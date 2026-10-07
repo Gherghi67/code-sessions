@@ -226,8 +226,9 @@ done
 # (a skills directory beside it), so this check is by identity, not by
 # where a link points: every file reachable under .claude/ (directory links
 # followed, Claude Code's own worktrees/ pruned) is compared to the target
-# by inode, and a dangling link by the path its first hop names, since the
-# Write may be the one that creates the file.
+# by inode, every directory there to the target's parent, and a dangling
+# link by the path its first hop names, since the Write may be the one that
+# creates the file.
 _cs_names_target() {
     # $1: a dangling link. True when its first hop names the write target.
     local dest parent
@@ -245,11 +246,15 @@ _cs_reaches_target() {
         _cs_names_target "$1"
         return
     fi
+    # Directories count too: a .claude that links at a content directory
+    # reaches a file the Write is about to create there.
     find -L "$1" -path '*/.claude/worktrees' -prune -o \
-        \( -type f -o -type l \) -print0 2>/dev/null > "$_cs_links" || return 0
+        \( -type f -o -type l -o -type d \) -print0 2>/dev/null > "$_cs_links" || return 0
     while IFS= read -r -d '' _cs_file; do
         if [ -L "$_cs_file" ]; then
             _cs_names_target "$_cs_file" && return 0
+        elif [ -d "$_cs_file" ]; then
+            [ "$_cs_file" -ef "$REAL_PARENT" ] && return 0
         elif [ "$_cs_file" -ef "$FILE_PATH" ]; then
             return 0
         fi
