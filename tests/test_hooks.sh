@@ -272,6 +272,143 @@ test_auto_approve_rejects_leaf_symlink() {
     fi
 }
 
+# Audit C2: approval covered every file under .cs/, including the ones cs
+# itself acts on: `.cs/local/pre-open` runs at the next open (Edit keeps the
+# exec bit), `.cs/claude-config/` is Claude Code's own config in an encrypted
+# session, the queue and the mailbox are execution channels. A prompt-injected
+# Write there landed with no prompt. Those paths now fall through to the
+# prompt; the content files (memory, narratives, handoffs, notes) stay
+# frictionless. The parent of every target is created first: a parent that
+# does not resolve already falls through, which would make a missing-parent
+# test green for the wrong reason.
+_auto_approve_output() {
+    # $1 tool, $2 path
+    local input
+    input=$(jq -n --arg tool "$1" --arg path "$2" \
+        '{tool_name: $tool, tool_input: {file_path: $path}}')
+    echo "$input" | bash "$HOOKS_DIR/session-auto-approve.sh"
+}
+
+_assert_falls_through() {
+    # $1 tool, $2 path, $3 what
+    local output
+    output=$(_auto_approve_output "$1" "$2")
+    if [[ -n "$output" ]]; then
+        echo "  FAIL: $3 must fall through to the prompt, got: $output"
+        return 1
+    fi
+}
+
+_assert_allowed() {
+    # $1 tool, $2 path, $3 what
+    local output
+    output=$(_auto_approve_output "$1" "$2")
+    assert_output_contains "$output" '"allow"' "$3 should be auto-approved" || return 1
+}
+
+test_auto_approve_rejects_pre_open() {
+    printf '#!/bin/sh\n' > "$CLAUDE_SESSION_META_DIR/local/pre-open"
+    chmod 755 "$CLAUDE_SESSION_META_DIR/local/pre-open"
+    _assert_falls_through Edit "$CLAUDE_SESSION_META_DIR/local/pre-open" \
+        "an Edit of .cs/local/pre-open" || return 1
+    rm "$CLAUDE_SESSION_META_DIR/local/pre-open"
+    _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/local/pre-open" \
+        "a Write of .cs/local/pre-open" || return 1
+}
+
+test_auto_approve_rejects_local_state_files() {
+    mkdir -p "$CLAUDE_SESSION_META_DIR/local/queue"
+    _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/local/queue/0001" \
+        "a queued task" || return 1
+    _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/local/state" \
+        ".cs/local/state" || return 1
+    _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/local/identity" \
+        ".cs/local/identity" || return 1
+}
+
+# The marker the rotate skill arms is the one machine-local file Claude writes
+# as part of a ritual; session-start.sh rejects any content with a separator,
+# so it names a handoff Claude already wrote and nothing else.
+test_auto_approve_allows_pending_handoff_marker() {
+    _assert_allowed Write "$CLAUDE_SESSION_META_DIR/local/pending-handoff" \
+        "the pending-handoff marker" || return 1
+}
+
+test_auto_approve_rejects_claude_config_and_keys() {
+    mkdir -p "$CLAUDE_SESSION_META_DIR/claude-config" "$CLAUDE_SESSION_META_DIR/age-recipients"
+    _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/claude-config/.claude.json" \
+        "Claude Code's config" || return 1
+    _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/age-recipients/x.pub" \
+        "an age recipient" || return 1
+    _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/session.lock" \
+        "the session lock" || return 1
+    _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/secrets.age" \
+        "the secret sync file" || return 1
+}
+
+# .cs/private holds the content files of an encrypted session beside its queue
+# and mailbox: only the content directories stay frictionless there.
+test_auto_approve_private_allows_content_not_queue() {
+    mkdir -p "$CLAUDE_SESSION_META_DIR/private/handoffs" "$CLAUDE_SESSION_META_DIR/private/queue"
+    _assert_allowed Write "$CLAUDE_SESSION_META_DIR/private/handoffs/2026-01-01-x.md" \
+        "a handoff in the vault" || return 1
+    _assert_allowed Write "$CLAUDE_SESSION_META_DIR/private/pending-handoff" \
+        "the vault's pending-handoff marker" || return 1
+    _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/private/queue/0001" \
+        "a queued task in the vault" || return 1
+    _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/private/session.log" \
+        "the vault's session log" || return 1
+}
+
+# An encrypted session links memory and claude-config into .cs/vault-mnt
+# (lib/63-encrypt.sh), so every real path there starts with vault-mnt/. The
+# classification must see memory/ as content and claude-config/ as config
+# through the link, not the mount directory as one unknown name.
+test_auto_approve_classifies_through_vault_links() {
+    local meta="$CLAUDE_SESSION_META_DIR"
+    rm -r "$meta/memory"
+    mkdir -p "$meta/vault-mnt/memory" "$meta/vault-mnt/claude-config"
+    ln -s vault-mnt/memory "$meta/memory"
+    ln -s vault-mnt/claude-config "$meta/claude-config"
+    _assert_allowed Write "$meta/memory/narrative.md" \
+        "a narrative behind the vault link" || return 1
+    _assert_falls_through Write "$meta/claude-config/settings.json" \
+        "a setting behind the vault link" || return 1
+}
+
+# A shared directory under .cs/ can carry a committed symlink into local/;
+# the spelled path looks like content, only the real one shows the target.
+test_auto_approve_rejects_link_into_local() {
+    ln -s ../local "$CLAUDE_SESSION_META_DIR/memory/notes"
+    _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/memory/notes/pre-open" \
+        "a write through a link into local/" || return 1
+}
+
+# Edit keeps the exec bit, so an executable anywhere under .cs/ is a script
+# whatever directory it sits in.
+test_auto_approve_rejects_executable_target() {
+    printf '#!/bin/sh\n' > "$CLAUDE_SESSION_META_DIR/memory/run.sh"
+    chmod 755 "$CLAUDE_SESSION_META_DIR/memory/run.sh"
+    _assert_falls_through Edit "$CLAUDE_SESSION_META_DIR/memory/run.sh" \
+        "an executable file" || return 1
+}
+
+# cs refuses to open a session whose .cs or .cs/local is a symlink (audit C1),
+# but a claude started in the directory by hand still runs this hook.
+test_auto_approve_rejects_linked_cs_dir() {
+    local real="$TEST_TMPDIR/elsewhere"
+    mkdir -p "$real/memory"
+    rm -r "$CLAUDE_SESSION_META_DIR"
+    ln -s "$real" "$CLAUDE_SESSION_META_DIR"
+    _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/memory/narrative.md" \
+        "a write under a linked .cs" || return 1
+    rm "$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$CLAUDE_SESSION_META_DIR/memory"
+    ln -s "$real" "$CLAUDE_SESSION_META_DIR/local"
+    _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/memory/narrative.md" \
+        "a write under a linked .cs/local" || return 1
+}
+
 test_auto_approve_skips_outside_session() {
     unset CLAUDE_SESSION_NAME
     local input='{"tool_name":"Write","tool_input":{"file_path":"/tmp/anything.md"}}'
@@ -2353,6 +2490,15 @@ run_test test_auto_approve_ignores_non_write_tools
 run_test test_auto_approve_rejects_traversal
 run_test test_auto_approve_rejects_leaf_symlink
 run_test test_auto_approve_skips_outside_session
+run_test test_auto_approve_rejects_pre_open
+run_test test_auto_approve_rejects_local_state_files
+run_test test_auto_approve_allows_pending_handoff_marker
+run_test test_auto_approve_rejects_claude_config_and_keys
+run_test test_auto_approve_private_allows_content_not_queue
+run_test test_auto_approve_classifies_through_vault_links
+run_test test_auto_approve_rejects_link_into_local
+run_test test_auto_approve_rejects_executable_target
+run_test test_auto_approve_rejects_linked_cs_dir
 
 # Subagent context
 run_test test_subagent_injects_session_name
