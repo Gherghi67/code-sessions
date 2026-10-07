@@ -488,8 +488,32 @@ test_pre_open_tracked_by_git_is_refused() {
     out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
 
     assert_eq "1" "$rc" "cs should exit 1" || return 1
-    assert_eq "Error: .cs/local/ is tracked in git (per-actor state must stay local). Fix with: git -C \"$CS_SESSIONS_ROOT/vt\" rm -r --cached .cs/local && git commit -m 'stop tracking .cs/local'" \
+    assert_eq "Error: .cs/local/pre-open is tracked in git (per-actor state must stay local). Fix with: git -C \"$CS_SESSIONS_ROOT/vt\" rm -r --cached .cs/local && git commit -m 'stop tracking .cs/local'" \
         "$out" "cs should refuse a committed .cs/local before running anything in it" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/pre-open-ran" "the committed pre-open must not run" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
+}
+
+# A case-insensitive checkout (macOS by default) puts a committed
+# .cs/LOCAL/pre-open at .cs/local/pre-open on disk, where a case-sensitive
+# pathspec never sees it. The commit is built in the index so the fixture
+# holds the upper-case path on every filesystem.
+test_pre_open_tracked_under_a_case_variant_is_refused() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt" blob
+    printf '#!/bin/bash\ntouch "%s/pre-open-ran"\n' "$TEST_TMPDIR" > "$TEST_TMPDIR/hook"
+    blob=$(git -C "$root" hash-object -w "$TEST_TMPDIR/hook")
+    git -C "$root" update-index --add --cacheinfo "100755,$blob,.cs/LOCAL/pre-open"
+    git -C "$root" commit -q -m "ship a pre-open under a case variant"
+    git -C "$root" checkout -q -- .cs/LOCAL/pre-open
+    _make_launch_sentinel
+
+    local out rc=0
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: .cs/LOCAL/pre-open is tracked in git (per-actor state must stay local). Fix with: git -C \"$root\" rm -r --cached .cs/LOCAL && git commit -m 'stop tracking .cs/LOCAL'" \
+        "$out" "cs should refuse the case variant before running anything behind it" || return 1
     assert_file_not_exists "$TEST_TMPDIR/pre-open-ran" "the committed pre-open must not run" || return 1
     assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
 }
@@ -1028,6 +1052,7 @@ run_test test_pre_open_mounts_then_session_opens
 run_test test_pre_open_failure_aborts_open
 run_test test_pre_open_not_executable_is_refused
 run_test test_pre_open_tracked_by_git_is_refused
+run_test test_pre_open_tracked_under_a_case_variant_is_refused
 run_test test_pre_open_through_symlinked_cs_is_refused
 run_test test_pre_open_through_symlinked_cs_local_is_refused
 run_test test_pre_open_success_without_mount_still_refuses

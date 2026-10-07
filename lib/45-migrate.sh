@@ -22,14 +22,19 @@ setup_merge_attributes() {
 # or `.cs/local -> ../payload` hides a committed pre-open from the pathspec
 # check below while the link resolves to it on disk.
 cs_assert_local_untracked() {
-    local dir="$1" sub
+    local dir="$1" sub tracked
     for sub in .cs .cs/local; do
         [ -L "$dir/$sub" ] || continue
         error "$sub is a symlink to $(readlink "$dir/$sub") (cs state must be a real directory inside the session). Replace the link with the directory, then reopen."
     done
     git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || return 0
-    if [ -n "$(git -C "$dir" ls-files -- .cs/local 2>/dev/null)" ]; then
-        error ".cs/local/ is tracked in git (per-actor state must stay local). Fix with: git -C \"$dir\" rm -r --cached .cs/local && git commit -m 'stop tracking .cs/local'"
+    # :(icase): a case-insensitive checkout (macOS by default) puts a
+    # committed .cs/LOCAL/pre-open at .cs/local/pre-open on disk, where a
+    # case-sensitive pathspec would never see it.
+    tracked=$(git -C "$dir" ls-files -- ':(icase).cs/local' 2>/dev/null | sed -n 1p)
+    if [ -n "$tracked" ]; then
+        sub=$(printf '%s\n' "$tracked" | cut -d/ -f1-2)
+        error "$tracked is tracked in git (per-actor state must stay local). Fix with: git -C \"$dir\" rm -r --cached $sub && git commit -m 'stop tracking $sub'"
     fi
 }
 
