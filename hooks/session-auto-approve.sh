@@ -85,35 +85,60 @@ REAL_META="$(cd "$META_DIR" 2>/dev/null && pwd -P)" || REAL_META=""
 REAL_CS="$(cd "$SESSION_DIR/.cs" 2>/dev/null && pwd -P)" || REAL_CS=""
 
 # Only consider files whose real parent is inside the session's .cs/ tree.
-# REL is that parent relative to the real .cs/, with the trailing slash that
-# lets a bare "local/" match the same pattern as "local/queue/".
-case "$REAL_PARENT/" in
-    "${REAL_META:-/cs-no-meta}"/*) REL="${REAL_PARENT#"$REAL_META"}" ;;
-    "${REAL_CS:-/cs-no-cs}"/*)     REL="${REAL_PARENT#"$REAL_CS"}" ;;
+# Every comparison from here on is lowercased: APFS keeps the case a caller
+# typed, so pwd -P returns LOCAL/ for the directory local/, and a spelling
+# must not change what a path is. On a case-sensitive filesystem LOCAL is
+# another directory and lowercasing only costs it the approval.
+_cs_lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+REAL_PARENT_LC="$(_cs_lower "$REAL_PARENT")"
+REAL_META_LC="$(_cs_lower "$REAL_META")"
+REAL_CS_LC="$(_cs_lower "$REAL_CS")"
+case "$REAL_PARENT_LC/" in
+    "${REAL_META_LC:-/cs-no-meta}"/*|"${REAL_CS_LC:-/cs-no-cs}"/*) ;;
     *) exit 0 ;;
 esac
-REL="${REL#/}/"
-# An encrypted session links memory, plans, claude-config and private into
-# .cs/vault-mnt (lib/63-encrypt.sh), so every real path there starts with it.
-REL="${REL#vault-mnt/}"
+BASENAME_LC="$(_cs_lower "${FILE_PATH##*/}")"
 
-# Classify by the REAL path: a shared directory can carry a committed symlink
-# whose spelled path looks like content (memory/notes -> ../local). Only the
-# files cs reads as data for people and Claude are frictionless; everything
-# cs itself acts on falls through to the prompt: .cs/local (pre-open runs at
-# the next open; the queue and the mailbox execute), Claude Code's own config
-# in an encrypted session, the secret-sync keys and files, the lock, and the
-# vault's copies of the same control files, which sit beside its content.
-# The one marker Claude arms by hand is pending-handoff: it names a handoff
-# Claude already wrote, and session-start.sh rejects any name with a separator.
-case "$REL" in
-    local/|private/)
-        [ "${FILE_PATH##*/}" = pending-handoff ] || exit 0 ;;
-    local/*|claude-config/*|age-recipients/*|.git/*|vault-mnt/*) exit 0 ;;
-    private/handoffs/*|private/checkpoints/*|private/narrative-archive/*) ;;
-    private/*) exit 0 ;;
-    /)
-        case "${FILE_PATH##*/}" in
+# Classify by where the write really lands, not by the spelled path: a
+# shared directory can carry a committed link into local/ (memory/notes ->
+# ../local), and cs accepts a .cs/claude-config that links anywhere, so a
+# config linked into memory/ makes a memory write a Claude Code setting.
+# Each control directory is resolved from both metadata roots and a parent
+# inside it falls through to the prompt. Only the files cs reads as data for
+# people and Claude stay frictionless; everything cs itself acts on prompts:
+# .cs/local (pre-open runs at the next open; the queue and the mailbox
+# execute), Claude Code's own config in an encrypted session, the secret-sync
+# keys, and the vault's copies of the same control files, which sit beside
+# its content. The one marker Claude arms by hand is pending-handoff: it names
+# a handoff Claude already wrote, and session-start.sh rejects any name with
+# a separator.
+_cs_real_lc() {
+    # Real, lowercased path of $1, or nothing when it does not resolve.
+    local real
+    real="$(cd "$1" 2>/dev/null && pwd -P)" || return 1
+    _cs_lower "$real"
+}
+for _cs_root in "$META_DIR" "$SESSION_DIR/.cs"; do
+    for _cs_name in local claude-config age-recipients .git; do
+        _cs_ctl="$(_cs_real_lc "$_cs_root/$_cs_name")" || continue
+        case "$REAL_PARENT_LC/" in
+            "$_cs_ctl"/)
+                [ "$_cs_name" = local ] && [ "$BASENAME_LC" = pending-handoff ] || exit 0 ;;
+            "$_cs_ctl"/*) exit 0 ;;
+        esac
+    done
+    _cs_ctl="$(_cs_real_lc "$_cs_root/private")" || continue
+    case "$REAL_PARENT_LC/" in
+        "$_cs_ctl"/)
+            [ "$BASENAME_LC" = pending-handoff ] || exit 0 ;;
+        "$_cs_ctl"/handoffs/*|"$_cs_ctl"/checkpoints/*|"$_cs_ctl"/narrative-archive/*) ;;
+        "$_cs_ctl"/*) exit 0 ;;
+    esac
+done
+# At the root of .cs/ itself: the lock and the secret-sync files.
+case "$REAL_PARENT_LC" in
+    "$REAL_META_LC"|"$REAL_CS_LC")
+        case "$BASENAME_LC" in
             session.lock|secrets.*) exit 0 ;;
         esac ;;
 esac
