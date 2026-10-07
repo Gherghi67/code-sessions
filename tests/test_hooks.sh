@@ -610,6 +610,21 @@ test_auto_approve_rejects_new_file_under_linked_claude_dir() {
         "a new file in a directory .claude links to" || return 1
 }
 
+# A requested path that ends in a newline: $(jq -r) strips it, so the hook
+# judges the stripped name while the Edit lands on the newline-named file a
+# project settings link points at.
+test_auto_approve_rejects_newline_file_path() {
+    local root="$CLAUDE_SESSION_DIR" meta="$CLAUDE_SESSION_META_DIR"
+    local target="$meta/memory/config.json
+"
+    mkdir -p "$root/.claude"
+    printf '{}\n' > "$target"
+    printf '{}\n' > "$meta/memory/config.json"
+    ln -s "$target" "$root/.claude/settings.json"
+    _assert_falls_through Edit "$target" \
+        "a newline-named file a settings link points at" || return 1
+}
+
 test_auto_approve_skips_outside_session() {
     unset CLAUDE_SESSION_NAME
     local input='{"tool_name":"Write","tool_input":{"file_path":"/tmp/anything.md"}}'
@@ -2715,6 +2730,7 @@ run_test test_auto_approve_rejects_mcp_link_to_new_content
 run_test test_auto_approve_rejects_newline_control_root
 run_test test_auto_approve_rejects_queue_link_under_separate_meta_dir
 run_test test_auto_approve_rejects_new_file_under_linked_claude_dir
+run_test test_auto_approve_rejects_newline_file_path
 
 # Subagent context
 run_test test_subagent_injects_session_name
