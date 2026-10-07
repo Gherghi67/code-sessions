@@ -84,8 +84,16 @@ REAL_PARENT="$(cd "$PARENT_DIR" 2>/dev/null && pwd -P)" || exit 0
 REAL_META="$(cd "$META_DIR" 2>/dev/null && pwd -P)" || REAL_META=""
 REAL_CS="$(cd "$SESSION_DIR/.cs" 2>/dev/null && pwd -P)" || REAL_CS=""
 
-# Only consider files whose real parent is inside the session's .cs/ tree.
-# Every comparison from here on is lowercased: APFS keeps the case a caller
+# Only consider files whose real parent is inside the session's .cs/ tree,
+# compared as the filesystem spelled them: on a case-sensitive filesystem a
+# SESSION/ beside session/ is another directory, and folding case here
+# would take its .cs/ for ours.
+case "$REAL_PARENT/" in
+    "${REAL_META:-/cs-no-meta}"/*|"${REAL_CS:-/cs-no-cs}"/*) ;;
+    *) exit 0 ;;
+esac
+
+# The classification below is lowercased: APFS keeps the case a caller
 # typed, so pwd -P returns LOCAL/ for the directory local/, and a spelling
 # must not change what a path is. On a case-sensitive filesystem LOCAL is
 # another directory and lowercasing only costs it the approval.
@@ -93,10 +101,6 @@ _cs_lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 REAL_PARENT_LC="$(_cs_lower "$REAL_PARENT")"
 REAL_META_LC="$(_cs_lower "$REAL_META")"
 REAL_CS_LC="$(_cs_lower "$REAL_CS")"
-case "$REAL_PARENT_LC/" in
-    "${REAL_META_LC:-/cs-no-meta}"/*|"${REAL_CS_LC:-/cs-no-cs}"/*) ;;
-    *) exit 0 ;;
-esac
 BASENAME_LC="$(_cs_lower "${FILE_PATH##*/}")"
 
 # Classify by where the write really lands, not by the spelled path: a
@@ -140,14 +144,19 @@ done
 # memory/, where it reads as content, while Claude Code reads it as its
 # settings; local/queue -> ../memory/tasks does the same for the drain. The
 # shapes compound (a chain of links, a link inside a linked directory, a
-# name ending in a newline that $(readlink) strips), so no link under a
-# control directory is followed: one whose first hop is not proven to land
-# outside .cs/ declines every write. The links cs itself puts in
-# claude-config point out at ~/.claude, so a session cs set up never
-# declines on its own. The scan is cheap: local/ and private/ hold few
-# entries, and claude-config's plugins/ is one link find does not enter.
+# name ending in a newline that $(readlink) strips, a hop through a shared
+# file at the session root), so no link under a control directory is
+# followed: one whose first hop is not proven to land outside the whole
+# session directory declines every write. What lies outside the session is
+# not something a shared or synced session can plant, so it is not chased.
+# The links cs itself puts in claude-config point out at ~/.claude, so a
+# session cs set up never declines on its own. The scan is cheap: local/
+# and private/ hold few entries, and claude-config's plugins/ is one link
+# find does not enter.
 # Paths come NUL-separated through a file so a planted name with a newline
 # in it cannot split into pieces that resolve to nothing and slip past.
+REAL_SESSION_LC="$(cd "$SESSION_DIR" 2>/dev/null && pwd -P)" || exit 0
+REAL_SESSION_LC="$(_cs_lower "$REAL_SESSION_LC")"
 _cs_links="$(mktemp "${TMPDIR:-/tmp}/cs-approve.XXXXXX")" || exit 0
 trap 'rm -f "$_cs_links"' EXIT
 for _cs_root in "$META_DIR" "$SESSION_DIR/.cs"; do
@@ -170,7 +179,7 @@ for _cs_root in "$META_DIR" "$SESSION_DIR/.cs"; do
             fi
             _cs_real="$(_cs_lower "$_cs_real")"
             case "$_cs_real/" in
-                "${REAL_META_LC:-/cs-no-meta}"/*|"${REAL_CS_LC:-/cs-no-cs}"/*) exit 0 ;;
+                "$REAL_SESSION_LC"/*) exit 0 ;;
             esac
         done < "$_cs_links"
     done
