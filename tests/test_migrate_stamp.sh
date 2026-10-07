@@ -237,8 +237,8 @@ test_committed_stamp_is_refused() {
         || { echo "  FAIL: could not commit the stamp"; return 1; }
     out=$(_open tracked) || rc=$?
     assert_eq "1" "$rc" "an open with a committed stamp is refused" || return 1
-    assert_output_contains "$out" ".cs/local/ is tracked in git" \
-        "the refusal names the tracked .cs/local" || return 1
+    assert_output_contains "$out" ".cs/local/migrated is tracked in git" \
+        "the refusal names the tracked stamp" || return 1
     assert_output_not_contains "$out" "--resume" "the refused open launches nothing" || return 1
 }
 

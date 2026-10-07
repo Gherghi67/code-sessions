@@ -336,6 +336,47 @@ test_worktree_reopen_preserves_project_claude_md() {
         "reopen must not rewrite the project's CLAUDE.md" || return 1
 }
 
+# A feature reopen skips migrate_session, so it carries its own refusal of a
+# linked .cs/local: the checkout would otherwise read and migrate state
+# behind the link.
+test_worktree_reopen_refuses_a_symlinked_cs_local() {
+    create_test_session_with_git "myproj" > /dev/null
+    cs_launch "myproj@fix-auth"
+    local wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    mv "$wt/.cs/local" "$wt/payload"
+    ln -s ../payload "$wt/.cs/local"
+
+    local out rc=0
+    out=$("$CS_BIN" "myproj@fix-auth" <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: .cs/local is a symlink to ../payload (cs state must be a real directory inside the session). Delete .cs/local/pre-open unless you wrote it, replace the link with the directory, then reopen." \
+        "$out" "the reopen should refuse the link before reading state behind it" || return 1
+}
+
+# Feature creation writes the worktree's state before the caller sees the
+# directory, so the refusal has to sit inside create_worktree_session, right
+# after the checkout: a base whose history commits `.cs/local` as a link
+# would otherwise have its first state writes land behind the link.
+test_worktree_creation_refuses_a_committed_cs_local_link() {
+    create_test_session_with_git "myproj" > /dev/null
+    local base="$CS_SESSIONS_ROOT/myproj"
+    mkdir -p "$base/payload" && touch "$base/payload/keep"
+    rm -rf "$base/.cs/local"
+    ln -s ../payload "$base/.cs/local"
+    git -C "$base" add -A
+    git -C "$base" commit -q -m "ship .cs/local as a link"
+    local wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+
+    local out rc=0
+    out=$("$CS_BIN" "myproj@fix-auth" <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_output_contains "$out" "Error: .cs/local is a symlink to ../payload (cs state must be a real directory inside the session). Delete .cs/local/pre-open unless you wrote it, replace the link with the directory, then reopen." \
+        "creation should refuse the link right after the checkout" || return 1
+    assert_not_exists "$wt/payload/state" "no state may be written behind the link" || return 1
+}
+
 test_worktree_launch_exports_base_identity() {
     create_test_session_with_git "myproj" > /dev/null
     cs_launch "myproj@fix-auth"   # create first
@@ -832,6 +873,8 @@ run_test test_retire_still_refuses_real_untracked_work
 run_test test_worktree_of_worktree_refused
 run_test test_worktree_create_succeeds_with_untracked_base
 run_test test_worktree_reopen_preserves_project_claude_md
+run_test test_worktree_reopen_refuses_a_symlinked_cs_local
+run_test test_worktree_creation_refuses_a_committed_cs_local_link
 run_test test_worktree_launch_exports_base_identity
 run_test test_launch_enables_the_task_tools_unless_opted_out
 run_test test_launch_enables_function_hooks_unless_opted_out

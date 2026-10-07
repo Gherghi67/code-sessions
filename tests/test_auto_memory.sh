@@ -488,9 +488,153 @@ test_pre_open_tracked_by_git_is_refused() {
     out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
 
     assert_eq "1" "$rc" "cs should exit 1" || return 1
-    assert_eq "Error: .cs/local/ is tracked in git (per-actor state must stay local). Fix with: git -C \"$CS_SESSIONS_ROOT/vt\" rm -r --cached .cs/local && git commit -m 'stop tracking .cs/local'" \
+    assert_eq "Error: .cs/local/pre-open is tracked in git (per-actor state must stay local). Fix with: git -C \"$CS_SESSIONS_ROOT/vt\" rm -r --cached .cs/local && git commit -m 'stop tracking .cs/local'" \
         "$out" "cs should refuse a committed .cs/local before running anything in it" || return 1
     assert_file_not_exists "$TEST_TMPDIR/pre-open-ran" "the committed pre-open must not run" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
+}
+
+# A case-insensitive checkout (macOS by default) puts a committed
+# .cs/LOCAL/pre-open at .cs/local/pre-open on disk, where a case-sensitive
+# pathspec never sees it. The commit is built in the index so the fixture
+# holds the upper-case path on every filesystem.
+test_pre_open_tracked_under_a_case_variant_is_refused() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt" blob
+    printf '#!/bin/bash\ntouch "%s/pre-open-ran"\n' "$TEST_TMPDIR" > "$TEST_TMPDIR/hook"
+    blob=$(git -C "$root" hash-object -w "$TEST_TMPDIR/hook")
+    git -C "$root" update-index --add --cacheinfo "100755,$blob,.cs/LOCAL/pre-open"
+    git -C "$root" commit -q -m "ship a pre-open under a case variant"
+    git -C "$root" checkout -q -- .cs/LOCAL/pre-open
+    _make_launch_sentinel
+
+    local out rc=0
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: .cs/LOCAL/pre-open is tracked in git (per-actor state must stay local). Fix with: git -C \"$root\" rm -r --cached .cs/LOCAL && git commit -m 'stop tracking .cs/LOCAL'" \
+        "$out" "cs should refuse the case variant before running anything behind it" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/pre-open-ran" "the committed pre-open must not run" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
+}
+
+# A clone can also deliver `.cs` itself as a committed symlink to a tracked
+# directory: `git ls-files -- .cs/local` then lists nothing, so the tracked
+# check passes and the pre-open behind the link would run.
+test_pre_open_through_symlinked_cs_is_refused() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt"
+    mv "$root/.cs" "$root/payload"
+    ln -s payload "$root/.cs"
+    _write_pre_open vt "touch \"$TEST_TMPDIR/pre-open-ran\""
+    git -C "$root" add -A
+    git -C "$root" commit -q -m "ship .cs as a link"
+    _make_launch_sentinel
+
+    local out rc=0
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: .cs is a symlink to payload (cs state must be a real directory inside the session). Delete .cs/local/pre-open unless you wrote it, replace the link with the directory, then reopen." \
+        "$out" "cs should refuse a symlinked .cs before running anything behind it" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/pre-open-ran" "the pre-open behind the link must not run" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
+}
+
+# A repository can also deliver .cs as a submodule: the superproject's index
+# holds one gitlink entry for .cs, so a pathspec under it lists nothing,
+# while a recursive clone puts the submodule's committed pre-open on disk.
+test_pre_open_inside_a_cs_submodule_is_refused() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt"
+    _write_pre_open vt "touch \"$TEST_TMPDIR/pre-open-ran\""
+    git -C "$root/.cs" init -q
+    git -C "$root/.cs" add -f local/pre-open
+    git -C "$root/.cs" -c user.name=t -c user.email=t@example.com commit -q -m "hook"
+    git -C "$root" rm -r -q --cached .cs
+    git -C "$root" add .cs
+    git -C "$root" commit -q -m "ship .cs as a submodule"
+    assert_eq "160000" "$(git -C "$root" ls-files -s -- .cs | cut -d' ' -f1)" "the fixture must index .cs as a gitlink" || return 1
+    _make_launch_sentinel
+
+    local out rc=0
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: .cs is a submodule or nested repository (cs state must be a plain directory inside the session). Delete .cs/local/pre-open unless you wrote it, then git rm --cached .cs, remove .cs/.git and git add .cs, then reopen." \
+        "$out" "cs should refuse a submodule .cs before running anything inside it" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/pre-open-ran" "the submodule's pre-open must not run" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
+
+    # Removing the submodule's own .git leaves the gitlink in the session's
+    # index, which still hides everything under .cs from the pathspec check.
+    rm -rf "$root/.cs/.git"
+    rc=0
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "cs should still exit 1 with the gitlink indexed" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/pre-open-ran" "the pre-open must not run after .cs/.git is removed" || return 1
+}
+
+# A submodule somewhere under .cs is the session's own business: only a
+# gitlink AT .cs hides cs's state from the index.
+test_submodule_inside_cs_is_not_refused() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt"
+    mkdir -p "$root/.cs/00-reference"
+    git -C "$root/.cs/00-reference" init -q
+    touch "$root/.cs/00-reference/keep"
+    git -C "$root/.cs/00-reference" add keep
+    git -C "$root/.cs/00-reference" -c user.name=t -c user.email=t@example.com commit -q -m "ref"
+    git -C "$root" add .cs/00-reference
+    git -C "$root" commit -q -m "track a reference submodule under .cs"
+    assert_eq "160000" "$(git -C "$root" ls-files -s -- .cs/00-reference | cut -d' ' -f1)" "the fixture must index the nested gitlink" || return 1
+    _make_launch_sentinel
+
+    local rc=0
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || rc=$?
+
+    assert_eq "0" "$rc" "a gitlink below .cs must not refuse the open" || return 1
+    assert_eq "launched" "$(cat "$TEST_TMPDIR/launched" 2>/dev/null)" "claude should launch" || return 1
+}
+
+# Without a pre-open the open reaches migration, whose hardening chmods .cs
+# and would follow a link to a directory cs does not own.
+test_symlinked_cs_without_pre_open_keeps_the_target_mode() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt"
+    mv "$root/.cs" "$root/payload"
+    rm -f "$root/payload/local/pre-open"
+    chmod 755 "$root/payload"
+    ln -s payload "$root/.cs"
+    _make_launch_sentinel
+
+    local out rc=0
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: .cs is a symlink to payload (cs state must be a real directory inside the session). Delete .cs/local/pre-open unless you wrote it, replace the link with the directory, then reopen." \
+        "$out" "cs should refuse the link before migration touches the target" || return 1
+    assert_eq "755" "$(_file_mode "$root/payload")" "the link target's mode must be untouched" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
+}
+
+test_pre_open_through_symlinked_cs_local_is_refused() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt"
+    mv "$root/.cs/local" "$root/payload"
+    ln -s ../payload "$root/.cs/local"
+    _write_pre_open vt "touch \"$TEST_TMPDIR/pre-open-ran\""
+    git -C "$root" add -A
+    git -C "$root" commit -q -m "ship .cs/local as a link"
+    _make_launch_sentinel
+
+    local out rc=0
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: .cs/local is a symlink to ../payload (cs state must be a real directory inside the session). Delete .cs/local/pre-open unless you wrote it, replace the link with the directory, then reopen." \
+        "$out" "cs should refuse a symlinked .cs/local before running anything behind it" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/pre-open-ran" "the pre-open behind the link must not run" || return 1
     assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
 }
 
@@ -985,6 +1129,12 @@ run_test test_pre_open_mounts_then_session_opens
 run_test test_pre_open_failure_aborts_open
 run_test test_pre_open_not_executable_is_refused
 run_test test_pre_open_tracked_by_git_is_refused
+run_test test_pre_open_tracked_under_a_case_variant_is_refused
+run_test test_pre_open_through_symlinked_cs_is_refused
+run_test test_symlinked_cs_without_pre_open_keeps_the_target_mode
+run_test test_pre_open_inside_a_cs_submodule_is_refused
+run_test test_submodule_inside_cs_is_not_refused
+run_test test_pre_open_through_symlinked_cs_local_is_refused
 run_test test_pre_open_success_without_mount_still_refuses
 run_test test_claude_config_link_moves_claude_code_into_the_vault
 run_test test_unmounted_claude_config_refuses_open

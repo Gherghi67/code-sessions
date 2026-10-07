@@ -17,12 +17,40 @@ setup_merge_attributes() {
     fi
 }
 
-# Refuse to proceed if per-actor local state has been committed to git.
+# Refuse to proceed if per-actor local state has been committed to git, or
+# sits behind a symlink: git tracks a link as one path, so `.cs -> payload`
+# or `.cs/local -> ../payload` hides a committed pre-open from the pathspec
+# check below while the link resolves to it on disk.
 cs_assert_local_untracked() {
-    local dir="$1"
+    local dir="$1" sub tracked
+    for sub in .cs .cs/local; do
+        [ -L "$dir/$sub" ] || continue
+        error "$sub is a symlink to $(readlink "$dir/$sub") (cs state must be a real directory inside the session). Delete .cs/local/pre-open unless you wrote it, replace the link with the directory, then reopen."
+    done
+    # A submodule or nested repository at .cs keeps its files out of the
+    # session's index, so the pathspec check below would never see them. The
+    # gitlink outlives a removed .cs/.git, so the index is checked as well.
+    local nested=""
+    [ -e "$dir/.cs/.git" ] && nested=1
+    if git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
+        # The pathspec also lists entries below .cs; only a gitlink whose
+        # whole path is .cs counts.
+        if git -C "$dir" ls-files -s -- ':(icase).cs' 2>/dev/null \
+            | awk -F'\t' '{ split($1, m, " "); if (m[1] == "160000" && tolower($2) == ".cs") hit = 1 } END { exit !hit }' 2>/dev/null; then
+            nested=1
+        fi
+    fi
+    if [ -n "$nested" ]; then
+        error ".cs is a submodule or nested repository (cs state must be a plain directory inside the session). Delete .cs/local/pre-open unless you wrote it, then git rm --cached .cs, remove .cs/.git and git add .cs, then reopen."
+    fi
     git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || return 0
-    if [ -n "$(git -C "$dir" ls-files -- .cs/local 2>/dev/null)" ]; then
-        error ".cs/local/ is tracked in git (per-actor state must stay local). Fix with: git -C \"$dir\" rm -r --cached .cs/local && git commit -m 'stop tracking .cs/local'"
+    # :(icase): a case-insensitive checkout (macOS by default) puts a
+    # committed .cs/LOCAL/pre-open at .cs/local/pre-open on disk, where a
+    # case-sensitive pathspec would never see it.
+    tracked=$(git -C "$dir" ls-files -- ':(icase).cs/local' 2>/dev/null | sed -n 1p)
+    if [ -n "$tracked" ]; then
+        sub=$(printf '%s\n' "$tracked" | cut -d/ -f1-2)
+        error "$tracked is tracked in git (per-actor state must stay local). Fix with: git -C \"$dir\" rm -r --cached $sub && git commit -m 'stop tracking $sub'"
     fi
 }
 
@@ -811,6 +839,10 @@ _write_migration_stamp() {  # session_dir, actor_raw, actor_slug
 migrate_session() {
     local session_dir="$1"
 
+    # Per-actor local state must never be committed or linked elsewhere;
+    # refuse before the hardening below chmods through a link.
+    cs_assert_local_untracked "$session_dir"
+
     # Sessions created before cs set a mode are still world-readable on disk,
     # and git does not record directory modes, so a fresh clone recreates .cs
     # under the cloner's umask however it was set on the other machine.
@@ -825,8 +857,6 @@ migrate_session() {
         chmod 700 "$session_dir" 2>/dev/null || true
     fi
 
-    # Per-actor local state must never be committed; refuse if it has been.
-    cs_assert_local_untracked "$session_dir"
     if [ "$(_read_local_state "$session_dir/.cs/local/state" git_bookkeeping)" = "exclude" ]; then
         local conflict
         conflict=$(_exclude_session_tracked_conflict "$session_dir")
