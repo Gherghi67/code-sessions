@@ -522,9 +522,13 @@ test_auto_approve_rejects_link_hopping_through_session_root() {
 # On a case-sensitive filesystem SESSION/ beside session/ is another
 # directory; a containment check that folds case would take its .cs/ for
 # ours and classify against ours, which has no claude-config to decline on.
-# On a case-insensitive filesystem the mkdir lands in our own .cs/ and the
-# write is to our own claude-config, which declines on its own.
+# On a case-insensitive filesystem the mkdir would land in our own .cs/ and
+# the write would decline as our own claude-config, proving nothing, so the
+# test skips there (reproduced on a case-sensitive APFS image: the old
+# containment approved it, the exact one is silent).
 test_auto_approve_rejects_case_sibling_session() {
+    mkdir -p "$TEST_TMPDIR/Probe"
+    [ -d "$TEST_TMPDIR/probe" ] && return 77
     local sibling="$TEST_TMPDIR/SESSION"
     mkdir -p "$sibling/.cs/claude-config"
     _assert_falls_through Write "$sibling/.cs/claude-config/settings.json" \
