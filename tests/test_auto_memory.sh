@@ -551,8 +551,10 @@ test_pre_open_inside_a_cs_submodule_is_refused() {
     git -C "$root/.cs" init -q
     git -C "$root/.cs" add -f local/pre-open
     git -C "$root/.cs" -c user.name=t -c user.email=t@example.com commit -q -m "hook"
+    git -C "$root" rm -r -q --cached .cs
     git -C "$root" add .cs
     git -C "$root" commit -q -m "ship .cs as a submodule"
+    assert_eq "160000" "$(git -C "$root" ls-files -s -- .cs | cut -d' ' -f1)" "the fixture must index .cs as a gitlink" || return 1
     _make_launch_sentinel
 
     local out rc=0
