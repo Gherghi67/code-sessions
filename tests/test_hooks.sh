@@ -505,6 +505,32 @@ test_auto_approve_rejects_newline_link_chain() {
         "the end of a chain through a newline-named link" || return 1
 }
 
+# The planted link can step out of .cs/ first: claude-config/settings.json
+# -> ../../hop.json at the session root (a shared project file), and hop.json
+# -> .cs/memory/config.json. A parent outside .cs/ proves nothing while it is
+# inside the session.
+test_auto_approve_rejects_link_hopping_through_session_root() {
+    local meta="$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$meta/claude-config"
+    printf '{}\n' > "$meta/memory/config.json"
+    ln -s .cs/memory/config.json "$CLAUDE_SESSION_DIR/hop.json"
+    ln -s ../../hop.json "$meta/claude-config/settings.json"
+    _assert_falls_through Edit "$meta/memory/config.json" \
+        "the end of a chain through the session root" || return 1
+}
+
+# On a case-sensitive filesystem SESSION/ beside session/ is another
+# directory; a containment check that folds case would take its .cs/ for
+# ours and classify against ours, which has no claude-config to decline on.
+# On a case-insensitive filesystem the mkdir lands in our own .cs/ and the
+# write is to our own claude-config, which declines on its own.
+test_auto_approve_rejects_case_sibling_session() {
+    local sibling="$TEST_TMPDIR/SESSION"
+    mkdir -p "$sibling/.cs/claude-config"
+    _assert_falls_through Write "$sibling/.cs/claude-config/settings.json" \
+        "a setting in a case-sibling session" || return 1
+}
+
 test_auto_approve_skips_outside_session() {
     unset CLAUDE_SESSION_NAME
     local input='{"tool_name":"Write","tool_input":{"file_path":"/tmp/anything.md"}}'
@@ -2602,6 +2628,8 @@ run_test test_auto_approve_rejects_queue_link_target
 run_test test_auto_approve_rejects_settings_link_chain_target
 run_test test_auto_approve_rejects_link_inside_linked_control_dir
 run_test test_auto_approve_rejects_newline_link_chain
+run_test test_auto_approve_rejects_link_hopping_through_session_root
+run_test test_auto_approve_rejects_case_sibling_session
 
 # Subagent context
 run_test test_subagent_injects_session_name
