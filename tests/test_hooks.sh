@@ -600,6 +600,16 @@ test_auto_approve_rejects_queue_link_under_separate_meta_dir() {
         "a file under a queue link in a separate metadata root" || return 1
 }
 
+# .claude itself linked at a content directory, with no settings file yet:
+# the Write creates .claude/settings.json. The parent, not a file, is what
+# must match.
+test_auto_approve_rejects_new_file_under_linked_claude_dir() {
+    local root="$CLAUDE_SESSION_DIR" meta="$CLAUDE_SESSION_META_DIR"
+    ln -s .cs/memory "$root/.claude"
+    _assert_falls_through Write "$meta/memory/settings.json" \
+        "a new file in a directory .claude links to" || return 1
+}
+
 test_auto_approve_skips_outside_session() {
     unset CLAUDE_SESSION_NAME
     local input='{"tool_name":"Write","tool_input":{"file_path":"/tmp/anything.md"}}'
@@ -2704,6 +2714,7 @@ run_test test_auto_approve_rejects_project_hook_link_behind_dir_link
 run_test test_auto_approve_rejects_mcp_link_to_new_content
 run_test test_auto_approve_rejects_newline_control_root
 run_test test_auto_approve_rejects_queue_link_under_separate_meta_dir
+run_test test_auto_approve_rejects_new_file_under_linked_claude_dir
 
 # Subagent context
 run_test test_subagent_injects_session_name
