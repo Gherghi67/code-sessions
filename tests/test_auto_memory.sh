@@ -561,7 +561,7 @@ test_pre_open_inside_a_cs_submodule_is_refused() {
     out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
 
     assert_eq "1" "$rc" "cs should exit 1" || return 1
-    assert_eq "Error: .cs is a submodule or nested repository (cs state must be a plain directory inside the session). Check .cs/local for files you did not write, then git rm --cached .cs, remove .cs/.git and git add .cs, then reopen." \
+    assert_eq "Error: .cs is a submodule or nested repository (cs state must be a plain directory inside the session). Delete .cs/local/pre-open unless you wrote it, then git rm --cached .cs, remove .cs/.git and git add .cs, then reopen." \
         "$out" "cs should refuse a submodule .cs before running anything inside it" || return 1
     assert_file_not_exists "$TEST_TMPDIR/pre-open-ran" "the submodule's pre-open must not run" || return 1
     assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
@@ -573,6 +573,28 @@ test_pre_open_inside_a_cs_submodule_is_refused() {
     out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
     assert_eq "1" "$rc" "cs should still exit 1 with the gitlink indexed" || return 1
     assert_file_not_exists "$TEST_TMPDIR/pre-open-ran" "the pre-open must not run after .cs/.git is removed" || return 1
+}
+
+# A submodule somewhere under .cs is the session's own business: only a
+# gitlink AT .cs hides cs's state from the index.
+test_submodule_inside_cs_is_not_refused() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt"
+    mkdir -p "$root/.cs/00-reference"
+    git -C "$root/.cs/00-reference" init -q
+    touch "$root/.cs/00-reference/keep"
+    git -C "$root/.cs/00-reference" add keep
+    git -C "$root/.cs/00-reference" -c user.name=t -c user.email=t@example.com commit -q -m "ref"
+    git -C "$root" add .cs/00-reference
+    git -C "$root" commit -q -m "track a reference submodule under .cs"
+    assert_eq "160000" "$(git -C "$root" ls-files -s -- .cs/00-reference | cut -d' ' -f1)" "the fixture must index the nested gitlink" || return 1
+    _make_launch_sentinel
+
+    local rc=0
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || rc=$?
+
+    assert_eq "0" "$rc" "a gitlink below .cs must not refuse the open" || return 1
+    assert_eq "launched" "$(cat "$TEST_TMPDIR/launched" 2>/dev/null)" "claude should launch" || return 1
 }
 
 # Without a pre-open the open reaches migration, whose hardening chmods .cs
@@ -1111,6 +1133,7 @@ run_test test_pre_open_tracked_under_a_case_variant_is_refused
 run_test test_pre_open_through_symlinked_cs_is_refused
 run_test test_symlinked_cs_without_pre_open_keeps_the_target_mode
 run_test test_pre_open_inside_a_cs_submodule_is_refused
+run_test test_submodule_inside_cs_is_not_refused
 run_test test_pre_open_through_symlinked_cs_local_is_refused
 run_test test_pre_open_success_without_mount_still_refuses
 run_test test_claude_config_link_moves_claude_code_into_the_vault
