@@ -18,6 +18,9 @@ setup() {
     # "declines outside a session" fail, and worse, ones that assert silence
     # stay green while the hook writes into that live session.
     unset CLAUDE_PROJECT_DIR
+    # The hook treats an in-session CLAUDE_CONFIG_DIR as a control directory;
+    # the developer's own (outside any fixture) must not reach the tests.
+    unset CLAUDE_CONFIG_DIR
     export CLAUDE_SESSION_NAME="test-session"
     export CLAUDE_SESSION_DIR="$TEST_TMPDIR/session"
     export CLAUDE_SESSION_META_DIR="$CLAUDE_SESSION_DIR/.cs"
@@ -623,6 +626,25 @@ test_auto_approve_rejects_newline_file_path() {
     ln -s "$target" "$root/.claude/settings.json"
     _assert_falls_through Edit "$target" \
         "a newline-named file a settings link points at" || return 1
+}
+
+# cs keeps a CLAUDE_CONFIG_DIR the shell set when the session has no vault
+# config (lib/75-launch.sh), so Claude Code's active config directory can be
+# a content directory of the session. One outside the session is the user's
+# own and stays out of the scan.
+test_auto_approve_rejects_config_dir_inside_session() {
+    local meta="$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$meta/memory/cfg" "$meta/plans"
+    export CLAUDE_CONFIG_DIR="$meta/memory/cfg"
+    _assert_falls_through Write "$meta/memory/cfg/settings.json" \
+        "a setting in a CLAUDE_CONFIG_DIR inside the session" || return 1
+    _assert_allowed Write "$meta/plans/plan.md" \
+        "a plan beside an in-session config dir" || return 1
+    export CLAUDE_CONFIG_DIR="$TEST_TMPDIR/outside-config"
+    mkdir -p "$CLAUDE_CONFIG_DIR"
+    _assert_allowed Write "$meta/memory/narrative.md" \
+        "a narrative with the config dir outside the session" || return 1
+    unset CLAUDE_CONFIG_DIR
 }
 
 test_auto_approve_skips_outside_session() {
@@ -2731,6 +2753,7 @@ run_test test_auto_approve_rejects_newline_control_root
 run_test test_auto_approve_rejects_queue_link_under_separate_meta_dir
 run_test test_auto_approve_rejects_new_file_under_linked_claude_dir
 run_test test_auto_approve_rejects_newline_file_path
+run_test test_auto_approve_rejects_config_dir_inside_session
 
 # Subagent context
 run_test test_subagent_injects_session_name
