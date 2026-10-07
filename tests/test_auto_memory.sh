@@ -541,6 +541,27 @@ test_pre_open_through_symlinked_cs_is_refused() {
     assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
 }
 
+# Without a pre-open the open reaches migration, whose hardening chmods .cs
+# and would follow a link to a directory cs does not own.
+test_symlinked_cs_without_pre_open_keeps_the_target_mode() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt"
+    mv "$root/.cs" "$root/payload"
+    rm -f "$root/payload/local/pre-open"
+    chmod 755 "$root/payload"
+    ln -s payload "$root/.cs"
+    _make_launch_sentinel
+
+    local out rc=0
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: .cs is a symlink to payload (cs state must be a real directory inside the session). Replace the link with the directory, then reopen." \
+        "$out" "cs should refuse the link before migration touches the target" || return 1
+    assert_eq "755" "$(_file_mode "$root/payload")" "the link target's mode must be untouched" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
+}
+
 test_pre_open_through_symlinked_cs_local_is_refused() {
     "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
     local root="$CS_SESSIONS_ROOT/vt"
@@ -1054,6 +1075,7 @@ run_test test_pre_open_not_executable_is_refused
 run_test test_pre_open_tracked_by_git_is_refused
 run_test test_pre_open_tracked_under_a_case_variant_is_refused
 run_test test_pre_open_through_symlinked_cs_is_refused
+run_test test_symlinked_cs_without_pre_open_keeps_the_target_mode
 run_test test_pre_open_through_symlinked_cs_local_is_refused
 run_test test_pre_open_success_without_mount_still_refuses
 run_test test_claude_config_link_moves_claude_code_into_the_vault
