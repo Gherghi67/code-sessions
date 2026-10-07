@@ -32,3 +32,4 @@ tests/.run_all.lock/
 .skillopt-sleep/
 .cs/vault-mnt/
 .cs-tmp.*
+mods/*/tsconfig.json
