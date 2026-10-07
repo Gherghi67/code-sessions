@@ -475,6 +475,32 @@ test_auto_approve_rejects_settings_link_chain_target() {
         "the end of a settings link chain" || return 1
 }
 
+# A link inside a linked control directory: local/queue -> memory/tasks, and
+# memory/tasks/0001 -> ../task.txt. The queue drain reads task.txt as a task.
+test_auto_approve_rejects_link_inside_linked_control_dir() {
+    local meta="$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$meta/memory/tasks"
+    printf 'original task\n' > "$meta/memory/task.txt"
+    ln -s ../memory/tasks "$meta/local/queue"
+    ln -s ../task.txt "$meta/memory/tasks/0001"
+    _assert_falls_through Edit "$meta/memory/task.txt" \
+        "the target of a link inside a linked queue" || return 1
+}
+
+# A link name ending in a newline: $(readlink) strips it, so a hop-by-hop
+# resolver checks a name that does not exist and loses the chain.
+test_auto_approve_rejects_newline_link_chain() {
+    local meta="$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$meta/claude-config"
+    printf '{}\n' > "$meta/memory/real.json"
+    ln -s real.json "$meta/memory/hop
+"
+    ln -s "../memory/hop
+" "$meta/claude-config/settings.json"
+    _assert_falls_through Edit "$meta/memory/real.json" \
+        "the end of a chain through a newline-named link" || return 1
+}
+
 test_auto_approve_skips_outside_session() {
     unset CLAUDE_SESSION_NAME
     local input='{"tool_name":"Write","tool_input":{"file_path":"/tmp/anything.md"}}'
@@ -2570,6 +2596,8 @@ run_test test_auto_approve_rejects_config_linked_into_content
 run_test test_auto_approve_rejects_settings_link_target
 run_test test_auto_approve_rejects_queue_link_target
 run_test test_auto_approve_rejects_settings_link_chain_target
+run_test test_auto_approve_rejects_link_inside_linked_control_dir
+run_test test_auto_approve_rejects_newline_link_chain
 
 # Subagent context
 run_test test_subagent_injects_session_name
