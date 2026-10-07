@@ -135,6 +135,43 @@ for _cs_root in "$META_DIR" "$SESSION_DIR/.cs"; do
         "$_cs_ctl"/*) exit 0 ;;
     esac
 done
+# A link beneath a control directory can point the other way, into content:
+# claude-config/settings.json -> ../memory/config.json lands the write in
+# memory/, where it reads as content, while Claude Code reads it as its
+# settings; local/queue -> ../memory/tasks does the same for the drain. Any
+# link under a control directory that resolves to the target or to one of its
+# ancestors declines. The scan is cheap: local/ and private/ hold few entries,
+# and the links cs itself puts in claude-config point out at ~/.claude, so
+# their targets never match a path under .cs/. Paths come NUL-separated
+# through a file so a planted name with a newline in it cannot split into
+# pieces that resolve to nothing and slip past.
+TARGET_LC="$REAL_PARENT_LC/$BASENAME_LC"
+_cs_links="$(mktemp "${TMPDIR:-/tmp}/cs-approve.XXXXXX")" || exit 0
+trap 'rm -f "$_cs_links"' EXIT
+for _cs_root in "$META_DIR" "$SESSION_DIR/.cs"; do
+    for _cs_name in local claude-config age-recipients private; do
+        _cs_ctl="$(cd "$_cs_root/$_cs_name" 2>/dev/null && pwd -P)" || continue
+        find "$_cs_ctl" -type l -print0 2>/dev/null > "$_cs_links" || exit 0
+        while IFS= read -r -d '' _cs_link; do
+            _cs_dest="$(readlink "$_cs_link")" || exit 0
+            case "$_cs_dest" in
+                /*) ;;
+                *) _cs_dest="${_cs_link%/*}/$_cs_dest" ;;
+            esac
+            if [ -d "$_cs_dest" ]; then
+                _cs_real="$(cd "$_cs_dest" 2>/dev/null && pwd -P)" || continue
+            else
+                _cs_real="$(cd "${_cs_dest%/*}" 2>/dev/null && pwd -P)" || continue
+                _cs_real="$_cs_real/${_cs_dest##*/}"
+            fi
+            _cs_real="$(_cs_lower "$_cs_real")"
+            case "$TARGET_LC/" in
+                "$_cs_real"/*) exit 0 ;;
+            esac
+        done < "$_cs_links"
+    done
+done
+
 # At the root of .cs/ itself: the lock and the secret-sync files.
 case "$REAL_PARENT_LC" in
     "$REAL_META_LC"|"$REAL_CS_LC")
