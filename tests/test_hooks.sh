@@ -463,6 +463,18 @@ test_auto_approve_rejects_queue_link_target() {
         "a narrative beside the linked target" || return 1
 }
 
+# The link under the control directory can point at another link in content,
+# and the file Claude Code reads is the end of that chain.
+test_auto_approve_rejects_settings_link_chain_target() {
+    local meta="$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$meta/claude-config"
+    printf '{}\n' > "$meta/memory/real.json"
+    ln -s real.json "$meta/memory/hop.json"
+    ln -s ../memory/hop.json "$meta/claude-config/settings.json"
+    _assert_falls_through Edit "$meta/memory/real.json" \
+        "the end of a settings link chain" || return 1
+}
+
 test_auto_approve_skips_outside_session() {
     unset CLAUDE_SESSION_NAME
     local input='{"tool_name":"Write","tool_input":{"file_path":"/tmp/anything.md"}}'
@@ -2557,6 +2569,7 @@ run_test test_auto_approve_rejects_case_variants
 run_test test_auto_approve_rejects_config_linked_into_content
 run_test test_auto_approve_rejects_settings_link_target
 run_test test_auto_approve_rejects_queue_link_target
+run_test test_auto_approve_rejects_settings_link_chain_target
 
 # Subagent context
 run_test test_subagent_injects_session_name
