@@ -194,9 +194,11 @@ Runs when a tool call fails (async, non-blocking):
 ## session-auto-approve.sh (PermissionRequest on Write/Edit)
 
 Runs when Claude Code would show a permission dialog for Write or Edit:
-- Auto-approves writes to files inside the session's `.cs/` metadata directory
-- Falls through to the normal permission prompt for all other files
-- Scoped narrowly to session metadata only — project files always require explicit approval
+- Auto-approves writes to the content files inside the session's `.cs/` directory: README, summary, memory and narratives, plans, handoffs, checkpoints, research notes, and the `pending-handoff` marker the rotate skill arms (session-start.sh rejects any marker with a path separator in it)
+- Falls through to the normal permission prompt for everything cs itself acts on: every file under `.cs/local/` (`pre-open` runs at the next open, the queue and the mailbox execute, `state` and `identity` bind the checkout), `.cs/claude-config/`, `.cs/age-recipients/`, the `secrets.*` sync files, `session.lock`, and everything in `.cs/private/` except `handoffs/`, `checkpoints/` and `narrative-archive/`
+- Falls through for an Edit of any executable file under `.cs/` (Edit keeps the mode bits), for a target that is itself a symlink, and for every write while `.cs` or `.cs/local` is a symlink (cs refuses to open such a session, but a `claude` started in the directory by hand still runs this hook)
+- Classifies by the real path: the hook strips an encrypted session's `vault-mnt/` prefix, and a committed link from a shared directory into `.cs/local` counts as `.cs/local`
+- Falls through to the normal permission prompt for all other files. Project files always require explicit approval
 
 ## bash-logger.sh (PreToolUse on Bash)
 
