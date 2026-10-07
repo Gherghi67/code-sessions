@@ -36,7 +36,7 @@ cs_assert_local_untracked() {
         # The pathspec also lists entries below .cs; only a gitlink whose
         # whole path is .cs counts.
         if git -C "$dir" ls-files -s -- ':(icase).cs' 2>/dev/null \
-            | awk -F'\t' '{ split($1, m, " "); if (m[1] == "160000" && tolower($2) == ".cs") exit 0 } END { exit 1 }' 2>/dev/null; then
+            | awk -F'\t' '{ split($1, m, " "); if (m[1] == "160000" && tolower($2) == ".cs") hit = 1 } END { exit !hit }' 2>/dev/null; then
             nested=1
         fi
     fi
