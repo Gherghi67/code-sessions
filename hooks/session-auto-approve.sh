@@ -42,7 +42,15 @@ if [ -z "$SESSION_DIR" ] || [ ! -d "$SESSION_DIR" ]; then
 fi
 
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // ""')
-FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // ""')
+# The path is read exactly: $(jq -r) would strip a trailing newline, and
+# the hook would then judge a name the write never touches. A path holding
+# a newline anywhere falls through instead of being reasoned about.
+FILE_PATH=$(echo "$INPUT" | jq -r '(.tool_input.file_path // "") + "x"')
+FILE_PATH="${FILE_PATH%x}"
+case "$FILE_PATH" in
+    *'
+'*) exit 0 ;;
+esac
 
 # Only consider Write and Edit tools
 if [ "$TOOL_NAME" != "Write" ] && [ "$TOOL_NAME" != "Edit" ]; then
