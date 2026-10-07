@@ -416,10 +416,7 @@ main() {
             # .cs/private made by hand.
             _refuse_unmounted_meta "$wt_base" "$base_dir"
             confirm_clean_worktree_base "$base_dir" "$wt_base"
-            session_dir=$(create_worktree_session "$base_dir" "$wt_base" "$wt_task")
-            # The checkout can carry a committed link or per-actor state
-            # from the base's history; refuse before anything reads it.
-            cs_assert_local_untracked "$session_dir"
+            session_dir=$(create_worktree_session "$base_dir" "$wt_base" "$wt_task") || exit 1
         else
             # No migrate_session on this path, so its refusal of committed or
             # linked per-actor state runs here, before any .cs/local read.

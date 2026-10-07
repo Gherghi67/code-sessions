@@ -306,6 +306,9 @@ create_worktree_session() {
         git -C "$base_dir" worktree add -b "$branch" "$wt_dir" >/dev/null \
             || error "git worktree add failed"
     fi
+    # The checkout can carry a committed link or per-actor state from the
+    # base's history; refuse before the state writes below go through it.
+    cs_assert_local_untracked "$wt_dir"
 
     local mode="tracked"
     if [ -z "$(git -C "$base_dir" ls-files -- .cs 2>/dev/null)" ]; then
