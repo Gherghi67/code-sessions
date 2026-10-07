@@ -3701,6 +3701,11 @@ cs_assert_local_untracked() {
         [ -L "$dir/$sub" ] || continue
         error "$sub is a symlink to $(readlink "$dir/$sub") (cs state must be a real directory inside the session). Replace the link with the directory, then reopen."
     done
+    # A submodule or nested repository at .cs keeps its files out of the
+    # session's index, so the pathspec check below would never see them.
+    if [ -e "$dir/.cs/.git" ]; then
+        error ".cs is its own git checkout (cs state must be a plain directory inside the session, never a submodule or nested repository). Remove .cs/.git, then reopen."
+    fi
     git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || return 0
     # :(icase): a case-insensitive checkout (macOS by default) puts a
     # committed .cs/LOCAL/pre-open at .cs/local/pre-open on disk, where a
