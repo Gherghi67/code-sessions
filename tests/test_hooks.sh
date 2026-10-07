@@ -647,6 +647,23 @@ test_auto_approve_rejects_config_dir_inside_session() {
     unset CLAUDE_CONFIG_DIR
 }
 
+# The session's git directory relocated into content (.git -> .cs/memory/repo,
+# or a .git file naming it): git reads config there, and core.fsmonitor runs.
+test_auto_approve_rejects_git_dir_inside_content() {
+    local root="$CLAUDE_SESSION_DIR" meta="$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$meta/memory/repo"
+    printf '[core]\n' > "$meta/memory/repo/config"
+    ln -s .cs/memory/repo "$root/.git"
+    _assert_falls_through Edit "$meta/memory/repo/config" \
+        "git config behind a relocated .git link" || return 1
+    rm "$root/.git"
+    printf 'gitdir: .cs/memory/repo\n' > "$root/.git"
+    _assert_falls_through Edit "$meta/memory/repo/config" \
+        "git config behind a .git file" || return 1
+    _assert_allowed Write "$meta/memory/narrative.md" \
+        "a narrative beside the relocated git dir" || return 1
+}
+
 test_auto_approve_skips_outside_session() {
     unset CLAUDE_SESSION_NAME
     local input='{"tool_name":"Write","tool_input":{"file_path":"/tmp/anything.md"}}'
@@ -2754,6 +2771,7 @@ run_test test_auto_approve_rejects_queue_link_under_separate_meta_dir
 run_test test_auto_approve_rejects_new_file_under_linked_claude_dir
 run_test test_auto_approve_rejects_newline_file_path
 run_test test_auto_approve_rejects_config_dir_inside_session
+run_test test_auto_approve_rejects_git_dir_inside_content
 
 # Subagent context
 run_test test_subagent_injects_session_name
