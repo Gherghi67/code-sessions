@@ -559,10 +559,18 @@ test_pre_open_inside_a_cs_submodule_is_refused() {
     out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
 
     assert_eq "1" "$rc" "cs should exit 1" || return 1
-    assert_eq "Error: .cs is its own git checkout (cs state must be a plain directory inside the session, never a submodule or nested repository). Remove .cs/.git, then reopen." \
+    assert_eq "Error: .cs is a submodule or nested repository (cs state must be a plain directory inside the session). Check .cs/local for files you did not write, then git rm --cached .cs, remove .cs/.git and git add .cs, then reopen." \
         "$out" "cs should refuse a submodule .cs before running anything inside it" || return 1
     assert_file_not_exists "$TEST_TMPDIR/pre-open-ran" "the submodule's pre-open must not run" || return 1
     assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
+
+    # Removing the submodule's own .git leaves the gitlink in the session's
+    # index, which still hides everything under .cs from the pathspec check.
+    rm -rf "$root/.cs/.git"
+    rc=0
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "cs should still exit 1 with the gitlink indexed" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/pre-open-ran" "the pre-open must not run after .cs/.git is removed" || return 1
 }
 
 # Without a pre-open the open reaches migration, whose hardening chmods .cs
