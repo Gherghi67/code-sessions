@@ -3707,12 +3707,15 @@ cs_assert_local_untracked() {
     local nested=""
     [ -e "$dir/.cs/.git" ] && nested=1
     if git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
-        case "$(git -C "$dir" ls-files -s -- ':(icase).cs' 2>/dev/null | cut -d' ' -f1 | sed -n 1p)" in
-            160000) nested=1 ;;
-        esac
+        # The pathspec also lists entries below .cs; only a gitlink whose
+        # whole path is .cs counts.
+        if git -C "$dir" ls-files -s -- ':(icase).cs' 2>/dev/null \
+            | awk -F'\t' '{ split($1, m, " "); if (m[1] == "160000" && tolower($2) == ".cs") exit 0 } END { exit 1 }' 2>/dev/null; then
+            nested=1
+        fi
     fi
     if [ -n "$nested" ]; then
-        error ".cs is a submodule or nested repository (cs state must be a plain directory inside the session). Check .cs/local for files you did not write, then git rm --cached .cs, remove .cs/.git and git add .cs, then reopen."
+        error ".cs is a submodule or nested repository (cs state must be a plain directory inside the session). Delete .cs/local/pre-open unless you wrote it, then git rm --cached .cs, remove .cs/.git and git add .cs, then reopen."
     fi
     git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || return 0
     # :(icase): a case-insensitive checkout (macOS by default) puts a
