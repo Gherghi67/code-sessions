@@ -449,8 +449,10 @@ test_auto_approve_rejects_settings_link_target() {
     ln -s ../memory/config.json "$meta/claude-config/settings.json"
     _assert_falls_through Edit "$meta/memory/config.json" \
         "the target of a settings link" || return 1
-    _assert_allowed Write "$meta/memory/narrative.md" \
-        "a narrative beside the linked target" || return 1
+    # A planted link under a control directory declines every write, not
+    # only its target: the shapes compound and none is followed.
+    _assert_falls_through Write "$meta/memory/narrative.md" \
+        "a narrative beside the planted link" || return 1
 }
 
 test_auto_approve_rejects_queue_link_target() {
@@ -459,8 +461,10 @@ test_auto_approve_rejects_queue_link_target() {
     ln -s ../memory/tasks "$meta/local/queue"
     _assert_falls_through Write "$meta/memory/tasks/0001" \
         "a file under the target of a queue link" || return 1
-    _assert_allowed Write "$meta/memory/narrative.md" \
-        "a narrative beside the linked target" || return 1
+    # A planted link under a control directory declines every write, not
+    # only its target: the shapes compound and none is followed.
+    _assert_falls_through Write "$meta/memory/narrative.md" \
+        "a narrative beside the planted link" || return 1
 }
 
 # The link under the control directory can point at another link in content,
