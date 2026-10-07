@@ -18,6 +18,9 @@ setup() {
     # "declines outside a session" fail, and worse, ones that assert silence
     # stay green while the hook writes into that live session.
     unset CLAUDE_PROJECT_DIR
+    # The hook treats an in-session CLAUDE_CONFIG_DIR as a control directory;
+    # the developer's own (outside any fixture) must not reach the tests.
+    unset CLAUDE_CONFIG_DIR
     export CLAUDE_SESSION_NAME="test-session"
     export CLAUDE_SESSION_DIR="$TEST_TMPDIR/session"
     export CLAUDE_SESSION_META_DIR="$CLAUDE_SESSION_DIR/.cs"
@@ -270,6 +273,395 @@ test_auto_approve_rejects_leaf_symlink() {
         echo "  FAIL: a symlinked target must fall through to the prompt, got: $output"
         return 1
     fi
+}
+
+# Audit C2: approval covered every file under .cs/, including the ones cs
+# itself acts on: `.cs/local/pre-open` runs at the next open (Edit keeps the
+# exec bit), `.cs/claude-config/` is Claude Code's own config in an encrypted
+# session, the queue and the mailbox are execution channels. A prompt-injected
+# Write there landed with no prompt. Those paths now fall through to the
+# prompt; the content files (memory, narratives, handoffs, notes) stay
+# frictionless. The parent of every target is created first: a parent that
+# does not resolve already falls through, which would make a missing-parent
+# test green for the wrong reason.
+_auto_approve_output() {
+    # $1 tool, $2 path
+    local input
+    input=$(jq -n --arg tool "$1" --arg path "$2" \
+        '{tool_name: $tool, tool_input: {file_path: $path}}')
+    echo "$input" | bash "$HOOKS_DIR/session-auto-approve.sh"
+}
+
+_assert_falls_through() {
+    # $1 tool, $2 path, $3 what
+    local output
+    output=$(_auto_approve_output "$1" "$2")
+    if [[ -n "$output" ]]; then
+        echo "  FAIL: $3 must fall through to the prompt, got: $output"
+        return 1
+    fi
+}
+
+_assert_allowed() {
+    # $1 tool, $2 path, $3 what
+    local output
+    output=$(_auto_approve_output "$1" "$2")
+    assert_output_contains "$output" '"allow"' "$3 should be auto-approved" || return 1
+}
+
+test_auto_approve_rejects_pre_open() {
+    printf '#!/bin/sh\n' > "$CLAUDE_SESSION_META_DIR/local/pre-open"
+    chmod 755 "$CLAUDE_SESSION_META_DIR/local/pre-open"
+    _assert_falls_through Edit "$CLAUDE_SESSION_META_DIR/local/pre-open" \
+        "an Edit of .cs/local/pre-open" || return 1
+    rm "$CLAUDE_SESSION_META_DIR/local/pre-open"
+    _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/local/pre-open" \
+        "a Write of .cs/local/pre-open" || return 1
+}
+
+test_auto_approve_rejects_local_state_files() {
+    mkdir -p "$CLAUDE_SESSION_META_DIR/local/queue"
+    _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/local/queue/0001" \
+        "a queued task" || return 1
+    _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/local/state" \
+        ".cs/local/state" || return 1
+    _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/local/identity" \
+        ".cs/local/identity" || return 1
+}
+
+# The marker the rotate skill arms is the one machine-local file Claude writes
+# as part of a ritual; session-start.sh rejects any content with a separator,
+# so it names a handoff Claude already wrote and nothing else.
+test_auto_approve_allows_pending_handoff_marker() {
+    _assert_allowed Write "$CLAUDE_SESSION_META_DIR/local/pending-handoff" \
+        "the pending-handoff marker" || return 1
+}
+
+test_auto_approve_rejects_claude_config_and_keys() {
+    mkdir -p "$CLAUDE_SESSION_META_DIR/claude-config" "$CLAUDE_SESSION_META_DIR/age-recipients"
+    _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/claude-config/.claude.json" \
+        "Claude Code's config" || return 1
+    _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/age-recipients/x.pub" \
+        "an age recipient" || return 1
+    _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/session.lock" \
+        "the session lock" || return 1
+    _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/secrets.age" \
+        "the secret sync file" || return 1
+}
+
+# .cs/private holds the content files of an encrypted session beside its queue
+# and mailbox: only the content directories stay frictionless there.
+test_auto_approve_private_allows_content_not_queue() {
+    mkdir -p "$CLAUDE_SESSION_META_DIR/private/handoffs" "$CLAUDE_SESSION_META_DIR/private/queue"
+    _assert_allowed Write "$CLAUDE_SESSION_META_DIR/private/handoffs/2026-01-01-x.md" \
+        "a handoff in the vault" || return 1
+    _assert_allowed Write "$CLAUDE_SESSION_META_DIR/private/pending-handoff" \
+        "the vault's pending-handoff marker" || return 1
+    _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/private/queue/0001" \
+        "a queued task in the vault" || return 1
+    _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/private/session.log" \
+        "the vault's session log" || return 1
+}
+
+# An encrypted session links memory and claude-config into .cs/vault-mnt
+# (lib/63-encrypt.sh), so every real path there starts with vault-mnt/. The
+# classification must see memory/ as content and claude-config/ as config
+# through the link, not the mount directory as one unknown name.
+test_auto_approve_classifies_through_vault_links() {
+    local meta="$CLAUDE_SESSION_META_DIR"
+    rm -r "$meta/memory"
+    mkdir -p "$meta/vault-mnt/memory" "$meta/vault-mnt/claude-config"
+    ln -s vault-mnt/memory "$meta/memory"
+    ln -s vault-mnt/claude-config "$meta/claude-config"
+    _assert_allowed Write "$meta/memory/narrative.md" \
+        "a narrative behind the vault link" || return 1
+    _assert_falls_through Write "$meta/claude-config/settings.json" \
+        "a setting behind the vault link" || return 1
+}
+
+# A shared directory under .cs/ can carry a committed symlink into local/;
+# the spelled path looks like content, only the real one shows the target.
+test_auto_approve_rejects_link_into_local() {
+    ln -s ../local "$CLAUDE_SESSION_META_DIR/memory/notes"
+    _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/memory/notes/pre-open" \
+        "a write through a link into local/" || return 1
+}
+
+# Edit keeps the exec bit, so an executable anywhere under .cs/ is a script
+# whatever directory it sits in.
+test_auto_approve_rejects_executable_target() {
+    printf '#!/bin/sh\n' > "$CLAUDE_SESSION_META_DIR/memory/run.sh"
+    chmod 755 "$CLAUDE_SESSION_META_DIR/memory/run.sh"
+    _assert_falls_through Edit "$CLAUDE_SESSION_META_DIR/memory/run.sh" \
+        "an executable file" || return 1
+}
+
+# cs refuses to open a session whose .cs or .cs/local is a symlink (audit C1),
+# but a claude started in the directory by hand still runs this hook.
+test_auto_approve_rejects_linked_cs_dir() {
+    local real="$TEST_TMPDIR/elsewhere"
+    mkdir -p "$real/memory"
+    rm -r "$CLAUDE_SESSION_META_DIR"
+    ln -s "$real" "$CLAUDE_SESSION_META_DIR"
+    _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/memory/narrative.md" \
+        "a write under a linked .cs" || return 1
+    rm "$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$CLAUDE_SESSION_META_DIR/memory"
+    ln -s "$real" "$CLAUDE_SESSION_META_DIR/local"
+    _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/memory/narrative.md" \
+        "a write under a linked .cs/local" || return 1
+}
+
+# APFS keeps the case a caller typed, so pwd -P returns LOCAL/ for local/.
+# On a case-sensitive filesystem LOCAL is another directory, and the parent
+# is created so the test does not pass on a missing parent there.
+test_auto_approve_rejects_case_variants() {
+    mkdir -p "$CLAUDE_SESSION_META_DIR/LOCAL" "$CLAUDE_SESSION_META_DIR/AGE-RECIPIENTS"
+    _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/LOCAL/state" \
+        ".cs/LOCAL/state" || return 1
+    _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/AGE-RECIPIENTS/x.pub" \
+        ".cs/AGE-RECIPIENTS/x.pub" || return 1
+    _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/SESSION.LOCK" \
+        ".cs/SESSION.LOCK" || return 1
+}
+
+# cs accepts a .cs/claude-config that is a link to any resolving directory
+# and launches Claude Code with CLAUDE_CONFIG_DIR pointing there. Linked into a
+# content directory, the config's real parent reads as memory/ and a write to
+# either spelling would land Claude Code settings and hooks.
+test_auto_approve_rejects_config_linked_into_content() {
+    local meta="$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$meta/memory/config"
+    ln -s memory/config "$meta/claude-config"
+    _assert_falls_through Write "$meta/claude-config/settings.json" \
+        "a setting through the config link" || return 1
+    _assert_falls_through Write "$meta/memory/config/settings.json" \
+        "a setting at the config link's target" || return 1
+    _assert_allowed Write "$meta/memory/narrative.md" \
+        "a narrative beside the linked config" || return 1
+}
+
+# A link beneath a control directory can point the other way, into content:
+# Claude Code reads .cs/claude-config/settings.json through the link, and the
+# queue drain reads .cs/local/queue through it, while the write itself lands
+# in memory/ and reads as content.
+test_auto_approve_rejects_settings_link_target() {
+    local meta="$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$meta/claude-config"
+    printf '{}\n' > "$meta/memory/config.json"
+    ln -s ../memory/config.json "$meta/claude-config/settings.json"
+    _assert_falls_through Edit "$meta/memory/config.json" \
+        "the target of a settings link" || return 1
+    # A planted link under a control directory declines every write, not
+    # only its target: the shapes compound and none is followed.
+    _assert_falls_through Write "$meta/memory/narrative.md" \
+        "a narrative beside the planted link" || return 1
+}
+
+test_auto_approve_rejects_queue_link_target() {
+    local meta="$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$meta/memory/tasks"
+    ln -s ../memory/tasks "$meta/local/queue"
+    _assert_falls_through Write "$meta/memory/tasks/0001" \
+        "a file under the target of a queue link" || return 1
+    # A planted link under a control directory declines every write, not
+    # only its target: the shapes compound and none is followed.
+    _assert_falls_through Write "$meta/memory/narrative.md" \
+        "a narrative beside the planted link" || return 1
+}
+
+# The link under the control directory can point at another link in content,
+# and the file Claude Code reads is the end of that chain.
+test_auto_approve_rejects_settings_link_chain_target() {
+    local meta="$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$meta/claude-config"
+    printf '{}\n' > "$meta/memory/real.json"
+    ln -s real.json "$meta/memory/hop.json"
+    ln -s ../memory/hop.json "$meta/claude-config/settings.json"
+    _assert_falls_through Edit "$meta/memory/real.json" \
+        "the end of a settings link chain" || return 1
+}
+
+# A link inside a linked control directory: local/queue -> memory/tasks, and
+# memory/tasks/0001 -> ../task.txt. The queue drain reads task.txt as a task.
+test_auto_approve_rejects_link_inside_linked_control_dir() {
+    local meta="$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$meta/memory/tasks"
+    printf 'original task\n' > "$meta/memory/task.txt"
+    ln -s ../memory/tasks "$meta/local/queue"
+    ln -s ../task.txt "$meta/memory/tasks/0001"
+    _assert_falls_through Edit "$meta/memory/task.txt" \
+        "the target of a link inside a linked queue" || return 1
+}
+
+# A link name ending in a newline: $(readlink) strips it, so a hop-by-hop
+# resolver checks a name that does not exist and loses the chain.
+test_auto_approve_rejects_newline_link_chain() {
+    local meta="$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$meta/claude-config"
+    printf '{}\n' > "$meta/memory/real.json"
+    ln -s real.json "$meta/memory/hop
+"
+    ln -s "../memory/hop
+" "$meta/claude-config/settings.json"
+    # A decoy at the stripped name points outside the session, so a
+    # resolver that lost the newline would call the link harmless.
+    ln -s / "$meta/memory/hop"
+    _assert_falls_through Edit "$meta/memory/real.json" \
+        "the end of a chain through a newline-named link" || return 1
+}
+
+# Claude Code reads the project's own .claude/ and .mcp.json from the
+# session root, and both are git-shared: a link from there into .cs/
+# content turns an approved content write into settings, a hook or an MCP
+# server. The check is by identity, so a .claude/ that links elsewhere in
+# the session (a skills directory beside it) keeps its approvals.
+test_auto_approve_rejects_project_claude_link_into_content() {
+    local root="$CLAUDE_SESSION_DIR" meta="$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$root/.claude" "$root/.agents/skills/x"
+    printf '{}\n' > "$meta/memory/config.json"
+    ln -s ../.cs/memory/config.json "$root/.claude/settings.json"
+    ln -s ../.agents/skills/x "$root/.claude/skills"
+    _assert_falls_through Edit "$meta/memory/config.json" \
+        "the target of a project settings link" || return 1
+    _assert_allowed Write "$meta/memory/narrative.md" \
+        "a narrative beside a project link into the session" || return 1
+}
+
+# A hooks directory linked elsewhere in the session, whose entry links on
+# into .cs/ content: reachable from .claude/ through the directory link.
+test_auto_approve_rejects_project_hook_link_behind_dir_link() {
+    local root="$CLAUDE_SESSION_DIR" meta="$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$root/.claude" "$root/.agents/hooks"
+    printf 'notes\n' > "$meta/memory/notes.md"
+    ln -s ../.agents/hooks "$root/.claude/hooks"
+    ln -s ../../.cs/memory/notes.md "$root/.agents/hooks/pre.sh"
+    _assert_falls_through Edit "$meta/memory/notes.md" \
+        "a hook reached through a linked directory" || return 1
+}
+
+# .mcp.json linked at a content file that does not exist yet: the Write
+# creates the file Claude Code will read as MCP servers.
+test_auto_approve_rejects_mcp_link_to_new_content() {
+    local root="$CLAUDE_SESSION_DIR" meta="$CLAUDE_SESSION_META_DIR"
+    ln -s .cs/memory/mcp.json "$root/.mcp.json"
+    _assert_falls_through Write "$meta/memory/mcp.json" \
+        "the dangling target of an .mcp.json link" || return 1
+}
+
+# The planted link can step out of .cs/ first: claude-config/settings.json
+# -> ../../hop.json at the session root (a shared project file), and hop.json
+# -> .cs/memory/config.json. A parent outside .cs/ proves nothing while it is
+# inside the session.
+test_auto_approve_rejects_link_hopping_through_session_root() {
+    local meta="$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$meta/claude-config"
+    printf '{}\n' > "$meta/memory/config.json"
+    ln -s .cs/memory/config.json "$CLAUDE_SESSION_DIR/hop.json"
+    ln -s ../../hop.json "$meta/claude-config/settings.json"
+    _assert_falls_through Edit "$meta/memory/config.json" \
+        "the end of a chain through the session root" || return 1
+}
+
+# On a case-sensitive filesystem SESSION/ beside session/ is another
+# directory; a containment check that folds case would take its .cs/ for
+# ours and classify against ours, which has no claude-config to decline on.
+# On a case-insensitive filesystem the mkdir would land in our own .cs/ and
+# the write would decline as our own claude-config, proving nothing, so the
+# test skips there (reproduced on a case-sensitive APFS image: the old
+# containment approved it, the exact one is silent).
+test_auto_approve_rejects_case_sibling_session() {
+    mkdir -p "$TEST_TMPDIR/Probe"
+    [ -d "$TEST_TMPDIR/probe" ] && return 77
+    local sibling="$TEST_TMPDIR/SESSION"
+    mkdir -p "$sibling/.cs/claude-config"
+    _assert_falls_through Write "$sibling/.cs/claude-config/settings.json" \
+        "a setting in a case-sibling session" || return 1
+}
+
+# A control directory that resolves to a name ending in a newline: every
+# $(pwd -P) strips it, so the resolved control root never matches the real
+# parent of a write beneath it, and a decoy at the stripped name scans clean.
+test_auto_approve_rejects_newline_control_root() {
+    local meta="$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$meta/memory/store" "$meta/memory/store
+/queue"
+    ln -s "memory/store
+" "$meta/private"
+    _assert_falls_through Write "$meta/memory/store
+/queue/0001" "a queue entry behind a newline-named private link" || return 1
+}
+
+# CLAUDE_SESSION_META_DIR may sit outside CLAUDE_SESSION_DIR; the metadata
+# root is then a containment domain of its own for planted control links.
+test_auto_approve_rejects_queue_link_under_separate_meta_dir() {
+    export CLAUDE_SESSION_META_DIR="$TEST_TMPDIR/meta"
+    local meta="$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$meta/local" "$meta/memory/tasks"
+    ln -s ../memory/tasks "$meta/local/queue"
+    _assert_falls_through Write "$meta/memory/tasks/0001" \
+        "a file under a queue link in a separate metadata root" || return 1
+}
+
+# .claude itself linked at a content directory, with no settings file yet:
+# the Write creates .claude/settings.json. The parent, not a file, is what
+# must match.
+test_auto_approve_rejects_new_file_under_linked_claude_dir() {
+    local root="$CLAUDE_SESSION_DIR" meta="$CLAUDE_SESSION_META_DIR"
+    ln -s .cs/memory "$root/.claude"
+    _assert_falls_through Write "$meta/memory/settings.json" \
+        "a new file in a directory .claude links to" || return 1
+}
+
+# A requested path that ends in a newline: $(jq -r) strips it, so the hook
+# judges the stripped name while the Edit lands on the newline-named file a
+# project settings link points at.
+test_auto_approve_rejects_newline_file_path() {
+    local root="$CLAUDE_SESSION_DIR" meta="$CLAUDE_SESSION_META_DIR"
+    local target="$meta/memory/config.json
+"
+    mkdir -p "$root/.claude"
+    printf '{}\n' > "$target"
+    printf '{}\n' > "$meta/memory/config.json"
+    ln -s "$target" "$root/.claude/settings.json"
+    _assert_falls_through Edit "$target" \
+        "a newline-named file a settings link points at" || return 1
+}
+
+# cs keeps a CLAUDE_CONFIG_DIR the shell set when the session has no vault
+# config (lib/75-launch.sh), so Claude Code's active config directory can be
+# a content directory of the session. One outside the session is the user's
+# own and stays out of the scan.
+test_auto_approve_rejects_config_dir_inside_session() {
+    local meta="$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$meta/memory/cfg" "$meta/plans"
+    export CLAUDE_CONFIG_DIR="$meta/memory/cfg"
+    _assert_falls_through Write "$meta/memory/cfg/settings.json" \
+        "a setting in a CLAUDE_CONFIG_DIR inside the session" || return 1
+    _assert_allowed Write "$meta/plans/plan.md" \
+        "a plan beside an in-session config dir" || return 1
+    export CLAUDE_CONFIG_DIR="$TEST_TMPDIR/outside-config"
+    mkdir -p "$CLAUDE_CONFIG_DIR"
+    _assert_allowed Write "$meta/memory/narrative.md" \
+        "a narrative with the config dir outside the session" || return 1
+    unset CLAUDE_CONFIG_DIR
+}
+
+# The session's git directory relocated into content (.git -> .cs/memory/repo,
+# or a .git file naming it): git reads config there, and core.fsmonitor runs.
+test_auto_approve_rejects_git_dir_inside_content() {
+    local root="$CLAUDE_SESSION_DIR" meta="$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$meta/memory/repo"
+    printf '[core]\n' > "$meta/memory/repo/config"
+    ln -s .cs/memory/repo "$root/.git"
+    _assert_falls_through Edit "$meta/memory/repo/config" \
+        "git config behind a relocated .git link" || return 1
+    rm "$root/.git"
+    printf 'gitdir: .cs/memory/repo\n' > "$root/.git"
+    _assert_falls_through Edit "$meta/memory/repo/config" \
+        "git config behind a .git file" || return 1
+    _assert_allowed Write "$meta/memory/narrative.md" \
+        "a narrative beside the relocated git dir" || return 1
 }
 
 test_auto_approve_skips_outside_session() {
@@ -2353,6 +2745,33 @@ run_test test_auto_approve_ignores_non_write_tools
 run_test test_auto_approve_rejects_traversal
 run_test test_auto_approve_rejects_leaf_symlink
 run_test test_auto_approve_skips_outside_session
+run_test test_auto_approve_rejects_pre_open
+run_test test_auto_approve_rejects_local_state_files
+run_test test_auto_approve_allows_pending_handoff_marker
+run_test test_auto_approve_rejects_claude_config_and_keys
+run_test test_auto_approve_private_allows_content_not_queue
+run_test test_auto_approve_classifies_through_vault_links
+run_test test_auto_approve_rejects_link_into_local
+run_test test_auto_approve_rejects_executable_target
+run_test test_auto_approve_rejects_linked_cs_dir
+run_test test_auto_approve_rejects_case_variants
+run_test test_auto_approve_rejects_config_linked_into_content
+run_test test_auto_approve_rejects_settings_link_target
+run_test test_auto_approve_rejects_queue_link_target
+run_test test_auto_approve_rejects_settings_link_chain_target
+run_test test_auto_approve_rejects_link_inside_linked_control_dir
+run_test test_auto_approve_rejects_newline_link_chain
+run_test test_auto_approve_rejects_link_hopping_through_session_root
+run_test test_auto_approve_rejects_case_sibling_session
+run_test test_auto_approve_rejects_project_claude_link_into_content
+run_test test_auto_approve_rejects_project_hook_link_behind_dir_link
+run_test test_auto_approve_rejects_mcp_link_to_new_content
+run_test test_auto_approve_rejects_newline_control_root
+run_test test_auto_approve_rejects_queue_link_under_separate_meta_dir
+run_test test_auto_approve_rejects_new_file_under_linked_claude_dir
+run_test test_auto_approve_rejects_newline_file_path
+run_test test_auto_approve_rejects_config_dir_inside_session
+run_test test_auto_approve_rejects_git_dir_inside_content
 
 # Subagent context
 run_test test_subagent_injects_session_name
