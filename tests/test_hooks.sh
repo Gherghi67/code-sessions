@@ -442,18 +442,25 @@ test_auto_approve_rejects_config_linked_into_content() {
 # Claude Code reads .cs/claude-config/settings.json through the link, and the
 # queue drain reads .cs/local/queue through it, while the write itself lands
 # in memory/ and reads as content.
-test_auto_approve_rejects_control_links_into_content() {
+test_auto_approve_rejects_settings_link_target() {
     local meta="$CLAUDE_SESSION_META_DIR"
-    mkdir -p "$meta/claude-config" "$meta/memory/tasks"
+    mkdir -p "$meta/claude-config"
     printf '{}\n' > "$meta/memory/config.json"
     ln -s ../memory/config.json "$meta/claude-config/settings.json"
-    ln -s ../memory/tasks "$meta/local/queue"
     _assert_falls_through Edit "$meta/memory/config.json" \
         "the target of a settings link" || return 1
+    _assert_allowed Write "$meta/memory/narrative.md" \
+        "a narrative beside the linked target" || return 1
+}
+
+test_auto_approve_rejects_queue_link_target() {
+    local meta="$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$meta/memory/tasks"
+    ln -s ../memory/tasks "$meta/local/queue"
     _assert_falls_through Write "$meta/memory/tasks/0001" \
         "a file under the target of a queue link" || return 1
     _assert_allowed Write "$meta/memory/narrative.md" \
-        "a narrative beside the linked targets" || return 1
+        "a narrative beside the linked target" || return 1
 }
 
 test_auto_approve_skips_outside_session() {
@@ -2548,7 +2555,8 @@ run_test test_auto_approve_rejects_executable_target
 run_test test_auto_approve_rejects_linked_cs_dir
 run_test test_auto_approve_rejects_case_variants
 run_test test_auto_approve_rejects_config_linked_into_content
-run_test test_auto_approve_rejects_control_links_into_content
+run_test test_auto_approve_rejects_settings_link_target
+run_test test_auto_approve_rejects_queue_link_target
 
 # Subagent context
 run_test test_subagent_injects_session_name
