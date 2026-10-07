@@ -535,7 +535,7 @@ test_pre_open_through_symlinked_cs_is_refused() {
     out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
 
     assert_eq "1" "$rc" "cs should exit 1" || return 1
-    assert_eq "Error: .cs is a symlink to payload (cs state must be a real directory inside the session). Replace the link with the directory, then reopen." \
+    assert_eq "Error: .cs is a symlink to payload (cs state must be a real directory inside the session). Delete .cs/local/pre-open unless you wrote it, replace the link with the directory, then reopen." \
         "$out" "cs should refuse a symlinked .cs before running anything behind it" || return 1
     assert_file_not_exists "$TEST_TMPDIR/pre-open-ran" "the pre-open behind the link must not run" || return 1
     assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
@@ -612,7 +612,7 @@ test_symlinked_cs_without_pre_open_keeps_the_target_mode() {
     out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
 
     assert_eq "1" "$rc" "cs should exit 1" || return 1
-    assert_eq "Error: .cs is a symlink to payload (cs state must be a real directory inside the session). Replace the link with the directory, then reopen." \
+    assert_eq "Error: .cs is a symlink to payload (cs state must be a real directory inside the session). Delete .cs/local/pre-open unless you wrote it, replace the link with the directory, then reopen." \
         "$out" "cs should refuse the link before migration touches the target" || return 1
     assert_eq "755" "$(_file_mode "$root/payload")" "the link target's mode must be untouched" || return 1
     assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
@@ -632,7 +632,7 @@ test_pre_open_through_symlinked_cs_local_is_refused() {
     out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
 
     assert_eq "1" "$rc" "cs should exit 1" || return 1
-    assert_eq "Error: .cs/local is a symlink to ../payload (cs state must be a real directory inside the session). Replace the link with the directory, then reopen." \
+    assert_eq "Error: .cs/local is a symlink to ../payload (cs state must be a real directory inside the session). Delete .cs/local/pre-open unless you wrote it, replace the link with the directory, then reopen." \
         "$out" "cs should refuse a symlinked .cs/local before running anything behind it" || return 1
     assert_file_not_exists "$TEST_TMPDIR/pre-open-ran" "the pre-open behind the link must not run" || return 1
     assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1

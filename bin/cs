@@ -3699,7 +3699,7 @@ cs_assert_local_untracked() {
     local dir="$1" sub tracked
     for sub in .cs .cs/local; do
         [ -L "$dir/$sub" ] || continue
-        error "$sub is a symlink to $(readlink "$dir/$sub") (cs state must be a real directory inside the session). Replace the link with the directory, then reopen."
+        error "$sub is a symlink to $(readlink "$dir/$sub") (cs state must be a real directory inside the session). Delete .cs/local/pre-open unless you wrote it, replace the link with the directory, then reopen."
     done
     # A submodule or nested repository at .cs keeps its files out of the
     # session's index, so the pathspec check below would never see them. The

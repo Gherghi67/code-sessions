@@ -350,7 +350,7 @@ test_worktree_reopen_refuses_a_symlinked_cs_local() {
     out=$("$CS_BIN" "myproj@fix-auth" <<< "" 2>&1) || rc=$?
 
     assert_eq "1" "$rc" "cs should exit 1" || return 1
-    assert_eq "Error: .cs/local is a symlink to ../payload (cs state must be a real directory inside the session). Replace the link with the directory, then reopen." \
+    assert_eq "Error: .cs/local is a symlink to ../payload (cs state must be a real directory inside the session). Delete .cs/local/pre-open unless you wrote it, replace the link with the directory, then reopen." \
         "$out" "the reopen should refuse the link before reading state behind it" || return 1
 }
 
@@ -372,7 +372,7 @@ test_worktree_creation_refuses_a_committed_cs_local_link() {
     out=$("$CS_BIN" "myproj@fix-auth" <<< "" 2>&1) || rc=$?
 
     assert_eq "1" "$rc" "cs should exit 1" || return 1
-    assert_output_contains "$out" "Error: .cs/local is a symlink to ../payload (cs state must be a real directory inside the session). Replace the link with the directory, then reopen." \
+    assert_output_contains "$out" "Error: .cs/local is a symlink to ../payload (cs state must be a real directory inside the session). Delete .cs/local/pre-open unless you wrote it, replace the link with the directory, then reopen." \
         "creation should refuse the link right after the checkout" || return 1
     assert_not_exists "$wt/payload/state" "no state may be written behind the link" || return 1
 }
