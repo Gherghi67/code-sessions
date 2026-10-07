@@ -155,6 +155,24 @@ done
 # find does not enter.
 # Paths come NUL-separated through a file so a planted name with a newline
 # in it cannot split into pieces that resolve to nothing and slip past.
+# Where a link points, as a path from the session root or absolute, kept
+# exactly: $(readlink) would strip a trailing newline, and a decoy at the
+# stripped name could then stand in for the real target. A destination with
+# a newline in it declines outright rather than being reasoned about.
+_cs_link_dest() {
+    local dest
+    dest="$(readlink "$1" && printf x)" || return 1
+    dest="${dest%x}"
+    dest="${dest%"$_cs_nl"}"
+    case "$dest" in
+        *"$_cs_nl"*) return 1 ;;
+        /*) ;;
+        *) dest="${1%/*}/$dest" ;;
+    esac
+    printf '%s' "$dest"
+}
+_cs_nl='
+'
 REAL_SESSION_LC="$(cd "$SESSION_DIR" 2>/dev/null && pwd -P)" || exit 0
 REAL_SESSION_LC="$(_cs_lower "$REAL_SESSION_LC")"
 _cs_links="$(mktemp "${TMPDIR:-/tmp}/cs-approve.XXXXXX")" || exit 0
@@ -164,11 +182,7 @@ for _cs_root in "$META_DIR" "$SESSION_DIR/.cs"; do
         _cs_ctl="$(cd "$_cs_root/$_cs_name" 2>/dev/null && pwd -P)" || continue
         find "$_cs_ctl" -type l -print0 2>/dev/null > "$_cs_links" || exit 0
         while IFS= read -r -d '' _cs_link; do
-            _cs_dest="$(readlink "$_cs_link")" || exit 0
-            case "$_cs_dest" in
-                /*) ;;
-                *) _cs_dest="${_cs_link%/*}/$_cs_dest" ;;
-            esac
+            _cs_dest="$(_cs_link_dest "$_cs_link")" || exit 0
             # The destination's directory, resolved: a file's parent, or the
             # directory itself. One that does not resolve is not proven
             # outside, so it declines too.
@@ -183,6 +197,46 @@ for _cs_root in "$META_DIR" "$SESSION_DIR/.cs"; do
             esac
         done < "$_cs_links"
     done
+done
+
+# Claude Code reads the project's own .claude/ and .mcp.json from the
+# session root, and both are git-shared, so a link from there into .cs/
+# content turns an approved content write into settings, a hook or an MCP
+# server. A project's .claude/ may link elsewhere in the session on purpose
+# (a skills directory beside it), so this check is by identity, not by
+# where a link points: every file reachable under .claude/ (directory links
+# followed, Claude Code's own worktrees/ pruned) is compared to the target
+# by inode, and a dangling link by the path its first hop names, since the
+# Write may be the one that creates the file.
+_cs_names_target() {
+    # $1: a dangling link. True when its first hop names the write target.
+    local dest parent
+    dest="$(_cs_link_dest "$1")" || return 0
+    [ -L "$dest" ] && return 0
+    parent="$(cd "${dest%/*}" 2>/dev/null && pwd -P)" || return 1
+    [ "$(_cs_lower "$parent/${dest##*/}")" = "$TARGET_LC" ]
+}
+_cs_reaches_target() {
+    # $1: a file or directory at the session root to search from.
+    [ -e "$1" ] || [ -L "$1" ] || return 1
+    if [ -L "$1" ] && [ ! -e "$1" ]; then
+        _cs_names_target "$1"
+        return
+    fi
+    find -L "$1" -path '*/.claude/worktrees' -prune -o \
+        \( -type f -o -type l \) -print0 2>/dev/null > "$_cs_links" || return 0
+    while IFS= read -r -d '' _cs_file; do
+        if [ -L "$_cs_file" ]; then
+            _cs_names_target "$_cs_file" && return 0
+        elif [ "$_cs_file" -ef "$FILE_PATH" ]; then
+            return 0
+        fi
+    done < "$_cs_links"
+    return 1
+}
+TARGET_LC="$REAL_PARENT_LC/$BASENAME_LC"
+for _cs_cfg in "$SESSION_DIR/.claude" "$SESSION_DIR/.mcp.json"; do
+    _cs_reaches_target "$_cs_cfg" && exit 0
 done
 
 # At the root of .cs/ itself: the lock and the secret-sync files.
