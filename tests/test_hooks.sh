@@ -501,8 +501,49 @@ test_auto_approve_rejects_newline_link_chain() {
 "
     ln -s "../memory/hop
 " "$meta/claude-config/settings.json"
+    # A decoy at the stripped name points outside the session, so a
+    # resolver that lost the newline would call the link harmless.
+    ln -s / "$meta/memory/hop"
     _assert_falls_through Edit "$meta/memory/real.json" \
         "the end of a chain through a newline-named link" || return 1
+}
+
+# Claude Code reads the project's own .claude/ and .mcp.json from the
+# session root, and both are git-shared: a link from there into .cs/
+# content turns an approved content write into settings, a hook or an MCP
+# server. The check is by identity, so a .claude/ that links elsewhere in
+# the session (a skills directory beside it) keeps its approvals.
+test_auto_approve_rejects_project_claude_link_into_content() {
+    local root="$CLAUDE_SESSION_DIR" meta="$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$root/.claude" "$root/.agents/skills/x"
+    printf '{}\n' > "$meta/memory/config.json"
+    ln -s ../.cs/memory/config.json "$root/.claude/settings.json"
+    ln -s ../../.agents/skills/x "$root/.claude/skills"
+    _assert_falls_through Edit "$meta/memory/config.json" \
+        "the target of a project settings link" || return 1
+    _assert_allowed Write "$meta/memory/narrative.md" \
+        "a narrative beside a project link into the session" || return 1
+}
+
+# A hooks directory linked elsewhere in the session, whose entry links on
+# into .cs/ content: reachable from .claude/ through the directory link.
+test_auto_approve_rejects_project_hook_link_behind_dir_link() {
+    local root="$CLAUDE_SESSION_DIR" meta="$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$root/.claude" "$root/.agents/hooks"
+    printf 'notes\n' > "$meta/memory/notes.md"
+    ln -s ../.agents/hooks "$root/.claude/hooks"
+    ln -s ../../.cs/memory/notes.md "$root/.agents/hooks/pre.sh"
+    _assert_falls_through Edit "$meta/memory/notes.md" \
+        "a hook reached through a linked directory" || return 1
+}
+
+# .mcp.json linked at a content file that does not exist yet: the Write
+# creates the file Claude Code will read as MCP servers.
+test_auto_approve_rejects_mcp_link_to_new_content() {
+    local root="$CLAUDE_SESSION_DIR" meta="$CLAUDE_SESSION_META_DIR"
+    ln -s .cs/memory/mcp.json "$root/.mcp.json"
+    _assert_falls_through Write "$meta/memory/mcp.json" \
+        "the dangling target of an .mcp.json link" || return 1
 }
 
 # The planted link can step out of .cs/ first: claude-config/settings.json
@@ -2634,6 +2675,9 @@ run_test test_auto_approve_rejects_link_inside_linked_control_dir
 run_test test_auto_approve_rejects_newline_link_chain
 run_test test_auto_approve_rejects_link_hopping_through_session_root
 run_test test_auto_approve_rejects_case_sibling_session
+run_test test_auto_approve_rejects_project_claude_link_into_content
+run_test test_auto_approve_rejects_project_hook_link_behind_dir_link
+run_test test_auto_approve_rejects_mcp_link_to_new_content
 
 # Subagent context
 run_test test_subagent_injects_session_name
