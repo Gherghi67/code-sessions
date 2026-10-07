@@ -541,6 +541,30 @@ test_pre_open_through_symlinked_cs_is_refused() {
     assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
 }
 
+# A repository can also deliver .cs as a submodule: the superproject's index
+# holds one gitlink entry for .cs, so a pathspec under it lists nothing,
+# while a recursive clone puts the submodule's committed pre-open on disk.
+test_pre_open_inside_a_cs_submodule_is_refused() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt"
+    _write_pre_open vt "touch \"$TEST_TMPDIR/pre-open-ran\""
+    git -C "$root/.cs" init -q
+    git -C "$root/.cs" add -f local/pre-open
+    git -C "$root/.cs" -c user.name=t -c user.email=t@example.com commit -q -m "hook"
+    git -C "$root" add .cs
+    git -C "$root" commit -q -m "ship .cs as a submodule"
+    _make_launch_sentinel
+
+    local out rc=0
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: .cs is its own git checkout (cs state must be a plain directory inside the session, never a submodule or nested repository). Remove .cs/.git, then reopen." \
+        "$out" "cs should refuse a submodule .cs before running anything inside it" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/pre-open-ran" "the submodule's pre-open must not run" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
+}
+
 # Without a pre-open the open reaches migration, whose hardening chmods .cs
 # and would follow a link to a directory cs does not own.
 test_symlinked_cs_without_pre_open_keeps_the_target_mode() {
@@ -1076,6 +1100,7 @@ run_test test_pre_open_tracked_by_git_is_refused
 run_test test_pre_open_tracked_under_a_case_variant_is_refused
 run_test test_pre_open_through_symlinked_cs_is_refused
 run_test test_symlinked_cs_without_pre_open_keeps_the_target_mode
+run_test test_pre_open_inside_a_cs_submodule_is_refused
 run_test test_pre_open_through_symlinked_cs_local_is_refused
 run_test test_pre_open_success_without_mount_still_refuses
 run_test test_claude_config_link_moves_claude_code_into_the_vault
