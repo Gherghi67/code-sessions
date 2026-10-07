@@ -409,6 +409,35 @@ test_auto_approve_rejects_linked_cs_dir() {
         "a write under a linked .cs/local" || return 1
 }
 
+# APFS keeps the case a caller typed, so pwd -P returns LOCAL/ for local/.
+# On a case-sensitive filesystem LOCAL is another directory, and the parent
+# is created so the test does not pass on a missing parent there.
+test_auto_approve_rejects_case_variants() {
+    mkdir -p "$CLAUDE_SESSION_META_DIR/LOCAL" "$CLAUDE_SESSION_META_DIR/AGE-RECIPIENTS"
+    _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/LOCAL/state" \
+        ".cs/LOCAL/state" || return 1
+    _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/AGE-RECIPIENTS/x.pub" \
+        ".cs/AGE-RECIPIENTS/x.pub" || return 1
+    _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/SESSION.LOCK" \
+        ".cs/SESSION.LOCK" || return 1
+}
+
+# cs accepts a .cs/claude-config that is a link to any resolving directory
+# and launches Claude Code with CLAUDE_CONFIG_DIR pointing there. Linked into a
+# content directory, the config's real parent reads as memory/ and a write to
+# either spelling would land Claude Code settings and hooks.
+test_auto_approve_rejects_config_linked_into_content() {
+    local meta="$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$meta/memory/config"
+    ln -s memory/config "$meta/claude-config"
+    _assert_falls_through Write "$meta/claude-config/settings.json" \
+        "a setting through the config link" || return 1
+    _assert_falls_through Write "$meta/memory/config/settings.json" \
+        "a setting at the config link's target" || return 1
+    _assert_allowed Write "$meta/memory/narrative.md" \
+        "a narrative beside the linked config" || return 1
+}
+
 test_auto_approve_skips_outside_session() {
     unset CLAUDE_SESSION_NAME
     local input='{"tool_name":"Write","tool_input":{"file_path":"/tmp/anything.md"}}'
@@ -2499,6 +2528,8 @@ run_test test_auto_approve_classifies_through_vault_links
 run_test test_auto_approve_rejects_link_into_local
 run_test test_auto_approve_rejects_executable_target
 run_test test_auto_approve_rejects_linked_cs_dir
+run_test test_auto_approve_rejects_case_variants
+run_test test_auto_approve_rejects_config_linked_into_content
 
 # Subagent context
 run_test test_subagent_injects_session_name
