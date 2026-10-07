@@ -201,31 +201,53 @@ REAL_SESSION_LC="$(_cs_realdir "$SESSION_DIR")" || exit 0
 REAL_SESSION_LC="$(_cs_lower "$REAL_SESSION_LC")"
 _cs_links="$(mktemp "${TMPDIR:-/tmp}/cs-approve.XXXXXX")" || exit 0
 trap 'rm -f "$_cs_links"' EXIT
+_cs_scan_control_links() {
+    # $1: a control directory's real path. Exits the hook on a link that is
+    # not proven to point outside the session.
+    find "$1" -type l -print0 2>/dev/null > "$_cs_links" || exit 0
+    while IFS= read -r -d '' _cs_link; do
+        _cs_dest="$(_cs_link_dest "$_cs_link")" || exit 0
+        # The destination's directory, resolved: a file's parent, or the
+        # directory itself. One that does not resolve is not proven
+        # outside, so it declines too.
+        if [ -d "$_cs_dest" ]; then
+            _cs_real="$(_cs_realdir "$_cs_dest")" || exit 0
+        else
+            _cs_real="$(_cs_realdir "${_cs_dest%/*}")" || exit 0
+        fi
+        _cs_real="$(_cs_lower "$_cs_real")"
+        case "$_cs_real/" in
+            "$REAL_SESSION_LC"/*) exit 0 ;;
+            "${REAL_META_LC:-/cs-no-meta}"/*|"${REAL_CS_LC:-/cs-no-cs}"/*) exit 0 ;;
+        esac
+    done < "$_cs_links"
+}
 for _cs_root in "$META_DIR" "$SESSION_DIR/.cs"; do
     for _cs_name in local claude-config age-recipients private; do
         # A control directory that resolves to a name no exact path can
         # hold declines every write rather than being skipped.
         [ -e "$_cs_root/$_cs_name" ] || continue
         _cs_ctl="$(_cs_realdir "$_cs_root/$_cs_name")" || exit 0
-        find "$_cs_ctl" -type l -print0 2>/dev/null > "$_cs_links" || exit 0
-        while IFS= read -r -d '' _cs_link; do
-            _cs_dest="$(_cs_link_dest "$_cs_link")" || exit 0
-            # The destination's directory, resolved: a file's parent, or the
-            # directory itself. One that does not resolve is not proven
-            # outside, so it declines too.
-            if [ -d "$_cs_dest" ]; then
-                _cs_real="$(_cs_realdir "$_cs_dest")" || exit 0
-            else
-                _cs_real="$(_cs_realdir "${_cs_dest%/*}")" || exit 0
-            fi
-            _cs_real="$(_cs_lower "$_cs_real")"
-            case "$_cs_real/" in
-                "$REAL_SESSION_LC"/*) exit 0 ;;
-                "${REAL_META_LC:-/cs-no-meta}"/*|"${REAL_CS_LC:-/cs-no-cs}"/*) exit 0 ;;
-            esac
-        done < "$_cs_links"
+        _cs_scan_control_links "$_cs_ctl"
     done
 done
+
+# Claude Code's active config directory: cs keeps a CLAUDE_CONFIG_DIR the
+# shell set when the session has no vault config (lib/75-launch.sh), so it
+# can be a content directory of this session. Inside the session, the
+# metadata root or .cs/ it is one more control directory; outside, it is
+# the user's own and the writes it covers never reach this hook's approval.
+if [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ -e "$CLAUDE_CONFIG_DIR" ]; then
+    _cs_ctl="$(_cs_realdir "$CLAUDE_CONFIG_DIR")" || exit 0
+    _cs_ctl_lc="$(_cs_lower "$_cs_ctl")"
+    case "$_cs_ctl_lc/" in
+        "$REAL_SESSION_LC"/*|"${REAL_META_LC:-/cs-no-meta}"/*|"${REAL_CS_LC:-/cs-no-cs}"/*)
+            case "$REAL_PARENT_LC/" in
+                "$_cs_ctl_lc"/*) exit 0 ;;
+            esac
+            _cs_scan_control_links "$_cs_ctl" ;;
+    esac
+fi
 
 # Claude Code reads the project's own .claude/ and .mcp.json from the
 # session root, and both are git-shared, so a link from there into .cs/
