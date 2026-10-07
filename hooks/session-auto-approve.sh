@@ -156,14 +156,14 @@ done
 # Paths come NUL-separated through a file so a planted name with a newline
 # in it cannot split into pieces that resolve to nothing and slip past.
 # Where a link points, as a path from the session root or absolute, kept
-# exactly: $(readlink) would strip a trailing newline, and a decoy at the
-# stripped name could then stand in for the real target. A destination with
+# exactly: $(readlink) would strip a trailing newline (and readlink prints
+# none of its own after one), so a decoy at the stripped name could stand
+# in for the real target. A destination with
 # a newline in it declines outright rather than being reasoned about.
 _cs_link_dest() {
     local dest
-    dest="$(readlink "$1" && printf x)" || return 1
+    dest="$(readlink -n "$1" && printf x)" || return 1
     dest="${dest%x}"
-    dest="${dest%"$_cs_nl"}"
     case "$dest" in
         *"$_cs_nl"*) return 1 ;;
         /*) ;;
