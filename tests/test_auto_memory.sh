@@ -494,6 +494,49 @@ test_pre_open_tracked_by_git_is_refused() {
     assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
 }
 
+# A clone can also deliver `.cs` itself as a committed symlink to a tracked
+# directory: `git ls-files -- .cs/local` then lists nothing, so the tracked
+# check passes and the pre-open behind the link would run.
+test_pre_open_through_symlinked_cs_is_refused() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt"
+    mv "$root/.cs" "$root/payload"
+    ln -s payload "$root/.cs"
+    _write_pre_open vt "touch \"$TEST_TMPDIR/pre-open-ran\""
+    git -C "$root" add -A
+    git -C "$root" commit -q -m "ship .cs as a link"
+    _make_launch_sentinel
+
+    local out rc=0
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: .cs is a symlink to payload (cs state must be a real directory inside the session). Replace the link with the directory, then reopen." \
+        "$out" "cs should refuse a symlinked .cs before running anything behind it" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/pre-open-ran" "the pre-open behind the link must not run" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
+}
+
+test_pre_open_through_symlinked_cs_local_is_refused() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt"
+    mv "$root/.cs/local" "$root/payload"
+    ln -s ../payload "$root/.cs/local"
+    _write_pre_open vt "touch \"$TEST_TMPDIR/pre-open-ran\""
+    git -C "$root" add -A
+    git -C "$root" commit -q -m "ship .cs/local as a link"
+    _make_launch_sentinel
+
+    local out rc=0
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: .cs/local is a symlink to ../payload (cs state must be a real directory inside the session). Replace the link with the directory, then reopen." \
+        "$out" "cs should refuse a symlinked .cs/local before running anything behind it" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/pre-open-ran" "the pre-open behind the link must not run" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
+}
+
 test_pre_open_success_without_mount_still_refuses() {
     _make_vaulted_session vt
     local meta="$CS_SESSIONS_ROOT/vt/.cs"
@@ -985,6 +1028,8 @@ run_test test_pre_open_mounts_then_session_opens
 run_test test_pre_open_failure_aborts_open
 run_test test_pre_open_not_executable_is_refused
 run_test test_pre_open_tracked_by_git_is_refused
+run_test test_pre_open_through_symlinked_cs_is_refused
+run_test test_pre_open_through_symlinked_cs_local_is_refused
 run_test test_pre_open_success_without_mount_still_refuses
 run_test test_claude_config_link_moves_claude_code_into_the_vault
 run_test test_unmounted_claude_config_refuses_open

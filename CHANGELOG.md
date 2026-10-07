@@ -4,6 +4,11 @@ All notable changes to cs are documented here. Release notes are also available 
 
 <!-- New entries group changes under Keep-a-Changelog headings (Added / Changed / Removed / Fixes / Docs), or Features / Performance where those fit the release. -->
 
+## Unreleased
+
+### Fixes
+- `cs <name>` refuses to open a session whose `.cs` or `.cs/local` is a symlink. A clone could commit `.cs` as a link to a tracked folder holding a `pre-open`; git lists nothing under `.cs/local` for a link, so the tracked-files check passed and the script ran at open. The error names the link and its target; replace it with the directory and reopen.
+
 ## 2026.10.7
 
 ### Changed
