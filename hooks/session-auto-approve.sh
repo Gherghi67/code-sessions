@@ -232,6 +232,27 @@ for _cs_root in "$META_DIR" "$SESSION_DIR/.cs"; do
     done
 done
 
+# The session's git directory: git reads config there and core.fsmonitor
+# runs from it. A clone cannot deliver .git as a link, but a synced session
+# can, and a .git file (a worktree) names its directory outright. Wherever it
+# really is, a write beneath it prompts. The common directory of a worktree
+# is reached through the file it names; nothing deeper is followed.
+_cs_git="$SESSION_DIR/.git"
+if [ -f "$_cs_git" ] && [ ! -L "$_cs_git" ]; then
+    _cs_gitdir="$(sed -n 's/^gitdir: //p' "$_cs_git" 2>/dev/null | head -1)"
+    case "$_cs_gitdir" in
+        "") _cs_git="" ;;
+        /*) _cs_git="$_cs_gitdir" ;;
+        *) _cs_git="$SESSION_DIR/$_cs_gitdir" ;;
+    esac
+fi
+if [ -n "$_cs_git" ] && [ -d "$_cs_git" ]; then
+    _cs_ctl="$(_cs_realdir "$_cs_git")" || exit 0
+    case "$REAL_PARENT_LC/" in
+        "$(_cs_lower "$_cs_ctl")"/*) exit 0 ;;
+    esac
+fi
+
 # Claude Code's active config directory: cs keeps a CLAUDE_CONFIG_DIR the
 # shell set when the session has no vault config (lib/75-launch.sh), so it
 # can be a content directory of this session. Inside the session, the
