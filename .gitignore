@@ -31,3 +31,4 @@ CLAUDE.local.md
 tests/.run_all.lock/
 .skillopt-sleep/
 .cs/vault-mnt/
+.cs-tmp.*
