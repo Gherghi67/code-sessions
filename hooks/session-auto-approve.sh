@@ -233,7 +233,9 @@ _cs_names_target() {
     local dest parent
     dest="$(_cs_link_dest "$1")" || return 0
     [ -L "$dest" ] && return 0
-    parent="$(_cs_realdir "${dest%/*}")" || return 0
+    # The target's parent exists, so a hop whose parent does not cannot
+    # name it.
+    parent="$(_cs_realdir "${dest%/*}")" || return 1
     [ "$(_cs_lower "$parent/${dest##*/}")" = "$TARGET_LC" ]
 }
 _cs_reaches_target() {

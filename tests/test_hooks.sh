@@ -518,7 +518,7 @@ test_auto_approve_rejects_project_claude_link_into_content() {
     mkdir -p "$root/.claude" "$root/.agents/skills/x"
     printf '{}\n' > "$meta/memory/config.json"
     ln -s ../.cs/memory/config.json "$root/.claude/settings.json"
-    ln -s ../../.agents/skills/x "$root/.claude/skills"
+    ln -s ../.agents/skills/x "$root/.claude/skills"
     _assert_falls_through Edit "$meta/memory/config.json" \
         "the target of a project settings link" || return 1
     _assert_allowed Write "$meta/memory/narrative.md" \
