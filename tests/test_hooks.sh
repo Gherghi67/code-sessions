@@ -576,6 +576,30 @@ test_auto_approve_rejects_case_sibling_session() {
         "a setting in a case-sibling session" || return 1
 }
 
+# A control directory that resolves to a name ending in a newline: every
+# $(pwd -P) strips it, so the resolved control root never matches the real
+# parent of a write beneath it, and a decoy at the stripped name scans clean.
+test_auto_approve_rejects_newline_control_root() {
+    local meta="$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$meta/memory/store" "$meta/memory/store
+/queue"
+    ln -s "memory/store
+" "$meta/private"
+    _assert_falls_through Write "$meta/memory/store
+/queue/0001" "a queue entry behind a newline-named private link" || return 1
+}
+
+# CLAUDE_SESSION_META_DIR may sit outside CLAUDE_SESSION_DIR; the metadata
+# root is then a containment domain of its own for planted control links.
+test_auto_approve_rejects_queue_link_under_separate_meta_dir() {
+    export CLAUDE_SESSION_META_DIR="$TEST_TMPDIR/meta"
+    local meta="$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$meta/local" "$meta/memory/tasks"
+    ln -s ../memory/tasks "$meta/local/queue"
+    _assert_falls_through Write "$meta/memory/tasks/0001" \
+        "a file under a queue link in a separate metadata root" || return 1
+}
+
 test_auto_approve_skips_outside_session() {
     unset CLAUDE_SESSION_NAME
     local input='{"tool_name":"Write","tool_input":{"file_path":"/tmp/anything.md"}}'
@@ -2678,6 +2702,8 @@ run_test test_auto_approve_rejects_case_sibling_session
 run_test test_auto_approve_rejects_project_claude_link_into_content
 run_test test_auto_approve_rejects_project_hook_link_behind_dir_link
 run_test test_auto_approve_rejects_mcp_link_to_new_content
+run_test test_auto_approve_rejects_newline_control_root
+run_test test_auto_approve_rejects_queue_link_under_separate_meta_dir
 
 # Subagent context
 run_test test_subagent_injects_session_name
