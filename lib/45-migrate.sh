@@ -28,9 +28,17 @@ cs_assert_local_untracked() {
         error "$sub is a symlink to $(readlink "$dir/$sub") (cs state must be a real directory inside the session). Replace the link with the directory, then reopen."
     done
     # A submodule or nested repository at .cs keeps its files out of the
-    # session's index, so the pathspec check below would never see them.
-    if [ -e "$dir/.cs/.git" ]; then
-        error ".cs is its own git checkout (cs state must be a plain directory inside the session, never a submodule or nested repository). Remove .cs/.git, then reopen."
+    # session's index, so the pathspec check below would never see them. The
+    # gitlink outlives a removed .cs/.git, so the index is checked as well.
+    local nested=""
+    [ -e "$dir/.cs/.git" ] && nested=1
+    if git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
+        case "$(git -C "$dir" ls-files -s -- ':(icase).cs' 2>/dev/null | cut -d' ' -f1 | sed -n 1p)" in
+            160000) nested=1 ;;
+        esac
+    fi
+    if [ -n "$nested" ]; then
+        error ".cs is a submodule or nested repository (cs state must be a plain directory inside the session). Check .cs/local for files you did not write, then git rm --cached .cs, remove .cs/.git and git add .cs, then reopen."
     fi
     git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || return 0
     # :(icase): a case-insensitive checkout (macOS by default) puts a
