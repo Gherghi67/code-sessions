@@ -138,14 +138,16 @@ done
 # A link beneath a control directory can point the other way, into content:
 # claude-config/settings.json -> ../memory/config.json lands the write in
 # memory/, where it reads as content, while Claude Code reads it as its
-# settings; local/queue -> ../memory/tasks does the same for the drain. Any
-# link under a control directory that resolves to the target or to one of its
-# ancestors declines. The scan is cheap: local/ and private/ hold few entries,
-# and the links cs itself puts in claude-config point out at ~/.claude, so
-# their targets never match a path under .cs/. Paths come NUL-separated
-# through a file so a planted name with a newline in it cannot split into
-# pieces that resolve to nothing and slip past.
-TARGET_LC="$REAL_PARENT_LC/$BASENAME_LC"
+# settings; local/queue -> ../memory/tasks does the same for the drain. The
+# shapes compound (a chain of links, a link inside a linked directory, a
+# name ending in a newline that $(readlink) strips), so no link under a
+# control directory is followed: one whose first hop is not proven to land
+# outside .cs/ declines every write. The links cs itself puts in
+# claude-config point out at ~/.claude, so a session cs set up never
+# declines on its own. The scan is cheap: local/ and private/ hold few
+# entries, and claude-config's plugins/ is one link find does not enter.
+# Paths come NUL-separated through a file so a planted name with a newline
+# in it cannot split into pieces that resolve to nothing and slip past.
 _cs_links="$(mktemp "${TMPDIR:-/tmp}/cs-approve.XXXXXX")" || exit 0
 trap 'rm -f "$_cs_links"' EXIT
 for _cs_root in "$META_DIR" "$SESSION_DIR/.cs"; do
@@ -158,28 +160,17 @@ for _cs_root in "$META_DIR" "$SESSION_DIR/.cs"; do
                 /*) ;;
                 *) _cs_dest="${_cs_link%/*}/$_cs_dest" ;;
             esac
-            # A link to a file can end on another link (claude-config/
-            # settings.json -> memory/hop -> memory/real): follow the chain
-            # to the file Claude Code reads. A chain that does not end in
-            # 32 hops is a loop and resolves to nothing.
-            _cs_hops=0
-            while [ ! -d "$_cs_dest" ] && [ -L "$_cs_dest" ] && [ "$_cs_hops" -lt 32 ]; do
-                _cs_next="$(readlink "$_cs_dest")" || break
-                case "$_cs_next" in
-                    /*) _cs_dest="$_cs_next" ;;
-                    *) _cs_dest="${_cs_dest%/*}/$_cs_next" ;;
-                esac
-                _cs_hops=$((_cs_hops + 1))
-            done
+            # The destination's directory, resolved: a file's parent, or the
+            # directory itself. One that does not resolve is not proven
+            # outside, so it declines too.
             if [ -d "$_cs_dest" ]; then
-                _cs_real="$(cd "$_cs_dest" 2>/dev/null && pwd -P)" || continue
+                _cs_real="$(cd "$_cs_dest" 2>/dev/null && pwd -P)" || exit 0
             else
-                _cs_real="$(cd "${_cs_dest%/*}" 2>/dev/null && pwd -P)" || continue
-                _cs_real="$_cs_real/${_cs_dest##*/}"
+                _cs_real="$(cd "${_cs_dest%/*}" 2>/dev/null && pwd -P)" || exit 0
             fi
             _cs_real="$(_cs_lower "$_cs_real")"
-            case "$TARGET_LC/" in
-                "$_cs_real"/*) exit 0 ;;
+            case "$_cs_real/" in
+                "${REAL_META_LC:-/cs-no-meta}"/*|"${REAL_CS_LC:-/cs-no-cs}"/*) exit 0 ;;
             esac
         done < "$_cs_links"
     done
