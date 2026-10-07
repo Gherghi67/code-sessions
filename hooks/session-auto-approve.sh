@@ -75,14 +75,31 @@ for _cs_dir in "$SESSION_DIR/.cs" "$META_DIR" "$META_DIR/local"; do
     fi
 done
 
+# A directory's real path, kept exact: $(pwd -P) would strip a trailing
+# newline, so a directory named with one would never match the real parent
+# of a write beneath it, and a decoy at the stripped name would stand in for
+# it. A real path holding a newline anywhere fails instead: nothing cs makes
+# is named that way, and every comparison below would be reasoning about a
+# name it cannot hold.
+_cs_nl='
+'
+_cs_realdir() {
+    local real
+    real="$(cd "$1" 2>/dev/null && pwd -P && printf x)" || return 1
+    real="${real%x}"
+    real="${real%"$_cs_nl"}"
+    case "$real" in *"$_cs_nl"*) return 1 ;; esac
+    printf '%s' "$real"
+}
+
 # Canonicalize the write target's parent directory so that no symlink or
 # spelling can smuggle the path outside .cs/. A parent that doesn't resolve
 # (e.g. a not-yet-created nested dir) falls through to the normal prompt.
 PARENT_DIR="${FILE_PATH%/*}"
 [ "$PARENT_DIR" = "$FILE_PATH" ] && PARENT_DIR="."
-REAL_PARENT="$(cd "$PARENT_DIR" 2>/dev/null && pwd -P)" || exit 0
-REAL_META="$(cd "$META_DIR" 2>/dev/null && pwd -P)" || REAL_META=""
-REAL_CS="$(cd "$SESSION_DIR/.cs" 2>/dev/null && pwd -P)" || REAL_CS=""
+REAL_PARENT="$(_cs_realdir "$PARENT_DIR")" || exit 0
+REAL_META="$(_cs_realdir "$META_DIR")" || REAL_META=""
+REAL_CS="$(_cs_realdir "$SESSION_DIR/.cs")" || REAL_CS=""
 
 # Only consider files whose real parent is inside the session's .cs/ tree,
 # compared as the filesystem spelled them: on a case-sensitive filesystem a
@@ -119,7 +136,7 @@ BASENAME_LC="$(_cs_lower "${FILE_PATH##*/}")"
 _cs_real_lc() {
     # Real, lowercased path of $1, or nothing when it does not resolve.
     local real
-    real="$(cd "$1" 2>/dev/null && pwd -P)" || return 1
+    real="$(_cs_realdir "$1")" || return 1
     _cs_lower "$real"
 }
 for _cs_root in "$META_DIR" "$SESSION_DIR/.cs"; do
@@ -147,7 +164,8 @@ done
 # name ending in a newline that $(readlink) strips, a hop through a shared
 # file at the session root), so no link under a control directory is
 # followed: one whose first hop is not proven to land outside the whole
-# session directory declines every write. What lies outside the session is
+# session directory, and outside a metadata root kept elsewhere, declines
+# every write. What lies outside the session is
 # not something a shared or synced session can plant, so it is not chased.
 # The links cs itself puts in claude-config point out at ~/.claude, so a
 # session cs set up never declines on its own. The scan is cheap: local/
@@ -171,15 +189,16 @@ _cs_link_dest() {
     esac
     printf '%s' "$dest"
 }
-_cs_nl='
-'
-REAL_SESSION_LC="$(cd "$SESSION_DIR" 2>/dev/null && pwd -P)" || exit 0
+REAL_SESSION_LC="$(_cs_realdir "$SESSION_DIR")" || exit 0
 REAL_SESSION_LC="$(_cs_lower "$REAL_SESSION_LC")"
 _cs_links="$(mktemp "${TMPDIR:-/tmp}/cs-approve.XXXXXX")" || exit 0
 trap 'rm -f "$_cs_links"' EXIT
 for _cs_root in "$META_DIR" "$SESSION_DIR/.cs"; do
     for _cs_name in local claude-config age-recipients private; do
-        _cs_ctl="$(cd "$_cs_root/$_cs_name" 2>/dev/null && pwd -P)" || continue
+        # A control directory that resolves to a name no exact path can
+        # hold declines every write rather than being skipped.
+        [ -e "$_cs_root/$_cs_name" ] || continue
+        _cs_ctl="$(_cs_realdir "$_cs_root/$_cs_name")" || exit 0
         find "$_cs_ctl" -type l -print0 2>/dev/null > "$_cs_links" || exit 0
         while IFS= read -r -d '' _cs_link; do
             _cs_dest="$(_cs_link_dest "$_cs_link")" || exit 0
@@ -187,13 +206,14 @@ for _cs_root in "$META_DIR" "$SESSION_DIR/.cs"; do
             # directory itself. One that does not resolve is not proven
             # outside, so it declines too.
             if [ -d "$_cs_dest" ]; then
-                _cs_real="$(cd "$_cs_dest" 2>/dev/null && pwd -P)" || exit 0
+                _cs_real="$(_cs_realdir "$_cs_dest")" || exit 0
             else
-                _cs_real="$(cd "${_cs_dest%/*}" 2>/dev/null && pwd -P)" || exit 0
+                _cs_real="$(_cs_realdir "${_cs_dest%/*}")" || exit 0
             fi
             _cs_real="$(_cs_lower "$_cs_real")"
             case "$_cs_real/" in
                 "$REAL_SESSION_LC"/*) exit 0 ;;
+                "${REAL_META_LC:-/cs-no-meta}"/*|"${REAL_CS_LC:-/cs-no-cs}"/*) exit 0 ;;
             esac
         done < "$_cs_links"
     done
@@ -213,7 +233,7 @@ _cs_names_target() {
     local dest parent
     dest="$(_cs_link_dest "$1")" || return 0
     [ -L "$dest" ] && return 0
-    parent="$(cd "${dest%/*}" 2>/dev/null && pwd -P)" || return 1
+    parent="$(_cs_realdir "${dest%/*}")" || return 0
     [ "$(_cs_lower "$parent/${dest##*/}")" = "$TARGET_LC" ]
 }
 _cs_reaches_target() {
