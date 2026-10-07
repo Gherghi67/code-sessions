@@ -158,6 +158,19 @@ for _cs_root in "$META_DIR" "$SESSION_DIR/.cs"; do
                 /*) ;;
                 *) _cs_dest="${_cs_link%/*}/$_cs_dest" ;;
             esac
+            # A link to a file can end on another link (claude-config/
+            # settings.json -> memory/hop -> memory/real): follow the chain
+            # to the file Claude Code reads. A chain that does not end in
+            # 32 hops is a loop and resolves to nothing.
+            _cs_hops=0
+            while [ ! -d "$_cs_dest" ] && [ -L "$_cs_dest" ] && [ "$_cs_hops" -lt 32 ]; do
+                _cs_next="$(readlink "$_cs_dest")" || break
+                case "$_cs_next" in
+                    /*) _cs_dest="$_cs_next" ;;
+                    *) _cs_dest="${_cs_dest%/*}/$_cs_next" ;;
+                esac
+                _cs_hops=$((_cs_hops + 1))
+            done
             if [ -d "$_cs_dest" ]; then
                 _cs_real="$(cd "$_cs_dest" 2>/dev/null && pwd -P)" || continue
             else
