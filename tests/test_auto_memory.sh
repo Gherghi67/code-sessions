@@ -207,6 +207,31 @@ test_migration_keeps_colliding_memory_and_subdirs() {
         "the default memory dir goes once every file has an identical copy" || return 1
 }
 
+# A destination reached through a symlink is not an independent copy: a
+# session file linked back into the default dir, or a session subdirectory
+# linked there, would pass the byte comparison and the source would be
+# deleted from under the link. Such a file is left where it is, whole.
+test_migration_keeps_a_source_the_destination_links_to() {
+    local staged session_dir default_dir
+    staged=$(_stage_memory_migration mem-linked)
+    session_dir=$(sed -n 1p <<< "$staged")
+    default_dir=$(sed -n 2p <<< "$staged")
+    printf 'linked-topic-line\n' > "$default_dir/topic.md"
+    ln -s "$default_dir/topic.md" "$session_dir/.cs/memory/topic.md"
+    mkdir -p "$default_dir/topics"
+    printf 'linked-dir-line\n' > "$default_dir/topics/deep.md"
+    ln -s "$default_dir/topics" "$session_dir/.cs/memory/topics"
+
+    "$CS_BIN" mem-linked <<< "" >/dev/null 2>&1 || true
+
+    assert_eq "linked-topic-line" "$(cat "$default_dir/topic.md" 2>/dev/null)" \
+        "a source the session links to must survive" || return 1
+    assert_eq "linked-dir-line" "$(cat "$default_dir/topics/deep.md" 2>/dev/null)" \
+        "a source under a linked directory must survive" || return 1
+    [ -L "$session_dir/.cs/memory/topic.md" ] || { echo "  FAIL: the session's link was replaced"; return 1; }
+    [ -L "$session_dir/.cs/memory/topics" ] || { echo "  FAIL: the session's directory link was replaced"; return 1; }
+}
+
 # A copy that fails stops the migration before anything is deleted, including
 # the files that did copy.
 test_migration_failed_copy_deletes_nothing() {
@@ -1217,6 +1242,7 @@ run_test test_adopt_adds_settings_to_gitignore
 run_test test_migration_creates_memory_and_settings
 run_test test_migration_moves_existing_auto_memory
 run_test test_migration_keeps_colliding_memory_and_subdirs
+run_test test_migration_keeps_a_source_the_destination_links_to
 run_test test_migration_failed_copy_deletes_nothing
 run_test test_open_leaves_a_project_with_only_a_logs_dir_unmigrated
 run_test test_open_migrates_a_flat_layout_session

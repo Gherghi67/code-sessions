@@ -491,6 +491,25 @@ test_state_write_waits_for_a_live_lock_holder() {
     [ "$took" -ge 4 ] || { echo "  FAIL: the writer must wait for a live holder (took ${took}s)"; return 1; }
 }
 
+# A lock older than the minute the timeout branch tolerates is still a LIVE
+# holder's when its pid answers: the caller goes ahead without the lock, as
+# documented, but never evicts that holder (a settings writer paused inside
+# its transform would otherwise write a stale snapshot over the next
+# writer's change).
+test_lock_timeout_leaves_a_live_holders_old_lock_in_place() {
+    local lock="$TEST_TMPDIR/old.lock" lib="$SCRIPT_DIR/../hooks/cs-shared.sh" rc=0
+    mkdir "$lock"
+    echo "$$" > "$lock/pid"
+    touch -t "$(date -v-3M +%Y%m%d%H%M.%S 2>/dev/null || date -d '3 minutes ago' +%Y%m%d%H%M.%S)" "$lock"
+
+    bash -c 'source "$1"; _cs_mkdir_lock "$2"' _ "$lib" "$lock" || rc=$?
+
+    assert_eq "1" "$rc" "the waiter gives up without the lock" || return 1
+    [ -d "$lock" ] || { echo "  FAIL: the live holder's lock was evicted"; return 1; }
+    assert_eq "$$" "$(cat "$lock/pid" 2>/dev/null)" "the live holder still holds it" || return 1
+    rm -f "$lock/pid"; rmdir "$lock" 2>/dev/null
+}
+
 # The state rewrite renders the old file through awk. When that read fails the
 # write must fail loudly and leave the file as it was; a renderer that swallows
 # the failure would replace the user's state with the one new line.
@@ -842,6 +861,7 @@ run_test test_launch_ignores_a_recorded_color_that_is_not_a_color
 run_test test_launch_stops_loudly_when_state_cannot_be_written
 run_test test_state_and_gitattributes_rewrites_leave_tmp_siblings_alone_and_keep_modes
 run_test test_state_write_waits_for_a_live_lock_holder
+run_test test_lock_timeout_leaves_a_live_holders_old_lock_in_place
 run_test test_state_write_takes_over_a_dead_holders_lock
 run_test test_state_write_fails_loudly_when_the_old_state_cannot_be_read
 run_test test_two_state_writers_lose_no_update
