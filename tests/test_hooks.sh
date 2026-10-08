@@ -3664,7 +3664,7 @@ test_session_start_publishes_the_contract_to_a_teammate() {
 
     assert_file_contains "$envfile" "CLAUDE_SESSION_NAME" \
         "a teammate needs the session in its own environment" || { session_start_teardown; return 1; }
-    assert_file_contains "$envfile" "CS_RESOLVED_FROM=\"walk\"" \
+    assert_file_contains "$envfile" "CS_RESOLVED_FROM='walk'" \
         "and must stay marked as not being the launch" || { session_start_teardown; return 1; }
     session_start_teardown
 }
