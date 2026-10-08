@@ -12062,6 +12062,14 @@ run_uninstall() {
             read -p "Delete session data? This cannot be undone. [y/N] " -n 1 -r
             echo ""
             if [[ $REPLY =~ ^[Yy]$ ]]; then
+                # The answer can take any time: a session opened or a vault
+                # mounted meanwhile keeps the data, as it would have above.
+                _uninstall_refuse_live_sessions
+                if ! mounted=$(_volume_mounted_under "$SESSIONS_ROOT"); then
+                    error "Kept $SESSIONS_ROOT: cs could not read the mount table, so it cannot tell whether a volume is mounted inside it."
+                elif [ -n "$mounted" ]; then
+                    error "Kept $SESSIONS_ROOT: a volume is mounted inside it at $mounted, and deleting the directory would delete what the volume holds. Unmount it before you delete $SESSIONS_ROOT."
+                fi
                 rm -rf "$SESSIONS_ROOT"
                 info "Removed $SESSIONS_ROOT"
             else
