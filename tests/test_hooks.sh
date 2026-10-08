@@ -275,6 +275,29 @@ test_auto_approve_rejects_leaf_symlink() {
     fi
 }
 
+# A hard link has no link to see: a content file under .cs/ that shares its
+# inode with a file elsewhere (a project setting, say) passes every path and
+# symlink check, and an in-place Edit then changes that other file. An
+# existing target with more than one link falls through to the prompt; once
+# the second name is gone, the same write is approved again.
+test_auto_approve_rejects_a_hard_linked_target() {
+    local outside="$TEST_TMPDIR/project-settings.json"
+    mkdir -p "$CLAUDE_SESSION_META_DIR/memory"
+    echo '{"hooks":{}}' > "$outside"
+    ln "$outside" "$CLAUDE_SESSION_META_DIR/memory/config.md" || { echo "  FAIL: hard link fixture"; return 1; }
+
+    local input output
+    input=$(jq -n --arg path "$CLAUDE_SESSION_META_DIR/memory/config.md" \
+        '{tool_name: "Edit", tool_input: {file_path: $path}}')
+    output=$(echo "$input" | bash "$HOOKS_DIR/session-auto-approve.sh" 2>/dev/null)
+    assert_eq "" "$output" "a hard-linked target falls through to the prompt" || return 1
+
+    rm -f "$outside"
+    output=$(echo "$input" | bash "$HOOKS_DIR/session-auto-approve.sh" 2>/dev/null)
+    assert_eq "allow" "$(echo "$output" | jq -r '.hookSpecificOutput.decision.behavior')" \
+        "the same file with one name is approved" || return 1
+}
+
 # Audit C2: approval covered every file under .cs/, including the ones cs
 # itself acts on: `.cs/local/pre-open` runs at the next open (Edit keeps the
 # exec bit), `.cs/claude-config/` is Claude Code's own config in an encrypted
@@ -2955,6 +2978,7 @@ run_test test_auto_approve_ignores_non_cs_path
 run_test test_auto_approve_ignores_non_write_tools
 run_test test_auto_approve_rejects_traversal
 run_test test_auto_approve_rejects_leaf_symlink
+run_test test_auto_approve_rejects_a_hard_linked_target
 run_test test_auto_approve_skips_outside_session
 run_test test_auto_approve_rejects_pre_open
 run_test test_auto_approve_rejects_local_state_files
