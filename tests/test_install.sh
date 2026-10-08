@@ -752,6 +752,9 @@ test_manifest_arrays_match_repo_files() {
 # The rotate mod deploys as plain files under ~/.claude/skills/cs, so
 # the manifest lists each one. Every listed file exists, and every file the
 # mod needs (manifest, hooks list, module) is listed; the bun tests are not.
+# The repo's files are the ones git sees (tracked, or new and not ignored):
+# Claude Code generates .claude-plugin/types/ inside a mod it loads, ignored
+# by its own .gitignore, and a walk of the disk counted those.
 test_mod_files_manifest_matches_the_repo() {
     local entry listed actual
     for entry in $(extract_array "$SCRIPT_DIR/../install.sh" CS_MOD_FILES); do
@@ -759,7 +762,7 @@ test_mod_files_manifest_matches_the_repo() {
             || { echo "  FAIL: CS_MOD_FILES entry missing from repo: mods/$entry"; return 1; }
     done
     listed=$(extract_array "$SCRIPT_DIR/../install.sh" CS_MOD_FILES | sort)
-    actual=$(cd "$SCRIPT_DIR/../mods" && find . -type f -not -path '*/test/*' | sed 's|^\./||' | sort)
+    actual=$(git -C "$SCRIPT_DIR/../mods" ls-files --cached --others --exclude-standard | grep -v '/test/' | sort)
     if [ "$listed" != "$actual" ]; then
         echo "  FAIL: CS_MOD_FILES does not match the files under mods/ (test/ excluded)"
         diff <(echo "$listed") <(echo "$actual") | head -10
