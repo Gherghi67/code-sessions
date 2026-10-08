@@ -1864,6 +1864,26 @@ test_install_follows_its_record() {
     assert_output_contains "$out" "$home/\.claude/commands/sweep\.md" "the kept file is named" || return 1
 }
 
+# An install that stops partway leaves a record true of every file: the ones
+# it placed under their new sha256, the ones it never reached under the line
+# the last install wrote for them.
+test_install_record_holds_what_a_partial_install_placed() {
+    local home="$TEST_TMPDIR/partial-home" record digest rc=0 zeros
+    zeros=0000000000000000000000000000000000000000000000000000000000000000
+    record="$home/.claude/hooks/cs/.installed"
+    mkdir -p "$home/.claude/hooks/cs"
+    printf '%s  .claude/hooks/cs/session-start.sh\n%s  .claude/skills/rotate/SKILL.md\n' "$zeros" "$zeros" > "$record"
+    # A file where the commands directory goes stops the install after the
+    # hooks are in place.
+    : > "$home/.claude/commands"
+    HOME="$home" bash "$INSTALL_SH" > "$TEST_TMPDIR/partial.out" 2>&1 < /dev/null || rc=$?
+    assert_eq "1" "$rc" "the install stops at the commands directory" || { cat "$TEST_TMPDIR/partial.out"; return 1; }
+    digest=$(shasum -a 256 "$SCRIPT_DIR/../hooks/session-start.sh" | awk '{print $1}')
+    assert_file_contains "$record" "^$digest  \.claude/hooks/cs/session-start\.sh$" "the placed hook is recorded" || return 1
+    assert_file_not_contains "$record" "^$zeros  \.claude/hooks/cs/session-start\.sh$" "its previous line is gone" || return 1
+    assert_file_contains "$record" "^$zeros  \.claude/skills/rotate/SKILL\.md$" "a file never reached keeps its line" || return 1
+}
+
 # Uninstall removes what cs installed and nothing that only shares its name:
 # a user's command, a user's skill, and a user's file inside a cs mod.
 test_uninstall_removes_only_files_cs_wrote() {
@@ -2057,6 +2077,7 @@ run_test test_install_keeps_the_registration_of_a_kept_flat_hook
 run_test test_install_never_sources_a_kept_deployed_cs_shared
 run_test test_install_replaces_files_cs_wrote_without_a_record
 run_test test_install_follows_its_record
+run_test test_install_record_holds_what_a_partial_install_placed
 run_test test_uninstall_removes_only_files_cs_wrote
 run_test test_uninstall_removes_subagent_statusline
 test_hook_registration_doc_matches_install() {
