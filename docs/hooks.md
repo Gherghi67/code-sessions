@@ -40,11 +40,21 @@ path (a silent exit, or the approval payload the blocking hooks owe Claude Code)
    `cs` exports them before `exec`, so a CLI session resolves here and never reaches
    the walk. This path is what it always was.
 2. **The directory**, otherwise: walk up from `CLAUDE_PROJECT_DIR` (or the hook
-   input's `cwd`) looking for the `.cs/` that marks a session root. The nearest one
-   wins, so a session cloned inside another belongs to itself, and the walk stops at
-   `$HOME` so a stray `~/.cs` cannot adopt everything beneath it. There is no `$PWD`
-   fallback: a hook's working directory is wherever the front end left it, not a
-   statement about which session is open.
+   input's `cwd`) looking for the `.cs/` that marks a session root, and accept it only
+   when the sessions root knows it: an entry under `~/.claude-sessions` (or
+   `CS_SESSIONS_ROOT`, when the front end passes it on) that is the directory or a
+   link to it, compared by inode. cs puts every session it makes there, so a cloned
+   repository that ships a `.cs/` of its own is not a session, whatever it carries
+   under `.cs/local/`; a hook cannot run the checks `cs` runs at open, so nothing
+   inside the directory can stand in for the entry. The nearest `.cs/` decides and an
+   unknown one declines, so such a clone inside a real session binds to nothing rather
+   than to the session around it. The walk stops at `$HOME` so a stray `~/.cs` cannot
+   adopt everything beneath it. There is no `$PWD` fallback: a hook's working
+   directory is wherever the front end left it, not a statement about which session
+   is open. An agent-team teammate walks in the same way, from a pane the tmux
+   server started with its own environment, so a launch inside tmux publishes
+   `CS_SESSIONS_ROOT` into that tmux session (as it does the truecolor flag) and a
+   session under a non-default root stays recognised by its teammates.
 
 The walk is what lets cs work in front ends that fire hooks but cannot export
 environment into a session — Claude Code desktop among them, where `CLAUDE_ENV_FILE`

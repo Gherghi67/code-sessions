@@ -419,6 +419,17 @@ test_launch_publishes_the_users_truecolor_value() {
         "a preset value is published as given" || return 1
 }
 
+# A teammate's hooks walk in from the session directory and accept it only
+# when the sessions root knows it; the root they read is CS_SESSIONS_ROOT or
+# the default. The teammate inherits the tmux server's environment, so a
+# launch under another root must publish it there or every teammate of that
+# session declines.
+test_launch_publishes_the_sessions_root_to_the_tmux_session() {
+    _launch_worker_in_tmux || true
+    assert_file_contains "$FAKE_TMUX_DIR/log" "^set-environment CS_SESSIONS_ROOT $CS_SESSIONS_ROOT$" \
+        "the launch sets the sessions root in the tmux session env" || return 1
+}
+
 test_launch_outside_tmux_touches_no_tmux_environment() {
     _launch_worker > /dev/null 2>&1 || true
     if [ -f "$FAKE_TMUX_DIR/log" ] && grep -q "set-environment" "$FAKE_TMUX_DIR/log"; then
@@ -748,6 +759,7 @@ run_test test_spawn_empty_spawner_writes_blank_first_line
 run_test test_launch_consumes_seed_queues_arms_and_kicks
 run_test test_launch_publishes_truecolor_to_the_tmux_session
 run_test test_launch_publishes_the_users_truecolor_value
+run_test test_launch_publishes_the_sessions_root_to_the_tmux_session
 run_test test_launch_outside_tmux_touches_no_tmux_environment
 run_test test_launch_empty_spawner_gets_no_reply_wiring
 run_test test_launch_without_seed_keeps_color_behavior
