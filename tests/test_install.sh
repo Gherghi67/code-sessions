@@ -1886,6 +1886,26 @@ EOF
         "cs's own copy is registered" || return 1
 }
 
+# Uninstall removes only the flat hooks cs wrote, so a flat
+# ~/.claude/hooks/<name> still there afterwards is the user's, and so is its
+# registration: uninstall strips cs's own registrations and leaves that one.
+test_uninstall_keeps_the_registration_of_a_kept_flat_hook() {
+    local home="$TEST_TMPDIR/flat-unreg-home" rc=0 s
+    s="$home/.claude/settings.json"
+    mkdir -p "$home/.claude/hooks"
+    printf '#!/bin/sh\necho my session-start\n' > "$home/.claude/hooks/session-start.sh"
+    cat > "$s" << 'EOF'
+{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"~/.claude/hooks/session-start.sh","timeout":30}]},{"hooks":[{"type":"command","command":"~/.claude/hooks/cs/session-start.sh","timeout":30}]}]}}
+EOF
+    printf 'y\n' | HOME="$home" "$CS_BIN" -uninstall > "$TEST_TMPDIR/flat-unreg.out" 2>&1 || rc=$?
+    assert_eq "0" "$rc" "uninstall exit status" || { cat "$TEST_TMPDIR/flat-unreg.out"; return 1; }
+    assert_file_exists "$home/.claude/hooks/session-start.sh" "the user's flat hook is kept" || return 1
+    assert_eq "1" "$(jq '[.hooks[][] | .hooks[]?.command | select(. == "~/.claude/hooks/session-start.sh")] | length' "$s")" \
+        "the kept flat hook's registration stays" || return 1
+    assert_eq "0" "$(jq '[.hooks[][] | .hooks[]?.command | select(. == "~/.claude/hooks/cs/session-start.sh")] | length' "$s")" \
+        "cs's own registration is stripped" || return 1
+}
+
 # The installer loads its settings helpers from the payload it verified, never
 # from the deployed copy: a kept ~/.claude/hooks/cs/cs-shared.sh that cs did
 # not write would otherwise run inside the installer.
@@ -2155,6 +2175,7 @@ run_test test_build_embeds_the_sha256_of_every_payload_file
 run_test test_release_workflow_pins_the_installers_default_ref
 run_test test_install_keeps_user_files_that_share_a_cs_name
 run_test test_install_keeps_the_registration_of_a_kept_flat_hook
+run_test test_uninstall_keeps_the_registration_of_a_kept_flat_hook
 run_test test_install_names_a_kept_retired_name_file_once_per_content
 run_test test_install_keeps_a_symlink_that_holds_no_cs_content
 run_test test_install_never_sources_a_kept_deployed_cs_shared
