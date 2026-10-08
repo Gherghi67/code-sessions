@@ -633,22 +633,33 @@ echo ""
 
 
 _race_lock_once() {  # meta_dir, round -> prints the number of openers that took the lock
-    local meta_dir="$1" gate="$TEST_TMPDIR/gate.$2" winners="$TEST_TMPDIR/winners.$2" i pids=""
+    local meta_dir="$1" gate="$TEST_TMPDIR/gate.$2" winners="$TEST_TMPDIR/winners.$2" settled="$TEST_TMPDIR/settled.$2" i pids=""
     rm -f "$meta_dir/session.lock"
     : > "$winners"
+    : > "$settled"
     for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
         # Each opener is its own bash process, as each cs is: the lock holds
         # $$, and in a subshell that would be this runner's pid for all twenty.
-        LOCK_LIB="$SCRIPT_DIR/../lib" LOCK_META="$meta_dir" LOCK_GATE="$gate" LOCK_WINNERS="$winners" bash -c '
+        LOCK_LIB="$SCRIPT_DIR/../lib" LOCK_META="$meta_dir" LOCK_GATE="$gate" LOCK_WINNERS="$winners" LOCK_SETTLED="$settled" bash -c '
             . "$LOCK_LIB/05-term.sh"
+            . "$LOCK_LIB/02-shared.sh"
             . "$LOCK_LIB/15-lock.sh"
             cs_interactive() { return 1; }
             warn() { :; }
             until [ -e "$LOCK_GATE" ]; do :; done
-            # A real winner goes on to run claude; this one stays alive long
-            # enough for every loser to find its pid live, else a loser would
-            # rightly reclaim the lock of a dead holder and win in turn.
-            acquire_session_lock "$LOCK_META" "" lockrace >/dev/null 2>&1 && { echo "$$" >> "$LOCK_WINNERS"; sleep 1; }
+            # The refusal exits, so the acquire runs in a subshell; its $$ is
+            # still this opener. A real winner goes on to run claude; this one
+            # stays alive until every opener has settled (or 20 s), else a
+            # late loser would rightly reclaim the lock of a dead holder and
+            # win in turn. Openers take turns, so twenty take about a second.
+            if ( acquire_session_lock "$LOCK_META" "" lockrace >/dev/null 2>&1 ); then
+                echo "$$" >> "$LOCK_WINNERS"
+                echo "$$" >> "$LOCK_SETTLED"
+                n=0
+                while [ "$(wc -l < "$LOCK_SETTLED")" -lt 20 ] && [ "$n" -lt 400 ]; do sleep 0.05; n=$((n + 1)); done
+            else
+                echo "$$" >> "$LOCK_SETTLED"
+            fi
         ' &
         pids="$pids $!"
     done
