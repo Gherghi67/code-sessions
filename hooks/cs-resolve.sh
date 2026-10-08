@@ -146,6 +146,17 @@ cs_is_lead() {
     [ "$_CS_IS_LEAD" = 1 ]
 }
 
+# True for a claude started from inside a cs session that is not the lead: a
+# `claude -p` the lead's Bash tool ran, a plugin, a script. It inherits the
+# exported contract (CS_LEAD_PID among it) so its hooks resolve from the env,
+# yet its pid is neither the launch nor the launch's child. Only the
+# contract's presence makes this judgement: a front end that walked in, or a
+# session cs did not launch, carries no CS_LEAD_PID and is not a nested child.
+cs_is_nested_child() {
+    [ -n "${CS_LEAD_PID:-}" ] && [ -n "${CLAUDE_PID:-}" ] || return 1
+    ! cs_is_lead
+}
+
 # Claude Code launches an agent-team teammate with --agent-id, --agent-name and
 # --team-name, and rejects the launch unless all three are given. All three are
 # required here for that reason: one flag alone also matches a person asking

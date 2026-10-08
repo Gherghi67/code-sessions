@@ -164,9 +164,36 @@ test_lock_cleaned_on_session_end() {
     # `walk` into a teammate's environment — so running this suite from a
     # teammate shell silently tested the OTHER branch and reported a failure
     # that looked like a flake.
-    echo '{"session_id": "test-123"}' | CS_RESOLVED_FROM=env "$SCRIPT_DIR/../hooks/session-end.sh"
+    # The hook models the lead: the claude firing it is the process cs
+    # exec'd into, so CLAUDE_PID is the launch pid.
+    echo '{"session_id": "test-123"}' | CS_RESOLVED_FROM=env CS_LEAD_PID=$$ CLAUDE_PID=$$ "$SCRIPT_DIR/../hooks/session-end.sh"
 
     assert_not_exists "$meta_dir/session.lock" "Lock should be cleaned up by session-end hook" || return 1
+}
+
+# A `claude -p` run from the lead's Bash tool (a plugin, a council query, a
+# script) inherits the exported contract, so its SessionEnd resolves from the
+# env like the lead's. It is not the lead: its claude is neither the launch
+# pid nor the launch's child. Stripping the lock there lets `cs <name>` open a
+# duplicate while the lead is live.
+test_session_end_keeps_the_lock_for_a_child_that_inherited_the_contract() {
+    create_lock_test_session "test-session"
+    local meta_dir="$CS_SESSIONS_ROOT/test-session/.cs"
+
+    sleep 300 &
+    local lead_pid=$!
+    echo "$lead_pid" > "$meta_dir/session.lock"
+
+    export CLAUDE_SESSION_NAME="test-session"
+    export CLAUDE_SESSION_DIR="$CS_SESSIONS_ROOT/test-session"
+    export CLAUDE_SESSION_META_DIR="$meta_dir"
+
+    # CLAUDE_PID is this test runner: alive, not the lead, not its child.
+    echo '{"session_id": "child-1", "reason": "other"}' \
+        | CS_RESOLVED_FROM=env CS_LEAD_PID="$lead_pid" CLAUDE_PID=$$ "$SCRIPT_DIR/../hooks/session-end.sh"
+
+    assert_eq "$lead_pid" "$(cat "$meta_dir/session.lock" 2>/dev/null)" \
+        "a nested claude that inherited the contract must not strip the lead's lock" || return 1
 }
 
 # /clear and /resume end a conversation but not the claude that holds the
@@ -604,11 +631,189 @@ echo "Session lock tests"
 echo "=================="
 echo ""
 
+
+_race_lock_once() {  # meta_dir, round -> prints the number of openers that took the lock
+    local meta_dir="$1" gate="$TEST_TMPDIR/gate.$2" winners="$TEST_TMPDIR/winners.$2" settled="$TEST_TMPDIR/settled.$2" i pids=""
+    rm -f "$meta_dir/session.lock"
+    : > "$winners"
+    : > "$settled"
+    for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+        # Each opener is its own bash process, as each cs is: the lock holds
+        # $$, and in a subshell that would be this runner's pid for all twenty.
+        LOCK_LIB="$SCRIPT_DIR/../lib" LOCK_META="$meta_dir" LOCK_GATE="$gate" LOCK_WINNERS="$winners" LOCK_SETTLED="$settled" bash -c '
+            . "$LOCK_LIB/05-term.sh"
+            . "$LOCK_LIB/02-shared.sh"
+            . "$LOCK_LIB/15-lock.sh"
+            cs_interactive() { return 1; }
+            warn() { :; }
+            until [ -e "$LOCK_GATE" ]; do :; done
+            # The refusal exits, so the acquire runs in a subshell; its $$ is
+            # still this opener. A real winner goes on to run claude; this one
+            # stays alive until every opener has settled (or 20 s), else a
+            # late loser would rightly reclaim the lock of a dead holder and
+            # win in turn. Openers take turns, so twenty take about a second.
+            if ( acquire_session_lock "$LOCK_META" "" lockrace >/dev/null 2>&1 ); then
+                echo "$$" >> "$LOCK_WINNERS"
+                echo "$$" >> "$LOCK_SETTLED"
+                n=0
+                while [ "$(wc -l < "$LOCK_SETTLED")" -lt 20 ] && [ "$n" -lt 400 ]; do sleep 0.05; n=$((n + 1)); done
+            else
+                echo "$$" >> "$LOCK_SETTLED"
+            fi
+        ' &
+        pids="$pids $!"
+    done
+    # Every opener is started and spinning on the gate before it opens.
+    sleep 1
+    touch "$gate"
+    wait $pids 2>/dev/null || true
+    wc -l < "$winners" | tr -d ' '
+}
+
+# Two `cs <name>` started together both read "no lock", both write their pid,
+# both launch: one UUID, two claudes. The lock must be taken atomically, so of
+# twenty openers released at the same instant exactly one holds it. The
+# openers are the real acquire function on its non-interactive refusal path,
+# spinning on a gate file so their check-then-write windows overlap. One round
+# does not always land two writes inside a plain check-then-write window, so
+# the race runs eight rounds and any round with a second winner fails.
+test_simultaneous_opens_take_the_lock_in_turn() {
+    create_lock_test_session "lockrace"
+    local meta_dir="$CS_SESSIONS_ROOT/lockrace/.cs" round counts=""
+    for round in 1 2 3 4 5 6 7 8; do
+        counts="$counts $(_race_lock_once "$meta_dir" "$round")"
+    done
+    assert_eq " 1 1 1 1 1 1 1 1" "$counts" "exactly one of 20 simultaneous openers holds the lock, every round" || return 1
+}
+
+# A stale lock (dead holder) met by two openers at once: both fail the create
+# and read the dead pid. If the first removes it, creates its own and returns
+# while the second is still between its read and its remove, the second's
+# remove deletes the first's live lock and both go on to launch. Reclaim and
+# create must take turns. The second opener is paused inside its rm by an rm
+# on its PATH that waits on a gate file; the first runs with the real rm. The
+# gate opens once the first has returned or had a second and a half to.
+test_stale_lock_reclaim_does_not_remove_a_newer_holders_lock() {
+    create_lock_test_session "lockreclaim"
+    local meta_dir="$CS_SESSIONS_ROOT/lockreclaim/.cs" shim="$TEST_TMPDIR/rmshim"
+    local paused="$TEST_TMPDIR/rm.paused" gate="$TEST_TMPDIR/rm.gate" winners="$TEST_TMPDIR/reclaim.winners"
+    local dead pid_a pid_b i=0
+    bash -c 'exit 0' & dead=$!; wait "$dead"
+    echo "$dead" > "$meta_dir/session.lock"
+    : > "$winners"
+    mkdir -p "$shim"
+    cat > "$shim/rm" <<SHIM
+#!/bin/bash
+case "\$*" in
+    *"/session.lock") touch "$paused"; until [ -e "$gate" ]; do sleep 0.05; done ;;
+esac
+exec /bin/rm "\$@"
+SHIM
+    chmod +x "$shim/rm"
+    _reclaim_opener() {  # PATH -> runs one opener in the background
+        LOCK_LIB="$SCRIPT_DIR/../lib" LOCK_META="$meta_dir" LOCK_WINNERS="$winners" PATH="$1" bash -c '
+            . "$LOCK_LIB/05-term.sh"
+            . "$LOCK_LIB/02-shared.sh"
+            . "$LOCK_LIB/15-lock.sh"
+            cs_interactive() { return 1; }
+            warn() { :; }
+            acquire_session_lock "$LOCK_META" "" lockreclaim >/dev/null 2>&1 && { echo "$$" >> "$LOCK_WINNERS"; sleep 3; }
+        ' &
+    }
+    _reclaim_opener "$shim:$PATH"; pid_b=$!
+    until [ -e "$paused" ] || [ "$i" -ge 100 ]; do sleep 0.05; i=$((i + 1)); done
+    assert_file_exists "$paused" "the second opener reached its remove of the stale lock" || { touch "$gate"; wait; return 1; }
+    _reclaim_opener "$PATH"; pid_a=$!
+    i=0
+    while kill -0 "$pid_a" 2>/dev/null && [ ! -s "$winners" ] && [ "$i" -lt 30 ]; do sleep 0.05; i=$((i + 1)); done
+    touch "$gate"
+    wait "$pid_a" "$pid_b" 2>/dev/null || true
+    assert_eq "1" "$(wc -l < "$winners" | tr -d ' ')" "exactly one of the two openers of a stale lock holds it" || return 1
+}
+
+# SessionEnd clears a dead holder's lock when the hook is not the lead's. It
+# reads the pid and removes the file, so it races an opener exactly as a
+# second opener did: paused between its read of the dead pid and its remove,
+# it would delete the live lock an opener made meanwhile, and the next open
+# would find no lock at all. The hook is paused inside its rm by an rm on its
+# PATH that waits on a gate file; the opener runs with the real rm.
+test_session_end_stale_clear_does_not_remove_a_newer_holders_lock() {
+    create_lock_test_session "lockhook"
+    local meta_dir="$CS_SESSIONS_ROOT/lockhook/.cs" shim="$TEST_TMPDIR/rmshim-hook"
+    local paused="$TEST_TMPDIR/hookrm.paused" gate="$TEST_TMPDIR/hookrm.gate" winners="$TEST_TMPDIR/hook.winners"
+    local dead pid_hook pid_open i=0
+    bash -c 'exit 0' & dead=$!; wait "$dead"
+    echo "$dead" > "$meta_dir/session.lock"
+    : > "$winners"
+    mkdir -p "$shim"
+    cat > "$shim/rm" <<SHIM
+#!/bin/bash
+case "\$*" in
+    *"/session.lock") touch "$paused"; until [ -e "$gate" ]; do sleep 0.05; done ;;
+esac
+exec /bin/rm "\$@"
+SHIM
+    chmod +x "$shim/rm"
+    echo '{"session_id": "hook-race"}' | PATH="$shim:$PATH" CLAUDE_SESSION_NAME=lockhook \
+        CLAUDE_SESSION_DIR="$CS_SESSIONS_ROOT/lockhook" CLAUDE_SESSION_META_DIR="$meta_dir" \
+        CS_RESOLVED_FROM=walk "$SCRIPT_DIR/../hooks/session-end.sh" >/dev/null 2>&1 &
+    pid_hook=$!
+    until [ -e "$paused" ] || [ "$i" -ge 200 ]; do sleep 0.05; i=$((i + 1)); done
+    assert_file_exists "$paused" "the hook reached its remove of the stale lock" || { touch "$gate"; wait; return 1; }
+    LOCK_LIB="$SCRIPT_DIR/../lib" LOCK_META="$meta_dir" LOCK_WINNERS="$winners" bash -c '
+        . "$LOCK_LIB/05-term.sh"
+        . "$LOCK_LIB/02-shared.sh"
+        . "$LOCK_LIB/15-lock.sh"
+        cs_interactive() { return 1; }
+        warn() { :; }
+        acquire_session_lock "$LOCK_META" "" lockhook >/dev/null 2>&1 && { echo "$$" >> "$LOCK_WINNERS"; sleep 4; }
+    ' &
+    pid_open=$!
+    i=0
+    while kill -0 "$pid_open" 2>/dev/null && [ ! -s "$winners" ] && [ "$i" -lt 30 ]; do sleep 0.05; i=$((i + 1)); done
+    touch "$gate"
+    wait "$pid_hook" 2>/dev/null || true
+    i=0
+    until [ -s "$winners" ] || [ "$i" -ge 140 ]; do sleep 0.05; i=$((i + 1)); done
+    assert_eq "$(cat "$winners")" "$(cat "$meta_dir/session.lock" 2>/dev/null)" \
+        "the opener that took the lock still holds it after the hook's stale clear" || { wait; return 1; }
+    wait "$pid_open" 2>/dev/null || true
+}
+
+# An opener that cannot take the session.lock.d mutex (another cs holds it
+# and still answers) must not touch session.lock. Going ahead without it after
+# the wait reopens the stale-reclaim race the mutex closes: the holder may be
+# paused between reading a dead pid and removing the file. The opener refuses.
+test_open_refuses_when_the_lock_mutex_stays_held() {
+    create_lock_test_session "lockheld"
+    local meta_dir="$CS_SESSIONS_ROOT/lockheld/.cs" dead holder rc=0
+    bash -c 'exit 0' & dead=$!; wait "$dead"
+    echo "$dead" > "$meta_dir/session.lock"
+    sleep 30 & holder=$!
+    mkdir "$meta_dir/session.lock.d" && echo "$holder" > "$meta_dir/session.lock.d/pid"
+    LOCK_LIB="$SCRIPT_DIR/../lib" LOCK_META="$meta_dir" bash -c '
+        . "$LOCK_LIB/05-term.sh"
+        . "$LOCK_LIB/02-shared.sh"
+        . "$LOCK_LIB/15-lock.sh"
+        cs_interactive() { return 1; }
+        warn() { :; }
+        acquire_session_lock "$LOCK_META" "" lockheld
+    ' >/dev/null 2>&1 || rc=$?
+    kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+    assert_eq "1" "$rc" "the open refuses while another cs holds the lock mutex" || return 1
+    assert_eq "$dead" "$(cat "$meta_dir/session.lock")" "the lock file is left as it was" || return 1
+}
+
 run_test test_lock_created_on_launch
+run_test test_simultaneous_opens_take_the_lock_in_turn
+run_test test_stale_lock_reclaim_does_not_remove_a_newer_holders_lock
+run_test test_session_end_stale_clear_does_not_remove_a_newer_holders_lock
+run_test test_open_refuses_when_the_lock_mutex_stays_held
 run_test test_lock_prevents_duplicate_session
 run_test test_stale_lock_is_reclaimed
 run_test test_force_overrides_live_lock
 run_test test_lock_cleaned_on_session_end
+run_test test_session_end_keeps_the_lock_for_a_child_that_inherited_the_contract
 run_test test_session_end_keeps_the_lock_for_clear_and_resume
 run_test test_session_end_leaves_a_live_lock_it_does_not_own
 run_test test_session_end_clears_a_stale_lock_even_when_walked_in

@@ -123,17 +123,26 @@ fi
 # lib/15-lock.sh uses — a hook is a different process.
 # A /clear or /resume ends the conversation but not the claude that holds the
 # lock, so the lock stays until that claude exits.
-if [ "${CS_RESOLVED_FROM:-env}" = "env" ]; then
+# A claude started from inside the session (a `claude -p` from the Bash tool,
+# a plugin, a script) inherits the exported contract, so it resolves from the
+# env like the lead; it is not the lead, and its end must not strip the lead's
+# lock either. cs_is_lead tells the two apart by the launch pid.
+if [ "${CS_RESOLVED_FROM:-env}" = "env" ] \
+    && { ! command -v cs_is_nested_child >/dev/null 2>&1 || ! cs_is_nested_child; }; then
     case "$END_REASON" in
         clear|resume) ;;
         *) rm -f "$META_DIR/session.lock" 2>/dev/null || true ;;
     esac
-else
+elif command -v _cs_mkdir_lock >/dev/null 2>&1 && _cs_mkdir_lock "$META_DIR/session.lock.d"; then
+    # Under the openers' mutex: a read of a dead pid followed by a remove would
+    # otherwise delete the lock an opener took in between. A hook that cannot
+    # take the mutex leaves the lock; the next open reclaims a dead one itself.
     _cs_lock_pid=$(cat "$META_DIR/session.lock" 2>/dev/null | tr -d '[:space:]') || true
     case "${_cs_lock_pid:-}" in
         ''|*[!0-9]*) rm -f "$META_DIR/session.lock" 2>/dev/null || true ;;
         *) kill -0 "$_cs_lock_pid" 2>/dev/null || rm -f "$META_DIR/session.lock" 2>/dev/null || true ;;
     esac
+    _cs_mkdir_unlock "$META_DIR/session.lock.d"
 fi
 
 # A session cs -encrypt built detaches its vault when the lead conversation
