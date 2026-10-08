@@ -1618,11 +1618,13 @@ if ! command -v jq >/dev/null 2>&1; then
     warn "See README for manual hook configuration."
 else
     # settings.json is read and rewritten once, by cs_settings_update from
-    # the hooks' shared library deployed above, under its lock and after
+    # the hooks' shared library in the payload (the checkout, or the verified
+    # downloads), never the deployed copy: a deployed cs-shared.sh that cs
+    # did not write is kept, and must not run here. Under its lock and after
     # every question below; a file jq cannot parse stops the install here,
     # before any question, and is left as it is.
     # shellcheck source=hooks/cs-shared.sh
-    . "$HOOKS_DIR/cs-shared.sh" || error "could not load $HOOKS_DIR/cs-shared.sh; $CLAUDE_SETTINGS left unchanged"
+    . "$PAYLOAD_DIR/hooks/cs-shared.sh" || error "could not load $PAYLOAD_DIR/hooks/cs-shared.sh; $CLAUDE_SETTINGS left unchanged"
     cs_settings_check "$CLAUDE_SETTINGS" || error "$CS_SETTINGS_ERROR"
 
     # Tilde spelling of HOOKS_DIR (settings.json entries use ~ instead of $HOME)
@@ -2005,9 +2007,10 @@ else
         add=$(jq -cn --argjson cs "$CS_ROTATE_WRAP_KEYS" --arg added "$added" \
             '$cs | with_entries(select(.key as $k | $added | split(", ") | any(.[]; . == $k)))') \
             || { warn "Rotate/wrap keys: could not build the bindings for $file"; return 1; }
+        # The payload's copy, as above: never the deployed one.
         # shellcheck source=hooks/cs-shared.sh
-        if ! . "$HOOKS_DIR/cs-shared.sh"; then
-            warn "Rotate/wrap keys: could not load $HOOKS_DIR/cs-shared.sh; $file left as it is."
+        if ! . "$PAYLOAD_DIR/hooks/cs-shared.sh"; then
+            warn "Rotate/wrap keys: could not load $PAYLOAD_DIR/hooks/cs-shared.sh; $file left as it is."
             return 1
         fi
         mkdir -p "$(dirname "$file")" 2>/dev/null || true
