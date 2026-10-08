@@ -913,7 +913,7 @@ _make_age_identity() {
 _age_decrypts_to() {
     local key="$1" file="$2" expected="$3" plain
     plain=$(age -d -i "$key" < "$file" 2>/dev/null) || return 1
-    printf '%s' "$plain" | grep -qF "$expected"
+    grep -qF -- "$expected" <<< "$plain"
 }
 
 test_age_export_skips_rewrite_when_nothing_changed() {

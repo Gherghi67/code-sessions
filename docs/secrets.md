@@ -128,7 +128,13 @@ cs -secrets export-file
 **How it works:**
 - Each machine has a keypair stored in `~/.cs-secrets/age.key`
 - Session recipients are stored in `<session>/.cs/age-recipients/*.pub`
-- Secrets are encrypted to all recipients' public keys
+- Each machine encrypts only to the recipients it has pinned in
+  `<session>/.cs/local/age-trusted`; `age add` pins a key, `age remove` unpins it
+- A `.pub` that arrives some other way, such as a `git pull` of someone's push,
+  makes `export-file` refuse and print the `age add` command that pins it; pin it
+  only if you trust the key, otherwise delete the file
+- The first export or `age add` on a machine with no pin list pins every
+  recipient present at that moment, and says so
 - Each machine writes its own sync file (see [Per-machine sync files](#per-machine-sync-files) below)
 - Anyone with their private key + being in recipients can decrypt
 
