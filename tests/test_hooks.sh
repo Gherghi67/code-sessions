@@ -677,7 +677,7 @@ _auto_approve_stderr() {
     local input
     input=$(jq -n --arg tool "$1" --arg path "$2" \
         '{tool_name: $tool, tool_input: {file_path: $path}}')
-    echo "$input" | bash "$HOOKS_DIR/session-auto-approve.sh" 2>&1 >/dev/null
+    { echo "$input" | bash "$HOOKS_DIR/session-auto-approve.sh" >/dev/null; } 2>&1
 }
 
 _link_reason() {
@@ -837,6 +837,30 @@ test_auto_approve_allows_vaulted_session_content() {
     HOME="$home" CLAUDE_CONFIG_DIR="$meta/claude-config" \
         _assert_falls_through Write "$meta/memory/narrative.md" \
         "a narrative beside a link planted inside the vault" || return 1
+}
+
+# `claude --worktree` keeps whole checkouts under the project's
+# .claude/worktrees/, links and all, and Claude Code does not read them as
+# this session's config: only that one directory is skipped. A worktrees/
+# deeper down is scanned like the rest, and so is a session directory whose
+# path holds find's pattern characters.
+test_auto_approve_skips_project_worktrees_only() {
+    local root="$CLAUDE_SESSION_DIR" meta="$CLAUDE_SESSION_META_DIR"
+    local outside="$TEST_TMPDIR/outside"
+    mkdir -p "$outside" "$root/.claude/worktrees/w" "$root/.claude/skills/x/worktrees"
+    ln -s "$outside" "$root/.claude/worktrees/w/committed-link"
+    _assert_allowed Write "$meta/memory/narrative.md" \
+        "a narrative beside a link inside a claude worktree" || return 1
+    ln -s "$outside" "$root/.claude/skills/x/worktrees/planted"
+    _assert_falls_through Write "$meta/memory/narrative.md" \
+        "a narrative beside a link under a nested worktrees/" || return 1
+    rm "$root/.claude/skills/x/worktrees/planted"
+    local odd="$TEST_TMPDIR/odd [x]*"
+    mkdir -p "$odd"
+    mv "$root" "$odd/session"
+    CLAUDE_SESSION_DIR="$odd/session" CLAUDE_SESSION_META_DIR="$odd/session/.cs" \
+        _assert_allowed Write "$odd/session/.cs/memory/narrative.md" \
+        "a narrative in a session path holding [ ] *" || return 1
 }
 
 # Claude Code itself keeps a debug/latest link in its config dir when it
@@ -2965,6 +2989,7 @@ run_test test_auto_approve_allows_cs_shared_config_links
 run_test test_auto_approve_rejects_foreign_config_link
 run_test test_auto_approve_allows_vaulted_session_content
 run_test test_auto_approve_declines_on_config_debug_link
+run_test test_auto_approve_skips_project_worktrees_only
 
 # Subagent context
 run_test test_subagent_injects_session_name
