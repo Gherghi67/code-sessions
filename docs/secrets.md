@@ -17,12 +17,12 @@ Override the choice with `CS_SECRETS_BACKEND=keychain|encrypted`.
 
 **Encrypted File Backend:**
 
-The encrypted file backend uses AES-256-CBC with PBKDF2 key derivation (100,000 iterations). The encryption key is derived from a machine-specific salt stored in `~/.cs-secrets/.salt`. This provides protection against:
+The encrypted file backend uses AES-256-CBC with PBKDF2 key derivation (100,000 iterations). The default key is derived from `USER@hostname` plus a random salt stored in `~/.cs-secrets/.salt`, beside the ciphertext. This provides protection against:
 - Casual snooping
 - Accidental git commits of the secrets directory
 - Backup/sync services copying plaintext credentials
 
-For additional security, set `CS_SECRETS_PASSWORD` to use an explicit master password instead of the auto-derived key.
+It does not protect against someone who holds a copy of `~/.cs-secrets` (a backup, a synced home directory): the salt is in the copy and the user and host names are guessable, so the default key is recoverable from the copy alone. Set `CS_SECRETS_PASSWORD` to use an explicit master password instead of the derived key, or use the Keychain backend on macOS. A machine-local key input is a planned follow-up.
 
 Check which backend is active: `cs -secrets backend`
 
