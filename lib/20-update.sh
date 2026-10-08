@@ -298,15 +298,20 @@ do_update() {
     echo ""
 
     local releases_url="${RELEASES_BASE}/download/v${remote_version}"
-    local tmpdir
-    tmpdir=$(mktemp -d)
+    # A global, not a local: the EXIT trap runs after do_update's frame may be
+    # gone, and it removes the dir however the update ends (an error() below,
+    # a failing installer under errexit, or the final exit).
+    _CS_UPDATE_TMPDIR=$(mktemp -d "${TMPDIR:-/tmp}/cs-update.XXXXXX") \
+        || error "Failed to create a temp dir for the update."
+    trap 'rm -rf "$_CS_UPDATE_TMPDIR"' EXIT
+    local tmpdir="$_CS_UPDATE_TMPDIR"
 
     # Download install.sh + checksum + signature from release assets
     curl -fsSL "$releases_url/install.sh" -o "$tmpdir/install.sh" || {
-        rm -rf "$tmpdir"; error "Failed to download installer."
+        error "Failed to download installer."
     }
     curl -fsSL "$releases_url/install.sh.sha256" -o "$tmpdir/install.sh.sha256" || {
-        rm -rf "$tmpdir"; error "Failed to download checksum."
+        error "Failed to download checksum."
     }
     # Signature file is optional (best-effort): a release without one is
     # checked by its checksum alone, so a failed fetch must not end the update.
@@ -314,14 +319,12 @@ do_update() {
 
     # Verify checksum (hard gate)
     if ! verify_checksum "$tmpdir/install.sh" "$tmpdir/install.sh.sha256"; then
-        rm -rf "$tmpdir"
         error "Checksum verification failed. Update aborted."
     fi
 
     # Verify signature if minisign available (soft enhancement)
     if [ -f "$tmpdir/install.sh.minisig" ]; then
         if ! verify_signature "$tmpdir/install.sh" "$tmpdir/install.sh.minisig"; then
-            rm -rf "$tmpdir"
             error "Signature verification failed. Update aborted."
         fi
     fi
