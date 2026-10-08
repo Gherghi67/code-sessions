@@ -59,7 +59,7 @@ run_conversations() {
                         + (if ($e.handoff // "") != "" then ": " + $e.handoff else "" end)
                         + ")")}]
             end)).out[] |
-        "O:" + (((try (.ts | fromdateiso8601 | strflocaltime("%Y-%m-%d %H:%M")) catch .ts)
+        "O:" + (((.ts as $ts | try ($ts | fromdateiso8601 | strflocaltime("%Y-%m-%d %H:%M")) catch ($ts // "?"))
             + "  " + .txt) | gsub("[\\x00-\\x08\\x0a-\\x1f\\x7f-\\x9f]"; "")))
     ' "$timeline" | while IFS= read -r line; do
         case "$line" in
