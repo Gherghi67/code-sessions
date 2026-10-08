@@ -1897,6 +1897,65 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    // `cs -rm` stops when git refuses to remove a worktree; deleting the
+    // directory anyway would leave the base repo registering a worktree that
+    // is gone. A locked worktree is one git refuses under a single --force.
+    #[test]
+    fn remove_session_path_returns_the_git_error_and_keeps_a_worktree_git_refuses() {
+        let root = std::env::temp_dir().join(format!("cs-wt-refused-{}", std::process::id()));
+        let base = root.join("proj");
+        fs::create_dir_all(&base).unwrap();
+        git_in(&base, &["init", "-q"]);
+        fs::write(base.join("f"), "x").unwrap();
+        git_in(&base, &["add", "f"]);
+        git_in(&base, &["commit", "-qm", "seed"]);
+        let wt = root.join("proj@task");
+        git_in(&base, &["worktree", "add", "-q", wt.to_str().unwrap(), "-b", "cs/task"]);
+        git_in(&base, &["worktree", "lock", wt.to_str().unwrap()]);
+        fs::create_dir_all(root.join(".spawn")).unwrap();
+        fs::write(root.join(".spawn/proj@task.seed"), "spawner\n").unwrap();
+
+        let err = remove_session_path(&root, "proj@task", &wt).unwrap_err();
+
+        let text = err.to_string();
+        assert!(
+            text.starts_with(&format!("git worktree remove failed for {}: ", wt.display())),
+            "error should name the failed git step, got: {text}"
+        );
+        assert!(text.contains("locked"), "error should carry git's reason, got: {text}");
+        assert!(wt.join("f").exists(), "the refused worktree keeps its files");
+        let list = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&base)
+            .args(["worktree", "list"])
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&list.stdout).contains("proj@task"),
+            "the registration stays consistent with the directory"
+        );
+        assert!(root.join(".spawn/proj@task.seed").exists(), "a refused delete discards nothing");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // `cs -rm` re-reads the lock when it runs (session_is_live); the picker's
+    // row can be minutes old, so the removal itself must refuse a session that
+    // took the lock since the last scan.
+    #[test]
+    fn remove_session_path_refuses_a_session_whose_lock_is_live_now() {
+        let root = std::env::temp_dir().join(format!("cs-rm-live-{}", std::process::id()));
+        let dir = root.join("busy");
+        fs::create_dir_all(dir.join(".cs/local")).unwrap();
+        let pid = std::process::id();
+        fs::write(dir.join(".cs/session.lock"), format!("{pid}\n")).unwrap();
+
+        let err = remove_session_path(&root, "busy", &dir).unwrap_err();
+
+        assert_eq!(err.to_string(), format!("busy is live (pid {pid}) — close it first"));
+        assert!(dir.join(".cs/session.lock").exists(), "a live session is left whole");
+        let _ = fs::remove_dir_all(&root);
+    }
+
     // An encrypted session mounts its vault inside the session directory by
     // convention, and remove_dir_all recurses into a mount: deleting the
     // session would delete what the vault holds. Unmounted, the link dangles
