@@ -230,6 +230,44 @@ test_migration_failed_copy_deletes_nothing() {
         "the session's own file must be untouched" || return 1
 }
 
+# A logs/ dir alone does not make a directory a flat-layout cs session: the
+# flat-layout migration moves README.md and rewrites .gitignore, so it must
+# leave a project that only happens to keep logs alone.
+test_open_leaves_a_project_with_only_a_logs_dir_unmigrated() {
+    local dir="$CS_SESSIONS_ROOT/plain-project"
+    mkdir -p "$dir/logs"
+    printf 'app started\n' > "$dir/logs/app.log"
+    printf '# Plain project\n\nPROJECT-README-KEEP\n' > "$dir/README.md"
+    printf 'secret.key\n' > "$dir/.gitignore"
+
+    "$CS_BIN" plain-project <<< "" >/dev/null 2>&1 || true
+
+    assert_file_contains "$dir/README.md" '^PROJECT-README-KEEP$' \
+        "the project's README.md must stay at its root" || return 1
+    assert_file_contains "$dir/.gitignore" '^secret\.key$' \
+        "the project's .gitignore rule must survive" || return 1
+    assert_not_exists "$dir/.cs/logs" "the project's logs/ must not be moved into .cs/" || return 1
+    assert_exists "$dir/logs/app.log" "the project's log must stay where it was" || return 1
+}
+
+# A flat-layout session cs created (its logs/session.log opens with cs's
+# header) still migrates into .cs/.
+test_open_migrates_a_flat_layout_session() {
+    local dir="$CS_SESSIONS_ROOT/flat-session"
+    mkdir -p "$dir/logs"
+    printf 'Claude Code Session Log\nSession: flat-session\n\nFLAT-LOG-LINE\n' > "$dir/logs/session.log"
+    printf '# Session: flat-session\n\nFLAT-README-LINE\n' > "$dir/README.md"
+    printf '# Session Documentation Protocol\n\nThis is a Claude Code session managed by the cs tool.\n' > "$dir/CLAUDE.md"
+
+    "$CS_BIN" flat-session <<< "" >/dev/null 2>&1 || true
+
+    assert_not_exists "$dir/README.md" "the session README moves out of the root" || return 1
+    assert_file_contains "$dir/.cs/README.md" '^FLAT-README-LINE$' \
+        "the session README lands in .cs/" || return 1
+    assert_file_contains "$dir/.cs/local/session.log" '^FLAT-LOG-LINE$' \
+        "the session log lands in .cs/local/" || return 1
+}
+
 # ============================================================================
 # Frontmatter migration for old sessions
 # ============================================================================
@@ -1180,6 +1218,8 @@ run_test test_migration_creates_memory_and_settings
 run_test test_migration_moves_existing_auto_memory
 run_test test_migration_keeps_colliding_memory_and_subdirs
 run_test test_migration_failed_copy_deletes_nothing
+run_test test_open_leaves_a_project_with_only_a_logs_dir_unmigrated
+run_test test_open_migrates_a_flat_layout_session
 
 # Frontmatter migration
 run_test test_migration_adds_frontmatter_to_old_readme
