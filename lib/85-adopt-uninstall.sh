@@ -99,6 +99,18 @@ adopt_session() {
     if [ "$target_dir" -ef / ]; then
         error "Refusing to adopt the filesystem root. Run cs -adopt from a project directory."
     fi
+    # Nor the sessions root or a directory above it: that commit would sweep
+    # in every session, and the session link would land inside the project.
+    # Walked up on the physical path, each step compared by -ef.
+    local root ancestor
+    root=$(cd "$SESSIONS_ROOT" 2>/dev/null && pwd -P) || root="$SESSIONS_ROOT"
+    ancestor="$root"
+    while [ -n "$ancestor" ] && [ "$ancestor" != / ] && [ "$ancestor" != . ]; do
+        if [ "$target_dir" -ef "$ancestor" ]; then
+            error "Refusing to adopt $target_dir: it is or contains the sessions root ($root). Run cs -adopt from a project directory."
+        fi
+        ancestor=$(dirname "$ancestor")
+    done
 
     # A linked git worktree keeps a `.git` FILE, so the init path below would
     # read it as "not a repo", `git init` over it and `git add -A` the user's
