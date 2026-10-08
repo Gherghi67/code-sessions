@@ -675,8 +675,54 @@ test_simultaneous_opens_take_the_lock_in_turn() {
     assert_eq " 1 1 1 1 1 1 1 1" "$counts" "exactly one of 20 simultaneous openers holds the lock, every round" || return 1
 }
 
+# A stale lock (dead holder) met by two openers at once: both fail the create
+# and read the dead pid. If the first removes it, creates its own and returns
+# while the second is still between its read and its remove, the second's
+# remove deletes the first's live lock and both go on to launch. Reclaim and
+# create must take turns. The second opener is paused inside its rm by an rm
+# on its PATH that waits on a gate file; the first runs with the real rm. The
+# gate opens once the first has returned or had a second and a half to.
+test_stale_lock_reclaim_does_not_remove_a_newer_holders_lock() {
+    create_lock_test_session "lockreclaim"
+    local meta_dir="$CS_SESSIONS_ROOT/lockreclaim/.cs" shim="$TEST_TMPDIR/rmshim"
+    local paused="$TEST_TMPDIR/rm.paused" gate="$TEST_TMPDIR/rm.gate" winners="$TEST_TMPDIR/reclaim.winners"
+    local dead pid_a pid_b i=0
+    bash -c 'exit 0' & dead=$!; wait "$dead"
+    echo "$dead" > "$meta_dir/session.lock"
+    : > "$winners"
+    mkdir -p "$shim"
+    cat > "$shim/rm" <<SHIM
+#!/bin/bash
+case "\$*" in
+    *"/session.lock") touch "$paused"; until [ -e "$gate" ]; do sleep 0.05; done ;;
+esac
+exec /bin/rm "\$@"
+SHIM
+    chmod +x "$shim/rm"
+    _reclaim_opener() {  # PATH -> runs one opener in the background
+        LOCK_LIB="$SCRIPT_DIR/../lib" LOCK_META="$meta_dir" LOCK_WINNERS="$winners" PATH="$1" bash -c '
+            . "$LOCK_LIB/05-term.sh"
+            . "$LOCK_LIB/02-shared.sh"
+            . "$LOCK_LIB/15-lock.sh"
+            cs_interactive() { return 1; }
+            warn() { :; }
+            acquire_session_lock "$LOCK_META" "" lockreclaim >/dev/null 2>&1 && { echo "$$" >> "$LOCK_WINNERS"; sleep 3; }
+        ' &
+    }
+    _reclaim_opener "$shim:$PATH"; pid_b=$!
+    until [ -e "$paused" ] || [ "$i" -ge 100 ]; do sleep 0.05; i=$((i + 1)); done
+    assert_file_exists "$paused" "the second opener reached its remove of the stale lock" || { touch "$gate"; wait; return 1; }
+    _reclaim_opener "$PATH"; pid_a=$!
+    i=0
+    while kill -0 "$pid_a" 2>/dev/null && [ ! -s "$winners" ] && [ "$i" -lt 30 ]; do sleep 0.05; i=$((i + 1)); done
+    touch "$gate"
+    wait "$pid_a" "$pid_b" 2>/dev/null || true
+    assert_eq "1" "$(wc -l < "$winners" | tr -d ' ')" "exactly one of the two openers of a stale lock holds it" || return 1
+}
+
 run_test test_lock_created_on_launch
 run_test test_simultaneous_opens_take_the_lock_in_turn
+run_test test_stale_lock_reclaim_does_not_remove_a_newer_holders_lock
 run_test test_lock_prevents_duplicate_session
 run_test test_stale_lock_is_reclaimed
 run_test test_force_overrides_live_lock
