@@ -558,6 +558,48 @@ _breaker_check() {
     return 1
 }
 
+# The line the model ends its final message with when it could not complete a
+# task. A line of output rather than a file: an unattended drain cannot answer
+# the permission prompt a write under .cs/ raises. The line comes from the
+# model, never from the task body, and the worst a body that coaxes it out can
+# do is park the run with its own task still queued.
+QFAIL_LINE="cs-task-failed"
+QFAIL_HINT="If you cannot complete a task, end your final message with a line reading exactly $QFAIL_LINE: the run then stops with that task still queued instead of recording it done."
+
+# True when the final assistant message carries the failure line as a whole
+# line. Claude Code hands the message over as last_assistant_message; a Stop
+# without it never reports a failure.
+_qreported_failed() {
+    local msg
+    msg=$(printf '%s' "$INPUT" | jq -r '.last_assistant_message // ""' 2>/dev/null) || return 1
+    case $'\n'"$msg"$'\n' in
+        *$'\n'"$QFAIL_LINE"$'\n'*) return 0 ;;
+    esac
+    return 1
+}
+
+# Park the run on a trip: queue back to idle, the trip recorded in the inbox
+# and sent to a spawner, and a debrief that ends this Stop. A spawned worker
+# keeps spawned-by, so the eventual real drain still reports.
+_qpark() {  # kind reading limit remaining note
+    local kind="$1" reading="$2" limit="$3" remaining="$4" note="$5" reason
+    _qstate_write idle
+    _inbox_append --arg ts "$(date +%s)" --arg r "$kind" \
+        --arg v "$reading" --arg l "$limit" --arg n "$remaining" \
+        '{ts: ($ts|tonumber), event: "breaker_tripped", reason: $r, reading: ($v|tonumber), limit: ($l|tonumber), remaining: ($n|tonumber)}'
+    rm -f "$QDIR/failures"
+    if [ "$kind" = task_failed ]; then
+        _notify_spawner "task reported failed, $remaining task(s) remaining"
+        reason="cs task queue: you reported the task as not completed ($QFAIL_LINE). The queue is parked with $remaining task(s) remaining$note; nothing was lost."
+    else
+        _notify_spawner "breaker tripped: $kind ($reading >= $limit), $remaining task(s) remaining"
+        reason="cs task queue: circuit breaker tripped — $kind at $reading (threshold $limit). The queue is parked with $remaining task(s) remaining$note; nothing was lost."
+    fi
+    reason="$reason Summarize the walk-away run so far and anything that needs the user's attention. They can re-arm with: cs -queue start."
+    jq -nc --arg r "$reason" '{decision:"block", reason:$r}'
+    exit 0
+}
+
 # Only the lead's Stop advances or gates the queue. A tmux teammate shares the
 # session directory and fires its own top-level Stop, so ungated its every
 # idle turn pops a task: an eight-task queue reads "all tasks complete" after
@@ -596,7 +638,7 @@ if [ "$QLEN" -gt 0 ] && _mail_is_lead; then
         rm -f "$QDIR/failures"
         _inbox_append --arg ts "$(date +%s)" --arg q "$QLEN" \
             '{ts: ($ts|tonumber), event: "drain_started", queued: ($q|tonumber)}'
-        REASON="cs task queue: starting a walk-away run. Work through the queued tasks one at a time; I will hand you the next after each finishes. Mirror the whole queue into your native task list now: run \`cs -queue list\` to see every queued item (this message shows only the first), create one task each, and mark each completed as you finish it. When a task is done, mark it completed and simply end your turn; the next task is delivered automatically on the next turn. Do not read or edit the queue yourself.
+        REASON="cs task queue: starting a walk-away run. Work through the queued tasks one at a time; I will hand you the next after each finishes. Mirror the whole queue into your native task list now: run \`cs -queue list\` to see every queued item (this message shows only the first), create one task each, and mark each completed as you finish it. When a task is done, mark it completed and simply end your turn; the next task is delivered automatically on the next turn. $QFAIL_HINT Do not read or edit the queue yourself.
 
 First task:
 $(_qtask_frame "$TASK")
@@ -607,6 +649,20 @@ $RUN_MODE$SCOPE"
     fi
 
     if [ "$QSTATE" = "draining" ]; then
+        # The breakers run before the task that just ended is popped, the last
+        # task included. Tool failures past the threshold, or the model's own
+        # failure line, mean that task did not succeed: it stays first in the
+        # queue, nothing is logged done, and the run parks. Context and the
+        # 5-hour window measure the session rather than the task, so the task
+        # is done and the run parks before the next one is handed out.
+        TRIP=$(_breaker_check) || TRIP=""
+        if _qreported_failed; then TRIP="task_failed 1 1"; fi
+        case "$TRIP" in
+            failures\ *|task_failed\ *)
+                set -- $TRIP
+                _qpark "$1" "$2" "$3" "$QLEN" "; the task in progress did not complete, so it stays first in the queue, was not logged done, and its native task stays open"
+                ;;
+        esac
         # Pop = mv the lexically first entry aside BEFORE reading it: a second
         # drain racing this one loses the rename and disarms instead of
         # double-running the task.
@@ -633,26 +689,15 @@ $RUN_MODE$SCOPE"
                 jq -nc '{decision:"block", reason:"cs task queue: all tasks complete. Mark the final native task completed, then give the user a brief summary of what the walk-away run accomplished and anything that needs their attention."}'
                 exit 0
             fi
-            if TRIP=$(_breaker_check); then
+            if [ -n "$TRIP" ]; then
                 set -- $TRIP
-                REASON_KIND="$1"; READING="$2"; LIMIT="$3"
-                _qstate_write idle
-                _inbox_append --arg ts "$(date +%s)" --arg r "$REASON_KIND" \
-                    --arg v "$READING" --arg l "$LIMIT" --arg n "$NEWLEN" \
-                    '{ts: ($ts|tonumber), event: "breaker_tripped", reason: $r, reading: ($v|tonumber), limit: ($l|tonumber), remaining: ($n|tonumber)}'
-                # Spawned worker: surface the trip to the spawner but KEEP
-                # spawned-by, so the eventual real drain still reports.
-                _notify_spawner "breaker tripped: $REASON_KIND ($READING >= $LIMIT), $NEWLEN task(s) remaining"
-                rm -f "$QDIR/failures"
-                REASON="cs task queue: circuit breaker tripped — $REASON_KIND at $READING (threshold $LIMIT). The queue is parked with $NEWLEN task(s) remaining; nothing was lost. Summarize the walk-away run so far and anything that needs the user's attention. They can re-arm with: cs -queue start."
-                jq -nc --arg r "$REASON" '{decision:"block", reason:$r}'
-                exit 0
+                _qpark "$1" "$2" "$3" "$NEWLEN" ""
             fi
             rm -f "$QDIR/failures"
             NEXT=""
             _first=$(_qfirst "$QUEUE") || _first=""
             [ -n "$_first" ] && NEXT=$(cat "$_first" 2>/dev/null || true)
-            REASON="cs task queue: next task ($NEWLEN remaining). Mark the previous native task completed and this one in-progress (create it if missing), then do it.
+            REASON="cs task queue: next task ($NEWLEN remaining). Mark the previous native task completed and this one in-progress (create it if missing), then do it. $QFAIL_HINT
 
 Task:
 $(_qtask_frame "$NEXT")
