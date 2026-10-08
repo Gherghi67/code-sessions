@@ -232,6 +232,32 @@ test_migration_keeps_a_source_the_destination_links_to() {
     [ -L "$session_dir/.cs/memory/topics" ] || { echo "  FAIL: the session's directory link was replaced"; return 1; }
 }
 
+# The destination root itself can be a link back into the default dir (a
+# vaulted session links .cs/memory elsewhere, so a linked root is a legal
+# layout). Then every destination path is the source path: the byte
+# comparison compares a file with itself, and deleting the source would
+# delete the only copy. Such a root leaves the default dir whole.
+test_migration_keeps_a_source_the_destination_root_links_to() {
+    local staged session_dir default_dir
+    staged=$(_stage_memory_migration mem-linked-root)
+    session_dir=$(sed -n 1p <<< "$staged")
+    default_dir=$(sed -n 2p <<< "$staged")
+    rmdir "$session_dir/.cs/memory"
+    ln -s "$default_dir" "$session_dir/.cs/memory"
+    printf 'root-linked-line\n' > "$default_dir/topic.md"
+    mkdir -p "$default_dir/topics"
+    printf 'root-linked-deep-line\n' > "$default_dir/topics/deep.md"
+
+    "$CS_BIN" mem-linked-root <<< "" >/dev/null 2>&1 || true
+
+    assert_eq "root-linked-line" "$(cat "$default_dir/topic.md" 2>/dev/null)" \
+        "a source the destination root links to must survive" || return 1
+    assert_eq "root-linked-deep-line" "$(cat "$default_dir/topics/deep.md" 2>/dev/null)" \
+        "a nested source under a linked root must survive" || return 1
+    [ -L "$session_dir/.cs/memory" ] || { echo "  FAIL: the session's memory root link was replaced"; return 1; }
+    [ -d "$session_dir/.cs/memory/" ] || { echo "  FAIL: the session's memory root link dangles"; return 1; }
+}
+
 # A copy that fails stops the migration before anything is deleted, including
 # the files that did copy.
 test_migration_failed_copy_deletes_nothing() {
@@ -1243,6 +1269,7 @@ run_test test_migration_creates_memory_and_settings
 run_test test_migration_moves_existing_auto_memory
 run_test test_migration_keeps_colliding_memory_and_subdirs
 run_test test_migration_keeps_a_source_the_destination_links_to
+run_test test_migration_keeps_a_source_the_destination_root_links_to
 run_test test_migration_failed_copy_deletes_nothing
 run_test test_open_leaves_a_project_with_only_a_logs_dir_unmigrated
 run_test test_open_migrates_a_flat_layout_session
