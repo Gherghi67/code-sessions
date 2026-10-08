@@ -2118,12 +2118,40 @@ EOF
     assert_output_contains "$out" "rotated (handoff: a\]52;c;Zm9vb)" "the printable rest survives" || return 1
 }
 
+# A timestamp that is a string but not a date, or missing altogether, is
+# accepted by the type check and must render as data: the record keeps its
+# line and the listing goes on. Inside jq's catch the input is the error
+# text, so a fallback that re-reads .ts there aborts the whole listing with
+# exit 5 and every later record vanishes.
+test_conversations_keeps_listing_past_a_bad_or_missing_timestamp() {
+    _rot_hook_session "rot-view-ts"
+    : > "$CLAUDE_SESSION_META_DIR/local/state"
+    cat > "$CLAUDE_SESSION_META_DIR/timeline.jsonl" << EOF
+{"ts":"not-a-date","event":"started","source":"startup","session_id":"33333333-3333-4333-8333-333333333333","branch":"main"}
+{"ts":"2026-07-14T09:00:00Z","event":"started","source":"startup","session_id":"$UUID_A","branch":"main"}
+{"ts":"2026-07-16T10:00:05Z","event":"started","source":"startup","session_id":"$UUID_B","branch":"main"}
+{"event":"started","source":"startup","session_id":"44444444-4444-4444-8444-444444444444","branch":"main"}
+EOF
+    local out rc=0
+    out=$("$CS_BIN" -conversations 2>"$TEST_TMPDIR/conv-ts-err") || rc=$?
+    [ "$rc" -eq 0 ] || { echo "  FAIL: a bad timestamp must not fail the listing (rc=$rc): $(cat "$TEST_TMPDIR/conv-ts-err")"; return 1; }
+    assert_output_contains "$out" "not-a-date  33333333  started (startup)" "the unparsable timestamp renders verbatim" || return 1
+    assert_output_contains "$out" "11111111  started (startup)" "the record after the bad timestamp renders" || return 1
+    assert_output_contains "$out" "22222222  started (startup)" "every well-formed record renders" || return 1
+    assert_output_contains "$out" "?  44444444  started (startup)" "a missing timestamp renders as ? and the record stays" || return 1
+    if [ -s "$TEST_TMPDIR/conv-ts-err" ]; then
+        echo "  FAIL: a timestamp that renders as data must not warn: $(cat "$TEST_TMPDIR/conv-ts-err")"
+        return 1
+    fi
+}
+
 run_test test_conversations_renders_chain
 run_test test_conversations_empty_timeline
 run_test test_conversations_requires_session_context
 run_test test_conversations_session_scoped_form
 run_test test_conversations_skips_a_malformed_record_and_keeps_listing
 run_test test_conversations_strips_control_characters
+run_test test_conversations_keeps_listing_past_a_bad_or_missing_timestamp
 
 # ============================================================================
 # Cycle 7: final-review fixes — rebind ordering (I1), frontmatter scoping (M-new)
