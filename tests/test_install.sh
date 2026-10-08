@@ -1760,6 +1760,22 @@ test_install_keeps_user_files_that_share_a_cs_name() {
         || { echo "  FAIL: the skipped command is not listed after the completion line"; return 1; }
 }
 
+# The installer loads its settings helpers from the payload it verified, never
+# from the deployed copy: a kept ~/.claude/hooks/cs/cs-shared.sh that cs did
+# not write would otherwise run inside the installer.
+test_install_never_sources_a_kept_deployed_cs_shared() {
+    local home="$TEST_TMPDIR/seam-home" out rc=0
+    mkdir -p "$home/.claude/hooks/cs"
+    { cat "$SCRIPT_DIR/../hooks/cs-shared.sh"; printf 'touch "%s/.claude/seam-ran"\n' "$home"; } \
+        > "$home/.claude/hooks/cs/cs-shared.sh"
+    out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || rc=$?
+    assert_eq "0" "$rc" "install exit status" || { echo "$out"; return 1; }
+    assert_file_not_exists "$home/.claude/seam-ran" "the kept cs-shared.sh never ran inside the installer" || return 1
+    assert_output_contains "$out" "$home/\.claude/hooks/cs/cs-shared\.sh" "the kept file is named" || return 1
+    grep -q 'seam-ran' "$home/.claude/hooks/cs/cs-shared.sh" || { echo "  FAIL: the user's cs-shared.sh was replaced"; return 1; }
+    assert_file_exists "$home/.claude/settings.json" "settings.json was still written" || return 1
+}
+
 # Files cs wrote are still replaced and removed by content, whatever version
 # put them there: one equal to what this install ships, and one holding
 # content a past cs shipped under a retired name.
@@ -1990,6 +2006,7 @@ run_test test_web_install_skips_a_completion_that_does_not_match
 run_test test_build_embeds_the_sha256_of_every_payload_file
 run_test test_release_workflow_pins_the_installers_default_ref
 run_test test_install_keeps_user_files_that_share_a_cs_name
+run_test test_install_never_sources_a_kept_deployed_cs_shared
 run_test test_install_replaces_files_cs_wrote_without_a_record
 run_test test_install_follows_its_record
 run_test test_uninstall_removes_only_files_cs_wrote
