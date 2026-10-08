@@ -695,6 +695,63 @@ test_uninstall_deletes_session_data_with_no_volume_mounted_inside() {
     assert_not_exists "$root" "the answered yes deletes the session data" || return 1
 }
 
+# The keychain purge runs cs-secrets, so the binary must still be on disk when
+# the purge asks for it. The answers are: continue (y), delete keychain
+# secrets (y), keep session data (n).
+test_uninstall_purges_secrets_before_removing_cs_secrets() {
+    local home="$TEST_TMPDIR/purge-home" root="$TEST_TMPDIR/purge-sessions"
+    local dump="$TEST_TMPDIR/purge-argv" stub="$TEST_TMPDIR/mount-stub"
+    mkdir -p "$home/.claude" "$home/.local/bin" "$root/purge-probe/.cs"
+    printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "%s"\n' "$dump" > "$home/.local/bin/cs-secrets"
+    chmod +x "$home/.local/bin/cs-secrets"
+    _stub_mount_table "$stub" "/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled)" || return 1
+    printf 'yyn' | HOME="$home" CS_SESSIONS_ROOT="$root" PATH="$stub:$PATH" "$CS_BIN" -uninstall \
+        > "$TEST_TMPDIR/purge.out" 2>&1 || { echo "  FAIL: cs -uninstall exited non-zero"; return 1; }
+    assert_file_exists "$dump" "the purge ran cs-secrets" || return 1
+    assert_file_contains "$dump" "^--session purge-probe purge$" "the purge names the session" || return 1
+    assert_not_exists "$home/.local/bin/cs-secrets" "cs-secrets is still removed afterwards" || return 1
+}
+
+# Deleting the sessions root under a running conversation pulls its files out
+# from under it. A session counts as live when its lock holds a running pid or
+# its statusline heartbeat is fresh; a lock naming a dead pid does not. The
+# answers are: continue (y), keep keychain secrets (n), delete session data (y).
+test_uninstall_refuses_to_delete_session_data_while_a_session_is_live() {
+    local home="$TEST_TMPDIR/live-home" root="$TEST_TMPDIR/live-sessions" stub="$TEST_TMPDIR/mount-stub"
+    mkdir -p "$home/.claude" "$root/live-lock/.cs" "$root/live-beat/.cs/local" "$root/dead-lock/.cs"
+    echo "$$" > "$root/live-lock/.cs/session.lock"
+    : > "$root/live-beat/.cs/local/context-pct"
+    echo 99999999 > "$root/dead-lock/.cs/session.lock"
+    _stub_mount_table "$stub" "/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled)" || return 1
+    local rc=0 out
+    printf 'yny' | HOME="$home" CS_SESSIONS_ROOT="$root" PATH="$stub:$PATH" "$CS_BIN" -uninstall \
+        > "$TEST_TMPDIR/live.out" 2>&1 || rc=$?
+    out=$(cat "$TEST_TMPDIR/live.out")
+    [ "$rc" -ne 0 ] || { echo "  FAIL: uninstall must exit non-zero while a session is live"; return 1; }
+    assert_file_exists "$root/live-lock/.cs/session.lock" "the live session's data survives" || return 1
+    assert_file_exists "$root/dead-lock/.cs/session.lock" "nothing under the root is deleted" || return 1
+    # Exact list: both live sessions, and not the one whose lock names a dead pid.
+    assert_output_contains "$out" "Kept $root: these sessions are live: live-beat live-lock\. Close them" \
+        "the refusal names exactly the live sessions" || return 1
+}
+
+# A live session is refused the same way when a volume is also mounted inside
+# the sessions root: the live refusal comes first and exits non-zero.
+test_uninstall_refuses_a_live_session_even_with_a_volume_mounted_inside() {
+    local home="$TEST_TMPDIR/livemnt-home" root="$TEST_TMPDIR/livemnt-sessions" stub="$TEST_TMPDIR/mount-stub"
+    mkdir -p "$home/.claude" "$root/live-vault/.cs/vault-mnt"
+    echo "$$" > "$root/live-vault/.cs/session.lock"
+    _stub_mount_table "$stub" "/dev/disk9s1 on $root/live-vault/.cs/vault-mnt (apfs, local, nodev, nosuid, journaled)" || return 1
+    local rc=0 out
+    printf 'yny' | HOME="$home" CS_SESSIONS_ROOT="$root" PATH="$stub:$PATH" "$CS_BIN" -uninstall \
+        > "$TEST_TMPDIR/livemnt.out" 2>&1 || rc=$?
+    out=$(cat "$TEST_TMPDIR/livemnt.out")
+    [ "$rc" -ne 0 ] || { echo "  FAIL: uninstall must exit non-zero while a session is live"; return 1; }
+    assert_file_exists "$root/live-vault/.cs/session.lock" "the live session's data survives" || return 1
+    assert_output_contains "$out" "Kept $root: these sessions are live: live-vault\. Close them" \
+        "the live refusal wins over the mount warning" || return 1
+}
+
 # An earlier opt-in shape had the person symlink the mod's directory under
 # ~/.claude/skills at the checkout. Copying through that link would overwrite the checkout's own
 # files and leave the link in place; the installer replaces the link with a
@@ -1435,6 +1492,9 @@ run_test test_uninstall_removes_the_claude_links
 run_test test_uninstall_keeps_session_data_while_a_volume_is_mounted_inside
 run_test test_uninstall_keeps_session_data_when_the_mount_table_cannot_be_read
 run_test test_uninstall_deletes_session_data_with_no_volume_mounted_inside
+run_test test_uninstall_purges_secrets_before_removing_cs_secrets
+run_test test_uninstall_refuses_to_delete_session_data_while_a_session_is_live
+run_test test_uninstall_refuses_a_live_session_even_with_a_volume_mounted_inside
 run_test test_install_replaces_a_symlinked_mod_directory
 run_test test_strip_filters_in_sync
 run_test test_install_deploys_hooks_to_cs_subdir

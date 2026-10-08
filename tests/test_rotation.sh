@@ -2080,10 +2080,50 @@ test_conversations_session_scoped_form() {
     assert_output_contains "$out" "11111111  started (startup)" "scoped form renders" || return 1
 }
 
+# A wrong-typed record (here a numeric session_id) is skipped with a warning
+# naming its line, and the records after it still render. It sits mid-file on
+# purpose: jq's error on any record but the last only reaches stderr, so a bad
+# LAST record would not show whether the listing survives it.
+test_conversations_skips_a_malformed_record_and_keeps_listing() {
+    _rot_hook_session "rot-view-bad"
+    : > "$CLAUDE_SESSION_META_DIR/local/state"
+    cat > "$CLAUDE_SESSION_META_DIR/timeline.jsonl" << EOF
+{"ts":"2026-07-14T09:00:00Z","event":"started","source":"startup","session_id":"$UUID_A","branch":"main"}
+{"ts":"2026-07-14T10:00:00Z","event":"started","source":"startup","session_id":12345,"branch":"main"}
+{"ts":"2026-07-16T10:00:05Z","event":"started","source":"startup","session_id":"$UUID_B","branch":"main"}
+EOF
+    local out rc=0
+    out=$("$CS_BIN" -conversations 2>"$TEST_TMPDIR/conv-err") || rc=$?
+    [ "$rc" -eq 0 ] || { echo "  FAIL: one bad record must not fail the listing (rc=$rc)"; return 1; }
+    assert_output_contains "$out" "11111111  started (startup)" "the record before the bad one renders" || return 1
+    assert_output_contains "$out" "22222222  started (startup)" "the record after the bad one renders" || return 1
+    assert_file_contains "$TEST_TMPDIR/conv-err" "line 2:" "the warning names the bad line" || return 1
+}
+
+# A recorded field is data: control characters are stripped before it reaches
+# the terminal, so an OSC 52 sequence in a handoff name cannot write the
+# clipboard. The printable rest of the field survives.
+test_conversations_strips_control_characters() {
+    _rot_hook_session "rot-view-esc"
+    : > "$CLAUDE_SESSION_META_DIR/local/state"
+    cat > "$CLAUDE_SESSION_META_DIR/timeline.jsonl" << EOF
+{"ts":"2026-07-16T10:00:00Z","event":"rotated","from":"$UUID_A","to":"$UUID_B","reason":"handoff","handoff":"a\\u001b]52;c;Zm9v\\u0007b"}
+EOF
+    local out
+    out=$("$CS_BIN" -conversations 2>&1) || return 1
+    if printf '%s' "$out" | LC_ALL=C grep -q "$(printf '[\001-\010\033\177]')"; then
+        echo "  FAIL: a control character reached the terminal"
+        return 1
+    fi
+    assert_output_contains "$out" "rotated (handoff: a\]52;c;Zm9vb)" "the printable rest survives" || return 1
+}
+
 run_test test_conversations_renders_chain
 run_test test_conversations_empty_timeline
 run_test test_conversations_requires_session_context
 run_test test_conversations_session_scoped_form
+run_test test_conversations_skips_a_malformed_record_and_keeps_listing
+run_test test_conversations_strips_control_characters
 
 # ============================================================================
 # Cycle 7: final-review fixes — rebind ordering (I1), frontmatter scoping (M-new)

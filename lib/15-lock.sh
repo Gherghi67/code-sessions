@@ -235,7 +235,9 @@ session_heartbeat_alive() {  # meta_dir, now_epoch
 # statusline heartbeat. Display surfaces (cs -live, cs -usage) use this so they
 # match the TUI. The destructive guards (rm/archive/spawn) use strict
 # session_is_live, so a session whose process is gone can still be removed
-# without --force even if its statusline was touched recently.
+# without --force even if its statusline was touched recently. Uninstall's
+# delete of the whole sessions root uses this broader test: it has no --force,
+# and a conversation opened outside cs holds no lock.
 session_display_live() {  # meta_dir, now_epoch
     session_is_live "$1" || session_heartbeat_alive "$1" "$2"
 }
