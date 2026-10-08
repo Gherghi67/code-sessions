@@ -70,6 +70,28 @@ test_uninstall_rechecks_live_sessions_after_the_confirmation() {
     done
 }
 
+# The data question waits on a person too. A session that opens while
+# "Delete session data?" is pending is found once the answer is in, before
+# rm -rf, and the data stays. The answers are: go ahead, keep the keychain
+# secrets, then (once the session is open) delete the data.
+test_uninstall_rechecks_live_sessions_after_the_data_question() {
+    local home="$TEST_TMPDIR/data-home" root="$TEST_TMPDIR/data-sessions" stub="$TEST_TMPDIR/mount-stub-data"
+    _stage_install "$home"
+    mkdir -p "$root/late-data/.cs"
+    echo "notes" > "$root/late-data/.cs/notes.md"
+    _stub_mount_table "$stub" "/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled)" || return 1
+    local rc=0 out
+    { printf 'yn'; sleep 2; echo "$$" > "$root/late-data/.cs/session.lock"; printf 'y'; } \
+        | HOME="$home" CS_SESSIONS_ROOT="$root" PATH="$stub:$PATH" "$CS_BIN" -uninstall \
+        > "$TEST_TMPDIR/data.out" 2>&1 || rc=$?
+    out=$(cat "$TEST_TMPDIR/data.out")
+    assert_output_contains "$out" "Session data exists at $root" "the data question was reached before the session opened" || return 1
+    assert_eq 1 "$rc" "uninstall exits 1 when a session opened during the data question" || return 1
+    assert_output_contains "$out" "Error: Kept $root: these sessions are live: late-data. Close them, then delete $root." \
+        "the refusal names the session that opened" || return 1
+    assert_file_exists "$root/late-data/.cs/notes.md" "the session data survives" || return 1
+}
+
 echo ""
 echo "cs -uninstall ordering"
 echo "======================"
@@ -77,5 +99,6 @@ echo ""
 
 run_test test_uninstall_with_a_live_session_removes_nothing
 run_test test_uninstall_rechecks_live_sessions_after_the_confirmation
+run_test test_uninstall_rechecks_live_sessions_after_the_data_question
 
 report_results
