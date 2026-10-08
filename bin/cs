@@ -10856,12 +10856,12 @@ run_uninstall() {
                 live_sessions="$live_sessions ${entry##*/}"
             fi
         done
-        if ! mounted=$(_volume_mounted_under "$SESSIONS_ROOT"); then
+        if [ -n "$live_sessions" ]; then
+            error "Kept $SESSIONS_ROOT: these sessions are live:$live_sessions. Close them, then delete $SESSIONS_ROOT."
+        elif ! mounted=$(_volume_mounted_under "$SESSIONS_ROOT"); then
             warn "Kept $SESSIONS_ROOT: cs could not read the mount table, so it cannot tell whether a volume is mounted inside it."
         elif [ -n "$mounted" ]; then
             warn "Kept $SESSIONS_ROOT: a volume is mounted inside it at $mounted, and deleting the directory would delete what the volume holds. Unmount it before you delete $SESSIONS_ROOT."
-        elif [ -n "$live_sessions" ]; then
-            error "Kept $SESSIONS_ROOT: these sessions are live:$live_sessions. Close them, then delete $SESSIONS_ROOT."
         else
             warn "Session data exists at $SESSIONS_ROOT"
             read -p "Delete session data? This cannot be undone. [y/N] " -n 1 -r
