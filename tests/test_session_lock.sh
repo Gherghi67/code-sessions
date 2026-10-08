@@ -632,39 +632,47 @@ echo "=================="
 echo ""
 
 
-# Two `cs <name>` started together both read "no lock", both write their pid,
-# both launch: one UUID, two claudes. The lock must be taken atomically, so of
-# N openers released at the same instant exactly one holds it. The openers
-# are the real acquire function with its refusal path in a non-interactive
-# shell; they block on a fifo until all are started, so their check-then-write
-# windows overlap, which is what the plain `echo $$ >` loses on.
-test_simultaneous_opens_take_the_lock_in_turn() {
-    create_lock_test_session "lockrace"
-    local meta_dir="$CS_SESSIONS_ROOT/lockrace/.cs" gate="$TEST_TMPDIR/gate" winners="$TEST_TMPDIR/winners"
-    mkfifo "$gate"
+_race_lock_once() {  # meta_dir, round -> prints the number of openers that took the lock
+    local meta_dir="$1" gate="$TEST_TMPDIR/gate.$2" winners="$TEST_TMPDIR/winners.$2" i pids=""
+    rm -f "$meta_dir/session.lock"
     : > "$winners"
-    local i pids=""
     for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-        (
-            # shellcheck disable=SC1090
-            . "$SCRIPT_DIR/../lib/05-term.sh"
-            . "$SCRIPT_DIR/../lib/15-lock.sh"
+        # Each opener is its own bash process, as each cs is: the lock holds
+        # $$, and in a subshell that would be this runner's pid for all twenty.
+        LOCK_LIB="$SCRIPT_DIR/../lib" LOCK_META="$meta_dir" LOCK_GATE="$gate" LOCK_WINNERS="$winners" bash -c '
+            . "$LOCK_LIB/05-term.sh"
+            . "$LOCK_LIB/15-lock.sh"
             cs_interactive() { return 1; }
             warn() { :; }
-            read -r _ < "$gate"
-            acquire_session_lock "$meta_dir" "" lockrace >/dev/null 2>&1 && echo "$BASHPID" >> "$winners"
-        ) &
+            until [ -e "$LOCK_GATE" ]; do :; done
+            # A real winner goes on to run claude; this one stays alive long
+            # enough for every loser to find its pid live, else a loser would
+            # rightly reclaim the lock of a dead holder and win in turn.
+            acquire_session_lock "$LOCK_META" "" lockrace >/dev/null 2>&1 && { echo "$$" >> "$LOCK_WINNERS"; sleep 1; }
+        ' &
         pids="$pids $!"
     done
-    sleep 0.5
-    # One writer line per reader: every opener gets its release at once.
-    for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do echo go; done > "$gate" &
+    # Every opener is started and spinning on the gate before it opens.
+    sleep 1
+    touch "$gate"
     wait $pids 2>/dev/null || true
-    wait 2>/dev/null || true
-    local n
-    n=$(wc -l < "$winners" | tr -d ' ')
-    assert_eq "1" "$n" "exactly one of 20 simultaneous openers holds the lock" || return 1
-    assert_eq "$(cat "$winners")" "$(cat "$meta_dir/session.lock")" "the lock names the winner" || return 1
+    wc -l < "$winners" | tr -d ' '
+}
+
+# Two `cs <name>` started together both read "no lock", both write their pid,
+# both launch: one UUID, two claudes. The lock must be taken atomically, so of
+# twenty openers released at the same instant exactly one holds it. The
+# openers are the real acquire function on its non-interactive refusal path,
+# spinning on a gate file so their check-then-write windows overlap. One round
+# does not always land two writes inside a plain check-then-write window, so
+# the race runs eight rounds and any round with a second winner fails.
+test_simultaneous_opens_take_the_lock_in_turn() {
+    create_lock_test_session "lockrace"
+    local meta_dir="$CS_SESSIONS_ROOT/lockrace/.cs" round counts=""
+    for round in 1 2 3 4 5 6 7 8; do
+        counts="$counts $(_race_lock_once "$meta_dir" "$round")"
+    done
+    assert_eq " 1 1 1 1 1 1 1 1" "$counts" "exactly one of 20 simultaneous openers holds the lock, every round" || return 1
 }
 
 run_test test_lock_created_on_launch
