@@ -564,16 +564,16 @@ _breaker_check() {
 # model, never from the task body, and the worst a body that coaxes it out can
 # do is park the run with its own task still queued.
 QFAIL_LINE="cs-task-failed"
-QFAIL_HINT="If you cannot complete a task, end your final message with a line reading exactly $QFAIL_LINE: the run then stops with that task still queued instead of recording it done."
+QFAIL_HINT="If you cannot complete a task, put a line reading exactly $QFAIL_LINE in your final message: the run then stops with that task still queued instead of recording it done."
 
 # True when the final assistant message carries the failure line as a whole
-# line. Claude Code hands the message over as last_assistant_message; a Stop
-# without it never reports a failure.
+# line, bare or as a markdown code span. Claude Code hands the message over as
+# last_assistant_message; a Stop without it never reports a failure.
 _qreported_failed() {
     local msg
     msg=$(printf '%s' "$INPUT" | jq -r '.last_assistant_message // ""' 2>/dev/null) || return 1
     case $'\n'"$msg"$'\n' in
-        *$'\n'"$QFAIL_LINE"$'\n'*) return 0 ;;
+        *$'\n'"$QFAIL_LINE"$'\n'*|*$'\n'"\`$QFAIL_LINE\`"$'\n'*) return 0 ;;
     esac
     return 1
 }
