@@ -1803,6 +1803,18 @@ test_install_keeps_a_symlink_that_holds_no_cs_content() {
     cmp -s "$SCRIPT_DIR/../commands/sweep.md" "$home/.claude/commands/sweep.md" \
         || { echo "  FAIL: sweep.md was not deployed"; return 1; }
     assert_eq '{"modules":["./register.tsx"]}' "$(cat "$TEST_TMPDIR/old-sweep.md")" "the link's target is untouched" || return 1
+    # The binaries go through the same gate: a link to the user's own script
+    # where cs-statusline goes is kept, the script untouched.
+    local bin_home="$TEST_TMPDIR/link-bin-home"
+    mkdir -p "$bin_home/.local/bin"
+    printf '#!/bin/sh\necho my bar\n' > "$TEST_TMPDIR/my-bar.sh"
+    ln -s "$TEST_TMPDIR/my-bar.sh" "$bin_home/.local/bin/cs-statusline"
+    rc=0
+    out=$(HOME="$bin_home" bash "$INSTALL_SH" 2>&1 < /dev/null) || rc=$?
+    assert_eq "0" "$rc" "install exit status (binary link)" || { echo "$out"; return 1; }
+    assert_eq "$TEST_TMPDIR/my-bar.sh" "$(readlink "$bin_home/.local/bin/cs-statusline")" "the link where a binary goes is kept" || return 1
+    assert_eq "$(printf '#!/bin/sh\necho my bar')" "$(cat "$TEST_TMPDIR/my-bar.sh")" "the user's script is untouched" || return 1
+    assert_output_contains "$out" "Kept $(_bre_literal "$bin_home/.local/bin/cs-statusline")" "the kept binary link is named" || return 1
 }
 
 # A kept flat ~/.claude/hooks/<name> is the user's hook, and so is its
