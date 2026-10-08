@@ -160,6 +160,25 @@ _place() {  # repo-path, dest
     _place_file "$PAYLOAD_DIR/$1" "$2" "$(_payload_mode "$1")"
 }
 
+# The install record's lines for the files this install writes under
+# ~/.claude, written out once every file is in place.
+CS_RECORD_LINES=()
+
+# Deploy payload file $1 at $2 under ~/.claude, unless a file cs did not
+# write is already there: that one is kept, named in a warning and listed
+# again at the end. A file is cs's as _cs_owns_file decides.
+_deploy() {  # repo-path, dest
+    local digest
+    digest=$(_cs_sha256_file "$PAYLOAD_DIR/$1") || error "Could not compute the sha256 of $1 (needs sha256sum or shasum)"
+    if [ -e "$2" ] && ! _cs_owns_file "$2" "$digest"; then
+        warn "Kept $2: cs did not write it, so it was not replaced"
+        CS_KEPT_PATHS+=("$2")
+        return 0
+    fi
+    _place "$1" "$2"
+    CS_RECORD_LINES+=("$digest  ${2#"$HOME"/}")
+}
+
 # Check for Claude Code
 if ! command -v claude >/dev/null 2>&1; then
     warn "Claude Code (claude) not found in PATH"
@@ -320,26 +339,25 @@ mkdir -p "$HOOKS_DIR"
 # Remove any retired hook files that earlier cs versions installed but no longer ship.
 # Settings.json entries are stripped further below. Retired hooks may sit in
 # HOOKS_DIR or, for installs that deployed hooks flat, its parent directory.
+# Only a file cs wrote is removed; a user's own file of the same name is kept.
 for retired in "${RETIRED_HOOKS[@]}"; do
     for dir in "$HOOKS_DIR" "$HOOKS_PARENT_DIR"; do
-        if [ -f "$dir/$retired" ]; then
-            rm "$dir/$retired"
+        if [ -f "$dir/$retired" ] && _cs_remove_if_owned "$dir/$retired"; then
             info "Removed retired hook: $dir/$retired"
         fi
     done
 done
 
 # The subdirectory copy is canonical; remove parent-level copies left by
-# installs that deployed hooks flat into ~/.claude/hooks/.
+# installs that deployed hooks flat into ~/.claude/hooks/, when cs wrote them.
 for hook in "${CS_HOOK_FILES[@]}"; do
-    if [ -f "$HOOKS_PARENT_DIR/$hook" ]; then
-        rm "$HOOKS_PARENT_DIR/$hook"
+    if [ -f "$HOOKS_PARENT_DIR/$hook" ] && _cs_remove_if_owned "$HOOKS_PARENT_DIR/$hook"; then
         info "Removed $HOOKS_PARENT_DIR/$hook"
     fi
 done
 
 for hook in "${CS_HOOK_FILES[@]}"; do
-    _place "hooks/$hook" "$HOOKS_DIR/$hook"
+    _deploy "hooks/$hook" "$HOOKS_DIR/$hook"
 done
 
 
@@ -348,7 +366,7 @@ installed "commands" "$COMMANDS_DIR/"
 mkdir -p "$COMMANDS_DIR"
 
 for cmd in "${CS_COMMANDS[@]}"; do
-    _place "commands/$cmd" "$COMMANDS_DIR/$cmd"
+    _deploy "commands/$cmd" "$COMMANDS_DIR/$cmd"
 done
 
 # Install skills
@@ -357,16 +375,12 @@ installed "skills" "$SKILLS_DIR/"
 
 # Drop skill directories earlier cs versions installed but no longer ship. A
 # skill left on disk keeps answering its slash command, so a rename is not
-# complete until the old directory is gone.
+# complete until the old directory is gone. Only the files cs wrote go; a
+# user's own files in it (or a user's skill of that name) are kept.
 for retired in "${RETIRED_SKILLS[@]}"; do
-    if [ -d "$SKILLS_DIR/$retired" ]; then
-        rm -rf "$SKILLS_DIR/$retired"
+    if [ -d "$SKILLS_DIR/$retired" ] && _cs_remove_tree_if_owned "$SKILLS_DIR/$retired"; then
         info "Removed retired skill: $SKILLS_DIR/$retired/"
     fi
-done
-
-for skill in "${CS_SKILLS[@]}"; do
-    mkdir -p "$SKILLS_DIR/$skill"
 done
 
 # A symlink anywhere on a mod file's deploy path (an earlier opt-in had the
@@ -385,15 +399,25 @@ _mod_path_real() {
 }
 
 for skill in "${CS_SKILLS[@]}"; do
-    _place "skills/$skill/SKILL.md" "$SKILLS_DIR/$skill/SKILL.md"
+    _deploy "skills/$skill/SKILL.md" "$SKILLS_DIR/$skill/SKILL.md"
 done
 for skill_file in "${CS_SKILL_FILES[@]}"; do
-    _place "skills/$skill_file" "$SKILLS_DIR/$skill_file"
+    _deploy "skills/$skill_file" "$SKILLS_DIR/$skill_file"
 done
 for mod_file in "${CS_MOD_FILES[@]}"; do
     _mod_path_real "$mod_file"
-    _place "mods/$mod_file" "$SKILLS_DIR/$mod_file"
+    _deploy "mods/$mod_file" "$SKILLS_DIR/$mod_file"
 done
+
+# Record what this install wrote under ~/.claude, so the next install, update
+# or uninstall knows those files as cs's by their content.
+_record_tmp="$STAGE_DIR/installed"
+if [ "${#CS_RECORD_LINES[@]}" -gt 0 ]; then
+    printf '%s\n' "${CS_RECORD_LINES[@]}" > "$_record_tmp"
+else
+    : > "$_record_tmp"
+fi
+_place_file "$_record_tmp" "$(_cs_install_record)" 644
 
 # Install shell completions. One a web install could not download was
 # reported then, and is skipped here.
@@ -894,6 +918,14 @@ fi
 echo ""
 echo -e "   ${GREEN}✓${NC} ${ORANGE}Installation complete${NC} ${COMMENT}(${CS_VERSION})${NC}"
 echo ""
+
+if [ "${#CS_KEPT_PATHS[@]}" -gt 0 ]; then
+    warn "Left in place, because cs did not write them:"
+    for _kept in "${CS_KEPT_PATHS[@]}"; do
+        warn_more "$_kept"
+    done
+    echo ""
+fi
 
 # Check if completion setup is needed
 SHELL_NAME=$(basename "$SHELL")

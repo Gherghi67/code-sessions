@@ -18,6 +18,15 @@ teardown() {
     unset CS_SESSIONS_ROOT CLAUDE_CODE_BIN CS_TRANSCRIPTS_DIR XDG_CONFIG_HOME
 }
 
+# Content a past cs deployed (mods/cs-rotate/hooks/hooks.json as it shipped),
+# so a file holding it is cs's whatever its name: a stand-in for any file an
+# install that kept no record left behind. install and uninstall remove only
+# files cs wrote, decided by content, so a fixture standing for a file cs left
+# behind holds this.
+_cs_shipped_content() {
+    echo '{"modules":["./register.tsx"]}'
+}
+
 # The declined marker is a preference memo, and a memo that cannot be written
 # must never take the install down with it. install.sh runs under errexit and
 # the marker write ends its && list, so a failing touch aborts before
@@ -974,8 +983,8 @@ test_install_migrates_flat_hook_layout() {
     local fake_home="$TEST_TMPDIR/home"
     mkdir -p "$fake_home/.claude/hooks"
     # Deployed binaries at the parent level: one current hook, one retired
-    echo '#!/bin/sh' > "$fake_home/.claude/hooks/session-start.sh"
-    echo '#!/bin/sh' > "$fake_home/.claude/hooks/files-context.sh"
+    _cs_shipped_content > "$fake_home/.claude/hooks/session-start.sh"
+    _cs_shipped_content > "$fake_home/.claude/hooks/files-context.sh"
     cat > "$fake_home/.claude/settings.json" << 'EOF'
 {"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"~/.claude/hooks/session-start.sh","timeout":30}]}],"PreToolUse":[{"matcher":"Read","hooks":[{"type":"command","command":"~/.claude/hooks/files-context.sh","timeout":5}]}]}}
 EOF
@@ -1024,7 +1033,7 @@ EOF
 test_install_removes_the_retired_hint_mod() {
     local fake_home="$TEST_TMPDIR/home-hintmod"
     mkdir -p "$fake_home/.claude/skills/cs-hint/hooks"
-    echo '{}' > "$fake_home/.claude/skills/cs-hint/hooks/hooks.json"
+    _cs_shipped_content > "$fake_home/.claude/skills/cs-hint/hooks/hooks.json"
     HOME="$fake_home" bash "$INSTALL_SH" > /dev/null 2>&1 || {
         echo "  FAIL: install.sh exited non-zero"
         return 1
@@ -1080,7 +1089,7 @@ test_install_writes_version_stamp() {
 test_uninstall_strips_hook_registrations() {
     local fake_home="$TEST_TMPDIR/uninstall-home"
     mkdir -p "$fake_home/.claude/hooks/cs"
-    echo '#!/bin/sh' > "$fake_home/.claude/hooks/cs/session-start.sh"
+    _cs_shipped_content > "$fake_home/.claude/hooks/cs/session-start.sh"
     echo "0.0.0" > "$fake_home/.claude/hooks/cs/.version"
     # Tilde-form registrations in both layouts, plus a non-cs hook that must survive
     cat > "$fake_home/.claude/settings.json" << 'EOF'
@@ -1606,13 +1615,6 @@ test_web_install_deploys_the_payload_from_the_stub() {
 # ============================================================================
 # Ownership: install, update and uninstall touch only files cs wrote
 # ============================================================================
-
-# Content a past cs deployed (mods/cs-rotate/hooks/hooks.json as it shipped),
-# so a file holding it is cs's whatever its name: a stand-in for any file an
-# install that kept no record left behind.
-_cs_shipped_content() {
-    echo '{"modules":["./register.tsx"]}'
-}
 
 # A user's own hooks, commands and skills that share a name with a file cs
 # ships or once shipped are theirs: install leaves each in place, says so on
