@@ -1243,6 +1243,25 @@ test_statusline_disable_strips_only_ours() {
     fi
 }
 
+# A settings.json jq cannot parse says nothing about whose status line it
+# holds: disable stops, says the file is unparseable with jq's reason, and
+# leaves the file byte for byte and the declined marker unwritten.
+test_statusline_disable_refuses_invalid_settings_json() {
+    local fake_home="$TEST_TMPDIR/home-sl-badjson" f rc=0 out
+    f="$fake_home/.claude/settings.json"
+    mkdir -p "$fake_home/.claude"
+    printf '{"statusLine":\n' > "$f"
+    cp "$f" "$TEST_TMPDIR/sl-badjson.orig"
+    out=$(HOME="$fake_home" XDG_CONFIG_HOME="$fake_home/.config" "$CS_BIN" -statusline disable 2>&1) || rc=$?
+    assert_eq "1" "$rc" "disable must stop on an unparseable settings.json" || { echo "$out"; return 1; }
+    assert_output_contains "$out" "$(_bre_literal "$f") is not valid JSON; left it unchanged and wrote no $(_bre_literal "$f")\.cs-bak\.<stamp> backup: parse error" \
+        "the error names the file and jq's reason" || return 1
+    cmp -s "$TEST_TMPDIR/sl-badjson.orig" "$f" \
+        || { echo "  FAIL: settings.json changed although it was refused"; return 1; }
+    assert_eq "" "$(_settings_backups "$f")" "a refused file gets no backup" || return 1
+    assert_file_not_exists "$fake_home/.config/cs/statusline-declined" "no decline is recorded" || return 1
+}
+
 test_install_preserves_foreign_statusline() {
     local fake_home="$TEST_TMPDIR/home-sl-foreign"
     mkdir -p "$fake_home/.claude"
@@ -1996,6 +2015,7 @@ run_test test_install_deploys_subagent_statusline_binary
 run_test test_install_skips_statusline_noninteractive
 run_test test_statusline_enable_registers
 run_test test_statusline_disable_strips_only_ours
+run_test test_statusline_disable_refuses_invalid_settings_json
 run_test test_install_preserves_foreign_statusline
 run_test test_uninstall_removes_statusline
 run_test test_install_removes_stale_opposite_platform_tui
