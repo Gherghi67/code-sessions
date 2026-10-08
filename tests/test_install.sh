@@ -1784,6 +1784,28 @@ test_install_keeps_user_files_that_share_a_cs_name() {
         || { echo "  FAIL: the skipped command is not listed after the completion line"; return 1; }
 }
 
+# A kept flat ~/.claude/hooks/<name> is the user's hook, and so is its
+# registration: install leaves the registration of a kept file in place,
+# under a current name and a retired one, and still registers cs's own copy.
+test_install_keeps_the_registration_of_a_kept_flat_hook() {
+    local home="$TEST_TMPDIR/flat-reg-home" rc=0 out s
+    s="$home/.claude/settings.json"
+    mkdir -p "$home/.claude/hooks"
+    printf '#!/bin/sh\necho my session-start\n' > "$home/.claude/hooks/session-start.sh"
+    printf '#!/bin/sh\necho my prose lint\n' > "$home/.claude/hooks/prose-lint.sh"
+    cat > "$s" << 'EOF'
+{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"~/.claude/hooks/session-start.sh","timeout":30}]}],"Stop":[{"hooks":[{"type":"command","command":"~/.claude/hooks/prose-lint.sh","timeout":10}]}]}}
+EOF
+    out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || rc=$?
+    assert_eq "0" "$rc" "install exit status" || { echo "$out"; return 1; }
+    assert_eq "1" "$(jq '[.hooks[][] | .hooks[]?.command | select(. == "~/.claude/hooks/session-start.sh")] | length' "$s")" \
+        "the kept flat hook's registration stays" || return 1
+    assert_eq "1" "$(jq '[.hooks[][] | .hooks[]?.command | select(. == "~/.claude/hooks/prose-lint.sh")] | length' "$s")" \
+        "the kept retired-name hook's registration stays" || return 1
+    assert_eq "1" "$(jq '[.hooks[][] | .hooks[]?.command | select(. == "~/.claude/hooks/cs/session-start.sh")] | length' "$s")" \
+        "cs's own copy is registered" || return 1
+}
+
 # The installer loads its settings helpers from the payload it verified, never
 # from the deployed copy: a kept ~/.claude/hooks/cs/cs-shared.sh that cs did
 # not write would otherwise run inside the installer.
@@ -2031,6 +2053,7 @@ run_test test_web_install_skips_a_completion_that_does_not_match
 run_test test_build_embeds_the_sha256_of_every_payload_file
 run_test test_release_workflow_pins_the_installers_default_ref
 run_test test_install_keeps_user_files_that_share_a_cs_name
+run_test test_install_keeps_the_registration_of_a_kept_flat_hook
 run_test test_install_never_sources_a_kept_deployed_cs_shared
 run_test test_install_replaces_files_cs_wrote_without_a_record
 run_test test_install_follows_its_record
