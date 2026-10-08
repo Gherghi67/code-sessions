@@ -485,6 +485,17 @@ else
     # Tilde spelling of HOOKS_DIR (settings.json entries use ~ instead of $HOME)
     HOOKS_TILDE_DIR="~/.claude/hooks/cs"
 
+    # Strip the registration of flat-layout hook $1 (~/.claude/hooks/$1) from
+    # SETTINGS, unless a file is still there: the clean-up above removed every
+    # flat file cs wrote, so one that is left is the user's own hook, and its
+    # registration is theirs too.
+    _strip_flat_hook() {  # name
+        if [ -e "$HOOKS_PARENT_DIR/$1" ] || [ -L "$HOOKS_PARENT_DIR/$1" ]; then
+            return 0
+        fi
+        SETTINGS=$(_strip_hook_registration "$SETTINGS" "$HOOKS_PARENT_DIR/$1" "~/.claude/hooks/$1")
+    }
+
     # The settings JSON in SETTINGS without any cs hook registration that the
     # merge below does not put back.
     _strip_cs_hooks() {
@@ -492,14 +503,14 @@ else
         # we don't know which event the old version registered them under). Covers
         # both deployment layouts.
         for retired in "${RETIRED_HOOKS[@]}"; do
-            SETTINGS=$(_strip_hook_registration "$SETTINGS" "$HOOKS_PARENT_DIR/$retired" "~/.claude/hooks/$retired")
+            _strip_flat_hook "$retired"
             SETTINGS=$(_strip_hook_registration "$SETTINGS" "$HOOKS_DIR/$retired" "$HOOKS_TILDE_DIR/$retired")
         done
 
         # Strip parent-level registrations of current hooks (flat-layout installs);
         # _merge_cs_hook re-registers each one under HOOKS_DIR below.
         for hook in "${CS_HOOKS[@]}"; do
-            SETTINGS=$(_strip_hook_registration "$SETTINGS" "$HOOKS_PARENT_DIR/$hook" "~/.claude/hooks/$hook")
+            _strip_flat_hook "$hook"
         done
 
         # Drop events that emptied out entirely after the strips
