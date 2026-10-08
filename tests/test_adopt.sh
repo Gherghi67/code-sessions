@@ -289,6 +289,31 @@ test_readopt_keeps_the_session_log() {
     esac
 }
 
+# An encrypted session keeps its log behind .cs/private. Re-adopting its
+# records must not start a plaintext .cs/local/session.log beside it, which
+# the next open refuses.
+test_readopt_of_an_encrypted_session_keeps_its_log_in_the_vault() {
+    local project_dir="$TEST_TMPDIR/my-project" vault="$TEST_TMPDIR/vault-mnt"
+    mkdir -p "$project_dir" "$vault/private"
+    (cd "$project_dir" && "$CS_BIN" -adopt old-name >/dev/null 2>&1)
+    rm "$CS_SESSIONS_ROOT/old-name"
+    mv "$project_dir/.cs/local/session.log" "$vault/private/session.log"
+    ln -s "$vault/private" "$project_dir/.cs/private"
+    local before
+    before=$(cat "$vault/private/session.log")
+
+    (cd "$project_dir" && printf 'y\n' | CS_ASSUME_TTY=1 "$CS_BIN" -adopt new-name >/dev/null 2>&1) \
+        || { echo "  FAIL: re-adopt should succeed"; return 1; }
+
+    assert_not_exists "$project_dir/.cs/local/session.log" \
+        "no plaintext session.log beside .cs/private" || return 1
+    assert_eq "$before" "$(cat "$vault/private/session.log")" \
+        "the vault's session.log is untouched" || return 1
+    local out rc=0
+    out=$("$CS_BIN" new-name <<< "" 2>&1) || rc=$?
+    assert_eq 0 "$rc" "the re-adopted session opens: $out" || return 1
+}
+
 test_adopt_orphaned_records_noninteractive_hints() {
     local project_dir="$TEST_TMPDIR/my-project"
     mkdir -p "$project_dir"
@@ -877,6 +902,7 @@ run_test test_adopt_refuses_the_sessions_root_and_its_parents
 run_test test_adopt_refuses_a_directory_already_linked
 run_test test_adopt_relinks_orphaned_records_interactively
 run_test test_readopt_keeps_the_session_log
+run_test test_readopt_of_an_encrypted_session_keeps_its_log_in_the_vault
 run_test test_adopt_orphaned_records_noninteractive_hints
 run_test test_adopt_orphaned_records_decline_cancels
 run_test test_adopt_fails_if_session_name_exists
