@@ -251,8 +251,10 @@ EOF
 
     write_session_claude_md "$session_dir"
 
-    # Initialize session log (machine-local; never git-synced)
-    cat > "$session_dir/.cs/local/session.log" << EOF
+    # Initialize session log (machine-local; never git-synced). Only when
+    # absent: re-adopted records already carry their command log.
+    if [ ! -e "$session_dir/.cs/local/session.log" ]; then
+        cat > "$session_dir/.cs/local/session.log" << EOF
 Claude Code Session Log
 Session: $(basename "$session_dir")
 Started: $(date '+%Y-%m-%d %H:%M:%S')
@@ -261,6 +263,7 @@ Location: $(hostname):$(pwd)
 ================================================================================
 
 EOF
+    fi
 
     # Redirect Claude Code auto memory into the session directory
     setup_auto_memory "$session_dir"
