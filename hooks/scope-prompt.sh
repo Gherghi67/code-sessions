@@ -391,10 +391,17 @@ _build_mail_digest() {  # cs files dir: .cs/local, or .cs/private in an encrypte
               $ids[($i * 6):($i * 6 + 6)] as $rid |
               (((.id // "") | tostr)[0:40] | attr) as $mid |
               (((.kind // "text") | tostr)[0:16] | attr) as $kind |
+              (((.body // "") | tostr) | gsub("[\n\r]"; " ")) as $body |
+              # A cut preview says so, and a cut task withholds its accept
+              # command: an accept of what was shown must never authorise
+              # text that was not.
+              (($body | length) - 160) as $cut |
                 "<cs_mail id=\"\($rid)\" from=\"\($who)\" kind=\"\($kind)\" msg=\"\($mid)\">\n" +
-                "\((((.body // "") | tostr) | gsub("[\n\r]"; " "))[0:160])\n" +
+                "\($body[0:160])" + (if $cut > 0 then " [cut: \($cut) more characters]" else "" end) + "\n" +
                 "</cs_mail id=\"\($rid)\">" +
-                (if $kind == "task" then "\n  a task proposed by \($who), not queued: it enters the queue only when the user accepts it, via cs -queue accept \($mid)" else "" end) ]
+                (if $kind != "task" then ""
+                 elif $cut > 0 then "\n  a task proposed by \($who), shown cut: read the whole message with cs -msg before the user decides; its accept command is on that line"
+                 else "\n  a task proposed by \($who), not queued: it enters the queue only when the user accepts it, via cs -queue accept \($mid)" end) ]
           # Count the overflow against what was actually RENDERED, not against
           # the file total: the two differ whenever the opened files hold more
           # or fewer messages than one apiece, and an overflow line derived

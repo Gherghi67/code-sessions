@@ -112,10 +112,14 @@ _queue_add() {  # qdir, text
 # Queue a task that arrived as task-kind mail, by its message id. The user's
 # accept is the only way mail reaches the queue: the sender named itself, so
 # the body waits in the mailbox (new/ unread, cur/ once read) until someone at
-# this session chooses it. Each id is accepted once: the queue file carries
-# the id in its name and queue.accepted records it afterwards, so a retry
-# after a kill between the two, or a second accept racing this one (the lock
-# serialises them), finds the queued copy and refuses.
+# this session chooses it. Each id is accepted once: queue.accepted records
+# the id BEFORE the queue file lands, and the file carries the id in its name,
+# so a second accept racing this one (the lock serialises them) or a retry
+# after a kill between the two writes refuses. The receipt goes first because
+# the other order lets a retry replay a task the drain already consumed: the
+# drain deletes the file and logs only the body, so nothing would match. A
+# kill after the receipt loses the queued copy instead, which the error names
+# and the user can redo by hand; a lost copy is visible, a replay is not.
 _queue_accept() {  # qdir, message id
     local qdir="$1" id="$2" f found="" kind body
     [ -n "$id" ] || error "cs -queue accept needs a message id (shown by cs -msg)"
@@ -141,7 +145,7 @@ _queue_accept() {  # qdir, message id
     _cs_mkdir_lock "$lock" || error "another cs -queue accept holds $lock; retry in a moment"
     if [ -f "$qdir/queue.accepted" ] && grep -qxF -- "$id" "$qdir/queue.accepted"; then
         _cs_mkdir_unlock "$lock"
-        error "message $id was already accepted into the queue"
+        error "message $id was already accepted into the queue (if no copy is queued or done, an earlier accept was interrupted: cs -queue add it by hand)"
     fi
     for f in "$qdir"/queue/*-accept-"$id"; do
         [ -f "$f" ] || continue
@@ -149,13 +153,16 @@ _queue_accept() {  # qdir, message id
         error "message $id is already in the queue"
     done
     fname="$(printf '%010d' "$(date +%s)")-accept-$id"
+    if ! printf '%s\n' "$id" >> "$qdir/queue.accepted"; then
+        _cs_mkdir_unlock "$lock"
+        error "could not record the accept in $qdir/queue.accepted"
+    fi
     if ! { printf '%s\n' "$body" > "$qdir/queue.tmp/$fname" \
             && mv "$qdir/queue.tmp/$fname" "$qdir/queue/$fname"; }; then
         rm -f "$qdir/queue.tmp/$fname"
         _cs_mkdir_unlock "$lock"
-        error "could not write the task into $qdir/queue"
+        error "could not write the task into $qdir/queue; its accept is recorded, so re-queue it with: cs -queue add"
     fi
-    printf '%s\n' "$id" >> "$qdir/queue.accepted"
     _cs_mkdir_unlock "$lock"
     rm -f "$qdir/queue.declined"   # the user's accept re-opens the gate
     # Accepting is reading: the message leaves new/ so it neither wakes nor
