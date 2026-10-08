@@ -122,6 +122,33 @@ test_adopt_relinks_orphaned_records_interactively() {
     assert_eq "$before" "$after" "narrative file should be byte-identical after re-adopt" || return 1
 }
 
+# Re-adopting orphaned records promises to preserve them; the command log is
+# one of them, and every byte it held must survive the re-adopt.
+test_readopt_keeps_the_session_log() {
+    local project_dir="$TEST_TMPDIR/my-project"
+    mkdir -p "$project_dir"
+    (cd "$project_dir" && "$CS_BIN" -adopt old-name >/dev/null 2>&1)
+    rm "$CS_SESSIONS_ROOT/old-name"
+
+    local log="$project_dir/.cs/local/session.log"
+    printf 'marker: log-survives-readopt\n' >> "$log"
+    local before
+    before=$(cat "$log")
+
+    (cd "$project_dir" && printf 'y\n' | CS_ASSUME_TTY=1 "$CS_BIN" -adopt new-name >/dev/null 2>&1) \
+        || { echo "  FAIL: re-adopt should succeed"; return 1; }
+    local after
+    after=$(cat "$log")
+    case "$after" in
+        "$before"*) ;;
+        *)
+            echo "  FAIL: re-adopt must keep every byte of the existing session.log"
+            echo "    after: $after"
+            return 1
+            ;;
+    esac
+}
+
 test_adopt_orphaned_records_noninteractive_hints() {
     local project_dir="$TEST_TMPDIR/my-project"
     mkdir -p "$project_dir"
@@ -702,6 +729,7 @@ run_test test_adopt_creates_claude_local_md_when_none_exists
 run_test test_adopt_leaves_existing_claude_md_untouched
 run_test test_adopt_refuses_a_directory_already_linked
 run_test test_adopt_relinks_orphaned_records_interactively
+run_test test_readopt_keeps_the_session_log
 run_test test_adopt_orphaned_records_noninteractive_hints
 run_test test_adopt_orphaned_records_decline_cancels
 run_test test_adopt_fails_if_session_name_exists
