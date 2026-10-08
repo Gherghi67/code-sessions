@@ -924,28 +924,33 @@ test_uninstall_refuses_a_live_session_even_with_a_volume_mounted_inside() {
 # An earlier opt-in shape had the person symlink the mod's directory under
 # ~/.claude/skills at the checkout. Copying through that link would overwrite the checkout's own
 # files and leave the link in place; the installer replaces the link with a
-# real directory and leaves the link's target alone.
+# real directory and leaves the link's target alone. The checkout holds cs's
+# own mod files (here, content a past cs shipped, so a write through the link
+# would show); a link at anything else is the user's and is kept.
 test_install_replaces_a_symlinked_mod_directory() {
     local fake_home="$TEST_TMPDIR/modlink-home" elsewhere="$TEST_TMPDIR/modlink-target"
-    mkdir -p "$fake_home/.claude/skills" "$elsewhere/hooks"
-    echo 'sentinel' > "$elsewhere/hooks/register.tsx"
+    mkdir -p "$fake_home/.claude/skills" "$elsewhere/hooks" "$elsewhere/.claude-plugin"
+    _cs_shipped_content > "$elsewhere/hooks/register.tsx"
+    _cs_shipped_content > "$elsewhere/hooks/hooks.json"
+    _cs_shipped_content > "$elsewhere/.claude-plugin/plugin.json"
     ln -s "$elsewhere" "$fake_home/.claude/skills/cs"
     HOME="$fake_home" bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || { echo "  FAIL: install.sh exited non-zero"; return 1; }
     [ ! -L "$fake_home/.claude/skills/cs" ] && [ -d "$fake_home/.claude/skills/cs" ] \
         || { echo "  FAIL: the symlink was not replaced by a real directory"; return 1; }
-    assert_eq "sentinel" "$(cat "$elsewhere/hooks/register.tsx")" "the link's target is untouched" || return 1
+    assert_eq "$(_cs_shipped_content)" "$(cat "$elsewhere/hooks/register.tsx")" "the link's target is untouched" || return 1
     cmp -s "$SCRIPT_DIR/../mods/cs/hooks/register.tsx" "$fake_home/.claude/skills/cs/hooks/register.tsx" \
         || { echo "  FAIL: the module was not deployed into the real directory"; return 1; }
     # A real mod directory whose hooks/ is the symlink redirects the copy the
     # same way; the installer replaces that link too.
     local sub_home="$TEST_TMPDIR/modsub-home" sub_target="$TEST_TMPDIR/modsub-target"
     mkdir -p "$sub_home/.claude/skills/cs" "$sub_target"
-    echo 'sentinel' > "$sub_target/register.tsx"
+    _cs_shipped_content > "$sub_target/register.tsx"
+    _cs_shipped_content > "$sub_target/hooks.json"
     ln -s "$sub_target" "$sub_home/.claude/skills/cs/hooks"
     HOME="$sub_home" bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || { echo "  FAIL: install.sh exited non-zero (subdir link)"; return 1; }
     [ ! -L "$sub_home/.claude/skills/cs/hooks" ] && [ -d "$sub_home/.claude/skills/cs/hooks" ] \
         || { echo "  FAIL: the hooks/ symlink was not replaced by a real directory"; return 1; }
-    assert_eq "sentinel" "$(cat "$sub_target/register.tsx")" "the subdirectory link's target is untouched" || return 1
+    assert_eq "$(_cs_shipped_content)" "$(cat "$sub_target/register.tsx")" "the subdirectory link's target is untouched" || return 1
 }
 
 # A mod directory linked at the user's own files (their fork of the mod, say)

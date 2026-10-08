@@ -447,18 +447,48 @@ for retired in "${RETIRED_SKILLS[@]}"; do
     fi
 done
 
-# A symlink anywhere on a mod file's deploy path (an earlier opt-in had the
-# person link the whole directory at the checkout) is replaced by a real
-# directory or file: copying through the link would write into its target
-# instead of deploying. Checks the mod directory, the file's directory and
-# the file itself.
+# Whether the symlinked directory $SKILLS_DIR/$1 points at cs's own mod
+# files: every file the manifest deploys under it, read through the link, is
+# content cs wrote (_cs_owns_file). A file missing there is not.
+_mod_link_holds_cs_files() {  # path under SKILLS_DIR
+    local f digest
+    for f in "${CS_MOD_FILES[@]}"; do
+        case "$f" in "$1"/*) ;; *) continue ;; esac
+        digest=$(_cs_sha256_file "$PAYLOAD_DIR/mods/$f") || error "Could not compute the sha256 of mods/$f (needs sha256sum or shasum)"
+        _cs_owns_file "$SKILLS_DIR/$f" "$digest" || return 1
+    done
+}
+
+# The symlinked mod directories this install kept, one per line, so each is
+# named once however many mod files sit under it.
+_mod_links_kept=$'\n'
+
+# Whether mod file $1 can be deployed without writing through a symlinked
+# directory: copying through the link would write into its target instead of
+# deploying. A link on the path (the mod directory or the file's directory)
+# that points at cs's own mod files (an earlier opt-in had the person link
+# the whole directory at the checkout) is replaced by a real directory. One
+# that points anywhere else is the user's: it is kept, named once and listed
+# with the kept files, and returns 1 so nothing is placed under it. A link at
+# the file itself is _deploy's to judge.
 _mod_path_real() {
     local rel="$1" p
-    for p in "${rel%%/*}" "$(dirname "$rel")" "$rel"; do
-        if [ -L "$SKILLS_DIR/$p" ]; then
+    for p in "${rel%%/*}" "$(dirname "$rel")"; do
+        [ -L "$SKILLS_DIR/$p" ] || continue
+        if _mod_link_holds_cs_files "$p"; then
             rm "$SKILLS_DIR/$p"
             info "Replaced symlink $SKILLS_DIR/$p with a deployed copy"
+            continue
         fi
+        case "$_mod_links_kept" in
+            *$'\n'"$SKILLS_DIR/$p"$'\n'*) ;;
+            *)
+                warn "Kept $SKILLS_DIR/$p: a symlink to files cs did not write, so the mod files under it were not deployed"
+                CS_KEPT_PATHS+=("$SKILLS_DIR/$p")
+                _mod_links_kept="$_mod_links_kept$SKILLS_DIR/$p"$'\n'
+                ;;
+        esac
+        return 1
     done
 }
 
@@ -469,8 +499,9 @@ for skill_file in "${CS_SKILL_FILES[@]}"; do
     _deploy "skills/$skill_file" "$SKILLS_DIR/$skill_file"
 done
 for mod_file in "${CS_MOD_FILES[@]}"; do
-    _mod_path_real "$mod_file"
-    _deploy "mods/$mod_file" "$SKILLS_DIR/$mod_file"
+    if _mod_path_real "$mod_file"; then
+        _deploy "mods/$mod_file" "$SKILLS_DIR/$mod_file"
+    fi
 done
 
 # Record what this install wrote under ~/.claude, so the next install, update
