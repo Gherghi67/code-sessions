@@ -11323,7 +11323,9 @@ ENTRIES
     while IFS= read -r line; do
         [ -z "$line" ] && continue
         [[ "$line" == \#* ]] && continue
-        if ! grep -qF "$line" "$gitignore" 2>/dev/null; then
+        # Whole lines only: a commented `# .cs/local/` or a negated
+        # `!.cs/local/` mentions the entry without ignoring the path.
+        if ! grep -qxF -- "$line" "$gitignore" 2>/dev/null; then
             # A last line with no newline would swallow the entry appended to it.
             if [ -s "$gitignore" ] && [ -n "$(tail -c 1 "$gitignore")" ]; then
                 printf '\n' >> "$gitignore"
