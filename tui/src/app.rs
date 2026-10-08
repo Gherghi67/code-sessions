@@ -1996,10 +1996,12 @@ impl App {
     ///
     /// `cs -rm` refuses a lock-held session without `--force`, and the TUI
     /// reaches the same removal. Lock, not heartbeat: the shell's
-    /// `session_is_live` reads the lock pid and `kill(0)`s it.
+    /// `session_is_live` reads the lock pid and `kill(0)`s it, and so does
+    /// this, now: the row's pid was read at the last scan and its process
+    /// may have exited since.
     fn locked_selection_refusal(&self) -> Option<String> {
         let session = self.selected_session()?;
-        let pid = session.liveness.lock_pid()?;
+        let pid = session.liveness.lock_pid().filter(|&pid| session::is_pid_alive(pid))?;
         Some(format!(
             "{} is live (pid {}) — close it first",
             session.name, pid
@@ -2060,7 +2062,8 @@ impl App {
                 .sessions
                 .iter()
                 .find(|s| &s.name == name)
-                .and_then(|s| s.liveness.lock_pid());
+                .and_then(|s| s.liveness.lock_pid())
+                .filter(|&pid| session::is_pid_alive(pid));
             if let Some(pid) = lock_pid {
                 live.push(format!("{} (pid {})", name, pid));
                 errors += 1;
@@ -3485,6 +3488,7 @@ mod tests {
     #[test]
     fn menu_delete_on_locked_session_refuses_instead_of_counting_down() {
         let mut app = App::new(sample_sessions());
+        hold_gamma_lock(&mut app);
         // gamma (index 2) is locked.
         app.table_state.select(Some(2));
         app.mode = Mode::SessionMenu;
@@ -4130,6 +4134,14 @@ mod tests {
         app.table_state.select(Some(idx));
     }
 
+    /// Gives gamma's lock to this test process, which is alive for as long as
+    /// the test runs, and returns the pid as the status prints it.
+    fn hold_gamma_lock(app: &mut App) -> String {
+        let pid = std::process::id();
+        app.sessions.iter_mut().find(|s| s.name == "gamma").unwrap().liveness = Liveness::Locked(pid);
+        pid.to_string()
+    }
+
     /// `cs -rm` refuses a lock-held session without --force (lib/15-lock.sh's
     /// session_is_live is lock-based, so Locked and not merely Heartbeat is the
     /// matching predicate). The TUI reaches the same filesystem removal and must
@@ -4138,6 +4150,7 @@ mod tests {
     #[test]
     fn delete_refuses_a_locked_session() {
         let mut app = App::new(sample_sessions());
+        let pid = hold_gamma_lock(&mut app);
         select_named(&mut app, "gamma");
 
         // Called directly rather than through `d`+`y`: this is the guard that
@@ -4151,7 +4164,7 @@ mod tests {
             .as_ref()
             .expect("refusing should explain itself");
         assert!(
-            status.text.contains("12345"),
+            status.text.contains(&pid),
             "status should name the locking pid, got: {}",
             status.text
         );
@@ -4167,6 +4180,7 @@ mod tests {
     #[test]
     fn confirm_delete_does_not_open_on_a_locked_session() {
         let mut app = App::new(sample_sessions());
+        let pid = hold_gamma_lock(&mut app);
         select_named(&mut app, "gamma");
 
         app.handle_key(KeyEvent::from(KeyCode::Char('d')));
@@ -4176,7 +4190,7 @@ mod tests {
         assert!(app
             .status_message
             .as_ref()
-            .is_some_and(|s| s.text.contains("12345")));
+            .is_some_and(|s| s.text.contains(&pid)));
     }
 
     /// A batch mixes states: the dormant rows go, the locked one stays and is
@@ -4184,6 +4198,7 @@ mod tests {
     #[test]
     fn batch_delete_skips_a_locked_session() {
         let mut app = App::new(sample_sessions());
+        let pid = hold_gamma_lock(&mut app);
         app.marked_sessions.insert("gamma".to_string());
 
         app.execute_batch_delete();
@@ -4193,7 +4208,7 @@ mod tests {
             .as_ref()
             .expect("a batch that skipped something should say so");
         assert!(
-            status.text.contains("12345"),
+            status.text.contains(&pid),
             "status should name the locking pid, got: {}",
             status.text
         );
@@ -5422,7 +5437,7 @@ mod tests {
 
         let mut app = App::new(session::scan_sessions());
         for s in app.sessions.iter_mut() {
-            s.liveness = session::Liveness::Locked(4242);
+            s.liveness = session::Liveness::Locked(std::process::id());
         }
         app.apply_filter_and_sort();
         app.handle_key(KeyEvent::from(KeyCode::Char('R')));

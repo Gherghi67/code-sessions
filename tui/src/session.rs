@@ -1225,7 +1225,7 @@ fn read_lock_pid(meta_dir: &Path) -> Option<u32> {
 /// True when a process with `pid` is alive on this machine, via `kill -0`.
 /// A missing tool or a spawn error is treated as "not alive" (the caller then
 /// falls back to the statusline heartbeat), never a crash.
-fn is_pid_alive(pid: u32) -> bool {
+pub fn is_pid_alive(pid: u32) -> bool {
     // A pid_t is a SIGNED 32-bit int, so anything past i32::MAX is not a process
     // id at all and each platform mishandles it differently: macOS `kill` refuses
     // it ("illegal process id"), while on Linux it wraps — 4294967295 lands on
