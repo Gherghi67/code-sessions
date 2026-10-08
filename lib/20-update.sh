@@ -308,8 +308,9 @@ do_update() {
     curl -fsSL "$releases_url/install.sh.sha256" -o "$tmpdir/install.sh.sha256" || {
         rm -rf "$tmpdir"; error "Failed to download checksum."
     }
-    # Signature file is optional (best-effort)
-    curl -fsSL "$releases_url/install.sh.minisig" -o "$tmpdir/install.sh.minisig" 2>/dev/null
+    # Signature file is optional (best-effort): a release without one is
+    # checked by its checksum alone, so a failed fetch must not end the update.
+    curl -fsSL "$releases_url/install.sh.minisig" -o "$tmpdir/install.sh.minisig" 2>/dev/null || true
 
     # Verify checksum (hard gate)
     if ! verify_checksum "$tmpdir/install.sh" "$tmpdir/install.sh.sha256"; then
