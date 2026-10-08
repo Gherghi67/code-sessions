@@ -133,12 +133,16 @@ if [ "${CS_RESOLVED_FROM:-env}" = "env" ] \
         clear|resume) ;;
         *) rm -f "$META_DIR/session.lock" 2>/dev/null || true ;;
     esac
-else
+elif command -v _cs_mkdir_lock >/dev/null 2>&1 && _cs_mkdir_lock "$META_DIR/session.lock.d"; then
+    # Under the openers' mutex: a read of a dead pid followed by a remove would
+    # otherwise delete the lock an opener took in between. A hook that cannot
+    # take the mutex leaves the lock; the next open reclaims a dead one itself.
     _cs_lock_pid=$(cat "$META_DIR/session.lock" 2>/dev/null | tr -d '[:space:]') || true
     case "${_cs_lock_pid:-}" in
         ''|*[!0-9]*) rm -f "$META_DIR/session.lock" 2>/dev/null || true ;;
         *) kill -0 "$_cs_lock_pid" 2>/dev/null || rm -f "$META_DIR/session.lock" 2>/dev/null || true ;;
     esac
+    _cs_mkdir_unlock "$META_DIR/session.lock.d"
 fi
 
 # A session cs -encrypt built detaches its vault when the lead conversation

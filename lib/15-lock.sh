@@ -107,8 +107,11 @@ _lock_collision_menu() {
 # the session.lock.d mutex: an opener that read a dead pid and then removed
 # the file could otherwise delete the live lock another opener had just made
 # in its place, and both would launch. The mutex is let go before the
-# collision menu, which waits on a person. A force (flag or collision menu)
-# replaces the lock outright, as before: that is what force means.
+# collision menu, which waits on a person. An opener that cannot take the
+# mutex (another cs holds it and still answers) refuses rather than going on
+# without it, since that holder may be between reading a dead pid and removing
+# the file. A force (flag or collision menu) replaces the lock outright, as
+# before: that is what force means.
 acquire_session_lock() {
     local meta_dir="$1"
     local force="${2:-}"
@@ -116,7 +119,12 @@ acquire_session_lock() {
     local lock_file="$meta_dir/session.lock"
     local lock_pid attempt=0 mutex=""
 
-    _cs_mkdir_lock "$meta_dir/session.lock.d" && mutex="$meta_dir/session.lock.d"
+    if ! _cs_mkdir_lock "$meta_dir/session.lock.d"; then
+        echo -e "${RED}Error: Another cs is opening this session ($meta_dir/session.lock.d is held)${NC}" >&2
+        echo -e "${DIM}Try again in a moment: cs $session_name${NC}" >&2
+        exit 1
+    fi
+    mutex="$meta_dir/session.lock.d"
     while :; do
         if ( set -C; echo "$$" > "$lock_file" ) 2>/dev/null; then
             # Verify: the create was ours only when the file still says so
