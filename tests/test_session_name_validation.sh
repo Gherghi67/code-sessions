@@ -35,6 +35,20 @@ test_create_allows_dotted_name() {
     assert_dir "$CS_SESSIONS_ROOT/v2026.7.4" "dotted session name is created" || return 1
 }
 
+# cs keeps its own staging dirs at the sessions root under leading-dot names
+# (.spawn/, .usage/). A session name may not start with a dot, so `cs .spawn`
+# is refused rather than migrating that dir into a session.
+test_create_rejects_a_leading_dot() {
+    local output status=0
+    mkdir -p "$CS_SESSIONS_ROOT/.spawn"
+    printf 'seed\n' > "$CS_SESSIONS_ROOT/.spawn/example.seed"
+    output=$("$CS_BIN" ".spawn" < /dev/null 2>&1) || status=$?
+    assert_eq "1" "$status" "cs .spawn must exit non-zero" || return 1
+    assert_output_contains "$output" "Session name cannot start with a dot" "says why it refused" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/.spawn/.cs" "cs .spawn must not migrate the staging dir" || return 1
+    assert_file_exists "$CS_SESSIONS_ROOT/.spawn/example.seed" "the staged seed is untouched" || return 1
+}
+
 # `cs -rm ..` would rm -rf the sessions-root parent. Must be rejected before removal.
 test_remove_rejects_dotdot() {
     local parent output status=0
@@ -58,6 +72,7 @@ test_remove_rejects_traversal() {
 run_test test_create_rejects_dotdot
 run_test test_create_rejects_dot
 run_test test_create_allows_dotted_name
+run_test test_create_rejects_a_leading_dot
 run_test test_remove_rejects_dotdot
 run_test test_remove_rejects_traversal
 
