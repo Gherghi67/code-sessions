@@ -318,7 +318,9 @@ _settings_backups() {  # settings file
 # A settings.json jq cannot parse holds the user's permissions, env, MCP
 # servers and other tools' hooks; replacing it with {} loses them all. The
 # install stops with one error naming the file and jq's reason, and leaves
-# the file byte for byte as it was, with no backup written.
+# the file byte for byte as it was, with no backup written. jq's reason is
+# matched up to its "parse error" prefix: the words after it differ between
+# jq releases.
 test_install_refuses_invalid_settings_json() {
     local fake_home="$TEST_TMPDIR/home-badjson" f rc=0 out
     f="$fake_home/.claude/settings.json"
@@ -328,7 +330,7 @@ test_install_refuses_invalid_settings_json() {
     HOME="$fake_home" bash "$INSTALL_SH" > "$TEST_TMPDIR/badjson.out" 2>&1 < /dev/null || rc=$?
     out=$(cat "$TEST_TMPDIR/badjson.out")
     assert_eq "1" "$rc" "install must stop on an unparseable settings.json" || return 1
-    assert_output_contains "$out" "^Error: $(_bre_literal "$f") is not valid JSON; left it unchanged and wrote no $(_bre_literal "$f")\.cs-bak\.<stamp> backup: parse error: Unfinished JSON term at EOF at line 2, column 0\$" \
+    assert_output_contains "$out" "^Error: $(_bre_literal "$f") is not valid JSON; left it unchanged and wrote no $(_bre_literal "$f")\.cs-bak\.<stamp> backup: parse error" \
         "the error names the file and jq's reason" || return 1
     cmp -s "$TEST_TMPDIR/badjson.orig" "$f" \
         || { echo "  FAIL: settings.json changed although it was refused"; return 1; }
@@ -436,7 +438,7 @@ test_uninstall_leaves_invalid_settings_json_untouched() {
     printf 'y\n' | HOME="$fake_home" "$CS_BIN" -uninstall > "$TEST_TMPDIR/unbad.out" 2>&1 || rc=$?
     out=$(cat "$TEST_TMPDIR/unbad.out")
     assert_eq "0" "$rc" "the uninstall finishes" || return 1
-    assert_output_contains "$out" "^$(_bre_literal "$f") is not valid JSON; left it unchanged and wrote no $(_bre_literal "$f")\.cs-bak\.<stamp> backup: parse error: Unfinished JSON term at EOF at line 2, column 0\$" \
+    assert_output_contains "$out" "^$(_bre_literal "$f") is not valid JSON; left it unchanged and wrote no $(_bre_literal "$f")\.cs-bak\.<stamp> backup: parse error" \
         "the warning names the file and jq's reason" || return 1
     cmp -s "$TEST_TMPDIR/unbad.orig" "$f" \
         || { echo "  FAIL: settings.json changed although it was refused"; return 1; }
