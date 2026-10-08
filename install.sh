@@ -1319,6 +1319,22 @@ _place() {  # repo-path, dest
 # ~/.claude, written out once every file is in place.
 CS_RECORD_LINES=()
 
+# Record sha256 $1 for path $2 (under $HOME) in the install record as soon as
+# the file is in place, keeping every other line as it was: a run that stops
+# partway then leaves a record true of each file, the placed ones under their
+# new sha256 and the rest under the line the last install wrote.
+_record_placed() {  # sha256, path-under-home
+    local record tmp="$STAGE_DIR/installed.partial"
+    record=$(_cs_install_record)
+    if [ -f "$record" ]; then
+        awk -v p="$2" 'substr($0, 67) != p' "$record" > "$tmp" || error "Could not read $record"
+    else
+        : > "$tmp"
+    fi
+    printf '%s  %s\n' "$1" "$2" >> "$tmp"
+    _place_file "$tmp" "$record" 644
+}
+
 # Deploy payload file $1 at $2 under ~/.claude, unless a file cs did not
 # write is already there: that one is kept, named in a warning and listed
 # again at the end. A file is cs's as _cs_owns_file decides.
@@ -1331,6 +1347,7 @@ _deploy() {  # repo-path, dest
         return 0
     fi
     _place "$1" "$2"
+    _record_placed "$digest" "${2#"$HOME"/}"
     CS_RECORD_LINES+=("$digest  ${2#"$HOME"/}")
 }
 
