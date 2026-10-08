@@ -491,26 +491,36 @@ launch_claude_code() {
                         printf '      %d. %s\n' "$_i" "$_shown"
                     done
                 fi
-                printf "${DIM}This open is not the spawn's own window.${NC} Take the seed? [Y/n] "
-                # Single keypress, as the resume ask. EOF (no terminal: a
-                # scripted open) is not an answer: the seed stays staged for an
-                # attended open, and this launch goes on without it. ESC or n
-                # declines: the seed and brief are set aside like a stale one,
-                # so the next open does not ask again.
-                local _answer
-                if IFS= read -rsn1 _answer; then
-                    echo
-                    case "$_answer" in
-                        $'\e'|[nN])
-                            mv "$_seed" "$_seed.stale" 2>/dev/null || true
-                            [ ! -f "$_brief" ] || mv "$_brief" "$_brief.stale" 2>/dev/null || true
-                            warn "Spawn seed declined and set aside: $_seed.stale (re-run cs -spawn if still wanted)"
-                            ;;
-                        *) _consume=1 ;;
-                    esac
-                else
-                    echo
+                # The answer is a keypress on a terminal, never redirected
+                # stdin: `cs name <<< ""` hands read a newline, which is the
+                # empty answer the default arm took (Codex round 1), and a
+                # script could type y as easily. With no terminal the seed
+                # stays staged for an attended open and this launch goes on
+                # without it. On a terminal: Enter or y takes the seed, n or
+                # Escape sets the seed and brief aside like a stale pair so
+                # the next open does not ask again, any other key asks
+                # again, and EOF leaves it staged.
+                if [ ! -t 0 ]; then
                     warn "Spawn seed left staged: $_seed (open $session_name in a terminal to answer, or remove it)"
+                else
+                    local _answer
+                    while :; do
+                        printf "${DIM}This open is not the spawn's own window.${NC} Take the seed? [Y/n] "
+                        if ! IFS= read -rsn1 _answer; then
+                            echo
+                            warn "Spawn seed left staged: $_seed (open $session_name in a terminal to answer, or remove it)"
+                            break
+                        fi
+                        echo
+                        case "$_answer" in
+                            ''|[yY]) _consume=1; break ;;
+                            $'\e'|[nN])
+                                mv "$_seed" "$_seed.stale" 2>/dev/null || true
+                                [ ! -f "$_brief" ] || mv "$_brief" "$_brief.stale" 2>/dev/null || true
+                                warn "Spawn seed declined and set aside: $_seed.stale (re-run cs -spawn if still wanted)"
+                                break ;;
+                        esac
+                    done
                 fi
             fi
         fi

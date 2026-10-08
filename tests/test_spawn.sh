@@ -617,7 +617,7 @@ test_launch_foreign_seed_redirected_stdin_stays_staged() {
     out=$("$CS_BIN" worker <<< "y" 2>&1) || return 1
     assert_file_exists "$CS_SESSIONS_ROOT/.spawn/worker.seed" "seed left staged on a piped y" || return 1
     assert_eq "0" "$(WQ_COUNT)" "nothing queued on a piped y" || return 1
-    assert_output_not_contains "$out" "\\[Y/n\\]" "no ask without a terminal" || return 1
+    assert_output_not_contains "$out" "Take the seed" "no ask without a terminal" || return 1
     assert_output_contains "$out" "worker.seed" "the launch names the staged seed" || return 1
 }
 
