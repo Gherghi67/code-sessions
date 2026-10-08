@@ -886,6 +886,90 @@ test_export_file_rewrites_when_changed() {
     assert_output_contains "$dec" "sk_changed" "re-export should contain the updated value" || return 1
 }
 
+# --- age recipient tests (real age; skipped where age is not installed) ---
+
+# Point cs-secrets at the real age binary, overriding the "no age" seam setup
+# exports. Returns 77 (skipped) where age or age-keygen is not installed.
+_use_real_age() {
+    local age_bin keygen_bin
+    age_bin=$(command -v age 2>/dev/null) || age_bin=""
+    keygen_bin=$(command -v age-keygen 2>/dev/null) || keygen_bin=""
+    if [ -z "$age_bin" ] || [ -z "$keygen_bin" ]; then
+        echo "    SKIP (age and age-keygen are not installed)"
+        return 77
+    fi
+    export CS_AGE_BIN="$age_bin"
+}
+
+# Generate a throwaway age identity in the test dir: <name>.key and <name>.pub.
+_make_age_identity() {
+    local name="$1"
+    age-keygen -o "$TEST_TMPDIR/$name.key" 2>/dev/null || return 1
+    age-keygen -y "$TEST_TMPDIR/$name.key" > "$TEST_TMPDIR/$name.pub" || return 1
+}
+
+# True when the identity file decrypts the sync file to a payload holding the
+# expected value. The plaintext never reaches the test output.
+_age_decrypts_to() {
+    local key="$1" file="$2" expected="$3" plain
+    plain=$(age -d -i "$key" < "$file" 2>/dev/null) || return 1
+    printf '%s' "$plain" | grep -qF "$expected"
+}
+
+test_age_add_reencrypts_an_unchanged_store() {
+    _use_real_age || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f
+    f="$meta/secrets.$(_machine_id).age"
+    _make_age_identity colleague || { echo "  FAIL: could not create a test identity"; return 1; }
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
+    assert_file_exists "$f" "first export should write the age sync file" || return 1
+    if _age_decrypts_to "$TEST_TMPDIR/colleague.key" "$f" "sk_123"; then
+        echo "  FAIL: the colleague decrypted the file before being added (fixture is wrong)"
+        return 1
+    fi
+    "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/colleague.pub" >/dev/null 2>&1 || { echo "  FAIL: age add failed"; return 1; }
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: export after age add failed"; return 1; }
+    if ! _age_decrypts_to "$TEST_TMPDIR/colleague.key" "$f" "sk_123"; then
+        echo "  FAIL: after age add, the unchanged store was not re-encrypted to the new recipient"
+        return 1
+    fi
+}
+
+test_age_remove_reencrypts_an_unchanged_store() {
+    _use_real_age || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f
+    f="$meta/secrets.$(_machine_id).age"
+    _make_age_identity colleague || { echo "  FAIL: could not create a test identity"; return 1; }
+    "$CS_SECRETS_BIN" age init >/dev/null 2>&1 || { echo "  FAIL: age init failed"; return 1; }
+    "$CS_SECRETS_BIN" age add "$HOME/.cs-secrets/age.pub" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/colleague.pub" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
+    # Positive control: the colleague can read the file before the revocation.
+    if ! _age_decrypts_to "$TEST_TMPDIR/colleague.key" "$f" "sk_123"; then
+        echo "  FAIL: the colleague could not decrypt before removal (fixture is wrong)"
+        return 1
+    fi
+    cp "$f" "$TEST_TMPDIR/before.age"
+    "$CS_SECRETS_BIN" age remove colleague >/dev/null 2>&1 || { echo "  FAIL: age remove failed"; return 1; }
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: export after age remove failed"; return 1; }
+    if cmp -s "$f" "$TEST_TMPDIR/before.age"; then
+        echo "  FAIL: after age remove, the unchanged store was not re-encrypted"
+        return 1
+    fi
+    if _age_decrypts_to "$TEST_TMPDIR/colleague.key" "$f" "sk_123"; then
+        echo "  FAIL: the removed recipient still decrypts the re-exported file"
+        return 1
+    fi
+    if ! _age_decrypts_to "$HOME/.cs-secrets/age.key" "$f" "sk_123"; then
+        echo "  FAIL: this machine's own key no longer decrypts the re-exported file"
+        return 1
+    fi
+}
+
 test_import_file_merges_all_machines_and_legacy() {
     local meta="$CS_SESSIONS_ROOT/test-session/.cs"
     _seed_enc_sync_file "$meta/secrets.machine-b.enc" '{"from_machine_b":"vb"}' || return 1
@@ -1866,5 +1950,9 @@ run_test test_encrypted_set_keeps_value_and_password_off_argv
 run_test test_encrypted_derived_key_stays_off_argv
 run_test test_sync_export_import_keep_values_off_argv
 run_test test_keychain_export_file_keeps_values_off_argv
+
+# age recipients
+run_test test_age_add_reencrypts_an_unchanged_store
+run_test test_age_remove_reencrypts_an_unchanged_store
 
 report_results
