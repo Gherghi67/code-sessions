@@ -467,6 +467,27 @@ _uninstall_rotate_wrap_keys() {
     fi
 }
 
+# Settings JSON on stdin without any cs hook, current or retired, on stdout:
+# stripped from any event, event-agnostic, matching both path spellings ($HOME
+# and ~) in both deployment layouts (subdirectory and flat). Drops wrappers
+# that empty out; sibling user hooks co-shipped in a wrapper survive.
+_strip_cs_hook_registrations() {  # hooks_dir, hooks_parent_dir
+    local settings strip_name
+    settings=$(cat)
+    for strip_name in "${CS_HOOKS[@]}" "${RETIRED_HOOKS[@]}"; do
+        settings=$(_strip_hook_registration "$settings" "$1/$strip_name" "~/.claude/hooks/cs/$strip_name")
+        settings=$(_strip_hook_registration "$settings" "$2/$strip_name" "~/.claude/hooks/$strip_name")
+    done
+
+    # Clean up empty hook arrays
+    echo "$settings" | jq '
+        if .hooks then
+            .hooks |= with_entries(select(.value | length > 0))
+            | if .hooks == {} then del(.hooks) else . end
+        else . end
+    '
+}
+
 # Uninstall cs and all components
 run_uninstall() {
     local install_dir="$HOME/.local/bin"
@@ -631,31 +652,15 @@ run_uninstall() {
         info "Removed $claude_links_dir"
     fi
 
-    # Clean up settings.json (remove cs hooks, preserve others)
+    # Clean up settings.json (remove cs hooks, preserve others). A file jq
+    # cannot parse is left as it is with a warning: the binaries are already
+    # gone, so the rest of the uninstall still runs.
     if [ -f "$settings_file" ] && command -v jq >/dev/null 2>&1; then
-        local settings
-        settings=$(cat "$settings_file")
-
-        # Strip every cs hook (current and retired) from any event,
-        # event-agnostic, matching both path spellings ($HOME and ~) in both
-        # deployment layouts (subdirectory and flat). Drops wrappers that
-        # empty out; sibling user hooks co-shipped in a wrapper survive.
-        local strip_name
-        for strip_name in "${CS_HOOKS[@]}" "${RETIRED_HOOKS[@]}"; do
-            settings=$(_strip_hook_registration "$settings" "$hooks_dir/$strip_name" "~/.claude/hooks/cs/$strip_name")
-            settings=$(_strip_hook_registration "$settings" "$hooks_parent_dir/$strip_name" "~/.claude/hooks/$strip_name")
-        done
-
-        # Clean up empty hook arrays
-        settings=$(echo "$settings" | jq '
-            if .hooks then
-                .hooks |= with_entries(select(.value | length > 0))
-                | if .hooks == {} then del(.hooks) else . end
-            else . end
-        ')
-
-        echo "$settings" > "$settings_file"
-        info "Cleaned up $settings_file"
+        if cs_settings_update "$settings_file" _strip_cs_hook_registrations "$hooks_dir" "$hooks_parent_dir"; then
+            info "Cleaned up $settings_file"
+        else
+            warn "$CS_SETTINGS_ERROR"
+        fi
     elif [ -f "$settings_file" ]; then
         warn "jq not found - cannot clean up $settings_file automatically"
         warn "Manually remove cs hook entries from $settings_file"

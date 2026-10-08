@@ -292,21 +292,146 @@ test_install_completes_when_zshrc_has_no_fpath() {
     fi
 }
 
-# An empty or invalid settings.json must not abort the install; it should be
-# backed up and replaced with a valid object so hook registration proceeds.
-test_install_recovers_from_invalid_settings_json() {
-    command -v jq >/dev/null 2>&1 || return 0  # jq path only
-    local fake_home="$TEST_TMPDIR/home"
-    mkdir -p "$fake_home/.claude"
-    printf 'not json at all {{{' > "$fake_home/.claude/settings.json"
+# A path as a BRE that matches only itself.
+_bre_literal() {  # text
+    printf '%s' "$1" | sed 's/[][\.*^$]/\\&/g'
+}
 
-    local rc=0
-    HOME="$fake_home" bash "$INSTALL_SH" > /dev/null 2>&1 || rc=$?
-    assert_eq "0" "$rc" "install must not abort on invalid settings.json" || return 1
-    assert_file_exists "$fake_home/.claude/settings.json.cs-bak" \
-        "invalid settings.json should be backed up" || return 1
-    jq -e . "$fake_home/.claude/settings.json" >/dev/null 2>&1 \
-        || { echo "  FAIL: settings.json is not valid JSON after install"; return 1; }
+# The settings.json backups beside the file, one name per line.
+_settings_backups() {  # settings file
+    local f
+    for f in "$1".cs-bak*; do
+        [ -e "$f" ] && basename "$f"
+    done
+    return 0
+}
+
+# A settings.json jq cannot parse holds the user's permissions, env, MCP
+# servers and other tools' hooks; replacing it with {} loses them all. The
+# install stops with one error naming the file and jq's reason, and leaves
+# the file byte for byte as it was, with no backup written.
+test_install_refuses_invalid_settings_json() {
+    local fake_home="$TEST_TMPDIR/home-badjson" f rc=0 out
+    f="$fake_home/.claude/settings.json"
+    mkdir -p "$fake_home/.claude"
+    printf '{"permissions":\n' > "$f"
+    cp "$f" "$TEST_TMPDIR/badjson.orig"
+    HOME="$fake_home" bash "$INSTALL_SH" > "$TEST_TMPDIR/badjson.out" 2>&1 < /dev/null || rc=$?
+    out=$(cat "$TEST_TMPDIR/badjson.out")
+    assert_eq "1" "$rc" "install must stop on an unparseable settings.json" || return 1
+    assert_output_contains "$out" "^Error: $(_bre_literal "$f") is not valid JSON; left it unchanged and wrote no $(_bre_literal "$f")\.cs-bak\.<stamp> backup: parse error: Unfinished JSON term at EOF at line 2, column 0\$" \
+        "the error names the file and jq's reason" || return 1
+    cmp -s "$TEST_TMPDIR/badjson.orig" "$f" \
+        || { echo "  FAIL: settings.json changed although it was refused"; return 1; }
+    assert_eq "" "$(_settings_backups "$f")" "a refused file gets no backup" || return 1
+}
+
+# A zero-byte settings.json holds nothing to lose: it is created as cs's
+# hooks, like a missing one.
+test_install_fills_an_empty_settings_json() {
+    local fake_home="$TEST_TMPDIR/home-emptyjson" f rc=0
+    f="$fake_home/.claude/settings.json"
+    mkdir -p "$fake_home/.claude"
+    : > "$f"
+    HOME="$fake_home" bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || rc=$?
+    assert_eq "0" "$rc" "an empty settings.json must not stop the install" || return 1
+    jq -e '.hooks.SessionStart' "$f" >/dev/null 2>&1 \
+        || { echo "  FAIL: hooks were not registered in the empty settings.json"; return 1; }
+}
+
+# Every write that changes settings.json leaves the file as it was beside it
+# under a UTC-stamped name, and a run that changes nothing writes none.
+test_install_backs_up_settings_json_before_changing_it() {
+    local fake_home="$TEST_TMPDIR/home-bak" f backups
+    f="$fake_home/.claude/settings.json"
+    mkdir -p "$fake_home/.claude"
+    printf '{"permissions":{"allow":["Bash(ls)"]},"env":{"ALICE":"1"}}\n' > "$f"
+    cp "$f" "$TEST_TMPDIR/bak.orig"
+    HOME="$fake_home" bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null \
+        || { echo "  FAIL: install.sh exited non-zero"; return 1; }
+    backups=$(_settings_backups "$f")
+    assert_output_contains "$backups" '^settings\.json\.cs-bak\.[0-9]\{8\}T[0-9]\{6\}Z$' \
+        "a stamped backup sits beside settings.json" || return 1
+    assert_eq "1" "$(printf '%s\n' "$backups" | grep -c .)" "one change, one backup" || return 1
+    cmp -s "$TEST_TMPDIR/bak.orig" "$fake_home/.claude/$backups" \
+        || { echo "  FAIL: the backup is not the file as it was"; return 1; }
+    jq -e '.env.ALICE == "1" and .permissions.allow == ["Bash(ls)"]' "$f" >/dev/null 2>&1 \
+        || { echo "  FAIL: the user's own settings were not kept"; return 1; }
+    HOME="$fake_home" bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null \
+        || { echo "  FAIL: the second install.sh exited non-zero"; return 1; }
+    assert_eq "$backups" "$(_settings_backups "$f")" "a run that changes nothing writes no backup" || return 1
+}
+
+# Another cs writer (a second install, cs -statusline, the cs-update mod
+# running install.sh inside a live Claude Code) can rewrite settings.json
+# while the installer is working on it. A one-shot slow jq on the merge
+# widens the installer's window, and from inside it starts a writer that
+# takes the settings lock beside the file and adds a key. Read and write
+# taken under that lock, both changes survive; read early and written late,
+# the writer's key is lost.
+test_install_keeps_a_concurrent_settings_change() {
+    local fake_home="$TEST_TMPDIR/home-race" f real stub="$TEST_TMPDIR/race-bin" i=0
+    f="$fake_home/.claude/settings.json"
+    real=$(command -v jq)
+    mkdir -p "$fake_home/.claude" "$stub"
+    printf '{"env":{"ALICE":"1"}}\n' > "$f"
+    cat > "$TEST_TMPDIR/race-writer.sh" <<EOF
+#!/bin/bash
+sleep 0.5
+n=0
+until mkdir "$f.lock" 2>/dev/null; do
+    n=\$((n + 1)); [ "\$n" -lt 80 ] || exit 1
+    sleep 0.05
+done
+echo \$\$ > "$f.lock/pid"
+"$real" '.env.BOB = "1"' "$f" > "$f.writer" && mv "$f.writer" "$f"
+rm -f "$f.lock/pid"; rmdir "$f.lock"
+: > "$TEST_TMPDIR/race-writer.done"
+EOF
+    cat > "$stub/jq" <<EOF
+#!/bin/bash
+case " \$* " in
+    *" --arg event "*)
+        if mkdir "$TEST_TMPDIR/race-fired" 2>/dev/null; then
+            bash "$TEST_TMPDIR/race-writer.sh" < /dev/null > /dev/null 2>&1 &
+            sleep 2
+        fi
+        ;;
+esac
+exec "$real" "\$@"
+EOF
+    chmod +x "$stub/jq"
+    HOME="$fake_home" PATH="$stub:$PATH" bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null \
+        || { echo "  FAIL: install.sh exited non-zero"; return 1; }
+    while [ ! -e "$TEST_TMPDIR/race-writer.done" ] && [ "$i" -lt 60 ]; do
+        sleep 0.1; i=$((i + 1))
+    done
+    assert_exists "$TEST_TMPDIR/race-fired" "the slow merge ran" || return 1
+    assert_file_exists "$TEST_TMPDIR/race-writer.done" "the concurrent writer finished" || return 1
+    jq -e '.env.BOB == "1"' "$f" >/dev/null 2>&1 \
+        || { echo "  FAIL: the concurrent writer's change was lost"; return 1; }
+    jq -e '.env.ALICE == "1" and (.hooks.SessionStart | length > 0)' "$f" >/dev/null 2>&1 \
+        || { echo "  FAIL: the installer's change or the user's key was lost"; return 1; }
+    assert_not_exists "$f.lock" "the settings lock is released" || return 1
+}
+
+# cs -uninstall has already removed the binaries when it reaches the settings
+# clean-up, so an unparseable settings.json is left byte for byte as it was
+# with a warning naming the file and jq's reason, and the uninstall finishes.
+test_uninstall_leaves_invalid_settings_json_untouched() {
+    local fake_home="$TEST_TMPDIR/home-unbad" f rc=0 out
+    f="$fake_home/.claude/settings.json"
+    mkdir -p "$fake_home/.claude"
+    printf '{"permissions":\n' > "$f"
+    cp "$f" "$TEST_TMPDIR/unbad.orig"
+    printf 'y\n' | HOME="$fake_home" "$CS_BIN" -uninstall > "$TEST_TMPDIR/unbad.out" 2>&1 || rc=$?
+    out=$(cat "$TEST_TMPDIR/unbad.out")
+    assert_eq "0" "$rc" "the uninstall finishes" || return 1
+    assert_output_contains "$out" "^$(_bre_literal "$f") is not valid JSON; left it unchanged and wrote no $(_bre_literal "$f")\.cs-bak\.<stamp> backup: parse error: Unfinished JSON term at EOF at line 2, column 0\$" \
+        "the warning names the file and jq's reason" || return 1
+    cmp -s "$TEST_TMPDIR/unbad.orig" "$f" \
+        || { echo "  FAIL: settings.json changed although it was refused"; return 1; }
+    assert_eq "" "$(_settings_backups "$f")" "a refused file gets no backup" || return 1
 }
 
 # ============================================================================
@@ -1969,7 +2094,11 @@ run_test test_uninstall_preserves_foreign_statusline
 run_test test_uninstall_removes_zsh_completion_from_detected_dir
 run_test test_uninstall_removes_zsh_completion_from_default_dir
 run_test test_uninstall_removes_update_cache
-run_test test_install_recovers_from_invalid_settings_json
+run_test test_install_refuses_invalid_settings_json
+run_test test_install_fills_an_empty_settings_json
+run_test test_install_backs_up_settings_json_before_changing_it
+run_test test_install_keeps_a_concurrent_settings_change
+run_test test_uninstall_leaves_invalid_settings_json_untouched
 run_test test_local_install_prefers_a_freshly_built_picker
 run_test test_local_install_uses_bin_picker_when_nothing_was_built
 run_test test_build_generates_the_shared_hook_fragment

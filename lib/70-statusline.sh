@@ -5,7 +5,9 @@ _strip_statusline_registration() {
     local settings_file="$1"
     [ -f "$settings_file" ] || return 1
     jq -e '.statusLine.command // "" | endswith("/cs-statusline")' "$settings_file" >/dev/null 2>&1 || return 1
-    cs_write_atomic "$settings_file" jq 'del(.statusLine)' "$settings_file" 2>/dev/null || return 2
+    cs_settings_update "$settings_file" jq \
+        'if (.statusLine.command // "" | endswith("/cs-statusline")) then del(.statusLine) else . end' \
+        2>/dev/null || return 2
 }
 
 # endswith("/cs-subagent-statusline") never matches "/cs-statusline", so this
@@ -16,7 +18,9 @@ _strip_subagent_statusline_registration() {
     [ -f "$settings_file" ] || return 1
     jq -e '.subagentStatusLine.command // "" | endswith("/cs-subagent-statusline")' \
         "$settings_file" >/dev/null 2>&1 || return 1
-    cs_write_atomic "$settings_file" jq 'del(.subagentStatusLine)' "$settings_file" 2>/dev/null || return 2
+    cs_settings_update "$settings_file" jq \
+        'if (.subagentStatusLine.command // "" | endswith("/cs-subagent-statusline")) then del(.subagentStatusLine) else . end' \
+        2>/dev/null || return 2
 }
 
 # The installer remembers a declined status-line prompt here so `cs -update`
@@ -72,21 +76,20 @@ run_statusline_cmd() {
             [ -x "$bin" ] || warn "cs-statusline binary not found at $bin (run install.sh first)"
             [ -x "$subbin" ] || warn "cs-subagent-statusline binary not found at $subbin (run install.sh first)"
             mkdir -p "$(dirname "$settings")"
-            [ -f "$settings" ] || echo '{}' > "$settings"
             # refreshInterval 60 repaints an idle bar once a minute, which keeps
             # the context-pct heartbeat fresh for a conversation with no lock.
             # Each tick on Claude Code 2.1.286 lists every process with
             # `ps -A`; at 1 s a dozen sessions together hit the process limit.
-            if cs_write_atomic "$settings" jq --arg cmd "$bin" --arg subcmd "$subbin" \
+            if cs_settings_update "$settings" jq --arg cmd "$bin" --arg subcmd "$subbin" \
                 '.statusLine = {type: "command", command: $cmd, refreshInterval: 60}
                  | .subagentStatusLine = {type: "command", command: $subcmd}' \
-                "$settings" 2>/dev/null; then
+                2>/dev/null; then
                 rm -f "$declined"
                 info "Registered cs-statusline as the Claude Code status line"
                 info "Registered cs-subagent-statusline for the agent panel rows"
                 info "Claude Code reads both at startup: restart it to see them."
             else
-                error "Could not update $settings"
+                error "$CS_SETTINGS_ERROR"
             fi
             ;;
         disable)

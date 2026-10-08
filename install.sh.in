@@ -487,44 +487,42 @@ if ! command -v jq >/dev/null 2>&1; then
     warn "jq not found - cannot configure hooks automatically."
     warn "See README for manual hook configuration."
 else
-    # Start with existing settings or empty object
-    if [ -f "$CLAUDE_SETTINGS" ]; then
-        SETTINGS=$(cat "$CLAUDE_SETTINGS")
-        # An empty or invalid-JSON settings.json would make every jq stage below
-        # silently produce nothing; back it up and start fresh instead.
-        if [ -z "${SETTINGS//[[:space:]]/}" ] || ! printf '%s' "$SETTINGS" | jq -e . >/dev/null 2>&1; then
-            cp "$CLAUDE_SETTINGS" "$CLAUDE_SETTINGS.cs-bak" 2>/dev/null || true
-            warn "settings.json was empty or invalid JSON — backed up to settings.json.cs-bak and starting fresh"
-            SETTINGS='{}'
-        fi
-    else
-        SETTINGS='{}'
-    fi
+    # settings.json is read and rewritten once, by cs_settings_update from
+    # the hooks' shared library deployed above, under its lock and after
+    # every question below; a file jq cannot parse stops the install here,
+    # before any question, and is left as it is.
+    # shellcheck source=hooks/cs-shared.sh
+    . "$HOOKS_DIR/cs-shared.sh" || error "could not load $HOOKS_DIR/cs-shared.sh; $CLAUDE_SETTINGS left unchanged"
+    cs_settings_check "$CLAUDE_SETTINGS" || error "$CS_SETTINGS_ERROR"
 
     # Tilde spelling of HOOKS_DIR (settings.json entries use ~ instead of $HOME)
     HOOKS_TILDE_DIR="~/.claude/hooks/cs"
 
-    # Strip retired hooks from any event in settings.json (event-agnostic since
-    # we don't know which event the old version registered them under). Covers
-    # both deployment layouts.
-    for retired in "${RETIRED_HOOKS[@]}"; do
-        SETTINGS=$(_strip_hook_registration "$SETTINGS" "$HOOKS_PARENT_DIR/$retired" "~/.claude/hooks/$retired")
-        SETTINGS=$(_strip_hook_registration "$SETTINGS" "$HOOKS_DIR/$retired" "$HOOKS_TILDE_DIR/$retired")
-    done
+    # The settings JSON in SETTINGS without any cs hook registration that the
+    # merge below does not put back.
+    _strip_cs_hooks() {
+        # Strip retired hooks from any event in settings.json (event-agnostic since
+        # we don't know which event the old version registered them under). Covers
+        # both deployment layouts.
+        for retired in "${RETIRED_HOOKS[@]}"; do
+            SETTINGS=$(_strip_hook_registration "$SETTINGS" "$HOOKS_PARENT_DIR/$retired" "~/.claude/hooks/$retired")
+            SETTINGS=$(_strip_hook_registration "$SETTINGS" "$HOOKS_DIR/$retired" "$HOOKS_TILDE_DIR/$retired")
+        done
 
-    # Strip parent-level registrations of current hooks (flat-layout installs);
-    # _merge_cs_hook re-registers each one under HOOKS_DIR below.
-    for hook in "${CS_HOOKS[@]}"; do
-        SETTINGS=$(_strip_hook_registration "$SETTINGS" "$HOOKS_PARENT_DIR/$hook" "~/.claude/hooks/$hook")
-    done
+        # Strip parent-level registrations of current hooks (flat-layout installs);
+        # _merge_cs_hook re-registers each one under HOOKS_DIR below.
+        for hook in "${CS_HOOKS[@]}"; do
+            SETTINGS=$(_strip_hook_registration "$SETTINGS" "$HOOKS_PARENT_DIR/$hook" "~/.claude/hooks/$hook")
+        done
 
-    # Drop events that emptied out entirely after the strips
-    SETTINGS=$(echo "$SETTINGS" | jq '
-        if .hooks then
-            .hooks |= with_entries(select(.value | length > 0))
-            | if .hooks == {} then del(.hooks) else . end
-        else . end
-    ')
+        # Drop events that emptied out entirely after the strips
+        SETTINGS=$(echo "$SETTINGS" | jq '
+            if .hooks then
+                .hooks |= with_entries(select(.value | length > 0))
+                | if .hooks == {} then del(.hooks) else . end
+            else . end
+        ')
+    }
 
     # Merge hooks: strip cs's command from any wrapper's nested .hooks array,
     # drop wrappers that emptied out, then append a fresh standalone wrapper
@@ -596,23 +594,29 @@ else
     # answering nothing loses the maildir watch for the rest of the session.
     # Registering FileChanged is itself what opens that path, so the mailbox has
     # to answer the event its own registration enables.
-    _merge_cs_hook SessionStart       session-start.sh       30
-    _merge_cs_hook PostToolUse        autosave-commits.sh    10 "Write|Edit" true
-    _merge_cs_hook Stop               narrative-reminder.sh  10
-    _merge_cs_hook SessionEnd         session-end.sh         30
-    _merge_cs_hook SubagentStart      subagent-context.sh    10
-    _merge_cs_hook PostToolUseFailure tool-failure-logger.sh 10 "" true
-    _merge_cs_hook PermissionRequest  session-auto-approve.sh 5 "Write|Edit"
-    _merge_cs_hook PreToolUse         bash-logger.sh          5 "Bash"
-    _merge_cs_hook UserPromptSubmit   scope-prompt.sh        10
-    _merge_cs_hook FileChanged        narrative-reminder.sh  10 "" "" true
-    _merge_cs_hook CwdChanged         narrative-reminder.sh   5
+    _register_cs_hooks() {
+        _merge_cs_hook SessionStart       session-start.sh       30
+        _merge_cs_hook PostToolUse        autosave-commits.sh    10 "Write|Edit" true
+        _merge_cs_hook Stop               narrative-reminder.sh  10
+        _merge_cs_hook SessionEnd         session-end.sh         30
+        _merge_cs_hook SubagentStart      subagent-context.sh    10
+        _merge_cs_hook PostToolUseFailure tool-failure-logger.sh 10 "" true
+        _merge_cs_hook PermissionRequest  session-auto-approve.sh 5 "Write|Edit"
+        _merge_cs_hook PreToolUse         bash-logger.sh          5 "Bash"
+        _merge_cs_hook UserPromptSubmit   scope-prompt.sh        10
+        _merge_cs_hook FileChanged        narrative-reminder.sh  10 "" "" true
+        _merge_cs_hook CwdChanged         narrative-reminder.sh   5
+    }
 
     # Register cs-statusline as the Claude Code status line. A status line the
     # user already configured is never replaced silently: prompt when a
-    # terminal is attached, otherwise keep it and print how to switch.
+    # terminal is attached, otherwise keep it and print how to switch. The
+    # file is only looked at here; the registration is written with the rest.
     _statusline_cmd="$INSTALL_DIR/cs-statusline"
-    _current_statusline=$(echo "$SETTINGS" | jq -r '.statusLine.command // ""')
+    _current_statusline=""
+    if [ -s "$CLAUDE_SETTINGS" ]; then
+        _current_statusline=$(jq -r '.statusLine.command // ""' "$CLAUDE_SETTINGS")
+    fi
     # A "no" is remembered here so `cs -update` (which re-runs this installer)
     # stops asking on every release. `cs -statusline enable` clears it,
     # `cs -statusline disable` sets it (KEEP IN SYNC with lib/70-statusline.sh).
@@ -794,20 +798,28 @@ else
             info "Capsule caps: square ends until you answer once with: cs -statusline caps ask"
         fi
     fi
-    if [ -n "$_register_statusline" ]; then
-        # Registers BOTH settings keys and a 60 s refreshInterval, same as
-        # `cs -statusline enable`; the two recipes must stay equivalent
-        # (KEEP IN SYNC with lib/70-statusline.sh).
-        SETTINGS=$(echo "$SETTINGS" | jq --arg cmd "$_statusline_cmd" \
-            --arg subcmd "$INSTALL_DIR/cs-subagent-statusline" \
-            '.statusLine = {type: "command", command: $cmd, refreshInterval: 60}
-             | .subagentStatusLine = {type: "command", command: $subcmd}')
-        if [ "$_register_statusline" = "1" ]; then
-            installed "status line" "cs-statusline + cs-subagent-statusline"
+    # settings.json on stdin, with cs's hooks and the status line the answers
+    # above chose, on stdout. cs_settings_update runs it under the lock, so it
+    # prints nothing else and asks nothing.
+    _cs_settings_filter() {
+        SETTINGS=$(cat)
+        _strip_cs_hooks
+        _register_cs_hooks
+        if [ -n "$_register_statusline" ]; then
+            # Registers BOTH settings keys and a 60 s refreshInterval, same as
+            # `cs -statusline enable`; the two recipes must stay equivalent
+            # (KEEP IN SYNC with lib/70-statusline.sh).
+            SETTINGS=$(echo "$SETTINGS" | jq --arg cmd "$_statusline_cmd" \
+                --arg subcmd "$INSTALL_DIR/cs-subagent-statusline" \
+                '.statusLine = {type: "command", command: $cmd, refreshInterval: 60}
+                 | .subagentStatusLine = {type: "command", command: $subcmd}')
         fi
+        printf '%s\n' "$SETTINGS"
+    }
+    cs_settings_update "$CLAUDE_SETTINGS" _cs_settings_filter || error "$CS_SETTINGS_ERROR"
+    if [ "$_register_statusline" = "1" ]; then
+        installed "status line" "cs-statusline + cs-subagent-statusline"
     fi
-
-    echo "$SETTINGS" > "$CLAUDE_SETTINGS"
 
     # Add cs's keys that nothing binds yet to keybindings.json: into its first
     # Global block, or a Global block of their own, creating the file when
