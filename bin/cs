@@ -3349,13 +3349,13 @@ $wt_untracked"
     # both moves are renames: nothing is half-copied on a failure.
     # A fuse that refuses after the removal would strand the records in the
     # staging directory, so its one refusal is asked before anything moves.
+    # Asked whether or not the worktree has a log: a locked vault takes the
+    # base's .cs/memory with it, which every fuse writes.
     local mode aside=""
     mode=$(_read_local_state "$wt_dir/.cs/local/state" cs_mode)
     if [ "$mode" = "ignored" ]; then
-        if [ -f "$wt_dir/.cs/local/session.log" ] || [ -f "$wt_dir/.cs/logs/session.log" ]; then
-            cs_private_dir "$base_dir/.cs" >/dev/null \
-                || error "cannot fuse the worktree's log: $base_dir/.cs/private is locked. Mount it, then retry."
-        fi
+        cs_private_dir "$base_dir/.cs" >/dev/null \
+            || error "cannot fuse the worktree's records: $base_dir/.cs/private is locked. Mount it, then retry."
         aside="$SESSIONS_ROOT/.retire-$wt_name.$$"
         mkdir "$aside" 2>/dev/null || error "Could not create $aside to set aside $wt_dir/.cs for the record fuse"
         mv "$wt_dir/.cs" "$aside/cs" || { rmdir "$aside" 2>/dev/null; error "Could not set aside $wt_dir/.cs for the record fuse"; }
