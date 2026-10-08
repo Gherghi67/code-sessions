@@ -89,10 +89,6 @@ SESSIONS_DIR="${HOME}/.claude-sessions"
 # install defaults to main.
 REPO_URL="https://raw.githubusercontent.com/hex/claude-sessions/${CS_INSTALL_REF:-main}"
 RELEASES_URL="https://github.com/hex/claude-sessions/releases/download"
-CS_URL="${REPO_URL}/bin/cs"
-CS_SECRETS_URL="${REPO_URL}/bin/cs-secrets"
-CS_STATUSLINE_URL="${REPO_URL}/bin/cs-statusline"
-CS_SUBAGENT_STATUSLINE_URL="${REPO_URL}/bin/cs-subagent-statusline"
 
 # ---- lib/01-manifests.sh (spliced by build.sh) ----
 # Files a past version deployed into the hooks directory and this one does not:
@@ -197,6 +193,27 @@ CS_MOD_FILES=(
     cs-update/.claude-plugin/plugin.json
     cs-update/hooks/hooks.json
     cs-update/hooks/register.tsx
+)
+
+# Every file install.sh deploys from the repo, one repo path per line: the
+# binaries, the hook files (libraries first), commands, skills, skill support
+# files and mod files. The web install downloads exactly these.
+_cs_payload_files() {
+    local f
+    printf '%s\n' bin/cs bin/cs-secrets bin/cs-statusline bin/cs-subagent-statusline
+    for f in "${CS_HOOK_LIBS[@]}" "${CS_HOOKS[@]}"; do printf 'hooks/%s\n' "$f"; done
+    for f in "${CS_COMMANDS[@]}"; do printf 'commands/%s\n' "$f"; done
+    for f in "${CS_SKILLS[@]}"; do printf 'skills/%s/SKILL.md\n' "$f"; done
+    for f in "${CS_SKILL_FILES[@]}"; do printf 'skills/%s\n' "$f"; done
+    for f in "${CS_MOD_FILES[@]}"; do printf 'mods/%s\n' "$f"; done
+}
+
+# The shell completions install.sh deploys. A web install that cannot fetch
+# one warns and goes on without it.
+# shellcheck disable=SC2034  # read by install.sh
+CS_COMPLETION_FILES=(
+    completions/cs.bash
+    completions/_cs
 )
 
 # Remove a hook registration from any event in a settings JSON string,
@@ -339,10 +356,6 @@ _cs_keybindings_strip() {  # bindings-json
 # the library they source.
 CS_HOOK_FILES=("${CS_HOOK_LIBS[@]}" "${CS_HOOKS[@]}")
 
-# Completion URLs for web install
-COMPLETION_BASH_URL="${REPO_URL}/completions/cs.bash"
-COMPLETION_ZSH_URL="${REPO_URL}/completions/_cs"
-
 # Minisign public key for verifying signed releases
 CS_SIGN_PUBKEY="RWQvs3IVdvrS8PJs0V0gwdJGPw/x5waQ6z6iqPQm90JfpxfcsSy9b9Vo"
 
@@ -350,14 +363,61 @@ CS_SIGN_PUBKEY="RWQvs3IVdvrS8PJs0V0gwdJGPw/x5waQ6z6iqPQm90JfpxfcsSy9b9Vo"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
 if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/bin/cs" ]; then
     # Running from cloned repo
-    CS_SOURCE="$SCRIPT_DIR/bin/cs"
-    HOOKS_SOURCE="$SCRIPT_DIR/hooks"
-    COMMANDS_SOURCE="$SCRIPT_DIR/commands"
     INSTALL_METHOD="local"
 else
     # Running from web (curl | bash)
     INSTALL_METHOD="web"
 fi
+
+# One temp dir for everything the web install downloads, removed however the
+# install ends.
+STAGE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/cs-install.XXXXXX") || error "Could not create a temp dir to download into"
+trap 'rm -rf "$STAGE_DIR"' EXIT
+
+# Where the payload is read from: the checkout on a local install, the
+# downloads in STAGE_DIR on a web install.
+if [ "$INSTALL_METHOD" = "local" ]; then
+    PAYLOAD_DIR="$SCRIPT_DIR"
+else
+    PAYLOAD_DIR="$STAGE_DIR"
+fi
+
+# Download URL $1 to file $2 with curl, or wget when there is no curl.
+_download() {  # url, out
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$1" -o "$2"
+    else
+        wget -q "$1" -O "$2"
+    fi
+}
+
+# The mode a payload file is deployed with, as the repo tracks it: the
+# binaries, the hook files and the skill support scripts are executable.
+_payload_mode() {  # repo-path
+    case "$1" in
+        bin/*|hooks/*|skills/*/scripts/*) echo 755 ;;
+        *) echo 644 ;;
+    esac
+}
+
+# Put file $1 at $2 with mode $3 through a temp file in $2's own directory and
+# a rename, so $2 is always either the file it was or the whole new one, never
+# a partial copy: a dropped transfer or a full disk leaves the old file whole.
+_place_file() {  # src, dest, mode
+    local dest="$2" dir tmp
+    dir=$(dirname "$dest")
+    mkdir -p "$dir" || error "Could not create $dir"
+    tmp=$(mktemp "$dir/.cs-install.XXXXXX") || error "Could not create a temp file in $dir"
+    if ! { cp "$1" "$tmp" && chmod "$3" "$tmp" && mv -f "$tmp" "$dest"; }; then
+        rm -f "$tmp"
+        error "Failed to install $dest"
+    fi
+}
+
+# Deploy payload file $1 (its repo path) at $2.
+_place() {  # repo-path, dest
+    _place_file "$PAYLOAD_DIR/$1" "$2" "$(_payload_mode "$1")"
+}
 
 # Check for Claude Code
 if ! command -v claude >/dev/null 2>&1; then
@@ -373,70 +433,41 @@ show_banner
 # Create install directory if needed
 mkdir -p "$INSTALL_DIR"
 
-# Install cs script
-installed "cs" "$INSTALL_DIR/cs"
-
-if [ "$INSTALL_METHOD" = "local" ]; then
-    # Install from local clone
-    cp "$CS_SOURCE" "$INSTALL_DIR/cs"
-else
-    # Download from GitHub
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$CS_URL" -o "$INSTALL_DIR/cs" || error "Failed to download cs script"
-    elif command -v wget >/dev/null 2>&1; then
-        wget -q "$CS_URL" -O "$INSTALL_DIR/cs" || error "Failed to download cs script"
-    else
+# A web install downloads every payload file before it puts any in place, so
+# a transfer that fails partway leaves the installed files as they were.
+if [ "$INSTALL_METHOD" = "web" ]; then
+    if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
         error "Neither curl nor wget found. Please install one of them."
     fi
+    while IFS= read -r _rel; do
+        mkdir -p "$STAGE_DIR/$(dirname "$_rel")"
+        _download "$REPO_URL/$_rel" "$STAGE_DIR/$_rel" || error "Failed to download $_rel"
+    done < <(_cs_payload_files)
+    for _rel in "${CS_COMPLETION_FILES[@]}"; do
+        mkdir -p "$STAGE_DIR/$(dirname "$_rel")"
+        if ! _download "$REPO_URL/$_rel" "$STAGE_DIR/$_rel"; then
+            rm -f "$STAGE_DIR/$_rel"
+            warn "Failed to download $_rel"
+        fi
+    done
 fi
 
-chmod +x "$INSTALL_DIR/cs"
+# Install cs script
+installed "cs" "$INSTALL_DIR/cs"
+_place bin/cs "$INSTALL_DIR/cs"
 
 # Install cs-secrets utility
 installed "cs-secrets" "$INSTALL_DIR/cs-secrets"
-
-if [ "$INSTALL_METHOD" = "local" ]; then
-    cp "$SCRIPT_DIR/bin/cs-secrets" "$INSTALL_DIR/cs-secrets"
-else
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$CS_SECRETS_URL" -o "$INSTALL_DIR/cs-secrets" || error "Failed to download cs-secrets"
-    elif command -v wget >/dev/null 2>&1; then
-        wget -q "$CS_SECRETS_URL" -O "$INSTALL_DIR/cs-secrets" || error "Failed to download cs-secrets"
-    fi
-fi
-
-chmod +x "$INSTALL_DIR/cs-secrets"
+_place bin/cs-secrets "$INSTALL_DIR/cs-secrets"
 
 # Install cs-statusline (Claude Code status line)
 installed "cs-statusline" "$INSTALL_DIR/cs-statusline"
-
-if [ "$INSTALL_METHOD" = "local" ]; then
-    cp "$SCRIPT_DIR/bin/cs-statusline" "$INSTALL_DIR/cs-statusline"
-else
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$CS_STATUSLINE_URL" -o "$INSTALL_DIR/cs-statusline" || error "Failed to download cs-statusline"
-    elif command -v wget >/dev/null 2>&1; then
-        wget -q "$CS_STATUSLINE_URL" -O "$INSTALL_DIR/cs-statusline" || error "Failed to download cs-statusline"
-    fi
-fi
-
-chmod +x "$INSTALL_DIR/cs-statusline"
+_place bin/cs-statusline "$INSTALL_DIR/cs-statusline"
 
 # Install cs-subagent-statusline (Claude Code agent-panel rows). It sources
 # cs-statusline for the shared palette, so the two must land in the same dir.
 installed "cs-subagent-statusline" "$INSTALL_DIR/cs-subagent-statusline"
-
-if [ "$INSTALL_METHOD" = "local" ]; then
-    cp "$SCRIPT_DIR/bin/cs-subagent-statusline" "$INSTALL_DIR/cs-subagent-statusline"
-else
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$CS_SUBAGENT_STATUSLINE_URL" -o "$INSTALL_DIR/cs-subagent-statusline" || error "Failed to download cs-subagent-statusline"
-    elif command -v wget >/dev/null 2>&1; then
-        wget -q "$CS_SUBAGENT_STATUSLINE_URL" -O "$INSTALL_DIR/cs-subagent-statusline" || error "Failed to download cs-subagent-statusline"
-    fi
-fi
-
-chmod +x "$INSTALL_DIR/cs-subagent-statusline"
+_place bin/cs-subagent-statusline "$INSTALL_DIR/cs-subagent-statusline"
 
 # Install cs-tui (interactive session manager).
 #
@@ -454,20 +485,20 @@ if [ -f "$_cs_tui_built" ] && { [ ! -f "$_cs_tui_src" ] || [ "$_cs_tui_built" -n
 fi
 if [ "$INSTALL_METHOD" = "local" ] && [ -f "$_cs_tui_src" ]; then
     installed "cs-tui" "$INSTALL_DIR/cs-tui"
-    cp "$_cs_tui_src" "$INSTALL_DIR/cs-tui"
-    chmod +x "$INSTALL_DIR/cs-tui"
+    _place_file "$_cs_tui_src" "$INSTALL_DIR/cs-tui" 755
 elif [ "$INSTALL_METHOD" = "web" ]; then
     _cs_version=$(grep -m1 "^VERSION=" "$INSTALL_DIR/cs" 2>/dev/null | cut -d'"' -f2 || echo "")
     _os=$(uname -s | tr '[:upper:]' '[:lower:]')
     _arch=$(uname -m)
     [ "$_arch" = "x86_64" ] && _arch="amd64"
     _tui_base="cs-tui-${_os}-${_arch}"
-    _tui_dst="$INSTALL_DIR/cs-tui"
+    # Downloaded and verified in the staging dir; only a binary that passes
+    # both gates below is put in place.
+    _tui_dst="$STAGE_DIR/cs-tui"
     _tui_url="${RELEASES_URL}/v${_cs_version}/${_tui_base}"
     if [ -n "$_cs_version" ] && curl -fsSL --head "$_tui_url" >/dev/null 2>&1 \
         && curl -fsSL "$_tui_url" -o "$_tui_dst"; then
-        installed "cs-tui" "$_tui_dst"
-        chmod +x "$_tui_dst"
+        installed "cs-tui" "$INSTALL_DIR/cs-tui"
 
         # Verify cs-tui checksum (hard gate). The rule is the one stated in
         # lib/20-update.sh's verify_checksum: a gate that cannot verify must not
@@ -527,6 +558,9 @@ elif [ "$INSTALL_METHOD" = "web" ]; then
             fi
             rm -f "$_tui_dst.minisig"
         fi
+        if [ -f "$_tui_dst" ]; then
+            _place_file "$_tui_dst" "$INSTALL_DIR/cs-tui" 755
+        fi
     else
         info "cs-tui not available for ${_os}-${_arch} — run 'cs' for help, or build from source: cd tui && cargo build --release"
     fi
@@ -563,51 +597,21 @@ for hook in "${CS_HOOK_FILES[@]}"; do
     fi
 done
 
-if [ "$INSTALL_METHOD" = "local" ]; then
-    # Install from local clone
-    for hook in "${CS_HOOK_FILES[@]}"; do
-        cp "$HOOKS_SOURCE/$hook" "$HOOKS_DIR/"
-    done
-else
-    # Download from GitHub
-    if command -v curl >/dev/null 2>&1; then
-        for hook in "${CS_HOOK_FILES[@]}"; do
-            curl -fsSL "$REPO_URL/hooks/$hook" -o "$HOOKS_DIR/$hook" || error "Failed to download $hook"
-        done
-    elif command -v wget >/dev/null 2>&1; then
-        for hook in "${CS_HOOK_FILES[@]}"; do
-            wget -q "$REPO_URL/hooks/$hook" -O "$HOOKS_DIR/$hook" || error "Failed to download $hook"
-        done
-    fi
-fi
-
-chmod +x "$HOOKS_DIR"/*.sh
+for hook in "${CS_HOOK_FILES[@]}"; do
+    _place "hooks/$hook" "$HOOKS_DIR/$hook"
+done
 
 
 # Install commands
 installed "commands" "$COMMANDS_DIR/"
 mkdir -p "$COMMANDS_DIR"
 
-if [ "$INSTALL_METHOD" = "local" ]; then
-    for cmd in "${CS_COMMANDS[@]}"; do
-        cp "$COMMANDS_SOURCE/$cmd" "$COMMANDS_DIR/"
-    done
-else
-    if command -v curl >/dev/null 2>&1; then
-        for cmd in "${CS_COMMANDS[@]}"; do
-            curl -fsSL "$REPO_URL/commands/$cmd" -o "$COMMANDS_DIR/$cmd" || error "Failed to download $cmd"
-        done
-    elif command -v wget >/dev/null 2>&1; then
-        for cmd in "${CS_COMMANDS[@]}"; do
-            wget -q "$REPO_URL/commands/$cmd" -O "$COMMANDS_DIR/$cmd" || error "Failed to download $cmd"
-        done
-    fi
-fi
+for cmd in "${CS_COMMANDS[@]}"; do
+    _place "commands/$cmd" "$COMMANDS_DIR/$cmd"
+done
 
 # Install skills
 SKILLS_DIR="$HOME/.claude/skills"
-SKILLS_SOURCE="$SCRIPT_DIR/skills"
-MODS_SOURCE="$SCRIPT_DIR/mods"
 installed "skills" "$SKILLS_DIR/"
 
 # Drop skill directories earlier cs versions installed but no longer ship. A
@@ -639,80 +643,25 @@ _mod_path_real() {
     done
 }
 
-if [ "$INSTALL_METHOD" = "local" ]; then
-    for skill in "${CS_SKILLS[@]}"; do
-        cp "$SKILLS_SOURCE/$skill/SKILL.md" "$SKILLS_DIR/$skill/"
-    done
-    for skill_file in "${CS_SKILL_FILES[@]}"; do
-        mkdir -p "$SKILLS_DIR/$(dirname "$skill_file")"
-        cp -p "$SKILLS_SOURCE/$skill_file" "$SKILLS_DIR/$skill_file"
-    done
-    for mod_file in "${CS_MOD_FILES[@]}"; do
-        _mod_path_real "$mod_file"
-        mkdir -p "$SKILLS_DIR/$(dirname "$mod_file")"
-        cp -p "$MODS_SOURCE/$mod_file" "$SKILLS_DIR/$mod_file"
-    done
-else
-    if command -v curl >/dev/null 2>&1; then
-        for skill in "${CS_SKILLS[@]}"; do
-            curl -fsSL "$REPO_URL/skills/$skill/SKILL.md" -o "$SKILLS_DIR/$skill/SKILL.md" || error "Failed to download $skill skill"
-        done
-        for skill_file in "${CS_SKILL_FILES[@]}"; do
-            mkdir -p "$SKILLS_DIR/$(dirname "$skill_file")"
-            curl -fsSL "$REPO_URL/skills/$skill_file" -o "$SKILLS_DIR/$skill_file" || error "Failed to download $skill_file"
-            chmod +x "$SKILLS_DIR/$skill_file"
-        done
-        for mod_file in "${CS_MOD_FILES[@]}"; do
-            _mod_path_real "$mod_file"
-            mkdir -p "$SKILLS_DIR/$(dirname "$mod_file")"
-            curl -fsSL "$REPO_URL/mods/$mod_file" -o "$SKILLS_DIR/$mod_file" || error "Failed to download $mod_file"
-        done
-    elif command -v wget >/dev/null 2>&1; then
-        for skill in "${CS_SKILLS[@]}"; do
-            wget -q "$REPO_URL/skills/$skill/SKILL.md" -O "$SKILLS_DIR/$skill/SKILL.md" || error "Failed to download $skill skill"
-        done
-        for skill_file in "${CS_SKILL_FILES[@]}"; do
-            mkdir -p "$SKILLS_DIR/$(dirname "$skill_file")"
-            wget -q "$REPO_URL/skills/$skill_file" -O "$SKILLS_DIR/$skill_file" || error "Failed to download $skill_file"
-            chmod +x "$SKILLS_DIR/$skill_file"
-        done
-        for mod_file in "${CS_MOD_FILES[@]}"; do
-            _mod_path_real "$mod_file"
-            mkdir -p "$SKILLS_DIR/$(dirname "$mod_file")"
-            wget -q "$REPO_URL/mods/$mod_file" -O "$SKILLS_DIR/$mod_file" || error "Failed to download $mod_file"
-        done
-    fi
-fi
+for skill in "${CS_SKILLS[@]}"; do
+    _place "skills/$skill/SKILL.md" "$SKILLS_DIR/$skill/SKILL.md"
+done
+for skill_file in "${CS_SKILL_FILES[@]}"; do
+    _place "skills/$skill_file" "$SKILLS_DIR/$skill_file"
+done
+for mod_file in "${CS_MOD_FILES[@]}"; do
+    _mod_path_real "$mod_file"
+    _place "mods/$mod_file" "$SKILLS_DIR/$mod_file"
+done
 
-# Install shell completions
-COMPLETIONS_SOURCE="$SCRIPT_DIR/completions"
-COMPLETION_SETUP_NEEDED=""
-
-# Bash completion
+# Install shell completions. One a web install could not download was
+# reported then, and is skipped here.
 installed "completions" "bash, zsh"
-mkdir -p "$BASH_COMPLETION_DIR"
-
-if [ "$INSTALL_METHOD" = "local" ]; then
-    cp "$COMPLETIONS_SOURCE/cs.bash" "$BASH_COMPLETION_DIR/"
-else
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$COMPLETION_BASH_URL" -o "$BASH_COMPLETION_DIR/cs.bash" || warn "Failed to download bash completion"
-    elif command -v wget >/dev/null 2>&1; then
-        wget -q "$COMPLETION_BASH_URL" -O "$BASH_COMPLETION_DIR/cs.bash" || warn "Failed to download bash completion"
-    fi
+if [ -f "$PAYLOAD_DIR/completions/cs.bash" ]; then
+    _place completions/cs.bash "$BASH_COMPLETION_DIR/cs.bash"
 fi
-
-# Zsh completion
-mkdir -p "$ZSH_COMPLETION_DIR"
-
-if [ "$INSTALL_METHOD" = "local" ]; then
-    cp "$COMPLETIONS_SOURCE/_cs" "$ZSH_COMPLETION_DIR/"
-else
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$COMPLETION_ZSH_URL" -o "$ZSH_COMPLETION_DIR/_cs" || warn "Failed to download zsh completion"
-    elif command -v wget >/dev/null 2>&1; then
-        wget -q "$COMPLETION_ZSH_URL" -O "$ZSH_COMPLETION_DIR/_cs" || warn "Failed to download zsh completion"
-    fi
+if [ -f "$PAYLOAD_DIR/completions/_cs" ]; then
+    _place completions/_cs "$ZSH_COMPLETION_DIR/_cs"
 fi
 
 # Configure Claude Code settings

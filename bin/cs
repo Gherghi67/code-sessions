@@ -134,6 +134,27 @@ CS_MOD_FILES=(
     cs-update/hooks/register.tsx
 )
 
+# Every file install.sh deploys from the repo, one repo path per line: the
+# binaries, the hook files (libraries first), commands, skills, skill support
+# files and mod files. The web install downloads exactly these.
+_cs_payload_files() {
+    local f
+    printf '%s\n' bin/cs bin/cs-secrets bin/cs-statusline bin/cs-subagent-statusline
+    for f in "${CS_HOOK_LIBS[@]}" "${CS_HOOKS[@]}"; do printf 'hooks/%s\n' "$f"; done
+    for f in "${CS_COMMANDS[@]}"; do printf 'commands/%s\n' "$f"; done
+    for f in "${CS_SKILLS[@]}"; do printf 'skills/%s/SKILL.md\n' "$f"; done
+    for f in "${CS_SKILL_FILES[@]}"; do printf 'skills/%s\n' "$f"; done
+    for f in "${CS_MOD_FILES[@]}"; do printf 'mods/%s\n' "$f"; done
+}
+
+# The shell completions install.sh deploys. A web install that cannot fetch
+# one warns and goes on without it.
+# shellcheck disable=SC2034  # read by install.sh
+CS_COMPLETION_FILES=(
+    completions/cs.bash
+    completions/_cs
+)
+
 # Remove a hook registration from any event in a settings JSON string,
 # matching either path spelling; drops wrappers that empty out. Prints the
 # updated JSON.
