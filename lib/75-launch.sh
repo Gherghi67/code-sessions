@@ -340,12 +340,16 @@ launch_claude_code() {
     # A pane claude opens itself (an agent-team teammate) is started by the
     # tmux server, which hands it the server's session environment, not the
     # lead's: the truecolor override cs exported for claude never reaches it,
-    # so the teammate's status line renders in the muted 256-colour fallback.
-    # Publish the value into the tmux session this launch runs in, so panes
-    # split from it inherit it. Best-effort: a pane cs did not launch is the
-    # documented fallback, not a failure.
+    # so the teammate's status line renders in the muted 256-colour fallback,
+    # and neither does the sessions root, which the teammate's hooks need to
+    # recognise this session when they walk in from its directory (a session
+    # under a non-default root would decline). Publish both into the tmux
+    # session this launch runs in, so panes split from it inherit them.
+    # Best-effort: a pane cs did not launch is the documented fallback, not a
+    # failure.
     if [ -n "${TMUX:-}" ]; then
         _tmux set-environment CLAUDE_CODE_TMUX_TRUECOLOR "$CLAUDE_CODE_TMUX_TRUECOLOR" 2>/dev/null || true
+        _tmux set-environment CS_SESSIONS_ROOT "$SESSIONS_ROOT" 2>/dev/null || true
     fi
     _iterm_tab_through_tmux
     # An adopted session's name lives only in the symlink pointing here, which a

@@ -51,7 +51,10 @@ path (a silent exit, or the approval payload the blocking hooks owe Claude Code)
    than to the session around it. The walk stops at `$HOME` so a stray `~/.cs` cannot
    adopt everything beneath it. There is no `$PWD` fallback: a hook's working
    directory is wherever the front end left it, not a statement about which session
-   is open.
+   is open. An agent-team teammate walks in the same way, from a pane the tmux
+   server started with its own environment, so a launch inside tmux publishes
+   `CS_SESSIONS_ROOT` into that tmux session (as it does the truecolor flag) and a
+   session under a non-default root stays recognised by its teammates.
 
 The walk is what lets cs work in front ends that fire hooks but cannot export
 environment into a session — Claude Code desktop among them, where `CLAUDE_ENV_FILE`
