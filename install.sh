@@ -418,12 +418,13 @@ _cs_remove_if_owned() {  # file, [payload-sha256]
 }
 
 # Removes the files under directory $1 that cs wrote, then every directory
-# that leaves empty; keeps the rest as _cs_remove_if_owned does. Returns 0
-# when the directory is gone.
-_cs_remove_tree_if_owned() {  # dir
-    local f
+# that leaves empty; keeps the rest as _cs_remove_if_owned does, or as
+# function $2 does when given one (it takes a file and removes it or keeps
+# it). Returns 0 when the directory is gone.
+_cs_remove_tree_if_owned() {  # dir, [remove-function]
+    local f remove="${2:-_cs_remove_if_owned}"
     while IFS= read -r f; do
-        _cs_remove_if_owned "$f" || true
+        "$remove" "$f" || true
     done < <(find "$1" ! -type d)
     find "$1" -depth -type d -exec rmdir {} \; 2>/dev/null || true
     [ ! -e "$1" ]
@@ -1204,7 +1205,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "b0e135bd50506217ebe73ad104d42fd8f6c96275940766e68e542e5bce08fdd9  bin/cs"
+    "9f598b386403356a22552b745a00877f4b1f6de6cf272ef0fe7e1984fb8971e4  bin/cs"
     "603074e92003d4403885dc892d7d0b4e3e1f44934d468f98722c7e05e3f92490  bin/cs-secrets"
     "218445530b4e201f65870c91c126ecfe6d7732b5796d6cf9df01b544b942cad5  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -1545,13 +1546,39 @@ rm -f "$INSTALL_DIR/cs-tui.exe"
 installed "${#CS_HOOKS[@]} hooks" "$HOOKS_DIR/"
 mkdir -p "$HOOKS_DIR"
 
+# Removes file $1, under a name cs retired, when cs wrote it, and returns 0.
+# A file cs did not write is kept and returns 1. It is in the way of nothing
+# cs deploys, so it is named (and listed at the end) only the first time an
+# install sees that content: the install record remembers it as a
+# "kept <sha256>  <path under $HOME>" line, which never matches the
+# "<sha256>  <path>" lines _cs_owns_file reads. Content whose sha256 cannot
+# be computed is named every time.
+_remove_retired() {  # file
+    local digest line record
+    if _cs_owns_file "$1"; then
+        rm -f "$1"
+        return 0
+    fi
+    record=$(_cs_install_record)
+    if digest=$(_cs_sha256_file "$1"); then
+        line="kept $digest  ${1#"$HOME"/}"
+        CS_RECORD_LINES+=("$line")
+        if [ -f "$record" ] && grep -qxF "$line" "$record"; then
+            return 1
+        fi
+    fi
+    warn "Kept $1: cs did not write it"
+    CS_KEPT_PATHS+=("$1")
+    return 1
+}
+
 # Remove any retired hook files that earlier cs versions installed but no longer ship.
 # Settings.json entries are stripped further below. Retired hooks may sit in
 # HOOKS_DIR or, for installs that deployed hooks flat, its parent directory.
 # Only a file cs wrote is removed; a user's own file of the same name is kept.
 for retired in "${RETIRED_HOOKS[@]}"; do
     for dir in "$HOOKS_DIR" "$HOOKS_PARENT_DIR"; do
-        if [ -f "$dir/$retired" ] && _cs_remove_if_owned "$dir/$retired"; then
+        if [ -f "$dir/$retired" ] && _remove_retired "$dir/$retired"; then
             info "Removed retired hook: $dir/$retired"
         fi
     done
@@ -1587,7 +1614,7 @@ installed "skills" "$SKILLS_DIR/"
 # complete until the old directory is gone. Only the files cs wrote go; a
 # user's own files in it (or a user's skill of that name) are kept.
 for retired in "${RETIRED_SKILLS[@]}"; do
-    if [ -d "$SKILLS_DIR/$retired" ] && _cs_remove_tree_if_owned "$SKILLS_DIR/$retired"; then
+    if [ -d "$SKILLS_DIR/$retired" ] && _cs_remove_tree_if_owned "$SKILLS_DIR/$retired" _remove_retired; then
         info "Removed retired skill: $SKILLS_DIR/$retired/"
     fi
 done

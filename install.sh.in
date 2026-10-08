@@ -400,13 +400,39 @@ rm -f "$INSTALL_DIR/cs-tui.exe"
 installed "${#CS_HOOKS[@]} hooks" "$HOOKS_DIR/"
 mkdir -p "$HOOKS_DIR"
 
+# Removes file $1, under a name cs retired, when cs wrote it, and returns 0.
+# A file cs did not write is kept and returns 1. It is in the way of nothing
+# cs deploys, so it is named (and listed at the end) only the first time an
+# install sees that content: the install record remembers it as a
+# "kept <sha256>  <path under $HOME>" line, which never matches the
+# "<sha256>  <path>" lines _cs_owns_file reads. Content whose sha256 cannot
+# be computed is named every time.
+_remove_retired() {  # file
+    local digest line record
+    if _cs_owns_file "$1"; then
+        rm -f "$1"
+        return 0
+    fi
+    record=$(_cs_install_record)
+    if digest=$(_cs_sha256_file "$1"); then
+        line="kept $digest  ${1#"$HOME"/}"
+        CS_RECORD_LINES+=("$line")
+        if [ -f "$record" ] && grep -qxF "$line" "$record"; then
+            return 1
+        fi
+    fi
+    warn "Kept $1: cs did not write it"
+    CS_KEPT_PATHS+=("$1")
+    return 1
+}
+
 # Remove any retired hook files that earlier cs versions installed but no longer ship.
 # Settings.json entries are stripped further below. Retired hooks may sit in
 # HOOKS_DIR or, for installs that deployed hooks flat, its parent directory.
 # Only a file cs wrote is removed; a user's own file of the same name is kept.
 for retired in "${RETIRED_HOOKS[@]}"; do
     for dir in "$HOOKS_DIR" "$HOOKS_PARENT_DIR"; do
-        if [ -f "$dir/$retired" ] && _cs_remove_if_owned "$dir/$retired"; then
+        if [ -f "$dir/$retired" ] && _remove_retired "$dir/$retired"; then
             info "Removed retired hook: $dir/$retired"
         fi
     done
@@ -442,7 +468,7 @@ installed "skills" "$SKILLS_DIR/"
 # complete until the old directory is gone. Only the files cs wrote go; a
 # user's own files in it (or a user's skill of that name) are kept.
 for retired in "${RETIRED_SKILLS[@]}"; do
-    if [ -d "$SKILLS_DIR/$retired" ] && _cs_remove_tree_if_owned "$SKILLS_DIR/$retired"; then
+    if [ -d "$SKILLS_DIR/$retired" ] && _cs_remove_tree_if_owned "$SKILLS_DIR/$retired" _remove_retired; then
         info "Removed retired skill: $SKILLS_DIR/$retired/"
     fi
 done
