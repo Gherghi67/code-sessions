@@ -664,6 +664,190 @@ test_auto_approve_rejects_git_dir_inside_content() {
         "a narrative beside the relocated git dir" || return 1
 }
 
+# Audit #886: no symlink under a control directory is reasoned about. Any
+# link there declines every write, wherever it points, and the hook says
+# which link on stderr. The scan roots are .cs/local, .cs/age-recipients,
+# .cs/private, .cs/claude-config, the project's .claude/ (and .mcp.json),
+# and an in-session CLAUDE_CONFIG_DIR.
+_auto_approve_stderr() {
+    # $1 tool, $2 path: the hook's stderr, its stdout dropped.
+    local input
+    input=$(jq -n --arg tool "$1" --arg path "$2" \
+        '{tool_name: $tool, tool_input: {file_path: $path}}')
+    echo "$input" | bash "$HOOKS_DIR/session-auto-approve.sh" 2>&1 >/dev/null
+}
+
+_link_reason() {
+    printf 'cs auto-approve: not approving, symlink under a control directory: %s' "$1"
+}
+
+test_auto_approve_declines_on_any_control_link() {
+    local root="$CLAUDE_SESSION_DIR" meta="$CLAUDE_SESSION_META_DIR"
+    local outside="$TEST_TMPDIR/outside" real
+    mkdir -p "$outside" "$meta/private/handoffs"
+    # A link under local/ that points outside the session entirely.
+    ln -s "$outside" "$meta/local/elsewhere"
+    _assert_falls_through Write "$meta/memory/narrative.md" \
+        "a narrative beside a link in local/ pointing outside" || return 1
+    real="$(cd "$meta/local" && pwd -P)"
+    assert_eq "$(_link_reason "$real/elsewhere")" \
+        "$(_auto_approve_stderr Write "$meta/memory/narrative.md")" \
+        "the decline names the link" || return 1
+    rm "$meta/local/elsewhere"
+    # Nested deep under private/.
+    mkdir -p "$meta/private/handoffs/a/b"
+    ln -s "$outside" "$meta/private/handoffs/a/b/deep"
+    _assert_falls_through Write "$meta/memory/narrative.md" \
+        "a narrative beside a nested link in private/" || return 1
+    rm "$meta/private/handoffs/a/b/deep"
+    # private itself linked anywhere but the vault mount.
+    mv "$meta/private" "$outside/private"
+    ln -s "$outside/private" "$meta/private"
+    _assert_falls_through Write "$meta/memory/narrative.md" \
+        "a narrative beside a private/ linked outside the vault" || return 1
+    rm "$meta/private"
+    # Under the project's .claude/, deep and pointing outside.
+    mkdir -p "$root/.claude/skills/x/scripts"
+    ln -s "$outside" "$root/.claude/skills/x/scripts/ref"
+    _assert_falls_through Write "$meta/memory/narrative.md" \
+        "a narrative beside a link in the project's .claude/" || return 1
+    rm "$root/.claude/skills/x/scripts/ref"
+    # .mcp.json as a link, wherever it points.
+    printf '{}\n' > "$outside/mcp.json"
+    ln -s "$outside/mcp.json" "$root/.mcp.json"
+    _assert_falls_through Write "$meta/memory/narrative.md" \
+        "a narrative beside a linked .mcp.json" || return 1
+    rm "$root/.mcp.json"
+    _assert_allowed Write "$meta/memory/narrative.md" \
+        "a narrative once every link is gone" || return 1
+}
+
+# The positive control for the scan: a session with no link anywhere keeps
+# its content writes frictionless, and the hook says nothing on stderr.
+test_auto_approve_allows_content_without_links() {
+    local root="$CLAUDE_SESSION_DIR" meta="$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$meta/plans" "$meta/private/handoffs" "$meta/claude-config" \
+        "$meta/age-recipients" "$root/.claude/skills/x"
+    printf '{}\n' > "$root/.claude/settings.json"
+    printf '{}\n' > "$meta/claude-config/settings.json"
+    _assert_allowed Write "$meta/memory/narrative.md" "a narrative" || return 1
+    _assert_allowed Write "$meta/plans/plan.md" "a plan" || return 1
+    _assert_allowed Write "$meta/private/handoffs/2026-01-01-x.md" \
+        "a handoff in private/" || return 1
+    assert_eq "" "$(_auto_approve_stderr Write "$meta/memory/narrative.md")" \
+        "an approval says nothing on stderr" || return 1
+}
+
+# cs links the shell's shared config names into .cs/claude-config
+# (lib/75-launch.sh _link_shared_claude_config). Those links, by those names
+# and pointing where cs points them, are the only ones allowed there.
+_make_shared_config_links() {
+    # $1 the claude-config directory, $2 the shell config dir
+    local name
+    mkdir -p "$2/rules" "$2/skills" "$2/plugins"
+    printf '{}\n' > "$2/settings.json"
+    printf '# shared\n' > "$2/CLAUDE.md"
+    for name in settings.json CLAUDE.md rules skills plugins; do
+        ln -s "$2/$name" "$1/$name"
+    done
+}
+
+test_auto_approve_allows_cs_shared_config_links() {
+    local meta="$CLAUDE_SESSION_META_DIR" home="$TEST_TMPDIR/home" name
+    mkdir -p "$meta/claude-config/projects"
+    _make_shared_config_links "$meta/claude-config" "$home/.claude"
+    HOME="$home" _assert_allowed Write "$meta/memory/narrative.md" \
+        "a narrative beside cs's own config links" || return 1
+    # A shell that ran with its own CLAUDE_CONFIG_DIR: cs linked from there,
+    # and the launch keeps it in CLAUDE_SECURESTORAGE_CONFIG_DIR.
+    for name in settings.json CLAUDE.md rules skills plugins; do
+        rm "$meta/claude-config/$name"
+    done
+    _make_shared_config_links "$meta/claude-config" "$TEST_TMPDIR/shell-config"
+    HOME="$home" CLAUDE_SECURESTORAGE_CONFIG_DIR="$TEST_TMPDIR/shell-config" \
+        _assert_allowed Write "$meta/memory/narrative.md" \
+        "a narrative beside config links into the shell's own config dir" || return 1
+}
+
+test_auto_approve_rejects_foreign_config_link() {
+    local meta="$CLAUDE_SESSION_META_DIR" home="$TEST_TMPDIR/home"
+    mkdir -p "$meta/claude-config"
+    _make_shared_config_links "$meta/claude-config" "$home/.claude"
+    # A name cs never links, pointing into the shell config like the rest.
+    printf '{}\n' > "$home/.claude/extra.json"
+    ln -s "$home/.claude/extra.json" "$meta/claude-config/extra.json"
+    HOME="$home" _assert_falls_through Write "$meta/memory/narrative.md" \
+        "a narrative beside a foreign-named config link" || return 1
+    rm "$meta/claude-config/extra.json"
+    # A shared name pointing somewhere cs does not point it.
+    printf '{}\n' > "$TEST_TMPDIR/other.json"
+    rm "$meta/claude-config/settings.json"
+    ln -s "$TEST_TMPDIR/other.json" "$meta/claude-config/settings.json"
+    HOME="$home" _assert_falls_through Write "$meta/memory/narrative.md" \
+        "a narrative beside a settings link cs did not make" || return 1
+    rm "$meta/claude-config/settings.json"
+    ln -s "$home/.claude/settings.json" "$meta/claude-config/settings.json"
+    # A shared name one level down is not where cs puts it.
+    mkdir -p "$meta/claude-config/sub"
+    ln -s "$home/.claude/rules" "$meta/claude-config/sub/rules"
+    HOME="$home" _assert_falls_through Write "$meta/memory/narrative.md" \
+        "a narrative beside a shared name below the config root" || return 1
+    rm -r "$meta/claude-config/sub"
+    HOME="$home" _assert_allowed Write "$meta/memory/narrative.md" \
+        "a narrative once only cs's links remain" || return 1
+}
+
+# An encrypted session (lib/63-encrypt.sh): memory, plans, claude-config and
+# private are links into .cs/vault-mnt by design (CS_VAULT_LINKS), and the
+# config dir's shared names link out to the shell config. Content writes
+# there must stay frictionless: the scan follows only the root links cs
+# places, then looks inside the vault directories they name.
+_make_vaulted_meta() {
+    # $1 the metadata root, $2 the shell config dir
+    local meta="$1" sub
+    mkdir -p "$meta/vault-mnt/private/handoffs" "$meta/vault-mnt/claude-config/projects" \
+        "$meta/vault-mnt/plans"
+    mv "$meta/memory" "$meta/vault-mnt/memory"
+    for sub in memory plans claude-config private; do
+        ln -s "vault-mnt/$sub" "$meta/$sub"
+    done
+    _make_shared_config_links "$meta/vault-mnt/claude-config" "$2"
+}
+
+test_auto_approve_allows_vaulted_session_content() {
+    local meta="$CLAUDE_SESSION_META_DIR" home="$TEST_TMPDIR/home"
+    _make_vaulted_meta "$meta" "$home/.claude"
+    HOME="$home" CLAUDE_CONFIG_DIR="$meta/claude-config" \
+        _assert_allowed Write "$meta/memory/narrative.md" \
+        "a narrative in an encrypted session" || return 1
+    HOME="$home" CLAUDE_CONFIG_DIR="$meta/claude-config" \
+        _assert_allowed Write "$meta/plans/plan.md" \
+        "a plan in an encrypted session" || return 1
+    HOME="$home" CLAUDE_CONFIG_DIR="$meta/claude-config" \
+        _assert_allowed Write "$meta/private/handoffs/2026-01-01-x.md" \
+        "a handoff in an encrypted session" || return 1
+    HOME="$home" CLAUDE_CONFIG_DIR="$meta/claude-config" \
+        _assert_falls_through Write "$meta/claude-config/settings.local.json" \
+        "a setting in an encrypted session" || return 1
+    # A planted link inside the vault's private/ still declines.
+    ln -s "$TEST_TMPDIR" "$meta/vault-mnt/private/handoffs/planted"
+    HOME="$home" CLAUDE_CONFIG_DIR="$meta/claude-config" \
+        _assert_falls_through Write "$meta/memory/narrative.md" \
+        "a narrative beside a link planted inside the vault" || return 1
+}
+
+# Claude Code itself keeps a debug/latest link in its config dir when it
+# logs to a file. In an encrypted session that dir is .cs/claude-config, and
+# the strict rule declines on it like any other foreign link.
+test_auto_approve_declines_on_config_debug_link() {
+    local meta="$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$meta/claude-config/debug"
+    printf 'log\n' > "$meta/claude-config/debug/x.txt"
+    ln -s "$meta/claude-config/debug/x.txt" "$meta/claude-config/debug/latest"
+    _assert_falls_through Write "$meta/memory/narrative.md" \
+        "a narrative beside Claude Code's debug/latest link" || return 1
+}
+
 test_auto_approve_skips_outside_session() {
     unset CLAUDE_SESSION_NAME
     local input='{"tool_name":"Write","tool_input":{"file_path":"/tmp/anything.md"}}'
@@ -2772,6 +2956,12 @@ run_test test_auto_approve_rejects_new_file_under_linked_claude_dir
 run_test test_auto_approve_rejects_newline_file_path
 run_test test_auto_approve_rejects_config_dir_inside_session
 run_test test_auto_approve_rejects_git_dir_inside_content
+run_test test_auto_approve_declines_on_any_control_link
+run_test test_auto_approve_allows_content_without_links
+run_test test_auto_approve_allows_cs_shared_config_links
+run_test test_auto_approve_rejects_foreign_config_link
+run_test test_auto_approve_allows_vaulted_session_content
+run_test test_auto_approve_declines_on_config_debug_link
 
 # Subagent context
 run_test test_subagent_injects_session_name
