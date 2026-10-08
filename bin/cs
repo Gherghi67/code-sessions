@@ -354,12 +354,13 @@ _cs_remove_if_owned() {  # file, [payload-sha256]
 }
 
 # Removes the files under directory $1 that cs wrote, then every directory
-# that leaves empty; keeps the rest as _cs_remove_if_owned does. Returns 0
-# when the directory is gone.
-_cs_remove_tree_if_owned() {  # dir
-    local f
+# that leaves empty; keeps the rest as _cs_remove_if_owned does, or as
+# function $2 does when given one (it takes a file and removes it or keeps
+# it). Returns 0 when the directory is gone.
+_cs_remove_tree_if_owned() {  # dir, [remove-function]
+    local f remove="${2:-_cs_remove_if_owned}"
     while IFS= read -r f; do
-        _cs_remove_if_owned "$f" || true
+        "$remove" "$f" || true
     done < <(find "$1" ! -type d)
     find "$1" -depth -type d -exec rmdir {} \; 2>/dev/null || true
     [ ! -e "$1" ]
@@ -8278,12 +8279,16 @@ _doctor_check_iterm2() {
 _doctor_check_spawn() {
     local spawn_dir="$SESSIONS_ROOT/.spawn"
     local stale=() orphan=() dangling=() clean=1
-    local f name
+    local f name suffix
 
     if [ -d "$spawn_dir" ]; then
-        for f in "$spawn_dir"/*.seed.stale "$spawn_dir"/*.brief.md.stale; do
-            [ -e "$f" ] || continue
-            stale+=("$(basename "$f")")
+        # The aged-out suffixes are the .stale ones in cs -spawn's own list.
+        for suffix in $(_spawn_staging_suffixes); do
+            case "$suffix" in *.stale) ;; *) continue ;; esac
+            for f in "$spawn_dir"/*"$suffix"; do
+                [ -e "$f" ] || continue
+                stale+=("$(basename "$f")")
+            done
         done
         for f in "$spawn_dir"/*.seed; do
             [ -e "$f" ] || continue
@@ -9908,6 +9913,9 @@ run_statusline_cmd() {
             ;;
         disable)
             [ -f "$settings" ] || { info "No settings.json; nothing to disable."; return 0; }
+            # A file jq cannot parse would read below as "not cs-statusline";
+            # it holds no answer either way, so say what is wrong with it.
+            cs_settings_check "$settings" || error "$CS_SETTINGS_ERROR"
             # Capture each stripper's exit code with `|| rc=$?`: a bare call
             # returning non-zero (foreign or absent registration) would trip
             # `set -e` before the following case ran, aborting the second strip.

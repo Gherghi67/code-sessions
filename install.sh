@@ -418,12 +418,13 @@ _cs_remove_if_owned() {  # file, [payload-sha256]
 }
 
 # Removes the files under directory $1 that cs wrote, then every directory
-# that leaves empty; keeps the rest as _cs_remove_if_owned does. Returns 0
-# when the directory is gone.
-_cs_remove_tree_if_owned() {  # dir
-    local f
+# that leaves empty; keeps the rest as _cs_remove_if_owned does, or as
+# function $2 does when given one (it takes a file and removes it or keeps
+# it). Returns 0 when the directory is gone.
+_cs_remove_tree_if_owned() {  # dir, [remove-function]
+    local f remove="${2:-_cs_remove_if_owned}"
     while IFS= read -r f; do
-        _cs_remove_if_owned "$f" || true
+        "$remove" "$f" || true
     done < <(find "$1" ! -type d)
     find "$1" -depth -type d -exec rmdir {} \; 2>/dev/null || true
     [ ! -e "$1" ]
@@ -1204,7 +1205,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "4abd5625b6b55cc52f86b6c7aee60c5a5e5e32543c1a7d8cd40957c4c197c697  bin/cs"
+    "9f598b386403356a22552b745a00877f4b1f6de6cf272ef0fe7e1984fb8971e4  bin/cs"
     "603074e92003d4403885dc892d7d0b4e3e1f44934d468f98722c7e05e3f92490  bin/cs-secrets"
     "218445530b4e201f65870c91c126ecfe6d7732b5796d6cf9df01b544b942cad5  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -1299,8 +1300,21 @@ _payload_mode() {  # repo-path
 # Put file $1 at $2 with mode $3 through a temp file in $2's own directory and
 # a rename, so $2 is always either the file it was or the whole new one, never
 # a partial copy: a dropped transfer or a full disk leaves the old file whole.
+# A symlink at $2 (a dotfiles manager's, or one pointing at a checkout) is
+# the user's and is kept, named in a warning and listed at the end, unless
+# what it points at is content cs wrote (_cs_owns_file): only then is the
+# link replaced by the file. The rename replaces the link itself, never
+# writing through it, so its target is left as it was either way.
 _place_file() {  # src, dest, mode
-    local dest="$2" dir tmp
+    local dest="$2" dir tmp digest
+    if [ -L "$dest" ]; then
+        digest=$(_cs_sha256_file "$1") || error "Could not compute the sha256 of $1 (needs sha256sum or shasum)"
+        if ! _cs_owns_file "$dest" "$digest"; then
+            warn "Kept $dest: a symlink to content cs did not write, so it was not replaced"
+            CS_KEPT_PATHS+=("$dest")
+            return 0
+        fi
+    fi
     dir=$(dirname "$dest")
     mkdir -p "$dir" || error "Could not create $dir"
     tmp=$(mktemp "$dir/.cs-install.XXXXXX") || error "Could not create a temp file in $dir"
@@ -1319,18 +1333,36 @@ _place() {  # repo-path, dest
 # ~/.claude, written out once every file is in place.
 CS_RECORD_LINES=()
 
+# Record sha256 $1 for path $2 (under $HOME) in the install record as soon as
+# the file is in place, keeping every other line as it was: a run that stops
+# partway then leaves a record true of each file, the placed ones under their
+# new sha256 and the rest under the line the last install wrote.
+_record_placed() {  # sha256, path-under-home
+    local record tmp="$STAGE_DIR/installed.partial"
+    record=$(_cs_install_record)
+    if [ -f "$record" ]; then
+        awk -v p="$2" 'substr($0, 67) != p' "$record" > "$tmp" || error "Could not read $record"
+    else
+        : > "$tmp"
+    fi
+    printf '%s  %s\n' "$1" "$2" >> "$tmp"
+    _place_file "$tmp" "$record" 644
+}
+
 # Deploy payload file $1 at $2 under ~/.claude, unless a file cs did not
 # write is already there: that one is kept, named in a warning and listed
-# again at the end. A file is cs's as _cs_owns_file decides.
+# again at the end. A file is cs's as _cs_owns_file decides; a symlink that
+# points nowhere holds nothing cs wrote, so it is kept too.
 _deploy() {  # repo-path, dest
     local digest
     digest=$(_cs_sha256_file "$PAYLOAD_DIR/$1") || error "Could not compute the sha256 of $1 (needs sha256sum or shasum)"
-    if [ -e "$2" ] && ! _cs_owns_file "$2" "$digest"; then
+    if { [ -e "$2" ] || [ -L "$2" ]; } && ! _cs_owns_file "$2" "$digest"; then
         warn "Kept $2: cs did not write it, so it was not replaced"
         CS_KEPT_PATHS+=("$2")
         return 0
     fi
     _place "$1" "$2"
+    _record_placed "$digest" "${2#"$HOME"/}"
     CS_RECORD_LINES+=("$digest  ${2#"$HOME"/}")
 }
 
@@ -1514,13 +1546,39 @@ rm -f "$INSTALL_DIR/cs-tui.exe"
 installed "${#CS_HOOKS[@]} hooks" "$HOOKS_DIR/"
 mkdir -p "$HOOKS_DIR"
 
+# Removes file $1, under a name cs retired, when cs wrote it, and returns 0.
+# A file cs did not write is kept and returns 1. It is in the way of nothing
+# cs deploys, so it is named (and listed at the end) only the first time an
+# install sees that content: the install record remembers it as a
+# "kept <sha256>  <path under $HOME>" line, which never matches the
+# "<sha256>  <path>" lines _cs_owns_file reads. Content whose sha256 cannot
+# be computed is named every time.
+_remove_retired() {  # file
+    local digest line record
+    if _cs_owns_file "$1"; then
+        rm -f "$1"
+        return 0
+    fi
+    record=$(_cs_install_record)
+    if digest=$(_cs_sha256_file "$1"); then
+        line="kept $digest  ${1#"$HOME"/}"
+        CS_RECORD_LINES+=("$line")
+        if [ -f "$record" ] && grep -qxF "$line" "$record"; then
+            return 1
+        fi
+    fi
+    warn "Kept $1: cs did not write it"
+    CS_KEPT_PATHS+=("$1")
+    return 1
+}
+
 # Remove any retired hook files that earlier cs versions installed but no longer ship.
 # Settings.json entries are stripped further below. Retired hooks may sit in
 # HOOKS_DIR or, for installs that deployed hooks flat, its parent directory.
 # Only a file cs wrote is removed; a user's own file of the same name is kept.
 for retired in "${RETIRED_HOOKS[@]}"; do
     for dir in "$HOOKS_DIR" "$HOOKS_PARENT_DIR"; do
-        if [ -f "$dir/$retired" ] && _cs_remove_if_owned "$dir/$retired"; then
+        if [ -f "$dir/$retired" ] && _remove_retired "$dir/$retired"; then
             info "Removed retired hook: $dir/$retired"
         fi
     done
@@ -1556,23 +1614,53 @@ installed "skills" "$SKILLS_DIR/"
 # complete until the old directory is gone. Only the files cs wrote go; a
 # user's own files in it (or a user's skill of that name) are kept.
 for retired in "${RETIRED_SKILLS[@]}"; do
-    if [ -d "$SKILLS_DIR/$retired" ] && _cs_remove_tree_if_owned "$SKILLS_DIR/$retired"; then
+    if [ -d "$SKILLS_DIR/$retired" ] && _cs_remove_tree_if_owned "$SKILLS_DIR/$retired" _remove_retired; then
         info "Removed retired skill: $SKILLS_DIR/$retired/"
     fi
 done
 
-# A symlink anywhere on a mod file's deploy path (an earlier opt-in had the
-# person link the whole directory at the checkout) is replaced by a real
-# directory or file: copying through the link would write into its target
-# instead of deploying. Checks the mod directory, the file's directory and
-# the file itself.
+# Whether the symlinked directory $SKILLS_DIR/$1 points at cs's own mod
+# files: every file the manifest deploys under it, read through the link, is
+# content cs wrote (_cs_owns_file). A file missing there is not.
+_mod_link_holds_cs_files() {  # path under SKILLS_DIR
+    local f digest
+    for f in "${CS_MOD_FILES[@]}"; do
+        case "$f" in "$1"/*) ;; *) continue ;; esac
+        digest=$(_cs_sha256_file "$PAYLOAD_DIR/mods/$f") || error "Could not compute the sha256 of mods/$f (needs sha256sum or shasum)"
+        _cs_owns_file "$SKILLS_DIR/$f" "$digest" || return 1
+    done
+}
+
+# The symlinked mod directories this install kept, one per line, so each is
+# named once however many mod files sit under it.
+_mod_links_kept=$'\n'
+
+# Whether mod file $1 can be deployed without writing through a symlinked
+# directory: copying through the link would write into its target instead of
+# deploying. A link on the path (the mod directory or the file's directory)
+# that points at cs's own mod files (an earlier opt-in had the person link
+# the whole directory at the checkout) is replaced by a real directory. One
+# that points anywhere else is the user's: it is kept, named once and listed
+# with the kept files, and returns 1 so nothing is placed under it. A link at
+# the file itself is _deploy's to judge.
 _mod_path_real() {
     local rel="$1" p
-    for p in "${rel%%/*}" "$(dirname "$rel")" "$rel"; do
-        if [ -L "$SKILLS_DIR/$p" ]; then
+    for p in "${rel%%/*}" "$(dirname "$rel")"; do
+        [ -L "$SKILLS_DIR/$p" ] || continue
+        if _mod_link_holds_cs_files "$p"; then
             rm "$SKILLS_DIR/$p"
             info "Replaced symlink $SKILLS_DIR/$p with a deployed copy"
+            continue
         fi
+        case "$_mod_links_kept" in
+            *$'\n'"$SKILLS_DIR/$p"$'\n'*) ;;
+            *)
+                warn "Kept $SKILLS_DIR/$p: a symlink to files cs did not write, so the mod files under it were not deployed"
+                CS_KEPT_PATHS+=("$SKILLS_DIR/$p")
+                _mod_links_kept="$_mod_links_kept$SKILLS_DIR/$p"$'\n'
+                ;;
+        esac
+        return 1
     done
 }
 
@@ -1583,8 +1671,9 @@ for skill_file in "${CS_SKILL_FILES[@]}"; do
     _deploy "skills/$skill_file" "$SKILLS_DIR/$skill_file"
 done
 for mod_file in "${CS_MOD_FILES[@]}"; do
-    _mod_path_real "$mod_file"
-    _deploy "mods/$mod_file" "$SKILLS_DIR/$mod_file"
+    if _mod_path_real "$mod_file"; then
+        _deploy "mods/$mod_file" "$SKILLS_DIR/$mod_file"
+    fi
 done
 
 # Record what this install wrote under ~/.claude, so the next install, update
@@ -1630,6 +1719,17 @@ else
     # Tilde spelling of HOOKS_DIR (settings.json entries use ~ instead of $HOME)
     HOOKS_TILDE_DIR="~/.claude/hooks/cs"
 
+    # Strip the registration of flat-layout hook $1 (~/.claude/hooks/$1) from
+    # SETTINGS, unless a file is still there: the clean-up above removed every
+    # flat file cs wrote, so one that is left is the user's own hook, and its
+    # registration is theirs too.
+    _strip_flat_hook() {  # name
+        if [ -e "$HOOKS_PARENT_DIR/$1" ] || [ -L "$HOOKS_PARENT_DIR/$1" ]; then
+            return 0
+        fi
+        SETTINGS=$(_strip_hook_registration "$SETTINGS" "$HOOKS_PARENT_DIR/$1" "~/.claude/hooks/$1")
+    }
+
     # The settings JSON in SETTINGS without any cs hook registration that the
     # merge below does not put back.
     _strip_cs_hooks() {
@@ -1637,14 +1737,14 @@ else
         # we don't know which event the old version registered them under). Covers
         # both deployment layouts.
         for retired in "${RETIRED_HOOKS[@]}"; do
-            SETTINGS=$(_strip_hook_registration "$SETTINGS" "$HOOKS_PARENT_DIR/$retired" "~/.claude/hooks/$retired")
+            _strip_flat_hook "$retired"
             SETTINGS=$(_strip_hook_registration "$SETTINGS" "$HOOKS_DIR/$retired" "$HOOKS_TILDE_DIR/$retired")
         done
 
         # Strip parent-level registrations of current hooks (flat-layout installs);
         # _merge_cs_hook re-registers each one under HOOKS_DIR below.
         for hook in "${CS_HOOKS[@]}"; do
-            SETTINGS=$(_strip_hook_registration "$SETTINGS" "$HOOKS_PARENT_DIR/$hook" "~/.claude/hooks/$hook")
+            _strip_flat_hook "$hook"
         done
 
         # Drop events that emptied out entirely after the strips
