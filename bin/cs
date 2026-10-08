@@ -3924,6 +3924,14 @@ _move_memory_files() {  # src, dest
             complete=0
             continue
         fi
+        # The destination root may itself be a link (a vaulted session keeps
+        # .cs/memory elsewhere); only one pointing back at src makes the
+        # target the source file, which no byte comparison can tell apart.
+        if [ "$f" -ef "$target" ]; then
+            warn "Not moving $f: $target is the same file" >&2
+            complete=0
+            continue
+        fi
         if { [ -e "$target" ] || [ -L "$target" ]; } && ! cmp -s "$f" "$target"; then
             target="$target.claude-projects"
         fi
