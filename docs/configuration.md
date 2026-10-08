@@ -242,6 +242,12 @@ export CS_NO_FUNCTION_HOOKS="1"
 # Override the tmux binary cs -spawn uses (default: tmux on PATH)
 export CS_TMUX_BIN="/opt/homebrew/bin/tmux"
 
+# Not a setting. cs -spawn puts the staged seed's token here in the tmux
+# window it opens, so that window takes the seed without asking; every
+# other open of the name is asked. The launch drops it before claude
+# starts. Setting it by hand does nothing unless it matches the seed.
+# export CS_SPAWN_TOKEN
+
 # Force the detected platform instead of probing for it; any other
 # value is rejected. Read by cs -secrets only, to choose between the
 # macOS keychain and the encrypted file

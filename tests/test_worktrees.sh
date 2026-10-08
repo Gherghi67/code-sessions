@@ -2026,10 +2026,13 @@ test_finish_warns_when_it_displaces_a_spawn_kick() {
     # the drain is the Stop hook, which fires at the first turn end.
     create_test_session_with_git "myproj" > /dev/null
     cs_launch "myproj@fix-auth"
+    # The seed as cs -spawn writes it (line 1 the token, line 2 the spawner),
+    # opened as the spawn's own window via CS_SPAWN_TOKEN, so the seed is
+    # consumed unasked and the two kicks compete.
     mkdir -p "$CS_SESSIONS_ROOT/.spawn"
-    printf 'other-session\nfirst staged task\n' > "$CS_SESSIONS_ROOT/.spawn/myproj.seed"
+    printf 'feedfacefeedfacefeedfacefeedface\nother-session\nfirst staged task\n' > "$CS_SESSIONS_ROOT/.spawn/myproj.seed"
     local output
-    output=$("$CS_BIN" "myproj" -finish "fix-auth" < /dev/null 2>&1 || true)
+    output=$(CS_SPAWN_TOKEN=feedfacefeedfacefeedfacefeedface "$CS_BIN" "myproj" -finish "fix-auth" < /dev/null 2>&1 || true)
     assert_output_contains "$output" "/finish fix-auth" "the merge kick takes the slot" || return 1
     assert_output_contains "$output" "walk-away queue is armed" "the displacement must be announced" || return 1
     assert_output_not_contains "$output" "after the merge" "must not promise sequencing it cannot enforce" || return 1

@@ -209,6 +209,15 @@ launch_claude_code() {
     # (colors were first set at startup, defaulting to dark).
     setup_palette
 
+    # The spawn token (see the seed consumer below) proves THIS window to
+    # THIS session only. Taken into a plain variable and dropped from the
+    # environment here, before the lock: its collision menu re-execs cs for
+    # a feature of the session, and an exported token would ride along and
+    # prove the redirected launch to a seed staged for that feature (Codex
+    # round 2, audit H2).
+    local _spawn_token="${CS_SPAWN_TOKEN:-}"
+    unset CS_SPAWN_TOKEN
+
     # Acquire session lock before anything else
     acquire_session_lock "$session_dir/.cs" "$force" "$session_name"
     # A force chosen at the collision menu is equivalent to --force for the
@@ -424,6 +433,15 @@ launch_claude_code() {
     # so a window that died before launching self-heals on the session's next
     # open. A stale seed (>1h) is set aside with its brief, never silently
     # armed days later.
+    #
+    # Consent (audit H2): a seed is a file in .spawn/, and anything that can
+    # write there could arm the next open of this name with its own tasks and
+    # a kick that says "begin". Line 1 of the seed is a token the spawn's own
+    # tmux window carries in CS_SPAWN_TOKEN; only that window consumes unasked.
+    # Every other open (by hand, a script, a window that died and was reopened
+    # elsewhere) is shown the seed as data and asked. The token was taken out
+    # of the environment before the lock (above), so claude, a collision
+    # redirect and any nested launch never carry it.
     local spawn_kick=""
     local _seed="$SESSIONS_ROOT/.spawn/$session_name.seed"
     local _brief="$SESSIONS_ROOT/.spawn/$session_name.brief.md"
@@ -436,7 +454,85 @@ launch_claude_code() {
             [ ! -f "$_brief" ] || mv "$_brief" "$_brief.stale" 2>/dev/null || true
             warn "Stale spawn seed set aside: $_seed.stale (re-run cs -spawn if still wanted)"
         else
-            local _spawner="" _line _n=0 _first=1 _has_brief=0
+            # Read the seed once: line 1 the token, line 2 the spawner, then
+            # one task per line. Whitespace-only lines are skipped, not merely
+            # empty ones: _queue_add trims and then errors on an empty body,
+            # which under errexit would abort the whole session launch over a
+            # stray space in a hand-edited seed.
+            local _seed_token="" _spawner="" _line _lineno=0 _n=0
+            local _tasks
+            _tasks=()
+            while IFS= read -r _line || [ -n "$_line" ]; do
+                _lineno=$((_lineno + 1))
+                case "$_lineno" in
+                    1) _seed_token="$_line"; continue ;;
+                    2) _spawner="$_line"; continue ;;
+                esac
+                case "$_line" in *[![:space:]]*) : ;; *) continue ;; esac
+                _tasks+=("$_line")
+                _n=$((_n + 1))
+            done < "$_seed"
+            # Never empty-equals-empty: a seed with no token line (older cs,
+            # or hand-written) is foreign to every open.
+            local _consume=1
+            if [ -n "$_spawn_token" ] && [ "$_spawn_token" = "$_seed_token" ]; then
+                :
+            else
+                _consume=0
+                # Shown as data: control characters stripped, so a crafted
+                # seed cannot draw over the question it is answering.
+                local _shown_spawner _shown
+                _shown_spawner=$(printf '%s' "$_spawner" | tr -d '[:cntrl:]')
+                echo
+                printf "${GOLD}A spawn seed is staged for this session:${NC} %s\n" "$_seed"
+                printf '    spawner: %s\n' "${_shown_spawner:-(none)}"
+                if [ -f "$_brief" ]; then
+                    printf '    brief:   %s (becomes .cs/brief.md)\n' "$_brief"
+                fi
+                if [ "$_n" -gt 0 ]; then
+                    printf '    tasks (queued and armed; the walk-away drain runs them unattended):\n'
+                    local _i=0
+                    for _line in ${_tasks[@]+"${_tasks[@]}"}; do
+                        _i=$((_i + 1))
+                        _shown=$(printf '%s' "$_line" | tr -d '[:cntrl:]')
+                        printf '      %d. %s\n' "$_i" "$_shown"
+                    done
+                fi
+                # The answer is a keypress on a terminal, never redirected
+                # stdin: `cs name <<< ""` hands read a newline, which is the
+                # empty answer the default arm took (Codex round 1), and a
+                # script could type y as easily. With no terminal the seed
+                # stays staged for an attended open and this launch goes on
+                # without it. On a terminal: Enter or y takes the seed, n or
+                # Escape sets the seed and brief aside like a stale pair so
+                # the next open does not ask again, any other key asks
+                # again, and EOF leaves it staged.
+                if [ ! -t 0 ]; then
+                    warn "Spawn seed left staged: $_seed (open $session_name in a terminal to answer, or remove it)"
+                else
+                    local _answer
+                    while :; do
+                        printf "${DIM}This open is not the spawn's own window.${NC} Take the seed? [Y/n] "
+                        if ! IFS= read -rsn1 _answer; then
+                            echo
+                            warn "Spawn seed left staged: $_seed (open $session_name in a terminal to answer, or remove it)"
+                            break
+                        fi
+                        echo
+                        case "$_answer" in
+                            ''|[yY]) _consume=1; break ;;
+                            $'\e'|[nN])
+                                mv "$_seed" "$_seed.stale" 2>/dev/null || true
+                                [ ! -f "$_brief" ] || mv "$_brief" "$_brief.stale" 2>/dev/null || true
+                                warn "Spawn seed declined and set aside: $_seed.stale (re-run cs -spawn if still wanted)"
+                                break ;;
+                        esac
+                    done
+                fi
+            fi
+        fi
+        if [ "${_consume:-0}" = 1 ]; then
+            local _has_brief=0 _qdir
             # The brief moves in before any task is queued, and a move that
             # fails stops the launch with the seed and brief still staged, so
             # the next open retries. Consuming the seed regardless would start
@@ -452,17 +548,15 @@ launch_claude_code() {
                     || error "Spawn brief could not be delivered to $session_dir/.cs/brief.md (seed kept; re-open the session to retry)"
                 _has_brief=1
             fi
-            while IFS= read -r _line || [ -n "$_line" ]; do
-                if [ "$_first" = 1 ]; then _spawner="$_line"; _first=0; continue; fi
-                # Skip whitespace-only lines, not merely empty ones: _queue_add
-                # trims and then errors on an empty body, which under errexit
-                # would abort the whole session launch over a stray space in a
-                # hand-edited seed.
-                case "$_line" in *[![:space:]]*) : ;; *) continue ;; esac
-                _queue_add "$session_dir/.cs/local" "$_line"
-                _n=$((_n + 1))
-            done < "$_seed"
-            [ "$_n" -eq 0 ] || _queue_set_state "$session_dir/.cs/local" armed
+            # The queue is a cs content file: behind .cs/private in an
+            # encrypted session, where the drain reads it. spawned-by is an
+            # id and stays in .cs/local (docs/session-layout.md).
+            _qdir=$(cs_private_dir "$session_dir/.cs") \
+                || error "$session_name: .cs/private dangles after the open checked it (vault unmounted mid-launch?). Mount it, then reopen. (seed kept)"
+            for _line in ${_tasks[@]+"${_tasks[@]}"}; do
+                _queue_add "$_qdir" "$_line"
+            done
+            [ "$_n" -eq 0 ] || _queue_set_state "$_qdir" armed
             if [ "$_n" -gt 0 ] || [ "$_has_brief" = 1 ]; then
                 local _work=""
                 [ "$_has_brief" = 1 ] && _work="Your brief is .cs/brief.md: read it first."

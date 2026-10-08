@@ -68,9 +68,15 @@ _spawn_attach_hint() {
     fi
 }
 
-_spawn_window() {  # name
-    local name="$1" cmd wid
-    cmd="$(_sq "$(_cs_self)") $(_sq "$name")"
+_spawn_window() {  # name, token
+    local name="$1" token="$2" cmd wid
+    # The token proves to the launch that this window is the spawn's own, so
+    # only it consumes the seed unasked (see the seed consumer in
+    # lib/75-launch.sh). It is correlation, not a secret: anyone who can read
+    # the seed can read it, and `ps` shows it for as long as the launch runs.
+    # `env` rather than a VAR=value prefix, which tmux's default-shell need
+    # not understand.
+    cmd="env $(_sq "CS_SPAWN_TOKEN=$token") $(_sq "$(_cs_self)") $(_sq "$name")"
     # Try to create the cs session outright: tmux rejects a duplicate -s name,
     # so "already exists" and "a concurrent spawner just created it" collapse
     # into the same fallthrough to new-window.
@@ -120,6 +126,21 @@ run_spawn() {
         validate_session_name "$name"
     fi
     _spawn_precheck "$name"
+    # The spawner is whatever the environment says. It becomes the worker's
+    # report-back address and goes into its kick prompt, so it must be a
+    # session name; an empty one means "no spawner" (no report-back wiring).
+    local spawner="${CLAUDE_SESSION_NAME:-}"
+    if [ -n "$spawner" ] && ! cs_split_worktree_name "$spawner"; then
+        # validate_session_name exits on a bad name; a subshell turns that
+        # into a status so the error can name where the name came from.
+        ( validate_session_name "$spawner" ) >/dev/null 2>&1 \
+            || error "cs -spawn: CLAUDE_SESSION_NAME is not a session name: $spawner"
+    fi
+    # One token per spawn, for the window command and the seed alike. The
+    # launch consumes the seed unasked only when the two match.
+    local token
+    token=$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n')
+    [ "${#token}" -eq 32 ] || error "cs -spawn: could not read 16 random bytes from /dev/urandom"
     # A brief is staged with a seed even when there are no tasks: the seed
     # carries the spawner, which the brief's report-back line needs.
     if [ "${#tasks[@]}" -gt 0 ] || [ -n "$brief" ]; then
@@ -145,7 +166,8 @@ run_spawn() {
         # reports only its LAST command, and a failed first write with a
         # succeeding task line published a seed whose spawner line was missing.
         local _payload _t
-        _payload="${CLAUDE_SESSION_NAME:-}
+        _payload="$token
+$spawner
 "
         # An empty array is unbound under bash 3.2's set -u, and a brief alone
         # leaves it empty; the guard expands to nothing in that case.
@@ -164,5 +186,5 @@ run_spawn() {
         mv "$seed.tmp" "$seed" \
             || { rm -f "$seed.tmp" 2>/dev/null || :; error "cs -spawn: cannot publish the seed in $sdir"; }
     fi
-    _spawn_window "$name"
+    _spawn_window "$name" "$token"
 }

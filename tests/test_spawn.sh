@@ -64,6 +64,20 @@ teardown() {
 SEED() { printf '%s' "$CS_SESSIONS_ROOT/.spawn/worker.seed"; }
 BRIEF() { printf '%s' "$CS_SESSIONS_ROOT/.spawn/worker.brief.md"; }
 
+# A seed as cs -spawn writes it: line 1 is the token the spawn's own tmux
+# window carries in CS_SPAWN_TOKEN, line 2 the spawner, then one task per
+# line. An open that carries the token is the spawn's own window and consumes
+# the seed unasked; any other open is shown the seed and asked.
+OWN_TOKEN=0123456789abcdef0123456789abcdef
+_stage_seed() {  # spawner, tasks...
+    mkdir -p "$CS_SESSIONS_ROOT/.spawn"
+    local spawner="$1" t
+    shift
+    { printf '%s\n%s\n' "$OWN_TOKEN" "$spawner"
+      for t in "$@"; do printf '%s\n' "$t"; done
+    } > "$CS_SESSIONS_ROOT/.spawn/worker.seed"
+}
+
 test_spawn_rejects_bad_names_and_missing_tmux() {
     ! "$CS_BIN" -spawn "bad name" >/dev/null 2>&1 || return 1
     ! "$CS_BIN" -spawn "../x" >/dev/null 2>&1 || return 1
@@ -82,9 +96,12 @@ test_spawn_writes_seed_and_opens_window() {
     out=$(CLAUDE_SESSION_NAME="boss" "$CS_BIN" -spawn worker \
         --task "first job" --task "second job" 2>&1) || return 1
     assert_file_exists "$(SEED)" "seed written" || return 1
-    assert_eq "boss" "$(sed -n 1p "$(SEED)")" "line 1 is spawner" || return 1
-    assert_eq "first job" "$(sed -n 2p "$(SEED)")" "task order kept" || return 1
-    assert_eq "second job" "$(sed -n 3p "$(SEED)")" "second task" || return 1
+    local tok; tok="$(sed -n 1p "$(SEED)")"
+    printf '%s' "$tok" | grep -Eq '^[0-9a-f]{32}$' || { echo "  line 1 is not a 32-hex token: '$tok'"; return 1; }
+    assert_eq "boss" "$(sed -n 2p "$(SEED)")" "line 2 is spawner" || return 1
+    assert_eq "first job" "$(sed -n 3p "$(SEED)")" "task order kept" || return 1
+    assert_eq "second job" "$(sed -n 4p "$(SEED)")" "second task" || return 1
+    assert_file_contains "$FAKE_TMUX_DIR/log" "'CS_SPAWN_TOKEN=$tok'" "the window command carries the seed's token" || return 1
     assert_output_contains "$out" "@0" "window id echoed" || return 1
     assert_output_contains "$out" "tmux attach -t cs" "attach hint" || return 1
     assert_file_contains "$FAKE_TMUX_DIR/log" "new-session -d -s cs" "created cs session" || return 1
@@ -105,8 +122,21 @@ test_spawn_tmux_targets_are_exact_match_anchored() {
 
 test_spawn_empty_spawner_writes_blank_first_line() {
     env -u CLAUDE_SESSION_NAME "$CS_BIN" -spawn worker --task "solo" >/dev/null 2>&1 || return 1
-    assert_eq "" "$(sed -n 1p "$(SEED)")" "blank spawner line" || return 1
-    assert_eq "solo" "$(sed -n 2p "$(SEED)")" "task on line 2" || return 1
+    assert_eq "" "$(sed -n 2p "$(SEED)")" "blank spawner line" || return 1
+    assert_eq "solo" "$(sed -n 3p "$(SEED)")" "task on line 3" || return 1
+}
+
+# The spawner line becomes the worker's report-back address (cs -msg <spawner>
+# -k result) and its kick prompt; it comes from the environment, so only a
+# session name gets in.
+test_spawn_rejects_an_invalid_spawner_name() {
+    local out
+    ! out=$(CLAUDE_SESSION_NAME="bad name; rm" "$CS_BIN" -spawn worker --task "solo" 2>&1) \
+        || { echo "  spawn accepted an invalid spawner name"; return 1; }
+    [ ! -f "$(SEED)" ] || { echo "  seed written for an invalid spawner"; return 1; }
+    assert_output_contains "$out" "CLAUDE_SESSION_NAME" "the error names the source" || return 1
+    CLAUDE_SESSION_NAME="base@task" "$CS_BIN" -spawn worker --task "solo" >/dev/null 2>&1 \
+        || { echo "  a worktree spawner name refused"; return 1; }
 }
 
 test_spawn_without_task_writes_no_seed() {
@@ -123,15 +153,15 @@ test_spawn_stages_brief_beside_the_seed() {
     assert_file_exists "$(BRIEF)" "brief staged" || return 1
     cmp -s "$TEST_TMPDIR/brief.md" "$(BRIEF)" || { echo "  staged brief differs from the source"; return 1; }
     assert_file_exists "$(SEED)" "a brief alone writes a seed" || return 1
-    assert_eq "boss" "$(sed -n 1p "$(SEED)")" "seed carries the spawner" || return 1
-    assert_eq "1" "$(wc -l < "$(SEED)" | tr -d ' ')" "seed carries no tasks" || return 1
+    assert_eq "boss" "$(sed -n 2p "$(SEED)")" "seed carries the spawner" || return 1
+    assert_eq "2" "$(wc -l < "$(SEED)" | tr -d ' ')" "seed carries no tasks" || return 1
 }
 
 test_spawn_brief_and_tasks_stage_together() {
     printf 'brief body\n' > "$TEST_TMPDIR/brief.md"
     "$CS_BIN" -spawn worker --brief "$TEST_TMPDIR/brief.md" --task "first job" >/dev/null 2>&1 || return 1
     assert_file_exists "$(BRIEF)" "brief staged" || return 1
-    assert_eq "first job" "$(sed -n 2p "$(SEED)")" "task staged with the brief" || return 1
+    assert_eq "first job" "$(sed -n 3p "$(SEED)")" "task staged with the brief" || return 1
 }
 
 test_spawn_rejects_unreadable_or_empty_brief_before_staging() {
@@ -233,7 +263,7 @@ test_spawn_refuses_existing_seed() {
     "$CS_BIN" -spawn worker --task "a" >/dev/null 2>&1 || return 1
     rm -f "$FAKE_TMUX_DIR/session-exists"
     ! "$CS_BIN" -spawn worker --task "b" >/dev/null 2>&1 || return 1
-    assert_eq "a" "$(sed -n 2p "$(SEED)")" "original seed untouched" || return 1
+    assert_eq "a" "$(sed -n 3p "$(SEED)")" "original seed untouched" || return 1
 }
 
 test_spawn_rejects_multiline_and_empty_task() {
@@ -299,13 +329,53 @@ WQ_FIRST() {
 
 # Launch recipe (same as tests/test_uuid.sh): CLAUDE_CODE_BIN=echo makes cs's
 # `exec $CLAUDE_CODE_BIN <args>` print claude's argv; <<< "" answers any read.
+# The recipe opens as the spawn's own window (CS_SPAWN_TOKEN matches the
+# seed), the unattended path; the consent tests below open without it.
 _launch_worker() {
-    "$CS_BIN" worker <<< "" 2>&1
+    CS_SPAWN_TOKEN="$OWN_TOKEN" "$CS_BIN" worker <<< "" 2>&1
+}
+
+# A foreign open on a terminal: the consent ask reads a keypress from a tty,
+# never from redirected stdin, so the launch runs on a pty and the keys are
+# typed once the ask appears. Keys take Python escapes (\r, \x1b). Output
+# comes back with CRLF folded.
+_launch_worker_on_tty() {  # keys, [VAR=value ...]
+    local keys="$1"; shift
+    env "$@" python3 - "$keys" "$CS_BIN" worker << 'PY'
+import os, pty, select, sys, time
+keys = sys.argv[1].encode("latin1").decode("unicode_escape").encode("latin1")
+cmd = sys.argv[2:]
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp(cmd[0], cmd)
+out = b""
+sent = False
+start = time.time()
+while True:
+    ready, _, _ = select.select([fd], [], [], 0.2)
+    if ready:
+        try:
+            data = os.read(fd, 65536)
+        except OSError:
+            break
+        if not data:
+            break
+        out += data
+    if not sent and (b"[Y/n]" in out or time.time() - start > 8):
+        if keys:
+            os.write(fd, keys)
+        sent = True
+    if time.time() - start > 20:
+        os.kill(pid, 9)
+        break
+_, status = os.waitpid(pid, 0)
+sys.stdout.buffer.write(out.replace(b"\r\n", b"\n"))
+sys.exit(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 1)
+PY
 }
 
 test_launch_consumes_seed_queues_arms_and_kicks() {
-    mkdir -p "$CS_SESSIONS_ROOT/.spawn"
-    printf 'boss\nfirst job\nsecond job\n' > "$CS_SESSIONS_ROOT/.spawn/worker.seed"
+    _stage_seed boss "first job" "second job"
     local out; out=$(_launch_worker) || return 1
     grep -q "first job" "$(WQ)/queue"/* || { echo "  task 1 not queued"; return 1; }
     grep -q "second job" "$(WQ)/queue"/* || { echo "  task 2 not queued"; return 1; }
@@ -357,8 +427,7 @@ test_launch_outside_tmux_touches_no_tmux_environment() {
 }
 
 test_launch_empty_spawner_gets_no_reply_wiring() {
-    mkdir -p "$CS_SESSIONS_ROOT/.spawn"
-    printf '\nonly job\n' > "$CS_SESSIONS_ROOT/.spawn/worker.seed"
+    _stage_seed "" "only job"
     local out; out=$(_launch_worker) || return 1
     grep -q "only job" "$(WQ)/queue"/* || { echo "  task not queued"; return 1; }
     [ ! -f "$(WQ)/spawned-by" ] || { echo "  spawned-by written for empty spawner"; return 1; }
@@ -371,8 +440,7 @@ test_launch_empty_spawner_gets_no_reply_wiring() {
 # sends the session to it before anything else. With no tasks there is no
 # queue to drain, so the report-back is by hand and the kick says how.
 test_launch_moves_brief_into_the_session_and_kicks_to_it() {
-    mkdir -p "$CS_SESSIONS_ROOT/.spawn"
-    printf 'boss\n' > "$CS_SESSIONS_ROOT/.spawn/worker.seed"
+    _stage_seed boss
     printf '# Goal\nrefresh tokens\n' > "$CS_SESSIONS_ROOT/.spawn/worker.brief.md"
     local out; out=$(_launch_worker) || return 1
     assert_file_exists "$CS_SESSIONS_ROOT/worker/.cs/brief.md" "brief moved into the session" || return 1
@@ -388,8 +456,7 @@ test_launch_moves_brief_into_the_session_and_kicks_to_it() {
 }
 
 test_launch_brief_with_tasks_kicks_to_both() {
-    mkdir -p "$CS_SESSIONS_ROOT/.spawn"
-    printf 'boss\nfirst job\n' > "$CS_SESSIONS_ROOT/.spawn/worker.seed"
+    _stage_seed boss "first job"
     printf 'brief body\n' > "$CS_SESSIONS_ROOT/.spawn/worker.brief.md"
     local out; out=$(_launch_worker) || return 1
     assert_output_contains "$out" "Your brief is .cs/brief.md" "kick names the brief" || return 1
@@ -406,8 +473,7 @@ test_launch_brief_with_tasks_kicks_to_both() {
 test_launch_refuses_a_directory_at_the_briefs_destination() {
     _launch_worker >/dev/null || return 1
     mkdir -p "$CS_SESSIONS_ROOT/worker/.cs/brief.md"
-    mkdir -p "$CS_SESSIONS_ROOT/.spawn"
-    printf 'boss\nfirst job\n' > "$CS_SESSIONS_ROOT/.spawn/worker.seed"
+    _stage_seed boss "first job"
     printf 'brief body\n' > "$CS_SESSIONS_ROOT/.spawn/worker.brief.md"
     local rc=0 out
     out=$(_launch_worker) || rc=$?
@@ -427,8 +493,7 @@ test_launch_failed_brief_delivery_keeps_the_seed_and_brief() {
     _launch_worker >/dev/null || return 1
     mkdir -p "$CS_SESSIONS_ROOT/worker/.cs/brief.md"
     chmod 500 "$CS_SESSIONS_ROOT/worker/.cs/brief.md"
-    mkdir -p "$CS_SESSIONS_ROOT/.spawn"
-    printf 'boss\nfirst job\n' > "$CS_SESSIONS_ROOT/.spawn/worker.seed"
+    _stage_seed boss "first job"
     printf 'brief body\n' > "$CS_SESSIONS_ROOT/.spawn/worker.brief.md"
     local rc=0 out
     out=$(_launch_worker) || rc=$?
@@ -443,8 +508,7 @@ test_launch_failed_brief_delivery_keeps_the_seed_and_brief() {
 }
 
 test_launch_stale_seed_sets_its_brief_aside_too() {
-    mkdir -p "$CS_SESSIONS_ROOT/.spawn"
-    printf 'boss\n' > "$CS_SESSIONS_ROOT/.spawn/worker.seed"
+    _stage_seed boss
     printf 'old brief\n' > "$CS_SESSIONS_ROOT/.spawn/worker.brief.md"
     touch -t 202401010000 "$CS_SESSIONS_ROOT/.spawn/worker.seed"
     local out; out=$(_launch_worker) || return 1
@@ -461,8 +525,7 @@ test_launch_without_seed_keeps_color_behavior() {
 }
 
 test_launch_sets_aside_stale_seed() {
-    mkdir -p "$CS_SESSIONS_ROOT/.spawn"
-    printf 'boss\nold job\n' > "$CS_SESSIONS_ROOT/.spawn/worker.seed"
+    _stage_seed boss "old job"
     touch -t 202401010000 "$CS_SESSIONS_ROOT/.spawn/worker.seed"
     local out; out=$(_launch_worker) || return 1
     [ ! -f "$CS_SESSIONS_ROOT/.spawn/worker.seed" ] || { echo "  stale seed still active"; return 1; }
@@ -472,8 +535,7 @@ test_launch_sets_aside_stale_seed() {
 }
 
 test_launch_stale_warning_names_the_stale_file() {
-    mkdir -p "$CS_SESSIONS_ROOT/.spawn"
-    printf 'boss\nold job\n' > "$CS_SESSIONS_ROOT/.spawn/worker.seed"
+    _stage_seed boss "old job"
     touch -t 202401010000 "$CS_SESSIONS_ROOT/.spawn/worker.seed"
     local out; out=$("$CS_BIN" worker <<< "" 2>&1) || return 1
     assert_output_contains "$out" "worker.seed.stale" "warning names the stale file" || return 1
@@ -481,30 +543,191 @@ test_launch_stale_warning_names_the_stale_file() {
 
 test_launch_fresh_boundary_seed_is_consumed() {
     # A seed 30 minutes old is comfortably inside the 3600s TTL.
-    mkdir -p "$CS_SESSIONS_ROOT/.spawn"
-    printf 'boss\nboundary job\n' > "$CS_SESSIONS_ROOT/.spawn/worker.seed"
+    _stage_seed boss "boundary job"
     touch -t "$(date -v-30M +%Y%m%d%H%M 2>/dev/null || date -d '-30 minutes' +%Y%m%d%H%M)" \
         "$CS_SESSIONS_ROOT/.spawn/worker.seed"
-    local out; out=$("$CS_BIN" worker <<< "" 2>&1) || return 1
+    local out; out=$(CS_SPAWN_TOKEN="$OWN_TOKEN" "$CS_BIN" worker <<< "" 2>&1) || return 1
     assert_output_contains "$out" "armed with 1 task(s)" "fresh-side seed consumed" || return 1
 }
 
 test_launch_seed_bypasses_resume_ask() {
     # First launch creates the session; second would normally ask "Continue
-    # previous conversation? [Y/n]". With a seed, no ask: stdin is closed so
-    # a read would die, proving the prompt was skipped.
+    # previous conversation? [Y/n]". In the spawn's own window, no ask: stdin
+    # is closed so a read would die, proving the prompt was skipped.
     _launch_worker >/dev/null || return 1
-    mkdir -p "$CS_SESSIONS_ROOT/.spawn"
-    printf 'boss\nresume job\n' > "$CS_SESSIONS_ROOT/.spawn/worker.seed"
-    local out; out=$("$CS_BIN" worker < /dev/null 2>&1) || return 1
+    _stage_seed boss "resume job"
+    local out; out=$(CS_SPAWN_TOKEN="$OWN_TOKEN" "$CS_BIN" worker < /dev/null 2>&1) || return 1
     assert_output_contains "$out" "armed with 1 task(s)" "seed consumed on resume" || return 1
     assert_output_not_contains "$out" "Continue previous conversation" "resume ask bypassed" || return 1
+}
+
+# Consent (audit H2). A seed is a file in .spawn/; anything that can write
+# there used to arm the next open of the name, by hand or by a script, with
+# whatever it staged, and the kick told Claude to begin. Only the spawn's own
+# tmux window, which carries the seed's token, consumes unasked. Every other
+# open is shown the seed as data and asked.
+test_launch_own_window_consumes_without_asking() {
+    _stage_seed boss "own job"
+    local out; out=$(CS_SPAWN_TOKEN="$OWN_TOKEN" "$CS_BIN" worker < /dev/null 2>&1) || return 1
+    assert_output_contains "$out" "armed with 1 task(s)" "seed consumed" || return 1
+    assert_output_not_contains "$out" "\\[Y/n\\]" "no consent ask in the spawn's own window" || return 1
+}
+
+test_launch_foreign_seed_unattended_stays_staged() {
+    _stage_seed boss "foreign job"
+    printf 'brief body\n' > "$CS_SESSIONS_ROOT/.spawn/worker.brief.md"
+    local out; out=$("$CS_BIN" worker < /dev/null 2>&1) || return 1
+    assert_file_exists "$CS_SESSIONS_ROOT/.spawn/worker.seed" "seed left staged" || return 1
+    assert_file_exists "$CS_SESSIONS_ROOT/.spawn/worker.brief.md" "brief left staged" || return 1
+    [ ! -f "$CS_SESSIONS_ROOT/worker/.cs/brief.md" ] || { echo "  brief delivered without consent"; return 1; }
+    assert_eq "0" "$(WQ_COUNT)" "nothing queued without consent" || return 1
+    [ ! -f "$(WQ)/queue.state" ] || { echo "  queue armed without consent"; return 1; }
+    [ ! -f "$(WQ)/spawned-by" ] || { echo "  spawned-by written without consent"; return 1; }
+    assert_output_not_contains "$out" "armed with" "no kick without consent" || return 1
+    assert_output_not_contains "$out" "Spawned by" "no kick without consent" || return 1
+    assert_output_contains "$out" "worker.seed" "the launch names the staged seed" || return 1
+}
+
+test_launch_wrong_token_is_a_foreign_open() {
+    _stage_seed boss "foreign job"
+    local out; out=$(CS_SPAWN_TOKEN="ffffffffffffffffffffffffffffffff" "$CS_BIN" worker < /dev/null 2>&1) || return 1
+    assert_file_exists "$CS_SESSIONS_ROOT/.spawn/worker.seed" "seed left staged" || return 1
+    assert_eq "0" "$(WQ_COUNT)" "nothing queued on a token mismatch" || return 1
+}
+
+test_launch_seed_without_a_token_line_is_foreign() {
+    # A seed written by an older cs, or by hand: line 1 is the spawner. An
+    # empty CS_SPAWN_TOKEN never matches an empty token line.
+    mkdir -p "$CS_SESSIONS_ROOT/.spawn"
+    printf '\nold job\n' > "$CS_SESSIONS_ROOT/.spawn/worker.seed"
+    local out; out=$(CS_SPAWN_TOKEN="" "$CS_BIN" worker < /dev/null 2>&1) || return 1
+    assert_file_exists "$CS_SESSIONS_ROOT/.spawn/worker.seed" "seed left staged" || return 1
+    assert_eq "0" "$(WQ_COUNT)" "nothing queued" || return 1
+}
+
+# Codex round 1: `<<< ""` hands the ask a newline, which read -rsn1 returns
+# as the empty answer, and the default arm consumed a foreign seed with no
+# human at all. Redirected stdin of any content leaves the seed staged.
+test_launch_foreign_seed_redirected_stdin_stays_staged() {
+    _stage_seed boss "foreign job"
+    local out
+    out=$("$CS_BIN" worker <<< "" 2>&1) || return 1
+    assert_file_exists "$CS_SESSIONS_ROOT/.spawn/worker.seed" "seed left staged on a piped newline" || return 1
+    assert_eq "0" "$(WQ_COUNT)" "nothing queued on a piped newline" || return 1
+    out=$("$CS_BIN" worker <<< "y" 2>&1) || return 1
+    assert_file_exists "$CS_SESSIONS_ROOT/.spawn/worker.seed" "seed left staged on a piped y" || return 1
+    assert_eq "0" "$(WQ_COUNT)" "nothing queued on a piped y" || return 1
+    assert_output_not_contains "$out" "Take the seed" "no ask without a terminal" || return 1
+    assert_output_contains "$out" "worker.seed" "the launch names the staged seed" || return 1
+}
+
+test_launch_foreign_seed_consent_shows_it_and_enter_consumes() {
+    _stage_seed boss "first job" "second job"
+    printf 'brief body\n' > "$CS_SESSIONS_ROOT/.spawn/worker.brief.md"
+    local out; out=$(_launch_worker_on_tty '\r') || { echo "  launch failed: $out"; return 1; }
+    assert_output_contains "$out" "\\[Y/n\\]" "consent asked" || return 1
+    assert_output_contains "$out" "boss" "spawner shown" || return 1
+    assert_output_contains "$out" "first job" "task 1 shown" || return 1
+    assert_output_contains "$out" "second job" "task 2 shown" || return 1
+    assert_output_contains "$out" "brief" "brief named" || return 1
+    assert_eq "2" "$(WQ_COUNT)" "tasks queued after consent" || return 1
+    assert_file_contains "$(WQ)/queue.state" "armed" "queue armed after consent" || return 1
+    assert_file_exists "$CS_SESSIONS_ROOT/worker/.cs/brief.md" "brief delivered after consent" || return 1
+    assert_file_contains "$(WQ)/spawned-by" "boss" "spawned-by recorded" || return 1
+    [ ! -f "$CS_SESSIONS_ROOT/.spawn/worker.seed" ] || { echo "  seed not deleted"; return 1; }
+    assert_output_contains "$out" "armed with 2 task(s)" "kick present" || return 1
+}
+
+test_launch_foreign_seed_y_consumes() {
+    _stage_seed boss "yes job"
+    local out; out=$(_launch_worker_on_tty 'y') || { echo "  launch failed: $out"; return 1; }
+    assert_eq "1" "$(WQ_COUNT)" "task queued after y" || return 1
+    assert_output_contains "$out" "armed with 1 task(s)" "kick present" || return 1
+}
+
+test_launch_foreign_seed_unknown_key_asks_again() {
+    _stage_seed boss "retry job"
+    local out; out=$(_launch_worker_on_tty 'xn') || { echo "  launch failed: $out"; return 1; }
+    assert_eq "0" "$(WQ_COUNT)" "an unknown key is not consent" || return 1
+    assert_file_exists "$CS_SESSIONS_ROOT/.spawn/worker.seed.stale" "the n after it declined" || return 1
+    [ "$(printf '%s' "$out" | grep -c 'Y/n')" -ge 2 ] || { echo "  ask not repeated after an unknown key"; return 1; }
+}
+
+test_launch_foreign_seed_escape_declines() {
+    _stage_seed boss "escaped job"
+    local out; out=$(_launch_worker_on_tty '\x1b') || { echo "  launch failed: $out"; return 1; }
+    assert_eq "0" "$(WQ_COUNT)" "nothing queued after Escape" || return 1
+    assert_file_exists "$CS_SESSIONS_ROOT/.spawn/worker.seed.stale" "Escape set the seed aside" || return 1
+}
+
+test_launch_foreign_seed_declined_is_set_aside() {
+    _stage_seed boss "declined job"
+    printf 'brief body\n' > "$CS_SESSIONS_ROOT/.spawn/worker.brief.md"
+    local out; out=$(_launch_worker_on_tty 'n') || { echo "  launch failed: $out"; return 1; }
+    [ ! -f "$CS_SESSIONS_ROOT/.spawn/worker.seed" ] || { echo "  declined seed still staged"; return 1; }
+    assert_file_exists "$CS_SESSIONS_ROOT/.spawn/worker.seed.stale" "declined seed set aside" || return 1
+    assert_file_exists "$CS_SESSIONS_ROOT/.spawn/worker.brief.md.stale" "declined brief set aside" || return 1
+    [ ! -f "$CS_SESSIONS_ROOT/worker/.cs/brief.md" ] || { echo "  brief delivered after a decline"; return 1; }
+    assert_eq "0" "$(WQ_COUNT)" "nothing queued after a decline" || return 1
+    [ ! -f "$(WQ)/queue.state" ] || { echo "  queue armed after a decline"; return 1; }
+    assert_output_not_contains "$out" "armed with" "no kick after a decline" || return 1
+    assert_output_contains "$out" "worker.seed.stale" "the launch names where the seed went" || return 1
+}
+
+test_launch_seed_control_characters_are_shown_flat() {
+    # A hand-crafted seed cannot hold a newline per line, but it can hold
+    # other control characters; the consent listing shows them stripped.
+    mkdir -p "$CS_SESSIONS_ROOT/.spawn"
+    printf '%s\nbo\001ss\nfirst\rjob \033[31mred\n' "$OWN_TOKEN" > "$CS_SESSIONS_ROOT/.spawn/worker.seed"
+    local out; out=$(_launch_worker_on_tty 'n') || { echo "  launch failed: $out"; return 1; }
+    assert_output_contains "$out" "boss" "spawner shown flat" || return 1
+    assert_output_contains "$out" "firstjob" "task shown flat" || return 1
+    assert_output_not_contains "$out" $'\033\[31m' "escape sequence not passed through" || return 1
+}
+
+test_launch_token_never_reaches_claude() {
+    cat > "$TEST_TMPDIR/fake-claude" << 'FAKE'
+#!/usr/bin/env bash
+printf 'token=%s\n' "${CS_SPAWN_TOKEN:-unset}"
+FAKE
+    chmod +x "$TEST_TMPDIR/fake-claude"
+    _stage_seed boss "own job"
+    local out; out=$(CLAUDE_CODE_BIN="$TEST_TMPDIR/fake-claude" CS_SPAWN_TOKEN="$OWN_TOKEN" "$CS_BIN" worker < /dev/null 2>&1) || return 1
+    assert_output_contains "$out" "token=unset" "the token is dropped before claude starts" || return 1
+}
+
+# An encrypted session keeps its queue behind .cs/private; a seed consumed into
+# .cs/local was plaintext the drain never read.
+_make_worker_vaulted() {
+    local meta="$CS_SESSIONS_ROOT/worker/.cs"
+    mkdir -p "$meta/vault-mnt/private"
+    mv "$meta/memory" "$meta/vault-mnt/memory"
+    mv "$meta/plans" "$meta/vault-mnt/plans"
+    ln -s "$meta/vault-mnt/memory" "$meta/memory"
+    ln -s "$meta/vault-mnt/plans" "$meta/plans"
+    mv "$meta/local/session.log" "$meta/vault-mnt/private/session.log"
+    ln -s "$meta/vault-mnt/private" "$meta/private"
+}
+
+test_launch_seed_queues_into_the_vault() {
+    _launch_worker >/dev/null || return 1
+    _make_worker_vaulted
+    _stage_seed boss "vault job"
+    local out; out=$(_launch_worker) || { echo "  launch failed: $out"; return 1; }
+    local priv="$CS_SESSIONS_ROOT/worker/.cs/vault-mnt/private"
+    grep -q "vault job" "$priv/queue"/* 2>/dev/null || { echo "  task not queued in the vault"; return 1; }
+    assert_file_contains "$priv/queue.state" "armed" "queue armed in the vault" || return 1
+    [ ! -e "$(WQ)/queue" ] || { echo "  plaintext queue written beside the vault"; return 1; }
+    [ ! -e "$(WQ)/queue.state" ] || { echo "  plaintext queue.state written beside the vault"; return 1; }
+    assert_file_contains "$(WQ)/spawned-by" "boss" "spawned-by stays in .cs/local" || return 1
+    assert_output_contains "$out" "armed with 1 task(s)" "kick present" || return 1
 }
 
 run_test test_spawn_rejects_bad_names_and_missing_tmux
 run_test test_spawn_rejects_live_target
 run_test test_spawn_writes_seed_and_opens_window
 run_test test_spawn_without_task_writes_no_seed
+run_test test_spawn_rejects_an_invalid_spawner_name
 run_test test_spawn_stages_brief_beside_the_seed
 run_test test_spawn_brief_and_tasks_stage_together
 run_test test_spawn_rejects_unreadable_or_empty_brief_before_staging
@@ -537,6 +760,19 @@ run_test test_launch_sets_aside_stale_seed
 run_test test_launch_stale_warning_names_the_stale_file
 run_test test_launch_fresh_boundary_seed_is_consumed
 run_test test_launch_seed_bypasses_resume_ask
+run_test test_launch_own_window_consumes_without_asking
+run_test test_launch_foreign_seed_unattended_stays_staged
+run_test test_launch_wrong_token_is_a_foreign_open
+run_test test_launch_seed_without_a_token_line_is_foreign
+run_test test_launch_foreign_seed_redirected_stdin_stays_staged
+run_test test_launch_foreign_seed_consent_shows_it_and_enter_consumes
+run_test test_launch_foreign_seed_y_consumes
+run_test test_launch_foreign_seed_unknown_key_asks_again
+run_test test_launch_foreign_seed_escape_declines
+run_test test_launch_foreign_seed_declined_is_set_aside
+run_test test_launch_seed_control_characters_are_shown_flat
+run_test test_launch_token_never_reaches_claude
+run_test test_launch_seed_queues_into_the_vault
 
 # Drain harness (same recipe as tests/test_queue_supervision.sh): the Stop
 # hook is narrative-reminder.sh; CLAUDE_SESSION_* env selects the session.

@@ -14,13 +14,17 @@ not, because that directory is the user's own project and its mode is theirs to
 choose.
 
 `.spawn/` at the sessions root stages `<name>.seed` files written by
-`cs -spawn`: line 1 is the spawner, remaining lines are `--task` items. cs
-stages a `--brief <file>` beside it as `<name>.brief.md`, and a brief alone
-still writes a seed, since the seed carries the spawner. The launch consumes
-fresh seeds (tasks queued and armed, the brief moved to the session's
-`.cs/brief.md`, kick prompt); seeds older than an hour are set aside as
-`<name>.seed.stale` with their brief as `<name>.brief.md.stale` and never
-applied silently.
+`cs -spawn`: line 1 is a random token, line 2 the spawner, remaining lines
+are `--task` items. cs stages a `--brief <file>` beside it as
+`<name>.brief.md`, and a brief alone still writes a seed, since the seed
+carries the spawner. The tmux window `cs -spawn` opens carries the same
+token in `CS_SPAWN_TOKEN`, and that window is the only open that consumes
+a fresh seed unasked (tasks queued and armed behind `.cs/private` in an
+encrypted session, `.cs/local` otherwise; the brief moved to the session's
+`.cs/brief.md`; kick prompt). Any other open of the name shows the seed as
+data and asks `[Y/n]`: `n` or Escape sets it aside, no terminal leaves it
+staged. Seeds older than an hour are set aside as `<name>.seed.stale` with
+their brief as `<name>.brief.md.stale` and never applied silently.
 
 `.usage/` at the sessions root holds `fable.<account>.json`, its `fable.<account>.json.fields` file (the fields the status line reads, one per line, written by the refresher), the machine-global cache
 behind the statusline's [fable segment](statusline.md#fable-usage), plus the

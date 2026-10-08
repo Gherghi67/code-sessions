@@ -979,10 +979,13 @@ test_unbound_spawned_launch_starts_fresh_and_keeps_the_handoff() {
     _rot_unbound_session "rot-unbound-spawn"
     local dir="$CS_SESSIONS_ROOT/rot-unbound-spawn"
     _seed_handoff "$dir" "2026-07-16-test.md" "unconsumed"
+    # The seed as cs -spawn writes it (line 1 the token, line 2 the spawner),
+    # opened as the spawn's own window: the token in CS_SPAWN_TOKEN is what
+    # makes this open unattended rather than a consent ask.
     mkdir -p "$CS_SESSIONS_ROOT/.spawn"
-    printf 'spawner\ndo the thing\n' > "$CS_SESSIONS_ROOT/.spawn/rot-unbound-spawn.seed"
+    printf 'feedfacefeedfacefeedfacefeedface\nspawner\ndo the thing\n' > "$CS_SESSIONS_ROOT/.spawn/rot-unbound-spawn.seed"
     local output
-    output=$("$CS_BIN" rot-unbound-spawn </dev/null 2>&1) || true
+    output=$(CS_SPAWN_TOKEN=feedfacefeedfacefeedfacefeedface "$CS_BIN" rot-unbound-spawn </dev/null 2>&1) || true
     assert_output_not_contains "$output" "Rotation handoff pending" "an unattended launch asks nothing" || return 1
     assert_output_contains "$output" "\-\-session-id " "a new conversation starts" || return 1
     assert_file_contains "$dir/.cs/handoffs/2026-07-16-test.md" "status: unconsumed" "the handoff waits for an attended open" || return 1
