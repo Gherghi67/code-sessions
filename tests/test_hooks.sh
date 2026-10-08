@@ -428,7 +428,9 @@ test_auto_approve_rejects_case_variants() {
 # cs accepts a .cs/claude-config that is a link to any resolving directory
 # and launches Claude Code with CLAUDE_CONFIG_DIR pointing there. Linked into a
 # content directory, the config's real parent reads as memory/ and a write to
-# either spelling would land Claude Code settings and hooks.
+# either spelling would land Claude Code settings and hooks. The only
+# claude-config link cs places is the one into the vault mount, so this one
+# declines every write.
 test_auto_approve_rejects_config_linked_into_content() {
     local meta="$CLAUDE_SESSION_META_DIR"
     mkdir -p "$meta/memory/config"
@@ -437,7 +439,7 @@ test_auto_approve_rejects_config_linked_into_content() {
         "a setting through the config link" || return 1
     _assert_falls_through Write "$meta/memory/config/settings.json" \
         "a setting at the config link's target" || return 1
-    _assert_allowed Write "$meta/memory/narrative.md" \
+    _assert_falls_through Write "$meta/memory/narrative.md" \
         "a narrative beside the linked config" || return 1
 }
 
@@ -514,18 +516,19 @@ test_auto_approve_rejects_newline_link_chain() {
 # Claude Code reads the project's own .claude/ and .mcp.json from the
 # session root, and both are git-shared: a link from there into .cs/
 # content turns an approved content write into settings, a hook or an MCP
-# server. The check is by identity, so a .claude/ that links elsewhere in
-# the session (a skills directory beside it) keeps its approvals.
+# server. No link there is followed: a .claude/ that links elsewhere in the
+# session, even a skills directory beside it, prompts for every write.
 test_auto_approve_rejects_project_claude_link_into_content() {
     local root="$CLAUDE_SESSION_DIR" meta="$CLAUDE_SESSION_META_DIR"
     mkdir -p "$root/.claude" "$root/.agents/skills/x"
     printf '{}\n' > "$meta/memory/config.json"
     ln -s ../.cs/memory/config.json "$root/.claude/settings.json"
-    ln -s ../.agents/skills/x "$root/.claude/skills"
     _assert_falls_through Edit "$meta/memory/config.json" \
         "the target of a project settings link" || return 1
-    _assert_allowed Write "$meta/memory/narrative.md" \
-        "a narrative beside a project link into the session" || return 1
+    rm "$root/.claude/settings.json"
+    ln -s ../.agents/skills/x "$root/.claude/skills"
+    _assert_falls_through Write "$meta/memory/narrative.md" \
+        "a narrative beside a project skills link" || return 1
 }
 
 # A hooks directory linked elsewhere in the session, whose entry links on
