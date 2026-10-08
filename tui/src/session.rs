@@ -2074,22 +2074,30 @@ mod tests {
         let _ = fs::remove_dir_all(root.parent().unwrap());
     }
 
+    // A brief left behind would reach a later same-name spawn as a first
+    // prompt nobody wrote for it, so it goes with the seed.
     #[test]
-    fn remove_session_path_discards_spawn_seeds() {
+    fn remove_session_path_discards_every_spawn_staging_file() {
         let root = std::env::temp_dir().join(format!("cs-seed-rm-{}", std::process::id()));
         let dir = root.join("seeded");
         fs::create_dir_all(dir.join(".cs/local")).unwrap();
         fs::create_dir_all(root.join(".spawn")).unwrap();
         fs::write(root.join(".spawn/seeded.seed"), "spawner\ntask\n").unwrap();
         fs::write(root.join(".spawn/seeded.seed.stale"), "old\n").unwrap();
+        fs::write(root.join(".spawn/seeded.brief.md"), "do this\n").unwrap();
+        fs::write(root.join(".spawn/seeded.brief.md.stale"), "old brief\n").unwrap();
         fs::write(root.join(".spawn/other.seed"), "other\n").unwrap();
+        fs::write(root.join(".spawn/other.brief.md"), "theirs\n").unwrap();
 
         remove_session_path(&root, "seeded", &dir).unwrap();
 
         assert!(!dir.exists(), "session directory should be gone");
         assert!(!root.join(".spawn/seeded.seed").exists(), "seed must go with the session");
         assert!(!root.join(".spawn/seeded.seed.stale").exists(), "stale seed must go too");
+        assert!(!root.join(".spawn/seeded.brief.md").exists(), "brief must go with the session");
+        assert!(!root.join(".spawn/seeded.brief.md.stale").exists(), "stale brief must go too");
         assert!(root.join(".spawn/other.seed").exists(), "other sessions' seeds stay");
+        assert!(root.join(".spawn/other.brief.md").exists(), "other sessions' briefs stay");
         let _ = fs::remove_dir_all(&root);
     }
 
