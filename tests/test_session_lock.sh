@@ -525,7 +525,7 @@ test_collision_menu_redirect_carries_no_spawn_token() {
         "the redirected launch must leave the feature's seed staged" || return 1
     [ ! -d "$CS_SESSIONS_ROOT/test-session@fix-auth/.cs/local/queue" ] \
         || { echo "  FAIL: the redirected launch consumed a seed with the original launch's token"; return 1; }
-    assert_output_not_contains "$output" "planted task" "no kick from the planted seed" || return 1
+    assert_output_not_contains "$output" "armed with" "no kick from the planted seed" || return 1
 }
 
 # The menu's force choice must carry through to the live-duplicate UUID guard:

@@ -209,6 +209,15 @@ launch_claude_code() {
     # (colors were first set at startup, defaulting to dark).
     setup_palette
 
+    # The spawn token (see the seed consumer below) proves THIS window to
+    # THIS session only. Taken into a plain variable and dropped from the
+    # environment here, before the lock: its collision menu re-execs cs for
+    # a feature of the session, and an exported token would ride along and
+    # prove the redirected launch to a seed staged for that feature (Codex
+    # round 2, audit H2).
+    local _spawn_token="${CS_SPAWN_TOKEN:-}"
+    unset CS_SPAWN_TOKEN
+
     # Acquire session lock before anything else
     acquire_session_lock "$session_dir/.cs" "$force" "$session_name"
     # A force chosen at the collision menu is equivalent to --force for the
@@ -430,14 +439,12 @@ launch_claude_code() {
     # a kick that says "begin". Line 1 of the seed is a token the spawn's own
     # tmux window carries in CS_SPAWN_TOKEN; only that window consumes unasked.
     # Every other open (by hand, a script, a window that died and was reopened
-    # elsewhere) is shown the seed as data and asked. The token is dropped from
-    # the environment here whatever happens, so claude and any nested launch
-    # never carry it.
+    # elsewhere) is shown the seed as data and asked. The token was taken out
+    # of the environment before the lock (above), so claude, a collision
+    # redirect and any nested launch never carry it.
     local spawn_kick=""
     local _seed="$SESSIONS_ROOT/.spawn/$session_name.seed"
     local _brief="$SESSIONS_ROOT/.spawn/$session_name.brief.md"
-    local _spawn_token="${CS_SPAWN_TOKEN:-}"
-    unset CS_SPAWN_TOKEN
     if [ -f "$_seed" ]; then
         local _now _age
         _now=$(date +%s)
