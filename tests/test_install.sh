@@ -18,6 +18,15 @@ teardown() {
     unset CS_SESSIONS_ROOT CLAUDE_CODE_BIN CS_TRANSCRIPTS_DIR XDG_CONFIG_HOME
 }
 
+# Content a past cs deployed (mods/cs-rotate/hooks/hooks.json as it shipped),
+# so a file holding it is cs's whatever its name: a stand-in for any file an
+# install that kept no record left behind. install and uninstall remove only
+# files cs wrote, decided by content, so a fixture standing for a file cs left
+# behind holds this.
+_cs_shipped_content() {
+    echo '{"modules":["./register.tsx"]}'
+}
+
 # The declined marker is a preference memo, and a memo that cannot be written
 # must never take the install down with it. install.sh runs under errexit and
 # the marker write ends its && list, so a failing touch aborts before
@@ -528,11 +537,25 @@ test_local_install_uses_bin_picker_when_nothing_was_built() {
 # so the hooks and cs run ONE copy of the actor and narrative-budget code. The
 # committed file must be exactly what the build writes, or the hooks ship code
 # the tests never ran (the same drift CI's build-sync job catches for bin/cs).
-test_build_generates_the_shared_hook_fragment() {
-    local repo="$TEST_TMPDIR/build-repo" real="$SCRIPT_DIR/.."
-    mkdir -p "$repo/bin" "$repo/hooks"
+# Copies into $1 what build.sh reads: lib/, build.sh, install.sh.in and the
+# payload files install.sh carries the sha256 of, without the three files
+# build.sh writes (bin/cs, hooks/cs-shared.sh, install.sh), so a build there
+# that fails to write one leaves it missing rather than a copy of the real one.
+_copy_build_inputs() {  # dir
+    local repo="$1" real="$SCRIPT_DIR/.." d
+    mkdir -p "$repo/bin"
     cp -R "$real/lib" "$repo/lib"
     cp "$real/build.sh" "$real/install.sh.in" "$repo/"
+    for d in hooks commands skills mods completions; do
+        cp -R "$real/$d" "$repo/$d"
+    done
+    cp -p "$real/bin/cs-secrets" "$real/bin/cs-statusline" "$real/bin/cs-subagent-statusline" "$repo/bin/"
+    rm -f "$repo/hooks/cs-shared.sh"
+}
+
+test_build_generates_the_shared_hook_fragment() {
+    local repo="$TEST_TMPDIR/build-repo" real="$SCRIPT_DIR/.."
+    _copy_build_inputs "$repo"
     (cd "$repo" && bash build.sh > /dev/null) || { echo "  FAIL: build.sh failed"; return 1; }
     assert_file_exists "$repo/hooks/cs-shared.sh" "build.sh writes hooks/cs-shared.sh" || return 1
     if ! diff -u "$real/hooks/cs-shared.sh" "$repo/hooks/cs-shared.sh" > "$TEST_TMPDIR/shared.diff" 2>&1; then
@@ -549,9 +572,7 @@ test_build_generates_the_shared_hook_fragment() {
 # committed install.sh must be what the build writes.
 test_build_generates_install_sh_from_its_template() {
     local repo="$TEST_TMPDIR/build-repo2" real="$SCRIPT_DIR/.."
-    mkdir -p "$repo/bin" "$repo/hooks"
-    cp -R "$real/lib" "$repo/lib"
-    cp "$real/build.sh" "$real/install.sh.in" "$repo/"
+    _copy_build_inputs "$repo"
     (cd "$repo" && bash build.sh > /dev/null) || { echo "  FAIL: build.sh failed"; return 1; }
     assert_file_exists "$repo/install.sh" "build.sh writes install.sh" || return 1
     [ -x "$repo/install.sh" ] || { echo "  FAIL: the generated install.sh is not executable"; return 1; }
@@ -600,10 +621,8 @@ test_build_refuses_a_missing_manifests_source() {
 # users, and every hook the deployed copy is sourced from. mktemp makes a
 # private file, so the mode is set on purpose rather than inherited.
 test_build_outputs_are_world_readable() {
-    local repo="$TEST_TMPDIR/build-repo5" real="$SCRIPT_DIR/.."
-    mkdir -p "$repo/bin" "$repo/hooks"
-    cp -R "$real/lib" "$repo/lib"
-    cp "$real/build.sh" "$real/install.sh.in" "$repo/"
+    local repo="$TEST_TMPDIR/build-repo5"
+    _copy_build_inputs "$repo"
     (cd "$repo" && bash build.sh > /dev/null) || { echo "  FAIL: build.sh failed"; return 1; }
     local f mode
     for f in bin/cs hooks/cs-shared.sh install.sh; do
@@ -974,8 +993,8 @@ test_install_migrates_flat_hook_layout() {
     local fake_home="$TEST_TMPDIR/home"
     mkdir -p "$fake_home/.claude/hooks"
     # Deployed binaries at the parent level: one current hook, one retired
-    echo '#!/bin/sh' > "$fake_home/.claude/hooks/session-start.sh"
-    echo '#!/bin/sh' > "$fake_home/.claude/hooks/files-context.sh"
+    _cs_shipped_content > "$fake_home/.claude/hooks/session-start.sh"
+    _cs_shipped_content > "$fake_home/.claude/hooks/files-context.sh"
     cat > "$fake_home/.claude/settings.json" << 'EOF'
 {"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"~/.claude/hooks/session-start.sh","timeout":30}]}],"PreToolUse":[{"matcher":"Read","hooks":[{"type":"command","command":"~/.claude/hooks/files-context.sh","timeout":5}]}]}}
 EOF
@@ -1024,7 +1043,7 @@ EOF
 test_install_removes_the_retired_hint_mod() {
     local fake_home="$TEST_TMPDIR/home-hintmod"
     mkdir -p "$fake_home/.claude/skills/cs-hint/hooks"
-    echo '{}' > "$fake_home/.claude/skills/cs-hint/hooks/hooks.json"
+    _cs_shipped_content > "$fake_home/.claude/skills/cs-hint/hooks/hooks.json"
     HOME="$fake_home" bash "$INSTALL_SH" > /dev/null 2>&1 || {
         echo "  FAIL: install.sh exited non-zero"
         return 1
@@ -1080,7 +1099,7 @@ test_install_writes_version_stamp() {
 test_uninstall_strips_hook_registrations() {
     local fake_home="$TEST_TMPDIR/uninstall-home"
     mkdir -p "$fake_home/.claude/hooks/cs"
-    echo '#!/bin/sh' > "$fake_home/.claude/hooks/cs/session-start.sh"
+    _cs_shipped_content > "$fake_home/.claude/hooks/cs/session-start.sh"
     echo "0.0.0" > "$fake_home/.claude/hooks/cs/.version"
     # Tilde-form registrations in both layouts, plus a non-cs hook that must survive
     cat > "$fake_home/.claude/settings.json" << 'EOF'
@@ -1396,11 +1415,19 @@ test_install_removes_stale_opposite_platform_tui() {
 
 # Run install.sh's WEB path with the cs-tui download stubbed, so the checksum
 # gate can be driven into each of its "cannot verify" states. Echoes the bin dir.
+# The payload (raw.githubusercontent files) is served from this checkout, so
+# it passes the installer's own sha256 check and the run reaches cs-tui.
 # CS_TEST_SHA_FETCH=fail   -> the .sha256 sibling 404s
 # CS_TEST_SHA_TOOL=fail    -> the digest tool exists but errors, so no digest
 _install_tui_with_broken_verification() {  # tag
     local sandbox="$TEST_TMPDIR/tui-verify-$1"
-    local bindir="$sandbox/stub"
+    local bindir="$sandbox/stub" repo real_digest
+    repo="$(cd "$SCRIPT_DIR/.." && pwd)"
+    if command -v sha256sum > /dev/null 2>&1; then
+        real_digest="$(command -v sha256sum)"
+    else
+        real_digest="$(command -v shasum) -a 256"
+    fi
     mkdir -p "$bindir" "$sandbox/home"
     cp "$INSTALL_SH" "$sandbox/install.sh"
 
@@ -1413,12 +1440,18 @@ for a in "\$@"; do
     prev="\$a"
 done
 case "\$url" in
+    https://raw.githubusercontent.com/hex/claude-sessions/*)
+        rel="\${url#https://raw.githubusercontent.com/hex/claude-sessions/}"
+        rel="\${rel#*/}"
+        [ -f "$repo/\$rel" ] || exit 22
+        cp "$repo/\$rel" "\$out"
+        exit 0
+        ;;
     *.sha256) [ "\${CS_TEST_SHA_FETCH:-ok}" = "fail" ] && exit 22 ;;
     *.minisig) [ "\${CS_TEST_SIG_FETCH:-fail}" = "fail" ] && exit 22 ;;
 esac
 if [ -n "\$out" ]; then
     case "\$out" in
-        */cs) printf 'VERSION="9999.9.9"\n' > "\$out" ;;
         *.sha256) printf 'deadbeef  x\n' > "\$out" ;;
         *)    printf 'stub-binary\n' > "\$out" ;;
     esac
@@ -1426,13 +1459,20 @@ fi
 exit 0
 STUB
 
-    # Shadow both digest tools; whichever install.sh picks, it fails the same way.
+    # Shadow both digest tools for the cs-tui gate, which names the file; a
+    # digest of stdin (the payload check) goes to the real tool. Whichever
+    # tool install.sh picks for cs-tui, it fails the same way.
     local t
     for t in sha256sum shasum; do
         cat > "$bindir/$t" <<STUB
 #!/usr/bin/env bash
+last=""
+for a in "\$@"; do last="\$a"; done
+if [ ! -f "\$last" ]; then
+    exec $real_digest
+fi
 [ "\${CS_TEST_SHA_TOOL:-ok}" = "fail" ] && exit 1
-printf '%s  %s\n' deadbeef "\$1"
+printf '%s  %s\n' deadbeef "\$last"
 STUB
         chmod +x "$bindir/$t"
     done
@@ -1501,6 +1541,289 @@ test_tui_signature_not_blamed_for_a_checksum_gate_removal() {
         "the checksum gate must still say why it removed the binary" || return 1
     assert_output_not_contains "$out" "signature verification failed" \
         "must not report a signature failure for a binary already removed" || return 1
+}
+
+# Run install.sh's WEB path (a copy outside the checkout) under sandbox $1,
+# with a stub curl that serves each raw.githubusercontent file from this
+# checkout and 404s every release asset (so cs-tui is skipped). A path named
+# in CS_TEST_BREAK (repo-relative, e.g. bin/cs) is served as a dropped
+# transfer: half the file is written, then curl exits 18. A path named in
+# CS_TEST_TAMPER is served with one line appended. Leaves the exit status in
+# $sandbox/install.rc and the output in $sandbox/install.out; echoes the HOME.
+_web_install() {  # sandbox-name
+    local sandbox="$TEST_TMPDIR/$1" repo
+    repo="$(cd "$SCRIPT_DIR/.." && pwd)"
+    mkdir -p "$sandbox/stub" "$sandbox/home"
+    cp "$INSTALL_SH" "$sandbox/install.sh"
+    cat > "$sandbox/stub/curl" <<STUB
+#!/usr/bin/env bash
+out=""; url=""; prev=""
+for a in "\$@"; do
+    case "\$prev" in -o) out="\$a" ;; esac
+    case "\$a" in https://*) url="\$a" ;; esac
+    prev="\$a"
+done
+case "\$url" in
+    https://raw.githubusercontent.com/hex/claude-sessions/*) ;;
+    *) exit 22 ;;
+esac
+rel="\${url#https://raw.githubusercontent.com/hex/claude-sessions/}"
+rel="\${rel#*/}"
+src="$repo/\$rel"
+[ -f "\$src" ] || exit 22
+[ -n "\$out" ] || exit 2
+if [ "\$rel" = "\${CS_TEST_BREAK:-}" ]; then
+    head -c "\$(( \$(wc -c < "\$src") / 2 ))" "\$src" > "\$out"
+    exit 18
+fi
+cp "\$src" "\$out"
+if [ "\$rel" = "\${CS_TEST_TAMPER:-}" ]; then
+    echo 'echo tampered' >> "\$out"
+fi
+exit 0
+STUB
+    chmod +x "$sandbox/stub/curl"
+    local rc=0
+    PATH="$sandbox/stub:$PATH" HOME="$sandbox/home" bash "$sandbox/install.sh" \
+        > "$sandbox/install.out" 2>&1 < /dev/null || rc=$?
+    printf '%s' "$rc" > "$sandbox/install.rc"
+    printf '%s' "$sandbox/home"
+}
+
+# Seeds a sandbox HOME with an installed cs and a deployed /summary command, so
+# a failed web install can be checked for what it left in their place.
+_seed_installed_cs() {  # home
+    mkdir -p "$1/.local/bin" "$1/.claude/commands"
+    printf '#!/bin/sh\necho installed cs\n' > "$1/.local/bin/cs"
+    chmod 755 "$1/.local/bin/cs"
+    printf 'installed summary command\n' > "$1/.claude/commands/summary.md"
+}
+
+# A web install whose own download of cs drops halfway fails, and the cs
+# already installed is still whole: curl never writes onto ~/.local/bin/cs.
+test_web_install_keeps_the_installed_cs_when_its_download_breaks() {
+    local home
+    _seed_installed_cs "$TEST_TMPDIR/break-cs/home"
+    home=$(CS_TEST_BREAK=bin/cs _web_install break-cs)
+    assert_eq "1" "$(cat "$TEST_TMPDIR/break-cs/install.rc")" "install exit status" \
+        || { cat "$TEST_TMPDIR/break-cs/install.out"; return 1; }
+    assert_eq "$(printf '#!/bin/sh\necho installed cs')" "$(cat "$home/.local/bin/cs")" "the installed cs is untouched" || return 1
+    assert_file_contains "$TEST_TMPDIR/break-cs/install.out" "Failed to download bin/cs" "the failure names the file" || return 1
+}
+
+# Every download lands before anything is put in place, so a transfer that
+# drops late in the list leaves the earlier files where they were too.
+test_web_install_places_nothing_when_a_later_download_breaks() {
+    local home
+    _seed_installed_cs "$TEST_TMPDIR/break-late/home"
+    home=$(CS_TEST_BREAK=commands/summary.md _web_install break-late)
+    assert_eq "1" "$(cat "$TEST_TMPDIR/break-late/install.rc")" "install exit status" \
+        || { cat "$TEST_TMPDIR/break-late/install.out"; return 1; }
+    assert_eq "$(printf '#!/bin/sh\necho installed cs')" "$(cat "$home/.local/bin/cs")" "cs is untouched" || return 1
+    assert_eq "installed summary command" "$(cat "$home/.claude/commands/summary.md")" "the command is untouched" || return 1
+    assert_file_not_exists "$home/.claude/hooks/cs/session-start.sh" "no hook was deployed" || return 1
+}
+
+# Positive control for the two above: the same stub with nothing broken
+# installs every file byte for byte, executables executable.
+test_web_install_deploys_the_payload_from_the_stub() {
+    local home repo
+    repo="$(cd "$SCRIPT_DIR/.." && pwd)"
+    home=$(_web_install web-ok)
+    assert_eq "0" "$(cat "$TEST_TMPDIR/web-ok/install.rc")" "install exit status" \
+        || { cat "$TEST_TMPDIR/web-ok/install.out"; return 1; }
+    cmp -s "$repo/bin/cs" "$home/.local/bin/cs" || { echo "  FAIL: bin/cs differs"; return 1; }
+    cmp -s "$repo/hooks/session-start.sh" "$home/.claude/hooks/cs/session-start.sh" || { echo "  FAIL: hook differs"; return 1; }
+    cmp -s "$repo/commands/summary.md" "$home/.claude/commands/summary.md" || { echo "  FAIL: command differs"; return 1; }
+    cmp -s "$repo/mods/cs/hooks/register.tsx" "$home/.claude/skills/cs/hooks/register.tsx" || { echo "  FAIL: mod differs"; return 1; }
+    assert_eq "755" "$(_file_mode "$home/.local/bin/cs")" "cs mode" || return 1
+    assert_eq "755" "$(_file_mode "$home/.claude/hooks/cs/cs-iterm-tab.py")" "hook library mode" || return 1
+    assert_eq "755" "$(_file_mode "$home/.claude/skills/finish/scripts/finish.sh")" "skill script mode" || return 1
+    assert_eq "644" "$(_file_mode "$home/.claude/commands/summary.md")" "command mode" || return 1
+    [ -z "$(find "$home" -name '.cs-install.*')" ] || { echo "  FAIL: a staging temp file was left beside a destination"; return 1; }
+}
+
+# A web install checks every downloaded payload file against the sha256 its
+# own (verified) installer carries. One file served altered stops the
+# install before anything is placed.
+test_web_install_refuses_a_payload_file_that_does_not_match() {
+    local home
+    _seed_installed_cs "$TEST_TMPDIR/tamper/home"
+    home=$(CS_TEST_TAMPER=hooks/session-start.sh _web_install tamper)
+    assert_eq "1" "$(cat "$TEST_TMPDIR/tamper/install.rc")" "install exit status" \
+        || { cat "$TEST_TMPDIR/tamper/install.out"; return 1; }
+    assert_file_contains "$TEST_TMPDIR/tamper/install.out" "hooks/session-start\.sh does not match" "the refusal names the file" || return 1
+    assert_eq "$(printf '#!/bin/sh\necho installed cs')" "$(cat "$home/.local/bin/cs")" "cs is untouched" || return 1
+    assert_eq "installed summary command" "$(cat "$home/.claude/commands/summary.md")" "the command is untouched" || return 1
+    assert_file_not_exists "$home/.claude/hooks/cs/session-start.sh" "the altered hook was not deployed" || return 1
+}
+
+# Same check for the shell completions, which a web install may go without:
+# an altered one is reported and skipped, and the rest installs.
+test_web_install_skips_a_completion_that_does_not_match() {
+    local home
+    home=$(CS_TEST_TAMPER=completions/_cs _web_install tamper-comp)
+    assert_eq "0" "$(cat "$TEST_TMPDIR/tamper-comp/install.rc")" "install exit status" \
+        || { cat "$TEST_TMPDIR/tamper-comp/install.out"; return 1; }
+    assert_file_contains "$TEST_TMPDIR/tamper-comp/install.out" "completions/_cs does not match" "the skip names the file" || return 1
+    assert_file_not_exists "$home/.zsh/completions/_cs" "the altered completion was not deployed" || return 1
+    cmp -s "$SCRIPT_DIR/../completions/cs.bash" "$home/.bash_completion.d/cs.bash" \
+        || { echo "  FAIL: the matching bash completion was not deployed"; return 1; }
+}
+
+# The built install.sh carries, for every file a web install downloads, the
+# sha256 of that file in the checkout it was built from, as
+# "<sha256>  <repo path>" entries of CS_PAYLOAD_SHA256.
+test_build_embeds_the_sha256_of_every_payload_file() {
+    local repo="$TEST_TMPDIR/build-sha" real entry f expected actual
+    real="$(cd "$SCRIPT_DIR/.." && pwd)"
+    _copy_build_inputs "$repo"
+    (cd "$repo" && bash build.sh > /dev/null) || { echo "  FAIL: build.sh failed"; return 1; }
+    actual=$(extract_array "$repo/install.sh" CS_PAYLOAD_SHA256 | tr -d '"' | sort)
+    expected=$(
+        {
+            printf '%s\n' bin/cs bin/cs-secrets bin/cs-statusline bin/cs-subagent-statusline \
+                completions/cs.bash completions/_cs
+            for entry in $(extract_array "$real/install.sh" CS_HOOK_LIBS) $(extract_array "$real/install.sh" CS_HOOKS); do
+                echo "hooks/$entry"
+            done
+            for entry in $(extract_array "$real/install.sh" CS_COMMANDS); do echo "commands/$entry"; done
+            for entry in $(extract_array "$real/install.sh" CS_SKILLS); do echo "skills/$entry/SKILL.md"; done
+            for entry in $(extract_array "$real/install.sh" CS_SKILL_FILES); do echo "skills/$entry"; done
+            for entry in $(extract_array "$real/install.sh" CS_MOD_FILES); do echo "mods/$entry"; done
+        } | while IFS= read -r f; do
+            printf '%s  %s\n' "$(shasum -a 256 < "$real/$f" | awk '{print $1}')" "$f"
+        done | sort
+    )
+    [ -n "$actual" ] || { echo "  FAIL: install.sh carries no CS_PAYLOAD_SHA256 entries"; return 1; }
+    if [ "$actual" != "$expected" ]; then
+        echo "  FAIL: CS_PAYLOAD_SHA256 is not the sha256 of every payload file"
+        diff <(echo "$expected") <(echo "$actual") | head -10
+        return 1
+    fi
+    printf '%s\n' "$actual" | grep -vq '^[0-9a-f]\{64\}  [^ ]*$' \
+        && { echo "  FAIL: an entry is not '<sha256>  <path>'"; return 1; }
+    return 0
+}
+
+# The release asset install.sh fetches its payload from the tag it was
+# released at when no CS_INSTALL_REF is given, because its sha256s describe
+# that tag's files. The release workflow rewrites the one default-ref line;
+# a checkout's install.sh keeps main.
+test_release_workflow_pins_the_installers_default_ref() {
+    local real
+    real="$(cd "$SCRIPT_DIR/.." && pwd)"
+    assert_eq "1" "$(grep -c '^CS_DEFAULT_REF=main$' "$real/install.sh")" "install.sh has one default-ref line" || return 1
+    assert_file_contains "$real/install.sh" 'CS_INSTALL_REF:-\$CS_DEFAULT_REF' "the payload URL reads the default ref" || return 1
+    # The workflow step, run here against a copy, rewrites that line to the tag.
+    local copy="$TEST_TMPDIR/pin-install.sh" step
+    cp "$real/install.sh" "$copy"
+    step=$(grep 'CS_DEFAULT_REF=' "$real/.github/workflows/release.yml" | grep 'sed ' | head -1 | sed 's/^ *//')
+    [ -n "$step" ] || { echo "  FAIL: release.yml has no step rewriting CS_DEFAULT_REF"; return 1; }
+    (cd "$TEST_TMPDIR" && cp "$copy" install.sh && GITHUB_REF_NAME=v2026.99.3 \
+        bash -c "${step//sed -i /sed -i.bak }" && mv install.sh "$copy") \
+        || { echo "  FAIL: the workflow step failed: $step"; return 1; }
+    assert_eq "1" "$(grep -c '^CS_DEFAULT_REF=v2026\.99\.3$' "$copy")" "the copy defaults to the tag" || return 1
+}
+
+# ============================================================================
+# Ownership: install, update and uninstall touch only files cs wrote
+# ============================================================================
+
+# A user's own hooks, commands and skills that share a name with a file cs
+# ships or once shipped are theirs: install leaves each in place, says so on
+# one line naming it, and still installs everything else and exits 0.
+test_install_keeps_user_files_that_share_a_cs_name() {
+    local home="$TEST_TMPDIR/own-home" out rc=0 f
+    mkdir -p "$home/.claude/hooks" "$home/.claude/commands" "$home/.claude/skills/feature" "$home/.claude/skills/merge"
+    printf '#!/bin/sh\necho my session-start\n' > "$home/.claude/hooks/session-start.sh"
+    printf '#!/bin/sh\necho my prose lint\n' > "$home/.claude/hooks/prose-lint.sh"
+    printf 'my summary command\n' > "$home/.claude/commands/summary.md"
+    printf 'my feature skill\n' > "$home/.claude/skills/feature/SKILL.md"
+    printf 'my merge skill\n' > "$home/.claude/skills/merge/SKILL.md"
+    out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || rc=$?
+    assert_eq "0" "$rc" "install exit status" || { echo "$out"; return 1; }
+    assert_eq "$(printf '#!/bin/sh\necho my session-start')" "$(cat "$home/.claude/hooks/session-start.sh")" "flat hook kept" || return 1
+    assert_eq "$(printf '#!/bin/sh\necho my prose lint')" "$(cat "$home/.claude/hooks/prose-lint.sh")" "retired-name hook kept" || return 1
+    assert_eq "my summary command" "$(cat "$home/.claude/commands/summary.md")" "command kept" || return 1
+    assert_eq "my feature skill" "$(cat "$home/.claude/skills/feature/SKILL.md")" "skill kept" || return 1
+    assert_eq "my merge skill" "$(cat "$home/.claude/skills/merge/SKILL.md")" "retired-name skill kept" || return 1
+    for f in hooks/session-start.sh hooks/prose-lint.sh commands/summary.md skills/feature/SKILL.md skills/merge/SKILL.md; do
+        assert_output_contains "$out" "$home/\.claude/$f" "a warning names $f" || return 1
+    done
+    # Everything that is not in the way is still installed.
+    cmp -s "$SCRIPT_DIR/../commands/wrap.md" "$home/.claude/commands/wrap.md" || { echo "  FAIL: wrap.md not installed"; return 1; }
+    cmp -s "$SCRIPT_DIR/../hooks/session-start.sh" "$home/.claude/hooks/cs/session-start.sh" || { echo "  FAIL: hook not installed"; return 1; }
+    # The skipped paths are reported again after the completion line.
+    assert_output_contains "$out" "Installation complete" "the install finished" || return 1
+    printf '%s\n' "$out" | sed -n '/Installation complete/,$p' | grep -q "$home/.claude/commands/summary.md" \
+        || { echo "  FAIL: the skipped command is not listed after the completion line"; return 1; }
+}
+
+# Files cs wrote are still replaced and removed by content, whatever version
+# put them there: one equal to what this install ships, and one holding
+# content a past cs shipped under a retired name.
+test_install_replaces_files_cs_wrote_without_a_record() {
+    local home="$TEST_TMPDIR/known-home" rc=0 out
+    mkdir -p "$home/.claude/hooks" "$home/.claude/skills/cs-hint/hooks"
+    cp "$SCRIPT_DIR/../hooks/session-start.sh" "$home/.claude/hooks/session-start.sh"
+    _cs_shipped_content > "$home/.claude/hooks/files-context.sh"
+    _cs_shipped_content > "$home/.claude/skills/cs-hint/hooks/hooks.json"
+    out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || rc=$?
+    assert_eq "0" "$rc" "install exit status" || { echo "$out"; return 1; }
+    assert_file_not_exists "$home/.claude/hooks/session-start.sh" "the flat copy cs wrote is removed" || return 1
+    assert_file_not_exists "$home/.claude/hooks/files-context.sh" "the retired hook cs wrote is removed" || return 1
+    [ ! -e "$home/.claude/skills/cs-hint" ] || { echo "  FAIL: the retired mod directory cs wrote survived"; return 1; }
+}
+
+# Install records what it wrote, and a file still matching its record is
+# cs's even when no release ever shipped that content; one changed since is
+# the user's and is kept.
+test_install_follows_its_record() {
+    local home="$TEST_TMPDIR/record-home" record digest out
+    mkdir -p "$home"
+    HOME="$home" bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || { echo "  FAIL: first install failed"; return 1; }
+    record="$home/.claude/hooks/cs/.installed"
+    assert_file_exists "$record" "install writes its record" || return 1
+    digest=$(shasum -a 256 "$SCRIPT_DIR/../commands/wrap.md" | awk '{print $1}')
+    assert_file_contains "$record" "^$digest  \.claude/commands/wrap\.md$" "the record holds each file's sha256" || return 1
+    # A release that shipped this wrap.md would have recorded it so.
+    printf 'wrap as a later release shipped it\n' > "$home/.claude/commands/wrap.md"
+    digest=$(shasum -a 256 "$home/.claude/commands/wrap.md" | awk '{print $1}')
+    grep -v 'commands/wrap\.md$' "$record" > "$record.tmp"
+    printf '%s  .claude/commands/wrap.md\n' "$digest" >> "$record.tmp"
+    mv "$record.tmp" "$record"
+    # The user edits the /sweep command cs installed.
+    printf 'my own sweep\n' > "$home/.claude/commands/sweep.md"
+    out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || { echo "$out"; echo "  FAIL: second install failed"; return 1; }
+    cmp -s "$SCRIPT_DIR/../commands/wrap.md" "$home/.claude/commands/wrap.md" \
+        || { echo "  FAIL: a file matching its record was not replaced"; return 1; }
+    assert_eq "my own sweep" "$(cat "$home/.claude/commands/sweep.md")" "an edited file is kept" || return 1
+    assert_output_contains "$out" "$home/\.claude/commands/sweep\.md" "the kept file is named" || return 1
+}
+
+# Uninstall removes what cs installed and nothing that only shares its name:
+# a user's command, a user's skill, and a user's file inside a cs mod.
+test_uninstall_removes_only_files_cs_wrote() {
+    local home="$TEST_TMPDIR/own-uninstall" out
+    mkdir -p "$home"
+    HOME="$home" bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || { echo "  FAIL: install failed"; return 1; }
+    printf 'my summary command\n' > "$home/.claude/commands/summary.md"
+    printf 'my notes\n' > "$home/.claude/skills/cs/notes.md"
+    mkdir -p "$home/.claude/skills/merge" "$home/.claude/hooks"
+    printf 'my merge skill\n' > "$home/.claude/skills/merge/SKILL.md"
+    printf '#!/bin/sh\necho mine\n' > "$home/.claude/hooks/bash-logger.sh"
+    out=$(printf 'y\n' | HOME="$home" "$CS_BIN" -uninstall 2>&1) || { echo "$out"; echo "  FAIL: cs -uninstall exited non-zero"; return 1; }
+    assert_eq "my summary command" "$(cat "$home/.claude/commands/summary.md")" "user's command kept" || return 1
+    assert_eq "my merge skill" "$(cat "$home/.claude/skills/merge/SKILL.md")" "user's retired-name skill kept" || return 1
+    assert_eq "my notes" "$(cat "$home/.claude/skills/cs/notes.md")" "user's file inside the mod kept" || return 1
+    assert_eq "$(printf '#!/bin/sh\necho mine')" "$(cat "$home/.claude/hooks/bash-logger.sh")" "user's flat hook kept" || return 1
+    assert_file_not_exists "$home/.claude/commands/wrap.md" "cs's command removed" || return 1
+    assert_file_not_exists "$home/.claude/skills/cs/hooks/register.tsx" "cs's mod file removed" || return 1
+    assert_file_not_exists "$home/.claude/skills/feature/SKILL.md" "cs's skill removed" || return 1
+    [ ! -e "$home/.claude/hooks/cs" ] || { echo "  FAIL: hooks/cs left behind"; return 1; }
+    assert_output_contains "$out" "$home/\.claude/commands/summary\.md" "the kept command is named" || return 1
+    assert_output_contains "$out" "$home/\.claude/skills/cs/notes\.md" "the kept mod file is named" || return 1
 }
 
 test_uninstall_removes_leftover_cs_tui_exe() {
@@ -1659,6 +1982,17 @@ run_test test_tui_removed_when_checksum_cannot_be_fetched
 run_test test_tui_removed_when_digest_cannot_be_computed
 run_test test_tui_signature_not_blamed_for_a_checksum_gate_removal
 run_test test_uninstall_removes_leftover_cs_tui_exe
+run_test test_web_install_keeps_the_installed_cs_when_its_download_breaks
+run_test test_web_install_places_nothing_when_a_later_download_breaks
+run_test test_web_install_deploys_the_payload_from_the_stub
+run_test test_web_install_refuses_a_payload_file_that_does_not_match
+run_test test_web_install_skips_a_completion_that_does_not_match
+run_test test_build_embeds_the_sha256_of_every_payload_file
+run_test test_release_workflow_pins_the_installers_default_ref
+run_test test_install_keeps_user_files_that_share_a_cs_name
+run_test test_install_replaces_files_cs_wrote_without_a_record
+run_test test_install_follows_its_record
+run_test test_uninstall_removes_only_files_cs_wrote
 run_test test_uninstall_removes_subagent_statusline
 test_hook_registration_doc_matches_install() {
     # docs/hooks.md restates install.sh's _merge_cs_hook registrations as a

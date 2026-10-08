@@ -571,12 +571,16 @@ run_uninstall() {
         fi
     done
 
+    # Everything below under ~/.claude goes only when cs wrote it, decided by
+    # content (_cs_owns_file): a user's own hook, command or skill of the same
+    # name is kept and named. The install record is read throughout, so it
+    # goes last.
+
     # Remove hooks from both deployment layouts (subdirectory and flat)
     local hook dir
     for hook in "${CS_HOOKS[@]}" "${CS_HOOK_LIBS[@]}"; do
         for dir in "$hooks_dir" "$hooks_parent_dir"; do
-            if [ -f "$dir/$hook" ]; then
-                rm "$dir/$hook"
+            if [ -f "$dir/$hook" ] && _cs_remove_if_owned "$dir/$hook"; then
                 info "Removed $dir/$hook"
             fi
         done
@@ -586,19 +590,15 @@ run_uninstall() {
     local retired
     for retired in "${RETIRED_HOOKS[@]}"; do
         for dir in "$hooks_dir" "$hooks_parent_dir"; do
-            if [ -f "$dir/$retired" ]; then
-                rm "$dir/$retired"
+            if [ -f "$dir/$retired" ] && _cs_remove_if_owned "$dir/$retired"; then
                 info "Removed retired $dir/$retired"
             fi
         done
     done
-    rm -f "$hooks_dir/.version"
-    rmdir "$hooks_dir" 2>/dev/null || true
 
     # Remove commands
     for cmd in "${CS_COMMANDS[@]}"; do
-        if [ -f "$commands_dir/$cmd" ]; then
-            rm "$commands_dir/$cmd"
+        if [ -f "$commands_dir/$cmd" ] && _cs_remove_if_owned "$commands_dir/$cmd"; then
             info "Removed $commands_dir/$cmd"
         fi
     done
@@ -608,23 +608,22 @@ run_uninstall() {
     # both lists or it leaves cs files behind.
     local skill
     for skill in "${CS_SKILLS[@]}" "${RETIRED_SKILLS[@]}"; do
-        if [ -d "$skills_dir/$skill" ]; then
-            rm -rf "$skills_dir/$skill"
+        if [ -d "$skills_dir/$skill" ] && _cs_remove_tree_if_owned "$skills_dir/$skill"; then
             info "Removed $skills_dir/$skill/"
         fi
     done
 
     # Remove mods: each deploys under its own directory beside the skills.
-    # Ownership is by name, as for the skills above: cs deploys these names
-    # and removes them whole, extra files included. Do not re-fix.
     local mod_file mod
     for mod_file in "${CS_MOD_FILES[@]}"; do
         mod="${mod_file%%/*}"
-        if [ -d "$skills_dir/$mod" ]; then
-            rm -rf "$skills_dir/$mod"
+        if [ -d "$skills_dir/$mod" ] && _cs_remove_tree_if_owned "$skills_dir/$mod"; then
             info "Removed $skills_dir/$mod/"
         fi
     done
+
+    rm -f "$hooks_dir/.version" "$(_cs_install_record)"
+    rmdir "$hooks_dir" 2>/dev/null || true
 
     # Remove shell completions
     if [ -f "$bash_completion_dir/cs.bash" ]; then
