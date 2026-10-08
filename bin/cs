@@ -3771,7 +3771,7 @@ _append_jsonl() {  # src dst
     local src="$1" dst="$2"
     [ -f "$src" ] || return 0
     _terminate_jsonl "$dst"
-    cat "$src" >> "$dst"
+    cat "$src" >> "$dst" || return 1
     _terminate_jsonl "$dst"
 }
 
@@ -3779,7 +3779,9 @@ _append_jsonl() {  # src dst
 # the repo does not track .cs/, so git merge cannot carry these). Applies the
 # same semantics the merge drivers give tracked repos: union append for
 # timeline/log/narratives, copy-never-overwrite for memory topic files,
-# base-wins for MEMORY.md.
+# base-wins for MEMORY.md. Every write returns 1 on failure: the caller runs
+# this in a subshell on the left of ||, where errexit is off, and deletes the
+# staged records only on success.
 fuse_session_records() {
     local src="$1" dst="$2"
     local f base
@@ -3800,13 +3802,13 @@ fuse_session_records() {
         fi
     done
 
-    _append_jsonl "$src/timeline.jsonl" "$dst/timeline.jsonl"
+    _append_jsonl "$src/timeline.jsonl" "$dst/timeline.jsonl" || return 1
     if [ -n "$srclog" ]; then
-        mkdir -p "$dstlog"
-        { echo ""; cat "$srclog"; } >> "$dstlog/session.log"
+        mkdir -p "$dstlog" || return 1
+        { echo ""; cat "$srclog"; } >> "$dstlog/session.log" || return 1
     fi
 
-    mkdir -p "$dst/memory"
+    mkdir -p "$dst/memory" || return 1
     for f in "$src"/memory/narrative.*.md; do
         [ -f "$f" ] || continue
         base=$(basename "$f")
@@ -3816,9 +3818,9 @@ fuse_session_records() {
             # body); counting stops at 2 so a --- horizontal rule in the
             # body stays body instead of truncating the append.
             awk 'NR==1 && $0 != "---" {c=2} /^---$/ && c < 2 {c++; next} c >= 2 {print}' \
-                "$f" >> "$dst/memory/$base"
+                "$f" >> "$dst/memory/$base" || return 1
         else
-            cp "$f" "$dst/memory/$base"
+            cp "$f" "$dst/memory/$base" || return 1
         fi
     done
 
@@ -3832,7 +3834,7 @@ fuse_session_records() {
         if [ -f "$dst/memory/$base" ]; then
             warn "memory/$base already exists in the base; skipped"
         else
-            cp "$f" "$dst/memory/$base"
+            cp "$f" "$dst/memory/$base" || return 1
         fi
     done
 
