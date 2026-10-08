@@ -1115,6 +1115,11 @@ fn read_mount_table() -> std::io::Result<String> {
 /// are unlinked, worktree sessions are unregistered through git, and plain
 /// directories are removed outright.
 pub fn remove_session_path(root: &Path, name: &str, path: &Path) -> std::io::Result<()> {
+    // Read the lock now, as `cs -rm`'s session_is_live does: the picker's row
+    // was scanned earlier and the session may have opened since.
+    if let Some(pid) = read_lock_pid(&path.join(".cs")) {
+        return Err(std::io::Error::other(format!("{name} is live (pid {pid}) — close it first")));
+    }
     let is_link = path.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false);
     // remove_dir_all recurses into a mount, so a vault mounted inside the
     // session would lose its contents. An adopted session loses only its link.
@@ -1162,24 +1167,28 @@ fn discard_spawn_seeds(root: &Path, name: &str) {
 /// Remove a worktree session (`base@task`) through git so the base repo's
 /// worktree registration goes with it; the task branch is left alone,
 /// matching `cs -rm` when its branch prompt is declined. Falls back to
-/// plain directory removal when the base session is gone.
+/// plain directory removal when the base session is gone. When git refuses,
+/// its error is returned and nothing is deleted, as `cs -rm` stops there.
 fn remove_worktree_session(root: &Path, name: &str, path: &Path) -> std::io::Result<()> {
     let base = worktree_parts(name).map(|(b, _)| b).unwrap_or(name);
     let base_dir = root.join(base);
-    if base_dir.is_dir() {
-        let ok = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&base_dir)
-            .args(["worktree", "remove", "--force"])
-            .arg(path)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        if ok {
-            return Ok(());
-        }
+    if !base_dir.is_dir() {
+        return fs::remove_dir_all(path);
     }
-    fs::remove_dir_all(path)
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&base_dir)
+        .args(["worktree", "remove", "--force"])
+        .arg(path)
+        .output()?;
+    if !out.status.success() {
+        return Err(std::io::Error::other(format!(
+            "git worktree remove failed for {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(())
 }
 
 /// Unread cross-session mail: the documents in `mail/new/` (`cs -msg` moves
