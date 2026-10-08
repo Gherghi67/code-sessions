@@ -101,7 +101,7 @@ test_spawn_writes_seed_and_opens_window() {
     assert_eq "boss" "$(sed -n 2p "$(SEED)")" "line 2 is spawner" || return 1
     assert_eq "first job" "$(sed -n 3p "$(SEED)")" "task order kept" || return 1
     assert_eq "second job" "$(sed -n 4p "$(SEED)")" "second task" || return 1
-    assert_file_contains "$FAKE_TMUX_DIR/log" "CS_SPAWN_TOKEN=$tok " "the window command carries the seed's token" || return 1
+    assert_file_contains "$FAKE_TMUX_DIR/log" "'CS_SPAWN_TOKEN=$tok'" "the window command carries the seed's token" || return 1
     assert_output_contains "$out" "@0" "window id echoed" || return 1
     assert_output_contains "$out" "tmux attach -t cs" "attach hint" || return 1
     assert_file_contains "$FAKE_TMUX_DIR/log" "new-session -d -s cs" "created cs session" || return 1
@@ -263,7 +263,7 @@ test_spawn_refuses_existing_seed() {
     "$CS_BIN" -spawn worker --task "a" >/dev/null 2>&1 || return 1
     rm -f "$FAKE_TMUX_DIR/session-exists"
     ! "$CS_BIN" -spawn worker --task "b" >/dev/null 2>&1 || return 1
-    assert_eq "a" "$(sed -n 2p "$(SEED)")" "original seed untouched" || return 1
+    assert_eq "a" "$(sed -n 3p "$(SEED)")" "original seed untouched" || return 1
 }
 
 test_spawn_rejects_multiline_and_empty_task() {
@@ -601,7 +601,7 @@ test_launch_seed_control_characters_are_shown_flat() {
     # A hand-crafted seed cannot hold a newline per line, but it can hold
     # other control characters; the consent listing shows them stripped.
     mkdir -p "$CS_SESSIONS_ROOT/.spawn"
-    printf '%s\nbo\033[31mss\nfirst\rjob\n' "$OWN_TOKEN" > "$CS_SESSIONS_ROOT/.spawn/worker.seed"
+    printf '%s\nbo\001ss\nfirst\rjob \033[31mred\n' "$OWN_TOKEN" > "$CS_SESSIONS_ROOT/.spawn/worker.seed"
     local out; out=$("$CS_BIN" worker <<< "n" 2>&1) || return 1
     assert_output_contains "$out" "boss" "spawner shown flat" || return 1
     assert_output_contains "$out" "firstjob" "task shown flat" || return 1
