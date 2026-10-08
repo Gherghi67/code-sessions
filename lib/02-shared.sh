@@ -1,5 +1,5 @@
-# ABOUTME: Actor identity, narrative budget, private-dir, tmux window-title, atomic file rewrite and state-file
-# ABOUTME: lock code that cs AND its hooks run. build.sh folds this into bin/cs and copies it to hooks/cs-shared.sh.
+# ABOUTME: Actor identity, narrative budget, private-dir, tmux window-title, atomic file rewrite, state-file
+# ABOUTME: lock and settings.json rewrite code that cs AND its hooks run. build.sh folds this into bin/cs and copies it to hooks/cs-shared.sh.
 
 # Normalize an arbitrary identity string to a filesystem-safe slug.
 _slugify() {
@@ -188,9 +188,11 @@ _cs_tmux_title_lock() {  # pane
 # and a line lost to either costs one resume prompt or one title, not data.
 # A live holder is waited for, but for no more than five seconds: past that
 # the caller goes ahead without the lock, since a launch or a hook must never
-# stall on a lock a stray process holds, and a lock older than a minute is
-# removed on the way out so the next caller is not taxed again (a real hold
-# lasts milliseconds). A lock that vanishes between the failed mkdir and the
+# stall on a lock a stray process holds, and a lock older than a minute whose
+# holder no longer answers is removed on the way out so the next caller is
+# not taxed again (a real hold lasts milliseconds); a holder that still
+# answers keeps its lock however old, since evicting a live writer lets it
+# finish over whatever the next holder writes. A lock that vanishes between the failed mkdir and the
 # look at it was just released, and the next mkdir is tried at once. Returns
 # 0 holding the lock with its pid written, 1 holding nothing; a directory
 # that cannot hold a lock at all (missing, read-only) is not waited on.
@@ -200,7 +202,13 @@ _cs_mkdir_lock() {  # lock dir
     until mkdir "$lock" 2>/dev/null; do
         [ -d "$dir" ] && [ -w "$dir" ] || return 1
         if [ "$SECONDS" -ge "$deadline" ]; then
-            [ -z "$(find "$lock" -prune -mmin +1 2>/dev/null)" ] || _cs_mkdir_reclaim "$lock" ""
+            if [ -n "$(find "$lock" -prune -mmin +1 2>/dev/null)" ]; then
+                holder=""
+                { read -r holder < "$lock/pid"; } 2>/dev/null || true
+                if [ -z "$holder" ] || ! kill -0 "$holder" 2>/dev/null; then
+                    _cs_mkdir_reclaim "$lock" "$holder"
+                fi
+            fi
             return 1
         fi
         if [ ! -d "$lock" ]; then
@@ -367,4 +375,87 @@ cs_vault_holder_drop() {  # holders, pid
     cs_write_atomic "$1" awk -v pid="$2" '$0 != pid' "$1" || rc=$?
     _cs_mkdir_unlock "$lock"
     return "$rc"
+}
+
+# Claude Code's settings.json holds the user's permissions, env, MCP servers
+# and other tools' hooks. Whether cs can read it: a missing or zero-byte file
+# can (cs creates it), anything else jq cannot parse cannot, and is never
+# replaced. Returns 1 with "<file> is not valid JSON; left it unchanged and
+# wrote no <file>.cs-bak.<stamp> backup: <jq's reason>" in CS_SETTINGS_ERROR
+# when it cannot.
+# shellcheck disable=SC2034  # CS_SETTINGS_ERROR is read by the callers in cs and install.sh
+cs_settings_check() {  # file
+    local reason
+    CS_SETTINGS_ERROR=""
+    [ -s "$1" ] || return 0
+    reason=$(jq -e . 2>&1 >/dev/null < "$1") && return 0
+    reason="${reason%%$'\n'*}"
+    reason="${reason#jq: }"
+    [ -n "$reason" ] || reason="jq found no JSON value in it, or only null or false"
+    CS_SETTINGS_ERROR="$1 is not valid JSON; left it unchanged and wrote no $1.cs-bak.<stamp> backup: $reason"
+    return 1
+}
+
+# Rewrite a Claude Code settings file through a command that reads its JSON on
+# stdin and prints the new JSON, usually jq and a filter. Claude Code, a second
+# install and cs's own verbs all rewrite the file whole, so the read, the
+# command and the write happen under one _cs_mkdir_lock beside the file, and
+# a cs writer waiting on it never loses its change or another's; nothing that
+# waits on a person may run inside it. Claude Code takes no such lock: against
+# it the guard is that the read and the write are only the command's run time
+# apart. A missing or zero-byte file reads as {}; a file cs_settings_check
+# refuses, or a command whose output is not JSON, leaves the file as it was.
+# When the content changes, the file as it was is first copied beside it as
+# <file>.cs-bak.<UTC stamp> (.1, .2 ... after a name already taken), mode
+# kept, then replaced through cs_write_atomic; unchanged content writes
+# nothing, so no backup either. Every changing write keeps one, and none are
+# pruned. Returns 0 written or unchanged, 1 refused with the reason in
+# CS_SETTINGS_ERROR and the file untouched.
+cs_settings_update() {  # file, command [args...]
+    local file="$1" lock="$1.lock" rc=0
+    shift
+    CS_SETTINGS_ERROR=""
+    if ! _cs_mkdir_lock "$lock"; then
+        CS_SETTINGS_ERROR="could not take the lock $lock; $file left unchanged"
+        return 1
+    fi
+    _cs_settings_rewrite "$file" "$@" || rc=$?
+    _cs_mkdir_unlock "$lock"
+    return "$rc"
+}
+
+# cs_settings_update's work, run while it holds the lock.
+# shellcheck disable=SC2034  # CS_SETTINGS_ERROR is read by the callers in cs and install.sh
+_cs_settings_rewrite() {  # file, command [args...]
+    local file="$1" current="{}" updated stamp backup n=1
+    shift
+    cs_settings_check "$file" || return 1
+    if [ -s "$file" ]; then
+        current=$(cat "$file") || {
+            CS_SETTINGS_ERROR="could not read $file; left it unchanged"
+            return 1
+        }
+    fi
+    if ! updated=$(printf '%s\n' "$current" | "$@") \
+        || ! printf '%s\n' "$updated" | jq -e . >/dev/null 2>&1; then
+        CS_SETTINGS_ERROR="could not update $file: the change did not produce JSON; left it unchanged"
+        return 1
+    fi
+    [ "$updated" != "$current" ] || return 0
+    if [ -e "$file" ]; then
+        stamp=$(date -u +%Y%m%dT%H%M%SZ)
+        backup="$file.cs-bak.$stamp"
+        while [ -e "$backup" ] || [ -L "$backup" ]; do
+            backup="$file.cs-bak.$stamp.$n"
+            n=$((n + 1))
+        done
+        cp -p "$file" "$backup" 2>/dev/null || {
+            CS_SETTINGS_ERROR="could not back up $file to $backup; left it unchanged"
+            return 1
+        }
+    fi
+    cs_write_atomic "$file" printf '%s\n' "$updated" || {
+        CS_SETTINGS_ERROR="could not write $file; left it unchanged"
+        return 1
+    }
 }

@@ -18,6 +18,13 @@ rs_extract_array() {
     ' "$file"
 }
 
+# Content a past cs deployed (mods/cs-rotate/hooks/hooks.json as it shipped).
+# install and uninstall remove only files cs wrote, decided by content, so a
+# stale skill a past cs left behind is staged with content cs shipped.
+_cs_shipped_content() {
+    echo '{"modules":["./register.tsx"]}'
+}
+
 test_retired_skills_array_exists_in_both_copies() {
     local f
     for f in "$INSTALL_SH" "$CS_BIN"; do
@@ -82,8 +89,8 @@ test_retired_skills_are_not_in_the_repo() {
 test_install_removes_a_retired_skill_directory() {
     local fake_home="$TEST_TMPDIR/retired-skill-home"
     mkdir -p "$fake_home/.claude/skills/voice/scripts"
-    echo 'stale skill' > "$fake_home/.claude/skills/voice/SKILL.md"
-    echo 'stale script' > "$fake_home/.claude/skills/voice/scripts/build-corpus.sh"
+    _cs_shipped_content > "$fake_home/.claude/skills/voice/SKILL.md"
+    _cs_shipped_content > "$fake_home/.claude/skills/voice/scripts/build-corpus.sh"
     # A skill cs never shipped must survive untouched.
     mkdir -p "$fake_home/.claude/skills/not-ours"
     echo 'keep me' > "$fake_home/.claude/skills/not-ours/SKILL.md"
@@ -105,7 +112,7 @@ test_install_removes_a_retired_skill_directory() {
 test_uninstall_removes_a_retired_skill_directory() {
     local fake_home="$TEST_TMPDIR/retired-skill-uninstall"
     mkdir -p "$fake_home/.claude/skills/voice"
-    echo 'stale skill' > "$fake_home/.claude/skills/voice/SKILL.md"
+    _cs_shipped_content > "$fake_home/.claude/skills/voice/SKILL.md"
     mkdir -p "$fake_home/.claude/skills/not-ours"
     echo 'keep me' > "$fake_home/.claude/skills/not-ours/SKILL.md"
 

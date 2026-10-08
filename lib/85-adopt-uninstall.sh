@@ -70,6 +70,10 @@ ENTRIES
         [ -z "$line" ] && continue
         [[ "$line" == \#* ]] && continue
         if ! grep -qF "$line" "$gitignore" 2>/dev/null; then
+            # A last line with no newline would swallow the entry appended to it.
+            if [ -s "$gitignore" ] && [ -n "$(tail -c 1 "$gitignore")" ]; then
+                printf '\n' >> "$gitignore"
+            fi
             echo "$line" >> "$gitignore"
         fi
     done <<< "$entries"
@@ -82,6 +86,17 @@ adopt_session() {
     target_dir="$(pwd -P)"
 
     validate_session_name "$session_name"
+
+    # Adopting a directory with no .git runs git init and commits everything
+    # under it, and writes cs's files into it: never the home directory or the
+    # filesystem root. -ef, not a string compare: either may be reached
+    # through a symlink or typed in another case.
+    if [ "$target_dir" -ef "${HOME:-}" ]; then
+        error "Refusing to adopt your home directory ($target_dir). Run cs -adopt from a project directory."
+    fi
+    if [ "$target_dir" -ef / ]; then
+        error "Refusing to adopt the filesystem root. Run cs -adopt from a project directory."
+    fi
 
     # A linked git worktree keeps a `.git` FILE, so the init path below would
     # read it as "not a repo", `git init` over it and `git add -A` the user's
@@ -181,7 +196,9 @@ adopt_session() {
     if [ ! -d "$target_dir/.git" ]; then
         (
             cd "$target_dir" || exit 0
-            create_session_gitignore "$target_dir"
+            # Merged, not written: the project's own rules (an .env, a key
+            # file) must keep hiding those files from the add -A below.
+            ensure_cs_gitignore_entries "$target_dir"
             git init -q 2>/dev/null || true
             # See the session-init path: autocrlf would rewrite .gitignore to
             # CRLF and its patterns would stop matching.
@@ -450,6 +467,27 @@ _uninstall_rotate_wrap_keys() {
     fi
 }
 
+# Settings JSON on stdin without any cs hook, current or retired, on stdout:
+# stripped from any event, event-agnostic, matching both path spellings ($HOME
+# and ~) in both deployment layouts (subdirectory and flat). Drops wrappers
+# that empty out; sibling user hooks co-shipped in a wrapper survive.
+_strip_cs_hook_registrations() {  # hooks_dir, hooks_parent_dir
+    local settings strip_name
+    settings=$(cat)
+    for strip_name in "${CS_HOOKS[@]}" "${RETIRED_HOOKS[@]}"; do
+        settings=$(_strip_hook_registration "$settings" "$1/$strip_name" "~/.claude/hooks/cs/$strip_name")
+        settings=$(_strip_hook_registration "$settings" "$2/$strip_name" "~/.claude/hooks/$strip_name")
+    done
+
+    # Clean up empty hook arrays
+    echo "$settings" | jq '
+        if .hooks then
+            .hooks |= with_entries(select(.value | length > 0))
+            | if .hooks == {} then del(.hooks) else . end
+        else . end
+    '
+}
+
 # Uninstall cs and all components
 run_uninstall() {
     local install_dir="$HOME/.local/bin"
@@ -533,12 +571,16 @@ run_uninstall() {
         fi
     done
 
+    # Everything below under ~/.claude goes only when cs wrote it, decided by
+    # content (_cs_owns_file): a user's own hook, command or skill of the same
+    # name is kept and named. The install record is read throughout, so it
+    # goes last.
+
     # Remove hooks from both deployment layouts (subdirectory and flat)
     local hook dir
     for hook in "${CS_HOOKS[@]}" "${CS_HOOK_LIBS[@]}"; do
         for dir in "$hooks_dir" "$hooks_parent_dir"; do
-            if [ -f "$dir/$hook" ]; then
-                rm "$dir/$hook"
+            if [ -f "$dir/$hook" ] && _cs_remove_if_owned "$dir/$hook"; then
                 info "Removed $dir/$hook"
             fi
         done
@@ -548,19 +590,15 @@ run_uninstall() {
     local retired
     for retired in "${RETIRED_HOOKS[@]}"; do
         for dir in "$hooks_dir" "$hooks_parent_dir"; do
-            if [ -f "$dir/$retired" ]; then
-                rm "$dir/$retired"
+            if [ -f "$dir/$retired" ] && _cs_remove_if_owned "$dir/$retired"; then
                 info "Removed retired $dir/$retired"
             fi
         done
     done
-    rm -f "$hooks_dir/.version"
-    rmdir "$hooks_dir" 2>/dev/null || true
 
     # Remove commands
     for cmd in "${CS_COMMANDS[@]}"; do
-        if [ -f "$commands_dir/$cmd" ]; then
-            rm "$commands_dir/$cmd"
+        if [ -f "$commands_dir/$cmd" ] && _cs_remove_if_owned "$commands_dir/$cmd"; then
             info "Removed $commands_dir/$cmd"
         fi
     done
@@ -570,23 +608,22 @@ run_uninstall() {
     # both lists or it leaves cs files behind.
     local skill
     for skill in "${CS_SKILLS[@]}" "${RETIRED_SKILLS[@]}"; do
-        if [ -d "$skills_dir/$skill" ]; then
-            rm -rf "$skills_dir/$skill"
+        if [ -d "$skills_dir/$skill" ] && _cs_remove_tree_if_owned "$skills_dir/$skill"; then
             info "Removed $skills_dir/$skill/"
         fi
     done
 
     # Remove mods: each deploys under its own directory beside the skills.
-    # Ownership is by name, as for the skills above: cs deploys these names
-    # and removes them whole, extra files included. Do not re-fix.
     local mod_file mod
     for mod_file in "${CS_MOD_FILES[@]}"; do
         mod="${mod_file%%/*}"
-        if [ -d "$skills_dir/$mod" ]; then
-            rm -rf "$skills_dir/$mod"
+        if [ -d "$skills_dir/$mod" ] && _cs_remove_tree_if_owned "$skills_dir/$mod"; then
             info "Removed $skills_dir/$mod/"
         fi
     done
+
+    rm -f "$hooks_dir/.version" "$(_cs_install_record)"
+    rmdir "$hooks_dir" 2>/dev/null || true
 
     # Remove shell completions
     if [ -f "$bash_completion_dir/cs.bash" ]; then
@@ -614,31 +651,15 @@ run_uninstall() {
         info "Removed $claude_links_dir"
     fi
 
-    # Clean up settings.json (remove cs hooks, preserve others)
+    # Clean up settings.json (remove cs hooks, preserve others). A file jq
+    # cannot parse is left as it is with a warning: the binaries are already
+    # gone, so the rest of the uninstall still runs.
     if [ -f "$settings_file" ] && command -v jq >/dev/null 2>&1; then
-        local settings
-        settings=$(cat "$settings_file")
-
-        # Strip every cs hook (current and retired) from any event,
-        # event-agnostic, matching both path spellings ($HOME and ~) in both
-        # deployment layouts (subdirectory and flat). Drops wrappers that
-        # empty out; sibling user hooks co-shipped in a wrapper survive.
-        local strip_name
-        for strip_name in "${CS_HOOKS[@]}" "${RETIRED_HOOKS[@]}"; do
-            settings=$(_strip_hook_registration "$settings" "$hooks_dir/$strip_name" "~/.claude/hooks/cs/$strip_name")
-            settings=$(_strip_hook_registration "$settings" "$hooks_parent_dir/$strip_name" "~/.claude/hooks/$strip_name")
-        done
-
-        # Clean up empty hook arrays
-        settings=$(echo "$settings" | jq '
-            if .hooks then
-                .hooks |= with_entries(select(.value | length > 0))
-                | if .hooks == {} then del(.hooks) else . end
-            else . end
-        ')
-
-        echo "$settings" > "$settings_file"
-        info "Cleaned up $settings_file"
+        if cs_settings_update "$settings_file" _strip_cs_hook_registrations "$hooks_dir" "$hooks_parent_dir"; then
+            info "Cleaned up $settings_file"
+        else
+            warn "$CS_SETTINGS_ERROR"
+        fi
     elif [ -f "$settings_file" ]; then
         warn "jq not found - cannot clean up $settings_file automatically"
         warn "Manually remove cs hook entries from $settings_file"

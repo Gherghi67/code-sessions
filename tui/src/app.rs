@@ -4199,6 +4199,30 @@ mod tests {
         );
     }
 
+    /// The row was scanned dormant, then the session opened before Enter on
+    /// Delete: the lock on disk, not the cached row, decides, as `cs -rm`'s
+    /// session_is_live re-reads it.
+    #[test]
+    fn delete_refuses_a_session_that_took_the_lock_after_the_scan() {
+        use crate::session::test_root;
+        let root = std::env::temp_dir().join(format!("cs-test-del-late-lock-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("busy/.cs/local")).unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let mut app = app_on(&root, "busy");
+        let pid = std::process::id();
+        std::fs::write(root.join("busy/.cs/session.lock"), format!("{pid}\n")).unwrap();
+
+        app.execute_delete();
+
+        let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+        assert!(
+            status.contains(&format!("busy is live (pid {pid})")),
+            "status should name the locking pid, got: {status}"
+        );
+        assert!(root.join("busy/.cs/session.lock").exists(), "the live session survives");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     // A batch keeps the reason a delete failed: a mounted vault says to
     // unmount it, and "1 failed" alone does not.
     #[test]

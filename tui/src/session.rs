@@ -1115,6 +1115,11 @@ fn read_mount_table() -> std::io::Result<String> {
 /// are unlinked, worktree sessions are unregistered through git, and plain
 /// directories are removed outright.
 pub fn remove_session_path(root: &Path, name: &str, path: &Path) -> std::io::Result<()> {
+    // Read the lock now, as `cs -rm`'s session_is_live does: the picker's row
+    // was scanned earlier and the session may have opened since.
+    if let Some(pid) = read_lock_pid(&path.join(".cs")) {
+        return Err(std::io::Error::other(format!("{name} is live (pid {pid}) — close it first")));
+    }
     let is_link = path.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false);
     // remove_dir_all recurses into a mount, so a vault mounted inside the
     // session would lose its contents. An adopted session loses only its link.
@@ -1150,36 +1155,47 @@ pub fn remove_session_path(root: &Path, name: &str, path: &Path) -> std::io::Res
     Ok(())
 }
 
-/// Delete any staged or stale spawn seed for `name`. A deleted session must
-/// not leave a seed behind: it would block re-spawning the name and arm a
-/// future same-name session with dead tasks. Best-effort by design.
+/// What `cs -spawn` stages under `$SESSIONS_ROOT/.spawn/` for a session name,
+/// and what the launch sets aside when the seed ages out. Twin of
+/// `_spawn_staging_suffixes` in lib/52-spawn.sh; the two lists change together.
+const SPAWN_STAGING_SUFFIXES: [&str; 4] = [".seed", ".seed.stale", ".brief.md", ".brief.md.stale"];
+
+/// Delete any staged or stale spawn seed and brief for `name`. A deleted
+/// session must not leave either behind: a seed would block re-spawning the
+/// name and arm a future same-name session with dead tasks, and a brief would
+/// reach it as a first prompt nobody wrote for it. Best-effort by design.
 fn discard_spawn_seeds(root: &Path, name: &str) {
     let spawn = root.join(".spawn");
-    let _ = fs::remove_file(spawn.join(format!("{name}.seed")));
-    let _ = fs::remove_file(spawn.join(format!("{name}.seed.stale")));
+    for suffix in SPAWN_STAGING_SUFFIXES {
+        let _ = fs::remove_file(spawn.join(format!("{name}{suffix}")));
+    }
 }
 
 /// Remove a worktree session (`base@task`) through git so the base repo's
 /// worktree registration goes with it; the task branch is left alone,
 /// matching `cs -rm` when its branch prompt is declined. Falls back to
-/// plain directory removal when the base session is gone.
+/// plain directory removal when the base session is gone. When git refuses,
+/// its error is returned and nothing is deleted, as `cs -rm` stops there.
 fn remove_worktree_session(root: &Path, name: &str, path: &Path) -> std::io::Result<()> {
     let base = worktree_parts(name).map(|(b, _)| b).unwrap_or(name);
     let base_dir = root.join(base);
-    if base_dir.is_dir() {
-        let ok = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&base_dir)
-            .args(["worktree", "remove", "--force"])
-            .arg(path)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        if ok {
-            return Ok(());
-        }
+    if !base_dir.is_dir() {
+        return fs::remove_dir_all(path);
     }
-    fs::remove_dir_all(path)
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&base_dir)
+        .args(["worktree", "remove", "--force"])
+        .arg(path)
+        .output()?;
+    if !out.status.success() {
+        return Err(std::io::Error::other(format!(
+            "git worktree remove failed for {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(())
 }
 
 /// Unread cross-session mail: the documents in `mail/new/` (`cs -msg` moves
@@ -1897,6 +1913,65 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    // `cs -rm` stops when git refuses to remove a worktree; deleting the
+    // directory anyway would leave the base repo registering a worktree that
+    // is gone. A locked worktree is one git refuses under a single --force.
+    #[test]
+    fn remove_session_path_returns_the_git_error_and_keeps_a_worktree_git_refuses() {
+        let root = std::env::temp_dir().join(format!("cs-wt-refused-{}", std::process::id()));
+        let base = root.join("proj");
+        fs::create_dir_all(&base).unwrap();
+        git_in(&base, &["init", "-q"]);
+        fs::write(base.join("f"), "x").unwrap();
+        git_in(&base, &["add", "f"]);
+        git_in(&base, &["commit", "-qm", "seed"]);
+        let wt = root.join("proj@task");
+        git_in(&base, &["worktree", "add", "-q", wt.to_str().unwrap(), "-b", "cs/task"]);
+        git_in(&base, &["worktree", "lock", wt.to_str().unwrap()]);
+        fs::create_dir_all(root.join(".spawn")).unwrap();
+        fs::write(root.join(".spawn/proj@task.seed"), "spawner\n").unwrap();
+
+        let err = remove_session_path(&root, "proj@task", &wt).unwrap_err();
+
+        let text = err.to_string();
+        assert!(
+            text.starts_with(&format!("git worktree remove failed for {}: ", wt.display())),
+            "error should name the failed git step, got: {text}"
+        );
+        assert!(text.contains("locked"), "error should carry git's reason, got: {text}");
+        assert!(wt.join("f").exists(), "the refused worktree keeps its files");
+        let list = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&base)
+            .args(["worktree", "list"])
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&list.stdout).contains("proj@task"),
+            "the registration stays consistent with the directory"
+        );
+        assert!(root.join(".spawn/proj@task.seed").exists(), "a refused delete discards nothing");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // `cs -rm` re-reads the lock when it runs (session_is_live); the picker's
+    // row can be minutes old, so the removal itself must refuse a session that
+    // took the lock since the last scan.
+    #[test]
+    fn remove_session_path_refuses_a_session_whose_lock_is_live_now() {
+        let root = std::env::temp_dir().join(format!("cs-rm-live-{}", std::process::id()));
+        let dir = root.join("busy");
+        fs::create_dir_all(dir.join(".cs/local")).unwrap();
+        let pid = std::process::id();
+        fs::write(dir.join(".cs/session.lock"), format!("{pid}\n")).unwrap();
+
+        let err = remove_session_path(&root, "busy", &dir).unwrap_err();
+
+        assert_eq!(err.to_string(), format!("busy is live (pid {pid}) — close it first"));
+        assert!(dir.join(".cs/session.lock").exists(), "a live session is left whole");
+        let _ = fs::remove_dir_all(&root);
+    }
+
     // An encrypted session mounts its vault inside the session directory by
     // convention, and remove_dir_all recurses into a mount: deleting the
     // session would delete what the vault holds. Unmounted, the link dangles
@@ -2006,22 +2081,30 @@ mod tests {
         let _ = fs::remove_dir_all(root.parent().unwrap());
     }
 
+    // A brief left behind would reach a later same-name spawn as a first
+    // prompt nobody wrote for it, so it goes with the seed.
     #[test]
-    fn remove_session_path_discards_spawn_seeds() {
+    fn remove_session_path_discards_every_spawn_staging_file() {
         let root = std::env::temp_dir().join(format!("cs-seed-rm-{}", std::process::id()));
         let dir = root.join("seeded");
         fs::create_dir_all(dir.join(".cs/local")).unwrap();
         fs::create_dir_all(root.join(".spawn")).unwrap();
         fs::write(root.join(".spawn/seeded.seed"), "spawner\ntask\n").unwrap();
         fs::write(root.join(".spawn/seeded.seed.stale"), "old\n").unwrap();
+        fs::write(root.join(".spawn/seeded.brief.md"), "do this\n").unwrap();
+        fs::write(root.join(".spawn/seeded.brief.md.stale"), "old brief\n").unwrap();
         fs::write(root.join(".spawn/other.seed"), "other\n").unwrap();
+        fs::write(root.join(".spawn/other.brief.md"), "theirs\n").unwrap();
 
         remove_session_path(&root, "seeded", &dir).unwrap();
 
         assert!(!dir.exists(), "session directory should be gone");
         assert!(!root.join(".spawn/seeded.seed").exists(), "seed must go with the session");
         assert!(!root.join(".spawn/seeded.seed.stale").exists(), "stale seed must go too");
+        assert!(!root.join(".spawn/seeded.brief.md").exists(), "brief must go with the session");
+        assert!(!root.join(".spawn/seeded.brief.md.stale").exists(), "stale brief must go too");
         assert!(root.join(".spawn/other.seed").exists(), "other sessions' seeds stay");
+        assert!(root.join(".spawn/other.brief.md").exists(), "other sessions' briefs stay");
         let _ = fs::remove_dir_all(&root);
     }
 

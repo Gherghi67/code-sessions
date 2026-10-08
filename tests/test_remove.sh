@@ -124,10 +124,16 @@ test_remove_worktree_session_discards_seeds() {
     mkdir -p "$CS_SESSIONS_ROOT/wbase@t/.cs/local"
     mkdir -p "$CS_SESSIONS_ROOT/.spawn"
     printf 'spawner\n' > "$CS_SESSIONS_ROOT/.spawn/wbase@t.seed"
+    printf 'old\n' > "$CS_SESSIONS_ROOT/.spawn/wbase@t.seed.stale"
+    printf 'do this\n' > "$CS_SESSIONS_ROOT/.spawn/wbase@t.brief.md"
+    printf 'old brief\n' > "$CS_SESSIONS_ROOT/.spawn/wbase@t.brief.md.stale"
 
     printf 'y\n' | CS_ASSUME_TTY=1 "$CS_BIN" -rm "wbase@t" >/dev/null 2>&1 || return 1
     [ ! -d "$CS_SESSIONS_ROOT/wbase@t" ] || { echo "  worktree session survived"; return 1; }
     [ ! -f "$CS_SESSIONS_ROOT/.spawn/wbase@t.seed" ] || { echo "  worktree seed survived removal"; return 1; }
+    [ ! -f "$CS_SESSIONS_ROOT/.spawn/wbase@t.seed.stale" ] || { echo "  worktree stale seed survived removal"; return 1; }
+    [ ! -f "$CS_SESSIONS_ROOT/.spawn/wbase@t.brief.md" ] || { echo "  worktree brief survived removal"; return 1; }
+    [ ! -f "$CS_SESSIONS_ROOT/.spawn/wbase@t.brief.md.stale" ] || { echo "  worktree stale brief survived removal"; return 1; }
 }
 
 test_remove_allows_heartbeat_only_session_without_force() {

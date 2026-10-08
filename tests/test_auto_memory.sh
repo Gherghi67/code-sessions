@@ -159,6 +159,166 @@ EOF
     rm -rf "$HOME/.claude/projects/${encoded_path}" 2>/dev/null || true
 }
 
+# A session whose next open runs the memory migration (no settings.local.json
+# yet), plus the default-location memory dir Claude Code keeps for it. Prints
+# the session dir, then the default memory dir, one per line.
+_stage_memory_migration() {  # session_name
+    local session_dir="$CS_SESSIONS_ROOT/$1"
+    mkdir -p "$session_dir/.cs/local" "$session_dir/.cs/memory"
+    printf '# Session Documentation Protocol\n\nSession metadata lives in the .cs/ directory.\n' > "$session_dir/CLAUDE.md"
+    (cd "$session_dir" && git init -q && git add -A && git commit -q -m "init")
+    local encoded_path
+    encoded_path=$(_encode_cwd_for_claude_test "$session_dir")
+    local default_dir="$HOME/.claude/projects/${encoded_path}/memory"
+    mkdir -p "$default_dir"
+    printf '%s\n%s\n' "$session_dir" "$default_dir"
+}
+
+# A name both sides hold with different content survives on both sides, and a
+# subdirectory is copied whole: the migration deletes only what it has an
+# identical copy of.
+test_migration_keeps_colliding_memory_and_subdirs() {
+    local staged session_dir default_dir
+    staged=$(_stage_memory_migration mem-collide)
+    session_dir=$(sed -n 1p <<< "$staged")
+    default_dir=$(sed -n 2p <<< "$staged")
+    printf 'session-index-line\n' > "$session_dir/.cs/memory/MEMORY.md"
+    printf 'same bytes on both sides\n' > "$session_dir/.cs/memory/shared.md"
+    printf 'default-index-line\n' > "$default_dir/MEMORY.md"
+    printf 'same bytes on both sides\n' > "$default_dir/shared.md"
+    mkdir -p "$default_dir/topics"
+    printf 'nested-topic-line\n' > "$default_dir/topics/deep.md"
+
+    "$CS_BIN" mem-collide <<< "" >/dev/null 2>&1 || true
+
+    # The open appends its narrative pointer to MEMORY.md, so only the
+    # session's own first line is pinned.
+    assert_eq "session-index-line" "$(head -1 "$session_dir/.cs/memory/MEMORY.md")" \
+        "the session's own MEMORY.md must keep its content" || return 1
+    assert_eq "default-index-line" "$(cat "$session_dir/.cs/memory/MEMORY.md.claude-projects" 2>/dev/null)" \
+        "the colliding default MEMORY.md must be kept beside it" || return 1
+    assert_eq "same bytes on both sides" "$(cat "$session_dir/.cs/memory/shared.md")" \
+        "an identical same-name file stays as it was" || return 1
+    assert_not_exists "$session_dir/.cs/memory/shared.md.claude-projects" \
+        "an identical same-name file needs no second copy" || return 1
+    assert_eq "nested-topic-line" "$(cat "$session_dir/.cs/memory/topics/deep.md" 2>/dev/null)" \
+        "a subdirectory's files must be copied" || return 1
+    assert_not_exists "$default_dir" \
+        "the default memory dir goes once every file has an identical copy" || return 1
+}
+
+# A destination reached through a symlink is not an independent copy: a
+# session file linked back into the default dir, or a session subdirectory
+# linked there, would pass the byte comparison and the source would be
+# deleted from under the link. Such a file is left where it is, whole.
+test_migration_keeps_a_source_the_destination_links_to() {
+    local staged session_dir default_dir
+    staged=$(_stage_memory_migration mem-linked)
+    session_dir=$(sed -n 1p <<< "$staged")
+    default_dir=$(sed -n 2p <<< "$staged")
+    printf 'linked-topic-line\n' > "$default_dir/topic.md"
+    ln -s "$default_dir/topic.md" "$session_dir/.cs/memory/topic.md"
+    mkdir -p "$default_dir/topics"
+    printf 'linked-dir-line\n' > "$default_dir/topics/deep.md"
+    ln -s "$default_dir/topics" "$session_dir/.cs/memory/topics"
+
+    "$CS_BIN" mem-linked <<< "" >/dev/null 2>&1 || true
+
+    assert_eq "linked-topic-line" "$(cat "$default_dir/topic.md" 2>/dev/null)" \
+        "a source the session links to must survive" || return 1
+    assert_eq "linked-dir-line" "$(cat "$default_dir/topics/deep.md" 2>/dev/null)" \
+        "a source under a linked directory must survive" || return 1
+    [ -L "$session_dir/.cs/memory/topic.md" ] || { echo "  FAIL: the session's link was replaced"; return 1; }
+    [ -L "$session_dir/.cs/memory/topics" ] || { echo "  FAIL: the session's directory link was replaced"; return 1; }
+}
+
+# The destination root itself can be a link back into the default dir (a
+# vaulted session links .cs/memory elsewhere, so a linked root is a legal
+# layout). Then every destination path is the source path: the byte
+# comparison compares a file with itself, and deleting the source would
+# delete the only copy. Such a root leaves the default dir whole.
+test_migration_keeps_a_source_the_destination_root_links_to() {
+    local staged session_dir default_dir
+    staged=$(_stage_memory_migration mem-linked-root)
+    session_dir=$(sed -n 1p <<< "$staged")
+    default_dir=$(sed -n 2p <<< "$staged")
+    rmdir "$session_dir/.cs/memory"
+    ln -s "$default_dir" "$session_dir/.cs/memory"
+    printf 'root-linked-line\n' > "$default_dir/topic.md"
+    mkdir -p "$default_dir/topics"
+    printf 'root-linked-deep-line\n' > "$default_dir/topics/deep.md"
+
+    "$CS_BIN" mem-linked-root <<< "" >/dev/null 2>&1 || true
+
+    assert_eq "root-linked-line" "$(cat "$default_dir/topic.md" 2>/dev/null)" \
+        "a source the destination root links to must survive" || return 1
+    assert_eq "root-linked-deep-line" "$(cat "$default_dir/topics/deep.md" 2>/dev/null)" \
+        "a nested source under a linked root must survive" || return 1
+    [ -L "$session_dir/.cs/memory" ] || { echo "  FAIL: the session's memory root link was replaced"; return 1; }
+    [ -d "$session_dir/.cs/memory/" ] || { echo "  FAIL: the session's memory root link dangles"; return 1; }
+}
+
+# A copy that fails stops the migration before anything is deleted, including
+# the files that did copy.
+test_migration_failed_copy_deletes_nothing() {
+    local staged session_dir default_dir
+    staged=$(_stage_memory_migration mem-fail)
+    session_dir=$(sed -n 1p <<< "$staged")
+    default_dir=$(sed -n 2p <<< "$staged")
+    # A file where the copy needs a directory makes the nested copy fail.
+    printf 'session file named topics\n' > "$session_dir/.cs/memory/topics"
+    printf 'top-level-line\n' > "$default_dir/top.md"
+    mkdir -p "$default_dir/topics"
+    printf 'nested-topic-line\n' > "$default_dir/topics/deep.md"
+
+    "$CS_BIN" mem-fail <<< "" >/dev/null 2>&1 || true
+
+    assert_eq "top-level-line" "$(cat "$default_dir/top.md" 2>/dev/null)" \
+        "a failed copy must leave every default memory file in place" || return 1
+    assert_eq "nested-topic-line" "$(cat "$default_dir/topics/deep.md" 2>/dev/null)" \
+        "the file whose copy failed must stay in place" || return 1
+    assert_eq "session file named topics" "$(cat "$session_dir/.cs/memory/topics")" \
+        "the session's own file must be untouched" || return 1
+}
+
+# A logs/ dir alone does not make a directory a flat-layout cs session: the
+# flat-layout migration moves README.md and rewrites .gitignore, so it must
+# leave a project that only happens to keep logs alone.
+test_open_leaves_a_project_with_only_a_logs_dir_unmigrated() {
+    local dir="$CS_SESSIONS_ROOT/plain-project"
+    mkdir -p "$dir/logs"
+    printf 'app started\n' > "$dir/logs/app.log"
+    printf '# Plain project\n\nPROJECT-README-KEEP\n' > "$dir/README.md"
+    printf 'secret.key\n' > "$dir/.gitignore"
+
+    "$CS_BIN" plain-project <<< "" >/dev/null 2>&1 || true
+
+    assert_file_contains "$dir/README.md" '^PROJECT-README-KEEP$' \
+        "the project's README.md must stay at its root" || return 1
+    assert_file_contains "$dir/.gitignore" '^secret\.key$' \
+        "the project's .gitignore rule must survive" || return 1
+    assert_not_exists "$dir/.cs/logs" "the project's logs/ must not be moved into .cs/" || return 1
+    assert_exists "$dir/logs/app.log" "the project's log must stay where it was" || return 1
+}
+
+# A flat-layout session cs created (its logs/session.log opens with cs's
+# header) still migrates into .cs/.
+test_open_migrates_a_flat_layout_session() {
+    local dir="$CS_SESSIONS_ROOT/flat-session"
+    mkdir -p "$dir/logs"
+    printf 'Claude Code Session Log\nSession: flat-session\n\nFLAT-LOG-LINE\n' > "$dir/logs/session.log"
+    printf '# Session: flat-session\n\nFLAT-README-LINE\n' > "$dir/README.md"
+    printf '# Session Documentation Protocol\n\nThis is a Claude Code session managed by the cs tool.\n' > "$dir/CLAUDE.md"
+
+    "$CS_BIN" flat-session <<< "" >/dev/null 2>&1 || true
+
+    assert_not_exists "$dir/README.md" "the session README moves out of the root" || return 1
+    assert_file_contains "$dir/.cs/README.md" '^FLAT-README-LINE$' \
+        "the session README lands in .cs/" || return 1
+    assert_file_contains "$dir/.cs/local/session.log" '^FLAT-LOG-LINE$' \
+        "the session log lands in .cs/local/" || return 1
+}
+
 # ============================================================================
 # Frontmatter migration for old sessions
 # ============================================================================
@@ -1107,6 +1267,12 @@ run_test test_adopt_creates_memory_dir
 run_test test_adopt_adds_settings_to_gitignore
 run_test test_migration_creates_memory_and_settings
 run_test test_migration_moves_existing_auto_memory
+run_test test_migration_keeps_colliding_memory_and_subdirs
+run_test test_migration_keeps_a_source_the_destination_links_to
+run_test test_migration_keeps_a_source_the_destination_root_links_to
+run_test test_migration_failed_copy_deletes_nothing
+run_test test_open_leaves_a_project_with_only_a_logs_dir_unmigrated
+run_test test_open_migrates_a_flat_layout_session
 
 # Frontmatter migration
 run_test test_migration_adds_frontmatter_to_old_readme

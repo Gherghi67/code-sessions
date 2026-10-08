@@ -40,10 +40,87 @@ SETTINGS
     local encoded_path
     encoded_path=$(_claude_encode_path "$real_path")
     local old_memory_dir="$HOME/.claude/projects/${encoded_path}/memory"
-    if [ -d "$old_memory_dir" ] && [ "$(ls -A "$old_memory_dir" 2>/dev/null)" ]; then
-        cp -n "$old_memory_dir"/* "$session_dir/.cs/memory/" 2>/dev/null || true
-        rm -rf "$old_memory_dir"
+    if [ -d "$old_memory_dir" ]; then
+        _move_memory_files "$old_memory_dir" "$session_dir/.cs/memory"
     fi
+}
+
+# Move every file under src (subdirectories included) to the same relative path
+# under dest, deleting a source file only once dest holds a byte-identical copy.
+# A name dest already holds with different content is copied beside it as
+# <name>.claude-projects (not .md, so Claude Code does not load it as a topic).
+# A copy that fails, or a .claude-projects name already holding something else,
+# stops the move before anything is deleted, so src stays whole. Warnings go to
+# stderr: create_worktree_session's caller captures stdout as a path.
+_move_memory_files() {  # src, dest
+    local src="$1" dest="$2" f rel target complete=1
+    while IFS= read -r -d '' f; do
+        rel="${f#"$src"/}"
+        target="$dest/$rel"
+        # A destination reached through a symlink is no copy at all: a link
+        # back into src would pass cmp and the source would be deleted from
+        # under it. Such a file stays where it is.
+        if ! _memory_dest_is_plain "$dest" "$rel"; then
+            warn "Not moving $f: $target is reached through a symlink" >&2
+            complete=0
+            continue
+        fi
+        # The destination root may itself be a link (a vaulted session keeps
+        # .cs/memory elsewhere); only one pointing back at src makes the
+        # target the source file, which no byte comparison can tell apart.
+        if [ "$f" -ef "$target" ]; then
+            warn "Not moving $f: $target is the same file" >&2
+            complete=0
+            continue
+        fi
+        if { [ -e "$target" ] || [ -L "$target" ]; } && ! cmp -s "$f" "$target"; then
+            target="$target.claude-projects"
+        fi
+        if [ -e "$target" ] || [ -L "$target" ]; then
+            if ! cmp -s "$f" "$target"; then
+                warn "Not moving $f: $dest/$rel and $target both hold other content" >&2
+                complete=0
+            fi
+            continue
+        fi
+        if mkdir -p "$(dirname "$target")" && cp -p "$f" "$target" && cmp -s "$f" "$target"; then
+            if [ "$target" != "$dest/$rel" ]; then
+                warn "Kept both copies of memory file $rel: the one from $src is $target" >&2
+            fi
+        else
+            warn "Could not copy $f to $target" >&2
+            complete=0
+        fi
+    done < <(find "$src" -type f -print0)
+
+    if [ "$complete" -eq 0 ]; then
+        warn "Left $src in place: not every file in it has a copy in $dest" >&2
+        return 0
+    fi
+    while IFS= read -r -d '' f; do
+        rel="${f#"$src"/}"
+        _memory_dest_is_plain "$dest" "$rel" || continue
+        if cmp -s "$f" "$dest/$rel" || cmp -s "$f" "$dest/$rel.claude-projects"; then
+            rm -f "$f"
+        fi
+    done < <(find "$src" -type f -print0)
+    # Only directories left empty go; one still holding anything (a symlink,
+    # a file that appeared since) stays, and its rmdir failure is expected.
+    find "$src" -depth -type d -empty -delete 2>/dev/null || true
+}
+
+# True when no component of dest/rel, from dest's first child down to the
+# file itself (or its .claude-projects twin), is a symlink.
+_memory_dest_is_plain() {  # dest, rel
+    local path="$1" part rest="$2"
+    while [ -n "$rest" ]; do
+        part="${rest%%/*}"
+        path="$path/$part"
+        [ -L "$path" ] && return 1
+        [ "$rest" = "$part" ] && break
+        rest="${rest#*/}"
+    done
+    [ ! -L "$path.claude-projects" ]
 }
 
 # Ensure the session narrative topic file and its MEMORY.md index pointer exist.
@@ -271,6 +348,22 @@ EOF
 write_session_claude_md() {
     local session_dir="$1"
     _emit_session_claude_md > "$session_dir/CLAUDE.local.md"
+}
+
+# Put the session protocol into CLAUDE.local.md without losing a line of it:
+# written when absent, appended below a user's own file, and a file that
+# already carries any cs sentinel is left alone. A user's CLAUDE.local.md is
+# gitignored by convention, so git holds no copy to recover it from.
+ensure_session_claude_md() {
+    local session_dir="$1"
+    local claude_local="$session_dir/CLAUDE.local.md"
+    if [ ! -f "$claude_local" ]; then
+        write_session_claude_md "$session_dir"
+    elif ! grep -q '<!-- cs:' "$claude_local"; then
+        printf '\n' >> "$claude_local"
+        _emit_session_claude_md >> "$claude_local"
+        warn "Appended the cs session protocol to your existing CLAUDE.local.md"
+    fi
 }
 
 # Move cs-managed content from a session's CLAUDE.md into CLAUDE.local.md.

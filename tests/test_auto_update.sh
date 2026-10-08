@@ -381,6 +381,100 @@ test_check_falls_back_when_fetch_fails() {
     assert_output_contains "$out" "releases" "fallback names the releases page" || return 1
 }
 
+# cs -update against a release whose optional install.sh.minisig asset is
+# missing. The stub curl answers the version probe with v2026.99.3, serves the
+# fixture installer and its checksum, and 404s (exit 22) everything else: the
+# .minisig and the changelog. The fixture installer installs a cs carrying the
+# new VERSION, as the real one does, prints a marker and exits with $2, so a
+# run that reached it says so. It carries a token unique to the run, which
+# _update_leftovers looks for. Prints the combined output; the exit status is
+# left in $TEST_TMPDIR/update-rc.
+_update_with_missing_minisig() {  # label, installer-exit-status
+    local stub="$TEST_TMPDIR/$1-stub" home="$TEST_TMPDIR/$1-home" tmp="$TEST_TMPDIR/$1-tmp"
+    local installer="$TEST_TMPDIR/$1-install.sh" digest
+    mkdir -p "$stub" "$home" "$tmp"
+    cat > "$installer" << INSTALLER
+#!/usr/bin/env bash
+# cs-update-fixture-$1-$$-$RANDOM$RANDOM
+mkdir -p "\$HOME/.local/bin"
+printf 'VERSION="2026.99.3"\n' > "\$HOME/.local/bin/cs"
+echo "fixture installer ran at \$CS_INSTALL_REF"
+exit $2
+INSTALLER
+    digest=$(shasum -a 256 "$installer" | awk '{print $1}')
+    [ -z "${CS_TEST_BAD_DIGEST:-}" ] || digest="0000000000000000000000000000000000000000000000000000000000000000"
+    cat > "$stub/curl" << STUB
+#!/usr/bin/env bash
+case "\$*" in
+    *" -w "*)
+        printf '%s' "https://github.com/hex/claude-sessions/releases/tag/v2026.99.3"
+        exit 0
+        ;;
+esac
+out=""
+prev=""
+for a in "\$@"; do
+    if [ "\$prev" = "-o" ]; then out="\$a"; fi
+    prev="\$a"
+done
+case "\$*" in
+    *"/v2026.99.3/install.sh -o "*) cp "$installer" "\$out"; exit 0 ;;
+    *"/v2026.99.3/install.sh.sha256 -o "*) printf '%s  install.sh\n' "$digest" > "\$out"; exit 0 ;;
+esac
+exit 22
+STUB
+    chmod +x "$stub/curl"
+    local rc=0 out
+    out=$(HOME="$home" TMPDIR="$tmp" PATH="$stub:$PATH" "$CS_BIN" -update 2>&1) || rc=$?
+    printf '%s' "$rc" > "$TEST_TMPDIR/update-rc"
+    printf '%s\n' "$out"
+}
+
+# Prints every copy of label $1's fixture installer left in a temp dir after
+# the update: under the TMPDIR the update ran with, and under the system's
+# default temp dir, which BSD `mktemp -d` uses whatever TMPDIR says.
+_update_leftovers() {  # label
+    local token sysdir f
+    token=$(sed -n 2p "$TEST_TMPDIR/$1-install.sh")
+    sysdir=$(dirname "$(mktemp -u)")
+    for f in "$TEST_TMPDIR/$1-tmp"/*/install.sh "$sysdir"/*/install.sh; do
+        [ -f "$f" ] || continue
+        if grep -qxF "$token" "$f" 2>/dev/null; then
+            printf '%s\n' "$f"
+        fi
+    done
+}
+
+# The .minisig asset is optional: a release without one is verified by its
+# checksum alone, and the update goes on to run the installer.
+test_update_runs_the_installer_when_the_minisig_asset_is_missing() {
+    local out
+    out=$(_update_with_missing_minisig nosig 0)
+    assert_eq "0" "$(cat "$TEST_TMPDIR/update-rc")" "cs -update exit status" || { echo "$out"; return 1; }
+    assert_output_contains "$out" "Verified" "the checksum gate passed" || return 1
+    assert_output_contains "$out" "fixture installer ran at v2026\.99\.3" "the verified installer ran, pinned to the tag" || return 1
+}
+
+# The update's temp dir (installer, checksum, signature) is removed however the
+# update ends: here the installer itself fails, after verification passed.
+test_update_removes_its_temp_dir_when_the_installer_fails() {
+    local out
+    out=$(_update_with_missing_minisig failinst 3)
+    assert_eq "3" "$(cat "$TEST_TMPDIR/update-rc")" "cs -update passes the installer's failure on" || { echo "$out"; return 1; }
+    assert_output_contains "$out" "fixture installer ran at v2026\.99\.3" "the installer was reached" || return 1
+    assert_eq "" "$(_update_leftovers failinst)" "no temp copy of the installer left behind" || return 1
+}
+
+# And when it ends on a refused checksum.
+test_update_removes_its_temp_dir_when_the_checksum_is_refused() {
+    local out
+    out=$(CS_TEST_BAD_DIGEST=1 _update_with_missing_minisig badsum 0)
+    assert_eq "1" "$(cat "$TEST_TMPDIR/update-rc")" "cs -update refuses the installer" || { echo "$out"; return 1; }
+    assert_output_contains "$out" "Checksum verification failed" "the refusal is reported" || return 1
+    assert_output_not_contains "$out" "fixture installer ran" "the refused installer never runs" || return 1
+    assert_eq "" "$(_update_leftovers badsum)" "no temp copy of the installer left behind" || return 1
+}
+
 # A launch asks GitHub for the latest version at most once an hour: a fresh
 # cache answers it whether or not it names a newer version. A stale cache asks
 # again (the positive control that the stub sees the probe at all).
@@ -643,6 +737,9 @@ run_test test_render_flushes_headers_for_bullet_first_sections
 run_test test_render_width_floor_survives_tiny_terminals
 run_test test_check_shows_rendered_span
 run_test test_check_falls_back_when_fetch_fails
+run_test test_update_runs_the_installer_when_the_minisig_asset_is_missing
+run_test test_update_removes_its_temp_dir_when_the_installer_fails
+run_test test_update_removes_its_temp_dir_when_the_checksum_is_refused
 run_test test_launch_with_a_fresh_cache_and_no_update_skips_the_network
 run_test test_launch_with_a_stale_cache_asks_again
 run_test test_launch_with_a_non_numeric_cache_time_runs_nothing_and_asks_again

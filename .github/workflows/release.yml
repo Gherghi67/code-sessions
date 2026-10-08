@@ -70,6 +70,14 @@ jobs:
           curl -fsSL https://github.com/jedisct1/minisign/releases/download/0.12/minisign-0.12-linux.tar.gz | tar xz
           sudo mv minisign-linux/x86_64/minisign /usr/local/bin/
 
+      # The published install.sh carries the sha256s of this tag's payload
+      # files, so with no CS_INSTALL_REF it must fetch them from this tag, not
+      # main. Done before signing and checksumming, which then cover it.
+      - name: Pin the installer's default payload ref to the tag
+        run: |
+          sed -i "s|^CS_DEFAULT_REF=main\$|CS_DEFAULT_REF=${GITHUB_REF_NAME}|" install.sh
+          grep -qx "CS_DEFAULT_REF=${GITHUB_REF_NAME}" install.sh
+
       - name: Sign release assets
         env:
           MINISIGN_KEY: ${{ secrets.MINISIGN_KEY }}
