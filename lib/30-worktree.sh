@@ -56,17 +56,21 @@ _tree_is_dirty() {
         || ! git -C "$1" diff --cached --quiet 2>/dev/null
 }
 
-# Untracked files in a worktree that removal would actually destroy, one per
-# line. cs writes its own bookkeeping into every worktree — the whole .cs tree
-# in ignored mode, plus the settings and protocol files — and none of it is the
-# user's to commit: ignored-mode fusion carries .cs into the base before the
-# removal, and the removal passes --force precisely because these are expected.
+# Untracked and ignored files in a worktree that removal would actually
+# destroy, one per line: git keeps no copy of either. cs writes its own
+# bookkeeping into every worktree — the whole .cs tree in ignored mode, plus
+# the settings and protocol files — and none of it is the user's to commit:
+# ignored-mode fusion carries .cs into the base before the removal, and the
+# removal passes --force precisely because these are expected. Finder's
+# .DS_Store is no one's work either, as cs -rm also treats it.
 # The merge gate and the readiness screen MUST read from this one definition;
 # when they disagreed, a worktree predating the cs exclude reported blocked on a
 # merge that would have gone straight through.
 _worktree_untracked_at_risk() {  # wt_dir
-    git -C "$1" ls-files --others --exclude-standard 2>/dev/null \
+    { git -C "$1" ls-files --others --exclude-standard 2>/dev/null
+      git -C "$1" ls-files --others --ignored --exclude-standard 2>/dev/null; } \
         | grep -v -e '^\.cs/' -e '^\.claude/settings\.local\.json$' -e '^CLAUDE\.local\.md$' \
+            -e '^\.DS_Store$' -e '/\.DS_Store$' \
         || true
 }
 
