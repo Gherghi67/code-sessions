@@ -109,6 +109,41 @@ _queue_add() {  # qdir, text
     rm -f "$qdir/queue.declined"   # queue changed: allow the gate to re-ask
 }
 
+# Queue a task that arrived as task-kind mail, by its message id. The user's
+# accept is the only way mail reaches the queue: the sender named itself, so
+# the body waits in the mailbox (new/ unread, cur/ once read) until someone at
+# this session chooses it. Each id is accepted once, recorded in
+# queue.accepted, so a repeated command cannot queue the same work twice.
+_queue_accept() {  # qdir, message id
+    local qdir="$1" id="$2" f found="" kind body
+    [ -n "$id" ] || error "cs -queue accept needs a message id (shown by cs -msg)"
+    if [ -f "$qdir/queue.accepted" ] && grep -qxF -- "$id" "$qdir/queue.accepted"; then
+        error "message $id was already accepted into the queue"
+    fi
+    for f in "$qdir"/mail/new/*.json "$qdir"/mail/cur/*.json; do
+        [ -f "$f" ] || continue
+        # The id and body are read in one jq pass; a document that is not the
+        # one asked for, or not JSON, prints nothing.
+        if [ "$(jq -r --arg id "$id" 'select(.id == $id) | "found"' "$f" 2>/dev/null)" = found ]; then
+            found="$f"
+            break
+        fi
+    done
+    [ -n "$found" ] || error "no mail with id $id in this session's mailbox"
+    kind=$(jq -r '.kind // "text" | if type == "string" then . else tostring end' "$found")
+    [ "$kind" = "task" ] || error "message $id is $kind mail, not a task; only task-kind mail can be queued"
+    body=$(jq -r '.body // "" | if type == "string" then . else tostring end' "$found")
+    _queue_add "$qdir" "$body"
+    printf '%s\n' "$id" >> "$qdir/queue.accepted"
+    # Accepting is reading: the message leaves new/ so it neither wakes nor
+    # digests again. A failed move leaves it unread, which over-shows the
+    # accept command but never re-queues (queue.accepted above refuses).
+    case "$found" in
+        "$qdir"/mail/new/*) mv "$found" "$qdir/mail/cur/" 2>/dev/null || true ;;
+    esac
+    info "queued: $body"
+}
+
 # Count of queued task files ([ -f ] also guards bash 3.2's literal
 # unmatched glob and skips the odd subdirectory).
 _queue_len() {  # qdir
@@ -219,6 +254,7 @@ run_queue() {
     local sub="${1:-list}"
     case "$sub" in
         add)   shift; _queue_add "$qdir" "$*";;
+        accept) shift; _queue_accept "$qdir" "${1:-}";;
         # Scrubbed once here rather than inside _queue_list's two branches:
         # one construct that cannot be half-removed, and one tr fork instead
         # of one per queued task.
@@ -233,7 +269,7 @@ run_queue() {
                { jq -nc --arg ts "$(date +%s)" '{ts: ($ts|tonumber), event: "gate_declined"}' \
                    >> "$qdir/notifications.jsonl"; } 2>/dev/null || true;;
         log)   _queue_log "$qdir";;
-        *)     error "Usage: cs -queue [add \"<task>\" | list | rm <n> | clear | log | start [subagents|workflow]]";;
+        *)     error "Usage: cs -queue [add \"<task>\" | accept <message id> | list | rm <n> | clear | log | start [subagents|workflow]]";;
     esac
 }
 

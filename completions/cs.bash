@@ -21,7 +21,7 @@ _cs_completions() {
     local narrative_cmds="rotate"
 
     # Queue subcommands
-    local queue_cmds="add list ls rm clear start defer log"
+    local queue_cmds="add accept list ls rm clear start defer log"
 
     # Tag subcommands
     local tag_cmds="add rm list"

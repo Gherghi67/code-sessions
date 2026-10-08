@@ -951,6 +951,7 @@ Commands:
   -checkpoint show <name>  Print a specific checkpoint
   -narrative rotate   Archive the oldest sections of your narrative once it passes its byte budget (/wrap runs it)
   -queue add "<task>" Add a task to the session's walk-away queue
+  -queue accept <id>  Queue a task another session sent by mail (the id is shown by cs -msg)
   -queue list         Show pending and completed queued tasks
   -queue rm <n>       Remove pending task n
   -queue clear        Empty the queue and stop draining
@@ -3838,7 +3839,7 @@ _refuse_worktree_of_encrypted_base() {  # base_name, base_dir
 # keeps behind .cs/private. The open refuses a plaintext copy of any of them,
 # and cs -encrypt moves each into the vault.
 CS_PRIVATE_LOCAL_FILES="session.log scope-prompt.trace memory-index.snapshot mail
-    queue queue.tmp queue.state queue.mode queue.done queue.declined queue.migrating
+    queue queue.tmp queue.state queue.mode queue.done queue.declined queue.accepted queue.migrating
     notifications.jsonl notifications.seen failures rewrite.trace pending-handoff
     finish-progress.json"
 
@@ -5480,29 +5481,18 @@ _mail_send() {  # target, [--kind|-k KIND] [--reply THREAD] body
     if [ "$bytes" -gt "$MAIL_BODY_MAX" ]; then
         error "Message body exceeds ${MAIL_BODY_MAX} bytes"
     fi
-    if [ "$kind" = "task" ]; then
-        # Queue first, attribution second: if the queue write fails (a
-        # multi-line body among the ways it refuses) nothing is sent; if the
-        # mail write fails the work is still delivered.
-        _queue_add "$target_files" "$body"
-    fi
+    # A task is mail like any other kind until the recipient's user accepts
+    # it (cs -queue accept <id>): the sender names itself, so its word alone
+    # must never put work in front of an unattended drain. The queue's own
+    # single-line rule applies at send time so a body the accept would refuse
+    # is refused here, where the sender can fix it.
+    [ "$kind" != "task" ] || _queue_require_single_line "$body"
     # Deliver into the RECIPIENT's tmp/, then rename into its new/: both live
     # in one tree, so the rename is atomic even for adopted (symlinked)
     # sessions, where a sender-side tmp/ could sit on another volume and
     # degrade the mv to copy-then-unlink.
     local maildir="$target_files/mail"
-    # Everything after _queue_add must fail gracefully for a task-kind send:
-    # the work is already queued, so aborting here makes the sender believe the
-    # send failed, and a retry queues the task a second time. The maildir
-    # creation and the record-composing jq are as able to fail as the write
-    # below (an unwritable mailbox, a mail/ path that is a regular file).
-    if ! _mail_ensure_maildir "$maildir" 2>/dev/null; then
-        if [ "$kind" = "task" ]; then
-            warn "task queued in $target, but its mailbox could not be opened for attribution"
-            return 0
-        fi
-        error "Failed to open ${target}'s mailbox"
-    fi
+    _mail_ensure_maildir "$maildir" 2>/dev/null || error "Failed to open ${target}'s mailbox"
     local now id line fname thread
     now="$(date +%s)"
     # The pid keeps two senders inside one second apart; a bare RANDOM suffix
@@ -5530,10 +5520,6 @@ _mail_send() {  # target, [--kind|-k KIND] [--reply THREAD] body
         '{id:$id, ts:$ts, thread:$thread,
           in_reply_to:(if $parent == "" then null else $parent end),
           to:$to, from:$from, actor:$actor, kind:$kind, body:.}'); then
-        if [ "$kind" = "task" ]; then
-            warn "task queued in $target, but composing the mail attribution failed"
-            return 0
-        fi
         error "Failed to compose the message for $target"
     fi
     # Zero-padded epoch keeps lexical order aligned with time order; NOT a
@@ -5543,14 +5529,14 @@ _mail_send() {  # target, [--kind|-k KIND] [--reply THREAD] body
     if ! { printf '%s\n' "$line" > "$maildir/tmp/$fname" \
             && mv "$maildir/tmp/$fname" "$maildir/new/$fname"; }; then
         rm -f "$maildir/tmp/$fname"
-        if [ "$kind" = "task" ]; then
-            warn "task queued in $target, but recording the mail attribution failed"
-            return 0
-        fi
         error "Failed to write to ${target}'s mailbox"
     fi
     _mail_keep_sent "$line" "$fname"
-    info "sent to $target (thread $thread); surfaces at their next turn"
+    if [ "$kind" = "task" ]; then
+        info "sent to $target (thread $thread); queued only once its user accepts it (cs -queue accept $id)"
+    else
+        info "sent to $target (thread $thread); surfaces at their next turn"
+    fi
 }
 
 # Shared formatter: 'HH:MM  -> peer  [kind]  (thread)  body', with <- for a
@@ -5558,7 +5544,8 @@ _mail_send() {  # target, [--kind|-k KIND] [--reply THREAD] body
 # the file's directory, which keeps this a single line-oriented jq pass over
 # every document — and with no early-exit consumer, no SIGPIPE risk on big mail.
 # The thread id is rendered because an agent cannot reply into a thread whose id
-# it was never shown.
+# it was never shown; a received task carries its accept command for the same
+# reason.
 _mail_print_files() {  # file...
     cat "$@" | jq -rR --arg me "${CLAUDE_SESSION_NAME:-}" '
         fromjson? // empty |
@@ -5568,7 +5555,9 @@ _mail_print_files() {  # file...
          else .from end) as $peer |
         (.ts | if type == "number" then strflocaltime("%H:%M") else "--:--" end) + "  " +
         $dir + " " + $peer + "  [" + (.kind // "text") + "]  (" + (.thread // "------") + ")  " +
-        ((.body // "") | gsub("[\n\r]"; " "))
+        ((.body // "") | gsub("[\n\r]"; " ")) +
+        (if $dir == "<-" and .kind == "task" and (.id | type) == "string"
+         then "  (accept into the queue: cs -queue accept " + .id + ")" else "" end)
     ' | _scrub_controls
 }
 
@@ -5889,6 +5878,41 @@ _queue_add() {  # qdir, text
     rm -f "$qdir/queue.declined"   # queue changed: allow the gate to re-ask
 }
 
+# Queue a task that arrived as task-kind mail, by its message id. The user's
+# accept is the only way mail reaches the queue: the sender named itself, so
+# the body waits in the mailbox (new/ unread, cur/ once read) until someone at
+# this session chooses it. Each id is accepted once, recorded in
+# queue.accepted, so a repeated command cannot queue the same work twice.
+_queue_accept() {  # qdir, message id
+    local qdir="$1" id="$2" f found="" kind body
+    [ -n "$id" ] || error "cs -queue accept needs a message id (shown by cs -msg)"
+    if [ -f "$qdir/queue.accepted" ] && grep -qxF -- "$id" "$qdir/queue.accepted"; then
+        error "message $id was already accepted into the queue"
+    fi
+    for f in "$qdir"/mail/new/*.json "$qdir"/mail/cur/*.json; do
+        [ -f "$f" ] || continue
+        # The id and body are read in one jq pass; a document that is not the
+        # one asked for, or not JSON, prints nothing.
+        if [ "$(jq -r --arg id "$id" 'select(.id == $id) | "found"' "$f" 2>/dev/null)" = found ]; then
+            found="$f"
+            break
+        fi
+    done
+    [ -n "$found" ] || error "no mail with id $id in this session's mailbox"
+    kind=$(jq -r '.kind // "text" | if type == "string" then . else tostring end' "$found")
+    [ "$kind" = "task" ] || error "message $id is $kind mail, not a task; only task-kind mail can be queued"
+    body=$(jq -r '.body // "" | if type == "string" then . else tostring end' "$found")
+    _queue_add "$qdir" "$body"
+    printf '%s\n' "$id" >> "$qdir/queue.accepted"
+    # Accepting is reading: the message leaves new/ so it neither wakes nor
+    # digests again. A failed move leaves it unread, which over-shows the
+    # accept command but never re-queues (queue.accepted above refuses).
+    case "$found" in
+        "$qdir"/mail/new/*) mv "$found" "$qdir/mail/cur/" 2>/dev/null || true ;;
+    esac
+    info "queued: $body"
+}
+
 # Count of queued task files ([ -f ] also guards bash 3.2's literal
 # unmatched glob and skips the odd subdirectory).
 _queue_len() {  # qdir
@@ -5999,6 +6023,7 @@ run_queue() {
     local sub="${1:-list}"
     case "$sub" in
         add)   shift; _queue_add "$qdir" "$*";;
+        accept) shift; _queue_accept "$qdir" "${1:-}";;
         # Scrubbed once here rather than inside _queue_list's two branches:
         # one construct that cannot be half-removed, and one tr fork instead
         # of one per queued task.
@@ -6013,7 +6038,7 @@ run_queue() {
                { jq -nc --arg ts "$(date +%s)" '{ts: ($ts|tonumber), event: "gate_declined"}' \
                    >> "$qdir/notifications.jsonl"; } 2>/dev/null || true;;
         log)   _queue_log "$qdir";;
-        *)     error "Usage: cs -queue [add \"<task>\" | list | rm <n> | clear | log | start [subagents|workflow]]";;
+        *)     error "Usage: cs -queue [add \"<task>\" | accept <message id> | list | rm <n> | clear | log | start [subagents|workflow]]";;
     esac
 }
 

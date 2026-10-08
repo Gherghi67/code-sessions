@@ -25,6 +25,7 @@ Commands:
   -checkpoint show <name>  Print a specific checkpoint
   -narrative rotate   Archive the oldest sections of your narrative once it passes its byte budget (/wrap runs it)
   -queue add "<task>" Add a task to the session's walk-away queue
+  -queue accept <id>  Queue a task another session sent by mail (the id is shown by cs -msg)
   -queue list         Show pending and completed queued tasks
   -queue rm <n>       Remove pending task n
   -queue clear        Empty the queue and stop draining
