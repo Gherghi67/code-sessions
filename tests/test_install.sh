@@ -1784,6 +1784,27 @@ test_install_keeps_user_files_that_share_a_cs_name() {
         || { echo "  FAIL: the skipped command is not listed after the completion line"; return 1; }
 }
 
+# A symlink where cs deploys a file is the user's unless what it points at is
+# content cs wrote: a dangling link holds nothing cs wrote, so it is kept and
+# named like any other file of the user's; a link to cs's own content is
+# replaced by the file this install ships.
+test_install_keeps_a_symlink_that_holds_no_cs_content() {
+    local home="$TEST_TMPDIR/link-home" rc=0 out
+    mkdir -p "$home/.claude/commands"
+    ln -s "$TEST_TMPDIR/nowhere/wrap.md" "$home/.claude/commands/wrap.md"
+    _cs_shipped_content > "$TEST_TMPDIR/old-sweep.md"
+    ln -s "$TEST_TMPDIR/old-sweep.md" "$home/.claude/commands/sweep.md"
+    out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || rc=$?
+    assert_eq "0" "$rc" "install exit status" || { echo "$out"; return 1; }
+    assert_eq "$TEST_TMPDIR/nowhere/wrap.md" "$(readlink "$home/.claude/commands/wrap.md")" "the dangling link is kept" || return 1
+    assert_output_contains "$out" "Kept $(_bre_literal "$home/.claude/commands/wrap.md")" "the kept link is named" || return 1
+    [ ! -L "$home/.claude/commands/sweep.md" ] \
+        || { echo "  FAIL: the link to cs's own content was not replaced"; return 1; }
+    cmp -s "$SCRIPT_DIR/../commands/sweep.md" "$home/.claude/commands/sweep.md" \
+        || { echo "  FAIL: sweep.md was not deployed"; return 1; }
+    assert_eq '{"modules":["./register.tsx"]}' "$(cat "$TEST_TMPDIR/old-sweep.md")" "the link's target is untouched" || return 1
+}
+
 # A kept flat ~/.claude/hooks/<name> is the user's hook, and so is its
 # registration: install leaves the registration of a kept file in place,
 # under a current name and a retired one, and still registers cs's own copy.
@@ -2074,6 +2095,7 @@ run_test test_build_embeds_the_sha256_of_every_payload_file
 run_test test_release_workflow_pins_the_installers_default_ref
 run_test test_install_keeps_user_files_that_share_a_cs_name
 run_test test_install_keeps_the_registration_of_a_kept_flat_hook
+run_test test_install_keeps_a_symlink_that_holds_no_cs_content
 run_test test_install_never_sources_a_kept_deployed_cs_shared
 run_test test_install_replaces_files_cs_wrote_without_a_record
 run_test test_install_follows_its_record
