@@ -48,11 +48,34 @@ test_uninstall_with_a_live_session_removes_nothing() {
     assert_dir "$root/live-lock/.cs" "the data is kept when the answer is no" || return 1
 }
 
+# The confirmation waits on a person, so a session can open after the first
+# check. The check runs again once the answer is in, before the first
+# removal: a session that went live during the prompt still refuses the
+# whole uninstall with every binary in place.
+test_uninstall_rechecks_live_sessions_after_the_confirmation() {
+    local home="$TEST_TMPDIR/late-home" root="$TEST_TMPDIR/late-sessions" stub="$TEST_TMPDIR/mount-stub-late"
+    _stage_install "$home"
+    mkdir -p "$root/late-open/.cs"
+    _stub_mount_table "$stub" "/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled)" || return 1
+    local rc=0 out f
+    { sleep 1; echo "$$" > "$root/late-open/.cs/session.lock"; printf 'yny'; } \
+        | HOME="$home" CS_SESSIONS_ROOT="$root" PATH="$stub:$PATH" "$CS_BIN" -uninstall \
+        > "$TEST_TMPDIR/late.out" 2>&1 || rc=$?
+    out=$(cat "$TEST_TMPDIR/late.out")
+    assert_eq 1 "$rc" "uninstall exits 1 when a session opened during the prompt" || return 1
+    assert_output_contains "$out" "Error: Kept $root: these sessions are live: late-open. Close them, then delete $root." \
+        "the refusal names the session that opened" || return 1
+    for f in cs cs-secrets cs-statusline cs-subagent-statusline; do
+        assert_file_exists "$home/.local/bin/$f" "$f is still installed after the late refusal" || return 1
+    done
+}
+
 echo ""
 echo "cs -uninstall ordering"
 echo "======================"
 echo ""
 
 run_test test_uninstall_with_a_live_session_removes_nothing
+run_test test_uninstall_rechecks_live_sessions_after_the_confirmation
 
 report_results
