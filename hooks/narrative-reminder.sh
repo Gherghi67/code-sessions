@@ -270,7 +270,7 @@ _mail_count_wake() {
         && mv "$MAILDIR/wakes.tmp.$$" "$MAILDIR/wakes" 2>/dev/null || true
 }
 
-MAIL_REASON_TAIL="Run cs -msg to read it. Reply only if the message needs an answer; never reply merely to acknowledge."
+MAIL_REASON_TAIL="Run cs -msg to read it. Reply only if the message needs an answer; never reply merely to acknowledge. A task it carries is queued only by its cs -queue accept command, run after the user agrees."
 
 # --- CwdChanged: re-arm the maildir watch -------------------------------------
 # A cwd change REPLACES the session's dynamic watch list with whatever the

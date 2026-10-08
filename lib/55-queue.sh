@@ -112,18 +112,17 @@ _queue_add() {  # qdir, text
 # Queue a task that arrived as task-kind mail, by its message id. The user's
 # accept is the only way mail reaches the queue: the sender named itself, so
 # the body waits in the mailbox (new/ unread, cur/ once read) until someone at
-# this session chooses it. Each id is accepted once, recorded in
-# queue.accepted, so a repeated command cannot queue the same work twice.
+# this session chooses it. Each id is accepted once: the queue file carries
+# the id in its name and queue.accepted records it afterwards, so a retry
+# after a kill between the two, or a second accept racing this one (the lock
+# serialises them), finds the queued copy and refuses.
 _queue_accept() {  # qdir, message id
     local qdir="$1" id="$2" f found="" kind body
     [ -n "$id" ] || error "cs -queue accept needs a message id (shown by cs -msg)"
-    if [ -f "$qdir/queue.accepted" ] && grep -qxF -- "$id" "$qdir/queue.accepted"; then
-        error "message $id was already accepted into the queue"
-    fi
+    case "$id" in *[!A-Za-z0-9._-]*) error "cs -queue accept: $id is not a message id";; esac
     for f in "$qdir"/mail/new/*.json "$qdir"/mail/cur/*.json; do
         [ -f "$f" ] || continue
-        # The id and body are read in one jq pass; a document that is not the
-        # one asked for, or not JSON, prints nothing.
+        # A document that is not the one asked for, or not JSON, prints nothing.
         if [ "$(jq -r --arg id "$id" 'select(.id == $id) | "found"' "$f" 2>/dev/null)" = found ]; then
             found="$f"
             break
@@ -133,11 +132,35 @@ _queue_accept() {  # qdir, message id
     kind=$(jq -r '.kind // "text" | if type == "string" then . else tostring end' "$found")
     [ "$kind" = "task" ] || error "message $id is $kind mail, not a task; only task-kind mail can be queued"
     body=$(jq -r '.body // "" | if type == "string" then . else tostring end' "$found")
-    _queue_add "$qdir" "$body"
+    body="$(_trim "$body")"
+    [ -n "$body" ] || error "message $id carries an empty task"
+    _queue_require_single_line "$body"
+    _queue_convert_legacy "$qdir"
+    mkdir -p "$qdir/queue" "$qdir/queue.tmp"
+    local lock="$qdir/queue.accept.lock" fname
+    _cs_mkdir_lock "$lock" || error "another cs -queue accept holds $lock; retry in a moment"
+    if [ -f "$qdir/queue.accepted" ] && grep -qxF -- "$id" "$qdir/queue.accepted"; then
+        _cs_mkdir_unlock "$lock"
+        error "message $id was already accepted into the queue"
+    fi
+    for f in "$qdir"/queue/*-accept-"$id"; do
+        [ -f "$f" ] || continue
+        _cs_mkdir_unlock "$lock"
+        error "message $id is already in the queue"
+    done
+    fname="$(printf '%010d' "$(date +%s)")-accept-$id"
+    if ! { printf '%s\n' "$body" > "$qdir/queue.tmp/$fname" \
+            && mv "$qdir/queue.tmp/$fname" "$qdir/queue/$fname"; }; then
+        rm -f "$qdir/queue.tmp/$fname"
+        _cs_mkdir_unlock "$lock"
+        error "could not write the task into $qdir/queue"
+    fi
     printf '%s\n' "$id" >> "$qdir/queue.accepted"
+    _cs_mkdir_unlock "$lock"
+    rm -f "$qdir/queue.declined"   # the user's accept re-opens the gate
     # Accepting is reading: the message leaves new/ so it neither wakes nor
     # digests again. A failed move leaves it unread, which over-shows the
-    # accept command but never re-queues (queue.accepted above refuses).
+    # accept command but never re-queues.
     case "$found" in
         "$qdir"/mail/new/*) mv "$found" "$qdir/mail/cur/" 2>/dev/null || true ;;
     esac
