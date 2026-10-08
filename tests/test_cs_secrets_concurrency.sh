@@ -481,7 +481,8 @@ test_export_holds_the_lock_across_encrypt_and_digest_on_every_backend() {
     local kcstore="$TEST_TMPDIR/kc-store-age"
     local sess="export-revoke-race"
     local meta="$CS_SESSIONS_ROOT/$sess/.cs"
-    local sync="$meta/secrets.$(_machine_id).age"
+    local sync
+    sync="$meta/secrets.$(_machine_id).age"
     # Every cs-secrets call below runs on the (fake) keychain backend with the
     # real age; `kc` keeps the three overrides in one place.
     kc() {

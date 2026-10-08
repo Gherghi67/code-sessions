@@ -133,11 +133,14 @@ cs -secrets export-file
 - A `.pub` that arrives some other way, such as a `git pull` of someone's push,
   makes `export-file` refuse and print the `age add` command that pins it; pin it
   only if you trust the key, otherwise delete the file
-- A machine with no pin list that already has its own sync file (it exported
-  before pinning existed) pins every recipient present on its next export,
-  `age add` or `age remove`, and says so; a fresh clone or a wiped `.cs/local/`
-  pins nothing on its own, and the export lists each `.pub` with the `age add`
-  command that pins it
+- Nothing is pinned without an `age add` on this machine, except this
+  machine's own key, which is pinned by its content whenever it is a
+  recipient. A machine that exported before pinning existed, a fresh clone and
+  a wiped `.cs/local/` all start with no pin list: the export refuses and lists
+  each `.pub` with the `age add` command that pins it
+- `export-file`, `age add` and `age remove` hold one per-session lock on every
+  backend, from the recipient snapshot through the encrypt, the rename and the
+  digest record
 - Each machine writes its own sync file (see [Per-machine sync files](#per-machine-sync-files) below)
 - Anyone with their private key + being in recipients can decrypt
 
