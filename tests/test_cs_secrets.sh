@@ -1818,10 +1818,12 @@ test_encrypted_stale_lock_fails_loud_not_reaped() {
 
 # codex F1 review: the export mutex must not couple non-encrypted backends to the
 # encrypted backend's ~/.cs-secrets. A keychain store is atomic per credential
-# and never needed the lock; requiring a writable ~/.cs-secrets to export from
-# those backends is a regression. Block the path with a plain file where the dir
-# would go and confirm a keychain export still works (only the encrypted backend
-# takes the lock).
+# and never needed the store lock. Narrowed by batch 1 (Codex round 2): the age
+# recipients lock and pin list live under ~/.cs-secrets on every backend, taken
+# once there is something to export, so the guarantee that remains is that an
+# export with nothing to export touches nothing. Block the path with a plain
+# file where the dir would go and confirm an empty-store keychain export still
+# works.
 test_keychain_export_does_not_require_cs_secrets_dir() {
     local bindir; bindir=$(_make_fake_security)
     rm -rf "$HOME/.cs-secrets"
