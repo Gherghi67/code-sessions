@@ -106,13 +106,27 @@ set -u
 sub="${1:-}"
 sess="${FAKE_SECURITY_SESSION:-test-session}"
 
-# Argument shape used by cs-secrets: -a <account> -s <service> [-w [value]] [-U]
-acct=""; service=""; value=""; have_value=0
+# FAKE_SECURITY_ARGVLOG records the argv this process was started with, which
+# is exactly what `ps` would show, so a test can prove a value never reached it.
+[ -n "${FAKE_SECURITY_ARGVLOG:-}" ] && printf '%s\n' "$*" >> "$FAKE_SECURITY_ARGVLOG"
+
+# `security -i` reads its command line from stdin. Parse that line the way the
+# real tokenizer does for what cs-secrets sends (double-quoted words with \\
+# and \" escapes) and carry on as if it had been argv.
+if [ "$sub" = "-i" ]; then
+    IFS= read -r line || true
+    eval "set -- $line"
+    sub="${1:-}"
+fi
+
+# Argument shape used by cs-secrets: -a <account> -s <service> [-w [value] | -X <hex>] [-U]
+acct=""; service=""; value=""; have_value=0; hex=""; have_hex=0
 while [ $# -gt 0 ]; do
     case "$1" in
         -a) acct="${2:-}"; shift 2 ;;
         -s) service="${2:-}"; shift 2 ;;
         -w) if [ $# -ge 2 ] && [ "${2#-}" = "$2" ]; then value="$2"; have_value=1; shift 2; else shift; fi ;;
+        -X) hex="${2:-}"; have_hex=1; shift 2 ;;
         *)  shift ;;
     esac
 done
@@ -176,7 +190,11 @@ case "$sub" in
         esac
         if [ -n "$store" ]; then
             mkdir -p "$store"
-            { printf '%s\n' "$service"; [ "$have_value" -eq 1 ] && printf '%s' "$value"; } > "$(slot)"
+            {
+                printf '%s\n' "$service"
+                [ "$have_value" -eq 1 ] && printf '%s' "$value"
+                [ "$have_hex" -eq 1 ] && printf '%s' "$hex" | perl -ne 'print pack("H*", $_)'
+            } > "$(slot)"
         fi
         exit 0
         ;;
