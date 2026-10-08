@@ -4223,6 +4223,24 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// The row was scanned locked, then its process exited before `d`: the
+    /// pid is checked when the delete is asked for, as `cs -rm`'s
+    /// session_is_live checks it, so the dead lock does not refuse until the
+    /// next scan.
+    #[test]
+    fn delete_opens_on_a_row_whose_locking_process_has_exited() {
+        let mut app = App::new(sample_sessions());
+        select_named(&mut app, "gamma");
+        let gamma = app.sessions.iter_mut().find(|s| s.name == "gamma").unwrap();
+        // Below i32::MAX, so a real pid value, and no process holds it.
+        gamma.liveness = Liveness::Locked(99_999_999);
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+
+        assert_eq!(app.mode, Mode::ConfirmDelete, "status: {:?}", app.status_message.as_ref().map(|m| &m.text));
+        assert!(app.delete_countdown_start.is_some());
+    }
+
     // A batch keeps the reason a delete failed: a mounted vault says to
     // unmount it, and "1 failed" alone does not.
     #[test]
