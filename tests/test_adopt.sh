@@ -159,6 +159,26 @@ test_adopt_into_git_repo_keeps_a_last_gitignore_line_without_newline() {
         "cs adds its .cs/local/ rule on a line of its own" || return 1
 }
 
+# A .gitignore that only MENTIONS one of cs's rules, commented out or negated,
+# does not ignore that path: cs still adds the rule as a line of its own, and
+# git then ignores the per-actor state.
+test_adopt_adds_its_rule_beside_a_commented_or_negated_mention() {
+    local project_dir="$TEST_TMPDIR/my-project"
+    mkdir -p "$project_dir"
+    (cd "$project_dir" && git init -q && git commit --allow-empty -m "initial" -q)
+    printf '# .cs/local/\n!.cs/archives/\n' > "$project_dir/.gitignore"
+
+    (cd "$project_dir" && "$CS_BIN" -adopt my-session >/dev/null 2>&1)
+
+    assert_file_contains "$project_dir/.gitignore" '^\.cs/local/$' \
+        "cs adds .cs/local/ although a comment mentions it" || return 1
+    assert_file_contains "$project_dir/.gitignore" '^\.cs/archives/$' \
+        "cs adds .cs/archives/ although a negation mentions it" || return 1
+    assert_eq ".cs/local/session.log" \
+        "$(git -C "$project_dir" check-ignore .cs/local/session.log)" \
+        "git ignores the per-actor log" || return 1
+}
+
 # The home directory is never a project: adopting it would git init and
 # commit everything under it. Refused before anything is written.
 test_adopt_refuses_the_home_directory() {
@@ -175,6 +195,31 @@ test_adopt_refuses_the_home_directory() {
     assert_not_exists "$HOME/.gitignore" "no .gitignore may be written in \$HOME" || return 1
     assert_not_exists "$HOME/.git" "no git repo may be created in \$HOME" || return 1
     assert_not_exists "$CS_SESSIONS_ROOT/home-session" "no session link may be created" || return 1
+}
+
+# The sessions root holds every session, and adopting it, or a directory that
+# contains it, would git init and commit all of them and link a session into
+# itself. Refused before anything is written, like $HOME.
+test_adopt_refuses_the_sessions_root_and_its_parents() {
+    local root parent dir output rc
+    root=$(cd "$CS_SESSIONS_ROOT" && pwd -P)
+    parent=$(cd "$TEST_TMPDIR" && pwd -P)
+    for dir in "$root" "$parent"; do
+        rc=0
+        output=$(cd "$dir" && "$CS_BIN" -adopt root-session 2>&1) || rc=$?
+        assert_eq 1 "$rc" "adopting $dir must fail" || return 1
+        assert_output_contains "$output" "Error: Refusing to adopt $dir: it is or contains the sessions root ($root). Run cs -adopt from a project directory." \
+            "the refusal names the sessions root" || return 1
+        assert_not_exists "$dir/.cs" "no .cs/ may be created in $dir" || return 1
+        assert_not_exists "$dir/.gitignore" "no .gitignore may be written in $dir" || return 1
+        assert_not_exists "$dir/.git" "no git repo may be created in $dir" || return 1
+        assert_not_exists "$CS_SESSIONS_ROOT/root-session" "no session link may be created" || return 1
+    done
+    # Positive control: a sibling of the sessions root is a project like any other.
+    mkdir -p "$TEST_TMPDIR/sibling"
+    (cd "$TEST_TMPDIR/sibling" && "$CS_BIN" -adopt sibling-session >/dev/null 2>&1) \
+        || { echo "  FAIL: adopting a sibling of the sessions root failed"; return 1; }
+    assert_symlink "$CS_SESSIONS_ROOT/sibling-session" "the sibling is adopted" || return 1
 }
 
 test_adopt_refuses_a_directory_already_linked() {
@@ -242,6 +287,31 @@ test_readopt_keeps_the_session_log() {
             return 1
             ;;
     esac
+}
+
+# An encrypted session keeps its log behind .cs/private. Re-adopting its
+# records must not start a plaintext .cs/local/session.log beside it, which
+# the next open refuses.
+test_readopt_of_an_encrypted_session_keeps_its_log_in_the_vault() {
+    local project_dir="$TEST_TMPDIR/my-project" vault="$TEST_TMPDIR/vault-mnt"
+    mkdir -p "$project_dir" "$vault/private"
+    (cd "$project_dir" && "$CS_BIN" -adopt old-name >/dev/null 2>&1)
+    rm "$CS_SESSIONS_ROOT/old-name"
+    mv "$project_dir/.cs/local/session.log" "$vault/private/session.log"
+    ln -s "$vault/private" "$project_dir/.cs/private"
+    local before
+    before=$(cat "$vault/private/session.log")
+
+    (cd "$project_dir" && printf 'y\n' | CS_ASSUME_TTY=1 "$CS_BIN" -adopt new-name >/dev/null 2>&1) \
+        || { echo "  FAIL: re-adopt should succeed"; return 1; }
+
+    assert_not_exists "$project_dir/.cs/local/session.log" \
+        "no plaintext session.log beside .cs/private" || return 1
+    assert_eq "$before" "$(cat "$vault/private/session.log")" \
+        "the vault's session.log is untouched" || return 1
+    local out rc=0
+    out=$("$CS_BIN" new-name <<< "" 2>&1) || rc=$?
+    assert_eq 0 "$rc" "the re-adopted session opens: $out" || return 1
 }
 
 test_adopt_orphaned_records_noninteractive_hints() {
@@ -826,10 +896,13 @@ run_test test_adopt_appends_protocol_to_an_existing_claude_local_md
 run_test test_adopt_leaves_a_claude_local_md_with_the_protocol_alone
 run_test test_adopt_without_git_keeps_the_existing_gitignore_lines
 run_test test_adopt_into_git_repo_keeps_a_last_gitignore_line_without_newline
+run_test test_adopt_adds_its_rule_beside_a_commented_or_negated_mention
 run_test test_adopt_refuses_the_home_directory
+run_test test_adopt_refuses_the_sessions_root_and_its_parents
 run_test test_adopt_refuses_a_directory_already_linked
 run_test test_adopt_relinks_orphaned_records_interactively
 run_test test_readopt_keeps_the_session_log
+run_test test_readopt_of_an_encrypted_session_keeps_its_log_in_the_vault
 run_test test_adopt_orphaned_records_noninteractive_hints
 run_test test_adopt_orphaned_records_decline_cancels
 run_test test_adopt_fails_if_session_name_exists

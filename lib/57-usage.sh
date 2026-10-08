@@ -198,7 +198,10 @@ _usage_cell() {
 _usage_read_limits() {
     U_5H_PCT=""; U_5H_RESET=""; U_WK_PCT=""; U_WK_RESET=""; U_STAMP=0
     local f stamp
-    for f in "$SESSIONS_ROOT"/*/.cs/local/limits; do
+    # Hidden entries too: a session named before leading dots were refused
+    # (.work) stamps limits like any other.
+    for f in "$SESSIONS_ROOT"/*/.cs/local/limits "$SESSIONS_ROOT"/.[!.]*/.cs/local/limits \
+        "$SESSIONS_ROOT"/..?*/.cs/local/limits; do
         [ -f "$f" ] || continue
         stamp=$(_read_local_state "$f" stamped_at)
         case "$stamp" in ''|*[!0-9]*) continue ;; esac
