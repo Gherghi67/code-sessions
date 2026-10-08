@@ -948,6 +948,28 @@ test_install_replaces_a_symlinked_mod_directory() {
     assert_eq "sentinel" "$(cat "$sub_target/register.tsx")" "the subdirectory link's target is untouched" || return 1
 }
 
+# A mod directory linked at the user's own files (their fork of the mod, say)
+# is theirs: install keeps the link, places nothing through it or in its
+# place, and names it once.
+test_install_keeps_a_mod_directory_linked_at_the_users_files() {
+    local home="$TEST_TMPDIR/modown-home" target="$TEST_TMPDIR/modown-target" out rc=0
+    mkdir -p "$home/.claude/skills" "$target/hooks" "$target/.claude-plugin"
+    echo 'my register' > "$target/hooks/register.tsx"
+    echo 'my hooks' > "$target/hooks/hooks.json"
+    echo 'my plugin' > "$target/.claude-plugin/plugin.json"
+    ln -s "$target" "$home/.claude/skills/cs"
+    out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || rc=$?
+    assert_eq "0" "$rc" "install exit status" || { echo "$out"; return 1; }
+    assert_eq "$target" "$(readlink "$home/.claude/skills/cs")" "the link is kept" || return 1
+    assert_eq "my register" "$(cat "$target/hooks/register.tsx")" "the link's target is untouched" || return 1
+    assert_eq "my hooks" "$(cat "$target/hooks/hooks.json")" "the link's target is untouched" || return 1
+    assert_eq "my plugin" "$(cat "$target/.claude-plugin/plugin.json")" "the link's target is untouched" || return 1
+    assert_eq "1" "$(printf '%s\n' "$out" | grep -c "Kept $(_bre_literal "$home/.claude/skills/cs"):")" \
+        "one warning names the kept link" || return 1
+    cmp -s "$SCRIPT_DIR/../mods/cs-update/hooks/register.tsx" "$home/.claude/skills/cs-update/hooks/register.tsx" \
+        || { echo "  FAIL: the other mod was not deployed"; return 1; }
+}
+
 test_skill_files_exist_in_repo() {
     local entry
     for entry in $(extract_array "$SCRIPT_DIR/../install.sh" CS_SKILL_FILES); do
@@ -2080,6 +2102,7 @@ run_test test_uninstall_refuses_to_delete_session_data_while_a_session_is_live
 run_test test_uninstall_refuses_to_delete_session_data_while_a_dotted_session_is_live
 run_test test_uninstall_refuses_a_live_session_even_with_a_volume_mounted_inside
 run_test test_install_replaces_a_symlinked_mod_directory
+run_test test_install_keeps_a_mod_directory_linked_at_the_users_files
 run_test test_strip_filters_in_sync
 run_test test_install_deploys_hooks_to_cs_subdir
 run_test test_install_migrates_flat_hook_layout
