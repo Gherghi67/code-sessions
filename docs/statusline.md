@@ -299,6 +299,8 @@ cs -statusline disable   # remove both registrations, each only if it points at 
 
 Claude Code reads both registrations at startup, so `enable` takes effect after the next restart — the command says so when it runs.
 
+Both commands read `settings.json` with jq first. On a file jq cannot parse they stop with an error naming the file and jq's reason, and change nothing: the file stays byte for byte, they write no `settings.json.cs-bak.<UTC stamp>` backup, and `disable` records no decline. Before any change they do make, they write that stamped backup beside the file.
+
 `cs -uninstall` removes both binaries and strips the `statusLine` and `subagentStatusLine` registrations only when they point at the cs binaries; a status line or row renderer you configured yourself is left untouched.
 
 `cs -doctor` includes a Statusline check and a parallel Subagent statusline check: OK when registered and executable, FAIL when a registration points at a missing binary. The Statusline check WARNs when cs-statusline is absent — unregistered, or a status line of your own — because it is the only writer of `.cs/local/context-pct`, and without that file the rotation nudge and the queue's context circuit breaker both go silently inert. The status line itself stays optional; the warning is about the gating that depends on it.
