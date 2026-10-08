@@ -120,14 +120,24 @@ cs -secrets age add age1abc123...
 # List who can decrypt
 cs -secrets age list
 
-# Revoke access (re-export to re-encrypt without them)
+# Revoke access (the next export re-encrypts without them)
 cs -secrets age remove colleague
+cs -secrets export-file
 ```
 
 **How it works:**
 - Each machine has a keypair stored in `~/.cs-secrets/age.key`
 - Session recipients are stored in `<session>/.cs/age-recipients/*.pub`
-- Secrets are encrypted to all recipients' public keys
+- Each machine encrypts only to the recipients it has pinned in
+  `<session>/.cs/local/age-trusted`; `age add` pins a key, `age remove` unpins it
+- A `.pub` that arrives some other way, such as a `git pull` of someone's push,
+  makes `export-file` refuse and print the `age add` command that pins it; pin it
+  only if you trust the key, otherwise delete the file
+- A machine with no pin list that already has its own sync file (it exported
+  before pinning existed) pins every recipient present on its next export,
+  `age add` or `age remove`, and says so; a fresh clone or a wiped `.cs/local/`
+  pins nothing on its own, and the export lists each `.pub` with the `age add`
+  command that pins it
 - Each machine writes its own sync file (see [Per-machine sync files](#per-machine-sync-files) below)
 - Anyone with their private key + being in recipients can decrypt
 
@@ -169,7 +179,12 @@ silently dropped.
 `export-file` also **skips the write when nothing changed**: it decrypts the
 existing file and compares the plaintext, so re-exporting an unchanged store
 does not churn the file's bytes (each encryption pass would otherwise emit fresh
-ciphertext from a random salt / ephemeral key).
+ciphertext from a random salt / ephemeral key). For an age file, "nothing
+changed" also covers the recipients: the machine records the recipient set it
+encrypted each file to (`.cs/local/age-exported-to`), and any add or removal
+makes the next export re-encrypt even when no secret changed. A removed
+recipient keeps reading other machines' sync files until those machines
+export, and every copy already in git history.
 
 `import-file` (with no path argument) **merges every sync file it can decrypt** —
 all `.cs/secrets.*.age` / `.cs/secrets.*.enc` from every machine, plus the legacy
