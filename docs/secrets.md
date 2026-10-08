@@ -2,6 +2,8 @@
 
 Store sensitive data (API keys, tokens, passwords) in a secure backend instead of writing it into project files in plaintext. Pipe the value on stdin (the recommended path) so it never appears in argv or the command log; a value passed on the command line is honoured but warned against, since it is visible via `ps` and captured verbatim by the bash-logger hook.
 
+A value taken on stdin stays off argv inside `cs -secrets` as well: the Keychain backend hands it to `security -i` on stdin, and the encrypted backend and sync files give values, the store key and `CS_SECRETS_PASSWORD` to `openssl` and `jq` through stdin or an environment variable set for that one command. Another user's `ps` cannot read either channel; processes running as your own user (and root) can read a process's environment.
+
 ## Storage Backends
 
 The `cs -secrets` command auto-detects the best available backend for the platform:

@@ -111,13 +111,27 @@ set -u
 sub="${1:-}"
 sess="${FAKE_SECURITY_SESSION:-test-session}"
 
-# Argument shape used by cs-secrets: -a <account> -s <service> [-w [value]] [-U]
-acct=""; service=""; value=""; have_value=0
+# FAKE_SECURITY_ARGVLOG records the argv this process was started with, which
+# is exactly what `ps` would show, so a test can prove a value never reached it.
+[ -n "${FAKE_SECURITY_ARGVLOG:-}" ] && printf '%s\n' "$*" >> "$FAKE_SECURITY_ARGVLOG"
+
+# `security -i` reads its command line from stdin. Parse that line the way the
+# real tokenizer does for what cs-secrets sends (double-quoted words with \\
+# and \" escapes) and carry on as if it had been argv.
+if [ "$sub" = "-i" ]; then
+    IFS= read -r line || true
+    eval "set -- $line"
+    sub="${1:-}"
+fi
+
+# Argument shape used by cs-secrets: -a <account> -s <service> [-w [value] | -X <hex>] [-U]
+acct=""; service=""; value=""; have_value=0; hex=""; have_hex=0
 while [ $# -gt 0 ]; do
     case "$1" in
         -a) acct="${2:-}"; shift 2 ;;
         -s) service="${2:-}"; shift 2 ;;
         -w) if [ $# -ge 2 ] && [ "${2#-}" = "$2" ]; then value="$2"; have_value=1; shift 2; else shift; fi ;;
+        -X) hex="${2:-}"; have_hex=1; shift 2 ;;
         *)  shift ;;
     esac
 done
@@ -181,7 +195,11 @@ case "$sub" in
         esac
         if [ -n "$store" ]; then
             mkdir -p "$store"
-            { printf '%s\n' "$service"; [ "$have_value" -eq 1 ] && printf '%s' "$value"; } > "$(slot)"
+            {
+                printf '%s\n' "$service"
+                [ "$have_value" -eq 1 ] && printf '%s' "$value"
+                [ "$have_hex" -eq 1 ] && printf '%s' "$hex" | perl -ne 'print pack("H*", $_)'
+            } > "$(slot)"
         fi
         exit 0
         ;;
@@ -1126,7 +1144,7 @@ test_keychain_export_file_aborts_on_jq_failure() {
     cat > "$bindir/jq" <<JQFAKE
 #!/usr/bin/env bash
 for a in "\$@"; do
-    case "\$a" in *'= \$value'*) echo "jq: simulated failure" >&2; exit 5 ;; esac
+    case "\$a" in *'= env.CS_SECRETS_VALUE'*) echo "jq: simulated failure" >&2; exit 5 ;; esac
 done
 exec "$real_jq" "\$@"
 JQFAKE
@@ -1502,6 +1520,224 @@ test_keychain_export_does_not_require_cs_secrets_dir() {
 
 
 
+# ----------------------------------------------------------------------------
+# No secret on a child's argv (audit H3). Every local user can read any
+# process's argv through `ps`, and EDR tools log it, so a value taken on stdin
+# must not be handed on to security, openssl or jq as an argument. Each fake
+# below records the argv it was started with (what `ps` shows) and then runs the
+# real tool, so the operation still has to work end to end.
+# ----------------------------------------------------------------------------
+
+# A random fixture value held in a file; tests feed it on stdin and grep for it
+# with -f, so the value itself never reaches an argv in the test either. Echoes
+# the file path.
+_argv_canary() {
+    local f="$TEST_TMPDIR/canary"
+    printf 'canary-%s-%s-%s' "$RANDOM" "$RANDOM" "$$" > "$f"
+    printf '%s' "$f"
+}
+
+# The canary's hex form, which is just as secret: a `-X <hex>` on argv would
+# leak the value as surely as `-w <value>`. Echoes the file path.
+_argv_canary_hex() {
+    local f="$TEST_TMPDIR/canary.hex"
+    od -An -v -tx1 < "$1" | tr -d ' \n' > "$f"
+    printf '%s' "$f"
+}
+
+# The fixture password, held in a file for the same reason.
+_argv_password_file() {
+    local f="$TEST_TMPDIR/password"
+    printf '%s' "$CS_SECRETS_PASSWORD" > "$f"
+    printf '%s' "$f"
+}
+
+# Put an argv-recording wrapper for tool $1 into bin dir $2, appending one line
+# per call to log $3, then exec the real tool found on the current PATH.
+_make_argv_logger() {
+    local tool="$1" bindir="$2" log="$3" real
+    real=$(command -v "$tool") || { echo "  FAIL: no real $tool on PATH"; return 1; }
+    mkdir -p "$bindir"
+    cat > "$bindir/$tool" <<LOGGER
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$log"
+exec "$real" "\$@"
+LOGGER
+    chmod +x "$bindir/$tool"
+}
+
+# Fail when argv log $1 holds the text in file $2. The message names the tool
+# and what leaked but never prints the value.
+_refute_argv_holds() {
+    local log="$1" needle="$2" what="$3"
+    if grep -qF -f "$needle" "$log" 2>/dev/null; then
+        echo "  FAIL: $what reached a child's argv (visible to ps): $(basename "$log")"
+        return 1
+    fi
+}
+
+# True when file $1 holds exactly the bytes of file $2 plus the one trailing
+# newline `get` prints. Compares without putting either value on output.
+_get_matches() {
+    [ "$(cat "$1")" = "$(cat "$2")" ]
+}
+
+test_keychain_set_keeps_the_value_off_argv() {
+    local bindir; bindir=$(_make_fake_security)
+    local canary; canary=$(_argv_canary)
+    local hex; hex=$(_argv_canary_hex "$canary")
+    local argvlog="$TEST_TMPDIR/security-argv" kcstore="$TEST_TMPDIR/kc-store"
+
+    PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        FAKE_SECURITY_ARGVLOG="$argvlog" "$CS_SECRETS_BIN" set K1 < "$canary" >/dev/null 2>&1 \
+        || { echo "  FAIL: keychain set exited nonzero"; return 1; }
+
+    # Positive control: the fake ran, and what it stored reads back byte-exact.
+    [ -s "$argvlog" ] || { echo "  FAIL: the fake security was never called"; return 1; }
+    PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        "$CS_SECRETS_BIN" get K1 > "$TEST_TMPDIR/got" 2>/dev/null \
+        || { echo "  FAIL: keychain get exited nonzero"; return 1; }
+    _get_matches "$TEST_TMPDIR/got" "$canary" \
+        || { echo "  FAIL: the stored value did not read back byte-exact"; return 1; }
+
+    _refute_argv_holds "$argvlog" "$canary" "the secret value" || return 1
+    _refute_argv_holds "$argvlog" "$hex" "the secret value (hex-encoded)" || return 1
+}
+
+# A value the user typed or piped in must reach security byte-exact, interior
+# newline and quotes included, now that it travels as a command line on stdin.
+test_keychain_set_round_trips_a_multiline_quoted_value() {
+    local bindir; bindir=$(_make_fake_security)
+    local kcstore="$TEST_TMPDIR/kc-store"
+    printf 'line one "q" \\ end\nline two' > "$TEST_TMPDIR/value"
+
+    PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        "$CS_SECRETS_BIN" set K1 < "$TEST_TMPDIR/value" >/dev/null 2>&1 \
+        || { echo "  FAIL: keychain set exited nonzero"; return 1; }
+    PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        "$CS_SECRETS_BIN" get K1 > "$TEST_TMPDIR/got" 2>/dev/null \
+        || { echo "  FAIL: keychain get exited nonzero"; return 1; }
+    _get_matches "$TEST_TMPDIR/got" "$TEST_TMPDIR/value" \
+        || { echo "  FAIL: a multi-line value with quotes and a backslash did not read back byte-exact"; return 1; }
+}
+
+test_encrypted_set_keeps_value_and_password_off_argv() {
+    local bindir="$TEST_TMPDIR/argv-bin"
+    local olog="$TEST_TMPDIR/openssl-argv" jlog="$TEST_TMPDIR/jq-argv"
+    _make_argv_logger openssl "$bindir" "$olog" || return 1
+    _make_argv_logger jq "$bindir" "$jlog" || return 1
+    local canary; canary=$(_argv_canary)
+    local pw; pw=$(_argv_password_file)
+
+    PATH="$bindir:$PATH" "$CS_SECRETS_BIN" set K1 < "$canary" >/dev/null 2>&1 \
+        || { echo "  FAIL: encrypted set exited nonzero"; return 1; }
+    PATH="$bindir:$PATH" "$CS_SECRETS_BIN" get K1 > "$TEST_TMPDIR/got" 2>/dev/null \
+        || { echo "  FAIL: encrypted get exited nonzero"; return 1; }
+
+    # Positive control: both wrappers ran, and the round trip held.
+    assert_file_contains "$olog" "aes-256-cbc" "the openssl wrapper must have seen the encrypt/decrypt" || return 1
+    [ -s "$jlog" ] || { echo "  FAIL: the jq wrapper was never called"; return 1; }
+    _get_matches "$TEST_TMPDIR/got" "$canary" \
+        || { echo "  FAIL: the stored value did not read back byte-exact"; return 1; }
+
+    _refute_argv_holds "$olog" "$canary" "the secret value" || return 1
+    _refute_argv_holds "$jlog" "$canary" "the secret value" || return 1
+    _refute_argv_holds "$olog" "$pw" "CS_SECRETS_PASSWORD" || return 1
+    _refute_argv_holds "$jlog" "$pw" "CS_SECRETS_PASSWORD" || return 1
+}
+
+# Without CS_SECRETS_PASSWORD the store key is derived: a SHA-256 printed as 64
+# hex characters. That key must not reach openssl's argv either.
+test_encrypted_derived_key_stays_off_argv() {
+    local bindir="$TEST_TMPDIR/argv-bin" olog="$TEST_TMPDIR/openssl-argv"
+    _make_argv_logger openssl "$bindir" "$olog" || return 1
+    local canary; canary=$(_argv_canary)
+
+    ( unset CS_SECRETS_PASSWORD
+      PATH="$bindir:$PATH" "$CS_SECRETS_BIN" set K1 < "$canary" >/dev/null 2>&1 \
+          || { echo "  FAIL: encrypted set with a derived key exited nonzero"; exit 1; }
+      PATH="$bindir:$PATH" "$CS_SECRETS_BIN" get K1 > "$TEST_TMPDIR/got" 2>/dev/null \
+          || { echo "  FAIL: encrypted get with a derived key exited nonzero"; exit 1; }
+    ) || return 1
+
+    assert_file_contains "$olog" "aes-256-cbc" "the openssl wrapper must have seen the encrypt/decrypt" || return 1
+    _get_matches "$TEST_TMPDIR/got" "$canary" \
+        || { echo "  FAIL: the stored value did not read back byte-exact"; return 1; }
+    if grep -qE '[0-9a-f]{64}' "$olog"; then
+        echo "  FAIL: a derived 256-bit key (64 hex characters) reached openssl's argv"
+        return 1
+    fi
+}
+
+# export-file encrypts the whole store, import-file decrypts and merges every
+# sync file; neither may put a value or the sync password on argv.
+test_sync_export_import_keep_values_off_argv() {
+    local bindir="$TEST_TMPDIR/argv-bin"
+    local olog="$TEST_TMPDIR/openssl-argv" jlog="$TEST_TMPDIR/jq-argv"
+    _make_argv_logger openssl "$bindir" "$olog" || return 1
+    _make_argv_logger jq "$bindir" "$jlog" || return 1
+    local canary; canary=$(_argv_canary)
+    local pw; pw=$(_argv_password_file)
+
+    "$CS_SECRETS_BIN" set K1 < "$canary" >/dev/null 2>&1 \
+        || { echo "  FAIL: seeding set exited nonzero"; return 1; }
+    PATH="$bindir:$(_ageless_path)" "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 \
+        || { echo "  FAIL: export-file exited nonzero"; return 1; }
+    "$CS_SECRETS_BIN" delete K1 >/dev/null 2>&1 \
+        || { echo "  FAIL: delete exited nonzero"; return 1; }
+    PATH="$bindir:$(_ageless_path)" "$CS_SECRETS_BIN" import-file >/dev/null 2>&1 \
+        || { echo "  FAIL: import-file exited nonzero"; return 1; }
+
+    # Positive control: the import really restored the value from the sync file.
+    "$CS_SECRETS_BIN" get K1 > "$TEST_TMPDIR/got" 2>/dev/null \
+        || { echo "  FAIL: get after import exited nonzero"; return 1; }
+    _get_matches "$TEST_TMPDIR/got" "$canary" \
+        || { echo "  FAIL: import-file did not restore the exported value byte-exact"; return 1; }
+    assert_file_contains "$olog" "aes-256-cbc" "the openssl wrapper must have seen the sync encrypt/decrypt" || return 1
+    [ -s "$jlog" ] || { echo "  FAIL: the jq wrapper was never called"; return 1; }
+
+    _refute_argv_holds "$olog" "$canary" "the secret value" || return 1
+    _refute_argv_holds "$jlog" "$canary" "the secret value" || return 1
+    _refute_argv_holds "$olog" "$pw" "CS_SECRETS_PASSWORD" || return 1
+    _refute_argv_holds "$jlog" "$pw" "CS_SECRETS_PASSWORD" || return 1
+}
+
+# Collecting a keychain store into a backup builds its JSON one value at a time;
+# that construction must not put a value on jq's argv.
+test_keychain_export_file_keeps_values_off_argv() {
+    local bindir; bindir=$(_make_fake_security)
+    local jlog="$TEST_TMPDIR/jq-argv" olog="$TEST_TMPDIR/openssl-argv"
+    _make_argv_logger jq "$bindir" "$jlog" || return 1
+    _make_argv_logger openssl "$bindir" "$olog" || return 1
+    local canary; canary=$(_argv_canary)
+    local pw; pw=$(_argv_password_file)
+    local kcstore="$TEST_TMPDIR/kc-store"
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local mid; mid=$(_machine_id)
+
+    PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        "$CS_SECRETS_BIN" set K1 < "$canary" >/dev/null 2>&1 \
+        || { echo "  FAIL: keychain set exited nonzero"; return 1; }
+    : > "$jlog"; : > "$olog"
+    PATH="$bindir:$(_ageless_path)" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 \
+        || { echo "  FAIL: keychain export-file exited nonzero"; return 1; }
+
+    # Positive control: the backup really carries the value.
+    local f="$meta/secrets.${mid}.enc"
+    assert_file_exists "$f" "export-file must write the per-machine sync file" || return 1
+    openssl enc -aes-256-cbc -d -pbkdf2 -iter 100000 -in "$f" -pass env:CS_SECRETS_PASSWORD \
+        > "$TEST_TMPDIR/backup.json" 2>/dev/null \
+        || { echo "  FAIL: the sync file does not decrypt with the test password"; return 1; }
+    grep -qF -f "$canary" "$TEST_TMPDIR/backup.json" \
+        || { echo "  FAIL: the sync file does not carry the stored value"; return 1; }
+    [ -s "$jlog" ] || { echo "  FAIL: the jq wrapper was never called"; return 1; }
+
+    _refute_argv_holds "$jlog" "$canary" "the secret value" || return 1
+    _refute_argv_holds "$olog" "$canary" "the secret value" || return 1
+    _refute_argv_holds "$olog" "$pw" "CS_SECRETS_PASSWORD" || return 1
+}
+
 # ============================================================================
 # Runner
 # ============================================================================
@@ -1622,5 +1858,13 @@ run_test test_encrypted_concurrent_stores_no_lost_update
 run_test test_export_file_atomic_preserves_prior_on_encrypt_failure
 run_test test_encrypted_stale_lock_fails_loud_not_reaped
 run_test test_keychain_export_does_not_require_cs_secrets_dir
+
+# No secret on a child's argv (audit H3)
+run_test test_keychain_set_keeps_the_value_off_argv
+run_test test_keychain_set_round_trips_a_multiline_quoted_value
+run_test test_encrypted_set_keeps_value_and_password_off_argv
+run_test test_encrypted_derived_key_stays_off_argv
+run_test test_sync_export_import_keep_values_off_argv
+run_test test_keychain_export_file_keeps_values_off_argv
 
 report_results
