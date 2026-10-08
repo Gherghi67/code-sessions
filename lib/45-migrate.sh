@@ -926,8 +926,9 @@ migrate_session() {
         migrate_if_exists "$session_dir/secrets.enc" "$session_dir/.cs/secrets.enc"
         migrate_if_exists "$session_dir/secrets.age" "$session_dir/.cs/secrets.age"
 
-        # Update .gitignore for new structure
-        create_session_gitignore "$session_dir"
+        # Merged, not written: the session's own rules must keep hiding
+        # their files from the add -A below.
+        ensure_cs_gitignore_entries "$session_dir"
 
         echo ""
         echo -e "${ORANGE}Migrated session to .cs/ directory structure${NC}"
