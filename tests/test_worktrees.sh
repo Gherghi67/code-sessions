@@ -314,6 +314,37 @@ test_retire_still_refuses_real_untracked_work() {
     assert_dir "$wt" "the worktree survives a refusal" || return 1
 }
 
+# An ignored file is as lost as an untracked one when the worktree goes: git
+# keeps no copy of either. Retire refuses over it and names it, while cs's own
+# ignored bookkeeping and Finder's .DS_Store still pass.
+test_retire_refuses_ignored_work() {
+    local base_dir="$CS_SESSIONS_ROOT/proj"
+    mkdir -p "$base_dir/.cs"/{memory,local}
+    echo "# Project readme" > "$base_dir/README.md"
+    printf '*.log\n.DS_Store\n' > "$base_dir/.gitignore"
+    (cd "$base_dir" && git init -q && git config core.autocrlf false \
+        && git add README.md .gitignore && git commit -q -m init)
+    cs_launch "proj@task1"
+    local wt="$CS_SESSIONS_ROOT/proj@task1"
+    echo "unsaved" > "$wt/build.log"
+    : > "$wt/.DS_Store"
+    local sha output status=0
+    sha=$(land_feature proj task1) || { echo "  FAIL: integrate fixture"; return 1; }
+    output=$("$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "retire refuses: $output" || return 1
+    assert_output_contains "$output" "untracked files that removal would destroy" \
+        "ignored work refuses like untracked work" || return 1
+    assert_output_contains "$output" "build.log" "the refusal names the ignored file" || return 1
+    assert_output_not_contains "$output" ".DS_Store" "Finder metadata is not work" || return 1
+    assert_file_exists "$wt/build.log" "the ignored file survives the refusal" || return 1
+    # Positive control: with the ignored file gone, the same worktree retires.
+    rm "$wt/build.log"
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "retire proceeds without ignored work: $output" || return 1
+    assert_not_exists "$wt" "the worktree is retired" || return 1
+}
+
 test_worktree_of_worktree_refused() {
     create_test_session_with_git "myproj" > /dev/null
     cs_launch "myproj@fix-auth"
@@ -883,6 +914,7 @@ run_test test_ignored_mode_worktree_starts_with_nothing_untracked
 run_test test_ignored_mode_worktree_retires_without_a_manual_exclude
 run_test test_retire_tolerates_a_worktree_predating_the_cs_exclude
 run_test test_retire_still_refuses_real_untracked_work
+run_test test_retire_refuses_ignored_work
 run_test test_worktree_of_worktree_refused
 run_test test_worktree_create_succeeds_with_untracked_base
 run_test test_worktree_reopen_preserves_project_claude_md
