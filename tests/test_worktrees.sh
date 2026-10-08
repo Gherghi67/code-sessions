@@ -835,6 +835,34 @@ test_retire_with_a_locked_base_vault_leaves_the_worktree_whole() {
     assert_eq "1" "$(grep -c "from-task" "$base_dir/.cs/timeline.jsonl")" "fused exactly once" || return 1
 }
 
+# A fuse write that fails after the worktree is gone (a full disk, an
+# unwritable base) must not count as fused: the staging directory holding
+# the only copy of the records stays, and retire names it and exits 1. The
+# base's memory directory is made read-only so the narrative copy fails.
+test_retire_keeps_the_records_when_a_fuse_write_fails() {
+    local base_dir="$CS_SESSIONS_ROOT/proj"
+    mkdir -p "$base_dir/.cs"/{memory,local}
+    echo "# P" > "$base_dir/README.md"
+    printf '.cs/\n.claude/settings.local.json\n' > "$base_dir/.gitignore"
+    (cd "$base_dir" && git init -q && git config core.autocrlf false && git add -A && git commit -q -m init)
+    cs_launch "proj@t1"
+    local wt="$CS_SESSIONS_ROOT/proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    printf 'only copy of the task notes\n' > "$wt/.cs/memory/narrative.example.md"
+    local sha output status=0 aside
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    chmod 555 "$base_dir/.cs/memory"
+
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    chmod 755 "$base_dir/.cs/memory"
+
+    assert_eq "1" "$status" "retire reports the failed fuse: $output" || return 1
+    assert_output_contains "$output" "its session records could not be fused" "the error says the fuse failed" || return 1
+    aside=$(find "$CS_SESSIONS_ROOT" -maxdepth 1 -name '.retire-*' | head -1)
+    assert_file_exists "$aside/cs/memory/narrative.example.md" "the staged records survive the failed fuse" || return 1
+}
+
 test_retire_refusal_for_an_open_session_comes_after_the_landing_check() {
     # An open conversation on an UNLANDED feature must hear "/finish first",
     # not "the feature is landed, close the session".
@@ -977,6 +1005,7 @@ run_test test_retire_force_still_refuses_untracked_work
 run_test test_retire_force_refuses_commits_after_the_captured_one
 run_test test_retire_fuses_nothing_when_removal_fails_and_retry_fuses_once
 run_test test_retire_with_a_locked_base_vault_leaves_the_worktree_whole
+run_test test_retire_keeps_the_records_when_a_fuse_write_fails
 run_test test_retire_refusal_for_an_open_session_comes_after_the_landing_check
 run_test test_retire_rejects_traversal_task_name
 run_test test_retire_is_hidden_from_completion_and_unknown_command_text
