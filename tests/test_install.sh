@@ -537,11 +537,25 @@ test_local_install_uses_bin_picker_when_nothing_was_built() {
 # so the hooks and cs run ONE copy of the actor and narrative-budget code. The
 # committed file must be exactly what the build writes, or the hooks ship code
 # the tests never ran (the same drift CI's build-sync job catches for bin/cs).
-test_build_generates_the_shared_hook_fragment() {
-    local repo="$TEST_TMPDIR/build-repo" real="$SCRIPT_DIR/.."
-    mkdir -p "$repo/bin" "$repo/hooks"
+# Copies into $1 what build.sh reads: lib/, build.sh, install.sh.in and the
+# payload files install.sh carries the sha256 of, without the three files
+# build.sh writes (bin/cs, hooks/cs-shared.sh, install.sh), so a build there
+# that fails to write one leaves it missing rather than a copy of the real one.
+_copy_build_inputs() {  # dir
+    local repo="$1" real="$SCRIPT_DIR/.." d
+    mkdir -p "$repo/bin"
     cp -R "$real/lib" "$repo/lib"
     cp "$real/build.sh" "$real/install.sh.in" "$repo/"
+    for d in hooks commands skills mods completions; do
+        cp -R "$real/$d" "$repo/$d"
+    done
+    cp -p "$real/bin/cs-secrets" "$real/bin/cs-statusline" "$real/bin/cs-subagent-statusline" "$repo/bin/"
+    rm -f "$repo/hooks/cs-shared.sh"
+}
+
+test_build_generates_the_shared_hook_fragment() {
+    local repo="$TEST_TMPDIR/build-repo" real="$SCRIPT_DIR/.."
+    _copy_build_inputs "$repo"
     (cd "$repo" && bash build.sh > /dev/null) || { echo "  FAIL: build.sh failed"; return 1; }
     assert_file_exists "$repo/hooks/cs-shared.sh" "build.sh writes hooks/cs-shared.sh" || return 1
     if ! diff -u "$real/hooks/cs-shared.sh" "$repo/hooks/cs-shared.sh" > "$TEST_TMPDIR/shared.diff" 2>&1; then
@@ -558,9 +572,7 @@ test_build_generates_the_shared_hook_fragment() {
 # committed install.sh must be what the build writes.
 test_build_generates_install_sh_from_its_template() {
     local repo="$TEST_TMPDIR/build-repo2" real="$SCRIPT_DIR/.."
-    mkdir -p "$repo/bin" "$repo/hooks"
-    cp -R "$real/lib" "$repo/lib"
-    cp "$real/build.sh" "$real/install.sh.in" "$repo/"
+    _copy_build_inputs "$repo"
     (cd "$repo" && bash build.sh > /dev/null) || { echo "  FAIL: build.sh failed"; return 1; }
     assert_file_exists "$repo/install.sh" "build.sh writes install.sh" || return 1
     [ -x "$repo/install.sh" ] || { echo "  FAIL: the generated install.sh is not executable"; return 1; }
@@ -609,10 +621,8 @@ test_build_refuses_a_missing_manifests_source() {
 # users, and every hook the deployed copy is sourced from. mktemp makes a
 # private file, so the mode is set on purpose rather than inherited.
 test_build_outputs_are_world_readable() {
-    local repo="$TEST_TMPDIR/build-repo5" real="$SCRIPT_DIR/.."
-    mkdir -p "$repo/bin" "$repo/hooks"
-    cp -R "$real/lib" "$repo/lib"
-    cp "$real/build.sh" "$real/install.sh.in" "$repo/"
+    local repo="$TEST_TMPDIR/build-repo5"
+    _copy_build_inputs "$repo"
     (cd "$repo" && bash build.sh > /dev/null) || { echo "  FAIL: build.sh failed"; return 1; }
     local f mode
     for f in bin/cs hooks/cs-shared.sh install.sh; do
@@ -1612,6 +1622,89 @@ test_web_install_deploys_the_payload_from_the_stub() {
     [ -z "$(find "$home" -name '.cs-install.*')" ] || { echo "  FAIL: a staging temp file was left beside a destination"; return 1; }
 }
 
+# A web install checks every downloaded payload file against the sha256 its
+# own (verified) installer carries. One file served altered stops the
+# install before anything is placed.
+test_web_install_refuses_a_payload_file_that_does_not_match() {
+    local home
+    _seed_installed_cs "$TEST_TMPDIR/tamper/home"
+    home=$(CS_TEST_TAMPER=hooks/session-start.sh _web_install tamper)
+    assert_eq "1" "$(cat "$TEST_TMPDIR/tamper/install.rc")" "install exit status" \
+        || { cat "$TEST_TMPDIR/tamper/install.out"; return 1; }
+    assert_file_contains "$TEST_TMPDIR/tamper/install.out" "hooks/session-start\.sh does not match" "the refusal names the file" || return 1
+    assert_eq "$(printf '#!/bin/sh\necho installed cs')" "$(cat "$home/.local/bin/cs")" "cs is untouched" || return 1
+    assert_eq "installed summary command" "$(cat "$home/.claude/commands/summary.md")" "the command is untouched" || return 1
+    assert_file_not_exists "$home/.claude/hooks/cs/session-start.sh" "the altered hook was not deployed" || return 1
+}
+
+# Same check for the shell completions, which a web install may go without:
+# an altered one is reported and skipped, and the rest installs.
+test_web_install_skips_a_completion_that_does_not_match() {
+    local home
+    home=$(CS_TEST_TAMPER=completions/_cs _web_install tamper-comp)
+    assert_eq "0" "$(cat "$TEST_TMPDIR/tamper-comp/install.rc")" "install exit status" \
+        || { cat "$TEST_TMPDIR/tamper-comp/install.out"; return 1; }
+    assert_file_contains "$TEST_TMPDIR/tamper-comp/install.out" "completions/_cs does not match" "the skip names the file" || return 1
+    assert_file_not_exists "$home/.zsh/completions/_cs" "the altered completion was not deployed" || return 1
+    cmp -s "$SCRIPT_DIR/../completions/cs.bash" "$home/.bash_completion.d/cs.bash" \
+        || { echo "  FAIL: the matching bash completion was not deployed"; return 1; }
+}
+
+# The built install.sh carries, for every file a web install downloads, the
+# sha256 of that file in the checkout it was built from, as
+# "<sha256>  <repo path>" entries of CS_PAYLOAD_SHA256.
+test_build_embeds_the_sha256_of_every_payload_file() {
+    local repo="$TEST_TMPDIR/build-sha" real entry f expected actual
+    real="$(cd "$SCRIPT_DIR/.." && pwd)"
+    _copy_build_inputs "$repo"
+    (cd "$repo" && bash build.sh > /dev/null) || { echo "  FAIL: build.sh failed"; return 1; }
+    actual=$(extract_array "$repo/install.sh" CS_PAYLOAD_SHA256 | tr -d '"' | sort)
+    expected=$(
+        {
+            printf '%s\n' bin/cs bin/cs-secrets bin/cs-statusline bin/cs-subagent-statusline \
+                completions/cs.bash completions/_cs
+            for entry in $(extract_array "$real/install.sh" CS_HOOK_LIBS) $(extract_array "$real/install.sh" CS_HOOKS); do
+                echo "hooks/$entry"
+            done
+            for entry in $(extract_array "$real/install.sh" CS_COMMANDS); do echo "commands/$entry"; done
+            for entry in $(extract_array "$real/install.sh" CS_SKILLS); do echo "skills/$entry/SKILL.md"; done
+            for entry in $(extract_array "$real/install.sh" CS_SKILL_FILES); do echo "skills/$entry"; done
+            for entry in $(extract_array "$real/install.sh" CS_MOD_FILES); do echo "mods/$entry"; done
+        } | while IFS= read -r f; do
+            printf '%s  %s\n' "$(shasum -a 256 < "$real/$f" | awk '{print $1}')" "$f"
+        done | sort
+    )
+    [ -n "$actual" ] || { echo "  FAIL: install.sh carries no CS_PAYLOAD_SHA256 entries"; return 1; }
+    if [ "$actual" != "$expected" ]; then
+        echo "  FAIL: CS_PAYLOAD_SHA256 is not the sha256 of every payload file"
+        diff <(echo "$expected") <(echo "$actual") | head -10
+        return 1
+    fi
+    printf '%s\n' "$actual" | grep -vq '^[0-9a-f]\{64\}  [^ ]*$' \
+        && { echo "  FAIL: an entry is not '<sha256>  <path>'"; return 1; }
+    return 0
+}
+
+# The release asset install.sh fetches its payload from the tag it was
+# released at when no CS_INSTALL_REF is given, because its sha256s describe
+# that tag's files. The release workflow rewrites the one default-ref line;
+# a checkout's install.sh keeps main.
+test_release_workflow_pins_the_installers_default_ref() {
+    local real
+    real="$(cd "$SCRIPT_DIR/.." && pwd)"
+    assert_eq "1" "$(grep -c '^CS_DEFAULT_REF=main$' "$real/install.sh")" "install.sh has one default-ref line" || return 1
+    assert_file_contains "$real/install.sh" 'CS_INSTALL_REF:-\$CS_DEFAULT_REF' "the payload URL reads the default ref" || return 1
+    # The workflow step, run here against a copy, rewrites that line to the tag.
+    local copy="$TEST_TMPDIR/pin-install.sh" step
+    cp "$real/install.sh" "$copy"
+    step=$(grep 'CS_DEFAULT_REF=' "$real/.github/workflows/release.yml" | grep 'sed ' | head -1 | sed 's/^ *//')
+    [ -n "$step" ] || { echo "  FAIL: release.yml has no step rewriting CS_DEFAULT_REF"; return 1; }
+    (cd "$TEST_TMPDIR" && cp "$copy" install.sh && GITHUB_REF_NAME=v2026.99.3 \
+        bash -c "${step//sed -i /sed -i.bak }" && mv install.sh "$copy") \
+        || { echo "  FAIL: the workflow step failed: $step"; return 1; }
+    assert_eq "1" "$(grep -c '^CS_DEFAULT_REF=v2026\.99\.3$' "$copy")" "the copy defaults to the tag" || return 1
+}
+
 # ============================================================================
 # Ownership: install, update and uninstall touch only files cs wrote
 # ============================================================================
@@ -1871,6 +1964,10 @@ run_test test_uninstall_removes_leftover_cs_tui_exe
 run_test test_web_install_keeps_the_installed_cs_when_its_download_breaks
 run_test test_web_install_places_nothing_when_a_later_download_breaks
 run_test test_web_install_deploys_the_payload_from_the_stub
+run_test test_web_install_refuses_a_payload_file_that_does_not_match
+run_test test_web_install_skips_a_completion_that_does_not_match
+run_test test_build_embeds_the_sha256_of_every_payload_file
+run_test test_release_workflow_pins_the_installers_default_ref
 run_test test_install_keeps_user_files_that_share_a_cs_name
 run_test test_install_replaces_files_cs_wrote_without_a_record
 run_test test_install_follows_its_record
