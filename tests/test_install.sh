@@ -1844,6 +1844,26 @@ test_install_keeps_a_symlink_that_holds_no_cs_content() {
     assert_output_contains "$out" "Kept $(_bre_literal "$bin_home/.local/bin/cs-statusline")" "the kept binary link is named" || return 1
 }
 
+# A user's file under a name cs retired is not in the way of anything cs
+# deploys: install names it the first time it sees that content, and stays
+# quiet about it on later installs until the content changes.
+test_install_names_a_kept_retired_name_file_once_per_content() {
+    local home="$TEST_TMPDIR/retired-once-home" out rc=0
+    mkdir -p "$home/.claude/hooks" "$home/.claude/skills/merge"
+    printf '#!/bin/sh\necho my prose lint\n' > "$home/.claude/hooks/prose-lint.sh"
+    printf 'my merge skill\n' > "$home/.claude/skills/merge/SKILL.md"
+    HOME="$home" bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || { echo "  FAIL: first install failed"; return 1; }
+    out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || rc=$?
+    assert_eq "0" "$rc" "second install exit status" || { echo "$out"; return 1; }
+    assert_output_not_contains "$out" "$(_bre_literal "$home/.claude/hooks/prose-lint.sh")" "the retired-name hook is not named again" || return 1
+    assert_output_not_contains "$out" "$(_bre_literal "$home/.claude/skills/merge/SKILL.md")" "the retired-name skill is not named again" || return 1
+    assert_eq "my merge skill" "$(cat "$home/.claude/skills/merge/SKILL.md")" "the skill is still kept" || return 1
+    printf 'my merge skill, edited\n' > "$home/.claude/skills/merge/SKILL.md"
+    out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || { echo "$out"; echo "  FAIL: third install failed"; return 1; }
+    assert_output_contains "$out" "Kept $(_bre_literal "$home/.claude/skills/merge/SKILL.md")" "changed content is named again" || return 1
+    assert_output_not_contains "$out" "$(_bre_literal "$home/.claude/hooks/prose-lint.sh")" "the unchanged hook stays quiet" || return 1
+}
+
 # A kept flat ~/.claude/hooks/<name> is the user's hook, and so is its
 # registration: install leaves the registration of a kept file in place,
 # under a current name and a retired one, and still registers cs's own copy.
@@ -2135,6 +2155,7 @@ run_test test_build_embeds_the_sha256_of_every_payload_file
 run_test test_release_workflow_pins_the_installers_default_ref
 run_test test_install_keeps_user_files_that_share_a_cs_name
 run_test test_install_keeps_the_registration_of_a_kept_flat_hook
+run_test test_install_names_a_kept_retired_name_file_once_per_content
 run_test test_install_keeps_a_symlink_that_holds_no_cs_content
 run_test test_install_never_sources_a_kept_deployed_cs_shared
 run_test test_install_replaces_files_cs_wrote_without_a_record
