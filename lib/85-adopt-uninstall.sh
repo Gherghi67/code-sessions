@@ -569,6 +569,9 @@ run_uninstall() {
         info "Uninstall cancelled."
         return 0
     fi
+    # The answer can take any time to arrive, and a session opened meanwhile
+    # is as live as one found before the prompt.
+    _uninstall_refuse_live_sessions
 
     echo ""
     info "Uninstalling cs..."
