@@ -62,8 +62,9 @@ _rotate_force_notice_file() {
 }
 
 # Mirrors forceThreshold() in mods/cs/hooks/register.tsx: unset is the
-# default, `off` (any case) and zero turn it off, digits move it, and anything
-# else is the default rather than silence. KEEP IN SYNC with that resolver.
+# default, `off` (any case) and zero turn it off, 1 to 100 moves it, and
+# anything else, a number past 100 included, is the default rather than
+# silence. KEEP IN SYNC with that resolver.
 _rotate_force_threshold() {  # -> prints the percentage, or nothing when off
     local raw="${CS_ROTATE_FORCE_CTX-}"
     raw="$(printf '%s' "$raw" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
@@ -73,7 +74,9 @@ _rotate_force_threshold() {  # -> prints the percentage, or nothing when off
     esac
     case "$raw" in
         *[!0-9]*) echo 80; return 0 ;;
-        *) [ "$((10#$raw))" -eq 0 ] && return 0; echo "$((10#$raw))" ;;
+        *) [ "$((10#$raw))" -eq 0 ] && return 0
+           [ "$((10#$raw))" -gt 100 ] && { echo 80; return 0; }
+           echo "$((10#$raw))" ;;
     esac
 }
 
