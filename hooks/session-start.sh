@@ -306,15 +306,23 @@ if [ "${CS_RESOLVED_FROM:-env}" = "env" ]; then
 elif command -v _cs_is_teammate >/dev/null 2>&1 && _cs_is_teammate; then
     _cs_publish_to="teammate"
 fi
+# Claude Code sources the file as shell, so each value goes in single quotes
+# with every ' written as '\'' : a path holding " or $( stays data. The quote
+# and its escape sit in variables because bash 3.2 mangles them as literals
+# inside a double-quoted ${v//pattern/replacement}.
+_cs_env_export() {  # name value
+    local v="$2" sq="'" esc="'\\''"
+    printf "export %s='%s'\n" "$1" "${v//$sq/$esc}"
+}
 if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -n "$_cs_publish_to" ]; then
-    cat >> "$CLAUDE_ENV_FILE" << EOF
-export CLAUDE_SESSION_NAME="$CLAUDE_SESSION_NAME"
-export CLAUDE_SESSION_DIR="$SESSION_DIR"
-export CLAUDE_SESSION_META_DIR="$META_DIR"
-EOF
-    if [ "$_cs_publish_to" = "teammate" ]; then
-        printf 'export CS_RESOLVED_FROM="%s"\n' "${CS_RESOLVED_FROM:-walk}" >> "$CLAUDE_ENV_FILE"
-    fi
+    {
+        _cs_env_export CLAUDE_SESSION_NAME "$CLAUDE_SESSION_NAME"
+        _cs_env_export CLAUDE_SESSION_DIR "$SESSION_DIR"
+        _cs_env_export CLAUDE_SESSION_META_DIR "$META_DIR"
+        if [ "$_cs_publish_to" = "teammate" ]; then
+            _cs_env_export CS_RESOLVED_FROM "${CS_RESOLVED_FROM:-walk}"
+        fi
+    } >> "$CLAUDE_ENV_FILE"
 fi
 
 # Resolve who is driving this session, for the identity anchor below, with the

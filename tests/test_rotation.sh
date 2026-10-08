@@ -2459,6 +2459,16 @@ test_force_threshold_trims_only_the_ends_like_the_mod() {
     assert_eq "" "$got" "off survives outer whitespace" || return 1
 }
 
+# Like the mod, a whole number past 100 is the default, not a threshold no
+# turn can reach; 100 itself is the top of the range.
+test_force_threshold_past_100_is_the_default_like_the_mod() {
+    local got
+    got=$(CS_ROTATE_FORCE_CTX="150" bash -c '. "'"$SCRIPT_DIR"'/../lib/75-launch.sh"; _rotate_force_threshold')
+    assert_eq "80" "$got" "150 reads as the default" || return 1
+    got=$(CS_ROTATE_FORCE_CTX="100" bash -c '. "'"$SCRIPT_DIR"'/../lib/75-launch.sh"; _rotate_force_threshold')
+    assert_eq "100" "$got" "100 is kept" || return 1
+}
+
 # The notice is only worth anything if a launch prints it: the unit tests above
 # call the function, this one goes through cs.
 test_launch_prints_the_force_notice_once_and_only_with_hooks_on() {
@@ -2486,6 +2496,7 @@ run_test test_force_notice_is_silent_when_the_forcing_is_off
 run_test test_force_notice_names_an_overridden_threshold
 run_test test_force_notice_is_silent_when_function_hooks_are_off
 run_test test_force_threshold_trims_only_the_ends_like_the_mod
+run_test test_force_threshold_past_100_is_the_default_like_the_mod
 run_test test_launch_prints_the_force_notice_once_and_only_with_hooks_on
 run_test test_ctx_warning_fires_once_in_band
 run_test test_ctx_tiers_are_silent_for_a_teammate

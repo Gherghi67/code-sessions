@@ -382,6 +382,9 @@ check_update_notify() {
     if [ -f "$UPDATE_CACHE" ]; then
         local cache_time cached_version
         read -r cache_time cached_version < "$UPDATE_CACHE" 2>/dev/null || true
+        # Digits only before the arithmetic below, which would evaluate any
+        # other token as an expression; anything else is no cache.
+        case "$cache_time" in *[!0-9]*) cache_time="" ;; esac
 
         # If cache is fresh, use it
         if [ -n "$cache_time" ] && [ $((now - cache_time)) -lt $UPDATE_CHECK_INTERVAL ]; then

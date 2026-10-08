@@ -229,6 +229,24 @@ test_session_end_clears_a_stale_lock_even_when_walked_in() {
         "a dead owner's lock must be cleared however the hook resolved" || return 1
 }
 
+# The exit trap releases the lock by the session's path, and that path is
+# data: a sessions root holding a quote, a double quote, a command
+# substitution and a space must run nothing and still release the lock. The
+# trap fires only where cs outlives claude, so the second open resumes a
+# conversation that has no transcript, which runs claude as a child.
+test_exit_trap_releases_the_lock_under_a_root_with_shell_metacharacters() {
+    local root="$TEST_TMPDIR/r 'q\" \$(touch sentinel) x"
+    mkdir -p "$root"
+    export CS_SESSIONS_ROOT="$root"
+    (cd "$TEST_TMPDIR" && "$CS_BIN" lock-meta < /dev/null > /dev/null 2>&1) || return 1
+    assert_file_exists "$root/lock-meta/.cs/README.md" "the first open creates the session" || return 1
+    local rc=0
+    (cd "$TEST_TMPDIR" && echo y | "$CS_BIN" lock-meta > /dev/null 2>&1) || rc=$?
+    assert_eq "" "$(find "$TEST_TMPDIR" -name sentinel)" "the trap runs no command from the path" || return 1
+    assert_not_exists "$root/lock-meta/.cs/session.lock" "the trap releases the lock" || return 1
+    assert_eq "0" "$rc" "the resumed open exits cleanly through its trap" || return 1
+}
+
 test_lock_contains_valid_pid() {
     cat > "$TEST_TMPDIR/save-lock" << 'SCRIPT'
 #!/bin/bash
@@ -595,6 +613,7 @@ run_test test_session_end_keeps_the_lock_for_clear_and_resume
 run_test test_session_end_leaves_a_live_lock_it_does_not_own
 run_test test_session_end_clears_a_stale_lock_even_when_walked_in
 run_test test_lock_contains_valid_pid
+run_test test_exit_trap_releases_the_lock_under_a_root_with_shell_metacharacters
 run_test test_collision_menu_new_task_creates_worktree
 run_test test_collision_menu_cancel_is_default
 run_test test_collision_menu_four_cancels

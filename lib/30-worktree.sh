@@ -13,6 +13,11 @@ cs_split_worktree_name() {
         error "Session name cannot be empty before '@' (expected <base>@<feature>)"
     fi
     validate_session_name "$CS_WT_BASE"
+    # The feature half names the branch cs/<feature>, and git refuses a ref
+    # component that starts with a dot.
+    case "$CS_WT_TASK" in
+        .*) error "Worktree feature name cannot start with a dot" ;;
+    esac
     if [ -z "$CS_WT_TASK" ] || ! [[ "$CS_WT_TASK" =~ ^[a-zA-Z0-9._-]+$ ]]; then
         error "Worktree feature name must contain only alphanumeric characters, hyphens, underscores, and dots"
     fi

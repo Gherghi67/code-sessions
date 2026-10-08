@@ -597,6 +597,20 @@ test('below the force threshold, or with an unusable value, a turn ending forces
   expect(timers.map(t => t.kind)).toEqual(['after'])
 })
 
+test('a whole number outside 1..100 is the default 80, not a threshold no turn can reach', async () => {
+  for (const value of ['101', '150', '999']) {
+    envVars.CS_ROTATE_FORCE_CTX = value
+    percent = 79
+    await turnComplete()
+    expect(timers).toEqual([])
+  }
+  percent = 80
+  await turnComplete()
+  expect(timers.map(t => t.kind)).toEqual(['after'])
+  await fireAfter()
+  expect(ran).toEqual([{ command: 'rotate', args: '' }])
+})
+
 test('a forced rotation runs once per conversation, and a failed /rotate is not retried', async () => {
   envVars.CS_ROTATE_FORCE_CTX = '70'
   percent = 80
