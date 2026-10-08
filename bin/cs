@@ -12476,6 +12476,10 @@ main() {
             git commit -q -m "Initial session structure" 2>/dev/null || true
         )
     else
+        # The sessions root also holds directories that are not sessions;
+        # migrate_session would write cs's files into one.
+        is_session_dir "$session_dir" \
+            || error "$session_dir is not a cs session (no .cs/ directory); cs will not write session files into it. Move it out of $SESSIONS_ROOT or open another name."
         _run_pre_open "$session_name" "$session_dir"
         _refuse_unmounted_meta "$session_name" "$session_dir"
         migrate_session "$session_dir"
