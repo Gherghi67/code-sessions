@@ -112,7 +112,7 @@ The installer:
 - Installs the cs [hooks](docs/hooks.md) to `~/.claude/hooks/cs/` for session tracking (including the `scope-prompt` auto-grounding hook on UserPromptSubmit)
 - Adds `/summary`, `/checkpoint`, `/sweep`, and `/wrap` commands, the `store-secret`, `prose-hygiene`, `rotate`, `finish`, `feature`, and `write-as-me` skills, and the `cs` and `cs-update` mods to `~/.claude/`
 - Installs shell completions for bash and zsh
-- Configures hook entries in `~/.claude/settings.json`, after writing a backup `settings.json.cs-bak.<UTC stamp>` beside it (not pruned)
+- Configures hook entries in `~/.claude/settings.json`; before any change to that file it writes a backup `settings.json.cs-bak.<UTC stamp>` beside it (not pruned)
 - Writes an install record, `~/.claude/hooks/cs/.installed`, with the sha256 of every file it placed; a later install, update or uninstall replaces or removes a file only when its content is one cs wrote, and keeps and lists your own file of the same name
 - Asks once whether to bind Ctrl+X R to `/rotate`, Ctrl+X W to `/wrap` and Ctrl+X 1 / Ctrl+X 2 to the `cs` band in `~/.claude/keybindings.json` (asks nothing without a terminal)
 
