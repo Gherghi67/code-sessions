@@ -10876,7 +10876,9 @@ run_uninstall() {
         echo ""
         local mounted live_sessions="" entry now
         now=$(date +%s)
-        for entry in "$SESSIONS_ROOT"/*; do
+        # Hidden entries too: a session named before leading dots were
+        # refused (.work) can still be live, and `*` alone would skip it.
+        for entry in "$SESSIONS_ROOT"/* "$SESSIONS_ROOT"/.[!.]* "$SESSIONS_ROOT"/..?*; do
             [ -d "$entry/.cs" ] || continue
             if session_display_live "$entry/.cs" "$now"; then
                 live_sessions="$live_sessions ${entry##*/}"

@@ -1120,7 +1120,7 @@ test_export_never_pins_from_a_forged_sync_file() {
     fi
     local attacker_fp
     attacker_fp=$(printf '%s' "$(head -1 "$TEST_TMPDIR/attacker.pub")" | shasum -a 256 | cut -d' ' -f1)
-    if [ -f "$meta/local/age-trusted" ] && grep -qxF "$attacker_fp" "$meta/local/age-trusted"; then
+    if [ -f "$HOME/.cs-secrets/sessions/test-session/age-trusted" ] && grep -qxF "$attacker_fp" "$HOME/.cs-secrets/sessions/test-session/age-trusted"; then
         echo "  FAIL: attacker.pub is in the pin list"
         return 1
     fi

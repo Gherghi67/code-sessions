@@ -129,15 +129,19 @@ cs -secrets export-file
 - Each machine has a keypair stored in `~/.cs-secrets/age.key`
 - Session recipients are stored in `<session>/.cs/age-recipients/*.pub`
 - Each machine encrypts only to the recipients it has pinned in
-  `<session>/.cs/local/age-trusted`; `age add` pins a key, `age remove` unpins it
+  `~/.cs-secrets/sessions/<session>/age-trusted`; `age add` pins a key, `age remove`
+  unpins it. The pin list, the per-file recipient digests (`age-exported-to`)
+  and their lock (`.age.lock`) live under `~/.cs-secrets`, outside the checkout:
+  `.cs/local` is gitignored, but `git add -f` is not, and a pushed pin list must
+  never be read
 - A `.pub` that arrives some other way, such as a `git pull` of someone's push,
   makes `export-file` refuse and print the `age add` command that pins it; pin it
   only if you trust the key, otherwise delete the file
 - Nothing is pinned without an `age add` on this machine, except this
   machine's own key, which is pinned by its content whenever it is a
-  recipient. A machine that exported before pinning existed, a fresh clone and
-  a wiped `.cs/local/` all start with no pin list: the export refuses and lists
-  each `.pub` with the `age add` command that pins it
+  recipient. A machine that exported before pinning existed and a fresh clone
+  both start with no pin list: the export refuses and lists each `.pub` with
+  the `age add` command that pins it
 - `export-file`, `age add` and `age remove` hold one per-session lock on every
   backend, from the recipient snapshot through the encrypt, the rename and the
   digest record
@@ -184,7 +188,7 @@ existing file and compares the plaintext, so re-exporting an unchanged store
 does not churn the file's bytes (each encryption pass would otherwise emit fresh
 ciphertext from a random salt / ephemeral key). For an age file, "nothing
 changed" also covers the recipients: the machine records the recipient set it
-encrypted each file to (`.cs/local/age-exported-to`), and any add or removal
+encrypted each file to (`~/.cs-secrets/sessions/<session>/age-exported-to`), and any add or removal
 makes the next export re-encrypt even when no secret changed. A removed
 recipient keeps reading other machines' sync files until those machines
 export, and every copy already in git history.

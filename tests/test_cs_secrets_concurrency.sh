@@ -531,7 +531,7 @@ SHIM
         echo "  FAIL: this machine's own key must decrypt the final export to the latest value"
         return 1
     fi
-    assert_file_contains "$meta/local/age-exported-to" " $sync\$" "the recipient digest is recorded for the sync file" || return 1
+    assert_file_contains "$HOME/.cs-secrets/sessions/$sess/age-exported-to" " $sync\$" "the recipient digest is recorded for the sync file" || return 1
 }
 
 run_test test_encrypted_salt_write_is_atomic_under_concurrency
