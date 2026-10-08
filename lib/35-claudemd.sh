@@ -40,10 +40,56 @@ SETTINGS
     local encoded_path
     encoded_path=$(_claude_encode_path "$real_path")
     local old_memory_dir="$HOME/.claude/projects/${encoded_path}/memory"
-    if [ -d "$old_memory_dir" ] && [ "$(ls -A "$old_memory_dir" 2>/dev/null)" ]; then
-        cp -n "$old_memory_dir"/* "$session_dir/.cs/memory/" 2>/dev/null || true
-        rm -rf "$old_memory_dir"
+    if [ -d "$old_memory_dir" ]; then
+        _move_memory_files "$old_memory_dir" "$session_dir/.cs/memory"
     fi
+}
+
+# Move every file under src (subdirectories included) to the same relative path
+# under dest, deleting a source file only once dest holds a byte-identical copy.
+# A name dest already holds with different content is copied beside it as
+# <name>.claude-projects (not .md, so Claude Code does not load it as a topic).
+# A copy that fails, or a .claude-projects name already holding something else,
+# stops the move before anything is deleted, so src stays whole. Warnings go to
+# stderr: create_worktree_session's caller captures stdout as a path.
+_move_memory_files() {  # src, dest
+    local src="$1" dest="$2" f rel target complete=1
+    while IFS= read -r -d '' f; do
+        rel="${f#"$src"/}"
+        target="$dest/$rel"
+        if { [ -e "$target" ] || [ -L "$target" ]; } && ! cmp -s "$f" "$target"; then
+            target="$target.claude-projects"
+        fi
+        if [ -e "$target" ] || [ -L "$target" ]; then
+            if ! cmp -s "$f" "$target"; then
+                warn "Not moving $f: $dest/$rel and $target both hold other content" >&2
+                complete=0
+            fi
+            continue
+        fi
+        if mkdir -p "$(dirname "$target")" && cp -p "$f" "$target" && cmp -s "$f" "$target"; then
+            if [ "$target" != "$dest/$rel" ]; then
+                warn "Kept both copies of memory file $rel: the one from $src is $target" >&2
+            fi
+        else
+            warn "Could not copy $f to $target" >&2
+            complete=0
+        fi
+    done < <(find "$src" -type f -print0)
+
+    if [ "$complete" -eq 0 ]; then
+        warn "Left $src in place: not every file in it has a copy in $dest" >&2
+        return 0
+    fi
+    while IFS= read -r -d '' f; do
+        rel="${f#"$src"/}"
+        if cmp -s "$f" "$dest/$rel" || cmp -s "$f" "$dest/$rel.claude-projects"; then
+            rm -f "$f"
+        fi
+    done < <(find "$src" -type f -print0)
+    # Only directories left empty go; one still holding anything (a symlink,
+    # a file that appeared since) stays, and its rmdir failure is expected.
+    find "$src" -depth -type d -empty -delete 2>/dev/null || true
 }
 
 # Ensure the session narrative topic file and its MEMORY.md index pointer exist.
