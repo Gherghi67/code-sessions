@@ -319,7 +319,7 @@ test_install_refuses_invalid_settings_json() {
     HOME="$fake_home" bash "$INSTALL_SH" > "$TEST_TMPDIR/badjson.out" 2>&1 < /dev/null || rc=$?
     out=$(cat "$TEST_TMPDIR/badjson.out")
     assert_eq "1" "$rc" "install must stop on an unparseable settings.json" || return 1
-    assert_output_contains "$out" "^Error: $(_bre_literal "$f") is not valid JSON; left it unchanged: parse error: Unfinished JSON term at EOF at line 2, column 0\$" \
+    assert_output_contains "$out" "^Error: $(_bre_literal "$f") is not valid JSON; left it unchanged and wrote no $(_bre_literal "$f")\.cs-bak\.<stamp> backup: parse error: Unfinished JSON term at EOF at line 2, column 0\$" \
         "the error names the file and jq's reason" || return 1
     cmp -s "$TEST_TMPDIR/badjson.orig" "$f" \
         || { echo "  FAIL: settings.json changed although it was refused"; return 1; }
@@ -427,7 +427,7 @@ test_uninstall_leaves_invalid_settings_json_untouched() {
     printf 'y\n' | HOME="$fake_home" "$CS_BIN" -uninstall > "$TEST_TMPDIR/unbad.out" 2>&1 || rc=$?
     out=$(cat "$TEST_TMPDIR/unbad.out")
     assert_eq "0" "$rc" "the uninstall finishes" || return 1
-    assert_output_contains "$out" "^$(_bre_literal "$f") is not valid JSON; left it unchanged: parse error: Unfinished JSON term at EOF at line 2, column 0\$" \
+    assert_output_contains "$out" "^$(_bre_literal "$f") is not valid JSON; left it unchanged and wrote no $(_bre_literal "$f")\.cs-bak\.<stamp> backup: parse error: Unfinished JSON term at EOF at line 2, column 0\$" \
         "the warning names the file and jq's reason" || return 1
     cmp -s "$TEST_TMPDIR/unbad.orig" "$f" \
         || { echo "  FAIL: settings.json changed although it was refused"; return 1; }
