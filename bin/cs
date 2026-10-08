@@ -3347,9 +3347,15 @@ $wt_untracked"
     # worktree's own back, and the retry fuses exactly once.
     # The staging directory sits beside the worktree, on its filesystem, so
     # both moves are renames: nothing is half-copied on a failure.
+    # A fuse that refuses after the removal would strand the records in the
+    # staging directory, so its one refusal is asked before anything moves.
     local mode aside=""
     mode=$(_read_local_state "$wt_dir/.cs/local/state" cs_mode)
     if [ "$mode" = "ignored" ]; then
+        if [ -f "$wt_dir/.cs/local/session.log" ] || [ -f "$wt_dir/.cs/logs/session.log" ]; then
+            cs_private_dir "$base_dir/.cs" >/dev/null \
+                || error "cannot fuse the worktree's log: $base_dir/.cs/private is locked. Mount it, then retry."
+        fi
         aside="$SESSIONS_ROOT/.retire-$wt_name.$$"
         mkdir "$aside" 2>/dev/null || error "Could not create $aside to set aside $wt_dir/.cs for the record fuse"
         mv "$wt_dir/.cs" "$aside/cs" || { rmdir "$aside" 2>/dev/null; error "Could not set aside $wt_dir/.cs for the record fuse"; }
@@ -3368,7 +3374,8 @@ $remove_err"
 $remove_err"
     fi
     if [ -n "$aside" ]; then
-        fuse_session_records "$aside/cs" "$base_dir/.cs"
+        ( fuse_session_records "$aside/cs" "$base_dir/.cs" ) \
+            || error "The worktree $wt_dir is removed, but its session records could not be fused into $base_dir/.cs: they are at $aside/cs. Fuse what is missing by hand, then delete that directory."
         rm -rf "$aside"
     fi
     if [ -n "$force" ]; then
@@ -3776,22 +3783,27 @@ fuse_session_records() {
     local src="$1" dst="$2"
     local f base
 
-    _append_jsonl "$src/timeline.jsonl" "$dst/timeline.jsonl"
     # Worktrees never run migrate_session, so a task branch created before the
     # log moved to .cs/local/ still keeps its audit trail at .cs/logs/; fuse
     # whichever the worktree has into the base's machine-local log.
     # An encrypted base keeps its log behind .cs/private; a locked one cannot
     # take the log, and .cs/local must not take it in plaintext instead.
-    local srclog dstlog
-    for srclog in "$src/local/session.log" "$src/logs/session.log"; do
-        if [ -f "$srclog" ]; then
+    # Resolved before any write, so that refusal leaves the base untouched.
+    local candidate srclog="" dstlog=""
+    for candidate in "$src/local/session.log" "$src/logs/session.log"; do
+        if [ -f "$candidate" ]; then
+            srclog="$candidate"
             dstlog=$(cs_private_dir "$dst") \
                 || error "cannot fuse the worktree's log: $dst/private is locked. Mount it, then retry."
-            mkdir -p "$dstlog"
-            { echo ""; cat "$srclog"; } >> "$dstlog/session.log"
             break
         fi
     done
+
+    _append_jsonl "$src/timeline.jsonl" "$dst/timeline.jsonl"
+    if [ -n "$srclog" ]; then
+        mkdir -p "$dstlog"
+        { echo ""; cat "$srclog"; } >> "$dstlog/session.log"
+    fi
 
     mkdir -p "$dst/memory"
     for f in "$src"/memory/narrative.*.md; do
