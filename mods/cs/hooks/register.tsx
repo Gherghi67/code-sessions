@@ -439,16 +439,18 @@ function numberOr(raw: string | undefined, fallback: number): number {
 }
 
 // On at FORCE_DEFAULT unless CS_ROTATE_FORCE_CTX says otherwise: `off` (any
-// case) and `0` turn the forcing off, a percentage moves it, and anything else
-// — a typo — is the default rather than silence, because a value nobody can
-// read must not quietly disable a rotation the person is relying on.
+// case) and `0` turn the forcing off, a percentage from 1 to 100 moves it, and
+// anything else — a typo, or a number past 100 no turn can reach — is the
+// default rather than silence, because a value nobody can read must not
+// quietly disable a rotation the person is relying on.
 // `claude plugin validate` lists what a module reads, and a name it does not
 // spell is refused.
 async function forceThreshold($: EngineInterface): Promise<number | undefined> {
   const raw = (await $.env.get("CS_ROTATE_FORCE_CTX"))?.trim()
   if (raw === undefined || raw === '') return FORCE_DEFAULT
   if (raw.toLowerCase() === 'off' || /^0+$/.test(raw)) return undefined
-  return /^\d+$/.test(raw) ? Number(raw) : FORCE_DEFAULT
+  const n = /^\d+$/.test(raw) ? Number(raw) : NaN
+  return n >= 1 && n <= 100 ? n : FORCE_DEFAULT
 }
 
 // A conversation id the mod has not met yet is the current one from here on,

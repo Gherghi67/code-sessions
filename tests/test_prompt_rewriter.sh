@@ -386,7 +386,10 @@ test_the_provider_knob_selects_the_vendor_rewriter() {
     unset CS_REWRITE_CMD
     local bin="$TEST_TMPDIR/bin"
     mkdir -p "$bin"
-    printf '#!/bin/bash\nprintf "VENDOR PATH TAKEN"\n' > "$bin/agy"
+    # agy answers stream-json: the rewrite is the result event's response.
+    printf '#!/bin/bash\ncat >/dev/null\nprintf "%%s\\n" %s\n' \
+        "'{\"event\":\"result\",\"result\":{\"status\":\"SUCCESS\",\"response\":\"VENDOR PATH TAKEN\"}}'" \
+        > "$bin/agy"
     chmod +x "$bin/agy"
     local f
     f=$(composer_file "make the login thing better")

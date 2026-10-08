@@ -3611,8 +3611,33 @@ test_session_start_withholds_the_contract_from_a_walked_in_front_end() {
     session_start_teardown
 }
 
+# Claude Code sources CLAUDE_ENV_FILE as shell, so each value is written as
+# data: a sessions root holding a quote, a double quote, a command substitution
+# and a space must read back as the same path and run nothing when sourced.
+test_session_start_publishes_a_path_with_shell_metacharacters_as_data() {
+    session_start_setup
+    local envfile="$TEST_TMPDIR/envfile" root got
+    root="$TEST_TMPDIR/r 'q\" \$(touch sentinel) x"
+    mv "$CS_SESSIONS_ROOT" "$root"
+    export CS_SESSIONS_ROOT="$root"
+    export CLAUDE_SESSION_DIR="$root/current-session"
+    export CLAUDE_SESSION_META_DIR="$CLAUDE_SESSION_DIR/.cs"
+    : > "$envfile"
+
+    jq -n -c --arg cwd "$CLAUDE_SESSION_DIR" \
+        '{session_id: "s", source: "startup", cwd: $cwd, hook_event_name: "SessionStart"}' \
+        | CLAUDE_ENV_FILE="$envfile" bash "$HOOKS_DIR/session-start.sh" >/dev/null 2>&1
+
+    got=$(cd "$TEST_TMPDIR" && env -u CLAUDE_SESSION_NAME -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR bash -c '. "$1" 2>/dev/null; printf "%s|%s|%s" "$CLAUDE_SESSION_NAME" "$CLAUDE_SESSION_DIR" "$CLAUDE_SESSION_META_DIR"' _ "$envfile")
+    assert_not_exists "$TEST_TMPDIR/sentinel" "sourcing the env file runs nothing" || { session_start_teardown; return 1; }
+    assert_eq "current-session|$root/current-session|$root/current-session/.cs" "$got" \
+        "the env file gives back the exact name and paths" || { session_start_teardown; return 1; }
+    session_start_teardown
+}
+
 run_test test_session_start_publishes_the_contract_for_a_cs_launch
 run_test test_session_start_withholds_the_contract_from_a_walked_in_front_end
+run_test test_session_start_publishes_a_path_with_shell_metacharacters_as_data
 
 # A teammate resolves by walking, and is the one walked-in front end that needs
 # the contract: its own `cs -secrets`, `cs -msg` and status line read the
@@ -3639,7 +3664,7 @@ test_session_start_publishes_the_contract_to_a_teammate() {
 
     assert_file_contains "$envfile" "CLAUDE_SESSION_NAME" \
         "a teammate needs the session in its own environment" || { session_start_teardown; return 1; }
-    assert_file_contains "$envfile" "CS_RESOLVED_FROM=\"walk\"" \
+    assert_file_contains "$envfile" "CS_RESOLVED_FROM='walk'" \
         "and must stay marked as not being the launch" || { session_start_teardown; return 1; }
     session_start_teardown
 }

@@ -62,8 +62,9 @@ _rotate_force_notice_file() {
 }
 
 # Mirrors forceThreshold() in mods/cs/hooks/register.tsx: unset is the
-# default, `off` (any case) and zero turn it off, digits move it, and anything
-# else is the default rather than silence. KEEP IN SYNC with that resolver.
+# default, `off` (any case) and zero turn it off, 1 to 100 moves it, and
+# anything else, a number past 100 included, is the default rather than
+# silence. KEEP IN SYNC with that resolver.
 _rotate_force_threshold() {  # -> prints the percentage, or nothing when off
     local raw="${CS_ROTATE_FORCE_CTX-}"
     raw="$(printf '%s' "$raw" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
@@ -73,7 +74,9 @@ _rotate_force_threshold() {  # -> prints the percentage, or nothing when off
     esac
     case "$raw" in
         *[!0-9]*) echo 80; return 0 ;;
-        *) [ "$((10#$raw))" -eq 0 ] && return 0; echo "$((10#$raw))" ;;
+        *) [ "$((10#$raw))" -eq 0 ] && return 0
+           [ "$((10#$raw))" -gt 100 ] && { echo 80; return 0; }
+           echo "$((10#$raw))" ;;
     esac
 }
 
@@ -223,8 +226,12 @@ launch_claude_code() {
     # A force chosen at the collision menu is equivalent to --force for the
     # rest of the launch.
     [ "${CS_COLLISION_FORCE:-}" = "1" ] && force="true"
-    trap 'reset_tab_title; release_session_lock "'"$session_dir/.cs"'"; _detach_opened_vault' EXIT
-    trap 'reset_tab_title; release_session_lock "'"$session_dir/.cs"'"; exit 130' INT TERM
+    # The traps read the path from a global when they fire, never from text
+    # spliced into them: a " or $( in the sessions root would be run as code.
+    # Global, not local: the EXIT trap fires after this function has returned.
+    _CS_LOCK_META_DIR="$session_dir/.cs"
+    trap 'reset_tab_title; release_session_lock "$_CS_LOCK_META_DIR"; _detach_opened_vault' EXIT
+    trap 'reset_tab_title; release_session_lock "$_CS_LOCK_META_DIR"; exit 130' INT TERM
 
     # Opening an archived session revives it. Placed after lock acquisition so
     # a cancelled collision menu leaves the marker in place; the removal is
@@ -901,6 +908,8 @@ EOF
         # cs when the resume is sure to land. exec keeps the pid: the session
         # lock names claude, as on a fresh launch.
         if _resume_lands_in_place "$session_dir" "$resume_id"; then
+            # Unquoted on purpose here and below: CLAUDE_CODE_BIN may carry
+            # flags after the command, and _claude_bin_word checks that word.
             # shellcheck disable=SC2086
             exec $CLAUDE_CODE_BIN --name "$session_name" --resume "$resume_id" ${launch_prompt:+"$launch_prompt"}
         fi

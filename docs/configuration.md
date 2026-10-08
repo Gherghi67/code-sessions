@@ -187,7 +187,7 @@ export CS_ROTATE_BUTTON_CTX="40"
 # conversation, then counts the band down for 20 seconds and runs the /clear
 # that continues from the handoff. Pressing 1 clears at once; sending a
 # prompt stops the countdown. On at 80 unless set; `off` or `0` disables it,
-# and a value that is not a number falls back to 80 rather than off. A
+# and a value that is not a number from 1 to 100 falls back to 80 rather than off. A
 # conversation born of a /clear that already starts past it is never forced
 # (a toast says so once); one met at launch or through /resume is.
 export CS_ROTATE_FORCE_CTX="80"

@@ -21,6 +21,18 @@ test_worktree_name_rejects_bad_task_half() {
     assert_output_contains "$output" "feature name" "slash in feature half must be rejected" || return 1
 }
 
+# Both halves refuse a leading dot: the base half is a session name, and the
+# feature half becomes the branch cs/<feature>, a ref git refuses.
+test_worktree_name_rejects_a_leading_dot_in_either_half() {
+    create_test_session_with_git "myproj" > /dev/null
+    local output
+    output=$("$CS_BIN" "myproj@.hidden" < /dev/null 2>&1 || true)
+    assert_output_contains "$output" "feature name cannot start with a dot" "a leading dot in the feature half is refused" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/myproj@.hidden" "no worktree is created for it" || return 1
+    output=$("$CS_BIN" ".myproj@fix" < /dev/null 2>&1 || true)
+    assert_output_contains "$output" "Session name cannot start with a dot" "a leading dot in the base half is refused" || return 1
+}
+
 test_plain_names_still_work() {
     local output
     output=$("$CS_BIN" "-list" 2>&1)
@@ -856,6 +868,7 @@ test_worktree_excludes_protocol_file() {
 
 run_test test_worktree_name_rejected_without_base
 run_test test_worktree_name_rejects_bad_task_half
+run_test test_worktree_name_rejects_a_leading_dot_in_either_half
 run_test test_plain_names_still_work
 run_test test_worktree_create_tracked_mode
 run_test test_worktree_create_refuses_dirty_base

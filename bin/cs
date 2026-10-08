@@ -1310,7 +1310,9 @@ session_heartbeat_alive() {  # meta_dir, now_epoch
 # statusline heartbeat. Display surfaces (cs -live, cs -usage) use this so they
 # match the TUI. The destructive guards (rm/archive/spawn) use strict
 # session_is_live, so a session whose process is gone can still be removed
-# without --force even if its statusline was touched recently.
+# without --force even if its statusline was touched recently. Uninstall's
+# delete of the whole sessions root uses this broader test: it has no --force,
+# and a conversation opened outside cs holds no lock.
 session_display_live() {  # meta_dir, now_epoch
     session_is_live "$1" || session_heartbeat_alive "$1" "$2"
 }
@@ -1706,6 +1708,9 @@ check_update_notify() {
     if [ -f "$UPDATE_CACHE" ]; then
         local cache_time cached_version
         read -r cache_time cached_version < "$UPDATE_CACHE" 2>/dev/null || true
+        # Digits only before the arithmetic below, which would evaluate any
+        # other token as an expression; anything else is no cache.
+        case "$cache_time" in *[!0-9]*) cache_time="" ;; esac
 
         # If cache is fresh, use it
         if [ -n "$cache_time" ] && [ $((now - cache_time)) -lt $UPDATE_CHECK_INTERVAL ]; then
@@ -1799,6 +1804,9 @@ validate_session_name() {
 
     case "$name" in
         .|..) error "Session name cannot be '.' or '..'" ;;
+        # cs keeps its own staging dirs at the sessions root under dot names
+        # (.spawn/, .usage/); `cs .spawn` would migrate one into a session.
+        .*) error "Session name cannot start with a dot" ;;
         # `cs <name>` reads a leading hyphen as a verb: a session named
         # -uninstall would run that verb rather than open, and -rm would reach
         # remove_session.
@@ -1840,6 +1848,11 @@ cs_split_worktree_name() {
         error "Session name cannot be empty before '@' (expected <base>@<feature>)"
     fi
     validate_session_name "$CS_WT_BASE"
+    # The feature half names the branch cs/<feature>, and git refuses a ref
+    # component that starts with a dot.
+    case "$CS_WT_TASK" in
+        .*) error "Worktree feature name cannot start with a dot" ;;
+    esac
     if [ -z "$CS_WT_TASK" ] || ! [[ "$CS_WT_TASK" =~ ^[a-zA-Z0-9._-]+$ ]]; then
         error "Worktree feature name must contain only alphanumeric characters, hyphens, underscores, and dots"
     fi
@@ -5063,9 +5076,15 @@ rotate_narrative() {
     fi
 
     # Test seam: lets a suite change the live file between the snapshot and the
-    # rewrite, which is the window every guard below exists for.
+    # rewrite, which is the window every guard below exists for. The value names
+    # a file whose bytes replace the live file; it is data, never run.
     if [ -n "${CS_NARRATIVE_ROTATE_MIDPOINT:-}" ]; then
-        eval "$CS_NARRATIVE_ROTATE_MIDPOINT"
+        if [ ! -f "$CS_NARRATIVE_ROTATE_MIDPOINT" ]; then
+            rm -f "$snap"
+            [ "$created" -eq 1 ] && rm -f "$chunk"
+            error "CS_NARRATIVE_ROTATE_MIDPOINT names no file: $CS_NARRATIVE_ROTATE_MIDPOINT"
+        fi
+        cp "$CS_NARRATIVE_ROTATE_MIDPOINT" "$live"
     fi
 
     # The live file must still open with the same bytes the snapshot did up to the
@@ -5768,10 +5787,26 @@ run_conversations() {
     current=$(_read_local_state "$CLAUDE_SESSION_META_DIR/local/state" claude_session_id)
     # One line per conversation's first started event (later starteds fold
     # into a resumed-count suffix); one line per rotated event. Torn or
-    # foreign lines are skipped by the tolerant per-line parse.
+    # foreign lines are skipped by the tolerant per-line parse. A started or
+    # rotated record with a field of the wrong type is skipped too, but named
+    # on stderr by its line number ("W:<n>"), so one bad record never empties
+    # the listing. Every rendered line ("O:<text>") has its control characters
+    # stripped (tab kept): the fields are recorded data, and an escape sequence
+    # in one must not reach the terminal.
+    local line
     jq -rRs --arg current "$current" '
-        [split("\n")[] | select(length > 0) | (fromjson? // empty)
-         | select(.event == "started" or .event == "rotated")] as $ev |
+        def str_or_null: type == "string" or . == null;
+        def well_typed: (.ts | str_or_null) and
+            (if .event == "started"
+             then (.session_id | type == "string") and (.source | str_or_null)
+             else (.to | type == "string") and (.from | str_or_null)
+                 and (.reason | str_or_null) and (.handoff | str_or_null) end);
+        [split("\n") | to_entries[] | select(.value | length > 0)
+         | {line: (.key + 1), e: (.value | fromjson? // empty)}
+         | select((.e | type == "object")
+             and (.e.event == "started" or .e.event == "rotated"))] as $all |
+        ($all[] | select(.e | well_typed | not) | "W:\(.line)"),
+        ([$all[] | select(.e | well_typed) | .e] as $ev |
         (reduce $ev[] as $e ({};
             if $e.event == "started"
             then .[$e.session_id] = (.[$e.session_id] // 0) + 1
@@ -5796,9 +5831,14 @@ run_conversations() {
                         + (if ($e.handoff // "") != "" then ": " + $e.handoff else "" end)
                         + ")")}]
             end)).out[] |
-        ((try (.ts | fromdateiso8601 | strflocaltime("%Y-%m-%d %H:%M")) catch .ts))
-            + "  " + .txt
-    ' "$timeline"
+        "O:" + (((.ts as $ts | try ($ts | fromdateiso8601 | strflocaltime("%Y-%m-%d %H:%M")) catch ($ts // "?"))
+            + "  " + .txt) | gsub("[\\x00-\\x08\\x0a-\\x1f\\x7f-\\x9f]"; "")))
+    ' "$timeline" | while IFS= read -r line; do
+        case "$line" in
+            W:*) warn "Skipped $timeline line ${line#W:}: a started or rotated record with a field of the wrong type" >&2 ;;
+            O:*) printf '%s\n' "${line#O:}" ;;
+        esac
+    done
 }
 _queue_set_state() {  # atomic single-word write; "" removes the file
     local qdir="$1" val="$2"
@@ -9105,8 +9145,9 @@ _rotate_force_notice_file() {
 }
 
 # Mirrors forceThreshold() in mods/cs/hooks/register.tsx: unset is the
-# default, `off` (any case) and zero turn it off, digits move it, and anything
-# else is the default rather than silence. KEEP IN SYNC with that resolver.
+# default, `off` (any case) and zero turn it off, 1 to 100 moves it, and
+# anything else, a number past 100 included, is the default rather than
+# silence. KEEP IN SYNC with that resolver.
 _rotate_force_threshold() {  # -> prints the percentage, or nothing when off
     local raw="${CS_ROTATE_FORCE_CTX-}"
     raw="$(printf '%s' "$raw" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
@@ -9116,7 +9157,9 @@ _rotate_force_threshold() {  # -> prints the percentage, or nothing when off
     esac
     case "$raw" in
         *[!0-9]*) echo 80; return 0 ;;
-        *) [ "$((10#$raw))" -eq 0 ] && return 0; echo "$((10#$raw))" ;;
+        *) [ "$((10#$raw))" -eq 0 ] && return 0
+           [ "$((10#$raw))" -gt 100 ] && { echo 80; return 0; }
+           echo "$((10#$raw))" ;;
     esac
 }
 
@@ -9266,8 +9309,12 @@ launch_claude_code() {
     # A force chosen at the collision menu is equivalent to --force for the
     # rest of the launch.
     [ "${CS_COLLISION_FORCE:-}" = "1" ] && force="true"
-    trap 'reset_tab_title; release_session_lock "'"$session_dir/.cs"'"; _detach_opened_vault' EXIT
-    trap 'reset_tab_title; release_session_lock "'"$session_dir/.cs"'"; exit 130' INT TERM
+    # The traps read the path from a global when they fire, never from text
+    # spliced into them: a " or $( in the sessions root would be run as code.
+    # Global, not local: the EXIT trap fires after this function has returned.
+    _CS_LOCK_META_DIR="$session_dir/.cs"
+    trap 'reset_tab_title; release_session_lock "$_CS_LOCK_META_DIR"; _detach_opened_vault' EXIT
+    trap 'reset_tab_title; release_session_lock "$_CS_LOCK_META_DIR"; exit 130' INT TERM
 
     # Opening an archived session revives it. Placed after lock acquisition so
     # a cancelled collision menu leaves the marker in place; the removal is
@@ -9944,6 +9991,8 @@ EOF
         # cs when the resume is sure to land. exec keeps the pid: the session
         # lock names claude, as on a fresh launch.
         if _resume_lands_in_place "$session_dir" "$resume_id"; then
+            # Unquoted on purpose here and below: CLAUDE_CODE_BIN may carry
+            # flags after the command, and _claude_bin_word checks that word.
             # shellcheck disable=SC2086
             exec $CLAUDE_CODE_BIN --name "$session_name" --resume "$resume_id" ${launch_prompt:+"$launch_prompt"}
         fi
@@ -10628,11 +10677,6 @@ run_uninstall() {
         info "Removed $install_dir/cs"
     fi
 
-    if [ -f "$install_dir/cs-secrets" ]; then
-        rm "$install_dir/cs-secrets"
-        info "Removed $install_dir/cs-secrets"
-    fi
-
     if [ -f "$install_dir/cs-statusline" ]; then
         rm "$install_dir/cs-statusline"
         info "Removed $install_dir/cs-statusline"
@@ -10816,13 +10860,33 @@ run_uninstall() {
         fi
     fi
 
+    # Removed only after the keychain purge above, which runs it.
+    if [ -f "$install_dir/cs-secrets" ]; then
+        rm "$install_dir/cs-secrets"
+        info "Removed $install_dir/cs-secrets"
+    fi
+
     # Ask about session data. rm -rf recurses into a mount, so with a volume
     # mounted inside the sessions root (an open encrypted session's vault) the
     # data stays and the question is not asked.
+    # A live session (a running lock pid, or a fresh statusline heartbeat for
+    # one opened outside cs) would have its files deleted from under it, so
+    # the data stays and uninstall exits non-zero naming them.
     if [ -d "$SESSIONS_ROOT" ]; then
         echo ""
-        local mounted
-        if ! mounted=$(_volume_mounted_under "$SESSIONS_ROOT"); then
+        local mounted live_sessions="" entry now
+        now=$(date +%s)
+        # Hidden entries too: a session named before leading dots were
+        # refused (.work) can still be live, and `*` alone would skip it.
+        for entry in "$SESSIONS_ROOT"/* "$SESSIONS_ROOT"/.[!.]* "$SESSIONS_ROOT"/..?*; do
+            [ -d "$entry/.cs" ] || continue
+            if session_display_live "$entry/.cs" "$now"; then
+                live_sessions="$live_sessions ${entry##*/}"
+            fi
+        done
+        if [ -n "$live_sessions" ]; then
+            error "Kept $SESSIONS_ROOT: these sessions are live:$live_sessions. Close them, then delete $SESSIONS_ROOT."
+        elif ! mounted=$(_volume_mounted_under "$SESSIONS_ROOT"); then
             warn "Kept $SESSIONS_ROOT: cs could not read the mount table, so it cannot tell whether a volume is mounted inside it."
         elif [ -n "$mounted" ]; then
             warn "Kept $SESSIONS_ROOT: a volume is mounted inside it at $mounted, and deleting the directory would delete what the volume holds. Unmount it before you delete $SESSIONS_ROOT."

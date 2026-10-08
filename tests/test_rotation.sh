@@ -2080,10 +2080,78 @@ test_conversations_session_scoped_form() {
     assert_output_contains "$out" "11111111  started (startup)" "scoped form renders" || return 1
 }
 
+# A wrong-typed record (here a numeric session_id) is skipped with a warning
+# naming its line, and the records after it still render. It sits mid-file on
+# purpose: jq's error on any record but the last only reaches stderr, so a bad
+# LAST record would not show whether the listing survives it.
+test_conversations_skips_a_malformed_record_and_keeps_listing() {
+    _rot_hook_session "rot-view-bad"
+    : > "$CLAUDE_SESSION_META_DIR/local/state"
+    cat > "$CLAUDE_SESSION_META_DIR/timeline.jsonl" << EOF
+{"ts":"2026-07-14T09:00:00Z","event":"started","source":"startup","session_id":"$UUID_A","branch":"main"}
+{"ts":"2026-07-14T10:00:00Z","event":"started","source":"startup","session_id":12345,"branch":"main"}
+{"ts":"2026-07-16T10:00:05Z","event":"started","source":"startup","session_id":"$UUID_B","branch":"main"}
+EOF
+    local out rc=0
+    out=$("$CS_BIN" -conversations 2>"$TEST_TMPDIR/conv-err") || rc=$?
+    [ "$rc" -eq 0 ] || { echo "  FAIL: one bad record must not fail the listing (rc=$rc)"; return 1; }
+    assert_output_contains "$out" "11111111  started (startup)" "the record before the bad one renders" || return 1
+    assert_output_contains "$out" "22222222  started (startup)" "the record after the bad one renders" || return 1
+    assert_file_contains "$TEST_TMPDIR/conv-err" "line 2:" "the warning names the bad line" || return 1
+}
+
+# A recorded field is data: control characters are stripped before it reaches
+# the terminal, so an OSC 52 sequence in a handoff name cannot write the
+# clipboard. The printable rest of the field survives.
+test_conversations_strips_control_characters() {
+    _rot_hook_session "rot-view-esc"
+    : > "$CLAUDE_SESSION_META_DIR/local/state"
+    cat > "$CLAUDE_SESSION_META_DIR/timeline.jsonl" << EOF
+{"ts":"2026-07-16T10:00:00Z","event":"rotated","from":"$UUID_A","to":"$UUID_B","reason":"handoff","handoff":"a\\u001b]52;c;Zm9v\\u0007b"}
+EOF
+    local out
+    out=$("$CS_BIN" -conversations 2>&1) || return 1
+    if printf '%s' "$out" | LC_ALL=C grep -q "$(printf '[\001-\010\033\177]')"; then
+        echo "  FAIL: a control character reached the terminal"
+        return 1
+    fi
+    assert_output_contains "$out" "rotated (handoff: a\]52;c;Zm9vb)" "the printable rest survives" || return 1
+}
+
+# A timestamp that is a string but not a date, or missing altogether, is
+# accepted by the type check and must render as data: the record keeps its
+# line and the listing goes on. Inside jq's catch the input is the error
+# text, so a fallback that re-reads .ts there aborts the whole listing with
+# exit 5 and every later record vanishes.
+test_conversations_keeps_listing_past_a_bad_or_missing_timestamp() {
+    _rot_hook_session "rot-view-ts"
+    : > "$CLAUDE_SESSION_META_DIR/local/state"
+    cat > "$CLAUDE_SESSION_META_DIR/timeline.jsonl" << EOF
+{"ts":"not-a-date","event":"started","source":"startup","session_id":"33333333-3333-4333-8333-333333333333","branch":"main"}
+{"ts":"2026-07-14T09:00:00Z","event":"started","source":"startup","session_id":"$UUID_A","branch":"main"}
+{"ts":"2026-07-16T10:00:05Z","event":"started","source":"startup","session_id":"$UUID_B","branch":"main"}
+{"event":"started","source":"startup","session_id":"44444444-4444-4444-8444-444444444444","branch":"main"}
+EOF
+    local out rc=0
+    out=$("$CS_BIN" -conversations 2>"$TEST_TMPDIR/conv-ts-err") || rc=$?
+    [ "$rc" -eq 0 ] || { echo "  FAIL: a bad timestamp must not fail the listing (rc=$rc): $(cat "$TEST_TMPDIR/conv-ts-err")"; return 1; }
+    assert_output_contains "$out" "not-a-date  33333333  started (startup)" "the unparsable timestamp renders verbatim" || return 1
+    assert_output_contains "$out" "11111111  started (startup)" "the record after the bad timestamp renders" || return 1
+    assert_output_contains "$out" "22222222  started (startup)" "every well-formed record renders" || return 1
+    assert_output_contains "$out" "?  44444444  started (startup)" "a missing timestamp renders as ? and the record stays" || return 1
+    if [ -s "$TEST_TMPDIR/conv-ts-err" ]; then
+        echo "  FAIL: a timestamp that renders as data must not warn: $(cat "$TEST_TMPDIR/conv-ts-err")"
+        return 1
+    fi
+}
+
 run_test test_conversations_renders_chain
 run_test test_conversations_empty_timeline
 run_test test_conversations_requires_session_context
 run_test test_conversations_session_scoped_form
+run_test test_conversations_skips_a_malformed_record_and_keeps_listing
+run_test test_conversations_strips_control_characters
+run_test test_conversations_keeps_listing_past_a_bad_or_missing_timestamp
 
 # ============================================================================
 # Cycle 7: final-review fixes — rebind ordering (I1), frontmatter scoping (M-new)
@@ -2419,6 +2487,16 @@ test_force_threshold_trims_only_the_ends_like_the_mod() {
     assert_eq "" "$got" "off survives outer whitespace" || return 1
 }
 
+# Like the mod, a whole number past 100 is the default, not a threshold no
+# turn can reach; 100 itself is the top of the range.
+test_force_threshold_past_100_is_the_default_like_the_mod() {
+    local got
+    got=$(CS_ROTATE_FORCE_CTX="150" bash -c '. "'"$SCRIPT_DIR"'/../lib/75-launch.sh"; _rotate_force_threshold')
+    assert_eq "80" "$got" "150 reads as the default" || return 1
+    got=$(CS_ROTATE_FORCE_CTX="100" bash -c '. "'"$SCRIPT_DIR"'/../lib/75-launch.sh"; _rotate_force_threshold')
+    assert_eq "100" "$got" "100 is kept" || return 1
+}
+
 # The notice is only worth anything if a launch prints it: the unit tests above
 # call the function, this one goes through cs.
 test_launch_prints_the_force_notice_once_and_only_with_hooks_on() {
@@ -2446,6 +2524,7 @@ run_test test_force_notice_is_silent_when_the_forcing_is_off
 run_test test_force_notice_names_an_overridden_threshold
 run_test test_force_notice_is_silent_when_function_hooks_are_off
 run_test test_force_threshold_trims_only_the_ends_like_the_mod
+run_test test_force_threshold_past_100_is_the_default_like_the_mod
 run_test test_launch_prints_the_force_notice_once_and_only_with_hooks_on
 run_test test_ctx_warning_fires_once_in_band
 run_test test_ctx_tiers_are_silent_for_a_teammate

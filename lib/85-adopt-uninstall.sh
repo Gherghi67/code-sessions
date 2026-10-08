@@ -500,11 +500,6 @@ run_uninstall() {
         info "Removed $install_dir/cs"
     fi
 
-    if [ -f "$install_dir/cs-secrets" ]; then
-        rm "$install_dir/cs-secrets"
-        info "Removed $install_dir/cs-secrets"
-    fi
-
     if [ -f "$install_dir/cs-statusline" ]; then
         rm "$install_dir/cs-statusline"
         info "Removed $install_dir/cs-statusline"
@@ -688,13 +683,33 @@ run_uninstall() {
         fi
     fi
 
+    # Removed only after the keychain purge above, which runs it.
+    if [ -f "$install_dir/cs-secrets" ]; then
+        rm "$install_dir/cs-secrets"
+        info "Removed $install_dir/cs-secrets"
+    fi
+
     # Ask about session data. rm -rf recurses into a mount, so with a volume
     # mounted inside the sessions root (an open encrypted session's vault) the
     # data stays and the question is not asked.
+    # A live session (a running lock pid, or a fresh statusline heartbeat for
+    # one opened outside cs) would have its files deleted from under it, so
+    # the data stays and uninstall exits non-zero naming them.
     if [ -d "$SESSIONS_ROOT" ]; then
         echo ""
-        local mounted
-        if ! mounted=$(_volume_mounted_under "$SESSIONS_ROOT"); then
+        local mounted live_sessions="" entry now
+        now=$(date +%s)
+        # Hidden entries too: a session named before leading dots were
+        # refused (.work) can still be live, and `*` alone would skip it.
+        for entry in "$SESSIONS_ROOT"/* "$SESSIONS_ROOT"/.[!.]* "$SESSIONS_ROOT"/..?*; do
+            [ -d "$entry/.cs" ] || continue
+            if session_display_live "$entry/.cs" "$now"; then
+                live_sessions="$live_sessions ${entry##*/}"
+            fi
+        done
+        if [ -n "$live_sessions" ]; then
+            error "Kept $SESSIONS_ROOT: these sessions are live:$live_sessions. Close them, then delete $SESSIONS_ROOT."
+        elif ! mounted=$(_volume_mounted_under "$SESSIONS_ROOT"); then
             warn "Kept $SESSIONS_ROOT: cs could not read the mount table, so it cannot tell whether a volume is mounted inside it."
         elif [ -n "$mounted" ]; then
             warn "Kept $SESSIONS_ROOT: a volume is mounted inside it at $mounted, and deleting the directory would delete what the volume holds. Unmount it before you delete $SESSIONS_ROOT."

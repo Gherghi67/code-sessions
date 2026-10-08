@@ -108,18 +108,20 @@ mkdir -p "$_cfg" 2>/dev/null || exit 1
 # kills the CLI, surfacing as 142 (128 + SIGALRM).
 _limit="${CS_REWRITE_TIMEOUT:-25}"
 
-# stdin is closed rather than inherited. Claude Code hands this shim the real
-# tty, and an agentic CLI that decides it is interactive would paint its own UI
-# over the progress screen the shim is drawing.
+# stdin carries the prompt, piped in by the caller, and is never the inherited
+# terminal. The prompt stays out of argv, where `ps` shows it to every user on
+# the box and the bash command log records it. And Claude Code hands this shim
+# the real tty: an agentic CLI that decides it is interactive would paint its
+# own UI over the progress screen the shim is drawing, and a pipe is not a tty.
 # Array expansions here use the `${a[@]+"${a[@]}"}` form throughout. bash 3.2
 # treats a plain `"${a[@]}"` on an EMPTY array as an unbound variable under
 # `set -u` and aborts the script; these arrays are never empty today, but the
 # guarded form costs nothing and the unguarded one already shipped one silent
 # failure on every machine without timeout(1).
-_run_cli() {  # binary, args...
+_run_cli() {  # binary, args...  (stdin: the prompt)
     local bin="$1"; shift
     ( cd "$_cfg" 2>/dev/null || exit 1
-      perl -e 'alarm shift; exec @ARGV' "$_limit" "$bin" "$@" </dev/null 2>/dev/null )
+      perl -e 'alarm shift; exec @ARGV' "$_limit" "$bin" "$@" 2>/dev/null )
 }
 
 # Every vendor here can fail with a zero status: agy prints "CLI error: …" on
@@ -268,14 +270,19 @@ _rc=0
 out=''
 case "$_engine" in
     agy)
-        # Flags must precede the prompt: agy uses Go's flag package, which stops
-        # parsing at the first positional. --sandbox restricts terminal access,
-        # since the prompt is untrusted text and agy has no allowed-tools flag.
-        _args=(--sandbox)
+        # --sandbox restricts terminal access, since the prompt is untrusted
+        # text and agy has no allowed-tools flag. agy's only stdin input is
+        # stream-json: one NDJSON user message in, events out, of which the
+        # result event carries the answer. -p takes its prompt as an attached
+        # value, so `-p=` enters print mode with none and comes last: agy uses
+        # Go's flag package, which stops parsing at the first positional.
+        _args=(--sandbox --input-format stream-json --output-format stream-json)
         [ -n "$_model" ] && _args+=(--model "$_model")
-        out=$(_run_cli agy ${_args[@]+"${_args[@]}"} -p "$_system
-
-$prompt") || _rc=$?
+        out=$(printf '%s\n\n%s' "$_system" "$prompt" \
+            | jq -Rsc '{event: "user", message: {content: .}}' \
+            | _run_cli agy ${_args[@]+"${_args[@]}"} -p= \
+            | jq -rR 'fromjson? | select(.event == "result" and .result.status == "SUCCESS")
+                | .result.response // empty') || _rc=$?
         ;;
     codex)
         # --skip-git-repo-check: the hermetic run directory is not a repo, and
@@ -287,9 +294,9 @@ $prompt") || _rc=$?
         # may well have opened up.
         _args=(exec --skip-git-repo-check -s read-only)
         [ -n "$_model" ] && _args+=(-m "$_model")
-        out=$(_run_cli codex ${_args[@]+"${_args[@]}"} "$_system
-
-$prompt") || _rc=$?
+        # No positional prompt: codex exec then reads it from stdin.
+        out=$(printf '%s\n\n%s' "$_system" "$prompt" \
+            | _run_cli codex ${_args[@]+"${_args[@]}"}) || _rc=$?
         ;;
     api)
         _make_temps || exit 1

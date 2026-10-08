@@ -106,13 +106,27 @@ set -u
 sub="${1:-}"
 sess="${FAKE_SECURITY_SESSION:-test-session}"
 
-# Argument shape used by cs-secrets: -a <account> -s <service> [-w [value]] [-U]
-acct=""; service=""; value=""; have_value=0
+# FAKE_SECURITY_ARGVLOG records the argv this process was started with, which
+# is exactly what `ps` would show, so a test can prove a value never reached it.
+[ -n "${FAKE_SECURITY_ARGVLOG:-}" ] && printf '%s\n' "$*" >> "$FAKE_SECURITY_ARGVLOG"
+
+# `security -i` reads its command line from stdin. Parse that line the way the
+# real tokenizer does for what cs-secrets sends (double-quoted words with \\
+# and \" escapes) and carry on as if it had been argv.
+if [ "$sub" = "-i" ]; then
+    IFS= read -r line || true
+    eval "set -- $line"
+    sub="${1:-}"
+fi
+
+# Argument shape used by cs-secrets: -a <account> -s <service> [-w [value] | -X <hex>] [-U]
+acct=""; service=""; value=""; have_value=0; hex=""; have_hex=0
 while [ $# -gt 0 ]; do
     case "$1" in
         -a) acct="${2:-}"; shift 2 ;;
         -s) service="${2:-}"; shift 2 ;;
         -w) if [ $# -ge 2 ] && [ "${2#-}" = "$2" ]; then value="$2"; have_value=1; shift 2; else shift; fi ;;
+        -X) hex="${2:-}"; have_hex=1; shift 2 ;;
         *)  shift ;;
     esac
 done
@@ -176,7 +190,11 @@ case "$sub" in
         esac
         if [ -n "$store" ]; then
             mkdir -p "$store"
-            { printf '%s\n' "$service"; [ "$have_value" -eq 1 ] && printf '%s' "$value"; } > "$(slot)"
+            {
+                printf '%s\n' "$service"
+                [ "$have_value" -eq 1 ] && printf '%s' "$value"
+                [ "$have_hex" -eq 1 ] && printf '%s' "$hex" | perl -ne 'print pack("H*", $_)'
+            } > "$(slot)"
         fi
         exit 0
         ;;
@@ -442,11 +460,86 @@ test_migrate_delete_source_tolerates_concurrently_deleted_key() {
         "migrated secret A must have reached the target" || return 1
 }
 
+# Codex (batch 1, round 1): on the keychain backend nothing serialises an
+# export against `age remove` and a second export. Export A snapshots the
+# recipient set {self, R} and is slow inside age; meanwhile R is removed and
+# export B writes a ciphertext for {self} and records that digest; A then
+# renames its {self, R} ciphertext over B's. The sync file still admits the
+# revoked key. Every export, `age add` and `age remove` must hold the one
+# per-session lock across recipient snapshot, encryption, rename and digest
+# record, on every backend. The slow age shim is bound to export A only
+# (CS_AGE_BIN); the removal and export B run the real binary.
+test_export_holds_the_lock_across_encrypt_and_digest_on_every_backend() {
+    local age_bin keygen_bin
+    age_bin=$(command -v age 2>/dev/null) || age_bin=""
+    keygen_bin=$(command -v age-keygen 2>/dev/null) || keygen_bin=""
+    if [ -z "$age_bin" ] || [ -z "$keygen_bin" ]; then
+        echo "    SKIP (age and age-keygen are not installed)"
+        return 77
+    fi
+    local bindir; bindir=$(_make_fake_security)
+    local kcstore="$TEST_TMPDIR/kc-store-age"
+    local sess="export-revoke-race"
+    local meta="$CS_SESSIONS_ROOT/$sess/.cs"
+    local sync
+    sync="$meta/secrets.$(_machine_id).age"
+    # Every cs-secrets call below runs on the (fake) keychain backend with the
+    # real age; `kc` keeps the three overrides in one place.
+    kc() {
+        PATH="$bindir:$PATH" FAKE_SECURITY_STORE="$kcstore" FAKE_SECURITY_SESSION="$sess" \
+            CS_SECRETS_BACKEND=keychain CLAUDE_SESSION_NAME="$sess" CS_AGE_BIN="${KC_AGE:-$age_bin}" \
+            "$CS_SECRETS_BIN" "$@"
+    }
+    "$keygen_bin" -o "$TEST_TMPDIR/r.key" 2>/dev/null || { echo "  FAIL: age-keygen"; return 1; }
+    "$keygen_bin" -y "$TEST_TMPDIR/r.key" > "$TEST_TMPDIR/r.pub" || return 1
+    kc age init >/dev/null 2>&1 || { echo "  FAIL: age init"; return 1; }
+    kc set api_key sk_123 >/dev/null 2>&1 || { echo "  FAIL: set"; return 1; }
+    # First export auto-adds and pins this machine's own key.
+    kc export-file >/dev/null 2>&1 || { echo "  FAIL: first export"; return 1; }
+    kc age add "$TEST_TMPDIR/r.pub" >/dev/null 2>&1 || { echo "  FAIL: age add"; return 1; }
+    kc export-file >/dev/null 2>&1 || { echo "  FAIL: export to self+R"; return 1; }
+    if ! "$age_bin" -d -i "$TEST_TMPDIR/r.key" < "$sync" 2>/dev/null | grep -qF sk_123; then
+        echo "  FAIL: fixture: R must decrypt the export made while it was a recipient"
+        return 1
+    fi
+
+    # An age that sleeps on encrypt (-o) only: decrypts for the unchanged check
+    # stay fast, so A's pause sits exactly between recipient snapshot and rename.
+    local slow="$TEST_TMPDIR/slow-age"
+    cat > "$slow" <<SHIM
+#!/usr/bin/env bash
+for a in "\$@"; do [ "\$a" = "-o" ] && sleep 2 && break; done
+exec "$age_bin" "\$@"
+SHIM
+    chmod +x "$slow"
+
+    kc set api_key sk_456 >/dev/null 2>&1 || { echo "  FAIL: set 2"; return 1; }
+    KC_AGE="$slow" kc export-file >"$TEST_TMPDIR/export-a.out" 2>&1 &
+    local apid=$!
+    sleep 0.5
+    kc age remove r >"$TEST_TMPDIR/remove.out" 2>&1 \
+        || { echo "  FAIL: age remove: $(cat "$TEST_TMPDIR/remove.out")"; kill "$apid" 2>/dev/null; return 1; }
+    kc export-file >"$TEST_TMPDIR/export-b.out" 2>&1 \
+        || { echo "  FAIL: export B: $(cat "$TEST_TMPDIR/export-b.out")"; kill "$apid" 2>/dev/null; return 1; }
+    wait "$apid" || { echo "  FAIL: export A: $(cat "$TEST_TMPDIR/export-a.out")"; return 1; }
+
+    if "$age_bin" -d -i "$TEST_TMPDIR/r.key" < "$sync" >/dev/null 2>&1; then
+        echo "  FAIL: the sync file left behind by the race still decrypts with the revoked key"
+        return 1
+    fi
+    if ! "$age_bin" -d -i "$HOME/.cs-secrets/age.key" < "$sync" 2>/dev/null | grep -qF sk_456; then
+        echo "  FAIL: this machine's own key must decrypt the final export to the latest value"
+        return 1
+    fi
+    assert_file_contains "$HOME/.cs-secrets/sessions/$sess/age-exported-to" " $sync\$" "the recipient digest is recorded for the sync file" || return 1
+}
+
 run_test test_encrypted_salt_write_is_atomic_under_concurrency
 run_test test_encrypted_signal_terminates_writer_mid_critical_section
 run_test test_encrypted_purge_serialized_with_concurrent_store
 run_test test_export_serialized_against_concurrent_store_no_stale_overwrite
 run_test test_migrate_delete_source_preserves_concurrent_store
 run_test test_migrate_delete_source_tolerates_concurrently_deleted_key
+run_test test_export_holds_the_lock_across_encrypt_and_digest_on_every_backend
 
 report_results

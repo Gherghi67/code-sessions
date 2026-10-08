@@ -111,13 +111,27 @@ set -u
 sub="${1:-}"
 sess="${FAKE_SECURITY_SESSION:-test-session}"
 
-# Argument shape used by cs-secrets: -a <account> -s <service> [-w [value]] [-U]
-acct=""; service=""; value=""; have_value=0
+# FAKE_SECURITY_ARGVLOG records the argv this process was started with, which
+# is exactly what `ps` would show, so a test can prove a value never reached it.
+[ -n "${FAKE_SECURITY_ARGVLOG:-}" ] && printf '%s\n' "$*" >> "$FAKE_SECURITY_ARGVLOG"
+
+# `security -i` reads its command line from stdin. Parse that line the way the
+# real tokenizer does for what cs-secrets sends (double-quoted words with \\
+# and \" escapes) and carry on as if it had been argv.
+if [ "$sub" = "-i" ]; then
+    IFS= read -r line || true
+    eval "set -- $line"
+    sub="${1:-}"
+fi
+
+# Argument shape used by cs-secrets: -a <account> -s <service> [-w [value] | -X <hex>] [-U]
+acct=""; service=""; value=""; have_value=0; hex=""; have_hex=0
 while [ $# -gt 0 ]; do
     case "$1" in
         -a) acct="${2:-}"; shift 2 ;;
         -s) service="${2:-}"; shift 2 ;;
         -w) if [ $# -ge 2 ] && [ "${2#-}" = "$2" ]; then value="$2"; have_value=1; shift 2; else shift; fi ;;
+        -X) hex="${2:-}"; have_hex=1; shift 2 ;;
         *)  shift ;;
     esac
 done
@@ -181,7 +195,11 @@ case "$sub" in
         esac
         if [ -n "$store" ]; then
             mkdir -p "$store"
-            { printf '%s\n' "$service"; [ "$have_value" -eq 1 ] && printf '%s' "$value"; } > "$(slot)"
+            {
+                printf '%s\n' "$service"
+                [ "$have_value" -eq 1 ] && printf '%s' "$value"
+                [ "$have_hex" -eq 1 ] && printf '%s' "$hex" | perl -ne 'print pack("H*", $_)'
+            } > "$(slot)"
         fi
         exit 0
         ;;
@@ -420,6 +438,23 @@ test_purge_removes_all() {
     local list_output
     list_output=$("$CS_SECRETS_BIN" list 2>&1)
     assert_output_contains "$list_output" "No secrets" "All secrets should be gone" || return 1
+}
+
+# The pin list and digest record live under ~/.cs-secrets, so they outlive the
+# session directory. `purge` deletes ALL of a session's secrets, and the trust
+# that went with them goes too: a later session under the same name must not
+# inherit recipients nobody pinned for it.
+test_purge_drops_the_sessions_age_state() {
+    local state="$HOME/.cs-secrets/sessions/test-session"
+    printf 'age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq0000000\n' > "$TEST_TMPDIR/peer.pub"
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/peer.pub" >/dev/null 2>&1 || { echo "  FAIL: age add failed"; return 1; }
+    assert_file_exists "$state/age-trusted" "fixture: age add wrote the pin list" || return 1
+    "$CS_SECRETS_BIN" purge >/dev/null 2>&1 || { echo "  FAIL: purge failed"; return 1; }
+    if [ -e "$state" ]; then
+        echo "  FAIL: purge left the session's age state behind: $(ls -A "$state" | tr '\n' ' ')"
+        return 1
+    fi
 }
 
 test_purge_empty_session() {
@@ -868,6 +903,308 @@ test_export_file_rewrites_when_changed() {
     assert_output_contains "$dec" "sk_changed" "re-export should contain the updated value" || return 1
 }
 
+# --- age recipient tests (real age; skipped where age is not installed) ---
+
+# Point cs-secrets at the real age binary, overriding the "no age" seam setup
+# exports. Returns 77 (skipped) where age or age-keygen is not installed.
+_use_real_age() {
+    local age_bin keygen_bin
+    age_bin=$(command -v age 2>/dev/null) || age_bin=""
+    keygen_bin=$(command -v age-keygen 2>/dev/null) || keygen_bin=""
+    if [ -z "$age_bin" ] || [ -z "$keygen_bin" ]; then
+        echo "    SKIP (age and age-keygen are not installed)"
+        return 77
+    fi
+    export CS_AGE_BIN="$age_bin"
+}
+
+# Generate a throwaway age identity in the test dir: <name>.key and <name>.pub.
+_make_age_identity() {
+    local name="$1"
+    age-keygen -o "$TEST_TMPDIR/$name.key" 2>/dev/null || return 1
+    age-keygen -y "$TEST_TMPDIR/$name.key" > "$TEST_TMPDIR/$name.pub" || return 1
+}
+
+# True when the identity file decrypts the sync file to a payload holding the
+# expected value. The plaintext never reaches the test output.
+_age_decrypts_to() {
+    local key="$1" file="$2" expected="$3" plain
+    plain=$(age -d -i "$key" < "$file" 2>/dev/null) || return 1
+    grep -qF -- "$expected" <<< "$plain"
+}
+
+# Codex (batch 1, round 2): the pin list lived at .cs/local/age-trusted, inside
+# the checkout. .cs/local is gitignored, but `git add -f` is not, so a push
+# carrying attacker.pub plus a pin list naming its fingerprint made a fresh
+# clone trust the pusher with no local age add. The machine-local age state
+# lives outside the checkout, under ~/.cs-secrets, where nothing git can
+# carry reaches it: a planted pin list in the session is never read.
+test_export_ignores_a_pin_list_planted_in_the_checkout() {
+    _use_real_age || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f out rc=0 attacker_fp
+    f="$meta/secrets.$(_machine_id).age"
+    _make_age_identity attacker || { echo "  FAIL: could not create a test identity"; return 1; }
+    "$CS_SECRETS_BIN" age init >/dev/null 2>&1 || { echo "  FAIL: age init failed"; return 1; }
+    mkdir -p "$meta/age-recipients" "$meta/local"
+    cp "$TEST_TMPDIR/attacker.pub" "$meta/age-recipients/attacker.pub"
+    attacker_fp=$(printf '%s' "$(head -1 "$TEST_TMPDIR/attacker.pub")" | shasum -a 256 | cut -d' ' -f1)
+    printf '%s\n' "$attacker_fp" > "$meta/local/age-trusted"
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "  FAIL: a pin list planted in the checkout was trusted: $out"
+        return 1
+    fi
+    assert_output_contains "$out" "age add .*age-recipients/attacker\\.pub" "the refusal names attacker.pub with its pin command" || return 1
+    if [ -s "$f" ]; then
+        echo "  FAIL: the refused export wrote the sync file"
+        return 1
+    fi
+}
+
+# Codex (batch 1, round 2): the recipients lock lived in the session's .cs/local
+# too, so a password export of a nonempty store to an external path needed a
+# writable checkout even though it writes nothing into the session. The lock
+# lives beside the other machine-local age state, under ~/.cs-secrets.
+test_password_export_to_an_external_path_needs_no_writable_checkout() {
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local out rc=0
+    mkdir -p "$meta"
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    chmod 500 "$meta"
+    out=$(PATH="$(_ageless_path)" "$CS_SECRETS_BIN" export-file "$TEST_TMPDIR/external.enc" 2>&1) || rc=$?
+    chmod 700 "$meta"
+    [ "$rc" -eq 0 ] || { echo "  FAIL: a password export to an external path failed on a read-only checkout (rc=$rc): $out"; return 1; }
+    assert_file_exists "$TEST_TMPDIR/external.enc" "the external sync file is written" || return 1
+    local restored
+    restored=$(openssl enc -aes-256-cbc -d -pbkdf2 -iter 100000 \
+        -in "$TEST_TMPDIR/external.enc" -pass "pass:$CS_SECRETS_PASSWORD" 2>/dev/null)
+    assert_output_contains "$restored" "sk_123" "the external file holds the store" || return 1
+}
+
+test_age_export_skips_rewrite_when_nothing_changed() {
+    _use_real_age || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f
+    f="$meta/secrets.$(_machine_id).age"
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
+    cp "$f" "$TEST_TMPDIR/before.age"
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: second export failed"; return 1; }
+    if ! cmp -s "$f" "$TEST_TMPDIR/before.age"; then
+        echo "  FAIL: an export with the same secrets and recipients rewrote the age sync file"
+        return 1
+    fi
+}
+
+test_age_add_reencrypts_an_unchanged_store() {
+    _use_real_age || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f
+    f="$meta/secrets.$(_machine_id).age"
+    _make_age_identity colleague || { echo "  FAIL: could not create a test identity"; return 1; }
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
+    assert_file_exists "$f" "first export should write the age sync file" || return 1
+    if _age_decrypts_to "$TEST_TMPDIR/colleague.key" "$f" "sk_123"; then
+        echo "  FAIL: the colleague decrypted the file before being added (fixture is wrong)"
+        return 1
+    fi
+    "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/colleague.pub" >/dev/null 2>&1 || { echo "  FAIL: age add failed"; return 1; }
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: export after age add failed"; return 1; }
+    if ! _age_decrypts_to "$TEST_TMPDIR/colleague.key" "$f" "sk_123"; then
+        echo "  FAIL: after age add, the unchanged store was not re-encrypted to the new recipient"
+        return 1
+    fi
+}
+
+test_age_remove_reencrypts_an_unchanged_store() {
+    _use_real_age || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f
+    f="$meta/secrets.$(_machine_id).age"
+    _make_age_identity colleague || { echo "  FAIL: could not create a test identity"; return 1; }
+    "$CS_SECRETS_BIN" age init >/dev/null 2>&1 || { echo "  FAIL: age init failed"; return 1; }
+    "$CS_SECRETS_BIN" age add "$HOME/.cs-secrets/age.pub" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/colleague.pub" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
+    # Positive control: the colleague can read the file before the revocation.
+    if ! _age_decrypts_to "$TEST_TMPDIR/colleague.key" "$f" "sk_123"; then
+        echo "  FAIL: the colleague could not decrypt before removal (fixture is wrong)"
+        return 1
+    fi
+    cp "$f" "$TEST_TMPDIR/before.age"
+    "$CS_SECRETS_BIN" age remove colleague >/dev/null 2>&1 || { echo "  FAIL: age remove failed"; return 1; }
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: export after age remove failed"; return 1; }
+    if cmp -s "$f" "$TEST_TMPDIR/before.age"; then
+        echo "  FAIL: after age remove, the unchanged store was not re-encrypted"
+        return 1
+    fi
+    if _age_decrypts_to "$TEST_TMPDIR/colleague.key" "$f" "sk_123"; then
+        echo "  FAIL: the removed recipient still decrypts the re-exported file"
+        return 1
+    fi
+    if ! _age_decrypts_to "$HOME/.cs-secrets/age.key" "$f" "sk_123"; then
+        echo "  FAIL: this machine's own key no longer decrypts the re-exported file"
+        return 1
+    fi
+}
+
+# A .pub that lands in .cs/age-recipients/ without a local `age add` (a git
+# pull of someone else's push) must not receive the secrets.
+test_export_refuses_an_unpinned_pushed_recipient() {
+    _use_real_age || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f out rc=0
+    f="$meta/secrets.$(_machine_id).age"
+    _make_age_identity intruder || { echo "  FAIL: could not create a test identity"; return 1; }
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
+    cp "$f" "$TEST_TMPDIR/before.age"
+    cp "$TEST_TMPDIR/intruder.pub" "$meta/age-recipients/intruder.pub"
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "  FAIL: export succeeded with an unpinned recipient present: $out"
+        return 1
+    fi
+    assert_output_contains "$out" "intruder\.pub" "the refusal names the unpinned file" || return 1
+    assert_output_contains "$out" "age add .*age-recipients/intruder\.pub" "the refusal prints the command that pins it" || return 1
+    if ! cmp -s "$f" "$TEST_TMPDIR/before.age"; then
+        echo "  FAIL: the refused export rewrote the age sync file"
+        return 1
+    fi
+    if _age_decrypts_to "$TEST_TMPDIR/intruder.key" "$f" "sk_123"; then
+        echo "  FAIL: the unpinned recipient decrypts the sync file"
+        return 1
+    fi
+    assert_file_not_exists "$meta/secrets.$(_machine_id).enc" "the refusal must not fall back to a password export" || return 1
+}
+
+test_export_encrypts_to_a_recipient_pinned_by_age_add() {
+    _use_real_age || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f
+    f="$meta/secrets.$(_machine_id).age"
+    _make_age_identity colleague || { echo "  FAIL: could not create a test identity"; return 1; }
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
+    cp "$TEST_TMPDIR/colleague.pub" "$meta/age-recipients/colleague.pub"
+    "$CS_SECRETS_BIN" age add "$meta/age-recipients/colleague.pub" >/dev/null 2>&1 \
+        || { echo "  FAIL: age add on the pulled file failed"; return 1; }
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: export after pinning failed"; return 1; }
+    if ! _age_decrypts_to "$TEST_TMPDIR/colleague.key" "$f" "sk_123"; then
+        echo "  FAIL: the pinned recipient cannot decrypt the export"
+        return 1
+    fi
+}
+
+# A machine that exported before pinning existed (its own sync file is there,
+# no pin list): the first export pins the recipients present, says so once,
+# and pins nothing that arrives afterwards.
+# Codex (batch 1, round 1): the one-time migration keyed trust on the
+# existence of this machine's own sync file, a TRACKED file with a predictable
+# name. A push adding attacker.pub beside an empty secrets.<user>@<host>.age
+# made a fresh clone's first export pin everyone. No automatic pin from
+# anything git can carry: only this machine's own public key is pinned by
+# content (encrypting to a key whose private half is here trusts nobody new);
+# every other recipient needs an `age add` on this machine.
+test_export_never_pins_from_a_forged_sync_file() {
+    _use_real_age || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f out rc=0
+    f="$meta/secrets.$(_machine_id).age"
+    _make_age_identity attacker || { echo "  FAIL: could not create a test identity"; return 1; }
+    "$CS_SECRETS_BIN" age init >/dev/null 2>&1 || { echo "  FAIL: age init failed"; return 1; }
+    mkdir -p "$meta/age-recipients"
+    cp "$HOME/.cs-secrets/age.pub" "$meta/age-recipients/self.pub"
+    cp "$TEST_TMPDIR/attacker.pub" "$meta/age-recipients/attacker.pub"
+    # The forged sync file a push can plant: tracked, predictable name, empty.
+    : > "$f"
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "  FAIL: a forged sync file made the first export pin a pushed key: $out"
+        return 1
+    fi
+    assert_output_contains "$out" "age add .*age-recipients/attacker\.pub" "the refusal names attacker.pub with its pin command" || return 1
+    assert_output_not_contains "$out" "self\.pub" "this machine's own key is pinned by content, not listed" || return 1
+    assert_output_not_contains "$out" "Pinned" "nothing is pinned automatically" || return 1
+    if [ -s "$f" ]; then
+        echo "  FAIL: the refused export wrote the sync file"
+        return 1
+    fi
+    local attacker_fp
+    attacker_fp=$(printf '%s' "$(head -1 "$TEST_TMPDIR/attacker.pub")" | shasum -a 256 | cut -d' ' -f1)
+    if [ -f "$HOME/.cs-secrets/sessions/test-session/age-trusted" ] && grep -qxF "$attacker_fp" "$HOME/.cs-secrets/sessions/test-session/age-trusted"; then
+        echo "  FAIL: attacker.pub is in the pin list"
+        return 1
+    fi
+    # Only an explicit age add on this machine admits the key.
+    "$CS_SECRETS_BIN" age add "$meta/age-recipients/attacker.pub" >/dev/null 2>&1 || { echo "  FAIL: age add failed"; return 1; }
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || { echo "  FAIL: export after the explicit pin failed: $out"; return 1; }
+    if ! _age_decrypts_to "$TEST_TMPDIR/attacker.key" "$f" "sk_123"; then
+        echo "  FAIL: an explicitly pinned recipient cannot decrypt the export"
+        return 1
+    fi
+}
+
+# A fresh clone (or a wiped .cs/local) has recipients but no sync file of this
+# machine's own: nothing is pinned for it, the export lists every unpinned file,
+# and an `age add` pins only the file it names.
+test_export_on_a_fresh_clone_pins_nothing() {
+    _use_real_age || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f out rc=0
+    f="$meta/secrets.$(_machine_id).age"
+    _make_age_identity alice || { echo "  FAIL: could not create a test identity"; return 1; }
+    _make_age_identity bob || { echo "  FAIL: could not create a test identity"; return 1; }
+    mkdir -p "$meta/age-recipients"
+    cp "$TEST_TMPDIR/alice.pub" "$meta/age-recipients/alice.pub"
+    cp "$TEST_TMPDIR/bob.pub" "$meta/age-recipients/bob.pub"
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "  FAIL: a fresh clone exported to recipients it never pinned: $out"
+        return 1
+    fi
+    assert_output_contains "$out" "age add .*age-recipients/alice\.pub" "the refusal names alice.pub with its pin command" || return 1
+    assert_output_contains "$out" "age add .*age-recipients/bob\.pub" "the refusal names bob.pub with its pin command" || return 1
+    assert_output_not_contains "$out" "Pinned" "a fresh clone pins nothing by itself" || return 1
+    assert_file_not_exists "$f" "the refused export writes no age sync file" || return 1
+    assert_file_not_exists "$meta/secrets.$(_machine_id).enc" "the refusal must not fall back to a password export" || return 1
+    "$CS_SECRETS_BIN" age add "$meta/age-recipients/alice.pub" >/dev/null 2>&1 || { echo "  FAIL: age add failed"; return 1; }
+    rc=0
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "  FAIL: age add on one file pinned the other as well: $out"
+        return 1
+    fi
+    assert_output_contains "$out" "bob\.pub" "the refusal still names bob.pub" || return 1
+    assert_output_not_contains "$out" "alice\.pub" "alice.pub is pinned now" || return 1
+}
+
+# Removing a recipient also drops its pin, so a copy of the same key pushed back
+# into the directory is refused rather than silently trusted again.
+test_age_remove_drops_the_pin() {
+    _use_real_age || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local out rc=0
+    _make_age_identity colleague || { echo "  FAIL: could not create a test identity"; return 1; }
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
+    "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/colleague.pub" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" age remove colleague >/dev/null 2>&1 || return 1
+    cp "$TEST_TMPDIR/colleague.pub" "$meta/age-recipients/colleague.pub"
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "  FAIL: a removed recipient's key pushed back was trusted again: $out"
+        return 1
+    fi
+    assert_output_contains "$out" "colleague\.pub" "the refusal names the re-pushed file" || return 1
+}
+
 test_import_file_merges_all_machines_and_legacy() {
     local meta="$CS_SESSIONS_ROOT/test-session/.cs"
     _seed_enc_sync_file "$meta/secrets.machine-b.enc" '{"from_machine_b":"vb"}' || return 1
@@ -1126,7 +1463,7 @@ test_keychain_export_file_aborts_on_jq_failure() {
     cat > "$bindir/jq" <<JQFAKE
 #!/usr/bin/env bash
 for a in "\$@"; do
-    case "\$a" in *'= \$value'*) echo "jq: simulated failure" >&2; exit 5 ;; esac
+    case "\$a" in *'= env.CS_SECRETS_VALUE'*) echo "jq: simulated failure" >&2; exit 5 ;; esac
 done
 exec "$real_jq" "\$@"
 JQFAKE
@@ -1481,10 +1818,12 @@ test_encrypted_stale_lock_fails_loud_not_reaped() {
 
 # codex F1 review: the export mutex must not couple non-encrypted backends to the
 # encrypted backend's ~/.cs-secrets. A keychain store is atomic per credential
-# and never needed the lock; requiring a writable ~/.cs-secrets to export from
-# those backends is a regression. Block the path with a plain file where the dir
-# would go and confirm a keychain export still works (only the encrypted backend
-# takes the lock).
+# and never needed the store lock. Narrowed by batch 1 (Codex round 2): the age
+# recipients lock and pin list live under ~/.cs-secrets on every backend, taken
+# once there is something to export, so the guarantee that remains is that an
+# export with nothing to export touches nothing. Block the path with a plain
+# file where the dir would go and confirm an empty-store keychain export still
+# works.
 test_keychain_export_does_not_require_cs_secrets_dir() {
     local bindir; bindir=$(_make_fake_security)
     rm -rf "$HOME/.cs-secrets"
@@ -1501,6 +1840,224 @@ test_keychain_export_does_not_require_cs_secrets_dir() {
 }
 
 
+
+# ----------------------------------------------------------------------------
+# No secret on a child's argv (audit H3). Every local user can read any
+# process's argv through `ps`, and EDR tools log it, so a value taken on stdin
+# must not be handed on to security, openssl or jq as an argument. Each fake
+# below records the argv it was started with (what `ps` shows) and then runs the
+# real tool, so the operation still has to work end to end.
+# ----------------------------------------------------------------------------
+
+# A random fixture value held in a file; tests feed it on stdin and grep for it
+# with -f, so the value itself never reaches an argv in the test either. Echoes
+# the file path.
+_argv_canary() {
+    local f="$TEST_TMPDIR/canary"
+    printf 'canary-%s-%s-%s' "$RANDOM" "$RANDOM" "$$" > "$f"
+    printf '%s' "$f"
+}
+
+# The canary's hex form, which is just as secret: a `-X <hex>` on argv would
+# leak the value as surely as `-w <value>`. Echoes the file path.
+_argv_canary_hex() {
+    local f="$TEST_TMPDIR/canary.hex"
+    od -An -v -tx1 < "$1" | tr -d ' \n' > "$f"
+    printf '%s' "$f"
+}
+
+# The fixture password, held in a file for the same reason.
+_argv_password_file() {
+    local f="$TEST_TMPDIR/password"
+    printf '%s' "$CS_SECRETS_PASSWORD" > "$f"
+    printf '%s' "$f"
+}
+
+# Put an argv-recording wrapper for tool $1 into bin dir $2, appending one line
+# per call to log $3, then exec the real tool found on the current PATH.
+_make_argv_logger() {
+    local tool="$1" bindir="$2" log="$3" real
+    real=$(command -v "$tool") || { echo "  FAIL: no real $tool on PATH"; return 1; }
+    mkdir -p "$bindir"
+    cat > "$bindir/$tool" <<LOGGER
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$log"
+exec "$real" "\$@"
+LOGGER
+    chmod +x "$bindir/$tool"
+}
+
+# Fail when argv log $1 holds the text in file $2. The message names the tool
+# and what leaked but never prints the value.
+_refute_argv_holds() {
+    local log="$1" needle="$2" what="$3"
+    if grep -qF -f "$needle" "$log" 2>/dev/null; then
+        echo "  FAIL: $what reached a child's argv (visible to ps): $(basename "$log")"
+        return 1
+    fi
+}
+
+# True when file $1 holds exactly the bytes of file $2 plus the one trailing
+# newline `get` prints. Compares without putting either value on output.
+_get_matches() {
+    [ "$(cat "$1")" = "$(cat "$2")" ]
+}
+
+test_keychain_set_keeps_the_value_off_argv() {
+    local bindir; bindir=$(_make_fake_security)
+    local canary; canary=$(_argv_canary)
+    local hex; hex=$(_argv_canary_hex "$canary")
+    local argvlog="$TEST_TMPDIR/security-argv" kcstore="$TEST_TMPDIR/kc-store"
+
+    PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        FAKE_SECURITY_ARGVLOG="$argvlog" "$CS_SECRETS_BIN" set K1 < "$canary" >/dev/null 2>&1 \
+        || { echo "  FAIL: keychain set exited nonzero"; return 1; }
+
+    # Positive control: the fake ran, and what it stored reads back byte-exact.
+    [ -s "$argvlog" ] || { echo "  FAIL: the fake security was never called"; return 1; }
+    PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        "$CS_SECRETS_BIN" get K1 > "$TEST_TMPDIR/got" 2>/dev/null \
+        || { echo "  FAIL: keychain get exited nonzero"; return 1; }
+    _get_matches "$TEST_TMPDIR/got" "$canary" \
+        || { echo "  FAIL: the stored value did not read back byte-exact"; return 1; }
+
+    _refute_argv_holds "$argvlog" "$canary" "the secret value" || return 1
+    _refute_argv_holds "$argvlog" "$hex" "the secret value (hex-encoded)" || return 1
+}
+
+# A value the user typed or piped in must reach security byte-exact, interior
+# newline and quotes included, now that it travels as a command line on stdin.
+test_keychain_set_round_trips_a_multiline_quoted_value() {
+    local bindir; bindir=$(_make_fake_security)
+    local kcstore="$TEST_TMPDIR/kc-store"
+    printf 'line one "q" \\ end\nline two' > "$TEST_TMPDIR/value"
+
+    PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        "$CS_SECRETS_BIN" set K1 < "$TEST_TMPDIR/value" >/dev/null 2>&1 \
+        || { echo "  FAIL: keychain set exited nonzero"; return 1; }
+    PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        "$CS_SECRETS_BIN" get K1 > "$TEST_TMPDIR/got" 2>/dev/null \
+        || { echo "  FAIL: keychain get exited nonzero"; return 1; }
+    _get_matches "$TEST_TMPDIR/got" "$TEST_TMPDIR/value" \
+        || { echo "  FAIL: a multi-line value with quotes and a backslash did not read back byte-exact"; return 1; }
+}
+
+test_encrypted_set_keeps_value_and_password_off_argv() {
+    local bindir="$TEST_TMPDIR/argv-bin"
+    local olog="$TEST_TMPDIR/openssl-argv" jlog="$TEST_TMPDIR/jq-argv"
+    _make_argv_logger openssl "$bindir" "$olog" || return 1
+    _make_argv_logger jq "$bindir" "$jlog" || return 1
+    local canary; canary=$(_argv_canary)
+    local pw; pw=$(_argv_password_file)
+
+    PATH="$bindir:$PATH" "$CS_SECRETS_BIN" set K1 < "$canary" >/dev/null 2>&1 \
+        || { echo "  FAIL: encrypted set exited nonzero"; return 1; }
+    PATH="$bindir:$PATH" "$CS_SECRETS_BIN" get K1 > "$TEST_TMPDIR/got" 2>/dev/null \
+        || { echo "  FAIL: encrypted get exited nonzero"; return 1; }
+
+    # Positive control: both wrappers ran, and the round trip held.
+    assert_file_contains "$olog" "aes-256-cbc" "the openssl wrapper must have seen the encrypt/decrypt" || return 1
+    [ -s "$jlog" ] || { echo "  FAIL: the jq wrapper was never called"; return 1; }
+    _get_matches "$TEST_TMPDIR/got" "$canary" \
+        || { echo "  FAIL: the stored value did not read back byte-exact"; return 1; }
+
+    _refute_argv_holds "$olog" "$canary" "the secret value" || return 1
+    _refute_argv_holds "$jlog" "$canary" "the secret value" || return 1
+    _refute_argv_holds "$olog" "$pw" "CS_SECRETS_PASSWORD" || return 1
+    _refute_argv_holds "$jlog" "$pw" "CS_SECRETS_PASSWORD" || return 1
+}
+
+# Without CS_SECRETS_PASSWORD the store key is derived: a SHA-256 printed as 64
+# hex characters. That key must not reach openssl's argv either.
+test_encrypted_derived_key_stays_off_argv() {
+    local bindir="$TEST_TMPDIR/argv-bin" olog="$TEST_TMPDIR/openssl-argv"
+    _make_argv_logger openssl "$bindir" "$olog" || return 1
+    local canary; canary=$(_argv_canary)
+
+    ( unset CS_SECRETS_PASSWORD
+      PATH="$bindir:$PATH" "$CS_SECRETS_BIN" set K1 < "$canary" >/dev/null 2>&1 \
+          || { echo "  FAIL: encrypted set with a derived key exited nonzero"; exit 1; }
+      PATH="$bindir:$PATH" "$CS_SECRETS_BIN" get K1 > "$TEST_TMPDIR/got" 2>/dev/null \
+          || { echo "  FAIL: encrypted get with a derived key exited nonzero"; exit 1; }
+    ) || return 1
+
+    assert_file_contains "$olog" "aes-256-cbc" "the openssl wrapper must have seen the encrypt/decrypt" || return 1
+    _get_matches "$TEST_TMPDIR/got" "$canary" \
+        || { echo "  FAIL: the stored value did not read back byte-exact"; return 1; }
+    if grep -qE '[0-9a-f]{64}' "$olog"; then
+        echo "  FAIL: a derived 256-bit key (64 hex characters) reached openssl's argv"
+        return 1
+    fi
+}
+
+# export-file encrypts the whole store, import-file decrypts and merges every
+# sync file; neither may put a value or the sync password on argv.
+test_sync_export_import_keep_values_off_argv() {
+    local bindir="$TEST_TMPDIR/argv-bin"
+    local olog="$TEST_TMPDIR/openssl-argv" jlog="$TEST_TMPDIR/jq-argv"
+    _make_argv_logger openssl "$bindir" "$olog" || return 1
+    _make_argv_logger jq "$bindir" "$jlog" || return 1
+    local canary; canary=$(_argv_canary)
+    local pw; pw=$(_argv_password_file)
+
+    "$CS_SECRETS_BIN" set K1 < "$canary" >/dev/null 2>&1 \
+        || { echo "  FAIL: seeding set exited nonzero"; return 1; }
+    PATH="$bindir:$(_ageless_path)" "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 \
+        || { echo "  FAIL: export-file exited nonzero"; return 1; }
+    "$CS_SECRETS_BIN" delete K1 >/dev/null 2>&1 \
+        || { echo "  FAIL: delete exited nonzero"; return 1; }
+    PATH="$bindir:$(_ageless_path)" "$CS_SECRETS_BIN" import-file >/dev/null 2>&1 \
+        || { echo "  FAIL: import-file exited nonzero"; return 1; }
+
+    # Positive control: the import really restored the value from the sync file.
+    "$CS_SECRETS_BIN" get K1 > "$TEST_TMPDIR/got" 2>/dev/null \
+        || { echo "  FAIL: get after import exited nonzero"; return 1; }
+    _get_matches "$TEST_TMPDIR/got" "$canary" \
+        || { echo "  FAIL: import-file did not restore the exported value byte-exact"; return 1; }
+    assert_file_contains "$olog" "aes-256-cbc" "the openssl wrapper must have seen the sync encrypt/decrypt" || return 1
+    [ -s "$jlog" ] || { echo "  FAIL: the jq wrapper was never called"; return 1; }
+
+    _refute_argv_holds "$olog" "$canary" "the secret value" || return 1
+    _refute_argv_holds "$jlog" "$canary" "the secret value" || return 1
+    _refute_argv_holds "$olog" "$pw" "CS_SECRETS_PASSWORD" || return 1
+    _refute_argv_holds "$jlog" "$pw" "CS_SECRETS_PASSWORD" || return 1
+}
+
+# Collecting a keychain store into a backup builds its JSON one value at a time;
+# that construction must not put a value on jq's argv.
+test_keychain_export_file_keeps_values_off_argv() {
+    local bindir; bindir=$(_make_fake_security)
+    local jlog="$TEST_TMPDIR/jq-argv" olog="$TEST_TMPDIR/openssl-argv"
+    _make_argv_logger jq "$bindir" "$jlog" || return 1
+    _make_argv_logger openssl "$bindir" "$olog" || return 1
+    local canary; canary=$(_argv_canary)
+    local pw; pw=$(_argv_password_file)
+    local kcstore="$TEST_TMPDIR/kc-store"
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local mid; mid=$(_machine_id)
+
+    PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        "$CS_SECRETS_BIN" set K1 < "$canary" >/dev/null 2>&1 \
+        || { echo "  FAIL: keychain set exited nonzero"; return 1; }
+    : > "$jlog"; : > "$olog"
+    PATH="$bindir:$(_ageless_path)" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 \
+        || { echo "  FAIL: keychain export-file exited nonzero"; return 1; }
+
+    # Positive control: the backup really carries the value.
+    local f="$meta/secrets.${mid}.enc"
+    assert_file_exists "$f" "export-file must write the per-machine sync file" || return 1
+    openssl enc -aes-256-cbc -d -pbkdf2 -iter 100000 -in "$f" -pass env:CS_SECRETS_PASSWORD \
+        > "$TEST_TMPDIR/backup.json" 2>/dev/null \
+        || { echo "  FAIL: the sync file does not decrypt with the test password"; return 1; }
+    grep -qF -f "$canary" "$TEST_TMPDIR/backup.json" \
+        || { echo "  FAIL: the sync file does not carry the stored value"; return 1; }
+    [ -s "$jlog" ] || { echo "  FAIL: the jq wrapper was never called"; return 1; }
+
+    _refute_argv_holds "$jlog" "$canary" "the secret value" || return 1
+    _refute_argv_holds "$olog" "$canary" "the secret value" || return 1
+    _refute_argv_holds "$olog" "$pw" "CS_SECRETS_PASSWORD" || return 1
+}
 
 # ============================================================================
 # Runner
@@ -1539,6 +2096,7 @@ run_test test_delete_preserves_other_secrets
 
 # Purge
 run_test test_purge_removes_all
+run_test test_purge_drops_the_sessions_age_state
 run_test test_purge_empty_session
 
 # Export
@@ -1622,5 +2180,25 @@ run_test test_encrypted_concurrent_stores_no_lost_update
 run_test test_export_file_atomic_preserves_prior_on_encrypt_failure
 run_test test_encrypted_stale_lock_fails_loud_not_reaped
 run_test test_keychain_export_does_not_require_cs_secrets_dir
+
+# No secret on a child's argv (audit H3)
+run_test test_keychain_set_keeps_the_value_off_argv
+run_test test_keychain_set_round_trips_a_multiline_quoted_value
+run_test test_encrypted_set_keeps_value_and_password_off_argv
+run_test test_encrypted_derived_key_stays_off_argv
+run_test test_sync_export_import_keep_values_off_argv
+run_test test_keychain_export_file_keeps_values_off_argv
+
+# age recipients
+run_test test_age_export_skips_rewrite_when_nothing_changed
+run_test test_age_add_reencrypts_an_unchanged_store
+run_test test_age_remove_reencrypts_an_unchanged_store
+run_test test_export_refuses_an_unpinned_pushed_recipient
+run_test test_export_encrypts_to_a_recipient_pinned_by_age_add
+run_test test_export_never_pins_from_a_forged_sync_file
+run_test test_export_ignores_a_pin_list_planted_in_the_checkout
+run_test test_password_export_to_an_external_path_needs_no_writable_checkout
+run_test test_export_on_a_fresh_clone_pins_nothing
+run_test test_age_remove_drops_the_pin
 
 report_results
