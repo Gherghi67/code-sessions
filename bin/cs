@@ -7611,7 +7611,10 @@ _usage_cell() {
 _usage_read_limits() {
     U_5H_PCT=""; U_5H_RESET=""; U_WK_PCT=""; U_WK_RESET=""; U_STAMP=0
     local f stamp
-    for f in "$SESSIONS_ROOT"/*/.cs/local/limits; do
+    # Hidden entries too: a session named before leading dots were refused
+    # (.work) stamps limits like any other.
+    for f in "$SESSIONS_ROOT"/*/.cs/local/limits "$SESSIONS_ROOT"/.[!.]*/.cs/local/limits \
+        "$SESSIONS_ROOT"/..?*/.cs/local/limits; do
         [ -f "$f" ] || continue
         stamp=$(_read_local_state "$f" stamped_at)
         case "$stamp" in ''|*[!0-9]*) continue ;; esac
@@ -9228,7 +9231,9 @@ search_sessions() {
     local search_files=".cs/README.md"
     local -a search_globs=(".cs/memory/*.md" ".cs/narrative-archive/*/*.md" ".cs/private/narrative-archive/*/*.md")
 
-    for session_dir in "$SESSIONS_ROOT"/*/; do
+    # Hidden entries too: a session named before leading dots were refused
+    # (.work) is still a session to search.
+    for session_dir in "$SESSIONS_ROOT"/*/ "$SESSIONS_ROOT"/.[!.]*/ "$SESSIONS_ROOT"/..?*/; do
         [ -d "$session_dir" ] || continue
         if [ -z "$include_archived" ] && _session_is_archived "$session_dir"; then
             continue

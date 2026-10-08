@@ -36,7 +36,9 @@ search_sessions() {
     local search_files=".cs/README.md"
     local -a search_globs=(".cs/memory/*.md" ".cs/narrative-archive/*/*.md" ".cs/private/narrative-archive/*/*.md")
 
-    for session_dir in "$SESSIONS_ROOT"/*/; do
+    # Hidden entries too: a session named before leading dots were refused
+    # (.work) is still a session to search.
+    for session_dir in "$SESSIONS_ROOT"/*/ "$SESSIONS_ROOT"/.[!.]*/ "$SESSIONS_ROOT"/..?*/; do
         [ -d "$session_dir" ] || continue
         if [ -z "$include_archived" ] && _session_is_archived "$session_dir"; then
             continue
