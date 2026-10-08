@@ -334,10 +334,12 @@ test_resume_of_a_real_conversation_runs_claude_in_place_of_cs() {
     assert_output_not_contains "$(_launched "$out" parent)" "resumer" \
         "claude must replace cs, not run as its child" || return 1
     assert_output_contains "$(_launched "$out" args)" "/color" "the launch prompt reaches the resumed claude" || return 1
+    # The seed as cs -spawn writes it (line 1 the token, line 2 the spawner),
+    # opened as the spawn's own window via CS_SPAWN_TOKEN.
     mkdir -p "$CS_SESSIONS_ROOT/.spawn"
-    : > "$CS_SESSIONS_ROOT/.spawn/resumer.seed"
+    printf 'feedfacefeedfacefeedfacefeedface\n\n' > "$CS_SESSIONS_ROOT/.spawn/resumer.seed"
     echo "brief" > "$CS_SESSIONS_ROOT/.spawn/resumer.brief.md"
-    out=$("$CS_BIN" resumer <<< "" 2>&1) || true
+    out=$(CS_SPAWN_TOKEN=feedfacefeedfacefeedfacefeedface "$CS_BIN" resumer <<< "" 2>&1) || true
     assert_output_not_contains "$(_launched "$out" parent)" "resumer" "a spawned resume replaces cs too" || return 1
     assert_output_contains "$(_launched "$out" args)" "Your brief is .cs/brief.md" \
         "a spawn kick, not the colour, reaches the resumed claude" || return 1

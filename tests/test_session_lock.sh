@@ -504,6 +504,30 @@ test_collision_menu_opens_existing_feature() {
     assert_output_not_contains "$output" "Cancelled" "opening a feature must not cancel" || return 1
 }
 
+# A spawn's token proves ITS window to ITS session only. The collision menu
+# re-execs cs for a feature of the session; carried in the environment, the
+# token would let a seed staged for that feature (with the published token
+# copied in) be consumed unasked by the redirected launch (Codex round 2,
+# audit H2). The token is dropped before the lock is taken.
+test_collision_menu_redirect_carries_no_spawn_token() {
+    create_lock_test_session "test-session"
+    "$CS_BIN" "test-session@fix-auth" < /dev/null > /dev/null 2>&1 || true
+    sleep 300 &
+    local live_pid=$!
+    echo "$live_pid" > "$CS_SESSIONS_ROOT/test-session/.cs/session.lock"
+    mkdir -p "$CS_SESSIONS_ROOT/.spawn"
+    printf 'feedfacefeedfacefeedfacefeedface\nboss\nplanted task\n' > "$CS_SESSIONS_ROOT/.spawn/test-session@fix-auth.seed"
+
+    local output status=0
+    output=$(printf '1' | CS_ASSUME_TTY=1 CS_SPAWN_TOKEN=feedfacefeedfacefeedfacefeedface "$CS_BIN" test-session 2>&1) || status=$?
+    kill "$live_pid" 2>/dev/null || true
+    assert_file_exists "$CS_SESSIONS_ROOT/.spawn/test-session@fix-auth.seed" \
+        "the redirected launch must leave the feature's seed staged" || return 1
+    [ ! -d "$CS_SESSIONS_ROOT/test-session@fix-auth/.cs/local/queue" ] \
+        || { echo "  FAIL: the redirected launch consumed a seed with the original launch's token"; return 1; }
+    assert_output_not_contains "$output" "planted task" "no kick from the planted seed" || return 1
+}
+
 # The menu's force choice must carry through to the live-duplicate UUID guard:
 # choosing "force start" and then being refused with "use --force" is a dead end.
 test_collision_menu_force_bypasses_live_duplicate_guard() {
@@ -583,6 +607,7 @@ run_test test_collision_menu_finds_the_picker_beside_cs
 run_test test_collision_menu_lists_existing_features
 run_test test_collision_menu_caps_features_so_every_row_stays_reachable
 run_test test_collision_menu_opens_existing_feature
+run_test test_collision_menu_redirect_carries_no_spawn_token
 run_test test_collision_menu_force_proceeds
 run_test test_collision_menu_force_bypasses_live_duplicate_guard
 run_test test_collision_menu_on_worktree_session_offers_no_new_task
