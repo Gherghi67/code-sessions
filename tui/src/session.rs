@@ -963,13 +963,25 @@ pub enum UnownedEntries {
 }
 
 impl UnownedEntries {
-    /// The confirm line, matching `cs -rm`'s wording; None when nothing is at risk.
-    pub fn warning(&self) -> Option<String> {
-        let (what, paths) = match self {
+    /// What the paths are, in `cs -rm`'s words, and the paths.
+    fn described(&self) -> (&'static str, &[String]) {
+        match self {
             UnownedEntries::NotCreatedByCs(p) => ("cs did not create", p),
             UnownedEntries::NotTrackedByGit(p) => ("git does not track", p),
-        };
+        }
+    }
+
+    /// The confirm line, matching `cs -rm`'s wording; None when nothing is at risk.
+    pub fn warning(&self) -> Option<String> {
+        let (what, paths) = self.described();
         (!paths.is_empty()).then(|| format!("Also deletes files {what}: {}", paths.join(", ")))
+    }
+
+    /// Why a removal not granted these files refuses session `name`, as
+    /// `cs -rm --force` refuses without --delete-files; None when there are none.
+    pub fn refusal(&self, name: &str) -> Option<String> {
+        let (what, paths) = self.described();
+        (!paths.is_empty()).then(|| format!("{name} holds files {what}: {}", paths.join(", ")))
     }
 }
 
@@ -1111,14 +1123,29 @@ fn read_mount_table() -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// What a delete may take beyond a dormant session that holds only cs's own
+/// files: `cs -rm`'s two escalations. Each is refused unless granted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RemoveGrants {
+    /// Remove a session whose lock a live process holds (`cs -rm --force`).
+    pub past_live_lock: bool,
+    /// Delete the files cs did not create in a session root, or that git
+    /// does not track in a worktree session (`cs -rm --delete-files`).
+    pub unowned_files: bool,
+}
+
 /// Remove a session at `path` by whatever means its kind requires: symlinks
 /// are unlinked, worktree sessions are unregistered through git, and plain
-/// directories are removed outright.
-pub fn remove_session_path(root: &Path, name: &str, path: &Path) -> std::io::Result<()> {
+/// directories are removed outright. A live session and one holding files
+/// beyond cs's own are refused unless `grants` allows them; a mounted vault
+/// or volume is refused always.
+pub fn remove_session_path(root: &Path, name: &str, path: &Path, grants: RemoveGrants) -> std::io::Result<()> {
     // Read the lock now, as `cs -rm`'s session_is_live does: the picker's row
     // was scanned earlier and the session may have opened since.
-    if let Some(pid) = read_lock_pid(&path.join(".cs")) {
-        return Err(std::io::Error::other(format!("{name} is live (pid {pid}) — close it first")));
+    if !grants.past_live_lock {
+        if let Some(pid) = read_lock_pid(&path.join(".cs")) {
+            return Err(std::io::Error::other(format!("{name} is live (pid {pid}) — close it first")));
+        }
     }
     let is_link = path.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false);
     // remove_dir_all recurses into a mount, so a vault mounted inside the
@@ -1142,6 +1169,13 @@ pub fn remove_session_path(root: &Path, name: &str, path: &Path) -> std::io::Res
                 "{name} has a volume mounted inside it at {}; unmount it, then retry",
                 mnt.display()
             )));
+        }
+    }
+    // Listed now, not when the confirm opened: a file added since is one the
+    // user was never shown.
+    if !grants.unowned_files {
+        if let Some(refusal) = unowned_entries(name, path).map_err(std::io::Error::other)?.refusal(name) {
+            return Err(std::io::Error::other(refusal));
         }
     }
     if is_link {
@@ -1931,7 +1965,7 @@ mod tests {
         fs::create_dir_all(root.join(".spawn")).unwrap();
         fs::write(root.join(".spawn/proj@task.seed"), "spawner\n").unwrap();
 
-        let err = remove_session_path(&root, "proj@task", &wt).unwrap_err();
+        let err = remove_session_path(&root, "proj@task", &wt, RemoveGrants::default()).unwrap_err();
 
         let text = err.to_string();
         assert!(
@@ -1965,10 +1999,15 @@ mod tests {
         let pid = std::process::id();
         fs::write(dir.join(".cs/session.lock"), format!("{pid}\n")).unwrap();
 
-        let err = remove_session_path(&root, "busy", &dir).unwrap_err();
+        let err = remove_session_path(&root, "busy", &dir, RemoveGrants::default()).unwrap_err();
 
         assert_eq!(err.to_string(), format!("busy is live (pid {pid}) — close it first"));
         assert!(dir.join(".cs/session.lock").exists(), "a live session is left whole");
+
+        // Past the live lock, as `cs -rm --force` goes.
+        let grants = RemoveGrants { past_live_lock: true, ..RemoveGrants::default() };
+        remove_session_path(&root, "busy", &dir, grants).unwrap();
+        assert!(!dir.exists(), "granted the live lock, the removal goes ahead");
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -1983,10 +2022,14 @@ mod tests {
         fs::create_dir_all(dir.join("journal.sparsebundle")).unwrap();
         fs::write(dir.join("start"), "x").unwrap();
 
-        let err = remove_session_path(&root, "rel", &dir).unwrap_err();
+        let err = remove_session_path(&root, "rel", &dir, RemoveGrants::default()).unwrap_err();
 
         assert_eq!(err.to_string(), "rel holds files cs did not create: journal.sparsebundle, start");
         assert!(dir.join("start").exists(), "the user's files survive");
+
+        let grants = RemoveGrants { unowned_files: true, ..RemoveGrants::default() };
+        remove_session_path(&root, "rel", &dir, grants).unwrap();
+        assert!(!dir.exists(), "granted the files, the removal takes them");
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -2006,10 +2049,14 @@ mod tests {
         git_in(&base, &["worktree", "add", "-q", wt.to_str().unwrap(), "-b", "cs/task"]);
         fs::write(wt.join("notes.txt"), "draft").unwrap();
 
-        let err = remove_session_path(&root, "proj@task", &wt).unwrap_err();
+        let err = remove_session_path(&root, "proj@task", &wt, RemoveGrants::default()).unwrap_err();
 
         assert_eq!(err.to_string(), "proj@task holds files git does not track: notes.txt");
         assert!(wt.join("notes.txt").exists(), "the untracked file survives");
+
+        let grants = RemoveGrants { unowned_files: true, ..RemoveGrants::default() };
+        remove_session_path(&root, "proj@task", &wt, grants).unwrap();
+        assert!(!wt.exists(), "granted the files, the removal takes the worktree");
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -2026,7 +2073,7 @@ mod tests {
         fs::write(vault.join("narrative.md"), "sealed\n").unwrap();
         std::os::unix::fs::symlink(&vault, dir.join(".cs/memory")).unwrap();
 
-        let err = remove_session_path(&root, "vt", &dir).unwrap_err();
+        let err = remove_session_path(&root, "vt", &dir, RemoveGrants::default()).unwrap_err();
 
         assert_eq!(
             err.to_string(),
@@ -2038,7 +2085,7 @@ mod tests {
         assert!(vault.join("narrative.md").exists(), "the vault's contents survive");
 
         fs::remove_dir_all(&vault).unwrap();
-        remove_session_path(&root, "vt", &dir).unwrap();
+        remove_session_path(&root, "vt", &dir, RemoveGrants::default()).unwrap();
         assert!(!dir.exists(), "an unmounted encrypted session is removed");
         let _ = fs::remove_dir_all(&root);
     }
@@ -2137,7 +2184,7 @@ mod tests {
         fs::write(root.join(".spawn/other.seed"), "other\n").unwrap();
         fs::write(root.join(".spawn/other.brief.md"), "theirs\n").unwrap();
 
-        remove_session_path(&root, "seeded", &dir).unwrap();
+        remove_session_path(&root, "seeded", &dir, RemoveGrants::default()).unwrap();
 
         assert!(!dir.exists(), "session directory should be gone");
         assert!(!root.join(".spawn/seeded.seed").exists(), "seed must go with the session");

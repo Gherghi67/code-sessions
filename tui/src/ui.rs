@@ -1121,7 +1121,7 @@ fn render_confirm_delete(app: &App, frame: &mut Frame) {
     };
     let hint_color = if remaining > 0 { p.comment } else { p.fg };
 
-    let popup_area = centered_rect(50, 7 + warning_rows(&app.delete_warnings), frame.area());
+    let popup_area = centered_rect(50, 7 + warning_rows(&app.delete_warnings) + grant_rows(app), frame.area());
     frame.render_widget(Clear, popup_area);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -1131,6 +1131,7 @@ fn render_confirm_delete(app: &App, frame: &mut Frame) {
 
     let mut lines = vec![Line::from(Span::styled(action_msg, Style::default().fg(p.fg)))];
     push_warning_lines(&mut lines, &app.delete_warnings, p.red);
+    push_grant_lines(&mut lines, app);
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(hint, Style::default().fg(hint_color))));
     let text = Paragraph::new(lines)
@@ -1160,7 +1161,7 @@ fn render_confirm_batch_delete(app: &App, frame: &mut Frame) {
     };
     let hint_color = if remaining > 0 { p.comment } else { p.fg };
 
-    let popup_area = centered_rect(55, 7 + warning_rows(&app.delete_warnings), frame.area());
+    let popup_area = centered_rect(55, 7 + warning_rows(&app.delete_warnings) + grant_rows(app), frame.area());
     frame.render_widget(Clear, popup_area);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -1176,6 +1177,7 @@ fn render_confirm_batch_delete(app: &App, frame: &mut Frame) {
         Line::from(Span::styled(list, Style::default().fg(p.comment))),
     ];
     push_warning_lines(&mut lines, &app.delete_warnings, p.red);
+    push_grant_lines(&mut lines, app);
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled("This cannot be undone.", Style::default().fg(p.red))));
     lines.push(Line::from(Span::styled(hint, Style::default().fg(hint_color))));
@@ -1183,6 +1185,38 @@ fn render_confirm_batch_delete(app: &App, frame: &mut Frame) {
         .block(block)
         .wrap(Wrap { trim: true });
     frame.render_widget(text, popup_area);
+}
+
+/// The escalations a delete confirm offers, each with its key and whether
+/// it is granted: the confirm refuses what is not granted, as `cs -rm` does
+/// without --delete-files or --force.
+fn grant_lines(app: &App) -> Vec<String> {
+    let state = |on: bool| if on { "yes" } else { "no" };
+    let mut lines = Vec::new();
+    if app.delete_offers.unowned_files {
+        lines.push(format!("[D] Delete those files too: {}", state(app.delete_grants.unowned_files)));
+    }
+    if app.delete_offers.past_live_lock {
+        lines.push(format!("[F] Remove although live: {}", state(app.delete_grants.past_live_lock)));
+    }
+    lines
+}
+
+/// Rows the grant lines take: a blank separator, then one row each.
+fn grant_rows(app: &App) -> u16 {
+    let n = grant_lines(app).len() as u16;
+    if n == 0 { 0 } else { 1 + n }
+}
+
+fn push_grant_lines(lines: &mut Vec<Line<'static>>, app: &App) {
+    let grants = grant_lines(app);
+    if grants.is_empty() {
+        return;
+    }
+    lines.push(Line::from(""));
+    for text in grants {
+        lines.push(Line::from(Span::styled(text, Style::default().fg(app.theme.fg))));
+    }
 }
 
 /// Rows the delete warnings take in a confirm popup: a blank separator,
