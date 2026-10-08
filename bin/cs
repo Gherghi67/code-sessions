@@ -5063,9 +5063,15 @@ rotate_narrative() {
     fi
 
     # Test seam: lets a suite change the live file between the snapshot and the
-    # rewrite, which is the window every guard below exists for.
+    # rewrite, which is the window every guard below exists for. The value names
+    # a file whose bytes replace the live file; it is data, never run.
     if [ -n "${CS_NARRATIVE_ROTATE_MIDPOINT:-}" ]; then
-        eval "$CS_NARRATIVE_ROTATE_MIDPOINT"
+        if [ ! -f "$CS_NARRATIVE_ROTATE_MIDPOINT" ]; then
+            rm -f "$snap"
+            [ "$created" -eq 1 ] && rm -f "$chunk"
+            error "CS_NARRATIVE_ROTATE_MIDPOINT names no file: $CS_NARRATIVE_ROTATE_MIDPOINT"
+        fi
+        cp "$CS_NARRATIVE_ROTATE_MIDPOINT" "$live"
     fi
 
     # The live file must still open with the same bytes the snapshot did up to the

@@ -360,7 +360,9 @@ test_rotate_refuses_a_differing_chunk_with_the_same_name() {
 
 test_rotate_keeps_an_append_that_lands_mid_rotation() {
     _make_narrative "$LIVE" 10 500
-    export CS_NARRATIVE_ROTATE_MIDPOINT="printf '\n## 2026-09-01 — late note\nlanded during rotation\n' >> '$LIVE'"
+    cp "$LIVE" "$TEST_TMPDIR/midpoint.md"
+    printf '\n## 2026-09-01 — late note\nlanded during rotation\n' >> "$TEST_TMPDIR/midpoint.md"
+    export CS_NARRATIVE_ROTATE_MIDPOINT="$TEST_TMPDIR/midpoint.md"
     "$CS_BIN" -narrative rotate > /dev/null 2>&1 || return 1
     assert_file_contains "$LIVE" "^## 2026-09-01 — late note$" "the late section is in the live file" || return 1
     assert_file_contains "$LIVE" "landed during rotation" "with its body" || return 1
@@ -371,7 +373,8 @@ test_rotate_keeps_an_append_that_lands_mid_rotation() {
 test_rotate_aborts_when_the_archived_run_changed_underneath() {
     _make_narrative "$LIVE" 10 500
     cp "$LIVE" "$TEST_TMPDIR/original.md"
-    export CS_NARRATIVE_ROTATE_MIDPOINT="sed 's/^## 2026-08-03 — section 2$/## 2026-08-03 — section 2 (edited)/' '$LIVE' > '$LIVE.x' && mv '$LIVE.x' '$LIVE'"
+    sed 's/^## 2026-08-03 — section 2$/## 2026-08-03 — section 2 (edited)/' "$LIVE" > "$TEST_TMPDIR/midpoint.md"
+    export CS_NARRATIVE_ROTATE_MIDPOINT="$TEST_TMPDIR/midpoint.md"
     local output
     if output=$("$CS_BIN" -narrative rotate 2>&1); then
         echo "  FAIL: must abort when the prefix changed"
@@ -388,7 +391,8 @@ test_rotate_abort_leaves_a_preexisting_identical_chunk_alone() {
     cp "$LIVE" "$TEST_TMPDIR/original.md"
     "$CS_BIN" -narrative rotate > /dev/null 2>&1 || return 1
     cp "$TEST_TMPDIR/original.md" "$LIVE"
-    export CS_NARRATIVE_ROTATE_MIDPOINT="sed 's/^## 2026-08-03 — section 2$/## 2026-08-03 — section 2 (edited)/' '$LIVE' > '$LIVE.x' && mv '$LIVE.x' '$LIVE'"
+    sed 's/^## 2026-08-03 — section 2$/## 2026-08-03 — section 2 (edited)/' "$LIVE" > "$TEST_TMPDIR/midpoint.md"
+    export CS_NARRATIVE_ROTATE_MIDPOINT="$TEST_TMPDIR/midpoint.md"
     "$CS_BIN" -narrative rotate > /dev/null 2>&1 && { echo "  FAIL: must abort"; return 1; }
     assert_eq "1" "$(find "$ARCHIVE_DIR" -name '*.md' | wc -l | tr -d ' ')" "a chunk that predates this run survives the abort" || return 1
 }
