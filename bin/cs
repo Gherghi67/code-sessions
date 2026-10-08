@@ -633,6 +633,88 @@ cs_vault_holder_drop() {  # holders, pid
     _cs_mkdir_unlock "$lock"
     return "$rc"
 }
+
+# Claude Code's settings.json holds the user's permissions, env, MCP servers
+# and other tools' hooks. Whether cs can read it: a missing or zero-byte file
+# can (cs creates it), anything else jq cannot parse cannot, and is never
+# replaced. Returns 1 with "<file> is not valid JSON; left it unchanged:
+# <jq's reason>" in CS_SETTINGS_ERROR when it cannot.
+# shellcheck disable=SC2034  # CS_SETTINGS_ERROR is read by the callers in cs and install.sh
+cs_settings_check() {  # file
+    local reason
+    CS_SETTINGS_ERROR=""
+    [ -s "$1" ] || return 0
+    reason=$(jq -e . 2>&1 >/dev/null < "$1") && return 0
+    reason="${reason%%$'\n'*}"
+    reason="${reason#jq: }"
+    [ -n "$reason" ] || reason="jq found no JSON value in it, or only null or false"
+    CS_SETTINGS_ERROR="$1 is not valid JSON; left it unchanged: $reason"
+    return 1
+}
+
+# Rewrite a Claude Code settings file through a command that reads its JSON on
+# stdin and prints the new JSON, usually jq and a filter. Claude Code, a second
+# install and cs's own verbs all rewrite the file whole, so the read, the
+# command and the write happen under one _cs_mkdir_lock beside the file, and
+# a cs writer waiting on it never loses its change or another's; nothing that
+# waits on a person may run inside it. Claude Code takes no such lock: against
+# it the guard is that the read and the write are only the command's run time
+# apart. A missing or zero-byte file reads as {}; a file cs_settings_check
+# refuses, or a command whose output is not JSON, leaves the file as it was.
+# When the content changes, the file as it was is first copied beside it as
+# <file>.cs-bak.<UTC stamp> (.1, .2 ... after a name already taken), mode
+# kept, then replaced through cs_write_atomic; unchanged content writes
+# nothing, so no backup either. Every changing write keeps one, and none are
+# pruned. Returns 0 written or unchanged, 1 refused with the reason in
+# CS_SETTINGS_ERROR and the file untouched.
+cs_settings_update() {  # file, command [args...]
+    local file="$1" lock="$1.lock" rc=0
+    shift
+    CS_SETTINGS_ERROR=""
+    if ! _cs_mkdir_lock "$lock"; then
+        CS_SETTINGS_ERROR="could not take the lock $lock; $file left unchanged"
+        return 1
+    fi
+    _cs_settings_rewrite "$file" "$@" || rc=$?
+    _cs_mkdir_unlock "$lock"
+    return "$rc"
+}
+
+# cs_settings_update's work, run while it holds the lock.
+# shellcheck disable=SC2034  # CS_SETTINGS_ERROR is read by the callers in cs and install.sh
+_cs_settings_rewrite() {  # file, command [args...]
+    local file="$1" current="{}" updated stamp backup n=1
+    shift
+    cs_settings_check "$file" || return 1
+    if [ -s "$file" ]; then
+        current=$(cat "$file") || {
+            CS_SETTINGS_ERROR="could not read $file; left it unchanged"
+            return 1
+        }
+    fi
+    if ! updated=$(printf '%s\n' "$current" | "$@") \
+        || ! printf '%s\n' "$updated" | jq -e . >/dev/null 2>&1; then
+        CS_SETTINGS_ERROR="could not update $file: the change did not produce JSON; left it unchanged"
+        return 1
+    fi
+    [ "$updated" != "$current" ] || return 0
+    if [ -e "$file" ]; then
+        stamp=$(date -u +%Y%m%dT%H%M%SZ)
+        backup="$file.cs-bak.$stamp"
+        while [ -e "$backup" ] || [ -L "$backup" ]; do
+            backup="$file.cs-bak.$stamp.$n"
+            n=$((n + 1))
+        done
+        cp -p "$file" "$backup" 2>/dev/null || {
+            CS_SETTINGS_ERROR="could not back up $file to $backup; left it unchanged"
+            return 1
+        }
+    fi
+    cs_write_atomic "$file" printf '%s\n' "$updated" || {
+        CS_SETTINGS_ERROR="could not write $file; left it unchanged"
+        return 1
+    }
+}
 _claude_encode_path() {
     local p="$1"
     p="${p//[^A-Za-z0-9]/-}"
@@ -8827,7 +8909,9 @@ _strip_statusline_registration() {
     local settings_file="$1"
     [ -f "$settings_file" ] || return 1
     jq -e '.statusLine.command // "" | endswith("/cs-statusline")' "$settings_file" >/dev/null 2>&1 || return 1
-    cs_write_atomic "$settings_file" jq 'del(.statusLine)' "$settings_file" 2>/dev/null || return 2
+    cs_settings_update "$settings_file" jq \
+        'if (.statusLine.command // "" | endswith("/cs-statusline")) then del(.statusLine) else . end' \
+        2>/dev/null || return 2
 }
 
 # endswith("/cs-subagent-statusline") never matches "/cs-statusline", so this
@@ -8838,7 +8922,9 @@ _strip_subagent_statusline_registration() {
     [ -f "$settings_file" ] || return 1
     jq -e '.subagentStatusLine.command // "" | endswith("/cs-subagent-statusline")' \
         "$settings_file" >/dev/null 2>&1 || return 1
-    cs_write_atomic "$settings_file" jq 'del(.subagentStatusLine)' "$settings_file" 2>/dev/null || return 2
+    cs_settings_update "$settings_file" jq \
+        'if (.subagentStatusLine.command // "" | endswith("/cs-subagent-statusline")) then del(.subagentStatusLine) else . end' \
+        2>/dev/null || return 2
 }
 
 # The installer remembers a declined status-line prompt here so `cs -update`
@@ -8894,21 +8980,20 @@ run_statusline_cmd() {
             [ -x "$bin" ] || warn "cs-statusline binary not found at $bin (run install.sh first)"
             [ -x "$subbin" ] || warn "cs-subagent-statusline binary not found at $subbin (run install.sh first)"
             mkdir -p "$(dirname "$settings")"
-            [ -f "$settings" ] || echo '{}' > "$settings"
             # refreshInterval 60 repaints an idle bar once a minute, which keeps
             # the context-pct heartbeat fresh for a conversation with no lock.
             # Each tick on Claude Code 2.1.286 lists every process with
             # `ps -A`; at 1 s a dozen sessions together hit the process limit.
-            if cs_write_atomic "$settings" jq --arg cmd "$bin" --arg subcmd "$subbin" \
+            if cs_settings_update "$settings" jq --arg cmd "$bin" --arg subcmd "$subbin" \
                 '.statusLine = {type: "command", command: $cmd, refreshInterval: 60}
                  | .subagentStatusLine = {type: "command", command: $subcmd}' \
-                "$settings" 2>/dev/null; then
+                2>/dev/null; then
                 rm -f "$declined"
                 info "Registered cs-statusline as the Claude Code status line"
                 info "Registered cs-subagent-statusline for the agent panel rows"
                 info "Claude Code reads both at startup: restart it to see them."
             else
-                error "Could not update $settings"
+                error "$CS_SETTINGS_ERROR"
             fi
             ;;
         disable)
@@ -10722,6 +10807,27 @@ _uninstall_rotate_wrap_keys() {
     fi
 }
 
+# Settings JSON on stdin without any cs hook, current or retired, on stdout:
+# stripped from any event, event-agnostic, matching both path spellings ($HOME
+# and ~) in both deployment layouts (subdirectory and flat). Drops wrappers
+# that empty out; sibling user hooks co-shipped in a wrapper survive.
+_strip_cs_hook_registrations() {  # hooks_dir, hooks_parent_dir
+    local settings strip_name
+    settings=$(cat)
+    for strip_name in "${CS_HOOKS[@]}" "${RETIRED_HOOKS[@]}"; do
+        settings=$(_strip_hook_registration "$settings" "$1/$strip_name" "~/.claude/hooks/cs/$strip_name")
+        settings=$(_strip_hook_registration "$settings" "$2/$strip_name" "~/.claude/hooks/$strip_name")
+    done
+
+    # Clean up empty hook arrays
+    echo "$settings" | jq '
+        if .hooks then
+            .hooks |= with_entries(select(.value | length > 0))
+            | if .hooks == {} then del(.hooks) else . end
+        else . end
+    '
+}
+
 # Uninstall cs and all components
 run_uninstall() {
     local install_dir="$HOME/.local/bin"
@@ -10886,31 +10992,15 @@ run_uninstall() {
         info "Removed $claude_links_dir"
     fi
 
-    # Clean up settings.json (remove cs hooks, preserve others)
+    # Clean up settings.json (remove cs hooks, preserve others). A file jq
+    # cannot parse is left as it is with a warning: the binaries are already
+    # gone, so the rest of the uninstall still runs.
     if [ -f "$settings_file" ] && command -v jq >/dev/null 2>&1; then
-        local settings
-        settings=$(cat "$settings_file")
-
-        # Strip every cs hook (current and retired) from any event,
-        # event-agnostic, matching both path spellings ($HOME and ~) in both
-        # deployment layouts (subdirectory and flat). Drops wrappers that
-        # empty out; sibling user hooks co-shipped in a wrapper survive.
-        local strip_name
-        for strip_name in "${CS_HOOKS[@]}" "${RETIRED_HOOKS[@]}"; do
-            settings=$(_strip_hook_registration "$settings" "$hooks_dir/$strip_name" "~/.claude/hooks/cs/$strip_name")
-            settings=$(_strip_hook_registration "$settings" "$hooks_parent_dir/$strip_name" "~/.claude/hooks/$strip_name")
-        done
-
-        # Clean up empty hook arrays
-        settings=$(echo "$settings" | jq '
-            if .hooks then
-                .hooks |= with_entries(select(.value | length > 0))
-                | if .hooks == {} then del(.hooks) else . end
-            else . end
-        ')
-
-        echo "$settings" > "$settings_file"
-        info "Cleaned up $settings_file"
+        if cs_settings_update "$settings_file" _strip_cs_hook_registrations "$hooks_dir" "$hooks_parent_dir"; then
+            info "Cleaned up $settings_file"
+        else
+            warn "$CS_SETTINGS_ERROR"
+        fi
     elif [ -f "$settings_file" ]; then
         warn "jq not found - cannot clean up $settings_file automatically"
         warn "Manually remove cs hook entries from $settings_file"
