@@ -1972,6 +1972,47 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    // A session root is also the user's workspace. As `cs -rm --force` does
+    // without --delete-files, the removal refuses one that holds files cs did
+    // not create, naming them, and deletes nothing.
+    #[test]
+    fn remove_session_path_refuses_a_root_holding_files_cs_did_not_create() {
+        let root = std::env::temp_dir().join(format!("cs-rm-foreign-{}", std::process::id()));
+        let dir = root.join("rel");
+        fs::create_dir_all(dir.join(".cs/local")).unwrap();
+        fs::create_dir_all(dir.join("journal.sparsebundle")).unwrap();
+        fs::write(dir.join("start"), "x").unwrap();
+
+        let err = remove_session_path(&root, "rel", &dir).unwrap_err();
+
+        assert_eq!(err.to_string(), "rel holds files cs did not create: journal.sparsebundle, start");
+        assert!(dir.join("start").exists(), "the user's files survive");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // A worktree session's untracked and ignored files have no copy on the
+    // branch; as `cs -rm --force` does without --delete-files, the removal
+    // refuses, naming them, and leaves the worktree registered.
+    #[test]
+    fn remove_session_path_refuses_a_worktree_holding_files_git_does_not_track() {
+        let root = std::env::temp_dir().join(format!("cs-rm-untracked-{}", std::process::id()));
+        let base = root.join("proj");
+        fs::create_dir_all(&base).unwrap();
+        fs::write(base.join("tracked.txt"), "x").unwrap();
+        git_in(&base, &["init", "-q"]);
+        git_in(&base, &["add", "tracked.txt"]);
+        git_in(&base, &["commit", "-qm", "seed"]);
+        let wt = root.join("proj@task");
+        git_in(&base, &["worktree", "add", "-q", wt.to_str().unwrap(), "-b", "cs/task"]);
+        fs::write(wt.join("notes.txt"), "draft").unwrap();
+
+        let err = remove_session_path(&root, "proj@task", &wt).unwrap_err();
+
+        assert_eq!(err.to_string(), "proj@task holds files git does not track: notes.txt");
+        assert!(wt.join("notes.txt").exists(), "the untracked file survives");
+        let _ = fs::remove_dir_all(&root);
+    }
+
     // An encrypted session mounts its vault inside the session directory by
     // convention, and remove_dir_all recurses into a mount: deleting the
     // session would delete what the vault holds. Unmounted, the link dangles

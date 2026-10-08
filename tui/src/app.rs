@@ -3756,6 +3756,30 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// A plain confirm deletes nothing the user put beside cs's files: y on a
+    /// session holding one refuses, naming it, and the session survives.
+    #[test]
+    fn delete_confirm_y_refuses_a_session_holding_files_cs_did_not_create() {
+        use crate::session::test_root;
+        let root = std::env::temp_dir().join(format!("cs-test-del-refuse-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("rel/.cs/local")).unwrap();
+        std::fs::create_dir_all(root.join("rel/journal.sparsebundle")).unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let mut app = app_on(&root, "rel");
+        app.execute_menu_action(MenuAction::Delete);
+        app.delete_countdown_start = Some(std::time::Instant::now() - std::time::Duration::from_secs(60));
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('y')));
+
+        let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+        assert!(
+            status.contains("rel holds files cs did not create: journal.sparsebundle"),
+            "the refusal names the files, got: {status}"
+        );
+        assert!(root.join("rel/journal.sparsebundle").exists(), "the user's files survive");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     #[test]
     fn delete_confirm_stays_closed_when_the_file_list_cannot_be_read() {
         use crate::session::test_root;
