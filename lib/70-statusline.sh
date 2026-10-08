@@ -94,6 +94,9 @@ run_statusline_cmd() {
             ;;
         disable)
             [ -f "$settings" ] || { info "No settings.json; nothing to disable."; return 0; }
+            # A file jq cannot parse would read below as "not cs-statusline";
+            # it holds no answer either way, so say what is wrong with it.
+            cs_settings_check "$settings" || error "$CS_SETTINGS_ERROR"
             # Capture each stripper's exit code with `|| rc=$?`: a bare call
             # returning non-zero (foreign or absent registration) would trip
             # `set -e` before the following case ran, aborting the second strip.
