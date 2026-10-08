@@ -1603,6 +1603,113 @@ test_web_install_deploys_the_payload_from_the_stub() {
     [ -z "$(find "$home" -name '.cs-install.*')" ] || { echo "  FAIL: a staging temp file was left beside a destination"; return 1; }
 }
 
+# ============================================================================
+# Ownership: install, update and uninstall touch only files cs wrote
+# ============================================================================
+
+# Content a past cs deployed (mods/cs-rotate/hooks/hooks.json as it shipped),
+# so a file holding it is cs's whatever its name: a stand-in for any file an
+# install that kept no record left behind.
+_cs_shipped_content() {
+    echo '{"modules":["./register.tsx"]}'
+}
+
+# A user's own hooks, commands and skills that share a name with a file cs
+# ships or once shipped are theirs: install leaves each in place, says so on
+# one line naming it, and still installs everything else and exits 0.
+test_install_keeps_user_files_that_share_a_cs_name() {
+    local home="$TEST_TMPDIR/own-home" out rc=0 f
+    mkdir -p "$home/.claude/hooks" "$home/.claude/commands" "$home/.claude/skills/feature" "$home/.claude/skills/merge"
+    printf '#!/bin/sh\necho my session-start\n' > "$home/.claude/hooks/session-start.sh"
+    printf '#!/bin/sh\necho my prose lint\n' > "$home/.claude/hooks/prose-lint.sh"
+    printf 'my summary command\n' > "$home/.claude/commands/summary.md"
+    printf 'my feature skill\n' > "$home/.claude/skills/feature/SKILL.md"
+    printf 'my merge skill\n' > "$home/.claude/skills/merge/SKILL.md"
+    out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || rc=$?
+    assert_eq "0" "$rc" "install exit status" || { echo "$out"; return 1; }
+    assert_eq "$(printf '#!/bin/sh\necho my session-start')" "$(cat "$home/.claude/hooks/session-start.sh")" "flat hook kept" || return 1
+    assert_eq "$(printf '#!/bin/sh\necho my prose lint')" "$(cat "$home/.claude/hooks/prose-lint.sh")" "retired-name hook kept" || return 1
+    assert_eq "my summary command" "$(cat "$home/.claude/commands/summary.md")" "command kept" || return 1
+    assert_eq "my feature skill" "$(cat "$home/.claude/skills/feature/SKILL.md")" "skill kept" || return 1
+    assert_eq "my merge skill" "$(cat "$home/.claude/skills/merge/SKILL.md")" "retired-name skill kept" || return 1
+    for f in hooks/session-start.sh hooks/prose-lint.sh commands/summary.md skills/feature/SKILL.md skills/merge/SKILL.md; do
+        assert_output_contains "$out" "$home/\.claude/$f" "a warning names $f" || return 1
+    done
+    # Everything that is not in the way is still installed.
+    cmp -s "$SCRIPT_DIR/../commands/wrap.md" "$home/.claude/commands/wrap.md" || { echo "  FAIL: wrap.md not installed"; return 1; }
+    cmp -s "$SCRIPT_DIR/../hooks/session-start.sh" "$home/.claude/hooks/cs/session-start.sh" || { echo "  FAIL: hook not installed"; return 1; }
+    # The skipped paths are reported again after the completion line.
+    assert_output_contains "$out" "Installation complete" "the install finished" || return 1
+    printf '%s\n' "$out" | sed -n '/Installation complete/,$p' | grep -q "$home/.claude/commands/summary.md" \
+        || { echo "  FAIL: the skipped command is not listed after the completion line"; return 1; }
+}
+
+# Files cs wrote are still replaced and removed by content, whatever version
+# put them there: one equal to what this install ships, and one holding
+# content a past cs shipped under a retired name.
+test_install_replaces_files_cs_wrote_without_a_record() {
+    local home="$TEST_TMPDIR/known-home" rc=0 out
+    mkdir -p "$home/.claude/hooks" "$home/.claude/skills/cs-hint/hooks"
+    cp "$SCRIPT_DIR/../hooks/session-start.sh" "$home/.claude/hooks/session-start.sh"
+    _cs_shipped_content > "$home/.claude/hooks/files-context.sh"
+    _cs_shipped_content > "$home/.claude/skills/cs-hint/hooks/hooks.json"
+    out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || rc=$?
+    assert_eq "0" "$rc" "install exit status" || { echo "$out"; return 1; }
+    assert_file_not_exists "$home/.claude/hooks/session-start.sh" "the flat copy cs wrote is removed" || return 1
+    assert_file_not_exists "$home/.claude/hooks/files-context.sh" "the retired hook cs wrote is removed" || return 1
+    [ ! -e "$home/.claude/skills/cs-hint" ] || { echo "  FAIL: the retired mod directory cs wrote survived"; return 1; }
+}
+
+# Install records what it wrote, and a file still matching its record is
+# cs's even when no release ever shipped that content; one changed since is
+# the user's and is kept.
+test_install_follows_its_record() {
+    local home="$TEST_TMPDIR/record-home" record digest out
+    mkdir -p "$home"
+    HOME="$home" bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || { echo "  FAIL: first install failed"; return 1; }
+    record="$home/.claude/hooks/cs/.installed"
+    assert_file_exists "$record" "install writes its record" || return 1
+    digest=$(shasum -a 256 "$SCRIPT_DIR/../commands/wrap.md" | awk '{print $1}')
+    assert_file_contains "$record" "^$digest  \.claude/commands/wrap\.md$" "the record holds each file's sha256" || return 1
+    # A release that shipped this wrap.md would have recorded it so.
+    printf 'wrap as a later release shipped it\n' > "$home/.claude/commands/wrap.md"
+    digest=$(shasum -a 256 "$home/.claude/commands/wrap.md" | awk '{print $1}')
+    grep -v 'commands/wrap\.md$' "$record" > "$record.tmp"
+    printf '%s  .claude/commands/wrap.md\n' "$digest" >> "$record.tmp"
+    mv "$record.tmp" "$record"
+    # The user edits the /sweep command cs installed.
+    printf 'my own sweep\n' > "$home/.claude/commands/sweep.md"
+    out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || { echo "$out"; echo "  FAIL: second install failed"; return 1; }
+    cmp -s "$SCRIPT_DIR/../commands/wrap.md" "$home/.claude/commands/wrap.md" \
+        || { echo "  FAIL: a file matching its record was not replaced"; return 1; }
+    assert_eq "my own sweep" "$(cat "$home/.claude/commands/sweep.md")" "an edited file is kept" || return 1
+    assert_output_contains "$out" "$home/\.claude/commands/sweep\.md" "the kept file is named" || return 1
+}
+
+# Uninstall removes what cs installed and nothing that only shares its name:
+# a user's command, a user's skill, and a user's file inside a cs mod.
+test_uninstall_removes_only_files_cs_wrote() {
+    local home="$TEST_TMPDIR/own-uninstall" out
+    mkdir -p "$home"
+    HOME="$home" bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || { echo "  FAIL: install failed"; return 1; }
+    printf 'my summary command\n' > "$home/.claude/commands/summary.md"
+    printf 'my notes\n' > "$home/.claude/skills/cs/notes.md"
+    mkdir -p "$home/.claude/skills/merge" "$home/.claude/hooks"
+    printf 'my merge skill\n' > "$home/.claude/skills/merge/SKILL.md"
+    printf '#!/bin/sh\necho mine\n' > "$home/.claude/hooks/bash-logger.sh"
+    out=$(printf 'y\n' | HOME="$home" "$CS_BIN" -uninstall 2>&1) || { echo "$out"; echo "  FAIL: cs -uninstall exited non-zero"; return 1; }
+    assert_eq "my summary command" "$(cat "$home/.claude/commands/summary.md")" "user's command kept" || return 1
+    assert_eq "my merge skill" "$(cat "$home/.claude/skills/merge/SKILL.md")" "user's retired-name skill kept" || return 1
+    assert_eq "my notes" "$(cat "$home/.claude/skills/cs/notes.md")" "user's file inside the mod kept" || return 1
+    assert_eq "$(printf '#!/bin/sh\necho mine')" "$(cat "$home/.claude/hooks/bash-logger.sh")" "user's flat hook kept" || return 1
+    assert_file_not_exists "$home/.claude/commands/wrap.md" "cs's command removed" || return 1
+    assert_file_not_exists "$home/.claude/skills/cs/hooks/register.tsx" "cs's mod file removed" || return 1
+    assert_file_not_exists "$home/.claude/skills/feature/SKILL.md" "cs's skill removed" || return 1
+    [ ! -e "$home/.claude/hooks/cs" ] || { echo "  FAIL: hooks/cs left behind"; return 1; }
+    assert_output_contains "$out" "$home/\.claude/commands/summary\.md" "the kept command is named" || return 1
+    assert_output_contains "$out" "$home/\.claude/skills/cs/notes\.md" "the kept mod file is named" || return 1
+}
+
 test_uninstall_removes_leftover_cs_tui_exe() {
     local fake_home="$TEST_TMPDIR/uninstall-tui-exe"
     mkdir -p "$fake_home/.local/bin" "$fake_home/.claude"
@@ -1762,6 +1869,10 @@ run_test test_uninstall_removes_leftover_cs_tui_exe
 run_test test_web_install_keeps_the_installed_cs_when_its_download_breaks
 run_test test_web_install_places_nothing_when_a_later_download_breaks
 run_test test_web_install_deploys_the_payload_from_the_stub
+run_test test_install_keeps_user_files_that_share_a_cs_name
+run_test test_install_replaces_files_cs_wrote_without_a_record
+run_test test_install_follows_its_record
+run_test test_uninstall_removes_only_files_cs_wrote
 run_test test_uninstall_removes_subagent_statusline
 test_hook_registration_doc_matches_install() {
     # docs/hooks.md restates install.sh's _merge_cs_hook registrations as a
