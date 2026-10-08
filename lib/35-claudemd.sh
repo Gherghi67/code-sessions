@@ -319,6 +319,22 @@ write_session_claude_md() {
     _emit_session_claude_md > "$session_dir/CLAUDE.local.md"
 }
 
+# Put the session protocol into CLAUDE.local.md without losing a line of it:
+# written when absent, appended below a user's own file, and a file that
+# already carries any cs sentinel is left alone. A user's CLAUDE.local.md is
+# gitignored by convention, so git holds no copy to recover it from.
+ensure_session_claude_md() {
+    local session_dir="$1"
+    local claude_local="$session_dir/CLAUDE.local.md"
+    if [ ! -f "$claude_local" ]; then
+        write_session_claude_md "$session_dir"
+    elif ! grep -q '<!-- cs:' "$claude_local"; then
+        printf '\n' >> "$claude_local"
+        _emit_session_claude_md >> "$claude_local"
+        warn "Appended the cs session protocol to your existing CLAUDE.local.md"
+    fi
+}
+
 # Move cs-managed content from a session's CLAUDE.md into CLAUDE.local.md.
 # A pure function of the file's content (no timestamps, no local state), so
 # two clones migrating the same tracked file produce byte-identical edits.

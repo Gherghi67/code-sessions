@@ -70,6 +70,10 @@ ENTRIES
         [ -z "$line" ] && continue
         [[ "$line" == \#* ]] && continue
         if ! grep -qF "$line" "$gitignore" 2>/dev/null; then
+            # A last line with no newline would swallow the entry appended to it.
+            if [ -s "$gitignore" ] && [ -n "$(tail -c 1 "$gitignore")" ]; then
+                printf '\n' >> "$gitignore"
+            fi
             echo "$line" >> "$gitignore"
         fi
     done <<< "$entries"
@@ -82,6 +86,17 @@ adopt_session() {
     target_dir="$(pwd -P)"
 
     validate_session_name "$session_name"
+
+    # Adopting a directory with no .git runs git init and commits everything
+    # under it, and writes cs's files into it: never the home directory or the
+    # filesystem root. -ef, not a string compare: either may be reached
+    # through a symlink or typed in another case.
+    if [ "$target_dir" -ef "${HOME:-}" ]; then
+        error "Refusing to adopt your home directory ($target_dir). Run cs -adopt from a project directory."
+    fi
+    if [ "$target_dir" -ef / ]; then
+        error "Refusing to adopt the filesystem root. Run cs -adopt from a project directory."
+    fi
 
     # A linked git worktree keeps a `.git` FILE, so the init path below would
     # read it as "not a repo", `git init` over it and `git add -A` the user's
@@ -181,7 +196,9 @@ adopt_session() {
     if [ ! -d "$target_dir/.git" ]; then
         (
             cd "$target_dir" || exit 0
-            create_session_gitignore "$target_dir"
+            # Merged, not written: the project's own rules (an .env, a key
+            # file) must keep hiding those files from the add -A below.
+            ensure_cs_gitignore_entries "$target_dir"
             git init -q 2>/dev/null || true
             # See the session-init path: autocrlf would rewrite .gitignore to
             # CRLF and its patterns would stop matching.
