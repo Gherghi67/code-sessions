@@ -57,6 +57,14 @@ _move_memory_files() {  # src, dest
     while IFS= read -r -d '' f; do
         rel="${f#"$src"/}"
         target="$dest/$rel"
+        # A destination reached through a symlink is no copy at all: a link
+        # back into src would pass cmp and the source would be deleted from
+        # under it. Such a file stays where it is.
+        if ! _memory_dest_is_plain "$dest" "$rel"; then
+            warn "Not moving $f: $target is reached through a symlink" >&2
+            complete=0
+            continue
+        fi
         if { [ -e "$target" ] || [ -L "$target" ]; } && ! cmp -s "$f" "$target"; then
             target="$target.claude-projects"
         fi
@@ -83,6 +91,7 @@ _move_memory_files() {  # src, dest
     fi
     while IFS= read -r -d '' f; do
         rel="${f#"$src"/}"
+        _memory_dest_is_plain "$dest" "$rel" || continue
         if cmp -s "$f" "$dest/$rel" || cmp -s "$f" "$dest/$rel.claude-projects"; then
             rm -f "$f"
         fi
@@ -90,6 +99,20 @@ _move_memory_files() {  # src, dest
     # Only directories left empty go; one still holding anything (a symlink,
     # a file that appeared since) stays, and its rmdir failure is expected.
     find "$src" -depth -type d -empty -delete 2>/dev/null || true
+}
+
+# True when no component of dest/rel, from dest's first child down to the
+# file itself (or its .claude-projects twin), is a symlink.
+_memory_dest_is_plain() {  # dest, rel
+    local path="$1" part rest="$2"
+    while [ -n "$rest" ]; do
+        part="${rest%%/*}"
+        path="$path/$part"
+        [ -L "$path" ] && return 1
+        [ "$rest" = "$part" ] && break
+        rest="${rest#*/}"
+    done
+    [ ! -L "$path.claude-projects" ]
 }
 
 # Ensure the session narrative topic file and its MEMORY.md index pointer exist.

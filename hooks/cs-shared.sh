@@ -190,9 +190,11 @@ _cs_tmux_title_lock() {  # pane
 # and a line lost to either costs one resume prompt or one title, not data.
 # A live holder is waited for, but for no more than five seconds: past that
 # the caller goes ahead without the lock, since a launch or a hook must never
-# stall on a lock a stray process holds, and a lock older than a minute is
-# removed on the way out so the next caller is not taxed again (a real hold
-# lasts milliseconds). A lock that vanishes between the failed mkdir and the
+# stall on a lock a stray process holds, and a lock older than a minute whose
+# holder no longer answers is removed on the way out so the next caller is
+# not taxed again (a real hold lasts milliseconds); a holder that still
+# answers keeps its lock however old, since evicting a live writer lets it
+# finish over whatever the next holder writes. A lock that vanishes between the failed mkdir and the
 # look at it was just released, and the next mkdir is tried at once. Returns
 # 0 holding the lock with its pid written, 1 holding nothing; a directory
 # that cannot hold a lock at all (missing, read-only) is not waited on.
@@ -202,7 +204,13 @@ _cs_mkdir_lock() {  # lock dir
     until mkdir "$lock" 2>/dev/null; do
         [ -d "$dir" ] && [ -w "$dir" ] || return 1
         if [ "$SECONDS" -ge "$deadline" ]; then
-            [ -z "$(find "$lock" -prune -mmin +1 2>/dev/null)" ] || _cs_mkdir_reclaim "$lock" ""
+            if [ -n "$(find "$lock" -prune -mmin +1 2>/dev/null)" ]; then
+                holder=""
+                { read -r holder < "$lock/pid"; } 2>/dev/null || true
+                if [ -z "$holder" ] || ! kill -0 "$holder" 2>/dev/null; then
+                    _cs_mkdir_reclaim "$lock" "$holder"
+                fi
+            fi
             return 1
         fi
         if [ ! -d "$lock" ]; then
