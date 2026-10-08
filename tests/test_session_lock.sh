@@ -164,9 +164,36 @@ test_lock_cleaned_on_session_end() {
     # `walk` into a teammate's environment — so running this suite from a
     # teammate shell silently tested the OTHER branch and reported a failure
     # that looked like a flake.
-    echo '{"session_id": "test-123"}' | CS_RESOLVED_FROM=env "$SCRIPT_DIR/../hooks/session-end.sh"
+    # The hook models the lead: the claude firing it is the process cs
+    # exec'd into, so CLAUDE_PID is the launch pid.
+    echo '{"session_id": "test-123"}' | CS_RESOLVED_FROM=env CS_LEAD_PID=$$ CLAUDE_PID=$$ "$SCRIPT_DIR/../hooks/session-end.sh"
 
     assert_not_exists "$meta_dir/session.lock" "Lock should be cleaned up by session-end hook" || return 1
+}
+
+# A `claude -p` run from the lead's Bash tool (a plugin, a council query, a
+# script) inherits the exported contract, so its SessionEnd resolves from the
+# env like the lead's. It is not the lead: its claude is neither the launch
+# pid nor the launch's child. Stripping the lock there lets `cs <name>` open a
+# duplicate while the lead is live.
+test_session_end_keeps_the_lock_for_a_child_that_inherited_the_contract() {
+    create_lock_test_session "test-session"
+    local meta_dir="$CS_SESSIONS_ROOT/test-session/.cs"
+
+    sleep 300 &
+    local lead_pid=$!
+    echo "$lead_pid" > "$meta_dir/session.lock"
+
+    export CLAUDE_SESSION_NAME="test-session"
+    export CLAUDE_SESSION_DIR="$CS_SESSIONS_ROOT/test-session"
+    export CLAUDE_SESSION_META_DIR="$meta_dir"
+
+    # CLAUDE_PID is this test runner: alive, not the lead, not its child.
+    echo '{"session_id": "child-1", "reason": "other"}' \
+        | CS_RESOLVED_FROM=env CS_LEAD_PID="$lead_pid" CLAUDE_PID=$$ "$SCRIPT_DIR/../hooks/session-end.sh"
+
+    assert_eq "$lead_pid" "$(cat "$meta_dir/session.lock" 2>/dev/null)" \
+        "a nested claude that inherited the contract must not strip the lead's lock" || return 1
 }
 
 # /clear and /resume end a conversation but not the claude that holds the
@@ -604,11 +631,49 @@ echo "Session lock tests"
 echo "=================="
 echo ""
 
+
+# Two `cs <name>` started together both read "no lock", both write their pid,
+# both launch: one UUID, two claudes. The lock must be taken atomically, so of
+# N openers released at the same instant exactly one holds it. The openers
+# are the real acquire function with its refusal path in a non-interactive
+# shell; they block on a fifo until all are started, so their check-then-write
+# windows overlap, which is what the plain `echo $$ >` loses on.
+test_simultaneous_opens_take_the_lock_in_turn() {
+    create_lock_test_session "lockrace"
+    local meta_dir="$CS_SESSIONS_ROOT/lockrace/.cs" gate="$TEST_TMPDIR/gate" winners="$TEST_TMPDIR/winners"
+    mkfifo "$gate"
+    : > "$winners"
+    local i pids=""
+    for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+        (
+            # shellcheck disable=SC1090
+            . "$SCRIPT_DIR/../lib/05-term.sh"
+            . "$SCRIPT_DIR/../lib/15-lock.sh"
+            cs_interactive() { return 1; }
+            warn() { :; }
+            read -r _ < "$gate"
+            acquire_session_lock "$meta_dir" "" lockrace >/dev/null 2>&1 && echo "$BASHPID" >> "$winners"
+        ) &
+        pids="$pids $!"
+    done
+    sleep 0.5
+    # One writer line per reader: every opener gets its release at once.
+    for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do echo go; done > "$gate" &
+    wait $pids 2>/dev/null || true
+    wait 2>/dev/null || true
+    local n
+    n=$(wc -l < "$winners" | tr -d ' ')
+    assert_eq "1" "$n" "exactly one of 20 simultaneous openers holds the lock" || return 1
+    assert_eq "$(cat "$winners")" "$(cat "$meta_dir/session.lock")" "the lock names the winner" || return 1
+}
+
 run_test test_lock_created_on_launch
+run_test test_simultaneous_opens_take_the_lock_in_turn
 run_test test_lock_prevents_duplicate_session
 run_test test_stale_lock_is_reclaimed
 run_test test_force_overrides_live_lock
 run_test test_lock_cleaned_on_session_end
+run_test test_session_end_keeps_the_lock_for_a_child_that_inherited_the_contract
 run_test test_session_end_keeps_the_lock_for_clear_and_resume
 run_test test_session_end_leaves_a_live_lock_it_does_not_own
 run_test test_session_end_clears_a_stale_lock_even_when_walked_in
