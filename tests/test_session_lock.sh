@@ -731,9 +731,84 @@ SHIM
     assert_eq "1" "$(wc -l < "$winners" | tr -d ' ')" "exactly one of the two openers of a stale lock holds it" || return 1
 }
 
+# SessionEnd clears a dead holder's lock when the hook is not the lead's. It
+# reads the pid and removes the file, so it races an opener exactly as a
+# second opener did: paused between its read of the dead pid and its remove,
+# it would delete the live lock an opener made meanwhile, and the next open
+# would find no lock at all. The hook is paused inside its rm by an rm on its
+# PATH that waits on a gate file; the opener runs with the real rm.
+test_session_end_stale_clear_does_not_remove_a_newer_holders_lock() {
+    create_lock_test_session "lockhook"
+    local meta_dir="$CS_SESSIONS_ROOT/lockhook/.cs" shim="$TEST_TMPDIR/rmshim-hook"
+    local paused="$TEST_TMPDIR/hookrm.paused" gate="$TEST_TMPDIR/hookrm.gate" winners="$TEST_TMPDIR/hook.winners"
+    local dead pid_hook pid_open i=0
+    bash -c 'exit 0' & dead=$!; wait "$dead"
+    echo "$dead" > "$meta_dir/session.lock"
+    : > "$winners"
+    mkdir -p "$shim"
+    cat > "$shim/rm" <<SHIM
+#!/bin/bash
+case "\$*" in
+    *"/session.lock") touch "$paused"; until [ -e "$gate" ]; do sleep 0.05; done ;;
+esac
+exec /bin/rm "\$@"
+SHIM
+    chmod +x "$shim/rm"
+    echo '{"session_id": "hook-race"}' | PATH="$shim:$PATH" CLAUDE_SESSION_NAME=lockhook \
+        CLAUDE_SESSION_DIR="$CS_SESSIONS_ROOT/lockhook" CLAUDE_SESSION_META_DIR="$meta_dir" \
+        CS_RESOLVED_FROM=walk "$SCRIPT_DIR/../hooks/session-end.sh" >/dev/null 2>&1 &
+    pid_hook=$!
+    until [ -e "$paused" ] || [ "$i" -ge 200 ]; do sleep 0.05; i=$((i + 1)); done
+    assert_file_exists "$paused" "the hook reached its remove of the stale lock" || { touch "$gate"; wait; return 1; }
+    LOCK_LIB="$SCRIPT_DIR/../lib" LOCK_META="$meta_dir" LOCK_WINNERS="$winners" bash -c '
+        . "$LOCK_LIB/05-term.sh"
+        . "$LOCK_LIB/02-shared.sh"
+        . "$LOCK_LIB/15-lock.sh"
+        cs_interactive() { return 1; }
+        warn() { :; }
+        acquire_session_lock "$LOCK_META" "" lockhook >/dev/null 2>&1 && { echo "$$" >> "$LOCK_WINNERS"; sleep 4; }
+    ' &
+    pid_open=$!
+    i=0
+    while kill -0 "$pid_open" 2>/dev/null && [ ! -s "$winners" ] && [ "$i" -lt 30 ]; do sleep 0.05; i=$((i + 1)); done
+    touch "$gate"
+    wait "$pid_hook" 2>/dev/null || true
+    i=0
+    until [ -s "$winners" ] || [ "$i" -ge 140 ]; do sleep 0.05; i=$((i + 1)); done
+    assert_eq "$(cat "$winners")" "$(cat "$meta_dir/session.lock" 2>/dev/null)" \
+        "the opener that took the lock still holds it after the hook's stale clear" || { wait; return 1; }
+    wait "$pid_open" 2>/dev/null || true
+}
+
+# An opener that cannot take the session.lock.d mutex (another cs holds it
+# and still answers) must not touch session.lock. Going ahead without it after
+# the wait reopens the stale-reclaim race the mutex closes: the holder may be
+# paused between reading a dead pid and removing the file. The opener refuses.
+test_open_refuses_when_the_lock_mutex_stays_held() {
+    create_lock_test_session "lockheld"
+    local meta_dir="$CS_SESSIONS_ROOT/lockheld/.cs" dead holder rc=0
+    bash -c 'exit 0' & dead=$!; wait "$dead"
+    echo "$dead" > "$meta_dir/session.lock"
+    sleep 30 & holder=$!
+    mkdir "$meta_dir/session.lock.d" && echo "$holder" > "$meta_dir/session.lock.d/pid"
+    LOCK_LIB="$SCRIPT_DIR/../lib" LOCK_META="$meta_dir" bash -c '
+        . "$LOCK_LIB/05-term.sh"
+        . "$LOCK_LIB/02-shared.sh"
+        . "$LOCK_LIB/15-lock.sh"
+        cs_interactive() { return 1; }
+        warn() { :; }
+        acquire_session_lock "$LOCK_META" "" lockheld
+    ' >/dev/null 2>&1 || rc=$?
+    kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+    assert_eq "1" "$rc" "the open refuses while another cs holds the lock mutex" || return 1
+    assert_eq "$dead" "$(cat "$meta_dir/session.lock")" "the lock file is left as it was" || return 1
+}
+
 run_test test_lock_created_on_launch
 run_test test_simultaneous_opens_take_the_lock_in_turn
 run_test test_stale_lock_reclaim_does_not_remove_a_newer_holders_lock
+run_test test_session_end_stale_clear_does_not_remove_a_newer_holders_lock
+run_test test_open_refuses_when_the_lock_mutex_stays_held
 run_test test_lock_prevents_duplicate_session
 run_test test_stale_lock_is_reclaimed
 run_test test_force_overrides_live_lock
