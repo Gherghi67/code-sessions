@@ -1310,7 +1310,9 @@ session_heartbeat_alive() {  # meta_dir, now_epoch
 # statusline heartbeat. Display surfaces (cs -live, cs -usage) use this so they
 # match the TUI. The destructive guards (rm/archive/spawn) use strict
 # session_is_live, so a session whose process is gone can still be removed
-# without --force even if its statusline was touched recently.
+# without --force even if its statusline was touched recently. Uninstall's
+# delete of the whole sessions root uses this broader test: it has no --force,
+# and a conversation opened outside cs holds no lock.
 session_display_live() {  # meta_dir, now_epoch
     session_is_live "$1" || session_heartbeat_alive "$1" "$2"
 }
@@ -10649,11 +10651,6 @@ run_uninstall() {
         info "Removed $install_dir/cs"
     fi
 
-    if [ -f "$install_dir/cs-secrets" ]; then
-        rm "$install_dir/cs-secrets"
-        info "Removed $install_dir/cs-secrets"
-    fi
-
     if [ -f "$install_dir/cs-statusline" ]; then
         rm "$install_dir/cs-statusline"
         info "Removed $install_dir/cs-statusline"
@@ -10837,16 +10834,34 @@ run_uninstall() {
         fi
     fi
 
+    # Removed only after the keychain purge above, which runs it.
+    if [ -f "$install_dir/cs-secrets" ]; then
+        rm "$install_dir/cs-secrets"
+        info "Removed $install_dir/cs-secrets"
+    fi
+
     # Ask about session data. rm -rf recurses into a mount, so with a volume
     # mounted inside the sessions root (an open encrypted session's vault) the
     # data stays and the question is not asked.
+    # A live session (a running lock pid, or a fresh statusline heartbeat for
+    # one opened outside cs) would have its files deleted from under it, so
+    # the data stays and uninstall exits non-zero naming them.
     if [ -d "$SESSIONS_ROOT" ]; then
         echo ""
-        local mounted
+        local mounted live_sessions="" entry now
+        now=$(date +%s)
+        for entry in "$SESSIONS_ROOT"/*; do
+            [ -d "$entry/.cs" ] || continue
+            if session_display_live "$entry/.cs" "$now"; then
+                live_sessions="$live_sessions ${entry##*/}"
+            fi
+        done
         if ! mounted=$(_volume_mounted_under "$SESSIONS_ROOT"); then
             warn "Kept $SESSIONS_ROOT: cs could not read the mount table, so it cannot tell whether a volume is mounted inside it."
         elif [ -n "$mounted" ]; then
             warn "Kept $SESSIONS_ROOT: a volume is mounted inside it at $mounted, and deleting the directory would delete what the volume holds. Unmount it before you delete $SESSIONS_ROOT."
+        elif [ -n "$live_sessions" ]; then
+            error "Kept $SESSIONS_ROOT: these sessions are live:$live_sessions. Close them, then delete $SESSIONS_ROOT."
         else
             warn "Session data exists at $SESSIONS_ROOT"
             read -p "Delete session data? This cannot be undone. [y/N] " -n 1 -r
