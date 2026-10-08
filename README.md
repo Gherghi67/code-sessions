@@ -100,7 +100,7 @@ No git repo required. No project structure needed. Just a name for what you're w
 ### Bash (macOS/Linux)
 
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/hex/claude-sessions/main/install.sh)"
+curl -fsSL https://github.com/hex/claude-sessions/releases/latest/download/install.sh | bash
 ```
 
 Or clone and run `./install.sh`.
