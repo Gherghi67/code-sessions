@@ -335,6 +335,45 @@ _launch_worker() {
     CS_SPAWN_TOKEN="$OWN_TOKEN" "$CS_BIN" worker <<< "" 2>&1
 }
 
+# A foreign open on a terminal: the consent ask reads a keypress from a tty,
+# never from redirected stdin, so the launch runs on a pty and the keys are
+# typed once the ask appears. Keys take Python escapes (\r, \x1b). Output
+# comes back with CRLF folded.
+_launch_worker_on_tty() {  # keys, [VAR=value ...]
+    local keys="$1"; shift
+    env "$@" python3 - "$keys" "$CS_BIN" worker << 'PY'
+import os, pty, select, sys, time
+keys = sys.argv[1].encode("latin1").decode("unicode_escape").encode("latin1")
+cmd = sys.argv[2:]
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp(cmd[0], cmd)
+out = b""
+sent = False
+start = time.time()
+while True:
+    ready, _, _ = select.select([fd], [], [], 0.2)
+    if ready:
+        try:
+            data = os.read(fd, 65536)
+        except OSError:
+            break
+        if not data:
+            break
+        out += data
+    if not sent and (b"[Y/n]" in out or time.time() - start > 8):
+        if keys:
+            os.write(fd, keys)
+        sent = True
+    if time.time() - start > 20:
+        os.kill(pid, 9)
+        break
+_, status = os.waitpid(pid, 0)
+sys.stdout.buffer.write(out.replace(b"\r\n", b"\n"))
+sys.exit(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 1)
+PY
+}
+
 test_launch_consumes_seed_queues_arms_and_kicks() {
     _stage_seed boss "first job" "second job"
     local out; out=$(_launch_worker) || return 1
@@ -566,10 +605,26 @@ test_launch_seed_without_a_token_line_is_foreign() {
     assert_eq "0" "$(WQ_COUNT)" "nothing queued" || return 1
 }
 
+# Codex round 1: `<<< ""` hands the ask a newline, which read -rsn1 returns
+# as the empty answer, and the default arm consumed a foreign seed with no
+# human at all. Redirected stdin of any content leaves the seed staged.
+test_launch_foreign_seed_redirected_stdin_stays_staged() {
+    _stage_seed boss "foreign job"
+    local out
+    out=$("$CS_BIN" worker <<< "" 2>&1) || return 1
+    assert_file_exists "$CS_SESSIONS_ROOT/.spawn/worker.seed" "seed left staged on a piped newline" || return 1
+    assert_eq "0" "$(WQ_COUNT)" "nothing queued on a piped newline" || return 1
+    out=$("$CS_BIN" worker <<< "y" 2>&1) || return 1
+    assert_file_exists "$CS_SESSIONS_ROOT/.spawn/worker.seed" "seed left staged on a piped y" || return 1
+    assert_eq "0" "$(WQ_COUNT)" "nothing queued on a piped y" || return 1
+    assert_output_not_contains "$out" "\\[Y/n\\]" "no ask without a terminal" || return 1
+    assert_output_contains "$out" "worker.seed" "the launch names the staged seed" || return 1
+}
+
 test_launch_foreign_seed_consent_shows_it_and_enter_consumes() {
     _stage_seed boss "first job" "second job"
     printf 'brief body\n' > "$CS_SESSIONS_ROOT/.spawn/worker.brief.md"
-    local out; out=$("$CS_BIN" worker <<< "" 2>&1) || return 1
+    local out; out=$(_launch_worker_on_tty '\r') || { echo "  launch failed: $out"; return 1; }
     assert_output_contains "$out" "\\[Y/n\\]" "consent asked" || return 1
     assert_output_contains "$out" "boss" "spawner shown" || return 1
     assert_output_contains "$out" "first job" "task 1 shown" || return 1
@@ -583,10 +638,32 @@ test_launch_foreign_seed_consent_shows_it_and_enter_consumes() {
     assert_output_contains "$out" "armed with 2 task(s)" "kick present" || return 1
 }
 
+test_launch_foreign_seed_y_consumes() {
+    _stage_seed boss "yes job"
+    local out; out=$(_launch_worker_on_tty 'y') || { echo "  launch failed: $out"; return 1; }
+    assert_eq "1" "$(WQ_COUNT)" "task queued after y" || return 1
+    assert_output_contains "$out" "armed with 1 task(s)" "kick present" || return 1
+}
+
+test_launch_foreign_seed_unknown_key_asks_again() {
+    _stage_seed boss "retry job"
+    local out; out=$(_launch_worker_on_tty 'xn') || { echo "  launch failed: $out"; return 1; }
+    assert_eq "0" "$(WQ_COUNT)" "an unknown key is not consent" || return 1
+    assert_file_exists "$CS_SESSIONS_ROOT/.spawn/worker.seed.stale" "the n after it declined" || return 1
+    [ "$(printf '%s' "$out" | grep -c 'Y/n')" -ge 2 ] || { echo "  ask not repeated after an unknown key"; return 1; }
+}
+
+test_launch_foreign_seed_escape_declines() {
+    _stage_seed boss "escaped job"
+    local out; out=$(_launch_worker_on_tty '\x1b') || { echo "  launch failed: $out"; return 1; }
+    assert_eq "0" "$(WQ_COUNT)" "nothing queued after Escape" || return 1
+    assert_file_exists "$CS_SESSIONS_ROOT/.spawn/worker.seed.stale" "Escape set the seed aside" || return 1
+}
+
 test_launch_foreign_seed_declined_is_set_aside() {
     _stage_seed boss "declined job"
     printf 'brief body\n' > "$CS_SESSIONS_ROOT/.spawn/worker.brief.md"
-    local out; out=$("$CS_BIN" worker <<< "n" 2>&1) || return 1
+    local out; out=$(_launch_worker_on_tty 'n') || { echo "  launch failed: $out"; return 1; }
     [ ! -f "$CS_SESSIONS_ROOT/.spawn/worker.seed" ] || { echo "  declined seed still staged"; return 1; }
     assert_file_exists "$CS_SESSIONS_ROOT/.spawn/worker.seed.stale" "declined seed set aside" || return 1
     assert_file_exists "$CS_SESSIONS_ROOT/.spawn/worker.brief.md.stale" "declined brief set aside" || return 1
@@ -602,7 +679,7 @@ test_launch_seed_control_characters_are_shown_flat() {
     # other control characters; the consent listing shows them stripped.
     mkdir -p "$CS_SESSIONS_ROOT/.spawn"
     printf '%s\nbo\001ss\nfirst\rjob \033[31mred\n' "$OWN_TOKEN" > "$CS_SESSIONS_ROOT/.spawn/worker.seed"
-    local out; out=$("$CS_BIN" worker <<< "n" 2>&1) || return 1
+    local out; out=$(_launch_worker_on_tty 'n') || { echo "  launch failed: $out"; return 1; }
     assert_output_contains "$out" "boss" "spawner shown flat" || return 1
     assert_output_contains "$out" "firstjob" "task shown flat" || return 1
     assert_output_not_contains "$out" $'\033\[31m' "escape sequence not passed through" || return 1
@@ -687,7 +764,11 @@ run_test test_launch_own_window_consumes_without_asking
 run_test test_launch_foreign_seed_unattended_stays_staged
 run_test test_launch_wrong_token_is_a_foreign_open
 run_test test_launch_seed_without_a_token_line_is_foreign
+run_test test_launch_foreign_seed_redirected_stdin_stays_staged
 run_test test_launch_foreign_seed_consent_shows_it_and_enter_consumes
+run_test test_launch_foreign_seed_y_consumes
+run_test test_launch_foreign_seed_unknown_key_asks_again
+run_test test_launch_foreign_seed_escape_declines
 run_test test_launch_foreign_seed_declined_is_set_aside
 run_test test_launch_seed_control_characters_are_shown_flat
 run_test test_launch_token_never_reaches_claude
