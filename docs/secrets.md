@@ -120,8 +120,9 @@ cs -secrets age add age1abc123...
 # List who can decrypt
 cs -secrets age list
 
-# Revoke access (re-export to re-encrypt without them)
+# Revoke access (the next export re-encrypts without them)
 cs -secrets age remove colleague
+cs -secrets export-file
 ```
 
 **How it works:**
@@ -169,7 +170,12 @@ silently dropped.
 `export-file` also **skips the write when nothing changed**: it decrypts the
 existing file and compares the plaintext, so re-exporting an unchanged store
 does not churn the file's bytes (each encryption pass would otherwise emit fresh
-ciphertext from a random salt / ephemeral key).
+ciphertext from a random salt / ephemeral key). For an age file, "nothing
+changed" also covers the recipients: the machine records the recipient set it
+encrypted each file to (`.cs/local/age-exported-to`), and any add or removal
+makes the next export re-encrypt even when no secret changed. A removed
+recipient keeps reading other machines' sync files until those machines
+export, and every copy already in git history.
 
 `import-file` (with no path argument) **merges every sync file it can decrypt** —
 all `.cs/secrets.*.age` / `.cs/secrets.*.enc` from every machine, plus the legacy

@@ -916,6 +916,21 @@ _age_decrypts_to() {
     printf '%s' "$plain" | grep -qF "$expected"
 }
 
+test_age_export_skips_rewrite_when_nothing_changed() {
+    _use_real_age || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f
+    f="$meta/secrets.$(_machine_id).age"
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
+    cp "$f" "$TEST_TMPDIR/before.age"
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: second export failed"; return 1; }
+    if ! cmp -s "$f" "$TEST_TMPDIR/before.age"; then
+        echo "  FAIL: an export with the same secrets and recipients rewrote the age sync file"
+        return 1
+    fi
+}
+
 test_age_add_reencrypts_an_unchanged_store() {
     _use_real_age || return $?
     local meta="$CS_SESSIONS_ROOT/test-session/.cs"
@@ -1952,6 +1967,7 @@ run_test test_sync_export_import_keep_values_off_argv
 run_test test_keychain_export_file_keeps_values_off_argv
 
 # age recipients
+run_test test_age_export_skips_rewrite_when_nothing_changed
 run_test test_age_add_reencrypts_an_unchanged_store
 run_test test_age_remove_reencrypts_an_unchanged_store
 
