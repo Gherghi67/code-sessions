@@ -735,6 +735,26 @@ test_uninstall_refuses_to_delete_session_data_while_a_session_is_live() {
         "the refusal names exactly the live sessions" || return 1
 }
 
+# Codex (batch 1, round 2): the liveness scan globbed `*`, which skips a
+# dot-prefixed session directory. A session named before leading dots were
+# refused (.work) can still be live, and uninstall offered to rm -rf the root
+# over it. Hidden directories count; only . and .. are skipped.
+test_uninstall_refuses_to_delete_session_data_while_a_dotted_session_is_live() {
+    local home="$TEST_TMPDIR/dot-home" root="$TEST_TMPDIR/dot-sessions" stub="$TEST_TMPDIR/mount-stub-dot"
+    mkdir -p "$home/.claude" "$root/.work/.cs" "$root/plain/.cs"
+    echo "$$" > "$root/.work/.cs/session.lock"
+    echo 99999999 > "$root/plain/.cs/session.lock"
+    _stub_mount_table "$stub" "/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled)" || return 1
+    local rc=0 out
+    printf 'yny' | HOME="$home" CS_SESSIONS_ROOT="$root" PATH="$stub:$PATH" "$CS_BIN" -uninstall \
+        > "$TEST_TMPDIR/dot.out" 2>&1 || rc=$?
+    out=$(cat "$TEST_TMPDIR/dot.out")
+    [ "$rc" -ne 0 ] || { echo "  FAIL: uninstall must exit non-zero while a dot-prefixed session is live"; return 1; }
+    assert_file_exists "$root/.work/.cs/session.lock" "the live dotted session's data survives" || return 1
+    assert_output_contains "$out" "Kept $root: these sessions are live: \.work\. Close them" \
+        "the refusal names the dotted session" || return 1
+}
+
 # A live session is refused the same way when a volume is also mounted inside
 # the sessions root: the live refusal comes first and exits non-zero.
 test_uninstall_refuses_a_live_session_even_with_a_volume_mounted_inside() {
@@ -1494,6 +1514,7 @@ run_test test_uninstall_keeps_session_data_when_the_mount_table_cannot_be_read
 run_test test_uninstall_deletes_session_data_with_no_volume_mounted_inside
 run_test test_uninstall_purges_secrets_before_removing_cs_secrets
 run_test test_uninstall_refuses_to_delete_session_data_while_a_session_is_live
+run_test test_uninstall_refuses_to_delete_session_data_while_a_dotted_session_is_live
 run_test test_uninstall_refuses_a_live_session_even_with_a_volume_mounted_inside
 run_test test_install_replaces_a_symlinked_mod_directory
 run_test test_strip_filters_in_sync

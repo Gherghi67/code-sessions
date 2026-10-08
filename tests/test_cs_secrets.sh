@@ -916,6 +916,56 @@ _age_decrypts_to() {
     grep -qF -- "$expected" <<< "$plain"
 }
 
+# Codex (batch 1, round 2): the pin list lived at .cs/local/age-trusted, inside
+# the checkout. .cs/local is gitignored, but `git add -f` is not, so a push
+# carrying attacker.pub plus a pin list naming its fingerprint made a fresh
+# clone trust the pusher with no local age add. The machine-local age state
+# lives outside the checkout, under ~/.cs-secrets, where nothing git can
+# carry reaches it: a planted pin list in the session is never read.
+test_export_ignores_a_pin_list_planted_in_the_checkout() {
+    _use_real_age || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f out rc=0 attacker_fp
+    f="$meta/secrets.$(_machine_id).age"
+    _make_age_identity attacker || { echo "  FAIL: could not create a test identity"; return 1; }
+    "$CS_SECRETS_BIN" age init >/dev/null 2>&1 || { echo "  FAIL: age init failed"; return 1; }
+    mkdir -p "$meta/age-recipients" "$meta/local"
+    cp "$TEST_TMPDIR/attacker.pub" "$meta/age-recipients/attacker.pub"
+    attacker_fp=$(printf '%s' "$(head -1 "$TEST_TMPDIR/attacker.pub")" | shasum -a 256 | cut -d' ' -f1)
+    printf '%s\n' "$attacker_fp" > "$meta/local/age-trusted"
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "  FAIL: a pin list planted in the checkout was trusted: $out"
+        return 1
+    fi
+    assert_output_contains "$out" "age add .*age-recipients/attacker\\.pub" "the refusal names attacker.pub with its pin command" || return 1
+    if [ -s "$f" ]; then
+        echo "  FAIL: the refused export wrote the sync file"
+        return 1
+    fi
+}
+
+# Codex (batch 1, round 2): the recipients lock lived in the session's .cs/local
+# too, so a password export of a nonempty store to an external path needed a
+# writable checkout even though it writes nothing into the session. The lock
+# lives beside the other machine-local age state, under ~/.cs-secrets.
+test_password_export_to_an_external_path_needs_no_writable_checkout() {
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local out rc=0
+    mkdir -p "$meta"
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    chmod 500 "$meta"
+    out=$(PATH="$(_ageless_path)" "$CS_SECRETS_BIN" export-file "$TEST_TMPDIR/external.enc" 2>&1) || rc=$?
+    chmod 700 "$meta"
+    [ "$rc" -eq 0 ] || { echo "  FAIL: a password export to an external path failed on a read-only checkout (rc=$rc): $out"; return 1; }
+    assert_file_exists "$TEST_TMPDIR/external.enc" "the external sync file is written" || return 1
+    local restored
+    restored=$(openssl enc -aes-256-cbc -d -pbkdf2 -iter 100000 \
+        -in "$TEST_TMPDIR/external.enc" -pass "pass:$CS_SECRETS_PASSWORD" 2>/dev/null)
+    assert_output_contains "$restored" "sk_123" "the external file holds the store" || return 1
+}
+
 test_age_export_skips_rewrite_when_nothing_changed() {
     _use_real_age || return $?
     local meta="$CS_SESSIONS_ROOT/test-session/.cs"
@@ -2126,6 +2176,8 @@ run_test test_age_remove_reencrypts_an_unchanged_store
 run_test test_export_refuses_an_unpinned_pushed_recipient
 run_test test_export_encrypts_to_a_recipient_pinned_by_age_add
 run_test test_export_never_pins_from_a_forged_sync_file
+run_test test_export_ignores_a_pin_list_planted_in_the_checkout
+run_test test_password_export_to_an_external_path_needs_no_writable_checkout
 run_test test_export_on_a_fresh_clone_pins_nothing
 run_test test_age_remove_drops_the_pin
 
