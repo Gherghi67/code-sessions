@@ -1036,38 +1036,51 @@ test_export_encrypts_to_a_recipient_pinned_by_age_add() {
 # A machine that exported before pinning existed (its own sync file is there,
 # no pin list): the first export pins the recipients present, says so once,
 # and pins nothing that arrives afterwards.
-test_export_pins_existing_recipients_once() {
+# Codex (batch 1, round 1): the one-time migration keyed trust on the
+# existence of this machine's own sync file, a TRACKED file with a predictable
+# name. A push adding attacker.pub beside an empty secrets.<user>@<host>.age
+# made a fresh clone's first export pin everyone. No automatic pin from
+# anything git can carry: only this machine's own public key is pinned by
+# content (encrypting to a key whose private half is here trusts nobody new);
+# every other recipient needs an `age add` on this machine.
+test_export_never_pins_from_a_forged_sync_file() {
     _use_real_age || return $?
     local meta="$CS_SESSIONS_ROOT/test-session/.cs"
     local f out rc=0
     f="$meta/secrets.$(_machine_id).age"
-    _make_age_identity colleague || { echo "  FAIL: could not create a test identity"; return 1; }
-    _make_age_identity intruder || { echo "  FAIL: could not create a test identity"; return 1; }
+    _make_age_identity attacker || { echo "  FAIL: could not create a test identity"; return 1; }
     "$CS_SECRETS_BIN" age init >/dev/null 2>&1 || { echo "  FAIL: age init failed"; return 1; }
     mkdir -p "$meta/age-recipients"
     cp "$HOME/.cs-secrets/age.pub" "$meta/age-recipients/self.pub"
-    cp "$TEST_TMPDIR/colleague.pub" "$meta/age-recipients/colleague.pub"
+    cp "$TEST_TMPDIR/attacker.pub" "$meta/age-recipients/attacker.pub"
+    # The forged sync file a push can plant: tracked, predictable name, empty.
+    : > "$f"
     "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
-    # This machine's sync file from an export made before pinning existed.
-    printf '{"api_key":"sk_123"}\n' | age -r "$(cat "$HOME/.cs-secrets/age.pub")" \
-        -r "$(cat "$TEST_TMPDIR/colleague.pub")" -o "$f" \
-        || { echo "  FAIL: could not seed the pre-pinning sync file"; return 1; }
-    out=$("$CS_SECRETS_BIN" export-file 2>&1) || { echo "  FAIL: first export failed: $out"; return 1; }
-    assert_output_contains "$out" "Pinned 2 age recipient" "the first export reports the pins it made" || return 1
-    if ! _age_decrypts_to "$TEST_TMPDIR/colleague.key" "$f" "sk_123"; then
-        echo "  FAIL: a recipient present before pinning cannot decrypt the export"
-        return 1
-    fi
-    "$CS_SECRETS_BIN" set api_key "sk_456" >/dev/null 2>&1 || return 1
-    out=$("$CS_SECRETS_BIN" export-file 2>&1) || { echo "  FAIL: second export failed: $out"; return 1; }
-    assert_output_not_contains "$out" "Pinned" "the pin message appears only once" || return 1
-    cp "$TEST_TMPDIR/intruder.pub" "$meta/age-recipients/intruder.pub"
     out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
     if [ "$rc" -eq 0 ]; then
-        echo "  FAIL: a recipient arriving after the one-time pin was accepted: $out"
+        echo "  FAIL: a forged sync file made the first export pin a pushed key: $out"
         return 1
     fi
-    assert_output_contains "$out" "intruder\.pub" "the refusal names the late file" || return 1
+    assert_output_contains "$out" "age add .*age-recipients/attacker\.pub" "the refusal names attacker.pub with its pin command" || return 1
+    assert_output_not_contains "$out" "self\.pub" "this machine's own key is pinned by content, not listed" || return 1
+    assert_output_not_contains "$out" "Pinned" "nothing is pinned automatically" || return 1
+    if [ -s "$f" ]; then
+        echo "  FAIL: the refused export wrote the sync file"
+        return 1
+    fi
+    local attacker_fp
+    attacker_fp=$(printf '%s' "$(head -1 "$TEST_TMPDIR/attacker.pub")" | shasum -a 256 | cut -d' ' -f1)
+    if [ -f "$meta/local/age-trusted" ] && grep -qxF "$attacker_fp" "$meta/local/age-trusted"; then
+        echo "  FAIL: attacker.pub is in the pin list"
+        return 1
+    fi
+    # Only an explicit age add on this machine admits the key.
+    "$CS_SECRETS_BIN" age add "$meta/age-recipients/attacker.pub" >/dev/null 2>&1 || { echo "  FAIL: age add failed"; return 1; }
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || { echo "  FAIL: export after the explicit pin failed: $out"; return 1; }
+    if ! _age_decrypts_to "$TEST_TMPDIR/attacker.key" "$f" "sk_123"; then
+        echo "  FAIL: an explicitly pinned recipient cannot decrypt the export"
+        return 1
+    fi
 }
 
 # A fresh clone (or a wiped .cs/local) has recipients but no sync file of this
@@ -2112,7 +2125,7 @@ run_test test_age_add_reencrypts_an_unchanged_store
 run_test test_age_remove_reencrypts_an_unchanged_store
 run_test test_export_refuses_an_unpinned_pushed_recipient
 run_test test_export_encrypts_to_a_recipient_pinned_by_age_add
-run_test test_export_pins_existing_recipients_once
+run_test test_export_never_pins_from_a_forged_sync_file
 run_test test_export_on_a_fresh_clone_pins_nothing
 run_test test_age_remove_drops_the_pin
 
