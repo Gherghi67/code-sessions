@@ -29,11 +29,34 @@ test_flat_layout_migration_keeps_the_sessions_gitignore() {
         "the ignored key file is not committed by the migration" || return 1
 }
 
+# The sessions root also holds directories that are not sessions (editor
+# config, a worktree holder). Opening one by name is refused before cs writes
+# its session files into it.
+test_open_refuses_a_directory_that_is_not_a_session() {
+    local dir="$CS_SESSIONS_ROOT/notes" out rc=0
+    mkdir -p "$dir"
+    printf 'my notes\n' > "$dir/todo.txt"
+
+    out=$("$CS_BIN" notes <<< "" 2>&1) || rc=$?
+
+    assert_eq 1 "$rc" "opening a non-session directory exits 1" || return 1
+    assert_output_contains "$out" "Error: $dir is not a cs session (no .cs/ directory); cs will not write session files into it. Move it out of $CS_SESSIONS_ROOT or open another name." \
+        "the refusal names the directory" || return 1
+    assert_not_exists "$dir/.cs" "no .cs/ is created" || return 1
+    assert_not_exists "$dir/.gitignore" "no .gitignore is written" || return 1
+    assert_not_exists "$dir/CLAUDE.local.md" "no CLAUDE.local.md is written" || return 1
+    # Positive control: a directory that is a session still opens.
+    "$CS_BIN" real-session <<< "" >/dev/null 2>&1 || { echo "  FAIL: creating real-session failed"; return 1; }
+    out=$("$CS_BIN" real-session <<< "" 2>&1) \
+        || { echo "  FAIL: reopening a real session failed: $out"; return 1; }
+}
+
 echo ""
 echo "Opening existing directories under the sessions root"
 echo "===================================================="
 echo ""
 
 run_test test_flat_layout_migration_keeps_the_sessions_gitignore
+run_test test_open_refuses_a_directory_that_is_not_a_session
 
 report_results
