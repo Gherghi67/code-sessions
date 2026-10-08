@@ -797,6 +797,44 @@ test_retire_fuses_nothing_when_removal_fails_and_retry_fuses_once() {
     assert_eq "1" "$(grep -c "from-task" "$base_dir/.cs/timeline.jsonl")" "fused exactly once" || return 1
 }
 
+# An encrypted base keeps its log behind .cs/private, and a locked vault
+# cannot take the worktree's. Retire refuses before anything moves: the
+# worktree stays whole with its records, nothing is stranded in a .retire-*
+# staging directory, and the retry once the vault is mounted fuses once.
+test_retire_with_a_locked_base_vault_leaves_the_worktree_whole() {
+    local base_dir="$CS_SESSIONS_ROOT/proj"
+    mkdir -p "$base_dir/.cs"/{memory,local}
+    echo "# P" > "$base_dir/README.md"
+    printf '.cs/\n.claude/settings.local.json\n' > "$base_dir/.gitignore"
+    (cd "$base_dir" && git init -q && git config core.autocrlf false && git add -A && git commit -q -m init)
+    cs_launch "proj@t1"
+    local wt="$CS_SESSIONS_ROOT/proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    printf '{"event":"from-task"}\n' > "$wt/.cs/timeline.jsonl"
+    local sha output status=0
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    ln -s "$TEST_TMPDIR/vault-mnt/private" "$base_dir/.cs/private"
+
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+
+    assert_eq "1" "$status" "retire refuses while the base vault is locked: $output" || return 1
+    assert_output_contains "$output" "$base_dir/.cs/private is locked" "the refusal names the vault" || return 1
+    assert_dir "$wt" "the worktree survives" || return 1
+    assert_file_exists "$wt/.cs/timeline.jsonl" "the worktree keeps its records in place" || return 1
+    assert_file_not_contains "$base_dir/.cs/timeline.jsonl" "from-task" "nothing is fused" || return 1
+    local stranded
+    stranded=$(find "$CS_SESSIONS_ROOT" -maxdepth 1 -name '.retire-*')
+    assert_eq "" "$stranded" "no records are stranded in a staging directory" || return 1
+
+    mkdir -p "$TEST_TMPDIR/vault-mnt/private"
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retry with the vault mounted retires: $output" || return 1
+    assert_not_exists "$wt" "worktree removed on retry" || return 1
+    assert_eq "1" "$(grep -c "from-task" "$base_dir/.cs/timeline.jsonl")" "fused exactly once" || return 1
+}
+
 test_retire_refusal_for_an_open_session_comes_after_the_landing_check() {
     # An open conversation on an UNLANDED feature must hear "/finish first",
     # not "the feature is landed, close the session".
@@ -938,6 +976,7 @@ run_test test_retire_force_takes_a_squash_landed_branch
 run_test test_retire_force_still_refuses_untracked_work
 run_test test_retire_force_refuses_commits_after_the_captured_one
 run_test test_retire_fuses_nothing_when_removal_fails_and_retry_fuses_once
+run_test test_retire_with_a_locked_base_vault_leaves_the_worktree_whole
 run_test test_retire_refusal_for_an_open_session_comes_after_the_landing_check
 run_test test_retire_rejects_traversal_task_name
 run_test test_retire_is_hidden_from_completion_and_unknown_command_text
