@@ -2128,15 +2128,29 @@ _lock_collision_menu() {
     esac
 }
 
-# Acquire a PID-based session lock to prevent concurrent access
+# Acquire a PID-based session lock to prevent concurrent access. The lock is
+# taken by creating the file, which the filesystem does for exactly one
+# process (noclobber: the open fails when the file exists), never by a check
+# followed by a write: two opens started together both saw no lock, both
+# wrote their pid, and both launched a claude on one UUID. A loser reads the
+# winner's pid and takes the live-lock path; a lock whose holder is dead is
+# removed and the create tried again, with a bound so a lock that keeps
+# reappearing cannot spin forever. A force (flag or collision menu) replaces
+# the lock outright, as before: that is what force means.
 acquire_session_lock() {
     local meta_dir="$1"
     local force="${2:-}"
     local session_name="$3"
     local lock_file="$meta_dir/session.lock"
+    local lock_pid attempt=0
 
-    if [ -f "$lock_file" ]; then
-        local lock_pid
+    while :; do
+        if ( set -C; echo "$$" > "$lock_file" ) 2>/dev/null; then
+            # Verify: the create was ours only when the file still says so
+            # (a force from another opener could have replaced it meanwhile).
+            [ "$(cat "$lock_file" 2>/dev/null)" = "$$" ] && return 0
+        fi
+        attempt=$((attempt + 1))
         lock_pid=$(cat "$lock_file" 2>/dev/null || echo "")
 
         if [ -n "$lock_pid" ] && kill -0 "$lock_pid" 2>/dev/null; then
@@ -2155,14 +2169,21 @@ acquire_session_lock() {
                 echo -e "${DIM}Use --force to override: cs $session_name --force${NC}" >&2
                 exit 1
             fi
-        else
+            echo "$$" > "$lock_file"
+            return 0
+        fi
+
+        if [ "$attempt" -ge 5 ]; then
+            error "Could not take the session lock $lock_file after $attempt attempts (another cs keeps writing it?)"
+        fi
+        if [ -e "$lock_file" ]; then
             # PID is dead — stale lock
             warn "Removing stale session lock (PID ${lock_pid:-unknown})"
             rm -f "$lock_file"
         fi
-    fi
-
-    echo "$$" > "$lock_file"
+        # The file vanished between the failed create and the look at it, or
+        # was just removed as stale: try the create again.
+    done
 }
 
 # Release session lock if owned by current process

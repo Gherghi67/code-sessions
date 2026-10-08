@@ -123,7 +123,12 @@ fi
 # lib/15-lock.sh uses — a hook is a different process.
 # A /clear or /resume ends the conversation but not the claude that holds the
 # lock, so the lock stays until that claude exits.
-if [ "${CS_RESOLVED_FROM:-env}" = "env" ]; then
+# A claude started from inside the session (a `claude -p` from the Bash tool,
+# a plugin, a script) inherits the exported contract, so it resolves from the
+# env like the lead; it is not the lead, and its end must not strip the lead's
+# lock either. cs_is_lead tells the two apart by the launch pid.
+if [ "${CS_RESOLVED_FROM:-env}" = "env" ] \
+    && { ! command -v cs_is_nested_child >/dev/null 2>&1 || ! cs_is_nested_child; }; then
     case "$END_REASON" in
         clear|resume) ;;
         *) rm -f "$META_DIR/session.lock" 2>/dev/null || true ;;

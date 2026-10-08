@@ -761,6 +761,15 @@ fi
 COOLDOWN_FILE="$META_DIR/.narrative-reminder-cooldown"
 COOLDOWN_SECONDS=300  # 5 minutes
 
+# A claude started from inside the session (a `claude -p` the lead's Bash
+# tool ran) inherits the contract and would be told to update the narrative,
+# which is the lead's job; it would also spend the lead's cooldown. A front
+# end that walked in carries no launch pid and is not a nested child.
+if command -v cs_is_nested_child >/dev/null 2>&1 && cs_is_nested_child; then
+    echo '{"decision": "approve"}'
+    exit 0
+fi
+
 CURRENT_TIME=$(date +%s)
 
 # Cooldown: don't nag if we reminded recently
