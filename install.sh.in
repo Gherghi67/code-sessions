@@ -84,12 +84,22 @@ fi
 CLAUDE_SETTINGS="${HOME}/.claude/settings.json"
 SESSIONS_DIR="${HOME}/.claude-sessions"
 # Payload ref: `cs -update` pins this to the release tag (v<version>) so the
-# downloaded scripts/hooks match the verified installer; a fresh curl|bash
-# install defaults to main.
-REPO_URL="https://raw.githubusercontent.com/hex/claude-sessions/${CS_INSTALL_REF:-main}"
+# downloaded scripts/hooks match the verified installer. Without it the
+# installer reads CS_DEFAULT_REF: main in the checkout, which the release
+# workflow rewrites to the tag in the install.sh it publishes, so either
+# fetches the files whose sha256s it carries (CS_PAYLOAD_SHA256 below).
+CS_DEFAULT_REF=main
+REPO_URL="https://raw.githubusercontent.com/hex/claude-sessions/${CS_INSTALL_REF:-$CS_DEFAULT_REF}"
 RELEASES_URL="https://github.com/hex/claude-sessions/releases/download"
 
 # @@CS_MANIFESTS@@
+
+# The sha256 of every file a web install downloads, as "<sha256>  <repo
+# path>", written by build.sh from the files it was built with. This
+# installer is checksum-verified (and signature-verified when minisign is
+# installed) before `cs -update` runs it, so a payload file that does not
+# match is not the file that was released.
+# @@CS_PAYLOAD_SHA256@@
 
 # Everything that lands in HOOKS_DIR, for the copy and cleanup loops. The
 # libraries go first: a web install that stops partway then leaves new
@@ -193,8 +203,26 @@ show_banner
 # Create install directory if needed
 mkdir -p "$INSTALL_DIR"
 
-# A web install downloads every payload file before it puts any in place, so
-# a transfer that fails partway leaves the installed files as they were.
+# Whether downloaded file $STAGE_DIR/$1 has the sha256 CS_PAYLOAD_SHA256
+# carries for repo path $1. A path with no entry, or a digest that cannot be
+# computed, does not match.
+_payload_matches() {  # repo-path
+    local entry actual
+    actual=$(_cs_sha256_file "$STAGE_DIR/$1") || return 1
+    for entry in "${CS_PAYLOAD_SHA256[@]}"; do
+        if [ "${entry#*  }" = "$1" ]; then
+            [ "${entry%%  *}" = "$actual" ]
+            return
+        fi
+    done
+    return 1
+}
+
+# A web install downloads every payload file and checks it against the sha256
+# this installer carries before it puts any in place, so a transfer that fails
+# partway, or a file that is not the released one, leaves the installed files
+# as they were. A local install copies from its own checkout, which is what
+# it was built from, and checks nothing.
 if [ "$INSTALL_METHOD" = "web" ]; then
     if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
         error "Neither curl nor wget found. Please install one of them."
@@ -202,12 +230,17 @@ if [ "$INSTALL_METHOD" = "web" ]; then
     while IFS= read -r _rel; do
         mkdir -p "$STAGE_DIR/$(dirname "$_rel")"
         _download "$REPO_URL/$_rel" "$STAGE_DIR/$_rel" || error "Failed to download $_rel"
+        _payload_matches "$_rel" \
+            || error "$_rel does not match the sha256 this installer carries for it; nothing was installed"
     done < <(_cs_payload_files)
     for _rel in "${CS_COMPLETION_FILES[@]}"; do
         mkdir -p "$STAGE_DIR/$(dirname "$_rel")"
         if ! _download "$REPO_URL/$_rel" "$STAGE_DIR/$_rel"; then
             rm -f "$STAGE_DIR/$_rel"
             warn "Failed to download $_rel"
+        elif ! _payload_matches "$_rel"; then
+            rm -f "$STAGE_DIR/$_rel"
+            warn "$_rel does not match the sha256 this installer carries for it; not installed"
         fi
     done
 fi

@@ -1415,11 +1415,19 @@ test_install_removes_stale_opposite_platform_tui() {
 
 # Run install.sh's WEB path with the cs-tui download stubbed, so the checksum
 # gate can be driven into each of its "cannot verify" states. Echoes the bin dir.
+# The payload (raw.githubusercontent files) is served from this checkout, so
+# it passes the installer's own sha256 check and the run reaches cs-tui.
 # CS_TEST_SHA_FETCH=fail   -> the .sha256 sibling 404s
 # CS_TEST_SHA_TOOL=fail    -> the digest tool exists but errors, so no digest
 _install_tui_with_broken_verification() {  # tag
     local sandbox="$TEST_TMPDIR/tui-verify-$1"
-    local bindir="$sandbox/stub"
+    local bindir="$sandbox/stub" repo real_digest
+    repo="$(cd "$SCRIPT_DIR/.." && pwd)"
+    if command -v sha256sum > /dev/null 2>&1; then
+        real_digest="$(command -v sha256sum)"
+    else
+        real_digest="$(command -v shasum) -a 256"
+    fi
     mkdir -p "$bindir" "$sandbox/home"
     cp "$INSTALL_SH" "$sandbox/install.sh"
 
@@ -1432,12 +1440,18 @@ for a in "\$@"; do
     prev="\$a"
 done
 case "\$url" in
+    https://raw.githubusercontent.com/hex/claude-sessions/*)
+        rel="\${url#https://raw.githubusercontent.com/hex/claude-sessions/}"
+        rel="\${rel#*/}"
+        [ -f "$repo/\$rel" ] || exit 22
+        cp "$repo/\$rel" "\$out"
+        exit 0
+        ;;
     *.sha256) [ "\${CS_TEST_SHA_FETCH:-ok}" = "fail" ] && exit 22 ;;
     *.minisig) [ "\${CS_TEST_SIG_FETCH:-fail}" = "fail" ] && exit 22 ;;
 esac
 if [ -n "\$out" ]; then
     case "\$out" in
-        */cs) printf 'VERSION="9999.9.9"\n' > "\$out" ;;
         *.sha256) printf 'deadbeef  x\n' > "\$out" ;;
         *)    printf 'stub-binary\n' > "\$out" ;;
     esac
@@ -1445,13 +1459,20 @@ fi
 exit 0
 STUB
 
-    # Shadow both digest tools; whichever install.sh picks, it fails the same way.
+    # Shadow both digest tools for the cs-tui gate, which names the file; a
+    # digest of stdin (the payload check) goes to the real tool. Whichever
+    # tool install.sh picks for cs-tui, it fails the same way.
     local t
     for t in sha256sum shasum; do
         cat > "$bindir/$t" <<STUB
 #!/usr/bin/env bash
+last=""
+for a in "\$@"; do last="\$a"; done
+if [ ! -f "\$last" ]; then
+    exec $real_digest
+fi
 [ "\${CS_TEST_SHA_TOOL:-ok}" = "fail" ] && exit 1
-printf '%s  %s\n' deadbeef "\$1"
+printf '%s  %s\n' deadbeef "\$last"
 STUB
         chmod +x "$bindir/$t"
     done

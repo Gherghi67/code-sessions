@@ -85,9 +85,12 @@ fi
 CLAUDE_SETTINGS="${HOME}/.claude/settings.json"
 SESSIONS_DIR="${HOME}/.claude-sessions"
 # Payload ref: `cs -update` pins this to the release tag (v<version>) so the
-# downloaded scripts/hooks match the verified installer; a fresh curl|bash
-# install defaults to main.
-REPO_URL="https://raw.githubusercontent.com/hex/claude-sessions/${CS_INSTALL_REF:-main}"
+# downloaded scripts/hooks match the verified installer. Without it the
+# installer reads CS_DEFAULT_REF: main in the checkout, which the release
+# workflow rewrites to the tag in the install.sh it publishes, so either
+# fetches the files whose sha256s it carries (CS_PAYLOAD_SHA256 below).
+CS_DEFAULT_REF=main
+REPO_URL="https://raw.githubusercontent.com/hex/claude-sessions/${CS_INSTALL_REF:-$CS_DEFAULT_REF}"
 RELEASES_URL="https://github.com/hex/claude-sessions/releases/download"
 
 # ---- lib/01-manifests.sh (spliced by build.sh) ----
@@ -1195,6 +1198,54 @@ CS_KNOWN_SHA256=(
 )
 # ---- end lib/01-manifests.sh ----
 
+# The sha256 of every file a web install downloads, as "<sha256>  <repo
+# path>", written by build.sh from the files it was built with. This
+# installer is checksum-verified (and signature-verified when minisign is
+# installed) before `cs -update` runs it, so a payload file that does not
+# match is not the file that was released.
+CS_PAYLOAD_SHA256=(
+    "aef2867453d0d899f78b3f56f4279d4e739a4ee4b266588120164b2770518ac1  bin/cs"
+    "603074e92003d4403885dc892d7d0b4e3e1f44934d468f98722c7e05e3f92490  bin/cs-secrets"
+    "218445530b4e201f65870c91c126ecfe6d7732b5796d6cf9df01b544b942cad5  bin/cs-statusline"
+    "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
+    "a3e3d24f6ff2394336e5c54bb0755198b7f8af3e6f440c756aecf80e58131f86  hooks/cs-resolve.sh"
+    "6f3927096e6a42e2d9056ea330dca75c34c38c5d50cc648a752b65cede58bb61  hooks/cs-shared.sh"
+    "50d63ce0995e68fddd8503700c15f9585d11938c9cd3872a883146de7707c765  hooks/cs-iterm-tab.py"
+    "34f6402e2f786213bbd1c4222e2ef187f215fe2f9fdfd49d28d205467f1abdf7  hooks/memory-index-guard.sh"
+    "1047d832a7287d8c719c92c35061b69ba7840469ac8f537ec4b19613bedc4b37  hooks/prompt-rewriter.sh"
+    "d884bc6e9f8a3b8e2970f4e77b5f9b4fb415176b00b3e085aac43e4ac409b906  hooks/prompt-rewriter-model.sh"
+    "29ac06fdebc523b5c2a4de15dcf47e47a486f4c043f22615172318ba80714b51  hooks/prompt-rewriter-vendor.sh"
+    "e96db24992b591f972e2cff86fbd0c11ef24ea55b60d74c3f11d3009a98d7ea7  hooks/session-start.sh"
+    "7e9942e417d4b5c874891bf393439a373f642ac195b57b08a5f71a2dd80dbd65  hooks/autosave-commits.sh"
+    "18085843c79b110297389053a94799f8beff5d17cb050f99e5b7b252ca52f7af  hooks/narrative-reminder.sh"
+    "5d931edefcafb3f8b878ed1329cfdd88a7b3629c9748e83c613e2e5e11c660dd  hooks/session-end.sh"
+    "7e0a88df4dd5e86966221728ed435cf5f2448c124f73dec75742c894a1f84f87  hooks/subagent-context.sh"
+    "0100adc92245b2911edb0d77cc230a27289aeaeabfb6129552783d2c23e68d11  hooks/tool-failure-logger.sh"
+    "e2af3787bbe2b388935eaf3fecf78cb1ffbe6f5f7378cd31ed591a1332342654  hooks/session-auto-approve.sh"
+    "57dfa07fad29450b172ecbaa948b34bc7427e0ec6ec321039cd628df20c4cb0e  hooks/bash-logger.sh"
+    "ddbee535b1ae0243e1cd915c883a33cf71b225d176cfbd8bf73d409f556092d8  hooks/scope-prompt.sh"
+    "12dca7f6d02f19f75865fa2f6e91384a5c8e727b0962e269a6adbb491a95971f  commands/summary.md"
+    "9e06eaa16960dff49881234c8a479c2f8d2dd8d672283056e1591c4528e755ab  commands/checkpoint.md"
+    "df9db21017a995e93fdab7135ee2c6d3d7ce0ff660f76bd6d29015854b3a1aa3  commands/sweep.md"
+    "930601dc27024ea0ab22a202ac1df2bc43fd284393ef2de6d064aa592ab955e5  commands/wrap.md"
+    "a4fa7ea3be9dd335f8959abbd3adf71e18f7eea563b49305ceb715090b7a2bf7  skills/store-secret/SKILL.md"
+    "63db6214c1afcb6b3f107383ff77dd0a738802e11ae8f7ed120988c496b9f431  skills/prose-hygiene/SKILL.md"
+    "bb9dc7e36945f5d69635e2d90aec2786ac0be7fceb2b283af5b43a51b16ca37b  skills/rotate/SKILL.md"
+    "b6eb9ffe2160e43bb95100b850427d2ae28d4c5e0e719564ba2f4b8d3c14a20a  skills/finish/SKILL.md"
+    "7915ca859bf53215b4f5c41833dca3a0c661921523eb5424d1f146befefae922  skills/feature/SKILL.md"
+    "343016f4d62029a85cfae3c0911b8a7a2bff99a31bd868e04ca83ec4002d6f48  skills/write-as-me/SKILL.md"
+    "6aa489261b3448946752ce20431ce39d5be316f3f03124e976608aedb7fa51d8  skills/write-as-me/scripts/build-corpus.sh"
+    "762ea9875fda791fd4f31fee1af5a6522a7fa5287f496eee267a561847a626bf  skills/finish/scripts/finish.sh"
+    "144391d7d2df6a89742528729ee8da1e51063b3783023a656571bec0f2235458  mods/cs/.claude-plugin/plugin.json"
+    "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs/hooks/hooks.json"
+    "53aea9ba9716661c01a89511c5bdfbc6b083d44c567b233ba90ccf66e5e5dc36  mods/cs/hooks/register.tsx"
+    "7a97c18b6ae755d8ec7862532eb15bbf627170a1fab8cc90dd2f8f77a57164be  mods/cs-update/.claude-plugin/plugin.json"
+    "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-update/hooks/hooks.json"
+    "434c341cb8869cd3db897bf26d18d99734eb338eae9074ad6962d5ea46461a7a  mods/cs-update/hooks/register.tsx"
+    "d8593afaa7ed9953ef722740dfa00cc8fe763ae08e4aca076796d36112d01034  completions/cs.bash"
+    "598a8e48ea0f58833ed78127e6282a6df2eaea464b7c22edabe59bf05b158d7a  completions/_cs"
+)
+
 # Everything that lands in HOOKS_DIR, for the copy and cleanup loops. The
 # libraries go first: a web install that stops partway then leaves new
 # libraries under old hooks, which still run, rather than new hooks without
@@ -1297,8 +1348,26 @@ show_banner
 # Create install directory if needed
 mkdir -p "$INSTALL_DIR"
 
-# A web install downloads every payload file before it puts any in place, so
-# a transfer that fails partway leaves the installed files as they were.
+# Whether downloaded file $STAGE_DIR/$1 has the sha256 CS_PAYLOAD_SHA256
+# carries for repo path $1. A path with no entry, or a digest that cannot be
+# computed, does not match.
+_payload_matches() {  # repo-path
+    local entry actual
+    actual=$(_cs_sha256_file "$STAGE_DIR/$1") || return 1
+    for entry in "${CS_PAYLOAD_SHA256[@]}"; do
+        if [ "${entry#*  }" = "$1" ]; then
+            [ "${entry%%  *}" = "$actual" ]
+            return
+        fi
+    done
+    return 1
+}
+
+# A web install downloads every payload file and checks it against the sha256
+# this installer carries before it puts any in place, so a transfer that fails
+# partway, or a file that is not the released one, leaves the installed files
+# as they were. A local install copies from its own checkout, which is what
+# it was built from, and checks nothing.
 if [ "$INSTALL_METHOD" = "web" ]; then
     if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
         error "Neither curl nor wget found. Please install one of them."
@@ -1306,12 +1375,17 @@ if [ "$INSTALL_METHOD" = "web" ]; then
     while IFS= read -r _rel; do
         mkdir -p "$STAGE_DIR/$(dirname "$_rel")"
         _download "$REPO_URL/$_rel" "$STAGE_DIR/$_rel" || error "Failed to download $_rel"
+        _payload_matches "$_rel" \
+            || error "$_rel does not match the sha256 this installer carries for it; nothing was installed"
     done < <(_cs_payload_files)
     for _rel in "${CS_COMPLETION_FILES[@]}"; do
         mkdir -p "$STAGE_DIR/$(dirname "$_rel")"
         if ! _download "$REPO_URL/$_rel" "$STAGE_DIR/$_rel"; then
             rm -f "$STAGE_DIR/$_rel"
             warn "Failed to download $_rel"
+        elif ! _payload_matches "$_rel"; then
+            rm -f "$STAGE_DIR/$_rel"
+            warn "$_rel does not match the sha256 this installer carries for it; not installed"
         fi
     done
 fi
