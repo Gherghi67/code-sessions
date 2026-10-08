@@ -1299,8 +1299,21 @@ _payload_mode() {  # repo-path
 # Put file $1 at $2 with mode $3 through a temp file in $2's own directory and
 # a rename, so $2 is always either the file it was or the whole new one, never
 # a partial copy: a dropped transfer or a full disk leaves the old file whole.
+# A symlink at $2 (a dotfiles manager's, or one pointing at a checkout) is
+# the user's and is kept, named in a warning and listed at the end, unless
+# what it points at is content cs wrote (_cs_owns_file): only then is the
+# link replaced by the file. The rename replaces the link itself, never
+# writing through it, so its target is left as it was either way.
 _place_file() {  # src, dest, mode
-    local dest="$2" dir tmp
+    local dest="$2" dir tmp digest
+    if [ -L "$dest" ]; then
+        digest=$(_cs_sha256_file "$1") || error "Could not compute the sha256 of $1 (needs sha256sum or shasum)"
+        if ! _cs_owns_file "$dest" "$digest"; then
+            warn "Kept $dest: a symlink to content cs did not write, so it was not replaced"
+            CS_KEPT_PATHS+=("$dest")
+            return 0
+        fi
+    fi
     dir=$(dirname "$dest")
     mkdir -p "$dir" || error "Could not create $dir"
     tmp=$(mktemp "$dir/.cs-install.XXXXXX") || error "Could not create a temp file in $dir"
@@ -1337,11 +1350,12 @@ _record_placed() {  # sha256, path-under-home
 
 # Deploy payload file $1 at $2 under ~/.claude, unless a file cs did not
 # write is already there: that one is kept, named in a warning and listed
-# again at the end. A file is cs's as _cs_owns_file decides.
+# again at the end. A file is cs's as _cs_owns_file decides; a symlink that
+# points nowhere holds nothing cs wrote, so it is kept too.
 _deploy() {  # repo-path, dest
     local digest
     digest=$(_cs_sha256_file "$PAYLOAD_DIR/$1") || error "Could not compute the sha256 of $1 (needs sha256sum or shasum)"
-    if [ -e "$2" ] && ! _cs_owns_file "$2" "$digest"; then
+    if { [ -e "$2" ] || [ -L "$2" ]; } && ! _cs_owns_file "$2" "$digest"; then
         warn "Kept $2: cs did not write it, so it was not replaced"
         CS_KEPT_PATHS+=("$2")
         return 0
