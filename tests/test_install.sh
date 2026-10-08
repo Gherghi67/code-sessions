@@ -1503,6 +1503,106 @@ test_tui_signature_not_blamed_for_a_checksum_gate_removal() {
         "must not report a signature failure for a binary already removed" || return 1
 }
 
+# Run install.sh's WEB path (a copy outside the checkout) under sandbox $1,
+# with a stub curl that serves each raw.githubusercontent file from this
+# checkout and 404s every release asset (so cs-tui is skipped). A path named
+# in CS_TEST_BREAK (repo-relative, e.g. bin/cs) is served as a dropped
+# transfer: half the file is written, then curl exits 18. A path named in
+# CS_TEST_TAMPER is served with one line appended. Leaves the exit status in
+# $sandbox/install.rc and the output in $sandbox/install.out; echoes the HOME.
+_web_install() {  # sandbox-name
+    local sandbox="$TEST_TMPDIR/$1" repo
+    repo="$(cd "$SCRIPT_DIR/.." && pwd)"
+    mkdir -p "$sandbox/stub" "$sandbox/home"
+    cp "$INSTALL_SH" "$sandbox/install.sh"
+    cat > "$sandbox/stub/curl" <<STUB
+#!/usr/bin/env bash
+out=""; url=""; prev=""
+for a in "\$@"; do
+    case "\$prev" in -o) out="\$a" ;; esac
+    case "\$a" in https://*) url="\$a" ;; esac
+    prev="\$a"
+done
+case "\$url" in
+    https://raw.githubusercontent.com/hex/claude-sessions/*) ;;
+    *) exit 22 ;;
+esac
+rel="\${url#https://raw.githubusercontent.com/hex/claude-sessions/}"
+rel="\${rel#*/}"
+src="$repo/\$rel"
+[ -f "\$src" ] || exit 22
+[ -n "\$out" ] || exit 2
+if [ "\$rel" = "\${CS_TEST_BREAK:-}" ]; then
+    head -c "\$(( \$(wc -c < "\$src") / 2 ))" "\$src" > "\$out"
+    exit 18
+fi
+cp "\$src" "\$out"
+if [ "\$rel" = "\${CS_TEST_TAMPER:-}" ]; then
+    echo 'echo tampered' >> "\$out"
+fi
+exit 0
+STUB
+    chmod +x "$sandbox/stub/curl"
+    local rc=0
+    PATH="$sandbox/stub:$PATH" HOME="$sandbox/home" bash "$sandbox/install.sh" \
+        > "$sandbox/install.out" 2>&1 < /dev/null || rc=$?
+    printf '%s' "$rc" > "$sandbox/install.rc"
+    printf '%s' "$sandbox/home"
+}
+
+# Seeds a sandbox HOME with an installed cs and a deployed /summary command, so
+# a failed web install can be checked for what it left in their place.
+_seed_installed_cs() {  # home
+    mkdir -p "$1/.local/bin" "$1/.claude/commands"
+    printf '#!/bin/sh\necho installed cs\n' > "$1/.local/bin/cs"
+    chmod 755 "$1/.local/bin/cs"
+    printf 'installed summary command\n' > "$1/.claude/commands/summary.md"
+}
+
+# A web install whose own download of cs drops halfway fails, and the cs
+# already installed is still whole: curl never writes onto ~/.local/bin/cs.
+test_web_install_keeps_the_installed_cs_when_its_download_breaks() {
+    local home
+    _seed_installed_cs "$TEST_TMPDIR/break-cs/home"
+    home=$(CS_TEST_BREAK=bin/cs _web_install break-cs)
+    assert_eq "1" "$(cat "$TEST_TMPDIR/break-cs/install.rc")" "install exit status" \
+        || { cat "$TEST_TMPDIR/break-cs/install.out"; return 1; }
+    assert_eq "$(printf '#!/bin/sh\necho installed cs')" "$(cat "$home/.local/bin/cs")" "the installed cs is untouched" || return 1
+    assert_file_contains "$TEST_TMPDIR/break-cs/install.out" "Failed to download bin/cs" "the failure names the file" || return 1
+}
+
+# Every download lands before anything is put in place, so a transfer that
+# drops late in the list leaves the earlier files where they were too.
+test_web_install_places_nothing_when_a_later_download_breaks() {
+    local home
+    _seed_installed_cs "$TEST_TMPDIR/break-late/home"
+    home=$(CS_TEST_BREAK=commands/summary.md _web_install break-late)
+    assert_eq "1" "$(cat "$TEST_TMPDIR/break-late/install.rc")" "install exit status" \
+        || { cat "$TEST_TMPDIR/break-late/install.out"; return 1; }
+    assert_eq "$(printf '#!/bin/sh\necho installed cs')" "$(cat "$home/.local/bin/cs")" "cs is untouched" || return 1
+    assert_eq "installed summary command" "$(cat "$home/.claude/commands/summary.md")" "the command is untouched" || return 1
+    assert_file_not_exists "$home/.claude/hooks/cs/session-start.sh" "no hook was deployed" || return 1
+}
+
+# Positive control for the two above: the same stub with nothing broken
+# installs every file byte for byte, executables executable.
+test_web_install_deploys_the_payload_from_the_stub() {
+    local home repo
+    repo="$(cd "$SCRIPT_DIR/.." && pwd)"
+    home=$(_web_install web-ok)
+    assert_eq "0" "$(cat "$TEST_TMPDIR/web-ok/install.rc")" "install exit status" \
+        || { cat "$TEST_TMPDIR/web-ok/install.out"; return 1; }
+    cmp -s "$repo/bin/cs" "$home/.local/bin/cs" || { echo "  FAIL: bin/cs differs"; return 1; }
+    cmp -s "$repo/hooks/session-start.sh" "$home/.claude/hooks/cs/session-start.sh" || { echo "  FAIL: hook differs"; return 1; }
+    cmp -s "$repo/commands/summary.md" "$home/.claude/commands/summary.md" || { echo "  FAIL: command differs"; return 1; }
+    cmp -s "$repo/mods/cs/hooks/register.tsx" "$home/.claude/skills/cs/hooks/register.tsx" || { echo "  FAIL: mod differs"; return 1; }
+    assert_eq "755" "$(_file_mode "$home/.local/bin/cs")" "cs mode" || return 1
+    assert_eq "755" "$(_file_mode "$home/.claude/hooks/cs/cs-iterm-tab.py")" "hook library mode" || return 1
+    assert_eq "755" "$(_file_mode "$home/.claude/skills/finish/scripts/finish.sh")" "skill script mode" || return 1
+    assert_eq "644" "$(_file_mode "$home/.claude/commands/summary.md")" "command mode" || return 1
+    [ -z "$(find "$home" -name '.cs-install.*')" ] || { echo "  FAIL: a staging temp file was left beside a destination"; return 1; }
+}
+
 test_uninstall_removes_leftover_cs_tui_exe() {
     local fake_home="$TEST_TMPDIR/uninstall-tui-exe"
     mkdir -p "$fake_home/.local/bin" "$fake_home/.claude"
@@ -1659,6 +1759,9 @@ run_test test_tui_removed_when_checksum_cannot_be_fetched
 run_test test_tui_removed_when_digest_cannot_be_computed
 run_test test_tui_signature_not_blamed_for_a_checksum_gate_removal
 run_test test_uninstall_removes_leftover_cs_tui_exe
+run_test test_web_install_keeps_the_installed_cs_when_its_download_breaks
+run_test test_web_install_places_nothing_when_a_later_download_breaks
+run_test test_web_install_deploys_the_payload_from_the_stub
 run_test test_uninstall_removes_subagent_statusline
 test_hook_registration_doc_matches_install() {
     # docs/hooks.md restates install.sh's _merge_cs_hook registrations as a
