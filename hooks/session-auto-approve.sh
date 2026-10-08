@@ -73,6 +73,15 @@ esac
 if [ -L "$FILE_PATH" ] || [ -x "$FILE_PATH" ]; then
     exit 0
 fi
+# A hard link has no link to see: an existing target with a second name may
+# share its inode with a file anywhere on the volume (a project setting, a
+# hook), and an in-place Edit writes that file too. GNU stat takes -c, BSD
+# stat -f; whichever answers first gives the link count, and a count that
+# cannot be read falls through to the prompt as well.
+if [ -f "$FILE_PATH" ]; then
+    _cs_nlink=$(stat -c %h "$FILE_PATH" 2>/dev/null || stat -f %l "$FILE_PATH" 2>/dev/null) || exit 0
+    [ "$_cs_nlink" = 1 ] || exit 0
+fi
 
 # cs refuses to open a session whose .cs or .cs/local is a symlink (a clone
 # can commit one), but a claude started in the directory by hand still runs
@@ -164,73 +173,121 @@ for _cs_root in "$META_DIR" "$SESSION_DIR/.cs"; do
         "$_cs_ctl"/*) exit 0 ;;
     esac
 done
-# A link beneath a control directory can point the other way, into content:
-# claude-config/settings.json -> ../memory/config.json lands the write in
-# memory/, where it reads as content, while Claude Code reads it as its
-# settings; local/queue -> ../memory/tasks does the same for the drain. The
-# shapes compound (a chain of links, a link inside a linked directory, a
-# name ending in a newline that $(readlink) strips, a hop through a shared
-# file at the session root), so no link under a control directory is
-# followed: one whose first hop is not proven to land outside the whole
-# session directory, and outside a metadata root kept elsewhere, declines
-# every write. What lies outside the session is
-# not something a shared or synced session can plant, so it is not chased.
-# The links cs itself puts in claude-config point out at ~/.claude, so a
-# session cs set up never declines on its own. The scan is cheap: local/
-# and private/ hold few entries, and claude-config's plugins/ is one link
-# find does not enter.
-# Paths come NUL-separated through a file so a planted name with a newline
-# in it cannot split into pieces that resolve to nothing and slip past.
-# Where a link points, as a path from the session root or absolute, kept
-# exactly: $(readlink) would strip a trailing newline (and readlink prints
-# none of its own after one), so a decoy at the stripped name could stand
-# in for the real target. A destination with
-# a newline in it declines outright rather than being reasoned about.
-_cs_link_dest() {
-    local dest
-    dest="$(readlink -n "$1" && printf x)" || return 1
-    dest="${dest%x}"
-    case "$dest" in
-        *"$_cs_nl"*) return 1 ;;
-        /*) ;;
-        *) dest="${1%/*}/$dest" ;;
-    esac
-    printf '%s' "$dest"
+# No link under a control directory is followed (audit C2, #886). A link
+# there can alias a control file into content or content into a control
+# file, and the shapes compound (chains, links inside linked directories,
+# names ending in a newline, hops through the session root), so where a
+# link points is never reasoned about: any symlink under .cs/local,
+# .cs/age-recipients, .cs/private, .cs/claude-config, the project's .claude/
+# or an in-session CLAUDE_CONFIG_DIR declines every write, and stderr names
+# the first one found. The only links allowed are the ones cs places: an
+# encrypted session's .cs/private and .cs/claude-config link into the vault
+# mount (CS_VAULT_LINKS, lib/63-encrypt.sh), so those two roots are followed
+# once, by identity, and the vault directory is scanned instead; inside
+# claude-config, the shared names cs links to the shell's config dir.
+# find -P never follows a link, and the walk has no depth bound: a planted
+# link one level below the bound would be the next finding. The only prune
+# is the project's .claude/worktrees directory, where `claude --worktree`
+# keeps whole checkouts that Claude Code does not read as this session's
+# config. A walk of a few thousand entries costs tens of milliseconds; an
+# encrypted session's claude-config/projects grows with its transcripts and
+# is where a prune would go if the scan ever needs bounding.
+_cs_decline() {
+    printf 'cs auto-approve: not approving, %s\n' "$1" >&2
+    exit 0
 }
-REAL_SESSION_LC="$(_cs_realdir "$SESSION_DIR")" || exit 0
-REAL_SESSION_LC="$(_cs_lower "$REAL_SESSION_LC")"
+# KEEP IN SYNC with lib/75-launch.sh _link_shared_claude_config, which links
+# these names from the shell's config dir into .cs/claude-config.
+_CS_SHARED_CONFIG_NAMES="settings.json settings.local.json CLAUDE.md AGENTS.md
+rules skills commands agents hooks plugins output-styles keybindings.json vale"
+_cs_shared_config_link() {
+    # $1 a config dir's real path, $2 a link found under it. True when it is
+    # one cs made: directly in the dir, by a shared name, and the same file
+    # as that name in the shell's config dir: ~/.claude, or the
+    # CLAUDE_CONFIG_DIR the shell had, which the launch keeps in
+    # CLAUDE_SECURESTORAGE_CONFIG_DIR.
+    local name="${2#"$1"/}" shared shell
+    for shared in $_CS_SHARED_CONFIG_NAMES; do
+        [ "$name" = "$shared" ] || continue
+        for shell in "${HOME:-}/.claude" "${CLAUDE_SECURESTORAGE_CONFIG_DIR:-}"; do
+            if [ -n "$shell" ] && [ "$2" -ef "$shell/$name" ]; then
+                return 0
+            fi
+        done
+    done
+    return 1
+}
+_cs_glob_quote() {
+    # $1 with find's pattern characters escaped, so -path matches it
+    # literally: a session path holding [ ] * ? must not widen or miss
+    # the prune.
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\[/\\[}"
+    s="${s//\]/\\]}"
+    s="${s//\*/\\*}"
+    s="${s//\?/\\?}"
+    printf '%s' "$s"
+}
 _cs_links="$(mktemp "${TMPDIR:-/tmp}/cs-approve.XXXXXX")" || exit 0
 trap 'rm -f "$_cs_links"' EXIT
-_cs_scan_control_links() {
-    # $1: a control directory's real path. Exits the hook on a link that is
-    # not proven to point outside the session.
-    find "$1" -type l -print0 2>/dev/null > "$_cs_links" || exit 0
+_cs_scan_links() {
+    # $1 a directory's real path; $2 "config" when cs's shared links are
+    # allowed directly in it; $3 a subdirectory of it not to enter.
+    # Paths come NUL-separated through a file, so a name with a newline in
+    # it cannot split into pieces, and find failing on an unreadable
+    # subdirectory declines rather than passing a partial scan.
+    if [ -n "${3:-}" ]; then
+        find -P "$1" \( -path "$(_cs_glob_quote "$1/$3")" -type d \) -prune -o -type l -print0 \
+            > "$_cs_links" 2>/dev/null || _cs_decline "could not scan $1 for symlinks"
+    else
+        find -P "$1" -type l -print0 \
+            > "$_cs_links" 2>/dev/null || _cs_decline "could not scan $1 for symlinks"
+    fi
     while IFS= read -r -d '' _cs_link; do
-        _cs_dest="$(_cs_link_dest "$_cs_link")" || exit 0
-        # The destination's directory, resolved: a file's parent, or the
-        # directory itself. One that does not resolve is not proven
-        # outside, so it declines too.
-        if [ -d "$_cs_dest" ]; then
-            _cs_real="$(_cs_realdir "$_cs_dest")" || exit 0
-        else
-            _cs_real="$(_cs_realdir "${_cs_dest%/*}")" || exit 0
+        if [ "${2:-}" = config ] && _cs_shared_config_link "$1" "$_cs_link"; then
+            continue
         fi
-        _cs_real="$(_cs_lower "$_cs_real")"
-        case "$_cs_real/" in
-            "$REAL_SESSION_LC"/*) exit 0 ;;
-            "${REAL_META_LC:-/cs-no-meta}"/*|"${REAL_CS_LC:-/cs-no-cs}"/*) exit 0 ;;
-        esac
+        _cs_decline "symlink under a control directory: $_cs_link"
     done < "$_cs_links"
 }
+_cs_scan_root() {
+    # $1 a control directory as spelled; $2 its metadata root when cs links
+    # it into the vault, else empty; $3, $4 as for _cs_scan_links. A root
+    # link is allowed only when it is the same directory as the vault
+    # mount's entry of that name and the mount is a real directory. A root
+    # that does not exist has nothing under it to scan.
+    if [ -L "$1" ]; then
+        if [ -z "$2" ] || [ -L "$2/vault-mnt" ] || ! [ "$1" -ef "$2/vault-mnt/${1##*/}" ]; then
+            _cs_decline "symlink under a control directory: $1"
+        fi
+    elif [ ! -e "$1" ]; then
+        return 0
+    fi
+    _cs_root_real="$(_cs_realdir "$1")" || _cs_decline "control directory that does not resolve: $1"
+    _cs_scan_links "$_cs_root_real" "${3:-}" "${4:-}"
+}
+# Usually one directory under two spellings: scanned once.
+_cs_seen=""
 for _cs_root in "$META_DIR" "$SESSION_DIR/.cs"; do
-    for _cs_name in local claude-config age-recipients private; do
-        # A control directory that resolves to a name no exact path can
-        # hold declines every write rather than being skipped.
-        [ -e "$_cs_root/$_cs_name" ] || continue
-        _cs_ctl="$(_cs_realdir "$_cs_root/$_cs_name")" || exit 0
-        _cs_scan_control_links "$_cs_ctl"
-    done
+    if [ -n "$_cs_seen" ] && [ "$_cs_root" -ef "$_cs_seen" ]; then
+        continue
+    fi
+    _cs_seen="$_cs_root"
+    _cs_scan_root "$_cs_root/local" ""
+    _cs_scan_root "$_cs_root/age-recipients" ""
+    _cs_scan_root "$_cs_root/private" "$_cs_root"
+    _cs_scan_root "$_cs_root/claude-config" "$_cs_root" config
 done
+# Claude Code reads the project's own .claude/ and .mcp.json from the
+# session root, and both are git-shared: a link there can make an approved
+# content write a setting, a hook or an MCP server.
+_cs_scan_root "$SESSION_DIR/.claude" "" "" worktrees
+if [ -L "$SESSION_DIR/.mcp.json" ]; then
+    _cs_decline "symlink under a control directory: $SESSION_DIR/.mcp.json"
+fi
+REAL_SESSION_LC="$(_cs_realdir "$SESSION_DIR")" || exit 0
+REAL_SESSION_LC="$(_cs_lower "$REAL_SESSION_LC")"
 
 # The session's git directory: git reads config there and core.fsmonitor
 # runs from it. A clone cannot deliver .git as a link, but a synced session
@@ -258,6 +315,7 @@ fi
 # can be a content directory of this session. Inside the session, the
 # metadata root or .cs/ it is one more control directory; outside, it is
 # the user's own and the writes it covers never reach this hook's approval.
+# The vault config cs points it at was scanned above, with its allow-list.
 if [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ -e "$CLAUDE_CONFIG_DIR" ]; then
     _cs_ctl="$(_cs_realdir "$CLAUDE_CONFIG_DIR")" || exit 0
     _cs_ctl_lc="$(_cs_lower "$_cs_ctl")"
@@ -266,58 +324,12 @@ if [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ -e "$CLAUDE_CONFIG_DIR" ]; then
             case "$REAL_PARENT_LC/" in
                 "$_cs_ctl_lc"/*) exit 0 ;;
             esac
-            _cs_scan_control_links "$_cs_ctl" ;;
+            if ! [ "$CLAUDE_CONFIG_DIR" -ef "$META_DIR/claude-config" ] \
+                && ! [ "$CLAUDE_CONFIG_DIR" -ef "$SESSION_DIR/.cs/claude-config" ]; then
+                _cs_scan_root "$CLAUDE_CONFIG_DIR" ""
+            fi ;;
     esac
 fi
-
-# Claude Code reads the project's own .claude/ and .mcp.json from the
-# session root, and both are git-shared, so a link from there into .cs/
-# content turns an approved content write into settings, a hook or an MCP
-# server. A project's .claude/ may link elsewhere in the session on purpose
-# (a skills directory beside it), so this check is by identity, not by
-# where a link points: every file reachable under .claude/ (directory links
-# followed, Claude Code's own worktrees/ pruned) is compared to the target
-# by inode, every directory there to the target's parent, and a dangling
-# link by the path its first hop names, since the Write may be the one that
-# creates the file.
-_cs_names_target() {
-    # $1: a dangling link. True when its first hop names the write target.
-    local dest parent
-    dest="$(_cs_link_dest "$1")" || return 0
-    [ -L "$dest" ] && return 0
-    # The target's parent exists, so a hop whose parent does not cannot
-    # name it.
-    parent="$(_cs_realdir "${dest%/*}")" || return 1
-    [ "$(_cs_lower "$parent/${dest##*/}")" = "$TARGET_LC" ]
-}
-_cs_reaches_target() {
-    # $1: a file or directory at the session root to search from.
-    [ -e "$1" ] || [ -L "$1" ] || return 1
-    if [ -L "$1" ] && [ ! -e "$1" ]; then
-        _cs_names_target "$1"
-        return
-    fi
-    # Directories count too: a .claude that links at a content directory
-    # reaches a file the Write is about to create there.
-    find -L "$1" -path '*/.claude/worktrees' -prune -o \
-        \( -type f -o -type l -o -type d \) -print0 2>/dev/null > "$_cs_links" || return 0
-    while IFS= read -r -d '' _cs_file; do
-        # Whatever exists compares by identity, a resolving link included;
-        # only a dangling one is judged by the path it names.
-        if [ -d "$_cs_file" ]; then
-            [ "$_cs_file" -ef "$REAL_PARENT" ] && return 0
-        elif [ -e "$_cs_file" ]; then
-            [ "$_cs_file" -ef "$FILE_PATH" ] && return 0
-        elif [ -L "$_cs_file" ]; then
-            _cs_names_target "$_cs_file" && return 0
-        fi
-    done < "$_cs_links"
-    return 1
-}
-TARGET_LC="$REAL_PARENT_LC/$BASENAME_LC"
-for _cs_cfg in "$SESSION_DIR/.claude" "$SESSION_DIR/.mcp.json"; do
-    _cs_reaches_target "$_cs_cfg" && exit 0
-done
 
 # At the root of .cs/ itself: the lock and the secret-sync files.
 case "$REAL_PARENT_LC" in

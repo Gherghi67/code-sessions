@@ -354,12 +354,13 @@ _cs_remove_if_owned() {  # file, [payload-sha256]
 }
 
 # Removes the files under directory $1 that cs wrote, then every directory
-# that leaves empty; keeps the rest as _cs_remove_if_owned does. Returns 0
-# when the directory is gone.
-_cs_remove_tree_if_owned() {  # dir
-    local f
+# that leaves empty; keeps the rest as _cs_remove_if_owned does, or as
+# function $2 does when given one (it takes a file and removes it or keeps
+# it). Returns 0 when the directory is gone.
+_cs_remove_tree_if_owned() {  # dir, [remove-function]
+    local f remove="${2:-_cs_remove_if_owned}"
     while IFS= read -r f; do
-        _cs_remove_if_owned "$f" || true
+        "$remove" "$f" || true
     done < <(find "$1" ! -type d)
     find "$1" -depth -type d -exec rmdir {} \; 2>/dev/null || true
     [ ! -e "$1" ]
@@ -2891,17 +2892,21 @@ _tree_is_dirty() {
         || ! git -C "$1" diff --cached --quiet 2>/dev/null
 }
 
-# Untracked files in a worktree that removal would actually destroy, one per
-# line. cs writes its own bookkeeping into every worktree — the whole .cs tree
-# in ignored mode, plus the settings and protocol files — and none of it is the
-# user's to commit: ignored-mode fusion carries .cs into the base before the
-# removal, and the removal passes --force precisely because these are expected.
+# Untracked and ignored files in a worktree that removal would actually
+# destroy, one per line: git keeps no copy of either. cs writes its own
+# bookkeeping into every worktree — the whole .cs tree in ignored mode, plus
+# the settings and protocol files — and none of it is the user's to commit:
+# ignored-mode fusion carries .cs into the base before the removal, and the
+# removal passes --force precisely because these are expected. Finder's
+# .DS_Store is no one's work either, as cs -rm also treats it.
 # The merge gate and the readiness screen MUST read from this one definition;
 # when they disagreed, a worktree predating the cs exclude reported blocked on a
 # merge that would have gone straight through.
 _worktree_untracked_at_risk() {  # wt_dir
-    git -C "$1" ls-files --others --exclude-standard 2>/dev/null \
+    { git -C "$1" ls-files --others --exclude-standard 2>/dev/null
+      git -C "$1" ls-files --others --ignored --exclude-standard 2>/dev/null; } \
         | grep -v -e '^\.cs/' -e '^\.claude/settings\.local\.json$' -e '^CLAUDE\.local\.md$' \
+            -e '^\.DS_Store$' -e '/\.DS_Store$' \
         || true
 }
 
@@ -3382,9 +3387,15 @@ $wt_untracked"
     # worktree's own back, and the retry fuses exactly once.
     # The staging directory sits beside the worktree, on its filesystem, so
     # both moves are renames: nothing is half-copied on a failure.
+    # A fuse that refuses after the removal would strand the records in the
+    # staging directory, so its one refusal is asked before anything moves.
+    # Asked whether or not the worktree has a log: a locked vault takes the
+    # base's .cs/memory with it, which every fuse writes.
     local mode aside=""
     mode=$(_read_local_state "$wt_dir/.cs/local/state" cs_mode)
     if [ "$mode" = "ignored" ]; then
+        cs_private_dir "$base_dir/.cs" >/dev/null \
+            || error "cannot fuse the worktree's records: $base_dir/.cs/private is locked. Mount it, then retry."
         aside="$SESSIONS_ROOT/.retire-$wt_name.$$"
         mkdir "$aside" 2>/dev/null || error "Could not create $aside to set aside $wt_dir/.cs for the record fuse"
         mv "$wt_dir/.cs" "$aside/cs" || { rmdir "$aside" 2>/dev/null; error "Could not set aside $wt_dir/.cs for the record fuse"; }
@@ -3403,7 +3414,8 @@ $remove_err"
 $remove_err"
     fi
     if [ -n "$aside" ]; then
-        fuse_session_records "$aside/cs" "$base_dir/.cs"
+        ( fuse_session_records "$aside/cs" "$base_dir/.cs" ) \
+            || error "The worktree $wt_dir is removed, but its session records could not be fused into $base_dir/.cs: they are at $aside/cs. Fuse what is missing by hand, then delete that directory."
         rm -rf "$aside"
     fi
     if [ -n "$force" ]; then
@@ -3798,7 +3810,7 @@ _append_jsonl() {  # src dst
     local src="$1" dst="$2"
     [ -f "$src" ] || return 0
     _terminate_jsonl "$dst"
-    cat "$src" >> "$dst"
+    cat "$src" >> "$dst" || return 1
     _terminate_jsonl "$dst"
 }
 
@@ -3806,29 +3818,36 @@ _append_jsonl() {  # src dst
 # the repo does not track .cs/, so git merge cannot carry these). Applies the
 # same semantics the merge drivers give tracked repos: union append for
 # timeline/log/narratives, copy-never-overwrite for memory topic files,
-# base-wins for MEMORY.md.
+# base-wins for MEMORY.md. Every write returns 1 on failure: the caller runs
+# this in a subshell on the left of ||, where errexit is off, and deletes the
+# staged records only on success.
 fuse_session_records() {
     local src="$1" dst="$2"
     local f base
 
-    _append_jsonl "$src/timeline.jsonl" "$dst/timeline.jsonl"
     # Worktrees never run migrate_session, so a task branch created before the
     # log moved to .cs/local/ still keeps its audit trail at .cs/logs/; fuse
     # whichever the worktree has into the base's machine-local log.
     # An encrypted base keeps its log behind .cs/private; a locked one cannot
     # take the log, and .cs/local must not take it in plaintext instead.
-    local srclog dstlog
-    for srclog in "$src/local/session.log" "$src/logs/session.log"; do
-        if [ -f "$srclog" ]; then
+    # Resolved before any write, so that refusal leaves the base untouched.
+    local candidate srclog="" dstlog=""
+    for candidate in "$src/local/session.log" "$src/logs/session.log"; do
+        if [ -f "$candidate" ]; then
+            srclog="$candidate"
             dstlog=$(cs_private_dir "$dst") \
                 || error "cannot fuse the worktree's log: $dst/private is locked. Mount it, then retry."
-            mkdir -p "$dstlog"
-            { echo ""; cat "$srclog"; } >> "$dstlog/session.log"
             break
         fi
     done
 
-    mkdir -p "$dst/memory"
+    _append_jsonl "$src/timeline.jsonl" "$dst/timeline.jsonl" || return 1
+    if [ -n "$srclog" ]; then
+        mkdir -p "$dstlog" || return 1
+        { echo ""; cat "$srclog"; } >> "$dstlog/session.log" || return 1
+    fi
+
+    mkdir -p "$dst/memory" || return 1
     for f in "$src"/memory/narrative.*.md; do
         [ -f "$f" ] || continue
         base=$(basename "$f")
@@ -3838,9 +3857,9 @@ fuse_session_records() {
             # body); counting stops at 2 so a --- horizontal rule in the
             # body stays body instead of truncating the append.
             awk 'NR==1 && $0 != "---" {c=2} /^---$/ && c < 2 {c++; next} c >= 2 {print}' \
-                "$f" >> "$dst/memory/$base"
+                "$f" >> "$dst/memory/$base" || return 1
         else
-            cp "$f" "$dst/memory/$base"
+            cp "$f" "$dst/memory/$base" || return 1
         fi
     done
 
@@ -3854,7 +3873,7 @@ fuse_session_records() {
         if [ -f "$dst/memory/$base" ]; then
             warn "memory/$base already exists in the base; skipped"
         else
-            cp "$f" "$dst/memory/$base"
+            cp "$f" "$dst/memory/$base" || return 1
         fi
     done
 
@@ -5035,9 +5054,12 @@ EOF
     ensure_session_claude_md "$session_dir"
 
     # Initialize session log (machine-local; never git-synced). Only when
-    # absent: re-adopted records already carry their command log.
-    if [ ! -e "$session_dir/.cs/local/session.log" ]; then
-        cat > "$session_dir/.cs/local/session.log" << EOF
+    # absent: re-adopted records already carry their command log, an
+    # encrypted session's behind .cs/private. While that vault is locked
+    # there is nowhere to write it, and the open refuses the locked vault.
+    local log_dir
+    if log_dir=$(cs_private_dir "$session_dir/.cs") && [ ! -e "$log_dir/session.log" ]; then
+        cat > "$log_dir/session.log" << EOF
 Claude Code Session Log
 Session: $(basename "$session_dir")
 Started: $(date '+%Y-%m-%d %H:%M:%S')
@@ -5707,8 +5729,9 @@ migrate_session() {
         migrate_if_exists "$session_dir/secrets.enc" "$session_dir/.cs/secrets.enc"
         migrate_if_exists "$session_dir/secrets.age" "$session_dir/.cs/secrets.age"
 
-        # Update .gitignore for new structure
-        create_session_gitignore "$session_dir"
+        # Merged, not written: the session's own rules must keep hiding
+        # their files from the add -A below.
+        ensure_cs_gitignore_entries "$session_dir"
 
         echo ""
         echo -e "${ORANGE}Migrated session to .cs/ directory structure${NC}"
@@ -7630,7 +7653,10 @@ _usage_cell() {
 _usage_read_limits() {
     U_5H_PCT=""; U_5H_RESET=""; U_WK_PCT=""; U_WK_RESET=""; U_STAMP=0
     local f stamp
-    for f in "$SESSIONS_ROOT"/*/.cs/local/limits; do
+    # Hidden entries too: a session named before leading dots were refused
+    # (.work) stamps limits like any other.
+    for f in "$SESSIONS_ROOT"/*/.cs/local/limits "$SESSIONS_ROOT"/.[!.]*/.cs/local/limits \
+        "$SESSIONS_ROOT"/..?*/.cs/local/limits; do
         [ -f "$f" ] || continue
         stamp=$(_read_local_state "$f" stamped_at)
         case "$stamp" in ''|*[!0-9]*) continue ;; esac
@@ -8317,12 +8343,16 @@ _doctor_check_iterm2() {
 _doctor_check_spawn() {
     local spawn_dir="$SESSIONS_ROOT/.spawn"
     local stale=() orphan=() dangling=() clean=1
-    local f name
+    local f name suffix
 
     if [ -d "$spawn_dir" ]; then
-        for f in "$spawn_dir"/*.seed.stale "$spawn_dir"/*.brief.md.stale; do
-            [ -e "$f" ] || continue
-            stale+=("$(basename "$f")")
+        # The aged-out suffixes are the .stale ones in cs -spawn's own list.
+        for suffix in $(_spawn_staging_suffixes); do
+            case "$suffix" in *.stale) ;; *) continue ;; esac
+            for f in "$spawn_dir"/*"$suffix"; do
+                [ -e "$f" ] || continue
+                stale+=("$(basename "$f")")
+            done
         done
         for f in "$spawn_dir"/*.seed; do
             [ -e "$f" ] || continue
@@ -9247,7 +9277,9 @@ search_sessions() {
     local search_files=".cs/README.md"
     local -a search_globs=(".cs/memory/*.md" ".cs/narrative-archive/*/*.md" ".cs/private/narrative-archive/*/*.md")
 
-    for session_dir in "$SESSIONS_ROOT"/*/; do
+    # Hidden entries too: a session named before leading dots were refused
+    # (.work) is still a session to search.
+    for session_dir in "$SESSIONS_ROOT"/*/ "$SESSIONS_ROOT"/.[!.]*/ "$SESSIONS_ROOT"/..?*/; do
         [ -d "$session_dir" ] || continue
         if [ -z "$include_archived" ] && _session_is_archived "$session_dir"; then
             continue
@@ -9947,6 +9979,9 @@ run_statusline_cmd() {
             ;;
         disable)
             [ -f "$settings" ] || { info "No settings.json; nothing to disable."; return 0; }
+            # A file jq cannot parse would read below as "not cs-statusline";
+            # it holds no answer either way, so say what is wrong with it.
+            cs_settings_check "$settings" || error "$CS_SETTINGS_ERROR"
             # Capture each stripper's exit code with `|| rc=$?`: a bare call
             # returning non-zero (foreign or absent registration) would trip
             # `set -e` before the following case ran, aborting the second strip.
@@ -11362,7 +11397,9 @@ ENTRIES
     while IFS= read -r line; do
         [ -z "$line" ] && continue
         [[ "$line" == \#* ]] && continue
-        if ! grep -qF "$line" "$gitignore" 2>/dev/null; then
+        # Whole lines only: a commented `# .cs/local/` or a negated
+        # `!.cs/local/` mentions the entry without ignoring the path.
+        if ! grep -qxF -- "$line" "$gitignore" 2>/dev/null; then
             # A last line with no newline would swallow the entry appended to it.
             if [ -s "$gitignore" ] && [ -n "$(tail -c 1 "$gitignore")" ]; then
                 printf '\n' >> "$gitignore"
@@ -11390,6 +11427,18 @@ adopt_session() {
     if [ "$target_dir" -ef / ]; then
         error "Refusing to adopt the filesystem root. Run cs -adopt from a project directory."
     fi
+    # Nor the sessions root or a directory above it: that commit would sweep
+    # in every session, and the session link would land inside the project.
+    # Walked up on the physical path, each step compared by -ef.
+    local root ancestor
+    root=$(cd "$SESSIONS_ROOT" 2>/dev/null && pwd -P) || root="$SESSIONS_ROOT"
+    ancestor="$root"
+    while [ -n "$ancestor" ] && [ "$ancestor" != / ] && [ "$ancestor" != . ]; do
+        if [ "$target_dir" -ef "$ancestor" ]; then
+            error "Refusing to adopt $target_dir: it is or contains the sessions root ($root). Run cs -adopt from a project directory."
+        fi
+        ancestor=$(dirname "$ancestor")
+    done
 
     # A linked git worktree keeps a `.git` FILE, so the init path below would
     # read it as "not a repo", `git init` over it and `git add -A` the user's
@@ -11763,13 +11812,17 @@ _uninstall_rotate_wrap_keys() {
 # Settings JSON on stdin without any cs hook, current or retired, on stdout:
 # stripped from any event, event-agnostic, matching both path spellings ($HOME
 # and ~) in both deployment layouts (subdirectory and flat). Drops wrappers
-# that empty out; sibling user hooks co-shipped in a wrapper survive.
+# that empty out; sibling user hooks co-shipped in a wrapper survive. A flat
+# hook file still present was kept as the user's (uninstall removes only the
+# flat files cs wrote), so its registration is the user's too and stays.
 _strip_cs_hook_registrations() {  # hooks_dir, hooks_parent_dir
     local settings strip_name
     settings=$(cat)
     for strip_name in "${CS_HOOKS[@]}" "${RETIRED_HOOKS[@]}"; do
         settings=$(_strip_hook_registration "$settings" "$1/$strip_name" "~/.claude/hooks/cs/$strip_name")
-        settings=$(_strip_hook_registration "$settings" "$2/$strip_name" "~/.claude/hooks/$strip_name")
+        if [ ! -e "$2/$strip_name" ] && [ ! -L "$2/$strip_name" ]; then
+            settings=$(_strip_hook_registration "$settings" "$2/$strip_name" "~/.claude/hooks/$strip_name")
+        fi
     done
 
     # Clean up empty hook arrays
@@ -11779,6 +11832,26 @@ _strip_cs_hook_registrations() {  # hooks_dir, hooks_parent_dir
             | if .hooks == {} then del(.hooks) else . end
         else . end
     '
+}
+
+# Refuse the uninstall while a session under the sessions root is live (a
+# running lock pid, or a fresh statusline heartbeat for one opened outside
+# cs): the data step would delete its files from under it.
+_uninstall_refuse_live_sessions() {
+    [ -d "$SESSIONS_ROOT" ] || return 0
+    local live_sessions="" entry now
+    now=$(date +%s)
+    # Hidden entries too: a session named before leading dots were
+    # refused (.work) can still be live, and `*` alone would skip it.
+    for entry in "$SESSIONS_ROOT"/* "$SESSIONS_ROOT"/.[!.]* "$SESSIONS_ROOT"/..?*; do
+        [ -d "$entry/.cs" ] || continue
+        if session_display_live "$entry/.cs" "$now"; then
+            live_sessions="$live_sessions ${entry##*/}"
+        fi
+    done
+    if [ -n "$live_sessions" ]; then
+        error "Kept $SESSIONS_ROOT: these sessions are live:$live_sessions. Close them, then delete $SESSIONS_ROOT."
+    fi
 }
 
 # Uninstall cs and all components
@@ -11804,6 +11877,10 @@ run_uninstall() {
     # outlived a full uninstall and made the next install look up to date.
     local update_cache_dir="$HOME/.cache/cs"
 
+    # Before anything is removed: refusing after the tool is gone would leave
+    # the data with no cs to open it.
+    _uninstall_refuse_live_sessions
+
     warn "This will uninstall cs and all its components:"
     echo "  - $install_dir/cs, $install_dir/cs-secrets, $install_dir/cs-statusline, $install_dir/cs-subagent-statusline, $install_dir/cs-tui(.exe)"
     echo "  - Hooks in $hooks_dir/"
@@ -11820,6 +11897,9 @@ run_uninstall() {
         info "Uninstall cancelled."
         return 0
     fi
+    # The answer can take any time to arrive, and a session opened meanwhile
+    # is as live as one found before the prompt.
+    _uninstall_refuse_live_sessions
 
     echo ""
     info "Uninstalling cs..."
@@ -12005,25 +12085,14 @@ run_uninstall() {
 
     # Ask about session data. rm -rf recurses into a mount, so with a volume
     # mounted inside the sessions root (an open encrypted session's vault) the
-    # data stays and the question is not asked.
-    # A live session (a running lock pid, or a fresh statusline heartbeat for
-    # one opened outside cs) would have its files deleted from under it, so
-    # the data stays and uninstall exits non-zero naming them.
+    # data stays and the question is not asked. Live sessions were refused
+    # before the first removal; asked again here, since one may have opened
+    # while the questions above waited.
     if [ -d "$SESSIONS_ROOT" ]; then
         echo ""
-        local mounted live_sessions="" entry now
-        now=$(date +%s)
-        # Hidden entries too: a session named before leading dots were
-        # refused (.work) can still be live, and `*` alone would skip it.
-        for entry in "$SESSIONS_ROOT"/* "$SESSIONS_ROOT"/.[!.]* "$SESSIONS_ROOT"/..?*; do
-            [ -d "$entry/.cs" ] || continue
-            if session_display_live "$entry/.cs" "$now"; then
-                live_sessions="$live_sessions ${entry##*/}"
-            fi
-        done
-        if [ -n "$live_sessions" ]; then
-            error "Kept $SESSIONS_ROOT: these sessions are live:$live_sessions. Close them, then delete $SESSIONS_ROOT."
-        elif ! mounted=$(_volume_mounted_under "$SESSIONS_ROOT"); then
+        _uninstall_refuse_live_sessions
+        local mounted
+        if ! mounted=$(_volume_mounted_under "$SESSIONS_ROOT"); then
             warn "Kept $SESSIONS_ROOT: cs could not read the mount table, so it cannot tell whether a volume is mounted inside it."
         elif [ -n "$mounted" ]; then
             warn "Kept $SESSIONS_ROOT: a volume is mounted inside it at $mounted, and deleting the directory would delete what the volume holds. Unmount it before you delete $SESSIONS_ROOT."
@@ -12032,6 +12101,14 @@ run_uninstall() {
             read -p "Delete session data? This cannot be undone. [y/N] " -n 1 -r
             echo ""
             if [[ $REPLY =~ ^[Yy]$ ]]; then
+                # The answer can take any time: a session opened or a vault
+                # mounted meanwhile keeps the data, as it would have above.
+                _uninstall_refuse_live_sessions
+                if ! mounted=$(_volume_mounted_under "$SESSIONS_ROOT"); then
+                    error "Kept $SESSIONS_ROOT: cs could not read the mount table, so it cannot tell whether a volume is mounted inside it."
+                elif [ -n "$mounted" ]; then
+                    error "Kept $SESSIONS_ROOT: a volume is mounted inside it at $mounted, and deleting the directory would delete what the volume holds. Unmount it before you delete $SESSIONS_ROOT."
+                fi
                 rm -rf "$SESSIONS_ROOT"
                 info "Removed $SESSIONS_ROOT"
             else
@@ -12512,6 +12589,10 @@ main() {
             git commit -q -m "Initial session structure" 2>/dev/null || true
         )
     else
+        # The sessions root also holds directories that are not sessions;
+        # migrate_session would write cs's files into one.
+        is_session_dir "$session_dir" \
+            || error "$session_dir is not a cs session (no .cs/ directory); cs will not write session files into it. Move it out of $SESSIONS_ROOT or open another name."
         _run_pre_open "$session_name" "$session_dir"
         _refuse_unmounted_meta "$session_name" "$session_dir"
         migrate_session "$session_dir"

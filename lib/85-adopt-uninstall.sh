@@ -69,7 +69,9 @@ ENTRIES
     while IFS= read -r line; do
         [ -z "$line" ] && continue
         [[ "$line" == \#* ]] && continue
-        if ! grep -qF "$line" "$gitignore" 2>/dev/null; then
+        # Whole lines only: a commented `# .cs/local/` or a negated
+        # `!.cs/local/` mentions the entry without ignoring the path.
+        if ! grep -qxF -- "$line" "$gitignore" 2>/dev/null; then
             # A last line with no newline would swallow the entry appended to it.
             if [ -s "$gitignore" ] && [ -n "$(tail -c 1 "$gitignore")" ]; then
                 printf '\n' >> "$gitignore"
@@ -97,6 +99,18 @@ adopt_session() {
     if [ "$target_dir" -ef / ]; then
         error "Refusing to adopt the filesystem root. Run cs -adopt from a project directory."
     fi
+    # Nor the sessions root or a directory above it: that commit would sweep
+    # in every session, and the session link would land inside the project.
+    # Walked up on the physical path, each step compared by -ef.
+    local root ancestor
+    root=$(cd "$SESSIONS_ROOT" 2>/dev/null && pwd -P) || root="$SESSIONS_ROOT"
+    ancestor="$root"
+    while [ -n "$ancestor" ] && [ "$ancestor" != / ] && [ "$ancestor" != . ]; do
+        if [ "$target_dir" -ef "$ancestor" ]; then
+            error "Refusing to adopt $target_dir: it is or contains the sessions root ($root). Run cs -adopt from a project directory."
+        fi
+        ancestor=$(dirname "$ancestor")
+    done
 
     # A linked git worktree keeps a `.git` FILE, so the init path below would
     # read it as "not a repo", `git init` over it and `git add -A` the user's
@@ -470,13 +484,17 @@ _uninstall_rotate_wrap_keys() {
 # Settings JSON on stdin without any cs hook, current or retired, on stdout:
 # stripped from any event, event-agnostic, matching both path spellings ($HOME
 # and ~) in both deployment layouts (subdirectory and flat). Drops wrappers
-# that empty out; sibling user hooks co-shipped in a wrapper survive.
+# that empty out; sibling user hooks co-shipped in a wrapper survive. A flat
+# hook file still present was kept as the user's (uninstall removes only the
+# flat files cs wrote), so its registration is the user's too and stays.
 _strip_cs_hook_registrations() {  # hooks_dir, hooks_parent_dir
     local settings strip_name
     settings=$(cat)
     for strip_name in "${CS_HOOKS[@]}" "${RETIRED_HOOKS[@]}"; do
         settings=$(_strip_hook_registration "$settings" "$1/$strip_name" "~/.claude/hooks/cs/$strip_name")
-        settings=$(_strip_hook_registration "$settings" "$2/$strip_name" "~/.claude/hooks/$strip_name")
+        if [ ! -e "$2/$strip_name" ] && [ ! -L "$2/$strip_name" ]; then
+            settings=$(_strip_hook_registration "$settings" "$2/$strip_name" "~/.claude/hooks/$strip_name")
+        fi
     done
 
     # Clean up empty hook arrays
@@ -486,6 +504,26 @@ _strip_cs_hook_registrations() {  # hooks_dir, hooks_parent_dir
             | if .hooks == {} then del(.hooks) else . end
         else . end
     '
+}
+
+# Refuse the uninstall while a session under the sessions root is live (a
+# running lock pid, or a fresh statusline heartbeat for one opened outside
+# cs): the data step would delete its files from under it.
+_uninstall_refuse_live_sessions() {
+    [ -d "$SESSIONS_ROOT" ] || return 0
+    local live_sessions="" entry now
+    now=$(date +%s)
+    # Hidden entries too: a session named before leading dots were
+    # refused (.work) can still be live, and `*` alone would skip it.
+    for entry in "$SESSIONS_ROOT"/* "$SESSIONS_ROOT"/.[!.]* "$SESSIONS_ROOT"/..?*; do
+        [ -d "$entry/.cs" ] || continue
+        if session_display_live "$entry/.cs" "$now"; then
+            live_sessions="$live_sessions ${entry##*/}"
+        fi
+    done
+    if [ -n "$live_sessions" ]; then
+        error "Kept $SESSIONS_ROOT: these sessions are live:$live_sessions. Close them, then delete $SESSIONS_ROOT."
+    fi
 }
 
 # Uninstall cs and all components
@@ -511,6 +549,10 @@ run_uninstall() {
     # outlived a full uninstall and made the next install look up to date.
     local update_cache_dir="$HOME/.cache/cs"
 
+    # Before anything is removed: refusing after the tool is gone would leave
+    # the data with no cs to open it.
+    _uninstall_refuse_live_sessions
+
     warn "This will uninstall cs and all its components:"
     echo "  - $install_dir/cs, $install_dir/cs-secrets, $install_dir/cs-statusline, $install_dir/cs-subagent-statusline, $install_dir/cs-tui(.exe)"
     echo "  - Hooks in $hooks_dir/"
@@ -527,6 +569,9 @@ run_uninstall() {
         info "Uninstall cancelled."
         return 0
     fi
+    # The answer can take any time to arrive, and a session opened meanwhile
+    # is as live as one found before the prompt.
+    _uninstall_refuse_live_sessions
 
     echo ""
     info "Uninstalling cs..."
@@ -712,25 +757,14 @@ run_uninstall() {
 
     # Ask about session data. rm -rf recurses into a mount, so with a volume
     # mounted inside the sessions root (an open encrypted session's vault) the
-    # data stays and the question is not asked.
-    # A live session (a running lock pid, or a fresh statusline heartbeat for
-    # one opened outside cs) would have its files deleted from under it, so
-    # the data stays and uninstall exits non-zero naming them.
+    # data stays and the question is not asked. Live sessions were refused
+    # before the first removal; asked again here, since one may have opened
+    # while the questions above waited.
     if [ -d "$SESSIONS_ROOT" ]; then
         echo ""
-        local mounted live_sessions="" entry now
-        now=$(date +%s)
-        # Hidden entries too: a session named before leading dots were
-        # refused (.work) can still be live, and `*` alone would skip it.
-        for entry in "$SESSIONS_ROOT"/* "$SESSIONS_ROOT"/.[!.]* "$SESSIONS_ROOT"/..?*; do
-            [ -d "$entry/.cs" ] || continue
-            if session_display_live "$entry/.cs" "$now"; then
-                live_sessions="$live_sessions ${entry##*/}"
-            fi
-        done
-        if [ -n "$live_sessions" ]; then
-            error "Kept $SESSIONS_ROOT: these sessions are live:$live_sessions. Close them, then delete $SESSIONS_ROOT."
-        elif ! mounted=$(_volume_mounted_under "$SESSIONS_ROOT"); then
+        _uninstall_refuse_live_sessions
+        local mounted
+        if ! mounted=$(_volume_mounted_under "$SESSIONS_ROOT"); then
             warn "Kept $SESSIONS_ROOT: cs could not read the mount table, so it cannot tell whether a volume is mounted inside it."
         elif [ -n "$mounted" ]; then
             warn "Kept $SESSIONS_ROOT: a volume is mounted inside it at $mounted, and deleting the directory would delete what the volume holds. Unmount it before you delete $SESSIONS_ROOT."
@@ -739,6 +773,14 @@ run_uninstall() {
             read -p "Delete session data? This cannot be undone. [y/N] " -n 1 -r
             echo ""
             if [[ $REPLY =~ ^[Yy]$ ]]; then
+                # The answer can take any time: a session opened or a vault
+                # mounted meanwhile keeps the data, as it would have above.
+                _uninstall_refuse_live_sessions
+                if ! mounted=$(_volume_mounted_under "$SESSIONS_ROOT"); then
+                    error "Kept $SESSIONS_ROOT: cs could not read the mount table, so it cannot tell whether a volume is mounted inside it."
+                elif [ -n "$mounted" ]; then
+                    error "Kept $SESSIONS_ROOT: a volume is mounted inside it at $mounted, and deleting the directory would delete what the volume holds. Unmount it before you delete $SESSIONS_ROOT."
+                fi
                 rm -rf "$SESSIONS_ROOT"
                 info "Removed $SESSIONS_ROOT"
             else

@@ -453,6 +453,12 @@ pub struct App {
     /// Lines the delete confirm shows for files beyond cs's own that the
     /// removal would take, read when the confirm opens (never in render).
     pub delete_warnings: Vec<String>,
+    /// The escalations the open delete confirm offers: the ones the sessions
+    /// it would delete need, read when it opens.
+    pub delete_offers: session::RemoveGrants,
+    /// The escalations granted in the open delete confirm; none until its
+    /// key is pressed, and none again once it closes.
+    pub delete_grants: session::RemoveGrants,
     /// Drawn beside a session tagged encrypted; resolved once at start from
     /// the machine's font consent.
     pub lock_marker: &'static str,
@@ -619,6 +625,8 @@ impl App {
             visible_sort_columns: Vec::new(),
             delete_countdown_start: None,
             delete_warnings: Vec::new(),
+            delete_offers: session::RemoveGrants::default(),
+            delete_grants: session::RemoveGrants::default(),
             lock_marker: session::lock_marker(),
             fuzzy_indices: HashMap::new(),
             attached_worktrees: HashSet::new(),
@@ -1164,14 +1172,7 @@ impl App {
                 } else {
                     let mut names: Vec<String> = self.marked_sessions.iter().cloned().collect();
                     names.sort();
-                    match self.unowned_warnings(&names) {
-                        Ok(warnings) => {
-                            self.delete_warnings = warnings;
-                            self.delete_countdown_start = Some(std::time::Instant::now());
-                            self.mode = Mode::ConfirmBatchDelete;
-                        }
-                        Err(e) => self.set_status(e, StatusLevel::Error),
-                    }
+                    self.open_delete_confirm(&names, Mode::ConfirmBatchDelete);
                 }
                 Action::None
             }
@@ -1550,20 +1551,10 @@ impl App {
                 }
             }
             MenuAction::Delete => {
-                // Delete. Same liveness guard as the `d` key: the removal
-                // refuses a lock-held session anyway, so opening the countdown
-                // here only promises a deletion that will not happen.
-                if let Some(refusal) = self.locked_selection_refusal() {
-                    self.set_status(refusal, StatusLevel::Error);
-                } else if let Some(name) = self.selected_session().map(|s| s.name.clone()) {
-                    match self.unowned_warnings(std::slice::from_ref(&name)) {
-                        Ok(warnings) => {
-                            self.delete_warnings = warnings;
-                            self.mode = Mode::ConfirmDelete;
-                            self.delete_countdown_start = Some(std::time::Instant::now());
-                        }
-                        Err(e) => self.set_status(e, StatusLevel::Error),
-                    }
+                // A live session opens the confirm too: it says so, and
+                // offers removing it anyway as `cs -rm --force` does.
+                if let Some(name) = self.selected_session().map(|s| s.name.clone()) {
+                    self.open_delete_confirm(std::slice::from_ref(&name), Mode::ConfirmDelete);
                 }
                 Action::None
             }
@@ -1659,10 +1650,7 @@ impl App {
                     self.set_status("Wait...", StatusLevel::Info);
                 }
             }
-            _ => {
-                self.mode = Mode::Normal;
-                self.delete_countdown_start = None;
-            }
+            code => self.toggle_delete_grant_or_cancel(code),
         }
         Action::None
     }
@@ -1676,12 +1664,47 @@ impl App {
                     self.set_status("Wait...", StatusLevel::Info);
                 }
             }
-            _ => {
-                self.mode = Mode::Normal;
-                self.delete_countdown_start = None;
-            }
+            code => self.toggle_delete_grant_or_cancel(code),
         }
         Action::None
+    }
+
+    /// In a delete confirm, D and F switch the escalation it offers on or
+    /// off (`cs -rm --delete-files` and `--force`); any other key cancels.
+    fn toggle_delete_grant_or_cancel(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char('D') if self.delete_offers.unowned_files => {
+                self.delete_grants.unowned_files = !self.delete_grants.unowned_files;
+            }
+            KeyCode::Char('F') if self.delete_offers.past_live_lock => {
+                self.delete_grants.past_live_lock = !self.delete_grants.past_live_lock;
+            }
+            _ => self.close_delete_confirm(),
+        }
+    }
+
+    /// Open the delete confirm `mode` for `names`, with every escalation
+    /// off: its lines name each live session and each one holding files
+    /// beyond cs's own, and it offers the escalation each needs. Stays
+    /// closed when a file listing fails.
+    fn open_delete_confirm(&mut self, names: &[String], mode: Mode) {
+        match self.delete_confirm_lines(names) {
+            Ok((warnings, offers)) => {
+                self.delete_warnings = warnings;
+                self.delete_offers = offers;
+                self.delete_grants = session::RemoveGrants::default();
+                self.delete_countdown_start = Some(std::time::Instant::now());
+                self.mode = mode;
+            }
+            Err(e) => self.set_status(e, StatusLevel::Error),
+        }
+    }
+
+    fn close_delete_confirm(&mut self) {
+        self.mode = Mode::Normal;
+        self.delete_countdown_start = None;
+        self.delete_offers = session::RemoveGrants::default();
+        self.delete_grants = session::RemoveGrants::default();
     }
 
     fn handle_confirm_force_open(&mut self, key: KeyEvent) -> Action {
@@ -1996,43 +2019,61 @@ impl App {
     ///
     /// `cs -rm` refuses a lock-held session without `--force`, and the TUI
     /// reaches the same removal. Lock, not heartbeat: the shell's
-    /// `session_is_live` reads the lock pid and `kill(0)`s it.
+    /// `session_is_live` reads the lock pid and `kill(0)`s it, and so does
+    /// this, now: the row's pid was read at the last scan and its process
+    /// may have exited since.
     fn locked_selection_refusal(&self) -> Option<String> {
         let session = self.selected_session()?;
-        let pid = session.liveness.lock_pid()?;
+        let pid = session.liveness.lock_pid().filter(|&pid| session::is_pid_alive(pid))?;
         Some(format!(
             "{} is live (pid {}) — close it first",
             session.name, pid
         ))
     }
 
-    /// The confirm lines for `names`: one per session holding files beyond
-    /// cs's own, prefixed with the session name when more than one is
-    /// being deleted. Errors when a listing fails, so the confirm never
-    /// opens on a list it could not read.
-    fn unowned_warnings(&self, names: &[String]) -> Result<Vec<String>, String> {
+    /// The confirm lines for `names` and the escalations they need: a line
+    /// per live session (offering the live-lock grant) and a line per session
+    /// holding files beyond cs's own (offering the files grant), the latter
+    /// prefixed with the session name when more than one is being deleted.
+    /// Errors when a listing fails, so the confirm never opens on a list it
+    /// could not read.
+    fn delete_confirm_lines(&self, names: &[String]) -> Result<(Vec<String>, session::RemoveGrants), String> {
         let mut lines = Vec::new();
+        let mut offers = session::RemoveGrants::default();
         for name in names {
+            let live_pid = self
+                .sessions
+                .iter()
+                .find(|s| &s.name == name)
+                .and_then(|s| s.liveness.lock_pid())
+                .filter(|&pid| session::is_pid_alive(pid));
+            if let Some(pid) = live_pid {
+                lines.push(format!("{name} is live (pid {pid})"));
+                offers.past_live_lock = true;
+            }
             let path = self.sessions_root.join(name);
             let entries = session::unowned_entries(name, &path)?;
             if let Some(warning) = entries.warning() {
                 lines.push(if names.len() > 1 { format!("{name}: {warning}") } else { warning });
+                offers.unowned_files = true;
             }
         }
-        Ok(lines)
+        Ok((lines, offers))
     }
 
     fn execute_delete(&mut self) {
-        if let Some(refusal) = self.locked_selection_refusal() {
-            self.set_status(refusal, StatusLevel::Error);
-            self.mode = Mode::Normal;
-            self.delete_countdown_start = None;
-            return;
+        let grants = self.delete_grants;
+        if !grants.past_live_lock {
+            if let Some(refusal) = self.locked_selection_refusal() {
+                self.set_status(refusal, StatusLevel::Error);
+                self.close_delete_confirm();
+                return;
+            }
         }
         if let Some(name) = self.selected_session().map(|s| s.name.clone()) {
             let root = self.sessions_root.clone();
             let path = root.join(&name);
-            match session::remove_session_path(&root, &name, &path) {
+            match session::remove_session_path(&root, &name, &path, grants) {
                 Ok(()) => {
                     self.set_status(format!("Deleted: {}", name), StatusLevel::Success);
                     self.rescan_now();
@@ -2042,11 +2083,11 @@ impl App {
                 }
             }
         }
-        self.mode = Mode::Normal;
-        self.delete_countdown_start = None;
+        self.close_delete_confirm();
     }
 
     fn execute_batch_delete(&mut self) {
+        let grants = self.delete_grants;
         let root = self.sessions_root.clone();
         let mut deleted = 0;
         let mut errors = 0;
@@ -2060,7 +2101,8 @@ impl App {
                 .sessions
                 .iter()
                 .find(|s| &s.name == name)
-                .and_then(|s| s.liveness.lock_pid());
+                .and_then(|s| s.liveness.lock_pid())
+                .filter(|&pid| !grants.past_live_lock && session::is_pid_alive(pid));
             if let Some(pid) = lock_pid {
                 live.push(format!("{} (pid {})", name, pid));
                 errors += 1;
@@ -2068,7 +2110,7 @@ impl App {
                 continue;
             }
             let path = root.join(name);
-            let result = session::remove_session_path(&root, name, &path);
+            let result = session::remove_session_path(&root, name, &path, grants);
             match result {
                 Ok(()) => {
                     deleted += 1;
@@ -2095,8 +2137,7 @@ impl App {
             }
             self.set_status(text, StatusLevel::Error);
         }
-        self.mode = Mode::Normal;
-        self.delete_countdown_start = None;
+        self.close_delete_confirm();
     }
 
     fn execute_rename(&mut self) {
@@ -3479,30 +3520,25 @@ mod tests {
         assert_eq!(app.mode, Mode::ConfirmForceOpen);
     }
 
-    /// The menu's Delete must refuse a lock-held session where the `d` key does.
-    /// The removal refuses it either way, so opening the countdown here only
-    /// promises a deletion that is already going to fail.
+    /// The menu's Delete on a lock-held session opens the confirm the way
+    /// the `d` key does: it says the session is live and offers removing it
+    /// anyway (F, `cs -rm --force`), off until pressed.
     #[test]
-    fn menu_delete_on_locked_session_refuses_instead_of_counting_down() {
+    fn menu_delete_on_locked_session_opens_the_confirm_offering_force() {
         let mut app = App::new(sample_sessions());
+        let pid = hold_gamma_lock(&mut app);
         // gamma (index 2) is locked.
         app.table_state.select(Some(2));
         app.mode = Mode::SessionMenu;
         app.menu_selected = 1;
         app.handle_key(KeyEvent::from(KeyCode::Enter));
-        assert_ne!(
-            app.mode,
-            Mode::ConfirmDelete,
-            "a locked row must not open the delete countdown"
+        assert_eq!(app.mode, Mode::ConfirmDelete);
+        assert_eq!(app.delete_warnings, vec![format!("gamma is live (pid {pid})")]);
+        assert_eq!(
+            app.delete_offers,
+            session::RemoveGrants { past_live_lock: true, unowned_files: false }
         );
-        assert!(
-            app.delete_countdown_start.is_none(),
-            "and must not start its timer"
-        );
-        assert!(
-            app.status_message.is_some(),
-            "the refusal has to be visible, not silent"
-        );
+        assert_eq!(app.delete_grants, session::RemoveGrants::default(), "nothing is granted until F");
     }
 
     #[test]
@@ -3749,6 +3785,30 @@ mod tests {
             app.delete_warnings,
             vec!["Also deletes files cs did not create: journal.sparsebundle".to_string()]
         );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A plain confirm deletes nothing the user put beside cs's files: y on a
+    /// session holding one refuses, naming it, and the session survives.
+    #[test]
+    fn delete_confirm_y_refuses_a_session_holding_files_cs_did_not_create() {
+        use crate::session::test_root;
+        let root = std::env::temp_dir().join(format!("cs-test-del-refuse-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("rel/.cs/local")).unwrap();
+        std::fs::create_dir_all(root.join("rel/journal.sparsebundle")).unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let mut app = app_on(&root, "rel");
+        app.execute_menu_action(MenuAction::Delete);
+        app.delete_countdown_start = Some(std::time::Instant::now() - std::time::Duration::from_secs(60));
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('y')));
+
+        let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+        assert!(
+            status.contains("rel holds files cs did not create: journal.sparsebundle"),
+            "the refusal names the files, got: {status}"
+        );
+        assert!(root.join("rel/journal.sparsebundle").exists(), "the user's files survive");
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -4130,6 +4190,14 @@ mod tests {
         app.table_state.select(Some(idx));
     }
 
+    /// Gives gamma's lock to this test process, which is alive for as long as
+    /// the test runs, and returns the pid as the status prints it.
+    fn hold_gamma_lock(app: &mut App) -> String {
+        let pid = std::process::id();
+        app.sessions.iter_mut().find(|s| s.name == "gamma").unwrap().liveness = Liveness::Locked(pid);
+        pid.to_string()
+    }
+
     /// `cs -rm` refuses a lock-held session without --force (lib/15-lock.sh's
     /// session_is_live is lock-based, so Locked and not merely Heartbeat is the
     /// matching predicate). The TUI reaches the same filesystem removal and must
@@ -4138,6 +4206,7 @@ mod tests {
     #[test]
     fn delete_refuses_a_locked_session() {
         let mut app = App::new(sample_sessions());
+        let pid = hold_gamma_lock(&mut app);
         select_named(&mut app, "gamma");
 
         // Called directly rather than through `d`+`y`: this is the guard that
@@ -4151,7 +4220,7 @@ mod tests {
             .as_ref()
             .expect("refusing should explain itself");
         assert!(
-            status.text.contains("12345"),
+            status.text.contains(&pid),
             "status should name the locking pid, got: {}",
             status.text
         );
@@ -4162,21 +4231,89 @@ mod tests {
         );
     }
 
-    /// The confirmation itself does not open on a locked row, so the user is
-    /// never shown a countdown that will refuse.
+    /// A plain confirm on a locked row refuses, as `cs -rm` does without
+    /// --force: y names the locking pid and deletes nothing.
     #[test]
-    fn confirm_delete_does_not_open_on_a_locked_session() {
+    fn confirm_delete_y_refuses_a_locked_session() {
         let mut app = App::new(sample_sessions());
+        let pid = hold_gamma_lock(&mut app);
         select_named(&mut app, "gamma");
 
         app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+        assert_eq!(app.mode, Mode::ConfirmDelete);
+        app.delete_countdown_start = Some(std::time::Instant::now() - std::time::Duration::from_secs(60));
+        app.handle_key(KeyEvent::from(KeyCode::Char('y')));
 
         assert_eq!(app.mode, Mode::Normal);
-        assert!(app.delete_countdown_start.is_none());
         assert!(app
             .status_message
             .as_ref()
-            .is_some_and(|s| s.text.contains("12345")));
+            .is_some_and(|s| s.text.contains(&format!("gamma is live (pid {pid})"))));
+    }
+
+    /// F grants the live lock (`cs -rm --force`): the confirm then removes
+    /// a session whose lock a live process holds.
+    #[test]
+    fn confirm_delete_f_then_y_removes_a_live_session() {
+        use crate::session::test_root;
+        let root = std::env::temp_dir().join(format!("cs-test-del-force-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("busy/.cs/local")).unwrap();
+        std::fs::write(root.join("busy/.cs/session.lock"), format!("{}\n", std::process::id())).unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let mut app = app_on(&root, "busy");
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+        assert!(app.delete_offers.past_live_lock, "a live session is offered F");
+        app.handle_key(KeyEvent::from(KeyCode::Char('F')));
+        assert!(app.delete_grants.past_live_lock);
+        app.delete_countdown_start = Some(std::time::Instant::now() - std::time::Duration::from_secs(60));
+        app.handle_key(KeyEvent::from(KeyCode::Char('y')));
+
+        assert!(!root.join("busy").exists(), "status: {:?}", app.status_message.as_ref().map(|m| &m.text));
+        assert_eq!(app.delete_grants, session::RemoveGrants::default(), "a closed confirm keeps no grant");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// D grants the files cs did not create (`cs -rm --delete-files`): the
+    /// confirm then removes the session with them. Pressed twice it is off
+    /// again, and y refuses.
+    #[test]
+    fn confirm_delete_d_then_y_removes_a_session_with_files_cs_did_not_create() {
+        use crate::session::test_root;
+        let root = std::env::temp_dir().join(format!("cs-test-del-files-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("rel/.cs/local")).unwrap();
+        std::fs::create_dir_all(root.join("rel/journal.sparsebundle")).unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let mut app = app_on(&root, "rel");
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+        assert_eq!(
+            app.delete_offers,
+            session::RemoveGrants { past_live_lock: false, unowned_files: true }
+        );
+        app.handle_key(KeyEvent::from(KeyCode::Char('D')));
+        app.handle_key(KeyEvent::from(KeyCode::Char('D')));
+        assert!(!app.delete_grants.unowned_files, "a second D takes the grant back");
+        app.handle_key(KeyEvent::from(KeyCode::Char('D')));
+        app.delete_countdown_start = Some(std::time::Instant::now() - std::time::Duration::from_secs(60));
+        app.handle_key(KeyEvent::from(KeyCode::Char('y')));
+
+        assert!(!root.join("rel").exists(), "status: {:?}", app.status_message.as_ref().map(|m| &m.text));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// An escalation the confirm does not offer is not a grant: its key
+    /// cancels like any other.
+    #[test]
+    fn confirm_delete_f_cancels_when_the_session_is_not_live() {
+        let mut app = App::new(sample_sessions());
+        select_named(&mut app, "alpha");
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+        app.handle_key(KeyEvent::from(KeyCode::Char('F')));
+
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.delete_grants, session::RemoveGrants::default());
     }
 
     /// A batch mixes states: the dormant rows go, the locked one stays and is
@@ -4184,6 +4321,7 @@ mod tests {
     #[test]
     fn batch_delete_skips_a_locked_session() {
         let mut app = App::new(sample_sessions());
+        let pid = hold_gamma_lock(&mut app);
         app.marked_sessions.insert("gamma".to_string());
 
         app.execute_batch_delete();
@@ -4193,7 +4331,7 @@ mod tests {
             .as_ref()
             .expect("a batch that skipped something should say so");
         assert!(
-            status.text.contains("12345"),
+            status.text.contains(&pid),
             "status should name the locking pid, got: {}",
             status.text
         );
@@ -4221,6 +4359,24 @@ mod tests {
         );
         assert!(root.join("busy/.cs/session.lock").exists(), "the live session survives");
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The row was scanned locked, then its process exited before `d`: the
+    /// pid is checked when the delete is asked for, as `cs -rm`'s
+    /// session_is_live checks it, so the dead lock does not refuse until the
+    /// next scan.
+    #[test]
+    fn delete_opens_on_a_row_whose_locking_process_has_exited() {
+        let mut app = App::new(sample_sessions());
+        select_named(&mut app, "gamma");
+        let gamma = app.sessions.iter_mut().find(|s| s.name == "gamma").unwrap();
+        // Below i32::MAX, so a real pid value, and no process holds it.
+        gamma.liveness = Liveness::Locked(99_999_999);
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+
+        assert_eq!(app.mode, Mode::ConfirmDelete, "status: {:?}", app.status_message.as_ref().map(|m| &m.text));
+        assert!(app.delete_countdown_start.is_some());
     }
 
     // A batch keeps the reason a delete failed: a mounted vault says to
@@ -5404,7 +5560,7 @@ mod tests {
 
         let mut app = App::new(session::scan_sessions());
         for s in app.sessions.iter_mut() {
-            s.liveness = session::Liveness::Locked(4242);
+            s.liveness = session::Liveness::Locked(std::process::id());
         }
         app.apply_filter_and_sort();
         app.handle_key(KeyEvent::from(KeyCode::Char('R')));

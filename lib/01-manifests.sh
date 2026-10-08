@@ -326,12 +326,13 @@ _cs_remove_if_owned() {  # file, [payload-sha256]
 }
 
 # Removes the files under directory $1 that cs wrote, then every directory
-# that leaves empty; keeps the rest as _cs_remove_if_owned does. Returns 0
-# when the directory is gone.
-_cs_remove_tree_if_owned() {  # dir
-    local f
+# that leaves empty; keeps the rest as _cs_remove_if_owned does, or as
+# function $2 does when given one (it takes a file and removes it or keeps
+# it). Returns 0 when the directory is gone.
+_cs_remove_tree_if_owned() {  # dir, [remove-function]
+    local f remove="${2:-_cs_remove_if_owned}"
     while IFS= read -r f; do
-        _cs_remove_if_owned "$f" || true
+        "$remove" "$f" || true
     done < <(find "$1" ! -type d)
     find "$1" -depth -type d -exec rmdir {} \; 2>/dev/null || true
     [ ! -e "$1" ]

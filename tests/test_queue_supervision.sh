@@ -56,8 +56,25 @@ test_failure_counter_still_logs_to_session_log() {
     assert_file_contains "$CLAUDE_SESSION_META_DIR/local/session.log" "Tool failure: Bash" "existing log behavior preserved" || return 1
 }
 
-_stop_turn() {
-    echo '{}' | bash "$HOOKS_DIR/narrative-reminder.sh"
+_stop_turn() {  # [hook input JSON]
+    local input='{}'
+    [ "$#" -eq 0 ] || input="$1"
+    printf '%s\n' "$input" | bash "$HOOKS_DIR/narrative-reminder.sh"
+}
+
+# A Stop whose final assistant message is the given text, as Claude Code
+# hands it over in last_assistant_message.
+_stop_turn_saying() {  # final message text
+    _stop_turn "$(jq -nc --arg m "$1" '{hook_event_name: "Stop", last_assistant_message: $m}')"
+}
+
+_qlen() {
+    local f n=0
+    for f in "$CLAUDE_SESSION_META_DIR/local/queue"/*; do
+        [ -f "$f" ] || continue
+        n=$((n + 1))
+    done
+    printf '%s' "$n"
 }
 
 _arm_queue() {  # tasks...
@@ -137,6 +154,95 @@ test_failures_reset_at_arm_and_each_advance() {
     [ ! -f "$CLAUDE_SESSION_META_DIR/local/failures" ] \
         || { echo "  FAIL: advance should reset the counter"; return 1; }
     assert_eq "draining" "$(cat "$CLAUDE_SESSION_META_DIR/local/queue.state")" "sub-threshold count does not trip" || return 1
+}
+
+# A task whose turn tripped the failure breaker did not succeed: it stays at
+# the head of the queue and is never logged done.
+test_failures_breaker_keeps_the_failed_task_queued() {
+    _qs_session "fk"
+    _arm_queue "will fail" "never reached"
+    _stop_turn >/dev/null || return 1              # armed -> draining
+    printf '5\n' > "$CLAUDE_SESSION_META_DIR/local/failures"
+    _stop_turn >/dev/null || return 1
+    assert_eq "2" "$(_qlen)" "the failed task is still queued" || return 1
+    assert_file_not_exists "$CLAUDE_SESSION_META_DIR/local/queue.done" "nothing is logged done" || return 1
+    assert_output_not_contains "$(_inbox)" '"event":"task_done"' "no task_done for a failed task" || return 1
+    assert_output_contains "$(_inbox)" '"remaining":2' "the trip counts the failed task as remaining" || return 1
+}
+
+# The last task gets the breaker too: an emptied queue is not "all tasks
+# complete" when the turn that emptied it failed.
+test_failures_breaker_trips_on_the_last_task() {
+    _qs_session "fl"
+    _arm_queue "only task"
+    _stop_turn >/dev/null || return 1              # armed -> draining
+    printf '5\n' > "$CLAUDE_SESSION_META_DIR/local/failures"
+    local out
+    out=$(_stop_turn) || return 1
+    assert_output_contains "$out" "circuit breaker tripped" "the last task trips the breaker" || return 1
+    assert_output_not_contains "$out" "all tasks complete" "a failed last task is not completion" || return 1
+    assert_eq "idle" "$(cat "$CLAUDE_SESSION_META_DIR/local/queue.state")" "queue parked" || return 1
+    assert_eq "1" "$(_qlen)" "the failed last task is still queued" || return 1
+    assert_output_not_contains "$(_inbox)" '"event":"drain_finished"' "no drain_finished" || return 1
+    out=$("$CS_BIN" -queue list 2>&1) || return 1
+    assert_eq "Pending (1)
+  1. only task" "$out" "cs -queue list shows the task pending and nothing done" || return 1
+}
+
+# The model can report a task it could not complete with a line of its own;
+# the turn then parks the run with that task still queued.
+test_reported_failure_parks_with_the_task_queued() {
+    _qs_session "rf"
+    _arm_queue "deploy it" "after"
+    local out
+    out=$(_stop_turn) || return 1                  # armed -> draining
+    assert_output_contains "$out" "cs-task-failed" "the hand-out names the failure line" || return 1
+    out=$(_stop_turn_saying "Could not deploy: credentials are missing.
+cs-task-failed") || return 1
+    assert_output_contains "$out" "reported the task as not completed" "the debrief names the report" || return 1
+    assert_output_not_contains "$out" "next task" "the next task is not handed out" || return 1
+    assert_eq "idle" "$(cat "$CLAUDE_SESSION_META_DIR/local/queue.state")" "queue parked" || return 1
+    assert_eq "2" "$(_qlen)" "the reported task is still queued" || return 1
+    assert_file_not_exists "$CLAUDE_SESSION_META_DIR/local/queue.done" "nothing is logged done" || return 1
+    assert_output_contains "$(_inbox)" '"reason":"task_failed"' "the report is recorded" || return 1
+}
+
+test_reported_failure_on_the_last_task_is_not_completion() {
+    _qs_session "rl"
+    _arm_queue "only task"
+    _stop_turn >/dev/null || return 1              # armed -> draining
+    local out
+    out=$(_stop_turn_saying "Blocked.
+cs-task-failed") || return 1
+    assert_output_not_contains "$out" "all tasks complete" "a reported failure is not completion" || return 1
+    assert_eq "1" "$(_qlen)" "the reported task is still queued" || return 1
+    assert_eq "idle" "$(cat "$CLAUDE_SESSION_META_DIR/local/queue.state")" "queue parked" || return 1
+}
+
+# A model asked for a line reading exactly cs-task-failed often writes it as a
+# markdown code span; that line is the same report.
+test_reported_failure_as_a_code_span_parks() {
+    _qs_session "rc"
+    _arm_queue "first" "second"
+    _stop_turn >/dev/null || return 1              # armed -> draining
+    _stop_turn_saying "Blocked on missing credentials.
+
+\`cs-task-failed\`" >/dev/null || return 1
+    assert_eq "2" "$(_qlen)" "the reported task is still queued" || return 1
+    assert_eq "idle" "$(cat "$CLAUDE_SESSION_META_DIR/local/queue.state")" "queue parked" || return 1
+}
+
+# Positive control: only a whole line is the report. A message that mentions
+# the marker inside a sentence advances as before.
+test_marker_inside_a_line_is_not_a_report() {
+    _qs_session "rn"
+    _arm_queue "first" "second"
+    _stop_turn >/dev/null || return 1              # armed -> draining
+    local out
+    out=$(_stop_turn_saying "Done. No need for cs-task-failed here.") || return 1
+    assert_output_contains "$out" "next task" "the drain advances" || return 1
+    assert_eq "1" "$(_qlen)" "the finished task is popped" || return 1
+    assert_file_contains "$CLAUDE_SESSION_META_DIR/local/queue.done" "^first$" "and logged done" || return 1
 }
 
 test_context_breaker_parks_and_missing_ctx_never_trips() {
@@ -455,6 +561,12 @@ run_test test_task_text_with_quotes_survives_jq_append
 run_test test_failures_breaker_parks_the_drain
 run_test test_breaker_parks_the_drain_past_a_stale_state_tmp
 run_test test_failures_reset_at_arm_and_each_advance
+run_test test_failures_breaker_keeps_the_failed_task_queued
+run_test test_failures_breaker_trips_on_the_last_task
+run_test test_reported_failure_parks_with_the_task_queued
+run_test test_reported_failure_on_the_last_task_is_not_completion
+run_test test_reported_failure_as_a_code_span_parks
+run_test test_marker_inside_a_line_is_not_a_report
 run_test test_context_breaker_parks_and_missing_ctx_never_trips
 run_test test_five_hour_breaker_fresh_trips_stale_skips
 run_test test_threshold_env_overrides

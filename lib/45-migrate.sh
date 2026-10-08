@@ -254,9 +254,12 @@ EOF
     ensure_session_claude_md "$session_dir"
 
     # Initialize session log (machine-local; never git-synced). Only when
-    # absent: re-adopted records already carry their command log.
-    if [ ! -e "$session_dir/.cs/local/session.log" ]; then
-        cat > "$session_dir/.cs/local/session.log" << EOF
+    # absent: re-adopted records already carry their command log, an
+    # encrypted session's behind .cs/private. While that vault is locked
+    # there is nowhere to write it, and the open refuses the locked vault.
+    local log_dir
+    if log_dir=$(cs_private_dir "$session_dir/.cs") && [ ! -e "$log_dir/session.log" ]; then
+        cat > "$log_dir/session.log" << EOF
 Claude Code Session Log
 Session: $(basename "$session_dir")
 Started: $(date '+%Y-%m-%d %H:%M:%S')
@@ -926,8 +929,9 @@ migrate_session() {
         migrate_if_exists "$session_dir/secrets.enc" "$session_dir/.cs/secrets.enc"
         migrate_if_exists "$session_dir/secrets.age" "$session_dir/.cs/secrets.age"
 
-        # Update .gitignore for new structure
-        create_session_gitignore "$session_dir"
+        # Merged, not written: the session's own rules must keep hiding
+        # their files from the add -A below.
+        ensure_cs_gitignore_entries "$session_dir"
 
         echo ""
         echo -e "${ORANGE}Migrated session to .cs/ directory structure${NC}"

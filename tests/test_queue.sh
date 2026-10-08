@@ -387,7 +387,7 @@ QDIR() { printf '%s' "$CLAUDE_SESSION_META_DIR/local"; }
 # Drive the Stop hook as the session's LEAD conversation: cs's exec arm replaces
 # its own process, so claude carries cs's pid and CS_LEAD_PID equals CLAUDE_PID.
 # A test that models a teammate unsets both first.
-drain() { echo "${1:-{}}" | CS_LEAD_PID=$$ CLAUDE_PID=$$ bash "$HOOKS_DIR/narrative-reminder.sh" 2>/dev/null; }
+drain() { local input='{}'; [ "$#" -eq 0 ] || input="$1"; printf '%s\n' "$input" | CS_LEAD_PID=$$ CLAUDE_PID=$$ bash "$HOOKS_DIR/narrative-reminder.sh" 2>/dev/null; }
 # The same Stop from a tmux teammate: no CS_LEAD_PID in its environment at all.
 teammate_drain() { echo '{}' | env -u CS_LEAD_PID -u CLAUDE_PID bash "$HOOKS_DIR/narrative-reminder.sh" 2>/dev/null; }
 

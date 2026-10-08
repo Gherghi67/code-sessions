@@ -227,12 +227,16 @@ _doctor_check_iterm2() {
 _doctor_check_spawn() {
     local spawn_dir="$SESSIONS_ROOT/.spawn"
     local stale=() orphan=() dangling=() clean=1
-    local f name
+    local f name suffix
 
     if [ -d "$spawn_dir" ]; then
-        for f in "$spawn_dir"/*.seed.stale "$spawn_dir"/*.brief.md.stale; do
-            [ -e "$f" ] || continue
-            stale+=("$(basename "$f")")
+        # The aged-out suffixes are the .stale ones in cs -spawn's own list.
+        for suffix in $(_spawn_staging_suffixes); do
+            case "$suffix" in *.stale) ;; *) continue ;; esac
+            for f in "$spawn_dir"/*"$suffix"; do
+                [ -e "$f" ] || continue
+                stale+=("$(basename "$f")")
+            done
         done
         for f in "$spawn_dir"/*.seed; do
             [ -e "$f" ] || continue
