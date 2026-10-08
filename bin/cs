@@ -5190,12 +5190,22 @@ _cs_self() {
     esac
 }
 
+# The suffixes of what cs -spawn stages under $SESSIONS_ROOT/.spawn/ for a
+# session name, and of what the launch sets aside when the seed ages out, one
+# per line. Twin of SPAWN_STAGING_SUFFIXES in tui/src/session.rs; the two
+# lists change together.
+_spawn_staging_suffixes() {
+    printf '%s\n' .seed .seed.stale .brief.md .brief.md.stale
+}
+
 # Delete any staged or stale seed and brief for a name. Called when the
 # session is deleted: a leftover seed would block re-spawning the name and arm
 # a future same-name session with dead tasks and a dead brief.
 _spawn_discard_seeds() {  # name
-    rm -f "$SESSIONS_ROOT/.spawn/$1.seed" "$SESSIONS_ROOT/.spawn/$1.seed.stale" \
-          "$SESSIONS_ROOT/.spawn/$1.brief.md" "$SESSIONS_ROOT/.spawn/$1.brief.md.stale"
+    local suffix
+    for suffix in $(_spawn_staging_suffixes); do
+        rm -f "$SESSIONS_ROOT/.spawn/$1$suffix"
+    done
 }
 
 # True when the tmux session named 'cs' carries cs's ownership stamp. Only

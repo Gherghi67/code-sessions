@@ -1155,13 +1155,20 @@ pub fn remove_session_path(root: &Path, name: &str, path: &Path) -> std::io::Res
     Ok(())
 }
 
-/// Delete any staged or stale spawn seed for `name`. A deleted session must
-/// not leave a seed behind: it would block re-spawning the name and arm a
-/// future same-name session with dead tasks. Best-effort by design.
+/// What `cs -spawn` stages under `$SESSIONS_ROOT/.spawn/` for a session name,
+/// and what the launch sets aside when the seed ages out. Twin of
+/// `_spawn_staging_suffixes` in lib/52-spawn.sh; the two lists change together.
+const SPAWN_STAGING_SUFFIXES: [&str; 4] = [".seed", ".seed.stale", ".brief.md", ".brief.md.stale"];
+
+/// Delete any staged or stale spawn seed and brief for `name`. A deleted
+/// session must not leave either behind: a seed would block re-spawning the
+/// name and arm a future same-name session with dead tasks, and a brief would
+/// reach it as a first prompt nobody wrote for it. Best-effort by design.
 fn discard_spawn_seeds(root: &Path, name: &str) {
     let spawn = root.join(".spawn");
-    let _ = fs::remove_file(spawn.join(format!("{name}.seed")));
-    let _ = fs::remove_file(spawn.join(format!("{name}.seed.stale")));
+    for suffix in SPAWN_STAGING_SUFFIXES {
+        let _ = fs::remove_file(spawn.join(format!("{name}{suffix}")));
+    }
 }
 
 /// Remove a worktree session (`base@task`) through git so the base repo's
