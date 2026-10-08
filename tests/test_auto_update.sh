@@ -404,6 +404,24 @@ test_launch_with_a_stale_cache_asks_again() {
     assert_output_contains "$(_launch_with_cache 1000)" "/latest" "a stale cache asks for the latest version" || return 1
 }
 
+# The cache's first word is read as a time and reaches arithmetic, which bash
+# evaluates recursively: an array subscript there runs a command substitution.
+# A token that is not all digits is no cache at all, so the launch asks again.
+# The launch is inlined because _launch_with_cache names the session after the
+# epoch, and this token is no valid session name.
+test_launch_with_a_non_numeric_cache_time_runs_nothing_and_asks_again() {
+    local stub="$TEST_TMPDIR/stub-bin"
+    mkdir -p "$stub" "$TEST_TMPDIR/home/.cache/cs"
+    printf '#!/bin/sh\necho "$*" >> "%s/curl-calls"\nexit 22\n' "$TEST_TMPDIR" > "$stub/curl"
+    chmod +x "$stub/curl"
+    : > "$TEST_TMPDIR/curl-calls"
+    printf '%s 2000.1.1\n' 'HOME[$(touch${IFS}'"$TEST_TMPDIR"'/sentinel)]' > "$TEST_TMPDIR/home/.cache/cs/update-check"
+    HOME="$TEST_TMPDIR/home" PATH="$stub:$PATH" CS_NO_UPDATE_CHECK='' \
+        "$CS_BIN" "cache-session-malformed" < /dev/null > /dev/null 2>&1 || true
+    assert_not_exists "$TEST_TMPDIR/sentinel" "the cache time is never evaluated as code" || return 1
+    assert_output_contains "$(cat "$TEST_TMPDIR/curl-calls")" "/latest" "a malformed cache time reads as stale" || return 1
+}
+
 test_launch_banner_shows_notes_card() {
     export HOME="$TEST_TMPDIR/home"
     mkdir -p "$HOME/.cache/cs"
@@ -627,6 +645,7 @@ run_test test_check_shows_rendered_span
 run_test test_check_falls_back_when_fetch_fails
 run_test test_launch_with_a_fresh_cache_and_no_update_skips_the_network
 run_test test_launch_with_a_stale_cache_asks_again
+run_test test_launch_with_a_non_numeric_cache_time_runs_nothing_and_asks_again
 run_test test_launch_banner_shows_notes_card
 run_test test_launch_banner_quiet_on_empty_notes_cache
 run_test test_launch_banner_card_yields_to_the_mod
