@@ -249,10 +249,14 @@ EOF
     fi
 
 
-    write_session_claude_md "$session_dir"
+    # adopt runs this in the user's own project, whose CLAUDE.local.md may
+    # already hold their lines.
+    ensure_session_claude_md "$session_dir"
 
-    # Initialize session log (machine-local; never git-synced)
-    cat > "$session_dir/.cs/local/session.log" << EOF
+    # Initialize session log (machine-local; never git-synced). Only when
+    # absent: re-adopted records already carry their command log.
+    if [ ! -e "$session_dir/.cs/local/session.log" ]; then
+        cat > "$session_dir/.cs/local/session.log" << EOF
 Claude Code Session Log
 Session: $(basename "$session_dir")
 Started: $(date '+%Y-%m-%d %H:%M:%S')
@@ -261,6 +265,7 @@ Location: $(hostname):$(pwd)
 ================================================================================
 
 EOF
+    fi
 
     # Redirect Claude Code auto memory into the session directory
     setup_auto_memory "$session_dir"
@@ -399,10 +404,17 @@ migrate_mailbox() {  # session_dir
     _convert_legacy_inbox "$maildir"
 }
 
-# Check if session needs migration from flat layout to .cs/ directory
+# Check if session needs migration from flat layout to .cs/ directory. The
+# migration moves README.md, rewrites .gitignore and commits, so it needs proof
+# the directory is a cs session, not just a logs/ dir any project can have:
+# every flat-layout session cs created opened logs/session.log with the line
+# "Claude Code Session Log".
 needs_cs_migration() {
-    local session_dir="$1"
-    [[ ! -d "$session_dir/.cs" ]] && { [[ -d "$session_dir/logs" ]] || [[ -f "$session_dir/discoveries.md" ]]; }
+    local session_dir="$1" first_line=""
+    [ -d "$session_dir/.cs" ] && return 1
+    [ -f "$session_dir/logs/session.log" ] || return 1
+    IFS= read -r first_line < "$session_dir/logs/session.log" || true
+    [ "${first_line%$'\r'}" = "Claude Code Session Log" ]
 }
 
 # Rewrite the read-all-narratives sentences cs wrote into existing sessions, and
@@ -528,13 +540,7 @@ _migrate_session_documents() {  # session_dir, tracked_tree_is_ours, actor_slug
     local claude_local="$session_dir/CLAUDE.local.md"
     if ! { [ -f "$claude_local" ] && grep -q '<!-- cs:' "$claude_local"; } \
         && ! { [ -f "$claude_md" ] && grep -q '\.cs/' "$claude_md"; }; then
-        if [ -f "$claude_local" ]; then
-            printf '\n' >> "$claude_local"
-            _emit_session_claude_md >> "$claude_local"
-            warn "Appended the cs session protocol to your existing CLAUDE.local.md"
-        else
-            write_session_claude_md "$session_dir"
-        fi
+        ensure_session_claude_md "$session_dir"
     fi
 
     # Phase 7: prune retired command-tracker artifacts.

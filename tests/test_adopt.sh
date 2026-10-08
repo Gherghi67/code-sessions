@@ -82,6 +82,101 @@ EOF
         "CLAUDE.md must not gain the protocol" || return 1
 }
 
+# A user's own CLAUDE.local.md is gitignored, so git holds no copy of it: the
+# protocol is appended below every line the user wrote.
+test_adopt_appends_protocol_to_an_existing_claude_local_md() {
+    local project_dir="$TEST_TMPDIR/my-project"
+    mkdir -p "$project_dir"
+    printf '# My local notes\n\nUSER-LOCAL-KEEP\n' > "$project_dir/CLAUDE.local.md"
+    local before
+    before=$(cat "$project_dir/CLAUDE.local.md")
+
+    (cd "$project_dir" && "$CS_BIN" -adopt my-session >/dev/null 2>&1)
+
+    local after
+    after=$(cat "$project_dir/CLAUDE.local.md")
+    case "$after" in
+        "$before"*) ;;
+        *)
+            echo "  FAIL: adopt must keep every line of an existing CLAUDE.local.md above the protocol"
+            echo "    after: $after"
+            return 1
+            ;;
+    esac
+    assert_file_contains "$project_dir/CLAUDE.local.md" "<!-- cs:session-protocol -->" \
+        "the protocol is appended to the user's CLAUDE.local.md" || return 1
+}
+
+# A CLAUDE.local.md that already carries a cs sentinel is left exactly as it is.
+test_adopt_leaves_a_claude_local_md_with_the_protocol_alone() {
+    local project_dir="$TEST_TMPDIR/my-project"
+    mkdir -p "$project_dir"
+    printf '<!-- cs:session-protocol -->\n# Session Documentation Protocol\n\nUSER-EDITED-PROTOCOL-LINE\n' \
+        > "$project_dir/CLAUDE.local.md"
+    local before
+    before=$(cat "$project_dir/CLAUDE.local.md")
+
+    (cd "$project_dir" && "$CS_BIN" -adopt my-session >/dev/null 2>&1)
+
+    assert_eq "$before" "$(cat "$project_dir/CLAUDE.local.md")" \
+        "a CLAUDE.local.md that already has the protocol must be byte-identical after adopt" || return 1
+}
+
+# A project with a .gitignore but no git repo keeps every ignore rule it had;
+# cs only adds its own. The rules matter before the adopt commit: a lost
+# `.env` line would commit the file it was hiding.
+test_adopt_without_git_keeps_the_existing_gitignore_lines() {
+    local project_dir="$TEST_TMPDIR/my-project"
+    mkdir -p "$project_dir"
+    printf 'node_modules/\n.env' > "$project_dir/.gitignore"
+    printf 'API_TOKEN=example\n' > "$project_dir/.env"
+
+    (cd "$project_dir" && "$CS_BIN" -adopt my-session >/dev/null 2>&1)
+
+    assert_file_contains "$project_dir/.gitignore" '^node_modules/$' \
+        "the project's node_modules/ rule must survive" || return 1
+    assert_file_contains "$project_dir/.gitignore" '^\.env$' \
+        "the project's last rule, without a trailing newline, must survive whole" || return 1
+    assert_file_contains "$project_dir/.gitignore" '^\.cs/local/$' \
+        "cs adds its .cs/local/ rule" || return 1
+    assert_eq "" "$(git -C "$project_dir" ls-files .env)" \
+        "the ignored .env must not be committed by the adopt" || return 1
+}
+
+# The same merge in a project that is already a git repo: a last line with no
+# trailing newline must not swallow cs's first appended rule.
+test_adopt_into_git_repo_keeps_a_last_gitignore_line_without_newline() {
+    local project_dir="$TEST_TMPDIR/my-project"
+    mkdir -p "$project_dir"
+    (cd "$project_dir" && git init -q && git commit --allow-empty -m "initial" -q)
+    printf 'build/\ndist' > "$project_dir/.gitignore"
+
+    (cd "$project_dir" && "$CS_BIN" -adopt my-session >/dev/null 2>&1)
+
+    assert_file_contains "$project_dir/.gitignore" '^dist$' \
+        "the project's last rule must survive whole" || return 1
+    assert_file_contains "$project_dir/.gitignore" '^\.cs/local/$' \
+        "cs adds its .cs/local/ rule on a line of its own" || return 1
+}
+
+# The home directory is never a project: adopting it would git init and
+# commit everything under it. Refused before anything is written.
+test_adopt_refuses_the_home_directory() {
+    local output rc=0
+    output=$(cd "$HOME" && "$CS_BIN" -adopt home-session 2>&1) || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "  FAIL: adopting \$HOME must fail"
+        return 1
+    fi
+    assert_output_contains "$output" "Refusing to adopt your home directory" \
+        "the refusal names the home directory" || return 1
+    assert_not_exists "$HOME/.cs" "no .cs/ may be created in \$HOME" || return 1
+    assert_not_exists "$HOME/CLAUDE.local.md" "no CLAUDE.local.md may be written in \$HOME" || return 1
+    assert_not_exists "$HOME/.gitignore" "no .gitignore may be written in \$HOME" || return 1
+    assert_not_exists "$HOME/.git" "no git repo may be created in \$HOME" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/home-session" "no session link may be created" || return 1
+}
+
 test_adopt_refuses_a_directory_already_linked() {
     local project_dir="$TEST_TMPDIR/my-project"
     mkdir -p "$project_dir"
@@ -120,6 +215,33 @@ test_adopt_relinks_orphaned_records_interactively() {
     local after
     after=$(cat "$narrative")
     assert_eq "$before" "$after" "narrative file should be byte-identical after re-adopt" || return 1
+}
+
+# Re-adopting orphaned records promises to preserve them; the command log is
+# one of them, and every byte it held must survive the re-adopt.
+test_readopt_keeps_the_session_log() {
+    local project_dir="$TEST_TMPDIR/my-project"
+    mkdir -p "$project_dir"
+    (cd "$project_dir" && "$CS_BIN" -adopt old-name >/dev/null 2>&1)
+    rm "$CS_SESSIONS_ROOT/old-name"
+
+    local log="$project_dir/.cs/local/session.log"
+    printf 'marker: log-survives-readopt\n' >> "$log"
+    local before
+    before=$(cat "$log")
+
+    (cd "$project_dir" && printf 'y\n' | CS_ASSUME_TTY=1 "$CS_BIN" -adopt new-name >/dev/null 2>&1) \
+        || { echo "  FAIL: re-adopt should succeed"; return 1; }
+    local after
+    after=$(cat "$log")
+    case "$after" in
+        "$before"*) ;;
+        *)
+            echo "  FAIL: re-adopt must keep every byte of the existing session.log"
+            echo "    after: $after"
+            return 1
+            ;;
+    esac
 }
 
 test_adopt_orphaned_records_noninteractive_hints() {
@@ -700,8 +822,14 @@ run_test test_adopt_creates_cs_structure
 run_test test_adopt_creates_symlink
 run_test test_adopt_creates_claude_local_md_when_none_exists
 run_test test_adopt_leaves_existing_claude_md_untouched
+run_test test_adopt_appends_protocol_to_an_existing_claude_local_md
+run_test test_adopt_leaves_a_claude_local_md_with_the_protocol_alone
+run_test test_adopt_without_git_keeps_the_existing_gitignore_lines
+run_test test_adopt_into_git_repo_keeps_a_last_gitignore_line_without_newline
+run_test test_adopt_refuses_the_home_directory
 run_test test_adopt_refuses_a_directory_already_linked
 run_test test_adopt_relinks_orphaned_records_interactively
+run_test test_readopt_keeps_the_session_log
 run_test test_adopt_orphaned_records_noninteractive_hints
 run_test test_adopt_orphaned_records_decline_cancels
 run_test test_adopt_fails_if_session_name_exists
