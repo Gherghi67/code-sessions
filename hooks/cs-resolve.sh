@@ -8,12 +8,17 @@
 # offered to SessionStart and writes to it succeed, but nothing propagates to
 # the Bash tool or to later hooks, so no hook can publish the contract to the
 # rest of the session. What every front end does supply is the directory the
-# session is open on (CLAUDE_PROJECT_DIR, and `cwd` in the hook input), and a
-# cs session is identifiable on disk by its .cs/ directory.
+# session is open on (CLAUDE_PROJECT_DIR, and `cwd` in the hook input). A cs
+# session is marked on disk by its .cs/ directory, and known to this machine
+# by its entry under the sessions root: cs puts every session it makes there,
+# as the directory itself or as a link to it.
 #
 # So: trust the env when it is there, and otherwise find the session the same
 # way a person would, by looking at where we are -- except in a terminal, where
 # `cs` is how a session is entered and the contract would have been exported.
+# The .cs/ marker alone is never enough: a cloned repository can carry any
+# file under .cs/, and a hook cannot run the checks `cs` runs at open, so the
+# walk accepts only a directory the sessions root knows.
 
 # Resolve the session and export the contract. Returns 0 when a session was
 # found, non-zero otherwise, leaving the caller's own decline path to run
@@ -73,6 +78,7 @@ cs_resolve_session() {  # [hook_input_json]
 
     dir=$(_cs_find_session_root "$start") || return 1
     [ -n "$dir" ] || return 1
+    _cs_session_is_registered "$dir" || return 1
     _cs_session_is_enabled "$dir" || return 1
 
     name=$(_cs_session_name "$dir")
@@ -87,9 +93,12 @@ cs_resolve_session() {  # [hook_input_json]
     return 0
 }
 
-# Walk up looking for the .cs/ that marks a session root. The nearest one wins,
-# so a session cloned inside another session belongs to itself. Stops at $HOME
-# and at / so an unrelated .cs far up the tree cannot capture a stray folder.
+# Walk up looking for the .cs/ that marks a session root. The nearest one
+# decides: a repository with its own .cs/ cloned inside a session is not that
+# session's work, so the walk never passes it to bind the clone to the
+# enclosing session (the registry check on the nearest one declines instead).
+# Stops at $HOME and at / so an unrelated .cs far up the tree cannot capture a
+# stray folder.
 _cs_find_session_root() {  # start_dir
     local d
     d=$(cd "$1" 2>/dev/null && pwd -P) || return 1
@@ -167,6 +176,30 @@ _cs_is_teammate() {
 _cs_session_is_enabled() {  # session_dir
     [ -f "$1/.cs/local/disabled" ] && return 1
     return 0
+}
+
+# True when the sessions root knows this directory: an entry there IS it (a
+# created session, a feature worktree, a vault) or links to it (an adopted
+# session, at its own project path). Nothing inside the directory can prove
+# it, because a cloned repository can carry any file under .cs/ and a hook
+# never runs the checks `cs` runs at open; an entry under this machine's root
+# is what a clone cannot carry. Identity is by inode, never by spelling: a
+# case-insensitive filesystem keeps the typed case, and a home reached through
+# a symlink spells the same directory two ways. CS_SESSIONS_ROOT is read when
+# a front end passes it on, and the default root otherwise, as session-end.sh
+# does for the index.
+_cs_session_is_registered() {  # session_dir
+    local root entry
+    root="${CS_SESSIONS_ROOT:-${HOME:-/nonexistent}/.claude-sessions}"
+    [ -d "$root" ] || return 1
+    # A session cs created sits under its own name; one adopted under a chosen
+    # name is a link, so every link is tried (dotted names included).
+    [ "$root/$(basename "$1")" -ef "$1" ] && return 0
+    for entry in "$root"/* "$root"/.[!.]* "$root"/..?*; do
+        [ -L "$entry" ] || continue
+        [ "$entry" -ef "$1" ] && return 0
+    done
+    return 1
 }
 
 # The name a session is known by is not always its basename: `cs -adopt` links

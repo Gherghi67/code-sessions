@@ -3366,7 +3366,7 @@ run_test test_session_end_survives_an_unset_home
 # conversation on a directory a CLI session is live in would remove that
 # session's lock, so `cs <name>` opens a duplicate with no collision menu.
 test_session_end_spares_a_live_sessions_lock() {
-    local proj="$TEST_TMPDIR/lockheld"
+    local proj="$TEST_TMPDIR/.claude-sessions/lockheld"
     mkdir -p "$proj/.cs/local"
     touch "$proj/.cs/local/session.log"
     # $$ is this test runner: a PID that is definitely alive.
@@ -3385,7 +3385,7 @@ test_session_end_spares_a_live_sessions_lock() {
 
 # A lock left by a process that is gone is exactly what SessionEnd should clear.
 test_session_end_clears_a_stale_lock() {
-    local proj="$TEST_TMPDIR/lockstale"
+    local proj="$TEST_TMPDIR/.claude-sessions/lockstale"
     mkdir -p "$proj/.cs/local"
     touch "$proj/.cs/local/session.log"
     # A PID that cannot be running: start a shell and let it exit.
