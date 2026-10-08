@@ -58,6 +58,7 @@ _cs() {
     local -a queue_cmds
     queue_cmds=(
         'add:Add a task to the walk-away queue'
+        'accept:Queue a task another session sent by mail, by message id'
         'list:Show pending and completed queued tasks'
         'ls:Show pending and completed queued tasks (alias)'
         'rm:Remove a pending task by index'
