@@ -159,6 +159,26 @@ test_adopt_into_git_repo_keeps_a_last_gitignore_line_without_newline() {
         "cs adds its .cs/local/ rule on a line of its own" || return 1
 }
 
+# A .gitignore that only MENTIONS one of cs's rules, commented out or negated,
+# does not ignore that path: cs still adds the rule as a line of its own, and
+# git then ignores the per-actor state.
+test_adopt_adds_its_rule_beside_a_commented_or_negated_mention() {
+    local project_dir="$TEST_TMPDIR/my-project"
+    mkdir -p "$project_dir"
+    (cd "$project_dir" && git init -q && git commit --allow-empty -m "initial" -q)
+    printf '# .cs/local/\n!.cs/archives/\n' > "$project_dir/.gitignore"
+
+    (cd "$project_dir" && "$CS_BIN" -adopt my-session >/dev/null 2>&1)
+
+    assert_file_contains "$project_dir/.gitignore" '^\.cs/local/$' \
+        "cs adds .cs/local/ although a comment mentions it" || return 1
+    assert_file_contains "$project_dir/.gitignore" '^\.cs/archives/$' \
+        "cs adds .cs/archives/ although a negation mentions it" || return 1
+    assert_eq ".cs/local/session.log" \
+        "$(git -C "$project_dir" check-ignore .cs/local/session.log)" \
+        "git ignores the per-actor log" || return 1
+}
+
 # The home directory is never a project: adopting it would git init and
 # commit everything under it. Refused before anything is written.
 test_adopt_refuses_the_home_directory() {
@@ -826,6 +846,7 @@ run_test test_adopt_appends_protocol_to_an_existing_claude_local_md
 run_test test_adopt_leaves_a_claude_local_md_with_the_protocol_alone
 run_test test_adopt_without_git_keeps_the_existing_gitignore_lines
 run_test test_adopt_into_git_repo_keeps_a_last_gitignore_line_without_newline
+run_test test_adopt_adds_its_rule_beside_a_commented_or_negated_mention
 run_test test_adopt_refuses_the_home_directory
 run_test test_adopt_refuses_a_directory_already_linked
 run_test test_adopt_relinks_orphaned_records_interactively
