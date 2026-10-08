@@ -372,8 +372,9 @@ cs_vault_holder_drop() {  # holders, pid
 # Claude Code's settings.json holds the user's permissions, env, MCP servers
 # and other tools' hooks. Whether cs can read it: a missing or zero-byte file
 # can (cs creates it), anything else jq cannot parse cannot, and is never
-# replaced. Returns 1 with "<file> is not valid JSON; left it unchanged:
-# <jq's reason>" in CS_SETTINGS_ERROR when it cannot.
+# replaced. Returns 1 with "<file> is not valid JSON; left it unchanged and
+# wrote no <file>.cs-bak.<stamp> backup: <jq's reason>" in CS_SETTINGS_ERROR
+# when it cannot.
 # shellcheck disable=SC2034  # CS_SETTINGS_ERROR is read by the callers in cs and install.sh
 cs_settings_check() {  # file
     local reason
@@ -383,7 +384,7 @@ cs_settings_check() {  # file
     reason="${reason%%$'\n'*}"
     reason="${reason#jq: }"
     [ -n "$reason" ] || reason="jq found no JSON value in it, or only null or false"
-    CS_SETTINGS_ERROR="$1 is not valid JSON; left it unchanged: $reason"
+    CS_SETTINGS_ERROR="$1 is not valid JSON; left it unchanged and wrote no $1.cs-bak.<stamp> backup: $reason"
     return 1
 }
 
