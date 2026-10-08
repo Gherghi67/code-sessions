@@ -197,6 +197,31 @@ test_adopt_refuses_the_home_directory() {
     assert_not_exists "$CS_SESSIONS_ROOT/home-session" "no session link may be created" || return 1
 }
 
+# The sessions root holds every session, and adopting it, or a directory that
+# contains it, would git init and commit all of them and link a session into
+# itself. Refused before anything is written, like $HOME.
+test_adopt_refuses_the_sessions_root_and_its_parents() {
+    local root parent dir output rc
+    root=$(cd "$CS_SESSIONS_ROOT" && pwd -P)
+    parent=$(cd "$TEST_TMPDIR" && pwd -P)
+    for dir in "$root" "$parent"; do
+        rc=0
+        output=$(cd "$dir" && "$CS_BIN" -adopt root-session 2>&1) || rc=$?
+        assert_eq 1 "$rc" "adopting $dir must fail" || return 1
+        assert_output_contains "$output" "Error: Refusing to adopt $dir: it is or contains the sessions root ($root). Run cs -adopt from a project directory." \
+            "the refusal names the sessions root" || return 1
+        assert_not_exists "$dir/.cs" "no .cs/ may be created in $dir" || return 1
+        assert_not_exists "$dir/.gitignore" "no .gitignore may be written in $dir" || return 1
+        assert_not_exists "$dir/.git" "no git repo may be created in $dir" || return 1
+        assert_not_exists "$CS_SESSIONS_ROOT/root-session" "no session link may be created" || return 1
+    done
+    # Positive control: a sibling of the sessions root is a project like any other.
+    mkdir -p "$TEST_TMPDIR/sibling"
+    (cd "$TEST_TMPDIR/sibling" && "$CS_BIN" -adopt sibling-session >/dev/null 2>&1) \
+        || { echo "  FAIL: adopting a sibling of the sessions root failed"; return 1; }
+    assert_symlink "$CS_SESSIONS_ROOT/sibling-session" "the sibling is adopted" || return 1
+}
+
 test_adopt_refuses_a_directory_already_linked() {
     local project_dir="$TEST_TMPDIR/my-project"
     mkdir -p "$project_dir"
@@ -848,6 +873,7 @@ run_test test_adopt_without_git_keeps_the_existing_gitignore_lines
 run_test test_adopt_into_git_repo_keeps_a_last_gitignore_line_without_newline
 run_test test_adopt_adds_its_rule_beside_a_commented_or_negated_mention
 run_test test_adopt_refuses_the_home_directory
+run_test test_adopt_refuses_the_sessions_root_and_its_parents
 run_test test_adopt_refuses_a_directory_already_linked
 run_test test_adopt_relinks_orphaned_records_interactively
 run_test test_readopt_keeps_the_session_log
