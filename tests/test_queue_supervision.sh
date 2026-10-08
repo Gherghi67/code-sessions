@@ -219,6 +219,19 @@ cs-task-failed") || return 1
     assert_eq "idle" "$(cat "$CLAUDE_SESSION_META_DIR/local/queue.state")" "queue parked" || return 1
 }
 
+# A model asked for a line reading exactly cs-task-failed often writes it as a
+# markdown code span; that line is the same report.
+test_reported_failure_as_a_code_span_parks() {
+    _qs_session "rc"
+    _arm_queue "first" "second"
+    _stop_turn >/dev/null || return 1              # armed -> draining
+    _stop_turn_saying "Blocked on missing credentials.
+
+\`cs-task-failed\`" >/dev/null || return 1
+    assert_eq "2" "$(_qlen)" "the reported task is still queued" || return 1
+    assert_eq "idle" "$(cat "$CLAUDE_SESSION_META_DIR/local/queue.state")" "queue parked" || return 1
+}
+
 # Positive control: only a whole line is the report. A message that mentions
 # the marker inside a sentence advances as before.
 test_marker_inside_a_line_is_not_a_report() {
@@ -552,6 +565,7 @@ run_test test_failures_breaker_keeps_the_failed_task_queued
 run_test test_failures_breaker_trips_on_the_last_task
 run_test test_reported_failure_parks_with_the_task_queued
 run_test test_reported_failure_on_the_last_task_is_not_completion
+run_test test_reported_failure_as_a_code_span_parks
 run_test test_marker_inside_a_line_is_not_a_report
 run_test test_context_breaker_parks_and_missing_ctx_never_trips
 run_test test_five_hour_breaker_fresh_trips_stale_skips
