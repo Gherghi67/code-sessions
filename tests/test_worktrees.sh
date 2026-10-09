@@ -1677,6 +1677,32 @@ test_integrate_tracked_mode_appends_feature_memory_pointers() {
 
 run_test test_integrate_tracked_mode_appends_feature_memory_pointers
 
+# A topic the base deleted after the feature branched stays deleted: the merge
+# drops the file, and the feature's old pointer to it is not appended back.
+test_integrate_tracked_mode_skips_pointers_to_base_deleted_topics() {
+    local sha base_dir wt output status=0
+    base_dir=$(create_test_session_with_git "myproj")
+    printf '%s\n' '- [A](a.md): base' '- [T](t.md): old topic' > "$base_dir/.cs/memory/MEMORY.md"
+    echo "t topic" > "$base_dir/.cs/memory/t.md"
+    (cd "$base_dir" && git add .cs/memory && git commit -q -m "base index")
+    cs_launch "myproj@fix-auth"
+    wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    echo '- [X](x.md): feature-side' >> "$wt/.cs/memory/MEMORY.md"
+    echo "x topic" > "$wt/.cs/memory/x.md"
+    (cd "$wt" && git add .cs/memory && git commit -q -m "feature topic")
+    sha=$(git -C "$wt" rev-parse HEAD)
+    printf '%s\n' '- [A](a.md): base' > "$base_dir/.cs/memory/MEMORY.md"
+    (cd "$base_dir" && git rm -q .cs/memory/t.md && git add .cs/memory/MEMORY.md && git commit -q -m "drop topic t")
+    output=$("$CS_BIN" myproj -integrate-feature fix-auth "$sha" -- true 2>&1) || status=$?
+    assert_eq "0" "$status" "integrate succeeds: $output" || return 1
+    assert_not_exists "$base_dir/.cs/memory/t.md" "the base's deletion of t.md stands" || return 1
+    assert_eq "- [A](a.md): base
+- [X](x.md): feature-side" "$(cat "$base_dir/.cs/memory/MEMORY.md")" \
+        "no pointer to the deleted topic comes back; the new one is appended" || return 1
+}
+
+run_test test_integrate_tracked_mode_skips_pointers_to_base_deleted_topics
+
 test_retire_ignored_mode_fuses_records() {
     local base_dir="$CS_SESSIONS_ROOT/proj"
     mkdir -p "$base_dir/.cs"/{memory,local}
