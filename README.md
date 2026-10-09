@@ -167,7 +167,7 @@ cs -detect-theme            # Show the detected terminal light/dark theme
 cs -list, -ls               # List all sessions
 cs -live                    # List sessions running right now on this machine, with what each is doing
 cs -status "<text>"         # Set this session's status (also: cs -status, cs -status --clear)
-cs -remove, -rm <name>...   # Remove sessions (each asks its own confirm, naming files cs did not create; --force skips the confirm and the live lock, and refuses a session holding such files unless --delete-files is added)
+cs -remove, -rm <name>...   # Remove sessions (each asks its own confirm, naming files cs did not create; --force skips the confirm and the live lock, and refuses a session holding such files unless --delete-files is added; a base session's age pins under ~/.cs-secrets/sessions/<name>/ go with it)
 cs -update [--check|--force]   # Update to latest (--check: check only; --force: reinstall)
 cs -uninstall               # Uninstall cs
 cs -help, -h                # Show help message
@@ -194,7 +194,7 @@ For `cs .`, the current directory decides, not any history: it opens a session o
 - **Preview & To-Do panes** — appear beside the list on wide landscape terminals (≥120 cols), or stacked below it (list, then details, then notes) on any window at least 40 cols by 26 rows; toggle with `p`
 - **Expand row** with `p` — shows session objective (auto-captured from your first prompt) and narrative inline
 - **Create session** with `n` — opens inline dialog to create a new session
-- **Delete** with `d` (confirmation required)
+- **Delete** with `d` (confirmation required). Like `cs -rm`, deleting a base session also removes its age pins under `~/.cs-secrets/sessions/<name>/` and the status line names the path; a worktree row or an adopted link keeps them
 - **Batch operations** — mark sessions with `Space`, then `D` to batch delete
 - **Rename** with `r`
 - **Archive / unarchive** with `a` — toggles the selected session's `.cs/archived` marker by running `cs -archive` / `cs -unarchive`, so the picker never writes the marker itself and inherits the verb's refusal to archive a live session. Archived rows are hidden until `A` shows them, which is also how you reach one to unarchive

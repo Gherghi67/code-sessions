@@ -134,6 +134,12 @@ cs -secrets export-file
   and their lock (`.age.lock`) live under `~/.cs-secrets`, outside the checkout:
   `.cs/local` is gitignored, but `git add -f` is not, and a pushed pin list must
   never be read
+- Removing a base session (`cs -rm <name>`, or the picker's delete, single or
+  batch) removes `~/.cs-secrets/sessions/<name>/` with it and prints the path, so
+  a later session under the same name starts with no pins. Removing a feature
+  session (`base@task`) or an adopted session's link leaves that state alone:
+  a feature session uses its base's secrets. Neither touches the stored secrets
+  in the Keychain or the encrypted store; `cs -secrets purge` removes those
 - A `.pub` that arrives some other way, such as a `git pull` of someone's push,
   makes `export-file` refuse and print the `age add` command that pins it; pin it
   only if you trust the key, otherwise delete the file
