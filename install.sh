@@ -114,6 +114,7 @@ RETIRED_HOOKS=(
     changes-tracker.sh        # retired: PostToolUse change log re-narrating git history into .cs/changes.md; git log/diff/status is authoritative
     artifact-tracker.sh       # retired: PreToolUse:Write redirect was inert (updatedInput path rewrite is not honored by the harness); tracking removed entirely
     prose-lint.sh             # retired with the `cs -lint` verb it called; MUST stay listed, because a deployed copy calling the removed verb reads error()'s exit 1 as "violations found" and blocks every turn-end
+    bash-logger.sh            # retired: PreToolUse:Bash command log cost every Bash call a hook process (~1.4 s), and nothing read the BASH: lines it wrote
 )
 
 # Hook scripts cs ships; deployed to ~/.claude/hooks/cs/ and registered in
@@ -126,7 +127,6 @@ CS_HOOKS=(
     subagent-context.sh
     tool-failure-logger.sh
     session-auto-approve.sh
-    bash-logger.sh
     scope-prompt.sh
 )
 
@@ -1205,7 +1205,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "4d8092d46744afe5b9e7d6b7c92a3d14a3dcbb98258a5d9fc62679a562c42f51  bin/cs"
+    "2f4c4804440c7b4772f0b89f0303a8fee9069ee9cf7587e6a336ec63feba3c67  bin/cs"
     "603074e92003d4403885dc892d7d0b4e3e1f44934d468f98722c7e05e3f92490  bin/cs-secrets"
     "218445530b4e201f65870c91c126ecfe6d7732b5796d6cf9df01b544b942cad5  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -1223,7 +1223,6 @@ CS_PAYLOAD_SHA256=(
     "7e0a88df4dd5e86966221728ed435cf5f2448c124f73dec75742c894a1f84f87  hooks/subagent-context.sh"
     "0100adc92245b2911edb0d77cc230a27289aeaeabfb6129552783d2c23e68d11  hooks/tool-failure-logger.sh"
     "c8ef0b73d47f04cefb7f2b7c7f85a274041930420b21d3b4f9866200f436a7af  hooks/session-auto-approve.sh"
-    "57dfa07fad29450b172ecbaa948b34bc7427e0ec6ec321039cd628df20c4cb0e  hooks/bash-logger.sh"
     "ddbee535b1ae0243e1cd915c883a33cf71b225d176cfbd8bf73d409f556092d8  hooks/scope-prompt.sh"
     "12dca7f6d02f19f75865fa2f6e91384a5c8e727b0962e269a6adbb491a95971f  commands/summary.md"
     "9e06eaa16960dff49881234c8a479c2f8d2dd8d672283056e1591c4528e755ab  commands/checkpoint.md"
@@ -1834,7 +1833,6 @@ else
         _merge_cs_hook SubagentStart      subagent-context.sh    10
         _merge_cs_hook PostToolUseFailure tool-failure-logger.sh 10 "" true
         _merge_cs_hook PermissionRequest  session-auto-approve.sh 5 "Write|Edit"
-        _merge_cs_hook PreToolUse         bash-logger.sh          5 "Bash"
         _merge_cs_hook UserPromptSubmit   scope-prompt.sh        10
         _merge_cs_hook FileChanged        narrative-reminder.sh  10 "" "" true
         _merge_cs_hook CwdChanged         narrative-reminder.sh   5
