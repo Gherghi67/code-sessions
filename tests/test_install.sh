@@ -2727,18 +2727,25 @@ test_rotate_wrap_keys_migration_keeps_a_users_alt_key() {
 
 # 14. Claude Code waits for a chord's second key once its first is pressed, so
 # binding ctrl+x r would silence a user's own bare ctrl+x. That counts as a
-# conflict for every chord: the file is left as it is, each is named, and
-# cs's Option+1 / Option+2 stay, as the only rotate and wrap keys there are.
+# conflict for every chord: the file is left as it is, one warning names the
+# chords and the ctrl+x, and cs's Option+1 / Option+2 stay, as the only rotate
+# and wrap keys there are. A file that already holds cs's chords beside the
+# bare ctrl+x gets the same one warning.
 test_rotate_wrap_keys_never_shadow_a_users_ctrl_x() {
-    local home="$TEST_TMPDIR/home-ok-prefix" kb doc chord
-    kb="$home/.claude/keybindings.json"
-    doc='{"bindings":[{"context":"Chat","bindings":{"ctrl+x":"chat:externalEditor"}},{"context":"Global","bindings":{"alt+1":"command:rotate","alt+2":"command:wrap"}}]}'
-    _install_with_recorded_yes ok-prefix "$home" "$doc" \
-        || { echo "  FAIL: install.sh exited non-zero"; return 1; }
-    printf '%s\n' "$doc" | cmp -s - "$kb" || { echo "  FAIL: the file was changed"; return 1; }
-    for chord in 'ctrl+x r' 'ctrl+x w' 'ctrl+x 1' 'ctrl+x 2'; do
-        grep -qF "Rotate/wrap keys: $chord would shadow ctrl+x, which is bound to chat:externalEditor in $kb; left unbound." \
-            "$TEST_TMPDIR/ok-prefix.out" || { echo "  FAIL: no warning naming $chord and the ctrl+x it would shadow"; return 1; }
+    local home kb doc label
+    for label in ok-prefix ok-prefix-bound; do
+        home="$TEST_TMPDIR/home-$label"
+        kb="$home/.claude/keybindings.json"
+        case "$label" in
+            ok-prefix) doc='{"bindings":[{"context":"Chat","bindings":{"ctrl+x":"chat:externalEditor"}},{"context":"Global","bindings":{"alt+1":"command:rotate","alt+2":"command:wrap"}}]}' ;;
+            ok-prefix-bound) doc='{"bindings":[{"context":"Chat","bindings":{"ctrl+x":"chat:externalEditor"}},{"context":"Global","bindings":{"ctrl+x r":"command:rotate","ctrl+x w":"command:wrap","ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2"}}]}' ;;
+        esac
+        _install_with_recorded_yes "$label" "$home" "$doc" \
+            || { echo "  FAIL: install.sh exited non-zero ($label)"; return 1; }
+        printf '%s\n' "$doc" | cmp -s - "$kb" || { echo "  FAIL: the file was changed ($label)"; return 1; }
+        grep -qF "Rotate/wrap keys: ctrl+x r, ctrl+x w, ctrl+x 1, ctrl+x 2 would shadow ctrl+x, which is bound to chat:externalEditor in $kb; left as they are." \
+            "$TEST_TMPDIR/$label.out" || { echo "  FAIL: no warning naming the chords and the ctrl+x they would shadow ($label)"; return 1; }
+        assert_eq "1" "$(grep -c 'would shadow' "$TEST_TMPDIR/$label.out")" "one shadow warning for the file ($label)" || return 1
     done
 }
 

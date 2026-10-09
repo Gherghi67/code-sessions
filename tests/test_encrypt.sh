@@ -277,6 +277,20 @@ test_encrypt_releases_the_session_lock_when_it_stops() {
     [ ! -e "$lock" ] || { echo "  FAIL: lock left after a failed encrypt: $(cat "$lock")"; return 1; }
 }
 
+# The EXIT trap releases the lock of whatever sessions root cs runs under: a
+# root holding a space, quotes and a $( is a path to release, never code to run.
+test_encrypt_releases_the_lock_under_a_root_with_quotes() {
+    _stubs
+    export CS_SESSIONS_ROOT="$TEST_TMPDIR/odd root/it's \"q\" \$(touch pwned)"
+    mkdir -p "$CS_SESSIONS_ROOT"
+    _populated_session enc
+    local lock="$CS_SESSIONS_ROOT/enc/.cs/session.lock" rc=0
+    (cd "$TEST_TMPDIR" && FAKE_HDIUTIL_FAIL=attach _encrypt enc >/dev/null 2>&1) || rc=$?
+    assert_eq "1" "$rc" "encrypt stops" || return 1
+    [ ! -e "$lock" ] || { echo "  FAIL: lock left after a failed encrypt: $(cat "$lock")"; return 1; }
+    [ ! -e "$TEST_TMPDIR/pwned" ] || { echo "  FAIL: the root's \$( ran as code"; return 1; }
+}
+
 test_encrypt_refuses_a_readme_it_cannot_tag() {
     _stubs
     create_test_session enc >/dev/null
@@ -682,6 +696,7 @@ run_test test_encrypt_builds_the_vault_and_detaches
 run_test test_encrypt_builds_a_session_never_opened_on_this_machine
 run_test test_encrypt_holds_the_session_lock_while_it_works
 run_test test_encrypt_releases_the_session_lock_when_it_stops
+run_test test_encrypt_releases_the_lock_under_a_root_with_quotes
 run_test test_encrypt_refuses_a_readme_it_cannot_tag
 run_test test_encrypt_stops_when_create_fails
 run_test test_encrypt_stops_when_attach_fails

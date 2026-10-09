@@ -173,12 +173,12 @@ _strip_hook_registration() {
 }
 
 # The Claude Code keybindings cs offers to add. Ctrl+X R and Ctrl+X W are
-# "command:<name>" actions, which submit /<name>. Ctrl+X 1 and Ctrl+X 2 are
-# the engine actions the cs mod's band Buttons answer to, so they press the
-# band's rotate (or /clear) and wrap keys (KEEP IN SYNC with ROTATE_ACTION
-# and WRAP_ACTION in mods/cs/hooks/register.tsx). install.sh asks once per
-# machine and binds them, cs -uninstall takes back only the keys that still
-# hold these values, and cs -doctor reports them.
+# "command:<name>" actions, which submit /<name>. Ctrl+X 1 and Ctrl+X 2 bind
+# the engine actions the cs mod's band Buttons answer to: they press the
+# band's rotate (or /clear) key and its wrap key. KEEP IN SYNC with
+# ROTATE_ACTION and WRAP_ACTION in mods/cs/hooks/register.tsx. install.sh
+# asks once per machine and binds them. cs -uninstall takes back only the
+# keys that still hold these values, and cs -doctor reports them.
 CS_ROTATE_WRAP_KEYS='{"ctrl+x r":"command:rotate","ctrl+x w":"command:wrap","ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2"}'
 
 # Option+1 and Option+2 on the same two commands, as cs 2026.10.6 bound them.
@@ -10127,13 +10127,6 @@ _remove_one_session() {
     _spawn_discard_seeds "$session_name"
 }
 
-# Launch Claude Code
-# Register or remove the cs-statusline entry in Claude Code's settings.json.
-# Enable overwrites whatever is registered (the command is explicit consent);
-# Strip the statusLine registration when (and only when) it points at
-# cs-statusline; a status line the user configured themselves is left alone.
-# Returns 0 when stripped, 1 when absent or foreign, 2 when the write failed.
-
 # Compact duration string from seconds: 45s, 12m, 3h, 2d. Arg: secs.
 _humanize_secs() {  # secs
     local s="$1"
@@ -10181,6 +10174,9 @@ cmd_live() {
         echo "No other live cs sessions."
     fi
 }
+# Strip the statusLine registration when (and only when) it points at
+# cs-statusline; a status line the user configured themselves is left alone.
+# Returns 0 when stripped, 1 when absent or foreign, 2 when the write failed.
 _strip_statusline_registration() {
     local settings_file="$1"
     [ -f "$settings_file" ] || return 1
@@ -10242,6 +10238,8 @@ _statusline_caps_ask() {
     done
 }
 
+# Register or remove the cs-statusline entry in Claude Code's settings.json.
+# enable overwrites whatever is registered (the command is explicit consent);
 # disable strips only a cs-statusline registration, never a foreign one.
 run_statusline_cmd() {
     local action="${1:-}"

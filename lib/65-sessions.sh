@@ -591,13 +591,6 @@ _remove_one_session() {
     _spawn_discard_seeds "$session_name"
 }
 
-# Launch Claude Code
-# Register or remove the cs-statusline entry in Claude Code's settings.json.
-# Enable overwrites whatever is registered (the command is explicit consent);
-# Strip the statusLine registration when (and only when) it points at
-# cs-statusline; a status line the user configured themselves is left alone.
-# Returns 0 when stripped, 1 when absent or foreign, 2 when the write failed.
-
 # Compact duration string from seconds: 45s, 12m, 3h, 2d. Arg: secs.
 _humanize_secs() {  # secs
     local s="$1"

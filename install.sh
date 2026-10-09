@@ -237,12 +237,12 @@ _strip_hook_registration() {
 }
 
 # The Claude Code keybindings cs offers to add. Ctrl+X R and Ctrl+X W are
-# "command:<name>" actions, which submit /<name>. Ctrl+X 1 and Ctrl+X 2 are
-# the engine actions the cs mod's band Buttons answer to, so they press the
-# band's rotate (or /clear) and wrap keys (KEEP IN SYNC with ROTATE_ACTION
-# and WRAP_ACTION in mods/cs/hooks/register.tsx). install.sh asks once per
-# machine and binds them, cs -uninstall takes back only the keys that still
-# hold these values, and cs -doctor reports them.
+# "command:<name>" actions, which submit /<name>. Ctrl+X 1 and Ctrl+X 2 bind
+# the engine actions the cs mod's band Buttons answer to: they press the
+# band's rotate (or /clear) key and its wrap key. KEEP IN SYNC with
+# ROTATE_ACTION and WRAP_ACTION in mods/cs/hooks/register.tsx. install.sh
+# asks once per machine and binds them. cs -uninstall takes back only the
+# keys that still hold these values, and cs -doctor reports them.
 CS_ROTATE_WRAP_KEYS='{"ctrl+x r":"command:rotate","ctrl+x w":"command:wrap","ctrl+x 1":"strip:jump1","ctrl+x 2":"strip:jump2"}'
 
 # Option+1 and Option+2 on the same two commands, as cs 2026.10.6 bound them.
@@ -1205,7 +1205,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "10869dc1acb46199b691b7220fb022f099ffc820ae9476889f8de997c044f430  bin/cs"
+    "48c056bfe962531be85d2a90e73ad0e3b0605321ddac845fa07d1c92c36cfcc1  bin/cs"
     "bf25f13b49a6ae5d72edd04fccabbe6644f2159c41ed54756f57c6b561ada8a9  bin/cs-secrets"
     "218445530b4e201f65870c91c126ecfe6d7732b5796d6cf9df01b544b942cad5  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -1238,7 +1238,7 @@ CS_PAYLOAD_SHA256=(
     "762ea9875fda791fd4f31fee1af5a6522a7fa5287f496eee267a561847a626bf  skills/finish/scripts/finish.sh"
     "144391d7d2df6a89742528729ee8da1e51063b3783023a656571bec0f2235458  mods/cs/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs/hooks/hooks.json"
-    "53aea9ba9716661c01a89511c5bdfbc6b083d44c567b233ba90ccf66e5e5dc36  mods/cs/hooks/register.tsx"
+    "cdf5feec1cdf39f9905ce3371ed215cccad1fda0018219feadef16bbe92d2ce7  mods/cs/hooks/register.tsx"
     "7a97c18b6ae755d8ec7862532eb15bbf627170a1fab8cc90dd2f8f77a57164be  mods/cs-update/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-update/hooks/hooks.json"
     "434c341cb8869cd3db897bf26d18d99734eb338eae9074ad6962d5ea46461a7a  mods/cs-update/hooks/register.tsx"
@@ -2120,12 +2120,15 @@ else
     # shadow. cs's own Option+1 / Option+2 bindings stood for /rotate and
     # /wrap, so they make way unless Ctrl+X R or Ctrl+X W conflicts: then
     # both stay, so the command whose chord is taken keeps a key. A conflict
-    # on a band chord leaves both commands their chords and keeps nothing. A file of a shape cs cannot read is refused before anything
-    # is written. The write is cs_write_atomic's, from the hooks' shared
-    # library deployed above: mode kept, and a symlinked file (a dotfiles
-    # manager's) rewritten through its link.
+    # on a band chord leaves both commands their chords and keeps nothing.
+    # The chords share one prefix, so the bare key they would shadow is named
+    # in one warning for the file. A file of a shape cs cannot read is refused
+    # before anything is written. The write is cs_write_atomic's, from the
+    # hooks' shared library deployed above: mode kept, and a symlinked file (a
+    # dotfiles manager's) rewritten through its link.
     _bind_rotate_wrap_keys() {
         local file doc status state key action prefix added="" command_conflicts=0 retired="" add
+        local shadowed="" shadowed_prefix="" shadowed_action=""
         file="$(_cs_keybindings_file)"
         if [ -e "$file" ]; then
             if ! _cs_keybindings_shape_ok "$file"; then
@@ -2145,7 +2148,9 @@ else
                         "ctrl+x r"|"ctrl+x w") command_conflicts=$((command_conflicts + 1)) ;;
                     esac
                     if [ -n "$prefix" ]; then
-                        warn "Rotate/wrap keys: $key would shadow $prefix, which is bound to $action in $file; left unbound."
+                        shadowed="${shadowed:+$shadowed, }$key"
+                        shadowed_prefix="$prefix"
+                        shadowed_action="$action"
                     else
                         warn "Rotate/wrap keys: $key is already bound to $action in $file; left as it is."
                     fi
@@ -2155,6 +2160,9 @@ else
                     ;;
             esac
         done <<< "$status"
+        if [ -n "$shadowed" ]; then
+            warn "Rotate/wrap keys: $shadowed would shadow $shadowed_prefix, which is bound to $shadowed_action in $file; left as they are."
+        fi
         if [ "$command_conflicts" = 0 ]; then
             retired=$(printf '%s\n' "$doc" | _cs_keybindings_held "$CS_RETIRED_OPTION_KEYS") \
                 || { warn "Rotate/wrap keys: could not read the bindings in $file"; return 1; }
@@ -2193,8 +2201,9 @@ else
     }
 
     # Ctrl+X R runs /rotate, Ctrl+X W runs /wrap, and Ctrl+X 1 / Ctrl+X 2 press
-    # the cs band's keys, through Claude Code's own keybindings.json. Keys are the user's keyboard, so they are offered once
-    # per machine and the answer is recorded: a yes is honoured on every
+    # the cs band's keys, through Claude Code's own keybindings.json. Keys are
+    # the user's keyboard, so they are offered once per machine and the answer
+    # is recorded: a yes is honoured on every
     # install (keys already bound are left as they are), a no is never asked
     # again, and with no terminal nothing is written or recorded. Every step
     # reports and carries on; a keybinding must never take the install down.
