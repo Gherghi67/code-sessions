@@ -814,6 +814,13 @@ test_doctor_statusline_judges_a_foreign_command_by_a_fresh_context_pct() {
     line=$(printf '%s\n' "$output" | grep 'Statusline:' | sed "s/$(printf '\033')\\[[0-9;]*m//g")
     assert_eq "  [WARN] Statusline: using a non-cs status line ($cmd) — context-pct is never written, so the rotation nudge and the queue context breaker stay inert, unless it chains to cs-statusline" "$line" \
         "a stale context-pct leaves the hedged WARN" || return 1
+    # A fresh but empty file (a teammate's statusline touches it without a
+    # reading) feeds no gate: the hedged WARN again.
+    : > "$pct"
+    output=$(CS_CLAUDE_DIR="$fake_claude" "$CS_BIN" -doctor 2>&1) || true
+    line=$(printf '%s\n' "$output" | grep 'Statusline:' | sed "s/$(printf '\033')\\[[0-9;]*m//g")
+    assert_eq "  [WARN] Statusline: using a non-cs status line ($cmd) — context-pct is never written, so the rotation nudge and the queue context breaker stay inert, unless it chains to cs-statusline" "$line" \
+        "a fresh context-pct holding no reading leaves the hedged WARN" || return 1
 }
 
 test_doctor_subagent_statusline_ok_when_registered_and_executable() {
