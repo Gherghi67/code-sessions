@@ -369,6 +369,9 @@ remove_session() {
 # Top-level entries of a session root that cs did not put there, as one
 # comma-separated line (empty when there are none). cs owns .cs/, .claude/,
 # the session git files and the two CLAUDE files; .DS_Store is Finder's.
+# notes.md, changes.md, discoveries.md, logs/ and artifacts/ are where legacy
+# cs layouts kept session files at the root. A third-party cache (.omc,
+# .claude-crawl) is not cs's to delete silently, so it still counts.
 _session_foreign_entries() {  # session_dir
     local dir="$1" entry name out=""
     for entry in "$dir"/* "$dir"/.[!.]* "$dir"/..?*; do
@@ -376,6 +379,7 @@ _session_foreign_entries() {  # session_dir
         name="${entry##*/}"
         case "$name" in
             .cs|.claude|.git|.gitignore|.gitattributes|CLAUDE.md|CLAUDE.local.md|.DS_Store) continue ;;
+            notes.md|changes.md|discoveries.md|logs|artifacts) continue ;;
         esac
         out="${out:+$out, }$name"
     done

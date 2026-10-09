@@ -985,10 +985,12 @@ impl UnownedEntries {
     }
 }
 
-/// Names cs, Claude Code and Finder put in a session root; everything else
-/// there belongs to the user. Kept in step with `_session_foreign_entries`.
+/// Names cs, Claude Code and Finder put in a session root, plus the root
+/// files legacy cs layouts kept there; everything else belongs to the user.
+/// Kept in step with `_session_foreign_entries`.
 const SESSION_ROOT_OWNED: &[&str] = &[
     ".cs", ".claude", ".git", ".gitignore", ".gitattributes", "CLAUDE.md", "CLAUDE.local.md", ".DS_Store",
+    "notes.md", "changes.md", "discoveries.md", "logs", "artifacts",
 ];
 
 /// Top-level names in a worktree that are cs's, not the user's.
