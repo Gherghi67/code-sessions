@@ -442,6 +442,93 @@ test_remove_base_session_drops_its_age_state() {
         "cs -rm names the age state it removed" || return 1
 }
 
+test_remove_base_session_without_age_state_prints_no_age_line() {
+    create_test_session agenone >/dev/null
+    local out
+    out=$("$CS_BIN" -rm agenone --force </dev/null 2>&1) || { echo "  cs -rm failed: $out"; return 1; }
+    assert_eq "" "$(printf '%s\n' "$out" | grep 'age state' || true)" \
+        "nothing removed, nothing named" || return 1
+}
+
+# A base@task session uses its base's secrets (CS_SECRETS_SESSION is the
+# base), so removing it must leave the base's age state alone.
+test_remove_worktree_session_keeps_the_base_age_state() {
+    local base="$CS_SESSIONS_ROOT/agewt"
+    create_test_session agewt >/dev/null
+    git -C "$base" init -q
+    git -C "$base" add CLAUDE.md
+    git -C "$base" -c user.email=t@t -c user.name=t commit -qm seed
+    git -C "$base" worktree add -q "$CS_SESSIONS_ROOT/agewt@t" -b cs/t
+    mkdir -p "$CS_SESSIONS_ROOT/agewt@t/.cs/local"
+    local age_dir="$HOME/.cs-secrets/sessions/agewt"
+    mkdir -p "$age_dir"
+    printf 'age1pin\n' > "$age_dir/age-trusted"
+    local out
+    out=$("$CS_BIN" -rm "agewt@t" --force </dev/null 2>&1) || { echo "  cs -rm failed: $out"; return 1; }
+    assert_not_exists "$CS_SESSIONS_ROOT/agewt@t" "the worktree session is removed" || return 1
+    assert_eq "age1pin" "$(cat "$age_dir/age-trusted")" "the base's age state survives" || return 1
+    assert_eq "" "$(printf '%s\n' "$out" | grep 'age state' || true)" "no age state is named" || return 1
+}
+
+# A base@task whose base is gone falls through to the plain directory
+# removal; the name still decides, so no age state goes with it.
+test_remove_orphaned_worktree_session_keeps_age_state() {
+    mkdir -p "$CS_SESSIONS_ROOT/ageorph@t/.cs/local"
+    local base_age="$HOME/.cs-secrets/sessions/ageorph"
+    local own_age="$HOME/.cs-secrets/sessions/ageorph@t"
+    mkdir -p "$base_age" "$own_age"
+    "$CS_BIN" -rm "ageorph@t" --force </dev/null >/dev/null 2>&1 || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/ageorph@t" "the orphaned worktree dir is removed" || return 1
+    assert_dir "$base_age" "the base's age state survives" || return 1
+    assert_dir "$own_age" "a feature name never reaches the age state" || return 1
+}
+
+test_remove_adopted_link_keeps_age_state() {
+    local project_dir="$TEST_TMPDIR/age-adopted-project"
+    mkdir -p "$project_dir"
+    (cd "$project_dir" && "$CS_BIN" -adopt ageadopt >/dev/null 2>&1)
+    [ -L "$CS_SESSIONS_ROOT/ageadopt" ] || { echo "  adopt did not create the link"; return 1; }
+    local age_dir="$HOME/.cs-secrets/sessions/ageadopt"
+    mkdir -p "$age_dir"
+    printf 'age1pin\n' > "$age_dir/age-trusted"
+    "$CS_BIN" -rm ageadopt --force </dev/null >/dev/null 2>&1 || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/ageadopt" "the link is removed" || return 1
+    assert_eq "age1pin" "$(cat "$age_dir/age-trusted")" "an adopted link's removal keeps age state" || return 1
+}
+
+# The helper itself refuses any name that is not one plain path component,
+# so no caller can turn it on ~/.cs-secrets/sessions/ or above.
+test_drop_age_state_refuses_escaping_names() {
+    local secrets="$HOME/.cs-secrets"
+    mkdir -p "$secrets/sessions/keep" "$secrets/sessions/.hidden"
+    printf 'x\n' > "$secrets/sessions/keep/age-trusted"
+    printf 'x\n' > "$secrets/sessions/age-root-marker"
+    local name rc out
+    for name in "" "." ".." ".hidden" "keep/.." "../sessions" "keep@t"; do
+        rc=0
+        out=$( source "$SCRIPT_DIR/../lib/05-term.sh"
+               source "$SCRIPT_DIR/../lib/10-help.sh"
+               source "$SCRIPT_DIR/../lib/65-sessions.sh"
+               _drop_session_age_state "$name" 2>&1 ) || rc=$?
+        assert_eq "1" "$rc" "name '$name' must be refused" || return 1
+        assert_eq "Refusing to remove age state for an invalid base session name: '$name'" "$out" \
+            "refusal for '$name' names it" || return 1
+    done
+    assert_eq "x" "$(cat "$secrets/sessions/keep/age-trusted")" "another session's state survives" || return 1
+    assert_eq "x" "$(cat "$secrets/sessions/age-root-marker")" "the sessions dir survives" || return 1
+    assert_dir "$secrets/sessions/.hidden" "a dot-named dir survives" || return 1
+    # A glob character is a plain name: the path is exact, so '*' removes
+    # nothing when no session is literally named '*'.
+    rc=0
+    out=$( source "$SCRIPT_DIR/../lib/05-term.sh"
+           source "$SCRIPT_DIR/../lib/10-help.sh"
+           source "$SCRIPT_DIR/../lib/65-sessions.sh"
+           _drop_session_age_state "*" 2>&1 ) || rc=$?
+    assert_eq "0" "$rc" "'*' with no such dir is a no-op" || return 1
+    assert_eq "" "$out" "'*' with no such dir names nothing" || return 1
+    assert_eq "x" "$(cat "$secrets/sessions/keep/age-trusted")" "'*' is not expanded as a glob" || return 1
+}
+
 test_remove_force_on_adopted_removes_only_the_link() {
     local project_dir="$TEST_TMPDIR/adopted-project"
     mkdir -p "$project_dir"
@@ -454,6 +541,11 @@ test_remove_force_on_adopted_removes_only_the_link() {
 
 run_test test_remove_empty_name_rejected_before_any_deletion
 run_test test_remove_base_session_drops_its_age_state
+run_test test_remove_base_session_without_age_state_prints_no_age_line
+run_test test_remove_worktree_session_keeps_the_base_age_state
+run_test test_remove_orphaned_worktree_session_keeps_age_state
+run_test test_remove_adopted_link_keeps_age_state
+run_test test_drop_age_state_refuses_escaping_names
 run_test test_remove_refuses_live_session_without_force
 run_test test_remove_allows_heartbeat_only_session_without_force
 run_test test_remove_discards_pending_spawn_seeds
