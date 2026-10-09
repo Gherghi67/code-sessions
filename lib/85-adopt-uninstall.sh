@@ -81,9 +81,22 @@ ENTRIES
     done <<< "$entries"
 }
 
-# Adopt an existing project directory as a cs session
-adopt_session() {
-    local session_name="$1"
+# Adopt an existing project directory as a cs session. --yes (-y) answers the
+# one question adopt asks, whether to re-adopt orphaned records, so it runs
+# without a terminal.
+adopt_session() {  # name, [--yes|-y], in any order
+    local session_name="" assume_yes=false arg
+    for arg in "$@"; do
+        case "$arg" in
+            --yes|-y) assume_yes=true ;;
+            -*) error "cs -adopt: unknown option '$arg'. Usage: cs -adopt <name> [--yes]" ;;
+            *)
+                [ -z "$session_name" ] \
+                    || error "cs -adopt: takes one session name, got '$session_name' and '$arg'. Usage: cs -adopt <name> [--yes]"
+                session_name="$arg"
+                ;;
+        esac
+    done
     local target_dir
     target_dir="$(pwd -P)"
 
@@ -139,7 +152,9 @@ adopt_session() {
             error "Directory is already adopted as session '$existing_name' (open it with: cs $existing_name)"
         fi
 
-        if cs_interactive; then
+        if [ "$assume_yes" = true ]; then
+            :
+        elif cs_interactive; then
             local confirm
             read -r -p "Found existing session records (.cs/) with no session link. Re-adopt as '$session_name', preserving them? [y/N] " confirm
             if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
@@ -147,7 +162,7 @@ adopt_session() {
                 return 0
             fi
         else
-            error "Directory carries session records (.cs/) but no session link. Re-run interactively to re-adopt them as '$session_name', or remove .cs/ to adopt fresh."
+            error "Directory carries session records (.cs/) but no session link. Re-run interactively or with --yes to re-adopt them as '$session_name', or remove .cs/ to adopt fresh."
         fi
     fi
 

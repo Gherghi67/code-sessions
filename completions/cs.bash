@@ -166,16 +166,19 @@ _cs_completions() {
         return
     fi
 
-    # Context: after -adopt. A new session name completes nothing; the options
-    # register Claude Code's worktrees instead.
+    # Context: after -adopt. A new session name completes nothing; --yes
+    # answers the re-adopt question, and --worktrees, only as the first word,
+    # registers Claude Code's worktrees instead.
     if $after_adopt; then
         COMPREPLY=()
         case "$cur" in
             -*)
                 if [[ "${words[cword-1]}" == "--worktrees" ]]; then
                     COMPREPLY=($(compgen -W "--dry-run" -- "$cur"))
+                elif [[ "${words[cword-1]}" == "-adopt" ]]; then
+                    COMPREPLY=($(compgen -W "--worktrees --yes" -- "$cur"))
                 else
-                    COMPREPLY=($(compgen -W "--worktrees" -- "$cur"))
+                    COMPREPLY=($(compgen -W "--yes" -- "$cur"))
                 fi
                 ;;
         esac
