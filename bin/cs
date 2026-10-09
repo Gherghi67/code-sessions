@@ -10192,14 +10192,44 @@ _remove_one_session() {
         return 0
     fi
 
+    local drop_age_state=""
     if [ -L "$session_dir" ]; then
         rm "$session_dir"
         info "Removed session link: $session_name (project directory preserved)"
     else
         rm -rf "$session_dir"
         info "Removed session: $session_name"
+        # Gated on the name, not the branch taken: a base@task whose base is
+        # gone falls through to the rm -rf above, and a feature session uses
+        # its base's secrets (CS_SECRETS_SESSION), so the state is the base's.
+        case "$session_name" in
+            *@*) ;;
+            *) drop_age_state="true" ;;
+        esac
     fi
     _spawn_discard_seeds "$session_name"
+    [ -z "$drop_age_state" ] || _drop_session_age_state "$session_name"
+}
+
+# Remove the age state cs-secrets keeps for a base session outside the
+# session directory: ~/.cs-secrets/sessions/<name>/ (recipient pins and
+# digests). Twin of age_state_dir in bin/cs-secrets and age_state_dir in
+# tui/src/app.rs; the three change together. Prints one line naming the path
+# when there was something to remove, nothing otherwise. A name that is not a
+# single plain path component is refused before it becomes a path, so "" can
+# never resolve to the sessions directory itself. Keychain and encrypted
+# stored secrets are not touched.
+_drop_session_age_state() {  # name
+    local name="$1" dir
+    case "$name" in
+        ''|.*|*/*|*@*)
+            warn "Refusing to remove age state for an invalid base session name: '$name'"
+            return 1 ;;
+    esac
+    dir="$HOME/.cs-secrets/sessions/$name"
+    [ -e "$dir" ] || [ -L "$dir" ] || return 0
+    rm -rf "$dir" || { warn "Could not remove age state: $dir"; return 1; }
+    info "Removed age state: $dir"
 }
 
 # Compact duration string from seconds: 45s, 12m, 3h, 2d. Arg: secs.
