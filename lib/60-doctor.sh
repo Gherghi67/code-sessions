@@ -519,9 +519,12 @@ _doctor_check_statusline() {
             # A foreign command can chain to cs-statusline (a bridge that runs
             # the original), so inside a session the file itself decides: a
             # context-pct inside the heartbeat window means the gates are fed.
-            local meta="${CLAUDE_SESSION_META_DIR:-}" now age
+            # An empty or non-numeric file feeds no gate, however fresh.
+            local meta="${CLAUDE_SESSION_META_DIR:-}" now age reading=""
             now=$(date +%s)
-            if [ -n "$meta" ] && session_heartbeat_alive "$meta" "$now"; then
+            [ -z "$meta" ] || reading=$(tr -d '[:space:]' < "$meta/local/context-pct" 2>/dev/null) || reading=""
+            case "$reading" in ''|*[!0-9]*) reading="" ;; esac
+            if [ -n "$reading" ] && session_heartbeat_alive "$meta" "$now"; then
                 age=$(( (now - $(_epoch_mtime "$meta/local/context-pct")) / 60 ))
                 [ "$age" -ge 0 ] || age=0
                 _doctor_ok "Statusline: context-pct written $age min ago through $cmd"
