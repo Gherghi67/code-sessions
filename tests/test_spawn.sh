@@ -466,6 +466,18 @@ test_launch_moves_brief_into_the_session_and_kicks_to_it() {
     [ ! -f "$(WQ)/queue.state" ] || { echo "  queue armed with no tasks"; return 1; }
 }
 
+# A brief file beside the seed belongs to no spawn the seed knows of: a
+# --brief spawn killed before it published, or a cs from before the brief
+# moved into the seed. A task-only spawn's session must not receive it.
+test_launch_ignores_a_brief_file_beside_the_seed() {
+    _stage_seed boss "first job"
+    printf 'a brief from another spawn\n' > "$CS_SESSIONS_ROOT/.spawn/worker.brief.md"
+    local out; out=$(_launch_worker) || return 1
+    [ ! -e "$CS_SESSIONS_ROOT/worker/.cs/brief.md" ] || { echo "  the session received a brief its spawn never staged"; return 1; }
+    assert_output_not_contains "$out" "Your brief is" "no kick to a brief the spawn never staged" || return 1
+    assert_output_contains "$out" "armed with 1 task(s)" "the seed's own task still runs" || return 1
+}
+
 test_launch_brief_with_tasks_kicks_to_both() {
     _stage_seed boss "first job"
     printf 'brief body\n' > "$CS_SESSIONS_ROOT/.spawn/worker.brief.md"
@@ -764,6 +776,7 @@ run_test test_launch_outside_tmux_touches_no_tmux_environment
 run_test test_launch_empty_spawner_gets_no_reply_wiring
 run_test test_launch_without_seed_keeps_color_behavior
 run_test test_launch_moves_brief_into_the_session_and_kicks_to_it
+run_test test_launch_ignores_a_brief_file_beside_the_seed
 run_test test_launch_brief_with_tasks_kicks_to_both
 run_test test_launch_refuses_a_directory_at_the_briefs_destination
 run_test test_launch_failed_brief_delivery_keeps_the_seed_and_brief
