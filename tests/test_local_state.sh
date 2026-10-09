@@ -560,6 +560,41 @@ test_lock_of_a_killed_holder_is_free_at_once() {
     [ $((SECONDS - start)) -le 1 ] || { echo "  FAIL: the take waited $((SECONDS - start))s"; return 1; }
 }
 
+# A lock taken inside $(...) or ( ) is that subshell's and is gone when it
+# exits, so its caller holds nothing. A lock the caller holds stays held
+# across its subshells, a subshell's release leaves it held, a release of a
+# path not held is a no-op, and a second take while holding is refused.
+test_lock_belongs_to_the_shell_that_took_it() {
+    local lock="$TEST_TMPDIR/sub.lock" other="$TEST_TMPDIR/other.lock" out
+    out=$(LOCK="$lock" OTHER="$other" PROBE='use Fcntl qw(:flock); open(my $f, "<", $ARGV[0]) or exit 2; exit(flock($f, LOCK_EX | LOCK_NB) ? 0 : 1)' \
+        bash -c 'source "$1"
+        state() { if perl -e "$PROBE" "$LOCK"; then echo "$1: free"; else echo "$1: held"; fi; }
+        taken=$(_cs_lock "$LOCK" && echo yes); echo "taken in \$(...): $taken"
+        state "after \$(...)"
+        ( _cs_lock "$LOCK" ) && echo "taken in ( ): yes"
+        state "after ( )"
+        _cs_lock "$LOCK" && echo "taken by the shell: yes"
+        ( _cs_unlock "$LOCK" ); released=$(_cs_unlock "$LOCK")
+        state "after a release in ( ) and in \$(...)"
+        _cs_unlock "$OTHER"
+        state "after a release of a path not held"
+        _cs_lock "$OTHER" 2>&1 || echo "second take: refused"
+        state "after the second take"
+        _cs_unlock "$LOCK"
+        state "after the release"' _ "$LOCK_LIB")
+    assert_eq "taken in \$(...): yes
+after \$(...): free
+taken in ( ): yes
+after ( ): free
+taken by the shell: yes
+after a release in ( ) and in \$(...): held
+after a release of a path not held: held
+cs: cannot lock $other: this process already holds $lock
+second take: refused
+after the second take: held
+after the release: free" "$out" "each shell holds only the lock it took" || return 1
+}
+
 # A state rewrite is a read-modify-write, so two writers (cs at launch and the
 # SessionStart hook) can lose an update unless they take turns. The lock is a
 # directory beside the file, .cs/local/state.lock, holding the holder's pid; a
@@ -1115,6 +1150,7 @@ run_test test_state_and_gitattributes_rewrites_leave_tmp_siblings_alone_and_keep
 run_test test_lock_refuses_a_path_that_is_not_a_regular_file
 run_test test_lock_takers_never_hold_it_at_once
 run_test test_lock_of_a_killed_holder_is_free_at_once
+run_test test_lock_belongs_to_the_shell_that_took_it
 run_test test_state_write_waits_for_a_live_lock_holder
 run_test test_lock_timeout_leaves_a_live_holders_old_lock_in_place
 run_test test_state_write_takes_over_a_dead_holders_lock
