@@ -741,7 +741,10 @@ _doctor_check_merge_driver() {
 _doctor_check_migration_stamp() {
     local dir="${CLAUDE_SESSION_DIR:-}" state
     [ -n "$dir" ] || return 0
-    if [ -n "$(_read_local_state "$dir/.cs/local/state" cs_base)" ]; then
+    # A worktree open never migrates, so never stamps. cs_base or task_branch
+    # marks one; task_branch is the key the worktree open itself reads.
+    if [ -n "$(_read_local_state "$dir/.cs/local/state" cs_base)" ] \
+        || [ -n "$(_read_local_state "$dir/.cs/local/state" task_branch)" ]; then
         return 0
     fi
     state=$(_migration_stamp_state "$dir" "$(cs_actor_raw "$dir" "$dir/.cs")")
