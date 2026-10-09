@@ -730,6 +730,20 @@ test_launch_terminated_at_the_ask_leaves_the_seed_staged_and_no_copy() {
     assert_eq "" "$(find "$CS_SESSIONS_ROOT/.spawn" -mindepth 1 ! -name worker.seed)" "nothing else left in .spawn" || return 1
 }
 
+# An open stopped after a newer seed took the staged name keeps the newer one
+# staged and sets the one it claimed aside.
+test_launch_terminated_after_a_newer_seed_sets_the_claimed_one_aside() {
+    _stage_seed_with_brief $'brief A\n' boss "job A"
+    {
+        printf '%s\n%s\n%s\n' "$OWN_TOKEN" boss "job B"
+    } > "$TEST_TMPDIR/seed-b"
+    local out
+    out=$(_launch_worker_on_tty '' BEFORE_KEYS="cp '$TEST_TMPDIR/seed-b' '$CS_SESSIONS_ROOT/.spawn/worker.seed'; kill -TERM \$PTY_PID") || true
+    assert_file_contains "$CS_SESSIONS_ROOT/.spawn/worker.seed" "job B" "the newer seed stays staged" || return 1
+    assert_file_contains "$CS_SESSIONS_ROOT/.spawn/worker.seed.stale" "job A" "the claimed seed is set aside" || return 1
+    assert_eq "" "$(find "$CS_SESSIONS_ROOT/.spawn" -mindepth 1 -name '.*')" "no claim left in .spawn" || return 1
+}
+
 # A launch that fails after it read the seed leaves no copy of it behind.
 test_launch_failing_after_the_read_leaves_no_copy_of_the_seed() {
     _launch_worker >/dev/null || return 1
@@ -892,6 +906,7 @@ run_test test_launch_foreign_seed_consent_shows_it_and_enter_consumes
 run_test test_launch_consumes_the_seed_it_asked_about
 run_test test_launch_decline_keeps_a_replacement_seed_staged
 run_test test_launch_terminated_at_the_ask_leaves_the_seed_staged_and_no_copy
+run_test test_launch_terminated_after_a_newer_seed_sets_the_claimed_one_aside
 run_test test_launch_failing_after_the_read_leaves_no_copy_of_the_seed
 run_test test_launch_foreign_seed_y_consumes
 run_test test_launch_foreign_seed_unknown_key_asks_again
