@@ -112,7 +112,7 @@ masked; `run_all.sh` reports every failing suite.
 
 ## Adding a Hook
 
-1. **Create the hook script** in `hooks/your-hook.sh`. Copy an existing hook (e.g., `hooks/bash-logger.sh`) as a starting template.
+1. **Create the hook script** in `hooks/your-hook.sh`. Copy an existing hook (e.g., `hooks/tool-failure-logger.sh`) as a starting template.
 
 2. **Register it**:
    - Add the filename to the `CS_HOOKS` array in `lib/01-manifests.sh`, then run `./build.sh`, which folds it into `bin/cs` and splices it into `install.sh` (deploy, flat-layout cleanup, registration stripping, uninstall and doctor all derive from it)
@@ -141,8 +141,8 @@ masked; `run_all.sh` reports every failing suite.
 - Match the style of surrounding code.
 - Every code file starts with a 2-line `ABOUTME:` comment explaining what the file does:
   ```bash
-  # ABOUTME: Logs every Bash tool call to .cs/local/session.log with timestamp.
-  # ABOUTME: Truncates long commands at 200 chars; never blocks on errors.
+  # ABOUTME: PostToolUseFailure hook that logs failed tool calls for debugging
+  # ABOUTME: Writes tool name, error, and timestamp to the session log (.cs/local or .cs/private)
   ```
 - No emojis in code or documentation (unless part of a functional emoji set).
 - No temporal names (`NewAPI`, `LegacyHandler`, `ImprovedParser`). Name things for what they do, not their history.
