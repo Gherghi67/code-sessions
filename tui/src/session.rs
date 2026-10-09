@@ -1200,8 +1200,8 @@ const SPAWN_STAGING_SUFFIXES: [&str; 4] = [".seed", ".seed.stale", ".brief.md", 
 /// re-spawning the name and arm a future same-name session with dead tasks,
 /// and a brief would reach it as a first prompt nobody wrote for it. Exactly
 /// six characters follow the staging prefix, so the staging file of a session
-/// named `<name>.seed` is never matched. Twin of `_spawn_staging_files_for` in
-/// lib/52-spawn.sh. Best-effort by design.
+/// named `<name>.seed` is never matched. Twin of the staging match in
+/// `_spawn_discard_seeds` (lib/52-spawn.sh). Best-effort by design.
 fn discard_spawn_seeds(root: &Path, name: &str) {
     let spawn = root.join(".spawn");
     for suffix in SPAWN_STAGING_SUFFIXES {
