@@ -6599,6 +6599,8 @@ run_spawn() {
                 t="$(_trim "$1")"
                 [ -n "$t" ] || error "cs -spawn --task needs a non-empty task"
                 _queue_require_single_line "$t"
+                [ "$t" != "$SPAWN_BRIEF_MARK" ] \
+                    || error "cs -spawn --task: '$SPAWN_BRIEF_MARK' marks where a seed's brief starts and cannot be a task"
                 tasks+=("$t");;
             --brief)
                 [ $# -ge 2 ] || error "--brief needs a file"
@@ -6637,47 +6639,39 @@ run_spawn() {
     # A brief is staged with a seed even when there are no tasks: the seed
     # carries the spawner, which the brief's report-back line needs.
     if [ "${#tasks[@]}" -gt 0 ] || [ -n "$brief" ]; then
-        local sdir="$SESSIONS_ROOT/.spawn" seed
+        local sdir="$SESSIONS_ROOT/.spawn" seed staged
         seed="$sdir/$name.seed"
-        # The check-then-write below is deliberately unlocked, and both temp
-        # names are fixed. Two spawns of one name started in the same instant
-        # can therefore interleave on them: one run fails at its publishing
-        # rename, or a seed is torn, or it is published beside the other
-        # run's brief. One user spawning one name twice at once is the only
-        # way in, so it is left as it is.
         [ ! -f "$seed" ] || error "A pending spawn for $name exists: $seed"
-        mkdir -p "$sdir"
-        # Order: seed content first (to a temp file), brief second, seed
-        # published last. The launch treats the seed as the signal, so the
-        # brief must exist before the seed is visible; and because the seed is
-        # published last, a write that fails leaves nothing staged and this
-        # abort never deletes a file another spawn of the same name published.
-        # Each step is an AND list, which errexit does not judge, so every
-        # abort is explicit.
-        #
-        # One printf, so one status covers the whole seed: a brace group
-        # reports only its LAST command, and a failed first write with a
-        # succeeding task line published a seed whose spawner line was missing.
+        mkdir -p "$sdir" || error "cs -spawn: cannot create $sdir"
+        # The whole spawn is one file: the token, the spawner, one task per
+        # line, then the brief marker and the brief verbatim. It is written
+        # under a name of its own and published with ln, which refuses an
+        # existing name, so two spawns of one name cannot both publish and a
+        # seed never pairs with another run's brief. A run killed before ln
+        # leaves only its own dot-named temp, which no launch reads. Each step
+        # is an AND list, which errexit does not judge, so every abort is
+        # explicit.
+        staged=$(mktemp "$sdir/.$name.seed.XXXXXX") \
+            || error "cs -spawn: cannot stage the seed in $sdir"
+        # One printf for the lines before the brief, so one status covers
+        # them: a brace group reports only its LAST command. An empty array is
+        # unbound under bash 3.2's set -u; the guard expands to nothing then.
         local _payload _t
         _payload="$token
 $spawner
 "
-        # An empty array is unbound under bash 3.2's set -u, and a brief alone
-        # leaves it empty; the guard expands to nothing in that case.
         for _t in ${tasks[@]+"${tasks[@]}"}; do _payload="$_payload$_t
 "; done
-        printf '%s' "$_payload" > "$seed.tmp" \
-            || { rm -f "$seed.tmp" 2>/dev/null || :; error "cs -spawn: cannot stage the seed in $sdir"; }
-        if [ -n "$brief" ]; then
-            cp "$brief" "$sdir/$name.brief.md.tmp" \
-                && mv "$sdir/$name.brief.md.tmp" "$sdir/$name.brief.md" \
-                || { rm -f "$sdir/$name.brief.md.tmp" "$seed.tmp" 2>/dev/null || :
-                     error "cs -spawn --brief: cannot stage $brief in $sdir"; }
+        [ -z "$brief" ] || _payload="$_payload$SPAWN_BRIEF_MARK
+"
+        { printf '%s' "$_payload" && { [ -z "$brief" ] || cat "$brief"; }; } > "$staged" \
+            || { rm -f "$staged" 2>/dev/null || :; error "cs -spawn: cannot stage the seed in $sdir"; }
+        if ! ln "$staged" "$seed" 2>/dev/null; then
+            rm -f "$staged" 2>/dev/null || :
+            [ ! -e "$seed" ] || error "A pending spawn for $name exists: $seed"
+            error "cs -spawn: cannot publish the seed in $sdir (ln failed; the filesystem may not support hard links)"
         fi
-        # A failed rename means another spawn of this name consumed the temp
-        # path and published its own pair; its brief is not this run's to remove.
-        mv "$seed.tmp" "$seed" \
-            || { rm -f "$seed.tmp" 2>/dev/null || :; error "cs -spawn: cannot publish the seed in $sdir"; }
+        rm -f "$staged" || warn "cs -spawn: could not remove the staging file $staged"
     fi
     _spawn_window "$name" "$token"
 }
