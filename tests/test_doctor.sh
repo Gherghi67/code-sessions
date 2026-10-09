@@ -792,6 +792,30 @@ test_doctor_statusline_names_context_gating_for_foreign_statusline() {
         || { echo "  FAIL: a non-cs statusline leaves gating inert — WARN, not OK"; return 1; }
 }
 
+# A foreign status line can chain to cs-statusline (a bridge that runs the
+# original), so inside a session the evidence decides: a context-pct written
+# within the heartbeat window means the gates are fed, whatever the command.
+test_doctor_statusline_judges_a_foreign_command_by_a_fresh_context_pct() {
+    local fake_claude="$TEST_TMPDIR/sl-claude-bridge"
+    local cmd="$TEST_TMPDIR/bridge/statusline-bridge.sh"
+    local pct="$CLAUDE_SESSION_META_DIR/local/context-pct"
+    mkdir -p "$fake_claude" "$CLAUDE_SESSION_META_DIR/local"
+    printf '{"statusLine":{"command":"%s"}}\n' "$cmd" > "$fake_claude/settings.json"
+    printf '61\n' > "$pct"
+    perl -e '$t = time - 60; utime $t, $t, $ARGV[0] or die' "$pct"
+    local output line
+    output=$(CS_CLAUDE_DIR="$fake_claude" "$CS_BIN" -doctor 2>&1) || true
+    line=$(printf '%s\n' "$output" | grep 'Statusline:' | sed "s/$(printf '\033')\\[[0-9;]*m//g")
+    assert_eq "  [ OK ] Statusline: context-pct written 1 min ago through $cmd" "$line" \
+        "a fresh context-pct under a foreign command is an OK naming its age" || return 1
+    # Past the heartbeat window the evidence is gone: back to the hedged WARN.
+    perl -e '$t = time - 1200; utime $t, $t, $ARGV[0] or die' "$pct"
+    output=$(CS_CLAUDE_DIR="$fake_claude" "$CS_BIN" -doctor 2>&1) || true
+    line=$(printf '%s\n' "$output" | grep 'Statusline:' | sed "s/$(printf '\033')\\[[0-9;]*m//g")
+    assert_eq "  [WARN] Statusline: using a non-cs status line ($cmd) — context-pct is never written, so the rotation nudge and the queue context breaker stay inert, unless it chains to cs-statusline" "$line" \
+        "a stale context-pct leaves the hedged WARN" || return 1
+}
+
 test_doctor_subagent_statusline_ok_when_registered_and_executable() {
     local fake_claude="$TEST_TMPDIR/ssl-claude"
     local fake_bin="$TEST_TMPDIR/ssl-bin"
@@ -991,6 +1015,7 @@ run_test test_doctor_rotate_mod_row_observes_execution_not_presence
 run_test test_doctor_statusline_no_fail_when_not_registered
 run_test test_doctor_statusline_names_context_gating_when_absent
 run_test test_doctor_statusline_names_context_gating_for_foreign_statusline
+run_test test_doctor_statusline_judges_a_foreign_command_by_a_fresh_context_pct
 run_test test_doctor_subagent_statusline_ok_when_registered_and_executable
 run_test test_doctor_subagent_statusline_fails_when_binary_missing
 run_test test_doctor_subagent_statusline_no_fail_when_not_registered
