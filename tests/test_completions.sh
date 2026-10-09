@@ -453,6 +453,10 @@ test_bash_adopt_completes_its_flags() {
     fi
     out=$(bash_candidates_words "$BASH_COMP" cs -adopt --worktrees --)
     assert_candidate "$out" "--dry-run" "cs -adopt --worktrees --<TAB> must offer --dry-run" || return 1
+    out=$(bash_candidates_words "$BASH_COMP" cs -adopt --)
+    assert_candidate "$out" "--yes" "cs -adopt --<TAB> must offer --yes" || return 1
+    out=$(bash_candidates_words "$BASH_COMP" cs -adopt my-name --)
+    assert_eq "--yes" "$out" "cs -adopt <name> --<TAB> offers --yes alone" || return 1
 }
 
 test_zsh_adopt_completes_its_flags() {
@@ -465,6 +469,10 @@ test_zsh_adopt_completes_its_flags() {
     fi
     out=$(zsh_candidates_words cs -adopt --worktrees --)
     assert_candidate "$out" "--dry-run" "zsh cs -adopt --worktrees --<TAB> must offer --dry-run" || return 1
+    out=$(zsh_candidates_words cs -adopt --)
+    assert_candidate "$out" "--yes" "zsh cs -adopt --<TAB> must offer --yes" || return 1
+    out=$(zsh_candidates_words cs -adopt my-name --)
+    assert_eq "--yes" "$out" "zsh cs -adopt <name> --<TAB> offers --yes alone" || return 1
 }
 
 echo ""
