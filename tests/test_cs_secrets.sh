@@ -254,6 +254,17 @@ test_store_and_get() {
     assert_eq "sk_test_123" "$value" "Should retrieve stored value" || return 1
 }
 
+# A value on argv is still stored, with a warning that names the one place it
+# shows (ps) and the stdin form that avoids it.
+test_set_warns_about_a_value_on_argv() {
+    local err
+    err=$("$CS_SECRETS_BIN" set api_key "sk_test_123" 2>&1 >/dev/null)
+    assert_eq "$(printf '%s\n%s' \
+        "Warning: passing the value on the command line exposes it via ps." \
+        "         Prefer stdin: cs -secrets set api_key < valuefile")" "$err" \
+        "the argv warning names ps and the stdin form" || return 1
+}
+
 test_store_with_spaces_in_value() {
     "$CS_SECRETS_BIN" set db_url "postgres://user:pass@localhost/my db" 2>&1
     local value
@@ -261,8 +272,7 @@ test_store_with_spaces_in_value() {
     assert_eq "postgres://user:pass@localhost/my db" "$value" "Should handle spaces" || return 1
 }
 
-# The value can be supplied on stdin (never argv) so it stays out of ps and the
-# bash-logger session.log capture.
+# The value can be supplied on stdin (never argv) so it stays out of ps.
 test_set_reads_value_from_stdin() {
     printf 'sk_from_stdin' | "$CS_SECRETS_BIN" set api_key >/dev/null 2>&1
     local value
@@ -2075,6 +2085,7 @@ run_test test_backend_wsl_defaults_encrypted_not_keychain
 
 # Store and retrieve
 run_test test_store_and_get
+run_test test_set_warns_about_a_value_on_argv
 run_test test_set_reads_value_from_stdin
 run_test test_set_reads_value_from_file_redirect
 run_test test_set_refuses_placeholder_values

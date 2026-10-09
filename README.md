@@ -82,7 +82,6 @@ No git repo required. No project structure needed. Just a name for what you're w
 ### Security and trust
 
 - **Secure secrets handling** - Store sensitive data in the OS keychain (value read from stdin, never written to a file); exportable as [age](https://github.com/FiloSottile/age)-encrypted files for backup
-- **Bash command audit trail** - Every Bash command Claude runs is logged to `.cs/local/session.log` (machine-local, never git-synced) with timestamps
 - **Update notifications** - Checks for updates and notifies when new versions are available. When an update is pending, cs shows the release notes for every version above the installed one: the `cs-update` mod's pane inside the session (see Release notes in the session above), a compact summary card in the launch banner only when `CS_NO_FUNCTION_HOOKS=1` withholds that mod, and the full notes under `cs -update --check`.
 - **Verified updates** - Updates are downloaded from GitHub Releases and verified with SHA-256 checksums; additionally verified with [minisign](https://jedisct1.github.io/minisign/) signatures when available
 
@@ -255,7 +254,7 @@ Working in worktrees Claude Code made with `claude --worktree`? Run `cs -adopt -
 │   ├── checkpoints/        # Labelled narrative snapshots (/checkpoint)
 │   ├── handoffs/           # Conversation rotation handoffs (rotate skill); .cs/private/handoffs in an encrypted session
 │   ├── brief.md            # Brief from cs -spawn --brief / the feature skill, when spawned with one
-│   └── local/              # Machine-local state + session.log audit trail (gitignored)
+│   └── local/              # Machine-local state + session.log (gitignored)
 ├── .claude/
 │   └── settings.local.json # Redirects auto memory into .cs/memory
 ├── CLAUDE.local.md         # Session protocol for Claude (machine-local, gitignored)
@@ -272,7 +271,7 @@ Claude Code's [auto memory](https://code.claude.com/docs/en/memory) is redirecte
 
 Sessions are designed to be shared through git (push/pull the whole session directory). Everything cs writes automatically is partitioned so independent work on two clones merges cleanly:
 
-- **Machine-local state never syncs.** The Claude conversation UUID, session color, and resume timestamps (in `.cs/local/state`) and the `session.log` command audit trail live under gitignored `.cs/local/` — each machine binds its own conversation and keeps its own log. A launch guard refuses to run if `.cs/local/` ever becomes tracked.
+- **Machine-local state never syncs.** The Claude conversation UUID, session color, and resume timestamps (in `.cs/local/state`) and `session.log` live under gitignored `.cs/local/` — each machine binds its own conversation and keeps its own log. A launch guard refuses to run if `.cs/local/` ever becomes tracked.
 - **Append-only files union-merge.** `timeline.jsonl` and the per-actor `narrative.*.md` notebooks carry `merge=union` in the session `.gitattributes`, so divergent appends interleave instead of conflicting.
 - **`MEMORY.md` resolves to the local copy** (`merge=ours`); each actor's pointer line is re-added idempotently on the next launch.
 - **Narrative rotation stays merge-safe.** `cs -narrative rotate` removes one interior run of sections and leaves the tail byte-identical, which is the only rewrite `merge=union` merges cleanly against a peer's append (renaming the file or truncating to EOF both resurrect the whole body — measured). Archive chunks are immutable and content-addressed, so two machines archiving the same sections produce the same file.

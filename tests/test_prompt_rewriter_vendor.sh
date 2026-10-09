@@ -144,7 +144,7 @@ test_the_prompt_never_reaches_argv_on_the_api_arm() {
 }
 
 # On the CLI arms the prompt goes to the vendor on stdin, never in argv, where
-# `ps` shows it to every user on the box and the bash command log records it.
+# `ps` shows it to every user on the box.
 # agy reads it as one stream-json user message and answers in stream-json, so
 # the fake answers with the result event the arm extracts.
 test_the_prompt_reaches_agy_on_stdin_never_argv() {

@@ -110,7 +110,7 @@ _limit="${CS_REWRITE_TIMEOUT:-25}"
 
 # stdin carries the prompt, piped in by the caller, and is never the inherited
 # terminal. The prompt stays out of argv, where `ps` shows it to every user on
-# the box and the bash command log records it. And Claude Code hands this shim
+# the box. And Claude Code hands this shim
 # the real tty: an agentic CLI that decides it is interactive would paint its
 # own UI over the progress screen the shim is drawing, and a pipe is not a tty.
 # Array expansions here use the `${a[@]+"${a[@]}"}` form throughout. bash 3.2

@@ -50,6 +50,7 @@ RETIRED_HOOKS=(
     changes-tracker.sh        # retired: PostToolUse change log re-narrating git history into .cs/changes.md; git log/diff/status is authoritative
     artifact-tracker.sh       # retired: PreToolUse:Write redirect was inert (updatedInput path rewrite is not honored by the harness); tracking removed entirely
     prose-lint.sh             # retired with the `cs -lint` verb it called; MUST stay listed, because a deployed copy calling the removed verb reads error()'s exit 1 as "violations found" and blocks every turn-end
+    bash-logger.sh            # retired: PreToolUse:Bash command log cost every Bash call a hook process (~1.4 s), and nothing read the BASH: lines it wrote
 )
 
 # Hook scripts cs ships; deployed to ~/.claude/hooks/cs/ and registered in
@@ -62,7 +63,6 @@ CS_HOOKS=(
     subagent-context.sh
     tool-failure-logger.sh
     session-auto-approve.sh
-    bash-logger.sh
     scope-prompt.sh
 )
 
@@ -4246,7 +4246,7 @@ _emit_encrypted_protocol_block() {
 This session keeps its private files in an encrypted vault: `.cs/memory`, `.cs/plans` and `.cs/private` link into it. Every other path in the session directory is plaintext on disk and in backups. These rules override the Session Files and Documentation Discipline sections above:
 
 - Keep the objective, environment and outcome at the top of your narrative (`.cs/memory/narrative.<actor>.md`), and read them from there on resume. `.cs/README.md` stays frontmatter only; cs does not copy your first prompt into it.
-- The bash-logger records every Bash command in `.cs/private/session.log`, inside the vault. The secrets rule above still applies.
+- cs logs session start and end, tool failures and autosaves to `.cs/private/session.log`, inside the vault.
 - Rotation handoffs live in `.cs/private/handoffs/` and are never committed; the `rotate` skill says how.
 - `cs -narrative rotate` archives your narrative's older sections into `.cs/private/narrative-archive/<actor>/` (or through a `.cs/narrative-archive` link into the vault); grep there on demand.
 - `/checkpoint` saves under `.cs/private/checkpoints/`, and the timeline records no label.
@@ -4297,8 +4297,8 @@ When a conversation's context grows heavy or a work phase completes, invoke the 
 
 Secrets live in the cs session store, never in a project file. `cs -secrets set`
 and the `store-secret` skill read the value on **stdin** via a file redirect —
-never `echo`/`printf` a secret into a pipe or a Bash heredoc: the bash-logger
-records the whole Bash command, plaintext and all, in `.cs/local/session.log`.
+never `echo`/`printf` a secret into a pipe or a Bash heredoc, either of which
+puts the plaintext in the Bash command itself.
 
 Consume a secret inline — `some-command --token "$(cs -secrets get API_KEY)"` —
 so it stays out of the tool result and the transcript. A retrieved value is read
@@ -10415,10 +10415,11 @@ _handoff_is_local() {  # handoff_file, session_dir
         }
     ' "$1" 2>/dev/null)
     [ -n "$parent" ] || return 1
-    # Anchored to the line session-start.sh writes, not a bare substring: the
-    # bash-logger appends every command to this same file, so an unanchored
-    # match reads a logged `claude --resume <uuid>` as proof this checkout ran
-    # that conversation and drops the one warning shown before r.
+    # Anchored to the line session-start.sh writes, not a bare substring: this
+    # file can hold the `BASH:` command lines the retired bash-logger hook
+    # appended, so an unanchored match reads a logged `claude --resume <uuid>`
+    # as proof this checkout ran that conversation and drops the one warning
+    # shown before r.
     grep -Fq "Session started" "$log" 2>/dev/null \
         && grep -E -q "Session started \(.*ID: $parent\)" "$log" 2>/dev/null
 }
@@ -11961,14 +11962,17 @@ _uninstall_rotate_wrap_keys() {
 # Settings JSON on stdin without any cs hook, current or retired, on stdout:
 # stripped from any event, event-agnostic, matching both path spellings ($HOME
 # and ~) in both deployment layouts (subdirectory and flat). Drops wrappers
-# that empty out; sibling user hooks co-shipped in a wrapper survive. A flat
-# hook file still present was kept as the user's (uninstall removes only the
-# flat files cs wrote), so its registration is the user's too and stays.
+# that empty out; sibling user hooks co-shipped in a wrapper survive. A hook
+# file still present in either layout was kept as the user's (uninstall
+# removes only the files cs wrote), so its registration is the user's too
+# and stays.
 _strip_cs_hook_registrations() {  # hooks_dir, hooks_parent_dir
     local settings strip_name
     settings=$(cat)
     for strip_name in "${CS_HOOKS[@]}" "${RETIRED_HOOKS[@]}"; do
-        settings=$(_strip_hook_registration "$settings" "$1/$strip_name" "~/.claude/hooks/cs/$strip_name")
+        if [ ! -e "$1/$strip_name" ] && [ ! -L "$1/$strip_name" ]; then
+            settings=$(_strip_hook_registration "$settings" "$1/$strip_name" "~/.claude/hooks/cs/$strip_name")
+        fi
         if [ ! -e "$2/$strip_name" ] && [ ! -L "$2/$strip_name" ]; then
             settings=$(_strip_hook_registration "$settings" "$2/$strip_name" "~/.claude/hooks/$strip_name")
         fi

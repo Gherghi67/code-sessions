@@ -213,14 +213,6 @@ Runs when Claude Code would show a permission dialog for Write or Edit:
 - A `CLAUDE_CONFIG_DIR` that sits inside the session counts as a control directory, so writes under it prompt; one outside the session belongs to you and stays out of the scan
 - Falls through to the normal permission prompt for all other files. Project files always require explicit approval
 
-## bash-logger.sh (PreToolUse on Bash)
-
-Runs before every Bash tool call (sync, fast):
-- Logs `[timestamp] BASH: command` to `.cs/local/session.log` (`.cs/private/session.log` in an encrypted session, and nowhere while its vault is locked)
-- Creates a complete audit trail of all commands Claude runs
-- Truncates long commands at 200 chars
-- Never blocks — uses `set -uo pipefail` without `set -e`
-
 ## scope-prompt.sh (UserPromptSubmit)
 
 Runs before each user prompt is sent to Claude. First it clears the statusline's attention marker (`.cs/local/attention`) — any prompt, including slash commands, means the user is back — and, inside iTerm2 with shell integration installed, stops the dock bounce the Stop hook started (`CS_NO_ITERM2=1` disables). Then five responsibilities: the queue and mail digests, objective capture, the date reminder, the clarify guideline, and scope grounding.
@@ -253,7 +245,7 @@ The default rewriter, `prompt-rewriter-model.sh`, calls a fast model with the pr
 
 **Rewriting with Grok.** `CS_REWRITE_PROVIDER=grok` (or `xai`) routes to xAI's OpenAI-compatible endpoint, reading `XAI_API_KEY` or `GROK_API_KEY`. There is no `grok-api` spelling because xAI ships no rewriter CLI: there is nothing to prefer and so nothing for a suffix to reach past. The default model is `grok-4.3`, chosen by measurement rather than by recency. Over 8 prompts run twice against every candidate, `grok-4.3` preserved every unspecified thing as an open item; the much faster `grok-4.20-0309-non-reasoning` resolved them by fiat in 7 of 10 vague prompts — answering `Use jq.` to "should i use jq or awk here?", picking a database unprompted, and once returning the input verbatim. A rewriter that decides for you is worse than no rewriter. Note that Grok is not faster than what already ships: `gemini-flash-lite-latest` was the quickest model measured and matched `grok-4.3` on fidelity.
 
-The vendor rewriter runs the CLI from the same neutral directory the default uses, because `codex` reads `AGENTS.md` from its working directory and `agy` takes that directory as its workspace — launched from your checkout, the rewrite would inherit that project's instructions. The CLI's stdin is a pipe carrying the prompt, never the inherited terminal, since Claude Code hands the shim the real tty and an agentic CLI that decides it is interactive would paint over the progress screen. No arm puts the prompt in `argv`, where `ps` shows it to every user on the machine and the bash command log records it: `codex exec` reads it from stdin when given no positional prompt, and `agy` takes it as one stream-json user message on stdin (`--input-format stream-json --output-format stream-json -p=`), the rewrite being the `response` of its `result` event. On the API arms the key travels in a mode-600 `curl --config` file and the prompt in a payload file, so neither reaches `argv`.
+The vendor rewriter runs the CLI from the same neutral directory the default uses, because `codex` reads `AGENTS.md` from its working directory and `agy` takes that directory as its workspace — launched from your checkout, the rewrite would inherit that project's instructions. The CLI's stdin is a pipe carrying the prompt, never the inherited terminal, since Claude Code hands the shim the real tty and an agentic CLI that decides it is interactive would paint over the progress screen. No arm puts the prompt in `argv`, where `ps` shows it to every user on the machine: `codex exec` reads it from stdin when given no positional prompt, and `agy` takes it as one stream-json user message on stdin (`--input-format stream-json --output-format stream-json -p=`), the rewrite being the `response` of its `result` event. On the API arms the key travels in a mode-600 `curl --config` file and the prompt in a payload file, so neither reaches `argv`.
 
 Three failure modes here are not the ones the contract anticipates. `agy` prints `CLI error: …` on **stdout and still exits 0**, so a status check alone would hand that string back as your next message; the gate judges the output as well as the status. A reasoning model can return a rewrite truncated at the token cap, which is non-empty and so passes an emptiness check while being unusable — `gemini-2.5-flash` was observed spending 1963 reasoning tokens against a 2048 cap and stopping mid-sentence, though it also completes normally on other calls — so a `finishReason` other than `STOP` declines. And Gemini's endpoint has been observed answering with a bare HTTP 404 and a zero-byte body, transiently, so an empty response declines rather than being treated as an answer. Only `/v1/chat/completions` is used for OpenAI: reasoning models are the wrong tool for a rewrite that blocks the interface, and an `o3`/`o4` model set through `CS_REWRITE_MODEL` gets a 400 and declines.
 
@@ -658,9 +650,6 @@ The hooks are configured in `~/.claude/settings.json`:
   "hooks": {
     "SessionStart": [
       { "hooks": [{ "type": "command", "command": "~/.claude/hooks/cs/session-start.sh", "timeout": 30 }] }
-    ],
-    "PreToolUse": [
-      { "matcher": "Bash", "hooks": [{ "type": "command", "command": "~/.claude/hooks/cs/bash-logger.sh", "timeout": 5 }] }
     ],
     "PostToolUse": [
       { "matcher": "Write|Edit", "hooks": [{ "type": "command", "command": "~/.claude/hooks/cs/autosave-commits.sh", "timeout": 10, "async": true }] }

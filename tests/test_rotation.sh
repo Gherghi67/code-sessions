@@ -842,8 +842,8 @@ test_offer_labels_a_handoff_from_another_checkout() {
         "a handoff whose parent this checkout never ran is labelled" || return 1
 }
 
-# hooks/bash-logger.sh appends every Bash command to the same session.log, so a
-# bare substring match reads a logged `claude --resume <uuid>` as proof this
+# A session.log can hold `BASH:` command lines (the retired bash-logger hook
+# appended every Bash command to it), so a bare substring match reads a logged `claude --resume <uuid>` as proof this
 # checkout ran that conversation — silently dropping the one warning shown
 # before r mutates a colleague's handoff.
 test_a_logged_command_naming_a_uuid_is_not_provenance() {

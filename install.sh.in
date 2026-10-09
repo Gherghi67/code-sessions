@@ -408,9 +408,15 @@ mkdir -p "$HOOKS_DIR"
 # "<sha256>  <path>" lines _cs_owns_file reads. Content whose sha256 cannot
 # be computed is named every time.
 _remove_retired() {  # file
+    _retired_is_ours "$1" || return 1
+    rm -f "$1"
+}
+
+# Returns 0 when cs wrote file $1, under a name cs retired; otherwise keeps it
+# as _remove_retired describes and returns 1.
+_retired_is_ours() {  # file
     local digest line record
     if _cs_owns_file "$1"; then
-        rm -f "$1"
         return 0
     fi
     record=$(_cs_install_record)
@@ -426,17 +432,50 @@ _remove_retired() {  # file
     return 1
 }
 
-# Remove any retired hook files that earlier cs versions installed but no longer ship.
-# Settings.json entries are stripped further below. Retired hooks may sit in
-# HOOKS_DIR or, for installs that deployed hooks flat, its parent directory.
-# Only a file cs wrote is removed; a user's own file of the same name is kept.
+# Retired hook files that earlier cs versions installed but no longer ship,
+# in HOOKS_DIR or, for installs that deployed hooks flat, its parent
+# directory. Only a file cs wrote is listed; a user's own file of the same
+# name is kept. The listed files go once settings.json no longer registers
+# them, below: an install that stops before then, or has no jq to rewrite
+# the settings, leaves each one beside its registration, and the install
+# record keeps its line, so the next run still knows it as cs's.
+# CS_RETIRED_HOOK_DIGESTS holds each listed file's sha256, by index.
+CS_RETIRED_HOOK_FILES=()
+CS_RETIRED_HOOK_DIGESTS=()
 for retired in "${RETIRED_HOOKS[@]}"; do
     for dir in "$HOOKS_DIR" "$HOOKS_PARENT_DIR"; do
-        if [ -f "$dir/$retired" ] && _remove_retired "$dir/$retired"; then
-            info "Removed retired hook: $dir/$retired"
+        if [ -f "$dir/$retired" ] && _retired_is_ours "$dir/$retired" \
+            && _retired_digest=$(_cs_sha256_file "$dir/$retired"); then
+            CS_RETIRED_HOOK_FILES+=("$dir/$retired")
+            CS_RETIRED_HOOK_DIGESTS+=("$_retired_digest")
+            CS_RECORD_LINES+=("$_retired_digest  ${dir#"$HOME"/}/$retired")
         fi
     done
 done
+
+# Returns 0 when $1 is a listed retired file that still holds the content cs
+# wrote. The questions below can take any time, so the content is checked
+# again here: a file replaced since it was listed is the user's, and so is
+# anything that is no longer a regular file, which is never read (a link to
+# a device or a FIFO would keep the hash, and the settings lock, waiting).
+_retired_still_ours() {  # path
+    local i digest
+    for i in ${CS_RETIRED_HOOK_FILES[@]+"${!CS_RETIRED_HOOK_FILES[@]}"}; do
+        [ "${CS_RETIRED_HOOK_FILES[$i]}" = "$1" ] || continue
+        [ -f "$1" ] && [ ! -L "$1" ] || return 1
+        digest=$(_cs_sha256_file "$1") || return 1
+        [ "$digest" = "${CS_RETIRED_HOOK_DIGESTS[$i]}" ]
+        return
+    done
+    return 1
+}
+
+# Returns 0 when hook file $1 stays after this install: it is there and is
+# not a retired file that still holds what cs wrote.
+_hook_file_stays() {  # path
+    [ -e "$1" ] || [ -L "$1" ] || return 1
+    ! _retired_still_ours "$1"
+}
 
 # The subdirectory copy is canonical; remove parent-level copies left by
 # installs that deployed hooks flat into ~/.claude/hooks/, when cs wrote them.
@@ -574,11 +613,11 @@ else
     HOOKS_TILDE_DIR="~/.claude/hooks/cs"
 
     # Strip the registration of flat-layout hook $1 (~/.claude/hooks/$1) from
-    # SETTINGS, unless a file is still there: the clean-up above removed every
-    # flat file cs wrote, so one that is left is the user's own hook, and its
-    # registration is theirs too.
+    # SETTINGS, unless the file there stays: the clean-up above removed or
+    # listed every flat file cs wrote, so one that stays is the user's own
+    # hook, and its registration is theirs too.
     _strip_flat_hook() {  # name
-        if [ -e "$HOOKS_PARENT_DIR/$1" ] || [ -L "$HOOKS_PARENT_DIR/$1" ]; then
+        if _hook_file_stays "$HOOKS_PARENT_DIR/$1"; then
             return 0
         fi
         SETTINGS=$(_strip_hook_registration "$SETTINGS" "$HOOKS_PARENT_DIR/$1" "~/.claude/hooks/$1")
@@ -590,9 +629,13 @@ else
         # Strip retired hooks from any event in settings.json (event-agnostic since
         # we don't know which event the old version registered them under). Covers
         # both deployment layouts.
+        # A retired file under HOOKS_DIR that stays was kept as the user's,
+        # as for a flat one, so its registration stays too.
         for retired in "${RETIRED_HOOKS[@]}"; do
             _strip_flat_hook "$retired"
-            SETTINGS=$(_strip_hook_registration "$SETTINGS" "$HOOKS_DIR/$retired" "$HOOKS_TILDE_DIR/$retired")
+            if ! _hook_file_stays "$HOOKS_DIR/$retired"; then
+                SETTINGS=$(_strip_hook_registration "$SETTINGS" "$HOOKS_DIR/$retired" "$HOOKS_TILDE_DIR/$retired")
+            fi
         done
 
         # Strip parent-level registrations of current hooks (flat-layout installs);
@@ -688,7 +731,6 @@ else
         _merge_cs_hook SubagentStart      subagent-context.sh    10
         _merge_cs_hook PostToolUseFailure tool-failure-logger.sh 10 "" true
         _merge_cs_hook PermissionRequest  session-auto-approve.sh 5 "Write|Edit"
-        _merge_cs_hook PreToolUse         bash-logger.sh          5 "Bash"
         _merge_cs_hook UserPromptSubmit   scope-prompt.sh        10
         _merge_cs_hook FileChanged        narrative-reminder.sh  10 "" "" true
         _merge_cs_hook CwdChanged         narrative-reminder.sh   5
@@ -903,6 +945,18 @@ else
         printf '%s\n' "$SETTINGS"
     }
     cs_settings_update "$CLAUDE_SETTINGS" _cs_settings_filter || error "$CS_SETTINGS_ERROR"
+    # settings.json no longer registers them, so the retired files can go,
+    # each one that still holds what cs wrote; the filter kept the
+    # registration of any other
+    for retired in ${CS_RETIRED_HOOK_FILES[@]+"${CS_RETIRED_HOOK_FILES[@]}"}; do
+        if _retired_still_ours "$retired"; then
+            rm -f "$retired"
+            info "Removed retired hook: $retired"
+        else
+            warn "Kept $retired: it changed during the install"
+            CS_KEPT_PATHS+=("$retired")
+        fi
+    done
     if [ "$_register_statusline" = "1" ]; then
         installed "status line" "cs-statusline + cs-subagent-statusline"
     fi

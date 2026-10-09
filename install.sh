@@ -114,6 +114,7 @@ RETIRED_HOOKS=(
     changes-tracker.sh        # retired: PostToolUse change log re-narrating git history into .cs/changes.md; git log/diff/status is authoritative
     artifact-tracker.sh       # retired: PreToolUse:Write redirect was inert (updatedInput path rewrite is not honored by the harness); tracking removed entirely
     prose-lint.sh             # retired with the `cs -lint` verb it called; MUST stay listed, because a deployed copy calling the removed verb reads error()'s exit 1 as "violations found" and blocks every turn-end
+    bash-logger.sh            # retired: PreToolUse:Bash command log cost every Bash call a hook process (~1.4 s), and nothing read the BASH: lines it wrote
 )
 
 # Hook scripts cs ships; deployed to ~/.claude/hooks/cs/ and registered in
@@ -126,7 +127,6 @@ CS_HOOKS=(
     subagent-context.sh
     tool-failure-logger.sh
     session-auto-approve.sh
-    bash-logger.sh
     scope-prompt.sh
 )
 
@@ -1205,8 +1205,8 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "4d8092d46744afe5b9e7d6b7c92a3d14a3dcbb98258a5d9fc62679a562c42f51  bin/cs"
-    "603074e92003d4403885dc892d7d0b4e3e1f44934d468f98722c7e05e3f92490  bin/cs-secrets"
+    "b5b5c20041d4e5e77a451c9b6020d836ef1c2d94f5dc59e4a0620b4990190ab9  bin/cs"
+    "bf25f13b49a6ae5d72edd04fccabbe6644f2159c41ed54756f57c6b561ada8a9  bin/cs-secrets"
     "218445530b4e201f65870c91c126ecfe6d7732b5796d6cf9df01b544b942cad5  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
     "6bbb09234ac48fcc1edb6cd62dae4fd7d4797a20a14e5bb7ea4df6876620173c  hooks/cs-resolve.sh"
@@ -1215,21 +1215,20 @@ CS_PAYLOAD_SHA256=(
     "34f6402e2f786213bbd1c4222e2ef187f215fe2f9fdfd49d28d205467f1abdf7  hooks/memory-index-guard.sh"
     "1047d832a7287d8c719c92c35061b69ba7840469ac8f537ec4b19613bedc4b37  hooks/prompt-rewriter.sh"
     "d884bc6e9f8a3b8e2970f4e77b5f9b4fb415176b00b3e085aac43e4ac409b906  hooks/prompt-rewriter-model.sh"
-    "29ac06fdebc523b5c2a4de15dcf47e47a486f4c043f22615172318ba80714b51  hooks/prompt-rewriter-vendor.sh"
+    "5ed0b9da8f102367e218e8dc6227594ad2f70ca3ba885103c058aabb4b528226  hooks/prompt-rewriter-vendor.sh"
     "e96db24992b591f972e2cff86fbd0c11ef24ea55b60d74c3f11d3009a98d7ea7  hooks/session-start.sh"
     "7e9942e417d4b5c874891bf393439a373f642ac195b57b08a5f71a2dd80dbd65  hooks/autosave-commits.sh"
     "33fa4918282a6479b9ed8f703ac7650c64e6ce196c905363e030d517121f2b08  hooks/narrative-reminder.sh"
     "3af8ba23904101a11959e9b4e3ae916dc9a1fc46c182939112337597bf46096d  hooks/session-end.sh"
-    "7e0a88df4dd5e86966221728ed435cf5f2448c124f73dec75742c894a1f84f87  hooks/subagent-context.sh"
+    "81a13835a65f4b4b35bb87493da0df9848de68375ca7ab1525d2d5079cf52bf1  hooks/subagent-context.sh"
     "0100adc92245b2911edb0d77cc230a27289aeaeabfb6129552783d2c23e68d11  hooks/tool-failure-logger.sh"
     "c8ef0b73d47f04cefb7f2b7c7f85a274041930420b21d3b4f9866200f436a7af  hooks/session-auto-approve.sh"
-    "57dfa07fad29450b172ecbaa948b34bc7427e0ec6ec321039cd628df20c4cb0e  hooks/bash-logger.sh"
     "ddbee535b1ae0243e1cd915c883a33cf71b225d176cfbd8bf73d409f556092d8  hooks/scope-prompt.sh"
     "12dca7f6d02f19f75865fa2f6e91384a5c8e727b0962e269a6adbb491a95971f  commands/summary.md"
     "9e06eaa16960dff49881234c8a479c2f8d2dd8d672283056e1591c4528e755ab  commands/checkpoint.md"
     "df9db21017a995e93fdab7135ee2c6d3d7ce0ff660f76bd6d29015854b3a1aa3  commands/sweep.md"
     "930601dc27024ea0ab22a202ac1df2bc43fd284393ef2de6d064aa592ab955e5  commands/wrap.md"
-    "a4fa7ea3be9dd335f8959abbd3adf71e18f7eea563b49305ceb715090b7a2bf7  skills/store-secret/SKILL.md"
+    "2520a6d54d75e3e9f1768160826a8b9f21e38e2234538cc62e3ec6337008fc28  skills/store-secret/SKILL.md"
     "63db6214c1afcb6b3f107383ff77dd0a738802e11ae8f7ed120988c496b9f431  skills/prose-hygiene/SKILL.md"
     "bb9dc7e36945f5d69635e2d90aec2786ac0be7fceb2b283af5b43a51b16ca37b  skills/rotate/SKILL.md"
     "b6eb9ffe2160e43bb95100b850427d2ae28d4c5e0e719564ba2f4b8d3c14a20a  skills/finish/SKILL.md"
@@ -1554,9 +1553,15 @@ mkdir -p "$HOOKS_DIR"
 # "<sha256>  <path>" lines _cs_owns_file reads. Content whose sha256 cannot
 # be computed is named every time.
 _remove_retired() {  # file
+    _retired_is_ours "$1" || return 1
+    rm -f "$1"
+}
+
+# Returns 0 when cs wrote file $1, under a name cs retired; otherwise keeps it
+# as _remove_retired describes and returns 1.
+_retired_is_ours() {  # file
     local digest line record
     if _cs_owns_file "$1"; then
-        rm -f "$1"
         return 0
     fi
     record=$(_cs_install_record)
@@ -1572,17 +1577,50 @@ _remove_retired() {  # file
     return 1
 }
 
-# Remove any retired hook files that earlier cs versions installed but no longer ship.
-# Settings.json entries are stripped further below. Retired hooks may sit in
-# HOOKS_DIR or, for installs that deployed hooks flat, its parent directory.
-# Only a file cs wrote is removed; a user's own file of the same name is kept.
+# Retired hook files that earlier cs versions installed but no longer ship,
+# in HOOKS_DIR or, for installs that deployed hooks flat, its parent
+# directory. Only a file cs wrote is listed; a user's own file of the same
+# name is kept. The listed files go once settings.json no longer registers
+# them, below: an install that stops before then, or has no jq to rewrite
+# the settings, leaves each one beside its registration, and the install
+# record keeps its line, so the next run still knows it as cs's.
+# CS_RETIRED_HOOK_DIGESTS holds each listed file's sha256, by index.
+CS_RETIRED_HOOK_FILES=()
+CS_RETIRED_HOOK_DIGESTS=()
 for retired in "${RETIRED_HOOKS[@]}"; do
     for dir in "$HOOKS_DIR" "$HOOKS_PARENT_DIR"; do
-        if [ -f "$dir/$retired" ] && _remove_retired "$dir/$retired"; then
-            info "Removed retired hook: $dir/$retired"
+        if [ -f "$dir/$retired" ] && _retired_is_ours "$dir/$retired" \
+            && _retired_digest=$(_cs_sha256_file "$dir/$retired"); then
+            CS_RETIRED_HOOK_FILES+=("$dir/$retired")
+            CS_RETIRED_HOOK_DIGESTS+=("$_retired_digest")
+            CS_RECORD_LINES+=("$_retired_digest  ${dir#"$HOME"/}/$retired")
         fi
     done
 done
+
+# Returns 0 when $1 is a listed retired file that still holds the content cs
+# wrote. The questions below can take any time, so the content is checked
+# again here: a file replaced since it was listed is the user's, and so is
+# anything that is no longer a regular file, which is never read (a link to
+# a device or a FIFO would keep the hash, and the settings lock, waiting).
+_retired_still_ours() {  # path
+    local i digest
+    for i in ${CS_RETIRED_HOOK_FILES[@]+"${!CS_RETIRED_HOOK_FILES[@]}"}; do
+        [ "${CS_RETIRED_HOOK_FILES[$i]}" = "$1" ] || continue
+        [ -f "$1" ] && [ ! -L "$1" ] || return 1
+        digest=$(_cs_sha256_file "$1") || return 1
+        [ "$digest" = "${CS_RETIRED_HOOK_DIGESTS[$i]}" ]
+        return
+    done
+    return 1
+}
+
+# Returns 0 when hook file $1 stays after this install: it is there and is
+# not a retired file that still holds what cs wrote.
+_hook_file_stays() {  # path
+    [ -e "$1" ] || [ -L "$1" ] || return 1
+    ! _retired_still_ours "$1"
+}
 
 # The subdirectory copy is canonical; remove parent-level copies left by
 # installs that deployed hooks flat into ~/.claude/hooks/, when cs wrote them.
@@ -1720,11 +1758,11 @@ else
     HOOKS_TILDE_DIR="~/.claude/hooks/cs"
 
     # Strip the registration of flat-layout hook $1 (~/.claude/hooks/$1) from
-    # SETTINGS, unless a file is still there: the clean-up above removed every
-    # flat file cs wrote, so one that is left is the user's own hook, and its
-    # registration is theirs too.
+    # SETTINGS, unless the file there stays: the clean-up above removed or
+    # listed every flat file cs wrote, so one that stays is the user's own
+    # hook, and its registration is theirs too.
     _strip_flat_hook() {  # name
-        if [ -e "$HOOKS_PARENT_DIR/$1" ] || [ -L "$HOOKS_PARENT_DIR/$1" ]; then
+        if _hook_file_stays "$HOOKS_PARENT_DIR/$1"; then
             return 0
         fi
         SETTINGS=$(_strip_hook_registration "$SETTINGS" "$HOOKS_PARENT_DIR/$1" "~/.claude/hooks/$1")
@@ -1736,9 +1774,13 @@ else
         # Strip retired hooks from any event in settings.json (event-agnostic since
         # we don't know which event the old version registered them under). Covers
         # both deployment layouts.
+        # A retired file under HOOKS_DIR that stays was kept as the user's,
+        # as for a flat one, so its registration stays too.
         for retired in "${RETIRED_HOOKS[@]}"; do
             _strip_flat_hook "$retired"
-            SETTINGS=$(_strip_hook_registration "$SETTINGS" "$HOOKS_DIR/$retired" "$HOOKS_TILDE_DIR/$retired")
+            if ! _hook_file_stays "$HOOKS_DIR/$retired"; then
+                SETTINGS=$(_strip_hook_registration "$SETTINGS" "$HOOKS_DIR/$retired" "$HOOKS_TILDE_DIR/$retired")
+            fi
         done
 
         # Strip parent-level registrations of current hooks (flat-layout installs);
@@ -1834,7 +1876,6 @@ else
         _merge_cs_hook SubagentStart      subagent-context.sh    10
         _merge_cs_hook PostToolUseFailure tool-failure-logger.sh 10 "" true
         _merge_cs_hook PermissionRequest  session-auto-approve.sh 5 "Write|Edit"
-        _merge_cs_hook PreToolUse         bash-logger.sh          5 "Bash"
         _merge_cs_hook UserPromptSubmit   scope-prompt.sh        10
         _merge_cs_hook FileChanged        narrative-reminder.sh  10 "" "" true
         _merge_cs_hook CwdChanged         narrative-reminder.sh   5
@@ -2049,6 +2090,18 @@ else
         printf '%s\n' "$SETTINGS"
     }
     cs_settings_update "$CLAUDE_SETTINGS" _cs_settings_filter || error "$CS_SETTINGS_ERROR"
+    # settings.json no longer registers them, so the retired files can go,
+    # each one that still holds what cs wrote; the filter kept the
+    # registration of any other
+    for retired in ${CS_RETIRED_HOOK_FILES[@]+"${CS_RETIRED_HOOK_FILES[@]}"}; do
+        if _retired_still_ours "$retired"; then
+            rm -f "$retired"
+            info "Removed retired hook: $retired"
+        else
+            warn "Kept $retired: it changed during the install"
+            CS_KEPT_PATHS+=("$retired")
+        fi
+    done
     if [ "$_register_statusline" = "1" ]; then
         installed "status line" "cs-statusline + cs-subagent-statusline"
     fi
