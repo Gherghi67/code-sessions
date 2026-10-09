@@ -546,6 +546,7 @@ test_remove_dotted_session_does_not_stop_the_next_name() {
 # fails, cs -rm names the path, still removes the names after it, and exits 1
 # so a script sees that the run left something behind.
 test_remove_age_state_failure_names_it_and_finishes_the_run() {
+    rm -rf "$HOME/.cs-secrets"
     create_test_session agefail >/dev/null
     create_test_session agefailnext >/dev/null
     local age_root="$HOME/.cs-secrets/sessions"
@@ -563,6 +564,62 @@ test_remove_age_state_failure_names_it_and_finishes_the_run() {
         "$(printf '%s\n' "$out" | sed -n 's/.*\(Could not remove age state: [^[:cntrl:]]*\).*/\1/p')" \
         "the failure names the path" || { echo "  output: $out"; return 1; }
     assert_eq "1" "$rc" "cs -rm exits 1 after a partial run" || { echo "  output: $out"; return 1; }
+}
+
+# ~/.cs-secrets or its sessions dir may be a link to anywhere; following it
+# would rm -rf a same-name directory there. The drop refuses through a link,
+# names the path it left, still removes the names after it, and exits 1.
+test_remove_age_state_refuses_a_linked_secrets_parent() {
+    local level elsewhere age_dir out rc
+    for level in secrets sessions; do
+        rm -rf "$HOME/.cs-secrets" "$TEST_TMPDIR/elsewhere-$level"
+        elsewhere="$TEST_TMPDIR/elsewhere-$level"
+        case "$level" in
+            secrets)
+                mkdir -p "$elsewhere/sessions/agelink"
+                ln -s "$elsewhere" "$HOME/.cs-secrets"
+                printf 'keep\n' > "$elsewhere/sessions/agelink/age-trusted" ;;
+            sessions)
+                mkdir -p "$elsewhere/agelink" "$HOME/.cs-secrets"
+                ln -s "$elsewhere" "$HOME/.cs-secrets/sessions"
+                printf 'keep\n' > "$elsewhere/agelink/age-trusted" ;;
+        esac
+        age_dir="$HOME/.cs-secrets/sessions/agelink"
+        create_test_session agelink >/dev/null
+        create_test_session agelinknext >/dev/null
+        rc=0
+        out=$("$CS_BIN" -rm agelink agelinknext --force </dev/null 2>&1) || rc=$?
+        assert_not_exists "$CS_SESSIONS_ROOT/agelink" "the session is removed ($level)" || return 1
+        assert_not_exists "$CS_SESSIONS_ROOT/agelinknext" "the name after it is removed too ($level)" || return 1
+        assert_eq "keep" "$(cat "$age_dir/age-trusted")" "nothing behind the link is deleted ($level)" || return 1
+        assert_eq "Left age state behind a linked ~/.cs-secrets: $age_dir" \
+            "$(printf '%s\n' "$out" | sed -n 's/.*\(Left age state behind a linked [^[:cntrl:]]*\).*/\1/p')" \
+            "the refusal names the path ($level)" || { echo "  output: $out"; return 1; }
+        assert_eq "1" "$rc" "cs -rm exits 1 ($level)" || return 1
+    done
+    rm -rf "$HOME/.cs-secrets"
+}
+
+# A sessions dir cs cannot search hides whether the state is there; that is a
+# failure to report, never "nothing to remove".
+test_remove_age_state_unsearchable_parent_is_a_failure() {
+    rm -rf "$HOME/.cs-secrets"
+    create_test_session agehidden >/dev/null
+    create_test_session agehiddennext >/dev/null
+    local age_root="$HOME/.cs-secrets/sessions"
+    local age_dir="$age_root/agehidden"
+    mkdir -p "$age_dir"
+    printf 'age1pin\n' > "$age_dir/age-trusted"
+    chmod 000 "$age_root"
+    local out rc=0
+    out=$("$CS_BIN" -rm agehidden agehiddennext --force </dev/null 2>&1) || rc=$?
+    chmod 700 "$age_root"
+    assert_not_exists "$CS_SESSIONS_ROOT/agehiddennext" "the name after it is removed too" || return 1
+    assert_dir "$age_dir" "the unreachable state is still there" || return 1
+    assert_eq "Could not check age state: $age_dir" \
+        "$(printf '%s\n' "$out" | sed -n 's/.*\(Could not check age state: [^[:cntrl:]]*\).*/\1/p')" \
+        "the failure names the path" || { echo "  output: $out"; return 1; }
+    assert_eq "1" "$rc" "cs -rm exits 1" || return 1
 }
 
 test_remove_force_on_adopted_removes_only_the_link() {
@@ -584,6 +641,8 @@ run_test test_remove_adopted_link_keeps_age_state
 run_test test_drop_age_state_refuses_escaping_names
 run_test test_remove_dotted_session_does_not_stop_the_next_name
 run_test test_remove_age_state_failure_names_it_and_finishes_the_run
+run_test test_remove_age_state_refuses_a_linked_secrets_parent
+run_test test_remove_age_state_unsearchable_parent_is_a_failure
 run_test test_remove_refuses_live_session_without_force
 run_test test_remove_allows_heartbeat_only_session_without_force
 run_test test_remove_discards_pending_spawn_seeds
