@@ -1131,6 +1131,50 @@ JSON
         "no bash-logger registration survives" || return 1
 }
 
+# A retired hook cs wrote goes only once settings.json no longer registers it:
+# an install that stops before the settings are rewritten (here a regular file
+# where ~/.claude/commands must be) leaves the file and its registration
+# together, so no Bash call runs a hook that is not there.
+test_install_that_stops_early_keeps_a_registered_retired_hook() {
+    local home="$TEST_TMPDIR/retired-abort-home" rc=0 out s
+    s="$home/.claude/settings.json"
+    mkdir -p "$home/.claude/hooks/cs"
+    _cs_shipped_content > "$home/.claude/hooks/cs/bash-logger.sh"
+    : > "$home/.claude/commands"
+    cat > "$s" << 'JSON'
+{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"~/.claude/hooks/cs/bash-logger.sh","timeout":5}]}]}}
+JSON
+    out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || rc=$?
+    assert_eq "1" "$rc" "the install stops at the commands directory" || { echo "$out"; return 1; }
+    assert_file_exists "$home/.claude/hooks/cs/bash-logger.sh" "the retired hook stays while it is registered" || return 1
+    assert_eq "1" "$(jq '[.hooks[][] | .hooks[]?.command | select(. == "~/.claude/hooks/cs/bash-logger.sh")] | length' "$s")" \
+        "its registration is unchanged" || return 1
+}
+
+# Without jq the install cannot touch settings.json, so a registered retired
+# hook cs wrote stays on disk with its registration.
+test_install_without_jq_keeps_a_registered_retired_hook() {
+    local home="$TEST_TMPDIR/retired-nojq-home" bindir="$TEST_TMPDIR/retired-nojq-bin" rc=0 out dir f
+    mkdir -p "$home/.claude/hooks/cs" "$bindir"
+    _cs_shipped_content > "$home/.claude/hooks/cs/bash-logger.sh"
+    printf '%s\n' '{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"~/.claude/hooks/cs/bash-logger.sh","timeout":5}]}]}}' \
+        > "$home/.claude/settings.json"
+    # A PATH holding every command the test's PATH does, except jq
+    local IFS=:
+    for dir in $PATH; do
+        for f in "$dir"/*; do
+            [ -x "$f" ] && [ ! -d "$f" ] || continue
+            [ "${f##*/}" = jq ] && continue
+            [ -e "$bindir/${f##*/}" ] || ln -s "$f" "$bindir/${f##*/}"
+        done
+    done
+    unset IFS
+    out=$(HOME="$home" PATH="$bindir" bash "$INSTALL_SH" 2>&1 < /dev/null) || rc=$?
+    assert_eq "0" "$rc" "install exit status" || { echo "$out"; return 1; }
+    assert_output_contains "$out" "jq not found" "the install says it left settings alone" || return 1
+    assert_file_exists "$home/.claude/hooks/cs/bash-logger.sh" "the retired hook stays while it is registered" || return 1
+}
+
 # A mod deploys under ~/.claude/skills/<mod>; one that a past version shipped
 # and this one does not is a retired skill directory, and a copy left behind
 # keeps loading into every Claude Code the machine starts.
@@ -2702,6 +2746,8 @@ run_test test_install_removes_the_retired_hint_mod
 run_test test_install_retires_the_bash_logger
 run_test test_install_and_uninstall_keep_a_kept_retired_hook_and_its_registration
 run_test test_uninstall_removes_a_cs_written_retired_hook_and_its_registration
+run_test test_install_that_stops_early_keeps_a_registered_retired_hook
+run_test test_install_without_jq_keeps_a_registered_retired_hook
 run_test test_install_removes_the_mod_under_its_old_name
 run_test test_rotate_wrap_keys_yes_creates_the_file_with_only_cs_block
 run_test test_rotate_wrap_keys_merge_into_the_existing_global_block
