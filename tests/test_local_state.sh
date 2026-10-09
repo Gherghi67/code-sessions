@@ -541,6 +541,25 @@ test_lock_takers_never_hold_it_at_once() {
     _lock_is_free "$lock" || { echo "  FAIL: the lock is still held after every taker released it"; return 1; }
 }
 
+# A holder killed outright has released the lock: the kernel drops it with
+# the process, so the next taker gets it at once, and nothing judges the
+# holder dead or waits to.
+test_lock_of_a_killed_holder_is_free_at_once() {
+    local lock="$TEST_TMPDIR/killed.lock" rc=0 start
+    _start_lock_holder "$lock" "$TEST_TMPDIR/killed.ready" || return 1
+    if _lock_is_free "$lock"; then
+        kill "$LOCK_HOLDER"
+        echo "  FAIL: the live holder does not hold the lock"
+        return 1
+    fi
+    kill -9 "$LOCK_HOLDER"
+    wait "$LOCK_HOLDER" 2>/dev/null || true
+    start=$SECONDS
+    bash -c 'source "$1"; _cs_lock "$2"' _ "$LOCK_LIB" "$lock" || rc=$?
+    assert_eq "0" "$rc" "the next taker gets the killed holder's lock" || return 1
+    [ $((SECONDS - start)) -le 1 ] || { echo "  FAIL: the take waited $((SECONDS - start))s"; return 1; }
+}
+
 # A state rewrite is a read-modify-write, so two writers (cs at launch and the
 # SessionStart hook) can lose an update unless they take turns. The lock is a
 # directory beside the file, .cs/local/state.lock, holding the holder's pid; a
@@ -1095,6 +1114,7 @@ run_test test_launch_stops_loudly_when_state_cannot_be_written
 run_test test_state_and_gitattributes_rewrites_leave_tmp_siblings_alone_and_keep_modes
 run_test test_lock_refuses_a_path_that_is_not_a_regular_file
 run_test test_lock_takers_never_hold_it_at_once
+run_test test_lock_of_a_killed_holder_is_free_at_once
 run_test test_state_write_waits_for_a_live_lock_holder
 run_test test_lock_timeout_leaves_a_live_holders_old_lock_in_place
 run_test test_state_write_takes_over_a_dead_holders_lock
