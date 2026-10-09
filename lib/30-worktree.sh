@@ -614,8 +614,10 @@ _integrate_cleanup() {
         fi
         git -C "$_INTEGRATE_BASE_DIR" worktree prune >/dev/null 2>&1 || true
     fi
-    # A run terminated mid-gate still holds the gate's output log.
-    [ -n "${_INTEGRATE_GATE_LOG:-}" ] && rm -f "$_INTEGRATE_GATE_LOG"
+    # A run terminated mid-gate still holds the gate's output log. A log that
+    # cannot be removed must not abort the handler under set -e: the lock
+    # below still has to be released.
+    [ -n "${_INTEGRATE_GATE_LOG:-}" ] && { rm -f "$_INTEGRATE_GATE_LOG" 2>/dev/null || :; }
     # A lock already gone must not abort the handler under set -e: the path
     # still has to be forgotten below.
     [ -n "${_INTEGRATE_LOCK:-}" ] && { rm -r "$_INTEGRATE_LOCK" 2>/dev/null || :; }
