@@ -2183,6 +2183,10 @@ mod tests {
         fs::write(root.join(".spawn/seeded.brief.md.stale"), "old brief\n").unwrap();
         fs::write(root.join(".spawn/other.seed"), "other\n").unwrap();
         fs::write(root.join(".spawn/other.brief.md"), "theirs\n").unwrap();
+        // An interrupted `cs -spawn` leaves its staging file; the one for a
+        // session named `seeded.seed` must not be mistaken for it.
+        fs::write(root.join(".spawn/.seeded.seed.Ab12Cd"), "killed\n").unwrap();
+        fs::write(root.join(".spawn/.seeded.seed.seed.Ef34Gh"), "theirs\n").unwrap();
 
         remove_session_path(&root, "seeded", &dir, RemoveGrants::default()).unwrap();
 
@@ -2193,6 +2197,8 @@ mod tests {
         assert!(!root.join(".spawn/seeded.brief.md.stale").exists(), "stale brief must go too");
         assert!(root.join(".spawn/other.seed").exists(), "other sessions' seeds stay");
         assert!(root.join(".spawn/other.brief.md").exists(), "other sessions' briefs stay");
+        assert!(!root.join(".spawn/.seeded.seed.Ab12Cd").exists(), "an interrupted spawn's staging file must go too");
+        assert!(root.join(".spawn/.seeded.seed.seed.Ef34Gh").exists(), "another session's staging file stays");
         let _ = fs::remove_dir_all(&root);
     }
 

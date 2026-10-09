@@ -88,6 +88,10 @@ test_remove_discards_pending_spawn_seeds() {
     printf 'spawner\ndo a task\n' > "$CS_SESSIONS_ROOT/.spawn/seeded.seed"
     printf 'old\n' > "$CS_SESSIONS_ROOT/.spawn/seeded.seed.stale"
     printf 'other\n' > "$CS_SESSIONS_ROOT/.spawn/other.seed"
+    # A spawn killed before it published leaves its staging file; so may one
+    # for a session whose name merely starts the same way.
+    printf 'killed\n' > "$CS_SESSIONS_ROOT/.spawn/.seeded.seed.Ab12Cd"
+    printf 'theirs\n' > "$CS_SESSIONS_ROOT/.spawn/.seeded.seed.seed.Ef34Gh"
 
     printf 'n\n' | CS_ASSUME_TTY=1 "$CS_BIN" -rm seeded >/dev/null 2>&1 || return 1
     [ -f "$CS_SESSIONS_ROOT/.spawn/seeded.seed" ] || { echo "  declined removal still discarded the seed"; return 1; }
@@ -96,6 +100,8 @@ test_remove_discards_pending_spawn_seeds() {
     [ ! -f "$CS_SESSIONS_ROOT/.spawn/seeded.seed" ] || { echo "  seed survived removal"; return 1; }
     [ ! -f "$CS_SESSIONS_ROOT/.spawn/seeded.seed.stale" ] || { echo "  stale seed survived removal"; return 1; }
     [ -f "$CS_SESSIONS_ROOT/.spawn/other.seed" ] || { echo "  another session's seed was deleted"; return 1; }
+    [ ! -f "$CS_SESSIONS_ROOT/.spawn/.seeded.seed.Ab12Cd" ] || { echo "  an interrupted spawn's staging file survived removal"; return 1; }
+    [ -f "$CS_SESSIONS_ROOT/.spawn/.seeded.seed.seed.Ef34Gh" ] || { echo "  the staging file of session seeded.seed was deleted"; return 1; }
 }
 
 # The brief staged with a seed dies with the session too: a leftover would

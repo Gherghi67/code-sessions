@@ -907,6 +907,18 @@ test_doctor_warns_on_stale_spawn_brief() {
         "doctor should name the aged-out brief beside its seed" || return 1
 }
 
+# A cs -spawn killed before it published leaves its dot-named staging file.
+# No launch reads it and nothing else removes it, so the doctor names it.
+test_doctor_warns_on_abandoned_spawn_staging() {
+    mkdir -p "$CS_SESSIONS_ROOT/.spawn"
+    printf 'killed\n' > "$CS_SESSIONS_ROOT/.spawn/.gone.seed.Ab12Cd"
+    touch -t 202401010000 "$CS_SESSIONS_ROOT/.spawn/.gone.seed.Ab12Cd"
+    local output
+    output=$(CS_TMUX_BIN="$(_doctor_tmux_fake '' '')" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" ".gone.seed.Ab12Cd" \
+        "doctor should name the staging file an interrupted spawn left" || return 1
+}
+
 test_doctor_warns_on_orphaned_spawn_seed() {
     mkdir -p "$CS_SESSIONS_ROOT/.spawn"
     printf 'boss\ndo work\n' > "$CS_SESSIONS_ROOT/.spawn/ghost.seed"
@@ -1032,6 +1044,7 @@ run_test test_doctor_token_cost_handles_no_transcripts
 run_test test_doctor_warns_on_stale_spawn_seeds
 run_test test_doctor_warns_on_stale_spawn_brief
 run_test test_doctor_completes_after_spawn_warning
+run_test test_doctor_warns_on_abandoned_spawn_staging
 run_test test_doctor_warns_on_orphaned_spawn_seed
 run_test test_doctor_spawn_ok_when_seeds_clean
 run_test test_doctor_warns_on_dangling_spawned_by
