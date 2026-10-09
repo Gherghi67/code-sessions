@@ -2604,6 +2604,25 @@ fn drop_age_state(name: &str) -> Result<Option<PathBuf>, String> {
     let Some(dir) = age_state_dir(name) else {
         return Ok(None);
     };
+    // `~/.cs-secrets/sessions` and `~/.cs-secrets` must be real directories:
+    // through a link the removal would land on a same-name directory
+    // elsewhere. Reading through the link is harmless, so only a state that is
+    // there is named as left behind. An unsearchable parent fails the read
+    // below with a permission error, never NotFound. A concurrent
+    // `cs-secrets age add` can recreate the state after the removal, since its
+    // lock lives inside the dir removed here; that race is accepted.
+    for parent in dir.ancestors().skip(1).take(2) {
+        match parent.symlink_metadata() {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                if dir.symlink_metadata().is_err() {
+                    return Ok(None);
+                }
+                return Err(format!("left age state behind a linked ~/.cs-secrets: {}", dir.display()));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            _ => {}
+        }
+    }
     let meta = match dir.symlink_metadata() {
         Ok(meta) => meta,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
