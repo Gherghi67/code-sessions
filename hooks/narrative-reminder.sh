@@ -455,24 +455,12 @@ QSTATE_FILE="$QDIR/queue.state"
 # state that cannot be recorded ends this Stop with nothing handed out and a
 # message Claude Code shows the user.
 _qstate_write() {  # state word
-    _qstate_try "$1" && return 0
-    _qstate_unwritten ""
-}
-
-# The recording half of _qstate_write; rc 1 when the state is not recorded.
-_qstate_try() {  # state word
     cs_write_atomic "$QSTATE_FILE" printf '%s\n' "$1" && return 0
     if [ "$1" = idle ] && rm -f "$QSTATE_FILE" 2>/dev/null \
         && [ ! -e "$QSTATE_FILE" ] && [ ! -L "$QSTATE_FILE" ]; then
         return 0
     fi
-    return 1
-}
-
-# End this Stop: the state could not be recorded. The suffix says what became
-# of a task popped before the write.
-_qstate_unwritten() {  # message suffix
-    jq -nc --arg m "cs task queue: could not write $QSTATE_FILE$1" '{decision:"approve", systemMessage:$m}'
+    jq -nc --arg m "cs task queue: could not write $QSTATE_FILE" '{decision:"approve", systemMessage:$m}'
     exit 0
 }
 
@@ -682,25 +670,13 @@ $RUN_MODE$SCOPE"
         POPPED="$QDIR/queue.popping.$$"
         if [ -n "$_first" ] && mv "$_first" "$POPPED" 2>/dev/null; then
             DONE_TASK=$(cat "$POPPED" 2>/dev/null || true)
-            NEWLEN=$(_qlen "$QUEUE")
-            # After the last task, idle is recorded before the task is logged
-            # done. When it cannot be, the task goes back under its own name,
-            # undone, rather than vanish from the queue while the state still
-            # reads draining. A task that cannot be put back is logged done,
-            # so it is never handed out twice.
-            QUNRECORDED=""
-            if [ "$NEWLEN" -le 0 ] && ! _qstate_try idle; then
-                if mv "$POPPED" "$_first" 2>/dev/null; then
-                    _qstate_unwritten "; the task that just ended stays first in the queue and was not logged done"
-                fi
-                QUNRECORDED="; the task that just ended could not be put back in the queue, so it was logged done"
-            fi
             rm -f "$POPPED"
             printf '%s\n' "$DONE_TASK" >> "$QDIR/queue.done"
             _inbox_append --arg ts "$(date +%s)" --arg task "$DONE_TASK" \
                 '{ts: ($ts|tonumber), event: "task_done", task: $task}'
-            [ -z "$QUNRECORDED" ] || _qstate_unwritten "$QUNRECORDED"
+            NEWLEN=$(_qlen "$QUEUE")
             if [ "$NEWLEN" -le 0 ]; then
+                _qstate_write idle
                 rm -f "$QDIR/queue.mode"
                 DONE_COUNT=$(_qdone_len "$QDIR/queue.done")
                 _inbox_append --arg ts "$(date +%s)" --arg d "$DONE_COUNT" \
