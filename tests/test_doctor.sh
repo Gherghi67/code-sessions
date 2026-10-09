@@ -907,6 +907,36 @@ test_doctor_warns_on_stale_spawn_brief() {
         "doctor should name the aged-out brief beside its seed" || return 1
 }
 
+# A cs -spawn killed before it published leaves its dot-named staging file.
+# No launch reads it and nothing else removes it, so the doctor names it.
+test_doctor_warns_on_abandoned_spawn_staging() {
+    mkdir -p "$CS_SESSIONS_ROOT/.spawn"
+    printf 'killed\n' > "$CS_SESSIONS_ROOT/.spawn/.gone.seed.Ab12Cd"
+    touch -t 202401010000 "$CS_SESSIONS_ROOT/.spawn/.gone.seed.Ab12Cd"
+    local output
+    output=$(CS_TMUX_BIN="$(_doctor_tmux_fake '' '')" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" ".gone.seed.Ab12Cd" \
+        "doctor should name the staging file an interrupted spawn left" || return 1
+}
+
+# An open killed outright (no trap runs) leaves the seed it claimed under
+# .<name>.seed.claim.<pid>. The doctor names it once that pid is gone, and
+# never a claim an open still waiting at the ask holds.
+test_doctor_warns_on_a_claimed_seed_whose_open_is_gone() {
+    mkdir -p "$CS_SESSIONS_ROOT/.spawn"
+    local dead
+    sh -c 'exit 0' & dead=$!
+    wait "$dead"
+    printf 'claimed\n' > "$CS_SESSIONS_ROOT/.spawn/.gone.seed.claim.$dead"
+    printf 'asking\n' > "$CS_SESSIONS_ROOT/.spawn/.live.seed.claim.$$"
+    local output
+    output=$(CS_TMUX_BIN="$(_doctor_tmux_fake '' '')" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" ".gone.seed.claim.$dead" \
+        "doctor should name the seed a killed open claimed" || return 1
+    assert_output_not_contains "$output" ".live.seed.claim.$$" \
+        "doctor should leave a live open's claim alone" || return 1
+}
+
 test_doctor_warns_on_orphaned_spawn_seed() {
     mkdir -p "$CS_SESSIONS_ROOT/.spawn"
     printf 'boss\ndo work\n' > "$CS_SESSIONS_ROOT/.spawn/ghost.seed"
@@ -1032,6 +1062,8 @@ run_test test_doctor_token_cost_handles_no_transcripts
 run_test test_doctor_warns_on_stale_spawn_seeds
 run_test test_doctor_warns_on_stale_spawn_brief
 run_test test_doctor_completes_after_spawn_warning
+run_test test_doctor_warns_on_abandoned_spawn_staging
+run_test test_doctor_warns_on_a_claimed_seed_whose_open_is_gone
 run_test test_doctor_warns_on_orphaned_spawn_seed
 run_test test_doctor_spawn_ok_when_seeds_clean
 run_test test_doctor_warns_on_dangling_spawned_by

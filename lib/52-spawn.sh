@@ -20,21 +20,70 @@ _cs_self() {
     esac
 }
 
+# The line in a seed that ends its task lines: every line after it is the
+# spawn's brief, verbatim. The brief rides inside the seed so the pair is
+# published, consumed and set aside as one file. cs -spawn refuses a task
+# equal to it.
+SPAWN_BRIEF_MARK='--- cs-spawn-brief ---'
+
+# The line number of a seed's brief marker; nothing when the seed carries no
+# brief. Lines 1 and 2 are the token and the spawner, never the marker.
+_spawn_brief_mark_line() {  # seed
+    awk -v m="$SPAWN_BRIEF_MARK" 'NR > 2 && $0 == m { print NR; exit }' "$1"
+}
+
 # The suffixes of what cs -spawn stages under $SESSIONS_ROOT/.spawn/ for a
 # session name, and of what the launch sets aside when the seed ages out, one
-# per line. Twin of SPAWN_STAGING_SUFFIXES in tui/src/session.rs; the two
-# lists change together.
+# per line. Nothing stages or reads a .brief.md name; a session's removal still
+# deletes one found there. Twin of SPAWN_STAGING_SUFFIXES in
+# tui/src/session.rs; the two lists change together.
 _spawn_staging_suffixes() {
     printf '%s\n' .seed .seed.stale .brief.md .brief.md.stale
+}
+
+# An open reads a seed only after renaming it to a name of its own,
+# .<name>.seed.claim.<pid>, so a seed cs -spawn publishes while the open asks
+# is never the one it reads, sets aside or deletes. The launch's EXIT trap
+# (which INT and TERM reach through their exit) calls _spawn_put_back_claim,
+# so an open that stops before it consumed the seed leaves it staged again
+# under <name>.seed.
+_CS_SPAWN_CLAIM=""
+_CS_SPAWN_SEED=""
+
+# Put a claimed seed back under its staged name. ln refuses a name a newer
+# spawn published meanwhile; the claimed seed is then set aside as .stale.
+_spawn_put_back_claim() {
+    local claim="$_CS_SPAWN_CLAIM" seed="$_CS_SPAWN_SEED"
+    _CS_SPAWN_CLAIM=""
+    [ -n "$claim" ] && [ -e "$claim" ] || return 0
+    if ln "$claim" "$seed" 2>/dev/null; then
+        rm -f "$claim"
+    elif mv "$claim" "$seed.stale" 2>/dev/null; then
+        warn "A newer spawn seed is staged: $seed; the one this open read is set aside: $seed.stale"
+    else
+        warn "Spawn seed could not be put back: $claim"
+    fi
+    return 0
 }
 
 # Delete any staged or stale seed and brief for a name. Called when the
 # session is deleted: a leftover seed would block re-spawning the name and arm
 # a future same-name session with dead tasks and a dead brief.
 _spawn_discard_seeds() {  # name
-    local suffix
+    local suffix staged
     for suffix in $(_spawn_staging_suffixes); do
         rm -f "$SESSIONS_ROOT/.spawn/$1$suffix"
+    done
+    # The staging file cs -spawn leaves when killed before it published:
+    # mktemp's .<name>.seed.XXXXXX. Exactly six characters follow, so a
+    # session named <name>.seed never has its own staging file matched. And
+    # the claim an open killed outright leaves: .<name>.seed.claim.<pid>, a
+    # digit first, so a session named <name>.seed.claim never has its own
+    # claim matched. Twin of the staging match in tui/src/session.rs.
+    for staged in "$SESSIONS_ROOT/.spawn/.$1.seed."?????? \
+                  "$SESSIONS_ROOT/.spawn/.$1.seed.claim."[0-9]*; do
+        [ -e "$staged" ] || continue
+        rm -f "$staged"
     done
 }
 
@@ -116,6 +165,8 @@ run_spawn() {
                 t="$(_trim "$1")"
                 [ -n "$t" ] || error "cs -spawn --task needs a non-empty task"
                 _queue_require_single_line "$t"
+                [ "$t" != "$SPAWN_BRIEF_MARK" ] \
+                    || error "cs -spawn --task: '$SPAWN_BRIEF_MARK' marks where a seed's brief starts and cannot be a task"
                 tasks+=("$t");;
             --brief)
                 [ $# -ge 2 ] || error "--brief needs a file"
@@ -154,47 +205,39 @@ run_spawn() {
     # A brief is staged with a seed even when there are no tasks: the seed
     # carries the spawner, which the brief's report-back line needs.
     if [ "${#tasks[@]}" -gt 0 ] || [ -n "$brief" ]; then
-        local sdir="$SESSIONS_ROOT/.spawn" seed
+        local sdir="$SESSIONS_ROOT/.spawn" seed staged
         seed="$sdir/$name.seed"
-        # The check-then-write below is deliberately unlocked, and both temp
-        # names are fixed. Two spawns of one name started in the same instant
-        # can therefore interleave on them: one run fails at its publishing
-        # rename, or a seed is torn, or it is published beside the other
-        # run's brief. One user spawning one name twice at once is the only
-        # way in, so it is left as it is.
         [ ! -f "$seed" ] || error "A pending spawn for $name exists: $seed"
-        mkdir -p "$sdir"
-        # Order: seed content first (to a temp file), brief second, seed
-        # published last. The launch treats the seed as the signal, so the
-        # brief must exist before the seed is visible; and because the seed is
-        # published last, a write that fails leaves nothing staged and this
-        # abort never deletes a file another spawn of the same name published.
-        # Each step is an AND list, which errexit does not judge, so every
-        # abort is explicit.
-        #
-        # One printf, so one status covers the whole seed: a brace group
-        # reports only its LAST command, and a failed first write with a
-        # succeeding task line published a seed whose spawner line was missing.
+        mkdir -p "$sdir" || error "cs -spawn: cannot create $sdir"
+        # The whole spawn is one file: the token, the spawner, one task per
+        # line, then the brief marker and the brief verbatim. It is written
+        # under a name of its own and published with ln, which refuses an
+        # existing name, so two spawns of one name cannot both publish and a
+        # seed never pairs with another run's brief. A run killed before ln
+        # leaves only its own dot-named temp, which no launch reads. Each step
+        # is an AND list, which errexit does not judge, so every abort is
+        # explicit.
+        staged=$(mktemp "$sdir/.$name.seed.XXXXXX") \
+            || error "cs -spawn: cannot stage the seed in $sdir"
+        # One printf for the lines before the brief, so one status covers
+        # them: a brace group reports only its LAST command. An empty array is
+        # unbound under bash 3.2's set -u; the guard expands to nothing then.
         local _payload _t
         _payload="$token
 $spawner
 "
-        # An empty array is unbound under bash 3.2's set -u, and a brief alone
-        # leaves it empty; the guard expands to nothing in that case.
         for _t in ${tasks[@]+"${tasks[@]}"}; do _payload="$_payload$_t
 "; done
-        printf '%s' "$_payload" > "$seed.tmp" \
-            || { rm -f "$seed.tmp" 2>/dev/null || :; error "cs -spawn: cannot stage the seed in $sdir"; }
-        if [ -n "$brief" ]; then
-            cp "$brief" "$sdir/$name.brief.md.tmp" \
-                && mv "$sdir/$name.brief.md.tmp" "$sdir/$name.brief.md" \
-                || { rm -f "$sdir/$name.brief.md.tmp" "$seed.tmp" 2>/dev/null || :
-                     error "cs -spawn --brief: cannot stage $brief in $sdir"; }
+        [ -z "$brief" ] || _payload="$_payload$SPAWN_BRIEF_MARK
+"
+        { printf '%s' "$_payload" && { [ -z "$brief" ] || cat "$brief"; }; } > "$staged" \
+            || { rm -f "$staged" 2>/dev/null || :; error "cs -spawn: cannot stage the seed in $sdir"; }
+        if ! ln "$staged" "$seed" 2>/dev/null; then
+            rm -f "$staged" 2>/dev/null || :
+            [ ! -e "$seed" ] || error "A pending spawn for $name exists: $seed"
+            error "cs -spawn: cannot publish the seed in $sdir (ln failed; the filesystem may not support hard links)"
         fi
-        # A failed rename means another spawn of this name consumed the temp
-        # path and published its own pair; its brief is not this run's to remove.
-        mv "$seed.tmp" "$seed" \
-            || { rm -f "$seed.tmp" 2>/dev/null || :; error "cs -spawn: cannot publish the seed in $sdir"; }
+        rm -f "$staged" || warn "cs -spawn: could not remove the staging file $staged"
     fi
     _spawn_window "$name" "$token"
 }

@@ -88,6 +88,14 @@ test_remove_discards_pending_spawn_seeds() {
     printf 'spawner\ndo a task\n' > "$CS_SESSIONS_ROOT/.spawn/seeded.seed"
     printf 'old\n' > "$CS_SESSIONS_ROOT/.spawn/seeded.seed.stale"
     printf 'other\n' > "$CS_SESSIONS_ROOT/.spawn/other.seed"
+    # A spawn killed before it published leaves its staging file; so may one
+    # for a session whose name merely starts the same way.
+    printf 'killed\n' > "$CS_SESSIONS_ROOT/.spawn/.seeded.seed.Ab12Cd"
+    printf 'theirs\n' > "$CS_SESSIONS_ROOT/.spawn/.seeded.seed.seed.Ef34Gh"
+    # An open killed outright leaves the seed it claimed; session
+    # seeded.seed.claim's claim starts the same way.
+    printf 'claimed\n' > "$CS_SESSIONS_ROOT/.spawn/.seeded.seed.claim.4242"
+    printf 'theirs\n' > "$CS_SESSIONS_ROOT/.spawn/.seeded.seed.claim.seed.claim.77"
 
     printf 'n\n' | CS_ASSUME_TTY=1 "$CS_BIN" -rm seeded >/dev/null 2>&1 || return 1
     [ -f "$CS_SESSIONS_ROOT/.spawn/seeded.seed" ] || { echo "  declined removal still discarded the seed"; return 1; }
@@ -96,6 +104,24 @@ test_remove_discards_pending_spawn_seeds() {
     [ ! -f "$CS_SESSIONS_ROOT/.spawn/seeded.seed" ] || { echo "  seed survived removal"; return 1; }
     [ ! -f "$CS_SESSIONS_ROOT/.spawn/seeded.seed.stale" ] || { echo "  stale seed survived removal"; return 1; }
     [ -f "$CS_SESSIONS_ROOT/.spawn/other.seed" ] || { echo "  another session's seed was deleted"; return 1; }
+    [ ! -f "$CS_SESSIONS_ROOT/.spawn/.seeded.seed.Ab12Cd" ] || { echo "  an interrupted spawn's staging file survived removal"; return 1; }
+    [ -f "$CS_SESSIONS_ROOT/.spawn/.seeded.seed.seed.Ef34Gh" ] || { echo "  the staging file of session seeded.seed was deleted"; return 1; }
+    [ ! -f "$CS_SESSIONS_ROOT/.spawn/.seeded.seed.claim.4242" ] || { echo "  a killed open's claimed seed survived removal"; return 1; }
+    [ -f "$CS_SESSIONS_ROOT/.spawn/.seeded.seed.claim.seed.claim.77" ] || { echo "  the claim of session seeded.seed.claim was deleted"; return 1; }
+}
+
+# The sessions root may hold a space; the staging-file cleanup must remove
+# exactly the staging file, not a path its words happen to name.
+test_remove_discards_spawn_staging_under_a_root_with_a_space() {
+    local root="$TEST_TMPDIR/cs root"
+    mkdir -p "$root"
+    printf 'bystander\n' > "$TEST_TMPDIR/cs"
+    CS_SESSIONS_ROOT="$root" create_test_session seeded >/dev/null
+    mkdir -p "$root/.spawn"
+    printf 'killed\n' > "$root/.spawn/.seeded.seed.Ab12Cd"
+    printf 'y\n' | CS_SESSIONS_ROOT="$root" CS_ASSUME_TTY=1 "$CS_BIN" -rm seeded >/dev/null 2>&1 || return 1
+    [ ! -f "$root/.spawn/.seeded.seed.Ab12Cd" ] || { echo "  the staging file survived removal"; return 1; }
+    assert_file_exists "$TEST_TMPDIR/cs" "a file named by the root's first word is untouched" || return 1
 }
 
 # The brief staged with a seed dies with the session too: a leftover would
@@ -412,6 +438,7 @@ run_test test_remove_empty_name_rejected_before_any_deletion
 run_test test_remove_refuses_live_session_without_force
 run_test test_remove_allows_heartbeat_only_session_without_force
 run_test test_remove_discards_pending_spawn_seeds
+run_test test_remove_discards_spawn_staging_under_a_root_with_a_space
 run_test test_remove_discards_pending_spawn_brief
 run_test test_remove_worktree_session_discards_seeds
 run_test test_remove_multiple_names_each_confirmed

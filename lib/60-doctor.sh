@@ -218,7 +218,11 @@ _doctor_check_iterm2() {
 
 # Spawn hygiene, all best-effort warnings:
 #   - .seed.stale and .brief.md.stale files accumulate in .spawn/ (the launch
-#     path sets aged-out seeds and their briefs aside but never deletes them),
+#     path sets aged-out seeds aside but never deletes them),
+#   - a cs -spawn killed before it published leaves its .<name>.seed.XXXXXX
+#     staging file, which no launch reads and nothing else removes,
+#   - an open killed outright leaves the seed it claimed under
+#     .<name>.seed.claim.<pid>, which no later open reads,
 #   - a pending .seed for a session that does not exist blocks re-spawning
 #     that name until it is removed,
 #   - a spawned-by pointer at a deleted session sends the drain notify nowhere,
@@ -226,8 +230,8 @@ _doctor_check_iterm2() {
 #     will refuse to reuse.
 _doctor_check_spawn() {
     local spawn_dir="$SESSIONS_ROOT/.spawn"
-    local stale=() orphan=() dangling=() clean=1
-    local f name suffix
+    local stale=() orphan=() dangling=() abandoned=() clean=1
+    local f name suffix now
 
     if [ -d "$spawn_dir" ]; then
         # The aged-out suffixes are the .stale ones in cs -spawn's own list.
@@ -243,6 +247,25 @@ _doctor_check_spawn() {
             name=$(basename "$f" .seed)
             is_session_dir "$SESSIONS_ROOT/$name" || orphan+=("$name")
         done
+        # A spawn runs for well under a minute; an older staging file is one
+        # whose spawn was killed before it published.
+        now=$(date +%s)
+        for f in "$spawn_dir"/.*.seed.??????; do
+            [ -e "$f" ] || continue
+            [ $(( now - $(_epoch_mtime "$f") )) -gt 60 ] || continue
+            abandoned+=("$(basename "$f")")
+        done
+        # A claim is held by an open still at the consent ask while its pid
+        # runs; once the pid is gone, nothing puts the seed back.
+        for f in "$spawn_dir"/.*.seed.claim.[0-9]*; do
+            [ -e "$f" ] || continue
+            kill -0 "${f##*.}" 2>/dev/null && continue
+            abandoned+=("$(basename "$f")")
+        done
+    fi
+    if [ ${#abandoned[@]} -gt 0 ]; then
+        _doctor_warn "Spawn staging: ${#abandoned[@]} file(s) left in .spawn/ by an interrupted cs -spawn or open (never read; safe to delete): ${abandoned[*]}"
+        clean=0
     fi
     if [ ${#stale[@]} -gt 0 ]; then
         _doctor_warn "Spawn seeds: ${#stale[@]} aged-out .stale file(s) in .spawn/ (nothing prunes them; safe to delete): ${stale[*]}"

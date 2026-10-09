@@ -6490,21 +6490,70 @@ _cs_self() {
     esac
 }
 
+# The line in a seed that ends its task lines: every line after it is the
+# spawn's brief, verbatim. The brief rides inside the seed so the pair is
+# published, consumed and set aside as one file. cs -spawn refuses a task
+# equal to it.
+SPAWN_BRIEF_MARK='--- cs-spawn-brief ---'
+
+# The line number of a seed's brief marker; nothing when the seed carries no
+# brief. Lines 1 and 2 are the token and the spawner, never the marker.
+_spawn_brief_mark_line() {  # seed
+    awk -v m="$SPAWN_BRIEF_MARK" 'NR > 2 && $0 == m { print NR; exit }' "$1"
+}
+
 # The suffixes of what cs -spawn stages under $SESSIONS_ROOT/.spawn/ for a
 # session name, and of what the launch sets aside when the seed ages out, one
-# per line. Twin of SPAWN_STAGING_SUFFIXES in tui/src/session.rs; the two
-# lists change together.
+# per line. Nothing stages or reads a .brief.md name; a session's removal still
+# deletes one found there. Twin of SPAWN_STAGING_SUFFIXES in
+# tui/src/session.rs; the two lists change together.
 _spawn_staging_suffixes() {
     printf '%s\n' .seed .seed.stale .brief.md .brief.md.stale
+}
+
+# An open reads a seed only after renaming it to a name of its own,
+# .<name>.seed.claim.<pid>, so a seed cs -spawn publishes while the open asks
+# is never the one it reads, sets aside or deletes. The launch's EXIT trap
+# (which INT and TERM reach through their exit) calls _spawn_put_back_claim,
+# so an open that stops before it consumed the seed leaves it staged again
+# under <name>.seed.
+_CS_SPAWN_CLAIM=""
+_CS_SPAWN_SEED=""
+
+# Put a claimed seed back under its staged name. ln refuses a name a newer
+# spawn published meanwhile; the claimed seed is then set aside as .stale.
+_spawn_put_back_claim() {
+    local claim="$_CS_SPAWN_CLAIM" seed="$_CS_SPAWN_SEED"
+    _CS_SPAWN_CLAIM=""
+    [ -n "$claim" ] && [ -e "$claim" ] || return 0
+    if ln "$claim" "$seed" 2>/dev/null; then
+        rm -f "$claim"
+    elif mv "$claim" "$seed.stale" 2>/dev/null; then
+        warn "A newer spawn seed is staged: $seed; the one this open read is set aside: $seed.stale"
+    else
+        warn "Spawn seed could not be put back: $claim"
+    fi
+    return 0
 }
 
 # Delete any staged or stale seed and brief for a name. Called when the
 # session is deleted: a leftover seed would block re-spawning the name and arm
 # a future same-name session with dead tasks and a dead brief.
 _spawn_discard_seeds() {  # name
-    local suffix
+    local suffix staged
     for suffix in $(_spawn_staging_suffixes); do
         rm -f "$SESSIONS_ROOT/.spawn/$1$suffix"
+    done
+    # The staging file cs -spawn leaves when killed before it published:
+    # mktemp's .<name>.seed.XXXXXX. Exactly six characters follow, so a
+    # session named <name>.seed never has its own staging file matched. And
+    # the claim an open killed outright leaves: .<name>.seed.claim.<pid>, a
+    # digit first, so a session named <name>.seed.claim never has its own
+    # claim matched. Twin of the staging match in tui/src/session.rs.
+    for staged in "$SESSIONS_ROOT/.spawn/.$1.seed."?????? \
+                  "$SESSIONS_ROOT/.spawn/.$1.seed.claim."[0-9]*; do
+        [ -e "$staged" ] || continue
+        rm -f "$staged"
     done
 }
 
@@ -6586,6 +6635,8 @@ run_spawn() {
                 t="$(_trim "$1")"
                 [ -n "$t" ] || error "cs -spawn --task needs a non-empty task"
                 _queue_require_single_line "$t"
+                [ "$t" != "$SPAWN_BRIEF_MARK" ] \
+                    || error "cs -spawn --task: '$SPAWN_BRIEF_MARK' marks where a seed's brief starts and cannot be a task"
                 tasks+=("$t");;
             --brief)
                 [ $# -ge 2 ] || error "--brief needs a file"
@@ -6624,47 +6675,39 @@ run_spawn() {
     # A brief is staged with a seed even when there are no tasks: the seed
     # carries the spawner, which the brief's report-back line needs.
     if [ "${#tasks[@]}" -gt 0 ] || [ -n "$brief" ]; then
-        local sdir="$SESSIONS_ROOT/.spawn" seed
+        local sdir="$SESSIONS_ROOT/.spawn" seed staged
         seed="$sdir/$name.seed"
-        # The check-then-write below is deliberately unlocked, and both temp
-        # names are fixed. Two spawns of one name started in the same instant
-        # can therefore interleave on them: one run fails at its publishing
-        # rename, or a seed is torn, or it is published beside the other
-        # run's brief. One user spawning one name twice at once is the only
-        # way in, so it is left as it is.
         [ ! -f "$seed" ] || error "A pending spawn for $name exists: $seed"
-        mkdir -p "$sdir"
-        # Order: seed content first (to a temp file), brief second, seed
-        # published last. The launch treats the seed as the signal, so the
-        # brief must exist before the seed is visible; and because the seed is
-        # published last, a write that fails leaves nothing staged and this
-        # abort never deletes a file another spawn of the same name published.
-        # Each step is an AND list, which errexit does not judge, so every
-        # abort is explicit.
-        #
-        # One printf, so one status covers the whole seed: a brace group
-        # reports only its LAST command, and a failed first write with a
-        # succeeding task line published a seed whose spawner line was missing.
+        mkdir -p "$sdir" || error "cs -spawn: cannot create $sdir"
+        # The whole spawn is one file: the token, the spawner, one task per
+        # line, then the brief marker and the brief verbatim. It is written
+        # under a name of its own and published with ln, which refuses an
+        # existing name, so two spawns of one name cannot both publish and a
+        # seed never pairs with another run's brief. A run killed before ln
+        # leaves only its own dot-named temp, which no launch reads. Each step
+        # is an AND list, which errexit does not judge, so every abort is
+        # explicit.
+        staged=$(mktemp "$sdir/.$name.seed.XXXXXX") \
+            || error "cs -spawn: cannot stage the seed in $sdir"
+        # One printf for the lines before the brief, so one status covers
+        # them: a brace group reports only its LAST command. An empty array is
+        # unbound under bash 3.2's set -u; the guard expands to nothing then.
         local _payload _t
         _payload="$token
 $spawner
 "
-        # An empty array is unbound under bash 3.2's set -u, and a brief alone
-        # leaves it empty; the guard expands to nothing in that case.
         for _t in ${tasks[@]+"${tasks[@]}"}; do _payload="$_payload$_t
 "; done
-        printf '%s' "$_payload" > "$seed.tmp" \
-            || { rm -f "$seed.tmp" 2>/dev/null || :; error "cs -spawn: cannot stage the seed in $sdir"; }
-        if [ -n "$brief" ]; then
-            cp "$brief" "$sdir/$name.brief.md.tmp" \
-                && mv "$sdir/$name.brief.md.tmp" "$sdir/$name.brief.md" \
-                || { rm -f "$sdir/$name.brief.md.tmp" "$seed.tmp" 2>/dev/null || :
-                     error "cs -spawn --brief: cannot stage $brief in $sdir"; }
+        [ -z "$brief" ] || _payload="$_payload$SPAWN_BRIEF_MARK
+"
+        { printf '%s' "$_payload" && { [ -z "$brief" ] || cat "$brief"; }; } > "$staged" \
+            || { rm -f "$staged" 2>/dev/null || :; error "cs -spawn: cannot stage the seed in $sdir"; }
+        if ! ln "$staged" "$seed" 2>/dev/null; then
+            rm -f "$staged" 2>/dev/null || :
+            [ ! -e "$seed" ] || error "A pending spawn for $name exists: $seed"
+            error "cs -spawn: cannot publish the seed in $sdir (ln failed; the filesystem may not support hard links)"
         fi
-        # A failed rename means another spawn of this name consumed the temp
-        # path and published its own pair; its brief is not this run's to remove.
-        mv "$seed.tmp" "$seed" \
-            || { rm -f "$seed.tmp" 2>/dev/null || :; error "cs -spawn: cannot publish the seed in $sdir"; }
+        rm -f "$staged" || warn "cs -spawn: could not remove the staging file $staged"
     fi
     _spawn_window "$name" "$token"
 }
@@ -8515,7 +8558,11 @@ _doctor_check_iterm2() {
 
 # Spawn hygiene, all best-effort warnings:
 #   - .seed.stale and .brief.md.stale files accumulate in .spawn/ (the launch
-#     path sets aged-out seeds and their briefs aside but never deletes them),
+#     path sets aged-out seeds aside but never deletes them),
+#   - a cs -spawn killed before it published leaves its .<name>.seed.XXXXXX
+#     staging file, which no launch reads and nothing else removes,
+#   - an open killed outright leaves the seed it claimed under
+#     .<name>.seed.claim.<pid>, which no later open reads,
 #   - a pending .seed for a session that does not exist blocks re-spawning
 #     that name until it is removed,
 #   - a spawned-by pointer at a deleted session sends the drain notify nowhere,
@@ -8523,8 +8570,8 @@ _doctor_check_iterm2() {
 #     will refuse to reuse.
 _doctor_check_spawn() {
     local spawn_dir="$SESSIONS_ROOT/.spawn"
-    local stale=() orphan=() dangling=() clean=1
-    local f name suffix
+    local stale=() orphan=() dangling=() abandoned=() clean=1
+    local f name suffix now
 
     if [ -d "$spawn_dir" ]; then
         # The aged-out suffixes are the .stale ones in cs -spawn's own list.
@@ -8540,6 +8587,25 @@ _doctor_check_spawn() {
             name=$(basename "$f" .seed)
             is_session_dir "$SESSIONS_ROOT/$name" || orphan+=("$name")
         done
+        # A spawn runs for well under a minute; an older staging file is one
+        # whose spawn was killed before it published.
+        now=$(date +%s)
+        for f in "$spawn_dir"/.*.seed.??????; do
+            [ -e "$f" ] || continue
+            [ $(( now - $(_epoch_mtime "$f") )) -gt 60 ] || continue
+            abandoned+=("$(basename "$f")")
+        done
+        # A claim is held by an open still at the consent ask while its pid
+        # runs; once the pid is gone, nothing puts the seed back.
+        for f in "$spawn_dir"/.*.seed.claim.[0-9]*; do
+            [ -e "$f" ] || continue
+            kill -0 "${f##*.}" 2>/dev/null && continue
+            abandoned+=("$(basename "$f")")
+        done
+    fi
+    if [ ${#abandoned[@]} -gt 0 ]; then
+        _doctor_warn "Spawn staging: ${#abandoned[@]} file(s) left in .spawn/ by an interrupted cs -spawn or open (never read; safe to delete): ${abandoned[*]}"
+        clean=0
     fi
     if [ ${#stale[@]} -gt 0 ]; then
         _doctor_warn "Spawn seeds: ${#stale[@]} aged-out .stale file(s) in .spawn/ (nothing prunes them; safe to delete): ${stale[*]}"
@@ -10659,7 +10725,7 @@ launch_claude_code() {
     # spliced into them: a " or $( in the sessions root would be run as code.
     # Global, not local: the EXIT trap fires after this function has returned.
     _CS_LOCK_META_DIR="$session_dir/.cs"
-    trap 'reset_tab_title; release_session_lock "$_CS_LOCK_META_DIR"; _detach_opened_vault' EXIT
+    trap 'reset_tab_title; _spawn_put_back_claim; release_session_lock "$_CS_LOCK_META_DIR"; _detach_opened_vault' EXIT
     trap 'reset_tab_title; release_session_lock "$_CS_LOCK_META_DIR"; exit 130' INT TERM
 
     # Opening an archived session revives it. Placed after lock acquisition so
@@ -10883,27 +10949,40 @@ launch_claude_code() {
     # of the environment before the lock (above), so claude, a collision
     # redirect and any nested launch never carry it.
     local spawn_kick=""
-    local _seed="$SESSIONS_ROOT/.spawn/$session_name.seed"
-    local _brief="$SESSIONS_ROOT/.spawn/$session_name.brief.md"
+    local _seed="$SESSIONS_ROOT/.spawn/$session_name.seed" _claim
     if [ -f "$_seed" ]; then
         local _now _age
         _now=$(date +%s)
         _age=$(( _now - $(_epoch_mtime "$_seed") ))
         if [ "$_age" -gt 3600 ]; then
             mv "$_seed" "$_seed.stale" 2>/dev/null || true
-            [ ! -f "$_brief" ] || mv "$_brief" "$_brief.stale" 2>/dev/null || true
             warn "Stale spawn seed set aside: $_seed.stale (re-run cs -spawn if still wanted)"
         else
             # Read the seed once: line 1 the token, line 2 the spawner, then
-            # one task per line. Whitespace-only lines are skipped, not merely
-            # empty ones: _queue_add trims and then errors on an empty body,
-            # which under errexit would abort the whole session launch over a
-            # stray space in a hand-edited seed.
-            local _seed_token="" _spawner="" _line _lineno=0 _n=0
+            # one task per line up to the brief marker, if the seed has one;
+            # the brief is the rest of the file and is never read as tasks.
+            # Whitespace-only lines are skipped, not merely empty ones:
+            # _queue_add trims and then errors on an empty body, which under
+            # errexit would abort the whole session launch over a stray space
+            # in a hand-edited seed.
+            local _seed_token="" _spawner="" _line _lineno=0 _n=0 _mark
             local _tasks
             _tasks=()
+            # Everything below reads the seed under a name this open owns
+            # (_spawn_put_back_claim in lib/52-spawn.sh): a seed published in
+            # .spawn while the consent ask waits is not the one shown, and the
+            # tasks, the brief, a decline and the delete all belong to the
+            # seed that was shown. The traps put it back if the open stops.
+            _claim="$SESSIONS_ROOT/.spawn/.$session_name.seed.claim.$$"
+            mv "$_seed" "$_claim" \
+                || error "Spawn seed could not be read: $_seed (seed kept; re-open the session to retry)"
+            _CS_SPAWN_SEED="$_seed"
+            _CS_SPAWN_CLAIM="$_claim"
+            _mark=$(_spawn_brief_mark_line "$_claim") \
+                || error "Spawn seed could not be read: $_seed (seed kept; re-open the session to retry)"
             while IFS= read -r _line || [ -n "$_line" ]; do
                 _lineno=$((_lineno + 1))
+                [ "$_lineno" != "$_mark" ] || break
                 case "$_lineno" in
                     1) _seed_token="$_line"; continue ;;
                     2) _spawner="$_line"; continue ;;
@@ -10911,7 +10990,7 @@ launch_claude_code() {
                 case "$_line" in *[![:space:]]*) : ;; *) continue ;; esac
                 _tasks+=("$_line")
                 _n=$((_n + 1))
-            done < "$_seed"
+            done < "$_claim"
             # Never empty-equals-empty: a seed with no token line (older cs,
             # or hand-written) is foreign to every open.
             local _consume=1
@@ -10926,8 +11005,9 @@ launch_claude_code() {
                 echo
                 printf "${GOLD}A spawn seed is staged for this session:${NC} %s\n" "$_seed"
                 printf '    spawner: %s\n' "${_shown_spawner:-(none)}"
-                if [ -f "$_brief" ]; then
-                    printf '    brief:   %s (becomes .cs/brief.md)\n' "$_brief"
+                if [ -n "$_mark" ]; then
+                    printf '    brief:   inline, %s bytes (becomes .cs/brief.md)\n' \
+                        "$(tail -n +"$((_mark + 1))" "$_claim" | wc -c | tr -d ' ')"
                 fi
                 if [ "$_n" -gt 0 ]; then
                     printf '    tasks (queued and armed; the walk-away drain runs them unattended):\n'
@@ -10948,6 +11028,7 @@ launch_claude_code() {
                 # the next open does not ask again, any other key asks
                 # again, and EOF leaves it staged.
                 if [ ! -t 0 ]; then
+                    _spawn_put_back_claim
                     warn "Spawn seed left staged: $_seed (open $session_name in a terminal to answer, or remove it)"
                 else
                     local _answer
@@ -10955,6 +11036,7 @@ launch_claude_code() {
                         printf "${DIM}This open is not the spawn's own window.${NC} Take the seed? [Y/n] "
                         if ! IFS= read -rsn1 _answer; then
                             echo
+                            _spawn_put_back_claim
                             warn "Spawn seed left staged: $_seed (open $session_name in a terminal to answer, or remove it)"
                             break
                         fi
@@ -10962,8 +11044,8 @@ launch_claude_code() {
                         case "$_answer" in
                             ''|[yY]) _consume=1; break ;;
                             $'\e'|[nN])
-                                mv "$_seed" "$_seed.stale" 2>/dev/null || true
-                                [ ! -f "$_brief" ] || mv "$_brief" "$_brief.stale" 2>/dev/null || true
+                                _CS_SPAWN_CLAIM=""
+                                mv "$_claim" "$_seed.stale" 2>/dev/null || true
                                 warn "Spawn seed declined and set aside: $_seed.stale (re-run cs -spawn if still wanted)"
                                 break ;;
                         esac
@@ -10973,18 +11055,19 @@ launch_claude_code() {
         fi
         if [ "${_consume:-0}" = 1 ]; then
             local _has_brief=0 _qdir
-            # The brief moves in before any task is queued, and a move that
-            # fails stops the launch with the seed and brief still staged, so
-            # the next open retries. Consuming the seed regardless would start
-            # the session without the brief it was opened for, and leave the
-            # brief to attach to a later spawn of the same name. errexit does
-            # not see a failed left operand, so the abort is explicit.
-            if [ -f "$_brief" ]; then
-                # A directory in the brief's place would take the file INSIDE
-                # it and the move would report success.
+            # The brief is written in before any task is queued, and a write
+            # that fails stops the launch with the seed still staged, so the
+            # next open retries. Consuming the seed regardless would start the
+            # session without the brief it was opened for. errexit does not
+            # see a failed left operand, so the abort is explicit.
+            if [ -n "$_mark" ]; then
+                # A link in the brief's place would turn the write into one
+                # over whatever it names; a directory would take the file.
+                [ ! -L "$session_dir/.cs/brief.md" ] \
+                    || error "Spawn brief could not be delivered: $session_dir/.cs/brief.md is a link (seed kept; remove it and re-open the session to retry)"
                 [ ! -d "$session_dir/.cs/brief.md" ] \
                     || error "Spawn brief could not be delivered: $session_dir/.cs/brief.md is a directory (seed kept; remove it and re-open the session to retry)"
-                mv "$_brief" "$session_dir/.cs/brief.md" \
+                cs_write_atomic "$session_dir/.cs/brief.md" tail -n +"$((_mark + 1))" "$_claim" \
                     || error "Spawn brief could not be delivered to $session_dir/.cs/brief.md (seed kept; re-open the session to retry)"
                 _has_brief=1
             fi
@@ -11012,7 +11095,10 @@ launch_claude_code() {
                     spawn_kick="$_work"
                 fi
             fi
-            rm -f "$_seed"
+            # Only the claimed seed is deleted: one published since stays
+            # staged for its own open.
+            _CS_SPAWN_CLAIM=""
+            rm -f "$_claim"
         fi
     fi
     # Arming the ritual is an explicit action the user took seconds ago, so it
