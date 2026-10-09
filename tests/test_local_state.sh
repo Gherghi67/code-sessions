@@ -519,6 +519,28 @@ test_lock_refuses_a_path_that_is_not_a_regular_file() {
     assert_eq "" "$err" "and taking it prints nothing" || return 1
 }
 
+# Takers never hold the lock at once: four of them each add one to a counter
+# 25 times, reading it, pausing, then writing it back, under the lock. Any
+# two inside together lose an increment, so the count falls short of 100.
+test_lock_takers_never_hold_it_at_once() {
+    local lock="$TEST_TMPDIR/count.lock" count="$TEST_TMPDIR/count" pids="" p failed=0
+    echo 0 > "$count"
+    for p in 1 2 3 4; do
+        bash -c 'source "$1"; i=0
+            while [ "$i" -lt 25 ]; do
+                _cs_lock "$2" || exit 1
+                read -r n < "$3"; sleep 0.01; echo $((n + 1)) > "$3"
+                _cs_unlock "$2"
+                i=$((i + 1))
+            done' _ "$LOCK_LIB" "$lock" "$count" &
+        pids="$pids $!"
+    done
+    for p in $pids; do wait "$p" || failed=$((failed + 1)); done
+    assert_eq "0" "$failed" "every taker got the lock each time it asked" || return 1
+    assert_eq "100" "$(cat "$count")" "no increment was lost to a second holder" || return 1
+    _lock_is_free "$lock" || { echo "  FAIL: the lock is still held after every taker released it"; return 1; }
+}
+
 # A state rewrite is a read-modify-write, so two writers (cs at launch and the
 # SessionStart hook) can lose an update unless they take turns. The lock is a
 # directory beside the file, .cs/local/state.lock, holding the holder's pid; a
@@ -1072,6 +1094,7 @@ run_test test_launch_ignores_a_recorded_color_that_is_not_a_color
 run_test test_launch_stops_loudly_when_state_cannot_be_written
 run_test test_state_and_gitattributes_rewrites_leave_tmp_siblings_alone_and_keep_modes
 run_test test_lock_refuses_a_path_that_is_not_a_regular_file
+run_test test_lock_takers_never_hold_it_at_once
 run_test test_state_write_waits_for_a_live_lock_holder
 run_test test_lock_timeout_leaves_a_live_holders_old_lock_in_place
 run_test test_state_write_takes_over_a_dead_holders_lock
