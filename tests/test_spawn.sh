@@ -362,7 +362,8 @@ _launch_worker() {
 # A foreign open on a terminal: the consent ask reads a keypress from a tty,
 # never from redirected stdin, so the launch runs on a pty and the keys are
 # typed once the ask appears. Keys take Python escapes (\r, \x1b). Output
-# comes back with CRLF folded.
+# comes back with CRLF folded. BEFORE_KEYS, when set, is a shell command run
+# while the ask waits, just before the keys are typed.
 _launch_worker_on_tty() {  # keys, [VAR=value ...]
     local keys="$1"; shift
     env "$@" python3 - "$keys" "$CS_BIN" worker << 'PY'
@@ -386,6 +387,8 @@ while True:
             break
         out += data
     if not sent and (b"[Y/n]" in out or time.time() - start > 8):
+        if os.environ.get("BEFORE_KEYS"):
+            os.system(os.environ["BEFORE_KEYS"])
         if keys:
             os.write(fd, keys)
         sent = True
@@ -682,6 +685,37 @@ test_launch_foreign_seed_consent_shows_it_and_enter_consumes() {
     assert_output_contains "$out" "armed with 2 task(s)" "kick present" || return 1
 }
 
+# What the open shows and asks about is what it consumes: a seed replaced in
+# .spawn while the ask waits is neither the source of the delivered brief nor
+# deleted by the consent given to the first one.
+test_launch_consumes_the_seed_it_asked_about() {
+    _stage_seed_with_brief $'brief A\n' boss "job A"
+    {
+        printf '%s\n%s\n%s\n%s\n%s\n' "$OWN_TOKEN" boss "job B" "$BRIEF_MARK" "brief B"
+    } > "$TEST_TMPDIR/seed-b"
+    local out
+    out=$(_launch_worker_on_tty 'y' BEFORE_KEYS="cp '$TEST_TMPDIR/seed-b' '$CS_SESSIONS_ROOT/.spawn/worker.seed'") \
+        || { echo "  launch failed: $out"; return 1; }
+    assert_eq "brief A" "$(cat "$CS_SESSIONS_ROOT/worker/.cs/brief.md")" "the brief comes from the seed that was shown" || return 1
+    assert_eq "job A" "$(WQ_FIRST)" "the task comes from the seed that was shown" || return 1
+    assert_file_contains "$CS_SESSIONS_ROOT/.spawn/worker.seed" "job B" "the replacement seed is left staged, not consumed" || return 1
+}
+
+# The brief is written to the session's .cs/brief.md name itself: a link
+# planted there must not turn the delivery into a write over another file.
+test_launch_refuses_a_link_at_the_briefs_destination() {
+    _launch_worker >/dev/null || return 1
+    printf 'project readme\n' > "$CS_SESSIONS_ROOT/worker/README.md"
+    ln -s ../README.md "$CS_SESSIONS_ROOT/worker/.cs/brief.md"
+    _stage_seed_with_brief $'brief body\n' boss "first job"
+    local rc=0 out
+    out=$(_launch_worker) || rc=$?
+    [ "$rc" != 0 ] || { echo "  launch succeeded with a link in the brief's place"; return 1; }
+    assert_eq "project readme" "$(cat "$CS_SESSIONS_ROOT/worker/README.md")" "the link's target is untouched" || return 1
+    assert_file_exists "$CS_SESSIONS_ROOT/.spawn/worker.seed" "seed kept for a retry" || return 1
+    assert_eq "0" "$(WQ_COUNT)" "no task queued without the brief" || return 1
+}
+
 test_launch_foreign_seed_y_consumes() {
     _stage_seed boss "yes job"
     local out; out=$(_launch_worker_on_tty 'y') || { echo "  launch failed: $out"; return 1; }
@@ -800,6 +834,7 @@ run_test test_launch_delivers_the_seeds_brief_and_kicks_to_it
 run_test test_launch_ignores_a_brief_file_beside_the_seed
 run_test test_launch_brief_with_tasks_kicks_to_both
 run_test test_launch_refuses_a_directory_at_the_briefs_destination
+run_test test_launch_refuses_a_link_at_the_briefs_destination
 run_test test_launch_failed_brief_delivery_keeps_the_seed
 run_test test_launch_stale_seed_sets_its_brief_aside_too
 run_test test_launch_sets_aside_stale_seed
@@ -812,6 +847,7 @@ run_test test_launch_wrong_token_is_a_foreign_open
 run_test test_launch_seed_without_a_token_line_is_foreign
 run_test test_launch_foreign_seed_redirected_stdin_stays_staged
 run_test test_launch_foreign_seed_consent_shows_it_and_enter_consumes
+run_test test_launch_consumes_the_seed_it_asked_about
 run_test test_launch_foreign_seed_y_consumes
 run_test test_launch_foreign_seed_unknown_key_asks_again
 run_test test_launch_foreign_seed_escape_declines
