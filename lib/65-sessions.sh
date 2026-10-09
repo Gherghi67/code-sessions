@@ -619,7 +619,9 @@ _remove_one_session() {
 # when there was something to remove, nothing otherwise. A name that is not a
 # single plain path component is refused before it becomes a path, so "" can
 # never resolve to the sessions directory itself. Keychain and encrypted
-# stored secrets are not touched.
+# stored secrets are not touched. Known window, accepted (Alex 2026-10-09): a
+# `cs -secrets age add` for this name that runs during the removal can
+# recreate the directory, because its lock (.age.lock) lives inside it.
 _drop_session_age_state() {  # name
     local name="$1" dir
     case "$name" in
@@ -628,6 +630,24 @@ _drop_session_age_state() {  # name
             return 1 ;;
     esac
     dir="$HOME/.cs-secrets/sessions/$name"
+    # Each parent must be a real directory cs can search: through a link the
+    # rm -rf would land on a same-name directory elsewhere, and an unsearchable
+    # parent makes a present state read as absent.
+    local parent
+    for parent in "$HOME/.cs-secrets" "$HOME/.cs-secrets/sessions"; do
+        if [ -L "$parent" ]; then
+            # Reading through the link is harmless; only a state that is
+            # there is named as left behind.
+            [ -e "$dir" ] || [ -L "$dir" ] || return 0
+            warn "Left age state behind a linked ~/.cs-secrets: $dir"
+            return 1
+        fi
+        [ -e "$parent" ] || return 0
+        if [ ! -d "$parent" ] || [ ! -x "$parent" ]; then
+            warn "Could not check age state: $dir"
+            return 1
+        fi
+    done
     [ -e "$dir" ] || [ -L "$dir" ] || return 0
     rm -rf "$dir" || { warn "Could not remove age state: $dir"; return 1; }
     info "Removed age state: $dir"

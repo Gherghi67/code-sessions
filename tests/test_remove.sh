@@ -594,7 +594,7 @@ test_remove_age_state_refuses_a_linked_secrets_parent() {
         assert_eq "keep" "$(cat "$age_dir/age-trusted")" "nothing behind the link is deleted ($level)" || return 1
         assert_eq "Left age state behind a linked ~/.cs-secrets: $age_dir" \
             "$(printf '%s\n' "$out" | sed -n 's/.*\(Left age state behind a linked [^[:cntrl:]]*\).*/\1/p')" \
-            "the refusal names the path ($level)" || { echo "  output: $out"; return 1; }
+            "the refusal names only the state that is there ($level)" || { echo "  output: $out"; return 1; }
         assert_eq "1" "$rc" "cs -rm exits 1 ($level)" || return 1
     done
     rm -rf "$HOME/.cs-secrets"
@@ -617,7 +617,7 @@ test_remove_age_state_unsearchable_parent_is_a_failure() {
     assert_not_exists "$CS_SESSIONS_ROOT/agehiddennext" "the name after it is removed too" || return 1
     assert_dir "$age_dir" "the unreachable state is still there" || return 1
     assert_eq "Could not check age state: $age_dir" \
-        "$(printf '%s\n' "$out" | sed -n 's/.*\(Could not check age state: [^[:cntrl:]]*\).*/\1/p')" \
+        "$(printf '%s\n' "$out" | sed -n 's/.*\(Could not check age state: [^[:cntrl:]]*agehidden\)$/\1/p;s/.*\(Could not check age state: [^[:cntrl:]]*agehidden\)[^[:alnum:]].*/\1/p')" \
         "the failure names the path" || { echo "  output: $out"; return 1; }
     assert_eq "1" "$rc" "cs -rm exits 1" || return 1
 }
