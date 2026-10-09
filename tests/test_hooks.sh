@@ -1476,8 +1476,8 @@ test_concurrent_claims_leave_the_name_the_claims_make() {
 }
 
 # A lock that can never be made (TMPDIR gone or read-only, a full disk) must
-# not stall the title: the wait is bounded at five seconds however the mkdir
-# fails, and the name is still written without the lock. The call runs in the
+# not stall the title: the wait is bounded at five seconds however the lock
+# file's create fails, and the name is still written without the lock. The call runs in the
 # background so an unbounded wait fails the test instead of hanging the suite.
 test_an_unmakeable_lock_still_names_the_window_in_bounded_time() {
     session_start_setup

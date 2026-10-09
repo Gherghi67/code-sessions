@@ -104,11 +104,16 @@ _lock_collision_menu() {
 # winner's pid and takes the live-lock path; a lock whose holder is dead is
 # removed and the create tried again, with a bound so a lock that keeps
 # reappearing cannot spin forever. Creating and reclaiming take turns under
-# the session.lock.d mutex: an opener that read a dead pid and then removed
+# the .cs/session.mutex.lock mutex (_cs_lock): an opener that read a dead pid and then removed
 # the file could otherwise delete the live lock another opener had just made
-# in its place, and both would launch. The mutex is let go before the
+# in its place, and both would launch. A cs from before that mutex took a
+# session.lock.d directory instead, and the two do not wait on each other: an
+# older opener still between reading a dead pid and removing the file while
+# this version installs could remove a new opener's lock. That window is an
+# update run in the middle of an open; it is accepted and named in the
+# CHANGELOG rather than bridged with the old pid judgement. The mutex is let go before the
 # collision menu, which waits on a person. An opener that cannot take the
-# mutex (another cs holds it and still answers) refuses rather than going on
+# mutex (another cs still holds it after the wait) refuses rather than going on
 # without it, since that holder may be between reading a dead pid and removing
 # the file. A force (flag or collision menu) replaces the lock outright, as
 # before: that is what force means.
@@ -119,18 +124,24 @@ acquire_session_lock() {
     local lock_file="$meta_dir/session.lock"
     local lock_pid attempt=0 mutex=""
 
-    if ! _cs_mkdir_lock "$meta_dir/session.lock.d"; then
-        echo -e "${RED}Error: Another cs is opening this session ($meta_dir/session.lock.d is held)${NC}" >&2
+    # Without perl the mutex can never be taken, which is no sign of another
+    # opener: say what is missing instead.
+    if ! perl -MFcntl=:flock -e 1 >/dev/null 2>&1; then
+        echo -e "${RED}Error: cs needs perl to lock this session ($meta_dir); install perl and retry${NC}" >&2
+        exit 1
+    fi
+    if ! _cs_lock "$meta_dir/session.mutex.lock"; then
+        echo -e "${RED}Error: Another cs is opening this session ($meta_dir/session.mutex.lock is held)${NC}" >&2
         echo -e "${DIM}Try again in a moment: cs $session_name${NC}" >&2
         exit 1
     fi
-    mutex="$meta_dir/session.lock.d"
+    mutex="$meta_dir/session.mutex.lock"
     while :; do
         if ( set -C; echo "$$" > "$lock_file" ) 2>/dev/null; then
             # Verify: the create was ours only when the file still says so
             # (a force from another opener could have replaced it meanwhile).
             if [ "$(cat "$lock_file" 2>/dev/null)" = "$$" ]; then
-                _cs_mkdir_unlock "$mutex"
+                _cs_unlock "$mutex"
                 return 0
             fi
         fi
@@ -138,7 +149,7 @@ acquire_session_lock() {
         lock_pid=$(cat "$lock_file" 2>/dev/null || echo "")
 
         if [ -n "$lock_pid" ] && kill -0 "$lock_pid" 2>/dev/null; then
-            _cs_mkdir_unlock "$mutex"
+            _cs_unlock "$mutex"
             # PID is alive — session is in use
             if [ "$force" = "true" ]; then
                 warn "Overriding active session lock (PID $lock_pid)"
@@ -159,7 +170,7 @@ acquire_session_lock() {
         fi
 
         if [ "$attempt" -ge 5 ]; then
-            _cs_mkdir_unlock "$mutex"
+            _cs_unlock "$mutex"
             error "Could not take the session lock $lock_file after $attempt attempts (another cs keeps writing it?)"
         fi
         if [ -e "$lock_file" ]; then

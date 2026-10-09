@@ -461,6 +461,25 @@ test_queue_accept_refuses_a_second_accept() {
     assert_eq "1" "$(RQUEUE_LEN)" "the task is queued once" || return 1
 }
 
+# Accepts take turns on .cs/local/queue.accept.mutex.lock. While another
+# process holds it past the five-second wait, an accept refuses, naming the
+# lock, and queues nothing.
+test_queue_accept_refuses_while_another_holds_its_lock() {
+    "$CS_BIN" -msg receiver -k task "review the tui diff" >/dev/null 2>&1 || return 1
+    local id; id=$(jq -r .id "$(FIRST_MSG)")
+    local lock fifo="$TEST_TMPDIR/accept.fifo" ready="$TEST_TMPDIR/accept.ready" holder out rc=0 i=0
+    lock="$(RCV_META)/local/queue.accept.mutex.lock"
+    mkfifo "$fifo"
+    bash -c 'source "$1"; _cs_lock "$2" || exit 1; : > "$3"; read -r _ <> "$4"' _ "$SCRIPT_DIR/../hooks/cs-shared.sh" "$lock" "$ready" "$fifo" &
+    holder=$!
+    until [ -e "$ready" ] || [ "$i" -ge 100 ]; do sleep 0.05; i=$((i + 1)); done
+    out=$(rcv -queue accept "$id" 2>&1) || rc=$?
+    kill "$holder"
+    assert_eq "1" "$rc" "accept exits 1" || return 1
+    assert_eq "Error: another cs -queue accept holds $lock; retry in a moment" "$out" "accept names the lock" || return 1
+    assert_eq "0" "$(RQUEUE_LEN)" "nothing queued" || return 1
+}
+
 # cs -msg is what the mail wake tells an unattended agent to run, so its
 # output needs the same framing as the prompt digest: a note that the lines
 # are mail from other sessions, and a sender that cannot break out of its line.
@@ -720,6 +739,7 @@ run_test test_queue_accept_finds_a_task_already_read
 run_test test_queue_accept_refuses_a_text_message
 run_test test_queue_accept_refuses_an_unknown_id
 run_test test_queue_accept_refuses_a_second_accept
+run_test test_queue_accept_refuses_while_another_holds_its_lock
 run_test test_read_frames_received_mail_as_untrusted
 run_test test_read_flattens_a_forged_multiline_sender
 run_test test_queue_accept_refuses_when_its_queue_file_already_exists

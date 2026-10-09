@@ -579,3 +579,18 @@ jsonl_events() {  # file
 jsonl_tail_is_torn() {  # file
     [ -s "$1" ] && [ -n "$(tail -c 1 "$1" 2>/dev/null)" ]
 }
+
+# Fills directory $1 with links to every command on the current PATH except
+# those whose name matches glob $2, for a PATH that lacks a tool (jq, perl).
+link_path_without() {  # dir, name glob
+    local dir f IFS=:
+    mkdir -p "$1"
+    for dir in $PATH; do
+        for f in "$dir"/*; do
+            [ -x "$f" ] && [ ! -d "$f" ] || continue
+            # shellcheck disable=SC2254  # the glob is the caller's pattern
+            case "${f##*/}" in $2) continue ;; esac
+            [ -e "$1/${f##*/}" ] || ln -s "$f" "$1/${f##*/}"
+        done
+    done
+}

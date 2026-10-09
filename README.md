@@ -91,6 +91,7 @@ No git repo required. No project structure needed. Just a name for what you're w
 - [Claude Code](https://github.com/anthropics/claude-code)
 - Bash 3.2+ (macOS system bash supported)
 - `jq` for hook configuration
+- `perl`, which cs takes its file locks through (macOS and most Linux distributions ship it)
 - `git` for local session history and crash recovery
 - Windows: WSL2 (see [Installation → Windows](#windows)); native Windows and Git Bash are not supported
 

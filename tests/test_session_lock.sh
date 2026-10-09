@@ -274,6 +274,18 @@ test_exit_trap_releases_the_lock_under_a_root_with_shell_metacharacters() {
     assert_eq "0" "$rc" "the resumed open exits cleanly through its trap" || return 1
 }
 
+# The session lock is taken through perl; an open on a machine without it
+# says so, and never blames another cs for holding the lock.
+test_open_without_perl_names_perl() {
+    local bindir="$TEST_TMPDIR/noperl-bin" rc=0 output
+    link_path_without "$bindir" 'perl*'
+    export CLAUDE_CODE_BIN="true"
+    output=$(PATH="$bindir" "$CS_BIN" test-session < /dev/null 2>&1) || rc=$?
+    [ "$rc" != 0 ] || { echo "  open without perl succeeded"; return 1; }
+    assert_output_contains "$output" "perl" "the refusal names perl" || return 1
+    assert_output_not_contains "$output" "Another cs is opening" "no other cs is blamed" || return 1
+}
+
 test_lock_contains_valid_pid() {
     cat > "$TEST_TMPDIR/save-lock" << 'SCRIPT'
 #!/bin/bash
@@ -780,28 +792,67 @@ SHIM
     wait "$pid_open" 2>/dev/null || true
 }
 
-# An opener that cannot take the session.lock.d mutex (another cs holds it
-# and still answers) must not touch session.lock. Going ahead without it after
-# the wait reopens the stale-reclaim race the mutex closes: the holder may be
-# paused between reading a dead pid and removing the file. The opener refuses.
+# Start a process that holds <lock file> through _cs_lock until killed, with
+# no child: it blocks in bash's own read on a fifo. Its pid is MUTEX_HOLDER.
+_hold_session_mutex() {  # lock file
+    local ready="$TEST_TMPDIR/mutex.ready" i=0
+    mkfifo "$TEST_TMPDIR/mutex.fifo"
+    bash -c 'source "$1"; _cs_lock "$2" || exit 1; : > "$3"; read -r _ <> "$4"' _ \
+        "$SCRIPT_DIR/../hooks/cs-shared.sh" "$1" "$ready" "$TEST_TMPDIR/mutex.fifo" &
+    MUTEX_HOLDER=$!
+    until [ -e "$ready" ] || [ "$i" -ge 100 ]; do sleep 0.05; i=$((i + 1)); done
+    [ -e "$ready" ] || { echo "  FAIL: the holder never took $1"; return 1; }
+}
+
+# An opener that cannot take the .cs/session.mutex.lock mutex (another cs
+# holds it) must not touch session.lock. Going ahead without it after the
+# wait reopens the stale-reclaim race the mutex closes: the holder may be
+# paused between reading a dead pid and removing the file. The opener
+# refuses, after the five-second wait.
 test_open_refuses_when_the_lock_mutex_stays_held() {
     create_lock_test_session "lockheld"
-    local meta_dir="$CS_SESSIONS_ROOT/lockheld/.cs" dead holder rc=0
+    local meta_dir="$CS_SESSIONS_ROOT/lockheld/.cs" dead rc=0 out start took
     bash -c 'exit 0' & dead=$!; wait "$dead"
     echo "$dead" > "$meta_dir/session.lock"
-    sleep 30 & holder=$!
-    mkdir "$meta_dir/session.lock.d" && echo "$holder" > "$meta_dir/session.lock.d/pid"
-    LOCK_LIB="$SCRIPT_DIR/../lib" LOCK_META="$meta_dir" bash -c '
+    _hold_session_mutex "$meta_dir/session.mutex.lock" || return 1
+    start=$SECONDS
+    out=$(LOCK_LIB="$SCRIPT_DIR/../lib" LOCK_META="$meta_dir" bash -c '
         . "$LOCK_LIB/05-term.sh"
         . "$LOCK_LIB/02-shared.sh"
         . "$LOCK_LIB/15-lock.sh"
         cs_interactive() { return 1; }
         warn() { :; }
         acquire_session_lock "$LOCK_META" "" lockheld
-    ' >/dev/null 2>&1 || rc=$?
-    kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+    ' 2>&1) || rc=$?
+    took=$((SECONDS - start))
+    kill "$MUTEX_HOLDER" 2>/dev/null; wait "$MUTEX_HOLDER" 2>/dev/null
     assert_eq "1" "$rc" "the open refuses while another cs holds the lock mutex" || return 1
+    assert_output_contains "$out" "Another cs is opening this session ($meta_dir/session.mutex.lock is held)" "the refusal names the mutex" || return 1
     assert_eq "$dead" "$(cat "$meta_dir/session.lock")" "the lock file is left as it was" || return 1
+    [ "$took" -ge 4 ] && [ "$took" -le 6 ] || { echo "  FAIL: the open refused after ${took}s, not about 5s"; return 1; }
+}
+
+# Earlier cs versions kept the mutex as a directory, .cs/session.lock.d,
+# holding a pid. One left on disk, even naming a live process, is not the
+# mutex: an open goes ahead at once and leaves it as it was. The mutex file
+# an open leaves behind is ignored by the session's .gitignore, so it is
+# never committed.
+test_open_ignores_a_mutex_directory_and_leaves_its_mutex_file_ignored() {
+    local session_dir="$CS_SESSIONS_ROOT/lockdir" meta_dir rc=0 start took
+    meta_dir="$session_dir/.cs"
+    "$CS_BIN" lockdir <<< "" >/dev/null 2>&1 || { echo "  FAIL: the first launch failed"; return 1; }
+    rm -f "$meta_dir/session.lock"
+    mkdir "$meta_dir/session.lock.d"
+    echo "$$" > "$meta_dir/session.lock.d/pid"
+    start=$SECONDS
+    "$CS_BIN" lockdir <<< "" >/dev/null 2>&1 || rc=$?
+    took=$((SECONDS - start))
+    assert_eq "0" "$rc" "the open succeeds beside a mutex directory" || return 1
+    [ "$took" -le 3 ] || { echo "  FAIL: the open waited on the directory (took ${took}s)"; return 1; }
+    assert_eq "$$" "$(cat "$meta_dir/session.lock.d/pid")" "the directory is left as it was" || return 1
+    assert_file_exists "$meta_dir/session.mutex.lock" "the open took the mutex file" || return 1
+    git -C "$session_dir" check-ignore -q .cs/session.mutex.lock \
+        || { echo "  FAIL: .cs/session.mutex.lock is not ignored by the session's .gitignore"; return 1; }
 }
 
 run_test test_lock_created_on_launch
@@ -809,6 +860,7 @@ run_test test_simultaneous_opens_take_the_lock_in_turn
 run_test test_stale_lock_reclaim_does_not_remove_a_newer_holders_lock
 run_test test_session_end_stale_clear_does_not_remove_a_newer_holders_lock
 run_test test_open_refuses_when_the_lock_mutex_stays_held
+run_test test_open_ignores_a_mutex_directory_and_leaves_its_mutex_file_ignored
 run_test test_lock_prevents_duplicate_session
 run_test test_stale_lock_is_reclaimed
 run_test test_force_overrides_live_lock
@@ -817,6 +869,7 @@ run_test test_session_end_keeps_the_lock_for_a_child_that_inherited_the_contract
 run_test test_session_end_keeps_the_lock_for_clear_and_resume
 run_test test_session_end_leaves_a_live_lock_it_does_not_own
 run_test test_session_end_clears_a_stale_lock_even_when_walked_in
+run_test test_open_without_perl_names_perl
 run_test test_lock_contains_valid_pid
 run_test test_exit_trap_releases_the_lock_under_a_root_with_shell_metacharacters
 run_test test_collision_menu_new_task_creates_worktree

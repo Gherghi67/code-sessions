@@ -141,29 +141,29 @@ _queue_accept() {  # qdir, message id
     _queue_require_single_line "$body"
     _queue_convert_legacy "$qdir"
     mkdir -p "$qdir/queue" "$qdir/queue.tmp"
-    local lock="$qdir/queue.accept.lock" fname
-    _cs_mkdir_lock "$lock" || error "another cs -queue accept holds $lock; retry in a moment"
+    local lock="$qdir/queue.accept.mutex.lock" fname
+    _cs_lock "$lock" || error "another cs -queue accept holds $lock; retry in a moment"
     if [ -f "$qdir/queue.accepted" ] && grep -qxF -- "$id" "$qdir/queue.accepted"; then
-        _cs_mkdir_unlock "$lock"
+        _cs_unlock "$lock"
         error "message $id was already accepted into the queue (if no copy is queued or done, an earlier accept was interrupted: cs -queue add it by hand)"
     fi
     for f in "$qdir"/queue/*-accept-"$id"; do
         [ -f "$f" ] || continue
-        _cs_mkdir_unlock "$lock"
+        _cs_unlock "$lock"
         error "message $id is already in the queue"
     done
     fname="$(printf '%010d' "$(date +%s)")-accept-$id"
     if ! printf '%s\n' "$id" >> "$qdir/queue.accepted"; then
-        _cs_mkdir_unlock "$lock"
+        _cs_unlock "$lock"
         error "could not record the accept in $qdir/queue.accepted"
     fi
     if ! { printf '%s\n' "$body" > "$qdir/queue.tmp/$fname" \
             && mv "$qdir/queue.tmp/$fname" "$qdir/queue/$fname"; }; then
         rm -f "$qdir/queue.tmp/$fname"
-        _cs_mkdir_unlock "$lock"
+        _cs_unlock "$lock"
         error "could not write the task into $qdir/queue; its accept is recorded, so re-queue it with: cs -queue add"
     fi
-    _cs_mkdir_unlock "$lock"
+    _cs_unlock "$lock"
     rm -f "$qdir/queue.declined"   # the user's accept re-opens the gate
     # Accepting is reading: the message leaves new/ so it neither wakes nor
     # digests again. A failed move leaves it unread, which over-shows the

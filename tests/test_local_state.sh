@@ -470,44 +470,217 @@ test_state_and_gitattributes_rewrites_leave_tmp_siblings_alone_and_keep_modes() 
     assert_eq "750" "$(_file_mode "$state")" "state keeps its mode" || return 1
 }
 
+# ============================================================================
+# The lock cs and its hooks share (_cs_lock / _cs_unlock in lib/02-shared.sh)
+# ============================================================================
+
+LOCK_LIB="$SCRIPT_DIR/../hooks/cs-shared.sh"
+
+# Exit 0 when the lock file is free right now, 1 when a process holds it: a
+# non-blocking flock of the probe's own, gone when the probe exits.
+_lock_is_free() {  # lock file
+    perl -e 'use Fcntl qw(:flock); open(my $f, "<", $ARGV[0]) or exit 2; exit(flock($f, LOCK_EX | LOCK_NB) ? 0 : 1)' "$1"
+}
+
+# Start a holder with no child process: it takes the lock, creates <ready>,
+# and blocks in bash's own read on a fifo, so the process holding the lock is
+# the one LOCK_HOLDER names and nothing else shares its descriptor.
+_start_lock_holder() {  # lock file, ready file
+    local i=0
+    mkfifo "$2.fifo"
+    bash -c 'source "$1"; _cs_lock "$2" || exit 1; : > "$3"; read -r _ <> "$4"' _ "$LOCK_LIB" "$1" "$2" "$2.fifo" &
+    LOCK_HOLDER=$!
+    until [ -e "$2" ] || [ "$i" -ge 100 ]; do sleep 0.05; i=$((i + 1)); done
+    [ -e "$2" ] || { echo "  FAIL: the holder never took $1"; return 1; }
+}
+
+# A lock path holding anything but a regular file is refused at once, with a
+# line saying so, and never followed: a committed symlink is how a clone could
+# aim the lock file's create at a file outside the session.
+test_lock_refuses_a_path_that_is_not_a_regular_file() {
+    local d="$TEST_TMPDIR/locks" kind rc start err
+    mkdir -p "$d/dir.lock"
+    mkfifo "$d/fifo.lock"
+    printf 'keep\n' > "$d/target"
+    ln -s "$d/target" "$d/link.lock"
+    ln -s "$d/absent" "$d/dangling.lock"
+    for kind in dir fifo link dangling; do
+        rc=0; start=$SECONDS
+        err=$(bash -c 'source "$1"; _cs_lock "$2"' _ "$LOCK_LIB" "$d/$kind.lock" 2>&1) || rc=$?
+        assert_eq "1" "$rc" "a $kind at the lock path is refused" || return 1
+        assert_eq "cs: cannot lock $d/$kind.lock: not a regular file" "$err" "the refusal says why" || return 1
+        [ $((SECONDS - start)) -le 1 ] || { echo "  FAIL: the $kind refusal took $((SECONDS - start))s"; return 1; }
+    done
+    assert_not_exists "$d/absent" "the dangling link's target was not created" || return 1
+    assert_eq "keep" "$(cat "$d/target")" "the link's target is untouched" || return 1
+    rc=0
+    err=$(bash -c 'source "$1"; _cs_lock "$2"' _ "$LOCK_LIB" "$d/plain.lock" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "a regular lock file is taken" || return 1
+    assert_eq "" "$err" "and taking it prints nothing" || return 1
+}
+
+# Takers never hold the lock at once: four of them each add one to a counter
+# 25 times, reading it, pausing, then writing it back, under the lock. Any
+# two inside together lose an increment, so the count falls short of 100.
+test_lock_takers_never_hold_it_at_once() {
+    local lock="$TEST_TMPDIR/count.lock" count="$TEST_TMPDIR/count" pids="" p failed=0
+    echo 0 > "$count"
+    for p in 1 2 3 4; do
+        bash -c 'source "$1"; i=0
+            while [ "$i" -lt 25 ]; do
+                _cs_lock "$2" || exit 1
+                read -r n < "$3"; sleep 0.01; echo $((n + 1)) > "$3"
+                _cs_unlock "$2"
+                i=$((i + 1))
+            done' _ "$LOCK_LIB" "$lock" "$count" &
+        pids="$pids $!"
+    done
+    for p in $pids; do wait "$p" || failed=$((failed + 1)); done
+    assert_eq "0" "$failed" "every taker got the lock each time it asked" || return 1
+    assert_eq "100" "$(cat "$count")" "no increment was lost to a second holder" || return 1
+    _lock_is_free "$lock" || { echo "  FAIL: the lock is still held after every taker released it"; return 1; }
+}
+
+# A holder killed outright has released the lock: the kernel drops it with
+# the process, so the next taker gets it at once, and nothing judges the
+# holder dead or waits to.
+test_lock_of_a_killed_holder_is_free_at_once() {
+    local lock="$TEST_TMPDIR/killed.lock" rc=0 start
+    _start_lock_holder "$lock" "$TEST_TMPDIR/killed.ready" || return 1
+    if _lock_is_free "$lock"; then
+        kill "$LOCK_HOLDER"
+        echo "  FAIL: the live holder does not hold the lock"
+        return 1
+    fi
+    kill -9 "$LOCK_HOLDER"
+    wait "$LOCK_HOLDER" 2>/dev/null || true
+    start=$SECONDS
+    bash -c 'source "$1"; _cs_lock "$2"' _ "$LOCK_LIB" "$lock" || rc=$?
+    assert_eq "0" "$rc" "the next taker gets the killed holder's lock" || return 1
+    [ $((SECONDS - start)) -le 1 ] || { echo "  FAIL: the take waited $((SECONDS - start))s"; return 1; }
+}
+
+# A lock taken inside $(...) or ( ) is that subshell's and is gone when it
+# exits, so its caller holds nothing. A lock the caller holds stays held
+# across its subshells, a subshell's release leaves it held, a release of a
+# path not held is a no-op, and a second take while holding is refused.
+test_lock_belongs_to_the_shell_that_took_it() {
+    local lock="$TEST_TMPDIR/sub.lock" other="$TEST_TMPDIR/other.lock" out
+    out=$(LOCK="$lock" OTHER="$other" PROBE='use Fcntl qw(:flock); open(my $f, "<", $ARGV[0]) or exit 2; exit(flock($f, LOCK_EX | LOCK_NB) ? 0 : 1)' \
+        bash -c 'source "$1"
+        state() { if perl -e "$PROBE" "$LOCK"; then echo "$1: free"; else echo "$1: held"; fi; }
+        taken=$(_cs_lock "$LOCK" && echo yes); echo "taken in \$(...): $taken"
+        state "after \$(...)"
+        ( _cs_lock "$LOCK" ) && echo "taken in ( ): yes"
+        state "after ( )"
+        _cs_lock "$LOCK" && echo "taken by the shell: yes"
+        ( _cs_unlock "$LOCK" ); released=$(_cs_unlock "$LOCK")
+        state "after a release in ( ) and in \$(...)"
+        _cs_unlock "$OTHER"
+        state "after a release of a path not held"
+        _cs_lock "$OTHER" 2>&1 || echo "second take: refused"
+        state "after the second take"
+        _cs_unlock "$LOCK"
+        state "after the release"' _ "$LOCK_LIB")
+    assert_eq "taken in \$(...): yes
+after \$(...): free
+taken in ( ): yes
+after ( ): free
+taken by the shell: yes
+after a release in ( ) and in \$(...): held
+after a release of a path not held: held
+cs: cannot lock $other: this process already holds $lock
+second take: refused
+after the second take: held
+after the release: free" "$out" "each shell holds only the lock it took" || return 1
+}
+
+# A child started while the lock is held inherits the descriptor the lock
+# lives on. Once the holder releases, that child, still running, does not
+# keep the lock.
+test_lock_release_frees_it_from_a_child_still_running() {
+    local lock="$TEST_TMPDIR/child.lock" pidfile="$TEST_TMPDIR/child.pid" out child
+    out=$(LOCK="$lock" PIDFILE="$pidfile" PROBE='use Fcntl qw(:flock); open(my $f, "<", $ARGV[0]) or exit 2; exit(flock($f, LOCK_EX | LOCK_NB) ? 0 : 1)' \
+        bash -c 'source "$1"
+        _cs_lock "$LOCK" || exit 1
+        sleep 30 >/dev/null 2>&1 &
+        echo "$!" > "$PIDFILE"
+        _cs_unlock "$LOCK"
+        if perl -e "$PROBE" "$LOCK"; then echo free; else echo held; fi' _ "$LOCK_LIB")
+    child=$(cat "$pidfile")
+    if ! kill -0 "$child" 2>/dev/null; then
+        echo "  FAIL: the child was not running when the lock was probed"
+        return 1
+    fi
+    kill "$child"
+    assert_eq "free" "$out" "the released lock is free while the child runs" || return 1
+}
+
+# A live holder is waited for five seconds; then the taker gives up holding
+# nothing, quietly (its caller says what that means), and the holder keeps
+# its lock.
+test_lock_waits_five_seconds_for_a_live_holder() {
+    local lock="$TEST_TMPDIR/busy.lock" rc=0 err start took held=yes
+    _start_lock_holder "$lock" "$TEST_TMPDIR/busy.ready" || return 1
+    start=$SECONDS
+    err=$(bash -c 'source "$1"; _cs_lock "$2"' _ "$LOCK_LIB" "$lock" 2>&1) || rc=$?
+    took=$((SECONDS - start))
+    _lock_is_free "$lock" && held=no
+    kill "$LOCK_HOLDER"
+    assert_eq "1" "$rc" "the taker gives up" || return 1
+    assert_eq "" "$err" "and prints nothing" || return 1
+    assert_eq "yes" "$held" "the holder still holds the lock" || return 1
+    [ "$took" -ge 4 ] && [ "$took" -le 6 ] || { echo "  FAIL: the taker gave up after ${took}s, not about 5s"; return 1; }
+}
+
+# Settings writers take turns on <file>.mutex.lock. While another writer
+# still holds it after five seconds, the rewrite refuses, says which lock,
+# and leaves the file as it was.
+test_settings_update_refuses_while_its_lock_stays_held() {
+    local f="$TEST_TMPDIR/settings.json" rc=0 out
+    printf '{"a": 1}\n' > "$f"
+    _start_lock_holder "$f.mutex.lock" "$TEST_TMPDIR/settings.ready" || return 1
+    out=$(bash -c 'source "$1"; cs_settings_update "$2" jq ".b = 2" || { echo "$CS_SETTINGS_ERROR"; exit 1; }' _ "$LOCK_LIB" "$f" 2>&1) || rc=$?
+    kill "$LOCK_HOLDER"
+    assert_eq "1" "$rc" "the rewrite refuses" || return 1
+    assert_eq "could not take the lock $f.mutex.lock; $f left unchanged" "$out" "and names the lock" || return 1
+    assert_eq '{"a": 1}' "$(cat "$f")" "the file is as it was" || return 1
+}
+
+# A lock whose directory is missing is refused at once and quietly, as one
+# whose directory cannot take a new file is; without perl nothing is locked,
+# and a line on stderr says so.
+test_lock_refuses_at_once_without_its_directory_or_perl() {
+    local lock="$TEST_TMPDIR/missing/x.lock" rc=0 err start
+    start=$SECONDS
+    err=$(bash -c 'source "$1"; _cs_lock "$2"' _ "$LOCK_LIB" "$lock" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a lock in a missing directory is refused" || return 1
+    assert_eq "" "$err" "quietly" || return 1
+    [ $((SECONDS - start)) -le 1 ] || { echo "  FAIL: the refusal took $((SECONDS - start))s"; return 1; }
+    lock="$TEST_TMPDIR/x.lock"; rc=0
+    err=$(bash -c 'source "$1"; PATH="$3"; _cs_lock "$2"' _ "$LOCK_LIB" "$lock" "$TEST_TMPDIR/no-such-bin" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "without perl the lock is refused" || return 1
+    assert_eq "cs: cannot lock $lock: perl not found" "$err" "with a line saying why" || return 1
+}
+
 # A state rewrite is a read-modify-write, so two writers (cs at launch and the
-# SessionStart hook) can lose an update unless they take turns. The lock is a
-# directory beside the file, .cs/local/state.lock, holding the holder's pid; a
-# live holder is waited for, up to five seconds, then the write goes ahead.
+# SessionStart hook) can lose an update unless they take turns. The lock is
+# .cs/local/state.mutex.lock beside the file; a live holder is waited for, up
+# to five seconds, then the write goes ahead.
 test_state_write_waits_for_a_live_lock_holder() {
     local state="$TEST_TMPDIR/state" lib="$SCRIPT_DIR/../hooks/cs-shared.sh" start took
     printf 'session_name: locked-state\n' > "$state"
-    mkdir "$state.lock"
-    echo "$$" > "$state.lock/pid"
+    _start_lock_holder "$state.mutex.lock" "$TEST_TMPDIR/state.ready" || return 1
 
     start=$SECONDS
     bash -c 'source "$1"; cs_local_state_set "$2" claude_session_id abc' _ "$lib" "$state" \
-        || { echo "  FAIL: the write failed"; return 1; }
+        || { kill "$LOCK_HOLDER"; echo "  FAIL: the write failed"; return 1; }
     took=$((SECONDS - start))
-    rm -f "$state.lock/pid"; rmdir "$state.lock" 2>/dev/null
+    kill "$LOCK_HOLDER"
 
     assert_file_contains "$state" "^claude_session_id: abc$" "the write went ahead once the wait ran out" || return 1
     assert_file_contains "$state" "^session_name: locked-state$" "and kept the other keys" || return 1
     [ "$took" -ge 4 ] || { echo "  FAIL: the writer must wait for a live holder (took ${took}s)"; return 1; }
-}
-
-# A lock older than the minute the timeout branch tolerates is still a LIVE
-# holder's when its pid answers: the caller goes ahead without the lock, as
-# documented, but never evicts that holder (a settings writer paused inside
-# its transform would otherwise write a stale snapshot over the next
-# writer's change).
-test_lock_timeout_leaves_a_live_holders_old_lock_in_place() {
-    local lock="$TEST_TMPDIR/old.lock" lib="$SCRIPT_DIR/../hooks/cs-shared.sh" rc=0
-    mkdir "$lock"
-    echo "$$" > "$lock/pid"
-    touch -t "$(date -v-3M +%Y%m%d%H%M.%S 2>/dev/null || date -d '3 minutes ago' +%Y%m%d%H%M.%S)" "$lock"
-
-    bash -c 'source "$1"; _cs_mkdir_lock "$2"' _ "$lib" "$lock" || rc=$?
-
-    assert_eq "1" "$rc" "the waiter gives up without the lock" || return 1
-    [ -d "$lock" ] || { echo "  FAIL: the live holder's lock was evicted"; return 1; }
-    assert_eq "$$" "$(cat "$lock/pid" 2>/dev/null)" "the live holder still holds it" || return 1
-    rm -f "$lock/pid"; rmdir "$lock" 2>/dev/null
 }
 
 # The state rewrite renders the old file through awk. When that read fails the
@@ -546,7 +719,7 @@ test_two_state_writers_lose_no_update() {
     wait "$p1" || { echo "  FAIL: writer a failed"; return 1; }
     wait "$p2" || { echo "  FAIL: writer b failed"; return 1; }
     assert_eq "80" "$(wc -l < "$state" | tr -d ' ')" "every key written by either writer is in the file" || return 1
-    assert_not_exists "$state.lock" "no lock left behind" || return 1
+    _lock_is_free "$state.mutex.lock" || { echo "  FAIL: the state lock is still held after both writers finished"; return 1; }
 }
 
 # Dropping a vault holder rewrites the list while an opener may be adding to
@@ -571,7 +744,7 @@ EOF
     [ -e "$added" ] || { echo "  FAIL: the opener's add never finished"; return 1; }
     assert_eq "222
 333" "$(cat "$holders")" "the drop removed 111 and the opener's 333 survived" || return 1
-    assert_not_exists "$holders.lock" "no lock left behind" || return 1
+    _lock_is_free "$holders.mutex.lock" || { echo "  FAIL: the holders lock is still held after the drop and the add"; return 1; }
 }
 
 # Homebrew's gnubin puts GNU stat first on a Mac's PATH; the mode read must
@@ -598,23 +771,30 @@ test_atomic_write_refuses_a_directory_destination() {
     assert_eq "" "$(ls -A "$d")" "nothing is left inside the directory" || return 1
 }
 
-test_state_write_takes_over_a_dead_holders_lock() {
+# Earlier cs versions locked the state with a directory, .cs/local/state.lock,
+# holding a pid. One left on disk, even naming a live process, is not the
+# lock: the write takes .cs/local/state.mutex.lock without waiting on it, and
+# leaves the directory as it found it.
+test_state_write_ignores_a_lock_directory_left_on_disk() {
     local session_dir
-    session_dir=$(create_test_session_with_git stale-lock)
-    local state="$session_dir/.cs/local/state"
-    local dead
-    dead=$(sh -c 'echo $$')
+    session_dir=$(create_test_session_with_git dir-lock)
+    local state="$session_dir/.cs/local/state" start took
     mkdir -p "$state.lock"
-    echo "$dead" > "$state.lock/pid"
+    echo "$$" > "$state.lock/pid"
     _argv_claude_stub
 
-    "$CS_BIN" stale-lock <<< "" >/dev/null 2>&1 || true
+    "$CS_BIN" dir-lock <<< "" >/dev/null 2>&1 || true
+    assert_file_contains "$state" "^claude_session_id:" "the launch's write went through" || return 1
 
-    assert_file_contains "$state" "^claude_session_id:" "the write went through" || return 1
-    # A waited-out deadline leaves the dead lock in place; a takeover removes it
-    # and the writer then releases its own, so the directory's absence is the
-    # takeover, with no clock involved.
-    assert_not_exists "$state.lock" "the dead lock was taken over and released" || return 1
+    # One write, timed alone: a launch's own run time under load would hide
+    # a five-second wait on the directory.
+    start=$SECONDS
+    bash -c 'source "$1"; cs_local_state_set "$2" probe yes' _ "$LOCK_LIB" "$state" \
+        || { echo "  FAIL: the write failed"; return 1; }
+    took=$((SECONDS - start))
+    [ "$took" -le 2 ] || { echo "  FAIL: the write waited on the directory (took ${took}s)"; return 1; }
+    assert_file_contains "$state" "^probe: yes$" "the write went through" || return 1
+    assert_eq "$$" "$(cat "$state.lock/pid")" "the directory is left as it was" || return 1
 }
 
 # ============================================================================
@@ -1022,9 +1202,16 @@ run_test test_clone_with_a_readme_color_that_is_not_a_color_gets_a_fresh_one
 run_test test_launch_ignores_a_recorded_color_that_is_not_a_color
 run_test test_launch_stops_loudly_when_state_cannot_be_written
 run_test test_state_and_gitattributes_rewrites_leave_tmp_siblings_alone_and_keep_modes
+run_test test_lock_refuses_a_path_that_is_not_a_regular_file
+run_test test_lock_takers_never_hold_it_at_once
+run_test test_lock_of_a_killed_holder_is_free_at_once
+run_test test_lock_belongs_to_the_shell_that_took_it
+run_test test_lock_release_frees_it_from_a_child_still_running
+run_test test_lock_waits_five_seconds_for_a_live_holder
+run_test test_settings_update_refuses_while_its_lock_stays_held
+run_test test_lock_refuses_at_once_without_its_directory_or_perl
 run_test test_state_write_waits_for_a_live_lock_holder
-run_test test_lock_timeout_leaves_a_live_holders_old_lock_in_place
-run_test test_state_write_takes_over_a_dead_holders_lock
+run_test test_state_write_ignores_a_lock_directory_left_on_disk
 run_test test_state_write_fails_loudly_when_the_old_state_cannot_be_read
 run_test test_two_state_writers_lose_no_update
 run_test test_vault_holder_drop_keeps_a_concurrent_add

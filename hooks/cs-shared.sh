@@ -124,7 +124,8 @@ cs_handoff_dir() {  # meta_dir
 cs_tmux_title_window() {  # pane, session name ("" releases the pane)
     local pane="$1" name="$2" names lock
     [ -n "$pane" ] || return 0
-    lock=$(_cs_tmux_title_lock "$pane")
+    lock=$(_cs_tmux_title_lock_path "$pane")
+    [ -z "$lock" ] || _cs_lock "$lock" || lock=""
     if [ -n "$name" ]; then
         tmux set-option -p -t "$pane" @cs_session "$name" 2>/dev/null || true
     else
@@ -141,7 +142,7 @@ cs_tmux_title_window() {  # pane, session name ("" releases the pane)
         tmux set-window-option -t "$pane" allow-rename on 2>/dev/null || true
         tmux set-window-option -t "$pane" allow-set-title on 2>/dev/null || true
     fi
-    _cs_mkdir_unlock "$lock"
+    _cs_unlock "$lock"
     _cs_iterm_tab_title "$pane"
 }
 
@@ -161,104 +162,127 @@ _cs_iterm_tab_title() {  # pane
     ( python3 "$helper" "$window" </dev/null >/dev/null 2>&1 & )
 }
 
-# Takes the lock on a pane's window and prints its directory: a directory per
-# tmux server and window under $TMPDIR, through _cs_mkdir_lock. A call is a few
-# tmux round trips (385 ms measured on a loaded machine, so six panes queue for
-# two seconds), and past the wait the title is written without the lock, as a
-# title must never stall a hook. Prints nothing when it holds nothing.
-_cs_tmux_title_lock() {  # pane
-    local key lock
+# Prints the lock file of a pane's window, one per tmux server and window
+# under $TMPDIR, which cs_tmux_title_window takes through _cs_lock in its own
+# process. A call is a few tmux round trips (385 ms measured on a loaded
+# machine, so six panes queue for two seconds), and past the wait the title
+# is written without the lock, as a title must never stall a hook. Prints
+# nothing when tmux cannot name the window.
+_cs_tmux_title_lock_path() {  # pane
+    local key
     key=$(tmux display-message -p -t "$1" '#{socket_path}#{window_id}' 2>/dev/null) || key=""
     [ -n "$key" ] || return 0
-    lock="${TMPDIR:-/tmp}/cs-title-$(printf '%s' "$key" | tr -c 'A-Za-z0-9@_.-' '_').lock"
-    _cs_mkdir_lock "$lock" || return 0
-    printf '%s\n' "$lock"
+    printf '%s\n' "${TMPDIR:-/tmp}/cs-title-$(printf '%s' "$key" | tr -c 'A-Za-z0-9@_.-' '_').mutex.lock"
 }
 
-# The one mkdir lock cs and its hooks take wherever two processes may write
-# the same thing at once (a window title, the state file): a directory holding
-# the holder's pid, since mkdir is atomic and bash 3.2 has no flock. A holder
-# whose pid is gone died holding it and is taken over at once; an empty pid
-# file older than two seconds is a holder that died between the mkdir and the
-# write, taken over too. A takeover renames the dead lock to a name of its own
-# before removing it, and rename is atomic, so of two waiters that saw the
-# same dead pid only one reclaims; the other's rename fails and it goes back
-# to waiting on whichever lock the winner then makes. Two windows are left
-# alone: a holder that pauses over two seconds between its mkdir and its pid
-# write is taken for dead, and a holder running as another user answers
-# kill -0 with EPERM, which reads as dead too; cs sessions run as one user,
-# and a line lost to either costs one resume prompt or one title, not data.
-# A live holder is waited for, but for no more than five seconds: past that
-# the caller goes ahead without the lock, since a launch or a hook must never
-# stall on a lock a stray process holds, and a lock older than a minute whose
-# holder no longer answers is removed on the way out so the next caller is
-# not taxed again (a real hold lasts milliseconds); a holder that still
-# answers keeps its lock however old, since evicting a live writer lets it
-# finish over whatever the next holder writes. A lock that vanishes between the failed mkdir and the
-# look at it was just released, and the next mkdir is tried at once. Returns
-# 0 holding the lock with its pid written, 1 holding nothing; a directory
-# that cannot hold a lock at all (missing, read-only) is not waited on.
-_cs_mkdir_lock() {  # lock dir
-    local lock="$1" dir holder deadline=$((SECONDS + 5)) empty_since=""
-    dir=$(dirname "$lock")
-    until mkdir "$lock" 2>/dev/null; do
-        [ -d "$dir" ] && [ -w "$dir" ] || return 1
-        if [ "$SECONDS" -ge "$deadline" ]; then
-            if [ -n "$(find "$lock" -prune -mmin +1 2>/dev/null)" ]; then
-                holder=""
-                { read -r holder < "$lock/pid"; } 2>/dev/null || true
-                if [ -z "$holder" ] || ! kill -0 "$holder" 2>/dev/null; then
-                    _cs_mkdir_reclaim "$lock" "$holder"
-                fi
-            fi
+# The one lock cs and its hooks take wherever two processes may write the
+# same thing at once (a window title, the state file, settings.json): flock(2)
+# on a lock file. The kernel ties the lock to the open file and drops it when
+# the last descriptor on that file closes, so a holder that dies, however it
+# dies, has released it, and no process ever judges another one dead. Bash
+# 3.2 has no flock, so bash opens the file on fd 9 and a short perl process
+# locks the descriptor it inherits; the lock stays with bash's descriptor
+# once perl exits. That shape sets the contract:
+# - fd 9 is the lock's, so a process holds one lock at a time. A second take
+#   while one is held is refused: opening fd 9 again would drop the first.
+# - A lock taken inside $(...) or ( ) belongs to that subshell and is gone
+#   when it exits, so the process that does the work takes the lock.
+# - A child started while holding inherits fd 9. Release unlocks the open
+#   file itself before closing fd 9, so a child still running cannot keep the
+#   lock past the release; a holder killed outright keeps it until every
+#   child that inherited fd 9 has exited.
+# - The path must be a regular file, or absent, when it is created. A
+#   directory, symlink, fifo or anything else is refused at once with a line
+#   on stderr, and a link is never followed: bash opens the file itself (a
+#   descriptor perl opened would close when perl exits), so a link is refused
+#   before the open, and perl then checks that the path names the very
+#   regular file fd 9 has open. Only a link swapped in between those two
+#   steps, by a live process of the same user, is followed, and the lock is
+#   then refused.
+# - The file is never removed: a removed lock file lets the next taker lock a
+#   fresh file while a waiter locks the removed one. A waiter that finds the
+#   path naming another file once it holds the lock lets it go and takes the
+#   lock on the file the path names.
+# - A directory that is missing, or cannot take a new file, refuses at once.
+# - A live holder is waited for, but for no more than five seconds: past that
+#   the caller goes ahead without the lock or gives up, as it chooses, since a
+#   launch or a hook must never stall on a lock a stray process holds.
+# - Without perl nothing is locked, and a line on stderr says so.
+# Returns 0 holding the lock, 1 holding nothing.
+_cs_lock() {  # lock file
+    local lock="$1" rc
+    if [ -n "${_CS_LOCK_HELD:-}" ]; then
+        echo "cs: cannot lock $lock: this process already holds $_CS_LOCK_HELD" >&2
+        return 1
+    fi
+    if ! command -v perl >/dev/null 2>&1; then
+        echo "cs: cannot lock $lock: perl not found" >&2
+        return 1
+    fi
+    for _ in 1 2 3; do
+        if [ -L "$lock" ] || { [ -e "$lock" ] && [ ! -f "$lock" ]; }; then
+            echo "cs: cannot lock $lock: not a regular file" >&2
             return 1
         fi
-        if [ ! -d "$lock" ]; then
-            empty_since=""
-            continue
-        fi
-        holder=""
-        { read -r holder < "$lock/pid"; } 2>/dev/null || true
-        if [ -n "$holder" ]; then
-            empty_since=""
-            kill -0 "$holder" 2>/dev/null || _cs_mkdir_reclaim "$lock" "$holder"
-        else
-            : "${empty_since:=$SECONDS}"
-            if [ $((SECONDS - empty_since)) -ge 2 ]; then
-                _cs_mkdir_reclaim "$lock" ""
-                empty_since=""
-            fi
-        fi
-        sleep 0.05
+        { exec 9<>"$lock"; } 2>/dev/null || return 1
+        rc=0
+        perl -e "$_CS_LOCK_PERL" "$lock" || rc=$?
+        case "$rc" in
+            0)
+                _CS_LOCK_HELD="$lock"
+                _CS_LOCK_SUBSHELL=$BASH_SUBSHELL
+                return 0
+                ;;
+            2)
+                exec 9<&-
+                echo "cs: cannot lock $lock: not a regular file" >&2
+                return 1
+                ;;
+            3) exec 9<&- ;;
+            *)
+                exec 9<&-
+                return 1
+                ;;
+        esac
     done
-    echo "$$" > "$lock/pid" 2>/dev/null || true
+    return 1
 }
 
-# Remove a dead holder's lock through a rename only this process can win. The
-# pid the caller judged dead is checked again after the rename: a lock with a
-# different pid is a NEW holder's, made between the judgement and the rename,
-# and goes back where it was.
-_cs_mkdir_reclaim() {  # lock dir, judged pid ("" accepts any)
-    local moved="$1.dead.$$" now=""
-    mv "$1" "$moved" 2>/dev/null || return 0
-    if [ -n "$2" ]; then
-        { read -r now < "$moved/pid"; } 2>/dev/null || true
-        if [ -n "$now" ] && [ "$now" != "$2" ]; then
-            mv "$moved" "$1" 2>/dev/null || true
-            return 0
-        fi
-    fi
-    rm -f "$moved/pid"; rmdir "$moved" 2>/dev/null || true
+# _cs_lock's perl, run on the lock file with bash's fd 9 open on it. Exits 0
+# holding the lock; 1 after five seconds of a live holder; 2 when the path is
+# not the regular file fd 9 has open (a link, or another type); 3 when the
+# path names another regular file than fd 9 has, so the caller opens that one.
+_CS_LOCK_PERL='
+use Fcntl qw(:flock);
+open(my $fd, "+<&=", 9) or exit 1;
+my @held = stat($fd);
+exit 2 unless @held && -f _;
+sub path_names_held {
+    my @path = lstat($ARGV[0]);
+    return @path && -f _ && $path[0] == $held[0] && $path[1] == $held[1];
 }
+my @path = lstat($ARGV[0]);
+exit 2 unless @path && -f _;
+exit 3 unless path_names_held();
+for my $poll (0 .. 100) {
+    if (flock($fd, LOCK_EX | LOCK_NB)) {
+        exit 0 if path_names_held();
+        flock($fd, LOCK_UN);
+        exit 3;
+    }
+    select(undef, undef, undef, 0.05) if $poll < 100;
+}
+exit 1;
+'
 
-# Release the lock, but only one this process still holds: a lock taken over
-# from us in the meantime belongs to someone else.
-_cs_mkdir_unlock() {  # lock dir ("" when none was held)
-    [ -n "$1" ] || return 0
-    local holder=""
-    { read -r holder < "$1/pid"; } 2>/dev/null || true
-    [ "$holder" = "$$" ] || return 0
-    rm -f "$1/pid"; rmdir "$1" 2>/dev/null || true
+# Release the lock this process holds on <lock file>. Any other path, an
+# empty one, or a lock the parent took, seen from a subshell, is left alone.
+_cs_unlock() {  # lock file ("" when none was held)
+    [ -n "$1" ] && [ "$1" = "${_CS_LOCK_HELD:-}" ] && [ "${_CS_LOCK_SUBSHELL:-}" = "$BASH_SUBSHELL" ] || return 0
+    perl -e 'use Fcntl qw(:flock); open(my $fd, "+<&=", 9) or exit 1; flock($fd, LOCK_UN) or exit 1' \
+        || echo "cs: could not unlock $1; closing it instead" >&2
+    exec 9<&-
+    _CS_LOCK_HELD=""
 }
 
 # Octal permission bits of a file, as chmod takes them (644), read through a
@@ -398,12 +422,19 @@ cs_write_atomic() {  # dest, command [args...]
 
 # The machine-local state file (.cs/local/state) is rewritten whole from its
 # old contents, by cs and by the SessionStart hook, so two writers can lose an
-# update unless they take turns: the lock is _cs_mkdir_lock on a directory
-# beside the file. The vault holder list takes turns through it too. Prints the lock directory when it holds it, nothing when it
-# does not.
-_cs_local_state_lock() {  # state
-    _cs_mkdir_lock "$1.lock" || return 0
-    printf '%s\n' "$1.lock"
+# update unless they take turns: they run their change under _cs_lock on
+# <file>.mutex.lock beside the file. The vault holder list takes turns
+# through it too. Once the lock's wait runs out the change runs without it,
+# as a launch or a hook must not stall on it. The lock is taken and let go in
+# this function's own process, never in a $(...), which would let go of it
+# as the $(...) exits. Returns the command's status.
+_cs_with_state_lock() {  # file, command [args...]
+    local lock="$1.mutex.lock" rc=0
+    shift
+    _cs_lock "$lock" || lock=""
+    "$@" || rc=$?
+    _cs_unlock "$lock"
+    return "$rc"
 }
 
 # The state file's new contents: every line but the key's, then the key's new
@@ -423,22 +454,14 @@ _cs_local_state_render() {  # state, key [, value]
 # line for that key, under the state lock. Returns non-zero when the write
 # failed; the file is then as it was.
 cs_local_state_set() {  # state, key, value
-    local lock rc=0
-    lock=$(_cs_local_state_lock "$1")
-    cs_write_atomic "$1" _cs_local_state_render "$1" "$2" "$3" || rc=$?
-    _cs_mkdir_unlock "$lock"
-    return "$rc"
+    _cs_with_state_lock "$1" cs_write_atomic "$1" _cs_local_state_render "$1" "$2" "$3"
 }
 
 # Remove a key's line from a machine-local state file, under the state lock.
 # A missing file is a no-op.
 cs_local_state_unset() {  # state, key
     [ -f "$1" ] || return 0
-    local lock rc=0
-    lock=$(_cs_local_state_lock "$1")
-    cs_write_atomic "$1" _cs_local_state_render "$1" "$2" || rc=$?
-    _cs_mkdir_unlock "$lock"
-    return "$rc"
+    _cs_with_state_lock "$1" cs_write_atomic "$1" _cs_local_state_render "$1" "$2"
 }
 
 # .cs/local/vault-holders lists the pids whose life keeps an encrypted
@@ -446,21 +469,18 @@ cs_local_state_unset() {  # state, key
 # list without one pid. Both take the lock beside the file, so a drop never
 # renames its copy over a line another opener added meanwhile.
 cs_vault_holder_add() {  # holders, pid
-    local lock rc=0
-    lock=$(_cs_local_state_lock "$1")
-    { printf '%s\n' "$2" >> "$1"; } 2>/dev/null || rc=$?
-    _cs_mkdir_unlock "$lock"
-    return "$rc"
+    _cs_with_state_lock "$1" _cs_append_line "$1" "$2"
+}
+
+# Append one line to a file. Its error message is dropped, its status kept.
+_cs_append_line() {  # file, line
+    { printf '%s\n' "$2" >> "$1"; } 2>/dev/null
 }
 
 # A missing list is a no-op. Other lines stay as they are.
 cs_vault_holder_drop() {  # holders, pid
     [ -f "$1" ] || return 0
-    local lock rc=0
-    lock=$(_cs_local_state_lock "$1")
-    cs_write_atomic "$1" awk -v pid="$2" '$0 != pid' "$1" || rc=$?
-    _cs_mkdir_unlock "$lock"
-    return "$rc"
+    _cs_with_state_lock "$1" cs_write_atomic "$1" awk -v pid="$2" '$0 != pid' "$1"
 }
 
 # Claude Code's settings.json holds the user's permissions, env, MCP servers
@@ -485,7 +505,7 @@ cs_settings_check() {  # file
 # Rewrite a Claude Code settings file through a command that reads its JSON on
 # stdin and prints the new JSON, usually jq and a filter. Claude Code, a second
 # install and cs's own verbs all rewrite the file whole, so the read, the
-# command and the write happen under one _cs_mkdir_lock beside the file, and
+# command and the write happen under one _cs_lock on <file>.mutex.lock beside it, and
 # a cs writer waiting on it never loses its change or another's; nothing that
 # waits on a person may run inside it. Claude Code takes no such lock: against
 # it the guard is that the read and the write are only the command's run time
@@ -498,15 +518,15 @@ cs_settings_check() {  # file
 # pruned. Returns 0 written or unchanged, 1 refused with the reason in
 # CS_SETTINGS_ERROR and the file untouched.
 cs_settings_update() {  # file, command [args...]
-    local file="$1" lock="$1.lock" rc=0
+    local file="$1" lock="$1.mutex.lock" rc=0
     shift
     CS_SETTINGS_ERROR=""
-    if ! _cs_mkdir_lock "$lock"; then
+    if ! _cs_lock "$lock"; then
         CS_SETTINGS_ERROR="could not take the lock $lock; $file left unchanged"
         return 1
     fi
     _cs_settings_rewrite "$file" "$@" || rc=$?
-    _cs_mkdir_unlock "$lock"
+    _cs_unlock "$lock"
     return "$rc"
 }
 
