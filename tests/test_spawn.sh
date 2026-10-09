@@ -78,6 +78,16 @@ _stage_seed() {  # spawner, tasks...
     } > "$CS_SESSIONS_ROOT/.spawn/worker.seed"
 }
 
+# A seed that carries a brief: the task lines end at the marker line, and
+# every line after it is the brief, verbatim.
+BRIEF_MARK='--- cs-spawn-brief ---'
+_stage_seed_with_brief() {  # brief text, spawner, tasks...
+    local brief="$1"
+    shift
+    _stage_seed "$@"
+    printf '%s\n%s' "$BRIEF_MARK" "$brief" >> "$CS_SESSIONS_ROOT/.spawn/worker.seed"
+}
+
 test_spawn_rejects_bad_names_and_missing_tmux() {
     ! "$CS_BIN" -spawn "bad name" >/dev/null 2>&1 || return 1
     ! "$CS_BIN" -spawn "../x" >/dev/null 2>&1 || return 1
@@ -450,13 +460,13 @@ test_launch_empty_spawner_gets_no_reply_wiring() {
 # A staged brief becomes the session's own file, .cs/brief.md, and the kick
 # sends the session to it before anything else. With no tasks there is no
 # queue to drain, so the report-back is by hand and the kick says how.
-test_launch_moves_brief_into_the_session_and_kicks_to_it() {
-    _stage_seed boss
-    printf '# Goal\nrefresh tokens\n' > "$CS_SESSIONS_ROOT/.spawn/worker.brief.md"
+test_launch_delivers_the_seeds_brief_and_kicks_to_it() {
+    _stage_seed_with_brief $'# Goal\n\n--- not the marker ---\nrefresh tokens\n\n' boss
     local out; out=$(_launch_worker) || return 1
-    assert_file_exists "$CS_SESSIONS_ROOT/worker/.cs/brief.md" "brief moved into the session" || return 1
-    assert_file_contains "$CS_SESSIONS_ROOT/worker/.cs/brief.md" "refresh tokens" "brief content kept" || return 1
-    [ ! -f "$CS_SESSIONS_ROOT/.spawn/worker.brief.md" ] || { echo "  staged brief left behind"; return 1; }
+    assert_file_exists "$CS_SESSIONS_ROOT/worker/.cs/brief.md" "brief delivered into the session" || return 1
+    printf '# Goal\n\n--- not the marker ---\nrefresh tokens\n\n' > "$TEST_TMPDIR/expected-brief.md"
+    cmp -s "$TEST_TMPDIR/expected-brief.md" "$CS_SESSIONS_ROOT/worker/.cs/brief.md" \
+        || { echo "  the delivered brief differs from the staged one"; return 1; }
     [ ! -f "$CS_SESSIONS_ROOT/.spawn/worker.seed" ] || { echo "  seed not deleted"; return 1; }
     assert_output_contains "$out" "Spawned by boss" "spawner named" || return 1
     assert_output_contains "$out" "Your brief is .cs/brief.md" "kick names the brief" || return 1
@@ -479,12 +489,13 @@ test_launch_ignores_a_brief_file_beside_the_seed() {
 }
 
 test_launch_brief_with_tasks_kicks_to_both() {
-    _stage_seed boss "first job"
-    printf 'brief body\n' > "$CS_SESSIONS_ROOT/.spawn/worker.brief.md"
+    _stage_seed_with_brief $'brief body\n' boss "first job"
     local out; out=$(_launch_worker) || return 1
     assert_output_contains "$out" "Your brief is .cs/brief.md" "kick names the brief" || return 1
     assert_output_contains "$out" "armed with 1 task(s)" "kick counts tasks" || return 1
     assert_file_contains "$(WQ)/queue.state" "armed" "queue armed" || return 1
+    assert_eq "first job" "$(WQ_FIRST)" "only the task line is queued" || return 1
+    assert_eq "1" "$(WQ_COUNT)" "the brief adds no task" || return 1
 }
 
 # A brief the launch cannot move into the session must stop the launch with
@@ -496,47 +507,44 @@ test_launch_brief_with_tasks_kicks_to_both() {
 test_launch_refuses_a_directory_at_the_briefs_destination() {
     _launch_worker >/dev/null || return 1
     mkdir -p "$CS_SESSIONS_ROOT/worker/.cs/brief.md"
-    _stage_seed boss "first job"
-    printf 'brief body\n' > "$CS_SESSIONS_ROOT/.spawn/worker.brief.md"
+    _stage_seed_with_brief $'brief body\n' boss "first job"
     local rc=0 out
     out=$(_launch_worker) || rc=$?
     [ "$rc" != 0 ] || { echo "  launch succeeded with a directory in the brief's place"; return 1; }
-    [ ! -e "$CS_SESSIONS_ROOT/worker/.cs/brief.md/worker.brief.md" ] || { echo "  the brief was moved inside the directory"; return 1; }
+    [ -z "$(ls -A "$CS_SESSIONS_ROOT/worker/.cs/brief.md")" ] || { echo "  the brief was written inside the directory"; return 1; }
     assert_file_exists "$CS_SESSIONS_ROOT/.spawn/worker.seed" "seed kept for a retry" || return 1
-    assert_file_exists "$CS_SESSIONS_ROOT/.spawn/worker.brief.md" "brief kept for a retry" || return 1
+    assert_file_contains "$CS_SESSIONS_ROOT/.spawn/worker.seed" "brief body" "the kept seed still holds the brief" || return 1
     assert_eq "0" "$(WQ_COUNT)" "no task queued without the brief" || return 1
     assert_output_contains "$out" "brief" "the failure names the brief" || return 1
 }
 
 # attach to some later, unrelated spawn of the same name.
-test_launch_failed_brief_delivery_keeps_the_seed_and_brief() {
+test_launch_failed_brief_delivery_keeps_the_seed() {
     # First open creates the session; then the brief's destination is made
     # undeliverable (a sealed directory in its place) while the staging
     # directory stays writable, so only the delivery can fail.
     _launch_worker >/dev/null || return 1
     mkdir -p "$CS_SESSIONS_ROOT/worker/.cs/brief.md"
     chmod 500 "$CS_SESSIONS_ROOT/worker/.cs/brief.md"
-    _stage_seed boss "first job"
-    printf 'brief body\n' > "$CS_SESSIONS_ROOT/.spawn/worker.brief.md"
+    _stage_seed_with_brief $'brief body\n' boss "first job"
     local rc=0 out
     out=$(_launch_worker) || rc=$?
     chmod 700 "$CS_SESSIONS_ROOT/worker/.cs/brief.md"
     [ "$rc" != 0 ] || { echo "  launch succeeded without delivering the brief"; return 1; }
     assert_file_exists "$CS_SESSIONS_ROOT/.spawn/worker.seed" "seed kept for a retry" || return 1
-    assert_file_exists "$CS_SESSIONS_ROOT/.spawn/worker.brief.md" "brief kept for a retry" || return 1
-    [ ! -f "$CS_SESSIONS_ROOT/worker/.cs/brief.md/worker.brief.md" ] || { echo "  a brief appeared in the session anyway"; return 1; }
+    assert_file_contains "$CS_SESSIONS_ROOT/.spawn/worker.seed" "brief body" "the kept seed still holds the brief" || return 1
+    [ -z "$(ls -A "$CS_SESSIONS_ROOT/worker/.cs/brief.md")" ] || { echo "  a brief appeared in the session anyway"; return 1; }
     assert_eq "0" "$(WQ_COUNT)" "no task queued without the brief" || return 1
     assert_output_not_contains "$out" "Spawned by" "no kick without the brief" || return 1
     assert_output_contains "$out" "brief" "the failure names the brief" || return 1
 }
 
 test_launch_stale_seed_sets_its_brief_aside_too() {
-    _stage_seed boss
-    printf 'old brief\n' > "$CS_SESSIONS_ROOT/.spawn/worker.brief.md"
+    _stage_seed_with_brief $'old brief\n' boss
     touch -t 202401010000 "$CS_SESSIONS_ROOT/.spawn/worker.seed"
     local out; out=$(_launch_worker) || return 1
-    assert_file_exists "$CS_SESSIONS_ROOT/.spawn/worker.brief.md.stale" "stale brief set aside" || return 1
-    [ ! -f "$CS_SESSIONS_ROOT/.spawn/worker.brief.md" ] || { echo "  stale brief still staged"; return 1; }
+    assert_file_contains "$CS_SESSIONS_ROOT/.spawn/worker.seed.stale" "old brief" "the stale seed keeps its brief" || return 1
+    [ ! -f "$CS_SESSIONS_ROOT/.spawn/worker.seed" ] || { echo "  stale seed still staged"; return 1; }
     [ ! -f "$CS_SESSIONS_ROOT/worker/.cs/brief.md" ] || { echo "  stale brief applied to the session"; return 1; }
     assert_output_not_contains "$out" "Your brief is" "no kick from a stale brief" || return 1
 }
@@ -597,11 +605,10 @@ test_launch_own_window_consumes_without_asking() {
 }
 
 test_launch_foreign_seed_unattended_stays_staged() {
-    _stage_seed boss "foreign job"
-    printf 'brief body\n' > "$CS_SESSIONS_ROOT/.spawn/worker.brief.md"
+    _stage_seed_with_brief $'brief body\n' boss "foreign job"
     local out; out=$("$CS_BIN" worker < /dev/null 2>&1) || return 1
     assert_file_exists "$CS_SESSIONS_ROOT/.spawn/worker.seed" "seed left staged" || return 1
-    assert_file_exists "$CS_SESSIONS_ROOT/.spawn/worker.brief.md" "brief left staged" || return 1
+    assert_file_contains "$CS_SESSIONS_ROOT/.spawn/worker.seed" "brief body" "the staged seed keeps its brief" || return 1
     [ ! -f "$CS_SESSIONS_ROOT/worker/.cs/brief.md" ] || { echo "  brief delivered without consent"; return 1; }
     assert_eq "0" "$(WQ_COUNT)" "nothing queued without consent" || return 1
     [ ! -f "$(WQ)/queue.state" ] || { echo "  queue armed without consent"; return 1; }
@@ -645,14 +652,14 @@ test_launch_foreign_seed_redirected_stdin_stays_staged() {
 }
 
 test_launch_foreign_seed_consent_shows_it_and_enter_consumes() {
-    _stage_seed boss "first job" "second job"
-    printf 'brief body\n' > "$CS_SESSIONS_ROOT/.spawn/worker.brief.md"
+    _stage_seed_with_brief $'brief body\n' boss "first job" "second job"
     local out; out=$(_launch_worker_on_tty '\r') || { echo "  launch failed: $out"; return 1; }
     assert_output_contains "$out" "\\[Y/n\\]" "consent asked" || return 1
     assert_output_contains "$out" "boss" "spawner shown" || return 1
     assert_output_contains "$out" "first job" "task 1 shown" || return 1
     assert_output_contains "$out" "second job" "task 2 shown" || return 1
-    assert_output_contains "$out" "brief" "brief named" || return 1
+    assert_output_contains "$out" "brief:   inline, 11 bytes" "brief shown by size, not as a task" || return 1
+    assert_output_not_contains "$out" "3\\. " "the marker and brief are not listed as tasks" || return 1
     assert_eq "2" "$(WQ_COUNT)" "tasks queued after consent" || return 1
     assert_file_contains "$(WQ)/queue.state" "armed" "queue armed after consent" || return 1
     assert_file_exists "$CS_SESSIONS_ROOT/worker/.cs/brief.md" "brief delivered after consent" || return 1
@@ -684,12 +691,11 @@ test_launch_foreign_seed_escape_declines() {
 }
 
 test_launch_foreign_seed_declined_is_set_aside() {
-    _stage_seed boss "declined job"
-    printf 'brief body\n' > "$CS_SESSIONS_ROOT/.spawn/worker.brief.md"
+    _stage_seed_with_brief $'brief body\n' boss "declined job"
     local out; out=$(_launch_worker_on_tty 'n') || { echo "  launch failed: $out"; return 1; }
     [ ! -f "$CS_SESSIONS_ROOT/.spawn/worker.seed" ] || { echo "  declined seed still staged"; return 1; }
     assert_file_exists "$CS_SESSIONS_ROOT/.spawn/worker.seed.stale" "declined seed set aside" || return 1
-    assert_file_exists "$CS_SESSIONS_ROOT/.spawn/worker.brief.md.stale" "declined brief set aside" || return 1
+    assert_file_contains "$CS_SESSIONS_ROOT/.spawn/worker.seed.stale" "brief body" "the declined seed keeps its brief" || return 1
     [ ! -f "$CS_SESSIONS_ROOT/worker/.cs/brief.md" ] || { echo "  brief delivered after a decline"; return 1; }
     assert_eq "0" "$(WQ_COUNT)" "nothing queued after a decline" || return 1
     [ ! -f "$(WQ)/queue.state" ] || { echo "  queue armed after a decline"; return 1; }
@@ -775,11 +781,11 @@ run_test test_launch_publishes_the_sessions_root_to_the_tmux_session
 run_test test_launch_outside_tmux_touches_no_tmux_environment
 run_test test_launch_empty_spawner_gets_no_reply_wiring
 run_test test_launch_without_seed_keeps_color_behavior
-run_test test_launch_moves_brief_into_the_session_and_kicks_to_it
+run_test test_launch_delivers_the_seeds_brief_and_kicks_to_it
 run_test test_launch_ignores_a_brief_file_beside_the_seed
 run_test test_launch_brief_with_tasks_kicks_to_both
 run_test test_launch_refuses_a_directory_at_the_briefs_destination
-run_test test_launch_failed_brief_delivery_keeps_the_seed_and_brief
+run_test test_launch_failed_brief_delivery_keeps_the_seed
 run_test test_launch_stale_seed_sets_its_brief_aside_too
 run_test test_launch_sets_aside_stale_seed
 run_test test_launch_stale_warning_names_the_stale_file
