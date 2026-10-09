@@ -454,6 +454,12 @@ QSTATE_FILE="$QDIR/queue.state"
 # have the next Stop mark a task done that was never handed out. Any other
 # state that cannot be recorded ends this Stop with nothing handed out and a
 # message Claude Code shows the user.
+#
+# No lock guards the file, by decision (#808): a drain writing idle and a
+# concurrent `cs -queue start` writing armed are last-rename-wins, and the
+# loser is an arm on a queue that just emptied. That costs one prompt, never
+# a task: a non-empty queue left idle takes the idle branch below, which
+# offers the gate again. Benign by design; do not add a lock here.
 _qstate_write() {  # state word
     cs_write_atomic "$QSTATE_FILE" printf '%s\n' "$1" && return 0
     if [ "$1" = idle ] && rm -f "$QSTATE_FILE" 2>/dev/null \
