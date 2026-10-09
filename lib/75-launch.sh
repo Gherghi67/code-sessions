@@ -36,10 +36,11 @@ _handoff_is_local() {  # handoff_file, session_dir
         }
     ' "$1" 2>/dev/null)
     [ -n "$parent" ] || return 1
-    # Anchored to the line session-start.sh writes, not a bare substring: the
-    # bash-logger appends every command to this same file, so an unanchored
-    # match reads a logged `claude --resume <uuid>` as proof this checkout ran
-    # that conversation and drops the one warning shown before r.
+    # Anchored to the line session-start.sh writes, not a bare substring: this
+    # file can hold the `BASH:` command lines the retired bash-logger hook
+    # appended, so an unanchored match reads a logged `claude --resume <uuid>`
+    # as proof this checkout ran that conversation and drops the one warning
+    # shown before r.
     grep -Fq "Session started" "$log" 2>/dev/null \
         && grep -E -q "Session started \(.*ID: $parent\)" "$log" 2>/dev/null
 }

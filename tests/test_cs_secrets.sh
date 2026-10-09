@@ -272,8 +272,7 @@ test_store_with_spaces_in_value() {
     assert_eq "postgres://user:pass@localhost/my db" "$value" "Should handle spaces" || return 1
 }
 
-# The value can be supplied on stdin (never argv) so it stays out of ps and the
-# bash-logger session.log capture.
+# The value can be supplied on stdin (never argv) so it stays out of ps.
 test_set_reads_value_from_stdin() {
     printf 'sk_from_stdin' | "$CS_SECRETS_BIN" set api_key >/dev/null 2>&1
     local value

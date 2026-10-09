@@ -36,15 +36,13 @@ If empty, inform the user that secrets storage requires a cs session and skip st
    - Otherwise: infer from context (e.g., "GitHub token" → `GITHUB_TOKEN`)
 
 4. **Store each secret** — feed the value on **stdin**, never on the command
-   line. A value passed as an argument is visible via `ps` and is captured
-   verbatim by the bash-logger hook into `.cs/local/session.log`
-   (`.cs/private/session.log` in an encrypted session).
+   line. A value passed as an argument is visible via `ps`.
    The Bash command itself must not contain the secret:
    - Run `cs -secrets list` first. `set` replaces an existing value silently
      (no diff, no prompt), so if the name you chose already exists, pick a more
      specific name or confirm with the user before overwriting.
-   - Write the raw value to a scratch file with the **Write** tool (Write is not
-     logged by bash-logger; a Bash heredoc would be). The scratch file MUST live
+   - Write the raw value to a scratch file with the **Write** tool, never a Bash
+     heredoc, which puts it in the Bash command. The scratch file MUST live
      OUTSIDE the session workspace (the harness scratchpad dir, or `mktemp` under
      `$TMPDIR`), e.g. `<scratchdir>/.secret` — any Write inside the session
      directory is immediately snapshotted into the `refs/worktree/cs/auto` autosave

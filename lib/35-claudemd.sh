@@ -245,7 +245,6 @@ _emit_encrypted_protocol_block() {
 This session keeps its private files in an encrypted vault: `.cs/memory`, `.cs/plans` and `.cs/private` link into it. Every other path in the session directory is plaintext on disk and in backups. These rules override the Session Files and Documentation Discipline sections above:
 
 - Keep the objective, environment and outcome at the top of your narrative (`.cs/memory/narrative.<actor>.md`), and read them from there on resume. `.cs/README.md` stays frontmatter only; cs does not copy your first prompt into it.
-- The bash-logger records every Bash command in `.cs/private/session.log`, inside the vault. The secrets rule above still applies.
 - Rotation handoffs live in `.cs/private/handoffs/` and are never committed; the `rotate` skill says how.
 - `cs -narrative rotate` archives your narrative's older sections into `.cs/private/narrative-archive/<actor>/` (or through a `.cs/narrative-archive` link into the vault); grep there on demand.
 - `/checkpoint` saves under `.cs/private/checkpoints/`, and the timeline records no label.
@@ -296,8 +295,8 @@ When a conversation's context grows heavy or a work phase completes, invoke the 
 
 Secrets live in the cs session store, never in a project file. `cs -secrets set`
 and the `store-secret` skill read the value on **stdin** via a file redirect —
-never `echo`/`printf` a secret into a pipe or a Bash heredoc: the bash-logger
-records the whole Bash command, plaintext and all, in `.cs/local/session.log`.
+never `echo`/`printf` a secret into a pipe or a Bash heredoc, either of which
+puts the plaintext in the Bash command itself.
 
 Consume a secret inline — `some-command --token "$(cs -secrets get API_KEY)"` —
 so it stays out of the tool result and the transcript. A retrieved value is read
