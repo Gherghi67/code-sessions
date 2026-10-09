@@ -2981,8 +2981,9 @@ cs_split_worktree_name() {
 # (ignored mode). Leaves the checkout's CLAUDE.md alone — in these repos it
 # is the project's own tracked file.
 bootstrap_worktree_meta() {
-    local wt_dir="$1" base_name="$2" task="$3"
+    local wt_dir="$1" base_name="$2" task="$3" base_dir="$4"
     mkdir -p "$wt_dir/.cs"/{local,memory}
+    _copy_base_context "$base_dir/.cs" "$wt_dir/.cs"
     _write_session_readme_head "$wt_dir/.cs/README.md" "$base_name@$task" "[worktree]" "[\"$base_name@$task\"]"
     cat >> "$wt_dir/.cs/README.md" << EOF
 Feature worktree of session '$base_name' on branch cs/$task.
@@ -3000,6 +3001,29 @@ Started: $(date '+%Y-%m-%d %H:%M:%S')
 
 EOF
     ensure_narrative_file "$wt_dir"
+}
+
+# Give an ignored-mode feature the base's context, which git cannot carry:
+# the memory topics, the MEMORY.md index, plans/ and summary.md. Never a
+# narrative (the feature keeps its own and fusion appends it back), .cs/local,
+# a lock or the timeline. A symlink is skipped, not followed: it would copy
+# whatever it points at into the feature. A failed copy warns and the create
+# goes on; the feature only starts with less context.
+_copy_base_context() {  # base_meta wt_meta
+    local src="$1" dst="$2" f name
+    for f in "$src"/memory/*.md; do
+        [ -f "$f" ] && [ ! -L "$f" ] || continue
+        name="${f##*/}"
+        case "$name" in narrative.*.md|narrative.md) continue ;; esac
+        cp "$f" "$dst/memory/$name" || warn "could not copy memory/$name from the base"
+    done
+    if [ -d "$src/plans" ] && [ ! -L "$src/plans" ]; then
+        cp -R "$src/plans" "$dst/plans" || warn "could not copy plans/ from the base"
+    fi
+    if [ -f "$src/summary.md" ] && [ ! -L "$src/summary.md" ]; then
+        cp "$src/summary.md" "$dst/summary.md" || warn "could not copy summary.md from the base"
+    fi
+    return 0
 }
 
 # True when a checkout has uncommitted changes to tracked files (staged or
@@ -3276,7 +3300,7 @@ create_worktree_session() {
     local mode="tracked"
     if [ -z "$(git -C "$base_dir" ls-files -- .cs 2>/dev/null)" ]; then
         mode="ignored"
-        bootstrap_worktree_meta "$wt_dir" "$base_name" "$task"
+        bootstrap_worktree_meta "$wt_dir" "$base_name" "$task" "$base_dir"
     fi
 
     # The protocol file is normally gitignored, so no worktree inherits it
@@ -4043,7 +4067,10 @@ fuse_session_records() {
             narrative.*.md) continue ;;
         esac
         if [ -f "$dst/memory/$base" ]; then
-            warn "memory/$base already exists in the base; skipped"
+            # The feature started from a copy of the base's topics, so an
+            # unchanged one is the base's own file, not a collision.
+            cmp -s "$f" "$dst/memory/$base" \
+                || warn "memory/$base already exists in the base; skipped"
         else
             cp "$f" "$dst/memory/$base" || return 1
         fi
