@@ -1769,6 +1769,30 @@ test_worktree_create_ignored_mode_copies_base_context() {
 
 run_test test_worktree_create_ignored_mode_copies_base_context
 
+# plans/ is copied file by file: a regular file at any depth comes over, a
+# link inside plans/ (to a file or a dir, such as another session's plans)
+# does not, neither as its target's content nor as the link.
+test_worktree_create_ignored_mode_copies_no_plan_links() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" other="$CS_SESSIONS_ROOT/other/.cs/plans"
+    mkdir -p "$base_dir/.cs"/{memory,local,plans/sub} "$other/deep"
+    echo "# P" > "$base_dir/README.md"
+    printf '.cs/\n' > "$base_dir/.gitignore"
+    echo "nested body" > "$base_dir/.cs/plans/sub/plan-b.md"
+    echo "other plan" > "$other/secret.md"
+    echo "other deep" > "$other/deep/deep.md"
+    ln -s "$other/secret.md" "$base_dir/.cs/plans/linked.md"
+    ln -s "$other/deep" "$base_dir/.cs/plans/sub/linkdir"
+    (cd "$base_dir" && git init -q && git config core.autocrlf false && git add -A && git commit -q -m init)
+    cs_launch "proj@task1"
+    local wt="$CS_SESSIONS_ROOT/proj@task1"
+    assert_file_contains "$wt/.cs/local/state" "cs_mode: ignored" || return 1
+    assert_eq "nested body" "$(cat "$wt/.cs/plans/sub/plan-b.md" 2>/dev/null)" "a nested plan is copied" || return 1
+    assert_eq "sub" "$(ls -A "$wt/.cs/plans")" "plans/ holds no link" || return 1
+    assert_eq "plan-b.md" "$(ls -A "$wt/.cs/plans/sub")" "plans/sub holds no link" || return 1
+}
+
+run_test test_worktree_create_ignored_mode_copies_no_plan_links
+
 # Ignored mode keeps the base's MEMORY.md too, and appends each feature
 # pointer whose target the base index does not name.
 test_retire_ignored_mode_appends_feature_memory_pointers() {
