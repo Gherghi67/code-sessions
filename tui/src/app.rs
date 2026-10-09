@@ -2103,6 +2103,8 @@ impl App {
         let mut errors = 0;
         let mut live: Vec<String> = Vec::new();
         let mut reasons: Vec<String> = Vec::new();
+        let mut aged: Vec<String> = Vec::new();
+        let mut age_failures: Vec<String> = Vec::new();
         let names: Vec<String> = self.marked_sessions.iter().cloned().collect();
         for name in &names {
             // Resolved per name rather than from the selection: a batch mixes
@@ -2120,11 +2122,17 @@ impl App {
                 continue;
             }
             let path = root.join(name);
+            let was_link = is_symlink(&path);
             let result = session::remove_session_path(&root, name, &path, grants);
             match result {
                 Ok(()) => {
                     deleted += 1;
                     self.flash_row(name.clone(), FlashKind::Success);
+                    match if was_link { Ok(None) } else { drop_age_state(name) } {
+                        Ok(None) => {}
+                        Ok(Some(dir)) => aged.push(dir.display().to_string()),
+                        Err(e) => age_failures.push(format!("{} deleted, but {}", name, e)),
+                    }
                 }
                 Err(e) => {
                     errors += 1;
@@ -2135,8 +2143,8 @@ impl App {
         }
         self.marked_sessions.clear();
         self.rescan_now();
-        if errors == 0 {
-            self.set_status(format!("Deleted {} sessions", deleted), StatusLevel::Success);
+        let mut text = if errors == 0 {
+            format!("Deleted {} sessions", deleted)
         } else {
             let mut text = format!("Deleted {}, {} failed", deleted, errors);
             if !live.is_empty() {
@@ -2145,8 +2153,17 @@ impl App {
             if !reasons.is_empty() {
                 text.push_str(&format!(" — {}", reasons.join("; ")));
             }
-            self.set_status(text, StatusLevel::Error);
+            text
+        };
+        if !aged.is_empty() {
+            aged.sort();
+            text.push_str(&format!(" · removed age state {}", aged.join(", ")));
         }
+        if !age_failures.is_empty() {
+            text.push_str(&format!(" — {}", age_failures.join("; ")));
+        }
+        let level = if errors == 0 && age_failures.is_empty() { StatusLevel::Success } else { StatusLevel::Error };
+        self.set_status(text, level);
         self.close_delete_confirm();
     }
 
