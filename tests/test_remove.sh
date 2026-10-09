@@ -214,6 +214,9 @@ test_remove_force_ignores_cs_owned_entries_and_ds_store() {
     dir=$(create_test_session f3)
     mkdir -p "$dir/.claude" "$dir/.git"
     touch "$dir/.gitignore" "$dir/.gitattributes" "$dir/CLAUDE.local.md" "$dir/.DS_Store"
+    # Legacy cs layouts kept these at the root; they are cs's, not the user's.
+    mkdir -p "$dir/logs" "$dir/artifacts"
+    touch "$dir/notes.md" "$dir/changes.md" "$dir/discoveries.md"
     "$CS_BIN" -rm f3 --force </dev/null >/dev/null 2>&1 || return 1
     assert_not_exists "$dir" "a session holding only cs-owned entries should still go under --force" || return 1
 }

@@ -1477,10 +1477,12 @@ mod tests {
     fn unowned_entries_lists_top_level_files_cs_did_not_create() {
         let root = std::env::temp_dir().join(format!("cs-unowned-plain-{}", std::process::id()));
         let dir = root.join("rel");
-        for d in [".cs/local", ".claude", ".git", "journal.sparsebundle"] {
+        for d in [".cs/local", ".claude", ".git", "logs", "artifacts", "journal.sparsebundle"] {
             fs::create_dir_all(dir.join(d)).unwrap();
         }
-        for f in [".gitignore", ".gitattributes", "CLAUDE.md", "CLAUDE.local.md", ".DS_Store", "start"] {
+        let owned = [".gitignore", ".gitattributes", "CLAUDE.md", "CLAUDE.local.md", ".DS_Store"];
+        let legacy = ["notes.md", "changes.md", "discoveries.md"];
+        for f in owned.iter().chain(legacy.iter()).chain(["start"].iter()) {
             fs::write(dir.join(f), "x").unwrap();
         }
 
