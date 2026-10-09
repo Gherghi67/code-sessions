@@ -1151,28 +1151,88 @@ JSON
         "its registration is unchanged" || return 1
 }
 
-# Without jq the install cannot touch settings.json, so a registered retired
-# hook cs wrote stays on disk with its registration.
-test_install_without_jq_keeps_a_registered_retired_hook() {
-    local home="$TEST_TMPDIR/retired-nojq-home" bindir="$TEST_TMPDIR/retired-nojq-bin" rc=0 out dir f
-    mkdir -p "$home/.claude/hooks/cs" "$bindir"
-    _cs_shipped_content > "$home/.claude/hooks/cs/bash-logger.sh"
-    printf '%s\n' '{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"~/.claude/hooks/cs/bash-logger.sh","timeout":5}]}]}}' \
-        > "$home/.claude/settings.json"
-    # A PATH holding every command the test's PATH does, except jq
-    local IFS=:
+# Fills directory $1 with links to every command on the test's PATH except
+# jq, for a PATH on which the install finds no jq.
+_link_path_without_jq() {  # dir
+    local dir f IFS=:
+    mkdir -p "$1"
     for dir in $PATH; do
         for f in "$dir"/*; do
             [ -x "$f" ] && [ ! -d "$f" ] || continue
             [ "${f##*/}" = jq ] && continue
-            [ -e "$bindir/${f##*/}" ] || ln -s "$f" "$bindir/${f##*/}"
+            [ -e "$1/${f##*/}" ] || ln -s "$f" "$1/${f##*/}"
         done
     done
-    unset IFS
+}
+
+# Without jq the install cannot touch settings.json, so a registered retired
+# hook cs wrote stays on disk with its registration.
+test_install_without_jq_keeps_a_registered_retired_hook() {
+    local home="$TEST_TMPDIR/retired-nojq-home" bindir="$TEST_TMPDIR/retired-nojq-bin" rc=0 out
+    mkdir -p "$home/.claude/hooks/cs"
+    _cs_shipped_content > "$home/.claude/hooks/cs/bash-logger.sh"
+    printf '%s\n' '{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"~/.claude/hooks/cs/bash-logger.sh","timeout":5}]}]}}' \
+        > "$home/.claude/settings.json"
+    _link_path_without_jq "$bindir"
     out=$(HOME="$home" PATH="$bindir" bash "$INSTALL_SH" 2>&1 < /dev/null) || rc=$?
     assert_eq "0" "$rc" "install exit status" || { echo "$out"; return 1; }
     assert_output_contains "$out" "jq not found" "the install says it left settings alone" || return 1
     assert_file_exists "$home/.claude/hooks/cs/bash-logger.sh" "the retired hook stays while it is registered" || return 1
+}
+
+# A retired hook whose only proof of being cs's is its install-record line
+# keeps that line while it waits on a registration: a run without jq leaves
+# it, and the next run with jq still knows it as cs's and removes it.
+test_a_retired_hook_known_by_its_record_survives_a_run_without_jq() {
+    local home="$TEST_TMPDIR/retired-record-home" bindir="$TEST_TMPDIR/retired-record-bin" rc=0 out s f digest
+    s="$home/.claude/settings.json"
+    f="$home/.claude/hooks/cs/bash-logger.sh"
+    mkdir -p "$home/.claude/hooks/cs"
+    printf '#!/bin/sh\n# an older cs build %s\n' "$RANDOM$RANDOM" > "$f"
+    digest=$(shasum -a 256 "$f" | cut -d' ' -f1)
+    printf '%s  .claude/hooks/cs/bash-logger.sh\n' "$digest" > "$home/.claude/hooks/cs/.installed"
+    printf '%s\n' '{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"~/.claude/hooks/cs/bash-logger.sh","timeout":5}]}]}}' > "$s"
+    _link_path_without_jq "$bindir"
+    out=$(HOME="$home" PATH="$bindir" bash "$INSTALL_SH" 2>&1 < /dev/null) || rc=$?
+    assert_eq "0" "$rc" "install without jq" || { echo "$out"; return 1; }
+    assert_file_exists "$f" "the registered retired hook waits for a run that can strip it" || return 1
+    out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || rc=$?
+    assert_eq "0" "$rc" "install with jq" || { echo "$out"; return 1; }
+    assert_file_not_exists "$f" "the next run still knows it as cs's and removes it" || return 1
+    assert_eq "0" "$(jq '[(.hooks // {})[][] | .hooks[]?.command | select(test("bash-logger"))] | length' "$s")" \
+        "and its registration" || return 1
+}
+
+# Ownership is judged again once the questions are answered: a retired hook
+# replaced while the install waited at a question is the user's file now, and
+# keeps its content and its registration.
+test_a_retired_hook_replaced_during_a_question_is_kept() {
+    command -v expect >/dev/null 2>&1 \
+        || { echo "    SKIP (expect not installed; the question needs a tty)"; return 77; }
+    local home="$TEST_TMPDIR/retired-swap-home" s f rc=0
+    s="$home/.claude/settings.json"
+    f="$home/.claude/hooks/cs/bash-logger.sh"
+    mkdir -p "$home/.claude/hooks/cs"
+    _cs_shipped_content > "$f"
+    printf '%s\n' '{"statusLine":{"command":"/opt/other/bar"},"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"~/.claude/hooks/cs/bash-logger.sh","timeout":5}]}]}}' > "$s"
+    local exp="$TEST_TMPDIR/retired-swap.exp"
+    cat > "$exp" <<EXPECT
+set timeout 120
+spawn env HOME=$home bash $INSTALL_SH
+expect {
+    -re {status line.*\[y/N\]} { exec sh -c {printf 'my own logger\n' > "\$0"} $f; send "n\r"; exp_continue }
+    -re {status line.*\[Y/n\]} { exec sh -c {printf 'my own logger\n' > "\$0"} $f; send "n\r"; exp_continue }
+    -re {$_ROTATE_WRAP_ASK_RE} { send "n"; exp_continue }
+    eof
+}
+catch wait result
+exit [lindex \$result 3]
+EXPECT
+    expect -f "$exp" >/dev/null 2>&1 || rc=$?
+    assert_eq "0" "$rc" "install exit status" || return 1
+    assert_eq "my own logger" "$(cat "$f" 2>/dev/null)" "the replaced hook keeps its content" || return 1
+    assert_eq "1" "$(jq '[.hooks[][] | .hooks[]?.command | select(. == "~/.claude/hooks/cs/bash-logger.sh")] | length' "$s")" \
+        "and its registration" || return 1
 }
 
 # A mod deploys under ~/.claude/skills/<mod>; one that a past version shipped
@@ -2748,6 +2808,8 @@ run_test test_install_and_uninstall_keep_a_kept_retired_hook_and_its_registratio
 run_test test_uninstall_removes_a_cs_written_retired_hook_and_its_registration
 run_test test_install_that_stops_early_keeps_a_registered_retired_hook
 run_test test_install_without_jq_keeps_a_registered_retired_hook
+run_test test_a_retired_hook_known_by_its_record_survives_a_run_without_jq
+run_test test_a_retired_hook_replaced_during_a_question_is_kept
 run_test test_install_removes_the_mod_under_its_old_name
 run_test test_rotate_wrap_keys_yes_creates_the_file_with_only_cs_block
 run_test test_rotate_wrap_keys_merge_into_the_existing_global_block
