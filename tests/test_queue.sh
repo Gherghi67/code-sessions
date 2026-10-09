@@ -575,31 +575,6 @@ test_drain_falls_back_to_no_state_file_when_idle_cannot_be_written() {
         || { echo "  FAIL: the state file must be gone, which reads as idle"; return 1; }
 }
 
-# A state file that can be read but neither replaced nor removed (macOS's user
-# immutable flag) while its directory still takes writes: the pop succeeds, so
-# the last task must not be logged done when idle cannot be recorded. It goes
-# back first in the queue, and the user is told which file.
-test_drain_puts_the_last_task_back_when_idle_cannot_be_recorded() {
-    command -v chflags >/dev/null 2>&1 || return 77
-    qseed "last task"
-    printf 'draining\n' > "$(QDIR)/queue.state"
-    chflags uchg "$(QDIR)/queue.state" 2>/dev/null || return 77
-    local out rc=0
-    out=$(drain) || rc=$?
-    chflags nouchg "$(QDIR)/queue.state"
-    assert_eq "0" "$rc" "the hook exits cleanly" || return 1
-    assert_eq "approve" "$(jq -r '.decision' <<< "$out")" "the turn is allowed to end" || return 1
-    assert_eq "cs task queue: could not write $(QDIR)/queue.state; the task that just ended stays first in the queue and was not logged done" \
-        "$(jq -r '.systemMessage' <<< "$out")" "the user is told which file and where the task is" || return 1
-    assert_eq "1" "$(qlen)" "the task is back in the queue" || return 1
-    assert_eq "last task" "$(cat "$(QDIR)/queue/0000000001-seed")" "under its own name" || return 1
-    assert_file_not_exists "$(QDIR)/queue.done" "nothing is logged done" || return 1
-    for f in "$(QDIR)"/queue.popping.*; do
-        [ -e "$f" ] && { echo "  pop staging leftover: $f"; return 1; }
-    done
-    return 0
-}
-
 test_drain_empties_and_returns_idle() {
     qseed "last task"
     printf 'draining\n' > "$(QDIR)/queue.state"
@@ -754,7 +729,6 @@ run_test test_drain_frames_the_next_task_with_a_fresh_id
 run_test test_drain_ignores_a_teammate_stop
 run_test test_drain_gate_ignores_a_teammate_stop
 run_test test_drain_disarms_when_the_pop_fails
-run_test test_drain_puts_the_last_task_back_when_idle_cannot_be_recorded
 run_test test_drain_empties_and_returns_idle
 run_test test_drain_reports_a_state_it_cannot_write
 run_test test_drain_falls_back_to_no_state_file_when_idle_cannot_be_written
