@@ -1814,6 +1814,22 @@ test_worktree_secrets_flag_targets_base_namespace() {
 
 run_test test_worktree_secrets_flag_targets_base_namespace
 
+# Codex r3 #3: a worktree's secrets route to the base session, so the base
+# is vetted too; a base link out of the session refuses the verb.
+test_worktree_secrets_flag_vets_the_base_session() {
+    create_test_session_with_git "myproj" > /dev/null
+    cs_launch "myproj@fix-auth"
+    local outside="$TEST_TMPDIR/outside-private" output status=0
+    mkdir -p "$outside"
+    ln -s "$outside" "$CS_SESSIONS_ROOT/myproj/.cs/private"
+    output=$("$CS_BIN" "myproj@fix-auth" -secrets list 2>&1) || status=$?
+    assert_eq "1" "$status" "cs should exit 1" || return 1
+    assert_eq "Error: .cs/private is a symlink to $outside, outside the session, and cs writes through it. Replace it with a real file or directory, or cs -rm the session." \
+        "$output" "the refusal names the base's link" || return 1
+}
+
+run_test test_worktree_secrets_flag_vets_the_base_session
+
 
 test_worktree_create_dirty_base_consent_yes() {
     local base_dir

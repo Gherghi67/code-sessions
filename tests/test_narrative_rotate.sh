@@ -128,17 +128,34 @@ test_rotate_keeps_the_live_files_mode() {
     assert_eq "750" "$(_file_mode "$LIVE")" "the live narrative keeps its mode" || return 1
 }
 
-# A live narrative that is a symlink is rewritten through the link: the target
-# holds the kept tail and the link stays a link.
+# A live narrative linked to a file inside the session is rewritten through
+# the link: the target holds the kept tail and the link stays a link. One
+# linked outside the session is refused before anything is archived, since a
+# clone can commit `narrative.x.md -> ~/.zshrc` (audit M8).
 test_rotate_writes_through_a_symlinked_narrative() {
-    local real="$TEST_TMPDIR/elsewhere/narrative.md"
-    mkdir -p "$TEST_TMPDIR/elsewhere"
+    local real="$SESSION_DIR/notes/narrative.md"
+    mkdir -p "$SESSION_DIR/notes"
     _make_narrative "$real" 10 500
-    ln -s "$real" "$LIVE"
+    ln -s ../../notes/narrative.md "$LIVE"
     "$CS_BIN" -narrative rotate > /dev/null 2>&1 || return 1
     [ -L "$LIVE" ] || { echo "  FAIL: the symlink was replaced by a regular file"; return 1; }
     assert_file_not_contains "$real" "section 1$" "the target was rotated" || return 1
     assert_file_contains "$real" "section 10$" "the target keeps the newest section" || return 1
+}
+
+test_rotate_refuses_a_narrative_linked_out_of_the_session() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local real="$t/elsewhere/narrative.md" out rc=0 before
+    mkdir -p "$t/elsewhere"
+    _make_narrative "$real" 10 500
+    before=$(cat "$real")
+    ln -s "$real" "$LIVE"
+    out=$("$CS_BIN" -narrative rotate 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the rotation must fail" || return 1
+    assert_eq "Error: .cs/memory/narrative.alice.md leads to $real, outside the session; cs will not rotate through it." \
+        "$out" "the refusal names the link" || return 1
+    assert_eq "$before" "$(cat "$real")" "the target is untouched" || return 1
+    assert_not_exists "$SESSION_DIR/.cs/narrative-archive/alice" "nothing was archived" || return 1
 }
 
 test_rotate_keeps_the_header_block() {
@@ -605,6 +622,7 @@ test_rotate_archives_an_encrypted_narrative_behind_private() {
     _vault_memory
     mkdir -p "$VAULT/private"
     ln -s "$VAULT/private" "$SESSION_DIR/.cs/private"
+    _mark_hand_made_vault "$SESSION_DIR"
     _make_narrative "$LIVE" 10 500
     local output archive
     output=$("$CS_BIN" -narrative rotate 2>&1) || { echo "$output"; return 1; }
@@ -621,6 +639,7 @@ test_rotate_uses_a_narrative_archive_linked_into_the_vault() {
     _vault_memory
     mkdir -p "$VAULT/narrative-archive"
     ln -s "$VAULT/narrative-archive" "$SESSION_DIR/.cs/narrative-archive"
+    _mark_hand_made_vault "$SESSION_DIR"
     _make_narrative "$LIVE" 10 500
     "$CS_BIN" -narrative rotate > /dev/null 2>&1 || return 1
     assert_eq "1" "$(find "$VAULT/narrative-archive/alice" -name '2026-08-08-*.md' | wc -l | tr -d ' ')" \
@@ -791,6 +810,37 @@ test_named_rotate_refuses_an_unknown_session() {
     assert_output_contains "$output" "No such session" "the error must name the real problem" || return 1
 }
 
+# The named form writes into a session without opening it, so the open's scan
+# never runs on that path. A committed .cs/timeline.jsonl leading out of the
+# session must stop the rotation before the event line is appended to it.
+test_named_rotate_refuses_a_timeline_linked_out_of_the_session() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local victim="$t/victim" out rc=0
+    printf 'USER-OWNED\n' > "$victim"
+    _make_narrative "$LIVE" 10 500
+    ln -s "$victim" "$SESSION_DIR/.cs/timeline.jsonl"
+    _leave_session
+    out=$("$CS_BIN" test-session -narrative rotate 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the rotation must fail" || return 1
+    assert_eq "Error: .cs/timeline.jsonl is a symlink to $victim, outside the session, and cs writes through it. Replace it with a real file or directory, or cs -rm the session." \
+        "$out" "the refusal names the link" || return 1
+    assert_eq "USER-OWNED" "$(cat "$victim")" "the file outside the session is untouched" || return 1
+    assert_not_exists "$ARCHIVE_DIR" "nothing was archived" || return 1
+}
+
+# The snapshot rotation copies the narrative into must not have a name a clone
+# can guess: with its pid known (exec keeps it), a planted link at that name
+# would have cp truncate a file outside the session.
+test_rotate_snapshot_name_is_not_predictable() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local victim="$t/victim"
+    printf 'USER-OWNED\n' > "$victim"
+    _make_narrative "$LIVE" 10 500
+    bash -c 'ln -s "$1" "$2/.cs/memory/.narrative.alice.rotate.$$" && exec "$3" -narrative rotate' \
+        _ "$victim" "$SESSION_DIR" "$CS_BIN" >/dev/null 2>&1 || true
+    assert_eq "USER-OWNED" "$(cat "$victim")" "the file outside the session is untouched" || return 1
+}
+
 test_named_rotate_usage_names_the_form_the_user_typed() {
     # The dispatcher's usage line is reached by BOTH forms. Telling someone who
     # correctly named a session to run it "from inside a session" prescribes the
@@ -907,6 +957,54 @@ echo "cs narrative rotation tests"
 echo "==========================="
 echo ""
 
+# Without a pre-open nothing marks the vault as the user's own, so an archive
+# link out of the session is refused before any chunk is written through it.
+test_rotate_refuses_an_archive_linked_out_without_a_pre_open() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local out rc=0
+    mkdir -p "$t/away"
+    ln -s "$t/away" "$SESSION_DIR/.cs/narrative-archive"
+    _make_narrative "$LIVE" 10 500
+    out=$("$CS_BIN" -narrative rotate 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the rotation must fail" || return 1
+    assert_eq "Error: .cs/narrative-archive/alice leads to $t/away/alice, outside the session; cs will not rotate through it." \
+        "$out" "the refusal names the link" || return 1
+    assert_eq "" "$(ls -A "$t/away")" "nothing was archived outside" || return 1
+    assert_file_contains "$LIVE" "section 1$" "the live narrative is whole" || return 1
+}
+
+# Codex r1 #4: the archive chunk's temp name was predictable (it carries the
+# chunk's own hash), so a clone could plant it as a link out of the session.
+# The name is learned the way an attacker would: by rotating a copy.
+test_rotate_does_not_write_through_a_planted_temp_link() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    _make_narrative "$LIVE" 10 500
+    cp -R "$SESSION_DIR" "$TEST_TMPDIR/probe"
+    CLAUDE_SESSION_DIR="$TEST_TMPDIR/probe" CLAUDE_SESSION_META_DIR="$TEST_TMPDIR/probe/.cs" \
+        "$CS_BIN" -narrative rotate >/dev/null 2>&1 || return 1
+    local name; name=$(basename "$(ls "$TEST_TMPDIR/probe/.cs/narrative-archive/alice/"*.md)")
+    printf 'USER-OWNED\n' > "$t/victim"
+    mkdir -p "$ARCHIVE_DIR"
+    ln -s "$t/victim" "$ARCHIVE_DIR/.$name.tmp"
+    "$CS_BIN" -narrative rotate >/dev/null 2>&1 || true
+    assert_eq "USER-OWNED" "$(cat "$t/victim")" "the file behind the planted temp link is untouched" || return 1
+}
+
+# The chunk's final name can be planted the same way, as a link to a
+# directory outside, where mv would drop the chunk.
+test_rotate_does_not_move_the_chunk_through_a_planted_link() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    _make_narrative "$LIVE" 10 500
+    cp -R "$SESSION_DIR" "$TEST_TMPDIR/probe"
+    CLAUDE_SESSION_DIR="$TEST_TMPDIR/probe" CLAUDE_SESSION_META_DIR="$TEST_TMPDIR/probe/.cs" \
+        "$CS_BIN" -narrative rotate >/dev/null 2>&1 || return 1
+    local name; name=$(basename "$(ls "$TEST_TMPDIR/probe/.cs/narrative-archive/alice/"*.md)")
+    mkdir -p "$t/away" "$ARCHIVE_DIR"
+    ln -s "$t/away" "$ARCHIVE_DIR/$name"
+    "$CS_BIN" -narrative rotate >/dev/null 2>&1 || true
+    assert_eq "" "$(ls -A "$t/away")" "nothing lands in the directory outside" || return 1
+}
+
 run_test test_rotate_is_a_recognised_subcommand
 run_test test_rotate_under_budget_is_a_noop
 run_test test_rotate_requires_a_session
@@ -915,6 +1013,10 @@ run_test test_help_shows_narrative
 run_test test_rotate_archives_oldest_sections_and_keeps_tail
 run_test test_rotate_keeps_the_live_files_mode
 run_test test_rotate_writes_through_a_symlinked_narrative
+run_test test_rotate_refuses_a_narrative_linked_out_of_the_session
+run_test test_rotate_refuses_an_archive_linked_out_without_a_pre_open
+run_test test_rotate_does_not_write_through_a_planted_temp_link
+run_test test_rotate_does_not_move_the_chunk_through_a_planted_link
 run_test test_rotate_keeps_the_header_block
 run_test test_rotate_cuts_on_a_heading_boundary
 run_test test_rotate_writes_one_chunk_whose_body_is_verbatim
@@ -957,6 +1059,8 @@ run_test test_named_rotate_on_a_worktree_uses_its_own_narrative
 run_test test_named_rotate_honours_the_caller_actor_over_the_session_identity
 run_test test_named_rotate_under_budget_is_a_noop
 run_test test_named_rotate_refuses_an_unknown_session
+run_test test_named_rotate_refuses_a_timeline_linked_out_of_the_session
+run_test test_rotate_snapshot_name_is_not_predictable
 run_test test_named_rotate_usage_names_the_form_the_user_typed
 run_test test_named_rotate_refuses_a_directory_that_is_not_a_session
 run_test test_narrative_budget_is_one_value_in_both_copies

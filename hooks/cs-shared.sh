@@ -276,17 +276,101 @@ _cs_file_mode() {  # path
 # with .cs-tmp., the prefix a session's .gitignore names, so one left by a
 # killed writer never reaches an autosave snapshot. A symlinked destination is
 # followed to its target, so a shared or linked file is rewritten in place and
-# the link survives. The destination keeps the
+# the link survives; inside a session (CLAUDE_SESSION_DIR) a destination under
+# it whose links lead out of it is refused instead (_cs_write_leaves_session),
+# since a clone can commit `.cs/README.md -> ~/.zshrc`. The destination keeps the
 # permission bits it had, and a new file gets the umask's; the temp file takes
 # them BEFORE the rename, so a shared directory never sees a 0600 window. A
 # failed command, chmod or rename leaves the destination as it was, the temp
 # file removed, and returns the failing status. Callers that want a message
 # add it: hooks source this file, and `error` is cs's alone.
 # Usage: cs_write_atomic <dest> <command> [args...]
+# Where a write to a path lands: its symlinks followed, 16 hops as
+# cs_write_atomic follows them, and its directory resolved physically, so a
+# linked parent counts too. Fails when that directory does not exist.
+_cs_write_target() {  # path
+    local dest="$1" link dir hops=0
+    while [ -L "$dest" ] && [ "$hops" -lt 16 ]; do
+        link=$(readlink "$dest") || return 1
+        case "$link" in
+            /*) dest="$link" ;;
+            *) dest="$(dirname "$dest")/$link" ;;
+        esac
+        hops=$((hops + 1))
+    done
+    # cd -P walks each component as the filesystem does: a logical cd would
+    # collapse `link/..` to the link's own parent, not the target's.
+    dir=$(cd -P "$(dirname "$dest")" 2>/dev/null && pwd -P) || return 1
+    printf '%s/%s\n' "${dir%/}" "$(basename "$dest")"
+}
+
+# True when .cs at <root> is a submodule or nested repository, whose files
+# the session's index never lists (Codex r2 #4). The gitlink outlives a
+# removed .cs/.git, so the index is checked as well; the pathspec also lists
+# entries below .cs, so only a gitlink whose whole path is .cs counts.
+_cs_nested_cs() {  # root
+    [ -e "$1/.cs/.git" ] && return 0
+    git -C "$1" rev-parse --git-dir >/dev/null 2>&1 || return 1
+    git -C "$1" ls-files -s -- ':(icase).cs' 2>/dev/null \
+        | awk -F'\t' '{ split($1, m, " "); if (m[1] == "160000" && tolower($2) == ".cs") hit = 1 } END { exit !hit }' 2>/dev/null
+}
+
+# True when the session at <root> has a vault the user set up by hand: a
+# .cs/local/pre-open the open would run. A clone can commit one or link one
+# in, so it counts only as a real file under a real .cs/local, untracked (the
+# same rules cs_assert_local_untracked enforces at open; a standalone command
+# like cs <name> -queue never ran that check).
+_cs_hand_made_vault() {  # root
+    local pre="$1/.cs/local/pre-open"
+    [ -f "$pre" ] && [ ! -L "$pre" ] && [ ! -L "$1/.cs" ] && [ ! -L "$1/.cs/local" ] || return 1
+    ! _cs_nested_cs "$1" || return 1
+    git -C "$1" rev-parse --git-dir >/dev/null 2>&1 || return 0
+    [ -z "$(git -C "$1" ls-files -- ':(icase).cs/local' 2>/dev/null | sed -n 1p)" ]
+}
+
+# True when a path lies in the session at <root> by its spelling (as typed,
+# or under the root's physical path, the spelling an adopted session is
+# written by) but a write to it lands outside the root; prints where it lands.
+# Two kinds of link lead out by design and are let through:
+# - an encrypted session's .cs/claude-config links settings, skills and the
+#   rest to the shell's own config, and the open refuses a .cs/claude-config
+#   that is not cs's link into the vault;
+# - a vault set up by hand mounts anywhere, from .cs/local/pre-open, so while
+#   one exists the four vault links, and a .cs/narrative-archive link (which
+#   cs -narrative rotate uses as it is), may lead out. A clone cannot ship a
+#   pre-open: cs_assert_local_untracked refuses one tracked or linked in.
+_cs_write_leaves_session() {  # root, path
+    local root="$1" root_p real sub
+    root_p=$(cd "$root" 2>/dev/null && pwd -P) || return 1
+    case "$2" in
+        "$root"/.cs/claude-config/*|"$root_p"/.cs/claude-config/*) return 1 ;;
+        "$root"/*|"$root_p"/*) ;;
+        *) return 1 ;;
+    esac
+    if _cs_hand_made_vault "$root"; then
+        for sub in $CS_VAULT_LINKS narrative-archive; do
+            [ -L "$root/.cs/$sub" ] || continue
+            case "$2" in
+                "$root/.cs/$sub"|"$root/.cs/$sub"/*|"$root_p/.cs/$sub"|"$root_p/.cs/$sub"/*) return 1 ;;
+            esac
+        done
+    fi
+    # An unresolvable directory fails the write at mktemp, writing nothing.
+    real=$(_cs_write_target "$2") || return 1
+    case "$real/" in
+        "$root_p"/*) return 1 ;;
+    esac
+    printf '%s\n' "$real"
+}
+
 cs_write_atomic() {  # dest, command [args...]
     local dest="$1"; shift
     (
-        local dir tmp mode link hops=0
+        local dir tmp mode link hops=0 out
+        if [ -n "${CLAUDE_SESSION_DIR:-}" ] && out=$(_cs_write_leaves_session "$CLAUDE_SESSION_DIR" "$dest"); then
+            echo "cs_write_atomic: $dest leads to $out, outside the session $CLAUDE_SESSION_DIR" >&2
+            exit 1
+        fi
         while [ -L "$dest" ] && [ "$hops" -lt 16 ]; do
             link=$(readlink "$dest") || exit 1
             case "$link" in

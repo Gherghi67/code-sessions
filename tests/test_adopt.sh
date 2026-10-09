@@ -299,6 +299,7 @@ test_readopt_of_an_encrypted_session_keeps_its_log_in_the_vault() {
     rm "$CS_SESSIONS_ROOT/old-name"
     mv "$project_dir/.cs/local/session.log" "$vault/private/session.log"
     ln -s "$vault/private" "$project_dir/.cs/private"
+    _mark_hand_made_vault "$project_dir"
     local before
     before=$(cat "$vault/private/session.log")
 

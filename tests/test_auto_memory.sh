@@ -319,6 +319,29 @@ test_open_migrates_a_flat_layout_session() {
         "the session log lands in .cs/local/" || return 1
 }
 
+# Codex r2 #1: a flat-layout session moves its root README.md into .cs/ and
+# then rewrites it. A README.md committed as a link out of the session must
+# stop the open before the move, so nothing lands outside.
+test_flat_layout_readme_linked_out_of_the_session_refuses_open() {
+    local dir="$CS_SESSIONS_ROOT/flat-session" t outside out rc=0
+    t=$(cd "$TEST_TMPDIR" && pwd -P); outside="$t/outside-readme"
+    printf 'USER-OWNED\n' > "$outside"
+    mkdir -p "$dir/logs"
+    printf 'Claude Code Session Log\nSession: flat-session\n\nFLAT-LOG-LINE\n' > "$dir/logs/session.log"
+    ln -s "$outside" "$dir/README.md"
+    printf '# Session Documentation Protocol\n\nThis is a Claude Code session managed by the cs tool.\n' > "$dir/CLAUDE.md"
+    _make_launch_sentinel
+
+    out=$(env -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_NAME -u CLAUDE_SESSION_META_DIR \
+        "$CS_BIN" flat-session <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: README.md is a symlink to $outside, outside the session, and cs writes through it. Replace it with a real file or directory, or cs -rm the session." \
+        "$out" "cs should name the link it refuses" || return 1
+    assert_eq "USER-OWNED" "$(cat "$outside")" "the file outside is untouched" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
+}
+
 # ============================================================================
 # Frontmatter migration for old sessions
 # ============================================================================
@@ -1258,6 +1281,196 @@ test_settings_merge_leaves_a_tmp_sibling_alone_and_keeps_the_mode() {
     assert_file_contains "$settings" "autoMemoryDirectory" "the merge still happened" || return 1
 }
 
+# A clone delivers every file under .cs, symlinks included, and cs rewrites
+# some of them on the first open (the README's frontmatter). A committed
+# `.cs/README.md -> ../../outside` would have that write land on a file the
+# session does not own. A fresh clone has no .cs/local, so no migration stamp.
+test_a_committed_link_out_of_the_session_refuses_open() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt" outside="$TEST_TMPDIR/outside-rc"
+    printf 'export USER_OWNED=1\n' > "$outside"
+    rm -f "$root/.cs/README.md"
+    ln -s "$outside" "$root/.cs/README.md"
+    git -C "$root" add -A
+    git -C "$root" commit -q -m "ship the README as a link"
+    rm -f "$root/.cs/local/migrated"
+    _make_launch_sentinel
+
+    local out rc=0
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: .cs/README.md is a symlink to $outside, outside the session, and cs writes through it. Replace it with a real file or directory, or cs -rm the session." \
+        "$out" "cs should name the link it refuses" || return 1
+    assert_eq "export USER_OWNED=1" "$(cat "$outside")" "the file outside the session must be untouched" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
+}
+
+# `cs <name> -queue` writes into a session without opening it, so the open's
+# scan never runs on that path. A committed .cs/private leading out of the
+# session must stop it before the queue file lands in a directory the session
+# does not own.
+test_a_named_queue_add_refuses_a_link_out_of_the_session() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt" outside="$TEST_TMPDIR/outside-private"
+    mkdir -p "$outside"
+    ln -s "$outside" "$root/.cs/private"
+    git -C "$root" add -A
+    git -C "$root" commit -q -m "ship private as a link"
+
+    local out rc=0
+    out=$(env -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_NAME -u CLAUDE_SESSION_META_DIR \
+        "$CS_BIN" vt -queue add "probe" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: .cs/private is a symlink to $outside, outside the session, and cs writes through it. Replace it with a real file or directory, or cs -rm the session." \
+        "$out" "cs should name the link it refuses" || return 1
+    assert_eq "" "$(ls -A "$outside")" "nothing may be written into the directory outside the session" || return 1
+}
+
+# The link can sit on a directory above the file cs writes: with .cs/memory
+# a link out of the session, every write into the memory directory lands in
+# a directory the session does not own.
+test_a_committed_directory_link_out_of_the_session_refuses_open() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt" outside="$TEST_TMPDIR/outside-dir"
+    mkdir -p "$outside"
+    printf 'USER-OWNED\n' > "$outside/keep"
+    rm -rf "$root/.cs/memory"
+    ln -s "$outside" "$root/.cs/memory"
+    git -C "$root" add -A
+    git -C "$root" commit -q -m "ship the memory directory as a link"
+    rm -f "$root/.cs/local/migrated"
+    _make_launch_sentinel
+
+    local out rc=0
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: .cs/memory is a symlink to $outside, outside the session, and cs writes through it. Replace it with a real file or directory, or cs -rm the session." \
+        "$out" "cs should name the link it refuses" || return 1
+    assert_eq "keep" "$(ls -A "$outside")" "nothing may be written into the directory outside the session" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
+}
+
+# A root-level file cs rewrites at open, CLAUDE.local.md, is the same hazard.
+test_a_committed_claude_local_link_out_of_the_session_refuses_open() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt" outside="$TEST_TMPDIR/outside-local"
+    printf 'USER-OWNED\n' > "$outside"
+    rm -f "$root/CLAUDE.local.md"
+    ln -s "$outside" "$root/CLAUDE.local.md"
+    git -C "$root" add -A
+    git -C "$root" commit -q -m "ship CLAUDE.local.md as a link"
+    rm -f "$root/.cs/local/migrated"
+    _make_launch_sentinel
+
+    local out rc=0
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: CLAUDE.local.md is a symlink to $outside, outside the session, and cs writes through it. Replace it with a real file or directory, or cs -rm the session." \
+        "$out" "cs should name the link it refuses" || return 1
+    assert_eq "USER-OWNED" "$(cat "$outside")" "the file outside the session must be untouched" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
+}
+
+# Codex r1 #2: a link to a directory inside the session is fine, but the scan
+# must look inside that directory too: payload/MEMORY.md -> outside would take
+# the narrative index line cs appends at open.
+# Codex r2 #2: a directory whose name holds a newline would split the scan's
+# list of directories to walk, so neither half is scanned and a link out
+# behind it is missed. The scan refuses such a directory rather than walk it.
+test_a_link_to_a_directory_named_with_a_newline_refuses_open() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt" t outside out rc=0 nl=$'pay\nload'
+    t=$(cd "$TEST_TMPDIR" && pwd -P); outside="$t/outside-mem"
+    printf 'USER-OWNED\n' > "$outside"
+    mv "$root/.cs/memory" "$root/$nl"
+    ln -s "../$nl" "$root/.cs/memory"
+    rm -f "$root/$nl/MEMORY.md"
+    ln -s "$outside" "$root/$nl/MEMORY.md"
+    git -C "$root" add -A
+    git -C "$root" commit -q -m "alias memory through a newline"
+    rm -f "$root/.cs/local/migrated"
+    _make_launch_sentinel
+
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: .cs/memory leads to a directory with a newline in its name, which cs cannot check for links out of the session. Rename it, or cs -rm the session." \
+        "$out" "cs should name the link it cannot vet" || return 1
+    assert_eq "USER-OWNED" "$(cat "$outside")" "the file outside is untouched" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
+}
+
+# Codex r3 #1: a trailing newline is stripped by command substitution, so the
+# physical path came back as a sibling without it and the scan walked nothing.
+test_a_link_to_a_directory_named_with_a_trailing_newline_refuses_open() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt" t outside out rc=0 nl=$'payload\n'
+    t=$(cd "$TEST_TMPDIR" && pwd -P); outside="$t/outside-mem"
+    printf 'USER-OWNED\n' > "$outside"
+    mv "$root/.cs/memory" "$root/$nl"
+    ln -s "../$nl" "$root/.cs/memory"
+    rm -f "$root/$nl/MEMORY.md"
+    ln -s "$outside" "$root/$nl/MEMORY.md"
+    git -C "$root" add -A
+    git -C "$root" commit -q -m "alias memory through a trailing newline"
+    rm -f "$root/.cs/local/migrated"
+    _make_launch_sentinel
+
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: .cs/memory leads to a directory with a newline in its name, which cs cannot check for links out of the session. Rename it, or cs -rm the session." \
+        "$out" "cs should name the link it cannot vet" || return 1
+    assert_eq "USER-OWNED" "$(cat "$outside")" "the file outside is untouched" || return 1
+}
+
+# Codex r3 #2: mail is sent to a target session without opening it, from
+# inside a session or from outside any; the target is vetted either way.
+test_global_msg_refuses_a_target_linked_out_of_the_session() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt" outside="$TEST_TMPDIR/outside-mail"
+    mkdir -p "$outside"
+    ln -s "$outside" "$root/.cs/private"
+    git -C "$root" add -A
+    git -C "$root" commit -q -m "ship private as a link"
+
+    local out rc=0
+    out=$(env -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_NAME -u CLAUDE_SESSION_META_DIR \
+        "$CS_BIN" -msg vt "probe" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: .cs/private is a symlink to $outside, outside the session, and cs writes through it. Replace it with a real file or directory, or cs -rm the session." \
+        "$out" "cs should name the link it refuses" || return 1
+    assert_eq "" "$(ls -A "$outside")" "nothing may be written into the directory outside the session" || return 1
+}
+
+test_a_link_out_behind_an_in_session_directory_link_refuses_open() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt" t outside out rc=0
+    t=$(cd "$TEST_TMPDIR" && pwd -P); outside="$t/outside-mem"
+    printf 'USER-OWNED\n' > "$outside"
+    mv "$root/.cs/memory" "$root/payload"
+    ln -s ../payload "$root/.cs/memory"
+    rm -f "$root/payload/MEMORY.md"
+    ln -s "$outside" "$root/payload/MEMORY.md"
+    git -C "$root" add -A
+    git -C "$root" commit -q -m "alias memory"
+    rm -f "$root/.cs/local/migrated"
+    _make_launch_sentinel
+
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: payload/MEMORY.md is a symlink to $outside, outside the session, and cs writes through it. Replace it with a real file or directory, or cs -rm the session." \
+        "$out" "cs should name the hidden link" || return 1
+    assert_eq "USER-OWNED" "$(cat "$outside")" "the file outside is untouched" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
+}
+
 run_test test_new_session_creates_memory_dir
 run_test test_new_session_creates_settings_local
 run_test test_unparseable_settings_local_survives_merge
@@ -1273,6 +1486,7 @@ run_test test_migration_keeps_a_source_the_destination_root_links_to
 run_test test_migration_failed_copy_deletes_nothing
 run_test test_open_leaves_a_project_with_only_a_logs_dir_unmigrated
 run_test test_open_migrates_a_flat_layout_session
+run_test test_flat_layout_readme_linked_out_of_the_session_refuses_open
 
 # Frontmatter migration
 run_test test_migration_adds_frontmatter_to_old_readme
@@ -1323,5 +1537,14 @@ run_test test_plaintext_mailbox_left_beside_private_refuses_open
 run_test test_plaintext_queue_files_left_beside_private_refuse_open
 run_test test_a_file_at_a_vault_link_refuses_open
 run_test test_plaintext_checkpoints_and_archive_beside_private_refuse_open
+
+run_test test_a_committed_link_out_of_the_session_refuses_open
+run_test test_a_committed_directory_link_out_of_the_session_refuses_open
+run_test test_a_named_queue_add_refuses_a_link_out_of_the_session
+run_test test_a_committed_claude_local_link_out_of_the_session_refuses_open
+run_test test_a_link_out_behind_an_in_session_directory_link_refuses_open
+run_test test_a_link_to_a_directory_named_with_a_newline_refuses_open
+run_test test_a_link_to_a_directory_named_with_a_trailing_newline_refuses_open
+run_test test_global_msg_refuses_a_target_linked_out_of_the_session
 
 report_results

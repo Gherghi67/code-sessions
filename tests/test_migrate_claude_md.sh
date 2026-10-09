@@ -558,6 +558,7 @@ make_encrypted_test_session() {
     dir=$(create_test_session "$1")
     mkdir -p "$TEST_TMPDIR/vault-$1/private"
     ln -s "$TEST_TMPDIR/vault-$1/private" "$dir/.cs/private"
+    _mark_hand_made_vault "$dir"
     echo "$dir"
 }
 

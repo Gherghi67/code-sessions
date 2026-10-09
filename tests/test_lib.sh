@@ -513,6 +513,15 @@ _make_launch_sentinel() {
     export CLAUDE_CODE_BIN="$TEST_TMPDIR/claude"
 }
 
+# Mark a session's vault as set up by hand: such a vault mounts from
+# .cs/local/pre-open, and only while one exists may the four vault links lead
+# outside the session. The script does nothing; the test mounts nothing.
+_mark_hand_made_vault() {  # session_dir
+    mkdir -p "$1/.cs/local"
+    printf '#!/bin/sh\nexit 0\n' > "$1/.cs/local/pre-open"
+    chmod +x "$1/.cs/local/pre-open"
+}
+
 # --- Session Helpers ---
 
 # Create a minimal cs session directory structure

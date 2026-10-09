@@ -664,6 +664,7 @@ test_migration_moves_session_log_into_private() {
     printf '[2026-01-01 10:01:00] BASH: echo sealed\n' > "$session_dir/.cs/logs/session.log"
     (cd "$session_dir" && git init -q && git add -A && git commit -q -m "init")
     ln -s "$vault/private" "$session_dir/.cs/private"
+    _mark_hand_made_vault "$session_dir"
 
     "$CS_BIN" legacy-private-log <<< "" >/dev/null 2>&1 || true
 
@@ -838,6 +839,167 @@ test_divergent_appends_merge_clean() {
 
 # ============================================================================
 
+# Inside a session (CLAUDE_SESSION_DIR set) a destination under the session
+# must stay in it once its links are followed: a committed link would make a
+# write to .cs/README.md land on a file the session does not own.
+_atomic_write_in() {  # session dir, dest, text
+    CLAUDE_SESSION_DIR="$1" bash -c 'source "$1"; cs_write_atomic "$2" printf "%s\n" "$3"' _ \
+        "$SCRIPT_DIR/../hooks/cs-shared.sh" "$2" "$3"
+}
+
+test_atomic_write_refuses_a_link_out_of_the_session() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/sess" o="$t/outside" out rc=0
+    mkdir -p "$s/.cs"
+    printf 'USER-OWNED\n' > "$o"
+    ln -s "$o" "$s/.cs/README.md"
+    out=$(_atomic_write_in "$s" "$s/.cs/README.md" new 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the write must fail" || return 1
+    assert_eq "cs_write_atomic: $s/.cs/README.md leads to $o, outside the session $s" "$out" "the refusal names the path" || return 1
+    assert_eq "USER-OWNED" "$(cat "$o")" "the target outside is untouched" || return 1
+}
+
+test_atomic_write_refuses_a_directory_link_out_of_the_session() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/sess" o="$t/outside-dir" out rc=0
+    mkdir -p "$s/.cs" "$o"
+    ln -s "$o" "$s/.cs/memory"
+    out=$(_atomic_write_in "$s" "$s/.cs/memory/MEMORY.md" new 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the write must fail" || return 1
+    assert_eq "cs_write_atomic: $s/.cs/memory/MEMORY.md leads to $o/MEMORY.md, outside the session $s" "$out" "the refusal names the path" || return 1
+    assert_eq "" "$(ls -A "$o")" "nothing is written into the directory outside" || return 1
+}
+
+# A dangling link would create its target: refused the same way.
+test_atomic_write_refuses_a_dangling_link_out_of_the_session() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/sess" o="$t/not-there" out rc=0
+    mkdir -p "$s/.cs"
+    ln -s "$o" "$s/.cs/README.md"
+    out=$(_atomic_write_in "$s" "$s/.cs/README.md" new 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the write must fail" || return 1
+    assert_eq "cs_write_atomic: $s/.cs/README.md leads to $o, outside the session $s" "$out" "the refusal names the path" || return 1
+    assert_not_exists "$o" "the link's target is not created" || return 1
+}
+
+# An adopted session is reached through a link from the sessions root, and
+# cs writes to it by its resolved path: the check holds for that spelling too.
+test_atomic_write_refuses_a_link_out_of_an_adopted_session() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/project" link="$t/root/adopted" o="$t/outside" out rc=0
+    mkdir -p "$s/.cs" "$t/root"
+    ln -s "$s" "$link"
+    printf 'USER-OWNED\n' > "$o"
+    ln -s "$o" "$s/.cs/README.md"
+    out=$(_atomic_write_in "$link" "$s/.cs/README.md" new 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the write must fail" || return 1
+    assert_eq "USER-OWNED" "$(cat "$o")" "the target outside is untouched" || return 1
+}
+
+# Links that stay inside the session, and destinations outside every session
+# (a dotfiles manager's settings.json), are still written through.
+test_atomic_write_follows_links_inside_the_session_and_outside_it() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/sess" dot="$t/dotfiles/settings.json" home="$t/home"
+    mkdir -p "$s/.cs" "$(dirname "$dot")" "$home"
+    printf 'old\n' > "$s/real.md"
+    ln -s ../real.md "$s/.cs/README.md"
+    printf 'old\n' > "$dot"
+    ln -s "$dot" "$home/settings.json"
+    _atomic_write_in "$s" "$s/.cs/README.md" new || { echo "  FAIL: an in-session link was refused"; return 1; }
+    _atomic_write_in "$s" "$home/settings.json" new || { echo "  FAIL: a destination outside the session was refused"; return 1; }
+    assert_eq "new" "$(cat "$s/real.md")" "the in-session target took the write" || return 1
+    [ -L "$s/.cs/README.md" ] || { echo "  FAIL: the in-session link was replaced"; return 1; }
+    assert_eq "new" "$(cat "$dot")" "the dotfiles target took the write" || return 1
+}
+
+# An encrypted session's .cs/claude-config links the shell's settings,
+# keybindings and the rest out to its config dir by design; a write there
+# (statusline enable, the rotate keys) goes through to the shell's file.
+test_atomic_write_follows_an_encrypted_sessions_shared_config_link() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/sess" shell="$t/shell-config"
+    mkdir -p "$s/.cs/vault-mnt/claude-config" "$shell"
+    ln -s vault-mnt/claude-config "$s/.cs/claude-config"
+    printf 'old\n' > "$shell/settings.json"
+    ln -s "$shell/settings.json" "$s/.cs/vault-mnt/claude-config/settings.json"
+    _atomic_write_in "$s" "$s/.cs/claude-config/settings.json" new \
+        || { echo "  FAIL: the shared settings link was refused"; return 1; }
+    assert_eq "new" "$(cat "$shell/settings.json")" "the shell's settings took the write" || return 1
+}
+
+# A vault set up by hand mounts anywhere, from .cs/local/pre-open, which a
+# clone cannot ship; with one there, the vault links lead outside by design.
+test_atomic_write_follows_a_hand_made_vault_link() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/sess" vault="$t/vault"
+    mkdir -p "$s/.cs" "$vault/private"
+    ln -s "$vault/private" "$s/.cs/private"
+    _mark_hand_made_vault "$s"
+    _atomic_write_in "$s" "$s/.cs/private/queue.state" new \
+        || { echo "  FAIL: the hand-made vault link was refused"; return 1; }
+    assert_eq "new" "$(cat "$vault/private/queue.state")" "the vault took the write" || return 1
+}
+
+# Codex r1 #1: a link whose target walks through another link and then ..
+# lands where the logical spelling does not; the check must resolve the
+# directories physically, as the write does.
+test_atomic_write_resolves_dotdot_after_a_link_physically() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/sess" out rc=0
+    mkdir -p "$s/.cs" "$t/out/sub"
+    printf 'USER-OWNED\n' > "$t/out/victim"
+    ln -s "$t/out/sub" "$s/bridge"
+    ln -s ../bridge/../victim "$s/.cs/README.md"
+    out=$(_atomic_write_in "$s" "$s/.cs/README.md" new 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the write must fail" || return 1
+    assert_eq "cs_write_atomic: $s/.cs/README.md leads to $t/out/victim, outside the session $s" "$out" "the refusal names where it lands" || return 1
+    assert_eq "USER-OWNED" "$(cat "$t/out/victim")" "the file outside is untouched" || return 1
+}
+
+# Codex r1 #3: a pre-open earns the vault exemption only when the open would
+# accept it. A clone that commits one (or links one in) gets no exemption.
+test_atomic_write_ignores_a_tracked_or_linked_pre_open() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/sess" vault="$t/vault" rc=0
+    mkdir -p "$s/.cs" "$vault/private"
+    ln -s "$vault/private" "$s/.cs/private"
+    _mark_hand_made_vault "$s"
+    git -C "$s" init -q
+    git -C "$s" add -f .cs/local/pre-open
+    _atomic_write_in "$s" "$s/.cs/private/queue.state" new >/dev/null 2>&1 || rc=$?
+    assert_eq "1" "$rc" "a tracked pre-open earns no exemption" || return 1
+    assert_file_not_exists "$vault/private/queue.state" "nothing was written through the link" || return 1
+
+    rm -rf "$s/.git" "$s/.cs/local"
+    mkdir -p "$t/elsewhere/local"
+    printf '#!/bin/sh\nexit 0\n' > "$t/elsewhere/local/pre-open"
+    ln -s "$t/elsewhere/local" "$s/.cs/local"
+    rc=0
+    _atomic_write_in "$s" "$s/.cs/private/queue.state" new >/dev/null 2>&1 || rc=$?
+    assert_eq "1" "$rc" "a pre-open behind a linked .cs/local earns no exemption" || return 1
+    assert_file_not_exists "$vault/private/queue.state" "nothing was written through the link" || return 1
+}
+
+# Codex r2 #4: with .cs a submodule, the superproject's index holds only the
+# .cs gitlink, so asking it about .cs/local finds nothing even when the
+# submodule commits a pre-open. Such a pre-open earns no exemption.
+test_atomic_write_ignores_a_pre_open_committed_in_a_cs_submodule() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/sess" vault="$t/vault" rc=0
+    mkdir -p "$s/.cs" "$vault/private"
+    _mark_hand_made_vault "$s"
+    git -C "$s/.cs" init -q
+    git -C "$s/.cs" add -f local/pre-open
+    git -C "$s/.cs" -c user.name=t -c user.email=t@example.com commit -q -m pre-open
+    git -C "$s" init -q
+    git -C "$s" add .cs 2>/dev/null
+    ln -s "$vault/private" "$s/.cs/private"
+    _atomic_write_in "$s" "$s/.cs/private/queue.state" new >/dev/null 2>&1 || rc=$?
+    assert_eq "1" "$rc" "a pre-open committed in a .cs submodule earns no exemption" || return 1
+    assert_file_not_exists "$vault/private/queue.state" "nothing was written through the link" || return 1
+}
+
 run_test test_new_session_records_state_in_local_not_readme
 run_test test_resume_leaves_readme_untouched
 run_test test_migration_leaves_a_body_line_that_looks_like_a_field
@@ -868,4 +1030,14 @@ run_test test_two_state_writers_lose_no_update
 run_test test_vault_holder_drop_keeps_a_concurrent_add
 run_test test_atomic_write_keeps_the_mode_with_gnu_stat_on_a_mac
 run_test test_atomic_write_refuses_a_directory_destination
+run_test test_atomic_write_refuses_a_link_out_of_the_session
+run_test test_atomic_write_refuses_a_directory_link_out_of_the_session
+run_test test_atomic_write_refuses_a_dangling_link_out_of_the_session
+run_test test_atomic_write_refuses_a_link_out_of_an_adopted_session
+run_test test_atomic_write_follows_links_inside_the_session_and_outside_it
+run_test test_atomic_write_follows_an_encrypted_sessions_shared_config_link
+run_test test_atomic_write_follows_a_hand_made_vault_link
+run_test test_atomic_write_resolves_dotdot_after_a_link_physically
+run_test test_atomic_write_ignores_a_tracked_or_linked_pre_open
+run_test test_atomic_write_ignores_a_pre_open_committed_in_a_cs_submodule
 report_results

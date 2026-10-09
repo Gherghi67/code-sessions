@@ -1,6 +1,14 @@
 # ABOUTME: main(): the top-level command dispatch and the entry-point call.
 # ABOUTME: Assembled last so 'main "$@"' runs after every definition.
 
+# A named verb (cs <name> -queue, -narrative, -secrets) writes into
+# the session without opening it, so the open's refusals never ran on this
+# path (Codex r2 #3). Run them here before the verb touches anything.
+_vet_named_session() {  # session_dir
+    is_session_dir "$1" || return 0
+    cs_assert_local_untracked "$1"
+}
+
 main() {
     # cs IS the launch, and the hooks read that from the ABSENCE of this marker
     # (hooks/cs-resolve.sh preserves an inherited value rather than setting
@@ -250,6 +258,10 @@ main() {
         case "$1" in
             -secrets)
                 shift
+                _vet_named_session "$SESSIONS_ROOT/$session_name"
+                # A worktree's secrets route to its base, so the base is the
+                # session cs-secrets writes into (Codex r3 #3).
+                [ -z "$wt_base" ] || _vet_named_session "$SESSIONS_ROOT/$wt_base"
                 export CLAUDE_SESSION_NAME="$session_name"
                 # Worktree secrets live under the base session's namespace
                 # (no launched session ever uses cs:<base>@<task>:*); a plain
@@ -262,6 +274,7 @@ main() {
                 ;;
             -queue)
                 shift
+                _vet_named_session "$SESSIONS_ROOT/$session_name"
                 export CLAUDE_SESSION_NAME="$session_name"
                 export CLAUDE_SESSION_DIR="$SESSIONS_ROOT/$session_name"
                 export CLAUDE_SESSION_META_DIR="$SESSIONS_ROOT/$session_name/.cs"
@@ -316,6 +329,7 @@ main() {
                 # and misnames this one's fault.
                 is_session_dir "$SESSIONS_ROOT/$session_name" \
                     || error "No such session: $session_name"
+                _vet_named_session "$SESSIONS_ROOT/$session_name"
                 export CLAUDE_SESSION_NAME="$session_name"
                 export CLAUDE_SESSION_DIR="$SESSIONS_ROOT/$session_name"
                 export CLAUDE_SESSION_META_DIR="$SESSIONS_ROOT/$session_name/.cs"
