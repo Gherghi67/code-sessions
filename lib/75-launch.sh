@@ -456,26 +456,29 @@ launch_claude_code() {
     # redirect and any nested launch never carry it.
     local spawn_kick=""
     local _seed="$SESSIONS_ROOT/.spawn/$session_name.seed"
-    local _brief="$SESSIONS_ROOT/.spawn/$session_name.brief.md"
     if [ -f "$_seed" ]; then
         local _now _age
         _now=$(date +%s)
         _age=$(( _now - $(_epoch_mtime "$_seed") ))
         if [ "$_age" -gt 3600 ]; then
             mv "$_seed" "$_seed.stale" 2>/dev/null || true
-            [ ! -f "$_brief" ] || mv "$_brief" "$_brief.stale" 2>/dev/null || true
             warn "Stale spawn seed set aside: $_seed.stale (re-run cs -spawn if still wanted)"
         else
             # Read the seed once: line 1 the token, line 2 the spawner, then
-            # one task per line. Whitespace-only lines are skipped, not merely
-            # empty ones: _queue_add trims and then errors on an empty body,
-            # which under errexit would abort the whole session launch over a
-            # stray space in a hand-edited seed.
-            local _seed_token="" _spawner="" _line _lineno=0 _n=0
+            # one task per line up to the brief marker, if the seed has one;
+            # the brief is the rest of the file and is never read as tasks.
+            # Whitespace-only lines are skipped, not merely empty ones:
+            # _queue_add trims and then errors on an empty body, which under
+            # errexit would abort the whole session launch over a stray space
+            # in a hand-edited seed.
+            local _seed_token="" _spawner="" _line _lineno=0 _n=0 _mark
             local _tasks
             _tasks=()
+            _mark=$(_spawn_brief_mark_line "$_seed") \
+                || error "Spawn seed could not be read: $_seed (seed kept; re-open the session to retry)"
             while IFS= read -r _line || [ -n "$_line" ]; do
                 _lineno=$((_lineno + 1))
+                [ "$_lineno" != "$_mark" ] || break
                 case "$_lineno" in
                     1) _seed_token="$_line"; continue ;;
                     2) _spawner="$_line"; continue ;;
@@ -498,8 +501,9 @@ launch_claude_code() {
                 echo
                 printf "${GOLD}A spawn seed is staged for this session:${NC} %s\n" "$_seed"
                 printf '    spawner: %s\n' "${_shown_spawner:-(none)}"
-                if [ -f "$_brief" ]; then
-                    printf '    brief:   %s (becomes .cs/brief.md)\n' "$_brief"
+                if [ -n "$_mark" ]; then
+                    printf '    brief:   inline, %s bytes (becomes .cs/brief.md)\n' \
+                        "$(tail -n +"$((_mark + 1))" "$_seed" | wc -c | tr -d ' ')"
                 fi
                 if [ "$_n" -gt 0 ]; then
                     printf '    tasks (queued and armed; the walk-away drain runs them unattended):\n'
@@ -535,7 +539,6 @@ launch_claude_code() {
                             ''|[yY]) _consume=1; break ;;
                             $'\e'|[nN])
                                 mv "$_seed" "$_seed.stale" 2>/dev/null || true
-                                [ ! -f "$_brief" ] || mv "$_brief" "$_brief.stale" 2>/dev/null || true
                                 warn "Spawn seed declined and set aside: $_seed.stale (re-run cs -spawn if still wanted)"
                                 break ;;
                         esac
@@ -545,18 +548,15 @@ launch_claude_code() {
         fi
         if [ "${_consume:-0}" = 1 ]; then
             local _has_brief=0 _qdir
-            # The brief moves in before any task is queued, and a move that
-            # fails stops the launch with the seed and brief still staged, so
-            # the next open retries. Consuming the seed regardless would start
-            # the session without the brief it was opened for, and leave the
-            # brief to attach to a later spawn of the same name. errexit does
-            # not see a failed left operand, so the abort is explicit.
-            if [ -f "$_brief" ]; then
-                # A directory in the brief's place would take the file INSIDE
-                # it and the move would report success.
+            # The brief is written in before any task is queued, and a write
+            # that fails stops the launch with the seed still staged, so the
+            # next open retries. Consuming the seed regardless would start the
+            # session without the brief it was opened for. errexit does not
+            # see a failed left operand, so the abort is explicit.
+            if [ -n "$_mark" ]; then
                 [ ! -d "$session_dir/.cs/brief.md" ] \
                     || error "Spawn brief could not be delivered: $session_dir/.cs/brief.md is a directory (seed kept; remove it and re-open the session to retry)"
-                mv "$_brief" "$session_dir/.cs/brief.md" \
+                cs_write_atomic "$session_dir/.cs/brief.md" tail -n +"$((_mark + 1))" "$_seed" \
                     || error "Spawn brief could not be delivered to $session_dir/.cs/brief.md (seed kept; re-open the session to retry)"
                 _has_brief=1
             fi

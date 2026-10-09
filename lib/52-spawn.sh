@@ -20,10 +20,23 @@ _cs_self() {
     esac
 }
 
+# The line in a seed that ends its task lines: every line after it is the
+# spawn's brief, verbatim. The brief rides inside the seed so the pair is
+# published, consumed and set aside as one file. cs -spawn refuses a task
+# equal to it.
+SPAWN_BRIEF_MARK='--- cs-spawn-brief ---'
+
+# The line number of a seed's brief marker; nothing when the seed carries no
+# brief. Lines 1 and 2 are the token and the spawner, never the marker.
+_spawn_brief_mark_line() {  # seed
+    awk -v m="$SPAWN_BRIEF_MARK" 'NR > 2 && $0 == m { print NR; exit }' "$1"
+}
+
 # The suffixes of what cs -spawn stages under $SESSIONS_ROOT/.spawn/ for a
 # session name, and of what the launch sets aside when the seed ages out, one
-# per line. Twin of SPAWN_STAGING_SUFFIXES in tui/src/session.rs; the two
-# lists change together.
+# per line. Nothing stages or reads a .brief.md name; a session's removal still
+# deletes one found there. Twin of SPAWN_STAGING_SUFFIXES in
+# tui/src/session.rs; the two lists change together.
 _spawn_staging_suffixes() {
     printf '%s\n' .seed .seed.stale .brief.md .brief.md.stale
 }
