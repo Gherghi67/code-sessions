@@ -259,6 +259,116 @@ _cs_mkdir_unlock() {  # lock dir ("" when none was held)
     rm -f "$1/pid"; rmdir "$1" 2>/dev/null || true
 }
 
+# The one lock cs and its hooks take wherever two processes may write the
+# same thing at once (a window title, the state file, settings.json): flock(2)
+# on a lock file. The kernel ties the lock to the open file and drops it when
+# the last descriptor on that file closes, so a holder that dies, however it
+# dies, has released it, and no process ever judges another one dead. Bash
+# 3.2 has no flock, so bash opens the file on fd 9 and a short perl process
+# locks the descriptor it inherits; the lock stays with bash's descriptor
+# once perl exits. That shape sets the contract:
+# - fd 9 is the lock's, so a process holds one lock at a time. A second take
+#   while one is held is refused: opening fd 9 again would drop the first.
+# - A lock taken inside $(...) or ( ) belongs to that subshell and is gone
+#   when it exits, so the process that does the work takes the lock.
+# - A child started while holding inherits fd 9. Release unlocks the open
+#   file itself before closing fd 9, so a child still running cannot keep the
+#   lock past the release; a holder killed outright keeps it until every
+#   child that inherited fd 9 has exited.
+# - The path must be a regular file, or absent, when it is created. A
+#   directory, symlink, fifo or anything else is refused at once with a line
+#   on stderr, and a link is never followed: bash opens the file itself (a
+#   descriptor perl opened would close when perl exits), so a link is refused
+#   before the open, and perl then checks that the path names the very
+#   regular file fd 9 has open. Only a link swapped in between those two
+#   steps, by a live process of the same user, is followed, and the lock is
+#   then refused.
+# - The file is never removed: a removed lock file lets the next taker lock a
+#   fresh file while a waiter locks the removed one. A waiter that finds the
+#   path naming another file once it holds the lock lets it go and takes the
+#   lock on the file the path names.
+# - A directory that is missing, or cannot take a new file, refuses at once.
+# - A live holder is waited for, but for no more than five seconds: past that
+#   the caller goes ahead without the lock or gives up, as it chooses, since a
+#   launch or a hook must never stall on a lock a stray process holds.
+# - Without perl nothing is locked, and a line on stderr says so.
+# Returns 0 holding the lock, 1 holding nothing.
+_cs_lock() {  # lock file
+    local lock="$1" attempt rc
+    if [ -n "${_CS_LOCK_HELD:-}" ]; then
+        echo "cs: cannot lock $lock: this process already holds $_CS_LOCK_HELD" >&2
+        return 1
+    fi
+    if ! command -v perl >/dev/null 2>&1; then
+        echo "cs: cannot lock $lock: perl not found" >&2
+        return 1
+    fi
+    for attempt in 1 2 3; do
+        if [ -L "$lock" ] || { [ -e "$lock" ] && [ ! -f "$lock" ]; }; then
+            echo "cs: cannot lock $lock: not a regular file" >&2
+            return 1
+        fi
+        { exec 9<>"$lock"; } 2>/dev/null || return 1
+        rc=0
+        perl -e "$_CS_LOCK_PERL" "$lock" || rc=$?
+        case "$rc" in
+            0)
+                _CS_LOCK_HELD="$lock"
+                _CS_LOCK_SUBSHELL=$BASH_SUBSHELL
+                return 0
+                ;;
+            2)
+                exec 9<&-
+                echo "cs: cannot lock $lock: not a regular file" >&2
+                return 1
+                ;;
+            3) exec 9<&- ;;
+            *)
+                exec 9<&-
+                return 1
+                ;;
+        esac
+    done
+    return 1
+}
+
+# _cs_lock's perl, run on the lock file with bash's fd 9 open on it. Exits 0
+# holding the lock; 1 after five seconds of a live holder; 2 when the path is
+# not the regular file fd 9 has open (a link, or another type); 3 when the
+# path names another regular file than fd 9 has, so the caller opens that one.
+_CS_LOCK_PERL='
+use Fcntl qw(:flock);
+open(my $fd, "+<&=", 9) or exit 1;
+my @held = stat($fd);
+exit 2 unless @held && -f _;
+sub path_names_held {
+    my @path = lstat($ARGV[0]);
+    return @path && -f _ && $path[0] == $held[0] && $path[1] == $held[1];
+}
+my @path = lstat($ARGV[0]);
+exit 2 unless @path && -f _;
+exit 3 unless path_names_held();
+for my $poll (0 .. 100) {
+    if (flock($fd, LOCK_EX | LOCK_NB)) {
+        exit 0 if path_names_held();
+        flock($fd, LOCK_UN);
+        exit 3;
+    }
+    select(undef, undef, undef, 0.05) if $poll < 100;
+}
+exit 1;
+'
+
+# Release the lock this process holds on <lock file>. Any other path, an
+# empty one, or a lock the parent took, seen from a subshell, is left alone.
+_cs_unlock() {  # lock file ("" when none was held)
+    [ -n "$1" ] && [ "$1" = "${_CS_LOCK_HELD:-}" ] && [ "${_CS_LOCK_SUBSHELL:-}" = "$BASH_SUBSHELL" ] || return 0
+    perl -e 'use Fcntl qw(:flock); open(my $fd, "+<&=", 9) or exit 1; flock($fd, LOCK_UN) or exit 1' \
+        || echo "cs: could not unlock $1; closing it instead" >&2
+    exec 9<&-
+    _CS_LOCK_HELD=""
+}
+
 # Octal permission bits of a file, as chmod takes them (644), read through a
 # symlink so a linked destination reports its target's mode, not the link's
 # 755. GNU stat is tried first: BSD stat rejects -c with no output, while GNU
