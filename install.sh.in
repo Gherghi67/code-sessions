@@ -228,6 +228,13 @@ if ! command -v claude >/dev/null 2>&1; then
     echo ""
 fi
 
+# cs takes every file lock through perl (flock(2) on a descriptor bash
+# opened), so without it no session can be opened. Checked before anything
+# is written.
+if ! perl -MFcntl=:flock -e 1 >/dev/null 2>&1; then
+    error "perl not found: cs locks its files through perl. Install perl and run the installer again."
+fi
+
 # Show banner
 show_banner
 

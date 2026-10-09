@@ -1205,7 +1205,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "384924ed4165a7d9ca3ffaf2886bc87fe18184dc40bc2fe7326ecfd637328a9b  bin/cs"
+    "10869dc1acb46199b691b7220fb022f099ffc820ae9476889f8de997c044f430  bin/cs"
     "bf25f13b49a6ae5d72edd04fccabbe6644f2159c41ed54756f57c6b561ada8a9  bin/cs-secrets"
     "218445530b4e201f65870c91c126ecfe6d7732b5796d6cf9df01b544b942cad5  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -1371,6 +1371,13 @@ if ! command -v claude >/dev/null 2>&1; then
     warn "Please install Claude Code before using cs"
     warn "Visit: https://github.com/anthropics/claude-code"
     echo ""
+fi
+
+# cs takes every file lock through perl (flock(2) on a descriptor bash
+# opened), so without it no session can be opened. Checked before anything
+# is written.
+if ! perl -MFcntl=:flock -e 1 >/dev/null 2>&1; then
+    error "perl not found: cs locks its files through perl. Install perl and run the installer again."
 fi
 
 # Show banner
