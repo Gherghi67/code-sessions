@@ -427,6 +427,21 @@ test_remove_worktree_confirm_lists_untracked_files() {
     assert_dir "$wt" "declined worktree must survive" || return 1
 }
 
+# The pins and recipient digests `cs -secrets age add` keeps for a session
+# live under ~/.cs-secrets/sessions/<name>/, outside the session directory.
+# Removing a base session drops them and says so on one line naming the path.
+test_remove_base_session_drops_its_age_state() {
+    create_test_session agebase >/dev/null
+    local age_dir="$HOME/.cs-secrets/sessions/agebase"
+    mkdir -p "$age_dir"
+    printf 'age1pin\n' > "$age_dir/age-trusted"
+    local out
+    out=$("$CS_BIN" -rm agebase --force </dev/null 2>&1) || { echo "  cs -rm failed: $out"; return 1; }
+    assert_not_exists "$age_dir" "the base session's age state must go with it" || return 1
+    assert_eq "Removed age state: $age_dir" "$(printf '%s\n' "$out" | grep '^Removed age state: ')" \
+        "cs -rm names the age state it removed" || return 1
+}
+
 test_remove_force_on_adopted_removes_only_the_link() {
     local project_dir="$TEST_TMPDIR/adopted-project"
     mkdir -p "$project_dir"
@@ -438,6 +453,7 @@ test_remove_force_on_adopted_removes_only_the_link() {
 }
 
 run_test test_remove_empty_name_rejected_before_any_deletion
+run_test test_remove_base_session_drops_its_age_state
 run_test test_remove_refuses_live_session_without_force
 run_test test_remove_allows_heartbeat_only_session_without_force
 run_test test_remove_discards_pending_spawn_seeds
