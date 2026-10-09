@@ -2,6 +2,7 @@
 // ABOUTME: Tracks table selection, sort order, search filter, and modal dialog state
 
 use std::collections::{HashMap, HashSet};
+use std::path::{Component, Path, PathBuf};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::widgets::TableState;
@@ -2073,9 +2074,18 @@ impl App {
         if let Some(name) = self.selected_session().map(|s| s.name.clone()) {
             let root = self.sessions_root.clone();
             let path = root.join(&name);
+            // An adopted link loses only the link; the age state is the project's.
+            let was_link = is_symlink(&path);
             match session::remove_session_path(&root, &name, &path, grants) {
                 Ok(()) => {
-                    self.set_status(format!("Deleted: {}", name), StatusLevel::Success);
+                    match if was_link { Ok(None) } else { drop_age_state(&name) } {
+                        Ok(None) => self.set_status(format!("Deleted: {}", name), StatusLevel::Success),
+                        Ok(Some(dir)) => self.set_status(
+                            format!("Deleted: {} · removed age state {}", name, dir.display()),
+                            StatusLevel::Success,
+                        ),
+                        Err(e) => self.set_status(format!("Deleted: {}, but {}", name, e), StatusLevel::Error),
+                    }
                     self.rescan_now();
                 }
                 Err(e) => {
@@ -2543,6 +2553,58 @@ fn claude_home() -> Option<String> {
         return Some(h.to_string_lossy().into_owned());
     }
     session::home_dir()
+}
+
+/// The home dir that holds `~/.cs-secrets`. Under test it is only ever the
+/// [`test_home`] override: with none scoped it is None, so no test run can
+/// reach the real `~/.cs-secrets` of whoever runs the suite.
+fn secrets_home() -> Option<PathBuf> {
+    #[cfg(test)]
+    return test_home::current();
+    #[cfg(not(test))]
+    session::home_dir().map(PathBuf::from)
+}
+
+/// Where cs-secrets keeps a base session's age state (recipient pins and
+/// digests): `~/.cs-secrets/sessions/<name>/`. Twin of `age_state_dir` in
+/// bin/cs-secrets and `_drop_session_age_state` in lib/65-sessions.sh; the
+/// three change together. None for a feature (`base@task`) name, whose
+/// secrets are its base's, and for any name that is not one plain path
+/// component, so an empty name never resolves to the sessions dir itself.
+fn age_state_dir(name: &str) -> Option<PathBuf> {
+    let mut parts = Path::new(name).components();
+    let one_plain_component = matches!((parts.next(), parts.next()), (Some(Component::Normal(_)), None));
+    // components() drops a trailing '/', so the slash is refused by hand.
+    if !one_plain_component || name.starts_with('.') || name.contains('/') || name.contains('@') {
+        return None;
+    }
+    Some(secrets_home()?.join(".cs-secrets/sessions").join(name))
+}
+
+/// Remove the age state of a base session that was just deleted. The path
+/// when something was removed, None when there was nothing to remove.
+fn drop_age_state(name: &str) -> Result<Option<PathBuf>, String> {
+    let Some(dir) = age_state_dir(name) else {
+        return Ok(None);
+    };
+    let meta = match dir.symlink_metadata() {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("could not read age state {}: {e}", dir.display())),
+    };
+    let removed = if meta.file_type().is_dir() {
+        std::fs::remove_dir_all(&dir)
+    } else {
+        std::fs::remove_file(&dir)
+    };
+    match removed {
+        Ok(()) => Ok(Some(dir)),
+        Err(e) => Err(format!("could not remove age state {}: {e}", dir.display())),
+    }
+}
+
+fn is_symlink(path: &Path) -> bool {
+    path.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false)
 }
 
 /// Test-only override for [`claude_home`]. Same rationale as
