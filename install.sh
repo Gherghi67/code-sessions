@@ -2120,12 +2120,15 @@ else
     # shadow. cs's own Option+1 / Option+2 bindings stood for /rotate and
     # /wrap, so they make way unless Ctrl+X R or Ctrl+X W conflicts: then
     # both stay, so the command whose chord is taken keeps a key. A conflict
-    # on a band chord leaves both commands their chords and keeps nothing. A file of a shape cs cannot read is refused before anything
-    # is written. The write is cs_write_atomic's, from the hooks' shared
-    # library deployed above: mode kept, and a symlinked file (a dotfiles
-    # manager's) rewritten through its link.
+    # on a band chord leaves both commands their chords and keeps nothing.
+    # The chords share one prefix, so the bare key they would shadow is named
+    # in one warning for the file. A file of a shape cs cannot read is refused
+    # before anything is written. The write is cs_write_atomic's, from the
+    # hooks' shared library deployed above: mode kept, and a symlinked file (a
+    # dotfiles manager's) rewritten through its link.
     _bind_rotate_wrap_keys() {
         local file doc status state key action prefix added="" command_conflicts=0 retired="" add
+        local shadowed="" shadowed_prefix="" shadowed_action=""
         file="$(_cs_keybindings_file)"
         if [ -e "$file" ]; then
             if ! _cs_keybindings_shape_ok "$file"; then
@@ -2145,7 +2148,9 @@ else
                         "ctrl+x r"|"ctrl+x w") command_conflicts=$((command_conflicts + 1)) ;;
                     esac
                     if [ -n "$prefix" ]; then
-                        warn "Rotate/wrap keys: $key would shadow $prefix, which is bound to $action in $file; left unbound."
+                        shadowed="${shadowed:+$shadowed, }$key"
+                        shadowed_prefix="$prefix"
+                        shadowed_action="$action"
                     else
                         warn "Rotate/wrap keys: $key is already bound to $action in $file; left as it is."
                     fi
@@ -2155,6 +2160,9 @@ else
                     ;;
             esac
         done <<< "$status"
+        if [ -n "$shadowed" ]; then
+            warn "Rotate/wrap keys: $shadowed would shadow $shadowed_prefix, which is bound to $shadowed_action in $file; left as they are."
+        fi
         if [ "$command_conflicts" = 0 ]; then
             retired=$(printf '%s\n' "$doc" | _cs_keybindings_held "$CS_RETIRED_OPTION_KEYS") \
                 || { warn "Rotate/wrap keys: could not read the bindings in $file"; return 1; }
@@ -2193,8 +2201,9 @@ else
     }
 
     # Ctrl+X R runs /rotate, Ctrl+X W runs /wrap, and Ctrl+X 1 / Ctrl+X 2 press
-    # the cs band's keys, through Claude Code's own keybindings.json. Keys are the user's keyboard, so they are offered once
-    # per machine and the answer is recorded: a yes is honoured on every
+    # the cs band's keys, through Claude Code's own keybindings.json. Keys are
+    # the user's keyboard, so they are offered once per machine and the answer
+    # is recorded: a yes is honoured on every
     # install (keys already bound are left as they are), a no is never asked
     # again, and with no terminal nothing is written or recorded. Every step
     # reports and carries on; a keybinding must never take the install down.

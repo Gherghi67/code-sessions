@@ -278,7 +278,8 @@ key within 3 seconds. The chords need no terminal setting.
   creating the file when there is none). cs never replaces a key you already
   bind to something else, in any context: it keeps your action and names the
   key in a warning. A bare `ctrl+x` you bind counts too: Claude Code would
-  wait for a second key and never run yours, so cs binds none of the chords. cs
+  wait for a second key and never run yours, so cs binds none of the chords
+  and names them, with your key, in one warning. cs
   refuses a file that is not JSON with a `bindings` array and leaves it
   untouched.
 - cs 2026.10.6 bound Option+1 and Option+2 (`alt+1`, `alt+2`), which iTerm2
