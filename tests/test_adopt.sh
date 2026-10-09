@@ -357,6 +357,53 @@ test_adopt_orphaned_records_decline_cancels() {
     assert_not_exists "$CS_SESSIONS_ROOT/new-name" "no symlink should be created on decline" || return 1
 }
 
+# --yes answers the re-adopt question, so a script or an agent with no
+# terminal re-adopts orphaned records; it may stand before or after the name.
+test_adopt_yes_relinks_orphaned_records_without_a_terminal() {
+    local project_dir="$TEST_TMPDIR/my-project" narrative before output rc
+    mkdir -p "$project_dir"
+    (cd "$project_dir" && "$CS_BIN" -adopt old-name >/dev/null 2>&1)
+    rm "$CS_SESSIONS_ROOT/old-name"
+    narrative=$(ls "$project_dir"/.cs/memory/narrative.*.md | head -1)
+    before=$(cat "$narrative")
+
+    rc=0
+    output=$(cd "$project_dir" && "$CS_BIN" -adopt new-name --yes </dev/null 2>&1) || rc=$?
+    assert_eq 0 "$rc" "re-adopt with --yes after the name exits 0: $output" || return 1
+    assert_symlink "$CS_SESSIONS_ROOT/new-name" "the session link exists" || return 1
+    assert_eq "$before" "$(cat "$narrative")" "the records are kept" || return 1
+
+    rm "$CS_SESSIONS_ROOT/new-name"
+    rc=0
+    output=$(cd "$project_dir" && "$CS_BIN" -adopt -y third-name </dev/null 2>&1) || rc=$?
+    assert_eq 0 "$rc" "re-adopt with -y before the name exits 0: $output" || return 1
+    assert_symlink "$CS_SESSIONS_ROOT/third-name" "the session link exists" || return 1
+}
+
+# Without a terminal and without --yes the re-adopt is refused, and the
+# refusal names both ways to answer it.
+test_adopt_orphaned_records_noninteractive_names_yes() {
+    local project_dir="$TEST_TMPDIR/my-project" output rc=0
+    mkdir -p "$project_dir"
+    (cd "$project_dir" && "$CS_BIN" -adopt old-name >/dev/null 2>&1)
+    rm "$CS_SESSIONS_ROOT/old-name"
+    output=$(cd "$project_dir" && "$CS_BIN" -adopt new-name </dev/null 2>&1) || rc=$?
+    assert_eq 1 "$rc" "the re-adopt is refused" || return 1
+    assert_eq "Error: Directory carries session records (.cs/) but no session link. Re-run interactively or with --yes to re-adopt them as 'new-name', or remove .cs/ to adopt fresh." \
+        "$output" "the refusal names --yes" || return 1
+}
+
+# A flag adopt does not know is refused, never taken for the session name.
+test_adopt_refuses_an_unknown_flag() {
+    local project_dir="$TEST_TMPDIR/my-project" output rc=0
+    mkdir -p "$project_dir"
+    output=$(cd "$project_dir" && "$CS_BIN" -adopt my-session --yse </dev/null 2>&1) || rc=$?
+    assert_eq 1 "$rc" "an unknown flag is refused" || return 1
+    assert_eq "Error: cs -adopt: unknown option '--yse'. Usage: cs -adopt <name> [--yes]" \
+        "$output" "the refusal names the flag" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/my-session" "nothing is adopted" || return 1
+}
+
 test_adopt_fails_if_session_name_exists() {
     local project_dir="$TEST_TMPDIR/my-project"
     mkdir -p "$project_dir"
@@ -906,6 +953,9 @@ run_test test_readopt_keeps_the_session_log
 run_test test_readopt_of_an_encrypted_session_keeps_its_log_in_the_vault
 run_test test_adopt_orphaned_records_noninteractive_hints
 run_test test_adopt_orphaned_records_decline_cancels
+run_test test_adopt_yes_relinks_orphaned_records_without_a_terminal
+run_test test_adopt_orphaned_records_noninteractive_names_yes
+run_test test_adopt_refuses_an_unknown_flag
 run_test test_adopt_fails_if_session_name_exists
 run_test test_adopt_validates_session_name
 run_test test_list_shows_adopted_sessions
