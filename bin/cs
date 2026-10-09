@@ -6513,9 +6513,10 @@ _spawn_staging_suffixes() {
 
 # An open reads a seed only after renaming it to a name of its own,
 # .<name>.seed.claim.<pid>, so a seed cs -spawn publishes while the open asks
-# is never the one it reads, sets aside or deletes. The launch's EXIT and
-# INT/TERM traps call _spawn_put_back_claim, so an open that stops before it
-# consumed the seed leaves it staged again under <name>.seed.
+# is never the one it reads, sets aside or deletes. The launch's EXIT trap
+# (which INT and TERM reach through their exit) calls _spawn_put_back_claim,
+# so an open that stops before it consumed the seed leaves it staged again
+# under <name>.seed.
 _CS_SPAWN_CLAIM=""
 _CS_SPAWN_SEED=""
 
@@ -10725,7 +10726,7 @@ launch_claude_code() {
     # Global, not local: the EXIT trap fires after this function has returned.
     _CS_LOCK_META_DIR="$session_dir/.cs"
     trap 'reset_tab_title; _spawn_put_back_claim; release_session_lock "$_CS_LOCK_META_DIR"; _detach_opened_vault' EXIT
-    trap 'reset_tab_title; _spawn_put_back_claim; release_session_lock "$_CS_LOCK_META_DIR"; exit 130' INT TERM
+    trap 'reset_tab_title; release_session_lock "$_CS_LOCK_META_DIR"; exit 130' INT TERM
 
     # Opening an archived session revives it. Placed after lock acquisition so
     # a cancelled collision menu leaves the marker in place; the removal is

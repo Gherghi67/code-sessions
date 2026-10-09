@@ -43,9 +43,10 @@ _spawn_staging_suffixes() {
 
 # An open reads a seed only after renaming it to a name of its own,
 # .<name>.seed.claim.<pid>, so a seed cs -spawn publishes while the open asks
-# is never the one it reads, sets aside or deletes. The launch's EXIT and
-# INT/TERM traps call _spawn_put_back_claim, so an open that stops before it
-# consumed the seed leaves it staged again under <name>.seed.
+# is never the one it reads, sets aside or deletes. The launch's EXIT trap
+# (which INT and TERM reach through their exit) calls _spawn_put_back_claim,
+# so an open that stops before it consumed the seed leaves it staged again
+# under <name>.seed.
 _CS_SPAWN_CLAIM=""
 _CS_SPAWN_SEED=""
 

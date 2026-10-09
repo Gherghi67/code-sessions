@@ -232,7 +232,7 @@ launch_claude_code() {
     # Global, not local: the EXIT trap fires after this function has returned.
     _CS_LOCK_META_DIR="$session_dir/.cs"
     trap 'reset_tab_title; _spawn_put_back_claim; release_session_lock "$_CS_LOCK_META_DIR"; _detach_opened_vault' EXIT
-    trap 'reset_tab_title; _spawn_put_back_claim; release_session_lock "$_CS_LOCK_META_DIR"; exit 130' INT TERM
+    trap 'reset_tab_title; release_session_lock "$_CS_LOCK_META_DIR"; exit 130' INT TERM
 
     # Opening an archived session revives it. Placed after lock acquisition so
     # a cancelled collision menu leaves the marker in place; the removal is
