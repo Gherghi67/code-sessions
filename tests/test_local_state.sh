@@ -650,43 +650,23 @@ test_lock_refuses_at_once_without_its_directory_or_perl() {
 }
 
 # A state rewrite is a read-modify-write, so two writers (cs at launch and the
-# SessionStart hook) can lose an update unless they take turns. The lock is a
-# directory beside the file, .cs/local/state.lock, holding the holder's pid; a
-# live holder is waited for, up to five seconds, then the write goes ahead.
+# SessionStart hook) can lose an update unless they take turns. The lock is
+# .cs/local/state.mutex.lock beside the file; a live holder is waited for, up
+# to five seconds, then the write goes ahead.
 test_state_write_waits_for_a_live_lock_holder() {
     local state="$TEST_TMPDIR/state" lib="$SCRIPT_DIR/../hooks/cs-shared.sh" start took
     printf 'session_name: locked-state\n' > "$state"
-    mkdir "$state.lock"
-    echo "$$" > "$state.lock/pid"
+    _start_lock_holder "$state.mutex.lock" "$TEST_TMPDIR/state.ready" || return 1
 
     start=$SECONDS
     bash -c 'source "$1"; cs_local_state_set "$2" claude_session_id abc' _ "$lib" "$state" \
-        || { echo "  FAIL: the write failed"; return 1; }
+        || { kill "$LOCK_HOLDER"; echo "  FAIL: the write failed"; return 1; }
     took=$((SECONDS - start))
-    rm -f "$state.lock/pid"; rmdir "$state.lock" 2>/dev/null
+    kill "$LOCK_HOLDER"
 
     assert_file_contains "$state" "^claude_session_id: abc$" "the write went ahead once the wait ran out" || return 1
     assert_file_contains "$state" "^session_name: locked-state$" "and kept the other keys" || return 1
     [ "$took" -ge 4 ] || { echo "  FAIL: the writer must wait for a live holder (took ${took}s)"; return 1; }
-}
-
-# A lock older than the minute the timeout branch tolerates is still a LIVE
-# holder's when its pid answers: the caller goes ahead without the lock, as
-# documented, but never evicts that holder (a settings writer paused inside
-# its transform would otherwise write a stale snapshot over the next
-# writer's change).
-test_lock_timeout_leaves_a_live_holders_old_lock_in_place() {
-    local lock="$TEST_TMPDIR/old.lock" lib="$SCRIPT_DIR/../hooks/cs-shared.sh" rc=0
-    mkdir "$lock"
-    echo "$$" > "$lock/pid"
-    touch -t "$(date -v-3M +%Y%m%d%H%M.%S 2>/dev/null || date -d '3 minutes ago' +%Y%m%d%H%M.%S)" "$lock"
-
-    bash -c 'source "$1"; _cs_mkdir_lock "$2"' _ "$lib" "$lock" || rc=$?
-
-    assert_eq "1" "$rc" "the waiter gives up without the lock" || return 1
-    [ -d "$lock" ] || { echo "  FAIL: the live holder's lock was evicted"; return 1; }
-    assert_eq "$$" "$(cat "$lock/pid" 2>/dev/null)" "the live holder still holds it" || return 1
-    rm -f "$lock/pid"; rmdir "$lock" 2>/dev/null
 }
 
 # The state rewrite renders the old file through awk. When that read fails the
@@ -725,7 +705,7 @@ test_two_state_writers_lose_no_update() {
     wait "$p1" || { echo "  FAIL: writer a failed"; return 1; }
     wait "$p2" || { echo "  FAIL: writer b failed"; return 1; }
     assert_eq "80" "$(wc -l < "$state" | tr -d ' ')" "every key written by either writer is in the file" || return 1
-    assert_not_exists "$state.lock" "no lock left behind" || return 1
+    _lock_is_free "$state.mutex.lock" || { echo "  FAIL: the state lock is still held after both writers finished"; return 1; }
 }
 
 # Dropping a vault holder rewrites the list while an opener may be adding to
@@ -750,7 +730,7 @@ EOF
     [ -e "$added" ] || { echo "  FAIL: the opener's add never finished"; return 1; }
     assert_eq "222
 333" "$(cat "$holders")" "the drop removed 111 and the opener's 333 survived" || return 1
-    assert_not_exists "$holders.lock" "no lock left behind" || return 1
+    _lock_is_free "$holders.mutex.lock" || { echo "  FAIL: the holders lock is still held after the drop and the add"; return 1; }
 }
 
 # Homebrew's gnubin puts GNU stat first on a Mac's PATH; the mode read must
@@ -777,23 +757,25 @@ test_atomic_write_refuses_a_directory_destination() {
     assert_eq "" "$(ls -A "$d")" "nothing is left inside the directory" || return 1
 }
 
-test_state_write_takes_over_a_dead_holders_lock() {
+# Earlier cs versions locked the state with a directory, .cs/local/state.lock,
+# holding a pid. One left on disk, even naming a live process, is not the
+# lock: the write takes .cs/local/state.mutex.lock without waiting on it, and
+# leaves the directory as it found it.
+test_state_write_ignores_a_lock_directory_left_on_disk() {
     local session_dir
-    session_dir=$(create_test_session_with_git stale-lock)
-    local state="$session_dir/.cs/local/state"
-    local dead
-    dead=$(sh -c 'echo $$')
+    session_dir=$(create_test_session_with_git dir-lock)
+    local state="$session_dir/.cs/local/state" start took
     mkdir -p "$state.lock"
-    echo "$dead" > "$state.lock/pid"
+    echo "$$" > "$state.lock/pid"
     _argv_claude_stub
 
-    "$CS_BIN" stale-lock <<< "" >/dev/null 2>&1 || true
+    start=$SECONDS
+    "$CS_BIN" dir-lock <<< "" >/dev/null 2>&1 || true
+    took=$((SECONDS - start))
 
     assert_file_contains "$state" "^claude_session_id:" "the write went through" || return 1
-    # A waited-out deadline leaves the dead lock in place; a takeover removes it
-    # and the writer then releases its own, so the directory's absence is the
-    # takeover, with no clock involved.
-    assert_not_exists "$state.lock" "the dead lock was taken over and released" || return 1
+    [ "$took" -le 3 ] || { echo "  FAIL: the launch waited on the directory (took ${took}s)"; return 1; }
+    assert_eq "$$" "$(cat "$state.lock/pid")" "the directory is left as it was" || return 1
 }
 
 # ============================================================================
@@ -1209,8 +1191,7 @@ run_test test_lock_release_frees_it_from_a_child_still_running
 run_test test_lock_waits_five_seconds_for_a_live_holder
 run_test test_lock_refuses_at_once_without_its_directory_or_perl
 run_test test_state_write_waits_for_a_live_lock_holder
-run_test test_lock_timeout_leaves_a_live_holders_old_lock_in_place
-run_test test_state_write_takes_over_a_dead_holders_lock
+run_test test_state_write_ignores_a_lock_directory_left_on_disk
 run_test test_state_write_fails_loudly_when_the_old_state_cannot_be_read
 run_test test_two_state_writers_lose_no_update
 run_test test_vault_holder_drop_keeps_a_concurrent_add
