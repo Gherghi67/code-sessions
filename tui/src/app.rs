@@ -2614,10 +2614,11 @@ fn drop_age_state(name: &str) -> Result<Option<PathBuf>, String> {
     for parent in dir.ancestors().skip(1).take(2) {
         match parent.symlink_metadata() {
             Ok(meta) if meta.file_type().is_symlink() => {
-                if dir.symlink_metadata().is_err() {
-                    return Ok(None);
-                }
-                return Err(format!("left age state behind a linked ~/.cs-secrets: {}", dir.display()));
+                return match dir.symlink_metadata() {
+                    Ok(_) => Err(format!("left age state behind a linked ~/.cs-secrets: {}", dir.display())),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                    Err(e) => Err(format!("could not read age state {}: {e}", dir.display())),
+                };
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             _ => {}

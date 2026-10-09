@@ -633,21 +633,22 @@ _drop_session_age_state() {  # name
     # Each parent must be a real directory cs can search: through a link the
     # rm -rf would land on a same-name directory elsewhere, and an unsearchable
     # parent makes a present state read as absent.
-    local parent
+    local parent linked=false
     for parent in "$HOME/.cs-secrets" "$HOME/.cs-secrets/sessions"; do
-        if [ -L "$parent" ]; then
-            # Reading through the link is harmless; only a state that is
-            # there is named as left behind.
-            [ -e "$dir" ] || [ -L "$dir" ] || return 0
-            warn "Left age state behind a linked ~/.cs-secrets: $dir"
-            return 1
-        fi
+        [ -L "$parent" ] && linked=true
         [ -e "$parent" ] || return 0
         if [ ! -d "$parent" ] || [ ! -x "$parent" ]; then
             warn "Could not check age state: $dir"
             return 1
         fi
     done
+    if [ "$linked" = true ]; then
+        # Reading through the link is harmless once every parent is known to
+        # be searchable; only a state that is there is named as left behind.
+        [ -e "$dir" ] || [ -L "$dir" ] || return 0
+        warn "Left age state behind a linked ~/.cs-secrets: $dir"
+        return 1
+    fi
     [ -e "$dir" ] || [ -L "$dir" ] || return 0
     rm -rf "$dir" || { warn "Could not remove age state: $dir"; return 1; }
     info "Removed age state: $dir"
