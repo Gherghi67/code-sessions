@@ -1388,8 +1388,20 @@ test_doctor_reports_a_stale_migration_stamp() {
         "a stale stamp names what changed and the reset" || return 1
 }
 
+# A worktree open never migrates, so it never stamps: its row would say
+# "stale (no stamp)" forever. The worktree open knows itself by task_branch,
+# which a worktree whose state lost cs_base still carries.
+test_doctor_skips_the_migration_stamp_in_a_worktree_known_by_its_task_branch() {
+    local output
+    printf 'task_branch: feature/fix-auth\n' >> "$CLAUDE_SESSION_DIR/.cs/local/state"
+    output=$(CS_ACTOR=alice "$CS_BIN" -doctor 2>&1) || true
+    assert_output_not_contains "$output" "Migration stamp:" \
+        "a worktree has no migration stamp row" || return 1
+}
+
 run_test test_doctor_reports_a_current_migration_stamp
 run_test test_doctor_reports_a_stale_migration_stamp
+run_test test_doctor_skips_the_migration_stamp_in_a_worktree_known_by_its_task_branch
 
 
 # `cs <base> -integrate-feature` takes <git-dir>/cs/integrate.lock and the
