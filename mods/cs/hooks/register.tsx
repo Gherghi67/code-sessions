@@ -61,8 +61,9 @@ export const BAR_EMPTY = '\u2591'
 // The band's chip and caps, in the bar's inks. KEEP IN SYNC with _sgr in
 // bin/cs-statusline (tests/test_mod_rotate.sh pins them): brand is the Claude
 // coral the bar's mark wears, and white the chip's ink on a filled chip, softer
-// on a dark terminal as the bar's is.
-export const BRAND = '217,119,87'
+// on a dark terminal as the bar's is. The coral is the session palette's
+// orange, so an orange session's chip keeps its colour once a handoff is armed.
+export const BRAND = SESSION_PALETTE.orange
 export const WHITE_LIGHT = '255,255,255'
 export const WHITE_DARK = '230,230,230'
 // The bar's rounded capsule ends, Powerline glyphs drawn in the fill they close.
@@ -676,8 +677,10 @@ async function capsWanted($: EngineInterface): Promise<boolean> {
 
 // The engine actions the band's Buttons answer to. They carry no default
 // chord and no engine handler is mounted for them (measured on 2.1.291 and
-// 2.1.292), so the chord a person binds to one presses the Button. KEEP IN
-// SYNC with CS_ROTATE_WRAP_KEYS in lib/01-manifests.sh, which binds them.
+// 2.1.292), so the chord a person binds to one presses the Button. The band
+// depends on that: a Claude Code that mounts a handler for either action
+// takes Ctrl+X 1 or Ctrl+X 2 from the band without a word. KEEP IN SYNC with
+// CS_ROTATE_WRAP_KEYS in lib/01-manifests.sh, which binds them.
 export const ROTATE_ACTION = 'strip:jump1'
 export const WRAP_ACTION = 'strip:jump2'
 

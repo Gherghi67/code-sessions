@@ -95,9 +95,13 @@ test_mod_ramp_inks_match_the_statusline() {
         "mod crit dark and light == statusline crit" || return 1
 
     # The band's chip: the bar's brand coral, and its white, softer on dark.
+    # BRAND names a palette colour; its value is that colour's, read above.
+    local brand_name
+    brand_name="$(sed -n 's/^export const BRAND = SESSION_PALETTE\.\([a-z]*\)$/\1/p' "$mod")"
+    [ -n "$brand_name" ] || { echo "  FAIL: BRAND is not a SESSION_PALETTE colour in register.tsx"; return 1; }
     assert_eq "$(sed -n 's/^ *brand) *rgb="\([0-9;]*\)" ;;.*/\1/p' <<< "$truecolor" | tr ';' ',')" \
-        "$(sed -n "s/^export const BRAND = '\([0-9,]*\)'$/\1/p" "$mod")" \
-        "mod BRAND == statusline brand" || return 1
+        "$(sed -n "s/.*[{ ]$brand_name: '\([0-9,]*\)'.*/\1/p" "$mod")" \
+        "mod BRAND ($brand_name) == statusline brand" || return 1
     assert_eq "$(sed -n 's/^ *\[ "\$SL_THEME" = "dark" \] && rgb="\([0-9;]*\)" || rgb="\([0-9;]*\)" ;;$/\1 \2/p' <<< "$(sed -n '/^ *white)$/,/;;/p' <<< "$truecolor")" | tr ';' ',')" \
         "$(sed -n "s/^export const WHITE_DARK = '\([0-9,]*\)'$/\1/p" "$mod") $(sed -n "s/^export const WHITE_LIGHT = '\([0-9,]*\)'$/\1/p" "$mod")" \
         "mod white dark and light == statusline white" || return 1

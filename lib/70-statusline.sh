@@ -1,6 +1,9 @@
 # ABOUTME: Status line enable/disable and terminal light/dark theme + background detection.
 # ABOUTME: Backs 'cs -statusline' and 'cs -detect-theme'.
 
+# Strip the statusLine registration when (and only when) it points at
+# cs-statusline; a status line the user configured themselves is left alone.
+# Returns 0 when stripped, 1 when absent or foreign, 2 when the write failed.
 _strip_statusline_registration() {
     local settings_file="$1"
     [ -f "$settings_file" ] || return 1
@@ -62,6 +65,8 @@ _statusline_caps_ask() {
     done
 }
 
+# Register or remove the cs-statusline entry in Claude Code's settings.json.
+# enable overwrites whatever is registered (the command is explicit consent);
 # disable strips only a cs-statusline registration, never a foreign one.
 run_statusline_cmd() {
     local action="${1:-}"

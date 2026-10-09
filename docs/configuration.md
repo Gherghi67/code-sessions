@@ -272,7 +272,10 @@ prompt: 1 its rotate key, or its `/clear` once a handoff is armed, and 2 its
 wrap key. The band has no key of its own, so a digit you type to answer a
 question never presses it; without these two chords it answers only a click or
 Ctrl+X Tab. Text you are typing stays in the prompt. Claude Code drops a Ctrl+X that gets no second
-key within 3 seconds. The chords need no terminal setting.
+key within 3 seconds. The chords need no terminal setting. Ctrl+X 1 and
+Ctrl+X 2 reach the band only because Claude Code mounts no handler of its own
+for `strip:jump1` and `strip:jump2` (measured on 2.1.291 and 2.1.292); a
+release that mounts one takes the chord from the band without a warning.
 
 - A yes merges the four keys into the file's first `Global` block (or adds one,
   creating the file when there is none). cs never replaces a key you already
