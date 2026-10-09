@@ -622,6 +622,27 @@ test_remove_age_state_unsearchable_parent_is_a_failure() {
     assert_eq "1" "$rc" "cs -rm exits 1" || return 1
 }
 
+test_remove_age_state_unsearchable_linked_parent_is_a_failure() {
+    rm -rf "$HOME/.cs-secrets"
+    create_test_session agelkhid >/dev/null
+    create_test_session agelkhidnext >/dev/null
+    local elsewhere="$TEST_TMPDIR/age-elsewhere-hidden"
+    mkdir -p "$elsewhere/agelkhid" "$HOME/.cs-secrets"
+    printf 'age1pin\n' > "$elsewhere/agelkhid/age-trusted"
+    ln -s "$elsewhere" "$HOME/.cs-secrets/sessions"
+    local age_dir="$HOME/.cs-secrets/sessions/agelkhid"
+    chmod 000 "$elsewhere"
+    local out rc=0
+    out=$("$CS_BIN" -rm agelkhid agelkhidnext --force </dev/null 2>&1) || rc=$?
+    chmod 700 "$elsewhere"
+    assert_not_exists "$CS_SESSIONS_ROOT/agelkhidnext" "the name after it is removed too" || return 1
+    assert_dir "$elsewhere/agelkhid" "the unreachable state is still there" || return 1
+    assert_eq "Could not check age state: $age_dir" \
+        "$(printf '%s\n' "$out" | sed -n 's/.*\(Could not check age state: [^[:cntrl:]]*agelkhid\)$/\1/p;s/.*\(Could not check age state: [^[:cntrl:]]*agelkhid\)[^[:alnum:]].*/\1/p')" \
+        "the failure names the path" || { echo "  output: $out"; return 1; }
+    assert_eq "1" "$rc" "cs -rm exits 1" || return 1
+}
+
 test_remove_force_on_adopted_removes_only_the_link() {
     local project_dir="$TEST_TMPDIR/adopted-project"
     mkdir -p "$project_dir"
@@ -643,6 +664,7 @@ run_test test_remove_dotted_session_does_not_stop_the_next_name
 run_test test_remove_age_state_failure_names_it_and_finishes_the_run
 run_test test_remove_age_state_refuses_a_linked_secrets_parent
 run_test test_remove_age_state_unsearchable_parent_is_a_failure
+run_test test_remove_age_state_unsearchable_linked_parent_is_a_failure
 run_test test_remove_refuses_live_session_without_force
 run_test test_remove_allows_heartbeat_only_session_without_force
 run_test test_remove_discards_pending_spawn_seeds

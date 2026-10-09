@@ -4697,6 +4697,40 @@ mod tests {
         std::fs::remove_dir_all(root.parent().unwrap()).ok();
     }
 
+    /// A linked `~/.cs-secrets/sessions` whose target cannot be searched is a
+    /// failure, never "no state": the delete goes ahead and the status is an
+    /// error naming the path.
+    #[test]
+    fn delete_reports_an_unsearchable_linked_sessions_dir() {
+        use crate::session::test_root;
+        use std::os::unix::fs::PermissionsExt;
+        let (root, home) = age_fixture("linked-hidden", &["agelkhid"], &[]);
+        let elsewhere = root.parent().unwrap().join("elsewhere");
+        std::fs::create_dir_all(elsewhere.join("agelkhid")).unwrap();
+        std::fs::write(elsewhere.join("agelkhid/age-trusted"), "age1pin\n").unwrap();
+        std::fs::create_dir_all(home.join(".cs-secrets")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, home.join(".cs-secrets/sessions")).unwrap();
+        std::fs::set_permissions(&elsewhere, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let _root = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        let mut app = app_on(&root, "agelkhid");
+
+        app.execute_delete();
+
+        std::fs::set_permissions(&elsewhere, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let msg = app.status_message.as_ref().unwrap();
+        assert!(!root.join("agelkhid").exists(), "the session is removed; status: {}", msg.text);
+        assert!(elsewhere.join("agelkhid/age-trusted").is_file(), "the state behind the link survives");
+        let age_dir = home.join(".cs-secrets/sessions/agelkhid");
+        assert!(
+            msg.text.starts_with(&format!("Deleted: agelkhid, but could not read age state {}: ", age_dir.display())),
+            "status: {}",
+            msg.text
+        );
+        assert_eq!(msg.level, StatusLevel::Error);
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
     /// With no test home scoped, a test resolves no age state at all, so the
     /// delete tests that predate the age state (and any written later without
     /// a scope) cannot reach the real `~/.cs-secrets` of whoever runs them.

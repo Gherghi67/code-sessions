@@ -1819,6 +1819,27 @@ test_worktree_create_ignored_mode_copies_no_plan_links() {
 
 run_test test_worktree_create_ignored_mode_copies_no_plan_links
 
+# A plan under a directory whose name starts with a dash, or ends in a
+# newline, is a regular file like any other and comes over to the feature.
+test_worktree_create_ignored_mode_copies_plans_under_odd_dir_names() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" nl_dir
+    nl_dir="$(printf 'tail\n_')"; nl_dir="${nl_dir%_}"
+    mkdir -p "$base_dir/.cs"/{memory,local} "$base_dir/.cs/plans/-sub" "$base_dir/.cs/plans/$nl_dir"
+    echo "# P" > "$base_dir/README.md"
+    printf '.cs/\n' > "$base_dir/.gitignore"
+    echo "dash body" > "$base_dir/.cs/plans/-sub/plan.md"
+    echo "newline body" > "$base_dir/.cs/plans/$nl_dir/plan.md"
+    (cd "$base_dir" && git init -q && git config core.autocrlf false && git add -A && git commit -q -m init)
+    cs_launch "proj@task1"
+    local wt="$CS_SESSIONS_ROOT/proj@task1"
+    assert_file_contains "$wt/.cs/local/state" "cs_mode: ignored" || return 1
+    assert_eq "dash body" "$(cat "$wt/.cs/plans/-sub/plan.md" 2>/dev/null)" "a plan under -sub/ is copied" || return 1
+    assert_eq "newline body" "$(cat "$wt/.cs/plans/$nl_dir/plan.md" 2>/dev/null)" \
+        "a plan under a dir ending in a newline is copied" || return 1
+}
+
+run_test test_worktree_create_ignored_mode_copies_plans_under_odd_dir_names
+
 # Ignored mode keeps the base's MEMORY.md too, and appends each feature
 # pointer whose target the base index does not name.
 test_retire_ignored_mode_appends_feature_memory_pointers() {
