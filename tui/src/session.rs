@@ -1194,14 +1194,27 @@ pub fn remove_session_path(root: &Path, name: &str, path: &Path, grants: RemoveG
 /// `_spawn_staging_suffixes` in lib/52-spawn.sh; the two lists change together.
 const SPAWN_STAGING_SUFFIXES: [&str; 4] = [".seed", ".seed.stale", ".brief.md", ".brief.md.stale"];
 
-/// Delete any staged or stale spawn seed and brief for `name`. A deleted
-/// session must not leave either behind: a seed would block re-spawning the
-/// name and arm a future same-name session with dead tasks, and a brief would
-/// reach it as a first prompt nobody wrote for it. Best-effort by design.
+/// Delete any staged or stale spawn seed and brief for `name`, and the
+/// `.<name>.seed.XXXXXX` staging file a `cs -spawn` killed before it published
+/// leaves. A deleted session must not leave either behind: a seed would block
+/// re-spawning the name and arm a future same-name session with dead tasks,
+/// and a brief would reach it as a first prompt nobody wrote for it. Exactly
+/// six characters follow the staging prefix, so the staging file of a session
+/// named `<name>.seed` is never matched. Twin of `_spawn_staging_files_for` in
+/// lib/52-spawn.sh. Best-effort by design.
 fn discard_spawn_seeds(root: &Path, name: &str) {
     let spawn = root.join(".spawn");
     for suffix in SPAWN_STAGING_SUFFIXES {
         let _ = fs::remove_file(spawn.join(format!("{name}{suffix}")));
+    }
+    let prefix = format!(".{name}.seed.");
+    let Ok(entries) = fs::read_dir(&spawn) else { return };
+    for entry in entries.flatten() {
+        let file = entry.file_name();
+        let Some(file) = file.to_str() else { continue };
+        if file.strip_prefix(&prefix).is_some_and(|rest| rest.chars().count() == 6) {
+            let _ = fs::remove_file(entry.path());
+        }
     }
 }
 

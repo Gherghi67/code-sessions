@@ -45,10 +45,25 @@ _spawn_staging_suffixes() {
 # session is deleted: a leftover seed would block re-spawning the name and arm
 # a future same-name session with dead tasks and a dead brief.
 _spawn_discard_seeds() {  # name
-    local suffix
+    local suffix staged
     for suffix in $(_spawn_staging_suffixes); do
         rm -f "$SESSIONS_ROOT/.spawn/$1$suffix"
     done
+    for staged in $(_spawn_staging_files_for "$1"); do
+        rm -f "$staged"
+    done
+}
+
+# The staging files cs -spawn left for a name when it was killed before it
+# published: mktemp's .<name>.seed.XXXXXX. Exactly six characters follow, so
+# a session named <name>.seed never has its own staging file matched. One
+# path per line. Twin of the staging match in tui/src/session.rs.
+_spawn_staging_files_for() {  # name
+    local staged
+    for staged in "$SESSIONS_ROOT/.spawn/.$1.seed."??????; do
+        [ -e "$staged" ] && printf '%s\n' "$staged"
+    done
+    return 0
 }
 
 # True when the tmux session named 'cs' carries cs's ownership stamp. Only
