@@ -186,6 +186,16 @@ adopt_session() {  # name, [--yes|-y], in any order
     prior_binding=$(_read_local_state "$target_dir/.cs/local/state" claude_session_id)
     prior_color=$(_read_local_state "$target_dir/.cs/local/state" claude_session_color)
     create_session_structure "$target_dir"
+    # Re-adopted records of an encrypted session keep their command log behind
+    # .cs/private; with the vault locked there is nowhere to start one, and
+    # create_session_structure leaves it unwritten rather than write plaintext.
+    if ! cs_private_dir "$target_dir/.cs" >/dev/null; then
+        if [ -L "$target_dir/.cs/private" ]; then
+            warn "$session_name: .cs/private $(cs_private_state "$target_dir/.cs"), which is missing (encrypted storage not mounted?), so adopt started no command log there. Mount it before opening the session."
+        else
+            warn "$session_name: .cs/private is not a directory, so adopt started no command log there."
+        fi
+    fi
     if _is_uuid "$prior_binding"; then
         _set_local_state "$target_dir/.cs/local/state" claude_session_id "$prior_binding"
     else
