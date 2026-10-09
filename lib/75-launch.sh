@@ -969,9 +969,32 @@ _resume_lands_in_place() {  # session_dir, conversation id
     [ -f "$1/.cs/local/vault" ] && return 1
     [ -z "${CLAUDE_CONFIG_DIR+set}" ] || return 1
     file="$(_claude_project_dir "$1")/$2.jsonl"
+    [ -f "$file" ] || file=$(_relocated_worktree_transcript "$1" "$2") || return 1
     [ -f "$file" ] && command -v jq >/dev/null 2>&1 || return 1
     jq -n -R -e 'first(inputs | fromjson? | objects | select(.type == "user")) | true' \
         "$file" >/dev/null 2>&1
+}
+
+# The transcript of a session's conversation once `claude --worktree` has
+# exited: Claude Code moves it into the parent repo's project dir, and
+# `claude --resume <id>` run from the worktree still finds it there (measured
+# on 2.1.289). That dir also holds the parent's own conversations, so the file
+# counts only when it is this worktree's by the record and first-prompt checks
+# of _discover_worktree_uuid_in, applied to that one file: the worktree can hold
+# older conversations than its newest, and the parent's other files are never
+# read. The base dir is the session's own, which is where the claude cs launches
+# for this session reads. Prints the path; fails when the session is no linked
+# worktree or the conversation is not its own.
+_relocated_worktree_transcript() {  # session_dir, conversation id
+    local git_dir common parent proj
+    git_dir=$(_git_path_abs "$1" --git-dir) || return 1
+    common=$(_git_path_abs "$1" --git-common-dir) || return 1
+    [ "$git_dir" -ef "$common" ] && return 1
+    parent=$(cd "$common/.." 2>/dev/null && pwd -P) || return 1
+    proj="$(dirname "$(_claude_project_dir "$1")")/$(_claude_encode_path "$parent")"
+    [ -f "$proj/$2.jsonl" ] || return 1
+    _is_worktree_own_transcript "$proj/$2.jsonl" "$(_worktree_json_path "$1")" || return 1
+    printf '%s\n' "$proj/$2.jsonl"
 }
 
 # Follow a chain of symlinks to the file at its end, portably (BSD readlink

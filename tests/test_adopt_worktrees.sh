@@ -283,6 +283,72 @@ SCRIPT
         "the open's own files (settings.local.json, CLAUDE.local.md) stay out of git status" || return 1
 }
 
+# A claude stub that records its argv and the command line of its parent: cs
+# when the resume runs claude as its child, the caller when cs execs claude.
+_launch_recording_stub() {
+    cat > "$TEST_TMPDIR/claude-stub" << SCRIPT
+#!/bin/bash
+{ printf 'args=%s\n' "\$*"; printf 'parent=%s\n' "\$(ps -o args= -p \$PPID)"; } > "$TEST_TMPDIR/claude-launch"
+exit 0
+SCRIPT
+    chmod +x "$TEST_TMPDIR/claude-stub"
+    export CLAUDE_CODE_BIN="$TEST_TMPDIR/claude-stub"
+}
+
+# A closed `claude --worktree` conversation sits in the parent repo's project
+# dir, and `claude --resume <id>` from inside the worktree still finds it. The
+# resume is sure to land, so claude runs in place of cs, as it does for a
+# transcript in the worktree's own project dir.
+test_resume_of_a_relocated_conversation_runs_claude_in_place_of_cs() {
+    local repo="$TEST_TMPDIR/repo"
+    _make_repo "$repo" moved-wt
+    _seed_relocated_conversation "$repo" "$repo/.claude/worktrees/moved-wt" "$UUID_A" "Port the sync engine to the worktree branch"
+    (cd "$repo" && "$CS_BIN" -adopt --worktrees >/dev/null 2>&1) || { echo "  FAIL: adopt should succeed"; return 1; }
+    _launch_recording_stub
+    (unset CLAUDE_CONFIG_DIR; "$CS_BIN" repo.moved-wt <<< "y" >/dev/null 2>&1) || true
+    assert_output_contains "$(sed -n 's/^args=//p' "$TEST_TMPDIR/claude-launch")" "--resume $UUID_A" \
+        "the open resumes the relocated conversation" || return 1
+    assert_output_not_contains "$(sed -n 's/^parent=//p' "$TEST_TMPDIR/claude-launch")" "repo.moved-wt" \
+        "claude replaces cs" || return 1
+}
+
+# The parent's project dir also holds the parent's own conversations. One that
+# stepped into the worktree carries the worktree's record but began on the
+# parent, so it is not the worktree's conversation: cs stays claude's parent.
+test_resume_of_a_parent_conversation_under_the_worktree_id_keeps_cs_as_the_parent() {
+    local repo="$TEST_TMPDIR/repo"
+    _make_repo "$repo" moved-wt
+    local wt="$repo/.claude/worktrees/moved-wt"
+    _seed_relocated_conversation "$repo" "$wt" "$UUID_A" "Port the sync engine to the worktree branch"
+    (cd "$repo" && "$CS_BIN" -adopt --worktrees >/dev/null 2>&1) || { echo "  FAIL: adopt should succeed"; return 1; }
+    _seed_entered_conversation "$repo" "$wt" "$UUID_A" "Start on the parent, then enter the worktree"
+    _launch_recording_stub
+    (unset CLAUDE_CONFIG_DIR; "$CS_BIN" repo.moved-wt <<< "y" >/dev/null 2>&1) || true
+    assert_output_contains "$(sed -n 's/^args=//p' "$TEST_TMPDIR/claude-launch")" "--resume $UUID_A" \
+        "the open still resumes the recorded conversation" || return 1
+    assert_output_contains "$(sed -n 's/^parent=//p' "$TEST_TMPDIR/claude-launch")" "repo.moved-wt" \
+        "cs stays claude's parent" || return 1
+}
+
+# A worktree that held two `claude --worktree` conversations has both in the
+# parent's project dir. Resuming the older one lands as surely as the newer:
+# the bound conversation is checked by its own file, not by being the newest.
+test_resume_of_an_older_relocated_conversation_runs_claude_in_place_of_cs() {
+    local repo="$TEST_TMPDIR/repo"
+    _make_repo "$repo" moved-wt
+    local wt="$repo/.claude/worktrees/moved-wt"
+    _seed_relocated_conversation "$repo" "$wt" "$UUID_A" "Port the sync engine to the worktree branch"
+    (cd "$repo" && "$CS_BIN" -adopt --worktrees >/dev/null 2>&1) || { echo "  FAIL: adopt should succeed"; return 1; }
+    _seed_relocated_conversation "$repo" "$wt" "$UUID_B" "Write the migration notes for the sync engine"
+    touch -t 200001010000 "$(_wt_project_dir "$repo")/$UUID_A.jsonl"
+    _launch_recording_stub
+    (unset CLAUDE_CONFIG_DIR; "$CS_BIN" repo.moved-wt <<< "y" >/dev/null 2>&1) || true
+    assert_output_contains "$(sed -n 's/^args=//p' "$TEST_TMPDIR/claude-launch")" "--resume $UUID_A" \
+        "the open resumes the bound, older conversation" || return 1
+    assert_output_not_contains "$(sed -n 's/^parent=//p' "$TEST_TMPDIR/claude-launch")" "repo.moved-wt" \
+        "claude replaces cs" || return 1
+}
+
 test_a_symlink_to_another_project_is_not_adopted() {
     local repo="$TEST_TMPDIR/repo" other="$TEST_TMPDIR/other-project"
     _make_repo "$repo"
@@ -543,6 +609,9 @@ run_test test_rerun_adopts_nothing_twice_and_keeps_the_exclude_file
 run_test test_dry_run_writes_nothing
 run_test test_rerun_prunes_a_link_whose_worktree_is_gone
 run_test test_same_worktree_name_under_two_repos_opens_the_right_one
+run_test test_resume_of_a_relocated_conversation_runs_claude_in_place_of_cs
+run_test test_resume_of_a_parent_conversation_under_the_worktree_id_keeps_cs_as_the_parent
+run_test test_resume_of_an_older_relocated_conversation_runs_claude_in_place_of_cs
 run_test test_a_symlink_to_another_project_is_not_adopted
 run_test test_open_leaves_a_tracked_claude_md_with_cs_markers_alone
 run_test test_an_exclude_file_without_a_final_newline_keeps_its_last_rule
