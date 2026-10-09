@@ -283,11 +283,16 @@ plugin's `remote-tests` script (`scripts/remote-tests.sh`):
 
 ```bash
 GATE=<scratchpad>/release-gate-$SHA
-git clone --quiet --branch main . "$GATE"
-[ "$(git -C "$GATE" rev-parse HEAD)" = "$SHA" ] || echo "clone is not at $SHA"
-bash <claude-tmux>/scripts/remote-tests.sh --host ghost@ghost --repo "$GATE" \
-  --cmd 'bash tests/run_all.sh'
+git clone --quiet . "$GATE" \
+  && git -C "$GATE" checkout --quiet --detach "$SHA" \
+  && [ "$(git -C "$GATE" rev-parse HEAD)" = "$SHA" ] \
+  && bash <claude-tmux>/scripts/remote-tests.sh --host ghost@ghost --repo "$GATE" \
+       --cmd 'bash tests/run_all.sh'
 ```
+
+The clone checks out `$SHA` itself, never `main`'s tip: a commit that lands on
+`main` after Step 8 would otherwise be the one judged. If the clone, the
+checkout or the sha check fails, nothing launches; stop and find out why.
 
 - Gate from a clone, never a git worktree: a worktree's `.git` points at a path
   that exists only on this machine, and every git-using suite fails on ghost.
