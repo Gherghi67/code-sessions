@@ -54,7 +54,9 @@ EOF
 # the memory topics, the MEMORY.md index, plans/ and summary.md. Never a
 # narrative (the feature keeps its own and fusion appends it back), .cs/local,
 # a lock or the timeline. A symlink is skipped, not followed: it would copy
-# whatever it points at into the feature. A failed copy warns and the create
+# whatever it points at into the feature. plans/ is copied file by file for
+# the same reason, so a link inside it (to another session's plans, say) stays
+# behind; only regular files come over. A failed copy warns and the create
 # goes on; the feature only starts with less context.
 _copy_base_context() {  # base_meta wt_meta
     local src="$1" dst="$2" f name
@@ -65,7 +67,15 @@ _copy_base_context() {  # base_meta wt_meta
         cp "$f" "$dst/memory/$name" || warn "could not copy memory/$name from the base"
     done
     if [ -d "$src/plans" ] && [ ! -L "$src/plans" ]; then
-        cp -R "$src/plans" "$dst/plans" || warn "could not copy plans/ from the base"
+        local rel
+        mkdir -p "$dst/plans" || warn "could not create plans/ in the feature"
+        # find -P (the default) never descends a linked dir, and -type f
+        # leaves out links and specials.
+        (cd "$src/plans" && find . -type f -print0) | while IFS= read -r -d '' rel; do
+            rel="${rel#./}"
+            { mkdir -p "$dst/plans/$(dirname "$rel")" && cp "$src/plans/$rel" "$dst/plans/$rel"; } \
+                || warn "could not copy plans/$rel from the base"
+        done || warn "could not list plans/ in the base"
     fi
     if [ -f "$src/summary.md" ] && [ ! -L "$src/summary.md" ]; then
         cp "$src/summary.md" "$dst/summary.md" || warn "could not copy summary.md from the base"
