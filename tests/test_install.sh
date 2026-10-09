@@ -377,7 +377,7 @@ test_install_backs_up_settings_json_before_changing_it() {
 # running install.sh inside a live Claude Code) can rewrite settings.json
 # while the installer is working on it. A one-shot slow jq on the merge
 # widens the installer's window, and from inside it starts a writer that
-# takes the settings lock beside the file and adds a key. Read and write
+# takes the settings lock beside the file (cs's own _cs_lock) and adds a key. Read and write
 # taken under that lock, both changes survive; read early and written late,
 # the writer's key is lost.
 test_install_keeps_a_concurrent_settings_change() {
@@ -389,14 +389,10 @@ test_install_keeps_a_concurrent_settings_change() {
     cat > "$TEST_TMPDIR/race-writer.sh" <<EOF
 #!/bin/bash
 sleep 0.5
-n=0
-until mkdir "$f.lock" 2>/dev/null; do
-    n=\$((n + 1)); [ "\$n" -lt 80 ] || exit 1
-    sleep 0.05
-done
-echo \$\$ > "$f.lock/pid"
+. "$SCRIPT_DIR/../hooks/cs-shared.sh"
+_cs_lock "$f.mutex.lock" || exit 1
 "$real" '.env.BOB = "1"' "$f" > "$f.writer" && mv "$f.writer" "$f"
-rm -f "$f.lock/pid"; rmdir "$f.lock"
+_cs_unlock "$f.mutex.lock"
 : > "$TEST_TMPDIR/race-writer.done"
 EOF
     cat > "$stub/jq" <<EOF
