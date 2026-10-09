@@ -1430,9 +1430,10 @@ test_integrate_terminated_mid_gate_leaves_no_lock_or_temp() {
     assert_file_not_exists "$base_dir/feature.txt" "nothing landed" || return 1
 }
 
-# A gate log the cleanup cannot remove (macOS's user immutable flag) must not
-# stop the cleanup: the mutex is still released, so the next integrate runs.
-test_integrate_terminated_mid_gate_releases_the_lock_when_the_gate_log_stays() {
+# A gate log or a temp worktree the cleanup cannot remove (macOS's user
+# immutable flag) must not stop the cleanup: the mutex is still released, so
+# the next integrate runs.
+test_integrate_terminated_mid_gate_releases_the_lock_when_its_files_stay() {
     command -v chflags >/dev/null 2>&1 || return 77
     local sha base_dir output status=0
     sha=$(integrate_fixture myproj fix-auth)
@@ -1442,6 +1443,7 @@ test_integrate_terminated_mid_gate_releases_the_lock_when_the_gate_log_stays() {
     output=$(TMPDIR="$gate_tmp" "$CS_BIN" myproj -integrate-feature fix-auth "$sha" -- sh -c '
         test -d "$0" || exit 9
         chflags uchg "$TMPDIR"/cs-gate.* || exit 8
+        : > kept && chflags uchg kept || exit 7
         : > "$1"
         target=""; p=$PPID
         while [ "${p:-1}" -gt 1 ]; do
@@ -1453,11 +1455,10 @@ test_integrate_terminated_mid_gate_releases_the_lock_when_the_gate_log_stays() {
         done
         kill -TERM "$target"; sleep 2
     ' "$base_dir/.git/cs/integrate.lock" "$TEST_TMPDIR/gate-ran" 2>&1) || status=$?
-    chflags nouchg "$gate_tmp"/cs-gate.* 2>/dev/null || :
+    chflags -R nouchg "$gate_tmp" 2>/dev/null || :
     [ "$status" != 0 ] || { echo "  FAIL: a terminated integrate must not exit 0"; return 1; }
     assert_file_exists "$TEST_TMPDIR/gate-ran" "the gate ran with the mutex held and its log immutable" || return 1
-    assert_not_exists "$base_dir/.git/cs/integrate.lock" "mutex released although the gate log stays" || return 1
-    assert_output_not_contains "$(git -C "$base_dir" worktree list)" "cs-finish-" "temp worktree removed on TERM" || return 1
+    assert_not_exists "$base_dir/.git/cs/integrate.lock" "mutex released although the gate log and the temp worktree stay" || return 1
 }
 
 test_integrate_conflict_names_the_path_and_leaves_no_merge_head() {
@@ -1642,7 +1643,7 @@ run_test test_integrate_refuses_when_base_moved_during_gates
 run_test test_integrate_refuses_when_base_reset_to_an_ancestor_during_gates
 run_test test_integrate_refuses_when_base_dirtied_during_gates
 run_test test_integrate_terminated_mid_gate_leaves_no_lock_or_temp
-run_test test_integrate_terminated_mid_gate_releases_the_lock_when_the_gate_log_stays
+run_test test_integrate_terminated_mid_gate_releases_the_lock_when_its_files_stay
 run_test test_integrate_conflict_names_the_path_and_leaves_no_merge_head
 run_test test_integrate_ignored_mode_fuses_nothing
 run_test test_integrate_tracked_mode_warns_on_memory_index_change
