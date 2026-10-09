@@ -616,6 +616,39 @@ test_lock_release_frees_it_from_a_child_still_running() {
     assert_eq "free" "$out" "the released lock is free while the child runs" || return 1
 }
 
+# A live holder is waited for five seconds; then the taker gives up holding
+# nothing, quietly (its caller says what that means), and the holder keeps
+# its lock.
+test_lock_waits_five_seconds_for_a_live_holder() {
+    local lock="$TEST_TMPDIR/busy.lock" rc=0 err start took held=yes
+    _start_lock_holder "$lock" "$TEST_TMPDIR/busy.ready" || return 1
+    start=$SECONDS
+    err=$(bash -c 'source "$1"; _cs_lock "$2"' _ "$LOCK_LIB" "$lock" 2>&1) || rc=$?
+    took=$((SECONDS - start))
+    _lock_is_free "$lock" && held=no
+    kill "$LOCK_HOLDER"
+    assert_eq "1" "$rc" "the taker gives up" || return 1
+    assert_eq "" "$err" "and prints nothing" || return 1
+    assert_eq "yes" "$held" "the holder still holds the lock" || return 1
+    [ "$took" -ge 4 ] && [ "$took" -le 6 ] || { echo "  FAIL: the taker gave up after ${took}s, not about 5s"; return 1; }
+}
+
+# A lock whose directory is missing is refused at once and quietly, as one
+# whose directory cannot take a new file is; without perl nothing is locked,
+# and a line on stderr says so.
+test_lock_refuses_at_once_without_its_directory_or_perl() {
+    local lock="$TEST_TMPDIR/missing/x.lock" rc=0 err start
+    start=$SECONDS
+    err=$(bash -c 'source "$1"; _cs_lock "$2"' _ "$LOCK_LIB" "$lock" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a lock in a missing directory is refused" || return 1
+    assert_eq "" "$err" "quietly" || return 1
+    [ $((SECONDS - start)) -le 1 ] || { echo "  FAIL: the refusal took $((SECONDS - start))s"; return 1; }
+    lock="$TEST_TMPDIR/x.lock"; rc=0
+    err=$(bash -c 'source "$1"; PATH="$3"; _cs_lock "$2"' _ "$LOCK_LIB" "$lock" "$TEST_TMPDIR/no-such-bin" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "without perl the lock is refused" || return 1
+    assert_eq "cs: cannot lock $lock: perl not found" "$err" "with a line saying why" || return 1
+}
+
 # A state rewrite is a read-modify-write, so two writers (cs at launch and the
 # SessionStart hook) can lose an update unless they take turns. The lock is a
 # directory beside the file, .cs/local/state.lock, holding the holder's pid; a
@@ -1173,6 +1206,8 @@ run_test test_lock_takers_never_hold_it_at_once
 run_test test_lock_of_a_killed_holder_is_free_at_once
 run_test test_lock_belongs_to_the_shell_that_took_it
 run_test test_lock_release_frees_it_from_a_child_still_running
+run_test test_lock_waits_five_seconds_for_a_live_holder
+run_test test_lock_refuses_at_once_without_its_directory_or_perl
 run_test test_state_write_waits_for_a_live_lock_holder
 run_test test_lock_timeout_leaves_a_live_holders_old_lock_in_place
 run_test test_state_write_takes_over_a_dead_holders_lock
