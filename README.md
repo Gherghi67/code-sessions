@@ -167,7 +167,7 @@ cs -detect-theme            # Show the detected terminal light/dark theme
 cs -list, -ls               # List all sessions
 cs -live                    # List sessions running right now on this machine, with what each is doing
 cs -status "<text>"         # Set this session's status (also: cs -status, cs -status --clear)
-cs -remove, -rm <name>...   # Remove sessions (each asks its own confirm, naming files cs did not create; --force skips the confirm and the live lock, and refuses a session holding such files unless --delete-files is added)
+cs -remove, -rm <name>...   # Remove sessions (each asks its own confirm, naming files cs did not create; --force skips the confirm and the live lock, and refuses a session holding such files unless --delete-files is added; a base session's age pins under ~/.cs-secrets/sessions/<name>/ go with it)
 cs -update [--check|--force]   # Update to latest (--check: check only; --force: reinstall)
 cs -uninstall               # Uninstall cs
 cs -help, -h                # Show help message
@@ -194,7 +194,7 @@ For `cs .`, the current directory decides, not any history: it opens a session o
 - **Preview & To-Do panes** — appear beside the list on wide landscape terminals (≥120 cols), or stacked below it (list, then details, then notes) on any window at least 40 cols by 26 rows; toggle with `p`
 - **Expand row** with `p` — shows session objective (auto-captured from your first prompt) and narrative inline
 - **Create session** with `n` — opens inline dialog to create a new session
-- **Delete** with `d` (confirmation required)
+- **Delete** with `d` (confirmation required). Like `cs -rm`, deleting a base session also removes its age pins under `~/.cs-secrets/sessions/<name>/` and the status line names the path; a worktree row or an adopted link keeps them
 - **Batch operations** — mark sessions with `Space`, then `D` to batch delete
 - **Rename** with `r`
 - **Archive / unarchive** with `a` — toggles the selected session's `.cs/archived` marker by running `cs -archive` / `cs -unarchive`, so the picker never writes the marker itself and inherits the verb's refusal to archive a live session. Archived rows are hidden until `A` shows them, which is also how you reach one to unarchive
@@ -296,14 +296,18 @@ different session, or cancel. A worktree session also
 knows what it is: Claude is told at launch that it runs in a feature worktree,
 that `/finish <feature>` in the base session integrates the work and then
 retires this worktree once its conversation is closed, so it won't merge or
-delete the branch by hand.
+delete the branch by hand. When the repo does not track `.cs/`, git cannot
+carry the base's session context, so cs copies the base's memory topics,
+`MEMORY.md`, `.cs/plans/` and `.cs/summary.md` into the new worktree; never
+its narratives, `.cs/local/` or the timeline.
 
 The `finish` skill (`/finish <feature>` in the base session) lands a feature
 and retires its worktree: it captures the feature commit, merges base and
 feature in a temporary detached worktree, runs no tests there unless you ask with `/finish <feature> --gate` (then it runs the repo's gates, skipped and reported as `gate skipped` when the PR is already merged, the checks origin recorded on its merge commit passed, and the base carries no commits of its own on top of it; the gate runs in a clean checkout without gitignored dependencies, `.env` or build output, so one that needs them installs them first, for example `-- sh -c 'npm ci && npm test'`),
 fast-forwards the base onto the result, reports whether a GitHub PR exists
 for the branch, then fuses the worktree's session records into the base and
-removes the worktree and branch. That last step needs the feature
+removes the worktree and branch. The base keeps its own `MEMORY.md` and gains
+each feature pointer whose target topic it does not index yet. That last step needs the feature
 conversation closed, because a directory cannot be removed from under a
 running Claude: while it is open, `/finish` lands the work, says so in plain
 words, and you close that session and run `/finish <feature>` again. Nothing

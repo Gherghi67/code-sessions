@@ -214,6 +214,9 @@ test_remove_force_ignores_cs_owned_entries_and_ds_store() {
     dir=$(create_test_session f3)
     mkdir -p "$dir/.claude" "$dir/.git"
     touch "$dir/.gitignore" "$dir/.gitattributes" "$dir/CLAUDE.local.md" "$dir/.DS_Store"
+    # Legacy cs layouts kept these at the root; they are cs's, not the user's.
+    mkdir -p "$dir/logs" "$dir/artifacts"
+    touch "$dir/notes.md" "$dir/changes.md" "$dir/discoveries.md"
     "$CS_BIN" -rm f3 --force </dev/null >/dev/null 2>&1 || return 1
     assert_not_exists "$dir" "a session holding only cs-owned entries should still go under --force" || return 1
 }
@@ -424,6 +427,222 @@ test_remove_worktree_confirm_lists_untracked_files() {
     assert_dir "$wt" "declined worktree must survive" || return 1
 }
 
+# The pins and recipient digests `cs -secrets age add` keeps for a session
+# live under ~/.cs-secrets/sessions/<name>/, outside the session directory.
+# Removing a base session drops them and says so on one line naming the path.
+test_remove_base_session_drops_its_age_state() {
+    create_test_session agebase >/dev/null
+    local age_dir="$HOME/.cs-secrets/sessions/agebase"
+    mkdir -p "$age_dir"
+    printf 'age1pin\n' > "$age_dir/age-trusted"
+    local out
+    out=$("$CS_BIN" -rm agebase --force </dev/null 2>&1) || { echo "  cs -rm failed: $out"; return 1; }
+    assert_not_exists "$age_dir" "the base session's age state must go with it" || return 1
+    assert_eq "Removed age state: $age_dir" "$(printf '%s\n' "$out" | grep '^Removed age state: ')" \
+        "cs -rm names the age state it removed" || return 1
+}
+
+test_remove_base_session_without_age_state_prints_no_age_line() {
+    create_test_session agenone >/dev/null
+    local out
+    out=$("$CS_BIN" -rm agenone --force </dev/null 2>&1) || { echo "  cs -rm failed: $out"; return 1; }
+    assert_eq "" "$(printf '%s\n' "$out" | grep 'age state' || true)" \
+        "nothing removed, nothing named" || return 1
+}
+
+# A base@task session uses its base's secrets (CS_SECRETS_SESSION is the
+# base), so removing it must leave the base's age state alone.
+test_remove_worktree_session_keeps_the_base_age_state() {
+    local base="$CS_SESSIONS_ROOT/agewt"
+    create_test_session agewt >/dev/null
+    git -C "$base" init -q
+    git -C "$base" add CLAUDE.md
+    git -C "$base" -c user.email=t@t -c user.name=t commit -qm seed
+    git -C "$base" worktree add -q "$CS_SESSIONS_ROOT/agewt@t" -b cs/t
+    mkdir -p "$CS_SESSIONS_ROOT/agewt@t/.cs/local"
+    local age_dir="$HOME/.cs-secrets/sessions/agewt"
+    mkdir -p "$age_dir"
+    printf 'age1pin\n' > "$age_dir/age-trusted"
+    local out
+    out=$("$CS_BIN" -rm "agewt@t" --force </dev/null 2>&1) || { echo "  cs -rm failed: $out"; return 1; }
+    assert_not_exists "$CS_SESSIONS_ROOT/agewt@t" "the worktree session is removed" || return 1
+    assert_eq "age1pin" "$(cat "$age_dir/age-trusted")" "the base's age state survives" || return 1
+    assert_eq "" "$(printf '%s\n' "$out" | grep 'age state' || true)" "no age state is named" || return 1
+}
+
+# A base@task whose base is gone falls through to the plain directory
+# removal; the name still decides, so no age state goes with it.
+test_remove_orphaned_worktree_session_keeps_age_state() {
+    mkdir -p "$CS_SESSIONS_ROOT/ageorph@t/.cs/local"
+    local base_age="$HOME/.cs-secrets/sessions/ageorph"
+    local own_age="$HOME/.cs-secrets/sessions/ageorph@t"
+    mkdir -p "$base_age" "$own_age"
+    "$CS_BIN" -rm "ageorph@t" --force </dev/null >/dev/null 2>&1 || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/ageorph@t" "the orphaned worktree dir is removed" || return 1
+    assert_dir "$base_age" "the base's age state survives" || return 1
+    assert_dir "$own_age" "a feature name never reaches the age state" || return 1
+}
+
+test_remove_adopted_link_keeps_age_state() {
+    local project_dir="$TEST_TMPDIR/age-adopted-project"
+    mkdir -p "$project_dir"
+    (cd "$project_dir" && "$CS_BIN" -adopt ageadopt >/dev/null 2>&1)
+    [ -L "$CS_SESSIONS_ROOT/ageadopt" ] || { echo "  adopt did not create the link"; return 1; }
+    local age_dir="$HOME/.cs-secrets/sessions/ageadopt"
+    mkdir -p "$age_dir"
+    printf 'age1pin\n' > "$age_dir/age-trusted"
+    "$CS_BIN" -rm ageadopt --force </dev/null >/dev/null 2>&1 || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/ageadopt" "the link is removed" || return 1
+    assert_eq "age1pin" "$(cat "$age_dir/age-trusted")" "an adopted link's removal keeps age state" || return 1
+}
+
+# The helper itself refuses any name that is not one plain path component,
+# so no caller can turn it on ~/.cs-secrets/sessions/ or above.
+test_drop_age_state_refuses_escaping_names() {
+    local secrets="$HOME/.cs-secrets"
+    mkdir -p "$secrets/sessions/keep" "$secrets/sessions/.hidden"
+    printf 'x\n' > "$secrets/sessions/keep/age-trusted"
+    printf 'x\n' > "$secrets/sessions/age-root-marker"
+    local name rc out
+    for name in "" "." ".." ".hidden" "keep/.." "../sessions" "keep@t"; do
+        rc=0
+        out=$( source "$SCRIPT_DIR/../lib/05-term.sh"
+               source "$SCRIPT_DIR/../lib/10-help.sh"
+               source "$SCRIPT_DIR/../lib/65-sessions.sh"
+               _drop_session_age_state "$name" 2>&1 ) || rc=$?
+        assert_eq "1" "$rc" "name '$name' must be refused" || return 1
+        assert_eq "Refusing to remove age state for an invalid base session name: '$name'" "$out" \
+            "refusal for '$name' names it" || return 1
+    done
+    assert_eq "x" "$(cat "$secrets/sessions/keep/age-trusted")" "another session's state survives" || return 1
+    assert_eq "x" "$(cat "$secrets/sessions/age-root-marker")" "the sessions dir survives" || return 1
+    assert_dir "$secrets/sessions/.hidden" "a dot-named dir survives" || return 1
+    # A glob character is a plain name: the path is exact, so '*' removes
+    # nothing when no session is literally named '*'.
+    rc=0
+    out=$( source "$SCRIPT_DIR/../lib/05-term.sh"
+           source "$SCRIPT_DIR/../lib/10-help.sh"
+           source "$SCRIPT_DIR/../lib/65-sessions.sh"
+           _drop_session_age_state "*" 2>&1 ) || rc=$?
+    assert_eq "0" "$rc" "'*' with no such dir is a no-op" || return 1
+    assert_eq "" "$out" "'*' with no such dir names nothing" || return 1
+    assert_eq "x" "$(cat "$secrets/sessions/keep/age-trusted")" "'*' is not expanded as a glob" || return 1
+}
+
+# A session made by hand under a leading-dot name predates the dot-name
+# refusal and stays removable. Its age state is never cs's to name, but its
+# removal must not stop the names after it in the same cs -rm.
+test_remove_dotted_session_does_not_stop_the_next_name() {
+    mkdir -p "$CS_SESSIONS_ROOT/.olddot/.cs/local"
+    create_test_session agenext >/dev/null
+    local out rc=0
+    out=$("$CS_BIN" -rm .olddot agenext --force </dev/null 2>&1) || rc=$?
+    assert_not_exists "$CS_SESSIONS_ROOT/.olddot" "the dotted session is removed" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/agenext" "the name after it is removed too" || return 1
+    assert_eq "0" "$rc" "cs -rm succeeds" || { echo "  output: $out"; return 1; }
+}
+
+# The age state is removed after its session is gone. When that removal
+# fails, cs -rm names the path, still removes the names after it, and exits 1
+# so a script sees that the run left something behind.
+test_remove_age_state_failure_names_it_and_finishes_the_run() {
+    rm -rf "$HOME/.cs-secrets"
+    create_test_session agefail >/dev/null
+    create_test_session agefailnext >/dev/null
+    local age_root="$HOME/.cs-secrets/sessions"
+    local age_dir="$age_root/agefail"
+    mkdir -p "$age_dir"
+    printf 'age1pin\n' > "$age_dir/age-trusted"
+    chmod 500 "$age_root"
+    local out rc=0
+    out=$("$CS_BIN" -rm agefail agefailnext --force </dev/null 2>&1) || rc=$?
+    chmod 700 "$age_root"
+    assert_not_exists "$CS_SESSIONS_ROOT/agefail" "the session itself is removed" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/agefailnext" "the name after it is removed too" || return 1
+    assert_dir "$age_dir" "the age state that could not go is still there" || return 1
+    assert_eq "Could not remove age state: $age_dir" \
+        "$(printf '%s\n' "$out" | sed -n 's/.*\(Could not remove age state: [^[:cntrl:]]*\).*/\1/p')" \
+        "the failure names the path" || { echo "  output: $out"; return 1; }
+    assert_eq "1" "$rc" "cs -rm exits 1 after a partial run" || { echo "  output: $out"; return 1; }
+}
+
+# ~/.cs-secrets or its sessions dir may be a link to anywhere; following it
+# would rm -rf a same-name directory there. The drop refuses through a link,
+# names the path it left, still removes the names after it, and exits 1.
+test_remove_age_state_refuses_a_linked_secrets_parent() {
+    local level elsewhere age_dir out rc
+    for level in secrets sessions; do
+        rm -rf "$HOME/.cs-secrets" "$TEST_TMPDIR/elsewhere-$level"
+        elsewhere="$TEST_TMPDIR/elsewhere-$level"
+        case "$level" in
+            secrets)
+                mkdir -p "$elsewhere/sessions/agelink"
+                ln -s "$elsewhere" "$HOME/.cs-secrets"
+                printf 'keep\n' > "$elsewhere/sessions/agelink/age-trusted" ;;
+            sessions)
+                mkdir -p "$elsewhere/agelink" "$HOME/.cs-secrets"
+                ln -s "$elsewhere" "$HOME/.cs-secrets/sessions"
+                printf 'keep\n' > "$elsewhere/agelink/age-trusted" ;;
+        esac
+        age_dir="$HOME/.cs-secrets/sessions/agelink"
+        create_test_session agelink >/dev/null
+        create_test_session agelinknext >/dev/null
+        rc=0
+        out=$("$CS_BIN" -rm agelink agelinknext --force </dev/null 2>&1) || rc=$?
+        assert_not_exists "$CS_SESSIONS_ROOT/agelink" "the session is removed ($level)" || return 1
+        assert_not_exists "$CS_SESSIONS_ROOT/agelinknext" "the name after it is removed too ($level)" || return 1
+        assert_eq "keep" "$(cat "$age_dir/age-trusted")" "nothing behind the link is deleted ($level)" || return 1
+        assert_eq "Left age state behind a linked ~/.cs-secrets: $age_dir" \
+            "$(printf '%s\n' "$out" | sed -n 's/.*\(Left age state behind a linked [^[:cntrl:]]*\).*/\1/p')" \
+            "the refusal names only the state that is there ($level)" || { echo "  output: $out"; return 1; }
+        assert_eq "1" "$rc" "cs -rm exits 1 ($level)" || return 1
+    done
+    rm -rf "$HOME/.cs-secrets"
+}
+
+# A sessions dir cs cannot search hides whether the state is there; that is a
+# failure to report, never "nothing to remove".
+test_remove_age_state_unsearchable_parent_is_a_failure() {
+    rm -rf "$HOME/.cs-secrets"
+    create_test_session agehidden >/dev/null
+    create_test_session agehiddennext >/dev/null
+    local age_root="$HOME/.cs-secrets/sessions"
+    local age_dir="$age_root/agehidden"
+    mkdir -p "$age_dir"
+    printf 'age1pin\n' > "$age_dir/age-trusted"
+    chmod 000 "$age_root"
+    local out rc=0
+    out=$("$CS_BIN" -rm agehidden agehiddennext --force </dev/null 2>&1) || rc=$?
+    chmod 700 "$age_root"
+    assert_not_exists "$CS_SESSIONS_ROOT/agehiddennext" "the name after it is removed too" || return 1
+    assert_dir "$age_dir" "the unreachable state is still there" || return 1
+    assert_eq "Could not check age state: $age_dir" \
+        "$(printf '%s\n' "$out" | sed -n 's/.*\(Could not check age state: [^[:cntrl:]]*agehidden\)$/\1/p;s/.*\(Could not check age state: [^[:cntrl:]]*agehidden\)[^[:alnum:]].*/\1/p')" \
+        "the failure names the path" || { echo "  output: $out"; return 1; }
+    assert_eq "1" "$rc" "cs -rm exits 1" || return 1
+}
+
+test_remove_age_state_unsearchable_linked_parent_is_a_failure() {
+    rm -rf "$HOME/.cs-secrets"
+    create_test_session agelkhid >/dev/null
+    create_test_session agelkhidnext >/dev/null
+    local elsewhere="$TEST_TMPDIR/age-elsewhere-hidden"
+    mkdir -p "$elsewhere/agelkhid" "$HOME/.cs-secrets"
+    printf 'age1pin\n' > "$elsewhere/agelkhid/age-trusted"
+    ln -s "$elsewhere" "$HOME/.cs-secrets/sessions"
+    local age_dir="$HOME/.cs-secrets/sessions/agelkhid"
+    chmod 000 "$elsewhere"
+    local out rc=0
+    out=$("$CS_BIN" -rm agelkhid agelkhidnext --force </dev/null 2>&1) || rc=$?
+    chmod 700 "$elsewhere"
+    assert_not_exists "$CS_SESSIONS_ROOT/agelkhidnext" "the name after it is removed too" || return 1
+    assert_dir "$elsewhere/agelkhid" "the unreachable state is still there" || return 1
+    assert_eq "Could not check age state: $age_dir" \
+        "$(printf '%s\n' "$out" | sed -n 's/.*\(Could not check age state: [^[:cntrl:]]*agelkhid\)$/\1/p;s/.*\(Could not check age state: [^[:cntrl:]]*agelkhid\)[^[:alnum:]].*/\1/p')" \
+        "the failure names the path" || { echo "  output: $out"; return 1; }
+    assert_eq "1" "$rc" "cs -rm exits 1" || return 1
+}
+
 test_remove_force_on_adopted_removes_only_the_link() {
     local project_dir="$TEST_TMPDIR/adopted-project"
     mkdir -p "$project_dir"
@@ -435,6 +654,17 @@ test_remove_force_on_adopted_removes_only_the_link() {
 }
 
 run_test test_remove_empty_name_rejected_before_any_deletion
+run_test test_remove_base_session_drops_its_age_state
+run_test test_remove_base_session_without_age_state_prints_no_age_line
+run_test test_remove_worktree_session_keeps_the_base_age_state
+run_test test_remove_orphaned_worktree_session_keeps_age_state
+run_test test_remove_adopted_link_keeps_age_state
+run_test test_drop_age_state_refuses_escaping_names
+run_test test_remove_dotted_session_does_not_stop_the_next_name
+run_test test_remove_age_state_failure_names_it_and_finishes_the_run
+run_test test_remove_age_state_refuses_a_linked_secrets_parent
+run_test test_remove_age_state_unsearchable_parent_is_a_failure
+run_test test_remove_age_state_unsearchable_linked_parent_is_a_failure
 run_test test_remove_refuses_live_session_without_force
 run_test test_remove_allows_heartbeat_only_session_without_force
 run_test test_remove_discards_pending_spawn_seeds

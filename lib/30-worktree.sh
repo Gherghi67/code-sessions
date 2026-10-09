@@ -28,8 +28,9 @@ cs_split_worktree_name() {
 # (ignored mode). Leaves the checkout's CLAUDE.md alone — in these repos it
 # is the project's own tracked file.
 bootstrap_worktree_meta() {
-    local wt_dir="$1" base_name="$2" task="$3"
+    local wt_dir="$1" base_name="$2" task="$3" base_dir="$4"
     mkdir -p "$wt_dir/.cs"/{local,memory}
+    _copy_base_context "$base_dir/.cs" "$wt_dir/.cs"
     _write_session_readme_head "$wt_dir/.cs/README.md" "$base_name@$task" "[worktree]" "[\"$base_name@$task\"]"
     cat >> "$wt_dir/.cs/README.md" << EOF
 Feature worktree of session '$base_name' on branch cs/$task.
@@ -47,6 +48,43 @@ Started: $(date '+%Y-%m-%d %H:%M:%S')
 
 EOF
     ensure_narrative_file "$wt_dir"
+}
+
+# Give an ignored-mode feature the base's context, which git cannot carry:
+# the memory topics, the MEMORY.md index, plans/ and summary.md. Never a
+# narrative (the feature keeps its own and fusion appends it back), .cs/local,
+# a lock or the timeline. A symlink is skipped, not followed: it would copy
+# whatever it points at into the feature. plans/ is copied file by file for
+# the same reason, so a link inside it (to another session's plans, say) stays
+# behind; only regular files come over. A failed copy warns and the create
+# goes on; the feature only starts with less context.
+_copy_base_context() {  # base_meta wt_meta
+    local src="$1" dst="$2" f name
+    for f in "$src"/memory/*.md; do
+        [ -f "$f" ] && [ ! -L "$f" ] || continue
+        name="${f##*/}"
+        case "$name" in narrative.*.md|narrative.md) continue ;; esac
+        cp "$f" "$dst/memory/$name" || warn "could not copy memory/$name from the base"
+    done
+    if [ -d "$src/plans" ] && [ ! -L "$src/plans" ]; then
+        local rel parent
+        mkdir -p "$dst/plans" || warn "could not create plans/ in the feature"
+        # find -P (the default) never descends a linked dir, and -type f
+        # leaves out links and specials.
+        (cd "$src/plans" && find . -type f -print0) | while IFS= read -r -d '' rel; do
+            rel="${rel#./}"
+            # Parameter expansion, not dirname: a "-sub" component reads as an
+            # option to it, and $( ) drops a trailing newline from a name.
+            parent=.
+            case "$rel" in */*) parent="${rel%/*}" ;; esac
+            { mkdir -p "$dst/plans/$parent" && cp "$src/plans/$rel" "$dst/plans/$rel"; } \
+                || warn "could not copy plans/$rel from the base"
+        done || warn "could not list plans/ in the base"
+    fi
+    if [ -f "$src/summary.md" ] && [ ! -L "$src/summary.md" ]; then
+        cp "$src/summary.md" "$dst/summary.md" || warn "could not copy summary.md from the base"
+    fi
+    return 0
 }
 
 # True when a checkout has uncommitted changes to tracked files (staged or
@@ -122,14 +160,15 @@ _setup_merge_attributes_clone_local() {  # base_dir common_dir
     fi
 }
 
-# Tracked-.cs mode: MEMORY.md merges with merge=ours, so a change to it on the
-# feature is silently dropped by the merge that follows; say so first.
+# Tracked-.cs mode: MEMORY.md merges with merge=ours, so an edit to it on the
+# feature is dropped by the merge that follows (only pointers to new targets
+# are appended after it); say so first.
 _warn_memory_index_changed() {  # base_dir ref
     local mb
     mb=$(git -C "$1" merge-base HEAD "$2" 2>/dev/null || echo "")
     if [ -n "$mb" ] \
         && ! git -C "$1" diff --quiet "$mb" "$2" -- .cs/memory/MEMORY.md 2>/dev/null; then
-        warn "MEMORY.md changed on $2; merge=ours keeps the base copy. Review: git -C \"$1\" diff $mb $2 -- .cs/memory/MEMORY.md"
+        warn "MEMORY.md changed on $2; merge=ours keeps the base copy and appends only pointers to targets it lacks. Review: git -C \"$1\" diff $mb $2 -- .cs/memory/MEMORY.md"
     fi
 }
 
@@ -322,7 +361,7 @@ create_worktree_session() {
     local mode="tracked"
     if [ -z "$(git -C "$base_dir" ls-files -- .cs 2>/dev/null)" ]; then
         mode="ignored"
-        bootstrap_worktree_meta "$wt_dir" "$base_name" "$task"
+        bootstrap_worktree_meta "$wt_dir" "$base_name" "$task" "$base_dir"
     fi
 
     # The protocol file is normally gitignored, so no worktree inherits it
@@ -813,6 +852,26 @@ _integrate_in_temp() {  # base_dir wt_dir task sha common from_remote ci_green g
     # The merge commit this integrate will land, read before the gate runs.
     # Everything after the gate is measured against it: what lands is this
     # commit, never whatever the temp holds when the gate is done.
+    # merge=ours kept the base's MEMORY.md; a pointer to a topic only the
+    # feature indexed is appended and folded into the merge commit, so it
+    # lands with it. A --from-remote landing is origin's commit, left as is.
+    if [ "$merge_status" = 0 ] && [ "$mode" = "tracked" ] && [ -z "$from_remote" ] \
+        && git -C "$tmp" cat-file -e "$sha:.cs/memory/MEMORY.md" 2>/dev/null; then
+        local feature_index added
+        feature_index=$(mktemp "${TMPDIR:-/tmp}/cs-memory-index.XXXXXX")
+        if ! git -C "$tmp" show "$sha:.cs/memory/MEMORY.md" > "$feature_index" \
+            || ! added=$(_append_missing_memory_pointers "$feature_index" "$tmp/.cs/memory/MEMORY.md"); then
+            rm -f "$feature_index"; rmdir "$no_hooks"
+            error "Could not carry the feature's MEMORY.md pointers into the merge in $tmp; base untouched"
+        fi
+        rm -f "$feature_index"
+        if [ "$added" != 0 ]; then
+            git -C "$tmp" add -- .cs/memory/MEMORY.md \
+                && git -C "$tmp" -c core.hooksPath="$no_hooks" commit -q --amend --no-edit >/dev/null \
+                || { rmdir "$no_hooks"; error "Could not commit the feature's MEMORY.md pointers in $tmp; base untouched"; }
+            info "MEMORY.md: appended $added pointer(s) from the feature (base lines kept)"
+        fi
+    fi
     local M=""
     [ "$merge_status" = 0 ] && M=$(git -C "$tmp" rev-parse HEAD)
     if [ "$merge_status" != 0 ]; then
@@ -989,11 +1048,43 @@ _append_jsonl() {  # src dst
     _terminate_jsonl "$dst"
 }
 
+# Append to the base's memory index each "- [title](target)" pointer of the
+# feature's index whose target the base index does not name, once per target,
+# and print how many were appended. The base's own lines stay as they are (a
+# pointer both sides reworded keeps the base wording); only a pointer to a
+# topic the base has never indexed is added, so it is not lost at /finish.
+# A pointer whose topic file is not beside the base index is left out: the
+# base deleted that topic after the feature branched, and the deletion stands.
+_append_missing_memory_pointers() {  # feature_index base_index
+    local src="$1" dst="$2" have="$2" missing
+    [ -f "$src" ] || { printf '0'; return 0; }
+    [ -f "$dst" ] || have=/dev/null
+    missing=$(awk '
+        function target(s) {
+            if (s !~ /^- \[/ || !match(s, /]\([^)]*\)/)) return ""
+            return substr(s, RSTART + 2, RLENGTH - 3)
+        }
+        FILENAME == ARGV[1] { t = target($0); if (t != "") seen[t] = 1; next }
+        { t = target($0); if (t == "" || (t in seen)) next; seen[t] = 1; print t "\t" $0 }
+    ' "$have" "$src") || return 1
+    local entry kept="" tab="	"
+    while IFS= read -r entry; do
+        [ -n "$entry" ] || continue
+        [ -f "${dst%/*}/${entry%%"$tab"*}" ] || continue
+        kept="$kept${entry#*"$tab"}"$'\n'
+    done <<< "$missing"
+    missing=$(printf '%s' "$kept")
+    [ -n "$missing" ] || { printf '0'; return 0; }
+    _terminate_jsonl "$dst"
+    printf '%s\n' "$missing" >> "$dst" || return 1
+    printf '%s' "$(printf '%s\n' "$missing" | wc -l | tr -d ' ')"
+}
+
 # Fuse session records from a worktree .cs into the base .cs (ignored mode:
 # the repo does not track .cs/, so git merge cannot carry these). Applies the
 # same semantics the merge drivers give tracked repos: union append for
 # timeline/log/narratives, copy-never-overwrite for memory topic files,
-# base-wins for MEMORY.md. Every write returns 1 on failure: the caller runs
+# base-wins for MEMORY.md plus the feature's pointers to targets it lacks. Every write returns 1 on failure: the caller runs
 # this in a subshell on the left of ||, where errexit is off, and deletes the
 # staged records only on success.
 fuse_session_records() {
@@ -1046,15 +1137,18 @@ fuse_session_records() {
             narrative.*.md) continue ;;
         esac
         if [ -f "$dst/memory/$base" ]; then
-            warn "memory/$base already exists in the base; skipped"
+            # The feature started from a copy of the base's topics, so an
+            # unchanged one is the base's own file, not a collision.
+            cmp -s "$f" "$dst/memory/$base" \
+                || warn "memory/$base already exists in the base; skipped"
         else
             cp "$f" "$dst/memory/$base" || return 1
         fi
     done
 
-    if [ -f "$src/memory/MEMORY.md" ]; then
-        info "MEMORY.md index lines from the feature were not merged (base copy kept)"
-    fi
+    local added
+    added=$(_append_missing_memory_pointers "$src/memory/MEMORY.md" "$dst/memory/MEMORY.md") || return 1
+    [ "$added" = 0 ] || info "MEMORY.md: appended $added pointer(s) from the feature (base lines kept)"
 }
 
 # List a base session's feature worktrees with their merge readiness. Read

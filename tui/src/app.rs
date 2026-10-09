@@ -2,6 +2,7 @@
 // ABOUTME: Tracks table selection, sort order, search filter, and modal dialog state
 
 use std::collections::{HashMap, HashSet};
+use std::path::{Component, Path, PathBuf};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::widgets::TableState;
@@ -2073,9 +2074,18 @@ impl App {
         if let Some(name) = self.selected_session().map(|s| s.name.clone()) {
             let root = self.sessions_root.clone();
             let path = root.join(&name);
+            // An adopted link loses only the link; the age state is the project's.
+            let was_link = is_symlink(&path);
             match session::remove_session_path(&root, &name, &path, grants) {
                 Ok(()) => {
-                    self.set_status(format!("Deleted: {}", name), StatusLevel::Success);
+                    match if was_link { Ok(None) } else { drop_age_state(&name) } {
+                        Ok(None) => self.set_status(format!("Deleted: {}", name), StatusLevel::Success),
+                        Ok(Some(dir)) => self.set_status(
+                            format!("Deleted: {} · removed age state {}", name, dir.display()),
+                            StatusLevel::Success,
+                        ),
+                        Err(e) => self.set_status(format!("Deleted: {}, but {}", name, e), StatusLevel::Error),
+                    }
                     self.rescan_now();
                 }
                 Err(e) => {
@@ -2093,6 +2103,8 @@ impl App {
         let mut errors = 0;
         let mut live: Vec<String> = Vec::new();
         let mut reasons: Vec<String> = Vec::new();
+        let mut aged: Vec<String> = Vec::new();
+        let mut age_failures: Vec<String> = Vec::new();
         let names: Vec<String> = self.marked_sessions.iter().cloned().collect();
         for name in &names {
             // Resolved per name rather than from the selection: a batch mixes
@@ -2110,11 +2122,17 @@ impl App {
                 continue;
             }
             let path = root.join(name);
+            let was_link = is_symlink(&path);
             let result = session::remove_session_path(&root, name, &path, grants);
             match result {
                 Ok(()) => {
                     deleted += 1;
                     self.flash_row(name.clone(), FlashKind::Success);
+                    match if was_link { Ok(None) } else { drop_age_state(name) } {
+                        Ok(None) => {}
+                        Ok(Some(dir)) => aged.push(dir.display().to_string()),
+                        Err(e) => age_failures.push(format!("{} deleted, but {}", name, e)),
+                    }
                 }
                 Err(e) => {
                     errors += 1;
@@ -2125,8 +2143,8 @@ impl App {
         }
         self.marked_sessions.clear();
         self.rescan_now();
-        if errors == 0 {
-            self.set_status(format!("Deleted {} sessions", deleted), StatusLevel::Success);
+        let mut text = if errors == 0 {
+            format!("Deleted {} sessions", deleted)
         } else {
             let mut text = format!("Deleted {}, {} failed", deleted, errors);
             if !live.is_empty() {
@@ -2135,8 +2153,17 @@ impl App {
             if !reasons.is_empty() {
                 text.push_str(&format!(" — {}", reasons.join("; ")));
             }
-            self.set_status(text, StatusLevel::Error);
+            text
+        };
+        if !aged.is_empty() {
+            aged.sort();
+            text.push_str(&format!(" · removed age state {}", aged.join(", ")));
         }
+        if !age_failures.is_empty() {
+            text.push_str(&format!(" — {}", age_failures.join("; ")));
+        }
+        let level = if errors == 0 && age_failures.is_empty() { StatusLevel::Success } else { StatusLevel::Error };
+        self.set_status(text, level);
         self.close_delete_confirm();
     }
 
@@ -2543,6 +2570,78 @@ fn claude_home() -> Option<String> {
         return Some(h.to_string_lossy().into_owned());
     }
     session::home_dir()
+}
+
+/// The home dir that holds `~/.cs-secrets`. Under test it is only ever the
+/// [`test_home`] override: with none scoped it is None, so no test run can
+/// reach the real `~/.cs-secrets` of whoever runs the suite.
+fn secrets_home() -> Option<PathBuf> {
+    #[cfg(test)]
+    return test_home::current();
+    #[cfg(not(test))]
+    session::home_dir().map(PathBuf::from)
+}
+
+/// Where cs-secrets keeps a base session's age state (recipient pins and
+/// digests): `~/.cs-secrets/sessions/<name>/`. Twin of `age_state_dir` in
+/// bin/cs-secrets and `_drop_session_age_state` in lib/65-sessions.sh; the
+/// three change together. None for a feature (`base@task`) name, whose
+/// secrets are its base's, and for any name that is not one plain path
+/// component, so an empty name never resolves to the sessions dir itself.
+fn age_state_dir(name: &str) -> Option<PathBuf> {
+    let mut parts = Path::new(name).components();
+    let one_plain_component = matches!((parts.next(), parts.next()), (Some(Component::Normal(_)), None));
+    // components() drops a trailing '/', so the slash is refused by hand.
+    if !one_plain_component || name.starts_with('.') || name.contains('/') || name.contains('@') {
+        return None;
+    }
+    Some(secrets_home()?.join(".cs-secrets/sessions").join(name))
+}
+
+/// Remove the age state of a base session that was just deleted. The path
+/// when something was removed, None when there was nothing to remove.
+fn drop_age_state(name: &str) -> Result<Option<PathBuf>, String> {
+    let Some(dir) = age_state_dir(name) else {
+        return Ok(None);
+    };
+    // `~/.cs-secrets/sessions` and `~/.cs-secrets` must be real directories:
+    // through a link the removal would land on a same-name directory
+    // elsewhere. Reading through the link is harmless, so only a state that is
+    // there is named as left behind. An unsearchable parent fails the read
+    // below with a permission error, never NotFound. A concurrent
+    // `cs-secrets age add` can recreate the state after the removal, since its
+    // lock lives inside the dir removed here; that race is accepted.
+    for parent in dir.ancestors().skip(1).take(2) {
+        match parent.symlink_metadata() {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return match dir.symlink_metadata() {
+                    Ok(_) => Err(format!("left age state behind a linked ~/.cs-secrets: {}", dir.display())),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                    Err(e) => Err(format!("could not read age state {}: {e}", dir.display())),
+                };
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            _ => {}
+        }
+    }
+    let meta = match dir.symlink_metadata() {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("could not read age state {}: {e}", dir.display())),
+    };
+    let removed = if meta.file_type().is_dir() {
+        std::fs::remove_dir_all(&dir)
+    } else {
+        std::fs::remove_file(&dir)
+    };
+    match removed {
+        Ok(()) => Ok(Some(dir)),
+        Err(e) => Err(format!("could not remove age state {}: {e}", dir.display())),
+    }
+}
+
+fn is_symlink(path: &Path) -> bool {
+    path.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false)
 }
 
 /// Test-only override for [`claude_home`]. Same rationale as
@@ -4377,6 +4476,282 @@ mod tests {
 
         assert_eq!(app.mode, Mode::ConfirmDelete, "status: {:?}", app.status_message.as_ref().map(|m| &m.text));
         assert!(app.delete_countdown_start.is_some());
+    }
+
+    /// A sessions root and a home dir under the temp dir, both scoped to this
+    /// thread, with `names` as dormant sessions and `aged` holding age state
+    /// at `<home>/.cs-secrets/sessions/<name>/age-trusted`.
+    fn age_fixture(tag: &str, names: &[&str], aged: &[&str]) -> (std::path::PathBuf, std::path::PathBuf) {
+        let base = std::env::temp_dir().join(format!("cs-test-age-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("sessions");
+        let home = base.join("home");
+        for name in names {
+            std::fs::create_dir_all(root.join(name).join(".cs/local")).unwrap();
+        }
+        for name in aged {
+            let dir = home.join(".cs-secrets/sessions").join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("age-trusted"), "age1pin\n").unwrap();
+        }
+        (root, home)
+    }
+
+    /// Deleting a base session drops the age state cs-secrets keeps for it
+    /// outside the session dir, and the status names the path.
+    #[test]
+    fn delete_of_a_base_session_drops_its_age_state() {
+        use crate::session::test_root;
+        let (root, home) = age_fixture("single", &["agebase"], &["agebase"]);
+        let _root = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        let mut app = app_on(&root, "agebase");
+
+        app.execute_delete();
+
+        let age_dir = home.join(".cs-secrets/sessions/agebase");
+        let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+        assert!(!age_dir.exists(), "age state survived; status: {status}");
+        assert_eq!(status, format!("Deleted: agebase · removed age state {}", age_dir.display()));
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
+    /// A batch drops the age state of every base session it deletes, and its
+    /// one status line names each path removed, sorted.
+    #[test]
+    fn batch_delete_drops_each_base_sessions_age_state() {
+        use crate::session::test_root;
+        let (root, home) = age_fixture("batch", &["agea", "ageb", "agec"], &["agea", "ageb"]);
+        let _root = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        let mut app = app_on(&root, "agea");
+        for name in ["agea", "ageb", "agec"] {
+            app.marked_sessions.insert(name.to_string());
+        }
+
+        app.execute_batch_delete();
+
+        let sessions = home.join(".cs-secrets/sessions");
+        let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+        assert!(!sessions.join("agea").exists(), "agea's age state survived; status: {status}");
+        assert!(!sessions.join("ageb").exists(), "ageb's age state survived; status: {status}");
+        assert_eq!(
+            status,
+            format!(
+                "Deleted 3 sessions · removed age state {}, {}",
+                sessions.join("agea").display(),
+                sessions.join("ageb").display()
+            )
+        );
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
+    /// A batch of a worktree row and an adopted link keeps every age state.
+    #[test]
+    fn batch_delete_of_worktree_and_adopted_rows_keeps_age_state() {
+        use crate::session::test_root;
+        let (root, home) = age_fixture("batch-keep", &["agebk", "agebk@t"], &["agebk", "agebk@t", "agebl"]);
+        let project = root.parent().unwrap().join("project");
+        std::fs::create_dir_all(project.join(".cs/local")).unwrap();
+        std::os::unix::fs::symlink(&project, root.join("agebl")).unwrap();
+        let _root = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        let mut app = app_on(&root, "agebk@t");
+        for name in ["agebk@t", "agebl"] {
+            app.marked_sessions.insert(name.to_string());
+        }
+
+        app.execute_batch_delete();
+
+        let sessions = home.join(".cs-secrets/sessions");
+        let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+        assert_eq!(status, "Deleted 2 sessions");
+        for name in ["agebk", "agebk@t", "agebl"] {
+            assert!(sessions.join(name).join("age-trusted").is_file(), "{name}'s age state survives");
+        }
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
+    /// A base@task row uses its base's secrets: deleting it leaves the base's
+    /// age state, and a feature name never reaches an age state path.
+    #[test]
+    fn delete_of_a_worktree_row_keeps_age_state() {
+        use crate::session::test_root;
+        let (root, home) = age_fixture("worktree", &["agewt", "agewt@t"], &["agewt", "agewt@t"]);
+        let _root = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        let mut app = app_on(&root, "agewt@t");
+
+        app.execute_delete();
+
+        let sessions = home.join(".cs-secrets/sessions");
+        let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+        assert_eq!(status, "Deleted: agewt@t");
+        assert!(!root.join("agewt@t").exists(), "the worktree row is deleted");
+        assert!(sessions.join("agewt/age-trusted").is_file(), "the base's age state survives");
+        assert!(sessions.join("agewt@t/age-trusted").is_file(), "a feature name reaches no age state");
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
+    /// An adopted session loses only its link; the age state stays.
+    #[test]
+    fn delete_of_an_adopted_link_keeps_age_state() {
+        use crate::session::test_root;
+        let (root, home) = age_fixture("adopted", &[], &["ageln"]);
+        let project = root.parent().unwrap().join("project");
+        std::fs::create_dir_all(project.join(".cs/local")).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        std::os::unix::fs::symlink(&project, root.join("ageln")).unwrap();
+        let _root = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        let mut app = app_on(&root, "ageln");
+
+        app.execute_delete();
+
+        let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+        assert_eq!(status, "Deleted: ageln");
+        assert!(root.join("ageln").symlink_metadata().is_err(), "the link is removed");
+        assert!(project.join(".cs").is_dir(), "the project survives");
+        assert!(home.join(".cs-secrets/sessions/ageln/age-trusted").is_file(), "the age state survives");
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
+    /// Only one plain path component names an age state dir, and the path is
+    /// exact: no name reaches `~/.cs-secrets/sessions/` itself or above it.
+    #[test]
+    fn age_state_dir_takes_only_a_plain_base_name() {
+        let home = std::env::temp_dir().join(format!("cs-test-age-names-{}", std::process::id()));
+        let _home = test_home::scoped(home.clone());
+        for name in ["", ".", "..", ".hidden", "a/", "a/b", "../x", "/abs", "a@t"] {
+            assert_eq!(age_state_dir(name), None, "name {name:?} must not resolve");
+        }
+        assert_eq!(age_state_dir("*"), Some(home.join(".cs-secrets/sessions/*")));
+        assert_eq!(age_state_dir("base"), Some(home.join(".cs-secrets/sessions/base")));
+    }
+
+    /// A linked `~/.cs-secrets` deletes nothing through the link: the session
+    /// goes, the age state behind the link stays, and the status names it as
+    /// left behind, as an error.
+    #[test]
+    fn delete_leaves_age_state_behind_a_linked_secrets_dir() {
+        use crate::session::test_root;
+        let (root, home) = age_fixture("linked-top", &["agelk"], &[]);
+        let elsewhere = root.parent().unwrap().join("elsewhere");
+        let real_state = elsewhere.join("sessions/agelk");
+        std::fs::create_dir_all(&real_state).unwrap();
+        std::fs::write(real_state.join("age-trusted"), "age1pin\n").unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, home.join(".cs-secrets")).unwrap();
+        let _root = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        let mut app = app_on(&root, "agelk");
+
+        app.execute_delete();
+
+        let msg = app.status_message.as_ref().unwrap();
+        assert!(!root.join("agelk").exists(), "the session is removed; status: {}", msg.text);
+        assert!(real_state.join("age-trusted").is_file(), "the state behind the link survives");
+        assert_eq!(
+            msg.text,
+            format!(
+                "Deleted: agelk, but left age state behind a linked ~/.cs-secrets: {}",
+                home.join(".cs-secrets/sessions/agelk").display()
+            )
+        );
+        assert_eq!(msg.level, StatusLevel::Error);
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
+    /// A batch under a linked `~/.cs-secrets/sessions` keeps going: every
+    /// session is removed, nothing behind the link is, and only a name with
+    /// state there is named as left behind.
+    #[test]
+    fn batch_delete_leaves_age_state_behind_a_linked_sessions_dir() {
+        use crate::session::test_root;
+        let (root, home) = age_fixture("linked-sessions", &["agelk", "agelknext"], &[]);
+        let elsewhere = root.parent().unwrap().join("elsewhere");
+        std::fs::create_dir_all(elsewhere.join("agelk")).unwrap();
+        std::fs::write(elsewhere.join("agelk/age-trusted"), "age1pin\n").unwrap();
+        std::fs::create_dir_all(home.join(".cs-secrets")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, home.join(".cs-secrets/sessions")).unwrap();
+        let _root = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        let mut app = app_on(&root, "agelk");
+        for name in ["agelk", "agelknext"] {
+            app.marked_sessions.insert(name.to_string());
+        }
+
+        app.execute_batch_delete();
+
+        let msg = app.status_message.as_ref().unwrap();
+        assert!(!root.join("agelk").exists(), "agelk is removed; status: {}", msg.text);
+        assert!(!root.join("agelknext").exists(), "agelknext is removed; status: {}", msg.text);
+        assert!(elsewhere.join("agelk/age-trusted").is_file(), "the state behind the link survives");
+        assert_eq!(
+            msg.text,
+            format!(
+                "Deleted 2 sessions — agelk deleted, but left age state behind a linked ~/.cs-secrets: {}",
+                home.join(".cs-secrets/sessions/agelk").display()
+            )
+        );
+        assert_eq!(msg.level, StatusLevel::Error);
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
+    /// A linked `~/.cs-secrets/sessions` whose target cannot be searched is a
+    /// failure, never "no state": the delete goes ahead and the status is an
+    /// error naming the path.
+    #[test]
+    fn delete_reports_an_unsearchable_linked_sessions_dir() {
+        use crate::session::test_root;
+        use std::os::unix::fs::PermissionsExt;
+        let (root, home) = age_fixture("linked-hidden", &["agelkhid"], &[]);
+        let elsewhere = root.parent().unwrap().join("elsewhere");
+        std::fs::create_dir_all(elsewhere.join("agelkhid")).unwrap();
+        std::fs::write(elsewhere.join("agelkhid/age-trusted"), "age1pin\n").unwrap();
+        std::fs::create_dir_all(home.join(".cs-secrets")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, home.join(".cs-secrets/sessions")).unwrap();
+        std::fs::set_permissions(&elsewhere, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let _root = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        let mut app = app_on(&root, "agelkhid");
+
+        app.execute_delete();
+
+        std::fs::set_permissions(&elsewhere, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let msg = app.status_message.as_ref().unwrap();
+        assert!(!root.join("agelkhid").exists(), "the session is removed; status: {}", msg.text);
+        assert!(elsewhere.join("agelkhid/age-trusted").is_file(), "the state behind the link survives");
+        let age_dir = home.join(".cs-secrets/sessions/agelkhid");
+        assert!(
+            msg.text.starts_with(&format!("Deleted: agelkhid, but could not read age state {}: ", age_dir.display())),
+            "status: {}",
+            msg.text
+        );
+        assert_eq!(msg.level, StatusLevel::Error);
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
+    /// With no test home scoped, a test resolves no age state at all, so the
+    /// delete tests that predate the age state (and any written later without
+    /// a scope) cannot reach the real `~/.cs-secrets` of whoever runs them.
+    /// A sentinel under a scoped home survives an unscoped delete of the same
+    /// name, proving the unscoped delete went nowhere.
+    #[test]
+    fn delete_without_a_test_home_touches_no_age_state() {
+        use crate::session::test_root;
+        let (root, home) = age_fixture("unscoped", &["agesent"], &["agesent"]);
+        let _root = test_root::scoped(root.clone());
+        assert_eq!(secrets_home(), None);
+        assert_eq!(age_state_dir("agesent"), None);
+        let mut app = app_on(&root, "agesent");
+
+        app.execute_delete();
+
+        let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+        assert_eq!(status, "Deleted: agesent");
+        assert!(home.join(".cs-secrets/sessions/agesent/age-trusted").is_file(), "the sentinel survives");
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
     }
 
     // A batch keeps the reason a delete failed: a mounted vault says to

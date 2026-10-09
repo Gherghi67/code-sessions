@@ -361,14 +361,21 @@ remove_session() {
         esac
     done
     [ "${#names[@]}" -ge 1 ] || error "Usage: cs -remove <session-name>... [--force]"
+    # Set by _remove_one_session when a session went but its age state did
+    # not: the other names still go, and the run ends non-zero.
+    local age_state_left=""
     for _name in "${names[@]}"; do
         _remove_one_session "$_name" "$force" "$delete_files"
     done
+    [ -z "$age_state_left" ] || return 1
 }
 
 # Top-level entries of a session root that cs did not put there, as one
 # comma-separated line (empty when there are none). cs owns .cs/, .claude/,
 # the session git files and the two CLAUDE files; .DS_Store is Finder's.
+# notes.md, changes.md, discoveries.md, logs/ and artifacts/ are where legacy
+# cs layouts kept session files at the root. A third-party cache (.omc,
+# .claude-crawl) is not cs's to delete silently, so it still counts.
 _session_foreign_entries() {  # session_dir
     local dir="$1" entry name out=""
     for entry in "$dir"/* "$dir"/.[!.]* "$dir"/..?*; do
@@ -376,6 +383,7 @@ _session_foreign_entries() {  # session_dir
         name="${entry##*/}"
         case "$name" in
             .cs|.claude|.git|.gitignore|.gitattributes|CLAUDE.md|CLAUDE.local.md|.DS_Store) continue ;;
+            notes.md|changes.md|discoveries.md|logs|artifacts) continue ;;
         esac
         out="${out:+$out, }$name"
     done
@@ -581,14 +589,69 @@ _remove_one_session() {
         return 0
     fi
 
+    local drop_age_state=""
     if [ -L "$session_dir" ]; then
         rm "$session_dir"
         info "Removed session link: $session_name (project directory preserved)"
     else
         rm -rf "$session_dir"
         info "Removed session: $session_name"
+        # Gated on the name, not the branch taken: a base@task whose base is
+        # gone falls through to the rm -rf above, and a feature session uses
+        # its base's secrets (CS_SECRETS_SESSION), so the state is the base's.
+        # A dotted name (a hand-made session older than the dot refusal) is
+        # skipped as the picker's age_state_dir skips it.
+        case "$session_name" in
+            *@*|.*) ;;
+            *) drop_age_state="true" ;;
+        esac
     fi
     _spawn_discard_seeds "$session_name"
+    if [ -n "$drop_age_state" ]; then
+        _drop_session_age_state "$session_name" || age_state_left="true"
+    fi
+}
+
+# Remove the age state cs-secrets keeps for a base session outside the
+# session directory: ~/.cs-secrets/sessions/<name>/ (recipient pins and
+# digests). Twin of age_state_dir in bin/cs-secrets and age_state_dir in
+# tui/src/app.rs; the three change together. Prints one line naming the path
+# when there was something to remove, nothing otherwise. A name that is not a
+# single plain path component is refused before it becomes a path, so "" can
+# never resolve to the sessions directory itself. Keychain and encrypted
+# stored secrets are not touched. Known window, accepted (Alex 2026-10-09): a
+# `cs -secrets age add` for this name that runs during the removal can
+# recreate the directory, because its lock (.age.lock) lives inside it.
+_drop_session_age_state() {  # name
+    local name="$1" dir
+    case "$name" in
+        ''|.*|*/*|*@*)
+            warn "Refusing to remove age state for an invalid base session name: '$name'"
+            return 1 ;;
+    esac
+    dir="$HOME/.cs-secrets/sessions/$name"
+    # Each parent must be a real directory cs can search: through a link the
+    # rm -rf would land on a same-name directory elsewhere, and an unsearchable
+    # parent makes a present state read as absent.
+    local parent linked=false
+    for parent in "$HOME/.cs-secrets" "$HOME/.cs-secrets/sessions"; do
+        [ -L "$parent" ] && linked=true
+        [ -e "$parent" ] || return 0
+        if [ ! -d "$parent" ] || [ ! -x "$parent" ]; then
+            warn "Could not check age state: $dir"
+            return 1
+        fi
+    done
+    if [ "$linked" = true ]; then
+        # Reading through the link is harmless once every parent is known to
+        # be searchable; only a state that is there is named as left behind.
+        [ -e "$dir" ] || [ -L "$dir" ] || return 0
+        warn "Left age state behind a linked ~/.cs-secrets: $dir"
+        return 1
+    fi
+    [ -e "$dir" ] || [ -L "$dir" ] || return 0
+    rm -rf "$dir" || { warn "Could not remove age state: $dir"; return 1; }
+    info "Removed age state: $dir"
 }
 
 # Compact duration string from seconds: 45s, 12m, 3h, 2d. Arg: secs.

@@ -293,7 +293,8 @@ conflict-free:
 - `merge=union` — `timeline.jsonl`, `narrative.*.md`: concurrent additions from
   different writers are both kept.
 - `merge=ours` — `MEMORY.md`: the index is regenerated, so a machine keeps its
-  own version rather than conflicting.
+  own version rather than conflicting. `/finish` then appends each feature
+  pointer whose target the base index does not name, once per target.
 
 Human-authored prose (`README.md`, `summary.md`) uses the default merge — a
 genuine divergence there is a real conflict a person should reconcile.

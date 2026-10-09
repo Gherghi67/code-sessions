@@ -985,10 +985,12 @@ impl UnownedEntries {
     }
 }
 
-/// Names cs, Claude Code and Finder put in a session root; everything else
-/// there belongs to the user. Kept in step with `_session_foreign_entries`.
+/// Names cs, Claude Code and Finder put in a session root, plus the root
+/// files legacy cs layouts kept there; everything else belongs to the user.
+/// Kept in step with `_session_foreign_entries`.
 const SESSION_ROOT_OWNED: &[&str] = &[
     ".cs", ".claude", ".git", ".gitignore", ".gitattributes", "CLAUDE.md", "CLAUDE.local.md", ".DS_Store",
+    "notes.md", "changes.md", "discoveries.md", "logs", "artifacts",
 ];
 
 /// Top-level names in a worktree that are cs's, not the user's.
@@ -1477,10 +1479,12 @@ mod tests {
     fn unowned_entries_lists_top_level_files_cs_did_not_create() {
         let root = std::env::temp_dir().join(format!("cs-unowned-plain-{}", std::process::id()));
         let dir = root.join("rel");
-        for d in [".cs/local", ".claude", ".git", "journal.sparsebundle"] {
+        for d in [".cs/local", ".claude", ".git", "logs", "artifacts", "journal.sparsebundle"] {
             fs::create_dir_all(dir.join(d)).unwrap();
         }
-        for f in [".gitignore", ".gitattributes", "CLAUDE.md", "CLAUDE.local.md", ".DS_Store", "start"] {
+        let owned = [".gitignore", ".gitattributes", "CLAUDE.md", "CLAUDE.local.md", ".DS_Store"];
+        let legacy = ["notes.md", "changes.md", "discoveries.md"];
+        for f in owned.iter().chain(legacy.iter()).chain(["start"].iter()) {
             fs::write(dir.join(f), "x").unwrap();
         }
 

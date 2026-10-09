@@ -1648,10 +1648,66 @@ run_test test_integrate_conflict_names_the_path_and_leaves_no_merge_head
 run_test test_integrate_ignored_mode_fuses_nothing
 run_test test_integrate_tracked_mode_warns_on_memory_index_change
 
+# merge=ours keeps the base's MEMORY.md, but a pointer to a topic only the
+# feature wrote must still reach the base: appended once, after the base's
+# own lines, and a pointer both sides name is not doubled.
+test_integrate_tracked_mode_appends_feature_memory_pointers() {
+    local sha base_dir wt output status=0
+    base_dir=$(create_test_session_with_git "myproj")
+    printf '%s\n' '- [A](a.md): base wording' > "$base_dir/.cs/memory/MEMORY.md"
+    (cd "$base_dir" && git add .cs/memory/MEMORY.md && git commit -q -m "base index")
+    cs_launch "myproj@fix-auth"
+    wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    printf '%s\n' '- [A](a.md): feature wording' '- [X](x.md): feature-side' '- [X again](x.md): duplicate' \
+        > "$wt/.cs/memory/MEMORY.md"
+    echo "x topic" > "$wt/.cs/memory/x.md"
+    (cd "$wt" && git add .cs/memory && git commit -q -m "index")
+    sha=$(git -C "$wt" rev-parse HEAD)
+    printf '%s\n' '- [B](b.md): base-side' >> "$base_dir/.cs/memory/MEMORY.md"
+    (cd "$base_dir" && git add .cs/memory/MEMORY.md && git commit -q -m "base pointer")
+    output=$("$CS_BIN" myproj -integrate-feature fix-auth "$sha" -- true 2>&1) || status=$?
+    assert_eq "0" "$status" "integrate succeeds: $output" || return 1
+    assert_eq "- [A](a.md): base wording
+- [B](b.md): base-side
+- [X](x.md): feature-side" "$(cat "$base_dir/.cs/memory/MEMORY.md")" \
+        "base index kept, the feature's new pointer appended once" || return 1
+    assert_eq "" "$(git -C "$base_dir" status --porcelain -- .cs/memory)" \
+        "the appended pointer is committed, not left as dirt" || return 1
+}
+
+run_test test_integrate_tracked_mode_appends_feature_memory_pointers
+
+# A topic the base deleted after the feature branched stays deleted: the merge
+# drops the file, and the feature's old pointer to it is not appended back.
+test_integrate_tracked_mode_skips_pointers_to_base_deleted_topics() {
+    local sha base_dir wt output status=0
+    base_dir=$(create_test_session_with_git "myproj")
+    printf '%s\n' '- [A](a.md): base' '- [T](t.md): old topic' > "$base_dir/.cs/memory/MEMORY.md"
+    echo "t topic" > "$base_dir/.cs/memory/t.md"
+    (cd "$base_dir" && git add .cs/memory && git commit -q -m "base index")
+    cs_launch "myproj@fix-auth"
+    wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    echo '- [X](x.md): feature-side' >> "$wt/.cs/memory/MEMORY.md"
+    echo "x topic" > "$wt/.cs/memory/x.md"
+    (cd "$wt" && git add .cs/memory && git commit -q -m "feature topic")
+    sha=$(git -C "$wt" rev-parse HEAD)
+    printf '%s\n' '- [A](a.md): base' > "$base_dir/.cs/memory/MEMORY.md"
+    (cd "$base_dir" && git rm -q .cs/memory/t.md && git add .cs/memory/MEMORY.md && git commit -q -m "drop topic t")
+    output=$("$CS_BIN" myproj -integrate-feature fix-auth "$sha" -- true 2>&1) || status=$?
+    assert_eq "0" "$status" "integrate succeeds: $output" || return 1
+    assert_not_exists "$base_dir/.cs/memory/t.md" "the base's deletion of t.md stands" || return 1
+    assert_eq "- [A](a.md): base
+- [X](x.md): feature-side" "$(cat "$base_dir/.cs/memory/MEMORY.md")" \
+        "no pointer to the deleted topic comes back; the new one is appended" || return 1
+}
+
+run_test test_integrate_tracked_mode_skips_pointers_to_base_deleted_topics
+
 test_retire_ignored_mode_fuses_records() {
     local base_dir="$CS_SESSIONS_ROOT/proj"
     mkdir -p "$base_dir/.cs"/{memory,local}
     echo "base note" > "$base_dir/.cs/memory/note-base.md"
+    echo "shared note" > "$base_dir/.cs/memory/note-shared.md"
     printf -- '---\ndescription: seed\n---\n# Session narrative (tester)\n\n## Prior finding\n' \
         > "$base_dir/.cs/memory/narrative.tester.md"
     printf -- '---\ndescription: plain-seed\n---\n# Session narrative (plain)\n' \
@@ -1675,6 +1731,7 @@ test_retire_ignored_mode_fuses_records() {
     printf -- '# Session narrative (plain)\n\n## Plain finding\n' \
         > "$wt/.cs/memory/narrative.plain.md"
     echo "task version" > "$wt/.cs/memory/note-base.md"
+    echo "shared note" > "$wt/.cs/memory/note-shared.md"
     local output merge_status
     local sha
     sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
@@ -1684,6 +1741,8 @@ test_retire_ignored_mode_fuses_records() {
         || { echo "  retire output: $output"; return 1; }
     assert_output_contains "$output" "memory/note-base.md already exists in the base; skipped" \
         "memory collision warned" || return 1
+    assert_output_not_contains "$output" "note-shared.md" \
+        "a topic byte-identical to the base's is skipped silently" || return 1
     assert_eq "base note" "$(cat "$base_dir/.cs/memory/note-base.md")" "memory collision keeps base copy" || return 1
     assert_file_contains "$base_dir/.cs/timeline.jsonl" "from-task" "timeline appended" || return 1
     assert_file_exists "$base_dir/.cs/memory/note-task.md" "memory file copied" || return 1
@@ -1704,6 +1763,108 @@ test_retire_ignored_mode_fuses_records() {
 }
 
 run_test test_retire_ignored_mode_fuses_records
+
+# The repo does not track .cs/, so git gives the feature none of the base's
+# context: cs copies the memory topics, the index, plans/ and summary.md.
+# Never a narrative (the feature writes its own), .cs/local, or the timeline.
+test_worktree_create_ignored_mode_copies_base_context() {
+    local base_dir="$CS_SESSIONS_ROOT/proj"
+    mkdir -p "$base_dir/.cs"/{memory,local,plans}
+    echo "# P" > "$base_dir/README.md"
+    printf '.cs/\n' > "$base_dir/.gitignore"
+    echo "topic body" > "$base_dir/.cs/memory/topic.md"
+    printf '%s\n' '- [Topic](topic.md): base pointer' > "$base_dir/.cs/memory/MEMORY.md"
+    echo "base narrative" > "$base_dir/.cs/memory/narrative.other.md"
+    echo "plan body" > "$base_dir/.cs/plans/plan-a.md"
+    echo "summary body" > "$base_dir/.cs/summary.md"
+    echo "base-only" > "$base_dir/.cs/local/marker"
+    echo '{"event":"base-only"}' > "$base_dir/.cs/timeline.jsonl"
+    (cd "$base_dir" && git init -q && git config core.autocrlf false && git add -A && git commit -q -m init)
+    cs_launch "proj@task1"
+    local wt="$CS_SESSIONS_ROOT/proj@task1"
+    assert_file_contains "$wt/.cs/local/state" "cs_mode: ignored" || return 1
+    assert_eq "topic body" "$(cat "$wt/.cs/memory/topic.md" 2>/dev/null)" "topic copied" || return 1
+    assert_eq "- [Topic](topic.md): base pointer" "$(head -1 "$wt/.cs/memory/MEMORY.md" 2>/dev/null)" \
+        "index copied with the base's lines first" || return 1
+    assert_eq "plan body" "$(cat "$wt/.cs/plans/plan-a.md" 2>/dev/null)" "plans copied" || return 1
+    assert_eq "summary body" "$(cat "$wt/.cs/summary.md" 2>/dev/null)" "summary copied" || return 1
+    assert_not_exists "$wt/.cs/memory/narrative.other.md" "a narrative is never copied" || return 1
+    assert_not_exists "$wt/.cs/local/marker" ".cs/local is never copied" || return 1
+    assert_file_not_contains "$wt/.cs/timeline.jsonl" "base-only" "the timeline is never copied" || return 1
+}
+
+run_test test_worktree_create_ignored_mode_copies_base_context
+
+# plans/ is copied file by file: a regular file at any depth comes over, a
+# link inside plans/ (to a file or a dir, such as another session's plans)
+# does not, neither as its target's content nor as the link.
+test_worktree_create_ignored_mode_copies_no_plan_links() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" other="$CS_SESSIONS_ROOT/other/.cs/plans"
+    mkdir -p "$base_dir/.cs"/{memory,local,plans/sub} "$other/deep"
+    echo "# P" > "$base_dir/README.md"
+    printf '.cs/\n' > "$base_dir/.gitignore"
+    echo "nested body" > "$base_dir/.cs/plans/sub/plan-b.md"
+    echo "other plan" > "$other/secret.md"
+    echo "other deep" > "$other/deep/deep.md"
+    ln -s "$other/secret.md" "$base_dir/.cs/plans/linked.md"
+    ln -s "$other/deep" "$base_dir/.cs/plans/sub/linkdir"
+    (cd "$base_dir" && git init -q && git config core.autocrlf false && git add -A && git commit -q -m init)
+    cs_launch "proj@task1"
+    local wt="$CS_SESSIONS_ROOT/proj@task1"
+    assert_file_contains "$wt/.cs/local/state" "cs_mode: ignored" || return 1
+    assert_eq "nested body" "$(cat "$wt/.cs/plans/sub/plan-b.md" 2>/dev/null)" "a nested plan is copied" || return 1
+    assert_eq "sub" "$(ls -A "$wt/.cs/plans")" "plans/ holds no link" || return 1
+    assert_eq "plan-b.md" "$(ls -A "$wt/.cs/plans/sub")" "plans/sub holds no link" || return 1
+}
+
+run_test test_worktree_create_ignored_mode_copies_no_plan_links
+
+# A plan under a directory whose name starts with a dash, or ends in a
+# newline, is a regular file like any other and comes over to the feature.
+test_worktree_create_ignored_mode_copies_plans_under_odd_dir_names() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" nl_dir
+    nl_dir="$(printf 'tail\n_')"; nl_dir="${nl_dir%_}"
+    mkdir -p "$base_dir/.cs"/{memory,local} "$base_dir/.cs/plans/-sub" "$base_dir/.cs/plans/$nl_dir"
+    echo "# P" > "$base_dir/README.md"
+    printf '.cs/\n' > "$base_dir/.gitignore"
+    echo "dash body" > "$base_dir/.cs/plans/-sub/plan.md"
+    echo "newline body" > "$base_dir/.cs/plans/$nl_dir/plan.md"
+    (cd "$base_dir" && git init -q && git config core.autocrlf false && git add -A && git commit -q -m init)
+    cs_launch "proj@task1"
+    local wt="$CS_SESSIONS_ROOT/proj@task1"
+    assert_file_contains "$wt/.cs/local/state" "cs_mode: ignored" || return 1
+    assert_eq "dash body" "$(cat "$wt/.cs/plans/-sub/plan.md" 2>/dev/null)" "a plan under -sub/ is copied" || return 1
+    assert_eq "newline body" "$(cat "$wt/.cs/plans/$nl_dir/plan.md" 2>/dev/null)" \
+        "a plan under a dir ending in a newline is copied" || return 1
+}
+
+run_test test_worktree_create_ignored_mode_copies_plans_under_odd_dir_names
+
+# Ignored mode keeps the base's MEMORY.md too, and appends each feature
+# pointer whose target the base index does not name.
+test_retire_ignored_mode_appends_feature_memory_pointers() {
+    local base_dir="$CS_SESSIONS_ROOT/proj"
+    mkdir -p "$base_dir/.cs"/{memory,local}
+    printf '%s\n' '- [A](a.md): base wording' > "$base_dir/.cs/memory/MEMORY.md"
+    echo "# P" > "$base_dir/README.md"
+    printf '.cs/\n.claude/settings.local.json\n' > "$base_dir/.gitignore"
+    (cd "$base_dir" && git init -q && git config core.autocrlf false && git add -A && git commit -q -m init)
+    cs_launch "proj@t1"
+    local wt="$CS_SESSIONS_ROOT/proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    printf '%s\n' '- [A](a.md): feature wording' '- [X](x.md): feature-side' > "$wt/.cs/memory/MEMORY.md"
+    echo "x topic" > "$wt/.cs/memory/x.md"
+    local sha output status=0
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "retire exits 0: $output" || return 1
+    assert_eq "- [A](a.md): base wording
+- [X](x.md): feature-side" "$(cat "$base_dir/.cs/memory/MEMORY.md")" \
+        "base index kept, the feature's new pointer appended" || return 1
+}
+
+run_test test_retire_ignored_mode_appends_feature_memory_pointers
 
 test_retire_fuse_survives_a_torn_timeline_tail() {
     # A crash mid-append leaves a last line with no newline. Appending onto it
