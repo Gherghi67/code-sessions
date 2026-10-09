@@ -4002,6 +4002,8 @@ _append_jsonl() {  # src dst
 # and print how many were appended. The base's own lines stay as they are (a
 # pointer both sides reworded keeps the base wording); only a pointer to a
 # topic the base has never indexed is added, so it is not lost at /finish.
+# A pointer whose topic file is not beside the base index is left out: the
+# base deleted that topic after the feature branched, and the deletion stands.
 _append_missing_memory_pointers() {  # feature_index base_index
     local src="$1" dst="$2" have="$2" missing
     [ -f "$src" ] || { printf '0'; return 0; }
@@ -4012,8 +4014,15 @@ _append_missing_memory_pointers() {  # feature_index base_index
             return substr(s, RSTART + 2, RLENGTH - 3)
         }
         FILENAME == ARGV[1] { t = target($0); if (t != "") seen[t] = 1; next }
-        { t = target($0); if (t == "" || (t in seen)) next; seen[t] = 1; print }
+        { t = target($0); if (t == "" || (t in seen)) next; seen[t] = 1; print t "\t" $0 }
     ' "$have" "$src") || return 1
+    local entry kept="" tab="	"
+    while IFS= read -r entry; do
+        [ -n "$entry" ] || continue
+        [ -f "${dst%/*}/${entry%%"$tab"*}" ] || continue
+        kept="$kept${entry#*"$tab"}"$'\n'
+    done <<< "$missing"
+    missing=$(printf '%s' "$kept")
     [ -n "$missing" ] || { printf '0'; return 0; }
     _terminate_jsonl "$dst"
     printf '%s\n' "$missing" >> "$dst" || return 1
