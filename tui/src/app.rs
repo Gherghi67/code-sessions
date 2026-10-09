@@ -4609,6 +4609,75 @@ mod tests {
         assert_eq!(age_state_dir("base"), Some(home.join(".cs-secrets/sessions/base")));
     }
 
+    /// A linked `~/.cs-secrets` deletes nothing through the link: the session
+    /// goes, the age state behind the link stays, and the status names it as
+    /// left behind, as an error.
+    #[test]
+    fn delete_leaves_age_state_behind_a_linked_secrets_dir() {
+        use crate::session::test_root;
+        let (root, home) = age_fixture("linked-top", &["agelk"], &[]);
+        let elsewhere = root.parent().unwrap().join("elsewhere");
+        let real_state = elsewhere.join("sessions/agelk");
+        std::fs::create_dir_all(&real_state).unwrap();
+        std::fs::write(real_state.join("age-trusted"), "age1pin\n").unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, home.join(".cs-secrets")).unwrap();
+        let _root = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        let mut app = app_on(&root, "agelk");
+
+        app.execute_delete();
+
+        let msg = app.status_message.as_ref().unwrap();
+        assert!(!root.join("agelk").exists(), "the session is removed; status: {}", msg.text);
+        assert!(real_state.join("age-trusted").is_file(), "the state behind the link survives");
+        assert_eq!(
+            msg.text,
+            format!(
+                "Deleted: agelk, but left age state behind a linked ~/.cs-secrets: {}",
+                home.join(".cs-secrets/sessions/agelk").display()
+            )
+        );
+        assert_eq!(msg.level, StatusLevel::Error);
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
+    /// A batch under a linked `~/.cs-secrets/sessions` keeps going: every
+    /// session is removed, nothing behind the link is, and only a name with
+    /// state there is named as left behind.
+    #[test]
+    fn batch_delete_leaves_age_state_behind_a_linked_sessions_dir() {
+        use crate::session::test_root;
+        let (root, home) = age_fixture("linked-sessions", &["agelk", "agelknext"], &[]);
+        let elsewhere = root.parent().unwrap().join("elsewhere");
+        std::fs::create_dir_all(elsewhere.join("agelk")).unwrap();
+        std::fs::write(elsewhere.join("agelk/age-trusted"), "age1pin\n").unwrap();
+        std::fs::create_dir_all(home.join(".cs-secrets")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, home.join(".cs-secrets/sessions")).unwrap();
+        let _root = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        let mut app = app_on(&root, "agelk");
+        for name in ["agelk", "agelknext"] {
+            app.marked_sessions.insert(name.to_string());
+        }
+
+        app.execute_batch_delete();
+
+        let msg = app.status_message.as_ref().unwrap();
+        assert!(!root.join("agelk").exists(), "agelk is removed; status: {}", msg.text);
+        assert!(!root.join("agelknext").exists(), "agelknext is removed; status: {}", msg.text);
+        assert!(elsewhere.join("agelk/age-trusted").is_file(), "the state behind the link survives");
+        assert_eq!(
+            msg.text,
+            format!(
+                "Deleted 2 sessions — agelk deleted, but left age state behind a linked ~/.cs-secrets: {}",
+                home.join(".cs-secrets/sessions/agelk").display()
+            )
+        );
+        assert_eq!(msg.level, StatusLevel::Error);
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
     /// With no test home scoped, a test resolves no age state at all, so the
     /// delete tests that predate the age state (and any written later without
     /// a scope) cannot reach the real `~/.cs-secrets` of whoever runs them.
