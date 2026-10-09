@@ -590,9 +590,13 @@ else
         # Strip retired hooks from any event in settings.json (event-agnostic since
         # we don't know which event the old version registered them under). Covers
         # both deployment layouts.
+        # A retired file still under HOOKS_DIR was kept as the user's, as for
+        # a flat one, so its registration stays too.
         for retired in "${RETIRED_HOOKS[@]}"; do
             _strip_flat_hook "$retired"
-            SETTINGS=$(_strip_hook_registration "$SETTINGS" "$HOOKS_DIR/$retired" "$HOOKS_TILDE_DIR/$retired")
+            if [ ! -e "$HOOKS_DIR/$retired" ] && [ ! -L "$HOOKS_DIR/$retired" ]; then
+                SETTINGS=$(_strip_hook_registration "$SETTINGS" "$HOOKS_DIR/$retired" "$HOOKS_TILDE_DIR/$retired")
+            fi
         done
 
         # Strip parent-level registrations of current hooks (flat-layout installs);
