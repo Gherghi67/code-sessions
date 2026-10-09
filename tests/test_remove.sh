@@ -542,6 +542,29 @@ test_remove_dotted_session_does_not_stop_the_next_name() {
     assert_eq "0" "$rc" "cs -rm succeeds" || { echo "  output: $out"; return 1; }
 }
 
+# The age state is removed after its session is gone. When that removal
+# fails, cs -rm names the path, still removes the names after it, and exits 1
+# so a script sees that the run left something behind.
+test_remove_age_state_failure_names_it_and_finishes_the_run() {
+    create_test_session agefail >/dev/null
+    create_test_session agefailnext >/dev/null
+    local sessions="$HOME/.cs-secrets/sessions"
+    local age_dir="$sessions/agefail"
+    mkdir -p "$age_dir"
+    printf 'age1pin\n' > "$age_dir/age-trusted"
+    chmod 500 "$sessions"
+    local out rc=0
+    out=$("$CS_BIN" -rm agefail agefailnext --force </dev/null 2>&1) || rc=$?
+    chmod 700 "$sessions"
+    assert_not_exists "$CS_SESSIONS_ROOT/agefail" "the session itself is removed" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/agefailnext" "the name after it is removed too" || return 1
+    assert_dir "$age_dir" "the age state that could not go is still there" || return 1
+    assert_eq "Could not remove age state: $age_dir" \
+        "$(printf '%s\n' "$out" | sed -n 's/.*\(Could not remove age state: [^[:cntrl:]]*\).*/\1/p')" \
+        "the failure names the path" || { echo "  output: $out"; return 1; }
+    assert_eq "1" "$rc" "cs -rm exits 1 after a partial run" || { echo "  output: $out"; return 1; }
+}
+
 test_remove_force_on_adopted_removes_only_the_link() {
     local project_dir="$TEST_TMPDIR/adopted-project"
     mkdir -p "$project_dir"
@@ -560,6 +583,7 @@ run_test test_remove_orphaned_worktree_session_keeps_age_state
 run_test test_remove_adopted_link_keeps_age_state
 run_test test_drop_age_state_refuses_escaping_names
 run_test test_remove_dotted_session_does_not_stop_the_next_name
+run_test test_remove_age_state_failure_names_it_and_finishes_the_run
 run_test test_remove_refuses_live_session_without_force
 run_test test_remove_allows_heartbeat_only_session_without_force
 run_test test_remove_discards_pending_spawn_seeds
