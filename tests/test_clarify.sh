@@ -73,6 +73,22 @@ test_guideline_injected_on_scope_firing_prompt() {
         "the scope block is still emitted alongside it"
 }
 
+test_scope_block_survives_an_erroring_rg() {
+    seed_repo "src/api.ts"
+    # rg exits 2 on an error and 126/127 when it cannot be run (a failed fork
+    # under load). Only 1 means "no match"; any other failure must fall back to
+    # grep rather than drop the scope block for a code-work prompt.
+    mkdir -p "$TEST_TMPDIR/bin"
+    printf '#!/bin/sh\nexit 2\n' > "$TEST_TMPDIR/bin/rg"
+    chmod +x "$TEST_TMPDIR/bin/rg"
+    local ctx
+    ctx=$(PATH="$TEST_TMPDIR/bin:$PATH" run_hook "implement a retry wrapper in src/api.ts" | emitted_context)
+    assert_output_contains "$ctx" "Scope (auto-grounded)" \
+        "an rg that errors still yields the scope block" || return 1
+    assert_output_contains "$ctx" "src/api.ts" \
+        "and the grep fallback grounds it on the named file" || return 1
+}
+
 test_guideline_injected_on_vague_prompt() {
     seed_repo "src/api.ts"
     # "make" is deliberately absent from the hook's work-verb regex, so this
@@ -195,6 +211,7 @@ test_emits_exactly_one_object_with_all_parts() {
 }
 
 run_test test_guideline_injected_on_scope_firing_prompt
+run_test test_scope_block_survives_an_erroring_rg
 run_test test_guideline_injected_on_vague_prompt
 run_test test_short_prompt_is_not_filtered
 run_test test_tilde_prefix_opts_out
