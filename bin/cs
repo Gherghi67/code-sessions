@@ -3998,7 +3998,7 @@ _append_missing_memory_pointers() {  # feature_index base_index
     [ -f "$dst" ] || have=/dev/null
     missing=$(awk '
         function target(s) {
-            if (s !~ /^- \[/ || !match(s, /\]\([^)]*\)/)) return ""
+            if (s !~ /^- \[/ || !match(s, /]\([^)]*\)/)) return ""
             return substr(s, RSTART + 2, RLENGTH - 3)
         }
         FILENAME == ARGV[1] { t = target($0); if (t != "") seen[t] = 1; next }
