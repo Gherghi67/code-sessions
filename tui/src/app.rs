@@ -4379,6 +4379,44 @@ mod tests {
         assert!(app.delete_countdown_start.is_some());
     }
 
+    /// A sessions root and a home dir under the temp dir, both scoped to this
+    /// thread, with `names` as dormant sessions and `aged` holding age state
+    /// at `<home>/.cs-secrets/sessions/<name>/age-trusted`.
+    fn age_fixture(tag: &str, names: &[&str], aged: &[&str]) -> (std::path::PathBuf, std::path::PathBuf) {
+        let base = std::env::temp_dir().join(format!("cs-test-age-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("sessions");
+        let home = base.join("home");
+        for name in names {
+            std::fs::create_dir_all(root.join(name).join(".cs/local")).unwrap();
+        }
+        for name in aged {
+            let dir = home.join(".cs-secrets/sessions").join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("age-trusted"), "age1pin\n").unwrap();
+        }
+        (root, home)
+    }
+
+    /// Deleting a base session drops the age state cs-secrets keeps for it
+    /// outside the session dir, and the status names the path.
+    #[test]
+    fn delete_of_a_base_session_drops_its_age_state() {
+        use crate::session::test_root;
+        let (root, home) = age_fixture("single", &["agebase"], &["agebase"]);
+        let _root = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        let mut app = app_on(&root, "agebase");
+
+        app.execute_delete();
+
+        let age_dir = home.join(".cs-secrets/sessions/agebase");
+        let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+        assert!(!age_dir.exists(), "age state survived; status: {status}");
+        assert_eq!(status, format!("Deleted: agebase · removed age state {}", age_dir.display()));
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
     // A batch keeps the reason a delete failed: a mounted vault says to
     // unmount it, and "1 failed" alone does not.
     #[test]
