@@ -437,25 +437,41 @@ _retired_is_ours() {  # file
 # directory. Only a file cs wrote is listed; a user's own file of the same
 # name is kept. The listed files go once settings.json no longer registers
 # them, below: an install that stops before then, or has no jq to rewrite
-# the settings, leaves each one beside its registration.
+# the settings, leaves each one beside its registration, and the install
+# record keeps its line, so the next run still knows it as cs's.
+# CS_RETIRED_HOOK_DIGESTS holds each listed file's sha256, by index.
 CS_RETIRED_HOOK_FILES=()
+CS_RETIRED_HOOK_DIGESTS=()
 for retired in "${RETIRED_HOOKS[@]}"; do
     for dir in "$HOOKS_DIR" "$HOOKS_PARENT_DIR"; do
-        if [ -f "$dir/$retired" ] && _retired_is_ours "$dir/$retired"; then
+        if [ -f "$dir/$retired" ] && _retired_is_ours "$dir/$retired" \
+            && _retired_digest=$(_cs_sha256_file "$dir/$retired"); then
             CS_RETIRED_HOOK_FILES+=("$dir/$retired")
+            CS_RETIRED_HOOK_DIGESTS+=("$_retired_digest")
+            CS_RECORD_LINES+=("$_retired_digest  ${dir#"$HOME"/}/$retired")
         fi
     done
 done
 
-# Returns 0 when hook file $1 stays after this install: it is there and is
-# not a retired file cs wrote.
-_hook_file_stays() {  # path
-    local f
-    [ -e "$1" ] || [ -L "$1" ] || return 1
-    for f in ${CS_RETIRED_HOOK_FILES[@]+"${CS_RETIRED_HOOK_FILES[@]}"}; do
-        [ "$f" = "$1" ] && return 1
+# Returns 0 when $1 is a listed retired file that still holds the content cs
+# wrote. The questions below can take any time, so the content is checked
+# again here: a file replaced since it was listed is the user's.
+_retired_still_ours() {  # path
+    local i digest
+    for i in ${CS_RETIRED_HOOK_FILES[@]+"${!CS_RETIRED_HOOK_FILES[@]}"}; do
+        [ "${CS_RETIRED_HOOK_FILES[$i]}" = "$1" ] || continue
+        digest=$(_cs_sha256_file "$1") || return 1
+        [ "$digest" = "${CS_RETIRED_HOOK_DIGESTS[$i]}" ]
+        return
     done
-    return 0
+    return 1
+}
+
+# Returns 0 when hook file $1 stays after this install: it is there and is
+# not a retired file that still holds what cs wrote.
+_hook_file_stays() {  # path
+    [ -e "$1" ] || [ -L "$1" ] || return 1
+    ! _retired_still_ours "$1"
 }
 
 # The subdirectory copy is canonical; remove parent-level copies left by
@@ -926,10 +942,17 @@ else
         printf '%s\n' "$SETTINGS"
     }
     cs_settings_update "$CLAUDE_SETTINGS" _cs_settings_filter || error "$CS_SETTINGS_ERROR"
-    # settings.json no longer registers them, so the retired files can go
+    # settings.json no longer registers them, so the retired files can go,
+    # each one that still holds what cs wrote; the filter kept the
+    # registration of any other
     for retired in ${CS_RETIRED_HOOK_FILES[@]+"${CS_RETIRED_HOOK_FILES[@]}"}; do
-        rm -f "$retired"
-        info "Removed retired hook: $retired"
+        if _retired_still_ours "$retired"; then
+            rm -f "$retired"
+            info "Removed retired hook: $retired"
+        else
+            warn "Kept $retired: it changed during the install"
+            CS_KEPT_PATHS+=("$retired")
+        fi
     done
     if [ "$_register_statusline" = "1" ]; then
         installed "status line" "cs-statusline + cs-subagent-statusline"
