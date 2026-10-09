@@ -210,7 +210,7 @@ _cs_tmux_title_lock_path() {  # pane
 # - Without perl nothing is locked, and a line on stderr says so.
 # Returns 0 holding the lock, 1 holding nothing.
 _cs_lock() {  # lock file
-    local lock="$1" attempt rc
+    local lock="$1" rc
     if [ -n "${_CS_LOCK_HELD:-}" ]; then
         echo "cs: cannot lock $lock: this process already holds $_CS_LOCK_HELD" >&2
         return 1
@@ -219,7 +219,7 @@ _cs_lock() {  # lock file
         echo "cs: cannot lock $lock: perl not found" >&2
         return 1
     fi
-    for attempt in 1 2 3; do
+    for _ in 1 2 3; do
         if [ -L "$lock" ] || { [ -e "$lock" ] && [ ! -f "$lock" ]; }; then
             echo "cs: cannot lock $lock: not a regular file" >&2
             return 1
