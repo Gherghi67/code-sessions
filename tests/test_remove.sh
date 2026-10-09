@@ -548,14 +548,14 @@ test_remove_dotted_session_does_not_stop_the_next_name() {
 test_remove_age_state_failure_names_it_and_finishes_the_run() {
     create_test_session agefail >/dev/null
     create_test_session agefailnext >/dev/null
-    local sessions="$HOME/.cs-secrets/sessions"
-    local age_dir="$sessions/agefail"
+    local age_root="$HOME/.cs-secrets/sessions"
+    local age_dir="$age_root/agefail"
     mkdir -p "$age_dir"
     printf 'age1pin\n' > "$age_dir/age-trusted"
-    chmod 500 "$sessions"
+    chmod 500 "$age_root"
     local out rc=0
     out=$("$CS_BIN" -rm agefail agefailnext --force </dev/null 2>&1) || rc=$?
-    chmod 700 "$sessions"
+    chmod 700 "$age_root"
     assert_not_exists "$CS_SESSIONS_ROOT/agefail" "the session itself is removed" || return 1
     assert_not_exists "$CS_SESSIONS_ROOT/agefailnext" "the name after it is removed too" || return 1
     assert_dir "$age_dir" "the age state that could not go is still there" || return 1
