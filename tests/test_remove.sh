@@ -529,6 +529,19 @@ test_drop_age_state_refuses_escaping_names() {
     assert_eq "x" "$(cat "$secrets/sessions/keep/age-trusted")" "'*' is not expanded as a glob" || return 1
 }
 
+# A session made by hand under a leading-dot name predates the dot-name
+# refusal and stays removable. Its age state is never cs's to name, but its
+# removal must not stop the names after it in the same cs -rm.
+test_remove_dotted_session_does_not_stop_the_next_name() {
+    mkdir -p "$CS_SESSIONS_ROOT/.olddot/.cs/local"
+    create_test_session agenext >/dev/null
+    local out rc=0
+    out=$("$CS_BIN" -rm .olddot agenext --force </dev/null 2>&1) || rc=$?
+    assert_not_exists "$CS_SESSIONS_ROOT/.olddot" "the dotted session is removed" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/agenext" "the name after it is removed too" || return 1
+    assert_eq "0" "$rc" "cs -rm succeeds" || { echo "  output: $out"; return 1; }
+}
+
 test_remove_force_on_adopted_removes_only_the_link() {
     local project_dir="$TEST_TMPDIR/adopted-project"
     mkdir -p "$project_dir"
@@ -546,6 +559,7 @@ run_test test_remove_worktree_session_keeps_the_base_age_state
 run_test test_remove_orphaned_worktree_session_keeps_age_state
 run_test test_remove_adopted_link_keeps_age_state
 run_test test_drop_age_state_refuses_escaping_names
+run_test test_remove_dotted_session_does_not_stop_the_next_name
 run_test test_remove_refuses_live_session_without_force
 run_test test_remove_allows_heartbeat_only_session_without_force
 run_test test_remove_discards_pending_spawn_seeds
