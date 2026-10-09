@@ -4526,6 +4526,32 @@ mod tests {
         std::fs::remove_dir_all(root.parent().unwrap()).ok();
     }
 
+    /// A batch of a worktree row and an adopted link keeps every age state.
+    #[test]
+    fn batch_delete_of_worktree_and_adopted_rows_keeps_age_state() {
+        use crate::session::test_root;
+        let (root, home) = age_fixture("batch-keep", &["agebk", "agebk@t"], &["agebk", "agebk@t", "agebl"]);
+        let project = root.parent().unwrap().join("project");
+        std::fs::create_dir_all(project.join(".cs/local")).unwrap();
+        std::os::unix::fs::symlink(&project, root.join("agebl")).unwrap();
+        let _root = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        let mut app = app_on(&root, "agebk@t");
+        for name in ["agebk@t", "agebl"] {
+            app.marked_sessions.insert(name.to_string());
+        }
+
+        app.execute_batch_delete();
+
+        let sessions = home.join(".cs-secrets/sessions");
+        let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+        assert_eq!(status, "Deleted 2 sessions");
+        for name in ["agebk", "agebk@t", "agebl"] {
+            assert!(sessions.join(name).join("age-trusted").is_file(), "{name}'s age state survives");
+        }
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
     /// A base@task row uses its base's secrets: deleting it leaves the base's
     /// age state, and a feature name never reaches an age state path.
     #[test]
