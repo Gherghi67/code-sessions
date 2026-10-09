@@ -4479,6 +4479,36 @@ mod tests {
         std::fs::remove_dir_all(root.parent().unwrap()).ok();
     }
 
+    /// A batch drops the age state of every base session it deletes, and its
+    /// one status line names each path removed, sorted.
+    #[test]
+    fn batch_delete_drops_each_base_sessions_age_state() {
+        use crate::session::test_root;
+        let (root, home) = age_fixture("batch", &["agea", "ageb", "agec"], &["agea", "ageb"]);
+        let _root = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        let mut app = app_on(&root, "agea");
+        for name in ["agea", "ageb", "agec"] {
+            app.marked_sessions.insert(name.to_string());
+        }
+
+        app.execute_batch_delete();
+
+        let sessions = home.join(".cs-secrets/sessions");
+        let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+        assert!(!sessions.join("agea").exists(), "agea's age state survived; status: {status}");
+        assert!(!sessions.join("ageb").exists(), "ageb's age state survived; status: {status}");
+        assert_eq!(
+            status,
+            format!(
+                "Deleted 3 sessions · removed age state {}, {}",
+                sessions.join("agea").display(),
+                sessions.join("ageb").display()
+            )
+        );
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
     // A batch keeps the reason a delete failed: a mounted vault says to
     // unmount it, and "1 failed" alone does not.
     #[test]
