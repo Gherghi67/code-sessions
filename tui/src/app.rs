@@ -4526,6 +4526,85 @@ mod tests {
         std::fs::remove_dir_all(root.parent().unwrap()).ok();
     }
 
+    /// A base@task row uses its base's secrets: deleting it leaves the base's
+    /// age state, and a feature name never reaches an age state path.
+    #[test]
+    fn delete_of_a_worktree_row_keeps_age_state() {
+        use crate::session::test_root;
+        let (root, home) = age_fixture("worktree", &["agewt", "agewt@t"], &["agewt", "agewt@t"]);
+        let _root = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        let mut app = app_on(&root, "agewt@t");
+
+        app.execute_delete();
+
+        let sessions = home.join(".cs-secrets/sessions");
+        let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+        assert_eq!(status, "Deleted: agewt@t");
+        assert!(!root.join("agewt@t").exists(), "the worktree row is deleted");
+        assert!(sessions.join("agewt/age-trusted").is_file(), "the base's age state survives");
+        assert!(sessions.join("agewt@t/age-trusted").is_file(), "a feature name reaches no age state");
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
+    /// An adopted session loses only its link; the age state stays.
+    #[test]
+    fn delete_of_an_adopted_link_keeps_age_state() {
+        use crate::session::test_root;
+        let (root, home) = age_fixture("adopted", &[], &["ageln"]);
+        let project = root.parent().unwrap().join("project");
+        std::fs::create_dir_all(project.join(".cs/local")).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        std::os::unix::fs::symlink(&project, root.join("ageln")).unwrap();
+        let _root = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        let mut app = app_on(&root, "ageln");
+
+        app.execute_delete();
+
+        let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+        assert_eq!(status, "Deleted: ageln");
+        assert!(root.join("ageln").symlink_metadata().is_err(), "the link is removed");
+        assert!(project.join(".cs").is_dir(), "the project survives");
+        assert!(home.join(".cs-secrets/sessions/ageln/age-trusted").is_file(), "the age state survives");
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
+    /// Only one plain path component names an age state dir, and the path is
+    /// exact: no name reaches `~/.cs-secrets/sessions/` itself or above it.
+    #[test]
+    fn age_state_dir_takes_only_a_plain_base_name() {
+        let home = std::env::temp_dir().join(format!("cs-test-age-names-{}", std::process::id()));
+        let _home = test_home::scoped(home.clone());
+        for name in ["", ".", "..", ".hidden", "a/", "a/b", "../x", "/abs", "a@t"] {
+            assert_eq!(age_state_dir(name), None, "name {name:?} must not resolve");
+        }
+        assert_eq!(age_state_dir("*"), Some(home.join(".cs-secrets/sessions/*")));
+        assert_eq!(age_state_dir("base"), Some(home.join(".cs-secrets/sessions/base")));
+    }
+
+    /// With no test home scoped, a test resolves no age state at all, so the
+    /// delete tests that predate the age state (and any written later without
+    /// a scope) cannot reach the real `~/.cs-secrets` of whoever runs them.
+    /// A sentinel under a scoped home survives an unscoped delete of the same
+    /// name, proving the unscoped delete went nowhere.
+    #[test]
+    fn delete_without_a_test_home_touches_no_age_state() {
+        use crate::session::test_root;
+        let (root, home) = age_fixture("unscoped", &["agesent"], &["agesent"]);
+        let _root = test_root::scoped(root.clone());
+        assert_eq!(secrets_home(), None);
+        assert_eq!(age_state_dir("agesent"), None);
+        let mut app = app_on(&root, "agesent");
+
+        app.execute_delete();
+
+        let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+        assert_eq!(status, "Deleted: agesent");
+        assert!(home.join(".cs-secrets/sessions/agesent/age-trusted").is_file(), "the sentinel survives");
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
     // A batch keeps the reason a delete failed: a mounted vault says to
     // unmount it, and "1 failed" alone does not.
     #[test]
