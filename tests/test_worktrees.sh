@@ -1648,6 +1648,35 @@ run_test test_integrate_conflict_names_the_path_and_leaves_no_merge_head
 run_test test_integrate_ignored_mode_fuses_nothing
 run_test test_integrate_tracked_mode_warns_on_memory_index_change
 
+# merge=ours keeps the base's MEMORY.md, but a pointer to a topic only the
+# feature wrote must still reach the base: appended once, after the base's
+# own lines, and a pointer both sides name is not doubled.
+test_integrate_tracked_mode_appends_feature_memory_pointers() {
+    local sha base_dir wt output status=0
+    base_dir=$(create_test_session_with_git "myproj")
+    printf '%s\n' '- [A](a.md): base wording' > "$base_dir/.cs/memory/MEMORY.md"
+    (cd "$base_dir" && git add .cs/memory/MEMORY.md && git commit -q -m "base index")
+    cs_launch "myproj@fix-auth"
+    wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    printf '%s\n' '- [A](a.md): feature wording' '- [X](x.md): feature-side' '- [X again](x.md): duplicate' \
+        > "$wt/.cs/memory/MEMORY.md"
+    echo "x topic" > "$wt/.cs/memory/x.md"
+    (cd "$wt" && git add .cs/memory && git commit -q -m "index")
+    sha=$(git -C "$wt" rev-parse HEAD)
+    printf '%s\n' '- [B](b.md): base-side' >> "$base_dir/.cs/memory/MEMORY.md"
+    (cd "$base_dir" && git add .cs/memory/MEMORY.md && git commit -q -m "base pointer")
+    output=$("$CS_BIN" myproj -integrate-feature fix-auth "$sha" -- true 2>&1) || status=$?
+    assert_eq "0" "$status" "integrate succeeds: $output" || return 1
+    assert_eq "- [A](a.md): base wording
+- [B](b.md): base-side
+- [X](x.md): feature-side" "$(cat "$base_dir/.cs/memory/MEMORY.md")" \
+        "base index kept, the feature's new pointer appended once" || return 1
+    assert_eq "" "$(git -C "$base_dir" status --porcelain -- .cs/memory)" \
+        "the appended pointer is committed, not left as dirt" || return 1
+}
+
+run_test test_integrate_tracked_mode_appends_feature_memory_pointers
+
 test_retire_ignored_mode_fuses_records() {
     local base_dir="$CS_SESSIONS_ROOT/proj"
     mkdir -p "$base_dir/.cs"/{memory,local}
@@ -1704,6 +1733,32 @@ test_retire_ignored_mode_fuses_records() {
 }
 
 run_test test_retire_ignored_mode_fuses_records
+
+# Ignored mode keeps the base's MEMORY.md too, and appends each feature
+# pointer whose target the base index does not name.
+test_retire_ignored_mode_appends_feature_memory_pointers() {
+    local base_dir="$CS_SESSIONS_ROOT/proj"
+    mkdir -p "$base_dir/.cs"/{memory,local}
+    printf '%s\n' '- [A](a.md): base wording' > "$base_dir/.cs/memory/MEMORY.md"
+    echo "# P" > "$base_dir/README.md"
+    printf '.cs/\n.claude/settings.local.json\n' > "$base_dir/.gitignore"
+    (cd "$base_dir" && git init -q && git config core.autocrlf false && git add -A && git commit -q -m init)
+    cs_launch "proj@t1"
+    local wt="$CS_SESSIONS_ROOT/proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    printf '%s\n' '- [A](a.md): feature wording' '- [X](x.md): feature-side' > "$wt/.cs/memory/MEMORY.md"
+    echo "x topic" > "$wt/.cs/memory/x.md"
+    local sha output status=0
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "retire exits 0: $output" || return 1
+    assert_eq "- [A](a.md): base wording
+- [X](x.md): feature-side" "$(cat "$base_dir/.cs/memory/MEMORY.md")" \
+        "base index kept, the feature's new pointer appended" || return 1
+}
+
+run_test test_retire_ignored_mode_appends_feature_memory_pointers
 
 test_retire_fuse_survives_a_torn_timeline_tail() {
     # A crash mid-append leaves a last line with no newline. Appending onto it
