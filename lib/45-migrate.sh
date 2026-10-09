@@ -17,6 +17,61 @@ setup_merge_attributes() {
     fi
 }
 
+# A clone delivers symlinks like any other file, and cs writes through them
+# at open: `.cs/README.md -> ~/.zshrc` would take the README's frontmatter.
+# Refuse any link under .cs, or at a root file cs rewrites, whose writes land
+# outside the session. A link to a directory inside the session is followed
+# and that directory scanned too: .cs/memory -> ../payload makes payload's
+# links cs's write targets. A hand-made vault's mount is the user's and is not
+# walked; cs_write_atomic still refuses a write leading out of it.
+_refuse_links_out_of_session() {  # dir
+    local dir="$1" dir_p p link cur todo seen="" prune="" cfg=""
+    dir_p=$(cd -P "$dir" 2>/dev/null && pwd -P) || return 0
+    _cs_hand_made_vault "$dir" && prune="$dir_p/.cs/vault-mnt"
+    # cs links the shell's settings, skills and the rest into an encrypted
+    # session's config dir by design; that dir is skipped only while
+    # .cs/claude-config is cs's own link into the vault.
+    if [ -L "$dir_p/.cs/claude-config" ] && [ "$dir_p/.cs/claude-config" -ef "$dir_p/.cs/vault-mnt/claude-config" ]; then
+        cfg=$(cd -P "$dir_p/.cs/vault-mnt/claude-config" 2>/dev/null && pwd -P)
+    fi
+    # A flat-layout session (Codex r2 #1) has Phase 1 move these root entries
+    # into .cs/ and then write them; vet them before the move.
+    local roots="CLAUDE.local.md .gitignore .gitattributes .claude .claude/settings.local.json"
+    if needs_cs_migration "$dir_p"; then
+        roots="$roots logs archives age-recipients README.md discoveries.md summary.md secrets.enc secrets.age"
+    fi
+    for p in $roots; do
+        [ -L "$dir_p/$p" ] || continue
+        _cs_write_leaves_session "$dir" "$dir_p/$p" >/dev/null || continue
+        error "$p is a symlink to $(readlink "$dir_p/$p"), outside the session, and cs writes through it. Replace it with a real file or directory, or cs -rm the session."
+    done
+    todo="$dir_p/.cs"
+    while [ -n "$todo" ]; do
+        cur=${todo%%$'\n'*}
+        if [ "$cur" = "$todo" ]; then todo=""; else todo=${todo#*$'\n'}; fi
+        case "$cur" in "$prune"|"$prune"/*) [ -n "$prune" ] && continue ;; esac
+        case "$cur" in "$cfg"|"$cfg"/*) [ -n "$cfg" ] && continue ;; esac
+        case "$seen" in *$'\n'"$cur"$'\n'*) continue ;; esac
+        seen="$seen"$'\n'"$cur"$'\n'
+        while IFS= read -r -d '' p; do
+            if _cs_write_leaves_session "$dir" "$p" >/dev/null; then
+                error "${p#"$dir_p"/} is a symlink to $(readlink "$p"), outside the session, and cs writes through it. Replace it with a real file or directory, or cs -rm the session."
+            fi
+            [ -d "$p" ] || continue
+            link=$p
+            # The x keeps a trailing newline that $(...) would strip (Codex r3 #1).
+            p=$(cd -P "$p" 2>/dev/null && pwd -P && printf x) || continue
+            p=${p%$'\n'x}
+            # The walk list is newline-separated, so such a name would split
+            # into two entries and neither would be scanned (Codex r2 #2).
+            case "$p" in *$'\n'*)
+                error "${link#"$dir_p"/} leads to a directory with a newline in its name, which cs cannot check for links out of the session. Rename it, or cs -rm the session." ;;
+            esac
+            todo="$todo${todo:+$'\n'}$p"
+        done < <(find "$cur" \( -path "${prune:-/nonexistent}" -o -path "${cfg:-/nonexistent}" \) -prune -o -type l -print0 2>/dev/null)
+    done
+}
+
 # Refuse to proceed if per-actor local state has been committed to git, or
 # sits behind a symlink: git tracks a link as one path, so `.cs -> payload`
 # or `.cs/local -> ../payload` hides a committed pre-open from the pathspec
@@ -28,21 +83,11 @@ cs_assert_local_untracked() {
         error "$sub is a symlink to $(readlink "$dir/$sub") (cs state must be a real directory inside the session). Delete .cs/local/pre-open unless you wrote it, replace the link with the directory, then reopen."
     done
     # A submodule or nested repository at .cs keeps its files out of the
-    # session's index, so the pathspec check below would never see them. The
-    # gitlink outlives a removed .cs/.git, so the index is checked as well.
-    local nested=""
-    [ -e "$dir/.cs/.git" ] && nested=1
-    if git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
-        # The pathspec also lists entries below .cs; only a gitlink whose
-        # whole path is .cs counts.
-        if git -C "$dir" ls-files -s -- ':(icase).cs' 2>/dev/null \
-            | awk -F'\t' '{ split($1, m, " "); if (m[1] == "160000" && tolower($2) == ".cs") hit = 1 } END { exit !hit }' 2>/dev/null; then
-            nested=1
-        fi
-    fi
-    if [ -n "$nested" ]; then
+    # session's index, so the pathspec check below would never see them.
+    if _cs_nested_cs "$dir"; then
         error ".cs is a submodule or nested repository (cs state must be a plain directory inside the session). Delete .cs/local/pre-open unless you wrote it, then git rm --cached .cs, remove .cs/.git and git add .cs, then reopen."
     fi
+    _refuse_links_out_of_session "$dir"
     git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || return 0
     # :(icase): a case-insensitive checkout (macOS by default) puts a
     # committed .cs/LOCAL/pre-open at .cs/local/pre-open on disk, where a

@@ -1406,17 +1406,101 @@ _cs_file_mode() {  # path
 # with .cs-tmp., the prefix a session's .gitignore names, so one left by a
 # killed writer never reaches an autosave snapshot. A symlinked destination is
 # followed to its target, so a shared or linked file is rewritten in place and
-# the link survives. The destination keeps the
+# the link survives; inside a session (CLAUDE_SESSION_DIR) a destination under
+# it whose links lead out of it is refused instead (_cs_write_leaves_session),
+# since a clone can commit `.cs/README.md -> ~/.zshrc`. The destination keeps the
 # permission bits it had, and a new file gets the umask's; the temp file takes
 # them BEFORE the rename, so a shared directory never sees a 0600 window. A
 # failed command, chmod or rename leaves the destination as it was, the temp
 # file removed, and returns the failing status. Callers that want a message
 # add it: hooks source this file, and `error` is cs's alone.
 # Usage: cs_write_atomic <dest> <command> [args...]
+# Where a write to a path lands: its symlinks followed, 16 hops as
+# cs_write_atomic follows them, and its directory resolved physically, so a
+# linked parent counts too. Fails when that directory does not exist.
+_cs_write_target() {  # path
+    local dest="$1" link dir hops=0
+    while [ -L "$dest" ] && [ "$hops" -lt 16 ]; do
+        link=$(readlink "$dest") || return 1
+        case "$link" in
+            /*) dest="$link" ;;
+            *) dest="$(dirname "$dest")/$link" ;;
+        esac
+        hops=$((hops + 1))
+    done
+    # cd -P walks each component as the filesystem does: a logical cd would
+    # collapse `link/..` to the link's own parent, not the target's.
+    dir=$(cd -P "$(dirname "$dest")" 2>/dev/null && pwd -P) || return 1
+    printf '%s/%s\n' "${dir%/}" "$(basename "$dest")"
+}
+
+# True when .cs at <root> is a submodule or nested repository, whose files
+# the session's index never lists (Codex r2 #4). The gitlink outlives a
+# removed .cs/.git, so the index is checked as well; the pathspec also lists
+# entries below .cs, so only a gitlink whose whole path is .cs counts.
+_cs_nested_cs() {  # root
+    [ -e "$1/.cs/.git" ] && return 0
+    git -C "$1" rev-parse --git-dir >/dev/null 2>&1 || return 1
+    git -C "$1" ls-files -s -- ':(icase).cs' 2>/dev/null \
+        | awk -F'\t' '{ split($1, m, " "); if (m[1] == "160000" && tolower($2) == ".cs") hit = 1 } END { exit !hit }' 2>/dev/null
+}
+
+# True when the session at <root> has a vault the user set up by hand: a
+# .cs/local/pre-open the open would run. A clone can commit one or link one
+# in, so it counts only as a real file under a real .cs/local, untracked (the
+# same rules cs_assert_local_untracked enforces at open; a standalone command
+# like cs <name> -queue never ran that check).
+_cs_hand_made_vault() {  # root
+    local pre="$1/.cs/local/pre-open"
+    [ -f "$pre" ] && [ ! -L "$pre" ] && [ ! -L "$1/.cs" ] && [ ! -L "$1/.cs/local" ] || return 1
+    ! _cs_nested_cs "$1" || return 1
+    git -C "$1" rev-parse --git-dir >/dev/null 2>&1 || return 0
+    [ -z "$(git -C "$1" ls-files -- ':(icase).cs/local' 2>/dev/null | sed -n 1p)" ]
+}
+
+# True when a path lies in the session at <root> by its spelling (as typed,
+# or under the root's physical path, the spelling an adopted session is
+# written by) but a write to it lands outside the root; prints where it lands.
+# Two kinds of link lead out by design and are let through:
+# - an encrypted session's .cs/claude-config links settings, skills and the
+#   rest to the shell's own config, and the open refuses a .cs/claude-config
+#   that is not cs's link into the vault;
+# - a vault set up by hand mounts anywhere, from .cs/local/pre-open, so while
+#   one exists the four vault links, and a .cs/narrative-archive link (which
+#   cs -narrative rotate uses as it is), may lead out. A clone cannot ship a
+#   pre-open: cs_assert_local_untracked refuses one tracked or linked in.
+_cs_write_leaves_session() {  # root, path
+    local root="$1" root_p real sub
+    root_p=$(cd "$root" 2>/dev/null && pwd -P) || return 1
+    case "$2" in
+        "$root"/.cs/claude-config/*|"$root_p"/.cs/claude-config/*) return 1 ;;
+        "$root"/*|"$root_p"/*) ;;
+        *) return 1 ;;
+    esac
+    if _cs_hand_made_vault "$root"; then
+        for sub in $CS_VAULT_LINKS narrative-archive; do
+            [ -L "$root/.cs/$sub" ] || continue
+            case "$2" in
+                "$root/.cs/$sub"|"$root/.cs/$sub"/*|"$root_p/.cs/$sub"|"$root_p/.cs/$sub"/*) return 1 ;;
+            esac
+        done
+    fi
+    # An unresolvable directory fails the write at mktemp, writing nothing.
+    real=$(_cs_write_target "$2") || return 1
+    case "$real/" in
+        "$root_p"/*) return 1 ;;
+    esac
+    printf '%s\n' "$real"
+}
+
 cs_write_atomic() {  # dest, command [args...]
     local dest="$1"; shift
     (
-        local dir tmp mode link hops=0
+        local dir tmp mode link hops=0 out
+        if [ -n "${CLAUDE_SESSION_DIR:-}" ] && out=$(_cs_write_leaves_session "$CLAUDE_SESSION_DIR" "$dest"); then
+            echo "cs_write_atomic: $dest leads to $out, outside the session $CLAUDE_SESSION_DIR" >&2
+            exit 1
+        fi
         while [ -L "$dest" ] && [ "$hops" -lt 16 ]; do
             link=$(readlink "$dest") || exit 1
             case "$link" in
@@ -4817,6 +4901,61 @@ setup_merge_attributes() {
     fi
 }
 
+# A clone delivers symlinks like any other file, and cs writes through them
+# at open: `.cs/README.md -> ~/.zshrc` would take the README's frontmatter.
+# Refuse any link under .cs, or at a root file cs rewrites, whose writes land
+# outside the session. A link to a directory inside the session is followed
+# and that directory scanned too: .cs/memory -> ../payload makes payload's
+# links cs's write targets. A hand-made vault's mount is the user's and is not
+# walked; cs_write_atomic still refuses a write leading out of it.
+_refuse_links_out_of_session() {  # dir
+    local dir="$1" dir_p p link cur todo seen="" prune="" cfg=""
+    dir_p=$(cd -P "$dir" 2>/dev/null && pwd -P) || return 0
+    _cs_hand_made_vault "$dir" && prune="$dir_p/.cs/vault-mnt"
+    # cs links the shell's settings, skills and the rest into an encrypted
+    # session's config dir by design; that dir is skipped only while
+    # .cs/claude-config is cs's own link into the vault.
+    if [ -L "$dir_p/.cs/claude-config" ] && [ "$dir_p/.cs/claude-config" -ef "$dir_p/.cs/vault-mnt/claude-config" ]; then
+        cfg=$(cd -P "$dir_p/.cs/vault-mnt/claude-config" 2>/dev/null && pwd -P)
+    fi
+    # A flat-layout session (Codex r2 #1) has Phase 1 move these root entries
+    # into .cs/ and then write them; vet them before the move.
+    local roots="CLAUDE.local.md .gitignore .gitattributes .claude .claude/settings.local.json"
+    if needs_cs_migration "$dir_p"; then
+        roots="$roots logs archives age-recipients README.md discoveries.md summary.md secrets.enc secrets.age"
+    fi
+    for p in $roots; do
+        [ -L "$dir_p/$p" ] || continue
+        _cs_write_leaves_session "$dir" "$dir_p/$p" >/dev/null || continue
+        error "$p is a symlink to $(readlink "$dir_p/$p"), outside the session, and cs writes through it. Replace it with a real file or directory, or cs -rm the session."
+    done
+    todo="$dir_p/.cs"
+    while [ -n "$todo" ]; do
+        cur=${todo%%$'\n'*}
+        if [ "$cur" = "$todo" ]; then todo=""; else todo=${todo#*$'\n'}; fi
+        case "$cur" in "$prune"|"$prune"/*) [ -n "$prune" ] && continue ;; esac
+        case "$cur" in "$cfg"|"$cfg"/*) [ -n "$cfg" ] && continue ;; esac
+        case "$seen" in *$'\n'"$cur"$'\n'*) continue ;; esac
+        seen="$seen"$'\n'"$cur"$'\n'
+        while IFS= read -r -d '' p; do
+            if _cs_write_leaves_session "$dir" "$p" >/dev/null; then
+                error "${p#"$dir_p"/} is a symlink to $(readlink "$p"), outside the session, and cs writes through it. Replace it with a real file or directory, or cs -rm the session."
+            fi
+            [ -d "$p" ] || continue
+            link=$p
+            # The x keeps a trailing newline that $(...) would strip (Codex r3 #1).
+            p=$(cd -P "$p" 2>/dev/null && pwd -P && printf x) || continue
+            p=${p%$'\n'x}
+            # The walk list is newline-separated, so such a name would split
+            # into two entries and neither would be scanned (Codex r2 #2).
+            case "$p" in *$'\n'*)
+                error "${link#"$dir_p"/} leads to a directory with a newline in its name, which cs cannot check for links out of the session. Rename it, or cs -rm the session." ;;
+            esac
+            todo="$todo${todo:+$'\n'}$p"
+        done < <(find "$cur" \( -path "${prune:-/nonexistent}" -o -path "${cfg:-/nonexistent}" \) -prune -o -type l -print0 2>/dev/null)
+    done
+}
+
 # Refuse to proceed if per-actor local state has been committed to git, or
 # sits behind a symlink: git tracks a link as one path, so `.cs -> payload`
 # or `.cs/local -> ../payload` hides a committed pre-open from the pathspec
@@ -4828,21 +4967,11 @@ cs_assert_local_untracked() {
         error "$sub is a symlink to $(readlink "$dir/$sub") (cs state must be a real directory inside the session). Delete .cs/local/pre-open unless you wrote it, replace the link with the directory, then reopen."
     done
     # A submodule or nested repository at .cs keeps its files out of the
-    # session's index, so the pathspec check below would never see them. The
-    # gitlink outlives a removed .cs/.git, so the index is checked as well.
-    local nested=""
-    [ -e "$dir/.cs/.git" ] && nested=1
-    if git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
-        # The pathspec also lists entries below .cs; only a gitlink whose
-        # whole path is .cs counts.
-        if git -C "$dir" ls-files -s -- ':(icase).cs' 2>/dev/null \
-            | awk -F'\t' '{ split($1, m, " "); if (m[1] == "160000" && tolower($2) == ".cs") hit = 1 } END { exit !hit }' 2>/dev/null; then
-            nested=1
-        fi
-    fi
-    if [ -n "$nested" ]; then
+    # session's index, so the pathspec check below would never see them.
+    if _cs_nested_cs "$dir"; then
         error ".cs is a submodule or nested repository (cs state must be a plain directory inside the session). Delete .cs/local/pre-open unless you wrote it, then git rm --cached .cs, remove .cs/.git and git add .cs, then reopen."
     fi
+    _refuse_links_out_of_session "$dir"
     git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || return 0
     # :(icase): a case-insensitive checkout (macOS by default) puts a
     # committed .cs/LOCAL/pre-open at .cs/local/pre-open on disk, where a
@@ -6120,9 +6249,30 @@ rotate_narrative() {
         info "nothing to rotate: narrative.$actor.md is $((size / 1024)) KB (budget $((max / 1024)) KB)"
         return 0
     fi
+    # An encrypted session's narrative sits in the vault behind the .cs/memory
+    # link, so its archive must too. A .cs/narrative-archive link is used as
+    # it is; otherwise .cs/private holds the archive. With neither, the only
+    # place left is plaintext, so the rotation refuses.
+    local arch_root="$meta_dir/narrative-archive"
+    if [ -L "$meta_dir/memory" ] && [ ! -L "$arch_root" ]; then
+        if [ ! -d "$meta_dir/private" ]; then
+            error "narrative.$actor.md lives on encrypted storage (.cs/memory is a link), and neither .cs/private nor .cs/narrative-archive is there to hold its archive. Link one of them into the vault, then run cs -narrative rotate again."
+        fi
+        arch_root="$meta_dir/private/narrative-archive"
+    fi
+    local arch_dir="$arch_root/$actor"
+    # A link out of the session would carry the kept tail onto a file the
+    # session does not own (audit M8); refuse before the first write.
+    local out
+    if out=$(_cs_write_leaves_session "$session_dir" "$live"); then
+        error "${live#"$session_dir"/} leads to $out, outside the session; cs will not rotate through it."
+    fi
     # Work from a snapshot: the cut is computed on bytes that cannot change under
     # us, and the live file is compared against that snapshot before it is rewritten.
-    local snap="$meta_dir/memory/.narrative.$actor.rotate.$$"
+    # Its name is unpredictable: a clone can plant a link at any name it can
+    # guess, and cp would follow it (Codex r2 #5).
+    local snap
+    snap=$(mktemp "$meta_dir/memory/.narrative.$actor.rotate.XXXXXX") || error "Cannot write to $meta_dir/memory"
     cp "$live" "$snap"
     # grep -c exits 1 on zero matches; under set -e -o pipefail that would end
     # cs instead of reaching the warning below, hence the || true.
@@ -6150,22 +6300,17 @@ rotate_narrative() {
         | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | tail -1 || true)
     [ -n "$through" ] || through="undated"
 
-    # An encrypted session's narrative sits in the vault behind the .cs/memory
-    # link, so its archive must too. A .cs/narrative-archive link is used as
-    # it is; otherwise .cs/private holds the archive. With neither, the only
-    # place left is plaintext, so the rotation refuses.
-    local arch_root="$meta_dir/narrative-archive"
-    if [ -L "$meta_dir/memory" ] && [ ! -L "$arch_root" ]; then
-        if [ ! -d "$meta_dir/private" ]; then
-            rm -f "$snap"
-            error "narrative.$actor.md lives on encrypted storage (.cs/memory is a link), and neither .cs/private nor .cs/narrative-archive is there to hold its archive. Link one of them into the vault, then run cs -narrative rotate again."
-        fi
-        arch_root="$meta_dir/private/narrative-archive"
+    # Nor may the archive chunk land outside the session.
+    if out=$(_cs_write_leaves_session "$session_dir" "$arch_dir"); then
+        rm -f "$snap"
+        error "${arch_dir#"$session_dir"/} leads to $out, outside the session; cs will not rotate through it."
     fi
-    local arch_dir="$arch_root/$actor"
     mkdir -p "$arch_dir"
     [ -w "$arch_dir" ] || { rm -f "$snap"; error "Cannot write to $arch_dir"; }
-    local body="$arch_dir/.body.$$"
+    # Every temp name here is unpredictable: a clone can commit any name it
+    # can guess, as a link out of the session (audit M8, Codex r1).
+    local body
+    body=$(mktemp "$arch_dir/.body.XXXXXX") || { rm -f "$snap"; error "Cannot write to $arch_dir"; }
     # head first, tail second: the bounded producer runs to completion and the
     # consumer reads all of it. The other order lets head close the pipe early
     # and tail die of SIGPIPE, which pipefail turns into a failed rotation on
@@ -6174,10 +6319,11 @@ rotate_narrative() {
     local blob chunk chunk_tmp
     blob=$(git hash-object "$body" | cut -c1-8)
     chunk="$arch_dir/$through-$blob.md"
-    # The fixed temp name is safe here and needs no unique one: it carries the
-    # hash of the bytes it will hold, so two rotations that share it are
-    # writing the same file.
-    chunk_tmp="$arch_dir/.$through-$blob.md.tmp"
+    if [ -L "$chunk" ]; then
+        rm -f "$body" "$snap"
+        error "archive chunk $chunk is a symlink; cs will not rotate through it."
+    fi
+    chunk_tmp=$(mktemp "$arch_dir/.chunk.XXXXXX") || { rm -f "$body" "$snap"; error "Cannot write to $arch_dir"; }
     {
         printf '<!-- rotated from narrative.%s.md: %s sections through %s -->\n' "$actor" "$sections" "$through"
         printf '<!-- verbatim copy of the sections that preceded the live tail; never edited -->\n\n'
@@ -6632,6 +6778,9 @@ _mail_send() {  # target, [--kind|-k KIND] [--reply THREAD] body
     validate_session_ref "$target"
     local target_dir="$SESSIONS_ROOT/$target"
     is_session_dir "$target_dir" || error "No such session: $target"
+    # Mail lands in a session that is not opened for it, from either form of
+    # cs -msg, so the open's refusals run here first (Codex r3 #2).
+    cs_assert_local_untracked "$target_dir"
     if [ "$target" = "${CLAUDE_SESSION_NAME:-}" ]; then
         error "Refusing to send mail to the current session"
     fi
@@ -12122,6 +12271,14 @@ run_uninstall() {
 }
 
 # Main function
+# A named verb (cs <name> -queue, -narrative, -secrets) writes into
+# the session without opening it, so the open's refusals never ran on this
+# path (Codex r2 #3). Run them here before the verb touches anything.
+_vet_named_session() {  # session_dir
+    is_session_dir "$1" || return 0
+    cs_assert_local_untracked "$1"
+}
+
 main() {
     # cs IS the launch, and the hooks read that from the ABSENCE of this marker
     # (hooks/cs-resolve.sh preserves an inherited value rather than setting
@@ -12371,6 +12528,10 @@ main() {
         case "$1" in
             -secrets)
                 shift
+                _vet_named_session "$SESSIONS_ROOT/$session_name"
+                # A worktree's secrets route to its base, so the base is the
+                # session cs-secrets writes into (Codex r3 #3).
+                [ -z "$wt_base" ] || _vet_named_session "$SESSIONS_ROOT/$wt_base"
                 export CLAUDE_SESSION_NAME="$session_name"
                 # Worktree secrets live under the base session's namespace
                 # (no launched session ever uses cs:<base>@<task>:*); a plain
@@ -12383,6 +12544,7 @@ main() {
                 ;;
             -queue)
                 shift
+                _vet_named_session "$SESSIONS_ROOT/$session_name"
                 export CLAUDE_SESSION_NAME="$session_name"
                 export CLAUDE_SESSION_DIR="$SESSIONS_ROOT/$session_name"
                 export CLAUDE_SESSION_META_DIR="$SESSIONS_ROOT/$session_name/.cs"
@@ -12437,6 +12599,7 @@ main() {
                 # and misnames this one's fault.
                 is_session_dir "$SESSIONS_ROOT/$session_name" \
                     || error "No such session: $session_name"
+                _vet_named_session "$SESSIONS_ROOT/$session_name"
                 export CLAUDE_SESSION_NAME="$session_name"
                 export CLAUDE_SESSION_DIR="$SESSIONS_ROOT/$session_name"
                 export CLAUDE_SESSION_META_DIR="$SESSIONS_ROOT/$session_name/.cs"

@@ -143,6 +143,9 @@ _mail_send() {  # target, [--kind|-k KIND] [--reply THREAD] body
     validate_session_ref "$target"
     local target_dir="$SESSIONS_ROOT/$target"
     is_session_dir "$target_dir" || error "No such session: $target"
+    # Mail lands in a session that is not opened for it, from either form of
+    # cs -msg, so the open's refusals run here first (Codex r3 #2).
+    cs_assert_local_untracked "$target_dir"
     if [ "$target" = "${CLAUDE_SESSION_NAME:-}" ]; then
         error "Refusing to send mail to the current session"
     fi

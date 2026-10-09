@@ -57,9 +57,30 @@ rotate_narrative() {
         info "nothing to rotate: narrative.$actor.md is $((size / 1024)) KB (budget $((max / 1024)) KB)"
         return 0
     fi
+    # An encrypted session's narrative sits in the vault behind the .cs/memory
+    # link, so its archive must too. A .cs/narrative-archive link is used as
+    # it is; otherwise .cs/private holds the archive. With neither, the only
+    # place left is plaintext, so the rotation refuses.
+    local arch_root="$meta_dir/narrative-archive"
+    if [ -L "$meta_dir/memory" ] && [ ! -L "$arch_root" ]; then
+        if [ ! -d "$meta_dir/private" ]; then
+            error "narrative.$actor.md lives on encrypted storage (.cs/memory is a link), and neither .cs/private nor .cs/narrative-archive is there to hold its archive. Link one of them into the vault, then run cs -narrative rotate again."
+        fi
+        arch_root="$meta_dir/private/narrative-archive"
+    fi
+    local arch_dir="$arch_root/$actor"
+    # A link out of the session would carry the kept tail onto a file the
+    # session does not own (audit M8); refuse before the first write.
+    local out
+    if out=$(_cs_write_leaves_session "$session_dir" "$live"); then
+        error "${live#"$session_dir"/} leads to $out, outside the session; cs will not rotate through it."
+    fi
     # Work from a snapshot: the cut is computed on bytes that cannot change under
     # us, and the live file is compared against that snapshot before it is rewritten.
-    local snap="$meta_dir/memory/.narrative.$actor.rotate.$$"
+    # Its name is unpredictable: a clone can plant a link at any name it can
+    # guess, and cp would follow it (Codex r2 #5).
+    local snap
+    snap=$(mktemp "$meta_dir/memory/.narrative.$actor.rotate.XXXXXX") || error "Cannot write to $meta_dir/memory"
     cp "$live" "$snap"
     # grep -c exits 1 on zero matches; under set -e -o pipefail that would end
     # cs instead of reaching the warning below, hence the || true.
@@ -87,22 +108,17 @@ rotate_narrative() {
         | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | tail -1 || true)
     [ -n "$through" ] || through="undated"
 
-    # An encrypted session's narrative sits in the vault behind the .cs/memory
-    # link, so its archive must too. A .cs/narrative-archive link is used as
-    # it is; otherwise .cs/private holds the archive. With neither, the only
-    # place left is plaintext, so the rotation refuses.
-    local arch_root="$meta_dir/narrative-archive"
-    if [ -L "$meta_dir/memory" ] && [ ! -L "$arch_root" ]; then
-        if [ ! -d "$meta_dir/private" ]; then
-            rm -f "$snap"
-            error "narrative.$actor.md lives on encrypted storage (.cs/memory is a link), and neither .cs/private nor .cs/narrative-archive is there to hold its archive. Link one of them into the vault, then run cs -narrative rotate again."
-        fi
-        arch_root="$meta_dir/private/narrative-archive"
+    # Nor may the archive chunk land outside the session.
+    if out=$(_cs_write_leaves_session "$session_dir" "$arch_dir"); then
+        rm -f "$snap"
+        error "${arch_dir#"$session_dir"/} leads to $out, outside the session; cs will not rotate through it."
     fi
-    local arch_dir="$arch_root/$actor"
     mkdir -p "$arch_dir"
     [ -w "$arch_dir" ] || { rm -f "$snap"; error "Cannot write to $arch_dir"; }
-    local body="$arch_dir/.body.$$"
+    # Every temp name here is unpredictable: a clone can commit any name it
+    # can guess, as a link out of the session (audit M8, Codex r1).
+    local body
+    body=$(mktemp "$arch_dir/.body.XXXXXX") || { rm -f "$snap"; error "Cannot write to $arch_dir"; }
     # head first, tail second: the bounded producer runs to completion and the
     # consumer reads all of it. The other order lets head close the pipe early
     # and tail die of SIGPIPE, which pipefail turns into a failed rotation on
@@ -111,10 +127,11 @@ rotate_narrative() {
     local blob chunk chunk_tmp
     blob=$(git hash-object "$body" | cut -c1-8)
     chunk="$arch_dir/$through-$blob.md"
-    # The fixed temp name is safe here and needs no unique one: it carries the
-    # hash of the bytes it will hold, so two rotations that share it are
-    # writing the same file.
-    chunk_tmp="$arch_dir/.$through-$blob.md.tmp"
+    if [ -L "$chunk" ]; then
+        rm -f "$body" "$snap"
+        error "archive chunk $chunk is a symlink; cs will not rotate through it."
+    fi
+    chunk_tmp=$(mktemp "$arch_dir/.chunk.XXXXXX") || { rm -f "$body" "$snap"; error "Cannot write to $arch_dir"; }
     {
         printf '<!-- rotated from narrative.%s.md: %s sections through %s -->\n' "$actor" "$sections" "$through"
         printf '<!-- verbatim copy of the sections that preceded the live tail; never edited -->\n\n'
