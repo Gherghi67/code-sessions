@@ -363,7 +363,8 @@ _launch_worker() {
 # never from redirected stdin, so the launch runs on a pty and the keys are
 # typed once the ask appears. Keys take Python escapes (\r, \x1b). Output
 # comes back with CRLF folded. BEFORE_KEYS, when set, is a shell command run
-# while the ask waits, just before the keys are typed.
+# while the ask waits, just before the keys are typed, with PTY_PID set to
+# the pid of cs on the pty.
 _launch_worker_on_tty() {  # keys, [VAR=value ...]
     local keys="$1"; shift
     env "$@" python3 - "$keys" "$CS_BIN" worker << 'PY'
@@ -388,6 +389,7 @@ while True:
         out += data
     if not sent and (b"[Y/n]" in out or time.time() - start > 8):
         if os.environ.get("BEFORE_KEYS"):
+            os.environ["PTY_PID"] = str(pid)
             os.system(os.environ["BEFORE_KEYS"])
         if keys:
             os.write(fd, keys)
@@ -701,6 +703,46 @@ test_launch_consumes_the_seed_it_asked_about() {
     assert_file_contains "$CS_SESSIONS_ROOT/.spawn/worker.seed" "job B" "the replacement seed is left staged, not consumed" || return 1
 }
 
+# A decline answers for the seed that was shown: a seed published in .spawn
+# while the ask waits stays staged for its own open, not set aside with it.
+test_launch_decline_keeps_a_replacement_seed_staged() {
+    _stage_seed_with_brief $'brief A\n' boss "job A"
+    {
+        printf '%s\n%s\n%s\n' "$OWN_TOKEN" boss "job B"
+    } > "$TEST_TMPDIR/seed-b"
+    local out
+    out=$(_launch_worker_on_tty 'n' BEFORE_KEYS="cp '$TEST_TMPDIR/seed-b' '$CS_SESSIONS_ROOT/.spawn/worker.seed'") \
+        || { echo "  launch failed: $out"; return 1; }
+    assert_file_contains "$CS_SESSIONS_ROOT/.spawn/worker.seed" "job B" "the replacement seed stays staged" || return 1
+    assert_file_contains "$CS_SESSIONS_ROOT/.spawn/worker.seed.stale" "job A" "the declined seed is the one set aside" || return 1
+    assert_eq "0" "$(WQ_COUNT)" "nothing queued after a decline" || return 1
+}
+
+# An open stopped at the ask leaves the seed staged for the next open and no
+# copy of it anywhere else: the seed can carry a brief.
+test_launch_terminated_at_the_ask_leaves_the_seed_staged_and_no_copy() {
+    _stage_seed_with_brief $'brief A\n' boss "job A"
+    mkdir -p "$TEST_TMPDIR/tmp"
+    local out
+    out=$(_launch_worker_on_tty '' TMPDIR="$TEST_TMPDIR/tmp" BEFORE_KEYS='kill -TERM $PTY_PID') || true
+    assert_file_contains "$CS_SESSIONS_ROOT/.spawn/worker.seed" "job A" "the seed is staged again" || return 1
+    assert_eq "" "$(ls -A "$TEST_TMPDIR/tmp")" "no copy of the seed left in TMPDIR" || return 1
+    assert_eq "" "$(ls -A "$CS_SESSIONS_ROOT/.spawn" | grep -v '^worker.seed$')" "nothing else left in .spawn" || return 1
+}
+
+# A launch that fails after it read the seed leaves no copy of it behind.
+test_launch_failing_after_the_read_leaves_no_copy_of_the_seed() {
+    _launch_worker >/dev/null || return 1
+    mkdir "$(WQ)/spawned-by"
+    _stage_seed_with_brief $'brief A\n' boss "job A"
+    mkdir -p "$TEST_TMPDIR/tmp"
+    local rc=0 out
+    out=$(TMPDIR="$TEST_TMPDIR/tmp" _launch_worker) || rc=$?
+    [ "$rc" != 0 ] || { echo "  launch succeeded with a directory at spawned-by"; return 1; }
+    assert_eq "" "$(ls -A "$TEST_TMPDIR/tmp")" "no copy of the seed left in TMPDIR" || return 1
+    assert_eq "" "$(ls -A "$CS_SESSIONS_ROOT/.spawn" | grep -v '^worker.seed')" "no launch-owned file left in .spawn" || return 1
+}
+
 # The brief is written to the session's .cs/brief.md name itself: a link
 # planted there must not turn the delivery into a write over another file.
 test_launch_refuses_a_link_at_the_briefs_destination() {
@@ -848,6 +890,9 @@ run_test test_launch_seed_without_a_token_line_is_foreign
 run_test test_launch_foreign_seed_redirected_stdin_stays_staged
 run_test test_launch_foreign_seed_consent_shows_it_and_enter_consumes
 run_test test_launch_consumes_the_seed_it_asked_about
+run_test test_launch_decline_keeps_a_replacement_seed_staged
+run_test test_launch_terminated_at_the_ask_leaves_the_seed_staged_and_no_copy
+run_test test_launch_failing_after_the_read_leaves_no_copy_of_the_seed
 run_test test_launch_foreign_seed_y_consumes
 run_test test_launch_foreign_seed_unknown_key_asks_again
 run_test test_launch_foreign_seed_escape_declines
