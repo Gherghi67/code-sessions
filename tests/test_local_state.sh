@@ -783,12 +783,17 @@ test_state_write_ignores_a_lock_directory_left_on_disk() {
     echo "$$" > "$state.lock/pid"
     _argv_claude_stub
 
-    start=$SECONDS
     "$CS_BIN" dir-lock <<< "" >/dev/null 2>&1 || true
-    took=$((SECONDS - start))
+    assert_file_contains "$state" "^claude_session_id:" "the launch's write went through" || return 1
 
-    assert_file_contains "$state" "^claude_session_id:" "the write went through" || return 1
-    [ "$took" -le 3 ] || { echo "  FAIL: the launch waited on the directory (took ${took}s)"; return 1; }
+    # One write, timed alone: a launch's own run time under load would hide
+    # a five-second wait on the directory.
+    start=$SECONDS
+    bash -c 'source "$1"; cs_local_state_set "$2" probe yes' _ "$LOCK_LIB" "$state" \
+        || { echo "  FAIL: the write failed"; return 1; }
+    took=$((SECONDS - start))
+    [ "$took" -le 2 ] || { echo "  FAIL: the write waited on the directory (took ${took}s)"; return 1; }
+    assert_file_contains "$state" "^probe: yes$" "the write went through" || return 1
     assert_eq "$$" "$(cat "$state.lock/pid")" "the directory is left as it was" || return 1
 }
 
