@@ -231,8 +231,8 @@ launch_claude_code() {
     # spliced into them: a " or $( in the sessions root would be run as code.
     # Global, not local: the EXIT trap fires after this function has returned.
     _CS_LOCK_META_DIR="$session_dir/.cs"
-    trap 'reset_tab_title; release_session_lock "$_CS_LOCK_META_DIR"; _detach_opened_vault' EXIT
-    trap 'reset_tab_title; release_session_lock "$_CS_LOCK_META_DIR"; exit 130' INT TERM
+    trap 'reset_tab_title; _spawn_put_back_claim; release_session_lock "$_CS_LOCK_META_DIR"; _detach_opened_vault' EXIT
+    trap 'reset_tab_title; _spawn_put_back_claim; release_session_lock "$_CS_LOCK_META_DIR"; exit 130' INT TERM
 
     # Opening an archived session revives it. Placed after lock acquisition so
     # a cancelled collision menu leaves the marker in place; the removal is
@@ -455,7 +455,7 @@ launch_claude_code() {
     # of the environment before the lock (above), so claude, a collision
     # redirect and any nested launch never carry it.
     local spawn_kick=""
-    local _seed="$SESSIONS_ROOT/.spawn/$session_name.seed" _snap=""
+    local _seed="$SESSIONS_ROOT/.spawn/$session_name.seed" _claim
     if [ -f "$_seed" ]; then
         local _now _age
         _now=$(date +%s)
@@ -474,16 +474,18 @@ launch_claude_code() {
             local _seed_token="" _spawner="" _line _lineno=0 _n=0 _mark
             local _tasks
             _tasks=()
-            # Everything below reads one private copy taken here: the seed in
-            # .spawn can be replaced while the consent ask waits, and the
-            # tasks, the brief and the delete must all belong to the seed
-            # that was shown.
-            _snap=$(mktemp "${TMPDIR:-/tmp}/cs-spawn-seed.XXXXXX") \
+            # Everything below reads the seed under a name this open owns
+            # (_spawn_put_back_claim in lib/52-spawn.sh): a seed published in
+            # .spawn while the consent ask waits is not the one shown, and the
+            # tasks, the brief, a decline and the delete all belong to the
+            # seed that was shown. The traps put it back if the open stops.
+            _claim="$SESSIONS_ROOT/.spawn/.$session_name.seed.claim.$$"
+            mv "$_seed" "$_claim" \
                 || error "Spawn seed could not be read: $_seed (seed kept; re-open the session to retry)"
-            cp "$_seed" "$_snap" \
-                || { rm -f "$_snap"; error "Spawn seed could not be read: $_seed (seed kept; re-open the session to retry)"; }
-            _mark=$(_spawn_brief_mark_line "$_snap") \
-                || { rm -f "$_snap"; error "Spawn seed could not be read: $_seed (seed kept; re-open the session to retry)"; }
+            _CS_SPAWN_SEED="$_seed"
+            _CS_SPAWN_CLAIM="$_claim"
+            _mark=$(_spawn_brief_mark_line "$_claim") \
+                || error "Spawn seed could not be read: $_seed (seed kept; re-open the session to retry)"
             while IFS= read -r _line || [ -n "$_line" ]; do
                 _lineno=$((_lineno + 1))
                 [ "$_lineno" != "$_mark" ] || break
@@ -494,7 +496,7 @@ launch_claude_code() {
                 case "$_line" in *[![:space:]]*) : ;; *) continue ;; esac
                 _tasks+=("$_line")
                 _n=$((_n + 1))
-            done < "$_snap"
+            done < "$_claim"
             # Never empty-equals-empty: a seed with no token line (older cs,
             # or hand-written) is foreign to every open.
             local _consume=1
@@ -511,7 +513,7 @@ launch_claude_code() {
                 printf '    spawner: %s\n' "${_shown_spawner:-(none)}"
                 if [ -n "$_mark" ]; then
                     printf '    brief:   inline, %s bytes (becomes .cs/brief.md)\n' \
-                        "$(tail -n +"$((_mark + 1))" "$_snap" | wc -c | tr -d ' ')"
+                        "$(tail -n +"$((_mark + 1))" "$_claim" | wc -c | tr -d ' ')"
                 fi
                 if [ "$_n" -gt 0 ]; then
                     printf '    tasks (queued and armed; the walk-away drain runs them unattended):\n'
@@ -532,6 +534,7 @@ launch_claude_code() {
                 # the next open does not ask again, any other key asks
                 # again, and EOF leaves it staged.
                 if [ ! -t 0 ]; then
+                    _spawn_put_back_claim
                     warn "Spawn seed left staged: $_seed (open $session_name in a terminal to answer, or remove it)"
                 else
                     local _answer
@@ -539,6 +542,7 @@ launch_claude_code() {
                         printf "${DIM}This open is not the spawn's own window.${NC} Take the seed? [Y/n] "
                         if ! IFS= read -rsn1 _answer; then
                             echo
+                            _spawn_put_back_claim
                             warn "Spawn seed left staged: $_seed (open $session_name in a terminal to answer, or remove it)"
                             break
                         fi
@@ -546,7 +550,8 @@ launch_claude_code() {
                         case "$_answer" in
                             ''|[yY]) _consume=1; break ;;
                             $'\e'|[nN])
-                                mv "$_seed" "$_seed.stale" 2>/dev/null || true
+                                _CS_SPAWN_CLAIM=""
+                                mv "$_claim" "$_seed.stale" 2>/dev/null || true
                                 warn "Spawn seed declined and set aside: $_seed.stale (re-run cs -spawn if still wanted)"
                                 break ;;
                         esac
@@ -565,18 +570,18 @@ launch_claude_code() {
                 # A link in the brief's place would turn the write into one
                 # over whatever it names; a directory would take the file.
                 [ ! -L "$session_dir/.cs/brief.md" ] \
-                    || { rm -f "$_snap"; error "Spawn brief could not be delivered: $session_dir/.cs/brief.md is a link (seed kept; remove it and re-open the session to retry)"; }
+                    || error "Spawn brief could not be delivered: $session_dir/.cs/brief.md is a link (seed kept; remove it and re-open the session to retry)"
                 [ ! -d "$session_dir/.cs/brief.md" ] \
-                    || { rm -f "$_snap"; error "Spawn brief could not be delivered: $session_dir/.cs/brief.md is a directory (seed kept; remove it and re-open the session to retry)"; }
-                cs_write_atomic "$session_dir/.cs/brief.md" tail -n +"$((_mark + 1))" "$_snap" \
-                    || { rm -f "$_snap"; error "Spawn brief could not be delivered to $session_dir/.cs/brief.md (seed kept; re-open the session to retry)"; }
+                    || error "Spawn brief could not be delivered: $session_dir/.cs/brief.md is a directory (seed kept; remove it and re-open the session to retry)"
+                cs_write_atomic "$session_dir/.cs/brief.md" tail -n +"$((_mark + 1))" "$_claim" \
+                    || error "Spawn brief could not be delivered to $session_dir/.cs/brief.md (seed kept; re-open the session to retry)"
                 _has_brief=1
             fi
             # The queue is a cs content file: behind .cs/private in an
             # encrypted session, where the drain reads it. spawned-by is an
             # id and stays in .cs/local (docs/session-layout.md).
             _qdir=$(cs_private_dir "$session_dir/.cs") \
-                || { rm -f "$_snap"; error "$session_name: .cs/private dangles after the open checked it (vault unmounted mid-launch?). Mount it, then reopen. (seed kept)"; }
+                || error "$session_name: .cs/private dangles after the open checked it (vault unmounted mid-launch?). Mount it, then reopen. (seed kept)"
             for _line in ${_tasks[@]+"${_tasks[@]}"}; do
                 _queue_add "$_qdir" "$_line"
             done
@@ -596,16 +601,12 @@ launch_claude_code() {
                     spawn_kick="$_work"
                 fi
             fi
-            # A seed replaced while the ask waited is not this one; it stays
+            # Only the claimed seed is deleted: one published since stays
             # staged for its own open.
-            if cmp -s "$_seed" "$_snap"; then
-                rm -f "$_seed"
-            else
-                warn "Spawn seed changed while this open read it; the new one stays staged: $_seed"
-            fi
+            _CS_SPAWN_CLAIM=""
+            rm -f "$_claim"
         fi
     fi
-    [ -z "$_snap" ] || rm -f "$_snap"
     # Arming the ritual is an explicit action the user took seconds ago, so it
     # outranks a spawn seed staged earlier. The queue is already armed by this
     # point, so nothing is lost — but the drain is the Stop hook, which fires

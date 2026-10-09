@@ -41,6 +41,30 @@ _spawn_staging_suffixes() {
     printf '%s\n' .seed .seed.stale .brief.md .brief.md.stale
 }
 
+# An open reads a seed only after renaming it to a name of its own,
+# .<name>.seed.claim.<pid>, so a seed cs -spawn publishes while the open asks
+# is never the one it reads, sets aside or deletes. The launch's EXIT and
+# INT/TERM traps call _spawn_put_back_claim, so an open that stops before it
+# consumed the seed leaves it staged again under <name>.seed.
+_CS_SPAWN_CLAIM=""
+_CS_SPAWN_SEED=""
+
+# Put a claimed seed back under its staged name. ln refuses a name a newer
+# spawn published meanwhile; the claimed seed is then set aside as .stale.
+_spawn_put_back_claim() {
+    local claim="$_CS_SPAWN_CLAIM" seed="$_CS_SPAWN_SEED"
+    _CS_SPAWN_CLAIM=""
+    [ -n "$claim" ] && [ -e "$claim" ] || return 0
+    if ln "$claim" "$seed" 2>/dev/null; then
+        rm -f "$claim"
+    elif mv "$claim" "$seed.stale" 2>/dev/null; then
+        warn "A newer spawn seed is staged: $seed; the one this open read is set aside: $seed.stale"
+    else
+        warn "Spawn seed could not be put back: $claim"
+    fi
+    return 0
+}
+
 # Delete any staged or stale seed and brief for a name. Called when the
 # session is deleted: a leftover seed would block re-spawning the name and arm
 # a future same-name session with dead tasks and a dead brief.
@@ -51,9 +75,12 @@ _spawn_discard_seeds() {  # name
     done
     # The staging file cs -spawn leaves when killed before it published:
     # mktemp's .<name>.seed.XXXXXX. Exactly six characters follow, so a
-    # session named <name>.seed never has its own staging file matched. Twin
-    # of the staging match in tui/src/session.rs.
-    for staged in "$SESSIONS_ROOT/.spawn/.$1.seed."??????; do
+    # session named <name>.seed never has its own staging file matched. And
+    # the claim an open killed outright leaves: .<name>.seed.claim.<pid>, a
+    # digit first, so a session named <name>.seed.claim never has its own
+    # claim matched. Twin of the staging match in tui/src/session.rs.
+    for staged in "$SESSIONS_ROOT/.spawn/.$1.seed."?????? \
+                  "$SESSIONS_ROOT/.spawn/.$1.seed.claim."[0-9]*; do
         [ -e "$staged" ] || continue
         rm -f "$staged"
     done
