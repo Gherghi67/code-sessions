@@ -646,8 +646,8 @@ run_uninstall() {
 
     # Everything below under ~/.claude goes only when cs wrote it, decided by
     # content (_cs_owns_file): a user's own hook, command or skill of the same
-    # name is kept and named. The install record is read throughout, so it
-    # goes last.
+    # name is kept and named. The install record and the known sha256 table
+    # are read throughout, so they go last.
 
     # Remove hooks from both deployment layouts (subdirectory and flat)
     local hook dir
@@ -695,7 +695,7 @@ run_uninstall() {
         fi
     done
 
-    rm -f "$hooks_dir/.version" "$(_cs_install_record)"
+    rm -f "$hooks_dir/.version" "$(_cs_install_record)" "$(_cs_known_sha256_table)"
     rmdir "$hooks_dir" 2>/dev/null || true
 
     # Remove shell completions

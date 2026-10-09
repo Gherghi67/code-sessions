@@ -101,6 +101,12 @@ RELEASES_URL="https://github.com/hex/claude-sessions/releases/download"
 # match is not the file that was released.
 # @@CS_PAYLOAD_SHA256@@
 
+# The sha256 of content past releases deployed (_cs_known_sha256_table in the
+# manifests above), written by build.sh from lib/known-sha256.txt. This
+# install judges by the table it carries, never by a deployed copy, and
+# leaves it beside its record for cs -uninstall.
+# @@CS_KNOWN_SHA256@@
+
 # Everything that lands in HOOKS_DIR, for the copy and cleanup loops. The
 # libraries go first: a web install that stops partway then leaves new
 # libraries under old hooks, which still run, rather than new hooks without
@@ -124,6 +130,15 @@ fi
 # install ends.
 STAGE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/cs-install.XXXXXX") || error "Could not create a temp dir to download into"
 trap 'rm -rf "$STAGE_DIR"' EXIT
+
+# The known sha256 table this install judges by is the one it carries, from
+# its temp copy; the deployed path is where it is left at the end.
+DEPLOYED_KNOWN_SHA256=$(_cs_known_sha256_table)
+printf '%s\n' "${CS_KNOWN_SHA256[@]}" > "$STAGE_DIR/known-sha256" \
+    || error "Could not write $STAGE_DIR/known-sha256"
+_cs_known_sha256_table() {
+    printf '%s\n' "$STAGE_DIR/known-sha256"
+}
 
 # Where the payload is read from: the checkout on a local install, the
 # downloads in STAGE_DIR on a web install.
@@ -585,6 +600,7 @@ else
     : > "$_record_tmp"
 fi
 _place_file "$_record_tmp" "$(_cs_install_record)" 644
+_place_file "$STAGE_DIR/known-sha256" "$DEPLOYED_KNOWN_SHA256" 644
 
 # Install shell completions. One a web install could not download was
 # reported then, and is skipped here.
