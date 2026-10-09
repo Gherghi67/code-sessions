@@ -3529,10 +3529,12 @@ $remove_err"
 _integrate_cleanup() {
     if [ -n "${_INTEGRATE_TMP:-}" ]; then
         # Remove if present, then prune regardless: a directory gone with its
-        # registration surviving is exactly what prune exists for.
+        # registration surviving is exactly what prune exists for. A temp
+        # that cannot be removed must not abort the handler under set -e:
+        # the lock below still has to be released.
         if [ -d "$_INTEGRATE_TMP" ]; then
             git -C "$_INTEGRATE_BASE_DIR" worktree remove --force "$_INTEGRATE_TMP" >/dev/null 2>&1 \
-                || rm -rf "$_INTEGRATE_TMP"
+                || { rm -rf "$_INTEGRATE_TMP" 2>/dev/null || :; }
         fi
         git -C "$_INTEGRATE_BASE_DIR" worktree prune >/dev/null 2>&1 || true
     fi
