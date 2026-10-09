@@ -67,13 +67,17 @@ _copy_base_context() {  # base_meta wt_meta
         cp "$f" "$dst/memory/$name" || warn "could not copy memory/$name from the base"
     done
     if [ -d "$src/plans" ] && [ ! -L "$src/plans" ]; then
-        local rel
+        local rel parent
         mkdir -p "$dst/plans" || warn "could not create plans/ in the feature"
         # find -P (the default) never descends a linked dir, and -type f
         # leaves out links and specials.
         (cd "$src/plans" && find . -type f -print0) | while IFS= read -r -d '' rel; do
             rel="${rel#./}"
-            { mkdir -p "$dst/plans/$(dirname "$rel")" && cp "$src/plans/$rel" "$dst/plans/$rel"; } \
+            # Parameter expansion, not dirname: a "-sub" component reads as an
+            # option to it, and $( ) drops a trailing newline from a name.
+            parent=.
+            case "$rel" in */*) parent="${rel%/*}" ;; esac
+            { mkdir -p "$dst/plans/$parent" && cp "$src/plans/$rel" "$dst/plans/$rel"; } \
                 || warn "could not copy plans/$rel from the base"
         done || warn "could not list plans/ in the base"
     fi

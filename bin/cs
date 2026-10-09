@@ -3020,13 +3020,17 @@ _copy_base_context() {  # base_meta wt_meta
         cp "$f" "$dst/memory/$name" || warn "could not copy memory/$name from the base"
     done
     if [ -d "$src/plans" ] && [ ! -L "$src/plans" ]; then
-        local rel
+        local rel parent
         mkdir -p "$dst/plans" || warn "could not create plans/ in the feature"
         # find -P (the default) never descends a linked dir, and -type f
         # leaves out links and specials.
         (cd "$src/plans" && find . -type f -print0) | while IFS= read -r -d '' rel; do
             rel="${rel#./}"
-            { mkdir -p "$dst/plans/$(dirname "$rel")" && cp "$src/plans/$rel" "$dst/plans/$rel"; } \
+            # Parameter expansion, not dirname: a "-sub" component reads as an
+            # option to it, and $( ) drops a trailing newline from a name.
+            parent=.
+            case "$rel" in */*) parent="${rel%/*}" ;; esac
+            { mkdir -p "$dst/plans/$parent" && cp "$src/plans/$rel" "$dst/plans/$rel"; } \
                 || warn "could not copy plans/$rel from the base"
         done || warn "could not list plans/ in the base"
     fi
@@ -10259,21 +10263,22 @@ _drop_session_age_state() {  # name
     # Each parent must be a real directory cs can search: through a link the
     # rm -rf would land on a same-name directory elsewhere, and an unsearchable
     # parent makes a present state read as absent.
-    local parent
+    local parent linked=false
     for parent in "$HOME/.cs-secrets" "$HOME/.cs-secrets/sessions"; do
-        if [ -L "$parent" ]; then
-            # Reading through the link is harmless; only a state that is
-            # there is named as left behind.
-            [ -e "$dir" ] || [ -L "$dir" ] || return 0
-            warn "Left age state behind a linked ~/.cs-secrets: $dir"
-            return 1
-        fi
+        [ -L "$parent" ] && linked=true
         [ -e "$parent" ] || return 0
         if [ ! -d "$parent" ] || [ ! -x "$parent" ]; then
             warn "Could not check age state: $dir"
             return 1
         fi
     done
+    if [ "$linked" = true ]; then
+        # Reading through the link is harmless once every parent is known to
+        # be searchable; only a state that is there is named as left behind.
+        [ -e "$dir" ] || [ -L "$dir" ] || return 0
+        warn "Left age state behind a linked ~/.cs-secrets: $dir"
+        return 1
+    fi
     [ -e "$dir" ] || [ -L "$dir" ] || return 0
     rm -rf "$dir" || { warn "Could not remove age state: $dir"; return 1; }
     info "Removed age state: $dir"
