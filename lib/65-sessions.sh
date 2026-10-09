@@ -361,9 +361,13 @@ remove_session() {
         esac
     done
     [ "${#names[@]}" -ge 1 ] || error "Usage: cs -remove <session-name>... [--force]"
+    # Set by _remove_one_session when a session went but its age state did
+    # not: the other names still go, and the run ends non-zero.
+    local age_state_left=""
     for _name in "${names[@]}"; do
         _remove_one_session "$_name" "$force" "$delete_files"
     done
+    [ -z "$age_state_left" ] || return 1
 }
 
 # Top-level entries of a session root that cs did not put there, as one
@@ -595,13 +599,17 @@ _remove_one_session() {
         # Gated on the name, not the branch taken: a base@task whose base is
         # gone falls through to the rm -rf above, and a feature session uses
         # its base's secrets (CS_SECRETS_SESSION), so the state is the base's.
+        # A dotted name (a hand-made session older than the dot refusal) is
+        # skipped as the picker's age_state_dir skips it.
         case "$session_name" in
-            *@*) ;;
+            *@*|.*) ;;
             *) drop_age_state="true" ;;
         esac
     fi
     _spawn_discard_seeds "$session_name"
-    [ -z "$drop_age_state" ] || _drop_session_age_state "$session_name"
+    if [ -n "$drop_age_state" ]; then
+        _drop_session_age_state "$session_name" || age_state_left="true"
+    fi
 }
 
 # Remove the age state cs-secrets keeps for a base session outside the
