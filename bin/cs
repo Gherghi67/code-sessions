@@ -1254,7 +1254,8 @@ cs_handoff_dir() {  # meta_dir
 cs_tmux_title_window() {  # pane, session name ("" releases the pane)
     local pane="$1" name="$2" names lock
     [ -n "$pane" ] || return 0
-    lock=$(_cs_tmux_title_lock "$pane")
+    lock=$(_cs_tmux_title_lock_path "$pane")
+    [ -z "$lock" ] || _cs_lock "$lock" || lock=""
     if [ -n "$name" ]; then
         tmux set-option -p -t "$pane" @cs_session "$name" 2>/dev/null || true
     else
@@ -1271,7 +1272,7 @@ cs_tmux_title_window() {  # pane, session name ("" releases the pane)
         tmux set-window-option -t "$pane" allow-rename on 2>/dev/null || true
         tmux set-window-option -t "$pane" allow-set-title on 2>/dev/null || true
     fi
-    _cs_mkdir_unlock "$lock"
+    _cs_unlock "$lock"
     _cs_iterm_tab_title "$pane"
 }
 
@@ -1291,18 +1292,17 @@ _cs_iterm_tab_title() {  # pane
     ( python3 "$helper" "$window" </dev/null >/dev/null 2>&1 & )
 }
 
-# Takes the lock on a pane's window and prints its directory: a directory per
-# tmux server and window under $TMPDIR, through _cs_mkdir_lock. A call is a few
-# tmux round trips (385 ms measured on a loaded machine, so six panes queue for
-# two seconds), and past the wait the title is written without the lock, as a
-# title must never stall a hook. Prints nothing when it holds nothing.
-_cs_tmux_title_lock() {  # pane
-    local key lock
+# Prints the lock file of a pane's window, one per tmux server and window
+# under $TMPDIR, which cs_tmux_title_window takes through _cs_lock in its own
+# process. A call is a few tmux round trips (385 ms measured on a loaded
+# machine, so six panes queue for two seconds), and past the wait the title
+# is written without the lock, as a title must never stall a hook. Prints
+# nothing when tmux cannot name the window.
+_cs_tmux_title_lock_path() {  # pane
+    local key
     key=$(tmux display-message -p -t "$1" '#{socket_path}#{window_id}' 2>/dev/null) || key=""
     [ -n "$key" ] || return 0
-    lock="${TMPDIR:-/tmp}/cs-title-$(printf '%s' "$key" | tr -c 'A-Za-z0-9@_.-' '_').lock"
-    _cs_mkdir_lock "$lock" || return 0
-    printf '%s\n' "$lock"
+    printf '%s\n' "${TMPDIR:-/tmp}/cs-title-$(printf '%s' "$key" | tr -c 'A-Za-z0-9@_.-' '_').mutex.lock"
 }
 
 # The one mkdir lock cs and its hooks take wherever two processes may write
