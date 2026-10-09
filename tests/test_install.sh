@@ -2166,6 +2166,26 @@ test_install_replaces_files_cs_wrote_without_a_record() {
     [ ! -e "$home/.claude/skills/cs-hint" ] || { echo "  FAIL: the retired mod directory cs wrote survived"; return 1; }
 }
 
+# The sha256 table of content past releases deployed is read only by install
+# and uninstall, so bin/cs, which every command loads, does not carry it:
+# install leaves it beside its record, where cs -uninstall reads it, and a
+# file holding such content is still cs's to remove. Uninstall takes the
+# table away with the record.
+test_known_sha256_table_lives_beside_the_install_record() {
+    local home="$TEST_TMPDIR/table-home" digest table
+    digest=$(_cs_shipped_content | shasum -a 256 | awk '{print $1}')
+    assert_eq 0 "$(grep -c "$digest" "$CS_BIN")" "bin/cs carries no entry of the table" || return 1
+    mkdir -p "$home/.claude"
+    HOME="$home" bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || { echo "  FAIL: install.sh exited non-zero"; return 1; }
+    table="$home/.claude/hooks/cs/.known-sha256"
+    assert_eq 1 "$(grep -cxF "$digest" "$table")" "install leaves the table beside its record" || return 1
+    _cs_shipped_content > "$home/.claude/hooks/files-context.sh"
+    printf 'y\n' | HOME="$home" "$CS_BIN" -uninstall > /dev/null 2>&1 || { echo "  FAIL: cs -uninstall exited non-zero"; return 1; }
+    assert_file_not_exists "$home/.claude/hooks/files-context.sh" \
+        "uninstall removes content the table names" || return 1
+    [ ! -e "$home/.claude/hooks/cs" ] || { echo "  FAIL: uninstall left ~/.claude/hooks/cs behind: $(ls -A "$home/.claude/hooks/cs")"; return 1; }
+}
+
 # Install records what it wrote, and a file still matching its record is
 # cs's even when no release ever shipped that content; one changed since is
 # the user's and is kept.
@@ -2408,6 +2428,7 @@ run_test test_install_names_a_kept_retired_name_file_once_per_content
 run_test test_install_keeps_a_symlink_that_holds_no_cs_content
 run_test test_install_never_sources_a_kept_deployed_cs_shared
 run_test test_install_replaces_files_cs_wrote_without_a_record
+run_test test_known_sha256_table_lives_beside_the_install_record
 run_test test_install_follows_its_record
 run_test test_install_record_holds_what_a_partial_install_placed
 run_test test_uninstall_removes_only_files_cs_wrote
