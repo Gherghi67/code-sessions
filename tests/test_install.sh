@@ -1154,15 +1154,19 @@ JSON
 # Fills directory $1 with links to every command on the test's PATH except
 # jq, for a PATH on which the install finds no jq.
 _link_path_without_jq() {  # dir
-    local dir f IFS=:
-    mkdir -p "$1"
-    for dir in $PATH; do
-        for f in "$dir"/*; do
-            [ -x "$f" ] && [ ! -d "$f" ] || continue
-            [ "${f##*/}" = jq ] && continue
-            [ -e "$1/${f##*/}" ] || ln -s "$f" "$1/${f##*/}"
-        done
-    done
+    link_path_without "$1" jq
+}
+
+# cs locks its files through perl, so an install where perl cannot lock
+# refuses before it writes anything, naming perl.
+test_install_without_perl_refuses_before_changing_anything() {
+    local home="$TEST_TMPDIR/noperl-home" bindir="$TEST_TMPDIR/noperl-bin" rc=0 out
+    mkdir -p "$home"
+    link_path_without "$bindir" 'perl*'
+    out=$(HOME="$home" PATH="$bindir" bash "$INSTALL_SH" 2>&1 < /dev/null) || rc=$?
+    [ "$rc" != 0 ] || { echo "  install without perl succeeded"; echo "$out"; return 1; }
+    assert_output_contains "$out" "perl" "the refusal names perl" || return 1
+    assert_eq "" "$(ls -A "$home")" "nothing written under HOME" || return 1
 }
 
 # Without jq the install cannot touch settings.json, so a registered retired
@@ -2841,6 +2845,7 @@ run_test test_install_and_uninstall_keep_a_kept_retired_hook_and_its_registratio
 run_test test_uninstall_removes_a_cs_written_retired_hook_and_its_registration
 run_test test_install_that_stops_early_keeps_a_registered_retired_hook
 run_test test_install_without_jq_keeps_a_registered_retired_hook
+run_test test_install_without_perl_refuses_before_changing_anything
 run_test test_a_retired_hook_known_by_its_record_survives_a_run_without_jq
 run_test test_a_retired_hook_replaced_during_a_question_is_kept
 run_test test_a_retired_hook_replaced_by_a_link_to_a_device_is_kept_unread

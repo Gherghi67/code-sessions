@@ -274,6 +274,18 @@ test_exit_trap_releases_the_lock_under_a_root_with_shell_metacharacters() {
     assert_eq "0" "$rc" "the resumed open exits cleanly through its trap" || return 1
 }
 
+# The session lock is taken through perl; an open on a machine without it
+# says so, and never blames another cs for holding the lock.
+test_open_without_perl_names_perl() {
+    local bindir="$TEST_TMPDIR/noperl-bin" rc=0 output
+    link_path_without "$bindir" 'perl*'
+    export CLAUDE_CODE_BIN="true"
+    output=$(PATH="$bindir" "$CS_BIN" test-session < /dev/null 2>&1) || rc=$?
+    [ "$rc" != 0 ] || { echo "  open without perl succeeded"; return 1; }
+    assert_output_contains "$output" "perl" "the refusal names perl" || return 1
+    assert_output_not_contains "$output" "Another cs is opening" "no other cs is blamed" || return 1
+}
+
 test_lock_contains_valid_pid() {
     cat > "$TEST_TMPDIR/save-lock" << 'SCRIPT'
 #!/bin/bash
@@ -857,6 +869,7 @@ run_test test_session_end_keeps_the_lock_for_a_child_that_inherited_the_contract
 run_test test_session_end_keeps_the_lock_for_clear_and_resume
 run_test test_session_end_leaves_a_live_lock_it_does_not_own
 run_test test_session_end_clears_a_stale_lock_even_when_walked_in
+run_test test_open_without_perl_names_perl
 run_test test_lock_contains_valid_pid
 run_test test_exit_trap_releases_the_lock_under_a_root_with_shell_metacharacters
 run_test test_collision_menu_new_task_creates_worktree
