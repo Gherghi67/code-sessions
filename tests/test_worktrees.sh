@@ -1405,8 +1405,11 @@ test_integrate_terminated_mid_gate_leaves_no_lock_or_temp() {
     base_dir="$CS_SESSIONS_ROOT/myproj"
     # The marker is written only after the gate has SEEN the mutex held, so a
     # run that never took the lock (or never reached the gate) cannot pass the
-    # release assertions below by never having acquired anything.
-    output=$("$CS_BIN" myproj -integrate-feature fix-auth "$sha" -- sh -c '
+    # release assertions below by never having acquired anything. A private
+    # TMPDIR holds the gate's output log, so a leftover is this run's alone.
+    local gate_tmp="$TEST_TMPDIR/gate-tmpdir"
+    mkdir -p "$gate_tmp"
+    output=$(TMPDIR="$gate_tmp" "$CS_BIN" myproj -integrate-feature fix-auth "$sha" -- sh -c '
         test -d "$0" || exit 9
         : > "$1"
         target=""; p=$PPID
@@ -1423,6 +1426,7 @@ test_integrate_terminated_mid_gate_leaves_no_lock_or_temp() {
     assert_file_exists "$TEST_TMPDIR/gate-ran" "the gate ran with the mutex held" || return 1
     assert_not_exists "$base_dir/.git/cs/integrate.lock" "mutex released on TERM" || return 1
     assert_output_not_contains "$(git -C "$base_dir" worktree list)" "cs-finish-" "temp worktree removed on TERM" || return 1
+    assert_eq "" "$(ls "$gate_tmp")" "nothing left in TMPDIR on TERM, the gate log included" || return 1
     assert_file_not_exists "$base_dir/feature.txt" "nothing landed" || return 1
 }
 
