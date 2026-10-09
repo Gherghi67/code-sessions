@@ -470,6 +470,55 @@ test_state_and_gitattributes_rewrites_leave_tmp_siblings_alone_and_keep_modes() 
     assert_eq "750" "$(_file_mode "$state")" "state keeps its mode" || return 1
 }
 
+# ============================================================================
+# The lock cs and its hooks share (_cs_lock / _cs_unlock in lib/02-shared.sh)
+# ============================================================================
+
+LOCK_LIB="$SCRIPT_DIR/../hooks/cs-shared.sh"
+
+# Exit 0 when the lock file is free right now, 1 when a process holds it: a
+# non-blocking flock of the probe's own, gone when the probe exits.
+_lock_is_free() {  # lock file
+    perl -e 'use Fcntl qw(:flock); open(my $f, "<", $ARGV[0]) or exit 2; exit(flock($f, LOCK_EX | LOCK_NB) ? 0 : 1)' "$1"
+}
+
+# Start a holder with no child process: it takes the lock, creates <ready>,
+# and blocks in bash's own read on a fifo, so the process holding the lock is
+# the one LOCK_HOLDER names and nothing else shares its descriptor.
+_start_lock_holder() {  # lock file, ready file
+    local i=0
+    mkfifo "$2.fifo"
+    bash -c 'source "$1"; _cs_lock "$2" || exit 1; : > "$3"; read -r _ <> "$4"' _ "$LOCK_LIB" "$1" "$2" "$2.fifo" &
+    LOCK_HOLDER=$!
+    until [ -e "$2" ] || [ "$i" -ge 100 ]; do sleep 0.05; i=$((i + 1)); done
+    [ -e "$2" ] || { echo "  FAIL: the holder never took $1"; return 1; }
+}
+
+# A lock path holding anything but a regular file is refused at once, with a
+# line saying so, and never followed: a committed symlink is how a clone could
+# aim the lock file's create at a file outside the session.
+test_lock_refuses_a_path_that_is_not_a_regular_file() {
+    local d="$TEST_TMPDIR/locks" kind rc start err
+    mkdir -p "$d/dir.lock"
+    mkfifo "$d/fifo.lock"
+    printf 'keep\n' > "$d/target"
+    ln -s "$d/target" "$d/link.lock"
+    ln -s "$d/absent" "$d/dangling.lock"
+    for kind in dir fifo link dangling; do
+        rc=0; start=$SECONDS
+        err=$(bash -c 'source "$1"; _cs_lock "$2"' _ "$LOCK_LIB" "$d/$kind.lock" 2>&1) || rc=$?
+        assert_eq "1" "$rc" "a $kind at the lock path is refused" || return 1
+        assert_eq "cs: cannot lock $d/$kind.lock: not a regular file" "$err" "the refusal says why" || return 1
+        [ $((SECONDS - start)) -le 1 ] || { echo "  FAIL: the $kind refusal took $((SECONDS - start))s"; return 1; }
+    done
+    assert_not_exists "$d/absent" "the dangling link's target was not created" || return 1
+    assert_eq "keep" "$(cat "$d/target")" "the link's target is untouched" || return 1
+    rc=0
+    err=$(bash -c 'source "$1"; _cs_lock "$2"' _ "$LOCK_LIB" "$d/plain.lock" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "a regular lock file is taken" || return 1
+    assert_eq "" "$err" "and taking it prints nothing" || return 1
+}
+
 # A state rewrite is a read-modify-write, so two writers (cs at launch and the
 # SessionStart hook) can lose an update unless they take turns. The lock is a
 # directory beside the file, .cs/local/state.lock, holding the holder's pid; a
@@ -1022,6 +1071,7 @@ run_test test_clone_with_a_readme_color_that_is_not_a_color_gets_a_fresh_one
 run_test test_launch_ignores_a_recorded_color_that_is_not_a_color
 run_test test_launch_stops_loudly_when_state_cannot_be_written
 run_test test_state_and_gitattributes_rewrites_leave_tmp_siblings_alone_and_keep_modes
+run_test test_lock_refuses_a_path_that_is_not_a_regular_file
 run_test test_state_write_waits_for_a_live_lock_holder
 run_test test_lock_timeout_leaves_a_live_holders_old_lock_in_place
 run_test test_state_write_takes_over_a_dead_holders_lock
