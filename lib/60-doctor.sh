@@ -221,6 +221,8 @@ _doctor_check_iterm2() {
 #     path sets aged-out seeds aside but never deletes them),
 #   - a cs -spawn killed before it published leaves its .<name>.seed.XXXXXX
 #     staging file, which no launch reads and nothing else removes,
+#   - an open killed outright leaves the seed it claimed under
+#     .<name>.seed.claim.<pid>, which no later open reads,
 #   - a pending .seed for a session that does not exist blocks re-spawning
 #     that name until it is removed,
 #   - a spawned-by pointer at a deleted session sends the drain notify nowhere,
@@ -253,9 +255,16 @@ _doctor_check_spawn() {
             [ $(( now - $(_epoch_mtime "$f") )) -gt 60 ] || continue
             abandoned+=("$(basename "$f")")
         done
+        # A claim is held by an open still at the consent ask while its pid
+        # runs; once the pid is gone, nothing puts the seed back.
+        for f in "$spawn_dir"/.*.seed.claim.[0-9]*; do
+            [ -e "$f" ] || continue
+            kill -0 "${f##*.}" 2>/dev/null && continue
+            abandoned+=("$(basename "$f")")
+        done
     fi
     if [ ${#abandoned[@]} -gt 0 ]; then
-        _doctor_warn "Spawn staging: ${#abandoned[@]} file(s) left in .spawn/ by an interrupted cs -spawn (never read; safe to delete): ${abandoned[*]}"
+        _doctor_warn "Spawn staging: ${#abandoned[@]} file(s) left in .spawn/ by an interrupted cs -spawn or open (never read; safe to delete): ${abandoned[*]}"
         clean=0
     fi
     if [ ${#stale[@]} -gt 0 ]; then

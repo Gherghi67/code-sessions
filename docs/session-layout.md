@@ -28,8 +28,14 @@ a fresh seed unasked (tasks queued and armed behind `.cs/private` in an
 encrypted session, `.cs/local` otherwise; the brief written to the
 session's `.cs/brief.md`; kick prompt). Any other open of the name shows
 the seed as data, the brief by its size, and asks `[Y/n]`: `n` or Escape
-sets it aside, no terminal leaves it staged. The launch sets a seed older
-than an hour aside whole as `<name>.seed.stale` and never applies it silently.
+sets it aside, no terminal leaves it staged. An open renames the seed to
+`.<name>.seed.claim.<pid>` before reading it, so a seed published while it
+asks is never the one it reads, sets aside or deletes; an open that stops
+before consuming it puts it back under `<name>.seed` (or sets it aside as
+`.stale` when a newer seed holds that name). An open killed outright leaves
+its claim, which `cs -doctor` names once the pid is gone and `cs -rm` and
+the picker's delete remove. The launch sets a seed older than an hour aside
+whole as `<name>.seed.stale` and never applies it silently.
 
 `.usage/` at the sessions root holds `fable.<account>.json`, its `fable.<account>.json.fields` file (the fields the status line reads, one per line, written by the refresher), the machine-global cache
 behind the statusline's [fable segment](statusline.md#fable-usage), plus the

@@ -1194,14 +1194,17 @@ pub fn remove_session_path(root: &Path, name: &str, path: &Path, grants: RemoveG
 /// `_spawn_staging_suffixes` in lib/52-spawn.sh; the two lists change together.
 const SPAWN_STAGING_SUFFIXES: [&str; 4] = [".seed", ".seed.stale", ".brief.md", ".brief.md.stale"];
 
-/// Delete any staged or stale spawn seed and brief for `name`, and the
+/// Delete any staged or stale spawn seed and brief for `name`, the
 /// `.<name>.seed.XXXXXX` staging file a `cs -spawn` killed before it published
+/// leaves, and the `.<name>.seed.claim.<pid>` seed an open killed outright
 /// leaves. A deleted session must not leave either behind: a seed would block
 /// re-spawning the name and arm a future same-name session with dead tasks,
 /// and a brief would reach it as a first prompt nobody wrote for it. Exactly
 /// six characters follow the staging prefix, so the staging file of a session
-/// named `<name>.seed` is never matched. Twin of the staging match in
-/// `_spawn_discard_seeds` (lib/52-spawn.sh). Best-effort by design.
+/// named `<name>.seed` is never matched; a digit starts the claim's pid, so
+/// the claim of a session named `<name>.seed.claim` is never matched. Twin of
+/// the staging match in `_spawn_discard_seeds` (lib/52-spawn.sh).
+/// Best-effort by design.
 fn discard_spawn_seeds(root: &Path, name: &str) {
     let spawn = root.join(".spawn");
     for suffix in SPAWN_STAGING_SUFFIXES {
@@ -1212,7 +1215,11 @@ fn discard_spawn_seeds(root: &Path, name: &str) {
     for entry in entries.flatten() {
         let file = entry.file_name();
         let Some(file) = file.to_str() else { continue };
-        if file.strip_prefix(&prefix).is_some_and(|rest| rest.chars().count() == 6) {
+        let Some(rest) = file.strip_prefix(&prefix) else { continue };
+        let claimed = rest
+            .strip_prefix("claim.")
+            .is_some_and(|pid| pid.starts_with(|c: char| c.is_ascii_digit()));
+        if rest.chars().count() == 6 || claimed {
             let _ = fs::remove_file(entry.path());
         }
     }

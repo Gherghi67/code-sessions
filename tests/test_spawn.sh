@@ -727,7 +727,7 @@ test_launch_terminated_at_the_ask_leaves_the_seed_staged_and_no_copy() {
     out=$(_launch_worker_on_tty '' TMPDIR="$TEST_TMPDIR/tmp" BEFORE_KEYS='kill -TERM $PTY_PID') || true
     assert_file_contains "$CS_SESSIONS_ROOT/.spawn/worker.seed" "job A" "the seed is staged again" || return 1
     assert_eq "" "$(ls -A "$TEST_TMPDIR/tmp")" "no copy of the seed left in TMPDIR" || return 1
-    assert_eq "" "$(ls -A "$CS_SESSIONS_ROOT/.spawn" | grep -v '^worker.seed$')" "nothing else left in .spawn" || return 1
+    assert_eq "" "$(find "$CS_SESSIONS_ROOT/.spawn" -mindepth 1 ! -name worker.seed)" "nothing else left in .spawn" || return 1
 }
 
 # A launch that fails after it read the seed leaves no copy of it behind.
@@ -740,7 +740,7 @@ test_launch_failing_after_the_read_leaves_no_copy_of_the_seed() {
     out=$(TMPDIR="$TEST_TMPDIR/tmp" _launch_worker) || rc=$?
     [ "$rc" != 0 ] || { echo "  launch succeeded with a directory at spawned-by"; return 1; }
     assert_eq "" "$(ls -A "$TEST_TMPDIR/tmp")" "no copy of the seed left in TMPDIR" || return 1
-    assert_eq "" "$(ls -A "$CS_SESSIONS_ROOT/.spawn" | grep -v '^worker.seed')" "no launch-owned file left in .spawn" || return 1
+    assert_eq "" "$(find "$CS_SESSIONS_ROOT/.spawn" -mindepth 1 -name '.*')" "no launch-owned file left in .spawn" || return 1
 }
 
 # The brief is written to the session's .cs/brief.md name itself: a link
