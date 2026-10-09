@@ -1203,6 +1203,37 @@ test_a_retired_hook_known_by_its_record_survives_a_run_without_jq() {
         "and its registration" || return 1
 }
 
+# Runs the installer over $1 (a HOME holding a registered bash-logger.sh cs
+# wrote) on a tty, and at the status line question runs shell command $2
+# with the hook's path as $0 before answering n. Returns the installer's
+# exit status, or 99 when it is still running after 60 s.
+_install_swapping_retired_hook_at_question() {  # home, sh-command
+    local exp="$TEST_TMPDIR/retired-swap.exp" f="$1/.claude/hooks/cs/bash-logger.sh" rc=0
+    cat > "$exp" <<EXPECT
+set timeout 60
+spawn env HOME=$1 bash $INSTALL_SH
+expect {
+    -re {status line.*\[[yY]/[nN]\]} { exec sh -c {$2} $f; send "n\r"; exp_continue }
+    -re {$_ROTATE_WRAP_ASK_RE} { send "n"; exp_continue }
+    timeout { exit 99 }
+    eof
+}
+catch wait result
+exit [lindex \$result 3]
+EXPECT
+    expect -f "$exp" >/dev/null 2>&1 || rc=$?
+    return "$rc"
+}
+
+# Seeds HOME $1 with a bash-logger.sh cs wrote, registered, and a status line
+# of the user's own, so the install asks its status line question.
+_seed_registered_retired_hook() {  # home
+    mkdir -p "$1/.claude/hooks/cs"
+    _cs_shipped_content > "$1/.claude/hooks/cs/bash-logger.sh"
+    printf '%s\n' '{"statusLine":{"command":"/opt/other/bar"},"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"~/.claude/hooks/cs/bash-logger.sh","timeout":5}]}]}}' \
+        > "$1/.claude/settings.json"
+}
+
 # Ownership is judged again once the questions are answered: a retired hook
 # replaced while the install waited at a question is the user's file now, and
 # keeps its content and its registration.
@@ -1212,25 +1243,27 @@ test_a_retired_hook_replaced_during_a_question_is_kept() {
     local home="$TEST_TMPDIR/retired-swap-home" s f rc=0
     s="$home/.claude/settings.json"
     f="$home/.claude/hooks/cs/bash-logger.sh"
-    mkdir -p "$home/.claude/hooks/cs"
-    _cs_shipped_content > "$f"
-    printf '%s\n' '{"statusLine":{"command":"/opt/other/bar"},"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"~/.claude/hooks/cs/bash-logger.sh","timeout":5}]}]}}' > "$s"
-    local exp="$TEST_TMPDIR/retired-swap.exp"
-    cat > "$exp" <<EXPECT
-set timeout 120
-spawn env HOME=$home bash $INSTALL_SH
-expect {
-    -re {status line.*\[y/N\]} { exec sh -c {printf 'my own logger\n' > "\$0"} $f; send "n\r"; exp_continue }
-    -re {status line.*\[Y/n\]} { exec sh -c {printf 'my own logger\n' > "\$0"} $f; send "n\r"; exp_continue }
-    -re {$_ROTATE_WRAP_ASK_RE} { send "n"; exp_continue }
-    eof
-}
-catch wait result
-exit [lindex \$result 3]
-EXPECT
-    expect -f "$exp" >/dev/null 2>&1 || rc=$?
+    _seed_registered_retired_hook "$home"
+    _install_swapping_retired_hook_at_question "$home" 'printf "my own logger\n" > "$0"' || rc=$?
     assert_eq "0" "$rc" "install exit status" || return 1
     assert_eq "my own logger" "$(cat "$f" 2>/dev/null)" "the replaced hook keeps its content" || return 1
+    assert_eq "1" "$(jq '[.hooks[][] | .hooks[]?.command | select(. == "~/.claude/hooks/cs/bash-logger.sh")] | length' "$s")" \
+        "and its registration" || return 1
+}
+
+# A retired hook replaced at a question by something that is not a regular
+# file (here a link to /dev/zero, which never ends) is the user's too, and is
+# kept without being read: the install finishes and keeps its registration.
+test_a_retired_hook_replaced_by_a_link_to_a_device_is_kept_unread() {
+    command -v expect >/dev/null 2>&1 \
+        || { echo "    SKIP (expect not installed; the question needs a tty)"; return 77; }
+    local home="$TEST_TMPDIR/retired-dev-home" s f rc=0
+    s="$home/.claude/settings.json"
+    f="$home/.claude/hooks/cs/bash-logger.sh"
+    _seed_registered_retired_hook "$home"
+    _install_swapping_retired_hook_at_question "$home" 'rm -f "$0" && ln -s /dev/zero "$0"' || rc=$?
+    assert_eq "0" "$rc" "install finishes (99: still running after 60 s)" || return 1
+    assert_eq "/dev/zero" "$(readlink "$f")" "the link is kept" || return 1
     assert_eq "1" "$(jq '[.hooks[][] | .hooks[]?.command | select(. == "~/.claude/hooks/cs/bash-logger.sh")] | length' "$s")" \
         "and its registration" || return 1
 }
@@ -2810,6 +2843,7 @@ run_test test_install_that_stops_early_keeps_a_registered_retired_hook
 run_test test_install_without_jq_keeps_a_registered_retired_hook
 run_test test_a_retired_hook_known_by_its_record_survives_a_run_without_jq
 run_test test_a_retired_hook_replaced_during_a_question_is_kept
+run_test test_a_retired_hook_replaced_by_a_link_to_a_device_is_kept_unread
 run_test test_install_removes_the_mod_under_its_old_name
 run_test test_rotate_wrap_keys_yes_creates_the_file_with_only_cs_block
 run_test test_rotate_wrap_keys_merge_into_the_existing_global_block
