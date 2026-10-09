@@ -633,6 +633,20 @@ test_lock_waits_five_seconds_for_a_live_holder() {
     [ "$took" -ge 4 ] && [ "$took" -le 6 ] || { echo "  FAIL: the taker gave up after ${took}s, not about 5s"; return 1; }
 }
 
+# Settings writers take turns on <file>.mutex.lock. While another writer
+# still holds it after five seconds, the rewrite refuses, says which lock,
+# and leaves the file as it was.
+test_settings_update_refuses_while_its_lock_stays_held() {
+    local f="$TEST_TMPDIR/settings.json" rc=0 out
+    printf '{"a": 1}\n' > "$f"
+    _start_lock_holder "$f.mutex.lock" "$TEST_TMPDIR/settings.ready" || return 1
+    out=$(bash -c 'source "$1"; cs_settings_update "$2" jq ".b = 2" || { echo "$CS_SETTINGS_ERROR"; exit 1; }' _ "$LOCK_LIB" "$f" 2>&1) || rc=$?
+    kill "$LOCK_HOLDER"
+    assert_eq "1" "$rc" "the rewrite refuses" || return 1
+    assert_eq "could not take the lock $f.mutex.lock; $f left unchanged" "$out" "and names the lock" || return 1
+    assert_eq '{"a": 1}' "$(cat "$f")" "the file is as it was" || return 1
+}
+
 # A lock whose directory is missing is refused at once and quietly, as one
 # whose directory cannot take a new file is; without perl nothing is locked,
 # and a line on stderr says so.
@@ -1189,6 +1203,7 @@ run_test test_lock_of_a_killed_holder_is_free_at_once
 run_test test_lock_belongs_to_the_shell_that_took_it
 run_test test_lock_release_frees_it_from_a_child_still_running
 run_test test_lock_waits_five_seconds_for_a_live_holder
+run_test test_settings_update_refuses_while_its_lock_stays_held
 run_test test_lock_refuses_at_once_without_its_directory_or_perl
 run_test test_state_write_waits_for_a_live_lock_holder
 run_test test_state_write_ignores_a_lock_directory_left_on_disk
