@@ -373,6 +373,35 @@ test_install_backs_up_settings_json_before_changing_it() {
     assert_eq "$backups" "$(_settings_backups "$f")" "a run that changes nothing writes no backup" || return 1
 }
 
+# Backups beside settings.json are kept to the five newest: a changing write
+# that would leave a sixth removes the oldest. Only cs's stamped names count;
+# a file that merely starts with the prefix is the user's and stays.
+test_install_keeps_the_five_newest_settings_backups() {
+    local fake_home="$TEST_TMPDIR/home-prune" f d stamp
+    f="$fake_home/.claude/settings.json"
+    d="$fake_home/.claude"
+    mkdir -p "$d"
+    printf '{"env":{"ALICE":"1"}}\n' > "$f"
+    for stamp in 20200101T000000Z 20200101T000000Z.1 20200101T000000Z.2 20200102T000000Z 20200103T000000Z 20200104T000000Z; do
+        printf 'old %s\n' "$stamp" > "$f.cs-bak.$stamp"
+    done
+    printf 'mine\n' > "$f.cs-bak.notes"
+    HOME="$fake_home" bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null \
+        || { echo "  FAIL: install.sh exited non-zero"; return 1; }
+    local backups fresh
+    backups=$(_settings_backups "$f")
+    fresh=$(printf '%s\n' "$backups" | grep -v '^settings\.json\.cs-bak\.2020' | grep -vxF 'settings.json.cs-bak.notes')
+    assert_output_contains "$fresh" '^settings\.json\.cs-bak\.[0-9]\{8\}T[0-9]\{6\}Z$' \
+        "the backup this install wrote is kept" || return 1
+    assert_eq "settings.json.cs-bak.20200101T000000Z.2
+settings.json.cs-bak.20200102T000000Z
+settings.json.cs-bak.20200103T000000Z
+settings.json.cs-bak.20200104T000000Z
+$fresh
+settings.json.cs-bak.notes" "$backups" \
+        "the four newest planted backups, the fresh one and the user's own file remain" || return 1
+}
+
 # Another cs writer (a second install, cs -statusline, the cs-update mod
 # running install.sh inside a live Claude Code) can rewrite settings.json
 # while the installer is working on it. A one-shot slow jq on the merge
@@ -2827,6 +2856,7 @@ run_test test_uninstall_removes_update_cache
 run_test test_install_refuses_invalid_settings_json
 run_test test_install_fills_an_empty_settings_json
 run_test test_install_backs_up_settings_json_before_changing_it
+run_test test_install_keeps_the_five_newest_settings_backups
 run_test test_install_keeps_a_concurrent_settings_change
 run_test test_uninstall_leaves_invalid_settings_json_untouched
 run_test test_local_install_prefers_a_freshly_built_picker
