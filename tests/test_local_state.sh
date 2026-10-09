@@ -595,6 +595,27 @@ after the second take: held
 after the release: free" "$out" "each shell holds only the lock it took" || return 1
 }
 
+# A child started while the lock is held inherits the descriptor the lock
+# lives on. Once the holder releases, that child, still running, does not
+# keep the lock.
+test_lock_release_frees_it_from_a_child_still_running() {
+    local lock="$TEST_TMPDIR/child.lock" pidfile="$TEST_TMPDIR/child.pid" out child
+    out=$(LOCK="$lock" PIDFILE="$pidfile" PROBE='use Fcntl qw(:flock); open(my $f, "<", $ARGV[0]) or exit 2; exit(flock($f, LOCK_EX | LOCK_NB) ? 0 : 1)' \
+        bash -c 'source "$1"
+        _cs_lock "$LOCK" || exit 1
+        sleep 30 >/dev/null 2>&1 &
+        echo "$!" > "$PIDFILE"
+        _cs_unlock "$LOCK"
+        if perl -e "$PROBE" "$LOCK"; then echo free; else echo held; fi' _ "$LOCK_LIB")
+    child=$(cat "$pidfile")
+    if ! kill -0 "$child" 2>/dev/null; then
+        echo "  FAIL: the child was not running when the lock was probed"
+        return 1
+    fi
+    kill "$child"
+    assert_eq "free" "$out" "the released lock is free while the child runs" || return 1
+}
+
 # A state rewrite is a read-modify-write, so two writers (cs at launch and the
 # SessionStart hook) can lose an update unless they take turns. The lock is a
 # directory beside the file, .cs/local/state.lock, holding the holder's pid; a
@@ -1151,6 +1172,7 @@ run_test test_lock_refuses_a_path_that_is_not_a_regular_file
 run_test test_lock_takers_never_hold_it_at_once
 run_test test_lock_of_a_killed_holder_is_free_at_once
 run_test test_lock_belongs_to_the_shell_that_took_it
+run_test test_lock_release_frees_it_from_a_child_still_running
 run_test test_state_write_waits_for_a_live_lock_holder
 run_test test_lock_timeout_leaves_a_live_holders_old_lock_in_place
 run_test test_state_write_takes_over_a_dead_holders_lock
