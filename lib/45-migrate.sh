@@ -560,15 +560,10 @@ migrate_narrative_resume_wording() {  # session_dir, [actor_slug]
     fi
 }
 
-# Phases 13, 5, 7, 6 and 12: the cs-managed text in the narrative, CLAUDE.md,
-# CLAUDE.local.md and .cs/README.md. Each phase is a no-op once its file is
-# current.
-_migrate_session_documents() {  # session_dir, tracked_tree_is_ours, actor_slug
-    local session_dir="$1" tracked_tree_is_ours="$2" actor_slug="$3"
-
-    # Phase 13: the resume protocol reads live narratives only; rewrite the
-    # read-all sentences cs wrote into files that predate rotation.
-    migrate_narrative_resume_wording "$session_dir" "$actor_slug"
+# Phases 5, 6 and 12: the cs-managed text in CLAUDE.md, CLAUDE.local.md and
+# .cs/README.md. Each phase is a no-op once its file is current.
+_migrate_session_documents() {  # session_dir, tracked_tree_is_ours
+    local session_dir="$1" tracked_tree_is_ours="$2"
 
     # Phase 5: move cs-managed sections out of CLAUDE.md, then ensure the
     # protocol is present in CLAUDE.local.md (machine-local, gitignored). A
@@ -589,11 +584,6 @@ _migrate_session_documents() {  # session_dir, tracked_tree_is_ours, actor_slug
     if ! { [ -f "$claude_local" ] && grep -q '<!-- cs:' "$claude_local"; } \
         && ! { [ -f "$claude_md" ] && grep -q '\.cs/' "$claude_md"; }; then
         ensure_session_claude_md "$session_dir"
-    fi
-
-    # Phase 7: prune retired command-tracker artifacts.
-    if [ "$tracked_tree_is_ours" = 1 ]; then
-        prune_commands_artifacts "$session_dir"
     fi
 
     # Phase 6: Add YAML frontmatter to README.md if missing
@@ -1050,13 +1040,27 @@ migrate_session() {
     # ensure the narrative file + index pointer exist (idempotent; skipped while
     # the migration stamp is fresh).
     migrate_discoveries_to_narrative "$session_dir"
+    actor_slug=$(_slugify "$actor_raw")
     if [ "$repair" != none ]; then
-        actor_slug=$(_slugify "$actor_raw")
         ensure_narrative_file "$session_dir" "$actor_slug"
     fi
 
+    # Phase 13: the resume protocol reads live narratives only; rewrite the
+    # read-all sentences cs wrote into files that predate rotation. The
+    # narrative is no stamp probe and old wording can come back into it (a
+    # merge, a restore), so this runs on every open: its probe reads eight
+    # lines of the narrative and greps MEMORY.md and CLAUDE.local.md.
+    migrate_narrative_resume_wording "$session_dir" "$actor_slug"
+
     if [ "$repair" = all ]; then
-        _migrate_session_documents "$session_dir" "$tracked_tree_is_ours" "$actor_slug"
+        _migrate_session_documents "$session_dir" "$tracked_tree_is_ours"
+    fi
+
+    # Phase 7: prune retired command-tracker artifacts. Their test is the
+    # files' existence and one grep of CLAUDE.md, so it runs on every open: a
+    # restored file is no stamp probe either.
+    if [ "$tracked_tree_is_ours" = 1 ]; then
+        prune_commands_artifacts "$session_dir"
     fi
 
     local _state="$session_dir/.cs/local/state"
