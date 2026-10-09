@@ -1069,6 +1069,27 @@ EOF
     fi
 }
 
+# bash-logger.sh cost every Bash call a hook process and nothing read the lines
+# it wrote, so it is retired: an install over one that registered it removes
+# the deployed copy and its PreToolUse entry, and keeps a user's own hook that
+# shares the event and the matcher.
+test_install_retires_the_bash_logger() {
+    local home="$TEST_TMPDIR/home-bashlogger" s rc=0 out
+    mkdir -p "$home/.claude/hooks/cs"
+    _cs_shipped_content > "$home/.claude/hooks/cs/bash-logger.sh"
+    s="$home/.claude/settings.json"
+    cat > "$s" << 'EOF'
+{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"~/.claude/hooks/cs/bash-logger.sh","timeout":5}]},{"matcher":"Bash","hooks":[{"type":"command","command":"~/bin/my-own-hook.sh","timeout":5}]}]}}
+EOF
+    out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || rc=$?
+    assert_eq "0" "$rc" "install exit status" || { echo "$out"; return 1; }
+    assert_file_not_exists "$home/.claude/hooks/cs/bash-logger.sh" "the deployed bash-logger is removed" || return 1
+    assert_eq "0" "$(jq '[.hooks[][] | .hooks[]?.command | select(test("bash-logger"))] | length' "$s")" \
+        "no bash-logger registration survives" || return 1
+    assert_eq '[{"matcher":"Bash","hooks":[{"type":"command","command":"~/bin/my-own-hook.sh","timeout":5}]}]' \
+        "$(jq -c '.hooks.PreToolUse' "$s")" "the user's own hook is all PreToolUse holds" || return 1
+}
+
 # A mod deploys under ~/.claude/skills/<mod>; one that a past version shipped
 # and this one does not is a retired skill directory, and a copy left behind
 # keeps loading into every Claude Code the machine starts.
@@ -2637,6 +2658,7 @@ run_test test_install_refreshes_registered_statusline_despite_marker
 run_test test_statusline_disable_sets_and_enable_clears_declined_marker
 run_test test_uninstall_removes_declined_marker
 run_test test_install_removes_the_retired_hint_mod
+run_test test_install_retires_the_bash_logger
 run_test test_install_removes_the_mod_under_its_old_name
 run_test test_rotate_wrap_keys_yes_creates_the_file_with_only_cs_block
 run_test test_rotate_wrap_keys_merge_into_the_existing_global_block
