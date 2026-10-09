@@ -390,11 +390,13 @@ check_update_notify() {
         # other token as an expression; anything else is no cache.
         case "$cache_time" in *[!0-9]*) cache_time="" ;; esac
 
-        # If cache is fresh, use it
-        if [ -n "$cache_time" ] && [ $((now - cache_time)) -lt $UPDATE_CHECK_INTERVAL ]; then
+        # A fresh cache needs both fields: a line torn after the time names
+        # no version and answers nothing, so it reads as no cache.
+        if [ -n "$cache_time" ] && [ -n "$cached_version" ] \
+            && [ $((now - cache_time)) -lt $UPDATE_CHECK_INTERVAL ]; then
             cache_fresh=1
             # Set update available if cached version is newer
-            if [ -n "$cached_version" ] && version_greater "$cached_version" "$VERSION"; then
+            if version_greater "$cached_version" "$VERSION"; then
                 UPDATE_AVAILABLE="$cached_version"
             fi
         fi
@@ -406,7 +408,7 @@ check_update_notify() {
         remote_version=$(get_remote_version 2>/dev/null) || remote_version=""
 
         if [ -n "$remote_version" ]; then
-            echo "$now $remote_version" > "$UPDATE_CACHE"
+            cs_write_atomic "$UPDATE_CACHE" printf '%s %s\n' "$now" "$remote_version" || true
             if version_greater "$remote_version" "$VERSION"; then
                 UPDATE_AVAILABLE="$remote_version"
             fi
