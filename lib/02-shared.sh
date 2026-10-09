@@ -589,7 +589,7 @@ cs_settings_check() {  # file
 # Rewrite a Claude Code settings file through a command that reads its JSON on
 # stdin and prints the new JSON, usually jq and a filter. Claude Code, a second
 # install and cs's own verbs all rewrite the file whole, so the read, the
-# command and the write happen under one _cs_mkdir_lock beside the file, and
+# command and the write happen under one _cs_lock on <file>.mutex.lock beside it, and
 # a cs writer waiting on it never loses its change or another's; nothing that
 # waits on a person may run inside it. Claude Code takes no such lock: against
 # it the guard is that the read and the write are only the command's run time
@@ -602,15 +602,15 @@ cs_settings_check() {  # file
 # pruned. Returns 0 written or unchanged, 1 refused with the reason in
 # CS_SETTINGS_ERROR and the file untouched.
 cs_settings_update() {  # file, command [args...]
-    local file="$1" lock="$1.lock" rc=0
+    local file="$1" lock="$1.mutex.lock" rc=0
     shift
     CS_SETTINGS_ERROR=""
-    if ! _cs_mkdir_lock "$lock"; then
+    if ! _cs_lock "$lock"; then
         CS_SETTINGS_ERROR="could not take the lock $lock; $file left unchanged"
         return 1
     fi
     _cs_settings_rewrite "$file" "$@" || rc=$?
-    _cs_mkdir_unlock "$lock"
+    _cs_unlock "$lock"
     return "$rc"
 }
 

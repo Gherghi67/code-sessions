@@ -1721,7 +1721,7 @@ cs_settings_check() {  # file
 # Rewrite a Claude Code settings file through a command that reads its JSON on
 # stdin and prints the new JSON, usually jq and a filter. Claude Code, a second
 # install and cs's own verbs all rewrite the file whole, so the read, the
-# command and the write happen under one _cs_mkdir_lock beside the file, and
+# command and the write happen under one _cs_lock on <file>.mutex.lock beside it, and
 # a cs writer waiting on it never loses its change or another's; nothing that
 # waits on a person may run inside it. Claude Code takes no such lock: against
 # it the guard is that the read and the write are only the command's run time
@@ -1734,15 +1734,15 @@ cs_settings_check() {  # file
 # pruned. Returns 0 written or unchanged, 1 refused with the reason in
 # CS_SETTINGS_ERROR and the file untouched.
 cs_settings_update() {  # file, command [args...]
-    local file="$1" lock="$1.lock" rc=0
+    local file="$1" lock="$1.mutex.lock" rc=0
     shift
     CS_SETTINGS_ERROR=""
-    if ! _cs_mkdir_lock "$lock"; then
+    if ! _cs_lock "$lock"; then
         CS_SETTINGS_ERROR="could not take the lock $lock; $file left unchanged"
         return 1
     fi
     _cs_settings_rewrite "$file" "$@" || rc=$?
-    _cs_mkdir_unlock "$lock"
+    _cs_unlock "$lock"
     return "$rc"
 }
 
@@ -7442,29 +7442,29 @@ _queue_accept() {  # qdir, message id
     _queue_require_single_line "$body"
     _queue_convert_legacy "$qdir"
     mkdir -p "$qdir/queue" "$qdir/queue.tmp"
-    local lock="$qdir/queue.accept.lock" fname
-    _cs_mkdir_lock "$lock" || error "another cs -queue accept holds $lock; retry in a moment"
+    local lock="$qdir/queue.accept.mutex.lock" fname
+    _cs_lock "$lock" || error "another cs -queue accept holds $lock; retry in a moment"
     if [ -f "$qdir/queue.accepted" ] && grep -qxF -- "$id" "$qdir/queue.accepted"; then
-        _cs_mkdir_unlock "$lock"
+        _cs_unlock "$lock"
         error "message $id was already accepted into the queue (if no copy is queued or done, an earlier accept was interrupted: cs -queue add it by hand)"
     fi
     for f in "$qdir"/queue/*-accept-"$id"; do
         [ -f "$f" ] || continue
-        _cs_mkdir_unlock "$lock"
+        _cs_unlock "$lock"
         error "message $id is already in the queue"
     done
     fname="$(printf '%010d' "$(date +%s)")-accept-$id"
     if ! printf '%s\n' "$id" >> "$qdir/queue.accepted"; then
-        _cs_mkdir_unlock "$lock"
+        _cs_unlock "$lock"
         error "could not record the accept in $qdir/queue.accepted"
     fi
     if ! { printf '%s\n' "$body" > "$qdir/queue.tmp/$fname" \
             && mv "$qdir/queue.tmp/$fname" "$qdir/queue/$fname"; }; then
         rm -f "$qdir/queue.tmp/$fname"
-        _cs_mkdir_unlock "$lock"
+        _cs_unlock "$lock"
         error "could not write the task into $qdir/queue; its accept is recorded, so re-queue it with: cs -queue add"
     fi
-    _cs_mkdir_unlock "$lock"
+    _cs_unlock "$lock"
     rm -f "$qdir/queue.declined"   # the user's accept re-opens the gate
     # Accepting is reading: the message leaves new/ so it neither wakes nor
     # digests again. A failed move leaves it unread, which over-shows the
