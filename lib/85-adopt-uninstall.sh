@@ -484,22 +484,17 @@ _uninstall_rotate_wrap_keys() {
 # Settings JSON on stdin without any cs hook, current or retired, on stdout:
 # stripped from any event, event-agnostic, matching both path spellings ($HOME
 # and ~) in both deployment layouts (subdirectory and flat). Drops wrappers
-# that empty out; sibling user hooks co-shipped in a wrapper survive. A flat
-# hook file, or a retired one under hooks_dir, still present was kept as the
-# user's (uninstall removes only the files cs wrote), so its registration is
-# the user's too and stays.
+# that empty out; sibling user hooks co-shipped in a wrapper survive. A hook
+# file still present in either layout was kept as the user's (uninstall
+# removes only the files cs wrote), so its registration is the user's too
+# and stays.
 _strip_cs_hook_registrations() {  # hooks_dir, hooks_parent_dir
-    local settings strip_name retired
+    local settings strip_name
     settings=$(cat)
-    for strip_name in "${CS_HOOKS[@]}"; do
-        settings=$(_strip_hook_registration "$settings" "$1/$strip_name" "~/.claude/hooks/cs/$strip_name")
-    done
-    for retired in "${RETIRED_HOOKS[@]}"; do
-        if [ ! -e "$1/$retired" ] && [ ! -L "$1/$retired" ]; then
-            settings=$(_strip_hook_registration "$settings" "$1/$retired" "~/.claude/hooks/cs/$retired")
-        fi
-    done
     for strip_name in "${CS_HOOKS[@]}" "${RETIRED_HOOKS[@]}"; do
+        if [ ! -e "$1/$strip_name" ] && [ ! -L "$1/$strip_name" ]; then
+            settings=$(_strip_hook_registration "$settings" "$1/$strip_name" "~/.claude/hooks/cs/$strip_name")
+        fi
         if [ ! -e "$2/$strip_name" ] && [ ! -L "$2/$strip_name" ]; then
             settings=$(_strip_hook_registration "$settings" "$2/$strip_name" "~/.claude/hooks/$strip_name")
         fi
