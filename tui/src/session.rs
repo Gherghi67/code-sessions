@@ -2200,6 +2200,10 @@ mod tests {
         // session named `seeded.seed` must not be mistaken for it.
         fs::write(root.join(".spawn/.seeded.seed.Ab12Cd"), "killed\n").unwrap();
         fs::write(root.join(".spawn/.seeded.seed.seed.Ef34Gh"), "theirs\n").unwrap();
+        // An open killed outright leaves the seed it claimed; session
+        // `seeded.seed.claim`'s claim starts the same way.
+        fs::write(root.join(".spawn/.seeded.seed.claim.4242"), "claimed\n").unwrap();
+        fs::write(root.join(".spawn/.seeded.seed.claim.seed.claim.77"), "theirs\n").unwrap();
 
         remove_session_path(&root, "seeded", &dir, RemoveGrants::default()).unwrap();
 
@@ -2212,6 +2216,8 @@ mod tests {
         assert!(root.join(".spawn/other.brief.md").exists(), "other sessions' briefs stay");
         assert!(!root.join(".spawn/.seeded.seed.Ab12Cd").exists(), "an interrupted spawn's staging file must go too");
         assert!(root.join(".spawn/.seeded.seed.seed.Ef34Gh").exists(), "another session's staging file stays");
+        assert!(!root.join(".spawn/.seeded.seed.claim.4242").exists(), "a killed open's claimed seed must go too");
+        assert!(root.join(".spawn/.seeded.seed.claim.seed.claim.77").exists(), "another session's claim stays");
         let _ = fs::remove_dir_all(&root);
     }
 
