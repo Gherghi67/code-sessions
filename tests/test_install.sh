@@ -1090,6 +1090,47 @@ EOF
         "$(jq -c '.hooks.PreToolUse' "$s")" "the user's own hook is all PreToolUse holds" || return 1
 }
 
+# A retired hook under ~/.claude/hooks/cs/ that cs did not write is kept, and
+# so is its registration, the same rule as for a kept flat hook: install and
+# uninstall leave both, and still strip a cs-written copy's file and entry.
+test_install_and_uninstall_keep_a_kept_retired_hook_and_its_registration() {
+    local home="$TEST_TMPDIR/kept-retired-home" rc=0 out s mine
+    s="$home/.claude/settings.json"
+    mine='#!/bin/sh
+echo my bash logger'
+    mkdir -p "$home/.claude/hooks/cs"
+    printf '%s\n' "$mine" > "$home/.claude/hooks/cs/bash-logger.sh"
+    cat > "$s" << 'JSON'
+{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"~/.claude/hooks/cs/bash-logger.sh","timeout":5}]}]}}
+JSON
+    out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || rc=$?
+    assert_eq "0" "$rc" "install exit status" || { echo "$out"; return 1; }
+    assert_eq "$mine" "$(cat "$home/.claude/hooks/cs/bash-logger.sh")" "install keeps the user's bash-logger" || return 1
+    assert_eq "1" "$(jq '[.hooks[][] | .hooks[]?.command | select(. == "~/.claude/hooks/cs/bash-logger.sh")] | length' "$s")" \
+        "install keeps the kept hook's registration" || return 1
+    printf 'y\n' | HOME="$home" "$CS_BIN" -uninstall > "$TEST_TMPDIR/kept-retired.out" 2>&1 || rc=$?
+    assert_eq "0" "$rc" "uninstall exit status" || { cat "$TEST_TMPDIR/kept-retired.out"; return 1; }
+    assert_eq "$mine" "$(cat "$home/.claude/hooks/cs/bash-logger.sh")" "uninstall keeps the user's bash-logger" || return 1
+    assert_eq "1" "$(jq '[.hooks[][] | .hooks[]?.command | select(. == "~/.claude/hooks/cs/bash-logger.sh")] | length' "$s")" \
+        "uninstall keeps the kept hook's registration" || return 1
+}
+
+# Uninstall over a bash-logger cs wrote removes the file and its registration.
+test_uninstall_removes_a_cs_written_retired_hook_and_its_registration() {
+    local home="$TEST_TMPDIR/owned-retired-home" rc=0 s
+    s="$home/.claude/settings.json"
+    mkdir -p "$home/.claude/hooks/cs"
+    _cs_shipped_content > "$home/.claude/hooks/cs/bash-logger.sh"
+    cat > "$s" << 'JSON'
+{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"~/.claude/hooks/cs/bash-logger.sh","timeout":5}]}]}}
+JSON
+    printf 'y\n' | HOME="$home" "$CS_BIN" -uninstall > "$TEST_TMPDIR/owned-retired.out" 2>&1 || rc=$?
+    assert_eq "0" "$rc" "uninstall exit status" || { cat "$TEST_TMPDIR/owned-retired.out"; return 1; }
+    assert_file_not_exists "$home/.claude/hooks/cs/bash-logger.sh" "the cs-written bash-logger is removed" || return 1
+    assert_eq "0" "$(jq '[(.hooks // {})[][] | .hooks[]?.command | select(test("bash-logger"))] | length' "$s")" \
+        "no bash-logger registration survives" || return 1
+}
+
 # A mod deploys under ~/.claude/skills/<mod>; one that a past version shipped
 # and this one does not is a retired skill directory, and a copy left behind
 # keeps loading into every Claude Code the machine starts.
@@ -2659,6 +2700,8 @@ run_test test_statusline_disable_sets_and_enable_clears_declined_marker
 run_test test_uninstall_removes_declined_marker
 run_test test_install_removes_the_retired_hint_mod
 run_test test_install_retires_the_bash_logger
+run_test test_install_and_uninstall_keep_a_kept_retired_hook_and_its_registration
+run_test test_uninstall_removes_a_cs_written_retired_hook_and_its_registration
 run_test test_install_removes_the_mod_under_its_old_name
 run_test test_rotate_wrap_keys_yes_creates_the_file_with_only_cs_block
 run_test test_rotate_wrap_keys_merge_into_the_existing_global_block
