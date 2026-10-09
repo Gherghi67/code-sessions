@@ -607,13 +607,19 @@ $remove_err"
 _integrate_cleanup() {
     if [ -n "${_INTEGRATE_TMP:-}" ]; then
         # Remove if present, then prune regardless: a directory gone with its
-        # registration surviving is exactly what prune exists for.
+        # registration surviving is exactly what prune exists for. A temp
+        # that cannot be removed must not abort the handler under set -e:
+        # the lock below still has to be released.
         if [ -d "$_INTEGRATE_TMP" ]; then
             git -C "$_INTEGRATE_BASE_DIR" worktree remove --force "$_INTEGRATE_TMP" >/dev/null 2>&1 \
-                || rm -rf "$_INTEGRATE_TMP"
+                || { rm -rf "$_INTEGRATE_TMP" 2>/dev/null || :; }
         fi
         git -C "$_INTEGRATE_BASE_DIR" worktree prune >/dev/null 2>&1 || true
     fi
+    # A run terminated mid-gate still holds the gate's output log. A log that
+    # cannot be removed must not abort the handler under set -e: the lock
+    # below still has to be released.
+    [ -n "${_INTEGRATE_GATE_LOG:-}" ] && { rm -f "$_INTEGRATE_GATE_LOG" 2>/dev/null || :; }
     # A lock already gone must not abort the handler under set -e: the path
     # still has to be forgotten below.
     [ -n "${_INTEGRATE_LOCK:-}" ] && { rm -r "$_INTEGRATE_LOCK" 2>/dev/null || :; }
@@ -622,6 +628,7 @@ _integrate_cleanup() {
     # a lock or temp another integrate has since taken.
     _INTEGRATE_LOCK=""
     _INTEGRATE_TMP=""
+    _INTEGRATE_GATE_LOG=""
     return 0
 }
 
@@ -732,6 +739,7 @@ integrate_feature_worktree() {  # base_name task sha [--from-remote [--ci-green]
     _INTEGRATE_LOCK="$lock"
     _INTEGRATE_BASE_DIR="$base_dir"
     _INTEGRATE_TMP=""
+    _INTEGRATE_GATE_LOG=""
     # EXIT alone is not enough: a TERM/INT'd bash skips the EXIT trap
     # (measured: exit 143, no cleanup), stranding the mutex and the temp.
     # Same shape as lib/75-launch.sh:112-113. Armed before the pid write: a
@@ -867,7 +875,6 @@ Move or delete these untracked files in $base_dir, then re-run /finish $task"
         gate_skipped=1
         echo "gate skipped: $base_dir at $B7 fast-forwards onto $sha7, whose checks passed on origin; nothing local to test"
     fi
-    local gate_log
     if [ -z "$gate_skipped" ]; then
         # `-- true` is how the caller says there is no gate: nothing worth a
         # band runs, so only a real gate is a step of the record.
@@ -875,16 +882,20 @@ Move or delete these untracked files in $base_dir, then re-run /finish $task"
             _FINISH_GATE_STARTED=$(date +%s)
             _finish_progress_write gate
         fi
-        gate_log=$(mktemp "${TMPDIR:-/tmp}/cs-gate.XXXXXX")
+        # A global, so _integrate_cleanup removes it when the run is
+        # terminated mid-gate.
+        _INTEGRATE_GATE_LOG=$(mktemp "${TMPDIR:-/tmp}/cs-gate.XXXXXX")
         # </dev/null: a gate that reads stdin would otherwise consume whatever
         # cs was given and block a non-interactive run forever.
-        if ! (cd "$tmp" && "$@") > "$gate_log" 2>&1 < /dev/null; then
-            cat "$gate_log" >&2
-            rm -f "$gate_log"
+        if ! (cd "$tmp" && "$@") > "$_INTEGRATE_GATE_LOG" 2>&1 < /dev/null; then
+            cat "$_INTEGRATE_GATE_LOG" >&2
+            rm -f "$_INTEGRATE_GATE_LOG"
+            _INTEGRATE_GATE_LOG=""
             error "Gate failed in $tmp (output above); base $base_dir untouched at $B
 The gate ran in a clean checkout of the merged commit: gitignored files (installed dependencies, .env, build output) are not there. A gate that needs them must create them first, e.g. -- sh -c 'npm ci && npm test'"
         fi
-        rm -f "$gate_log"
+        rm -f "$_INTEGRATE_GATE_LOG"
+        _INTEGRATE_GATE_LOG=""
     fi
 
     # A green gate that changed the temp is still a refusal. What lands is M,

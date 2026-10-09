@@ -2797,11 +2797,13 @@ check_update_notify() {
         # other token as an expression; anything else is no cache.
         case "$cache_time" in *[!0-9]*) cache_time="" ;; esac
 
-        # If cache is fresh, use it
-        if [ -n "$cache_time" ] && [ $((now - cache_time)) -lt $UPDATE_CHECK_INTERVAL ]; then
+        # A fresh cache needs both fields: a line torn after the time names
+        # no version and answers nothing, so it reads as no cache.
+        if [ -n "$cache_time" ] && [ -n "$cached_version" ] \
+            && [ $((now - cache_time)) -lt $UPDATE_CHECK_INTERVAL ]; then
             cache_fresh=1
             # Set update available if cached version is newer
-            if [ -n "$cached_version" ] && version_greater "$cached_version" "$VERSION"; then
+            if version_greater "$cached_version" "$VERSION"; then
                 UPDATE_AVAILABLE="$cached_version"
             fi
         fi
@@ -2813,7 +2815,7 @@ check_update_notify() {
         remote_version=$(get_remote_version 2>/dev/null) || remote_version=""
 
         if [ -n "$remote_version" ]; then
-            echo "$now $remote_version" > "$UPDATE_CACHE"
+            cs_write_atomic "$UPDATE_CACHE" printf '%s %s\n' "$now" "$remote_version" || true
             if version_greater "$remote_version" "$VERSION"; then
                 UPDATE_AVAILABLE="$remote_version"
             fi
@@ -3527,13 +3529,19 @@ $remove_err"
 _integrate_cleanup() {
     if [ -n "${_INTEGRATE_TMP:-}" ]; then
         # Remove if present, then prune regardless: a directory gone with its
-        # registration surviving is exactly what prune exists for.
+        # registration surviving is exactly what prune exists for. A temp
+        # that cannot be removed must not abort the handler under set -e:
+        # the lock below still has to be released.
         if [ -d "$_INTEGRATE_TMP" ]; then
             git -C "$_INTEGRATE_BASE_DIR" worktree remove --force "$_INTEGRATE_TMP" >/dev/null 2>&1 \
-                || rm -rf "$_INTEGRATE_TMP"
+                || { rm -rf "$_INTEGRATE_TMP" 2>/dev/null || :; }
         fi
         git -C "$_INTEGRATE_BASE_DIR" worktree prune >/dev/null 2>&1 || true
     fi
+    # A run terminated mid-gate still holds the gate's output log. A log that
+    # cannot be removed must not abort the handler under set -e: the lock
+    # below still has to be released.
+    [ -n "${_INTEGRATE_GATE_LOG:-}" ] && { rm -f "$_INTEGRATE_GATE_LOG" 2>/dev/null || :; }
     # A lock already gone must not abort the handler under set -e: the path
     # still has to be forgotten below.
     [ -n "${_INTEGRATE_LOCK:-}" ] && { rm -r "$_INTEGRATE_LOCK" 2>/dev/null || :; }
@@ -3542,6 +3550,7 @@ _integrate_cleanup() {
     # a lock or temp another integrate has since taken.
     _INTEGRATE_LOCK=""
     _INTEGRATE_TMP=""
+    _INTEGRATE_GATE_LOG=""
     return 0
 }
 
@@ -3652,6 +3661,7 @@ integrate_feature_worktree() {  # base_name task sha [--from-remote [--ci-green]
     _INTEGRATE_LOCK="$lock"
     _INTEGRATE_BASE_DIR="$base_dir"
     _INTEGRATE_TMP=""
+    _INTEGRATE_GATE_LOG=""
     # EXIT alone is not enough: a TERM/INT'd bash skips the EXIT trap
     # (measured: exit 143, no cleanup), stranding the mutex and the temp.
     # Same shape as lib/75-launch.sh:112-113. Armed before the pid write: a
@@ -3787,7 +3797,6 @@ Move or delete these untracked files in $base_dir, then re-run /finish $task"
         gate_skipped=1
         echo "gate skipped: $base_dir at $B7 fast-forwards onto $sha7, whose checks passed on origin; nothing local to test"
     fi
-    local gate_log
     if [ -z "$gate_skipped" ]; then
         # `-- true` is how the caller says there is no gate: nothing worth a
         # band runs, so only a real gate is a step of the record.
@@ -3795,16 +3804,20 @@ Move or delete these untracked files in $base_dir, then re-run /finish $task"
             _FINISH_GATE_STARTED=$(date +%s)
             _finish_progress_write gate
         fi
-        gate_log=$(mktemp "${TMPDIR:-/tmp}/cs-gate.XXXXXX")
+        # A global, so _integrate_cleanup removes it when the run is
+        # terminated mid-gate.
+        _INTEGRATE_GATE_LOG=$(mktemp "${TMPDIR:-/tmp}/cs-gate.XXXXXX")
         # </dev/null: a gate that reads stdin would otherwise consume whatever
         # cs was given and block a non-interactive run forever.
-        if ! (cd "$tmp" && "$@") > "$gate_log" 2>&1 < /dev/null; then
-            cat "$gate_log" >&2
-            rm -f "$gate_log"
+        if ! (cd "$tmp" && "$@") > "$_INTEGRATE_GATE_LOG" 2>&1 < /dev/null; then
+            cat "$_INTEGRATE_GATE_LOG" >&2
+            rm -f "$_INTEGRATE_GATE_LOG"
+            _INTEGRATE_GATE_LOG=""
             error "Gate failed in $tmp (output above); base $base_dir untouched at $B
 The gate ran in a clean checkout of the merged commit: gitignored files (installed dependencies, .env, build output) are not there. A gate that needs them must create them first, e.g. -- sh -c 'npm ci && npm test'"
         fi
-        rm -f "$gate_log"
+        rm -f "$_INTEGRATE_GATE_LOG"
+        _INTEGRATE_GATE_LOG=""
     fi
 
     # A green gate that changed the temp is still a refusal. What lands is M,
@@ -5444,15 +5457,10 @@ migrate_narrative_resume_wording() {  # session_dir, [actor_slug]
     fi
 }
 
-# Phases 13, 5, 7, 6 and 12: the cs-managed text in the narrative, CLAUDE.md,
-# CLAUDE.local.md and .cs/README.md. Each phase is a no-op once its file is
-# current.
-_migrate_session_documents() {  # session_dir, tracked_tree_is_ours, actor_slug
-    local session_dir="$1" tracked_tree_is_ours="$2" actor_slug="$3"
-
-    # Phase 13: the resume protocol reads live narratives only; rewrite the
-    # read-all sentences cs wrote into files that predate rotation.
-    migrate_narrative_resume_wording "$session_dir" "$actor_slug"
+# Phases 5, 6 and 12: the cs-managed text in CLAUDE.md, CLAUDE.local.md and
+# .cs/README.md. Each phase is a no-op once its file is current.
+_migrate_session_documents() {  # session_dir, tracked_tree_is_ours
+    local session_dir="$1" tracked_tree_is_ours="$2"
 
     # Phase 5: move cs-managed sections out of CLAUDE.md, then ensure the
     # protocol is present in CLAUDE.local.md (machine-local, gitignored). A
@@ -5473,11 +5481,6 @@ _migrate_session_documents() {  # session_dir, tracked_tree_is_ours, actor_slug
     if ! { [ -f "$claude_local" ] && grep -q '<!-- cs:' "$claude_local"; } \
         && ! { [ -f "$claude_md" ] && grep -q '\.cs/' "$claude_md"; }; then
         ensure_session_claude_md "$session_dir"
-    fi
-
-    # Phase 7: prune retired command-tracker artifacts.
-    if [ "$tracked_tree_is_ours" = 1 ]; then
-        prune_commands_artifacts "$session_dir"
     fi
 
     # Phase 6: Add YAML frontmatter to README.md if missing
@@ -5934,13 +5937,27 @@ migrate_session() {
     # ensure the narrative file + index pointer exist (idempotent; skipped while
     # the migration stamp is fresh).
     migrate_discoveries_to_narrative "$session_dir"
+    actor_slug=$(_slugify "$actor_raw")
     if [ "$repair" != none ]; then
-        actor_slug=$(_slugify "$actor_raw")
         ensure_narrative_file "$session_dir" "$actor_slug"
     fi
 
+    # Phase 13: the resume protocol reads live narratives only; rewrite the
+    # read-all sentences cs wrote into files that predate rotation. The
+    # narrative is no stamp probe and old wording can come back into it (a
+    # merge, a restore), so this runs on every open: its probe reads eight
+    # lines of the narrative and greps MEMORY.md and CLAUDE.local.md.
+    migrate_narrative_resume_wording "$session_dir" "$actor_slug"
+
     if [ "$repair" = all ]; then
-        _migrate_session_documents "$session_dir" "$tracked_tree_is_ours" "$actor_slug"
+        _migrate_session_documents "$session_dir" "$tracked_tree_is_ours"
+    fi
+
+    # Phase 7: prune retired command-tracker artifacts. Their test is the
+    # files' existence and one grep of CLAUDE.md, so it runs on every open: a
+    # restored file is no stamp probe either.
+    if [ "$tracked_tree_is_ours" = 1 ]; then
+        prune_commands_artifacts "$session_dir"
     fi
 
     local _state="$session_dir/.cs/local/state"
@@ -8781,7 +8798,21 @@ _doctor_check_statusline() {
             esac
             ;;
         *)
-            _doctor_warn "Statusline: using a non-cs status line ($cmd) — $gating"
+            # A foreign command can chain to cs-statusline (a bridge that runs
+            # the original), so inside a session the file itself decides: a
+            # context-pct inside the heartbeat window means the gates are fed.
+            # An empty or non-numeric file feeds no gate, however fresh.
+            local meta="${CLAUDE_SESSION_META_DIR:-}" now age reading=""
+            now=$(date +%s)
+            [ -z "$meta" ] || reading=$(tr -d '[:space:]' < "$meta/local/context-pct" 2>/dev/null) || reading=""
+            case "$reading" in ''|*[!0-9]*) reading="" ;; esac
+            if [ -n "$reading" ] && session_heartbeat_alive "$meta" "$now"; then
+                age=$(( (now - $(_epoch_mtime "$meta/local/context-pct")) / 60 ))
+                [ "$age" -ge 0 ] || age=0
+                _doctor_ok "Statusline: context-pct written $age min ago through $cmd"
+            else
+                _doctor_warn "Statusline: using a non-cs status line ($cmd) — $gating, unless it chains to cs-statusline"
+            fi
             ;;
     esac
 }
@@ -8995,7 +9026,10 @@ _doctor_check_merge_driver() {
 _doctor_check_migration_stamp() {
     local dir="${CLAUDE_SESSION_DIR:-}" state
     [ -n "$dir" ] || return 0
-    if [ -n "$(_read_local_state "$dir/.cs/local/state" cs_base)" ]; then
+    # A worktree open never migrates, so never stamps. cs_base or task_branch
+    # marks one; task_branch is the key the worktree open itself reads.
+    if [ -n "$(_read_local_state "$dir/.cs/local/state" cs_base)" ] \
+        || [ -n "$(_read_local_state "$dir/.cs/local/state" task_branch)" ]; then
         return 0
     fi
     state=$(_migration_stamp_state "$dir" "$(cs_actor_raw "$dir" "$dir/.cs")")

@@ -527,17 +527,23 @@ EXT_RE='\.(ts|tsx|js|jsx|py|sh|bash|md|json|yaml|yml|toml|rs|go|swift|java|c|cpp
 # stock macOS/BSD box without ripgrep installed (rather than silently classifying
 # every prompt negative). Both accept the -q/-v/-i flags used below; the
 # classifier's inline (?i:) group becomes two grep passes in the fallback.
+_rg_rc=127
 if command -v rg >/dev/null 2>&1; then
-    _scan() { rg "$@"; }
     # Verbs match case-insensitively via (?i:); extensions stay case-sensitive.
     # Herestring, not a pipe: -q exits at the first match, which leaves the
     # writer holding a closed fd, and `set -o pipefail` promotes that SIGPIPE
-    # (141) to the pipeline's status — read by the leading `!` as "no match".
+    # (141) to the pipeline's status — read as "no match".
     # A prompt bigger than the 64KB pipe buffer outlives the match, so pasted
     # logs classified negative and got no grounding at all.
-    if ! rg -q "(?i:$VERB_RE)|$EXT_RE" <<< "$PROMPT" 2>/dev/null; then
-        _digest_exit   # negative classification: silent pass-through
-    fi
+    _rg_rc=0
+    rg -q "(?i:$VERB_RE)|$EXT_RE" <<< "$PROMPT" 2>/dev/null || _rg_rc=$?
+    # Only 1 is "no match". rg exits 2 on an error and 126/127 when it cannot
+    # be run (a failed fork under load); those take the grep arm below, for
+    # the classifier and the scan alike, rather than drop the scope block.
+    [ "$_rg_rc" -eq 1 ] && _digest_exit   # negative classification: silent pass-through
+fi
+if [ "$_rg_rc" -eq 0 ]; then
+    _scan() { rg "$@"; }
 else
     _scan() { grep -E "$@"; }
     if ! { grep -qiE "$VERB_RE" <<< "$PROMPT" 2>/dev/null \

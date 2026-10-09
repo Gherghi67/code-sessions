@@ -516,7 +516,21 @@ _doctor_check_statusline() {
             esac
             ;;
         *)
-            _doctor_warn "Statusline: using a non-cs status line ($cmd) — $gating"
+            # A foreign command can chain to cs-statusline (a bridge that runs
+            # the original), so inside a session the file itself decides: a
+            # context-pct inside the heartbeat window means the gates are fed.
+            # An empty or non-numeric file feeds no gate, however fresh.
+            local meta="${CLAUDE_SESSION_META_DIR:-}" now age reading=""
+            now=$(date +%s)
+            [ -z "$meta" ] || reading=$(tr -d '[:space:]' < "$meta/local/context-pct" 2>/dev/null) || reading=""
+            case "$reading" in ''|*[!0-9]*) reading="" ;; esac
+            if [ -n "$reading" ] && session_heartbeat_alive "$meta" "$now"; then
+                age=$(( (now - $(_epoch_mtime "$meta/local/context-pct")) / 60 ))
+                [ "$age" -ge 0 ] || age=0
+                _doctor_ok "Statusline: context-pct written $age min ago through $cmd"
+            else
+                _doctor_warn "Statusline: using a non-cs status line ($cmd) — $gating, unless it chains to cs-statusline"
+            fi
             ;;
     esac
 }
@@ -730,7 +744,10 @@ _doctor_check_merge_driver() {
 _doctor_check_migration_stamp() {
     local dir="${CLAUDE_SESSION_DIR:-}" state
     [ -n "$dir" ] || return 0
-    if [ -n "$(_read_local_state "$dir/.cs/local/state" cs_base)" ]; then
+    # A worktree open never migrates, so never stamps. cs_base or task_branch
+    # marks one; task_branch is the key the worktree open itself reads.
+    if [ -n "$(_read_local_state "$dir/.cs/local/state" cs_base)" ] \
+        || [ -n "$(_read_local_state "$dir/.cs/local/state" task_branch)" ]; then
         return 0
     fi
     state=$(_migration_stamp_state "$dir" "$(cs_actor_raw "$dir" "$dir/.cs")")

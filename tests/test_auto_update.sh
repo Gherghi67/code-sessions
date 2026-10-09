@@ -593,6 +593,24 @@ test_launch_banner_card_yields_to_the_mod() {
 # The cs-update mod reads the launch's verdict from the environment: which
 # version is pending, exported only when one is, so the mod stays silent by
 # absence. Where cs lives is exported on every launch as CS_BIN, since
+# A torn cache line (a fresh time, no version) answers nothing: the launch asks
+# GitHub and records the answer, rather than stay silent for the hour.
+test_launch_with_a_time_only_cache_asks_again() {
+    local stub="$TEST_TMPDIR/stub-bin"
+    mkdir -p "$stub" "$TEST_TMPDIR/home/.cache/cs"
+    printf '#!/bin/sh\necho "$*" >> "%s/curl-calls"\ncase "$*" in *url_effective*) printf "https://example.com/releases/tag/v2099.1.1" ;; *) exit 22 ;; esac\n' \
+        "$TEST_TMPDIR" > "$stub/curl"
+    chmod +x "$stub/curl"
+    : > "$TEST_TMPDIR/curl-calls"
+    printf '%s\n' "$(date +%s)" > "$TEST_TMPDIR/home/.cache/cs/update-check"
+    HOME="$TEST_TMPDIR/home" PATH="$stub:$PATH" CS_NO_UPDATE_CHECK='' \
+        "$CS_BIN" "cache-session-torn" < /dev/null > /dev/null 2>&1 || true
+    assert_output_contains "$(cat "$TEST_TMPDIR/curl-calls")" "/latest" "a time-only cache reads as no cache" || return 1
+    local cached_version
+    read -r _ cached_version < "$TEST_TMPDIR/home/.cache/cs/update-check"
+    assert_eq "2099.1.1" "$cached_version" "the answer is recorded with its version" || return 1
+}
+
 # `$.process.run` takes no shell and the claude process's PATH is not the
 # launching shell's; the cs mod's /queue needs it with nothing pending.
 test_launch_exports_update_verdict_to_the_mod() {
@@ -743,6 +761,7 @@ run_test test_update_removes_its_temp_dir_when_the_checksum_is_refused
 run_test test_launch_with_a_fresh_cache_and_no_update_skips_the_network
 run_test test_launch_with_a_stale_cache_asks_again
 run_test test_launch_with_a_non_numeric_cache_time_runs_nothing_and_asks_again
+run_test test_launch_with_a_time_only_cache_asks_again
 run_test test_launch_banner_shows_notes_card
 run_test test_launch_banner_quiet_on_empty_notes_cache
 run_test test_launch_banner_card_yields_to_the_mod
