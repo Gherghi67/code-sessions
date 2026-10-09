@@ -828,12 +828,12 @@ test_open_refuses_when_the_lock_mutex_stays_held() {
 test_open_ignores_a_mutex_directory_and_leaves_its_mutex_file_ignored() {
     local session_dir="$CS_SESSIONS_ROOT/lockdir" meta_dir rc=0 start took
     meta_dir="$session_dir/.cs"
-    "$CS_BIN" lockdir >/dev/null 2>&1 || { echo "  FAIL: the first launch failed"; return 1; }
+    "$CS_BIN" lockdir <<< "" >/dev/null 2>&1 || { echo "  FAIL: the first launch failed"; return 1; }
     rm -f "$meta_dir/session.lock"
     mkdir "$meta_dir/session.lock.d"
     echo "$$" > "$meta_dir/session.lock.d/pid"
     start=$SECONDS
-    "$CS_BIN" lockdir >/dev/null 2>&1 || rc=$?
+    "$CS_BIN" lockdir <<< "" >/dev/null 2>&1 || rc=$?
     took=$((SECONDS - start))
     assert_eq "0" "$rc" "the open succeeds beside a mutex directory" || return 1
     [ "$took" -le 3 ] || { echo "  FAIL: the open waited on the directory (took ${took}s)"; return 1; }
