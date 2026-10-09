@@ -900,6 +900,7 @@ test_offer_reads_provenance_from_the_private_log() {
     # An encrypted session keeps its handoffs in the vault too.
     mv "$dir/.cs/handoffs" "$TEST_TMPDIR/vault/private/handoffs"
     ln -s "$TEST_TMPDIR/vault/private" "$dir/.cs/private"
+    _mark_hand_made_vault "$dir"
     printf '%s - Session started (source: startup, ID: %s)\n' \
         "2026-07-16 10:00:00" "$UUID_A" >> "$TEST_TMPDIR/vault/private/session.log"
     local output
@@ -2549,6 +2550,7 @@ _encrypt_session() {  # session_dir -> prints the vault's private dir
     mkdir -p "$vault/handoffs"
     [ -f "$1/.cs/local/session.log" ] && mv "$1/.cs/local/session.log" "$vault/session.log"
     ln -s "$vault" "$1/.cs/private"
+    _mark_hand_made_vault "$1"
     echo "$vault"
 }
 
@@ -2606,6 +2608,7 @@ test_encrypted_pending_handoff_is_consumed_in_the_vault() {
     local vault="$TEST_TMPDIR/vault-consume/private"
     mkdir -p "$vault"
     ln -s "$vault" "$CLAUDE_SESSION_META_DIR/private"
+    _mark_hand_made_vault "$(dirname "$CLAUDE_SESSION_META_DIR")"
     _seed_handoff "$TEST_TMPDIR/vault-consume/stage" "2026-07-16-test.md" "unconsumed"
     mkdir -p "$vault/handoffs"
     mv "$TEST_TMPDIR/vault-consume/stage/.cs/handoffs/2026-07-16-test.md" "$vault/handoffs/"
@@ -2626,6 +2629,7 @@ test_encrypted_clear_rotation_keeps_the_handoff_name_out_of_the_timeline() {
     local vault="$TEST_TMPDIR/vault-label/private"
     mkdir -p "$vault"
     ln -s "$vault" "$CLAUDE_SESSION_META_DIR/private"
+    _mark_hand_made_vault "$(dirname "$CLAUDE_SESSION_META_DIR")"
     _seed_handoff "$TEST_TMPDIR/vault-label/stage" "2026-07-16-secret-topic.md" "unconsumed"
     mkdir -p "$vault/handoffs"
     mv "$TEST_TMPDIR/vault-label/stage/.cs/handoffs/2026-07-16-secret-topic.md" "$vault/handoffs/"

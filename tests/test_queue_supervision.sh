@@ -614,6 +614,7 @@ run_test test_build_digest_fn_in_sync_across_hooks
 _qs_private() {
     mkdir -p "$TEST_TMPDIR/vault-$CLAUDE_SESSION_NAME/private"
     ln -s "$TEST_TMPDIR/vault-$CLAUDE_SESSION_NAME/private" "$CLAUDE_SESSION_META_DIR/private"
+    _mark_hand_made_vault "$(dirname "$CLAUDE_SESSION_META_DIR")"
     PRIV="$TEST_TMPDIR/vault-$CLAUDE_SESSION_NAME/private"
 }
 _arm_private_queue() {  # tasks...

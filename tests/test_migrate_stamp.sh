@@ -170,6 +170,7 @@ test_session_encrypted_after_the_stamp_gains_the_protocol() {
     # otherwise refuses.
     mkdir -p "$TEST_TMPDIR/vault/private"
     ln -s "$TEST_TMPDIR/vault/private" "$dir/.cs/private"
+    _mark_hand_made_vault "$dir"
     if [ -e "$dir/.cs/local/session.log" ]; then
         mv "$dir/.cs/local/session.log" "$TEST_TMPDIR/vault/private/session.log"
     fi

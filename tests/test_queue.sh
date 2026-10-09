@@ -828,6 +828,7 @@ run_test test_queue_log_strips_control_bytes
 _make_private_queue() {
     mkdir -p "$TEST_TMPDIR/vault/private"
     ln -s "$TEST_TMPDIR/vault/private" "$CLAUDE_SESSION_META_DIR/private"
+    _mark_hand_made_vault "$(dirname "$CLAUDE_SESSION_META_DIR")"
 }
 
 test_queue_in_an_encrypted_session_lives_in_its_vault() {
