@@ -356,7 +356,7 @@ _cs_keybindings_strip() {  # bindings-json
 # a user's own hook, command or skill may share a name with one cs ships or
 # once shipped. A file is cs's when its sha256 is the one the install record
 # holds for its path, the one of the payload being deployed there, or one in
-# the known sha256 table. install.sh overwrites and removes, and cs -uninstall
+# CS_KNOWN_SHA256. install.sh overwrites and removes, and cs -uninstall
 # removes, only such files; any other is kept and named in a warning.
 
 # The install record: one "<sha256>  <path under $HOME>" line for each file
@@ -383,10 +383,10 @@ _cs_sha256_file() {  # file
 
 # Whether file $1 holds content cs wrote: the sha256 the install record
 # holds for its path, $2 (the sha256 of the payload the caller deploys at
-# that path, so a file already equal to it is cs's), or one in the known
-# sha256 table. A file whose sha256 cannot be computed is not cs's.
+# that path, so a file already equal to it is cs's), or one in
+# CS_KNOWN_SHA256. A file whose sha256 cannot be computed is not cs's.
 _cs_owns_file() {  # file, [payload-sha256]
-    local digest record table
+    local digest record
     digest=$(_cs_sha256_file "$1") || return 1
     if [ -n "${2:-}" ] && [ "$digest" = "$2" ]; then
         return 0
@@ -395,10 +395,9 @@ _cs_owns_file() {  # file, [payload-sha256]
     if [ -f "$record" ] && grep -qxF "$digest  ${1#"$HOME"/}" "$record"; then
         return 0
     fi
-    table=$(_cs_known_sha256_table)
-    if [ -f "$table" ] && grep -qxF "$digest" "$table"; then
-        return 0
-    fi
+    case " ${CS_KNOWN_SHA256[*]} " in
+        *" $digest "*) return 0 ;;
+    esac
     return 1
 }
 
@@ -437,68 +436,6 @@ _cs_remove_tree_if_owned() {  # dir, [remove-function]
 # An install from before that record wrote only content listed here, so it is
 # how such a file is still known as cs's. Complete as it stands: every later
 # install records what it writes, so this list is never extended.
-#
-# The list is lib/known-sha256.txt, one sha256 per line. Only install and
-# uninstall read it, so bin/cs, which every command loads, does not carry it:
-# build.sh splices it into install.sh, and install leaves it beside its
-# record, where cs -uninstall reads it. An uninstall where no install left the
-# table knows cs's files by the record and the payload alone.
-_cs_known_sha256_table() {
-    printf '%s\n' "$HOME/.claude/hooks/cs/.known-sha256"
-}
-# ---- end lib/01-manifests.sh ----
-
-# The sha256 of every file a web install downloads, as "<sha256>  <repo
-# path>", written by build.sh from the files it was built with. This
-# installer is checksum-verified (and signature-verified when minisign is
-# installed) before `cs -update` runs it, so a payload file that does not
-# match is not the file that was released.
-CS_PAYLOAD_SHA256=(
-    "cb3578c9473fc986fcbb7d835c9183d02f771e387f194563a368beb7c9851ee5  bin/cs"
-    "36f95ee9db4cb797e063242733b3c49d35bb5f990f99ec8b7da6227c670dc303  bin/cs-secrets"
-    "218445530b4e201f65870c91c126ecfe6d7732b5796d6cf9df01b544b942cad5  bin/cs-statusline"
-    "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
-    "6bbb09234ac48fcc1edb6cd62dae4fd7d4797a20a14e5bb7ea4df6876620173c  hooks/cs-resolve.sh"
-    "5d2e28b6042ac0273dace720226465de56d52a1b6a8ff03675a61bceead077fb  hooks/cs-shared.sh"
-    "50d63ce0995e68fddd8503700c15f9585d11938c9cd3872a883146de7707c765  hooks/cs-iterm-tab.py"
-    "34f6402e2f786213bbd1c4222e2ef187f215fe2f9fdfd49d28d205467f1abdf7  hooks/memory-index-guard.sh"
-    "1047d832a7287d8c719c92c35061b69ba7840469ac8f537ec4b19613bedc4b37  hooks/prompt-rewriter.sh"
-    "d884bc6e9f8a3b8e2970f4e77b5f9b4fb415176b00b3e085aac43e4ac409b906  hooks/prompt-rewriter-model.sh"
-    "5ed0b9da8f102367e218e8dc6227594ad2f70ca3ba885103c058aabb4b528226  hooks/prompt-rewriter-vendor.sh"
-    "e96db24992b591f972e2cff86fbd0c11ef24ea55b60d74c3f11d3009a98d7ea7  hooks/session-start.sh"
-    "7e9942e417d4b5c874891bf393439a373f642ac195b57b08a5f71a2dd80dbd65  hooks/autosave-commits.sh"
-    "bd4397bcf6c58e2eb9368f7290ae68bcc45e73c880c7528d9d2a51e529e510d3  hooks/narrative-reminder.sh"
-    "0fad5d753509bd2c79f91e2a30d607be0f29b3143f9ce5d6b9239f133bc6bd57  hooks/session-end.sh"
-    "81a13835a65f4b4b35bb87493da0df9848de68375ca7ab1525d2d5079cf52bf1  hooks/subagent-context.sh"
-    "0100adc92245b2911edb0d77cc230a27289aeaeabfb6129552783d2c23e68d11  hooks/tool-failure-logger.sh"
-    "c8ef0b73d47f04cefb7f2b7c7f85a274041930420b21d3b4f9866200f436a7af  hooks/session-auto-approve.sh"
-    "33442192cb5dcb71af5f5c4d58af03d89592cf46657af714afaa2c3090cdc4f4  hooks/scope-prompt.sh"
-    "12dca7f6d02f19f75865fa2f6e91384a5c8e727b0962e269a6adbb491a95971f  commands/summary.md"
-    "9e06eaa16960dff49881234c8a479c2f8d2dd8d672283056e1591c4528e755ab  commands/checkpoint.md"
-    "df9db21017a995e93fdab7135ee2c6d3d7ce0ff660f76bd6d29015854b3a1aa3  commands/sweep.md"
-    "930601dc27024ea0ab22a202ac1df2bc43fd284393ef2de6d064aa592ab955e5  commands/wrap.md"
-    "2520a6d54d75e3e9f1768160826a8b9f21e38e2234538cc62e3ec6337008fc28  skills/store-secret/SKILL.md"
-    "63db6214c1afcb6b3f107383ff77dd0a738802e11ae8f7ed120988c496b9f431  skills/prose-hygiene/SKILL.md"
-    "bb9dc7e36945f5d69635e2d90aec2786ac0be7fceb2b283af5b43a51b16ca37b  skills/rotate/SKILL.md"
-    "b6eb9ffe2160e43bb95100b850427d2ae28d4c5e0e719564ba2f4b8d3c14a20a  skills/finish/SKILL.md"
-    "7915ca859bf53215b4f5c41833dca3a0c661921523eb5424d1f146befefae922  skills/feature/SKILL.md"
-    "343016f4d62029a85cfae3c0911b8a7a2bff99a31bd868e04ca83ec4002d6f48  skills/write-as-me/SKILL.md"
-    "6aa489261b3448946752ce20431ce39d5be316f3f03124e976608aedb7fa51d8  skills/write-as-me/scripts/build-corpus.sh"
-    "762ea9875fda791fd4f31fee1af5a6522a7fa5287f496eee267a561847a626bf  skills/finish/scripts/finish.sh"
-    "144391d7d2df6a89742528729ee8da1e51063b3783023a656571bec0f2235458  mods/cs/.claude-plugin/plugin.json"
-    "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs/hooks/hooks.json"
-    "b0cedbfcf826c5df4145a54e785d1bf00707e8d1a878f20e8606194f36d0ee88  mods/cs/hooks/register.tsx"
-    "7a97c18b6ae755d8ec7862532eb15bbf627170a1fab8cc90dd2f8f77a57164be  mods/cs-update/.claude-plugin/plugin.json"
-    "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-update/hooks/hooks.json"
-    "434c341cb8869cd3db897bf26d18d99734eb338eae9074ad6962d5ea46461a7a  mods/cs-update/hooks/register.tsx"
-    "e734ae7bbf14401689981ee06d8732622176c3fcb37e47422397633613ea6442  completions/cs.bash"
-    "85192e9f1d0a2772582dad8c3f0113b0cdda2eddec35664ea79ad19f3f46ace0  completions/_cs"
-)
-
-# The sha256 of content past releases deployed (_cs_known_sha256_table in the
-# manifests above), written by build.sh from lib/known-sha256.txt. This
-# install judges by the table it carries, never by a deployed copy, and
-# leaves it beside its record for cs -uninstall.
 CS_KNOWN_SHA256=(
     0007ced8c46eb1ba6a56c5102f144c3bdf4f7fa66537eafa79cdcec10ae04935
     007fe70b85b0e2dcd341109783f086804bce8b59987df6f67bc941782baef1f6
@@ -1260,6 +1197,54 @@ CS_KNOWN_SHA256=(
     fedb3f71baf20f2120f6e41d956d58da2c4c358479d9eb68b2eacec7d3106fbe
     fee623948d68a5a9cf993bcadb1aa13c9a047745e0be6294dd31390af89f9225
 )
+# ---- end lib/01-manifests.sh ----
+
+# The sha256 of every file a web install downloads, as "<sha256>  <repo
+# path>", written by build.sh from the files it was built with. This
+# installer is checksum-verified (and signature-verified when minisign is
+# installed) before `cs -update` runs it, so a payload file that does not
+# match is not the file that was released.
+CS_PAYLOAD_SHA256=(
+    "70167531dc98f63419eb153de8156434994319aee932c364807efb5a0cdb610e  bin/cs"
+    "36f95ee9db4cb797e063242733b3c49d35bb5f990f99ec8b7da6227c670dc303  bin/cs-secrets"
+    "218445530b4e201f65870c91c126ecfe6d7732b5796d6cf9df01b544b942cad5  bin/cs-statusline"
+    "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
+    "6bbb09234ac48fcc1edb6cd62dae4fd7d4797a20a14e5bb7ea4df6876620173c  hooks/cs-resolve.sh"
+    "5d2e28b6042ac0273dace720226465de56d52a1b6a8ff03675a61bceead077fb  hooks/cs-shared.sh"
+    "50d63ce0995e68fddd8503700c15f9585d11938c9cd3872a883146de7707c765  hooks/cs-iterm-tab.py"
+    "34f6402e2f786213bbd1c4222e2ef187f215fe2f9fdfd49d28d205467f1abdf7  hooks/memory-index-guard.sh"
+    "1047d832a7287d8c719c92c35061b69ba7840469ac8f537ec4b19613bedc4b37  hooks/prompt-rewriter.sh"
+    "d884bc6e9f8a3b8e2970f4e77b5f9b4fb415176b00b3e085aac43e4ac409b906  hooks/prompt-rewriter-model.sh"
+    "5ed0b9da8f102367e218e8dc6227594ad2f70ca3ba885103c058aabb4b528226  hooks/prompt-rewriter-vendor.sh"
+    "e96db24992b591f972e2cff86fbd0c11ef24ea55b60d74c3f11d3009a98d7ea7  hooks/session-start.sh"
+    "7e9942e417d4b5c874891bf393439a373f642ac195b57b08a5f71a2dd80dbd65  hooks/autosave-commits.sh"
+    "bd4397bcf6c58e2eb9368f7290ae68bcc45e73c880c7528d9d2a51e529e510d3  hooks/narrative-reminder.sh"
+    "0fad5d753509bd2c79f91e2a30d607be0f29b3143f9ce5d6b9239f133bc6bd57  hooks/session-end.sh"
+    "81a13835a65f4b4b35bb87493da0df9848de68375ca7ab1525d2d5079cf52bf1  hooks/subagent-context.sh"
+    "0100adc92245b2911edb0d77cc230a27289aeaeabfb6129552783d2c23e68d11  hooks/tool-failure-logger.sh"
+    "c8ef0b73d47f04cefb7f2b7c7f85a274041930420b21d3b4f9866200f436a7af  hooks/session-auto-approve.sh"
+    "33442192cb5dcb71af5f5c4d58af03d89592cf46657af714afaa2c3090cdc4f4  hooks/scope-prompt.sh"
+    "12dca7f6d02f19f75865fa2f6e91384a5c8e727b0962e269a6adbb491a95971f  commands/summary.md"
+    "9e06eaa16960dff49881234c8a479c2f8d2dd8d672283056e1591c4528e755ab  commands/checkpoint.md"
+    "df9db21017a995e93fdab7135ee2c6d3d7ce0ff660f76bd6d29015854b3a1aa3  commands/sweep.md"
+    "930601dc27024ea0ab22a202ac1df2bc43fd284393ef2de6d064aa592ab955e5  commands/wrap.md"
+    "2520a6d54d75e3e9f1768160826a8b9f21e38e2234538cc62e3ec6337008fc28  skills/store-secret/SKILL.md"
+    "63db6214c1afcb6b3f107383ff77dd0a738802e11ae8f7ed120988c496b9f431  skills/prose-hygiene/SKILL.md"
+    "bb9dc7e36945f5d69635e2d90aec2786ac0be7fceb2b283af5b43a51b16ca37b  skills/rotate/SKILL.md"
+    "b6eb9ffe2160e43bb95100b850427d2ae28d4c5e0e719564ba2f4b8d3c14a20a  skills/finish/SKILL.md"
+    "7915ca859bf53215b4f5c41833dca3a0c661921523eb5424d1f146befefae922  skills/feature/SKILL.md"
+    "343016f4d62029a85cfae3c0911b8a7a2bff99a31bd868e04ca83ec4002d6f48  skills/write-as-me/SKILL.md"
+    "6aa489261b3448946752ce20431ce39d5be316f3f03124e976608aedb7fa51d8  skills/write-as-me/scripts/build-corpus.sh"
+    "762ea9875fda791fd4f31fee1af5a6522a7fa5287f496eee267a561847a626bf  skills/finish/scripts/finish.sh"
+    "144391d7d2df6a89742528729ee8da1e51063b3783023a656571bec0f2235458  mods/cs/.claude-plugin/plugin.json"
+    "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs/hooks/hooks.json"
+    "b0cedbfcf826c5df4145a54e785d1bf00707e8d1a878f20e8606194f36d0ee88  mods/cs/hooks/register.tsx"
+    "7a97c18b6ae755d8ec7862532eb15bbf627170a1fab8cc90dd2f8f77a57164be  mods/cs-update/.claude-plugin/plugin.json"
+    "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-update/hooks/hooks.json"
+    "434c341cb8869cd3db897bf26d18d99734eb338eae9074ad6962d5ea46461a7a  mods/cs-update/hooks/register.tsx"
+    "e734ae7bbf14401689981ee06d8732622176c3fcb37e47422397633613ea6442  completions/cs.bash"
+    "85192e9f1d0a2772582dad8c3f0113b0cdda2eddec35664ea79ad19f3f46ace0  completions/_cs"
+)
 
 # Everything that lands in HOOKS_DIR, for the copy and cleanup loops. The
 # libraries go first: a web install that stops partway then leaves new
@@ -1284,15 +1269,6 @@ fi
 # install ends.
 STAGE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/cs-install.XXXXXX") || error "Could not create a temp dir to download into"
 trap 'rm -rf "$STAGE_DIR"' EXIT
-
-# The known sha256 table this install judges by is the one it carries, from
-# its temp copy; the deployed path is where it is left at the end.
-DEPLOYED_KNOWN_SHA256=$(_cs_known_sha256_table)
-printf '%s\n' "${CS_KNOWN_SHA256[@]}" > "$STAGE_DIR/known-sha256" \
-    || error "Could not write $STAGE_DIR/known-sha256"
-_cs_known_sha256_table() {
-    printf '%s\n' "$STAGE_DIR/known-sha256"
-}
 
 # Where the payload is read from: the checkout on a local install, the
 # downloads in STAGE_DIR on a web install.
@@ -1754,7 +1730,6 @@ else
     : > "$_record_tmp"
 fi
 _place_file "$_record_tmp" "$(_cs_install_record)" 644
-_place_file "$STAGE_DIR/known-sha256" "$DEPLOYED_KNOWN_SHA256" 644
 
 # Install shell completions. One a web install could not download was
 # reported then, and is skipped here.
