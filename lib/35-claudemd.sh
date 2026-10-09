@@ -245,6 +245,7 @@ _emit_encrypted_protocol_block() {
 This session keeps its private files in an encrypted vault: `.cs/memory`, `.cs/plans` and `.cs/private` link into it. Every other path in the session directory is plaintext on disk and in backups. These rules override the Session Files and Documentation Discipline sections above:
 
 - Keep the objective, environment and outcome at the top of your narrative (`.cs/memory/narrative.<actor>.md`), and read them from there on resume. `.cs/README.md` stays frontmatter only; cs does not copy your first prompt into it.
+- cs logs session start and end, tool failures and autosaves to `.cs/private/session.log`, inside the vault.
 - Rotation handoffs live in `.cs/private/handoffs/` and are never committed; the `rotate` skill says how.
 - `cs -narrative rotate` archives your narrative's older sections into `.cs/private/narrative-archive/<actor>/` (or through a `.cs/narrative-archive` link into the vault); grep there on demand.
 - `/checkpoint` saves under `.cs/private/checkpoints/`, and the timeline records no label.
