@@ -512,9 +512,10 @@ cs_settings_check() {  # file
 # When the content changes, the file as it was is first copied beside it as
 # <file>.cs-bak.<UTC stamp> (.1, .2 ... after a name already taken), mode
 # kept, then replaced through cs_write_atomic; unchanged content writes
-# nothing, so no backup either. Every changing write keeps one, and none are
-# pruned. Returns 0 written or unchanged, 1 refused with the reason in
-# CS_SETTINGS_ERROR and the file untouched.
+# nothing, so no backup either. Every changing write keeps one, and then the
+# five newest backups are kept and older ones removed. Returns 0 written or
+# unchanged, 1 refused with the reason in CS_SETTINGS_ERROR and the file
+# untouched.
 cs_settings_update() {  # file, command [args...]
     local file="$1" lock="$1.mutex.lock" rc=0
     shift
@@ -562,4 +563,31 @@ _cs_settings_rewrite() {  # file, command [args...]
         CS_SETTINGS_ERROR="could not write $file; left it unchanged"
         return 1
     }
+    _cs_prune_settings_backups "$file"
+}
+
+# Keeps the five newest of file $1's backups, <file>.cs-bak.<UTC stamp> with an
+# optional .<n>, ordered by stamp and then by n, and removes the rest. A file
+# beside it under any other name, or a link, is not a backup cs wrote and is
+# left alone. A backup rm cannot remove stays, with rm's own message.
+_cs_prune_settings_backups() {  # file
+    local f suffix n
+    for f in "$1".cs-bak.*; do
+        [ -f "$f" ] && [ ! -L "$f" ] || continue
+        suffix="${f#"$1".cs-bak.}"
+        case "$suffix" in
+            [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z)
+                printf '%s 0 %s\n' "$suffix" "$suffix" ;;
+            [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z.*)
+                n="${suffix#*Z.}"
+                case "$n" in
+                    ''|*[!0-9]*) ;;
+                    *) printf '%s %s %s\n' "${suffix%%Z.*}Z" "$n" "$suffix" ;;
+                esac
+                ;;
+        esac
+    done | sort -k1,1 -k2,2n | awk '{ name[NR] = $3 } END { for (i = 1; i <= NR - 5; i++) print name[i] }' \
+        | while IFS= read -r suffix; do
+            rm -f -- "$1.cs-bak.$suffix" || true
+        done
 }
