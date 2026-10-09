@@ -1600,11 +1600,14 @@ done
 
 # Returns 0 when $1 is a listed retired file that still holds the content cs
 # wrote. The questions below can take any time, so the content is checked
-# again here: a file replaced since it was listed is the user's.
+# again here: a file replaced since it was listed is the user's, and so is
+# anything that is no longer a regular file, which is never read (a link to
+# a device or a FIFO would keep the hash, and the settings lock, waiting).
 _retired_still_ours() {  # path
     local i digest
     for i in ${CS_RETIRED_HOOK_FILES[@]+"${!CS_RETIRED_HOOK_FILES[@]}"}; do
         [ "${CS_RETIRED_HOOK_FILES[$i]}" = "$1" ] || continue
+        [ -f "$1" ] && [ ! -L "$1" ] || return 1
         digest=$(_cs_sha256_file "$1") || return 1
         [ "$digest" = "${CS_RETIRED_HOOK_DIGESTS[$i]}" ]
         return
