@@ -451,6 +451,12 @@ fi
 # Hands the agent its next queued task when armed; asks once when idle. Wins
 # over the narrative nag (returns early). Queue text is arbitrary -> jq emit.
 QDIR="$CS_FILES"
+# A queue a link carries out of the session is not this session's: the drain
+# would move and delete the files there before any checked write.
+if [ -n "$QDIR" ] && command -v _cs_refuses_write >/dev/null 2>&1 \
+    && _cs_refuses_write cs-queue "$QDIR/queue"; then
+    QDIR=""
+fi
 LOCAL="$META_DIR/local"
 QUEUE="$QDIR/queue"
 QSTATE_FILE="$QDIR/queue.state"

@@ -323,6 +323,12 @@ _cs_write_target() {  # path
         hops=$((hops + 1))
     done
     [ ! -L "$dest" ] || return 2
+    # A directory that exists resolves whole, its last component included:
+    # appending a final ".." to its resolved parent would read as inside.
+    if [ -d "$dest" ]; then
+        (cd -P "$dest" 2>/dev/null && pwd -P)
+        return
+    fi
     # cd -P walks each component as the filesystem does: a logical cd would
     # collapse `link/..` to the link's own parent, not the target's.
     dir=$(cd -P "$(dirname "$dest")" 2>/dev/null && pwd -P) || return 1
@@ -393,15 +399,16 @@ _cs_write_leaves_session() {  # root, path
 
 # The session a path lies in, by its spelling: the nearest directory above it
 # that holds a .cs, never climbing to the sessions root or past it. A
-# directory inside a .cs is never the session, nor is one that is itself a
-# link (an adopted session's entry in the sessions root aside): a link a
-# clone commits there (.cs/private -> ../../other) would make a .cs it
-# reaches the session the write is checked against. Found from
+# directory inside a .cs is never the session. Nor is one reached through a
+# link inside a session further up (an adopted session's entry in the
+# sessions root aside): a link a clone commits (.cs/private -> ../../other,
+# backup -> elsewhere) would make a .cs it reaches the session the write is
+# checked against, so the session the link sits in is the one checked. Found from
 # the path rather than from CLAUDE_SESSION_DIR, so a write into another session
 # (cs-secrets --session) or one made with the variable unset is checked against
 # the session it lands in. Fails for a path in no session.
 _cs_session_root_of() {  # path
-    local d stop="${CS_SESSIONS_ROOT:-${HOME:-/nonexistent}/.claude-sessions}"
+    local d stop="${CS_SESSIONS_ROOT:-${HOME:-/nonexistent}/.claude-sessions}" root="" linked=""
     case "$1" in
         /*) d="${1%/*}" ;;
         *) d="$PWD/$1"; d="${d%/*}" ;;
@@ -409,14 +416,17 @@ _cs_session_root_of() {  # path
     while [ -n "$d" ] && [ "$d" != "$stop" ]; do
         case "$d/" in
             */.cs/*) ;;
-            *) if [ -d "$d/.cs" ] && { [ ! -L "$d" ] || [ "${d%/*}" = "$stop" ]; }; then
-                   printf '%s\n' "$d"
-                   return 0
+            *) if [ -d "$d/.cs" ] && { [ -z "$root" ] || [ -n "$linked" ]; }; then
+                   root="$d" linked=""
                fi ;;
         esac
+        if [ -L "$d" ] && [ "${d%/*}" != "$stop" ]; then
+            linked=1
+        fi
         d="${d%/*}"
     done
-    return 1
+    [ -n "$root" ] || return 1
+    printf '%s\n' "$root"
 }
 
 # The three writers below name a link out of the session on stderr whatever
