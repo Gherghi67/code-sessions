@@ -512,11 +512,13 @@ cs_settings_check() {  # file
 # apart. A missing or zero-byte file reads as {}; a file cs_settings_check
 # refuses, or a command whose output is not JSON, leaves the file as it was.
 # When the content changes, the file as it was is first copied beside it as
-# <file>.cs-bak.<UTC stamp> (.1, .2 ... after a name already taken), mode
+# <file>.cs-bak.<UTC stamp> (.1, .2 ... numbered past the highest taken for
+# that stamp, so a name pruning freed is never reused), mode
 # kept, then replaced through cs_write_atomic; unchanged content writes
-# nothing, so no backup either. Every changing write keeps one, and none are
-# pruned. Returns 0 written or unchanged, 1 refused with the reason in
-# CS_SETTINGS_ERROR and the file untouched.
+# nothing, so no backup either. Every changing write keeps one, and then the
+# five newest backups are kept and older ones removed. Returns 0 written or
+# unchanged, 1 refused with the reason in CS_SETTINGS_ERROR and the file
+# untouched.
 cs_settings_update() {  # file, command [args...]
     local file="$1" lock="$1.mutex.lock" rc=0
     shift
@@ -533,7 +535,7 @@ cs_settings_update() {  # file, command [args...]
 # cs_settings_update's work, run while it holds the lock.
 # shellcheck disable=SC2034  # CS_SETTINGS_ERROR is read by the callers in cs and install.sh
 _cs_settings_rewrite() {  # file, command [args...]
-    local file="$1" current="{}" updated stamp backup n=1
+    local file="$1" current="{}" updated stamp backup="" n=0 taken="" f k
     shift
     cs_settings_check "$file" || return 1
     if [ -s "$file" ]; then
@@ -551,10 +553,27 @@ _cs_settings_rewrite() {  # file, command [args...]
     if [ -e "$file" ]; then
         stamp=$(date -u +%Y%m%dT%H%M%SZ)
         backup="$file.cs-bak.$stamp"
-        while [ -e "$backup" ] || [ -L "$backup" ]; do
-            backup="$file.cs-bak.$stamp.$n"
-            n=$((n + 1))
+        # The next number is one past the highest this stamp has: pruning
+        # removes the lowest, so filling a freed name would make the newest
+        # backup sort oldest and be pruned at once.
+        for f in "$backup" "$backup".*; do
+            [ -e "$f" ] || [ -L "$f" ] || continue
+            taken=yes
+            k="${f#"$backup"}"
+            k="${k#.}"
+            case "$k" in
+                ''|*[!0-9]*) ;;
+                *) [ $((10#$k)) -gt "$n" ] && n=$((10#$k)) ;;
+            esac
         done
+        if [ -n "$taken" ]; then
+            n=$((n + 1))
+            backup="$file.cs-bak.$stamp.$n"
+            while [ -e "$backup" ] || [ -L "$backup" ]; do
+                n=$((n + 1))
+                backup="$file.cs-bak.$stamp.$n"
+            done
+        fi
         cp -p "$file" "$backup" 2>/dev/null || {
             CS_SETTINGS_ERROR="could not back up $file to $backup; left it unchanged"
             return 1
@@ -564,4 +583,36 @@ _cs_settings_rewrite() {  # file, command [args...]
         CS_SETTINGS_ERROR="could not write $file; left it unchanged"
         return 1
     }
+    _cs_prune_settings_backups "$file" "$backup"
+}
+
+# Keeps five of file $1's backups, <file>.cs-bak.<UTC stamp> with an
+# optional .<n>, and removes the rest: backup $2, the one this write just
+# took, when given, and the newest of the others by stamp and then by n.
+# $2 is kept by name, not by order, as a clock set back stamps it older than
+# backups already there. A file beside it under any other name, or a link,
+# is not a backup cs wrote and is left alone. A backup rm cannot remove
+# stays, with rm's own message.
+_cs_prune_settings_backups() {  # file, [backup just written]
+    local f suffix n keep=5
+    [ -z "${2:-}" ] || keep=4
+    for f in "$1".cs-bak.*; do
+        [ -f "$f" ] && [ ! -L "$f" ] || continue
+        [ "$f" != "${2:-}" ] || continue
+        suffix="${f#"$1".cs-bak.}"
+        case "$suffix" in
+            [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z)
+                printf '%s 0 %s\n' "$suffix" "$suffix" ;;
+            [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z.*)
+                n="${suffix#*Z.}"
+                case "$n" in
+                    ''|*[!0-9]*) ;;
+                    *) printf '%s %s %s\n' "${suffix%%Z.*}Z" "$n" "$suffix" ;;
+                esac
+                ;;
+        esac
+    done | sort -k1,1 -k2,2n | awk -v keep="$keep" '{ name[NR] = $3 } END { for (i = 1; i <= NR - keep; i++) print name[i] }' \
+        | while IFS= read -r suffix; do
+            rm -f -- "$1.cs-bak.$suffix" || true
+        done
 }

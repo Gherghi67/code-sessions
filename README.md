@@ -112,7 +112,7 @@ The installer:
 - Installs the cs [hooks](docs/hooks.md) to `~/.claude/hooks/cs/` for session tracking (including the `scope-prompt` auto-grounding hook on UserPromptSubmit)
 - Adds `/summary`, `/checkpoint`, `/sweep`, and `/wrap` commands, the `store-secret`, `prose-hygiene`, `rotate`, `finish`, `feature`, and `write-as-me` skills, and the `cs` and `cs-update` mods to `~/.claude/`
 - Installs shell completions for bash and zsh
-- Configures hook entries in `~/.claude/settings.json`. Before any write that changes that file (the installer's, `cs -statusline`'s or `cs -uninstall`'s), cs copies the current file to `settings.json.cs-bak.<UTC stamp>` beside it, mode kept, adding `.1`, `.2` and so on when a backup with that stamp exists; a write that changes nothing makes no backup, and backups are not pruned
+- Configures hook entries in `~/.claude/settings.json`. Before any write that changes that file (the installer's, `cs -statusline`'s or `cs -uninstall`'s), cs copies the current file to `settings.json.cs-bak.<UTC stamp>` beside it, mode kept, adding `.1`, `.2` and so on when a backup with that stamp exists; a write that changes nothing makes no backup, and cs keeps the five newest backups and removes older ones
 - Writes an install record, `~/.claude/hooks/cs/.installed`, with the sha256 of every file it placed; a later install, update or uninstall replaces or removes a file only when its content is one cs wrote, and keeps and lists your own file of the same name. Each kept file gets a `Kept <path>` warning and a line in the list at the end of the install; an install names a file of yours under a name cs no longer ships only the first time it finds that content, since the record remembers it
 - Asks once whether to bind Ctrl+X R to `/rotate`, Ctrl+X W to `/wrap` and Ctrl+X 1 / Ctrl+X 2 to the `cs` band in `~/.claude/keybindings.json` (asks nothing without a terminal)
 
@@ -143,6 +143,7 @@ cs <base>@<feature>         # Create/resume a parallel feature worktree off <bas
 cs <base> -features         # List a base's feature worktrees and their merge readiness
 cs <base> -finish <feature> # Open <base> and run /finish for <feature> (integrate, then retire the worktree)
 cs -adopt <name>            # Adopt current directory as a session
+cs -adopt <name> --yes      # Re-adopt orphaned .cs/ records without asking (scripts, no terminal)
 cs -whoami                  # Show the current actor (for shared, multi-person sessions)
 cs -who                     # Show who contributed to shared memory/narrative (git history)
 cs -search <query>          # Search across all sessions
@@ -237,6 +238,7 @@ This converts the current directory into a cs session in place:
 - Symlinks `~/.claude-sessions/<name>` to the current directory
 - Writes the session protocol to `CLAUDE.local.md` (machine-local, gitignored, regenerated per machine); a project's existing `CLAUDE.md` is never touched
 - Initializes a git repo if one doesn't exist (preserves existing repos)
+- When a directory's `.cs/` records outlived their session link, adopt asks before re-adopting it and keeps the records; `--yes` (`-y`) answers that question, so a script or an agent with no terminal can re-adopt, and with no terminal and no `--yes` adopt refuses
 - Since the working directory doesn't change, the first `cs <name>` finds Claude Code's own transcripts for the folder and offers to resume the newest one; a project with none starts a new conversation without asking
 - Seeds the session Objective from the newest conversation's first prompt, with the rules the prompt hook applies to a live session (no slash commands, nothing under 8 characters, clipped at 100), so the picker shows what the project is about from the first open; a project with no conversation keeps the placeholder for the first prompt you type
 

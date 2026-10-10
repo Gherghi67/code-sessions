@@ -81,9 +81,22 @@ ENTRIES
     done <<< "$entries"
 }
 
-# Adopt an existing project directory as a cs session
-adopt_session() {
-    local session_name="$1"
+# Adopt an existing project directory as a cs session. --yes (-y) answers the
+# one question adopt asks, whether to re-adopt orphaned records, so it runs
+# without a terminal.
+adopt_session() {  # name, [--yes|-y], in any order
+    local session_name="" assume_yes=false arg
+    for arg in "$@"; do
+        case "$arg" in
+            --yes|-y) assume_yes=true ;;
+            -*) error "cs -adopt: unknown option '$arg'. Usage: cs -adopt <name> [--yes]" ;;
+            *)
+                [ -z "$session_name" ] \
+                    || error "cs -adopt: takes one session name, got '$session_name' and '$arg'. Usage: cs -adopt <name> [--yes]"
+                session_name="$arg"
+                ;;
+        esac
+    done
     local target_dir
     target_dir="$(pwd -P)"
 
@@ -139,7 +152,21 @@ adopt_session() {
             error "Directory is already adopted as session '$existing_name' (open it with: cs $existing_name)"
         fi
 
-        if cs_interactive; then
+        # An encrypted session's records sit behind links into its vault
+        # (cs -encrypt makes one per CS_VAULT_LINKS name). With the vault
+        # locked they lead nowhere, and setting the session up over them
+        # stops partway, after the state has lost the conversation it names.
+        # Refuse before asking or writing anything.
+        local sub
+        for sub in $CS_VAULT_LINKS; do
+            if [ -L "$target_dir/.cs/$sub" ] && [ ! -e "$target_dir/.cs/$sub" ]; then
+                error "Cannot re-adopt as '$session_name': .cs/$sub points at $(readlink "$target_dir/.cs/$sub"), which is missing (encrypted storage not mounted?). Mount it and run cs -adopt again; nothing was changed."
+            fi
+        done
+
+        if [ "$assume_yes" = true ]; then
+            :
+        elif cs_interactive; then
             local confirm
             read -r -p "Found existing session records (.cs/) with no session link. Re-adopt as '$session_name', preserving them? [y/N] " confirm
             if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
@@ -147,7 +174,7 @@ adopt_session() {
                 return 0
             fi
         else
-            error "Directory carries session records (.cs/) but no session link. Re-run interactively to re-adopt them as '$session_name', or remove .cs/ to adopt fresh."
+            error "Directory carries session records (.cs/) but no session link. Re-run interactively or with --yes to re-adopt them as '$session_name', or remove .cs/ to adopt fresh."
         fi
     fi
 
@@ -171,6 +198,16 @@ adopt_session() {
     prior_binding=$(_read_local_state "$target_dir/.cs/local/state" claude_session_id)
     prior_color=$(_read_local_state "$target_dir/.cs/local/state" claude_session_color)
     create_session_structure "$target_dir"
+    # Re-adopted records of an encrypted session keep their command log behind
+    # .cs/private; with the vault locked there is nowhere to start one, and
+    # create_session_structure leaves it unwritten rather than write plaintext.
+    if ! cs_private_dir "$target_dir/.cs" >/dev/null; then
+        if [ -L "$target_dir/.cs/private" ]; then
+            warn "$session_name: .cs/private $(cs_private_state "$target_dir/.cs"), which is missing (encrypted storage not mounted?), so adopt started no command log there. Mount it before opening the session."
+        else
+            warn "$session_name: .cs/private is not a directory, so adopt started no command log there."
+        fi
+    fi
     if _is_uuid "$prior_binding"; then
         _set_local_state "$target_dir/.cs/local/state" claude_session_id "$prior_binding"
     else

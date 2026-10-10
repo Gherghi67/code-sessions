@@ -81,12 +81,14 @@ run_test test_remove_rejects_traversal
 # in the verb arms: a session named -uninstall would run that verb instead of
 # opening, and one named -rm would reach remove_session.
 test_a_leading_hyphen_is_rejected() {
-    local out
-    out=$(CS_SESSIONS_ROOT="$TEST_TMPDIR/sessions" "$CS_BIN" -adopt -uninstall 2>&1 </dev/null)
-    case "$out" in
-        *"Unknown command"*|*"cannot start"*) : ;;
-        *) echo "  FAIL: a leading-hyphen name was not refused, got [$out]"; return 1 ;;
-    esac
+    local out rc=0
+    out=$(CS_SESSIONS_ROOT="$TEST_TMPDIR/sessions" "$CS_BIN" -adopt -uninstall 2>&1 </dev/null) || rc=$?
+    assert_eq 1 "$rc" "a leading-hyphen name is refused" || return 1
+    assert_eq "Error: cs -adopt: unknown option '-uninstall'. Usage: cs -adopt <name> [--yes]" "$out" \
+        "adopt reads it as an option it does not know" || return 1
+    if [ -e "$TEST_TMPDIR/sessions/-uninstall" ] || [ -L "$TEST_TMPDIR/sessions/-uninstall" ]; then
+        echo "  FAIL: a session named -uninstall was made"; return 1
+    fi
 }
 
 run_test test_a_leading_hyphen_is_rejected

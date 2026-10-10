@@ -88,7 +88,8 @@ main() {
                 shift 2
                 adopt_worktrees "$@"
             else
-                adopt_session "${2:-}"
+                shift
+                adopt_session "$@"
             fi
             return 0
             ;;

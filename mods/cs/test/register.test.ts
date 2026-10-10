@@ -25,6 +25,10 @@ let existing: Set<string>
 let files: Record<string, string>
 let sessionId: string
 let envVars: Record<string, string | undefined>
+// The conversation's working directory, and where each path lands as `$.fs.stat` resolves it
+// (a path absent here does not exist).
+let cwdPath: string
+let realPaths: Record<string, string>
 let timers: { ms: number; fn: () => void; kind: 'after' | 'every'; cancelled: boolean }[]
 let invalidated: string[]
 let toasts: string[]
@@ -57,7 +61,7 @@ const $ = {
   env: { get: async (name: string) => envVars[name] },
   session: {
     usage: async () => ({ context: { percent } }),
-    cwd: async () => '/work',
+    cwd: async () => cwdPath,
     id: async () => sessionId,
     compact: async () => {
       compactedAt.push(runs.length)
@@ -100,6 +104,10 @@ const $ = {
     write: async (path: string, text: string) => { written[path] = text; files[path] = text },
     exists: async (path: string) => existing.has(path) || path in files,
     read: async (path: string) => { if (path in files) return files[path]; throw new Error(`ENOENT ${path}`) },
+    stat: async (path: string, options?: { resolve?: boolean }) => {
+      if (!(path in realPaths)) throw new Error(`ENOENT ${path}`)
+      return { kind: 'directory', size: 0, mtimeMs: 0, isLink: false, ...(options?.resolve ? { realPath: realPaths[path] } : {}) }
+    },
   },
 }
 
@@ -123,7 +131,10 @@ beforeEach(() => {
   nowMs = 1_800_000_000_000; livePids = new Set()
   // The default fixture is the lead conversation of a cs session.
   sessionId = 'uuid-lead'
-  envVars = {}
+  // /work sits under the default sessions root by its own name.
+  envVars = { HOME: '/home' }
+  cwdPath = '/work'
+  realPaths = { '/work': '/work', '/home/.claude-sessions/work': '/work' }
   files = { '/work/.cs/local/state': 'claude_session_color: red\nclaude_session_id: uuid-lead\n' }
   register(on as any)
 })
@@ -542,6 +553,55 @@ test('session.start writes a heartbeat under the session meta dir', async () => 
 test('outside a cs session no heartbeat is written', async () => {
   await hooks['session.start']($, { cwd: '/plain', surface: 'terminal', isInteractive: true }, async (e) => ({ cwd: e.cwd }))
   expect(Object.keys(written)).toEqual([])
+})
+
+// The sessions root names a session; nothing inside a directory can, since a
+// cloned repository may carry any file under .cs/. The cwd is a cs session
+// when <root>/<its name> is the cwd itself.
+test('a directory with .cs/local that the sessions root does not name gets no heartbeat', async () => {
+  cwdPath = '/clone'
+  existing = new Set(['/clone/.cs/local'])
+  realPaths = { '/clone': '/clone' }
+  await hooks['session.start']($, { cwd: '/clone', surface: 'terminal', isInteractive: true }, async (e) => ({ cwd: e.cwd }))
+  expect(Object.keys(written)).toEqual([])
+})
+
+test('a root entry of the same name that is another directory does not make the cwd a session', async () => {
+  cwdPath = '/clone/work'
+  existing = new Set(['/clone/work/.cs/local'])
+  realPaths = { '/clone/work': '/clone/work', '/home/.claude-sessions/work': '/work' }
+  await hooks['session.start']($, { cwd: '/clone/work', surface: 'terminal', isInteractive: true }, async (e) => ({ cwd: e.cwd }))
+  expect(Object.keys(written)).toEqual([])
+})
+
+test('CS_SESSIONS_ROOT names the sessions root', async () => {
+  envVars.CS_SESSIONS_ROOT = '/roots'
+  realPaths = { '/work': '/work', '/roots/work': '/work' }
+  await hooks['session.start']($, { cwd: '/work', surface: 'terminal', isInteractive: true }, async (e) => ({ cwd: e.cwd }))
+  expect(Object.keys(written)).toEqual(['/work/.cs/local/cs.heartbeat'])
+  realPaths = { '/work': '/work', '/home/.claude-sessions/work': '/work' }
+  written = {}
+  await hooks['session.start']($, { cwd: '/work', surface: 'terminal', isInteractive: true }, async (e) => ({ cwd: e.cwd }))
+  expect(Object.keys(written)).toEqual([])
+})
+
+test('an adopted session is named by the session_name its state records, and the root entry must be the cwd', async () => {
+  cwdPath = '/code/project'
+  existing = new Set(['/code/project/.cs/local'])
+  files = { '/code/project/.cs/local/state': 'session_name: alias\nclaude_session_id: uuid-lead\n' }
+  realPaths = { '/code/project': '/code/project', '/home/.claude-sessions/alias': '/code/project' }
+  await hooks['session.start']($, { cwd: '/code/project', surface: 'terminal', isInteractive: true }, async (e) => ({ cwd: e.cwd }))
+  expect(Object.keys(written)).toEqual(['/code/project/.cs/local/cs.heartbeat'])
+  realPaths['/home/.claude-sessions/alias'] = '/elsewhere'
+  written = {}
+  await hooks['session.start']($, { cwd: '/code/project', surface: 'terminal', isInteractive: true }, async (e) => ({ cwd: e.cwd }))
+  expect(Object.keys(written)).toEqual([])
+})
+
+test('the lead of a directory the sessions root does not name gets no button', async () => {
+  percent = 90
+  realPaths = { '/work': '/work' }
+  expect(await band()).toBe(DRAWN)
 })
 
 // A turn's end, the way the engine reports it: answered on the main loop unless said otherwise.

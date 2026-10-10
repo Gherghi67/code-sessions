@@ -241,9 +241,8 @@ export function register(on: On) {
       registered = true
       await $.command.register({ name: 'queue', description: "Add a task to this cs session's walk-away queue, or list it.", argumentHint: '[task]', immediate: true })
     }
-    // Only a cs session has .cs/local; anywhere else the mod stays silent.
-    const local = `${e.cwd}/.cs/local`
-    if (await $.fs.exists(local)) {
+    // Only in a cs session; anywhere else the mod stays silent.
+    if ((await $.fs.exists(`${e.cwd}/.cs/local`)) && (await isCsSession($, e.cwd))) {
       await $.fs.write(`${e.cwd}/${HEARTBEAT}`, `${new Date().toISOString()}\n`)
     }
     return next(e)
@@ -715,6 +714,47 @@ async function readState($: EngineInterface): Promise<string | undefined> {
   }
 }
 
+// Whether directory `cwd` is a cs session. Nothing inside a directory can
+// prove it: a cloned repository may carry any file under .cs/, .cs/local
+// included. The sessions root ($CS_SESSIONS_ROOT, else ~/.claude-sessions) is
+// what a clone cannot carry: the directory is a session when the root's entry
+// under its own name, or under the session_name an adopted session's state
+// records, lands on the directory itself. The recorded name is only a
+// candidate, so it may not reach outside the root. Identity is by resolved
+// path, as the hooks compare by inode: a link at the root and a home reached
+// through a symlink each spell the same directory another way.
+async function isCsSession($: EngineInterface, cwd: string): Promise<boolean> {
+  const home = await $.env.get('HOME')
+  const root = (await $.env.get('CS_SESSIONS_ROOT')) || (home ? `${home}/.claude-sessions` : undefined)
+  if (root === undefined) return false
+  const here = await resolvedPath($, cwd)
+  if (here === undefined) return false
+  const dir = cwd.replace(/\/+$/, '')
+  const names = [dir.slice(dir.lastIndexOf('/') + 1)]
+  let state = ''
+  try {
+    state = await $.fs.read(`${cwd}/.cs/local/state`)
+  } catch {
+    // no state: only the directory's own name is a candidate
+  }
+  const recorded = state.match(/^session_name: *"?([^"\s/]+)"?[ \t]*$/m)?.[1]
+  if (recorded !== undefined && recorded !== '.' && recorded !== '..') names.push(recorded)
+  for (const name of names) {
+    if ((await resolvedPath($, `${root}/${name}`)) === here) return true
+  }
+  return false
+}
+
+// Where `path` lands once every link is followed; undefined when it leads
+// nowhere or cannot be read, which proves nothing about a session.
+async function resolvedPath($: EngineInterface, path: string): Promise<string | undefined> {
+  try {
+    return (await $.fs.stat(path, { resolve: true })).realPath
+  } catch {
+    return undefined
+  }
+}
+
 // Only the lead conversation of a cs session may be offered a rotation. The
 // rotate skill refuses outside a cs session, .cs/local/disabled opts a
 // directory out of cs entirely, and the handoff it writes carries the UUID in
@@ -724,8 +764,10 @@ async function readState($: EngineInterface): Promise<string | undefined> {
 // The value may be quoted and may carry trailing spaces, as cs's own state
 // readers allow.
 async function ownsRotation($: EngineInterface): Promise<boolean> {
-  const local = `${await $.session.cwd()}/.cs/local`
+  const cwd = await $.session.cwd()
+  const local = `${cwd}/.cs/local`
   if (!(await $.fs.exists(local)) || (await $.fs.exists(`${local}/disabled`))) return false
+  if (!(await isCsSession($, cwd))) return false
   const state = await readState($)
   if (state === undefined) return false
   const lead = state.match(/^claude_session_id: *"?([^"\s]+)"?[ \t]*$/m)?.[1]
