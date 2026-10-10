@@ -535,7 +535,7 @@ cs_settings_update() {  # file, command [args...]
 # cs_settings_update's work, run while it holds the lock.
 # shellcheck disable=SC2034  # CS_SETTINGS_ERROR is read by the callers in cs and install.sh
 _cs_settings_rewrite() {  # file, command [args...]
-    local file="$1" current="{}" updated stamp backup n=0 taken="" f k
+    local file="$1" current="{}" updated stamp backup="" n=0 taken="" f k
     shift
     cs_settings_check "$file" || return 1
     if [ -s "$file" ]; then
