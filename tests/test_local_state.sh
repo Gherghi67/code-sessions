@@ -1201,6 +1201,34 @@ test_append_inside_checks_every_append() {
     assert_eq "USER-OWNED" "$(cat "$o")" "the target outside is untouched" || return 1
 }
 
+# A link anywhere between the destination and the session, not only one
+# that is itself the candidate, must not make a .cs below it the session.
+test_append_inside_is_not_rerooted_through_a_linked_ancestor() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local root="$t/root" out rc=0
+    mkdir -p "$root/sess/.cs" "$t/other/sub/.cs"
+    ln -s "$t/other" "$root/sess/backup"
+    out=$(CS_SESSIONS_ROOT="$root" bash -c 'source "$1"; cs_append_inside "$2" echo new' _ \
+        "$SCRIPT_DIR/../hooks/cs-shared.sh" "$root/sess/backup/sub/x.log" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the append must fail" || return 1
+    assert_eq "cs_append_inside: $root/sess/backup/sub/x.log leads to $t/other/sub/x.log, outside the session $root/sess" "$out" "the refusal names the path" || return 1
+    assert_not_exists "$t/other/sub/x.log" "nothing is written below the link" || return 1
+}
+
+# A directory that exists is resolved whole: a link to ../.. is the
+# session's parent even though its last component spells "..".
+test_mkdir_inside_resolves_a_link_to_a_parent_directory() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/a/sess" out rc=0
+    mkdir -p "$s/.cs"
+    ln -s ../.. "$s/.cs/private"
+    out=$(bash -c 'source "$1"; cs_mkdir_inside "$2"' _ \
+        "$SCRIPT_DIR/../hooks/cs-shared.sh" "$s/.cs/private/mail/tmp" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the mkdir must fail" || return 1
+    assert_eq "cs_mkdir_inside: $s/.cs/private/mail/tmp leads to $t/a/mail/tmp, outside the session $s" "$out" "the refusal names the path" || return 1
+    assert_not_exists "$t/a/mail" "nothing is made above the session" || return 1
+}
+
 # A dangling link would create its target: refused the same way.
 test_atomic_write_refuses_a_dangling_link_out_of_the_session() {
     local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
@@ -1380,6 +1408,8 @@ run_test test_append_inside_checks_a_relative_destination
 run_test test_append_inside_refuses_a_chain_longer_than_it_follows
 run_test test_append_inside_is_not_rerooted_by_a_link_to_another_session
 run_test test_append_inside_checks_every_append
+run_test test_append_inside_is_not_rerooted_through_a_linked_ancestor
+run_test test_mkdir_inside_resolves_a_link_to_a_parent_directory
 run_test test_atomic_write_refuses_a_link_out_of_an_adopted_session
 run_test test_atomic_write_follows_links_inside_the_session_and_outside_it
 run_test test_atomic_write_follows_an_encrypted_sessions_shared_config_link

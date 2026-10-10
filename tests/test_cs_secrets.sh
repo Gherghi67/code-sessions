@@ -889,6 +889,24 @@ test_export_file_refuses_a_named_path_a_link_carries_out() {
     assert_eq "USER-OWNED" "$(cat "$o/result.enc")" "the file outside is untouched" || return 1
 }
 
+# The default sync file is checked too: one committed as a link to a
+# directory outside the session would take the ciphertext into it.
+test_export_file_refuses_a_default_file_linked_to_a_directory_outside() {
+    local t o s="$CS_SESSIONS_ROOT/other" out rc=0 f
+    t=$(cd "$TEST_TMPDIR" && pwd -P); o="$t/outside"
+    mkdir -p "$o" "$s/.cs"
+    "$CS_SECRETS_BIN" --session other set api_key "sk_123" >/dev/null 2>&1
+    PATH="$(_ageless_path)" "$CS_SECRETS_BIN" --session other export-file >/dev/null 2>&1
+    f=$(ls "$s/.cs"/secrets.*.enc 2>/dev/null)
+    [ -f "$f" ] || { echo "  FAIL: no default sync file to replace"; return 1; }
+    rm "$f"; ln -s "$o" "$f"
+    "$CS_SECRETS_BIN" --session other set api_key "sk_456" >/dev/null 2>&1
+    out=$(PATH="$(_ageless_path)" "$CS_SECRETS_BIN" --session other export-file 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the export must fail" || return 1
+    assert_eq "cs-secrets export-file: $f leads to $o, outside the session $s" "$out" "the refusal names the link" || return 1
+    assert_eq "" "$(ls -A "$o")" "nothing is written outside the session" || return 1
+}
+
 # A context that leaves USER unset (cron, a systemd unit) must still derive a
 # machine id: under `set -u` a bare ${USER} aborts the derivation, the sync file
 # collapses to the empty-id name "secrets..enc", and every machine then writes
@@ -2162,6 +2180,7 @@ run_test test_rm_alias_works
 run_test test_session_flag_overrides_env
 run_test test_export_file_refuses_a_session_whose_cs_links_out
 run_test test_export_file_refuses_a_named_path_a_link_carries_out
+run_test test_export_file_refuses_a_default_file_linked_to_a_directory_outside
 run_test test_no_session_errors
 run_test test_picker_selects_numbered_session
 run_test test_picker_prompt_stays_off_stdout
