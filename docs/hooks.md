@@ -26,7 +26,8 @@ twins (`cs_append_inside`, `cs_mkdir_inside`), the link check all three run firs
 session is the nearest directory above the destination that holds a `.cs`, unless a link
 inside an outer session leads to it, and then the outer session is the one checked; the writer
 refuses a write a link would carry out of it and names the link on stderr, and checks a
-new directory at its nearest existing level; hooks set `CS_WRITE_QUIET=1`, so any other write
+new directory at its nearest existing level; a path or link target holding a newline is refused,
+since `$(...)` drops a trailing one and would check a different path; hooks set `CS_WRITE_QUIET=1`, so any other write
 failure stays silent), and the
 machine-local state writers (`cs_local_state_set`, `cs_local_state_unset`), which take a
 lock beside `.cs/local/state` so cs and session-start.sh take turns, the vault holder list's add and drop (`cs_vault_holder_add`, `cs_vault_holder_drop`), and the lock they and the window title share (`_cs_lock`,
