@@ -313,7 +313,8 @@ export function register(on: On) {
   // next conversation a birth; a run the engine refuses makes nothing.
   on('command.run', { command: 'clear' }, async ($, e, next) => {
     clearSeen = true
-    if (ticker) stopCountdown($)
+    if (ticker) stopCountdown($, false)
+    await closeHandoffPane($)
     try {
       return await next(e)
     } catch (err) {
@@ -525,20 +526,41 @@ function startCountdown($: EngineInterface) {
     // then does nothing, so nothing clears twice or behind a new turn.
     const idle = bandIdle && (await handoffArmed($)) && (await ownsRotation($))
     if (left !== 0) return
-    stopCountdown($)
+    stopCountdown($, !idle)
     if (idle) await clearAndContinue($).catch(err => $.ui.toast(`cs: /clear did not run: ${String(err)}`))
   })
 }
 
-function stopCountdown($: EngineInterface) {
+// closePane false leaves the pane to a /clear path, which closes it with
+// closeHandoffPane and waits for that close.
+function stopCountdown($: EngineInterface, closePane = true) {
   ticker?.cancel()
   ticker = undefined
   left = undefined
-  if (preview !== undefined) {
+  if (closePane && preview !== undefined) {
     preview = undefined
     $.ui.close({ id: PREVIEW_PANE }).catch(err => $.ui.toast(`cs: the handoff pane did not close: ${String(err)}`))
   }
   $.ui.invalidate('ui.render')
+}
+
+// Before a /clear: closes the handoff pane and waits for the close. /clear does
+// not close a plugin's pane, and the pane can outlive the module that opened
+// it (a reload, as every install rewrites the mod, leaves the engine holding
+// the pane while the module holds no count), so the engine's own list decides
+// as well as this module's state (#909).
+async function closeHandoffPane($: EngineInterface) {
+  let open = preview !== undefined
+  preview = undefined
+  if (!open) {
+    try {
+      open = (await $.ui.panes()).some(p => p.id === PREVIEW_PANE)
+    } catch (err) {
+      $.ui.toast(`cs: could not list the open panes: ${String(err)}`)
+    }
+  }
+  if (!open) return
+  await $.ui.close({ id: PREVIEW_PANE }).catch(err => $.ui.toast(`cs: the handoff pane did not close: ${String(err)}`))
 }
 
 // Opens the preview for the count that scheduled it, if that count still runs.
@@ -912,7 +934,8 @@ async function offerToStart($: EngineInterface, bin: string, count: number) {
 // is open; the marker is the hook's to consume.
 async function clearAndContinue($: EngineInterface) {
   clearSeen = true
-  if (ticker) stopCountdown($)
+  if (ticker) stopCountdown($, false)
+  await closeHandoffPane($)
   try {
     await $.command.run({ command: 'clear', args: '' })
   } catch (err) {
