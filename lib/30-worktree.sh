@@ -808,6 +808,10 @@ _integrate_in_temp() {  # base_dir wt_dir task sha common from_remote ci_green g
 
     local B
     B=$(git -C "$base_dir" rev-parse HEAD)
+    # Before 2a92ac67 the temp lived under <common>/cs/finish/, so a run killed
+    # then can have left a <task>.<pid> directory there. Nothing reads that
+    # path any more, and removing it would mean cs deleting inside an adopted
+    # repo's .git for no change in behaviour (#838). Leave it; do not add a sweep.
     # Outside any .git directory: tools refuse to serve or read files under
     # one (Vite's server.fs.deny holds **/.git/**, so a vitest browser run in
     # the temp never connects and the gate goes red for where it ran). An

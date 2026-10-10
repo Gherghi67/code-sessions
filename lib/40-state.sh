@@ -231,7 +231,9 @@ _discover_worktree_uuid_in() {  # parent_project_dir, wt_dir
 
 # A worktree's real path as it appears inside a transcript's JSON strings: the
 # record escapes a `\` or `"` in the path, so a match escapes the same way, or
-# such a repo never matches.
+# such a repo never matches. Physical, by measurement: launched from /tmp (a
+# link to /private/tmp), `claude --worktree` 2.1.296 recorded worktreePath and
+# cwd under /private/tmp, so pwd -P is the matching side (#814).
 _worktree_json_path() {  # wt_dir
     local wt_real
     wt_real=$( (cd "$1" 2>/dev/null && pwd -P) || printf '%s' "$1" )
