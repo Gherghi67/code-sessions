@@ -584,12 +584,11 @@ _qreported_failed() {
     return 1
 }
 
-# Park the run on a trip: queue back to idle, the trip recorded in the inbox
-# and sent to a spawner, and a debrief that ends this Stop. A spawned worker
+# Debrief a trip: recorded in the inbox and sent to a spawner, then a message
+# that ends this Stop. The caller has already recorded idle. A spawned worker
 # keeps spawned-by, so the eventual real drain still reports.
 _qpark() {  # kind reading limit remaining note
     local kind="$1" reading="$2" limit="$3" remaining="$4" note="$5" reason
-    _qstate_write idle
     _inbox_append --arg ts "$(date +%s)" --arg r "$kind" \
         --arg v "$reading" --arg l "$limit" --arg n "$remaining" \
         '{ts: ($ts|tonumber), event: "breaker_tripped", reason: $r, reading: ($v|tonumber), limit: ($l|tonumber), remaining: ($n|tonumber)}'
@@ -661,8 +660,15 @@ $RUN_MODE$SCOPE"
         # queue, nothing is logged done, and the run parks. Context and the
         # 5-hour window measure the session rather than the task, so the task
         # is done and the run parks before the next one is handed out.
+        # Every trip records idle before the pop: a state that cannot be
+        # written ends this Stop with nothing popped, so the queue still
+        # starts with the task last handed out. Popping first would leave
+        # "draining" behind, and the next Stop would log a task done that was
+        # never handed out. A hook killed between the write and the pop leaves
+        # idle with the finished task still queued, which a re-arm runs again.
         TRIP=$(_breaker_check) || TRIP=""
         if _qreported_failed; then TRIP="task_failed 1 1"; fi
+        [ -z "$TRIP" ] || _qstate_write idle
         case "$TRIP" in
             failures\ *|task_failed\ *)
                 set -- $TRIP
