@@ -1517,14 +1517,77 @@ _cs_write_leaves_session() {  # root, path
     printf '%s\n' "$real"
 }
 
+# The session a path lies in, by its spelling: the nearest directory above it
+# that holds a .cs, never climbing to the sessions root or past it. Found from
+# the path rather than from CLAUDE_SESSION_DIR, so a write into another session
+# (cs-secrets --session) or one made with the variable unset is checked against
+# the session it lands in. Fails for a path in no session.
+_cs_session_root_of() {  # path
+    local d stop="${CS_SESSIONS_ROOT:-${HOME:-/nonexistent}/.claude-sessions}"
+    case "$1" in
+        /*) d="${1%/*}" ;;
+        *) d="$PWD/$1"; d="${d%/*}" ;;
+    esac
+    while [ -n "$d" ] && [ "$d" != "$stop" ]; do
+        if [ -d "$d/.cs" ]; then
+            printf '%s\n' "$d"
+            return 0
+        fi
+        d="${d%/*}"
+    done
+    return 1
+}
+
+# The three writers below name a link out of the session on stderr whatever
+# the caller wants. A hook sets CS_WRITE_QUIET=1 so that a write failing for any
+# other reason (a read-only directory, a full disk) shows only in the status:
+# hooks fail quietly, and their stderr reaches the user's terminal.
+
+# Append a command's output to a file, unless a link takes the file out of the
+# session it lies in; then name the link on stderr and append nothing.
+cs_append_inside() {  # file, command [args...]
+    local file="$1" root out; shift
+    if root=$(_cs_session_root_of "$file") && out=$(_cs_write_leaves_session "$root" "$file"); then
+        echo "cs_append_inside: $file leads to $out, outside the session $root" >&2
+        return 1
+    fi
+    if [ -n "${CS_WRITE_QUIET:-}" ]; then
+        { "$@" >> "$file"; } 2>/dev/null
+    else
+        "$@" >> "$file"
+    fi
+}
+
+# mkdir -p, unless a link takes the directory out of the session it lies in.
+# The levels mkdir -p would make do not exist yet, so the nearest one that does
+# is what gets resolved: a link there carries every level made below it.
+cs_mkdir_inside() {  # dir
+    local dir="$1" e root out
+    case "$dir" in /*) ;; *) dir="$PWD/$dir" ;; esac
+    e="$dir"
+    while [ -n "$e" ] && [ ! -e "$e" ] && [ ! -L "$e" ]; do
+        e="${e%/*}"
+    done
+    if [ -n "$e" ] && root=$(_cs_session_root_of "$dir") && out=$(_cs_write_leaves_session "$root" "$e"); then
+        echo "cs_mkdir_inside: $dir leads to $out${dir#"$e"}, outside the session $root" >&2
+        return 1
+    fi
+    if [ -n "${CS_WRITE_QUIET:-}" ]; then
+        mkdir -p "$dir" 2>/dev/null
+    else
+        mkdir -p "$dir"
+    fi
+}
+
 cs_write_atomic() {  # dest, command [args...]
     local dest="$1"; shift
     (
-        local dir tmp mode link hops=0 out
-        if [ -n "${CLAUDE_SESSION_DIR:-}" ] && out=$(_cs_write_leaves_session "$CLAUDE_SESSION_DIR" "$dest"); then
-            echo "cs_write_atomic: $dest leads to $out, outside the session $CLAUDE_SESSION_DIR" >&2
+        local dir tmp mode link hops=0 out root
+        if root=$(_cs_session_root_of "$dest") && out=$(_cs_write_leaves_session "$root" "$dest"); then
+            echo "cs_write_atomic: $dest leads to $out, outside the session $root" >&2
             exit 1
         fi
+        [ -z "${CS_WRITE_QUIET:-}" ] || exec 2>/dev/null
         while [ -L "$dest" ] && [ "$hops" -lt 16 ]; do
             link=$(readlink "$dest") || exit 1
             case "$link" in
