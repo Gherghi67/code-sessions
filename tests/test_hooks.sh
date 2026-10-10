@@ -4135,6 +4135,11 @@ test_reminder_carries_the_commit_cadence() {
     # a reason to delay appends, which loses work the autosave ref already holds.
     assert_output_contains "$output" "autosave" \
         "Cadence should say uncommitted appends are safe" || return 1
+    # A session whose own notes say to push after each commit pushed every
+    # narrative commit to a deploy branch, one redeploy each. The reminder
+    # fires at the append, so it is where the push rule has to be.
+    assert_output_contains "$output" "Never push a commit that holds only narrative appends; push them with real changes or when the user asks." \
+        "Cadence should say a narrative-only commit is never pushed" || return 1
 }
 
 run_test test_advisor_nudge_cooldown_lands_in_the_machine_local_dir
