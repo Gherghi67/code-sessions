@@ -92,6 +92,31 @@ test_uninstall_rechecks_live_sessions_after_the_data_question() {
     assert_file_exists "$root/late-data/.cs/notes.md" "the session data survives" || return 1
 }
 
+# A volume can be mounted inside the sessions root while "Delete session
+# data?" is pending, as an encrypted session opening attaches its vault.
+# The mount table is read again once the answer is in, before rm -rf, which
+# would recurse into the volume: the data stays and the refusal names it.
+test_uninstall_rechecks_mounts_after_the_data_question() {
+    local home="$TEST_TMPDIR/mnt-home" root="$TEST_TMPDIR/mnt-sessions" stub="$TEST_TMPDIR/mount-stub-mnt"
+    _stage_install "$home"
+    mkdir -p "$root/vaulted/.cs/vault-mnt"
+    echo "notes" > "$root/vaulted/.cs/vault-mnt/notes.md"
+    _stub_mount_table "$stub" "/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled)" || return 1
+    local rc=0 out
+    { printf 'yn'; sleep 2
+      printf '%s\n' "/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled)" \
+          "/dev/disk9s1 on $root/vaulted/.cs/vault-mnt (apfs, local, nodev, nosuid, journaled, noowners, mounted by tester)" > "$stub/table"
+      printf 'y'; } \
+        | HOME="$home" CS_SESSIONS_ROOT="$root" PATH="$stub:$PATH" "$CS_BIN" -uninstall \
+        > "$TEST_TMPDIR/mnt.out" 2>&1 || rc=$?
+    out=$(cat "$TEST_TMPDIR/mnt.out")
+    assert_output_contains "$out" "Session data exists at $root" "the data question was reached before the mount" || return 1
+    assert_eq 1 "$rc" "uninstall exits 1 when a volume was mounted during the data question" || return 1
+    assert_output_contains "$out" "Error: Kept $root: a volume is mounted inside it at $root/vaulted/.cs/vault-mnt, and deleting the directory would delete what the volume holds. Unmount it before you delete $root." \
+        "the refusal names the mount" || return 1
+    assert_file_exists "$root/vaulted/.cs/vault-mnt/notes.md" "the volume's data survives" || return 1
+}
+
 echo ""
 echo "cs -uninstall ordering"
 echo "======================"
@@ -100,5 +125,6 @@ echo ""
 run_test test_uninstall_with_a_live_session_removes_nothing
 run_test test_uninstall_rechecks_live_sessions_after_the_confirmation
 run_test test_uninstall_rechecks_live_sessions_after_the_data_question
+run_test test_uninstall_rechecks_mounts_after_the_data_question
 
 report_results
