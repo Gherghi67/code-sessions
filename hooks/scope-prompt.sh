@@ -42,11 +42,14 @@ if [ "${CS_SCOPE_TRACE_DISABLE:-}" != "1" ] && [ -n "${CLAUDE_SESSION_DIR:-}" ] 
             ;;
     esac
     # Written before the library loads, since it must survive a run killed
-    # while loading it, so the shared link check is not there yet: the one
-    # builtin test below refuses a trace file that is itself a link. A linked
-    # trace directory is refused at the open, and by the checked stage-trace
-    # writes later in the same run.
-    if [ -n "$_launch_ms" ] && [ ! -L "$_launch_trace_dir/scope-prompt.trace" ]; then
+    # while loading it, so the shared link check is not there yet. Builtin
+    # tests stand in for it: the trace file may not be a link, nor .cs/local,
+    # and a linked .cs/private counts only beside a real .cs/local/pre-open,
+    # the mark of a vault set up by hand (the checked stage-trace writes later
+    # in the run apply the full rule).
+    if [ -n "$_launch_ms" ] && [ ! -L "$_launch_trace_dir/scope-prompt.trace" ] \
+        && [ ! -L "$_launch_local" ] \
+        && { [ ! -L "$_launch_trace_dir" ] || { [ -f "$_launch_local/pre-open" ] && [ ! -L "$_launch_local/pre-open" ]; }; }; then
         { printf '%s %s launch\n' "$$" "$_launch_ms" \
             >> "$_launch_trace_dir/scope-prompt.trace"; } 2>/dev/null || true
     fi

@@ -309,7 +309,9 @@ _cs_file_mode() {  # path
 # Usage: cs_write_atomic <dest> <command> [args...]
 # Where a write to a path lands: its symlinks followed, 16 hops as
 # cs_write_atomic follows them, and its directory resolved physically, so a
-# linked parent counts too. Fails when that directory does not exist.
+# linked parent counts too. Fails when that directory does not exist, and
+# with status 2 when the path is still a link after 16 hops: the kernel
+# follows more, so where such a write lands is unknown here.
 _cs_write_target() {  # path
     local dest="$1" link dir hops=0
     while [ -L "$dest" ] && [ "$hops" -lt 16 ]; do
@@ -320,6 +322,7 @@ _cs_write_target() {  # path
         esac
         hops=$((hops + 1))
     done
+    [ ! -L "$dest" ] || return 2
     # cd -P walks each component as the filesystem does: a logical cd would
     # collapse `link/..` to the link's own parent, not the target's.
     dir=$(cd -P "$(dirname "$dest")" 2>/dev/null && pwd -P) || return 1
@@ -378,7 +381,10 @@ _cs_write_leaves_session() {  # root, path
         done
     fi
     # An unresolvable directory fails the write at mktemp, writing nothing.
-    real=$(_cs_write_target "$2") || return 1
+    real=$(_cs_write_target "$2") || {
+        [ $? -eq 2 ] || return 1
+        real="a chain of more than 16 links"
+    }
     case "$real/" in
         "$root_p"/*) return 1 ;;
     esac
@@ -386,7 +392,11 @@ _cs_write_leaves_session() {  # root, path
 }
 
 # The session a path lies in, by its spelling: the nearest directory above it
-# that holds a .cs, never climbing to the sessions root or past it. Found from
+# that holds a .cs, never climbing to the sessions root or past it. A
+# directory inside a .cs is never the session, nor is one that is itself a
+# link (an adopted session's entry in the sessions root aside): a link a
+# clone commits there (.cs/private -> ../../other) would make a .cs it
+# reaches the session the write is checked against. Found from
 # the path rather than from CLAUDE_SESSION_DIR, so a write into another session
 # (cs-secrets --session) or one made with the variable unset is checked against
 # the session it lands in. Fails for a path in no session.
@@ -397,10 +407,13 @@ _cs_session_root_of() {  # path
         *) d="$PWD/$1"; d="${d%/*}" ;;
     esac
     while [ -n "$d" ] && [ "$d" != "$stop" ]; do
-        if [ -d "$d/.cs" ]; then
-            printf '%s\n' "$d"
-            return 0
-        fi
+        case "$d/" in
+            */.cs/*) ;;
+            *) if [ -d "$d/.cs" ] && { [ ! -L "$d" ] || [ "${d%/*}" = "$stop" ]; }; then
+                   printf '%s\n' "$d"
+                   return 0
+               fi ;;
+        esac
         d="${d%/*}"
     done
     return 1
@@ -411,19 +424,26 @@ _cs_session_root_of() {  # path
 # other reason (a read-only directory, a full disk) shows only in the status:
 # hooks fail quietly, and their stderr reaches the user's terminal.
 
+# The check the writers share: true, with the refusal on stderr, when a write
+# to <path> would leave the session it lies in. A relative path is taken from
+# the current directory, its links kept, so its spelling still says which
+# session it is in. <probe> is the part of the path that exists, when that is
+# less than all of it. Every write is checked afresh: a file that passed once
+# can be swapped for a link before the next write.
+_cs_refuses_write() {  # writer, path, [probe]
+    local p="$2" e="${3:-$2}" root out
+    case "$p" in /*) ;; *) p="$PWD/$p" ;; esac
+    case "$e" in /*) ;; *) e="$PWD/$e" ;; esac
+    root=$(_cs_session_root_of "$p") || return 1
+    out=$(_cs_write_leaves_session "$root" "$e") || return 1
+    echo "$1: $p leads to $out${p#"$e"}, outside the session $root" >&2
+}
+
 # Append a command's output to a file, unless a link takes the file out of the
 # session it lies in; then name the link on stderr and append nothing.
-# The last file that passed is remembered: a hook appends to one trace many
-# times a run, and each check costs a few forks.
 cs_append_inside() {  # file, command [args...]
-    local file="$1" root out; shift
-    if [ "$file" != "${_CS_APPEND_PASSED:-}" ]; then
-        if root=$(_cs_session_root_of "$file") && out=$(_cs_write_leaves_session "$root" "$file"); then
-            echo "cs_append_inside: $file leads to $out, outside the session $root" >&2
-            return 1
-        fi
-        _CS_APPEND_PASSED="$file"
-    fi
+    local file="$1"; shift
+    ! _cs_refuses_write cs_append_inside "$file" || return 1
     if [ -n "${CS_WRITE_QUIET:-}" ]; then
         { "$@" >> "$file"; } 2>/dev/null
     else
@@ -435,14 +455,13 @@ cs_append_inside() {  # file, command [args...]
 # The levels mkdir -p would make do not exist yet, so the nearest one that does
 # is what gets resolved: a link there carries every level made below it.
 cs_mkdir_inside() {  # dir
-    local dir="$1" e root out
+    local dir="$1" e
     case "$dir" in /*) ;; *) dir="$PWD/$dir" ;; esac
     e="$dir"
     while [ -n "$e" ] && [ ! -e "$e" ] && [ ! -L "$e" ]; do
         e="${e%/*}"
     done
-    if [ -n "$e" ] && root=$(_cs_session_root_of "$dir") && out=$(_cs_write_leaves_session "$root" "$e"); then
-        echo "cs_mkdir_inside: $dir leads to $out${dir#"$e"}, outside the session $root" >&2
+    if [ -n "$e" ] && _cs_refuses_write cs_mkdir_inside "$dir" "$e"; then
         return 1
     fi
     if [ -n "${CS_WRITE_QUIET:-}" ]; then
@@ -455,11 +474,8 @@ cs_mkdir_inside() {  # dir
 cs_write_atomic() {  # dest, command [args...]
     local dest="$1"; shift
     (
-        local dir tmp mode link hops=0 out root
-        if root=$(_cs_session_root_of "$dest") && out=$(_cs_write_leaves_session "$root" "$dest"); then
-            echo "cs_write_atomic: $dest leads to $out, outside the session $root" >&2
-            exit 1
-        fi
+        local dir tmp mode link hops=0
+        ! _cs_refuses_write cs_write_atomic "$dest" || exit 1
         [ -z "${CS_WRITE_QUIET:-}" ] || exec 2>/dev/null
         while [ -L "$dest" ] && [ "$hops" -lt 16 ]; do
             link=$(readlink "$dest") || exit 1

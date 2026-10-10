@@ -181,8 +181,10 @@ if [ -f "$META_DIR/local/vault" ] && [ "${CS_RESOLVED_FROM:-env}" = "env" ] \
                 if [ -z "$held" ] && mnt=$(cd "$dir/.cs/vault-mnt" 2>/dev/null && pwd -P) \
                     && mount | grep -F " on $mnt (" >/dev/null; then
                     # A child with a recorded pid, so a reopen can stop it.
+                    # Long after the open checked the session: the builtin
+                    # test refuses a link planted here since.
                     hdiutil detach "$mnt" >/dev/null 2>&1 &
-                    echo "$!" > "$dir/.cs/local/vault-detach.pid"
+                    [ -L "$dir/.cs/local/vault-detach.pid" ] || echo "$!" > "$dir/.cs/local/vault-detach.pid"
                     wait "$!" || true
                     rm -f "$dir/.cs/local/vault-detach.pid"
                 fi
