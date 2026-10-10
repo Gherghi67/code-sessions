@@ -2732,6 +2732,7 @@ test_finish_progress_goes_behind_private_in_an_encrypted_session() {
     base_dir="$CS_SESSIONS_ROOT/myproj"
     mkdir -p "$TEST_TMPDIR/vault/private"
     ln -s "$TEST_TMPDIR/vault/private" "$base_dir/.cs/private"
+    _mark_hand_made_vault "$base_dir"
     "$CS_BIN" myproj -integrate-feature fix-auth "$sha" -- true >/dev/null 2>&1 || status=$?
     assert_eq "0" "$status" "integrate succeeds" || return 1
     assert_eq "landed" "$(progress_field "$TEST_TMPDIR/vault/private/finish-progress.json" .step)" "the record is in the vault" || return 1

@@ -41,7 +41,15 @@ if [ "${CS_SCOPE_TRACE_DISABLE:-}" != "1" ] && [ -n "${CLAUDE_SESSION_DIR:-}" ] 
             esac
             ;;
     esac
-    if [ -n "$_launch_ms" ]; then
+    # Written before the library loads, since it must survive a run killed
+    # while loading it, so the shared link check is not there yet. Builtin
+    # tests stand in for it: the trace file may not be a link, nor .cs/local,
+    # and a linked .cs/private counts only beside a real .cs/local/pre-open,
+    # the mark of a vault set up by hand (the checked stage-trace writes later
+    # in the run apply the full rule).
+    if [ -n "$_launch_ms" ] && [ ! -L "$_launch_trace_dir/scope-prompt.trace" ] \
+        && [ ! -L "$_launch_local" ] \
+        && { [ ! -L "$_launch_trace_dir" ] || { [ -f "$_launch_local/pre-open" ] && [ ! -L "$_launch_local/pre-open" ]; }; }; then
         { printf '%s %s launch\n' "$$" "$_launch_ms" \
             >> "$_launch_trace_dir/scope-prompt.trace"; } 2>/dev/null || true
     fi
@@ -78,6 +86,14 @@ if [ "$_cs_had_e" = 1 ]; then set -e; fi
 # in a vault, so nothing is traced rather than risk writing it in plaintext.
 if ! command -v cs_private_dir >/dev/null 2>&1; then
     cs_private_dir() { return 1; }
+fi
+# A write this hook cannot make is skipped without a word, and the link check
+# on appends and new directories lives in cs-shared.sh; without the library
+# they are made unchecked, as they were before the check existed.
+CS_WRITE_QUIET=1
+if ! command -v cs_append_inside >/dev/null 2>&1; then
+    cs_append_inside() { local f="$1"; shift; { "$@" >> "$f"; } 2>/dev/null; }
+    cs_mkdir_inside() { mkdir -p "$1" 2>/dev/null; }
 fi
 if ! command -v cs_resolve_session >/dev/null 2>&1; then
     cs_resolve_session() {
@@ -126,7 +142,7 @@ _now_ms() {
 _trace_open() {  # meta_local_dir
     [ "${CS_SCOPE_TRACE_DISABLE:-}" = "1" ] && return 0
     [ -n "$1" ] || return 0
-    [ -d "$1" ] || mkdir -p "$1" 2>/dev/null || return 0
+    [ -d "$1" ] || cs_mkdir_inside "$1" || return 0
     _TRACE="$1/scope-prompt.trace"
     _now_ms
     _TRACE_T0=$_MS
@@ -137,8 +153,7 @@ _trace_open() {  # meta_local_dir
     # and a unique name would add a fork to a path timed in milliseconds. Not
     # a defect to fix.
     if [ $(( $$ % 64 )) -eq 0 ] && [ -f "$_TRACE" ]; then
-        { tail -n 2000 "$_TRACE" > "$_TRACE.tmp"; } 2>/dev/null \
-            && mv "$_TRACE.tmp" "$_TRACE" 2>/dev/null || true
+        cs_write_atomic "$_TRACE" tail -n 2000 "$_TRACE" || true
     fi
     # The start mark carries the origin every later mark is relative to, so one
     # run reads as elapsed time and the file as a history. It also names the
@@ -147,14 +162,13 @@ _trace_open() {  # meta_local_dir
     # the same event. The directory is the rest of the line, never a field —
     # paths hold spaces. A newline in one would split the mark in two, so it
     # collapses to a space (a shell substitution: still no fork).
-    { printf '%s %s start %s\n' "$$" "$_TRACE_T0" "${PWD//$'\n'/ }" \
-        >> "$_TRACE"; } 2>/dev/null || true
+    cs_append_inside "$_TRACE" printf '%s %s start %s\n' "$$" "$_TRACE_T0" "${PWD//$'\n'/ }" || true
 }
 
 _trace() {  # stage
     [ -n "$_TRACE" ] || return 0
     _now_ms
-    { printf '%s %s %s\n' "$$" "$(( _MS - _TRACE_T0 ))" "$1" >> "$_TRACE"; } 2>/dev/null || true
+    cs_append_inside "$_TRACE" printf '%s %s %s\n' "$$" "$(( _MS - _TRACE_T0 ))" "$1" || true
 }
 
 # The hook's own clock, kept apart from the trace's (which a session can opt
@@ -248,9 +262,8 @@ fi
 _commit_date_stamp() {  # meta_local_dir
     [ -n "${DATE_STAMP_PENDING:-}" ] || return 0
     local dir="$1/context-date"
-    mkdir -p "$dir" 2>/dev/null || return 0
-    { printf '%s\n' "$DATE_STAMP_PENDING" > "$dir/.$DATE_STAMP_CONV.$$.tmp"; } 2>/dev/null \
-        && mv "$dir/.$DATE_STAMP_CONV.$$.tmp" "$dir/$DATE_STAMP_CONV" 2>/dev/null || true
+    cs_mkdir_inside "$dir" || return 0
+    cs_write_atomic "$dir/$DATE_STAMP_CONV" printf '%s\n' "$DATE_STAMP_PENDING" || true
     DATE_STAMP_PENDING=""
 }
 _trace date

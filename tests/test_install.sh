@@ -2156,7 +2156,7 @@ test_install_never_sources_a_kept_deployed_cs_shared() {
 test_install_replaces_files_cs_wrote_without_a_record() {
     local home="$TEST_TMPDIR/known-home" rc=0 out
     mkdir -p "$home/.claude/hooks" "$home/.claude/skills/cs-hint/hooks"
-    cp "$SCRIPT_DIR/../hooks/session-start.sh" "$home/.claude/hooks/session-start.sh"
+    _cs_shipped_content > "$home/.claude/hooks/session-start.sh"
     _cs_shipped_content > "$home/.claude/hooks/files-context.sh"
     _cs_shipped_content > "$home/.claude/skills/cs-hint/hooks/hooks.json"
     out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || rc=$?

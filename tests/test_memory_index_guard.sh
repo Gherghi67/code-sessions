@@ -237,6 +237,7 @@ test_snapshot_goes_into_the_private_dir() {
     _guard_session
     mkdir -p "$TEST_TMPDIR/vault/private"
     ln -s "$TEST_TMPDIR/vault/private" "$SESSION/.cs/private"
+    _mark_hand_made_vault "$SESSION"
     local out
     out=$(_guard snapshot 2>&1) || { echo "  FAIL: snapshot exited non-zero: $out"; return 1; }
     assert_eq "$(cat "$INDEX")" "$(cat "$TEST_TMPDIR/vault/private/memory-index.snapshot")" \

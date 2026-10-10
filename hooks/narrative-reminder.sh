@@ -84,11 +84,19 @@ fi
 if ! command -v cs_write_atomic >/dev/null 2>&1; then
     cs_write_atomic() { return 1; }
 fi
+# A write this hook cannot make is skipped without a word (cs-shared.sh).
+CS_WRITE_QUIET=1
+# The link check on appends and new directories lives in the library too;
+# without it they are made unchecked, as they were before the check existed.
+if ! command -v cs_append_inside >/dev/null 2>&1; then
+    cs_append_inside() { local f="$1"; shift; { "$@" >> "$f"; } 2>/dev/null; }
+    cs_mkdir_inside() { mkdir -p "$1" 2>/dev/null; }
+fi
 if ! command -v _cs_terminate_jsonl >/dev/null 2>&1; then
     _cs_terminate_jsonl() {
         [ -s "$1" ] || return 0
         [ -n "$(tail -c 1 "$1" 2>/dev/null)" ] || return 0
-        { printf '\n' >> "$1"; } 2>/dev/null || true
+        cs_append_inside "$1" printf '\n' || true
     }
 fi
 # Only run in cs sessions
@@ -236,8 +244,7 @@ _mail_from_clause() {
 # overlaps itself: two writers sharing one tmp name splice each other, and the
 # rename then publishes the splice.
 _mail_record() {
-    { printf '%s' "$MAIL_NAMES" > "$MAIL_WOKE.tmp.$$"; } 2>/dev/null \
-        && mv "$MAIL_WOKE.tmp.$$" "$MAIL_WOKE" 2>/dev/null || true
+    cs_write_atomic "$MAIL_WOKE" printf '%s' "$MAIL_NAMES" || true
 }
 
 # Apply the two silencers. A silenced run discharges nothing, so it records
@@ -266,8 +273,7 @@ _mail_apply_silencers() {
 }
 
 _mail_count_wake() {
-    { printf '%s\n' "$((MAIL_WAKES + 1))" > "$MAILDIR/wakes.tmp.$$"; } 2>/dev/null \
-        && mv "$MAILDIR/wakes.tmp.$$" "$MAILDIR/wakes" 2>/dev/null || true
+    cs_write_atomic "$MAILDIR/wakes" printf '%s\n' "$((MAIL_WAKES + 1))" || true
 }
 
 MAIL_REASON_TAIL="Run cs -msg to read it. Reply only if the message needs an answer; never reply merely to acknowledge. A task it carries is queued only by its cs -queue accept command, run after the user agrees."
@@ -291,7 +297,7 @@ MAIL_REASON_TAIL="Run cs -msg to read it. Reply only if the message needs an ans
 if [ "$HOOK_EVENT" = "CwdChanged" ]; then
     [ -n "$MAILDIR" ] || exit 0
     _mail_is_lead || exit 0
-    mkdir -p "$MAILDIR/new" 2>/dev/null || exit 0
+    cs_mkdir_inside "$MAILDIR/new" || exit 0
     jq -nc --arg p "$MAILDIR/new" \
         '{hookSpecificOutput: {hookEventName: "CwdChanged", watchPaths: [$p]}}' \
         2>/dev/null || true
@@ -380,7 +386,7 @@ if [ "$HOOK_EVENT" = "FileChanged" ] && [ "${FC_PATH%/*.kick}" != "$FC_PATH" ]; 
     # k+1's by more than the CS_ROTATION_KICK_DELAY between writes. Measured
     # one wake in 12/12 at 0-2 s staggers. Benign by design; do not add a lock.
     printf '%s\n' "The rotation is loaded and nothing has run yet. First reconcile your native task list, which carried over from the previous conversation, with the handoff, then execute the handoff's next-step section now and report what you did, without re-summarising it or asking which part to start with. If the user has already sent a message of their own, theirs wins — do what they asked and treat this wake as spent. Ask first only where you normally would: the handoff is missing, unreadable, or genuinely ambiguous, or its next step is destructive or irreversible." >&2
-    { : > "$_kick_dir/delivered"; } 2>/dev/null || true
+    cs_write_atomic "$_kick_dir/delivered" : || true
     exit 2
 fi
 
@@ -428,8 +434,8 @@ fi
 # on the next prompt and by session-start.sh at launch. Lives in .cs/local/
 # (per-machine state, never git-synced). Raised before the cooldown gates so
 # every turn end signals, not just the ones that remind.
-mkdir -p "$META_DIR/local" 2>/dev/null || true
-touch "$META_DIR/local/attention" 2>/dev/null || true
+cs_mkdir_inside "$META_DIR/local" || true
+cs_append_inside "$META_DIR/local/attention" : || true
 
 # iTerm2: bounce the dock while attention is raised, so a finished turn
 # reaches the user in another app. The it2 utilities live in ~/.iterm2 (shell
@@ -445,6 +451,12 @@ fi
 # Hands the agent its next queued task when armed; asks once when idle. Wins
 # over the narrative nag (returns early). Queue text is arbitrary -> jq emit.
 QDIR="$CS_FILES"
+# A queue a link carries out of the session is not this session's: the drain
+# would move and delete the files there before any checked write.
+if [ -n "$QDIR" ] && command -v _cs_refuses_write >/dev/null 2>&1 \
+    && _cs_refuses_write cs-queue "$QDIR/queue"; then
+    QDIR=""
+fi
 LOCAL="$META_DIR/local"
 QUEUE="$QDIR/queue"
 QSTATE_FILE="$QDIR/queue.state"
@@ -510,7 +522,7 @@ _qdone_len() {  # done file
 # record and this one. Best-effort: inbox failure must never break the drain.
 _inbox_append() {  # jq --arg/--argjson pairs..., then the jq object program
     _cs_terminate_jsonl "$QDIR/notifications.jsonl" 2>/dev/null || true
-    { jq -nc "$@" >> "$QDIR/notifications.jsonl"; } 2>/dev/null || true
+    cs_append_inside "$QDIR/notifications.jsonl" jq -nc "$@" || true
 }
 
 # Mail a spawned worker's spawner (recorded in spawned-by by the launch).
@@ -683,7 +695,7 @@ $RUN_MODE$SCOPE"
         if [ -n "$_first" ] && mv "$_first" "$POPPED" 2>/dev/null; then
             DONE_TASK=$(cat "$POPPED" 2>/dev/null || true)
             rm -f "$POPPED"
-            printf '%s\n' "$DONE_TASK" >> "$QDIR/queue.done"
+            cs_append_inside "$QDIR/queue.done" printf '%s\n' "$DONE_TASK" || true
             _inbox_append --arg ts "$(date +%s)" --arg task "$DONE_TASK" \
                 '{ts: ($ts|tonumber), event: "task_done", task: $task}'
             NEWLEN=$(_qlen "$QUEUE")
@@ -793,7 +805,7 @@ if [ -n "$NUDGE_PCT" ] && [ -n "$NUDGE_UUID" ] && [ "$NUDGE_PCT" -ge "$NUDGE_CTX
     # directory and runs the same Stop, so a single-slot cursor let each
     # teammate's stop cancel the lead's notice and re-arm it every turn.
     if ! grep -qx "$NUDGE_UUID" "$LOCAL/rotate-nudged" 2>/dev/null; then
-        printf '%s\n' "$NUDGE_UUID" >> "$LOCAL/rotate-nudged"
+        cs_append_inside "$LOCAL/rotate-nudged" printf '%s\n' "$NUDGE_UUID" || true
         REASON="Context is at ${NUDGE_PCT}% — consider rotating this conversation. Invoke the rotate skill to distill a handoff and arm it; the user then runs /clear to continue in a fresh conversation, without leaving Claude Code. One-time notice for this conversation; if now is a bad time, simply continue."
         jq -nc --arg r "$REASON" '{decision: "block", reason: $r}'
         exit 0
@@ -808,7 +820,7 @@ WARN_CTX=$(_num_or "${CS_CTX_WARN_CTX:-}" 40)
 if [ -n "$NUDGE_PCT" ] && [ -n "$NUDGE_UUID" ] \
     && [ "$NUDGE_PCT" -ge "$WARN_CTX" ] && [ "$NUDGE_PCT" -lt "$NUDGE_CTX" ]; then
     if ! grep -qx "$NUDGE_UUID" "$LOCAL/ctx-warned" 2>/dev/null; then
-        printf '%s\n' "$NUDGE_UUID" >> "$LOCAL/ctx-warned"
+        cs_append_inside "$LOCAL/ctx-warned" printf '%s\n' "$NUDGE_UUID" || true
         REASON="Context is at ${NUDGE_PCT}% — past the comfortable-headroom mark. Briefly let the user know so they can steer toward a natural stopping point or plan a rotation; the rotate nudge follows at ${NUDGE_CTX}%. One-time notice for this conversation; no action needed now."
         jq -nc --arg r "$REASON" '{decision: "block", reason: $r}'
         exit 0
@@ -939,7 +951,7 @@ if _mail_is_lead; then
             _adv_last=$((10#$_adv_last))
         fi
         if [ "$((CURRENT_TIME - _adv_last))" -ge "$ADVISOR_COOLDOWN_SECONDS" ]; then
-            { echo "$CURRENT_TIME" > "$ADVISOR_COOLDOWN_FILE"; } 2>/dev/null || true
+            cs_write_atomic "$ADVISOR_COOLDOWN_FILE" echo "$CURRENT_TIME" || true
             # One note and one cooldown slot however many channels are present:
             # two independent nudges would double the appended text and race
             # the same stamp.
@@ -958,7 +970,7 @@ if _mail_is_lead; then
 fi
 
 # Update cooldown marker and remind
-echo "$CURRENT_TIME" > "$COOLDOWN_FILE"
+cs_write_atomic "$COOLDOWN_FILE" echo "$CURRENT_TIME" || true
 
 # Sessions whose .cs/ is tracked were committing once per narrative append —
 # 328 such commits in one repo, 74 in a single day, burying the project's own

@@ -49,6 +49,17 @@ if [ "$_cs_had_e" = 1 ]; then set -e; fi
 if ! command -v cs_private_dir >/dev/null 2>&1; then
     cs_private_dir() { return 1; }
 fi
+# A write this hook cannot make is skipped without a word, and the link check
+# on appends and new directories lives in cs-shared.sh; without the library
+# they are made unchecked, as they were before the check existed.
+CS_WRITE_QUIET=1
+if ! command -v cs_append_inside >/dev/null 2>&1; then
+    cs_append_inside() { local f="$1"; shift; { "$@" >> "$f"; } 2>/dev/null; }
+    cs_mkdir_inside() { mkdir -p "$1" 2>/dev/null; }
+fi
+if ! command -v cs_write_atomic >/dev/null 2>&1; then
+    cs_write_atomic() { return 1; }
+fi
 if ! command -v cs_resolve_session >/dev/null 2>&1; then
     cs_resolve_session() {
         [ -n "${CLAUDE_SESSION_NAME:-}" ] && [ -n "${CLAUDE_SESSION_DIR:-}" ]
@@ -58,7 +69,7 @@ if ! command -v _cs_terminate_jsonl >/dev/null 2>&1; then
     _cs_terminate_jsonl() {
         [ -s "$1" ] || return 0
         [ -n "$(tail -c 1 "$1" 2>/dev/null)" ] || return 0
-        { printf '\n' >> "$1"; } 2>/dev/null || true
+        cs_append_inside "$1" printf '\n' || true
     }
 fi
 # Not in a cs session, do nothing. Resolves from the env under the CLI and
@@ -88,22 +99,21 @@ fi
 # append into a missing dir cannot abort this hook (and its cleanup) under set -e.
 # An encrypted session logs into its vault; while the vault is locked the log
 # goes nowhere, never into .cs/local.
-mkdir -p "$META_DIR/local" 2>/dev/null || true
+cs_mkdir_inside "$META_DIR/local" || true
 if _log_dir=$(cs_private_dir "$META_DIR"); then SESSION_LOG="$_log_dir/session.log"; else SESSION_LOG=/dev/null; fi
-echo "" >> "$SESSION_LOG"
-echo "$(date '+%Y-%m-%d %H:%M:%S') - Session ended (source: $END_REASON, ID: $SESSION_ID)" >> "$SESSION_LOG"
+cs_append_inside "$SESSION_LOG" printf '%s\n' "" "$(date '+%Y-%m-%d %H:%M:%S') - Session ended (source: $END_REASON, ID: $SESSION_ID)" || true
 
 # Append structured event to timeline.jsonl
 TIMELINE_FILE="$META_DIR/timeline.jsonl"
 TIMELINE_BRANCH=$(git -C "$SESSION_DIR" branch --show-current 2>/dev/null || echo "")
 _cs_terminate_jsonl "$TIMELINE_FILE" 2>/dev/null || true
-{ jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+cs_append_inside "$TIMELINE_FILE" jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
        --arg event "ended" \
        --arg source "$END_REASON" \
        --arg session_id "$SESSION_ID" \
        --arg branch "$TIMELINE_BRANCH" \
        '{ts: $ts, event: $event, source: $source, session_id: $session_id, branch: $branch}' \
-    >> "$TIMELINE_FILE"; } 2>/dev/null || true
+    || true
 
 # Delete only the ending conversation's own autosave ref (no longer needed
 # after a clean end). A sibling conversation's ref is left untouched, so a
@@ -171,14 +181,19 @@ if [ -f "$META_DIR/local/vault" ] && [ "${CS_RESOLVED_FROM:-env}" = "env" ] \
                 if [ -z "$held" ] && mnt=$(cd "$dir/.cs/vault-mnt" 2>/dev/null && pwd -P) \
                     && mount | grep -F " on $mnt (" >/dev/null; then
                     # A child with a recorded pid, so a reopen can stop it.
+                    # Long after the open checked the session: the builtin
+                    # test refuses a link planted here since.
                     hdiutil detach "$mnt" >/dev/null 2>&1 &
-                    echo "$!" > "$dir/.cs/local/vault-detach.pid"
+                    [ -L "$dir/.cs/local/vault-detach.pid" ] || echo "$!" > "$dir/.cs/local/vault-detach.pid"
                     wait "$!" || true
                     rm -f "$dir/.cs/local/vault-detach.pid"
                 fi
                 rm -f "$dir/.cs/local/vault-waiter.pid"
             ' cs-vault-waiter "$SESSION_DIR" "$CLAUDE_PID" </dev/null >/dev/null 2>&1 &
-            echo "$!" > "$META_DIR/local/vault-waiter.pid"
+            # Written at once, not through cs_write_atomic: the waiter deletes
+            # this file as it ends, and a slower write could land after that.
+            # The builtin test refuses a planted link in its place.
+            [ -L "$META_DIR/local/vault-waiter.pid" ] || echo "$!" > "$META_DIR/local/vault-waiter.pid"
             disown 2>/dev/null || true
             ;;
     esac
@@ -273,7 +288,7 @@ if [ -n "$SESSIONS_ROOT" ] && [ -d "$SESSIONS_ROOT" ]; then
     } > "$INDEX_FILE"; } 2>/dev/null || true
 fi
 
-echo "Session management cleanup complete" >> "$SESSION_LOG"
-echo "================================================================================" >> "$SESSION_LOG"
+cs_append_inside "$SESSION_LOG" printf '%s\n' "Session management cleanup complete" \
+    "================================================================================" || true
 
 exit 0

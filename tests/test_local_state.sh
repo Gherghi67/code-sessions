@@ -1087,6 +1087,148 @@ test_atomic_write_refuses_a_directory_link_out_of_the_session() {
     assert_eq "" "$(ls -A "$o")" "nothing is written into the directory outside" || return 1
 }
 
+# The session is found from the destination, not from CLAUDE_SESSION_DIR: a
+# write made with it unset, or into another session, is checked the same way.
+test_atomic_write_checks_the_session_the_destination_is_in() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/sess" o="$t/outside" out rc=0
+    mkdir -p "$s/.cs"
+    printf 'USER-OWNED\n' > "$o"
+    ln -s "$o" "$s/.cs/README.md"
+    out=$(env -u CLAUDE_SESSION_DIR bash -c 'source "$1"; cs_write_atomic "$2" printf "%s\n" new' _ \
+        "$SCRIPT_DIR/../hooks/cs-shared.sh" "$s/.cs/README.md" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the write must fail" || return 1
+    assert_eq "cs_write_atomic: $s/.cs/README.md leads to $o, outside the session $s" "$out" "the refusal names the path" || return 1
+    assert_eq "USER-OWNED" "$(cat "$o")" "the target outside is untouched" || return 1
+}
+
+# mkdir -p makes every missing level: a link out above the first missing one
+# must be caught even though the levels below it do not exist yet.
+test_mkdir_inside_refuses_new_levels_under_a_link_out() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/sess" o="$t/outside-dir" out rc=0
+    mkdir -p "$s/.cs" "$o"
+    ln -s "$o" "$s/.cs/local"
+    out=$(bash -c 'source "$1"; cs_mkdir_inside "$2"' _ "$SCRIPT_DIR/../hooks/cs-shared.sh" "$s/.cs/local/a/b" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the mkdir must fail" || return 1
+    assert_eq "cs_mkdir_inside: $s/.cs/local/a/b leads to $o/a/b, outside the session $s" "$out" "the refusal names the path" || return 1
+    assert_eq "" "$(ls -A "$o")" "nothing is made outside the session" || return 1
+}
+
+# The writers take a relative destination from the caller's directory, and
+# check it as that absolute path.
+test_atomic_write_checks_a_relative_destination() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/sess" o="$t/outside" out rc=0
+    mkdir -p "$s/.cs/local"
+    printf 'USER-OWNED\n' > "$o"
+    ln -s "$o" "$s/.cs/local/snap"
+    out=$(cd "$s" && bash -c 'source "$1"; cs_write_atomic .cs/local/snap printf "%s\n" new' _ \
+        "$SCRIPT_DIR/../hooks/cs-shared.sh" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the write must fail" || return 1
+    assert_eq "cs_write_atomic: $s/.cs/local/snap leads to $o, outside the session $s" "$out" "the refusal names the path" || return 1
+    assert_eq "USER-OWNED" "$(cat "$o")" "the target outside is untouched" || return 1
+}
+
+test_append_inside_checks_a_relative_destination() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/sess" o="$t/outside" out rc=0
+    mkdir -p "$s/.cs/local"
+    printf 'USER-OWNED\n' > "$o"
+    ln -s "$o" "$s/.cs/local/trace"
+    out=$(cd "$s" && bash -c 'source "$1"; cs_append_inside .cs/local/trace echo new' _ \
+        "$SCRIPT_DIR/../hooks/cs-shared.sh" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the append must fail" || return 1
+    assert_eq "cs_append_inside: $s/.cs/local/trace leads to $o, outside the session $s" "$out" "the refusal names the path" || return 1
+    assert_eq "USER-OWNED" "$(cat "$o")" "the target outside is untouched" || return 1
+}
+
+# The kernel follows up to 32 links (macOS) and the check follows 16: a
+# longer chain is refused rather than written where the check stopped looking.
+test_append_inside_refuses_a_chain_longer_than_it_follows() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/sess" o="$t/outside" out rc=0 i=15
+    mkdir -p "$s/.cs"
+    printf 'USER-OWNED\n' > "$o"
+    ln -s "$o" "$s/.cs/x16"
+    while [ "$i" -ge 1 ]; do ln -s "x$((i + 1))" "$s/.cs/x$i"; i=$((i - 1)); done
+    ln -s x1 "$s/.cs/timeline.jsonl"
+    out=$(bash -c 'source "$1"; cs_append_inside "$2" echo new' _ \
+        "$SCRIPT_DIR/../hooks/cs-shared.sh" "$s/.cs/timeline.jsonl" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the append must fail" || return 1
+    assert_eq "cs_append_inside: $s/.cs/timeline.jsonl leads to a chain of more than 16 links, outside the session $s" "$out" "the refusal names the path" || return 1
+    assert_eq "USER-OWNED" "$(cat "$o")" "the target outside is untouched" || return 1
+}
+
+# A link inside .cs to another session puts a .cs above the destination
+# that is not this session's: the session is never one found inside a .cs,
+# nor one reached through a link below the sessions root.
+test_append_inside_is_not_rerooted_by_a_link_to_another_session() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local root="$t/root" out rc=0
+    mkdir -p "$root/sess/.cs" "$root/other/.cs"
+    ln -s ../../other "$root/sess/.cs/private"
+    out=$(CS_SESSIONS_ROOT="$root" bash -c 'source "$1"; cs_append_inside "$2" echo new' _ \
+        "$SCRIPT_DIR/../hooks/cs-shared.sh" "$root/sess/.cs/private/session.log" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the append must fail" || return 1
+    assert_eq "cs_append_inside: $root/sess/.cs/private/session.log leads to $root/other/session.log, outside the session $root/sess" "$out" "the refusal names the path" || return 1
+    assert_not_exists "$root/other/session.log" "nothing is written in the other session" || return 1
+    rc=0
+    ln -s ../other "$root/sess/sub"
+    out=$(CS_SESSIONS_ROOT="$root" bash -c 'source "$1"; cs_mkdir_inside "$2"' _ \
+        "$SCRIPT_DIR/../hooks/cs-shared.sh" "$root/sess/sub/.cs/local" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a session dir reached through a link is not a session" || return 1
+    assert_not_exists "$root/other/.cs/local" "nothing is made in the other session" || return 1
+    rc=0
+    mkdir -p "$root/other/sub/.cs"
+    out=$(CS_SESSIONS_ROOT="$root" bash -c 'source "$1"; cs_append_inside "$2" echo new' _ \
+        "$SCRIPT_DIR/../hooks/cs-shared.sh" "$root/sess/.cs/private/sub/x.log" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a .cs below the link is not the session either" || return 1
+    assert_not_exists "$root/other/sub/x.log" "nothing is written below the link" || return 1
+}
+
+# Every append is checked: a file that passed once and was then replaced by
+# a link out is refused on the next append.
+test_append_inside_checks_every_append() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/sess" o="$t/outside" out rc=0
+    mkdir -p "$s/.cs/local"
+    printf 'USER-OWNED\n' > "$o"
+    out=$(bash -c 'source "$1"; cs_append_inside "$2" echo first; rm "$2"; ln -s "$3" "$2"; cs_append_inside "$2" echo second' _ \
+        "$SCRIPT_DIR/../hooks/cs-shared.sh" "$s/.cs/local/trace" "$o" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the second append must fail" || return 1
+    assert_eq "cs_append_inside: $s/.cs/local/trace leads to $o, outside the session $s" "$out" "the refusal names the path" || return 1
+    assert_eq "USER-OWNED" "$(cat "$o")" "the target outside is untouched" || return 1
+}
+
+# A link anywhere between the destination and the session, not only one
+# that is itself the candidate, must not make a .cs below it the session.
+test_append_inside_is_not_rerooted_through_a_linked_ancestor() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local root="$t/root" out rc=0
+    mkdir -p "$root/sess/.cs" "$t/other/sub/.cs"
+    ln -s "$t/other" "$root/sess/backup"
+    out=$(CS_SESSIONS_ROOT="$root" bash -c 'source "$1"; cs_append_inside "$2" echo new' _ \
+        "$SCRIPT_DIR/../hooks/cs-shared.sh" "$root/sess/backup/sub/x.log" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the append must fail" || return 1
+    assert_eq "cs_append_inside: $root/sess/backup/sub/x.log leads to $t/other/sub/x.log, outside the session $root/sess" "$out" "the refusal names the path" || return 1
+    assert_not_exists "$t/other/sub/x.log" "nothing is written below the link" || return 1
+}
+
+# A directory that exists is resolved whole: a link to ../.. is the
+# session's parent even though its last component spells "..".
+test_mkdir_inside_resolves_a_link_to_a_parent_directory() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/a/sess" out rc=0
+    mkdir -p "$s/.cs"
+    ln -s ../.. "$s/.cs/private"
+    out=$(bash -c 'source "$1"; cs_mkdir_inside "$2"' _ \
+        "$SCRIPT_DIR/../hooks/cs-shared.sh" "$s/.cs/private/mail/tmp" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the mkdir must fail" || return 1
+    assert_eq "cs_mkdir_inside: $s/.cs/private/mail/tmp leads to $t/a/mail/tmp, outside the session $s" "$out" "the refusal names the path" || return 1
+    assert_not_exists "$t/a/mail" "nothing is made above the session" || return 1
+}
+
 # A dangling link would create its target: refused the same way.
 test_atomic_write_refuses_a_dangling_link_out_of_the_session() {
     local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
@@ -1259,6 +1401,15 @@ run_test test_atomic_write_refuses_a_directory_destination
 run_test test_atomic_write_refuses_a_link_out_of_the_session
 run_test test_atomic_write_refuses_a_directory_link_out_of_the_session
 run_test test_atomic_write_refuses_a_dangling_link_out_of_the_session
+run_test test_atomic_write_checks_the_session_the_destination_is_in
+run_test test_mkdir_inside_refuses_new_levels_under_a_link_out
+run_test test_atomic_write_checks_a_relative_destination
+run_test test_append_inside_checks_a_relative_destination
+run_test test_append_inside_refuses_a_chain_longer_than_it_follows
+run_test test_append_inside_is_not_rerooted_by_a_link_to_another_session
+run_test test_append_inside_checks_every_append
+run_test test_append_inside_is_not_rerooted_through_a_linked_ancestor
+run_test test_mkdir_inside_resolves_a_link_to_a_parent_directory
 run_test test_atomic_write_refuses_a_link_out_of_an_adopted_session
 run_test test_atomic_write_follows_links_inside_the_session_and_outside_it
 run_test test_atomic_write_follows_an_encrypted_sessions_shared_config_link

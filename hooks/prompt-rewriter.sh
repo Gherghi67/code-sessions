@@ -14,29 +14,32 @@ target="${1:-}"
 # passthrough paths it took — the buffer looks identical for "not a composer
 # file", "disabled", "slash command" and "rewriter declined".
 _trace() {  # stage
-    local dir="${CLAUDE_SESSION_META_DIR:-}" base
+    local dir="${CLAUDE_SESSION_META_DIR:-}" base lib
     [ -n "$dir" ] && [ -d "$dir" ] || return 0
-    # An encrypted session keeps its cs files behind .cs/private, and a locked
-    # one gets no trace. cs_private_dir's rule, inlined: sourcing the library
-    # would put a fork on the keypress path.
-    if [ -L "$dir/private" ] || [ -e "$dir/private" ]; then
-        [ -d "$dir/private" ] || return 0
-        base="$dir/private"
-    else
-        base="$dir/local"
-        mkdir -p "$base" 2>/dev/null || return 0
+    # The trace goes through cs's own writers, which refuse a link out of the
+    # session. cs-shared.sh is loaded at the first trace, parse-checked first
+    # like every hook's copy: a corrupt library must not take the shim down.
+    # Without it there is no trace.
+    if ! command -v cs_append_inside >/dev/null 2>&1; then
+        lib="$(dirname "$0")/cs-shared.sh"
+        # shellcheck source=cs-shared.sh
+        [ -r "$lib" ] && "${BASH:-/bin/bash}" -n "$lib" 2>/dev/null && . "$lib" 2>/dev/null
+        command -v cs_append_inside >/dev/null 2>&1 || return 0
+        CS_WRITE_QUIET=1
     fi
+    # An encrypted session keeps its cs files behind .cs/private, and a locked
+    # one gets no trace.
+    base=$(cs_private_dir "$dir") || return 0
+    [ "$base" != "$dir/local" ] || cs_mkdir_inside "$base" || return 0
     local f="$base/rewrite.trace"
     # Bound the file the way scope-prompt.sh bounds its own: one run in 64 trims
     # it, often enough that it cannot run away and rare enough that the fork
     # stays off the keypress path. Without this the trace grows for the life of
-    # the session directory. The fixed temp name stays: two trims meeting on it
-    # can at worst tear a trace whose every line stands alone, and this hook
-    # loads no library to take a unique name from. Not a defect to fix.
+    # the session directory.
     if [ $(( $$ % 64 )) -eq 0 ] && [ -f "$f" ]; then
-        { tail -n 2000 "$f" > "$f.tmp"; } 2>/dev/null && mv "$f.tmp" "$f" 2>/dev/null || true
+        cs_write_atomic "$f" tail -n 2000 "$f" || true
     fi
-    { printf '%s %s %s\n' "$$" "$(date '+%Y-%m-%dT%H:%M:%S')" "$1" >> "$f"; } 2>/dev/null || true
+    cs_append_inside "$f" printf '%s %s %s\n' "$$" "$(date '+%Y-%m-%dT%H:%M:%S')" "$1" || true
 }
 
 _trace "start ${CS_REWRITE_PROVIDER:-claude} $(basename "${target:-<none>}")"

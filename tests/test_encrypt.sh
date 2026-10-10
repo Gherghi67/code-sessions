@@ -616,6 +616,22 @@ test_session_end_detaches_after_the_lead_exits() {
     _waiter_gone enc || { echo "  FAIL: waiter pid file left"; return 1; }
 }
 
+# The detach child's pid file is written by the waiter long after the open
+# checked the session; a link planted there since must not carry the write.
+test_session_end_detach_pid_does_not_follow_a_link() {
+    _encrypted_session enc || return 1
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    printf 'USER-OWNED\n' > "$t/victim"
+    ln -s "$t/victim" "$CS_SESSIONS_ROOT/enc/.cs/local/vault-detach.pid"
+    sleep 300 &
+    local claude=$!
+    _end_conversation enc prompt_input_exit "$claude" "$claude"
+    kill "$claude" 2>/dev/null; wait "$claude" 2>/dev/null
+    _wait_for_log "detach $FAKE_MNT" || { echo "  FAIL: no detach after exit: $(cat "$FAKE_HDIUTIL_LOG")"; return 1; }
+    _waiter_gone enc || { echo "  FAIL: waiter pid file left"; return 1; }
+    assert_eq "USER-OWNED" "$(cat "$t/victim")" "the link's target is untouched" || return 1
+}
+
 test_session_end_leaves_the_vault_for_clear_resume_and_non_leads() {
     _encrypted_session enc || return 1
     local case_ reason lead claude
@@ -717,6 +733,7 @@ run_test test_open_resuming_keeps_the_vault_while_claude_runs
 run_test test_open_fresh_leaves_the_detach_to_the_waiter
 run_test test_first_open_leaves_the_detach_to_the_waiter
 run_test test_session_end_detaches_after_the_lead_exits
+run_test test_session_end_detach_pid_does_not_follow_a_link
 run_test test_session_end_leaves_the_vault_for_clear_resume_and_non_leads
 run_test test_session_end_ignores_a_session_cs_did_not_encrypt
 run_test test_session_end_waiter_spares_a_reopened_session

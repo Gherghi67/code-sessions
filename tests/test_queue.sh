@@ -436,6 +436,39 @@ test_drain_armed_mentions_queue_list() {
         "mirror instruction must name cs -queue list (the message shows only the first task)" || return 1
 }
 
+# A done log pulled in as a link out of the session after the open must not
+# take the append: the drain skips that one write, says so in one line, and
+# still hands out the next task.
+test_drain_skips_a_done_log_linked_out_of_the_session() {
+    local t o err="$TEST_TMPDIR/drain.err" out
+    t=$(cd "$TEST_TMPDIR" && pwd -P); o="$t/outside"
+    printf 'USER-OWNED\n' > "$o"
+    qseed "task one" "task two"
+    printf 'draining\n' > "$(QDIR)/queue.state"
+    ln -s "$o" "$(QDIR)/queue.done"
+    out=$(printf '{}\n' | CS_LEAD_PID=$$ CLAUDE_PID=$$ bash "$HOOKS_DIR/narrative-reminder.sh" 2>"$err")
+    assert_eq "USER-OWNED" "$(cat "$o")" "nothing is appended outside the session" || return 1
+    assert_output_contains "$out" "task two" "the drain still hands out the next task" || return 1
+    assert_eq "cs_append_inside: $(QDIR)/queue.done leads to $o, outside the session $CLAUDE_SESSION_DIR" \
+        "$(cat "$err")" "one warning names the link" || return 1
+}
+
+# A .cs/private linked out of the session without a vault set up by hand is
+# no queue: the drain moves and deletes nothing there.
+test_drain_leaves_a_queue_linked_out_of_the_session_alone() {
+    local t o err="$TEST_TMPDIR/drain.err" out
+    t=$(cd "$TEST_TMPDIR" && pwd -P); o="$t/outside"
+    mkdir -p "$o/queue"
+    printf 'task one\n' > "$o/queue/0000000001-seed"
+    printf 'draining\n' > "$o/queue.state"
+    ln -s "$o" "$CLAUDE_SESSION_META_DIR/private"
+    out=$(printf '{}\n' | CS_LEAD_PID=$$ CLAUDE_PID=$$ bash "$HOOKS_DIR/narrative-reminder.sh" 2>"$err")
+    assert_eq "task one" "$(cat "$o/queue/0000000001-seed" 2>/dev/null)" "the task outside is left in place" || return 1
+    assert_eq "draining" "$(cat "$o/queue.state")" "the state outside is untouched" || return 1
+    assert_eq "cs-queue: $CLAUDE_SESSION_META_DIR/private/queue leads to $o/queue, outside the session $CLAUDE_SESSION_DIR" \
+        "$(cat "$err")" "one warning names the link" || return 1
+}
+
 test_drain_draining_pops_and_injects_next() {
     qseed "task one" "task two"
     printf 'draining\n' > "$(QDIR)/queue.state"
@@ -754,6 +787,8 @@ run_test test_drain_gates_when_idle_nonempty
 run_test test_drain_armed_injects_first_task_no_pop
 run_test test_drain_armed_mentions_queue_list
 run_test test_drain_draining_pops_and_injects_next
+run_test test_drain_skips_a_done_log_linked_out_of_the_session
+run_test test_drain_leaves_a_queue_linked_out_of_the_session_alone
 run_test test_drain_frames_the_first_task_as_untrusted
 run_test test_drain_frames_the_next_task_with_a_fresh_id
 run_test test_drain_ignores_a_teammate_stop

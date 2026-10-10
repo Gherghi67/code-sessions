@@ -34,6 +34,14 @@ if [ "$_cs_had_e" = 1 ]; then set -e; fi
 if ! command -v cs_private_dir >/dev/null 2>&1; then
     cs_private_dir() { return 1; }
 fi
+# A write this hook cannot make is skipped without a word, and the link check
+# on appends and new directories lives in cs-shared.sh; without the library
+# they are made unchecked, as they were before the check existed.
+CS_WRITE_QUIET=1
+if ! command -v cs_append_inside >/dev/null 2>&1; then
+    cs_append_inside() { local f="$1"; shift; { "$@" >> "$f"; } 2>/dev/null; }
+    cs_mkdir_inside() { mkdir -p "$1" 2>/dev/null; }
+fi
 if ! command -v cs_resolve_session >/dev/null 2>&1; then
     cs_resolve_session() {
         [ -n "${CLAUDE_SESSION_NAME:-}" ] && [ -n "${CLAUDE_SESSION_DIR:-}" ]
@@ -172,7 +180,7 @@ cs-base: $base"
 
         if [ -n "$LATEST_ENTRY" ]; then
             if LOG_DIR=$(cs_private_dir "$META_DIR"); then
-                echo "[$TIMESTAMP] Autosave: $LATEST_ENTRY" >> "$LOG_DIR/session.log"
+                cs_append_inside "$LOG_DIR/session.log" echo "[$TIMESTAMP] Autosave: $LATEST_ENTRY" || true
             fi
         fi
     )
