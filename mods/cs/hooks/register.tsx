@@ -526,6 +526,10 @@ function startCountdown($: EngineInterface) {
     // then does nothing, so nothing clears twice or behind a new turn.
     const idle = bandIdle && (await handoffArmed($)) && (await ownsRotation($))
     if (left !== 0) return
+    // The pane closes while the count still holds at zero, for the same
+    // reason: a prompt landing during the close stops the /clear.
+    if (idle) await closeHandoffPane($)
+    if (left !== 0) return
     stopCountdown($, !idle)
     if (idle) await clearAndContinue($).catch(err => $.ui.toast(`cs: /clear did not run: ${String(err)}`))
   })
@@ -549,18 +553,28 @@ function stopCountdown($: EngineInterface, closePane = true) {
 // it (a reload, as every install rewrites the mod, leaves the engine holding
 // the pane while the module holds no count), so the engine's own list decides
 // as well as this module's state (#909).
+// A close resolves when a ui.close hook answers for the pane and keeps it, so
+// the engine's list says whether the pane went.
 async function closeHandoffPane($: EngineInterface) {
-  let open = preview !== undefined
+  const open = preview !== undefined || (await handoffPaneListed($))
   preview = undefined
-  if (!open) {
-    try {
-      open = (await $.ui.panes()).some(p => p.id === PREVIEW_PANE)
-    } catch (err) {
-      $.ui.toast(`cs: could not list the open panes: ${String(err)}`)
-    }
-  }
   if (!open) return
-  await $.ui.close({ id: PREVIEW_PANE }).catch(err => $.ui.toast(`cs: the handoff pane did not close: ${String(err)}`))
+  try {
+    await $.ui.close({ id: PREVIEW_PANE })
+  } catch (err) {
+    $.ui.toast(`cs: the handoff pane did not close: ${String(err)}`)
+    return
+  }
+  if (await handoffPaneListed($)) $.ui.toast('cs: the handoff pane did not close: a hook kept it open')
+}
+
+async function handoffPaneListed($: EngineInterface) {
+  try {
+    return (await $.ui.panes()).some(p => p.id === PREVIEW_PANE)
+  } catch (err) {
+    $.ui.toast(`cs: could not list the open panes: ${String(err)}`)
+    return false
+  }
 }
 
 // Opens the preview for the count that scheduled it, if that count still runs.
