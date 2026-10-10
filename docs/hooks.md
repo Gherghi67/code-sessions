@@ -21,7 +21,12 @@ never registered against an event. It carries the actor rules (`cs_actor_raw`,
 `cs_actor_slug`, `_slugify`), the narrative budget (`CS_NARRATIVE_MAX_DEFAULT`,
 `CS_NARRATIVE_KEEP_DEFAULT`, `_narrative_budget`), the atomic file rewrite
 (`cs_write_atomic`: a uniquely named `.cs-tmp.` temp file in the destination's directory,
-which a session's `.gitignore` ignores, the destination's mode kept, renamed into place only when the command succeeded) and the
+which a session's `.gitignore` ignores, the destination's mode kept, renamed into place only when the command succeeded), its append and directory
+twins (`cs_append_inside`, `cs_mkdir_inside`), the link check all three run first (the
+session is the nearest directory above the destination that holds a `.cs`; the writer
+refuses a write a link would carry out of it and names the link on stderr, and checks a
+new directory at its nearest existing level; hooks set `CS_WRITE_QUIET=1`, so any other write
+failure stays silent), and the
 machine-local state writers (`cs_local_state_set`, `cs_local_state_unset`), which take a
 lock beside `.cs/local/state` so cs and session-start.sh take turns, the vault holder list's add and drop (`cs_vault_holder_add`, `cs_vault_holder_drop`), and the lock they and the window title share (`_cs_lock`,
 `_cs_unlock`): flock(2) on a `<file>.mutex.lock` file, taken through perl on fd 9, which the kernel releases when its holder exits or dies. A writer that has waited 5 seconds on a live holder writes anyway. Edit the `lib/` file and rebuild; CI's
