@@ -1087,6 +1087,34 @@ test_atomic_write_refuses_a_directory_link_out_of_the_session() {
     assert_eq "" "$(ls -A "$o")" "nothing is written into the directory outside" || return 1
 }
 
+# The session is found from the destination, not from CLAUDE_SESSION_DIR: a
+# write made with it unset, or into another session, is checked the same way.
+test_atomic_write_checks_the_session_the_destination_is_in() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/sess" o="$t/outside" out rc=0
+    mkdir -p "$s/.cs"
+    printf 'USER-OWNED\n' > "$o"
+    ln -s "$o" "$s/.cs/README.md"
+    out=$(env -u CLAUDE_SESSION_DIR bash -c 'source "$1"; cs_write_atomic "$2" printf "%s\n" new' _ \
+        "$SCRIPT_DIR/../hooks/cs-shared.sh" "$s/.cs/README.md" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the write must fail" || return 1
+    assert_eq "cs_write_atomic: $s/.cs/README.md leads to $o, outside the session $s" "$out" "the refusal names the path" || return 1
+    assert_eq "USER-OWNED" "$(cat "$o")" "the target outside is untouched" || return 1
+}
+
+# mkdir -p makes every missing level: a link out above the first missing one
+# must be caught even though the levels below it do not exist yet.
+test_mkdir_inside_refuses_new_levels_under_a_link_out() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/sess" o="$t/outside-dir" out rc=0
+    mkdir -p "$s/.cs" "$o"
+    ln -s "$o" "$s/.cs/local"
+    out=$(bash -c 'source "$1"; cs_mkdir_inside "$2"' _ "$SCRIPT_DIR/../hooks/cs-shared.sh" "$s/.cs/local/a/b" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the mkdir must fail" || return 1
+    assert_eq "cs_mkdir_inside: $s/.cs/local/a/b leads to $o/a/b, outside the session $s" "$out" "the refusal names the path" || return 1
+    assert_eq "" "$(ls -A "$o")" "nothing is made outside the session" || return 1
+}
+
 # A dangling link would create its target: refused the same way.
 test_atomic_write_refuses_a_dangling_link_out_of_the_session() {
     local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
@@ -1259,6 +1287,8 @@ run_test test_atomic_write_refuses_a_directory_destination
 run_test test_atomic_write_refuses_a_link_out_of_the_session
 run_test test_atomic_write_refuses_a_directory_link_out_of_the_session
 run_test test_atomic_write_refuses_a_dangling_link_out_of_the_session
+run_test test_atomic_write_checks_the_session_the_destination_is_in
+run_test test_mkdir_inside_refuses_new_levels_under_a_link_out
 run_test test_atomic_write_refuses_a_link_out_of_an_adopted_session
 run_test test_atomic_write_follows_links_inside_the_session_and_outside_it
 run_test test_atomic_write_follows_an_encrypted_sessions_shared_config_link
