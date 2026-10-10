@@ -1292,6 +1292,19 @@ test_atomic_write_refuses_a_link_with_a_newline_in_its_target() {
     CLAUDE_SESSION_DIR="$s" bash -c 'source "$1"; cs_append_inside "$2" echo new' _ \
         "$SCRIPT_DIR/../hooks/cs-shared.sh" "$s/.cs/timeline.jsonl" 2>/dev/null || rc=$?
     assert_eq "1" "$rc" "a newline-ended directory: the append must fail" || return 1
+    rc=0
+    _atomic_write_in "$s" "$s/.cs/d$nl/rc" new 2>/dev/null || rc=$?
+    assert_eq "1" "$rc" "a destination spelled with a newline: the write must fail" || return 1
+    mkdir -p "$t/sess$nl"
+    ln -s "../../sess$nl" "$s/.cs/up"
+    rc=0
+    _atomic_write_in "$s" "$s/.cs/up/rc" new 2>/dev/null || rc=$?
+    assert_eq "1" "$rc" "a directory resolving to a newline-ended name: the write must fail" || return 1
+    rc=0
+    CLAUDE_SESSION_DIR="$s" bash -c 'source "$1"; cs_mkdir_inside "$2"' _ \
+        "$SCRIPT_DIR/../hooks/cs-shared.sh" "$s/.cs/up/" 2>/dev/null || rc=$?
+    assert_eq "1" "$rc" "a newline-ended directory itself: the mkdir must fail" || return 1
+    assert_eq "" "$(ls -A "$t/sess$nl")" "nothing lands beside the session" || return 1
     assert_eq "USER-OWNED" "$(cat "$o/rc")" "the target outside is untouched" || return 1
     assert_eq "decoy" "$(cat "$s/.cs/t")" "the decoy is untouched" || return 1
 }
