@@ -1272,6 +1272,64 @@ test_atomic_write_follows_links_inside_the_session_and_outside_it() {
     assert_eq "new" "$(cat "$dot")" "the dotfiles target took the write" || return 1
 }
 
+# Command substitution strips trailing newlines, so a link whose target ends
+# in one, or names a directory that does, would be read as a different path
+# than the kernel follows: a committed decoy beside it passes as inside.
+test_atomic_write_refuses_a_link_with_a_newline_in_its_target() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/sess" o="$t/outside" nl=$'\n' out rc=0
+    mkdir -p "$s/.cs/d" "$o"
+    printf 'USER-OWNED\n' > "$o/rc"
+    printf 'decoy\n' > "$s/.cs/t"
+    ln -s "$o/rc" "$s/.cs/t$nl"
+    ln -s "t$nl" "$s/.cs/README.md"
+    out=$(_atomic_write_in "$s" "$s/.cs/README.md" new 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a trailing newline: the write must fail" || return 1
+    assert_eq "cs_write_atomic: $s/.cs/README.md leads to a name ending in a newline, outside the session $s" "$out" "the refusal names the link" || return 1
+    ln -s "$o" "$s/.cs/d$nl"
+    ln -s "d$nl/rc" "$s/.cs/timeline.jsonl"
+    rc=0
+    CLAUDE_SESSION_DIR="$s" bash -c 'source "$1"; cs_append_inside "$2" echo new' _ \
+        "$SCRIPT_DIR/../hooks/cs-shared.sh" "$s/.cs/timeline.jsonl" 2>/dev/null || rc=$?
+    assert_eq "1" "$rc" "a newline-ended directory: the append must fail" || return 1
+    rc=0
+    _atomic_write_in "$s" "$s/.cs/d$nl/rc" new 2>/dev/null || rc=$?
+    assert_eq "1" "$rc" "a destination spelled with a newline: the write must fail" || return 1
+    mkdir -p "$t/sess$nl"
+    ln -s "../../sess$nl" "$s/.cs/up"
+    rc=0
+    _atomic_write_in "$s" "$s/.cs/up/rc" new 2>/dev/null || rc=$?
+    assert_eq "1" "$rc" "a directory resolving to a newline-ended name: the write must fail" || return 1
+    rc=0
+    CLAUDE_SESSION_DIR="$s" bash -c 'source "$1"; cs_mkdir_inside "$2"' _ \
+        "$SCRIPT_DIR/../hooks/cs-shared.sh" "$s/.cs/up/" 2>/dev/null || rc=$?
+    assert_eq "1" "$rc" "a newline-ended directory itself: the mkdir must fail" || return 1
+    assert_eq "" "$(ls -A "$t/sess$nl")" "nothing lands beside the session" || return 1
+    assert_eq "USER-OWNED" "$(cat "$o/rc")" "the target outside is untouched" || return 1
+    assert_eq "decoy" "$(cat "$s/.cs/t")" "the decoy is untouched" || return 1
+    mkdir -p "$s/.cs/mid${nl}dir"
+    ln -s "mid${nl}dir/notes${nl}x.md" "$s/.cs/mid.md"
+    _atomic_write_in "$s" "$s/.cs/mid.md" kept \
+        || { echo "  FAIL: a newline inside a name, not at its end, was refused"; return 1; }
+    assert_eq "kept" "$(cat "$s/.cs/mid${nl}dir/notes${nl}x.md")" "the in-session target took the write" || return 1
+    _atomic_write_in "$s" "$s/.cs/mid${nl}dir/direct.md" kept \
+        || { echo "  FAIL: a destination with a newline inside a name was refused"; return 1; }
+}
+
+# A .cs/claude-config leads out only as cs's own link into the vault; a real
+# directory a clone commits, holding a link out, is checked like any other.
+test_atomic_write_refuses_a_link_out_of_a_committed_claude_config() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/sess" o="$t/outside" out rc=0
+    mkdir -p "$s/.cs/claude-config"
+    printf 'USER-OWNED\n' > "$o"
+    ln -s "$o" "$s/.cs/claude-config/settings.json"
+    out=$(_atomic_write_in "$s" "$s/.cs/claude-config/settings.json" new 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the write must fail" || return 1
+    assert_eq "cs_write_atomic: $s/.cs/claude-config/settings.json leads to $o, outside the session $s" "$out" "the refusal names the path" || return 1
+    assert_eq "USER-OWNED" "$(cat "$o")" "the target outside is untouched" || return 1
+}
+
 # An encrypted session's .cs/claude-config links the shell's settings,
 # keybindings and the rest out to its config dir by design; a write there
 # (statusline enable, the rotate keys) goes through to the shell's file.
@@ -1412,6 +1470,8 @@ run_test test_append_inside_is_not_rerooted_through_a_linked_ancestor
 run_test test_mkdir_inside_resolves_a_link_to_a_parent_directory
 run_test test_atomic_write_refuses_a_link_out_of_an_adopted_session
 run_test test_atomic_write_follows_links_inside_the_session_and_outside_it
+run_test test_atomic_write_refuses_a_link_with_a_newline_in_its_target
+run_test test_atomic_write_refuses_a_link_out_of_a_committed_claude_config
 run_test test_atomic_write_follows_an_encrypted_sessions_shared_config_link
 run_test test_atomic_write_follows_a_hand_made_vault_link
 run_test test_atomic_write_resolves_dotdot_after_a_link_physically

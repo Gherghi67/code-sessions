@@ -1443,27 +1443,42 @@ _cs_file_mode() {  # path
 # cs_write_atomic follows them, and its directory resolved physically, so a
 # linked parent counts too. Fails when that directory does not exist, and
 # with status 2 when the path is still a link after 16 hops: the kernel
-# follows more, so where such a write lands is unknown here.
+# follows more, so where such a write lands is unknown here. Fails with
+# status 3 when a name in the path, in a link's target or in the directory it
+# resolves to ends in a newline: $(...) strips a trailing one, here and in the
+# caller, so the path read would not be the one the kernel follows, and a
+# decoy beside it would pass.
 _cs_write_target() {  # path
-    local dest="$1" link dir hops=0
+    local dest="$1" link dir hops=0 nl=$'\n'
+    case "$dest" in *"$nl"/*|*"$nl") return 3 ;; esac
     while [ -L "$dest" ] && [ "$hops" -lt 16 ]; do
-        link=$(readlink "$dest") || return 1
+        # -n and the x keep a trailing newline that $(...) would strip
+        # (macOS readlink adds none of its own to a target ending in one).
+        link=$(readlink -n "$dest" && printf x) || return 1
+        link=${link%x}
         case "$link" in
             /*) dest="$link" ;;
             *) dest="$(dirname "$dest")/$link" ;;
         esac
+        case "$dest" in *"$nl"/*|*"$nl") return 3 ;; esac
         hops=$((hops + 1))
     done
     [ ! -L "$dest" ] || return 2
     # A directory that exists resolves whole, its last component included:
     # appending a final ".." to its resolved parent would read as inside.
     if [ -d "$dest" ]; then
-        (cd -P "$dest" 2>/dev/null && pwd -P)
+        dir=$(cd -P "$dest" 2>/dev/null && pwd -P && printf x) || return 1
+        dir=${dir%"$nl"x}
+        case "$dir" in *"$nl") return 3 ;; esac
+        printf '%s\n' "$dir"
         return
     fi
     # cd -P walks each component as the filesystem does: a logical cd would
-    # collapse `link/..` to the link's own parent, not the target's.
-    dir=$(cd -P "$(dirname "$dest")" 2>/dev/null && pwd -P) || return 1
+    # collapse `link/..` to the link's own parent, not the target's. The x
+    # keeps a directory's trailing newline; the name after it keeps it from
+    # the caller's $(...).
+    dir=$(cd -P "$(dirname "$dest")" 2>/dev/null && pwd -P && printf x) || return 1
+    dir=${dir%"$nl"x}
     printf '%s/%s\n' "${dir%/}" "$(basename "$dest")"
 }
 
@@ -1496,8 +1511,9 @@ _cs_hand_made_vault() {  # root
 # written by) but a write to it lands outside the root; prints where it lands.
 # Two kinds of link lead out by design and are let through:
 # - an encrypted session's .cs/claude-config links settings, skills and the
-#   rest to the shell's own config, and the open refuses a .cs/claude-config
-#   that is not cs's link into the vault;
+#   rest to the shell's own config, so a path under it is let through while
+#   .cs/claude-config is cs's link into the vault (a clone can commit a real
+#   one holding links out);
 # - a vault set up by hand mounts anywhere, from .cs/local/pre-open, so while
 #   one exists the four vault links, and a .cs/narrative-archive link (which
 #   cs -narrative rotate uses as it is), may lead out. A clone cannot ship a
@@ -1506,7 +1522,10 @@ _cs_write_leaves_session() {  # root, path
     local root="$1" root_p real sub
     root_p=$(cd "$root" 2>/dev/null && pwd -P) || return 1
     case "$2" in
-        "$root"/.cs/claude-config/*|"$root_p"/.cs/claude-config/*) return 1 ;;
+        "$root"/.cs/claude-config/*|"$root_p"/.cs/claude-config/*)
+            if [ -L "$root/.cs/claude-config" ] && [ "$root/.cs/claude-config" -ef "$root/.cs/vault-mnt/claude-config" ]; then
+                return 1
+            fi ;;
         "$root"/*|"$root_p"/*) ;;
         *) return 1 ;;
     esac
@@ -1520,8 +1539,11 @@ _cs_write_leaves_session() {  # root, path
     fi
     # An unresolvable directory fails the write at mktemp, writing nothing.
     real=$(_cs_write_target "$2") || {
-        [ $? -eq 2 ] || return 1
-        real="a chain of more than 16 links"
+        case $? in
+            2) real="a chain of more than 16 links" ;;
+            3) real="a name ending in a newline" ;;
+            *) return 1 ;;
+        esac
     }
     case "$real/" in
         "$root_p"/*) return 1 ;;
@@ -1620,7 +1642,8 @@ cs_write_atomic() {  # dest, command [args...]
         ! _cs_refuses_write cs_write_atomic "$dest" || exit 1
         [ -z "${CS_WRITE_QUIET:-}" ] || exec 2>/dev/null
         while [ -L "$dest" ] && [ "$hops" -lt 16 ]; do
-            link=$(readlink "$dest") || exit 1
+            link=$(readlink -n "$dest" && printf x) || exit 1
+            link=${link%x}
             case "$link" in
                 /*) dest="$link" ;;
                 *) dest="$(dirname "$dest")/$link" ;;
@@ -5213,7 +5236,7 @@ setup_merge_attributes() {
 # links cs's write targets. A hand-made vault's mount is the user's and is not
 # walked; cs_write_atomic still refuses a write leading out of it.
 _refuse_links_out_of_session() {  # dir
-    local dir="$1" dir_p p link cur todo seen="" prune="" cfg=""
+    local dir="$1" dir_p p link real cur todo seen="" prune="" cfg=""
     dir_p=$(cd -P "$dir" 2>/dev/null && pwd -P) || return 0
     _cs_hand_made_vault "$dir" && prune="$dir_p/.cs/vault-mnt"
     # cs links the shell's settings, skills and the rest into an encrypted
@@ -5242,20 +5265,23 @@ _refuse_links_out_of_session() {  # dir
         case "$seen" in *$'\n'"$cur"$'\n'*) continue ;; esac
         seen="$seen"$'\n'"$cur"$'\n'
         while IFS= read -r -d '' p; do
+            link=$p real=""
+            if [ -d "$p" ]; then
+                # The x keeps a trailing newline that $(...) would strip (Codex r3 #1).
+                real=$(cd -P "$p" 2>/dev/null && pwd -P && printf x) && real=${real%$'\n'x}
+                # The walk list is newline-separated, so such a name would split
+                # into two entries and neither would be scanned (Codex r2 #2).
+                # Named before the link check, which refuses the same link as
+                # leading out without saying why.
+                case "$real" in *$'\n'*)
+                    error "${link#"$dir_p"/} leads to a directory with a newline in its name, which cs cannot check for links out of the session. Rename it, or cs -rm the session." ;;
+                esac
+            fi
             if _cs_write_leaves_session "$dir" "$p" >/dev/null; then
                 error "${p#"$dir_p"/} is a symlink to $(readlink "$p"), outside the session, and cs writes through it. Replace it with a real file or directory, or cs -rm the session."
             fi
-            [ -d "$p" ] || continue
-            link=$p
-            # The x keeps a trailing newline that $(...) would strip (Codex r3 #1).
-            p=$(cd -P "$p" 2>/dev/null && pwd -P && printf x) || continue
-            p=${p%$'\n'x}
-            # The walk list is newline-separated, so such a name would split
-            # into two entries and neither would be scanned (Codex r2 #2).
-            case "$p" in *$'\n'*)
-                error "${link#"$dir_p"/} leads to a directory with a newline in its name, which cs cannot check for links out of the session. Rename it, or cs -rm the session." ;;
-            esac
-            todo="$todo${todo:+$'\n'}$p"
+            [ -n "$real" ] || continue
+            todo="$todo${todo:+$'\n'}$real"
         done < <(find "$cur" \( -path "${prune:-/nonexistent}" -o -path "${cfg:-/nonexistent}" \) -prune -o -type l -print0 2>/dev/null)
     done
 }
