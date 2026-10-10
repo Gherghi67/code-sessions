@@ -315,24 +315,50 @@ test_readopt_of_an_encrypted_session_keeps_its_log_in_the_vault() {
     assert_eq 0 "$rc" "the re-adopted session opens: $out" || return 1
 }
 
-# Re-adopting an encrypted session whose vault is locked cannot seed the
-# command log behind .cs/private; the adoption goes on and says so.
-test_readopt_of_an_encrypted_session_with_a_locked_vault_warns() {
-    local project_dir="$TEST_TMPDIR/my-project" vault="$TEST_TMPDIR/vault-mnt" out rc=0 expected
+# Re-adopting an encrypted session whose vault is locked refuses before it
+# writes anything: the records behind the vault links cannot be reached, so
+# adopt would set up a half session over them. The state keeps the
+# conversation it names, and no session link is made.
+test_readopt_of_an_encrypted_session_with_a_locked_vault_refuses() {
+    local project_dir="$TEST_TMPDIR/my-project" vault="$TEST_TMPDIR/vault-mnt" out rc=0 expected before
     mkdir -p "$project_dir"
     (cd "$project_dir" && "$CS_BIN" -adopt old-name >/dev/null 2>&1)
     rm "$CS_SESSIONS_ROOT/old-name"
     rm "$project_dir/.cs/local/session.log"
     ln -s "$vault/private" "$project_dir/.cs/private"
+    printf 'claude_session_id: 11111111-2222-4333-8444-555555555555\n' >> "$project_dir/.cs/local/state"
+    before=$(cat "$project_dir/.cs/local/state")
 
     out=$(cd "$project_dir" && "$CS_BIN" -adopt new-name --yes </dev/null 2>&1) || rc=$?
-    assert_eq 0 "$rc" "the re-adopt goes on: $out" || return 1
-    expected="new-name: .cs/private points at $vault/private, which is missing (encrypted storage not mounted?), so adopt started no command log there. Mount it before opening the session."
-    assert_eq 1 "$(printf '%s\n' "$out" | grep -cxF -- "$expected")" \
-        "the locked vault is named once: $out" || return 1
-    assert_symlink "$CS_SESSIONS_ROOT/new-name" "the session link exists" || return 1
+    assert_eq 1 "$rc" "the re-adopt refuses: $out" || return 1
+    expected="Error: Cannot re-adopt as 'new-name': .cs/private points at $vault/private, which is missing (encrypted storage not mounted?). Mount it and run cs -adopt again; nothing was changed."
+    assert_eq "$expected" "$out" "the locked vault is named" || return 1
+    assert_eq "$before" "$(cat "$project_dir/.cs/local/state")" "the state is untouched" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/new-name" "no session link" || return 1
     assert_not_exists "$project_dir/.cs/local/session.log" \
         "no plaintext session.log beside .cs/private" || return 1
+}
+
+# cs -encrypt links memory, plans, claude-config and private into the vault;
+# with it locked, the first of them to lead nowhere is the one named.
+test_readopt_with_every_vault_link_dangling_refuses_naming_memory() {
+    local project_dir="$TEST_TMPDIR/my-project" out rc=0 sub before
+    mkdir -p "$project_dir"
+    (cd "$project_dir" && "$CS_BIN" -adopt old-name >/dev/null 2>&1)
+    rm "$CS_SESSIONS_ROOT/old-name"
+    rm "$project_dir/.cs/local/session.log"
+    for sub in memory plans claude-config private; do
+        rm -rf "$project_dir/.cs/$sub"
+        ln -s "vault-mnt/$sub" "$project_dir/.cs/$sub"
+    done
+    before=$(cat "$project_dir/.cs/local/state")
+
+    out=$(cd "$project_dir" && "$CS_BIN" -adopt new-name --yes </dev/null 2>&1) || rc=$?
+    assert_eq 1 "$rc" "the re-adopt refuses: $out" || return 1
+    assert_eq "Error: Cannot re-adopt as 'new-name': .cs/memory points at vault-mnt/memory, which is missing (encrypted storage not mounted?). Mount it and run cs -adopt again; nothing was changed." \
+        "$out" "memory is named first" || return 1
+    assert_eq "$before" "$(cat "$project_dir/.cs/local/state")" "the state is untouched" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/new-name" "no session link" || return 1
 }
 
 test_adopt_orphaned_records_noninteractive_hints() {
@@ -971,7 +997,8 @@ run_test test_adopt_refuses_a_directory_already_linked
 run_test test_adopt_relinks_orphaned_records_interactively
 run_test test_readopt_keeps_the_session_log
 run_test test_readopt_of_an_encrypted_session_keeps_its_log_in_the_vault
-run_test test_readopt_of_an_encrypted_session_with_a_locked_vault_warns
+run_test test_readopt_of_an_encrypted_session_with_a_locked_vault_refuses
+run_test test_readopt_with_every_vault_link_dangling_refuses_naming_memory
 run_test test_adopt_orphaned_records_noninteractive_hints
 run_test test_adopt_orphaned_records_decline_cancels
 run_test test_adopt_yes_relinks_orphaned_records_without_a_terminal

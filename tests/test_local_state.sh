@@ -665,6 +665,25 @@ test_settings_backups_in_one_second_keep_the_newest_five() {
     assert_eq "2 3 4 5 6 " "$kept" "the backups taken before writes 3 to 7 remain" || return 1
 }
 
+# After the clock moves back, five older backups carry later stamps than
+# the one just written. Pruning keeps the new one anyway, plus the four
+# newest of the others, so the rollback snapshot of the last write survives.
+test_settings_backup_survives_a_clock_set_back() {
+    local f="$TEST_TMPDIR/settings.json" bin="$TEST_TMPDIR/early-date" i kept
+    mkdir -p "$bin"
+    printf '#!/bin/bash\nif [ "$1" = -u ]; then echo 20291231T235959Z; else exec /bin/date "$@"; fi\n' > "$bin/date"
+    chmod +x "$bin/date"
+    printf '{"n": 0}\n' > "$f"
+    for i in 0 1 2 3 4; do
+        printf '{"n": "later%s"}\n' "$i" > "$f.cs-bak.20300101T00000${i}Z"
+    done
+    bash -c 'source "$1"; PATH="$3:$PATH"; cs_settings_update "$2" jq ".n = 1" || { echo "$CS_SETTINGS_ERROR"; exit 1; }' \
+        _ "$LOCK_LIB" "$f" "$bin" || { echo "  FAIL: the write refused"; return 1; }
+    kept=$(for b in "$f".cs-bak.*; do jq -c .n "$b"; done | tr '\n' ' ')
+    assert_eq '0 "later1" "later2" "later3" "later4" ' "$kept" \
+        "the new backup and the four latest-stamped others remain" || return 1
+}
+
 # A lock whose directory is missing is refused at once and quietly, as one
 # whose directory cannot take a new file is; without perl nothing is locked,
 # and a line on stderr says so.
@@ -1228,6 +1247,7 @@ run_test test_lock_release_frees_it_from_a_child_still_running
 run_test test_lock_waits_five_seconds_for_a_live_holder
 run_test test_settings_update_refuses_while_its_lock_stays_held
 run_test test_settings_backups_in_one_second_keep_the_newest_five
+run_test test_settings_backup_survives_a_clock_set_back
 run_test test_lock_refuses_at_once_without_its_directory_or_perl
 run_test test_state_write_waits_for_a_live_lock_holder
 run_test test_state_write_ignores_a_lock_directory_left_on_disk
