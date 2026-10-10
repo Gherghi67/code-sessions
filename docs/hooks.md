@@ -23,7 +23,8 @@ never registered against an event. It carries the actor rules (`cs_actor_raw`,
 (`cs_write_atomic`: a uniquely named `.cs-tmp.` temp file in the destination's directory,
 which a session's `.gitignore` ignores, the destination's mode kept, renamed into place only when the command succeeded), its append and directory
 twins (`cs_append_inside`, `cs_mkdir_inside`), the link check all three run first (the
-session is the nearest directory above the destination that holds a `.cs`; the writer
+session is the nearest directory above the destination that holds a `.cs`, unless a link
+inside an outer session leads to it, and then the outer session is the one checked; the writer
 refuses a write a link would carry out of it and names the link on stderr, and checks a
 new directory at its nearest existing level; hooks set `CS_WRITE_QUIET=1`, so any other write
 failure stays silent), and the
