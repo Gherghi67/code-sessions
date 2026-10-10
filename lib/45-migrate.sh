@@ -25,7 +25,7 @@ setup_merge_attributes() {
 # links cs's write targets. A hand-made vault's mount is the user's and is not
 # walked; cs_write_atomic still refuses a write leading out of it.
 _refuse_links_out_of_session() {  # dir
-    local dir="$1" dir_p p link cur todo seen="" prune="" cfg=""
+    local dir="$1" dir_p p link real cur todo seen="" prune="" cfg=""
     dir_p=$(cd -P "$dir" 2>/dev/null && pwd -P) || return 0
     _cs_hand_made_vault "$dir" && prune="$dir_p/.cs/vault-mnt"
     # cs links the shell's settings, skills and the rest into an encrypted
@@ -54,20 +54,23 @@ _refuse_links_out_of_session() {  # dir
         case "$seen" in *$'\n'"$cur"$'\n'*) continue ;; esac
         seen="$seen"$'\n'"$cur"$'\n'
         while IFS= read -r -d '' p; do
+            link=$p real=""
+            if [ -d "$p" ]; then
+                # The x keeps a trailing newline that $(...) would strip (Codex r3 #1).
+                real=$(cd -P "$p" 2>/dev/null && pwd -P && printf x) && real=${real%$'\n'x}
+                # The walk list is newline-separated, so such a name would split
+                # into two entries and neither would be scanned (Codex r2 #2).
+                # Named before the link check, which refuses the same link as
+                # leading out without saying why.
+                case "$real" in *$'\n'*)
+                    error "${link#"$dir_p"/} leads to a directory with a newline in its name, which cs cannot check for links out of the session. Rename it, or cs -rm the session." ;;
+                esac
+            fi
             if _cs_write_leaves_session "$dir" "$p" >/dev/null; then
                 error "${p#"$dir_p"/} is a symlink to $(readlink "$p"), outside the session, and cs writes through it. Replace it with a real file or directory, or cs -rm the session."
             fi
-            [ -d "$p" ] || continue
-            link=$p
-            # The x keeps a trailing newline that $(...) would strip (Codex r3 #1).
-            p=$(cd -P "$p" 2>/dev/null && pwd -P && printf x) || continue
-            p=${p%$'\n'x}
-            # The walk list is newline-separated, so such a name would split
-            # into two entries and neither would be scanned (Codex r2 #2).
-            case "$p" in *$'\n'*)
-                error "${link#"$dir_p"/} leads to a directory with a newline in its name, which cs cannot check for links out of the session. Rename it, or cs -rm the session." ;;
-            esac
-            todo="$todo${todo:+$'\n'}$p"
+            [ -n "$real" ] || continue
+            todo="$todo${todo:+$'\n'}$real"
         done < <(find "$cur" \( -path "${prune:-/nonexistent}" -o -path "${cfg:-/nonexistent}" \) -prune -o -type l -print0 2>/dev/null)
     done
 }
