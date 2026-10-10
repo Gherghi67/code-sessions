@@ -647,6 +647,24 @@ test_settings_update_refuses_while_its_lock_stays_held() {
     assert_eq '{"a": 1}' "$(cat "$f")" "the file is as it was" || return 1
 }
 
+# Seven changing writes inside one UTC second keep the backups of the last
+# five: each backup holds the file as it was before its own write, and
+# pruning never removes the one just taken, even after it freed the
+# unsuffixed name. The clock is pinned so the seven share one stamp.
+test_settings_backups_in_one_second_keep_the_newest_five() {
+    local f="$TEST_TMPDIR/settings.json" bin="$TEST_TMPDIR/pinned-date" k kept
+    mkdir -p "$bin"
+    printf '#!/bin/bash\nif [ "$1" = -u ]; then echo 20300101T000000Z; else exec /bin/date "$@"; fi\n' > "$bin/date"
+    chmod +x "$bin/date"
+    printf '{"n": 0}\n' > "$f"
+    for k in 1 2 3 4 5 6 7; do
+        bash -c 'source "$1"; PATH="$4:$PATH"; cs_settings_update "$2" jq ".n = $3" || { echo "$CS_SETTINGS_ERROR"; exit 1; }' \
+            _ "$LOCK_LIB" "$f" "$k" "$bin" || { echo "  FAIL: write $k refused"; return 1; }
+    done
+    kept=$(for b in "$f".cs-bak.*; do jq -c .n "$b"; done | sort -n | tr '\n' ' ')
+    assert_eq "2 3 4 5 6 " "$kept" "the backups taken before writes 3 to 7 remain" || return 1
+}
+
 # A lock whose directory is missing is refused at once and quietly, as one
 # whose directory cannot take a new file is; without perl nothing is locked,
 # and a line on stderr says so.
@@ -1209,6 +1227,7 @@ run_test test_lock_belongs_to_the_shell_that_took_it
 run_test test_lock_release_frees_it_from_a_child_still_running
 run_test test_lock_waits_five_seconds_for_a_live_holder
 run_test test_settings_update_refuses_while_its_lock_stays_held
+run_test test_settings_backups_in_one_second_keep_the_newest_five
 run_test test_lock_refuses_at_once_without_its_directory_or_perl
 run_test test_state_write_waits_for_a_live_lock_holder
 run_test test_state_write_ignores_a_lock_directory_left_on_disk
