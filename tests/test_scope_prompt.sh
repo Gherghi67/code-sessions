@@ -551,6 +551,17 @@ test_stage_trace_goes_into_the_private_dir() {
     assert_file_not_exists "$(_trace_file)" "nothing may be traced in plaintext" || return 1
 }
 
+# Without a vault set up by hand, a .cs/private link out of the session is
+# no place for the trace: not even the launch mark, written before the
+# library and its link check load.
+test_launch_mark_skips_a_private_link_without_a_hand_made_vault() {
+    seed_repo "src/api.ts"
+    mkdir -p "$TEST_TMPDIR/elsewhere" "$CLAUDE_SESSION_META_DIR/local"
+    ln -s "$TEST_TMPDIR/elsewhere" "$CLAUDE_SESSION_META_DIR/private"
+    run_hook "implement a retry wrapper around the fetch call in src/api.ts" >/dev/null 2>&1
+    assert_file_not_exists "$TEST_TMPDIR/elsewhere/scope-prompt.trace" "nothing is traced through the link" || return 1
+}
+
 # A locked vault leaves the link dangling: the prompt still goes through, and
 # no trace is written anywhere.
 test_stage_trace_is_skipped_while_the_private_dir_is_locked() {
@@ -949,6 +960,7 @@ run_test test_injection_prompt_is_data_not_code
 run_test test_firing_prompt_exits_zero
 run_test test_stage_trace_records_the_run_in_order
 run_test test_stage_trace_goes_into_the_private_dir
+run_test test_launch_mark_skips_a_private_link_without_a_hand_made_vault
 run_test test_stage_trace_is_skipped_while_the_private_dir_is_locked
 run_test test_stage_trace_stops_where_a_killed_run_stopped
 run_test test_stage_trace_marks_a_run_killed_before_the_trace_opens

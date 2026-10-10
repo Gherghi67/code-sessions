@@ -1156,7 +1156,7 @@ test_append_inside_refuses_a_chain_longer_than_it_follows() {
     out=$(bash -c 'source "$1"; cs_append_inside "$2" echo new' _ \
         "$SCRIPT_DIR/../hooks/cs-shared.sh" "$s/.cs/timeline.jsonl" 2>&1) || rc=$?
     assert_eq "1" "$rc" "the append must fail" || return 1
-    assert_eq "cs_append_inside: $s/.cs/timeline.jsonl leads through more than 16 links" "$out" "the refusal names the path" || return 1
+    assert_eq "cs_append_inside: $s/.cs/timeline.jsonl leads to a chain of more than 16 links, outside the session $s" "$out" "the refusal names the path" || return 1
     assert_eq "USER-OWNED" "$(cat "$o")" "the target outside is untouched" || return 1
 }
 
@@ -1179,6 +1179,12 @@ test_append_inside_is_not_rerooted_by_a_link_to_another_session() {
         "$SCRIPT_DIR/../hooks/cs-shared.sh" "$root/sess/sub/.cs/local" 2>&1) || rc=$?
     assert_eq "1" "$rc" "a session dir reached through a link is not a session" || return 1
     assert_not_exists "$root/other/.cs/local" "nothing is made in the other session" || return 1
+    rc=0
+    mkdir -p "$root/other/sub/.cs"
+    out=$(CS_SESSIONS_ROOT="$root" bash -c 'source "$1"; cs_append_inside "$2" echo new' _ \
+        "$SCRIPT_DIR/../hooks/cs-shared.sh" "$root/sess/.cs/private/sub/x.log" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a .cs below the link is not the session either" || return 1
+    assert_not_exists "$root/other/sub/x.log" "nothing is written below the link" || return 1
 }
 
 # Every append is checked: a file that passed once and was then replaced by
