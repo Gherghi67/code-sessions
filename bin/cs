@@ -1642,7 +1642,8 @@ cs_settings_check() {  # file
 # apart. A missing or zero-byte file reads as {}; a file cs_settings_check
 # refuses, or a command whose output is not JSON, leaves the file as it was.
 # When the content changes, the file as it was is first copied beside it as
-# <file>.cs-bak.<UTC stamp> (.1, .2 ... after a name already taken), mode
+# <file>.cs-bak.<UTC stamp> (.1, .2 ... numbered past the highest taken for
+# that stamp, so a name pruning freed is never reused), mode
 # kept, then replaced through cs_write_atomic; unchanged content writes
 # nothing, so no backup either. Every changing write keeps one, and then the
 # five newest backups are kept and older ones removed. Returns 0 written or
@@ -1664,7 +1665,7 @@ cs_settings_update() {  # file, command [args...]
 # cs_settings_update's work, run while it holds the lock.
 # shellcheck disable=SC2034  # CS_SETTINGS_ERROR is read by the callers in cs and install.sh
 _cs_settings_rewrite() {  # file, command [args...]
-    local file="$1" current="{}" updated stamp backup n=1
+    local file="$1" current="{}" updated stamp backup n=0 taken="" f k
     shift
     cs_settings_check "$file" || return 1
     if [ -s "$file" ]; then
@@ -1682,10 +1683,27 @@ _cs_settings_rewrite() {  # file, command [args...]
     if [ -e "$file" ]; then
         stamp=$(date -u +%Y%m%dT%H%M%SZ)
         backup="$file.cs-bak.$stamp"
-        while [ -e "$backup" ] || [ -L "$backup" ]; do
-            backup="$file.cs-bak.$stamp.$n"
-            n=$((n + 1))
+        # The next number is one past the highest this stamp has: pruning
+        # removes the lowest, so filling a freed name would make the newest
+        # backup sort oldest and be pruned at once.
+        for f in "$backup" "$backup".*; do
+            [ -e "$f" ] || [ -L "$f" ] || continue
+            taken=yes
+            k="${f#"$backup"}"
+            k="${k#.}"
+            case "$k" in
+                ''|*[!0-9]*) ;;
+                *) [ $((10#$k)) -gt "$n" ] && n=$((10#$k)) ;;
+            esac
         done
+        if [ -n "$taken" ]; then
+            n=$((n + 1))
+            backup="$file.cs-bak.$stamp.$n"
+            while [ -e "$backup" ] || [ -L "$backup" ]; do
+                n=$((n + 1))
+                backup="$file.cs-bak.$stamp.$n"
+            done
+        fi
         cp -p "$file" "$backup" 2>/dev/null || {
             CS_SETTINGS_ERROR="could not back up $file to $backup; left it unchanged"
             return 1
