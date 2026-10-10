@@ -1285,7 +1285,7 @@ test_atomic_write_refuses_a_link_with_a_newline_in_its_target() {
     ln -s "t$nl" "$s/.cs/README.md"
     out=$(_atomic_write_in "$s" "$s/.cs/README.md" new 2>&1) || rc=$?
     assert_eq "1" "$rc" "a trailing newline: the write must fail" || return 1
-    assert_eq "cs_write_atomic: $s/.cs/README.md leads to a link with a newline in its target, outside the session $s" "$out" "the refusal names the link" || return 1
+    assert_eq "cs_write_atomic: $s/.cs/README.md leads to a name ending in a newline, outside the session $s" "$out" "the refusal names the link" || return 1
     ln -s "$o" "$s/.cs/d$nl"
     ln -s "d$nl/rc" "$s/.cs/timeline.jsonl"
     rc=0
@@ -1307,6 +1307,13 @@ test_atomic_write_refuses_a_link_with_a_newline_in_its_target() {
     assert_eq "" "$(ls -A "$t/sess$nl")" "nothing lands beside the session" || return 1
     assert_eq "USER-OWNED" "$(cat "$o/rc")" "the target outside is untouched" || return 1
     assert_eq "decoy" "$(cat "$s/.cs/t")" "the decoy is untouched" || return 1
+    mkdir -p "$s/.cs/mid${nl}dir"
+    ln -s "mid${nl}dir/notes${nl}x.md" "$s/.cs/mid.md"
+    _atomic_write_in "$s" "$s/.cs/mid.md" kept \
+        || { echo "  FAIL: a newline inside a name, not at its end, was refused"; return 1; }
+    assert_eq "kept" "$(cat "$s/.cs/mid${nl}dir/notes${nl}x.md")" "the in-session target took the write" || return 1
+    _atomic_write_in "$s" "$s/.cs/mid${nl}dir/direct.md" kept \
+        || { echo "  FAIL: a destination with a newline inside a name was refused"; return 1; }
 }
 
 # A .cs/claude-config leads out only as cs's own link into the vault; a real

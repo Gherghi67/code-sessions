@@ -1444,23 +1444,23 @@ _cs_file_mode() {  # path
 # linked parent counts too. Fails when that directory does not exist, and
 # with status 2 when the path is still a link after 16 hops: the kernel
 # follows more, so where such a write lands is unknown here. Fails with
-# status 3 when the path, a link's target or the directory it names holds a
-# newline: $(...) strips a trailing one, here and in the caller, so the path
-# read would not be the one the kernel follows, and a decoy beside it would
-# pass.
+# status 3 when a name in the path, in a link's target or in the directory it
+# resolves to ends in a newline: $(...) strips a trailing one, here and in the
+# caller, so the path read would not be the one the kernel follows, and a
+# decoy beside it would pass.
 _cs_write_target() {  # path
     local dest="$1" link dir hops=0 nl=$'\n'
-    case "$dest" in *"$nl"*) return 3 ;; esac
+    case "$dest" in *"$nl"/*|*"$nl") return 3 ;; esac
     while [ -L "$dest" ] && [ "$hops" -lt 16 ]; do
         # -n and the x keep a trailing newline that $(...) would strip
         # (macOS readlink adds none of its own to a target ending in one).
         link=$(readlink -n "$dest" && printf x) || return 1
         link=${link%x}
-        case "$link" in *"$nl"*) return 3 ;; esac
         case "$link" in
             /*) dest="$link" ;;
             *) dest="$(dirname "$dest")/$link" ;;
         esac
+        case "$dest" in *"$nl"/*|*"$nl") return 3 ;; esac
         hops=$((hops + 1))
     done
     [ ! -L "$dest" ] || return 2
@@ -1469,7 +1469,7 @@ _cs_write_target() {  # path
     if [ -d "$dest" ]; then
         dir=$(cd -P "$dest" 2>/dev/null && pwd -P && printf x) || return 1
         dir=${dir%"$nl"x}
-        case "$dir" in *"$nl"*) return 3 ;; esac
+        case "$dir" in *"$nl") return 3 ;; esac
         printf '%s\n' "$dir"
         return
     fi
@@ -1541,7 +1541,7 @@ _cs_write_leaves_session() {  # root, path
     real=$(_cs_write_target "$2") || {
         case $? in
             2) real="a chain of more than 16 links" ;;
-            3) real="a link with a newline in its target" ;;
+            3) real="a name ending in a newline" ;;
             *) return 1 ;;
         esac
     }
