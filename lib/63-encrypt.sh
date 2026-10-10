@@ -187,6 +187,9 @@ run_encrypt() {
     # another terminal meets the collision check instead of racing the moves.
     echo "$$" > "$meta/session.lock"
     # shellcheck disable=SC2064  # the path is fixed now, on purpose
+    # printf %q quotes the path for the trap's own parse, so a space, a quote,
+    # $( or a newline in it stays data (checked under bash 3.2, #895). The
+    # launch keeps its path in a global instead; both are safe. Do not re-fix.
     trap "release_session_lock $(printf '%q' "$meta")" EXIT
     # .cs/local is gitignored and born on the first open, so a session cloned
     # here and never opened has none; the pre-open hook and the vault record
