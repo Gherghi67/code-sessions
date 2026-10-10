@@ -1286,6 +1286,31 @@ test('a prompt landing while the zero tick closes the pane stops the /clear', as
   expect(panes.at(-1)).toEqual({ op: 'close', args: { id: PREVIEW_PANE } })
 })
 
+// Once the zero tick has closed the pane and stopped the count, nothing of the
+// mod's waits before the /clear runs, its own /clear hook included: a prompt
+// landing in such a wait would find no count to stop.
+test('after the zero tick closes the pane, the /clear runs before a later prompt', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); percent = 80
+  const order: string[] = []
+  let queries = 0
+  $.ui.panes = () => (++queries === 1 ? Promise.resolve(enginePanes) : new Promise<any>(() => {}))
+  $.command.run = async (args: any) =>
+    hooks['command.run:clear']($, { command: 'clear', args: '', origin: { kind: 'plugin' }, presentation: { layout: 'main', columns: 80 } }, async () => { order.push('clear'); ran.push(args); return { text: '' } })
+  try {
+    await band(); await turnComplete(); await fireAfter()
+    await tick(GRACE_SECONDS - 1)
+    const zero = ticker()!.fn()
+    await new Promise(r => setTimeout(r, 0))
+    order.push('prompt'); await promptSubmit()
+    await Promise.race([zero, new Promise(r => setTimeout(r, 10))])
+  } finally {
+    $.ui.panes = async () => enginePanes
+    $.command.run = async (args: any) => { ran.push(args); return { text: '' } }
+  }
+  expect(order).toEqual(['clear', 'prompt'])
+})
+
 // A ui.close hook that answers without next keeps the pane open, and the close
 // still resolves: the engine's list says whether the pane went.
 test('a close that leaves the pane listed says so, and the /clear still runs', async () => {
