@@ -152,6 +152,18 @@ adopt_session() {  # name, [--yes|-y], in any order
             error "Directory is already adopted as session '$existing_name' (open it with: cs $existing_name)"
         fi
 
+        # An encrypted session's records sit behind links into its vault
+        # (cs -encrypt makes one per CS_VAULT_LINKS name). With the vault
+        # locked they lead nowhere, and setting the session up over them
+        # stops partway, after the state has lost the conversation it names.
+        # Refuse before asking or writing anything.
+        local sub
+        for sub in $CS_VAULT_LINKS; do
+            if [ -L "$target_dir/.cs/$sub" ] && [ ! -e "$target_dir/.cs/$sub" ]; then
+                error "Cannot re-adopt as '$session_name': .cs/$sub points at $(readlink "$target_dir/.cs/$sub"), which is missing (encrypted storage not mounted?). Mount it and run cs -adopt again; nothing was changed."
+            fi
+        done
+
         if [ "$assume_yes" = true ]; then
             :
         elif cs_interactive; then

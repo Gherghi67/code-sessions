@@ -583,17 +583,22 @@ _cs_settings_rewrite() {  # file, command [args...]
         CS_SETTINGS_ERROR="could not write $file; left it unchanged"
         return 1
     }
-    _cs_prune_settings_backups "$file"
+    _cs_prune_settings_backups "$file" "$backup"
 }
 
-# Keeps the five newest of file $1's backups, <file>.cs-bak.<UTC stamp> with an
-# optional .<n>, ordered by stamp and then by n, and removes the rest. A file
-# beside it under any other name, or a link, is not a backup cs wrote and is
-# left alone. A backup rm cannot remove stays, with rm's own message.
-_cs_prune_settings_backups() {  # file
-    local f suffix n
+# Keeps five of file $1's backups, <file>.cs-bak.<UTC stamp> with an
+# optional .<n>, and removes the rest: backup $2, the one this write just
+# took, when given, and the newest of the others by stamp and then by n.
+# $2 is kept by name, not by order, as a clock set back stamps it older than
+# backups already there. A file beside it under any other name, or a link,
+# is not a backup cs wrote and is left alone. A backup rm cannot remove
+# stays, with rm's own message.
+_cs_prune_settings_backups() {  # file, [backup just written]
+    local f suffix n keep=5
+    [ -z "${2:-}" ] || keep=4
     for f in "$1".cs-bak.*; do
         [ -f "$f" ] && [ ! -L "$f" ] || continue
+        [ "$f" != "${2:-}" ] || continue
         suffix="${f#"$1".cs-bak.}"
         case "$suffix" in
             [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z)
@@ -606,7 +611,7 @@ _cs_prune_settings_backups() {  # file
                 esac
                 ;;
         esac
-    done | sort -k1,1 -k2,2n | awk '{ name[NR] = $3 } END { for (i = 1; i <= NR - 5; i++) print name[i] }' \
+    done | sort -k1,1 -k2,2n | awk -v keep="$keep" '{ name[NR] = $3 } END { for (i = 1; i <= NR - keep; i++) print name[i] }' \
         | while IFS= read -r suffix; do
             rm -f -- "$1.cs-bak.$suffix" || true
         done
