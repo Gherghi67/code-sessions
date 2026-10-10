@@ -93,7 +93,7 @@ const $ = {
     invalidate: (event: string) => { invalidated.push(event) },
     toast: (text: string) => { toasts.push(text) },
     open: async (args: any) => { panes.push({ op: 'open', args }) },
-    close: async (args: any) => { panes.push({ op: 'close', args }) },
+    close: async (args: any) => { panes.push({ op: 'close', args }); enginePanes = enginePanes.filter(p => p.id !== args.id) },
     panes: async () => enginePanes,
     ask: async (question: string, options: any) => {
       asks.push({ question, options })
@@ -1240,7 +1240,7 @@ test('a /clear closes a handoff pane the engine still holds, before the /clear r
     await hooks['command.run:clear']($, { command: 'clear', args: '', origin: { kind: 'composer' }, presentation: { layout: 'main', columns: 80 } }, async () => { order.push('run:clear'); return { text: '' } })
     expect(order).toEqual([`close:${PREVIEW_PANE}`, 'run:clear'])
   } finally {
-    $.ui.close = async (args: any) => { panes.push({ op: 'close', args }) }
+    $.ui.close = async (args: any) => { panes.push({ op: 'close', args }); enginePanes = enginePanes.filter(p => p.id !== args.id) }
     $.command.run = async (args: any) => { ran.push(args); return { text: '' } }
   }
 })
@@ -1259,9 +1259,45 @@ test('the /clear waits for the pane close to land', async () => {
     await press
     expect(order).toEqual([`close:${PREVIEW_PANE}`, 'run:clear'])
   } finally {
-    $.ui.close = async (args: any) => { panes.push({ op: 'close', args }) }
+    $.ui.close = async (args: any) => { panes.push({ op: 'close', args }); enginePanes = enginePanes.filter(p => p.id !== args.id) }
     $.command.run = async (args: any) => { ran.push(args); return { text: '' } }
   }
+})
+
+// The zero tick holds the count at zero while it closes the pane: a prompt
+// landing during that close stops the count, and no /clear follows it.
+test('a prompt landing while the zero tick closes the pane stops the /clear', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); percent = 80
+  let land!: () => void
+  $.ui.close = (args: any) => new Promise<void>(resolve => { land = () => { panes.push({ op: 'close', args }); resolve() } })
+  try {
+    await band(); await turnComplete(); await fireAfter()
+    await tick(GRACE_SECONDS - 1)
+    const zero = ticker()!.fn()
+    await new Promise(r => setTimeout(r, 0))
+    await promptSubmit()
+    land()
+    await zero
+  } finally {
+    $.ui.close = async (args: any) => { panes.push({ op: 'close', args }); enginePanes = enginePanes.filter(p => p.id !== args.id) }
+  }
+  expect(ran).toEqual([])
+  expect(panes.at(-1)).toEqual({ op: 'close', args: { id: PREVIEW_PANE } })
+})
+
+// A ui.close hook that answers without next keeps the pane open, and the close
+// still resolves: the engine's list says whether the pane went.
+test('a close that leaves the pane listed says so, and the /clear still runs', async () => {
+  $.ui.close = async (args: any) => { panes.push({ op: 'close', args }) }
+  try {
+    arm(); enginePanes = [{ id: PREVIEW_PANE, title: 'Handoff' }]
+    await findButton(await band()).props.onPress()
+  } finally {
+    $.ui.close = async (args: any) => { panes.push({ op: 'close', args }); enginePanes = enginePanes.filter(p => p.id !== args.id) }
+  }
+  expect(toasts).toEqual(['cs: the handoff pane did not close: a hook kept it open'])
+  expect(ran).toEqual([{ command: 'clear', args: '' }])
 })
 
 // The open is a round trip: a prompt landing while it is in flight stops the
