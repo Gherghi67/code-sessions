@@ -575,6 +575,36 @@ test_drain_falls_back_to_no_state_file_when_idle_cannot_be_written() {
         || { echo "  FAIL: the state file must be gone, which reads as idle"; return 1; }
 }
 
+# A breaker that trips after a pop records idle before it pops: when idle
+# cannot be recorded, the Stop ends with nothing popped and the task last
+# handed out still first. Popping first left "draining" behind, and the next
+# Stop logged a task done that was never handed out. The state file is
+# immutable, so neither the rename over it nor its removal goes through.
+test_drain_pops_nothing_when_a_trip_cannot_record_idle() {
+    qseed "task a" "task b" "task c"
+    printf 'armed\n' > "$(QDIR)/queue.state"
+    drain >/dev/null || true
+    printf '91\n' > "$(QDIR)/context-pct"
+    chflags uchg "$(QDIR)/queue.state" 2>/dev/null || return 77
+    printf 'probe\n' > "$TEST_TMPDIR/rename-probe"
+    if mv "$TEST_TMPDIR/rename-probe" "$(QDIR)/queue.state" 2>/dev/null; then
+        chflags nouchg "$(QDIR)/queue.state" 2>/dev/null || true
+        echo "    SKIP (an immutable file can still be renamed over here)"
+        return 77
+    fi
+    local parked next
+    parked=$(drain) || true
+    rm -f "$(QDIR)/context-pct"
+    next=$(drain) || true
+    chflags nouchg "$(QDIR)/queue.state"
+    assert_eq "approve" "$(jq -r '.decision' <<< "$parked")" "the trip ends the turn" || return 1
+    assert_eq "cs task queue: could not write $(QDIR)/queue.state" "$(jq -r '.systemMessage' <<< "$parked")" \
+        "the user is told which file" || return 1
+    assert_output_contains "$next" "task b" "the next Stop hands out the task after the one handed out" || return 1
+    assert_eq "task a" "$(cat "$(QDIR)/queue.done")" "only the handed-out task is logged done" || return 1
+    assert_eq "2" "$(qlen)" "task b and task c stay queued until handed out" || return 1
+}
+
 test_drain_empties_and_returns_idle() {
     qseed "last task"
     printf 'draining\n' > "$(QDIR)/queue.state"
@@ -732,6 +762,7 @@ run_test test_drain_disarms_when_the_pop_fails
 run_test test_drain_empties_and_returns_idle
 run_test test_drain_reports_a_state_it_cannot_write
 run_test test_drain_falls_back_to_no_state_file_when_idle_cannot_be_written
+run_test test_drain_pops_nothing_when_a_trip_cannot_record_idle
 run_test test_drain_advances_past_a_stale_state_tmp
 run_test test_drain_disarms_after_a_failed_pop_past_a_stale_state_tmp
 run_test test_drain_declined_within_cooldown_falls_through
