@@ -89,14 +89,14 @@ CS_WRITE_QUIET=1
 # The link check on appends and new directories lives in the library too;
 # without it they are made unchecked, as they were before the check existed.
 if ! command -v cs_append_inside >/dev/null 2>&1; then
-    cs_append_inside() { local f="$1"; shift; "$@" >> "$f"; }
-    cs_mkdir_inside() { mkdir -p "$1"; }
+    cs_append_inside() { local f="$1"; shift; { "$@" >> "$f"; } 2>/dev/null; }
+    cs_mkdir_inside() { mkdir -p "$1" 2>/dev/null; }
 fi
 if ! command -v _cs_terminate_jsonl >/dev/null 2>&1; then
     _cs_terminate_jsonl() {
         [ -s "$1" ] || return 0
         [ -n "$(tail -c 1 "$1" 2>/dev/null)" ] || return 0
-        cs_append_inside "$1" printf '\n' 2>/dev/null || true
+        cs_append_inside "$1" printf '\n' || true
     }
 fi
 # Only run in cs sessions

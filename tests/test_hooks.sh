@@ -2842,6 +2842,9 @@ test_lifecycle_hooks_log_into_the_private_dir() {
     rm "$CLAUDE_SESSION_META_DIR/local/session.log"
     mkdir -p "$TEST_TMPDIR/vault/private"
     ln -s "$TEST_TMPDIR/vault/private" "$CLAUDE_SESSION_META_DIR/private"
+    _mark_hand_made_vault "$CLAUDE_SESSION_DIR"
+    # A hand-made vault needs an untracked .cs/local; the fixture's commit took it in.
+    git -C "$CLAUDE_SESSION_DIR" rm -rq --cached --ignore-unmatch .cs/local
 
     echo '{"session_id":"test-123","source":"startup","cwd":"'"$CLAUDE_SESSION_DIR"'","hook_event_name":"SessionStart"}' \
         | bash "$HOOKS_DIR/session-start.sh" >/dev/null 2>&1
@@ -3475,6 +3478,9 @@ test_session_start_arms_the_vault_maildir() {
     session_start_setup
     mkdir -p "$TEST_TMPDIR/vault/private"
     ln -s "$TEST_TMPDIR/vault/private" "$CLAUDE_SESSION_META_DIR/private"
+    _mark_hand_made_vault "$CLAUDE_SESSION_DIR"
+    # A hand-made vault needs an untracked .cs/local; the fixture's commit took it in.
+    git -C "$CLAUDE_SESSION_DIR" rm -rq --cached --ignore-unmatch .cs/local
     local output wp rc=0
     output=$(echo '{"session_id":"s","source":"startup","cwd":"'"$CLAUDE_SESSION_DIR"'","hook_event_name":"SessionStart"}' \
         | bash "$HOOKS_DIR/session-start.sh" 2>/dev/null)

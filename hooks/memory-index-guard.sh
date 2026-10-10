@@ -53,13 +53,13 @@ _need_snapshot() {
 case "${1:-}" in
     snapshot)
         [ -d .cs/memory ] || _die "no .cs/memory here; run from the session root"
-        mkdir -p "$_snapshot_dir" || _die "cannot create $_snapshot_dir"
+        cs_mkdir_inside "$_snapshot_dir" || _die "cannot create $_snapshot_dir"
         # Claude Code writes MEMORY.md with the first entry, so a fresh
         # session's first sweep starts from an empty index.
         if [ -f "$INDEX" ]; then
-            cp "$INDEX" "$SNAPSHOT" || _die "cannot write $SNAPSHOT"
+            cs_write_atomic "$SNAPSHOT" cat "$INDEX" || _die "cannot write $SNAPSHOT"
         else
-            : > "$SNAPSHOT" || _die "cannot write $SNAPSHOT"
+            cs_write_atomic "$SNAPSHOT" : || _die "cannot write $SNAPSHOT"
         fi
         printf 'snapshot: %s\n' "$SNAPSHOT"
         ;;
@@ -95,7 +95,7 @@ case "${1:-}" in
         ;;
     restore)
         _need_snapshot
-        cp "$SNAPSHOT" "$INDEX" || _die "cannot write $INDEX"
+        cs_write_atomic "$INDEX" cat "$SNAPSHOT" || _die "cannot write $INDEX"
         printf 'restored: %s from %s\n' "$INDEX" "$SNAPSHOT"
         ;;
     *)

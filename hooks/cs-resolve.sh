@@ -240,5 +240,5 @@ _cs_session_name() {  # session_dir
 _cs_terminate_jsonl() {  # file
     [ -s "$1" ] || return 0
     [ -n "$(tail -c 1 "$1" 2>/dev/null)" ] || return 0
-    { printf '\n' >> "$1"; } 2>/dev/null || true
+    cs_append_inside "$1" printf '\n' || true
 }

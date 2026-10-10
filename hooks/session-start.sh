@@ -49,6 +49,14 @@ if [ "$_cs_had_e" = 1 ]; then set -e; fi
 if ! command -v cs_private_dir >/dev/null 2>&1; then
     cs_private_dir() { return 1; }
 fi
+# A write this hook cannot make is skipped without a word, and the link check
+# on appends and new directories lives in cs-shared.sh; without the library
+# they are made unchecked, as they were before the check existed.
+CS_WRITE_QUIET=1
+if ! command -v cs_append_inside >/dev/null 2>&1; then
+    cs_append_inside() { local f="$1"; shift; { "$@" >> "$f"; } 2>/dev/null; }
+    cs_mkdir_inside() { mkdir -p "$1" 2>/dev/null; }
+fi
 # Nor whether its handoffs sit in a vault, so no rotation is offered or consumed.
 if ! command -v cs_handoff_dir >/dev/null 2>&1; then
     cs_handoff_dir() { return 1; }
@@ -77,7 +85,7 @@ if ! command -v _cs_terminate_jsonl >/dev/null 2>&1; then
     _cs_terminate_jsonl() {
         [ -s "$1" ] || return 0
         [ -n "$(tail -c 1 "$1" 2>/dev/null)" ] || return 0
-        { printf '\n' >> "$1"; } 2>/dev/null || true
+        cs_append_inside "$1" printf '\n' || true
     }
 fi
 # Not in a cs session, do nothing. Resolves from the env under the CLI and
@@ -154,11 +162,10 @@ fi
 # append into a missing dir would abort this hook under set -e.
 # An encrypted session logs into its vault; while the vault is locked the log
 # goes nowhere, never into .cs/local.
-mkdir -p "$META_DIR/local" 2>/dev/null || true
+cs_mkdir_inside "$META_DIR/local" || true
 if _log_dir=$(cs_private_dir "$META_DIR"); then SESSION_LOG="$_log_dir/session.log"; else SESSION_LOG=/dev/null; fi
-echo "$(date '+%Y-%m-%d %H:%M:%S') - Session started (source: $SOURCE, ID: $SESSION_ID)" >> "$SESSION_LOG"
-echo "  Working directory: $CWD" >> "$SESSION_LOG"
-echo "" >> "$SESSION_LOG"
+cs_append_inside "$SESSION_LOG" printf '%s\n' "$(date '+%Y-%m-%d %H:%M:%S') - Session started (source: $SOURCE, ID: $SESSION_ID)" \
+    "  Working directory: $CWD" "" || true
 
 
 # Auto-pull and crash recovery only on fresh start or resume
@@ -280,8 +287,8 @@ if git -C "$SESSION_DIR" rev-parse --git-dir >/dev/null 2>&1; then
                 fi
                 CRASH_CONTEXT="${CRASH_HEAD} WARNING: ${CRASH_WHY} A blanket restore would overwrite committed work with a divergent snapshot, so it is NOT offered. Inspect and restore per file, e.g.: git -C \"$SESSION_DIR\" diff HEAD $SHADOW_REF -- <file> then git -C \"$SESSION_DIR\" checkout $SHADOW_REF -- <file>\nTo discard the snapshot once reviewed, run: git -C \"$SESSION_DIR\" update-ref -d $SHADOW_REF"
             fi
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Crash recovery: found ${CRASH_FILE_COUNT} unsaved file(s), awaiting user decision" \
-                >> "$SESSION_LOG"
+            cs_append_inside "$SESSION_LOG" \
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] Crash recovery: found ${CRASH_FILE_COUNT} unsaved file(s), awaiting user decision" || true
         else
             # No actual changes — just clean up the orphaned ref
             git -C "$SESSION_DIR" update-ref -d "$SHADOW_REF" 2>/dev/null || true
@@ -374,7 +381,7 @@ EOF
 # Atomic and serialised against cs's own writer through cs_local_state_set.
 STATE_FILE="$META_DIR/local/state"
 local_state_set() {
-    mkdir -p "$META_DIR/local"
+    cs_mkdir_inside "$META_DIR/local" || return 1
     cs_local_state_set "$STATE_FILE" "$1" "$2"
 }
 
@@ -446,7 +453,7 @@ if [ "$IS_LEAD" = 1 ] && [[ "$SESSION_ID" =~ $UUID_RE ]]; then
     RECORDED_UUID=$(awk '/^claude_session_id:/ { print $2; exit }' "$STATE_FILE" 2>/dev/null || true)
     if [ "$RECORDED_UUID" != "$SESSION_ID" ]; then
         local_state_set claude_session_id "$SESSION_ID" \
-            && echo "$(date '+%Y-%m-%d %H:%M:%S') - Rebound claude_session_id: ${RECORDED_UUID:-none} -> $SESSION_ID" >> "$SESSION_LOG"
+            && { cs_append_inside "$SESSION_LOG" echo "$(date '+%Y-%m-%d %H:%M:%S') - Rebound claude_session_id: ${RECORDED_UUID:-none} -> $SESSION_ID" || true; }
         # Named literally: TIMELINE_FILE is not assigned until further down.
         _cs_terminate_jsonl "$META_DIR/timeline.jsonl" 2>/dev/null || true
         # Durable lineage: a UUID change the launch path did not pre-record.
@@ -458,7 +465,7 @@ if [ "$IS_LEAD" = 1 ] && [[ "$SESSION_ID" =~ $UUID_RE ]]; then
         # timeline records that a handoff rotated, never which.
         _public_handoff="$ROTATION_HANDOFF"
         [ "$HANDOFF_REL" = ".cs/handoffs" ] || _public_handoff=""
-        { jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        cs_append_inside "$META_DIR/timeline.jsonl" jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
                --arg from "${RECORDED_UUID:-}" \
                --arg to "$SESSION_ID" \
                --arg handoff "$ROTATION_HANDOFF" \
@@ -466,7 +473,7 @@ if [ "$IS_LEAD" = 1 ] && [[ "$SESSION_ID" =~ $UUID_RE ]]; then
                '{ts: $ts, event: "rotated", from: $from, to: $to,
                  reason: (if $handoff == "" then "rebind" else "handoff" end)}
                 + (if $name == "" then {} else {handoff: $name} end)' \
-            >> "$META_DIR/timeline.jsonl"; } 2>/dev/null || true
+            || true
         # Follow the autosave ref to the new UUID so a future crash of this
         # (continued) conversation is recoverable under its live identity. A
         # rebind is a clean continuation, so there is no crash to recover here.
@@ -501,13 +508,13 @@ fi
 TIMELINE_FILE="$META_DIR/timeline.jsonl"
 TIMELINE_BRANCH=$(git -C "$SESSION_DIR" branch --show-current 2>/dev/null || echo "")
 _cs_terminate_jsonl "$TIMELINE_FILE" 2>/dev/null || true
-{ jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+cs_append_inside "$TIMELINE_FILE" jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
        --arg event "started" \
        --arg source "$SOURCE" \
        --arg session_id "$SESSION_ID" \
        --arg branch "$TIMELINE_BRANCH" \
        '{ts: $ts, event: $event, source: $source, session_id: $session_id, branch: $branch}' \
-    >> "$TIMELINE_FILE"; } 2>/dev/null || true
+    || true
 
 # Update last_resumed in local state on resume
 if [ "$SOURCE" = "resume" ]; then
@@ -622,7 +629,7 @@ if [ "$SOURCE" = "resume" ] && git -C "$SESSION_DIR" rev-parse --git-dir >/dev/n
     fi
 
     # Per-actor digest: shared memory/narrative activity since this actor last looked.
-    mkdir -p "$META_DIR/local" 2>/dev/null || true
+    cs_mkdir_inside "$META_DIR/local" || true
     WATERMARK_FILE="$META_DIR/local/watermark"
     LAST_SEEN=""
     [ -f "$WATERMARK_FILE" ] && LAST_SEEN=$(cat "$WATERMARK_FILE" 2>/dev/null || true)
@@ -687,7 +694,7 @@ NUMSTAT
         [ -n "$DELTA_LINE" ] && DYNAMIC="${DYNAMIC}${DELTA_LINE}${_NL}"
     fi
     # Advance the watermark to current HEAD (also seeds it on first resume).
-    [ -n "$HEAD_SHA" ] && echo "$HEAD_SHA" > "$WATERMARK_FILE"
+    [ -z "$HEAD_SHA" ] || cs_write_atomic "$WATERMARK_FILE" echo "$HEAD_SHA" || true
 
     # Objective from README.md
     OBJECTIVE=$(sed -n '/^## Objective/,/^## /{/^## Objective/d;/^## /d;/^$/d;p;}' "$META_DIR/README.md" 2>/dev/null | head -1 | sed 's/^\[.*\]$//' || true)
@@ -834,7 +841,7 @@ if [ -n "$ROTATION_HANDOFF" ] && [ "$SOURCE" = "clear" ] && [ "$IS_LEAD" = 1 ] \
     _kick_dir="$META_DIR/local/rotation-kick"
     # The watcher is handed the path with no existence check, and a watch armed
     # on a missing directory never fires again for the process's lifetime.
-    if mkdir -p "$_kick_dir" 2>/dev/null; then
+    if cs_mkdir_inside "$_kick_dir"; then
         ROTATION_KICK="$_kick_dir"
         # A stale marker from a previous rotation would make the FileChanged
         # hook treat this kick as already delivered and exit silently.
@@ -853,8 +860,7 @@ if [ -n "$ROTATION_HANDOFF" ] && [ "$SOURCE" = "clear" ] && [ "$IS_LEAD" = 1 ] \
             # deliberately does not end in .kick, so it does not match the
             # hook's triage.
             _write_kick() {
-                { date +%s > "$_kick_dir/rotation.tmp.$$"; } 2>/dev/null \
-                    && mv "$_kick_dir/rotation.tmp.$$" "$_kick_dir/rotation.kick" 2>/dev/null
+                cs_write_atomic "$_kick_dir/rotation.kick" date +%s
             }
             # Every write lost before the arm leaves the session idle under a
             # notice promising it would continue on its own, so keep writing: a
@@ -893,7 +899,7 @@ elif [ "$SOURCE" = "clear" ] && [ "$IS_LEAD" = 1 ]; then
     # and make the lead's own wake decline.
     _stale_kick="$META_DIR/local/rotation-kick"
     if [ -d "$_stale_kick" ]; then
-        { : > "$_stale_kick/delivered"; } 2>/dev/null || true
+        cs_write_atomic "$_stale_kick/delivered" : || true
     fi
 fi
 
@@ -987,8 +993,8 @@ fi
 # encrypted session); a locked vault arms no watch rather than a plaintext one.
 MAIL_WATCH=""
 if [ "$IS_LEAD" = 1 ] && _mail_base=$(cs_private_dir "$META_DIR") \
-    && mkdir -p "$_mail_base/mail/tmp" "$_mail_base/mail/new" \
-                "$_mail_base/mail/cur" 2>/dev/null; then
+    && cs_mkdir_inside "$_mail_base/mail/tmp" && cs_mkdir_inside "$_mail_base/mail/new" \
+    && cs_mkdir_inside "$_mail_base/mail/cur"; then
     MAIL_WATCH="$_mail_base/mail/new"
 fi
 
@@ -1056,9 +1062,8 @@ _commit_digest "$DIGEST_DIR"
 case "$SESSION_ID" in
     ''|.*|*[!A-Za-z0-9._-]*) ;;
     *)
-        mkdir -p "$META_DIR/local/context-date" 2>/dev/null \
-            && { printf '%s\n' "$CONTEXT_DAY" > "$META_DIR/local/context-date/.$SESSION_ID.$$.tmp"; } 2>/dev/null \
-            && mv "$META_DIR/local/context-date/.$SESSION_ID.$$.tmp" "$META_DIR/local/context-date/$SESSION_ID" 2>/dev/null || true
+        cs_mkdir_inside "$META_DIR/local/context-date" \
+            && cs_write_atomic "$META_DIR/local/context-date/$SESSION_ID" printf '%s\n' "$CONTEXT_DAY" || true
         ;;
 esac
 

@@ -415,11 +415,16 @@ _cs_session_root_of() {  # path
 
 # Append a command's output to a file, unless a link takes the file out of the
 # session it lies in; then name the link on stderr and append nothing.
+# The last file that passed is remembered: a hook appends to one trace many
+# times a run, and each check costs a few forks.
 cs_append_inside() {  # file, command [args...]
     local file="$1" root out; shift
-    if root=$(_cs_session_root_of "$file") && out=$(_cs_write_leaves_session "$root" "$file"); then
-        echo "cs_append_inside: $file leads to $out, outside the session $root" >&2
-        return 1
+    if [ "$file" != "${_CS_APPEND_PASSED:-}" ]; then
+        if root=$(_cs_session_root_of "$file") && out=$(_cs_write_leaves_session "$root" "$file"); then
+            echo "cs_append_inside: $file leads to $out, outside the session $root" >&2
+            return 1
+        fi
+        _CS_APPEND_PASSED="$file"
     fi
     if [ -n "${CS_WRITE_QUIET:-}" ]; then
         { "$@" >> "$file"; } 2>/dev/null

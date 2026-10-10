@@ -542,6 +542,7 @@ test_stage_trace_goes_into_the_private_dir() {
     seed_repo "src/api.ts"
     mkdir -p "$TEST_TMPDIR/vault/private" "$CLAUDE_SESSION_META_DIR/local"
     ln -s "$TEST_TMPDIR/vault/private" "$CLAUDE_SESSION_META_DIR/private"
+    _mark_hand_made_vault "$CLAUDE_SESSION_DIR"
     run_hook "implement a retry wrapper around the fetch call in src/api.ts" >/dev/null 2>&1
     local stages
     stages=$(awk '{print $3}' "$TEST_TMPDIR/vault/private/scope-prompt.trace" 2>/dev/null)
