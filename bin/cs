@@ -3173,10 +3173,10 @@ EOF
 # the same reason, so a link inside it (to another session's plans, say) stays
 # behind; only regular files come over. A failed copy warns and the create
 # goes on; the feature only starts with less context.
-# Each topic copied is recorded in .cs/local/inherited-topics as
-# "<cksum> <bytes> <name>", so the fuse can tell a topic the feature wrote
-# from one it was handed. A name holding a newline is not recorded, and the
-# fuse treats it as the feature's own.
+# Each topic copied is recorded as .cs/local/inherited-topics/<name>, a file
+# holding the copy's "<cksum> <bytes>", so the fuse can tell a topic the
+# feature wrote from one it was handed. One file per topic: the file system
+# keeps any name whole, and nothing has to parse one.
 _copy_base_context() {  # base_meta wt_meta
     local src="$1" dst="$2" f name sum
     for f in "$src"/memory/*.md; do
@@ -3187,9 +3187,9 @@ _copy_base_context() {  # base_meta wt_meta
             warn "could not copy memory/$name from the base"
             continue
         fi
-        case "$name" in *$'\n'*) continue ;; esac
         sum=$(cksum < "$dst/memory/$name") \
-            && printf '%s %s\n' "$sum" "$name" >> "$dst/local/inherited-topics" \
+            && mkdir -p "$dst/local/inherited-topics" \
+            && printf '%s\n' "$sum" > "$dst/local/inherited-topics/$name" \
             || warn "could not record memory/$name as inherited from the base"
     done
     if [ -d "$src/plans" ] && [ ! -L "$src/plans" ]; then
@@ -3231,8 +3231,12 @@ _tree_is_dirty() {
 # when they disagreed, a worktree predating the cs exclude reported blocked on a
 # merge that would have gone straight through.
 _worktree_untracked_at_risk() {  # wt_dir
-    { git -C "$1" ls-files --others --exclude-standard 2>/dev/null
-      git -C "$1" ls-files --others --ignored --exclude-standard 2>/dev/null; } \
+    # -z, then one path per line with a newline inside a name shown as "?":
+    # without it git quotes any name holding a newline or a non-ASCII byte,
+    # and the quote in front hides cs's own files from the patterns below.
+    { git -C "$1" ls-files -z --others --exclude-standard 2>/dev/null
+      git -C "$1" ls-files -z --others --ignored --exclude-standard 2>/dev/null; } \
+        | tr '\n\0' '?\n' \
         | grep -v -e '^\.cs/' -e '^\.claude/settings\.local\.json$' -e '^CLAUDE\.local\.md$' \
             -e '^\.DS_Store$' -e '/\.DS_Store$' \
         || true
@@ -4226,13 +4230,14 @@ _append_missing_memory_pointers() {  # feature_index base_index
 # Says how a feature's topic relates to the copy it started with: "unchanged"
 # or "edited" for a topic the create recorded as inherited, nothing for one
 # the feature wrote itself (or one a create with no record handed over).
+# Fails when the record is there and cannot be read, or the topic cannot be
+# summed: answering "the feature wrote it" then would bring a deleted topic
+# back and call the fuse a success.
 _inherited_topic_state() {  # feature_meta topic_file
-    local record="$1/local/inherited-topics" was now
-    [ -f "$record" ] || return 0
-    was=$(TOPIC="${2##*/}" awk '{ sum = $1 " " $2; sub(/^[^ ]+ [^ ]+ /, "")
-            if ($0 == ENVIRON["TOPIC"]) { print sum; exit } }' "$record") || return 0
-    [ -n "$was" ] || return 0
-    now=$(cksum < "$2") || return 0
+    local record="$1/local/inherited-topics/${2##*/}" was now
+    [ -e "$record" ] || [ -L "$record" ] || return 0
+    was=$(cat "$record") || return 1
+    now=$(cksum < "$2") || return 1
     if [ "$now" = "$was" ]; then echo unchanged; else echo edited; fi
 }
 
@@ -4307,7 +4312,10 @@ fuse_session_records() {
             # A topic the feature inherited and the base no longer has was
             # deleted in the base. Untouched, it stays deleted; edited, the
             # feature's text comes back and the user is told.
-            inherited=$(_inherited_topic_state "$src" "$f")
+            if ! inherited=$(_inherited_topic_state "$src" "$f"); then
+                warn "could not read what the feature inherited for memory/$base, so cs cannot tell whether the base deleted it"
+                return 1
+            fi
             [ "$inherited" != unchanged ] || continue
             cs_write_atomic "$dst/memory/$base" cat "$f" || return 1
             [ "$inherited" != edited ] \
