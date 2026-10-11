@@ -1406,7 +1406,7 @@ test_age_add_refuses_what_is_not_a_key() {
     local refusal="Error: Invalid public key. Must be a file, an age1... key or a quoted \"ssh-ed25519 <key>\""
     local candidate out rc
     printf 'not a key\n' > "$TEST_TMPDIR/junk.pub"
-    for candidate in "hello" "ssh-ed25519" "ssh-ed25519 not*base64" "ssh-rsa AAAAB3NzaC1yc2E" "$TEST_TMPDIR/junk.pub"; do
+    for candidate in "hello" "ssh-ed25519" "ssh-ed25519 " "ssh-ed25519 not*base64" "ssh-rsa AAAAB3NzaC1yc2E" "$TEST_TMPDIR/junk.pub"; do
         rc=0
         out=$("$CS_SECRETS_BIN" age add "$candidate" 2>&1) || rc=$?
         assert_eq "1" "$rc" "age add exits 1 for '$candidate'" || return 1
