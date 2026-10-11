@@ -1416,6 +1416,42 @@ test_age_add_refuses_what_is_not_a_key() {
     done
 }
 
+_stage_machine_ssh_key() {  # this machine's ssh key under the test HOME
+    mkdir -p "$HOME/.cs-secrets" && chmod 700 "$HOME/.cs-secrets" || return 1
+    ssh-keygen -q -t ed25519 -N '' -C "test@example.com" -f "$HOME/.cs-secrets/id_ed25519" </dev/null || return 1
+}
+
+# A peer encrypts to whichever of this machine's keys it has pinned: the ssh
+# key, or the age key from before the ssh key existed. Both stay readable.
+test_import_file_reads_a_file_encrypted_to_this_machines_ssh_key() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    _stage_machine_ssh_key || { echo "  FAIL: could not stage the machine ssh key"; return 1; }
+    printf '%s\n' '{"from_peer":"vp"}' \
+        | age -r "$(cat "$HOME/.cs-secrets/id_ed25519.pub")" -o "$meta/secrets.peer@example.age" \
+        || { echo "  FAIL: fixture: age could not encrypt to the ssh key"; return 1; }
+
+    local out rc=0
+    out=$("$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_eq "vp" "$("$CS_SECRETS_BIN" get from_peer 2>&1)" "the secret is imported (import said: $rc $out)" || return 1
+}
+
+test_import_file_still_reads_a_file_encrypted_to_the_earlier_age_key() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    _stage_machine_ssh_key || { echo "  FAIL: could not stage the machine ssh key"; return 1; }
+    age-keygen -o "$HOME/.cs-secrets/age.key" 2>/dev/null || { echo "  FAIL: fixture: age-keygen failed"; return 1; }
+    printf '%s\n' '{"from_before":"vb"}' \
+        | age -r "$(age-keygen -y "$HOME/.cs-secrets/age.key")" -o "$meta/secrets.peer@example.age" \
+        || { echo "  FAIL: fixture: age could not encrypt to the age key"; return 1; }
+
+    local out rc=0
+    out=$("$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_eq "vb" "$("$CS_SECRETS_BIN" get from_before 2>&1)" "the secret is imported (import said: $rc $out)" || return 1
+}
+
 test_import_file_merges_all_machines_and_legacy() {
     local meta="$CS_SESSIONS_ROOT/test-session/.cs"
     _seed_enc_sync_file "$meta/secrets.machine-b.enc" '{"from_machine_b":"vb"}' || return 1
@@ -2501,5 +2537,7 @@ run_test test_age_remove_drops_the_pin
 run_test test_age_add_takes_an_ssh_ed25519_key_file
 run_test test_age_add_takes_a_raw_ssh_ed25519_key
 run_test test_age_add_refuses_what_is_not_a_key
+run_test test_import_file_reads_a_file_encrypted_to_this_machines_ssh_key
+run_test test_import_file_still_reads_a_file_encrypted_to_the_earlier_age_key
 
 report_results
