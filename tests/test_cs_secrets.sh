@@ -1492,6 +1492,28 @@ test_import_file_refuses_two_names_that_export_as_one_variable() {
     _assert_secret_absent other "a name beside the pair is not stored either" || return 1
 }
 
+# The same pair with one half already stored: the local secret stays, the
+# incoming one is refused, and export keeps working.
+test_import_file_refuses_a_name_that_shares_a_variable_with_a_stored_secret() {
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    "$CS_SECRETS_BIN" set api_key "vlocal" >/dev/null 2>&1 || { echo "  FAIL: fixture: set failed"; return 1; }
+    _seed_enc_sync_file "$meta/secrets.machine-a.enc" '{"api-key":"va","other":"vo"}' || return 1
+
+    local mode out rc
+    for mode in "" --replace; do
+        rc=0
+        # shellcheck disable=SC2086  # an empty mode is no argument
+        out=$(PATH="$(_ageless_path)" "$CS_SECRETS_BIN" import-file $mode 2>&1) || rc=$?
+        assert_eq "1" "$rc" "the import exits 1 (mode '$mode')" || return 1
+        assert_eq "Error: Aborting import for session 'test-session': secrets 'api-key' and 'api_key' both export as CS_SECRET_API_KEY. Nothing was imported. Remove one of them where it is stored, then export and import again." \
+            "$out" "the refusal names the incoming and the stored secret (mode '$mode')" || return 1
+        _assert_secret_absent api-key "the incoming name is not stored (mode '$mode')" || return 1
+        _assert_secret_absent other "a name beside it is not stored either (mode '$mode')" || return 1
+        assert_eq "vlocal" "$("$CS_SECRETS_BIN" get api_key 2>&1)" "the stored secret is untouched (mode '$mode')" || return 1
+    done
+    assert_eq "export CS_SECRET_API_KEY=vlocal" "$("$CS_SECRETS_BIN" export 2>&1)" "export still works" || return 1
+}
+
 # Defense in depth: a store written before the check existed must still not be
 # able to execute. Poison the encrypted store directly, bypassing `set`.
 test_export_refuses_a_hostile_name_already_in_the_store() {
@@ -2312,6 +2334,7 @@ run_test test_export_namespaces_every_variable
 run_test test_export_namespace_neutralises_dangerous_names
 run_test test_import_file_refuses_a_hostile_key_name
 run_test test_import_file_refuses_two_names_that_export_as_one_variable
+run_test test_import_file_refuses_a_name_that_shares_a_variable_with_a_stored_secret
 run_test test_export_refuses_a_hostile_name_already_in_the_store
 run_test test_import_file_aborts_when_the_store_write_fails
 run_test test_import_file_skips_undecryptable_files
