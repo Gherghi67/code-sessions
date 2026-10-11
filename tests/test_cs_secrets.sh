@@ -501,6 +501,27 @@ test_age_add_refuses_a_directory_that_is_not_a_session() {
     assert_not_exists "$HOME/.cs-secrets/sessions/plain" "no age state is created for it" || return 1
 }
 
+# A session is one entry of the sessions root, so a name that is a path is
+# refused even where the path leads to a directory holding .cs: ".." would put
+# the recipients in the root's parent and the pin list in ~/.cs-secrets itself,
+# where no session removal looks.
+test_age_add_refuses_a_name_that_is_a_path() {
+    local name out rc
+    mkdir -p "$TEST_TMPDIR/.cs" "$CS_SESSIONS_ROOT/test-session/nested/.cs"
+    for name in .. . test-session/nested test-session/; do
+        rc=0
+        out=$("$CS_SECRETS_BIN" --session "$name" age add age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq0000000 2>&1) || rc=$?
+        assert_eq "1" "$rc" "age add exits 1 for '$name'" || return 1
+        assert_eq "Error: No session named '$name' in $CS_SESSIONS_ROOT" "$out" "the refusal names '$name' and the root" || return 1
+    done
+    assert_not_exists "$TEST_TMPDIR/.cs/age-recipients" "nothing is written beside the sessions root" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/.cs" "nothing is written into the sessions root" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/test-session/nested/.cs/age-recipients" "nothing is written into the nested directory" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/test-session/.cs/age-recipients" "nothing is written into the session through a trailing slash" || return 1
+    assert_not_exists "$HOME/.cs-secrets/age-trusted" "no pin list lands in ~/.cs-secrets itself" || return 1
+    assert_not_exists "$HOME/.cs-secrets/sessions" "no age state is created" || return 1
+}
+
 test_age_remove_refuses_a_session_the_root_does_not_have() {
     local out rc=0
     out=$("$CS_SECRETS_BIN" --session ghost age remove peer 2>&1) || rc=$?
@@ -2212,6 +2233,7 @@ run_test test_purge_removes_all
 run_test test_purge_drops_the_sessions_age_state
 run_test test_age_add_refuses_a_session_the_root_does_not_have
 run_test test_age_add_refuses_a_directory_that_is_not_a_session
+run_test test_age_add_refuses_a_name_that_is_a_path
 run_test test_age_remove_refuses_a_session_the_root_does_not_have
 run_test test_export_file_refuses_a_session_the_root_does_not_have
 run_test test_purge_empty_session
