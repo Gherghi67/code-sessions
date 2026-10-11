@@ -1733,6 +1733,30 @@ test_retire_never_fuses_records_through_a_landed_timeline_link() {
 
 run_test test_retire_never_fuses_records_through_a_landed_timeline_link
 
+# A feature can commit .cs itself as a link. Once it lands, the base's whole
+# metadata directory is that link, and the retire's progress record must not
+# create its directory on the far side.
+test_retire_never_creates_the_progress_directory_through_a_landed_cs_link() {
+    local sha base_dir wt output status=0 outside="$TEST_TMPDIR/outside-cs"
+    base_dir=$(create_test_session_with_git "myproj")
+    cs_launch "myproj@fix-auth"
+    wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    mkdir "$outside"
+    (cd "$wt" && git rm -rq --cached .cs && mv .cs "$TEST_TMPDIR/feature-cs" && ln -s "$outside" .cs \
+        && git add .cs && git commit -q -m "link the metadata out")
+    sha=$(git -C "$wt" rev-parse HEAD)
+    rm "$wt/.cs" && mv "$TEST_TMPDIR/feature-cs" "$wt/.cs"
+    git -C "$wt" checkout -q --detach HEAD~1 2>/dev/null
+    output=$("$CS_BIN" myproj -integrate-feature fix-auth "$sha" -- true 2>&1) || status=$?
+    assert_eq "0" "$status" "the landing itself succeeds: $output" || return 1
+    assert_symlink "$base_dir/.cs" "the feature's link landed in the base" || return 1
+    assert_eq "" "$(ls -A "$outside")" "integrate created nothing outside the session" || return 1
+    "$CS_BIN" myproj -retire-feature fix-auth "$sha" >/dev/null 2>&1
+    assert_eq "" "$(ls -A "$outside")" "retire created nothing outside the session" || return 1
+}
+
+run_test test_retire_never_creates_the_progress_directory_through_a_landed_cs_link
+
 # merge=ours keeps the base's MEMORY.md, but a pointer to a topic only the
 # feature wrote must still reach the base: appended once, after the base's
 # own lines, and a pointer both sides name is not doubled.
