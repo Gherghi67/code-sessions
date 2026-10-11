@@ -1504,6 +1504,25 @@ test_first_export_makes_this_machines_ssh_key_the_recipient() {
     assert_not_exists "$HOME/.cs-secrets/age.key" "no age key is created" || return 1
 }
 
+# Machines upgrade one at a time, so one sync file is encrypted to age keys
+# and ssh keys together.
+test_export_encrypts_to_age_and_ssh_recipients_together() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f; f="$meta/secrets.$(_machine_id).age"
+    _make_age_identity older || { echo "  FAIL: could not create a test age identity"; return 1; }
+    _make_ssh_identity newer || { echo "  FAIL: could not create a test ssh identity"; return 1; }
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
+    "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/older.pub" >/dev/null 2>&1 || { echo "  FAIL: age add of the age key failed"; return 1; }
+    "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/newer.ssh.pub" >/dev/null 2>&1 || { echo "  FAIL: age add of the ssh key failed"; return 1; }
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: export to both failed"; return 1; }
+    _age_decrypts_to "$TEST_TMPDIR/older.key" "$f" "sk_123" || { echo "  FAIL: the age recipient cannot decrypt"; return 1; }
+    _age_decrypts_to "$TEST_TMPDIR/newer.ssh" "$f" "sk_123" || { echo "  FAIL: the ssh recipient cannot decrypt"; return 1; }
+    _age_decrypts_to "$HOME/.cs-secrets/id_ed25519" "$f" "sk_123" || { echo "  FAIL: this machine cannot decrypt its own file"; return 1; }
+}
+
 test_import_file_merges_all_machines_and_legacy() {
     local meta="$CS_SESSIONS_ROOT/test-session/.cs"
     _seed_enc_sync_file "$meta/secrets.machine-b.enc" '{"from_machine_b":"vb"}' || return 1
@@ -2594,5 +2613,6 @@ run_test test_import_file_still_reads_a_file_encrypted_to_the_earlier_age_key
 run_test test_age_init_creates_this_machines_ssh_key
 run_test test_age_init_names_a_missing_ssh_keygen
 run_test test_first_export_makes_this_machines_ssh_key_the_recipient
+run_test test_export_encrypts_to_age_and_ssh_recipients_together
 
 report_results
