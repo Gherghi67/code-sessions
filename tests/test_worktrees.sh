@@ -1980,6 +1980,44 @@ test_retire_ignored_mode_appends_feature_memory_pointers() {
 
 run_test test_retire_ignored_mode_appends_feature_memory_pointers
 
+# An ignored-mode feature starts with a copy of the base's topics. One the
+# base deleted while the feature was open, and the feature never touched, is
+# not a topic the feature wrote: the fuse leaves it deleted, pointer and all.
+_ignored_base_with_two_topics() {  # prints nothing; base at $CS_SESSIONS_ROOT/proj
+    local base_dir="$CS_SESSIONS_ROOT/proj"
+    mkdir -p "$base_dir/.cs"/{memory,local}
+    printf '%s\n' '- [Gone](gone.md): a topic' '- [Kept](kept.md): a topic' > "$base_dir/.cs/memory/MEMORY.md"
+    echo "gone topic" > "$base_dir/.cs/memory/gone.md"
+    echo "kept topic" > "$base_dir/.cs/memory/kept.md"
+    echo "# P" > "$base_dir/README.md"
+    printf '.cs/\n.claude/settings.local.json\n' > "$base_dir/.gitignore"
+    (cd "$base_dir" && git init -q && git config core.autocrlf false && git add -A && git commit -q -m init)
+}
+
+test_retire_ignored_mode_leaves_a_base_deleted_topic_deleted() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    assert_eq "gone topic" "$(cat "$wt/.cs/memory/gone.md")" "the feature inherited the topic" || return 1
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    echo "feature topic" > "$wt/.cs/memory/new.md"
+    printf '%s\n' '- [New](new.md): feature-side' >> "$wt/.cs/memory/MEMORY.md"
+    rm "$base_dir/.cs/memory/gone.md"
+    printf '%s\n' '- [Kept](kept.md): a topic' > "$base_dir/.cs/memory/MEMORY.md"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "retire exits 0: $output" || return 1
+    assert_file_not_exists "$base_dir/.cs/memory/gone.md" "the deleted topic stays deleted" || return 1
+    assert_eq "feature topic" "$(cat "$base_dir/.cs/memory/new.md")" "a topic the feature wrote still lands" || return 1
+    assert_eq "- [Kept](kept.md): a topic
+- [New](new.md): feature-side" "$(cat "$base_dir/.cs/memory/MEMORY.md")" \
+        "no pointer comes back for the deleted topic" || return 1
+    assert_output_not_contains "$output" "gone.md" "an untouched deleted topic is not mentioned" || return 1
+}
+
+run_test test_retire_ignored_mode_leaves_a_base_deleted_topic_deleted
+
 test_retire_fuse_survives_a_torn_timeline_tail() {
     # A crash mid-append leaves a last line with no newline. Appending onto it
     # splices two records into one, and the reader's tolerant `fromjson? //
