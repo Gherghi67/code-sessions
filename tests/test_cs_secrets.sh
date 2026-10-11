@@ -1579,6 +1579,23 @@ test_export_switches_this_machine_to_its_ssh_key() {
     assert_file_not_exists "$TEST_TMPDIR/peer-after.age" "the refused export writes nothing" || return 1
 }
 
+# With age on the machine an export encrypts to keys, and it needs ssh-keygen
+# for this machine's key. Without it the export stops and says so; it does not
+# fall back to a password file.
+test_first_export_without_ssh_keygen_refuses() {
+    _use_real_age || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local bindir="$TEST_TMPDIR/no-ssh-keygen" out rc=0
+    link_path_without "$bindir" 'ssh-keygen'
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    out=$(PATH="$bindir" "$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the export exits 1" || return 1
+    assert_eq "Error: ssh-keygen not found. cs keeps this machine's key as an ssh-ed25519 pair and needs OpenSSH 8.0 or later to create it and to sign with it." \
+        "$out" "the refusal names ssh-keygen" || return 1
+    assert_eq "" "$(find "$meta" -name 'secrets.*')" "no sync file of either kind is written" || return 1
+    assert_eq "" "$(find "$meta" -name '*.pub')" "no recipient file is written" || return 1
+}
+
 test_import_file_merges_all_machines_and_legacy() {
     local meta="$CS_SESSIONS_ROOT/test-session/.cs"
     _seed_enc_sync_file "$meta/secrets.machine-b.enc" '{"from_machine_b":"vb"}' || return 1
@@ -2671,5 +2688,6 @@ run_test test_age_init_names_a_missing_ssh_keygen
 run_test test_first_export_makes_this_machines_ssh_key_the_recipient
 run_test test_export_encrypts_to_age_and_ssh_recipients_together
 run_test test_export_switches_this_machine_to_its_ssh_key
+run_test test_first_export_without_ssh_keygen_refuses
 
 report_results
