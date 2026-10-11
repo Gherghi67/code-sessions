@@ -26,6 +26,9 @@ setup() {
     # exist, which the CS_AGE_BIN seam reads as "no age on this machine".
     export CS_AGE_BIN="$TEST_TMPDIR/no-such-age"
     mkdir -p "$CS_SESSIONS_ROOT" "$HOME"
+    # The session CLAUDE_SESSION_NAME names: export-file and the age commands
+    # refuse a name the sessions root does not have.
+    mkdir -p "$CS_SESSIONS_ROOT/test-session/.cs"
 }
 
 teardown() {
@@ -486,6 +489,18 @@ test_age_add_refuses_a_session_the_root_does_not_have() {
     _assert_no_trace_of_session ghost || return 1
 }
 
+# A directory in the sessions root that holds no .cs is not a session, and an
+# age add must not make it look like one.
+test_age_add_refuses_a_directory_that_is_not_a_session() {
+    local out rc=0
+    mkdir -p "$CS_SESSIONS_ROOT/plain"
+    out=$("$CS_SECRETS_BIN" --session plain age add age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq0000000 2>&1) || rc=$?
+    assert_eq "1" "$rc" "age add exits 1" || return 1
+    assert_eq "Error: No session named 'plain' in $CS_SESSIONS_ROOT" "$out" "the refusal names the session and the root" || return 1
+    assert_eq "" "$(ls -A "$CS_SESSIONS_ROOT/plain")" "the directory stays empty" || return 1
+    assert_not_exists "$HOME/.cs-secrets/sessions/plain" "no age state is created for it" || return 1
+}
+
 test_age_remove_refuses_a_session_the_root_does_not_have() {
     local out rc=0
     out=$("$CS_SECRETS_BIN" --session ghost age remove peer 2>&1) || rc=$?
@@ -849,6 +864,8 @@ test_picker_rejects_invalid_choice() {
 
 test_picker_empty_root_errors() {
     unset CLAUDE_SESSION_NAME CS_SECRETS_SESSION
+    # setup stages test-session; this test is about a root with no session.
+    rm -rf "$CS_SESSIONS_ROOT/test-session"
     local out
     if out=$(printf '1\n' | CS_ASSUME_TTY=1 "$CS_SECRETS_BIN" list 2>&1); then
         echo "  FAIL: empty sessions root should error"
@@ -2194,6 +2211,7 @@ run_test test_delete_preserves_other_secrets
 run_test test_purge_removes_all
 run_test test_purge_drops_the_sessions_age_state
 run_test test_age_add_refuses_a_session_the_root_does_not_have
+run_test test_age_add_refuses_a_directory_that_is_not_a_session
 run_test test_age_remove_refuses_a_session_the_root_does_not_have
 run_test test_export_file_refuses_a_session_the_root_does_not_have
 run_test test_purge_empty_session

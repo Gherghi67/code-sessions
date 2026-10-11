@@ -2608,9 +2608,10 @@ fn drop_age_state(name: &str) -> Result<Option<PathBuf>, String> {
     // through a link the removal would land on a same-name directory
     // elsewhere. Reading through the link is harmless, so only a state that is
     // there is named as left behind. An unsearchable parent fails the read
-    // below with a permission error, never NotFound. A concurrent
-    // `cs-secrets age add` can recreate the state after the removal, since its
-    // lock lives inside the dir removed here; that race is accepted.
+    // below with a permission error, never NotFound. cs-secrets refuses an age
+    // command for a session the sessions root does not have, so only one that
+    // passed that check before the delete can recreate the state after it (its
+    // lock lives inside the dir removed here); that window is accepted.
     for parent in dir.ancestors().skip(1).take(2) {
         match parent.symlink_metadata() {
             Ok(meta) if meta.file_type().is_symlink() => {
