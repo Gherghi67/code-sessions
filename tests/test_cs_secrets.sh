@@ -1709,6 +1709,73 @@ test_export_refuses_when_this_machines_recipient_file_holds_another_key() {
     assert_eq "" "$(find "$meta" -name 'secrets.*')" "no sync file is written" || return 1
 }
 
+# An export that has nothing new to say leaves the file and its signature
+# byte for byte as they were.
+test_export_leaves_a_current_signed_file_alone() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f; f="$meta/secrets.$(_machine_id).age"
+    local out rc=0
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
+    cp "$f" "$TEST_TMPDIR/before.age"
+    cp "$f.sig" "$TEST_TMPDIR/before.sig"
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the second export exits 0" || return 1
+    assert_eq "No secret changes to export for session: test-session (secrets.$(_machine_id).age is up to date)" "$out" \
+        "it reports nothing to export" || return 1
+    cmp -s "$f" "$TEST_TMPDIR/before.age" || { echo "  FAIL: the sync file was rewritten"; return 1; }
+    cmp -s "$f.sig" "$TEST_TMPDIR/before.sig" || { echo "  FAIL: the signature was rewritten"; return 1; }
+}
+
+# Signing needs ssh-keygen on every export, not only the first.
+test_later_export_without_ssh_keygen_refuses_and_keeps_the_signed_file() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f; f="$meta/secrets.$(_machine_id).age"
+    local bindir="$TEST_TMPDIR/no-ssh-keygen" out rc=0
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
+    cp "$f" "$TEST_TMPDIR/before.age"
+    cp "$f.sig" "$TEST_TMPDIR/before.sig"
+    "$CS_SECRETS_BIN" set api_key "sk_456" >/dev/null 2>&1 || return 1
+    link_path_without "$bindir" 'ssh-keygen'
+    out=$(PATH="$bindir" "$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the export exits 1" || return 1
+    assert_eq "Error: ssh-keygen not found. cs keeps this machine's key as an ssh-ed25519 pair and needs OpenSSH 8.0 or later to create it and to sign with it." \
+        "$out" "the refusal names ssh-keygen" || return 1
+    cmp -s "$f" "$TEST_TMPDIR/before.age" || { echo "  FAIL: the sync file was changed"; return 1; }
+    cmp -s "$f.sig" "$TEST_TMPDIR/before.sig" || { echo "  FAIL: the signature was changed"; return 1; }
+    assert_eq "" "$(find "$meta" -name '.secrets.*')" "no temp file is left" || return 1
+    assert_eq "" "$(find "$meta" -name '*.enc')" "no password file is written instead" || return 1
+}
+
+test_export_to_a_named_file_signs_beside_it() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local named="$TEST_TMPDIR/out/named.age"
+    mkdir -p "$TEST_TMPDIR/out"
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file "$named" >/dev/null 2>&1 || { echo "  FAIL: export to a named file failed"; return 1; }
+    _sync_file_is_signed_by "$HOME/.cs-secrets/id_ed25519.pub" "$named" test-session \
+        || { echo "  FAIL: the named file has no verifying signature beside it"; return 1; }
+    assert_eq "" "$(find "$meta" -name 'secrets.*')" "nothing is written at the default place" || return 1
+}
+
+# A password file's trust is the password: whoever holds it can write one. It
+# carries no signature.
+test_password_export_writes_no_signature() {
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: password export failed"; return 1; }
+    assert_file_exists "$meta/secrets.$(_machine_id).enc" "the password file is written" || return 1
+    assert_eq "" "$(find "$meta" -name '*.sig')" "no signature is written" || return 1
+    assert_not_exists "$HOME/.cs-secrets/id_ed25519" "no machine key is made for a password export" || return 1
+}
+
 test_import_file_merges_all_machines_and_legacy() {
     local meta="$CS_SESSIONS_ROOT/test-session/.cs"
     _seed_enc_sync_file "$meta/secrets.machine-b.enc" '{"from_machine_b":"vb"}' || return 1
@@ -2806,5 +2873,9 @@ run_test test_export_signs_the_sync_file
 run_test test_export_replaces_a_signature_that_does_not_verify
 run_test test_export_adds_this_machine_to_a_session_that_has_recipients
 run_test test_export_refuses_when_this_machines_recipient_file_holds_another_key
+run_test test_export_leaves_a_current_signed_file_alone
+run_test test_later_export_without_ssh_keygen_refuses_and_keeps_the_signed_file
+run_test test_export_to_a_named_file_signs_beside_it
+run_test test_password_export_writes_no_signature
 
 report_results
