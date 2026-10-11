@@ -541,6 +541,14 @@ test_export_file_refuses_a_session_the_root_does_not_have() {
     _assert_no_trace_of_session ghost || return 1
 }
 
+test_import_file_refuses_a_session_the_root_does_not_have() {
+    local out rc=0
+    out=$("$CS_SECRETS_BIN" --session ghost import-file 2>&1) || rc=$?
+    assert_eq "1" "$rc" "import-file exits 1" || return 1
+    assert_eq "Error: No session named 'ghost' in $CS_SESSIONS_ROOT" "$out" "the refusal names the session and the root" || return 1
+    _assert_no_trace_of_session ghost || return 1
+}
+
 test_purge_empty_session() {
     local output
     output=$("$CS_SECRETS_BIN" purge 2>&1)
@@ -2310,6 +2318,7 @@ run_test test_age_add_refuses_a_directory_that_is_not_a_session
 run_test test_age_add_refuses_a_name_that_is_a_path
 run_test test_age_remove_refuses_a_session_the_root_does_not_have
 run_test test_export_file_refuses_a_session_the_root_does_not_have
+run_test test_import_file_refuses_a_session_the_root_does_not_have
 run_test test_purge_empty_session
 
 # Export
