@@ -3173,13 +3173,24 @@ EOF
 # the same reason, so a link inside it (to another session's plans, say) stays
 # behind; only regular files come over. A failed copy warns and the create
 # goes on; the feature only starts with less context.
+# Each topic copied is recorded as .cs/local/inherited-topics/<name>, a file
+# holding the copy's "<cksum> <bytes>", so the fuse can tell a topic the
+# feature wrote from one it was handed. One file per topic: the file system
+# keeps any name whole, and nothing has to parse one.
 _copy_base_context() {  # base_meta wt_meta
-    local src="$1" dst="$2" f name
+    local src="$1" dst="$2" f name sum
     for f in "$src"/memory/*.md; do
         [ -f "$f" ] && [ ! -L "$f" ] || continue
         name="${f##*/}"
         case "$name" in narrative.*.md|narrative.md) continue ;; esac
-        cp "$f" "$dst/memory/$name" || warn "could not copy memory/$name from the base"
+        if ! cp "$f" "$dst/memory/$name"; then
+            warn "could not copy memory/$name from the base"
+            continue
+        fi
+        sum=$(cksum < "$dst/memory/$name") \
+            && mkdir -p "$dst/local/inherited-topics" \
+            && printf '%s\n' "$sum" > "$dst/local/inherited-topics/$name" \
+            || warn "could not record memory/$name as inherited from the base"
     done
     if [ -d "$src/plans" ] && [ ! -L "$src/plans" ]; then
         local rel parent
@@ -3220,11 +3231,21 @@ _tree_is_dirty() {
 # when they disagreed, a worktree predating the cs exclude reported blocked on a
 # merge that would have gone straight through.
 _worktree_untracked_at_risk() {  # wt_dir
-    { git -C "$1" ls-files --others --exclude-standard 2>/dev/null
-      git -C "$1" ls-files --others --ignored --exclude-standard 2>/dev/null; } \
-        | grep -v -e '^\.cs/' -e '^\.claude/settings\.local\.json$' -e '^CLAUDE\.local\.md$' \
+    # -z, then one path per line with a newline inside a name shown as "?":
+    # without it git quotes any name holding a newline or a non-ASCII byte,
+    # and the quote in front hides cs's own files from the patterns below.
+    # Names are bytes here (LC_ALL=C): in a multibyte locale that cannot
+    # decode one, tr stops mid-list. A listing that fails is a failure, never
+    # an empty list: the caller would remove the worktree on it.
+    local listing
+    listing=$({ git -C "$1" ls-files -z --others --exclude-standard \
+                && git -C "$1" ls-files -z --others --ignored --exclude-standard; } 2>/dev/null \
+              | LC_ALL=C tr '\n\0' '?\n') || return 1
+    [ -n "$listing" ] || return 0
+    printf '%s\n' "$listing" \
+        | LC_ALL=C grep -v -e '^\.cs/' -e '^\.claude/settings\.local\.json$' -e '^CLAUDE\.local\.md$' \
             -e '^\.DS_Store$' -e '/\.DS_Store$' \
-        || true
+        || [ $? -eq 1 ]
 }
 
 # Print the PID of a live lock on a session that the invoker does not own:
@@ -3358,7 +3379,8 @@ _feature_readiness() {  # base_name task
     _tree_is_dirty "$base_dir" && base_dirty=1
 
     local others
-    others=$(_worktree_untracked_at_risk "$wt_dir")
+    others=$(_worktree_untracked_at_risk "$wt_dir") \
+        || error "Could not list the untracked files in $wt_dir"
     if [ -n "$others" ]; then
         untracked=$(printf '%s\n' "$others" | wc -l | tr -d '[:space:]')
     fi
@@ -3689,7 +3711,8 @@ retire_feature_worktree() {  # base_name task sha [--force]
         error "Worktree has uncommitted changes; commit them in $wt_dir first (cs never commits for you)"
     fi
     local wt_untracked
-    wt_untracked=$(_worktree_untracked_at_risk "$wt_dir")
+    wt_untracked=$(_worktree_untracked_at_risk "$wt_dir") \
+        || error "Could not list the untracked files in $wt_dir; nothing was removed"
     if [ -n "$wt_untracked" ]; then
         error "Worktree has untracked files that removal would destroy; commit or remove them first:
 $wt_untracked"
@@ -4212,6 +4235,23 @@ _append_missing_memory_pointers() {  # feature_index base_index
     printf '%s' "$(printf '%s\n' "$missing" | wc -l | tr -d ' ')"
 }
 
+# Says how a feature's topic relates to the copy it started with: "unchanged"
+# or "edited" for a topic the create recorded as inherited, nothing for one
+# the feature wrote itself (or one a create with no record handed over).
+# Fails when the record is there and cannot be read (the directory or the
+# topic's file), or the topic cannot be summed: answering "the feature wrote it" then would bring a deleted topic
+# back and call the fuse a success.
+_inherited_topic_state() {  # feature_meta topic_file
+    local dir="$1/local/inherited-topics" record was now
+    record="$dir/${2##*/}"
+    [ -e "$dir" ] || [ -L "$dir" ] || return 0
+    [ -d "$dir" ] && [ -r "$dir" ] && [ -x "$dir" ] || return 1
+    [ -e "$record" ] || [ -L "$record" ] || return 0
+    was=$(cat "$record") || return 1
+    now=$(cksum < "$2") || return 1
+    if [ "$now" = "$was" ]; then echo unchanged; else echo edited; fi
+}
+
 # Fuse session records from a worktree .cs into the base .cs (ignored mode:
 # the repo does not track .cs/, so git merge cannot carry these). Applies the
 # same semantics the merge drivers give tracked repos: union append for
@@ -4227,7 +4267,7 @@ _append_missing_memory_pointers() {  # feature_index base_index
 # that pass would have to list the destinations a second time.
 fuse_session_records() {
     local src="$1" dst="$2"
-    local f base
+    local f base inherited
 
     # Worktrees never run migrate_session, so a task branch created before the
     # log moved to .cs/local/ still keeps its audit trail at .cs/logs/; fuse
@@ -4280,7 +4320,17 @@ fuse_session_records() {
             cmp -s "$f" "$dst/memory/$base" \
                 || warn "memory/$base already exists in the base; skipped"
         else
+            # A topic the feature inherited and the base no longer has was
+            # deleted in the base. Untouched, it stays deleted; edited, the
+            # feature's text comes back and the user is told.
+            if ! inherited=$(_inherited_topic_state "$src" "$f"); then
+                warn "could not read what the feature inherited for memory/$base, so cs cannot tell whether the base deleted it"
+                return 1
+            fi
+            [ "$inherited" != unchanged ] || continue
             cs_write_atomic "$dst/memory/$base" cat "$f" || return 1
+            [ "$inherited" != edited ] \
+                || warn "memory/$base was deleted in the base and edited in the feature; the feature's version is back in the base"
         fi
     done
 

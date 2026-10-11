@@ -1980,6 +1980,152 @@ test_retire_ignored_mode_appends_feature_memory_pointers() {
 
 run_test test_retire_ignored_mode_appends_feature_memory_pointers
 
+# An ignored-mode feature starts with a copy of the base's topics. One the
+# base deleted while the feature was open, and the feature never touched, is
+# not a topic the feature wrote: the fuse leaves it deleted, pointer and all.
+_ignored_base_with_two_topics() {  # prints nothing; base at $CS_SESSIONS_ROOT/proj
+    local base_dir="$CS_SESSIONS_ROOT/proj"
+    mkdir -p "$base_dir/.cs"/{memory,local}
+    printf '%s\n' '- [Gone](gone.md): a topic' '- [Kept](kept.md): a topic' > "$base_dir/.cs/memory/MEMORY.md"
+    echo "gone topic" > "$base_dir/.cs/memory/gone.md"
+    echo "kept topic" > "$base_dir/.cs/memory/kept.md"
+    echo "# P" > "$base_dir/README.md"
+    printf '.cs/\n.claude/settings.local.json\n' > "$base_dir/.gitignore"
+    (cd "$base_dir" && git init -q && git config core.autocrlf false && git add -A && git commit -q -m init)
+}
+
+test_retire_ignored_mode_leaves_a_base_deleted_topic_deleted() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    local odd=$'gone\nagain.md'
+    _ignored_base_with_two_topics
+    echo "odd topic" > "$base_dir/.cs/memory/$odd"
+    cs_launch "proj@t1"
+    assert_eq "gone topic" "$(cat "$wt/.cs/memory/gone.md")" "the feature inherited the topic" || return 1
+    assert_eq "odd topic" "$(cat "$wt/.cs/memory/$odd")" "and the one with a newline in its name" || return 1
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    echo "feature topic" > "$wt/.cs/memory/new.md"
+    printf '%s\n' '- [New](new.md): feature-side' >> "$wt/.cs/memory/MEMORY.md"
+    rm "$base_dir/.cs/memory/gone.md" "$base_dir/.cs/memory/$odd"
+    printf '%s\n' '- [Kept](kept.md): a topic' > "$base_dir/.cs/memory/MEMORY.md"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "retire exits 0: $output" || return 1
+    assert_file_not_exists "$base_dir/.cs/memory/gone.md" "the deleted topic stays deleted" || return 1
+    assert_file_not_exists "$base_dir/.cs/memory/$odd" "whatever its name holds" || return 1
+    assert_eq "feature topic" "$(cat "$base_dir/.cs/memory/new.md")" "a topic the feature wrote still lands" || return 1
+    assert_eq "" "$(grep -F 'gone.md' "$base_dir/.cs/memory/MEMORY.md")" \
+        "no pointer comes back for the deleted topic" || return 1
+    assert_eq "- [New](new.md): feature-side" "$(grep -F 'new.md' "$base_dir/.cs/memory/MEMORY.md")" \
+        "the feature's own pointer still lands" || return 1
+    assert_output_not_contains "$output" "gone.md" "an untouched deleted topic is not mentioned" || return 1
+}
+
+run_test test_retire_ignored_mode_leaves_a_base_deleted_topic_deleted
+
+# The feature edited a topic it inherited and the base deleted meanwhile: the
+# edit is work, so the feature's text comes back, its pointer with it, and
+# the retire says which topic.
+test_retire_ignored_mode_brings_back_a_deleted_topic_the_feature_edited() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    echo "gone topic, with a feature note" > "$wt/.cs/memory/gone.md"
+    rm "$base_dir/.cs/memory/gone.md" "$base_dir/.cs/memory/kept.md"
+    : > "$base_dir/.cs/memory/MEMORY.md"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "retire exits 0: $output" || return 1
+    assert_eq "gone topic, with a feature note" "$(cat "$base_dir/.cs/memory/gone.md")" \
+        "the feature's edit is back in the base" || return 1
+    assert_output_contains "$output" "memory/gone.md was deleted in the base and edited in the feature" \
+        "the retire names the topic" || return 1
+    assert_eq "- [Gone](gone.md): a topic" "$(grep -F 'gone.md' "$base_dir/.cs/memory/MEMORY.md")" \
+        "its pointer comes back with it" || return 1
+    assert_file_not_exists "$base_dir/.cs/memory/kept.md" "the untouched deleted topic stays deleted" || return 1
+    assert_eq "" "$(grep -F 'kept.md' "$base_dir/.cs/memory/MEMORY.md")" "and so does its pointer" || return 1
+}
+
+run_test test_retire_ignored_mode_brings_back_a_deleted_topic_the_feature_edited
+
+# The record of what the feature inherited is what tells a deleted topic from
+# a new one. A record that is there and cannot be read must stop the fuse:
+# guessing "new" would bring the deleted topic back and report success.
+test_retire_ignored_mode_refuses_when_the_inherited_record_cannot_be_read() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    rm "$base_dir/.cs/memory/gone.md"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    find "$wt/.cs/local/inherited-topics" -type f -exec chmod 000 {} +
+    [ ! -r "$wt/.cs/local/inherited-topics/gone.md" ] || return 77
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    find "$CS_SESSIONS_ROOT" -path '*/local/inherited-topics/*' -type f -exec chmod 600 {} + 2>/dev/null
+    assert_eq "1" "$status" "the retire fails: $output" || return 1
+    assert_file_not_exists "$base_dir/.cs/memory/gone.md" "the deleted topic did not come back" || return 1
+    assert_output_contains "$output" "could not read what the feature inherited for memory/gone.md" \
+        "the error names the topic" || return 1
+    assert_output_contains "$output" "could not be fused into" "the staged records are kept and named" || return 1
+}
+
+run_test test_retire_ignored_mode_refuses_when_the_inherited_record_cannot_be_read
+
+# The same when the record directory itself cannot be searched: a file that
+# cannot be seen inside it is not a topic the feature wrote.
+test_retire_ignored_mode_refuses_when_the_inherited_directory_cannot_be_searched() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    rm "$base_dir/.cs/memory/gone.md"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    chmod 000 "$wt/.cs/local/inherited-topics"
+    if [ -e "$wt/.cs/local/inherited-topics/gone.md" ]; then
+        chmod 700 "$wt/.cs/local/inherited-topics"; return 77
+    fi
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    find "$CS_SESSIONS_ROOT" -type d -name inherited-topics -exec chmod 700 {} + 2>/dev/null
+    assert_eq "1" "$status" "the retire fails: $output" || return 1
+    assert_file_not_exists "$base_dir/.cs/memory/gone.md" "the deleted topic did not come back" || return 1
+    assert_output_contains "$output" "could not read what the feature inherited for memory/gone.md" \
+        "the error names the topic" || return 1
+}
+
+run_test test_retire_ignored_mode_refuses_when_the_inherited_directory_cannot_be_searched
+
+# The list of files a removal would destroy is read as bytes. In a locale
+# that cannot decode a name, a failed conversion must never read as "nothing
+# to lose": the retire would force-remove the worktree and the user's
+# untracked file with it.
+test_retire_keeps_untracked_work_when_a_name_does_not_decode_in_the_locale() {
+    # A multibyte locale that is not UTF-8 and in which bash still parses cs.
+    local loc
+    loc=$(locale -a 2>/dev/null | grep -m1 -x -e 'zh_CN\.GBK' -e 'ja_JP\.SJIS' -e 'zh_TW\.Big5') || true
+    [ -n "$loc" ] || { echo "    SKIP (no GBK, SJIS or Big5 locale here)"; return 77; }
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    _ignored_base_with_two_topics
+    (cd "$base_dir" && echo 'secret.env' >> .gitignore && git commit -q -am "ignore the env file")
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    echo "snow" > "$wt/.cs/memory/$(printf '\342\230\203').md"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    # Ignored, so git lists it after the .cs entries: past the name the
+    # conversion stops on.
+    echo "valuable" > "$wt/secret.env"
+    output=$(LC_ALL="$loc" "$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "valuable" "$(cat "$wt/secret.env" 2>/dev/null)" "the ignored file is still there" || return 1
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_output_contains "$output" "secret.env" "and names the file" || return 1
+}
+
+run_test test_retire_keeps_untracked_work_when_a_name_does_not_decode_in_the_locale
+
 test_retire_fuse_survives_a_torn_timeline_tail() {
     # A crash mid-append leaves a last line with no newline. Appending onto it
     # splices two records into one, and the reader's tolerant `fromjson? //
