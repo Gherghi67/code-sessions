@@ -1626,6 +1626,36 @@ test_export_signs_the_sync_file() {
     fi
 }
 
+# A stop between the two renames leaves a new sync file beside an old
+# signature, or none. The next export puts a current signature back although
+# no secret changed.
+test_export_replaces_a_signature_that_does_not_verify() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f; f="$meta/secrets.$(_machine_id).age"
+    local out rc
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
+
+    rm "$f.sig"
+    rc=0
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the export after a lost signature exits 0: $out" || return 1
+    _sync_file_is_signed_by "$HOME/.cs-secrets/id_ed25519.pub" "$f" test-session \
+        || { echo "  FAIL: a lost signature was not written again: $out"; return 1; }
+
+    printf 'an earlier ciphertext' \
+        | ssh-keygen -Y sign -f "$HOME/.cs-secrets/id_ed25519" -n "cs-secrets@test-session" > "$f.sig" 2>/dev/null \
+        || { echo "  FAIL: fixture: could not make a stale signature"; return 1; }
+    rc=0
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the export after a stale signature exits 0: $out" || return 1
+    _sync_file_is_signed_by "$HOME/.cs-secrets/id_ed25519.pub" "$f" test-session \
+        || { echo "  FAIL: a stale signature was not replaced: $out"; return 1; }
+    assert_eq "sk_123" "$(age -d -i "$HOME/.cs-secrets/id_ed25519" < "$f" | jq -r .api_key)" "the secret is still the same" || return 1
+}
+
 test_import_file_merges_all_machines_and_legacy() {
     local meta="$CS_SESSIONS_ROOT/test-session/.cs"
     _seed_enc_sync_file "$meta/secrets.machine-b.enc" '{"from_machine_b":"vb"}' || return 1
@@ -2720,5 +2750,6 @@ run_test test_export_encrypts_to_age_and_ssh_recipients_together
 run_test test_export_switches_this_machine_to_its_ssh_key
 run_test test_first_export_without_ssh_keygen_refuses
 run_test test_export_signs_the_sync_file
+run_test test_export_replaces_a_signature_that_does_not_verify
 
 report_results

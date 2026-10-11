@@ -571,9 +571,9 @@ SHIM
     wait "$second_pid" || { echo "  FAIL: the second age init failed: $(cat "$TEST_TMPDIR/second.out")"; return 1; }
 
     assert_eq "2" "$(grep -c generate "$log")" "both processes generated a key (the race ran)" || return 1
-    local kept key_type key_body key_comment
+    local kept key_type key_body
     kept=$(CS_AGE_BIN="$age_bin" "$CS_SECRETS_BIN" age pubkey 2>&1)
-    read -r key_type key_body key_comment <<< "$("$real_keygen" -y -f "$HOME/.cs-secrets/id_ed25519")"
+    read -r key_type key_body _ <<< "$("$real_keygen" -y -f "$HOME/.cs-secrets/id_ed25519")"
     assert_eq "$key_type $key_body" "$kept" "the public key belongs to the private key that was kept" || return 1
     assert_eq "Public key: $kept" "$(grep '^Public key:' "$TEST_TMPDIR/first.out" | tail -1)" \
         "the key the first process reported is the one kept" || return 1
