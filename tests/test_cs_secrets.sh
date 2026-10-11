@@ -1596,6 +1596,36 @@ test_first_export_without_ssh_keygen_refuses() {
     assert_eq "" "$(find "$meta" -name '*.pub')" "no recipient file is written" || return 1
 }
 
+# True when <file>.sig is this key's signature over the file in the session's
+# namespace. Checked with ssh-keygen directly, not through cs.
+_sync_file_is_signed_by() {  # public key file, sync file, session
+    local allowed="$TEST_TMPDIR/allowed.$$" key_type key_body key_comment
+    read -r key_type key_body key_comment < "$1"
+    printf 'cs %s %s\n' "$key_type" "$key_body" > "$allowed"
+    ssh-keygen -Y verify -f "$allowed" -I cs -n "cs-secrets@$3" -s "$2.sig" < "$2" >/dev/null 2>&1
+}
+
+# age says who may read a sync file, not who wrote it: anyone who can push can
+# encrypt to a tracked public key. The export signs the ciphertext with this
+# machine's key, in a namespace that names the session.
+test_export_signs_the_sync_file() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f; f="$meta/secrets.$(_machine_id).age"
+    local out rc=0
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the export exits 0: $out" || return 1
+    assert_file_exists "$f.sig" "the signature sits beside the sync file" || return 1
+    _sync_file_is_signed_by "$HOME/.cs-secrets/id_ed25519.pub" "$f" test-session \
+        || { echo "  FAIL: the signature does not verify with this machine's key"; return 1; }
+    if _sync_file_is_signed_by "$HOME/.cs-secrets/id_ed25519.pub" "$f" other-session; then
+        echo "  FAIL: the signature verifies for another session"
+        return 1
+    fi
+}
+
 test_import_file_merges_all_machines_and_legacy() {
     local meta="$CS_SESSIONS_ROOT/test-session/.cs"
     _seed_enc_sync_file "$meta/secrets.machine-b.enc" '{"from_machine_b":"vb"}' || return 1
@@ -2689,5 +2719,6 @@ run_test test_first_export_makes_this_machines_ssh_key_the_recipient
 run_test test_export_encrypts_to_age_and_ssh_recipients_together
 run_test test_export_switches_this_machine_to_its_ssh_key
 run_test test_first_export_without_ssh_keygen_refuses
+run_test test_export_signs_the_sync_file
 
 report_results
