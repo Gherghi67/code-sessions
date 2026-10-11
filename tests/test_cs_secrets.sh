@@ -1886,13 +1886,13 @@ test_import_file_skips_a_file_signed_by_a_key_outside_the_session() {
 test_import_file_skips_a_signed_file_changed_after_signing() {
     _use_real_age || return $?
     _use_real_ssh_keygen || return $?
-    local out rc=0 peer_file size
+    local out rc=0 peer_file
     _peer_exports from_peer "vp" || { echo "  FAIL: fixture: the peer could not export"; return 1; }
     "$CS_SECRETS_BIN" age add "$(_peer_recipient_file)" >/dev/null 2>&1 || return 1
     peer_file=$(_peer_sync_file)
-    # One byte changed at the end of the ciphertext.
-    size=$(wc -c < "$peer_file")
-    printf 'X' | dd of="$peer_file" bs=1 seek=$((size - 1)) conv=notrunc 2>/dev/null || return 1
+    # One byte added to the ciphertext. (Overwriting a byte with a fixed value
+    # leaves the file as it was once in 256 runs.)
+    printf 'X' >> "$peer_file"
     out=$("$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
     assert_eq "0" "$rc" "the import exits 0" || return 1
     assert_output_contains "$out" "^Skipped $(basename "$peer_file"): its signature does not match\." "the skip names the file" || return 1
@@ -1936,12 +1936,11 @@ test_import_file_allow_unsigned_takes_a_file_with_no_signature() {
 test_import_file_allow_unsigned_still_skips_a_bad_signature() {
     _use_real_age || return $?
     _use_real_ssh_keygen || return $?
-    local out rc=0 peer_file size
+    local out rc=0 peer_file
     _peer_exports from_peer "vp" || { echo "  FAIL: fixture: the peer could not export"; return 1; }
     "$CS_SECRETS_BIN" age add "$(_peer_recipient_file)" >/dev/null 2>&1 || return 1
     peer_file=$(_peer_sync_file)
-    size=$(wc -c < "$peer_file")
-    printf 'X' | dd of="$peer_file" bs=1 seek=$((size - 1)) conv=notrunc 2>/dev/null || return 1
+    printf 'X' >> "$peer_file"
     out=$("$CS_SECRETS_BIN" import-file --allow-unsigned 2>&1) || rc=$?
     assert_eq "0" "$rc" "the import exits 0" || return 1
     assert_output_contains "$out" "^Skipped $(basename "$peer_file"): its signature does not match\." "the skip names the file" || return 1
