@@ -119,12 +119,18 @@ _worktree_untracked_at_risk() {  # wt_dir
     # -z, then one path per line with a newline inside a name shown as "?":
     # without it git quotes any name holding a newline or a non-ASCII byte,
     # and the quote in front hides cs's own files from the patterns below.
-    { git -C "$1" ls-files -z --others --exclude-standard 2>/dev/null
-      git -C "$1" ls-files -z --others --ignored --exclude-standard 2>/dev/null; } \
-        | tr '\n\0' '?\n' \
-        | grep -v -e '^\.cs/' -e '^\.claude/settings\.local\.json$' -e '^CLAUDE\.local\.md$' \
+    # Names are bytes here (LC_ALL=C): in a multibyte locale that cannot
+    # decode one, tr stops mid-list. A listing that fails is a failure, never
+    # an empty list: the caller would remove the worktree on it.
+    local listing
+    listing=$({ git -C "$1" ls-files -z --others --exclude-standard \
+                && git -C "$1" ls-files -z --others --ignored --exclude-standard; } 2>/dev/null \
+              | LC_ALL=C tr '\n\0' '?\n') || return 1
+    [ -n "$listing" ] || return 0
+    printf '%s\n' "$listing" \
+        | LC_ALL=C grep -v -e '^\.cs/' -e '^\.claude/settings\.local\.json$' -e '^CLAUDE\.local\.md$' \
             -e '^\.DS_Store$' -e '/\.DS_Store$' \
-        || true
+        || [ $? -eq 1 ]
 }
 
 # Print the PID of a live lock on a session that the invoker does not own:
@@ -258,7 +264,8 @@ _feature_readiness() {  # base_name task
     _tree_is_dirty "$base_dir" && base_dirty=1
 
     local others
-    others=$(_worktree_untracked_at_risk "$wt_dir")
+    others=$(_worktree_untracked_at_risk "$wt_dir") \
+        || error "Could not list the untracked files in $wt_dir"
     if [ -n "$others" ]; then
         untracked=$(printf '%s\n' "$others" | wc -l | tr -d '[:space:]')
     fi
@@ -589,7 +596,8 @@ retire_feature_worktree() {  # base_name task sha [--force]
         error "Worktree has uncommitted changes; commit them in $wt_dir first (cs never commits for you)"
     fi
     local wt_untracked
-    wt_untracked=$(_worktree_untracked_at_risk "$wt_dir")
+    wt_untracked=$(_worktree_untracked_at_risk "$wt_dir") \
+        || error "Could not list the untracked files in $wt_dir; nothing was removed"
     if [ -n "$wt_untracked" ]; then
         error "Worktree has untracked files that removal would destroy; commit or remove them first:
 $wt_untracked"
@@ -1115,11 +1123,14 @@ _append_missing_memory_pointers() {  # feature_index base_index
 # Says how a feature's topic relates to the copy it started with: "unchanged"
 # or "edited" for a topic the create recorded as inherited, nothing for one
 # the feature wrote itself (or one a create with no record handed over).
-# Fails when the record is there and cannot be read, or the topic cannot be
-# summed: answering "the feature wrote it" then would bring a deleted topic
+# Fails when the record is there and cannot be read (the directory or the
+# topic's file), or the topic cannot be summed: answering "the feature wrote it" then would bring a deleted topic
 # back and call the fuse a success.
 _inherited_topic_state() {  # feature_meta topic_file
-    local record="$1/local/inherited-topics/${2##*/}" was now
+    local dir="$1/local/inherited-topics" record was now
+    record="$dir/${2##*/}"
+    [ -e "$dir" ] || [ -L "$dir" ] || return 0
+    [ -d "$dir" ] && [ -r "$dir" ] && [ -x "$dir" ] || return 1
     [ -e "$record" ] || [ -L "$record" ] || return 0
     was=$(cat "$record") || return 1
     now=$(cksum < "$2") || return 1
