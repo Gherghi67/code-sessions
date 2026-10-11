@@ -105,16 +105,15 @@ save_checkpoint() {
     # was taken.
     local sealed=false
     [ "$checkpoints_dir" = "$meta_dir/private/checkpoints" ] && sealed=true
-    _terminate_jsonl "$timeline_file"
-    { jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    _append_record "$timeline_file" \
+           --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
            --arg event "checkpoint" \
            --arg label "$label" \
            --arg file "$filename" \
            --arg branch "$timeline_branch" \
            --argjson sealed "$sealed" \
            'if $sealed then {ts: $ts, event: $event, branch: $branch}
-            else {ts: $ts, event: $event, label: $label, file: $file, branch: $branch} end' \
-        >> "$timeline_file"; } 2>/dev/null || true
+            else {ts: $ts, event: $event, label: $label, file: $file, branch: $branch} end'
 
     info "Checkpoint saved: $filename"
     echo "  Label: $label"

@@ -630,12 +630,11 @@ $remove_err"
     fi
     _spawn_discard_seeds "$wt_name"
 
-    _terminate_jsonl "$base_dir/.cs/timeline.jsonl"
-    { jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    _append_record "$base_dir/.cs/timeline.jsonl" \
+           --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
            --arg event "worktree-retired" \
            --arg task "$task" \
-        '{ts: $ts, event: $event, task: $task}' \
-        >> "$base_dir/.cs/timeline.jsonl"; } 2>/dev/null || true
+        '{ts: $ts, event: $event, task: $task}'
     _finish_progress_write retired
     printf 'retired %s %s\n' "$task" "$sha"
 }
@@ -1026,14 +1025,16 @@ ${ff_err:-(no output from git merge --ff-only)}"
         warn "Temporary worktree $tmp could not be removed; run: git -C \"$base_dir\" worktree remove --force \"$tmp\""
     fi
 
-    _terminate_jsonl "$base_dir/.cs/timeline.jsonl"
-    { jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    # The feature's tree has landed in the base, and nothing has scanned it
+    # since the base opened: a link the feature committed here is refused
+    # by the append, never written through.
+    _append_record "$base_dir/.cs/timeline.jsonl" \
+           --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
            --arg event "feature-integrated" \
            --arg task "$task" \
            --arg sha "$sha" \
            --arg result "$landed" \
-        '{ts: $ts, event: $event, task: $task, sha: $sha, result: $result}' \
-        >> "$base_dir/.cs/timeline.jsonl"; } 2>/dev/null || true
+        '{ts: $ts, event: $event, task: $task, sha: $sha, result: $result}'
     _finish_progress_write landed result "$landed"
     printf 'integrated %s %s -> %s\n' "$task" "$sha" "$landed"
 }

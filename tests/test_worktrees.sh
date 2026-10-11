@@ -1653,24 +1653,26 @@ run_test test_integrate_tracked_mode_warns_on_memory_index_change
 # committed at .cs/timeline.jsonl would carry that write out of the session.
 test_integrate_and_retire_never_write_through_a_landed_timeline_link() {
     local sha base_dir wt output status=0 outside="$TEST_TMPDIR/outside-timeline"
+    local outside_p
     base_dir=$(create_test_session_with_git "myproj")
     echo '{"ts":"2026-01-01T00:00:00Z","event":"seed"}' > "$base_dir/.cs/timeline.jsonl"
     (cd "$base_dir" && git add .cs/timeline.jsonl && git commit -q -m seed)
     cs_launch "myproj@fix-auth"
     wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
     printf 'outside\n' > "$outside"
+    outside_p="$(cd "$TEST_TMPDIR" && pwd -P)/outside-timeline"
     (cd "$wt" && rm .cs/timeline.jsonl && ln -s "$outside" .cs/timeline.jsonl \
         && git add .cs/timeline.jsonl && git commit -q -m "link the timeline out")
     sha=$(git -C "$wt" rev-parse HEAD)
     output=$("$CS_BIN" myproj -integrate-feature fix-auth "$sha" -- true 2>&1) || status=$?
     assert_eq "0" "$status" "the landing itself succeeds: $output" || return 1
     assert_symlink "$base_dir/.cs/timeline.jsonl" "the feature's link landed in the base" || return 1
-    assert_output_contains "$output" "timeline.jsonl leads to $outside" "the refusal names the link" || return 1
+    assert_output_contains "$output" "timeline.jsonl leads to $outside_p" "the refusal names the link" || return 1
     assert_eq "outside" "$(cat "$outside")" "integrate wrote nothing outside the session" || return 1
     status=0
     output=$("$CS_BIN" myproj -retire-feature fix-auth "$sha" 2>&1) || status=$?
     assert_eq "0" "$status" "the retire itself succeeds: $output" || return 1
-    assert_output_contains "$output" "timeline.jsonl leads to $outside" "the retire names the link too" || return 1
+    assert_output_contains "$output" "timeline.jsonl leads to $outside_p" "the retire names the link too" || return 1
     assert_eq "outside" "$(cat "$outside")" "retire wrote nothing outside the session" || return 1
 }
 

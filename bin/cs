@@ -3745,12 +3745,11 @@ $remove_err"
     fi
     _spawn_discard_seeds "$wt_name"
 
-    _terminate_jsonl "$base_dir/.cs/timeline.jsonl"
-    { jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    _append_record "$base_dir/.cs/timeline.jsonl" \
+           --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
            --arg event "worktree-retired" \
            --arg task "$task" \
-        '{ts: $ts, event: $event, task: $task}' \
-        >> "$base_dir/.cs/timeline.jsonl"; } 2>/dev/null || true
+        '{ts: $ts, event: $event, task: $task}'
     _finish_progress_write retired
     printf 'retired %s %s\n' "$task" "$sha"
 }
@@ -4141,14 +4140,16 @@ ${ff_err:-(no output from git merge --ff-only)}"
         warn "Temporary worktree $tmp could not be removed; run: git -C \"$base_dir\" worktree remove --force \"$tmp\""
     fi
 
-    _terminate_jsonl "$base_dir/.cs/timeline.jsonl"
-    { jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    # The feature's tree has landed in the base, and nothing has scanned it
+    # since the base opened: a link the feature committed here is refused
+    # by the append, never written through.
+    _append_record "$base_dir/.cs/timeline.jsonl" \
+           --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
            --arg event "feature-integrated" \
            --arg task "$task" \
            --arg sha "$sha" \
            --arg result "$landed" \
-        '{ts: $ts, event: $event, task: $task, sha: $sha, result: $result}' \
-        >> "$base_dir/.cs/timeline.jsonl"; } 2>/dev/null || true
+        '{ts: $ts, event: $event, task: $task, sha: $sha, result: $result}'
     _finish_progress_write landed result "$landed"
     printf 'integrated %s %s -> %s\n' "$task" "$sha" "$landed"
 }
@@ -5071,11 +5072,22 @@ _seed_readme_objective() {  # readme, text
 # it was never complete — but the next one no longer dies with it. A no-op on a
 # file that is empty or already terminated, and best-effort on write like every
 # other timeline append: a launch must not die because a journal could not be
-# repaired.
+# repaired. Silent even about a link out of the session: the append that
+# follows names it.
 _terminate_jsonl() {  # file
     [ -s "$1" ] || return 0
     [ -n "$(tail -c 1 "$1" 2>/dev/null)" ] || return 0
-    { printf '\n' >> "$1"; } 2>/dev/null || true
+    { CS_WRITE_QUIET=1 cs_append_inside "$1" printf '\n'; } 2>/dev/null || true
+}
+
+# Append one record, built by jq -nc from the arguments, to a session's JSONL
+# journal (the timeline, the queue's notifications). Best-effort like every
+# journal write, so a failure never stops the verb; a link that takes the
+# journal out of the session is still named on stderr, and nothing is written.
+_append_record() {  # file, jq args...
+    local file="$1"; shift
+    _terminate_jsonl "$file"
+    CS_WRITE_QUIET=1 cs_append_inside "$file" jq -nc "$@" || true
 }
 
 # Append a rotated event to the tracked timeline: the durable link between
@@ -5084,15 +5096,14 @@ _terminate_jsonl() {  # file
 # Best-effort — a timeline failure must never break a launch.
 _timeline_rotated() {  # session_dir, from, to, reason, [handoff]
     local session_dir="$1" from="$2" to="$3" reason="$4" handoff="${5:-}"
-    _terminate_jsonl "$session_dir/.cs/timeline.jsonl"
-    { jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    _append_record "$session_dir/.cs/timeline.jsonl" \
+           --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
            --arg from "$from" \
            --arg to "$to" \
            --arg reason "$reason" \
            --arg handoff "$handoff" \
            '{ts: $ts, event: "rotated", from: $from, to: $to, reason: $reason}
-            + (if $handoff == "" then {} else {handoff: $handoff} end)' \
-        >> "$session_dir/.cs/timeline.jsonl"; } 2>/dev/null || true
+            + (if $handoff == "" then {} else {handoff: $handoff} end)'
 }
 
 # Allocate a fresh UUID, rewrite the local state's claude_session_id to it, export
@@ -6438,16 +6449,15 @@ save_checkpoint() {
     # was taken.
     local sealed=false
     [ "$checkpoints_dir" = "$meta_dir/private/checkpoints" ] && sealed=true
-    _terminate_jsonl "$timeline_file"
-    { jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    _append_record "$timeline_file" \
+           --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
            --arg event "checkpoint" \
            --arg label "$label" \
            --arg file "$filename" \
            --arg branch "$timeline_branch" \
            --argjson sealed "$sealed" \
            'if $sealed then {ts: $ts, event: $event, branch: $branch}
-            else {ts: $ts, event: $event, label: $label, file: $file, branch: $branch} end' \
-        >> "$timeline_file"; } 2>/dev/null || true
+            else {ts: $ts, event: $event, label: $label, file: $file, branch: $branch} end'
 
     info "Checkpoint saved: $filename"
     echo "  Label: $label"
@@ -6739,14 +6749,13 @@ rotate_narrative() {
     fi
 
     local timeline="$meta_dir/timeline.jsonl"
-    _terminate_jsonl "$timeline"
-    { jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    _append_record "$timeline" \
+           --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
            --arg actor "$actor" \
            --argjson sections "$sections" \
            --argjson bytes "$((cut - head_end))" \
            --arg archive "$chunk_rel" \
-           '{ts: $ts, event: "narrative_rotated", actor: $actor, sections: $sections, bytes: $bytes, archive: $archive}' \
-        >> "$timeline"; } 2>/dev/null || true
+           '{ts: $ts, event: "narrative_rotated", actor: $actor, sections: $sections, bytes: $bytes, archive: $archive}'
 
     local archived_kb now_kb
     archived_kb=$(( (cut - head_end) / 1024 ))
@@ -7789,9 +7798,8 @@ run_queue() {
         clear) _queue_clear "$qdir";;
         start) shift; _queue_start "$qdir" "${1:-}";;
         defer) mkdir -p "$qdir"; cs_write_atomic "$qdir/queue.declined" printf '%s\n' "$(date +%s)"
-               _terminate_jsonl "$qdir/notifications.jsonl"
-               { jq -nc --arg ts "$(date +%s)" '{ts: ($ts|tonumber), event: "gate_declined"}' \
-                   >> "$qdir/notifications.jsonl"; } 2>/dev/null || true;;
+               _append_record "$qdir/notifications.jsonl" \
+                   --arg ts "$(date +%s)" '{ts: ($ts|tonumber), event: "gate_declined"}';;
         log)   _queue_log "$qdir";;
         *)     error "Usage: cs -queue [add \"<task>\" | accept <message id> | list | rm <n> | clear | log | start [subagents|workflow]]";;
     esac
