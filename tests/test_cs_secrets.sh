@@ -1528,6 +1528,20 @@ test_import_file_stores_nothing_when_one_name_is_invalid() {
     assert_file_not_exists "$HOME/.cs-secrets/test-session.enc" "no store is created" || return 1
 }
 
+# A name carrying a carriage return is not the name without it. The import
+# refuses it instead of storing an empty value under the shorter name.
+test_import_file_refuses_a_name_ending_in_a_carriage_return() {
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    _seed_enc_sync_file "$meta/secrets.machine-a.enc" '{"cr_key\r":"crval"}' || return 1
+
+    local out rc=0
+    out=$(PATH="$(_ageless_path)" "$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the import exits 1" || return 1
+    assert_output_contains "$out" "invalid secret name 'cr_key\\\\r'" "the refusal shows the carriage return" || return 1
+    assert_output_not_contains "$out" "Imported" "nothing is reported as imported" || return 1
+    assert_file_not_exists "$HOME/.cs-secrets/test-session.enc" "no store is created" || return 1
+}
+
 # Defense in depth: a store written before the check existed must still not be
 # able to execute. Poison the encrypted store directly, bypassing `set`.
 test_export_refuses_a_hostile_name_already_in_the_store() {
@@ -2350,6 +2364,7 @@ run_test test_import_file_refuses_a_hostile_key_name
 run_test test_import_file_refuses_two_names_that_export_as_one_variable
 run_test test_import_file_refuses_a_name_that_shares_a_variable_with_a_stored_secret
 run_test test_import_file_stores_nothing_when_one_name_is_invalid
+run_test test_import_file_refuses_a_name_ending_in_a_carriage_return
 run_test test_export_refuses_a_hostile_name_already_in_the_store
 run_test test_import_file_aborts_when_the_store_write_fails
 run_test test_import_file_skips_undecryptable_files
