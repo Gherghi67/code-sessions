@@ -90,6 +90,7 @@ No git repo required. No project structure needed. Just a name for what you're w
 
 - [Claude Code](https://github.com/anthropics/claude-code)
 - Bash 3.2+ (macOS system bash supported)
+- A UTF-8 locale. Under `ja_JP.eucJP`, `ko_KR.eucKR` or `zh_CN.eucCN`, bash stops with a syntax error in `cs` and two of its hooks.
 - `jq` for hook configuration
 - `perl`, which cs takes its file locks through (macOS and most Linux distributions ship it)
 - `git` for local session history and crash recovery
