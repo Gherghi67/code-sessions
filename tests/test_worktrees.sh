@@ -1996,19 +1996,23 @@ _ignored_base_with_two_topics() {  # prints nothing; base at $CS_SESSIONS_ROOT/p
 
 test_retire_ignored_mode_leaves_a_base_deleted_topic_deleted() {
     local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    local odd=$'gone\nagain.md'
     _ignored_base_with_two_topics
+    echo "odd topic" > "$base_dir/.cs/memory/$odd"
     cs_launch "proj@t1"
     assert_eq "gone topic" "$(cat "$wt/.cs/memory/gone.md")" "the feature inherited the topic" || return 1
+    assert_eq "odd topic" "$(cat "$wt/.cs/memory/$odd")" "and the one with a newline in its name" || return 1
     echo "done" > "$wt/result.txt"
     (cd "$wt" && git add result.txt && git commit -q -m "task")
     echo "feature topic" > "$wt/.cs/memory/new.md"
     printf '%s\n' '- [New](new.md): feature-side' >> "$wt/.cs/memory/MEMORY.md"
-    rm "$base_dir/.cs/memory/gone.md"
+    rm "$base_dir/.cs/memory/gone.md" "$base_dir/.cs/memory/$odd"
     printf '%s\n' '- [Kept](kept.md): a topic' > "$base_dir/.cs/memory/MEMORY.md"
     sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
     assert_eq "0" "$status" "retire exits 0: $output" || return 1
     assert_file_not_exists "$base_dir/.cs/memory/gone.md" "the deleted topic stays deleted" || return 1
+    assert_file_not_exists "$base_dir/.cs/memory/$odd" "whatever its name holds" || return 1
     assert_eq "feature topic" "$(cat "$base_dir/.cs/memory/new.md")" "a topic the feature wrote still lands" || return 1
     assert_eq "" "$(grep -F 'gone.md' "$base_dir/.cs/memory/MEMORY.md")" \
         "no pointer comes back for the deleted topic" || return 1
@@ -2045,6 +2049,30 @@ test_retire_ignored_mode_brings_back_a_deleted_topic_the_feature_edited() {
 }
 
 run_test test_retire_ignored_mode_brings_back_a_deleted_topic_the_feature_edited
+
+# The record of what the feature inherited is what tells a deleted topic from
+# a new one. A record that is there and cannot be read must stop the fuse:
+# guessing "new" would bring the deleted topic back and report success.
+test_retire_ignored_mode_refuses_when_the_inherited_record_cannot_be_read() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    rm "$base_dir/.cs/memory/gone.md"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    find "$wt/.cs/local/inherited-topics" -type f -exec chmod 000 {} +
+    [ ! -r "$wt/.cs/local/inherited-topics/gone.md" ] || return 77
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    find "$CS_SESSIONS_ROOT" -path '*/local/inherited-topics/*' -type f -exec chmod 600 {} + 2>/dev/null
+    assert_eq "1" "$status" "the retire fails: $output" || return 1
+    assert_file_not_exists "$base_dir/.cs/memory/gone.md" "the deleted topic did not come back" || return 1
+    assert_output_contains "$output" "could not read what the feature inherited for memory/gone.md" \
+        "the error names the topic" || return 1
+    assert_output_contains "$output" "could not be fused into" "the staged records are kept and named" || return 1
+}
+
+run_test test_retire_ignored_mode_refuses_when_the_inherited_record_cannot_be_read
 
 test_retire_fuse_survives_a_torn_timeline_tail() {
     # A crash mid-append leaves a last line with no newline. Appending onto it
