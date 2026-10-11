@@ -1656,6 +1656,55 @@ test_export_replaces_a_signature_that_does_not_verify() {
     assert_eq "sk_123" "$(age -d -i "$HOME/.cs-secrets/id_ed25519" < "$f" | jq -r .api_key)" "the secret is still the same" || return 1
 }
 
+# A peer checks a sync file's signature against the public keys in
+# .cs/age-recipients, so the machine that signs has to be in there. Joining a
+# session that already has recipients adds this machine's key on its first
+# export.
+test_export_adds_this_machine_to_a_session_that_has_recipients() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local mid; mid=$(_machine_id)
+    local f="$meta/secrets.$mid.age" out rc=0 key_type key_body key_comment
+    _make_age_identity colleague || { echo "  FAIL: could not create a test identity"; return 1; }
+    "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/colleague.pub" >/dev/null 2>&1 || { echo "  FAIL: fixture: age add failed"; return 1; }
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the export exits 0: $out" || return 1
+    assert_file_exists "$HOME/.cs-secrets/id_ed25519.pub" "this machine has a key" || return 1
+    read -r key_type key_body key_comment < "$HOME/.cs-secrets/id_ed25519.pub"
+    assert_file_exists "$meta/age-recipients/$mid.pub" "this machine has a recipient file" || return 1
+    assert_eq "$key_type $key_body" "$(cat "$meta/age-recipients/$mid.pub")" "it holds this machine's key" || return 1
+    _age_decrypts_to "$HOME/.cs-secrets/id_ed25519" "$f" "sk_123" || { echo "  FAIL: this machine cannot decrypt its own file"; return 1; }
+    _age_decrypts_to "$TEST_TMPDIR/colleague.key" "$f" "sk_123" || { echo "  FAIL: the colleague cannot decrypt"; return 1; }
+    _sync_file_is_signed_by "$meta/age-recipients/$mid.pub" "$f" test-session \
+        || { echo "  FAIL: the signature does not verify with the published key"; return 1; }
+}
+
+# The file name this machine would publish under can already hold someone
+# else's key: two machines with one user and host name, or a key pair made
+# anew. cs does not replace a key it cannot account for.
+test_export_refuses_when_this_machines_recipient_file_holds_another_key() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local mid; mid=$(_machine_id)
+    local out rc=0 before
+    _make_ssh_identity other || { echo "  FAIL: could not create a test ssh identity"; return 1; }
+    cp "$TEST_TMPDIR/other.ssh.pub" "$TEST_TMPDIR/$mid.pub"
+    "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/$mid.pub" >/dev/null 2>&1 || { echo "  FAIL: fixture: age add failed"; return 1; }
+    before=$(cat "$meta/age-recipients/$mid.pub")
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the export exits 1" || return 1
+    assert_eq "Error: $meta/age-recipients/$mid.pub holds a key that is not this machine's. Remove it with 'cs -secrets age remove $mid', or publish this machine's key under another name with 'cs -secrets age add <a copy of $HOME/.cs-secrets/id_ed25519.pub>'." \
+        "$out" "the refusal names the file and both ways out" || return 1
+    assert_eq "$before" "$(cat "$meta/age-recipients/$mid.pub")" "the file is left as it was" || return 1
+    assert_eq "" "$(find "$meta" -name 'secrets.*')" "no sync file is written" || return 1
+}
+
 test_import_file_merges_all_machines_and_legacy() {
     local meta="$CS_SESSIONS_ROOT/test-session/.cs"
     _seed_enc_sync_file "$meta/secrets.machine-b.enc" '{"from_machine_b":"vb"}' || return 1
@@ -2751,5 +2800,7 @@ run_test test_export_switches_this_machine_to_its_ssh_key
 run_test test_first_export_without_ssh_keygen_refuses
 run_test test_export_signs_the_sync_file
 run_test test_export_replaces_a_signature_that_does_not_verify
+run_test test_export_adds_this_machine_to_a_session_that_has_recipients
+run_test test_export_refuses_when_this_machines_recipient_file_holds_another_key
 
 report_results
