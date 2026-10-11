@@ -1874,6 +1874,10 @@ test_import_file_skips_a_file_signed_by_a_key_outside_the_session() {
     local meta="$CS_SESSIONS_ROOT/test-session/.cs"
     local f="$meta/secrets.aaa@example.age" out rc=0
     _make_ssh_identity stranger || return 1
+    # This machine has exported, so the session holds a pinned key to check
+    # signatures against: the stranger's must fail that check, not find it empty.
+    "$CS_SECRETS_BIN" set local_key "vlocal" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: fixture: export failed"; return 1; }
     _plant_unsigned_sync_file "secrets.aaa@example.age" '{"planted":"vx"}' || return 1
     ssh-keygen -Y sign -f "$TEST_TMPDIR/stranger.ssh" -n "cs-secrets@test-session" < "$f" > "$f.sig" 2>/dev/null \
         || { echo "  FAIL: fixture: could not sign"; return 1; }
