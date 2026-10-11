@@ -1380,6 +1380,42 @@ test_age_add_takes_an_ssh_ed25519_key_file() {
         || { echo "  FAIL: the ssh identity cannot decrypt the sync file"; return 1; }
 }
 
+test_age_add_takes_a_raw_ssh_ed25519_key() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f; f="$meta/secrets.$(_machine_id).age"
+    local out rc=0 key_type key_body key_comment added
+    _make_ssh_identity colleague || { echo "  FAIL: could not create a test ssh identity"; return 1; }
+    read -r key_type key_body key_comment < "$TEST_TMPDIR/colleague.ssh.pub"
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+
+    out=$("$CS_SECRETS_BIN" age add "$key_type $key_body $key_comment" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "age add accepts the quoted key: $out" || return 1
+    added=$(cat "$meta"/age-recipients/recipient-*.pub)
+    assert_eq "$key_type $key_body" "$added" "the recipient file holds the key without its comment" || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: export failed"; return 1; }
+    _age_decrypts_to "$TEST_TMPDIR/colleague.ssh" "$f" "sk_123" \
+        || { echo "  FAIL: the ssh identity cannot decrypt the sync file"; return 1; }
+}
+
+# Only the two key forms are recipients. Anything else is refused before a
+# file or a pin is written.
+test_age_add_refuses_what_is_not_a_key() {
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local refusal="Error: Invalid public key. Must be a file, an age1... key or a quoted \"ssh-ed25519 <key>\""
+    local candidate out rc
+    printf 'not a key\n' > "$TEST_TMPDIR/junk.pub"
+    for candidate in "hello" "ssh-ed25519" "ssh-ed25519 not*base64" "ssh-rsa AAAAB3NzaC1yc2E" "$TEST_TMPDIR/junk.pub"; do
+        rc=0
+        out=$("$CS_SECRETS_BIN" age add "$candidate" 2>&1) || rc=$?
+        assert_eq "1" "$rc" "age add exits 1 for '$candidate'" || return 1
+        assert_eq "$refusal" "$out" "the refusal names the accepted forms for '$candidate'" || return 1
+        assert_eq "" "$(ls "$meta/age-recipients" 2>/dev/null)" "no recipient file is written for '$candidate'" || return 1
+        assert_not_exists "$HOME/.cs-secrets/sessions/test-session/age-trusted" "nothing is pinned for '$candidate'" || return 1
+    done
+}
+
 test_import_file_merges_all_machines_and_legacy() {
     local meta="$CS_SESSIONS_ROOT/test-session/.cs"
     _seed_enc_sync_file "$meta/secrets.machine-b.enc" '{"from_machine_b":"vb"}' || return 1
@@ -2463,5 +2499,7 @@ run_test test_password_export_to_an_external_path_needs_no_writable_checkout
 run_test test_export_on_a_fresh_clone_pins_nothing
 run_test test_age_remove_drops_the_pin
 run_test test_age_add_takes_an_ssh_ed25519_key_file
+run_test test_age_add_takes_a_raw_ssh_ed25519_key
+run_test test_age_add_refuses_what_is_not_a_key
 
 report_results
