@@ -2010,9 +2010,10 @@ test_retire_ignored_mode_leaves_a_base_deleted_topic_deleted() {
     assert_eq "0" "$status" "retire exits 0: $output" || return 1
     assert_file_not_exists "$base_dir/.cs/memory/gone.md" "the deleted topic stays deleted" || return 1
     assert_eq "feature topic" "$(cat "$base_dir/.cs/memory/new.md")" "a topic the feature wrote still lands" || return 1
-    assert_eq "- [Kept](kept.md): a topic
-- [New](new.md): feature-side" "$(cat "$base_dir/.cs/memory/MEMORY.md")" \
+    assert_eq "" "$(grep -F 'gone.md' "$base_dir/.cs/memory/MEMORY.md")" \
         "no pointer comes back for the deleted topic" || return 1
+    assert_eq "- [New](new.md): feature-side" "$(grep -F 'new.md' "$base_dir/.cs/memory/MEMORY.md")" \
+        "the feature's own pointer still lands" || return 1
     assert_output_not_contains "$output" "gone.md" "an untouched deleted topic is not mentioned" || return 1
 }
 

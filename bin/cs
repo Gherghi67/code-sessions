@@ -3173,13 +3173,24 @@ EOF
 # the same reason, so a link inside it (to another session's plans, say) stays
 # behind; only regular files come over. A failed copy warns and the create
 # goes on; the feature only starts with less context.
+# Each topic copied is recorded in .cs/local/inherited-topics as
+# "<cksum> <bytes> <name>", so the fuse can tell a topic the feature wrote
+# from one it was handed. A name holding a newline is not recorded, and the
+# fuse treats it as the feature's own.
 _copy_base_context() {  # base_meta wt_meta
-    local src="$1" dst="$2" f name
+    local src="$1" dst="$2" f name sum
     for f in "$src"/memory/*.md; do
         [ -f "$f" ] && [ ! -L "$f" ] || continue
         name="${f##*/}"
         case "$name" in narrative.*.md|narrative.md) continue ;; esac
-        cp "$f" "$dst/memory/$name" || warn "could not copy memory/$name from the base"
+        if ! cp "$f" "$dst/memory/$name"; then
+            warn "could not copy memory/$name from the base"
+            continue
+        fi
+        case "$name" in *$'\n'*) continue ;; esac
+        sum=$(cksum < "$dst/memory/$name") \
+            && printf '%s %s\n' "$sum" "$name" >> "$dst/local/inherited-topics" \
+            || warn "could not record memory/$name as inherited from the base"
     done
     if [ -d "$src/plans" ] && [ ! -L "$src/plans" ]; then
         local rel parent
@@ -4212,6 +4223,19 @@ _append_missing_memory_pointers() {  # feature_index base_index
     printf '%s' "$(printf '%s\n' "$missing" | wc -l | tr -d ' ')"
 }
 
+# Says how a feature's topic relates to the copy it started with: "unchanged"
+# or "edited" for a topic the create recorded as inherited, nothing for one
+# the feature wrote itself (or one a create with no record handed over).
+_inherited_topic_state() {  # feature_meta topic_file
+    local record="$1/local/inherited-topics" was now
+    [ -f "$record" ] || return 0
+    was=$(TOPIC="${2##*/}" awk '{ sum = $1 " " $2; sub(/^[^ ]+ [^ ]+ /, "")
+            if ($0 == ENVIRON["TOPIC"]) { print sum; exit } }' "$record") || return 0
+    [ -n "$was" ] || return 0
+    now=$(cksum < "$2") || return 0
+    if [ "$now" = "$was" ]; then echo unchanged; else echo edited; fi
+}
+
 # Fuse session records from a worktree .cs into the base .cs (ignored mode:
 # the repo does not track .cs/, so git merge cannot carry these). Applies the
 # same semantics the merge drivers give tracked repos: union append for
@@ -4227,7 +4251,7 @@ _append_missing_memory_pointers() {  # feature_index base_index
 # that pass would have to list the destinations a second time.
 fuse_session_records() {
     local src="$1" dst="$2"
-    local f base
+    local f base inherited
 
     # Worktrees never run migrate_session, so a task branch created before the
     # log moved to .cs/local/ still keeps its audit trail at .cs/logs/; fuse
@@ -4280,7 +4304,14 @@ fuse_session_records() {
             cmp -s "$f" "$dst/memory/$base" \
                 || warn "memory/$base already exists in the base; skipped"
         else
+            # A topic the feature inherited and the base no longer has was
+            # deleted in the base. Untouched, it stays deleted; edited, the
+            # feature's text comes back and the user is told.
+            inherited=$(_inherited_topic_state "$src" "$f")
+            [ "$inherited" != unchanged ] || continue
             cs_write_atomic "$dst/memory/$base" cat "$f" || return 1
+            [ "$inherited" != edited ] \
+                || warn "memory/$base was deleted in the base and edited in the feature; the feature's version is back in the base"
         fi
     done
 
