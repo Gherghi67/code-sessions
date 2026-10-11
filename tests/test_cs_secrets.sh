@@ -1167,7 +1167,7 @@ test_age_remove_reencrypts_an_unchanged_store() {
     f="$meta/secrets.$(_machine_id).age"
     _make_age_identity colleague || { echo "  FAIL: could not create a test identity"; return 1; }
     "$CS_SECRETS_BIN" age init >/dev/null 2>&1 || { echo "  FAIL: age init failed"; return 1; }
-    "$CS_SECRETS_BIN" age add "$HOME/.cs-secrets/age.pub" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" age add "$HOME/.cs-secrets/id_ed25519.pub" >/dev/null 2>&1 || return 1
     "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/colleague.pub" >/dev/null 2>&1 || return 1
     "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
     "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
@@ -1187,7 +1187,7 @@ test_age_remove_reencrypts_an_unchanged_store() {
         echo "  FAIL: the removed recipient still decrypts the re-exported file"
         return 1
     fi
-    if ! _age_decrypts_to "$HOME/.cs-secrets/age.key" "$f" "sk_123"; then
+    if ! _age_decrypts_to "$HOME/.cs-secrets/id_ed25519" "$f" "sk_123"; then
         echo "  FAIL: this machine's own key no longer decrypts the re-exported file"
         return 1
     fi
@@ -1259,7 +1259,7 @@ test_export_never_pins_from_a_forged_sync_file() {
     _make_age_identity attacker || { echo "  FAIL: could not create a test identity"; return 1; }
     "$CS_SECRETS_BIN" age init >/dev/null 2>&1 || { echo "  FAIL: age init failed"; return 1; }
     mkdir -p "$meta/age-recipients"
-    cp "$HOME/.cs-secrets/age.pub" "$meta/age-recipients/self.pub"
+    cp "$HOME/.cs-secrets/id_ed25519.pub" "$meta/age-recipients/self.pub"
     cp "$TEST_TMPDIR/attacker.pub" "$meta/age-recipients/attacker.pub"
     # The forged sync file a push can plant: tracked, predictable name, empty.
     : > "$f"

@@ -532,7 +532,7 @@ SHIM
         echo "  FAIL: the sync file left behind by the race still decrypts with the revoked key"
         return 1
     fi
-    if ! "$age_bin" -d -i "$HOME/.cs-secrets/age.key" < "$sync" 2>/dev/null | grep -qF sk_456; then
+    if ! "$age_bin" -d -i "$HOME/.cs-secrets/id_ed25519" < "$sync" 2>/dev/null | grep -qF sk_456; then
         echo "  FAIL: this machine's own key must decrypt the final export to the latest value"
         return 1
     fi
