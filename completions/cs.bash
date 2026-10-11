@@ -16,6 +16,9 @@ _cs_completions() {
     # Secrets subcommands
     local secrets_cmds="set store get list ls delete rm purge export export-file import-file migrate migrate-backend backend age"
 
+    # Secrets options
+    local secrets_flags="--session --replace --allow-unsigned --redact --from --delete-source --help"
+
     # Checkpoint subcommands
     local checkpoint_cmds="list show"
     local narrative_cmds="rotate"
@@ -210,9 +213,13 @@ _cs_completions() {
         return
     fi
 
-    # Context: after -secrets, complete with secrets subcommands
+    # Context: after -secrets, complete with secrets subcommands, or with the
+    # options cs-secrets takes once the word starts with a dash
     if $in_secrets; then
-        COMPREPLY=($(compgen -W "$secrets_cmds" -- "$cur"))
+        case "$cur" in
+            -*) COMPREPLY=($(compgen -W "$secrets_flags" -- "$cur")) ;;
+            *) COMPREPLY=($(compgen -W "$secrets_cmds" -- "$cur")) ;;
+        esac
         return
     fi
 
