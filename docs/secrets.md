@@ -140,6 +140,10 @@ cs -secrets export-file
   session (`base@task`) or an adopted session's link leaves that state alone:
   a feature session uses its base's secrets. Neither touches the stored secrets
   in the Keychain or the encrypted store; `cs -secrets purge` removes those
+- `age add`, `age remove` and `export-file` refuse a session name the sessions
+  root does not have (`No session named '<name>' in <root>`), so a removed or
+  mistyped name never gets a directory or a pin list. A command already past
+  that check when `cs -rm` removes the session can still write its files back
 - A `.pub` that arrives some other way, such as a `git pull` of someone's push,
   makes `export-file` refuse and print the `age add` command that pins it; pin it
   only if you trust the key, otherwise delete the file
