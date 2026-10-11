@@ -1346,6 +1346,40 @@ test_age_remove_drops_the_pin() {
     assert_output_contains "$out" "colleague\.pub" "the refusal names the re-pushed file" || return 1
 }
 
+_use_real_ssh_keygen() {
+    if ! command -v ssh-keygen >/dev/null 2>&1; then
+        echo "    SKIP (ssh-keygen is not installed)"
+        return 77
+    fi
+}
+_make_ssh_identity() {  # name -> $TEST_TMPDIR/<name>.ssh (+ .pub)
+    ssh-keygen -q -t ed25519 -N '' -C "$1@example.com" -f "$TEST_TMPDIR/$1.ssh" </dev/null || return 1
+}
+
+# A recipient may be an ssh-ed25519 key: age encrypts to it, and it is the key
+# a peer signs its sync file with.
+test_age_add_takes_an_ssh_ed25519_key_file() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f; f="$meta/secrets.$(_machine_id).age"
+    local out rc=0 key_type key_body key_comment
+    _make_ssh_identity colleague || { echo "  FAIL: could not create a test ssh identity"; return 1; }
+    read -r key_type key_body key_comment < "$TEST_TMPDIR/colleague.ssh.pub"
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
+
+    out=$("$CS_SECRETS_BIN" age add "$TEST_TMPDIR/colleague.ssh.pub" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "age add accepts the key file: $out" || return 1
+    assert_eq "$key_type $key_body" "$(cat "$meta/age-recipients/colleague.ssh.pub")" \
+        "the recipient file holds the key without its comment" || return 1
+    rc=0
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the export encrypts to it: $out" || return 1
+    _age_decrypts_to "$TEST_TMPDIR/colleague.ssh" "$f" "sk_123" \
+        || { echo "  FAIL: the ssh identity cannot decrypt the sync file"; return 1; }
+}
+
 test_import_file_merges_all_machines_and_legacy() {
     local meta="$CS_SESSIONS_ROOT/test-session/.cs"
     _seed_enc_sync_file "$meta/secrets.machine-b.enc" '{"from_machine_b":"vb"}' || return 1
@@ -2428,5 +2462,6 @@ run_test test_export_ignores_a_pin_list_planted_in_the_checkout
 run_test test_password_export_to_an_external_path_needs_no_writable_checkout
 run_test test_export_on_a_fresh_clone_pins_nothing
 run_test test_age_remove_drops_the_pin
+run_test test_age_add_takes_an_ssh_ed25519_key_file
 
 report_results
