@@ -467,6 +467,44 @@ test_purge_drops_the_sessions_age_state() {
     fi
 }
 
+# The age recipients and the sync file live in a session's .cs, and the pin
+# list under ~/.cs-secrets is keyed by the session's name. A name the sessions
+# root does not have (a removed session, a mistyped --session) must be refused
+# before anything is written: creating it would bring a removed session back
+# as a directory holding nothing but recipients, with a pin list a later
+# session of that name would inherit.
+_assert_no_trace_of_session() {  # name
+    assert_not_exists "$CS_SESSIONS_ROOT/$1" "no directory is created for the session" || return 1
+    assert_not_exists "$HOME/.cs-secrets/sessions/$1" "no age state is created for the session" || return 1
+}
+
+test_age_add_refuses_a_session_the_root_does_not_have() {
+    local out rc=0
+    out=$("$CS_SECRETS_BIN" --session ghost age add age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq0000000 2>&1) || rc=$?
+    assert_eq "1" "$rc" "age add exits 1" || return 1
+    assert_eq "Error: No session named 'ghost' in $CS_SESSIONS_ROOT" "$out" "the refusal names the session and the root" || return 1
+    _assert_no_trace_of_session ghost || return 1
+}
+
+test_age_remove_refuses_a_session_the_root_does_not_have() {
+    local out rc=0
+    out=$("$CS_SECRETS_BIN" --session ghost age remove peer 2>&1) || rc=$?
+    assert_eq "1" "$rc" "age remove exits 1" || return 1
+    assert_eq "Error: No session named 'ghost' in $CS_SESSIONS_ROOT" "$out" "the refusal names the session and the root" || return 1
+    _assert_no_trace_of_session ghost || return 1
+}
+
+# Stored secrets outlive `cs -rm`, so an export under a removed session's name
+# has something to write.
+test_export_file_refuses_a_session_the_root_does_not_have() {
+    local out rc=0
+    "$CS_SECRETS_BIN" --session ghost set api_key "sk_123" >/dev/null 2>&1 || { echo "  FAIL: fixture: set failed"; return 1; }
+    out=$("$CS_SECRETS_BIN" --session ghost export-file 2>&1) || rc=$?
+    assert_eq "1" "$rc" "export-file exits 1" || return 1
+    assert_eq "Error: No session named 'ghost' in $CS_SESSIONS_ROOT" "$out" "the refusal names the session and the root" || return 1
+    _assert_no_trace_of_session ghost || return 1
+}
+
 test_purge_empty_session() {
     local output
     output=$("$CS_SECRETS_BIN" purge 2>&1)
@@ -2155,6 +2193,9 @@ run_test test_delete_preserves_other_secrets
 # Purge
 run_test test_purge_removes_all
 run_test test_purge_drops_the_sessions_age_state
+run_test test_age_add_refuses_a_session_the_root_does_not_have
+run_test test_age_remove_refuses_a_session_the_root_does_not_have
+run_test test_export_file_refuses_a_session_the_root_does_not_have
 run_test test_purge_empty_session
 
 # Export
