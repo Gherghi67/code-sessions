@@ -573,6 +573,41 @@ test_drain_disarms_after_a_failed_pop_past_a_stale_state_tmp() {
     assert_eq "idle" "$(cat "$(QDIR)/queue.state" | tr -d '[:space:]')" "failed pop disarms the drain" || return 1
 }
 
+# The model's failure line lives only in the message of the Stop that carries
+# it. When that Stop cannot record idle, the report must outlive it: the next
+# Stop sees an ordinary message, and popping then would log the failed task
+# done. The state file is immutable, so neither the rename over it nor its
+# removal goes through.
+test_drain_keeps_a_failure_report_it_could_not_park_on() {
+    qseed "task a" "task b"
+    printf 'armed\n' > "$(QDIR)/queue.state"
+    drain >/dev/null || true
+    chflags uchg "$(QDIR)/queue.state" 2>/dev/null || return 77
+    printf 'probe\n' > "$TEST_TMPDIR/rename-probe"
+    if mv "$TEST_TMPDIR/rename-probe" "$(QDIR)/queue.state" 2>/dev/null; then
+        chflags nouchg "$(QDIR)/queue.state" 2>/dev/null || true
+        echo "    SKIP (an immutable file can still be renamed over here)"
+        return 77
+    fi
+    local reported next parked
+    reported=$(drain '{"last_assistant_message":"could not finish\ncs-task-failed"}') || true
+    next=$(drain) || true
+    chflags nouchg "$(QDIR)/queue.state"
+    assert_eq "cs task queue: could not write $(QDIR)/queue.state" "$(jq -r '.systemMessage' <<< "$reported")" \
+        "the reporting Stop says which file" || return 1
+    assert_file_not_exists "$(QDIR)/queue.done" "the failed task is never logged done" || return 1
+    assert_eq "2" "$(qlen)" "the failed task stays queued" || return 1
+    assert_eq "cs task queue: could not write $(QDIR)/queue.state" "$(jq -r '.systemMessage' <<< "$next")" \
+        "the next Stop still cannot park" || return 1
+    parked=$(drain) || true
+    assert_output_contains "$parked" "you reported the task as not completed" "the run parks once idle can be recorded" || return 1
+    assert_eq "2" "$(qlen)" "the failed task is still first in the queue" || return 1
+    assert_file_not_exists "$(QDIR)/queue.done" "nothing was logged done" || return 1
+    printf 'armed\n' > "$(QDIR)/queue.state"
+    assert_output_contains "$(drain)" "task a" "a re-arm hands the failed task out again" || return 1
+    assert_output_contains "$(drain)" "task b" "and the run goes on once it completes" || return 1
+}
+
 # A state write that fails ends the Stop hook cleanly and tells the user why,
 # in the message Claude Code shows them: no task is handed out against a state
 # that was never recorded, and the hook does not die with a bare shell status.
@@ -796,6 +831,7 @@ run_test test_drain_gate_ignores_a_teammate_stop
 run_test test_drain_disarms_when_the_pop_fails
 run_test test_drain_empties_and_returns_idle
 run_test test_drain_reports_a_state_it_cannot_write
+run_test test_drain_keeps_a_failure_report_it_could_not_park_on
 run_test test_drain_falls_back_to_no_state_file_when_idle_cannot_be_written
 run_test test_drain_pops_nothing_when_a_trip_cannot_record_idle
 run_test test_drain_advances_past_a_stale_state_tmp
