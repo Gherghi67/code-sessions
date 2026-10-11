@@ -1333,16 +1333,35 @@ test_atomic_write_refuses_a_link_out_of_a_committed_claude_config() {
 # An encrypted session's .cs/claude-config links the shell's settings,
 # keybindings and the rest out to its config dir by design; a write there
 # (statusline enable, the rotate keys) goes through to the shell's file.
+# cs -encrypt writes the session's .cs/local/pre-open, so it is a vault set
+# up by hand.
 test_atomic_write_follows_an_encrypted_sessions_shared_config_link() {
     local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
     local s="$t/sess" shell="$t/shell-config"
     mkdir -p "$s/.cs/vault-mnt/claude-config" "$shell"
+    _mark_hand_made_vault "$s"
     ln -s vault-mnt/claude-config "$s/.cs/claude-config"
     printf 'old\n' > "$shell/settings.json"
     ln -s "$shell/settings.json" "$s/.cs/vault-mnt/claude-config/settings.json"
     _atomic_write_in "$s" "$s/.cs/claude-config/settings.json" new \
         || { echo "  FAIL: the shared settings link was refused"; return 1; }
     assert_eq "new" "$(cat "$shell/settings.json")" "the shell's settings took the write" || return 1
+}
+
+# A clone can commit the same layout: .cs/claude-config linked to a real
+# .cs/vault-mnt/claude-config holding links out. Without a pre-open the
+# session has no vault, so those links are checked like any other.
+test_atomic_write_refuses_a_committed_vault_config_lookalike() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/sess" o="$t/outside" out rc=0
+    mkdir -p "$s/.cs/vault-mnt/claude-config"
+    ln -s vault-mnt/claude-config "$s/.cs/claude-config"
+    printf 'USER-OWNED\n' > "$o"
+    ln -s "$o" "$s/.cs/vault-mnt/claude-config/settings.json"
+    out=$(_atomic_write_in "$s" "$s/.cs/claude-config/settings.json" new 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the write must fail" || return 1
+    assert_eq "cs_write_atomic: $s/.cs/claude-config/settings.json leads to $o, outside the session $s" "$out" "the refusal names the path" || return 1
+    assert_eq "USER-OWNED" "$(cat "$o")" "the target outside is untouched" || return 1
 }
 
 # A vault set up by hand mounts anywhere, from .cs/local/pre-open, which a
@@ -1473,6 +1492,7 @@ run_test test_atomic_write_follows_links_inside_the_session_and_outside_it
 run_test test_atomic_write_refuses_a_link_with_a_newline_in_its_target
 run_test test_atomic_write_refuses_a_link_out_of_a_committed_claude_config
 run_test test_atomic_write_follows_an_encrypted_sessions_shared_config_link
+run_test test_atomic_write_refuses_a_committed_vault_config_lookalike
 run_test test_atomic_write_follows_a_hand_made_vault_link
 run_test test_atomic_write_resolves_dotdot_after_a_link_physically
 run_test test_atomic_write_ignores_a_tracked_or_linked_pre_open
