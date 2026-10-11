@@ -2074,6 +2074,58 @@ test_retire_ignored_mode_refuses_when_the_inherited_record_cannot_be_read() {
 
 run_test test_retire_ignored_mode_refuses_when_the_inherited_record_cannot_be_read
 
+# The same when the record directory itself cannot be searched: a file that
+# cannot be seen inside it is not a topic the feature wrote.
+test_retire_ignored_mode_refuses_when_the_inherited_directory_cannot_be_searched() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    rm "$base_dir/.cs/memory/gone.md"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    chmod 000 "$wt/.cs/local/inherited-topics"
+    if [ -e "$wt/.cs/local/inherited-topics/gone.md" ]; then
+        chmod 700 "$wt/.cs/local/inherited-topics"; return 77
+    fi
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    find "$CS_SESSIONS_ROOT" -type d -name inherited-topics -exec chmod 700 {} + 2>/dev/null
+    assert_eq "1" "$status" "the retire fails: $output" || return 1
+    assert_file_not_exists "$base_dir/.cs/memory/gone.md" "the deleted topic did not come back" || return 1
+    assert_output_contains "$output" "could not read what the feature inherited for memory/gone.md" \
+        "the error names the topic" || return 1
+}
+
+run_test test_retire_ignored_mode_refuses_when_the_inherited_directory_cannot_be_searched
+
+# The list of files a removal would destroy is read as bytes. In a locale
+# that cannot decode a name, a failed conversion must never read as "nothing
+# to lose": the retire would force-remove the worktree and the user's
+# untracked file with it.
+test_retire_keeps_untracked_work_when_a_name_does_not_decode_in_the_locale() {
+    # A multibyte locale that is not UTF-8 and in which bash still parses cs.
+    local loc
+    loc=$(locale -a 2>/dev/null | grep -m1 -x -e 'zh_CN\.GBK' -e 'ja_JP\.SJIS' -e 'zh_TW\.Big5') || true
+    [ -n "$loc" ] || { echo "    SKIP (no GBK, SJIS or Big5 locale here)"; return 77; }
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    _ignored_base_with_two_topics
+    (cd "$base_dir" && echo 'secret.env' >> .gitignore && git commit -q -am "ignore the env file")
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    echo "snow" > "$wt/.cs/memory/$(printf '\342\230\203').md"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    # Ignored, so git lists it after the .cs entries: past the name the
+    # conversion stops on.
+    echo "valuable" > "$wt/secret.env"
+    output=$(LC_ALL="$loc" "$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "valuable" "$(cat "$wt/secret.env" 2>/dev/null)" "the ignored file is still there" || return 1
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_output_contains "$output" "secret.env" "and names the file" || return 1
+}
+
+run_test test_retire_keeps_untracked_work_when_a_name_does_not_decode_in_the_locale
+
 test_retire_fuse_survives_a_torn_timeline_tail() {
     # A crash mid-append leaves a last line with no newline. Appending onto it
     # splices two records into one, and the reader's tolerant `fromjson? //
