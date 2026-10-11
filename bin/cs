@@ -3568,7 +3568,10 @@ _finish_progress_begin() {  # base_dir task
         warn "cs: /finish progress not recorded: .cs/private $(cs_private_state "$1/.cs")" >&2
         return 0
     fi
-    mkdir -p "$dir" 2>/dev/null || true
+    if ! CS_WRITE_QUIET=1 cs_mkdir_inside "$dir"; then
+        warn "cs: /finish progress not recorded: could not create $dir" >&2
+        return 0
+    fi
     _FINISH_PROGRESS="$dir/finish-progress.json"
     trap '_finish_progress_exit "$?"' EXIT
 }
@@ -3745,12 +3748,11 @@ $remove_err"
     fi
     _spawn_discard_seeds "$wt_name"
 
-    _terminate_jsonl "$base_dir/.cs/timeline.jsonl"
-    { jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    _append_record "$base_dir/.cs/timeline.jsonl" \
+           --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
            --arg event "worktree-retired" \
            --arg task "$task" \
-        '{ts: $ts, event: $event, task: $task}' \
-        >> "$base_dir/.cs/timeline.jsonl"; } 2>/dev/null || true
+        '{ts: $ts, event: $event, task: $task}'
     _finish_progress_write retired
     printf 'retired %s %s\n' "$task" "$sha"
 }
@@ -4141,14 +4143,16 @@ ${ff_err:-(no output from git merge --ff-only)}"
         warn "Temporary worktree $tmp could not be removed; run: git -C \"$base_dir\" worktree remove --force \"$tmp\""
     fi
 
-    _terminate_jsonl "$base_dir/.cs/timeline.jsonl"
-    { jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    # The feature's tree has landed in the base, and nothing has scanned it
+    # since the base opened: a link the feature committed here is refused
+    # by the append, never written through.
+    _append_record "$base_dir/.cs/timeline.jsonl" \
+           --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
            --arg event "feature-integrated" \
            --arg task "$task" \
            --arg sha "$sha" \
            --arg result "$landed" \
-        '{ts: $ts, event: $event, task: $task, sha: $sha, result: $result}' \
-        >> "$base_dir/.cs/timeline.jsonl"; } 2>/dev/null || true
+        '{ts: $ts, event: $event, task: $task, sha: $sha, result: $result}'
     _finish_progress_write landed result "$landed"
     printf 'integrated %s %s -> %s\n' "$task" "$sha" "$landed"
 }
@@ -4158,13 +4162,20 @@ ${ff_err:-(no output from git merge --ff-only)}"
 # then splices two records into one, and the tolerant per-line reader
 # (`fromjson? // empty` in run_conversations) drops BOTH the splice and the
 # record that followed it. Terminating on either side costs one byte and keeps
-# the loss at zero.
+# the loss at zero. Fails, appending nothing, when a link takes <dst> out of
+# its session.
 _append_jsonl() {  # src dst
     local src="$1" dst="$2"
     [ -f "$src" ] || return 0
     _terminate_jsonl "$dst"
-    cat "$src" >> "$dst" || return 1
+    cs_append_inside "$dst" cat "$src" || return 1
     _terminate_jsonl "$dst"
+}
+
+# A log fused onto another starts on a line of its own.
+_blank_line_then_cat() {  # file
+    echo ""
+    cat "$1"
 }
 
 # Append to the base's memory index each "- [title](target)" pointer of the
@@ -4174,6 +4185,8 @@ _append_jsonl() {  # src dst
 # topic the base has never indexed is added, so it is not lost at /finish.
 # A pointer whose topic file is not beside the base index is left out: the
 # base deleted that topic after the feature branched, and the deletion stands.
+# Fails, appending nothing, when a link takes the base index out of its
+# session: a feature can commit MEMORY.md as a link, and a merge installs it.
 _append_missing_memory_pointers() {  # feature_index base_index
     local src="$1" dst="$2" have="$2" missing
     [ -f "$src" ] || { printf '0'; return 0; }
@@ -4195,7 +4208,7 @@ _append_missing_memory_pointers() {  # feature_index base_index
     missing=$(printf '%s' "$kept")
     [ -n "$missing" ] || { printf '0'; return 0; }
     _terminate_jsonl "$dst"
-    printf '%s\n' "$missing" >> "$dst" || return 1
+    cs_append_inside "$dst" printf '%s\n' "$missing" || return 1
     printf '%s' "$(printf '%s\n' "$missing" | wc -l | tr -d ' ')"
 }
 
@@ -4205,7 +4218,13 @@ _append_missing_memory_pointers() {  # feature_index base_index
 # timeline/log/narratives, copy-never-overwrite for memory topic files,
 # base-wins for MEMORY.md plus the feature's pointers to targets it lacks. Every write returns 1 on failure: the caller runs
 # this in a subshell on the left of ||, where errexit is off, and deletes the
-# staged records only on success.
+# staged records only on success. Every write also goes through the link
+# check: the landing put the feature's tree in the base, and nothing has
+# scanned the base since. A write that fails leaves the earlier ones in the
+# base, so the staged records can repeat some the base already holds; the
+# caller's error says to fuse what is missing. No pass checks every
+# destination before the first write: a full disk leaves the same state, and
+# that pass would have to list the destinations a second time.
 fuse_session_records() {
     local src="$1" dst="$2"
     local f base
@@ -4228,11 +4247,11 @@ fuse_session_records() {
 
     _append_jsonl "$src/timeline.jsonl" "$dst/timeline.jsonl" || return 1
     if [ -n "$srclog" ]; then
-        mkdir -p "$dstlog" || return 1
-        { echo ""; cat "$srclog"; } >> "$dstlog/session.log" || return 1
+        cs_mkdir_inside "$dstlog" || return 1
+        cs_append_inside "$dstlog/session.log" _blank_line_then_cat "$srclog" || return 1
     fi
 
-    mkdir -p "$dst/memory" || return 1
+    cs_mkdir_inside "$dst/memory" || return 1
     for f in "$src"/memory/narrative.*.md; do
         [ -f "$f" ] || continue
         base=$(basename "$f")
@@ -4241,10 +4260,10 @@ fuse_session_records() {
             # A file not opening with --- has no frontmatter (whole file is
             # body); counting stops at 2 so a --- horizontal rule in the
             # body stays body instead of truncating the append.
-            awk 'NR==1 && $0 != "---" {c=2} /^---$/ && c < 2 {c++; next} c >= 2 {print}' \
-                "$f" >> "$dst/memory/$base" || return 1
+            cs_append_inside "$dst/memory/$base" \
+                awk 'NR==1 && $0 != "---" {c=2} /^---$/ && c < 2 {c++; next} c >= 2 {print}' "$f" || return 1
         else
-            cp "$f" "$dst/memory/$base" || return 1
+            cs_write_atomic "$dst/memory/$base" cat "$f" || return 1
         fi
     done
 
@@ -4261,7 +4280,7 @@ fuse_session_records() {
             cmp -s "$f" "$dst/memory/$base" \
                 || warn "memory/$base already exists in the base; skipped"
         else
-            cp "$f" "$dst/memory/$base" || return 1
+            cs_write_atomic "$dst/memory/$base" cat "$f" || return 1
         fi
     done
 
@@ -5071,11 +5090,22 @@ _seed_readme_objective() {  # readme, text
 # it was never complete — but the next one no longer dies with it. A no-op on a
 # file that is empty or already terminated, and best-effort on write like every
 # other timeline append: a launch must not die because a journal could not be
-# repaired.
+# repaired. Silent even about a link out of the session: the append that
+# follows names it.
 _terminate_jsonl() {  # file
     [ -s "$1" ] || return 0
     [ -n "$(tail -c 1 "$1" 2>/dev/null)" ] || return 0
-    { printf '\n' >> "$1"; } 2>/dev/null || true
+    { CS_WRITE_QUIET=1 cs_append_inside "$1" printf '\n'; } 2>/dev/null || true
+}
+
+# Append one record, built by jq -nc from the arguments, to a session's JSONL
+# journal (the timeline, the queue's notifications). Best-effort like every
+# journal write, so a failure never stops the verb; a link that takes the
+# journal out of the session is still named on stderr, and nothing is written.
+_append_record() {  # file, jq args...
+    local file="$1"; shift
+    _terminate_jsonl "$file"
+    CS_WRITE_QUIET=1 cs_append_inside "$file" jq -nc "$@" || true
 }
 
 # Append a rotated event to the tracked timeline: the durable link between
@@ -5084,15 +5114,14 @@ _terminate_jsonl() {  # file
 # Best-effort — a timeline failure must never break a launch.
 _timeline_rotated() {  # session_dir, from, to, reason, [handoff]
     local session_dir="$1" from="$2" to="$3" reason="$4" handoff="${5:-}"
-    _terminate_jsonl "$session_dir/.cs/timeline.jsonl"
-    { jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    _append_record "$session_dir/.cs/timeline.jsonl" \
+           --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
            --arg from "$from" \
            --arg to "$to" \
            --arg reason "$reason" \
            --arg handoff "$handoff" \
            '{ts: $ts, event: "rotated", from: $from, to: $to, reason: $reason}
-            + (if $handoff == "" then {} else {handoff: $handoff} end)' \
-        >> "$session_dir/.cs/timeline.jsonl"; } 2>/dev/null || true
+            + (if $handoff == "" then {} else {handoff: $handoff} end)'
 }
 
 # Allocate a fresh UUID, rewrite the local state's claude_session_id to it, export
@@ -6438,16 +6467,15 @@ save_checkpoint() {
     # was taken.
     local sealed=false
     [ "$checkpoints_dir" = "$meta_dir/private/checkpoints" ] && sealed=true
-    _terminate_jsonl "$timeline_file"
-    { jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    _append_record "$timeline_file" \
+           --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
            --arg event "checkpoint" \
            --arg label "$label" \
            --arg file "$filename" \
            --arg branch "$timeline_branch" \
            --argjson sealed "$sealed" \
            'if $sealed then {ts: $ts, event: $event, branch: $branch}
-            else {ts: $ts, event: $event, label: $label, file: $file, branch: $branch} end' \
-        >> "$timeline_file"; } 2>/dev/null || true
+            else {ts: $ts, event: $event, label: $label, file: $file, branch: $branch} end'
 
     info "Checkpoint saved: $filename"
     echo "  Label: $label"
@@ -6739,14 +6767,13 @@ rotate_narrative() {
     fi
 
     local timeline="$meta_dir/timeline.jsonl"
-    _terminate_jsonl "$timeline"
-    { jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    _append_record "$timeline" \
+           --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
            --arg actor "$actor" \
            --argjson sections "$sections" \
            --argjson bytes "$((cut - head_end))" \
            --arg archive "$chunk_rel" \
-           '{ts: $ts, event: "narrative_rotated", actor: $actor, sections: $sections, bytes: $bytes, archive: $archive}' \
-        >> "$timeline"; } 2>/dev/null || true
+           '{ts: $ts, event: "narrative_rotated", actor: $actor, sections: $sections, bytes: $bytes, archive: $archive}'
 
     local archived_kb now_kb
     archived_kb=$(( (cut - head_end) / 1024 ))
@@ -7789,9 +7816,8 @@ run_queue() {
         clear) _queue_clear "$qdir";;
         start) shift; _queue_start "$qdir" "${1:-}";;
         defer) mkdir -p "$qdir"; cs_write_atomic "$qdir/queue.declined" printf '%s\n' "$(date +%s)"
-               _terminate_jsonl "$qdir/notifications.jsonl"
-               { jq -nc --arg ts "$(date +%s)" '{ts: ($ts|tonumber), event: "gate_declined"}' \
-                   >> "$qdir/notifications.jsonl"; } 2>/dev/null || true;;
+               _append_record "$qdir/notifications.jsonl" \
+                   --arg ts "$(date +%s)" '{ts: ($ts|tonumber), event: "gate_declined"}';;
         log)   _queue_log "$qdir";;
         *)     error "Usage: cs -queue [add \"<task>\" | accept <message id> | list | rm <n> | clear | log | start [subagents|workflow]]";;
     esac

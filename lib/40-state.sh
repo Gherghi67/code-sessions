@@ -315,11 +315,22 @@ _seed_readme_objective() {  # readme, text
 # it was never complete — but the next one no longer dies with it. A no-op on a
 # file that is empty or already terminated, and best-effort on write like every
 # other timeline append: a launch must not die because a journal could not be
-# repaired.
+# repaired. Silent even about a link out of the session: the append that
+# follows names it.
 _terminate_jsonl() {  # file
     [ -s "$1" ] || return 0
     [ -n "$(tail -c 1 "$1" 2>/dev/null)" ] || return 0
-    { printf '\n' >> "$1"; } 2>/dev/null || true
+    { CS_WRITE_QUIET=1 cs_append_inside "$1" printf '\n'; } 2>/dev/null || true
+}
+
+# Append one record, built by jq -nc from the arguments, to a session's JSONL
+# journal (the timeline, the queue's notifications). Best-effort like every
+# journal write, so a failure never stops the verb; a link that takes the
+# journal out of the session is still named on stderr, and nothing is written.
+_append_record() {  # file, jq args...
+    local file="$1"; shift
+    _terminate_jsonl "$file"
+    CS_WRITE_QUIET=1 cs_append_inside "$file" jq -nc "$@" || true
 }
 
 # Append a rotated event to the tracked timeline: the durable link between
@@ -328,15 +339,14 @@ _terminate_jsonl() {  # file
 # Best-effort — a timeline failure must never break a launch.
 _timeline_rotated() {  # session_dir, from, to, reason, [handoff]
     local session_dir="$1" from="$2" to="$3" reason="$4" handoff="${5:-}"
-    _terminate_jsonl "$session_dir/.cs/timeline.jsonl"
-    { jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    _append_record "$session_dir/.cs/timeline.jsonl" \
+           --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
            --arg from "$from" \
            --arg to "$to" \
            --arg reason "$reason" \
            --arg handoff "$handoff" \
            '{ts: $ts, event: "rotated", from: $from, to: $to, reason: $reason}
-            + (if $handoff == "" then {} else {handoff: $handoff} end)' \
-        >> "$session_dir/.cs/timeline.jsonl"; } 2>/dev/null || true
+            + (if $handoff == "" then {} else {handoff: $handoff} end)'
 }
 
 # Allocate a fresh UUID, rewrite the local state's claude_session_id to it, export

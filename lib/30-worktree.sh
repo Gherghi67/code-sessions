@@ -453,7 +453,10 @@ _finish_progress_begin() {  # base_dir task
         warn "cs: /finish progress not recorded: .cs/private $(cs_private_state "$1/.cs")" >&2
         return 0
     fi
-    mkdir -p "$dir" 2>/dev/null || true
+    if ! CS_WRITE_QUIET=1 cs_mkdir_inside "$dir"; then
+        warn "cs: /finish progress not recorded: could not create $dir" >&2
+        return 0
+    fi
     _FINISH_PROGRESS="$dir/finish-progress.json"
     trap '_finish_progress_exit "$?"' EXIT
 }
@@ -630,12 +633,11 @@ $remove_err"
     fi
     _spawn_discard_seeds "$wt_name"
 
-    _terminate_jsonl "$base_dir/.cs/timeline.jsonl"
-    { jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    _append_record "$base_dir/.cs/timeline.jsonl" \
+           --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
            --arg event "worktree-retired" \
            --arg task "$task" \
-        '{ts: $ts, event: $event, task: $task}' \
-        >> "$base_dir/.cs/timeline.jsonl"; } 2>/dev/null || true
+        '{ts: $ts, event: $event, task: $task}'
     _finish_progress_write retired
     printf 'retired %s %s\n' "$task" "$sha"
 }
@@ -1026,14 +1028,16 @@ ${ff_err:-(no output from git merge --ff-only)}"
         warn "Temporary worktree $tmp could not be removed; run: git -C \"$base_dir\" worktree remove --force \"$tmp\""
     fi
 
-    _terminate_jsonl "$base_dir/.cs/timeline.jsonl"
-    { jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    # The feature's tree has landed in the base, and nothing has scanned it
+    # since the base opened: a link the feature committed here is refused
+    # by the append, never written through.
+    _append_record "$base_dir/.cs/timeline.jsonl" \
+           --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
            --arg event "feature-integrated" \
            --arg task "$task" \
            --arg sha "$sha" \
            --arg result "$landed" \
-        '{ts: $ts, event: $event, task: $task, sha: $sha, result: $result}' \
-        >> "$base_dir/.cs/timeline.jsonl"; } 2>/dev/null || true
+        '{ts: $ts, event: $event, task: $task, sha: $sha, result: $result}'
     _finish_progress_write landed result "$landed"
     printf 'integrated %s %s -> %s\n' "$task" "$sha" "$landed"
 }
@@ -1043,13 +1047,20 @@ ${ff_err:-(no output from git merge --ff-only)}"
 # then splices two records into one, and the tolerant per-line reader
 # (`fromjson? // empty` in run_conversations) drops BOTH the splice and the
 # record that followed it. Terminating on either side costs one byte and keeps
-# the loss at zero.
+# the loss at zero. Fails, appending nothing, when a link takes <dst> out of
+# its session.
 _append_jsonl() {  # src dst
     local src="$1" dst="$2"
     [ -f "$src" ] || return 0
     _terminate_jsonl "$dst"
-    cat "$src" >> "$dst" || return 1
+    cs_append_inside "$dst" cat "$src" || return 1
     _terminate_jsonl "$dst"
+}
+
+# A log fused onto another starts on a line of its own.
+_blank_line_then_cat() {  # file
+    echo ""
+    cat "$1"
 }
 
 # Append to the base's memory index each "- [title](target)" pointer of the
@@ -1059,6 +1070,8 @@ _append_jsonl() {  # src dst
 # topic the base has never indexed is added, so it is not lost at /finish.
 # A pointer whose topic file is not beside the base index is left out: the
 # base deleted that topic after the feature branched, and the deletion stands.
+# Fails, appending nothing, when a link takes the base index out of its
+# session: a feature can commit MEMORY.md as a link, and a merge installs it.
 _append_missing_memory_pointers() {  # feature_index base_index
     local src="$1" dst="$2" have="$2" missing
     [ -f "$src" ] || { printf '0'; return 0; }
@@ -1080,7 +1093,7 @@ _append_missing_memory_pointers() {  # feature_index base_index
     missing=$(printf '%s' "$kept")
     [ -n "$missing" ] || { printf '0'; return 0; }
     _terminate_jsonl "$dst"
-    printf '%s\n' "$missing" >> "$dst" || return 1
+    cs_append_inside "$dst" printf '%s\n' "$missing" || return 1
     printf '%s' "$(printf '%s\n' "$missing" | wc -l | tr -d ' ')"
 }
 
@@ -1090,7 +1103,13 @@ _append_missing_memory_pointers() {  # feature_index base_index
 # timeline/log/narratives, copy-never-overwrite for memory topic files,
 # base-wins for MEMORY.md plus the feature's pointers to targets it lacks. Every write returns 1 on failure: the caller runs
 # this in a subshell on the left of ||, where errexit is off, and deletes the
-# staged records only on success.
+# staged records only on success. Every write also goes through the link
+# check: the landing put the feature's tree in the base, and nothing has
+# scanned the base since. A write that fails leaves the earlier ones in the
+# base, so the staged records can repeat some the base already holds; the
+# caller's error says to fuse what is missing. No pass checks every
+# destination before the first write: a full disk leaves the same state, and
+# that pass would have to list the destinations a second time.
 fuse_session_records() {
     local src="$1" dst="$2"
     local f base
@@ -1113,11 +1132,11 @@ fuse_session_records() {
 
     _append_jsonl "$src/timeline.jsonl" "$dst/timeline.jsonl" || return 1
     if [ -n "$srclog" ]; then
-        mkdir -p "$dstlog" || return 1
-        { echo ""; cat "$srclog"; } >> "$dstlog/session.log" || return 1
+        cs_mkdir_inside "$dstlog" || return 1
+        cs_append_inside "$dstlog/session.log" _blank_line_then_cat "$srclog" || return 1
     fi
 
-    mkdir -p "$dst/memory" || return 1
+    cs_mkdir_inside "$dst/memory" || return 1
     for f in "$src"/memory/narrative.*.md; do
         [ -f "$f" ] || continue
         base=$(basename "$f")
@@ -1126,10 +1145,10 @@ fuse_session_records() {
             # A file not opening with --- has no frontmatter (whole file is
             # body); counting stops at 2 so a --- horizontal rule in the
             # body stays body instead of truncating the append.
-            awk 'NR==1 && $0 != "---" {c=2} /^---$/ && c < 2 {c++; next} c >= 2 {print}' \
-                "$f" >> "$dst/memory/$base" || return 1
+            cs_append_inside "$dst/memory/$base" \
+                awk 'NR==1 && $0 != "---" {c=2} /^---$/ && c < 2 {c++; next} c >= 2 {print}' "$f" || return 1
         else
-            cp "$f" "$dst/memory/$base" || return 1
+            cs_write_atomic "$dst/memory/$base" cat "$f" || return 1
         fi
     done
 
@@ -1146,7 +1165,7 @@ fuse_session_records() {
             cmp -s "$f" "$dst/memory/$base" \
                 || warn "memory/$base already exists in the base; skipped"
         else
-            cp "$f" "$dst/memory/$base" || return 1
+            cs_write_atomic "$dst/memory/$base" cat "$f" || return 1
         fi
     done
 
