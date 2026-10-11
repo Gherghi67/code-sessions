@@ -815,6 +815,7 @@ test_retire_with_a_locked_base_vault_leaves_the_worktree_whole() {
     local sha output status=0
     sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
     ln -s "$TEST_TMPDIR/vault-mnt/private" "$base_dir/.cs/private"
+    _mark_hand_made_vault "$base_dir"
 
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
 
@@ -1682,13 +1683,14 @@ run_test test_integrate_and_retire_never_write_through_a_landed_timeline_link
 # pointer line. The merge installs the link in the temp checkout, and the
 # pointer carryover then appended that line through it.
 test_integrate_never_appends_memory_pointers_through_a_committed_index_link() {
-    local sha base_dir wt output status=0 outside up="" i
+    local sha base_dir wt output status=0 outside
+    # Enough levels to climb to / from any temp checkout.
+    local up="../../../../../../../../../../../../../../../../../../../../../../../../"
     base_dir=$(create_test_session_with_git "myproj")
     cs_launch "myproj@fix-auth"
     wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
     outside="$(cd "$TEST_TMPDIR" && pwd -P)/outside-index"
     printf 'outside\n' > "$outside"
-    for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24; do up="$up../"; done
     (cd "$wt/.cs/memory" && printf 'topic\n' > x.md && mkdir -- '- [X](x.md)' && : > '- [X](x.md)/.keep' \
         && rm -f MEMORY.md && ln -s -- "- [X](x.md)/$up${outside#/}" MEMORY.md \
         && git add -A . && git commit -q -m "link the index out")
