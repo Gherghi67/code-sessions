@@ -3568,7 +3568,10 @@ _finish_progress_begin() {  # base_dir task
         warn "cs: /finish progress not recorded: .cs/private $(cs_private_state "$1/.cs")" >&2
         return 0
     fi
-    mkdir -p "$dir" 2>/dev/null || true
+    if ! CS_WRITE_QUIET=1 cs_mkdir_inside "$dir"; then
+        warn "cs: /finish progress not recorded: could not create $dir" >&2
+        return 0
+    fi
     _FINISH_PROGRESS="$dir/finish-progress.json"
     trap '_finish_progress_exit "$?"' EXIT
 }
