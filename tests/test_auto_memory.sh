@@ -839,10 +839,13 @@ test_pre_open_success_without_mount_still_refuses() {
 
 # A session whose Claude Code config lives on its encrypted volume: .cs/claude-config
 # is a symlink into vault-mnt, the same shape as memory and plans.
+# cs -encrypt writes the session's .cs/local/pre-open; without one the
+# config dir is no vault's and its links out are refused.
 _make_vaulted_config() {  # name
     local meta="$CS_SESSIONS_ROOT/$1/.cs"
     mkdir -p "$meta/vault-mnt/claude-config"
     ln -s "$meta/vault-mnt/claude-config" "$meta/claude-config"
+    _mark_hand_made_vault "$CS_SESSIONS_ROOT/$1"
 }
 
 # Records the Claude Code config variables each launch sees; "unset" when absent.

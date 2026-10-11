@@ -27,12 +27,15 @@ setup_merge_attributes() {
 _refuse_links_out_of_session() {  # dir
     local dir="$1" dir_p p link real cur todo seen="" prune="" cfg=""
     dir_p=$(cd -P "$dir" 2>/dev/null && pwd -P) || return 0
-    _cs_hand_made_vault "$dir" && prune="$dir_p/.cs/vault-mnt"
     # cs links the shell's settings, skills and the rest into an encrypted
     # session's config dir by design; that dir is skipped only while
-    # .cs/claude-config is cs's own link into the vault.
-    if [ -L "$dir_p/.cs/claude-config" ] && [ "$dir_p/.cs/claude-config" -ef "$dir_p/.cs/vault-mnt/claude-config" ]; then
-        cfg=$(cd -P "$dir_p/.cs/vault-mnt/claude-config" 2>/dev/null && pwd -P)
+    # .cs/claude-config is cs's own link into a vault set up by hand. A clone
+    # can commit the layout but not the pre-open that makes it a vault.
+    if _cs_hand_made_vault "$dir"; then
+        prune="$dir_p/.cs/vault-mnt"
+        if [ -L "$dir_p/.cs/claude-config" ] && [ "$dir_p/.cs/claude-config" -ef "$dir_p/.cs/vault-mnt/claude-config" ]; then
+            cfg=$(cd -P "$dir_p/.cs/vault-mnt/claude-config" 2>/dev/null && pwd -P)
+        fi
     fi
     # A flat-layout session (Codex r2 #1) has Phase 1 move these root entries
     # into .cs/ and then write them; vet them before the move.

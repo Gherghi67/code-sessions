@@ -377,23 +377,17 @@ _cs_hand_made_vault() {  # root
 # True when a path lies in the session at <root> by its spelling (as typed,
 # or under the root's physical path, the spelling an adopted session is
 # written by) but a write to it lands outside the root; prints where it lands.
-# Two kinds of link lead out by design and are let through:
-# - an encrypted session's .cs/claude-config links settings, skills and the
-#   rest to the shell's own config, so a path under it is let through while
-#   .cs/claude-config is cs's link into the vault (a clone can commit a real
-#   one holding links out);
-# - a vault set up by hand mounts anywhere, from .cs/local/pre-open, so while
-#   one exists the four vault links, and a .cs/narrative-archive link (which
-#   cs -narrative rotate uses as it is), may lead out. A clone cannot ship a
-#   pre-open: cs_assert_local_untracked refuses one tracked or linked in.
+# A vault set up by hand mounts anywhere, from .cs/local/pre-open, so while
+# one exists the four vault links, and a .cs/narrative-archive link (which
+# cs -narrative rotate uses as it is), may lead out. That covers an encrypted
+# session, whose .cs/claude-config links settings, skills and the rest to the
+# shell's own config: cs -encrypt writes the pre-open. A clone cannot ship a
+# pre-open (cs_assert_local_untracked refuses one tracked or linked in), but
+# it can commit the vault's layout, so the layout alone earns nothing.
 _cs_write_leaves_session() {  # root, path
     local root="$1" root_p real sub
     root_p=$(cd "$root" 2>/dev/null && pwd -P) || return 1
     case "$2" in
-        "$root"/.cs/claude-config/*|"$root_p"/.cs/claude-config/*)
-            if [ -L "$root/.cs/claude-config" ] && [ "$root/.cs/claude-config" -ef "$root/.cs/vault-mnt/claude-config" ]; then
-                return 1
-            fi ;;
         "$root"/*|"$root_p"/*) ;;
         *) return 1 ;;
     esac
