@@ -1402,10 +1402,9 @@ test_set_rejects_a_name_that_breaks_out_of_export() {
 # both become CS_SECRET_API_KEY. Eval takes the last, so a sync file can shadow
 # a real secret with an attacker's value. Refuse rather than emit both.
 test_export_refuses_colliding_exported_names() {
-    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
-    _seed_enc_sync_file "$meta/secrets.machine-c.enc" \
-        '{"api_key":"REAL","api-key":"SHADOW"}' || return 1
-    PATH="$(_ageless_path)" "$CS_SECRETS_BIN" import-file >/dev/null 2>&1
+    # Staged with two `set` calls: an import refuses the pair.
+    "$CS_SECRETS_BIN" set api_key "REAL" >/dev/null 2>&1 || { echo "  FAIL: fixture: set api_key failed"; return 1; }
+    "$CS_SECRETS_BIN" set api-key "SHADOW" >/dev/null 2>&1 || { echo "  FAIL: fixture: set api-key failed"; return 1; }
 
     local out rc=0
     out=$("$CS_SECRETS_BIN" export 2>&1) || rc=$?
