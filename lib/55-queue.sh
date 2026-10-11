@@ -236,7 +236,7 @@ _queue_rm() {  # qdir, index
 _queue_clear() {  # qdir
     local qdir="$1"
     rm -rf "$qdir/queue" "$qdir/queue.tmp"
-    rm -f "$qdir/queue.state" "$qdir/queue.declined" "$qdir/queue.mode"
+    rm -f "$qdir/queue.state" "$qdir/queue.declined" "$qdir/queue.mode" "$qdir/queue.failed"
 }
 
 # Arms the queue and records how its tasks run: in the conversation (no mode

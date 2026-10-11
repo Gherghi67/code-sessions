@@ -186,7 +186,8 @@ run_checkpoint() {
 # Machine-local queue of prompts drained by the Stop hook. Files live in
 # <session>/.cs/local/ (.cs/private/ in an encrypted session): queue/ (one
 # file per task, staged via queue.tmp/),
-# queue.done, queue.state (idle|armed|draining), queue.declined (epoch).
+# queue.done, queue.state (idle|armed|draining), queue.declined (epoch),
+# queue.failed (a reported failure the drain has not parked on yet).
 # Plain files so the standalone Stop hook can read them without bin/cs's
 # helpers.
 

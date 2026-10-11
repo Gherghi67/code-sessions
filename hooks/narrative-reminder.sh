@@ -460,6 +460,7 @@ fi
 LOCAL="$META_DIR/local"
 QUEUE="$QDIR/queue"
 QSTATE_FILE="$QDIR/queue.state"
+QFAILED_FILE="$QDIR/queue.failed"
 
 # Record the queue state. An absent state file reads as idle, so when idle
 # cannot be written the file is removed instead: "draining" left behind would
@@ -604,7 +605,7 @@ _qpark() {  # kind reading limit remaining note
     _inbox_append --arg ts "$(date +%s)" --arg r "$kind" \
         --arg v "$reading" --arg l "$limit" --arg n "$remaining" \
         '{ts: ($ts|tonumber), event: "breaker_tripped", reason: $r, reading: ($v|tonumber), limit: ($l|tonumber), remaining: ($n|tonumber)}'
-    rm -f "$QDIR/failures"
+    rm -f "$QDIR/failures" "$QFAILED_FILE"
     if [ "$kind" = task_failed ]; then
         _notify_spawner "task reported failed, $remaining task(s) remaining"
         reason="cs task queue: you reported the task as not completed ($QFAIL_LINE). The queue is parked with $remaining task(s) remaining$note; nothing was lost."
@@ -652,7 +653,7 @@ if [ "$QLEN" -gt 0 ] && _mail_is_lead; then
         _first=$(_qfirst "$QUEUE") || _first=""
         [ -n "$_first" ] && TASK=$(cat "$_first" 2>/dev/null || true)
         _qstate_write draining
-        rm -f "$QDIR/failures"
+        rm -f "$QDIR/failures" "$QFAILED_FILE"
         _inbox_append --arg ts "$(date +%s)" --arg q "$QLEN" \
             '{ts: ($ts|tonumber), event: "drain_started", queued: ($q|tonumber)}'
         REASON="cs task queue: starting a walk-away run. Work through the queued tasks one at a time; I will hand you the next after each finishes. Mirror the whole queue into your native task list now: run \`cs -queue list\` to see every queued item (this message shows only the first), create one task each, and mark each completed as you finish it. When a task is done, mark it completed and simply end your turn; the next task is delivered automatically on the next turn. $QFAIL_HINT Do not read or edit the queue yourself.
@@ -679,7 +680,19 @@ $RUN_MODE$SCOPE"
         # never handed out. A hook killed between the write and the pop leaves
         # idle with the finished task still queued, which a re-arm runs again.
         TRIP=$(_breaker_check) || TRIP=""
-        if _qreported_failed; then TRIP="task_failed 1 1"; fi
+        # The failure line exists only in the message of the Stop that
+        # carries it, so it goes to disk before idle is recorded: a Stop that
+        # cannot record idle ends with "draining" in place, and the next one,
+        # with an ordinary message, would pop the failed task and log it
+        # done. The report is lost only when this file cannot be written
+        # either.
+        if _qreported_failed; then
+            cs_write_atomic "$QFAILED_FILE" printf '%s\n' "$QFAIL_LINE" \
+                || echo "cs task queue: could not write $QFAILED_FILE" >&2
+            TRIP="task_failed 1 1"
+        elif [ -e "$QFAILED_FILE" ]; then
+            TRIP="task_failed 1 1"
+        fi
         [ -z "$TRIP" ] || _qstate_write idle
         case "$TRIP" in
             failures\ *|task_failed\ *)
