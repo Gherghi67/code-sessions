@@ -49,6 +49,14 @@ secrets_subcommands() {
     } | grep -E '^[a-z]' | sort -u
 }
 
+# Every long option bin/cs-secrets' argument parser takes: the arms of its
+# option loop, `--name)` alone or behind a short form (`-s|--session)`).
+secrets_flags() {
+    grep -oE '^ +(-[a-z]\|)?--[a-z-]+\)' "$SECRETS_FILE" \
+        | grep -oE -- '--[a-z-]+' \
+        | sort -u
+}
+
 # Both completion scripts shell out to `cs`, so a functional test has to shadow
 # the installed cs with the one just built from lib/.
 put_built_cs_on_path() {
@@ -283,6 +291,26 @@ test_zsh_completion_covers_all_secrets_subcommands() {
     done
     if [ -n "$missing" ]; then
         echo "  FAIL: completions/_cs missing secrets subcommands:$missing"
+        return 1
+    fi
+}
+
+test_secrets_flag_extraction_is_sane() {
+    local flags
+    flags=$(secrets_flags)
+    assert_output_contains "$flags" "^--replace$" "extraction should find --replace" || return 1
+    assert_output_contains "$flags" "^--allow-unsigned$" "extraction should find --allow-unsigned" || return 1
+    assert_output_contains "$flags" "^--session$" "extraction should find --session behind its short form" || return 1
+}
+
+test_both_completions_offer_every_secrets_flag() {
+    local missing="" flag
+    for flag in $(secrets_flags); do
+        grep -qF -- "$flag" "$ZSH_COMP" 2>/dev/null || missing="$missing _cs:$flag"
+        grep -qF -- "$flag" "$BASH_COMP" 2>/dev/null || missing="$missing cs.bash:$flag"
+    done
+    if [ -n "$missing" ]; then
+        echo "  FAIL: completions missing secrets flags:$missing"
         return 1
     fi
 }
@@ -530,6 +558,8 @@ test_completions_cover_all_queue_subcommands() {
 
 run_test test_zsh_completion_covers_all_secrets_subcommands
 run_test test_bash_completion_covers_all_secrets_subcommands
+run_test test_secrets_flag_extraction_is_sane
+run_test test_both_completions_offer_every_secrets_flag
 run_test test_queue_extraction_is_sane
 run_test test_completions_cover_all_queue_subcommands
 run_test test_bash_msg_completes_target_session
