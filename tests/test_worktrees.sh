@@ -1678,6 +1678,59 @@ test_integrate_and_retire_never_write_through_a_landed_timeline_link() {
 
 run_test test_integrate_and_retire_never_write_through_a_landed_timeline_link
 
+# A feature can commit MEMORY.md as a link whose target text reads as a
+# pointer line. The merge installs the link in the temp checkout, and the
+# pointer carryover then appended that line through it.
+test_integrate_never_appends_memory_pointers_through_a_committed_index_link() {
+    local sha base_dir wt output status=0 outside up="" i
+    base_dir=$(create_test_session_with_git "myproj")
+    cs_launch "myproj@fix-auth"
+    wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    outside="$(cd "$TEST_TMPDIR" && pwd -P)/outside-index"
+    printf 'outside\n' > "$outside"
+    for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24; do up="$up../"; done
+    (cd "$wt/.cs/memory" && printf 'topic\n' > x.md && mkdir -- '- [X](x.md)' && : > '- [X](x.md)/.keep' \
+        && rm -f MEMORY.md && ln -s -- "- [X](x.md)/$up${outside#/}" MEMORY.md \
+        && git add -A . && git commit -q -m "link the index out")
+    assert_eq "outside" "$(cat "$wt/.cs/memory/MEMORY.md")" "the fixture's link reaches the outside file" || return 1
+    sha=$(git -C "$wt" rev-parse HEAD)
+    output=$("$CS_BIN" myproj -integrate-feature fix-auth "$sha" -- true 2>&1) || status=$?
+    assert_eq "outside" "$(cat "$outside")" "nothing was appended outside the session" || return 1
+    assert_eq "1" "$status" "the integrate refuses: $output" || return 1
+    assert_output_contains "$output" "MEMORY.md leads to $outside" "the refusal names the link" || return 1
+}
+
+run_test test_integrate_never_appends_memory_pointers_through_a_committed_index_link
+
+# Ignored mode: git overwrites the base's ignored timeline with a link the
+# feature force-added, and retire then fuses the worktree's own records into
+# the base.
+test_retire_never_fuses_records_through_a_landed_timeline_link() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt sha output status=0 outside
+    mkdir -p "$base_dir/.cs"/{memory,local}
+    echo "# readme" > "$base_dir/README.md"
+    printf '.cs/\n' > "$base_dir/.gitignore"
+    (cd "$base_dir" && git init -q && git add -A && git commit -q -m init)
+    cs_launch "proj@t1"
+    wt="$CS_SESSIONS_ROOT/proj@t1"
+    outside="$(cd "$TEST_TMPDIR" && pwd -P)/outside-fuse"
+    printf 'outside\n' > "$outside"
+    (cd "$wt" && rm -f .cs/timeline.jsonl && ln -s "$outside" .cs/timeline.jsonl \
+        && git add -f .cs/timeline.jsonl && git commit -q -m "link the timeline out")
+    sha=$(git -C "$wt" rev-parse HEAD)
+    git -C "$wt" checkout -q --detach HEAD~1
+    echo '{"ts":"2026-01-01T00:00:00Z","event":"task","note":"feature-side"}' > "$wt/.cs/timeline.jsonl"
+    "$CS_BIN" proj -integrate-feature t1 "$sha" -- true >/dev/null 2>&1 || { echo "  FAIL: integrate failed"; return 1; }
+    assert_symlink "$base_dir/.cs/timeline.jsonl" "the feature's link landed over the base's ignored timeline" || return 1
+    output=$("$CS_BIN" proj -retire-feature t1 "$sha" 2>&1) || status=$?
+    assert_eq "outside" "$(cat "$outside")" "the fuse wrote nothing outside the session" || return 1
+    assert_eq "1" "$status" "the retire says the records were not fused: $output" || return 1
+    assert_output_contains "$output" "timeline.jsonl leads to $outside" "the refusal names the link" || return 1
+    assert_output_contains "$output" "could not be fused into" "the staged records are kept and named" || return 1
+}
+
+run_test test_retire_never_fuses_records_through_a_landed_timeline_link
+
 # merge=ours keeps the base's MEMORY.md, but a pointer to a topic only the
 # feature wrote must still reach the base: appended once, after the base's
 # own lines, and a pointer both sides name is not doubled.
