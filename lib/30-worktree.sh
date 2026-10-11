@@ -1105,7 +1105,11 @@ _append_missing_memory_pointers() {  # feature_index base_index
 # this in a subshell on the left of ||, where errexit is off, and deletes the
 # staged records only on success. Every write also goes through the link
 # check: the landing put the feature's tree in the base, and nothing has
-# scanned the base since.
+# scanned the base since. A write that fails leaves the earlier ones in the
+# base, so the staged records can repeat some the base already holds; the
+# caller's error says to fuse what is missing. No pass checks every
+# destination before the first write: a full disk leaves the same state, and
+# that pass would have to list the destinations a second time.
 fuse_session_records() {
     local src="$1" dst="$2"
     local f base
