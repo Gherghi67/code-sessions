@@ -2019,6 +2019,33 @@ test_retire_ignored_mode_leaves_a_base_deleted_topic_deleted() {
 
 run_test test_retire_ignored_mode_leaves_a_base_deleted_topic_deleted
 
+# The feature edited a topic it inherited and the base deleted meanwhile: the
+# edit is work, so the feature's text comes back, its pointer with it, and
+# the retire says which topic.
+test_retire_ignored_mode_brings_back_a_deleted_topic_the_feature_edited() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    echo "gone topic, with a feature note" > "$wt/.cs/memory/gone.md"
+    rm "$base_dir/.cs/memory/gone.md" "$base_dir/.cs/memory/kept.md"
+    : > "$base_dir/.cs/memory/MEMORY.md"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "retire exits 0: $output" || return 1
+    assert_eq "gone topic, with a feature note" "$(cat "$base_dir/.cs/memory/gone.md")" \
+        "the feature's edit is back in the base" || return 1
+    assert_output_contains "$output" "memory/gone.md was deleted in the base and edited in the feature" \
+        "the retire names the topic" || return 1
+    assert_eq "- [Gone](gone.md): a topic" "$(grep -F 'gone.md' "$base_dir/.cs/memory/MEMORY.md")" \
+        "its pointer comes back with it" || return 1
+    assert_file_not_exists "$base_dir/.cs/memory/kept.md" "the untouched deleted topic stays deleted" || return 1
+    assert_eq "" "$(grep -F 'kept.md' "$base_dir/.cs/memory/MEMORY.md")" "and so does its pointer" || return 1
+}
+
+run_test test_retire_ignored_mode_brings_back_a_deleted_topic_the_feature_edited
+
 test_retire_fuse_survives_a_torn_timeline_tail() {
     # A crash mid-append leaves a last line with no newline. Appending onto it
     # splices two records into one, and the reader's tolerant `fromjson? //
