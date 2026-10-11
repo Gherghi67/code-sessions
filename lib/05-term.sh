@@ -46,6 +46,13 @@ setup_palette() {
 setup_palette
 
 # Icons - Nerd Font with Unicode fallback
+# cs needs a UTF-8 locale. Under an EUC one (ja_JP.eucJP, ko_KR.eucKR,
+# zh_CN.eucCN) bash reads the last byte of a glyph that sits directly before a
+# quote as the lead byte of a two-byte character and takes the quote with it,
+# so these lines, and a few like them elsewhere in cs and its hooks, stop the
+# parse with a syntax error. Left as is (Alex 2026-10-11): the output is UTF-8
+# in any case, and the README names the requirement. Do not escape the glyphs
+# or add a locale check for this.
 if [[ "${CS_NERD_FONTS:-}" == "1" ]]; then
     ICON_LOCK='󰌾'      # mdi-lock
     ICON_HOST='󰟀'      # mdi-monitor
