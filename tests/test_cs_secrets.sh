@@ -1550,13 +1550,17 @@ test_export_switches_this_machine_to_its_ssh_key() {
     local f="$meta/secrets.$mid.age" peer_home="$TEST_TMPDIR/peer-home"
     local out rc=0 key_type key_body key_comment
     _stage_session_from_before_the_ssh_key || { echo "  FAIL: could not stage the earlier session"; return 1; }
-    # The peer pinned this machine's age key while it was the recipient.
+    # The peer is another machine (its own user name, so its own recipient
+    # file). It pinned this machine's age key while that was the recipient,
+    # and this machine pinned the peer's key in turn.
     mkdir -p "$peer_home"
-    HOME="$peer_home" "$CS_SECRETS_BIN" age add "$meta/age-recipients/$mid.pub" >/dev/null 2>&1 \
+    USER=peer HOME="$peer_home" "$CS_SECRETS_BIN" age add "$meta/age-recipients/$mid.pub" >/dev/null 2>&1 \
         || { echo "  FAIL: fixture: the peer could not pin the age key"; return 1; }
-    HOME="$peer_home" "$CS_SECRETS_BIN" set peer_key "pv" >/dev/null 2>&1 || return 1
-    HOME="$peer_home" "$CS_SECRETS_BIN" export-file "$TEST_TMPDIR/peer-before.age" >/dev/null 2>&1 \
+    USER=peer HOME="$peer_home" "$CS_SECRETS_BIN" set peer_key "pv" >/dev/null 2>&1 || return 1
+    USER=peer HOME="$peer_home" "$CS_SECRETS_BIN" export-file "$TEST_TMPDIR/peer-before.age" >/dev/null 2>&1 \
         || { echo "  FAIL: fixture: the peer cannot export before the switch"; return 1; }
+    printf '%s' "$(cat "$meta"/age-recipients/peer@*.pub)" | shasum -a 256 | cut -d' ' -f1 \
+        >> "$HOME/.cs-secrets/sessions/test-session/age-trusted"
 
     out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
     assert_eq "0" "$rc" "the export exits 0: $out" || return 1
@@ -1573,7 +1577,7 @@ test_export_switches_this_machine_to_its_ssh_key() {
     assert_file_exists "$HOME/.cs-secrets/age.key" "the earlier age key is kept" || return 1
 
     rc=0
-    out=$(HOME="$peer_home" "$CS_SECRETS_BIN" export-file "$TEST_TMPDIR/peer-after.age" 2>&1) || rc=$?
+    out=$(USER=peer HOME="$peer_home" "$CS_SECRETS_BIN" export-file "$TEST_TMPDIR/peer-after.age" 2>&1) || rc=$?
     assert_eq "1" "$rc" "the peer's next export is refused" || return 1
     assert_output_contains "$out" "age add .*age-recipients/$mid\.pub" "the refusal gives the peer the pin command" || return 1
     assert_file_not_exists "$TEST_TMPDIR/peer-after.age" "the refused export writes nothing" || return 1
