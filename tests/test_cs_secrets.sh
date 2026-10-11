@@ -1468,6 +1468,30 @@ test_import_file_refuses_a_hostile_key_name() {
     assert_output_contains "$out" "name" "the refusal must name the problem" || return 1
 }
 
+_assert_secret_absent() {  # name, message
+    local out rc=0
+    out=$("$CS_SECRETS_BIN" get "$1" 2>&1) || rc=$?
+    assert_eq "3 Error: secret not found: $1" "$rc $out" "$2" || return 1
+}
+
+# Two names that differ only in hyphen against underscore become one variable
+# in `cs -secrets export`, which then refuses the whole store. An import that
+# would create such a pair stores nothing and names both.
+test_import_file_refuses_two_names_that_export_as_one_variable() {
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    _seed_enc_sync_file "$meta/secrets.machine-a.enc" '{"api-key":"va","other":"vo"}' || return 1
+    _seed_enc_sync_file "$meta/secrets.machine-b.enc" '{"api_key":"vb"}' || return 1
+
+    local out rc=0
+    out=$(PATH="$(_ageless_path)" "$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the import exits 1" || return 1
+    assert_eq "Error: Aborting import for session 'test-session': secrets 'api-key' and 'api_key' both export as CS_SECRET_API_KEY. Nothing was imported. Remove one of them where it is stored, then export and import again." \
+        "$out" "the refusal names both secrets and the variable" || return 1
+    _assert_secret_absent api-key "the hyphenated name is not stored" || return 1
+    _assert_secret_absent api_key "the underscored name is not stored" || return 1
+    _assert_secret_absent other "a name beside the pair is not stored either" || return 1
+}
+
 # Defense in depth: a store written before the check existed must still not be
 # able to execute. Poison the encrypted store directly, bypassing `set`.
 test_export_refuses_a_hostile_name_already_in_the_store() {
@@ -2287,6 +2311,7 @@ run_test test_migrate_refuses_an_invalid_name
 run_test test_export_namespaces_every_variable
 run_test test_export_namespace_neutralises_dangerous_names
 run_test test_import_file_refuses_a_hostile_key_name
+run_test test_import_file_refuses_two_names_that_export_as_one_variable
 run_test test_export_refuses_a_hostile_name_already_in_the_store
 run_test test_import_file_aborts_when_the_store_write_fails
 run_test test_import_file_skips_undecryptable_files
