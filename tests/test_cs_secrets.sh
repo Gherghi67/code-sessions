@@ -1514,6 +1514,20 @@ test_import_file_refuses_a_name_that_shares_a_variable_with_a_stored_secret() {
     assert_eq "export CS_SECRET_API_KEY=vlocal" "$("$CS_SECRETS_BIN" export 2>&1)" "export still works" || return 1
 }
 
+# An invalid name stops the import before any name is stored, however the
+# names sort.
+test_import_file_stores_nothing_when_one_name_is_invalid() {
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    _seed_enc_sync_file "$meta/secrets.machine-a.enc" '{"aaa_new":"v1","zz;rm":"v2"}' || return 1
+
+    local out rc=0
+    out=$(PATH="$(_ageless_path)" "$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the import exits 1" || return 1
+    assert_output_contains "$out" "invalid secret name 'zz;rm'" "the refusal names the invalid name" || return 1
+    _assert_secret_absent aaa_new "a valid name sorted before the invalid one is not stored" || return 1
+    assert_file_not_exists "$HOME/.cs-secrets/test-session.enc" "no store is created" || return 1
+}
+
 # Defense in depth: a store written before the check existed must still not be
 # able to execute. Poison the encrypted store directly, bypassing `set`.
 test_export_refuses_a_hostile_name_already_in_the_store() {
@@ -2335,6 +2349,7 @@ run_test test_export_namespace_neutralises_dangerous_names
 run_test test_import_file_refuses_a_hostile_key_name
 run_test test_import_file_refuses_two_names_that_export_as_one_variable
 run_test test_import_file_refuses_a_name_that_shares_a_variable_with_a_stored_secret
+run_test test_import_file_stores_nothing_when_one_name_is_invalid
 run_test test_export_refuses_a_hostile_name_already_in_the_store
 run_test test_import_file_aborts_when_the_store_write_fails
 run_test test_import_file_skips_undecryptable_files
