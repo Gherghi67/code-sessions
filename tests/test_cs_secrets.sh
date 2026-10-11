@@ -1452,6 +1452,58 @@ test_import_file_still_reads_a_file_encrypted_to_the_earlier_age_key() {
     assert_eq "vb" "$("$CS_SECRETS_BIN" get from_before 2>&1)" "the secret is imported (import said: $rc $out)" || return 1
 }
 
+# This machine has one key, an ssh-ed25519 pair cs keeps under ~/.cs-secrets:
+# never the user's own ~/.ssh keys, and no passphrase, since exports run
+# unattended.
+test_age_init_creates_this_machines_ssh_key() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local out rc=0 key_type key_body key_comment
+    out=$("$CS_SECRETS_BIN" age init 2>&1) || rc=$?
+    assert_eq "0" "$rc" "age init exits 0: $out" || return 1
+    assert_file_exists "$HOME/.cs-secrets/id_ed25519" "the private key exists" || return 1
+    assert_eq "600" "$(_file_mode "$HOME/.cs-secrets/id_ed25519")" "the private key is owner-only" || return 1
+    assert_not_exists "$HOME/.cs-secrets/age.key" "no age key is created" || return 1
+    assert_not_exists "$HOME/.ssh" "the user's own ssh directory is untouched" || return 1
+    assert_file_exists "$HOME/.cs-secrets/id_ed25519.pub" "the public key exists" || return 1
+    read -r key_type key_body key_comment < "$HOME/.cs-secrets/id_ed25519.pub"
+    assert_eq "ssh-ed25519" "$key_type" "the key is an ed25519 key" || return 1
+    assert_eq "$key_type $key_body" "$("$CS_SECRETS_BIN" age pubkey 2>&1)" "age pubkey prints the key without its comment" || return 1
+    printf 'x' > "$TEST_TMPDIR/payload"
+    ssh-keygen -q -Y sign -f "$HOME/.cs-secrets/id_ed25519" -n probe "$TEST_TMPDIR/payload" </dev/null 2>/dev/null \
+        || { echo "  FAIL: the key signs without asking for a passphrase"; return 1; }
+}
+
+test_age_init_names_a_missing_ssh_keygen() {
+    _use_real_age || return $?
+    local bindir="$TEST_TMPDIR/no-ssh-keygen" out rc=0
+    link_path_without "$bindir" 'ssh-keygen'
+    out=$(PATH="$bindir" "$CS_SECRETS_BIN" age init 2>&1) || rc=$?
+    assert_eq "1" "$rc" "age init exits 1" || return 1
+    assert_eq "Error: ssh-keygen not found. cs keeps this machine's key as an ssh-ed25519 pair and needs OpenSSH 8.0 or later to create it and to sign with it." \
+        "$out" "the refusal names ssh-keygen" || return 1
+    assert_not_exists "$HOME/.cs-secrets/id_ed25519" "no key is created" || return 1
+    assert_not_exists "$HOME/.cs-secrets/age.key" "no age key is created instead" || return 1
+}
+
+test_first_export_makes_this_machines_ssh_key_the_recipient() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f; f="$meta/secrets.$(_machine_id).age"
+    local out rc=0 key_type key_body key_comment
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the first export exits 0: $out" || return 1
+    assert_file_exists "$HOME/.cs-secrets/id_ed25519.pub" "this machine's public key exists" || return 1
+    read -r key_type key_body key_comment < "$HOME/.cs-secrets/id_ed25519.pub"
+    assert_eq "$key_type $key_body" "$(cat "$meta/age-recipients/$(_machine_id).pub")" \
+        "this machine's recipient file holds its ssh key" || return 1
+    _age_decrypts_to "$HOME/.cs-secrets/id_ed25519" "$f" "sk_123" \
+        || { echo "  FAIL: this machine's ssh key cannot decrypt its own sync file"; return 1; }
+    assert_not_exists "$HOME/.cs-secrets/age.key" "no age key is created" || return 1
+}
+
 test_import_file_merges_all_machines_and_legacy() {
     local meta="$CS_SESSIONS_ROOT/test-session/.cs"
     _seed_enc_sync_file "$meta/secrets.machine-b.enc" '{"from_machine_b":"vb"}' || return 1
@@ -2539,5 +2591,8 @@ run_test test_age_add_takes_a_raw_ssh_ed25519_key
 run_test test_age_add_refuses_what_is_not_a_key
 run_test test_import_file_reads_a_file_encrypted_to_this_machines_ssh_key
 run_test test_import_file_still_reads_a_file_encrypted_to_the_earlier_age_key
+run_test test_age_init_creates_this_machines_ssh_key
+run_test test_age_init_names_a_missing_ssh_keygen
+run_test test_first_export_makes_this_machines_ssh_key_the_recipient
 
 report_results
