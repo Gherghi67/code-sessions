@@ -1523,6 +1523,62 @@ test_export_encrypts_to_age_and_ssh_recipients_together() {
     _age_decrypts_to "$HOME/.cs-secrets/id_ed25519" "$f" "sk_123" || { echo "  FAIL: this machine cannot decrypt its own file"; return 1; }
 }
 
+# A session the way a cs from before the ssh key left it on this machine: an
+# age key pair, this machine's recipient file holding the age key, that key
+# pinned, a secret in the store.
+_stage_session_from_before_the_ssh_key() {
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs" age_pub
+    mkdir -p "$HOME/.cs-secrets/sessions/test-session" "$meta/age-recipients" || return 1
+    chmod 700 "$HOME/.cs-secrets"
+    age-keygen -o "$HOME/.cs-secrets/age.key" 2>/dev/null || return 1
+    age_pub=$(age-keygen -y "$HOME/.cs-secrets/age.key") || return 1
+    printf '%s\n' "$age_pub" > "$HOME/.cs-secrets/age.pub"
+    printf '%s\n' "$age_pub" > "$meta/age-recipients/$(_machine_id).pub"
+    printf '%s' "$age_pub" | shasum -a 256 | cut -d' ' -f1 > "$HOME/.cs-secrets/sessions/test-session/age-trusted"
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+}
+
+# The first export after the upgrade moves this machine to its ssh key: its
+# recipient file changes, the sync file is encrypted to the new key, and a
+# peer that pinned the old key is told to pin the new one before it exports
+# again.
+test_export_switches_this_machine_to_its_ssh_key() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local mid; mid=$(_machine_id)
+    local f="$meta/secrets.$mid.age" peer_home="$TEST_TMPDIR/peer-home"
+    local out rc=0 key_type key_body key_comment
+    _stage_session_from_before_the_ssh_key || { echo "  FAIL: could not stage the earlier session"; return 1; }
+    # The peer pinned this machine's age key while it was the recipient.
+    mkdir -p "$peer_home"
+    HOME="$peer_home" "$CS_SECRETS_BIN" age add "$meta/age-recipients/$mid.pub" >/dev/null 2>&1 \
+        || { echo "  FAIL: fixture: the peer could not pin the age key"; return 1; }
+    HOME="$peer_home" "$CS_SECRETS_BIN" set peer_key "pv" >/dev/null 2>&1 || return 1
+    HOME="$peer_home" "$CS_SECRETS_BIN" export-file "$TEST_TMPDIR/peer-before.age" >/dev/null 2>&1 \
+        || { echo "  FAIL: fixture: the peer cannot export before the switch"; return 1; }
+
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the export exits 0: $out" || return 1
+    assert_file_exists "$HOME/.cs-secrets/id_ed25519.pub" "this machine has an ssh key" || return 1
+    read -r key_type key_body key_comment < "$HOME/.cs-secrets/id_ed25519.pub"
+    assert_eq "$key_type $key_body" "$(cat "$meta/age-recipients/$mid.pub")" \
+        "this machine's recipient file holds its ssh key" || return 1
+    _age_decrypts_to "$HOME/.cs-secrets/id_ed25519" "$f" "sk_123" \
+        || { echo "  FAIL: the ssh key cannot decrypt the sync file"; return 1; }
+    if _age_decrypts_to "$HOME/.cs-secrets/age.key" "$f" "sk_123"; then
+        echo "  FAIL: the sync file is still encrypted to the earlier age key"
+        return 1
+    fi
+    assert_file_exists "$HOME/.cs-secrets/age.key" "the earlier age key is kept" || return 1
+
+    rc=0
+    out=$(HOME="$peer_home" "$CS_SECRETS_BIN" export-file "$TEST_TMPDIR/peer-after.age" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the peer's next export is refused" || return 1
+    assert_output_contains "$out" "age add .*age-recipients/$mid\.pub" "the refusal gives the peer the pin command" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/peer-after.age" "the refused export writes nothing" || return 1
+}
+
 test_import_file_merges_all_machines_and_legacy() {
     local meta="$CS_SESSIONS_ROOT/test-session/.cs"
     _seed_enc_sync_file "$meta/secrets.machine-b.enc" '{"from_machine_b":"vb"}' || return 1
@@ -2614,5 +2670,6 @@ run_test test_age_init_creates_this_machines_ssh_key
 run_test test_age_init_names_a_missing_ssh_keygen
 run_test test_first_export_makes_this_machines_ssh_key_the_recipient
 run_test test_export_encrypts_to_age_and_ssh_recipients_together
+run_test test_export_switches_this_machine_to_its_ssh_key
 
 report_results
