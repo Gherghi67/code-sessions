@@ -1745,14 +1745,19 @@ test_retire_never_creates_the_progress_directory_through_a_landed_cs_link() {
     (cd "$wt" && git rm -rq --cached .cs && mv .cs "$TEST_TMPDIR/feature-cs" && ln -s "$outside" .cs \
         && git add .cs && git commit -q -m "link the metadata out")
     sha=$(git -C "$wt" rev-parse HEAD)
-    rm "$wt/.cs" && mv "$TEST_TMPDIR/feature-cs" "$wt/.cs"
-    git -C "$wt" checkout -q --detach HEAD~1 2>/dev/null
+    rm "$wt/.cs" && git -C "$wt" checkout -q --detach HEAD~1 \
+        && cp -R "$TEST_TMPDIR/feature-cs/local" "$wt/.cs/local" \
+        || { echo "  FAIL: could not put the worktree's own .cs back"; return 1; }
+    assert_eq "" "$(git -C "$wt" status --porcelain)" "the worktree is clean at the parent commit" || return 1
     output=$("$CS_BIN" myproj -integrate-feature fix-auth "$sha" -- true 2>&1) || status=$?
     assert_eq "0" "$status" "the landing itself succeeds: $output" || return 1
     assert_symlink "$base_dir/.cs" "the feature's link landed in the base" || return 1
     assert_eq "" "$(ls -A "$outside")" "integrate created nothing outside the session" || return 1
-    "$CS_BIN" myproj -retire-feature fix-auth "$sha" >/dev/null 2>&1
+    status=0
+    output=$("$CS_BIN" myproj -retire-feature fix-auth "$sha" 2>&1) || status=$?
     assert_eq "" "$(ls -A "$outside")" "retire created nothing outside the session" || return 1
+    assert_eq "0" "$status" "the retire itself succeeds: $output" || return 1
+    assert_output_contains "$output" "/finish progress not recorded" "the unrecorded run is named" || return 1
 }
 
 run_test test_retire_never_creates_the_progress_directory_through_a_landed_cs_link
