@@ -1404,6 +1404,31 @@ test_a_link_to_a_directory_named_with_a_newline_refuses_open() {
     assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
 }
 
+# A clone can commit cs's encrypted layout: .cs/claude-config linked to a real
+# .cs/vault-mnt/claude-config holding a link out. With no pre-open there is no
+# vault, so the open walks that directory like any other.
+test_a_committed_vault_config_lookalike_refuses_open() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt" t outside out rc=0
+    t=$(cd "$TEST_TMPDIR" && pwd -P); outside="$t/outside-settings"
+    printf 'USER-OWNED\n' > "$outside"
+    mkdir -p "$root/.cs/vault-mnt/claude-config"
+    ln -s vault-mnt/claude-config "$root/.cs/claude-config"
+    ln -s "$outside" "$root/.cs/vault-mnt/claude-config/settings.json"
+    git -C "$root" add -f .cs/claude-config .cs/vault-mnt/claude-config/settings.json
+    git -C "$root" commit -q -m "a vault config lookalike"
+    rm -f "$root/.cs/local/migrated"
+    _make_launch_sentinel
+
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: .cs/vault-mnt/claude-config/settings.json is a symlink to $outside, outside the session, and cs writes through it. Replace it with a real file or directory, or cs -rm the session." \
+        "$out" "cs should name the link out" || return 1
+    assert_eq "USER-OWNED" "$(cat "$outside")" "the file outside is untouched" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
+}
+
 # Codex r3 #1: a trailing newline is stripped by command substitution, so the
 # physical path came back as a sibling without it and the scan walked nothing.
 test_a_link_to_a_directory_named_with_a_trailing_newline_refuses_open() {
@@ -1545,6 +1570,7 @@ run_test test_a_committed_claude_local_link_out_of_the_session_refuses_open
 run_test test_a_link_out_behind_an_in_session_directory_link_refuses_open
 run_test test_a_link_to_a_directory_named_with_a_newline_refuses_open
 run_test test_a_link_to_a_directory_named_with_a_trailing_newline_refuses_open
+run_test test_a_committed_vault_config_lookalike_refuses_open
 run_test test_global_msg_refuses_a_target_linked_out_of_the_session
 
 report_results
