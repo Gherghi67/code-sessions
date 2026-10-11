@@ -26,6 +26,9 @@ setup() {
     # exist, which the CS_AGE_BIN seam reads as "no age on this machine".
     export CS_AGE_BIN="$TEST_TMPDIR/no-such-age"
     mkdir -p "$CS_SESSIONS_ROOT" "$HOME"
+    # The session CLAUDE_SESSION_NAME names: export-file and the age commands
+    # refuse a name the sessions root does not have.
+    mkdir -p "$CS_SESSIONS_ROOT/test-session/.cs"
 }
 
 teardown() {
@@ -467,6 +470,77 @@ test_purge_drops_the_sessions_age_state() {
     fi
 }
 
+# The age recipients and the sync file live in a session's .cs, and the pin
+# list under ~/.cs-secrets is keyed by the session's name. A name the sessions
+# root does not have (a removed session, a mistyped --session) must be refused
+# before anything is written: creating it would bring a removed session back
+# as a directory holding nothing but recipients, with a pin list a later
+# session of that name would inherit.
+_assert_no_trace_of_session() {  # name
+    assert_not_exists "$CS_SESSIONS_ROOT/$1" "no directory is created for the session" || return 1
+    assert_not_exists "$HOME/.cs-secrets/sessions/$1" "no age state is created for the session" || return 1
+}
+
+test_age_add_refuses_a_session_the_root_does_not_have() {
+    local out rc=0
+    out=$("$CS_SECRETS_BIN" --session ghost age add age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq0000000 2>&1) || rc=$?
+    assert_eq "1" "$rc" "age add exits 1" || return 1
+    assert_eq "Error: No session named 'ghost' in $CS_SESSIONS_ROOT" "$out" "the refusal names the session and the root" || return 1
+    _assert_no_trace_of_session ghost || return 1
+}
+
+# A directory in the sessions root that holds no .cs is not a session, and an
+# age add must not make it look like one.
+test_age_add_refuses_a_directory_that_is_not_a_session() {
+    local out rc=0
+    mkdir -p "$CS_SESSIONS_ROOT/plain"
+    out=$("$CS_SECRETS_BIN" --session plain age add age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq0000000 2>&1) || rc=$?
+    assert_eq "1" "$rc" "age add exits 1" || return 1
+    assert_eq "Error: No session named 'plain' in $CS_SESSIONS_ROOT" "$out" "the refusal names the session and the root" || return 1
+    assert_eq "" "$(ls -A "$CS_SESSIONS_ROOT/plain")" "the directory stays empty" || return 1
+    assert_not_exists "$HOME/.cs-secrets/sessions/plain" "no age state is created for it" || return 1
+}
+
+# A session is one entry of the sessions root, so a name that is a path is
+# refused even where the path leads to a directory holding .cs: ".." would put
+# the recipients in the root's parent and the pin list in ~/.cs-secrets itself,
+# where no session removal looks.
+test_age_add_refuses_a_name_that_is_a_path() {
+    local name out rc
+    mkdir -p "$TEST_TMPDIR/.cs" "$CS_SESSIONS_ROOT/test-session/nested/.cs"
+    for name in .. . test-session/nested test-session/; do
+        rc=0
+        out=$("$CS_SECRETS_BIN" --session "$name" age add age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq0000000 2>&1) || rc=$?
+        assert_eq "1" "$rc" "age add exits 1 for '$name'" || return 1
+        assert_eq "Error: No session named '$name' in $CS_SESSIONS_ROOT" "$out" "the refusal names '$name' and the root" || return 1
+    done
+    assert_not_exists "$TEST_TMPDIR/.cs/age-recipients" "nothing is written beside the sessions root" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/.cs" "nothing is written into the sessions root" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/test-session/nested/.cs/age-recipients" "nothing is written into the nested directory" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/test-session/.cs/age-recipients" "nothing is written into the session through a trailing slash" || return 1
+    assert_not_exists "$HOME/.cs-secrets/age-trusted" "no pin list lands in ~/.cs-secrets itself" || return 1
+    assert_not_exists "$HOME/.cs-secrets/sessions" "no age state is created" || return 1
+}
+
+test_age_remove_refuses_a_session_the_root_does_not_have() {
+    local out rc=0
+    out=$("$CS_SECRETS_BIN" --session ghost age remove peer 2>&1) || rc=$?
+    assert_eq "1" "$rc" "age remove exits 1" || return 1
+    assert_eq "Error: No session named 'ghost' in $CS_SESSIONS_ROOT" "$out" "the refusal names the session and the root" || return 1
+    _assert_no_trace_of_session ghost || return 1
+}
+
+# Stored secrets outlive `cs -rm`, so an export under a removed session's name
+# has something to write.
+test_export_file_refuses_a_session_the_root_does_not_have() {
+    local out rc=0
+    "$CS_SECRETS_BIN" --session ghost set api_key "sk_123" >/dev/null 2>&1 || { echo "  FAIL: fixture: set failed"; return 1; }
+    out=$("$CS_SECRETS_BIN" --session ghost export-file 2>&1) || rc=$?
+    assert_eq "1" "$rc" "export-file exits 1" || return 1
+    assert_eq "Error: No session named 'ghost' in $CS_SESSIONS_ROOT" "$out" "the refusal names the session and the root" || return 1
+    _assert_no_trace_of_session ghost || return 1
+}
+
 test_purge_empty_session() {
     local output
     output=$("$CS_SECRETS_BIN" purge 2>&1)
@@ -811,6 +885,8 @@ test_picker_rejects_invalid_choice() {
 
 test_picker_empty_root_errors() {
     unset CLAUDE_SESSION_NAME CS_SECRETS_SESSION
+    # setup stages test-session; this test is about a root with no session.
+    rm -rf "$CS_SESSIONS_ROOT/test-session"
     local out
     if out=$(printf '1\n' | CS_ASSUME_TTY=1 "$CS_SECRETS_BIN" list 2>&1); then
         echo "  FAIL: empty sessions root should error"
@@ -2155,6 +2231,11 @@ run_test test_delete_preserves_other_secrets
 # Purge
 run_test test_purge_removes_all
 run_test test_purge_drops_the_sessions_age_state
+run_test test_age_add_refuses_a_session_the_root_does_not_have
+run_test test_age_add_refuses_a_directory_that_is_not_a_session
+run_test test_age_add_refuses_a_name_that_is_a_path
+run_test test_age_remove_refuses_a_session_the_root_does_not_have
+run_test test_export_file_refuses_a_session_the_root_does_not_have
 run_test test_purge_empty_session
 
 # Export

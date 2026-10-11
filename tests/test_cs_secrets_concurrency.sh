@@ -21,6 +21,9 @@ setup() {
     # exist, which the CS_AGE_BIN seam reads as "no age on this machine".
     export CS_AGE_BIN="$TEST_TMPDIR/no-such-age"
     mkdir -p "$CS_SESSIONS_ROOT" "$HOME"
+    # The session CLAUDE_SESSION_NAME names: export-file and the age commands
+    # refuse a name the sessions root does not have.
+    mkdir -p "$CS_SESSIONS_ROOT/test-session/.cs"
 }
 
 teardown() {
@@ -362,6 +365,7 @@ SHIM
 # the backup keeps every secret.
 test_export_serialized_against_concurrent_store_no_stale_overwrite() {
     local sess="export-race"
+    mkdir -p "$CS_SESSIONS_ROOT/$sess/.cs"
     CLAUDE_SESSION_NAME="$sess" "$CS_SECRETS_BIN" set A vA >/dev/null 2>&1
 
     # Force the .enc path (no age) and slow ONLY the export's encrypt. The shim
@@ -481,6 +485,7 @@ test_export_holds_the_lock_across_encrypt_and_digest_on_every_backend() {
     local kcstore="$TEST_TMPDIR/kc-store-age"
     local sess="export-revoke-race"
     local meta="$CS_SESSIONS_ROOT/$sess/.cs"
+    mkdir -p "$meta"
     local sync
     sync="$meta/secrets.$(_machine_id).age"
     # Every cs-secrets call below runs on the (fake) keychain backend with the

@@ -10503,9 +10503,12 @@ _remove_one_session() {
 # when there was something to remove, nothing otherwise. A name that is not a
 # single plain path component is refused before it becomes a path, so "" can
 # never resolve to the sessions directory itself. Keychain and encrypted
-# stored secrets are not touched. Known window, accepted (Alex 2026-10-09): a
-# `cs -secrets age add` for this name that runs during the removal can
-# recreate the directory, because its lock (.age.lock) lives inside it.
+# stored secrets are not touched. cs-secrets refuses an age command for a
+# session the sessions root does not have, so only an `age add` or an export
+# that passed that check before the removal can recreate this directory after
+# it: their lock (.age.lock) lives inside it. That window is accepted (Alex
+# 2026-10-11); a lock shared with the removal was weighed and declined, do not
+# add one.
 _drop_session_age_state() {  # name
     local name="$1" dir
     case "$name" in
