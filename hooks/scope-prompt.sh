@@ -87,6 +87,9 @@ if [ "$_cs_had_e" = 1 ]; then set -e; fi
 if ! command -v cs_private_dir >/dev/null 2>&1; then
     cs_private_dir() { return 1; }
 fi
+if ! command -v cs_local_dir >/dev/null 2>&1; then
+    cs_local_dir() { return 1; }
+fi
 # A write this hook cannot make is skipped without a word, and the link check
 # on appends and new directories lives in cs-shared.sh; without the library
 # they are made unchecked, as they were before the check existed.
@@ -259,9 +262,11 @@ It is now $_today. The date this conversation last heard was $_known_day, so any
         fi
     fi
 fi
-_commit_date_stamp() {  # meta_local_dir
+_commit_date_stamp() {  # meta_dir
     [ -n "${DATE_STAMP_PENDING:-}" ] || return 0
-    local dir="$1/context-date"
+    local dir
+    dir=$(cs_local_dir "$1") || return 0
+    dir="$dir/context-date"
     cs_mkdir_inside "$dir" || return 0
     cs_write_atomic "$dir/$DATE_STAMP_CONV" printf '%s\n' "$DATE_STAMP_PENDING" || true
     DATE_STAMP_PENDING=""
@@ -477,7 +482,7 @@ _digest_exit() {
     # and the stamp wait for the next prompt to carry them.
     if [ "$_emitted" -eq 0 ]; then
         _commit_digest "$DIGEST_DIR"
-        _commit_date_stamp "${CLAUDE_SESSION_META_DIR:-}/local"
+        _commit_date_stamp "${CLAUDE_SESSION_META_DIR:-}"
     fi
     _trace exit
     exit 0
@@ -755,7 +760,7 @@ _emitted=0
 _emit_context "$DATE_NOTE" "$DIGEST" "$CLARIFY" "$BLOCK" || _emitted=$?
 if [ "$_emitted" -eq 0 ]; then
     _commit_digest "$DIGEST_DIR"
-    _commit_date_stamp "${CLAUDE_SESSION_META_DIR:-}/local"
+    _commit_date_stamp "${CLAUDE_SESSION_META_DIR:-}"
 fi
 _trace emit
 exit 0
