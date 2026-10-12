@@ -637,6 +637,13 @@ test_auto_approve_prompts_inside_a_git_directory_reached_by_another_name() {
         "a hook of a bare clone kept below .cs" || return 1
     _assert_allowed Write "$meta/artifacts/notes.md" \
         "a note beside the bare clone" || return 1
+    # A linked worktree's own directory holds HEAD and names the shared one in
+    # commondir; git reads config.worktree from it.
+    mkdir -p "$meta/research/admin"
+    echo 'ref: refs/heads/main' > "$meta/research/admin/HEAD"
+    echo '/elsewhere/.git' > "$meta/research/admin/commondir"
+    _assert_falls_through Write "$meta/research/admin/config.worktree" \
+        "the config of a worktree's git directory kept below .cs" || return 1
 }
 
 # Only the part of the path below .cs/ is judged: a session that lives under

@@ -164,6 +164,32 @@ test_a_teammate_leaves_the_armed_rotation_and_the_digest_to_the_lead() {
         "a front end with no launch pid still loads the rotation on /clear" || return 1
 }
 
+# cs passes a launch prompt to claude as an argument, so the lead's own
+# command line can hold the three teammate flags as words of a prompt. A
+# claude shown to be the lead is the lead whatever its arguments say.
+test_the_lead_keeps_its_rotation_when_its_prompt_names_the_teammate_flags() {
+    _nested_setup
+    local meta="$CLAUDE_SESSION_META_DIR" handoff out lead i=0
+    handoff="$meta/handoffs/2026-01-01-topic.md"
+    mkdir -p "$meta/handoffs"
+    printf -- '---\nstatus: unconsumed\n---\nnext step: do the thing\n' > "$handoff"
+    printf '2026-01-01-topic.md\n' > "$meta/local/pending-handoff"
+    printf '#!/usr/bin/env bash\nsleep 300\n' > "$TEST_TMPDIR/fake-claude.sh"
+    chmod +x "$TEST_TMPDIR/fake-claude.sh"
+    "$TEST_TMPDIR/fake-claude.sh" explain --agent-id --agent-name --team-name options >/dev/null 2>&1 &
+    lead=$!
+    while [ "$i" -lt 50 ]; do
+        ps -o args= -p "$lead" 2>/dev/null | grep -q fake-claude && break
+        i=$((i + 1)); sleep 0.1
+    done
+    out=$(_start_hook "$lead" "$lead" clear 33333333-3333-4333-8333-333333333333)
+    kill "$lead" 2>/dev/null
+    assert_eq "1" "$(grep -c 'Conversation Rotation' <<< "$out")" \
+        "the lead's /clear loads the rotation" || return 1
+    assert_eq "consumed_by: 33333333-3333-4333-8333-333333333333" "$(sed -n 3p "$handoff")" \
+        "the lead's conversation is recorded as the consumer" || return 1
+}
+
 # The resume arm runs claude as cs's child, so the lead is known there only by
 # asking ps for the parent. A ps that cannot answer proves nothing: the claude
 # is then not shown to be a guest, and keeps what is the lead's. The stand-in
@@ -192,6 +218,7 @@ run_test test_a_nested_child_does_not_raise_the_attention_flag
 run_test test_a_nested_child_leaves_the_armed_rotation_to_the_lead
 run_test test_a_nested_child_leaves_the_queue_digest_to_the_lead
 run_test test_a_teammate_leaves_the_armed_rotation_and_the_digest_to_the_lead
+run_test test_the_lead_keeps_its_rotation_when_its_prompt_names_the_teammate_flags
 run_test test_a_claude_whose_parent_cannot_be_read_is_not_taken_for_a_guest
 
 report_results
