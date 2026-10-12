@@ -538,15 +538,32 @@ _arm_handoff() {  # yes when the marker is committed
 test_vet_session_refuses_a_session_whose_marker_git_tracks() {
     local s="$CLAUDE_SESSION_DIR" out rc setting
     _arm_handoff yes
-    # git reads how to match a pathspec from the environment too; none of
-    # those settings may turn the tracked file into one git does not find.
-    for setting in CS_NONE=1 GIT_LITERAL_PATHSPECS=1 GIT_GLOB_PATHSPECS=1 GIT_NOGLOB_PATHSPECS=1 GIT_ICASE_PATHSPECS=1; do
+    # git reads how to match a pathspec, and configuration, from the
+    # environment too; none of those settings may turn the tracked file into
+    # one git does not find, or make git fail into "nothing tracked".
+    for setting in CS_NONE=1 GIT_LITERAL_PATHSPECS=1 GIT_GLOB_PATHSPECS=1 GIT_NOGLOB_PATHSPECS=1 GIT_ICASE_PATHSPECS=1 \
+        "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.ignorecase GIT_CONFIG_VALUE_0=invalid" \
+        "GIT_CONFIG_PARAMETERS='core.ignorecase'='invalid'"; do
         rc=0
-        out=$(env -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR "$setting" "$CS_BIN" -vet-session "$s" 2>&1) || rc=$?
+        # shellcheck disable=SC2086 # a setting is one or more NAME=value words
+        out=$(env -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR $setting "$CS_BIN" -vet-session "$s" 2>&1) || rc=$?
         assert_eq "1" "$rc" "cs -vet-session refuses ($setting)" || return 1
         assert_eq "Error: .cs/local/pending-handoff is tracked in git (per-actor state must stay local). Fix with: git -C $s --literal-pathspecs rm -r --cached -- .cs/local && git -C $s commit -m 'stop tracking .cs/local'" \
             "$out" "the refusal names the tracked marker and how to stop tracking it ($setting)" || return 1
     done
+}
+
+# A git that cannot answer is not a git that says nothing is tracked: a bad
+# value in the repository's own configuration makes every git call fail, and
+# cs then refuses with git's message rather than trusting the files.
+test_vet_session_refuses_when_git_cannot_answer() {
+    local s="$CLAUDE_SESSION_DIR" out rc=0
+    _arm_handoff yes
+    git -C "$s" config core.ignorecase invalid
+    out=$(env -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR "$CS_BIN" -vet-session "$s" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "cs -vet-session refuses" || return 1
+    assert_eq "Error: cs could not ask git whether it tracks a file in .cs/local: fatal: bad boolean config value 'invalid' for 'core.ignorecase'" \
+        "$out" "and names git's own error" || return 1
 }
 
 test_vet_session_passes_a_session_whose_control_files_git_ignores() {
@@ -1022,6 +1039,7 @@ run_test test_drain_hands_out_nothing_from_a_private_queue_git_tracks
 run_test test_queue_verbs_refuse_a_queue_git_tracks
 run_test test_queue_verbs_ignore_a_link_out_elsewhere_under_cs
 run_test test_vet_session_refuses_a_session_whose_marker_git_tracks
+run_test test_vet_session_refuses_when_git_cannot_answer
 run_test test_vet_session_passes_a_session_whose_control_files_git_ignores
 run_test test_vet_session_judges_the_directory_it_is_given
 run_test test_vet_session_refuses_a_directory_that_is_no_session
