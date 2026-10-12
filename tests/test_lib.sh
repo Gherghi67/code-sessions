@@ -27,6 +27,9 @@ unset CLAUDE_PROJECT_DIR CS_ACTOR CLAUDE_CODE_SESSION_ID CS_CLAUDE_SESSION_ID CL
 # CS_SECRETS_SESSION is the same identity for cs-secrets, which reads it ahead
 # of the session name: a feature worktree exports its base session there.
 unset CLAUDE_SESSION_NAME CLAUDE_SESSION_DIR CLAUDE_SESSION_META_DIR CS_SECRETS_SESSION 2>/dev/null || true
+# CS_CLAUDE_DIR outranks HOME for Claude Code's settings.json, and a
+# SessionStart hook appends the session it ran for to CLAUDE_ENV_FILE.
+unset CS_CLAUDE_DIR CLAUDE_ENV_FILE 2>/dev/null || true
 
 # --- State ---
 TESTS_RUN=0
