@@ -550,6 +550,22 @@ test_auto_approve_prompts_for_a_folded_control_name() {
         "a recipient key under a directory spelled with a long s" || return 1
 }
 
+# A repository kept below .cs/ (a clone under a notes directory) has a git
+# directory of its own, and git reads config and runs hooks from it whenever
+# git runs there. The note beside it is the control.
+test_auto_approve_prompts_inside_a_git_directory_below_cs() {
+    local meta="$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$meta/artifacts/repo/.git/hooks" "$meta/memory/sub"
+    _assert_falls_through Write "$meta/artifacts/repo/.git/config" \
+        "the config of a repository kept below .cs" || return 1
+    _assert_falls_through Write "$meta/artifacts/repo/.git/hooks/pre-commit" \
+        "a hook of a repository kept below .cs" || return 1
+    _assert_falls_through Write "$meta/memory/sub/.git" \
+        "a .git file in a content directory" || return 1
+    _assert_allowed Write "$meta/artifacts/repo/notes.md" \
+        "a note beside that repository" || return 1
+}
+
 # Only the part of the path below .cs/ is judged: a session that lives under
 # a directory named outside ASCII keeps its content writes frictionless.
 test_auto_approve_allows_ascii_content_under_a_non_ascii_session_path() {
@@ -3123,6 +3139,7 @@ run_test test_auto_approve_prompts_for_instructions_at_the_root
 run_test test_auto_approve_allows_markdown_at_the_root
 run_test test_auto_approve_prompts_for_a_non_ascii_name_in_content
 run_test test_auto_approve_prompts_for_a_folded_control_name
+run_test test_auto_approve_prompts_inside_a_git_directory_below_cs
 run_test test_auto_approve_allows_ascii_content_under_a_non_ascii_session_path
 run_test test_auto_approve_rejects_config_linked_into_content
 run_test test_auto_approve_rejects_settings_link_target
