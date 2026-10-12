@@ -171,14 +171,18 @@ run_status() {
         if [ -n "$status" ]; then printf '%s\n' "$status"; else echo "(none)"; fi
         return 0
     fi
+    # Setting and clearing write into .cs/local, which cs leaves as git has
+    # it while git tracks a file there; reading writes nothing.
     case "$1" in
         --clear|-c)
+            _vet_current_session
             rm -f "$(_presence_file "$meta_dir")"
             ;;
         "")
             error "cs -status: empty status; use 'cs -status --clear' to clear"
             ;;
         *)
+            _vet_current_session
             _write_presence "$meta_dir" "$*"
             ;;
     esac
