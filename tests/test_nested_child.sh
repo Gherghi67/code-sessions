@@ -116,6 +116,27 @@ test_a_nested_child_leaves_the_armed_rotation_to_the_lead() {
         "the lead's conversation is the one recorded as the consumer" || return 1
 }
 
+# A rotation marker git tracks came with a pull, a merge or a checkout, not
+# from this session's rotate: the lead's /clear loads nothing from it and
+# leaves the marker and the handoff as they are.
+test_a_rotation_marker_git_tracks_is_not_loaded() {
+    _nested_setup
+    local meta="$CLAUDE_SESSION_META_DIR" handoff out
+    handoff=$(_arm_rotation)
+    git -C "$CLAUDE_SESSION_DIR" init -q
+    git -C "$CLAUDE_SESSION_DIR" add -f .cs/local/pending-handoff .cs/handoffs
+    git -C "$CLAUDE_SESSION_DIR" -c user.email=jane.roe@example.com -c user.name="Jane Roe" \
+        commit -q -m "ship a rotation"
+
+    out=$(_start_hook "$$" "$$" clear 33333333-3333-4333-8333-333333333333)
+
+    assert_eq "0" "$(grep -c 'Conversation Rotation' <<< "$out")" \
+        "the lead is not told to continue a rotation git delivered" || return 1
+    assert_eq "2026-01-01-topic.md" "$(cat "$meta/local/pending-handoff" 2>/dev/null)" \
+        "the tracked marker is left in place" || return 1
+    assert_eq "status: unconsumed" "$(sed -n 2p "$handoff")" "the handoff is left unconsumed" || return 1
+}
+
 # The queue's digest is shown once, to whoever reads it first. A child that
 # starts before the lead must neither be shown it nor move the cursor.
 test_a_nested_child_leaves_the_queue_digest_to_the_lead() {
@@ -264,6 +285,7 @@ run_test test_the_lead_gets_the_narrative_reminder
 run_test test_a_nested_child_is_not_reminded
 run_test test_a_nested_child_does_not_raise_the_attention_flag
 run_test test_a_nested_child_leaves_the_armed_rotation_to_the_lead
+run_test test_a_rotation_marker_git_tracks_is_not_loaded
 run_test test_a_nested_child_leaves_the_queue_digest_to_the_lead
 run_test test_a_teammate_leaves_the_armed_rotation_and_the_digest_to_the_lead
 run_test test_a_direct_child_of_the_lead_claude_is_not_the_lead

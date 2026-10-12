@@ -453,6 +453,48 @@ test_drain_skips_a_done_log_linked_out_of_the_session() {
         "$(cat "$err")" "one warning names the link" || return 1
 }
 
+# Commits an armed queue with one task in a control directory of the session,
+# the state a pull, a merge or a checkout leaves in a session that is open.
+_track_armed_queue() {  # control directory under .cs
+    local dir="$CLAUDE_SESSION_META_DIR/$1"
+    mkdir -p "$dir/queue"
+    printf 'a task the repository wrote\n' > "$dir/queue/0000000001-seed"
+    printf 'armed\n' > "$dir/queue.state"
+    git -C "$CLAUDE_SESSION_DIR" init -q
+    git -C "$CLAUDE_SESSION_DIR" add -f ".cs/$1"
+    git -C "$CLAUDE_SESSION_DIR" -c user.email=jane.roe@example.com -c user.name="Jane Roe" \
+        commit -q -m "ship a queue"
+}
+
+# What the Stop hook answers when git tracks files in the control directory.
+_tracked_files_verdict() {  # control directory under .cs
+    jq -nc --arg m "cs reads no queue, mail or rotation in this session: .cs/$1/queue.state is tracked in git (per-actor state must stay local). Fix with: git -C \"$CLAUDE_SESSION_DIR\" rm -r --cached .cs/$1 && git commit -m 'stop tracking .cs/$1'" \
+        '{decision:"approve", systemMessage:$m}'
+}
+
+# No refusal at the open sees files git delivers into a session that is
+# already open. A queue git tracks is one the repository wrote: the Stop hook
+# hands nothing out, leaves the queue as it is, and says why.
+test_drain_hands_out_nothing_from_a_queue_git_tracks() {
+    _track_armed_queue local
+    local out
+    out=$(drain)
+    assert_eq "$(_tracked_files_verdict local)" "$out" "the Stop names the tracked file and hands out nothing" || return 1
+    assert_eq "armed" "$(cat "$(QDIR)/queue.state")" "the state is left as it was" || return 1
+    assert_eq "a task the repository wrote" "$(cat "$(QDIR)/queue/0000000001-seed")" "the task is left in place" || return 1
+}
+
+# The same queue in a .cs/private directory, where cs reads its files from
+# once that name exists.
+test_drain_hands_out_nothing_from_a_private_queue_git_tracks() {
+    _track_armed_queue private
+    local out priv="$CLAUDE_SESSION_META_DIR/private"
+    out=$(drain)
+    assert_eq "$(_tracked_files_verdict private)" "$out" "the Stop names the tracked file and hands out nothing" || return 1
+    assert_eq "armed" "$(cat "$priv/queue.state")" "the state is left as it was" || return 1
+    assert_eq "a task the repository wrote" "$(cat "$priv/queue/0000000001-seed")" "the task is left in place" || return 1
+}
+
 # A .cs/private linked out of the session without a vault set up by hand is
 # no queue: the drain moves and deletes nothing there.
 test_drain_leaves_a_queue_linked_out_of_the_session_alone() {
@@ -837,6 +879,8 @@ run_test test_drain_armed_mentions_queue_list
 run_test test_drain_draining_pops_and_injects_next
 run_test test_drain_skips_a_done_log_linked_out_of_the_session
 run_test test_drain_leaves_a_queue_linked_out_of_the_session_alone
+run_test test_drain_hands_out_nothing_from_a_queue_git_tracks
+run_test test_drain_hands_out_nothing_from_a_private_queue_git_tracks
 run_test test_drain_frames_the_first_task_as_untrusted
 run_test test_drain_frames_the_next_task_with_a_fresh_id
 run_test test_drain_ignores_a_teammate_stop
