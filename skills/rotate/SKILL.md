@@ -267,7 +267,7 @@ vault is locked: tell the user to mount it and stop.
 
    ```sh
    marker=.cs/local/pending-handoff
-   if [ -e .cs/private ]; then marker=.cs/private/pending-handoff; fi
+   if [ -L .cs/private ] || [ -e .cs/private ]; then marker=.cs/private/pending-handoff; fi
    cs -vet-session . && printf '%s\n' "$HANDOFF" > "$marker"
    ```
 
