@@ -153,6 +153,14 @@ REAL_META_LC="$(_cs_lower "$REAL_META")"
 REAL_CS_LC="$(_cs_lower "$REAL_CS")"
 BASENAME_LC="$(_cs_lower "${FILE_PATH##*/}")"
 
+# A repository kept below .cs/ (a clone under a notes directory) has a git
+# directory of its own: git reads config and runs hooks from it whenever git
+# runs there, and a .git file names another directory to read them from. A
+# write with a .git component anywhere below .cs/ prompts.
+case "$(_cs_lower "$_cs_below")/$BASENAME_LC/" in
+    */.git/*) exit 0 ;;
+esac
+
 # Classify by where the write really lands, not by the spelled path: a
 # shared directory can carry a committed link into local/ (memory/notes ->
 # ../local), and cs accepts a .cs/claude-config that links anywhere, so a
