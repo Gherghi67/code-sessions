@@ -752,7 +752,10 @@ $RUN_MODE$SCOPE"
         DECLINED="$QDIR/queue.declined"
         GATE=1
         if [ -f "$DECLINED" ]; then
-            DECL_AT=$(cat "$DECLINED" 2>/dev/null | tr -d '[:space:]')
+            # A stamp is data: anything but a plain number reads as 0, a
+            # decline long past, and never reaches the arithmetic below, which
+            # would run a command substitution held in it.
+            DECL_AT=$(_num_or "$(cat "$DECLINED" 2>/dev/null | tr -d '[:space:]')" 0)
             NOW=$(date +%s)
             if [ -n "$DECL_AT" ] && [ $((NOW - DECL_AT)) -lt 600 ]; then
                 GATE=0            # within cooldown: fall through to narrative
@@ -856,7 +859,10 @@ CURRENT_TIME=$(date +%s)
 
 # Cooldown: don't nag if we reminded recently
 if [ -f "$COOLDOWN_FILE" ]; then
-    LAST_REMINDER=$(cat "$COOLDOWN_FILE" 2>/dev/null || echo "0")
+    # The stamp sits at the .cs root, where a write needs no approval, and
+    # arithmetic runs a command substitution held in an operand: anything but
+    # a plain number reads as 0, a reminder long past.
+    LAST_REMINDER=$(_num_or "$(cat "$COOLDOWN_FILE" 2>/dev/null | tr -d '[:space:]')" 0)
     ELAPSED=$((CURRENT_TIME - LAST_REMINDER))
     if [ "$ELAPSED" -lt "$COOLDOWN_SECONDS" ]; then
         echo '{"decision": "approve"}'
