@@ -105,12 +105,11 @@ that cannot start, leaves the handoff armed and prints both ways back:
 <current>`. When the target exits with an error before its conversation
 starts, cs also puts back a handoff its launch had already marked consumed.
 
-Codex does not yet read an encrypted session's vault for rotation, so a switch
-into Codex refuses in an [encrypted session](session-layout.md#encrypted-sessions),
-as does `--engine codex --from-handoff`. A switch from Codex to Claude refuses
-there too while a plaintext `.cs/local/session.log` is present, for example one
-an older Codex run left there: an encrypted session does not open beside it.
-Move the file into `.cs/private/`, then ask for the switch again.
+Codex does not open an [encrypted session](session-layout.md#encrypted-sessions)
+yet: it keeps its conversations in `CODEX_HOME`, outside the vault. Every Codex
+launch of one refuses before the vault's password is asked for, `--engine codex
+--from-handoff` included, and names `cs <name> --engine claude`; a switch into
+Codex refuses there as well.
 
 ## Workspace preparation and installation
 
@@ -179,7 +178,7 @@ the handoff and runs its first turn on its own. `$switch` does the same across
 engines (see [Switching engines](#switching-engines)). The Claude hooks and
 function-hook mods do not run in Codex. Codex does
 not yet participate in CS autosave and crash recovery, queue delivery, usage
-reporting, rotation in an encrypted session, observed runtime status, or native
+reporting, encrypted sessions, observed runtime status, or native
 terminal controls. CS session-management commands continue to manage the shared
 workspace, including manual `cs -status` updates through `CS_SESSION_*`; native runtime observations remain Claude-specific for now.
 

@@ -262,6 +262,10 @@ core event bus yet. A full move to
 `core/` and `adapters/` directories should follow these behavior boundaries.
 Codex native event delivery remains separate work; shared supervision does not
 provide turn-boundary observation, queue delivery, or forced rotation.
+Codex refuses encrypted sessions, a stopgap until it keeps a `CODEX_HOME` of
+its own inside the vault: main checks before the pre-open, and
+`_launch_codex_bound` checks again for any other caller
+(`_codex_encrypted_refusal`).
 The shipped skills deploy to Claude and Codex alike. Each one reaches its
 helpers through its own directory and checks `cs -engine supports` before an
 adapter feature. Codex declares `rotation` and none of the other three, so under

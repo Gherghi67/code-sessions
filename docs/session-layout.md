@@ -217,6 +217,13 @@ opening one refuses even while the vault is mounted: a checkout of the links
 where nothing is mounted, and a base whose `.cs/` is ignored would give the
 worktree plaintext files of its own.
 
+Codex does not open an encrypted session yet, because it keeps its
+conversations in `CODEX_HOME`, outside the vault. A Codex launch of one
+refuses before the pre-open asks for the password and names
+`cs <name> --engine claude`. A Codex launch of a worktree name whose base is
+one refuses at the same point, saying that worktrees of an encrypted session
+are not supported.
+
 Opening an encrypted session also refuses when a plaintext copy of a vault
 file is still outside it: any of the `.cs/private` files above left in
 `.cs/local/`, or a `.cs/handoffs/` or `.cs/checkpoints/` folder, or a plain

@@ -158,12 +158,10 @@ ccs research-notes --engine claude
 the resume prompt: the armed one, otherwise the newest unconsumed one, labelled
 `(from another checkout)` when this checkout did not write it. Without a
 pending handoff it refuses and points at `--fresh`. It cannot be combined with
-`--fresh`, `--resume` or `-finish`. Codex cannot yet start from the handoffs of
-an [encrypted session](session-layout.md#encrypted-sessions), so the switch
-into Codex and `--engine codex --from-handoff` refuse there. A switch out of
-Codex refuses there as well while a plaintext `.cs/local/session.log` is
-present, for example one an older Codex run left; move it into `.cs/private/`
-first.
+`--fresh`, `--resume` or `-finish`. Codex does not open an
+[encrypted session](session-layout.md#encrypted-sessions) yet, so the switch
+into Codex and `--engine codex --from-handoff` refuse there; open it with
+`cs <name> --engine claude`.
 
 Run `ccs .` from the root of an adopted project or registered session to open
 that workspace. From anywhere, `ccs` with no arguments opens the interactive

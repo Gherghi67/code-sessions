@@ -333,23 +333,23 @@ test_verb_refuses_a_target_without_rotation() {
 
 test_encrypted_session_keeps_the_switch_in_private_and_refuses_when_locked() {
     local out status=0 dir
-    _fake_run venc codex
+    _fake_run venc claude
     dir="$CS_SESSION_DIR"
     mkdir -p "$dir/.cs/private"
     _arm
-    out=$("$CS_BIN" -switch claude 2>&1) || status=$?
-    assert_eq 0 "$status" "encrypted switch failed: $out" || return 1
-    _has "$dir/.cs/private/pending-switch" "engine=claude" || return 1
-    assert_not_exists "$dir/.cs/local/pending-switch" "nothing in plaintext .cs/local" || return 1
-    out=$("$CS_BIN" -switch cancel 2>&1) || return 1
-    assert_not_exists "$dir/.cs/private/pending-switch" || return 1
     # Codex's rotation reads .cs/handoffs, never the vault: no switch into it.
-    status=0; out=$(CS_RUN_ENGINE=claude "$CS_BIN" -switch codex 2>&1) || status=$?
+    out=$("$CS_BIN" -switch codex 2>&1) || status=$?
     [ "$status" -ne 0 ] || { echo "  FAIL: an encrypted switch into codex must refuse"; return 1; }
     assert_output_contains "$out" 'this session is encrypted' || return 1
     assert_output_contains "$out" 'rotate skill' "names the fix" || return 1
-    status=0; out=$(CS_RUN_ENGINE=claude "$CS_BIN" -switch --check 2>&1) || status=$?
+    status=0; out=$("$CS_BIN" -switch --check 2>&1) || status=$?
     [ "$status" -ne 0 ] && assert_output_contains "$out" 'this session is encrypted' || return 1
+    assert_not_exists "$dir/.cs/private/pending-switch" || return 1
+    assert_not_exists "$dir/.cs/local/pending-switch" "nothing in plaintext .cs/local" || return 1
+    # A switch an earlier run left is kept in the vault, and cancel finds it there.
+    printf 'engine=codex\nmode=fresh\nhandoff=%s\nrun=%s\n' "$HANDOFF" "$CS_RUN_ID" > "$dir/.cs/private/pending-switch"
+    out=$("$CS_BIN" -switch cancel 2>&1) || return 1
+    assert_output_contains "$out" 'Switch to codex cancelled' || return 1
     assert_not_exists "$dir/.cs/private/pending-switch" || return 1
     # A locked vault: .cs/private dangles.
     rm -rf "$dir/.cs/private"
@@ -461,12 +461,40 @@ test_codex_from_handoff_refuses_an_encrypted_session() {
     [ ! -f "$dir/.cs/local/session.log" ] || mv "$dir/.cs/local/session.log" "$dir/.cs/private/"
     CS_SESSION_DIR="$dir" _arm
     out=$("$CS_BIN" cenc --from-handoff </dev/null 2>&1) || status=$?
-    [ "$status" -ne 0 ] || { echo "  FAIL: codex must refuse a handoff kept in the vault"; return 1; }
-    assert_output_contains "$out" 'does not read handoffs from .cs/private' || return 1
+    [ "$status" -ne 0 ] || { echo "  FAIL: codex must refuse an encrypted session"; return 1; }
+    assert_output_contains "$out" 'cenc is encrypted' || return 1
     assert_output_contains "$out" 'cs cenc --engine claude --from-handoff' "names the way that works" || return 1
     assert_eq 1 "$(_calls codex)" "codex is not launched" || return 1
     _has "$dir/.cs/private/handoffs/$HANDOFF" "status: unconsumed" || return 1
     assert_eq "$HANDOFF" "$(cat "$dir/.cs/private/pending-handoff")" "the handoff stays armed" || return 1
+}
+
+# Every Codex open of an encrypted session refuses, and before the pre-open
+# that would ask for the vault's password: a locked vault (a dangling
+# .cs/private) counts as encrypted, and so does a worktree name whose base is.
+test_codex_open_of_an_encrypted_session_refuses_before_pre_open() {
+    local out status=0 dir helper_calls
+    _new_codex_session cpo
+    dir=$(_dir cpo)
+    helper_calls=$(_calls helper)
+    rm -f "$dir/.cs/local/session.log"
+    ln -s "$TEST_TMPDIR/vault-not-mounted" "$dir/.cs/private"
+    printf '#!/bin/sh\ntouch "%s"\n' "$TEST_TMPDIR/pre-open-ran" > "$dir/.cs/local/pre-open"
+    chmod +x "$dir/.cs/local/pre-open"
+    out=$("$CS_BIN" cpo </dev/null 2>&1) || status=$?
+    [ "$status" -ne 0 ] || { echo "  FAIL: the sticky codex open must refuse: $out"; return 1; }
+    assert_output_contains "$out" 'cpo is encrypted' || return 1
+    assert_output_contains "$out" 'cs cpo --engine claude' "names the Claude way" || return 1
+    assert_not_exists "$TEST_TMPDIR/pre-open-ran" "no vault prompt for a launch that refuses" || return 1
+    status=0; out=$("$CS_BIN" cpo --engine codex --resume </dev/null 2>&1) || status=$?
+    [ "$status" -ne 0 ] && assert_output_contains "$out" 'cpo is encrypted' || return 1
+    status=0; out=$(CS_DEFAULT_ENGINE=codex "$CS_BIN" cpo@feat </dev/null 2>&1) || status=$?
+    [ "$status" -ne 0 ] || { echo "  FAIL: a codex worktree of an encrypted base must refuse: $out"; return 1; }
+    assert_output_contains "$out" 'cpo is encrypted, and feature worktrees of an encrypted session are not supported yet' || return 1
+    assert_output_not_contains "$out" '--engine claude' "a worktree is not pointed at Claude, which refuses it too" || return 1
+    assert_not_exists "$TEST_TMPDIR/pre-open-ran" || return 1
+    assert_eq 1 "$(_calls codex)" "codex is not launched" || return 1
+    assert_eq "$helper_calls" "$(_calls helper)" "no thread is started" || return 1
 }
 
 # ============================================================================
@@ -688,23 +716,28 @@ test_worktree_session_relaunches_under_its_own_name() {
     [ "$(_state "$base" engine)" != codex ] || { echo "  FAIL: the base's preference must not change"; return 1; }
 }
 
-test_encrypted_session_relaunch_reads_the_switch_from_private() {
-    local out status=0 dir thread new
+# Codex does not open an encrypted session, so its vault handoff waits for
+# the Claude launch the refusal names, which reads it from .cs/private.
+test_encrypted_codex_session_leaves_the_vault_handoff_to_claude() {
+    local out status=0 dir new
     _new_codex_session swe
     dir=$(_dir swe)
     # Encrypted: .cs/private holds what .cs/local would (a real directory
     # stands in for the mounted vault).
     mkdir -p "$dir/.cs/private"
     [ ! -f "$dir/.cs/local/session.log" ] || mv "$dir/.cs/local/session.log" "$dir/.cs/private/"
-    thread=$(cat "$dir/.cs/local/codex-thread-id")
-    _plan codex "PLAN_HANDOFF=$HANDOFF" "PLAN_SWITCH=claude"
+    CS_SESSION_DIR="$dir" _arm
     out=$("$CS_BIN" swe </dev/null 2>&1) || status=$?
-    assert_eq 0 "$status" "switch run failed: $out" || return 1
-    assert_eq 1 "$(_calls claude)" "claude is relaunched once" || return 1
+    [ "$status" -ne 0 ] || { echo "  FAIL: codex must refuse an encrypted session: $out"; return 1; }
+    assert_eq 1 "$(_calls codex)" "codex is not launched" || return 1
+    assert_eq "$HANDOFF" "$(cat "$dir/.cs/private/pending-handoff")" "the handoff stays armed" || return 1
+    assert_not_exists "$dir/.cs/local/session.log" "nothing in plaintext .cs/local" || return 1
+    status=0; out=$("$CS_BIN" swe --engine claude --from-handoff </dev/null 2>&1) || status=$?
+    assert_eq 0 "$status" "the Claude launch failed: $out" || return 1
+    assert_eq 1 "$(_calls claude)" || return 1
     new=$(_state "$dir" claude_session_id)
     _has "$dir/.cs/private/handoffs/$HANDOFF" "consumed_by: $new" || return 1
     _lacks "$CS_STUB_DIR/claude.args.1" "$HANDOFF" "the topic stays out of argv" || return 1
-    assert_not_exists "$dir/.cs/private/pending-switch" || return 1
     assert_not_exists "$dir/.cs/private/pending-handoff" || return 1
 }
 
@@ -753,25 +786,25 @@ test_relaunch_refused_by_an_open_step_names_both_ways_back() {
 }
 
 # A session.log an older Codex run left in .cs/local beside an encrypted
-# session is a plaintext file every later open refuses. The switch asks before it
-# relaunches, while it can still say what to fix and how to come back.
-test_encrypted_leftovers_stop_the_relaunch_before_it_starts() {
+# session is a plaintext file every later open refuses. Codex refuses the
+# session before that check, and the Claude open it names then says what to fix.
+test_encrypted_leftovers_stop_the_claude_open_codex_names() {
     local out status=0 dir
     _new_codex_session swl
     dir=$(_dir swl)
     mkdir -p "$dir/.cs/private"
     [ ! -f "$dir/.cs/local/session.log" ] || mv "$dir/.cs/local/session.log" "$dir/.cs/private/"
-    _plan codex "PLAN_HANDOFF=$HANDOFF" "PLAN_SWITCH=claude" \
-        "PLAN_CMD='echo started >> \"\$CS_SESSION_DIR/.cs/local/session.log\"'"
-    out=$("$CS_BIN" swl </dev/null 2>&1) || status=$?
-    assert_eq 0 "$status" "the Codex run itself ended well: $out" || return 1
-    _has "$CS_STUB_DIR/switch.out" "Switch armed" "(fixture) the switch was armed" || return 1
-    assert_eq 0 "$(_calls claude)" "no relaunch" || return 1
-    assert_output_contains "$out" 'Not switching to claude: the session would not reopen' || return 1
-    assert_output_contains "$out" 'session.log in plaintext' "names what to fix" || return 1
+    CS_SESSION_DIR="$dir" _arm
+    echo started >> "$dir/.cs/local/session.log"
+    out=$("$CS_BIN" swl --from-handoff </dev/null 2>&1) || status=$?
+    [ "$status" -ne 0 ] || { echo "  FAIL: codex must refuse an encrypted session: $out"; return 1; }
+    assert_output_contains "$out" 'swl is encrypted' || return 1
     assert_output_contains "$out" 'cs swl --engine claude --from-handoff' || return 1
-    assert_output_contains "$out" 'cs swl --engine codex$' || return 1
-    assert_not_exists "$dir/.cs/private/pending-switch" || return 1
+    status=0; out=$("$CS_BIN" swl --engine claude --from-handoff </dev/null 2>&1) || status=$?
+    [ "$status" -ne 0 ] || { echo "  FAIL: the plaintext leftover must stop the Claude open"; return 1; }
+    assert_output_contains "$out" 'session.log in plaintext' "names what to fix" || return 1
+    assert_eq 0 "$(_calls claude)" "claude is not launched" || return 1
+    assert_eq 1 "$(_calls codex)" "codex is not launched" || return 1
     assert_eq "$HANDOFF" "$(cat "$dir/.cs/private/pending-handoff")" "the handoff stays armed" || return 1
     _has "$dir/.cs/private/handoffs/$HANDOFF" "status: unconsumed" || return 1
 }
@@ -962,6 +995,7 @@ run_test test_claude_from_handoff_picks_an_unarmed_pending_handoff
 run_test test_from_handoff_refuses_without_a_handoff_and_conflicts
 run_test test_codex_from_handoff_starts_a_thread_from_the_handoff
 run_test test_codex_from_handoff_refuses_an_encrypted_session
+run_test test_codex_open_of_an_encrypted_session_refuses_before_pre_open
 run_test test_switch_from_claude_relaunches_codex_from_the_handoff
 run_test test_switch_from_codex_relaunches_claude_from_the_handoff
 run_test test_round_trip_carries_each_engine_s_work_forward
@@ -972,10 +1006,10 @@ run_test test_resume_mode_from_claude_resumes_codex_with_the_handoff
 run_test test_resume_mode_from_codex_resumes_claude_with_the_handoff
 run_test test_resume_mode_without_a_recorded_conversation_starts_fresh
 run_test test_worktree_session_relaunches_under_its_own_name
-run_test test_encrypted_session_relaunch_reads_the_switch_from_private
+run_test test_encrypted_codex_session_leaves_the_vault_handoff_to_claude
 run_test test_relaunch_that_cannot_start_names_both_ways_back
 run_test test_relaunch_refused_by_an_open_step_names_both_ways_back
-run_test test_encrypted_leftovers_stop_the_relaunch_before_it_starts
+run_test test_encrypted_leftovers_stop_the_claude_open_codex_names
 run_test test_codex_from_handoff_labels_a_handoff_from_another_checkout
 run_test test_relaunch_ignores_user_variables_named_like_its_locals
 run_test test_resume_relaunch_claude_refuses_puts_the_handoff_back

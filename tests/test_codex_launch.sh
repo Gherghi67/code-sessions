@@ -14,6 +14,7 @@ source "$SCRIPT_DIR/../lib/41-bindings.sh"
 source "$SCRIPT_DIR/../lib/75-launch.sh"
 source "$SCRIPT_DIR/../lib/76-codex.sh"
 source "$SCRIPT_DIR/../lib/77-codex-hooks.sh"
+source "$SCRIPT_DIR/../lib/78-switch.sh"
 
 _set_local_state() {  # state key value
     printf '%s: %s\n' "$2" "$3" >> "$1"
@@ -128,6 +129,30 @@ test_missing_codex_home_is_named_before_the_helper() {
     assert_eq 1 "$status" "a missing CODEX_HOME must stop the launch" || return 1
     assert_output_contains "$output" "CODEX_HOME points to $TEST_TMPDIR/no such codex home" "names the directory" || return 1
     assert_output_contains "$output" "codex login" "says what to do next" || return 1
+    assert_not_exists "$CS_HELPER_COUNT" "no helper call" || return 1
+    assert_not_exists "$CS_CODEX_LOG" "no CLI call" || return 1
+    assert_not_exists "$CS_TEST_SESSION_DIR/.cs/session.lock" || return 1
+}
+
+# Codex keeps its conversations in its own home, outside the vault, so no
+# intent opens an encrypted session; a locked vault (a dangling link) counts.
+test_encrypted_session_refuses_codex() {
+    local output status intent
+    mkdir -p "$TEST_TMPDIR/vault/private"
+    ln -s "$TEST_TMPDIR/vault/private" "$CS_TEST_SESSION_DIR/.cs/private"
+    printf '%s\n' "$CS_THREAD_ID" > "$CS_TEST_SESSION_DIR/.cs/local/codex-thread-id"
+    for intent in auto fresh resume handoff; do
+        status=0
+        output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false "" "$intent" 2>&1) || status=$?
+        assert_eq 1 "$status" "$intent must refuse an encrypted session" || return 1
+        assert_output_contains "$output" "demo is encrypted" "$intent names why" || return 1
+        assert_output_contains "$output" "cs demo --engine claude" "$intent names the Claude way" || return 1
+    done
+    rm -rf "$TEST_TMPDIR/vault"
+    status=0
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false 2>&1) || status=$?
+    assert_eq 1 "$status" "a locked vault must refuse too" || return 1
+    assert_output_contains "$output" "demo is encrypted" || return 1
     assert_not_exists "$CS_HELPER_COUNT" "no helper call" || return 1
     assert_not_exists "$CS_CODEX_LOG" "no CLI call" || return 1
     assert_not_exists "$CS_TEST_SESSION_DIR/.cs/session.lock" || return 1
@@ -408,6 +433,7 @@ run_test test_resume_refreshes_exact_thread
 run_test test_failed_refresh_never_starts_fresh
 run_test test_malformed_binding_rejected_without_helper
 run_test test_missing_codex_home_is_named_before_the_helper
+run_test test_encrypted_session_refuses_codex
 run_test test_mismatched_refresh_rejected
 run_test test_cli_status_and_lock_cleanup
 run_test test_claude_runtime_binding_isolation

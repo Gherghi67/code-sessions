@@ -149,6 +149,16 @@ _codex_ack_resume() {  # session_dir, thread_id
     _timeline_started "$1" codex "$2" resume
 }
 
+# Codex writes its rollouts, history and state under CODEX_HOME, outside an
+# encrypted session's vault, so it opens none. main refuses before the pre-open
+# asks for the vault's password; _launch_codex_bound, for any other caller.
+_codex_encrypted_refusal() {  # session_name, intent
+    local again="cs $1 --engine claude"
+    [ "${2:-}" != handoff ] || again="$again --from-handoff"
+    printf '%s is encrypted, and Codex keeps its conversations in %s, outside the vault. Open it under Claude: %s\n' \
+        "$1" "${CODEX_HOME:-$HOME/.codex}" "$again"
+}
+
 # The actual cs process owns session.lock, so terminating that PID runs these
 # traps and can stop its Codex child before releasing the lock.
 _launch_codex_bound() {
@@ -163,6 +173,11 @@ _launch_codex_bound() {
         _codex_launch_error "Session directory does not exist: $session_dir"
         return 1
     }
+    # A stopgap until Codex keeps its home inside the vault.
+    if _switch_session_encrypted "$session_dir"; then
+        _codex_launch_error "$(_codex_encrypted_refusal "$session_name" "$intent")"
+        return 1
+    fi
     mkdir -p "$local_dir" || return 1
     umask 077
 
@@ -210,12 +225,7 @@ _launch_codex_bound() {
     pending_handoff=$(_pending_handoff_pick "$session_dir")
     if [ "$intent" = handoff ]; then
         # --from-handoff (and the relaunch of a cs -switch): the r answer,
-        # unasked, as on Claude. Not from an encrypted session's vault, which
-        # the r path below does not read (lib/78-switch.sh).
-        if _switch_session_encrypted "$session_dir"; then
-            _codex_launch_error "Codex does not read handoffs from .cs/private yet. Continue from it under Claude: cs $session_name --engine claude --from-handoff"
-            return 1
-        fi
+        # unasked, as on Claude.
         [ -n "$pending_handoff" ] || {
             _codex_launch_error "$(_switch_no_handoff_message "$session_name")"
             return 1

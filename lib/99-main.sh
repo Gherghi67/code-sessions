@@ -456,6 +456,16 @@ main() {
     local session_dir="$SESSIONS_ROOT/$session_name"
     local engine
     engine=$(_session_engine "$session_dir" "$explicit_engine")
+    # A stopgap until Codex keeps its home inside the vault (_codex_encrypted_refusal).
+    # Claude refuses a worktree of an encrypted base too, so that one is not pointed at it.
+    if [ "$engine" = codex ]; then
+        if [ -n "$wt_base" ] && _switch_session_encrypted "$(_resolve_session_dir "$wt_base")"; then
+            error "$wt_base is encrypted, and feature worktrees of an encrypted session are not supported yet."
+        fi
+        if _switch_session_encrypted "$session_dir"; then
+            error "$(_codex_encrypted_refusal "$session_name" "$launch_intent")"
+        fi
+    fi
     if [ -n "$merge_feature" ] && ! cs_engine_supports "$engine" feature_finish; then
         error "-finish is not supported under $engine. Use: cs $session_name --engine claude -finish $merge_feature"
     fi
