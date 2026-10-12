@@ -665,6 +665,27 @@ test_adopt_gitignores_the_vault_mount() {
     assert_file_contains "$owned/.gitignore" "node_modules/" "the project's own entry stays" || return 1
 }
 
+# .cs/private holds what .cs/local holds for a plain session, so a directory
+# of that name stays out of git the same way. Only the directory: an encrypted
+# session's .cs/private is a link, and the link itself is committed.
+test_adopt_gitignores_a_private_directory_and_not_its_link() {
+    local fresh="$TEST_TMPDIR/fresh" owned="$TEST_TMPDIR/owned" linked="$TEST_TMPDIR/linked"
+    mkdir -p "$fresh" "$owned" "$linked"
+    (cd "$fresh" && git init -q && "$CS_BIN" -adopt fresh-session >/dev/null 2>&1)
+    (cd "$owned" && git init -q && printf 'node_modules/\n' > .gitignore \
+        && "$CS_BIN" -adopt owned-session >/dev/null 2>&1)
+    (cd "$linked" && git init -q && "$CS_BIN" -adopt linked-session >/dev/null 2>&1)
+    mkdir -p "$fresh/.cs/private" "$owned/.cs/private"
+    git -C "$fresh" check-ignore -q .cs/private/session.log \
+        || { echo "  FAIL: cs's own .gitignore must ignore .cs/private/"; return 1; }
+    git -C "$owned" check-ignore -q .cs/private/session.log \
+        || { echo "  FAIL: adopt must append .cs/private/ to a project .gitignore"; return 1; }
+    ln -s vault-mnt/private "$linked/.cs/private"
+    if git -C "$linked" check-ignore -q .cs/private; then
+        echo "  FAIL: the .cs/private link itself must stay committable"; return 1
+    fi
+}
+
 # cs_write_atomic stages each write in a temp file beside its destination; one
 # left by a killed writer must not reach an autosave snapshot, both under the
 # .gitignore cs writes and under a project's own .gitignore that adopt appends to.
@@ -978,6 +999,7 @@ echo ""
 
 run_test test_adopt_gitignores_cs_local
 run_test test_adopt_gitignores_the_vault_mount
+run_test test_adopt_gitignores_a_private_directory_and_not_its_link
 run_test test_adopt_gitignores_atomic_write_temps
 run_test test_adopt_sets_memory_merge_driver
 

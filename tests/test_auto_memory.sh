@@ -700,6 +700,85 @@ test_pre_open_tracked_under_a_case_variant_is_refused() {
     assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
 }
 
+# A repository as a clone delivers it: one commit holding a session README.
+_upstream_session_repo() {  # dir
+    mkdir -p "$1/.cs"
+    git -C "$1" init -q -b main
+    git -C "$1" config user.email jane.roe@example.com
+    git -C "$1" config user.name "Jane Roe"
+    printf -- '---\nstatus: active\ncreated: 2026-01-01\n---\n# vt\n\n## Objective\n\nx\n' > "$1/.cs/README.md"
+    git -C "$1" add -f .cs/README.md
+    git -C "$1" commit -q -m init
+}
+
+# Commits a task queue the way `cs -queue start` leaves one: a task file and a
+# state file that says the user armed the run.
+_commit_armed_queue() {  # repo, directory relative to the repo
+    mkdir -p "$1/$2/queue"
+    printf 'armed\n' > "$1/$2/queue.state"
+    printf 'a task the repository wrote\n' > "$1/$2/queue/0000000001-task"
+    git -C "$1" add -f "$2"
+    git -C "$1" commit -q -m "ship a queue"
+}
+
+# With .cs/private present cs reads the queue, the mailbox and the rotation
+# marker from it, so a repository that commits one hands cs a queue the user
+# never armed. Refused like the same files under .cs/local.
+test_cs_files_tracked_in_cs_private_are_refused() {
+    local up="$TEST_TMPDIR/upstream" root="$CS_SESSIONS_ROOT/vt"
+    _upstream_session_repo "$up"
+    _commit_armed_queue "$up" .cs/private
+    git clone -q "$up" "$root"
+    _make_launch_sentinel
+
+    local out rc=0
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: .cs/private/queue.state is tracked in git (per-actor state must stay local). Fix with: git -C \"$root\" rm -r --cached .cs/private && git commit -m 'stop tracking .cs/private'" \
+        "$out" "cs should refuse a committed .cs/private before it reads a queue from it" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
+}
+
+# The same queue behind a committed link: .cs/private points at a directory
+# the repository also tracks, so no path under .cs/private is in the index.
+test_cs_files_tracked_behind_a_cs_private_link_are_refused() {
+    local up="$TEST_TMPDIR/upstream" root="$CS_SESSIONS_ROOT/vt"
+    _upstream_session_repo "$up"
+    ln -s vault-mnt/private "$up/.cs/private"
+    git -C "$up" add .cs/private
+    _commit_armed_queue "$up" .cs/vault-mnt/private
+    git clone -q "$up" "$root"
+    _make_launch_sentinel
+
+    local out rc=0
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: .cs/vault-mnt/private/queue.state is tracked in git (per-actor state must stay local). Fix with: git -C \"$root\" rm -r --cached .cs/vault-mnt/private && git commit -m 'stop tracking .cs/vault-mnt/private'" \
+        "$out" "cs should refuse tracked files behind the .cs/private link" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
+}
+
+# The refusal is about what git tracks: the same queue in a .cs/private made
+# by hand and never committed opens.
+test_an_untracked_cs_private_directory_opens() {
+    local up="$TEST_TMPDIR/upstream" root="$CS_SESSIONS_ROOT/vt"
+    _upstream_session_repo "$up"
+    git clone -q "$up" "$root"
+    mkdir -p "$root/.cs/private/queue"
+    printf 'armed\n' > "$root/.cs/private/queue.state"
+    printf 'a task the user queued\n' > "$root/.cs/private/queue/0000000001-task"
+    _make_launch_sentinel
+
+    local rc=0
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || rc=$?
+
+    assert_eq "0" "$rc" "cs should open the session" || return 1
+    assert_file_contains "$TEST_TMPDIR/launched" "launched" "claude should launch" || return 1
+    assert_eq "armed" "$(cat "$root/.cs/private/queue.state")" "the user's queue stays as it was" || return 1
+}
+
 # A clone can also deliver `.cs` itself as a committed symlink to a tracked
 # directory: `git ls-files -- .cs/local` then lists nothing, so the tracked
 # check passes and the pre-open behind the link would run.
@@ -1537,6 +1616,9 @@ run_test test_pre_open_failure_aborts_open
 run_test test_pre_open_not_executable_is_refused
 run_test test_pre_open_tracked_by_git_is_refused
 run_test test_pre_open_tracked_under_a_case_variant_is_refused
+run_test test_cs_files_tracked_in_cs_private_are_refused
+run_test test_cs_files_tracked_behind_a_cs_private_link_are_refused
+run_test test_an_untracked_cs_private_directory_opens
 run_test test_pre_open_through_symlinked_cs_is_refused
 run_test test_symlinked_cs_without_pre_open_keeps_the_target_mode
 run_test test_pre_open_inside_a_cs_submodule_is_refused
