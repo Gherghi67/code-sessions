@@ -114,6 +114,7 @@ beforeEach(() => {
   written = {}; panes = []; toasts = []; invalidated = []; runs = []; commands = []
   runResult = { exitCode: 0, stdout: 'ok', stderr: '' }
   ;($ as any).process.run = defaultRun
+  ;($ as any).env.get = async (name: string) => envVars[name]
   defaultWrite = async (path: string, text: string) => { written[path] = text }
   sessionId = 'uuid-lead'
   load()
@@ -158,6 +159,9 @@ test('session.start opens the pane once per load and writes the heartbeat', asyn
 // While git tracks the session's control files, cs -vet-session refuses and
 // the mod writes nothing into .cs/local: no heartbeat, no DONE marker, and a
 // stale marker is left as git has it.
+// The installer runs alone, apart from the -vet-session asks around it.
+const updateRuns = () => runs.filter(r => r.argv[1] === '-update')
+
 const vetRefusing = () => {
   ;($ as any).process.run = async (argv: string[], init: any) => {
     runs.push({ argv, init })
@@ -279,16 +283,19 @@ test('1 runs cs -update once, by the exported path, with a ten-minute timeout, a
   // and pressed twice; the run is held in flight so the second press lands
   // while the first is running.
   let release!: (v: any) => void
-  ;($ as any).process.run = async (argv: string[], init: any) => { runs.push({ argv, init }); return new Promise(r => { release = r }) }
+  ;($ as any).process.run = async (argv: string[], init: any) => {
+    if (argv[1] === '-vet-session') return { exitCode: 0, stdout: '', stderr: '' }
+    runs.push({ argv, init }); return new Promise(r => { release = r })
+  }
   const press = buttons(await draw())[0].props.onPress
   const first = press()
   const second = press()
   await Promise.resolve()
   release({ exitCode: 0, stdout: '', stderr: '' })
   await first; await second
-  expect(runs).toHaveLength(1)
-  expect(runs[0].argv).toEqual(['/opt/cs/bin/cs', '-update'])
-  expect(runs[0].init).toMatchObject({ timeoutMs: 600000 })
+  expect(updateRuns()).toHaveLength(1)
+  expect(updateRuns()[0].argv).toEqual(['/opt/cs/bin/cs', '-update'])
+  expect(updateRuns()[0].init).toMatchObject({ timeoutMs: 600000 })
   const words = texts(await draw()).join('\n')
   // Version-neutral: cs -update installs whatever is latest when pressed,
   // which may be newer than the launch saw.
@@ -300,20 +307,28 @@ test('1 runs cs -update once, by the exported path, with a ten-minute timeout, a
 test('a second press returns at the running guard before any lookup', async () => {
   await start()
   let giveBin!: (v: any) => void
-  ;($ as any).env.get = async (name: string) => name === 'CS_BIN' ? new Promise(r => { giveBin = r }) : envVars[name]
+  // Only the press's own lookup is held; the -vet-session ask after the run answers at once.
+  let held = false
+  ;($ as any).env.get = async (name: string) => {
+    if (name !== 'CS_BIN' || held) return envVars[name]
+    held = true
+    return new Promise(r => { giveBin = r })
+  }
   const press = buttons(await draw())[0].props.onPress
   const a = press(); const b = press()
   await Promise.resolve()
   giveBin('/opt/cs/bin/cs')
   await a; await b
-  ;($ as any).env.get = async (name: string) => envVars[name]
-  expect(runs).toHaveLength(1)
+  expect(updateRuns()).toHaveLength(1)
 })
 
 test('while the update runs the pane says so and hides the key', async () => {
   await start()
   let release!: (v: any) => void
-  ;($ as any).process.run = async (argv: string[], init: any) => { runs.push({ argv, init }); return new Promise(r => { release = r }) }
+  ;($ as any).process.run = async (argv: string[], init: any) => {
+    if (argv[1] === '-vet-session') return { exitCode: 0, stdout: '', stderr: '' }
+    runs.push({ argv, init }); return new Promise(r => { release = r })
+  }
   const pressed = buttons(await draw())[0].props.onPress()
   await Promise.resolve()
   const words = texts(await draw()).join('\n')
