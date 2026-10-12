@@ -22,6 +22,17 @@ _vet_current_session() {
     ! notice=$(cs_files_tracked_notice "$dir/.cs" "$dir") || error "$notice"
 }
 
+# cs -vet-session <dir>: the same question about the session at <dir>,
+# whatever the environment names. The cs mod asks it before it arms a
+# rotation: a pending-handoff marker git tracks names one the SessionStart
+# hook refuses to load. Prints nothing and exits 0 when cs trusts the files.
+_vet_named_session() {  # session directory
+    local notice
+    [ $# -eq 1 ] || error "Usage: cs -vet-session <session directory>"
+    [ -d "$1/.cs" ] || error "$1 is not a cs session"
+    ! notice=$(cs_files_tracked_notice "$1/.cs" "$1") || error "$notice"
+}
+
 main() {
     # cs IS the launch, and the hooks read that from the ABSENCE of this marker
     # (hooks/cs-resolve.sh preserves an inherited value rather than setting
@@ -108,6 +119,11 @@ main() {
             ;;
         -complete) # hidden: shell-completion plumbing, not a user-facing command
             cmd_complete "${2:-}"
+            return 0
+            ;;
+        -vet-session) # hidden: asked by the cs mod before it arms a rotation, not typed by a user
+            shift
+            _vet_named_session "$@"
             return 0
             ;;
         -whoami)

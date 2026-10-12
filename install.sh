@@ -1205,7 +1205,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "5e193b24315309fc9d50cad71741c04b2270f899d80ddce2c83d824802b0729a  bin/cs"
+    "b73903ad3688d21dff9603f8a5808191c46f59a8185a04141aa7d6ef76c43605  bin/cs"
     "21bb234814840702741e4b08a2af1eda6289856a340a0cbdb0659bbca3716955  bin/cs-secrets"
     "218445530b4e201f65870c91c126ecfe6d7732b5796d6cf9df01b544b942cad5  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -1238,7 +1238,7 @@ CS_PAYLOAD_SHA256=(
     "762ea9875fda791fd4f31fee1af5a6522a7fa5287f496eee267a561847a626bf  skills/finish/scripts/finish.sh"
     "144391d7d2df6a89742528729ee8da1e51063b3783023a656571bec0f2235458  mods/cs/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs/hooks/hooks.json"
-    "3a93e6cc6d66a4b06e21caf1331fbefee6c209ea09fdd5982372c6d482df7bbb  mods/cs/hooks/register.tsx"
+    "cc3c2567569dbb25c23185cea29f5b1548952c5c8a119f2014793ced0f2c3cee  mods/cs/hooks/register.tsx"
     "7a97c18b6ae755d8ec7862532eb15bbf627170a1fab8cc90dd2f8f77a57164be  mods/cs-update/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-update/hooks/hooks.json"
     "434c341cb8869cd3db897bf26d18d99734eb338eae9074ad6962d5ea46461a7a  mods/cs-update/hooks/register.tsx"

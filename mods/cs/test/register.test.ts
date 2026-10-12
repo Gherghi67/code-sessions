@@ -551,7 +551,7 @@ test('an armed handoff asks cs about the session, and a tracked control file arm
   runResult = tracked
   expect(await band()).toBe(DRAWN)
   expect(runs.map(r => r.argv)).toEqual([['/opt/cs/bin/cs', '-vet-session', '/work']])
-  expect(toasts).toEqual([`cs: the handoff is not armed: ${TRACKED}`])
+  expect(toasts).toEqual([`cs: no rotation in this session: ${TRACKED}`])
   await band()
   expect(toasts).toHaveLength(1)
   runResult = VETTED
@@ -588,8 +588,8 @@ test('when cs cannot answer, the handoff arms nothing and the band says why', as
   runResult = new Error('spawn ENOENT')
   expect(await band()).toBe(DRAWN)
   expect(toasts).toEqual([
-    'cs: the handoff is not armed: the launch did not say where cs is (CS_BIN)',
-    'cs: the handoff is not armed: cs -vet-session did not run: spawn ENOENT',
+    'cs: no rotation in this session: the launch did not say where cs is (CS_BIN)',
+    'cs: no rotation in this session: cs -vet-session did not run: spawn ENOENT',
   ])
 })
 

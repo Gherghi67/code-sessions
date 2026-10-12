@@ -133,6 +133,9 @@ export const GRACE_SECONDS = 20
 // Claude Code's own auto-compact lands, so a handoff is written while the
 // conversation is still whole.
 export const FORCE_DEFAULT = 80
+// How long cs may take to say whether it trusts the session's control files
+// (`cs -vet-session`, about 0.2 s measured) before the answer counts as a no.
+const VET_TIMEOUT_MS = 10000
 
 // The pane the first grace of a session opens beside the band: what the
 // handoff will do next, read while the count runs. It carries no keys, so
@@ -208,6 +211,9 @@ let previewShown = false
 // Set while the mod's own /clear runs with the pane already closed, so the
 // /clear hook goes straight through (clearAndContinue).
 let paneChecked = false
+// cs's last refusal of this session's control files, toasted once: the band
+// asks on every render while a handoff is armed.
+let lastRefusal: string | undefined
 
 // Which conversation the turns belong to, and whether it is being judged. A
 // conversation that begins past the force threshold did not get there by
@@ -497,7 +503,9 @@ async function forceRotation($: EngineInterface) {
   }
   if (startPercent !== undefined && startPercent >= force) return
   if (context.percent === undefined || context.percent < force) return
-  const forced = `${await $.session.cwd()}/${FORCED}`
+  const cwd = await $.session.cwd()
+  if (!(await sessionVetted($, cwd))) return
+  const forced = `${cwd}/${FORCED}`
   if ((await $.fs.exists(forced)) && (await $.fs.read(forced)).trim() === id) return
   await $.fs.write(forced, `${id}\n`)
   $.clock.after(0, () => {
@@ -636,7 +644,8 @@ async function threshold($: EngineInterface): Promise<number> {
 
 // Armed means the marker names a handoff the SessionStart hook will accept
 // after the /clear: a bare basename (the hook rejects a separator), a file in
-// the store, and frontmatter that still says unconsumed. A marker an aborted
+// the store, frontmatter that still says unconsumed, and a session whose
+// control files cs trusts (sessionVetted). A marker an aborted
 // rotation left behind, or one naming a handoff since consumed, would offer a
 // /clear that lands in a conversation with nothing to continue from, so it
 // does not arm. One exists per render; the reads only while the marker is there.
@@ -662,12 +671,38 @@ async function armedHandoff($: EngineInterface): Promise<string | undefined> {
     if (name === '' || /[/\\]/.test(name)) return undefined
     try {
       const text = await $.fs.read(`${cwd}/${store}/${name}`)
-      return isUnconsumed(text) ? text : undefined
+      if (!isUnconsumed(text)) return undefined
+      return (await sessionVetted($, cwd)) ? text : undefined
     } catch {
       return undefined
     }
   }
   return undefined
+}
+
+// Whether cs trusts the session's control files, by cs's own rule (the one
+// SessionStart, the Stop hook and the queue verbs ask): while git tracks a
+// file in .cs/local or .cs/private, a pull can put a marker there, and the
+// SessionStart hook refuses the rotation it names. An answer cs cannot give
+// is a no. Each new refusal is toasted once.
+async function sessionVetted($: EngineInterface, cwd: string): Promise<boolean> {
+  const bin = await $.env.get("CS_BIN")
+  let refusal: string | undefined
+  if (!bin) {
+    refusal = 'the launch did not say where cs is (CS_BIN)'
+  } else {
+    try {
+      const result = await $.process.run([bin, '-vet-session', cwd], { timeoutMs: VET_TIMEOUT_MS })
+      if (result.exitCode !== 0) {
+        refusal = result.stderr.split('\n').filter(l => l.trim() !== '').slice(-1)[0] ?? `cs -vet-session exited ${result.exitCode}`
+      }
+    } catch (err) {
+      refusal = `cs -vet-session did not run: ${String(err instanceof Error ? err.message : err)}`
+    }
+  }
+  if (refusal !== undefined && refusal !== lastRefusal) $.ui.toast(`cs: no rotation in this session: ${refusal}`)
+  lastRefusal = refusal
+  return refusal === undefined
 }
 
 // The hook's own rule (_handoff_is_unconsumed in hooks/session-start.sh): a
