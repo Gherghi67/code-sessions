@@ -198,7 +198,8 @@ paths both sides had at the last sync, so a deletion is told from an addition.
 A file the copy changes while the script runs is left as it is. Should that
 record lose its path list, the script stops rather than bring back files the
 copy deleted. Every change goes to `.cs-to-code-sessions/log.jsonl`, with up
-to 1000 of the files kept on both sides.
+to 1000 of the files kept on both sides. A record the ags-era script left as
+`.cs-to-ags/` is renamed on the first run with `--apply`.
 
 The script leaves these behind and names each one: an encrypted session, a
 session the original created in its own folder, a project whose `.git` is not a
@@ -242,8 +243,10 @@ changed since, by the same rules as above with the sides swapped: what cs
 changed in its copy is kept until both sides hold the same content again, and
 something changed on both sides keeps cs's and is reported once per change in
 code-sessions. A copy cs removed is not made again. The record of the last
-sync lives in `~/.claude-sessions/.code-sessions-to-cs/`. A copy made before
-this record existed is named and left; move it aside and rerun.
+sync lives in `~/.claude-sessions/.code-sessions-to-cs/`; the ags-era script's
+`.ags-to-cs/` and `ags-origin` markers are renamed on the first run with
+`--apply`. A copy made before this record existed is named and left; move it
+aside and rerun.
 
 The script leaves these behind and names each one: a session open in
 code-sessions (close it, then rerun), an encrypted session (its vault needs its

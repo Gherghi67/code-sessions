@@ -960,6 +960,19 @@ def sync_worktree_git(src_worktree, dst_worktree, src_repo, dst_repo, mark, head
     return "taken", None
 
 
+def adopt_legacy_dir(new, legacy, apply):
+    """The folder a record lives in: new, or the one the pre-rename tool left, renamed to new when applying."""
+    if os.path.lexists(new) or os.path.islink(legacy) or not os.path.isdir(legacy):
+        return new
+    if not apply:
+        return legacy
+    try:
+        os.rename(legacy, new)
+    except OSError:
+        return legacy
+    return new
+
+
 class Record:
     """What the last sync of one session family left: a JSON file, and per session its paths and own writes."""
 

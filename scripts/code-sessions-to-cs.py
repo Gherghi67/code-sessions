@@ -57,9 +57,10 @@ import tempfile
 NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 VAULT_LINKS = ("memory", "plans", "claude-config", "private")
 MARKER = os.path.join(".cs", "local", "code-sessions-origin")
+LEGACY_MARKER = os.path.join(".cs", "local", "ags-origin")
 
 from session_transfer import (
-    STATE, Record, SecretsError, Syncer, admin_dir_for, branch_heads, claude_project_key,
+    STATE, Record, SecretsError, Syncer, adopt_legacy_dir, admin_dir_for, branch_heads, claude_project_key,
     clone_tree, copy_admin_dir, copy_blocker, copy_index, copy_secret, mark_copied, mark_now, merge_tree,
     profile_secrets_env, read_text, reap, relinker, scrubbed_env, secret_names,
     secret_differs, session_is_open, state_value, tilde, write_atomic,
@@ -123,7 +124,8 @@ class Copier:
         self.ccs_secrets = os.path.join(self.profile, ".local", "bin", "cs-secrets")
         self.ccs_secrets_dir = os.path.join(self.profile, ".cs-secrets")
         self.cs_root_real = os.path.realpath(self.cs_root)
-        self.record_root = os.path.join(self.cs_root, ".code-sessions-to-cs")
+        self.record_root = adopt_legacy_dir(os.path.join(self.cs_root, ".code-sessions-to-cs"),
+                                            os.path.join(self.cs_root, ".ags-to-cs"), self.apply)
         self.log_path = os.path.join(self.record_root, "log.jsonl")
         self.records = {}
         self.failed = False
@@ -228,7 +230,7 @@ class Copier:
         if not os.path.lexists(entry):
             return "free"
         if os.path.isdir(entry) and not os.path.islink(entry):
-            origin = (read_text(os.path.join(entry, MARKER)) or "").strip()
+            origin = (read_text(os.path.join(entry, MARKER)) or read_text(os.path.join(entry, LEGACY_MARKER)) or "").strip()
             if origin == plan.source:
                 return "ours"
         return "taken"
@@ -417,6 +419,8 @@ class Copier:
             self.problem("%s was copied by an earlier version of this script, which kept no record of the copy, "
                          "so nothing is brought over; move it aside and rerun to copy it afresh" % tilde(self.cs_dir(plan)))
             return
+        if self.apply and os.path.lexists(os.path.join(self.cs_dir(plan), LEGACY_MARKER)):
+            self.write_marker(plan, self.cs_dir(plan))
         base = plan.base_plan if plan.base else plan
         base_copy = self.cs_physical(base)
         if not plan.base and plan.is_repo:
@@ -442,9 +446,16 @@ class Copier:
         changed = raw is not None and self.rekey_settings(raw, plan)
         if changed:
             write_atomic(settings, changed, prefix=".code-sessions-to-cs.")
+        self.write_marker(plan, root)
+
+    def write_marker(self, plan, root):
         os.makedirs(os.path.dirname(os.path.join(root, MARKER)), exist_ok=True)
         with open(os.path.join(root, MARKER), "w") as f:
             f.write(plan.source + "\n")
+        try:
+            os.remove(os.path.join(root, LEGACY_MARKER))
+        except FileNotFoundError:
+            pass
 
     # --- running ---------------------------------------------------------
 

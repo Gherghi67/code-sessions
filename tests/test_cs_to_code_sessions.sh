@@ -686,6 +686,26 @@ test_a_lost_record_stops_the_sync() {
     assert_file_not_exists "$(ccs_dir wap)/app.js" "a file code-sessions deleted came back"
 }
 
+# The ags-era script kept its record under another name; a rerun adopts it
+# rather than taking the copy for a different wap.
+test_a_record_from_the_ags_era_is_adopted() {
+    make_fixture
+    run_move --session wap --apply || { echo "$OUT"; return 1; }
+    mv "$PROFILE/.cs-to-code-sessions" "$PROFILE/.cs-to-ags"
+    printf 'later\n' > "$PROJECT/later.txt"
+    git -C "$PROJECT" add later.txt
+    git -C "$PROJECT" commit -q -m 'cs commit'
+    run_move --session wap || { echo "$OUT"; return 1; }
+    assert_output_not_contains "$OUT" 'already has a different' || return 1
+    assert_dir "$PROFILE/.cs-to-ags" "a dry run renamed the record" || return 1
+    assert_not_exists "$PROFILE/.cs-to-code-sessions" "a dry run renamed the record" || return 1
+    run_move --session wap --apply || { echo "$OUT"; return 1; }
+    assert_output_not_contains "$OUT" 'already has a different' || return 1
+    assert_file_exists "$(ccs_dir wap)/later.txt" || return 1
+    assert_dir "$PROFILE/.cs-to-code-sessions" || return 1
+    assert_not_exists "$PROFILE/.cs-to-ags"
+}
+
 # cs execs claude in its place, which takes the lock with it: an engine or a
 # session manager running in a folder shows the session is open. It is named,
 # since what it writes later needs a rerun; the copy goes ahead.
@@ -838,6 +858,7 @@ run_test test_a_file_code_sessions_changed_back_is_no_longer_kept
 run_test test_a_file_code_sessions_kept_stays_kept_past_a_link_in_its_folder
 run_test test_features_cs_starts_or_ends_and_code_sessions_removes
 run_test test_a_lost_record_stops_the_sync
+run_test test_a_record_from_the_ags_era_is_adopted
 run_test test_a_session_open_in_cs_is_named_and_still_copied
 run_test test_sessions_the_script_does_not_copy_say_why
 run_test test_a_code_sessions_session_running_leaves_the_shared_config_files

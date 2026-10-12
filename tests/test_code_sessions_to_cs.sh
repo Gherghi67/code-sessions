@@ -296,6 +296,26 @@ test_rerun_brings_over_only_what_grew() {
     assert_output_not_contains "$OUT" 'README.md' "a file kept on both sides was reported twice"
 }
 
+# The ags-era script kept its record and origin markers under other names; a
+# rerun adopts them rather than copying each session again.
+test_a_record_and_origin_marker_from_the_ags_era_are_adopted() {
+    make_fixture
+    run_copy --apply || { echo "$OUT"; return 1; }
+    mv "$CSROOT/.code-sessions-to-cs" "$CSROOT/.ags-to-cs"
+    local name
+    for name in beta alpha-ccs; do
+        mv "$CSROOT/$name/.cs/local/code-sessions-origin" "$CSROOT/$name/.cs/local/ags-origin"
+    done
+    run_copy --apply || { echo "$OUT"; return 1; }
+    assert_output_not_contains "$OUT" 'cs already has a different beta' || return 1
+    assert_not_exists "$CSROOT/beta-ccs" "a copy cs already had was made again" || return 1
+    assert_not_exists "$CSROOT/alpha-ccs-ccs" "a copy cs already had was made again" || return 1
+    assert_dir "$CSROOT/.code-sessions-to-cs" || return 1
+    assert_not_exists "$CSROOT/.ags-to-cs" || return 1
+    assert_file_exists "$CSROOT/beta/.cs/local/code-sessions-origin" || return 1
+    assert_not_exists "$CSROOT/beta/.cs/local/ags-origin"
+}
+
 # A file cs changed and kept stays cs's when code-sessions changes it later, until the two agree.
 test_a_file_cs_kept_stays_kept_when_code_sessions_changes_it_later() {
     make_fixture
@@ -489,6 +509,7 @@ test_a_code_sessions_environment_does_not_redirect_the_copy() {
 run_test test_dry_run_changes_nothing
 run_test test_apply_copies_sessions_conversations_and_secrets
 run_test test_rerun_brings_over_only_what_grew
+run_test test_a_record_and_origin_marker_from_the_ags_era_are_adopted
 run_test test_a_file_cs_kept_stays_kept_when_code_sessions_changes_it_later
 run_test test_a_secret_cs_already_has_is_kept
 run_test test_open_encrypted_and_orphaned_sessions_stay_behind_with_a_reason

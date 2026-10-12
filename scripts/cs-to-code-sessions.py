@@ -64,7 +64,7 @@ import sys
 import tempfile
 
 from session_transfer import (
-    STATE, Record, SecretsError, Syncer, admin_dir_for, branch_heads, claude_project_key, clone_tree, copy_admin_dir,
+    STATE, Record, SecretsError, Syncer, adopt_legacy_dir, admin_dir_for, branch_heads, claude_project_key, clone_tree, copy_admin_dir,
     copy_blocker, copy_index, copy_secret, git, mark_copied, mark_now, merge_tree, profile_secrets_env, read_text,
     reap, relinker, scrubbed_env, secret_names, session_is_open,
     secret_differs, state_value, tilde, write_atomic,
@@ -124,7 +124,8 @@ class Importer:
         self.ccs_claude = os.path.join(self.profile, ".claude")
         self.ccs_secrets = os.path.join(self.profile, ".local", "bin", "cs-secrets")
         self.ccs_secrets_dir = os.path.join(self.profile, ".cs-secrets")
-        self.record_root = os.path.join(self.profile, ".cs-to-code-sessions")
+        self.record_root = adopt_legacy_dir(os.path.join(self.profile, ".cs-to-code-sessions"),
+                                            os.path.join(self.profile, ".cs-to-ags"), self.apply)
         self.log_path = os.path.join(self.record_root, "log.jsonl")
         self.failed = False
         self.syncer = Syncer("cs", "code-sessions", self.apply, self.say, self.problem, self.log, self.log_path, TMP_SUFFIX)
