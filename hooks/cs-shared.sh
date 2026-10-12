@@ -100,9 +100,12 @@ cs_private_dir() {  # meta_dir
 # case variant of the name are both seen through. A directory in no
 # repository, a vault mounted from elsewhere, has nothing tracked.
 # <session_dir> is the session as its caller names it, printed in place of
-# the repository's own path when the two are one directory.
+# the repository's own path when the two are one directory. The repository
+# chose the directory's name and the user is asked to run the command, so the
+# path is quoted for the shell and the commit message keeps only characters
+# that mean nothing to one.
 cs_tracked_files_notice() {  # dir, session_dir
-    local real tracked top sub
+    local real tracked top sub said
     real=$(cd -P "$1" 2>/dev/null && pwd -P) || return 1
     tracked=$(git -C "$real" ls-files --full-name 2>/dev/null | sed -n 1p) || return 1
     [ -n "$tracked" ] || return 1
@@ -110,8 +113,10 @@ cs_tracked_files_notice() {  # dir, session_dir
     [ ! "$top" -ef "$2" ] || top="$2"
     sub=$(git -C "$real" rev-parse --show-prefix 2>/dev/null) || return 1
     sub=${sub%/}
-    printf "%s is tracked in git (per-actor state must stay local). Fix with: git -C \"%s\" rm -r --cached %s && git commit -m 'stop tracking %s'\n" \
-        "$tracked" "$top" "${sub:-.}" "${sub:-.}"
+    sub=${sub:-.}
+    said=$(printf '%s' "$sub" | LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_') || return 1
+    printf "%s is tracked in git (per-actor state must stay local). Fix with: git -C \"%s\" rm -r --cached %q && git commit -m 'stop tracking %s'\n" \
+        "$tracked" "$top" "$sub" "$said"
 }
 
 # The same, for the directory that holds a session's cs content files:
