@@ -108,6 +108,10 @@ cs_resolve_session() {  # [hook_input_json]
 # The status line cannot ask git on every render, so the answer is also left
 # for it as a mark, ~/.cache/cs/tracked/<session name>, present while git
 # tracks the files and removed by the first run that finds them untracked.
+# Keyed by name because the status line knows a session only by name (it
+# writes to $SESSIONS_ROOT/<name>/.cs/local); names are unique within one
+# sessions root, so only two roots under one HOME holding the same name share
+# a mark.
 _cs_note_tracked_files() {
     command -v cs_files_tracked_notice >/dev/null 2>&1 || return 0
     local mark=""

@@ -127,12 +127,16 @@ or `.cs/private` once that name exists)? `cs` refuses to open such a session, bu
 `git pull`, a merge or a checkout can put committed files there while the session is
 open. A repository wrote a tracked file, not this session, so while git tracks one the
 hooks read no queue, mail or rotation marker from that directory and write nothing there:
-the Stop hook hands out no task, the prompt hook shows no mail and stamps no date, a
-`/clear` loads no handoff, SessionStart records no conversation id, and the command log
-stops. The status line, the cs mod and `/wrap`'s last pass stand down too. The status line
+the Stop hook hands out no task, the prompt hook shows no mail, stamps no date and leaves
+the attention flag, a `/clear` loads no handoff, SessionStart records no conversation id,
+SessionEnd's vault waiter records no pid (it still detaches the vault), and the command log
+stops. The status line, both mods (`cs` and `cs-update`) and `/wrap`'s last pass stand down
+too. The status line
 cannot ask git on every render, so each hook run leaves its answer in
 `~/.cache/cs/tracked/<session name>`, and a pull goes unseen there until the next hook
-runs. The mod and `/wrap` ask `cs -vet-session`. One write stays: the prompt hook's launch
+runs. The mods and `/wrap` ask `cs -vet-session`. Git's pathspec settings in the
+environment (`GIT_LITERAL_PATHSPECS` and its three siblings) are cleared for the question,
+since a literal pathspec would match no file and read as nothing tracked. One write stays: the prompt hook's launch
 mark in `scope-prompt.trace`, made before anything that can stall, including git. `cs -queue` and `cs -msg` run inside the session
 refuse on the same question. Each finished turn says why, in a system message that names the file
 and the `git rm --cached` command that untracks it. That message is all the Stop hook
@@ -652,7 +656,9 @@ leaves nothing open to redraw, so `/cs-update` after the reload reads the
 marker too and shows the finished pane instead of offering the install a
 second time. The mod clears the marker (writes it empty) the next launch,
 render, or `/cs-update` that finds nothing pending for that version, since
-`$.fs` offers no delete.
+`$.fs` offers no delete. While `cs -vet-session` refuses the session (git tracks
+its control files), the mod writes neither the marker nor its heartbeat and
+leaves a stale marker as git has it.
 
 The `/config` row `cs-update.showReleaseNotes` (on by default) turns off only
 the launch pane; `/cs-update` still opens it with the option off.
@@ -661,7 +667,7 @@ the launch pane; `/cs-update` still opens it with the option off.
 `hooks/hooks.json`, `hooks/register.tsx`) under `~/.claude/skills/cs-update/`,
 the same layout as the `cs` mod, and `cs -uninstall` removes the directory. When
 Claude Code loads the plugin, the mod writes `.cs/local/cs-update.heartbeat`
-(one UTC timestamp) when the cwd has `.cs/local`, and `cs -doctor` reports the
+(one UTC timestamp) when the cwd has `.cs/local` and `cs -vet-session` passes, and `cs -doctor` reports the
 mod from that file through the same `_doctor_check_mod` check it runs for
 the `cs` mod: OK naming when it last ran in this session, or a WARN naming the
 ways it has not (no cs launch since the install, function hooks withheld by
