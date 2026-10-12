@@ -1788,10 +1788,10 @@ test_password_export_writes_no_signature() {
 # this machine's key, stores one secret and exports: the session then holds
 # secrets.peer@<host>.age, its signature and the peer's recipient file.
 _peer_exports() {  # secret name, value
-    local peer_home="$TEST_TMPDIR/peer-home"
+    local peer_home="$TEST_TMPDIR/peer-home" own_pubkey="$HOME/.cs-secrets/id_ed25519.pub"
     mkdir -p "$peer_home"
     "$CS_SECRETS_BIN" age init >/dev/null 2>&1 || return 1
-    USER=peer HOME="$peer_home" "$CS_SECRETS_BIN" age add "$HOME/.cs-secrets/id_ed25519.pub" >/dev/null 2>&1 || return 1
+    USER=peer HOME="$peer_home" "$CS_SECRETS_BIN" age add "$own_pubkey" >/dev/null 2>&1 || return 1
     USER=peer HOME="$peer_home" "$CS_SECRETS_BIN" set "$1" "$2" >/dev/null 2>&1 || return 1
     USER=peer HOME="$peer_home" "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || return 1
 }
