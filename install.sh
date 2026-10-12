@@ -1205,12 +1205,12 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "ad622741edc8457355088889388c3c338f721ad29ed0c72a24bb8ec0fd9f1a51  bin/cs"
+    "ed19aeac7a3b96d1278aaf624d75aef2f6d4fa80cb21d0c7434d665f40872fa9  bin/cs"
     "21bb234814840702741e4b08a2af1eda6289856a340a0cbdb0659bbca3716955  bin/cs-secrets"
     "218445530b4e201f65870c91c126ecfe6d7732b5796d6cf9df01b544b942cad5  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
-    "e71a37fd1b3c3a821b6119c8a4e3b1394cb0df2c7ab5f6edb80da99825f0cc8e  hooks/cs-resolve.sh"
-    "e4cb7e6cea4e1b63575c60e2dc2e21bb14b0cfdfa62b2f59499a586dfab08669  hooks/cs-shared.sh"
+    "d9dc35cc8a73bb6c47f2c5107577443408c18e2dde4e1d07476a8944aa6935e6  hooks/cs-resolve.sh"
+    "a3c6c7739c3d832825f97ddabbf5671f9c8ce535cd7551f2d793566de9d62842  hooks/cs-shared.sh"
     "50d63ce0995e68fddd8503700c15f9585d11938c9cd3872a883146de7707c765  hooks/cs-iterm-tab.py"
     "5ba5d967c2f5b8949847195fe928af2dd6c41c1ab502cb74f9deb0d3af842de9  hooks/memory-index-guard.sh"
     "31db5bb68d572f541e22e240bd1d9f518f0ce760cf5cd359de33dec72bab3600  hooks/prompt-rewriter.sh"
@@ -1218,7 +1218,7 @@ CS_PAYLOAD_SHA256=(
     "5ed0b9da8f102367e218e8dc6227594ad2f70ca3ba885103c058aabb4b528226  hooks/prompt-rewriter-vendor.sh"
     "3a7ae8e3a3e5eedefee044ab5ba37800d2ae1b090f277e566b8a36c706c124d1  hooks/session-start.sh"
     "38e1585be0b3fee0cea8c5397d6177b2c67678b270ad2b1cfc191e3b71b6a723  hooks/autosave-commits.sh"
-    "474498c0653ab00ed38ec325bb84362037e6cfd459b6ac31827d17124012f54b  hooks/narrative-reminder.sh"
+    "182676b91a3c28ae5ed06d582c455d7a8811a21061306f8a8deed22f906c3df6  hooks/narrative-reminder.sh"
     "f4eca8e1686a94a2df2938d09beaeef36123112c7949fb3720be3abfa67000f9  hooks/session-end.sh"
     "81a13835a65f4b4b35bb87493da0df9848de68375ca7ab1525d2d5079cf52bf1  hooks/subagent-context.sh"
     "53b16016dd6d087c3cc3db7e4acf8de6629e149e3b7f326f0731b36809574156  hooks/tool-failure-logger.sh"

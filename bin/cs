@@ -1207,13 +1207,47 @@ CS_VAULT_LINKS="memory plans claude-config private"
 # traces). An encrypted session links .cs/private into its vault; any other
 # keeps them in .cs/local. Fails, printing nothing, when .cs/private is a link
 # whose vault is locked: a writer drops its line rather than write it anywhere
-# else in plaintext.
+# else in plaintext. Fails the same way for a hook whose session resolved with
+# files git tracks in that directory (CS_TRACKED_FILES_META, set by
+# cs_resolve_session): nothing git delivered there is read as a queue, mail or
+# a rotation, and nothing is added beside it.
 cs_private_dir() {  # meta_dir
+    [ "${CS_TRACKED_FILES_META:-}" != "$1" ] || return 1
     if [ -L "$1/private" ] || [ -e "$1/private" ]; then
         [ -d "$1/private" ] || return 1
         printf '%s\n' "$1/private"
     else
         printf '%s\n' "$1/local"
+    fi
+}
+
+# Says which file git tracks in <dir> and how to stop tracking it; fails,
+# printing nothing, when git tracks none there. Asked of the directory itself,
+# in whichever repository lists it, so a link to a tracked directory and a
+# case variant of the name are both seen through. A directory in no
+# repository, a vault mounted from elsewhere, has nothing tracked.
+# <session_dir> is the session as its caller names it, printed in place of
+# the repository's own path when the two are one directory.
+cs_tracked_files_notice() {  # dir, session_dir
+    local real tracked top sub
+    real=$(cd -P "$1" 2>/dev/null && pwd -P) || return 1
+    tracked=$(git -C "$real" ls-files --full-name 2>/dev/null | sed -n 1p) || return 1
+    [ -n "$tracked" ] || return 1
+    top=$(git -C "$real" rev-parse --show-toplevel 2>/dev/null) || return 1
+    [ ! "$top" -ef "$2" ] || top="$2"
+    sub=$(git -C "$real" rev-parse --show-prefix 2>/dev/null) || return 1
+    sub=${sub%/}
+    printf "%s is tracked in git (per-actor state must stay local). Fix with: git -C \"%s\" rm -r --cached %s && git commit -m 'stop tracking %s'\n" \
+        "$tracked" "$top" "${sub:-.}" "${sub:-.}"
+}
+
+# The same, for the directory that holds a session's cs content files:
+# .cs/private once that name exists, .cs/local otherwise.
+cs_files_tracked_notice() {  # meta_dir, session_dir
+    if [ -L "$1/private" ] || [ -e "$1/private" ]; then
+        cs_tracked_files_notice "$1/private" "$2"
+    else
+        cs_tracked_files_notice "$1/local" "$2"
     fi
 }
 
@@ -5374,7 +5408,7 @@ _refuse_links_out_of_session() {  # dir
 # or `.cs/local -> ../payload` hides a committed pre-open from the pathspec
 # check below while the link resolves to it on disk.
 cs_assert_local_untracked() {
-    local dir="$1" sub tracked priv top
+    local dir="$1" sub tracked
     for sub in .cs .cs/local; do
         [ -L "$dir/$sub" ] || continue
         error "$sub is a symlink to $(readlink "$dir/$sub") (cs state must be a real directory inside the session). Delete .cs/local/pre-open unless you wrote it, replace the link with the directory, then reopen."
@@ -5399,15 +5433,7 @@ cs_assert_local_untracked() {
     # either. Asked of the directory the name resolves to, in whichever
     # repository lists it: an encrypted session commits the link itself, and
     # a clone can commit the link beside a directory it tracks elsewhere.
-    priv=$(cd -P "$dir/.cs/private" 2>/dev/null && pwd -P) || return 0
-    tracked=$(git -C "$priv" ls-files --full-name 2>/dev/null | sed -n 1p)
-    if [ -n "$tracked" ]; then
-        top=$(git -C "$priv" rev-parse --show-toplevel)
-        [ ! "$top" -ef "$dir" ] || top="$dir"
-        sub=$(git -C "$priv" rev-parse --show-prefix)
-        sub=${sub%/}
-        error "$tracked is tracked in git (per-actor state must stay local). Fix with: git -C \"$top\" rm -r --cached ${sub:-.} && git commit -m 'stop tracking ${sub:-.}'"
-    fi
+    ! tracked=$(cs_tracked_files_notice "$dir/.cs/private" "$dir") || error "$tracked"
 }
 
 # For a checkout cs hides itself in through info/exclude (git_bookkeeping:
