@@ -541,6 +541,7 @@ test_vet_session_refuses_a_session_whose_marker_git_tracks() {
     # git reads how to match a pathspec, and configuration, from the
     # environment too; none of those settings may turn the tracked file into
     # one git does not find, or make git fail into "nothing tracked".
+    # shellcheck disable=SC2089,SC2090 # GIT_CONFIG_PARAMETERS carries its quotes as content
     for setting in CS_NONE=1 GIT_LITERAL_PATHSPECS=1 GIT_GLOB_PATHSPECS=1 GIT_NOGLOB_PATHSPECS=1 GIT_ICASE_PATHSPECS=1 \
         "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.ignorecase GIT_CONFIG_VALUE_0=invalid" \
         "GIT_CONFIG_PARAMETERS='core.ignorecase'='invalid'"; do
