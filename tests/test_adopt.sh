@@ -739,6 +739,12 @@ test_adopt_gitignores_a_private_directory_and_not_its_link() {
     if git -C "$linked" check-ignore -q .cs/private; then
         echo "  FAIL: the .cs/private link itself must stay committable"; return 1
     fi
+    # The same in a project whose own .gitignore adopt merged its entries into.
+    rm -rf "$owned/.cs/private"
+    ln -s vault-mnt/private "$owned/.cs/private"
+    if git -C "$owned" check-ignore -q .cs/private; then
+        echo "  FAIL: the .cs/private link must stay committable in a project's own .gitignore"; return 1
+    fi
 }
 
 # cs_write_atomic stages each write in a temp file beside its destination; one
