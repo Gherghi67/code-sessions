@@ -1000,14 +1000,17 @@ async function offerToStart($: EngineInterface, bin: string, count: number) {
 // The clear button's press: the /clear runs only once cs says it trusts the
 // session's control files, as at a countdown's zero. The press stops the count
 // before it asks, so the zero tick cannot clear while cs answers, and only the
-// latest press acts.
+// latest press acts. It closes the pane before asking again whether a prompt
+// came, as the zero tick does: a prompt landing during the close is a new turn.
 async function pressClear($: EngineInterface) {
   if (ticker) stopCountdown($, false)
   const press = ++pressCount
   const vetted = await sessionVetted($, await $.session.cwd())
   if (press !== pressCount) return
-  if (vetted) await clearAndContinue($)
-  else stopCountdown($)
+  if (!vetted) return stopCountdown($)
+  await closeHandoffPane($)
+  if (press !== pressCount) return
+  await clearAndContinue($, true)
 }
 
 // /clear ends this conversation, and cs's SessionStart hook then starts the
