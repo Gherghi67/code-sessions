@@ -126,15 +126,25 @@ _cs_git_at() {  # dir, git arguments...
 }
 
 # True when git's error output says it found no repository at all, the one
-# failure that answers "nothing tracked".
+# failure that answers "nothing tracked". The line is looked for anywhere in
+# the output: GIT_TRACE and trace2 settings, from the environment or from
+# configuration, print their own lines first.
 _cs_git_not_a_repo() {  # git's error output
-    case "$1" in "fatal: not a git repository"*) return 0 ;; esac
+    local line
+    while IFS= read -r line; do
+        case "$line" in "fatal: not a git repository"*) return 0 ;; esac
+    done <<<"$1"
     return 1
 }
 
-# The first line of git's own complaint, cut to printable characters.
+# git's own complaint, cut to printable characters: its first "fatal:" or
+# "error:" line, so trace lines printed before it are passed over, else its
+# first line.
 _cs_git_complaint() {  # git's error output
-    local why=${1%%$'\n'*}
+    local line why=${1%%$'\n'*}
+    while IFS= read -r line; do
+        case "$line" in "fatal: "* | "error: "*) why=$line; break ;; esac
+    done <<<"$1"
     why=$(printf '%s' "$why" | LC_ALL=C tr -c '[:print:]' '?' | cut -c1-200) || why=""
     printf '%s\n' "${why:-git failed}"
 }
