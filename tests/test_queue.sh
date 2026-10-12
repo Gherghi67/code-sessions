@@ -536,12 +536,17 @@ _arm_handoff() {  # yes when the marker is committed
 }
 
 test_vet_session_refuses_a_session_whose_marker_git_tracks() {
-    local s="$CLAUDE_SESSION_DIR" out rc=0
+    local s="$CLAUDE_SESSION_DIR" out rc setting
     _arm_handoff yes
-    out=$(env -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR "$CS_BIN" -vet-session "$s" 2>&1) || rc=$?
-    assert_eq "1" "$rc" "cs -vet-session refuses" || return 1
-    assert_eq "Error: .cs/local/pending-handoff is tracked in git (per-actor state must stay local). Fix with: git -C $s --literal-pathspecs rm -r --cached -- .cs/local && git -C $s commit -m 'stop tracking .cs/local'" \
-        "$out" "the refusal names the tracked marker and how to stop tracking it" || return 1
+    # git reads how to match a pathspec from the environment too; none of
+    # those settings may turn the tracked file into one git does not find.
+    for setting in CS_NONE=1 GIT_LITERAL_PATHSPECS=1 GIT_GLOB_PATHSPECS=1 GIT_NOGLOB_PATHSPECS=1 GIT_ICASE_PATHSPECS=1; do
+        rc=0
+        out=$(env -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR "$setting" "$CS_BIN" -vet-session "$s" 2>&1) || rc=$?
+        assert_eq "1" "$rc" "cs -vet-session refuses ($setting)" || return 1
+        assert_eq "Error: .cs/local/pending-handoff is tracked in git (per-actor state must stay local). Fix with: git -C $s --literal-pathspecs rm -r --cached -- .cs/local && git -C $s commit -m 'stop tracking .cs/local'" \
+            "$out" "the refusal names the tracked marker and how to stop tracking it ($setting)" || return 1
+    done
 }
 
 test_vet_session_passes_a_session_whose_control_files_git_ignores() {
