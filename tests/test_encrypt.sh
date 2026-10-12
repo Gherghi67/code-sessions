@@ -19,8 +19,13 @@ EOF
 #!/bin/sh
 echo "$*" >> "$FAKE_HDIUTIL_LOG"
 [ "$1" = "${FAKE_HDIUTIL_FAIL:-}" ] && { echo "hdiutil: $1 failed - stub" >&2; exit 1; }
-# The verb named in $FAKE_HDIUTIL_SLOW takes 3 s and logs "<verb>-done" once it finishes.
-if [ "$1" = "${FAKE_HDIUTIL_SLOW:-}" ]; then sleep 3; echo "$1-done" >> "$FAKE_HDIUTIL_LOG"; fi
+# The verb named in $FAKE_HDIUTIL_HOLD never finishes by itself: it stays in
+# flight until something stops it, or until the log is gone, so a test that
+# fails leaves nothing running.
+if [ "$1" = "${FAKE_HDIUTIL_HOLD:-}" ]; then
+    while [ -e "$FAKE_HDIUTIL_LOG" ]; do sleep 0.1; done
+    exit 0
+fi
 # With $FAKE_LOCK_WATCH set, create records whether that lock names a live pid.
 if [ "$1" = "create" ] && [ -n "${FAKE_LOCK_WATCH:-}" ]; then
     p=$(cat "$FAKE_LOCK_WATCH" 2>/dev/null)
@@ -392,14 +397,18 @@ test_pre_open_stops_a_waiter_detach_in_flight() {
     sleep 0.1 &
     local claude=$!
     wait "$claude" 2>/dev/null
-    FAKE_HDIUTIL_SLOW=detach _end_conversation enc prompt_input_exit "$claude" "$claude"
+    FAKE_HDIUTIL_HOLD=detach _end_conversation enc prompt_input_exit "$claude" "$claude"
     local f="$CS_SESSIONS_ROOT/enc/.cs/local/vault-detach.pid" i=0
-    while [ ! -s "$f" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+    while [ ! -s "$f" ] && [ $i -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
     [ -s "$f" ] || { echo "  FAIL: the waiter recorded no detach child"; return 1; }
-    local rc=0
+    local detach rc=0
+    detach=$(cat "$f")
+    kill -0 "$detach" 2>/dev/null || { echo "  FAIL: the waiter's detach is not in flight before the reopen"; return 1; }
     _pre_open enc FAKE_MOUNTED=1 CS_ASSUME_TTY=1 >/dev/null 2>&1 || rc=$?
-    sleep 3.5
+    local alive=0
+    kill -0 "$detach" 2>/dev/null && alive=1
     assert_eq "0" "$rc" "reopen asks again" || return 1
+    assert_eq "0" "$alive" "the waiter's detach is stopped when the reopen returns" || return 1
     assert_eq "detach $FAKE_MNT
 detach $FAKE_MNT
 attach -nobrowse -mountpoint $FAKE_MNT $(_vault_path enc)" "$(cat "$FAKE_HDIUTIL_LOG")" "the waiter's detach never finished" || return 1
