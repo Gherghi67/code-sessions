@@ -141,7 +141,10 @@ configuration settings passed through the environment (`GIT_CONFIG_COUNT`,
 `GIT_CONFIG_PARAMETERS`). Git that fails to answer for any reason other than "not a git
 repository" (a broken `~/.gitconfig`, a bad repository config, an unreadable index, a
 `safe.directory` refusal) counts as tracked: the hooks stand down the same way, `cs` refuses
-to open the session, and the message carries the first line of git's error. One write stays: the prompt hook's launch
+to open the session, a named verb (`cs <name> -queue` and the rest) refuses, and the message
+carries git's first `fatal:` or `error:` line. Lines that `GIT_TRACE` or a trace2 setting
+print ahead of it are not a failure. A file git tracks there still counts after you delete
+its directory. One write stays: the prompt hook's launch
 mark in `scope-prompt.trace`, made before anything that can stall, including git. `cs -queue` and `cs -msg` run inside the session
 refuse on the same question. Each finished turn says why, in a system message that names the file
 and the `git rm --cached` command that untracks it. That message is all the Stop hook
@@ -451,7 +454,8 @@ is time, the status bar's amber from ten seconds and its crit red under five
 At zero the mod runs the `/clear` itself, only if
 the band is idle at that moment (no turn running, no survey), the handoff still
 armed and this still the lead; otherwise the count stops and the button waits
-for you. Ctrl+X 1 during the count clears at once. Sending a prompt, from
+for you. Ctrl+X 1 during the count clears at once. A press while the mod's own `/clear` is
+still running does nothing, so it cannot clear the conversation that `/clear` opened. Sending a prompt, from
 the composer or anywhere else a prompt enters the session, stops the count;
 the next turn's end starts it again from 20. A `/clear` from anywhere else
 (typed, or another plugin's) ends it too. The count is module state: it does
