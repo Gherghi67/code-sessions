@@ -616,13 +616,17 @@ test('a press while cs is still answering, then the count reaching zero, clears 
   const zero = ticker()!
   const run = $.process.run
   let answer: (r: any) => void = () => {}
+  let asked: () => void = () => {}
+  const reached = new Promise<void>(r => { asked = r })
   $.process.run = async (argv: string[], init: any) => {
     $.process.run = run
     runs.push({ argv, init })
+    asked()
     return new Promise(r => { answer = r })
   }
   try {
     const press = findButton(await band()).props.onPress()
+    await reached
     await zero.fn()
     answer(VETTED)
     await press
