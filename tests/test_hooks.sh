@@ -464,6 +464,103 @@ test_auto_approve_rejects_case_variants() {
         ".cs/SESSION.LOCK" || return 1
 }
 
+# The root of .cs/ holds the notes people and Claude read beside the files cs
+# acts on: the stamps the Stop hook reads, the locks, the archive marker, the
+# timeline, and the names cs gives its control directories. Only a Markdown
+# file is approved there, so a name cs reads later cannot be written unseen.
+test_auto_approve_prompts_for_a_reminder_stamp() {
+    local stamp="$CLAUDE_SESSION_META_DIR/.narrative-reminder-cooldown"
+    _assert_falls_through Write "$stamp" "a new reminder stamp" || return 1
+    echo 1700000000 > "$stamp"
+    _assert_falls_through Edit "$stamp" "an Edit of the reminder stamp" || return 1
+}
+
+# A control directory cs has not made yet is a free name at the root: taken
+# by a file, it is what cs finds where it expects its directory.
+test_auto_approve_prompts_for_a_control_directory_name_taken_by_a_file() {
+    local name
+    for name in private claude-config age-recipients .git vault-mnt; do
+        _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/$name" \
+            "a file named .cs/$name" || return 1
+    done
+}
+
+test_auto_approve_prompts_for_the_open_lock() {
+    _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/session.mutex.lock" \
+        "the lock an open holds" || return 1
+}
+
+test_auto_approve_prompts_for_the_archive_marker() {
+    _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/archived" \
+        "the archive marker" || return 1
+}
+
+test_auto_approve_prompts_for_the_timeline() {
+    local timeline="$CLAUDE_SESSION_META_DIR/timeline.jsonl"
+    _assert_falls_through Write "$timeline" "a new timeline" || return 1
+    echo '{"event":"session_started"}' > "$timeline"
+    _assert_falls_through Edit "$timeline" "an Edit of the timeline" || return 1
+}
+
+# Claude Code loads a CLAUDE.md from the directory of a file it reads, so one
+# at the root of .cs/ is instructions, not notes.
+test_auto_approve_prompts_for_instructions_at_the_root() {
+    local name
+    for name in CLAUDE.md CLAUDE.local.md claude.md; do
+        _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/$name" \
+            ".cs/$name" || return 1
+    done
+}
+
+test_auto_approve_allows_markdown_at_the_root() {
+    _assert_allowed Write "$CLAUDE_SESSION_META_DIR/README.md" \
+        "the session README" || return 1
+    echo "# Changes" > "$CLAUDE_SESSION_META_DIR/changes.md"
+    _assert_allowed Edit "$CLAUDE_SESSION_META_DIR/changes.md" \
+        "an Edit of a Markdown file at the root" || return 1
+    _assert_allowed Write "$CLAUDE_SESSION_META_DIR/memory/topic_notes.md" \
+        "a memory topic" || return 1
+}
+
+# A filesystem that folds names (APFS reads a long s as s and the Kelvin sign
+# as k) makes a name outside ASCII another spelling of a control file, and no
+# comparison of strings sees it. Below .cs/ such a name always prompts. The
+# names are written as byte escapes so this file stays ASCII.
+test_auto_approve_prompts_for_a_non_ascii_name_in_content() {
+    local memory="$CLAUDE_SESSION_META_DIR/memory"
+    _assert_falls_through Write "$memory/caf"$'\xc3\xa9'".md" \
+        "a memory file named with a precomposed e-acute" || return 1
+    _assert_falls_through Write "$memory/cafe"$'\xcc\x81'".md" \
+        "a memory file named with a combining acute" || return 1
+    mkdir -p "$memory/r"$'\xc3\xa9'"sum"
+    _assert_falls_through Write "$memory/r"$'\xc3\xa9'"sum/notes.md" \
+        "a file in a memory directory named outside ASCII" || return 1
+}
+
+# mkdir -p of the folded spelling is the existing control directory where the
+# filesystem folds it and a directory of its own where it does not; the write
+# prompts either way, and never on a missing parent.
+test_auto_approve_prompts_for_a_folded_control_name() {
+    local meta="$CLAUDE_SESSION_META_DIR"
+    _assert_falls_through Write "$meta/"$'\xc5\xbf'"ession.lock" \
+        "the session lock spelled with a long s" || return 1
+    mkdir -p "$meta/age-recipients"
+    mkdir -p "$meta/age-recipient"$'\xc5\xbf'
+    _assert_falls_through Write "$meta/age-recipient"$'\xc5\xbf'"/k.pub" \
+        "a recipient key under a directory spelled with a long s" || return 1
+}
+
+# Only the part of the path below .cs/ is judged: a session that lives under
+# a directory named outside ASCII keeps its content writes frictionless.
+test_auto_approve_allows_ascii_content_under_a_non_ascii_session_path() {
+    local home="$TEST_TMPDIR/caf"$'\xc3\xa9'
+    mkdir -p "$home"
+    mv "$CLAUDE_SESSION_DIR" "$home/session"
+    CLAUDE_SESSION_DIR="$home/session" CLAUDE_SESSION_META_DIR="$home/session/.cs" \
+        _assert_allowed Write "$home/session/.cs/memory/narrative.md" \
+        "a narrative in a session path named outside ASCII" || return 1
+}
+
 # cs accepts a .cs/claude-config that is a link to any resolving directory
 # and launches Claude Code with CLAUDE_CONFIG_DIR pointing there. Linked into a
 # content directory, the config's real parent reads as memory/ and a write to
@@ -3017,6 +3114,16 @@ run_test test_auto_approve_rejects_link_into_local
 run_test test_auto_approve_rejects_executable_target
 run_test test_auto_approve_rejects_linked_cs_dir
 run_test test_auto_approve_rejects_case_variants
+run_test test_auto_approve_prompts_for_a_reminder_stamp
+run_test test_auto_approve_prompts_for_a_control_directory_name_taken_by_a_file
+run_test test_auto_approve_prompts_for_the_open_lock
+run_test test_auto_approve_prompts_for_the_archive_marker
+run_test test_auto_approve_prompts_for_the_timeline
+run_test test_auto_approve_prompts_for_instructions_at_the_root
+run_test test_auto_approve_allows_markdown_at_the_root
+run_test test_auto_approve_prompts_for_a_non_ascii_name_in_content
+run_test test_auto_approve_prompts_for_a_folded_control_name
+run_test test_auto_approve_allows_ascii_content_under_a_non_ascii_session_path
 run_test test_auto_approve_rejects_config_linked_into_content
 run_test test_auto_approve_rejects_settings_link_target
 run_test test_auto_approve_rejects_queue_link_target
