@@ -2705,6 +2705,14 @@ test_rotate_skill_arms_the_marker_only_when_cs_vets_the_session() {
     assert_eq "2026-01-01-next.md" "$(cat "$dir/e/.cs/private/pending-handoff" 2>/dev/null)" \
         "an encrypted session arms .cs/private" || { rm -rf "$dir"; return 1; }
     assert_not_exists "$dir/e/.cs/local/pending-handoff" "and not .cs/local" || { rm -rf "$dir"; return 1; }
+    # A locked vault leaves .cs/private a link to nowhere: the session is still
+    # encrypted, and nothing reads a marker from .cs/local there.
+    mkdir -p "$dir/l/.cs/local"
+    ln -s "$dir/nowhere" "$dir/l/.cs/private"
+    rc=0
+    (cd "$dir/l" && PATH="$dir/bin:$PATH" HANDOFF=2026-01-01-next.md bash -c "$block" 2>/dev/null) || rc=$?
+    assert_eq "1" "$rc" "step 9 fails in a locked encrypted session" || { rm -rf "$dir"; return 1; }
+    assert_not_exists "$dir/l/.cs/local/pending-handoff" "and arms no .cs/local marker" || { rm -rf "$dir"; return 1; }
     rm -f "$dir/s/.cs/local/pending-handoff"
     printf 'claude_session_id: x\n' > "$dir/s/.cs/local/state"
     git -C "$dir/s" init -q
