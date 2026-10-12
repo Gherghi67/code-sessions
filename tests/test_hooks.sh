@@ -620,6 +620,25 @@ test_auto_approve_prompts_inside_a_git_directory_below_cs() {
         "a note beside that repository" || return 1
 }
 
+# The name is not what makes a git directory. A .git that is a link resolves
+# to its target's name, and a bare clone is a git directory under a name of
+# its own; both are read by git the same way.
+test_auto_approve_prompts_inside_a_git_directory_reached_by_another_name() {
+    local meta="$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$meta/research/repo" "$meta/research/gitdata"
+    ln -s ../gitdata "$meta/research/repo/.git"
+    _assert_falls_through Write "$meta/research/repo/.git/config" \
+        "the config behind a linked .git" || return 1
+    mkdir -p "$meta/artifacts/mirror/objects" "$meta/artifacts/mirror/refs" "$meta/artifacts/mirror/hooks"
+    echo 'ref: refs/heads/main' > "$meta/artifacts/mirror/HEAD"
+    _assert_falls_through Write "$meta/artifacts/mirror/config" \
+        "the config of a bare clone kept below .cs" || return 1
+    _assert_falls_through Write "$meta/artifacts/mirror/hooks/pre-commit" \
+        "a hook of a bare clone kept below .cs" || return 1
+    _assert_allowed Write "$meta/artifacts/notes.md" \
+        "a note beside the bare clone" || return 1
+}
+
 # Only the part of the path below .cs/ is judged: a session that lives under
 # a directory named outside ASCII keeps its content writes frictionless.
 test_auto_approve_allows_ascii_content_under_a_non_ascii_session_path() {
@@ -3198,6 +3217,7 @@ run_test test_auto_approve_allows_markdown_at_the_root
 run_test test_auto_approve_prompts_for_a_non_ascii_name_in_content
 run_test test_auto_approve_prompts_for_a_folded_control_name
 run_test test_auto_approve_prompts_inside_a_git_directory_below_cs
+run_test test_auto_approve_prompts_inside_a_git_directory_reached_by_another_name
 run_test test_auto_approve_allows_ascii_content_under_a_non_ascii_session_path
 run_test test_auto_approve_rejects_config_linked_into_content
 run_test test_auto_approve_rejects_settings_link_target
