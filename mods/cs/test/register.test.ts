@@ -439,6 +439,16 @@ test('a press runs the rotate skill and fills nothing', async () => {
   expect(filled).toEqual([])
 })
 
+// The skill ends by arming a marker in .cs/local, so the press asks cs first,
+// as the clear button and the forced /rotate do.
+test('while git tracks a control file, a press runs no rotation', async () => {
+  percent = 80
+  runResult = tracked
+  await findButton(await band()).props.onPress()
+  expect(runs.map(r => r.argv)).toEqual([['/opt/cs/bin/cs', '-vet-session', '/work']])
+  expect(ran).toEqual([])
+})
+
 test('outside a cs session the band draws nothing at crit', async () => {
   percent = 90
   existing = new Set(); files = {}
