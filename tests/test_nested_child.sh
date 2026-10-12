@@ -64,6 +64,16 @@ test_a_nested_child_does_not_raise_the_attention_flag() {
         "the lead's Stop raises the attention flag" || return 1
 }
 
+# A rotation the lead armed and has not cleared into yet: an unconsumed
+# handoff and the marker that names it. Prints the handoff's path.
+_arm_rotation() {
+    local meta="$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$meta/handoffs"
+    printf -- '---\nstatus: unconsumed\n---\nnext step: do the thing\n' > "$meta/handoffs/2026-01-01-topic.md"
+    printf '2026-01-01-topic.md\n' > "$meta/local/pending-handoff"
+    printf '%s\n' "$meta/handoffs/2026-01-01-topic.md"
+}
+
 _start_hook() {  # CS_LEAD_PID CLAUDE_PID source session_id; prints the context Claude is given
     printf '{"session_id":"%s","source":"%s","cwd":"%s","hook_event_name":"SessionStart"}\n' \
         "$4" "$3" "$CLAUDE_SESSION_DIR" \
@@ -80,10 +90,7 @@ _start_hook() {  # CS_LEAD_PID CLAUDE_PID source session_id; prints the context 
 test_a_nested_child_leaves_the_armed_rotation_to_the_lead() {
     _nested_setup
     local meta="$CLAUDE_SESSION_META_DIR" handoff out
-    handoff="$meta/handoffs/2026-01-01-topic.md"
-    mkdir -p "$meta/handoffs"
-    printf -- '---\nstatus: unconsumed\n---\nnext step: do the thing\n' > "$handoff"
-    printf '2026-01-01-topic.md\n' > "$meta/local/pending-handoff"
+    handoff=$(_arm_rotation)
     sleep 300 &
     local lead=$!
     out=$(_start_hook "$lead" "$$" startup 22222222-2222-4222-8222-222222222222)
@@ -133,10 +140,7 @@ test_a_nested_child_leaves_the_queue_digest_to_the_lead() {
 test_a_teammate_leaves_the_armed_rotation_and_the_digest_to_the_lead() {
     _nested_setup
     local meta="$CLAUDE_SESSION_META_DIR" handoff out mate i=0
-    handoff="$meta/handoffs/2026-01-01-topic.md"
-    mkdir -p "$meta/handoffs"
-    printf -- '---\nstatus: unconsumed\n---\nnext step: do the thing\n' > "$handoff"
-    printf '2026-01-01-topic.md\n' > "$meta/local/pending-handoff"
+    handoff=$(_arm_rotation)
     printf '{"ts":1,"event":"task_done","task":"t"}\n' > "$meta/local/notifications.jsonl"
     printf '#!/usr/bin/env bash\nsleep 300\n' > "$TEST_TMPDIR/fake-claude.sh"
     chmod +x "$TEST_TMPDIR/fake-claude.sh"
@@ -170,10 +174,7 @@ test_a_teammate_leaves_the_armed_rotation_and_the_digest_to_the_lead() {
 test_the_lead_keeps_its_rotation_when_its_prompt_names_the_teammate_flags() {
     _nested_setup
     local meta="$CLAUDE_SESSION_META_DIR" handoff out lead i=0
-    handoff="$meta/handoffs/2026-01-01-topic.md"
-    mkdir -p "$meta/handoffs"
-    printf -- '---\nstatus: unconsumed\n---\nnext step: do the thing\n' > "$handoff"
-    printf '2026-01-01-topic.md\n' > "$meta/local/pending-handoff"
+    handoff=$(_arm_rotation)
     printf '#!/usr/bin/env bash\nsleep 300\n' > "$TEST_TMPDIR/fake-claude.sh"
     chmod +x "$TEST_TMPDIR/fake-claude.sh"
     "$TEST_TMPDIR/fake-claude.sh" explain --agent-id --agent-name --team-name options >/dev/null 2>&1 &
@@ -196,11 +197,9 @@ test_the_lead_keeps_its_rotation_when_its_prompt_names_the_teammate_flags() {
 # leaves a file behind, so the test knows it was the ps that answered.
 test_a_claude_whose_parent_cannot_be_read_is_not_taken_for_a_guest() {
     _nested_setup
-    local meta="$CLAUDE_SESSION_META_DIR" handoff out shim="$TEST_TMPDIR/shim"
-    handoff="$meta/handoffs/2026-01-01-topic.md"
-    mkdir -p "$meta/handoffs" "$shim"
-    printf -- '---\nstatus: unconsumed\n---\nnext step: do the thing\n' > "$handoff"
-    printf '2026-01-01-topic.md\n' > "$meta/local/pending-handoff"
+    local meta="$CLAUDE_SESSION_META_DIR" out shim="$TEST_TMPDIR/shim"
+    _arm_rotation > /dev/null
+    mkdir -p "$shim"
     printf '#!/bin/sh\n: > "%s/ps-asked"\nexit 126\n' "$TEST_TMPDIR" > "$shim/ps"
     chmod +x "$shim/ps"
     out=$(PATH="$shim:$PATH" _start_hook "$PPID" "$$" clear 33333333-3333-4333-8333-333333333333)
