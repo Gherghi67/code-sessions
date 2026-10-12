@@ -109,15 +109,18 @@ cs_local_dir() {  # meta_dir
 # the environment says. GIT_DIR and GIT_WORK_TREE name another repository,
 # GIT_INDEX_FILE another index (git hands one to every commit hook),
 # GIT_COMMON_DIR and GIT_OBJECT_DIRECTORY another store, and
-# GIT_CEILING_DIRECTORIES can keep git from finding the repository at all. A
-# refusal that asked git under any of them would find nothing tracked and let
-# the open, or a hook, go on. Every check that decides whether cs trusts a
-# session's files asks through here.
+# GIT_CEILING_DIRECTORIES can keep git from finding the repository at all, and
+# the four *_PATHSPECS settings change how a pathspec matches (a literal one
+# reads ":(icase,literal)..." as a file name). A refusal that asked git under
+# any of them would find nothing tracked and let the open, or a hook, go on.
+# Every check that decides whether cs trusts a session's files asks through
+# here.
 _cs_git_at() {  # dir, git arguments...
     local dir="$1"
     shift
     env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR -u GIT_OBJECT_DIRECTORY \
-        -u GIT_CEILING_DIRECTORIES git -C "$dir" "$@"
+        -u GIT_CEILING_DIRECTORIES -u GIT_LITERAL_PATHSPECS -u GIT_GLOB_PATHSPECS \
+        -u GIT_NOGLOB_PATHSPECS -u GIT_ICASE_PATHSPECS git -C "$dir" "$@"
 }
 
 # Prints the line that says git tracks <tracked> and how to stop: untrack
