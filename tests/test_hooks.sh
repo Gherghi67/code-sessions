@@ -1328,16 +1328,23 @@ session_start_teardown() {
 # drop. Every change it made would be a change to the repository's files.
 test_session_start_writes_nothing_into_a_control_directory_git_tracks() {
     session_start_setup
-    local m="$CLAUDE_SESSION_META_DIR/local" rc=0 changed
+    local m="$CLAUDE_SESSION_META_DIR/local" rc source changed
     printf 'attended\n' > "$m/attention"
     printf 'session_name: current-session\n' > "$m/state"
+    mkdir -p "$m/rotation-kick"
+    printf 'pending\n' > "$m/rotation-kick/delivered"
     git -C "$CLAUDE_SESSION_DIR" add -f .cs/local
     git -C "$CLAUDE_SESSION_DIR" commit -q -m "ship the control directory"
-    echo '{"session_id":"0b7c6a52-5d1e-4c3f-9a8b-1c2d3e4f5a6b","source":"startup","cwd":"'"$CLAUDE_SESSION_DIR"'","hook_event_name":"SessionStart"}' \
-        | bash "$HOOKS_DIR/session-start.sh" >/dev/null 2>"$TEST_TMPDIR/ss.err" || rc=$?
-    assert_eq "0" "$rc" "SessionStart stands down, it does not fail: $(cat "$TEST_TMPDIR/ss.err")" || return 1
-    changed=$(git -C "$CLAUDE_SESSION_DIR" status --porcelain --ignored -- .cs/local)
-    assert_eq "" "$changed" "nothing under the tracked .cs/local is added, changed or removed" || return 1
+    # A resume advances the digest watermark and a lead's /clear spends a kick
+    # left in flight; each source has writes of its own.
+    for source in startup resume clear; do
+        rc=0
+        echo '{"session_id":"0b7c6a52-5d1e-4c3f-9a8b-1c2d3e4f5a6b","source":"'"$source"'","cwd":"'"$CLAUDE_SESSION_DIR"'","hook_event_name":"SessionStart"}' \
+            | bash "$HOOKS_DIR/session-start.sh" >/dev/null 2>"$TEST_TMPDIR/ss.err" || rc=$?
+        assert_eq "0" "$rc" "SessionStart ($source) stands down, it does not fail: $(cat "$TEST_TMPDIR/ss.err")" || return 1
+        changed=$(git -C "$CLAUDE_SESSION_DIR" status --porcelain --ignored -- .cs/local)
+        assert_eq "" "$changed" "SessionStart ($source) adds, changes or removes nothing under the tracked .cs/local" || return 1
+    done
 }
 
 # The status line cannot ask git on every render, so each hook run leaves its

@@ -589,6 +589,12 @@ test('a turn ending with a tracked control file starts no countdown and forces n
   expect(timers.filter(t => t.kind === 'every')).toEqual([])
   expect(ran).toEqual([])
   expect(Object.keys(written)).toEqual([])
+  // with no handoff armed, the same turn's end past the threshold forces nothing either
+  delete files[MARKER]
+  await turnComplete()
+  await fireAfter()
+  expect(ran).toEqual([])
+  expect(Object.keys(written)).toEqual([])
 })
 
 test('a control file git starts tracking during the count clears nothing at zero', async () => {
