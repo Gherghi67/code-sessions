@@ -14,7 +14,8 @@ _vet_named_session() {  # session_dir
 # from while git tracks one of them; the open's refusals run here first.
 _vet_current_session() {
     local dir="${CLAUDE_SESSION_DIR:-}"
-    [ -n "$dir" ] || dir="${CLAUDE_SESSION_META_DIR%/.cs}"
+    [ -n "$dir" ] || dir="${CLAUDE_SESSION_META_DIR:-}"
+    dir=${dir%/.cs}
     [ -n "$dir" ] || return 0
     _vet_named_session "$dir"
 }
