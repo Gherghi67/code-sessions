@@ -48,7 +48,70 @@ test_a_nested_child_is_not_reminded() {
         "the child must not spend the lead's reminder cooldown" || return 1
 }
 
+_start_hook() {  # CS_LEAD_PID CLAUDE_PID source session_id; prints the context Claude is given
+    printf '{"session_id":"%s","source":"%s","cwd":"%s","hook_event_name":"SessionStart"}\n' \
+        "$4" "$3" "$CLAUDE_SESSION_DIR" \
+        | CS_RESOLVED_FROM=env CS_LEAD_PID="$1" CLAUDE_PID="$2" CS_NO_ROTATION_WAKE=1 CS_NO_ITERM2=1 \
+            bash "$HOOKS_DIR/session-start.sh" 2>/dev/null \
+        | jq -r '.hookSpecificOutput.additionalContext'
+}
+
+# The lead wrote a handoff and armed the marker; its /clear has not come yet.
+# A child started in that window fires SessionStart with source startup. The
+# rotation is the lead's: the child must not be handed it, flip the handoff to
+# consumed under its own id, or drop the marker. The lead's /clear afterwards
+# is the positive control: the rotation is still there to load.
+test_a_nested_child_leaves_the_armed_rotation_to_the_lead() {
+    _nested_setup
+    local meta="$CLAUDE_SESSION_META_DIR" handoff out
+    handoff="$meta/handoffs/2026-01-01-topic.md"
+    mkdir -p "$meta/handoffs"
+    printf -- '---\nstatus: unconsumed\n---\nnext step: do the thing\n' > "$handoff"
+    printf '2026-01-01-topic.md\n' > "$meta/local/pending-handoff"
+    sleep 300 &
+    local lead=$!
+    out=$(_start_hook "$lead" "$$" startup 22222222-2222-4222-8222-222222222222)
+    kill "$lead" 2>/dev/null
+    assert_eq "0" "$(grep -c 'Conversation Rotation' <<< "$out")" \
+        "a nested child is not told to continue the rotation" || return 1
+    assert_eq "2026-01-01-topic.md" "$(cat "$meta/local/pending-handoff" 2>/dev/null)" \
+        "the marker stays armed after a nested child starts" || return 1
+    assert_eq "status: unconsumed" "$(sed -n 2p "$handoff")" \
+        "the handoff stays unconsumed after a nested child starts" || return 1
+
+    out=$(_start_hook "$$" "$$" clear 33333333-3333-4333-8333-333333333333)
+    assert_eq "1" "$(grep -c 'Conversation Rotation' <<< "$out")" \
+        "the lead's /clear loads the rotation" || return 1
+    assert_eq "consumed_by: 33333333-3333-4333-8333-333333333333" "$(sed -n 3p "$handoff")" \
+        "the lead's conversation is the one recorded as the consumer" || return 1
+}
+
+# The queue's digest is shown once, to whoever reads it first. A child that
+# starts before the lead must neither be shown it nor move the cursor.
+test_a_nested_child_leaves_the_queue_digest_to_the_lead() {
+    _nested_setup
+    local local_dir="$CLAUDE_SESSION_META_DIR/local" out
+    printf '{"ts":1,"event":"task_done","task":"t"}\n{"ts":2,"event":"drain_finished"}\n' \
+        > "$local_dir/notifications.jsonl"
+    sleep 300 &
+    local lead=$!
+    out=$(_start_hook "$lead" "$$" startup 22222222-2222-4222-8222-222222222222)
+    kill "$lead" 2>/dev/null
+    assert_eq "0" "$(grep -c 'cs queue while you were away' <<< "$out")" \
+        "a nested child is not shown the queue digest" || return 1
+    assert_not_exists "$local_dir/notifications.seen" \
+        "a nested child does not move the digest cursor" || return 1
+
+    out=$(_start_hook "$$" "$$" resume 33333333-3333-4333-8333-333333333333)
+    assert_eq "1" "$(grep -c 'cs queue while you were away' <<< "$out")" \
+        "the lead is shown the digest afterwards" || return 1
+    assert_eq "2" "$(tr -d '[:space:]' < "$local_dir/notifications.seen")" \
+        "the lead's start moves the cursor past both entries" || return 1
+}
+
 run_test test_the_lead_gets_the_narrative_reminder
 run_test test_a_nested_child_is_not_reminded
+run_test test_a_nested_child_leaves_the_armed_rotation_to_the_lead
+run_test test_a_nested_child_leaves_the_queue_digest_to_the_lead
 
 report_results
