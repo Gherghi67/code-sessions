@@ -134,8 +134,9 @@ beforeEach(() => {
   nowMs = 1_800_000_000_000; livePids = new Set()
   // The default fixture is the lead conversation of a cs session.
   sessionId = 'uuid-lead'
-  // /work sits under the default sessions root by its own name.
-  envVars = { HOME: '/home' }
+  // /work sits under the default sessions root by its own name, and the launch
+  // said where cs is, as every cs launch does.
+  envVars = { HOME: '/home', CS_BIN: '/opt/cs/bin/cs' }
   cwdPath = '/work'
   realPaths = { '/work': '/work', '/home/.claude-sessions/work': '/work' }
   files = { '/work/.cs/local/state': 'claude_session_color: red\nclaude_session_id: uuid-lead\n' }
@@ -536,6 +537,60 @@ test('a private marker never arms from the plaintext handoff store', async () =>
   files[HANDOFF] = UNCONSUMED; files[PRIVATE_MARKER] = '2026-09-15-next-step.md\n'
   percent = 39
   expect(await band()).toBe(DRAWN)
+})
+
+// cs judges whether it trusts the session's control files: a marker git tracks
+// (a pull brought it in) names a rotation the SessionStart hook refuses, so it
+// arms nothing, and the band says why, once per answer.
+const VETTED = { exitCode: 0, stdout: '', stderr: '' }
+const TRACKED = "Error: .cs/local/pending-handoff is tracked in git (per-actor state must stay local). Fix with: git -C /work --literal-pathspecs rm -r --cached -- .cs/local && git -C /work commit -m 'stop tracking .cs/local'"
+const tracked = { exitCode: 1, stdout: '', stderr: `${TRACKED}\n` }
+
+test('an armed handoff asks cs about the session, and a tracked control file arms nothing', async () => {
+  arm(); percent = 39
+  runResult = tracked
+  expect(await band()).toBe(DRAWN)
+  expect(runs.map(r => r.argv)).toEqual([['/opt/cs/bin/cs', '-vet-session', '/work']])
+  expect(toasts).toEqual([`cs: the handoff is not armed: ${TRACKED}`])
+  await band()
+  expect(toasts).toHaveLength(1)
+  runResult = VETTED
+  expect(findButton(await band()).props.label).toBe('/clear and continue from the handoff')
+})
+
+test('a turn ending with a tracked control file starts no countdown and forces no /rotate', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); percent = 80
+  runResult = tracked
+  await turnComplete()
+  await fireAfter()
+  expect(timers.filter(t => t.kind === 'every')).toEqual([])
+  expect(ran).toEqual([])
+  expect(Object.keys(written)).toEqual([])
+})
+
+test('a control file git starts tracking during the count clears nothing at zero', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); percent = 80
+  await band()
+  await turnComplete()
+  runResult = tracked
+  await tick(GRACE_SECONDS)
+  expect(ran).toEqual([])
+})
+
+test('when cs cannot answer, the handoff arms nothing and the band says why', async () => {
+  arm(); percent = 39
+  delete envVars.CS_BIN
+  expect(await band()).toBe(DRAWN)
+  expect(runs).toHaveLength(0)
+  envVars.CS_BIN = '/opt/cs/bin/cs'
+  runResult = new Error('spawn ENOENT')
+  expect(await band()).toBe(DRAWN)
+  expect(toasts).toEqual([
+    'cs: the handoff is not armed: the launch did not say where cs is (CS_BIN)',
+    'cs: the handoff is not armed: cs -vet-session did not run: spawn ENOENT',
+  ])
 })
 
 test('an empty marker names no handoff, so the band behaves as unarmed', async () => {
@@ -1761,6 +1816,7 @@ test('a run that cannot start says why', async () => {
 })
 
 test('without CS_BIN /queue says the launch did not say where cs is, and runs nothing', async () => {
+  delete envVars.CS_BIN
   const r = await queue('something')
   expect(runs).toHaveLength(0)
   expect(r).toEqual({ text: 'The launch did not say where cs is (CS_BIN); run `cs -queue add "<task>"` from a shell in this session.' })
