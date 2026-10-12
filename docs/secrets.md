@@ -22,7 +22,7 @@ The encrypted file backend uses AES-256-CBC with PBKDF2 key derivation (100,000 
 - Accidental git commits of the secrets directory
 - Backup/sync services copying plaintext credentials
 
-It does not protect against someone who holds a copy of `~/.cs-secrets` (a backup, a synced home directory): the salt is in the copy and the user and host names are guessable, so the default key is recoverable from the copy alone. Set `CS_SECRETS_PASSWORD` to use an explicit master password instead of the derived key, or use the Keychain backend on macOS. A machine-local key input is a planned follow-up.
+It does not protect against someone who holds a copy of `~/.cs-secrets` (a backup, a synced home directory): the salt is in the copy and the user and host names are guessable, so the default key is recoverable from the copy alone. Set `CS_SECRETS_PASSWORD` to use an explicit master password instead of the derived key, or use the Keychain backend on macOS.
 
 Check which backend is active: `cs -secrets backend`
 
