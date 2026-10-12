@@ -779,6 +779,26 @@ test_an_untracked_cs_private_directory_opens() {
     assert_eq "armed" "$(cat "$root/.cs/private/queue.state")" "the user's queue stays as it was" || return 1
 }
 
+# A vault set up by hand can sit anywhere, and most places are in no git
+# repository at all: asking git about such a .cs/private finds nothing
+# tracked, and the session opens.
+test_a_cs_private_link_into_a_vault_outside_any_repository_opens() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local meta="$CS_SESSIONS_ROOT/vt/.cs" vault="$TEST_TMPDIR/vault"
+    mkdir -p "$vault/private"
+    mv "$meta/local/session.log" "$vault/private/session.log"
+    ln -s "$vault/private" "$meta/private"
+    _mark_hand_made_vault "$CS_SESSIONS_ROOT/vt"
+    assert_eq "" "$(git -C "$vault/private" rev-parse --git-dir 2>/dev/null)" "the fixture's vault is in no repository" || return 1
+    _make_launch_sentinel
+
+    local out rc=0
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "0" "$rc" "cs should open the session: $out" || return 1
+    assert_file_contains "$TEST_TMPDIR/launched" "launched" "claude should launch" || return 1
+}
+
 # A clone can also deliver `.cs` itself as a committed symlink to a tracked
 # directory: `git ls-files -- .cs/local` then lists nothing, so the tracked
 # check passes and the pre-open behind the link would run.
@@ -1619,6 +1639,7 @@ run_test test_pre_open_tracked_under_a_case_variant_is_refused
 run_test test_cs_files_tracked_in_cs_private_are_refused
 run_test test_cs_files_tracked_behind_a_cs_private_link_are_refused
 run_test test_an_untracked_cs_private_directory_opens
+run_test test_a_cs_private_link_into_a_vault_outside_any_repository_opens
 run_test test_pre_open_through_symlinked_cs_is_refused
 run_test test_symlinked_cs_without_pre_open_keeps_the_target_mode
 run_test test_pre_open_inside_a_cs_submodule_is_refused
