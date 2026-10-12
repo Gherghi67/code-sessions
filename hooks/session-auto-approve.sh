@@ -190,10 +190,24 @@ esac
 # A repository kept below .cs/ (a clone under a notes directory) has a git
 # directory of its own: git reads config and runs hooks from it whenever git
 # runs there, and a .git file names another directory to read them from. A
-# write with a .git component anywhere below .cs/ prompts.
+# write with a .git component anywhere below .cs/ prompts, in the real path
+# and in the spelled one: a .git that is a link resolves to its target's name.
 case "$(_cs_lower "$_cs_below")/$BASENAME_LC/" in
     */.git/*) exit 0 ;;
 esac
+case "$(_cs_lower "$FILE_PATH")/" in
+    */.git/*) exit 0 ;;
+esac
+# The name is not what makes a git directory: a bare clone is one under any
+# name, and so is the target of a linked .git. Every directory from the
+# write's real parent up to the root of .cs/ is asked what it is.
+_cs_up="$REAL_PARENT"
+while [ -n "$_cs_up" ] && [ "$_cs_up" != "$REAL_META" ] && [ "$_cs_up" != "$REAL_CS" ]; do
+    if [ -f "$_cs_up/HEAD" ] && [ -d "$_cs_up/objects" ] && [ -d "$_cs_up/refs" ]; then
+        exit 0
+    fi
+    _cs_up="${_cs_up%/*}"
+done
 
 # Classify by where the write really lands, not by the spelled path: a
 # shared directory can carry a committed link into local/ (memory/notes ->

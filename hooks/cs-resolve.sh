@@ -126,8 +126,11 @@ _cs_find_session_root() {  # start_dir
 # environment), a `claude -p` run from inside the session (its parent is a
 # shell), a front end that walked in from the directory. Both variables must be
 # non-empty, not merely equal: unset on both sides compares equal. Memoized: a
-# hook may ask more than once, and the resume-arm answer costs a ps fork.
+# hook may ask more than once, and the resume-arm answer costs a ps fork. A ps
+# that names no parent leaves the answer at "not the lead" and records that
+# nothing was learned, which cs_is_nested_child reads.
 _CS_IS_LEAD=""
+_CS_PARENT_UNREAD=0
 cs_is_lead() {
     if [ -z "$_CS_IS_LEAD" ]; then
         _CS_IS_LEAD=0
@@ -137,7 +140,9 @@ cs_is_lead() {
             else
                 local parent
                 parent=$(ps -o ppid= -p "$CLAUDE_PID" 2>/dev/null | tr -d '[:space:]' || true)
-                if [ -n "$parent" ] && [ "$parent" = "$CS_LEAD_PID" ]; then
+                if [ -z "$parent" ]; then
+                    _CS_PARENT_UNREAD=1
+                elif [ "$parent" = "$CS_LEAD_PID" ]; then
                     _CS_IS_LEAD=1
                 fi
             fi
@@ -152,9 +157,14 @@ cs_is_lead() {
 # yet its pid is neither the launch nor the launch's child. Only the
 # contract's presence makes this judgement: a front end that walked in, or a
 # session cs did not launch, carries no CS_LEAD_PID and is not a nested child.
+# Nor is a claude whose parent ps could not name: it may be the resumed lead,
+# and a failed lookup is not evidence that it is a guest.
 cs_is_nested_child() {
     [ -n "${CS_LEAD_PID:-}" ] && [ -n "${CLAUDE_PID:-}" ] || return 1
-    ! cs_is_lead
+    if cs_is_lead; then
+        return 1
+    fi
+    [ "$_CS_PARENT_UNREAD" != 1 ]
 }
 
 # Claude Code launches an agent-team teammate with --agent-id, --agent-name and
