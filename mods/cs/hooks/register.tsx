@@ -214,6 +214,9 @@ let paneChecked = false
 // cs's last refusal of this session's control files, toasted once: the band
 // asks on every render while a handoff is armed.
 let lastRefusal: string | undefined
+// Counts presses of the clear button: a press acts only if no later press or
+// prompt came while cs was answering it.
+let pressCount = 0
 
 // Which conversation the turns belong to, and whether it is being judged. A
 // conversation that begins past the force threshold did not get there by
@@ -318,7 +321,9 @@ export function register(on: On) {
     if (ticker) stopCountdown($)
     // A new turn asks afresh, as the Stop hook says it afresh each turn: the
     // band draws the handoff again, and its press asks cs before it clears.
+    // A press still waiting on cs is dropped.
     lastRefusal = undefined
+    pressCount += 1
     return next(e)
   })
 
@@ -993,10 +998,16 @@ async function offerToStart($: EngineInterface, bin: string, count: number) {
 }
 
 // The clear button's press: the /clear runs only once cs says it trusts the
-// session's control files, as at a countdown's zero.
+// session's control files, as at a countdown's zero. The press stops the count
+// before it asks, so the zero tick cannot clear while cs answers, and only the
+// latest press acts.
 async function pressClear($: EngineInterface) {
-  if (await sessionVetted($, await $.session.cwd())) await clearAndContinue($)
-  else $.ui.invalidate('ui.render')
+  if (ticker) stopCountdown($, false)
+  const press = ++pressCount
+  const vetted = await sessionVetted($, await $.session.cwd())
+  if (press !== pressCount) return
+  if (vetted) await clearAndContinue($)
+  else stopCountdown($)
 }
 
 // /clear ends this conversation, and cs's SessionStart hook then starts the
