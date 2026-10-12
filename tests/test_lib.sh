@@ -20,7 +20,11 @@ set -euo pipefail
 # CLAUDE_CONFIG_DIR goes because it outranks HOME: an install or uninstall
 # under a fake HOME would still read and write the keybindings.json of the
 # config dir the suite was started from.
+# The session identity goes because cs trusts it: a send under test files its
+# sent copy in the mailbox of the session the suite was started from, and
+# signs the mail with that session's name.
 unset CLAUDE_PROJECT_DIR CS_ACTOR CLAUDE_CODE_SESSION_ID CS_CLAUDE_SESSION_ID CLAUDE_CONFIG_DIR 2>/dev/null || true
+unset CLAUDE_SESSION_NAME CLAUDE_SESSION_DIR CLAUDE_SESSION_META_DIR 2>/dev/null || true
 
 # --- State ---
 TESTS_RUN=0
