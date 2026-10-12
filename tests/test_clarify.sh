@@ -17,6 +17,10 @@ setup() {
     while IFS='=' read -r _v _; do
         case "$_v" in CS_*|CLAUDE_*) unset "$_v" 2>/dev/null || true ;; esac
     done < <(env)
+    # The loop above also drops the budget test_lib.sh exports, so it is set
+    # again: on a loaded machine the hook's 1500 ms default skips the scan,
+    # and the scope assertions here fail for a reason they do not test.
+    export CS_SCOPE_BUDGET_MS="600000"
     export CLAUDE_SESSION_NAME="test-clarify"
     export CLAUDE_SESSION_DIR="$TEST_TMPDIR/session"
     export CLAUDE_SESSION_META_DIR="$CLAUDE_SESSION_DIR/.cs"
