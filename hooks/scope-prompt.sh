@@ -193,9 +193,10 @@ if [ -n "${CLAUDE_SESSION_META_DIR:-}" ] && _trace_dir=$(cs_private_dir "$CLAUDE
 fi
 
 # The user is back: drop the statusline's attention marker before any
-# other gate (slash commands and short prompts clear it too).
-[ -n "${CLAUDE_SESSION_META_DIR:-}" ] \
-    && rm -f "$CLAUDE_SESSION_META_DIR/local/attention" 2>/dev/null
+# other gate (slash commands and short prompts clear it too). A directory git
+# tracks keeps the marker as git has it (cs_local_dir).
+[ -n "${CLAUDE_SESSION_META_DIR:-}" ] && _attention_dir=$(cs_local_dir "$CLAUDE_SESSION_META_DIR") \
+    && rm -f "$_attention_dir/attention" 2>/dev/null
 
 # iTerm2: the bounce raised at turn end stops the moment the user prompts.
 # Mirrors the guard in narrative-reminder.sh (hooks are standalone).
