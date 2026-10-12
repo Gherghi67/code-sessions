@@ -196,6 +196,8 @@ each machine signs what it exports, and an import checks the signature.
   not pinned (the line gives the `age add` to run), or the signature does not
   match (the file changed after signing, the signature is for another
   session, or its signer has no key in the session)
+- It reads neither the file nor its signature through a symbolic link, and
+  skips a file that has a link at either path
 - `import-file --allow-unsigned` also takes age files that have no signature.
   Sync files written before cs signed them have none, and that is what the
   flag is for. It does not cover a file whose signature does not match: the
