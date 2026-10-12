@@ -24,7 +24,9 @@ set -euo pipefail
 # sent copy in the mailbox of the session the suite was started from, and
 # signs the mail with that session's name.
 unset CLAUDE_PROJECT_DIR CS_ACTOR CLAUDE_CODE_SESSION_ID CS_CLAUDE_SESSION_ID CLAUDE_CONFIG_DIR 2>/dev/null || true
-unset CLAUDE_SESSION_NAME CLAUDE_SESSION_DIR CLAUDE_SESSION_META_DIR 2>/dev/null || true
+# CS_SECRETS_SESSION is the same identity for cs-secrets, which reads it ahead
+# of the session name: a feature worktree exports its base session there.
+unset CLAUDE_SESSION_NAME CLAUDE_SESSION_DIR CLAUDE_SESSION_META_DIR CS_SECRETS_SESSION 2>/dev/null || true
 
 # --- State ---
 TESTS_RUN=0
@@ -234,8 +236,9 @@ export HOME="$(mktemp -d)/home"
 mkdir -p "$HOME"
 # XDG_DATA_HOME inherited from the developer's shell would point the install
 # and uninstall tests at the real data directory, whatever HOME says. Scoped
-# here, at source time, as HOME is.
-unset XDG_DATA_HOME
+# here, at source time, as HOME is. XDG_CONFIG_HOME does the same to cs's
+# per-machine preferences, which an uninstall under test deletes.
+unset XDG_DATA_HOME XDG_CONFIG_HOME
 # The scope-prompt hook's own deadline (CS_SCOPE_BUDGET_MS) is off the table
 # for every suite that drives the hook: tests time nothing, and a loaded
 # runner must not turn a scan assertion into a skip. The deadline tests in
