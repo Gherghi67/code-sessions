@@ -1322,6 +1322,24 @@ session_start_teardown() {
     export CS_TITLE_TTY="$HOME/title-tty"
 }
 
+# While git tracks a file in a session's control directory (a pull brought it
+# in), the hooks read no queue, mail or rotation there, and SessionStart writes
+# nothing there either: no state line, no context date, no lock, no attention
+# drop. Every change it made would be a change to the repository's files.
+test_session_start_writes_nothing_into_a_control_directory_git_tracks() {
+    session_start_setup
+    local m="$CLAUDE_SESSION_META_DIR/local" rc=0 changed
+    printf 'attended\n' > "$m/attention"
+    printf 'session_name: current-session\n' > "$m/state"
+    git -C "$CLAUDE_SESSION_DIR" add -f .cs/local
+    git -C "$CLAUDE_SESSION_DIR" commit -q -m "ship the control directory"
+    echo '{"session_id":"0b7c6a52-5d1e-4c3f-9a8b-1c2d3e4f5a6b","source":"startup","cwd":"'"$CLAUDE_SESSION_DIR"'","hook_event_name":"SessionStart"}' \
+        | bash "$HOOKS_DIR/session-start.sh" >/dev/null 2>"$TEST_TMPDIR/ss.err" || rc=$?
+    assert_eq "0" "$rc" "SessionStart stands down, it does not fail: $(cat "$TEST_TMPDIR/ss.err")" || return 1
+    changed=$(git -C "$CLAUDE_SESSION_DIR" status --porcelain --ignored -- .cs/local)
+    assert_eq "" "$changed" "nothing under the tracked .cs/local is added, changed or removed" || return 1
+}
+
 # A tmux stub on PATH that records every call's argv, one bracketed word per
 # argument so a title split at its space is distinguishable from one passed
 # whole. Sets FAKE_TMUX_PATH and FAKE_TMUX_CALLS.
@@ -3329,6 +3347,7 @@ run_test test_resume_digest_counts_two_commits_and_an_uncommitted_tail
 run_test test_hooks_parse_under_bin_bash
 run_test test_resume_digest_reports_uncommitted_teammate_growth
 run_test test_resume_digest_says_nothing_about_an_untracked_teammate_narrative
+run_test test_session_start_writes_nothing_into_a_control_directory_git_tracks
 run_test test_resume_digest_start_line_ignores_a_head_edit
 run_test test_resume_digest_works_when_the_session_is_a_repo_subdirectory
 run_test test_resume_digest_silent_when_nothing_changed
