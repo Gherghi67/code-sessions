@@ -106,6 +106,7 @@ cs_resolve_session() {  # [hook_input_json]
 # cs-shared.sh reads none of those files.
 _cs_note_tracked_files() {
     command -v cs_files_tracked_notice >/dev/null 2>&1 || return 0
+    # shellcheck disable=SC2034  # read by cs_private_dir (cs-shared.sh) and the Stop hook
     if CS_TRACKED_FILES_NOTICE=$(cs_files_tracked_notice "$CLAUDE_SESSION_META_DIR" "$CLAUDE_SESSION_DIR"); then
         CS_TRACKED_FILES_META="$CLAUDE_SESSION_META_DIR"
     fi

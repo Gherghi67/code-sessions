@@ -1209,7 +1209,7 @@ CS_PAYLOAD_SHA256=(
     "21bb234814840702741e4b08a2af1eda6289856a340a0cbdb0659bbca3716955  bin/cs-secrets"
     "218445530b4e201f65870c91c126ecfe6d7732b5796d6cf9df01b544b942cad5  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
-    "d08120600e6dc5214dca14a023d92a47f2ced22972b66e5b76ffd0f3b6f048c7  hooks/cs-resolve.sh"
+    "2c7d3d55501f8b029b2676ad6fdccea3da7863ac697e38249fa47283e959809c  hooks/cs-resolve.sh"
     "5500a186b4d33dd32b59b24fdadd6f56c29cc10b02cb97ff5ab1750cec2b6647  hooks/cs-shared.sh"
     "50d63ce0995e68fddd8503700c15f9585d11938c9cd3872a883146de7707c765  hooks/cs-iterm-tab.py"
     "5ba5d967c2f5b8949847195fe928af2dd6c41c1ab502cb74f9deb0d3af842de9  hooks/memory-index-guard.sh"
