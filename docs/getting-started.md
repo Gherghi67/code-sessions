@@ -213,8 +213,8 @@ shared startup context, rotation, the `switch` skill in both directions, and
 finishing a feature (`-finish`, `$finish`).
 Claude's hooks and mods do not run inside Codex. Codex does not yet provide
 cs's autosave and crash recovery, automatic queue or mailbox
-delivery, runtime usage reporting, rotation in an encrypted session, or native
-terminal controls. Manual status and workspace management are available.
+delivery, runtime usage reporting, encrypted sessions, or native terminal
+controls. Manual status and workspace management are available.
 
 This fork has not been published. Inside its profile `cs -update` and
 `cs -uninstall` refuse, since the fork's release address is the original cs's;
