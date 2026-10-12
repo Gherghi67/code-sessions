@@ -48,6 +48,22 @@ test_a_nested_child_is_not_reminded() {
         "the child must not spend the lead's reminder cooldown" || return 1
 }
 
+# The attention flag tells the status line the lead's turn has ended and the
+# user is awaited. A child finishing in the middle of the lead's turn ends no
+# turn of the lead's. The lead's own Stop is the positive control.
+test_a_nested_child_does_not_raise_the_attention_flag() {
+    _nested_setup
+    sleep 300 &
+    local lead=$!
+    _stop_hook "$lead" "$$" > /dev/null
+    kill "$lead" 2>/dev/null
+    assert_not_exists "$CLAUDE_SESSION_META_DIR/local/attention" \
+        "a nested child's Stop leaves the attention flag down" || return 1
+    _stop_hook "$$" "$$" > /dev/null
+    assert_file_exists "$CLAUDE_SESSION_META_DIR/local/attention" \
+        "the lead's Stop raises the attention flag" || return 1
+}
+
 _start_hook() {  # CS_LEAD_PID CLAUDE_PID source session_id; prints the context Claude is given
     printf '{"session_id":"%s","source":"%s","cwd":"%s","hook_event_name":"SessionStart"}\n' \
         "$4" "$3" "$CLAUDE_SESSION_DIR" \
@@ -111,6 +127,7 @@ test_a_nested_child_leaves_the_queue_digest_to_the_lead() {
 
 run_test test_the_lead_gets_the_narrative_reminder
 run_test test_a_nested_child_is_not_reminded
+run_test test_a_nested_child_does_not_raise_the_attention_flag
 run_test test_a_nested_child_leaves_the_armed_rotation_to_the_lead
 run_test test_a_nested_child_leaves_the_queue_digest_to_the_lead
 
