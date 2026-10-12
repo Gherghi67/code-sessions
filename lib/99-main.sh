@@ -11,13 +11,15 @@ _vet_named_session() {  # session_dir
 
 # cs -queue and cs -msg run inside a session read the queue and the mailbox of
 # the session the environment names, the same files the hooks stand down
-# from while git tracks one of them; the open's refusals run here first.
+# from while git tracks one of them, so they refuse on the same question. Only
+# that question: the open's other refusals walk every link under .cs, which
+# would cost these verbs a fork per link on every call.
 _vet_current_session() {
-    local dir="${CLAUDE_SESSION_DIR:-}"
+    local dir="${CLAUDE_SESSION_DIR:-}" notice
     [ -n "$dir" ] || dir="${CLAUDE_SESSION_META_DIR:-}"
     dir=${dir%/.cs}
-    [ -n "$dir" ] || return 0
-    _vet_named_session "$dir"
+    [ -n "$dir" ] && is_session_dir "$dir" || return 0
+    ! notice=$(cs_files_tracked_notice "$dir/.cs" "$dir") || error "$notice"
 }
 
 main() {

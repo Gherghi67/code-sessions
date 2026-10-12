@@ -126,9 +126,10 @@ in the directory that holds the queue, the mailbox and the rotation marker (`.cs
 or `.cs/private` once that name exists)? `cs` refuses to open such a session, but a
 `git pull`, a merge or a checkout can put committed files there while the session is
 open. A repository wrote a tracked file, not this session, so while git tracks one the
-hooks read no queue, mail or rotation marker from that directory and write nothing into
-it: the Stop hook hands out no task, the prompt hook shows no mail, a `/clear` loads no
-handoff, and the command log stops. Each finished turn says why, in a system message that names the file
+hooks read no queue, mail or rotation marker from that directory and write none of those
+files: the Stop hook hands out no task, the prompt hook shows no mail, a `/clear` loads no
+handoff, and the command log stops. `cs -queue` and `cs -msg` run inside the session
+refuse on the same question. Each finished turn says why, in a system message that names the file
 and the `git rm --cached` command that untracks it. That message is all the Stop hook
 does until then: it sends no narrative reminder and no rotation nudge, and raises no
 attention flag. Its other two events do nothing: no mail wake, no rotation kick, no
