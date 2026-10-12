@@ -121,11 +121,13 @@ _cs_find_session_root() {  # start_dir
 # True when the claude a hook fires for is the conversation cs launched. cs
 # starts claude two ways: the exec arms replace cs's own process, so claude
 # carries cs's pid; the resume arm runs claude as a child, since it needs the
-# exit status, and there claude's parent is cs. The parent is asked only where
-# cs says it stayed as the parent (CS_LEAD_IS_PARENT, set on that one command):
-# after an exec the launch pid is the lead claude's own, and a claude started
-# as its direct child would otherwise pass for the lead. Anything else is not
-# the lead: a tmux teammate (tmux starts it, and CS_LEAD_PID is absent from its
+# exit status, and there claude's parent is cs. cs says which it did in
+# CS_LEAD_IS_PARENT: 1 on that one resume command, 0 everywhere else. After an
+# exec the launch pid is the lead claude's own, so at 0 the parent is never
+# asked, or a claude started as the lead's direct child would pass for it.
+# A session with no value was started by a cs that did not say; it keeps the
+# rule it was launched under, the parent check, until it is relaunched.
+# Anything else is not the lead: a tmux teammate (tmux starts it, and CS_LEAD_PID is absent from its
 # environment), a `claude -p` run from inside the session (its parent is a
 # shell), a front end that walked in from the directory. Both variables must be
 # non-empty, not merely equal: unset on both sides compares equal. Memoized: a
@@ -140,7 +142,7 @@ cs_is_lead() {
         if [ -n "${CS_LEAD_PID:-}" ] && [ -n "${CLAUDE_PID:-}" ]; then
             if [ "$CLAUDE_PID" = "$CS_LEAD_PID" ]; then
                 _CS_IS_LEAD=1
-            elif [ -n "${CS_LEAD_IS_PARENT:-}" ]; then
+            elif [ "${CS_LEAD_IS_PARENT:-}" != 0 ]; then
                 local parent
                 parent=$(ps -o ppid= -p "$CLAUDE_PID" 2>/dev/null | tr -d '[:space:]' || true)
                 if [ -z "$parent" ]; then
