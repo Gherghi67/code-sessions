@@ -176,6 +176,22 @@ test_narrative_reminder_respects_cooldown() {
     assert_output_contains "$output" "approve" "Fresh cooldown should suppress the reminder" || return 1
 }
 
+# The stamp sits at the .cs root, where a write needs no approval, so its
+# content is whatever anyone put there. Shell arithmetic runs a command
+# substitution found in an operand's array subscript; the array is PATH because
+# the hook runs under set -u, which stops on an unset name before the
+# substitution is reached.
+test_narrative_reminder_reads_its_cooldown_stamp_as_data() {
+    echo "# Session narrative" > "$CLAUDE_SESSION_META_DIR/memory/narrative.md"
+    _backdate "$CLAUDE_SESSION_META_DIR/memory/narrative.md"
+    printf 'PATH[$(:>%s)]' "$TEST_TMPDIR/ran-from-stamp" > "$CLAUDE_SESSION_META_DIR/.narrative-reminder-cooldown"
+    local output
+    output=$(echo '{}' | bash "$HOOKS_DIR/narrative-reminder.sh" 2>/dev/null)
+    assert_file_not_exists "$TEST_TMPDIR/ran-from-stamp" "A cooldown stamp's content must never run" || return 1
+    assert_output_contains "$output" "block" "A stamp that is not a time counts as no stamp: the reminder fires" || return 1
+    assert_output_contains "$output" "narrative.md" "Reminder should point at narrative.md" || return 1
+}
+
 test_narrative_reminder_approves_for_subagent() {
     echo "# Session narrative" > "$CLAUDE_SESSION_META_DIR/memory/narrative.md"
     _backdate "$CLAUDE_SESSION_META_DIR/memory/narrative.md"
@@ -2979,6 +2995,7 @@ run_test test_narrative_reminder_is_silent_about_budget_when_under
 run_test test_narrative_reminder_survives_an_unreadable_narrative
 run_test test_narrative_reminder_budget_line_covers_a_teammates_file
 run_test test_narrative_reminder_respects_cooldown
+run_test test_narrative_reminder_reads_its_cooldown_stamp_as_data
 run_test test_stop_raises_attention_marker
 run_test test_stop_no_attention_marker_for_subagents
 run_test test_narrative_reminder_approves_for_subagent
