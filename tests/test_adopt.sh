@@ -360,6 +360,57 @@ test_readopt_with_every_vault_link_dangling_refuses_naming_memory() {
     assert_not_exists "$CS_SESSIONS_ROOT/new-name" "no session link" || return 1
 }
 
+# A cloned project can commit .gitignore, .gitattributes or CLAUDE.local.md as
+# a link to a file outside the checkout, and adopt appends to all three. Each
+# is refused before adopt writes anything: the file outside keeps its bytes,
+# and the project gets no .cs and no session link.
+test_adopt_refuses_a_committed_link_it_would_write_through() {
+    local name project_dir outside before out rc
+    for name in CLAUDE.local.md .gitignore .gitattributes; do
+        project_dir="$TEST_TMPDIR/proj-$name"
+        outside="$TEST_TMPDIR/outside-$name"
+        mkdir -p "$project_dir"
+        printf 'a file that is not the project'"'"'s\n' > "$outside"
+        before=$(cksum < "$outside")
+        ( cd "$project_dir" && git init -q && git config user.email jane.roe@example.com \
+            && git config user.name "Jane Roe" && ln -s "../outside-$name" "$name" \
+            && git add -A && git commit -q -m "a project with a committed link" )
+
+        rc=0
+        out=$(cd "$project_dir" && "$CS_BIN" -adopt "linked" </dev/null 2>&1) || rc=$?
+
+        assert_eq 1 "$rc" "adopt refuses a linked $name: $out" || return 1
+        assert_eq "Error: $name is a symlink to ../outside-$name, outside the session, and cs writes through it. Replace it with a real file or directory, or cs -rm the session." \
+            "$out" "the refusal names $name" || return 1
+        assert_eq "$before" "$(cksum < "$outside")" "the file $name points at keeps its bytes" || return 1
+        assert_not_exists "$project_dir/.cs" "no session records behind a linked $name" || return 1
+        assert_not_exists "$CS_SESSIONS_ROOT/linked" "no session link behind a linked $name" || return 1
+    done
+}
+
+# Records the open would refuse are refused by the re-adopt too, before it
+# links a session that can never open: here a queue committed in .cs/private.
+test_readopt_refuses_records_the_open_would_refuse() {
+    local project_dir="$TEST_TMPDIR/my-project" out rc=0 before
+    mkdir -p "$project_dir/.cs/private/queue"
+    ( cd "$project_dir" && git init -q && git config user.email jane.roe@example.com \
+        && git config user.name "Jane Roe" \
+        && printf -- '---\nstatus: active\n---\n# x\n' > .cs/README.md \
+        && printf 'armed\n' > .cs/private/queue.state \
+        && printf 'a task the repository wrote\n' > .cs/private/queue/0000000001-task \
+        && git add -A -f && git commit -q -m "a project with session records" )
+    before=$(git -C "$project_dir" rev-parse HEAD)
+
+    out=$(cd "$project_dir" && "$CS_BIN" -adopt new-name --yes </dev/null 2>&1) || rc=$?
+
+    assert_eq 1 "$rc" "the re-adopt refuses: $out" || return 1
+    assert_eq "Error: .cs/private/queue.state is tracked in git (per-actor state must stay local). Fix with: git -C \"$(cd "$project_dir" && pwd -P)\" rm -r --cached .cs/private && git commit -m 'stop tracking .cs/private'" \
+        "$out" "the refusal names the tracked file" || return 1
+    assert_eq "$before" "$(git -C "$project_dir" rev-parse HEAD)" "adopt commits nothing" || return 1
+    assert_eq "" "$(git -C "$project_dir" status --porcelain)" "adopt writes nothing" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/new-name" "no session link" || return 1
+}
+
 test_adopt_orphaned_records_noninteractive_hints() {
     local project_dir="$TEST_TMPDIR/my-project"
     mkdir -p "$project_dir"
@@ -1020,6 +1071,8 @@ run_test test_readopt_keeps_the_session_log
 run_test test_readopt_of_an_encrypted_session_keeps_its_log_in_the_vault
 run_test test_readopt_of_an_encrypted_session_with_a_locked_vault_refuses
 run_test test_readopt_with_every_vault_link_dangling_refuses_naming_memory
+run_test test_adopt_refuses_a_committed_link_it_would_write_through
+run_test test_readopt_refuses_records_the_open_would_refuse
 run_test test_adopt_orphaned_records_noninteractive_hints
 run_test test_adopt_orphaned_records_decline_cancels
 run_test test_adopt_yes_relinks_orphaned_records_without_a_terminal
