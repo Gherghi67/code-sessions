@@ -155,6 +155,39 @@ test('session.start opens the pane once per load and writes the heartbeat', asyn
   expect(opens()).toHaveLength(1)
 })
 
+// While git tracks the session's control files, cs -vet-session refuses and
+// the mod writes nothing into .cs/local: no heartbeat, no DONE marker, and a
+// stale marker is left as git has it.
+const vetRefusing = () => {
+  ;($ as any).process.run = async (argv: string[], init: any) => {
+    runs.push({ argv, init })
+    if (argv[1] === '-vet-session') return { exitCode: 1, stdout: '', stderr: 'Error: .cs/local/state is tracked in git\n' }
+    return runResult
+  }
+}
+
+test('a session whose control files git tracks gets no heartbeat', async () => {
+  vetRefusing()
+  await start()
+  expect(written['/work/' + HEARTBEAT]).toBeUndefined()
+  expect(runs.map(r => r.argv)).toContainEqual(['/opt/cs/bin/cs', '-vet-session', '/work'])
+})
+
+test('while git tracks the control files, a stale DONE marker is left as git has it', async () => {
+  vetRefusing()
+  files['/work/' + DONE] = '2026.99.1\nUpdate finished. Takes effect on your next launch.\n'
+  await start()
+  expect(written['/work/' + DONE]).toBeUndefined()
+})
+
+test('while git tracks the control files, a finished update writes no DONE marker', async () => {
+  vetRefusing()
+  await start()
+  await buttons(await draw())[0].props.onPress()
+  expect(texts(await draw()).join('\n')).toContain('Update finished. Takes effect on your next launch.')
+  expect(written['/work/' + DONE]).toBeUndefined()
+})
+
 test('no pending version, no pane, no toast', async () => {
   delete envVars.CS_UPDATE_AVAILABLE
   await start()
