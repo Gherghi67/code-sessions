@@ -147,6 +147,31 @@ test_outside_a_cs_codex_run_the_hook_is_inert() {
     assert_not_exists "$SESSION/.cs/local/session.log" || return 1
 }
 
+# An encrypted session keeps its command log behind .cs/private; a plaintext
+# .cs/local/session.log beside the vault is what the next open refuses.
+test_an_encrypted_session_logs_the_start_behind_private() {
+    mkdir -p "$SESSION/.cs/private"
+    _hook resume >/dev/null || return 1
+    assert_file_contains "$SESSION/.cs/private/session.log" "Session started (source: resume, ID: $NEW_THREAD)" || return 1
+    assert_not_exists "$SESSION/.cs/local/session.log" "no plaintext log beside the vault" || return 1
+}
+
+test_a_clear_in_an_encrypted_session_logs_the_rebind_behind_private() {
+    mkdir -p "$SESSION/.cs/private"
+    _hook clear >/dev/null || return 1
+    assert_file_contains "$SESSION/.cs/private/session.log" "Session started (source: clear, ID: $NEW_THREAD)" || return 1
+    assert_file_contains "$SESSION/.cs/private/session.log" "Rebound codex thread: $OLD_THREAD -> $NEW_THREAD" || return 1
+    assert_not_exists "$SESSION/.cs/local/session.log" || return 1
+}
+
+# A locked vault drops the line, as the Claude hooks do.
+test_a_locked_vault_drops_the_log_line() {
+    ln -s "$TEST_TMPDIR/not-mounted" "$SESSION/.cs/private"
+    _hook clear >/dev/null || { echo "  FAIL: a hook must never fail a turn"; return 1; }
+    assert_not_exists "$SESSION/.cs/local/session.log" || return 1
+    assert_not_exists "$TEST_TMPDIR/not-mounted" "nothing is created behind the dangling link" || return 1
+}
+
 test_unknown_hook_event_is_a_usage_error() {
     local status=0 out
     out=$("$CS_BIN" -codex-hook stop </dev/null 2>&1) || status=$?
@@ -161,6 +186,9 @@ run_test test_resume_changes_nothing_but_the_log
 run_test test_a_run_without_the_lease_rebinds_nothing
 run_test test_a_run_without_the_lease_leaves_a_stale_marker
 run_test test_outside_a_cs_codex_run_the_hook_is_inert
+run_test test_an_encrypted_session_logs_the_start_behind_private
+run_test test_a_clear_in_an_encrypted_session_logs_the_rebind_behind_private
+run_test test_a_locked_vault_drops_the_log_line
 run_test test_unknown_hook_event_is_a_usage_error
 
 report_results

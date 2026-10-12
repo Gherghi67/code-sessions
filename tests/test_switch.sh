@@ -752,8 +752,8 @@ test_relaunch_refused_by_an_open_step_names_both_ways_back() {
     assert_not_exists "$dir/.cs/local/pending-switch" || return 1
 }
 
-# A Codex run in an encrypted session writes its session.log to .cs/local, and
-# every later open refuses that plaintext file. The switch asks before it
+# A session.log an older Codex run left in .cs/local beside an encrypted
+# session is a plaintext file every later open refuses. The switch asks before it
 # relaunches, while it can still say what to fix and how to come back.
 test_encrypted_leftovers_stop_the_relaunch_before_it_starts() {
     local out status=0 dir
@@ -928,7 +928,7 @@ test_settle_refuses_a_switch_that_names_no_other_engine() {
     assert_eq 0 "$(_calls codex)" || return 1
 }
 
-# Codex writes its session log to .cs/local, which an encrypted session's
+# A session log left in .cs/local, which an encrypted session's
 # open refuses: the verb says so before the skill writes a handoff.
 test_verb_refuses_an_encrypted_session_that_would_not_reopen() {
     local out status=0 dir

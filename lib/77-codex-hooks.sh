@@ -46,7 +46,7 @@ cmd_codex_hook() {  # event
 # other binding and its own rotation (`r`). The hook must never fail a turn,
 # so every path returns 0 and anything it cannot do it skips.
 _codex_hook_session_start() {
-    local input session_id source session_dir meta actor handoff context="" sysmsg=""
+    local input session_id source session_dir meta log_dir actor handoff context="" sysmsg=""
     input=$(cat) || input=""
     session_id=$(printf '%s' "$input" | jq -r '.session_id // ""' 2>/dev/null) || session_id=""
     source=$(printf '%s' "$input" | jq -r '.source // ""' 2>/dev/null) || source=""
@@ -59,8 +59,11 @@ _codex_hook_session_start() {
     _codex_thread_id_valid "$session_id" || return 0
     # The rotate skill and the launch prompt read which conversations this
     # checkout ran from this line; hooks/session-start.sh writes it for Claude.
-    { printf '%s - Session started (source: %s, ID: %s)\n' "$(date '+%Y-%m-%d %H:%M:%S')" \
-        "${source:-unknown}" "$session_id" >> "$meta/local/session.log"; } 2>/dev/null || true
+    # A locked vault drops it rather than leave a plaintext log beside it.
+    if log_dir=$(cs_private_dir "$meta"); then
+        { printf '%s - Session started (source: %s, ID: %s)\n' "$(date '+%Y-%m-%d %H:%M:%S')" \
+            "${source:-unknown}" "$session_id" >> "$log_dir/session.log"; } 2>/dev/null || true
+    fi
     [ "$source" = clear ] || return 0
     # The launched conversation alone may rebind: the slot is one per checkout.
     cs_run_lease_owned "$meta" || return 0
@@ -84,14 +87,16 @@ _codex_hook_session_start() {
 # Under the run lease: point the session at the thread /clear opened, so the
 # next `cs <name>` resumes it, and record the lineage the way a launch does.
 _codex_hook_rebind() {  # session_dir, thread_id, handoff
-    local session_dir="$1" thread_id="$2" handoff="$3" previous reason=rebind
+    local session_dir="$1" thread_id="$2" handoff="$3" previous log_dir reason=rebind
     previous=$(cs_binding_read "$session_dir" codex) || return 1
     [ "$previous" != "$thread_id" ] || return 0
     cs_binding_write "$session_dir" codex "$thread_id" || return 1
     _cs_set_local_state_unlocked "$session_dir/.cs/local/state" engine codex || return 1
     [ -z "$handoff" ] || reason=handoff
-    { printf '%s - Rebound codex thread: %s -> %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" \
-        "${previous:-none}" "$thread_id" >> "$session_dir/.cs/local/session.log"; } 2>/dev/null || true
+    if log_dir=$(cs_private_dir "$session_dir/.cs"); then
+        { printf '%s - Rebound codex thread: %s -> %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" \
+            "${previous:-none}" "$thread_id" >> "$log_dir/session.log"; } 2>/dev/null || true
+    fi
     if [ -n "$previous" ]; then
         _timeline_rotated "$session_dir" "$previous" "$thread_id" "$reason" "$handoff" codex || true
     fi

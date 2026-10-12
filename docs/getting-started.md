@@ -161,8 +161,9 @@ pending handoff it refuses and points at `--fresh`. It cannot be combined with
 `--fresh`, `--resume` or `-finish`. Codex cannot yet start from the handoffs of
 an [encrypted session](session-layout.md#encrypted-sessions), so the switch
 into Codex and `--engine codex --from-handoff` refuse there. A switch out of
-Codex refuses there as well while Codex's plaintext `.cs/local/session.log`
-exists; move it into `.cs/private/` first.
+Codex refuses there as well while a plaintext `.cs/local/session.log` is
+present, for example one an older Codex run left; move it into `.cs/private/`
+first.
 
 Run `ccs .` from the root of an adopted project or registered session to open
 that workspace. From anywhere, `ccs` with no arguments opens the interactive

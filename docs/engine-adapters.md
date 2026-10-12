@@ -198,8 +198,8 @@ current one, for a target the install did not set up or whose CLI is missing,
 for a target adapter without `rotation`, for a switch already pending, for an
 encrypted session whose vault is locked, whose target is Codex (its rotation
 does not read `.cs/private` yet) or whose open would refuse the relaunch
-(`_refuse_unmounted_meta`, for example the plaintext `.cs/local/session.log`
-Codex's session-start hook writes), and when no unconsumed handoff is armed.
+(`_refuse_unmounted_meta`, for example a plaintext `.cs/local/session.log` an
+older Codex run left there), and when no unconsumed handoff is armed.
 `--check` runs every refusal except the last and writes nothing; the skill
 calls it before writing a handoff. On success the verb writes
 `pending-switch` atomically to the session's private directory (`.cs/local/`,

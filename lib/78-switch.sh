@@ -143,8 +143,8 @@ cmd_switch() {
         error "Cannot switch to $target: this session is encrypted, and $target does not read handoffs from .cs/private yet; use the rotate skill to continue in $current"
     fi
     # The relaunch opens the session again, and an encrypted one refuses with
-    # plaintext leftovers beside its vault (a Codex run writes its session.log
-    # to .cs/local). Asked now, before the skill writes a handoff for nothing.
+    # plaintext leftovers beside its vault (a session.log an older Codex run
+    # left in .cs/local). Asked now, before the skill writes a handoff for nothing.
     local refusal
     if _switch_session_encrypted "$session_dir" \
         && ! refusal=$( (_refuse_unmounted_meta "$name" "$session_dir") 2>&1 ); then
@@ -258,8 +258,8 @@ _switch_settle() {  # session_name, session_dir, engine, run_status
         return 0
     fi
     # The relaunch opens the session again, and an encrypted one with
-    # plaintext leftovers beside its vault (a Codex run writes its session.log
-    # to .cs/local) would be refused after its pre-open has taken over the
+    # plaintext leftovers beside its vault (a session.log an older Codex run
+    # left in .cs/local) would be refused after its pre-open has taken over the
     # exit trap. Ask now, while the handoff can still be named.
     if ! refusal=$( (_refuse_unmounted_meta "$name" "$dir") 2>&1 ); then
         printf 'Not switching to %s: the session would not reopen.\n%s\nThe handoff %s stays armed. Fix that, then reopen with either:\n' \
@@ -405,9 +405,10 @@ _switch_note_spent() {  # session_dir, handoff, consumer_id
     _cs_switch_starts=$(_switch_logged_starts "$1")
 }
 
-# How many conversation starts this checkout's session logs hold: Claude's
-# SessionStart logs to the private dir, Codex's hook to .cs/local. A count
-# that grew while the CLI ran means it reached its conversation.
+# How many conversation starts this checkout's session logs hold: both
+# engines' start hooks log to the private dir, and .cs/local still counts for a
+# log an older Codex run left there. A count that grew while the CLI ran means
+# it reached its conversation.
 _switch_logged_starts() {  # session_dir
     local private total more
     total=$(grep -c 'Session started' "$1/.cs/local/session.log" 2>/dev/null) || total=0

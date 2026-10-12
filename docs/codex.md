@@ -108,8 +108,8 @@ starts, cs also puts back a handoff its launch had already marked consumed.
 Codex does not yet read an encrypted session's vault for rotation, so a switch
 into Codex refuses in an [encrypted session](session-layout.md#encrypted-sessions),
 as does `--engine codex --from-handoff`. A switch from Codex to Claude refuses
-there too while `.cs/local/session.log` exists: Codex's session-start hook
-writes that log in plaintext, and an encrypted session does not open beside it.
+there too while a plaintext `.cs/local/session.log` is present, for example one
+an older Codex run left there: an encrypted session does not open beside it.
 Move the file into `.cs/private/`, then ask for the switch again.
 
 ## Workspace preparation and installation
