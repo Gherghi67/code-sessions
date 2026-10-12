@@ -1433,6 +1433,29 @@ test('a prompt landing while the zero tick closes the pane stops the /clear', as
   expect(panes.at(-1)).toEqual({ op: 'close', args: { id: PREVIEW_PANE } })
 })
 
+// A press closes the pane before its /clear as the zero tick does: a prompt
+// landing during that close is a new turn, and no /clear follows it.
+test('a prompt landing while a press closes the pane stops the /clear', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); percent = 80
+  let land!: () => void
+  let closing!: () => void
+  const closeAsked = new Promise<void>(r => { closing = r })
+  $.ui.close = (args: any) => new Promise<void>(resolve => { closing(); land = () => { panes.push({ op: 'close', args }); resolve() } })
+  try {
+    await band(); await turnComplete(); await fireAfter()
+    await tick(2)
+    const press = findButton(await band()).props.onPress()
+    await closeAsked
+    await promptSubmit()
+    land()
+    await press
+  } finally {
+    $.ui.close = async (args: any) => { panes.push({ op: 'close', args }); enginePanes = enginePanes.filter(p => p.id !== args.id) }
+  }
+  expect(ran).toEqual([])
+})
+
 // Once the zero tick has closed the pane and stopped the count, nothing of the
 // mod's waits before the /clear runs, its own /clear hook included: a prompt
 // landing in such a wait would find no count to stop.
