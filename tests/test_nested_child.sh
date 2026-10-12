@@ -64,6 +64,13 @@ test_a_nested_child_does_not_raise_the_attention_flag() {
         "the lead's Stop raises the attention flag" || return 1
 }
 
+# A stand-in for a claude process: its command line carries whatever the test
+# passes, and a kill takes its sleep down with it, so nothing outlives a test.
+_fake_claude_script() {
+    printf '#!/usr/bin/env bash\nsleep 300 &\ntrap "kill $!" TERM\nwait\n' > "$TEST_TMPDIR/fake-claude.sh"
+    chmod +x "$TEST_TMPDIR/fake-claude.sh"
+}
+
 # A rotation the lead armed and has not cleared into yet: an unconsumed
 # handoff and the marker that names it. Prints the handoff's path.
 _arm_rotation() {
@@ -142,8 +149,7 @@ test_a_teammate_leaves_the_armed_rotation_and_the_digest_to_the_lead() {
     local meta="$CLAUDE_SESSION_META_DIR" handoff out mate i=0
     handoff=$(_arm_rotation)
     printf '{"ts":1,"event":"task_done","task":"t"}\n' > "$meta/local/notifications.jsonl"
-    printf '#!/usr/bin/env bash\nsleep 300\n' > "$TEST_TMPDIR/fake-claude.sh"
-    chmod +x "$TEST_TMPDIR/fake-claude.sh"
+    _fake_claude_script
     "$TEST_TMPDIR/fake-claude.sh" --agent-id a1 --agent-name mate --team-name t >/dev/null 2>&1 &
     mate=$!
     while [ "$i" -lt 50 ]; do
@@ -175,8 +181,7 @@ test_the_lead_keeps_its_rotation_when_its_prompt_names_the_teammate_flags() {
     _nested_setup
     local meta="$CLAUDE_SESSION_META_DIR" handoff out lead i=0
     handoff=$(_arm_rotation)
-    printf '#!/usr/bin/env bash\nsleep 300\n' > "$TEST_TMPDIR/fake-claude.sh"
-    chmod +x "$TEST_TMPDIR/fake-claude.sh"
+    _fake_claude_script
     "$TEST_TMPDIR/fake-claude.sh" explain --agent-id --agent-name --team-name options >/dev/null 2>&1 &
     lead=$!
     while [ "$i" -lt 50 ]; do

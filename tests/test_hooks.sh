@@ -646,6 +646,17 @@ test_auto_approve_prompts_inside_a_git_directory_reached_by_another_name() {
         "the config of a worktree's git directory kept below .cs" || return 1
 }
 
+# The same for a session whose own path has a .git component above .cs/: the
+# git-directory rule reads the path below .cs/ only.
+test_auto_approve_allows_content_in_a_session_below_a_git_named_directory() {
+    local home="$TEST_TMPDIR/checkout/.git"
+    mkdir -p "$home"
+    mv "$CLAUDE_SESSION_DIR" "$home/session"
+    CLAUDE_SESSION_DIR="$home/session" CLAUDE_SESSION_META_DIR="$home/session/.cs" \
+        _assert_allowed Write "$home/session/.cs/memory/narrative.md" \
+        "a narrative in a session path holding a .git component" || return 1
+}
+
 # Only the part of the path below .cs/ is judged: a session that lives under
 # a directory named outside ASCII keeps its content writes frictionless.
 test_auto_approve_allows_ascii_content_under_a_non_ascii_session_path() {
@@ -3226,6 +3237,7 @@ run_test test_auto_approve_prompts_for_a_folded_control_name
 run_test test_auto_approve_prompts_inside_a_git_directory_below_cs
 run_test test_auto_approve_prompts_inside_a_git_directory_reached_by_another_name
 run_test test_auto_approve_allows_ascii_content_under_a_non_ascii_session_path
+run_test test_auto_approve_allows_content_in_a_session_below_a_git_named_directory
 run_test test_auto_approve_rejects_config_linked_into_content
 run_test test_auto_approve_rejects_settings_link_target
 run_test test_auto_approve_rejects_queue_link_target
