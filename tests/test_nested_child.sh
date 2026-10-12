@@ -176,9 +176,10 @@ test_a_teammate_leaves_the_armed_rotation_and_the_digest_to_the_lead() {
 
 # On an exec launch the pid cs hands on is the lead claude's own, so a claude
 # started as its direct child (a mod's process run) has the lead for a
-# parent. A child of the lead is not the lead: the parent counts only where
-# cs says it stayed as the parent, which the last step shows with the same
-# two processes.
+# parent. A child of the lead is not the lead: cs says which way it started
+# claude, and the parent counts only where it stayed as the parent. The same
+# two processes show both, and a third step shows a session an older cs
+# started, which says neither and keeps the rule it was launched under.
 test_a_direct_child_of_the_lead_claude_is_not_the_lead() {
     _nested_setup
     local meta="$CLAUDE_SESSION_META_DIR" handoff out lead child i=0
@@ -193,15 +194,18 @@ test_a_direct_child_of_the_lead_claude_is_not_the_lead() {
         "the stand-in child's parent is the stand-in lead" || { kill "$lead" 2>/dev/null; return 1; }
     echo "$lead" > "$meta/session.lock"
 
-    out=$(_start_hook "$lead" "$child" startup 44444444-4444-4444-8444-444444444444)
+    out=$(CS_LEAD_IS_PARENT=0 _start_hook "$lead" "$child" startup 44444444-4444-4444-8444-444444444444)
     printf '{"session_id":"44444444-4444-4444-8444-444444444444","reason":"other"}\n' \
-        | CS_RESOLVED_FROM=env CS_LEAD_PID="$lead" CLAUDE_PID="$child" bash "$HOOKS_DIR/session-end.sh" >/dev/null 2>&1
+        | CS_RESOLVED_FROM=env CS_LEAD_IS_PARENT=0 CS_LEAD_PID="$lead" CLAUDE_PID="$child" bash "$HOOKS_DIR/session-end.sh" >/dev/null 2>&1
     local rotations marker status lock
     rotations=$(grep -c 'Conversation Rotation' <<< "$out")
     marker=$(cat "$meta/local/pending-handoff" 2>/dev/null)
     status=$(sed -n 2p "$handoff")
     lock=$(cat "$meta/session.lock" 2>/dev/null)
     out=$(CS_LEAD_IS_PARENT=1 _start_hook "$lead" "$child" clear 33333333-3333-4333-8333-333333333333)
+    _arm_rotation > /dev/null
+    local older
+    older=$(CS_LEAD_IS_PARENT='' _start_hook "$lead" "$child" clear 55555555-5555-4555-8555-555555555555)
     kill "$lead" 2>/dev/null
 
     assert_eq "0" "$rotations" "the lead's child is not told to continue the rotation" || return 1
@@ -210,6 +214,8 @@ test_a_direct_child_of_the_lead_claude_is_not_the_lead() {
     assert_eq "$lead" "$lock" "the child's end leaves the live lead's lock" || return 1
     assert_eq "1" "$(grep -c 'Conversation Rotation' <<< "$out")" \
         "a claude cs started as its own child is the lead" || return 1
+    assert_eq "1" "$(grep -c 'Conversation Rotation' <<< "$older")" \
+        "a session an older cs resumed as its child is still the lead" || return 1
 }
 
 # cs passes a launch prompt to claude as an argument, so the lead's own

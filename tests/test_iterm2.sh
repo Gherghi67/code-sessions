@@ -324,8 +324,9 @@ _user_record() {
 }
 
 # A hook knows the lead by its pid. Where cs stays as claude's parent that pid
-# is cs's, so cs says so; where claude takes cs's place nothing is said, and
-# a child of that claude cannot pass for the lead.
+# is cs's, and cs says so; where claude takes cs's place cs says that too, so
+# a child of that claude cannot pass for the lead. Saying nothing is left to
+# mean a session an older cs started.
 test_cs_tells_claude_when_it_stays_as_the_parent() {
     _tab_launch_env 1
     local uuid out
@@ -337,7 +338,7 @@ test_cs_tells_claude_when_it_stays_as_the_parent() {
     _user_record > "$(_transcript marked "$uuid")"
     out=$("$CS_BIN" marked <<< "" 2>&1) || true
     assert_output_not_contains "$(_launched "$out" parent)" "marked" "a real conversation: claude replaces cs" || return 1
-    assert_eq "no" "$(_launched "$out" leadparent)" "a claude that replaced cs is told nothing" || return 1
+    assert_eq "0" "$(_launched "$out" leadparent)" "a claude that replaced cs is told cs is not its parent" || return 1
 }
 
 test_resume_of_a_real_conversation_runs_claude_in_place_of_cs() {
