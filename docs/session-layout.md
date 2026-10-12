@@ -106,6 +106,8 @@ the files out. For that reason `cs` refuses to open a session, `cs -adopt` refus
 `.cs/local` or in the directory `.cs/private` resolves to. The error names the file
 and the command that untracks it. The hooks cover a session that is already open:
 see [How a hook finds its session](hooks.md#how-a-hook-finds-its-session-cs-resolvesh).
+While git tracks a file there, none of the writers in the table below adds, changes or
+removes anything, except the prompt hook's launch mark in `scope-prompt.trace`.
 
 | File | Purpose |
 |------|---------|
