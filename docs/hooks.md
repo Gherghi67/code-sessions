@@ -111,13 +111,15 @@ there `cs` is claude's parent. A context-limit fork and an in-process `/clear` k
 the process either way. Environment cannot answer this on its own: children inherit
 exports, so a teammate carries `CS_LEAD_PID` while owning a different pid.
 
-The parent arm is the looser of the two, and its limit is worth stating. After an
-`exec` launch `CS_LEAD_PID` is the lead claude's own pid, so a claude that is a
-*direct* child of the lead claude is admitted. Nothing in cs spawns one, and the
-route that would otherwise reach it — a `claude -p` run through the Bash tool —
-does not, because that command runs under an intermediate shell and the nested
-claude is a grandchild. A user hook or wrapper that `exec`-chains straight into
-`claude -p` inside a session would take the slot.
+The parent arm applies only where `cs` says it stayed as the parent: it sets
+`CS_LEAD_IS_PARENT=1` on that one resume command, and a hook asks `ps` for the
+parent only on that launch. After an `exec` launch `CS_LEAD_PID` is the lead
+claude's own pid, so without that marker a claude that is a *direct* child of the
+lead claude (a mod's process run, a hook that `exec`-chains into `claude -p`) would
+pass for the lead; it does not, and neither does a `claude -p` run through the Bash
+tool, which is a grandchild under an intermediate shell. Nothing in cs spawns a
+direct child. A session resumed as a child by a `cs` older than this marker carries
+no marker, so its hooks treat it as a guest until you relaunch it.
 
 ## session-start.sh (SessionStart)
 
