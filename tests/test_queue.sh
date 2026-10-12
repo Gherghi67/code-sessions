@@ -520,6 +520,60 @@ test_queue_verbs_ignore_a_link_out_elsewhere_under_cs() {
     assert_eq "Queue is empty." "$out" "and says the queue is empty" || return 1
 }
 
+# The cs mod asks `cs -vet-session <dir>` before it arms a rotation, and cs
+# answers by the rule the verbs and the hooks ask: while git tracks a file in a
+# control directory, a pull can put a pending-handoff marker there, and the
+# mod's /clear would land in a conversation that loads nothing.
+_arm_handoff() {  # yes when the marker is committed
+    local s="$CLAUDE_SESSION_DIR"
+    mkdir -p "$s/.cs/handoffs"
+    printf -- '---\nstatus: unconsumed\n---\n\n## 1. Next Step\n' > "$s/.cs/handoffs/h.md"
+    printf 'h.md\n' > "$CLAUDE_SESSION_META_DIR/local/pending-handoff"
+    [ "$1" = yes ] || printf '.cs/local/\n' > "$s/.gitignore"
+    git -C "$s" init -q
+    git -C "$s" add -A
+    git -C "$s" -c user.email=jane.roe@example.com -c user.name="Jane Roe" commit -q -m "ship a session"
+}
+
+test_vet_session_refuses_a_session_whose_marker_git_tracks() {
+    local s="$CLAUDE_SESSION_DIR" out rc=0
+    _arm_handoff yes
+    out=$(env -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR "$CS_BIN" -vet-session "$s" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "cs -vet-session refuses" || return 1
+    assert_eq "Error: .cs/local/pending-handoff is tracked in git (per-actor state must stay local). Fix with: git -C $s --literal-pathspecs rm -r --cached -- .cs/local && git -C $s commit -m 'stop tracking .cs/local'" \
+        "$out" "the refusal names the tracked marker and how to stop tracking it" || return 1
+}
+
+test_vet_session_passes_a_session_whose_control_files_git_ignores() {
+    local out rc=0
+    _arm_handoff no
+    out=$(env -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR "$CS_BIN" -vet-session "$CLAUDE_SESSION_DIR" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "cs -vet-session passes: $out" || return 1
+    assert_eq "" "$out" "and prints nothing" || return 1
+}
+
+# The answer is about the directory named, never the session the caller's
+# environment names: the mod's working directory is the session it rotates.
+test_vet_session_judges_the_directory_it_is_given() {
+    local s="$CLAUDE_SESSION_DIR" out rc=0 clean="$TEST_TMPDIR/clean"
+    _arm_handoff yes
+    mkdir -p "$clean/.cs/local"
+    out=$(CLAUDE_SESSION_DIR="$clean" CLAUDE_SESSION_META_DIR="$clean/.cs" "$CS_BIN" -vet-session "$s" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the named session is refused whatever the environment names: $out" || return 1
+}
+
+test_vet_session_refuses_a_directory_that_is_no_session() {
+    local out rc=0
+    mkdir -p "$TEST_TMPDIR/plain"
+    out=$("$CS_BIN" -vet-session "$TEST_TMPDIR/plain" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a directory with no .cs is refused" || return 1
+    assert_eq "Error: $TEST_TMPDIR/plain is not a cs session" "$out" "and the refusal says so" || return 1
+    rc=0
+    out=$("$CS_BIN" -vet-session 2>&1) || rc=$?
+    assert_eq "1" "$rc" "no directory is refused" || return 1
+    assert_eq "Error: Usage: cs -vet-session <session directory>" "$out" "and the refusal shows the usage" || return 1
+}
+
 # A clone or a pull can commit the queue under another spelling of the
 # directory, .cs/LOCAL. A case-insensitive volume puts it in .cs/local, where
 # the drain reads it; either way the Stop hook hands nothing out.
@@ -962,6 +1016,10 @@ run_test test_drain_hands_out_nothing_from_a_queue_git_tracks
 run_test test_drain_hands_out_nothing_from_a_private_queue_git_tracks
 run_test test_queue_verbs_refuse_a_queue_git_tracks
 run_test test_queue_verbs_ignore_a_link_out_elsewhere_under_cs
+run_test test_vet_session_refuses_a_session_whose_marker_git_tracks
+run_test test_vet_session_passes_a_session_whose_control_files_git_ignores
+run_test test_vet_session_judges_the_directory_it_is_given
+run_test test_vet_session_refuses_a_directory_that_is_no_session
 run_test test_drain_hands_out_nothing_from_a_queue_tracked_under_a_case_variant
 run_test test_the_stop_message_shows_a_tracked_file_name_as_a_plain_path
 run_test test_drain_hands_out_nothing_while_git_tracks_cs_local_beside_cs_private
