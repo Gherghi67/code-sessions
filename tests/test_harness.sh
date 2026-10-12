@@ -186,6 +186,49 @@ test_config_home_does_not_reach_a_suite_from_its_caller() {
         "a suite's preference write must leave its caller's config home alone" || return 1
 }
 
+# CS_CLAUDE_DIR outranks HOME too, for Claude Code's settings.json. Inherited,
+# a suite that enables or removes the status line under its fixture HOME
+# rewrites the caller's settings to point at binaries the suite then deletes.
+test_claude_dir_does_not_reach_a_suite_from_its_caller() {
+    local caller="$TEST_TMPDIR/caller-claude" home="$TEST_TMPDIR/probe-home"
+    mkdir -p "$caller" "$home"
+    printf '{"statusLine":{"type":"command","command":"the-callers-own"}}\n' > "$caller/settings.json"
+    local probe
+    probe=$(_overriding_suite "export HOME=$(printf '%q' "$home")"'
+"$CS_BIN" -statusline enable >/dev/null 2>&1 </dev/null || { echo ENABLE_FAILED; exit 1; }')
+    local out
+    out=$(CS_CLAUDE_DIR="$caller" /bin/bash "$probe" 2>&1) \
+        || { echo "  FAIL: probe suite errored: $out"; return 1; }
+
+    assert_eq "$home/.local/bin/cs-statusline" "$(jq -r .statusLine.command "$home/.claude/settings.json" 2>/dev/null)" \
+        "the probe's registration must land under its own HOME" || return 1
+    assert_eq "the-callers-own" "$(jq -r .statusLine.command "$caller/settings.json")" \
+        "a suite's registration must leave its caller's settings alone" || return 1
+}
+
+# Claude Code hands a SessionStart hook CLAUDE_ENV_FILE and sources what the
+# hook appends. A suite that drives the hook with that variable inherited
+# appends its fixture session's identity to the caller's file.
+test_env_file_does_not_reach_a_suite_from_its_caller() {
+    local envfile="$TEST_TMPDIR/caller-env" dir="$TEST_TMPDIR/probe-sessions/fixture"
+    mkdir -p "$dir/.cs/local"
+    : > "$envfile"
+    local probe
+    probe=$(_overriding_suite "dir=$(printf '%q' "$dir")"'
+export CS_SESSIONS_ROOT="${dir%/*}"
+export CLAUDE_SESSION_NAME=fixture CLAUDE_SESSION_DIR="$dir" CLAUDE_SESSION_META_DIR="$dir/.cs"
+printf "{\"session_id\":\"probe-conversation\",\"source\":\"startup\",\"cwd\":\"%s\",\"hook_event_name\":\"SessionStart\"}\n" "$dir" \
+    | bash "$SCRIPT_DIR/../hooks/session-start.sh" >/dev/null 2>&1 || { echo HOOK_FAILED; exit 1; }')
+    local out
+    out=$(CLAUDE_ENV_FILE="$envfile" /bin/bash "$probe" 2>&1) \
+        || { echo "  FAIL: probe suite errored: $out"; return 1; }
+
+    [ -e "$dir/.cs/local/context-date/probe-conversation" ] \
+        || { echo "  FAIL: the probe's hook must have run for its own fixture session"; return 1; }
+    assert_eq "0" "$(wc -c < "$envfile" | tr -d ' ')" \
+        "a suite's SessionStart must leave its caller's environment file alone" || return 1
+}
+
 # ============================================================================
 # Runner
 # ============================================================================
@@ -239,6 +282,8 @@ run_test test_process_table_stub_passes_through_other_ps_forms
 run_test test_session_identity_does_not_reach_a_suite_from_its_caller
 run_test test_secrets_identity_does_not_reach_a_suite_from_its_caller
 run_test test_config_home_does_not_reach_a_suite_from_its_caller
+run_test test_claude_dir_does_not_reach_a_suite_from_its_caller
+run_test test_env_file_does_not_reach_a_suite_from_its_caller
 run_test test_results_line_omits_the_skip_column_when_nothing_skipped
 run_test test_results_line_counts_a_skip_when_a_test_returns_77
 report_results
