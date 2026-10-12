@@ -83,7 +83,7 @@ _refuse_links_out_of_session() {  # dir
 # or `.cs/local -> ../payload` hides a committed pre-open from the pathspec
 # check below while the link resolves to it on disk.
 cs_assert_local_untracked() {
-    local dir="$1" sub tracked
+    local dir="$1" sub tracked priv top
     for sub in .cs .cs/local; do
         [ -L "$dir/$sub" ] || continue
         error "$sub is a symlink to $(readlink "$dir/$sub") (cs state must be a real directory inside the session). Delete .cs/local/pre-open unless you wrote it, replace the link with the directory, then reopen."
@@ -102,6 +102,20 @@ cs_assert_local_untracked() {
     if [ -n "$tracked" ]; then
         sub=$(printf '%s\n' "$tracked" | cut -d/ -f1-2)
         error "$tracked is tracked in git (per-actor state must stay local). Fix with: git -C \"$dir\" rm -r --cached $sub && git commit -m 'stop tracking $sub'"
+    fi
+    # .cs/private takes .cs/local's place for the queue, the mailbox and the
+    # rotation marker (cs_private_dir), so nothing in it may come from git
+    # either. Asked of the directory the name resolves to, in whichever
+    # repository lists it: an encrypted session commits the link itself, and
+    # a clone can commit the link beside a directory it tracks elsewhere.
+    priv=$(cd -P "$dir/.cs/private" 2>/dev/null && pwd -P) || return 0
+    tracked=$(git -C "$priv" ls-files --full-name 2>/dev/null | sed -n 1p)
+    if [ -n "$tracked" ]; then
+        top=$(git -C "$priv" rev-parse --show-toplevel)
+        [ ! "$top" -ef "$dir" ] || top="$dir"
+        sub=$(git -C "$priv" rev-parse --show-prefix)
+        sub=${sub%/}
+        error "$tracked is tracked in git (per-actor state must stay local). Fix with: git -C \"$top\" rm -r --cached ${sub:-.} && git commit -m 'stop tracking ${sub:-.}'"
     fi
 }
 

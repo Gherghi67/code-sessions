@@ -13,6 +13,10 @@ create_session_gitignore() {
 # Per-actor local state (never shared)
 .cs/local/
 
+# A session's cs files when a .cs/private directory holds them (the link an
+# encrypted session keeps there is committed; a directory is not)
+.cs/private/
+
 # Session archives (large binaries; unrelated to the tracked .cs/archived marker)
 .cs/archives/
 
@@ -56,6 +60,7 @@ ensure_cs_gitignore_entries() {
     local entries
     entries=$(cat << 'ENTRIES'
 .cs/local/
+.cs/private/
 .cs/archives/
 .cs/vault-mnt/
 .cs/.narrative-reminder-cooldown
