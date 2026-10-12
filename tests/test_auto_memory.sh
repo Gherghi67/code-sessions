@@ -735,7 +735,7 @@ test_cs_files_tracked_in_cs_private_are_refused() {
     out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
 
     assert_eq "1" "$rc" "cs should exit 1" || return 1
-    assert_eq "Error: .cs/private/queue.state is tracked in git (per-actor state must stay local). Fix with: git -C \"$root\" rm -r --cached .cs/private && git commit -m 'stop tracking .cs/private'" \
+    assert_eq "Error: .cs/private/queue.state is tracked in git (per-actor state must stay local). Fix with: git -C \"$root\" --literal-pathspecs rm -r --cached -- .cs/private && git -C \"$root\" commit -m 'stop tracking .cs/private'" \
         "$out" "cs should refuse a committed .cs/private before it reads a queue from it" || return 1
     assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
 }
@@ -755,7 +755,7 @@ test_cs_files_tracked_behind_a_cs_private_link_are_refused() {
     out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
 
     assert_eq "1" "$rc" "cs should exit 1" || return 1
-    assert_eq "Error: .cs/vault-mnt/private/queue.state is tracked in git (per-actor state must stay local). Fix with: git -C \"$root\" rm -r --cached .cs/vault-mnt/private && git commit -m 'stop tracking .cs/vault-mnt/private'" \
+    assert_eq "Error: .cs/vault-mnt/private/queue.state is tracked in git (per-actor state must stay local). Fix with: git -C \"$root\" --literal-pathspecs rm -r --cached -- .cs/vault-mnt/private && git -C \"$root\" commit -m 'stop tracking .cs/vault-mnt/private'" \
         "$out" "cs should refuse tracked files behind the .cs/private link" || return 1
     assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
 }
@@ -776,8 +776,56 @@ test_the_untrack_command_quotes_a_directory_name_the_repository_chose() {
     out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
 
     assert_eq "1" "$rc" "cs should exit 1" || return 1
-    assert_eq "Error: .cs/v; touch pwned/private/queue.state is tracked in git (per-actor state must stay local). Fix with: git -C \"$root\" rm -r --cached .cs/v\;\\ touch\\ pwned/private && git commit -m 'stop tracking .cs/v__touch_pwned/private'" \
+    assert_eq "Error: .cs/v; touch pwned/private/queue.state is tracked in git (per-actor state must stay local). Fix with: git -C \"$root\" --literal-pathspecs rm -r --cached -- .cs/v\;\\ touch\\ pwned/private && git -C \"$root\" commit -m 'stop tracking .cs/v__touch_pwned/private'" \
         "$out" "the path in the command is quoted, and the commit message holds no shell character" || return 1
+}
+
+# git reads a path on its command line as a pattern, so a directory the
+# repository named "*" would make the printed command untrack every file.
+# The command says the path is literal: run as printed, it untracks that
+# directory and leaves the rest of the repository tracked.
+test_the_untrack_command_untracks_only_the_directory_it_names() {
+    local up="$TEST_TMPDIR/upstream" root="$CS_SESSIONS_ROOT/vt"
+    _upstream_session_repo "$up"
+    ln -s '../*' "$up/.cs/private"
+    git -C "$up" add .cs/private
+    mkdir -p "$up/*/queue"
+    printf 'armed\n' > "$up/*/queue.state"
+    printf 'a task the repository wrote\n' > "$up/*/queue/0000000001-task"
+    git -C "$up" add -f -- ':(literal)*'
+    git -C "$up" commit -q -m "ship a queue"
+    git clone -q "$up" "$root"
+    git -C "$root" config user.email jane.roe@example.com
+    git -C "$root" config user.name "Jane Roe"
+    _make_launch_sentinel
+
+    local out rc=0
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: */queue.state is tracked in git (per-actor state must stay local). Fix with: git -C \"$root\" --literal-pathspecs rm -r --cached -- \\* && git -C \"$root\" commit -m 'stop tracking _'" \
+        "$out" "the command names the directory as a literal path" || return 1
+    (cd "$TEST_TMPDIR" && bash -c "${out#*Fix with: }") >/dev/null 2>&1 \
+        || { echo "  FAIL: the printed command should run"; return 1; }
+    assert_eq "" "$(git -C "$root" ls-files -- ':(literal)*')" "the directory is no longer tracked" || return 1
+    assert_eq ".cs/README.md .cs/private" "$(git -C "$root" ls-files | tr '\n' ' ' | sed 's/ $//')" \
+        "every other file is still tracked" || return 1
+}
+
+# Command substitution drops a trailing newline, so a directory whose name
+# ends in one must not be asked about under the name without it.
+test_tracked_files_in_a_directory_named_with_a_trailing_newline_are_seen() {
+    local s="$TEST_TMPDIR/s" d out rc=0
+    d="$s/payload"$'\n'
+    mkdir -p "$s/.cs" "$d"
+    git -C "$s" init -q
+    ln -s $'../payload\n' "$s/.cs/private"
+    printf 'x\n' > "$d/seed"
+    git -C "$s" add .cs/private "$d/seed"
+    out=$(bash -c 'source "$1"; cs_tracked_files_notice "$2" "$3"' _ "$SCRIPT_DIR/../hooks/cs-shared.sh" "$s/.cs/private" "$s") || rc=$?
+    assert_eq "0" "$rc" "the tracked file is found" || return 1
+    assert_eq "\"payload\\n/seed\" is tracked in git (per-actor state must stay local). Fix with: git -C \"$s\" --literal-pathspecs rm -r --cached -- \$'payload\\n' && git -C \"$s\" commit -m 'stop tracking payload_'" \
+        "$out" "the notice names the file and quotes the directory" || return 1
 }
 
 # The refusal is about what git tracks: the same queue in a .cs/private made
@@ -1762,6 +1810,8 @@ run_test test_pre_open_tracked_under_a_case_variant_is_refused
 run_test test_cs_files_tracked_in_cs_private_are_refused
 run_test test_cs_files_tracked_behind_a_cs_private_link_are_refused
 run_test test_the_untrack_command_quotes_a_directory_name_the_repository_chose
+run_test test_the_untrack_command_untracks_only_the_directory_it_names
+run_test test_tracked_files_in_a_directory_named_with_a_trailing_newline_are_seen
 run_test test_an_untracked_cs_private_directory_opens
 run_test test_a_cs_private_link_into_a_vault_outside_any_repository_opens
 run_test test_an_inherited_tracked_files_answer_does_not_stop_the_open

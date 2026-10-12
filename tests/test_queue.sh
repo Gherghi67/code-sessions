@@ -468,7 +468,7 @@ _track_armed_queue() {  # control directory under .cs
 
 # What the Stop hook answers when git tracks files in the control directory.
 _tracked_files_verdict() {  # control directory under .cs
-    jq -nc --arg m "cs reads no queue, mail or rotation in this session: .cs/$1/queue.state is tracked in git (per-actor state must stay local). Fix with: git -C \"$CLAUDE_SESSION_DIR\" rm -r --cached .cs/$1 && git commit -m 'stop tracking .cs/$1'" \
+    jq -nc --arg m "cs reads no queue, mail or rotation in this session: .cs/$1/queue.state is tracked in git (per-actor state must stay local). Fix with: git -C \"$CLAUDE_SESSION_DIR\" --literal-pathspecs rm -r --cached -- .cs/$1 && git -C \"$CLAUDE_SESSION_DIR\" commit -m 'stop tracking .cs/$1'" \
         '{decision:"approve", systemMessage:$m}'
 }
 
@@ -493,6 +493,17 @@ test_drain_hands_out_nothing_from_a_private_queue_git_tracks() {
     assert_eq "$(_tracked_files_verdict private)" "$out" "the Stop names the tracked file and hands out nothing" || return 1
     assert_eq "armed" "$(cat "$priv/queue.state")" "the state is left as it was" || return 1
     assert_eq "a task the repository wrote" "$(cat "$priv/queue/0000000001-seed")" "the task is left in place" || return 1
+}
+
+# cs -queue run inside the session reads the same directory the hook does, so
+# it refuses the same queue, as the open would.
+test_queue_verbs_refuse_a_queue_git_tracks() {
+    _track_armed_queue local
+    local out rc=0
+    out=$("$CS_BIN" -queue list 2>&1) || rc=$?
+    assert_eq "1" "$rc" "cs -queue list refuses" || return 1
+    assert_eq "Error: .cs/local/queue.state is tracked in git (per-actor state must stay local). Fix with: git -C \"$CLAUDE_SESSION_DIR\" rm -r --cached .cs/local && git commit -m 'stop tracking .cs/local'" \
+        "$out" "the refusal names the tracked file" || return 1
 }
 
 # The answer about tracked files belongs to the hook run that asked. One
@@ -894,6 +905,7 @@ run_test test_drain_skips_a_done_log_linked_out_of_the_session
 run_test test_drain_leaves_a_queue_linked_out_of_the_session_alone
 run_test test_drain_hands_out_nothing_from_a_queue_git_tracks
 run_test test_drain_hands_out_nothing_from_a_private_queue_git_tracks
+run_test test_queue_verbs_refuse_a_queue_git_tracks
 run_test test_drain_ignores_an_inherited_tracked_files_answer
 run_test test_drain_frames_the_first_task_as_untrusted
 run_test test_drain_frames_the_next_task_with_a_fresh_id

@@ -408,7 +408,7 @@ test_readopt_refuses_records_the_open_would_refuse() {
     out=$(cd "$project_dir" && "$CS_BIN" -adopt new-name --yes </dev/null 2>&1) || rc=$?
 
     assert_eq 1 "$rc" "the re-adopt refuses: $out" || return 1
-    assert_eq "Error: .cs/private/queue.state is tracked in git (per-actor state must stay local). Fix with: git -C \"$(cd "$project_dir" && pwd -P)\" rm -r --cached .cs/private && git commit -m 'stop tracking .cs/private'" \
+    assert_eq "Error: .cs/private/queue.state is tracked in git (per-actor state must stay local). Fix with: git -C \"$(cd "$project_dir" && pwd -P)\" --literal-pathspecs rm -r --cached -- .cs/private && git -C \"$(cd "$project_dir" && pwd -P)\" commit -m 'stop tracking .cs/private'" \
         "$out" "the refusal names the tracked file" || return 1
     assert_eq "$before" "$(git -C "$project_dir" rev-parse HEAD)" "adopt commits nothing" || return 1
     assert_eq "" "$(git -C "$project_dir" status --porcelain)" "adopt writes nothing" || return 1
