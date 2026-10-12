@@ -98,10 +98,12 @@ cs_assert_local_untracked() {
     # :(icase): a case-insensitive checkout (macOS by default) puts a
     # committed .cs/LOCAL/pre-open at .cs/local/pre-open on disk, where a
     # case-sensitive pathspec would never see it.
-    tracked=$(_cs_git_at "$dir" ls-files -- ':(icase).cs/local' 2>/dev/null | sed -n 1p)
+    tracked=$(_cs_git_at "$dir" ls-files -z -- ':(icase).cs/local' 2>/dev/null \
+        | { IFS= read -r -d '' first || exit 0; printf '%sx' "$first"; })
+    tracked=${tracked%x}
     if [ -n "$tracked" ]; then
-        sub=$(printf '%s\n' "$tracked" | cut -d/ -f1-2)
-        error "$tracked is tracked in git (per-actor state must stay local). Fix with: git -C \"$dir\" rm -r --cached $sub && git commit -m 'stop tracking $sub'"
+        sub=${tracked#*/}
+        error "$(cs_untrack_notice "$tracked" "$dir" "${tracked%%/*}/${sub%%/*}")"
     fi
     # .cs/private takes .cs/local's place for the queue, the mailbox and the
     # rotation marker (cs_private_dir), so nothing in it may come from git

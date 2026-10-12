@@ -109,44 +109,77 @@ _cs_git_at() {  # dir, git arguments...
         -u GIT_CEILING_DIRECTORIES git -C "$dir" "$@"
 }
 
-# Says which file git tracks in <dir> and how to stop tracking it; fails,
-# printing nothing, when git tracks none there. Asked of the directory itself,
-# in whichever repository lists it, so a link to a tracked directory and a
-# case variant of the name are both seen through. A directory in no
-# repository, a vault mounted from elsewhere, has nothing tracked.
-# <session_dir> is the session as its caller names it, printed in place of
-# the repository's own path when the two are one directory. The repository
-# chose the directory's name and the user is asked to run the command, so the
-# path is quoted for the shell and taken literally by git (a directory named
-# "*" would otherwise untrack every file), the commit runs in the same
-# repository wherever the command is pasted, and the commit message keeps only
-# characters that mean nothing to a shell.
-cs_tracked_files_notice() {  # dir, session_dir
-    local real tracked top sub said
-    # The x keeps a trailing newline in the directory's name that $( ) drops.
-    real=$(cd -P "$1" 2>/dev/null && pwd -P && printf x) || return 1
-    real=${real%$'\n'x}
-    tracked=$(_cs_git_at "$real" ls-files --full-name 2>/dev/null | sed -n 1p) || return 1
-    [ -n "$tracked" ] || return 1
-    top=$(_cs_git_at "$real" rev-parse --show-toplevel 2>/dev/null) || return 1
-    [ ! "$top" -ef "$2" ] || top="$2"
-    sub=$(_cs_git_at "$real" rev-parse --show-prefix 2>/dev/null && printf x) || return 1
-    sub=${sub%$'\n'x}
-    sub=${sub%/}
-    sub=${sub:-.}
+# Prints the line that says git tracks <tracked> and how to stop: untrack
+# <sub>, a path relative to <top>, and commit, both in <top>. The repository
+# chose both names and the user is asked to paste the command, so each path is
+# quoted for the shell and taken literally by git (a directory named "*" would
+# otherwise untrack every file), a path starting with "~" is spelled from the
+# current directory (bash 3.2 leaves the tilde bare), the commit runs in the
+# same repository wherever the command is pasted, and the file name and the
+# commit message keep only characters a plain path has. The name also reaches
+# Claude, in the Stop hook's message.
+cs_untrack_notice() {  # tracked, top, sub
+    local shown said sub="$3"
+    shown=$(printf '%s' "$1" | LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_' | cut -c1-160) || return 1
     said=$(printf '%s' "$sub" | LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_') || return 1
-    printf "%s is tracked in git (per-actor state must stay local). Fix with: git -C \"%s\" --literal-pathspecs rm -r --cached -- %q && git -C \"%s\" commit -m 'stop tracking %s'\n" \
-        "$tracked" "$top" "$sub" "$top" "$said"
+    case "$sub" in '~'*) sub="./$sub" ;; esac
+    printf "%s is tracked in git (per-actor state must stay local). Fix with: git -C %q --literal-pathspecs rm -r --cached -- %q && git -C %q commit -m 'stop tracking %s'\n" \
+        "$shown" "$2" "$sub" "$2" "$said"
 }
 
-# The same, for the directory that holds a session's cs content files:
-# .cs/private once that name exists, .cs/local otherwise.
+# Says which file git tracks in <dir> and how to stop tracking it; fails,
+# printing nothing, when git tracks none there. Asked of the directory itself,
+# in whichever repository lists it, so a link to a tracked directory is seen
+# through; asked from the repository's top with a case-insensitive pattern, so
+# a case variant of the name (.cs/LOCAL, which a case-insensitive volume puts
+# in .cs/local) is seen too. A directory in no repository, a vault mounted from
+# elsewhere, has nothing tracked. <session_dir> is the session as its caller
+# names it, printed in place of the repository's own path when the two are one
+# directory. A directory that holds the session's own files is named, with no
+# command: untracking it would untrack the project.
+cs_tracked_files_notice() {  # dir, session_dir
+    local real top prefix tracked meta sub rest n
+    # The x keeps a trailing newline in a name that $( ) drops.
+    real=$(cd -P "$1" 2>/dev/null && pwd -P && printf x) || return 1
+    real=${real%$'\n'x}
+    top=$(_cs_git_at "$real" rev-parse --show-toplevel 2>/dev/null && printf x) || return 1
+    top=${top%$'\n'x}
+    prefix=$(_cs_git_at "$real" rev-parse --show-prefix 2>/dev/null && printf x) || return 1
+    prefix=${prefix%$'\n'x}
+    tracked=$(_cs_git_at "$top" ls-files -z -- ":(icase,literal)${prefix:-.}" 2>/dev/null \
+        | { IFS= read -r -d '' first || exit 0; printf '%sx' "$first"; }) || return 1
+    tracked=${tracked%x}
+    [ -n "$tracked" ] || return 1
+    meta=$(cd -P "$2/.cs" 2>/dev/null && pwd -P && printf x) && meta=${meta%$'\n'x}
+    case "$meta/" in
+        "$real"/*)
+            printf "%s leads to a directory that holds this session's own files, where git tracks %s (per-actor state must stay local). Make %s a directory of its own.\n" \
+                ".cs/${1##*/}" "$(printf '%s' "$tracked" | LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_' | cut -c1-160)" ".cs/${1##*/}"
+            return 0
+            ;;
+    esac
+    # The path to untrack, spelled as the index has it: a case variant is
+    # removed under its own name.
+    n=0 rest=$prefix
+    while [ -n "$rest" ]; do n=$((n + 1)); rest=${rest#*/}; done
+    sub="" rest=$tracked
+    while [ "$n" -gt 0 ]; do
+        sub="$sub${sub:+/}${rest%%/*}"
+        rest=${rest#*/}
+        n=$((n - 1))
+    done
+    [ ! "$top" -ef "$2" ] || top="$2"
+    cs_untrack_notice "$tracked" "$top" "${sub:-.}"
+}
+
+# The same, for the directories that hold a session's cs content files:
+# .cs/private once that name exists, and .cs/local always (the hooks read the
+# rotation kick and the session's ids there either way).
 cs_files_tracked_notice() {  # meta_dir, session_dir
     if [ -L "$1/private" ] || [ -e "$1/private" ]; then
-        cs_tracked_files_notice "$1/private" "$2"
-    else
-        cs_tracked_files_notice "$1/local" "$2"
+        cs_tracked_files_notice "$1/private" "$2" && return 0
     fi
+    cs_tracked_files_notice "$1/local" "$2"
 }
 
 # Says what an unusable .cs/private is, for an error message: the vault it
