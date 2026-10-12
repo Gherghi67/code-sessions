@@ -111,15 +111,15 @@ there `cs` is claude's parent. A context-limit fork and an in-process `/clear` k
 the process either way. Environment cannot answer this on its own: children inherit
 exports, so a teammate carries `CS_LEAD_PID` while owning a different pid.
 
-The parent arm applies only where `cs` says it stayed as the parent: it sets
-`CS_LEAD_IS_PARENT=1` on that one resume command, and a hook asks `ps` for the
-parent only on that launch. After an `exec` launch `CS_LEAD_PID` is the lead
-claude's own pid, so without that marker a claude that is a *direct* child of the
-lead claude (a mod's process run, a hook that `exec`-chains into `claude -p`) would
-pass for the lead; it does not, and neither does a `claude -p` run through the Bash
-tool, which is a grandchild under an intermediate shell. Nothing in cs spawns a
-direct child. A session resumed as a child by a `cs` older than this marker carries
-no marker, so its hooks treat it as a guest until you relaunch it.
+`cs` says which way it launched in `CS_LEAD_IS_PARENT`: `1` on the one resume command
+that runs claude as its child, `0` on every other launch. A hook asks `ps` for the
+parent unless the value is `0`. After an `exec` launch `CS_LEAD_PID` is the lead
+claude's own pid, so there a claude that is a *direct* child of the lead claude (a
+mod's process run, a hook that `exec`-chains into `claude -p`) would pass for the
+lead if the parent counted; at `0` it does not, and neither does a `claude -p` run
+through the Bash tool, which is a grandchild under an intermediate shell. Nothing in
+cs spawns a direct child. A session started by a `cs` that did not export the value
+keeps the parent check, and with it this gap, until you relaunch it.
 
 ## session-start.sh (SessionStart)
 
