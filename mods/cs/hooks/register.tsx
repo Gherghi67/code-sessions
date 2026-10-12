@@ -211,6 +211,11 @@ let previewShown = false
 // Set while the mod's own /clear runs with the pane already closed, so the
 // /clear hook goes straight through (clearAndContinue).
 let paneChecked = false
+// Set while the mod's own /clear runs. The marker stays armed until the
+// successor's SessionStart consumes it, so the band still offers the button
+// meanwhile; a second /clear would end the conversation the handoff started,
+// so a press then does nothing.
+let clearing = false
 // cs's last refusal of this session's control files, toasted once: the band
 // asks on every render while a handoff is armed.
 let lastRefusal: string | undefined
@@ -246,7 +251,7 @@ let finishProblemShown = false
 
 export function register(on: On) {
   // A (re)load has no countdown: the engine cancelled the old one's timers.
-  left = undefined; ticker = undefined; bandIdle = false; turnRunning = false; preview = undefined; previewShown = false; adopted = undefined; clearSeen = false; paneChecked = false; birth = undefined; startPercent = undefined; registered = false
+  left = undefined; ticker = undefined; bandIdle = false; turnRunning = false; preview = undefined; previewShown = false; adopted = undefined; clearSeen = false; paneChecked = false; clearing = false; birth = undefined; startPercent = undefined; registered = false
   finishWatch = undefined; finishTurnOver = false; finishShown = new Set(); finishGate = undefined; finishProblemShown = false
   lastRefusal = undefined
   on('session.start', async ($, e, next) => {
@@ -1009,6 +1014,7 @@ async function offerToStart($: EngineInterface, bin: string, count: number) {
 // latest press acts. It closes the pane before asking again whether a prompt
 // came, as the zero tick does: a prompt landing during the close is a new turn.
 async function pressClear($: EngineInterface) {
+  if (clearing) return
   if (ticker) stopCountdown($, false)
   const press = ++pressCount
   const vetted = await sessionVetted($, await $.session.cwd())
@@ -1032,6 +1038,7 @@ async function clearAndContinue($: EngineInterface, paneClosed = false) {
   if (ticker) stopCountdown($, false)
   if (!paneClosed) await closeHandoffPane($)
   paneChecked = true
+  clearing = true
   try {
     await $.command.run({ command: 'clear', args: '' })
   } catch (err) {
@@ -1039,6 +1046,7 @@ async function clearAndContinue($: EngineInterface, paneClosed = false) {
     throw err
   } finally {
     paneChecked = false
+    clearing = false
   }
 }
 
