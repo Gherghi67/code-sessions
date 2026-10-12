@@ -49,6 +49,9 @@ if [ "$_cs_had_e" = 1 ]; then set -e; fi
 if ! command -v cs_private_dir >/dev/null 2>&1; then
     cs_private_dir() { return 1; }
 fi
+if ! command -v cs_local_dir >/dev/null 2>&1; then
+    cs_local_dir() { return 1; }
+fi
 # A write this hook cannot make is skipped without a word, and the link check
 # on appends and new directories lives in cs-shared.sh; without the library
 # they are made unchecked, as they were before the check existed.
@@ -99,7 +102,9 @@ fi
 # append into a missing dir cannot abort this hook (and its cleanup) under set -e.
 # An encrypted session logs into its vault; while the vault is locked the log
 # goes nowhere, never into .cs/local.
-cs_mkdir_inside "$META_DIR/local" || true
+# A .cs/local git tracks is left as git has it (cs_local_dir).
+LOCAL_DIR=$(cs_local_dir "$META_DIR") || LOCAL_DIR=""
+[ -z "$LOCAL_DIR" ] || cs_mkdir_inside "$LOCAL_DIR" || true
 if _log_dir=$(cs_private_dir "$META_DIR"); then SESSION_LOG="$_log_dir/session.log"; else SESSION_LOG=/dev/null; fi
 cs_append_inside "$SESSION_LOG" printf '%s\n' "" "$(date '+%Y-%m-%d %H:%M:%S') - Session ended (source: $END_REASON, ID: $SESSION_ID)" || true
 
@@ -170,7 +175,7 @@ if [ -f "$META_DIR/local/vault" ] && [ "${CS_RESOLVED_FROM:-env}" = "env" ] \
         clear|resume) ;;
         *)
             nohup /bin/bash -c '
-                dir=$1 pid=$2
+                dir=$1 pid=$2 ldir=$3
                 while kill -0 "$pid" 2>/dev/null; do sleep 1; done
                 alive() { case "$1" in ""|*[!0-9]*) return 1 ;; esac; kill -0 "$1" 2>/dev/null; }
                 held=""
@@ -184,16 +189,20 @@ if [ -f "$META_DIR/local/vault" ] && [ "${CS_RESOLVED_FROM:-env}" = "env" ] \
                     # Long after the open checked the session: the builtin
                     # test refuses a link planted here since.
                     hdiutil detach "$mnt" >/dev/null 2>&1 &
-                    [ -L "$dir/.cs/local/vault-detach.pid" ] || echo "$!" > "$dir/.cs/local/vault-detach.pid"
+                    # Recorded only where cs keeps its own files: a .cs/local
+                    # git tracks gets no pid ($ldir is empty then).
+                    if [ -n "$ldir" ]; then
+                        [ -L "$ldir/vault-detach.pid" ] || echo "$!" > "$ldir/vault-detach.pid"
+                    fi
                     wait "$!" || true
-                    rm -f "$dir/.cs/local/vault-detach.pid"
+                    [ -z "$ldir" ] || rm -f "$ldir/vault-detach.pid"
                 fi
-                rm -f "$dir/.cs/local/vault-waiter.pid"
-            ' cs-vault-waiter "$SESSION_DIR" "$CLAUDE_PID" </dev/null >/dev/null 2>&1 &
+                [ -z "$ldir" ] || rm -f "$ldir/vault-waiter.pid"
+            ' cs-vault-waiter "$SESSION_DIR" "$CLAUDE_PID" "$LOCAL_DIR" </dev/null >/dev/null 2>&1 &
             # Written at once, not through cs_write_atomic: the waiter deletes
             # this file as it ends, and a slower write could land after that.
             # The builtin test refuses a planted link in its place.
-            [ -L "$META_DIR/local/vault-waiter.pid" ] || echo "$!" > "$META_DIR/local/vault-waiter.pid"
+            [ -z "$LOCAL_DIR" ] || [ -L "$LOCAL_DIR/vault-waiter.pid" ] || echo "$!" > "$LOCAL_DIR/vault-waiter.pid"
             disown 2>/dev/null || true
             ;;
     esac
