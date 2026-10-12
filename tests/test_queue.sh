@@ -194,11 +194,12 @@ test_queue_add_rejects_a_multiline_task() {
 }
 
 test_queue_requires_session() {
-    unset CLAUDE_SESSION_META_DIR
+    unset CLAUDE_SESSION_META_DIR CLAUDE_SESSION_DIR
     local out; if out=$("$CS_BIN" -queue add "x" 2>&1); then
         echo "  FAIL: expected non-zero outside a session"; return 1
     fi
-    assert_output_contains "$out" "session" "explains it needs a session" || return 1
+    assert_eq "Error: cs -queue must be run inside a cs session, or as: cs <session> -queue ..." \
+        "$out" "explains it needs a session" || return 1
 }
 
 test_queue_add_via_session_scoped_arm() {
