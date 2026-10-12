@@ -1466,6 +1466,49 @@ test('a prompt landing while a press closes the pane stops the /clear', async ()
   expect(ran).toEqual([])
 })
 
+// A /clear in flight is the mod's last word on this conversation: the marker
+// stays armed until the successor's SessionStart consumes it, so the band still
+// offers the button, and a second /clear would wipe the successor the handoff
+// just started.
+test('a press while the zero tick\'s /clear is in flight runs no second /clear', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); percent = 80
+  await band(); await turnComplete()
+  await tick(GRACE_SECONDS - 1)
+  let started!: () => void
+  const clearStarted = new Promise<void>(r => { started = r })
+  let finish!: () => void
+  const held = new Promise<void>(r => { finish = r })
+  const run = $.command.run
+  $.command.run = async (args: any) => { ran.push(args); started(); await held; return { text: '' } }
+  try {
+    const zero = ticker()!.fn()
+    await clearStarted
+    const press = findButton(await band())?.props.onPress()
+    finish()
+    await zero; await press
+  } finally { $.command.run = run }
+  expect(ran).toEqual([{ command: 'clear', args: '' }])
+})
+
+test('a second press while the first press\'s /clear is in flight runs no second /clear', async () => {
+  arm(); percent = 3
+  let started!: () => void
+  const clearStarted = new Promise<void>(r => { started = r })
+  let finish!: () => void
+  const held = new Promise<void>(r => { finish = r })
+  const run = $.command.run
+  $.command.run = async (args: any) => { ran.push(args); started(); await held; return { text: '' } }
+  try {
+    const first = findButton(await band()).props.onPress()
+    await clearStarted
+    const second = findButton(await band())?.props.onPress()
+    finish()
+    await first; await second
+  } finally { $.command.run = run }
+  expect(ran).toEqual([{ command: 'clear', args: '' }])
+})
+
 // Once the zero tick has closed the pane and stopped the count, nothing of the
 // mod's waits before the /clear runs, its own /clear hook included: a prompt
 // landing in such a wait would find no count to stop.
