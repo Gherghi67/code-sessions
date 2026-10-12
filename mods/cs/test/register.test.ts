@@ -645,6 +645,16 @@ test('session.start writes a heartbeat under the session meta dir', async () => 
   expect(text).toMatch(/^\d{4}-\d{2}-\d{2}T.*Z\n$/)
 })
 
+// While git tracks the session's control files the mod adds nothing there: cs
+// is asked before the heartbeat lands, and its refusal is said once.
+test('a session whose control files git tracks gets no heartbeat', async () => {
+  runResult = tracked
+  await hooks['session.start']($, { cwd: '/work', surface: 'terminal', isInteractive: true }, async (e) => ({ cwd: e.cwd }))
+  expect(runs.map(r => r.argv)).toEqual([['/opt/cs/bin/cs', '-vet-session', '/work']])
+  expect(written).toEqual({})
+  expect(toasts).toEqual([`cs: no rotation in this session: ${TRACKED}`])
+})
+
 test('outside a cs session no heartbeat is written', async () => {
   await hooks['session.start']($, { cwd: '/plain', surface: 'terminal', isInteractive: true }, async (e) => ({ cwd: e.cwd }))
   expect(Object.keys(written)).toEqual([])
@@ -1226,6 +1236,16 @@ test('queued work, or a second wrap that fails, brings the key back', async () =
   files[WRAPPED] = 'uuid-lead\n'
   await turnStart('/wrap')
   expect(wrapButton(await band())).toBeDefined()
+})
+
+test('while git tracks the control files, a prompt leaves the wrap marker as git has it', async () => {
+  percent = 40
+  files[WRAPPED] = 'uuid-lead\n'
+  runResult = tracked
+  await turnStart('next thing')
+  expect(runs.map(r => r.argv)).toEqual([['/opt/cs/bin/cs', '-vet-session', '/work']])
+  expect(written).toEqual({})
+  expect(files[WRAPPED]).toBe('uuid-lead\n')
 })
 
 test('a summary with no wrap marker, or a marker naming another conversation, keeps the wrap key', async () => {
