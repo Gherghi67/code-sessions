@@ -1010,6 +1010,18 @@ test_date_note_silent_without_a_stamp_and_writes_one() {
     assert_file_contains "$(_stamp_file)" "^$(_today)\$" "first sight writes the baseline" || return 1
 }
 
+# While git tracks a file in .cs/local, the hooks write nothing there: the
+# date baseline is not stamped, as SessionStart stamps none.
+test_date_note_writes_no_stamp_into_a_control_directory_git_tracks() {
+    mkdir -p "$CLAUDE_SESSION_META_DIR/local"
+    rm -f "$(_stamp_file)"
+    printf 'tracked\n' > "$CLAUDE_SESSION_META_DIR/local/session.log"
+    git -C "$CLAUDE_SESSION_DIR" add -f .cs/local
+    git -C "$CLAUDE_SESSION_DIR" commit -q -m "ship the control directory"
+    run_hook "hello" >/dev/null
+    assert_file_not_exists "$(_stamp_file)" "no date stamp lands in the tracked directory" || return 1
+}
+
 test_date_note_stamps_are_per_conversation() {
     # A lead and a tmux teammate share .cs/local. Each conversation keeps its
     # own day, so one hearing the new date never silences the other.
@@ -1142,6 +1154,7 @@ test_date_note_stamp_advances_on_a_code_work_prompt_too() {
 run_test test_date_note_fires_when_the_day_changed
 run_test test_date_note_silent_when_the_day_is_unchanged
 run_test test_date_note_silent_without_a_stamp_and_writes_one
+run_test test_date_note_writes_no_stamp_into_a_control_directory_git_tracks
 run_test test_date_note_stamps_are_per_conversation
 run_test test_date_note_silent_on_the_prompt_after_it_fired
 run_test test_date_note_treats_a_malformed_stamp_as_missing
