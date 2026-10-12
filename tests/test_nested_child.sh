@@ -174,6 +174,44 @@ test_a_teammate_leaves_the_armed_rotation_and_the_digest_to_the_lead() {
         "a front end with no launch pid still loads the rotation on /clear" || return 1
 }
 
+# On an exec launch the pid cs hands on is the lead claude's own, so a claude
+# started as its direct child (a mod's process run) has the lead for a
+# parent. A child of the lead is not the lead: the parent counts only where
+# cs says it stayed as the parent, which the last step shows with the same
+# two processes.
+test_a_direct_child_of_the_lead_claude_is_not_the_lead() {
+    _nested_setup
+    local meta="$CLAUDE_SESSION_META_DIR" handoff out lead child i=0
+    handoff=$(_arm_rotation)
+    printf '#!/usr/bin/env bash\nsleep 300 &\necho "$$ $!" > "$1"\ntrap "kill $!" TERM\nwait\n' > "$TEST_TMPDIR/lead.sh"
+    bash "$TEST_TMPDIR/lead.sh" "$TEST_TMPDIR/pids" &
+    while [ "$i" -lt 50 ] && [ ! -s "$TEST_TMPDIR/pids" ]; do
+        i=$((i + 1)); sleep 0.1
+    done
+    read -r lead child < "$TEST_TMPDIR/pids"
+    assert_eq "$lead" "$(ps -o ppid= -p "$child" | tr -d '[:space:]')" \
+        "the stand-in child's parent is the stand-in lead" || { kill "$lead" 2>/dev/null; return 1; }
+    echo "$lead" > "$meta/session.lock"
+
+    out=$(_start_hook "$lead" "$child" startup 44444444-4444-4444-8444-444444444444)
+    printf '{"session_id":"44444444-4444-4444-8444-444444444444","reason":"other"}\n' \
+        | CS_RESOLVED_FROM=env CS_LEAD_PID="$lead" CLAUDE_PID="$child" bash "$HOOKS_DIR/session-end.sh" >/dev/null 2>&1
+    local rotations marker status lock
+    rotations=$(grep -c 'Conversation Rotation' <<< "$out")
+    marker=$(cat "$meta/local/pending-handoff" 2>/dev/null)
+    status=$(sed -n 2p "$handoff")
+    lock=$(cat "$meta/session.lock" 2>/dev/null)
+    out=$(CS_LEAD_IS_PARENT=1 _start_hook "$lead" "$child" clear 33333333-3333-4333-8333-333333333333)
+    kill "$lead" 2>/dev/null
+
+    assert_eq "0" "$rotations" "the lead's child is not told to continue the rotation" || return 1
+    assert_eq "2026-01-01-topic.md" "$marker" "the marker stays armed" || return 1
+    assert_eq "status: unconsumed" "$status" "the handoff stays unconsumed" || return 1
+    assert_eq "$lead" "$lock" "the child's end leaves the live lead's lock" || return 1
+    assert_eq "1" "$(grep -c 'Conversation Rotation' <<< "$out")" \
+        "a claude cs started as its own child is the lead" || return 1
+}
+
 # cs passes a launch prompt to claude as an argument, so the lead's own
 # command line can hold the three teammate flags as words of a prompt. A
 # claude shown to be the lead is the lead whatever its arguments say.
@@ -207,11 +245,11 @@ test_a_claude_whose_parent_cannot_be_read_is_not_taken_for_a_guest() {
     mkdir -p "$shim"
     printf '#!/bin/sh\n: > "%s/ps-asked"\nexit 126\n' "$TEST_TMPDIR" > "$shim/ps"
     chmod +x "$shim/ps"
-    out=$(PATH="$shim:$PATH" _start_hook "$PPID" "$$" clear 33333333-3333-4333-8333-333333333333)
+    out=$(PATH="$shim:$PATH" CS_LEAD_IS_PARENT=1 _start_hook "$PPID" "$$" clear 33333333-3333-4333-8333-333333333333)
     assert_file_exists "$TEST_TMPDIR/ps-asked" "the stand-in ps was the one asked" || return 1
     assert_eq "1" "$(grep -c 'Conversation Rotation' <<< "$out")" \
         "the rotation is loaded when the parent cannot be read" || return 1
-    PATH="$shim:$PATH" _stop_hook "$PPID" "$$" > /dev/null
+    PATH="$shim:$PATH" CS_LEAD_IS_PARENT=1 _stop_hook "$PPID" "$$" > /dev/null
     assert_file_exists "$meta/local/attention" \
         "the attention flag is raised when the parent cannot be read" || return 1
 }
@@ -222,6 +260,7 @@ run_test test_a_nested_child_does_not_raise_the_attention_flag
 run_test test_a_nested_child_leaves_the_armed_rotation_to_the_lead
 run_test test_a_nested_child_leaves_the_queue_digest_to_the_lead
 run_test test_a_teammate_leaves_the_armed_rotation_and_the_digest_to_the_lead
+run_test test_a_direct_child_of_the_lead_claude_is_not_the_lead
 run_test test_the_lead_keeps_its_rotation_when_its_prompt_names_the_teammate_flags
 run_test test_a_claude_whose_parent_cannot_be_read_is_not_taken_for_a_guest
 

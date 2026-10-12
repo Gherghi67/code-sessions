@@ -306,7 +306,7 @@ test_native_claude_with_flags_runs_the_link_with_its_flags() {
 # A stub whose argv, parent and launch prompt the tests read.
 _resume_session() {  # name -> prints the recorded conversation id
     local inst="$TEST_TMPDIR/inst"
-    printf '#!/usr/bin/env bash\necho "argv0=$0"\necho "args=$*"\necho "parent=$(ps -o args= -p $PPID)"\n' \
+    printf '#!/usr/bin/env bash\necho "argv0=$0"\necho "args=$*"\necho "parent=$(ps -o args= -p $PPID)"\necho "leadparent=${CS_LEAD_IS_PARENT:-no}"\n' \
         > "$inst/versions/9.9.9"
     "$CS_BIN" "$1" <<< "" > /dev/null 2>&1 || true
     awk '/^claude_session_id:/ { print $2; exit }' "$CS_SESSIONS_ROOT/$1/.cs/local/state"
@@ -321,6 +321,23 @@ _transcript() {  # name, uuid -> prints the transcript path cs reads
 
 _user_record() {
     printf '{"type":"user","message":{"role":"user","content":"hi"}}\n'
+}
+
+# A hook knows the lead by its pid. Where cs stays as claude's parent that pid
+# is cs's, so cs says so; where claude takes cs's place nothing is said, and
+# a child of that claude cannot pass for the lead.
+test_cs_tells_claude_when_it_stays_as_the_parent() {
+    _tab_launch_env 1
+    local uuid out
+    uuid=$(_resume_session marked)
+    [ -n "$uuid" ] || { echo "  FAIL: the first launch recorded no conversation"; return 1; }
+    out=$("$CS_BIN" marked <<< "" 2>&1) || true
+    assert_output_contains "$(_launched "$out" parent)" "marked" "no transcript: cs stays the parent" || return 1
+    assert_eq "1" "$(_launched "$out" leadparent)" "cs tells its child claude that it is the parent" || return 1
+    _user_record > "$(_transcript marked "$uuid")"
+    out=$("$CS_BIN" marked <<< "" 2>&1) || true
+    assert_output_not_contains "$(_launched "$out" parent)" "marked" "a real conversation: claude replaces cs" || return 1
+    assert_eq "no" "$(_launched "$out" leadparent)" "a claude that replaced cs is told nothing" || return 1
 }
 
 test_resume_of_a_real_conversation_runs_claude_in_place_of_cs() {
@@ -411,6 +428,7 @@ test_npm_shaped_claude_is_not_linked() {
 run_test test_launch_under_iterm_cc_shows_loader_and_icon
 run_test test_npm_shaped_claude_is_not_linked
 run_test test_claude_bin_without_a_command_is_refused_by_name
+run_test test_cs_tells_claude_when_it_stays_as_the_parent
 run_test test_resume_of_a_real_conversation_runs_claude_in_place_of_cs
 run_test test_resume_that_might_not_land_keeps_cs_as_the_parent
 run_test test_native_claude_with_flags_runs_the_link_with_its_flags

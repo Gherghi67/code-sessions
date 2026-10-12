@@ -215,7 +215,7 @@ test_session_end_keeps_the_lock_when_the_parent_cannot_be_read() {
     export CLAUDE_SESSION_META_DIR="$meta_dir"
 
     echo '{"session_id": "child-1", "reason": "other"}' \
-        | PATH="$shim:$PATH" CS_RESOLVED_FROM=env CS_LEAD_PID="$lead_pid" CLAUDE_PID=$$ "$SCRIPT_DIR/../hooks/session-end.sh"
+        | PATH="$shim:$PATH" CS_RESOLVED_FROM=env CS_LEAD_IS_PARENT=1 CS_LEAD_PID="$lead_pid" CLAUDE_PID=$$ "$SCRIPT_DIR/../hooks/session-end.sh"
     local kept
     kept=$(cat "$meta_dir/session.lock" 2>/dev/null)
     kill "$lead_pid" 2>/dev/null
