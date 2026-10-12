@@ -24,9 +24,10 @@ _vet_current_session() {
 
 # cs -vet-session <dir>: the same question about the session at <dir>,
 # whatever the environment names. The cs mod asks it before it arms a
-# rotation: a pending-handoff marker git tracks names one the SessionStart
-# hook refuses to load. Prints nothing and exits 0 when cs trusts the files.
-_vet_named_session() {  # session directory
+# rotation (a pending-handoff marker git tracks names one the SessionStart
+# hook refuses to load) or writes into .cs/local, and /wrap before its marker.
+# Prints nothing and exits 0 when cs trusts the files.
+cmd_vet_session() {  # session directory
     local notice
     [ $# -eq 1 ] || error "Usage: cs -vet-session <session directory>"
     [ -d "$1/.cs" ] || error "$1 is not a cs session"
@@ -123,7 +124,7 @@ main() {
             ;;
         -vet-session) # hidden: asked by the cs mod before it arms a rotation, not typed by a user
             shift
-            _vet_named_session "$@"
+            cmd_vet_session "$@"
             return 0
             ;;
         -whoami)
