@@ -669,6 +669,28 @@ test_session_end_ignores_a_session_cs_did_not_encrypt() {
     assert_eq "" "$(cat "$FAKE_HDIUTIL_LOG")" "no detach" || return 1
 }
 
+# While git tracks .cs/local the waiter still detaches the vault when claude
+# exits (a mounted vault left behind is the worse outcome), but records no pid
+# there: the tracked directory is left as git has it.
+test_session_end_waiter_records_nothing_while_git_tracks_the_control_files() {
+    _encrypted_session enc || return 1
+    local s="$CS_SESSIONS_ROOT/enc" changed
+    git -C "$s" init -q && git -C "$s" add -f .cs/local \
+        && git -C "$s" -c user.name=test -c user.email=test@example.com commit -q -m "ship the control directory" \
+        || { echo "  FAIL: fixture commit failed"; return 1; }
+    assert_eq "" "$(git -C "$s" status --porcelain --ignored -- .cs/local)" "the fixture starts clean" || return 1
+    sleep 300 &
+    local claude=$!
+    _end_conversation enc prompt_input_exit "$claude" "$claude"
+    changed=$(git -C "$s" status --porcelain --ignored -- .cs/local)
+    kill "$claude" 2>/dev/null; wait "$claude" 2>/dev/null
+    assert_eq "" "$changed" "no waiter pid lands in the tracked .cs/local" || return 1
+    _wait_for_log "detach $FAKE_MNT" || { echo "  FAIL: no detach after exit: $(cat "$FAKE_HDIUTIL_LOG")"; return 1; }
+    sleep 0.5
+    changed=$(git -C "$s" status --porcelain --ignored -- .cs/local)
+    assert_eq "" "$changed" "nor a detach pid once the waiter has run" || return 1
+}
+
 test_session_end_waiter_spares_a_reopened_session() {
     _encrypted_session enc || return 1
     sleep 300 &
@@ -745,6 +767,7 @@ run_test test_session_end_detaches_after_the_lead_exits
 run_test test_session_end_detach_pid_does_not_follow_a_link
 run_test test_session_end_leaves_the_vault_for_clear_resume_and_non_leads
 run_test test_session_end_ignores_a_session_cs_did_not_encrypt
+run_test test_session_end_waiter_records_nothing_while_git_tracks_the_control_files
 run_test test_session_end_waiter_spares_a_reopened_session
 run_test test_session_end_waiter_spares_a_vault_a_holder_keeps
 run_test test_session_end_waiter_leaves_a_busy_vault_mounted
