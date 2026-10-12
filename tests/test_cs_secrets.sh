@@ -1927,37 +1927,70 @@ test_import_file_skips_a_signed_file_changed_after_signing() {
 
 # The bytes that are decrypted are the bytes whose signature was checked. A
 # checkout can replace a sync file while an import runs; here ssh-keygen
-# itself swaps the file the moment it has verified it.
-test_import_file_decrypts_the_bytes_it_verified() {
-    _use_real_age || return $?
-    _use_real_ssh_keygen || return $?
-    local bindir="$TEST_TMPDIR/swapping-ssh-keygen" swapped="$TEST_TMPDIR/swapped.age"
-    local real_keygen peer_file out rc=0
+# itself replaces the session's file, just before or just after it verifies.
+_ssh_keygen_that_swaps() {  # bin dir, before|after, replacement, sync file
+    local real_keygen
     real_keygen=$(command -v ssh-keygen)
-    _peer_exports from_peer "vp" || { echo "  FAIL: fixture: the peer could not export"; return 1; }
-    "$CS_SECRETS_BIN" age add "$(_peer_recipient_file)" >/dev/null 2>&1 || { echo "  FAIL: fixture: could not pin the peer"; return 1; }
-    peer_file=$(_peer_sync_file)
-    printf '%s\n' '{"from_peer":"vswapped"}' | age -r "$(cat "$HOME/.cs-secrets/id_ed25519.pub")" -o "$swapped" \
-        || { echo "  FAIL: fixture: could not encrypt the replacement"; return 1; }
-    mkdir -p "$bindir"
-    cat > "$bindir/ssh-keygen" <<SHIM
+    mkdir -p "$1"
+    cat > "$1/ssh-keygen" <<SHIM
 #!/bin/bash
 case " \$* " in
     *" -Y verify "*)
+        if [ "$2" = before ]; then
+            cp "$3" "$4"
+            : > "$TEST_TMPDIR/swapped"
+            exec "$real_keygen" "\$@"
+        fi
         "$real_keygen" "\$@" || exit \$?
-        cp "$swapped" "$peer_file"
-        : > "$TEST_TMPDIR/swapped-after-verify"
+        cp "$3" "$4"
+        : > "$TEST_TMPDIR/swapped"
         exit 0
         ;;
 esac
 exec "$real_keygen" "\$@"
 SHIM
-    chmod +x "$bindir/ssh-keygen"
+    chmod +x "$1/ssh-keygen"
+}
+_plant_unsigned_replacement() {  # output file, json
+    printf '%s\n' "$2" | age -r "$(cat "$HOME/.cs-secrets/id_ed25519.pub")" -o "$1"
+}
+
+test_import_file_decrypts_the_bytes_it_verified() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local bindir="$TEST_TMPDIR/swapping-ssh-keygen" unsigned="$TEST_TMPDIR/unsigned.age"
+    local peer_file out rc=0
+    _peer_exports from_peer "vp" || { echo "  FAIL: fixture: the peer could not export"; return 1; }
+    "$CS_SECRETS_BIN" age add "$(_peer_recipient_file)" >/dev/null 2>&1 || { echo "  FAIL: fixture: could not pin the peer"; return 1; }
+    peer_file=$(_peer_sync_file)
+    _plant_unsigned_replacement "$unsigned" '{"from_peer":"vswapped"}' || { echo "  FAIL: fixture: could not encrypt the replacement"; return 1; }
+    _ssh_keygen_that_swaps "$bindir" after "$unsigned" "$peer_file"
     out=$(PATH="$bindir:$PATH" "$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
-    assert_file_exists "$TEST_TMPDIR/swapped-after-verify" "fixture: the file was swapped after a passing check" || return 1
-    cmp -s "$peer_file" "$swapped" || { echo "  FAIL: fixture: the session does not hold the replacement"; return 1; }
+    assert_file_exists "$TEST_TMPDIR/swapped" "fixture: the file was replaced after a passing check" || return 1
+    cmp -s "$peer_file" "$unsigned" || { echo "  FAIL: fixture: the session does not hold the replacement"; return 1; }
     assert_eq "0" "$rc" "the import exits 0: $out" || return 1
     assert_eq "vp" "$("$CS_SECRETS_BIN" get from_peer 2>&1)" "the signed value is imported, not the replacement" || return 1
+}
+
+# The other order: the session holds an unsigned file when the import reads
+# it, and the signed one is back in place by the time the signature is checked.
+test_import_file_verifies_the_bytes_it_will_decrypt() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local bindir="$TEST_TMPDIR/swapping-ssh-keygen" signed="$TEST_TMPDIR/signed.age"
+    local peer_file out rc=0
+    _peer_exports from_peer "vp" || { echo "  FAIL: fixture: the peer could not export"; return 1; }
+    "$CS_SECRETS_BIN" age add "$(_peer_recipient_file)" >/dev/null 2>&1 || { echo "  FAIL: fixture: could not pin the peer"; return 1; }
+    peer_file=$(_peer_sync_file)
+    cp "$peer_file" "$signed"
+    _plant_unsigned_replacement "$peer_file" '{"from_peer":"vswapped"}' || { echo "  FAIL: fixture: could not encrypt the replacement"; return 1; }
+    _ssh_keygen_that_swaps "$bindir" before "$signed" "$peer_file"
+    out=$(PATH="$bindir:$PATH" "$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_file_exists "$TEST_TMPDIR/swapped" "fixture: the signed file was put back before the check" || return 1
+    cmp -s "$peer_file" "$signed" || { echo "  FAIL: fixture: the session does not hold the signed file"; return 1; }
+    assert_eq "0" "$rc" "the import exits 0: $out" || return 1
+    assert_output_contains "$out" "^Skipped $(basename "$peer_file"): its signature does not match\." "the skip names the file" || return 1
+    _assert_secret_absent from_peer "nothing from the unsigned file is stored" || return 1
 }
 
 # The same peer, pinned in two sessions: a file it signed for one is not
@@ -3153,6 +3186,7 @@ run_test test_import_file_skips_a_file_signed_by_an_unpinned_key
 run_test test_import_file_skips_a_file_signed_by_a_key_outside_the_session
 run_test test_import_file_skips_a_signed_file_changed_after_signing
 run_test test_import_file_decrypts_the_bytes_it_verified
+run_test test_import_file_verifies_the_bytes_it_will_decrypt
 run_test test_import_file_skips_a_file_signed_for_another_session
 run_test test_import_file_allow_unsigned_takes_a_file_with_no_signature
 run_test test_import_file_allow_unsigned_still_skips_a_bad_signature
