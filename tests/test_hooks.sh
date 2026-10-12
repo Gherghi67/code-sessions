@@ -1295,8 +1295,10 @@ session_start_setup() {
     mkdir -p "$CLAUDE_SESSION_META_DIR"/{local,memory}
     touch "$CLAUDE_SESSION_META_DIR/local/session.log"
 
-    # Initialize git so the dynamic context block runs
-    (cd "$CLAUDE_SESSION_DIR" && git init -q -b main && git config user.email t@t && git config user.name T && echo init > README.md && git add -A && git commit -q -m init)
+    # Initialize git so the dynamic context block runs. .cs/local stays out of
+    # the commit, as in every session cs makes: hooks act on no file git
+    # tracks there.
+    (cd "$CLAUDE_SESSION_DIR" && git init -q -b main && git config user.email t@t && git config user.name T && echo init > README.md && printf '.cs/local/\n' > .gitignore && git add -A && git commit -q -m init)
 
     # Create README with frontmatter and placeholder objective
     cat > "$CLAUDE_SESSION_META_DIR/README.md" << 'EOF'
@@ -2805,7 +2807,7 @@ Test the index generation feature
 
 Local dev
 EOF
-    (cd "$CLAUDE_SESSION_DIR" && git init -q -b main && git config user.email t@t && git config user.name T && echo init > f && git add -A && git commit -q -m init)
+    (cd "$CLAUDE_SESSION_DIR" && git init -q -b main && git config user.email t@t && git config user.name T && echo init > f && printf '.cs/local/\n' > .gitignore && git add -A && git commit -q -m init)
 }
 
 index_teardown() {
