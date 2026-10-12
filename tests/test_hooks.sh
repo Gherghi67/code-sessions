@@ -543,11 +543,12 @@ test_auto_approve_allows_the_first_write_into_a_content_directory() {
 
 # Any other missing directory keeps its prompt: a control directory cs has not
 # made yet, a name cs does not use, a second missing level, another spelling,
-# and a dangling link where the directory would go.
+# one of cs's names below the root, and a dangling link where the directory
+# would go.
 test_auto_approve_prompts_for_the_first_write_into_any_other_directory() {
     local meta="$CLAUDE_SESSION_META_DIR" path
     for path in private/queue/0001 private/handoffs/x.md queue/0001 notes/x.md \
-        handoffs/deep/x.md Handoffs/x.md claude-config/settings.json; do
+        handoffs/deep/x.md Handoffs/x.md claude-config/settings.json memory/plans/x.md; do
         _assert_falls_through Write "$meta/$path" \
             "the first file at .cs/$path" || return 1
     done
