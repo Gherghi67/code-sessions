@@ -580,19 +580,26 @@ test_stage_trace_stops_where_a_killed_run_stopped() {
     # A git that blocks parks the hook in the grounded scan, exactly where the
     # UserPromptSubmit cap parks it in production. The trail it leaves is the
     # only evidence such a run ever produces, so it has to name the last stage
-    # reached and must not claim the run finished.
-    local stub="$TEST_TMPDIR/stub" marker="$TEST_TMPDIR/stub-reached"
+    # reached and must not claim the run finished. Only the scan's bare
+    # `git -C <session> ls-files` blocks: the .cs/local tracked-file check asks
+    # git before the trace opens, and those calls go to the real git.
+    local stub="$TEST_TMPDIR/stub" marker="$TEST_TMPDIR/stub-reached" real_git
+    real_git=$(command -v git)
     mkdir -p "$stub"
     cat > "$stub/git" <<'STUB'
 #!/bin/sh
-printf 'reached\n' > "$STUB_MARKER"
-sleep 5
+if [ "$#" -eq 3 ] && [ "$3" = ls-files ]; then
+    printf 'reached %s\n' "$*" > "$STUB_MARKER"
+    sleep 5
+    exit 1
+fi
+exec "$STUB_REAL_GIT" "$@"
 STUB
     chmod +x "$stub/git"
     rm -f "$marker"
 
     printf '{"prompt": "implement a retry wrapper in src/api.ts"}' \
-        | STUB_MARKER="$marker" PATH="$stub:$PATH" bash "$HOOK" >/dev/null 2>&1 &
+        | STUB_MARKER="$marker" STUB_REAL_GIT="$real_git" PATH="$stub:$PATH" bash "$HOOK" >/dev/null 2>&1 &
     local pid=$! i=0
     while [ ! -f "$marker" ] && [ "$i" -lt 100 ]; do i=$((i + 1)); sleep 0.05; done
     kill -9 "$pid" 2>/dev/null
