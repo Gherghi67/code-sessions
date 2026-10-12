@@ -579,6 +579,44 @@ test_vet_session_refuses_when_git_cannot_read_the_index() {
         "$out" "and names git's own error" || return 1
 }
 
+# A named verb runs the open's refusals (_vet_named_session), and those ask
+# git the same question: a git that cannot answer refuses there too, from a
+# configuration file git reads (not one cs clears from the environment).
+test_a_named_verb_refuses_when_git_cannot_answer() {
+    local out rc=0 cfg="$TEST_TMPDIR/broken-gitconfig"
+    _arm_handoff no
+    printf '[core\nbad\n' > "$cfg"
+    out=$(env -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_NAME -u CLAUDE_SESSION_META_DIR GIT_CONFIG_GLOBAL="$cfg" \
+        "$CS_BIN" test-session -queue list 2>&1) || rc=$?
+    assert_eq "1" "$rc" "cs refuses" || return 1
+    assert_eq "Error: cs could not ask git whether it tracks a file in .cs/local: fatal: bad config line 1 in file $cfg" \
+        "$out" "and names git's own error" || return 1
+}
+
+# The same when git finds the repository but cannot read its index.
+test_a_named_verb_refuses_when_git_cannot_read_the_index() {
+    local s="$CLAUDE_SESSION_DIR" out rc=0
+    _arm_handoff no
+    printf 'garbage' > "$s/.git/index"
+    out=$(env -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_NAME -u CLAUDE_SESSION_META_DIR \
+        "$CS_BIN" test-session -queue list 2>&1) || rc=$?
+    assert_eq "1" "$rc" "cs refuses" || return 1
+    assert_eq "Error: cs could not ask git whether it tracks a file in .cs/local: fatal: .git/index: index file smaller than expected" \
+        "$out" "and names git's own error" || return 1
+}
+
+# A tracked file stays tracked when its working copy is gone: the index still
+# lists it, and the next checkout brings it back.
+test_vet_session_refuses_a_tracked_marker_whose_directory_is_gone() {
+    local s="$CLAUDE_SESSION_DIR" out rc=0
+    _arm_handoff yes
+    rm -rf "$s/.cs/local"
+    out=$(env -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR "$CS_BIN" -vet-session "$s" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "cs -vet-session refuses" || return 1
+    assert_eq "Error: .cs/local/pending-handoff is tracked in git (per-actor state must stay local). Fix with: git -C $s --literal-pathspecs rm -r --cached -- .cs/local && git -C $s commit -m 'stop tracking .cs/local'" \
+        "$out" "the refusal names the tracked marker" || return 1
+}
+
 test_vet_session_passes_a_session_whose_control_files_git_ignores() {
     local out rc=0
     _arm_handoff no
@@ -1054,6 +1092,9 @@ run_test test_queue_verbs_ignore_a_link_out_elsewhere_under_cs
 run_test test_vet_session_refuses_a_session_whose_marker_git_tracks
 run_test test_vet_session_refuses_when_git_cannot_answer
 run_test test_vet_session_refuses_when_git_cannot_read_the_index
+run_test test_a_named_verb_refuses_when_git_cannot_answer
+run_test test_a_named_verb_refuses_when_git_cannot_read_the_index
+run_test test_vet_session_refuses_a_tracked_marker_whose_directory_is_gone
 run_test test_vet_session_passes_a_session_whose_control_files_git_ignores
 run_test test_vet_session_judges_the_directory_it_is_given
 run_test test_vet_session_refuses_a_directory_that_is_no_session
