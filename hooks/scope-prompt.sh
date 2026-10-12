@@ -47,6 +47,10 @@ if [ "${CS_SCOPE_TRACE_DISABLE:-}" != "1" ] && [ -n "${CLAUDE_SESSION_DIR:-}" ] 
     # and a linked .cs/private counts only beside a real .cs/local/pre-open,
     # the mark of a vault set up by hand (the checked stage-trace writes later
     # in the run apply the full rule).
+    # It is also the one write any hook makes into .cs/local while git tracks
+    # the session's control files: knowing that takes git, and the mark has to
+    # land before anything that can stall. Every later write in this run asks
+    # cs_private_dir or cs_local_dir and stands down. Accepted as is (#980).
     if [ -n "$_launch_ms" ] && [ ! -L "$_launch_trace_dir/scope-prompt.trace" ] \
         && [ ! -L "$_launch_local" ] \
         && { [ ! -L "$_launch_trace_dir" ] || { [ -f "$_launch_local/pre-open" ] && [ ! -L "$_launch_local/pre-open" ]; }; }; then
