@@ -507,6 +507,19 @@ test_queue_verbs_refuse_a_queue_git_tracks() {
         "$out" "the refusal names the tracked file" || return 1
 }
 
+# The verbs ask only whether git tracks a file where the queue lives. A link
+# out of the session elsewhere under .cs is the open's question, not theirs:
+# with nothing tracked they run as before, and they never walk the links.
+test_queue_verbs_ignore_a_link_out_elsewhere_under_cs() {
+    local o="$TEST_TMPDIR/outside" out rc=0
+    mkdir -p "$o"
+    git -C "$CLAUDE_SESSION_DIR" init -q
+    ln -s "$o" "$CLAUDE_SESSION_META_DIR/plans"
+    out=$("$CS_BIN" -queue list 2>&1) || rc=$?
+    assert_eq "0" "$rc" "cs -queue list runs: $out" || return 1
+    assert_eq "Queue is empty." "$out" "and says the queue is empty" || return 1
+}
+
 # A clone or a pull can commit the queue under another spelling of the
 # directory, .cs/LOCAL. A case-insensitive volume puts it in .cs/local, where
 # the drain reads it; either way the Stop hook hands nothing out.
@@ -948,6 +961,7 @@ run_test test_drain_leaves_a_queue_linked_out_of_the_session_alone
 run_test test_drain_hands_out_nothing_from_a_queue_git_tracks
 run_test test_drain_hands_out_nothing_from_a_private_queue_git_tracks
 run_test test_queue_verbs_refuse_a_queue_git_tracks
+run_test test_queue_verbs_ignore_a_link_out_elsewhere_under_cs
 run_test test_drain_hands_out_nothing_from_a_queue_tracked_under_a_case_variant
 run_test test_the_stop_message_shows_a_tracked_file_name_as_a_plain_path
 run_test test_drain_hands_out_nothing_while_git_tracks_cs_local_beside_cs_private
