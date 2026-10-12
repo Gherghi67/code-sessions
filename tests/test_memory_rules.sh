@@ -11,7 +11,6 @@ teardown() {
         rm -rf "$TEST_TMPDIR"
     fi
     unset CS_SESSIONS_ROOT CLAUDE_CODE_BIN
-    unset CLAUDE_SESSION_NAME CLAUDE_SESSION_DIR CLAUDE_SESSION_META_DIR 2>/dev/null || true
 }
 
 # Current sentinel — managed by cs, marks the disclosure note section.
