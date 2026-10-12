@@ -53,6 +53,7 @@ fi
 # into .cs/local either.
 if ! command -v cs_local_dir >/dev/null 2>&1; then
     cs_local_dir() { return 1; }
+    _cs_local_dir_unknown=1
 fi
 # A write this hook cannot make is skipped without a word, and the link check
 # on appends and new directories lives in cs-shared.sh; without the library
@@ -389,7 +390,13 @@ EOF
 # Atomic and serialised against cs's own writer through cs_local_state_set.
 STATE_FILE="$META_DIR/local/state"
 local_state_set() {
-    [ -n "$LOCAL_DIR" ] || return 1
+    if [ -z "$LOCAL_DIR" ]; then
+        # A tracked control directory is reported by the Stop hook; a missing
+        # library is said here, because nothing else names what it cost.
+        [ -z "${_cs_local_dir_unknown:-}" ] \
+            || echo "session-start: cs-shared.sh is missing or outdated, so $1 was not recorded in $STATE_FILE" >&2
+        return 1
+    fi
     cs_mkdir_inside "$LOCAL_DIR" || return 1
     cs_local_state_set "$STATE_FILE" "$1" "$2"
 }
