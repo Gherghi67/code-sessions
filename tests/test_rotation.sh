@@ -1639,6 +1639,24 @@ _arm_kick() {  # returns the kick file path on stdout
     printf '%s\n' "$d/rotation.kick"
 }
 
+# While git tracks a file in the session's control directory the hooks act on
+# nothing there, the rotation kick included: a watched file that changes
+# wakes nobody and spends no kick.
+test_rotation_kick_wakes_nobody_while_git_tracks_a_control_file() {
+    _rot_hook_session "rot-tracked"
+    local kick; kick=$(_arm_kick)
+    git -C "$CLAUDE_SESSION_DIR" rev-parse --git-dir >/dev/null 2>&1 || git -C "$CLAUDE_SESSION_DIR" init -q
+    git -C "$CLAUDE_SESSION_DIR" add -f .cs/local/rotation-kick/rotation.kick
+    git -C "$CLAUDE_SESSION_DIR" -c user.email=jane.roe@example.com -c user.name="Jane Roe" \
+        commit -q -m "ship a kick"
+    local out rc=0
+    out=$(_rot_filechanged "$kick" add 2>&1) || rc=$?
+    assert_eq "0" "$rc" "no wake is delivered" || return 1
+    assert_eq "" "$out" "and nothing is printed" || return 1
+    assert_file_not_exists "$CLAUDE_SESSION_META_DIR/local/rotation-kick/delivered" \
+        "the kick is not marked delivered" || return 1
+}
+
 test_rotation_kick_wakes_the_model() {
     _rot_hook_session "rot-wake"
     local kick; kick=$(_arm_kick)
@@ -1826,6 +1844,7 @@ run_test test_a_teammate_clear_leaves_the_leads_kick_alone
 run_test test_the_detached_child_actually_writes_the_kick
 run_test test_the_kick_is_rewritten_until_delivered
 run_test test_rotation_kick_wakes_the_model
+run_test test_rotation_kick_wakes_nobody_while_git_tracks_a_control_file
 run_test test_rotation_kick_wakes_exactly_once
 run_test test_rotation_kick_does_not_yield_to_a_stale_queue_state
 run_test test_rotation_kick_ignores_unlink
