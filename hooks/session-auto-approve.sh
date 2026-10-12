@@ -192,10 +192,19 @@ esac
 # runs there, and a .git file names another directory to read them from. A
 # write with a .git component anywhere below .cs/ prompts, in the real path
 # and in the spelled one: a .git that is a link resolves to its target's name.
+# The spelled path is read below .cs/ as well, so a session that lives under
+# a directory named .git keeps its approvals; a spelling that starts at
+# neither metadata root is read whole.
 case "$(_cs_lower "$_cs_below")/$BASENAME_LC/" in
     */.git/*) exit 0 ;;
 esac
-case "$(_cs_lower "$FILE_PATH")/" in
+_cs_spelled="$FILE_PATH"
+for _cs_root in "$META_DIR" "$SESSION_DIR/.cs"; do
+    case "$FILE_PATH" in
+        "$_cs_root"/*) _cs_spelled="${FILE_PATH#"$_cs_root"}"; break ;;
+    esac
+done
+case "$(_cs_lower "$_cs_spelled")/" in
     */.git/*) exit 0 ;;
 esac
 # The name is not what makes a git directory: a bare clone is one under any
