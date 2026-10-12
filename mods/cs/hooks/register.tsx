@@ -251,8 +251,9 @@ export function register(on: On) {
       registered = true
       await $.command.register({ name: 'queue', description: "Add a task to this cs session's walk-away queue, or list it.", argumentHint: '[task]', immediate: true })
     }
-    // Only in a cs session; anywhere else the mod stays silent.
-    if ((await $.fs.exists(`${e.cwd}/.cs/local`)) && (await isCsSession($, e.cwd))) {
+    // Only in a cs session; anywhere else the mod stays silent. Nor while git
+    // tracks the session's control files: the heartbeat would change them.
+    if ((await $.fs.exists(`${e.cwd}/.cs/local`)) && (await isCsSession($, e.cwd)) && (await sessionVetted($, e.cwd))) {
       await $.fs.write(`${e.cwd}/${HEARTBEAT}`, `${new Date().toISOString()}\n`)
     }
     return next(e)
@@ -876,6 +877,8 @@ async function wrapFinished($: EngineInterface): Promise<boolean> {
 async function clearWrapped($: EngineInterface) {
   const marker = await readWrapped($)
   if (marker === '' || marker !== (await $.session.id())) return
+  // A marker git tracks stays as git has it, like every control file then.
+  if (!(await sessionVetted($, await $.session.cwd()))) return
   await $.fs.write(`${await $.session.cwd()}/${WRAPPED}`, '').catch(() => {})
 }
 
