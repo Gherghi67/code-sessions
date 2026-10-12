@@ -495,6 +495,19 @@ test_drain_hands_out_nothing_from_a_private_queue_git_tracks() {
     assert_eq "a task the repository wrote" "$(cat "$priv/queue/0000000001-seed")" "the task is left in place" || return 1
 }
 
+# The answer about tracked files belongs to the hook run that asked. One
+# inherited from the environment changes nothing: with no file tracked, the
+# armed queue is handed out.
+test_drain_ignores_an_inherited_tracked_files_answer() {
+    qseed "task one"
+    printf 'armed\n' > "$(QDIR)/queue.state"
+    local out
+    out=$(printf '{}\n' | CS_TRACKED_FILES_META="$CLAUDE_SESSION_META_DIR" CS_TRACKED_FILES_NOTICE="x" \
+        CS_LEAD_PID=$$ CLAUDE_PID=$$ bash "$HOOKS_DIR/narrative-reminder.sh" 2>/dev/null)
+    assert_output_contains "$out" "task one" "the user's own queue is handed out" || return 1
+    assert_eq "draining" "$(cat "$(QDIR)/queue.state")" "the run starts" || return 1
+}
+
 # A .cs/private linked out of the session without a vault set up by hand is
 # no queue: the drain moves and deletes nothing there.
 test_drain_leaves_a_queue_linked_out_of_the_session_alone() {
@@ -881,6 +894,7 @@ run_test test_drain_skips_a_done_log_linked_out_of_the_session
 run_test test_drain_leaves_a_queue_linked_out_of_the_session_alone
 run_test test_drain_hands_out_nothing_from_a_queue_git_tracks
 run_test test_drain_hands_out_nothing_from_a_private_queue_git_tracks
+run_test test_drain_ignores_an_inherited_tracked_files_answer
 run_test test_drain_frames_the_first_task_as_untrusted
 run_test test_drain_frames_the_next_task_with_a_fresh_id
 run_test test_drain_ignores_a_teammate_stop

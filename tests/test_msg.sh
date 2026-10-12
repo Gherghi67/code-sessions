@@ -997,6 +997,11 @@ test_mail_git_tracks_is_not_shown() {
     out=$(_prompt_as_receiver "hello") || return 1
 
     assert_output_not_contains "$out" "review the auth PR please" "tracked mail is not inlined" || return 1
+    assert_eq "1" "$(find "$root/.cs/local/mail/new" -name '*.json' | grep -c .)" \
+        "the tracked message is left where it was" || return 1
+    git -C "$root" rm -r -q --cached .cs/local
+    out=$(_prompt_as_receiver "hello") || return 1
+    assert_output_contains "$out" "review the auth PR please" "untracked again, the same message is inlined" || return 1
 }
 
 # Reading with cs -msg advances the `seen` cursor, which clears the digest.

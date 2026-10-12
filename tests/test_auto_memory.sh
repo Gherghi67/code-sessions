@@ -799,6 +799,21 @@ test_a_cs_private_link_into_a_vault_outside_any_repository_opens() {
     assert_file_contains "$TEST_TMPDIR/launched" "launched" "claude should launch" || return 1
 }
 
+# The hooks record their own answer about tracked files in a shell variable.
+# A value of that name inherited from the environment is nobody's answer: cs
+# opens the session as if it were not there.
+test_an_inherited_tracked_files_answer_does_not_stop_the_open() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt"
+    _make_launch_sentinel
+
+    local out rc=0
+    out=$(CS_TRACKED_FILES_META="$root/.cs" CS_TRACKED_FILES_NOTICE="x" "$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "0" "$rc" "cs should open the session: $out" || return 1
+    assert_file_contains "$TEST_TMPDIR/launched" "launched" "claude should launch" || return 1
+}
+
 # A clone can also deliver `.cs` itself as a committed symlink to a tracked
 # directory: `git ls-files -- .cs/local` then lists nothing, so the tracked
 # check passes and the pre-open behind the link would run.
@@ -1640,6 +1655,7 @@ run_test test_cs_files_tracked_in_cs_private_are_refused
 run_test test_cs_files_tracked_behind_a_cs_private_link_are_refused
 run_test test_an_untracked_cs_private_directory_opens
 run_test test_a_cs_private_link_into_a_vault_outside_any_repository_opens
+run_test test_an_inherited_tracked_files_answer_does_not_stop_the_open
 run_test test_pre_open_through_symlinked_cs_is_refused
 run_test test_symlinked_cs_without_pre_open_keeps_the_target_mode
 run_test test_pre_open_inside_a_cs_submodule_is_refused
