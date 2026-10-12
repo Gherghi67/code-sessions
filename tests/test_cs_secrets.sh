@@ -541,6 +541,14 @@ test_export_file_refuses_a_session_the_root_does_not_have() {
     _assert_no_trace_of_session ghost || return 1
 }
 
+test_import_file_refuses_a_session_the_root_does_not_have() {
+    local out rc=0
+    out=$("$CS_SECRETS_BIN" --session ghost import-file 2>&1) || rc=$?
+    assert_eq "1" "$rc" "import-file exits 1" || return 1
+    assert_eq "Error: No session named 'ghost' in $CS_SESSIONS_ROOT" "$out" "the refusal names the session and the root" || return 1
+    _assert_no_trace_of_session ghost || return 1
+}
+
 test_purge_empty_session() {
     local output
     output=$("$CS_SECRETS_BIN" purge 2>&1)
@@ -1159,7 +1167,7 @@ test_age_remove_reencrypts_an_unchanged_store() {
     f="$meta/secrets.$(_machine_id).age"
     _make_age_identity colleague || { echo "  FAIL: could not create a test identity"; return 1; }
     "$CS_SECRETS_BIN" age init >/dev/null 2>&1 || { echo "  FAIL: age init failed"; return 1; }
-    "$CS_SECRETS_BIN" age add "$HOME/.cs-secrets/age.pub" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" age add "$HOME/.cs-secrets/id_ed25519.pub" >/dev/null 2>&1 || return 1
     "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/colleague.pub" >/dev/null 2>&1 || return 1
     "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
     "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
@@ -1179,7 +1187,7 @@ test_age_remove_reencrypts_an_unchanged_store() {
         echo "  FAIL: the removed recipient still decrypts the re-exported file"
         return 1
     fi
-    if ! _age_decrypts_to "$HOME/.cs-secrets/age.key" "$f" "sk_123"; then
+    if ! _age_decrypts_to "$HOME/.cs-secrets/id_ed25519" "$f" "sk_123"; then
         echo "  FAIL: this machine's own key no longer decrypts the re-exported file"
         return 1
     fi
@@ -1251,7 +1259,7 @@ test_export_never_pins_from_a_forged_sync_file() {
     _make_age_identity attacker || { echo "  FAIL: could not create a test identity"; return 1; }
     "$CS_SECRETS_BIN" age init >/dev/null 2>&1 || { echo "  FAIL: age init failed"; return 1; }
     mkdir -p "$meta/age-recipients"
-    cp "$HOME/.cs-secrets/age.pub" "$meta/age-recipients/self.pub"
+    cp "$HOME/.cs-secrets/id_ed25519.pub" "$meta/age-recipients/self.pub"
     cp "$TEST_TMPDIR/attacker.pub" "$meta/age-recipients/attacker.pub"
     # The forged sync file a push can plant: tracked, predictable name, empty.
     : > "$f"
@@ -1338,6 +1346,787 @@ test_age_remove_drops_the_pin() {
     assert_output_contains "$out" "colleague\.pub" "the refusal names the re-pushed file" || return 1
 }
 
+_use_real_ssh_keygen() {
+    if ! command -v ssh-keygen >/dev/null 2>&1; then
+        echo "    SKIP (ssh-keygen is not installed)"
+        return 77
+    fi
+}
+_make_ssh_identity() {  # name -> $TEST_TMPDIR/<name>.ssh (+ .pub)
+    ssh-keygen -q -t ed25519 -N '' -C "$1@example.com" -f "$TEST_TMPDIR/$1.ssh" </dev/null || return 1
+}
+
+# A recipient may be an ssh-ed25519 key: age encrypts to it, and it is the key
+# a peer signs its sync file with.
+test_age_add_takes_an_ssh_ed25519_key_file() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f; f="$meta/secrets.$(_machine_id).age"
+    local out rc=0 key_type key_body key_comment
+    _make_ssh_identity colleague || { echo "  FAIL: could not create a test ssh identity"; return 1; }
+    read -r key_type key_body key_comment < "$TEST_TMPDIR/colleague.ssh.pub"
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
+
+    out=$("$CS_SECRETS_BIN" age add "$TEST_TMPDIR/colleague.ssh.pub" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "age add accepts the key file: $out" || return 1
+    assert_eq "$key_type $key_body" "$(cat "$meta/age-recipients/colleague.ssh.pub")" \
+        "the recipient file holds the key without its comment" || return 1
+    rc=0
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the export encrypts to it: $out" || return 1
+    _age_decrypts_to "$TEST_TMPDIR/colleague.ssh" "$f" "sk_123" \
+        || { echo "  FAIL: the ssh identity cannot decrypt the sync file"; return 1; }
+}
+
+test_age_add_takes_a_raw_ssh_ed25519_key() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f; f="$meta/secrets.$(_machine_id).age"
+    local out rc=0 key_type key_body key_comment added
+    _make_ssh_identity colleague || { echo "  FAIL: could not create a test ssh identity"; return 1; }
+    read -r key_type key_body key_comment < "$TEST_TMPDIR/colleague.ssh.pub"
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+
+    out=$("$CS_SECRETS_BIN" age add "$key_type $key_body $key_comment" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "age add accepts the quoted key: $out" || return 1
+    added=$(cat "$meta"/age-recipients/recipient-*.pub)
+    assert_eq "$key_type $key_body" "$added" "the recipient file holds the key without its comment" || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: export failed"; return 1; }
+    _age_decrypts_to "$TEST_TMPDIR/colleague.ssh" "$f" "sk_123" \
+        || { echo "  FAIL: the ssh identity cannot decrypt the sync file"; return 1; }
+}
+
+# Only the two key forms are recipients. Anything else is refused before a
+# file or a pin is written.
+test_age_add_refuses_what_is_not_a_key() {
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local refusal="Error: Invalid public key. Must be a file, an age1... key or a quoted \"ssh-ed25519 <key>\""
+    local candidate out rc
+    printf 'not a key\n' > "$TEST_TMPDIR/junk.pub"
+    for candidate in "hello" "ssh-ed25519" "ssh-ed25519 " "ssh-ed25519 not*base64" "ssh-rsa AAAAB3NzaC1yc2E" "$TEST_TMPDIR/junk.pub"; do
+        rc=0
+        out=$("$CS_SECRETS_BIN" age add "$candidate" 2>&1) || rc=$?
+        assert_eq "1" "$rc" "age add exits 1 for '$candidate'" || return 1
+        assert_eq "$refusal" "$out" "the refusal names the accepted forms for '$candidate'" || return 1
+        assert_eq "" "$(ls "$meta/age-recipients" 2>/dev/null)" "no recipient file is written for '$candidate'" || return 1
+        assert_not_exists "$HOME/.cs-secrets/sessions/test-session/age-trusted" "nothing is pinned for '$candidate'" || return 1
+    done
+}
+
+_stage_machine_ssh_key() {  # this machine's ssh key under the test HOME
+    mkdir -p "$HOME/.cs-secrets" && chmod 700 "$HOME/.cs-secrets" || return 1
+    ssh-keygen -q -t ed25519 -N '' -C "test@example.com" -f "$HOME/.cs-secrets/id_ed25519" </dev/null || return 1
+}
+
+# A peer encrypts to whichever of this machine's keys it has pinned: the ssh
+# key, or the age key from before the ssh key existed. Both stay readable.
+test_import_file_reads_a_file_encrypted_to_this_machines_ssh_key() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    _stage_machine_ssh_key || { echo "  FAIL: could not stage the machine ssh key"; return 1; }
+    printf '%s\n' '{"from_peer":"vp"}' \
+        | age -r "$(cat "$HOME/.cs-secrets/id_ed25519.pub")" -o "$meta/secrets.peer@example.age" \
+        || { echo "  FAIL: fixture: age could not encrypt to the ssh key"; return 1; }
+
+    # Made by hand, so unsigned: this test is about which key decrypts.
+    local out rc=0
+    out=$("$CS_SECRETS_BIN" import-file --allow-unsigned 2>&1) || rc=$?
+    assert_eq "vp" "$("$CS_SECRETS_BIN" get from_peer 2>&1)" "the secret is imported (import said: $rc $out)" || return 1
+}
+
+test_import_file_still_reads_a_file_encrypted_to_the_earlier_age_key() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    _stage_machine_ssh_key || { echo "  FAIL: could not stage the machine ssh key"; return 1; }
+    age-keygen -o "$HOME/.cs-secrets/age.key" 2>/dev/null || { echo "  FAIL: fixture: age-keygen failed"; return 1; }
+    printf '%s\n' '{"from_before":"vb"}' \
+        | age -r "$(age-keygen -y "$HOME/.cs-secrets/age.key")" -o "$meta/secrets.peer@example.age" \
+        || { echo "  FAIL: fixture: age could not encrypt to the age key"; return 1; }
+
+    local out rc=0
+    out=$("$CS_SECRETS_BIN" import-file --allow-unsigned 2>&1) || rc=$?
+    assert_eq "vb" "$("$CS_SECRETS_BIN" get from_before 2>&1)" "the secret is imported (import said: $rc $out)" || return 1
+}
+
+# This machine has one key, an ssh-ed25519 pair cs keeps under ~/.cs-secrets:
+# never the user's own ~/.ssh keys, and no passphrase, since exports run
+# unattended.
+test_age_init_creates_this_machines_ssh_key() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local out rc=0 key_type key_body key_comment
+    out=$("$CS_SECRETS_BIN" age init 2>&1) || rc=$?
+    assert_eq "0" "$rc" "age init exits 0: $out" || return 1
+    assert_file_exists "$HOME/.cs-secrets/id_ed25519" "the private key exists" || return 1
+    assert_eq "600" "$(_file_mode "$HOME/.cs-secrets/id_ed25519")" "the private key is owner-only" || return 1
+    assert_not_exists "$HOME/.cs-secrets/age.key" "no age key is created" || return 1
+    assert_not_exists "$HOME/.ssh" "the user's own ssh directory is untouched" || return 1
+    assert_file_exists "$HOME/.cs-secrets/id_ed25519.pub" "the public key exists" || return 1
+    read -r key_type key_body key_comment < "$HOME/.cs-secrets/id_ed25519.pub"
+    assert_eq "ssh-ed25519" "$key_type" "the key is an ed25519 key" || return 1
+    assert_eq "$key_type $key_body" "$("$CS_SECRETS_BIN" age pubkey 2>&1)" "age pubkey prints the key without its comment" || return 1
+    printf 'x' > "$TEST_TMPDIR/payload"
+    ssh-keygen -q -Y sign -f "$HOME/.cs-secrets/id_ed25519" -n probe "$TEST_TMPDIR/payload" </dev/null 2>/dev/null \
+        || { echo "  FAIL: the key signs without asking for a passphrase"; return 1; }
+}
+
+test_age_init_names_a_missing_ssh_keygen() {
+    _use_real_age || return $?
+    local bindir="$TEST_TMPDIR/no-ssh-keygen" out rc=0
+    link_path_without "$bindir" 'ssh-keygen'
+    out=$(PATH="$bindir" "$CS_SECRETS_BIN" age init 2>&1) || rc=$?
+    assert_eq "1" "$rc" "age init exits 1" || return 1
+    assert_eq "Error: ssh-keygen not found. cs keeps this machine's key as an ssh-ed25519 pair and needs OpenSSH 8.0 or later to create it and to sign with it." \
+        "$out" "the refusal names ssh-keygen" || return 1
+    assert_not_exists "$HOME/.cs-secrets/id_ed25519" "no key is created" || return 1
+    assert_not_exists "$HOME/.cs-secrets/age.key" "no age key is created instead" || return 1
+}
+
+test_first_export_makes_this_machines_ssh_key_the_recipient() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f; f="$meta/secrets.$(_machine_id).age"
+    local out rc=0 key_type key_body key_comment
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the first export exits 0: $out" || return 1
+    assert_file_exists "$HOME/.cs-secrets/id_ed25519.pub" "this machine's public key exists" || return 1
+    read -r key_type key_body key_comment < "$HOME/.cs-secrets/id_ed25519.pub"
+    assert_eq "$key_type $key_body" "$(cat "$meta/age-recipients/$(_machine_id).pub")" \
+        "this machine's recipient file holds its ssh key" || return 1
+    _age_decrypts_to "$HOME/.cs-secrets/id_ed25519" "$f" "sk_123" \
+        || { echo "  FAIL: this machine's ssh key cannot decrypt its own sync file"; return 1; }
+    assert_not_exists "$HOME/.cs-secrets/age.key" "no age key is created" || return 1
+}
+
+# Machines upgrade one at a time, so one sync file is encrypted to age keys
+# and ssh keys together.
+test_export_encrypts_to_age_and_ssh_recipients_together() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f; f="$meta/secrets.$(_machine_id).age"
+    _make_age_identity older || { echo "  FAIL: could not create a test age identity"; return 1; }
+    _make_ssh_identity newer || { echo "  FAIL: could not create a test ssh identity"; return 1; }
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
+    "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/older.pub" >/dev/null 2>&1 || { echo "  FAIL: age add of the age key failed"; return 1; }
+    "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/newer.ssh.pub" >/dev/null 2>&1 || { echo "  FAIL: age add of the ssh key failed"; return 1; }
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: export to both failed"; return 1; }
+    _age_decrypts_to "$TEST_TMPDIR/older.key" "$f" "sk_123" || { echo "  FAIL: the age recipient cannot decrypt"; return 1; }
+    _age_decrypts_to "$TEST_TMPDIR/newer.ssh" "$f" "sk_123" || { echo "  FAIL: the ssh recipient cannot decrypt"; return 1; }
+    _age_decrypts_to "$HOME/.cs-secrets/id_ed25519" "$f" "sk_123" || { echo "  FAIL: this machine cannot decrypt its own file"; return 1; }
+}
+
+# A session the way a cs from before the ssh key left it on this machine: an
+# age key pair, this machine's recipient file holding the age key, that key
+# pinned, a secret in the store.
+_stage_session_from_before_the_ssh_key() {
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs" age_pub
+    mkdir -p "$HOME/.cs-secrets/sessions/test-session" "$meta/age-recipients" || return 1
+    chmod 700 "$HOME/.cs-secrets"
+    age-keygen -o "$HOME/.cs-secrets/age.key" 2>/dev/null || return 1
+    age_pub=$(age-keygen -y "$HOME/.cs-secrets/age.key") || return 1
+    printf '%s\n' "$age_pub" > "$HOME/.cs-secrets/age.pub"
+    printf '%s\n' "$age_pub" > "$meta/age-recipients/$(_machine_id).pub"
+    printf '%s' "$age_pub" | shasum -a 256 | cut -d' ' -f1 > "$HOME/.cs-secrets/sessions/test-session/age-trusted"
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+}
+
+# The first export after the upgrade moves this machine to its ssh key: its
+# recipient file changes, the sync file is encrypted to the new key, and a
+# peer that pinned the old key is told to pin the new one before it exports
+# again.
+test_export_switches_this_machine_to_its_ssh_key() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local mid; mid=$(_machine_id)
+    local f="$meta/secrets.$mid.age" peer_home="$TEST_TMPDIR/peer-home"
+    local out rc=0 key_type key_body key_comment
+    _stage_session_from_before_the_ssh_key || { echo "  FAIL: could not stage the earlier session"; return 1; }
+    # The peer is another machine (its own user name, so its own recipient
+    # file). It pinned this machine's age key while that was the recipient,
+    # and this machine pinned the peer's key in turn.
+    mkdir -p "$peer_home"
+    USER=peer HOME="$peer_home" "$CS_SECRETS_BIN" age add "$meta/age-recipients/$mid.pub" >/dev/null 2>&1 \
+        || { echo "  FAIL: fixture: the peer could not pin the age key"; return 1; }
+    USER=peer HOME="$peer_home" "$CS_SECRETS_BIN" set peer_key "pv" >/dev/null 2>&1 || return 1
+    USER=peer HOME="$peer_home" "$CS_SECRETS_BIN" export-file "$TEST_TMPDIR/peer-before.age" >/dev/null 2>&1 \
+        || { echo "  FAIL: fixture: the peer cannot export before the switch"; return 1; }
+    printf '%s' "$(cat "$meta"/age-recipients/peer@*.pub)" | shasum -a 256 | cut -d' ' -f1 \
+        >> "$HOME/.cs-secrets/sessions/test-session/age-trusted"
+
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the export exits 0: $out" || return 1
+    assert_file_exists "$HOME/.cs-secrets/id_ed25519.pub" "this machine has an ssh key" || return 1
+    read -r key_type key_body key_comment < "$HOME/.cs-secrets/id_ed25519.pub"
+    assert_eq "$key_type $key_body" "$(cat "$meta/age-recipients/$mid.pub")" \
+        "this machine's recipient file holds its ssh key" || return 1
+    _age_decrypts_to "$HOME/.cs-secrets/id_ed25519" "$f" "sk_123" \
+        || { echo "  FAIL: the ssh key cannot decrypt the sync file"; return 1; }
+    if _age_decrypts_to "$HOME/.cs-secrets/age.key" "$f" "sk_123"; then
+        echo "  FAIL: the sync file is still encrypted to the earlier age key"
+        return 1
+    fi
+    assert_file_exists "$HOME/.cs-secrets/age.key" "the earlier age key is kept" || return 1
+
+    rc=0
+    out=$(USER=peer HOME="$peer_home" "$CS_SECRETS_BIN" export-file "$TEST_TMPDIR/peer-after.age" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the peer's next export is refused" || return 1
+    assert_output_contains "$out" "age add .*age-recipients/$mid\.pub" "the refusal gives the peer the pin command" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/peer-after.age" "the refused export writes nothing" || return 1
+}
+
+# With age on the machine an export encrypts to keys, and it needs ssh-keygen
+# for this machine's key. Without it the export stops and says so; it does not
+# fall back to a password file.
+test_first_export_without_ssh_keygen_refuses() {
+    _use_real_age || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local bindir="$TEST_TMPDIR/no-ssh-keygen" out rc=0
+    link_path_without "$bindir" 'ssh-keygen'
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    out=$(PATH="$bindir" "$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the export exits 1" || return 1
+    assert_eq "Error: ssh-keygen not found. cs keeps this machine's key as an ssh-ed25519 pair and needs OpenSSH 8.0 or later to create it and to sign with it." \
+        "$out" "the refusal names ssh-keygen" || return 1
+    assert_eq "" "$(find "$meta" -name 'secrets.*')" "no sync file of either kind is written" || return 1
+    assert_eq "" "$(find "$meta" -name '*.pub')" "no recipient file is written" || return 1
+}
+
+# True when <file>.sig is this key's signature over the file in the session's
+# namespace. Checked with ssh-keygen directly, not through cs.
+_sync_file_is_signed_by() {  # public key file, sync file, session
+    local allowed="$TEST_TMPDIR/allowed.$$" key_type key_body key_comment
+    read -r key_type key_body key_comment < "$1"
+    printf 'cs %s %s\n' "$key_type" "$key_body" > "$allowed"
+    ssh-keygen -Y verify -f "$allowed" -I cs -n "cs-secrets@$3" -s "$2.sig" < "$2" >/dev/null 2>&1
+}
+
+# age says who may read a sync file, not who wrote it: anyone who can push can
+# encrypt to a tracked public key. The export signs the ciphertext with this
+# machine's key, in a namespace that names the session.
+test_export_signs_the_sync_file() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f; f="$meta/secrets.$(_machine_id).age"
+    local out rc=0
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the export exits 0: $out" || return 1
+    assert_file_exists "$f.sig" "the signature sits beside the sync file" || return 1
+    _sync_file_is_signed_by "$HOME/.cs-secrets/id_ed25519.pub" "$f" test-session \
+        || { echo "  FAIL: the signature does not verify with this machine's key"; return 1; }
+    if _sync_file_is_signed_by "$HOME/.cs-secrets/id_ed25519.pub" "$f" other-session; then
+        echo "  FAIL: the signature verifies for another session"
+        return 1
+    fi
+}
+
+# A stop between the two renames leaves a new sync file beside an old
+# signature, or none. The next export puts a current signature back although
+# no secret changed.
+test_export_replaces_a_signature_that_does_not_verify() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f; f="$meta/secrets.$(_machine_id).age"
+    local out rc
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
+
+    rm "$f.sig"
+    rc=0
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the export after a lost signature exits 0: $out" || return 1
+    _sync_file_is_signed_by "$HOME/.cs-secrets/id_ed25519.pub" "$f" test-session \
+        || { echo "  FAIL: a lost signature was not written again: $out"; return 1; }
+
+    printf 'an earlier ciphertext' \
+        | ssh-keygen -Y sign -f "$HOME/.cs-secrets/id_ed25519" -n "cs-secrets@test-session" > "$f.sig" 2>/dev/null \
+        || { echo "  FAIL: fixture: could not make a stale signature"; return 1; }
+    rc=0
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the export after a stale signature exits 0: $out" || return 1
+    _sync_file_is_signed_by "$HOME/.cs-secrets/id_ed25519.pub" "$f" test-session \
+        || { echo "  FAIL: a stale signature was not replaced: $out"; return 1; }
+    assert_eq "sk_123" "$(age -d -i "$HOME/.cs-secrets/id_ed25519" < "$f" | jq -r .api_key)" "the secret is still the same" || return 1
+}
+
+# A peer checks a sync file's signature against the public keys in
+# .cs/age-recipients, so the machine that signs has to be in there. Joining a
+# session that already has recipients adds this machine's key on its first
+# export.
+test_export_adds_this_machine_to_a_session_that_has_recipients() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local mid; mid=$(_machine_id)
+    local f="$meta/secrets.$mid.age" out rc=0 key_type key_body key_comment
+    _make_age_identity colleague || { echo "  FAIL: could not create a test identity"; return 1; }
+    "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/colleague.pub" >/dev/null 2>&1 || { echo "  FAIL: fixture: age add failed"; return 1; }
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the export exits 0: $out" || return 1
+    assert_file_exists "$HOME/.cs-secrets/id_ed25519.pub" "this machine has a key" || return 1
+    read -r key_type key_body key_comment < "$HOME/.cs-secrets/id_ed25519.pub"
+    assert_file_exists "$meta/age-recipients/$mid.pub" "this machine has a recipient file" || return 1
+    assert_eq "$key_type $key_body" "$(cat "$meta/age-recipients/$mid.pub")" "it holds this machine's key" || return 1
+    _age_decrypts_to "$HOME/.cs-secrets/id_ed25519" "$f" "sk_123" || { echo "  FAIL: this machine cannot decrypt its own file"; return 1; }
+    _age_decrypts_to "$TEST_TMPDIR/colleague.key" "$f" "sk_123" || { echo "  FAIL: the colleague cannot decrypt"; return 1; }
+    _sync_file_is_signed_by "$meta/age-recipients/$mid.pub" "$f" test-session \
+        || { echo "  FAIL: the signature does not verify with the published key"; return 1; }
+}
+
+# The file name this machine would publish under can already hold someone
+# else's key: two machines with one user and host name, or a key pair made
+# anew. cs does not replace a key it cannot account for.
+test_export_refuses_when_this_machines_recipient_file_holds_another_key() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local mid; mid=$(_machine_id)
+    local out rc=0 before
+    _make_ssh_identity other || { echo "  FAIL: could not create a test ssh identity"; return 1; }
+    cp "$TEST_TMPDIR/other.ssh.pub" "$TEST_TMPDIR/$mid.pub"
+    "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/$mid.pub" >/dev/null 2>&1 || { echo "  FAIL: fixture: age add failed"; return 1; }
+    before=$(cat "$meta/age-recipients/$mid.pub")
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the export exits 1" || return 1
+    assert_eq "Error: $meta/age-recipients/$mid.pub holds a key that is not this machine's. Remove it with 'cs -secrets age remove $mid', or publish this machine's key under another name with 'cs -secrets age add <a copy of $HOME/.cs-secrets/id_ed25519.pub>'." \
+        "$out" "the refusal names the file and both ways out" || return 1
+    assert_eq "$before" "$(cat "$meta/age-recipients/$mid.pub")" "the file is left as it was" || return 1
+    assert_eq "" "$(find "$meta" -name 'secrets.*')" "no sync file is written" || return 1
+}
+
+# An export that has nothing new to say leaves the file and its signature
+# byte for byte as they were.
+test_export_leaves_a_current_signed_file_alone() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f; f="$meta/secrets.$(_machine_id).age"
+    local out rc=0
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
+    cp "$f" "$TEST_TMPDIR/before.age"
+    cp "$f.sig" "$TEST_TMPDIR/before.sig"
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the second export exits 0" || return 1
+    assert_eq "No secret changes to export for session: test-session (secrets.$(_machine_id).age is up to date)" "$out" \
+        "it reports nothing to export" || return 1
+    cmp -s "$f" "$TEST_TMPDIR/before.age" || { echo "  FAIL: the sync file was rewritten"; return 1; }
+    cmp -s "$f.sig" "$TEST_TMPDIR/before.sig" || { echo "  FAIL: the signature was rewritten"; return 1; }
+}
+
+# Signing needs ssh-keygen on every export, not only the first.
+test_later_export_without_ssh_keygen_refuses_and_keeps_the_signed_file() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f; f="$meta/secrets.$(_machine_id).age"
+    local bindir="$TEST_TMPDIR/no-ssh-keygen" out rc=0
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
+    cp "$f" "$TEST_TMPDIR/before.age"
+    cp "$f.sig" "$TEST_TMPDIR/before.sig"
+    "$CS_SECRETS_BIN" set api_key "sk_456" >/dev/null 2>&1 || return 1
+    link_path_without "$bindir" 'ssh-keygen'
+    out=$(PATH="$bindir" "$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the export exits 1" || return 1
+    assert_eq "Error: ssh-keygen not found. cs keeps this machine's key as an ssh-ed25519 pair and needs OpenSSH 8.0 or later to create it and to sign with it." \
+        "$out" "the refusal names ssh-keygen" || return 1
+    cmp -s "$f" "$TEST_TMPDIR/before.age" || { echo "  FAIL: the sync file was changed"; return 1; }
+    cmp -s "$f.sig" "$TEST_TMPDIR/before.sig" || { echo "  FAIL: the signature was changed"; return 1; }
+    assert_eq "" "$(find "$meta" -name '.secrets.*')" "no temp file is left" || return 1
+    assert_eq "" "$(find "$meta" -name '*.enc')" "no password file is written instead" || return 1
+}
+
+test_export_to_a_named_file_signs_beside_it() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local named="$TEST_TMPDIR/out/named.age"
+    mkdir -p "$TEST_TMPDIR/out"
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file "$named" >/dev/null 2>&1 || { echo "  FAIL: export to a named file failed"; return 1; }
+    _sync_file_is_signed_by "$HOME/.cs-secrets/id_ed25519.pub" "$named" test-session \
+        || { echo "  FAIL: the named file has no verifying signature beside it"; return 1; }
+    assert_eq "" "$(find "$meta" -name 'secrets.*')" "nothing is written at the default place" || return 1
+}
+
+# A password file's trust is the password: whoever holds it can write one. It
+# carries no signature.
+test_password_export_writes_no_signature() {
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: password export failed"; return 1; }
+    assert_file_exists "$meta/secrets.$(_machine_id).enc" "the password file is written" || return 1
+    assert_eq "" "$(find "$meta" -name '*.sig')" "no signature is written" || return 1
+    assert_not_exists "$HOME/.cs-secrets/id_ed25519" "no machine key is made for a password export" || return 1
+}
+
+# A directory where the signature goes would take the new signature inside it
+# and leave the sync file with none: the export stops before it writes.
+test_export_refuses_a_directory_where_the_signature_goes() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f; f="$meta/secrets.$(_machine_id).age"
+    local out rc=0
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
+    cp "$f" "$TEST_TMPDIR/before.age"
+    rm "$f.sig"
+    mkdir "$f.sig"
+    "$CS_SECRETS_BIN" set api_key "sk_456" >/dev/null 2>&1 || return 1
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the export exits 1" || return 1
+    assert_eq "Error: Aborting export for session 'test-session': $f.sig is a directory" "$out" "the refusal names the path" || return 1
+    cmp -s "$f" "$TEST_TMPDIR/before.age" || { echo "  FAIL: the sync file was changed"; return 1; }
+    assert_eq "" "$(find "$meta" -name '.secrets.*')" "no temp file is left" || return 1
+    assert_eq "" "$(find "$f.sig" -mindepth 1)" "nothing is written into the directory" || return 1
+}
+
+# ---------------------------------------------------------------------------
+# Signed sync files on import. age only says who may read a file: anyone who
+# can push to the session's repository can encrypt one to a tracked public
+# key. An import takes an age file only when its signature was made by a key
+# a recipient file holds and this machine has pinned.
+# ---------------------------------------------------------------------------
+
+# Another machine in the session, with its own HOME and user name. It pins
+# this machine's key, stores one secret and exports: the session then holds
+# secrets.peer@<host>.age, its signature and the peer's recipient file.
+_peer_exports() {  # secret name, value
+    local peer_home="$TEST_TMPDIR/peer-home" own_pubkey="$HOME/.cs-secrets/id_ed25519.pub"
+    mkdir -p "$peer_home"
+    "$CS_SECRETS_BIN" age init >/dev/null 2>&1 || return 1
+    USER=peer HOME="$peer_home" "$CS_SECRETS_BIN" age add "$own_pubkey" >/dev/null 2>&1 || return 1
+    USER=peer HOME="$peer_home" "$CS_SECRETS_BIN" set "$1" "$2" >/dev/null 2>&1 || return 1
+    USER=peer HOME="$peer_home" "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || return 1
+}
+_peer_sync_file() {
+    printf '%s' "$CS_SESSIONS_ROOT"/test-session/.cs/secrets.peer@*.age
+}
+_peer_recipient_file() {
+    printf '%s' "$CS_SESSIONS_ROOT"/test-session/.cs/age-recipients/peer@*.pub
+}
+# A sync file someone who can push made by hand: encrypted to this machine's
+# key under the given file name, with no signature.
+_plant_unsigned_sync_file() {  # file name, json
+    "$CS_SECRETS_BIN" age init >/dev/null 2>&1 || return 1
+    printf '%s\n' "$2" | age -r "$(cat "$HOME/.cs-secrets/id_ed25519.pub")" \
+        -o "$CS_SESSIONS_ROOT/test-session/.cs/$1" || return 1
+}
+
+test_import_file_takes_a_file_signed_by_a_pinned_peer() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local out rc=0
+    _peer_exports from_peer "vp" || { echo "  FAIL: fixture: the peer could not export"; return 1; }
+    "$CS_SECRETS_BIN" age add "$(_peer_recipient_file)" >/dev/null 2>&1 || { echo "  FAIL: fixture: could not pin the peer"; return 1; }
+    out=$("$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the import exits 0: $out" || return 1
+    assert_eq "Imported 1 secret(s) from 1 sync file(s)." "$out" "it reports the one file" || return 1
+    assert_eq "vp" "$("$CS_SECRETS_BIN" get from_peer 2>&1)" "the peer's secret is imported" || return 1
+}
+
+test_import_file_skips_an_unsigned_age_file() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local mode out rc
+    _plant_unsigned_sync_file "secrets.aaa@example.age" '{"planted":"vx"}' || { echo "  FAIL: fixture: could not plant the file"; return 1; }
+    for mode in "" --replace; do
+        rc=0
+        # shellcheck disable=SC2086  # an empty mode is no argument
+        out=$("$CS_SECRETS_BIN" import-file $mode 2>&1) || rc=$?
+        assert_eq "0" "$rc" "the import exits 0 (mode '$mode')" || return 1
+        assert_output_contains "$out" "^Skipped secrets\.aaa@example\.age: it has no signature\. Sync files written before cs signed them have none; import one you trust with --allow-unsigned\.$" \
+            "the skip names the file and the flag (mode '$mode')" || return 1
+        _assert_secret_absent planted "nothing from the file is stored (mode '$mode')" || return 1
+    done
+}
+
+# A file under this machine's own name is no more trusted than any other: the
+# name is a string anyone can write.
+test_import_file_skips_an_unsigned_file_under_this_machines_name() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local out rc=0
+    "$CS_SECRETS_BIN" set api_key "vlocal" >/dev/null 2>&1 || return 1
+    _plant_unsigned_sync_file "secrets.$(_machine_id).age" '{"api_key":"vswapped"}' || { echo "  FAIL: fixture: could not plant the file"; return 1; }
+    out=$("$CS_SECRETS_BIN" import-file --replace 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the import exits 0" || return 1
+    assert_output_contains "$out" "^Skipped secrets\.$(_machine_id)\.age: it has no signature" "the skip names the file" || return 1
+    assert_eq "vlocal" "$("$CS_SECRETS_BIN" get api_key 2>&1)" "the stored secret is not replaced" || return 1
+}
+
+test_import_file_skips_a_file_signed_by_an_unpinned_key() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local out rc=0 peer_pub peer_file
+    _peer_exports from_peer "vp" || { echo "  FAIL: fixture: the peer could not export"; return 1; }
+    peer_pub=$(_peer_recipient_file)
+    peer_file=$(_peer_sync_file)
+    out=$("$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the import exits 0" || return 1
+    assert_output_contains "$out" "^Skipped $(basename "$peer_file"): it is signed by $(basename "$peer_pub"), a key this machine has not pinned\. If you trust it: cs -secrets --session test-session age add " \
+        "the skip names the signer's file and the pin command" || return 1
+    _assert_secret_absent from_peer "nothing from the file is stored" || return 1
+}
+
+# A signature by a key no recipient file holds says nothing about who wrote
+# the file, however valid it is.
+test_import_file_skips_a_file_signed_by_a_key_outside_the_session() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f="$meta/secrets.aaa@example.age" out rc=0
+    _make_ssh_identity stranger || return 1
+    # This machine has exported, so the session holds a pinned key to check
+    # signatures against: the stranger's must fail that check, not find it empty.
+    "$CS_SECRETS_BIN" set local_key "vlocal" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: fixture: export failed"; return 1; }
+    _plant_unsigned_sync_file "secrets.aaa@example.age" '{"planted":"vx"}' || return 1
+    ssh-keygen -Y sign -f "$TEST_TMPDIR/stranger.ssh" -n "cs-secrets@test-session" < "$f" > "$f.sig" 2>/dev/null \
+        || { echo "  FAIL: fixture: could not sign"; return 1; }
+    out=$("$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the import exits 0" || return 1
+    assert_output_contains "$out" "^Skipped secrets\.aaa@example\.age: its signature does not match\." "the skip names the file" || return 1
+    _assert_secret_absent planted "nothing from the file is stored" || return 1
+}
+
+test_import_file_skips_a_signed_file_changed_after_signing() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local out rc=0 peer_file
+    _peer_exports from_peer "vp" || { echo "  FAIL: fixture: the peer could not export"; return 1; }
+    "$CS_SECRETS_BIN" age add "$(_peer_recipient_file)" >/dev/null 2>&1 || return 1
+    peer_file=$(_peer_sync_file)
+    # One byte added to the ciphertext. (Overwriting a byte with a fixed value
+    # leaves the file as it was once in 256 runs.)
+    printf 'X' >> "$peer_file"
+    out=$("$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the import exits 0" || return 1
+    assert_output_contains "$out" "^Skipped $(basename "$peer_file"): its signature does not match\." "the skip names the file" || return 1
+    _assert_secret_absent from_peer "nothing from the file is stored" || return 1
+}
+
+# The bytes that are decrypted are the bytes whose signature was checked. A
+# checkout can replace a sync file while an import runs; here ssh-keygen
+# itself replaces the session's file, just before or just after it verifies.
+_ssh_keygen_that_swaps() {  # bin dir, before|after, replacement, sync file
+    local real_keygen
+    real_keygen=$(command -v ssh-keygen)
+    mkdir -p "$1"
+    cat > "$1/ssh-keygen" <<SHIM
+#!/bin/bash
+case " \$* " in
+    *" -Y verify "*)
+        if [ "$2" = before ]; then
+            cp "$3" "$4"
+            : > "$TEST_TMPDIR/swapped"
+            exec "$real_keygen" "\$@"
+        fi
+        "$real_keygen" "\$@" || exit \$?
+        cp "$3" "$4"
+        : > "$TEST_TMPDIR/swapped"
+        exit 0
+        ;;
+esac
+exec "$real_keygen" "\$@"
+SHIM
+    chmod +x "$1/ssh-keygen"
+}
+_plant_unsigned_replacement() {  # output file, json
+    printf '%s\n' "$2" | age -r "$(cat "$HOME/.cs-secrets/id_ed25519.pub")" -o "$1"
+}
+
+test_import_file_decrypts_the_bytes_it_verified() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local bindir="$TEST_TMPDIR/swapping-ssh-keygen" unsigned="$TEST_TMPDIR/unsigned.age"
+    local peer_file out rc=0
+    _peer_exports from_peer "vp" || { echo "  FAIL: fixture: the peer could not export"; return 1; }
+    "$CS_SECRETS_BIN" age add "$(_peer_recipient_file)" >/dev/null 2>&1 || { echo "  FAIL: fixture: could not pin the peer"; return 1; }
+    peer_file=$(_peer_sync_file)
+    _plant_unsigned_replacement "$unsigned" '{"from_peer":"vswapped"}' || { echo "  FAIL: fixture: could not encrypt the replacement"; return 1; }
+    _ssh_keygen_that_swaps "$bindir" after "$unsigned" "$peer_file"
+    out=$(PATH="$bindir:$PATH" "$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_file_exists "$TEST_TMPDIR/swapped" "fixture: the file was replaced after a passing check" || return 1
+    cmp -s "$peer_file" "$unsigned" || { echo "  FAIL: fixture: the session does not hold the replacement"; return 1; }
+    assert_eq "0" "$rc" "the import exits 0: $out" || return 1
+    assert_eq "vp" "$("$CS_SECRETS_BIN" get from_peer 2>&1)" "the signed value is imported, not the replacement" || return 1
+}
+
+# The other order: the session holds an unsigned file when the import reads
+# it, and the signed one is back in place by the time the signature is checked.
+test_import_file_verifies_the_bytes_it_will_decrypt() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local bindir="$TEST_TMPDIR/swapping-ssh-keygen" signed="$TEST_TMPDIR/signed.age"
+    local peer_file out rc=0
+    _peer_exports from_peer "vp" || { echo "  FAIL: fixture: the peer could not export"; return 1; }
+    "$CS_SECRETS_BIN" age add "$(_peer_recipient_file)" >/dev/null 2>&1 || { echo "  FAIL: fixture: could not pin the peer"; return 1; }
+    peer_file=$(_peer_sync_file)
+    cp "$peer_file" "$signed"
+    _plant_unsigned_replacement "$peer_file" '{"from_peer":"vswapped"}' || { echo "  FAIL: fixture: could not encrypt the replacement"; return 1; }
+    _ssh_keygen_that_swaps "$bindir" before "$signed" "$peer_file"
+    out=$(PATH="$bindir:$PATH" "$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_file_exists "$TEST_TMPDIR/swapped" "fixture: the signed file was put back before the check" || return 1
+    cmp -s "$peer_file" "$signed" || { echo "  FAIL: fixture: the session does not hold the signed file"; return 1; }
+    assert_eq "0" "$rc" "the import exits 0: $out" || return 1
+    assert_output_contains "$out" "^Skipped $(basename "$peer_file"): its signature does not match\." "the skip names the file" || return 1
+    _assert_secret_absent from_peer "nothing from the unsigned file is stored" || return 1
+}
+
+# A symbolic link is the one thing a push can put at either path that names
+# something outside the repository: a device, a pipe, a file of any size. An
+# import copies the link, never what it names, and takes neither.
+test_import_file_skips_a_signature_that_is_a_symbolic_link() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local peer_file mode out rc
+    _peer_exports from_peer "vp" || { echo "  FAIL: fixture: the peer could not export"; return 1; }
+    "$CS_SECRETS_BIN" age add "$(_peer_recipient_file)" >/dev/null 2>&1 || { echo "  FAIL: fixture: could not pin the peer"; return 1; }
+    peer_file=$(_peer_sync_file)
+    mv "$peer_file.sig" "$TEST_TMPDIR/elsewhere.sig"
+    ln -s "$TEST_TMPDIR/elsewhere.sig" "$peer_file.sig"
+    for mode in "" --allow-unsigned; do
+        rc=0
+        # shellcheck disable=SC2086  # an empty mode is no argument
+        out=$("$CS_SECRETS_BIN" import-file $mode 2>&1) || rc=$?
+        assert_eq "0" "$rc" "the import exits 0 (mode '$mode')" || return 1
+        assert_output_contains "$out" "^Skipped $(basename "$peer_file"): its signature is a symbolic link\.$" "the skip says why (mode '$mode')" || return 1
+        _assert_secret_absent from_peer "nothing from the file is stored (mode '$mode')" || return 1
+    done
+}
+
+test_import_file_skips_a_sync_file_that_is_a_symbolic_link() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local peer_file out rc=0
+    _peer_exports from_peer "vp" || { echo "  FAIL: fixture: the peer could not export"; return 1; }
+    "$CS_SECRETS_BIN" age add "$(_peer_recipient_file)" >/dev/null 2>&1 || { echo "  FAIL: fixture: could not pin the peer"; return 1; }
+    peer_file=$(_peer_sync_file)
+    mv "$peer_file" "$TEST_TMPDIR/elsewhere.age"
+    ln -s "$TEST_TMPDIR/elsewhere.age" "$peer_file"
+    out=$("$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the import exits 0" || return 1
+    assert_output_contains "$out" "^Skipped $(basename "$peer_file"): it is a symbolic link\.$" "the skip says why" || return 1
+    _assert_secret_absent from_peer "nothing from the file is stored" || return 1
+}
+
+# A directory at the signature path is not a missing signature.
+test_import_file_skips_a_file_whose_signature_cannot_be_read() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local out rc=0
+    _plant_unsigned_sync_file "secrets.aaa@example.age" '{"planted":"vx"}' || { echo "  FAIL: fixture: could not plant the file"; return 1; }
+    mkdir "$CS_SESSIONS_ROOT/test-session/.cs/secrets.aaa@example.age.sig"
+    out=$("$CS_SECRETS_BIN" import-file --allow-unsigned 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the import exits 0" || return 1
+    assert_output_contains "$out" "^Skipped secrets\.aaa@example\.age: its signature could not be read\.$" "the skip says why" || return 1
+    _assert_secret_absent planted "nothing from the file is stored" || return 1
+}
+
+# The same peer, pinned in two sessions: a file it signed for one is not
+# accepted in the other.
+test_import_file_skips_a_file_signed_for_another_session() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs" other="$CS_SESSIONS_ROOT/other-session/.cs"
+    local out rc=0 peer_file peer_pub
+    _peer_exports from_peer "vp" || { echo "  FAIL: fixture: the peer could not export"; return 1; }
+    peer_file=$(_peer_sync_file)
+    peer_pub=$(_peer_recipient_file)
+    mkdir -p "$other/age-recipients"
+    cp "$peer_pub" "$other/age-recipients/"
+    cp "$peer_file" "$peer_file.sig" "$other/"
+    "$CS_SECRETS_BIN" --session other-session age add "$other/age-recipients/$(basename "$peer_pub")" >/dev/null 2>&1 \
+        || { echo "  FAIL: fixture: could not pin the peer in the other session"; return 1; }
+    out=$("$CS_SECRETS_BIN" --session other-session import-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the import exits 0" || return 1
+    assert_output_contains "$out" "^Skipped $(basename "$peer_file"): its signature does not match\." "the skip names the file" || return 1
+    out=$("$CS_SECRETS_BIN" --session other-session get from_peer 2>&1) || true
+    assert_eq "Error: secret not found: from_peer" "$out" "nothing is stored in the other session" || return 1
+}
+
+test_import_file_allow_unsigned_takes_a_file_with_no_signature() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local out rc=0
+    _plant_unsigned_sync_file "secrets.older@example.age" '{"from_before":"vb"}' || return 1
+    out=$("$CS_SECRETS_BIN" import-file --allow-unsigned 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the import exits 0: $out" || return 1
+    assert_eq "vb" "$("$CS_SECRETS_BIN" get from_before 2>&1)" "the unsigned file is imported" || return 1
+}
+
+# The flag is for files that predate signatures, not for files whose
+# signature is wrong.
+test_import_file_allow_unsigned_still_skips_a_bad_signature() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local out rc=0 peer_file
+    _peer_exports from_peer "vp" || { echo "  FAIL: fixture: the peer could not export"; return 1; }
+    "$CS_SECRETS_BIN" age add "$(_peer_recipient_file)" >/dev/null 2>&1 || return 1
+    peer_file=$(_peer_sync_file)
+    printf 'X' >> "$peer_file"
+    out=$("$CS_SECRETS_BIN" import-file --allow-unsigned 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the import exits 0" || return 1
+    assert_output_contains "$out" "^Skipped $(basename "$peer_file"): its signature does not match\." "the skip names the file" || return 1
+    _assert_secret_absent from_peer "nothing from the file is stored" || return 1
+}
+
+test_import_file_refuses_a_named_file_that_is_not_trusted() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f="$meta/secrets.aaa@example.age" out rc=0
+    _plant_unsigned_sync_file "secrets.aaa@example.age" '{"planted":"vx"}' || return 1
+    out=$("$CS_SECRETS_BIN" import-file "$f" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the import of the named file exits 1" || return 1
+    assert_eq "Error: Refusing to import $f: it has no signature. Sync files written before cs signed them have none; import one you trust with --allow-unsigned." \
+        "$out" "the refusal names the file and the flag" || return 1
+    _assert_secret_absent planted "nothing from the file is stored" || return 1
+    rc=0
+    out=$("$CS_SECRETS_BIN" import-file "$f" --allow-unsigned 2>&1) || rc=$?
+    assert_eq "0" "$rc" "with the flag the named file is imported: $out" || return 1
+    assert_eq "vx" "$("$CS_SECRETS_BIN" get planted 2>&1)" "its secret is stored" || return 1
+}
+
+# Checking a signature needs ssh-keygen. Without it an age file is skipped by
+# name, and a password file beside it is still imported.
+test_import_file_without_ssh_keygen_skips_signed_files_by_name() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local bindir="$TEST_TMPDIR/no-ssh-keygen" out rc=0 peer_file
+    _peer_exports from_peer "vp" || { echo "  FAIL: fixture: the peer could not export"; return 1; }
+    "$CS_SECRETS_BIN" age add "$(_peer_recipient_file)" >/dev/null 2>&1 || return 1
+    peer_file=$(_peer_sync_file)
+    _seed_enc_sync_file "$meta/secrets.machine-b.enc" '{"from_password_file":"ve"}' || return 1
+    link_path_without "$bindir" 'ssh-keygen'
+    out=$(PATH="$bindir" "$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the import exits 0: $out" || return 1
+    assert_output_contains "$out" "^Skipped $(basename "$peer_file"): ssh-keygen not found, so its signature cannot be checked\.$" "the skip names the file and the tool" || return 1
+    _assert_secret_absent from_peer "the age file is not imported" || return 1
+    assert_eq "ve" "$("$CS_SECRETS_BIN" get from_password_file 2>&1)" "the password file is imported" || return 1
+}
+
 test_import_file_merges_all_machines_and_legacy() {
     local meta="$CS_SESSIONS_ROOT/test-session/.cs"
     _seed_enc_sync_file "$meta/secrets.machine-b.enc" '{"from_machine_b":"vb"}' || return 1
@@ -1394,10 +2183,9 @@ test_set_rejects_a_name_that_breaks_out_of_export() {
 # both become CS_SECRET_API_KEY. Eval takes the last, so a sync file can shadow
 # a real secret with an attacker's value. Refuse rather than emit both.
 test_export_refuses_colliding_exported_names() {
-    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
-    _seed_enc_sync_file "$meta/secrets.machine-c.enc" \
-        '{"api_key":"REAL","api-key":"SHADOW"}' || return 1
-    PATH="$(_ageless_path)" "$CS_SECRETS_BIN" import-file >/dev/null 2>&1
+    # Staged with two `set` calls: an import refuses the pair.
+    "$CS_SECRETS_BIN" set api_key "REAL" >/dev/null 2>&1 || { echo "  FAIL: fixture: set api_key failed"; return 1; }
+    "$CS_SECRETS_BIN" set api-key "SHADOW" >/dev/null 2>&1 || { echo "  FAIL: fixture: set api-key failed"; return 1; }
 
     local out rc=0
     out=$("$CS_SECRETS_BIN" export 2>&1) || rc=$?
@@ -1466,6 +2254,80 @@ test_import_file_refuses_a_hostile_key_name() {
         return 1
     fi
     assert_output_contains "$out" "name" "the refusal must name the problem" || return 1
+}
+
+_assert_secret_absent() {  # name, message
+    local out rc=0
+    out=$("$CS_SECRETS_BIN" get "$1" 2>&1) || rc=$?
+    assert_eq "3 Error: secret not found: $1" "$rc $out" "$2" || return 1
+}
+
+# Two names that differ only in hyphen against underscore become one variable
+# in `cs -secrets export`, which then refuses the whole store. An import that
+# would create such a pair stores nothing and names both.
+test_import_file_refuses_two_names_that_export_as_one_variable() {
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    _seed_enc_sync_file "$meta/secrets.machine-a.enc" '{"api-key":"va","other":"vo"}' || return 1
+    _seed_enc_sync_file "$meta/secrets.machine-b.enc" '{"api_key":"vb"}' || return 1
+
+    local out rc=0
+    out=$(PATH="$(_ageless_path)" "$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the import exits 1" || return 1
+    assert_eq "Error: Aborting import for session 'test-session': secrets 'api-key' and 'api_key' both export as CS_SECRET_API_KEY. Nothing was imported. Remove one of them where it is stored, then export and import again." \
+        "$out" "the refusal names both secrets and the variable" || return 1
+    _assert_secret_absent api-key "the hyphenated name is not stored" || return 1
+    _assert_secret_absent api_key "the underscored name is not stored" || return 1
+    _assert_secret_absent other "a name beside the pair is not stored either" || return 1
+}
+
+# The same pair with one half already stored: the local secret stays, the
+# incoming one is refused, and export keeps working.
+test_import_file_refuses_a_name_that_shares_a_variable_with_a_stored_secret() {
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    "$CS_SECRETS_BIN" set api_key "vlocal" >/dev/null 2>&1 || { echo "  FAIL: fixture: set failed"; return 1; }
+    _seed_enc_sync_file "$meta/secrets.machine-a.enc" '{"api-key":"va","other":"vo"}' || return 1
+
+    local mode out rc
+    for mode in "" --replace; do
+        rc=0
+        # shellcheck disable=SC2086  # an empty mode is no argument
+        out=$(PATH="$(_ageless_path)" "$CS_SECRETS_BIN" import-file $mode 2>&1) || rc=$?
+        assert_eq "1" "$rc" "the import exits 1 (mode '$mode')" || return 1
+        assert_eq "Error: Aborting import for session 'test-session': secrets 'api-key' and 'api_key' both export as CS_SECRET_API_KEY. Nothing was imported. Remove one of them where it is stored, then export and import again." \
+            "$out" "the refusal names the incoming and the stored secret (mode '$mode')" || return 1
+        _assert_secret_absent api-key "the incoming name is not stored (mode '$mode')" || return 1
+        _assert_secret_absent other "a name beside it is not stored either (mode '$mode')" || return 1
+        assert_eq "vlocal" "$("$CS_SECRETS_BIN" get api_key 2>&1)" "the stored secret is untouched (mode '$mode')" || return 1
+    done
+    assert_eq "export CS_SECRET_API_KEY=vlocal" "$("$CS_SECRETS_BIN" export 2>&1)" "export still works" || return 1
+}
+
+# An invalid name stops the import before any name is stored, however the
+# names sort.
+test_import_file_stores_nothing_when_one_name_is_invalid() {
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    _seed_enc_sync_file "$meta/secrets.machine-a.enc" '{"aaa_new":"v1","zz;rm":"v2"}' || return 1
+
+    local out rc=0
+    out=$(PATH="$(_ageless_path)" "$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the import exits 1" || return 1
+    assert_output_contains "$out" "invalid secret name 'zz;rm'" "the refusal names the invalid name" || return 1
+    _assert_secret_absent aaa_new "a valid name sorted before the invalid one is not stored" || return 1
+    assert_file_not_exists "$HOME/.cs-secrets/test-session.enc" "no store is created" || return 1
+}
+
+# A name carrying a carriage return is not the name without it. The import
+# refuses it instead of storing an empty value under the shorter name.
+test_import_file_refuses_a_name_ending_in_a_carriage_return() {
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    _seed_enc_sync_file "$meta/secrets.machine-a.enc" '{"cr_key\r":"crval"}' || return 1
+
+    local out rc=0
+    out=$(PATH="$(_ageless_path)" "$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the import exits 1" || return 1
+    assert_output_contains "$out" "invalid secret name 'cr_key\\\\r'" "the refusal shows the carriage return" || return 1
+    assert_output_not_contains "$out" "Imported" "nothing is reported as imported" || return 1
+    assert_file_not_exists "$HOME/.cs-secrets/test-session.enc" "no store is created" || return 1
 }
 
 # Defense in depth: a store written before the check existed must still not be
@@ -2236,6 +3098,7 @@ run_test test_age_add_refuses_a_directory_that_is_not_a_session
 run_test test_age_add_refuses_a_name_that_is_a_path
 run_test test_age_remove_refuses_a_session_the_root_does_not_have
 run_test test_export_file_refuses_a_session_the_root_does_not_have
+run_test test_import_file_refuses_a_session_the_root_does_not_have
 run_test test_purge_empty_session
 
 # Export
@@ -2287,6 +3150,10 @@ run_test test_migrate_refuses_an_invalid_name
 run_test test_export_namespaces_every_variable
 run_test test_export_namespace_neutralises_dangerous_names
 run_test test_import_file_refuses_a_hostile_key_name
+run_test test_import_file_refuses_two_names_that_export_as_one_variable
+run_test test_import_file_refuses_a_name_that_shares_a_variable_with_a_stored_secret
+run_test test_import_file_stores_nothing_when_one_name_is_invalid
+run_test test_import_file_refuses_a_name_ending_in_a_carriage_return
 run_test test_export_refuses_a_hostile_name_already_in_the_store
 run_test test_import_file_aborts_when_the_store_write_fails
 run_test test_import_file_skips_undecryptable_files
@@ -2342,5 +3209,41 @@ run_test test_export_ignores_a_pin_list_planted_in_the_checkout
 run_test test_password_export_to_an_external_path_needs_no_writable_checkout
 run_test test_export_on_a_fresh_clone_pins_nothing
 run_test test_age_remove_drops_the_pin
+run_test test_age_add_takes_an_ssh_ed25519_key_file
+run_test test_age_add_takes_a_raw_ssh_ed25519_key
+run_test test_age_add_refuses_what_is_not_a_key
+run_test test_import_file_reads_a_file_encrypted_to_this_machines_ssh_key
+run_test test_import_file_still_reads_a_file_encrypted_to_the_earlier_age_key
+run_test test_age_init_creates_this_machines_ssh_key
+run_test test_age_init_names_a_missing_ssh_keygen
+run_test test_first_export_makes_this_machines_ssh_key_the_recipient
+run_test test_export_encrypts_to_age_and_ssh_recipients_together
+run_test test_export_switches_this_machine_to_its_ssh_key
+run_test test_first_export_without_ssh_keygen_refuses
+run_test test_export_signs_the_sync_file
+run_test test_export_replaces_a_signature_that_does_not_verify
+run_test test_export_adds_this_machine_to_a_session_that_has_recipients
+run_test test_export_refuses_when_this_machines_recipient_file_holds_another_key
+run_test test_export_leaves_a_current_signed_file_alone
+run_test test_later_export_without_ssh_keygen_refuses_and_keeps_the_signed_file
+run_test test_export_to_a_named_file_signs_beside_it
+run_test test_export_refuses_a_directory_where_the_signature_goes
+run_test test_password_export_writes_no_signature
+run_test test_import_file_takes_a_file_signed_by_a_pinned_peer
+run_test test_import_file_skips_an_unsigned_age_file
+run_test test_import_file_skips_an_unsigned_file_under_this_machines_name
+run_test test_import_file_skips_a_file_signed_by_an_unpinned_key
+run_test test_import_file_skips_a_file_signed_by_a_key_outside_the_session
+run_test test_import_file_skips_a_signed_file_changed_after_signing
+run_test test_import_file_decrypts_the_bytes_it_verified
+run_test test_import_file_verifies_the_bytes_it_will_decrypt
+run_test test_import_file_skips_a_signature_that_is_a_symbolic_link
+run_test test_import_file_skips_a_sync_file_that_is_a_symbolic_link
+run_test test_import_file_skips_a_file_whose_signature_cannot_be_read
+run_test test_import_file_skips_a_file_signed_for_another_session
+run_test test_import_file_allow_unsigned_takes_a_file_with_no_signature
+run_test test_import_file_allow_unsigned_still_skips_a_bad_signature
+run_test test_import_file_refuses_a_named_file_that_is_not_trusted
+run_test test_import_file_without_ssh_keygen_skips_signed_files_by_name
 
 report_results

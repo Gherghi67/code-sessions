@@ -95,7 +95,7 @@ There are two ways to sync secrets: **age encryption** (recommended) or **passwo
 [age](https://github.com/FiloSottile/age) provides modern public-key encryption - no shared password needed:
 
 ```bash
-# Initialize age (auto-downloads if needed)
+# Create this machine's key (downloads age if needed; needs ssh-keygen)
 cs -secrets age init
 
 # Show your public key (share this with collaborators)
@@ -104,7 +104,8 @@ cs -secrets age pubkey
 # Export secrets (auto-configures age on first use)
 cs -secrets export-file
 
-# Import on another machine (after adding your pubkey as recipient)
+# Import on another machine. It takes the files signed by keys you pinned
+# there with `age add`
 cs -secrets import-file
 ```
 
@@ -114,7 +115,8 @@ cs -secrets import-file
 # Add a collaborator's public key
 cs -secrets age add colleague.pub
 
-# Or add a raw key directly
+# Or add a raw key directly (quote an ssh key: it has a space in it)
+cs -secrets age add "ssh-ed25519 AAAAC3..."
 cs -secrets age add age1abc123...
 
 # List who can decrypt
@@ -126,11 +128,26 @@ cs -secrets export-file
 ```
 
 **How it works:**
-- Each machine has a keypair stored in `~/.cs-secrets/age.key`
-- Session recipients are stored in `<session>/.cs/age-recipients/*.pub`
+- Each machine has one ssh-ed25519 key pair, `~/.cs-secrets/id_ed25519` and
+  `id_ed25519.pub`. cs makes it with `ssh-keygen` on the first `age init` or
+  export, with no passphrase (exports run unattended) and mode 600. cs never
+  uses one of your `~/.ssh` keys. age encrypts to it and decrypts with it,
+  and `ssh-keygen` signs with it, so making the key and signing need
+  `ssh-keygen` from OpenSSH 8.0 or later
+- Session recipients are stored in `<session>/.cs/age-recipients/*.pub`. A
+  recipient is an `ssh-ed25519` key or an `age1...` key. cs stores an ssh key
+  as its type and key, without the comment, so a copy with another comment is
+  the same recipient
+- An export puts this machine's key in `age-recipients/<machine-id>.pub` when no
+  recipient file holds it yet, in a new session and in one that already has
+  recipients. Other machines encrypt to that file and check this machine's
+  signatures against it. When `<machine-id>.pub` already holds a different key
+  (two machines with one user and host name, or a key pair you made again),
+  the export stops and names the file
 - Each machine encrypts only to the recipients it has pinned in
   `~/.cs-secrets/sessions/<session>/age-trusted`; `age add` pins a key, `age remove`
-  unpins it. The pin list, the per-file recipient digests (`age-exported-to`)
+  unpins it. A pin means two things: encrypt to this key, and accept sync
+  files this key signed. The pin list, the per-file recipient digests (`age-exported-to`)
   and their lock (`.age.lock`) live under `~/.cs-secrets`, outside the checkout:
   `.cs/local` is gitignored, but `git add -f` is not, and a pushed pin list must
   never be read
@@ -140,7 +157,7 @@ cs -secrets export-file
   session (`base@task`) or an adopted session's link leaves that state alone:
   a feature session uses its base's secrets. Neither touches the stored secrets
   in the Keychain or the encrypted store; `cs -secrets purge` removes those
-- `age add`, `age remove` and `export-file` refuse a session name the sessions
+- `age add`, `age remove`, `export-file` and `import-file` refuse a session name the sessions
   root does not have (`No session named '<name>' in <root>`), so a removed or
   mistyped name never gets a directory or a pin list. A command already past
   that check when `cs -rm` removes the session can still write its files back
@@ -157,6 +174,64 @@ cs -secrets export-file
   digest record
 - Each machine writes its own sync file (see [Per-machine sync files](#per-machine-sync-files) below)
 - Anyone with their private key + being in recipients can decrypt
+
+### Signed sync files
+
+age decides who can read a sync file. It says nothing about who wrote it:
+`.cs/age-recipients/` is in git, so anyone who can push to the session's
+repository can encrypt a file to your public key and push it. That is why
+each machine signs what it exports, and an import checks the signature.
+
+- `export-file` signs the encrypted file with this machine's key and writes
+  the signature beside it, `.cs/secrets.<machine-id>.age.sig`. Commit both.
+  An export to a path you name writes `<path>.sig`
+- The signature names the session, so a file signed for one session is not
+  accepted in another
+- `import-file` takes an age file only when the key that signed it is in a
+  file under `.cs/age-recipients/` and you pinned that key on this machine.
+  The file's name counts for nothing, a file under this machine's own name
+  included
+- It skips every file it does not take, with a line that names the file and
+  says why: it has no signature, its signer is in `.cs/age-recipients/` but
+  not pinned (the line gives the `age add` to run), or the signature does not
+  match (the file changed after signing, the signature is for another
+  session, or its signer has no key in the session)
+- It reads neither the file nor its signature through a symbolic link, and
+  skips a file that has a link at either path
+- `import-file --allow-unsigned` also takes age files that have no signature.
+  Sync files written before cs signed them have none, and that is what the
+  flag is for. It does not cover a file whose signature does not match: the
+  import skips that one too
+- `import-file <file>` checks the named file the same way and refuses it
+  (exit 1) instead of skipping it
+- Password files (`.enc`) are not signed. Whoever has the password can write
+  one, and that is that format's trust
+- Without `ssh-keygen` an import cannot check signatures: it skips each signed
+  age file by name and still imports password files
+- A signature does not expire. Someone who can push can put back an older
+  file that one of your machines signed, and the import takes it. A merge
+  import only adds the secrets you do not have; `--replace` would bring the
+  old values back
+
+### Upgrading from age keys
+
+Before this, each machine had an age key pair (`~/.cs-secrets/age.key`) and
+sync files were not signed. A machine moves to its ssh key on its first
+export after the upgrade:
+
+1. `cs -secrets export-file` makes `~/.cs-secrets/id_ed25519`, rewrites this
+   machine's recipient file to the ssh key, pins it, encrypts again and
+   signs. It prints the `age add` line the other machines need
+2. Commit and push `.cs/age-recipients/`, the sync file and its `.sig`
+3. On each other machine, pull. Its next export refuses, because the changed
+   `.pub` is a key it has not pinned, and prints the same `age add` line. Run
+   it once you know the change is yours
+
+Every machine in the session needs the upgrade: an older cs does not accept
+an ssh key in `age add`. cs keeps `age.key` and still decrypts with it, so
+files other machines encrypted to the old key stay readable. Until a machine
+has exported with the new cs its sync file has no signature, and the others
+import it only with `--allow-unsigned`.
 
 ### Password-Based Encryption (Legacy)
 
@@ -182,8 +257,10 @@ Sessions are shared between machines via git, so the sync files live under `.cs/
 and are committed. To keep two machines from clobbering each other, **each machine
 writes its own sync file**, named after its hostname-derived machine id:
 
-- `.cs/secrets.<machine-id>.age` - age-encrypted (preferred when recipients configured)
-- `.cs/secrets.<machine-id>.enc` - password-encrypted (requires `CS_SECRETS_PASSWORD`)
+- `.cs/secrets.<machine-id>.age` - age-encrypted, what a machine with age writes
+- `.cs/secrets.<machine-id>.age.sig` - this machine's signature over that file
+- `.cs/secrets.<machine-id>.enc` - password-encrypted (requires `CS_SECRETS_PASSWORD`),
+  what a machine without age writes
 
 The `<machine-id>` is `${USER}@<short-hostname>` (the same id used to name age
 recipients under `.cs/age-recipients/`).
@@ -199,20 +276,29 @@ does not churn the file's bytes (each encryption pass would otherwise emit fresh
 ciphertext from a random salt / ephemeral key). For an age file, "nothing
 changed" also covers the recipients: the machine records the recipient set it
 encrypted each file to (`~/.cs-secrets/sessions/<session>/age-exported-to`), and any add or removal
-makes the next export re-encrypt even when no secret changed. A removed
+makes the next export re-encrypt even when no secret changed. A signature
+that is missing or no longer matches the file does the same. A removed
 recipient keeps reading other machines' sync files until those machines
 export, and every copy already in git history.
 
-`import-file` (with no path argument) **merges every sync file it can decrypt** —
-all `.cs/secrets.*.age` / `.cs/secrets.*.enc` from every machine, plus the legacy
-unsuffixed `.cs/secrets.age` / `.cs/secrets.enc` (a one-shot migration for
-sessions created before per-machine naming). Files it cannot decrypt (another
-machine's age key, a different password) are skipped, not fatal. Per-machine
-files win key collisions over the legacy files; local secrets are preserved
-unless you pass `--replace`.
+`import-file` (with no path argument) **merges every sync file it trusts and
+can decrypt**: all `.cs/secrets.*.age` / `.cs/secrets.*.enc` from every
+machine, plus the legacy unsuffixed `.cs/secrets.age` / `.cs/secrets.enc` (a
+one-shot migration for sessions created before per-machine naming). An age
+file has to pass the signature check in [Signed sync files](#signed-sync-files).
+Files it cannot decrypt (another machine's key, a different password) are
+skipped, not fatal. Per-machine files win key collisions over the legacy
+files; local secrets are preserved unless you pass `--replace`.
 
 Passing an explicit path (`cs -secrets import-file <file>`) imports just that
-one file, as before.
+one file.
+
+An import checks every name before it stores any. It stores nothing and
+exits 1 when a name is not a valid secret name (a carriage return or another
+control character in it counts), or when two names would become one variable
+in `cs -secrets export`: `api-key` beside `api_key`, whether both come from
+the sync files or one is already stored. The message names both. `import-file`
+also refuses a session name the sessions root does not have.
 
 ## Migrating Between Backends
 
@@ -250,14 +336,15 @@ The migrate command:
 ## Age Commands Reference
 
 ```bash
-# Initialize keypair (auto-downloads age binary if needed)
+# Create this machine's ssh-ed25519 key (downloads the age binary if
+# needed; needs ssh-keygen)
 cs -secrets age init
 
 # Print your public key for sharing
 cs -secrets age pubkey
 
-# Add recipient to current session
-cs -secrets age add <file.pub|age1...>
+# Add recipient to current session and pin it
+cs -secrets age add <file.pub|"ssh-ed25519 ..."|age1...>
 
 # List recipients who can decrypt session secrets
 cs -secrets age list

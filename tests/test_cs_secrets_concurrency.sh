@@ -532,11 +532,54 @@ SHIM
         echo "  FAIL: the sync file left behind by the race still decrypts with the revoked key"
         return 1
     fi
-    if ! "$age_bin" -d -i "$HOME/.cs-secrets/age.key" < "$sync" 2>/dev/null | grep -qF sk_456; then
+    if ! "$age_bin" -d -i "$HOME/.cs-secrets/id_ed25519" < "$sync" 2>/dev/null | grep -qF sk_456; then
         echo "  FAIL: this machine's own key must decrypt the final export to the latest value"
         return 1
     fi
     assert_file_contains "$HOME/.cs-secrets/sessions/$sess/age-exported-to" " $sync\$" "the recipient digest is recorded for the sync file" || return 1
+}
+
+# Two cs processes that both find no machine key each generate one. The first
+# to place its private key wins and the second adopts that pair: a key some
+# sync file is already encrypted to is never replaced. The ssh-keygen shim
+# delays each generation by a different amount, so both are under way before
+# either lands and the first has reported its key before the second places.
+test_two_first_runs_keep_one_machine_key() {
+    local age_bin real_keygen
+    age_bin=$(command -v age 2>/dev/null) || age_bin=""
+    real_keygen=$(command -v ssh-keygen 2>/dev/null) || real_keygen=""
+    if [ -z "$age_bin" ] || [ -z "$real_keygen" ]; then
+        echo "    SKIP (age and ssh-keygen are not installed)"
+        return 77
+    fi
+    local shim="$TEST_TMPDIR/keygen-shim" log="$TEST_TMPDIR/keygen.log"
+    mkdir -p "$shim"
+    cat > "$shim/ssh-keygen" <<SHIM
+#!/bin/bash
+case " \$* " in
+    *" -t "*) echo generate >> "$log"; sleep "\${SHIM_SLEEP:-0}" ;;
+esac
+exec "$real_keygen" "\$@"
+SHIM
+    chmod +x "$shim/ssh-keygen"
+
+    PATH="$shim:$PATH" SHIM_SLEEP=2 CS_AGE_BIN="$age_bin" "$CS_SECRETS_BIN" age init > "$TEST_TMPDIR/first.out" 2>&1 &
+    local first_pid=$!
+    PATH="$shim:$PATH" SHIM_SLEEP=5 CS_AGE_BIN="$age_bin" "$CS_SECRETS_BIN" age init > "$TEST_TMPDIR/second.out" 2>&1 &
+    local second_pid=$!
+    wait "$first_pid" || { echo "  FAIL: the first age init failed: $(cat "$TEST_TMPDIR/first.out")"; wait "$second_pid"; return 1; }
+    wait "$second_pid" || { echo "  FAIL: the second age init failed: $(cat "$TEST_TMPDIR/second.out")"; return 1; }
+
+    assert_eq "2" "$(grep -c generate "$log")" "both processes generated a key (the race ran)" || return 1
+    local kept key_type key_body
+    kept=$(CS_AGE_BIN="$age_bin" "$CS_SECRETS_BIN" age pubkey 2>&1)
+    read -r key_type key_body _ <<< "$("$real_keygen" -y -f "$HOME/.cs-secrets/id_ed25519")"
+    assert_eq "$key_type $key_body" "$kept" "the public key belongs to the private key that was kept" || return 1
+    assert_eq "Public key: $kept" "$(grep '^Public key:' "$TEST_TMPDIR/first.out" | tail -1)" \
+        "the key the first process reported is the one kept" || return 1
+    assert_eq "Public key: $kept" "$(grep '^Public key:' "$TEST_TMPDIR/second.out" | tail -1)" \
+        "the second process reports the same key" || return 1
+    assert_eq "" "$(find "$HOME/.cs-secrets" -name '.keygen.*')" "no staging directory is left" || return 1
 }
 
 run_test test_encrypted_salt_write_is_atomic_under_concurrency
@@ -546,5 +589,6 @@ run_test test_export_serialized_against_concurrent_store_no_stale_overwrite
 run_test test_migrate_delete_source_preserves_concurrent_store
 run_test test_migrate_delete_source_tolerates_concurrently_deleted_key
 run_test test_export_holds_the_lock_across_encrypt_and_digest_on_every_backend
+run_test test_two_first_runs_keep_one_machine_key
 
 report_results
