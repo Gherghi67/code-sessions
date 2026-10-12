@@ -94,6 +94,21 @@ cs_private_dir() {  # meta_dir
     fi
 }
 
+# git, asked about <dir> and the repository that directory sits in, whatever
+# the environment says. GIT_DIR and GIT_WORK_TREE name another repository,
+# GIT_INDEX_FILE another index (git hands one to every commit hook),
+# GIT_COMMON_DIR and GIT_OBJECT_DIRECTORY another store, and
+# GIT_CEILING_DIRECTORIES can keep git from finding the repository at all. A
+# refusal that asked git under any of them would find nothing tracked and let
+# the open, or a hook, go on. Every check that decides whether cs trusts a
+# session's files asks through here.
+_cs_git_at() {  # dir, git arguments...
+    local dir="$1"
+    shift
+    env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR -u GIT_OBJECT_DIRECTORY \
+        -u GIT_CEILING_DIRECTORIES git -C "$dir" "$@"
+}
+
 # Says which file git tracks in <dir> and how to stop tracking it; fails,
 # printing nothing, when git tracks none there. Asked of the directory itself,
 # in whichever repository lists it, so a link to a tracked directory and a
@@ -107,11 +122,11 @@ cs_private_dir() {  # meta_dir
 cs_tracked_files_notice() {  # dir, session_dir
     local real tracked top sub said
     real=$(cd -P "$1" 2>/dev/null && pwd -P) || return 1
-    tracked=$(git -C "$real" ls-files --full-name 2>/dev/null | sed -n 1p) || return 1
+    tracked=$(_cs_git_at "$real" ls-files --full-name 2>/dev/null | sed -n 1p) || return 1
     [ -n "$tracked" ] || return 1
-    top=$(git -C "$real" rev-parse --show-toplevel 2>/dev/null) || return 1
+    top=$(_cs_git_at "$real" rev-parse --show-toplevel 2>/dev/null) || return 1
     [ ! "$top" -ef "$2" ] || top="$2"
-    sub=$(git -C "$real" rev-parse --show-prefix 2>/dev/null) || return 1
+    sub=$(_cs_git_at "$real" rev-parse --show-prefix 2>/dev/null) || return 1
     sub=${sub%/}
     sub=${sub:-.}
     said=$(printf '%s' "$sub" | LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_') || return 1
@@ -400,8 +415,8 @@ _cs_write_target() {  # path
 # entries below .cs, so only a gitlink whose whole path is .cs counts.
 _cs_nested_cs() {  # root
     [ -e "$1/.cs/.git" ] && return 0
-    git -C "$1" rev-parse --git-dir >/dev/null 2>&1 || return 1
-    git -C "$1" ls-files -s -- ':(icase).cs' 2>/dev/null \
+    _cs_git_at "$1" rev-parse --git-dir >/dev/null 2>&1 || return 1
+    _cs_git_at "$1" ls-files -s -- ':(icase).cs' 2>/dev/null \
         | awk -F'\t' '{ split($1, m, " "); if (m[1] == "160000" && tolower($2) == ".cs") hit = 1 } END { exit !hit }' 2>/dev/null
 }
 
@@ -414,8 +429,8 @@ _cs_hand_made_vault() {  # root
     local pre="$1/.cs/local/pre-open"
     [ -f "$pre" ] && [ ! -L "$pre" ] && [ ! -L "$1/.cs" ] && [ ! -L "$1/.cs/local" ] || return 1
     ! _cs_nested_cs "$1" || return 1
-    git -C "$1" rev-parse --git-dir >/dev/null 2>&1 || return 0
-    [ -z "$(git -C "$1" ls-files -- ':(icase).cs/local' 2>/dev/null | sed -n 1p)" ]
+    _cs_git_at "$1" rev-parse --git-dir >/dev/null 2>&1 || return 0
+    [ -z "$(_cs_git_at "$1" ls-files -- ':(icase).cs/local' 2>/dev/null | sed -n 1p)" ]
 }
 
 # True when a path lies in the session at <root> by its spelling (as typed,

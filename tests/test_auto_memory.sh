@@ -884,7 +884,9 @@ test_a_cs_gitlink_is_refused_whatever_repository_the_shell_names() {
     git -C "$root/.cs" add -f README.md
     git -C "$root/.cs" -c user.name=t -c user.email=t@example.com commit -q -m "inner"
     git -C "$root" rm -r -q --cached .cs
-    git -C "$root" -c advice.addEmbeddedRepo=false add .cs
+    # git warns that it is adding an embedded repository; the gitlink is
+    # checked below instead of its stderr.
+    git -C "$root" add .cs 2>/dev/null
     git -C "$root" commit -q -m "ship .cs as a submodule"
     rm -rf "$root/.cs/.git"
     assert_eq "160000" "$(git -C "$root" ls-files -s -- .cs | cut -d' ' -f1)" "the fixture must index .cs as a gitlink" || return 1
