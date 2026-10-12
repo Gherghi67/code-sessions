@@ -1340,6 +1340,25 @@ test_session_start_writes_nothing_into_a_control_directory_git_tracks() {
     assert_eq "" "$changed" "nothing under the tracked .cs/local is added, changed or removed" || return 1
 }
 
+# The status line cannot ask git on every render, so each hook run leaves its
+# answer where a render reads it with a builtin test: a mark under
+# ~/.cache/cs/tracked named after the session, there while git tracks the
+# control files and gone once they are untracked and committed.
+test_hooks_mark_the_session_while_git_tracks_its_control_files() {
+    session_start_setup
+    local mark="$HOME/.cache/cs/tracked/$CLAUDE_SESSION_NAME"
+    local input='{"session_id":"0b7c6a52-5d1e-4c3f-9a8b-1c2d3e4f5a6b","source":"startup","cwd":"'"$CLAUDE_SESSION_DIR"'","hook_event_name":"SessionStart"}'
+    printf 'session_name: current-session\n' > "$CLAUDE_SESSION_META_DIR/local/state"
+    git -C "$CLAUDE_SESSION_DIR" add -f .cs/local/state
+    git -C "$CLAUDE_SESSION_DIR" commit -q -m "ship the control directory"
+    echo "$input" | bash "$HOOKS_DIR/session-start.sh" >/dev/null 2>&1 || true
+    assert_file_exists "$mark" "a hook run marks the session while git tracks its control files" || return 1
+    git -C "$CLAUDE_SESSION_DIR" rm -q --cached .cs/local/state
+    git -C "$CLAUDE_SESSION_DIR" commit -q -m "untrack the control directory"
+    echo "$input" | bash "$HOOKS_DIR/session-start.sh" >/dev/null 2>&1 || true
+    assert_file_not_exists "$mark" "the next run drops the mark once they are untracked" || return 1
+}
+
 # A tmux stub on PATH that records every call's argv, one bracketed word per
 # argument so a title split at its space is distinguishable from one passed
 # whole. Sets FAKE_TMUX_PATH and FAKE_TMUX_CALLS.
@@ -3348,6 +3367,7 @@ run_test test_hooks_parse_under_bin_bash
 run_test test_resume_digest_reports_uncommitted_teammate_growth
 run_test test_resume_digest_says_nothing_about_an_untracked_teammate_narrative
 run_test test_session_start_writes_nothing_into_a_control_directory_git_tracks
+run_test test_hooks_mark_the_session_while_git_tracks_its_control_files
 run_test test_resume_digest_start_line_ignores_a_head_edit
 run_test test_resume_digest_works_when_the_session_is_a_repo_subdirectory
 run_test test_resume_digest_silent_when_nothing_changed
