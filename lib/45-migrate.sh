@@ -94,17 +94,7 @@ cs_assert_local_untracked() {
         error ".cs is a submodule or nested repository (cs state must be a plain directory inside the session). Delete .cs/local/pre-open unless you wrote it, then git rm --cached .cs, remove .cs/.git and git add .cs, then reopen."
     fi
     _refuse_links_out_of_session "$dir"
-    _cs_git_at "$dir" rev-parse --git-dir >/dev/null 2>&1 || return 0
-    # :(icase): a case-insensitive checkout (macOS by default) puts a
-    # committed .cs/LOCAL/pre-open at .cs/local/pre-open on disk, where a
-    # case-sensitive pathspec would never see it.
-    tracked=$(_cs_git_at "$dir" ls-files -z -- ':(icase).cs/local' 2>/dev/null \
-        | { IFS= read -r -d '' first || exit 0; printf '%sx' "$first"; })
-    tracked=${tracked%x}
-    if [ -n "$tracked" ]; then
-        sub=${tracked#*/}
-        error "$(cs_untrack_notice "$tracked" "$dir" "${tracked%%/*}/${sub%%/*}")"
-    fi
+    ! tracked=$(cs_tracked_files_notice "$dir/.cs/local" "$dir") || error "$tracked"
     # .cs/private takes .cs/local's place for the queue, the mailbox and the
     # rotation marker (cs_private_dir), so nothing in it may come from git
     # either. Asked of the directory the name resolves to, in whichever
@@ -119,16 +109,23 @@ cs_assert_local_untracked() {
 # lands on the target, which may be tracked). Empty when the open is safe. An
 # exclude hides only untracked files, so a tracked one here would be dirtied
 # on every open; checked at adoption to skip, and at every open to refuse,
-# since the branch moves on.
+# since the branch moves on. A git that cannot answer prints "cs could not ask
+# git ...", which both callers refuse as it stands.
 _exclude_session_tracked_conflict() {  # dir
-    local dir="$1" p
+    local dir="$1" p list why
     for p in .claude .claude/settings.local.json CLAUDE.local.md .cs; do
         if [ -L "$dir/$p" ]; then
             printf '%s is a symlink' "$p"
             return 0
         fi
     done
-    _cs_git_at "$dir" ls-files -- .cs .claude/settings.local.json CLAUDE.local.md 2>/dev/null | head -1
+    if ! list=$(_cs_git_at "$dir" ls-files -- .cs .claude/settings.local.json CLAUDE.local.md 2>/dev/null); then
+        why=$(_cs_git_at "$dir" ls-files -- .cs .claude/settings.local.json CLAUDE.local.md 2>&1 >/dev/null) || true
+        ! _cs_git_not_a_repo "$why" || return 0
+        printf 'cs could not ask git whether the branch tracks a file cs rewrites at open: %s' "$(_cs_git_complaint "$why")"
+        return 0
+    fi
+    printf '%s' "${list%%$'\n'*}"
 }
 
 # True when cs created this session directory, and so owns its mode. Two ways to
@@ -920,6 +917,7 @@ migrate_session() {
         conflict=$(_exclude_session_tracked_conflict "$session_dir")
         if [ -n "$conflict" ]; then
             case "$conflict" in
+                "cs could not ask git"*) error "$conflict" ;;
                 *symlink) error "$conflict in $session_dir, and cs writes through it at every open. Replace it with a real file or directory, or cs -rm the session." ;;
                 *) error "$conflict is tracked on the branch in $session_dir, and cs would rewrite it at every open. Stop tracking it, or cs -rm the session." ;;
             esac

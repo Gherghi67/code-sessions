@@ -125,12 +125,24 @@ _cs_git_at() {  # dir, git arguments...
         -u LANGUAGE LC_ALL=C git -C "$dir" "$@"
 }
 
-# Says that git could not answer whether it tracks a file in <dir>, with the
-# first line of git's own complaint, cut to printable characters.
-_cs_git_cannot_answer() {  # dir, git's error output
-    local why=${2%%$'\n'*}
+# True when git's error output says it found no repository at all, the one
+# failure that answers "nothing tracked".
+_cs_git_not_a_repo() {  # git's error output
+    case "$1" in "fatal: not a git repository"*) return 0 ;; esac
+    return 1
+}
+
+# The first line of git's own complaint, cut to printable characters.
+_cs_git_complaint() {  # git's error output
+    local why=${1%%$'\n'*}
     why=$(printf '%s' "$why" | LC_ALL=C tr -c '[:print:]' '?' | cut -c1-200) || why=""
-    printf 'cs could not ask git whether it tracks a file in .cs/%s: %s\n' "${1##*/}" "${why:-git failed}"
+    printf '%s\n' "${why:-git failed}"
+}
+
+# Says that git could not answer whether it tracks a file in <dir>, in git's
+# own words.
+_cs_git_cannot_answer() {  # dir, git's error output
+    printf 'cs could not ask git whether it tracks a file in .cs/%s: %s\n' "${1##*/}" "$(_cs_git_complaint "$2")"
 }
 
 # Prints the line that says git tracks <tracked> and how to stop: untrack
@@ -159,18 +171,27 @@ cs_untrack_notice() {  # tracked, top, sub
 # through; asked from the repository's top with a case-insensitive pattern, so
 # a case variant of the name (.cs/LOCAL, which a case-insensitive volume puts
 # in .cs/local) is seen too. A directory in no repository, a vault mounted from
-# elsewhere, has nothing tracked. <session_dir> is the session as its caller
-# names it, printed in place of the repository's own path when the two are one
-# directory. A directory that holds the session's own files is named, with no
-# command: untracking it would untrack the project.
+# elsewhere, has nothing tracked. A directory that is gone can still hold files
+# the index lists (the next checkout brings them back), so it is asked of the
+# nearest directory that exists, with the missing part added to the pattern; a
+# link that leads nowhere (a locked vault) holds nothing git lists.
+# <session_dir> is the session as its caller names it, printed in place of the
+# repository's own path when the two are one directory. A directory that holds
+# the session's own files is named, with no command: untracking it would
+# untrack the project.
 cs_tracked_files_notice() {  # dir, session_dir
-    local real top prefix tracked status why meta sub rest n
+    local real top prefix tracked status why meta sub rest n here="$1" missing=""
+    while [ ! -e "$here" ] && [ ! -L "$here" ]; do
+        case "$here" in */?*) ;; *) return 1 ;; esac
+        missing="/${here##*/}$missing"
+        here=${here%/*}
+    done
     # The x keeps a trailing newline in a name that $( ) drops.
-    real=$(cd -P "$1" 2>/dev/null && pwd -P && printf x) || return 1
+    real=$(cd -P "$here" 2>/dev/null && pwd -P && printf x) || return 1
     real=${real%$'\n'x}
     if ! top=$(_cs_git_at "$real" rev-parse --show-toplevel 2>/dev/null && printf x); then
         why=$(_cs_git_at "$real" rev-parse --show-toplevel 2>&1 >/dev/null) || true
-        case "$why" in "fatal: not a git repository"*) return 1 ;; esac
+        ! _cs_git_not_a_repo "$why" || return 1
         _cs_git_cannot_answer "$1" "$why"
         return 0
     fi
@@ -181,6 +202,11 @@ cs_tracked_files_notice() {  # dir, session_dir
         return 0
     fi
     prefix=${prefix%$'\n'x}
+    [ -z "$missing" ] || prefix="$prefix${missing#/}/"
+    real="$real$missing"
+    # :(icase): a case-insensitive checkout (macOS by default) puts a
+    # committed .cs/LOCAL/pre-open at .cs/local/pre-open on disk, where a
+    # case-sensitive pathspec would never see it.
     # The reader stops at the first entry, so git may die of SIGPIPE behind a
     # found one; its status counts only when nothing was found.
     tracked=$(_cs_git_at "$top" ls-files -z -- ":(icase,literal)${prefix:-.}" 2>/dev/null \
@@ -495,7 +521,9 @@ _cs_write_target() {  # path
 # True when .cs at <root> is a submodule or nested repository, whose files
 # the session's index never lists (Codex r2 #4). The gitlink outlives a
 # removed .cs/.git, so the index is checked as well; the pathspec also lists
-# entries below .cs, so only a gitlink whose whole path is .cs counts.
+# entries below .cs, so only a gitlink whose whole path is .cs counts. A git
+# that fails here reads as "not nested"; both callers go on to ask
+# cs_tracked_files_notice, which refuses on the same failure.
 _cs_nested_cs() {  # root
     [ -e "$1/.cs/.git" ] && return 0
     _cs_git_at "$1" rev-parse --git-dir >/dev/null 2>&1 || return 1
@@ -512,8 +540,9 @@ _cs_hand_made_vault() {  # root
     local pre="$1/.cs/local/pre-open"
     [ -f "$pre" ] && [ ! -L "$pre" ] && [ ! -L "$1/.cs" ] && [ ! -L "$1/.cs/local" ] || return 1
     ! _cs_nested_cs "$1" || return 1
-    _cs_git_at "$1" rev-parse --git-dir >/dev/null 2>&1 || return 0
-    [ -z "$(_cs_git_at "$1" ls-files -- ':(icase).cs/local' 2>/dev/null | sed -n 1p)" ]
+    # A git that cannot answer has not said "untracked": no vault, and so no
+    # link out of the session is let through.
+    ! cs_tracked_files_notice "$1/.cs/local" "$1" >/dev/null
 }
 
 # True when a path lies in the session at <root> by its spelling (as typed,
