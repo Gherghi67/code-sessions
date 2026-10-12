@@ -27,10 +27,12 @@ Run `cs -narrative rotate` once and keep its single output line. It archives the
 Run this once, from the session root, only after the three passes above completed:
 
 ```sh
-[ -z "$CLAUDE_CODE_SESSION_ID" ] || printf '%s\n' "$CLAUDE_CODE_SESSION_ID" > .cs/local/wrapped
+if [ -n "$CLAUDE_CODE_SESSION_ID" ] && cs -vet-session . >/dev/null; then
+    printf '%s\n' "$CLAUDE_CODE_SESSION_ID" > .cs/local/wrapped
+fi
 ```
 
-It names the conversation this wrap finished in (its own id, so a teammate's wrap never marks the lead), so the cs mod's band stops offering `wrap up this session` until the next prompt. Skip it if any pass failed: a wrap that did not finish should stay one key away.
+It names the conversation this wrap finished in (its own id, so a teammate's wrap never marks the lead), so the cs mod's band stops offering `wrap up this session` until the next prompt. Skip it if any pass failed: a wrap that did not finish should stay one key away. While git tracks the session's control files, cs says so and the pass writes nothing; the wrap still finished.
 
 ## Report
 
