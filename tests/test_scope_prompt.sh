@@ -1012,14 +1012,20 @@ test_date_note_silent_without_a_stamp_and_writes_one() {
 
 # While git tracks a file in .cs/local, the hooks write nothing there: the
 # date baseline is not stamped, as SessionStart stamps none.
-test_date_note_writes_no_stamp_into_a_control_directory_git_tracks() {
+test_prompt_hook_changes_nothing_in_a_control_directory_git_tracks() {
+    local changed
     mkdir -p "$CLAUDE_SESSION_META_DIR/local"
     rm -f "$(_stamp_file)"
     printf 'tracked\n' > "$CLAUDE_SESSION_META_DIR/local/session.log"
+    printf 'attended\n' > "$CLAUDE_SESSION_META_DIR/local/attention"
     git -C "$CLAUDE_SESSION_DIR" add -f .cs/local
     git -C "$CLAUDE_SESSION_DIR" commit -q -m "ship the control directory"
-    run_hook "hello" >/dev/null
+    # The launch mark, written before the library loads, is the one write
+    # docs/hooks.md keeps; everything after it stands down.
+    CS_SCOPE_TRACE_DISABLE=1 run_hook "hello" >/dev/null
     assert_file_not_exists "$(_stamp_file)" "no date stamp lands in the tracked directory" || return 1
+    changed=$(git -C "$CLAUDE_SESSION_DIR" status --porcelain --ignored -- .cs/local)
+    assert_eq "" "$changed" "nothing under the tracked .cs/local is added, changed or removed" || return 1
 }
 
 test_date_note_stamps_are_per_conversation() {
@@ -1154,7 +1160,7 @@ test_date_note_stamp_advances_on_a_code_work_prompt_too() {
 run_test test_date_note_fires_when_the_day_changed
 run_test test_date_note_silent_when_the_day_is_unchanged
 run_test test_date_note_silent_without_a_stamp_and_writes_one
-run_test test_date_note_writes_no_stamp_into_a_control_directory_git_tracks
+run_test test_prompt_hook_changes_nothing_in_a_control_directory_git_tracks
 run_test test_date_note_stamps_are_per_conversation
 run_test test_date_note_silent_on_the_prompt_after_it_fired
 run_test test_date_note_treats_a_malformed_stamp_as_missing
