@@ -129,7 +129,9 @@ open. A repository wrote a tracked file, not this session, so while git tracks o
 hooks read no queue, mail or rotation marker from that directory and write nothing into
 it: the Stop hook hands out no task, the prompt hook shows no mail, a `/clear` loads no
 handoff, and the command log stops. Each finished turn says why, in a system message that names the file
-and the `git rm --cached` command that untracks it. The check is one `git ls-files` per
+and the `git rm --cached` command that untracks it. That message is all the Stop hook
+does until then: it sends no narrative reminder and no rotation nudge, and raises no
+attention flag. The check is one `git ls-files` per
 hook run, about 0.05 to 0.09 s. `memory-index-guard.sh` and `prompt-rewriter.sh` resolve
 no session and do not ask.
 

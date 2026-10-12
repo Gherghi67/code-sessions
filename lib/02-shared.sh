@@ -78,7 +78,10 @@ CS_VAULT_LINKS="memory plans claude-config private"
 # else in plaintext. Fails the same way for a hook whose session resolved with
 # files git tracks in that directory (CS_TRACKED_FILES_META, set by
 # cs_resolve_session): nothing git delivered there is read as a queue, mail or
-# a rotation, and nothing is added beside it.
+# a rotation, and nothing is added beside it. That answer is one hook run's:
+# a value of either name that came in with the environment is dropped here,
+# where cs and every hook that reads these files load this file.
+unset CS_TRACKED_FILES_META CS_TRACKED_FILES_NOTICE
 cs_private_dir() {  # meta_dir
     [ "${CS_TRACKED_FILES_META:-}" != "$1" ] || return 1
     if [ -L "$1/private" ] || [ -e "$1/private" ]; then

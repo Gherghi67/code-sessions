@@ -101,11 +101,10 @@ cs_resolve_session() {  # [hook_input_json]
 # directory that holds the queue, the mailbox and the rotation marker. While
 # it does, cs_private_dir (cs-shared.sh) fails for this session and every
 # reader and writer of those files stands down; the Stop hook shows the
-# notice. Not exported: the answer is this hook run's, asked again by the next.
-# A hook that sources no cs-shared.sh reads none of those files.
+# notice. Not exported: the answer is this hook run's, asked again by the next,
+# and cs-shared.sh drops an inherited one as it loads. A hook that sources no
+# cs-shared.sh reads none of those files.
 _cs_note_tracked_files() {
-    CS_TRACKED_FILES_META=""
-    CS_TRACKED_FILES_NOTICE=""
     command -v cs_files_tracked_notice >/dev/null 2>&1 || return 0
     if CS_TRACKED_FILES_NOTICE=$(cs_files_tracked_notice "$CLAUDE_SESSION_META_DIR" "$CLAUDE_SESSION_DIR"); then
         CS_TRACKED_FILES_META="$CLAUDE_SESSION_META_DIR"
