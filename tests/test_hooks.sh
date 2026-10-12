@@ -1216,17 +1216,24 @@ test_each_pane_is_titled_with_its_own_session_alone() {
 # window renames never reach; only iTerm's Python API sets it. Every claim and
 # release hands the window to hooks/cs-iterm-tab.py in the background, and only
 # when the terminal is iTerm2 and CS_NO_ITERM2 is unset. A stand-in python3
-# records its call, then takes five seconds and fails loudly: the hook must
-# return without waiting on it and carry none of its output.
+# records its call, then stays up until the test releases it and fails loudly:
+# the hook must return without waiting on it and carry none of its output.
+# Whether the hook waited is read from the stand-in, never from the clock: a
+# loaded machine makes the hook itself slow, and a time limit then fails a
+# hook that waited on nothing.
 _fake_tab_python() {
     FAKE_PY_PATH="$TEST_TMPDIR/pybin"
     FAKE_PY_CALLS="$TEST_TMPDIR/py-calls"
+    FAKE_PY_RELEASE="$TEST_TMPDIR/py-release"
+    FAKE_PY_DONE="$TEST_TMPDIR/py-done"
     mkdir -p "$FAKE_PY_PATH"
     cat > "$FAKE_PY_PATH/python3" <<EOF
 #!/bin/sh
 { printf '[%s]' "\$@"; printf '[%s]\n' "\$TMUX"; } >> "$FAKE_PY_CALLS"
 echo "stand-in python3 failing on purpose" >&2
-sleep 5
+i=0
+while [ ! -e "$FAKE_PY_RELEASE" ] && [ -d "$FAKE_PY_PATH" ] && [ "\$i" -lt 300 ]; do sleep 0.1; i=\$((i + 1)); done
+[ -d "$FAKE_PY_PATH" ] && : > "$FAKE_PY_DONE"
 exit 1
 EOF
     chmod +x "$FAKE_PY_PATH/python3"
@@ -1243,14 +1250,14 @@ test_a_claim_in_iterm_hands_the_window_to_the_tab_helper() {
     session_start_setup
     _real_tmux_window || return $?
     _fake_tab_python
-    local window out rc start
+    local window out rc
     window=$(_tt display-message -p -t "$TT_PANE_A" '#{window_id}')
-    start=$SECONDS
     out=$(_tt_tab_hook session-start.sh "$TT_PANE_A" current-session iTerm2 ""); rc=$?
     assert_eq "0" "$rc" "the hook succeeds while the helper fails" || { _tt kill-server; return 1; }
-    assert_eq "1" "$(( SECONDS - start < 4 ))" \
-        "the hook returns while the five-second helper still runs" || { _tt kill-server; return 1; }
+    assert_eq "still running" "$([ -e "$FAKE_PY_DONE" ] && echo finished || echo "still running")" \
+        "the hook returns while the helper it started still runs" || { _tt kill-server; return 1; }
     _wait_for_file "$FAKE_PY_CALLS"
+    : > "$FAKE_PY_RELEASE"
     assert_eq "[$HOOKS_DIR/cs-iterm-tab.py][$window][$TT_SOCK,1,0]" "$(cat "$FAKE_PY_CALLS" 2>/dev/null)" \
         "a claim runs the tab helper once on its window, on the same tmux server" || { _tt kill-server; return 1; }
     assert_output_not_contains "$out" "stand-in python3" \
