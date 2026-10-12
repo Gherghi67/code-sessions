@@ -113,6 +113,9 @@ cs_local_dir() {  # meta_dir
 # the four *_PATHSPECS settings change how a pathspec matches (a literal one
 # reads ":(icase,literal)..." as a file name). A refusal that asked git under
 # any of them would find nothing tracked and let the open, or a hook, go on.
+# GIT_CONFIG_COUNT (with its KEY_n/VALUE_n pairs) and GIT_CONFIG_PARAMETERS
+# hand git configuration, and a bad value makes every call fail. git speaks
+# in the C locale here so a caller can tell "not a repository" from a failure.
 # Every check that decides whether cs trusts a session's files asks through
 # here.
 _cs_git_at() {  # dir, git arguments...
@@ -120,7 +123,16 @@ _cs_git_at() {  # dir, git arguments...
     shift
     env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR -u GIT_OBJECT_DIRECTORY \
         -u GIT_CEILING_DIRECTORIES -u GIT_LITERAL_PATHSPECS -u GIT_GLOB_PATHSPECS \
-        -u GIT_NOGLOB_PATHSPECS -u GIT_ICASE_PATHSPECS git -C "$dir" "$@"
+        -u GIT_NOGLOB_PATHSPECS -u GIT_ICASE_PATHSPECS -u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS \
+        -u LANGUAGE LC_ALL=C git -C "$dir" "$@"
+}
+
+# Says that git could not answer whether it tracks a file in <dir>, with the
+# first line of git's own complaint, cut to printable characters.
+_cs_git_cannot_answer() {  # dir, git's error output
+    local why=${2%%$'\n'*}
+    why=$(printf '%s' "$why" | LC_ALL=C tr -c '[:print:]' '?' | cut -c1-200) || why=""
+    printf 'cs could not ask git whether it tracks a file in .cs/%s: %s\n' "${1##*/}" "${why:-git failed}"
 }
 
 # Prints the line that says git tracks <tracked> and how to stop: untrack
@@ -142,7 +154,9 @@ cs_untrack_notice() {  # tracked, top, sub
 }
 
 # Says which file git tracks in <dir> and how to stop tracking it; fails,
-# printing nothing, when git tracks none there. Asked of the directory itself,
+# printing nothing, when git tracks none there. A git that fails for any
+# reason but "not a git repository" has not said that: the function then
+# prints why and succeeds, so every caller refuses. Asked of the directory itself,
 # in whichever repository lists it, so a link to a tracked directory is seen
 # through; asked from the repository's top with a case-insensitive pattern, so
 # a case variant of the name (.cs/LOCAL, which a case-insensitive volume puts
@@ -152,18 +166,37 @@ cs_untrack_notice() {  # tracked, top, sub
 # directory. A directory that holds the session's own files is named, with no
 # command: untracking it would untrack the project.
 cs_tracked_files_notice() {  # dir, session_dir
-    local real top prefix tracked meta sub rest n
+    local real top prefix tracked status why meta sub rest n
     # The x keeps a trailing newline in a name that $( ) drops.
     real=$(cd -P "$1" 2>/dev/null && pwd -P && printf x) || return 1
     real=${real%$'\n'x}
-    top=$(_cs_git_at "$real" rev-parse --show-toplevel 2>/dev/null && printf x) || return 1
+    if ! top=$(_cs_git_at "$real" rev-parse --show-toplevel 2>/dev/null && printf x); then
+        why=$(_cs_git_at "$real" rev-parse --show-toplevel 2>&1 >/dev/null) || true
+        case "$why" in "fatal: not a git repository"*) return 1 ;; esac
+        _cs_git_cannot_answer "$1" "$why"
+        return 0
+    fi
     top=${top%$'\n'x}
-    prefix=$(_cs_git_at "$real" rev-parse --show-prefix 2>/dev/null && printf x) || return 1
+    if ! prefix=$(_cs_git_at "$real" rev-parse --show-prefix 2>/dev/null && printf x); then
+        why=$(_cs_git_at "$real" rev-parse --show-prefix 2>&1 >/dev/null) || true
+        _cs_git_cannot_answer "$1" "$why"
+        return 0
+    fi
     prefix=${prefix%$'\n'x}
+    # The reader stops at the first entry, so git may die of SIGPIPE behind a
+    # found one; its status counts only when nothing was found.
     tracked=$(_cs_git_at "$top" ls-files -z -- ":(icase,literal)${prefix:-.}" 2>/dev/null \
-        | { IFS= read -r -d '' first || exit 0; printf '%sx' "$first"; }) || return 1
+        | { IFS= read -r -d '' first || exit 0; printf '%sx' "$first"; }
+        printf '/%s' "${PIPESTATUS[0]}") || return 1
+    status=${tracked##*/}
+    tracked=${tracked%/*}
     tracked=${tracked%x}
-    [ -n "$tracked" ] || return 1
+    if [ -z "$tracked" ]; then
+        [ "$status" != 0 ] || return 1
+        why=$(_cs_git_at "$top" ls-files -z -- ":(icase,literal)${prefix:-.}" 2>&1 >/dev/null) || true
+        _cs_git_cannot_answer "$1" "$why"
+        return 0
+    fi
     meta=$(cd -P "$2/.cs" 2>/dev/null && pwd -P && printf x) && meta=${meta%$'\n'x}
     case "$meta/" in
         "$real"/*)

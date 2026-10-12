@@ -566,6 +566,18 @@ test_vet_session_refuses_when_git_cannot_answer() {
         "$out" "and names git's own error" || return 1
 }
 
+# The same when git finds the repository but cannot read its index: an
+# ls-files that fails lists nothing, and that is not "nothing tracked".
+test_vet_session_refuses_when_git_cannot_read_the_index() {
+    local s="$CLAUDE_SESSION_DIR" out rc=0
+    _arm_handoff yes
+    printf 'garbage' > "$s/.git/index"
+    out=$(env -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR "$CS_BIN" -vet-session "$s" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "cs -vet-session refuses" || return 1
+    assert_eq "Error: cs could not ask git whether it tracks a file in .cs/local: fatal: .git/index: index file smaller than expected" \
+        "$out" "and names git's own error" || return 1
+}
+
 test_vet_session_passes_a_session_whose_control_files_git_ignores() {
     local out rc=0
     _arm_handoff no
@@ -1040,6 +1052,7 @@ run_test test_queue_verbs_refuse_a_queue_git_tracks
 run_test test_queue_verbs_ignore_a_link_out_elsewhere_under_cs
 run_test test_vet_session_refuses_a_session_whose_marker_git_tracks
 run_test test_vet_session_refuses_when_git_cannot_answer
+run_test test_vet_session_refuses_when_git_cannot_read_the_index
 run_test test_vet_session_passes_a_session_whose_control_files_git_ignores
 run_test test_vet_session_judges_the_directory_it_is_given
 run_test test_vet_session_refuses_a_directory_that_is_no_session
