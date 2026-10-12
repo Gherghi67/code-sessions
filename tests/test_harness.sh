@@ -104,6 +104,41 @@ test_setup_isolates_the_process_table() {
         || { echo "  FAIL: the default ps stub must report no processes, got: $out"; return 1; }
 }
 
+# A suite started from inside a live cs session inherits that session's
+# identity, and cs trusts it: a send under test files its sent copy in the
+# caller's own mailbox and signs the mail with the caller's name. The caller is
+# staged here rather than inherited, so the test holds on a runner that is in
+# no session at all.
+test_session_identity_does_not_reach_a_suite_from_its_caller() {
+    local caller="$TEST_TMPDIR/caller" root="$TEST_TMPDIR/probe-sessions"
+    mkdir -p "$caller/.cs/local/mail/out" "$root"
+    local probe="$TEST_TMPDIR/probe.sh"
+    cat > "$probe" <<PROBE
+#!/usr/bin/env bash
+SCRIPT_DIR="$SCRIPT_DIR"
+source "\$SCRIPT_DIR/test_lib.sh"
+setup() { :; }   # the pattern 24 suites use
+setup
+TEST_TMPDIR="$TEST_TMPDIR"
+export CS_SESSIONS_ROOT="$root"
+export CLAUDE_CODE_BIN="\$(_make_env_stub)"
+"\$CS_BIN" target >/dev/null 2>&1 <<< ""
+"\$CS_BIN" target -msg "hello" >/dev/null 2>&1 <<< "" || { echo SEND_FAILED; exit 1; }
+PROBE
+    local out
+    out=$(CLAUDE_SESSION_NAME=caller CLAUDE_SESSION_DIR="$caller" \
+        CLAUDE_SESSION_META_DIR="$caller/.cs" /bin/bash "$probe" 2>&1) \
+        || { echo "  FAIL: probe suite errored: $out"; return 1; }
+
+    local delivered=("$root"/target/.cs/local/mail/new/*.json)
+    [ -f "${delivered[0]}" ] && [ "${#delivered[@]}" -eq 1 ] \
+        || { echo "  FAIL: the probe's send must deliver exactly one mail to its own fixture"; return 1; }
+    assert_eq "0" "$(find "$caller/.cs/local/mail/out" -type f | wc -l | tr -d ' ')" \
+        "a suite's send must leave its caller's sent mail alone" || return 1
+    assert_eq "" "$(jq -r .from "${delivered[0]}")" \
+        "a suite's mail must not be signed with its caller's session name" || return 1
+}
+
 # ============================================================================
 # Runner
 # ============================================================================
@@ -154,6 +189,7 @@ run_test test_output_not_contains_still_fails_on_a_real_hit
 run_test test_setup_isolates_the_process_table
 run_test test_process_table_isolation_survives_a_suite_that_overrides_setup
 run_test test_process_table_stub_passes_through_other_ps_forms
+run_test test_session_identity_does_not_reach_a_suite_from_its_caller
 run_test test_results_line_omits_the_skip_column_when_nothing_skipped
 run_test test_results_line_counts_a_skip_when_a_test_returns_77
 report_results
