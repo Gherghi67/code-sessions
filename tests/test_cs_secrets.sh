@@ -1777,6 +1777,28 @@ test_password_export_writes_no_signature() {
     assert_not_exists "$HOME/.cs-secrets/id_ed25519" "no machine key is made for a password export" || return 1
 }
 
+# A directory where the signature goes would take the new signature inside it
+# and leave the sync file with none: the export stops before it writes.
+test_export_refuses_a_directory_where_the_signature_goes() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f; f="$meta/secrets.$(_machine_id).age"
+    local out rc=0
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
+    cp "$f" "$TEST_TMPDIR/before.age"
+    rm "$f.sig"
+    mkdir "$f.sig"
+    "$CS_SECRETS_BIN" set api_key "sk_456" >/dev/null 2>&1 || return 1
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the export exits 1" || return 1
+    assert_eq "Error: Aborting export for session 'test-session': $f.sig is a directory" "$out" "the refusal names the path" || return 1
+    cmp -s "$f" "$TEST_TMPDIR/before.age" || { echo "  FAIL: the sync file was changed"; return 1; }
+    assert_eq "" "$(find "$meta" -name '.secrets.*')" "no temp file is left" || return 1
+    assert_eq "" "$(find "$f.sig" -mindepth 1)" "nothing is written into the directory" || return 1
+}
+
 # ---------------------------------------------------------------------------
 # Signed sync files on import. age only says who may read a file: anyone who
 # can push to the session's repository can encrypt one to a tracked public
@@ -1901,6 +1923,41 @@ test_import_file_skips_a_signed_file_changed_after_signing() {
     assert_eq "0" "$rc" "the import exits 0" || return 1
     assert_output_contains "$out" "^Skipped $(basename "$peer_file"): its signature does not match\." "the skip names the file" || return 1
     _assert_secret_absent from_peer "nothing from the file is stored" || return 1
+}
+
+# The bytes that are decrypted are the bytes whose signature was checked. A
+# checkout can replace a sync file while an import runs; here ssh-keygen
+# itself swaps the file the moment it has verified it.
+test_import_file_decrypts_the_bytes_it_verified() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local bindir="$TEST_TMPDIR/swapping-ssh-keygen" swapped="$TEST_TMPDIR/swapped.age"
+    local real_keygen peer_file out rc=0
+    real_keygen=$(command -v ssh-keygen)
+    _peer_exports from_peer "vp" || { echo "  FAIL: fixture: the peer could not export"; return 1; }
+    "$CS_SECRETS_BIN" age add "$(_peer_recipient_file)" >/dev/null 2>&1 || { echo "  FAIL: fixture: could not pin the peer"; return 1; }
+    peer_file=$(_peer_sync_file)
+    printf '%s\n' '{"from_peer":"vswapped"}' | age -r "$(cat "$HOME/.cs-secrets/id_ed25519.pub")" -o "$swapped" \
+        || { echo "  FAIL: fixture: could not encrypt the replacement"; return 1; }
+    mkdir -p "$bindir"
+    cat > "$bindir/ssh-keygen" <<SHIM
+#!/bin/bash
+case " \$* " in
+    *" -Y verify "*)
+        "$real_keygen" "\$@" || exit \$?
+        cp "$swapped" "$peer_file"
+        : > "$TEST_TMPDIR/swapped-after-verify"
+        exit 0
+        ;;
+esac
+exec "$real_keygen" "\$@"
+SHIM
+    chmod +x "$bindir/ssh-keygen"
+    out=$(PATH="$bindir:$PATH" "$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_file_exists "$TEST_TMPDIR/swapped-after-verify" "fixture: the file was swapped after a passing check" || return 1
+    cmp -s "$peer_file" "$swapped" || { echo "  FAIL: fixture: the session does not hold the replacement"; return 1; }
+    assert_eq "0" "$rc" "the import exits 0: $out" || return 1
+    assert_eq "vp" "$("$CS_SECRETS_BIN" get from_peer 2>&1)" "the signed value is imported, not the replacement" || return 1
 }
 
 # The same peer, pinned in two sessions: a file it signed for one is not
@@ -3087,6 +3144,7 @@ run_test test_export_refuses_when_this_machines_recipient_file_holds_another_key
 run_test test_export_leaves_a_current_signed_file_alone
 run_test test_later_export_without_ssh_keygen_refuses_and_keeps_the_signed_file
 run_test test_export_to_a_named_file_signs_beside_it
+run_test test_export_refuses_a_directory_where_the_signature_goes
 run_test test_password_export_writes_no_signature
 run_test test_import_file_takes_a_file_signed_by_a_pinned_peer
 run_test test_import_file_skips_an_unsigned_age_file
@@ -3094,6 +3152,7 @@ run_test test_import_file_skips_an_unsigned_file_under_this_machines_name
 run_test test_import_file_skips_a_file_signed_by_an_unpinned_key
 run_test test_import_file_skips_a_file_signed_by_a_key_outside_the_session
 run_test test_import_file_skips_a_signed_file_changed_after_signing
+run_test test_import_file_decrypts_the_bytes_it_verified
 run_test test_import_file_skips_a_file_signed_for_another_session
 run_test test_import_file_allow_unsigned_takes_a_file_with_no_signature
 run_test test_import_file_allow_unsigned_still_skips_a_bad_signature
