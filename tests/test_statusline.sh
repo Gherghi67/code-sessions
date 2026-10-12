@@ -4358,6 +4358,32 @@ test_teammate_heartbeat_does_not_reset_the_lead_cadence() {
 
 run_test test_teammate_heartbeat_does_not_reset_the_lead_cadence
 
+# While git tracks the session's control files the hooks mark the session under
+# ~/.cache/cs/tracked (hooks/cs-resolve.sh), and the render adds, changes and
+# removes nothing in .cs/local: neither the context stamp nor the limits stamp.
+# The control render, unmarked, writes both, so the check is sensitive.
+test_render_writes_nothing_into_a_tracked_control_directory() {
+    export CLAUDE_SESSION_NAME=trackedsess
+    local sess="$CS_SESSIONS_ROOT/trackedsess" porcelain
+    local input='{"session_id":"lead","context_window":{"used_percentage":30},"rate_limits":{"five_hour":{"used_percentage":12,"resets_at":2000}},"workspace":{"current_dir":"/none"}}'
+    mkdir -p "$sess/.cs/local"
+    printf 'claude_session_id: lead\n' > "$sess/.cs/local/state"
+    git -C "$sess" init -q
+    git -C "$sess" add .cs/local/state
+    git -C "$sess" -c user.name=t -c user.email=t@example.com commit -q -m tracked
+    mkdir -p "$HOME/.cache/cs/tracked"
+    : > "$HOME/.cache/cs/tracked/trackedsess"
+    CS_STATUSLINE_NOW=1000 run_sl "$input" >/dev/null
+    porcelain=$(git -C "$sess" status --porcelain --ignored -- .cs/local)
+    assert_eq "" "$porcelain" "a marked session's control directory is left as git has it" || return 1
+    rm "$HOME/.cache/cs/tracked/trackedsess"
+    CS_STATUSLINE_NOW=1000 run_sl "$input" >/dev/null
+    assert_eq "30" "$(cat "$sess/.cs/local/context-pct" 2>/dev/null)" "unmarked, the render stamps the context" || return 1
+    assert_file_exists "$sess/.cs/local/limits" "and the limits" || return 1
+}
+
+run_test test_render_writes_nothing_into_a_tracked_control_directory
+
 
 # A config that yields no account (caught mid-rewrite, or malformed) leaves no
 # cache entry behind: the next render parses it again rather than showing no
