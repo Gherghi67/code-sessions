@@ -410,7 +410,7 @@ export function register(on: On) {
               ? <Button key="cs-rotate" action={ROTATE_ACTION} plain label="/clear and continue from the handoff"
                         onPress={() => pressClear($)} />
               : <Button key="cs-rotate" action={ROTATE_ACTION} plain label="rotate this conversation"
-                        onPress={() => rotate($)} />}
+                        onPress={() => pressRotate($)} />}
             {/* a Button is a block: nested in a Text the engine refuses the whole tree (measured), so the separator stands beside it */}
             {!armed && !wrapped && <Text dimColor>{'  \u00b7  '}</Text>}
             {!armed && !wrapped && key(WRAP_ACTION)}
@@ -698,7 +698,7 @@ async function armedHandoff($: EngineInterface): Promise<string | undefined> {
 // SessionStart hook refuses the rotation it names. An answer cs cannot give
 // is a no. Each new refusal is toasted once. Each answer starts a cs process
 // (0.15-0.44 s measured), so only the steps that act ask: a countdown's start
-// and zero, a forced /rotate, and a press of the clear button.
+// and zero, a forced /rotate, and a press of the clear or the rotate button.
 async function sessionVetted($: EngineInterface, cwd: string): Promise<boolean> {
   const bin = await $.env.get("CS_BIN")
   let refusal: string | undefined
@@ -867,6 +867,12 @@ async function ownsRotation($: EngineInterface): Promise<boolean> {
 // the purpose from the conversation itself.
 async function rotate($: EngineInterface) {
   await $.command.run({ command: 'rotate', args: '' })
+}
+
+// The rotate button's press. The skill ends by arming a marker in .cs/local,
+// so the press asks cs first, as the forced /rotate does before it runs.
+async function pressRotate($: EngineInterface) {
+  if (await sessionVetted($, await $.session.cwd())) await rotate($)
 }
 
 // /wrap's last pass writes WRAPPED naming the conversation it ran in
