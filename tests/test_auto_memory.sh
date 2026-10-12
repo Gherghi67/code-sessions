@@ -834,6 +834,92 @@ test_an_inherited_tracked_files_answer_does_not_stop_the_open() {
     assert_file_contains "$TEST_TMPDIR/launched" "launched" "claude should launch" || return 1
 }
 
+# The refusals at the open ask git about the session's own repository. A
+# shell can name another one: GIT_DIR and GIT_WORK_TREE point git elsewhere,
+# GIT_INDEX_FILE swaps the index (git hands one to every commit hook), and
+# GIT_CEILING_DIRECTORIES stops it finding the repository at all. Opens vt
+# plain, checks that refusal, then opens it under each variable: the answer
+# must be the same one.
+_assert_refused_under_any_git_environment() {  # text the refusal holds
+    local root="$CS_SESSIONS_ROOT/vt" plain plain_rc=0 out rc var
+    mkdir -p "$TEST_TMPDIR/elsewhere"
+    git -C "$TEST_TMPDIR/elsewhere" init -q
+    _make_launch_sentinel
+    plain=$("$CS_BIN" vt <<< "" 2>&1) || plain_rc=$?
+    assert_eq "1" "$plain_rc" "cs should refuse with no git variable set: $plain" || return 1
+    assert_output_contains "$plain" "$1" "the fixture reaches the refusal under test" || return 1
+    for var in "GIT_INDEX_FILE=/dev/null" "GIT_DIR=$TEST_TMPDIR/elsewhere/.git" \
+               "GIT_WORK_TREE=$TEST_TMPDIR/elsewhere" "GIT_CEILING_DIRECTORIES=$root/.cs:$root"; do
+        rc=0
+        out=$(env "$var" "$CS_BIN" vt <<< "" 2>&1) || rc=$?
+        assert_eq "1" "$rc" "cs should refuse with ${var%%=*} set: $out" || return 1
+        assert_eq "$plain" "$out" "the refusal is the same with ${var%%=*} set" || return 1
+    done
+    assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
+}
+
+test_a_tracked_pre_open_is_refused_whatever_repository_the_shell_names() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    _write_pre_open vt "touch \"$TEST_TMPDIR/pre-open-ran\""
+    git -C "$CS_SESSIONS_ROOT/vt" add -f .cs/local/pre-open
+    git -C "$CS_SESSIONS_ROOT/vt" commit -q -m "track pre-open"
+    _assert_refused_under_any_git_environment ".cs/local/pre-open is tracked in git" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/pre-open-ran" "the committed pre-open must not run" || return 1
+}
+
+test_tracked_cs_private_is_refused_whatever_repository_the_shell_names() {
+    local up="$TEST_TMPDIR/upstream"
+    _upstream_session_repo "$up"
+    _commit_armed_queue "$up" .cs/private
+    git clone -q "$up" "$CS_SESSIONS_ROOT/vt"
+    _assert_refused_under_any_git_environment ".cs/private/queue.state is tracked in git" || return 1
+}
+
+# The gitlink for a .cs submodule stays in the index after its .git is gone,
+# and the index is then the only place that says so.
+test_a_cs_gitlink_is_refused_whatever_repository_the_shell_names() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt"
+    git -C "$root/.cs" init -q
+    git -C "$root/.cs" add -f README.md
+    git -C "$root/.cs" -c user.name=t -c user.email=t@example.com commit -q -m "inner"
+    git -C "$root" rm -r -q --cached .cs
+    git -C "$root" -c advice.addEmbeddedRepo=false add .cs
+    git -C "$root" commit -q -m "ship .cs as a submodule"
+    rm -rf "$root/.cs/.git"
+    assert_eq "160000" "$(git -C "$root" ls-files -s -- .cs | cut -d' ' -f1)" "the fixture must index .cs as a gitlink" || return 1
+    _assert_refused_under_any_git_environment ".cs is a submodule or nested repository" || return 1
+}
+
+# A checkout cs hides itself in through info/exclude must track none of the
+# files cs rewrites at every open.
+test_an_exclude_session_conflict_is_refused_whatever_repository_the_shell_names() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt"
+    printf 'git_bookkeeping: exclude\n' >> "$root/.cs/local/state"
+    git -C "$root" add -f CLAUDE.local.md
+    git -C "$root" commit -q -m "track the protocol file"
+    _assert_refused_under_any_git_environment "is tracked on the branch" || return 1
+}
+
+# Only a pre-open git does not track makes a vault the user set up by hand,
+# which is what lets the vault links lead out of the session.
+test_a_tracked_pre_open_makes_no_hand_made_vault_whatever_repository_the_shell_names() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt" var rc
+    _write_pre_open vt "exit 0"
+    rc=0
+    bash -c 'source "$1"; _cs_hand_made_vault "$2"' _ "$SCRIPT_DIR/../hooks/cs-shared.sh" "$root" || rc=$?
+    assert_eq "0" "$rc" "an untracked pre-open is a hand-made vault" || return 1
+    git -C "$root" add -f .cs/local/pre-open
+    git -C "$root" commit -q -m "track pre-open"
+    for var in "GIT_CS_TEST_NONE=1" "GIT_INDEX_FILE=/dev/null" "GIT_DIR=$TEST_TMPDIR/nowhere/.git"; do
+        rc=0
+        env "$var" bash -c 'source "$1"; _cs_hand_made_vault "$2"' _ "$SCRIPT_DIR/../hooks/cs-shared.sh" "$root" || rc=$?
+        assert_eq "1" "$rc" "a tracked pre-open is no hand-made vault with ${var%%=*} set" || return 1
+    done
+}
+
 # A clone can also deliver `.cs` itself as a committed symlink to a tracked
 # directory: `git ls-files -- .cs/local` then lists nothing, so the tracked
 # check passes and the pre-open behind the link would run.
@@ -1677,6 +1763,11 @@ run_test test_the_untrack_command_quotes_a_directory_name_the_repository_chose
 run_test test_an_untracked_cs_private_directory_opens
 run_test test_a_cs_private_link_into_a_vault_outside_any_repository_opens
 run_test test_an_inherited_tracked_files_answer_does_not_stop_the_open
+run_test test_a_tracked_pre_open_is_refused_whatever_repository_the_shell_names
+run_test test_tracked_cs_private_is_refused_whatever_repository_the_shell_names
+run_test test_a_cs_gitlink_is_refused_whatever_repository_the_shell_names
+run_test test_an_exclude_session_conflict_is_refused_whatever_repository_the_shell_names
+run_test test_a_tracked_pre_open_makes_no_hand_made_vault_whatever_repository_the_shell_names
 run_test test_pre_open_through_symlinked_cs_is_refused
 run_test test_symlinked_cs_without_pre_open_keeps_the_target_mode
 run_test test_pre_open_inside_a_cs_submodule_is_refused
