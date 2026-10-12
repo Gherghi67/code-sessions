@@ -409,9 +409,25 @@ if _marker_dir=$(cs_private_dir "$META_DIR") && HANDOFF_DIR=$(cs_handoff_dir "$M
     PENDING_MARKER="$_marker_dir/pending-handoff"
 fi
 HANDOFF_REL=".cs/${HANDOFF_DIR#"$META_DIR"/}"
+# A claude started from inside the session (a `claude -p` the lead's Bash tool
+# ran) fires this hook with the lead's contract in its environment, and a tmux
+# teammate fires it as a full claude of its own. The armed rotation and the
+# queue's once-only digest belong to the lead: such a guest is neither handed
+# them nor clears them. A front end that walked in is no guest: it is the
+# conversation the user is in, and its /clear loads the rotation. A claude
+# shown to be the lead is asked nothing further: the teammate check reads the
+# command line, and a launch prompt can hold the flags it looks for.
+IS_GUEST=0
+if command -v cs_is_lead >/dev/null 2>&1 && cs_is_lead; then
+    :
+elif command -v cs_is_shown_nested_child >/dev/null 2>&1 && cs_is_shown_nested_child; then
+    IS_GUEST=1
+elif command -v _cs_is_teammate >/dev/null 2>&1 && _cs_is_teammate; then
+    IS_GUEST=1
+fi
 case "$SOURCE" in
     startup|clear)
-        if [ -n "$PENDING_MARKER" ] && [ -f "$PENDING_MARKER" ]; then
+        if [ "$IS_GUEST" != 1 ] && [ -n "$PENDING_MARKER" ] && [ -f "$PENDING_MARKER" ]; then
             HANDOFF_BASENAME=$(cat "$PENDING_MARKER" 2>/dev/null | tr -d '[:space:]' || true)
             # The marker names a basename. Anything with a separator would
             # resolve outside the handoff store, and the file it landed on
@@ -962,7 +978,7 @@ DIGEST_PENDING=""
 # The inbox sits behind .cs/private in an encrypted session; a locked vault has
 # nothing readable, and DIGEST_DIR stays empty so no cursor is written.
 DIGEST_DIR=""
-if DIGEST_DIR=$(cs_private_dir "$META_DIR"); then _build_digest "$DIGEST_DIR"; else DIGEST_DIR=""; fi
+if [ "$IS_GUEST" != 1 ] && DIGEST_DIR=$(cs_private_dir "$META_DIR"); then _build_digest "$DIGEST_DIR"; else DIGEST_DIR=""; fi
 if [ -n "$DIGEST" ]; then
     CONTEXT="${CONTEXT}
 

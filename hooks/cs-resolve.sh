@@ -121,23 +121,33 @@ _cs_find_session_root() {  # start_dir
 # True when the claude a hook fires for is the conversation cs launched. cs
 # starts claude two ways: the exec arms replace cs's own process, so claude
 # carries cs's pid; the resume arm runs claude as a child, since it needs the
-# exit status, and there claude's parent is cs. Anything else is not the lead:
-# a tmux teammate (tmux starts it, and CS_LEAD_PID is absent from its
+# exit status, and there claude's parent is cs. cs says which it did in
+# CS_LEAD_IS_PARENT: 1 on that one resume command, 0 everywhere else. After an
+# exec the launch pid is the lead claude's own, so at 0 the parent is never
+# asked, or a claude started as the lead's direct child would pass for it.
+# A session with no value was started by a cs that did not say; it keeps the
+# rule it was launched under, the parent check, until it is relaunched.
+# Anything else is not the lead: a tmux teammate (tmux starts it, and CS_LEAD_PID is absent from its
 # environment), a `claude -p` run from inside the session (its parent is a
 # shell), a front end that walked in from the directory. Both variables must be
 # non-empty, not merely equal: unset on both sides compares equal. Memoized: a
-# hook may ask more than once, and the resume-arm answer costs a ps fork.
+# hook may ask more than once, and the resume-arm answer costs a ps fork. A ps
+# that names no parent leaves the answer at "not the lead" and records that
+# nothing was learned, which cs_is_shown_nested_child reads.
 _CS_IS_LEAD=""
+_CS_PARENT_UNREAD=0
 cs_is_lead() {
     if [ -z "$_CS_IS_LEAD" ]; then
         _CS_IS_LEAD=0
         if [ -n "${CS_LEAD_PID:-}" ] && [ -n "${CLAUDE_PID:-}" ]; then
             if [ "$CLAUDE_PID" = "$CS_LEAD_PID" ]; then
                 _CS_IS_LEAD=1
-            else
+            elif [ "${CS_LEAD_IS_PARENT:-}" != 0 ]; then
                 local parent
                 parent=$(ps -o ppid= -p "$CLAUDE_PID" 2>/dev/null | tr -d '[:space:]' || true)
-                if [ -n "$parent" ] && [ "$parent" = "$CS_LEAD_PID" ]; then
+                if [ -z "$parent" ]; then
+                    _CS_PARENT_UNREAD=1
+                elif [ "$parent" = "$CS_LEAD_PID" ]; then
                     _CS_IS_LEAD=1
                 fi
             fi
@@ -155,6 +165,17 @@ cs_is_lead() {
 cs_is_nested_child() {
     [ -n "${CS_LEAD_PID:-}" ] && [ -n "${CLAUDE_PID:-}" ] || return 1
     ! cs_is_lead
+}
+
+# True when ps named the parent and it is not cs: the claude is shown to be a
+# guest, where cs_is_nested_child only fails to show it is the lead. The two
+# differ when ps cannot answer, and each caller takes the side that loses
+# nothing. What a guest must not take from the lead (the armed rotation, the
+# once-only digest, the attention flag) asks this one, so a resumed lead whose
+# parent cannot be read keeps them. What a guest must not remove (the lock)
+# asks cs_is_nested_child, so the same doubt leaves a live holder's lock.
+cs_is_shown_nested_child() {
+    cs_is_nested_child && [ "$_CS_PARENT_UNREAD" != 1 ]
 }
 
 # Claude Code launches an agent-team teammate with --agent-id, --agent-name and

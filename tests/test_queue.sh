@@ -688,6 +688,19 @@ test_drain_declined_within_cooldown_falls_through() {
     assert_output_not_contains "$out" "AskUserQuestion" "recent decline suppresses the gate" || return 1
 }
 
+# The stamp's content reaches shell arithmetic, which runs a command
+# substitution found in an operand's array subscript. The hook strips
+# whitespace from it, so the stand-in command holds none; the array is PATH
+# because the hook runs under set -u, which stops on an unset name before the
+# substitution is reached.
+test_drain_reads_a_declined_stamp_as_data() {
+    qseed "queued"
+    printf 'PATH[$(:>%s)]\n' "$TEST_TMPDIR/ran-from-declined" > "$(QDIR)/queue.declined"
+    local out; out=$(drain 2>/dev/null)
+    assert_file_not_exists "$TEST_TMPDIR/ran-from-declined" "a declined stamp's content must never run" || return 1
+    assert_output_contains "$out" "AskUserQuestion" "a stamp that is not a time counts as no decline: the gate asks" || return 1
+}
+
 test_drain_ignores_subagents() {
     qseed "queued"
     local out; out=$(drain '{"agent_id":"sub-1"}')
@@ -837,6 +850,7 @@ run_test test_drain_pops_nothing_when_a_trip_cannot_record_idle
 run_test test_drain_advances_past_a_stale_state_tmp
 run_test test_drain_disarms_after_a_failed_pop_past_a_stale_state_tmp
 run_test test_drain_declined_within_cooldown_falls_through
+run_test test_drain_reads_a_declined_stamp_as_data
 run_test test_drain_ignores_subagents
 run_test test_drain_gate_mentions_high_context
 run_test test_drain_armed_states_stop_mechanic

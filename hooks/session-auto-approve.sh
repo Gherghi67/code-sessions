@@ -114,9 +114,37 @@ _cs_realdir() {
 # (e.g. a not-yet-created nested dir) falls through to the normal prompt.
 PARENT_DIR="${FILE_PATH%/*}"
 [ "$PARENT_DIR" = "$FILE_PATH" ] && PARENT_DIR="."
-REAL_PARENT="$(_cs_realdir "$PARENT_DIR")" || exit 0
 REAL_META="$(_cs_realdir "$META_DIR")" || REAL_META=""
 REAL_CS="$(_cs_realdir "$SESSION_DIR/.cs")" || REAL_CS=""
+if ! REAL_PARENT="$(_cs_realdir "$PARENT_DIR")"; then
+    # The one parent approved before it exists: a directory cs keeps content
+    # in, by its own name, directly at the root of .cs/. The Write tool makes
+    # it, so a session's first handoff, checkpoint or plan needs no prompt.
+    # Nothing else is inferred about a path that is not there: a control
+    # directory cs has not made yet, a second missing level and a dangling
+    # link all prompt. An encrypted session keeps these directories in its
+    # vault, so a new one at the plaintext root prompts too.
+    if [ -e "$PARENT_DIR" ] || [ -L "$PARENT_DIR" ]; then
+        exit 0
+    fi
+    case "${PARENT_DIR##*/}" in
+        handoffs|checkpoints|narrative-archive|memory|plans|research) ;;
+        *) exit 0 ;;
+    esac
+    _cs_new_in="${PARENT_DIR%/*}"
+    [ "$_cs_new_in" = "$PARENT_DIR" ] && _cs_new_in="."
+    _cs_new_in="$(_cs_realdir "$_cs_new_in")" || exit 0
+    case "$_cs_new_in" in
+        "${REAL_META:-/cs-no-meta}"|"${REAL_CS:-/cs-no-cs}") ;;
+        *) exit 0 ;;
+    esac
+    for _cs_dir in "$META_DIR/private" "$SESSION_DIR/.cs/private"; do
+        if [ -e "$_cs_dir" ] || [ -L "$_cs_dir" ]; then
+            exit 0
+        fi
+    done
+    REAL_PARENT="$_cs_new_in/${PARENT_DIR##*/}"
+fi
 
 # Only consider files whose real parent is inside the session's .cs/ tree,
 # compared as the filesystem spelled them: on a case-sensitive filesystem a
@@ -125,6 +153,22 @@ REAL_CS="$(_cs_realdir "$SESSION_DIR/.cs")" || REAL_CS=""
 case "$REAL_PARENT/" in
     "${REAL_META:-/cs-no-meta}"/*|"${REAL_CS:-/cs-no-cs}"/*) ;;
     *) exit 0 ;;
+esac
+
+# Below .cs/ a name outside ASCII always prompts. A filesystem that folds
+# names (APFS reads a long s as s, the Kelvin sign as k, a ligature as its
+# letters) makes such a name another spelling of a control file or directory,
+# and no comparison of strings can see that. Only the part below .cs/ is
+# judged, so a session under a directory named outside ASCII keeps its
+# approvals, and it is read before the lowercasing: tr may rewrite bytes it
+# takes for letters. The class is matched in the hook's own locale; a
+# one-command LC_ALL=C in a function can crash Homebrew bash after a fork.
+case "$REAL_PARENT/" in
+    "${REAL_META:-/cs-no-meta}"/*) _cs_below="${REAL_PARENT#"$REAL_META"}" ;;
+    *) _cs_below="${REAL_PARENT#"$REAL_CS"}" ;;
+esac
+case "$_cs_below/${FILE_PATH##*/}" in
+    *[![:ascii:]]*) exit 0 ;;
 esac
 
 # The classification below is lowercased: APFS keeps the case a caller
@@ -136,6 +180,46 @@ REAL_PARENT_LC="$(_cs_lower "$REAL_PARENT")"
 REAL_META_LC="$(_cs_lower "$REAL_META")"
 REAL_CS_LC="$(_cs_lower "$REAL_CS")"
 BASENAME_LC="$(_cs_lower "${FILE_PATH##*/}")"
+
+# A CLAUDE.md is instructions wherever it sits: Claude Code loads the one
+# beside a file it reads, and it reads .cs/memory/ in every session.
+case "$BASENAME_LC" in
+    claude.md|claude.local.md) exit 0 ;;
+esac
+
+# A repository kept below .cs/ (a clone under a notes directory) has a git
+# directory of its own: git reads config and runs hooks from it whenever git
+# runs there, and a .git file names another directory to read them from. A
+# write with a .git component anywhere below .cs/ prompts, in the real path
+# and in the spelled one: a .git that is a link resolves to its target's name.
+# The spelled path is read below .cs/ as well, so a session that lives under
+# a directory named .git keeps its approvals; a spelling that starts at
+# neither metadata root is read whole.
+case "$(_cs_lower "$_cs_below")/$BASENAME_LC/" in
+    */.git/*) exit 0 ;;
+esac
+_cs_spelled="$FILE_PATH"
+for _cs_root in "$META_DIR" "$SESSION_DIR/.cs"; do
+    case "$FILE_PATH" in
+        "$_cs_root"/*) _cs_spelled="${FILE_PATH#"$_cs_root"}"; break ;;
+    esac
+done
+case "$(_cs_lower "$_cs_spelled")/" in
+    */.git/*) exit 0 ;;
+esac
+# The name is not what makes a git directory: a bare clone is one under any
+# name, and so is the target of a linked .git. Every directory from the
+# write's real parent up to the root of .cs/ is asked what it is: one that
+# holds HEAD beside objects/ or refs/, or beside commondir, which is how a
+# linked worktree's own directory names the shared one.
+_cs_up="$REAL_PARENT"
+while [ -n "$_cs_up" ] && [ "$_cs_up" != "$REAL_META" ] && [ "$_cs_up" != "$REAL_CS" ]; do
+    if [ -f "$_cs_up/HEAD" ] && { [ -d "$_cs_up/objects" ] || [ -d "$_cs_up/refs" ] \
+        || [ -f "$_cs_up/commondir" ]; }; then
+        exit 0
+    fi
+    _cs_up="${_cs_up%/*}"
+done
 
 # Classify by where the write really lands, not by the spelled path: a
 # shared directory can carry a committed link into local/ (memory/notes ->
@@ -173,7 +257,10 @@ for _cs_root in "$META_DIR" "$SESSION_DIR/.cs"; do
         "$_cs_ctl"/*) exit 0 ;;
     esac
 done
-# No link under a control directory is followed (audit C2, #886). A link
+# No link under a control directory is followed (audit C2, #886). The cost
+# is known and accepted: one link there makes every write in the session
+# prompt, a legitimately linked skill under .claude/ included. Do not narrow
+# this to the tree that holds the link. A link
 # there can alias a control file into content or content into a control
 # file, and the shapes compound (chains, links inside linked directories,
 # names ending in a newline, hops through the session root), so where a
@@ -331,11 +418,16 @@ if [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ -e "$CLAUDE_CONFIG_DIR" ]; then
     esac
 fi
 
-# At the root of .cs/ itself: the lock and the secret-sync files.
+# At the root of .cs/ itself only a Markdown file is approved: the notes
+# people and Claude read (README.md, summary.md). Every other name there is
+# one cs acts on: the locks, the secret-sync files, the stamps the Stop hook
+# reads, the archive marker, the timeline, and a control directory's name
+# before cs makes the directory.
 case "$REAL_PARENT_LC" in
     "$REAL_META_LC"|"$REAL_CS_LC")
         case "$BASENAME_LC" in
-            session.lock|secrets.*) exit 0 ;;
+            *.md) ;;
+            *) exit 0 ;;
         esac ;;
 esac
 

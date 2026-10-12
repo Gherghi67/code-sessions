@@ -176,6 +176,22 @@ test_narrative_reminder_respects_cooldown() {
     assert_output_contains "$output" "approve" "Fresh cooldown should suppress the reminder" || return 1
 }
 
+# The stamp sits at the .cs root, where a write needs no approval, so its
+# content is whatever anyone put there. Shell arithmetic runs a command
+# substitution found in an operand's array subscript; the array is PATH because
+# the hook runs under set -u, which stops on an unset name before the
+# substitution is reached.
+test_narrative_reminder_reads_its_cooldown_stamp_as_data() {
+    echo "# Session narrative" > "$CLAUDE_SESSION_META_DIR/memory/narrative.md"
+    _backdate "$CLAUDE_SESSION_META_DIR/memory/narrative.md"
+    printf 'PATH[$(:>%s)]' "$TEST_TMPDIR/ran-from-stamp" > "$CLAUDE_SESSION_META_DIR/.narrative-reminder-cooldown"
+    local output
+    output=$(echo '{}' | bash "$HOOKS_DIR/narrative-reminder.sh" 2>/dev/null)
+    assert_file_not_exists "$TEST_TMPDIR/ran-from-stamp" "A cooldown stamp's content must never run" || return 1
+    assert_output_contains "$output" "block" "A stamp that is not a time counts as no stamp: the reminder fires" || return 1
+    assert_output_contains "$output" "narrative.md" "Reminder should point at narrative.md" || return 1
+}
+
 test_narrative_reminder_approves_for_subagent() {
     echo "# Session narrative" > "$CLAUDE_SESSION_META_DIR/memory/narrative.md"
     _backdate "$CLAUDE_SESSION_META_DIR/memory/narrative.md"
@@ -446,6 +462,210 @@ test_auto_approve_rejects_case_variants() {
         ".cs/AGE-RECIPIENTS/x.pub" || return 1
     _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/SESSION.LOCK" \
         ".cs/SESSION.LOCK" || return 1
+}
+
+# The root of .cs/ holds the notes people and Claude read beside the files cs
+# acts on: the stamps the Stop hook reads, the locks, the archive marker, the
+# timeline, and the names cs gives its control directories. Only a Markdown
+# file is approved there, so a name cs reads later cannot be written unseen.
+test_auto_approve_prompts_for_a_reminder_stamp() {
+    local stamp="$CLAUDE_SESSION_META_DIR/.narrative-reminder-cooldown"
+    _assert_falls_through Write "$stamp" "a new reminder stamp" || return 1
+    echo 1700000000 > "$stamp"
+    _assert_falls_through Edit "$stamp" "an Edit of the reminder stamp" || return 1
+}
+
+# A control directory cs has not made yet is a free name at the root: taken
+# by a file, it is what cs finds where it expects its directory.
+test_auto_approve_prompts_for_a_control_directory_name_taken_by_a_file() {
+    local name
+    for name in private claude-config age-recipients .git vault-mnt; do
+        _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/$name" \
+            "a file named .cs/$name" || return 1
+    done
+}
+
+test_auto_approve_prompts_for_the_open_lock() {
+    _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/session.mutex.lock" \
+        "the lock an open holds" || return 1
+}
+
+test_auto_approve_prompts_for_the_archive_marker() {
+    _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/archived" \
+        "the archive marker" || return 1
+}
+
+test_auto_approve_prompts_for_the_timeline() {
+    local timeline="$CLAUDE_SESSION_META_DIR/timeline.jsonl"
+    _assert_falls_through Write "$timeline" "a new timeline" || return 1
+    echo '{"event":"session_started"}' > "$timeline"
+    _assert_falls_through Edit "$timeline" "an Edit of the timeline" || return 1
+}
+
+# Claude Code loads a CLAUDE.md from the directory of a file it reads, so one
+# at the root of .cs/ is instructions, not notes.
+test_auto_approve_prompts_for_instructions_at_the_root() {
+    local name
+    for name in CLAUDE.md CLAUDE.local.md claude.md; do
+        _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/$name" \
+            ".cs/$name" || return 1
+    done
+}
+
+# The same holds in every directory below .cs/: Claude Code reads the
+# CLAUDE.md beside a file it opens, and it opens memory/ in every session.
+test_auto_approve_prompts_for_instructions_in_a_content_directory() {
+    local meta="$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$meta/plans" "$meta/private/handoffs"
+    _assert_falls_through Write "$meta/memory/CLAUDE.md" \
+        ".cs/memory/CLAUDE.md" || return 1
+    _assert_falls_through Write "$meta/plans/CLAUDE.local.md" \
+        ".cs/plans/CLAUDE.local.md" || return 1
+    _assert_falls_through Write "$meta/private/handoffs/claude.md" \
+        ".cs/private/handoffs/claude.md" || return 1
+    _assert_allowed Write "$meta/memory/claude-notes.md" \
+        "a memory topic whose name only starts with claude" || return 1
+}
+
+# The Write tool makes a missing parent directory, so the first handoff,
+# checkpoint or plan of a session lands in a directory that is not there yet.
+# The directories cs itself keeps content in are approved by name, directly
+# at the root of .cs/; the hook makes nothing itself.
+test_auto_approve_allows_the_first_write_into_a_content_directory() {
+    local meta="$CLAUDE_SESSION_META_DIR" name
+    rm -r "$meta/memory"
+    for name in handoffs checkpoints narrative-archive memory plans research; do
+        _assert_allowed Write "$meta/$name/2026-01-01-x.md" \
+            "the first file in a missing .cs/$name" || return 1
+        assert_not_exists "$meta/$name" "the hook leaves .cs/$name unmade" || return 1
+    done
+}
+
+# Any other missing directory keeps its prompt: a control directory cs has not
+# made yet, a name cs does not use, a second missing level, another spelling,
+# one of cs's names below the root, and a dangling link where the directory
+# would go.
+test_auto_approve_prompts_for_the_first_write_into_any_other_directory() {
+    local meta="$CLAUDE_SESSION_META_DIR" path
+    for path in private/queue/0001 private/handoffs/x.md queue/0001 notes/x.md \
+        handoffs/deep/x.md Handoffs/x.md claude-config/settings.json memory/plans/x.md; do
+        _assert_falls_through Write "$meta/$path" \
+            "the first file at .cs/$path" || return 1
+    done
+    ln -s "$TEST_TMPDIR/nowhere" "$meta/plans"
+    _assert_falls_through Write "$meta/plans/x.md" \
+        "a file behind a dangling link at .cs/plans" || return 1
+}
+
+# An encrypted session keeps its handoffs and checkpoints in the vault, so a
+# new directory of that name at the plaintext root is not where they go.
+test_auto_approve_prompts_for_a_new_plaintext_directory_in_an_encrypted_session() {
+    local meta="$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$meta/private"
+    _assert_falls_through Write "$meta/handoffs/2026-01-01-x.md" \
+        "a first handoff at the plaintext root of an encrypted session" || return 1
+}
+
+test_auto_approve_allows_markdown_at_the_root() {
+    _assert_allowed Write "$CLAUDE_SESSION_META_DIR/README.md" \
+        "the session README" || return 1
+    echo "# Changes" > "$CLAUDE_SESSION_META_DIR/changes.md"
+    _assert_allowed Edit "$CLAUDE_SESSION_META_DIR/changes.md" \
+        "an Edit of a Markdown file at the root" || return 1
+    _assert_allowed Write "$CLAUDE_SESSION_META_DIR/memory/topic_notes.md" \
+        "a memory topic" || return 1
+}
+
+# A filesystem that folds names (APFS reads a long s as s and the Kelvin sign
+# as k) makes a name outside ASCII another spelling of a control file, and no
+# comparison of strings sees it. Below .cs/ such a name always prompts. The
+# names are written as byte escapes so this file stays ASCII.
+test_auto_approve_prompts_for_a_non_ascii_name_in_content() {
+    local memory="$CLAUDE_SESSION_META_DIR/memory"
+    _assert_falls_through Write "$memory/caf"$'\xc3\xa9'".md" \
+        "a memory file named with a precomposed e-acute" || return 1
+    _assert_falls_through Write "$memory/cafe"$'\xcc\x81'".md" \
+        "a memory file named with a combining acute" || return 1
+    mkdir -p "$memory/r"$'\xc3\xa9'"sum"
+    _assert_falls_through Write "$memory/r"$'\xc3\xa9'"sum/notes.md" \
+        "a file in a memory directory named outside ASCII" || return 1
+}
+
+# mkdir -p of the folded spelling is the existing control directory where the
+# filesystem folds it and a directory of its own where it does not; the write
+# prompts either way, and never on a missing parent.
+test_auto_approve_prompts_for_a_folded_control_name() {
+    local meta="$CLAUDE_SESSION_META_DIR"
+    _assert_falls_through Write "$meta/"$'\xc5\xbf'"ession.lock" \
+        "the session lock spelled with a long s" || return 1
+    mkdir -p "$meta/age-recipients"
+    mkdir -p "$meta/age-recipient"$'\xc5\xbf'
+    _assert_falls_through Write "$meta/age-recipient"$'\xc5\xbf'"/k.pub" \
+        "a recipient key under a directory spelled with a long s" || return 1
+}
+
+# A repository kept below .cs/ (a clone under a notes directory) has a git
+# directory of its own, and git reads config and runs hooks from it whenever
+# git runs there. The note beside it is the control.
+test_auto_approve_prompts_inside_a_git_directory_below_cs() {
+    local meta="$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$meta/artifacts/repo/.git/hooks" "$meta/memory/sub"
+    _assert_falls_through Write "$meta/artifacts/repo/.git/config" \
+        "the config of a repository kept below .cs" || return 1
+    _assert_falls_through Write "$meta/artifacts/repo/.git/hooks/pre-commit" \
+        "a hook of a repository kept below .cs" || return 1
+    _assert_falls_through Write "$meta/memory/sub/.git" \
+        "a .git file in a content directory" || return 1
+    _assert_allowed Write "$meta/artifacts/repo/notes.md" \
+        "a note beside that repository" || return 1
+}
+
+# The name is not what makes a git directory. A .git that is a link resolves
+# to its target's name, and a bare clone is a git directory under a name of
+# its own; both are read by git the same way.
+test_auto_approve_prompts_inside_a_git_directory_reached_by_another_name() {
+    local meta="$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$meta/research/repo" "$meta/research/gitdata"
+    ln -s ../gitdata "$meta/research/repo/.git"
+    _assert_falls_through Write "$meta/research/repo/.git/config" \
+        "the config behind a linked .git" || return 1
+    mkdir -p "$meta/artifacts/mirror/objects" "$meta/artifacts/mirror/refs" "$meta/artifacts/mirror/hooks"
+    echo 'ref: refs/heads/main' > "$meta/artifacts/mirror/HEAD"
+    _assert_falls_through Write "$meta/artifacts/mirror/config" \
+        "the config of a bare clone kept below .cs" || return 1
+    _assert_falls_through Write "$meta/artifacts/mirror/hooks/pre-commit" \
+        "a hook of a bare clone kept below .cs" || return 1
+    _assert_allowed Write "$meta/artifacts/notes.md" \
+        "a note beside the bare clone" || return 1
+    # A linked worktree's own directory holds HEAD and names the shared one in
+    # commondir; git reads config.worktree from it.
+    mkdir -p "$meta/research/admin"
+    echo 'ref: refs/heads/main' > "$meta/research/admin/HEAD"
+    echo '/elsewhere/.git' > "$meta/research/admin/commondir"
+    _assert_falls_through Write "$meta/research/admin/config.worktree" \
+        "the config of a worktree's git directory kept below .cs" || return 1
+}
+
+# The same for a session whose own path has a .git component above .cs/: the
+# git-directory rule reads the path below .cs/ only.
+test_auto_approve_allows_content_in_a_session_below_a_git_named_directory() {
+    local home="$TEST_TMPDIR/checkout/.git"
+    mkdir -p "$home"
+    mv "$CLAUDE_SESSION_DIR" "$home/session"
+    CLAUDE_SESSION_DIR="$home/session" CLAUDE_SESSION_META_DIR="$home/session/.cs" \
+        _assert_allowed Write "$home/session/.cs/memory/narrative.md" \
+        "a narrative in a session path holding a .git component" || return 1
+}
+
+# Only the part of the path below .cs/ is judged: a session that lives under
+# a directory named outside ASCII keeps its content writes frictionless.
+test_auto_approve_allows_ascii_content_under_a_non_ascii_session_path() {
+    local home="$TEST_TMPDIR/caf"$'\xc3\xa9'
+    mkdir -p "$home"
+    mv "$CLAUDE_SESSION_DIR" "$home/session"
+    CLAUDE_SESSION_DIR="$home/session" CLAUDE_SESSION_META_DIR="$home/session/.cs" \
+        _assert_allowed Write "$home/session/.cs/memory/narrative.md" \
+        "a narrative in a session path named outside ASCII" || return 1
 }
 
 # cs accepts a .cs/claude-config that is a link to any resolving directory
@@ -2979,6 +3199,7 @@ run_test test_narrative_reminder_is_silent_about_budget_when_under
 run_test test_narrative_reminder_survives_an_unreadable_narrative
 run_test test_narrative_reminder_budget_line_covers_a_teammates_file
 run_test test_narrative_reminder_respects_cooldown
+run_test test_narrative_reminder_reads_its_cooldown_stamp_as_data
 run_test test_stop_raises_attention_marker
 run_test test_stop_no_attention_marker_for_subagents
 run_test test_narrative_reminder_approves_for_subagent
@@ -3000,6 +3221,23 @@ run_test test_auto_approve_rejects_link_into_local
 run_test test_auto_approve_rejects_executable_target
 run_test test_auto_approve_rejects_linked_cs_dir
 run_test test_auto_approve_rejects_case_variants
+run_test test_auto_approve_prompts_for_a_reminder_stamp
+run_test test_auto_approve_prompts_for_a_control_directory_name_taken_by_a_file
+run_test test_auto_approve_prompts_for_the_open_lock
+run_test test_auto_approve_prompts_for_the_archive_marker
+run_test test_auto_approve_prompts_for_the_timeline
+run_test test_auto_approve_prompts_for_instructions_at_the_root
+run_test test_auto_approve_prompts_for_instructions_in_a_content_directory
+run_test test_auto_approve_allows_the_first_write_into_a_content_directory
+run_test test_auto_approve_prompts_for_the_first_write_into_any_other_directory
+run_test test_auto_approve_prompts_for_a_new_plaintext_directory_in_an_encrypted_session
+run_test test_auto_approve_allows_markdown_at_the_root
+run_test test_auto_approve_prompts_for_a_non_ascii_name_in_content
+run_test test_auto_approve_prompts_for_a_folded_control_name
+run_test test_auto_approve_prompts_inside_a_git_directory_below_cs
+run_test test_auto_approve_prompts_inside_a_git_directory_reached_by_another_name
+run_test test_auto_approve_allows_ascii_content_under_a_non_ascii_session_path
+run_test test_auto_approve_allows_content_in_a_session_below_a_git_named_directory
 run_test test_auto_approve_rejects_config_linked_into_content
 run_test test_auto_approve_rejects_settings_link_target
 run_test test_auto_approve_rejects_queue_link_target

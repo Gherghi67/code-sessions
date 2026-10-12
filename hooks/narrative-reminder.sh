@@ -433,16 +433,23 @@ fi
 # statusline shows until the user next interacts. Cleared by scope-prompt.sh
 # on the next prompt and by session-start.sh at launch. Lives in .cs/local/
 # (per-machine state, never git-synced). Raised before the cooldown gates so
-# every turn end signals, not just the ones that remind.
-cs_mkdir_inside "$META_DIR/local" || true
-cs_append_inside "$META_DIR/local/attention" : || true
+# every turn end signals, not just the ones that remind. A claude started
+# from inside the session ends no turn of the lead's, so it raises nothing.
+IS_NESTED_CHILD=0
+if command -v cs_is_shown_nested_child >/dev/null 2>&1 && cs_is_shown_nested_child; then
+    IS_NESTED_CHILD=1
+fi
+if [ "$IS_NESTED_CHILD" != 1 ]; then
+    cs_mkdir_inside "$META_DIR/local" || true
+    cs_append_inside "$META_DIR/local/attention" : || true
+fi
 
 # iTerm2: bounce the dock while attention is raised, so a finished turn
 # reaches the user in another app. The it2 utilities live in ~/.iterm2 (shell
 # aliases, not on PATH); escapes go to the tty directly because hook stdout is
 # captured by Claude Code. CS_NO_ITERM2=1 disables; CS_IT2_DIR/CS_IT2_TTY are
 # test seams. Silent everywhere it cannot apply.
-if [ -z "${CS_NO_ITERM2:-}" ] && [ "${TERM_PROGRAM:-}" = "iTerm.app" ]; then
+if [ "$IS_NESTED_CHILD" != 1 ] && [ -z "${CS_NO_ITERM2:-}" ] && [ "${TERM_PROGRAM:-}" = "iTerm.app" ]; then
     _it2="${CS_IT2_DIR:-$HOME/.iterm2}/it2attention"
     { [ -x "$_it2" ] && "$_it2" start > "${CS_IT2_TTY:-/dev/tty}"; } 2>/dev/null || true
 fi
@@ -752,7 +759,10 @@ $RUN_MODE$SCOPE"
         DECLINED="$QDIR/queue.declined"
         GATE=1
         if [ -f "$DECLINED" ]; then
-            DECL_AT=$(cat "$DECLINED" 2>/dev/null | tr -d '[:space:]')
+            # A stamp is data: anything but a plain number reads as 0, a
+            # decline long past, and never reaches the arithmetic below, which
+            # would run a command substitution held in it.
+            DECL_AT=$(_num_or "$(cat "$DECLINED" 2>/dev/null | tr -d '[:space:]')" 0)
             NOW=$(date +%s)
             if [ -n "$DECL_AT" ] && [ $((NOW - DECL_AT)) -lt 600 ]; then
                 GATE=0            # within cooldown: fall through to narrative
@@ -856,7 +866,10 @@ CURRENT_TIME=$(date +%s)
 
 # Cooldown: don't nag if we reminded recently
 if [ -f "$COOLDOWN_FILE" ]; then
-    LAST_REMINDER=$(cat "$COOLDOWN_FILE" 2>/dev/null || echo "0")
+    # The stamp sits at the .cs root, where a write needs no approval, and
+    # arithmetic runs a command substitution held in an operand: anything but
+    # a plain number reads as 0, a reminder long past.
+    LAST_REMINDER=$(_num_or "$(cat "$COOLDOWN_FILE" 2>/dev/null | tr -d '[:space:]')" 0)
     ELAPSED=$((CURRENT_TIME - LAST_REMINDER))
     if [ "$ELAPSED" -lt "$COOLDOWN_SECONDS" ]; then
         echo '{"decision": "approve"}'
