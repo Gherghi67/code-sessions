@@ -31,6 +31,24 @@ test_statusline_cleanup_removes_cs_and_preserves_foreign() {
     assert_eq "$before" "$(cat "$file")"
 }
 
+# The release workflow packages the binary that tui/Cargo.toml builds. A rename of
+# one side without the other fails the tag build, so both are pinned here.
+test_release_workflow_names_no_ags_product() {
+    local stale
+    stale="$(grep -rlE 'ags-tui|agent-sessions' "$SCRIPT_DIR/../.github" || true)"
+    assert_eq "" "$stale" "no workflow under .github should name ags-tui or agent-sessions" || return 1
+}
+
+test_release_workflow_copies_the_binary_cargo_builds() {
+    local bin
+    bin="$(sed -n 's/^name = "\(.*\)"/\1/p' "$SCRIPT_DIR/../tui/Cargo.toml" | head -1)"
+    assert_eq cs-tui "$bin" "tui/Cargo.toml should build cs-tui" || return 1
+    assert_file_contains "$SCRIPT_DIR/../.github/workflows/release.yml" "release/$bin" \
+        "release.yml should copy the $bin binary from its target directory"
+}
+
 run_test test_codex_finds_the_thread_helper_beside_cs
 run_test test_statusline_cleanup_removes_cs_and_preserves_foreign
+run_test test_release_workflow_names_no_ags_product
+run_test test_release_workflow_copies_the_binary_cargo_builds
 report_results
