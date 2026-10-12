@@ -127,6 +127,22 @@ case "$REAL_PARENT/" in
     *) exit 0 ;;
 esac
 
+# Below .cs/ a name outside ASCII always prompts. A filesystem that folds
+# names (APFS reads a long s as s, the Kelvin sign as k, a ligature as its
+# letters) makes such a name another spelling of a control file or directory,
+# and no comparison of strings can see that. Only the part below .cs/ is
+# judged, so a session under a directory named outside ASCII keeps its
+# approvals, and it is read before the lowercasing: tr may rewrite bytes it
+# takes for letters. The class is matched in the hook's own locale; a
+# one-command LC_ALL=C in a function can crash Homebrew bash after a fork.
+case "$REAL_PARENT/" in
+    "${REAL_META:-/cs-no-meta}"/*) _cs_below="${REAL_PARENT#"$REAL_META"}" ;;
+    *) _cs_below="${REAL_PARENT#"$REAL_CS"}" ;;
+esac
+case "$_cs_below/${FILE_PATH##*/}" in
+    *[![:ascii:]]*) exit 0 ;;
+esac
+
 # The classification below is lowercased: APFS keeps the case a caller
 # typed, so pwd -P returns LOCAL/ for the directory local/, and a spelling
 # must not change what a path is. On a case-sensitive filesystem LOCAL is
@@ -331,11 +347,18 @@ if [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ -e "$CLAUDE_CONFIG_DIR" ]; then
     esac
 fi
 
-# At the root of .cs/ itself: the lock and the secret-sync files.
+# At the root of .cs/ itself only a Markdown file is approved: the notes
+# people and Claude read (README.md, summary.md). Every other name there is
+# one cs acts on: the locks, the secret-sync files, the stamps the Stop hook
+# reads, the archive marker, the timeline, and a control directory's name
+# before cs makes the directory. A CLAUDE.md is instructions: Claude Code
+# loads one from the directory of a file it reads.
 case "$REAL_PARENT_LC" in
     "$REAL_META_LC"|"$REAL_CS_LC")
         case "$BASENAME_LC" in
-            session.lock|secrets.*) exit 0 ;;
+            claude.md|claude.local.md) exit 0 ;;
+            *.md) ;;
+            *) exit 0 ;;
         esac ;;
 esac
 
