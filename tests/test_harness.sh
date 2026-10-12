@@ -104,6 +104,21 @@ test_setup_isolates_the_process_table() {
         || { echo "  FAIL: the default ps stub must report no processes, got: $out"; return 1; }
 }
 
+# Write a throwaway suite that sources test_lib.sh and replaces setup(), the
+# way 24 suites do, then runs the given body. Prints the suite's path; the
+# caller runs it with the environment it wants the suite to inherit.
+_overriding_suite() {  # body, as bash source
+    local probe="$TEST_TMPDIR/probe.sh"
+    {
+        printf 'SCRIPT_DIR=%q\n' "$SCRIPT_DIR"
+        printf 'source %q\n' "$SCRIPT_DIR/test_lib.sh"
+        printf 'setup() { :; }\nsetup\n'
+        printf 'TEST_TMPDIR=%q\n' "$TEST_TMPDIR"
+        printf '%s\n' "$1"
+    } > "$probe"
+    echo "$probe"
+}
+
 # A suite started from inside a live cs session inherits that session's
 # identity, and cs trusts it: a send under test files its sent copy in the
 # caller's own mailbox and signs the mail with the caller's name. The caller is
@@ -112,19 +127,11 @@ test_setup_isolates_the_process_table() {
 test_session_identity_does_not_reach_a_suite_from_its_caller() {
     local caller="$TEST_TMPDIR/caller" root="$TEST_TMPDIR/probe-sessions"
     mkdir -p "$caller/.cs/local/mail/out" "$root"
-    local probe="$TEST_TMPDIR/probe.sh"
-    cat > "$probe" <<PROBE
-#!/usr/bin/env bash
-SCRIPT_DIR="$SCRIPT_DIR"
-source "\$SCRIPT_DIR/test_lib.sh"
-setup() { :; }   # the pattern 24 suites use
-setup
-TEST_TMPDIR="$TEST_TMPDIR"
-export CS_SESSIONS_ROOT="$root"
-export CLAUDE_CODE_BIN="\$(_make_env_stub)"
-"\$CS_BIN" target >/dev/null 2>&1 <<< ""
-"\$CS_BIN" target -msg "hello" >/dev/null 2>&1 <<< "" || { echo SEND_FAILED; exit 1; }
-PROBE
+    local probe
+    probe=$(_overriding_suite "export CS_SESSIONS_ROOT=$(printf '%q' "$root")"'
+export CLAUDE_CODE_BIN="$(_make_env_stub)"
+"$CS_BIN" target >/dev/null 2>&1 <<< ""
+"$CS_BIN" target -msg "hello" >/dev/null 2>&1 <<< "" || { echo SEND_FAILED; exit 1; }')
     local out
     out=$(CLAUDE_SESSION_NAME=caller CLAUDE_SESSION_DIR="$caller" \
         CLAUDE_SESSION_META_DIR="$caller/.cs" /bin/bash "$probe" 2>&1) \
@@ -137,6 +144,46 @@ PROBE
         "a suite's send must leave its caller's sent mail alone" || return 1
     assert_eq "" "$(jq -r .from "${delivered[0]}")" \
         "a suite's mail must not be signed with its caller's session name" || return 1
+}
+
+# A feature worktree's shell also exports CS_SECRETS_SESSION, the base session
+# its secrets are keyed to, and cs-secrets reads it ahead of the session name.
+# A suite that stores a secret for its own fixture session would store it under
+# the developer's base session instead: on the keychain backend, in the real
+# keychain.
+test_secrets_identity_does_not_reach_a_suite_from_its_caller() {
+    local home="$TEST_TMPDIR/probe-home"
+    mkdir -p "$home"
+    local probe
+    probe=$(_overriding_suite "export HOME=$(printf '%q' "$home")"'
+export CS_SECRETS_BACKEND=encrypted CS_SECRETS_PASSWORD=fixture-password CLAUDE_SESSION_NAME=fixture
+"$_CS_TEST_BIN/cs-secrets" set probe_key < <(printf v) >/dev/null 2>&1 || { echo SET_FAILED; exit 1; }')
+    local out
+    out=$(CS_SECRETS_SESSION=caller-base /bin/bash "$probe" 2>&1) \
+        || { echo "  FAIL: probe suite errored: $out"; return 1; }
+
+    assert_eq "fixture.enc" "$(cd "$home/.cs-secrets" && find . -name '*.enc' | sed 's|^\./||')" \
+        "a suite's secret must be stored under its own fixture session" || return 1
+}
+
+# HOME is scoped at source time, but XDG_CONFIG_HOME outranks it for cs's
+# per-machine preferences (the status line's declined and caps markers, the
+# option-keys record, the rotation notice). Inherited, a suite's install,
+# uninstall or statusline verb reads and deletes the developer's own.
+test_config_home_does_not_reach_a_suite_from_its_caller() {
+    local caller="$TEST_TMPDIR/caller-config" home="$TEST_TMPDIR/probe-home"
+    mkdir -p "$caller" "$home"
+    local probe
+    probe=$(_overriding_suite "export HOME=$(printf '%q' "$home")"'
+"$CS_BIN" -statusline caps off >/dev/null 2>&1 </dev/null || { echo CAPS_FAILED; exit 1; }')
+    local out
+    out=$(XDG_CONFIG_HOME="$caller" /bin/bash "$probe" 2>&1) \
+        || { echo "  FAIL: probe suite errored: $out"; return 1; }
+
+    [ -f "$home/.config/cs/statusline-caps" ] \
+        || { echo "  FAIL: the probe's preference must land under its own HOME"; return 1; }
+    assert_eq "0" "$(find "$caller" -type f | wc -l | tr -d ' ')" \
+        "a suite's preference write must leave its caller's config home alone" || return 1
 }
 
 # ============================================================================
@@ -190,6 +237,8 @@ run_test test_setup_isolates_the_process_table
 run_test test_process_table_isolation_survives_a_suite_that_overrides_setup
 run_test test_process_table_stub_passes_through_other_ps_forms
 run_test test_session_identity_does_not_reach_a_suite_from_its_caller
+run_test test_secrets_identity_does_not_reach_a_suite_from_its_caller
+run_test test_config_home_does_not_reach_a_suite_from_its_caller
 run_test test_results_line_omits_the_skip_column_when_nothing_skipped
 run_test test_results_line_counts_a_skip_when_a_test_returns_77
 report_results
