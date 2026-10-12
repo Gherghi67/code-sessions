@@ -131,7 +131,8 @@ it: the Stop hook hands out no task, the prompt hook shows no mail, a `/clear` l
 handoff, and the command log stops. Each finished turn says why, in a system message that names the file
 and the `git rm --cached` command that untracks it. That message is all the Stop hook
 does until then: it sends no narrative reminder and no rotation nudge, and raises no
-attention flag. The check is one `git ls-files` per
+attention flag. Its other two events do nothing: no mail wake, no rotation kick, no
+watch re-armed. The check is one `git ls-files` per
 hook run, about 0.05 to 0.09 s. `memory-index-guard.sh` and `prompt-rewriter.sh` resolve
 no session and do not ask.
 
