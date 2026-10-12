@@ -19,13 +19,12 @@ EOF
 #!/bin/sh
 echo "$*" >> "$FAKE_HDIUTIL_LOG"
 [ "$1" = "${FAKE_HDIUTIL_FAIL:-}" ] && { echo "hdiutil: $1 failed - stub" >&2; exit 1; }
-# The verb named in $FAKE_HDIUTIL_HOLD stays in flight until the test creates
-# "$FAKE_HDIUTIL_LOG.release", then logs "<verb>-done". It also ends once the
-# log is gone, so a test that fails leaves nothing running.
+# The verb named in $FAKE_HDIUTIL_HOLD never finishes by itself: it stays in
+# flight until something stops it, or until the log is gone, so a test that
+# fails leaves nothing running.
 if [ "$1" = "${FAKE_HDIUTIL_HOLD:-}" ]; then
-    while [ -e "$FAKE_HDIUTIL_LOG" ] && [ ! -e "$FAKE_HDIUTIL_LOG.release" ]; do sleep 0.1; done
-    [ -e "$FAKE_HDIUTIL_LOG" ] || exit 0
-    echo "$1-done" >> "$FAKE_HDIUTIL_LOG"
+    while [ -e "$FAKE_HDIUTIL_LOG" ]; do sleep 0.1; done
+    exit 0
 fi
 # With $FAKE_LOCK_WATCH set, create records whether that lock names a live pid.
 if [ "$1" = "create" ] && [ -n "${FAKE_LOCK_WATCH:-}" ]; then
