@@ -136,7 +136,12 @@ cannot ask git on every render, so each hook run leaves its answer in
 `~/.cache/cs/tracked/<session name>`, and a pull goes unseen there until the next hook
 runs. The mods and `/wrap` ask `cs -vet-session`. Git's pathspec settings in the
 environment (`GIT_LITERAL_PATHSPECS` and its three siblings) are cleared for the question,
-since a literal pathspec would match no file and read as nothing tracked. One write stays: the prompt hook's launch
+since a literal pathspec would match no file and read as nothing tracked, and so are
+configuration settings passed through the environment (`GIT_CONFIG_COUNT`,
+`GIT_CONFIG_PARAMETERS`). Git that fails to answer for any reason other than "not a git
+repository" (a broken `~/.gitconfig`, a bad repository config, an unreadable index, a
+`safe.directory` refusal) counts as tracked: the hooks stand down the same way, `cs` refuses
+to open the session, and the message carries the first line of git's error. One write stays: the prompt hook's launch
 mark in `scope-prompt.trace`, made before anything that can stall, including git. `cs -queue` and `cs -msg` run inside the session
 refuse on the same question. Each finished turn says why, in a system message that names the file
 and the `git rm --cached` command that untracks it. That message is all the Stop hook
