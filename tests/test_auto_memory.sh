@@ -760,6 +760,26 @@ test_cs_files_tracked_behind_a_cs_private_link_are_refused() {
     assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
 }
 
+# The repository names the directory its link points at, and the refusal
+# prints a command with that name in it for the user to run. The name is
+# quoted for the shell, so pasting the command runs git and nothing else.
+test_the_untrack_command_quotes_a_directory_name_the_repository_chose() {
+    local up="$TEST_TMPDIR/upstream" root="$CS_SESSIONS_ROOT/vt" evil="v; touch pwned"
+    _upstream_session_repo "$up"
+    ln -s "$evil/private" "$up/.cs/private"
+    git -C "$up" add .cs/private
+    _commit_armed_queue "$up" ".cs/$evil/private"
+    git clone -q "$up" "$root"
+    _make_launch_sentinel
+
+    local out rc=0
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: .cs/v; touch pwned/private/queue.state is tracked in git (per-actor state must stay local). Fix with: git -C \"$root\" rm -r --cached .cs/v\;\\ touch\\ pwned/private && git commit -m 'stop tracking .cs/v__touch_pwned/private'" \
+        "$out" "the path in the command is quoted, and the commit message holds no shell character" || return 1
+}
+
 # The refusal is about what git tracks: the same queue in a .cs/private made
 # by hand and never committed opens.
 test_an_untracked_cs_private_directory_opens() {
@@ -1653,6 +1673,7 @@ run_test test_pre_open_tracked_by_git_is_refused
 run_test test_pre_open_tracked_under_a_case_variant_is_refused
 run_test test_cs_files_tracked_in_cs_private_are_refused
 run_test test_cs_files_tracked_behind_a_cs_private_link_are_refused
+run_test test_the_untrack_command_quotes_a_directory_name_the_repository_chose
 run_test test_an_untracked_cs_private_directory_opens
 run_test test_a_cs_private_link_into_a_vault_outside_any_repository_opens
 run_test test_an_inherited_tracked_files_answer_does_not_stop_the_open
