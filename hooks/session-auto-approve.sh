@@ -114,9 +114,37 @@ _cs_realdir() {
 # (e.g. a not-yet-created nested dir) falls through to the normal prompt.
 PARENT_DIR="${FILE_PATH%/*}"
 [ "$PARENT_DIR" = "$FILE_PATH" ] && PARENT_DIR="."
-REAL_PARENT="$(_cs_realdir "$PARENT_DIR")" || exit 0
 REAL_META="$(_cs_realdir "$META_DIR")" || REAL_META=""
 REAL_CS="$(_cs_realdir "$SESSION_DIR/.cs")" || REAL_CS=""
+if ! REAL_PARENT="$(_cs_realdir "$PARENT_DIR")"; then
+    # The one parent approved before it exists: a directory cs keeps content
+    # in, by its own name, directly at the root of .cs/. The Write tool makes
+    # it, so a session's first handoff, checkpoint or plan needs no prompt.
+    # Nothing else is inferred about a path that is not there: a control
+    # directory cs has not made yet, a second missing level and a dangling
+    # link all prompt. An encrypted session keeps these directories in its
+    # vault, so a new one at the plaintext root prompts too.
+    if [ -e "$PARENT_DIR" ] || [ -L "$PARENT_DIR" ]; then
+        exit 0
+    fi
+    case "${PARENT_DIR##*/}" in
+        handoffs|checkpoints|narrative-archive|memory|plans|research) ;;
+        *) exit 0 ;;
+    esac
+    _cs_new_in="${PARENT_DIR%/*}"
+    [ "$_cs_new_in" = "$PARENT_DIR" ] && _cs_new_in="."
+    _cs_new_in="$(_cs_realdir "$_cs_new_in")" || exit 0
+    case "$_cs_new_in" in
+        "${REAL_META:-/cs-no-meta}"|"${REAL_CS:-/cs-no-cs}") ;;
+        *) exit 0 ;;
+    esac
+    for _cs_dir in "$META_DIR/private" "$SESSION_DIR/.cs/private"; do
+        if [ -e "$_cs_dir" ] || [ -L "$_cs_dir" ]; then
+            exit 0
+        fi
+    done
+    REAL_PARENT="$_cs_new_in/${PARENT_DIR##*/}"
+fi
 
 # Only consider files whose real parent is inside the session's .cs/ tree,
 # compared as the filesystem spelled them: on a case-sensitive filesystem a
@@ -152,6 +180,12 @@ REAL_PARENT_LC="$(_cs_lower "$REAL_PARENT")"
 REAL_META_LC="$(_cs_lower "$REAL_META")"
 REAL_CS_LC="$(_cs_lower "$REAL_CS")"
 BASENAME_LC="$(_cs_lower "${FILE_PATH##*/}")"
+
+# A CLAUDE.md is instructions wherever it sits: Claude Code loads the one
+# beside a file it reads, and it reads .cs/memory/ in every session.
+case "$BASENAME_LC" in
+    claude.md|claude.local.md) exit 0 ;;
+esac
 
 # A repository kept below .cs/ (a clone under a notes directory) has a git
 # directory of its own: git reads config and runs hooks from it whenever git
@@ -197,7 +231,10 @@ for _cs_root in "$META_DIR" "$SESSION_DIR/.cs"; do
         "$_cs_ctl"/*) exit 0 ;;
     esac
 done
-# No link under a control directory is followed (audit C2, #886). A link
+# No link under a control directory is followed (audit C2, #886). The cost
+# is known and accepted: one link there makes every write in the session
+# prompt, a legitimately linked skill under .claude/ included. Do not narrow
+# this to the tree that holds the link. A link
 # there can alias a control file into content or content into a control
 # file, and the shapes compound (chains, links inside linked directories,
 # names ending in a newline, hops through the session root), so where a
@@ -359,12 +396,10 @@ fi
 # people and Claude read (README.md, summary.md). Every other name there is
 # one cs acts on: the locks, the secret-sync files, the stamps the Stop hook
 # reads, the archive marker, the timeline, and a control directory's name
-# before cs makes the directory. A CLAUDE.md is instructions: Claude Code
-# loads one from the directory of a file it reads.
+# before cs makes the directory.
 case "$REAL_PARENT_LC" in
     "$REAL_META_LC"|"$REAL_CS_LC")
         case "$BASENAME_LC" in
-            claude.md|claude.local.md) exit 0 ;;
             *.md) ;;
             *) exit 0 ;;
         esac ;;
