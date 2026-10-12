@@ -414,9 +414,13 @@ HANDOFF_REL=".cs/${HANDOFF_DIR#"$META_DIR"/}"
 # teammate fires it as a full claude of its own. The armed rotation and the
 # queue's once-only digest belong to the lead: such a guest is neither handed
 # them nor clears them. A front end that walked in is no guest: it is the
-# conversation the user is in, and its /clear loads the rotation.
+# conversation the user is in, and its /clear loads the rotation. A claude
+# shown to be the lead is asked nothing further: the teammate check reads the
+# command line, and a launch prompt can hold the flags it looks for.
 IS_GUEST=0
-if command -v cs_is_nested_child >/dev/null 2>&1 && cs_is_nested_child; then
+if command -v cs_is_lead >/dev/null 2>&1 && cs_is_lead; then
+    :
+elif command -v cs_is_shown_nested_child >/dev/null 2>&1 && cs_is_shown_nested_child; then
     IS_GUEST=1
 elif command -v _cs_is_teammate >/dev/null 2>&1 && _cs_is_teammate; then
     IS_GUEST=1

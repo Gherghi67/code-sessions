@@ -436,7 +436,7 @@ fi
 # every turn end signals, not just the ones that remind. A claude started
 # from inside the session ends no turn of the lead's, so it raises nothing.
 IS_NESTED_CHILD=0
-if command -v cs_is_nested_child >/dev/null 2>&1 && cs_is_nested_child; then
+if command -v cs_is_shown_nested_child >/dev/null 2>&1 && cs_is_shown_nested_child; then
     IS_NESTED_CHILD=1
 fi
 if [ "$IS_NESTED_CHILD" != 1 ]; then

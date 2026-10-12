@@ -200,10 +200,13 @@ case "$(_cs_lower "$FILE_PATH")/" in
 esac
 # The name is not what makes a git directory: a bare clone is one under any
 # name, and so is the target of a linked .git. Every directory from the
-# write's real parent up to the root of .cs/ is asked what it is.
+# write's real parent up to the root of .cs/ is asked what it is: one that
+# holds HEAD beside objects/ or refs/, or beside commondir, which is how a
+# linked worktree's own directory names the shared one.
 _cs_up="$REAL_PARENT"
 while [ -n "$_cs_up" ] && [ "$_cs_up" != "$REAL_META" ] && [ "$_cs_up" != "$REAL_CS" ]; do
-    if [ -f "$_cs_up/HEAD" ] && [ -d "$_cs_up/objects" ] && [ -d "$_cs_up/refs" ]; then
+    if [ -f "$_cs_up/HEAD" ] && { [ -d "$_cs_up/objects" ] || [ -d "$_cs_up/refs" ] \
+        || [ -f "$_cs_up/commondir" ]; }; then
         exit 0
     fi
     _cs_up="${_cs_up%/*}"
