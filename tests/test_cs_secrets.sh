@@ -1993,6 +1993,56 @@ test_import_file_verifies_the_bytes_it_will_decrypt() {
     _assert_secret_absent from_peer "nothing from the unsigned file is stored" || return 1
 }
 
+# A symbolic link is the one thing a push can put at either path that names
+# something outside the repository: a device, a pipe, a file of any size. An
+# import copies the link, never what it names, and takes neither.
+test_import_file_skips_a_signature_that_is_a_symbolic_link() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local peer_file mode out rc
+    _peer_exports from_peer "vp" || { echo "  FAIL: fixture: the peer could not export"; return 1; }
+    "$CS_SECRETS_BIN" age add "$(_peer_recipient_file)" >/dev/null 2>&1 || { echo "  FAIL: fixture: could not pin the peer"; return 1; }
+    peer_file=$(_peer_sync_file)
+    mv "$peer_file.sig" "$TEST_TMPDIR/elsewhere.sig"
+    ln -s "$TEST_TMPDIR/elsewhere.sig" "$peer_file.sig"
+    for mode in "" --allow-unsigned; do
+        rc=0
+        # shellcheck disable=SC2086  # an empty mode is no argument
+        out=$("$CS_SECRETS_BIN" import-file $mode 2>&1) || rc=$?
+        assert_eq "0" "$rc" "the import exits 0 (mode '$mode')" || return 1
+        assert_output_contains "$out" "^Skipped $(basename "$peer_file"): its signature is a symbolic link\.$" "the skip says why (mode '$mode')" || return 1
+        _assert_secret_absent from_peer "nothing from the file is stored (mode '$mode')" || return 1
+    done
+}
+
+test_import_file_skips_a_sync_file_that_is_a_symbolic_link() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local peer_file out rc=0
+    _peer_exports from_peer "vp" || { echo "  FAIL: fixture: the peer could not export"; return 1; }
+    "$CS_SECRETS_BIN" age add "$(_peer_recipient_file)" >/dev/null 2>&1 || { echo "  FAIL: fixture: could not pin the peer"; return 1; }
+    peer_file=$(_peer_sync_file)
+    mv "$peer_file" "$TEST_TMPDIR/elsewhere.age"
+    ln -s "$TEST_TMPDIR/elsewhere.age" "$peer_file"
+    out=$("$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the import exits 0" || return 1
+    assert_output_contains "$out" "^Skipped $(basename "$peer_file"): it is a symbolic link\.$" "the skip says why" || return 1
+    _assert_secret_absent from_peer "nothing from the file is stored" || return 1
+}
+
+# A directory at the signature path is not a missing signature.
+test_import_file_skips_a_file_whose_signature_cannot_be_read() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local out rc=0
+    _plant_unsigned_sync_file "secrets.aaa@example.age" '{"planted":"vx"}' || { echo "  FAIL: fixture: could not plant the file"; return 1; }
+    mkdir "$CS_SESSIONS_ROOT/test-session/.cs/secrets.aaa@example.age.sig"
+    out=$("$CS_SECRETS_BIN" import-file --allow-unsigned 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the import exits 0" || return 1
+    assert_output_contains "$out" "^Skipped secrets\.aaa@example\.age: its signature could not be read\.$" "the skip says why" || return 1
+    _assert_secret_absent planted "nothing from the file is stored" || return 1
+}
+
 # The same peer, pinned in two sessions: a file it signed for one is not
 # accepted in the other.
 test_import_file_skips_a_file_signed_for_another_session() {
@@ -3187,6 +3237,9 @@ run_test test_import_file_skips_a_file_signed_by_a_key_outside_the_session
 run_test test_import_file_skips_a_signed_file_changed_after_signing
 run_test test_import_file_decrypts_the_bytes_it_verified
 run_test test_import_file_verifies_the_bytes_it_will_decrypt
+run_test test_import_file_skips_a_signature_that_is_a_symbolic_link
+run_test test_import_file_skips_a_sync_file_that_is_a_symbolic_link
+run_test test_import_file_skips_a_file_whose_signature_cannot_be_read
 run_test test_import_file_skips_a_file_signed_for_another_session
 run_test test_import_file_allow_unsigned_takes_a_file_with_no_signature
 run_test test_import_file_allow_unsigned_still_skips_a_bad_signature
