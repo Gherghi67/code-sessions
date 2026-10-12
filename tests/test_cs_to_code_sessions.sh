@@ -420,6 +420,81 @@ test_rerun_brings_over_what_cs_changed_and_keeps_what_code_sessions_changed() {
     assert_file_not_exists "$feat/node_modules/dep/index.js" "a file code-sessions deleted came back"
 }
 
+# A folder code-sessions's copy has as a link elsewhere is never written through:
+# what cs adds under it stays out, and the link is reported once.
+test_a_link_in_the_copy_is_never_written_through() {
+    make_fixture
+    run_move --session wap --apply || { echo "$OUT"; return 1; }
+    local wap outside="$TEST_TMPDIR/outside" status=0
+    wap=$(ccs_dir wap)
+    mkdir -p "$outside" "$PROJECT/linked/deep"
+    ln -s "$outside" "$wap/linked"
+    printf 'from cs\n' > "$PROJECT/linked/new-file"
+    printf 'from cs\n' > "$PROJECT/linked/deep/new-file"
+    run_move --session wap --apply || status=$?
+    assert_eq 1 "$status" "a link in the way was not reported" || { echo "$OUT"; return 1; }
+    assert_eq "" "$(ls -A "$outside")" "the sync wrote through code-sessions's link" || return 1
+    assert_output_contains "$OUT" "wap: kept code-sessions's linked (" || return 1
+    assert_eq 1 "$(grep -c "kept code-sessions's linked (" <<< "$OUT")" "the link was reported more than once" || return 1
+    assert_symlink "$wap/linked"
+}
+
+# The same for the Claude history: a conversation folder code-sessions has as a
+# link elsewhere gets nothing written through it, and is reported.
+test_a_link_in_the_copied_history_is_never_written_through() {
+    make_fixture
+    run_move --session wap --apply || { echo "$OUT"; return 1; }
+    local wap outside="$TEST_TMPDIR/outside" status=0 subagents
+    wap=$(ccs_dir wap)
+    subagents="$PROFILE/.claude/projects/$(project_key "$wap")/$WAP_ID/subagents"
+    mkdir -p "$outside"
+    rm -r "$subagents"
+    ln -s "$outside" "$subagents"
+    printf '{"agent":2}\n' > "$CLAUDE/projects/$PROJECT_KEY/$WAP_ID/subagents/agent-2.jsonl"
+    run_move --session wap --apply || status=$?
+    assert_eq 1 "$status" "a link in the way was not reported" || { echo "$OUT"; return 1; }
+    assert_eq "" "$(ls -A "$outside")" "the history copy wrote through code-sessions's link" || return 1
+    assert_output_contains "$OUT" "a link or a file in code-sessions where cs has a folder, left as it is: .*/$WAP_ID/subagents$" || return 1
+    assert_output_not_contains "$OUT" "continued in both" || return 1
+    assert_symlink "$subagents"
+}
+
+# A file cs replaced with a folder is no link in the way: the dry run, which
+# deletes nothing, says so as the real run does.
+test_a_file_cs_replaced_with_a_folder_comes_over() {
+    make_fixture
+    printf 'a file\n' > "$PROJECT/notes"
+    run_move --session wap --apply || { echo "$OUT"; return 1; }
+    local wap
+    wap=$(ccs_dir wap)
+    rm "$PROJECT/notes"
+    mkdir "$PROJECT/notes"
+    printf 'in a folder\n' > "$PROJECT/notes/today"
+    run_move --session wap || { echo "$OUT"; return 1; }
+    assert_output_contains "$OUT" 'wap: files: 1 to copy from cs, 1 to delete as in cs' || return 1
+    assert_output_not_contains "$OUT" "kept code-sessions's notes" || return 1
+    run_move --session wap --apply || { echo "$OUT"; return 1; }
+    assert_file_contains "$wap/notes/today" 'in a folder'
+}
+
+# A folder of the copy that cannot be searched stops only the paths below it.
+test_an_unsearchable_folder_in_the_copy_stops_only_its_paths() {
+    make_fixture
+    run_move --session wap --apply || { echo "$OUT"; return 1; }
+    local wap status=0
+    wap=$(ccs_dir wap)
+    mkdir "$wap/locked"
+    chmod 600 "$wap/locked"
+    mkdir -p "$PROJECT/locked/sub"
+    printf 'below\n' > "$PROJECT/locked/sub/file"
+    printf 'later\n' > "$PROJECT/zz-later"
+    run_move --session wap --apply || status=$?
+    chmod 700 "$wap/locked"
+    assert_eq 1 "$status" "the unsearchable folder was not reported" || { echo "$OUT"; return 1; }
+    assert_output_contains "$OUT" "kept code-sessions's locked/sub/file (could not read it: Permission denied)" || return 1
+    assert_file_contains "$wap/zz-later" 'later'
+}
+
 test_git_moved_on_both_sides_is_left_and_reported_once() {
     make_fixture
     git -C "$PROJECT" branch side main
@@ -536,6 +611,40 @@ test_a_file_code_sessions_changed_back_is_no_longer_kept() {
     run_move --session wap --apply || { echo "$OUT"; return 1; }
     assert_output_not_contains "$OUT" 'app.js' "a file changed back to cs's content was still kept" || return 1
     assert_file_contains "$wap/app.js" '^later cs edit$'
+}
+
+# A run that leaves a folder alone for a link in the way forgets nothing below it:
+# once the folder is back, a file code-sessions kept is still kept.
+test_a_file_code_sessions_kept_stays_kept_past_a_link_in_its_folder() {
+    make_fixture
+    mkdir -p "$PROJECT/sub"
+    printf 'old\n' > "$PROJECT/sub/f"
+    sleep 2.1
+    run_move --session wap --apply || { echo "$OUT"; return 1; }
+    local wap away="$TEST_TMPDIR/away" outside="$TEST_TMPDIR/outside" status=0
+    wap=$(ccs_dir wap)
+    printf 'code-sessions edit\n' > "$wap/sub/f"
+    printf 'cs edit\n' > "$PROJECT/sub/f"
+    sleep 2.1
+    run_move --session wap --apply || status=$?
+    assert_eq 1 "$status" || { echo "$OUT"; return 1; }
+    assert_output_contains "$OUT" "wap: kept code-sessions's sub/f (changed on both sides)" || return 1
+
+    mkdir -p "$outside"
+    mv "$wap/sub" "$away"
+    ln -s "$outside" "$wap/sub"
+    status=0
+    run_move --session wap --apply || status=$?
+    assert_eq 1 "$status" "a link in the way was not reported" || { echo "$OUT"; return 1; }
+    rm "$wap/sub"
+    mv "$away" "$wap/sub"
+
+    printf 'later cs edit\n' > "$PROJECT/sub/f"
+    status=0
+    run_move --session wap --apply || status=$?
+    assert_eq 1 "$status" "the run past the link forgot what code-sessions kept" || { echo "$OUT"; return 1; }
+    assert_output_contains "$OUT" "wap: kept code-sessions's sub/f (changed on both sides)" || return 1
+    assert_file_contains "$wap/sub/f" '^code-sessions edit$'
 }
 
 test_features_cs_starts_or_ends_and_code_sessions_removes() {
@@ -719,9 +828,14 @@ test_code_sessions_opens_the_copied_session_and_its_features() {
 run_test test_dry_run_changes_nothing
 run_test test_apply_copies_the_session_and_leaves_cs_as_it_is
 run_test test_rerun_brings_over_what_cs_changed_and_keeps_what_code_sessions_changed
+run_test test_a_link_in_the_copy_is_never_written_through
+run_test test_a_link_in_the_copied_history_is_never_written_through
+run_test test_a_file_cs_replaced_with_a_folder_comes_over
+run_test test_an_unsearchable_folder_in_the_copy_stops_only_its_paths
 run_test test_git_moved_on_both_sides_is_left_and_reported_once
 run_test test_a_file_code_sessions_kept_stays_kept_when_cs_changes_it_later
 run_test test_a_file_code_sessions_changed_back_is_no_longer_kept
+run_test test_a_file_code_sessions_kept_stays_kept_past_a_link_in_its_folder
 run_test test_features_cs_starts_or_ends_and_code_sessions_removes
 run_test test_a_lost_record_stops_the_sync
 run_test test_a_session_open_in_cs_is_named_and_still_copied

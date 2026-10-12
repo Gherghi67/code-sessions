@@ -147,6 +147,7 @@ class Tally:
         self.same = 0
         self.ahead = 0
         self.diverged = []
+        self.blocked = []   # folders of dst that are a link or a file
 
     def add(self, other):
         self.new += other.new
@@ -154,6 +155,7 @@ class Tally:
         self.same += other.same
         self.ahead += other.ahead
         self.diverged += other.diverged
+        self.blocked += other.blocked
 
     def pending(self):
         return self.new + self.grown
@@ -171,6 +173,7 @@ def merge_tree(src, dst, apply, tmp_suffix=".session-transfer.tmp"):
     tally = Tally()
     if not os.path.isdir(src):
         return tally
+    in_the_way = set()
     for root, dirs, files in os.walk(src):
         dirs.sort()
         rel = os.path.relpath(root, src)
@@ -179,6 +182,12 @@ def merge_tree(src, dst, apply, tmp_suffix=".session-transfer.tmp"):
             s = os.path.join(root, name)
             d = os.path.join(target_dir, name)
             if os.path.islink(s) or not os.path.isfile(s):
+                continue
+            way = _in_the_way(dst, os.path.join(rel, name)) if rel != "." else None
+            if way:
+                if way not in in_the_way:
+                    in_the_way.add(way)
+                    tally.blocked.append(os.path.join(dst, way))
                 continue
             if not os.path.lexists(d):
                 tally.new += 1
@@ -489,6 +498,26 @@ def _put(src, dst, data, relink, tmp_suffix):
     os.replace(tmp, dst)
 
 
+def _in_the_way(root, rel):
+    """The nearest folder above rel under root that is a link or not a folder, or None.
+
+    Writing below a link would land outside root; below a file it cannot land
+    at all. root itself is trusted. The check is a live lstat, made right
+    before the write: a folder swapped for a link between the two is not
+    caught, which only the owner of both trees could do, and they can already
+    write there directly.
+    """
+    parts = rel.split(os.sep)[:-1]
+    for n in range(1, len(parts) + 1):
+        try:
+            mode = os.lstat(os.path.join(root, *parts[:n])).st_mode
+        except FileNotFoundError:
+            return None   # _put makes the rest
+        if not stat.S_ISDIR(mode):
+            return os.path.join(*parts[:n])
+    return None
+
+
 def parse_state(text):
     """The key: value lines of .cs/local/state, in order."""
     out = {}
@@ -570,6 +599,7 @@ def sync_files(src, dst, mark, apply, rewrites=None, relink=None, only=None, pin
     for folder in sorted(set(blind)):
         out.failed += 1
         out.conflicts.append((folder or ".", "could not read this folder on one side; left as it is"))
+    in_the_way, gone = set(), set()
 
     def marks(rel):
         held = [v for k, v in since.items() if _inside(rel, k)]
@@ -611,6 +641,16 @@ def sync_files(src, dst, mark, apply, rewrites=None, relink=None, only=None, pin
         was = rel in known
         sp, dp = os.path.join(src, rel), os.path.join(dst, rel)
         try:
+            way = _in_the_way(dst, rel)
+            # A dry run deletes nothing, so what it would delete is still there.
+            if way and (apply or way not in gone):
+                if way not in in_the_way:
+                    in_the_way.add(way)
+                    out.failed += 1
+                    out.conflicts.append((way, "a link or a file here, a folder in the source; left as it is"))
+                if was:
+                    out.paths.add(rel)
+                continue
             if s is not None and d is not None:
                 out.paths.add(rel)
                 if rel == STATE:
@@ -650,7 +690,7 @@ def sync_files(src, dst, mark, apply, rewrites=None, relink=None, only=None, pin
                     if s_new:
                         out.conflicts.append((rel, "deleted here, changed in the source"))
                     continue
-                if os.path.lexists(dp):
+                if not way and os.path.lexists(dp):
                     out.conflicts.append((rel, "a folder here, a file in the source"))
                     continue
                 data = (rewrites[rel](_read_bytes(sp))
@@ -667,6 +707,7 @@ def sync_files(src, dst, mark, apply, rewrites=None, relink=None, only=None, pin
                     out.conflicts.append((rel, "deleted in the source, changed here"))
                 else:
                     out.deleted += 1
+                    gone.add(rel)
                     if apply and unchanged_since_read(rel, d):
                         attempt(rel, os.unlink, dp)
         except OSError as error:

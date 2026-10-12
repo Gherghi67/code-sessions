@@ -544,12 +544,14 @@ class Copier:
                 parts.append("%d grown since the last copy" % tally.grown)
             self.say("Claude history of %d conversation(s), files %s: %s"
                      % (count, verb, ", ".join(parts)))
-        elif not tally.diverged:
+        elif not tally.diverged and not tally.blocked:
             self.say("Claude history of %d conversation(s): nothing new" % count)
         if tally.ahead:
             self.say("%d cs file(s) went on past the code-sessions copy; kept" % tally.ahead)
         for path_ in tally.diverged:
             self.problem("continued in both code-sessions and cs, left as it is: %s" % tilde(path_))
+        for path_ in tally.blocked:
+            self.problem("a link or a file in cs where code-sessions has a folder, left as it is: %s" % tilde(path_))
         claude_id = state_value(plan.meta, "claude_session_id")
         transcript = claude_project_key(plan.source) + os.sep + claude_id + ".jsonl"
         if claude_id and os.path.isfile(os.path.join(self.ccs_projects, transcript)):

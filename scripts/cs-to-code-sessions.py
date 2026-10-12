@@ -584,12 +584,14 @@ class Importer:
             if tally.grown:
                 parts.append("%d grown since the last copy" % tally.grown)
             self.say("%s, %d conversation(s), files %s: %s" % (what, count, verb, ", ".join(parts)))
-        elif not tally.diverged:
+        elif not tally.diverged and not tally.blocked:
             self.say("%s, %d conversation(s): nothing new" % (what, count))
         if tally.ahead:
             self.say("%d code-sessions file(s) went on past the cs copy; kept" % tally.ahead)
         for path in tally.diverged:
             self.problem("continued in both cs and code-sessions, left as it is: %s" % tilde(path))
+        for path in tally.blocked:
+            self.problem("a link or a file in code-sessions where cs has a folder, left as it is: %s" % tilde(path))
 
     def handle(self, base):
         if base.skip:
