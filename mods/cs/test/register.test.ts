@@ -601,6 +601,19 @@ test('a control file git starts tracking during the count clears nothing at zero
   expect(ran).toEqual([])
 })
 
+test('with the forcing off, a prompt after a refusal asks cs afresh at the next press', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = 'off'
+  arm(); percent = 3
+  runResult = tracked
+  await findButton(await band()).props.onPress()
+  expect(await band()).toBe(DRAWN)
+  runResult = VETTED
+  await promptSubmit()
+  expect(findButton(await band()).props.label).toBe('/clear and continue from the handoff')
+  await findButton(await band()).props.onPress()
+  expect(ran).toEqual([{ command: 'clear', args: '' }])
+})
+
 test('when cs cannot answer, a press clears nothing and the band says why', async () => {
   arm(); percent = 3
   delete envVars.CS_BIN
