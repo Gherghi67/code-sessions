@@ -1216,7 +1216,7 @@ CS_PAYLOAD_SHA256=(
     "31db5bb68d572f541e22e240bd1d9f518f0ce760cf5cd359de33dec72bab3600  hooks/prompt-rewriter.sh"
     "d884bc6e9f8a3b8e2970f4e77b5f9b4fb415176b00b3e085aac43e4ac409b906  hooks/prompt-rewriter-model.sh"
     "5ed0b9da8f102367e218e8dc6227594ad2f70ca3ba885103c058aabb4b528226  hooks/prompt-rewriter-vendor.sh"
-    "f9434ebcb671b8af85c4a5e09bb77d6e15cc240ec6b7aafd2b9293532322f0e4  hooks/session-start.sh"
+    "491fce34689ba688ac9a24c95dbaffca920b76bd3e0333650d62ff67a0734f0d  hooks/session-start.sh"
     "38e1585be0b3fee0cea8c5397d6177b2c67678b270ad2b1cfc191e3b71b6a723  hooks/autosave-commits.sh"
     "8aa24309d8a8e0edc37320eca6d425a33c0fb73db8ed4dc3512b0c3975fe6fcc  hooks/narrative-reminder.sh"
     "f4eca8e1686a94a2df2938d09beaeef36123112c7949fb3720be3abfa67000f9  hooks/session-end.sh"

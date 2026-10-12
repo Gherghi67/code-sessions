@@ -409,9 +409,17 @@ if _marker_dir=$(cs_private_dir "$META_DIR") && HANDOFF_DIR=$(cs_handoff_dir "$M
     PENDING_MARKER="$_marker_dir/pending-handoff"
 fi
 HANDOFF_REL=".cs/${HANDOFF_DIR#"$META_DIR"/}"
+# A claude started from inside the session (a `claude -p` the lead's Bash tool
+# ran) fires this hook with the lead's contract in its environment. The armed
+# rotation and the queue's once-only digest belong to the lead: such a child
+# is neither handed them nor clears them.
+IS_NESTED_CHILD=0
+if command -v cs_is_nested_child >/dev/null 2>&1 && cs_is_nested_child; then
+    IS_NESTED_CHILD=1
+fi
 case "$SOURCE" in
     startup|clear)
-        if [ -n "$PENDING_MARKER" ] && [ -f "$PENDING_MARKER" ]; then
+        if [ "$IS_NESTED_CHILD" != 1 ] && [ -n "$PENDING_MARKER" ] && [ -f "$PENDING_MARKER" ]; then
             HANDOFF_BASENAME=$(cat "$PENDING_MARKER" 2>/dev/null | tr -d '[:space:]' || true)
             # The marker names a basename. Anything with a separator would
             # resolve outside the handoff store, and the file it landed on
@@ -962,7 +970,7 @@ DIGEST_PENDING=""
 # The inbox sits behind .cs/private in an encrypted session; a locked vault has
 # nothing readable, and DIGEST_DIR stays empty so no cursor is written.
 DIGEST_DIR=""
-if DIGEST_DIR=$(cs_private_dir "$META_DIR"); then _build_digest "$DIGEST_DIR"; else DIGEST_DIR=""; fi
+if [ "$IS_NESTED_CHILD" != 1 ] && DIGEST_DIR=$(cs_private_dir "$META_DIR"); then _build_digest "$DIGEST_DIR"; else DIGEST_DIR=""; fi
 if [ -n "$DIGEST" ]; then
     CONTEXT="${CONTEXT}
 
