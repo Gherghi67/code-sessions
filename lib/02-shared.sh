@@ -92,6 +92,17 @@ cs_private_dir() {  # meta_dir
     fi
 }
 
+# The machine-local directory a hook writes in, .cs/local (an encrypted session
+# keeps it beside the vault, not in it). Fails, as cs_private_dir does, for the
+# session whose control files git tracks (CS_TRACKED_FILES_META): a hook adds,
+# changes and removes nothing a pull delivered or a commit would carry. That
+# holds while only vault content is tracked too: the rule is the session's,
+# not one directory's.
+cs_local_dir() {  # meta_dir
+    [ "${CS_TRACKED_FILES_META:-}" != "$1" ] || return 1
+    printf '%s\n' "$1/local"
+}
+
 # git, asked about <dir> and the repository that directory sits in, whatever
 # the environment says. GIT_DIR and GIT_WORK_TREE name another repository,
 # GIT_INDEX_FILE another index (git hands one to every commit hook),
