@@ -512,6 +512,59 @@ test_auto_approve_prompts_for_instructions_at_the_root() {
     done
 }
 
+# The same holds in every directory below .cs/: Claude Code reads the
+# CLAUDE.md beside a file it opens, and it opens memory/ in every session.
+test_auto_approve_prompts_for_instructions_in_a_content_directory() {
+    local meta="$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$meta/plans" "$meta/private/handoffs"
+    _assert_falls_through Write "$meta/memory/CLAUDE.md" \
+        ".cs/memory/CLAUDE.md" || return 1
+    _assert_falls_through Write "$meta/plans/CLAUDE.local.md" \
+        ".cs/plans/CLAUDE.local.md" || return 1
+    _assert_falls_through Write "$meta/private/handoffs/claude.md" \
+        ".cs/private/handoffs/claude.md" || return 1
+    _assert_allowed Write "$meta/memory/claude-notes.md" \
+        "a memory topic whose name only starts with claude" || return 1
+}
+
+# The Write tool makes a missing parent directory, so the first handoff,
+# checkpoint or plan of a session lands in a directory that is not there yet.
+# The directories cs itself keeps content in are approved by name, directly
+# at the root of .cs/; the hook makes nothing itself.
+test_auto_approve_allows_the_first_write_into_a_content_directory() {
+    local meta="$CLAUDE_SESSION_META_DIR" name
+    rm -r "$meta/memory"
+    for name in handoffs checkpoints narrative-archive memory plans research; do
+        _assert_allowed Write "$meta/$name/2026-01-01-x.md" \
+            "the first file in a missing .cs/$name" || return 1
+        assert_not_exists "$meta/$name" "the hook leaves .cs/$name unmade" || return 1
+    done
+}
+
+# Any other missing directory keeps its prompt: a control directory cs has not
+# made yet, a name cs does not use, a second missing level, another spelling,
+# and a dangling link where the directory would go.
+test_auto_approve_prompts_for_the_first_write_into_any_other_directory() {
+    local meta="$CLAUDE_SESSION_META_DIR" path
+    for path in private/queue/0001 private/handoffs/x.md queue/0001 notes/x.md \
+        handoffs/deep/x.md Handoffs/x.md claude-config/settings.json; do
+        _assert_falls_through Write "$meta/$path" \
+            "the first file at .cs/$path" || return 1
+    done
+    ln -s "$TEST_TMPDIR/nowhere" "$meta/plans"
+    _assert_falls_through Write "$meta/plans/x.md" \
+        "a file behind a dangling link at .cs/plans" || return 1
+}
+
+# An encrypted session keeps its handoffs and checkpoints in the vault, so a
+# new directory of that name at the plaintext root is not where they go.
+test_auto_approve_prompts_for_a_new_plaintext_directory_in_an_encrypted_session() {
+    local meta="$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$meta/private"
+    _assert_falls_through Write "$meta/handoffs/2026-01-01-x.md" \
+        "a first handoff at the plaintext root of an encrypted session" || return 1
+}
+
 test_auto_approve_allows_markdown_at_the_root() {
     _assert_allowed Write "$CLAUDE_SESSION_META_DIR/README.md" \
         "the session README" || return 1
@@ -3136,6 +3189,10 @@ run_test test_auto_approve_prompts_for_the_open_lock
 run_test test_auto_approve_prompts_for_the_archive_marker
 run_test test_auto_approve_prompts_for_the_timeline
 run_test test_auto_approve_prompts_for_instructions_at_the_root
+run_test test_auto_approve_prompts_for_instructions_in_a_content_directory
+run_test test_auto_approve_allows_the_first_write_into_a_content_directory
+run_test test_auto_approve_prompts_for_the_first_write_into_any_other_directory
+run_test test_auto_approve_prompts_for_a_new_plaintext_directory_in_an_encrypted_session
 run_test test_auto_approve_allows_markdown_at_the_root
 run_test test_auto_approve_prompts_for_a_non_ascii_name_in_content
 run_test test_auto_approve_prompts_for_a_folded_control_name
