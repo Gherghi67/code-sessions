@@ -5565,8 +5565,11 @@ cs_assert_local_untracked() {
     if _cs_nested_cs "$dir"; then
         error ".cs is a submodule or nested repository (cs state must be a plain directory inside the session). Delete .cs/local/pre-open unless you wrote it, then git rm --cached .cs, remove .cs/.git and git add .cs, then reopen."
     fi
-    _refuse_links_out_of_session "$dir"
+    # Asked before the link walk: a vault set up by hand needs git's answer
+    # about .cs/local before its links out are let through, so when git
+    # cannot answer, git's own error is the one shown.
     ! tracked=$(cs_tracked_files_notice "$dir/.cs/local" "$dir") || error "$tracked"
+    _refuse_links_out_of_session "$dir"
     # .cs/private takes .cs/local's place for the queue, the mailbox and the
     # rotation marker (cs_private_dir), so nothing in it may come from git
     # either. Asked of the directory the name resolves to, in whichever
