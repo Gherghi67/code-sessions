@@ -670,7 +670,7 @@ test_pre_open_tracked_by_git_is_refused() {
     out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
 
     assert_eq "1" "$rc" "cs should exit 1" || return 1
-    assert_eq "Error: .cs/local/pre-open is tracked in git (per-actor state must stay local). Fix with: git -C \"$CS_SESSIONS_ROOT/vt\" rm -r --cached .cs/local && git commit -m 'stop tracking .cs/local'" \
+    assert_eq "Error: .cs/local/pre-open is tracked in git (per-actor state must stay local). Fix with: git -C $CS_SESSIONS_ROOT/vt --literal-pathspecs rm -r --cached -- .cs/local && git -C $CS_SESSIONS_ROOT/vt commit -m 'stop tracking .cs/local'" \
         "$out" "cs should refuse a committed .cs/local before running anything in it" || return 1
     assert_file_not_exists "$TEST_TMPDIR/pre-open-ran" "the committed pre-open must not run" || return 1
     assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
@@ -694,10 +694,316 @@ test_pre_open_tracked_under_a_case_variant_is_refused() {
     out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
 
     assert_eq "1" "$rc" "cs should exit 1" || return 1
-    assert_eq "Error: .cs/LOCAL/pre-open is tracked in git (per-actor state must stay local). Fix with: git -C \"$root\" rm -r --cached .cs/LOCAL && git commit -m 'stop tracking .cs/LOCAL'" \
+    assert_eq "Error: .cs/LOCAL/pre-open is tracked in git (per-actor state must stay local). Fix with: git -C $root --literal-pathspecs rm -r --cached -- .cs/LOCAL && git -C $root commit -m 'stop tracking .cs/LOCAL'" \
         "$out" "cs should refuse the case variant before running anything behind it" || return 1
     assert_file_not_exists "$TEST_TMPDIR/pre-open-ran" "the committed pre-open must not run" || return 1
     assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
+}
+
+# A repository as a clone delivers it: one commit holding a session README.
+_upstream_session_repo() {  # dir
+    mkdir -p "$1/.cs"
+    git -C "$1" init -q -b main
+    git -C "$1" config user.email jane.roe@example.com
+    git -C "$1" config user.name "Jane Roe"
+    printf -- '---\nstatus: active\ncreated: 2026-01-01\n---\n# vt\n\n## Objective\n\nx\n' > "$1/.cs/README.md"
+    git -C "$1" add -f .cs/README.md
+    git -C "$1" commit -q -m init
+}
+
+# Commits a task queue the way `cs -queue start` leaves one: a task file and a
+# state file that says the user armed the run.
+_commit_armed_queue() {  # repo, directory relative to the repo
+    mkdir -p "$1/$2/queue"
+    printf 'armed\n' > "$1/$2/queue.state"
+    printf 'a task the repository wrote\n' > "$1/$2/queue/0000000001-task"
+    git -C "$1" add -f "$2"
+    git -C "$1" commit -q -m "ship a queue"
+}
+
+# With .cs/private present cs reads the queue, the mailbox and the rotation
+# marker from it, so a repository that commits one hands cs a queue the user
+# never armed. Refused like the same files under .cs/local.
+test_cs_files_tracked_in_cs_private_are_refused() {
+    local up="$TEST_TMPDIR/upstream" root="$CS_SESSIONS_ROOT/vt"
+    _upstream_session_repo "$up"
+    _commit_armed_queue "$up" .cs/private
+    git clone -q "$up" "$root"
+    _make_launch_sentinel
+
+    local out rc=0
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: .cs/private/queue.state is tracked in git (per-actor state must stay local). Fix with: git -C $root --literal-pathspecs rm -r --cached -- .cs/private && git -C $root commit -m 'stop tracking .cs/private'" \
+        "$out" "cs should refuse a committed .cs/private before it reads a queue from it" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
+}
+
+# The same queue behind a committed link: .cs/private points at a directory
+# the repository also tracks, so no path under .cs/private is in the index.
+test_cs_files_tracked_behind_a_cs_private_link_are_refused() {
+    local up="$TEST_TMPDIR/upstream" root="$CS_SESSIONS_ROOT/vt"
+    _upstream_session_repo "$up"
+    ln -s vault-mnt/private "$up/.cs/private"
+    git -C "$up" add .cs/private
+    _commit_armed_queue "$up" .cs/vault-mnt/private
+    git clone -q "$up" "$root"
+    _make_launch_sentinel
+
+    local out rc=0
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: .cs/vault-mnt/private/queue.state is tracked in git (per-actor state must stay local). Fix with: git -C $root --literal-pathspecs rm -r --cached -- .cs/vault-mnt/private && git -C $root commit -m 'stop tracking .cs/vault-mnt/private'" \
+        "$out" "cs should refuse tracked files behind the .cs/private link" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
+}
+
+# The repository names the directory its link points at, and the refusal
+# prints a command with that name in it for the user to run. The name is
+# quoted for the shell, so pasting the command runs git and nothing else.
+test_the_untrack_command_quotes_a_directory_name_the_repository_chose() {
+    local up="$TEST_TMPDIR/upstream" root="$CS_SESSIONS_ROOT/vt" evil="v; touch pwned"
+    _upstream_session_repo "$up"
+    ln -s "$evil/private" "$up/.cs/private"
+    git -C "$up" add .cs/private
+    _commit_armed_queue "$up" ".cs/$evil/private"
+    git clone -q "$up" "$root"
+    _make_launch_sentinel
+
+    local out rc=0
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: .cs/v__touch_pwned/private/queue.state is tracked in git (per-actor state must stay local). Fix with: git -C $root --literal-pathspecs rm -r --cached -- .cs/v\;\\ touch\\ pwned/private && git -C $root commit -m 'stop tracking .cs/v__touch_pwned/private'" \
+        "$out" "the path in the command is quoted, and the commit message holds no shell character" || return 1
+}
+
+# git reads a path on its command line as a pattern, so a directory the
+# repository named "*" would make the printed command untrack every file.
+# The command says the path is literal: run as printed, it untracks that
+# directory and leaves the rest of the repository tracked.
+test_the_untrack_command_untracks_only_the_directory_it_names() {
+    local up="$TEST_TMPDIR/upstream" root="$CS_SESSIONS_ROOT/vt"
+    _upstream_session_repo "$up"
+    ln -s '../*' "$up/.cs/private"
+    git -C "$up" add .cs/private
+    mkdir -p "$up/*/queue"
+    printf 'armed\n' > "$up/*/queue.state"
+    printf 'a task the repository wrote\n' > "$up/*/queue/0000000001-task"
+    git -C "$up" add -f -- ':(literal)*'
+    git -C "$up" commit -q -m "ship a queue"
+    git clone -q "$up" "$root"
+    git -C "$root" config user.email jane.roe@example.com
+    git -C "$root" config user.name "Jane Roe"
+    _make_launch_sentinel
+
+    local out rc=0
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: _/queue.state is tracked in git (per-actor state must stay local). Fix with: git -C $root --literal-pathspecs rm -r --cached -- \\* && git -C $root commit -m 'stop tracking _'" \
+        "$out" "the command names the directory as a literal path" || return 1
+    (cd "$TEST_TMPDIR" && bash -c "${out#*Fix with: }") >/dev/null 2>&1 \
+        || { echo "  FAIL: the printed command should run"; return 1; }
+    assert_eq "" "$(git -C "$root" ls-files -- ':(literal)*')" "the directory is no longer tracked" || return 1
+    assert_eq ".cs/README.md .cs/private" "$(git -C "$root" ls-files | tr '\n' ' ' | sed 's/ $//')" \
+        "every other file is still tracked" || return 1
+}
+
+# Command substitution drops a trailing newline, so a directory whose name
+# ends in one must not be asked about under the name without it.
+test_tracked_files_in_a_directory_named_with_a_trailing_newline_are_seen() {
+    local s="$TEST_TMPDIR/s" d out rc=0
+    d="$s/payload"$'\n'
+    mkdir -p "$s/.cs" "$d"
+    git -C "$s" init -q
+    ln -s $'../payload\n' "$s/.cs/private"
+    printf 'x\n' > "$d/seed"
+    git -C "$s" add .cs/private "$d/seed"
+    out=$(bash -c 'source "$1"; cs_tracked_files_notice "$2" "$3"' _ "$SCRIPT_DIR/../hooks/cs-shared.sh" "$s/.cs/private" "$s") || rc=$?
+    assert_eq "0" "$rc" "the tracked file is found" || return 1
+    assert_eq "payload_/seed is tracked in git (per-actor state must stay local). Fix with: git -C $s --literal-pathspecs rm -r --cached -- \$'payload\\n' && git -C $s commit -m 'stop tracking payload_'" \
+        "$out" "the notice names the file and quotes the directory" || return 1
+}
+
+# A .cs/private that leads to the session itself would have cs keep its queue
+# among the project's files, and the command that untracks a directory would
+# untrack the project. The open names the link instead and prints no command.
+test_a_cs_private_link_to_the_session_itself_is_refused_without_an_untrack_command() {
+    local up="$TEST_TMPDIR/upstream" root="$CS_SESSIONS_ROOT/vt"
+    _upstream_session_repo "$up"
+    ln -s .. "$up/.cs/private"
+    git -C "$up" add .cs/private
+    git -C "$up" commit -q -m "link private to the session"
+    git clone -q "$up" "$root"
+    _make_launch_sentinel
+
+    local out rc=0
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: .cs/private leads to a directory that holds this session's own files, where git tracks .cs/README.md (per-actor state must stay local). Make .cs/private a directory of its own." \
+        "$out" "the refusal names the link and prints no command" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
+}
+
+# bash 3.2 quotes a path that starts with "~" as it is, and a shell then reads
+# it as a home directory: the command names the path from the current one.
+test_the_untrack_command_names_a_directory_called_tilde_as_a_path() {
+    local s="$TEST_TMPDIR/s" out rc=0
+    mkdir -p "$s/.cs" "$s/~"
+    git -C "$s" init -q
+    ln -s '../~' "$s/.cs/private"
+    printf 'x\n' > "$s/~/seed"
+    git -C "$s" add .cs/private "$s/~/seed"
+    out=$(/bin/bash -c 'source "$1"; cs_tracked_files_notice "$2" "$3"' _ "$SCRIPT_DIR/../hooks/cs-shared.sh" "$s/.cs/private" "$s") || rc=$?
+    assert_eq "0" "$rc" "the tracked file is found" || return 1
+    assert_eq "_/seed is tracked in git (per-actor state must stay local). Fix with: git -C $s --literal-pathspecs rm -r --cached -- ./~ && git -C $s commit -m 'stop tracking _'" \
+        "$out" "the command names ./~" || return 1
+}
+
+# The refusal is about what git tracks: the same queue in a .cs/private made
+# by hand and never committed opens.
+test_an_untracked_cs_private_directory_opens() {
+    local up="$TEST_TMPDIR/upstream" root="$CS_SESSIONS_ROOT/vt"
+    _upstream_session_repo "$up"
+    git clone -q "$up" "$root"
+    mkdir -p "$root/.cs/private/queue"
+    printf 'armed\n' > "$root/.cs/private/queue.state"
+    printf 'a task the user queued\n' > "$root/.cs/private/queue/0000000001-task"
+    _make_launch_sentinel
+
+    local rc=0
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || rc=$?
+
+    assert_eq "0" "$rc" "cs should open the session" || return 1
+    assert_file_contains "$TEST_TMPDIR/launched" "launched" "claude should launch" || return 1
+    assert_eq "armed" "$(cat "$root/.cs/private/queue.state")" "the user's queue stays as it was" || return 1
+}
+
+# A vault set up by hand can sit anywhere, and most places are in no git
+# repository at all: asking git about such a .cs/private finds nothing
+# tracked, and the session opens.
+test_a_cs_private_link_into_a_vault_outside_any_repository_opens() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local meta="$CS_SESSIONS_ROOT/vt/.cs" vault="$TEST_TMPDIR/vault"
+    mkdir -p "$vault/private"
+    mv "$meta/local/session.log" "$vault/private/session.log"
+    ln -s "$vault/private" "$meta/private"
+    _mark_hand_made_vault "$CS_SESSIONS_ROOT/vt"
+    assert_eq "" "$(git -C "$vault/private" rev-parse --git-dir 2>/dev/null)" "the fixture's vault is in no repository" || return 1
+    _make_launch_sentinel
+
+    local out rc=0
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "0" "$rc" "cs should open the session: $out" || return 1
+    assert_file_contains "$TEST_TMPDIR/launched" "launched" "claude should launch" || return 1
+}
+
+# The hooks record their own answer about tracked files in a shell variable.
+# A value of that name inherited from the environment is nobody's answer: cs
+# opens the session as if it were not there.
+test_an_inherited_tracked_files_answer_does_not_stop_the_open() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt"
+    _make_launch_sentinel
+
+    local out rc=0
+    out=$(CS_TRACKED_FILES_META="$root/.cs" CS_TRACKED_FILES_NOTICE="x" "$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "0" "$rc" "cs should open the session: $out" || return 1
+    assert_file_contains "$TEST_TMPDIR/launched" "launched" "claude should launch" || return 1
+}
+
+# The refusals at the open ask git about the session's own repository. A
+# shell can name another one: GIT_DIR and GIT_WORK_TREE point git elsewhere,
+# GIT_INDEX_FILE swaps the index (git hands one to every commit hook), and
+# GIT_CEILING_DIRECTORIES stops it finding the repository at all. Opens vt
+# plain, checks that refusal, then opens it under each variable: the answer
+# must be the same one.
+_assert_refused_under_any_git_environment() {  # text the refusal holds
+    local root="$CS_SESSIONS_ROOT/vt" plain plain_rc=0 out rc var
+    mkdir -p "$TEST_TMPDIR/elsewhere"
+    git -C "$TEST_TMPDIR/elsewhere" init -q
+    _make_launch_sentinel
+    plain=$("$CS_BIN" vt <<< "" 2>&1) || plain_rc=$?
+    assert_eq "1" "$plain_rc" "cs should refuse with no git variable set: $plain" || return 1
+    assert_output_contains "$plain" "$1" "the fixture reaches the refusal under test" || return 1
+    for var in "GIT_INDEX_FILE=/dev/null" "GIT_DIR=$TEST_TMPDIR/elsewhere/.git" \
+               "GIT_WORK_TREE=$TEST_TMPDIR/elsewhere" "GIT_CEILING_DIRECTORIES=$root/.cs:$root"; do
+        rc=0
+        out=$(env "$var" "$CS_BIN" vt <<< "" 2>&1) || rc=$?
+        assert_eq "1" "$rc" "cs should refuse with ${var%%=*} set: $out" || return 1
+        assert_eq "$plain" "$out" "the refusal is the same with ${var%%=*} set" || return 1
+    done
+    assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
+}
+
+test_a_tracked_pre_open_is_refused_whatever_repository_the_shell_names() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    _write_pre_open vt "touch \"$TEST_TMPDIR/pre-open-ran\""
+    git -C "$CS_SESSIONS_ROOT/vt" add -f .cs/local/pre-open
+    git -C "$CS_SESSIONS_ROOT/vt" commit -q -m "track pre-open"
+    _assert_refused_under_any_git_environment ".cs/local/pre-open is tracked in git" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/pre-open-ran" "the committed pre-open must not run" || return 1
+}
+
+test_tracked_cs_private_is_refused_whatever_repository_the_shell_names() {
+    local up="$TEST_TMPDIR/upstream"
+    _upstream_session_repo "$up"
+    _commit_armed_queue "$up" .cs/private
+    git clone -q "$up" "$CS_SESSIONS_ROOT/vt"
+    _assert_refused_under_any_git_environment ".cs/private/queue.state is tracked in git" || return 1
+}
+
+# The gitlink for a .cs submodule stays in the index after its .git is gone,
+# and the index is then the only place that says so.
+test_a_cs_gitlink_is_refused_whatever_repository_the_shell_names() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt"
+    git -C "$root/.cs" init -q
+    git -C "$root/.cs" add -f README.md
+    git -C "$root/.cs" -c user.name=t -c user.email=t@example.com commit -q -m "inner"
+    git -C "$root" rm -r -q --cached .cs
+    # git warns that it is adding an embedded repository; the gitlink is
+    # checked below instead of its stderr.
+    git -C "$root" add .cs 2>/dev/null
+    git -C "$root" commit -q -m "ship .cs as a submodule"
+    rm -rf "$root/.cs/.git"
+    assert_eq "160000" "$(git -C "$root" ls-files -s -- .cs | cut -d' ' -f1)" "the fixture must index .cs as a gitlink" || return 1
+    _assert_refused_under_any_git_environment ".cs is a submodule or nested repository" || return 1
+}
+
+# A checkout cs hides itself in through info/exclude must track none of the
+# files cs rewrites at every open.
+test_an_exclude_session_conflict_is_refused_whatever_repository_the_shell_names() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt"
+    printf 'git_bookkeeping: exclude\n' >> "$root/.cs/local/state"
+    git -C "$root" add -f CLAUDE.local.md
+    git -C "$root" commit -q -m "track the protocol file"
+    _assert_refused_under_any_git_environment "is tracked on the branch" || return 1
+}
+
+# Only a pre-open git does not track makes a vault the user set up by hand,
+# which is what lets the vault links lead out of the session.
+test_a_tracked_pre_open_makes_no_hand_made_vault_whatever_repository_the_shell_names() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt" var rc
+    _write_pre_open vt "exit 0"
+    rc=0
+    bash -c 'source "$1"; _cs_hand_made_vault "$2"' _ "$SCRIPT_DIR/../hooks/cs-shared.sh" "$root" || rc=$?
+    assert_eq "0" "$rc" "an untracked pre-open is a hand-made vault" || return 1
+    git -C "$root" add -f .cs/local/pre-open
+    git -C "$root" commit -q -m "track pre-open"
+    for var in "GIT_CS_TEST_NONE=1" "GIT_INDEX_FILE=/dev/null" "GIT_DIR=$TEST_TMPDIR/nowhere/.git"; do
+        rc=0
+        env "$var" bash -c 'source "$1"; _cs_hand_made_vault "$2"' _ "$SCRIPT_DIR/../hooks/cs-shared.sh" "$root" || rc=$?
+        assert_eq "1" "$rc" "a tracked pre-open is no hand-made vault with ${var%%=*} set" || return 1
+    done
 }
 
 # A clone can also deliver `.cs` itself as a committed symlink to a tracked
@@ -1537,6 +1843,21 @@ run_test test_pre_open_failure_aborts_open
 run_test test_pre_open_not_executable_is_refused
 run_test test_pre_open_tracked_by_git_is_refused
 run_test test_pre_open_tracked_under_a_case_variant_is_refused
+run_test test_cs_files_tracked_in_cs_private_are_refused
+run_test test_cs_files_tracked_behind_a_cs_private_link_are_refused
+run_test test_the_untrack_command_quotes_a_directory_name_the_repository_chose
+run_test test_the_untrack_command_untracks_only_the_directory_it_names
+run_test test_tracked_files_in_a_directory_named_with_a_trailing_newline_are_seen
+run_test test_a_cs_private_link_to_the_session_itself_is_refused_without_an_untrack_command
+run_test test_the_untrack_command_names_a_directory_called_tilde_as_a_path
+run_test test_an_untracked_cs_private_directory_opens
+run_test test_a_cs_private_link_into_a_vault_outside_any_repository_opens
+run_test test_an_inherited_tracked_files_answer_does_not_stop_the_open
+run_test test_a_tracked_pre_open_is_refused_whatever_repository_the_shell_names
+run_test test_tracked_cs_private_is_refused_whatever_repository_the_shell_names
+run_test test_a_cs_gitlink_is_refused_whatever_repository_the_shell_names
+run_test test_an_exclude_session_conflict_is_refused_whatever_repository_the_shell_names
+run_test test_a_tracked_pre_open_makes_no_hand_made_vault_whatever_repository_the_shell_names
 run_test test_pre_open_through_symlinked_cs_is_refused
 run_test test_symlinked_cs_without_pre_open_keeps_the_target_mode
 run_test test_pre_open_inside_a_cs_submodule_is_refused

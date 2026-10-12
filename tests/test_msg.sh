@@ -984,6 +984,44 @@ test_mail_persists_inline_until_read() {
     assert_output_contains "$out" "review the auth PR please" "body still inlined next prompt" || return 1
 }
 
+# Mail git tracks came with a pull, a merge or a checkout, not from a sender
+# on this machine: the prompt hook shows none of it.
+test_mail_git_tracks_is_not_shown() {
+    "$CS_BIN" -msg receiver "review the auth PR please" >/dev/null 2>&1
+    local root="$CS_SESSIONS_ROOT/receiver" out
+    git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || git -C "$root" init -q
+    git -C "$root" add -f .cs/local/mail
+    git -C "$root" -c user.email=jane.roe@example.com -c user.name="Jane Roe" commit -q -m "ship mail"
+    assert_eq "1" "$(git -C "$root" ls-files .cs/local/mail | grep -c .)" "the fixture tracks the one message" || return 1
+
+    out=$(_prompt_as_receiver "hello") || return 1
+
+    assert_output_not_contains "$out" "review the auth PR please" "tracked mail is not inlined" || return 1
+    assert_eq "1" "$(find "$root/.cs/local/mail/new" -name '*.json' | grep -c .)" \
+        "the tracked message is left where it was" || return 1
+    git -C "$root" rm -r -q --cached .cs/local
+    out=$(_prompt_as_receiver "hello") || return 1
+    assert_output_contains "$out" "review the auth PR please" "untracked again, the same message is inlined" || return 1
+}
+
+# cs -msg run inside the session reads the mailbox the prompt hook reads, so
+# it refuses mail git tracks, as the open would, and moves none of it.
+test_reading_mail_git_tracks_is_refused() {
+    "$CS_BIN" -msg receiver "review the auth PR please" >/dev/null 2>&1
+    local root="$CS_SESSIONS_ROOT/receiver" out rc=0 first
+    git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || git -C "$root" init -q
+    git -C "$root" add -f .cs/local/mail
+    git -C "$root" -c user.email=jane.roe@example.com -c user.name="Jane Roe" commit -q -m "ship mail"
+    first=$(git -C "$root" ls-files .cs/local | sed -n 1p)
+
+    out=$(_as_receiver -msg 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs -msg refuses" || return 1
+    assert_eq "Error: $first is tracked in git (per-actor state must stay local). Fix with: git -C $root --literal-pathspecs rm -r --cached -- .cs/local && git -C $root commit -m 'stop tracking .cs/local'" \
+        "$out" "the refusal names the tracked message" || return 1
+    assert_eq "1" "$(find "$root/.cs/local/mail/new" -name '*.json' | grep -c .)" "the message is not moved" || return 1
+}
+
 # Reading with cs -msg advances the `seen` cursor, which clears the digest.
 test_mail_read_clears_digest() {
     "$CS_BIN" -msg receiver "transient note" >/dev/null 2>&1
@@ -1207,6 +1245,8 @@ test_mail_tag_attributes_sanitised() {
 }
 
 run_test test_mail_persists_inline_until_read
+run_test test_mail_git_tracks_is_not_shown
+run_test test_reading_mail_git_tracks_is_refused
 run_test test_mail_read_clears_digest
 run_test test_mail_body_framed_by_random_id_tags
 run_test test_mail_tag_ids_random_per_block

@@ -121,6 +121,22 @@ through the Bash tool, which is a grandchild under an intermediate shell. Nothin
 cs spawns a direct child. A session started by a `cs` that did not export the value
 keeps the parent check, and with it this gap, until you relaunch it.
 
+Each hook also asks git one question as it resolves its session: does it track a file
+in the directory that holds the queue, the mailbox and the rotation marker (`.cs/local`,
+or `.cs/private` once that name exists)? `cs` refuses to open such a session, but a
+`git pull`, a merge or a checkout can put committed files there while the session is
+open. A repository wrote a tracked file, not this session, so while git tracks one the
+hooks read no queue, mail or rotation marker from that directory and write none of those
+files: the Stop hook hands out no task, the prompt hook shows no mail, a `/clear` loads no
+handoff, and the command log stops. `cs -queue` and `cs -msg` run inside the session
+refuse on the same question. Each finished turn says why, in a system message that names the file
+and the `git rm --cached` command that untracks it. That message is all the Stop hook
+does until then: it sends no narrative reminder and no rotation nudge, and raises no
+attention flag. Its other two events do nothing: no mail wake, no rotation kick, no
+watch re-armed. The check is one `git ls-files` per
+hook run, about 0.05 to 0.09 s. `memory-index-guard.sh` and `prompt-rewriter.sh` resolve
+no session and do not ask.
+
 ## session-start.sh (SessionStart)
 
 Runs when Claude Code starts a session:

@@ -9,6 +9,19 @@ _vet_named_session() {  # session_dir
     cs_assert_local_untracked "$1"
 }
 
+# cs -queue and cs -msg run inside a session read the queue and the mailbox of
+# the session the environment names, the same files the hooks stand down
+# from while git tracks one of them, so they refuse on the same question. Only
+# that question: the open's other refusals walk every link under .cs, which
+# would cost these verbs a fork per link on every call.
+_vet_current_session() {
+    local dir="${CLAUDE_SESSION_DIR:-}" notice
+    [ -n "$dir" ] || dir="${CLAUDE_SESSION_META_DIR:-}"
+    dir=${dir%/.cs}
+    [ -n "$dir" ] && is_session_dir "$dir" || return 0
+    ! notice=$(cs_files_tracked_notice "$dir/.cs" "$dir") || error "$notice"
+}
+
 main() {
     # cs IS the launch, and the hooks read that from the ABSENCE of this marker
     # (hooks/cs-resolve.sh preserves an inherited value rather than setting
@@ -149,11 +162,13 @@ main() {
             ;;
         -queue)
             shift
+            _vet_current_session
             run_queue "$@"
             return 0
             ;;
         -msg)
             shift
+            _vet_current_session
             run_mail "$@"
             return 0
             ;;

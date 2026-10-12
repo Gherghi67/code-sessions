@@ -112,6 +112,18 @@ if [ -z "$SESSION_DIR" ] || [ ! -d "$SESSION_DIR" ]; then
     exit 0
 fi
 
+# Files git tracks where this session keeps its queue and mailbox were written
+# by a repository, not by this session (cs_resolve_session). Nothing below
+# reads them, on any event: the rotation kick lives in .cs/local whatever
+# cs_private_dir answers, so a watched file that changes there wakes nobody
+# either. A finished turn says why, with the command that untracks them.
+if [ -n "${CS_TRACKED_FILES_NOTICE:-}" ]; then
+    [ "$HOOK_EVENT" = "Stop" ] || exit 0
+    jq -nc --arg m "cs reads no queue, mail or rotation in this session: $CS_TRACKED_FILES_NOTICE" \
+        '{decision:"approve", systemMessage:$m}'
+    exit 0
+fi
+
 # --- Mail wake, shared by both events -----------------------------------------
 # Unread cross-session mail takes a turn, so an agent-to-agent exchange advances
 # without waiting for a keystroke. Stop reaches a session that has just finished

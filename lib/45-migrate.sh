@@ -94,15 +94,23 @@ cs_assert_local_untracked() {
         error ".cs is a submodule or nested repository (cs state must be a plain directory inside the session). Delete .cs/local/pre-open unless you wrote it, then git rm --cached .cs, remove .cs/.git and git add .cs, then reopen."
     fi
     _refuse_links_out_of_session "$dir"
-    git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || return 0
+    _cs_git_at "$dir" rev-parse --git-dir >/dev/null 2>&1 || return 0
     # :(icase): a case-insensitive checkout (macOS by default) puts a
     # committed .cs/LOCAL/pre-open at .cs/local/pre-open on disk, where a
     # case-sensitive pathspec would never see it.
-    tracked=$(git -C "$dir" ls-files -- ':(icase).cs/local' 2>/dev/null | sed -n 1p)
+    tracked=$(_cs_git_at "$dir" ls-files -z -- ':(icase).cs/local' 2>/dev/null \
+        | { IFS= read -r -d '' first || exit 0; printf '%sx' "$first"; })
+    tracked=${tracked%x}
     if [ -n "$tracked" ]; then
-        sub=$(printf '%s\n' "$tracked" | cut -d/ -f1-2)
-        error "$tracked is tracked in git (per-actor state must stay local). Fix with: git -C \"$dir\" rm -r --cached $sub && git commit -m 'stop tracking $sub'"
+        sub=${tracked#*/}
+        error "$(cs_untrack_notice "$tracked" "$dir" "${tracked%%/*}/${sub%%/*}")"
     fi
+    # .cs/private takes .cs/local's place for the queue, the mailbox and the
+    # rotation marker (cs_private_dir), so nothing in it may come from git
+    # either. Asked of the directory the name resolves to, in whichever
+    # repository lists it: an encrypted session commits the link itself, and
+    # a clone can commit the link beside a directory it tracks elsewhere.
+    ! tracked=$(cs_tracked_files_notice "$dir/.cs/private" "$dir") || error "$tracked"
 }
 
 # For a checkout cs hides itself in through info/exclude (git_bookkeeping:
@@ -120,7 +128,7 @@ _exclude_session_tracked_conflict() {  # dir
             return 0
         fi
     done
-    git -C "$dir" ls-files -- .cs .claude/settings.local.json CLAUDE.local.md 2>/dev/null | head -1
+    _cs_git_at "$dir" ls-files -- .cs .claude/settings.local.json CLAUDE.local.md 2>/dev/null | head -1
 }
 
 # True when cs created this session directory, and so owns its mode. Two ways to

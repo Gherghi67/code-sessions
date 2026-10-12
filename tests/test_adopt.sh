@@ -360,6 +360,61 @@ test_readopt_with_every_vault_link_dangling_refuses_naming_memory() {
     assert_not_exists "$CS_SESSIONS_ROOT/new-name" "no session link" || return 1
 }
 
+# A cloned project can commit .gitignore, .gitattributes or CLAUDE.local.md as
+# a link to a file outside the checkout, and adopt appends to all three. Each
+# is refused before adopt writes anything: the file outside keeps its bytes,
+# and the project gets no .cs and no session link.
+test_adopt_refuses_a_committed_link_it_would_write_through() {
+    local name project_dir outside before out rc
+    for name in CLAUDE.local.md .gitignore .gitattributes; do
+        project_dir="$TEST_TMPDIR/proj-$name"
+        outside="$TEST_TMPDIR/outside-$name"
+        mkdir -p "$project_dir"
+        printf 'a file that is not the project'"'"'s\n' > "$outside"
+        before=$(cksum < "$outside")
+        # git warns that it will not read a linked .gitignore; the commit is
+        # checked instead of its stderr.
+        ( cd "$project_dir" && git init -q && git config user.email jane.roe@example.com \
+            && git config user.name "Jane Roe" && ln -s "../outside-$name" "$name" \
+            && git add -A 2>/dev/null && git commit -q -m "a project with a committed link" 2>/dev/null )
+        assert_eq "120000" "$(git -C "$project_dir" ls-files -s -- "$name" 2>/dev/null | cut -d' ' -f1)" \
+            "the fixture commits $name as a link" || return 1
+
+        rc=0
+        out=$(cd "$project_dir" && "$CS_BIN" -adopt "linked" </dev/null 2>&1) || rc=$?
+
+        assert_eq 1 "$rc" "adopt refuses a linked $name: $out" || return 1
+        assert_eq "Error: $name is a symlink to ../outside-$name, outside the session, and cs writes through it. Replace it with a real file or directory, or cs -rm the session." \
+            "$out" "the refusal names $name" || return 1
+        assert_eq "$before" "$(cksum < "$outside")" "the file $name points at keeps its bytes" || return 1
+        assert_not_exists "$project_dir/.cs" "no session records behind a linked $name" || return 1
+        assert_not_exists "$CS_SESSIONS_ROOT/linked" "no session link behind a linked $name" || return 1
+    done
+}
+
+# Records the open would refuse are refused by the re-adopt too, before it
+# links a session that can never open: here a queue committed in .cs/private.
+test_readopt_refuses_records_the_open_would_refuse() {
+    local project_dir="$TEST_TMPDIR/my-project" out rc=0 before
+    mkdir -p "$project_dir/.cs/private/queue"
+    ( cd "$project_dir" && git init -q && git config user.email jane.roe@example.com \
+        && git config user.name "Jane Roe" \
+        && printf -- '---\nstatus: active\n---\n# x\n' > .cs/README.md \
+        && printf 'armed\n' > .cs/private/queue.state \
+        && printf 'a task the repository wrote\n' > .cs/private/queue/0000000001-task \
+        && git add -A -f && git commit -q -m "a project with session records" )
+    before=$(git -C "$project_dir" rev-parse HEAD)
+
+    out=$(cd "$project_dir" && "$CS_BIN" -adopt new-name --yes </dev/null 2>&1) || rc=$?
+
+    assert_eq 1 "$rc" "the re-adopt refuses: $out" || return 1
+    assert_eq "Error: .cs/private/queue.state is tracked in git (per-actor state must stay local). Fix with: git -C $(cd "$project_dir" && pwd -P) --literal-pathspecs rm -r --cached -- .cs/private && git -C $(cd "$project_dir" && pwd -P) commit -m 'stop tracking .cs/private'" \
+        "$out" "the refusal names the tracked file" || return 1
+    assert_eq "$before" "$(git -C "$project_dir" rev-parse HEAD)" "adopt commits nothing" || return 1
+    assert_eq "" "$(git -C "$project_dir" status --porcelain)" "adopt writes nothing" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/new-name" "no session link" || return 1
+}
+
 test_adopt_orphaned_records_noninteractive_hints() {
     local project_dir="$TEST_TMPDIR/my-project"
     mkdir -p "$project_dir"
@@ -663,6 +718,33 @@ test_adopt_gitignores_the_vault_mount() {
     git -C "$owned" check-ignore -q .cs/vault-mnt/memory/narrative.md \
         || { echo "  FAIL: adopt must append .cs/vault-mnt/ to a project .gitignore"; return 1; }
     assert_file_contains "$owned/.gitignore" "node_modules/" "the project's own entry stays" || return 1
+}
+
+# .cs/private holds what .cs/local holds for a plain session, so a directory
+# of that name stays out of git the same way. Only the directory: an encrypted
+# session's .cs/private is a link, and the link itself is committed.
+test_adopt_gitignores_a_private_directory_and_not_its_link() {
+    local fresh="$TEST_TMPDIR/fresh" owned="$TEST_TMPDIR/owned" linked="$TEST_TMPDIR/linked"
+    mkdir -p "$fresh" "$owned" "$linked"
+    (cd "$fresh" && git init -q && "$CS_BIN" -adopt fresh-session >/dev/null 2>&1)
+    (cd "$owned" && git init -q && printf 'node_modules/\n' > .gitignore \
+        && "$CS_BIN" -adopt owned-session >/dev/null 2>&1)
+    (cd "$linked" && git init -q && "$CS_BIN" -adopt linked-session >/dev/null 2>&1)
+    mkdir -p "$fresh/.cs/private" "$owned/.cs/private"
+    git -C "$fresh" check-ignore -q .cs/private/session.log \
+        || { echo "  FAIL: cs's own .gitignore must ignore .cs/private/"; return 1; }
+    git -C "$owned" check-ignore -q .cs/private/session.log \
+        || { echo "  FAIL: adopt must append .cs/private/ to a project .gitignore"; return 1; }
+    ln -s vault-mnt/private "$linked/.cs/private"
+    if git -C "$linked" check-ignore -q .cs/private; then
+        echo "  FAIL: the .cs/private link itself must stay committable"; return 1
+    fi
+    # The same in a project whose own .gitignore adopt merged its entries into.
+    rm -rf "$owned/.cs/private"
+    ln -s vault-mnt/private "$owned/.cs/private"
+    if git -C "$owned" check-ignore -q .cs/private; then
+        echo "  FAIL: the .cs/private link must stay committable in a project's own .gitignore"; return 1
+    fi
 }
 
 # cs_write_atomic stages each write in a temp file beside its destination; one
@@ -978,6 +1060,7 @@ echo ""
 
 run_test test_adopt_gitignores_cs_local
 run_test test_adopt_gitignores_the_vault_mount
+run_test test_adopt_gitignores_a_private_directory_and_not_its_link
 run_test test_adopt_gitignores_atomic_write_temps
 run_test test_adopt_sets_memory_merge_driver
 
@@ -998,6 +1081,8 @@ run_test test_readopt_keeps_the_session_log
 run_test test_readopt_of_an_encrypted_session_keeps_its_log_in_the_vault
 run_test test_readopt_of_an_encrypted_session_with_a_locked_vault_refuses
 run_test test_readopt_with_every_vault_link_dangling_refuses_naming_memory
+run_test test_adopt_refuses_a_committed_link_it_would_write_through
+run_test test_readopt_refuses_records_the_open_would_refuse
 run_test test_adopt_orphaned_records_noninteractive_hints
 run_test test_adopt_orphaned_records_decline_cancels
 run_test test_adopt_yes_relinks_orphaned_records_without_a_terminal

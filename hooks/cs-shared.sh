@@ -77,14 +77,109 @@ CS_VAULT_LINKS="memory plans claude-config private"
 # traces). An encrypted session links .cs/private into its vault; any other
 # keeps them in .cs/local. Fails, printing nothing, when .cs/private is a link
 # whose vault is locked: a writer drops its line rather than write it anywhere
-# else in plaintext.
+# else in plaintext. Fails the same way for a hook whose session resolved with
+# files git tracks in that directory (CS_TRACKED_FILES_META, set by
+# cs_resolve_session): nothing git delivered there is read as a queue, mail or
+# a rotation, and nothing is added beside it. That answer is one hook run's:
+# a value of either name that came in with the environment is dropped here,
+# where cs and every hook that reads these files load this file.
+unset CS_TRACKED_FILES_META CS_TRACKED_FILES_NOTICE
 cs_private_dir() {  # meta_dir
+    [ "${CS_TRACKED_FILES_META:-}" != "$1" ] || return 1
     if [ -L "$1/private" ] || [ -e "$1/private" ]; then
         [ -d "$1/private" ] || return 1
         printf '%s\n' "$1/private"
     else
         printf '%s\n' "$1/local"
     fi
+}
+
+# git, asked about <dir> and the repository that directory sits in, whatever
+# the environment says. GIT_DIR and GIT_WORK_TREE name another repository,
+# GIT_INDEX_FILE another index (git hands one to every commit hook),
+# GIT_COMMON_DIR and GIT_OBJECT_DIRECTORY another store, and
+# GIT_CEILING_DIRECTORIES can keep git from finding the repository at all. A
+# refusal that asked git under any of them would find nothing tracked and let
+# the open, or a hook, go on. Every check that decides whether cs trusts a
+# session's files asks through here.
+_cs_git_at() {  # dir, git arguments...
+    local dir="$1"
+    shift
+    env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR -u GIT_OBJECT_DIRECTORY \
+        -u GIT_CEILING_DIRECTORIES git -C "$dir" "$@"
+}
+
+# Prints the line that says git tracks <tracked> and how to stop: untrack
+# <sub>, a path relative to <top>, and commit, both in <top>. The repository
+# chose both names and the user is asked to paste the command, so each path is
+# quoted for the shell and taken literally by git (a directory named "*" would
+# otherwise untrack every file), a path starting with "~" is spelled from the
+# current directory (bash 3.2 leaves the tilde bare), the commit runs in the
+# same repository wherever the command is pasted, and the file name and the
+# commit message keep only characters a plain path has. The name also reaches
+# Claude, in the Stop hook's message.
+cs_untrack_notice() {  # tracked, top, sub
+    local shown said sub="$3"
+    shown=$(printf '%s' "$1" | LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_' | cut -c1-160) || return 1
+    said=$(printf '%s' "$sub" | LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_') || return 1
+    case "$sub" in '~'*) sub="./$sub" ;; esac
+    printf "%s is tracked in git (per-actor state must stay local). Fix with: git -C %q --literal-pathspecs rm -r --cached -- %q && git -C %q commit -m 'stop tracking %s'\n" \
+        "$shown" "$2" "$sub" "$2" "$said"
+}
+
+# Says which file git tracks in <dir> and how to stop tracking it; fails,
+# printing nothing, when git tracks none there. Asked of the directory itself,
+# in whichever repository lists it, so a link to a tracked directory is seen
+# through; asked from the repository's top with a case-insensitive pattern, so
+# a case variant of the name (.cs/LOCAL, which a case-insensitive volume puts
+# in .cs/local) is seen too. A directory in no repository, a vault mounted from
+# elsewhere, has nothing tracked. <session_dir> is the session as its caller
+# names it, printed in place of the repository's own path when the two are one
+# directory. A directory that holds the session's own files is named, with no
+# command: untracking it would untrack the project.
+cs_tracked_files_notice() {  # dir, session_dir
+    local real top prefix tracked meta sub rest n
+    # The x keeps a trailing newline in a name that $( ) drops.
+    real=$(cd -P "$1" 2>/dev/null && pwd -P && printf x) || return 1
+    real=${real%$'\n'x}
+    top=$(_cs_git_at "$real" rev-parse --show-toplevel 2>/dev/null && printf x) || return 1
+    top=${top%$'\n'x}
+    prefix=$(_cs_git_at "$real" rev-parse --show-prefix 2>/dev/null && printf x) || return 1
+    prefix=${prefix%$'\n'x}
+    tracked=$(_cs_git_at "$top" ls-files -z -- ":(icase,literal)${prefix:-.}" 2>/dev/null \
+        | { IFS= read -r -d '' first || exit 0; printf '%sx' "$first"; }) || return 1
+    tracked=${tracked%x}
+    [ -n "$tracked" ] || return 1
+    meta=$(cd -P "$2/.cs" 2>/dev/null && pwd -P && printf x) && meta=${meta%$'\n'x}
+    case "$meta/" in
+        "$real"/*)
+            printf "%s leads to a directory that holds this session's own files, where git tracks %s (per-actor state must stay local). Make %s a directory of its own.\n" \
+                ".cs/${1##*/}" "$(printf '%s' "$tracked" | LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_' | cut -c1-160)" ".cs/${1##*/}"
+            return 0
+            ;;
+    esac
+    # The path to untrack, spelled as the index has it: a case variant is
+    # removed under its own name.
+    n=0 rest=$prefix
+    while [ -n "$rest" ]; do n=$((n + 1)); rest=${rest#*/}; done
+    sub="" rest=$tracked
+    while [ "$n" -gt 0 ]; do
+        sub="$sub${sub:+/}${rest%%/*}"
+        rest=${rest#*/}
+        n=$((n - 1))
+    done
+    [ ! "$top" -ef "$2" ] || top="$2"
+    cs_untrack_notice "$tracked" "$top" "${sub:-.}"
+}
+
+# The same, for the directories that hold a session's cs content files:
+# .cs/private once that name exists, and .cs/local always (the hooks read the
+# rotation kick and the session's ids there either way).
+cs_files_tracked_notice() {  # meta_dir, session_dir
+    if [ -L "$1/private" ] || [ -e "$1/private" ]; then
+        cs_tracked_files_notice "$1/private" "$2" && return 0
+    fi
+    cs_tracked_files_notice "$1/local" "$2"
 }
 
 # Says what an unusable .cs/private is, for an error message: the vault it
@@ -358,8 +453,8 @@ _cs_write_target() {  # path
 # entries below .cs, so only a gitlink whose whole path is .cs counts.
 _cs_nested_cs() {  # root
     [ -e "$1/.cs/.git" ] && return 0
-    git -C "$1" rev-parse --git-dir >/dev/null 2>&1 || return 1
-    git -C "$1" ls-files -s -- ':(icase).cs' 2>/dev/null \
+    _cs_git_at "$1" rev-parse --git-dir >/dev/null 2>&1 || return 1
+    _cs_git_at "$1" ls-files -s -- ':(icase).cs' 2>/dev/null \
         | awk -F'\t' '{ split($1, m, " "); if (m[1] == "160000" && tolower($2) == ".cs") hit = 1 } END { exit !hit }' 2>/dev/null
 }
 
@@ -372,8 +467,8 @@ _cs_hand_made_vault() {  # root
     local pre="$1/.cs/local/pre-open"
     [ -f "$pre" ] && [ ! -L "$pre" ] && [ ! -L "$1/.cs" ] && [ ! -L "$1/.cs/local" ] || return 1
     ! _cs_nested_cs "$1" || return 1
-    git -C "$1" rev-parse --git-dir >/dev/null 2>&1 || return 0
-    [ -z "$(git -C "$1" ls-files -- ':(icase).cs/local' 2>/dev/null | sed -n 1p)" ]
+    _cs_git_at "$1" rev-parse --git-dir >/dev/null 2>&1 || return 0
+    [ -z "$(_cs_git_at "$1" ls-files -- ':(icase).cs/local' 2>/dev/null | sed -n 1p)" ]
 }
 
 # True when a path lies in the session at <root> by its spelling (as typed,

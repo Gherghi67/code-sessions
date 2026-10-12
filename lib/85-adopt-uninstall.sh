@@ -13,6 +13,10 @@ create_session_gitignore() {
 # Per-actor local state (never shared)
 .cs/local/
 
+# A session's cs files when a .cs/private directory holds them (the link an
+# encrypted session keeps there is committed; a directory is not)
+.cs/private/
+
 # Session archives (large binaries; unrelated to the tracked .cs/archived marker)
 .cs/archives/
 
@@ -56,6 +60,7 @@ ensure_cs_gitignore_entries() {
     local entries
     entries=$(cat << 'ENTRIES'
 .cs/local/
+.cs/private/
 .cs/archives/
 .cs/vault-mnt/
 .cs/.narrative-reminder-cooldown
@@ -131,6 +136,13 @@ adopt_session() {  # name, [--yes|-y], in any order
     if [ -f "$target_dir/.git" ]; then
         error "$target_dir is a linked git worktree. For Claude Code's worktrees run cs -adopt --worktrees from the repo; plain cs -adopt would commit into this branch."
     fi
+
+    # Adopt appends to .gitignore, .gitattributes and CLAUDE.local.md and
+    # writes under .cs, and a cloned project can commit any of those as a
+    # link out of the checkout, or commit per-actor state. The open refuses
+    # all of it; asked here, before the first write, so nothing lands behind
+    # a link and no session is linked that cannot open.
+    cs_assert_local_untracked "$target_dir"
 
     # A .cs/ directory with no session link is orphaned: `cs -rm`/the TUI's `d`
     # only ever remove the symlink, by design, so records survive a removal —

@@ -40,6 +40,7 @@ cs_resolve_session() {  # [hook_input_json]
         # while session-end.sh can still see the launch was someone else's.
         : "${CS_RESOLVED_FROM:=env}"
         export CS_RESOLVED_FROM
+        _cs_note_tracked_files
         return 0
     fi
 
@@ -90,6 +91,25 @@ cs_resolve_session() {  # [hook_input_json]
     # session lock, so a hook that got here by walking must not remove it.
     CS_RESOLVED_FROM=walk
     export CLAUDE_SESSION_DIR CLAUDE_SESSION_META_DIR CLAUDE_SESSION_NAME CS_RESOLVED_FROM
+    _cs_note_tracked_files
+    return 0
+}
+
+# A pull, a merge or a checkout puts committed files into a session that is
+# already open, where none of the open's refusals run again. So each hook asks
+# once, as it resolves its session, whether git tracks anything in the
+# directory that holds the queue, the mailbox and the rotation marker. While
+# it does, cs_private_dir (cs-shared.sh) fails for this session and every
+# reader and writer of those files stands down; the Stop hook shows the
+# notice. Not exported: the answer is this hook run's, asked again by the next,
+# and cs-shared.sh drops an inherited one as it loads. A hook that sources no
+# cs-shared.sh reads none of those files.
+_cs_note_tracked_files() {
+    command -v cs_files_tracked_notice >/dev/null 2>&1 || return 0
+    # shellcheck disable=SC2034  # read by cs_private_dir (cs-shared.sh) and the Stop hook
+    if CS_TRACKED_FILES_NOTICE=$(cs_files_tracked_notice "$CLAUDE_SESSION_META_DIR" "$CLAUDE_SESSION_DIR"); then
+        CS_TRACKED_FILES_META="$CLAUDE_SESSION_META_DIR"
+    fi
     return 0
 }
 
