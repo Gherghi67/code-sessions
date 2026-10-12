@@ -607,6 +607,31 @@ test('a control file git starts tracking during the count clears nothing at zero
   expect(ran).toEqual([])
 })
 
+test('a press while cs is still answering, then the count reaching zero, clears once', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); percent = 80
+  await band()
+  await turnComplete()
+  await tick(GRACE_SECONDS - 1)
+  const zero = ticker()!
+  const run = $.process.run
+  let answer: (r: any) => void = () => {}
+  $.process.run = async (argv: string[], init: any) => {
+    $.process.run = run
+    runs.push({ argv, init })
+    return new Promise(r => { answer = r })
+  }
+  try {
+    const press = findButton(await band()).props.onPress()
+    await zero.fn()
+    answer(VETTED)
+    await press
+  } finally {
+    $.process.run = run
+  }
+  expect(ran).toEqual([{ command: 'clear', args: '' }])
+})
+
 test('with the forcing off, a prompt after a refusal asks cs afresh at the next press', async () => {
   envVars.CS_ROTATE_FORCE_CTX = 'off'
   arm(); percent = 3
