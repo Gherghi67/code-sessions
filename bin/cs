@@ -11884,10 +11884,14 @@ EOF
         fi
         # Otherwise claude decides whether the conversation resumes, and cs
         # stays to start a fresh one if it cannot and to detach a vault.
+        # CS_LEAD_PID is this shell's pid and claude is its child here, so the
+        # hooks are told to find the lead by its parent (cs_is_lead). Set on
+        # this command alone: every other arm execs, and there a claude whose
+        # parent is the launch pid is the lead's child, not the lead.
         SECONDS=0
         local rc=0
         # shellcheck disable=SC2086
-        $CLAUDE_CODE_BIN --name "$session_name" --resume "$resume_id" ${launch_prompt:+"$launch_prompt"} || rc=$?
+        CS_LEAD_IS_PARENT=1 $CLAUDE_CODE_BIN --name "$session_name" --resume "$resume_id" ${launch_prompt:+"$launch_prompt"} || rc=$?
         if [ $rc -ne 0 ] && [ $SECONDS -lt 3 ]; then
             # Quick failure suggests no conversation to continue. Rebind so
             # the fresh transcript claude is about to create is tracked by
