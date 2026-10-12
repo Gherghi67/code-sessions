@@ -617,6 +617,20 @@ test_vet_session_refuses_a_tracked_marker_whose_directory_is_gone() {
         "$out" "the refusal names the tracked marker" || return 1
 }
 
+# Git's trace output shares stderr with its answer, from the environment or
+# from configuration; a session in no repository is still in no repository.
+test_vet_session_passes_a_session_in_no_repository_while_git_traces() {
+    local s="$CLAUDE_SESSION_DIR" out rc=0 cfg="$TEST_TMPDIR/trace-gitconfig"
+    out=$(env -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR GIT_TRACE=1 "$CS_BIN" -vet-session "$s" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "cs -vet-session passes under GIT_TRACE: $out" || return 1
+    assert_eq "" "$out" "and prints nothing" || return 1
+    printf '[trace2]\n\tnormalTarget = 2\n' > "$cfg"
+    rc=0
+    out=$(env -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR GIT_CONFIG_GLOBAL="$cfg" "$CS_BIN" -vet-session "$s" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "cs -vet-session passes under trace2.normalTarget: $out" || return 1
+    assert_eq "" "$out" "and prints nothing" || return 1
+}
+
 test_vet_session_passes_a_session_whose_control_files_git_ignores() {
     local out rc=0
     _arm_handoff no
@@ -1095,6 +1109,7 @@ run_test test_vet_session_refuses_when_git_cannot_read_the_index
 run_test test_a_named_verb_refuses_when_git_cannot_answer
 run_test test_a_named_verb_refuses_when_git_cannot_read_the_index
 run_test test_vet_session_refuses_a_tracked_marker_whose_directory_is_gone
+run_test test_vet_session_passes_a_session_in_no_repository_while_git_traces
 run_test test_vet_session_passes_a_session_whose_control_files_git_ignores
 run_test test_vet_session_judges_the_directory_it_is_given
 run_test test_vet_session_refuses_a_directory_that_is_no_session
