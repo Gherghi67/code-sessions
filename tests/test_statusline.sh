@@ -3909,13 +3909,17 @@ make_full_render_fixture() {
 # forks a dozen runs past Claude Code's limit and the tick is killed.
 test_warm_render_forks_only_the_interpreter_and_jq() {
     make_full_render_fixture
+    # Every cache ages against the render's own clock, so the renders share one
+    # pinned second: "warm" is a fact about that clock, not about how quickly
+    # this machine gets from one render to the next.
+    local now; now=$(date +%s)
     # What the bar shows without the shims, rendered from this same shell (a
     # pipeline would give it another parent and so another ancestry verdict).
     printf '%s' "$FULL_JSON" > "$TEST_TMPDIR/stdin.json"
-    bash "$SL" < "$TEST_TMPDIR/stdin.json" > "$TEST_TMPDIR/plain.txt" 2>/dev/null
+    CS_STATUSLINE_NOW="$now" bash "$SL" < "$TEST_TMPDIR/stdin.json" > "$TEST_TMPDIR/plain.txt" 2>/dev/null
     local plain; plain=$(cat "$TEST_TMPDIR/plain.txt")
-    count_render_forks "$FULL_JSON"   # the cold render fills the caches
-    count_render_forks "$FULL_JSON"
+    CS_STATUSLINE_NOW="$now" count_render_forks "$FULL_JSON"   # the cold render fills the caches
+    CS_STATUSLINE_NOW="$now" count_render_forks "$FULL_JSON"
     assert_eq "0" "$FORKS_RC" "the counted render exits cleanly" || return 1
     assert_eq "$plain" "$FORKS_OUT" "the counted render draws the same line" || return 1
     assert_output_contains_f "$FORKS_OUT" "main +1!1" "and the line carries the git segment" || return 1
@@ -3924,11 +3928,14 @@ test_warm_render_forks_only_the_interpreter_and_jq() {
     # been seen, or the shims were never installed and the count means nothing.
     grep -qx bash "$TEST_TMPDIR/forks" || { echo "  FAIL: the interpreter was not counted; shims missing"; return 1; }
     grep -qx jq "$TEST_TMPDIR/forks" || { echo "  FAIL: jq was not counted; shims missing"; return 1; }
-    # A bash without a builtin clock (3.2, macOS stock) forks date once for the
-    # render's shared clock; nothing else is allowed through.
-    local limit=2
-    bash -c 'printf "%(%s)T" -1' >/dev/null 2>&1 || limit=3
-    [ "$FORKS" -le "$limit" ] || { echo "  FAIL: warm render forked $FORKS external commands (limit $limit):"; sed 's/^/    /' "$TEST_TMPDIR/forks"; return 1; }
+    [ "$FORKS" -le 2 ] || { echo "  FAIL: warm render forked $FORKS external commands (limit 2):"; sed 's/^/    /' "$TEST_TMPDIR/forks"; return 1; }
+    # The clock itself, read for real: a bash without a builtin clock (3.2,
+    # macOS stock) forks date once for the render's shared clock, never once
+    # per reader. Only date is counted here, since this render's caches may
+    # have aged.
+    count_render_forks "$FULL_JSON"
+    local dates; dates=$(grep -cx date "$TEST_TMPDIR/forks" || true)
+    [ "$dates" -le 1 ] || { echo "  FAIL: a render on the real clock forked date $dates times (limit 1)"; return 1; }
 }
 
 run_test test_warm_render_forks_only_the_interpreter_and_jq
