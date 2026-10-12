@@ -546,16 +546,38 @@ const VETTED = { exitCode: 0, stdout: '', stderr: '' }
 const TRACKED = "Error: .cs/local/pending-handoff is tracked in git (per-actor state must stay local). Fix with: git -C /work --literal-pathspecs rm -r --cached -- .cs/local && git -C /work commit -m 'stop tracking .cs/local'"
 const tracked = { exitCode: 1, stdout: '', stderr: `${TRACKED}\n` }
 
-test('an armed handoff asks cs about the session, and a tracked control file arms nothing', async () => {
-  arm(); percent = 39
+test('the band asks cs nothing as it draws, however often it redraws', async () => {
+  arm(); percent = 3
+  for (let i = 0; i < 5; i++) expect(findButton(await band()).props.label).toBe('/clear and continue from the handoff')
+  expect(runs).toEqual([])
+})
+
+test('pressing the clear button asks cs about the session, and a tracked control file clears nothing', async () => {
+  arm(); percent = 3
   runResult = tracked
-  expect(await band()).toBe(DRAWN)
+  await findButton(await band()).props.onPress()
   expect(runs.map(r => r.argv)).toEqual([['/opt/cs/bin/cs', '-vet-session', '/work']])
+  expect(ran).toEqual([])
   expect(toasts).toEqual([`cs: no rotation in this session: ${TRACKED}`])
-  await band()
+  // the band then draws the session as unarmed (below the threshold: nothing),
+  // and the same refusal at the next turn's end is not said again
+  expect(await band()).toBe(DRAWN)
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  await turnComplete()
+  expect(runs).toHaveLength(2)
   expect(toasts).toHaveLength(1)
+})
+
+test('once cs trusts the session again, the next press clears', async () => {
+  arm(); percent = 3
+  runResult = tracked
+  await findButton(await band()).props.onPress()
   runResult = VETTED
+  envVars.CS_ROTATE_FORCE_CTX = '70'; percent = 80
+  await turnComplete()
   expect(findButton(await band()).props.label).toBe('/clear and continue from the handoff')
+  await findButton(await band()).props.onPress()
+  expect(ran).toEqual([{ command: 'clear', args: '' }])
 })
 
 test('a turn ending with a tracked control file starts no countdown and forces no /rotate', async () => {
@@ -579,14 +601,16 @@ test('a control file git starts tracking during the count clears nothing at zero
   expect(ran).toEqual([])
 })
 
-test('when cs cannot answer, the handoff arms nothing and the band says why', async () => {
-  arm(); percent = 39
+test('when cs cannot answer, a press clears nothing and the band says why', async () => {
+  arm(); percent = 3
   delete envVars.CS_BIN
-  expect(await band()).toBe(DRAWN)
+  await findButton(await band()).props.onPress()
   expect(runs).toHaveLength(0)
   envVars.CS_BIN = '/opt/cs/bin/cs'
   runResult = new Error('spawn ENOENT')
-  expect(await band()).toBe(DRAWN)
+  envVars.CS_ROTATE_FORCE_CTX = '70'; percent = 80
+  await turnComplete()
+  expect(ran).toEqual([])
   expect(toasts).toEqual([
     'cs: no rotation in this session: the launch did not say where cs is (CS_BIN)',
     'cs: no rotation in this session: cs -vet-session did not run: spawn ENOENT',
