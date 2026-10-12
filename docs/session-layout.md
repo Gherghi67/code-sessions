@@ -98,6 +98,15 @@ user-owned `CLAUDE.md` is never touched.
 An [encrypted session](#encrypted-sessions) keeps the content files among these
 in `.cs/private/` instead.
 
+Git must track no file in either directory. A session's `.gitignore` lists
+`.cs/local/` and `.cs/private/` (the directory; git still takes the link an encrypted
+session keeps at `.cs/private`), but `git add -f` gets past that and a clone checks
+the files out. For that reason `cs` refuses to open a session, `cs -adopt` refuses a project, and
+`cs <base>@<task>` refuses a feature checkout while git tracks a file under
+`.cs/local` or in the directory `.cs/private` resolves to. The error names the file
+and the command that untracks it. The hooks cover a session that is already open:
+see [How a hook finds its session](hooks.md#how-a-hook-finds-its-session-cs-resolvesh).
+
 | File | Purpose |
 |------|---------|
 | `session.log` | Human-readable audit trail — session lifecycle, tool failures, autosave notes, UUID rebinds. Per-checkout by nature; the shared structured record is `timeline.jsonl`. |
