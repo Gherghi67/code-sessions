@@ -178,8 +178,10 @@ code-sessions left the same thing alone, and keeps what code-sessions changed:
   reported once per change on the original's side.
 - Files: one the original changed is copied where the copy did not change it,
   and a file the original deleted is deleted in the copy. A file changed on
-  both sides keeps the copy's and is reported once. `.cs/local/state` is
-  merged key by key.
+  both sides keeps the copy's and is reported once per change on the
+  original's side. A file the copy changed stays the copy's until both sides
+  hold the same content again, so a later change in the original is reported
+  rather than copied over it. `.cs/local/state` is merged key by key.
 - Features the original started since are copied, unless their branch is
   checked out in the copy already or their commit is on no branch the copy's
   repository has; one the original finished stays in the copy, and one whose
@@ -237,8 +239,9 @@ keeps working. When cs already has a session of that name, the code-sessions
 one arrives as `<name>-ccs`; `--rename OLD=NEW` picks another name and
 `--session NAME` copies one session. A rerun brings over what code-sessions
 changed since, by the same rules as above with the sides swapped: what cs
-changed in its copy is kept, and something changed on both sides keeps cs's and
-is reported once. A copy cs removed is not made again. The record of the last
+changed in its copy is kept until both sides hold the same content again, and
+something changed on both sides keeps cs's and is reported once per change in
+code-sessions. A copy cs removed is not made again. The record of the last
 sync lives in `~/.claude-sessions/.code-sessions-to-cs/`. A copy made before
 this record existed is named and left; move it aside and rerun.
 

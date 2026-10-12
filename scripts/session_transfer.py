@@ -294,7 +294,10 @@ def copy_secret(get_command, get_env, set_command, set_env):
 # manager writes into the other's folders) and keeps a record of the last
 # sync beside the receiving side. A rerun brings over what the source changed
 # since: a file changed only there is copied, one changed only in the copy is
-# kept, and one changed on both sides keeps the copy's and is reported, once.
+# kept, and one changed on both sides keeps the copy's and is reported once
+# per change in the source. A file the copy kept stays kept until the two
+# sides hold the same content again, so a later change in the source counts
+# as a change on both sides.
 # Files are told apart by their inode change time (ctime), which nothing but
 # the kernel sets: each side has a mark, taken before that side is read, and
 # a file whose ctime is past its side's mark changed since. The copy's own
@@ -534,6 +537,7 @@ class FileSync:
         self.paths = set()
         self.written = {}       # path -> ctime of what this sync wrote there
         self.state = None       # the source's state, the next merge's base
+        self.held = set()       # paths whose copy is kept until the two sides agree again
 
 
 def _inside(rel, folder):
@@ -546,9 +550,10 @@ def sync_files(src, dst, mark, apply, rewrites=None, relink=None, only=None, pin
 
     mark holds the last sync: since ({folder: [src mark, dst mark]}, "" for
     the whole tree; the latest that holds a path counts), written (path ->
-    ctime of the copy's own last writes), paths (on both sides then) and
-    state (src's .cs/local/state then). Each side's mark must have been taken
-    before that side was read. rewrites maps a path to a function of its
+    ctime of the copy's own last writes), paths (on both sides then), held
+    (paths whose copy was kept against src's) and state (src's
+    .cs/local/state then). Each side's mark must have been taken before that
+    side was read. rewrites maps a path to a function of its
     bytes giving what the copy should hold, or None to copy it as is; relink
     places absolute link targets. With only, just that folder is synced.
     """
@@ -557,6 +562,7 @@ def sync_files(src, dst, mark, apply, rewrites=None, relink=None, only=None, pin
     known = mark["paths"]
     since = mark.get("since") or {"": [0, 0]}
     written = mark.get("written") or {}
+    held = set(mark.get("held") or ())
     out.paths = {p for p in known if not _inside(p, only)}
     blind = []
     s_files = dict(_walk(src, only, unreadable=blind))
@@ -600,7 +606,8 @@ def sync_files(src, dst, mark, apply, rewrites=None, relink=None, only=None, pin
         s, d = s_files.get(rel), d_files.get(rel)
         s_since, d_since = marks(rel)
         s_new = s is not None and s.st_ctime_ns > s_since
-        d_new = d is not None and d.st_ctime_ns > d_since and written.get(rel) != d.st_ctime_ns
+        d_changed = d is not None and d.st_ctime_ns > d_since and written.get(rel) != d.st_ctime_ns
+        d_new = d_changed or (d is not None and rel in held)
         was = rel in known
         sp, dp = os.path.join(src, rel), os.path.join(dst, rel)
         try:
@@ -620,17 +627,20 @@ def sync_files(src, dst, mark, apply, rewrites=None, relink=None, only=None, pin
                     elif d_new:
                         out.kept += 1
                     continue
-                if not s_new:
-                    out.kept += d_new
-                    continue
                 data = (rewrites[rel](_read_bytes(sp))
                         if rel in rewrites and stat.S_ISREG(s.st_mode) else None)
+                if not s_new:
+                    out.kept += d_changed
+                    if d_new and not _same(sp, dp, s, d, data, relink):
+                        out.held.add(rel)
+                    continue
                 if was and not d_new:
                     if not _same(sp, dp, s, d, data, relink):
                         out.copied += 1
                         if apply and unchanged_since_read(rel, d):
                             attempt(rel, _put, sp, dp, data, relink, tmp_suffix)
                 elif not _same(sp, dp, s, d, data, relink):
+                    out.held.add(rel)
                     out.conflicts.append((rel, "changed on both sides" if was else "added on both sides"))
             elif s is not None:
                 if was:
@@ -1062,7 +1072,7 @@ class Syncer:
         # Each side's mark is taken before that side is read.
         since = mark_now()
         last = {"paths": record.paths(name), "since": mark.get("since"), "written": record.written(name),
-                "state": mark.get("state")}
+                "state": mark.get("state"), "held": mark.get("held")}
         result = sync_files(src, dst, last, self.apply, rewrites=rewrites, relink=relink, only=only,
                             pinned=pinned, tmp_suffix=self.tmp_suffix)
         if self.apply:
@@ -1074,6 +1084,7 @@ class Syncer:
                 written = dict(record.written(name))
                 written.update(result.written)
                 record.set_paths(name, result.paths, written)
+                mark["held"] = sorted(set(mark.get("held") or ()) | result.held)
             else:
                 marks = dict(mark.get("since") or {})
                 if only:
@@ -1083,7 +1094,8 @@ class Syncer:
                 written = {p: c for p, c in record.written(name).items() if only and not _inside(p, only)}
                 written.update(result.written)
                 record.set_paths(name, result.paths, written)
-                mark.update(since=marks, state=result.state)
+                held = {p for p in mark.get("held") or () if only and not _inside(p, only)}
+                mark.update(since=marks, state=result.state, held=sorted(held | result.held))
         parts = []
         if result.copied:
             parts.append("%d %s from %s" % (result.copied, "copied" if self.apply else "to copy", self.src))

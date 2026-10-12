@@ -475,6 +475,69 @@ test_git_moved_on_both_sides_is_left_and_reported_once() {
     assert_file_not_exists "$wap/gone.txt" "the path record lost what lies outside .cs/"
 }
 
+# A file code-sessions kept, changed there only or on both sides, stays code-sessions's
+# when cs changes it again later, until the two sides hold the same content.
+test_a_file_code_sessions_kept_stays_kept_when_cs_changes_it_later() {
+    make_fixture
+    printf 'old\n' > "$PROJECT/both.md"
+    # Past the marks' 2 s margin, so the first rerun sees cs's files as unchanged.
+    sleep 2.1
+    run_move --session wap --apply || { echo "$OUT"; return 1; }
+    local wap status=0
+    wap=$(ccs_dir wap)
+    printf 'code-sessions edit\n' > "$wap/app.js"
+    printf 'code-sessions both\n' > "$wap/both.md"
+    printf 'cs both\n' > "$PROJECT/both.md"
+    # Past the marks' 2 s margin, so the next run is the last to see these edits as new.
+    sleep 2.1
+    run_move --session wap --apply || status=$?
+    assert_eq 1 "$status" || { echo "$OUT"; return 1; }
+    assert_output_contains "$OUT" 'wap: files: 1 changed in code-sessions only, kept' || return 1
+    assert_output_contains "$OUT" "wap: kept code-sessions's both.md (changed on both sides)" || return 1
+
+    printf 'later cs edit\n' > "$PROJECT/app.js"
+    printf 'later cs both\n' > "$PROJECT/both.md"
+    status=0
+    run_move --session wap --apply || status=$?
+    assert_eq 1 "$status" "a later cs change overwrote what code-sessions kept" || { echo "$OUT"; return 1; }
+    assert_output_contains "$OUT" "wap: kept code-sessions's app.js (changed on both sides)" || return 1
+    assert_output_contains "$OUT" "wap: kept code-sessions's both.md (changed on both sides)" || return 1
+    assert_file_contains "$wap/app.js" '^code-sessions edit$' || return 1
+    assert_file_contains "$wap/both.md" '^code-sessions both$' || return 1
+
+    # Once both sides agree, the next cs change comes over again.
+    cp "$wap/app.js" "$PROJECT/app.js"
+    cp "$wap/both.md" "$PROJECT/both.md"
+    run_move --session wap --apply || { echo "$OUT"; return 1; }
+    assert_output_not_contains "$OUT" 'app.js' || return 1
+    assert_output_not_contains "$OUT" 'both.md' || return 1
+    printf 'after\n' > "$PROJECT/app.js"
+    printf 'after both\n' > "$PROJECT/both.md"
+    run_move --session wap --apply || { echo "$OUT"; return 1; }
+    assert_file_contains "$wap/app.js" '^after$' || return 1
+    assert_file_contains "$wap/both.md" '^after both$'
+}
+
+# A file code-sessions changed and then changed back to cs's content is no longer kept.
+test_a_file_code_sessions_changed_back_is_no_longer_kept() {
+    make_fixture
+    # Past the marks' 2 s margin before each run that must not see the edit before it as new.
+    sleep 2.1
+    run_move --session wap --apply || { echo "$OUT"; return 1; }
+    local wap
+    wap=$(ccs_dir wap)
+    printf 'code-sessions edit\n' > "$wap/app.js"
+    sleep 2.1
+    run_move --session wap --apply || { echo "$OUT"; return 1; }
+    cp "$PROJECT/app.js" "$wap/app.js"
+    sleep 2.1
+    run_move --session wap --apply || { echo "$OUT"; return 1; }
+    printf 'later cs edit\n' > "$PROJECT/app.js"
+    run_move --session wap --apply || { echo "$OUT"; return 1; }
+    assert_output_not_contains "$OUT" 'app.js' "a file changed back to cs's content was still kept" || return 1
+    assert_file_contains "$wap/app.js" '^later cs edit$'
+}
+
 test_features_cs_starts_or_ends_and_code_sessions_removes() {
     make_fixture
     run_move --session wap --apply || { echo "$OUT"; return 1; }
@@ -657,6 +720,8 @@ run_test test_dry_run_changes_nothing
 run_test test_apply_copies_the_session_and_leaves_cs_as_it_is
 run_test test_rerun_brings_over_what_cs_changed_and_keeps_what_code_sessions_changed
 run_test test_git_moved_on_both_sides_is_left_and_reported_once
+run_test test_a_file_code_sessions_kept_stays_kept_when_cs_changes_it_later
+run_test test_a_file_code_sessions_changed_back_is_no_longer_kept
 run_test test_features_cs_starts_or_ends_and_code_sessions_removes
 run_test test_a_lost_record_stops_the_sync
 run_test test_a_session_open_in_cs_is_named_and_still_copied

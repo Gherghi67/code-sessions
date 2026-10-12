@@ -296,6 +296,30 @@ test_rerun_brings_over_only_what_grew() {
     assert_output_not_contains "$OUT" 'README.md' "a file kept on both sides was reported twice"
 }
 
+# A file cs changed and kept stays cs's when code-sessions changes it later, until the two agree.
+test_a_file_cs_kept_stays_kept_when_code_sessions_changes_it_later() {
+    make_fixture
+    printf 'old\n' > "$ALPHA/.cs/notes.md"
+    # Past the marks' 2 s margin before each run that must not see the edit before it as new.
+    sleep 2.1
+    run_copy --apply || { echo "$OUT"; return 1; }
+    local status=0
+    printf 'cs edit\n' > "$CSROOT/alpha-ccs/.cs/notes.md"
+    sleep 2.1
+    run_copy --apply || { echo "$OUT"; return 1; }
+    assert_output_contains "$OUT" 'alpha-ccs: files: 1 changed in cs only, kept' || return 1
+    printf 'later code-sessions edit\n' > "$ALPHA/.cs/notes.md"
+    run_copy --apply || status=$?
+    assert_eq 1 "$status" "a later code-sessions change overwrote what cs kept" || { echo "$OUT"; return 1; }
+    assert_output_contains "$OUT" "alpha-ccs: kept cs's .cs/notes.md (changed on both sides)" || return 1
+    assert_file_contains "$CSROOT/alpha-ccs/.cs/notes.md" '^cs edit$' || return 1
+    cp "$CSROOT/alpha-ccs/.cs/notes.md" "$ALPHA/.cs/notes.md"
+    run_copy --apply || { echo "$OUT"; return 1; }
+    printf 'after\n' > "$ALPHA/.cs/notes.md"
+    run_copy --apply || { echo "$OUT"; return 1; }
+    assert_file_contains "$CSROOT/alpha-ccs/.cs/notes.md" '^after$'
+}
+
 test_a_secret_cs_already_has_is_kept() {
     make_fixture
     mkdir -p "$STUB_STORE/beta"
@@ -465,6 +489,7 @@ test_a_code_sessions_environment_does_not_redirect_the_copy() {
 run_test test_dry_run_changes_nothing
 run_test test_apply_copies_sessions_conversations_and_secrets
 run_test test_rerun_brings_over_only_what_grew
+run_test test_a_file_cs_kept_stays_kept_when_code_sessions_changes_it_later
 run_test test_a_secret_cs_already_has_is_kept
 run_test test_open_encrypted_and_orphaned_sessions_stay_behind_with_a_reason
 run_test test_a_failure_in_one_session_leaves_the_others_to_copy

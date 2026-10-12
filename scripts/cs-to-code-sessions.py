@@ -33,8 +33,9 @@ A rerun brings over what cs changed since the last one, wherever code-sessions l
 the same thing alone: branches cs moved (fetched into the copy, also as
 refs/remotes/cs/*), a worktree's HEAD and index, files, keys of
 .cs/local/state, conversations, and features cs started. What code-sessions changed is
-kept; something changed on both sides keeps code-sessions's and is reported, once. A
-secret whose value differs is reported, never overwritten.
+kept until both sides hold the same content again; something changed on both sides
+keeps code-sessions's and is reported once per change in cs. A secret whose value
+differs is reported, never overwritten.
 
 Nothing outside the profile is written: ~/.claude-sessions, the project and
 its feature folders, ~/.claude, ~/.claude.json, ~/.codex and the keychain are

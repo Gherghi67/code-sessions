@@ -26,9 +26,10 @@ working. When cs already has a session of that name, the code-sessions one arriv
 <name>-ccs, or under the name --rename gives it. A rerun brings over what code-sessions
 changed since, wherever cs left the same thing alone: branches (fetched into
 the copy, also as refs/remotes/code-sessions/*), a worktree's HEAD and index, files and
-conversations. What cs changed in its copy is kept; something changed on both
-sides keeps cs's and is reported, once. The record of the last sync lives in
-cs's sessions root, under .code-sessions-to-cs/.
+conversations. What cs changed in its copy is kept until both sides hold the
+same content again; something changed on both sides keeps cs's and is
+reported once per change in code-sessions. The record of the last sync lives
+in cs's sessions root, under .code-sessions-to-cs/.
 
 Left behind, and said so: a session open in code-sessions (close it, then rerun), an
 encrypted session (its vault opens only with its password and links into the
