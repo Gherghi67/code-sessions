@@ -137,6 +137,13 @@ adopt_session() {  # name, [--yes|-y], in any order
         error "$target_dir is a linked git worktree. For Claude Code's worktrees run cs -adopt --worktrees from the repo; plain cs -adopt would commit into this branch."
     fi
 
+    # Adopt appends to .gitignore, .gitattributes and CLAUDE.local.md and
+    # writes under .cs, and a cloned project can commit any of those as a
+    # link out of the checkout, or commit per-actor state. The open refuses
+    # all of it; asked here, before the first write, so nothing lands behind
+    # a link and no session is linked that cannot open.
+    cs_assert_local_untracked "$target_dir"
+
     # A .cs/ directory with no session link is orphaned: `cs -rm`/the TUI's `d`
     # only ever remove the symlink, by design, so records survive a removal —
     # but re-adopting under the right name used to hit a flat "already a cs

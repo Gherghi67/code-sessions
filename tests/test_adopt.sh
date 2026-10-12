@@ -372,9 +372,13 @@ test_adopt_refuses_a_committed_link_it_would_write_through() {
         mkdir -p "$project_dir"
         printf 'a file that is not the project'"'"'s\n' > "$outside"
         before=$(cksum < "$outside")
+        # git warns that it will not read a linked .gitignore; the commit is
+        # checked instead of its stderr.
         ( cd "$project_dir" && git init -q && git config user.email jane.roe@example.com \
             && git config user.name "Jane Roe" && ln -s "../outside-$name" "$name" \
-            && git add -A && git commit -q -m "a project with a committed link" )
+            && git add -A 2>/dev/null && git commit -q -m "a project with a committed link" 2>/dev/null )
+        assert_eq "120000" "$(git -C "$project_dir" ls-files -s -- "$name" 2>/dev/null | cut -d' ' -f1)" \
+            "the fixture commits $name as a link" || return 1
 
         rc=0
         out=$(cd "$project_dir" && "$CS_BIN" -adopt "linked" </dev/null 2>&1) || rc=$?
