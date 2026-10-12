@@ -104,11 +104,23 @@ cs_resolve_session() {  # [hook_input_json]
 # notice. Not exported: the answer is this hook run's, asked again by the next,
 # and cs-shared.sh drops an inherited one as it loads. A hook that sources no
 # cs-shared.sh reads none of those files.
+#
+# The status line cannot ask git on every render, so the answer is also left
+# for it as a mark, ~/.cache/cs/tracked/<session name>, present while git
+# tracks the files and removed by the first run that finds them untracked.
 _cs_note_tracked_files() {
     command -v cs_files_tracked_notice >/dev/null 2>&1 || return 0
+    local mark=""
+    case "${CLAUDE_SESSION_NAME:-}" in
+        ''|*/*) ;;
+        *) [ -z "${HOME:-}" ] || mark="$HOME/.cache/cs/tracked/$CLAUDE_SESSION_NAME" ;;
+    esac
     # shellcheck disable=SC2034  # read by cs_private_dir (cs-shared.sh) and the Stop hook
     if CS_TRACKED_FILES_NOTICE=$(cs_files_tracked_notice "$CLAUDE_SESSION_META_DIR" "$CLAUDE_SESSION_DIR"); then
         CS_TRACKED_FILES_META="$CLAUDE_SESSION_META_DIR"
+        [ -z "$mark" ] || [ -e "$mark" ] || { mkdir -p "${mark%/*}" && : > "$mark"; } 2>/dev/null || true
+    else
+        [ -z "$mark" ] || [ ! -e "$mark" ] || rm -f "$mark" 2>/dev/null || true
     fi
     return 0
 }

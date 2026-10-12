@@ -1207,9 +1207,9 @@ CS_KNOWN_SHA256=(
 CS_PAYLOAD_SHA256=(
     "6ce5851b66b9741eb0d946a3ea4e58e660a989414ae15ca55d3330c9dc75b3ba  bin/cs"
     "21bb234814840702741e4b08a2af1eda6289856a340a0cbdb0659bbca3716955  bin/cs-secrets"
-    "218445530b4e201f65870c91c126ecfe6d7732b5796d6cf9df01b544b942cad5  bin/cs-statusline"
+    "f5c5600a9e08e623881893c5ca4f8e06d64adc5da414fbc0ad2166b6adea8775  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
-    "2c7d3d55501f8b029b2676ad6fdccea3da7863ac697e38249fa47283e959809c  hooks/cs-resolve.sh"
+    "17637559ff639533272988e354554328dfcc0d3898a8800ce2717f0b777fe058  hooks/cs-resolve.sh"
     "08175d16fe9c0199ecd78ebaab7ac314494287c1daea2ef0a135e52a4f57afa4  hooks/cs-shared.sh"
     "50d63ce0995e68fddd8503700c15f9585d11938c9cd3872a883146de7707c765  hooks/cs-iterm-tab.py"
     "5ba5d967c2f5b8949847195fe928af2dd6c41c1ab502cb74f9deb0d3af842de9  hooks/memory-index-guard.sh"
