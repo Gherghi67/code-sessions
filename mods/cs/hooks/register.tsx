@@ -315,6 +315,9 @@ export function register(on: On) {
   // not done with: the countdown stops and the prompt goes through untouched.
   on('prompt.submit', async ($, e, next) => {
     if (ticker) stopCountdown($)
+    // A new turn asks afresh, as the Stop hook says it afresh each turn: the
+    // band draws the handoff again, and its press asks cs before it clears.
+    lastRefusal = undefined
     return next(e)
   })
 
