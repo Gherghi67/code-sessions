@@ -9,6 +9,16 @@ _vet_named_session() {  # session_dir
     cs_assert_local_untracked "$1"
 }
 
+# cs -queue and cs -msg run inside a session read the queue and the mailbox of
+# the session the environment names, the same files the hooks stand down
+# from while git tracks one of them; the open's refusals run here first.
+_vet_current_session() {
+    local dir="${CLAUDE_SESSION_DIR:-}"
+    [ -n "$dir" ] || dir="${CLAUDE_SESSION_META_DIR%/.cs}"
+    [ -n "$dir" ] || return 0
+    _vet_named_session "$dir"
+}
+
 main() {
     # cs IS the launch, and the hooks read that from the ABSENCE of this marker
     # (hooks/cs-resolve.sh preserves an inherited value rather than setting
@@ -149,11 +159,13 @@ main() {
             ;;
         -queue)
             shift
+            _vet_current_session
             run_queue "$@"
             return 0
             ;;
         -msg)
             shift
+            _vet_current_session
             run_mail "$@"
             return 0
             ;;

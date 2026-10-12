@@ -117,21 +117,26 @@ _cs_git_at() {  # dir, git arguments...
 # <session_dir> is the session as its caller names it, printed in place of
 # the repository's own path when the two are one directory. The repository
 # chose the directory's name and the user is asked to run the command, so the
-# path is quoted for the shell and the commit message keeps only characters
-# that mean nothing to one.
+# path is quoted for the shell and taken literally by git (a directory named
+# "*" would otherwise untrack every file), the commit runs in the same
+# repository wherever the command is pasted, and the commit message keeps only
+# characters that mean nothing to a shell.
 cs_tracked_files_notice() {  # dir, session_dir
     local real tracked top sub said
-    real=$(cd -P "$1" 2>/dev/null && pwd -P) || return 1
+    # The x keeps a trailing newline in the directory's name that $( ) drops.
+    real=$(cd -P "$1" 2>/dev/null && pwd -P && printf x) || return 1
+    real=${real%$'\n'x}
     tracked=$(_cs_git_at "$real" ls-files --full-name 2>/dev/null | sed -n 1p) || return 1
     [ -n "$tracked" ] || return 1
     top=$(_cs_git_at "$real" rev-parse --show-toplevel 2>/dev/null) || return 1
     [ ! "$top" -ef "$2" ] || top="$2"
-    sub=$(_cs_git_at "$real" rev-parse --show-prefix 2>/dev/null) || return 1
+    sub=$(_cs_git_at "$real" rev-parse --show-prefix 2>/dev/null && printf x) || return 1
+    sub=${sub%$'\n'x}
     sub=${sub%/}
     sub=${sub:-.}
     said=$(printf '%s' "$sub" | LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_') || return 1
-    printf "%s is tracked in git (per-actor state must stay local). Fix with: git -C \"%s\" rm -r --cached %q && git commit -m 'stop tracking %s'\n" \
-        "$tracked" "$top" "$sub" "$said"
+    printf "%s is tracked in git (per-actor state must stay local). Fix with: git -C \"%s\" --literal-pathspecs rm -r --cached -- %q && git -C \"%s\" commit -m 'stop tracking %s'\n" \
+        "$tracked" "$top" "$sub" "$top" "$said"
 }
 
 # The same, for the directory that holds a session's cs content files:
