@@ -1017,7 +1017,7 @@ test_reading_mail_git_tracks_is_refused() {
     out=$(_as_receiver -msg 2>&1) || rc=$?
 
     assert_eq "1" "$rc" "cs -msg refuses" || return 1
-    assert_eq "Error: $first is tracked in git (per-actor state must stay local). Fix with: git -C \"$root\" rm -r --cached .cs/local && git commit -m 'stop tracking .cs/local'" \
+    assert_eq "Error: $first is tracked in git (per-actor state must stay local). Fix with: git -C $root --literal-pathspecs rm -r --cached -- .cs/local && git -C $root commit -m 'stop tracking .cs/local'" \
         "$out" "the refusal names the tracked message" || return 1
     assert_eq "1" "$(find "$root/.cs/local/mail/new" -name '*.json' | grep -c .)" "the message is not moved" || return 1
 }

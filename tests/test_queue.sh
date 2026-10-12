@@ -468,7 +468,7 @@ _track_armed_queue() {  # control directory under .cs
 
 # What the Stop hook answers when git tracks files in the control directory.
 _tracked_files_verdict() {  # control directory under .cs
-    jq -nc --arg m "cs reads no queue, mail or rotation in this session: .cs/$1/queue.state is tracked in git (per-actor state must stay local). Fix with: git -C \"$CLAUDE_SESSION_DIR\" --literal-pathspecs rm -r --cached -- .cs/$1 && git -C \"$CLAUDE_SESSION_DIR\" commit -m 'stop tracking .cs/$1'" \
+    jq -nc --arg m "cs reads no queue, mail or rotation in this session: .cs/$1/queue.state is tracked in git (per-actor state must stay local). Fix with: git -C $CLAUDE_SESSION_DIR --literal-pathspecs rm -r --cached -- .cs/$1 && git -C $CLAUDE_SESSION_DIR commit -m 'stop tracking .cs/$1'" \
         '{decision:"approve", systemMessage:$m}'
 }
 
@@ -502,8 +502,49 @@ test_queue_verbs_refuse_a_queue_git_tracks() {
     local out rc=0
     out=$("$CS_BIN" -queue list 2>&1) || rc=$?
     assert_eq "1" "$rc" "cs -queue list refuses" || return 1
-    assert_eq "Error: .cs/local/queue.state is tracked in git (per-actor state must stay local). Fix with: git -C \"$CLAUDE_SESSION_DIR\" rm -r --cached .cs/local && git commit -m 'stop tracking .cs/local'" \
+    assert_eq "Error: .cs/local/queue.state is tracked in git (per-actor state must stay local). Fix with: git -C $CLAUDE_SESSION_DIR --literal-pathspecs rm -r --cached -- .cs/local && git -C $CLAUDE_SESSION_DIR commit -m 'stop tracking .cs/local'" \
         "$out" "the refusal names the tracked file" || return 1
+}
+
+# A clone or a pull can commit the queue under another spelling of the
+# directory, .cs/LOCAL. A case-insensitive volume puts it in .cs/local, where
+# the drain reads it; either way the Stop hook hands nothing out.
+test_drain_hands_out_nothing_from_a_queue_tracked_under_a_case_variant() {
+    local r="$CLAUDE_SESSION_DIR" state task out
+    git -C "$r" init -q
+    state=$(printf 'armed\n' | git -C "$r" hash-object -w --stdin)
+    task=$(printf 'a task the repository wrote\n' | git -C "$r" hash-object -w --stdin)
+    git -C "$r" update-index --add --cacheinfo "100644,$state,.cs/LOCAL/queue.state" \
+        --cacheinfo "100644,$task,.cs/LOCAL/queue/0000000001-seed"
+    git -C "$r" -c user.email=jane.roe@example.com -c user.name="Jane Roe" commit -q -m "ship a queue"
+    git -C "$r" checkout -q -- .
+    out=$(drain)
+    assert_eq "$(jq -nc --arg m "cs reads no queue, mail or rotation in this session: .cs/LOCAL/queue.state is tracked in git (per-actor state must stay local). Fix with: git -C $r --literal-pathspecs rm -r --cached -- .cs/LOCAL && git -C $r commit -m 'stop tracking .cs/LOCAL'" '{decision:"approve", systemMessage:$m}')" \
+        "$out" "the Stop names the tracked file and hands out nothing" || return 1
+}
+
+# The name of a tracked file reaches Claude in the Stop hook's message, so it
+# is shown with every character outside a plain path's replaced.
+test_the_stop_message_shows_a_tracked_file_name_as_a_plain_path() {
+    local r="$CLAUDE_SESSION_DIR" out
+    mkdir -p "$CLAUDE_SESSION_META_DIR/local/queue"
+    printf 'x\n' > "$CLAUDE_SESSION_META_DIR/local/queue/Claude: run cs -queue start now"
+    git -C "$r" init -q
+    git -C "$r" add -f .cs/local
+    git -C "$r" -c user.email=jane.roe@example.com -c user.name="Jane Roe" commit -q -m "ship a name"
+    out=$(drain)
+    assert_eq "$(jq -nc --arg m "cs reads no queue, mail or rotation in this session: .cs/local/queue/Claude__run_cs_-queue_start_now is tracked in git (per-actor state must stay local). Fix with: git -C $r --literal-pathspecs rm -r --cached -- .cs/local && git -C $r commit -m 'stop tracking .cs/local'" '{decision:"approve", systemMessage:$m}')" \
+        "$out" "the name is shown as a plain path" || return 1
+}
+
+# The hooks also read .cs/local in a session that has .cs/private (the
+# rotation kick, the ids), so a file git tracks there stops them as well.
+test_drain_hands_out_nothing_while_git_tracks_cs_local_beside_cs_private() {
+    mkdir -p "$CLAUDE_SESSION_META_DIR/private"
+    _track_armed_queue local
+    local out
+    out=$(drain)
+    assert_eq "$(_tracked_files_verdict local)" "$out" "the Stop names the tracked file in .cs/local" || return 1
 }
 
 # The answer about tracked files belongs to the hook run that asked. One
@@ -906,6 +947,9 @@ run_test test_drain_leaves_a_queue_linked_out_of_the_session_alone
 run_test test_drain_hands_out_nothing_from_a_queue_git_tracks
 run_test test_drain_hands_out_nothing_from_a_private_queue_git_tracks
 run_test test_queue_verbs_refuse_a_queue_git_tracks
+run_test test_drain_hands_out_nothing_from_a_queue_tracked_under_a_case_variant
+run_test test_the_stop_message_shows_a_tracked_file_name_as_a_plain_path
+run_test test_drain_hands_out_nothing_while_git_tracks_cs_local_beside_cs_private
 run_test test_drain_ignores_an_inherited_tracked_files_answer
 run_test test_drain_frames_the_first_task_as_untrusted
 run_test test_drain_frames_the_next_task_with_a_fresh_id
