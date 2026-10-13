@@ -4168,6 +4168,51 @@ mod tests {
         std::fs::remove_dir_all(&tmp).ok();
     }
 
+    // A spawn file the undo cannot move back is named in the status: the
+    // refused rename otherwise reads as undone whole while the seed sits
+    // under the new name. Here a seed staged under the old name while the
+    // secrets move ran blocks the move back.
+    #[cfg(unix)]
+    #[test]
+    fn a_rename_undo_names_a_spawn_file_it_cannot_move_back() {
+        use crate::session::test_root;
+        use std::os::unix::fs::PermissionsExt;
+        let _env = CS_BIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (tmp, root, home) = rename_fixture("spawn-undo", true);
+        std::fs::create_dir_all(root.join(".spawn")).unwrap();
+        std::fs::write(root.join(".spawn/proj.seed"), "task\n").unwrap();
+        std::fs::write(
+            tmp.join("cs-stub"),
+            format!(
+                "#!/bin/sh\nprintf 'other\\n' > '{}'\necho 'Error: refused by the stand-in' >&2\nexit 1\n",
+                root.join(".spawn/proj.seed").display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(tmp.join("cs-stub"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        std::env::set_var("CS_BIN", tmp.join("cs-stub"));
+        let mut app = app_on(&root, "proj");
+        app.mode = Mode::Rename;
+        app.rename_input.set("proj-old");
+
+        app.execute_rename();
+        std::env::remove_var("CS_BIN");
+
+        assert_eq!(
+            app.status_message.as_ref().map(|m| m.text.clone()),
+            Some(format!(
+                "Rename failed: Error: refused by the stand-in; could not move spawn file {} back to {}: File exists (os error 17)",
+                root.join(".spawn/proj-old.seed").display(),
+                root.join(".spawn/proj.seed").display()
+            ))
+        );
+        assert!(root.join("proj/.cs").is_dir(), "the session keeps its name");
+        assert_eq!(std::fs::read_to_string(root.join(".spawn/proj-old.seed")).unwrap_or_default(), "task\n", "the moved seed is still there");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
     // A move cs-secrets refuses or fails undoes the rename: the session keeps
     // its name, and its transcripts and spawn seed stay where they were.
     #[cfg(unix)]
