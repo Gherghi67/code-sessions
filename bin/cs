@@ -4050,6 +4050,11 @@ $conflicts"
     # .claude/settings.local.json, which git does not carry. They go into the
     # base's before the removal; a removal that then fails leaves them there,
     # and the retry's union changes nothing.
+    local settings
+    for settings in "$wt_dir/.claude/settings.local.json" "$base_dir/.claude/settings.local.json"; do
+        _settings_allow_readable "$settings" \
+            || error "$settings is not valid JSON, or its permissions.allow is not a list, so cs cannot add the feature's permission grants to $base_dir/.claude/settings.local.json. Nothing was removed. Fix it, then run /finish $task again."
+    done
     _carry_permission_grants "$wt_dir" "$base_dir" \
         || error "Could not add the feature's permission grants to $base_dir/.claude/settings.local.json; nothing was removed"
 
@@ -4095,6 +4100,16 @@ $remove_err"
         '{ts: $ts, event: $event, task: $task}'
     _finish_progress_write retired
     printf 'retired %s %s\n' "$task" "$sha"
+}
+
+# Whether _settings_allow_union can read a Claude Code settings file: a
+# missing or zero-byte one reads as {}; any other must be a JSON object whose
+# permissions, when present, is an object and whose permissions.allow, when
+# present, is a list.
+_settings_allow_readable() {  # file
+    [ -s "$1" ] || return 0
+    jq -e 'type == "object" and ((.permissions // {}) | type == "object")
+        and ((.permissions.allow // []) | type == "array")' "$1" >/dev/null 2>&1
 }
 
 # A Claude Code settings file's JSON, or {} for a missing or zero-byte one.
