@@ -915,6 +915,26 @@ test_narrative_budget_reads_any_spelling_of_zero_as_the_default() {
     assert_eq "999999999999999" "$(_narrative_budget 999999999999999 5)" "15 digits is kept" || return 1
 }
 
+# The heading scan runs inside rotate_narrative's command substitution, a
+# forked copy of the shell, and a bash linked against libintl can die when it
+# changes its own locale there. The trace shows every assignment the shell
+# itself made while the scan ran; awk gets its C locale as an argument of env.
+# Offsets are C-locale byte counts: the em dash (\342\200\224) is 3 bytes.
+test_narrative_headings_counts_bytes_and_leaves_the_shells_own_locale_alone() {
+    local b utf8 out own expected
+    utf8="$(utf8_locale)"
+    printf '# T\n\n## a \342\200\224 b\nxx\n## c \342\200\224 d\n' > "$TEST_TMPDIR/headings.md"
+    expected="$(printf '5 ## a \342\200\224 b\n19 ## c \342\200\224 d')"
+    for b in $(every_bash); do
+        out="$(env -i PATH="$PATH" HOME="$HOME" ${utf8:+"LC_ALL=$utf8"} "$b" -c '
+            source "$1"; set -x; _narrative_headings "$2"' x "$SCRIPT_DIR/../lib/51-narrative.sh" \
+            "$TEST_TMPDIR/headings.md" 2>"$TEST_TMPDIR/trace")"
+        assert_eq "$expected" "$out" "$b: each heading at its byte offset" || return 1
+        own="$(shell_locale_assignments "$TEST_TMPDIR/trace")"
+        assert_eq "" "$own" "$b must not assign its own locale inside _narrative_headings" || return 1
+    done
+}
+
 test_named_rotate_refuses_a_dangling_adopted_link() {
     # An adopted session is a symlink into the user's project. When that project
     # moves, the link dangles — a bare -L guard admits it and the failure then
@@ -1065,6 +1085,7 @@ run_test test_named_rotate_usage_names_the_form_the_user_typed
 run_test test_named_rotate_refuses_a_directory_that_is_not_a_session
 run_test test_narrative_budget_is_one_value_in_both_copies
 run_test test_narrative_budget_reads_any_spelling_of_zero_as_the_default
+run_test test_narrative_headings_counts_bytes_and_leaves_the_shells_own_locale_alone
 run_test test_named_rotate_refuses_a_dangling_adopted_link
 run_test test_named_rotate_rejects_an_unknown_subcommand
 run_test test_unknown_session_command_error_lists_narrative

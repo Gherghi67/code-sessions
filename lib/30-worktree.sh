@@ -125,10 +125,10 @@ _worktree_untracked_at_risk() {  # wt_dir
     local listing
     listing=$({ git -C "$1" ls-files -z --others --exclude-standard \
                 && git -C "$1" ls-files -z --others --ignored --exclude-standard; } 2>/dev/null \
-              | LC_ALL=C tr '\n\0' '?\n') || return 1
+              | env LC_ALL=C tr '\n\0' '?\n') || return 1
     [ -n "$listing" ] || return 0
     printf '%s\n' "$listing" \
-        | LC_ALL=C grep -v -e '^\.cs/' -e '^\.claude/settings\.local\.json$' -e '^CLAUDE\.local\.md$' \
+        | env LC_ALL=C grep -v -e '^\.cs/' -e '^\.claude/settings\.local\.json$' -e '^CLAUDE\.local\.md$' \
             -e '^\.DS_Store$' -e '/\.DS_Store$' \
         || [ $? -eq 1 ]
 }

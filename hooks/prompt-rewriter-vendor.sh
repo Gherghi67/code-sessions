@@ -105,8 +105,10 @@ mkdir -p "$_cfg" 2>/dev/null || exit 1
 # A hung rewrite freezes the whole TUI, because Claude Code spawns the editor
 # with spawnSync and stdio:"inherit". perl's alarm bounds it where stock macOS
 # ships neither `timeout` nor `gtimeout`; the pending alarm survives exec and
-# kills the CLI, surfacing as 142 (128 + SIGALRM).
-_limit="${CS_REWRITE_TIMEOUT:-25}"
+# kills the CLI, surfacing as 142 (128 + SIGALRM). The bound is
+# prompt-rewriter.sh's, which checks CS_REWRITE_TIMEOUT once for both its
+# countdown and this; run on its own, this takes the same default.
+_limit="${_CS_REWRITE_LIMIT:-25}"
 
 # stdin carries the prompt, piped in by the caller, and is never the inherited
 # terminal. The prompt stays out of argv, where `ps` shows it to every user on
@@ -278,10 +280,15 @@ case "$_engine" in
         # Go's flag package, which stops parsing at the first positional.
         _args=(--sandbox --input-format stream-json --output-format stream-json)
         [ -n "$_model" ] && _args+=(--model "$_model")
+        # Both jq reads take the whole input with --rawfile: jq 1.7.1's -R
+        # splits a multibyte character 4095 bytes into a line and puts a
+        # replacement character in its place, and a pasted prompt or its
+        # rewrite can run that long on one line.
         out=$(printf '%s\n\n%s' "$_system" "$prompt" \
-            | jq -Rsc '{event: "user", message: {content: .}}' \
+            | jq -cn --rawfile p /dev/stdin '{event: "user", message: {content: $p}}' \
             | _run_cli agy ${_args[@]+"${_args[@]}"} -p= \
-            | jq -rR 'fromjson? | select(.event == "result" and .result.status == "SUCCESS")
+            | jq -rn --rawfile events /dev/stdin '$events | split("\n")[] | fromjson?
+                | select(.event == "result" and .result.status == "SUCCESS")
                 | .result.response // empty') || _rc=$?
         ;;
     codex)

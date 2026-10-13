@@ -296,6 +296,94 @@ test_encrypt_releases_the_lock_under_a_root_with_quotes() {
     [ ! -e "$TEST_TMPDIR/pwned" ] || { echo "  FAIL: the root's \$( ran as code"; return 1; }
 }
 
+# cs -encrypt checks that the session is not live, then takes its lock. An
+# open in another terminal can take the lock between the two. cs -encrypt must
+# then refuse, with nothing written, and leave the open's lock as it is: two
+# processes each holding the session would run claude while the moves run.
+# cs -encrypt is paused after its check by a stand-in awk that waits on a gate
+# file while it reads the session README, and the open takes the lock
+# meanwhile and stays alive, blocked on a fifo, until the asserts are done.
+test_encrypt_refuses_an_open_that_took_the_lock_after_its_check() {
+    _stubs
+    _populated_session enc
+    local meta="$CS_SESSIONS_ROOT/enc/.cs" shim="$TEST_TMPDIR/awkshim" real_awk
+    local paused="$TEST_TMPDIR/awk.paused" gate="$TEST_TMPDIR/awk.gate"
+    local opened="$TEST_TMPDIR/open.ready" fifo="$TEST_TMPDIR/open.fifo"
+    local pid_encrypt pid_open rc=0 i=0 out="$TEST_TMPDIR/encrypt.out"
+    real_awk=$(command -v awk)
+    mkdir -p "$shim"
+    cat > "$shim/awk" <<SHIM
+#!/bin/bash
+case "\$*" in
+    *"/enc/.cs/README.md")
+        if [ ! -e "$paused" ]; then
+            touch "$paused"; until [ -e "$gate" ]; do sleep 0.05; done
+        fi ;;
+esac
+exec "$real_awk" "\$@"
+SHIM
+    chmod +x "$shim/awk"
+    PATH="$shim:$PATH" _encrypt enc >"$out" 2>&1 &
+    pid_encrypt=$!
+    until [ -e "$paused" ] || [ "$i" -ge 200 ]; do sleep 0.05; i=$((i + 1)); done
+    assert_file_exists "$paused" "cs -encrypt reached its README read after the live check" \
+        || { touch "$gate"; wait "$pid_encrypt"; return 1; }
+    mkfifo "$fifo"
+    LOCK_LIB="$SCRIPT_DIR/../lib" LOCK_META="$meta" READY="$opened" FIFO="$fifo" bash -c '
+        . "$LOCK_LIB/05-term.sh"
+        . "$LOCK_LIB/02-shared.sh"
+        . "$LOCK_LIB/15-lock.sh"
+        cs_interactive() { return 1; }
+        acquire_session_lock "$LOCK_META" "" enc >/dev/null 2>&1 || exit 1
+        : > "$READY"
+        read -r _ <> "$FIFO"
+    ' &
+    pid_open=$!
+    i=0
+    until [ -e "$opened" ] || [ "$i" -ge 100 ]; do sleep 0.05; i=$((i + 1)); done
+    assert_file_exists "$opened" "the open took the session lock" \
+        || { touch "$gate"; wait "$pid_encrypt"; kill "$pid_open" 2>/dev/null; wait "$pid_open"; return 1; }
+    touch "$gate"
+    wait "$pid_encrypt" || rc=$?
+    local lock_now
+    lock_now=$(cat "$meta/session.lock" 2>/dev/null)
+    kill "$pid_open" 2>/dev/null; wait "$pid_open" 2>/dev/null
+    assert_eq "1" "$rc" "cs -encrypt refuses" || return 1
+    assert_eq "Error: enc: the session is running; close it, then encrypt." "$(cat "$out")" \
+        "cs -encrypt names the running session" || return 1
+    assert_eq "" "$(cat "$FAKE_HDIUTIL_LOG")" "hdiutil never called" || return 1
+    assert_eq "$pid_open" "$lock_now" "the open still holds the session lock" || return 1
+}
+
+# Start a process that holds <lock file> through _cs_lock until killed, with
+# no child: it blocks in bash's own read on a fifo. Its pid is MUTEX_HOLDER.
+_hold_session_mutex() {  # lock file
+    local ready="$TEST_TMPDIR/mutex.ready" i=0
+    mkfifo "$TEST_TMPDIR/mutex.fifo"
+    bash -c 'source "$1"; _cs_lock "$2" || exit 1; : > "$3"; read -r _ <> "$4"' _ \
+        "$SCRIPT_DIR/../hooks/cs-shared.sh" "$1" "$ready" "$TEST_TMPDIR/mutex.fifo" &
+    MUTEX_HOLDER=$!
+    until [ -e "$ready" ] || [ "$i" -ge 100 ]; do sleep 0.05; i=$((i + 1)); done
+    [ -e "$ready" ] || { echo "  FAIL: the holder never took $1"; return 1; }
+}
+
+# While another cs holds the openers' mutex past its five-second wait, that
+# holder may be between reading a dead pid and removing the lock, so
+# cs -encrypt refuses rather than going on without it, and writes nothing.
+test_encrypt_refuses_while_the_openers_mutex_stays_held() {
+    _stubs
+    _populated_session enc
+    local meta="$CS_SESSIONS_ROOT/enc/.cs" out rc=0
+    _hold_session_mutex "$meta/session.mutex.lock" || return 1
+    out=$(_encrypt enc 2>&1) || rc=$?
+    kill "$MUTEX_HOLDER" 2>/dev/null; wait "$MUTEX_HOLDER" 2>/dev/null
+    assert_eq "1" "$rc" "cs -encrypt refuses" || return 1
+    assert_eq "Error: enc: another cs is opening this session ($meta/session.mutex.lock is held); try again in a moment." "$out" \
+        "cs -encrypt names the held mutex" || return 1
+    [ ! -e "$meta/session.lock" ] || { echo "  FAIL: session.lock written: $(cat "$meta/session.lock")"; return 1; }
+    _assert_nothing_written enc || return 1
+}
+
 test_encrypt_refuses_a_readme_it_cannot_tag() {
     _stubs
     create_test_session enc >/dev/null
@@ -744,6 +832,8 @@ run_test test_encrypt_builds_a_session_never_opened_on_this_machine
 run_test test_encrypt_holds_the_session_lock_while_it_works
 run_test test_encrypt_releases_the_session_lock_when_it_stops
 run_test test_encrypt_releases_the_lock_under_a_root_with_quotes
+run_test test_encrypt_refuses_an_open_that_took_the_lock_after_its_check
+run_test test_encrypt_refuses_while_the_openers_mutex_stays_held
 run_test test_encrypt_refuses_a_readme_it_cannot_tag
 run_test test_encrypt_stops_when_create_fails
 run_test test_encrypt_stops_when_attach_fails

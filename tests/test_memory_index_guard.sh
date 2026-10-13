@@ -259,6 +259,37 @@ test_snapshot_refuses_a_locked_private_dir() {
         "nothing may be copied into .cs/local" || return 1
 }
 
+# The pointers and the entries are compared with comm, which needs them sorted
+# the way it reads them: both sorts and comm get the C locale through env, so
+# the lists come out in byte order (uppercase, then "_", then lowercase) in any
+# caller's locale, and the shell never changes its own locale for them, which
+# can crash a bash linked against libintl in the forked copies they run in.
+test_check_lists_in_byte_order_without_the_shell_assigning_its_own_locale() {
+    local b utf8 out rc own
+    utf8="$(utf8_locale)"
+    _guard_session
+    printf '%s\n' '- [A](project_a.md): a' '- [B](project_B.md): b' '- [C](project__c.md): c' \
+        '- [Keep](feedback_keep.md): kept' > "$INDEX"
+    _guard snapshot > /dev/null || return 1
+    printf '%s\n' '- [Keep](feedback_keep.md): kept' > "$INDEX"
+    : > "$SESSION/.cs/memory/feedback_keep.md"
+    : > "$SESSION/.cs/memory/project_yak.md"
+    : > "$SESSION/.cs/memory/project_Zed.md"
+    for b in $(every_bash); do
+        rc=0
+        out=$(cd "$SESSION" && env ${utf8:+"LC_ALL=$utf8"} "$b" -x "$GUARD" check 2>"$TEST_TMPDIR/trace") || rc=$?
+        assert_eq 1 "$rc" "$b: check fails on the removed and unindexed entries" || return 1
+        assert_eq "removed: project_B.md
+removed: project__c.md
+removed: project_a.md
+unindexed: project_Zed.md
+unindexed: project_yak.md
+MEMORY.md: 33/24400 bytes" "$out" "$b: the report, in byte order" || return 1
+        own="$(shell_locale_assignments "$TEST_TMPDIR/trace")"
+        assert_eq "" "$own" "$b must not assign its own locale during check" || return 1
+    done
+}
+
 run_test test_check_fails_when_a_link_is_removed
 run_test test_check_passes_a_rewrite_that_keeps_every_link_at_the_budget
 run_test test_check_counts_bytes_not_characters
@@ -277,5 +308,6 @@ run_test test_snapshot_outside_a_session_root_is_an_error
 run_test test_check_with_an_unreadable_snapshot_is_an_error
 run_test test_snapshot_goes_into_the_private_dir
 run_test test_snapshot_refuses_a_locked_private_dir
+run_test test_check_lists_in_byte_order_without_the_shell_assigning_its_own_locale
 
 report_results

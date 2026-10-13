@@ -1277,7 +1277,7 @@ _cs_git_complaint() {  # git's error output
     while IFS= read -r line; do
         case "$line" in "fatal: "* | "error: "*) why=$line; break ;; esac
     done <<<"$1"
-    why=$(printf '%s' "$why" | LC_ALL=C tr -c '[:print:]' '?' | cut -c1-200) || why=""
+    why=$(printf '%s' "$why" | env LC_ALL=C tr -c '[:print:]' '?' | cut -c1-200) || why=""
     printf '%s\n' "${why:-git failed}"
 }
 
@@ -1298,8 +1298,8 @@ _cs_git_cannot_answer() {  # dir, git's error output
 # Claude, in the Stop hook's message.
 cs_untrack_notice() {  # tracked, top, sub
     local shown said sub="$3"
-    shown=$(printf '%s' "$1" | LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_' | cut -c1-160) || return 1
-    said=$(printf '%s' "$sub" | LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_') || return 1
+    shown=$(printf '%s' "$1" | env LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_' | cut -c1-160) || return 1
+    said=$(printf '%s' "$sub" | env LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_') || return 1
     case "$sub" in '~'*) sub="./$sub" ;; esac
     printf "%s is tracked in git (per-actor state must stay local). Fix with: git -C %q --literal-pathspecs rm -r --cached -- %q && git -C %q commit -m 'stop tracking %s'\n" \
         "$shown" "$2" "$sub" "$2" "$said"
@@ -1367,7 +1367,7 @@ cs_tracked_files_notice() {  # dir, session_dir
     case "$meta/" in
         "$real"/*)
             printf "%s leads to a directory that holds this session's own files, where git tracks %s (per-actor state must stay local). Make %s a directory of its own.\n" \
-                ".cs/${1##*/}" "$(printf '%s' "$tracked" | LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_' | cut -c1-160)" ".cs/${1##*/}"
+                ".cs/${1##*/}" "$(printf '%s' "$tracked" | env LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_' | cut -c1-160)" ".cs/${1##*/}"
             return 0
             ;;
     esac
@@ -2136,8 +2136,12 @@ _trim() {  # text
 # mail all cross a session boundary — and the reader does not trust the writer.
 # C0 and DEL only: 8-bit C1 (0x80-0x9F, where 0x9B is CSI) is deliberately out
 # of scope, because a UTF-8 terminal does not decode raw C1 bytes as controls.
+# The C locale reaches tr as an argument of env, never as an assignment the
+# shell makes for itself: every caller pipes into this function, so it runs in
+# a forked copy of the shell, and a bash linked against libintl (Homebrew's)
+# can crash when it changes its own locale there.
 _scrub_controls() {
-    LC_ALL=C tr -d '\000-\010\013-\037\177'
+    env LC_ALL=C tr -d '\000-\010\013-\037\177'
 }
 
 # Detect the outer terminal, even when running inside tmux.
@@ -2583,33 +2587,33 @@ _lock_collision_menu() {
     esac
 }
 
-# Acquire a PID-based session lock to prevent concurrent access. The lock is
-# taken by creating the file, which the filesystem does for exactly one
-# process (noclobber: the open fails when the file exists), never by a check
-# followed by a write: two opens started together both saw no lock, both
-# wrote their pid, and both launched a claude on one UUID. A loser reads the
-# winner's pid and takes the live-lock path; a lock whose holder is dead is
-# removed and the create tried again, with a bound so a lock that keeps
-# reappearing cannot spin forever. Creating and reclaiming take turns under
-# the .cs/session.mutex.lock mutex (_cs_lock): an opener that read a dead pid and then removed
-# the file could otherwise delete the live lock another opener had just made
-# in its place, and both would launch. A cs from before that mutex took a
-# session.lock.d directory instead, and the two do not wait on each other: an
-# older opener still between reading a dead pid and removing the file while
-# this version installs could remove a new opener's lock. That window is an
-# update run in the middle of an open; it is accepted and named in the
-# CHANGELOG rather than bridged with the old pid judgement. The mutex is let go before the
-# collision menu, which waits on a person. An opener that cannot take the
-# mutex (another cs still holds it after the wait) refuses rather than going on
-# without it, since that holder may be between reading a dead pid and removing
-# the file. A force (flag or collision menu) replaces the lock outright, as
-# before: that is what force means.
-acquire_session_lock() {
+# Take the PID-based session lock of <meta_dir> to prevent concurrent access.
+# The lock is taken by creating the file, which the filesystem does for
+# exactly one process (noclobber: the open fails when the file exists), never
+# by a check followed by a write: two opens started together both saw no
+# lock, both wrote their pid, and both launched a claude on one UUID. A loser
+# reads the winner's pid and takes the live-lock path; a lock whose holder is
+# dead is removed and the create tried again, with a bound so a lock that
+# keeps reappearing cannot spin forever. Creating and reclaiming take turns
+# under the .cs/session.mutex.lock mutex (_cs_lock): an opener that read a
+# dead pid and then removed the file could otherwise delete the live lock
+# another opener had just made in its place, and both would launch. A cs from
+# before that mutex took a session.lock.d directory instead, and the two do
+# not wait on each other: an older opener still between reading a dead pid
+# and removing the file while this version installs could remove a new
+# opener's lock. That window is an update run in the middle of an open; it is
+# accepted and named in the CHANGELOG rather than bridged with the old pid
+# judgement. A caller that cannot take the mutex (another cs still holds it
+# after the wait) must refuse rather than go on without it, since that holder
+# may be between reading a dead pid and removing the file.
+# Returns 0 holding the lock; 1 when a live process holds it, with its pid in
+# _CS_LOCK_LIVE_PID and the mutex released; 2 when the mutex cannot be taken,
+# with session.lock untouched. Exits when perl is missing or the bound is hit.
+_take_session_lock() {  # meta_dir
     local meta_dir="$1"
-    local force="${2:-}"
-    local session_name="$3"
-    local lock_file="$meta_dir/session.lock"
-    local lock_pid attempt=0 mutex=""
+    local lock_file="$meta_dir/session.lock" mutex="$meta_dir/session.mutex.lock"
+    local lock_pid attempt=0
+    _CS_LOCK_LIVE_PID=""
 
     # Without perl the mutex can never be taken, which is no sign of another
     # opener: say what is missing instead.
@@ -2617,12 +2621,7 @@ acquire_session_lock() {
         echo -e "${RED}Error: cs needs perl to lock this session ($meta_dir); install perl and retry${NC}" >&2
         exit 1
     fi
-    if ! _cs_lock "$meta_dir/session.mutex.lock"; then
-        echo -e "${RED}Error: Another cs is opening this session ($meta_dir/session.mutex.lock is held)${NC}" >&2
-        echo -e "${DIM}Try again in a moment: cs $session_name${NC}" >&2
-        exit 1
-    fi
-    mutex="$meta_dir/session.mutex.lock"
+    _cs_lock "$mutex" || return 2
     while :; do
         if ( set -C; echo "$$" > "$lock_file" ) 2>/dev/null; then
             # Verify: the create was ours only when the file still says so
@@ -2636,24 +2635,10 @@ acquire_session_lock() {
         lock_pid=$(cat "$lock_file" 2>/dev/null || echo "")
 
         if [ -n "$lock_pid" ] && kill -0 "$lock_pid" 2>/dev/null; then
-            _cs_unlock "$mutex"
             # PID is alive — session is in use
-            if [ "$force" = "true" ]; then
-                warn "Overriding active session lock (PID $lock_pid)"
-            elif cs_interactive; then
-                _lock_collision_menu "$session_name" "$lock_pid"
-                # The menu returns only when the user chose force. Record the
-                # choice so the rest of the launch (live-duplicate UUID guard
-                # included) honors it exactly like an explicit --force.
-                CS_COLLISION_FORCE=1
-                warn "Overriding active session lock (PID $lock_pid)"
-            else
-                echo -e "${RED}Error: Session is already open (PID $lock_pid)${NC}" >&2
-                echo -e "${DIM}Use --force to override: cs $session_name --force${NC}" >&2
-                exit 1
-            fi
-            echo "$$" > "$lock_file"
-            return 0
+            _cs_unlock "$mutex"
+            _CS_LOCK_LIVE_PID="$lock_pid"
+            return 1
         fi
 
         if [ "$attempt" -ge 5 ]; then
@@ -2670,17 +2655,84 @@ acquire_session_lock() {
     done
 }
 
-# Release session lock if owned by current process
+# Acquire the session lock for an open, through _take_session_lock. An opener
+# that cannot take the mutex refuses. A live holder meets the collision menu
+# at a terminal, which waits on a person, so the mutex is let go before it. A
+# force (flag or collision menu) replaces the lock outright: that is what
+# force means. It takes the mutex again to write the replacement, since a
+# SessionEnd clearing its own lock reads and removes it under the mutex.
+acquire_session_lock() {
+    local meta_dir="$1"
+    local force="${2:-}"
+    local session_name="$3"
+    local lock_file="$meta_dir/session.lock" mutex="$meta_dir/session.mutex.lock"
+    local lock_pid taken=0
+
+    _take_session_lock "$meta_dir" || taken=$?
+    case "$taken" in
+        0) return 0 ;;
+        1) lock_pid="$_CS_LOCK_LIVE_PID" ;;
+        2)
+            echo -e "${RED}Error: Another cs is opening this session ($mutex is held)${NC}" >&2
+            echo -e "${DIM}Try again in a moment: cs $session_name${NC}" >&2
+            exit 1
+            ;;
+        *) error "_take_session_lock returned $taken for $meta_dir" ;;
+    esac
+
+    if [ "$force" = "true" ]; then
+        warn "Overriding active session lock (PID $lock_pid)"
+    elif cs_interactive; then
+        _lock_collision_menu "$session_name" "$lock_pid"
+        # The menu returns only when the user chose force. Record the
+        # choice so the rest of the launch (live-duplicate UUID guard
+        # included) honors it exactly like an explicit --force.
+        CS_COLLISION_FORCE=1
+        warn "Overriding active session lock (PID $lock_pid)"
+    else
+        echo -e "${RED}Error: Session is already open (PID $lock_pid)${NC}" >&2
+        echo -e "${DIM}Use --force to override: cs $session_name --force${NC}" >&2
+        exit 1
+    fi
+    # The replacement is written under the mutex again: a SessionEnd
+    # that read its own pid while the mutex was free would otherwise
+    # remove this lock right after it is written.
+    if ! _cs_lock "$mutex"; then
+        echo -e "${RED}Error: Another cs is opening this session ($mutex is held)${NC}" >&2
+        echo -e "${DIM}Try again in a moment: cs $session_name --force${NC}" >&2
+        exit 1
+    fi
+    # The lock records one pid. When this forced open ends first, its
+    # exit removes the lock and the other holder runs unprotected;
+    # that is decided, and locks do not record every holder.
+    echo "$$" > "$lock_file"
+    _cs_unlock "$mutex"
+    return 0
+}
+
+# Release session lock if owned by current process. The read of the pid and
+# the removal happen under the openers' mutex (.cs/session.mutex.lock): a
+# forced open that replaced the lock between the two would otherwise have its
+# lock removed here and run on unlocked. This runs from cs's exit traps, so
+# when the mutex cannot be taken for any reason (perl missing, this process
+# already holding another _cs_lock, another cs holding it past the five-second
+# wait) the lock is left as it is, nothing is printed and the status is 0; the
+# lock left behind names a dead pid, and the next open reclaims it. The exit
+# can therefore wait up to five seconds while another cs holds the mutex. Both
+# are decided; do not re-fix.
 release_session_lock() {
     local meta_dir="$1"
     local lock_file="$meta_dir/session.lock"
+    local mutex="$meta_dir/session.mutex.lock"
 
     if [ -f "$lock_file" ]; then
+        _cs_lock "$mutex" 2>/dev/null || return 0
         local lock_pid
         lock_pid=$(cat "$lock_file" 2>/dev/null || echo "")
         if [ "$lock_pid" = "$$" ]; then
             rm -f "$lock_file"
         fi
+        _cs_unlock "$mutex"
     fi
 }
 
@@ -2740,13 +2792,12 @@ session_lock_owned_by_invoker() {  # session_name, lock_pid
         && _pid_is_self_or_ancestor "$2"
 }
 
-# Epoch mtime of a file (BSD/GNU stat), 0 on error. Arg: path.
+# Epoch mtime of a file, 0 on error. Arg: path. GNU stat is asked first, as
+# _cs_file_mode does: BSD stat rejects -c with no output, while GNU stat reads
+# -f as --file-system and prints that, and OSTYPE is no guide to which stat
+# PATH finds (Homebrew's gnubin puts GNU stat on a Mac).
 _epoch_mtime() {  # path
-    if [[ "${OSTYPE:-}" == darwin* ]]; then
-        stat -f %m "$1" 2>/dev/null || echo 0
-    else
-        stat -c %Y "$1" 2>/dev/null || echo 0
-    fi
+    stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0
 }
 
 # How long after the last statusline write a lockless conversation still counts
@@ -3428,10 +3479,10 @@ _worktree_untracked_at_risk() {  # wt_dir
     local listing
     listing=$({ git -C "$1" ls-files -z --others --exclude-standard \
                 && git -C "$1" ls-files -z --others --ignored --exclude-standard; } 2>/dev/null \
-              | LC_ALL=C tr '\n\0' '?\n') || return 1
+              | env LC_ALL=C tr '\n\0' '?\n') || return 1
     [ -n "$listing" ] || return 0
     printf '%s\n' "$listing" \
-        | LC_ALL=C grep -v -e '^\.cs/' -e '^\.claude/settings\.local\.json$' -e '^CLAUDE\.local\.md$' \
+        | env LC_ALL=C grep -v -e '^\.cs/' -e '^\.claude/settings\.local\.json$' -e '^CLAUDE\.local\.md$' \
             -e '^\.DS_Store$' -e '/\.DS_Store$' \
         || [ $? -eq 1 ]
 }
@@ -5176,6 +5227,9 @@ _is_bystander_transcript() {  # transcript_file
     local first
     first=$(grep -m1 '"type":"user"' "$1" 2>/dev/null) || return 1
     case "$first" in
+        # Any first prompt holding the text counts, so discovery and adopt
+        # skip a person's relocated conversation whose prompt quotes it.
+        # Decided; do not re-fix.
         *teammate-message*) return 0 ;;
         *'"entrypoint":"sdk-'*)
             # Any entrypoint value that does not begin `sdk-`.
@@ -5253,11 +5307,11 @@ _worktree_json_path() {  # wt_dir
     printf '%s' "$wt_real" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
-# Whether a transcript in the parent's project dir is the worktree's own
-# conversation, by the checks _discover_worktree_uuid_in describes: the
-# worktree record, a first prompt stamped with the worktree as cwd, and no
-# bystander.
-_is_worktree_own_transcript() {  # transcript_file, wt_json_path
+# Whether a transcript in the parent's project dir is a conversation that
+# began in the worktree: it carries the worktree's record, and its first
+# prompt is stamped with the worktree as cwd. This is the identity a bound
+# conversation is kept by (_relocated_worktree_transcript).
+_is_worktree_started_transcript() {  # transcript_file, wt_json_path
     local first
     # The closing quote pins the whole path: a worktree named `wt` must not
     # claim `wt2`'s conversation.
@@ -5267,7 +5321,13 @@ _is_worktree_own_transcript() {  # transcript_file, wt_json_path
         *"\"cwd\":\"$2\""*) ;;
         *) return 1 ;;
     esac
-    ! _is_bystander_transcript "$1"
+}
+
+# Whether a transcript in the parent's project dir is the worktree's own
+# conversation, by the checks _discover_worktree_uuid_in describes: it began
+# in the worktree, and it is no bystander.
+_is_worktree_own_transcript() {  # transcript_file, wt_json_path
+    _is_worktree_started_transcript "$1" "$2" && ! _is_bystander_transcript "$1"
 }
 
 # The first prompt somebody typed into a conversation, as an Objective line:
@@ -5283,15 +5343,23 @@ _transcript_first_prompt() {  # transcript_file
     local file="$1"
     [ -f "$file" ] || return 0
     command -v jq >/dev/null 2>&1 || return 0
+    # Read whole with --rawfile, not line by line with -R: jq 1.7.1's -R
+    # splits a multibyte character 4095 bytes into a line, and a prompt sent
+    # with an image starts past the image's base64 in its line. The read stops
+    # at 16 MiB, which holds two images at the API's 5 MB limit (about 6.7 MB
+    # each as base64) and the records before them, and keeps jq near 66 MiB
+    # (measured: about four times the bytes read). A line the cap cuts no
+    # longer parses and is skipped like any torn line.
     local candidates
-    candidates=$(jq -r -R '
-        fromjson? | select(.type == "user" and ((.isMeta // false) | not))
+    candidates=$(head -c 16777216 "$file" | jq -rn --rawfile t /dev/stdin '
+        $t | split("\n")[]
+        | fromjson? | select(.type == "user" and ((.isMeta // false) | not))
         | .message.content
         | if type == "string" then .
           elif type == "array" then ([.[] | select(.type == "text") | .text] | join(" "))
           else empty end
         | gsub("[\\n\\r\\t]+"; " ") | gsub(" +"; " ")
-        | select(length > 0)' "$file" 2>/dev/null) || return 0
+        | select(length > 0)' 2>/dev/null) || return 0
     local line
     while IFS= read -r line; do
         line="${line# }"; line="${line% }"
@@ -5695,7 +5763,7 @@ _refuse_worktree_of_encrypted_base() {  # base_name, base_dir
 # keeps behind .cs/private. The open refuses a plaintext copy of any of them,
 # and cs -encrypt moves each into the vault.
 CS_PRIVATE_LOCAL_FILES="session.log scope-prompt.trace memory-index.snapshot mail
-    queue queue.tmp queue.state queue.mode queue.done queue.declined queue.accepted queue.failed queue.migrating
+    queue queue.tmp queue.state queue.mode queue.done queue.current queue.accepted queue.failed queue.migrating
     notifications.jsonl notifications.seen failures rewrite.trace pending-handoff
     finish-progress.json"
 
@@ -6094,10 +6162,11 @@ _migrate_session_documents() {  # session_dir, tracked_tree_is_ours
             created_date=$(git -C "$session_dir" log --diff-filter=A --format=%as -- .cs/README.md 2>/dev/null | tail -1 || true)
         fi
         if [ -z "$created_date" ]; then
-            if [[ "$OSTYPE" == "darwin"* ]]; then
-                created_date=$(stat -f '%Sm' -t '%Y-%m-%d' "$readme" 2>/dev/null || date '+%Y-%m-%d')
+            # GNU stat first, as _epoch_mtime asks it.
+            if created_date=$(stat -c '%y' "$readme" 2>/dev/null); then
+                created_date=${created_date%% *}
             else
-                created_date=$(stat -c '%y' "$readme" 2>/dev/null | cut -d' ' -f1 || date '+%Y-%m-%d')
+                created_date=$(stat -f '%Sm' -t '%Y-%m-%d' "$readme" 2>/dev/null || date '+%Y-%m-%d')
             fi
         fi
         local existing_content
@@ -6556,13 +6625,17 @@ migrate_session() {
     # conversation. A recorded UUID with no matching transcript file is an
     # orphan — the cs hooks/doctor cross-checks will warn about it on every
     # launch, and `--resume` will fail. Steady state ("recorded UUID present,
-    # transcript exists") is the fast path; cold paths run discovery.
+    # transcript exists") is the fast path; cold paths run discovery. A linked
+    # worktree's conversation whose transcript `claude --worktree` moved into
+    # the parent repo's project dir still exists and still resumes, so it is
+    # bound too (_relocated_worktree_transcript).
     {
         local _existing _proj _bind_uuid=""
         _existing=$(_read_local_state "$_state" claude_session_id)
         _proj=$(_claude_project_dir "$session_dir")
 
-        if [ -n "$_existing" ] && [ -f "$_proj/$_existing.jsonl" ]; then
+        if [ -n "$_existing" ] && { [ -f "$_proj/$_existing.jsonl" ] \
+            || _relocated_worktree_transcript "$session_dir" "$_existing" >/dev/null; }; then
             : # already bound — skip discovery entirely
         else
             local _discovered
@@ -6610,12 +6683,14 @@ migrate_session() {
 }
 
 # Cross-platform helpers
+# A file's mtime as local date and time, "-" when it cannot be read. GNU stat
+# is asked first, as _epoch_mtime does, and its answer keeps the seconds.
 get_file_mtime() {
-    local file="$1"
-    if [[ "$OSTYPE" == darwin* ]]; then
-        stat -f "%Sm" -t "%Y-%m-%d %H:%M" "$file" 2>/dev/null || echo "-"
+    local file="$1" mtime
+    if mtime=$(stat -c "%y" "$file" 2>/dev/null); then
+        printf '%s\n' "${mtime%%.*}"
     else
-        stat -c "%y" "$file" 2>/dev/null | cut -d. -f1 || echo "-"
+        stat -f "%Sm" -t "%Y-%m-%d %H:%M" "$file" 2>/dev/null || echo "-"
     fi
 }
 
@@ -6795,16 +6870,20 @@ run_checkpoint() {
 # Machine-local queue of prompts drained by the Stop hook. Files live in
 # <session>/.cs/local/ (.cs/private/ in an encrypted session): queue/ (one
 # file per task, staged via queue.tmp/),
-# queue.done, queue.state (idle|armed|draining), queue.declined (epoch),
-# queue.failed (a reported failure the drain has not parked on yet).
+# queue.done, queue.state (idle|armed|draining), queue.current (the task the
+# drain last handed out), queue.failed (a reported failure the drain has not
+# parked on yet).
 # Plain files so the standalone Stop hook can read them without bin/cs's
 # helpers.
 
 # One line per '## ' heading: the heading's byte offset, a space, the heading.
 # LC_ALL=C makes awk's length() count bytes, so offsets survive multibyte text
-# (real headings carry an em dash).
+# (real headings carry an em dash). env hands the locale to awk alone; the
+# shell's own locale is never changed. BSD awk counts bytes in any locale, so
+# on it no test can tell this locale from none: the byte count is untestable
+# there and is pinned only where awk counts characters.
 _narrative_headings() {  # file
-    LC_ALL=C awk 'BEGIN { off = 0 } { if (substr($0, 1, 3) == "## ") print off, $0; off += length($0) + 1 }' "$1"
+    env LC_ALL=C awk 'BEGIN { off = 0 } { if (substr($0, 1, 3) == "## ") print off, $0; off += length($0) + 1 }' "$1"
 }
 
 # Byte offset of the first heading to KEEP: the earliest one with at most KEEP
@@ -7230,7 +7309,6 @@ run_spawn() {
     if ! cs_split_worktree_name "$name"; then
         validate_session_name "$name"
     fi
-    _spawn_precheck "$name"
     # The spawner is whatever the environment says. It becomes the worker's
     # report-back address and goes into its kick prompt, so it must be a
     # session name; an empty one means "no spawner" (no report-back wiring).
@@ -7241,6 +7319,17 @@ run_spawn() {
         ( validate_session_name "$spawner" ) >/dev/null 2>&1 \
             || error "cs -spawn: CLAUDE_SESSION_NAME is not a session name: $spawner"
     fi
+    # The spawn's own window runs a seed's tasks and brief unasked, so a seed
+    # for a session that already exists is work handed to that session's
+    # user. Another session's work goes through task mail they accept; a
+    # terminal outside any session, and the base briefing one of its own
+    # features, are that user.
+    if [ -n "$spawner" ] && { [ "${#tasks[@]}" -gt 0 ] || [ -n "$brief" ]; } \
+        && is_session_dir "$SESSIONS_ROOT/$name" \
+        && [ "${spawner%%@*}" != "${name%%@*}" ]; then
+        error "session $spawner cannot hand work to the existing session $name; send it as task mail for $name's user to accept: cs -msg $name --kind task \"<task>\""
+    fi
+    _spawn_precheck "$name"
     # One token per spawn, for the window command and the seed alike. The
     # launch consumes the seed unasked only when the two match.
     local token
@@ -7424,6 +7513,17 @@ _mail_send() {  # target, [--kind|-k KIND] [--reply THREAD] body
         fi
     fi
     command -v jq >/dev/null 2>&1 || error "jq is required for cs -msg"
+    # The sender is whatever the environment says, and it reaches the
+    # recipient's wake and listing, so it must be a name cs gives a session,
+    # as cs -spawn requires of its spawner. An empty one is a send from
+    # outside any session, recorded as from "".
+    local sender="${CLAUDE_SESSION_NAME:-}"
+    if [ -n "$sender" ] && ! cs_split_worktree_name "$sender"; then
+        # validate_session_name exits on a bad name; a subshell turns that
+        # into a status so the error can name where the name came from.
+        ( validate_session_name "$sender" ) >/dev/null 2>&1 \
+            || error "cs -msg: CLAUDE_SESSION_NAME is not a session name: $sender"
+    fi
     validate_session_ref "$target"
     local target_dir="$SESSIONS_ROOT/$target"
     is_session_dir "$target_dir" || error "No such session: $target"
@@ -7448,7 +7548,7 @@ _mail_send() {  # target, [--kind|-k KIND] [--reply THREAD] body
     target_files=$(cs_private_dir "$target_dir/.cs") \
         || error "$target keeps its mail in encrypted storage that is not mounted (.cs/private $(cs_private_state "$target_dir/.cs")). Nothing was sent."
     local bytes
-    bytes=$(LC_ALL=C printf '%s' "$body" | wc -c | tr -d '[:space:]')
+    bytes=$(printf '%s' "$body" | wc -c | tr -d '[:space:]')
     if [ "$bytes" -gt "$MAIL_BODY_MAX" ]; then
         error "Message body exceeds ${MAIL_BODY_MAX} bytes"
     fi
@@ -7481,16 +7581,19 @@ _mail_send() {  # target, [--kind|-k KIND] [--reply THREAD] body
         thread="$(_mail_new_thread "$roots")"
     fi
     # The body rides on stdin, never as an --arg: `cs -msg <target> -` exists
-    # precisely so a multi-KB handoff need not go through argv, and putting it
-    # back into jq's argv undid that. -Rs makes the whole of stdin one string,
-    # byte for byte, and printf adds nothing to it.
-    if ! line=$(printf '%s' "$body" | jq -cRs --arg id "$id" --argjson ts "$now" \
+    # precisely so a multi-KB handoff need not go through argv. It is read with
+    # --rawfile /dev/stdin rather than -R: jq 1.7.1's -R splits a multibyte
+    # character at its 4096-byte read buffer and stores a replacement character
+    # in its place, while --rawfile reads the whole input byte for byte. No
+    # temporary file holds it, so a body bound for an encrypted session's vault
+    # is never written in plaintext outside it. printf adds nothing to it.
+    if ! line=$(printf '%s' "$body" | jq -cn --rawfile body /dev/stdin --arg id "$id" --argjson ts "$now" \
         --arg thread "$thread" --arg to "$target" --arg parent "$reply_parent" \
         --arg from "${CLAUDE_SESSION_NAME:-}" --arg actor "$(cs_actor_slug)" \
         --arg kind "$kind" \
         '{id:$id, ts:$ts, thread:$thread,
           in_reply_to:(if $parent == "" then null else $parent end),
-          to:$to, from:$from, actor:$actor, kind:$kind, body:.}'); then
+          to:$to, from:$from, actor:$actor, kind:$kind, body:$body}'); then
         error "Failed to compose the message for $target"
     fi
     # Zero-padded epoch keeps lexical order aligned with time order; NOT a
@@ -7514,12 +7617,15 @@ _mail_send() {  # target, [--kind|-k KIND] [--reply THREAD] body
 # message this session received. Direction is taken from the record rather than
 # the file's directory, which keeps this a single line-oriented jq pass over
 # every document — and with no early-exit consumer, no SIGPIPE risk on big mail.
+# The documents are read whole with --rawfile and split into lines inside jq:
+# jq 1.7.1's -R splits a multibyte character at its 4096-byte read buffer and
+# shows a replacement character in its place.
 # The thread id is rendered because an agent cannot reply into a thread whose id
 # it was never shown; a received task carries its accept command for the same
 # reason.
 _mail_print_files() {  # file...
-    cat "$@" | jq -rR --arg me "${CLAUDE_SESSION_NAME:-}" '
-        fromjson? // empty |
+    cat "$@" | jq -rn --rawfile docs /dev/stdin --arg me "${CLAUDE_SESSION_NAME:-}" '
+        $docs | split("\n")[] | fromjson? // empty |
         (if $me != "" and (.from // "") == $me then "->" else "<-" end) as $dir |
         # The peer is whatever the sending process said it was: flattened and
         # cut inside jq so a forged name cannot start a line of its own.
@@ -7530,7 +7636,12 @@ _mail_print_files() {  # file...
         (.ts | if type == "number" then strflocaltime("%H:%M") else "--:--" end) + "  " +
         $dir + " " + $peer + "  [" + (.kind // "text") + "]  (" + (.thread // "------") + ")  " +
         ((.body // "") | gsub("[\n\r]"; " ")) +
+        # Only an id cs -queue accept takes whole: 1 to 40 of A-Z a-z 0-9 . _ -.
+        # Judged by what is left once those are deleted, since a regex "$"
+        # also matches before a final newline.
         (if $dir == "<-" and .kind == "task" and (.id | type) == "string"
+            and (.id | length) >= 1 and (.id | length) <= 40
+            and (.id | gsub("[A-Za-z0-9._-]"; "")) == ""
          then "  (accept into the queue: cs -queue accept " + .id + ")" else "" end)
     ' | _scrub_controls
 }
@@ -7856,7 +7967,17 @@ _queue_require_single_line() {  # text
 }
 
 _queue_add() {  # qdir, text
+    _queue_write_task "$1" "$2" \
+        || error "could not write the task into $1/queue; it is not queued"
+}
+
+# Write one task into the queue; returns 1 when the write fails, having left
+# nothing behind, and records the path of the file it wrote in _QUEUE_ADDED,
+# so a caller queueing several can take them back. A task that breaks the
+# queue's rules (empty, more than one line) is refused with an error.
+_queue_write_task() {  # qdir, text
     local qdir="$1" text="$2"
+    _QUEUE_ADDED=""
     text="$(_trim "$text")"
     [ -n "$text" ] || { error "cs -queue add needs a non-empty task"; }
     _queue_require_single_line "$text"
@@ -7873,9 +7994,13 @@ _queue_add() {  # qdir, text
     _QUEUE_SEQ=$((10#$_QUEUE_SEQ + 1))
     local fname
     fname="$(printf '%010d' "$(date +%s)")-$$-$(printf '%04d' "$_QUEUE_SEQ")-${RANDOM}"
-    printf '%s\n' "$text" > "$qdir/queue.tmp/$fname" \
-        && mv "$qdir/queue.tmp/$fname" "$qdir/queue/$fname"
-    rm -f "$qdir/queue.declined"   # queue changed: allow the gate to re-ask
+    # errexit does not see a failed left operand, so the failure is returned.
+    if ! { printf '%s\n' "$text" > "$qdir/queue.tmp/$fname" \
+            && mv "$qdir/queue.tmp/$fname" "$qdir/queue/$fname"; }; then
+        rm -f "$qdir/queue.tmp/$fname"
+        return 1
+    fi
+    _QUEUE_ADDED="$qdir/queue/$fname"
 }
 
 # Queue a task that arrived as task-kind mail, by its message id. The user's
@@ -7890,20 +8015,31 @@ _queue_add() {  # qdir, text
 # kill after the receipt loses the queued copy instead, which the error names
 # and the user can redo by hand; a lost copy is visible, a replay is not.
 _queue_accept() {  # qdir, message id
-    local qdir="$1" id="$2" f found="" kind body
+    local qdir="$1" id="$2" f found="" matches=0 kind body
     [ -n "$id" ] || error "cs -queue accept needs a message id (shown by cs -msg)"
+    # The shape the digest and the listing offer an accept command for: an id
+    # outside it was never shown whole, so nobody can have agreed to its mail.
     case "$id" in *[!A-Za-z0-9._-]*) error "cs -queue accept: $id is not a message id";; esac
+    [ "${#id}" -le 40 ] || error "cs -queue accept: $id is not a message id"
+    # Every document is read: an id two mails share names neither of them.
     for f in "$qdir"/mail/new/*.json "$qdir"/mail/cur/*.json; do
         [ -f "$f" ] || continue
         # A document that is not the one asked for, or not JSON, prints nothing.
         if [ "$(jq -r --arg id "$id" 'select(.id == $id) | "found"' "$f" 2>/dev/null)" = found ]; then
             found="$f"
-            break
+            matches=$((matches + 1))
         fi
     done
     [ -n "$found" ] || error "no mail with id $id in this session's mailbox"
-    kind=$(jq -r '.kind // "text" | if type == "string" then . else tostring end' "$found")
-    [ "$kind" = "task" ] || error "message $id is $kind mail, not a task; only task-kind mail can be queued"
+    [ "$matches" -eq 1 ] || error "$matches mails in this session's mailbox carry the id $id; cs -queue accept cannot tell which one was meant"
+    # The kind is judged inside jq, on the document's own value: $( ) drops a
+    # trailing newline and a NUL, so "task\n" would read as task out here
+    # while the digest and the listing, which compare the whole string, show
+    # it no accept command. Any other kind comes back marked, with every byte
+    # outside a plain word replaced, for the refusal to name.
+    kind=$(jq -r '(.kind // "text") | if . == "task" then "task"
+        else "other:" + ((if type == "string" then . else tostring end) | gsub("[^A-Za-z0-9._-]"; "_"))[0:16] end' "$found")
+    [ "$kind" = "task" ] || error "message $id is ${kind#other:} mail, not a task; only task-kind mail can be queued"
     body=$(jq -r '.body // "" | if type == "string" then . else tostring end' "$found")
     body="$(_trim "$body")"
     [ -n "$body" ] || error "message $id carries an empty task"
@@ -7933,14 +8069,15 @@ _queue_accept() {  # qdir, message id
         error "could not write the task into $qdir/queue; its accept is recorded, so re-queue it with: cs -queue add"
     fi
     _cs_unlock "$lock"
-    rm -f "$qdir/queue.declined"   # the user's accept re-opens the gate
     # Accepting is reading: the message leaves new/ so it neither wakes nor
     # digests again. A failed move leaves it unread, which over-shows the
     # accept command but never re-queues.
     case "$found" in
         "$qdir"/mail/new/*) mv "$found" "$qdir/mail/cur/" 2>/dev/null || true ;;
     esac
-    info "queued: $body"
+    # The body is another session's text on its way to this terminal: shown
+    # scrubbed, while the queued file keeps it as mailed.
+    info "queued: $(printf '%s' "$body" | _scrub_controls)"
 }
 
 # Count of queued task files ([ -f ] also guards bash 3.2's literal
@@ -7984,9 +8121,7 @@ _queue_rm() {  # qdir, index
     case "$n" in ''|*[!0-9]*) error "cs -queue rm needs a task number";; esac
     len=$(_queue_len "$qdir")
     [ "$len" -gt 0 ] || { error "queue is empty"; }
-    # Refuse before touching anything: an index past the end used to fall
-    # through the loop silently and still clear queue.declined below, re-arming
-    # the gate so a later drain ran the task the user believed they had removed.
+    # Refuse before touching anything: an index past the end names no task.
     if [ "$n" -lt 1 ] || [ "$n" -gt "$len" ]; then
         error "no task $n in the queue (1-$len)"
     fi
@@ -7999,13 +8134,12 @@ _queue_rm() {  # qdir, index
             break
         fi
     done
-    rm -f "$qdir/queue.declined"
 }
 
 _queue_clear() {  # qdir
     local qdir="$1"
     rm -rf "$qdir/queue" "$qdir/queue.tmp"
-    rm -f "$qdir/queue.state" "$qdir/queue.declined" "$qdir/queue.mode" "$qdir/queue.failed"
+    rm -f "$qdir/queue.state" "$qdir/queue.mode" "$qdir/queue.failed" "$qdir/queue.current"
 }
 
 # Arms the queue and records how its tasks run: in the conversation (no mode
@@ -8028,14 +8162,16 @@ _queue_log() {  # qdir
         return 0
     fi
     # Tolerant per-line parse (torn lines skipped); oldest-first is file order.
-    jq -rR '
-        fromjson? // empty |
+    # Read whole and split inside jq: jq 1.7.1's -R splits a multibyte
+    # character at its 4096-byte read buffer.
+    jq -rn --rawfile inbox "$inbox" '
+        $inbox | split("\n")[] | fromjson? // empty |
         (.ts | strflocaltime("%Y-%m-%d %H:%M")) + "  " + .event +
         (if .task then ": " + .task
          elif .reason then ": " + .reason + " (" + (.reading|tostring) + " >= " + (.limit|tostring) + "), " + (.remaining|tostring) + " remaining"
          elif .done then ": " + (.done|tostring) + " done"
          else "" end)
-    ' "$inbox" | _scrub_controls
+    ' | _scrub_controls
 }
 
 # Dispatcher. Runs inside a session (env) or via the session-scoped arm.
@@ -8063,9 +8199,6 @@ run_queue() {
         rm)    shift; _queue_rm "$qdir" "${1:-}";;
         clear) _queue_clear "$qdir";;
         start) shift; _queue_start "$qdir" "${1:-}";;
-        defer) mkdir -p "$qdir"; cs_write_atomic "$qdir/queue.declined" printf '%s\n' "$(date +%s)"
-               _append_record "$qdir/notifications.jsonl" \
-                   --arg ts "$(date +%s)" '{ts: ($ts|tonumber), event: "gate_declined"}';;
         log)   _queue_log "$qdir";;
         *)     error "Usage: cs -queue [add \"<task>\" | accept <message id> | list | rm <n> | clear | log | start [subagents|workflow]]";;
     esac
@@ -8314,6 +8447,14 @@ _USAGE_LARGE_READ_LINES=350
 # jq error no longer costs one line — it would end the scan for all remaining
 # files, silently, since stderr goes to /dev/null. The update is therefore
 # wrapped in try/catch: a malformed entry is skipped and the state survives.
+#
+# The read is line by line with -R, which jq 1.7.1 does through a 4096-byte
+# buffer: a multibyte character split at a line's byte 4095 comes back as a
+# replacement character and one more, so a large read's character length can
+# be one too high per split. Nothing else this scan prints is free text. The
+# transcripts are not read whole with --rawfile because the scan takes every
+# transcript of the window at once, hundreds of MB, and a whole read costs
+# jq three to four times the bytes it holds (measured on jq 1.7.1).
 _usage_scan() {
     local w5="$1" wk="$2"
     shift 2
@@ -9732,18 +9873,20 @@ _doctor_check_integrate_lock() {
     case "$pid" in
         0|*[!0-9]*|"") pid="" ;;
     esac
-    # kill -0 through the shell builtin, not ps: kill(2) sees a process that a
-    # restricted /proc hides from ps, and its errno tells a holder owned by
-    # another user (EPERM) from a pid that is gone (ESRCH). Only ESRCH is
-    # evidence of absence; anything else the check cannot read is unknown,
-    # and an unknown must not come with removal advice. LC_ALL=C pins the
-    # message the builtin prints, which is the only channel for the errno;
-    # it is assigned inside the subshell rather than as a command prefix
-    # because bash 3.2 does not apply a prefix assignment to a builtin's
-    # locale (probed: `$(LC_ALL=C printf "%.1f" 1)` prints 1,0 under fr_FR).
+    # kill -0, not ps: kill(2) sees a process that a restricted /proc hides
+    # from ps, and its errno tells a holder owned by another user (EPERM) from
+    # a pid that is gone (ESRCH). Only ESRCH is evidence of absence; anything
+    # else the check cannot read is unknown, and an unknown must not come with
+    # removal advice. LC_ALL=C pins the message kill prints, which is the only
+    # channel for the errno. env runs the kill on PATH (/bin/kill on macOS)
+    # with that locale in its own environment, so the shell never changes its
+    # own locale in this forked copy, which can crash a bash linked against
+    # libintl. That kill prints "kill: <pid>: No such process" or "kill:
+    # <pid>: Operation not permitted" and exits 1, and refuses a pid it cannot
+    # parse with "kill: illegal process id: <pid>", which is unknown.
     local verdict="unrecorded" err=""
     if [ -n "$pid" ]; then
-        if err=$( LC_ALL=C; kill -0 "$pid" 2>&1 ); then
+        if err=$(env LC_ALL=C kill -0 "$pid" 2>&1); then
             verdict="held"
         else
             case "$err" in
@@ -9756,7 +9899,7 @@ _doctor_check_integrate_lock() {
     case "$verdict" in
         held)    _doctor_ok "Integrate lock: $lock held by a running integrate (pid $pid)" ;;
         eperm)   _doctor_ok "Integrate lock: $lock held by a running integrate (pid $pid; signalling it is not permitted here, which is a process that exists)" ;;
-        unknown) _doctor_warn "Integrate lock: $lock records pid $pid and cs cannot tell whether it is running (${err##*: })" ;;
+        unknown) _doctor_warn "Integrate lock: $lock records pid $pid and cs cannot tell whether it is running (${err#kill: })" ;;
         # ESRCH is absence only in this process's pid namespace, and pids are
         # recycled, so the removal stays conditional on what the person can see.
         stale)   _doctor_warn "Integrate lock: $lock records pid $pid, which this process cannot see; the lock is probably stale. Autosave skips while it exists. Once nothing is using this checkout, clear it with: rm -r \"$lock\"" ;;
@@ -10035,12 +10178,20 @@ _detach_opened_vault() {
 
 run_encrypt() {
     [ $# -eq 1 ] || error "Usage: cs -encrypt <name>"
-    local name="$1" meta container mnt sub
+    local name="$1" meta container mnt sub taken=0
     _encrypt_refuse "$name"
     meta="$SESSIONS_ROOT/$name/.cs"
     # Hold the session lock while the password prompts run, so an open in
     # another terminal meets the collision check instead of racing the moves.
-    echo "$$" > "$meta/session.lock"
+    # It is taken as an open takes it, under the openers' mutex: when an open
+    # took it after the live check above, cs -encrypt refuses and leaves it.
+    _take_session_lock "$meta" || taken=$?
+    case "$taken" in
+        0) ;;
+        1) error "$name: the session is running; close it, then encrypt." ;;
+        2) error "$name: another cs is opening this session ($meta/session.mutex.lock is held); try again in a moment." ;;
+        *) error "_take_session_lock returned $taken for $meta" ;;
+    esac
     # shellcheck disable=SC2064  # the path is fixed now, on purpose
     # printf %q quotes the path for the trap's own parse, so a space, a quote,
     # $( or a newline in it stays data (checked under bash 3.2, #895). The
@@ -10538,7 +10689,7 @@ _worktree_untracked_entries() {  # worktree_dir
     [ -n "$paths" ] || return 0
     while IFS= read -r path; do
         out="${out:+$out, }$path"
-    done <<< "$(printf '%s' "$paths" | LC_ALL=C sort)"
+    done <<< "$(printf '%s' "$paths" | env LC_ALL=C sort)"
     printf '%s' "$out"
 }
 
@@ -11370,6 +11521,9 @@ launch_claude_code() {
     # Global, not local: the EXIT trap fires after this function has returned.
     _CS_LOCK_META_DIR="$session_dir/.cs"
     trap 'reset_tab_title; _spawn_put_back_claim; release_session_lock "$_CS_LOCK_META_DIR"; _detach_opened_vault' EXIT
+    # An INT that lands while cs_tmux_title_window holds the title lock makes
+    # release_session_lock skip (one _cs_lock at a time); the lock left names
+    # a dead pid and the next open reclaims it. Decided; do not re-fix.
     trap 'reset_tab_title; release_session_lock "$_CS_LOCK_META_DIR"; exit 130' INT TERM
 
     # Opening an archived session revives it. Placed after lock acquisition so
@@ -11725,10 +11879,42 @@ launch_claude_code() {
             # id and stays in .cs/local (docs/session-layout.md).
             _qdir=$(cs_private_dir "$session_dir/.cs") \
                 || error "$session_name: .cs/private dangles after the open checked it (vault unmounted mid-launch?). Mount it, then reopen. (seed kept)"
+            # Every write that can fail runs before the first task is queued:
+            # a failure stops the open with the seed staged again, and that
+            # seed is then the only copy of its tasks, so the retry queues
+            # each one once.
+            if [ -n "$_spawner" ] && { [ "$_n" -gt 0 ] || [ "$_has_brief" = 1 ]; }; then
+                printf '%s\n' "$_spawner" > "$session_dir/.cs/local/spawned-by" 2>/dev/null \
+                    || error "could not record the spawner in $session_dir/.cs/local/spawned-by (seed kept; fix it and re-open the session to retry)"
+            fi
+            # A task that cannot be queued takes back the ones this open queued
+            # before it, so the seed put back is the only copy of its tasks. A
+            # take-back that fails names every file left, for the person to
+            # remove before a retry queues them again.
+            local _queued=() _left=() _f
             for _line in ${_tasks[@]+"${_tasks[@]}"}; do
-                _queue_add "$_qdir" "$_line"
+                if _queue_write_task "$_qdir" "$_line"; then
+                    _queued+=("$_QUEUE_ADDED")
+                    continue
+                fi
+                for _f in ${_queued[@]+"${_queued[@]}"}; do
+                    rm -f "$_f" 2>/dev/null && [ ! -e "$_f" ] || _left+=("$_f")
+                done
+                if [ "${#_left[@]}" -gt 0 ]; then
+                    error "could not write the task into $_qdir/queue; it is not queued, and ${#_left[@]} task(s) this open queued before it could not be taken back: ${_left[*]}. Remove them before re-opening the session, or the retry queues them again (seed kept)"
+                fi
+                error "could not write the task into $_qdir/queue; it is not queued (seed kept; the ${#_queued[@]} task(s) this open queued before it were taken back)"
             done
-            [ "$_n" -eq 0 ] || _queue_set_state "$_qdir" armed
+            # Once its tasks are queued the seed is spent: only the claimed
+            # seed is deleted (one published since stays staged for its own
+            # open), and a failure from here on cannot put it back to be
+            # queued a second time.
+            _CS_SPAWN_CLAIM=""
+            rm -f "$_claim"
+            if [ "$_n" -gt 0 ]; then
+                _queue_set_state "$_qdir" armed \
+                    || error "the seed's $_n task(s) are queued but the queue could not be armed; arm it with: cs $session_name -queue start"
+            fi
             if [ "$_n" -gt 0 ] || [ "$_has_brief" = 1 ]; then
                 local _work=""
                 [ "$_has_brief" = 1 ] && _work="Your brief is .cs/brief.md: read it first."
@@ -11738,16 +11924,11 @@ launch_claude_code() {
                     _work="$_work Then begin."
                 fi
                 if [ -n "$_spawner" ]; then
-                    printf '%s\n' "$_spawner" > "$session_dir/.cs/local/spawned-by"
                     spawn_kick="Spawned by $_spawner. $_work Send results with: cs -msg $_spawner -k result \"...\""
                 else
                     spawn_kick="$_work"
                 fi
             fi
-            # Only the claimed seed is deleted: one published since stays
-            # staged for its own open.
-            _CS_SPAWN_CLAIM=""
-            rm -f "$_claim"
         fi
     fi
     # Arming the ritual is an explicit action the user took seconds ago, so it
@@ -12146,12 +12327,15 @@ _resume_lands_in_place() {  # session_dir, conversation id
 # exited: Claude Code moves it into the parent repo's project dir, and
 # `claude --resume <id>` run from the worktree still finds it there (measured
 # on 2.1.289). That dir also holds the parent's own conversations, so the file
-# counts only when it is this worktree's by the record and first-prompt checks
-# of _discover_worktree_uuid_in, applied to that one file: the worktree can hold
-# older conversations than its newest, and the parent's other files are never
-# read. The base dir is the session's own, which is where the claude cs launches
-# for this session reads. Prints the path; fails when the session is no linked
-# worktree or the conversation is not its own.
+# counts only when it began in this worktree, by the record and first-prompt
+# checks of _discover_worktree_uuid_in, applied to that one file: the worktree
+# can hold older conversations than its newest, and the parent's other files
+# are never read. Discovery's bystander test is not applied: the id is the
+# session's already, and that test reads the first prompt's whole line, so a
+# prompt that only names the teammate frame would unbind it. The base dir is
+# the session's own, which is where the claude cs launches for this session
+# reads. Prints the path; fails when the session is no linked worktree or the
+# conversation did not begin in it.
 _relocated_worktree_transcript() {  # session_dir, conversation id
     local git_dir common parent proj
     git_dir=$(_git_path_abs "$1" --git-dir) || return 1
@@ -12160,7 +12344,7 @@ _relocated_worktree_transcript() {  # session_dir, conversation id
     parent=$(cd "$common/.." 2>/dev/null && pwd -P) || return 1
     proj="$(dirname "$(_claude_project_dir "$1")")/$(_claude_encode_path "$parent")"
     [ -f "$proj/$2.jsonl" ] || return 1
-    _is_worktree_own_transcript "$proj/$2.jsonl" "$(_worktree_json_path "$1")" || return 1
+    _is_worktree_started_transcript "$proj/$2.jsonl" "$(_worktree_json_path "$1")" || return 1
     printf '%s\n' "$proj/$2.jsonl"
 }
 
@@ -13443,6 +13627,29 @@ main() {
             -queue)
                 shift
                 _vet_named_session "$SESSIONS_ROOT/$session_name"
+                # Another session's word never puts work in front of this
+                # session's drain: its add travels as task mail for this
+                # session's user to accept, and arming or accepting stays with
+                # that user. A terminal outside any session is the user.
+                local caller="${CLAUDE_SESSION_NAME:-}"
+                if [ -n "$caller" ] && [ "$caller" != "$session_name" ]; then
+                    case "${1:-}" in
+                        add)
+                            shift
+                            _mail_send "$session_name" --kind task "$*"
+                            return 0
+                            ;;
+                        start)
+                            error "session $caller cannot start $session_name's queue; $session_name's user starts it (cs -queue start inside $session_name)"
+                            ;;
+                        accept)
+                            error "session $caller cannot accept mail into $session_name's queue; $session_name's user accepts it (cs -queue accept ${2:-<id>} inside $session_name)"
+                            ;;
+                        rm|clear)
+                            error "session $caller cannot change $session_name's queue; $session_name's user does that inside $session_name (cs -queue $1)"
+                            ;;
+                    esac
+                fi
                 export CLAUDE_SESSION_NAME="$session_name"
                 export CLAUDE_SESSION_DIR="$SESSIONS_ROOT/$session_name"
                 export CLAUDE_SESSION_META_DIR="$SESSIONS_ROOT/$session_name/.cs"

@@ -180,12 +180,20 @@ _detach_opened_vault() {
 
 run_encrypt() {
     [ $# -eq 1 ] || error "Usage: cs -encrypt <name>"
-    local name="$1" meta container mnt sub
+    local name="$1" meta container mnt sub taken=0
     _encrypt_refuse "$name"
     meta="$SESSIONS_ROOT/$name/.cs"
     # Hold the session lock while the password prompts run, so an open in
     # another terminal meets the collision check instead of racing the moves.
-    echo "$$" > "$meta/session.lock"
+    # It is taken as an open takes it, under the openers' mutex: when an open
+    # took it after the live check above, cs -encrypt refuses and leaves it.
+    _take_session_lock "$meta" || taken=$?
+    case "$taken" in
+        0) ;;
+        1) error "$name: the session is running; close it, then encrypt." ;;
+        2) error "$name: another cs is opening this session ($meta/session.mutex.lock is held); try again in a moment." ;;
+        *) error "_take_session_lock returned $taken for $meta" ;;
+    esac
     # shellcheck disable=SC2064  # the path is fixed now, on purpose
     # printf %q quotes the path for the trap's own parse, so a space, a quote,
     # $( or a newline in it stays data (checked under bash 3.2, #895). The

@@ -453,7 +453,7 @@ _worktree_untracked_entries() {  # worktree_dir
     [ -n "$paths" ] || return 0
     while IFS= read -r path; do
         out="${out:+$out, }$path"
-    done <<< "$(printf '%s' "$paths" | LC_ALL=C sort)"
+    done <<< "$(printf '%s' "$paths" | env LC_ALL=C sort)"
     printf '%s' "$out"
 }
 

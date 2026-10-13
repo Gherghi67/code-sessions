@@ -1179,6 +1179,29 @@ test_display_width_counts_codepoints_not_bytes() {
       assert_eq "4" "$_WIDTH" "a multibyte session name should count codepoints, not bytes" )
 }
 
+# The width is counted the same way under every bash and locale, and the
+# shell never changes its own locale for it: a bash linked against libintl
+# that sets a locale of its own inside a command substitution, with no locale
+# variable set, dies of SIGSEGV. Each cell is one fresh bash with one locale
+# setting, counting "café ✳" (six codepoints) inside $( ).
+test_display_width_leaves_the_shells_own_locale_alone() {
+    local b utf8 loc out own
+    utf8="$(utf8_locale)"
+    for b in $(every_bash); do
+        for loc in ${utf8:+"LC_ALL=$utf8"} LC_ALL=C none; do
+            [ "$loc" = none ] && loc=""
+            out=$(env -i PATH="$PATH" HOME="$TEST_TMPDIR" $loc "$b" -c '
+                CS_STATUSLINE_LIB=1 . "$1" 2>/dev/null
+                set -x
+                w=$(_display_width "$2"; printf "%s" "$_WIDTH")
+                printf "%s" "$w"' x "$SL" "$(printf 'caf\303\251 \342\234\263')" 2>"$TEST_TMPDIR/trace")
+            assert_eq "6" "$out" "$b ${loc:-with no locale}: the width of the name" || return 1
+            own="$(shell_locale_assignments "$TEST_TMPDIR/trace")"
+            assert_eq "" "$own" "$b ${loc:-with no locale} must not assign its own locale in _display_width" || return 1
+        done
+    done
+}
+
 test_parse_rgb_triplet_accepts_valid_and_rejects_malformed() {
     ( _load_sl_functions
       _parse_rgb_triplet "250;248;242"
@@ -1698,6 +1721,7 @@ run_test test_ctx_zero_vs_absent
 run_test test_unknown_segment_ignored
 run_test test_session_color_never_reaches_the_bar
 run_test test_display_width_counts_codepoints_not_bytes
+run_test test_display_width_leaves_the_shells_own_locale_alone
 run_test test_parse_rgb_triplet_accepts_valid_and_rejects_malformed
 
 # ============================================================================
@@ -4166,6 +4190,57 @@ test_usage_refresher_never_walks_the_process_tree() {
 }
 
 run_test test_usage_refresher_never_walks_the_process_tree
+
+# The walker's deadline reaches shell arithmetic, which runs a command
+# substitution held in an array subscript. PATH[...] is the payload because
+# set -u aborts on an unset array base before the subscript is expanded.
+_walk_deadline_payload() {  # marker
+    printf 'PATH[$(touch %s)]' "$1"
+}
+
+# The subagent bar sources this script in library mode, which walks in-process
+# at load, so a _SL_WALK_DEADLINE in its environment would reach the walk.
+test_an_inherited_walk_deadline_is_never_read() {
+    local marker="$TEST_TMPDIR/ran"
+    _make_ps_chain "2216:1"
+    export TMUX="/tmp/fake,2216,0" PATH="$TEST_TMPDIR/fakebin:$PATH"
+    printf '%s' '{"columns":80,"tasks":[]}' \
+        | _SL_WALK_DEADLINE="$(_walk_deadline_payload "$marker")" \
+            bash "$SCRIPT_DIR/../bin/cs-subagent-statusline" >/dev/null 2>&1
+    assert_not_exists "$marker" "an inherited _SL_WALK_DEADLINE must not run as code" || return 1
+}
+
+# A well-formed number inherited from the environment is ignored too: the
+# in-process walk reads ps directly, over a pipe, and only the detached walker
+# takes the deadline path, which writes ps's answer to a file.
+test_an_inherited_numeric_walk_deadline_is_ignored() {
+    local log="$TEST_TMPDIR/ps-stdout"
+    mkdir -p "$TEST_TMPDIR/fakebin"
+    printf '#!/bin/sh\nk=other; [ -p /dev/stdout ] && k=pipe\necho "$k" >> "%s"\necho "2216 1"\n' \
+        "$log" > "$TEST_TMPDIR/fakebin/ps"
+    chmod +x "$TEST_TMPDIR/fakebin/ps"
+    export TMUX="/tmp/fake,2216,0" PATH="$TEST_TMPDIR/fakebin:$PATH"
+    printf '%s' '{"columns":80,"tasks":[]}' \
+        | _SL_WALK_DEADLINE=5 bash "$SCRIPT_DIR/../bin/cs-subagent-statusline" >/dev/null 2>&1
+    assert_eq "pipe" "$(cat "$log" 2>/dev/null)" \
+        "the walk must read ps directly, not by an inherited deadline" || return 1
+}
+
+test_the_walk_reads_its_deadline_only_as_digits() {
+    local marker="$TEST_TMPDIR/ran"
+    ( _load_sl_functions
+      _make_ps_chain "500:2216 2216:1"
+      export PATH="$TEST_TMPDIR/fakebin:$PATH"
+      mkdir -p "$HOME/.cache/cs/tmux-walking"
+      _SL_WALK_DEADLINE="$(_walk_deadline_payload "$marker")"
+      _sl_tmux_walk 500 2216 2>/dev/null
+      assert_eq "0" "$?" "a walk with an unusable deadline still answers from ps" || return 1 )
+    assert_not_exists "$marker" "a non-numeric deadline must not run as code" || return 1
+}
+
+run_test test_an_inherited_walk_deadline_is_never_read
+run_test test_an_inherited_numeric_walk_deadline_is_ignored
+run_test test_the_walk_reads_its_deadline_only_as_digits
 
 # The org id is kept for ORG_CACHE_TTL under the config path, so an account
 # swap shows within five minutes and a render never walks the config twice in

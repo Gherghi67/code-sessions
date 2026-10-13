@@ -1170,6 +1170,26 @@ test_age_export_skips_rewrite_when_nothing_changed() {
     fi
 }
 
+# The recipient set's digest sorts the keys with the C locale handed to sort
+# through env, so the digest is the same under every bash and locale and the
+# shell never changes its own locale for it, which can crash a bash linked
+# against libintl in the forked copy the sort runs in.
+test_age_recipient_digest_leaves_the_shells_own_locale_alone() {
+    _use_real_age || return $?
+    local b utf8 out own
+    utf8="$(utf8_locale)"
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
+    for b in $(every_bash); do
+        out=$(env ${utf8:+"LC_ALL=$utf8"} "$b" -x "$CS_SECRETS_BIN" export-file 2>"$TEST_TMPDIR/trace") \
+            || { echo "  FAIL: $b: export failed"; return 1; }
+        assert_eq "No secret changes to export for session: test-session (secrets.$(_machine_id).age is up to date)" \
+            "$out" "$b: the recipient set reads as unchanged" || return 1
+        own="$(shell_locale_assignments "$TEST_TMPDIR/trace")"
+        assert_eq "" "$own" "$b must not assign its own locale during export-file" || return 1
+    done
+}
+
 test_age_add_reencrypts_an_unchanged_store() {
     _use_real_age || return $?
     local meta="$CS_SESSIONS_ROOT/test-session/.cs"
@@ -4175,6 +4195,7 @@ run_test test_keychain_export_file_keeps_values_off_argv
 
 # age recipients
 run_test test_age_export_skips_rewrite_when_nothing_changed
+run_test test_age_recipient_digest_leaves_the_shells_own_locale_alone
 run_test test_age_add_reencrypts_an_unchanged_store
 run_test test_age_remove_reencrypts_an_unchanged_store
 run_test test_export_refuses_an_unpinned_pushed_recipient
