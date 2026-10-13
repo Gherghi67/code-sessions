@@ -4601,13 +4601,18 @@ _fuse_own_rule() {  # rel
 
 # Write to <out> one NUL-terminated "<verdict> <rel>" for every other file of
 # a feature's .cs (_fuse_verdict). A directory holding a .git is a repository
-# nested under .cs: written once as "conflict <rel>/" and never walked. Links
+# nested under .cs: written once as "conflict <rel>/" and never walked, and
+# .cs itself holding one is written as "conflict " with an empty path. Links
 # are listed, never followed. Fails, naming the file, when one cannot be
 # classified, and when the walk fails.
 _fuse_plan() {  # feature_meta base_meta out
     local list rel verdict
     : > "$3" || return 1
     [ -d "$1" ] && [ ! -L "$1" ] || return 0
+    if [ -e "$1/.git" ] || [ -L "$1/.git" ]; then
+        printf 'conflict \0' >> "$3"
+        return 0
+    fi
     list=$(mktemp "${TMPDIR:-/tmp}/cs-fuse-list.XXXXXX") || return 1
     # local/ is machine-local (_fuse_own_rule) and never walked.
     if ! (cd "$1" && find . -mindepth 1 \( -path ./local -prune \) \
