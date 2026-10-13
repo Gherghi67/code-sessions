@@ -385,9 +385,10 @@ _feature_readiness() {  # base_name task
     [ -z "$hidden" ] || wt_dirty=1
     _tree_is_dirty "$base_dir" && base_dirty=1
 
-    # The screen does not read either checkout's .claude/settings.local.json;
-    # the retire refuses one it would add the feature's rules to and cannot
-    # read, naming the file, before it removes anything.
+    # The screen does not read either checkout's .claude/settings.local.json,
+    # so it predicts neither refusal the retire makes over them, each naming
+    # the file before it removes anything: one it would add the feature's
+    # rules to and cannot read, and a link at the feature's.
     # A locked base vault is the retire's refusal before the records are
     # classified, and every record bound for it would read as at risk, so the
     # records are not classified then.
