@@ -765,6 +765,17 @@ run_uninstall() {
         warn "Manually remove cs hook entries from $settings_file"
     fi
 
+    local settings_lock="$settings_file.mutex.lock"
+    if [ -f "$settings_lock" ]; then
+        # Lock files are never removed (lib/02-shared.sh), but uninstall is this one's last user; it goes while held, so a writer still waiting locks a fresh file.
+        if _cs_lock "$settings_lock"; then
+            rm -f "$settings_lock"
+            _cs_unlock "$settings_lock"
+        else
+            warn "Kept $settings_lock: cs could not take the lock to remove it"
+        fi
+    fi
+
     _uninstall_rotate_wrap_keys
 
     # Ask about secrets in keychain
