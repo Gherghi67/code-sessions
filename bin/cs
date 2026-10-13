@@ -2602,8 +2602,9 @@ _lock_collision_menu() {
 # collision menu, which waits on a person. An opener that cannot take the
 # mutex (another cs still holds it after the wait) refuses rather than going on
 # without it, since that holder may be between reading a dead pid and removing
-# the file. A force (flag or collision menu) replaces the lock outright, as
-# before: that is what force means.
+# the file. A force (flag or collision menu) replaces the lock outright: that
+# is what force means. It takes the mutex again to write the replacement, since
+# a SessionEnd clearing its own lock reads and removes it under the mutex.
 acquire_session_lock() {
     local meta_dir="$1"
     local force="${2:-}"
@@ -2652,7 +2653,16 @@ acquire_session_lock() {
                 echo -e "${DIM}Use --force to override: cs $session_name --force${NC}" >&2
                 exit 1
             fi
+            # The replacement is written under the mutex again: a SessionEnd
+            # that read its own pid while the mutex was free would otherwise
+            # remove this lock right after it is written.
+            if ! _cs_lock "$mutex"; then
+                echo -e "${RED}Error: Another cs is opening this session ($mutex is held)${NC}" >&2
+                echo -e "${DIM}Try again in a moment: cs $session_name --force${NC}" >&2
+                exit 1
+            fi
             echo "$$" > "$lock_file"
+            _cs_unlock "$mutex"
             return 0
         fi
 
