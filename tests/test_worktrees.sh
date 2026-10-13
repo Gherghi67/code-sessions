@@ -2233,6 +2233,80 @@ test_retire_ignored_mode_refuses_a_log_the_base_cannot_take() {
 
 run_test test_retire_ignored_mode_refuses_a_log_the_base_cannot_take
 
+# A worktree made while cs kept the log at .cs/logs/session.log and used
+# since holds two logs, and both go to the base's. The one at .cs/logs/ goes
+# first: cs stopped writing there when the log moved to .cs/local/, so its
+# lines are the earlier ones and the base's log stays in the order they ran.
+test_retire_ignored_mode_fuses_both_of_a_feature_logs() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    mkdir -p "$wt/.cs/logs"
+    printf 'earlier command one\nearlier command two\n' > "$wt/.cs/logs/session.log"
+    printf 'later command\n' > "$wt/.cs/local/session.log"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    printf 'base command\n' > "$base_dir/.cs/local/session.log"
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire succeeds: $output" || return 1
+    assert_eq "base command
+
+earlier command one
+earlier command two
+
+later command" "$(cat "$base_dir/.cs/local/session.log")" "the base's log holds its own lines, then each log's, earlier first" || return 1
+    assert_not_exists "$base_dir/.cs/logs" "nothing lands at the path the log moved from" || return 1
+}
+
+run_test test_retire_ignored_mode_fuses_both_of_a_feature_logs
+
+# Each of the two logs is read, so each has to be a regular file: a link at
+# either is refused by name before anything is removed.
+test_retire_ignored_mode_refuses_either_log_that_is_a_link() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output line status=0
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    mkdir -p "$wt/.cs/logs"
+    printf 'earlier command\n' > "$wt/.cs/local/earlier.log"
+    ln -s "$wt/.cs/local/earlier.log" "$wt/.cs/logs/session.log"
+    printf 'later command\n' > "$wt/.cs/local/session.log"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    line=$("$CS_BIN" proj -features --porcelain 2>&1)
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_eq "earlier command" "$(cat "$wt/.cs/local/earlier.log" 2>/dev/null)" "nothing was removed: $output" || return 1
+    assert_eq ".cs/logs/session.log" "$(printf '%s\n' "$output" | awk 'listed; /again:$/ { listed = 1 }')" \
+        "the refusal names the linked log" || return 1
+    assert_eq "1" "$(_feat_field "$line" 7)" "the features screen counts it: $line" || return 1
+    assert_file_not_exists "$base_dir/.cs/local/session.log" "nothing was fused" || return 1
+    # The log in .cs/local is held to the same rule.
+    rm "$wt/.cs/logs/session.log"
+    mv "$wt/.cs/local/earlier.log" "$wt/.cs/logs/session.log"
+    mv "$wt/.cs/local/session.log" "$wt/.cs/local/later.log"
+    ln -s "$wt/.cs/local/later.log" "$wt/.cs/local/session.log"
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_eq ".cs/local/session.log" "$(printf '%s\n' "$output" | awk 'listed; /again:$/ { listed = 1 }')" \
+        "the refusal names the linked log" || return 1
+    assert_eq "later command" "$(cat "$wt/.cs/local/later.log" 2>/dev/null)" "nothing was removed: $output" || return 1
+    # Positive control: as regular files, both land.
+    rm "$wt/.cs/local/session.log"
+    mv "$wt/.cs/local/later.log" "$wt/.cs/local/session.log"
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire proceeds: $output" || return 1
+    assert_eq "
+earlier command
+
+later command" "$(cat "$base_dir/.cs/local/session.log")" "both logs land" || return 1
+}
+
+run_test test_retire_ignored_mode_refuses_either_log_that_is_a_link
+
 # Every record under .cs that the base lacks goes back to it, at any depth,
 # not just topics and narratives: plans, a summary, handoffs, a brief,
 # artifacts, archived narrative sections, a nested topic, a non-.md note. A
