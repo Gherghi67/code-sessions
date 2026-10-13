@@ -435,6 +435,45 @@ retired task1 $sha" "$output" "the listing shows the newline as ?" || return 1
     assert_eq "kept" "$(cat "$TEST_TMPDIR/trash-bin/1-$name")" "the file is in the trash, intact" || return 1
 }
 
+# A literal "?" and a newline print alike, but they are two names on disk:
+# each is its own entry and each reaches the trash.
+test_retire_moves_two_ignored_names_that_print_alike() {
+    local wt="$CS_SESSIONS_ROOT/proj@task1" sha bin output status=0 newline_name
+    sha=$(_landed_feature_ignoring 'a?b*') || { echo "  FAIL: integrate fixture"; return 1; }
+    bin=$(fake_trash_bin moves trash)
+    newline_name="a"$'\n'"b"
+    echo "question mark" > "$wt/a?b"
+    echo "newline" > "$wt/$newline_name"
+    output=$(PATH="$bin:$PATH" "$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "retire proceeds: $output" || return 1
+    assert_eq "MEMORY.md: appended 1 pointer(s) from the feature (base lines kept)
+Moved 2 ignored files to the system trash:
+    $wt/a?b
+    $wt/a?b
+retired task1 $sha" "$output" "both names are listed, each showing a newline as ?" || return 1
+    assert_eq "question mark" "$(cat "$TEST_TMPDIR/trash-bin/1-a?b")" "the name holding ? is in the trash" || return 1
+    assert_eq "newline" "$(cat "$TEST_TMPDIR/trash-bin/2-$newline_name")" "the name holding a newline is in the trash" || return 1
+}
+
+# An entry stands for one name exactly: "a?b" is not the start of "a<newline>bc".
+test_retire_moves_an_ignored_name_that_starts_another_shown_alike() {
+    local wt="$CS_SESSIONS_ROOT/proj@task1" sha bin output status=0 newline_name
+    sha=$(_landed_feature_ignoring 'a?b*') || { echo "  FAIL: integrate fixture"; return 1; }
+    bin=$(fake_trash_bin moves trash)
+    newline_name="a"$'\n'"bc"
+    echo "question mark" > "$wt/a?b"
+    echo "newline" > "$wt/$newline_name"
+    output=$(PATH="$bin:$PATH" "$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "retire proceeds: $output" || return 1
+    assert_eq "MEMORY.md: appended 1 pointer(s) from the feature (base lines kept)
+Moved 2 ignored files to the system trash:
+    $wt/a?b
+    $wt/a?bc
+retired task1 $sha" "$output" "each name is listed once" || return 1
+    assert_eq "question mark" "$(cat "$TEST_TMPDIR/trash-bin/1-a?b")" "the name holding ? is in the trash" || return 1
+    assert_eq "newline" "$(cat "$TEST_TMPDIR/trash-bin/2-$newline_name")" "the name holding a newline is in the trash" || return 1
+}
+
 # A removal that fails after the trash step leaves the worktree, and the
 # refusal says what is already in the trash and where it came from.
 test_retire_lists_what_it_trashed_when_the_removal_then_fails() {
@@ -1109,6 +1148,8 @@ run_test test_retire_refuses_when_the_trash_command_fails
 run_test test_retire_refuses_without_a_trash_command
 run_test test_retire_moves_ignored_work_with_gio_when_trash_is_missing
 run_test test_retire_moves_an_ignored_file_whose_name_holds_a_newline
+run_test test_retire_moves_two_ignored_names_that_print_alike
+run_test test_retire_moves_an_ignored_name_that_starts_another_shown_alike
 run_test test_retire_lists_what_it_trashed_when_the_removal_then_fails
 
 # Ignored build trees hold tens of thousands of files. The refusal names each
