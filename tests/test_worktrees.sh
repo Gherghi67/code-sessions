@@ -2191,6 +2191,43 @@ test_retire_refuses_a_worktree_whose_state_names_no_mode() {
 
 run_test test_retire_refuses_a_worktree_whose_state_names_no_mode
 
+# A tracked file marked skip-worktree (or assume-unchanged) hides its edit
+# from git diff, and git keeps no copy of the edit: removal would destroy it.
+test_retire_refuses_an_edit_git_diff_does_not_show() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    mkdir -p "$base_dir/.cs"/{memory,local}
+    echo "# P" > "$base_dir/README.md"
+    echo "default: 1" > "$base_dir/config.yml"
+    echo "default: 2" > "$base_dir/other.yml"
+    printf '.cs/\n' > "$base_dir/.gitignore"
+    (cd "$base_dir" && git init -q && git config core.autocrlf false && git add -A && git commit -q -m init)
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    git -C "$wt" update-index --skip-worktree config.yml
+    echo "local: tuned" >> "$wt/config.yml"
+    git -C "$wt" update-index --assume-unchanged other.yml
+    echo "local: tuned too" >> "$wt/other.yml"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_output_contains "$output" "Worktree has edits git diff does not show (skip-worktree or assume-unchanged), which removal would destroy; commit them, or undo them and clear the flag (git update-index --no-skip-worktree / --no-assume-unchanged), first:
+config.yml
+other.yml" "the refusal names both files" || return 1
+    assert_eq "default: 1
+local: tuned" "$(cat "$wt/config.yml")" "the edit is still there" || return 1
+    # Positive control: an unedited skip-worktree file is no reason to refuse.
+    git -C "$wt" update-index --no-assume-unchanged other.yml
+    git -C "$wt" checkout -q -- other.yml
+    git -C "$wt" show HEAD:config.yml > "$wt/config.yml"
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "an unedited flagged file retires: $output" || return 1
+    assert_not_exists "$wt" "the worktree is retired" || return 1
+}
+
+run_test test_retire_refuses_an_edit_git_diff_does_not_show
+
 test_rm_worktree_unregisters_and_prompts_branch() {
     local base_dir
     base_dir=$(create_test_session_with_git "myproj")
