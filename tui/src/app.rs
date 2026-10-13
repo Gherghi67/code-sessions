@@ -2252,10 +2252,11 @@ impl App {
     /// which moves every store keyed by the name (the Keychain entries, the
     /// encrypted store and the age state) and needs the directory already
     /// moved. A failure at any step undoes the steps before it, so the session
-    /// keeps its old name whole; the error says what failed. The one
-    /// exception is a secrets move that stopped after it began: values are
-    /// under `new` already, so the session keeps `new` and the outcome says
-    /// the move is unfinished.
+    /// keeps its old name whole; the error says what failed. cs-secrets puts
+    /// back what a failed move moved before it exits. The one exception is a
+    /// move it could not put back, or that was killed: its marker is left,
+    /// values are under `new` already, so the session keeps `new` and the
+    /// outcome says the move is unfinished.
     fn rename_session(&self, root: &Path, old: &str, new: &str) -> Result<RenameOutcome, String> {
         let (old_dir, new_dir) = (root.join(old), root.join(new));
         std::fs::rename(&old_dir, &new_dir).map_err(|e| e.to_string())?;
@@ -2645,7 +2646,9 @@ fn age_state_dir(name: &str) -> Option<PathBuf> {
 /// True when cs-secrets began moving session `old`'s secrets to `new` and
 /// did not finish: its marker `~/.cs-secrets/.rename.<old>` holds the line
 /// `<new>`. It writes the marker before its first change and removes it
-/// last, so a refusal leaves none, or one naming another unfinished move.
+/// last, or once it has put a failed move back, so a refusal or a failure
+/// leaves none, or one naming another unfinished move; a move it could not
+/// put back, or that was killed, leaves it.
 /// Twin of `marker` in rename_session_secrets in bin/cs-secrets; the two
 /// change together.
 fn secrets_move_unfinished(old: &str, new: &str) -> bool {
