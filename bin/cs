@@ -4153,13 +4153,14 @@ $conflicts"
     [ "$carried" != 3 ] \
         || error "$wt_dir/.claude/settings.local.json is a link, and cs reads the feature's permission rules only from a file of its own. Nothing was removed. Put the rules in a file there, or delete the link, then run /finish $task again."
     if [ "$carried" = 2 ]; then
+        local link missing
+        link=$(_settings_link "$base_dir")
         _settings_rules_readable "$wt_dir/.claude/settings.local.json" \
-            || error "$wt_dir/.claude/settings.local.json is not one JSON object, or its permissions is not an object, or its permissions.allow, deny or ask is not a list, so cs cannot list the feature's permission rules that $base_dir/.claude/settings.local.json, a link, does not take. Nothing was removed. Fix it, then run /finish $task again."
-        local missing
+            || error "$wt_dir/.claude/settings.local.json is not one JSON object, or its permissions is not an object, or its permissions.allow, deny or ask is not a list, so cs cannot list the feature's permission rules that $link, a link, does not take. Nothing was removed. Fix it, then run /finish $task again."
         missing=$(_settings_rules_missing "$base_dir/.claude/settings.local.json" "$wt_dir/.claude/settings.local.json") \
-            || error "Could not list the feature's permission rules that $base_dir/.claude/settings.local.json, a link, does not take; nothing was removed"
+            || error "Could not list the feature's permission rules that $link, a link, does not take; nothing was removed"
         [ -z "$missing" ] \
-            || info "$base_dir/.claude/settings.local.json is a link, and cs writes nothing through it. Add by hand the feature's permission rules it lacks that the base needs:
+            || info "$link is a link, and cs writes nothing through it. Add by hand the feature's permission rules it lacks that the base needs:
 $missing"
     elif [ "$carried" = 0 ]; then
         for settings in "$wt_dir/.claude/settings.local.json" "$base_dir/.claude/settings.local.json"; do
@@ -4301,15 +4302,32 @@ _settings_tracked() {  # dir
 # a union would bring back a rule the base dropped or never took). Returns 2
 # for a link at the base's path, wherever it points: the link is the user's
 # way of sharing the file, and cs writes nothing through it; the retire lists
-# the rules the base lacks instead. Returns 3 for a link at the feature's
-# path, leading anywhere or nowhere: cs reads the feature's rules only from a
-# file of its own, and the retire refuses it.
+# the rules the base lacks instead. The same for a link at the base's .claude
+# that stays inside the session: git sees no file behind a linked directory,
+# tracked or not, so it is a way of sharing the file git cannot answer for.
+# One that leads out of the session is refused by the write. Returns 3 for a
+# link at the feature's path, leading anywhere or nowhere: cs reads the
+# feature's rules only from a file of its own, and the retire refuses it.
 _permission_rules_carried() {  # wt_dir base_dir
     [ -s "$1/.claude/settings.local.json" ] || [ -L "$1/.claude/settings.local.json" ] || return 1
     ! _settings_tracked "$1" || return 1
     ! _settings_tracked "$2" || return 1
     [ ! -L "$1/.claude/settings.local.json" ] || return 3
     [ ! -L "$2/.claude/settings.local.json" ] || return 2
+    if [ -L "$2/.claude" ] \
+        && ! _cs_refuses_write cs_mkdir_inside "$2/.claude" "$2/.claude" 2>/dev/null; then
+        return 2
+    fi
+}
+
+# The link _permission_rules_carried returned 2 for: the base's
+# settings.local.json, or else its .claude.
+_settings_link() {  # base_dir
+    if [ -L "$1/.claude/settings.local.json" ]; then
+        printf '%s\n' "$1/.claude/settings.local.json"
+    else
+        printf '%s\n' "$1/.claude"
+    fi
 }
 
 # Add the feature's permission rules to the base's settings.local.json
