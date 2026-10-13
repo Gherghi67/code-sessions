@@ -452,9 +452,9 @@ pub fn sessions_root() -> PathBuf {
         })
 }
 
-/// Test-only sessions-root override. `set_var("CS_SESSIONS_ROOT")` is a
-/// process-global mutation that races the many parallel tests reading env
-/// through `sessions_root()` (a logical data race on shared state). Cargo runs
+/// Test-only sessions-root override. A test build never reads
+/// `CS_SESSIONS_ROOT`, and setting it would be a process-global mutation
+/// racing the many parallel tests (a logical data race on shared state). Cargo runs
 /// each test on its own thread, so a thread-local root is naturally isolated per
 /// test: `scoped(root)` sets it for the life of the returned guard and clears it
 /// on drop (panic-safe, so a reused test thread never leaks it).
