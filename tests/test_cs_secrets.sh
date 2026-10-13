@@ -2852,33 +2852,34 @@ JQFAKE
     assert_file_not_exists "$meta/secrets.${mid}.age" "no age sync file on jq construction failure" || return 1
 }
 
-# A grep/sed execution failure in keychain enumeration must fail loud, not read
-# as an empty store. A fake sed fails only on the extraction script (svce).
+# An awk execution failure in keychain enumeration must fail loud, not read
+# as an empty store. A fake awk fails only on the extraction script, which
+# reads the session's prefix from CS_KEYCHAIN_PREFIX.
 test_keychain_list_loud_on_extraction_failure() {
     local bindir; bindir=$(_make_fake_security)
-    local real_sed; real_sed=$(command -v sed)
-    # A fake sed in the sandbox dir shadows the real one, which it delegates to
+    local real_awk; real_awk=$(command -v awk)
+    # A fake awk in the sandbox dir shadows the real one, which it delegates to
     # for every call except the one it simulates failing.
-    cat > "$bindir/sed" <<SEDFAKE
+    cat > "$bindir/awk" <<AWKFAKE
 #!/usr/bin/env bash
 for a in "\$@"; do
-    case "\$a" in *svce*) echo "sed: simulated failure" >&2; exit 2 ;; esac
+    case "\$a" in *CS_KEYCHAIN_PREFIX*) echo "awk: simulated failure" >&2; exit 2 ;; esac
 done
-exec "$real_sed" "\$@"
-SEDFAKE
-    chmod +x "$bindir/sed"
+exec "$real_awk" "\$@"
+AWKFAKE
+    chmod +x "$bindir/awk"
 
     local out rc=0
     out=$(PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_MODE=readfail \
         "$CS_SECRETS_BIN" list 2>&1) || rc=$?
 
     if [[ $rc -eq 0 ]]; then
-        echo "  FAIL: list must be nonzero when enumeration extraction (sed) fails"
+        echo "  FAIL: list must be nonzero when enumeration extraction (awk) fails"
         echo "    output: $out"
         return 1
     fi
-    assert_output_contains "$out" "sed: simulated failure" \
-        "the abort must show sed actually ran and failed, not that cs-secrets never started" || return 1
+    assert_output_contains "$out" "awk: simulated failure" \
+        "the abort must show awk actually ran and failed, not that cs-secrets never started" || return 1
     assert_output_not_contains "$out" "No secrets stored" "an extraction failure must not read as an empty store" || return 1
 }
 
