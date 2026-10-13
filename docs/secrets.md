@@ -77,16 +77,16 @@ cs -secrets --session my-session list
 
 ### Renaming a session
 
-Every store is keyed by the session's name: the Keychain entries `cs:<session>:<name>`, the encrypted store `~/.cs-secrets/<session>.enc`, and the age pins and digest record under `~/.cs-secrets/sessions/<session>/`. The picker's rename moves them with the session by running `rename` after it moves the directory. If the move fails, the picker moves the directory back and the session keeps its old name.
+cs-secrets keys every store by the session's name: the Keychain entries `cs:<session>:<name>`, the encrypted store `~/.cs-secrets/<session>.enc`, and the age pins and digest record under `~/.cs-secrets/sessions/<session>/`. The picker's rename moves them with the session by running `rename` after it moves the directory. If the move fails, the picker moves the directory back and the session keeps its old name.
 
 ```bash
 # After the session directory old-name was renamed to new-name
 cs -secrets --session old-name rename new-name
 ```
 
-`rename` refuses while the sessions root still has the old name, when it does not have the new one, and when the new name already has Keychain secrets, an encrypted store or age state. It never merges or overwrites. It takes the same per-session locks as `set`, `export-file`, `age add` and `age remove`. Keychain entries are moved only on the Keychain backend.
+`rename` refuses while the sessions root still has the old name, when it does not have the new one, and when the new name already has Keychain secrets, an encrypted store or age state. It never merges or overwrites. It takes the same per-session locks as `set`, `export-file`, `age add` and `age remove`. It moves Keychain entries only on the Keychain backend.
 
-An interrupted move loses no secret. Every Keychain entry is stored and read back under the new name before any old entry is deleted, and each file is linked under the new name before it is removed under the old one. `~/.cs-secrets/.rename.<old>` records the move until it finishes, so running the same command again completes it.
+An interrupted move loses no secret. `rename` stores every Keychain entry under the new name and reads it back before it deletes any old entry, and links each file under the new name before it unlinks the old one. `~/.cs-secrets/.rename.<old>` records the move until it finishes, so running the same command again completes it.
 
 ### No session name?
 
