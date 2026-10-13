@@ -1157,6 +1157,10 @@ test_mkdir_inside_makes_levels_only_inside_an_existing_cs() {
     rc=0
     out=$(CS_SESSIONS_ROOT="$root" "$BASH" -c 'source "$1"; cs_mkdir_inside "$2"' _ "$lib" "$root/live/.cs" 2>&1) || rc=$?
     assert_eq "0" "$rc" "an existing .cs is left as it is" || return 1
+    mkdir "$root/live/notes-kept"
+    out=$(CS_SESSIONS_ROOT="$root" "$BASH" -c 'source "$1"; cs_mkdir_inside "$2"' _ "$lib" "$root/live/notes-kept" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "an existing directory beside the .cs is left as it is: nothing is made" || return 1
+    assert_eq "" "$out" "leaving it says nothing" || return 1
     rc=0
     out=$(CS_SESSIONS_ROOT="$root" "$BASH" -c 'source "$1"; cs_mkdir_inside "$2"' _ "$lib" "$root/gone/.cs/local" 2>&1) || rc=$?
     assert_eq "1" "$rc" "a removed session's .cs/local is refused" || return 1
