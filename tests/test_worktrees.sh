@@ -2809,6 +2809,43 @@ test_retire_leaves_a_settings_file_tracked_in_another_case_to_git() {
 
 run_test test_retire_leaves_a_settings_file_tracked_in_another_case_to_git
 
+# The retire reads the settings files only to add the feature's rules to the
+# base's. One it leaves alone, tracked or behind a link, is never read, so
+# what it holds is no reason to refuse.
+test_retire_reads_no_settings_file_it_leaves_alone() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0 before
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    jq '.permissions.allow = ["Read", "Bash(make:*)"]' "$wt/.claude/settings.local.json" > "$wt/.claude/s.json" \
+        && mv "$wt/.claude/s.json" "$wt/.claude/settings.local.json"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    mkdir -p "$base_dir/.claude"
+    printf '%s\n' '{"permissions": {"allow": "Read"}}' > "$base_dir/team-settings.json"
+    ln -s ../team-settings.json "$base_dir/.claude/settings.local.json"
+    (cd "$base_dir" && git add team-settings.json && git commit -q -m "share settings")
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire goes through a link to a file it cannot read: $output" || return 1
+    assert_eq '{"permissions": {"allow": "Read"}}' "$(cat "$base_dir/team-settings.json")" "the file is untouched" || return 1
+    # The same file tracked at the base's own path.
+    cs_launch "proj@t2"
+    echo "done" > "$CS_SESSIONS_ROOT/proj@t2/result2.txt"
+    (cd "$CS_SESSIONS_ROOT/proj@t2" && git add result2.txt && git commit -q -m "task two")
+    sha=$(land_feature proj t2) || { echo "  FAIL: integrate fixture"; return 1; }
+    rm "$base_dir/.claude/settings.local.json"
+    printf '%s\n' '{"permissions": {"allow": "Read"}}' > "$base_dir/.claude/settings.local.json"
+    (cd "$base_dir" && git add -f .claude/settings.local.json && git commit -q -m "track settings")
+    before=$(cat "$base_dir/.claude/settings.local.json")
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t2" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire goes through a tracked file it cannot read: $output" || return 1
+    assert_eq "$before" "$(cat "$base_dir/.claude/settings.local.json")" "the base's file is as git left it" || return 1
+    assert_eq "" "$(git -C "$base_dir" status --porcelain)" "and the base's checkout is clean" || return 1
+}
+
+run_test test_retire_reads_no_settings_file_it_leaves_alone
+
 # The record of what the feature inherited is what tells a deleted topic from
 # a new one. A record that is there and cannot be read must stop the fuse:
 # guessing "new" would bring the deleted topic back and report success.
