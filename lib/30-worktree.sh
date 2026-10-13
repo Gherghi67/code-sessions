@@ -1578,9 +1578,12 @@ fuse_session_records() {
         cs_append_inside "$dstlog/session.log" _blank_line_then_cat "$src/$srclog" || return 1
     done
 
-    cs_mkdir_inside "$dst/memory" || return 1
+    # .cs/memory is made for a narrative to merge and for nothing else:
+    # _fuse_plan checks the path of each it will merge, and a feature with
+    # none must not fail on a base whose .cs/memory is a file.
     for f in "$src"/memory/narrative.*.md; do
         [ -f "$f" ] || continue
+        cs_mkdir_inside "$dst/memory" || return 1
         base=$(basename "$f")
         if [ -f "$dst/memory/$base" ]; then
             # Append the body past the closing --- of the YAML frontmatter.
