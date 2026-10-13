@@ -1115,6 +1115,48 @@ test_mkdir_inside_refuses_new_levels_under_a_link_out() {
     assert_eq "" "$(ls -A "$o")" "nothing is made outside the session" || return 1
 }
 
+# A session's .cs is made by cs when it creates, adopts or migrates the
+# session, never by a writer: a writer finding the .cs gone is running for a
+# session that was removed under it, and making the path would bring the
+# session back. So cs_mkdir_inside makes levels only inside a .cs that exists,
+# as many as the path needs, and refuses one that would make the .cs or
+# anything above it, quietly when the caller asks.
+test_mkdir_inside_makes_levels_only_inside_an_existing_cs() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local root="$t/root" out rc=0
+    local lib="$SCRIPT_DIR/../hooks/cs-shared.sh"
+    mkdir -p "$root/live/.cs" "$root/bare"
+    out=$(CS_SESSIONS_ROOT="$root" "$BASH" -c 'source "$1"; cs_mkdir_inside "$2"' _ "$lib" "$root/live/.cs/local/context-date" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "levels inside an existing .cs are made" || return 1
+    assert_eq "" "$out" "making them says nothing" || return 1
+    [ -d "$root/live/.cs/local/context-date" ] || { echo "  FAIL: both missing levels are made"; return 1; }
+    rc=0
+    out=$(CS_SESSIONS_ROOT="$root" "$BASH" -c 'source "$1"; cs_mkdir_inside "$2"' _ "$lib" "$root/live/.cs" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "an existing .cs is left as it is" || return 1
+    rc=0
+    out=$(CS_SESSIONS_ROOT="$root" "$BASH" -c 'source "$1"; cs_mkdir_inside "$2"' _ "$lib" "$root/gone/.cs/local" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a removed session's .cs/local is refused" || return 1
+    assert_eq "cs_mkdir_inside: $root/gone/.cs/local is not inside an existing .cs" "$out" "the refusal names the path" || return 1
+    assert_not_exists "$root/gone" "the removed session is not made again" || return 1
+    rc=0
+    out=$(CS_SESSIONS_ROOT="$root" CS_WRITE_QUIET=1 "$BASH" -c 'source "$1"; cs_mkdir_inside "$2"' _ "$lib" "$root/gone/.cs/local" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the quiet refusal fails too" || return 1
+    assert_eq "" "$out" "a quiet caller hears nothing" || return 1
+    assert_not_exists "$root/gone" "nor does a quiet caller make it" || return 1
+    rc=0
+    out=$(CS_SESSIONS_ROOT="$root" "$BASH" -c 'source "$1"; cs_mkdir_inside "$2"' _ "$lib" "$root/bare/.cs/local" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a session directory without its .cs gets none" || return 1
+    assert_not_exists "$root/bare/.cs" "the .cs is not made" || return 1
+    rc=0
+    out=$(CS_SESSIONS_ROOT="$root" "$BASH" -c 'source "$1"; cs_mkdir_inside "$2"' _ "$lib" "$root/live/notes" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a directory beside the .cs is refused" || return 1
+    assert_not_exists "$root/live/notes" "nothing is made beside the .cs" || return 1
+    rc=0
+    out=$(CS_SESSIONS_ROOT="$root" "$BASH" -c 'source "$1"; cs_mkdir_inside "$2"' _ "$lib" "$root/live/.cs/sub/.cs/local" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a .cs among the levels to make is refused" || return 1
+    assert_not_exists "$root/live/.cs/sub" "no level of it is made" || return 1
+}
+
 # The writers take a relative destination from the caller's directory, and
 # check it as that absolute path.
 test_atomic_write_checks_a_relative_destination() {
@@ -1480,6 +1522,7 @@ run_test test_atomic_write_refuses_a_directory_link_out_of_the_session
 run_test test_atomic_write_refuses_a_dangling_link_out_of_the_session
 run_test test_atomic_write_checks_the_session_the_destination_is_in
 run_test test_mkdir_inside_refuses_new_levels_under_a_link_out
+run_test test_mkdir_inside_makes_levels_only_inside_an_existing_cs
 run_test test_atomic_write_checks_a_relative_destination
 run_test test_append_inside_checks_a_relative_destination
 run_test test_append_inside_refuses_a_chain_longer_than_it_follows
