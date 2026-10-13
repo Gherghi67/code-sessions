@@ -104,8 +104,12 @@ _queue_add() {  # qdir, text
     _QUEUE_SEQ=$((10#$_QUEUE_SEQ + 1))
     local fname
     fname="$(printf '%010d' "$(date +%s)")-$$-$(printf '%04d' "$_QUEUE_SEQ")-${RANDOM}"
-    printf '%s\n' "$text" > "$qdir/queue.tmp/$fname" \
-        && mv "$qdir/queue.tmp/$fname" "$qdir/queue/$fname"
+    # errexit does not see a failed left operand, so the abort is explicit.
+    if ! { printf '%s\n' "$text" > "$qdir/queue.tmp/$fname" \
+            && mv "$qdir/queue.tmp/$fname" "$qdir/queue/$fname"; }; then
+        rm -f "$qdir/queue.tmp/$fname"
+        error "could not write the task into $qdir/queue; it is not queued"
+    fi
     rm -f "$qdir/queue.declined"   # queue changed: allow the gate to re-ask
 }
 
