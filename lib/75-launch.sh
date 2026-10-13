@@ -232,6 +232,9 @@ launch_claude_code() {
     # Global, not local: the EXIT trap fires after this function has returned.
     _CS_LOCK_META_DIR="$session_dir/.cs"
     trap 'reset_tab_title; _spawn_put_back_claim; release_session_lock "$_CS_LOCK_META_DIR"; _detach_opened_vault' EXIT
+    # An INT that lands while cs_tmux_title_window holds the title lock makes
+    # release_session_lock skip (one _cs_lock at a time); the lock left names
+    # a dead pid and the next open reclaims it. Decided; do not re-fix.
     trap 'reset_tab_title; release_session_lock "$_CS_LOCK_META_DIR"; exit 130' INT TERM
 
     # Opening an archived session revives it. Placed after lock acquisition so
@@ -587,10 +590,42 @@ launch_claude_code() {
             # id and stays in .cs/local (docs/session-layout.md).
             _qdir=$(cs_private_dir "$session_dir/.cs") \
                 || error "$session_name: .cs/private dangles after the open checked it (vault unmounted mid-launch?). Mount it, then reopen. (seed kept)"
+            # Every write that can fail runs before the first task is queued:
+            # a failure stops the open with the seed staged again, and that
+            # seed is then the only copy of its tasks, so the retry queues
+            # each one once.
+            if [ -n "$_spawner" ] && { [ "$_n" -gt 0 ] || [ "$_has_brief" = 1 ]; }; then
+                printf '%s\n' "$_spawner" > "$session_dir/.cs/local/spawned-by" 2>/dev/null \
+                    || error "could not record the spawner in $session_dir/.cs/local/spawned-by (seed kept; fix it and re-open the session to retry)"
+            fi
+            # A task that cannot be queued takes back the ones this open queued
+            # before it, so the seed put back is the only copy of its tasks. A
+            # take-back that fails names every file left, for the person to
+            # remove before a retry queues them again.
+            local _queued=() _left=() _f
             for _line in ${_tasks[@]+"${_tasks[@]}"}; do
-                _queue_add "$_qdir" "$_line"
+                if _queue_write_task "$_qdir" "$_line"; then
+                    _queued+=("$_QUEUE_ADDED")
+                    continue
+                fi
+                for _f in ${_queued[@]+"${_queued[@]}"}; do
+                    rm -f "$_f" 2>/dev/null && [ ! -e "$_f" ] || _left+=("$_f")
+                done
+                if [ "${#_left[@]}" -gt 0 ]; then
+                    error "could not write the task into $_qdir/queue; it is not queued, and ${#_left[@]} task(s) this open queued before it could not be taken back: ${_left[*]}. Remove them before re-opening the session, or the retry queues them again (seed kept)"
+                fi
+                error "could not write the task into $_qdir/queue; it is not queued (seed kept; the ${#_queued[@]} task(s) this open queued before it were taken back)"
             done
-            [ "$_n" -eq 0 ] || _queue_set_state "$_qdir" armed
+            # Once its tasks are queued the seed is spent: only the claimed
+            # seed is deleted (one published since stays staged for its own
+            # open), and a failure from here on cannot put it back to be
+            # queued a second time.
+            _CS_SPAWN_CLAIM=""
+            rm -f "$_claim"
+            if [ "$_n" -gt 0 ]; then
+                _queue_set_state "$_qdir" armed \
+                    || error "the seed's $_n task(s) are queued but the queue could not be armed; arm it with: cs $session_name -queue start"
+            fi
             if [ "$_n" -gt 0 ] || [ "$_has_brief" = 1 ]; then
                 local _work=""
                 [ "$_has_brief" = 1 ] && _work="Your brief is .cs/brief.md: read it first."
@@ -600,16 +635,11 @@ launch_claude_code() {
                     _work="$_work Then begin."
                 fi
                 if [ -n "$_spawner" ]; then
-                    printf '%s\n' "$_spawner" > "$session_dir/.cs/local/spawned-by"
                     spawn_kick="Spawned by $_spawner. $_work Send results with: cs -msg $_spawner -k result \"...\""
                 else
                     spawn_kick="$_work"
                 fi
             fi
-            # Only the claimed seed is deleted: one published since stays
-            # staged for its own open.
-            _CS_SPAWN_CLAIM=""
-            rm -f "$_claim"
         fi
     fi
     # Arming the ritual is an explicit action the user took seconds ago, so it
@@ -1008,12 +1038,15 @@ _resume_lands_in_place() {  # session_dir, conversation id
 # exited: Claude Code moves it into the parent repo's project dir, and
 # `claude --resume <id>` run from the worktree still finds it there (measured
 # on 2.1.289). That dir also holds the parent's own conversations, so the file
-# counts only when it is this worktree's by the record and first-prompt checks
-# of _discover_worktree_uuid_in, applied to that one file: the worktree can hold
-# older conversations than its newest, and the parent's other files are never
-# read. The base dir is the session's own, which is where the claude cs launches
-# for this session reads. Prints the path; fails when the session is no linked
-# worktree or the conversation is not its own.
+# counts only when it began in this worktree, by the record and first-prompt
+# checks of _discover_worktree_uuid_in, applied to that one file: the worktree
+# can hold older conversations than its newest, and the parent's other files
+# are never read. Discovery's bystander test is not applied: the id is the
+# session's already, and that test reads the first prompt's whole line, so a
+# prompt that only names the teammate frame would unbind it. The base dir is
+# the session's own, which is where the claude cs launches for this session
+# reads. Prints the path; fails when the session is no linked worktree or the
+# conversation did not begin in it.
 _relocated_worktree_transcript() {  # session_dir, conversation id
     local git_dir common parent proj
     git_dir=$(_git_path_abs "$1" --git-dir) || return 1
@@ -1022,7 +1055,7 @@ _relocated_worktree_transcript() {  # session_dir, conversation id
     parent=$(cd "$common/.." 2>/dev/null && pwd -P) || return 1
     proj="$(dirname "$(_claude_project_dir "$1")")/$(_claude_encode_path "$parent")"
     [ -f "$proj/$2.jsonl" ] || return 1
-    _is_worktree_own_transcript "$proj/$2.jsonl" "$(_worktree_json_path "$1")" || return 1
+    _is_worktree_started_transcript "$proj/$2.jsonl" "$(_worktree_json_path "$1")" || return 1
     printf '%s\n' "$proj/$2.jsonl"
 }
 

@@ -36,7 +36,7 @@ _pointers() {  # file
     lines=$(grep -E '^- \[[^]]*\]\([^)]+\)' "$1") || rc=$?
     [ "$rc" -le 1 ] || _die "cannot read $1"
     [ -n "$lines" ] || return 0
-    printf '%s\n' "$lines" | sed -E 's/^- \[[^]]*\]\(([^)]+)\).*/\1/' | LC_ALL=C sort -u
+    printf '%s\n' "$lines" | sed -E 's/^- \[[^]]*\]\(([^)]+)\).*/\1/' | env LC_ALL=C sort -u
 }
 
 _need_index() {
@@ -69,7 +69,7 @@ case "${1:-}" in
         status=0
         before=$(_pointers "$SNAPSHOT")
         after=$(_pointers "$INDEX")
-        removed=$(LC_ALL=C comm -23 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | sed '/^$/d')
+        removed=$(env LC_ALL=C comm -23 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | sed '/^$/d')
         if [ -n "$removed" ]; then
             printf '%s\n' "$removed" | sed 's/^/removed: /'
             status=1
@@ -79,8 +79,8 @@ case "${1:-}" in
         entries=$(cd .cs/memory && for f in user_*.md feedback_*.md project_*.md reference_*.md; do
             [ -f "$f" ] || continue
             printf '%s\n' "$f"
-        done | LC_ALL=C sort)
-        unindexed=$(LC_ALL=C comm -23 <(printf '%s\n' "$entries") <(printf '%s\n' "$after") | sed '/^$/d')
+        done | env LC_ALL=C sort)
+        unindexed=$(env LC_ALL=C comm -23 <(printf '%s\n' "$entries") <(printf '%s\n' "$after") | sed '/^$/d')
         if [ -n "$unindexed" ]; then
             printf '%s\n' "$unindexed" | sed 's/^/unindexed: /'
             status=1

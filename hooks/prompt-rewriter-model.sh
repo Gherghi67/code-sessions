@@ -82,7 +82,10 @@ SYS
 # EMPTY array as an unbound variable under `set -u` and aborts — so on exactly
 # the machines with no timeout(1), the ones this fallback exists for, the
 # rewrite would die before reaching the model.
-_limit="${CS_REWRITE_TIMEOUT:-25}"
+#
+# The bound is prompt-rewriter.sh's, which checks CS_REWRITE_TIMEOUT once for
+# both its countdown and this; run on its own, this takes the same default.
+_limit="${_CS_REWRITE_LIMIT:-25}"
 _tmo=()
 if command -v timeout >/dev/null 2>&1; then
     _tmo=(timeout "$_limit")

@@ -255,9 +255,10 @@ _render_until_done() {  # pid
     # acknowledging itself at once.
     kill -0 "$pid" 2>/dev/null || return 0
     [ -t 2 ] || return 0
-    [ -n "$_bounded" ] && budget=" / ${CS_REWRITE_TIMEOUT:-25}s"
+    local limit="$_CS_REWRITE_LIMIT"
+    [ -n "$_bounded" ] && budget=" / ${limit}s"
     _budget=''
-    [ -n "$_bounded" ] && _budget="${CS_REWRITE_TIMEOUT:-25}"
+    [ -n "$_bounded" ] && _budget="$limit"
 
     # Hidden for the whole display, restored below and in the trap. A cursor
     # parked at the end of the line reads as unfinished output.
@@ -278,7 +279,7 @@ _render_until_done() {  # pid
             _center_vertically
             indent=$(_center_indent 40)
             printf '%*s%sRewriting your prompt…  up to %ss%s\n' \
-                "$indent" '' "$_d" "${CS_REWRITE_TIMEOUT:-25}" "$_r" >&2
+                "$indent" '' "$_d" "$limit" "$_r" >&2
             while kill -0 "$pid" 2>/dev/null; do sleep 0.2; done
             ;;
         native)
@@ -365,6 +366,21 @@ case "${CS_REWRITE_PROVIDER:-}" in
         _rewriter="$(dirname "$0")/prompt-rewriter-vendor.sh" ;;
     *)  _rewriter="$(dirname "$0")/prompt-rewriter-model.sh" ;;
 esac
+
+# The rewrite's time bound, decided once here and exported to the rewriter
+# forked below, which reads only this; the countdown shows the same number. The
+# value reaches shell arithmetic, which runs a command substitution held in an
+# operand, the bar divides by it, and timeout(1) and perl's alarm read a zero as
+# no bound at all, so anything but a positive plain number is the default. 10#
+# forces base 10 once the value is known to be digits, so 08 is eight rather
+# than invalid octal.
+_CS_REWRITE_LIMIT=25
+case "${CS_REWRITE_TIMEOUT:-}" in
+    ''|*[!0-9]*|????????*) ;;
+    *) _CS_REWRITE_LIMIT=$(( 10#$CS_REWRITE_TIMEOUT ))
+       [ "$_CS_REWRITE_LIMIT" -gt 0 ] || _CS_REWRITE_LIMIT=25 ;;
+esac
+export _CS_REWRITE_LIMIT
 
 # What the screen may claim, decided here because here is where the command is
 # known. A countdown is shown only when the thing that runs bounds itself: the

@@ -218,7 +218,7 @@ _worktree_untracked_at_risk() {  # wt_dir
         cs_own+=(-e '^CLAUDE\.local\.md$')
     fi
     printf '%s\n' "$listing" \
-        | LC_ALL=C grep -v "${cs_own[@]}" -e '^\.claude/settings\.local\.json$' \
+        | env LC_ALL=C grep -v "${cs_own[@]}" -e '^\.claude/settings\.local\.json$' \
             -e '^\.DS_Store$' -e '/\.DS_Store$' \
         || [ $? -eq 1 ]
 }
@@ -233,7 +233,7 @@ _untracked_and_ignored_lines() {  # checkout_dir prefix
     local listing line entry sub
     listing=$({ git -C "$1" ls-files -z --others --exclude-standard \
                 && git -C "$1" ls-files -z --others --ignored --exclude-standard; } 2>/dev/null \
-              | LC_ALL=C tr '\n\0' '?\n') || return 1
+              | env LC_ALL=C tr '\n\0' '?\n') || return 1
     if [ -n "$listing" ]; then
         while IFS= read -r line; do
             printf '%s%s\n' "$2" "$line"

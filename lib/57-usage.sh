@@ -58,6 +58,14 @@ _USAGE_LARGE_READ_LINES=350
 # jq error no longer costs one line — it would end the scan for all remaining
 # files, silently, since stderr goes to /dev/null. The update is therefore
 # wrapped in try/catch: a malformed entry is skipped and the state survives.
+#
+# The read is line by line with -R, which jq 1.7.1 does through a 4096-byte
+# buffer: a multibyte character split at a line's byte 4095 comes back as a
+# replacement character and one more, so a large read's character length can
+# be one too high per split. Nothing else this scan prints is free text. The
+# transcripts are not read whole with --rawfile because the scan takes every
+# transcript of the window at once, hundreds of MB, and a whole read costs
+# jq three to four times the bytes it holds (measured on jq 1.7.1).
 _usage_scan() {
     local w5="$1" wk="$2"
     shift 2

@@ -1,12 +1,14 @@
 # ABOUTME: Labelled state checkpoints (save/list/show).
 # ABOUTME: Backs 'cs -checkpoint'.
 
+# A file's mtime as local date and time, "-" when it cannot be read. GNU stat
+# is asked first, as _epoch_mtime does, and its answer keeps the seconds.
 get_file_mtime() {
-    local file="$1"
-    if [[ "$OSTYPE" == darwin* ]]; then
-        stat -f "%Sm" -t "%Y-%m-%d %H:%M" "$file" 2>/dev/null || echo "-"
+    local file="$1" mtime
+    if mtime=$(stat -c "%y" "$file" 2>/dev/null); then
+        printf '%s\n' "${mtime%%.*}"
     else
-        stat -c "%y" "$file" 2>/dev/null | cut -d. -f1 || echo "-"
+        stat -f "%Sm" -t "%Y-%m-%d %H:%M" "$file" 2>/dev/null || echo "-"
     fi
 }
 
@@ -186,8 +188,9 @@ run_checkpoint() {
 # Machine-local queue of prompts drained by the Stop hook. Files live in
 # <session>/.cs/local/ (.cs/private/ in an encrypted session): queue/ (one
 # file per task, staged via queue.tmp/),
-# queue.done, queue.state (idle|armed|draining), queue.declined (epoch),
-# queue.failed (a reported failure the drain has not parked on yet).
+# queue.done, queue.state (idle|armed|draining), queue.current (the task the
+# drain last handed out), queue.failed (a reported failure the drain has not
+# parked on yet).
 # Plain files so the standalone Stop hook can read them without bin/cs's
 # helpers.
 

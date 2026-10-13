@@ -107,6 +107,13 @@ const $ = {
     write: async (path: string, text: string) => { written[path] = text; files[path] = text },
     exists: async (path: string) => existing.has(path) || path in files,
     read: async (path: string) => { if (path in files) return files[path]; throw new Error(`ENOENT ${path}`) },
+    // A directory is listed from the files under it; one with none is absent.
+    list: async (path: string) => {
+      const prefix = `${path.replace(/\/+$/, '')}/`
+      const names = Object.keys(files).filter(k => k.startsWith(prefix) && !k.slice(prefix.length).includes('/'))
+      if (names.length === 0) throw new Error(`ENOENT ${path}`)
+      return names.map(k => ({ name: k.slice(prefix.length), kind: 'file', size: files[k].length, isLink: false }))
+    },
     stat: async (path: string, options?: { resolve?: boolean }) => {
       if (!(path in realPaths)) throw new Error(`ENOENT ${path}`)
       return { kind: 'directory', size: 0, mtimeMs: 0, isLink: false, ...(options?.resolve ? { realPath: realPaths[path] } : {}) }
@@ -1849,15 +1856,14 @@ test('Start while a turn is running arms the queue and sends no prompt', async (
   expect(submitted).toEqual([])
 })
 
-// Not yet is the Stop hook's own "Not yet": it holds that offer back for a
-// while instead of asking again at the next turn end.
-test('Not yet defers the queue and sends no prompt', async () => {
+// Not yet leaves the queue as it is: the band keeps offering its start key.
+test('Not yet runs nothing and sends no prompt', async () => {
   envVars.CS_BIN = '/opt/cs/bin/cs'
   runResult = LISTED
   answer = 'Not yet'
   await queue('')
   await settle()
-  expect(runs.map(x => x.argv[2])).toEqual(['list', 'defer'])
+  expect(runs.map(x => x.argv[2])).toEqual(['list'])
   expect(submitted).toEqual([])
 })
 
@@ -1988,6 +1994,112 @@ test('without CS_BIN /queue says the launch did not say where cs is, and runs no
   const r = await queue('something')
   expect(runs).toHaveLength(0)
   expect(r).toEqual({ text: 'The launch did not say where cs is (CS_BIN); run `cs -queue add "<task>"` from a shell in this session.' })
+})
+
+// The band's start key: tasks queued and nothing running them. cs writes one
+// file per task in the queue directory, behind .cs/private in an encrypted
+// session and in .cs/local otherwise.
+const QDIR = '/work/.cs/local/queue'
+const queueTasks = (n: number, dir = QDIR) => { for (let i = 1; i <= n; i++) files[`${dir}/000000000${i}-seed`] = `task ${i}\n` }
+const queueKey = (tree: any) => buttons(tree).find((b: any) => b.props.key === 'cs-queue')
+// The band body's elements in order, with the conditional gaps left out.
+const bandBody = (tree: any): any[] => {
+  if (!tree || typeof tree !== 'object') return []
+  if (tree.props?.key === 'cs-rotate-band-body') return (tree.children ?? []).flat().filter((c: any) => c && typeof c === 'object')
+  return (tree.children ?? []).flatMap(bandBody)
+}
+
+test('a queue with tasks and nothing running them draws a start key, below the threshold too', async () => {
+  queueTasks(2)
+  const tree = await band()
+  expect(buttons(tree).map((b: any) => b.props.label)).toEqual(['queue 2 \u00b7 start'])
+  expect(queueKey(tree).props).toMatchObject({ key: 'cs-queue', plain: true })
+  expect(queueKey(tree).props.action).toBeUndefined()
+  expect(buttonsUnderText(tree)).toBe(0)
+})
+
+test('the start key is gone while the queue is armed or draining, and while it is empty', async () => {
+  expect(await band()).toBe(DRAWN)
+  queueTasks(1)
+  for (const state of ['armed\n', 'draining\n']) {
+    files['/work/.cs/local/queue.state'] = state
+    expect(await band()).toBe(DRAWN)
+  }
+  files['/work/.cs/local/queue.state'] = 'idle\n'
+  expect(queueKey(await band()).props.label).toBe('queue 1 \u00b7 start')
+})
+
+test('past the threshold the start key comes after the rotate and wrap keys, a separator before it', async () => {
+  percent = 40
+  queueTasks(3)
+  const tree = await band()
+  expect(buttons(tree).map((b: any) => b.props.key)).toEqual(['cs-rotate', 'cs-wrap', 'cs-queue'])
+  const body = bandBody(tree)
+  const at = body.indexOf(queueKey(tree))
+  expect(body[at - 1]).toMatchObject({ type: 'Text', children: ['  \u00b7  '] })
+  expect(buttonsUnderText(tree)).toBe(0)
+})
+
+test('an armed handoff draws the clear key alone, whatever is queued', async () => {
+  arm()
+  queueTasks(2)
+  expect(buttons(await band()).map((b: any) => b.props.key)).toEqual(['cs-rotate'])
+})
+
+test('a teammate conversation, or one cs did not launch, gets no start key', async () => {
+  queueTasks(2)
+  sessionId = 'uuid-teammate'
+  expect(await band()).toBe(DRAWN)
+  sessionId = 'uuid-lead'
+  cwdPath = '/elsewhere'
+  expect(await band()).toBe(DRAWN)
+})
+
+test('an encrypted session counts its tasks, and reads its state, behind .cs/private', async () => {
+  existing.add('/work/.cs/private')
+  queueTasks(5)
+  queueTasks(2, '/work/.cs/private/queue')
+  expect(queueKey(await band()).props.label).toBe('queue 2 \u00b7 start')
+  files['/work/.cs/private/queue.state'] = 'draining\n'
+  expect(await band()).toBe(DRAWN)
+})
+
+test('pressing the start key asks to start and how, then starts the queue and its first turn', async () => {
+  queueTasks(2)
+  answer = QUEUE_START
+  modeAnswer = QUEUE_SUBAGENTS
+  queueKey(await band()).props.onPress()
+  await settle()
+  expect(asks).toEqual([
+    { question: 'Start the 2 queued tasks now?', options: { header: 'Queue', options: [QUEUE_START, 'Not yet', QUEUE_COMPACT] } },
+    { question: QUEUE_MODE_QUESTION, options: { header: 'Queue', options: [QUEUE_HERE, QUEUE_SUBAGENTS, QUEUE_WORKFLOWS] } },
+  ])
+  expect(runs.map(r => r.argv)).toEqual([['/opt/cs/bin/cs', '-queue', 'start', 'subagents']])
+  expect(submitted).toEqual([{ text: QUEUE_KICK }])
+})
+
+test('a press after the queue was started, or emptied, asks nothing', async () => {
+  queueTasks(1)
+  const key = queueKey(await band())
+  files['/work/.cs/local/queue.state'] = 'armed\n'
+  key.props.onPress()
+  await settle()
+  delete files['/work/.cs/local/queue.state']
+  delete files[`${QDIR}/0000000001-seed`]
+  key.props.onPress()
+  await settle()
+  expect(asks).toEqual([])
+  expect(runs).toEqual([])
+})
+
+test('without CS_BIN a press says where to start the queue, and runs nothing', async () => {
+  queueTasks(1)
+  delete envVars.CS_BIN
+  queueKey(await band()).props.onPress()
+  await settle()
+  expect(asks).toEqual([])
+  expect(runs).toEqual([])
+  expect(toasts).toEqual(['cs: the launch did not say where cs is (CS_BIN); run cs -queue start from a shell in this session'])
 })
 
 // /finish progress: cs writes one record per step while it integrates and

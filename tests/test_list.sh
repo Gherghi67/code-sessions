@@ -42,6 +42,24 @@ test_list_runs_under_old_bash() {
     assert_output_contains "$out" "beta" "cs -list should list beta under bash <4"
 }
 
+# Homebrew's gnubin puts GNU stat first on a Mac's PATH. The MODIFIED column is
+# still the session log's mtime, read in the dialect the stat on PATH speaks,
+# not the one OSTYPE names. A `security` that answers nothing stands in for the
+# keychain, which the listing reads secret counts from.
+test_list_modified_time_with_gnu_stat_first_on_a_mac() {
+    local gnubin dir out rc=0
+    gnubin=$(_gnu_stat_first_dir) || { echo "    SKIP: no GNU stat on this machine"; return 77; }
+    printf '#!/bin/sh\nexit 0\n' > "$gnubin/security"; chmod +x "$gnubin/security"
+    dir=$(create_test_session alpha)
+    printf '2020-01-02 03:04:05 - Session started\n' > "$dir/.cs/local/session.log"
+    touch -t 202001020304.05 "$dir/.cs/local/session.log"
+    out=$(PATH="$gnubin:$PATH" OSTYPE=darwin "$CS_BIN" -list 2>&1) || rc=$?
+    assert_eq "0" "$rc" "cs -list exits 0 with GNU stat first; output: $out" || return 1
+    assert_eq "alpha    2020-01-02 03:04  2020-01-02 03:04:05" \
+        "$(printf '%s\n' "$out" | sed "s/$(printf '\033')\[[0-9;]*m//g" | grep '^alpha ')" \
+        "the row shows the log's start and its mtime" || return 1
+}
+
 # A non-session directory under the sessions root (editor config, an empty cs
 # artifact) must not be listed, so that -list and tab-completion agree on what a
 # session is.
@@ -87,6 +105,7 @@ echo "=============="
 echo ""
 
 run_test test_list_renders_sessions
+run_test test_list_modified_time_with_gnu_stat_first_on_a_mac
 run_test test_list_omits_non_session_directories
 run_test test_list_includes_a_legacy_session
 run_test test_list_runs_under_old_bash

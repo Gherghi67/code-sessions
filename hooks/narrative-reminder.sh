@@ -215,13 +215,15 @@ _mail_scan() {
         # recipient it is there. One jq per document for the sender: a count
         # says mail arrived but not whose, and the recipient would otherwise
         # spend a turn on `cs -msg` just to learn whether it can wait.
-        # Truncated and stripped of separators inside jq so a forged or
-        # hand-written document cannot smuggle a newline or a comma into the
-        # rendered line, and coerced to a string so a numeric field cannot
-        # error the read. An unreadable document still wakes, nameless.
-        from=$(jq -r '(((if (.from // "") == "" then .actor else .from end) // "")
+        # Cut to 40 characters and every character outside A-Z a-z 0-9 . _ @
+        # : - replaced inside jq, as the prompt digest renders a sender, so a
+        # forged or hand-written document cannot smuggle a newline, a comma,
+        # a quote or a control byte into the rendered line; coerced to a
+        # string so a numeric field cannot error the read. An unreadable
+        # document still wakes, nameless.
+        from=$(jq -r '((if (.from // "") == "" then .actor else .from end) // "")
              | if type == "string" then . else tostring end
-             | gsub("[\n\r,]"; " "))[0:40]' "$f" 2>/dev/null || printf '')
+             | .[0:40] | gsub("[^A-Za-z0-9._@:-]"; "_")' "$f" 2>/dev/null || printf '')
         # Distinct senders only: two messages from one session is one name, and
         # repeating it answers nothing the count has not already said.
         case "$from" in
@@ -245,9 +247,12 @@ _mail_scan() {
 # every unread sender instead would cost one jq per unread document on every
 # turn end, which is the expense _mail_scan is built to avoid, and which the
 # wake ceiling makes an ordinary state rather than a rare one.
+#
+# Each name is quoted, so one that reads as words cannot run on into the
+# instruction beside it; _mail_scan leaves no quote or comma inside a name.
 _mail_from_clause() {
     [ -n "${MAIL_FROM:-}" ] || { printf ''; return 0; }
-    printf ', new from %s' "$(printf '%s' "$MAIL_FROM" | tr '\n' ',' | sed 's/,$//; s/,/, /g')"
+    printf ', new from %s' "$(printf '%s\n' "$MAIL_FROM" | sed 's/.*/"&"/' | tr '\n' ',' | sed 's/,$//; s/,/, /g')"
 }
 
 # Record the snapshot as the whole of new/, which is sound only when everything
@@ -446,12 +451,19 @@ fi
 # on the next prompt and by session-start.sh at launch. Lives in .cs/local/
 # (per-machine state, never git-synced). Raised before the cooldown gates so
 # every turn end signals, not just the ones that remind. A claude started
-# from inside the session ends no turn of the lead's, so it raises nothing.
-IS_NESTED_CHILD=0
-if command -v cs_is_shown_nested_child >/dev/null 2>&1 && cs_is_shown_nested_child; then
-    IS_NESTED_CHILD=1
+# from inside the session and a tmux teammate end no turn of the lead's, so
+# they raise nothing. The guest is told apart as session-start.sh does: a
+# claude shown to be the lead is asked nothing further, since its launch
+# prompt can hold the flags the teammate check reads.
+IS_GUEST=0
+if command -v cs_is_lead >/dev/null 2>&1 && cs_is_lead; then
+    :
+elif command -v cs_is_shown_nested_child >/dev/null 2>&1 && cs_is_shown_nested_child; then
+    IS_GUEST=1
+elif command -v _cs_is_teammate >/dev/null 2>&1 && _cs_is_teammate; then
+    IS_GUEST=1
 fi
-if [ "$IS_NESTED_CHILD" != 1 ]; then
+if [ "$IS_GUEST" != 1 ]; then
     cs_mkdir_inside "$META_DIR/local" || true
     cs_append_inside "$META_DIR/local/attention" : || true
 fi
@@ -461,14 +473,15 @@ fi
 # aliases, not on PATH); escapes go to the tty directly because hook stdout is
 # captured by Claude Code. CS_NO_ITERM2=1 disables; CS_IT2_DIR/CS_IT2_TTY are
 # test seams. Silent everywhere it cannot apply.
-if [ "$IS_NESTED_CHILD" != 1 ] && [ -z "${CS_NO_ITERM2:-}" ] && [ "${TERM_PROGRAM:-}" = "iTerm.app" ]; then
+if [ "$IS_GUEST" != 1 ] && [ -z "${CS_NO_ITERM2:-}" ] && [ "${TERM_PROGRAM:-}" = "iTerm.app" ]; then
     _it2="${CS_IT2_DIR:-$HOME/.iterm2}/it2attention"
     { [ -x "$_it2" ] && "$_it2" start > "${CS_IT2_TTY:-/dev/tty}"; } 2>/dev/null || true
 fi
 
 # --- Task queue drain (walk-away mode) ---------------------------------------
-# Hands the agent its next queued task when armed; asks once when idle. Wins
-# over the narrative nag (returns early). Queue text is arbitrary -> jq emit.
+# Hands the agent its next queued task when armed or draining. An idle queue,
+# tasks or not, is left to the person: the cs mod's band offers its start.
+# Wins over the narrative nag (returns early). Queue text is arbitrary -> jq emit.
 QDIR="$CS_FILES"
 # A queue a link carries out of the session is not this session's: the drain
 # would move and delete the files there before any checked write.
@@ -480,18 +493,21 @@ LOCAL="$META_DIR/local"
 QUEUE="$QDIR/queue"
 QSTATE_FILE="$QDIR/queue.state"
 QFAILED_FILE="$QDIR/queue.failed"
+# The basename of the task last handed out. Only that file is logged done when
+# its turn ends: whatever is first in the queue by then may be a task nobody
+# handed out (the handed-out one removed, or another accepted ahead of it).
+QCURRENT_FILE="$QDIR/queue.current"
 
 # Record the queue state. An absent state file reads as idle, so when idle
-# cannot be written the file is removed instead: "draining" left behind would
-# have the next Stop mark a task done that was never handed out. Any other
-# state that cannot be recorded ends this Stop with nothing handed out and a
-# message Claude Code shows the user.
+# cannot be written the file is removed instead, rather than leave a run that
+# ended recorded as draining. Any other state that cannot be recorded ends this
+# Stop with nothing handed out and a message Claude Code shows the user.
 #
 # No lock guards the file, by decision (#808): a drain writing idle and a
 # concurrent `cs -queue start` writing armed are last-rename-wins, and the
-# loser is an arm on a queue that just emptied. That costs one prompt, never
-# a task: a non-empty queue left idle takes the idle branch below, which
-# offers the gate again. Benign by design; do not add a lock here.
+# loser is an arm on a queue that just emptied. That costs one press, never a
+# task: a non-empty queue left idle is offered again by the cs mod's band.
+# Benign by design; do not add a lock here.
 _qstate_write() {  # state word
     cs_write_atomic "$QSTATE_FILE" printf '%s\n' "$1" && return 0
     if [ "$1" = idle ] && rm -f "$QSTATE_FILE" 2>/dev/null \
@@ -499,6 +515,16 @@ _qstate_write() {  # state word
         return 0
     fi
     jq -nc --arg m "cs task queue: could not write $QSTATE_FILE" '{decision:"approve", systemMessage:$m}'
+    exit 0
+}
+
+# Record the task about to be handed out, by its file's basename. A hand-out
+# that cannot be recorded is not made: the next Stop could not say which task
+# finished, so this Stop ends with nothing handed out and a message Claude Code
+# shows the user.
+_qcurrent_write() {  # task file path
+    cs_write_atomic "$QCURRENT_FILE" printf '%s\n' "${1##*/}" && return 0
+    jq -nc --arg m "cs task queue: could not write $QCURRENT_FILE" '{decision:"approve", systemMessage:$m}'
     exit 0
 }
 
@@ -624,7 +650,7 @@ _qpark() {  # kind reading limit remaining note
     _inbox_append --arg ts "$(date +%s)" --arg r "$kind" \
         --arg v "$reading" --arg l "$limit" --arg n "$remaining" \
         '{ts: ($ts|tonumber), event: "breaker_tripped", reason: $r, reading: ($v|tonumber), limit: ($l|tonumber), remaining: ($n|tonumber)}'
-    rm -f "$QDIR/failures" "$QFAILED_FILE"
+    rm -f "$QDIR/failures" "$QFAILED_FILE" "$QCURRENT_FILE"
     if [ "$kind" = task_failed ]; then
         _notify_spawner "task reported failed, $remaining task(s) remaining"
         reason="cs task queue: you reported the task as not completed ($QFAIL_LINE). The queue is parked with $remaining task(s) remaining$note; nothing was lost."
@@ -637,7 +663,7 @@ _qpark() {  # kind reading limit remaining note
     exit 0
 }
 
-# Only the lead's Stop advances or gates the queue. A tmux teammate shares the
+# Only the lead's Stop advances the queue. A tmux teammate shares the
 # session directory and fires its own top-level Stop, so ungated its every
 # idle turn pops a task: an eight-task queue reads "all tasks complete" after
 # eight reviewer turns with nothing done. A teammate falls through to the
@@ -671,6 +697,7 @@ if [ "$QLEN" -gt 0 ] && _mail_is_lead; then
         TASK=""
         _first=$(_qfirst "$QUEUE") || _first=""
         [ -n "$_first" ] && TASK=$(cat "$_first" 2>/dev/null || true)
+        [ -z "$_first" ] || _qcurrent_write "$_first"
         _qstate_write draining
         rm -f "$QDIR/failures" "$QFAILED_FILE"
         _inbox_append --arg ts "$(date +%s)" --arg q "$QLEN" \
@@ -686,6 +713,20 @@ $RUN_MODE$SCOPE"
     fi
 
     if [ "$QSTATE" = "draining" ]; then
+        # Which task the turn that just ended was working on. With no usable
+        # record nothing can be logged done, and handing out the first task
+        # could run again one that is finished, so the run parks.
+        QCUR=""
+        [ ! -f "$QCURRENT_FILE" ] || IFS= read -r QCUR < "$QCURRENT_FILE" || true
+        case "$QCUR" in
+            ''|*/*|.|..)
+                _qstate_write idle
+                rm -f "$QCURRENT_FILE"
+                jq -nc --arg m "cs task queue: no record of which task was handed out ($QCURRENT_FILE), so none is logged done. The queue is parked with $QLEN task(s); re-arm with: cs -queue start" \
+                    '{decision:"approve", systemMessage:$m}'
+                exit 0
+                ;;
+        esac
         # The breakers run before the task that just ended is popped, the last
         # task included. Tool failures past the threshold, or the model's own
         # failure line, mean that task did not succeed: it stays first in the
@@ -695,9 +736,10 @@ $RUN_MODE$SCOPE"
         # Every trip records idle before the pop: a state that cannot be
         # written ends this Stop with nothing popped, so the queue still
         # starts with the task last handed out. Popping first would leave
-        # "draining" behind, and the next Stop would log a task done that was
-        # never handed out. A hook killed between the write and the pop leaves
-        # idle with the finished task still queued, which a re-arm runs again.
+        # "draining" behind with that task already gone, and the next Stop
+        # would carry on past the trip. A hook killed between the write and the
+        # pop leaves idle with the finished task still queued, which a re-arm
+        # runs again.
         TRIP=$(_breaker_check) || TRIP=""
         # The failure line exists only in the message of the Stop that
         # carries it, so it goes to disk before idle is recorded: a Stop that
@@ -719,21 +761,28 @@ $RUN_MODE$SCOPE"
                 _qpark "$1" "$2" "$3" "$QLEN" "; the task in progress did not complete, so it stays first in the queue, was not logged done, and its native task stays open"
                 ;;
         esac
-        # Pop = mv the lexically first entry aside BEFORE reading it: a second
-        # drain racing this one loses the rename and disarms instead of
-        # double-running the task.
-        _first=$(_qfirst "$QUEUE") || _first=""
+        # Pop = mv the task handed out aside BEFORE reading it: a second drain
+        # racing this one loses the rename and disarms instead of
+        # double-running the task. A handed-out task that is gone (removed
+        # mid-run) is logged nothing, and the run goes on with what is first.
         POPPED="$QDIR/queue.popping.$$"
-        if [ -n "$_first" ] && mv "$_first" "$POPPED" 2>/dev/null; then
-            DONE_TASK=$(cat "$POPPED" 2>/dev/null || true)
-            rm -f "$POPPED"
-            cs_append_inside "$QDIR/queue.done" printf '%s\n' "$DONE_TASK" || true
-            _inbox_append --arg ts "$(date +%s)" --arg task "$DONE_TASK" \
-                '{ts: ($ts|tonumber), event: "task_done", task: $task}'
+        POP_OK=1
+        if [ -f "$QUEUE/$QCUR" ]; then
+            if mv "$QUEUE/$QCUR" "$POPPED" 2>/dev/null; then
+                DONE_TASK=$(cat "$POPPED" 2>/dev/null || true)
+                rm -f "$POPPED"
+                cs_append_inside "$QDIR/queue.done" printf '%s\n' "$DONE_TASK" || true
+                _inbox_append --arg ts "$(date +%s)" --arg task "$DONE_TASK" \
+                    '{ts: ($ts|tonumber), event: "task_done", task: $task}'
+            else
+                POP_OK=0
+            fi
+        fi
+        if [ "$POP_OK" = 1 ]; then
             NEWLEN=$(_qlen "$QUEUE")
             if [ "$NEWLEN" -le 0 ]; then
                 _qstate_write idle
-                rm -f "$QDIR/queue.mode"
+                rm -f "$QDIR/queue.mode" "$QCURRENT_FILE"
                 DONE_COUNT=$(_qdone_len "$QDIR/queue.done")
                 _inbox_append --arg ts "$(date +%s)" --arg d "$DONE_COUNT" \
                     '{ts: ($ts|tonumber), event: "drain_finished", done: ($d|tonumber)}'
@@ -753,6 +802,7 @@ $RUN_MODE$SCOPE"
             NEXT=""
             _first=$(_qfirst "$QUEUE") || _first=""
             [ -n "$_first" ] && NEXT=$(cat "$_first" 2>/dev/null || true)
+            [ -z "$_first" ] || _qcurrent_write "$_first"
             REASON="cs task queue: next task ($NEWLEN remaining). Mark the previous native task completed and this one in-progress (create it if missing), then do it. $QFAIL_HINT
 
 Task:
@@ -764,40 +814,12 @@ $RUN_MODE$SCOPE"
         else
             # pop failed: disarm rather than re-inject the same task (fail-safe)
             _qstate_write idle
+            rm -f "$QCURRENT_FILE"
         fi
     fi
 
-    if [ "$QSTATE" = "idle" ]; then
-        DECLINED="$QDIR/queue.declined"
-        GATE=1
-        if [ -f "$DECLINED" ]; then
-            # A stamp is data: anything but a plain number reads as 0, a
-            # decline long past, and never reaches the arithmetic below, which
-            # would run a command substitution held in it.
-            DECL_AT=$(_num_or "$(cat "$DECLINED" 2>/dev/null | tr -d '[:space:]')" 0)
-            NOW=$(date +%s)
-            if [ -n "$DECL_AT" ] && [ $((NOW - DECL_AT)) -lt 600 ]; then
-                GATE=0            # within cooldown: fall through to narrative
-            else
-                rm -f "$DECLINED"
-            fi
-        fi
-        if [ "$GATE" = "1" ]; then
-            CTX=$(cat "$LOCAL/context-pct" 2>/dev/null | tr -d '[:space:]' || true)
-            CTX_LINE=""
-            COMPACT=""
-            case "$CTX" in
-                ''|*[!0-9]*) : ;;
-                *) CTX_LINE=" Context is at ${CTX}%."
-                   [ "$CTX" -ge 60 ] && COMPACT=" Context is heavy: offer a third option 'Compact first'. If chosen, run no queue command and tell the user to run /compact; you will be asked again afterward." ;;
-            esac
-            REASON="cs task queue: $QLEN task(s) are queued for a walk-away run.$CTX_LINE$COMPACT Use AskUserQuestion to ask, in one call, whether to work through them now (options: Start / Not yet) and how to run them (options: In this conversation / In subagents / As workflows). On Start, run: cs -queue start, or cs -queue start subagents, or cs -queue start workflow, by the second answer (then stop; I will hand you each task). On Not yet, run: cs -queue defer."
-            jq -nc --arg r "$REASON" '{decision:"block", reason:$r}'
-            exit 0
-        fi
-    fi
 fi
-# (falls through to the narrative reminder below when not gating/draining)
+# (falls through to the narrative reminder below when not draining)
 
 # --- Mail wake (Stop) ---------------------------------------------------------
 # The turn-end half. Reached only when the queue is not active: every armed or
@@ -903,11 +925,10 @@ fi
 NARRATIVE_OVER=""
 for _nf in "$META_DIR"/memory/narrative*.md; do
     [ -f "$_nf" ] || continue
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-        _m=$(stat -f %m "$_nf" 2>/dev/null || echo 0)
-    else
-        _m=$(stat -c %Y "$_nf" 2>/dev/null || echo 0)
-    fi
+    # GNU stat is asked first and BSD second, by which one answers rather than
+    # by OSTYPE: Homebrew's coreutils can put GNU stat ahead of the system's on
+    # a Mac, and GNU `stat -f` prints the file system's details, not the mtime.
+    _m=$(_num_or "$(stat -c %Y "$_nf" 2>/dev/null || stat -f %m "$_nf" 2>/dev/null)" 0)
     if [ "$_m" -ge "$NARRATIVE_MTIME" ]; then
         NARRATIVE_MTIME="$_m"
         NARRATIVE_FILE="$_nf"

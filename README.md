@@ -351,7 +351,7 @@ Queue up prompts and step away — cs drains them on its own at turn
 boundaries, once you've confirmed:
 
 ```bash
-cs -queue add "refactor the parser"   # add a task (or: cs <session> -queue add "..." from another terminal)
+cs -queue add "refactor the parser"   # add a task (or: cs <session> -queue add "..." from a terminal outside any session; from another session it arrives as task mail)
 cs -queue accept <id>                 # queue a task another session mailed (cs -msg shows the id)
 cs -queue                             # or `cs -queue list` — show pending + completed tasks
 cs -queue rm 2                        # remove pending task 2
@@ -359,15 +359,16 @@ cs -queue clear                       # empty the queue and stop draining
 cs -queue log                         # Walk-away run journal (tasks done, breaker trips)
 ```
 
-When you finish a turn with tasks queued, the Stop hook asks once (via
-`AskUserQuestion`) whether to work through them — showing the current
-context % and, at 60% or above, offering to compact first — and how: in
-this conversation, each task in a subagent, or each task as a workflow
-(choosing workflows is your go-ahead for Claude Code's Workflow tool).
-Choosing "Start"
+When tasks are queued and nothing is running them, the `cs` mod's band
+above the prompt shows a `queue N · start` key. Press it and cs asks whether
+to work through them (Start, Not yet, or Compact, which compacts the
+conversation and then starts) and how: in this conversation, each task in a
+subagent, or each task as a workflow (choosing workflows is your go-ahead
+for Claude Code's Workflow tool). A turn that ends with tasks waiting is not
+stopped to ask. Start
 drains every task in order (FIFO, top to bottom) at each stop boundary with
-no further prompts until the queue is empty; "Not yet" waits and re-asks
-after about 10 minutes, or as soon as the queue changes. There's no
+no further prompts until the queue is empty. Not yet runs nothing and the
+key stays. There's no
 mid-drain pause — once started it runs to the end, trusting Claude Code's
 own auto-compact. As it drains, cs instructs Claude to mirror the queue
 into the native task list so progress stays visible, and hands each task
@@ -375,9 +376,9 @@ over with its scope: do what the task asks, leave a pre-existing bug or
 unmentioned behavior as a follow-up in the narrative, and state the reading
 taken of an ambiguous task. In subagent or workflow mode each handed task
 also says to run it that way and to check the result before marking it
-done. (The gate itself runs `cs -queue start` (with `subagents` or
-`workflow`) / `cs -queue defer` on your behalf — you don't need to run
-those directly.)
+done. (The key runs `cs -queue start` (with `subagents` or `workflow`) on
+your behalf. With `CS_NO_FUNCTION_HOOKS=1` there is no band, so run it
+yourself.)
 
 Inside a cs session, `/queue <task>` does the same as `cs -queue add` without
 leaving Claude Code, and runs at once even while Claude is mid-turn. A toast
@@ -385,8 +386,8 @@ under the prompt confirms each add (`cs: queued: <task>`, cut at 60
 characters). `/queue`
 alone prints `cs -queue list` and, when tasks are pending and the queue is not
 already running, asks whether to start them. Start arms the queue (and starts
-a turn if Claude is idle, so the first task arrives); Not yet waits, as the
-Stop hook's own "Not yet" does; Compact compacts the conversation first, then
+a turn if Claude is idle, so the first task arrives); Not yet runs
+nothing; Compact compacts the conversation first, then
 starts the queue as Start does. It comes from the `cs` mod, so
 `CS_NO_FUNCTION_HOOKS=1` withholds it.
 
