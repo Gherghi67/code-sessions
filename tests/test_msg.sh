@@ -402,6 +402,22 @@ test_send_accepts_body_at_the_cap() {
     assert_eq "65536" "$(jq -r '.body | length' "$(FIRST_MSG)")" "body stored whole" || return 1
 }
 
+# A body of multibyte text reaches the mailbox byte for byte, past jq's
+# 4096-byte read buffer, which on some jq builds splits a character there and
+# stores a replacement character in its place. Compared as bytes: one body of
+# 3000 U+00E9, and one of U+00E9 exactly at the 65536-byte cap.
+test_send_stores_a_multibyte_body_byte_for_byte() {
+    local sent="$TEST_TMPDIR/sent" got="$TEST_TMPDIR/got" n
+    for n in 3000 32768; do
+        python3 -c "import sys; sys.stdout.buffer.write('\u00e9'.encode() * $n)" > "$sent"
+        "$CS_BIN" -msg receiver - < "$sent" >/dev/null 2>&1 || { echo "  the $n-character send failed"; return 1; }
+        jq -j .body "$(FIRST_MSG)" > "$got"
+        assert_eq "$(wc -c < "$sent" | tr -d ' ')" "$(wc -c < "$got" | tr -d ' ')" "the $n-character body keeps its length in bytes" || return 1
+        cmp -s "$sent" "$got" || { echo "  FAIL: the $n-character body is not the bytes sent"; return 1; }
+        rm -f "$(MAILDIR)"/new/*.json
+    done
+}
+
 # `cs -msg <session> -` reads the body from stdin — the channel that makes the
 # larger cap reachable, since a multi-KB handoff does not belong in argv.
 test_send_reads_body_from_stdin() {
@@ -927,6 +943,7 @@ run_test test_send_trailing_flag_errors_loudly
 run_test test_send_rejects_empty_and_oversize_body
 run_test test_send_accepts_body_at_the_cap
 run_test test_send_reads_body_from_stdin
+run_test test_send_stores_a_multibyte_body_byte_for_byte
 run_test test_task_kind_waits_in_the_mailbox_not_the_queue
 run_test test_queue_accept_queues_a_mailed_task_by_id
 run_test test_queue_accept_shows_the_task_without_its_control_bytes
