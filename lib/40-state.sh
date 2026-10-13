@@ -82,10 +82,14 @@ _read_local_state() {
 # and serialised against the SessionStart hook's writer (cs_local_state_set),
 # idempotent. A write that fails (permissions, a full disk) ends cs with the
 # file named: the launch has already told the user what it was about to
-# start, and a silent miss leaves the next open resuming nothing.
+# start, and a silent miss leaves the next open resuming nothing. Only the
+# last level is made: every session cs writes state for already has its .cs,
+# and one removed under a running cs ends it here rather than being built
+# again from its path.
 _set_local_state() {
-    local state="$1" key="$2" value="$3"
-    mkdir -p "$(dirname "$state")" 2>/dev/null || error "could not create $(dirname "$state")"
+    local state="$1" key="$2" value="$3" dir
+    dir=$(dirname "$state")
+    [ -d "$dir" ] || mkdir "$dir" 2>/dev/null || error "could not create $dir"
     cs_local_state_set "$state" "$key" "$value" 2>/dev/null || error "could not write $state"
 }
 
