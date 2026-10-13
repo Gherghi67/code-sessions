@@ -777,7 +777,7 @@ $conflicts"
     local settings
     for settings in "$wt_dir/.claude/settings.local.json" "$base_dir/.claude/settings.local.json"; do
         _settings_allow_readable "$settings" \
-            || error "$settings is not valid JSON, or its permissions.allow is not a list, so cs cannot add the feature's permission grants to $base_dir/.claude/settings.local.json. Nothing was removed. Fix it, then run /finish $task again."
+            || error "$settings is not one JSON object, or its permissions is not an object, or its permissions.allow is not a list, so cs cannot add the feature's permission grants to $base_dir/.claude/settings.local.json. Nothing was removed. Fix it, then run /finish $task again."
     done
     _carry_permission_grants "$wt_dir" "$base_dir" \
         || error "Could not add the feature's permission grants to $base_dir/.claude/settings.local.json; nothing was removed"
@@ -827,13 +827,15 @@ $remove_err"
 }
 
 # Whether _settings_allow_union can read a Claude Code settings file: a
-# missing or zero-byte one reads as {}; any other must be a JSON object whose
-# permissions, when present, is an object and whose permissions.allow, when
-# present, is a list.
+# missing or zero-byte one reads as {}; any other must hold exactly one JSON
+# value, an object whose permissions, when present, is an object and whose
+# permissions.allow, when present, is a list. A null is present, not absent:
+# the union reads only the first document and takes a null for none.
 _settings_allow_readable() {  # file
     [ -s "$1" ] || return 0
-    jq -e 'type == "object" and ((.permissions // {}) | type == "object")
-        and ((.permissions.allow // []) | type == "array")' "$1" >/dev/null 2>&1
+    jq -s -e 'length == 1 and (.[0] | type == "object"
+        and ((has("permissions") | not) or (.permissions | type == "object"
+            and ((has("allow") | not) or (.allow | type == "array")))))' "$1" >/dev/null 2>&1
 }
 
 # A Claude Code settings file's JSON, or {} for a missing or zero-byte one.

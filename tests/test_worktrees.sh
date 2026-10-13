@@ -2366,7 +2366,7 @@ test_retire_refuses_a_settings_file_it_cannot_read() {
     before=$(cat "$base_dir/.claude/settings.local.json")
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
     assert_eq "1" "$status" "the retire refuses: $output" || return 1
-    assert_output_contains "$output" "Error: $wt/.claude/settings.local.json is not valid JSON, or its permissions.allow is not a list, so cs cannot add the feature's permission grants to $base_dir/.claude/settings.local.json. Nothing was removed. Fix it, then run /finish t1 again." \
+    assert_output_contains "$output" "Error: $wt/.claude/settings.local.json is not one JSON object, or its permissions is not an object, or its permissions.allow is not a list, so cs cannot add the feature's permission grants to $base_dir/.claude/settings.local.json. Nothing was removed. Fix it, then run /finish t1 again." \
         "the refusal names the feature's file" || return 1
     assert_dir "$wt/.cs/memory" "the worktree is still there" || return 1
     assert_eq "$before" "$(cat "$base_dir/.claude/settings.local.json")" "the base's file is as it was" || return 1
@@ -2377,7 +2377,7 @@ test_retire_refuses_a_settings_file_it_cannot_read() {
     status=0
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
     assert_eq "1" "$status" "the retire refuses: $output" || return 1
-    assert_output_contains "$output" "Error: $base_dir/.claude/settings.local.json is not valid JSON, or its permissions.allow is not a list, so cs cannot add the feature's permission grants to $base_dir/.claude/settings.local.json. Nothing was removed. Fix it, then run /finish t1 again." \
+    assert_output_contains "$output" "Error: $base_dir/.claude/settings.local.json is not one JSON object, or its permissions is not an object, or its permissions.allow is not a list, so cs cannot add the feature's permission grants to $base_dir/.claude/settings.local.json. Nothing was removed. Fix it, then run /finish t1 again." \
         "the refusal names the base's file" || return 1
     assert_dir "$wt/.cs/memory" "the worktree is still there" || return 1
     assert_eq "$before" "$(cat "$base_dir/.claude/settings.local.json")" "the base's file is as it was" || return 1
