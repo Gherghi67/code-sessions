@@ -2197,15 +2197,22 @@ test_import_file_reads_the_cs_it_checked_when_swapped_during_the_copy() {
     _assert_secret_absent victim_token "nothing from the victim's store is imported" || return 1
 }
 
+# A directory outside the session and outside the local store, holding a sync
+# file the shared password opens; the session's .cs/inbox is linked to it.
+_link_inbox_outside_the_session() {
+    mkdir -p "$TEST_TMPDIR/outside"
+    printf '{"other_token":"value-of-other"}\n' | openssl enc -aes-256-cbc -e -pbkdf2 -iter 100000 \
+        -out "$TEST_TMPDIR/outside/other-session.enc" -pass env:CS_SECRETS_PASSWORD \
+        || { echo "  FAIL: fixture: could not encrypt the sync file"; return 1; }
+    ln -s "$TEST_TMPDIR/outside" "$CS_SESSIONS_ROOT/test-session/.cs/inbox"
+}
+
 # The session can be spelled many ways: a doubled slash, a dot segment, a link
 # to the sessions root, or a relative name from a directory reached through
 # one. Each is the same session, so each must meet the same refusal.
 test_import_file_refuses_a_named_file_behind_a_linked_directory_however_spelled() {
     local out rc spelling alias="$TEST_TMPDIR/root-alias"
-    local inbox="$CS_SESSIONS_ROOT/test-session/.cs/inbox"
-    printf 'value-of-other\n' | "$CS_SECRETS_BIN" --session other-session set other_token >/dev/null 2>&1 \
-        || { echo "  FAIL: fixture: set in the other session failed"; return 1; }
-    ln -s "$HOME/.cs-secrets" "$inbox"
+    _link_inbox_outside_the_session || return 1
     ln -s "$CS_SESSIONS_ROOT" "$alias"
     for spelling in \
         "$CS_SESSIONS_ROOT//test-session/.cs/inbox/other-session.enc" \
@@ -2231,9 +2238,7 @@ test_import_file_refuses_a_named_file_behind_a_linked_directory_in_another_case(
         return 77
     fi
     upper=$(printf '%s' "$CS_SESSIONS_ROOT/test-session" | tr '[:lower:]' '[:upper:]')
-    printf 'value-of-other\n' | "$CS_SECRETS_BIN" --session other-session set other_token >/dev/null 2>&1 \
-        || { echo "  FAIL: fixture: set in the other session failed"; return 1; }
-    ln -s "$HOME/.cs-secrets" "$CS_SESSIONS_ROOT/test-session/.cs/inbox"
+    _link_inbox_outside_the_session || return 1
     out=$("$CS_SECRETS_BIN" import-file "$upper/.cs/inbox/other-session.enc" 2>&1) || rc=$?
     assert_eq "1" "$rc" "the import is refused: $out" || return 1
     _assert_secret_absent other_token "nothing from the other session's store is imported" || return 1
