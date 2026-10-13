@@ -426,15 +426,15 @@ qlen() {
 
 
 # A queue with tasks that nobody started is left to the person: the turn ends
-# with nothing said about it, and nothing is recorded. The cs mod's band offers
+# as it would with no queue, and nothing is recorded. The cs mod's band offers
 # the start instead.
 test_drain_leaves_an_idle_queue_alone() {
     qseed "do the thing" "and the other"
     local out; out=$(drain)
-    assert_eq "" "$out" "the Stop says nothing" || return 1
+    assert_eq '{"decision": "approve"}' "$out" "the Stop ends as one with no queue does" || return 1
     printf 'idle\n' > "$(QDIR)/queue.state"
     out=$(drain)
-    assert_eq "" "$out" "an idle state says nothing either" || return 1
+    assert_eq '{"decision": "approve"}' "$out" "and so does one whose queue is recorded idle" || return 1
     assert_eq "idle" "$(cat "$(QDIR)/queue.state")" "the state is untouched" || return 1
     assert_file_not_exists "$(QDIR)/queue.declined" "no cooldown is stamped" || return 1
     assert_file_not_exists "$(QDIR)/queue.current" "nothing was handed out" || return 1
