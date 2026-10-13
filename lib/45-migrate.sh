@@ -622,10 +622,11 @@ _migrate_session_documents() {  # session_dir, tracked_tree_is_ours
             created_date=$(git -C "$session_dir" log --diff-filter=A --format=%as -- .cs/README.md 2>/dev/null | tail -1 || true)
         fi
         if [ -z "$created_date" ]; then
-            if [[ "$OSTYPE" == "darwin"* ]]; then
-                created_date=$(stat -f '%Sm' -t '%Y-%m-%d' "$readme" 2>/dev/null || date '+%Y-%m-%d')
+            # GNU stat first, as _epoch_mtime asks it.
+            if created_date=$(stat -c '%y' "$readme" 2>/dev/null); then
+                created_date=${created_date%% *}
             else
-                created_date=$(stat -c '%y' "$readme" 2>/dev/null | cut -d' ' -f1 || date '+%Y-%m-%d')
+                created_date=$(stat -f '%Sm' -t '%Y-%m-%d' "$readme" 2>/dev/null || date '+%Y-%m-%d')
             fi
         fi
         local existing_content
@@ -1084,13 +1085,17 @@ migrate_session() {
     # conversation. A recorded UUID with no matching transcript file is an
     # orphan — the cs hooks/doctor cross-checks will warn about it on every
     # launch, and `--resume` will fail. Steady state ("recorded UUID present,
-    # transcript exists") is the fast path; cold paths run discovery.
+    # transcript exists") is the fast path; cold paths run discovery. A linked
+    # worktree's conversation whose transcript `claude --worktree` moved into
+    # the parent repo's project dir still exists and still resumes, so it is
+    # bound too (_relocated_worktree_transcript).
     {
         local _existing _proj _bind_uuid=""
         _existing=$(_read_local_state "$_state" claude_session_id)
         _proj=$(_claude_project_dir "$session_dir")
 
-        if [ -n "$_existing" ] && [ -f "$_proj/$_existing.jsonl" ]; then
+        if [ -n "$_existing" ] && { [ -f "$_proj/$_existing.jsonl" ] \
+            || _relocated_worktree_transcript "$session_dir" "$_existing" >/dev/null; }; then
             : # already bound — skip discovery entirely
         else
             local _discovered
