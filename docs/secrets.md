@@ -92,7 +92,7 @@ cs -secrets --session old-name rename new-name
 
 `rename` refuses while the sessions root still has the old name, when it does not have the new one, and when the new name already has Keychain secrets, an encrypted store or age state. It never merges or overwrites. It takes the same per-session locks as `set`, `rm`, `purge`, `export-file`, `age add` and `age remove`, for both names, so a write that lands during a rename moves with the session or waits for the move. It moves Keychain entries only on the Keychain backend.
 
-An interrupted move loses no secret. `rename` stores every Keychain entry under the new name and reads it back before it deletes any old entry, and links each file under the new name before it unlinks the old one. `~/.cs-secrets/.rename.<old>` records the move until it finishes, so running the same command again completes it.
+An interrupted move loses no secret. `rename` stores every Keychain entry under the new name and reads it back before it deletes any old entry, and links each file under the new name before it unlinks the old one. `~/.cs-secrets/.rename.<old>` records the move until it finishes, so running the same command again completes it. While it is there, a `rename` of the old name to any other name is refused with the command that finishes the first; `rename` reads it only once it holds both names' write locks, so a second `rename` that waited on the first sees it.
 
 ### No session name?
 
