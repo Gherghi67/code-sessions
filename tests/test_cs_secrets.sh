@@ -4138,9 +4138,9 @@ test_set_delete_and_purge_take_the_session_write_lock() {
         for verb in "set K2" "delete K1" "purge"; do
             rc=0
             # shellcheck disable=SC2086  # $verb is a verb and its argument
-            out=$(CS_SECRETS_LOCK_TIMEOUT=0 _backend_secrets "$backend" $verb < "$TEST_TMPDIR/v1" 2>&1) || rc=$?
+            out=$(CS_SECRETS_LOCK_TIMEOUT=1 _backend_secrets "$backend" $verb < "$TEST_TMPDIR/v1" 2>&1) || rc=$?
             assert_eq "1" "$rc" "$backend $verb exits 1: $out" || return 1
-            assert_eq "Error: timed out after 0s acquiring the secrets write lock for session 'test-session' (held by PID 1). If no such process is running, remove: $lock
+            assert_eq "Error: timed out after 1s acquiring the secrets write lock for session 'test-session' (held by PID 1). If no such process is running, remove: $lock
 Error: Refusing to change the secrets of session 'test-session': could not acquire the secrets write lock" "$out" \
                 "$backend $verb names the lock" || return 1
         done
@@ -4161,9 +4161,9 @@ test_rename_takes_the_write_lock_of_both_names() {
         lock="$CS_SESSIONS_ROOT/.secrets-lock.$name"
         printf '1\n' > "$lock"
         rc=0
-        out=$(CS_SECRETS_LOCK_TIMEOUT=0 _kc_secrets --session alpha rename bravo 2>&1) || rc=$?
+        out=$(CS_SECRETS_LOCK_TIMEOUT=1 _kc_secrets --session alpha rename bravo 2>&1) || rc=$?
         assert_eq "1" "$rc" "rename exits 1 while $name's write lock is held: $out" || return 1
-        assert_eq "Error: timed out after 0s acquiring the secrets write lock for session '$name' (held by PID 1). If no such process is running, remove: $lock
+        assert_eq "Error: timed out after 1s acquiring the secrets write lock for session '$name' (held by PID 1). If no such process is running, remove: $lock
 Error: Refusing to move the secrets of session 'alpha' to 'bravo': could not acquire the secrets write locks" "$out" \
             "rename names $name's lock" || return 1
         rm -f "$lock"
