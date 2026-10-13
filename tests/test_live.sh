@@ -491,11 +491,12 @@ test_scrub_controls_bytes_under_the_c_locale() {
     done
 }
 
-# Only /bin/bash here: a bash linked against libintl (Homebrew's) can die in
-# this cell before it prints a row.
 test_scrub_controls_bytes_with_no_locale_set() {
-    assert_eq "$SCRUB_GRID" "$(_scrub_grid /bin/bash "" 2>&1)" \
-        "/bin/bash with no locale variable set" || return 1
+    local b
+    for b in $(_scrub_bashes); do
+        assert_eq "$SCRUB_GRID" "$(_scrub_grid "$b" "" 2>&1)" \
+            "$b with no locale variable set" || return 1
+    done
 }
 
 # A caller pipes into _scrub_controls, so it runs in a forked copy of the
