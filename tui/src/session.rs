@@ -2838,6 +2838,61 @@ mod tests {
         assert!(count_secrets_from_keychain().is_empty());
     }
 
+    // The Keychain panel counts one secret per generic password whose
+    // service is cs:<session>:<name>, by session. A label or an account that
+    // reads cs:..., and a service that is not cs's, count for nothing.
+    #[test]
+    fn a_keychain_dump_counts_cs_secrets_per_session() {
+        let dump = r#"keychain: "/Users/example/Library/Keychains/login.keychain-db"
+version: 512
+class: "genp"
+attributes:
+    0x00000007 <blob>="cs:alpha:API_KEY"
+    "acct"<blob>="example"
+    "labl"<blob>="cs:alpha:API_KEY"
+    "svce"<blob>="cs:alpha:API_KEY"
+keychain: "/Users/example/Library/Keychains/login.keychain-db"
+version: 512
+class: "genp"
+attributes:
+    "acct"<blob>="example"
+    "svce"<blob>="cs:alpha:TOKEN"
+keychain: "/Users/example/Library/Keychains/login.keychain-db"
+version: 512
+class: "genp"
+attributes:
+    "acct"<blob>="example"
+    "svce"<blob>="cs:a.b:K1"
+keychain: "/Users/example/Library/Keychains/login.keychain-db"
+version: 512
+class: "genp"
+attributes:
+    "acct"<blob>="cs:gamma:K1"
+    "svce"<blob>="cs:beta:DB_URL"
+keychain: "/Users/example/Library/Keychains/login.keychain-db"
+version: 512
+class: "genp"
+attributes:
+    "acct"<blob>="example"
+    "labl"<blob>="cs:delta:K1"
+    "svce"<blob>="com.example.app"
+keychain: "/Users/example/Library/Keychains/login.keychain-db"
+version: 512
+class: "inet"
+attributes:
+    "acct"<blob>="example"
+    "srvr"<blob>="example.com"
+    "svce"<blob>="cs-other:alpha:K1"
+"#;
+        let mut counts: Vec<(String, u32)> = secret_counts_in_keychain_dump(dump).into_iter().collect();
+        counts.sort();
+        assert_eq!(
+            counts,
+            vec![("a.b".to_string(), 1), ("alpha".to_string(), 2), ("beta".to_string(), 1)]
+        );
+        assert!(secret_counts_in_keychain_dump("").is_empty(), "an empty dump counts nothing");
+    }
+
     #[test]
     fn a_linked_worktree_is_recognised_as_a_git_checkout() {
         // A linked worktree's .git is a FILE containing a gitdir: pointer, not
