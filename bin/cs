@@ -5339,15 +5339,23 @@ _transcript_first_prompt() {  # transcript_file
     local file="$1"
     [ -f "$file" ] || return 0
     command -v jq >/dev/null 2>&1 || return 0
+    # Read whole with --rawfile, not line by line with -R: jq 1.7.1's -R
+    # splits a multibyte character 4095 bytes into a line, and a prompt sent
+    # with an image starts past the image's base64 in its line. The read stops
+    # at 16 MiB, which holds two images at the API's 5 MB limit (about 6.7 MB
+    # each as base64) and the records before them, and keeps jq near 66 MiB
+    # (measured: about four times the bytes read). A line the cap cuts no
+    # longer parses and is skipped like any torn line.
     local candidates
-    candidates=$(jq -r -R '
-        fromjson? | select(.type == "user" and ((.isMeta // false) | not))
+    candidates=$(head -c 16777216 "$file" | jq -rn --rawfile t /dev/stdin '
+        $t | split("\n")[]
+        | fromjson? | select(.type == "user" and ((.isMeta // false) | not))
         | .message.content
         | if type == "string" then .
           elif type == "array" then ([.[] | select(.type == "text") | .text] | join(" "))
           else empty end
         | gsub("[\\n\\r\\t]+"; " ") | gsub(" +"; " ")
-        | select(length > 0)' "$file" 2>/dev/null) || return 0
+        | select(length > 0)' 2>/dev/null) || return 0
     local line
     while IFS= read -r line; do
         line="${line# }"; line="${line% }"
@@ -5751,7 +5759,7 @@ _refuse_worktree_of_encrypted_base() {  # base_name, base_dir
 # keeps behind .cs/private. The open refuses a plaintext copy of any of them,
 # and cs -encrypt moves each into the vault.
 CS_PRIVATE_LOCAL_FILES="session.log scope-prompt.trace memory-index.snapshot mail
-    queue queue.tmp queue.state queue.mode queue.done queue.declined queue.accepted queue.failed queue.migrating
+    queue queue.tmp queue.state queue.mode queue.done queue.current queue.accepted queue.failed queue.migrating
     notifications.jsonl notifications.seen failures rewrite.trace pending-handoff
     finish-progress.json"
 
@@ -6858,8 +6866,9 @@ run_checkpoint() {
 # Machine-local queue of prompts drained by the Stop hook. Files live in
 # <session>/.cs/local/ (.cs/private/ in an encrypted session): queue/ (one
 # file per task, staged via queue.tmp/),
-# queue.done, queue.state (idle|armed|draining), queue.declined (epoch),
-# queue.failed (a reported failure the drain has not parked on yet).
+# queue.done, queue.state (idle|armed|draining), queue.current (the task the
+# drain last handed out), queue.failed (a reported failure the drain has not
+# parked on yet).
 # Plain files so the standalone Stop hook can read them without bin/cs's
 # helpers.
 
@@ -7497,6 +7506,17 @@ _mail_send() {  # target, [--kind|-k KIND] [--reply THREAD] body
         fi
     fi
     command -v jq >/dev/null 2>&1 || error "jq is required for cs -msg"
+    # The sender is whatever the environment says, and it reaches the
+    # recipient's wake and listing, so it must be a name cs gives a session,
+    # as cs -spawn requires of its spawner. An empty one is a send from
+    # outside any session, recorded as from "".
+    local sender="${CLAUDE_SESSION_NAME:-}"
+    if [ -n "$sender" ] && ! cs_split_worktree_name "$sender"; then
+        # validate_session_name exits on a bad name; a subshell turns that
+        # into a status so the error can name where the name came from.
+        ( validate_session_name "$sender" ) >/dev/null 2>&1 \
+            || error "cs -msg: CLAUDE_SESSION_NAME is not a session name: $sender"
+    fi
     validate_session_ref "$target"
     local target_dir="$SESSIONS_ROOT/$target"
     is_session_dir "$target_dir" || error "No such session: $target"
@@ -7554,16 +7574,19 @@ _mail_send() {  # target, [--kind|-k KIND] [--reply THREAD] body
         thread="$(_mail_new_thread "$roots")"
     fi
     # The body rides on stdin, never as an --arg: `cs -msg <target> -` exists
-    # precisely so a multi-KB handoff need not go through argv, and putting it
-    # back into jq's argv undid that. -Rs makes the whole of stdin one string,
-    # byte for byte, and printf adds nothing to it.
-    if ! line=$(printf '%s' "$body" | jq -cRs --arg id "$id" --argjson ts "$now" \
+    # precisely so a multi-KB handoff need not go through argv. It is read with
+    # --rawfile /dev/stdin rather than -R: jq 1.7.1's -R splits a multibyte
+    # character at its 4096-byte read buffer and stores a replacement character
+    # in its place, while --rawfile reads the whole input byte for byte. No
+    # temporary file holds it, so a body bound for an encrypted session's vault
+    # is never written in plaintext outside it. printf adds nothing to it.
+    if ! line=$(printf '%s' "$body" | jq -cn --rawfile body /dev/stdin --arg id "$id" --argjson ts "$now" \
         --arg thread "$thread" --arg to "$target" --arg parent "$reply_parent" \
         --arg from "${CLAUDE_SESSION_NAME:-}" --arg actor "$(cs_actor_slug)" \
         --arg kind "$kind" \
         '{id:$id, ts:$ts, thread:$thread,
           in_reply_to:(if $parent == "" then null else $parent end),
-          to:$to, from:$from, actor:$actor, kind:$kind, body:.}'); then
+          to:$to, from:$from, actor:$actor, kind:$kind, body:$body}'); then
         error "Failed to compose the message for $target"
     fi
     # Zero-padded epoch keeps lexical order aligned with time order; NOT a
@@ -7587,12 +7610,15 @@ _mail_send() {  # target, [--kind|-k KIND] [--reply THREAD] body
 # message this session received. Direction is taken from the record rather than
 # the file's directory, which keeps this a single line-oriented jq pass over
 # every document — and with no early-exit consumer, no SIGPIPE risk on big mail.
+# The documents are read whole with --rawfile and split into lines inside jq:
+# jq 1.7.1's -R splits a multibyte character at its 4096-byte read buffer and
+# shows a replacement character in its place.
 # The thread id is rendered because an agent cannot reply into a thread whose id
 # it was never shown; a received task carries its accept command for the same
 # reason.
 _mail_print_files() {  # file...
-    cat "$@" | jq -rR --arg me "${CLAUDE_SESSION_NAME:-}" '
-        fromjson? // empty |
+    cat "$@" | jq -rn --rawfile docs /dev/stdin --arg me "${CLAUDE_SESSION_NAME:-}" '
+        $docs | split("\n")[] | fromjson? // empty |
         (if $me != "" and (.from // "") == $me then "->" else "<-" end) as $dir |
         # The peer is whatever the sending process said it was: flattened and
         # cut inside jq so a forged name cannot start a line of its own.
@@ -7603,7 +7629,12 @@ _mail_print_files() {  # file...
         (.ts | if type == "number" then strflocaltime("%H:%M") else "--:--" end) + "  " +
         $dir + " " + $peer + "  [" + (.kind // "text") + "]  (" + (.thread // "------") + ")  " +
         ((.body // "") | gsub("[\n\r]"; " ")) +
+        # Only an id cs -queue accept takes whole: 1 to 40 of A-Z a-z 0-9 . _ -.
+        # Judged by what is left once those are deleted, since a regex "$"
+        # also matches before a final newline.
         (if $dir == "<-" and .kind == "task" and (.id | type) == "string"
+            and (.id | length) >= 1 and (.id | length) <= 40
+            and (.id | gsub("[A-Za-z0-9._-]"; "")) == ""
          then "  (accept into the queue: cs -queue accept " + .id + ")" else "" end)
     ' | _scrub_controls
 }
@@ -7929,7 +7960,17 @@ _queue_require_single_line() {  # text
 }
 
 _queue_add() {  # qdir, text
+    _queue_write_task "$1" "$2" \
+        || error "could not write the task into $1/queue; it is not queued"
+}
+
+# Write one task into the queue; returns 1 when the write fails, having left
+# nothing behind, and records the path of the file it wrote in _QUEUE_ADDED,
+# so a caller queueing several can take them back. A task that breaks the
+# queue's rules (empty, more than one line) is refused with an error.
+_queue_write_task() {  # qdir, text
     local qdir="$1" text="$2"
+    _QUEUE_ADDED=""
     text="$(_trim "$text")"
     [ -n "$text" ] || { error "cs -queue add needs a non-empty task"; }
     _queue_require_single_line "$text"
@@ -7946,9 +7987,13 @@ _queue_add() {  # qdir, text
     _QUEUE_SEQ=$((10#$_QUEUE_SEQ + 1))
     local fname
     fname="$(printf '%010d' "$(date +%s)")-$$-$(printf '%04d' "$_QUEUE_SEQ")-${RANDOM}"
-    printf '%s\n' "$text" > "$qdir/queue.tmp/$fname" \
-        && mv "$qdir/queue.tmp/$fname" "$qdir/queue/$fname"
-    rm -f "$qdir/queue.declined"   # queue changed: allow the gate to re-ask
+    # errexit does not see a failed left operand, so the failure is returned.
+    if ! { printf '%s\n' "$text" > "$qdir/queue.tmp/$fname" \
+            && mv "$qdir/queue.tmp/$fname" "$qdir/queue/$fname"; }; then
+        rm -f "$qdir/queue.tmp/$fname"
+        return 1
+    fi
+    _QUEUE_ADDED="$qdir/queue/$fname"
 }
 
 # Queue a task that arrived as task-kind mail, by its message id. The user's
@@ -7963,20 +8008,31 @@ _queue_add() {  # qdir, text
 # kill after the receipt loses the queued copy instead, which the error names
 # and the user can redo by hand; a lost copy is visible, a replay is not.
 _queue_accept() {  # qdir, message id
-    local qdir="$1" id="$2" f found="" kind body
+    local qdir="$1" id="$2" f found="" matches=0 kind body
     [ -n "$id" ] || error "cs -queue accept needs a message id (shown by cs -msg)"
+    # The shape the digest and the listing offer an accept command for: an id
+    # outside it was never shown whole, so nobody can have agreed to its mail.
     case "$id" in *[!A-Za-z0-9._-]*) error "cs -queue accept: $id is not a message id";; esac
+    [ "${#id}" -le 40 ] || error "cs -queue accept: $id is not a message id"
+    # Every document is read: an id two mails share names neither of them.
     for f in "$qdir"/mail/new/*.json "$qdir"/mail/cur/*.json; do
         [ -f "$f" ] || continue
         # A document that is not the one asked for, or not JSON, prints nothing.
         if [ "$(jq -r --arg id "$id" 'select(.id == $id) | "found"' "$f" 2>/dev/null)" = found ]; then
             found="$f"
-            break
+            matches=$((matches + 1))
         fi
     done
     [ -n "$found" ] || error "no mail with id $id in this session's mailbox"
-    kind=$(jq -r '.kind // "text" | if type == "string" then . else tostring end' "$found")
-    [ "$kind" = "task" ] || error "message $id is $kind mail, not a task; only task-kind mail can be queued"
+    [ "$matches" -eq 1 ] || error "$matches mails in this session's mailbox carry the id $id; cs -queue accept cannot tell which one was meant"
+    # The kind is judged inside jq, on the document's own value: $( ) drops a
+    # trailing newline and a NUL, so "task\n" would read as task out here
+    # while the digest and the listing, which compare the whole string, show
+    # it no accept command. Any other kind comes back marked, with every byte
+    # outside a plain word replaced, for the refusal to name.
+    kind=$(jq -r '(.kind // "text") | if . == "task" then "task"
+        else "other:" + ((if type == "string" then . else tostring end) | gsub("[^A-Za-z0-9._-]"; "_"))[0:16] end' "$found")
+    [ "$kind" = "task" ] || error "message $id is ${kind#other:} mail, not a task; only task-kind mail can be queued"
     body=$(jq -r '.body // "" | if type == "string" then . else tostring end' "$found")
     body="$(_trim "$body")"
     [ -n "$body" ] || error "message $id carries an empty task"
@@ -8006,14 +8062,15 @@ _queue_accept() {  # qdir, message id
         error "could not write the task into $qdir/queue; its accept is recorded, so re-queue it with: cs -queue add"
     fi
     _cs_unlock "$lock"
-    rm -f "$qdir/queue.declined"   # the user's accept re-opens the gate
     # Accepting is reading: the message leaves new/ so it neither wakes nor
     # digests again. A failed move leaves it unread, which over-shows the
     # accept command but never re-queues.
     case "$found" in
         "$qdir"/mail/new/*) mv "$found" "$qdir/mail/cur/" 2>/dev/null || true ;;
     esac
-    info "queued: $body"
+    # The body is another session's text on its way to this terminal: shown
+    # scrubbed, while the queued file keeps it as mailed.
+    info "queued: $(printf '%s' "$body" | _scrub_controls)"
 }
 
 # Count of queued task files ([ -f ] also guards bash 3.2's literal
@@ -8057,9 +8114,7 @@ _queue_rm() {  # qdir, index
     case "$n" in ''|*[!0-9]*) error "cs -queue rm needs a task number";; esac
     len=$(_queue_len "$qdir")
     [ "$len" -gt 0 ] || { error "queue is empty"; }
-    # Refuse before touching anything: an index past the end used to fall
-    # through the loop silently and still clear queue.declined below, re-arming
-    # the gate so a later drain ran the task the user believed they had removed.
+    # Refuse before touching anything: an index past the end names no task.
     if [ "$n" -lt 1 ] || [ "$n" -gt "$len" ]; then
         error "no task $n in the queue (1-$len)"
     fi
@@ -8072,13 +8127,12 @@ _queue_rm() {  # qdir, index
             break
         fi
     done
-    rm -f "$qdir/queue.declined"
 }
 
 _queue_clear() {  # qdir
     local qdir="$1"
     rm -rf "$qdir/queue" "$qdir/queue.tmp"
-    rm -f "$qdir/queue.state" "$qdir/queue.declined" "$qdir/queue.mode" "$qdir/queue.failed"
+    rm -f "$qdir/queue.state" "$qdir/queue.mode" "$qdir/queue.failed" "$qdir/queue.current"
 }
 
 # Arms the queue and records how its tasks run: in the conversation (no mode
@@ -8101,14 +8155,16 @@ _queue_log() {  # qdir
         return 0
     fi
     # Tolerant per-line parse (torn lines skipped); oldest-first is file order.
-    jq -rR '
-        fromjson? // empty |
+    # Read whole and split inside jq: jq 1.7.1's -R splits a multibyte
+    # character at its 4096-byte read buffer.
+    jq -rn --rawfile inbox "$inbox" '
+        $inbox | split("\n")[] | fromjson? // empty |
         (.ts | strflocaltime("%Y-%m-%d %H:%M")) + "  " + .event +
         (if .task then ": " + .task
          elif .reason then ": " + .reason + " (" + (.reading|tostring) + " >= " + (.limit|tostring) + "), " + (.remaining|tostring) + " remaining"
          elif .done then ": " + (.done|tostring) + " done"
          else "" end)
-    ' "$inbox" | _scrub_controls
+    ' | _scrub_controls
 }
 
 # Dispatcher. Runs inside a session (env) or via the session-scoped arm.
@@ -8136,9 +8192,6 @@ run_queue() {
         rm)    shift; _queue_rm "$qdir" "${1:-}";;
         clear) _queue_clear "$qdir";;
         start) shift; _queue_start "$qdir" "${1:-}";;
-        defer) mkdir -p "$qdir"; cs_write_atomic "$qdir/queue.declined" printf '%s\n' "$(date +%s)"
-               _append_record "$qdir/notifications.jsonl" \
-                   --arg ts "$(date +%s)" '{ts: ($ts|tonumber), event: "gate_declined"}';;
         log)   _queue_log "$qdir";;
         *)     error "Usage: cs -queue [add \"<task>\" | accept <message id> | list | rm <n> | clear | log | start [subagents|workflow]]";;
     esac
@@ -8387,6 +8440,14 @@ _USAGE_LARGE_READ_LINES=350
 # jq error no longer costs one line — it would end the scan for all remaining
 # files, silently, since stderr goes to /dev/null. The update is therefore
 # wrapped in try/catch: a malformed entry is skipped and the state survives.
+#
+# The read is line by line with -R, which jq 1.7.1 does through a 4096-byte
+# buffer: a multibyte character split at a line's byte 4095 comes back as a
+# replacement character and one more, so a large read's character length can
+# be one too high per split. Nothing else this scan prints is free text. The
+# transcripts are not read whole with --rawfile because the scan takes every
+# transcript of the window at once, hundreds of MB, and a whole read costs
+# jq three to four times the bytes it holds (measured on jq 1.7.1).
 _usage_scan() {
     local w5="$1" wk="$2"
     shift 2
@@ -11809,10 +11870,42 @@ launch_claude_code() {
             # id and stays in .cs/local (docs/session-layout.md).
             _qdir=$(cs_private_dir "$session_dir/.cs") \
                 || error "$session_name: .cs/private dangles after the open checked it (vault unmounted mid-launch?). Mount it, then reopen. (seed kept)"
+            # Every write that can fail runs before the first task is queued:
+            # a failure stops the open with the seed staged again, and that
+            # seed is then the only copy of its tasks, so the retry queues
+            # each one once.
+            if [ -n "$_spawner" ] && { [ "$_n" -gt 0 ] || [ "$_has_brief" = 1 ]; }; then
+                printf '%s\n' "$_spawner" > "$session_dir/.cs/local/spawned-by" 2>/dev/null \
+                    || error "could not record the spawner in $session_dir/.cs/local/spawned-by (seed kept; fix it and re-open the session to retry)"
+            fi
+            # A task that cannot be queued takes back the ones this open queued
+            # before it, so the seed put back is the only copy of its tasks. A
+            # take-back that fails names every file left, for the person to
+            # remove before a retry queues them again.
+            local _queued=() _left=() _f
             for _line in ${_tasks[@]+"${_tasks[@]}"}; do
-                _queue_add "$_qdir" "$_line"
+                if _queue_write_task "$_qdir" "$_line"; then
+                    _queued+=("$_QUEUE_ADDED")
+                    continue
+                fi
+                for _f in ${_queued[@]+"${_queued[@]}"}; do
+                    rm -f "$_f" 2>/dev/null && [ ! -e "$_f" ] || _left+=("$_f")
+                done
+                if [ "${#_left[@]}" -gt 0 ]; then
+                    error "could not write the task into $_qdir/queue; it is not queued, and ${#_left[@]} task(s) this open queued before it could not be taken back: ${_left[*]}. Remove them before re-opening the session, or the retry queues them again (seed kept)"
+                fi
+                error "could not write the task into $_qdir/queue; it is not queued (seed kept; the ${#_queued[@]} task(s) this open queued before it were taken back)"
             done
-            [ "$_n" -eq 0 ] || _queue_set_state "$_qdir" armed
+            # Once its tasks are queued the seed is spent: only the claimed
+            # seed is deleted (one published since stays staged for its own
+            # open), and a failure from here on cannot put it back to be
+            # queued a second time.
+            _CS_SPAWN_CLAIM=""
+            rm -f "$_claim"
+            if [ "$_n" -gt 0 ]; then
+                _queue_set_state "$_qdir" armed \
+                    || error "the seed's $_n task(s) are queued but the queue could not be armed; arm it with: cs $session_name -queue start"
+            fi
             if [ "$_n" -gt 0 ] || [ "$_has_brief" = 1 ]; then
                 local _work=""
                 [ "$_has_brief" = 1 ] && _work="Your brief is .cs/brief.md: read it first."
@@ -11822,16 +11915,11 @@ launch_claude_code() {
                     _work="$_work Then begin."
                 fi
                 if [ -n "$_spawner" ]; then
-                    printf '%s\n' "$_spawner" > "$session_dir/.cs/local/spawned-by"
                     spawn_kick="Spawned by $_spawner. $_work Send results with: cs -msg $_spawner -k result \"...\""
                 else
                     spawn_kick="$_work"
                 fi
             fi
-            # Only the claimed seed is deleted: one published since stays
-            # staged for its own open.
-            _CS_SPAWN_CLAIM=""
-            rm -f "$_claim"
         fi
     fi
     # Arming the ritual is an explicit action the user took seconds ago, so it
@@ -13548,7 +13636,7 @@ main() {
                         accept)
                             error "session $caller cannot accept mail into $session_name's queue; $session_name's user accepts it (cs -queue accept ${2:-<id>} inside $session_name)"
                             ;;
-                        rm|clear|defer)
+                        rm|clear)
                             error "session $caller cannot change $session_name's queue; $session_name's user does that inside $session_name (cs -queue $1)"
                             ;;
                     esac

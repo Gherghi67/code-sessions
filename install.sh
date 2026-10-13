@@ -1205,7 +1205,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "0e38aec5613ee888fa545ccd61b85fe4bee266c64fe93ad7b2edfcb6a875a67b  bin/cs"
+    "2258c29d241ec210e00b27bd83ef66e2f8e4fc63291d8411fde7b292c9e908aa  bin/cs"
     "3b4626c505845d0e94961cd06e3e5400c6f497340ff93dadf88770f02ff22524  bin/cs-secrets"
     "f5c5600a9e08e623881893c5ca4f8e06d64adc5da414fbc0ad2166b6adea8775  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -1215,15 +1215,15 @@ CS_PAYLOAD_SHA256=(
     "5ba5d967c2f5b8949847195fe928af2dd6c41c1ab502cb74f9deb0d3af842de9  hooks/memory-index-guard.sh"
     "d7eff4467d4ffaf9c9a617cfdf2dd6b3249b3f797f9a2f2583c2658906946a3f  hooks/prompt-rewriter.sh"
     "749db28afb6c76a28a7633214e22b6cd8153b0334adf4b4426e27df25d7515ef  hooks/prompt-rewriter-model.sh"
-    "f9e1e368011403bcffb7aa04468d0c4af1a0ae4e2b329756aff5a4ff1aec17aa  hooks/prompt-rewriter-vendor.sh"
+    "c96c1affc10329c18531bc54811e155b6156b345ca5be86c9cbdcdde96161a5b  hooks/prompt-rewriter-vendor.sh"
     "da95b222c082bf6ad8cc3cbe6cd5f8f55f37c5f5e538de7872d1051aebb4e436  hooks/session-start.sh"
     "38e1585be0b3fee0cea8c5397d6177b2c67678b270ad2b1cfc191e3b71b6a723  hooks/autosave-commits.sh"
-    "f26b1ba7839e6baf2eb50e6feeb44e0b423cbb006685b868524c0ad556c095c6  hooks/narrative-reminder.sh"
+    "4fcc4c960992f36145d363308028f722592b491ee4836c1366487f7365bf1871  hooks/narrative-reminder.sh"
     "ad1a2d324ff18dfcdd2e677bfb2630a04cdd21ea6b0ac619891eb7de12e6ce62  hooks/session-end.sh"
     "81a13835a65f4b4b35bb87493da0df9848de68375ca7ab1525d2d5079cf52bf1  hooks/subagent-context.sh"
     "53b16016dd6d087c3cc3db7e4acf8de6629e149e3b7f326f0731b36809574156  hooks/tool-failure-logger.sh"
     "40deb4f7592a2d87f8c4a0232ec94be91e66c8c4f9385806d9a7cb4c6085a96a  hooks/session-auto-approve.sh"
-    "6b63297a3b0f8bf2eaf63b6caf2c2a3ff5ef9f7b4eb443ee499c980b428151a0  hooks/scope-prompt.sh"
+    "79848b68ba9eb468029ec02f272de0573f564eabeb7fffae48a45712ac62e1b8  hooks/scope-prompt.sh"
     "12dca7f6d02f19f75865fa2f6e91384a5c8e727b0962e269a6adbb491a95971f  commands/summary.md"
     "9e06eaa16960dff49881234c8a479c2f8d2dd8d672283056e1591c4528e755ab  commands/checkpoint.md"
     "df9db21017a995e93fdab7135ee2c6d3d7ce0ff660f76bd6d29015854b3a1aa3  commands/sweep.md"
@@ -1234,16 +1234,16 @@ CS_PAYLOAD_SHA256=(
     "b6eb9ffe2160e43bb95100b850427d2ae28d4c5e0e719564ba2f4b8d3c14a20a  skills/finish/SKILL.md"
     "7915ca859bf53215b4f5c41833dca3a0c661921523eb5424d1f146befefae922  skills/feature/SKILL.md"
     "343016f4d62029a85cfae3c0911b8a7a2bff99a31bd868e04ca83ec4002d6f48  skills/write-as-me/SKILL.md"
-    "6aa489261b3448946752ce20431ce39d5be316f3f03124e976608aedb7fa51d8  skills/write-as-me/scripts/build-corpus.sh"
+    "9d42a50e396f05c53d62f13f4a6e21ba20ee04abf7b532023e0d8e5be988e2d3  skills/write-as-me/scripts/build-corpus.sh"
     "762ea9875fda791fd4f31fee1af5a6522a7fa5287f496eee267a561847a626bf  skills/finish/scripts/finish.sh"
     "144391d7d2df6a89742528729ee8da1e51063b3783023a656571bec0f2235458  mods/cs/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs/hooks/hooks.json"
-    "830e9d5ea33e466c1fc750b5fd23431fbc4eaa050f2ee67304c8945fc9fbd553  mods/cs/hooks/register.tsx"
+    "6a8d256e1e805d19ede14602caa94c29c426ed44eade6f13d73474d6ebebe9f3  mods/cs/hooks/register.tsx"
     "7a97c18b6ae755d8ec7862532eb15bbf627170a1fab8cc90dd2f8f77a57164be  mods/cs-update/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-update/hooks/hooks.json"
     "8cd9e46d6d6cb24acc48f1e8506675698a0b382453a9d1e8c08e35bb7b332cd4  mods/cs-update/hooks/register.tsx"
-    "fd904386612fcc74693787efcf5d9904481781bf2c1188081d1d3d6190afd0c3  completions/cs.bash"
-    "038725aa3a611b098f3b6cc5cca850649c601f576d329b86f913dc04cf707b94  completions/_cs"
+    "9ea60b6839947156cb361227363cd5a52059ff39a1157a10bcd6225e0294639c  completions/cs.bash"
+    "ef0b227b264c02f7654326b2d81c967bd309b2990ad130e78f74727a1d48b6fc  completions/_cs"
 )
 
 # Everything that lands in HOOKS_DIR, for the copy and cleanup loops. The
