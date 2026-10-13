@@ -2255,9 +2255,11 @@ run_test test_retire_ignored_mode_retires_over_a_memory_file_once_nothing_goes_t
 # claude-config and private as links into its vault, and a locked vault
 # leaves them all dangling. The retire says to mount it, before and instead
 # of listing the records that cannot go through the dangling links: deleting
-# them, as that list says, would delete the feature's only narrative.
-test_retire_refuses_a_locked_base_vault_before_listing_records() {
-    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0 sub
+# them, as that list says, would delete the feature's only narrative. The
+# features screen reads vault-locked, with nothing at risk, in the retire's
+# order: untracked work in the worktree comes first.
+test_retire_and_features_name_a_locked_base_vault_before_any_record() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output line status=0 sub
     local mnt="$CS_SESSIONS_ROOT/proj/.cs/vault-mnt"
     mkdir -p "$base_dir/.cs"/{memory,local}
     printf '%s\n' '- [Kept](kept.md): a topic' > "$base_dir/.cs/memory/MEMORY.md"
@@ -2280,6 +2282,17 @@ test_retire_refuses_a_locked_base_vault_before_listing_records() {
     done
     _mark_hand_made_vault "$base_dir"
     mv "$mnt" "$TEST_TMPDIR/vault-unmounted"
+    line=$("$CS_BIN" proj -features --porcelain 2>&1)
+    assert_eq "vault-locked" "$(_feat_field "$line" 10)" "the features screen reads vault-locked: $line" || return 1
+    assert_eq "0" "$(_feat_field "$line" 7)" "with nothing at risk: $line" || return 1
+    echo "scratch" > "$wt/scratch.txt"
+    line=$("$CS_BIN" proj -features --porcelain 2>&1)
+    assert_eq "untracked" "$(_feat_field "$line" 10)" "untracked work comes first, as in the retire: $line" || return 1
+    assert_eq "1" "$(_feat_field "$line" 7)" "counting only that file: $line" || return 1
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_output_contains "$output" "Worktree has untracked files that removal would destroy" "the retire agrees: $output" || return 1
+    rm "$wt/scratch.txt"
+    status=0
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
     assert_eq "1" "$status" "the retire refuses: $output" || return 1
     assert_output_contains "$output" "Error: cannot fuse the worktree's records: $base_dir/.cs/private is locked. Mount it, then retry." \
@@ -2289,21 +2302,26 @@ test_retire_refuses_a_locked_base_vault_before_listing_records() {
     # Any one link dangling is the same refusal, naming that link.
     mv "$TEST_TMPDIR/vault-unmounted" "$mnt"
     mv "$mnt/memory" "$TEST_TMPDIR/memory-away"
+    line=$("$CS_BIN" proj -features --porcelain 2>&1)
+    assert_eq "vault-locked" "$(_feat_field "$line" 10)" "one dangling link reads vault-locked too: $line" || return 1
     status=0
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
     assert_eq "1" "$status" "the retire refuses: $output" || return 1
     assert_output_contains "$output" "Error: cannot fuse the worktree's records: $base_dir/.cs/memory is locked. Mount it, then retry." \
         "the refusal names the dangling link" || return 1
     assert_output_not_contains "$output" "by hand" "and lists no records to merge or delete" || return 1
-    # Positive control: mounted whole, the narrative lands in the vault.
+    # Positive control: mounted whole, the screen reads merged and the
+    # narrative lands in the vault.
     mv "$TEST_TMPDIR/memory-away" "$mnt/memory"
+    line=$("$CS_BIN" proj -features --porcelain 2>&1)
+    assert_eq "merged" "$(_feat_field "$line" 10)" "the features screen reads merged: $line" || return 1
     status=0
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
     assert_eq "0" "$status" "the retire goes through: $output" || return 1
     assert_file_contains "$mnt/memory/narrative.tester-example-com.md" "^## Task finding$" "the narrative lands in the vault" || return 1
 }
 
-run_test test_retire_refuses_a_locked_base_vault_before_listing_records
+run_test test_retire_and_features_name_a_locked_base_vault_before_any_record
 
 # The feature's log is appended to the base's machine-local log, so that is
 # the destination checked before anything is removed.

@@ -4682,6 +4682,20 @@ mod tests {
     }
 
     #[test]
+    fn merge_screen_names_a_locked_base_vault() {
+        // The retire refuses a locked base vault before anything else in the
+        // base, and mounting it is the remedy, so the row and the base line
+        // both say so rather than the raw state or "clean".
+        let mut app = merge_app();
+        app.merge_features[0].state = "vault-locked".into();
+        app.merge_selected = 0;
+        let text = render_wide(&mut app);
+        assert!(text.contains("base vault is locked"), "the row must name the vault:\n{text}");
+        assert!(text.contains("base      vault locked"), "the base line must name the vault:\n{text}");
+        assert!(!text.contains("base      clean"), "a locked vault must not read clean:\n{text}");
+    }
+
+    #[test]
     fn merge_screen_hairline_stays_inside_the_list_card() {
         // The rule is drawn at inner.y + 1. On a short terminal the list shrinks
         // until that row falls past the card and the rule paints across the
