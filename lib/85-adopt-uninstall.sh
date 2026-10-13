@@ -767,7 +767,7 @@ run_uninstall() {
 
     local settings_lock="$settings_file.mutex.lock"
     if [ -f "$settings_lock" ]; then
-        # Lock files are never removed (lib/02-shared.sh), but uninstall is this one's last user; it goes while held, so a writer still waiting locks a fresh file.
+        # The one lock file cs removes (_cs_lock in lib/02-shared.sh): uninstall is its last user. It goes while held, so a writer still waiting on it, or still opening it, locks a fresh file.
         if _cs_lock "$settings_lock"; then
             rm -f "$settings_lock"
             _cs_unlock "$settings_lock"
