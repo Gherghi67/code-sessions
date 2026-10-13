@@ -2056,6 +2056,27 @@ test_import_file_skips_a_sync_file_that_is_a_symbolic_link() {
     _assert_secret_absent from_peer "nothing from the file is stored" || return 1
 }
 
+# A password file carries no signature, so the link is the whole attack: a
+# pushed .enc link to another session's local store, which the shared password
+# opens, would import that session's secrets and the next export would publish
+# them in this session's tracked sync file.
+test_import_file_skips_a_password_sync_file_that_is_a_symbolic_link() {
+    local out rc=0 link="$CS_SESSIONS_ROOT/test-session/.cs/secrets.zz.enc"
+    printf 'value-of-other\n' | "$CS_SECRETS_BIN" --session other-session set other_token >/dev/null 2>&1 \
+        || { echo "  FAIL: fixture: set in the other session failed"; return 1; }
+    assert_file_exists "$HOME/.cs-secrets/other-session.enc" "fixture: the other session's local store" || return 1
+    ln -s "$HOME/.cs-secrets/other-session.enc" "$link"
+    out=$("$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the import exits 0" || return 1
+    assert_output_contains "$out" "^Skipped secrets\.zz\.enc: it is a symbolic link\.$" "the skip says why" || return 1
+    _assert_secret_absent other_token "nothing from the linked store is imported" || return 1
+    rc=0
+    out=$("$CS_SECRETS_BIN" import-file "$link" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a named link is refused" || return 1
+    assert_eq "Error: Refusing to import $link: it is a symbolic link." "$out" "the refusal names the file and why" || return 1
+    _assert_secret_absent other_token "nothing is imported through the named link" || return 1
+}
+
 # A directory at the signature path is not a missing signature.
 test_import_file_skips_a_file_whose_signature_cannot_be_read() {
     _use_real_age || return $?
@@ -3266,6 +3287,7 @@ run_test test_import_file_decrypts_the_bytes_it_verified
 run_test test_import_file_verifies_the_bytes_it_will_decrypt
 run_test test_import_file_skips_a_signature_that_is_a_symbolic_link
 run_test test_import_file_skips_a_sync_file_that_is_a_symbolic_link
+run_test test_import_file_skips_a_password_sync_file_that_is_a_symbolic_link
 run_test test_import_file_skips_a_file_whose_signature_cannot_be_read
 run_test test_import_file_skips_a_file_signed_for_another_session
 run_test test_import_file_allow_unsigned_takes_a_file_with_no_signature
