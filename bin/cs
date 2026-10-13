@@ -4129,10 +4129,13 @@ _settings_allow_union() {  # base_settings feature_settings
 
 # Add the feature's permission grants to the base's settings.local.json
 # (_settings_allow_union), creating it when the base has none. Writes nothing
-# when the base already holds every grant.
+# when the base already holds every grant, and nothing when the repository
+# tracks the file: git carried it with the integrate, and a union would bring
+# back a grant the base dropped since.
 _carry_permission_grants() {  # wt_dir base_dir
     local feat="$1/.claude/settings.local.json" base="$2/.claude/settings.local.json" was now
     [ -s "$feat" ] || return 0
+    ! git -C "$1" ls-files --error-unmatch -- .claude/settings.local.json >/dev/null 2>&1 || return 0
     was=$(_settings_json_or_empty "$base" | jq '(.permissions.allow // []) | length') || return 1
     now=$(_settings_allow_union "$base" "$feat" | jq '.permissions.allow | length') || return 1
     [ "$now" != "$was" ] || return 0
