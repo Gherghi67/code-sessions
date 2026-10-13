@@ -2423,6 +2423,55 @@ later command" "$(cat "$base_dir/.cs/local/session.log")" "both logs land" || re
 
 run_test test_retire_ignored_mode_refuses_either_log_that_is_a_link
 
+# The directory a log sits in is held to the same rule: a feature .cs/local or
+# .cs/logs that is a link would have the fuse read a log from wherever it
+# leads. Each is refused by name before anything is removed, and the features
+# screen counts it.
+test_retire_ignored_mode_refuses_a_log_directory_that_is_a_link() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output line status=0
+    local out="$TEST_TMPDIR/outside-local" logs="$TEST_TMPDIR/outside-logs" kept="$TEST_TMPDIR/local-kept" dir
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    printf 'base command\n' > "$base_dir/.cs/local/session.log"
+    cp -R "$wt/.cs/local" "$kept"
+    cp -R "$wt/.cs/local" "$out"
+    printf 'outside local line\n' >> "$out/session.log"
+    rm -rf "$wt/.cs/local"
+    ln -s "$out" "$wt/.cs/local"
+    mkdir -p "$logs"
+    printf 'outside logs line\n' > "$logs/session.log"
+    for dir in local logs; do
+        if [ "$dir" = logs ]; then
+            rm "$wt/.cs/local"
+            cp -R "$kept" "$wt/.cs/local"
+            ln -s "$logs" "$wt/.cs/logs"
+        fi
+        line=$("$CS_BIN" proj -features --porcelain 2>&1)
+        status=0
+        output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+        assert_eq "1" "$status" "the retire refuses a .cs/$dir link: $output" || return 1
+        assert_output_contains "$output" "Error: The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:
+.cs/$dir" "the refusal says why for .cs/$dir" || return 1
+        assert_eq ".cs/$dir" "$(printf '%s\n' "$output" | awk 'listed; /again:$/ { listed = 1 }')" \
+            "the refusal names only the linked .cs/$dir" || return 1
+        assert_eq "1" "$(_feat_field "$line" 7)" "the features screen counts the .cs/$dir link: $line" || return 1
+        assert_dir "$wt/.cs/memory" "nothing was removed for .cs/$dir: $output" || return 1
+        assert_eq "base command" "$(cat "$base_dir/.cs/local/session.log")" "the base's log is as it was for .cs/$dir" || return 1
+    done
+    # Positive control: with the link gone, the retire goes through, and no
+    # line from outside reaches the base's log.
+    rm "$wt/.cs/logs"
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire proceeds: $output" || return 1
+    assert_eq "0" "$(grep -c '^outside' "$base_dir/.cs/local/session.log")" "nothing from outside lands in the base's log" || return 1
+}
+
+run_test test_retire_ignored_mode_refuses_a_log_directory_that_is_a_link
+
 # Every record under .cs that the base lacks goes back to it, at any depth,
 # not just topics and narratives: plans, a summary, handoffs, a brief,
 # artifacts, archived narrative sections, a nested topic, a non-.md note. A
