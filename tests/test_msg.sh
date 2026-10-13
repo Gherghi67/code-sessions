@@ -607,13 +607,33 @@ test_queue_accept_writes_the_receipt_before_the_queued_copy() {
     assert_eq "0" "$(RQUEUE_LEN)" "no queued copy" || return 1
 }
 
+# Racing accepts of one id take turns between the receipt check and the receipt
+# write. The check is held open for a second (a grep stand-in that waits when
+# asked about the receipt file, then runs the real grep by its full path), so
+# every racer is inside it before any of them writes: without the lock each
+# would find no receipt, record one, and report the task queued. A receipt for
+# another id is there beforehand because the check reads an existing file only.
+# The queued file is no witness on its own: racers in one second write the
+# same name, and the rename hides the duplicates.
 test_queue_accept_serialises_concurrent_accepts() {
     "$CS_BIN" -msg receiver -k task "review the tui diff" >/dev/null 2>&1 || return 1
     local id; id=$(jq -r .id "$(FIRST_MSG)")
+    local receipts; receipts="$(RCV_META)/local/queue.accepted"
+    printf 'some-earlier-id\n' > "$receipts"
+    local real_grep; real_grep=$(command -v grep) || return 1
+    mkdir -p "$TEST_TMPDIR/bin"
+    printf '#!/bin/sh\ncase "$*" in *queue.accepted*) sleep 1 ;; esac\nexec "%s" "$@"\n' "$real_grep" > "$TEST_TMPDIR/bin/grep"
+    chmod +x "$TEST_TMPDIR/bin/grep"
     local i
-    for i in 1 2 3 4 5 6; do rcv -queue accept "$id" >/dev/null 2>&1 & done
+    for i in 1 2 3; do
+        ( PATH="$TEST_TMPDIR/bin:$PATH" rcv -queue accept "$id" > "$TEST_TMPDIR/accept.$i" 2>&1 ) &
+    done
     wait
-    assert_eq "1" "$(RQUEUE_LEN)" "six racing accepts queue the task once" || return 1
+    local refusal="Error: message $id was already accepted into the queue (if no copy is queued or done, an earlier accept was interrupted: cs -queue add it by hand)"
+    assert_eq "$(printf '%s\n%s\n%s' "$refusal" "$refusal" "queued: review the tui diff")" \
+        "$(cat "$TEST_TMPDIR"/accept.[123] | sort)" "one racer queues the task and the other two are refused" || return 1
+    assert_eq "1" "$("$real_grep" -cxF -- "$id" "$receipts")" "the receipt is recorded once" || return 1
+    assert_eq "1" "$(RQUEUE_LEN)" "the task is queued once" || return 1
 }
 
 # The read listing is where an agent learns the id it needs to accept with.
