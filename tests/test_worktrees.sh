@@ -2089,6 +2089,91 @@ test_retire_ignored_mode_refuses_a_topic_both_sides_edited() {
 
 run_test test_retire_ignored_mode_refuses_a_topic_both_sides_edited
 
+# Every record under .cs that the base lacks goes back to it, at any depth,
+# not just topics and narratives: plans, a summary, handoffs, a brief,
+# artifacts, archived narrative sections, a nested topic, a non-.md note. A
+# plan or summary the create copied in and only the feature edited replaces
+# the base's unchanged copy, named. The README cs wrote for the feature, left
+# as written, is the feature's own bookkeeping and goes with it.
+test_retire_ignored_mode_carries_every_record_the_base_lacks() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0 rel
+    _ignored_base_with_two_topics
+    mkdir -p "$base_dir/.cs/plans"
+    echo "base plan" > "$base_dir/.cs/plans/base-plan.md"
+    echo "base summary" > "$base_dir/.cs/summary.md"
+    echo "# Session: proj" > "$base_dir/.cs/README.md"
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    mkdir -p "$wt/.cs/plans/sub" "$wt/.cs/handoffs" "$wt/.cs/artifacts" \
+        "$wt/.cs/narrative-archive/someone" "$wt/.cs/memory/sub"
+    for rel in plans/feat-plan.md plans/sub/deep-plan.md handoffs/2026-01-01-h.md brief.md \
+            artifacts/report.html narrative-archive/someone/old.md memory/sub/deep.md memory/notes.txt; do
+        echo "feature $rel" > "$wt/.cs/$rel"
+    done
+    echo "base plan, feature edit" > "$wt/.cs/plans/base-plan.md"
+    echo "base summary, feature edit" > "$wt/.cs/summary.md"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "retire exits 0: $output" || return 1
+    for rel in plans/feat-plan.md plans/sub/deep-plan.md handoffs/2026-01-01-h.md brief.md \
+            artifacts/report.html narrative-archive/someone/old.md memory/sub/deep.md memory/notes.txt; do
+        assert_eq "feature $rel" "$(cat "$base_dir/.cs/$rel" 2>/dev/null)" "$rel lands in the base" || return 1
+    done
+    assert_eq "base plan, feature edit" "$(cat "$base_dir/.cs/plans/base-plan.md")" "the edited plan lands" || return 1
+    assert_eq "base summary, feature edit" "$(cat "$base_dir/.cs/summary.md")" "the edited summary lands" || return 1
+    assert_output_contains "$output" "plans/base-plan.md was edited in the feature and not in the base; the feature's version is now in the base" \
+        "the plan's replacement is named" || return 1
+    assert_output_contains "$output" "summary.md was edited in the feature and not in the base; the feature's version is now in the base" \
+        "the summary's replacement is named" || return 1
+    assert_eq "# Session: proj" "$(cat "$base_dir/.cs/README.md")" "the base README is untouched" || return 1
+    assert_output_not_contains "$output" "README" "the feature's own README is not mentioned" || return 1
+    assert_not_exists "$wt" "the worktree is retired" || return 1
+}
+
+run_test test_retire_ignored_mode_carries_every_record_the_base_lacks
+
+# What the fuse cannot carry without overwriting the base, it refuses to
+# destroy: a plan both sides edited, a brief each side wrote, the feature's
+# README once edited, a repository nested under .cs with its history, and a
+# link. The refusal lists them all and nothing moves, not even what could go.
+test_retire_ignored_mode_refuses_records_it_cannot_carry() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output line status=0
+    _ignored_base_with_two_topics
+    mkdir -p "$base_dir/.cs/plans"
+    echo "base plan" > "$base_dir/.cs/plans/base-plan.md"
+    echo "# Session: proj" > "$base_dir/.cs/README.md"
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    echo "base plan, feature edit" > "$wt/.cs/plans/base-plan.md"
+    echo "base plan, base edit" > "$base_dir/.cs/plans/base-plan.md"
+    echo "feature brief" > "$wt/.cs/brief.md"
+    echo "base brief" > "$base_dir/.cs/brief.md"
+    echo "## Outcome" >> "$wt/.cs/README.md"
+    mkdir -p "$wt/.cs/scratch-repo"
+    (cd "$wt/.cs/scratch-repo" && git init -q && echo kept > kept.txt && git add kept.txt && git commit -q -m kept)
+    ln -s "$base_dir/README.md" "$wt/.cs/plans/link.md"
+    echo "could land" > "$wt/.cs/plans/new.md"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    line=$("$CS_BIN" proj -features --porcelain 2>&1)
+    assert_eq "5" "$(_feat_field "$line" 7)" "five files at risk: $line" || return 1
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_output_contains "$output" "Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:
+.cs/README.md
+.cs/brief.md
+.cs/plans/base-plan.md
+.cs/plans/link.md
+.cs/scratch-repo/" "the refusal names all five" || return 1
+    assert_eq "kept" "$(git -C "$wt/.cs/scratch-repo" show HEAD:kept.txt 2>/dev/null)" "the nested repository keeps its history" || return 1
+    assert_eq "base plan, base edit" "$(cat "$base_dir/.cs/plans/base-plan.md")" "the base's plan is untouched" || return 1
+    assert_file_not_exists "$base_dir/.cs/plans/new.md" "nothing was fused" || return 1
+    assert_file_exists "$wt/.cs/plans/new.md" "and nothing was removed" || return 1
+}
+
+run_test test_retire_ignored_mode_refuses_records_it_cannot_carry
+
 # The record of what the feature inherited is what tells a deleted topic from
 # a new one. A record that is there and cannot be read must stop the fuse:
 # guessing "new" would bring the deleted topic back and report success.
