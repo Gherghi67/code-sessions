@@ -345,12 +345,12 @@ __screenshots__/') || { echo "  FAIL: integrate fixture"; return 1; }
     touch "$wt/apps/web/src/__screenshots__/a.png" "$wt/apps/web/src/__screenshots__/b.png"
     output=$(PATH="$bin:$PATH" "$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1) || status=$?
     assert_eq "0" "$status" "retire proceeds: $output" || return 1
-    assert_eq "Moved 4 ignored files to the system trash:
-    apps/web/src/__screenshots__/  (2 files)
-    apps/web/.env
-    build.log
-MEMORY.md: appended 1 pointer(s) from the feature (base lines kept)
-retired task1 $sha" "$output" "retire names what it moved to the trash, then fuses the records" || return 1
+    assert_eq "MEMORY.md: appended 1 pointer(s) from the feature (base lines kept)
+Moved 4 ignored files to the system trash:
+    $wt/apps/web/src/__screenshots__/  (2 files)
+    $wt/apps/web/.env
+    $wt/build.log
+retired task1 $sha" "$output" "retire names where each file it moved to the trash came from" || return 1
     assert_eq "$wt/apps/web/src/__screenshots__
 $wt/apps/web/.env
 $wt/build.log" "$(cat "$TEST_TMPDIR/trash.log")" "the trash gets each entry once, by its full path" || return 1
@@ -364,9 +364,16 @@ test_retire_deletes_regenerable_trees_with_the_worktree() {
     local wt="$CS_SESSIONS_ROOT/proj@task1" sha bin output status=0
     sha=$(_landed_feature_ignoring 'node_modules/
 __pycache__/
-.venv/') || { echo "  FAIL: integrate fixture"; return 1; }
+.venv/
+.dart_tool/
+.direnv/
+.hypothesis/') || { echo "  FAIL: integrate fixture"; return 1; }
     bin=$(fake_trash_bin moves trash)
-    mkdir -p "$wt/apps/web/node_modules/pkg" "$wt/apps/web/src/__pycache__" "$wt/.venv/bin"
+    mkdir -p "$wt/apps/web/node_modules/pkg" "$wt/apps/web/src/__pycache__" "$wt/.venv/bin" \
+        "$wt/apps/mobile/.dart_tool" "$wt/.direnv" "$wt/.hypothesis/examples"
+    : > "$wt/apps/mobile/.dart_tool/package_config.json"
+    : > "$wt/.direnv/env"
+    : > "$wt/.hypothesis/examples/0a1b"
     echo "module.exports = 1" > "$wt/apps/web/node_modules/pkg/index.js"
     echo "TOKEN=x" > "$wt/apps/web/node_modules/pkg/.env"
     : > "$wt/apps/web/src/__pycache__/app.cpython-312.pyc"
@@ -407,6 +414,42 @@ test_retire_refuses_without_a_trash_command() {
     assert_eq "Error: Worktree has 1 ignored file that retiring moves to the system trash, but neither trash nor gio is installed, so nothing was removed. Move or delete it, then run /finish task1 here again:
     apps/web/.env" "$output" "the refusal names the file and the missing commands" || return 1
     assert_eq "KEY=value" "$(cat "$wt/apps/web/.env")" "the ignored file is where it was" || return 1
+    assert_dir "$wt" "the worktree survives" || return 1
+}
+
+# A name holding a newline reaches the trash command as it is on disk; the
+# listing shows the newline as "?".
+test_retire_moves_an_ignored_file_whose_name_holds_a_newline() {
+    local wt="$CS_SESSIONS_ROOT/proj@task1" sha bin output status=0 name
+    sha=$(_landed_feature_ignoring 'notes*') || { echo "  FAIL: integrate fixture"; return 1; }
+    bin=$(fake_trash_bin moves trash)
+    name="notes"$'\n'"final.txt"
+    echo "kept" > "$wt/$name"
+    output=$(PATH="$bin:$PATH" "$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "retire proceeds: $output" || return 1
+    assert_eq "MEMORY.md: appended 1 pointer(s) from the feature (base lines kept)
+Moved 1 ignored file to the system trash:
+    $wt/notes?final.txt
+retired task1 $sha" "$output" "the listing shows the newline as ?" || return 1
+    assert_eq "$wt/$name" "$(cat "$TEST_TMPDIR/trash.log")" "the trash gets the name with its newline" || return 1
+    assert_eq "kept" "$(cat "$TEST_TMPDIR/trash-bin/1-$name")" "the file is in the trash, intact" || return 1
+}
+
+# A removal that fails after the trash step leaves the worktree, and the
+# refusal says what is already in the trash and where it came from.
+test_retire_lists_what_it_trashed_when_the_removal_then_fails() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@task1" sha bin output status=0
+    sha=$(_landed_feature_ignoring '.env') || { echo "  FAIL: integrate fixture"; return 1; }
+    bin=$(fake_trash_bin moves trash)
+    echo "KEY=value" > "$wt/apps/web/.env"
+    git -C "$base_dir" worktree lock "$wt"
+    output=$(PATH="$bin:$PATH" "$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "a locked worktree cannot be removed: $output" || return 1
+    assert_eq "Error: git worktree remove failed for $wt; nothing was fused or deleted" "$(printf '%s\n' "$output" | head -n 1)" \
+        "the refusal names the failed removal" || return 1
+    assert_eq "Moved 1 ignored file to the system trash before this failed:
+    $wt/apps/web/.env" "$(printf '%s\n' "$output" | tail -n 2)" "and what is already in the trash" || return 1
+    assert_eq "KEY=value" "$(cat "$TEST_TMPDIR/trash-bin/1-.env")" "the file is in the trash" || return 1
     assert_dir "$wt" "the worktree survives" || return 1
 }
 
@@ -1065,6 +1108,8 @@ run_test test_retire_deletes_regenerable_trees_with_the_worktree
 run_test test_retire_refuses_when_the_trash_command_fails
 run_test test_retire_refuses_without_a_trash_command
 run_test test_retire_moves_ignored_work_with_gio_when_trash_is_missing
+run_test test_retire_moves_an_ignored_file_whose_name_holds_a_newline
+run_test test_retire_lists_what_it_trashed_when_the_removal_then_fails
 
 # Ignored build trees hold tens of thousands of files. The refusal names each
 # whole tree once with its file count, under the total, so the files that are
