@@ -96,34 +96,33 @@ _lock_collision_menu() {
     esac
 }
 
-# Acquire a PID-based session lock to prevent concurrent access. The lock is
-# taken by creating the file, which the filesystem does for exactly one
-# process (noclobber: the open fails when the file exists), never by a check
-# followed by a write: two opens started together both saw no lock, both
-# wrote their pid, and both launched a claude on one UUID. A loser reads the
-# winner's pid and takes the live-lock path; a lock whose holder is dead is
-# removed and the create tried again, with a bound so a lock that keeps
-# reappearing cannot spin forever. Creating and reclaiming take turns under
-# the .cs/session.mutex.lock mutex (_cs_lock): an opener that read a dead pid and then removed
-# the file could otherwise delete the live lock another opener had just made
-# in its place, and both would launch. A cs from before that mutex took a
-# session.lock.d directory instead, and the two do not wait on each other: an
-# older opener still between reading a dead pid and removing the file while
-# this version installs could remove a new opener's lock. That window is an
-# update run in the middle of an open; it is accepted and named in the
-# CHANGELOG rather than bridged with the old pid judgement. The mutex is let go before the
-# collision menu, which waits on a person. An opener that cannot take the
-# mutex (another cs still holds it after the wait) refuses rather than going on
-# without it, since that holder may be between reading a dead pid and removing
-# the file. A force (flag or collision menu) replaces the lock outright: that
-# is what force means. It takes the mutex again to write the replacement, since
-# a SessionEnd clearing its own lock reads and removes it under the mutex.
-acquire_session_lock() {
+# Take the PID-based session lock of <meta_dir> to prevent concurrent access.
+# The lock is taken by creating the file, which the filesystem does for
+# exactly one process (noclobber: the open fails when the file exists), never
+# by a check followed by a write: two opens started together both saw no
+# lock, both wrote their pid, and both launched a claude on one UUID. A loser
+# reads the winner's pid and takes the live-lock path; a lock whose holder is
+# dead is removed and the create tried again, with a bound so a lock that
+# keeps reappearing cannot spin forever. Creating and reclaiming take turns
+# under the .cs/session.mutex.lock mutex (_cs_lock): an opener that read a
+# dead pid and then removed the file could otherwise delete the live lock
+# another opener had just made in its place, and both would launch. A cs from
+# before that mutex took a session.lock.d directory instead, and the two do
+# not wait on each other: an older opener still between reading a dead pid
+# and removing the file while this version installs could remove a new
+# opener's lock. That window is an update run in the middle of an open; it is
+# accepted and named in the CHANGELOG rather than bridged with the old pid
+# judgement. A caller that cannot take the mutex (another cs still holds it
+# after the wait) must refuse rather than go on without it, since that holder
+# may be between reading a dead pid and removing the file.
+# Returns 0 holding the lock; 1 when a live process holds it, with its pid in
+# _CS_LOCK_LIVE_PID and the mutex released; 2 when the mutex cannot be taken,
+# with session.lock untouched. Exits when perl is missing or the bound is hit.
+_take_session_lock() {  # meta_dir
     local meta_dir="$1"
-    local force="${2:-}"
-    local session_name="$3"
-    local lock_file="$meta_dir/session.lock"
-    local lock_pid attempt=0 mutex=""
+    local lock_file="$meta_dir/session.lock" mutex="$meta_dir/session.mutex.lock"
+    local lock_pid attempt=0
+    _CS_LOCK_LIVE_PID=""
 
     # Without perl the mutex can never be taken, which is no sign of another
     # opener: say what is missing instead.
@@ -131,12 +130,7 @@ acquire_session_lock() {
         echo -e "${RED}Error: cs needs perl to lock this session ($meta_dir); install perl and retry${NC}" >&2
         exit 1
     fi
-    if ! _cs_lock "$meta_dir/session.mutex.lock"; then
-        echo -e "${RED}Error: Another cs is opening this session ($meta_dir/session.mutex.lock is held)${NC}" >&2
-        echo -e "${DIM}Try again in a moment: cs $session_name${NC}" >&2
-        exit 1
-    fi
-    mutex="$meta_dir/session.mutex.lock"
+    _cs_lock "$mutex" || return 2
     while :; do
         if ( set -C; echo "$$" > "$lock_file" ) 2>/dev/null; then
             # Verify: the create was ours only when the file still says so
@@ -150,36 +144,10 @@ acquire_session_lock() {
         lock_pid=$(cat "$lock_file" 2>/dev/null || echo "")
 
         if [ -n "$lock_pid" ] && kill -0 "$lock_pid" 2>/dev/null; then
-            _cs_unlock "$mutex"
             # PID is alive — session is in use
-            if [ "$force" = "true" ]; then
-                warn "Overriding active session lock (PID $lock_pid)"
-            elif cs_interactive; then
-                _lock_collision_menu "$session_name" "$lock_pid"
-                # The menu returns only when the user chose force. Record the
-                # choice so the rest of the launch (live-duplicate UUID guard
-                # included) honors it exactly like an explicit --force.
-                CS_COLLISION_FORCE=1
-                warn "Overriding active session lock (PID $lock_pid)"
-            else
-                echo -e "${RED}Error: Session is already open (PID $lock_pid)${NC}" >&2
-                echo -e "${DIM}Use --force to override: cs $session_name --force${NC}" >&2
-                exit 1
-            fi
-            # The replacement is written under the mutex again: a SessionEnd
-            # that read its own pid while the mutex was free would otherwise
-            # remove this lock right after it is written.
-            if ! _cs_lock "$mutex"; then
-                echo -e "${RED}Error: Another cs is opening this session ($mutex is held)${NC}" >&2
-                echo -e "${DIM}Try again in a moment: cs $session_name --force${NC}" >&2
-                exit 1
-            fi
-            # The lock records one pid. When this forced open ends first, its
-            # exit removes the lock and the other holder runs unprotected;
-            # that is decided, and locks do not record every holder.
-            echo "$$" > "$lock_file"
             _cs_unlock "$mutex"
-            return 0
+            _CS_LOCK_LIVE_PID="$lock_pid"
+            return 1
         fi
 
         if [ "$attempt" -ge 5 ]; then
@@ -194,6 +162,61 @@ acquire_session_lock() {
         # The file vanished between the failed create and the look at it, or
         # was just removed as stale: try the create again.
     done
+}
+
+# Acquire the session lock for an open, through _take_session_lock. An opener
+# that cannot take the mutex refuses. A live holder meets the collision menu
+# at a terminal, which waits on a person, so the mutex is let go before it. A
+# force (flag or collision menu) replaces the lock outright: that is what
+# force means. It takes the mutex again to write the replacement, since a
+# SessionEnd clearing its own lock reads and removes it under the mutex.
+acquire_session_lock() {
+    local meta_dir="$1"
+    local force="${2:-}"
+    local session_name="$3"
+    local lock_file="$meta_dir/session.lock" mutex="$meta_dir/session.mutex.lock"
+    local lock_pid taken=0
+
+    _take_session_lock "$meta_dir" || taken=$?
+    case "$taken" in
+        0) return 0 ;;
+        1) lock_pid="$_CS_LOCK_LIVE_PID" ;;
+        2)
+            echo -e "${RED}Error: Another cs is opening this session ($mutex is held)${NC}" >&2
+            echo -e "${DIM}Try again in a moment: cs $session_name${NC}" >&2
+            exit 1
+            ;;
+        *) error "_take_session_lock returned $taken for $meta_dir" ;;
+    esac
+
+    if [ "$force" = "true" ]; then
+        warn "Overriding active session lock (PID $lock_pid)"
+    elif cs_interactive; then
+        _lock_collision_menu "$session_name" "$lock_pid"
+        # The menu returns only when the user chose force. Record the
+        # choice so the rest of the launch (live-duplicate UUID guard
+        # included) honors it exactly like an explicit --force.
+        CS_COLLISION_FORCE=1
+        warn "Overriding active session lock (PID $lock_pid)"
+    else
+        echo -e "${RED}Error: Session is already open (PID $lock_pid)${NC}" >&2
+        echo -e "${DIM}Use --force to override: cs $session_name --force${NC}" >&2
+        exit 1
+    fi
+    # The replacement is written under the mutex again: a SessionEnd
+    # that read its own pid while the mutex was free would otherwise
+    # remove this lock right after it is written.
+    if ! _cs_lock "$mutex"; then
+        echo -e "${RED}Error: Another cs is opening this session ($mutex is held)${NC}" >&2
+        echo -e "${DIM}Try again in a moment: cs $session_name --force${NC}" >&2
+        exit 1
+    fi
+    # The lock records one pid. When this forced open ends first, its
+    # exit removes the lock and the other holder runs unprotected;
+    # that is decided, and locks do not record every holder.
+    echo "$$" > "$lock_file"
+    _cs_unlock "$mutex"
+    return 0
 }
 
 # Release session lock if owned by current process. The read of the pid and
