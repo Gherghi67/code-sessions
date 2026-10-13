@@ -186,7 +186,9 @@ _queue_accept() {  # qdir, message id
     case "$found" in
         "$qdir"/mail/new/*) mv "$found" "$qdir/mail/cur/" 2>/dev/null || true ;;
     esac
-    info "queued: $body"
+    # The body is another session's text on its way to this terminal: shown
+    # scrubbed, while the queued file keeps it as mailed.
+    info "queued: $(printf '%s' "$body" | _scrub_controls)"
 }
 
 # Count of queued task files ([ -f ] also guards bash 3.2's literal

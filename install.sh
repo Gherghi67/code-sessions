@@ -1205,7 +1205,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "f6ee8ead537cff727e57a14e1183149899d8673f7a1f68d4dcd76d6bc5f63a33  bin/cs"
+    "e2ede3b3c00db5b0b5523c6e599ccf25472b0f635c1a6f3cb7ce45ac41eff1f9  bin/cs"
     "3b4626c505845d0e94961cd06e3e5400c6f497340ff93dadf88770f02ff22524  bin/cs-secrets"
     "f5c5600a9e08e623881893c5ca4f8e06d64adc5da414fbc0ad2166b6adea8775  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -1223,7 +1223,7 @@ CS_PAYLOAD_SHA256=(
     "81a13835a65f4b4b35bb87493da0df9848de68375ca7ab1525d2d5079cf52bf1  hooks/subagent-context.sh"
     "53b16016dd6d087c3cc3db7e4acf8de6629e149e3b7f326f0731b36809574156  hooks/tool-failure-logger.sh"
     "40deb4f7592a2d87f8c4a0232ec94be91e66c8c4f9385806d9a7cb4c6085a96a  hooks/session-auto-approve.sh"
-    "c0690b22bc4cc5487e0881fa85d113438cf1ecea2af380ab3e93cce7d16f6343  hooks/scope-prompt.sh"
+    "bc3899dd42a2e81e9ea2941006bf46b1ddc07e45c448f32382dc1e4ecd309874  hooks/scope-prompt.sh"
     "12dca7f6d02f19f75865fa2f6e91384a5c8e727b0962e269a6adbb491a95971f  commands/summary.md"
     "9e06eaa16960dff49881234c8a479c2f8d2dd8d672283056e1591c4528e755ab  commands/checkpoint.md"
     "df9db21017a995e93fdab7135ee2c6d3d7ce0ff660f76bd6d29015854b3a1aa3  commands/sweep.md"
