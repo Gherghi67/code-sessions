@@ -144,8 +144,8 @@ _worktree_untracked_at_risk() {  # wt_dir
 CS_REGENERABLE_DIRS=(
     node_modules .svelte-kit .next .nuxt .output .turbo .parcel-cache .vite .astro .angular
     coverage .nyc_output htmlcov
-    __pycache__ .pytest_cache .mypy_cache .ruff_cache .tox .venv venv
-    target .gradle
+    __pycache__ .pytest_cache .mypy_cache .ruff_cache .tox .venv venv .hypothesis
+    target .gradle .dart_tool .direnv
     test-results playwright-report
 )
 
@@ -676,9 +676,11 @@ _finish_progress_exit() {  # exit status
 
 # Move the worktree's ignored files that are not regenerable to the system
 # trash, so retiring it deletes nothing git keeps no copy of; files under a
-# regenerable directory (CS_REGENERABLE_DIRS) go with the worktree. Prints
-# what it moved, one line per entry. Refuses, having removed nothing, when no
-# trash command is installed or the one that is fails.
+# regenerable directory (CS_REGENERABLE_DIRS) go with the worktree. Leaves
+# what it moved in _RETIRE_TRASHED_COUNT and _RETIRE_TRASHED_LINES (one line
+# per entry, by absolute path) for _retire_trashed_note. Refuses, having
+# removed nothing, when no trash command is installed or the one that is
+# fails.
 _retire_trash_ignored_work() {  # wt_dir task
     local wt_dir="$1" task="$2" ignored trash_paths regenerable input entries listing count them=them nl=$'\n'
     ignored=$(_worktree_others "$wt_dir" --ignored) \
@@ -693,14 +695,34 @@ _retire_trash_ignored_work() {  # wt_dir task
     listing=$(printf '%s\n' "$entries" | _untracked_listing_format 20)
     count="${listing%%"$nl"*}"
     [ "$count" != "1 file" ] || them=it
-    local -a trash_cmd=() targets=()
-    local word entry
+    local -a trash_cmd=() targets=() named=()
+    local word entry raw
     while IFS= read -r word; do trash_cmd+=("$word"); done <<< "$(_system_trash_command)"
     [ -n "${trash_cmd[0]:-}" ] \
         || error "Worktree has ${count% *} ignored ${count#* } that retiring moves to the system trash, but neither trash nor gio is installed, so nothing was removed. Move or delete $them, then run /finish $task here again:
 ${listing#*"$nl"}"
+    # The lists show a newline inside a name as "?", so a "?" in an entry is
+    # looked up among the names on disk that hold a newline: the trash
+    # command gets the name as it is. Both are one character, so the entry's
+    # length is the length of the name it stands for.
+    case "$entries" in
+        *'?'*)
+            while IFS= read -r -d '' raw; do
+                case "$raw" in *"$nl"*) named+=("$raw") ;; esac
+            done < <(git -C "$wt_dir" ls-files -z --others --ignored --exclude-standard 2>/dev/null)
+            ;;
+    esac
     while IFS= read -r entry; do
         entry="${entry#*$'\t'}"
+        case "$entry" in
+            *'?'*)
+                for raw in ${named[@]+"${named[@]}"}; do
+                    case "${raw//"$nl"/?}" in
+                        "$entry"*) entry="${raw:0:${#entry}}"; break ;;
+                    esac
+                done
+                ;;
+        esac
         targets+=("$wt_dir/${entry%/}")
     done <<< "$entries"
     local trash_err
@@ -708,8 +730,18 @@ ${listing#*"$nl"}"
         || error "Could not move ${count% *} ignored ${count#* } to the system trash, so nothing was removed; anything the trash command did move is in the trash. Move or delete $them, then run /finish $task here again:
 ${listing#*"$nl"}
 ${trash_cmd[0]}: ${trash_err:-exited with an error}"
-    printf 'Moved %s ignored %s to the system trash:\n' "${count% *}" "${count#* }"
-    printf '%s\n' "$entries" | _untracked_listing_format all | tail -n +2
+    _RETIRE_TRASHED_COUNT="$count"
+    _RETIRE_TRASHED_LINES=$(printf '%s\n' "$entries" \
+        | LC_ALL=C awk -v dir="$wt_dir/" '{ cut = index($0, "\t"); print substr($0, 1, cut) dir substr($0, cut + 1) }' \
+        | _untracked_listing_format all | tail -n +2)
+}
+
+# What _retire_trash_ignored_work moved to the system trash, as a heading
+# ending in $1 and one line per entry; nothing when it moved nothing.
+_retire_trashed_note() {  # heading_end
+    [ -n "${_RETIRE_TRASHED_COUNT:-}" ] || return 0
+    printf 'Moved %s ignored %s to the system trash%s:\n%s\n' \
+        "${_RETIRE_TRASHED_COUNT% *}" "${_RETIRE_TRASHED_COUNT#* }" "$1" "$_RETIRE_TRASHED_LINES"
 }
 
 # Retire an integrated feature worktree: fuse its session records into the
@@ -826,10 +858,12 @@ ${wt_listing#*"$nl"}"
             || error "cannot fuse the worktree's records: $base_dir/.cs/private is locked. Mount it, then retry."
     fi
     _retire_trash_ignored_work "$wt_dir" "$task"
+    local trashed nl=$'\n'
+    trashed=$(_retire_trashed_note " before this failed")
     if [ "$mode" = "ignored" ]; then
         aside="$SESSIONS_ROOT/.retire-$wt_name.$$"
-        mkdir "$aside" 2>/dev/null || error "Could not create $aside to set aside $wt_dir/.cs for the record fuse"
-        mv "$wt_dir/.cs" "$aside/cs" || { rmdir "$aside" 2>/dev/null; error "Could not set aside $wt_dir/.cs for the record fuse"; }
+        mkdir "$aside" 2>/dev/null || error "Could not create $aside to set aside $wt_dir/.cs for the record fuse${trashed:+$nl$trashed}"
+        mv "$wt_dir/.cs" "$aside/cs" || { rmdir "$aside" 2>/dev/null; error "Could not set aside $wt_dir/.cs for the record fuse${trashed:+$nl$trashed}"; }
     fi
     local remove_err
     if ! remove_err=$(git -C "$base_dir" worktree remove --force "$wt_dir" 2>&1); then
@@ -838,15 +872,15 @@ ${wt_listing#*"$nl"}"
                 rmdir "$aside" 2>/dev/null
             else
                 error "git worktree remove failed for $wt_dir, and its session records could not be put back: they are at $aside/cs (move that directory to $wt_dir/.cs by hand)
-$remove_err"
+$remove_err${trashed:+$nl$trashed}"
             fi
         fi
         error "git worktree remove failed for $wt_dir; nothing was fused or deleted
-$remove_err"
+$remove_err${trashed:+$nl$trashed}"
     fi
     if [ -n "$aside" ]; then
         ( fuse_session_records "$aside/cs" "$base_dir/.cs" ) \
-            || error "The worktree $wt_dir is removed, but its session records could not be fused into $base_dir/.cs: they are at $aside/cs. Fuse what is missing by hand, then delete that directory."
+            || error "The worktree $wt_dir is removed, but its session records could not be fused into $base_dir/.cs: they are at $aside/cs. Fuse what is missing by hand, then delete that directory.${trashed:+$nl$trashed}"
         rm -rf "$aside"
     fi
     if [ -n "$force" ]; then
@@ -864,6 +898,7 @@ $remove_err"
            --arg task "$task" \
         '{ts: $ts, event: $event, task: $task}'
     _finish_progress_write retired
+    _retire_trashed_note ""
     printf 'retired %s %s\n' "$task" "$sha"
 }
 
