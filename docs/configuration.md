@@ -147,7 +147,7 @@ export CS_REWRITE_PROVIDER="claude"          # claude | openai | gemini | grok
 # reasoning and return a rewrite truncated mid-sentence, which cs declines — so
 # ctrl+g intermittently does nothing at all.
 export CS_REWRITE_MODEL="gemini-3.6-flash-low"        # agy's id, for the gemini CLI arm
-export CS_REWRITE_TIMEOUT="25"                        # seconds; needs timeout(1)
+export CS_REWRITE_TIMEOUT="25"                        # whole seconds; 0 or a non-number means 25
 
 # What fills the blank screen while the rewrite runs. `screen` holds your prompt
 # in a margin rule that breathes while the rewrite runs, with the engine, the
