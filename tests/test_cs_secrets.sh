@@ -3332,6 +3332,37 @@ test_keychain_set_round_trips_a_multiline_quoted_value() {
         || { echo "  FAIL: a multi-line value with quotes and a backslash did not read back byte-exact"; return 1; }
 }
 
+# `security -i` reads one command per line into a 4096-byte buffer, so a line
+# runs whole only up to 4095 bytes; the rest of a longer line is read as the
+# next command. The store line for account "tester" and secret BIG of
+# test-session is 37 fixed bytes, the quoted account (8) and service
+# "cs:test-session:BIG" (21), and two hex digits per value byte:
+# 66 + 2 * 2014 = 4094 fits, 66 + 2 * 2015 = 4096 does not. A value over the
+# limit is refused before `security` runs at all; one at the limit is stored.
+test_keychain_set_refuses_a_value_too_long_for_one_security_line() {
+    local bindir; bindir=$(_make_fake_security)
+    local argvlog="$TEST_TMPDIR/security-argv" kcstore="$TEST_TMPDIR/kc-store" out rc=0
+    head -c 2015 /dev/zero | tr '\0' 'v' > "$TEST_TMPDIR/over"
+    head -c 2014 /dev/zero | tr '\0' 'v' > "$TEST_TMPDIR/at"
+
+    out=$(PATH="$bindir:$PATH" USER=tester CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        FAKE_SECURITY_ARGVLOG="$argvlog" "$CS_SECRETS_BIN" set BIG < "$TEST_TMPDIR/over" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a value one byte over the limit is refused" || return 1
+    assert_eq "Error: refusing to store BIG in the Keychain: its value is 2015 bytes, over the 2014 bytes a Keychain value can hold under this session and name. Store larger values with the encrypted backend (CS_SECRETS_BACKEND=encrypted)." \
+        "$out" "the refusal names the limit and the encrypted backend" || return 1
+    assert_not_exists "$argvlog" "security is never called for a value over the limit" || return 1
+
+    rc=0
+    out=$(PATH="$bindir:$PATH" USER=tester CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        FAKE_SECURITY_ARGVLOG="$argvlog" "$CS_SECRETS_BIN" set BIG < "$TEST_TMPDIR/at" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "a value at the limit is stored: $out" || return 1
+    PATH="$bindir:$PATH" USER=tester CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        "$CS_SECRETS_BIN" get BIG > "$TEST_TMPDIR/got" 2>/dev/null \
+        || { echo "  FAIL: keychain get exited nonzero"; return 1; }
+    _get_matches "$TEST_TMPDIR/got" "$TEST_TMPDIR/at" \
+        || { echo "  FAIL: the value at the limit did not read back byte-exact"; return 1; }
+}
+
 test_encrypted_set_keeps_value_and_password_off_argv() {
     local bindir="$TEST_TMPDIR/argv-bin"
     local olog="$TEST_TMPDIR/openssl-argv" jlog="$TEST_TMPDIR/jq-argv"
@@ -4188,6 +4219,7 @@ run_test test_keychain_export_does_not_require_cs_secrets_dir
 # No secret on a child's argv (audit H3)
 run_test test_keychain_set_keeps_the_value_off_argv
 run_test test_keychain_set_round_trips_a_multiline_quoted_value
+run_test test_keychain_set_refuses_a_value_too_long_for_one_security_line
 run_test test_encrypted_set_keeps_value_and_password_off_argv
 run_test test_encrypted_derived_key_stays_off_argv
 run_test test_sync_export_import_keep_values_off_argv
