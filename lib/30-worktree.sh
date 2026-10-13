@@ -1301,7 +1301,9 @@ _append_missing_memory_pointers() {  # feature_index base_index
     local src="$1" dst="$2" have="$2" missing
     [ -f "$src" ] || { printf '0'; return 0; }
     [ -f "$dst" ] || have=/dev/null
-    missing=$(awk '
+    # Bytes, not characters: the index is UTF-8 in any locale, and awk stops
+    # on a line a multibyte locale cannot decode.
+    missing=$(LC_ALL=C awk '
         function target(s) {
             if (s !~ /^- \[/ || !match(s, /]\([^)]*\)/)) return ""
             return substr(s, RSTART + 2, RLENGTH - 3)
@@ -1387,8 +1389,10 @@ fuse_session_records() {
             # A file not opening with --- has no frontmatter (whole file is
             # body); counting stops at 2 so a --- horizontal rule in the
             # body stays body instead of truncating the append.
+            # Bytes, not characters (LC_ALL=C): the records are UTF-8 in any
+            # locale, and awk stops on one a multibyte locale cannot decode.
             cs_append_inside "$dst/memory/$base" \
-                awk 'NR==1 && $0 != "---" {c=2} /^---$/ && c < 2 {c++; next} c >= 2 {print}' "$f" || return 1
+                env LC_ALL=C awk 'NR==1 && $0 != "---" {c=2} /^---$/ && c < 2 {c++; next} c >= 2 {print}' "$f" || return 1
         else
             cs_write_atomic "$dst/memory/$base" cat "$f" || return 1
         fi
