@@ -622,10 +622,11 @@ _migrate_session_documents() {  # session_dir, tracked_tree_is_ours
             created_date=$(git -C "$session_dir" log --diff-filter=A --format=%as -- .cs/README.md 2>/dev/null | tail -1 || true)
         fi
         if [ -z "$created_date" ]; then
-            if [[ "$OSTYPE" == "darwin"* ]]; then
-                created_date=$(stat -f '%Sm' -t '%Y-%m-%d' "$readme" 2>/dev/null || date '+%Y-%m-%d')
+            # GNU stat first, as _epoch_mtime asks it.
+            if created_date=$(stat -c '%y' "$readme" 2>/dev/null); then
+                created_date=${created_date%% *}
             else
-                created_date=$(stat -c '%y' "$readme" 2>/dev/null | cut -d' ' -f1 || date '+%Y-%m-%d')
+                created_date=$(stat -f '%Sm' -t '%Y-%m-%d' "$readme" 2>/dev/null || date '+%Y-%m-%d')
             fi
         fi
         local existing_content

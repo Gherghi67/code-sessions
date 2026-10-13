@@ -253,13 +253,12 @@ session_lock_owned_by_invoker() {  # session_name, lock_pid
         && _pid_is_self_or_ancestor "$2"
 }
 
-# Epoch mtime of a file (BSD/GNU stat), 0 on error. Arg: path.
+# Epoch mtime of a file, 0 on error. Arg: path. GNU stat is asked first, as
+# _cs_file_mode does: BSD stat rejects -c with no output, while GNU stat reads
+# -f as --file-system and prints that, and OSTYPE is no guide to which stat
+# PATH finds (Homebrew's gnubin puts GNU stat on a Mac).
 _epoch_mtime() {  # path
-    if [[ "${OSTYPE:-}" == darwin* ]]; then
-        stat -f %m "$1" 2>/dev/null || echo 0
-    else
-        stat -c %Y "$1" 2>/dev/null || echo 0
-    fi
+    stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0
 }
 
 # How long after the last statusline write a lockless conversation still counts
