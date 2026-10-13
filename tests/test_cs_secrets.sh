@@ -3728,6 +3728,19 @@ test_set_and_delete_refuse_a_session_the_root_does_not_have() {
     assert_eq "test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
 }
 
+# migrate-backend stores every key it moves, so a session the sessions root
+# does not have is refused before it starts, by name, not key by key.
+test_migrate_backend_refuses_a_session_the_root_does_not_have() {
+    _seed_removed_session || { echo "  FAIL: fixture: could not seed ghost's stores"; return 1; }
+    local out rc=0 backend
+    out=$(_backend_secrets keychain --session ghost migrate-backend keychain --from encrypted --delete-source 2>&1) || rc=$?
+    assert_eq "1" "$rc" "migrate-backend exits 1: $out" || return 1
+    assert_eq "Error: No session named 'ghost' in $CS_SESSIONS_ROOT" "$out" "migrate-backend names the session and the root" || return 1
+    for backend in keychain encrypted; do
+        assert_eq "kept" "$(_backend_secrets "$backend" --session ghost get K1 2>&1)" "$backend K1 keeps its value" || return 1
+    done
+}
+
 # Stored secrets outlive `cs -rm`, and purge is how they are removed
 # afterwards, so purge does not need the session directory.
 test_purge_removes_what_a_removed_session_left() {
@@ -3989,6 +4002,7 @@ run_test test_rename_rerun_finishes_an_interrupted_move
 run_test test_rename_rerun_refuses_a_value_that_differs_under_both_names
 run_test test_rename_with_nothing_to_move_creates_no_cs_secrets
 run_test test_set_and_delete_refuse_a_session_the_root_does_not_have
+run_test test_migrate_backend_refuses_a_session_the_root_does_not_have
 run_test test_purge_removes_what_a_removed_session_left
 run_test test_keychain_writes_create_no_cs_secrets_dir
 run_test test_set_delete_and_purge_take_the_session_write_lock
