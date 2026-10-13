@@ -22,11 +22,14 @@ every one in ~/.claude-sessions, one after another:
   comes with the outer copy as well.
 - Each feature worktree (<name>@<task>) is copied beside it as a linked
   worktree of the copy's repository, on the same branch, with its index and
-  uncommitted changes. A link into any cs session's folder by an absolute
-  path is pointed at that session's copy, and so is each such path in a
-  Python virtual environment's text files (pyvenv.cfg, bin/, an editable
-  install's .pth, finder and direct_url.json); the run names each such
-  environment once, with how many of its files it rewrites.
+  uncommitted changes. A link by an absolute path into the folder of a cs
+  session that has a copy (made by this run or an earlier one) is pointed at
+  that copy, and so is each such path in a Python virtual environment's text
+  files (pyvenv.cfg, bin/, an editable install's .pth, finder and
+  direct_url.json); the run names each such environment once, with how many
+  of its files it rewrites. A link into any other session's folder is left
+  as it is and named as a problem; the run that copies that session puts it
+  right.
 - The stable cs never reads the engine its state names: it opens Claude on
   claude_session_id. A copy whose cs state names another engine (left by
   trials of this fork) says claude, so ccs opens the same conversation; the
@@ -125,7 +128,7 @@ import sys
 import tempfile
 
 from session_transfer import (
-    STATE, Record, Rewrites, SecretsError, Syncer, Tally, adopt_legacy_dir, admin_dir_for,
+    STATE, Record, Rewrites, SecretsError, Syncer, Tally, _walk, adopt_legacy_dir, admin_dir_for,
     claude_project_key, clone_tree, copy_admin_dir, copy_blocker, copy_index, copy_secret, git, mark_copied, mark_now,
     merge_files, merge_tree, merged_notes, merged_parts, parse_state, profile_secrets_env, read_text, reap, relinker,
     repo_marks, scrubbed_env, secret_names, session_is_open, secret_differs, shown, state_value, tilde, write_atomic,
@@ -203,6 +206,7 @@ class Session:
         self.left = {}          # path of nested -> why its session is not copied: no link in its place
         self.shared = []        # (path, name) of a session folder this one's repository tracks: copied here too
         self.held = []          # (path, name) of a link to a session cs no longer has, kept as it is
+        self.into_cs = set()    # link targets left in cs's folder of a session with no copy
         self.features = []
         self.open_now = []
         self.gone_in_cs = []
@@ -259,6 +263,7 @@ class Importer:
         self.in_run = set()
         self._processes = None
         self._roots = None
+        self._no_copy = []
         self._relink = None
         self._probes = {}
         self._rollouts = None
@@ -612,11 +617,14 @@ class Importer:
         return (json.dumps(settings, indent=2) + "\n").encode()
 
     def roots(self):
-        """The folder of each cs session, by every spelling, -> where its copy is in code-sessions.
+        """The folder of each cs session with a copy in code-sessions, made by this run or an earlier one, by
+        every spelling, -> where that copy is.
 
         A session's folder by its link in the cs root, by the link's target
         and by where it really is; inside a folder that holds another session's,
-        the inner one's copy wins, as the longer path.
+        the inner one's copy wins, as the longer path. The folder of any other
+        session stays as it is (see relink). Built only once run() has set
+        in_run, the sessions this run copies.
         """
         if self._roots is None:
             self._roots = {}
@@ -625,19 +633,59 @@ class Importer:
                 paths = [cs_path, real, os.path.join(self.cs_root_real, name)]
                 if os.path.islink(cs_path) and os.path.isabs(os.readlink(cs_path)):
                     paths.append(os.readlink(cs_path))
-                for path in paths:
-                    self._roots[path] = os.path.join(self.ccs_root, name)
+                if name in self.in_run or self.has_copy(name):
+                    for path in paths:
+                        self._roots[path] = os.path.join(self.ccs_root, name)
+                else:
+                    self._no_copy += paths
         return self._roots
 
-    def relink(self):
-        """Absolute links into the folder of any cs session, pointed at code-sessions's copy of it."""
+    def has_copy(self, name):
+        """Whether code-sessions has the copy an earlier run made of the cs session name, by its record."""
+        base_name = name.partition("@")[0]
+        try:
+            record = Record(os.path.join(self.record_root, base_name))
+        except ValueError:
+            return False
+        mark = record.data if name == base_name else (record.data["sessions"].get(name) or {})
+        copy = os.path.join(self.ccs_root, name)
+        return mark.get("source") == self.folders[name] and os.path.isdir(copy) and not os.path.islink(copy)
+
+    def relink(self, session):
+        """Absolute links into the folder of a cs session with a copy, pointed at that copy.
+
+        A target left in cs's folder of a session with no copy is noted in
+        session.into_cs: the copy would write through it into cs.
+        """
         if self._relink is None:
             self._relink = relinker(self.roots())
-        return self._relink
+        move = self._relink
+
+        def relink(target):
+            moved = move(target)
+            if moved == target and os.path.isabs(target) and any(
+                    target == p or target.startswith(p + os.sep) for p in self._no_copy):
+                session.into_cs.add(target)
+            return moved
+        return relink
+
+    def check_links(self, session):
+        """What a copy would do with each link in session's folder, for a dry run, which copies nothing."""
+        relink = self.relink(session)
+        for rel, st in _walk(session.source, None, unreadable=[], skip=frozenset(session.nested_paths)):
+            if stat.S_ISLNK(st.st_mode):
+                relink(os.readlink(os.path.join(session.source, rel)))
+
+    def say_into_cs(self, session, prefix=""):
+        if session.into_cs:
+            self.problem("%slinks into cs's folder of a session with no copy here, left as they are, so the copy "
+                         "would write into cs through them: %s; a rerun points each at that session's copy once it "
+                         "is copied" % (prefix, shown(sorted(tilde(t) for t in session.into_cs))))
 
     def rewrites(self, session):
         """What session's copy holds in place of cs's file: the memory folder at the copy's path, the engine cs
-        opens it with, and each Python virtual environment naming the copy wherever it names a cs session's folder.
+        opens it with, and each Python virtual environment naming the copy wherever it names the folder of a cs
+        session with a copy (see roots).
 
         sync_files merges .cs/local/state rather than rewrite it, so the engine
         is set in a fresh copy only; from then on it is code-sessions's own.
@@ -842,7 +890,8 @@ class Importer:
     def sync(self, base, session):
         session.synced = self.syncer.session(session.name, session.source, session.ccs_physical, base.source,
                                              base.ccs_physical, base.record, rewrites=self.rewrites(session),
-                                             relink=self.relink(), is_repo=base.is_repo, skip=session.nested_paths)
+                                             relink=self.relink(session), is_repo=base.is_repo,
+                                             skip=session.nested_paths)
         self.say_venvs(session, session.synced.rewritten, self.apply)
         self.note_links(base, session)
 
@@ -853,7 +902,7 @@ class Importer:
         os.rmdir(tmp)
         since = mark_now()
         try:
-            paths = clone_tree(base.source, tmp, self.relink(), skip=base.nested_paths)
+            paths = clone_tree(base.source, tmp, self.relink(base), skip=base.nested_paths)
             for rel, name in base.links:
                 self.place_link(tmp, rel, name)
             # cs's linked worktrees are not the copy's; each feature copied
@@ -896,7 +945,7 @@ class Importer:
         os.rmdir(tmp)
         since = mark_now()
         try:
-            paths = clone_tree(feature.source, tmp, self.relink(), skip=feature.nested_paths)
+            paths = clone_tree(feature.source, tmp, self.relink(feature), skip=feature.nested_paths)
             for rel, name in feature.links:
                 self.place_link(tmp, rel, name)
             state = read_text(os.path.join(tmp, STATE))
@@ -1146,7 +1195,7 @@ class Importer:
             folder.source = os.path.realpath(folder.cs_path)
             bases.append(self.plan_folder(folder))
         bases.sort(key=lambda b: b.name)
-        self.in_run = {s.name for b in bases for s in [b] + b.features if not s.skip}
+        self.in_run = {s.name for b in bases for s in [b] + b.features if not s.skip and s.state != "gone"}
         self.settle_nested(bases)
         for base in bases:
             print()
@@ -1257,6 +1306,8 @@ class Importer:
                 rewritten = self.copy_base(base)
             else:
                 rewritten = self.rewrites(base).preview(base.nested_paths)
+                self.check_links(base)
+            self.say_into_cs(base)
             self.say_venvs(base, rewritten, self.apply)
             self.say_engine(base)
             base.outcome = done("copied")
@@ -1267,6 +1318,7 @@ class Importer:
             if base.is_repo:
                 base.branches = self.syncer.repo(base.name, base.source, base.ccs_physical, base.record)
             self.sync(base, base)
+            self.say_into_cs(base)
             base.outcome = done("brought up to date")
 
         # 2. Feature worktrees.
@@ -1282,6 +1334,7 @@ class Importer:
             if feature.state == "ours":
                 self.say_nested(feature)
                 self.sync(base, feature)
+                self.say_into_cs(feature, feature.name + ": ")
                 feature.outcome = done("brought up to date")
                 continue
             branch = git(feature.source, "branch", "--show-current").stdout.strip()
@@ -1306,6 +1359,8 @@ class Importer:
                     continue
             else:
                 rewritten = self.rewrites(feature).preview(feature.nested_paths)
+                self.check_links(feature)
+            self.say_into_cs(feature, feature.name + ": ")
             self.say_venvs(feature, rewritten, self.apply)
             self.say_engine(feature)
         for name in base.gone_in_cs:

@@ -159,17 +159,22 @@ It and `scripts/code-sessions-to-cs.py` need git 2.31 or later.
 - Each feature worktree (`<name>@<task>`) is copied beside it as a linked
   worktree of the copy's repository, on the same branch, with its index,
   uncommitted changes and per-worktree refs. A link that points into the
-  folder of any cs session by an absolute path (a `node_modules` or `.env`
-  shared with the project) is pointed at that session's copy instead, so
-  nothing writes through it.
+  folder of a cs session that has a copy, made by this run or an earlier one,
+  by an absolute path (a `node_modules` or `.env` shared with the project) is
+  pointed at that session's copy instead, so nothing writes through it. A
+  link into any other session's folder is left as it is and named as a
+  problem, since the copy would write through it into cs; the run that
+  copies that session puts it right.
 - A Python virtual environment (a folder with `pyvenv.cfg`) names folders by
   absolute path in `pyvenv.cfg`, `bin/activate*`, each script's shebang and,
   for an editable install, its `.pth` file, finder module and
-  `direct_url.json`. In the copy, each of those that names a cs session's
-  folder names that session's copy instead, so the copy's `pip` installs into
-  the copy and its Python imports the copy's source. A binary file is left
-  as it is. The run, a dry run included, names each such environment once,
-  with how many of its text files it rewrites.
+  `direct_url.json`. In the copy, each of those that names the folder of a
+  cs session that has a copy names that copy instead, so the copy's `pip`
+  installs into the copy and its Python imports the copy's source; one that
+  names another session's folder keeps naming cs's until a run copies that
+  session. A binary file is left as it is. The run, a dry run included,
+  names each such environment once, with how many of its text files it
+  rewrites.
 - The original cs never reads the `engine:` its state names: it opens Claude
   on `claude_session_id`. A session whose state names another engine (left
   by trials of this fork) is copied with `engine: claude`, so `ccs <name>`

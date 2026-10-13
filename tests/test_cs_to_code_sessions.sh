@@ -1507,6 +1507,67 @@ test_a_python_environment_in_the_copy_names_the_copy() {
     assert_eq "#!$CSROOT/lab-ccs/.venv/bin/python3" "$(head -1 "$CSROOT/lab-ccs/.venv/bin/tool")"
 }
 
+# A link into the folder of a session that has no copy, made by this run or an
+# earlier one, is left naming cs's folder and named: pointed at the profile it
+# would lead nowhere. A virtual environment's path there stays too. The run
+# that copies that session puts both right, and a rerun leaves them alone
+# while that session cannot be copied.
+test_a_link_into_a_session_with_no_copy_is_left_and_named() {
+    make_fixture
+    make_created lab "$MINE_ID"
+    make_created vault "$OTHER_ID"
+    printf 'S=1\n' > "$CSROOT/vault/.env"
+    ln -s "$CSROOT/vault/.env" "$CSROOT/lab/.env"
+    make_venv "$CSROOT/lab"
+    local pth=.venv/lib/python3.12/site-packages/vault.pth status=0
+    printf '%s/src\n' "$CSROOT/vault" > "$CSROOT/lab/$pth"
+    run_move --session lab || status=$?
+    assert_eq 1 "$status" "the dry run did not name the link" || { echo "$OUT"; return 1; }
+    assert_output_contains "$OUT" "! links into cs's folder of a session with no copy here, left as they are.*vault/.env" \
+        || return 1
+    status=0
+    run_move --session lab --apply || status=$?
+    assert_eq 1 "$status" || { echo "$OUT"; return 1; }
+    assert_output_contains "$OUT" "! links into cs's folder of a session with no copy here, left as they are.*vault/.env" \
+        || return 1
+    assert_eq "$CSROOT/vault/.env" "$(readlink "$PROFILE/sessions/lab/.env")" || return 1
+    assert_eq "$CSROOT/vault/src" "$(cat "$PROFILE/sessions/lab/$pth")" || return 1
+
+    run_move --session vault --apply || { echo "$OUT"; return 1; }
+    wait_past_the_margin
+    run_move --session lab --apply || { echo "$OUT"; return 1; }
+    assert_eq "$PROFILE/sessions/vault/.env" "$(readlink "$PROFILE/sessions/lab/.env")" || return 1
+    assert_file_exists "$PROFILE/sessions/vault/.env" || return 1
+    assert_eq "$PROFILE/sessions/vault/src" "$(cat "$PROFILE/sessions/lab/$pth")" || return 1
+
+    # Encrypted, so --all leaves it: the link still names cs's folder, on a rerun too.
+    rm -rf "$PROFILE/sessions"/* "$PROFILE/.cs-to-code-sessions"
+    printf '#!/bin/bash\n' > "$CSROOT/vault/.cs/local/pre-open"
+    status=0
+    run_move --all --apply || status=$?
+    assert_eq 1 "$status" || { echo "$OUT"; return 1; }
+    assert_output_contains "$OUT" "! links into cs's folder of a session with no copy here, left as they are.*vault/.env" \
+        || return 1
+    assert_eq "$CSROOT/vault/.env" "$(readlink "$PROFILE/sessions/lab/.env")" || return 1
+    wait_past_the_margin
+    run_move --session lab --apply || true
+    assert_eq "$CSROOT/vault/.env" "$(readlink "$PROFILE/sessions/lab/.env")" "a rerun pointed the link at no copy" \
+        || return 1
+    assert_eq "$CSROOT/vault/src" "$(cat "$PROFILE/sessions/lab/$pth")"
+}
+
+# A session --all copies after the one linking into it still counts as copied.
+test_all_points_a_link_at_a_session_copied_later_in_the_same_run() {
+    make_fixture
+    make_created alpha "$MINE_ID"
+    make_created zeta "$OTHER_ID"
+    printf 'Z=1\n' > "$CSROOT/zeta/.env"
+    ln -s "$CSROOT/zeta/.env" "$CSROOT/alpha/.env"
+    run_move --all --apply || { echo "$OUT"; return 1; }
+    assert_eq "$PROFILE/sessions/zeta/.env" "$(readlink "$PROFILE/sessions/alpha/.env")" || return 1
+    assert_output_not_contains "$OUT" 'links into cs'
+}
+
 # A feature worktree inside its own project is that feature's folder: a Claude
 # working there is named as open in the feature.
 test_a_session_open_in_a_feature_inside_its_project_is_named() {
@@ -2363,6 +2424,8 @@ run_test test_all_and_session_together_is_an_error
 run_test test_the_way_back_never_links_a_nested_session_into_the_profile
 run_test test_the_way_back_names_a_link_into_a_session_it_does_not_copy
 run_test test_a_python_environment_in_the_copy_names_the_copy
+run_test test_a_link_into_a_session_with_no_copy_is_left_and_named
+run_test test_all_points_a_link_at_a_session_copied_later_in_the_same_run
 run_test test_a_session_open_in_a_feature_inside_its_project_is_named
 run_test test_a_nested_layout_that_changes_after_the_copy
 run_test test_a_session_folder_the_outer_repository_tracks_comes_with_it
