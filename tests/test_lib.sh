@@ -610,3 +610,36 @@ link_path_without() {  # dir, name glob
         done
     done
 }
+
+# Every bash this machine offers, one path a line: /bin/bash, then each other
+# one on PATH. A Mac with Homebrew has two (3.2 and 5.x); a Linux runner one.
+every_bash() {
+    local seen=" " b
+    for b in /bin/bash $(type -aP bash 2>/dev/null); do
+        [ -x "$b" ] || continue
+        case "$seen" in *" $b "*) continue ;; esac
+        seen="$seen$b "
+        printf '%s\n' "$b"
+    done
+}
+
+# A UTF-8 locale this machine has, empty when it has none.
+utf8_locale() {
+    local have name
+    have="$(locale -a 2>/dev/null || true)"
+    for name in en_US.UTF-8 C.UTF-8 en_US.utf8 C.utf8; do
+        case "
+$have
+" in *"
+$name
+"*) printf '%s' "$name"; return 0 ;; esac
+    done
+}
+
+# The locale assignments a bash made to itself, read from the set -x trace in
+# file $1 (default PS4): a temporary `LC_ALL=C cmd` traces as a line of its
+# own, while a locale handed to a command as an argument of env traces inside
+# the env line. Empty when the shell assigned none.
+shell_locale_assignments() {  # trace file
+    grep -E '^\++ ((local|export|declare|typeset|readonly) )?(LC_[A-Z_]+|LANG|LANGUAGE)=' "$1" || true
+}

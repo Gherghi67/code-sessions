@@ -406,31 +406,6 @@ test_live_ignores_record_whose_start_time_differs() {
 
 # --- _scrub_controls: exact bytes out, under every bash and locale it meets ---
 
-# Every bash this machine offers, one path a line: /bin/bash, then each other
-# one on PATH. A Mac with Homebrew has two (3.2 and 5.x); a Linux runner one.
-_scrub_bashes() {
-    local seen=" " b
-    for b in /bin/bash $(type -aP bash 2>/dev/null); do
-        [ -x "$b" ] || continue
-        case "$seen" in *" $b "*) continue ;; esac
-        seen="$seen$b "
-        printf '%s\n' "$b"
-    done
-}
-
-# A UTF-8 locale this machine has, empty when it has none.
-_scrub_utf8_locale() {
-    local have name
-    have="$(locale -a 2>/dev/null || true)"
-    for name in en_US.UTF-8 C.UTF-8 en_US.utf8 C.utf8; do
-        case "
-$have
-" in *"
-$name
-"*) printf '%s' "$name"; return 0 ;; esac
-    done
-}
-
 # One line per input, "<case>=<hex of what _scrub_controls printed>", from a
 # fresh $1 with nothing in its environment but PATH, HOME and the locale
 # assignment in $2 (empty for no locale at all). Inputs are printf octal, so
@@ -475,9 +450,9 @@ c0_all=78
 no_newline=78"
 
 test_scrub_controls_bytes_under_a_utf8_locale() {
-    local b utf8; utf8="$(_scrub_utf8_locale)"
+    local b utf8; utf8="$(utf8_locale)"
     [ -n "$utf8" ] || return 77
-    for b in $(_scrub_bashes); do
+    for b in $(every_bash); do
         assert_eq "$SCRUB_GRID" "$(_scrub_grid "$b" "LC_ALL=$utf8" 2>&1)" \
             "$b under LC_ALL=$utf8" || return 1
     done
@@ -485,7 +460,7 @@ test_scrub_controls_bytes_under_a_utf8_locale() {
 
 test_scrub_controls_bytes_under_the_c_locale() {
     local b
-    for b in $(_scrub_bashes); do
+    for b in $(every_bash); do
         assert_eq "$SCRUB_GRID" "$(_scrub_grid "$b" "LC_ALL=C" 2>&1)" \
             "$b under LC_ALL=C" || return 1
     done
@@ -493,7 +468,7 @@ test_scrub_controls_bytes_under_the_c_locale() {
 
 test_scrub_controls_bytes_with_no_locale_set() {
     local b
-    for b in $(_scrub_bashes); do
+    for b in $(every_bash); do
         assert_eq "$SCRUB_GRID" "$(_scrub_grid "$b" "" 2>&1)" \
             "$b with no locale variable set" || return 1
     done
@@ -505,13 +480,12 @@ test_scrub_controls_bytes_with_no_locale_set() {
 # the function ran; a locale handed to tr as an argument of env is none.
 test_scrub_controls_leaves_the_shells_own_locale_alone() {
     local b out own
-    for b in $(_scrub_bashes); do
+    for b in $(every_bash); do
         out="$(printf 'a\001b' | env -i PATH="$PATH" HOME="$HOME" "$b" -c '
             source "$1"; set -x; _scrub_controls' x "$SCRIPT_DIR/../lib/05-term.sh" \
             2>"$TEST_TMPDIR/trace")"
         assert_eq "ab" "$out" "$b scrubs while traced" || return 1
-        own="$(grep -E '^\++ ((local|export|declare|typeset|readonly) )?(LC_[A-Z_]+|LANG|LANGUAGE)=' \
-            "$TEST_TMPDIR/trace" || true)"
+        own="$(shell_locale_assignments "$TEST_TMPDIR/trace")"
         assert_eq "" "$own" "$b must not assign its own locale inside _scrub_controls" || return 1
     done
 }
