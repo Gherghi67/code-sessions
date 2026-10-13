@@ -876,6 +876,14 @@ _settings_rules_count() {
     jq '[(.permissions // {}) | .allow, .deny, .ask | length] | add'
 }
 
+# Whether the index of the checkout at <dir> holds .claude/settings.local.json
+# in any letter case: a checkout on a volume that folds case puts a tracked
+# .claude/Settings.local.json at the path cs reads, as cs_tracked_files_notice
+# finds for .cs.
+_settings_tracked() {  # dir
+    _cs_git_at "$1" ls-files --error-unmatch -- ':(icase,literal).claude/settings.local.json' >/dev/null 2>&1
+}
+
 # Add the feature's permission rules to the base's settings.local.json
 # (_settings_rules_union), creating it when the base has none. Writes nothing
 # when the base already holds every rule, and nothing when either checkout
@@ -886,8 +894,8 @@ _settings_rules_count() {
 _carry_permission_rules() {  # wt_dir base_dir
     local feat="$1/.claude/settings.local.json" base="$2/.claude/settings.local.json" was now
     [ -s "$feat" ] || return 0
-    ! git -C "$1" ls-files --error-unmatch -- .claude/settings.local.json >/dev/null 2>&1 || return 0
-    ! git -C "$2" ls-files --error-unmatch -- .claude/settings.local.json >/dev/null 2>&1 || return 0
+    ! _settings_tracked "$1" || return 0
+    ! _settings_tracked "$2" || return 0
     if [ -L "$base" ]; then
         info "$base is a link, and cs writes nothing through it: the feature's permission rules were not added to it."
         return 0
