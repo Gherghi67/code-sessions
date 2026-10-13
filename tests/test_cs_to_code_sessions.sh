@@ -827,47 +827,40 @@ test_a_history_file_code_sessions_rewrote_whole_is_kept() {
     assert_file_contains "$copy" '"side":"code-sessions"'
 }
 
-# A copy an earlier version of the script made has no signature in the record.
-# It is cs's to replace only when provably the clone that run made, never
-# written since: the same birth time as cs's file, content older than the
-# record, and no write in place (mtime older than ctime). Anything else is
-# reported once.
-test_a_history_copy_an_earlier_version_made_is_taken_only_when_untouched() {
-    if ! python3 -c 'import os, sys; os.stat(sys.argv[1]).st_birthtime' "$TEST_TMPDIR" 2>/dev/null; then
-        echo "    SKIP (this system keeps no birth times)"
-        return 77
-    fi
+# A copy an earlier version of the script made has no signature in the record:
+# nothing proves it untouched, so where cs rewrote it, it is kept and reported
+# once, whatever its times say (a write put back with touch -r included).
+test_a_history_copy_an_earlier_version_made_is_reported_once_and_kept() {
     make_fixture
-    make_workflow wf_1.json wf_2.json
+    make_workflow wf_1.json wf_2.json wf_3.json
     run_move --session wap --apply || { echo "$OUT"; return 1; }
-    # wf_3 is new in cs after the first copy, so younger than the record.
-    make_workflow wf_3.json
-    run_move --session wap --apply || { echo "$OUT"; return 1; }
-    assert_file_exists "$(wf_copy wf_3.json)" || return 1
     # What an earlier version left: the same record, without the signatures.
     rm "$PROFILE/.cs-to-code-sessions/wap/history.gz"
-    # code-sessions rewrote wf_2 in place; cs rewrote all three.
+    # code-sessions rewrote wf_2 in place, and wf_3 too with its mtime put back; cs rewrote all three.
     printf '{"workflow":"wf_2.json","side":"code-sessions"}\n' > "$(wf_copy wf_2.json)"
-    local name
+    touch -r "$(wf_copy wf_3.json)" "$TEST_TMPDIR/wf_3.mtime"
+    printf '{"workflow":"wf_3.json","side":"code-sessions"}\n' > "$(wf_copy wf_3.json)"
+    touch -r "$TEST_TMPDIR/wf_3.mtime" "$(wf_copy wf_3.json)"
+    local name status=0
     for name in wf_1.json wf_2.json wf_3.json; do
-        printf '{"workflow":"%s","side":"cs"}\n' "$name" > "$WF_DIR/$name"
+        printf '{"workflow":"%s","step":2,"side":"cs"}\n' "$name" > "$WF_DIR/$name"
     done
 
-    run_move --session wap || true
-    assert_output_contains "$OUT" "untouched in code-sessions, would be brought over: .*/workflows/wf_1.json$" || return 1
-    local status=0
     run_move --session wap --apply || status=$?
     assert_eq 1 "$status" || { echo "$OUT"; return 1; }
-    assert_output_contains "$OUT" "untouched in code-sessions, brought over: .*/workflows/wf_1.json$" || return 1
-    cmp -s "$WF_DIR/wf_1.json" "$(wf_copy wf_1.json)" || { echo "  FAIL: the untouched copy was not replaced"; return 1; }
-    assert_output_contains "$OUT" "! continued in both cs and code-sessions, left as it is: .*/workflows/wf_2.json$" || return 1
-    assert_file_contains "$(wf_copy wf_2.json)" '"side":"code-sessions"' "a copy code-sessions rewrote was replaced" || return 1
-    # Copied after the record was made: nothing proves it untouched, so it is reported, and kept.
-    assert_output_contains "$OUT" "! continued in both cs and code-sessions, left as it is: .*/workflows/wf_3.json$" || return 1
-    assert_file_contains "$(wf_copy wf_3.json)" '"step":1' || return 1
+    assert_output_not_contains "$OUT" 'untouched in code-sessions, brought over' || return 1
+    for name in wf_1.json wf_2.json wf_3.json; do
+        assert_eq 1 "$(grep -c "! continued in both cs and code-sessions, left as it is: .*/workflows/$name$" <<< "$OUT")" \
+            "$name not reported exactly once" || { echo "$OUT"; return 1; }
+    done
+    assert_file_contains "$(wf_copy wf_1.json)" '"step":1' "the copy of wf_1 was replaced" || return 1
+    assert_file_contains "$(wf_copy wf_2.json)" '"side":"code-sessions"' "the copy of wf_2 was replaced" || return 1
+    assert_file_contains "$(wf_copy wf_3.json)" '"side":"code-sessions"' "the copy of wf_3 was replaced" || return 1
 
+    # Said once: the next rerun keeps them quietly.
     run_move --session wap --apply || { echo "$OUT"; return 1; }
-    assert_output_not_contains "$OUT" '!'
+    assert_output_not_contains "$OUT" '!' || return 1
+    assert_output_contains "$OUT" "code-sessions's kept"
 }
 
 # The way back takes the same care: a history file code-sessions rewrote whole
@@ -2328,7 +2321,7 @@ run_test test_a_file_code_sessions_kept_stays_kept_past_a_link_in_its_folder
 run_test test_a_history_file_cs_rewrote_whole_comes_over
 run_test test_a_history_file_rewritten_on_both_sides_is_kept_and_reported_once
 run_test test_a_history_file_code_sessions_rewrote_whole_is_kept
-run_test test_a_history_copy_an_earlier_version_made_is_taken_only_when_untouched
+run_test test_a_history_copy_an_earlier_version_made_is_reported_once_and_kept
 run_test test_the_way_back_brings_a_history_file_code_sessions_rewrote_whole
 run_test test_features_cs_starts_or_ends_and_code_sessions_removes
 run_test test_a_lost_record_stops_the_sync

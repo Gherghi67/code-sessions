@@ -229,42 +229,20 @@ def merge_tree(src, dst, apply, tmp_suffix=".session-transfer.tmp", record=None)
 # When neither, both rewrote it: kept, reported, and its "src" noted, so it is
 # reported once per change in the source.
 #
-# A copy an earlier version of the scripts made has no signature yet. It is
-# taken all the same when _left_as_cloned proves it the clone a run made and
-# never written since (see there); otherwise it is reported once, as above.
+# A copy an earlier version of the scripts made has no signature yet: nothing
+# proves it untouched, so where the source rewrote it, it is kept and reported
+# once, as above.
 
 def _signature(st):
     return [st.st_size, st.st_mtime_ns, st.st_ctime_ns]
-
-
-def _left_as_cloned(s, d, since):
-    """True when d (the receiving side's file, lstat) is provably the copy an earlier run cloned from the source's
-    file s (lstat), never written since; since: the birth time (ns) of the record's folder, or None.
-
-    Three facts, each needed (all three hold for a clone a run made, on APFS):
-    - d is a clone of that very file: the same birth time as the source's. copy_file clones, and a clone keeps
-      its original's birth time; an in-place write keeps it too, but a writer that replaces the file gives it a
-      new one, and so does setting its mtime back past its birth.
-    - d's content is older than the record's folder, which the first run that copied the family made before
-      it copied any of its history (see Record.started): the receiving side's Claude can only write a file of
-      a conversation it has, so only after that.
-    - nothing wrote d in place since its copy: a write sets mtime and ctime to the same instant, while a copy
-      keeps the source's mtime and gets a later ctime. This one covers a record folder made afresh after
-      the copy (one moved aside to copy a session again).
-    Where birth times are not kept (other than macOS), nothing is taken on this ground.
-    """
-    s_birth, d_birth = getattr(s, "st_birthtime", None), getattr(d, "st_birthtime", None)
-    if since is None or s_birth is None or d_birth is None or s_birth != d_birth:
-        return False
-    return d.st_mtime_ns < d.st_ctime_ns and d.st_mtime_ns < since
 
 
 def merge_files(src, dst, rels, apply, tmp_suffix=".session-transfer.tmp", new_only=False, record=None):
     """merge_tree for the files rels (paths relative to src and dst) alone.
 
     A file dst lacks is copied, and one dst holds an unchanged start of is
-    replaced. Any other is decided by record (a Record, whose history() and
-    started() it reads and, with apply, updates; see the comment above):
+    replaced. Any other is decided by record (a Record, whose history() it
+    reads and, with apply, updates; see the comment above):
     taken when dst's is provably as a run left it; else kept when dst's holds
     more (ahead) or src's is unchanged since a run read it (kept); else, and
     always without record, left and reported (diverged).
@@ -274,7 +252,6 @@ def merge_files(src, dst, rels, apply, tmp_suffix=".session-transfer.tmp", new_o
     tally = Tally()
     in_the_way = set()
     known = record.history() if record is not None else {}
-    since = record.started() if record is not None else None
 
     def note(d, entry):
         if apply and record is not None and known.get(d) != entry:
@@ -330,8 +307,7 @@ def merge_files(src, dst, rels, apply, tmp_suffix=".session-transfer.tmp", new_o
                 note(d, {"dst": _signature(d_st), "src": _signature(s_st)})
         else:
             entry = known.get(d) or {}
-            if record is not None and (entry.get("dst") == _signature(d_st)
-                                       or (not entry and _left_as_cloned(s_st, d_st, since))):
+            if record is not None and entry.get("dst") == _signature(d_st):
                 # Before ahead: a copy no one wrote since cannot have gone on, so a
                 # source now shorter than it was rewritten shorter.
                 tally.taken.append(d)
@@ -2000,20 +1976,6 @@ class Record:
 
     def history_changed(self):
         self._history_dirty = True
-
-    def started(self):
-        """The birth time (ns) of this record's folder, or None where there is none (another system, no folder).
-
-        Nothing but os.makedirs makes it, in the first run that copied the
-        family: both scripts save the record right after the copy, before any
-        of its history. Nothing sets its times back, and a rename (the
-        ags-era name) keeps it.
-        """
-        try:
-            birth = os.stat(self.dir).st_birthtime
-        except (OSError, AttributeError):
-            return None
-        return int(birth * 10 ** 9)
 
     def session(self, name):
         return self.data["sessions"].setdefault(name, {})

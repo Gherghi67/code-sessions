@@ -313,20 +313,10 @@ run wrote it (a clone of the original's) or found it equal to the original's,
 and the original file's when a run last read it. A copy whose ctime is
 unchanged holds what the original once had, so the original's rewrite
 replaces it; an original unchanged since tells a rewrite of the copy alone.
-A copy an earlier version of the script made has no such entry. On the first
-run that keeps them, it is taken as that version's copy, and replaced by the
-original's rewrite, only when three things prove it the clone that run made,
-never written since: it has the original file's birth time (the script clones
-on APFS, a clone keeps its original's birth time, and a writer that replaces
-the file or sets its mtime back gives it another); its mtime is older than
-the record's folder, which the first run that copied the session made before
-it copied any of its history, so nothing on the copy's side can have written
-it before; and its mtime is older than its ctime, where a write in place sets
-both to the same instant. Another such copy that differs inside is reported
-once, then kept quietly until the original changes it again. Where the file
-system keeps no birth times, nothing is taken on those grounds. A session
-whose folder is gone keeps no record: its history only comes when new or
-grown, as cs cannot open it to rewrite anything. Every change goes to `.cs-to-code-sessions/log.jsonl`, with up
+A copy an earlier version of the script made has no such entry: where the
+original was rewritten, the copy is kept, reported once, then kept quietly until
+the original changes it again. A session whose folder is gone keeps no record:
+its history only comes when new or grown, as cs cannot open it to rewrite anything. Every change goes to `.cs-to-code-sessions/log.jsonl`, with up
 to 1000 of the files kept on both sides. A record the ags-era script left as
 `.cs-to-ags/` is renamed on the first run with `--apply`.
 

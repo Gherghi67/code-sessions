@@ -88,11 +88,8 @@ the record keeps each copy's size, mtime and ctime right after the run wrote
 it or found it equal to cs's, and cs's file's when a run read it, so an
 unchanged ctime proves the copy untouched, and an unchanged cs file tells a
 rewrite in code-sessions alone (kept). A copy an earlier version of this script
-made has no such entry: it counts as untouched only when it has the birth time
-of cs's file (a clone's), and an mtime older both than the record's folder
-(made by the first run that copied the session, before its history) and than
-its own ctime (a write in place sets the two alike). See merge_files in
-session_transfer.py.
+made has no such entry: where cs rewrote it, it is kept and reported once as
+continued in both. See merge_files in session_transfer.py.
 
 Nothing outside the profile is written: ~/.claude-sessions, the project and
 its feature folders, ~/.claude, ~/.claude.json, ~/.codex and the keychain are
