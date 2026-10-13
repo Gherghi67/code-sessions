@@ -2606,6 +2606,52 @@ sub/secret.env" "the refusal names both files inside the submodule" || return 1
 
 run_test test_retire_refuses_untracked_and_ignored_work_inside_a_submodule
 
+# A submodule keeps its own index, so a flagged file inside it hides its edit
+# from the submodule's git diff and from the worktree's: removal destroys it.
+test_retire_refuses_an_edit_git_diff_does_not_show_inside_a_submodule() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" lib="$TEST_TMPDIR/sublib"
+    local sha output line status=0
+    mkdir -p "$lib"
+    (cd "$lib" && git init -q && git config core.autocrlf false && echo lib > lib.txt \
+        && git add -A && git commit -q -m lib)
+    mkdir -p "$base_dir/.cs"/{memory,local}
+    echo "# P" > "$base_dir/README.md"
+    printf '.cs/\n' > "$base_dir/.gitignore"
+    (cd "$base_dir" && git init -q && git config core.autocrlf false && git add -A && git commit -q -m init \
+        && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always \
+            git submodule add -q "$lib" sub && git commit -q -m "add submodule") \
+        || { echo "  FAIL: submodule fixture"; return 1; }
+    cs_launch "proj@t1"
+    (cd "$wt" && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always \
+        git submodule update --init -q) \
+        || { echo "  FAIL: submodule fixture"; return 1; }
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    git -C "$wt/sub" update-index --assume-unchanged lib.txt
+    echo "local: tuned" >> "$wt/sub/lib.txt"
+    # The integrate updates submodules in its temporary worktree.
+    sha=$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always \
+        land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    line=$("$CS_BIN" proj -features --porcelain 2>&1)
+    assert_eq "1" "$(_feat_field "$line" 6)" "wt_dirty: $line" || return 1
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_output_contains "$output" "Worktree has edits git diff does not show (skip-worktree or assume-unchanged), which removal would destroy; commit them, or undo them and clear the flag (git update-index --no-skip-worktree / --no-assume-unchanged), first:" \
+        "the refusal says why" || return 1
+    assert_eq "sub/lib.txt" "$(printf '%s\n' "$output" | awk 'listed; /first:$/ { listed = 1 }')" \
+        "the refusal names the file inside the submodule" || return 1
+    assert_eq "lib
+local: tuned" "$(cat "$wt/sub/lib.txt")" "the edit is still there" || return 1
+    # Positive control: the flagged file left as committed retires.
+    echo lib > "$wt/sub/lib.txt"
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "an unedited flagged file in a submodule retires: $output" || return 1
+    assert_not_exists "$wt" "the worktree is retired" || return 1
+}
+
+run_test test_retire_refuses_an_edit_git_diff_does_not_show_inside_a_submodule
+
 test_rm_worktree_unregisters_and_prompts_branch() {
     local base_dir
     base_dir=$(create_test_session_with_git "myproj")
