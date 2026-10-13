@@ -105,9 +105,10 @@ there but cannot be read, a feature worktree git does not list or whose base
 is not copied, anything whose name code-sessions already uses for something
 else, and a name whose rename in the profile (.rename-profile-session/) has
 not finished. A session whose folder is gone (nothing at its link's target)
-is left too, as a note rather than a problem, since cs cannot open it either;
-its Claude conversations and prompt history still come, under the same names,
-as history. --all ends with a line per session and the count of problems.
+is left too, as a note rather than a problem, since cs cannot open it either,
+and so is each of its features whose folder is gone too; its Claude
+conversations and prompt history still come, under the same names, as
+history. --all ends with a line per session and the count of problems.
 
     scripts/cs-to-code-sessions.py --session wap            # print what would happen; change nothing
     scripts/cs-to-code-sessions.py --session wap --apply    # copy; rerun to bring over what cs did since
@@ -1468,11 +1469,21 @@ class Importer:
     def handle_gone(self, base):
         """A session whose folder is gone: nothing to copy but its Claude history, under the same names.
 
-        cs cannot open it either, so it is a note, not a problem.
+        cs cannot open it either, so it is a note, not a problem. So is a feature of
+        it whose folder is gone too; one whose folder is still there is a problem.
         """
         print("%s: not copied" % base.name)
         self.say("note: %s, so cs cannot open it either" % base.skip)
-        self.skip_features(base)
+        for feature in base.features:
+            missing, error = stat_error(feature.cs_path)
+            if missing:
+                self.say("note: %s: its folder is gone too, as %s's is, so cs cannot open it either"
+                         % (feature.name, base.name))
+                feature.outcome = "not copied: its folder is gone"
+            else:
+                self.problem("%s: not copied: its base %s is gone, so it is no worktree to copy, but its folder is "
+                             "still there: copy it by hand or remove it, then rerun" % (feature.name, base.name))
+                feature.outcome = "not copied: its base %s is gone, its folder is not" % base.name
         if not self.history:
             base.outcome = "not copied: its folder is gone (its history left out: --no-history)"
             return

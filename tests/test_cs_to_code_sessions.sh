@@ -1874,6 +1874,42 @@ test_all_with_only_a_folder_gone_has_no_problem() {
     assert_output_contains "$OUT" '^  old: not copied: its folder is gone (its history left out: --no-history)$'
 }
 
+# The features of a session whose folder is gone: one whose own folder is gone
+# too (an adopted worktree's link, dangling once its base is deleted) is a
+# note as well, since cs cannot open it either. One whose folder is still
+# there is a problem, with what to do about it.
+test_all_with_a_gone_session_and_its_gone_features_has_no_problem() {
+    make_fixture
+    local status=0
+    ln -s "$TEST_TMPDIR/projects/gone" "$CSROOT/old"
+    ln -s "$TEST_TMPDIR/projects/gone/.claude/worktrees/feat" "$CSROOT/old@feat"
+    run_move --all || status=$?
+    assert_eq 0 "$status" || { echo "$OUT"; return 1; }
+    assert_output_contains "$OUT" "^    note: old@feat: its folder is gone too, as old's is, so cs cannot open it either$" || return 1
+    assert_output_contains "$OUT" '^    old@feat: not copied: its folder is gone$' || return 1
+    assert_output_contains "$OUT" '^No problems\.$' || return 1
+    for _ in 1 2; do
+        status=0
+        run_move --all --apply || status=$?
+        assert_eq 0 "$status" || { echo "$OUT"; return 1; }
+        assert_output_contains "$OUT" '^    old@feat: not copied: its folder is gone$' || return 1
+        assert_output_contains "$OUT" '^No problems\.$' || return 1
+    done
+}
+
+test_a_feature_folder_under_a_gone_session_is_still_a_problem() {
+    make_fixture
+    local status=0
+    ln -s "$TEST_TMPDIR/projects/gone" "$CSROOT/old"
+    mkdir -p "$CSROOT/old@kept/.cs/local"
+    printf 'unsaved\n' > "$CSROOT/old@kept/uncommitted.txt"
+    run_move --all || status=$?
+    assert_eq 1 "$status" || { echo "$OUT"; return 1; }
+    assert_output_contains "$OUT" "^  ! old@kept: not copied: its base old is gone, .* its folder is still there" || return 1
+    assert_output_contains "$OUT" '^    note: .*, so cs cannot open it either$' || return 1
+    assert_file_exists "$CSROOT/old@kept/uncommitted.txt" "the cs side was touched" || return 1
+}
+
 CODEX_THREAD=01a0ed7c-af4c-7d80-874a-99dab5257ca2
 OTHER_THREAD=01a0ed6b-3af6-7292-a607-c2eb3eefc58a
 CODEX_ROLLOUT=2026/09/29/rollout-2026-09-29T17-06-06-$CODEX_THREAD.jsonl
@@ -2531,6 +2567,8 @@ run_test test_a_link_into_a_nested_session_with_no_copy_is_left_and_named
 run_test test_a_name_code_sessions_is_still_renaming_is_left
 run_test test_a_session_folder_that_cannot_be_read_is_a_problem_not_gone
 run_test test_all_with_only_a_folder_gone_has_no_problem
+run_test test_all_with_a_gone_session_and_its_gone_features_has_no_problem
+run_test test_a_feature_folder_under_a_gone_session_is_still_a_problem
 run_test test_a_session_cs_named_codex_for_opens_claude_in_code_sessions
 run_test test_the_codex_thread_a_session_binds_comes_with_it
 run_test test_the_resume_line_names_the_conversation_after_the_run
