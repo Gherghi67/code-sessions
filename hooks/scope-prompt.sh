@@ -5,6 +5,26 @@
 # No `set -e`: this hook must NEVER block the prompt. Every error path exits 0.
 set -uo pipefail
 
+# Whether $EPOCHREALTIME is a clock this hook can read. Bash 5 keeps its own
+# and ignores the environment; bash 3.2 has none and takes whatever the
+# environment holds. Its parts reach shell arithmetic, which runs a command
+# substitution held in an operand, so only seconds and a fraction that are
+# both digits count. Anything else reads as a shell without the variable.
+_EPOCH_CLOCK=""
+case "${EPOCHREALTIME:-}" in
+    *[.,]*)
+        case "${EPOCHREALTIME%%[.,]*}" in
+            ''|*[!0-9]*) ;;
+            *)
+                case "${EPOCHREALTIME#*[.,]}" in
+                    ''|*[!0-9]*) ;;
+                    *) _EPOCH_CLOCK=1 ;;
+                esac
+                ;;
+        esac
+        ;;
+esac
+
 # Launch mark, written before anything that can stall. The library parse-check,
 # its source and the session resolve below all run before the stage trace opens,
 # and a run the UserPromptSubmit cap kills in there would otherwise leave no line
@@ -27,10 +47,12 @@ fi
 if [ "${CS_SCOPE_TRACE_DISABLE:-}" != "1" ] && [ -n "${CLAUDE_SESSION_DIR:-}" ] \
     && [ -d "$_launch_local" ] && [ -d "$_launch_trace_dir" ] && [ ! -f "$_launch_local/disabled" ]; then
     _launch_ms=""
-    case "${EPOCHREALTIME:-}" in
+    _launch_t=""
+    [ -z "$_EPOCH_CLOCK" ] || _launch_t="$EPOCHREALTIME"
+    case "$_launch_t" in
         *[.,]*)
-            _launch_s="${EPOCHREALTIME%%[.,]*}"
-            _launch_f="${EPOCHREALTIME#*[.,]}"
+            _launch_s="${_launch_t%%[.,]*}"
+            _launch_f="${_launch_t#*[.,]}"
             _launch_ms=$(( 10#$_launch_s * 1000 + 10#${_launch_f:0:3} ))
             ;;
         *)
@@ -134,7 +156,8 @@ _MS=0
 # its own overhead in a hook under suspicion for being slow. Sets _MS rather
 # than printing, because capturing a print costs the subshell this avoids.
 _now_ms() {
-    local t="${EPOCHREALTIME:-}" s f
+    local t="" s f
+    [ -z "$_EPOCH_CLOCK" ] || t="$EPOCHREALTIME"
     case "$t" in
         *[.,]*)
             s="${t%%[.,]*}"
@@ -600,7 +623,7 @@ case "$_BUDGET_MS" in ''|*[!0-9]*|????????*) _BUDGET_MS=1500 ;; *) _BUDGET_MS=$(
 # that boundary alone, 1000 included. Only the default sits above one tick, so
 # a positive budget of a tick or less takes it. Zero is left alone: it is the
 # always-skip stub, not a duration.
-if [ -z "${EPOCHREALTIME:-}" ] && [ "$_BUDGET_MS" -gt 0 ] && [ "$_BUDGET_MS" -le 1000 ]; then
+if [ -z "$_EPOCH_CLOCK" ] && [ "$_BUDGET_MS" -gt 0 ] && [ "$_BUDGET_MS" -le 1000 ]; then
     _BUDGET_MS=1500
 fi
 _trace "budget=$_BUDGET_MS"
