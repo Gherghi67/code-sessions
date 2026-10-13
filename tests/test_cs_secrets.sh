@@ -2197,6 +2197,116 @@ test_import_file_reads_the_cs_it_checked_when_swapped_during_the_copy() {
     _assert_secret_absent victim_token "nothing from the victim's store is imported" || return 1
 }
 
+# The session can be spelled many ways: a doubled slash, a dot segment, a link
+# to the sessions root, or a relative name from a directory reached through
+# one. Each is the same session, so each must meet the same refusal.
+test_import_file_refuses_a_named_file_behind_a_linked_directory_however_spelled() {
+    local out rc spelling alias="$TEST_TMPDIR/root-alias"
+    local inbox="$CS_SESSIONS_ROOT/test-session/.cs/inbox"
+    printf 'value-of-other\n' | "$CS_SECRETS_BIN" --session other-session set other_token >/dev/null 2>&1 \
+        || { echo "  FAIL: fixture: set in the other session failed"; return 1; }
+    ln -s "$HOME/.cs-secrets" "$inbox"
+    ln -s "$CS_SESSIONS_ROOT" "$alias"
+    for spelling in \
+        "$CS_SESSIONS_ROOT//test-session/.cs/inbox/other-session.enc" \
+        "$CS_SESSIONS_ROOT/./test-session/.cs/inbox/other-session.enc" \
+        "$alias/test-session/.cs/inbox/other-session.enc"; do
+        rc=0
+        out=$("$CS_SECRETS_BIN" import-file "$spelling" 2>&1) || rc=$?
+        assert_eq "1" "$rc" "the import of $spelling is refused: $out" || return 1
+    done
+    rc=0
+    out=$(cd "$alias/test-session" && "$CS_SECRETS_BIN" import-file .cs/inbox/other-session.enc 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a relative name from the session reached through a link is refused: $out" || return 1
+    _assert_secret_absent other_token "nothing from the other session's store is imported" || return 1
+}
+
+# On a filesystem that ignores case, a session spelled in another case is the
+# same session.
+test_import_file_refuses_a_named_file_behind_a_linked_directory_in_another_case() {
+    local out rc=0 upper
+    mkdir "$TEST_TMPDIR/case-probe"
+    if [[ ! -d "$TEST_TMPDIR/CASE-PROBE" ]]; then
+        echo "    SKIP (this filesystem tells case apart)"
+        return 77
+    fi
+    upper=$(printf '%s' "$CS_SESSIONS_ROOT/test-session" | tr '[:lower:]' '[:upper:]')
+    printf 'value-of-other\n' | "$CS_SECRETS_BIN" --session other-session set other_token >/dev/null 2>&1 \
+        || { echo "  FAIL: fixture: set in the other session failed"; return 1; }
+    ln -s "$HOME/.cs-secrets" "$CS_SESSIONS_ROOT/test-session/.cs/inbox"
+    out=$("$CS_SECRETS_BIN" import-file "$upper/.cs/inbox/other-session.enc" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the import is refused: $out" || return 1
+    _assert_secret_absent other_token "nothing from the other session's store is imported" || return 1
+}
+
+# Whatever path names it, a file in the local secrets store is another
+# session's store, never a sync file: a link pushed into any other session
+# reaches it just as well.
+test_import_file_refuses_a_named_file_in_the_local_secrets_store() {
+    local out rc=0 inbox="$CS_SESSIONS_ROOT/b-session/.cs/inbox" real
+    printf 'value-of-other\n' | "$CS_SECRETS_BIN" --session other-session set other_token >/dev/null 2>&1 \
+        || { echo "  FAIL: fixture: set in the other session failed"; return 1; }
+    mkdir -p "$CS_SESSIONS_ROOT/b-session/.cs"
+    ln -s "$HOME/.cs-secrets" "$inbox"
+    real=$(cd "$HOME/.cs-secrets" && /bin/pwd -P)
+    out=$("$CS_SECRETS_BIN" import-file "$inbox/other-session.enc" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the import is refused" || return 1
+    assert_eq "Error: Refusing to import $inbox/other-session.enc: its directory leads to $real, the local secrets store" \
+        "$out" "the refusal names the file and the store" || return 1
+    _assert_secret_absent other_token "nothing from the other session's store is imported" || return 1
+}
+
+# An exported CDPATH must not change where a relative name leads, nor what the
+# directory check reads back.
+test_import_file_reads_a_relative_name_under_an_exported_cdpath() {
+    local out rc=0 work="$TEST_TMPDIR/work"
+    mkdir -p "$work/sub"
+    printf '{"cdpath_token":"v"}\n' | openssl enc -aes-256-cbc -e -pbkdf2 -iter 100000 \
+        -out "$work/sub/backup.enc" -pass env:CS_SECRETS_PASSWORD \
+        || { echo "  FAIL: fixture: could not encrypt the sync file"; return 1; }
+    out=$(cd "$work" && CDPATH=".:$TEST_TMPDIR" "$CS_SECRETS_BIN" import-file sub/backup.enc 2>&1) || rc=$?
+    assert_eq "0 Imported 1 secret(s) from 1 sync file(s)." "$rc $out" "the file is imported" || return 1
+    assert_eq "v" "$("$CS_SECRETS_BIN" get cdpath_token 2>&1)" "the value is stored" || return 1
+}
+
+# A relative TMPDIR names a directory from where cs-secrets started, not from
+# the directory a copy runs in.
+test_import_file_reads_the_session_under_a_relative_tmpdir() {
+    local out rc=0
+    printf '{"own_token":"mine"}\n' | openssl enc -aes-256-cbc -e -pbkdf2 -iter 100000 \
+        -out "$CS_SESSIONS_ROOT/test-session/.cs/secrets.enc" -pass env:CS_SECRETS_PASSWORD \
+        || { echo "  FAIL: fixture: could not encrypt the sync file"; return 1; }
+    mkdir "$TEST_TMPDIR/rt"
+    out=$(cd "$TEST_TMPDIR" && TMPDIR=rt "$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_eq "0 Imported 1 secret(s) from 1 sync file(s)." "$rc $out" "the session's file is imported" || return 1
+    assert_eq "mine" "$("$CS_SECRETS_BIN" get own_token 2>&1)" "the value is stored" || return 1
+}
+
+# A .cs that cannot be entered by the time its file is copied has not changed:
+# the file is unreadable, and the import says so.
+test_import_file_counts_a_cs_it_cannot_enter_as_unreadable() {
+    local out rc=0 bindir="$TEST_TMPDIR/lock-bin" real meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    printf '{"own_token":"mine"}\n' | openssl enc -aes-256-cbc -e -pbkdf2 -iter 100000 \
+        -out "$meta/secrets.enc" -pass env:CS_SECRETS_PASSWORD \
+        || { echo "  FAIL: fixture: could not encrypt the sync file"; return 1; }
+    real=$(command -v mktemp) || { echo "  FAIL: fixture: no mktemp"; return 1; }
+    mkdir -p "$bindir"
+    cat > "$bindir/mktemp" <<EOF
+#!/bin/bash
+case "\$*" in *cs-import*) chmod 000 "$meta" ;; esac
+exec "$real" "\$@"
+EOF
+    chmod +x "$bindir/mktemp"
+    out=$(PATH="$bindir:$PATH" "$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    chmod 755 "$meta"
+    assert_eq "0" "$rc" "the import finishes: $out" || return 1
+    assert_output_contains "$out" "^Skipped 1 undecryptable file(s)" "the file is counted as unreadable" || return 1
+    if [[ "$out" == *"changed while it was read"* ]]; then
+        echo "  FAIL: an unenterable .cs is reported as changed: $out"
+        return 1
+    fi
+}
+
 # A Keychain value larger than the kernel lets a process carry in its
 # environment (1 MiB on macOS) must still reach the backup: export-file builds
 # the backup through jq, which never starts if the value rides in env.
@@ -3453,6 +3563,12 @@ run_test test_import_file_refuses_a_session_whose_cs_is_a_link
 run_test test_import_file_refuses_a_named_file_behind_a_linked_directory
 run_test test_import_file_refuses_a_cs_swapped_for_a_link_before_the_copy
 run_test test_import_file_reads_the_cs_it_checked_when_swapped_during_the_copy
+run_test test_import_file_refuses_a_named_file_behind_a_linked_directory_however_spelled
+run_test test_import_file_refuses_a_named_file_behind_a_linked_directory_in_another_case
+run_test test_import_file_refuses_a_named_file_in_the_local_secrets_store
+run_test test_import_file_reads_a_relative_name_under_an_exported_cdpath
+run_test test_import_file_reads_the_session_under_a_relative_tmpdir
+run_test test_import_file_counts_a_cs_it_cannot_enter_as_unreadable
 run_test test_keychain_export_file_carries_a_value_past_the_exec_limit
 run_test test_set_refuses_to_write_a_store_of_more_than_one_document
 run_test test_import_file_skips_a_file_whose_signature_cannot_be_read
