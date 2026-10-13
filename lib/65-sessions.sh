@@ -521,9 +521,11 @@ _remove_one_session() {
                         || error "cs could not count the files git does not track in $session_dir; refusing to remove what it cannot list"
                 fi
                 if [ -n "$untracked" ] && [ -n "$force" ] && [ -z "$delete_files" ]; then
-                    error "Worktree session '$session_name' holds ${untracked_listing%%"$nl"*} git does not track:
+                    local untracked_count="${untracked_listing%%"$nl"*}" them=them
+                    [ "$untracked_count" != "1 file" ] || them=it
+                    error "Worktree session '$session_name' holds $untracked_count git does not track:
 ${untracked_listing#*"$nl"}
-Add --delete-files to remove them with --force"
+Add --delete-files to remove $them with --force"
                 fi
                 local confirm
                 if [ -n "$force" ]; then
