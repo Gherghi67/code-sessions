@@ -2785,6 +2785,30 @@ test_retire_writes_no_permission_rules_through_a_settings_link() {
 
 run_test test_retire_writes_no_permission_rules_through_a_settings_link
 
+# On a volume that folds case, a base that tracks .claude/Settings.local.json
+# has git's file at the path cs reads, and git owns it all the same.
+test_retire_leaves_a_settings_file_tracked_in_another_case_to_git() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0 before
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    jq '.permissions.allow = ["Read", "Bash(make:*)"]' "$wt/.claude/settings.local.json" > "$wt/.claude/s.json" \
+        && mv "$wt/.claude/s.json" "$wt/.claude/settings.local.json"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    mkdir -p "$base_dir/.claude"
+    printf '%s\n' '{"permissions": {"allow": ["Read"]}}' > "$base_dir/.claude/Settings.local.json"
+    [ -e "$base_dir/.claude/settings.local.json" ] || { echo "    SKIP (this volume does not fold case)"; return 77; }
+    (cd "$base_dir" && git add -f .claude/Settings.local.json && git commit -q -m "share settings")
+    before=$(cat "$base_dir/.claude/Settings.local.json")
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire succeeds: $output" || return 1
+    assert_eq "$before" "$(cat "$base_dir/.claude/Settings.local.json")" "the base's file is as git left it" || return 1
+    assert_eq "" "$(git -C "$base_dir" status --porcelain -- .claude)" "and the base's checkout is clean" || return 1
+}
+
+run_test test_retire_leaves_a_settings_file_tracked_in_another_case_to_git
+
 # The record of what the feature inherited is what tells a deleted topic from
 # a new one. A record that is there and cannot be read must stop the fuse:
 # guessing "new" would bring the deleted topic back and report success.
