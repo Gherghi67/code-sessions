@@ -1216,7 +1216,7 @@ test_digest_offers_no_accept_for_an_id_it_cannot_show_whole() {
     _forge_mail 0000000004-plain '{"id":"plain-1","ts":4,"from":"peer","kind":"task","body":"plain id task"}'
     local out; out=$(_prompt_as_receiver "hello" | jq -r '.hookSpecificOutput.additionalContext') || return 1
     assert_eq "  a task proposed by peer, not queued: it enters the queue only when the user accepts it, via cs -queue accept plain-1" \
-        "$(grep 'cs -queue accept' <<< "$out")" "only the id shown whole carries an accept command" || return 1
+        "$(grep 'via cs -queue accept' <<< "$out")" "only the id shown whole carries an accept command" || return 1
     assert_eq "3" "$(grep -c '^  a task proposed by peer, not queued: its message id is not one cs -queue accept takes, so it cannot be accepted$' <<< "$out")" \
         "each of the other three says it cannot be accepted" || return 1
 }
