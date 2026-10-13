@@ -2234,6 +2234,27 @@ test_retire_tracked_mode_refuses_untracked_session_records() {
 
 run_test test_retire_tracked_mode_refuses_untracked_session_records
 
+# cs writes the root CLAUDE.local.md with its protocol sentinel, and that copy
+# goes with the worktree. One without the sentinel is the user's own: git
+# keeps no copy of it, so the retire refuses and names it.
+test_retire_refuses_a_user_authored_claude_local_md() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    assert_file_contains "$wt/CLAUDE.local.md" "cs:session-protocol" "cs wrote the protocol file" || return 1
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    echo "my own notes for this checkout" > "$wt/CLAUDE.local.md"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_output_contains "$output" "Worktree has untracked files that removal would destroy; commit or remove them first:
+CLAUDE.local.md" "the refusal names the file" || return 1
+    assert_eq "my own notes for this checkout" "$(cat "$wt/CLAUDE.local.md")" "the notes are still there" || return 1
+}
+
+run_test test_retire_refuses_a_user_authored_claude_local_md
+
 # The record of what the feature inherited is what tells a deleted topic from
 # a new one. A record that is there and cannot be read must stop the fuse:
 # guessing "new" would bring the deleted topic back and report success.
