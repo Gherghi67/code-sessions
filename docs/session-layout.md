@@ -154,6 +154,7 @@ removes anything, except the prompt hook's launch mark in `scope-prompt.trace`.
 | `rotation-kick/` | Arms the `/clear` auto-start. session-start.sh creates it (a watch given a missing path never fires again for that process's lifetime), hands it over as `watchPaths`, and leaves a detached child to write `rotation.kick` into it once Claude Code's watch is up; that `FileChanged` wakes the session into the handoff's next step. `delivered` marks the kick spent, so the unlink that cleanup fires cannot wake the session on its own tail. Cleared at the start of each rotation, since a stale marker would make the new kick look already spent. |
 | `spawned-by` | Spawner session name for a `cs -spawn`ed worker; deleted after the drain-finished notify (one-shot). A brief-only spawn writes it with no queue to drain, so it stays until a later queue in that session drains, and that drain reports to the spawner. |
 | `inherited-topics/` | In a feature of a session whose `.gitignore` lists `.cs`: one file per memory topic the feature copied from its base, named like the topic and holding the copy's `<checksum> <bytes>`. `/finish` reads it to tell a topic the base deleted from one the feature wrote, and stops when it cannot read a file here. |
+| `inherited/` | In the same features: one file per other record the feature copied from its base (the README, plans, the summary and the rest), at `inherited/<path>` and holding the copy's `<checksum> <bytes>`. `/finish` reads it to tell a copy the feature edited from one it left alone. |
 
 ## Encrypted sessions
 
