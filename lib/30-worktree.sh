@@ -386,9 +386,12 @@ _feature_readiness() {  # base_name task
     _tree_is_dirty "$base_dir" && base_dirty=1
 
     # The screen does not read either checkout's .claude/settings.local.json,
-    # so it predicts neither refusal the retire makes over them, each naming
-    # the file before it removes anything: one it would add the feature's
-    # rules to and cannot read, and a link at the feature's.
+    # so it predicts none of the refusals the retire makes over them, each
+    # before it removes anything: a file it would add the feature's rules to
+    # and cannot read, a link at the feature's file, a feature .claude link
+    # cs cannot follow to a directory inside the worktree, a base .claude
+    # that links out of the session when a rule would be written through it,
+    # and a git that cannot say whether a checkout tracks the file.
     # A locked base vault is the retire's refusal before the records are
     # classified, and every record bound for it would read as at risk, so the
     # records are not classified then.
@@ -797,8 +800,11 @@ $conflicts"
     # leaves alone is no reason to refuse, whatever it holds.
     local settings carried=0
     _permission_rules_carried "$wt_dir" "$base_dir" || carried=$?
-    [ "$carried" != 3 ] \
-        || error "$wt_dir/.claude/settings.local.json is a link, and cs reads the feature's permission rules only from a file of its own. Nothing was removed. Put the rules in a file there, or delete the link, then run /finish $task again."
+    if [ "$carried" = 3 ]; then
+        [ ! -L "$wt_dir/.claude/settings.local.json" ] \
+            || error "$wt_dir/.claude/settings.local.json is a link, and cs reads the feature's permission rules only from a file of its own. Nothing was removed. Put the rules in a file there, or delete the link, then run /finish $task again."
+        error "$wt_dir/.claude is a link cs cannot follow to a directory inside $wt_dir, and cs reads the feature's permission rules only from a file inside it. Nothing was removed. Replace the link with a directory of the feature's own, or remove it, and commit that, then run /finish $task again."
+    fi
     if [ "$carried" = 2 ]; then
         local link missing
         link=$(_settings_link "$base_dir")
@@ -933,13 +939,17 @@ _settings_rules_count() {
 # .claude/Settings.local.json at the path cs reads, as cs_tracked_files_notice
 # finds for .cs. A git that cannot answer has not said the file is untracked:
 # the retire refuses then, with git's own error, before anything is removed.
-_settings_tracked() {  # dir
-    local listed why
-    if listed=$(_cs_git_at "$1" ls-files -- ':(icase,literal).claude/settings.local.json' 2>/dev/null); then
+# <claude_dir> is the directory a linked .claude leads to, relative to the
+# checkout and empty for the checkout itself: git lists the file there, and
+# none behind the link.
+_settings_tracked() {  # dir [claude_dir]
+    local listed why at="${2-.claude}" spec
+    spec=":(icase,literal)${at:+$at/}settings.local.json"
+    if listed=$(_cs_git_at "$1" ls-files -- "$spec" 2>/dev/null); then
         [ -n "$listed" ]
         return
     fi
-    why=$(_cs_git_at "$1" ls-files -- ':(icase,literal).claude/settings.local.json' 2>&1 >/dev/null) || true
+    why=$(_cs_git_at "$1" ls-files -- "$spec" 2>&1 >/dev/null) || true
     error "cs could not ask git whether it tracks $1/.claude/settings.local.json: $(_cs_git_complaint "$why"). Nothing was removed."
 }
 
@@ -952,14 +962,29 @@ _settings_tracked() {  # dir
 # the rules the base lacks instead. The same for a link at the base's .claude
 # that stays inside the session: git sees no file behind a linked directory,
 # tracked or not, so it is a way of sharing the file git cannot answer for.
-# One that leads out of the session is refused by the write. Returns 3 for a
-# link at the feature's path, leading anywhere or nowhere: cs reads the
-# feature's rules only from a file of its own, and the retire refuses it.
+# One that leads out of the session is left to the union: its write
+# (cs_mkdir_inside) refuses it, and a retire with no rule to add writes
+# nothing and goes through. A dangling one whose target has no directory to
+# resolve reads as staying inside. Returns 3 for a link at the feature's
+# path, leading anywhere or nowhere: cs reads the feature's rules only from a
+# file of its own, and the retire refuses it. Returns 3 as well for a link at
+# the feature's .claude that cs cannot follow to a directory inside the
+# worktree: it leads out, or through more links than _cs_write_target
+# follows. One cs can follow is read where it leads: a file git tracks there
+# is git's to carry, like one tracked at the feature's path, and any other is
+# the feature's own.
 _permission_rules_carried() {  # wt_dir base_dir
+    local dir root
     [ -s "$1/.claude/settings.local.json" ] || [ -L "$1/.claude/settings.local.json" ] || return 1
     ! _settings_tracked "$1" || return 1
     ! _settings_tracked "$2" || return 1
     [ ! -L "$1/.claude/settings.local.json" ] || return 3
+    if [ -L "$1/.claude" ]; then
+        dir=$(_cs_write_target "$1/.claude") && root=$(cd -P "$1" 2>/dev/null && pwd -P) || return 3
+        case "$dir/" in "$root"/*) ;; *) return 3 ;; esac
+        dir="${dir#"$root"}"
+        ! _settings_tracked "$1" "${dir#/}" || return 1
+    fi
     [ ! -L "$2/.claude/settings.local.json" ] || return 2
     if [ -L "$2/.claude" ] \
         && ! _cs_refuses_write cs_mkdir_inside "$2/.claude" "$2/.claude" 2>/dev/null; then
