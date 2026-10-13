@@ -983,6 +983,12 @@ EOF
         local rc=0
         # shellcheck disable=SC2086
         CS_LEAD_IS_PARENT=1 $CLAUDE_CODE_BIN --name "$session_name" --resume "$resume_id" ${launch_prompt:+"$launch_prompt"} || rc=$?
+        # A claude can end because its session was removed under it
+        # (cs -rm --force while it ran). The fresh start below would write
+        # .cs/local/state again with mkdir -p and launch a claude in a
+        # directory that is gone, so cs leaves with claude's status. This
+        # open made .cs moments ago; with it gone there is no session here.
+        [ -d "$session_dir/.cs" ] || exit $rc
         if [ $rc -ne 0 ] && [ $SECONDS -lt 3 ]; then
             # Quick failure suggests no conversation to continue. Rebind so
             # the fresh transcript claude is about to create is tracked by
