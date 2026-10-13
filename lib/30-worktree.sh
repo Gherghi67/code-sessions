@@ -595,6 +595,14 @@ retire_feature_worktree() {  # base_name task sha [--force]
     if _tree_is_dirty "$wt_dir"; then
         error "Worktree has uncommitted changes; commit them in $wt_dir first (cs never commits for you)"
     fi
+    # The mode says who carries .cs into the base: git (tracked) or the record
+    # fuse below (ignored). Without one, nothing under .cs is known to survive.
+    local mode
+    mode=$(_read_local_state "$wt_dir/.cs/local/state" cs_mode)
+    case "$mode" in
+        tracked|ignored) ;;
+        *) error "$wt_dir/.cs/local/state names no cs_mode, so cs cannot tell whether git or the record fuse carries $wt_dir/.cs; nothing was removed. Add the line 'cs_mode: tracked' if git tracks .cs in $base_name, else 'cs_mode: ignored', then run /finish $task again." ;;
+    esac
     local wt_untracked
     wt_untracked=$(_worktree_untracked_at_risk "$wt_dir") \
         || error "Could not list the untracked files in $wt_dir; nothing was removed"
@@ -620,8 +628,7 @@ $wt_untracked"
     # staging directory, so its one refusal is asked before anything moves.
     # Asked whether or not the worktree has a log: a locked vault takes the
     # base's .cs/memory with it, which every fuse writes.
-    local mode aside=""
-    mode=$(_read_local_state "$wt_dir/.cs/local/state" cs_mode)
+    local aside=""
     if [ "$mode" = "ignored" ]; then
         cs_private_dir "$base_dir/.cs" >/dev/null \
             || error "cannot fuse the worktree's records: $base_dir/.cs/private is locked. Mount it, then retry."
