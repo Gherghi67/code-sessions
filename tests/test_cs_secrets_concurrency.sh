@@ -934,8 +934,10 @@ test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions ro
 # between. PID 1 stands for the rename holding the lock, and the sleep shim's
 # marker shows the command is waiting on it.
 test_a_command_waiting_on_the_age_lock_takes_it_once_a_rename_removed_its_directory() {
-    local shim="$TEST_TMPDIR/sleep-shim" age="$HOME/.cs-secrets/sessions/bravo" real_sleep cmd pid rc waited expected
+    local shim="$TEST_TMPDIR/sleep-shim" age="$HOME/.cs-secrets/sessions/bravo" real_sleep cmd pid rc waited expected age_bin
     local key="age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqs3290gq"
+    # age add needs age; the export runs without it, so it takes the password path.
+    age_bin=$(command -v age 2>/dev/null) || { echo "    SKIP (age is not installed)"; return 77; }
     real_sleep=$(command -v sleep)
     mkdir -p "$CS_SESSIONS_ROOT/bravo/.cs" "$shim"
     cat > "$shim/sleep" <<SHIM
@@ -954,7 +956,7 @@ SHIM
         printf '1\n' > "$age/.age.lock"
         case "$cmd" in
             age-add)
-                PATH="$shim:$PATH" CS_SECRETS_LOCK_TIMEOUT=3 CLAUDE_SESSION_NAME=bravo \
+                PATH="$shim:$PATH" CS_SECRETS_LOCK_TIMEOUT=3 CLAUDE_SESSION_NAME=bravo CS_AGE_BIN="$age_bin" \
                     "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/laptop.pub" > "$TEST_TMPDIR/out" 2>&1 &
                 expected="Added recipient: laptop
 Public key: $key" ;;
@@ -989,8 +991,10 @@ test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions ro
 # and the rename's removal of alpha's age directory, lock and all, follow
 # once the sleep shim's marker shows the command is waiting.
 test_a_command_waiting_on_the_age_lock_through_a_rename_refuses_the_old_name() {
-    local shim="$TEST_TMPDIR/sleep-shim" age="$HOME/.cs-secrets/sessions/alpha" real_sleep cmd pid rc waited
+    local shim="$TEST_TMPDIR/sleep-shim" age="$HOME/.cs-secrets/sessions/alpha" real_sleep cmd pid rc waited age_bin
     local key="age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqs3290gq"
+    # age add needs age; remove and the export run without it.
+    age_bin=$(command -v age 2>/dev/null) || { echo "    SKIP (age is not installed)"; return 77; }
     real_sleep=$(command -v sleep)
     mkdir -p "$shim" "$HOME/.cs-secrets"
     cat > "$shim/sleep" <<SHIM
@@ -1015,7 +1019,7 @@ SHIM
         printf '1\n' > "$age/.age.lock"
         case "$cmd" in
             age-add)
-                PATH="$shim:$PATH" CS_SECRETS_LOCK_TIMEOUT=3 CLAUDE_SESSION_NAME=alpha \
+                PATH="$shim:$PATH" CS_SECRETS_LOCK_TIMEOUT=3 CLAUDE_SESSION_NAME=alpha CS_AGE_BIN="$age_bin" \
                     "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/laptop.pub" > "$TEST_TMPDIR/out" 2>&1 & ;;
             age-remove)
                 PATH="$shim:$PATH" CS_SECRETS_LOCK_TIMEOUT=3 CLAUDE_SESSION_NAME=alpha \

@@ -458,8 +458,9 @@ test_purge_removes_all() {
 # that went with them goes too: a later session under the same name must not
 # inherit recipients nobody pinned for it.
 test_purge_drops_the_sessions_age_state() {
+    _use_real_age || return $?
     local state="$HOME/.cs-secrets/sessions/test-session"
-    printf 'age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq0000000\n' > "$TEST_TMPDIR/peer.pub"
+    printf 'age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqs3290gq\n' > "$TEST_TMPDIR/peer.pub"
     "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
     "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/peer.pub" >/dev/null 2>&1 || { echo "  FAIL: age add failed"; return 1; }
     assert_file_exists "$state/age-trusted" "fixture: age add wrote the pin list" || return 1
