@@ -1623,21 +1623,31 @@ test_a_nested_layout_that_changes_after_the_copy() {
 
 # A session folder inside another one's that the outer repository tracks is
 # part of the outer project: it comes with the outer copy, which then shows
-# what cs shows, and the inner session is copied on its own as well.
+# what cs shows, and the inner session is copied on its own as well. The
+# outer copy's links and virtual environment name its own folder there, and
+# the inner copy's name the inner copy.
 test_a_session_folder_the_outer_repository_tracks_comes_with_it() {
     make_fixture
     local mono="$TEST_TMPDIR/projects/mono" copy
-    mkdir -p "$mono/api/.cs/local" "$mono/.cs/local"
+    mkdir -p "$mono/api/.cs/local" "$mono/api/src" "$mono/.cs/local"
     git init -q -b main "$mono"
-    printf '.cs/\n' > "$mono/.gitignore"
+    printf '.cs/\n.env\n.venv/\nvenv-notes.md\n' > "$mono/.gitignore"
     printf 'api code\n' > "$mono/api/server.js"
     git -C "$mono" add -A
     git -C "$mono" commit -q -m mono
+    ln -s "$mono/api/server.js" "$mono/.env"
+    ln -s "$mono/api/server.js" "$mono/api/.env"
+    make_venv "$mono"
+    printf '%s/api/src\n' "$mono" > "$mono/.venv/lib/python3.12/site-packages/api.pth"
     ln -s "$mono" "$CSROOT/mono"
     ln -s "$mono/api" "$CSROOT/mono-api"
     run_move --session mono --session mono-api --apply || { echo "$OUT"; return 1; }
     copy=$(ccs_dir mono)
     [ -d "$copy/api" ] && [ ! -L "$copy/api" ] || { echo "  FAIL: api is not a folder in mono's copy"; return 1; }
+    assert_eq "$PROFILE/sessions/mono/api/server.js" "$(readlink "$copy/.env")" || return 1
+    assert_eq "$PROFILE/sessions/mono/api/server.js" "$(readlink "$copy/api/.env")" || return 1
+    assert_eq "$PROFILE/sessions/mono/api/src" "$(cat "$copy/.venv/lib/python3.12/site-packages/api.pth")" || return 1
+    assert_eq "$PROFILE/sessions/mono-api/server.js" "$(readlink "$(ccs_dir mono-api)/.env")" || return 1
     assert_eq "" "$(git -C "$copy" status --porcelain)" "mono's copy shows a change cs does not have" || return 1
     assert_output_contains "$OUT" "mono/api is the folder of cs session mono-api, and mono's repository tracks files there: copied with mono as well" \
         || return 1

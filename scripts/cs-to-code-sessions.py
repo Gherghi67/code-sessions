@@ -19,7 +19,8 @@ every one in ~/.claude-sessions, one after another:
   copy a link to the inner copy takes its place, and no sync of the outer
   copy ever touches that path. An inner session that is not copied gets no
   link, and the run says why; a folder the outer repository tracks files in
-  comes with the outer copy as well.
+  comes with the outer copy as well, and the outer copy's links and virtual
+  environments name that folder in the outer copy.
 - Each feature worktree (<name>@<task>) is copied beside it as a linked
   worktree of the copy's repository, on the same branch, with its index and
   uncommitted changes. A link by an absolute path into the folder of a cs
@@ -264,7 +265,6 @@ class Importer:
         self._processes = None
         self._roots = None
         self._no_copy = []
-        self._relink = None
         self._probes = {}
         self._rollouts = None
         self._paste_names = None
@@ -616,29 +616,37 @@ class Importer:
         settings["autoMemoryDirectory"] = memory
         return (json.dumps(settings, indent=2) + "\n").encode()
 
-    def roots(self):
-        """The folder of each cs session with a copy in code-sessions, made by this run or an earlier one, by
-        every spelling, -> where that copy is.
+    def spellings(self, name):
+        """The folder of the cs session name by its link in the cs root, by the link's target and by where it
+        really is."""
+        cs_path = os.path.join(self.cs_root, name)
+        paths = [cs_path, self.folders[name], os.path.join(self.cs_root_real, name)]
+        if os.path.islink(cs_path) and os.path.isabs(os.readlink(cs_path)):
+            paths.append(os.readlink(cs_path))
+        return paths
 
-        A session's folder by its link in the cs root, by the link's target
-        and by where it really is; inside a folder that holds another session's,
-        the inner one's copy wins, as the longer path. The folder of any other
-        session stays as it is (see relink). Built only once run() has set
-        in_run, the sessions this run copies.
+    def roots(self, session):
+        """The folder of each cs session with a copy in code-sessions, made by this run or an earlier one, by
+        every spelling, -> where that copy is, for session's copy.
+
+        Inside a folder that holds another session's, the inner one's copy
+        wins, as the longer path, except in a folder session's repository
+        tracks (session.shared): that one is session's copy's own, so by its
+        path inside session it stays there. The folder of any other session
+        stays as it is (see relink). Built only once run() has set in_run, the
+        sessions this run copies.
         """
         if self._roots is None:
             self._roots = {}
-            for name, real in self.folders.items():
-                cs_path = os.path.join(self.cs_root, name)
-                paths = [cs_path, real, os.path.join(self.cs_root_real, name)]
-                if os.path.islink(cs_path) and os.path.isabs(os.readlink(cs_path)):
-                    paths.append(os.readlink(cs_path))
+            for name in self.folders:
+                paths = self.spellings(name)
                 if name in self.in_run or self.has_copy(name):
                     for path in paths:
                         self._roots[path] = os.path.join(self.ccs_root, name)
                 else:
                     self._no_copy += paths
-        return self._roots
+        own = {os.path.join(path, rel) for path in self.spellings(session.name) for rel, _ in session.shared}
+        return {old: new for old, new in self._roots.items() if old not in own}
 
     def has_copy(self, name):
         """Whether code-sessions has the copy an earlier run made of the cs session name, by its record."""
@@ -657,9 +665,7 @@ class Importer:
         A target left in cs's folder of a session with no copy is noted in
         session.into_cs: the copy would write through it into cs.
         """
-        if self._relink is None:
-            self._relink = relinker(self.roots())
-        move = self._relink
+        move = relinker(self.roots(session))
 
         def relink(target):
             moved = move(target)
@@ -691,7 +697,7 @@ class Importer:
         is set in a fresh copy only; from then on it is code-sessions's own.
         """
         return Rewrites(session.source, {SETTINGS: lambda data: self.rekey_settings(data, session),
-                                         STATE: claude_engine}, self.roots())
+                                         STATE: claude_engine}, self.roots(session))
 
     def say_venvs(self, session, rels, done):
         """One line per Python virtual environment of session whose text files are among rels (rewritten ones)."""

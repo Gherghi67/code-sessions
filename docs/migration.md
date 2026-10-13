@@ -150,7 +150,9 @@ It and `scripts/code-sessions-to-cs.py` need git 2.31 or later.
   uses for another session), the path is left out with no link, and the run
   says why. A folder the outer repository tracks files in (a subproject
   adopted on its own) comes with the outer copy as well, since git would show
-  a link there as a deletion; the inner session's copy is its own.
+  a link there as a deletion, and the outer copy's links and virtual
+  environments that name a path in it name the outer copy's own folder; the
+  inner session's copy is its own.
 - If cs stops having the inner session, the outer copy keeps its link and
   leaves the path alone, and says so. If the inner folder becomes a session
   after the outer was copied, the folder the outer copy has there duplicates
