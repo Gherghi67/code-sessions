@@ -2522,6 +2522,7 @@ test_retire_refuses_an_edit_git_diff_does_not_show() {
     echo "# P" > "$base_dir/README.md"
     echo "default: 1" > "$base_dir/config.yml"
     echo "default: 2" > "$base_dir/other.yml"
+    ln -s defaults-a "$base_dir/profile"
     printf '.cs/\n' > "$base_dir/.gitignore"
     (cd "$base_dir" && git init -q && git config core.autocrlf false && git add -A && git commit -q -m init)
     cs_launch "proj@t1"
@@ -2531,18 +2532,24 @@ test_retire_refuses_an_edit_git_diff_does_not_show() {
     echo "local: tuned" >> "$wt/config.yml"
     git -C "$wt" update-index --assume-unchanged other.yml
     echo "local: tuned too" >> "$wt/other.yml"
+    git -C "$wt" update-index --assume-unchanged profile
+    ln -sfn defaults-b "$wt/profile"
     sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
     assert_eq "1" "$status" "the retire refuses: $output" || return 1
-    assert_output_contains "$output" "Worktree has edits git diff does not show (skip-worktree or assume-unchanged), which removal would destroy; commit them, or undo them and clear the flag (git update-index --no-skip-worktree / --no-assume-unchanged), first:
-config.yml
-other.yml" "the refusal names both files" || return 1
+    assert_output_contains "$output" "Worktree has edits git diff does not show (skip-worktree or assume-unchanged), which removal would destroy; commit them, or undo them and clear the flag (git update-index --no-skip-worktree / --no-assume-unchanged), first:" \
+        "the refusal says why" || return 1
+    assert_eq "config.yml
+other.yml
+profile" "$(printf '%s\n' "$output" | awk 'listed; /first:$/ { listed = 1 }')" "the refusal names the two files and the retargeted link" || return 1
     assert_eq "default: 1
 local: tuned" "$(cat "$wt/config.yml")" "the edit is still there" || return 1
-    # Positive control: an unedited skip-worktree file is no reason to refuse.
+    assert_eq "defaults-b" "$(readlink "$wt/profile")" "the link still has its new target" || return 1
+    # Positive control: an unedited flagged file or link is no reason to refuse.
     git -C "$wt" update-index --no-assume-unchanged other.yml
     git -C "$wt" checkout -q -- other.yml
     git -C "$wt" show HEAD:config.yml > "$wt/config.yml"
+    ln -sfn defaults-a "$wt/profile"
     status=0
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
     assert_eq "0" "$status" "an unedited flagged file retires: $output" || return 1
