@@ -4167,6 +4167,40 @@ test_usage_refresher_never_walks_the_process_tree() {
 
 run_test test_usage_refresher_never_walks_the_process_tree
 
+# The walker's deadline reaches shell arithmetic, which runs a command
+# substitution held in an array subscript. PATH[...] is the payload because
+# set -u aborts on an unset array base before the subscript is expanded.
+_walk_deadline_payload() {  # marker
+    printf 'PATH[$(touch %s)]' "$1"
+}
+
+# The subagent bar sources this script in library mode, which walks in-process
+# at load, so a _SL_WALK_DEADLINE in its environment would reach the walk.
+test_an_inherited_walk_deadline_is_never_read() {
+    local marker="$TEST_TMPDIR/ran"
+    _make_ps_chain "2216:1"
+    export TMUX="/tmp/fake,2216,0" PATH="$TEST_TMPDIR/fakebin:$PATH"
+    printf '%s' '{"columns":80,"tasks":[]}' \
+        | _SL_WALK_DEADLINE="$(_walk_deadline_payload "$marker")" \
+            bash "$SCRIPT_DIR/../bin/cs-subagent-statusline" >/dev/null 2>&1
+    assert_not_exists "$marker" "an inherited _SL_WALK_DEADLINE must not run as code" || return 1
+}
+
+test_the_walk_reads_its_deadline_only_as_digits() {
+    local marker="$TEST_TMPDIR/ran"
+    ( _load_sl_functions
+      _make_ps_chain "500:2216 2216:1"
+      export PATH="$TEST_TMPDIR/fakebin:$PATH"
+      mkdir -p "$HOME/.cache/cs/tmux-walking"
+      _SL_WALK_DEADLINE="$(_walk_deadline_payload "$marker")"
+      _sl_tmux_walk 500 2216 2>/dev/null
+      assert_eq "0" "$?" "a walk with an unusable deadline still answers from ps" || return 1 )
+    assert_not_exists "$marker" "a non-numeric deadline must not run as code" || return 1
+}
+
+run_test test_an_inherited_walk_deadline_is_never_read
+run_test test_the_walk_reads_its_deadline_only_as_digits
+
 # The org id is kept for ORG_CACHE_TTL under the config path, so an account
 # swap shows within five minutes and a render never walks the config twice in
 # that time.
