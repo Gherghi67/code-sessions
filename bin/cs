@@ -3463,11 +3463,13 @@ _hidden_tracked_edits() {  # checkout_dir
 
 # Untracked and ignored files in a worktree that removal would actually
 # destroy, one per line: git keeps no copy of either. cs writes its own
-# bookkeeping into every worktree — the whole .cs tree in ignored mode, plus
-# the settings and protocol files — and none of it is the user's to commit:
-# ignored-mode fusion carries .cs into the base before the removal, and the
-# removal passes --force precisely because these are expected. Finder's
-# .DS_Store is no one's work either, as cs -rm also treats it.
+# bookkeeping into every worktree — .cs/local, the session locks, the settings
+# and protocol files — and none of it is the user's to commit; the removal
+# passes --force precisely because these are expected. In ignored mode the
+# whole .cs tree is left to _fuse_conflicts, which knows what the record fuse
+# carries. In tracked mode git carries .cs, so any other untracked file there
+# is at risk like one anywhere else. Finder's .DS_Store is no one's work
+# either, as cs -rm also treats it.
 # The merge gate and the readiness screen MUST read from this one definition;
 # when they disagreed, a worktree predating the cs exclude reported blocked on a
 # merge that would have gone straight through.
@@ -3479,10 +3481,15 @@ _worktree_untracked_at_risk() {  # wt_dir
     # decode one, tr stops mid-list. A listing that fails is a failure, never
     # an empty list: the caller would remove the worktree on it.
     local listing
+    local -a cs_own=(-e '^\.cs/')
     listing=$(_untracked_and_ignored_lines "$1" "") || return 1
     [ -n "$listing" ] || return 0
+    if [ "$(_read_local_state "$1/.cs/local/state" cs_mode)" != "ignored" ]; then
+        cs_own=(-e '^\.cs/local/' -e '^\.cs/session\.lock$' -e '^\.cs/session\.mutex\.lock$'
+                -e '^\.cs/\.narrative-reminder-cooldown$')
+    fi
     printf '%s\n' "$listing" \
-        | LC_ALL=C grep -v -e '^\.cs/' -e '^\.claude/settings\.local\.json$' -e '^CLAUDE\.local\.md$' \
+        | LC_ALL=C grep -v "${cs_own[@]}" -e '^\.claude/settings\.local\.json$' -e '^CLAUDE\.local\.md$' \
             -e '^\.DS_Store$' -e '/\.DS_Store$' \
         || [ $? -eq 1 ]
 }
