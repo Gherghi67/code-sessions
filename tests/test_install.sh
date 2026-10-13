@@ -1382,6 +1382,33 @@ test_install_and_uninstall_remove_retired_commands_cs_wrote() {
     assert_output_contains "$out" "Kept $(_bre_literal "$d/skillify.md"): cs did not write it" "uninstall names the kept command" || return 1
 }
 
+# RETIRED_COMMANDS names files inside ~/.claude/commands, and both removal
+# loops join each entry onto that directory. An entry with a path component
+# would reach outside it, so install and uninstall refuse the list, naming
+# the entry, before they change anything; a file cs wrote beside the commands
+# directory stays. The list is cs's own, so a scratch build carries the bad
+# entry.
+test_install_and_uninstall_refuse_a_retired_command_with_a_path() {
+    local repo="$TEST_TMPDIR/retired-path-repo" home="$TEST_TMPDIR/retired-path-home" out rc=0 f
+    _copy_build_inputs "$repo"
+    printf '%s\n' "RETIRED_COMMANDS+=('../x')" >> "$repo/lib/01-manifests.sh"
+    (cd "$repo" && bash build.sh > /dev/null) || { echo "  FAIL: build.sh failed"; return 1; }
+    for f in install.sh bin/cs; do
+        assert_eq "1" "$(grep -c "^RETIRED_COMMANDS+=('\.\./x')$" "$repo/$f")" "the scratch $f carries the entry" || return 1
+    done
+    mkdir -p "$home/.claude/commands"
+    _cs_shipped_content > "$home/.claude/x"
+    out=$(HOME="$home" bash "$repo/install.sh" 2>&1 < /dev/null) || rc=$?
+    assert_eq "1" "$rc" "install exit status" || { echo "$out"; return 1; }
+    assert_output_contains "$out" "Error: RETIRED_COMMANDS entry '\.\./x' is not a file name" "install names the entry" || return 1
+    assert_eq "$(_cs_shipped_content)" "$(cat "$home/.claude/x" 2>/dev/null)" "install keeps the file outside the commands directory" || return 1
+    rc=0
+    out=$(printf 'y\n' | HOME="$home" "$repo/bin/cs" -uninstall 2>&1) || rc=$?
+    assert_eq "1" "$rc" "uninstall exit status" || { echo "$out"; return 1; }
+    assert_output_contains "$out" "Error: RETIRED_COMMANDS entry '\.\./x' is not a file name" "uninstall names the entry" || return 1
+    assert_eq "$(_cs_shipped_content)" "$(cat "$home/.claude/x" 2>/dev/null)" "uninstall keeps the file outside the commands directory" || return 1
+}
+
 # The cs mod shipped as cs-rotate before it took the name cs; a copy left
 # under the old name keeps loading into every Claude Code the machine starts,
 # beside the mod under its current name.
@@ -2995,6 +3022,7 @@ run_test test_a_retired_hook_replaced_during_a_question_is_kept
 run_test test_a_retired_hook_replaced_by_a_link_to_a_device_is_kept_unread
 run_test test_install_removes_the_mod_under_its_old_name
 run_test test_install_and_uninstall_remove_retired_commands_cs_wrote
+run_test test_install_and_uninstall_refuse_a_retired_command_with_a_path
 run_test test_rotate_wrap_keys_yes_creates_the_file_with_only_cs_block
 run_test test_rotate_wrap_keys_merge_into_the_existing_global_block
 run_test test_rotate_wrap_keys_never_overwrite_a_user_binding
