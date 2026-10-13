@@ -1710,8 +1710,8 @@ test_integrate_never_appends_memory_pointers_through_a_committed_index_link() {
 run_test test_integrate_never_appends_memory_pointers_through_a_committed_index_link
 
 # Ignored mode: git overwrites the base's ignored timeline with a link the
-# feature force-added, and retire then fuses the worktree's own records into
-# the base.
+# feature force-added, and retire then has the worktree's own timeline to
+# fuse into the base. It refuses before removing anything, naming the record.
 test_retire_never_fuses_records_through_a_landed_timeline_link() {
     local base_dir="$CS_SESSIONS_ROOT/proj" wt sha output status=0 outside
     mkdir -p "$base_dir/.cs"/{memory,local}
@@ -1731,9 +1731,11 @@ test_retire_never_fuses_records_through_a_landed_timeline_link() {
     assert_symlink "$base_dir/.cs/timeline.jsonl" "the feature's link landed over the base's ignored timeline" || return 1
     output=$("$CS_BIN" proj -retire-feature t1 "$sha" 2>&1) || status=$?
     assert_eq "outside" "$(cat "$outside")" "the fuse wrote nothing outside the session" || return 1
-    assert_eq "1" "$status" "the retire says the records were not fused: $output" || return 1
-    assert_output_contains "$output" "timeline.jsonl leads to $outside" "the refusal names the link" || return 1
-    assert_output_contains "$output" "could not be fused into" "the staged records are kept and named" || return 1
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_dir "$wt/.cs" "nothing was removed: $output" || return 1
+    assert_eq ".cs/timeline.jsonl" "$(printf '%s\n' "$output" | awk 'listed; /again:$/ { listed = 1 }')" \
+        "the refusal names the timeline" || return 1
+    assert_file_contains "$wt/.cs/timeline.jsonl" "feature-side" "the worktree keeps its timeline" || return 1
 }
 
 run_test test_retire_never_fuses_records_through_a_landed_timeline_link
@@ -2132,6 +2134,78 @@ test_retire_ignored_mode_refuses_a_record_whose_directory_is_a_file_in_the_base(
 }
 
 run_test test_retire_ignored_mode_refuses_a_record_whose_directory_is_a_file_in_the_base
+
+# The narratives merge by a rule of their own, but only a regular file can be
+# merged. A narrative that is a link into the feature's own .cs/local reads as
+# missing once .cs is set aside, and deleting the staging directory would then
+# delete the only copy of the notes.
+test_retire_ignored_mode_refuses_a_narrative_that_is_a_link() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output line status=0
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    printf '## Only copy of the task notes\n' > "$wt/.cs/local/notes"
+    ln -s "$wt/.cs/local/notes" "$wt/.cs/memory/narrative.example.md"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    line=$("$CS_BIN" proj -features --porcelain 2>&1)
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_dir "$wt/.cs/memory" "nothing was removed: $output" || return 1
+    assert_eq "## Only copy of the task notes" "$(cat "$wt/.cs/local/notes" 2>/dev/null)" "the notes are still there" || return 1
+    assert_eq ".cs/memory/narrative.example.md" "$(printf '%s\n' "$output" | awk 'listed; /again:$/ { listed = 1 }')" \
+        "the refusal names the narrative" || return 1
+    assert_eq "1" "$(_feat_field "$line" 7)" "the features screen counts it: $line" || return 1
+    # Positive control: the same notes as a regular file merge into the base.
+    rm "$wt/.cs/memory/narrative.example.md"
+    mv "$wt/.cs/local/notes" "$wt/.cs/memory/narrative.example.md"
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire proceeds: $output" || return 1
+    assert_eq "## Only copy of the task notes" "$(cat "$base_dir/.cs/memory/narrative.example.md" 2>/dev/null)" \
+        "the notes land in the base" || return 1
+}
+
+run_test test_retire_ignored_mode_refuses_a_narrative_that_is_a_link
+
+# A record merged by a rule of its own still needs its directory in the base.
+# A file where the base's .cs/memory should be is found before anything is
+# removed, not by the merge once the worktree is gone.
+test_retire_ignored_mode_refuses_a_narrative_whose_directory_is_a_file_in_the_base() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output line status=0
+    mkdir -p "$base_dir/.cs"/{memory,local}
+    echo "# P" > "$base_dir/README.md"
+    printf '.cs/\n.claude/settings.local.json\n' > "$base_dir/.gitignore"
+    (cd "$base_dir" && git init -q && git config core.autocrlf false && git config user.email tester@example.com \
+        && git add -A && git commit -q -m init)
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    printf '## Task finding\n' > "$wt/.cs/memory/narrative.example.md"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    rm -r "$base_dir/.cs/memory"
+    echo "base notes" > "$base_dir/.cs/memory"
+    line=$("$CS_BIN" proj -features --porcelain 2>&1)
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_dir "$wt/.cs/memory" "nothing was removed: $output" || return 1
+    # The index and the narrative cs wrote at the launch need the directory too.
+    assert_eq ".cs/memory/MEMORY.md
+.cs/memory/narrative.example.md
+.cs/memory/narrative.tester-example-com.md" "$(printf '%s\n' "$output" | awk 'listed; /again:$/ { listed = 1 }')" \
+        "the refusal names the merged records" || return 1
+    assert_eq "3" "$(_feat_field "$line" 7)" "the features screen counts them: $line" || return 1
+    assert_eq "base notes" "$(cat "$base_dir/.cs/memory")" "the base's file is untouched" || return 1
+    assert_eq "" "$(find "$CS_SESSIONS_ROOT" -maxdepth 1 -name '.retire-*')" "nothing is left staged" || return 1
+    # Positive control: with the file out of the way, the narrative lands.
+    rm "$base_dir/.cs/memory"
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire proceeds: $output" || return 1
+    assert_eq "## Task finding" "$(cat "$base_dir/.cs/memory/narrative.example.md" 2>/dev/null)" "the narrative lands" || return 1
+}
+
+run_test test_retire_ignored_mode_refuses_a_narrative_whose_directory_is_a_file_in_the_base
 
 # Every record under .cs that the base lacks goes back to it, at any depth,
 # not just topics and narratives: plans, a summary, handoffs, a brief,
