@@ -2261,6 +2261,40 @@ test_import_file_refuses_a_named_file_in_the_local_secrets_store() {
     _assert_secret_absent other_token "nothing from the other session's store is imported" || return 1
 }
 
+# Another session's checkout is no more trusted than this one's: a file named
+# through its .cs/inbox, a link pushed to a directory outside it, must not be
+# read. A file that really is in the other session still imports.
+test_import_file_refuses_a_named_file_behind_another_sessions_linked_directory() {
+    local out rc=0 other="$CS_SESSIONS_ROOT/b-session"
+    mkdir -p "$TEST_TMPDIR/outside" "$other/.cs"
+    printf '{"other_token":"value-of-other"}\n' | openssl enc -aes-256-cbc -e -pbkdf2 -iter 100000 \
+        -out "$TEST_TMPDIR/outside/other-session.enc" -pass env:CS_SECRETS_PASSWORD \
+        || { echo "  FAIL: fixture: could not encrypt the outside file"; return 1; }
+    ln -s "$TEST_TMPDIR/outside" "$other/.cs/inbox"
+    out=$("$CS_SECRETS_BIN" import-file "$other/.cs/inbox/other-session.enc" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the import is refused: $out" || return 1
+    _assert_secret_absent other_token "nothing behind the other session's link is imported" || return 1
+    printf '{"b_token":"from-b"}\n' | openssl enc -aes-256-cbc -e -pbkdf2 -iter 100000 \
+        -out "$other/.cs/secrets.b.enc" -pass env:CS_SECRETS_PASSWORD \
+        || { echo "  FAIL: fixture: could not encrypt the other session's file"; return 1; }
+    rc=0
+    out=$("$CS_SECRETS_BIN" import-file "$other/.cs/secrets.b.enc" 2>&1) || rc=$?
+    assert_eq "0 Imported 1 secret(s) from 1 sync file(s)." "$rc $out" "a file inside the other session imports" || return 1
+}
+
+# A named file cs cannot read is not a file it could not decrypt.
+test_import_file_names_a_file_it_cannot_read() {
+    local out rc=0 work="$TEST_TMPDIR/work"
+    mkdir -p "$work"
+    printf '{"own_token":"mine"}\n' | openssl enc -aes-256-cbc -e -pbkdf2 -iter 100000 \
+        -out "$work/backup.enc" -pass env:CS_SECRETS_PASSWORD \
+        || { echo "  FAIL: fixture: could not encrypt the sync file"; return 1; }
+    chmod 000 "$work/backup.enc"
+    out=$("$CS_SECRETS_BIN" import-file "$work/backup.enc" 2>&1) || rc=$?
+    chmod 600 "$work/backup.enc"
+    assert_eq "1 Error: Could not read $work/backup.enc" "$rc $out" "the refusal says the file could not be read" || return 1
+}
+
 # An exported CDPATH must not change where a relative name leads, nor what the
 # directory check reads back.
 test_import_file_reads_a_relative_name_under_an_exported_cdpath() {
@@ -2305,7 +2339,7 @@ EOF
     out=$(PATH="$bindir:$PATH" "$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
     chmod 755 "$meta"
     assert_eq "0" "$rc" "the import finishes: $out" || return 1
-    assert_output_contains "$out" "^Skipped 1 undecryptable file(s)" "the file is counted as unreadable" || return 1
+    assert_output_contains "$out" "^Skipped 1 sync file(s) that could not be read\.$" "the file is counted as unreadable" || return 1
     if [[ "$out" == *"changed while it was read"* ]]; then
         echo "  FAIL: an unenterable .cs is reported as changed: $out"
         return 1
@@ -3571,6 +3605,8 @@ run_test test_import_file_reads_the_cs_it_checked_when_swapped_during_the_copy
 run_test test_import_file_refuses_a_named_file_behind_a_linked_directory_however_spelled
 run_test test_import_file_refuses_a_named_file_behind_a_linked_directory_in_another_case
 run_test test_import_file_refuses_a_named_file_in_the_local_secrets_store
+run_test test_import_file_refuses_a_named_file_behind_another_sessions_linked_directory
+run_test test_import_file_names_a_file_it_cannot_read
 run_test test_import_file_reads_a_relative_name_under_an_exported_cdpath
 run_test test_import_file_reads_the_session_under_a_relative_tmpdir
 run_test test_import_file_counts_a_cs_it_cannot_enter_as_unreadable
