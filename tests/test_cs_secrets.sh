@@ -2665,7 +2665,7 @@ test_keychain_export_file_aborts_on_jq_failure() {
     cat > "$bindir/jq" <<JQFAKE
 #!/usr/bin/env bash
 for a in "\$@"; do
-    case "\$a" in *'= env.CS_SECRETS_VALUE'*) echo "jq: simulated failure" >&2; exit 5 ;; esac
+    case "\$a" in *'.[\$name] = \$value'*) echo "jq: simulated failure" >&2; exit 5 ;; esac
 done
 exec "$real_jq" "\$@"
 JQFAKE
