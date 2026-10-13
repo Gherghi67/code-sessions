@@ -163,6 +163,9 @@ _is_bystander_transcript() {  # transcript_file
     local first
     first=$(grep -m1 '"type":"user"' "$1" 2>/dev/null) || return 1
     case "$first" in
+        # Any first prompt holding the text counts, so discovery and adopt
+        # skip a person's relocated conversation whose prompt quotes it.
+        # Decided; do not re-fix.
         *teammate-message*) return 0 ;;
         *'"entrypoint":"sdk-'*)
             # Any entrypoint value that does not begin `sdk-`.

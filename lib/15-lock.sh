@@ -174,6 +174,9 @@ acquire_session_lock() {
                 echo -e "${DIM}Try again in a moment: cs $session_name --force${NC}" >&2
                 exit 1
             fi
+            # The lock records one pid. When this forced open ends first, its
+            # exit removes the lock and the other holder runs unprotected;
+            # that is decided, and locks do not record every holder.
             echo "$$" > "$lock_file"
             _cs_unlock "$mutex"
             return 0
@@ -197,9 +200,12 @@ acquire_session_lock() {
 # the removal happen under the openers' mutex (.cs/session.mutex.lock): a
 # forced open that replaced the lock between the two would otherwise have its
 # lock removed here and run on unlocked. This runs from cs's exit traps, so
-# when the mutex cannot be taken (another cs still holds it after the wait,
-# or this process holds another lock) the lock is left as it is, nothing is
-# printed and the status is 0; the next open reclaims a lock whose pid is dead.
+# when the mutex cannot be taken for any reason (perl missing, this process
+# already holding another _cs_lock, another cs holding it past the five-second
+# wait) the lock is left as it is, nothing is printed and the status is 0; the
+# lock left behind names a dead pid, and the next open reclaims it. The exit
+# can therefore wait up to five seconds while another cs holds the mutex. Both
+# are decided; do not re-fix.
 release_session_lock() {
     local meta_dir="$1"
     local lock_file="$meta_dir/session.lock"
