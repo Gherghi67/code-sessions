@@ -105,17 +105,14 @@ _tree_is_dirty() {
         || ! git -C "$1" diff --cached --quiet 2>/dev/null
 }
 
-# Untracked and ignored files in a worktree that removal would actually
-# destroy, one per line: git keeps no copy of either. cs writes its own
-# bookkeeping into every worktree — the whole .cs tree in ignored mode, plus
-# the settings and protocol files — and none of it is the user's to commit:
-# ignored-mode fusion carries .cs into the base before the removal, and the
-# removal passes --force precisely because these are expected. Finder's
-# .DS_Store is no one's work either, as cs -rm also treats it.
-# The merge gate and the readiness screen MUST read from this one definition;
-# when they disagreed, a worktree predating the cs exclude reported blocked on a
-# merge that would have gone straight through.
-_worktree_untracked_at_risk() {  # wt_dir
+# Paths in a worktree that git does not track, one per line, leaving out cs's
+# own bookkeeping: the whole .cs tree in ignored mode, plus the settings and
+# protocol files, none of it the user's to commit (ignored-mode fusion carries
+# .cs into the base before the removal, and the removal passes --force
+# precisely because these are expected). Finder's .DS_Store is no one's work
+# either, as cs -rm also treats it. With --ignored, the ignored paths; else
+# the untracked ones git does not ignore.
+_worktree_others() {  # wt_dir [--ignored]
     # -z, then one path per line with a newline inside a name shown as "?":
     # without it git quotes any name holding a newline or a non-ASCII byte,
     # and the quote in front hides cs's own files from the patterns below.
@@ -123,8 +120,7 @@ _worktree_untracked_at_risk() {  # wt_dir
     # decode one, tr stops mid-list. A listing that fails is a failure, never
     # an empty list: the caller would remove the worktree on it.
     local listing
-    listing=$({ git -C "$1" ls-files -z --others --exclude-standard \
-                && git -C "$1" ls-files -z --others --ignored --exclude-standard; } 2>/dev/null \
+    listing=$(git -C "$1" ls-files -z --others ${2:+"$2"} --exclude-standard 2>/dev/null \
               | LC_ALL=C tr '\n\0' '?\n') || return 1
     [ -n "$listing" ] || return 0
     printf '%s\n' "$listing" \
@@ -133,15 +129,58 @@ _worktree_untracked_at_risk() {  # wt_dir
         || [ $? -eq 1 ]
 }
 
-# The listing of files a removal would destroy, from three lists on stdin
-# separated by empty lines: the checkout's tracked paths; "<count><TAB><path>"
-# for each directory git does not list into (a nested repository, shown by
-# git as one path ending in "/"); and the paths at risk. Prints the count
-# phrase ("1 file", "60,882 files"), then one indented line per entry: a
-# directory holding no tracked file is one entry with the number of files at
-# risk under it, any other path is listed alone. Entries holding the most
-# files come first, at most 20, then how many entries are not shown.
-_untracked_listing_render() {
+# Untracked files in a worktree that git does not ignore, one per line: work
+# the user has not committed, which retire refuses over. The merge gate and
+# the readiness screen MUST read from this one definition; when they
+# disagreed, a worktree predating the cs exclude reported blocked on a merge
+# that would have gone straight through.
+_worktree_untracked_at_risk() {  # wt_dir
+    _worktree_others "$1"
+}
+
+# Directory names whose contents a build, an install or a test run writes
+# again: an ignored file under one of these, at any depth, goes with a retired
+# worktree. Every other ignored file goes to the system trash instead.
+CS_REGENERABLE_DIRS=(
+    node_modules .svelte-kit .next .nuxt .output .turbo .parcel-cache .vite .astro .angular
+    coverage .nyc_output htmlcov
+    __pycache__ .pytest_cache .mypy_cache .ruff_cache .tox .venv venv
+    target .gradle
+    test-results playwright-report
+)
+
+# The paths given one per line on stdin that lie under a regenerable
+# directory (keep=regenerable) or that do not (keep=other). A path's last
+# component is its own name, so only the directories above it count.
+_regenerable_filter() {  # regenerable|other
+    LC_ALL=C awk -F/ -v keep="$1" -v names="${CS_REGENERABLE_DIRS[*]}" '
+        BEGIN { n = split(names, list, " "); for (i = 1; i <= n; i++) regenerable[list[i]] = 1 }
+        {
+            under = 0
+            for (i = 1; i < NF; i++) if ($i in regenerable) { under = 1; break }
+            if (under == (keep == "regenerable")) print
+        }'
+}
+
+# The system trash command, one word per line: macOS's trash, else GLib's
+# gio trash. Prints nothing when neither is installed.
+_system_trash_command() {
+    if command -v trash >/dev/null 2>&1; then
+        echo trash
+    elif command -v gio >/dev/null 2>&1; then
+        printf '%s\n' gio trash
+    fi
+}
+
+# The entries of a listing of files a removal would destroy, from three
+# lists on stdin separated by empty lines: the checkout's paths that stay
+# (tracked, or deleted anyway); "<count><TAB><path>" for each directory git
+# does not list into (a nested repository, shown by git as one path ending in
+# "/"); and the paths at risk. A directory holding no path that stays is one
+# entry with the number of files at risk under it, any other path is an
+# entry alone. Prints "<files><TAB><entry>", the entries holding the most
+# files first, then by path.
+_untracked_entries() {
     local tab=$'\t'
     LC_ALL=C awk '
         BEGIN { section = 0 }
@@ -181,48 +220,73 @@ _untracked_listing_render() {
             }
             for (entry in count) printf "%d\t%s\n", count[entry], entry
         }' \
-    | LC_ALL=C sort -t "$tab" -k1,1nr -k2 \
-    | LC_ALL=C awk -v shown=20 '
+    | LC_ALL=C sort -t "$tab" -k1,1nr -k2
+}
+
+# The listing of the entries on stdin (_untracked_entries): the count phrase
+# ("1 file", "60,882 files"), then one line per entry indented four spaces, a
+# directory with its file count in a column past the longest directory
+# shown. With a number, at most that many entries, then how many are not
+# shown; with "all", every entry.
+_untracked_listing_format() {  # shown|all
+    LC_ALL=C awk -v shown="$1" '
         function grouped(n,    s) {
             s = sprintf("%d", n)
             while (s ~ /[0-9][0-9][0-9][0-9]/) sub(/[0-9][0-9][0-9]($|,)/, ",&", s)
             return s
         }
         function files(n) { return grouped(n) (n == 1 ? " file" : " files") }
+        BEGIN { if (shown == "all") shown = -1 }
         {
             cut = index($0, "\t")
             total += substr($0, 1, cut - 1)
-            if (NR > shown) next
+            if (shown >= 0 && NR > shown) next
             held[NR] = substr($0, 1, cut - 1)
             path[NR] = substr($0, cut + 1)
             if (path[NR] ~ /\/$/ && length(path[NR]) > width) width = length(path[NR])
         }
         END {
             print files(total)
-            for (i = 1; i <= NR && i <= shown; i++) {
+            for (i = 1; i <= NR && (shown < 0 || i <= shown); i++) {
                 if (path[i] ~ /\/$/) printf "    %-" width "s  (%s)\n", path[i], files(held[i])
                 else printf "    %s\n", path[i]
             }
-            if (NR > shown) printf "    ... and %s more\n", grouped(NR - shown)
+            if (shown >= 0 && NR > shown) printf "    ... and %s more\n", grouped(NR - shown)
         }'
 }
 
-# The listing of files a removal of the checkout would destroy, for the paths
-# at risk given one per line (_untracked_listing_render has the format). git
-# lists a nested repository as one path ending in "/", so the files under each
-# are counted here. Fails when git cannot list the tracked paths or a nested
-# repository cannot be read.
-_untracked_listing() {  # checkout_dir paths
-    local dir="$1" paths="$2" tracked nested="" repo files
+# The listing, at most 20 entries, from the three lists _untracked_entries
+# reads on stdin.
+_untracked_listing_render() {
+    _untracked_entries | _untracked_listing_format 20
+}
+
+# The three lists _untracked_entries reads, for the paths at risk in a
+# checkout given one per line, and paths that stay beside the tracked ones
+# (deleted anyway, so never inside a collapsed entry). git lists a nested
+# repository as one path ending in "/", so the files under each are counted
+# here. Fails when git cannot list the tracked paths or a nested repository
+# cannot be read.
+_untracked_listing_input() {  # checkout_dir paths [staying_paths]
+    local dir="$1" paths="$2" staying="${3:-}" tracked nested="" repo files
     tracked=$(git -C "$dir" ls-files -z | LC_ALL=C tr '\n\0' '?\n') || return 1
     while IFS= read -r repo; do
         [ -n "$repo" ] || continue
         files=$(find "$dir/$repo" ! -type d | wc -l) || return 1
         nested="$nested${files//[[:space:]]/}"$'\t'"$repo"$'\n'
     done <<< "$(printf '%s\n' "$paths" | LC_ALL=C grep '/$' || [ $? -eq 1 ])"
-    { [ -z "$tracked" ] || printf '%s\n' "$tracked"
-      printf '\n%s\n' "$nested"
-      printf '%s\n' "$paths"; } | _untracked_listing_render
+    [ -z "$tracked" ] || printf '%s\n' "$tracked"
+    [ -z "$staying" ] || printf '%s\n' "$staying"
+    printf '\n%s\n' "$nested"
+    printf '%s\n' "$paths"
+}
+
+# The listing of files a removal of the checkout would destroy, at most 20
+# entries, for the paths at risk given one per line.
+_untracked_listing() {  # checkout_dir paths
+    local input
+    input=$(_untracked_listing_input "$1" "$2") || return 1
+    printf '%s\n' "$input" | _untracked_listing_render
 }
 
 # Print the PID of a live lock on a session that the invoker does not own:
@@ -610,6 +674,44 @@ _finish_progress_exit() {  # exit status
     return 0
 }
 
+# Move the worktree's ignored files that are not regenerable to the system
+# trash, so retiring it deletes nothing git keeps no copy of; files under a
+# regenerable directory (CS_REGENERABLE_DIRS) go with the worktree. Prints
+# what it moved, one line per entry. Refuses, having removed nothing, when no
+# trash command is installed or the one that is fails.
+_retire_trash_ignored_work() {  # wt_dir task
+    local wt_dir="$1" task="$2" ignored trash_paths regenerable input entries listing count them=them nl=$'\n'
+    ignored=$(_worktree_others "$wt_dir" --ignored) \
+        || error "Could not list the ignored files in $wt_dir; nothing was removed"
+    [ -n "$ignored" ] || return 0
+    trash_paths=$(printf '%s\n' "$ignored" | _regenerable_filter other)
+    [ -n "$trash_paths" ] || return 0
+    regenerable=$(printf '%s\n' "$ignored" | _regenerable_filter regenerable)
+    input=$(_untracked_listing_input "$wt_dir" "$trash_paths" "$regenerable") \
+        && entries=$(printf '%s\n' "$input" | _untracked_entries) \
+        || error "Could not count the ignored files in $wt_dir; nothing was removed"
+    listing=$(printf '%s\n' "$entries" | _untracked_listing_format 20)
+    count="${listing%%"$nl"*}"
+    [ "$count" != "1 file" ] || them=it
+    local -a trash_cmd=() targets=()
+    local word entry
+    while IFS= read -r word; do trash_cmd+=("$word"); done <<< "$(_system_trash_command)"
+    [ -n "${trash_cmd[0]:-}" ] \
+        || error "Worktree has ${count% *} ignored ${count#* } that retiring moves to the system trash, but neither trash nor gio is installed, so nothing was removed. Move or delete $them, then run /finish $task here again:
+${listing#*"$nl"}"
+    while IFS= read -r entry; do
+        entry="${entry#*$'\t'}"
+        targets+=("$wt_dir/${entry%/}")
+    done <<< "$entries"
+    local trash_err
+    trash_err=$("${trash_cmd[@]}" "${targets[@]}" 2>&1 >/dev/null) \
+        || error "Could not move ${count% *} ignored ${count#* } to the system trash, so nothing was removed; anything the trash command did move is in the trash. Move or delete $them, then run /finish $task here again:
+${listing#*"$nl"}
+${trash_cmd[0]}: ${trash_err:-exited with an error}"
+    printf 'Moved %s ignored %s to the system trash:\n' "${count% *}" "${count#* }"
+    printf '%s\n' "$entries" | _untracked_listing_format all | tail -n +2
+}
+
 # Retire an integrated feature worktree: fuse its session records into the
 # base (ignored mode), remove the worktree and delete its branch. Backs the
 # unadvertised `cs <base> -retire-feature <task> <sha> [--force]` that
@@ -722,6 +824,9 @@ ${wt_listing#*"$nl"}"
     if [ "$mode" = "ignored" ]; then
         cs_private_dir "$base_dir/.cs" >/dev/null \
             || error "cannot fuse the worktree's records: $base_dir/.cs/private is locked. Mount it, then retry."
+    fi
+    _retire_trash_ignored_work "$wt_dir" "$task"
+    if [ "$mode" = "ignored" ]; then
         aside="$SESSIONS_ROOT/.retire-$wt_name.$$"
         mkdir "$aside" 2>/dev/null || error "Could not create $aside to set aside $wt_dir/.cs for the record fuse"
         mv "$wt_dir/.cs" "$aside/cs" || { rmdir "$aside" 2>/dev/null; error "Could not set aside $wt_dir/.cs for the record fuse"; }
