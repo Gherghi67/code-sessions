@@ -770,6 +770,32 @@ test_adopt_gitignores_atomic_write_temps() {
     done
 }
 
+# Every open writes .cs/session.lock and .cs/session.mutex.lock. In a project
+# with its own .gitignore, adopt appends rules that hide the two, so git status
+# stays clean and a re-adopt commits neither, while the project's own lock
+# files (Cargo.lock) stay visible to git.
+test_adopt_gitignores_the_session_locks() {
+    local dir="$TEST_TMPDIR/owned-locks" f status
+    mkdir -p "$dir"
+    (cd "$dir" && git init -q && git config user.email tester@example.com && git config user.name Tester \
+        && printf 'node_modules/\n' > .gitignore && "$CS_BIN" -adopt locks-session >/dev/null 2>&1) \
+        || { echo "  FAIL: adopt failed"; return 1; }
+    printf '1\n' > "$dir/.cs/session.lock"
+    : > "$dir/.cs/session.mutex.lock"
+    : > "$dir/Cargo.lock"
+    for f in .cs/session.lock .cs/session.mutex.lock; do
+        git -C "$dir" check-ignore -q "$f" || { echo "  FAIL: $f is not ignored"; return 1; }
+    done
+    if git -C "$dir" check-ignore -q Cargo.lock; then
+        echo "  FAIL: the project's own Cargo.lock is ignored"; return 1
+    fi
+    status=$(git -C "$dir" status --porcelain)
+    assert_eq "?? Cargo.lock" "$status" "git status shows only the project's own file" || return 1
+    rm "$CS_SESSIONS_ROOT/locks-session"
+    (cd "$dir" && "$CS_BIN" -adopt locks-session --yes </dev/null >/dev/null 2>&1) || { echo "  FAIL: re-adopt failed"; return 1; }
+    assert_eq "" "$(git -C "$dir" log --format= --name-only | grep 'session\.' || true)" "no commit carries a session lock" || return 1
+}
+
 # ============================================================================
 # First launch after adopt
 # ============================================================================
@@ -1062,6 +1088,7 @@ run_test test_adopt_gitignores_cs_local
 run_test test_adopt_gitignores_the_vault_mount
 run_test test_adopt_gitignores_a_private_directory_and_not_its_link
 run_test test_adopt_gitignores_atomic_write_temps
+run_test test_adopt_gitignores_the_session_locks
 run_test test_adopt_sets_memory_merge_driver
 
 run_test test_adopt_creates_cs_structure
