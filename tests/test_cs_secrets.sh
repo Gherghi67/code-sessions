@@ -560,7 +560,9 @@ test_age_remove_refuses_a_session_the_root_does_not_have() {
 # has something to write.
 test_export_file_refuses_a_session_the_root_does_not_have() {
     local out rc=0
+    mkdir -p "$CS_SESSIONS_ROOT/ghost/.cs"
     "$CS_SECRETS_BIN" --session ghost set api_key "sk_123" >/dev/null 2>&1 || { echo "  FAIL: fixture: set failed"; return 1; }
+    rm -rf "$CS_SESSIONS_ROOT/ghost"
     out=$("$CS_SECRETS_BIN" --session ghost export-file 2>&1) || rc=$?
     assert_eq "1" "$rc" "export-file exits 1" || return 1
     assert_eq "Error: No session named 'ghost' in $CS_SESSIONS_ROOT" "$out" "the refusal names the session and the root" || return 1
@@ -3428,12 +3430,13 @@ _kc_secrets() {
         "$CS_SECRETS_BIN" "$@"
 }
 
-# Session alpha, already renamed to bravo on disk, with a value in all three
-# stores: Keychain K1 (the argv canary) and K2, encrypted-store E1, and a pin
-# list. Leaves the fake security's bin dir in _RN_BIN.
+# Session alpha with a value in all three stores, Keychain K1 (the argv
+# canary) and K2, encrypted-store E1, and a pin list, and its directory then
+# renamed to bravo as the picker does before it runs `rename`. Leaves the
+# fake security's bin dir in _RN_BIN.
 _seed_renamed_session() {
     _RN_BIN=$(_make_fake_security)
-    mkdir -p "$CS_SESSIONS_ROOT/bravo/.cs"
+    mkdir -p "$CS_SESSIONS_ROOT/alpha/.cs"
     _RN_CANARY=$(_argv_canary)
     printf 'value-two' > "$TEST_TMPDIR/v2"
     printf 'value-enc' > "$TEST_TMPDIR/ve"
@@ -3442,6 +3445,7 @@ _seed_renamed_session() {
     "$CS_SECRETS_BIN" --session alpha set E1 < "$TEST_TMPDIR/ve" >/dev/null 2>&1 || return 1
     mkdir -p "$HOME/.cs-secrets/sessions/alpha"
     printf 'pin-fingerprint\n' > "$HOME/.cs-secrets/sessions/alpha/age-trusted"
+    mv "$CS_SESSIONS_ROOT/alpha" "$CS_SESSIONS_ROOT/bravo"
 }
 
 # The names a fake Keychain holds, one service per line, sorted.
@@ -3658,6 +3662,139 @@ test_rename_with_nothing_to_move_creates_no_cs_secrets() {
     [ ! -e "$HOME/.cs-secrets" ] || { echo "  FAIL: rename created ~/.cs-secrets"; return 1; }
 }
 
+# ----------------------------------------------------------------------------
+# The session write lock: set, delete, purge and rename serialise on one lock
+# per session name, <sessions root>/.secrets-lock.<name>, and set and delete
+# refuse a name the sessions root does not have. Without both, a write that
+# lands while rename moves the session is deleted or left under the old name
+# after it said it was stored.
+# ----------------------------------------------------------------------------
+
+# Run cs-secrets on the named backend; the Keychain is the fake security's
+# store. Needs _RN_BIN.
+_backend_secrets() {  # backend, args...
+    PATH="$_RN_BIN:$PATH" CS_SECRETS_BACKEND="$1" FAKE_SECURITY_STORE="$TEST_TMPDIR/kc-store" \
+        "$CS_SECRETS_BIN" "${@:2}"
+}
+
+# Session ghost with K1 on both backends and a pin list, then removed from
+# the sessions root: what `cs -rm`, or a rename away from the name, leaves.
+_seed_removed_session() {
+    _RN_BIN=$(_make_fake_security)
+    mkdir -p "$CS_SESSIONS_ROOT/ghost/.cs"
+    printf 'kept' > "$TEST_TMPDIR/kept"
+    printf 'late' > "$TEST_TMPDIR/late"
+    local backend
+    for backend in keychain encrypted; do
+        _backend_secrets "$backend" --session ghost set K1 < "$TEST_TMPDIR/kept" >/dev/null 2>&1 || return 1
+    done
+    mkdir -p "$HOME/.cs-secrets/sessions/ghost"
+    printf 'pin-fingerprint\n' > "$HOME/.cs-secrets/sessions/ghost/age-trusted"
+    rm -rf "$CS_SESSIONS_ROOT/ghost"
+}
+
+# A value stored under a name the sessions root does not have is one no
+# session reads, and one the rename that moved the session away never moves.
+test_set_and_delete_refuse_a_session_the_root_does_not_have() {
+    _seed_removed_session || { echo "  FAIL: fixture: could not seed ghost's stores"; return 1; }
+    local backend out rc
+    for backend in keychain encrypted; do
+        rc=0
+        out=$(_backend_secrets "$backend" --session ghost set K2 < "$TEST_TMPDIR/late" 2>&1) || rc=$?
+        assert_eq "1" "$rc" "$backend set exits 1: $out" || return 1
+        assert_eq "Error: No session named 'ghost' in $CS_SESSIONS_ROOT" "$out" "$backend set names the session and the root" || return 1
+        rc=0
+        out=$(_backend_secrets "$backend" --session ghost delete K1 2>&1) || rc=$?
+        assert_eq "1" "$rc" "$backend delete exits 1: $out" || return 1
+        assert_eq "Error: No session named 'ghost' in $CS_SESSIONS_ROOT" "$out" "$backend delete names the session and the root" || return 1
+        assert_eq "Secrets for session: ghost
+  - K1" "$(_backend_secrets "$backend" --session ghost list 2>&1)" "$backend holds K1 and no K2" || return 1
+        assert_eq "kept" "$(_backend_secrets "$backend" --session ghost get K1 2>&1)" "$backend K1 keeps its value" || return 1
+    done
+    assert_not_exists "$CS_SESSIONS_ROOT/ghost" "no directory is created for the session" || return 1
+    assert_eq "test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
+}
+
+# Stored secrets outlive `cs -rm`, and purge is how they are removed
+# afterwards, so purge does not need the session directory.
+test_purge_removes_what_a_removed_session_left() {
+    _seed_removed_session || { echo "  FAIL: fixture: could not seed ghost's stores"; return 1; }
+    local backend out rc
+    for backend in keychain encrypted; do
+        rc=0
+        out=$(_backend_secrets "$backend" --session ghost purge 2>&1) || rc=$?
+        assert_eq "0" "$rc" "$backend purge exits 0: $out" || return 1
+        assert_eq "Purged 1 secret(s) for session: ghost" "$out" "$backend purge counts what it removed" || return 1
+        assert_eq "No secrets stored for session: ghost" "$(_backend_secrets "$backend" --session ghost list 2>&1)" \
+            "$backend holds nothing of ghost's" || return 1
+    done
+    assert_not_exists "$HOME/.cs-secrets/sessions/ghost" "the age state went with the secrets" || return 1
+    assert_eq "test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
+}
+
+# The write lock lives in the sessions root, so a Keychain write on a machine
+# with no ~/.cs-secrets does not create one.
+test_keychain_writes_create_no_cs_secrets_dir() {
+    _RN_BIN=$(_make_fake_security)
+    printf 'value-one' > "$TEST_TMPDIR/v1"
+    assert_eq "Stored secret: K1" "$(_backend_secrets keychain set K1 < "$TEST_TMPDIR/v1" 2>&1)" "set stores K1" || return 1
+    assert_eq "Deleted secret: K1" "$(_backend_secrets keychain delete K1 2>&1)" "delete removes K1" || return 1
+    assert_eq "Stored secret: K1" "$(_backend_secrets keychain set K1 < "$TEST_TMPDIR/v1" 2>&1)" "set stores K1 again" || return 1
+    assert_eq "Purged 1 secret(s) for session: test-session" "$(_backend_secrets keychain purge 2>&1)" "purge removes K1" || return 1
+    assert_not_exists "$HOME/.cs-secrets" "no ~/.cs-secrets is created" || return 1
+    assert_eq "test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
+}
+
+# A write that cannot take the lock changes nothing and names the lock file.
+# PID 1 stands for another process holding it.
+test_set_delete_and_purge_take_the_session_write_lock() {
+    _RN_BIN=$(_make_fake_security)
+    local lock="$CS_SESSIONS_ROOT/.secrets-lock.test-session" backend verb out rc
+    printf 'value-one' > "$TEST_TMPDIR/v1"
+    for backend in keychain encrypted; do
+        _backend_secrets "$backend" set K1 < "$TEST_TMPDIR/v1" >/dev/null 2>&1 \
+            || { echo "  FAIL: fixture: $backend set failed"; return 1; }
+    done
+    printf '1\n' > "$lock"
+    for backend in keychain encrypted; do
+        for verb in "set K2" "delete K1" "purge"; do
+            rc=0
+            # shellcheck disable=SC2086  # $verb is a verb and its argument
+            out=$(CS_SECRETS_LOCK_TIMEOUT=0 _backend_secrets "$backend" $verb < "$TEST_TMPDIR/v1" 2>&1) || rc=$?
+            assert_eq "1" "$rc" "$backend $verb exits 1: $out" || return 1
+            assert_eq "Error: timed out after 0s acquiring the secrets write lock for session 'test-session' (held by PID 1). If no such process is running, remove: $lock
+Error: Refusing to change the secrets of session 'test-session': could not acquire the secrets write lock" "$out" \
+                "$backend $verb names the lock" || return 1
+        done
+        assert_eq "Secrets for session: test-session
+  - K1" "$(_backend_secrets "$backend" list 2>&1)" "$backend holds K1 and no K2" || return 1
+    done
+    assert_eq "1" "$(cat "$lock")" "the other holder's lock is left alone" || return 1
+}
+
+# rename takes the write lock of both names before it looks at any store,
+# even to say there is nothing to move: a set that passed its session check
+# before the directory moved may still be writing under the old name.
+test_rename_takes_the_write_lock_of_both_names() {
+    _RN_BIN=$(_make_fake_security)
+    mkdir -p "$CS_SESSIONS_ROOT/bravo/.cs"
+    local name lock out rc
+    for name in alpha bravo; do
+        lock="$CS_SESSIONS_ROOT/.secrets-lock.$name"
+        printf '1\n' > "$lock"
+        rc=0
+        out=$(CS_SECRETS_LOCK_TIMEOUT=0 _kc_secrets --session alpha rename bravo 2>&1) || rc=$?
+        assert_eq "1" "$rc" "rename exits 1 while $name's write lock is held: $out" || return 1
+        assert_eq "Error: timed out after 0s acquiring the secrets write lock for session '$name' (held by PID 1). If no such process is running, remove: $lock
+Error: Refusing to move the secrets of session 'alpha' to 'bravo': could not acquire the secrets write locks" "$out" \
+            "rename names $name's lock" || return 1
+        rm -f "$lock"
+        assert_eq "bravo
+test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "rename released the lock it did take" || return 1
+    done
+    assert_not_exists "$HOME/.cs-secrets" "a refused rename creates no ~/.cs-secrets" || return 1
+}
+
 # ============================================================================
 # Runner
 # ============================================================================
@@ -3838,6 +3975,11 @@ run_test test_rename_refuses_while_the_old_session_directory_exists
 run_test test_rename_rerun_finishes_an_interrupted_move
 run_test test_rename_rerun_refuses_a_value_that_differs_under_both_names
 run_test test_rename_with_nothing_to_move_creates_no_cs_secrets
+run_test test_set_and_delete_refuse_a_session_the_root_does_not_have
+run_test test_purge_removes_what_a_removed_session_left
+run_test test_keychain_writes_create_no_cs_secrets_dir
+run_test test_set_delete_and_purge_take_the_session_write_lock
+run_test test_rename_takes_the_write_lock_of_both_names
 run_test test_export_refuses_when_this_machines_recipient_file_holds_another_key
 run_test test_export_leaves_a_current_signed_file_alone
 run_test test_later_export_without_ssh_keygen_refuses_and_keeps_the_signed_file

@@ -188,6 +188,16 @@ case "$sub" in
             : > "$FAKE_SECURITY_SLOW_STORE"
             sleep 1
         fi
+        # A store that touches <hold>.began and then waits for <hold>.release,
+        # two seconds at most, stays in flight until a test lets it go.
+        if [ -n "${FAKE_SECURITY_HOLD_STORE:-}" ]; then
+            : > "$FAKE_SECURITY_HOLD_STORE.began"
+            held=0
+            until [ -e "$FAKE_SECURITY_HOLD_STORE.release" ] || [ "$held" -ge 40 ]; do
+                sleep 0.05
+                held=$((held + 1))
+            done
+        fi
         case "${FAKE_SECURITY_MODE:-}" in
             storefail) echo "security: could not add credential" >&2; exit 1 ;;
         esac
@@ -206,6 +216,9 @@ case "$sub" in
             [ -f "$(slot)" ] || exit 44
             rm -f "$(slot)"
         fi
+        # A delete that touches a marker tells a test the caller has begun
+        # deleting.
+        [ -n "${FAKE_SECURITY_DELETE_MARKER:-}" ] && : > "$FAKE_SECURITY_DELETE_MARKER"
         exit 0
         ;;
     *)
@@ -582,6 +595,54 @@ SHIM
     assert_eq "" "$(find "$HOME/.cs-secrets" -name '.keygen.*')" "no staging directory is left" || return 1
 }
 
+# A Keychain set that passed its session check before the picker moved the
+# session directory, and writes while rename moves the session's entries: the
+# set says it stored the value, so the value must end up under the new name.
+# The set's write is held in flight; it is let go when rename begins deleting
+# the old entries, which is after rename copied the earlier value. With no
+# lock shared by the two, rename reaches that point and the held value lands
+# under the old name or is deleted. With the lock rename waits, the held write
+# times out of its wait, and rename then moves what the set stored.
+test_keychain_set_during_a_rename_is_moved_with_the_session() {
+    local bindir; bindir=$(_make_fake_security)
+    local kc="$TEST_TMPDIR/kc-store" hold="$TEST_TMPDIR/hold"
+    _kcs() {
+        PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kc" "$CS_SECRETS_BIN" "$@"
+    }
+    mkdir -p "$CS_SESSIONS_ROOT/alpha/.cs"
+    printf 'value-one' > "$TEST_TMPDIR/v1"
+    printf 'value-two' > "$TEST_TMPDIR/v2"
+    printf 'v2-concurrent' > "$TEST_TMPDIR/v2c"
+    _kcs --session alpha set K1 < "$TEST_TMPDIR/v1" >/dev/null 2>&1 || { echo "  FAIL: fixture: set K1 failed"; return 1; }
+    _kcs --session alpha set K2 < "$TEST_TMPDIR/v2" >/dev/null 2>&1 || { echo "  FAIL: fixture: set K2 failed"; return 1; }
+
+    FAKE_SECURITY_HOLD_STORE="$hold" _kcs --session alpha set K2 < "$TEST_TMPDIR/v2c" > "$TEST_TMPDIR/set.out" 2>&1 &
+    local spid=$! waited=0
+    until [ -f "$hold.began" ]; do sleep 0.05; waited=$((waited + 1)); [ "$waited" -gt 200 ] && break; done
+    [ -f "$hold.began" ] || { echo "  FAIL: fixture: the held set never reached its write"; wait "$spid"; return 1; }
+
+    # The picker moves the directory, then runs rename.
+    mv "$CS_SESSIONS_ROOT/alpha" "$CS_SESSIONS_ROOT/bravo"
+    FAKE_SECURITY_DELETE_MARKER="$hold.release" _kcs --session alpha rename bravo > "$TEST_TMPDIR/rename.out" 2>&1 &
+    local rpid=$! src=0 rrc=0
+    wait "$spid" || src=$?
+    wait "$rpid" || rrc=$?
+
+    assert_eq "0" "$src" "the set exits 0: $(cat "$TEST_TMPDIR/set.out")" || return 1
+    assert_eq "Stored secret: K2" "$(cat "$TEST_TMPDIR/set.out")" "the set says it stored K2" || return 1
+    assert_eq "0" "$rrc" "rename exits 0: $(cat "$TEST_TMPDIR/rename.out")" || return 1
+    assert_eq "Moved the secrets of session 'alpha' to 'bravo'" "$(cat "$TEST_TMPDIR/rename.out")" "rename says what it did" || return 1
+    assert_eq "v2-concurrent" "$(_kcs --session bravo get K2 2>&1)" "the value the set stored is bravo's" || return 1
+    assert_eq "value-one" "$(_kcs --session bravo get K1 2>&1)" "K1 moved" || return 1
+    local f services=""
+    for f in "$kc"/*; do
+        [ -f "$f" ] && services="$services$(head -1 "$f") "
+    done
+    assert_eq "cs:bravo:K1 cs:bravo:K2 " "$services" "nothing is left under alpha" || return 1
+    assert_eq "bravo
+test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
+}
+
 run_test test_encrypted_salt_write_is_atomic_under_concurrency
 run_test test_encrypted_signal_terminates_writer_mid_critical_section
 run_test test_encrypted_purge_serialized_with_concurrent_store
@@ -590,5 +651,6 @@ run_test test_migrate_delete_source_preserves_concurrent_store
 run_test test_migrate_delete_source_tolerates_concurrently_deleted_key
 run_test test_export_holds_the_lock_across_encrypt_and_digest_on_every_backend
 run_test test_two_first_runs_keep_one_machine_key
+run_test test_keychain_set_during_a_rename_is_moved_with_the_session
 
 report_results
