@@ -419,6 +419,13 @@ qseed() {
     done
 }
 
+# A run in progress: the drain has handed out the task file named, and records
+# its name beside the state.
+qdraining() {  # basename of the task handed out
+    printf 'draining\n' > "$(QDIR)/queue.state"
+    printf '%s\n' "$1" > "$(QDIR)/queue.current"
+}
+
 # Count task files in the queue directory.
 qlen() {
     local f n=0
@@ -462,7 +469,7 @@ test_drain_skips_a_done_log_linked_out_of_the_session() {
     t=$(cd "$TEST_TMPDIR" && pwd -P); o="$t/outside"
     printf 'USER-OWNED\n' > "$o"
     qseed "task one" "task two"
-    printf 'draining\n' > "$(QDIR)/queue.state"
+    qdraining 0000000001-seed
     ln -s "$o" "$(QDIR)/queue.done"
     out=$(printf '{}\n' | CS_LEAD_PID=$$ CLAUDE_PID=$$ bash "$HOOKS_DIR/narrative-reminder.sh" 2>"$err")
     assert_eq "USER-OWNED" "$(cat "$o")" "nothing is appended outside the session" || return 1
@@ -750,7 +757,7 @@ test_drain_leaves_a_queue_linked_out_of_the_session_alone() {
 
 test_drain_draining_pops_and_injects_next() {
     qseed "task one" "task two"
-    printf 'draining\n' > "$(QDIR)/queue.state"
+    qdraining 0000000001-seed
     local out; out=$(drain)
     assert_output_contains "$out" "task two" "draining injects the next task" || return 1
     assert_file_contains "$(QDIR)/queue.done" "task one" "finished task logged to done" || return 1
@@ -793,7 +800,7 @@ test_drain_frames_the_next_task_with_a_fresh_id() {
 # reads "all tasks complete" with nothing done.
 test_drain_ignores_a_teammate_stop() {
     qseed "task one" "task two"
-    printf 'draining\n' > "$(QDIR)/queue.state"
+    qdraining 0000000001-seed
     local out
     out=$(teammate_drain)
     assert_output_not_contains "$out" "task two" "a teammate's stop injects nothing" || return 1
@@ -820,7 +827,7 @@ test_drain_gate_ignores_a_teammate_stop() {
 # branch — a second drain winning the race is not reproducible on demand.
 test_drain_disarms_when_the_pop_fails() {
     qseed "task one" "task two"
-    printf 'draining\n' > "$(QDIR)/queue.state"
+    qdraining 0000000001-seed
     _deny_writes "$(QDIR)/queue" || return 77
     local out; out=$(drain)
     _allow_writes "$(QDIR)/queue"
@@ -844,7 +851,7 @@ test_drain_advances_past_a_stale_state_tmp() {
 
 test_drain_disarms_after_a_failed_pop_past_a_stale_state_tmp() {
     qseed "task one" "task two"
-    printf 'draining\n' > "$(QDIR)/queue.state"
+    qdraining 0000000001-seed
     mkdir "$(QDIR)/queue.state.tmp"
     _deny_writes "$(QDIR)/queue" || return 77
     drain >/dev/null || true
@@ -914,6 +921,7 @@ test_drain_falls_back_to_no_state_file_when_idle_cannot_be_written() {
     mkdir -p "$TEST_TMPDIR/state-home"
     printf 'draining\n' > "$TEST_TMPDIR/state-home/queue.state"
     ln -s "$TEST_TMPDIR/state-home/queue.state" "$(QDIR)/queue.state"
+    printf '0000000001-seed\n' > "$(QDIR)/queue.current"
     _deny_writes "$TEST_TMPDIR/state-home" || return 77
     local out; out=$(drain) || true
     _allow_writes "$TEST_TMPDIR/state-home"
@@ -999,7 +1007,7 @@ test_drain_parks_a_run_with_no_record_of_the_task_handed_out() {
 
 test_drain_empties_and_returns_idle() {
     qseed "last task"
-    printf 'draining\n' > "$(QDIR)/queue.state"
+    qdraining 0000000001-seed
     local out; out=$(drain)
     assert_output_contains "$out" "complete" "announces completion" || return 1
     assert_eq "idle" "$(cat "$(QDIR)/queue.state" | tr -d '[:space:]')" "returns to idle" || return 1
@@ -1114,7 +1122,7 @@ test_drain_without_a_mode_names_none() {
 # spawn seeds and arms one) runs in the conversation.
 test_drain_completion_forgets_the_mode() {
     qseed "last task"
-    printf 'draining\n' > "$(QDIR)/queue.state"
+    qdraining 0000000001-seed
     printf 'subagents\n' > "$(QDIR)/queue.mode"
     drain >/dev/null
     assert_file_not_exists "$(QDIR)/queue.mode" "the finished run forgets its mode" || return 1
@@ -1124,7 +1132,7 @@ test_drain_completion_asks_for_debrief() {
     # Popping the last task must close the final native task and prompt a debrief,
     # not merely announce that the queue is empty (which leaves a dangling in-progress).
     qseed "last task"
-    printf 'draining\n' > "$(QDIR)/queue.state"
+    qdraining 0000000001-seed
     local out; out=$(drain)
     assert_output_contains "$out" "final native task" "completion must close the final native task" || return 1
     assert_output_contains "$out" "summary" "completion must ask for a walk-away summary" || return 1
