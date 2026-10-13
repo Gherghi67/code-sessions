@@ -2371,6 +2371,27 @@ test_retire_refuses_a_settings_file_it_cannot_read() {
     assert_dir "$wt/.cs/memory" "the worktree is still there" || return 1
     assert_eq "$before" "$(cat "$base_dir/.claude/settings.local.json")" "the base's file is as it was" || return 1
 
+    # Valid JSON is not enough: one object, with a permissions object and an
+    # allow list where they are present. A second document's grants would be
+    # dropped, and a null would read as absent.
+    local bad i
+    bad=("$wt/.claude/settings.local.json" '{"permissions": null}'
+         "$base_dir/.claude/settings.local.json" '{"permissions": {"allow": null}}'
+         "$wt/.claude/settings.local.json" '{"permissions": {"allow": false}}'
+         "$wt/.claude/settings.local.json" $'{"permissions": {"allow": ["Read"]}}\n{"permissions": {"allow": ["Bash(make:*)"]}}')
+    for i in 0 2 4 6; do
+        printf '%s\n' '{"permissions": {"allow": ["Bash(make:*)"]}}' > "$wt/.claude/settings.local.json"
+        printf '%s\n' '{"permissions": {"allow": ["Bash(ls:*)"]}}' > "$base_dir/.claude/settings.local.json"
+        printf '%s\n' "${bad[$((i + 1))]}" > "${bad[$i]}"
+        before=$(cat "$base_dir/.claude/settings.local.json")
+        status=0
+        output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+        assert_eq "1" "$status" "the retire refuses ${bad[$((i + 1))]}: $output" || return 1
+        assert_output_contains "$output" "Error: ${bad[$i]} is not one JSON object, or its permissions is not an object, or its permissions.allow is not a list, so cs cannot add the feature's permission grants to $base_dir/.claude/settings.local.json. Nothing was removed. Fix it, then run /finish t1 again." \
+            "the refusal names ${bad[$i]}" || return 1
+        assert_dir "$wt/.cs/memory" "the worktree is still there" || return 1
+        assert_eq "$before" "$(cat "$base_dir/.claude/settings.local.json")" "the base's file is as it was" || return 1
+    done
 }
 
 run_test test_retire_refuses_a_settings_file_it_cannot_read
