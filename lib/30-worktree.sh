@@ -145,14 +145,40 @@ _worktree_untracked_at_risk() {  # wt_dir
     # decode one, tr stops mid-list. A listing that fails is a failure, never
     # an empty list: the caller would remove the worktree on it.
     local listing
-    listing=$({ git -C "$1" ls-files -z --others --exclude-standard \
-                && git -C "$1" ls-files -z --others --ignored --exclude-standard; } 2>/dev/null \
-              | LC_ALL=C tr '\n\0' '?\n') || return 1
+    listing=$(_untracked_and_ignored_lines "$1" "") || return 1
     [ -n "$listing" ] || return 0
     printf '%s\n' "$listing" \
         | LC_ALL=C grep -v -e '^\.cs/' -e '^\.claude/settings\.local\.json$' -e '^CLAUDE\.local\.md$' \
             -e '^\.DS_Store$' -e '/\.DS_Store$' \
         || [ $? -eq 1 ]
+}
+
+# The untracked and ignored files of a checkout and of every initialised
+# submodule in it, at any depth, one per line in the form
+# _worktree_untracked_at_risk reads, each path prefixed with <prefix>. git
+# ls-files never lists the files inside a submodule: it is a checkout of its
+# own, and removing the worktree removes it with them. Fails when any listing
+# fails.
+_untracked_and_ignored_lines() {  # checkout_dir prefix
+    local listing line entry sub
+    listing=$({ git -C "$1" ls-files -z --others --exclude-standard \
+                && git -C "$1" ls-files -z --others --ignored --exclude-standard; } 2>/dev/null \
+              | LC_ALL=C tr '\n\0' '?\n') || return 1
+    if [ -n "$listing" ]; then
+        while IFS= read -r line; do
+            printf '%s%s\n' "$2" "$line"
+        done <<< "$listing"
+    fi
+    git -C "$1" ls-files -s -z > /dev/null 2>&1 || return 1
+    # A gitlink's index entry reads "160000 <oid> <stage>\t<path>"; one with a
+    # .git inside is initialised.
+    while IFS= read -r -d '' entry; do
+        case "$entry" in 160000\ *) ;; *) continue ;; esac
+        sub="${entry#*$'\t'}"
+        [ -e "$1/$sub/.git" ] || continue
+        _untracked_and_ignored_lines "$1/$sub" "$2${sub//$'\n'/?}/" || return 1
+    done < <(git -C "$1" ls-files -s -z 2>/dev/null)
+    return 0
 }
 
 # Print the PID of a live lock on a session that the invoker does not own:
