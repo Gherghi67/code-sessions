@@ -556,7 +556,7 @@ test_the_countdown_is_only_shown_when_something_enforces_it() {
 test_the_budget_is_read_as_data_and_bounds_the_rewriter() {
     unset CS_REWRITE_CMD
     local bin="$TEST_TMPDIR/bin" pwned="$TEST_TMPDIR/pwned" bound="$TEST_TMPDIR/bound"
-    local real_perl provider pair value want f out
+    local real_perl real_timeout provider pair value want f out
     real_perl=$(command -v perl) || { echo "  SKIP: no perl"; return 77; }
     mkdir -p "$bin"
     cat > "$bin/agy" <<'EOF'
@@ -570,9 +570,16 @@ EOF
 [ "\$2" = 'alarm shift; exec @ARGV' ] && printf '%s\n' "\$3" >> "$bound"
 exec "$real_perl" "\$@"
 EOF
+    # Anything but the rewriter's call goes to the real timeout where one
+    # exists, so the pty harness keeps its own bound on Linux.
+    real_timeout=$(command -v timeout 2>/dev/null || true)
     cat > "$bin/timeout" <<EOF
 #!/bin/bash
-[ "\$2" = claude ] && printf '%s\n' "\$1" >> "$bound"
+if [ "\$2" = claude ]; then
+    printf '%s\n' "\$1" >> "$bound"
+elif [ -n "$real_timeout" ]; then
+    exec "$real_timeout" "\$@"
+fi
 shift
 exec "\$@"
 EOF
