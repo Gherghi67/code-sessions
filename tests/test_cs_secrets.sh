@@ -1467,6 +1467,24 @@ test_age_add_refuses_what_is_not_a_key() {
     done
 }
 
+# `age add` never offers to download age: with no age binary it fails at once,
+# pointing at `age init`, which is where the download is offered. It prompts
+# for nothing, reaches for no network, and writes no recipient, no pin and no
+# machine key. The curl on PATH logs a call and fails.
+test_age_add_without_age_points_at_age_init() {
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs" netbin="$TEST_TMPDIR/net-bin" out rc=0
+    mkdir -p "$netbin"
+    printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nexit 1\n' "$TEST_TMPDIR/curl-argv" > "$netbin/curl"
+    chmod +x "$netbin/curl"
+    out=$(PATH="$netbin:$PATH" "$CS_SECRETS_BIN" age add age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqs3290gq 2>&1) || rc=$?
+    assert_eq "1" "$rc" "age add exits 1 with no age binary" || return 1
+    assert_eq "Error: age binary not found. Run: cs -secrets age init" "$out" "the refusal points at age init and offers no download" || return 1
+    assert_not_exists "$TEST_TMPDIR/curl-argv" "age add reaches for no network" || return 1
+    assert_eq "" "$(ls "$meta/age-recipients" 2>/dev/null)" "no recipient file is written" || return 1
+    assert_not_exists "$HOME/.cs-secrets/sessions/test-session/age-trusted" "nothing is pinned" || return 1
+    assert_not_exists "$HOME/.cs-secrets/id_ed25519" "no machine key is made" || return 1
+}
+
 _stage_machine_ssh_key() {  # this machine's ssh key under the test HOME
     mkdir -p "$HOME/.cs-secrets" && chmod 700 "$HOME/.cs-secrets" || return 1
     ssh-keygen -q -t ed25519 -N '' -C "test@example.com" -f "$HOME/.cs-secrets/id_ed25519" </dev/null || return 1
@@ -4239,6 +4257,7 @@ run_test test_export_on_a_fresh_clone_pins_nothing
 run_test test_age_remove_drops_the_pin
 run_test test_age_add_takes_an_ssh_ed25519_key_file
 run_test test_age_add_takes_a_raw_ssh_ed25519_key
+run_test test_age_add_without_age_points_at_age_init
 run_test test_age_add_refuses_what_is_not_a_key
 run_test test_import_file_reads_a_file_encrypted_to_this_machines_ssh_key
 run_test test_import_file_still_reads_a_file_encrypted_to_the_earlier_age_key
