@@ -1213,7 +1213,7 @@ CS_PAYLOAD_SHA256=(
     "d274602e5a34a754f0b639389d2123d75d0fd2d01aa8330c97648b6e67d7a2b0  hooks/cs-shared.sh"
     "50d63ce0995e68fddd8503700c15f9585d11938c9cd3872a883146de7707c765  hooks/cs-iterm-tab.py"
     "5ba5d967c2f5b8949847195fe928af2dd6c41c1ab502cb74f9deb0d3af842de9  hooks/memory-index-guard.sh"
-    "31db5bb68d572f541e22e240bd1d9f518f0ce760cf5cd359de33dec72bab3600  hooks/prompt-rewriter.sh"
+    "5670169667eee9aea2098206a02cb48078aca86d155fde240922af6c5c2f7af9  hooks/prompt-rewriter.sh"
     "d884bc6e9f8a3b8e2970f4e77b5f9b4fb415176b00b3e085aac43e4ac409b906  hooks/prompt-rewriter-model.sh"
     "5ed0b9da8f102367e218e8dc6227594ad2f70ca3ba885103c058aabb4b528226  hooks/prompt-rewriter-vendor.sh"
     "da95b222c082bf6ad8cc3cbe6cd5f8f55f37c5f5e538de7872d1051aebb4e436  hooks/session-start.sh"

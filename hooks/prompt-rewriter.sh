@@ -255,9 +255,18 @@ _render_until_done() {  # pid
     # acknowledging itself at once.
     kill -0 "$pid" 2>/dev/null || return 0
     [ -t 2 ] || return 0
-    [ -n "$_bounded" ] && budget=" / ${CS_REWRITE_TIMEOUT:-25}s"
+    # The budget reaches shell arithmetic, which runs a command substitution
+    # held in an operand, and the bar divides by it: anything but a positive
+    # plain number shows the rewriters' default. 10# forces base 10 once the
+    # value is known to be digits, so 08 is eight rather than invalid octal.
+    local limit=25
+    case "${CS_REWRITE_TIMEOUT:-}" in
+        ''|*[!0-9]*|????????*) ;;
+        *) limit=$(( 10#$CS_REWRITE_TIMEOUT )); [ "$limit" -gt 0 ] || limit=25 ;;
+    esac
+    [ -n "$_bounded" ] && budget=" / ${limit}s"
     _budget=''
-    [ -n "$_bounded" ] && _budget="${CS_REWRITE_TIMEOUT:-25}"
+    [ -n "$_bounded" ] && _budget="$limit"
 
     # Hidden for the whole display, restored below and in the trap. A cursor
     # parked at the end of the line reads as unfinished output.
@@ -278,7 +287,7 @@ _render_until_done() {  # pid
             _center_vertically
             indent=$(_center_indent 40)
             printf '%*s%sRewriting your prompt…  up to %ss%s\n' \
-                "$indent" '' "$_d" "${CS_REWRITE_TIMEOUT:-25}" "$_r" >&2
+                "$indent" '' "$_d" "$limit" "$_r" >&2
             while kill -0 "$pid" 2>/dev/null; do sleep 0.2; done
             ;;
         native)
