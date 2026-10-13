@@ -4122,6 +4122,13 @@ mod tests {
         std::fs::remove_dir_all(&tmp).unwrap();
     }
 
+    // A rename moves the transcripts under the Claude home, so a test that
+    // renames without scoping a home must reach no ~/.claude at all.
+    #[test]
+    fn an_unscoped_test_build_has_no_claude_home() {
+        assert_eq!(claude_home(), None);
+    }
+
     #[test]
     fn set_status_creates_message() {
         let mut app = App::new(sample_sessions());
