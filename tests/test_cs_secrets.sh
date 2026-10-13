@@ -2101,6 +2101,46 @@ test_import_file_keeps_the_store_when_a_value_exceeds_the_exec_limit() {
     assert_eq "1200000" "$len" "the large value is stored whole" || return 1
 }
 
+# A .cs pushed as a link to ~/.cs-secrets holds no link a file check sees, yet
+# the legacy secrets.enc it finds there is the local store of a session named
+# secrets, which the shared password opens.
+test_import_file_refuses_a_session_whose_cs_is_a_link() {
+    local out rc=0 session_dir="$CS_SESSIONS_ROOT/linked-session" real
+    printf 'value-of-victim\n' | "$CS_SECRETS_BIN" --session secrets set victim_token >/dev/null 2>&1 \
+        || { echo "  FAIL: fixture: set in the session named secrets failed"; return 1; }
+    assert_file_exists "$HOME/.cs-secrets/secrets.enc" "fixture: the victim's local store" || return 1
+    mkdir -p "$session_dir"
+    ln -s "$HOME/.cs-secrets" "$session_dir/.cs"
+    real=$(cd "$HOME/.cs-secrets" && pwd -P)
+    out=$("$CS_SECRETS_BIN" --session linked-session import-file 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the import is refused" || return 1
+    assert_eq "Error: Refusing to import for session 'linked-session': $session_dir/.cs leads to $real, outside the session" \
+        "$out" "the refusal names the link and where it leads" || return 1
+    rc=0
+    out=$("$CS_SECRETS_BIN" --session linked-session import-file "$session_dir/.cs/secrets.enc" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a file named through the link is refused" || return 1
+    rc=0
+    out=$("$CS_SECRETS_BIN" --session linked-session get victim_token 2>&1) || rc=$?
+    assert_eq "3 Error: secret not found: victim_token" "$rc $out" "nothing from the victim's store is imported" || return 1
+}
+
+# A store that already holds two JSON documents (a corrupt or hand-edited
+# file) comes back from jq as two documents; writing them would keep a store
+# that every reader takes as missing secrets.
+test_set_refuses_to_write_a_store_of_more_than_one_document() {
+    local out rc=0 store="$HOME/.cs-secrets/test-session.enc"
+    mkdir -p "$HOME/.cs-secrets"
+    printf '{"a":"1"}\n{"b":"2"}\n' | openssl enc -aes-256-cbc -e -pbkdf2 -iter 100000 \
+        -out "$store" -pass env:CS_SECRETS_PASSWORD \
+        || { echo "  FAIL: fixture: could not encrypt the store"; return 1; }
+    cp "$store" "$TEST_TMPDIR/store.before"
+    out=$(printf 'v\n' | "$CS_SECRETS_BIN" set c 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the write is refused" || return 1
+    assert_output_contains "$out" "^Error: refusing to write a secrets store for session 'test-session' that is not one JSON object$" \
+        "the refusal says why" || return 1
+    cmp -s "$store" "$TEST_TMPDIR/store.before" || { echo "  FAIL: the store on disk changed"; return 1; }
+}
+
 # A directory at the signature path is not a missing signature.
 test_import_file_skips_a_file_whose_signature_cannot_be_read() {
     _use_real_age || return $?
@@ -3313,6 +3353,8 @@ run_test test_import_file_skips_a_signature_that_is_a_symbolic_link
 run_test test_import_file_skips_a_sync_file_that_is_a_symbolic_link
 run_test test_import_file_skips_a_password_sync_file_that_is_a_symbolic_link
 run_test test_import_file_keeps_the_store_when_a_value_exceeds_the_exec_limit
+run_test test_import_file_refuses_a_session_whose_cs_is_a_link
+run_test test_set_refuses_to_write_a_store_of_more_than_one_document
 run_test test_import_file_skips_a_file_whose_signature_cannot_be_read
 run_test test_import_file_skips_a_file_signed_for_another_session
 run_test test_import_file_allow_unsigned_takes_a_file_with_no_signature
