@@ -1144,6 +1144,21 @@ test_read_outside_session_errors() {
     ! env -u CLAUDE_SESSION_META_DIR "$CS_BIN" -msg >/dev/null 2>&1 || return 1
 }
 
+# A read shows a multibyte body whole, past jq's 4096-byte read buffer, which
+# on some jq builds splits a character there and shows a replacement character.
+# Which byte the buffer ends on decides whether a character is split, so the
+# body is read at two offsets: as is, and one byte later.
+test_read_shows_a_multibyte_body_whole() {
+    local body lead out
+    body=$(python3 -c "print('\u00e9' * 3000)")
+    for lead in "" "a"; do
+        _forge_mail "0000000001-long$lead" "{\"id\":\"m1\",\"from\":\"peer\",\"kind\":\"text\",\"body\":\"$lead$body\"}"
+        out=$(_as_receiver -msg 2>&1) || return 1
+        assert_eq "--:--  <- peer  [text]  (------)  $lead$body" "$(printf '%s\n' "$out" | tail -1)" \
+            "the body is shown as sent (lead '$lead')" || return 1
+    done
+}
+
 test_read_strips_control_characters() {
     "$CS_BIN" -msg receiver "$(printf 'evil \033[2J clear')" >/dev/null 2>&1 || return 1
     local out; out=$(_as_receiver -msg 2>&1) || return 1
@@ -1205,6 +1220,7 @@ run_test test_read_prints_unread_then_moves_to_cur
 run_test test_log_reprints_read_mail
 run_test test_read_outside_session_errors
 run_test test_read_strips_control_characters
+run_test test_read_shows_a_multibyte_body_whole
 run_test test_read_skips_non_json_entries
 run_test test_read_renders_null_ts_and_flattens_multiline_body
 run_test test_read_survives_corrupt_document_and_big_mailbox

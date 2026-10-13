@@ -1218,6 +1218,14 @@ test_queue_list_strips_control_bytes_from_the_done_log() {
     assert_eq "0" "$(_esc_bytes "$out")" "no raw ESC reaches the terminal" || return 1
 }
 
+# The log shows a multibyte task whole, past jq's 4096-byte read buffer.
+test_queue_log_shows_a_multibyte_task_whole() {
+    local task; task=$(python3 -c "print('\u00e9' * 3000)")
+    printf '{"ts":0,"event":"task_done","task":"%s"}\n' "$task" > "$CLAUDE_SESSION_META_DIR/local/notifications.jsonl"
+    local out; out=$(TZ=UTC "$CS_BIN" -queue log 2>&1) || return 1
+    assert_eq "1970-01-01 00:00  task_done: $task" "$out" "the task is shown as queued" || return 1
+}
+
 test_queue_log_strips_control_bytes() {
     # jq -r DECODES the  the drain stored, so the raw byte reappears here
     # even though the journal on disk holds none.
@@ -1232,6 +1240,7 @@ test_queue_log_strips_control_bytes() {
 run_test test_queue_list_strips_control_bytes_from_a_pending_task
 run_test test_queue_list_strips_control_bytes_from_the_done_log
 run_test test_queue_log_strips_control_bytes
+run_test test_queue_log_shows_a_multibyte_task_whole
 
 # An encrypted session keeps its queue with its other cs files, behind
 # .cs/private (a link into its vault); a locked vault refuses rather than
