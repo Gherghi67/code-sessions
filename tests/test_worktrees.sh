@@ -982,6 +982,20 @@ run_test test_ignored_mode_worktree_retires_without_a_manual_exclude
 run_test test_retire_tolerates_a_worktree_predating_the_cs_exclude
 run_test test_retire_still_refuses_real_untracked_work
 run_test test_retire_refuses_ignored_work
+
+# cs and the TUI list files a removal would destroy in one format, pinned by
+# one fixture both render: input.txt holds the tracked paths, the file count
+# of each directory git does not list into, and the paths at risk, separated
+# by empty lines; expected.txt holds the count phrase, then the entry lines.
+test_untracked_listing_renders_the_shared_fixture() {
+    local fixture="$SCRIPT_DIR/fixtures/untracked-listing" out status=0
+    out=$( source "$SCRIPT_DIR/../lib/30-worktree.sh"
+           _untracked_listing_render < "$fixture/input.txt" ) || status=$?
+    assert_eq "0" "$status" "the fixture renders: $out" || return 1
+    assert_eq "$(cat "$fixture/expected.txt")" "$out" "the listing matches the shared fixture" || return 1
+}
+
+run_test test_untracked_listing_renders_the_shared_fixture
 run_test test_worktree_of_worktree_refused
 run_test test_worktree_create_succeeds_with_untracked_base
 run_test test_worktree_reopen_preserves_project_claude_md

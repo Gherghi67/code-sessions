@@ -407,8 +407,11 @@ test_remove_force_refuses_worktree_with_untracked_or_ignored_files() {
     local wt out rc=0
     wt=$(_worktree_with_user_files wf1)
     out=$("$CS_BIN" -rm wf1@t --force </dev/null 2>&1) || rc=$?
-    [ "$rc" -ne 0 ] || { echo "  FAIL: --force removed a worktree holding untracked files"; return 1; }
-    assert_output_contains "$out" "journal.img, notes.txt" "refusal names the untracked and ignored files" || return 1
+    assert_eq "1" "$rc" "--force refuses a worktree holding untracked files" || return 1
+    assert_eq "Error: Worktree session 'wf1@t' holds 2 files git does not track:
+    journal.img
+    notes.txt
+Add --delete-files to remove them with --force" "$out" "refusal counts and lists the untracked and ignored files" || return 1
     assert_file_exists "$wt/journal.img" "ignored file must survive the refusal" || return 1
 }
 
@@ -423,8 +426,65 @@ test_remove_worktree_confirm_lists_untracked_files() {
     local wt out
     wt=$(_worktree_with_user_files wf3)
     out=$(printf 'n\n' | CS_ASSUME_TTY=1 "$CS_BIN" -rm wf3@t 2>&1) || return 1
-    assert_output_contains "$out" "Also deletes files git does not track: journal.img, notes.txt" "confirm lists untracked and ignored files" || return 1
+    assert_eq "Also deletes 2 files git does not track:
+    journal.img
+    notes.txt
+Cancelled" "$out" "confirm counts and lists untracked and ignored files" || return 1
     assert_dir "$wt" "declined worktree must survive" || return 1
+}
+
+# A worktree session shaped like a web app after a dev run: ignored build
+# trees holding thousands of files, an untracked screenshot directory beside
+# tracked source, and two loose files. Echoes the worktree path.
+_worktree_with_build_trees() {  # base-name
+    local base="$CS_SESSIONS_ROOT/$1" wt="$CS_SESSIONS_ROOT/$1@t"
+    create_test_session "$1" >/dev/null
+    printf 'node_modules/\n.svelte-kit/\n.env\n.cs/local/\n' > "$base/.gitignore"
+    mkdir -p "$base/apps/web/src"
+    echo 'export {}' > "$base/apps/web/src/app.ts"
+    git -C "$base" init -q
+    git -C "$base" add CLAUDE.md .gitignore apps
+    git -C "$base" -c user.email=t@example.com -c user.name=t commit -qm seed
+    git -C "$base" worktree add -q "$wt" -b "cs/$1-t"
+    mkdir -p "$wt/.cs/local" "$wt/apps/web/node_modules/pkg" "$wt/apps/web/.svelte-kit/out" \
+        "$wt/apps/web/src/__screenshots__"
+    (cd "$wt/apps/web/node_modules/pkg" && touch f{1..3000})
+    (cd "$wt/apps/web/.svelte-kit/out" && touch f{1..1200})
+    touch "$wt/apps/web/src/__screenshots__/a.png" "$wt/apps/web/src/__screenshots__/b.png"
+    echo KEY=value > "$wt/apps/web/.env"
+    echo draft > "$wt/notes.txt"
+    echo "$wt"
+}
+
+# A whole ignored or untracked tree is one line carrying its file count, the
+# header carries the total, and loose files follow by path.
+test_remove_worktree_confirm_collapses_untracked_trees() {
+    local wt out
+    wt=$(_worktree_with_build_trees wf4)
+    out=$(printf 'n\n' | CS_ASSUME_TTY=1 "$CS_BIN" -rm wf4@t 2>&1) || return 1
+    assert_eq "Also deletes 4,204 files git does not track:
+    apps/web/node_modules/         (3,000 files)
+    apps/web/.svelte-kit/          (1,200 files)
+    apps/web/src/__screenshots__/  (2 files)
+    apps/web/.env
+    notes.txt
+Cancelled" "$out" "confirm collapses each untracked tree to one counted line" || return 1
+    assert_dir "$wt" "declined worktree must survive" || return 1
+}
+
+test_remove_force_refusal_collapses_untracked_trees() {
+    local wt out rc=0
+    wt=$(_worktree_with_build_trees wf5)
+    out=$("$CS_BIN" -rm wf5@t --force </dev/null 2>&1) || rc=$?
+    assert_eq "1" "$rc" "--force refuses a worktree holding untracked trees" || return 1
+    assert_eq "Error: Worktree session 'wf5@t' holds 4,204 files git does not track:
+    apps/web/node_modules/         (3,000 files)
+    apps/web/.svelte-kit/          (1,200 files)
+    apps/web/src/__screenshots__/  (2 files)
+    apps/web/.env
+    notes.txt
+Add --delete-files to remove them with --force" "$out" "refusal collapses each untracked tree to one counted line" || return 1
+    assert_file_exists "$wt/apps/web/.env" "ignored file must survive the refusal" || return 1
 }
 
 # The pins and recipient digests `cs -secrets age add` keeps for a session
@@ -685,6 +745,8 @@ run_test test_remove_confirm_lists_foreign_entries
 run_test test_remove_force_refuses_worktree_with_untracked_or_ignored_files
 run_test test_remove_force_with_delete_files_removes_worktree
 run_test test_remove_worktree_confirm_lists_untracked_files
+run_test test_remove_worktree_confirm_collapses_untracked_trees
+run_test test_remove_force_refusal_collapses_untracked_trees
 run_test test_remove_force_on_adopted_removes_only_the_link
 run_test test_remove_refuses_while_the_vault_is_mounted_inside
 run_test test_remove_goes_ahead_once_the_vault_is_unmounted
