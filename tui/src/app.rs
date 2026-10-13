@@ -4410,6 +4410,55 @@ mod tests {
         std::fs::remove_dir_all(&tmp).ok();
     }
 
+    // A lock cs-secrets cannot release once it has moved every value does
+    // not undo the rename: the session and its secrets stay together under
+    // the new name.
+    #[cfg(unix)]
+    #[test]
+    fn a_lock_left_after_the_secrets_moved_keeps_the_rename() {
+        use crate::session::test_root;
+        use std::os::unix::fs::PermissionsExt;
+        let _env = CS_BIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (tmp, root, home) = rename_fixture("lock-tail", false);
+        let pins = home.join(".cs-secrets/sessions/proj");
+        std::fs::create_dir_all(&pins).unwrap();
+        std::fs::write(pins.join("age-trusted"), "0000000000000000000000000000000000000000000000000000000000000000\n")
+            .unwrap();
+        fixture_secret_set(&tmp, "proj", "E1", "value-enc");
+        // Written after the fixture's set, which releases the same lock: the
+        // rename's release of proj's write lock fails.
+        std::fs::write(
+            tmp.join("shim/rm"),
+            "#!/bin/sh\ncase \"$2\" in */.secrets-lock.proj) echo 'rm: simulated failure' >&2; exit 1 ;; esac\nexec /bin/rm \"$@\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(tmp.join("shim/rm"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        std::env::set_var("CS_BIN", tmp.join("cs-stub"));
+        let mut app = app_on(&root, "proj");
+        app.mode = Mode::Rename;
+        app.rename_input.set("proj-old");
+
+        app.execute_rename();
+        std::env::remove_var("CS_BIN");
+
+        assert_eq!(
+            app.status_message.as_ref().map(|m| (m.text.as_str(), m.level)),
+            Some(("Renamed to: proj-old", StatusLevel::Success))
+        );
+        assert!(root.join("proj-old/.cs").is_dir(), "the session has the new name");
+        assert!(!root.join("proj").exists(), "no session under the old name");
+        assert_eq!(fixture_secret_get(&tmp, "proj-old", "E1"), Ok("value-enc".to_string()), "E1 reads under proj-old");
+        assert_eq!(
+            std::fs::read_to_string(home.join(".cs-secrets/sessions/proj-old/age-trusted")).unwrap_or_default(),
+            "0000000000000000000000000000000000000000000000000000000000000000\n",
+            "the pins are proj-old's"
+        );
+        assert!(!home.join(".cs-secrets/.rename.proj").exists(), "no marker is left");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
     // A move cs-secrets could not put back keeps its marker, which names the
     // new name, with values under both names. Moving the directory back
     // would leave those under a name the sessions root does not have, so the

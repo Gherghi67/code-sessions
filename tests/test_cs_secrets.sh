@@ -3788,6 +3788,41 @@ test_a_refused_rename_leaves_the_new_names_age_directory() {
     [ -d "$HOME/.cs-secrets/sessions/bravo" ] || { echo "  FAIL: the refused rename removed bravo's age directory"; return 1; }
 }
 
+# A rename that has moved every value exits 0 even when it cannot release a
+# lock it took: the picker reads a nonzero exit as "still under the old name"
+# and moves the session directory back away from its secrets. The lock it
+# could not remove is named on stderr and left for the user to remove. A
+# stand-in rm fails on alpha's write lock.
+test_a_rename_that_cannot_release_a_lock_after_the_move_exits_0() {
+    _seed_renamed_session || { echo "  FAIL: fixture: could not seed alpha's stores"; return 1; }
+    local rmbin="$TEST_TMPDIR/rm-bin" real_rm out rc=0 sec="$HOME/.cs-secrets" lock="$CS_SESSIONS_ROOT/.secrets-lock.alpha"
+    real_rm=$(command -v rm)
+    mkdir -p "$rmbin"
+    cat > "$rmbin/rm" <<SHIM
+#!/usr/bin/env bash
+case "\$*" in
+    "-f $lock") echo "rm: simulated failure on \$2" >&2; exit 1 ;;
+esac
+exec "$real_rm" "\$@"
+SHIM
+    chmod +x "$rmbin/rm"
+    out=$(PATH="$rmbin:$PATH" _kc_secrets --session alpha rename bravo 2>"$TEST_TMPDIR/err") || rc=$?
+    assert_eq "0" "$rc" "rename exits 0: $out $(cat "$TEST_TMPDIR/err")" || return 1
+    assert_eq "Moved the secrets of session 'alpha' to 'bravo'" "$out" "rename says what it did" || return 1
+    assert_eq "rm: simulated failure on $lock
+Warning: could not remove the lock $lock; remove it by hand" "$(cat "$TEST_TMPDIR/err")" \
+        "rename names the lock it could not release" || return 1
+    assert_eq "cs:bravo:K1
+cs:bravo:K2" "$(_kc_services)" "the Keychain holds bravo's entries and none of alpha's" || return 1
+    assert_eq "value-enc" "$("$CS_SECRETS_BIN" --session bravo get E1 2>&1)" "the encrypted store is bravo's" || return 1
+    assert_eq "pin-fingerprint" "$(cat "$sec/sessions/bravo/age-trusted" 2>&1)" "the pin list is bravo's" || return 1
+    assert_not_exists "$sec/sessions/alpha" "no age state is left under alpha" || return 1
+    assert_not_exists "$sec/.rename.alpha" "no marker is left" || return 1
+    assert_eq ".secrets-lock.alpha
+bravo
+test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "only the lock rm could not remove is left in the sessions root" || return 1
+}
+
 # On a Mac the Keychain holds what a session stored there whatever backend a
 # later run uses, so rename on the encrypted backend reads it too. Run against
 # the fake security's store, as macOS.
@@ -4177,6 +4212,7 @@ run_test test_rename_that_cannot_put_a_failed_move_back_keeps_the_marker
 run_test test_a_signal_right_after_the_marker_is_written_leaves_no_marker
 run_test test_keychain_commands_match_the_session_name_literally
 run_test test_a_refused_rename_leaves_the_new_names_age_directory
+run_test test_a_rename_that_cannot_release_a_lock_after_the_move_exits_0
 run_test test_rename_rerun_finishes_an_interrupted_move
 run_test test_rename_rerun_refuses_a_value_that_differs_under_both_names
 run_test test_rename_with_nothing_to_move_creates_no_cs_secrets
