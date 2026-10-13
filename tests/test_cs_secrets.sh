@@ -3747,6 +3747,35 @@ cs:alpha:K2" "$(_kc_services)" "the Keychain holds alpha's entries and none of b
     assert_eq "pin-fingerprint" "$(cat "$sec/sessions/alpha/age-trusted" 2>&1)" "the pin list is alpha's" || return 1
 }
 
+# A session name is matched literally in the Keychain: a dot in a.b matches
+# a dot, never the dash of a-b, so list, export, purge and rename of a.b see
+# none of a-b's entries.
+test_keychain_commands_match_the_session_name_literally() {
+    _RN_BIN=$(_make_fake_security)
+    mkdir -p "$CS_SESSIONS_ROOT/a-b/.cs" "$CS_SESSIONS_ROOT/a.b/.cs"
+    printf 'value-ab' > "$TEST_TMPDIR/vab"
+    _kc_secrets --session a-b set K1 < "$TEST_TMPDIR/vab" >/dev/null 2>&1 || { echo "  FAIL: fixture: set a-b K1 failed"; return 1; }
+    local out rc=0
+    out=$(_kc_secrets --session a.b list 2>&1) || rc=$?
+    assert_eq "0 No secrets stored for session: a.b" "$rc $out" "list a.b shows none of a-b's names" || return 1
+    rc=0
+    out=$(_kc_secrets --session a.b export 2>&1) || rc=$?
+    assert_eq "0 " "$rc $out" "export a.b exports nothing" || return 1
+    rc=0
+    out=$(_kc_secrets --session a.b purge 2>&1) || rc=$?
+    assert_eq "0 No secrets to purge for session: a.b" "$rc $out" "purge a.b finds nothing to purge" || return 1
+    rm -rf "$CS_SESSIONS_ROOT/a.b"
+    rc=0
+    out=$(_kc_secrets --session a.b rename x 2>&1) || rc=$?
+    assert_eq "1 Error: No session named 'x' in $CS_SESSIONS_ROOT" "$rc $out" "rename a.b refuses only for the missing target" || return 1
+    mkdir -p "$CS_SESSIONS_ROOT/a.b/.cs"
+    rc=0
+    out=$(_kc_secrets --session x rename a.b 2>&1) || rc=$?
+    assert_eq "0 No secrets to move for session: x" "$rc $out" "rename to a.b finds no secrets under a.b" || return 1
+    assert_eq "cs:a-b:K1" "$(_kc_services)" "a-b's entry is untouched" || return 1
+    assert_eq "value-ab" "$(_kc_secrets --session a-b get K1 2>&1)" "a-b's K1 keeps its value" || return 1
+}
+
 # On a Mac the Keychain holds what a session stored there whatever backend a
 # later run uses, so rename on the encrypted backend reads it too. Run against
 # the fake security's store, as macOS.
@@ -4134,6 +4163,7 @@ run_test test_rename_on_the_encrypted_backend_refuses_what_the_keychain_holds_or
 run_test test_rename_that_fails_partway_puts_every_value_back_under_the_old_name
 run_test test_rename_that_cannot_put_a_failed_move_back_keeps_the_marker
 run_test test_a_signal_right_after_the_marker_is_written_leaves_no_marker
+run_test test_keychain_commands_match_the_session_name_literally
 run_test test_rename_rerun_finishes_an_interrupted_move
 run_test test_rename_rerun_refuses_a_value_that_differs_under_both_names
 run_test test_rename_with_nothing_to_move_creates_no_cs_secrets
