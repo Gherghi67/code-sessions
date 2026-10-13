@@ -1517,6 +1517,32 @@ test_age_add_refuses_an_age_key_age_does_not_accept() {
     done
 }
 
+# When age cannot encrypt the export, the export fails and says what age said.
+# It writes no password-encrypted file in its place: a later import would read
+# the stale .age beside it and restore an old value. The bad key is pinned the
+# way a pin list holds one that was added before `age add` checked keys.
+test_export_fails_when_age_cannot_encrypt() {
+    _use_real_age || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs" f bad err rc=0 fp age_said
+    f="$meta/secrets.$(_machine_id).age"
+    bad="age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq0000000"
+    "$CS_SECRETS_BIN" set api_key "v1" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: fixture: the first export failed"; return 1; }
+    cp "$f" "$TEST_TMPDIR/before.age"
+    printf '%s\n' "$bad" > "$meta/age-recipients/bad.pub"
+    fp=$(printf '%s' "$bad" | shasum -a 256 | cut -d' ' -f1)
+    printf '%s\n' "$fp" >> "$HOME/.cs-secrets/sessions/test-session/age-trusted"
+    age_said=$(age -r "$bad" -o /dev/null < /dev/null 2>&1) && { echo "  FAIL: fixture: age accepted the bad key"; return 1; }
+    "$CS_SECRETS_BIN" set api_key "v2" >/dev/null 2>&1 || return 1
+
+    err=$("$CS_SECRETS_BIN" export-file 2>&1 >/dev/null) || rc=$?
+    assert_eq "1" "$rc" "the export fails when age cannot encrypt" || return 1
+    assert_eq "Error: age could not encrypt the export for session 'test-session' (existing sync file left intact):
+$age_said" "$err" "the failure names age's error" || return 1
+    assert_file_not_exists "$meta/secrets.$(_machine_id).enc" "no password-encrypted file is written instead" || return 1
+    cmp -s "$f" "$TEST_TMPDIR/before.age" || { echo "  FAIL: the failed export changed the age sync file"; return 1; }
+}
+
 # `age add` never offers to download age: with no age binary it fails at once,
 # pointing at `age init`, which is where the download is offered. It prompts
 # for nothing, reaches for no network, and writes no recipient, no pin and no
@@ -4309,6 +4335,7 @@ run_test test_age_add_takes_an_ssh_ed25519_key_file
 run_test test_age_add_takes_a_raw_ssh_ed25519_key
 run_test test_age_add_refuses_a_different_key_under_a_recipient_name_in_use
 run_test test_age_add_refuses_an_age_key_age_does_not_accept
+run_test test_export_fails_when_age_cannot_encrypt
 run_test test_age_add_without_age_points_at_age_init
 run_test test_age_add_refuses_what_is_not_a_key
 run_test test_import_file_reads_a_file_encrypted_to_this_machines_ssh_key
