@@ -140,21 +140,41 @@ _tree_is_dirty() {
 # differs from the index, one per line: git diff hides these edits and git
 # keeps no copy of them, so removing a worktree destroys them. Checked on a
 # worktree about to be removed only; in a base the flags usually mark local
-# config the user means to keep uncommitted. A file the flag leaves absent
-# (sparse checkout) holds no edit. Fails when git cannot list the index,
-# never answering "none" on a listing it did not get.
+# config the user means to keep uncommitted. A link counts by its target, as
+# git stores it, and a link where the index has a file (or the reverse) is an
+# edit. A file the flag leaves absent (sparse checkout) holds no edit. Fails
+# when git cannot list the index, never answering "none" on a listing it did
+# not get.
 _hidden_tracked_edits() {  # checkout_dir
-    local entry path
-    git -C "$1" ls-files -v -z > /dev/null 2>&1 || return 1
+    local entry tag mode oid path now target
+    git -C "$1" ls-files -v -s -z > /dev/null 2>&1 || return 1
+    # Each entry reads "<tag> <mode> <oid> <stage>\t<path>".
     while IFS= read -r -d '' entry; do
-        case "$entry" in
-            "S "*|[[:lower:]]" "*) path="${entry#? }" ;;
-            *) continue ;;
-        esac
-        [ -f "$1/$path" ] && [ ! -L "$1/$path" ] || continue
-        [ "$(git -C "$1" hash-object -- "$path" 2>/dev/null)" = "$(git -C "$1" rev-parse -q --verify ":0:$path" 2>/dev/null)" ] \
-            || printf '%s\n' "$path"
-    done < <(git -C "$1" ls-files -v -z 2>/dev/null)
+        tag="${entry%% *}"
+        entry="${entry#* }"
+        mode="${entry%% *}"
+        entry="${entry#* }"
+        oid="${entry%% *}"
+        path="${entry#*$'\t'}"
+        case "$tag" in S|[[:lower:]]) ;; *) continue ;; esac
+        if [ -L "$1/$path" ]; then
+            if [ "$mode" = 120000 ]; then
+                target=$(readlink -n "$1/$path" && printf x) || target=""
+                now=$(printf '%s' "${target%x}" | git -C "$1" hash-object --stdin 2>/dev/null) || now=""
+            else
+                now=""
+            fi
+        elif [ -f "$1/$path" ]; then
+            if [ "$mode" != 120000 ]; then
+                now=$(git -C "$1" hash-object -- "$path" 2>/dev/null) || now=""
+            else
+                now=""
+            fi
+        else
+            continue
+        fi
+        [ "$now" = "$oid" ] || printf '%s\n' "$path"
+    done < <(git -C "$1" ls-files -v -s -z 2>/dev/null)
     return 0
 }
 
