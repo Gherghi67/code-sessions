@@ -1492,7 +1492,7 @@ test_doctor_reports_a_lock_held_by_another_users_process_as_held() {
     # the EPERM branch this test exists for. So the fixture is checked first,
     # and a run that cannot produce EPERM skips loudly instead of passing.
     local err
-    if err=$( LC_ALL=C; kill -0 1 2>&1 ); then
+    if err=$(env LC_ALL=C kill -0 1 2>&1); then
         echo "    SKIP: pid 1 is signalable here, so EPERM cannot be exercised"
         return 77
     fi
@@ -1570,6 +1570,38 @@ test_doctor_does_not_treat_pid_zero_as_a_holder() {
     assert_output_contains "$output" "integrate.lock" "the lock is still reported" || return 1
 }
 
+# The liveness check runs kill -0 in a command substitution, a forked copy of
+# the shell, and a bash linked against libintl can die when it changes its own
+# locale there. The trace shows every locale assignment the shell made during
+# the whole doctor run; the C locale reaches kill as an argument of env. Each
+# verdict stays exact under every bash: a live holder is held, a reaped pid is
+# stale, and pid 1, which another user owns, is held through EPERM.
+test_doctor_checks_the_lock_holder_without_the_shell_assigning_its_own_locale() {
+    local sess="$TEST_TMPDIR/sess-tracelock" b pid want output own eperm=1 err
+    mkdir -p "$sess/.cs/memory"
+    git -C "$sess" init -q
+    mkdir -p "$sess/.git/cs/integrate.lock"
+    sh -c 'exit 0' & local dead=$!; wait "$dead"
+    if err=$(env LC_ALL=C kill -0 1 2>&1); then eperm=""; fi
+    case "$err" in *"Operation not permitted"*) ;; *) eperm="" ;; esac
+    for b in $(every_bash); do
+        for pid in "$$" "$dead" ${eperm:+1}; do
+            case "$pid" in
+                "$$")    want="integrate.lock held by a running integrate (pid $$)" ;;
+                "$dead") want="integrate.lock records pid $dead, which this process cannot see" ;;
+                *)       want="integrate.lock held by a running integrate (pid 1; signalling it is not permitted here" ;;
+            esac
+            echo "$pid" > "$sess/.git/cs/integrate.lock/pid"
+            output=$(CLAUDE_SESSION_DIR="$sess" CLAUDE_SESSION_META_DIR="$sess/.cs" \
+                CS_CLAUDE_DIR="$TEST_TMPDIR/claude-tl" "$b" -x "$CS_BIN" -doctor 2>"$TEST_TMPDIR/trace") || true
+            assert_output_contains "$output" "$want" "$b, pid $pid: the verdict" || return 1
+            own="$(shell_locale_assignments "$TEST_TMPDIR/trace")"
+            assert_eq "" "$own" "$b, pid $pid: doctor must not assign its own locale" || return 1
+        done
+    done
+    [ -n "$eperm" ] || { echo "    SKIP (EPERM cell): pid 1 is signalable here"; return 77; }
+}
+
 test_doctor_is_silent_with_no_integrate_lock() {
     local sess="$TEST_TMPDIR/sess-nolock"
     mkdir -p "$sess/.cs/memory"
@@ -1588,5 +1620,6 @@ run_test test_doctor_reports_a_lock_held_by_another_users_process_as_held
 run_test test_doctor_does_not_call_a_lock_stale_when_the_pid_cannot_be_checked
 run_test test_doctor_names_a_lock_whose_pid_is_dead_as_stale
 run_test test_doctor_is_silent_with_no_integrate_lock
+run_test test_doctor_checks_the_lock_holder_without_the_shell_assigning_its_own_locale
 
 report_results

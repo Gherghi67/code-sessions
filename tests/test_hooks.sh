@@ -4262,6 +4262,29 @@ test_session_state_scrubs_a_real_control_byte_in_content() {
     session_start_teardown
 }
 
+# The Session State scrub hands tr the C locale through env: the shell never
+# changes its own locale for it, which can crash a bash linked against
+# libintl in the forked copy the scrub runs in. The control bytes go and a
+# multibyte character stays whole.
+test_session_state_scrubs_without_the_shell_assigning_its_own_locale() {
+    session_start_setup
+    printf '# test-session\n\n## Objective\n\nship \033[31mred\033[0m \342\200\224 thing\001\n' \
+        > "$CLAUDE_SESSION_META_DIR/README.md"
+    local b utf8 output line own
+    utf8="$(utf8_locale)"
+    for b in $(every_bash); do
+        output=$(echo '{"session_id":"test","source":"resume","cwd":"'"$CLAUDE_SESSION_DIR"'","hook_event_name":"SessionStart"}' \
+            | env ${utf8:+"LC_ALL=$utf8"} "$b" -x "$HOOKS_DIR/session-start.sh" 2>"$TEST_TMPDIR/trace")
+        line=$(echo "$output" | jq -r '.hookSpecificOutput.additionalContext' | grep '^Objective: ')
+        assert_eq "$(printf 'Objective: ship [31mred[0m \342\200\224 thing')" "$line" \
+            "$b: the objective, scrubbed byte for byte" || { session_start_teardown; return 1; }
+        own="$(shell_locale_assignments "$TEST_TMPDIR/trace")"
+        assert_eq "" "$own" "$b must not assign its own locale in the SessionStart hook" \
+            || { session_start_teardown; return 1; }
+    done
+    session_start_teardown
+}
+
 test_session_state_still_renders_its_own_line_breaks() {
     # The fix removes %b, so cs's OWN newlines must survive the change — the
     # block is multi-line and a regression would fuse it into one line.
@@ -4284,6 +4307,7 @@ test_session_state_still_renders_its_own_line_breaks() {
 
 run_test test_session_state_does_not_interpret_backslash_escapes_in_content
 run_test test_session_state_scrubs_a_real_control_byte_in_content
+run_test test_session_state_scrubs_without_the_shell_assigning_its_own_locale
 run_test test_session_state_still_renders_its_own_line_breaks
 
 # ============================================================================

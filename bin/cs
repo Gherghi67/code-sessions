@@ -1277,7 +1277,7 @@ _cs_git_complaint() {  # git's error output
     while IFS= read -r line; do
         case "$line" in "fatal: "* | "error: "*) why=$line; break ;; esac
     done <<<"$1"
-    why=$(printf '%s' "$why" | LC_ALL=C tr -c '[:print:]' '?' | cut -c1-200) || why=""
+    why=$(printf '%s' "$why" | env LC_ALL=C tr -c '[:print:]' '?' | cut -c1-200) || why=""
     printf '%s\n' "${why:-git failed}"
 }
 
@@ -1298,8 +1298,8 @@ _cs_git_cannot_answer() {  # dir, git's error output
 # Claude, in the Stop hook's message.
 cs_untrack_notice() {  # tracked, top, sub
     local shown said sub="$3"
-    shown=$(printf '%s' "$1" | LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_' | cut -c1-160) || return 1
-    said=$(printf '%s' "$sub" | LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_') || return 1
+    shown=$(printf '%s' "$1" | env LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_' | cut -c1-160) || return 1
+    said=$(printf '%s' "$sub" | env LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_') || return 1
     case "$sub" in '~'*) sub="./$sub" ;; esac
     printf "%s is tracked in git (per-actor state must stay local). Fix with: git -C %q --literal-pathspecs rm -r --cached -- %q && git -C %q commit -m 'stop tracking %s'\n" \
         "$shown" "$2" "$sub" "$2" "$said"
@@ -1367,7 +1367,7 @@ cs_tracked_files_notice() {  # dir, session_dir
     case "$meta/" in
         "$real"/*)
             printf "%s leads to a directory that holds this session's own files, where git tracks %s (per-actor state must stay local). Make %s a directory of its own.\n" \
-                ".cs/${1##*/}" "$(printf '%s' "$tracked" | LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_' | cut -c1-160)" ".cs/${1##*/}"
+                ".cs/${1##*/}" "$(printf '%s' "$tracked" | env LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_' | cut -c1-160)" ".cs/${1##*/}"
             return 0
             ;;
     esac
@@ -2154,8 +2154,12 @@ _trim() {  # text
 # mail all cross a session boundary — and the reader does not trust the writer.
 # C0 and DEL only: 8-bit C1 (0x80-0x9F, where 0x9B is CSI) is deliberately out
 # of scope, because a UTF-8 terminal does not decode raw C1 bytes as controls.
+# The C locale reaches tr as an argument of env, never as an assignment the
+# shell makes for itself: every caller pipes into this function, so it runs in
+# a forked copy of the shell, and a bash linked against libintl (Homebrew's)
+# can crash when it changes its own locale there.
 _scrub_controls() {
-    LC_ALL=C tr -d '\000-\010\013-\037\177'
+    env LC_ALL=C tr -d '\000-\010\013-\037\177'
 }
 
 # Detect the outer terminal, even when running inside tmux.
@@ -3493,10 +3497,10 @@ _worktree_untracked_at_risk() {  # wt_dir
     local listing
     listing=$({ git -C "$1" ls-files -z --others --exclude-standard \
                 && git -C "$1" ls-files -z --others --ignored --exclude-standard; } 2>/dev/null \
-              | LC_ALL=C tr '\n\0' '?\n') || return 1
+              | env LC_ALL=C tr '\n\0' '?\n') || return 1
     [ -n "$listing" ] || return 0
     printf '%s\n' "$listing" \
-        | LC_ALL=C grep -v -e '^\.cs/' -e '^\.claude/settings\.local\.json$' -e '^CLAUDE\.local\.md$' \
+        | env LC_ALL=C grep -v -e '^\.cs/' -e '^\.claude/settings\.local\.json$' -e '^CLAUDE\.local\.md$' \
             -e '^\.DS_Store$' -e '/\.DS_Store$' \
         || [ $? -eq 1 ]
 }
@@ -6896,9 +6900,12 @@ run_checkpoint() {
 
 # One line per '## ' heading: the heading's byte offset, a space, the heading.
 # LC_ALL=C makes awk's length() count bytes, so offsets survive multibyte text
-# (real headings carry an em dash).
+# (real headings carry an em dash). env hands the locale to awk alone; the
+# shell's own locale is never changed. BSD awk counts bytes in any locale, so
+# on it no test can tell this locale from none: the byte count is untestable
+# there and is pinned only where awk counts characters.
 _narrative_headings() {  # file
-    LC_ALL=C awk 'BEGIN { off = 0 } { if (substr($0, 1, 3) == "## ") print off, $0; off += length($0) + 1 }' "$1"
+    env LC_ALL=C awk 'BEGIN { off = 0 } { if (substr($0, 1, 3) == "## ") print off, $0; off += length($0) + 1 }' "$1"
 }
 
 # Byte offset of the first heading to KEEP: the earliest one with at most KEEP
@@ -7563,7 +7570,7 @@ _mail_send() {  # target, [--kind|-k KIND] [--reply THREAD] body
     target_files=$(cs_private_dir "$target_dir/.cs") \
         || error "$target keeps its mail in encrypted storage that is not mounted (.cs/private $(cs_private_state "$target_dir/.cs")). Nothing was sent."
     local bytes
-    bytes=$(LC_ALL=C printf '%s' "$body" | wc -c | tr -d '[:space:]')
+    bytes=$(printf '%s' "$body" | wc -c | tr -d '[:space:]')
     if [ "$bytes" -gt "$MAIL_BODY_MAX" ]; then
         error "Message body exceeds ${MAIL_BODY_MAX} bytes"
     fi
@@ -9888,18 +9895,20 @@ _doctor_check_integrate_lock() {
     case "$pid" in
         0|*[!0-9]*|"") pid="" ;;
     esac
-    # kill -0 through the shell builtin, not ps: kill(2) sees a process that a
-    # restricted /proc hides from ps, and its errno tells a holder owned by
-    # another user (EPERM) from a pid that is gone (ESRCH). Only ESRCH is
-    # evidence of absence; anything else the check cannot read is unknown,
-    # and an unknown must not come with removal advice. LC_ALL=C pins the
-    # message the builtin prints, which is the only channel for the errno;
-    # it is assigned inside the subshell rather than as a command prefix
-    # because bash 3.2 does not apply a prefix assignment to a builtin's
-    # locale (probed: `$(LC_ALL=C printf "%.1f" 1)` prints 1,0 under fr_FR).
+    # kill -0, not ps: kill(2) sees a process that a restricted /proc hides
+    # from ps, and its errno tells a holder owned by another user (EPERM) from
+    # a pid that is gone (ESRCH). Only ESRCH is evidence of absence; anything
+    # else the check cannot read is unknown, and an unknown must not come with
+    # removal advice. LC_ALL=C pins the message kill prints, which is the only
+    # channel for the errno. env runs the kill on PATH (/bin/kill on macOS)
+    # with that locale in its own environment, so the shell never changes its
+    # own locale in this forked copy, which can crash a bash linked against
+    # libintl. That kill prints "kill: <pid>: No such process" or "kill:
+    # <pid>: Operation not permitted" and exits 1, and refuses a pid it cannot
+    # parse with "kill: illegal process id: <pid>", which is unknown.
     local verdict="unrecorded" err=""
     if [ -n "$pid" ]; then
-        if err=$( LC_ALL=C; kill -0 "$pid" 2>&1 ); then
+        if err=$(env LC_ALL=C kill -0 "$pid" 2>&1); then
             verdict="held"
         else
             case "$err" in
@@ -9912,7 +9921,7 @@ _doctor_check_integrate_lock() {
     case "$verdict" in
         held)    _doctor_ok "Integrate lock: $lock held by a running integrate (pid $pid)" ;;
         eperm)   _doctor_ok "Integrate lock: $lock held by a running integrate (pid $pid; signalling it is not permitted here, which is a process that exists)" ;;
-        unknown) _doctor_warn "Integrate lock: $lock records pid $pid and cs cannot tell whether it is running (${err##*: })" ;;
+        unknown) _doctor_warn "Integrate lock: $lock records pid $pid and cs cannot tell whether it is running (${err#kill: })" ;;
         # ESRCH is absence only in this process's pid namespace, and pids are
         # recycled, so the removal stays conditional on what the person can see.
         stale)   _doctor_warn "Integrate lock: $lock records pid $pid, which this process cannot see; the lock is probably stale. Autosave skips while it exists. Once nothing is using this checkout, clear it with: rm -r \"$lock\"" ;;
@@ -10702,7 +10711,7 @@ _worktree_untracked_entries() {  # worktree_dir
     [ -n "$paths" ] || return 0
     while IFS= read -r path; do
         out="${out:+$out, }$path"
-    done <<< "$(printf '%s' "$paths" | LC_ALL=C sort)"
+    done <<< "$(printf '%s' "$paths" | env LC_ALL=C sort)"
     printf '%s' "$out"
 }
 

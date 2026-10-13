@@ -14,6 +14,10 @@ SESSIONS_ROOT="${CS_SESSIONS_ROOT:-$HOME/.claude-sessions}"
 # (3.2) forks date to fill the memo, and a second reset would fork it again.
 _NOW=""
 _SL_NOW_READY=""
+# The ancestry walker's ps deadline is set only by the detached walker this
+# script spawns (see _sl_defer_tmux_verdict); a value of the same name in the
+# environment is never read.
+_SL_WALK_DEADLINE=""
 
 # This file re-invokes itself for the out-of-band usage refresh, so it needs its
 # own path — resolved at load, since $0 is the sourcing shell under the library
@@ -304,12 +308,16 @@ _sl_tmux_walk() {  # start-pid server-pid
     # missing or restricted, not that the server is absent — return 2 there,
     # because a tool failure is not evidence of the negative, and scoring it as
     # one makes a genuine pane render dark and lose its pane id.
+    # The deadline is read only as a whole number of seconds: it reaches shell
+    # arithmetic, which would run a command substitution held in any other
+    # text. Anything else walks without a deadline.
     local table
-    if [ -n "${_SL_WALK_DEADLINE:-}" ]; then
-        _sl_ps_table_by_deadline "$_SL_WALK_DEADLINE"; table="$_PS_TABLE"
-    else
-        table=$(ps -ax -o pid=,ppid= 2>/dev/null) || table=""
-    fi
+    case "${_SL_WALK_DEADLINE:-}" in
+        ''|0*|*[!0-9]*)
+            table=$(ps -ax -o pid=,ppid= 2>/dev/null) || table="" ;;
+        *)
+            _sl_ps_table_by_deadline "$_SL_WALK_DEADLINE"; table="$_PS_TABLE" ;;
+    esac
     [ -n "$table" ] || return 2
     printf '%s\n' "$table" | awk -v p="$start" -v s="$srv" '
         { pp[$1] = $2 }
@@ -1986,22 +1994,19 @@ _seg_cost() {
 
 # Set _WIDTH to the display width (cells) of "$1": UTF-8 codepoints, not
 # bytes — every icon and label this script emits is single-width, so
-# codepoint count equals cell count. LC_ALL=C forces byte-wise indexing for
-# the duration of this function regardless of the ambient locale or this
-# bash's own multibyte awareness, so continuation bytes (the 0x80-0xBF range)
-# can be counted and subtracted out: every codepoint has exactly one leading
-# (non-continuation) byte. No subprocess. Used by bin/cs-subagent-statusline
-# (_fixed_width and _truncate); no caller in this file.
+# codepoint count equals cell count. Every codepoint has exactly one leading
+# (non-continuation) byte, so the width is the length of "$1" with its
+# continuation bytes (the 0x80-0xBF range) removed. Under a UTF-8 locale bash
+# sees whole characters and the pattern removes nothing; under the C locale,
+# or in a bash without multibyte support, it sees bytes and removes the
+# continuation bytes: the count is the same either way. The shell's own
+# locale is never changed, because a bash linked against libintl can die
+# setting one inside a command substitution. No subprocess. Used by
+# bin/cs-subagent-statusline (_fixed_width and _truncate); no caller in this
+# file.
 _display_width() {
-    local LC_ALL=C s="$1" i n=0
-    local len=${#s}
-    for ((i = 0; i < len; i++)); do
-        case "${s:i:1}" in
-            [$'\x80'-$'\xBF']) ;;
-            *) n=$((n + 1)) ;;
-        esac
-    done
-    _WIDTH=$n
+    local s="${1//[$'\x80'-$'\xBF']/}"
+    _WIDTH=${#s}
 }
 
 # Parse "$1" as an "r;g;b" triplet of 0-255 integers into _R/_G/_B. Returns 1

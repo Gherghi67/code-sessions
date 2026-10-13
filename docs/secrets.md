@@ -75,6 +75,25 @@ cs -secrets --session my-session list
 
 `set` refuses a value that is a placeholder rather than a secret: anything starting with `[REDACTED:`, a run of asterisks, `<redacted>`, or `YOUR_API_KEY`. Storing one would replace a working secret with junk that breaks whatever reads it later.
 
+`set`, `rm`, `import-file` and `migrate-backend` refuse a session name the sessions root does not have (`No session named '<name>' in <root>`), on both backends: a value stored under a removed session's name, or under the old name of a renamed one, is a value no session reads. `purge` takes such a name: purging is how you remove the secrets a removed session left.
+
+`set`, `rm`, `purge` and the stores `import-file`, `migrate` and `migrate-backend` make hold one lock per session while they write, `<sessions root>/.secrets-lock.<session>`. It lives in the sessions root so that a Keychain write never creates `~/.cs-secrets`. A write that cannot take it within `CS_SECRETS_LOCK_TIMEOUT` seconds fails and names the file. On Ctrl-C or `kill`, the command lets the `security` or `openssl` call in flight finish before it releases the lock and exits, so the Keychain may already hold the value when the command exits with an error.
+
+### Renaming a session
+
+cs-secrets keys every store by the session's name: the Keychain entries `cs:<session>:<name>`, the encrypted store `~/.cs-secrets/<session>.enc`, and the age pins and digest record under `~/.cs-secrets/sessions/<session>/`. The picker's rename moves them with the session by running `rename` after it moves the directory. If `rename` refuses, fails, or gets a Ctrl-C or `kill`, it first puts back every value it moved, and the picker moves the directory and any staged spawn files back: the session keeps its old name and every secret reads under it. If `rename` cannot put a value back, or `kill -9` ends it, it keeps its marker; the session then keeps the new name and the picker shows ``Rename incomplete: run `cs -secrets --session <old> rename <new>` ``; that command finishes the move.
+
+```bash
+# After the session directory old-name was renamed to new-name
+cs -secrets --session old-name rename new-name
+```
+
+`rename` reads the new name, its last argument, literally, so a session named `purge` or `--redact` is a name here, not a command or an option. Options such as `--session` go before `rename`; `rename` refuses a word after the new name (`rename takes one session name; unexpected: <words>`).
+
+`rename` refuses while the sessions root still has the old name, when it does not have the new one, and when the new name already has Keychain secrets, an encrypted store or age state. It never merges or overwrites. It takes the same per-session locks as `set`, `rm`, `purge`, `export-file`, `age add` and `age remove`, for both names, so a write that lands during a rename moves with the session or waits for the move. An `age add`, `age remove` or `export-file` for the old name that waited then refuses it, since that session no longer exists. On a Mac it reads and moves Keychain entries on either backend, since the Keychain keeps what a session stored there after you switch to the encrypted backend, and it refuses when it cannot read the Keychain. Elsewhere it reads the Keychain only on the Keychain backend.
+
+A move that fails, or gets a Ctrl-C or `kill`, puts back what it moved and exits with an error. Once every value is under the new name, neither Ctrl-C, `kill` nor a lock file it cannot remove stops it: it finishes and exits 0, names any such lock file on stderr for you to remove, and the picker never moves the directory back away from its secrets. A move that `kill -9` ends, or that cannot put a value back, still loses no secret. `rename` stores every Keychain entry under the new name and reads it back before it deletes any old entry, and links each file under the new name before it unlinks the old one. `~/.cs-secrets/.rename.<old>` records the move until it finishes, so running the same command again completes it. While that file exists, `rename` refuses to move the old name to any other name and prints the command that finishes the first move. `rename` reads the file only once it holds both names' write locks, so a second `rename` that waited on the first finds it.
+
 ### No session name?
 
 Run interactively with no session name and `cs -secrets` lists your
@@ -359,4 +378,4 @@ cs -secrets age remove <name>
 - `CS_SECRETS_SESSION` - Overrides the session namespace; worktree feature sessions export it so their secrets land in the base session's store, and `cs <name> -secrets` sets it so an explicit target outranks ambient env
 - `CS_SECRETS_BACKEND` - Force a specific backend (`keychain` or `encrypted`)
 - `CS_SECRETS_PASSWORD` - Master password for legacy sync (only needed if not using age)
-- `CS_SECRETS_LOCK_TIMEOUT` - Seconds to wait for the store lock before giving up (default 10)
+- `CS_SECRETS_LOCK_TIMEOUT` - Seconds to wait for a secrets lock (the write lock, the encrypted store's lock, the age lock) before giving up (default 10)

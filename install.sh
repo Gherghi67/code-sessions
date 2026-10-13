@@ -1205,25 +1205,25 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "f3655642891ef0358b1bc8b59e81014b0ba4bb6d63127d76e5a06ef5b94be940  bin/cs"
-    "3b4626c505845d0e94961cd06e3e5400c6f497340ff93dadf88770f02ff22524  bin/cs-secrets"
-    "c5cb27cdbd7f55b3f7f93439bd4123522dfa64efb41d78155a48dde417dc6e18  bin/cs-statusline"
+    "1eee3321413be3219746a1be2b4c44f3336cf0db98f20c25979c11660cdb9939  bin/cs"
+    "53865bc18046bdb236b3bc644d3b197e5e2198890be4d22b449fea81c9ab41db  bin/cs-secrets"
+    "602abb7edebbcd0a583ec738f566fa9046fa3de987174935577edb52cfd14564  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
     "8eb754cc99aa9a3b1478fefc31b6cb1486044022150334ec289ed727b3a98272  hooks/cs-resolve.sh"
-    "b9263a6a1aecb0d15e6ce2dc71f63522f3c0173e1b6b016371ead790446044a1  hooks/cs-shared.sh"
+    "887b38f6d076bba816454189965c000f75da03f6604458360cdb7699cc18d3eb  hooks/cs-shared.sh"
     "50d63ce0995e68fddd8503700c15f9585d11938c9cd3872a883146de7707c765  hooks/cs-iterm-tab.py"
-    "5ba5d967c2f5b8949847195fe928af2dd6c41c1ab502cb74f9deb0d3af842de9  hooks/memory-index-guard.sh"
+    "5ad0e64e99ddbccdb2bc437f8ad0b7865689d9bf1170e95a70756a07a998dfc6  hooks/memory-index-guard.sh"
     "d7eff4467d4ffaf9c9a617cfdf2dd6b3249b3f797f9a2f2583c2658906946a3f  hooks/prompt-rewriter.sh"
     "749db28afb6c76a28a7633214e22b6cd8153b0334adf4b4426e27df25d7515ef  hooks/prompt-rewriter-model.sh"
     "c96c1affc10329c18531bc54811e155b6156b345ca5be86c9cbdcdde96161a5b  hooks/prompt-rewriter-vendor.sh"
-    "da95b222c082bf6ad8cc3cbe6cd5f8f55f37c5f5e538de7872d1051aebb4e436  hooks/session-start.sh"
+    "de4d1bb258cc1e2888911dd464623f567d2a4370b65dc7c7139ca5a71c4f337f  hooks/session-start.sh"
     "38e1585be0b3fee0cea8c5397d6177b2c67678b270ad2b1cfc191e3b71b6a723  hooks/autosave-commits.sh"
     "4fcc4c960992f36145d363308028f722592b491ee4836c1366487f7365bf1871  hooks/narrative-reminder.sh"
     "41782bee734b46d070798a7c44c3b6f7dccce2eeaf27557020ed0aab9a194684  hooks/session-end.sh"
     "81a13835a65f4b4b35bb87493da0df9848de68375ca7ab1525d2d5079cf52bf1  hooks/subagent-context.sh"
     "53b16016dd6d087c3cc3db7e4acf8de6629e149e3b7f326f0731b36809574156  hooks/tool-failure-logger.sh"
     "40deb4f7592a2d87f8c4a0232ec94be91e66c8c4f9385806d9a7cb4c6085a96a  hooks/session-auto-approve.sh"
-    "79848b68ba9eb468029ec02f272de0573f564eabeb7fffae48a45712ac62e1b8  hooks/scope-prompt.sh"
+    "5390f2cb4d0192b43711578b8bdcef145de5fd011c166e900023183d65c05ab3  hooks/scope-prompt.sh"
     "12dca7f6d02f19f75865fa2f6e91384a5c8e727b0962e269a6adbb491a95971f  commands/summary.md"
     "9e06eaa16960dff49881234c8a479c2f8d2dd8d672283056e1591c4528e755ab  commands/checkpoint.md"
     "df9db21017a995e93fdab7135ee2c6d3d7ce0ff660f76bd6d29015854b3a1aa3  commands/sweep.md"
@@ -1242,8 +1242,8 @@ CS_PAYLOAD_SHA256=(
     "7a97c18b6ae755d8ec7862532eb15bbf627170a1fab8cc90dd2f8f77a57164be  mods/cs-update/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-update/hooks/hooks.json"
     "8cd9e46d6d6cb24acc48f1e8506675698a0b382453a9d1e8c08e35bb7b332cd4  mods/cs-update/hooks/register.tsx"
-    "9ea60b6839947156cb361227363cd5a52059ff39a1157a10bcd6225e0294639c  completions/cs.bash"
-    "ef0b227b264c02f7654326b2d81c967bd309b2990ad130e78f74727a1d48b6fc  completions/_cs"
+    "1b1f194468645f5b3b4386f29b77b7933f14526152348b0549eb3d657c906dbd  completions/cs.bash"
+    "3bfd2d81585d8c0ec18098dd627ef653ee28585d66ccdbdd9fbb868ae99ad4ac  completions/_cs"
 )
 
 # Everything that lands in HOOKS_DIR, for the copy and cleanup loops. The
