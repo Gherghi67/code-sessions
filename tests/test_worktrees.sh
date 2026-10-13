@@ -2089,6 +2089,39 @@ test_retire_ignored_mode_refuses_a_topic_both_sides_edited() {
 
 run_test test_retire_ignored_mode_refuses_a_topic_both_sides_edited
 
+# A record whose directory is a file in the base cannot be carried: the retire
+# refuses before it removes anything, naming the record, and the features
+# screen counts it as a file the removal would destroy.
+test_retire_ignored_mode_refuses_a_record_whose_directory_is_a_file_in_the_base() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output line status=0
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    mkdir -p "$wt/.cs/artifacts"
+    echo "feature report" > "$wt/.cs/artifacts/report.txt"
+    echo "base notes" > "$base_dir/.cs/artifacts"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    line=$("$CS_BIN" proj -features --porcelain 2>&1)
+    assert_eq "1" "$(_feat_field "$line" 7)" "one file at risk: $line" || return 1
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_dir "$wt/.cs/memory" "the worktree is still there: $output" || return 1
+    assert_output_contains "$output" "The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path or a file where the path needs a directory, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:" \
+        "the refusal says why" || return 1
+    assert_eq ".cs/artifacts/report.txt" "$(printf '%s\n' "$output" | awk 'listed; /again:$/ { listed = 1 }')" \
+        "the refusal names the record" || return 1
+    assert_eq "base notes" "$(cat "$base_dir/.cs/artifacts")" "the base's file is untouched" || return 1
+    # Positive control: once the base's file is out of the way, the record lands.
+    rm "$base_dir/.cs/artifacts"
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire proceeds: $output" || return 1
+    assert_eq "feature report" "$(cat "$base_dir/.cs/artifacts/report.txt")" "the feature's record lands" || return 1
+}
+
+run_test test_retire_ignored_mode_refuses_a_record_whose_directory_is_a_file_in_the_base
+
 # Every record under .cs that the base lacks goes back to it, at any depth,
 # not just topics and narratives: plans, a summary, handoffs, a brief,
 # artifacts, archived narrative sections, a nested topic, a non-.md note. A
@@ -2337,6 +2370,7 @@ test_retire_refuses_a_settings_file_it_cannot_read() {
         "the refusal names the base's file" || return 1
     assert_dir "$wt/.cs/memory" "the worktree is still there" || return 1
     assert_eq "$before" "$(cat "$base_dir/.claude/settings.local.json")" "the base's file is as it was" || return 1
+
 }
 
 run_test test_retire_refuses_a_settings_file_it_cannot_read
