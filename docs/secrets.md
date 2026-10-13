@@ -77,7 +77,7 @@ cs -secrets --session my-session list
 
 `set`, `rm`, `import-file` and `migrate-backend` refuse a session name the sessions root does not have (`No session named '<name>' in <root>`), on both backends: a value stored under a removed session's name, or under the old name of a renamed one, is a value no session reads. `purge` takes such a name: purging is how you remove the secrets a removed session left.
 
-`set`, `rm`, `purge` and the stores `import-file`, `migrate` and `migrate-backend` make hold one lock per session while they write, `<sessions root>/.secrets-lock.<session>`. It lives in the sessions root so that a Keychain write never creates `~/.cs-secrets`. A write that cannot take it within `CS_SECRETS_LOCK_TIMEOUT` seconds fails and names the file.
+`set`, `rm`, `purge` and the stores `import-file`, `migrate` and `migrate-backend` make hold one lock per session while they write, `<sessions root>/.secrets-lock.<session>`. It lives in the sessions root so that a Keychain write never creates `~/.cs-secrets`. A write that cannot take it within `CS_SECRETS_LOCK_TIMEOUT` seconds fails and names the file. Interrupted (Ctrl-C, `kill`), the command lets the `security` or `openssl` call in flight finish before it releases the lock and exits, so a Keychain value may already be stored when it exits with an error.
 
 ### Renaming a session
 
