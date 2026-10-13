@@ -193,6 +193,22 @@ test_queue_add_rejects_a_multiline_task() {
     assert_eq "0" "$(QCOUNT)" "nothing queued despite the rejection" || return 1
 }
 
+# A task that cannot be written is not queued, and the add says so: the
+# staging directory takes no new file, so the write itself is what fails.
+test_queue_add_fails_when_the_task_cannot_be_written() {
+    local q="$CLAUDE_SESSION_META_DIR/local" out rc=0
+    mkdir -p "$q/queue" "$q/queue.tmp"
+    _deny_writes "$q/queue.tmp" || return 77
+    out=$("$CS_BIN" -queue add "a task" 2>/dev/null) || rc=$?
+    local err; err=$("$CS_BIN" -queue add "a task" 2>&1 >/dev/null | tail -1) || true
+    _allow_writes "$q/queue.tmp"
+    assert_eq "1" "$rc" "an add that wrote nothing exits 1" || return 1
+    assert_eq "" "$out" "nothing is reported queued" || return 1
+    assert_eq "Error: could not write the task into $q/queue; it is not queued" "$err" \
+        "the error names the queue" || return 1
+    assert_eq "0" "$(QCOUNT)" "no task file landed" || return 1
+}
+
 test_queue_requires_session() {
     unset CLAUDE_SESSION_META_DIR CLAUDE_SESSION_DIR
     local out; if out=$("$CS_BIN" -queue add "x" 2>&1); then
@@ -381,6 +397,7 @@ run_test test_queue_start_ignores_a_stale_state_tmp
 run_test test_queue_defer_ignores_a_stale_declined_tmp
 run_test test_queue_add_clears_declined
 run_test test_queue_add_rejects_a_multiline_task
+run_test test_queue_add_fails_when_the_task_cannot_be_written
 run_test test_queue_requires_session
 run_test test_queue_add_via_session_scoped_arm
 

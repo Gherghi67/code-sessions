@@ -786,6 +786,25 @@ test_launch_failing_after_the_read_leaves_no_copy_of_the_seed() {
     assert_eq "" "$(find "$CS_SESSIONS_ROOT/.spawn" -mindepth 1 -name '.*')" "no launch-owned file left in .spawn" || return 1
 }
 
+# A seed whose tasks cannot be written into the queue stops the launch: the
+# queue is not armed over nothing, and the seed stays staged for the next open.
+test_launch_keeps_the_seed_when_its_tasks_cannot_be_queued() {
+    _launch_worker >/dev/null || return 1
+    mkdir -p "$(WQ)/queue" "$(WQ)/queue.tmp"
+    _stage_seed boss "job A" "job B"
+    _deny_writes "$(WQ)/queue.tmp" || return 77
+    local rc=0 out
+    out=$(_launch_worker) || rc=$?
+    _allow_writes "$(WQ)/queue.tmp"
+    assert_eq "1" "$rc" "the launch stops" || return 1
+    assert_output_contains "$out" "Error: could not write the task into $(WQ)/queue; it is not queued" \
+        "the failure names the queue" || return 1
+    assert_output_not_contains "$out" "armed with" "no kick announces tasks that were never queued" || return 1
+    assert_eq "0" "$(WQ_COUNT)" "no task file landed" || return 1
+    assert_file_not_exists "$(WQ)/queue.state" "the queue is not armed" || return 1
+    assert_eq "$(printf '%s\nboss\njob A\njob B' "$OWN_TOKEN")" "$(cat "$(SEED)")" "the seed is staged again, whole" || return 1
+}
+
 # The brief is written to the session's .cs/brief.md name itself: a link
 # planted there must not turn the delivery into a write over another file.
 test_launch_refuses_a_link_at_the_briefs_destination() {
@@ -940,6 +959,7 @@ run_test test_launch_decline_keeps_a_replacement_seed_staged
 run_test test_launch_terminated_at_the_ask_leaves_the_seed_staged_and_no_copy
 run_test test_launch_terminated_after_a_newer_seed_sets_the_claimed_one_aside
 run_test test_launch_failing_after_the_read_leaves_no_copy_of_the_seed
+run_test test_launch_keeps_the_seed_when_its_tasks_cannot_be_queued
 run_test test_launch_foreign_seed_y_consumes
 run_test test_launch_foreign_seed_unknown_key_asks_again
 run_test test_launch_foreign_seed_escape_declines
