@@ -2077,6 +2077,30 @@ test_import_file_skips_a_password_sync_file_that_is_a_symbolic_link() {
     _assert_secret_absent other_token "nothing is imported through the named link" || return 1
 }
 
+# One value larger than the kernel lets a process carry in its environment
+# (1 MiB on macOS, 128 KiB per string on Linux) used to make the store's jq
+# fail to start; the empty result was written over the store, every secret
+# was lost, and the import still reported success.
+test_import_file_keeps_the_store_when_a_value_exceeds_the_exec_limit() {
+    local out rc=0 len
+    printf 'kept\n' | "$CS_SECRETS_BIN" set keep_one >/dev/null 2>&1 \
+        || { echo "  FAIL: fixture: set failed"; return 1; }
+    {
+        printf '{"big_blob":"'
+        head -c 1200000 /dev/zero | tr '\0' 'A'
+        printf '","zzz_small":"s2"}\n'
+    } > "$TEST_TMPDIR/payload.json"
+    openssl enc -aes-256-cbc -e -pbkdf2 -iter 100000 -in "$TEST_TMPDIR/payload.json" \
+        -out "$CS_SESSIONS_ROOT/test-session/.cs/secrets.peer@example.enc" -pass env:CS_SECRETS_PASSWORD \
+        || { echo "  FAIL: fixture: could not encrypt the sync file"; return 1; }
+    out=$("$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_eq "0 Imported 2 secret(s) from 1 sync file(s)." "$rc $out" "the import stores both values" || return 1
+    assert_eq "kept" "$("$CS_SECRETS_BIN" get keep_one 2>&1)" "the stored secret survives" || return 1
+    assert_eq "s2" "$("$CS_SECRETS_BIN" get zzz_small 2>&1)" "the small value is stored" || return 1
+    len=$("$CS_SECRETS_BIN" get big_blob 2>/dev/null | tr -d '\n' | wc -c | tr -d ' ')
+    assert_eq "1200000" "$len" "the large value is stored whole" || return 1
+}
+
 # A directory at the signature path is not a missing signature.
 test_import_file_skips_a_file_whose_signature_cannot_be_read() {
     _use_real_age || return $?
@@ -3288,6 +3312,7 @@ run_test test_import_file_verifies_the_bytes_it_will_decrypt
 run_test test_import_file_skips_a_signature_that_is_a_symbolic_link
 run_test test_import_file_skips_a_sync_file_that_is_a_symbolic_link
 run_test test_import_file_skips_a_password_sync_file_that_is_a_symbolic_link
+run_test test_import_file_keeps_the_store_when_a_value_exceeds_the_exec_limit
 run_test test_import_file_skips_a_file_whose_signature_cannot_be_read
 run_test test_import_file_skips_a_file_signed_for_another_session
 run_test test_import_file_allow_unsigned_takes_a_file_with_no_signature
