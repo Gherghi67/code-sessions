@@ -2240,16 +2240,20 @@ test_retire_refuses_untracked_and_ignored_work_inside_a_submodule() {
     echo "# P" > "$base_dir/README.md"
     printf '.cs/\n' > "$base_dir/.gitignore"
     (cd "$base_dir" && git init -q && git config core.autocrlf false && git add -A && git commit -q -m init \
-        && git config protocol.file.allow always \
-        && git submodule add -q "$lib" sub && git commit -q -m "add submodule")
+        && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always \
+            git submodule add -q "$lib" sub && git commit -q -m "add submodule") \
+        || { echo "  FAIL: submodule fixture"; return 1; }
     cs_launch "proj@t1"
-    (cd "$wt" && git submodule update --init -q) \
+    (cd "$wt" && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always \
+        git submodule update --init -q) \
         || { echo "  FAIL: submodule fixture"; return 1; }
     echo "done" > "$wt/result.txt"
     (cd "$wt" && git add result.txt && git commit -q -m "task")
     echo "secret" > "$wt/sub/secret.env"
     echo "notes" > "$wt/sub/notes.txt"
-    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    # The integrate updates submodules in its temporary worktree.
+    sha=$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always \
+        land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
     assert_eq "1" "$status" "the retire refuses: $output" || return 1
     assert_output_contains "$output" "Worktree has untracked files that removal would destroy; commit or remove them first:
