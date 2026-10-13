@@ -883,6 +883,49 @@ test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions ro
     done
 }
 
+# A TERM to an encrypted-backend purge while it removes the session's age
+# state keeps the write lock until that removal is done: a rename that took
+# the lock at once would move the age state while it is being deleted. A
+# stand-in rm holds the removal for two seconds at most.
+test_a_term_keeps_the_write_lock_until_purge_has_removed_the_age_state() {
+    local shim="$TEST_TMPDIR/rm-shim" real_rm age="$HOME/.cs-secrets/sessions/alpha" rc=0 gone_first=0 waited=0
+    real_rm=$(command -v rm)
+    mkdir -p "$CS_SESSIONS_ROOT/alpha/.cs" "$shim"
+    printf 'value-enc' > "$TEST_TMPDIR/ve"
+    CLAUDE_SESSION_NAME=alpha "$CS_SECRETS_BIN" set E1 < "$TEST_TMPDIR/ve" >/dev/null 2>&1 || { echo "  FAIL: fixture: set E1 failed"; return 1; }
+    mkdir -p "$age"
+    printf 'pin-fingerprint\n' > "$age/age-trusted"
+    cat > "$shim/rm" <<SHIM
+#!/usr/bin/env bash
+case "\$*" in
+    "-rf $age")
+        : > "$TEST_TMPDIR/pause.began"
+        n=0
+        until [ -e "$TEST_TMPDIR/pause.release" ] || [ "\$n" -ge 40 ]; do sleep 0.05; n=\$((n + 1)); done ;;
+esac
+exec "$real_rm" "\$@"
+SHIM
+    chmod +x "$shim/rm"
+
+    PATH="$shim:$PATH" CLAUDE_SESSION_NAME=alpha "$CS_SECRETS_BIN" purge > "$TEST_TMPDIR/purge.out" 2>&1 &
+    local pid=$!
+    until [ -f "$TEST_TMPDIR/pause.began" ]; do sleep 0.05; waited=$((waited + 1)); [ "$waited" -gt 200 ] && break; done
+    [ -f "$TEST_TMPDIR/pause.began" ] || { echo "  FAIL: fixture: the purge never reached its rm -rf"; wait "$pid"; return 1; }
+    kill -TERM "$pid"
+    wait "$pid" || rc=$?
+    [ -e "$age" ] || gone_first=1
+    # A removal left running finishes on its own; let it go before teardown.
+    : > "$TEST_TMPDIR/pause.release"
+    waited=0
+    while [ -e "$age" ]; do sleep 0.05; waited=$((waited + 1)); [ "$waited" -gt 100 ] && break; done
+
+    assert_eq "1" "$gone_first" "the age state was removed before the purge exited" || return 1
+    assert_eq "143" "$rc" "the purge exits 143: $(cat "$TEST_TMPDIR/purge.out")" || return 1
+    assert_eq "Purged 1 secret(s) for session: alpha" "$(cat "$TEST_TMPDIR/purge.out")" "the purge says what it removed" || return 1
+    assert_eq "alpha
+test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
+}
+
 run_test test_encrypted_salt_write_is_atomic_under_concurrency
 run_test test_encrypted_signal_terminates_writer_mid_critical_section
 run_test test_encrypted_purge_serialized_with_concurrent_store
@@ -897,5 +940,6 @@ run_test test_a_term_keeps_the_write_lock_until_the_keychain_write_finishes
 run_test test_a_rename_that_waited_on_the_write_lock_refuses_over_a_move_begun_meanwhile
 run_test test_a_term_to_a_rename_puts_back_what_it_moved
 run_test test_a_signal_after_every_value_moved_does_not_end_a_rename_nonzero
+run_test test_a_term_keeps_the_write_lock_until_purge_has_removed_the_age_state
 
 report_results
