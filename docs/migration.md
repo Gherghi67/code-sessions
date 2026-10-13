@@ -148,7 +148,9 @@ It and `scripts/code-sessions-to-cs.py` need git 2.31 or later.
   run of the outer session alone leaves the inner one out too, and says so.
   When the inner session is not copied (encrypted, or a name code-sessions
   uses for another session), the path is left out with no link, and the run
-  says why. A folder the outer repository tracks files in (a subproject
+  says why. If the outer copy already has a link or a folder there from an
+  earlier run, it is kept as it is and named, and a kept link stays recorded.
+  A folder the outer repository tracks files in (a subproject
   adopted on its own) comes with the outer copy as well, since git would show
   a link there as a deletion, and the outer copy's links and virtual
   environments that name a path in it name the outer copy's own folder; the

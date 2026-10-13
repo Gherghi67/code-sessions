@@ -1708,6 +1708,42 @@ test_a_nested_session_that_is_not_copied_gets_no_link() {
     assert_not_exists "$PROFILE/sessions/outer/inner"
 }
 
+# A link an earlier run put in the outer copy for an inner session that is
+# now left out stays, stays in the record, and is named, so no later run
+# forgets it. A folder the copy had there from before is named too. Neither
+# is a problem: a rerun cannot change them while the session is not copied.
+test_a_link_an_earlier_run_put_for_a_session_now_left_stays_recorded() {
+    make_fixture
+    make_nested
+    run_move --session outer --session inner --apply || { echo "$OUT"; return 1; }
+    rm -rf "$PROFILE/sessions/inner" "$PROFILE/.cs-to-code-sessions/inner"
+    mkdir -p "$PROFILE/sessions/inner/.cs"
+    local status
+    for _ in 1 2 3; do
+        status=0
+        run_move --session outer --session inner --apply || status=$?
+        assert_eq 1 "$status" "inner's own problem is the only one" || { echo "$OUT"; return 1; }
+        assert_output_contains "$OUT" 'outer/inner is the folder of cs session inner, which is not copied (.*): the copy keeps the link an earlier run put there, to .*sessions/inner, and leaves that path alone' \
+            || { echo "$OUT"; return 1; }
+        assert_output_not_contains "$OUT" 'with no link' || return 1
+        assert_symlink "$PROFILE/sessions/outer/inner" || return 1
+        assert_eq "{'outer': {'inner': 'inner'}}" "$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('nested'))" \
+            "$PROFILE/.cs-to-code-sessions/outer/record.json")" "the record forgot the link" || return 1
+    done
+
+    rm -rf "$PROFILE/sessions"/* "$PROFILE/.cs-to-code-sessions"
+    rm "$CSROOT/inner"
+    run_move --session outer --apply || { echo "$OUT"; return 1; }
+    ln -s "$INNER_SRC" "$CSROOT/inner"
+    printf '#!/bin/bash\n' > "$INNER_SRC/.cs/local/pre-open"
+    run_move --session outer --apply || { echo "$OUT"; return 1; }
+    assert_output_contains "$OUT" 'outer/inner is the folder of cs session inner, which is not copied (encrypted.*): the copy has its own inner there from before, left as it is' \
+        || return 1
+    assert_output_not_contains "$OUT" 'with no link' || return 1
+    [ -d "$PROFILE/sessions/outer/inner" ] && [ ! -L "$PROFILE/sessions/outer/inner" ] \
+        || { echo "  FAIL: the folder outer's copy had for inner is not as it was"; return 1; }
+}
+
 # A link into a nested session with no copy is not pointed into the outer
 # copy, which has nothing there: it is left naming cs's folder and named, and
 # so is the path in a virtual environment.
@@ -2490,6 +2526,7 @@ run_test test_a_session_open_in_a_feature_inside_its_project_is_named
 run_test test_a_nested_layout_that_changes_after_the_copy
 run_test test_a_session_folder_the_outer_repository_tracks_comes_with_it
 run_test test_a_nested_session_that_is_not_copied_gets_no_link
+run_test test_a_link_an_earlier_run_put_for_a_session_now_left_stays_recorded
 run_test test_a_link_into_a_nested_session_with_no_copy_is_left_and_named
 run_test test_a_name_code_sessions_is_still_renaming_is_left
 run_test test_a_session_folder_that_cannot_be_read_is_a_problem_not_gone

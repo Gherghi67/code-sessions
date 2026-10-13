@@ -204,7 +204,8 @@ class Session:
         self.is_repo = False
         self.branches = None
         self.nested = []        # (path inside this folder, name) of each other cs session's folder there
-        self.left = {}          # path of nested -> why its session is not copied: no link in its place
+        self.left = {}          # path of nested -> why its session is not copied: no link put in its place
+        self.kept = {}          # path of nested -> name: a link an earlier run put there for a session now left out
         self.shared = []        # (path, name) of a session folder this one's repository tracks: copied here too
         self.held = []          # (path, name) of a link to a session cs no longer has, kept as it is
         self.into_cs = set()    # link targets left in cs's folder of a session with no copy
@@ -371,6 +372,10 @@ class Importer:
                     why = self.not_copied(name, planned)
                     if why:
                         session.left[rel] = why
+                        recorded = (base.record.data.get("nested") or {}).get(session.name) or {}
+                        if session.state == "ours" and recorded.get(rel) == name \
+                                and self.is_link_to_copy(session, rel, name):
+                            session.kept[rel] = name
 
     def not_copied(self, name, planned):
         """Why the cs session name is not copied, or None when it is (or a run that names it would copy it)."""
@@ -857,8 +862,13 @@ class Importer:
                      "as well; %s's copy is its own" % (session.name, rel, name, session.name, session.name, name))
         for rel, name in session.nested:
             if rel in session.left:
-                self.say("%s/%s is the folder of cs session %s, which is not copied (%s): left out here, with no link"
-                         % (session.name, rel, name, session.left[rel]))
+                what = ("left out here, with no link" if not os.path.lexists(os.path.join(session.ccs_physical, rel))
+                        else "the copy has its own %s there from before, left as it is" % rel)
+                if rel in session.kept:
+                    what = ("the copy keeps the link an earlier run put there, to %s, and leaves that path alone"
+                            % tilde(os.path.join(self.ccs_root, name)))
+                self.say("%s/%s is the folder of cs session %s, which is not copied (%s): %s"
+                         % (session.name, rel, name, session.left[rel], what))
                 continue
             copy = tilde(os.path.join(self.ccs_root, name))
             later = ""
@@ -888,7 +898,8 @@ class Importer:
         """Record the links session's copy has for nested sessions, so a later run knows them as its own."""
         if not self.apply:
             return
-        kept = {rel: name for rel, name in session.links + session.held if self.is_link_to_copy(session, rel, name)}
+        owned = session.links + session.held + sorted(session.kept.items())
+        kept = {rel: name for rel, name in owned if self.is_link_to_copy(session, rel, name)}
         nested = base.record.data.setdefault("nested", {})
         if kept:
             nested[session.name] = kept
