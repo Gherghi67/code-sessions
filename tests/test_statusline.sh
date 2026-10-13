@@ -4186,6 +4186,22 @@ test_an_inherited_walk_deadline_is_never_read() {
     assert_not_exists "$marker" "an inherited _SL_WALK_DEADLINE must not run as code" || return 1
 }
 
+# A well-formed number inherited from the environment is ignored too: the
+# in-process walk reads ps directly, over a pipe, and only the detached walker
+# takes the deadline path, which writes ps's answer to a file.
+test_an_inherited_numeric_walk_deadline_is_ignored() {
+    local log="$TEST_TMPDIR/ps-stdout"
+    mkdir -p "$TEST_TMPDIR/fakebin"
+    printf '#!/bin/sh\nk=other; [ -p /dev/stdout ] && k=pipe\necho "$k" >> "%s"\necho "2216 1"\n' \
+        "$log" > "$TEST_TMPDIR/fakebin/ps"
+    chmod +x "$TEST_TMPDIR/fakebin/ps"
+    export TMUX="/tmp/fake,2216,0" PATH="$TEST_TMPDIR/fakebin:$PATH"
+    printf '%s' '{"columns":80,"tasks":[]}' \
+        | _SL_WALK_DEADLINE=5 bash "$SCRIPT_DIR/../bin/cs-subagent-statusline" >/dev/null 2>&1
+    assert_eq "pipe" "$(cat "$log" 2>/dev/null)" \
+        "the walk must read ps directly, not by an inherited deadline" || return 1
+}
+
 test_the_walk_reads_its_deadline_only_as_digits() {
     local marker="$TEST_TMPDIR/ran"
     ( _load_sl_functions
@@ -4199,6 +4215,7 @@ test_the_walk_reads_its_deadline_only_as_digits() {
 }
 
 run_test test_an_inherited_walk_deadline_is_never_read
+run_test test_an_inherited_numeric_walk_deadline_is_ignored
 run_test test_the_walk_reads_its_deadline_only_as_digits
 
 # The org id is kept for ORG_CACHE_TTL under the config path, so an account
