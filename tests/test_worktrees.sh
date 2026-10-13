@@ -2174,6 +2174,26 @@ test_retire_ignored_mode_refuses_records_it_cannot_carry() {
 
 run_test test_retire_ignored_mode_refuses_records_it_cannot_carry
 
+# .cs itself made a repository is refused whole: walked into, its .git would
+# be copied into the base's .cs as files.
+test_retire_ignored_mode_refuses_a_cs_that_is_itself_a_repository() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    (cd "$wt/.cs" && git init -q && git add memory/kept.md && git commit -q -m "notes history")
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_output_contains "$output" "then run /finish t1 again:
+.cs/" "the refusal names .cs itself" || return 1
+    assert_eq "notes history" "$(git -C "$wt/.cs" log -1 --format=%s 2>/dev/null)" ".cs keeps its history" || return 1
+    assert_not_exists "$base_dir/.cs/.git" "the base's .cs gets no .git" || return 1
+}
+
+run_test test_retire_ignored_mode_refuses_a_cs_that_is_itself_a_repository
+
 # The record of what the feature inherited is what tells a deleted topic from
 # a new one. A record that is there and cannot be read must stop the fuse:
 # guessing "new" would bring the deleted topic back and report success.
