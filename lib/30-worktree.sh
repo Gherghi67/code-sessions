@@ -385,6 +385,9 @@ _feature_readiness() {  # base_name task
     [ -z "$hidden" ] || wt_dirty=1
     _tree_is_dirty "$base_dir" && base_dirty=1
 
+    # The screen does not read either checkout's .claude/settings.local.json;
+    # the retire refuses one it cannot read, naming the file, before it
+    # removes anything.
     local others conflicts=""
     others=$(_worktree_untracked_at_risk "$wt_dir") \
         || error "Could not list the untracked files in $wt_dir"
@@ -866,13 +869,14 @@ _settings_rules_count() {
 
 # Add the feature's permission rules to the base's settings.local.json
 # (_settings_rules_union), creating it when the base has none. Writes nothing
-# when the base already holds every rule, and nothing when the repository
-# tracks the file: git carried it with the integrate, and a union would bring
-# back a rule the base dropped since.
+# when the base already holds every rule, and nothing when either checkout
+# tracks the file: git carried it with the integrate, or owns the base's copy
+# since, and a union would bring back a rule the base dropped or never took.
 _carry_permission_rules() {  # wt_dir base_dir
     local feat="$1/.claude/settings.local.json" base="$2/.claude/settings.local.json" was now
     [ -s "$feat" ] || return 0
     ! git -C "$1" ls-files --error-unmatch -- .claude/settings.local.json >/dev/null 2>&1 || return 0
+    ! git -C "$2" ls-files --error-unmatch -- .claude/settings.local.json >/dev/null 2>&1 || return 0
     was=$(_settings_json_or_empty "$base" | _settings_rules_count) || return 1
     now=$(_settings_rules_union "$base" "$feat" | _settings_rules_count) || return 1
     [ "$now" != "$was" ] || return 0
