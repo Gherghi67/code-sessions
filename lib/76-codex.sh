@@ -379,12 +379,15 @@ _launch_codex_bound() {
     # The new thread is bound now, so the handoff it continues is spent. The
     # kick is Codex's starting prompt, the counterpart of Claude's positional
     # prompt on the same answer: without it the thread would wait for a message.
-    local kick=""
+    local kick="" rotation_starts=""
     if [ -n "$rotation_handoff" ]; then
-        # Spent before Codex starts; a switch relaunch's settle puts it back
-        # if Codex never takes it up (lib/78-switch.sh).
+        # Spent before Codex starts; failed launches restore it below, or in
+        # a switch relaunch's settle, if the conversation never begins.
         if declare -F _switch_note_spent >/dev/null; then
             _switch_note_spent "$session_dir" "$rotation_handoff" "$thread_id"
+            # Set by _switch_note_spent in lib/78-switch.sh.
+            # shellcheck disable=SC2154
+            rotation_starts="$_cs_switch_starts"
         fi
         _handoff_set_status "$session_dir/.cs/handoffs/$rotation_handoff" consumed "$thread_id" || true
         rm -f "$local_dir/pending-handoff" 2>/dev/null || true
@@ -404,7 +407,15 @@ _launch_codex_bound() {
     printf '%s\n' 'Codex via cs: session context, exact resume and rotation are enabled; Claude hooks, autosave, and task queue integration are unavailable.'
     # A dedicated native writer lives for this supervised CLI lifetime.
     # Signals and lock cleanup belong to the shared controller.
-    cs_run_child "$codex_bin" --no-daemon resume "$thread_id" -C "$session_dir" ${kick:+"$kick"}
+    local status=0
+    cs_run_child "$codex_bin" --no-daemon resume "$thread_id" -C "$session_dir" ${kick:+"$kick"} || status=$?
+    if [ "$status" -ne 0 ] && [ -n "$rotation_handoff" ] && [ -z "${_cs_switched_from:-}" ]; then
+        if cs_run_with_lease "$meta_dir" _restore_launch_handoff "$session_dir" \
+            "$rotation_handoff" "$thread_id" "$rotation_starts"; then
+            printf 'Codex did not start; handoff %s restored for retry.\n' "$rotation_handoff" >&2
+        fi
+    fi
+    return "$status"
 }
 
 launch_codex() {

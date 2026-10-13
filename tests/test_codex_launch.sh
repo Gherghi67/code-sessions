@@ -37,6 +37,7 @@ setup() {
     export CS_HELPER_COUNT="$TEST_TMPDIR/helper-count"
     export CS_THREAD_ID=12345678-1234-1234-1234-123456789abc
     export CS_HELPER_EXIT=0 CS_CODEX_EXIT=0
+    export CS_CODEX_START=0 CS_CODEX_NEW_HANDOFF=""
     export CODEX_BIN="$TEST_TMPDIR/codex with spaces"
     export CS_CODEX_THREAD_BIN="$TEST_TMPDIR/cs-codex-thread"
     export CS_BIN="$SCRIPT_DIR/../bin/cs"
@@ -44,6 +45,13 @@ setup() {
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$CS_CODEX_LOG"
 env | grep -E '^(CS_SESSION_|CS_ACTOR=|CLAUDE_SESSION_|CLAUDE_CODE_SESSION_ID=|CS_CLAUDE_SESSION_ID=|CS_LEAD_PID=|CLAUDE_PID=)' > "$CS_CODEX_ENV" || true
+if [ "$CS_CODEX_START" = 1 ]; then
+    printf '{"session_id":"%s","source":"resume"}' "$CS_THREAD_ID" | "$CS_BIN" -codex-hook session-start
+fi
+if [ -n "$CS_CODEX_NEW_HANDOFF" ]; then
+    printf -- '---\nstatus: unconsumed\n---\n' > "$CS_SESSION_DIR/.cs/handoffs/$CS_CODEX_NEW_HANDOFF"
+    printf '%s\n' "$CS_CODEX_NEW_HANDOFF" > "$CS_SESSION_DIR/.cs/local/pending-handoff"
+fi
 exit "$CS_CODEX_EXIT"
 CODEX
     cat > "$CS_CODEX_THREAD_BIN" <<'HELPER'
@@ -62,6 +70,7 @@ teardown() {
     unset CODEX_BIN CS_CODEX_THREAD_BIN CS_TEST_SESSION_DIR CS_CODEX_LOG
     unset CS_CODEX_ENV CS_HELPER_ARGS CS_HELPER_COUNT CS_THREAD_ID
     unset CS_HELPER_EXIT CS_CODEX_EXIT
+    unset CS_CODEX_START CS_CODEX_NEW_HANDOFF
 }
 
 test_new_thread_binding_and_context() {
@@ -407,6 +416,53 @@ test_explicit_fresh_continues_an_armed_rotation() {
     assert_output_contains "$(sed -n '6p' "$CS_CODEX_LOG")" "$ROTATION_HANDOFF" "kicked from the handoff" || return 1
 }
 
+test_failed_direct_rotation_launches_restore_the_handoff_for_retry() {
+    local intent output status h="$CS_TEST_SESSION_DIR/.cs/handoffs/$ROTATION_HANDOFF"
+    # An older conversation's log entry must not count as this one starting.
+    printf 'Earlier - Session started (source: resume, ID: old)\n' > "$CS_TEST_SESSION_DIR/.cs/local/session.log"
+    for intent in handoff fresh auto; do
+        _rotation_fixture unconsumed
+        export CS_THREAD_ID=12345678-1234-1234-1234-123456789abc CS_CODEX_EXIT=27
+        status=0
+        output=$(_launch_answering r "$intent" 2>&1) || status=$?
+        assert_eq 27 "$status" "$intent preserves CLI failure: $output" || return 1
+        assert_file_contains "$h" '^status: unconsumed$' "$intent restores the handoff" || return 1
+        assert_file_not_contains "$h" '^consumed_by:' || return 1
+        assert_eq "$ROTATION_HANDOFF" "$(cat "$CS_TEST_SESSION_DIR/.cs/local/pending-handoff")" || return 1
+        assert_not_exists "$CS_TEST_SESSION_DIR/.cs/session.lock" || return 1
+
+        export CS_THREAD_ID=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa CS_CODEX_EXIT=0
+        status=0
+        output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false "" handoff 2>&1) || status=$?
+        assert_eq 0 "$status" "$intent can retry --from-handoff: $output" || return 1
+        assert_file_contains "$h" "^consumed_by: $CS_THREAD_ID$" || return 1
+        assert_not_exists "$CS_TEST_SESSION_DIR/.cs/local/pending-handoff" || return 1
+    done
+}
+
+test_direct_rotation_that_started_then_failed_keeps_the_handoff_consumed() {
+    _rotation_fixture unconsumed
+    export CS_CODEX_START=1 CS_CODEX_EXIT=27
+    local output status=0
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false "" handoff 2>&1) || status=$?
+    assert_eq 27 "$status" || return 1
+    assert_file_contains "$CS_TEST_SESSION_DIR/.cs/local/session.log" "Session started.*$CS_THREAD_ID" || return 1
+    assert_file_contains "$CS_TEST_SESSION_DIR/.cs/handoffs/$ROTATION_HANDOFF" "^consumed_by: $CS_THREAD_ID$" || return 1
+    assert_not_exists "$CS_TEST_SESSION_DIR/.cs/local/pending-handoff" || return 1
+    assert_output_not_contains "$output" 'restored for retry' || return 1
+}
+
+test_failed_direct_rotation_preserves_a_newer_pending_handoff() {
+    _rotation_fixture unconsumed
+    export CS_CODEX_NEW_HANDOFF=2026-10-13-newer.md CS_CODEX_EXIT=27
+    local output status=0
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false "" handoff 2>&1) || status=$?
+    assert_eq 27 "$status" || return 1
+    assert_eq "$CS_CODEX_NEW_HANDOFF" "$(cat "$CS_TEST_SESSION_DIR/.cs/local/pending-handoff")" || return 1
+    assert_file_contains "$CS_TEST_SESSION_DIR/.cs/handoffs/$ROTATION_HANDOFF" "^consumed_by: $CS_THREAD_ID$" || return 1
+    assert_file_contains "$CS_TEST_SESSION_DIR/.cs/handoffs/$CS_CODEX_NEW_HANDOFF" '^status: unconsumed$' || return 1
+}
+
 # Unattended or explicit resume never takes the rotation, so the marker goes.
 test_resume_disarms_an_armed_rotation() {
     _rotation_fixture unconsumed
@@ -427,6 +483,9 @@ run_test test_r_starts_a_thread_from_the_rotation_handoff
 run_test test_n_starts_fresh_and_leaves_the_handoff_pending
 run_test test_d_discards_the_handoff_then_resumes
 run_test test_explicit_fresh_continues_an_armed_rotation
+run_test test_failed_direct_rotation_launches_restore_the_handoff_for_retry
+run_test test_direct_rotation_that_started_then_failed_keeps_the_handoff_consumed
+run_test test_failed_direct_rotation_preserves_a_newer_pending_handoff
 run_test test_resume_disarms_an_armed_rotation
 run_test test_new_thread_binding_and_context
 run_test test_resume_refreshes_exact_thread

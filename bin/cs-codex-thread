@@ -196,7 +196,10 @@ def bootstrap(args):
     with AppServer(args.codex_bin, cwd, deadline) as server:
         server.initialize()
         if args.thread_id:
-            result = server.request("thread/resume", {"threadId": args.thread_id, "cwd": cwd})
+            # Only identity is needed here; full history can exceed MAX_MESSAGE.
+            result = server.request("thread/resume", {
+                "threadId": args.thread_id, "cwd": cwd, "excludeTurns": True,
+            })
         else:
             result = server.request("thread/start", {"cwd": cwd, "ephemeral": False})
         thread_id = exact_id(result, args.thread_id)
@@ -213,7 +216,9 @@ def bootstrap(args):
     # A successful start/injection response is insufficient proof of durability.
     with AppServer(args.codex_bin, cwd, deadline) as server:
         server.initialize()
-        exact_id(server.request("thread/resume", {"threadId": thread_id, "cwd": cwd}), thread_id)
+        exact_id(server.request("thread/resume", {
+            "threadId": thread_id, "cwd": cwd, "excludeTurns": True,
+        }), thread_id)
         server.request("thread/unsubscribe", {"threadId": thread_id})
     return thread_id
 

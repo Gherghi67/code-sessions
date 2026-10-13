@@ -133,6 +133,8 @@ scripts/cs-to-code-sessions.py --session wap --apply    # rerun later to bring o
 scripts/cs-to-code-sessions.py --all --apply            # every cs session; then ccs -list
 ```
 
+It and `scripts/code-sessions-to-cs.py` need git 2.31 or later.
+
 - The session's folder is copied whole into the profile's sessions root,
   whether the original adopted it (a link in `~/.claude-sessions`) or created
   it there (a folder of its own): its repository if it has one, `.cs/`,

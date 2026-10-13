@@ -66,7 +66,13 @@ for line in sys.stdin:
         if mode == 'mismatch' and method == 'thread/resume':
             tid = '01900000-0000-7000-8000-000000000002'
         if mode == 'bad_id': tid = 'malicious\n--last'
-        reply({'result':{'thread':{'id':tid,'ephemeral':mode == 'ephemeral'}}})
+        thread = {'id':tid,'ephemeral':mode == 'ephemeral'}
+        if mode == 'large_history' and method == 'thread/resume':
+            # Real resume responses include history unless explicitly excluded.
+            thread['turns'] = [] if request['params'].get('excludeTurns') is True else [
+                {'id':'large-turn','status':'completed','items':[
+                    {'type':'agentMessage','id':'large-message','text':'x' * (5 * 1024 * 1024)}]}]
+        reply({'result':{'thread':thread}})
         if mode == 'write_timeout': time.sleep(60)
     else: reply({'result':{}})
 if mode == 'cleanup':
@@ -154,6 +160,16 @@ class BootstrapTests(unittest.TestCase):
         result = self.run_helper('noise')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, THREAD_ID + '\n')
+
+    def test_large_history_resumes_and_verifies_without_fetching_turns(self):
+        result = self.run_helper('large_history', '--thread-id', THREAD_ID)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, THREAD_ID + '\n')
+        requests = self.requests()
+        resumes = [r for r in requests if r['request']['method'] == 'thread/resume']
+        self.assertEqual([r['process'] for r in resumes], [1, 2])
+        self.assertEqual(sum(r['request']['method'] == 'thread/inject_items' for r in requests), 1)
+        self.assertNotIn('thread/start', [r['request']['method'] for r in requests])
 
     def test_large_private_stderr_does_not_block_or_leak(self):
         result = self.run_helper('stderr')

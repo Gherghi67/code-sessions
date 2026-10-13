@@ -1157,43 +1157,10 @@ def relation(dst_repo, src_repo, d, s):
     return "diverged"
 
 
-# git fetch --no-write-fetch-head (git 2.29): None until asked, then the flag or "".
-_NO_FETCH_HEAD = None
-
-
-def _no_fetch_head_flag():
-    global _NO_FETCH_HEAD
-    if _NO_FETCH_HEAD is None:
-        usage = subprocess.run(["git", "fetch", "-h"], env=_git_env(), capture_output=True, text=True,
-                               stdin=subprocess.DEVNULL)
-        _NO_FETCH_HEAD = "--no-write-fetch-head" if "write-fetch-head" in usage.stdout + usage.stderr else ""
-    return _NO_FETCH_HEAD
-
-
+# git 2.31 or later: rev-parse --path-format (copy_index, _common_dir, _git_path), fetch --no-write-fetch-head.
 def fetch_quietly(dst_repo, src_repo, refspecs, options=()):
-    """git fetch src_repo refspecs in the copy, leaving the copy's FETCH_HEAD as the copy's own fetches left it.
-
-    A git without --no-write-fetch-head has FETCH_HEAD put back as it was
-    (or removed, when there was none) once the fetch is done.
-    """
-    flag = _no_fetch_head_flag()
-    command = ["fetch", "--quiet", "--no-tags"] + list(options)
-    if flag:
-        git_ok(dst_repo, *(command + [flag, src_repo] + list(refspecs)))
-        return
-    fetch_head = git_ok(dst_repo, "rev-parse", "--path-format=absolute", "--git-path", "FETCH_HEAD").stdout.strip()
-    try:
-        saved = _read_bytes(fetch_head)
-    except FileNotFoundError:
-        saved = None
-    try:
-        git_ok(dst_repo, *(command + [src_repo] + list(refspecs)))
-    finally:
-        if saved is None:
-            if os.path.lexists(fetch_head):
-                os.unlink(fetch_head)
-        elif os.path.islink(fetch_head) or not os.path.isfile(fetch_head) or _read_bytes(fetch_head) != saved:
-            write_atomic(fetch_head, saved, prefix=".session-transfer.")
+    """git fetch src_repo refspecs in the copy, leaving the copy's FETCH_HEAD as the copy's own fetches left it."""
+    git_ok(dst_repo, "fetch", "--quiet", "--no-tags", *options, "--no-write-fetch-head", src_repo, *refspecs)
 
 
 def fetch_source(dst_repo, src_repo, label):

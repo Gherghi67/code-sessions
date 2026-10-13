@@ -2078,32 +2078,11 @@ test_a_branch_or_ref_a_rerun_adds_comes_with_its_cs_reflog() {
 
 test_a_rerun_leaves_the_copy_s_fetch_head_alone() {
     make_remote_drift || return 1
-    local scripts before="$TEST_TMPDIR/FETCH_HEAD.before"
-    scripts=$(dirname "$MOVE")
+    local before="$TEST_TMPDIR/FETCH_HEAD.before"
     cp "$WAP/.git/FETCH_HEAD" "$before"
     run_move --session wap --apply
     cmp -s "$before" "$WAP/.git/FETCH_HEAD" || { echo "  FAIL: the sync overwrote the copy's FETCH_HEAD"; return 1; }
     assert_eq "$(git -C "$PROJECT" rev-parse pushed)" "$(git -C "$WAP" rev-parse refs/remotes/cs/pushed)" || return 1
-    # A git without --no-write-fetch-head: FETCH_HEAD is put back, or removed when the copy had none.
-    git -C "$PROJECT" commit -q --allow-empty -m 'cs main again'
-    python3 -B - "$scripts" "$WAP" "$PROJECT" <<'EOF' || return 1
-import sys
-sys.path.insert(0, sys.argv[1])
-import session_transfer
-session_transfer._NO_FETCH_HEAD = ""
-session_transfer.fetch_source(sys.argv[2], sys.argv[3], "cs")
-EOF
-    assert_eq "$(git -C "$PROJECT" rev-parse main)" "$(git -C "$WAP" rev-parse refs/remotes/cs/main)" || return 1
-    cmp -s "$before" "$WAP/.git/FETCH_HEAD" || { echo "  FAIL: the fallback left another FETCH_HEAD"; return 1; }
-    rm "$WAP/.git/FETCH_HEAD"
-    python3 -B - "$scripts" "$WAP" "$PROJECT" <<'EOF' || return 1
-import sys
-sys.path.insert(0, sys.argv[1])
-import session_transfer
-session_transfer._NO_FETCH_HEAD = ""
-session_transfer.fetch_source(sys.argv[2], sys.argv[3], "cs")
-EOF
-    assert_file_not_exists "$WAP/.git/FETCH_HEAD" "the fallback left a FETCH_HEAD the copy did not have"
 }
 
 test_a_dry_run_says_what_a_rerun_would_do_to_git() {
