@@ -3724,6 +3724,29 @@ cs:bravo:K2" "$(_kc_services)" "every Keychain entry is bravo's" || return 1
     assert_eq "pin-fingerprint" "$(cat "$sec/sessions/bravo/age-trusted" 2>&1)" "the pin list is bravo's" || return 1
 }
 
+# A signal that lands the moment rename has written its marker, before it
+# moves anything, puts back nothing and removes the marker: a marker is left
+# only by a move it could not put back. BASH_ENV hands cs-secrets a DEBUG
+# trap that sends it one TERM before its first command after the marker
+# exists.
+test_a_signal_right_after_the_marker_is_written_leaves_no_marker() {
+    _seed_renamed_session || { echo "  FAIL: fixture: could not seed alpha's stores"; return 1; }
+    local env="$TEST_TMPDIR/term-after-marker.sh" out rc=0 sec="$HOME/.cs-secrets"
+    cat > "$env" <<HOOK
+set -T
+trap '[ -e "$sec/.rename.alpha" ] && [ ! -e "$TEST_TMPDIR/term.sent" ] && : > "$TEST_TMPDIR/term.sent" && kill -TERM \$\$' DEBUG
+HOOK
+    out=$(BASH_ENV="$env" _kc_secrets --session alpha rename bravo 2>&1) || rc=$?
+    [ -e "$TEST_TMPDIR/term.sent" ] || { echo "  FAIL: fixture: the hook never saw the marker"; return 1; }
+    assert_eq "143" "$rc" "rename exits 143: $out" || return 1
+    assert_eq "" "$out" "rename prints nothing" || return 1
+    assert_not_exists "$sec/.rename.alpha" "no marker is left" || return 1
+    assert_eq "cs:alpha:K1
+cs:alpha:K2" "$(_kc_services)" "the Keychain holds alpha's entries and none of bravo's" || return 1
+    assert_eq "value-enc" "$("$CS_SECRETS_BIN" --session alpha get E1 2>&1)" "the encrypted store is alpha's" || return 1
+    assert_eq "pin-fingerprint" "$(cat "$sec/sessions/alpha/age-trusted" 2>&1)" "the pin list is alpha's" || return 1
+}
+
 # On a Mac the Keychain holds what a session stored there whatever backend a
 # later run uses, so rename on the encrypted backend reads it too. Run against
 # the fake security's store, as macOS.
@@ -4110,6 +4133,7 @@ run_test test_rename_on_the_encrypted_backend_moves_the_keychain_entries
 run_test test_rename_on_the_encrypted_backend_refuses_what_the_keychain_holds_or_hides
 run_test test_rename_that_fails_partway_puts_every_value_back_under_the_old_name
 run_test test_rename_that_cannot_put_a_failed_move_back_keeps_the_marker
+run_test test_a_signal_right_after_the_marker_is_written_leaves_no_marker
 run_test test_rename_rerun_finishes_an_interrupted_move
 run_test test_rename_rerun_refuses_a_value_that_differs_under_both_names
 run_test test_rename_with_nothing_to_move_creates_no_cs_secrets
