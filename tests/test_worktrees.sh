@@ -2840,6 +2840,49 @@ test_retire_leaves_a_settings_file_tracked_in_another_case_to_git() {
 
 run_test test_retire_leaves_a_settings_file_tracked_in_another_case_to_git
 
+# A git that cannot say whether a checkout tracks settings.local.json has not
+# said it does not: the retire refuses with git's own error, naming the file,
+# before anything is removed. The stand-in git fails only that question, for
+# one checkout, and hands every other call to the real git.
+test_retire_refuses_when_git_cannot_say_whether_it_tracks_the_settings() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0 real side
+    local bindir="$TEST_TMPDIR/git-bin"
+    real=$(command -v git) || return 1
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    jq '.permissions.allow = ["Read", "Bash(make:*)"]' "$wt/.claude/settings.local.json" > "$wt/.claude/s.json" \
+        && mv "$wt/.claude/s.json" "$wt/.claude/settings.local.json"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    mkdir -p "$bindir"
+    for side in "$wt" "$base_dir"; do
+        cat > "$bindir/git" <<EOF
+#!/bin/bash
+case " \$* " in *" -C $side ls-files "*settings.local.json*)
+    echo "fatal: index file corrupt" >&2
+    exit 128 ;;
+esac
+exec "$real" "\$@"
+EOF
+        chmod +x "$bindir/git"
+        status=0
+        output=$(PATH="$bindir:$PATH" "$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+        assert_eq "1" "$status" "the retire refuses for $side: $output" || return 1
+        assert_output_contains "$output" "Error: cs could not ask git whether it tracks $side/.claude/settings.local.json: fatal: index file corrupt. Nothing was removed." \
+            "the refusal gives git's own error for $side" || return 1
+        assert_dir "$wt/.cs/memory" "nothing was removed" || return 1
+        assert_file_not_exists "$base_dir/.claude/settings.local.json" "nothing was carried" || return 1
+    done
+    # Positive control: with the real git, the rules are carried.
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire succeeds: $output" || return 1
+    assert_eq '["Read","Bash(make:*)"]' "$(jq -c .permissions.allow "$base_dir/.claude/settings.local.json")" "the rules are carried" || return 1
+}
+
+run_test test_retire_refuses_when_git_cannot_say_whether_it_tracks_the_settings
+
 # The retire reads the settings files only to add the feature's rules to the
 # base's. One it leaves alone, tracked or behind a link, is never read, so
 # what it holds is no reason to refuse.
