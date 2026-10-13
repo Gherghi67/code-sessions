@@ -679,7 +679,7 @@ extract_array() {
 
 test_manifest_arrays_in_sync() {
     local arr a b
-    for arr in CS_HOOKS CS_HOOK_LIBS RETIRED_HOOKS CS_COMMANDS CS_SKILLS RETIRED_SKILLS CS_SKILL_FILES CS_MOD_FILES; do
+    for arr in CS_HOOKS CS_HOOK_LIBS RETIRED_HOOKS CS_COMMANDS RETIRED_COMMANDS CS_SKILLS RETIRED_SKILLS CS_SKILL_FILES CS_MOD_FILES; do
         a=$(extract_array "$SCRIPT_DIR/../install.sh" "$arr" | sort)
         b=$(extract_array "$CS_BIN" "$arr" | sort)
         if [ -z "$a" ]; then
@@ -1313,6 +1313,33 @@ test_install_removes_the_retired_hint_mod() {
         return 1
     fi
     assert_dir "$fake_home/.claude/skills/cs" "the shipped mod is still deployed" || return 1
+}
+
+# A slash command a past version shipped and this one does not keeps
+# answering its name from ~/.claude/commands until something removes it.
+# Install removes each one cs wrote, by content, and uninstall removes one
+# still there; a user's own file under a retired name is kept by both.
+test_install_and_uninstall_remove_retired_commands_cs_wrote() {
+    local home="$TEST_TMPDIR/retired-cmd-home" d rc=0 out c
+    d="$home/.claude/commands"
+    mkdir -p "$d"
+    for c in compact-discoveries learn store-secret; do
+        _cs_shipped_content > "$d/$c.md"
+    done
+    printf 'my skillify command\n' > "$d/skillify.md"
+    out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || rc=$?
+    assert_eq "0" "$rc" "install exit status" || { echo "$out"; return 1; }
+    for c in compact-discoveries learn store-secret; do
+        assert_file_not_exists "$d/$c.md" "install removes the retired $c.md cs wrote" || return 1
+    done
+    assert_eq "my skillify command" "$(cat "$d/skillify.md")" "install keeps the user's skillify.md" || return 1
+    assert_output_contains "$out" "Kept $(_bre_literal "$d/skillify.md"): cs did not write it$" "install names the kept command" || return 1
+    _cs_shipped_content > "$d/compact-discoveries.md"
+    out=$(printf 'y\n' | HOME="$home" "$CS_BIN" -uninstall 2>&1) || rc=$?
+    assert_eq "0" "$rc" "uninstall exit status" || { echo "$out"; return 1; }
+    assert_file_not_exists "$d/compact-discoveries.md" "uninstall removes the retired command cs wrote" || return 1
+    assert_eq "my skillify command" "$(cat "$d/skillify.md")" "uninstall keeps the user's skillify.md" || return 1
+    assert_output_contains "$out" "Kept $(_bre_literal "$d/skillify.md"): cs did not write it" "uninstall names the kept command" || return 1
 }
 
 # The cs mod shipped as cs-rotate before it took the name cs; a copy left
@@ -2926,6 +2953,7 @@ run_test test_a_retired_hook_known_by_its_record_survives_a_run_without_jq
 run_test test_a_retired_hook_replaced_during_a_question_is_kept
 run_test test_a_retired_hook_replaced_by_a_link_to_a_device_is_kept_unread
 run_test test_install_removes_the_mod_under_its_old_name
+run_test test_install_and_uninstall_remove_retired_commands_cs_wrote
 run_test test_rotate_wrap_keys_yes_creates_the_file_with_only_cs_block
 run_test test_rotate_wrap_keys_merge_into_the_existing_global_block
 run_test test_rotate_wrap_keys_never_overwrite_a_user_binding
