@@ -2757,6 +2757,34 @@ test_retire_leaves_a_settings_file_the_base_tracks_since_to_git() {
 
 run_test test_retire_leaves_a_settings_file_the_base_tracks_since_to_git
 
+# The base's settings.local.json can be a link the base keeps ignored, to a
+# file it shares through git. cs writes nothing through a link at that path,
+# wherever it points: the file is left as it is, and the retire says so.
+test_retire_writes_no_permission_rules_through_a_settings_link() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0 before
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    jq '.permissions.allow = ["Read", "Bash(make:*)"]' "$wt/.claude/settings.local.json" > "$wt/.claude/s.json" \
+        && mv "$wt/.claude/s.json" "$wt/.claude/settings.local.json"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    mkdir -p "$base_dir/.claude"
+    printf '%s\n' '{"permissions": {"allow": ["Read"]}}' > "$base_dir/team-settings.json"
+    ln -s ../team-settings.json "$base_dir/.claude/settings.local.json"
+    (cd "$base_dir" && git add team-settings.json && git commit -q -m "share settings")
+    before=$(cat "$base_dir/team-settings.json")
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>"$TEST_TMPDIR/stderr") || status=$?
+    assert_eq "0" "$status" "the retire succeeds: $output $(cat "$TEST_TMPDIR/stderr")" || return 1
+    assert_eq "$before" "$(cat "$base_dir/team-settings.json")" "the shared file is as git left it" || return 1
+    assert_eq "" "$(git -C "$base_dir" status --porcelain)" "and the base's checkout is clean" || return 1
+    assert_symlink "$base_dir/.claude/settings.local.json" "the link stays" || return 1
+    assert_eq "1" "$(printf '%s\n' "$output" | grep -cxF "$base_dir/.claude/settings.local.json is a link, and cs writes nothing through it: the feature's permission rules were not added to it.")" \
+        "stdout says so: $output" || return 1
+}
+
+run_test test_retire_writes_no_permission_rules_through_a_settings_link
+
 # The record of what the feature inherited is what tells a deleted topic from
 # a new one. A record that is there and cannot be read must stop the fuse:
 # guessing "new" would bring the deleted topic back and report success.
