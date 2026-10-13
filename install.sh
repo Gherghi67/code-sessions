@@ -1206,7 +1206,7 @@ CS_KNOWN_SHA256=(
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
     "84881e27755cf037d9dd3c7bee9bc3795aed0f2ed90b2b8f6e7c6bebcbdfe814  bin/cs"
-    "300dacdecdd7c121f2a9241d4baa43e3c9a7fb0f50b7159f825c1af22e440efa  bin/cs-secrets"
+    "4bcc367a755a2eb649a377a2c8a4d8d05892a9d0dff4068a7a642947347f1981  bin/cs-secrets"
     "a6d008e8bcba4e3d4c1599c76aaddc4ea1c4eb61e3ba861c60d9e4b91f706e78  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
     "8eb754cc99aa9a3b1478fefc31b6cb1486044022150334ec289ed727b3a98272  hooks/cs-resolve.sh"
