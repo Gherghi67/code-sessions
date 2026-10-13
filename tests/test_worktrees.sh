@@ -2074,7 +2074,7 @@ test_retire_ignored_mode_refuses_a_topic_both_sides_edited() {
     assert_eq "untracked" "$(_feat_field "$line" 10)" "state: $line" || return 1
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
     assert_eq "1" "$status" "the retire refuses: $output" || return 1
-    assert_output_contains "$output" "The feature's session records hold files the base also changed, so the record fuse cannot carry them without overwriting the base's copy; nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:
+    assert_output_contains "$output" "The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:
 .cs/memory/kept.md" "the refusal names the topic" || return 1
     assert_eq "kept topic, feature edit" "$(cat "$wt/.cs/memory/kept.md")" "the feature's edit is still there" || return 1
     assert_eq "kept topic, base edit" "$(cat "$base_dir/.cs/memory/kept.md")" "the base's edit is untouched" || return 1
@@ -2193,7 +2193,9 @@ test_retire_ignored_mode_refuses_when_the_inherited_record_cannot_be_read() {
     assert_file_not_exists "$base_dir/.cs/memory/gone.md" "the deleted topic did not come back" || return 1
     assert_output_contains "$output" "could not read what the feature inherited for memory/gone.md" \
         "the error names the topic" || return 1
-    assert_output_contains "$output" "could not be fused into" "the staged records are kept and named" || return 1
+    assert_output_contains "$output" "Could not classify the session records in $wt/.cs; nothing was removed" \
+        "the retire refuses before it removes anything" || return 1
+    assert_dir "$wt/.cs/memory" "the worktree and its records are still there" || return 1
 }
 
 run_test test_retire_ignored_mode_refuses_when_the_inherited_record_cannot_be_read
@@ -2218,6 +2220,7 @@ test_retire_ignored_mode_refuses_when_the_inherited_directory_cannot_be_searched
     assert_file_not_exists "$base_dir/.cs/memory/gone.md" "the deleted topic did not come back" || return 1
     assert_output_contains "$output" "could not read what the feature inherited for memory/gone.md" \
         "the error names the topic" || return 1
+    assert_dir "$wt/.cs/memory" "the worktree and its records are still there" || return 1
 }
 
 run_test test_retire_ignored_mode_refuses_when_the_inherited_directory_cannot_be_searched
