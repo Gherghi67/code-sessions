@@ -2966,6 +2966,73 @@ test_retire_reads_no_settings_file_it_leaves_alone() {
 
 run_test test_retire_reads_no_settings_file_it_leaves_alone
 
+# The base's .claude can itself be a link inside the session, to a directory
+# whose settings.local.json the base tracks, and git sees no file at
+# .claude/settings.local.json behind it, ignored or tracked. cs writes nothing
+# through that link either: the file is left as git left it, and the retire
+# lists on stdout each rule the union would have added, naming the link. A
+# .claude that leads out of the session is still refused by the write.
+test_retire_writes_no_permission_rules_through_a_linked_claude_dir() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" sha1 sha2 sha3 output status=0 before git_before task out
+    _ignored_base_with_two_topics
+    for task in t1 t2 t3; do
+        cs_launch "proj@$task"
+        printf '%s\n' '{"permissions": {"allow": ["Read", "Bash(make:*)"]}}' \
+            > "$CS_SESSIONS_ROOT/proj@$task/.claude/settings.local.json"
+        echo "done" > "$CS_SESSIONS_ROOT/proj@$task/result-$task.txt"
+        (cd "$CS_SESSIONS_ROOT/proj@$task" && git add "result-$task.txt" && git commit -q -m "task $task")
+    done
+    sha1=$(land_feature proj t1) || { echo "  FAIL: integrate fixture t1"; return 1; }
+    sha2=$(land_feature proj t2) || { echo "  FAIL: integrate fixture t2"; return 1; }
+    sha3=$(land_feature proj t3) || { echo "  FAIL: integrate fixture t3"; return 1; }
+    mkdir -p "$base_dir/team-claude"
+    printf '%s\n' '{"permissions": {"allow": ["Read"]}}' > "$base_dir/team-claude/settings.local.json"
+    (cd "$base_dir" && git add -f team-claude/settings.local.json && git commit -q -m "share settings")
+    rm -rf "$base_dir/.claude"
+    ln -s team-claude "$base_dir/.claude"
+    before=$(cat "$base_dir/team-claude/settings.local.json")
+    git_before=$(git -C "$base_dir" status --porcelain)
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha1" 2>"$TEST_TMPDIR/stderr") || status=$?
+    assert_eq "0" "$status" "the retire succeeds: $output $(cat "$TEST_TMPDIR/stderr")" || return 1
+    assert_eq "$before" "$(cat "$base_dir/team-claude/settings.local.json")" "the tracked file is as git left it" || return 1
+    assert_eq "$git_before" "$(git -C "$base_dir" status --porcelain)" "and the base's git status is as it was" || return 1
+    assert_symlink "$base_dir/.claude" "the link stays" || return 1
+    assert_eq "$base_dir/.claude is a link, and cs writes nothing through it. Add by hand the feature's permission rules it lacks that the base needs:
+  allow: \"Bash(make:*)\"" "$(printf '%s\n' "$output" | awk '/ is a link, and cs writes nothing through it/ { on = 1 } on && !/^(  |\/)/ { on = 0 } on')" \
+        "stdout names the link and lists each rule the union would have added: $output" || return 1
+    # A .claude leading out of the session: the write refuses it, as before.
+    out="$TEST_TMPDIR/outside-claude"
+    mkdir -p "$out"
+    printf '%s\n' '{"permissions": {"allow": ["Read"]}}' > "$out/settings.local.json"
+    rm "$base_dir/.claude"
+    ln -s "$out" "$base_dir/.claude"
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t3" "$sha3" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses a .claude out of the session: $output" || return 1
+    assert_output_contains "$output" "cs_mkdir_inside: $base_dir/.claude leads to $(cd "$out" && pwd -P), outside the session $base_dir" \
+        "the refusal names where the link leads" || return 1
+    assert_output_contains "$output" "Error: Could not add the feature's permission rules to $base_dir/.claude/settings.local.json; nothing was removed" \
+        "the refusal names the file" || return 1
+    assert_dir "$CS_SESSIONS_ROOT/proj@t3/.cs/memory" "nothing was removed" || return 1
+    assert_eq '{"permissions": {"allow": ["Read"]}}' "$(cat "$out/settings.local.json")" "the outside file is untouched" || return 1
+    # The base tracks the link itself.
+    rm "$base_dir/.claude"
+    ln -s team-claude "$base_dir/.claude"
+    (cd "$base_dir" && git add .claude && git commit -q -m "share .claude")
+    assert_eq "" "$(git -C "$base_dir" ls-files -- .claude/settings.local.json)" "git sees no file behind the tracked link" || return 1
+    git_before=$(git -C "$base_dir" status --porcelain)
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t2" "$sha2" 2>"$TEST_TMPDIR/stderr") || status=$?
+    assert_eq "0" "$status" "the retire succeeds past a tracked link: $output $(cat "$TEST_TMPDIR/stderr")" || return 1
+    assert_eq "$before" "$(cat "$base_dir/team-claude/settings.local.json")" "the tracked file is as git left it, past a tracked link" || return 1
+    assert_eq "$git_before" "$(git -C "$base_dir" status --porcelain)" "and the base's git status is as it was, past a tracked link" || return 1
+    assert_eq "$base_dir/.claude is a link, and cs writes nothing through it. Add by hand the feature's permission rules it lacks that the base needs:
+  allow: \"Bash(make:*)\"" "$(printf '%s\n' "$output" | awk '/ is a link, and cs writes nothing through it/ { on = 1 } on && !/^(  |\/)/ { on = 0 } on')" \
+        "stdout names the tracked link and lists the rules: $output" || return 1
+}
+
+run_test test_retire_writes_no_permission_rules_through_a_linked_claude_dir
+
 # The record of what the feature inherited is what tells a deleted topic from
 # a new one. A record that is there and cannot be read must stop the fuse:
 # guessing "new" would bring the deleted topic back and report success.
