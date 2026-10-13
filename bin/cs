@@ -3691,12 +3691,18 @@ _feature_readiness() {  # base_name task
     # The screen does not read either checkout's .claude/settings.local.json;
     # the retire refuses one it would add the feature's rules to and cannot
     # read, naming the file, before it removes anything.
-    local others conflicts=""
+    # A locked base vault is the retire's refusal before the records are
+    # classified, and every record bound for it would read as at risk, so the
+    # records are not classified then.
+    local others conflicts="" vault_locked=""
     others=$(_worktree_untracked_at_risk "$wt_dir") \
         || error "Could not list the untracked files in $wt_dir"
     if [ "$(_read_local_state "$wt_dir/.cs/local/state" cs_mode)" = "ignored" ]; then
-        conflicts=$(_fuse_conflicts "$wt_dir/.cs" "$base_dir/.cs") \
-            || error "Could not classify the session records in $wt_dir/.cs"
+        vault_locked=$(_locked_vault_link "$base_dir/.cs")
+        if [ -z "$vault_locked" ]; then
+            conflicts=$(_fuse_conflicts "$wt_dir/.cs" "$base_dir/.cs") \
+                || error "Could not classify the session records in $wt_dir/.cs"
+        fi
     fi
     others="$others${others:+${conflicts:+$'\n'}}$conflicts"
     if [ -n "$others" ]; then
@@ -3728,6 +3734,8 @@ _feature_readiness() {  # base_name task
         state="dirty"
     elif [ "$untracked" != 0 ]; then
         state="untracked"
+    elif [ -n "$vault_locked" ]; then
+        state="vault-locked"
     elif [ "$base_dirty" = 1 ]; then
         state="base-dirty"
     elif [ "$merged" = 1 ]; then
@@ -4053,13 +4061,11 @@ $wt_untracked"
     if [ "$mode" = "ignored" ]; then
         # A locked vault leaves its links dangling, and every record bound
         # for one would read as a conflict to merge or delete by hand; the
-        # vault is named first, and mounting it is the remedy. private is
-        # asked first, so a vault locked whole is named by it.
-        local sub
-        for sub in private $CS_VAULT_LINKS; do
-            [ -L "$base_dir/.cs/$sub" ] && [ ! -d "$base_dir/.cs/$sub" ] \
-                && error "cannot fuse the worktree's records: $base_dir/.cs/$sub is locked. Mount it, then retry."
-        done
+        # vault is named first, and mounting it is the remedy.
+        local locked
+        locked=$(_locked_vault_link "$base_dir/.cs")
+        [ -z "$locked" ] \
+            || error "cannot fuse the worktree's records: $base_dir/.cs/$locked is locked. Mount it, then retry."
         local conflicts
         conflicts=$(_fuse_conflicts "$wt_dir/.cs" "$base_dir/.cs") \
             || error "Could not classify the session records in $wt_dir/.cs; nothing was removed"
@@ -4146,6 +4152,19 @@ $remove_err"
         '{ts: $ts, event: $event, task: $task}'
     _finish_progress_write retired
     printf 'retired %s %s\n' "$task" "$sha"
+}
+
+# The first of a base's vault links (CS_VAULT_LINKS) that dangles, the vault
+# it leads into locked, or nothing. private is asked first, so a vault locked
+# whole is named by it.
+_locked_vault_link() {  # base_meta
+    local sub
+    for sub in private $CS_VAULT_LINKS; do
+        if [ -L "$1/$sub" ] && [ ! -d "$1/$sub" ]; then
+            printf '%s\n' "$sub"
+            return 0
+        fi
+    done
 }
 
 # Whether _settings_rules_union can read a Claude Code settings file: a

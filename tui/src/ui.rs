@@ -1996,6 +1996,7 @@ fn render_merge(app: &mut App, frame: &mut Frame, area: Rect) {
                 "locked" => (format!("{} session is open", f.lock), p.amber),
                 "dirty" => ("uncommitted changes".to_string(), p.amber),
                 "base-dirty" => ("base has uncommitted changes".to_string(), p.amber),
+                "vault-locked" => ("base vault is locked".to_string(), p.amber),
                 other => (other.to_string(), p.amber),
             };
             Row::new(vec![
@@ -2080,6 +2081,8 @@ fn render_merge(app: &mut App, frame: &mut Frame, area: Rect) {
         // and worktree locks want different remedies, so name the side.
         let (base_label, base_color) = if f.lock == "base" {
             ("base session open".to_string(), p.amber)
+        } else if f.state == "vault-locked" {
+            ("vault locked".to_string(), p.amber)
         } else if f.base_dirty {
             ("uncommitted changes".to_string(), p.amber)
         } else {
