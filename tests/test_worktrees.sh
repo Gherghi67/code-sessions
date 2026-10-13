@@ -2168,6 +2168,29 @@ test_retire_fuse_survives_a_torn_timeline_tail() {
 
 run_test test_retire_fuse_survives_a_torn_timeline_tail
 
+# Whether the retire fuses .cs or leaves it to git depends on the mode the
+# create recorded. A state file without one says neither, so nothing under
+# .cs is known to be carried: the retire refuses and the worktree stays.
+test_retire_refuses_a_worktree_whose_state_names_no_mode() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    echo "feature topic" > "$wt/.cs/memory/new.md"
+    grep -v '^cs_mode:' "$wt/.cs/local/state" > "$wt/.cs/local/state.tmp"
+    mv "$wt/.cs/local/state.tmp" "$wt/.cs/local/state"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_output_contains "$output" "$wt/.cs/local/state names no cs_mode, so cs cannot tell whether git or the record fuse carries $wt/.cs; nothing was removed" \
+        "the refusal names the state file" || return 1
+    assert_eq "feature topic" "$(cat "$wt/.cs/memory/new.md" 2>/dev/null)" "the feature's topic is still there" || return 1
+    assert_file_not_exists "$base_dir/.cs/memory/new.md" "and nothing was fused" || return 1
+}
+
+run_test test_retire_refuses_a_worktree_whose_state_names_no_mode
+
 test_rm_worktree_unregisters_and_prompts_branch() {
     local base_dir
     base_dir=$(create_test_session_with_git "myproj")
