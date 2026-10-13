@@ -437,23 +437,14 @@ test_task_kind_waits_in_the_mailbox_not_the_queue() {
     assert_eq "task" "$(jq -r .kind "$(FIRST_MSG)")" "kind is task" || return 1
 }
 
-test_task_kind_leaves_the_declined_flag() {
-    touch "$CS_SESSIONS_ROOT/receiver/.cs/local/queue.declined"
-    "$CS_BIN" -msg receiver -k task "another" >/dev/null 2>&1 || return 1
-    assert_file_exists "$CS_SESSIONS_ROOT/receiver/.cs/local/queue.declined" \
-        "a sender cannot re-open a gate the user declined" || return 1
-}
 
 test_queue_accept_queues_a_mailed_task_by_id() {
     "$CS_BIN" -msg receiver -k task "review the tui diff" >/dev/null 2>&1 || return 1
     local id; id=$(jq -r .id "$(FIRST_MSG)")
-    touch "$CS_SESSIONS_ROOT/receiver/.cs/local/queue.declined"
     rcv -queue accept "$id" >/dev/null 2>&1 || { echo "  accept failed"; return 1; }
     assert_eq "1" "$(RQUEUE_LEN)" "one task queued" || return 1
     assert_eq "review the tui diff" "$(cat "$(RQUEUE)"/*)" "the mailed body is the queued task" || return 1
     assert_eq "0" "$(NEW_COUNT)" "the accepted message is no longer unread" || return 1
-    assert_not_exists "$CS_SESSIONS_ROOT/receiver/.cs/local/queue.declined" \
-        "the user's accept re-opens the gate" || return 1
 }
 
 # The body was written by another session, and the accept prints it to this
@@ -733,12 +724,12 @@ test_queue_accept_from_another_session_refuses() {
     assert_not_exists "$(RCV_META)/local/queue.accepted" "no receipt recorded" || return 1
 }
 
-# Removing, clearing or deferring changes what the target's drain runs next:
+# Removing or clearing changes what the target's drain runs next:
 # the target's user does that too. Listing stays open.
 test_queue_changes_from_another_session_refuse() {
     rcv -queue add "mine" >/dev/null 2>&1 || { echo "  receiver add failed"; return 1; }
     local verb out rc
-    for verb in "rm 1" "clear" "defer"; do
+    for verb in "rm 1" "clear"; do
         rc=0
         # shellcheck disable=SC2086 # the verb carries its own argument
         out=$("$CS_BIN" receiver -queue $verb 2>&1) || rc=$?
@@ -747,7 +738,6 @@ test_queue_changes_from_another_session_refuse() {
             "$out" "$verb names who may change the queue" || return 1
     done
     assert_eq "1" "$(RQUEUE_LEN)" "the receiver's task is still queued" || return 1
-    assert_not_exists "$(RCV_META)/local/queue.declined" "the gate was not deferred" || return 1
     out=$("$CS_BIN" receiver -queue list 2>&1) || { echo "  list refused: $out"; return 1; }
     assert_output_contains "$out" "1. mine" "list still shows the queue" || return 1
 }
@@ -928,7 +918,6 @@ run_test test_send_rejects_empty_and_oversize_body
 run_test test_send_accepts_body_at_the_cap
 run_test test_send_reads_body_from_stdin
 run_test test_task_kind_waits_in_the_mailbox_not_the_queue
-run_test test_task_kind_leaves_the_declined_flag
 run_test test_queue_accept_queues_a_mailed_task_by_id
 run_test test_queue_accept_shows_the_task_without_its_control_bytes
 run_test test_queue_accept_finds_a_task_already_read
