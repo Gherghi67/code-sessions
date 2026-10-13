@@ -382,6 +382,39 @@ test_send_reads_body_from_stdin() {
     assert_output_contains "$out" "exceeds" "over-cap stdin body errors, never truncates" || return 1
 }
 
+# The byte count runs in a forked copy of the shell (a command substitution),
+# and a bash linked against libintl can die when it changes its own locale
+# there. The trace shows every assignment the shell itself made during the
+# whole send; printf writes the body's bytes and wc -c counts bytes in any
+# locale, so the count needs none.
+test_send_leaves_the_shells_own_locale_alone() {
+    local b own
+    for b in $(every_bash); do
+        PS4='+ ' "$b" -x "$CS_BIN" -msg receiver "traced send" >/dev/null 2>"$TEST_TMPDIR/trace" \
+            || { echo "  $b: traced send failed"; return 1; }
+        own="$(shell_locale_assignments "$TEST_TMPDIR/trace")"
+        assert_eq "" "$own" "$b must not assign its own locale during cs -msg" || return 1
+    done
+    assert_eq "$(every_bash | wc -l | tr -d ' ')" "$(NEW_COUNT)" "one message per bash" || return 1
+}
+
+# The cap is in bytes, whatever the locale: under UTF-8 a body of two-byte
+# characters reaches it at half as many characters. The body is printf octal
+# (U+00E9 is \303\251), so the bytes do not depend on this file's encoding.
+test_send_counts_a_multibyte_body_in_bytes() {
+    local utf8; utf8="$(utf8_locale)"
+    [ -n "$utf8" ] || return 77
+    local at_cap out rc=0
+    at_cap="$(printf '\303\251%.0s' $(seq 1 32768))"
+    out=$(printf '%sa' "$at_cap" | env LC_ALL="$utf8" "$CS_BIN" -msg receiver - 2>&1) || rc=$?
+    assert_eq "1" "$rc" "one byte over the cap is refused" || return 1
+    assert_eq "Error: Message body exceeds 65536 bytes" "$out" "the refusal names the cap" || return 1
+    assert_eq "0" "$(NEW_COUNT)" "nothing delivered for the refused body" || return 1
+    printf '%s' "$at_cap" | env LC_ALL="$utf8" "$CS_BIN" -msg receiver - >/dev/null 2>&1 \
+        || { echo "  a body of exactly 65536 bytes was refused"; return 1; }
+    assert_eq "1" "$(NEW_COUNT)" "the at-cap body is delivered" || return 1
+}
+
 RQUEUE() { printf '%s' "$CS_SESSIONS_ROOT/receiver/.cs/local/queue"; }
 
 # Count of task files in the receiver's queue (0 when the directory is absent).
@@ -796,6 +829,8 @@ run_test test_send_rejects_bad_kind
 run_test test_send_trailing_flag_errors_loudly
 run_test test_send_rejects_empty_and_oversize_body
 run_test test_send_accepts_body_at_the_cap
+run_test test_send_leaves_the_shells_own_locale_alone
+run_test test_send_counts_a_multibyte_body_in_bytes
 run_test test_send_reads_body_from_stdin
 run_test test_task_kind_waits_in_the_mailbox_not_the_queue
 run_test test_task_kind_leaves_the_declined_flag
