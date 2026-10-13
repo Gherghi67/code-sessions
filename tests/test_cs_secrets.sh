@@ -522,6 +522,32 @@ test_age_add_refuses_a_name_that_is_a_path() {
     assert_not_exists "$HOME/.cs-secrets/sessions" "no age state is created" || return 1
 }
 
+# Purge ends in an rm -rf of the session's age state under ~/.cs-secrets, so a
+# name that is a path would delete whatever it leads to: the machine key one
+# level up, a directory beside ~/.cs-secrets two levels up. Every verb that
+# takes a session refuses such a name before touching any store.
+test_session_verbs_refuse_a_name_that_is_a_path() {
+    local bindir; bindir=$(_make_fake_security)
+    mkdir -p "$HOME/.cs-secrets/sessions/test-session" "$HOME/victim"
+    printf 'keep\n' > "$HOME/victim/file.txt"
+    printf 'PRIVATE\n' > "$HOME/.cs-secrets/id_ed25519"
+    local backend name verb out rc
+    for backend in keychain encrypted; do
+        for name in ../../victim ../id_ed25519 .. test-session/x; do
+            for verb in purge list; do
+                rc=0
+                out=$(PATH="$bindir:$PATH" CS_SECRETS_BACKEND=$backend FAKE_SECURITY_MODE=empty \
+                    "$CS_SECRETS_BIN" --session "$name" "$verb" 2>&1) || rc=$?
+                assert_eq "1" "$rc" "$backend $verb exits 1 for '$name'" || return 1
+                assert_eq "Error: No session named '$name' in $CS_SESSIONS_ROOT" "$out" \
+                    "$backend $verb names '$name' and the root" || return 1
+            done
+        done
+    done
+    assert_file_exists "$HOME/victim/file.txt" "the directory beside ~/.cs-secrets survives" || return 1
+    assert_file_exists "$HOME/.cs-secrets/id_ed25519" "the machine key survives" || return 1
+}
+
 test_age_remove_refuses_a_session_the_root_does_not_have() {
     local out rc=0
     out=$("$CS_SECRETS_BIN" --session ghost age remove peer 2>&1) || rc=$?
@@ -3096,6 +3122,7 @@ run_test test_purge_drops_the_sessions_age_state
 run_test test_age_add_refuses_a_session_the_root_does_not_have
 run_test test_age_add_refuses_a_directory_that_is_not_a_session
 run_test test_age_add_refuses_a_name_that_is_a_path
+run_test test_session_verbs_refuse_a_name_that_is_a_path
 run_test test_age_remove_refuses_a_session_the_root_does_not_have
 run_test test_export_file_refuses_a_session_the_root_does_not_have
 run_test test_import_file_refuses_a_session_the_root_does_not_have
