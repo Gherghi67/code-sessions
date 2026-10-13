@@ -3988,6 +3988,39 @@ mod tests {
         }
     }
 
+    // The age pins under ~/.cs-secrets/sessions/<name>/ are keyed by the
+    // session's name. After a picker rename no pin list may be left under a
+    // name the sessions root no longer has: a later session given that name
+    // would export to every key pinned there without an `age add`.
+    #[test]
+    fn a_rename_leaves_no_age_state_under_a_name_without_a_session() {
+        use crate::session::test_root;
+        let tmp = std::env::temp_dir().join(format!("cs-test-rename-age-{}", std::process::id()));
+        let root = tmp.join("root");
+        let home = tmp.join("home");
+        std::fs::create_dir_all(root.join("proj/.cs/local")).unwrap();
+        let pins = home.join(".cs-secrets/sessions/proj");
+        std::fs::create_dir_all(&pins).unwrap();
+        std::fs::write(pins.join("age-trusted"), "0000000000000000000000000000000000000000000000000000000000000000\n")
+            .unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        let mut app = app_on(&root, "proj");
+        app.mode = Mode::Rename;
+        app.rename_input.set("proj-old");
+
+        app.execute_rename();
+
+        let mut stranded: Vec<String> = std::fs::read_dir(home.join(".cs-secrets/sessions"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| !root.join(name).exists())
+            .collect();
+        stranded.sort();
+        assert_eq!(stranded, Vec::<String>::new(), "age state left under a name with no session");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
     #[test]
     fn a_rescan_finishing_under_a_modal_waits_for_normal_mode() {
         use crate::session::test_root;
