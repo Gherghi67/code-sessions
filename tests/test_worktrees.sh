@@ -2237,6 +2237,12 @@ test_retire_keeps_untracked_work_when_a_name_does_not_decode_in_the_locale() {
     echo "done" > "$wt/result.txt"
     (cd "$wt" && git add result.txt && git commit -q -m "task")
     echo "snow" > "$wt/.cs/memory/$(printf '\342\230\203').md"
+    # The records fused at retire are UTF-8 whatever the locale: a pointer
+    # and a narrative note holding a character GBK cannot decode.
+    printf -- '- [Snow \342\200\224 notes](snow.md): a topic\n' >> "$wt/.cs/memory/MEMORY.md"
+    echo "snow topic" > "$wt/.cs/memory/snow.md"
+    printf -- '---\nname: n\n---\nbase note\n' > "$base_dir/.cs/memory/narrative.alice.md"
+    printf -- '---\nname: n\n---\nfeature note \342\200\224 done\n' > "$wt/.cs/memory/narrative.alice.md"
     sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
     # Ignored, so git lists it after the .cs entries: past the name the
     # conversion stops on.
@@ -2247,6 +2253,14 @@ test_retire_keeps_untracked_work_when_a_name_does_not_decode_in_the_locale() {
     assert_eq "0" "$status" "the retire proceeds: $output" || return 1
     assert_eq "$wt/secret.env" "$(cat "$TEST_TMPDIR/trash.log")" "the ignored file goes to the trash" || return 1
     assert_eq "valuable" "$(cat "$TEST_TMPDIR/trash-bin/1-secret.env")" "intact" || return 1
+    assert_eq "- [Snow $(printf '\342\200\224') notes](snow.md): a topic" "$(tail -n 1 "$base_dir/.cs/memory/MEMORY.md")" \
+        "the feature's pointer reaches the base index" || return 1
+    assert_eq "---
+name: n
+---
+base note
+feature note $(printf '\342\200\224') done" "$(cat "$base_dir/.cs/memory/narrative.alice.md")" \
+        "the feature's narrative note is appended to the base's" || return 1
 }
 
 run_test test_retire_keeps_untracked_work_when_a_name_does_not_decode_in_the_locale
