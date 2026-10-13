@@ -821,6 +821,68 @@ test_a_term_to_a_rename_puts_back_what_it_moved() {
 test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
 }
 
+# A signal that reaches rename after every value has moved does not end it
+# nonzero: the picker reads a nonzero exit as "still under the old name" and
+# moves the directory back over secrets that are all under the new one. Two
+# windows: the write-lock release (its `cat` of the lock) and the removal of
+# the old name's empty age directory (its `rmdir`). A stand-in pauses there
+# until the test lets it go, two seconds at most.
+test_a_signal_after_every_value_moved_does_not_end_a_rename_nonzero() {
+    local bindir; bindir=$(_make_fake_security)
+    local kc="$TEST_TMPDIR/kc-store" shim="$TEST_TMPDIR/tail-shim" tool pattern real out rc waited f services
+    _kcs() {
+        PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kc" "$CS_SECRETS_BIN" "$@"
+    }
+    printf 'value-one' > "$TEST_TMPDIR/v1"
+    for tool in cat rmdir; do
+        case "$tool" in
+            cat) pattern="*/.secrets-lock.alpha" ;;
+            rmdir) pattern="*/sessions/alpha" ;;
+        esac
+        rm -rf "$kc" "$HOME/.cs-secrets" "$shim" "$CS_SESSIONS_ROOT/bravo" "$TEST_TMPDIR/pause."*
+        mkdir -p "$CS_SESSIONS_ROOT/alpha/.cs" "$shim"
+        _kcs --session alpha set K1 < "$TEST_TMPDIR/v1" >/dev/null 2>&1 || { echo "  FAIL: fixture: set K1 failed ($tool)"; return 1; }
+        mkdir -p "$HOME/.cs-secrets/sessions/alpha"
+        printf 'pin-fingerprint\n' > "$HOME/.cs-secrets/sessions/alpha/age-trusted"
+        mv "$CS_SESSIONS_ROOT/alpha" "$CS_SESSIONS_ROOT/bravo"
+        real=$(command -v "$tool")
+        cat > "$shim/$tool" <<SHIM
+#!/usr/bin/env bash
+case "\$1" in
+    $pattern)
+        : > "$TEST_TMPDIR/pause.began"
+        n=0
+        until [ -e "$TEST_TMPDIR/pause.release" ] || [ "\$n" -ge 40 ]; do sleep 0.05; n=\$((n + 1)); done ;;
+esac
+exec "$real" "\$@"
+SHIM
+        chmod +x "$shim/$tool"
+
+        PATH="$shim:$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kc" \
+            "$CS_SECRETS_BIN" --session alpha rename bravo > "$TEST_TMPDIR/rename.out" 2>&1 &
+        local rpid=$!
+        waited=0
+        until [ -f "$TEST_TMPDIR/pause.began" ]; do sleep 0.05; waited=$((waited + 1)); [ "$waited" -gt 200 ] && break; done
+        [ -f "$TEST_TMPDIR/pause.began" ] || { echo "  FAIL: fixture: the rename never reached its $tool"; wait "$rpid"; return 1; }
+        kill -TERM "$rpid"
+        : > "$TEST_TMPDIR/pause.release"
+        rc=0
+        wait "$rpid" || rc=$?
+
+        assert_eq "0" "$rc" "the rename exits 0 after a TERM during its $tool: $(cat "$TEST_TMPDIR/rename.out")" || return 1
+        assert_eq "Moved the secrets of session 'alpha' to 'bravo'" "$(cat "$TEST_TMPDIR/rename.out")" "the rename says what it did ($tool)" || return 1
+        services=""
+        for f in "$kc"/*; do
+            [ -f "$f" ] && services="$services$(head -1 "$f") "
+        done
+        assert_eq "cs:bravo:K1 " "$services" "the entry is bravo's ($tool)" || return 1
+        assert_eq "pin-fingerprint" "$(cat "$HOME/.cs-secrets/sessions/bravo/age-trusted" 2>&1)" "the pins are bravo's ($tool)" || return 1
+        assert_not_exists "$HOME/.cs-secrets/.rename.alpha" "no marker is left ($tool)" || return 1
+        assert_eq "bravo
+test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root ($tool)" || return 1
+    done
+}
+
 run_test test_encrypted_salt_write_is_atomic_under_concurrency
 run_test test_encrypted_signal_terminates_writer_mid_critical_section
 run_test test_encrypted_purge_serialized_with_concurrent_store
@@ -834,5 +896,6 @@ run_test test_a_set_that_waited_on_the_write_lock_refuses_a_session_moved_away
 run_test test_a_term_keeps_the_write_lock_until_the_keychain_write_finishes
 run_test test_a_rename_that_waited_on_the_write_lock_refuses_over_a_move_begun_meanwhile
 run_test test_a_term_to_a_rename_puts_back_what_it_moved
+run_test test_a_signal_after_every_value_moved_does_not_end_a_rename_nonzero
 
 report_results
