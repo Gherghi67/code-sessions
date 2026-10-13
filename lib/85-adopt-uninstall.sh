@@ -642,6 +642,8 @@ run_uninstall() {
     # outlived a full uninstall and made the next install look up to date.
     local update_cache_dir="$HOME/.cache/cs"
 
+    _check_retired_command_names
+
     # Before anything is removed: refusing after the tool is gone would leave
     # the data with no cs to open it.
     _uninstall_refuse_live_sessions

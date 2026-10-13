@@ -165,6 +165,19 @@ RETIRED_COMMANDS=(
     store-secret.md         # moved to skills/store-secret; deployed only by an install from a checkout
 )
 
+# Stop with an error naming the first RETIRED_COMMANDS entry that is not a
+# plain file name. install.sh and run_uninstall join each entry onto the
+# commands directory, so one holding a path component would reach outside it;
+# both call this before they change anything.
+_check_retired_command_names() {
+    local entry
+    for entry in "${RETIRED_COMMANDS[@]}"; do
+        case "$entry" in
+            ''|.|..|*/*) error "RETIRED_COMMANDS entry '$entry' is not a file name" ;;
+        esac
+    done
+}
+
 # Skills cs ships; each deploys as ~/.claude/skills/<name>/SKILL.md.
 CS_SKILLS=(
     store-secret
@@ -1218,7 +1231,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "a212043c42d01e3053592ea69d543cd989109a9bdabbd6672abfb54342d7042b  bin/cs"
+    "5a1f24075554ea616ebd5c156d6a06934d63645ed97114e6249cd6af77610e90  bin/cs"
     "3b4626c505845d0e94961cd06e3e5400c6f497340ff93dadf88770f02ff22524  bin/cs-secrets"
     "f5c5600a9e08e623881893c5ca4f8e06d64adc5da414fbc0ad2166b6adea8775  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -1264,6 +1277,8 @@ CS_PAYLOAD_SHA256=(
 # libraries under old hooks, which still run, rather than new hooks without
 # the library they source.
 CS_HOOK_FILES=("${CS_HOOK_LIBS[@]}" "${CS_HOOKS[@]}")
+
+_check_retired_command_names
 
 # Minisign public key for verifying signed releases
 CS_SIGN_PUBKEY="RWQvs3IVdvrS8PJs0V0gwdJGPw/x5waQ6z6iqPQm90JfpxfcsSy9b9Vo"

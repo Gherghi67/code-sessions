@@ -73,6 +73,19 @@ RETIRED_COMMANDS=(
     store-secret.md         # moved to skills/store-secret; deployed only by an install from a checkout
 )
 
+# Stop with an error naming the first RETIRED_COMMANDS entry that is not a
+# plain file name. install.sh and run_uninstall join each entry onto the
+# commands directory, so one holding a path component would reach outside it;
+# both call this before they change anything.
+_check_retired_command_names() {
+    local entry
+    for entry in "${RETIRED_COMMANDS[@]}"; do
+        case "$entry" in
+            ''|.|..|*/*) error "RETIRED_COMMANDS entry '$entry' is not a file name" ;;
+        esac
+    done
+}
+
 # Skills cs ships; each deploys as ~/.claude/skills/<name>/SKILL.md.
 CS_SKILLS=(
     store-secret
