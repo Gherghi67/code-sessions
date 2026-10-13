@@ -196,6 +196,27 @@ test_live_uptime_from_lock_mtime() {
     assert_output_contains "$out" "2h" "uptime reflects the lock mtime (~2h)" || return 1
 }
 
+# Homebrew's gnubin puts GNU stat first on a Mac's PATH. The uptime still
+# comes from the lock's mtime, and a lockless session's liveness from its
+# heartbeat's, read in whichever dialect the stat on PATH speaks, not the one
+# OSTYPE names.
+test_live_uptime_with_gnu_stat_first_on_a_mac() {
+    local gnubin
+    gnubin=$(_gnu_stat_first_dir) || { echo "    SKIP: no GNU stat on this machine"; return 77; }
+    make_heartbeat_session breathing
+    make_live_session up-one
+    local lock="$CS_SESSIONS_ROOT/up-one/.cs/session.lock"
+    if ! touch -A -020000 "$lock" 2>/dev/null; then
+        touch -d "2 hours ago" "$lock" 2>/dev/null || true
+    fi
+    local out rc=0
+    out="$(PATH="$gnubin:$PATH" OSTYPE=darwin "$CS_BIN" -live 2>&1)" || rc=$?
+    assert_eq "0" "$rc" "cs -live exits 0 with GNU stat first; output: $out" || return 1
+    assert_output_contains "$out" "breathing" "the heartbeat-live session is listed" || return 1
+    assert_output_contains "$out" "up-one" "the live session is listed" || return 1
+    assert_output_contains "$out" "2h" "uptime reflects the lock mtime (~2h)" || return 1
+}
+
 test_live_empty_root_message_and_exit0() {
     rm -rf "$CS_SESSIONS_ROOT"   # exercise the [ ! -d "$SESSIONS_ROOT" ] branch
     local out rc
@@ -491,6 +512,7 @@ test_scrub_controls_leaves_the_shells_own_locale_alone() {
 }
 
 run_test test_live_includes_heartbeat_session
+run_test test_live_uptime_with_gnu_stat_first_on_a_mac
 run_test test_live_excludes_cold_heartbeat_session
 run_test test_live_includes_live_excludes_dead
 run_test test_live_shows_presence_status

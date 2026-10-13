@@ -65,6 +65,30 @@ _file_mode() {
     fi
 }
 
+# A directory whose `stat` is GNU coreutils' stat, for a caller to put first on
+# PATH the way Homebrew's gnubin does on a Mac. GNU stat reads -f as
+# --file-system and prints text instead of failing, so code that asks BSD
+# stat first reads that text. Callers also run cs with OSTYPE=darwin, so a
+# Linux runner, whose own stat is GNU, stands in for that Mac (bash keeps an
+# OSTYPE it inherits). Prints the directory; fails when this machine has no
+# GNU stat, and the caller skips.
+_gnu_stat_first_dir() {
+    local c gnu=""
+    for c in gstat /opt/homebrew/opt/coreutils/libexec/gnubin/stat \
+        /usr/local/opt/coreutils/libexec/gnubin/stat stat; do
+        c=$(command -v "$c" 2>/dev/null) || continue
+        if "$c" --version 2>/dev/null | grep -q 'GNU coreutils'; then
+            gnu="$c"
+            break
+        fi
+    done
+    [ -n "$gnu" ] || return 1
+    mkdir -p "$TEST_TMPDIR/gnubin"
+    printf '#!/bin/sh\nexec "%s" "$@"\n' "$gnu" > "$TEST_TMPDIR/gnubin/stat"
+    chmod +x "$TEST_TMPDIR/gnubin/stat"
+    printf '%s\n' "$TEST_TMPDIR/gnubin"
+}
+
 # Make a directory reject new files, and prove it did. A filesystem that does
 # not enforce the POSIX mode bits against the owner leaves the directory
 # writable after `chmod 500`, and a test modelling a FAILED write silently

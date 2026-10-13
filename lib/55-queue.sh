@@ -87,7 +87,17 @@ _queue_require_single_line() {  # text
 }
 
 _queue_add() {  # qdir, text
+    _queue_write_task "$1" "$2" \
+        || error "could not write the task into $1/queue; it is not queued"
+}
+
+# Write one task into the queue; returns 1 when the write fails, having left
+# nothing behind, and records the path of the file it wrote in _QUEUE_ADDED,
+# so a caller queueing several can take them back. A task that breaks the
+# queue's rules (empty, more than one line) is refused with an error.
+_queue_write_task() {  # qdir, text
     local qdir="$1" text="$2"
+    _QUEUE_ADDED=""
     text="$(_trim "$text")"
     [ -n "$text" ] || { error "cs -queue add needs a non-empty task"; }
     _queue_require_single_line "$text"
@@ -104,9 +114,13 @@ _queue_add() {  # qdir, text
     _QUEUE_SEQ=$((10#$_QUEUE_SEQ + 1))
     local fname
     fname="$(printf '%010d' "$(date +%s)")-$$-$(printf '%04d' "$_QUEUE_SEQ")-${RANDOM}"
-    printf '%s\n' "$text" > "$qdir/queue.tmp/$fname" \
-        && mv "$qdir/queue.tmp/$fname" "$qdir/queue/$fname"
-    rm -f "$qdir/queue.declined"   # queue changed: allow the gate to re-ask
+    # errexit does not see a failed left operand, so the failure is returned.
+    if ! { printf '%s\n' "$text" > "$qdir/queue.tmp/$fname" \
+            && mv "$qdir/queue.tmp/$fname" "$qdir/queue/$fname"; }; then
+        rm -f "$qdir/queue.tmp/$fname"
+        return 1
+    fi
+    _QUEUE_ADDED="$qdir/queue/$fname"
 }
 
 # Queue a task that arrived as task-kind mail, by its message id. The user's
@@ -121,20 +135,31 @@ _queue_add() {  # qdir, text
 # kill after the receipt loses the queued copy instead, which the error names
 # and the user can redo by hand; a lost copy is visible, a replay is not.
 _queue_accept() {  # qdir, message id
-    local qdir="$1" id="$2" f found="" kind body
+    local qdir="$1" id="$2" f found="" matches=0 kind body
     [ -n "$id" ] || error "cs -queue accept needs a message id (shown by cs -msg)"
+    # The shape the digest and the listing offer an accept command for: an id
+    # outside it was never shown whole, so nobody can have agreed to its mail.
     case "$id" in *[!A-Za-z0-9._-]*) error "cs -queue accept: $id is not a message id";; esac
+    [ "${#id}" -le 40 ] || error "cs -queue accept: $id is not a message id"
+    # Every document is read: an id two mails share names neither of them.
     for f in "$qdir"/mail/new/*.json "$qdir"/mail/cur/*.json; do
         [ -f "$f" ] || continue
         # A document that is not the one asked for, or not JSON, prints nothing.
         if [ "$(jq -r --arg id "$id" 'select(.id == $id) | "found"' "$f" 2>/dev/null)" = found ]; then
             found="$f"
-            break
+            matches=$((matches + 1))
         fi
     done
     [ -n "$found" ] || error "no mail with id $id in this session's mailbox"
-    kind=$(jq -r '.kind // "text" | if type == "string" then . else tostring end' "$found")
-    [ "$kind" = "task" ] || error "message $id is $kind mail, not a task; only task-kind mail can be queued"
+    [ "$matches" -eq 1 ] || error "$matches mails in this session's mailbox carry the id $id; cs -queue accept cannot tell which one was meant"
+    # The kind is judged inside jq, on the document's own value: $( ) drops a
+    # trailing newline and a NUL, so "task\n" would read as task out here
+    # while the digest and the listing, which compare the whole string, show
+    # it no accept command. Any other kind comes back marked, with every byte
+    # outside a plain word replaced, for the refusal to name.
+    kind=$(jq -r '(.kind // "text") | if . == "task" then "task"
+        else "other:" + ((if type == "string" then . else tostring end) | gsub("[^A-Za-z0-9._-]"; "_"))[0:16] end' "$found")
+    [ "$kind" = "task" ] || error "message $id is ${kind#other:} mail, not a task; only task-kind mail can be queued"
     body=$(jq -r '.body // "" | if type == "string" then . else tostring end' "$found")
     body="$(_trim "$body")"
     [ -n "$body" ] || error "message $id carries an empty task"
@@ -164,14 +189,15 @@ _queue_accept() {  # qdir, message id
         error "could not write the task into $qdir/queue; its accept is recorded, so re-queue it with: cs -queue add"
     fi
     _cs_unlock "$lock"
-    rm -f "$qdir/queue.declined"   # the user's accept re-opens the gate
     # Accepting is reading: the message leaves new/ so it neither wakes nor
     # digests again. A failed move leaves it unread, which over-shows the
     # accept command but never re-queues.
     case "$found" in
         "$qdir"/mail/new/*) mv "$found" "$qdir/mail/cur/" 2>/dev/null || true ;;
     esac
-    info "queued: $body"
+    # The body is another session's text on its way to this terminal: shown
+    # scrubbed, while the queued file keeps it as mailed.
+    info "queued: $(printf '%s' "$body" | _scrub_controls)"
 }
 
 # Count of queued task files ([ -f ] also guards bash 3.2's literal
@@ -215,9 +241,7 @@ _queue_rm() {  # qdir, index
     case "$n" in ''|*[!0-9]*) error "cs -queue rm needs a task number";; esac
     len=$(_queue_len "$qdir")
     [ "$len" -gt 0 ] || { error "queue is empty"; }
-    # Refuse before touching anything: an index past the end used to fall
-    # through the loop silently and still clear queue.declined below, re-arming
-    # the gate so a later drain ran the task the user believed they had removed.
+    # Refuse before touching anything: an index past the end names no task.
     if [ "$n" -lt 1 ] || [ "$n" -gt "$len" ]; then
         error "no task $n in the queue (1-$len)"
     fi
@@ -230,13 +254,12 @@ _queue_rm() {  # qdir, index
             break
         fi
     done
-    rm -f "$qdir/queue.declined"
 }
 
 _queue_clear() {  # qdir
     local qdir="$1"
     rm -rf "$qdir/queue" "$qdir/queue.tmp"
-    rm -f "$qdir/queue.state" "$qdir/queue.declined" "$qdir/queue.mode" "$qdir/queue.failed"
+    rm -f "$qdir/queue.state" "$qdir/queue.mode" "$qdir/queue.failed" "$qdir/queue.current"
 }
 
 # Arms the queue and records how its tasks run: in the conversation (no mode
@@ -259,14 +282,16 @@ _queue_log() {  # qdir
         return 0
     fi
     # Tolerant per-line parse (torn lines skipped); oldest-first is file order.
-    jq -rR '
-        fromjson? // empty |
+    # Read whole and split inside jq: jq 1.7.1's -R splits a multibyte
+    # character at its 4096-byte read buffer.
+    jq -rn --rawfile inbox "$inbox" '
+        $inbox | split("\n")[] | fromjson? // empty |
         (.ts | strflocaltime("%Y-%m-%d %H:%M")) + "  " + .event +
         (if .task then ": " + .task
          elif .reason then ": " + .reason + " (" + (.reading|tostring) + " >= " + (.limit|tostring) + "), " + (.remaining|tostring) + " remaining"
          elif .done then ": " + (.done|tostring) + " done"
          else "" end)
-    ' "$inbox" | _scrub_controls
+    ' | _scrub_controls
 }
 
 # Dispatcher. Runs inside a session (env) or via the session-scoped arm.
@@ -294,9 +319,6 @@ run_queue() {
         rm)    shift; _queue_rm "$qdir" "${1:-}";;
         clear) _queue_clear "$qdir";;
         start) shift; _queue_start "$qdir" "${1:-}";;
-        defer) mkdir -p "$qdir"; cs_write_atomic "$qdir/queue.declined" printf '%s\n' "$(date +%s)"
-               _append_record "$qdir/notifications.jsonl" \
-                   --arg ts "$(date +%s)" '{ts: ($ts|tonumber), event: "gate_declined"}';;
         log)   _queue_log "$qdir";;
         *)     error "Usage: cs -queue [add \"<task>\" | accept <message id> | list | rm <n> | clear | log | start [subagents|workflow]]";;
     esac

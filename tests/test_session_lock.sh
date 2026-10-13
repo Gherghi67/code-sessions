@@ -196,6 +196,53 @@ test_session_end_keeps_the_lock_for_a_child_that_inherited_the_contract() {
         "a nested claude that inherited the contract must not strip the lead's lock" || return 1
 }
 
+# A second terminal force-opened the session (--force or the collision menu's
+# force start), so the lock names that launch now. The first launch's lead
+# conversation then ends: the lock is not its own, and removing it leaves the
+# live session unlocked, so `cs -rm` deletes it under the second claude.
+test_session_end_leaves_the_lock_a_forced_open_took() {
+    create_lock_test_session "test-session"
+    local meta_dir="$CS_SESSIONS_ROOT/test-session/.cs"
+
+    sleep 300 &
+    local forced_pid=$!
+    echo "$forced_pid" > "$meta_dir/session.lock"
+
+    export CLAUDE_SESSION_NAME="test-session"
+    export CLAUDE_SESSION_DIR="$CS_SESSIONS_ROOT/test-session"
+    export CLAUDE_SESSION_META_DIR="$meta_dir"
+
+    # The ending claude is the first launch's lead: CLAUDE_PID is its launch pid.
+    echo '{"session_id": "lead-a", "reason": "other"}' \
+        | CS_RESOLVED_FROM=env CS_LEAD_PID=$$ CLAUDE_PID=$$ "$SCRIPT_DIR/../hooks/session-end.sh"
+    local kept
+    kept=$(cat "$meta_dir/session.lock" 2>/dev/null)
+    kill "$forced_pid" 2>/dev/null
+
+    assert_eq "$forced_pid" "$kept" \
+        "a lead whose lock a forced open replaced must leave that live lock" || return 1
+}
+
+# The lead ends and the lock names a launch that has since died (it crashed
+# after a forced open): the lock is stale, so the lead clears it, as a hook
+# that walked in would.
+test_session_end_lead_clears_a_stale_lock_it_does_not_own() {
+    create_lock_test_session "test-session"
+    local meta_dir="$CS_SESSIONS_ROOT/test-session/.cs" dead
+    bash -c 'exit 0' & dead=$!; wait "$dead"
+    echo "$dead" > "$meta_dir/session.lock"
+
+    export CLAUDE_SESSION_NAME="test-session"
+    export CLAUDE_SESSION_DIR="$CS_SESSIONS_ROOT/test-session"
+    export CLAUDE_SESSION_META_DIR="$meta_dir"
+
+    echo '{"session_id": "lead-a", "reason": "other"}' \
+        | CS_RESOLVED_FROM=env CS_LEAD_PID=$$ CLAUDE_PID=$$ "$SCRIPT_DIR/../hooks/session-end.sh"
+
+    assert_not_exists "$meta_dir/session.lock" \
+        "a dead holder's lock is cleared when the lead ends" || return 1
+}
+
 # The same child on a machine where ps cannot name its parent: nothing shows
 # it to be the lead, so its end still leaves a live holder's lock. The
 # stand-in leaves a file behind, so the test knows which ps answered.
@@ -821,6 +868,137 @@ SHIM
     wait "$pid_open" 2>/dev/null || true
 }
 
+# A forced open decides to replace a live lock after it lets the openers' mutex
+# go, since the collision menu waits on a person. The lead's SessionEnd may
+# take the mutex in that gap and read its own pid from the lock. If the forced
+# open then writes its pid without the mutex, the lead's remove deletes the
+# forced open's lock, and the session runs on unlocked. The forced open is
+# paused at its override warning, the hook inside its rm by a stand-in rm that
+# waits on a gate file; the forced open is let go first.
+test_forced_open_lock_survives_the_lead_ending_meanwhile() {
+    create_lock_test_session "lockforce"
+    local meta_dir="$CS_SESSIONS_ROOT/lockforce/.cs" shim="$TEST_TMPDIR/rmshim-force"
+    local hook_paused="$TEST_TMPDIR/force-hookrm.paused" hook_gate="$TEST_TMPDIR/force-hookrm.gate"
+    local open_paused="$TEST_TMPDIR/force-open.paused" open_gate="$TEST_TMPDIR/force-open.gate"
+    local opener_pid="$TEST_TMPDIR/force-open.pid" lead pid_hook pid_open i=0
+    sleep 300 &
+    lead=$!
+    echo "$lead" > "$meta_dir/session.lock"
+    mkdir -p "$shim"
+    cat > "$shim/rm" <<SHIM
+#!/bin/bash
+case "\$*" in
+    *"/session.lock") touch "$hook_paused"; until [ -e "$hook_gate" ]; do sleep 0.05; done ;;
+esac
+exec /bin/rm "\$@"
+SHIM
+    chmod +x "$shim/rm"
+    LOCK_LIB="$SCRIPT_DIR/../lib" LOCK_META="$meta_dir" PAUSED="$open_paused" GATE="$open_gate" \
+        OPENER_PID="$opener_pid" bash -c '
+        . "$LOCK_LIB/05-term.sh"
+        . "$LOCK_LIB/02-shared.sh"
+        . "$LOCK_LIB/15-lock.sh"
+        cs_interactive() { return 1; }
+        warn() { touch "$PAUSED"; until [ -e "$GATE" ]; do sleep 0.05; done; }
+        echo "$$" > "$OPENER_PID"
+        acquire_session_lock "$LOCK_META" true lockforce >/dev/null 2>&1
+    ' &
+    pid_open=$!
+    until [ -e "$open_paused" ] || [ "$i" -ge 200 ]; do sleep 0.05; i=$((i + 1)); done
+    assert_file_exists "$open_paused" "the forced open reached its override" \
+        || { touch "$open_gate" "$hook_gate"; kill "$lead"; wait; return 1; }
+    echo '{"session_id": "lead-a", "reason": "other"}' | PATH="$shim:$PATH" CLAUDE_SESSION_NAME=lockforce \
+        CLAUDE_SESSION_DIR="$CS_SESSIONS_ROOT/lockforce" CLAUDE_SESSION_META_DIR="$meta_dir" \
+        CS_RESOLVED_FROM=env CS_LEAD_PID="$lead" CLAUDE_PID="$lead" \
+        "$SCRIPT_DIR/../hooks/session-end.sh" >/dev/null 2>&1 &
+    pid_hook=$!
+    i=0
+    until [ -e "$hook_paused" ] || [ "$i" -ge 200 ]; do sleep 0.05; i=$((i + 1)); done
+    assert_file_exists "$hook_paused" "the lead's SessionEnd reached its remove of its own lock" \
+        || { touch "$open_gate" "$hook_gate"; kill "$lead"; wait; return 1; }
+    # The forced open goes on while the hook holds the mutex. Without the mutex
+    # it writes its pid at once; with it, it waits, and the hook is let go
+    # after a look of one to two seconds, well inside the five the open waits
+    # on the mutex.
+    local opener rc_open=0 deadline
+    opener=$(cat "$opener_pid")
+    touch "$open_gate"
+    deadline=$((SECONDS + 2))
+    until [ "$(cat "$meta_dir/session.lock" 2>/dev/null)" = "$opener" ] || [ "$SECONDS" -ge "$deadline" ]; do
+        sleep 0.05
+    done
+    touch "$hook_gate"
+    wait "$pid_hook" 2>/dev/null || true
+    wait "$pid_open" 2>/dev/null || rc_open=$?
+    kill "$lead" 2>/dev/null
+    assert_eq "0" "$rc_open" "the forced open took the lock" || return 1
+    assert_eq "$opener" "$(cat "$meta_dir/session.lock" 2>/dev/null)" \
+        "the forced open still holds the lock after the lead's SessionEnd" || return 1
+}
+
+# An open that is cancelled, at the resume prompt for one, clears its own lock
+# from cs's exit trap: it reads the pid in the lock and removes the file when
+# the pid is its own. A forced open in another terminal may replace the lock in
+# between. If the cleanup reads and removes without the openers' mutex, its
+# remove deletes the forced open's lock, and that session runs on unlocked:
+# cs -rm, -archive and -spawn no longer see it as live. The cleanup is paused
+# inside its rm by a stand-in rm that waits on a gate file, and the forced
+# open is started meanwhile.
+test_cancelled_open_cleanup_leaves_the_lock_a_forced_open_took_meanwhile() {
+    create_lock_test_session "lockcancel"
+    local meta_dir="$CS_SESSIONS_ROOT/lockcancel/.cs" shim="$TEST_TMPDIR/rmshim-cancel"
+    local rm_paused="$TEST_TMPDIR/cancel-rm.paused" rm_gate="$TEST_TMPDIR/cancel-rm.gate"
+    local opener_pid="$TEST_TMPDIR/cancel-open.pid" pid_cancel pid_open i=0
+    mkdir -p "$shim"
+    cat > "$shim/rm" <<SHIM
+#!/bin/bash
+case "\$*" in
+    *"/session.lock") touch "$rm_paused"; until [ -e "$rm_gate" ]; do sleep 0.05; done ;;
+esac
+exec /bin/rm "\$@"
+SHIM
+    chmod +x "$shim/rm"
+    PATH="$shim:$PATH" LOCK_LIB="$SCRIPT_DIR/../lib" LOCK_META="$meta_dir" bash -c '
+        . "$LOCK_LIB/05-term.sh"
+        . "$LOCK_LIB/02-shared.sh"
+        . "$LOCK_LIB/15-lock.sh"
+        echo "$$" > "$LOCK_META/session.lock"
+        trap "release_session_lock \"\$LOCK_META\"" EXIT
+        exit 0
+    ' >/dev/null 2>&1 &
+    pid_cancel=$!
+    until [ -e "$rm_paused" ] || [ "$i" -ge 200 ]; do sleep 0.05; i=$((i + 1)); done
+    assert_file_exists "$rm_paused" "the cancelled open's cleanup reached its remove of its own lock" \
+        || { touch "$rm_gate"; wait; return 1; }
+    LOCK_LIB="$SCRIPT_DIR/../lib" LOCK_META="$meta_dir" OPENER_PID="$opener_pid" bash -c '
+        . "$LOCK_LIB/05-term.sh"
+        . "$LOCK_LIB/02-shared.sh"
+        . "$LOCK_LIB/15-lock.sh"
+        cs_interactive() { return 1; }
+        warn() { :; }
+        echo "$$" > "$OPENER_PID"
+        acquire_session_lock "$LOCK_META" true lockcancel >/dev/null 2>&1
+    ' &
+    pid_open=$!
+    # The forced open goes on while the cleanup sits in its rm. Without the
+    # mutex around the cleanup it writes its pid at once; with it, it waits,
+    # and the cleanup is let go after a look of one to two seconds, well
+    # inside the five the open waits on the mutex.
+    local opener="" rc_open=0 deadline
+    deadline=$((SECONDS + 2))
+    until { [ -s "$opener_pid" ] && [ "$(cat "$meta_dir/session.lock" 2>/dev/null)" = "$(cat "$opener_pid")" ]; } \
+        || [ "$SECONDS" -ge "$deadline" ]; do
+        sleep 0.05
+    done
+    touch "$rm_gate"
+    wait "$pid_cancel" 2>/dev/null || true
+    wait "$pid_open" 2>/dev/null || rc_open=$?
+    opener=$(cat "$opener_pid" 2>/dev/null)
+    assert_eq "0" "$rc_open" "the forced open took the lock" || return 1
+    assert_eq "$opener" "$(cat "$meta_dir/session.lock" 2>/dev/null)" \
+        "the forced open still holds the lock after the cancelled open's cleanup" || return 1
+}
+
 # Start a process that holds <lock file> through _cs_lock until killed, with
 # no child: it blocks in bash's own read on a fifo. Its pid is MUTEX_HOLDER.
 _hold_session_mutex() {  # lock file
@@ -861,23 +1039,67 @@ test_open_refuses_when_the_lock_mutex_stays_held() {
     [ "$took" -ge 4 ] && [ "$took" -le 6 ] || { echo "  FAIL: the open refused after ${took}s, not about 5s"; return 1; }
 }
 
+# The exit trap's cleanup takes the same mutex. While another cs holds it past
+# the five-second wait, the cleanup leaves session.lock as it was, prints
+# nothing, and the trap goes on: the holder may be a forced open about to
+# write its pid, and the next open reclaims a lock whose pid is dead.
+test_cancelled_open_cleanup_leaves_the_lock_when_the_mutex_stays_held() {
+    create_lock_test_session "lockbusy"
+    local meta_dir="$CS_SESSIONS_ROOT/lockbusy/.cs" rc=0 out
+    local owner_pid="$TEST_TMPDIR/busy-owner.pid" after_trap="$TEST_TMPDIR/busy-after-trap"
+    _hold_session_mutex "$meta_dir/session.mutex.lock" || return 1
+    out=$(LOCK_LIB="$SCRIPT_DIR/../lib" LOCK_META="$meta_dir" OWNER_PID="$owner_pid" AFTER="$after_trap" bash -c '
+        set -euo pipefail
+        . "$LOCK_LIB/05-term.sh"
+        . "$LOCK_LIB/02-shared.sh"
+        . "$LOCK_LIB/15-lock.sh"
+        echo "$$" > "$LOCK_META/session.lock"
+        echo "$$" > "$OWNER_PID"
+        trap "release_session_lock \"\$LOCK_META\"; : > \"\$AFTER\"" EXIT
+        exit 0
+    ' 2>&1) || rc=$?
+    kill "$MUTEX_HOLDER" 2>/dev/null; wait "$MUTEX_HOLDER" 2>/dev/null
+    assert_eq "0" "$rc" "the exit status is the cancelled open's own" || return 1
+    assert_eq "" "$out" "the cleanup prints nothing when it cannot take the mutex" || return 1
+    assert_file_exists "$after_trap" "the exit trap ran on past the cleanup" || return 1
+    assert_eq "$(cat "$owner_pid")" "$(cat "$meta_dir/session.lock" 2>/dev/null)" \
+        "the lock file is left as it was" || return 1
+}
+
 # Earlier cs versions kept the mutex as a directory, .cs/session.lock.d,
 # holding a pid. One left on disk, even naming a live process, is not the
 # mutex: an open goes ahead at once and leaves it as it was. The mutex file
 # an open leaves behind is ignored by the session's .gitignore, so it is
-# never committed.
+# never committed. "At once" is read from what the open runs, not the clock:
+# taking a directory lock means a mkdir of it, and waiting on its holder
+# means polling with sleep, so stand-ins on PATH log every mkdir naming the
+# directory and every sleep, and both logs stay empty.
 test_open_ignores_a_mutex_directory_and_leaves_its_mutex_file_ignored() {
-    local session_dir="$CS_SESSIONS_ROOT/lockdir" meta_dir rc=0 start took
+    local session_dir="$CS_SESSIONS_ROOT/lockdir" meta_dir rc=0
+    local shim="$TEST_TMPDIR/dirshim" calls="$TEST_TMPDIR/dirshim.log"
     meta_dir="$session_dir/.cs"
     "$CS_BIN" lockdir <<< "" >/dev/null 2>&1 || { echo "  FAIL: the first launch failed"; return 1; }
     rm -f "$meta_dir/session.lock"
     mkdir "$meta_dir/session.lock.d"
     echo "$$" > "$meta_dir/session.lock.d/pid"
-    start=$SECONDS
-    "$CS_BIN" lockdir <<< "" >/dev/null 2>&1 || rc=$?
-    took=$((SECONDS - start))
+    mkdir -p "$shim"
+    : > "$calls"
+    cat > "$shim/mkdir" <<SHIM
+#!/bin/bash
+case "\$*" in
+    *session.lock.d*) echo "mkdir \$*" >> "$calls" ;;
+esac
+exec "$(command -v mkdir)" "\$@"
+SHIM
+    cat > "$shim/sleep" <<SHIM
+#!/bin/bash
+echo "sleep \$*" >> "$calls"
+exec "$(command -v sleep)" "\$@"
+SHIM
+    chmod +x "$shim/mkdir" "$shim/sleep"
+    PATH="$shim:$PATH" "$CS_BIN" lockdir <<< "" >/dev/null 2>&1 || rc=$?
     assert_eq "0" "$rc" "the open succeeds beside a mutex directory" || return 1
-    [ "$took" -le 3 ] || { echo "  FAIL: the open waited on the directory (took ${took}s)"; return 1; }
+    assert_eq "" "$(cat "$calls")" "the open neither took nor waited on the directory" || return 1
     assert_eq "$$" "$(cat "$meta_dir/session.lock.d/pid")" "the directory is left as it was" || return 1
     assert_file_exists "$meta_dir/session.mutex.lock" "the open took the mutex file" || return 1
     git -C "$session_dir" check-ignore -q .cs/session.mutex.lock \
@@ -888,7 +1110,10 @@ run_test test_lock_created_on_launch
 run_test test_simultaneous_opens_take_the_lock_in_turn
 run_test test_stale_lock_reclaim_does_not_remove_a_newer_holders_lock
 run_test test_session_end_stale_clear_does_not_remove_a_newer_holders_lock
+run_test test_forced_open_lock_survives_the_lead_ending_meanwhile
+run_test test_cancelled_open_cleanup_leaves_the_lock_a_forced_open_took_meanwhile
 run_test test_open_refuses_when_the_lock_mutex_stays_held
+run_test test_cancelled_open_cleanup_leaves_the_lock_when_the_mutex_stays_held
 run_test test_open_ignores_a_mutex_directory_and_leaves_its_mutex_file_ignored
 run_test test_lock_prevents_duplicate_session
 run_test test_stale_lock_is_reclaimed
@@ -896,6 +1121,8 @@ run_test test_force_overrides_live_lock
 run_test test_lock_cleaned_on_session_end
 run_test test_session_end_keeps_the_lock_for_a_child_that_inherited_the_contract
 run_test test_session_end_keeps_the_lock_when_the_parent_cannot_be_read
+run_test test_session_end_leaves_the_lock_a_forced_open_took
+run_test test_session_end_lead_clears_a_stale_lock_it_does_not_own
 run_test test_session_end_keeps_the_lock_for_clear_and_resume
 run_test test_session_end_leaves_a_live_lock_it_does_not_own
 run_test test_session_end_clears_a_stale_lock_even_when_walked_in

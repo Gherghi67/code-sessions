@@ -379,6 +379,30 @@ SLOWEOF
     fi
 }
 
+# The agy arm passes a prompt line longer than 4 KB to the CLI byte for byte,
+# and writes back a rewrite that long the same way: jq 1.7.1's -R splits a
+# multibyte character 4095 bytes into a line. Both texts put U+00E9 across that
+# point at the two possible offsets. The fake agy records what it was handed
+# and answers with a rewrite read from a file.
+test_the_agy_rewriter_carries_long_multibyte_lines_whole() {
+    unset CS_REWRITE_CMD
+    local bin="$TEST_TMPDIR/bin" lead prompt answer f
+    mkdir -p "$bin"
+    printf '#!/bin/bash\ncat > "%s/agy.stdin"\ncat "%s/agy.answer"\n' "$TEST_TMPDIR" "$TEST_TMPDIR" > "$bin/agy"
+    chmod +x "$bin/agy"
+    for lead in "" "a"; do
+        prompt="$lead$(python3 -c "print('\u00e9' * 3000, end='')")"
+        answer="${lead}b$(python3 -c "print('\u00e9' * 3000, end='')")"
+        jq -nc --arg r "$answer" '{event:"result", result:{status:"SUCCESS", response:$r}}' > "$TEST_TMPDIR/agy.answer"
+        f=$(composer_file "$prompt")
+        PATH="$bin:$PATH" XDG_CACHE_HOME="$TEST_TMPDIR/cache" CS_REWRITE_PROVIDER=gemini \
+            "$SHIM" "$f" >/dev/null 2>&1
+        assert_eq "$prompt" "$(jq -r '.message.content | split("\n\n") | last' "$TEST_TMPDIR/agy.stdin")" \
+            "the prompt reaches agy as typed (lead '$lead')" || return 1
+        assert_eq "$answer" "$(cat "$f")" "the rewrite lands as agy wrote it (lead '$lead')" || return 1
+    done
+}
+
 # The provider knob picks which shipped rewriter runs. A fake agy on PATH stands
 # in for the vendor CLI so the assertion is about the shim's routing and never
 # makes a live call.
@@ -681,6 +705,7 @@ run_test test_clarify_disable_does_not_suppress_the_rewriter
 run_test test_prompt_text_is_data_not_code
 run_test test_shim_never_leaves_a_temp_file_behind
 run_test test_the_provider_knob_selects_the_vendor_rewriter
+run_test test_the_agy_rewriter_carries_long_multibyte_lines_whole
 run_test test_an_explicit_rewrite_cmd_outranks_the_provider_knob
 run_test test_an_unknown_provider_falls_back_to_the_default_rewriter
 run_test test_claude_api_routes_to_the_vendor_rewriter

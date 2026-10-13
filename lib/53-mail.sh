@@ -140,6 +140,17 @@ _mail_send() {  # target, [--kind|-k KIND] [--reply THREAD] body
         fi
     fi
     command -v jq >/dev/null 2>&1 || error "jq is required for cs -msg"
+    # The sender is whatever the environment says, and it reaches the
+    # recipient's wake and listing, so it must be a name cs gives a session,
+    # as cs -spawn requires of its spawner. An empty one is a send from
+    # outside any session, recorded as from "".
+    local sender="${CLAUDE_SESSION_NAME:-}"
+    if [ -n "$sender" ] && ! cs_split_worktree_name "$sender"; then
+        # validate_session_name exits on a bad name; a subshell turns that
+        # into a status so the error can name where the name came from.
+        ( validate_session_name "$sender" ) >/dev/null 2>&1 \
+            || error "cs -msg: CLAUDE_SESSION_NAME is not a session name: $sender"
+    fi
     validate_session_ref "$target"
     local target_dir="$SESSIONS_ROOT/$target"
     is_session_dir "$target_dir" || error "No such session: $target"
@@ -197,16 +208,19 @@ _mail_send() {  # target, [--kind|-k KIND] [--reply THREAD] body
         thread="$(_mail_new_thread "$roots")"
     fi
     # The body rides on stdin, never as an --arg: `cs -msg <target> -` exists
-    # precisely so a multi-KB handoff need not go through argv, and putting it
-    # back into jq's argv undid that. -Rs makes the whole of stdin one string,
-    # byte for byte, and printf adds nothing to it.
-    if ! line=$(printf '%s' "$body" | jq -cRs --arg id "$id" --argjson ts "$now" \
+    # precisely so a multi-KB handoff need not go through argv. It is read with
+    # --rawfile /dev/stdin rather than -R: jq 1.7.1's -R splits a multibyte
+    # character at its 4096-byte read buffer and stores a replacement character
+    # in its place, while --rawfile reads the whole input byte for byte. No
+    # temporary file holds it, so a body bound for an encrypted session's vault
+    # is never written in plaintext outside it. printf adds nothing to it.
+    if ! line=$(printf '%s' "$body" | jq -cn --rawfile body /dev/stdin --arg id "$id" --argjson ts "$now" \
         --arg thread "$thread" --arg to "$target" --arg parent "$reply_parent" \
         --arg from "${CLAUDE_SESSION_NAME:-}" --arg actor "$(cs_actor_slug)" \
         --arg kind "$kind" \
         '{id:$id, ts:$ts, thread:$thread,
           in_reply_to:(if $parent == "" then null else $parent end),
-          to:$to, from:$from, actor:$actor, kind:$kind, body:.}'); then
+          to:$to, from:$from, actor:$actor, kind:$kind, body:$body}'); then
         error "Failed to compose the message for $target"
     fi
     # Zero-padded epoch keeps lexical order aligned with time order; NOT a
@@ -230,12 +244,15 @@ _mail_send() {  # target, [--kind|-k KIND] [--reply THREAD] body
 # message this session received. Direction is taken from the record rather than
 # the file's directory, which keeps this a single line-oriented jq pass over
 # every document — and with no early-exit consumer, no SIGPIPE risk on big mail.
+# The documents are read whole with --rawfile and split into lines inside jq:
+# jq 1.7.1's -R splits a multibyte character at its 4096-byte read buffer and
+# shows a replacement character in its place.
 # The thread id is rendered because an agent cannot reply into a thread whose id
 # it was never shown; a received task carries its accept command for the same
 # reason.
 _mail_print_files() {  # file...
-    cat "$@" | jq -rR --arg me "${CLAUDE_SESSION_NAME:-}" '
-        fromjson? // empty |
+    cat "$@" | jq -rn --rawfile docs /dev/stdin --arg me "${CLAUDE_SESSION_NAME:-}" '
+        $docs | split("\n")[] | fromjson? // empty |
         (if $me != "" and (.from // "") == $me then "->" else "<-" end) as $dir |
         # The peer is whatever the sending process said it was: flattened and
         # cut inside jq so a forged name cannot start a line of its own.
@@ -246,7 +263,12 @@ _mail_print_files() {  # file...
         (.ts | if type == "number" then strflocaltime("%H:%M") else "--:--" end) + "  " +
         $dir + " " + $peer + "  [" + (.kind // "text") + "]  (" + (.thread // "------") + ")  " +
         ((.body // "") | gsub("[\n\r]"; " ")) +
+        # Only an id cs -queue accept takes whole: 1 to 40 of A-Z a-z 0-9 . _ -.
+        # Judged by what is left once those are deleted, since a regex "$"
+        # also matches before a final newline.
         (if $dir == "<-" and .kind == "task" and (.id | type) == "string"
+            and (.id | length) >= 1 and (.id | length) <= 40
+            and (.id | gsub("[A-Za-z0-9._-]"; "")) == ""
          then "  (accept into the queue: cs -queue accept " + .id + ")" else "" end)
     ' | _scrub_controls
 }

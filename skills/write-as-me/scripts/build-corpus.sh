@@ -84,8 +84,13 @@ while IFS= read -r f; do
     [ -n "$f" ] || continue
     files_scanned=$((files_scanned + 1))
     proj="$(basename "$(dirname "$f")")"
-    if ! jq -cR --arg proj "$proj" --argjson paste "$PASTE_CHARS" "$LOOKS_SECRET_DEF"'
-        fromjson? | select(type == "object")
+    # Read whole with --rawfile and split inside jq, not line by line with -R:
+    # jq 1.7.1's -R splits a multibyte character 4095 bytes into a line and
+    # puts a replacement character in its place, and a transcript line runs
+    # that long whenever a message carries tool output or an image.
+    if ! jq -cn --rawfile t "$f" --arg proj "$proj" --argjson paste "$PASTE_CHARS" "$LOOKS_SECRET_DEF"'
+        $t | split("\n")[]
+        | fromjson? | select(type == "object")
         | select(.type == "user")
         | select((.isMeta // false) | not)
         | select((.isSidechain // false) | not)
@@ -122,7 +127,7 @@ while IFS= read -r f; do
                         | map(if looks_secret then "[redacted line]" else . end)
                         | join("\n"))
                   end)}
-    ' "$f" >> "$workdir/all.jsonl" 2>/dev/null; then
+    ' >> "$workdir/all.jsonl" 2>/dev/null; then
         files_failed=$((files_failed + 1))
     fi
 done < "$workdir/files"
@@ -187,8 +192,11 @@ for src in "$VOICE_DIR/sources/"*.md; do
     [ -f "$src" ] || continue
     {
         printf '\n## Supplementary source: %s\n\n' "$(basename "$src")"
+        # Whole, for the reason the transcript read gives; the final newline is
+        # dropped before the split so it adds no empty line of its own.
         awk 'NR == 1 && /^# / { next } { print }' "$src" \
-            | jq -rR "$LOOKS_SECRET_DEF"' if looks_secret then "[redacted line]" else . end'
+            | jq -rn --rawfile s /dev/stdin "$LOOKS_SECRET_DEF"' $s | rtrimstr("\n") | split("\n")[]
+                | if looks_secret then "[redacted line]" else . end'
     } >> "$workdir/corpus.md"
 done
 
