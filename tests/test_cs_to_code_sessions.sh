@@ -2220,6 +2220,32 @@ test_a_reflog_naming_commits_the_copy_lacks_is_not_brought() {
         assert_eq 1 "$(git -C "$WAP" reflog show --format=%H "$ref" | wc -l | tr -d ' ')" \
             "$ref took a reflog naming a commit the copy lacks" || return 1
     done
+    # A rerun moves forced along: its line, like the one that added it, names the sync.
+    commit_to "$PROJECT" forced 'after the draft'
+    run_move --session wap --apply || { echo "$OUT"; return 1; }
+    assert_output_contains "$OUT" 'branches cs moved on, moved along: forced$' || { echo "$OUT"; return 1; }
+    assert_eq "$(printf 'sync: from cs\nsync: from cs')" "$(git -C "$WAP" reflog show --format=%gs forced)" || return 1
+}
+
+test_a_line_code_sessions_wrote_without_a_message_keeps_its_reflog() {
+    make_fixture
+    run_move --session wap --apply || { echo "$OUT"; return 1; }
+    local wap sha log
+    wap=$(ccs_dir wap)
+    git -C "$PROJECT" branch side
+    run_move --session wap --apply || { echo "$OUT"; return 1; }
+    sha=$(git -C "$PROJECT" commit-tree 'side^{tree}' -p side -m x)
+    git -C "$PROJECT" update-ref -m 'commit: cs moves side' refs/heads/side "$sha"
+    # code-sessions moves side there first, with plumbing that writes no message.
+    git -C "$wap" fetch -q "$PROJECT" side
+    git -C "$wap" update-ref refs/heads/side "$sha"
+    run_move --session wap --apply || { echo "$OUT"; return 1; }
+    log="$wap/.git/logs/refs/heads/side"
+    assert_eq 2 "$(wc -l < "$log" | tr -d ' ')" "side's reflog is not the copy's own" || return 1
+    if tail -n 1 "$log" | grep -q -F "$(printf '\t')"; then
+        echo "  FAIL: the copy's line for side was replaced"; return 1
+    fi
+    assert_output_not_contains "$OUT" 'reflogs only cs went on with'
 }
 
 test_a_rerun_brings_the_reflogs_only_cs_went_on_with() {
@@ -2366,6 +2392,7 @@ run_test test_a_rerun_prunes_before_it_adds_and_a_ref_it_cannot_write_stops_only
 run_test test_a_tag_a_rerun_cannot_add_stops_only_itself
 run_test test_a_reflog_naming_commits_the_copy_lacks_is_not_brought
 run_test test_a_rerun_brings_the_reflogs_only_cs_went_on_with
+run_test test_a_line_code_sessions_wrote_without_a_message_keeps_its_reflog
 run_test test_a_fetch_head_an_earlier_run_wrote_is_put_back
 run_test test_a_tag_code_sessions_deleted_stays_deleted
 report_results

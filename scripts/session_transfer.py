@@ -1236,15 +1236,20 @@ def _null_id(value):
     return value.strip(b"0") == b""
 
 
+# Reflog lines with no message from before this were a sync's: earlier versions wrote no -m.
+REFLOG_MARKED_SINCE = 1791894604
+
+
 class Reflogs:
     """Gives a ref of the copy the source's reflog, as a fresh copy has it, where the copy's holds nothing of its own.
 
     That is when the ref is where the source's is and the copy's reflog is
     the start of the source's: each of its lines one of the source's, in the
-    source's order from the first, but for lines a sync wrote (git's line for
-    an update-ref with no message, as this script's earlier versions left, or
-    "sync: from <label>"). A line the copy's own git wrote (a fetch, a commit,
-    a reset) keeps the copy's reflog as it is. Only when every commit the
+    source's order from the first, but for lines a sync wrote ("sync: from
+    <label>", or a line with no message from before REFLOG_MARKED_SINCE, as
+    this script's earlier versions left). A line the copy's own git wrote (a
+    fetch, a commit, a reset, an update-ref with no message since) keeps the
+    copy's reflog as it is. Only when every commit the
     source's reflog names is in the copy, or a dry run's ref comes with it:
     one only the source's reflog keeps (amended or rebased away) would break
     git fsck in the copy, which then keeps git's own line. A link or a file
@@ -1255,7 +1260,7 @@ class Reflogs:
 
     def __init__(self, src_repo, dst_repo, label, apply):
         self.src_repo, self.dst_repo, self.apply = src_repo, dst_repo, apply
-        self._sync_lines = (b"", ("sync: from %s" % label).encode())
+        self._sync_line = ("sync: from %s" % label).encode()
         self._dirs = None
         self.blocked = []   # folders of the copy's .git/logs that are a link or a file
 
@@ -1289,7 +1294,14 @@ class Reflogs:
 
     def _own(self, lines):
         """lines but those a sync wrote."""
-        return [line for line in lines if line.partition(b"\t")[2] not in self._sync_lines]
+        return [line for line in lines if not self._by_a_sync(line)]
+
+    def _by_a_sync(self, line):
+        head, tab, message = line.partition(b"\t")
+        if tab:
+            return message == self._sync_line
+        when = head.split(b" ")[-2:-1]
+        return bool(when) and when[0].isdigit() and int(when[0]) < REFLOG_MARKED_SINCE
 
     def due(self, ref, value, changing):
         """(the source's reflog of ref, the copy's as read) when the copy's should become the source's, else None.
@@ -1410,7 +1422,7 @@ def sync_branches(src_repo, dst_repo, recorded, apply, skip=(), label="source"):
             if r is None:
                 out.created.append(name)
                 if apply:
-                    git_ok(dst_repo, "update-ref", ref, s, "")
+                    git_ok(dst_repo, "update-ref", "-m", "sync: from %s" % label, ref, s, "")
                 out.reflogs += reflogs.bring(ref, s, True)
             # else: deleted in the copy since the last sync; it stays deleted.
             continue
@@ -1420,7 +1432,7 @@ def sync_branches(src_repo, dst_repo, recorded, apply, skip=(), label="source"):
         if how in ("taken", "behind"):
             out.moved.append(name)
             if apply:
-                git_ok(dst_repo, "update-ref", ref, s, d)
+                git_ok(dst_repo, "update-ref", "-m", "sync: from %s" % label, ref, s, d)
             if reflogs.bring(ref, s, True):
                 out.reflogs_taken.append(name)
         elif how == "ahead":
@@ -1783,7 +1795,7 @@ def _apply_refs(src_repo, dst_repo, plan, label):
             elif _is_symbolic(new):
                 git_ok(dst_repo, "symbolic-ref", ref, new[len("ref: "):])
             else:
-                git_ok(dst_repo, "update-ref", "--no-deref", ref, new)
+                git_ok(dst_repo, "update-ref", "--no-deref", "-m", "sync: from %s" % label, ref, new)
         except OSError as error:
             failed[short] = str(error)
     return failed
@@ -1909,14 +1921,14 @@ def copy_blocker(src_worktree, dst_repo, due=()):
     return None
 
 
-def sync_worktree_git(src_worktree, dst_worktree, src_repo, dst_repo, mark, heads, apply, busy=()):
+def sync_worktree_git(src_worktree, dst_worktree, src_repo, dst_repo, mark, heads, apply, busy=(), label="source"):
     """Bring the source worktree's HEAD and index over when the copy left its own alone.
 
     Returns (what, detail): same, kept (only the copy moved), taken,
     diverged (moved on both sides; diverged-seen when the source has not moved
     since that was reported) or refused, with the reason. mark holds head and
     index of the last sync; heads is the branch record, updated for a branch
-    this moves.
+    this moves. label names the source in the reflog's sync lines.
     """
     sh, si = head_state(src_worktree), index_digest(src_worktree)
     dh, di = head_state(dst_worktree), index_digest(dst_worktree)
@@ -1954,11 +1966,11 @@ def sync_worktree_git(src_worktree, dst_worktree, src_repo, dst_repo, mark, head
         # changes as staged, which loses nothing; the refs last.
         copy_index(src_worktree, dst_worktree)
         if ref != "detached":
-            git_ok(dst_repo, "update-ref", ref, sha)
+            git_ok(dst_repo, "update-ref", "-m", "sync: from %s" % label, ref, sha)
             git_ok(dst_worktree, "symbolic-ref", "HEAD", ref)
             heads[ref[len("refs/heads/"):]] = sha
         else:
-            git_ok(dst_worktree, "update-ref", "--no-deref", "HEAD", sha)
+            git_ok(dst_worktree, "update-ref", "--no-deref", "-m", "sync: from %s" % label, "HEAD", sha)
     mark.update(head=sh, index=si)
     mark.pop("diverged", None)
     return "taken", None
@@ -2240,7 +2252,7 @@ class Syncer:
             busy = {b for b, where in checked_out(dst_repo).items()
                     if os.path.realpath(where) != os.path.realpath(dst)}
             how, why = sync_worktree_git(src, dst, src_repo, dst_repo, mark, record.data.setdefault("heads", {}),
-                                         self.apply, busy)
+                                         self.apply, busy, label=self.src)
             if how == "taken":
                 ref, sha = head_state(src).split(" ", 1)
                 self.say("%s: %s %s's HEAD and index: %s at %s" % (
