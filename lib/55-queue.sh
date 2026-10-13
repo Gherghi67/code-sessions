@@ -87,7 +87,17 @@ _queue_require_single_line() {  # text
 }
 
 _queue_add() {  # qdir, text
+    _queue_write_task "$1" "$2" \
+        || error "could not write the task into $1/queue; it is not queued"
+}
+
+# Write one task into the queue; returns 1 when the write fails, having left
+# nothing behind, and records the path of the file it wrote in _QUEUE_ADDED,
+# so a caller queueing several can take them back. A task that breaks the
+# queue's rules (empty, more than one line) is refused with an error.
+_queue_write_task() {  # qdir, text
     local qdir="$1" text="$2"
+    _QUEUE_ADDED=""
     text="$(_trim "$text")"
     [ -n "$text" ] || { error "cs -queue add needs a non-empty task"; }
     _queue_require_single_line "$text"
@@ -104,12 +114,13 @@ _queue_add() {  # qdir, text
     _QUEUE_SEQ=$((10#$_QUEUE_SEQ + 1))
     local fname
     fname="$(printf '%010d' "$(date +%s)")-$$-$(printf '%04d' "$_QUEUE_SEQ")-${RANDOM}"
-    # errexit does not see a failed left operand, so the abort is explicit.
+    # errexit does not see a failed left operand, so the failure is returned.
     if ! { printf '%s\n' "$text" > "$qdir/queue.tmp/$fname" \
             && mv "$qdir/queue.tmp/$fname" "$qdir/queue/$fname"; }; then
         rm -f "$qdir/queue.tmp/$fname"
-        error "could not write the task into $qdir/queue; it is not queued"
+        return 1
     fi
+    _QUEUE_ADDED="$qdir/queue/$fname"
 }
 
 # Queue a task that arrived as task-kind mail, by its message id. The user's

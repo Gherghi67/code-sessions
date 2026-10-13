@@ -595,8 +595,23 @@ launch_claude_code() {
                 printf '%s\n' "$_spawner" > "$session_dir/.cs/local/spawned-by" 2>/dev/null \
                     || error "could not record the spawner in $session_dir/.cs/local/spawned-by (seed kept; fix it and re-open the session to retry)"
             fi
+            # A task that cannot be queued takes back the ones this open queued
+            # before it, so the seed put back is the only copy of its tasks. A
+            # take-back that fails names every file left, for the person to
+            # remove before a retry queues them again.
+            local _queued=() _left=() _f
             for _line in ${_tasks[@]+"${_tasks[@]}"}; do
-                _queue_add "$_qdir" "$_line"
+                if _queue_write_task "$_qdir" "$_line"; then
+                    _queued+=("$_QUEUE_ADDED")
+                    continue
+                fi
+                for _f in ${_queued[@]+"${_queued[@]}"}; do
+                    rm -f "$_f" 2>/dev/null && [ ! -e "$_f" ] || _left+=("$_f")
+                done
+                if [ "${#_left[@]}" -gt 0 ]; then
+                    error "could not write the task into $_qdir/queue; it is not queued, and ${#_left[@]} task(s) this open queued before it could not be taken back: ${_left[*]}. Remove them before re-opening the session, or the retry queues them again (seed kept)"
+                fi
+                error "could not write the task into $_qdir/queue; it is not queued (seed kept; the ${#_queued[@]} task(s) this open queued before it were taken back)"
             done
             # Once its tasks are queued the seed is spent: only the claimed
             # seed is deleted (one published since stays staged for its own
