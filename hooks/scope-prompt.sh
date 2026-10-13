@@ -469,7 +469,7 @@ _build_mail_digest() {  # cs files dir: .cs/local, or .cs/private in an encrypte
         "Unread mail (\($total)) - still unread, run cs -msg to clear:\n" + $note + ($lines | join("\n"))
         end
     ' 2>/dev/null) || MAIL_DIGEST=""
-    MAIL_DIGEST=$(printf '%s' "$MAIL_DIGEST" | LC_ALL=C tr -d '\000-\010\013-\037\177')
+    MAIL_DIGEST=$(printf '%s' "$MAIL_DIGEST" | env LC_ALL=C tr -d '\000-\010\013-\037\177')
 }
 
 DIGEST=""

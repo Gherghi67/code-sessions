@@ -815,18 +815,20 @@ _doctor_check_integrate_lock() {
     case "$pid" in
         0|*[!0-9]*|"") pid="" ;;
     esac
-    # kill -0 through the shell builtin, not ps: kill(2) sees a process that a
-    # restricted /proc hides from ps, and its errno tells a holder owned by
-    # another user (EPERM) from a pid that is gone (ESRCH). Only ESRCH is
-    # evidence of absence; anything else the check cannot read is unknown,
-    # and an unknown must not come with removal advice. LC_ALL=C pins the
-    # message the builtin prints, which is the only channel for the errno;
-    # it is assigned inside the subshell rather than as a command prefix
-    # because bash 3.2 does not apply a prefix assignment to a builtin's
-    # locale (probed: `$(LC_ALL=C printf "%.1f" 1)` prints 1,0 under fr_FR).
+    # kill -0, not ps: kill(2) sees a process that a restricted /proc hides
+    # from ps, and its errno tells a holder owned by another user (EPERM) from
+    # a pid that is gone (ESRCH). Only ESRCH is evidence of absence; anything
+    # else the check cannot read is unknown, and an unknown must not come with
+    # removal advice. LC_ALL=C pins the message kill prints, which is the only
+    # channel for the errno. env runs the kill on PATH (/bin/kill on macOS)
+    # with that locale in its own environment, so the shell never changes its
+    # own locale in this forked copy, which can crash a bash linked against
+    # libintl. That kill prints "kill: <pid>: No such process" or "kill:
+    # <pid>: Operation not permitted" and exits 1, and refuses a pid it cannot
+    # parse with "kill: illegal process id: <pid>", which is unknown.
     local verdict="unrecorded" err=""
     if [ -n "$pid" ]; then
-        if err=$( LC_ALL=C; kill -0 "$pid" 2>&1 ); then
+        if err=$(env LC_ALL=C kill -0 "$pid" 2>&1); then
             verdict="held"
         else
             case "$err" in
@@ -839,7 +841,7 @@ _doctor_check_integrate_lock() {
     case "$verdict" in
         held)    _doctor_ok "Integrate lock: $lock held by a running integrate (pid $pid)" ;;
         eperm)   _doctor_ok "Integrate lock: $lock held by a running integrate (pid $pid; signalling it is not permitted here, which is a process that exists)" ;;
-        unknown) _doctor_warn "Integrate lock: $lock records pid $pid and cs cannot tell whether it is running (${err##*: })" ;;
+        unknown) _doctor_warn "Integrate lock: $lock records pid $pid and cs cannot tell whether it is running (${err#kill: })" ;;
         # ESRCH is absence only in this process's pid namespace, and pids are
         # recycled, so the removal stays conditional on what the person can see.
         stale)   _doctor_warn "Integrate lock: $lock records pid $pid, which this process cannot see; the lock is probably stale. Autosave skips while it exists. Once nothing is using this checkout, clear it with: rm -r \"$lock\"" ;;

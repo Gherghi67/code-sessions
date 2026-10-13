@@ -175,7 +175,7 @@ _mail_send() {  # target, [--kind|-k KIND] [--reply THREAD] body
     target_files=$(cs_private_dir "$target_dir/.cs") \
         || error "$target keeps its mail in encrypted storage that is not mounted (.cs/private $(cs_private_state "$target_dir/.cs")). Nothing was sent."
     local bytes
-    bytes=$(LC_ALL=C printf '%s' "$body" | wc -c | tr -d '[:space:]')
+    bytes=$(printf '%s' "$body" | wc -c | tr -d '[:space:]')
     if [ "$bytes" -gt "$MAIL_BODY_MAX" ]; then
         error "Message body exceeds ${MAIL_BODY_MAX} bytes"
     fi

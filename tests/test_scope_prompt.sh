@@ -798,6 +798,28 @@ test_grep_fallback_still_classifies_chitchat_negative() {
 # nothing timed. The digests, the date and the clarify guideline still arrive;
 # the scope block is replaced by one line that says why; the trace names the
 # stage and never reaches the scan.
+# A mail body is text another session wrote: the digest drops its C0 control
+# bytes but tab and newline, and DEL, and keeps a multibyte character whole.
+# tr gets the C locale through env; the shell never changes its own locale for
+# it, which can crash a bash linked against libintl in the forked copy the
+# scrub runs in.
+test_mail_digest_scrubs_controls_without_the_shell_assigning_its_own_locale() {
+    local b utf8 _in out body own
+    utf8="$(utf8_locale)"
+    mkdir -p "$CLAUDE_SESSION_META_DIR/local/mail/new"
+    printf '%s\n' '{"id":"m1","ts":1,"from":"peer","actor":"","kind":"text","ref":null,"body":"hi \u0007there \u2014 peer\u007f"}' \
+        > "$CLAUDE_SESSION_META_DIR/local/mail/new/0000000001-m1.json"
+    _in=$(printf '%s' "fix the retry" | jq -Rs '{prompt: ., hook_event_name: "UserPromptSubmit", session_id: "sid-test"}')
+    for b in $(every_bash); do
+        out=$(env ${utf8:+"LC_ALL=$utf8"} "$b" -x "$HOOK" <<< "$_in" 2>"$TEST_TMPDIR/trace") \
+            || { echo "  FAIL: $b: hook must exit 0"; return 1; }
+        body=$(additional_context "$out" | grep -A1 '^<cs_mail id=' | sed -n 2p)
+        assert_eq "$(printf 'hi there \342\200\224 peer')" "$body" "$b: the body, scrubbed byte for byte" || return 1
+        own="$(shell_locale_assignments "$TEST_TMPDIR/trace")"
+        assert_eq "" "$own" "$b must not assign its own locale in the prompt hook" || return 1
+    done
+}
+
 test_budget_exhausted_skips_the_scan_and_keeps_the_rest() {
     seed_repo "src/api.ts"
     # Everything the front half builds is live at once: a pending queue
@@ -1224,6 +1246,7 @@ run_test test_date_note_stamp_advances_on_a_code_work_prompt_too
 
 # The deadline tests use the date-stamp helpers defined above, so they run after them.
 run_test test_budget_exhausted_skips_the_scan_and_keeps_the_rest
+run_test test_mail_digest_scrubs_controls_without_the_shell_assigning_its_own_locale
 run_test test_budget_within_runs_the_scan
 run_test test_budget_garbage_is_the_default
 run_test test_budget_of_one_millisecond_expires
