@@ -938,12 +938,16 @@ test_a_clock_from_the_environment_is_read_as_data() {
         return 77
     fi
     seed_repo "src/api.ts"
-    local in pwned="$TEST_TMPDIR/pwned" value
+    # A cs launch has made .cs/local/ by the first prompt, and the launch mark
+    # is written only into one that exists.
+    mkdir -p "$CLAUDE_SESSION_META_DIR/local"
+    local in pwned="$TEST_TMPDIR/pwned" value rc
     in=$(printf '%s' "fix the handler in src/api.ts" | jq -Rs '{prompt: ., hook_event_name: "UserPromptSubmit", session_id: "sid-test"}')
     for value in '0+HOME[$(:>"$PWNED_FILE")].5' 'soon.later'; do
         rm -f "$(_trace_file)" "$pwned"
         env EPOCHREALTIME="$value" PWNED_FILE="$pwned" CS_SCOPE_BUDGET_MS=500 \
-            "$inherits" "$HOOK" <<< "$in" >/dev/null 2>&1
+            "$inherits" "$HOOK" <<< "$in" >/dev/null 2>&1 && rc=0 || rc=$?
+        assert_eq "0" "$rc" "the hook exits 0 ($value)" || return 1
         assert_file_not_exists "$pwned" "the clock's content never runs ($value)" || return 1
         awk '$3 == "launch" && $2 ~ /^[0-9]{10}000$/ { ok = 1 } END { exit !ok }' "$(_trace_file)" \
             || { echo "  FAIL: the launch mark is whole seconds from date ($value): $(cat "$(_trace_file)" 2>/dev/null)"; return 1; }
@@ -951,7 +955,6 @@ test_a_clock_from_the_environment_is_read_as_data() {
             || { echo "  FAIL: the stage marks count whole seconds ($value): $(cat "$(_trace_file)")"; return 1; }
         assert_output_contains "$(_trace_stages)" "budget=1500" \
             "a sub-second budget takes the default on the whole-second clock ($value)" || return 1
-        assert_output_contains "$(_trace_stages)" "emit" "the run completes ($value)" || return 1
     done
 }
 
