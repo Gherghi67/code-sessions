@@ -3689,8 +3689,8 @@ _feature_readiness() {  # base_name task
     _tree_is_dirty "$base_dir" && base_dirty=1
 
     # The screen does not read either checkout's .claude/settings.local.json;
-    # the retire refuses one it cannot read, naming the file, before it
-    # removes anything.
+    # the retire refuses one it would add the feature's rules to and cannot
+    # read, naming the file, before it removes anything.
     local others conflicts=""
     others=$(_worktree_untracked_at_risk "$wt_dir") \
         || error "Could not list the untracked files in $wt_dir"
@@ -4089,13 +4089,20 @@ $conflicts"
     # ask) to its own .claude/settings.local.json, which git does not carry.
     # They go into the base's before the removal; a removal that then fails
     # leaves them there, and the retry's union changes nothing.
-    local settings
-    for settings in "$wt_dir/.claude/settings.local.json" "$base_dir/.claude/settings.local.json"; do
-        _settings_rules_readable "$settings" \
-            || error "$settings is not one JSON object, or its permissions is not an object, or its permissions.allow, deny or ask is not a list, so cs cannot add the feature's permission rules to $base_dir/.claude/settings.local.json. Nothing was removed. Fix it, then run /finish $task again."
-    done
-    _carry_permission_rules "$wt_dir" "$base_dir" \
-        || error "Could not add the feature's permission rules to $base_dir/.claude/settings.local.json; nothing was removed"
+    # The files are read only when the rules are carried: one the retire
+    # leaves alone is no reason to refuse, whatever it holds.
+    local settings carried=0
+    _permission_rules_carried "$wt_dir" "$base_dir" || carried=$?
+    if [ "$carried" = 2 ]; then
+        info "$base_dir/.claude/settings.local.json is a link, and cs writes nothing through it: the feature's permission rules were not added to it."
+    elif [ "$carried" = 0 ]; then
+        for settings in "$wt_dir/.claude/settings.local.json" "$base_dir/.claude/settings.local.json"; do
+            _settings_rules_readable "$settings" \
+                || error "$settings is not one JSON object, or its permissions is not an object, or its permissions.allow, deny or ask is not a list, so cs cannot add the feature's permission rules to $base_dir/.claude/settings.local.json. Nothing was removed. Fix it, then run /finish $task again."
+        done
+        _carry_permission_rules "$wt_dir" "$base_dir" \
+            || error "Could not add the feature's permission rules to $base_dir/.claude/settings.local.json; nothing was removed"
+    fi
 
     local aside=""
     if [ "$mode" = "ignored" ]; then
@@ -4187,22 +4194,25 @@ _settings_tracked() {  # dir
     _cs_git_at "$1" ls-files --error-unmatch -- ':(icase,literal).claude/settings.local.json' >/dev/null 2>&1
 }
 
+# Whether the retire adds the feature's permission rules to the base's
+# settings.local.json: the feature has a file, and neither checkout tracks
+# one (git carried it with the integrate, or owns the base's copy since, and
+# a union would bring back a rule the base dropped or never took). Returns 2
+# for a link at the base's path, wherever it points: the link is the user's
+# way of sharing the file, and cs writes nothing through it.
+_permission_rules_carried() {  # wt_dir base_dir
+    [ -s "$1/.claude/settings.local.json" ] || return 1
+    ! _settings_tracked "$1" || return 1
+    ! _settings_tracked "$2" || return 1
+    [ ! -L "$2/.claude/settings.local.json" ] || return 2
+}
+
 # Add the feature's permission rules to the base's settings.local.json
-# (_settings_rules_union), creating it when the base has none. Writes nothing
-# when the base already holds every rule, and nothing when either checkout
-# tracks the file: git carried it with the integrate, or owns the base's copy
-# since, and a union would bring back a rule the base dropped or never took.
-# Nor through a link at the base's path, wherever it points: the link is the
-# user's way of sharing the file, and it is left as it is, said on stdout.
+# (_settings_rules_union), creating it when the base has none, for a retire
+# _permission_rules_carried says carries them. Writes nothing when the base
+# already holds every rule.
 _carry_permission_rules() {  # wt_dir base_dir
     local feat="$1/.claude/settings.local.json" base="$2/.claude/settings.local.json" was now
-    [ -s "$feat" ] || return 0
-    ! _settings_tracked "$1" || return 0
-    ! _settings_tracked "$2" || return 0
-    if [ -L "$base" ]; then
-        info "$base is a link, and cs writes nothing through it: the feature's permission rules were not added to it."
-        return 0
-    fi
     was=$(_settings_json_or_empty "$base" | _settings_rules_count) || return 1
     now=$(_settings_rules_union "$base" "$feat" | _settings_rules_count) || return 1
     [ "$now" != "$was" ] || return 0
