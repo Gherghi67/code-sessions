@@ -1500,6 +1500,23 @@ Public key: $k1" "$out" "adding the same key again says what it holds" || return
     assert_eq "laptop.pub" "$(ls "$dir")" "no second recipient file is written" || return 1
 }
 
+# An age1... key age cannot encrypt to is refused at `age add`, before it is
+# written or pinned: pinned, it made every later export of the session fail.
+# One key is not bech32 at all; the other has the right shape and characters
+# and fails only its checksum.
+test_age_add_refuses_an_age_key_age_does_not_accept() {
+    _use_real_age || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs" candidate out rc
+    for candidate in age1notakey age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq0000000; do
+        rc=0
+        out=$("$CS_SECRETS_BIN" age add "$candidate" 2>&1) || rc=$?
+        assert_eq "1" "$rc" "age add exits 1 for '$candidate'" || return 1
+        assert_eq "Error: Invalid public key: age does not accept $candidate as a recipient" "$out" "the refusal names the key ('$candidate')" || return 1
+        assert_eq "" "$(ls "$meta/age-recipients" 2>/dev/null)" "no recipient file is written for '$candidate'" || return 1
+        assert_not_exists "$HOME/.cs-secrets/sessions/test-session/age-trusted" "nothing is pinned for '$candidate'" || return 1
+    done
+}
+
 # `age add` never offers to download age: with no age binary it fails at once,
 # pointing at `age init`, which is where the download is offered. It prompts
 # for nothing, reaches for no network, and writes no recipient, no pin and no
@@ -4291,6 +4308,7 @@ run_test test_age_remove_drops_the_pin
 run_test test_age_add_takes_an_ssh_ed25519_key_file
 run_test test_age_add_takes_a_raw_ssh_ed25519_key
 run_test test_age_add_refuses_a_different_key_under_a_recipient_name_in_use
+run_test test_age_add_refuses_an_age_key_age_does_not_accept
 run_test test_age_add_without_age_points_at_age_init
 run_test test_age_add_refuses_what_is_not_a_key
 run_test test_import_file_reads_a_file_encrypted_to_this_machines_ssh_key
