@@ -2271,7 +2271,10 @@ impl App {
             if secrets_move_unfinished(old, new) {
                 return Ok(RenameOutcome::SecretsUnfinished);
             }
-            session::undo_spawn_moves(&moved);
+            let reason = match session::undo_spawn_moves(&moved) {
+                Ok(()) => reason,
+                Err(left) => format!("{reason}; {left}"),
+            };
             return Err(undo_dir(reason));
         }
         Ok(RenameOutcome::Done)

@@ -1279,21 +1279,28 @@ pub fn move_spawn_files(root: &Path, old: &str, new: &str) -> Result<Vec<(PathBu
             })
         });
         if let Err(e) = result {
-            undo_spawn_moves(&moved);
-            return Err(format!("could not move spawn file {}: {e}", from.display()));
+            let failed = format!("could not move spawn file {}: {e}", from.display());
+            return Err(match undo_spawn_moves(&moved) {
+                Ok(()) => failed,
+                Err(left) => format!("{failed}; {left}"),
+            });
         }
         moved.push((from, to));
     }
     Ok(moved)
 }
 
-/// Put back spawn files [`move_spawn_files`] moved, newest first.
-pub fn undo_spawn_moves(moved: &[(PathBuf, PathBuf)]) {
+/// Put back spawn files [`move_spawn_files`] moved, newest first. Every move
+/// is tried; the error names each file left under the new name.
+pub fn undo_spawn_moves(moved: &[(PathBuf, PathBuf)]) -> Result<(), String> {
+    let mut left = Vec::new();
     for (from, to) in moved.iter().rev() {
-        if fs::hard_link(to, from).is_ok() {
-            let _ = fs::remove_file(to);
+        let back = fs::hard_link(to, from).and_then(|_| fs::remove_file(to));
+        if let Err(e) = back {
+            left.push(format!("could not move spawn file {} back to {}: {e}", to.display(), from.display()));
         }
     }
+    if left.is_empty() { Ok(()) } else { Err(left.join("; ")) }
 }
 
 /// Remove a worktree session (`base@task`) through git so the base repo's
