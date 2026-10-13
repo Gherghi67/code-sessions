@@ -1179,6 +1179,29 @@ test_display_width_counts_codepoints_not_bytes() {
       assert_eq "4" "$_WIDTH" "a multibyte session name should count codepoints, not bytes" )
 }
 
+# The width is counted the same way under every bash and locale, and the
+# shell never changes its own locale for it: a bash linked against libintl
+# that sets a locale of its own inside a command substitution, with no locale
+# variable set, dies of SIGSEGV. Each cell is one fresh bash with one locale
+# setting, counting "café ✳" (six codepoints) inside $( ).
+test_display_width_leaves_the_shells_own_locale_alone() {
+    local b utf8 loc out own
+    utf8="$(utf8_locale)"
+    for b in $(every_bash); do
+        for loc in ${utf8:+"LC_ALL=$utf8"} LC_ALL=C none; do
+            [ "$loc" = none ] && loc=""
+            out=$(env -i PATH="$PATH" HOME="$TEST_TMPDIR" $loc "$b" -c '
+                CS_STATUSLINE_LIB=1 . "$1" 2>/dev/null
+                set -x
+                w=$(_display_width "$2"; printf "%s" "$_WIDTH")
+                printf "%s" "$w"' x "$SL" "$(printf 'caf\303\251 \342\234\263')" 2>"$TEST_TMPDIR/trace")
+            assert_eq "6" "$out" "$b ${loc:-with no locale}: the width of the name" || return 1
+            own="$(shell_locale_assignments "$TEST_TMPDIR/trace")"
+            assert_eq "" "$own" "$b ${loc:-with no locale} must not assign its own locale in _display_width" || return 1
+        done
+    done
+}
+
 test_parse_rgb_triplet_accepts_valid_and_rejects_malformed() {
     ( _load_sl_functions
       _parse_rgb_triplet "250;248;242"
@@ -1698,6 +1721,7 @@ run_test test_ctx_zero_vs_absent
 run_test test_unknown_segment_ignored
 run_test test_session_color_never_reaches_the_bar
 run_test test_display_width_counts_codepoints_not_bytes
+run_test test_display_width_leaves_the_shells_own_locale_alone
 run_test test_parse_rgb_triplet_accepts_valid_and_rejects_malformed
 
 # ============================================================================
