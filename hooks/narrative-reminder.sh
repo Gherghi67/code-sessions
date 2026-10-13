@@ -215,13 +215,15 @@ _mail_scan() {
         # recipient it is there. One jq per document for the sender: a count
         # says mail arrived but not whose, and the recipient would otherwise
         # spend a turn on `cs -msg` just to learn whether it can wait.
-        # Truncated and stripped of separators inside jq so a forged or
-        # hand-written document cannot smuggle a newline or a comma into the
-        # rendered line, and coerced to a string so a numeric field cannot
-        # error the read. An unreadable document still wakes, nameless.
-        from=$(jq -r '(((if (.from // "") == "" then .actor else .from end) // "")
+        # Cut to 40 characters and every character outside A-Z a-z 0-9 . _ @
+        # : - replaced inside jq, as the prompt digest renders a sender, so a
+        # forged or hand-written document cannot smuggle a newline, a comma,
+        # a quote or a control byte into the rendered line; coerced to a
+        # string so a numeric field cannot error the read. An unreadable
+        # document still wakes, nameless.
+        from=$(jq -r '((if (.from // "") == "" then .actor else .from end) // "")
              | if type == "string" then . else tostring end
-             | gsub("[\n\r,]"; " "))[0:40]' "$f" 2>/dev/null || printf '')
+             | .[0:40] | gsub("[^A-Za-z0-9._@:-]"; "_")' "$f" 2>/dev/null || printf '')
         # Distinct senders only: two messages from one session is one name, and
         # repeating it answers nothing the count has not already said.
         case "$from" in
@@ -245,9 +247,12 @@ _mail_scan() {
 # every unread sender instead would cost one jq per unread document on every
 # turn end, which is the expense _mail_scan is built to avoid, and which the
 # wake ceiling makes an ordinary state rather than a rare one.
+#
+# Each name is quoted, so one that reads as words cannot run on into the
+# instruction beside it; _mail_scan leaves no quote or comma inside a name.
 _mail_from_clause() {
     [ -n "${MAIL_FROM:-}" ] || { printf ''; return 0; }
-    printf ', new from %s' "$(printf '%s' "$MAIL_FROM" | tr '\n' ',' | sed 's/,$//; s/,/, /g')"
+    printf ', new from %s' "$(printf '%s\n' "$MAIL_FROM" | sed 's/.*/"&"/' | tr '\n' ',' | sed 's/,$//; s/,/, /g')"
 }
 
 # Record the snapshot as the whole of new/, which is sound only when everything

@@ -140,6 +140,17 @@ _mail_send() {  # target, [--kind|-k KIND] [--reply THREAD] body
         fi
     fi
     command -v jq >/dev/null 2>&1 || error "jq is required for cs -msg"
+    # The sender is whatever the environment says, and it reaches the
+    # recipient's wake and listing, so it must be a name cs gives a session,
+    # as cs -spawn requires of its spawner. An empty one is a send from
+    # outside any session, recorded as from "".
+    local sender="${CLAUDE_SESSION_NAME:-}"
+    if [ -n "$sender" ] && ! cs_split_worktree_name "$sender"; then
+        # validate_session_name exits on a bad name; a subshell turns that
+        # into a status so the error can name where the name came from.
+        ( validate_session_name "$sender" ) >/dev/null 2>&1 \
+            || error "cs -msg: CLAUDE_SESSION_NAME is not a session name: $sender"
+    fi
     validate_session_ref "$target"
     local target_dir="$SESSIONS_ROOT/$target"
     is_session_dir "$target_dir" || error "No such session: $target"
