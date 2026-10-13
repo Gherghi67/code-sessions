@@ -4951,4 +4951,110 @@ mod tests {
             "a probe failure must surface on the merge screen's status line:\n{text}"
         );
     }
+
+    fn git_in(dir: &std::path::Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.email=t@example.com", "-c", "user.name=t"])
+            .args(args)
+            .output()
+            .expect("git runs");
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    /// A worktree session `proj@task` under `root`, beside its base, whose
+    /// repo tracks `src/app.ts` and ignores `node_modules/`.
+    fn worktree_session(root: &std::path::Path) -> std::path::PathBuf {
+        let base = root.join("proj");
+        std::fs::create_dir_all(base.join("src")).unwrap();
+        std::fs::write(base.join("src/app.ts"), "export {}").unwrap();
+        std::fs::write(base.join(".gitignore"), "node_modules/\n.cs/local/\n").unwrap();
+        git_in(&base, &["init", "-q"]);
+        git_in(&base, &["add", "src", ".gitignore"]);
+        git_in(&base, &["commit", "-qm", "seed"]);
+        let wt = root.join("proj@task");
+        git_in(&base, &["worktree", "add", "-q", wt.to_str().unwrap(), "-b", "cs/task"]);
+        std::fs::create_dir_all(wt.join(".cs/local")).unwrap();
+        wt
+    }
+
+    /// The delete confirm for `proj@task`, rendered: the text of each popup
+    /// row from the row holding `first` on, without the popup's borders.
+    fn delete_confirm_rows(root: &std::path::Path, width: u16, height: u16, first: &str) -> Vec<String> {
+        let _guard = crate::session::test_root::scoped(root.to_path_buf());
+        let mut app = App::new(crate::session::scan_sessions());
+        let pos = app.filtered.iter().position(|&i| app.sessions[i].name == "proj@task").unwrap();
+        app.table_state.select(Some(pos));
+        app.mode = Mode::SessionMenu;
+        app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+        let rows = rows_at(&mut app, width, height);
+        let top = rows.iter().position(|r| r.contains(first)).unwrap_or_else(|| panic!("no row holds {first:?}:\n{}", rows.join("\n")));
+        let left = rows[top].chars().position(|c| c == first.chars().next().unwrap()).unwrap();
+        rows[top..]
+            .iter()
+            .map(|r| r.chars().skip(left).take_while(|&c| c != '\u{2502}').collect::<String>().trim_end().to_string())
+            .collect()
+    }
+
+    // The delete confirm lists what git does not track the way `cs -rm` does:
+    // the total, then one entry per row, a whole untracked tree as one row
+    // with its file count.
+    #[test]
+    fn delete_confirm_lists_untracked_trees_one_per_row() {
+        let root = std::env::temp_dir().join(format!("cs-ui-del-trees-{}", std::process::id()));
+        let wt = worktree_session(&root);
+        std::fs::create_dir_all(wt.join("node_modules/pkg")).unwrap();
+        for i in 0..1200 {
+            std::fs::write(wt.join(format!("node_modules/pkg/f{i}")), "").unwrap();
+        }
+        std::fs::create_dir_all(wt.join("src/__screenshots__")).unwrap();
+        std::fs::write(wt.join("src/__screenshots__/a.png"), "").unwrap();
+        std::fs::write(wt.join("src/__screenshots__/b.png"), "").unwrap();
+        std::fs::write(wt.join("notes.txt"), "draft").unwrap();
+
+        let rows = delete_confirm_rows(&root, 120, 40, "Also deletes");
+
+        assert_eq!(
+            rows[..4],
+            [
+                "Also deletes 1,203 files git does not track:",
+                "    node_modules/         (1,200 files)",
+                "    src/__screenshots__/  (2 files)",
+                "    notes.txt",
+            ]
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    // On a terminal too short for twenty entries the confirm lists fewer, so
+    // the grant and the key hint under the list stay on screen.
+    #[test]
+    fn delete_confirm_lists_fewer_entries_on_a_short_terminal() {
+        let root = std::env::temp_dir().join(format!("cs-ui-del-short-{}", std::process::id()));
+        let wt = worktree_session(&root);
+        for i in 1..=25 {
+            std::fs::write(wt.join(format!("n{i:02}.txt")), "").unwrap();
+        }
+
+        let rows = delete_confirm_rows(&root, 120, 20, "Also deletes");
+
+        assert_eq!(
+            rows[..9],
+            [
+                "Also deletes 25 files git does not track:",
+                "    n01.txt",
+                "    n02.txt",
+                "    n03.txt",
+                "    n04.txt",
+                "    n05.txt",
+                "    n06.txt",
+                "    n07.txt",
+                "    ... and 18 more",
+            ]
+        );
+        assert!(rows.iter().any(|r| r == "[D] Delete those files too: no"), "the grant stays on screen: {rows:?}");
+        assert!(rows.iter().any(|r| r.starts_with("[y] Confirm")), "the key hint stays on screen: {rows:?}");
+        std::fs::remove_dir_all(&root).ok();
+    }
 }
