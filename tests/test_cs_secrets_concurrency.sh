@@ -1051,6 +1051,79 @@ SHIM
 test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
 }
 
+# A command waiting on alpha's age lock makes alpha's age directory and then
+# sets its mode before every try. A rename that removes the directory between
+# those two steps leaves the mode step nothing to act on; the waiter makes the
+# directory again, takes the lock and refuses the old name, as it does when
+# the removal lands anywhere else in its wait. The chmod on PATH is the
+# rename: on the first mode step after the command has started waiting (the
+# sleep shim's marker), it moves the session and removes alpha's age
+# directory, lock and all, and then runs the real chmod on what is left.
+test_a_rename_between_making_the_age_directory_and_setting_its_mode_is_waited_through() {
+    local shim="$TEST_TMPDIR/race-shim" age="$HOME/.cs-secrets/sessions/alpha" real_sleep real_chmod cmd rc age_bin
+    local key="age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqs3290gq"
+    # age add needs age; remove and the export run without it.
+    age_bin=$(command -v age 2>/dev/null) || { echo "    SKIP (age is not installed)"; return 77; }
+    real_sleep=$(command -v sleep)
+    real_chmod=$(command -v chmod)
+    mkdir -p "$shim" "$HOME/.cs-secrets"
+    cat > "$shim/sleep" <<SHIM
+#!/usr/bin/env bash
+: > "$TEST_TMPDIR/waiting"
+exec "$real_sleep" "\$@"
+SHIM
+    cat > "$shim/chmod" <<SHIM
+#!/usr/bin/env bash
+if [ -f "$TEST_TMPDIR/waiting" ] && [ ! -e "$TEST_TMPDIR/gone" ]; then
+    for a in "\$@"; do
+        if [ "\$a" = "$age" ]; then
+            mv "$CS_SESSIONS_ROOT/alpha" "$CS_SESSIONS_ROOT/bravo"
+            mv "$age" "$TEST_TMPDIR/gone"
+            break
+        fi
+    done
+fi
+exec "$real_chmod" "\$@"
+SHIM
+    chmod +x "$shim/sleep" "$shim/chmod"
+    printf '%s\n' "$key" > "$TEST_TMPDIR/laptop.pub"
+    printf 'value-one' > "$TEST_TMPDIR/v1"
+    printf 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOwnMachineKeyBodyForTheTestOnly test@example.com\n' \
+        > "$HOME/.cs-secrets/id_ed25519.pub"
+
+    for cmd in age-add age-remove export-file; do
+        rm -rf "$age" "$TEST_TMPDIR/gone" "$TEST_TMPDIR/waiting" "$TEST_TMPDIR/sync.enc" \
+            "$CS_SESSIONS_ROOT/alpha" "$CS_SESSIONS_ROOT/bravo"
+        mkdir -p "$CS_SESSIONS_ROOT/alpha/.cs/age-recipients" "$age"
+        printf '%s\n' "$key" > "$CS_SESSIONS_ROOT/alpha/.cs/age-recipients/peer.pub"
+        CLAUDE_SESSION_NAME=alpha "$CS_SECRETS_BIN" set K1 < "$TEST_TMPDIR/v1" >/dev/null 2>&1 \
+            || { echo "  FAIL: fixture: set K1 failed ($cmd)"; return 1; }
+        printf '1\n' > "$age/.age.lock"
+        rc=0
+        case "$cmd" in
+            age-add)
+                PATH="$shim:$PATH" CS_SECRETS_LOCK_TIMEOUT=3 CLAUDE_SESSION_NAME=alpha CS_AGE_BIN="$age_bin" \
+                    "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/laptop.pub" > "$TEST_TMPDIR/out" 2>&1 || rc=$? ;;
+            age-remove)
+                PATH="$shim:$PATH" CS_SECRETS_LOCK_TIMEOUT=3 CLAUDE_SESSION_NAME=alpha \
+                    "$CS_SECRETS_BIN" age remove peer > "$TEST_TMPDIR/out" 2>&1 || rc=$? ;;
+            export-file)
+                PATH="$shim:$PATH" CS_SECRETS_LOCK_TIMEOUT=3 CLAUDE_SESSION_NAME=alpha \
+                    "$CS_SECRETS_BIN" export-file "$TEST_TMPDIR/sync.enc" > "$TEST_TMPDIR/out" 2>&1 || rc=$? ;;
+        esac
+
+        [ -d "$TEST_TMPDIR/gone" ] || { echo "  FAIL: fixture: the removal never landed in $cmd's mode step: $(cat "$TEST_TMPDIR/out")"; return 1; }
+        assert_eq "1" "$rc" "$cmd for the old name exits 1: $(cat "$TEST_TMPDIR/out")" || return 1
+        assert_eq "Error: No session named 'alpha' in $CS_SESSIONS_ROOT" "$(cat "$TEST_TMPDIR/out")" \
+            "$cmd refuses the old name" || return 1
+        assert_not_exists "$age" "$cmd leaves no age directory, and no pin, under alpha" || return 1
+        assert_not_exists "$TEST_TMPDIR/sync.enc" "$cmd writes no sync file" || return 1
+        assert_eq "peer.pub" "$(ls -A "$CS_SESSIONS_ROOT/bravo/.cs/age-recipients")" "$cmd changes no recipient" || return 1
+    done
+    assert_eq "bravo
+test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
+}
+
 # `age add` and `age remove` change the recipient set an export snapshots, so
 # each waits while an export holds the session's age lock and runs once the
 # export is done. The export's age blocks on encrypt (-o) until the test
@@ -1177,6 +1250,7 @@ run_test test_a_signal_after_every_value_moved_does_not_end_a_rename_nonzero
 run_test test_a_term_keeps_the_write_lock_until_purge_has_removed_the_age_state
 run_test test_a_command_waiting_on_the_age_lock_takes_it_once_a_rename_removed_its_directory
 run_test test_a_command_waiting_on_the_age_lock_through_a_rename_refuses_the_old_name
+run_test test_a_rename_between_making_the_age_directory_and_setting_its_mode_is_waited_through
 run_test test_age_add_and_remove_wait_while_an_export_holds_the_age_lock
 run_test test_a_lock_timeout_that_is_not_a_positive_whole_number_is_the_default
 
