@@ -186,7 +186,6 @@ run_spawn() {
     if ! cs_split_worktree_name "$name"; then
         validate_session_name "$name"
     fi
-    _spawn_precheck "$name"
     # The spawner is whatever the environment says. It becomes the worker's
     # report-back address and goes into its kick prompt, so it must be a
     # session name; an empty one means "no spawner" (no report-back wiring).
@@ -197,6 +196,17 @@ run_spawn() {
         ( validate_session_name "$spawner" ) >/dev/null 2>&1 \
             || error "cs -spawn: CLAUDE_SESSION_NAME is not a session name: $spawner"
     fi
+    # The spawn's own window runs a seed's tasks and brief unasked, so a seed
+    # for a session that already exists is work handed to that session's
+    # user. Another session's work goes through task mail they accept; a
+    # terminal outside any session, and the base briefing one of its own
+    # features, are that user.
+    if [ -n "$spawner" ] && { [ "${#tasks[@]}" -gt 0 ] || [ -n "$brief" ]; } \
+        && is_session_dir "$SESSIONS_ROOT/$name" \
+        && [ "${spawner%%@*}" != "${name%%@*}" ]; then
+        error "session $spawner cannot hand work to the existing session $name; send it as task mail for $name's user to accept: cs -msg $name --kind task \"<task>\""
+    fi
+    _spawn_precheck "$name"
     # One token per spawn, for the window command and the seed alike. The
     # launch consumes the seed unasked only when the two match.
     local token
