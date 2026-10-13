@@ -1047,6 +1047,91 @@ SHIM
 test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
 }
 
+# `age add` and `age remove` change the recipient set an export snapshots, so
+# each waits while an export holds the session's age lock and runs once the
+# export is done. The export's age blocks on encrypt (-o) until the test
+# releases it, so the export holds the lock for as long as the test looks;
+# the sleep shim's marker shows the add or remove is waiting on that lock.
+test_age_add_and_remove_wait_while_an_export_holds_the_age_lock() {
+    local age_bin keygen_bin real_sleep cmd pid xpid rc waited expected key
+    local shim="$TEST_TMPDIR/sleep-shim" slow="$TEST_TMPDIR/held-age"
+    age_bin=$(command -v age 2>/dev/null) || age_bin=""
+    keygen_bin=$(command -v age-keygen 2>/dev/null) || keygen_bin=""
+    if [ -z "$age_bin" ] || [ -z "$keygen_bin" ]; then
+        echo "    SKIP (age and age-keygen are not installed)"
+        return 77
+    fi
+    real_sleep=$(command -v sleep)
+    mkdir -p "$shim"
+    cat > "$shim/sleep" <<SHIM
+#!/usr/bin/env bash
+: > "$TEST_TMPDIR/waiting"
+exec "$real_sleep" "\$@"
+SHIM
+    chmod +x "$shim/sleep"
+    cat > "$slow" <<SHIM
+#!/usr/bin/env bash
+for a in "\$@"; do
+    if [ "\$a" = "-o" ]; then
+        : > "$TEST_TMPDIR/encrypting"
+        n=0
+        until [ -f "$TEST_TMPDIR/release" ] || [ "\$n" -ge 200 ]; do "$real_sleep" 0.05; n=\$((n + 1)); done
+        break
+    fi
+done
+exec "$age_bin" "\$@"
+SHIM
+    chmod +x "$slow"
+    "$keygen_bin" -o "$TEST_TMPDIR/r.key" 2>/dev/null || { echo "  FAIL: fixture: age-keygen"; return 1; }
+    "$keygen_bin" -y "$TEST_TMPDIR/r.key" > "$TEST_TMPDIR/r.pub" || return 1
+    key=$(cat "$TEST_TMPDIR/r.pub")
+    CS_AGE_BIN="$age_bin" "$CS_SECRETS_BIN" age init >/dev/null 2>&1 || { echo "  FAIL: fixture: age init"; return 1; }
+
+    for cmd in age-add age-remove; do
+        rm -f "$TEST_TMPDIR/waiting" "$TEST_TMPDIR/encrypting" "$TEST_TMPDIR/release" "$TEST_TMPDIR/out"
+        printf 'value-%s' "$cmd" > "$TEST_TMPDIR/v"
+        "$CS_SECRETS_BIN" set api_key < "$TEST_TMPDIR/v" >/dev/null 2>&1 || { echo "  FAIL: fixture: set ($cmd)"; return 1; }
+        CS_AGE_BIN="$slow" "$CS_SECRETS_BIN" export-file > "$TEST_TMPDIR/export.out" 2>&1 &
+        xpid=$!
+        waited=0
+        until [ -f "$TEST_TMPDIR/encrypting" ]; do sleep 0.05; waited=$((waited + 1)); [ "$waited" -gt 400 ] && break; done
+        [ -f "$TEST_TMPDIR/encrypting" ] || { echo "  FAIL: fixture: the export never reached its encrypt ($cmd): $(cat "$TEST_TMPDIR/export.out")"; kill "$xpid"; wait "$xpid"; return 1; }
+
+        case "$cmd" in
+            age-add)
+                PATH="$shim:$PATH" CS_AGE_BIN="$age_bin" "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/r.pub" > "$TEST_TMPDIR/out" 2>&1 &
+                expected="Added recipient: r
+Public key: $key" ;;
+            age-remove)
+                PATH="$shim:$PATH" CS_AGE_BIN="$age_bin" "$CS_SECRETS_BIN" age remove r > "$TEST_TMPDIR/out" 2>&1 &
+                expected="Removed recipient: r
+
+Note: Existing secrets.age files can still be decrypted by this recipient.
+Run 'cs -secrets export-file' to re-encrypt without this recipient; each machine
+re-encrypts only its own sync file, and copies in git history stay readable to them." ;;
+        esac
+        pid=$!
+        waited=0
+        until [ -f "$TEST_TMPDIR/waiting" ] || ! kill -0 "$pid" 2>/dev/null; do sleep 0.05; waited=$((waited + 1)); [ "$waited" -gt 400 ] && break; done
+        if ! kill -0 "$pid" 2>/dev/null; then
+            : > "$TEST_TMPDIR/release"; wait "$xpid"; wait "$pid"
+            echo "  FAIL: $cmd finished while the export held the age lock: $(cat "$TEST_TMPDIR/out")"
+            return 1
+        fi
+        [ -f "$TEST_TMPDIR/waiting" ] || { echo "  FAIL: fixture: $cmd never waited"; : > "$TEST_TMPDIR/release"; kill "$pid"; wait "$xpid"; wait "$pid"; return 1; }
+        assert_eq "" "$(cat "$TEST_TMPDIR/out")" "$cmd says nothing while it waits" || { : > "$TEST_TMPDIR/release"; wait "$xpid"; wait "$pid"; return 1; }
+
+        : > "$TEST_TMPDIR/release"
+        rc=0
+        wait "$xpid" || rc=$?
+        assert_eq "0" "$rc" "the export holding the lock exits 0 ($cmd): $(cat "$TEST_TMPDIR/export.out")" || { wait "$pid"; return 1; }
+        rc=0
+        wait "$pid" || rc=$?
+        assert_eq "0" "$rc" "$cmd exits 0 once the export is done" || return 1
+        assert_eq "$expected" "$(cat "$TEST_TMPDIR/out")" "$cmd says what it did" || return 1
+    done
+}
+
 run_test test_encrypted_salt_write_is_atomic_under_concurrency
 run_test test_encrypted_signal_terminates_writer_mid_critical_section
 run_test test_encrypted_purge_serialized_with_concurrent_store
@@ -1064,5 +1149,6 @@ run_test test_a_signal_after_every_value_moved_does_not_end_a_rename_nonzero
 run_test test_a_term_keeps_the_write_lock_until_purge_has_removed_the_age_state
 run_test test_a_command_waiting_on_the_age_lock_takes_it_once_a_rename_removed_its_directory
 run_test test_a_command_waiting_on_the_age_lock_through_a_rename_refuses_the_old_name
+run_test test_age_add_and_remove_wait_while_an_export_holds_the_age_lock
 
 report_results
