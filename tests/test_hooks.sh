@@ -3993,11 +3993,11 @@ run_test test_session_end_clears_a_stale_lock
 # shell holding the end's log line, timeline event and lock files. A DEBUG trap
 # loaded through BASH_ENV removes the directory before the hook's Nth command,
 # for every N the hook runs, so wherever the removal lands is covered without
-# naming a line or a command of the hook. Run under /bin/bash (cs's 3.2 floor)
-# and under the bash running this suite.
+# naming a line or a command of the hook. The hook runs under the bash running
+# this suite; run the suite under /bin/bash too for cs's 3.2 floor.
 test_session_end_never_recreates_a_removed_session() {
     local seam="$TEST_TMPDIR/remove-at-step.sh" root="$TEST_TMPDIR/rm-sessions"
-    local dir="$root/ending" steps_file="$TEST_TMPDIR/steps" sh steps n rc
+    local dir="$root/ending" steps_file="$TEST_TMPDIR/steps" sh="$BASH" steps n rc
     cat > "$seam" << 'SEAM'
 _cs_test_step=0
 _cs_test_remove_at_step() {
@@ -4030,29 +4030,26 @@ SEAM
             >/dev/null 2>&1
     }
     mkdir -p "$root"
-    for sh in /bin/bash "$BASH"; do
-        [ "$sh" = /bin/bash ] || [ ! "$sh" -ef /bin/bash ] || continue
-        # Positive control: untouched, the hook writes its end into the session.
+    # Positive control: untouched, the hook writes its end into the session.
+    _stage_ending_session
+    _run_ending_hook "$sh" "" || { echo "  FAIL: $sh: session-end failed with no removal"; return 1; }
+    assert_file_contains "$dir/.cs/timeline.jsonl" '"event":"ended"' \
+        "$sh: the hook records the end when the session stays" || return 1
+    steps=$(cat "$steps_file")
+    [ "$steps" -ge 20 ] || { echo "  FAIL: $sh: the seam counted only $steps hook commands"; return 1; }
+    n=1
+    while [ "$n" -le "$steps" ]; do
         _stage_ending_session
-        _run_ending_hook "$sh" "" || { echo "  FAIL: $sh: session-end failed with no removal"; return 1; }
-        assert_file_contains "$dir/.cs/timeline.jsonl" '"event":"ended"' \
-            "$sh: the hook records the end when the session stays" || return 1
-        steps=$(cat "$steps_file")
-        [ "$steps" -ge 20 ] || { echo "  FAIL: $sh: the seam counted only $steps hook commands"; return 1; }
-        n=1
-        while [ "$n" -le "$steps" ]; do
-            _stage_ending_session
-            rm -f "$TEST_TMPDIR/removed"
-            rc=0
-            _run_ending_hook "$sh" "$n" || rc=$?
-            assert_exists "$TEST_TMPDIR/removed" "$sh: the session was removed before hook command $n" || return 1
-            assert_eq "0" "$rc" "$sh: session-end exits 0 when the session goes before command $n" || return 1
-            if [ -e "$dir" ]; then
-                echo "  FAIL: $sh: removed before hook command $n of $steps, the session came back holding: $(cd "$root" && find ending | tr '\n' ' ')"
-                return 1
-            fi
-            n=$((n + 1))
-        done
+        rm -f "$TEST_TMPDIR/removed"
+        rc=0
+        _run_ending_hook "$sh" "$n" || rc=$?
+        assert_exists "$TEST_TMPDIR/removed" "$sh: the session was removed before hook command $n" || return 1
+        assert_eq "0" "$rc" "$sh: session-end exits 0 when the session goes before command $n" || return 1
+        if [ -e "$dir" ]; then
+            echo "  FAIL: $sh: removed before hook command $n of $steps, the session came back holding: $(cd "$root" && find ending | tr '\n' ' ')"
+            return 1
+        fi
+        n=$((n + 1))
     done
 }
 
