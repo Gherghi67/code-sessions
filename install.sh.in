@@ -544,9 +544,22 @@ _mod_link_holds_cs_files() {  # path under SKILLS_DIR
     done
 }
 
-# The symlinked mod directories this install kept, one per line, so each is
-# named once however many mod files sit under it.
-_mod_links_kept=$'\n'
+# The symlinked directories under SKILLS_DIR this install kept, one per line,
+# so each is named once however many files sit under it.
+_dir_links_kept=$'\n'
+
+# Keeps the symlinked directory $SKILLS_DIR/$1: names it in warning $2 the
+# first time, and lists it with the kept files.
+_keep_dir_link() {  # path under SKILLS_DIR, warning
+    case "$_dir_links_kept" in
+        *$'\n'"$SKILLS_DIR/$1"$'\n'*) ;;
+        *)
+            warn "$2"
+            CS_KEPT_PATHS+=("$SKILLS_DIR/$1")
+            _dir_links_kept="$_dir_links_kept$SKILLS_DIR/$1"$'\n'
+            ;;
+    esac
+}
 
 # Whether mod file $1 can be deployed without writing through a symlinked
 # directory: copying through the link would write into its target instead of
@@ -565,23 +578,35 @@ _mod_path_real() {
             info "Replaced symlink $SKILLS_DIR/$p with a deployed copy"
             continue
         fi
-        case "$_mod_links_kept" in
-            *$'\n'"$SKILLS_DIR/$p"$'\n'*) ;;
-            *)
-                warn "Kept $SKILLS_DIR/$p: a symlink to files cs did not write, so the mod files under it were not deployed"
-                CS_KEPT_PATHS+=("$SKILLS_DIR/$p")
-                _mod_links_kept="$_mod_links_kept$SKILLS_DIR/$p"$'\n'
-                ;;
-        esac
+        _keep_dir_link "$p" "Kept $SKILLS_DIR/$p: a symlink to files cs did not write, so the mod files under it were not deployed"
+        return 1
+    done
+}
+
+# Whether skill file $1 (its path under SKILLS_DIR) can be deployed without
+# writing through a symlinked directory. A link on the path (the skill
+# directory or the file's directory) is the user's wherever it points, as cs
+# never makes one: it is kept, named once and listed with the kept files, and
+# returns 1 so nothing is placed under it. A link at the file itself is
+# _deploy's to judge.
+_skill_path_real() {
+    local rel="$1" p
+    for p in "${rel%%/*}" "$(dirname "$rel")"; do
+        [ -L "$SKILLS_DIR/$p" ] || continue
+        _keep_dir_link "$p" "Kept $SKILLS_DIR/$p: a symlink, so cs wrote nothing through it and the skill files under it were not deployed"
         return 1
     done
 }
 
 for skill in "${CS_SKILLS[@]}"; do
-    _deploy "skills/$skill/SKILL.md" "$SKILLS_DIR/$skill/SKILL.md"
+    if _skill_path_real "$skill/SKILL.md"; then
+        _deploy "skills/$skill/SKILL.md" "$SKILLS_DIR/$skill/SKILL.md"
+    fi
 done
 for skill_file in "${CS_SKILL_FILES[@]}"; do
-    _deploy "skills/$skill_file" "$SKILLS_DIR/$skill_file"
+    if _skill_path_real "$skill_file"; then
+        _deploy "skills/$skill_file" "$SKILLS_DIR/$skill_file"
+    fi
 done
 for mod_file in "${CS_MOD_FILES[@]}"; do
     if _mod_path_real "$mod_file"; then
