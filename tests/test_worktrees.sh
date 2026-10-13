@@ -2883,6 +2883,47 @@ EOF
 
 run_test test_retire_refuses_when_git_cannot_say_whether_it_tracks_the_settings
 
+# The retire reads the feature's permission rules only from a file of the
+# feature's own. A link at that path, leading anywhere or nowhere, is refused
+# by name before anything is removed, whatever the base's file is.
+test_retire_refuses_a_feature_settings_file_that_is_a_link() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0 target
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    printf '%s\n' '{"permissions": {"allow": ["Bash(make:*)"]}}' > "$TEST_TMPDIR/elsewhere.json"
+    rm "$wt/.claude/settings.local.json"
+    for target in "$TEST_TMPDIR/elsewhere.json" "$TEST_TMPDIR/nowhere.json"; do
+        ln -sf "$target" "$wt/.claude/settings.local.json"
+        status=0
+        output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+        assert_eq "1" "$status" "the retire refuses a link to $target: $output" || return 1
+        assert_output_contains "$output" "Error: $wt/.claude/settings.local.json is a link, and cs reads the feature's permission rules only from a file of its own. Nothing was removed. Put the rules in a file there, or delete the link, then run /finish t1 again." \
+            "the refusal names the link to $target" || return 1
+        assert_dir "$wt/.cs/memory" "nothing was removed" || return 1
+    done
+    # A link at the base's path too: the feature's link is still refused.
+    mkdir -p "$base_dir/.claude"
+    ln -s ../team-settings.json "$base_dir/.claude/settings.local.json"
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses with both linked: $output" || return 1
+    assert_output_contains "$output" "Error: $wt/.claude/settings.local.json is a link, and cs reads the feature's permission rules only from a file of its own." \
+        "the refusal names the feature's link" || return 1
+    rm "$base_dir/.claude/settings.local.json"
+    # Positive control: the same rules in a file of the feature's own go.
+    rm "$wt/.claude/settings.local.json"
+    cp "$TEST_TMPDIR/elsewhere.json" "$wt/.claude/settings.local.json"
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire succeeds: $output" || return 1
+    assert_eq '["Bash(make:*)"]' "$(jq -c .permissions.allow "$base_dir/.claude/settings.local.json")" "the rules are carried" || return 1
+}
+
+run_test test_retire_refuses_a_feature_settings_file_that_is_a_link
+
 # The retire reads the settings files only to add the feature's rules to the
 # base's. One it leaves alone, tracked or behind a link, is never read, so
 # what it holds is no reason to refuse.
