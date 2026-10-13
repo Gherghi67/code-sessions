@@ -75,16 +75,22 @@ cs -secrets --session my-session list
 
 `set` refuses a value that is a placeholder rather than a secret: anything starting with `[REDACTED:`, a run of asterisks, `<redacted>`, or `YOUR_API_KEY`. Storing one would replace a working secret with junk that breaks whatever reads it later.
 
+`set` and `rm` refuse a session name the sessions root does not have (`No session named '<name>' in <root>`), on both backends: a value stored under a removed session's name, or under the old name of a renamed one, is a value no session reads. `purge` takes such a name, because it is how the secrets a removed session left are removed.
+
+`set`, `rm` and `purge` hold one lock per session while they write, `<sessions root>/.secrets-lock.<session>`. It lives in the sessions root so that a Keychain write never creates `~/.cs-secrets`. A write that cannot take it within `CS_SECRETS_LOCK_TIMEOUT` seconds fails and names the file.
+
 ### Renaming a session
 
-cs-secrets keys every store by the session's name: the Keychain entries `cs:<session>:<name>`, the encrypted store `~/.cs-secrets/<session>.enc`, and the age pins and digest record under `~/.cs-secrets/sessions/<session>/`. The picker's rename moves them with the session by running `rename` after it moves the directory. If the move fails, the picker moves the directory back and the session keeps its old name.
+cs-secrets keys every store by the session's name: the Keychain entries `cs:<session>:<name>`, the encrypted store `~/.cs-secrets/<session>.enc`, and the age pins and digest record under `~/.cs-secrets/sessions/<session>/`. The picker's rename moves them with the session by running `rename` after it moves the directory. If `rename` refuses before it changes anything, the picker moves the directory back and the session keeps its old name. If `rename` stops partway, the session keeps the new name and the picker shows ``Rename incomplete: run `cs -secrets --session <old> rename <new>` ``; that command finishes the move.
 
 ```bash
 # After the session directory old-name was renamed to new-name
 cs -secrets --session old-name rename new-name
 ```
 
-`rename` refuses while the sessions root still has the old name, when it does not have the new one, and when the new name already has Keychain secrets, an encrypted store or age state. It never merges or overwrites. It takes the same per-session locks as `set`, `export-file`, `age add` and `age remove`. It moves Keychain entries only on the Keychain backend.
+The new name is the last argument and is taken literally, so a session named `purge` or `--redact` is a name here, not a command or an option. Options such as `--session` go before `rename`; a word after the new name is refused (`rename takes one session name; unexpected: <words>`).
+
+`rename` refuses while the sessions root still has the old name, when it does not have the new one, and when the new name already has Keychain secrets, an encrypted store or age state. It never merges or overwrites. It takes the same per-session locks as `set`, `rm`, `purge`, `export-file`, `age add` and `age remove`, for both names, so a write that lands during a rename is moved with the session or waits for the move. It moves Keychain entries only on the Keychain backend.
 
 An interrupted move loses no secret. `rename` stores every Keychain entry under the new name and reads it back before it deletes any old entry, and links each file under the new name before it unlinks the old one. `~/.cs-secrets/.rename.<old>` records the move until it finishes, so running the same command again completes it.
 
@@ -372,4 +378,4 @@ cs -secrets age remove <name>
 - `CS_SECRETS_SESSION` - Overrides the session namespace; worktree feature sessions export it so their secrets land in the base session's store, and `cs <name> -secrets` sets it so an explicit target outranks ambient env
 - `CS_SECRETS_BACKEND` - Force a specific backend (`keychain` or `encrypted`)
 - `CS_SECRETS_PASSWORD` - Master password for legacy sync (only needed if not using age)
-- `CS_SECRETS_LOCK_TIMEOUT` - Seconds to wait for the store lock before giving up (default 10)
+- `CS_SECRETS_LOCK_TIMEOUT` - Seconds to wait for a secrets lock (the write lock, the encrypted store's lock, the age lock) before giving up (default 10)

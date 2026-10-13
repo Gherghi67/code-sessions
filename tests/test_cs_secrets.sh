@@ -747,6 +747,8 @@ test_encrypted_write_success_updates_and_leaves_no_temp() {
 # ============================================================================
 
 test_sessions_are_isolated() {
+    create_test_session session-a >/dev/null
+    create_test_session session-b >/dev/null
     export CLAUDE_SESSION_NAME="session-a"
     "$CS_SECRETS_BIN" set shared_key "value_a" 2>&1
 
@@ -792,6 +794,7 @@ test_rm_alias_works() {
 }
 
 test_session_flag_overrides_env() {
+    create_test_session other-session >/dev/null
     export CLAUDE_SESSION_NAME="default-session"
     "$CS_SECRETS_BIN" --session other-session set api_key "abc" 2>&1
     local value
@@ -2064,6 +2067,7 @@ test_import_file_skips_a_sync_file_that_is_a_symbolic_link() {
 # them in this session's tracked sync file.
 test_import_file_skips_a_password_sync_file_that_is_a_symbolic_link() {
     local out rc=0 link="$CS_SESSIONS_ROOT/test-session/.cs/secrets.zz.enc"
+    create_test_session other-session >/dev/null
     printf 'value-of-other\n' | "$CS_SECRETS_BIN" --session other-session set other_token >/dev/null 2>&1 \
         || { echo "  FAIL: fixture: set in the other session failed"; return 1; }
     assert_file_exists "$HOME/.cs-secrets/other-session.enc" "fixture: the other session's local store" || return 1
@@ -2108,6 +2112,7 @@ test_import_file_keeps_the_store_when_a_value_exceeds_the_exec_limit() {
 # secrets, which the shared password opens.
 test_import_file_refuses_a_session_whose_cs_is_a_link() {
     local out rc=0 session_dir="$CS_SESSIONS_ROOT/linked-session" real
+    create_test_session secrets >/dev/null
     printf 'value-of-victim\n' | "$CS_SECRETS_BIN" --session secrets set victim_token >/dev/null 2>&1 \
         || { echo "  FAIL: fixture: set in the session named secrets failed"; return 1; }
     assert_file_exists "$HOME/.cs-secrets/secrets.enc" "fixture: the victim's local store" || return 1
@@ -2131,6 +2136,7 @@ test_import_file_refuses_a_session_whose_cs_is_a_link() {
 # another session's local store under a name that is itself no link.
 test_import_file_refuses_a_named_file_behind_a_linked_directory() {
     local out rc=0 inbox="$CS_SESSIONS_ROOT/test-session/.cs/inbox" real
+    create_test_session other-session >/dev/null
     printf 'value-of-other\n' | "$CS_SECRETS_BIN" --session other-session set other_token >/dev/null 2>&1 \
         || { echo "  FAIL: fixture: set in the other session failed"; return 1; }
     ln -s "$HOME/.cs-secrets" "$inbox"
@@ -2167,6 +2173,7 @@ EOF
 # The session's own legacy secrets.enc, and a session named secrets whose
 # local store ~/.cs-secrets/secrets.enc a swapped-in .cs link would expose.
 _seed_swap_fixture() {
+    create_test_session secrets >/dev/null
     printf 'value-of-victim\n' | "$CS_SECRETS_BIN" --session secrets set victim_token >/dev/null 2>&1 \
         || { echo "  FAIL: fixture: set in the session named secrets failed"; return 1; }
     printf '{"own_token":"mine"}\n' | openssl enc -aes-256-cbc -e -pbkdf2 -iter 100000 \
@@ -2251,6 +2258,7 @@ test_import_file_refuses_a_named_file_behind_a_linked_directory_in_another_case(
 # just as well.
 test_import_file_refuses_a_named_file_in_the_local_secrets_store() {
     local out rc=0 link="$TEST_TMPDIR/elsewhere" real
+    create_test_session other-session >/dev/null
     printf 'value-of-other\n' | "$CS_SECRETS_BIN" --session other-session set other_token >/dev/null 2>&1 \
         || { echo "  FAIL: fixture: set in the other session failed"; return 1; }
     ln -s "$HOME/.cs-secrets" "$link"
@@ -3072,6 +3080,7 @@ test_migrate_partial_write_fails_loud() {
 # silently vanish. Every key must survive.
 test_encrypted_concurrent_stores_no_lost_update() {
     local sess="d1-concurrent"
+    create_test_session "$sess" >/dev/null
     local n=15 i
     for i in $(seq 1 "$n"); do
         CLAUDE_SESSION_NAME="$sess" "$CS_SECRETS_BIN" set "key$i" "val$i" >/dev/null 2>&1 &
@@ -3096,6 +3105,7 @@ test_encrypted_concurrent_stores_no_lost_update() {
 # so a failed export leaves the existing sync file untouched.
 test_export_file_atomic_preserves_prior_on_encrypt_failure() {
     local sess="d2-atomic"
+    create_test_session "$sess" >/dev/null
     CLAUDE_SESSION_NAME="$sess" "$CS_SECRETS_BIN" set k1 v1 >/dev/null 2>&1
 
     # Seed an existing, valid per-machine sync file (a prior successful export).
@@ -3154,6 +3164,7 @@ SHIM
 # lock to remove. Deterministic: seed the lock with a definitely-dead PID.
 test_encrypted_stale_lock_fails_loud_not_reaped() {
     local sess="stale-lock"
+    create_test_session "$sess" >/dev/null
     mkdir -p "$HOME/.cs-secrets"
     chmod 700 "$HOME/.cs-secrets"
     # A definitely-dead PID: spawn a child, reap it, reuse its now-free PID.

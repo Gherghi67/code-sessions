@@ -275,6 +275,8 @@ if [ "\$1" = "rand" ]; then sleep 0.4; fi
 exec "$real_ssl" "\$@"
 SHIM
     chmod +x "$shim/openssl"
+    create_test_session salt-A >/dev/null
+    create_test_session salt-B >/dev/null
 
     PATH="$shim:$PATH" CLAUDE_SESSION_NAME="salt-A" "$CS_SECRETS_BIN" set k "vA" >/dev/null 2>&1 &
     sleep 0.15   # B reaches the salt read while A's file is still mid-write
@@ -299,6 +301,7 @@ SHIM
 # left no lock behind.
 test_encrypted_signal_terminates_writer_mid_critical_section() {
     local sess="sig-term"
+    create_test_session "$sess" >/dev/null
     local real_ssl shim
     real_ssl=$(command -v openssl)
     shim="$TEST_TMPDIR/sig-shim"
@@ -327,6 +330,8 @@ SHIM
     [ "$rc" -ne 0 ] || { echo "  FAIL: writer must exit non-zero when TERMed mid-store (got $rc)"; return 1; }
     assert_file_not_exists "$HOME/.cs-secrets/.lock.$sess" \
         "the lock must be released after the signal" || return 1
+    assert_file_not_exists "$CS_SESSIONS_ROOT/.secrets-lock.$sess" \
+        "the write lock must be released after the signal" || return 1
 }
 
 # codex round 3 finding: encrypted_purge deleted the store without holding the
@@ -338,6 +343,7 @@ SHIM
 # runs after the store commits and leaves the store empty, not resurrected.
 test_encrypted_purge_serialized_with_concurrent_store() {
     local sess="purge-race"
+    create_test_session "$sess" >/dev/null
     CLAUDE_SESSION_NAME="$sess" "$CS_SECRETS_BIN" set A vA >/dev/null 2>&1
 
     local real_ssl shim
