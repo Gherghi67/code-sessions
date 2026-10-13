@@ -1396,6 +1396,26 @@ EOF
     fi
 }
 
+# An event entry with its command at the top level and no .hooks array is the
+# user's, and passes through install and uninstall as it is, while cs's own
+# registrations beside it are added and then stripped.
+test_install_and_uninstall_keep_a_flat_shape_hook_entry() {
+    local home="$TEST_TMPDIR/flat-entry-home" s rc=0 flat='[{"type":"command","command":"/usr/local/bin/notify-me"}]'
+    s="$home/.claude/settings.json"
+    mkdir -p "$home/.claude"
+    printf '{"permissions":{"allow":["Bash(ls:*)"]},"hooks":{"Notification":%s}}\n' "$flat" > "$s"
+    HOME="$home" bash "$INSTALL_SH" > "$TEST_TMPDIR/flat-entry.out" 2>&1 < /dev/null || rc=$?
+    assert_eq "0" "$rc" "install exit status" || { cat "$TEST_TMPDIR/flat-entry.out"; return 1; }
+    assert_eq "$flat" "$(jq -c '.hooks.Notification' "$s")" "install keeps the flat entry" || return 1
+    assert_eq "1" "$(jq '[.hooks.SessionStart[]? | .hooks[]?.command | select(. == "~/.claude/hooks/cs/session-start.sh")] | length' "$s")" \
+        "install registers cs's hooks beside it" || return 1
+    printf 'y\n' | HOME="$home" "$CS_BIN" -uninstall > "$TEST_TMPDIR/flat-entry.un" 2>&1 || rc=$?
+    assert_eq "0" "$rc" "uninstall exit status" || { cat "$TEST_TMPDIR/flat-entry.un"; return 1; }
+    assert_eq "$flat" "$(jq -c '.hooks.Notification' "$s")" "uninstall keeps the flat entry" || return 1
+    assert_eq "0" "$(jq '[.hooks[][] | .hooks[]?.command | select(test("hooks/cs/"))] | length' "$s")" \
+        "uninstall strips every cs registration" || return 1
+}
+
 # ============================================================================
 # Cycle: cs-statusline deployment + statusLine registration
 # ============================================================================
@@ -2381,6 +2401,7 @@ run_test test_install_deploys_hooks_to_cs_subdir
 run_test test_install_migrates_flat_hook_layout
 run_test test_install_writes_version_stamp
 run_test test_uninstall_strips_hook_registrations
+run_test test_install_and_uninstall_keep_a_flat_shape_hook_entry
 run_test test_install_deploys_statusline_binary
 run_test test_install_deploys_subagent_statusline_binary
 run_test test_install_skips_statusline_noninteractive
