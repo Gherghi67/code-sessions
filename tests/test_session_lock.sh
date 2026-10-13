@@ -868,6 +868,70 @@ SHIM
     wait "$pid_open" 2>/dev/null || true
 }
 
+# A forced open decides to replace a live lock after it lets the openers' mutex
+# go, since the collision menu waits on a person. The lead's SessionEnd may
+# take the mutex in that gap and read its own pid from the lock. If the forced
+# open then writes its pid without the mutex, the lead's remove deletes the
+# forced open's lock, and the session runs on unlocked. The forced open is
+# paused at its override warning, the hook inside its rm by a stand-in rm that
+# waits on a gate file; the forced open is let go first.
+test_forced_open_lock_survives_the_lead_ending_meanwhile() {
+    create_lock_test_session "lockforce"
+    local meta_dir="$CS_SESSIONS_ROOT/lockforce/.cs" shim="$TEST_TMPDIR/rmshim-force"
+    local hook_paused="$TEST_TMPDIR/force-hookrm.paused" hook_gate="$TEST_TMPDIR/force-hookrm.gate"
+    local open_paused="$TEST_TMPDIR/force-open.paused" open_gate="$TEST_TMPDIR/force-open.gate"
+    local opener_pid="$TEST_TMPDIR/force-open.pid" lead pid_hook pid_open i=0
+    sleep 300 &
+    lead=$!
+    echo "$lead" > "$meta_dir/session.lock"
+    mkdir -p "$shim"
+    cat > "$shim/rm" <<SHIM
+#!/bin/bash
+case "\$*" in
+    *"/session.lock") touch "$hook_paused"; until [ -e "$hook_gate" ]; do sleep 0.05; done ;;
+esac
+exec /bin/rm "\$@"
+SHIM
+    chmod +x "$shim/rm"
+    LOCK_LIB="$SCRIPT_DIR/../lib" LOCK_META="$meta_dir" PAUSED="$open_paused" GATE="$open_gate" \
+        OPENER_PID="$opener_pid" bash -c '
+        . "$LOCK_LIB/05-term.sh"
+        . "$LOCK_LIB/02-shared.sh"
+        . "$LOCK_LIB/15-lock.sh"
+        cs_interactive() { return 1; }
+        warn() { touch "$PAUSED"; until [ -e "$GATE" ]; do sleep 0.05; done; }
+        echo "$$" > "$OPENER_PID"
+        acquire_session_lock "$LOCK_META" true lockforce >/dev/null 2>&1
+    ' &
+    pid_open=$!
+    until [ -e "$open_paused" ] || [ "$i" -ge 200 ]; do sleep 0.05; i=$((i + 1)); done
+    assert_file_exists "$open_paused" "the forced open reached its override" \
+        || { touch "$open_gate" "$hook_gate"; kill "$lead"; wait; return 1; }
+    echo '{"session_id": "lead-a", "reason": "other"}' | PATH="$shim:$PATH" CLAUDE_SESSION_NAME=lockforce \
+        CLAUDE_SESSION_DIR="$CS_SESSIONS_ROOT/lockforce" CLAUDE_SESSION_META_DIR="$meta_dir" \
+        CS_RESOLVED_FROM=env CS_LEAD_PID="$lead" CLAUDE_PID="$lead" \
+        "$SCRIPT_DIR/../hooks/session-end.sh" >/dev/null 2>&1 &
+    pid_hook=$!
+    i=0
+    until [ -e "$hook_paused" ] || [ "$i" -ge 200 ]; do sleep 0.05; i=$((i + 1)); done
+    assert_file_exists "$hook_paused" "the lead's SessionEnd reached its remove of its own lock" \
+        || { touch "$open_gate" "$hook_gate"; kill "$lead"; wait; return 1; }
+    # The forced open goes on while the hook holds the mutex. Without the mutex
+    # it writes its pid at once; with it, it waits, and the hook is let go
+    # after a bounded look.
+    touch "$open_gate"
+    i=0
+    until [ "$(cat "$meta_dir/session.lock" 2>/dev/null)" = "$(cat "$opener_pid")" ] || [ "$i" -ge 40 ]; do
+        sleep 0.05; i=$((i + 1))
+    done
+    touch "$hook_gate"
+    wait "$pid_hook" 2>/dev/null || true
+    wait "$pid_open" 2>/dev/null || true
+    kill "$lead" 2>/dev/null
+    assert_eq "$(cat "$opener_pid")" "$(cat "$meta_dir/session.lock" 2>/dev/null)" \
+        "the forced open still holds the lock after the lead's SessionEnd" || return 1
+}
+
 # Start a process that holds <lock file> through _cs_lock until killed, with
 # no child: it blocks in bash's own read on a fifo. Its pid is MUTEX_HOLDER.
 _hold_session_mutex() {  # lock file
@@ -935,6 +999,7 @@ run_test test_lock_created_on_launch
 run_test test_simultaneous_opens_take_the_lock_in_turn
 run_test test_stale_lock_reclaim_does_not_remove_a_newer_holders_lock
 run_test test_session_end_stale_clear_does_not_remove_a_newer_holders_lock
+run_test test_forced_open_lock_survives_the_lead_ending_meanwhile
 run_test test_open_refuses_when_the_lock_mutex_stays_held
 run_test test_open_ignores_a_mutex_directory_and_leaves_its_mutex_file_ignored
 run_test test_lock_prevents_duplicate_session
