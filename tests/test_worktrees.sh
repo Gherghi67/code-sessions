@@ -2194,6 +2194,46 @@ test_retire_ignored_mode_refuses_a_cs_that_is_itself_a_repository() {
 
 run_test test_retire_ignored_mode_refuses_a_cs_that_is_itself_a_repository
 
+# A repo that tracks .cs carries it through git, so an untracked file under
+# .cs is no more carried than one anywhere else: the retire refuses and names
+# it. Only cs's own machine-local files (.cs/local, the locks) go with the
+# worktree unasked.
+test_retire_tracked_mode_refuses_untracked_session_records() {
+    local base_dir wt sha output line status=0 rel
+    base_dir=$(create_test_session_with_git "myproj")
+    cs_launch "myproj@t1"
+    wt="$CS_SESSIONS_ROOT/myproj@t1"
+    assert_file_contains "$wt/.cs/local/state" "cs_mode: tracked" || return 1
+    echo "feature work" > "$wt/feature.txt"
+    (cd "$wt" && git add feature.txt && git commit -q -m "feature work")
+    mkdir -p "$wt/.cs/plans" "$wt/.cs/handoffs"
+    for rel in plans/feat-plan.md memory/new-topic.md memory/narrative.someone.md handoffs/h.md summary.md; do
+        echo "feature $rel" > "$wt/.cs/$rel"
+    done
+    : > "$wt/.cs/session.lock"
+    sha=$(land_feature myproj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    line=$("$CS_BIN" myproj -features --porcelain 2>&1)
+    assert_eq "5" "$(_feat_field "$line" 7)" "five files at risk: $line" || return 1
+    output=$("$CS_BIN" myproj -retire-feature t1 "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_output_contains "$output" "Worktree has untracked files that removal would destroy; commit or remove them first:
+.cs/handoffs/h.md
+.cs/memory/narrative.someone.md
+.cs/memory/new-topic.md
+.cs/plans/feat-plan.md
+.cs/summary.md" "the refusal names all five" || return 1
+    assert_eq "feature plans/feat-plan.md" "$(cat "$wt/.cs/plans/feat-plan.md")" "the plan is still there" || return 1
+    # Positive control: committed, they land with the feature and the worktree retires.
+    (cd "$wt" && git add .cs && git commit -q -m "session records")
+    sha=$(land_feature myproj t1) || { echo "  FAIL: second integrate"; return 1; }
+    status=0
+    output=$("$CS_BIN" myproj -retire-feature t1 "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire proceeds: $output" || return 1
+    assert_eq "feature plans/feat-plan.md" "$(cat "$base_dir/.cs/plans/feat-plan.md")" "the plan landed" || return 1
+}
+
+run_test test_retire_tracked_mode_refuses_untracked_session_records
+
 # The record of what the feature inherited is what tells a deleted topic from
 # a new one. A record that is there and cannot be read must stop the fuse:
 # guessing "new" would bring the deleted topic back and report success.
