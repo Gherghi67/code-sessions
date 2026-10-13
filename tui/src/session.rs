@@ -436,11 +436,14 @@ pub fn agent_statuses_in(dir: &Path) -> HashMap<String, String> {
     out
 }
 
+/// The sessions root: `$CS_SESSIONS_ROOT`, else `~/.claude-sessions`. Under
+/// test it is only ever the [`test_root`] override; with none scoped it is
+/// [`test_root::UNSCOPED`], a path that cannot exist, so no test run can
+/// delete, rename or scan the real sessions of whoever runs the suite.
 pub fn sessions_root() -> PathBuf {
     #[cfg(test)]
-    if let Some(root) = test_root::current() {
-        return root;
-    }
+    return test_root::current().unwrap_or_else(|| PathBuf::from(test_root::UNSCOPED));
+    #[cfg(not(test))]
     std::env::var("CS_SESSIONS_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
@@ -459,6 +462,10 @@ pub fn sessions_root() -> PathBuf {
 pub mod test_root {
     use std::cell::RefCell;
     use std::path::PathBuf;
+
+    /// The root a test sees when it scoped none. Under `/nonexistent`, which
+    /// only root can create, so a write fails and a delete finds nothing.
+    pub const UNSCOPED: &str = "/nonexistent/cs-tui-test-sessions-root";
 
     thread_local! {
         static ROOT: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
