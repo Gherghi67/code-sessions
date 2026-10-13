@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::untracked;
+
 /// Whether a session is running, and whether cs owns the lock. Collapsing the
 /// old `lock_pid`/`is_locked`/`is_live` trio into one value keeps the illegal
 /// "locked but not live" combination unrepresentable.
@@ -959,29 +961,54 @@ pub fn worktree_parts(name: &str) -> Option<(&str, &str)> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnownedEntries {
     NotCreatedByCs(Vec<String>),
-    NotTrackedByGit(Vec<String>),
+    NotTrackedByGit(Vec<untracked::Entry>),
+}
+
+/// The delete confirm's account of one thing a removal would take: a line of
+/// text, and under it the entries of a listing of files git does not track
+/// (empty for any other warning).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeleteWarning {
+    pub text: String,
+    pub entries: Vec<untracked::Entry>,
+}
+
+impl DeleteWarning {
+    pub fn line(text: String) -> Self {
+        DeleteWarning { text, entries: Vec::new() }
+    }
 }
 
 impl UnownedEntries {
-    /// What the paths are, in `cs -rm`'s words, and the paths.
-    fn described(&self) -> (&'static str, &[String]) {
+    /// The confirm's warning, in `cs -rm`'s words; None when nothing is at risk.
+    pub fn warning(&self) -> Option<DeleteWarning> {
         match self {
-            UnownedEntries::NotCreatedByCs(p) => ("cs did not create", p),
-            UnownedEntries::NotTrackedByGit(p) => ("git does not track", p),
+            UnownedEntries::NotCreatedByCs(p) if !p.is_empty() => {
+                Some(DeleteWarning::line(format!("Also deletes files cs did not create: {}", p.join(", "))))
+            }
+            UnownedEntries::NotTrackedByGit(e) if !e.is_empty() => Some(DeleteWarning {
+                text: format!("Also deletes {} git does not track:", untracked::count_phrase(e)),
+                entries: e.clone(),
+            }),
+            _ => None,
         }
     }
 
-    /// The confirm line, matching `cs -rm`'s wording; None when nothing is at risk.
-    pub fn warning(&self) -> Option<String> {
-        let (what, paths) = self.described();
-        (!paths.is_empty()).then(|| format!("Also deletes files {what}: {}", paths.join(", ")))
-    }
-
     /// Why a removal not granted these files refuses session `name`, as
-    /// `cs -rm --force` refuses without --delete-files; None when there are none.
+    /// `cs -rm --force` refuses without --delete-files, on one line for the
+    /// status bar; None when there are none.
     pub fn refusal(&self, name: &str) -> Option<String> {
-        let (what, paths) = self.described();
-        (!paths.is_empty()).then(|| format!("{name} holds files {what}: {}", paths.join(", ")))
+        match self {
+            UnownedEntries::NotCreatedByCs(p) if !p.is_empty() => {
+                Some(format!("{name} holds files cs did not create: {}", p.join(", ")))
+            }
+            UnownedEntries::NotTrackedByGit(e) if !e.is_empty() => {
+                let lines = untracked::entry_lines(e, untracked::SHOWN_ENTRIES);
+                let listed: Vec<&str> = lines.iter().map(|l| l.trim()).collect();
+                Some(format!("{name} holds {} git does not track: {}", untracked::count_phrase(e), listed.join(", ")))
+            }
+            _ => None,
+        }
     }
 }
 
@@ -1027,31 +1054,54 @@ pub fn unowned_entries(name: &str, path: &Path) -> Result<UnownedEntries, String
     Ok(UnownedEntries::NotCreatedByCs(names))
 }
 
-fn worktree_untracked(path: &Path) -> Result<Vec<String>, String> {
+/// The NUL-separated paths `git ls-files <args>` prints in `path`.
+fn git_ls_files(path: &Path, args: &[&str]) -> Result<Vec<String>, String> {
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(path)
-        .args(["status", "--porcelain", "--ignored", "--untracked-files=normal"])
+        .args(["ls-files", "-z"])
+        .args(args)
         .output()
-        .map_err(|e| format!("cannot run git status in {}: {e}", path.display()))?;
+        .map_err(|e| format!("cannot run git ls-files in {}: {e}", path.display()))?;
     if !out.status.success() {
         return Err(format!(
-            "git status failed in {}: {}",
+            "git ls-files failed in {}: {}",
             path.display(),
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
-    let mut paths: Vec<String> = String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter(|l| l.starts_with("?? ") || l.starts_with("!! "))
-        .map(|l| l[3..].to_string())
-        .filter(|p| {
-            let top = p.split('/').next().unwrap_or(p);
-            !WORKTREE_OWNED.contains(&top)
-        })
-        .collect();
-    paths.sort();
-    Ok(paths)
+    Ok(String::from_utf8_lossy(&out.stdout).split('\0').filter(|p| !p.is_empty()).map(str::to_string).collect())
+}
+
+/// Files and links under `dir`, not following links: what removing it deletes.
+fn files_under(dir: &Path) -> Result<u64, String> {
+    let mut files = 0;
+    for entry in fs::read_dir(dir).map_err(|e| format!("cannot list {}: {e}", dir.display()))? {
+        let entry = entry.map_err(|e| format!("cannot list {}: {e}", dir.display()))?;
+        let kind = entry.file_type().map_err(|e| format!("cannot read {}: {e}", entry.path().display()))?;
+        files += if kind.is_dir() { files_under(&entry.path())? } else { 1 };
+    }
+    Ok(files)
+}
+
+/// The entries of what git does not track in the worktree at `path`, as
+/// `cs -rm` lists them (lib/65-sessions.sh `_worktree_untracked_paths`).
+fn worktree_untracked(path: &Path) -> Result<Vec<untracked::Entry>, String> {
+    let mut at_risk = git_ls_files(path, &["--others", "--exclude-standard"])?;
+    at_risk.extend(git_ls_files(path, &["--others", "--ignored", "--exclude-standard"])?);
+    at_risk.retain(|p| {
+        let top = p.split('/').next().unwrap_or(p);
+        !WORKTREE_OWNED.contains(&top)
+    });
+    if at_risk.is_empty() {
+        return Ok(Vec::new());
+    }
+    let tracked = git_ls_files(path, &[])?;
+    let mut inside = HashMap::new();
+    for repo in at_risk.iter().filter(|p| p.ends_with('/')) {
+        inside.insert(repo.clone(), files_under(&path.join(repo))?);
+    }
+    untracked::entries(&tracked, &inside, &at_risk)
 }
 
 /// The links an encrypted session keeps into its vault, under `.cs/`.
@@ -1526,7 +1576,8 @@ mod tests {
 
         let got = unowned_entries("proj@task", &wt).unwrap();
 
-        assert_eq!(got, UnownedEntries::NotTrackedByGit(vec!["journal.img".into(), "notes.txt".into()]));
+        let file = |path: &str| untracked::Entry { path: path.into(), files: 1 };
+        assert_eq!(got, UnownedEntries::NotTrackedByGit(vec![file("journal.img"), file("notes.txt")]));
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -2075,7 +2126,7 @@ mod tests {
 
         let err = remove_session_path(&root, "proj@task", &wt, RemoveGrants::default()).unwrap_err();
 
-        assert_eq!(err.to_string(), "proj@task holds files git does not track: notes.txt");
+        assert_eq!(err.to_string(), "proj@task holds 1 file git does not track: notes.txt");
         assert!(wt.join("notes.txt").exists(), "the untracked file survives");
 
         let grants = RemoveGrants { unowned_files: true, ..RemoveGrants::default() };

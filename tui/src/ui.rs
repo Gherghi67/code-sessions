@@ -16,7 +16,9 @@ use ratatui::layout::Alignment;
 use crate::app::{
     App, FlashKind, Focus, Mode, NotesFocus, SortColumn, SortDirection, StatusLevel,
 };
+use crate::session::DeleteWarning;
 use crate::theme::{self, Palette};
+use crate::untracked;
 
 const PREVIEW_MIN_WIDTH: u16 = 120;
 
@@ -1121,7 +1123,8 @@ fn render_confirm_delete(app: &App, frame: &mut Frame) {
     };
     let hint_color = if remaining > 0 { p.comment } else { p.fg };
 
-    let popup_area = centered_rect(50, 7 + warning_rows(&app.delete_warnings) + grant_rows(app), frame.area());
+    let warnings = warning_lines(&app.delete_warnings, frame.area().height, 7 + grant_rows(app), p.red);
+    let popup_area = centered_rect(50, 7 + warnings.len() as u16 + grant_rows(app), frame.area());
     frame.render_widget(Clear, popup_area);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -1130,13 +1133,13 @@ fn render_confirm_delete(app: &App, frame: &mut Frame) {
         .title_style(Style::default().fg(p.red).add_modifier(Modifier::BOLD));
 
     let mut lines = vec![Line::from(Span::styled(action_msg, Style::default().fg(p.fg)))];
-    push_warning_lines(&mut lines, &app.delete_warnings, p.red);
+    lines.extend(warnings);
     push_grant_lines(&mut lines, app);
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(hint, Style::default().fg(hint_color))));
     let text = Paragraph::new(lines)
         .block(block)
-        .wrap(Wrap { trim: true });
+        .wrap(Wrap { trim: false });
     frame.render_widget(text, popup_area);
 }
 
@@ -1161,7 +1164,8 @@ fn render_confirm_batch_delete(app: &App, frame: &mut Frame) {
     };
     let hint_color = if remaining > 0 { p.comment } else { p.fg };
 
-    let popup_area = centered_rect(55, 7 + warning_rows(&app.delete_warnings) + grant_rows(app), frame.area());
+    let warnings = warning_lines(&app.delete_warnings, frame.area().height, 7 + grant_rows(app), p.red);
+    let popup_area = centered_rect(55, 7 + warnings.len() as u16 + grant_rows(app), frame.area());
     frame.render_widget(Clear, popup_area);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -1176,14 +1180,14 @@ fn render_confirm_batch_delete(app: &App, frame: &mut Frame) {
         )),
         Line::from(Span::styled(list, Style::default().fg(p.comment))),
     ];
-    push_warning_lines(&mut lines, &app.delete_warnings, p.red);
+    lines.extend(warnings);
     push_grant_lines(&mut lines, app);
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled("This cannot be undone.", Style::default().fg(p.red))));
     lines.push(Line::from(Span::styled(hint, Style::default().fg(hint_color))));
     let text = Paragraph::new(lines)
         .block(block)
-        .wrap(Wrap { trim: true });
+        .wrap(Wrap { trim: false });
     frame.render_widget(text, popup_area);
 }
 
@@ -1219,24 +1223,32 @@ fn push_grant_lines(lines: &mut Vec<Line<'static>>, app: &App) {
     }
 }
 
-/// Rows the delete warnings take in a confirm popup: a blank separator,
-/// then two rows per warning, since a file list usually wraps once.
-fn warning_rows(warnings: &[String]) -> u16 {
+/// The delete warnings as confirm popup lines: a blank separator, then each
+/// warning, a listing of files git does not track one entry per row (as
+/// `cs -rm` prints it) under its own. A popup whose other lines take `other`
+/// rows of a `height`-row screen lists fewer than the usual twenty entries
+/// when they would not fit, so its key hint stays on screen.
+fn warning_lines(warnings: &[DeleteWarning], height: u16, other: u16, color: Color) -> Vec<Line<'static>> {
     if warnings.is_empty() {
-        0
-    } else {
-        1 + 2 * warnings.len() as u16
+        return Vec::new();
     }
-}
-
-fn push_warning_lines(lines: &mut Vec<Line<'static>>, warnings: &[String], color: Color) {
-    if warnings.is_empty() {
-        return;
-    }
-    lines.push(Line::from(""));
+    let style = Style::default().fg(color);
+    let mut rows_left = (height as usize).saturating_sub(other as usize + 1 + warnings.len());
+    let mut lines = vec![Line::from("")];
     for warning in warnings {
-        lines.push(Line::from(Span::styled(warning.clone(), Style::default().fg(color))));
+        lines.push(Line::from(Span::styled(warning.text.clone(), style)));
+        let entries = &warning.entries;
+        let shown = if entries.len() <= rows_left.min(untracked::SHOWN_ENTRIES) {
+            entries.len()
+        } else {
+            rows_left.min(untracked::SHOWN_ENTRIES + 1).saturating_sub(1)
+        };
+        for text in untracked::entry_lines(entries, shown) {
+            rows_left = rows_left.saturating_sub(1);
+            lines.push(Line::from(Span::styled(text, style)));
+        }
     }
+    lines
 }
 
 fn render_confirm_force_open(app: &App, frame: &mut Frame) {
