@@ -544,30 +544,53 @@ test_the_countdown_is_only_shown_when_something_enforces_it() {
     fi
 }
 
-# The countdown's budget reaches shell arithmetic, which runs a command
-# substitution held in an operand, and divides by it. Anything but a positive
-# plain number takes the default the rewriters use, and the countdown starts
-# there. The file named by PWNED_FILE is what a substitution in the value would
-# create. The vendor rewriter bounds itself with perl's alarm, so the
-# countdown is drawn on every runner; the stand-in agy answers in the
-# stream-json shape the vendor rewriter reads, so the rewrite lands.
-test_the_countdown_reads_its_budget_as_data() {
+# The budget reaches shell arithmetic, which runs a command substitution held in
+# an operand, and the bar divides by it. Anything but a positive plain number
+# takes the default, 25 seconds, and the countdown and the rewriter's own bound
+# both get that one number: a zero would otherwise be no bound at all to
+# timeout(1) and to perl's alarm. The file named by PWNED_FILE is what a
+# substitution in the value would create. The stand-in timeout and perl record
+# the bound each rewriter was handed and then run the command as the real ones
+# would; the stand-in agy answers in the stream-json shape the vendor rewriter
+# reads, so the rewrite lands on both arms.
+test_the_budget_is_read_as_data_and_bounds_the_rewriter() {
     unset CS_REWRITE_CMD
-    local bin="$TEST_TMPDIR/bin" pwned="$TEST_TMPDIR/pwned" value f out
+    local bin="$TEST_TMPDIR/bin" pwned="$TEST_TMPDIR/pwned" bound="$TEST_TMPDIR/bound"
+    local real_perl provider pair value want f out
+    real_perl=$(command -v perl) || { echo "  SKIP: no perl"; return 77; }
     mkdir -p "$bin"
-    printf '#!/bin/bash\nsleep 0.9\nprintf %%s\\\\n %s\n' \
-        "'{\"event\":\"result\",\"result\":{\"status\":\"SUCCESS\",\"response\":\"REWRITTEN\"}}'" > "$bin/agy"
-    chmod +x "$bin/agy"
-    for value in 'PATH[$(:>"$PWNED_FILE")]' 'soon' '0'; do
-        rm -f "$pwned"
-        f=$(composer_file "make the login thing better")
-        out="$TEST_TMPDIR/pty-budget"
-        PATH="$bin:$PATH" XDG_CACHE_HOME="$TEST_TMPDIR/cache" PWNED_FILE="$pwned" \
-            CS_REWRITE_PROVIDER=gemini CS_REWRITE_TIMEOUT="$value" \
-            _pty_run "$SHIM" "$f" > "$out" 2>&1
-        assert_file_not_exists "$pwned" "the budget's content never runs ($value)" || return 1
-        assert_file_contains "$out" '25s left' "the countdown starts from the default ($value)" || return 1
-        assert_eq "REWRITTEN" "$(cat "$f")" "the rewrite still lands ($value)" || return 1
+    cat > "$bin/agy" <<'EOF'
+#!/bin/bash
+sleep 0.9
+printf '%s\n' '{"event":"result","result":{"status":"SUCCESS","response":"REWRITTEN"}}'
+EOF
+    printf '#!/bin/bash\nsleep 0.9\nprintf "REWRITTEN"\n' > "$bin/claude"
+    cat > "$bin/perl" <<EOF
+#!/bin/bash
+[ "\$2" = 'alarm shift; exec @ARGV' ] && printf '%s\n' "\$3" >> "$bound"
+exec "$real_perl" "\$@"
+EOF
+    cat > "$bin/timeout" <<EOF
+#!/bin/bash
+[ "\$2" = claude ] && printf '%s\n' "\$1" >> "$bound"
+shift
+exec "\$@"
+EOF
+    chmod +x "$bin/agy" "$bin/claude" "$bin/perl" "$bin/timeout"
+    for provider in gemini ''; do
+        for pair in 'PATH[$(:>"$PWNED_FILE")]=25' 'soon=25' '0=25' '7=7'; do
+            value="${pair%=*}" want="${pair##*=}"
+            rm -f "$pwned" "$bound"
+            f=$(composer_file "make the login thing better")
+            out="$TEST_TMPDIR/pty-budget"
+            PATH="$bin:$PATH" XDG_CACHE_HOME="$TEST_TMPDIR/cache" PWNED_FILE="$pwned" \
+                CS_REWRITE_PROVIDER="$provider" CS_REWRITE_TIMEOUT="$value" \
+                _pty_run "$SHIM" "$f" > "$out" 2>&1
+            assert_file_not_exists "$pwned" "the budget's content never runs (${provider:-model} $value)" || return 1
+            assert_file_contains "$out" "${want}s left" "the countdown starts from ${want}s (${provider:-model} $value)" || return 1
+            assert_eq "$want" "$(cat "$bound" 2>/dev/null)" "the rewriter is bounded at ${want}s (${provider:-model} $value)" || return 1
+            assert_eq "REWRITTEN" "$(cat "$f")" "the rewrite still lands (${provider:-model} $value)" || return 1
+        done
     done
 }
 
@@ -627,7 +650,7 @@ run_test test_the_trace_goes_behind_private
 run_test test_screen_mode_frames_the_prompt_in_a_margin
 run_test test_screen_mode_counts_down_not_up
 run_test test_the_countdown_is_only_shown_when_something_enforces_it
-run_test test_the_countdown_reads_its_budget_as_data
+run_test test_the_budget_is_read_as_data_and_bounds_the_rewriter
 run_test test_screen_mode_has_no_spinner
 run_test test_the_header_names_the_resolved_engine_and_model
 run_test test_progress_hides_the_cursor_and_restores_it
