@@ -709,10 +709,11 @@ else
     # session-end.sh) — the prior shape dropped the entire wrapper whenever
     # it contained cs's command, taking sibling user hooks with it.
     #
-    # Flat-shape entries (no `.hooks` field, command at top level) pass
-    # through untouched because the `if .hooks then ... else . end` branch
-    # skips them. The spec tests in tests/test_hooks.sh embed this same
-    # filter shape via _install_merge_filter — keep them aligned.
+    # An entry whose `.hooks` is not an array (flat shape with the command at
+    # the top level, or a `.hooks` of any other type) passes through
+    # untouched: only an array `.hooks` is stripped or dropped, as in
+    # _strip_hook_registration. The spec tests in tests/test_hooks.sh embed
+    # this same filter shape via _install_merge_filter — keep them aligned.
     _merge_cs_hook() {
         local event="$1" file="$2" timeout="$3" matcher="${4:-}" async="${5:-}" rewake="${6:-}"
         local path="$HOOKS_DIR/$file" tilde="$HOOKS_TILDE_DIR/$file"
@@ -749,10 +750,10 @@ else
             --argjson append "$append" '
             .hooks[$event] = (
                 ((.hooks[$event] // []) | map(
-                    if .hooks then
+                    if (.hooks | type) == "array" then
                         .hooks |= map(select(.command != $path and .command != $tilde))
                     else . end
-                ) | map(select(.hooks == null or (.hooks | length > 0))))
+                ) | map(select((.hooks | type) != "array" or (.hooks | length > 0))))
                 + [$append]
             )
         ')

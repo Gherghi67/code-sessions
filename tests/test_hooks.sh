@@ -3547,10 +3547,10 @@ _install_merge_filter() {
     cat << 'JQ'
 .hooks[$event] = (
     ((.hooks[$event] // []) | map(
-        if .hooks then
+        if (.hooks | type) == "array" then
             .hooks |= map(select(.command != $path and .command != $tilde))
         else . end
-    ) | map(select(.hooks == null or (.hooks | length > 0))))
+    ) | map(select((.hooks | type) != "array" or (.hooks | length > 0))))
     + [{ "hooks": [{ "type": "command", "command": $tilde, "timeout": $timeout }] }]
 )
 JQ
