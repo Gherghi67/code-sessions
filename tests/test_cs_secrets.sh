@@ -2245,18 +2245,17 @@ test_import_file_refuses_a_named_file_behind_a_linked_directory_in_another_case(
 }
 
 # Whatever path names it, a file in the local secrets store is another
-# session's store, never a sync file: a link pushed into any other session
-# reaches it just as well.
+# session's store, never a sync file: a link outside every session reaches it
+# just as well.
 test_import_file_refuses_a_named_file_in_the_local_secrets_store() {
-    local out rc=0 inbox="$CS_SESSIONS_ROOT/b-session/.cs/inbox" real
+    local out rc=0 link="$TEST_TMPDIR/elsewhere" real
     printf 'value-of-other\n' | "$CS_SECRETS_BIN" --session other-session set other_token >/dev/null 2>&1 \
         || { echo "  FAIL: fixture: set in the other session failed"; return 1; }
-    mkdir -p "$CS_SESSIONS_ROOT/b-session/.cs"
-    ln -s "$HOME/.cs-secrets" "$inbox"
+    ln -s "$HOME/.cs-secrets" "$link"
     real=$(cd "$HOME/.cs-secrets" && /bin/pwd -P)
-    out=$("$CS_SECRETS_BIN" import-file "$inbox/other-session.enc" 2>&1) || rc=$?
+    out=$("$CS_SECRETS_BIN" import-file "$link/other-session.enc" 2>&1) || rc=$?
     assert_eq "1" "$rc" "the import is refused" || return 1
-    assert_eq "Error: Refusing to import $inbox/other-session.enc: its directory leads to $real, the local secrets store" \
+    assert_eq "Error: Refusing to import $link/other-session.enc: its directory leads to $real, the local secrets store" \
         "$out" "the refusal names the file and the store" || return 1
     _assert_secret_absent other_token "nothing from the other session's store is imported" || return 1
 }
