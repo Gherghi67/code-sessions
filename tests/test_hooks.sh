@@ -740,7 +740,9 @@ test_auto_approve_rejects_link_inside_linked_control_dir() {
 }
 
 # A link name ending in a newline: $(readlink) strips it, so a hop-by-hop
-# resolver checks a name that does not exist and loses the chain.
+# resolver would check a name that does not exist and lose the chain. The
+# control directory scan follows no link, so the planted settings link
+# declines the write whatever its chain spells; the scan is what this pins.
 test_auto_approve_rejects_newline_link_chain() {
     local meta="$CLAUDE_SESSION_META_DIR"
     mkdir -p "$meta/claude-config"
@@ -825,17 +827,22 @@ test_auto_approve_rejects_case_sibling_session() {
         "a setting in a case-sibling session" || return 1
 }
 
-# A control directory that resolves to a name ending in a newline: every
-# $(pwd -P) strips it, so the resolved control root never matches the real
-# parent of a write beneath it, and a decoy at the stripped name scans clean.
-test_auto_approve_rejects_newline_control_root() {
+# A write whose real parent ends in a newline: $(pwd -P) strips it, so the
+# hook would judge the plain directory at the stripped name while the write
+# lands in the newline-named one. A real path holding a newline falls
+# through. The link that reaches it sits in content, which the control
+# directory scan does not walk, and the spelled path holds no newline, so the
+# exact real path is all that decides.
+test_auto_approve_rejects_newline_real_parent() {
     local meta="$CLAUDE_SESSION_META_DIR"
     mkdir -p "$meta/memory/store" "$meta/memory/store
-/queue"
-    ln -s "memory/store
-" "$meta/private"
-    _assert_falls_through Write "$meta/memory/store
-/queue/0001" "a queue entry behind a newline-named private link" || return 1
+"
+    ln -s "store
+" "$meta/memory/notes"
+    _assert_allowed Write "$meta/memory/store/0001" \
+        "a write in the plain directory at the stripped name" || return 1
+    _assert_falls_through Write "$meta/memory/notes/0001" \
+        "a write whose real parent is the newline-named directory" || return 1
 }
 
 # CLAUDE_SESSION_META_DIR may sit outside CLAUDE_SESSION_DIR; the metadata
@@ -860,18 +867,20 @@ test_auto_approve_rejects_new_file_under_linked_claude_dir() {
 }
 
 # A requested path that ends in a newline: $(jq -r) strips it, so the hook
-# judges the stripped name while the Edit lands on the newline-named file a
-# project settings link points at.
+# would judge the plain file at the stripped name while the Edit lands on
+# the newline-named file beside it. A requested path holding a newline falls
+# through. No link is planted, so neither the control directory scan nor a
+# link check carries the verdict: the exact read and the newline check do.
 test_auto_approve_rejects_newline_file_path() {
-    local root="$CLAUDE_SESSION_DIR" meta="$CLAUDE_SESSION_META_DIR"
+    local meta="$CLAUDE_SESSION_META_DIR"
     local target="$meta/memory/config.json
 "
-    mkdir -p "$root/.claude"
     printf '{}\n' > "$target"
     printf '{}\n' > "$meta/memory/config.json"
-    ln -s "$target" "$root/.claude/settings.json"
+    _assert_allowed Edit "$meta/memory/config.json" \
+        "an Edit of the plain file at the stripped name" || return 1
     _assert_falls_through Edit "$target" \
-        "a newline-named file a settings link points at" || return 1
+        "an Edit of the newline-named file beside it" || return 1
 }
 
 # cs keeps a CLAUDE_CONFIG_DIR the shell set when the session has no vault
@@ -3295,7 +3304,7 @@ run_test test_auto_approve_rejects_case_sibling_session
 run_test test_auto_approve_rejects_project_claude_link_into_content
 run_test test_auto_approve_rejects_project_hook_link_behind_dir_link
 run_test test_auto_approve_rejects_mcp_link_to_new_content
-run_test test_auto_approve_rejects_newline_control_root
+run_test test_auto_approve_rejects_newline_real_parent
 run_test test_auto_approve_rejects_queue_link_under_separate_meta_dir
 run_test test_auto_approve_rejects_new_file_under_linked_claude_dir
 run_test test_auto_approve_rejects_newline_file_path
