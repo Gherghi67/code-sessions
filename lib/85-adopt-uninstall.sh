@@ -694,8 +694,8 @@ run_uninstall() {
         done
     done
 
-    # Remove commands
-    for cmd in "${CS_COMMANDS[@]}"; do
+    # Remove commands, current and retired
+    for cmd in "${CS_COMMANDS[@]}" "${RETIRED_COMMANDS[@]}"; do
         if [ -f "$commands_dir/$cmd" ] && _cs_remove_if_owned "$commands_dir/$cmd"; then
             info "Removed $commands_dir/$cmd"
         fi

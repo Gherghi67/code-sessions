@@ -510,6 +510,14 @@ for cmd in "${CS_COMMANDS[@]}"; do
     _deploy "commands/$cmd" "$COMMANDS_DIR/$cmd"
 done
 
+# Drop commands earlier cs versions installed but no longer ship; only a file
+# cs wrote goes, and a user's own file of that name is kept.
+for retired in "${RETIRED_COMMANDS[@]}"; do
+    if [ -f "$COMMANDS_DIR/$retired" ] && _remove_retired "$COMMANDS_DIR/$retired"; then
+        info "Removed retired command: $COMMANDS_DIR/$retired"
+    fi
+done
+
 # Install skills
 SKILLS_DIR="$HOME/.claude/skills"
 installed "skills" "$SKILLS_DIR/"

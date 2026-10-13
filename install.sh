@@ -153,6 +153,17 @@ CS_COMMANDS=(
     wrap.md
 )
 
+# Slash commands past versions deployed to ~/.claude/commands/ and this one
+# does not. A command file left behind keeps answering its name, so install.sh
+# and run_uninstall both remove each one cs wrote; a user's own file of the
+# same name is kept. When retiring a command, add its filename here.
+RETIRED_COMMANDS=(
+    compact-discoveries.md  # retired with the discoveries machinery; the session narrative replaced it
+    skillify.md             # retired with CLI command capture (command-tracker.sh), whose log it promoted to skills
+    learn.md                # wrapped cs -learn, removed with the learnings log; deployed only by an install from a checkout
+    store-secret.md         # moved to skills/store-secret; deployed only by an install from a checkout
+)
+
 # Skills cs ships; each deploys as ~/.claude/skills/<name>/SKILL.md.
 CS_SKILLS=(
     store-secret
@@ -1206,7 +1217,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "483dcbc17a919121cbac6a15fa5775317bc99eed7d7a50664065da6d6358703c  bin/cs"
+    "1682b71cd94682bd49f0769eea4ea3fb7f33425bd996f42b43ef2a215178cf78  bin/cs"
     "3b4626c505845d0e94961cd06e3e5400c6f497340ff93dadf88770f02ff22524  bin/cs-secrets"
     "f5c5600a9e08e623881893c5ca4f8e06d64adc5da414fbc0ad2166b6adea8775  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -1654,6 +1665,14 @@ mkdir -p "$COMMANDS_DIR"
 
 for cmd in "${CS_COMMANDS[@]}"; do
     _deploy "commands/$cmd" "$COMMANDS_DIR/$cmd"
+done
+
+# Drop commands earlier cs versions installed but no longer ship; only a file
+# cs wrote goes, and a user's own file of that name is kept.
+for retired in "${RETIRED_COMMANDS[@]}"; do
+    if [ -f "$COMMANDS_DIR/$retired" ] && _remove_retired "$COMMANDS_DIR/$retired"; then
+        info "Removed retired command: $COMMANDS_DIR/$retired"
+    fi
 done
 
 # Install skills

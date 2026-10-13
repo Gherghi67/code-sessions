@@ -61,6 +61,17 @@ CS_COMMANDS=(
     wrap.md
 )
 
+# Slash commands past versions deployed to ~/.claude/commands/ and this one
+# does not. A command file left behind keeps answering its name, so install.sh
+# and run_uninstall both remove each one cs wrote; a user's own file of the
+# same name is kept. When retiring a command, add its filename here.
+RETIRED_COMMANDS=(
+    compact-discoveries.md  # retired with the discoveries machinery; the session narrative replaced it
+    skillify.md             # retired with CLI command capture (command-tracker.sh), whose log it promoted to skills
+    learn.md                # wrapped cs -learn, removed with the learnings log; deployed only by an install from a checkout
+    store-secret.md         # moved to skills/store-secret; deployed only by an install from a checkout
+)
+
 # Skills cs ships; each deploys as ~/.claude/skills/<name>/SKILL.md.
 CS_SKILLS=(
     store-secret
