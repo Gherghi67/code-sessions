@@ -128,16 +128,17 @@ CS_COMPLETION_FILES=(
 )
 
 # Remove a hook registration from any event in a settings JSON string,
-# matching either path spelling; drops wrappers that empty out. Prints the
-# updated JSON.
+# matching either path spelling; drops wrappers that empty out. An entry with
+# no .hooks array (its command at the top level) passes through untouched.
+# Prints the updated JSON.
 _strip_hook_registration() {
     local settings="$1" p="$2" t="$3"
     echo "$settings" | jq --arg p "$p" --arg t "$t" '
         if .hooks then
             .hooks |= with_entries(
                 .value |= (
-                    map(.hooks |= map(select(.command != $p and .command != $t)))
-                    | map(select(.hooks | length > 0))
+                    map(if (.hooks | type) == "array" then .hooks |= map(select(.command != $p and .command != $t)) else . end)
+                    | map(select((.hooks | type) != "array" or (.hooks | length > 0)))
                 )
             )
         else . end

@@ -220,16 +220,17 @@ CS_COMPLETION_FILES=(
 )
 
 # Remove a hook registration from any event in a settings JSON string,
-# matching either path spelling; drops wrappers that empty out. Prints the
-# updated JSON.
+# matching either path spelling; drops wrappers that empty out. An entry with
+# no .hooks array (its command at the top level) passes through untouched.
+# Prints the updated JSON.
 _strip_hook_registration() {
     local settings="$1" p="$2" t="$3"
     echo "$settings" | jq --arg p "$p" --arg t "$t" '
         if .hooks then
             .hooks |= with_entries(
                 .value |= (
-                    map(.hooks |= map(select(.command != $p and .command != $t)))
-                    | map(select(.hooks | length > 0))
+                    map(if (.hooks | type) == "array" then .hooks |= map(select(.command != $p and .command != $t)) else . end)
+                    | map(select((.hooks | type) != "array" or (.hooks | length > 0)))
                 )
             )
         else . end
@@ -1205,7 +1206,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "239e1ca0c7d4345e7ee2d99271ffe06a422494ba31ab3751cca675e8e4dbeb82  bin/cs"
+    "483dcbc17a919121cbac6a15fa5775317bc99eed7d7a50664065da6d6358703c  bin/cs"
     "3b4626c505845d0e94961cd06e3e5400c6f497340ff93dadf88770f02ff22524  bin/cs-secrets"
     "f5c5600a9e08e623881893c5ca4f8e06d64adc5da414fbc0ad2166b6adea8775  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
