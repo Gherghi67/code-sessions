@@ -492,12 +492,15 @@ LOCAL="$META_DIR/local"
 QUEUE="$QDIR/queue"
 QSTATE_FILE="$QDIR/queue.state"
 QFAILED_FILE="$QDIR/queue.failed"
+# The basename of the task last handed out. Only that file is logged done when
+# its turn ends: whatever is first in the queue by then may be a task nobody
+# handed out (the handed-out one removed, or another accepted ahead of it).
+QCURRENT_FILE="$QDIR/queue.current"
 
 # Record the queue state. An absent state file reads as idle, so when idle
-# cannot be written the file is removed instead: "draining" left behind would
-# have the next Stop mark a task done that was never handed out. Any other
-# state that cannot be recorded ends this Stop with nothing handed out and a
-# message Claude Code shows the user.
+# cannot be written the file is removed instead, rather than leave a run that
+# ended recorded as draining. Any other state that cannot be recorded ends this
+# Stop with nothing handed out and a message Claude Code shows the user.
 #
 # No lock guards the file, by decision (#808): a drain writing idle and a
 # concurrent `cs -queue start` writing armed are last-rename-wins, and the
@@ -511,6 +514,16 @@ _qstate_write() {  # state word
         return 0
     fi
     jq -nc --arg m "cs task queue: could not write $QSTATE_FILE" '{decision:"approve", systemMessage:$m}'
+    exit 0
+}
+
+# Record the task about to be handed out, by its file's basename. A hand-out
+# that cannot be recorded is not made: the next Stop could not say which task
+# finished, so this Stop ends with nothing handed out and a message Claude Code
+# shows the user.
+_qcurrent_write() {  # task file path
+    cs_write_atomic "$QCURRENT_FILE" printf '%s\n' "${1##*/}" && return 0
+    jq -nc --arg m "cs task queue: could not write $QCURRENT_FILE" '{decision:"approve", systemMessage:$m}'
     exit 0
 }
 
@@ -636,7 +649,7 @@ _qpark() {  # kind reading limit remaining note
     _inbox_append --arg ts "$(date +%s)" --arg r "$kind" \
         --arg v "$reading" --arg l "$limit" --arg n "$remaining" \
         '{ts: ($ts|tonumber), event: "breaker_tripped", reason: $r, reading: ($v|tonumber), limit: ($l|tonumber), remaining: ($n|tonumber)}'
-    rm -f "$QDIR/failures" "$QFAILED_FILE"
+    rm -f "$QDIR/failures" "$QFAILED_FILE" "$QCURRENT_FILE"
     if [ "$kind" = task_failed ]; then
         _notify_spawner "task reported failed, $remaining task(s) remaining"
         reason="cs task queue: you reported the task as not completed ($QFAIL_LINE). The queue is parked with $remaining task(s) remaining$note; nothing was lost."
@@ -683,6 +696,7 @@ if [ "$QLEN" -gt 0 ] && _mail_is_lead; then
         TASK=""
         _first=$(_qfirst "$QUEUE") || _first=""
         [ -n "$_first" ] && TASK=$(cat "$_first" 2>/dev/null || true)
+        [ -z "$_first" ] || _qcurrent_write "$_first"
         _qstate_write draining
         rm -f "$QDIR/failures" "$QFAILED_FILE"
         _inbox_append --arg ts "$(date +%s)" --arg q "$QLEN" \
@@ -698,6 +712,20 @@ $RUN_MODE$SCOPE"
     fi
 
     if [ "$QSTATE" = "draining" ]; then
+        # Which task the turn that just ended was working on. With no usable
+        # record nothing can be logged done, and handing out the first task
+        # could run again one that is finished, so the run parks.
+        QCUR=""
+        [ ! -f "$QCURRENT_FILE" ] || IFS= read -r QCUR < "$QCURRENT_FILE" || true
+        case "$QCUR" in
+            ''|*/*|.|..)
+                _qstate_write idle
+                rm -f "$QCURRENT_FILE"
+                jq -nc --arg m "cs task queue: no record of which task was handed out ($QCURRENT_FILE), so none is logged done. The queue is parked with $QLEN task(s); re-arm with: cs -queue start" \
+                    '{decision:"approve", systemMessage:$m}'
+                exit 0
+                ;;
+        esac
         # The breakers run before the task that just ended is popped, the last
         # task included. Tool failures past the threshold, or the model's own
         # failure line, mean that task did not succeed: it stays first in the
@@ -707,9 +735,10 @@ $RUN_MODE$SCOPE"
         # Every trip records idle before the pop: a state that cannot be
         # written ends this Stop with nothing popped, so the queue still
         # starts with the task last handed out. Popping first would leave
-        # "draining" behind, and the next Stop would log a task done that was
-        # never handed out. A hook killed between the write and the pop leaves
-        # idle with the finished task still queued, which a re-arm runs again.
+        # "draining" behind with that task already gone, and the next Stop
+        # would carry on past the trip. A hook killed between the write and the
+        # pop leaves idle with the finished task still queued, which a re-arm
+        # runs again.
         TRIP=$(_breaker_check) || TRIP=""
         # The failure line exists only in the message of the Stop that
         # carries it, so it goes to disk before idle is recorded: a Stop that
@@ -731,21 +760,28 @@ $RUN_MODE$SCOPE"
                 _qpark "$1" "$2" "$3" "$QLEN" "; the task in progress did not complete, so it stays first in the queue, was not logged done, and its native task stays open"
                 ;;
         esac
-        # Pop = mv the lexically first entry aside BEFORE reading it: a second
-        # drain racing this one loses the rename and disarms instead of
-        # double-running the task.
-        _first=$(_qfirst "$QUEUE") || _first=""
+        # Pop = mv the task handed out aside BEFORE reading it: a second drain
+        # racing this one loses the rename and disarms instead of
+        # double-running the task. A handed-out task that is gone (removed
+        # mid-run) is logged nothing, and the run goes on with what is first.
         POPPED="$QDIR/queue.popping.$$"
-        if [ -n "$_first" ] && mv "$_first" "$POPPED" 2>/dev/null; then
-            DONE_TASK=$(cat "$POPPED" 2>/dev/null || true)
-            rm -f "$POPPED"
-            cs_append_inside "$QDIR/queue.done" printf '%s\n' "$DONE_TASK" || true
-            _inbox_append --arg ts "$(date +%s)" --arg task "$DONE_TASK" \
-                '{ts: ($ts|tonumber), event: "task_done", task: $task}'
+        POP_OK=1
+        if [ -f "$QUEUE/$QCUR" ]; then
+            if mv "$QUEUE/$QCUR" "$POPPED" 2>/dev/null; then
+                DONE_TASK=$(cat "$POPPED" 2>/dev/null || true)
+                rm -f "$POPPED"
+                cs_append_inside "$QDIR/queue.done" printf '%s\n' "$DONE_TASK" || true
+                _inbox_append --arg ts "$(date +%s)" --arg task "$DONE_TASK" \
+                    '{ts: ($ts|tonumber), event: "task_done", task: $task}'
+            else
+                POP_OK=0
+            fi
+        fi
+        if [ "$POP_OK" = 1 ]; then
             NEWLEN=$(_qlen "$QUEUE")
             if [ "$NEWLEN" -le 0 ]; then
                 _qstate_write idle
-                rm -f "$QDIR/queue.mode"
+                rm -f "$QDIR/queue.mode" "$QCURRENT_FILE"
                 DONE_COUNT=$(_qdone_len "$QDIR/queue.done")
                 _inbox_append --arg ts "$(date +%s)" --arg d "$DONE_COUNT" \
                     '{ts: ($ts|tonumber), event: "drain_finished", done: ($d|tonumber)}'
@@ -765,6 +801,7 @@ $RUN_MODE$SCOPE"
             NEXT=""
             _first=$(_qfirst "$QUEUE") || _first=""
             [ -n "$_first" ] && NEXT=$(cat "$_first" 2>/dev/null || true)
+            [ -z "$_first" ] || _qcurrent_write "$_first"
             REASON="cs task queue: next task ($NEWLEN remaining). Mark the previous native task completed and this one in-progress (create it if missing), then do it. $QFAIL_HINT
 
 Task:
@@ -776,6 +813,7 @@ $RUN_MODE$SCOPE"
         else
             # pop failed: disarm rather than re-inject the same task (fail-safe)
             _qstate_write idle
+            rm -f "$QCURRENT_FILE"
         fi
     fi
 
