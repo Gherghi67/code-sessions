@@ -2074,7 +2074,7 @@ test_retire_ignored_mode_refuses_a_topic_both_sides_edited() {
     assert_eq "untracked" "$(_feat_field "$line" 10)" "state: $line" || return 1
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
     assert_eq "1" "$status" "the retire refuses: $output" || return 1
-    assert_output_contains "$output" "The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:
+    assert_output_contains "$output" "The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:
 .cs/memory/kept.md" "the refusal names the topic" || return 1
     assert_eq "kept topic, feature edit" "$(cat "$wt/.cs/memory/kept.md")" "the feature's edit is still there" || return 1
     assert_eq "kept topic, base edit" "$(cat "$base_dir/.cs/memory/kept.md")" "the base's edit is untouched" || return 1
@@ -2089,9 +2089,11 @@ test_retire_ignored_mode_refuses_a_topic_both_sides_edited() {
 
 run_test test_retire_ignored_mode_refuses_a_topic_both_sides_edited
 
-# A record whose directory is a file in the base cannot be carried: the retire
-# refuses before it removes anything, naming the record, and the features
-# screen counts it as a file the removal would destroy.
+# A record whose directory is a file in the base, or a link out of the
+# session, cannot be carried: the retire refuses before it removes anything,
+# naming the record, and the features screen counts it as a file the removal
+# would destroy. A link that stays in the session, as an encrypted session's
+# vault links do, is a directory like any other.
 test_retire_ignored_mode_refuses_a_record_whose_directory_is_a_file_in_the_base() {
     local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output line status=0
     _ignored_base_with_two_topics
@@ -2101,23 +2103,32 @@ test_retire_ignored_mode_refuses_a_record_whose_directory_is_a_file_in_the_base(
     mkdir -p "$wt/.cs/artifacts"
     echo "feature report" > "$wt/.cs/artifacts/report.txt"
     echo "base notes" > "$base_dir/.cs/artifacts"
+    mkdir -p "$wt/.cs/handoffs" "$TEST_TMPDIR/outside" "$wt/.cs/briefs" "$base_dir/.cs/vault-mnt/briefs"
+    echo "feature handoff" > "$wt/.cs/handoffs/h.md"
+    ln -s "$TEST_TMPDIR/outside" "$base_dir/.cs/handoffs"
+    echo "feature brief" > "$wt/.cs/briefs/b.md"
+    ln -s vault-mnt/briefs "$base_dir/.cs/briefs"
     sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
     line=$("$CS_BIN" proj -features --porcelain 2>&1)
-    assert_eq "1" "$(_feat_field "$line" 7)" "one file at risk: $line" || return 1
+    assert_eq "2" "$(_feat_field "$line" 7)" "two files at risk: $line" || return 1
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
     assert_eq "1" "$status" "the retire refuses: $output" || return 1
     assert_dir "$wt/.cs/memory" "the worktree is still there: $output" || return 1
-    assert_output_contains "$output" "The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path or a file where the path needs a directory, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:" \
+    assert_output_contains "$output" "The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:" \
         "the refusal says why" || return 1
-    assert_eq ".cs/artifacts/report.txt" "$(printf '%s\n' "$output" | awk 'listed; /again:$/ { listed = 1 }')" \
-        "the refusal names the record" || return 1
+    assert_eq ".cs/artifacts/report.txt
+.cs/handoffs/h.md" "$(printf '%s\n' "$output" | awk 'listed; /again:$/ { listed = 1 }')" \
+        "the refusal names both records" || return 1
     assert_eq "base notes" "$(cat "$base_dir/.cs/artifacts")" "the base's file is untouched" || return 1
-    # Positive control: once the base's file is out of the way, the record lands.
-    rm "$base_dir/.cs/artifacts"
+    assert_eq "" "$(ls -A "$TEST_TMPDIR/outside")" "nothing was written out of the session" || return 1
+    # Positive control: once the file and the link are out of the way, the
+    # records land, the brief through the link that stays in the session.
+    rm "$base_dir/.cs/artifacts" "$base_dir/.cs/handoffs"
     status=0
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
     assert_eq "0" "$status" "the retire proceeds: $output" || return 1
     assert_eq "feature report" "$(cat "$base_dir/.cs/artifacts/report.txt")" "the feature's record lands" || return 1
+    assert_eq "feature brief" "$(cat "$base_dir/.cs/vault-mnt/briefs/b.md")" "the brief lands through the link" || return 1
 }
 
 run_test test_retire_ignored_mode_refuses_a_record_whose_directory_is_a_file_in_the_base

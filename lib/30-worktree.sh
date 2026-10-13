@@ -749,7 +749,7 @@ $wt_untracked"
         conflicts=$(_fuse_conflicts "$wt_dir/.cs" "$base_dir/.cs") \
             || error "Could not classify the session records in $wt_dir/.cs; nothing was removed"
         [ -z "$conflicts" ] \
-            || error "The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt_dir/.cs, then run /finish $task again:
+            || error "The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt_dir/.cs, then run /finish $task again:
 $conflicts"
     fi
     # The base's own .cs/ bookkeeping is exempt: in tracked mode the integrate
@@ -1352,16 +1352,38 @@ _inherited_sum() {  # feature_meta rel
 #            did not: the feature's version replaces the base's, named
 #   skip     nothing to carry: the base holds the same bytes, or the feature
 #            left the copy it was handed as it was
-#   conflict carrying it would overwrite a different file in the base, or it
-#            is a link or not a regular file
+#   conflict carrying it would overwrite a different file in the base, the
+#            base holds a file where it needs a directory or a link that
+#            takes it out of the session, or it is a link or not a regular
+#            file
 # Fails when the record of the copy, or the file, cannot be read.
 _fuse_verdict() {  # feature_meta base_meta rel
-    local src="$1/$3" dst="$2/$3" was now
+    local src="$1/$3" dst="$2/$3" was now dir="$2" rest="$3" near="$2" linked=""
     if [ -L "$src" ] || [ ! -f "$src" ]; then echo conflict; return 0; fi
     was=$(_inherited_sum "$1" "$3") || return 1
     if [ -n "$was" ]; then
         now=$(cksum < "$src") || return 1
         if [ "$now" = "$was" ]; then echo skip; return 0; fi
+    fi
+    # The fuse makes the directories on the way with cs_mkdir_inside, which
+    # cannot make one where the base holds a file or a dangling link, and
+    # refuses one a link takes out of the session. A link that stays inside
+    # (an encrypted session's .cs/memory, say) is a directory like any other.
+    while case "$rest" in */*) true ;; *) false ;; esac; do
+        dir="$dir/${rest%%/*}"
+        rest="${rest#*/}"
+        [ ! -L "$dir" ] || linked=1
+        if [ -e "$dir" ]; then
+            [ -d "$dir" ] || { echo conflict; return 0; }
+            near="$dir"
+        elif [ -L "$dir" ]; then
+            echo conflict; return 0
+        else
+            break
+        fi
+    done
+    if [ -n "$linked" ] && _cs_refuses_write cs_mkdir_inside "$dst" "$near" 2>/dev/null; then
+        echo conflict; return 0
     fi
     if [ ! -e "$dst" ] && [ ! -L "$dst" ]; then
         if [ -n "$was" ]; then echo restore; else echo carry; fi
