@@ -1334,6 +1334,20 @@ test_digest_offers_no_accept_for_an_id_it_cannot_show_whole() {
         "each of the other three says it cannot be accepted" || return 1
 }
 
+# The digest shows a multibyte body whole where jq's 4096-byte read buffer ends
+# inside it: a padding field puts the body there, read at two offsets.
+test_digest_shows_a_multibyte_body_whole() {
+    local pad body lead out
+    pad=$(printf 'p%.0s' $(seq 1 3950))
+    for lead in "" "a"; do
+        rm -f "$(MAILDIR)"/new/*.json
+        body="$lead$(python3 -c "print('\u00e9' * (160 - len('$lead')))")"
+        _forge_mail 0000000001-pad "{\"pad\":\"$pad\",\"id\":\"m1\",\"from\":\"peer\",\"kind\":\"text\",\"body\":\"$body\"}"
+        out=$(_prompt_as_receiver "hello" | jq -r '.hookSpecificOutput.additionalContext') || return 1
+        assert_eq "1" "$(grep -cxF -- "$body" <<< "$out")" "the body is shown as sent (lead '$lead')" || return 1
+    done
+}
+
 # Bounded: at most 5 bodies inline, with an "N more" overflow line and the total.
 # Seeded as files rather than via seven `cs -msg` runs: document names carry the
 # sending process's pid unpadded, so same-second sends from different pids sort
@@ -1528,6 +1542,7 @@ run_test test_mail_tag_attributes_sanitised
 run_test test_task_kind_longer_than_the_preview_withholds_the_accept_command
 run_test test_task_kind_inlined_as_untrusted_with_its_accept_command
 run_test test_digest_offers_no_accept_for_an_id_it_cannot_show_whole
+run_test test_digest_shows_a_multibyte_body_whole
 run_test test_mail_bounded_at_five
 run_test test_mail_digest_bounds_messages_not_files
 run_test test_mail_digest_reports_when_nothing_parses
