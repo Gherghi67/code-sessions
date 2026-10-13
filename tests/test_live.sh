@@ -498,6 +498,23 @@ test_scrub_controls_bytes_with_no_locale_set() {
         "/bin/bash with no locale variable set" || return 1
 }
 
+# A caller pipes into _scrub_controls, so it runs in a forked copy of the
+# shell, and a bash linked against libintl can die when it changes its own
+# locale there. The trace shows every assignment the shell itself made while
+# the function ran; a locale handed to tr as an argument of env is none.
+test_scrub_controls_leaves_the_shells_own_locale_alone() {
+    local b out own
+    for b in $(_scrub_bashes); do
+        out="$(printf 'a\001b' | env -i PATH="$PATH" HOME="$HOME" "$b" -c '
+            source "$1"; set -x; _scrub_controls' x "$SCRIPT_DIR/../lib/05-term.sh" \
+            2>"$TEST_TMPDIR/trace")"
+        assert_eq "ab" "$out" "$b scrubs while traced" || return 1
+        own="$(grep -E '^\++ ((local|export|declare|typeset|readonly) )?(LC_[A-Z_]+|LANG|LANGUAGE)=' \
+            "$TEST_TMPDIR/trace" || true)"
+        assert_eq "" "$own" "$b must not assign its own locale inside _scrub_controls" || return 1
+    done
+}
+
 run_test test_live_includes_heartbeat_session
 run_test test_live_excludes_cold_heartbeat_session
 run_test test_live_includes_live_excludes_dead
@@ -526,5 +543,6 @@ run_test test_live_none_message_when_no_live
 run_test test_scrub_controls_bytes_under_a_utf8_locale
 run_test test_scrub_controls_bytes_under_the_c_locale
 run_test test_scrub_controls_bytes_with_no_locale_set
+run_test test_scrub_controls_leaves_the_shells_own_locale_alone
 
 report_results
