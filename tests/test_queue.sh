@@ -952,6 +952,51 @@ test_drain_pops_nothing_when_a_trip_cannot_record_idle() {
     assert_eq "2" "$(qlen)" "task b and task c stay queued until handed out" || return 1
 }
 
+# Only the task the drain handed out is logged done. Removed mid-run, it is
+# logged nothing, and the next Stop hands out what is first now; it never
+# marks that task done unrun.
+test_drain_logs_nothing_done_when_the_handed_out_task_was_removed() {
+    qseed "task one" "task two"
+    printf 'armed\n' > "$(QDIR)/queue.state"
+    drain >/dev/null || true
+    "$CS_BIN" -queue rm 1 >/dev/null 2>&1 || return 1
+    local reason; reason=$(drain | jq -r .reason)
+    assert_file_not_exists "$(QDIR)/queue.done" "nothing is logged done" || return 1
+    assert_output_contains "$reason" "^cs task queue: next task (1 remaining)" "the next task is handed out" || return 1
+    assert_output_contains "$reason" "^task two$" "and it is task two" || return 1
+    assert_eq "1" "$(qlen)" "task two stays queued until it is done" || return 1
+    assert_eq "draining" "$(cat "$(QDIR)/queue.state")" "the run goes on" || return 1
+}
+
+# A task accepted into a run whose handed-out task was removed is handed out,
+# never logged done in its place and announced as the run's end.
+test_drain_hands_out_a_task_accepted_after_the_handed_out_one_was_removed() {
+    qseed "only task"
+    printf 'armed\n' > "$(QDIR)/queue.state"
+    drain >/dev/null || true
+    "$CS_BIN" -queue rm 1 >/dev/null 2>&1 || return 1
+    printf 'accepted task\n' > "$(QDIR)/queue/9999999999-accept-m1"
+    local reason; reason=$(drain | jq -r .reason)
+    assert_file_not_exists "$(QDIR)/queue.done" "nothing is logged done" || return 1
+    assert_output_not_contains "$reason" "all tasks complete" "the run does not end" || return 1
+    assert_output_contains "$reason" "^accepted task$" "the accepted task is handed out" || return 1
+    assert_eq "1" "$(qlen)" "it stays queued until it is done" || return 1
+}
+
+# A draining queue with no record of what was handed out cannot say which task
+# finished: the run parks with every task still queued, logging none done.
+test_drain_parks_a_run_with_no_record_of_the_task_handed_out() {
+    qseed "task one" "task two"
+    printf 'draining\n' > "$(QDIR)/queue.state"
+    local out; out=$(drain)
+    assert_eq "approve" "$(jq -r .decision <<< "$out")" "the turn ends" || return 1
+    assert_eq "cs task queue: no record of which task was handed out ($(QDIR)/queue.current), so none is logged done. The queue is parked with 2 task(s); re-arm with: cs -queue start" \
+        "$(jq -r .systemMessage <<< "$out")" "the user is told why" || return 1
+    assert_file_not_exists "$(QDIR)/queue.done" "nothing is logged done" || return 1
+    assert_eq "2" "$(qlen)" "every task stays queued" || return 1
+    assert_eq "idle" "$(cat "$(QDIR)/queue.state")" "the queue is parked" || return 1
+}
+
 test_drain_empties_and_returns_idle() {
     qseed "last task"
     printf 'draining\n' > "$(QDIR)/queue.state"
@@ -1139,6 +1184,9 @@ run_test test_drain_frames_the_next_task_with_a_fresh_id
 run_test test_drain_ignores_a_teammate_stop
 run_test test_drain_gate_ignores_a_teammate_stop
 run_test test_drain_disarms_when_the_pop_fails
+run_test test_drain_logs_nothing_done_when_the_handed_out_task_was_removed
+run_test test_drain_hands_out_a_task_accepted_after_the_handed_out_one_was_removed
+run_test test_drain_parks_a_run_with_no_record_of_the_task_handed_out
 run_test test_drain_empties_and_returns_idle
 run_test test_drain_reports_a_state_it_cannot_write
 run_test test_drain_keeps_a_failure_report_it_could_not_park_on
