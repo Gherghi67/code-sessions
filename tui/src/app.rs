@@ -3988,29 +3988,76 @@ mod tests {
         }
     }
 
-    // The age pins under ~/.cs-secrets/sessions/<name>/ are keyed by the
-    // session's name. After a picker rename no pin list may be left under a
-    // name the sessions root no longer has: a later session given that name
-    // would export to every key pinned there without an `age add`.
-    #[test]
-    fn a_rename_leaves_no_age_state_under_a_name_without_a_session() {
-        use crate::session::test_root;
-        let tmp = std::env::temp_dir().join(format!("cs-test-rename-age-{}", std::process::id()));
+    /// A sessions root holding session `proj`, a home beside it, and a cs
+    /// stand-in that logs its argv and hands `-secrets ...` to this checkout's
+    /// bin/cs-secrets with HOME and the sessions root pointed at them, so the
+    /// picker's rename runs the real secrets move against scratch state. With
+    /// `fail` set the stand-in prints a refusal and exits 1 instead.
+    #[cfg(unix)]
+    fn rename_fixture(tag: &str, fail: bool) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = std::env::temp_dir().join(format!("cs-test-rename-{}-{}", tag, std::process::id()));
+        std::fs::remove_dir_all(&tmp).ok();
         let root = tmp.join("root");
         let home = tmp.join("home");
         std::fs::create_dir_all(root.join("proj/.cs/local")).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        let secrets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../bin/cs-secrets");
+        let body = if fail {
+            "echo 'Error: refused by the stand-in' >&2\nexit 1\n".to_string()
+        } else {
+            format!(
+                "[ \"$1\" = -secrets ] || exit 9\nshift\n\
+                 HOME='{home}' CS_SESSIONS_ROOT='{root}' CS_SECRETS_BACKEND=encrypted exec '{secrets}' \"$@\"\n",
+                home = home.display(),
+                root = root.display(),
+                secrets = secrets.display()
+            )
+        };
+        let stub = tmp.join("cs-stub");
+        std::fs::write(
+            &stub,
+            format!("#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{}'\n{}", tmp.join("argv").display(), body),
+        )
+        .unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (tmp, root, home)
+    }
+
+    // The age pins under ~/.cs-secrets/sessions/<name>/ are keyed by the
+    // session's name. After a picker rename no pin list may be left under a
+    // name the sessions root no longer has: a later session given that name
+    // would export to every key pinned there without an `age add`. The pins
+    // follow the session to its new name.
+    #[cfg(unix)]
+    #[test]
+    fn a_rename_leaves_no_age_state_under_a_name_without_a_session() {
+        use crate::session::test_root;
+        let _env = CS_BIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (tmp, root, home) = rename_fixture("age", false);
         let pins = home.join(".cs-secrets/sessions/proj");
         std::fs::create_dir_all(&pins).unwrap();
         std::fs::write(pins.join("age-trusted"), "0000000000000000000000000000000000000000000000000000000000000000\n")
             .unwrap();
         let _guard = test_root::scoped(root.clone());
         let _home = test_home::scoped(home.clone());
+        std::env::set_var("CS_BIN", tmp.join("cs-stub"));
         let mut app = app_on(&root, "proj");
         app.mode = Mode::Rename;
         app.rename_input.set("proj-old");
 
         app.execute_rename();
+        std::env::remove_var("CS_BIN");
 
+        assert_eq!(
+            app.status_message.as_ref().map(|m| m.text.as_str()),
+            Some("Renamed to: proj-old")
+        );
+        assert_eq!(
+            std::fs::read_to_string(tmp.join("argv")).unwrap_or_default(),
+            "-secrets\n--session\nproj\nrename\nproj-old\n",
+            "the picker asks cs-secrets to move proj's secrets to proj-old"
+        );
         let mut stranded: Vec<String> = std::fs::read_dir(home.join(".cs-secrets/sessions"))
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -4018,6 +4065,126 @@ mod tests {
             .collect();
         stranded.sort();
         assert_eq!(stranded, Vec::<String>::new(), "age state left under a name with no session");
+        assert_eq!(
+            std::fs::read_to_string(home.join(".cs-secrets/sessions/proj-old/age-trusted")).unwrap_or_default(),
+            "0000000000000000000000000000000000000000000000000000000000000000\n",
+            "the pins are proj-old's now"
+        );
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // A move cs-secrets refuses or fails undoes the rename: the session keeps
+    // its name, and its transcripts and spawn seed stay where they were.
+    #[cfg(unix)]
+    #[test]
+    fn a_rename_whose_secrets_move_fails_keeps_the_old_name() {
+        use crate::session::test_root;
+        let _env = CS_BIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (tmp, root, home) = rename_fixture("fail", true);
+        std::fs::create_dir_all(root.join(".spawn")).unwrap();
+        std::fs::write(root.join(".spawn/proj.seed"), "task\n").unwrap();
+        let encode = |p: &std::path::Path| -> String {
+            p.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
+        };
+        let transcripts = home.join(".claude/projects").join(encode(&root.join("proj")));
+        std::fs::create_dir_all(&transcripts).unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        std::env::set_var("CS_BIN", tmp.join("cs-stub"));
+        let mut app = app_on(&root, "proj");
+        app.mode = Mode::Rename;
+        app.rename_input.set("proj-old");
+
+        app.execute_rename();
+        std::env::remove_var("CS_BIN");
+
+        assert_eq!(
+            app.status_message.as_ref().map(|m| m.text.as_str()),
+            Some("Rename failed: Error: refused by the stand-in")
+        );
+        assert!(root.join("proj/.cs").is_dir(), "the session keeps its name");
+        assert!(!root.join("proj-old").exists(), "no session under the new name");
+        assert!(root.join(".spawn/proj.seed").is_file(), "the seed stays proj's");
+        assert!(!root.join(".spawn/proj-old.seed").exists());
+        assert!(transcripts.is_dir(), "the transcripts stay under the old path's name");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // A staged spawn seed and brief are keyed by the session's name: they go
+    // with the session, or the next open of the old name would launch the
+    // renamed session's tasks.
+    #[cfg(unix)]
+    #[test]
+    fn a_rename_carries_the_staged_spawn_seed_and_brief() {
+        use crate::session::test_root;
+        let _env = CS_BIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (tmp, root, home) = rename_fixture("seed", false);
+        std::fs::create_dir_all(root.join(".spawn")).unwrap();
+        for suffix in [".seed", ".seed.stale", ".brief.md", ".brief.md.stale"] {
+            std::fs::write(root.join(format!(".spawn/proj{suffix}")), format!("staged{suffix}\n")).unwrap();
+        }
+        let _guard = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        std::env::set_var("CS_BIN", tmp.join("cs-stub"));
+        let mut app = app_on(&root, "proj");
+        app.mode = Mode::Rename;
+        app.rename_input.set("proj-old");
+
+        app.execute_rename();
+        std::env::remove_var("CS_BIN");
+
+        assert_eq!(
+            app.status_message.as_ref().map(|m| m.text.as_str()),
+            Some("Renamed to: proj-old")
+        );
+        let mut staged: Vec<String> = std::fs::read_dir(root.join(".spawn"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        staged.sort();
+        assert_eq!(
+            staged,
+            vec!["proj-old.brief.md", "proj-old.brief.md.stale", "proj-old.seed", "proj-old.seed.stale"]
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join(".spawn/proj-old.seed")).unwrap(),
+            "staged.seed\n",
+            "the seed moved whole"
+        );
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // A seed already staged for the new name belongs to a spawn of that name;
+    // the rename refuses rather than overwrite it, and changes nothing.
+    #[cfg(unix)]
+    #[test]
+    fn a_rename_refuses_a_new_name_with_a_staged_spawn_seed() {
+        use crate::session::test_root;
+        let _env = CS_BIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (tmp, root, home) = rename_fixture("seed-taken", false);
+        std::fs::create_dir_all(root.join(".spawn")).unwrap();
+        std::fs::write(root.join(".spawn/proj.seed"), "mine\n").unwrap();
+        std::fs::write(root.join(".spawn/proj-old.brief.md"), "theirs\n").unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        std::env::set_var("CS_BIN", tmp.join("cs-stub"));
+        let mut app = app_on(&root, "proj");
+        app.mode = Mode::Rename;
+        app.rename_input.set("proj-old");
+
+        app.execute_rename();
+        std::env::remove_var("CS_BIN");
+
+        let taken = root.join(".spawn/proj-old.brief.md");
+        assert_eq!(
+            app.status_message.as_ref().map(|m| m.text.clone()),
+            Some(format!("Can't rename: a spawn is staged for proj-old: {}", taken.display()))
+        );
+        assert!(root.join("proj/.cs").is_dir(), "the session keeps its name");
+        assert!(!root.join("proj-old").exists());
+        assert_eq!(std::fs::read_to_string(root.join(".spawn/proj.seed")).unwrap(), "mine\n");
+        assert_eq!(std::fs::read_to_string(&taken).unwrap(), "theirs\n");
+        assert!(!tmp.join("argv").exists(), "cs-secrets is never asked to move anything");
         std::fs::remove_dir_all(&tmp).ok();
     }
 
