@@ -3083,12 +3083,13 @@ test_retire_writes_no_permission_rules_through_a_linked_claude_dir() {
 run_test test_retire_writes_no_permission_rules_through_a_linked_claude_dir
 
 # A feature can commit its .claude as a link, and git sees no file behind a
-# linked directory on that side either. One that does not lead to a directory
-# inside the worktree is refused by name before anything is removed, whether
-# the feature landed through the integrate or is retired with --force: cs
-# reads the feature's rules only from a file inside the worktree.
+# linked directory on that side either. One cs cannot follow to a directory
+# inside the worktree, because it leads out or through more links than cs
+# follows, is refused by name before anything is removed, whether the feature
+# landed through the integrate or is retired with --force: cs reads the
+# feature's rules only from a file inside the worktree.
 test_retire_refuses_a_feature_claude_dir_that_links_out_of_the_worktree() {
-    local base_dir="$CS_SESSIONS_ROOT/proj" sha1 sha2 output status=0 task wt
+    local base_dir="$CS_SESSIONS_ROOT/proj" sha1 sha2 output status=0 task wt hop
     local out="$TEST_TMPDIR/outside-claude"
     _ignored_base_with_two_topics
     mkdir -p "$out"
@@ -3110,7 +3111,7 @@ test_retire_refuses_a_feature_claude_dir_that_links_out_of_the_worktree() {
     output=$("$CS_BIN" "proj" -retire-feature "t2" "$sha2" 2>&1) || status=$?
     wt="$CS_SESSIONS_ROOT/proj@t2"
     assert_eq "1" "$status" "the retire refuses a landed feature: $output" || return 1
-    assert_output_contains "$output" "Error: $wt/.claude is a link that does not lead to a directory inside $wt, and cs reads the feature's permission rules only from a file inside it. Nothing was removed. Replace the link with a directory of the feature's own, or remove it, and commit that, then run /finish t2 again." \
+    assert_output_contains "$output" "Error: $wt/.claude is a link cs cannot follow to a directory inside $wt, and cs reads the feature's permission rules only from a file inside it. Nothing was removed. Replace the link with a directory of the feature's own, or remove it, and commit that, then run /finish t2 again." \
         "the refusal names the landed feature's link" || return 1
     assert_dir "$wt/.cs/memory" "the landed feature's worktree is still there" || return 1
     assert_eq '{"permissions": {"allow": ["Read"]}}' "$(cat "$base_dir/.claude/settings.local.json")" "the base's file is as it was" || return 1
@@ -3119,11 +3120,31 @@ test_retire_refuses_a_feature_claude_dir_that_links_out_of_the_worktree() {
     status=0
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha1" --force 2>&1) || status=$?
     assert_eq "1" "$status" "the retire refuses with --force: $output" || return 1
-    assert_output_contains "$output" "Error: $wt/.claude is a link that does not lead to a directory inside $wt, and cs reads the feature's permission rules only from a file inside it. Nothing was removed. Replace the link with a directory of the feature's own, or remove it, and commit that, then run /finish t1 again." \
+    assert_output_contains "$output" "Error: $wt/.claude is a link cs cannot follow to a directory inside $wt, and cs reads the feature's permission rules only from a file inside it. Nothing was removed. Replace the link with a directory of the feature's own, or remove it, and commit that, then run /finish t1 again." \
         "the refusal names the link with --force" || return 1
     assert_dir "$wt/.cs/memory" "the worktree is still there with --force" || return 1
     assert_eq '{"permissions": {"allow": ["Read"]}}' "$(cat "$base_dir/.claude/settings.local.json")" "the base's file is as it was with --force" || return 1
     assert_eq '{"permissions": {"allow": ["Bash(elsewhere:*)"]}}' "$(cat "$out/settings.local.json")" "the outside file is untouched" || return 1
+    # A chain of 18 links that ends inside the worktree: the kernel follows
+    # it, and cs follows 16.
+    mkdir "$wt/.cs/local/claude"
+    cp "$out/settings.local.json" "$wt/.cs/local/claude/settings.local.json"
+    ln -s claude "$wt/.cs/local/hop17"
+    for hop in 16 15 14 13 12 11 10 9 8 7 6 5 4 3 2 1; do
+        ln -s "hop$((hop + 1))" "$wt/.cs/local/hop$hop"
+    done
+    rm "$wt/.claude"
+    ln -s .cs/local/hop1 "$wt/.claude"
+    (cd "$wt" && git add .claude && git commit -q -m "a long chain")
+    sha1=$(git -C "$wt" rev-parse HEAD)
+    assert_eq '{"permissions": {"allow": ["Bash(elsewhere:*)"]}}' "$(cat "$wt/.claude/settings.local.json")" "the kernel follows the chain" || return 1
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha1" --force 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses a chain it cannot follow: $output" || return 1
+    assert_output_contains "$output" "Error: $wt/.claude is a link cs cannot follow to a directory inside $wt, and cs reads the feature's permission rules only from a file inside it. Nothing was removed." \
+        "the refusal names the link at the head of the chain" || return 1
+    assert_dir "$wt/.cs/memory" "the worktree is still there past the chain" || return 1
+    assert_eq '{"permissions": {"allow": ["Read"]}}' "$(cat "$base_dir/.claude/settings.local.json")" "the base's file is as it was past the chain" || return 1
     # Positive control: the same rules in a directory of the feature's own go.
     rm "$wt/.claude"
     mkdir "$wt/.claude"
