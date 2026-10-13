@@ -1247,13 +1247,17 @@ class Reflogs:
     a reset) keeps the copy's reflog as it is. Only when every commit the
     source's reflog names is in the copy, or a dry run's ref comes with it:
     one only the source's reflog keeps (amended or rebased away) would break
-    git fsck in the copy, which then keeps git's own line.
+    git fsck in the copy, which then keeps git's own line. A link or a file
+    in place of a folder above the copy's log means no log is brought, and the
+    folder is kept in blocked: git itself still writes its lines through such
+    a link, this script never does.
     """
 
     def __init__(self, src_repo, dst_repo, label, apply):
         self.src_repo, self.dst_repo, self.apply = src_repo, dst_repo, apply
         self._sync_lines = (b"", ("sync: from %s" % label).encode())
         self._dirs = None
+        self.blocked = []   # folders of the copy's .git/logs that are a link or a file
 
     def dirs(self):
         if self._dirs is None:
@@ -1273,6 +1277,16 @@ class Reflogs:
         except OSError:
             return None
 
+    def _in_the_way_of(self, ref):
+        """True when a link or a file stands above the copy's log of ref (see _in_the_way)."""
+        way = _in_the_way(self.dirs()[1], os.path.join("logs", ref))
+        if way is None:
+            return False
+        way = os.path.join(self.dirs()[1], way)
+        if way not in self.blocked:
+            self.blocked.append(way)
+        return True
+
     def _own(self, lines):
         """lines but those a sync wrote."""
         return [line for line in lines if line.partition(b"\t")[2] not in self._sync_lines]
@@ -1287,6 +1301,8 @@ class Reflogs:
         src = self._read(0, ref)
         src_lines = _reflog_lines(src) if src else None
         if not src_lines or src_lines[-1].split(b" ", 2)[1:2] != [value.encode()]:
+            return None
+        if self._in_the_way_of(ref):
             return None
         dst = seen = self._read(1, ref)
         if dst is None:
@@ -1330,7 +1346,7 @@ class Reflogs:
             return True
         data, seen = found
         # Only over what was read: a line git added meanwhile in the copy is the copy's own.
-        if self._read(1, ref) != seen:
+        if self._read(1, ref) != seen or self._in_the_way_of(ref):
             return False
         write_atomic(os.path.join(self.dirs()[1], "logs", ref), data, prefix=".session-transfer.")
         return True
@@ -1358,6 +1374,7 @@ class BranchSync:
         self.heads = {}
         self.reflogs = 0        # created branches that take the source's reflog (a dry run's too)
         self.reflogs_taken = []  # other branches whose reflog becomes the source's (see Reflogs)
+        self.reflogs_blocked = []  # folders of the copy's .git/logs in the way of a reflog (Reflogs.blocked)
 
 
 def sync_branches(src_repo, dst_repo, recorded, apply, skip=(), label="source"):
@@ -1410,6 +1427,7 @@ def sync_branches(src_repo, dst_repo, recorded, apply, skip=(), label="source"):
             out.ahead.append(name)
         else:
             out.diverged.append(name)
+    out.reflogs_blocked = reflogs.blocked
     return out
 
 
@@ -1516,6 +1534,7 @@ class GitMetaSync:
         self.refs_diverged = []     # moved elsewhere on both sides: the copy's kept
         self.reflogs = 0            # added refs that take the source's reflog
         self.reflogs_taken = []     # other refs whose reflog becomes the source's (see Reflogs)
+        self.reflogs_blocked = []   # folders of the copy's .git/logs in the way of a reflog (Reflogs.blocked)
         self.urls = []              # remotes whose URL differs: their refs are left as the copy has them
         self.branch_settings = []   # branches given the source's branch.<name>.* settings
         self.remote_settings = []   # remotes given the source's remote.<name>.* settings
@@ -1667,6 +1686,7 @@ def sync_git_meta(src_repo, dst_repo, record, label, created, apply):
                 out.reflogs += 1
             else:
                 out.reflogs_taken.append(short)
+    out.reflogs_blocked = reflogs.blocked
 
     # Tags: added, never moved; one the copy deleted since the last sync stays deleted.
     s_tags, d_tags = _tags(src_repo), {ref[len("refs/tags/"):]: v for ref, v in _refs(dst_repo, "refs/tags/").items()}
@@ -2144,8 +2164,11 @@ class Syncer:
                          % (branch, self.src, self.dst, self.dst, self.src, self.src, branch))
         if result.moved or result.created:
             self.log("synced-branches", session=name, created=result.created, moved=result.moved)
-        self.git_meta(name, sync_git_meta(src_repo, dst_repo, record.data, self.src, result.created, self.apply),
-                      result.reflogs_taken)
+        meta = sync_git_meta(src_repo, dst_repo, record.data, self.src, result.created, self.apply)
+        self.git_meta(name, meta, result.reflogs_taken)
+        for way in dict.fromkeys(result.reflogs_blocked + meta.reflogs_blocked):
+            self.problem("%s: a link or a file in %s's .git where git keeps reflogs, left as it is: %s"
+                         % (name, self.dst, tilde(way)))
         return result
 
     def with_reflogs(self, count, total):

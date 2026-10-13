@@ -250,7 +250,10 @@ code-sessions left the same thing alone, and keeps what code-sessions changed:
   earlier version of the script added or moved with only git's one line. One
   whose original reflog names a commit the copy lacks (amended or rebased
   away in the original, kept only by that reflog) keeps git's line instead,
-  so `git fsck` finds nothing wrong in the copy.
+  so `git fsck` finds nothing wrong in the copy. A link or a file in place
+  of a folder of the copy's `.git/logs` is reported once and left as it is,
+  and no reflog is written below it: git itself still writes its lines
+  through such a link, the script never does.
 - `FETCH_HEAD`: the script's fetches write none, so the copy's stays its own.
   One an earlier version's fetch of the original's branches wrote becomes the
   original's again, or is removed where the original's names a commit none of

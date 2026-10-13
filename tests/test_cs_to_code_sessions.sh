@@ -495,6 +495,26 @@ test_a_link_in_the_copy_is_never_written_through() {
     assert_symlink "$wap/linked"
 }
 
+# The same for the copy's reflogs: a folder of .git/logs that code-sessions has
+# as a link elsewhere gets no reflog written through it, and is reported once.
+test_a_link_in_the_copy_s_reflogs_is_never_written_through() {
+    make_fixture
+    run_move --session wap --apply || { echo "$OUT"; return 1; }
+    local wap outside="$TEST_TMPDIR/outside" status=0
+    wap=$(ccs_dir wap)
+    mkdir -p "$outside"
+    printf 'notes of mine\n' > "$outside/main"
+    rm -r "$wap/.git/logs/refs/heads"
+    ln -s "$outside" "$wap/.git/logs/refs/heads"
+    run_move --session wap --apply || status=$?
+    assert_eq 1 "$status" "a link in the way was not reported" || { echo "$OUT"; return 1; }
+    assert_eq 'notes of mine' "$(cat "$outside/main")" "the sync wrote a reflog through code-sessions's link" || return 1
+    assert_output_contains "$OUT" "a link or a file in code-sessions's .git where git keeps reflogs, left as it is: .*/logs/refs/heads$" || return 1
+    assert_eq 1 "$(grep -c "where git keeps reflogs" <<< "$OUT")" "the link was reported more than once" || return 1
+    assert_output_not_contains "$OUT" "reflogs only cs went on with" || return 1
+    assert_symlink "$wap/.git/logs/refs/heads"
+}
+
 # The same for the Claude history: a conversation folder code-sessions has as a
 # link elsewhere gets nothing written through it, and is reported.
 test_a_link_in_the_copied_history_is_never_written_through() {
@@ -2292,6 +2312,7 @@ run_test test_dry_run_changes_nothing
 run_test test_apply_copies_the_session_and_leaves_cs_as_it_is
 run_test test_rerun_brings_over_what_cs_changed_and_keeps_what_code_sessions_changed
 run_test test_a_link_in_the_copy_is_never_written_through
+run_test test_a_link_in_the_copy_s_reflogs_is_never_written_through
 run_test test_a_link_in_the_copied_history_is_never_written_through
 run_test test_a_file_cs_replaced_with_a_folder_comes_over
 run_test test_an_unsearchable_folder_in_the_copy_stops_only_its_paths
