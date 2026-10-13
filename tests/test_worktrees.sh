@@ -2288,6 +2288,25 @@ test_retire_carries_the_feature_permission_grants_into_the_base() {
 
 run_test test_retire_carries_the_feature_permission_grants_into_the_base
 
+# A base with no settings file gets one holding the feature's allow list only.
+test_retire_creates_the_base_settings_with_the_feature_grants_alone() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    rm -rf "$base_dir/.claude"
+    jq '.permissions.allow = ["Bash(make:*)"]' "$wt/.claude/settings.local.json" > "$wt/.claude/s.json" \
+        && mv "$wt/.claude/s.json" "$wt/.claude/settings.local.json"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire succeeds: $output" || return 1
+    assert_eq '{"permissions":{"allow":["Bash(make:*)"]}}' "$(jq -c . "$base_dir/.claude/settings.local.json" 2>&1)" \
+        "the base's file holds the grant and nothing else" || return 1
+}
+
+run_test test_retire_creates_the_base_settings_with_the_feature_grants_alone
+
 # The record of what the feature inherited is what tells a deleted topic from
 # a new one. A record that is there and cannot be read must stop the fuse:
 # guessing "new" would bring the deleted topic back and report success.
