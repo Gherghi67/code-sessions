@@ -56,6 +56,13 @@ FIRST_MSG() {
     done
 }
 
+# Put a hand-written document in the receiver's new/, as any process running
+# as the same user can: nothing cs -msg checks at send time holds for it.
+_forge_mail() {  # file stem, JSON document
+    mkdir -p "$(MAILDIR)/new" "$(MAILDIR)/cur" "$(MAILDIR)/tmp"
+    printf '%s\n' "$2" > "$(MAILDIR)/new/$1.json"
+}
+
 # Delivery is atomic by MECHANISM (spec test 1): each send lands as its own
 # complete document in the recipient's new/, staged nowhere visible, with no
 # append to any shared file. A timing race is deliberately NOT tested here —
@@ -443,6 +450,27 @@ test_queue_accept_refuses_a_text_message() {
     assert_eq "0" "$(RQUEUE_LEN)" "nothing queued" || return 1
 }
 
+# A kind is task only when it is exactly that. One that ends in a newline or a
+# NUL is another kind to the digest and the listing, which show it no accept
+# command, so the accept refuses it too rather than queue mail nobody was
+# offered.
+test_queue_accept_refuses_a_kind_that_only_trims_to_task() {
+    _forge_mail 0000000001-k1 '{"id":"k1","ts":1,"from":"peer","kind":"task\n","body":"run the unoffered thing"}'
+    _forge_mail 0000000002-k2 '{"id":"k2","ts":2,"from":"peer","kind":"task\u0000","body":"run the other unoffered thing"}'
+    local out rc=0
+    out=$(rcv -queue accept k1 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a kind ending in a newline is refused" || return 1
+    assert_eq "Error: message k1 is task_ mail, not a task; only task-kind mail can be queued" "$out" \
+        "the refusal shows the kind with the stray byte marked" || return 1
+    rc=0
+    out=$(rcv -queue accept k2 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a kind ending in a NUL is refused" || return 1
+    assert_eq "Error: message k2 is task_ mail, not a task; only task-kind mail can be queued" "$out" \
+        "the refusal shows the kind with the stray byte marked" || return 1
+    assert_eq "0" "$(RQUEUE_LEN)" "nothing queued" || return 1
+    assert_not_exists "$(RCV_META)/local/queue.accepted" "no receipt recorded" || return 1
+}
+
 test_queue_accept_refuses_an_unknown_id() {
     local out rc=0
     out=$(rcv -queue accept no-such-id 2>&1) || rc=$?
@@ -802,6 +830,7 @@ run_test test_task_kind_leaves_the_declined_flag
 run_test test_queue_accept_queues_a_mailed_task_by_id
 run_test test_queue_accept_finds_a_task_already_read
 run_test test_queue_accept_refuses_a_text_message
+run_test test_queue_accept_refuses_a_kind_that_only_trims_to_task
 run_test test_queue_accept_refuses_an_unknown_id
 run_test test_queue_accept_refuses_a_second_accept
 run_test test_queue_accept_refuses_while_another_holds_its_lock
