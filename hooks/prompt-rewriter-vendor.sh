@@ -105,8 +105,10 @@ mkdir -p "$_cfg" 2>/dev/null || exit 1
 # A hung rewrite freezes the whole TUI, because Claude Code spawns the editor
 # with spawnSync and stdio:"inherit". perl's alarm bounds it where stock macOS
 # ships neither `timeout` nor `gtimeout`; the pending alarm survives exec and
-# kills the CLI, surfacing as 142 (128 + SIGALRM).
-_limit="${CS_REWRITE_TIMEOUT:-25}"
+# kills the CLI, surfacing as 142 (128 + SIGALRM). The bound is
+# prompt-rewriter.sh's, which checks CS_REWRITE_TIMEOUT once for both its
+# countdown and this; run on its own, this takes the same default.
+_limit="${_CS_REWRITE_LIMIT:-25}"
 
 # stdin carries the prompt, piped in by the caller, and is never the inherited
 # terminal. The prompt stays out of argv, where `ps` shows it to every user on
