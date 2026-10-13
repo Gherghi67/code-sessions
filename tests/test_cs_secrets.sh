@@ -3660,6 +3660,50 @@ test_rename_rerun_refuses_a_value_that_differs_under_both_names() {
         || { echo "  FAIL: alpha's K1 was deleted by a refused move"; return 1; }
 }
 
+# On a Mac the Keychain holds what a session stored there whatever backend a
+# later run uses, so rename on the encrypted backend reads it too. Run against
+# the fake security's store, as macOS.
+_mac_encrypted_secrets() {
+    PATH="$_RN_BIN:$PATH" CS_PLATFORM_OVERRIDE=macos CS_SECRETS_BACKEND=encrypted FAKE_SECURITY_STORE="$TEST_TMPDIR/kc-store" \
+        "$CS_SECRETS_BIN" "$@"
+}
+
+test_rename_on_the_encrypted_backend_moves_the_keychain_entries() {
+    _seed_renamed_session || { echo "  FAIL: fixture: could not seed alpha's stores"; return 1; }
+    local out rc=0
+    out=$(_mac_encrypted_secrets --session alpha rename bravo 2>&1) || rc=$?
+    assert_eq "0" "$rc" "rename exits 0: $out" || return 1
+    assert_eq "Moved the secrets of session 'alpha' to 'bravo'" "$out" "rename says what it did" || return 1
+    assert_eq "cs:bravo:K1
+cs:bravo:K2" "$(_kc_services)" "the Keychain holds bravo's entries and none of alpha's" || return 1
+    assert_eq "value-two" "$(_kc_secrets --session bravo get K2 2>&1)" "K2 moved" || return 1
+    assert_eq "value-enc" "$("$CS_SECRETS_BIN" --session bravo get E1 2>&1)" "the encrypted store moved" || return 1
+}
+
+# What a removed session left in the Keychain under the new name would become
+# the renamed session's, and a Keychain that cannot be read may hold such a
+# value: either is refused before anything changes.
+test_rename_on_the_encrypted_backend_refuses_what_the_keychain_holds_or_hides() {
+    _RN_BIN=$(_make_fake_security)
+    mkdir -p "$CS_SESSIONS_ROOT/bravo/.cs"
+    printf 'stale' > "$TEST_TMPDIR/stale"
+    _kc_secrets --session bravo set K1 < "$TEST_TMPDIR/stale" >/dev/null 2>&1 || return 1
+    local out rc=0
+    out=$(_mac_encrypted_secrets --session alpha rename bravo 2>&1) || rc=$?
+    assert_eq "1" "$rc" "rename refuses: $out" || return 1
+    assert_eq "Error: Refusing to move the secrets of session 'alpha' to 'bravo': 'bravo' already has Keychain secrets" "$out" \
+        "the refusal names the Keychain" || return 1
+    assert_eq "stale" "$(_kc_secrets --session bravo get K1 2>&1)" "bravo's Keychain entry stays" || return 1
+
+    rm -rf "$TEST_TMPDIR/kc-store"
+    rc=0
+    out=$(FAKE_SECURITY_MODE=fail _mac_encrypted_secrets --session alpha rename bravo 2>&1) || rc=$?
+    assert_eq "1" "$rc" "rename refuses an unreadable Keychain: $out" || return 1
+    assert_eq "Error: Refusing to move the secrets of session 'alpha' to 'bravo': failed to enumerate the Keychain" "$out" \
+        "the refusal says the Keychain could not be read" || return 1
+    [ ! -e "$HOME/.cs-secrets/.rename.alpha" ] || { echo "  FAIL: a refused rename left a marker"; return 1; }
+}
+
 # The picker runs rename on every rename, mostly for sessions with no secrets:
 # those must not gain a ~/.cs-secrets.
 test_rename_with_nothing_to_move_creates_no_cs_secrets() {
@@ -3998,6 +4042,8 @@ run_test test_rename_moves_into_an_empty_age_state_directory
 run_test test_rename_takes_the_new_name_literally
 run_test test_rename_refuses_a_second_name
 run_test test_rename_refuses_while_the_old_session_directory_exists
+run_test test_rename_on_the_encrypted_backend_moves_the_keychain_entries
+run_test test_rename_on_the_encrypted_backend_refuses_what_the_keychain_holds_or_hides
 run_test test_rename_rerun_finishes_an_interrupted_move
 run_test test_rename_rerun_refuses_a_value_that_differs_under_both_names
 run_test test_rename_with_nothing_to_move_creates_no_cs_secrets

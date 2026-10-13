@@ -4077,6 +4077,9 @@ mod tests {
     /// bin/cs-secrets with HOME and the sessions root pointed at them, so the
     /// picker's rename runs the real secrets move against scratch state. A
     /// tool a test puts in `<tmp>/shim` shadows the real one for cs-secrets.
+    /// The shim starts with a `security` that reports an empty Keychain:
+    /// rename reads the Keychain on a Mac whatever the backend, and a test
+    /// must never read the real one.
     /// With `fail` set the stand-in prints a refusal and exits 1 instead.
     #[cfg(unix)]
     fn rename_fixture(tag: &str, fail: bool) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
@@ -4087,6 +4090,9 @@ mod tests {
         let home = tmp.join("home");
         std::fs::create_dir_all(root.join("proj/.cs/local")).unwrap();
         std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(tmp.join("shim")).unwrap();
+        std::fs::write(tmp.join("shim/security"), "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(tmp.join("shim/security"), std::fs::Permissions::from_mode(0o755)).unwrap();
         let secrets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../bin/cs-secrets");
         let body = if fail {
             "echo 'Error: refused by the stand-in' >&2\nexit 1\n".to_string()
