@@ -1402,11 +1402,16 @@ test_install_and_uninstall_refuse_a_retired_command_with_a_path() {
     assert_eq "1" "$rc" "install exit status" || { echo "$out"; return 1; }
     assert_output_contains "$out" "Error: RETIRED_COMMANDS entry '\.\./x' is not a file name" "install names the entry" || return 1
     assert_eq "$(_cs_shipped_content)" "$(cat "$home/.claude/x" 2>/dev/null)" "install keeps the file outside the commands directory" || return 1
+    assert_not_exists "$home/.local" "install deploys nothing" || return 1
+    assert_eq "" "$(ls -A "$home/.claude/commands")" "install leaves the commands directory empty" || return 1
+    mkdir -p "$home/.claude/hooks/cs"
+    _cs_shipped_content > "$home/.claude/hooks/cs/session-start.sh"
     rc=0
     out=$(printf 'y\n' | HOME="$home" "$repo/bin/cs" -uninstall 2>&1) || rc=$?
     assert_eq "1" "$rc" "uninstall exit status" || { echo "$out"; return 1; }
     assert_output_contains "$out" "Error: RETIRED_COMMANDS entry '\.\./x' is not a file name" "uninstall names the entry" || return 1
     assert_eq "$(_cs_shipped_content)" "$(cat "$home/.claude/x" 2>/dev/null)" "uninstall keeps the file outside the commands directory" || return 1
+    assert_eq "$(_cs_shipped_content)" "$(cat "$home/.claude/hooks/cs/session-start.sh" 2>/dev/null)" "uninstall removes nothing" || return 1
 }
 
 # The cs mod shipped as cs-rotate before it took the name cs; a copy left
