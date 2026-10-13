@@ -25,8 +25,12 @@ The profile is only read, and git runs there only to read, so code-sessions keep
 working. When cs already has a session of that name, the code-sessions one arrives as
 <name>-ccs, or under the name --rename gives it. A rerun brings over what code-sessions
 changed since, wherever cs left the same thing alone: branches (fetched into
-the copy, also as refs/remotes/code-sessions/*), a worktree's HEAD and index, files and
-conversations. What cs changed in its copy is kept until both sides hold the
+the copy, also as refs/remotes/code-sessions/*; a new one with its reflog), tags,
+remote-tracking refs, reflogs and the branch and remote settings cs has none of
+(as cs-to-code-sessions.py brings them), a worktree's HEAD and index, files and
+conversations, a conversation file Claude Code rewrites whole included (by the
+record of each copy's size, mtime and ctime that cs-to-code-sessions.py
+describes). What cs changed in its copy is kept until both sides hold the
 same content again; something changed on both sides keeps cs's and is
 reported once per change in code-sessions. The record of the last sync lives
 in cs's sessions root, under .code-sessions-to-cs/.
@@ -60,10 +64,10 @@ MARKER = os.path.join(".cs", "local", "code-sessions-origin")
 LEGACY_MARKER = os.path.join(".cs", "local", "ags-origin")
 
 from session_transfer import (
-    STATE, Record, SecretsError, Syncer, adopt_legacy_dir, admin_dir_for, branch_heads, claude_project_key,
-    clone_tree, copy_admin_dir, copy_blocker, copy_index, copy_secret, mark_copied, mark_now, merge_tree,
-    profile_secrets_env, read_text, reap, relinker, scrubbed_env, secret_names,
-    secret_differs, session_is_open, state_value, tilde, write_atomic,
+    STATE, Record, Rewrites, SecretsError, Syncer, adopt_legacy_dir, admin_dir_for,
+    claude_project_key, clone_tree, copy_admin_dir, copy_blocker, copy_index, copy_secret, mark_copied, mark_now,
+    merge_tree, merged_notes, merged_parts, profile_secrets_env, read_text, reap, relinker, repo_marks, scrubbed_env,
+    secret_names, secret_differs, session_is_open, shown, state_value, tilde, write_atomic,
 )
 
 TMP_SUFFIX = ".code-sessions-to-cs.tmp"
@@ -94,6 +98,7 @@ class Plan:
         self.is_repo = os.path.isdir(os.path.join(self.source, ".git"))
         self.gone = False       # cs removed the copy an earlier run made
         self.branches = None    # a base's branch sync this run
+        self.into_profile = set()   # link targets in the profile cs's copy keeps: cs would write there
 
 
 class Copier:
@@ -263,14 +268,48 @@ class Copier:
             self.records[base.cs_name] = Record(os.path.join(self.record_root, base.cs_name))
         return self.records[base.cs_name]
 
-    def relink(self, plan):
-        """Absolute links into code-sessions's folders of the family, pointed at cs's copies of them."""
-        base = plan.base_plan if plan.base else plan
+    def roots(self):
+        """The folder of each code-sessions session that has a cs name, by every spelling, -> cs's copy of it.
+
+        Not the family's alone: a session folder inside another one's is a link
+        in the outer copy (cs-to-code-sessions.py puts it there), which must
+        lead to cs's copy of the inner session, never into the profile.
+        """
+        real_root = os.path.realpath(self.sessions_root)
         roots = {}
         for other in self.plans:
-            if other.cs_name and (other is base or other.base_plan is base):
-                roots[other.path] = roots[other.source] = self.cs_dir(other)
-        return relinker(roots)
+            if other.cs_name:
+                for spelling in (other.path, other.source, os.path.join(real_root, other.name)):
+                    roots[spelling] = self.cs_dir(other)
+        return roots
+
+    def relink(self, plan):
+        """Absolute links into code-sessions's session folders, pointed at cs's copies of them.
+
+        A target left in the profile (its session has no cs copy) is noted in
+        plan.into_profile: cs would write through it into the profile.
+        """
+        move = relinker(self.roots())
+        profile = {self.profile, os.path.realpath(self.profile)}
+
+        def relink(target):
+            moved = move(target)
+            if moved == target and os.path.isabs(target) and any(
+                    target == p or target.startswith(p + os.sep) for p in profile):
+                plan.into_profile.add(target)
+            return moved
+        return relink
+
+    def check_links(self, plan):
+        """What a copy would do with each link in plan's folder, for a dry run, which copies nothing."""
+        relink = self.relink(plan)
+        for top, dirs, files in os.walk(plan.source):
+            if top == plan.source and ".git" in dirs:
+                dirs.remove(".git")
+            for name in dirs + files:
+                full = os.path.join(top, name)
+                if os.path.islink(full):
+                    relink(os.readlink(full))
 
     def log(self, action, **fields):
         if not self.apply:
@@ -281,10 +320,14 @@ class Copier:
             f.write(json.dumps(fields, sort_keys=True) + "\n")
 
     def conversations(self, plan):
-        """The tally of the session's Claude files, and how many conversations they hold."""
+        """The tally of the session's Claude files, and how many conversations they hold.
+
+        The family's record keeps what merge_files needs to bring a file code-sessions rewrote whole.
+        """
+        record = self.record(plan)
         src = os.path.join(self.ccs_projects, claude_project_key(plan.source))
         dst = os.path.join(self.claude_dir, "projects", claude_project_key(self.cs_physical(plan)))
-        tally = merge_tree(src, dst, self.apply, ".code-sessions-to-cs.tmp")
+        tally = merge_tree(src, dst, self.apply, ".code-sessions-to-cs.tmp", record=record)
         count = 0
         if os.path.isdir(src):
             for name in sorted(os.listdir(src)):
@@ -293,7 +336,7 @@ class Copier:
                     conversation = name[:-len(".jsonl")]
                     tally.add(merge_tree(os.path.join(self.ccs_history, conversation),
                                          os.path.join(self.claude_dir, "file-history", conversation),
-                                         self.apply, ".code-sessions-to-cs.tmp"))
+                                         self.apply, ".code-sessions-to-cs.tmp", record=record))
         return tally, count
 
     def secrets(self, plan):
@@ -337,6 +380,7 @@ class Copier:
             if os.path.isdir(worktrees) and not os.path.islink(worktrees):
                 shutil.rmtree(worktrees)
             state = read_text(os.path.join(tmp, STATE))
+            self.rewrites(plan).apply(tmp, paths, ".code-sessions-to-cs.")
             self.adjust_copy(plan, tmp)
             os.rename(tmp, final)
         except BaseException:
@@ -348,7 +392,7 @@ class Copier:
             record.forget(old)
         record.data = {"sessions": {}, "source": plan.source, "heads": {}}
         if plan.is_repo:
-            record.data["heads"] = branch_heads(self.cs_physical(plan))
+            record.data.update(repo_marks(self.cs_physical(plan), self.syncer.src))
         mark_copied(record, plan.cs_name, plan.source, since, state, self.cs_physical(plan), plan.is_repo, paths)
         record.save()
         self.log("copied", session=plan.name, cs=plan.cs_name, source=plan.source)
@@ -378,6 +422,7 @@ class Copier:
         try:
             paths = clone_tree(plan.source, tmp, self.relink(plan))
             state = read_text(os.path.join(tmp, STATE))
+            self.rewrites(plan).apply(tmp, paths, ".code-sessions-to-cs.")
             self.adjust_copy(plan, tmp)
             copy_admin_dir(plan.admin, admin)
             with open(os.path.join(admin, "gitdir"), "w") as f:
@@ -397,8 +442,9 @@ class Copier:
         self.log("copied-feature", session=plan.name, cs=plan.cs_name, source=plan.source)
 
     def rewrites(self, plan):
-        """What a file from code-sessions becomes in cs's copy: the memory folder at cs's path."""
-        return {SETTINGS: lambda data: self.rekey_settings(data, plan)}
+        """What a file from code-sessions becomes in cs's copy: the memory folder at cs's path, and each
+        Python virtual environment naming cs's copy wherever it names a code-sessions session's folder."""
+        return Rewrites(plan.source, {SETTINGS: lambda data: self.rekey_settings(data, plan)}, self.roots())
 
     def rekey_settings(self, data, plan):
         try:
@@ -543,20 +589,23 @@ class Copier:
             self.say("%scopy the session directory to %s" % (will, tilde(final)))
             if self.apply:
                 self.copy_directory(plan)
+        if not self.apply and plan.cs_state != "ours":
+            self.check_links(plan)
+        if plan.into_profile:
+            self.problem("links into the code-sessions profile left as they are, so cs would write there through "
+                         "them: %s; a rerun points each at cs's copy of its session once that is copied"
+                         % shown(sorted(tilde(t) for t in plan.into_profile)))
 
         # 2. Claude conversations.
         tally, count = self.conversations(plan)
         verb = "copied" if self.apply else "to copy"
         if tally.pending():
-            parts = []
-            if tally.new:
-                parts.append("%d new" % tally.new)
-            if tally.grown:
-                parts.append("%d grown since the last copy" % tally.grown)
             self.say("Claude history of %d conversation(s), files %s: %s"
-                     % (count, verb, ", ".join(parts)))
+                     % (count, verb, ", ".join(merged_parts(tally, "code-sessions"))))
         elif not tally.diverged and not tally.blocked:
             self.say("Claude history of %d conversation(s): nothing new" % count)
+        for line in merged_notes(tally, "code-sessions", "cs", self.apply):
+            self.say(line)
         if tally.ahead:
             self.say("%d cs file(s) went on past the code-sessions copy; kept" % tally.ahead)
         for path_ in tally.diverged:
