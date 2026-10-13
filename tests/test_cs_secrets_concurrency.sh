@@ -690,6 +690,42 @@ SHIM
 test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
 }
 
+# A TERM to a Keychain set while `security` writes keeps the write lock until
+# that write is done: a rename that took the lock the moment it went would
+# move the session's entries while the value still lands under the old name.
+# The store is held in flight for two seconds at most; the set exits after it,
+# so the stored value is there the moment the set has exited.
+test_a_term_keeps_the_write_lock_until_the_keychain_write_finishes() {
+    local bindir; bindir=$(_make_fake_security)
+    local kc="$TEST_TMPDIR/kc-store" hold="$TEST_TMPDIR/hold" slot="$TEST_TMPDIR/kc-store/cs_alpha_K1"
+    _kcs() {
+        PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kc" "$CS_SECRETS_BIN" "$@"
+    }
+    mkdir -p "$CS_SESSIONS_ROOT/alpha/.cs"
+    printf 'value-one' > "$TEST_TMPDIR/v1"
+
+    # Started directly, not through _kcs: the TERM must reach cs-secrets, not
+    # a subshell running the function.
+    PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kc" FAKE_SECURITY_HOLD_STORE="$hold" \
+        "$CS_SECRETS_BIN" --session alpha set K1 < "$TEST_TMPDIR/v1" > "$TEST_TMPDIR/set.out" 2>&1 &
+    local spid=$! waited=0 rc=0 written_first=0
+    until [ -f "$hold.began" ]; do sleep 0.05; waited=$((waited + 1)); [ "$waited" -gt 200 ] && break; done
+    [ -f "$hold.began" ] || { echo "  FAIL: fixture: the set never reached its write"; wait "$spid"; return 1; }
+    kill -TERM "$spid"
+    wait "$spid" || rc=$?
+    [ -f "$slot" ] && written_first=1
+    # A store left running writes on its own; let it finish before teardown.
+    waited=0
+    until [ -f "$slot" ]; do sleep 0.05; waited=$((waited + 1)); [ "$waited" -gt 100 ] && break; done
+
+    assert_eq "1" "$written_first" "the Keychain write finished before the set exited" || return 1
+    assert_eq "143" "$rc" "the set exits 143: $(cat "$TEST_TMPDIR/set.out")" || return 1
+    assert_eq "" "$(cat "$TEST_TMPDIR/set.out")" "the set does not say it stored the value" || return 1
+    assert_eq "value-one" "$(_kcs --session alpha get K1 2>&1)" "the write in flight stored its value" || return 1
+    assert_eq "alpha
+test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
+}
+
 run_test test_encrypted_salt_write_is_atomic_under_concurrency
 run_test test_encrypted_signal_terminates_writer_mid_critical_section
 run_test test_encrypted_purge_serialized_with_concurrent_store
@@ -700,5 +736,6 @@ run_test test_export_holds_the_lock_across_encrypt_and_digest_on_every_backend
 run_test test_two_first_runs_keep_one_machine_key
 run_test test_keychain_set_during_a_rename_is_moved_with_the_session
 run_test test_a_set_that_waited_on_the_write_lock_refuses_a_session_moved_away
+run_test test_a_term_keeps_the_write_lock_until_the_keychain_write_finishes
 
 report_results
