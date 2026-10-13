@@ -1737,6 +1737,28 @@ test_a_committed_vault_config_lookalike_refuses_open() {
     assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
 }
 
+# A vault set up by hand needs git's answer before its links out are let
+# through. When git cannot answer, the open refuses with git's own error, not
+# with advice to replace the vault's links or remove the session.
+test_a_hand_made_vault_refuses_open_with_gits_error_when_git_cannot_answer() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local meta="$CS_SESSIONS_ROOT/vt/.cs" t outside cfg="$TEST_TMPDIR/broken-gitconfig" out rc=0
+    t=$(cd "$TEST_TMPDIR" && pwd -P); outside="$t/outside-settings"
+    printf 'USER-OWNED\n' > "$outside"
+    _make_vaulted_config vt
+    ln -s "$outside" "$meta/vault-mnt/claude-config/settings.json"
+    printf '[core\nbad\n' > "$cfg"
+    _make_launch_sentinel
+
+    out=$(GIT_CONFIG_GLOBAL="$cfg" "$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: cs could not ask git whether it tracks a file in .cs/local: fatal: bad config line 1 in file $cfg" \
+        "$out" "cs should name git's error" || return 1
+    assert_eq "USER-OWNED" "$(cat "$outside")" "the file outside is untouched" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
+}
+
 # Codex r3 #1: a trailing newline is stripped by command substitution, so the
 # physical path came back as a sibling without it and the scan walked nothing.
 test_a_link_to_a_directory_named_with_a_trailing_newline_refuses_open() {
@@ -1894,6 +1916,7 @@ run_test test_a_link_out_behind_an_in_session_directory_link_refuses_open
 run_test test_a_link_to_a_directory_named_with_a_newline_refuses_open
 run_test test_a_link_to_a_directory_named_with_a_trailing_newline_refuses_open
 run_test test_a_committed_vault_config_lookalike_refuses_open
+run_test test_a_hand_made_vault_refuses_open_with_gits_error_when_git_cannot_answer
 run_test test_global_msg_refuses_a_target_linked_out_of_the_session
 
 report_results

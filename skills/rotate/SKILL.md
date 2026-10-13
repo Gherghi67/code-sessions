@@ -262,7 +262,21 @@ vault is locked: tell the user to mount it and stop.
    by name, skipping every ignored one (the step 4 check).
 9. Arm it, LAST: write its basename (no path) to `.cs/local/pending-handoff`
    (`.cs/private/pending-handoff` in an encrypted session).
-   Machine-local state — never commit it.
+   Machine-local state — never commit it. Run this once from the session
+   root, with `HANDOFF` set to the basename:
+
+   ```sh
+   marker=.cs/local/pending-handoff
+   if [ -L .cs/private ] || [ -e .cs/private ]; then marker=.cs/private/pending-handoff; fi
+   cs -vet-session . && printf '%s\n' "$HANDOFF" > "$marker"
+   ```
+
+   The command asks cs first: while git tracks a file in `.cs/local` or
+   `.cs/private`, a pull can rewrite the marker, and the SessionStart hook
+   refuses the rotation it names. Then the command prints why and arms
+   nothing. Tell the user that line and that the handoff stays in the store:
+   once they untrack the files as it says, `cs <session-name>`'s launch
+   prompt offers the handoff with `r`. Skip steps 10 and 11.
 
    Arming is the final step because an armed marker is fragile in a way a
    committed file is not. If Claude Code exits before the ritual finishes and

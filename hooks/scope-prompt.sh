@@ -47,6 +47,10 @@ if [ "${CS_SCOPE_TRACE_DISABLE:-}" != "1" ] && [ -n "${CLAUDE_SESSION_DIR:-}" ] 
     # and a linked .cs/private counts only beside a real .cs/local/pre-open,
     # the mark of a vault set up by hand (the checked stage-trace writes later
     # in the run apply the full rule).
+    # It is also the one write any hook makes into .cs/local while git tracks
+    # the session's control files: knowing that takes git, and the mark has to
+    # land before anything that can stall. Every later write in this run asks
+    # cs_private_dir or cs_local_dir and stands down. Accepted as is (#980).
     if [ -n "$_launch_ms" ] && [ ! -L "$_launch_trace_dir/scope-prompt.trace" ] \
         && [ ! -L "$_launch_local" ] \
         && { [ ! -L "$_launch_trace_dir" ] || { [ -f "$_launch_local/pre-open" ] && [ ! -L "$_launch_local/pre-open" ]; }; }; then
@@ -86,6 +90,9 @@ if [ "$_cs_had_e" = 1 ]; then set -e; fi
 # in a vault, so nothing is traced rather than risk writing it in plaintext.
 if ! command -v cs_private_dir >/dev/null 2>&1; then
     cs_private_dir() { return 1; }
+fi
+if ! command -v cs_local_dir >/dev/null 2>&1; then
+    cs_local_dir() { return 1; }
 fi
 # A write this hook cannot make is skipped without a word, and the link check
 # on appends and new directories lives in cs-shared.sh; without the library
@@ -186,9 +193,10 @@ if [ -n "${CLAUDE_SESSION_META_DIR:-}" ] && _trace_dir=$(cs_private_dir "$CLAUDE
 fi
 
 # The user is back: drop the statusline's attention marker before any
-# other gate (slash commands and short prompts clear it too).
-[ -n "${CLAUDE_SESSION_META_DIR:-}" ] \
-    && rm -f "$CLAUDE_SESSION_META_DIR/local/attention" 2>/dev/null
+# other gate (slash commands and short prompts clear it too). A directory git
+# tracks keeps the marker as git has it (cs_local_dir).
+[ -n "${CLAUDE_SESSION_META_DIR:-}" ] && _attention_dir=$(cs_local_dir "$CLAUDE_SESSION_META_DIR") \
+    && rm -f "$_attention_dir/attention" 2>/dev/null
 
 # iTerm2: the bounce raised at turn end stops the moment the user prompts.
 # Mirrors the guard in narrative-reminder.sh (hooks are standalone).
@@ -259,9 +267,11 @@ It is now $_today. The date this conversation last heard was $_known_day, so any
         fi
     fi
 fi
-_commit_date_stamp() {  # meta_local_dir
+_commit_date_stamp() {  # meta_dir
     [ -n "${DATE_STAMP_PENDING:-}" ] || return 0
-    local dir="$1/context-date"
+    local dir
+    dir=$(cs_local_dir "$1") || return 0
+    dir="$dir/context-date"
     cs_mkdir_inside "$dir" || return 0
     cs_write_atomic "$dir/$DATE_STAMP_CONV" printf '%s\n' "$DATE_STAMP_PENDING" || true
     DATE_STAMP_PENDING=""
@@ -477,7 +487,7 @@ _digest_exit() {
     # and the stamp wait for the next prompt to carry them.
     if [ "$_emitted" -eq 0 ]; then
         _commit_digest "$DIGEST_DIR"
-        _commit_date_stamp "${CLAUDE_SESSION_META_DIR:-}/local"
+        _commit_date_stamp "${CLAUDE_SESSION_META_DIR:-}"
     fi
     _trace exit
     exit 0
@@ -755,7 +765,7 @@ _emitted=0
 _emit_context "$DATE_NOTE" "$DIGEST" "$CLARIFY" "$BLOCK" || _emitted=$?
 if [ "$_emitted" -eq 0 ]; then
     _commit_digest "$DIGEST_DIR"
-    _commit_date_stamp "${CLAUDE_SESSION_META_DIR:-}/local"
+    _commit_date_stamp "${CLAUDE_SESSION_META_DIR:-}"
 fi
 _trace emit
 exit 0

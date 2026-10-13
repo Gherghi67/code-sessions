@@ -126,9 +126,26 @@ in the directory that holds the queue, the mailbox and the rotation marker (`.cs
 or `.cs/private` once that name exists)? `cs` refuses to open such a session, but a
 `git pull`, a merge or a checkout can put committed files there while the session is
 open. A repository wrote a tracked file, not this session, so while git tracks one the
-hooks read no queue, mail or rotation marker from that directory and write none of those
-files: the Stop hook hands out no task, the prompt hook shows no mail, a `/clear` loads no
-handoff, and the command log stops. `cs -queue` and `cs -msg` run inside the session
+hooks read no queue, mail or rotation marker from that directory and write nothing there:
+the Stop hook hands out no task, the prompt hook shows no mail, stamps no date and leaves
+the attention flag, a `/clear` loads no handoff, SessionStart records no conversation id,
+SessionEnd's vault waiter records no pid (it still detaches the vault), and the command log
+stops. The status line, both mods (`cs` and `cs-update`) and `/wrap`'s last pass stand down
+too. The status line
+cannot ask git on every render, so each hook run leaves its answer in
+`~/.cache/cs/tracked/<session name>`, and a pull goes unseen there until the next hook
+runs. The mods and `/wrap` ask `cs -vet-session`. Git's pathspec settings in the
+environment (`GIT_LITERAL_PATHSPECS` and its three siblings) are cleared for the question,
+since a literal pathspec would match no file and read as nothing tracked, and so are
+configuration settings passed through the environment (`GIT_CONFIG_COUNT`,
+`GIT_CONFIG_PARAMETERS`). Git that fails to answer for any reason other than "not a git
+repository" (a broken `~/.gitconfig`, a bad repository config, an unreadable index, a
+`safe.directory` refusal) counts as tracked: the hooks stand down the same way, `cs` refuses
+to open the session, a named verb (`cs <name> -queue` and the rest) refuses, and the message
+carries git's first `fatal:` or `error:` line. Lines that `GIT_TRACE` or a trace2 setting
+print ahead of it are not a failure. A file git tracks there still counts after you delete
+its directory. One write stays: the prompt hook's launch
+mark in `scope-prompt.trace`, made before anything that can stall, including git. `cs -queue` and `cs -msg` run inside the session
 refuse on the same question. Each finished turn says why, in a system message that names the file
 and the `git rm --cached` command that untracks it. That message is all the Stop hook
 does until then: it sends no narrative reminder and no rotation nudge, and raises no
@@ -437,7 +454,8 @@ is time, the status bar's amber from ten seconds and its crit red under five
 At zero the mod runs the `/clear` itself, only if
 the band is idle at that moment (no turn running, no survey), the handoff still
 armed and this still the lead; otherwise the count stops and the button waits
-for you. Ctrl+X 1 during the count clears at once. Sending a prompt, from
+for you. Ctrl+X 1 during the count clears at once. A press while the mod's own `/clear` is
+still running does nothing, so it cannot clear the conversation that `/clear` opened. Sending a prompt, from
 the composer or anywhere else a prompt enters the session, stops the count;
 the next turn's end starts it again from 20. A `/clear` from anywhere else
 (typed, or another plugin's) ends it too. The count is module state: it does
@@ -647,7 +665,9 @@ leaves nothing open to redraw, so `/cs-update` after the reload reads the
 marker too and shows the finished pane instead of offering the install a
 second time. The mod clears the marker (writes it empty) the next launch,
 render, or `/cs-update` that finds nothing pending for that version, since
-`$.fs` offers no delete.
+`$.fs` offers no delete. While `cs -vet-session` refuses the session (git tracks
+its control files), the mod writes neither the marker nor its heartbeat and
+leaves a stale marker as git has it.
 
 The `/config` row `cs-update.showReleaseNotes` (on by default) turns off only
 the launch pane; `/cs-update` still opens it with the option off.
@@ -656,7 +676,7 @@ the launch pane; `/cs-update` still opens it with the option off.
 `hooks/hooks.json`, `hooks/register.tsx`) under `~/.claude/skills/cs-update/`,
 the same layout as the `cs` mod, and `cs -uninstall` removes the directory. When
 Claude Code loads the plugin, the mod writes `.cs/local/cs-update.heartbeat`
-(one UTC timestamp) when the cwd has `.cs/local`, and `cs -doctor` reports the
+(one UTC timestamp) when the cwd has `.cs/local` and `cs -vet-session` passes, and `cs -doctor` reports the
 mod from that file through the same `_doctor_check_mod` check it runs for
 the `cs` mod: OK naming when it last ran in this session, or a WARN naming the
 ways it has not (no cs launch since the install, function hooks withheld by

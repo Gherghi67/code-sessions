@@ -49,6 +49,12 @@ if [ "$_cs_had_e" = 1 ]; then set -e; fi
 if ! command -v cs_private_dir >/dev/null 2>&1; then
     cs_private_dir() { return 1; }
 fi
+# Nor whether git tracks the session's control files, so nothing is written
+# into .cs/local either.
+if ! command -v cs_local_dir >/dev/null 2>&1; then
+    cs_local_dir() { return 1; }
+    _cs_local_dir_unknown=1
+fi
 # A write this hook cannot make is skipped without a word, and the link check
 # on appends and new directories lives in cs-shared.sh; without the library
 # they are made unchecked, as they were before the check existed.
@@ -162,7 +168,10 @@ fi
 # append into a missing dir would abort this hook under set -e.
 # An encrypted session logs into its vault; while the vault is locked the log
 # goes nowhere, never into .cs/local.
-cs_mkdir_inside "$META_DIR/local" || true
+# Every write into .cs/local goes through LOCAL_DIR, which is empty while git
+# tracks a file in the session's control directories (cs_local_dir).
+LOCAL_DIR=$(cs_local_dir "$META_DIR") || LOCAL_DIR=""
+[ -z "$LOCAL_DIR" ] || cs_mkdir_inside "$LOCAL_DIR" || true
 if _log_dir=$(cs_private_dir "$META_DIR"); then SESSION_LOG="$_log_dir/session.log"; else SESSION_LOG=/dev/null; fi
 cs_append_inside "$SESSION_LOG" printf '%s\n' "$(date '+%Y-%m-%d %H:%M:%S') - Session started (source: $SOURCE, ID: $SESSION_ID)" \
     "  Working directory: $CWD" "" || true
@@ -381,7 +390,14 @@ EOF
 # Atomic and serialised against cs's own writer through cs_local_state_set.
 STATE_FILE="$META_DIR/local/state"
 local_state_set() {
-    cs_mkdir_inside "$META_DIR/local" || return 1
+    if [ -z "$LOCAL_DIR" ]; then
+        # A tracked control directory is reported by the Stop hook; a missing
+        # library is said here, because nothing else names what it cost.
+        [ -z "${_cs_local_dir_unknown:-}" ] \
+            || echo "session-start: cs-shared.sh is missing or outdated, so $1 was not recorded in $STATE_FILE" >&2
+        return 1
+    fi
+    cs_mkdir_inside "$LOCAL_DIR" || return 1
     cs_local_state_set "$STATE_FILE" "$1" "$2"
 }
 
@@ -539,7 +555,7 @@ fi
 
 # A fresh session is attended by definition: drop any stale attention
 # marker left by the previous conversation's final Stop.
-rm -f "$META_DIR/local/attention" 2>/dev/null || true
+[ -z "$LOCAL_DIR" ] || rm -f "$LOCAL_DIR/attention" 2>/dev/null || true
 
 # iTerm2: also cancel any dock bounce the previous conversation left running.
 # Mirrors the guard in narrative-reminder.sh (hooks are standalone).
@@ -645,7 +661,7 @@ if [ "$SOURCE" = "resume" ] && git -C "$SESSION_DIR" rev-parse --git-dir >/dev/n
     fi
 
     # Per-actor digest: shared memory/narrative activity since this actor last looked.
-    cs_mkdir_inside "$META_DIR/local" || true
+    [ -z "$LOCAL_DIR" ] || cs_mkdir_inside "$LOCAL_DIR" || true
     WATERMARK_FILE="$META_DIR/local/watermark"
     LAST_SEEN=""
     [ -f "$WATERMARK_FILE" ] && LAST_SEEN=$(cat "$WATERMARK_FILE" 2>/dev/null || true)
@@ -710,7 +726,7 @@ NUMSTAT
         [ -n "$DELTA_LINE" ] && DYNAMIC="${DYNAMIC}${DELTA_LINE}${_NL}"
     fi
     # Advance the watermark to current HEAD (also seeds it on first resume).
-    [ -z "$HEAD_SHA" ] || cs_write_atomic "$WATERMARK_FILE" echo "$HEAD_SHA" || true
+    [ -z "$HEAD_SHA" ] || [ -z "$LOCAL_DIR" ] || cs_write_atomic "$WATERMARK_FILE" echo "$HEAD_SHA" || true
 
     # Objective from README.md
     OBJECTIVE=$(sed -n '/^## Objective/,/^## /{/^## Objective/d;/^## /d;/^$/d;p;}' "$META_DIR/README.md" 2>/dev/null | head -1 | sed 's/^\[.*\]$//' || true)
@@ -854,10 +870,10 @@ esac
 ROTATION_KICK=""
 if [ -n "$ROTATION_HANDOFF" ] && [ "$SOURCE" = "clear" ] && [ "$IS_LEAD" = 1 ] \
     && [ -z "${CS_NO_ROTATION_WAKE:-}" ]; then
-    _kick_dir="$META_DIR/local/rotation-kick"
+    _kick_dir="$LOCAL_DIR/rotation-kick"
     # The watcher is handed the path with no existence check, and a watch armed
     # on a missing directory never fires again for the process's lifetime.
-    if cs_mkdir_inside "$_kick_dir"; then
+    if [ -n "$LOCAL_DIR" ] && cs_mkdir_inside "$_kick_dir"; then
         ROTATION_KICK="$_kick_dir"
         # A stale marker from a previous rotation would make the FileChanged
         # hook treat this kick as already delivered and exit silently.
@@ -913,8 +929,8 @@ elif [ "$SOURCE" = "clear" ] && [ "$IS_LEAD" = 1 ]; then
     #
     # Lead-only: a teammate's /clear would otherwise stop the lead's retries
     # and make the lead's own wake decline.
-    _stale_kick="$META_DIR/local/rotation-kick"
-    if [ -d "$_stale_kick" ]; then
+    _stale_kick="$LOCAL_DIR/rotation-kick"
+    if [ -n "$LOCAL_DIR" ] && [ -d "$_stale_kick" ]; then
         cs_write_atomic "$_stale_kick/delivered" : || true
     fi
 fi
@@ -1078,8 +1094,8 @@ _commit_digest "$DIGEST_DIR"
 case "$SESSION_ID" in
     ''|.*|*[!A-Za-z0-9._-]*) ;;
     *)
-        cs_mkdir_inside "$META_DIR/local/context-date" \
-            && cs_write_atomic "$META_DIR/local/context-date/$SESSION_ID" printf '%s\n' "$CONTEXT_DAY" || true
+        [ -z "$LOCAL_DIR" ] || { cs_mkdir_inside "$LOCAL_DIR/context-date" \
+            && cs_write_atomic "$LOCAL_DIR/context-date/$SESSION_ID" printf '%s\n' "$CONTEXT_DAY"; } || true
         ;;
 esac
 

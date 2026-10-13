@@ -421,16 +421,27 @@ test_wrap_marks_the_wrapped_conversation() {
     block=$(awk '/^## Pass 4/{p=1; next} /^## /{p=0} p && /^```/{f=!f; next} p && f' "$COMMANDS_DIR/wrap.md")
     [ -n "$block" ] || { echo "  FAIL: wrap.md has no Pass 4 command block"; return 1; }
     dir="$TEST_TMPDIR/wrapped"
-    mkdir -p "$dir/.cs/local"
+    mkdir -p "$dir/.cs/local" "$TEST_TMPDIR/csbin"
+    ln -sf "$SCRIPT_DIR/../bin/cs" "$TEST_TMPDIR/csbin/cs"
     printf 'claude_session_id: 99999999-9999-4999-8999-999999999999\n' > "$dir/.cs/local/state"
-    (cd "$dir" && CLAUDE_CODE_SESSION_ID=11111111-2222-4333-8444-555555555555 bash -c "$block") \
+    (cd "$dir" && PATH="$TEST_TMPDIR/csbin:$PATH" CLAUDE_CODE_SESSION_ID=11111111-2222-4333-8444-555555555555 bash -c "$block") \
         || { echo "  FAIL: the Pass 4 command failed"; return 1; }
     assert_eq "11111111-2222-4333-8444-555555555555" "$(cat "$dir/.cs/local/wrapped")" \
         "the marker names the conversation the wrap ran in, not the state's lead" || return 1
     rm -f "$dir/.cs/local/wrapped"
-    (cd "$dir" && env -u CLAUDE_CODE_SESSION_ID bash -c "$block") \
+    (cd "$dir" && PATH="$TEST_TMPDIR/csbin:$PATH" env -u CLAUDE_CODE_SESSION_ID bash -c "$block") \
         || { echo "  FAIL: the Pass 4 command must succeed with no conversation id"; return 1; }
     assert_not_exists "$dir/.cs/local/wrapped" "no id, no marker" || return 1
+    # cs is asked first, and while git tracks the control files it refuses and
+    # the pass adds nothing there, still succeeding: the wrap itself finished.
+    git -C "$dir" init -q
+    git -C "$dir" add .cs/local/state
+    git -C "$dir" -c user.name=t -c user.email=t@example.com commit -q -m tracked
+    (cd "$dir" && PATH="$TEST_TMPDIR/csbin:$PATH" CLAUDE_CODE_SESSION_ID=11111111-2222-4333-8444-555555555555 \
+        bash -c "$block" 2>/dev/null) \
+        || { echo "  FAIL: the Pass 4 command must succeed while git tracks the control files"; return 1; }
+    assert_eq "" "$(git -C "$dir" status --porcelain --ignored -- .cs/local)" \
+        "nothing is added under a tracked .cs/local" || return 1
 }
 
 run_test test_checkpoint_allowed_tools_hyphenated

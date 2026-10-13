@@ -133,6 +133,9 @@ export const GRACE_SECONDS = 20
 // Claude Code's own auto-compact lands, so a handoff is written while the
 // conversation is still whole.
 export const FORCE_DEFAULT = 80
+// How long cs may take to say whether it trusts the session's control files
+// (`cs -vet-session`, about 0.2 s measured) before the answer counts as a no.
+const VET_TIMEOUT_MS = 10000
 
 // The pane the first grace of a session opens beside the band: what the
 // handoff will do next, read while the count runs. It carries no keys, so
@@ -208,6 +211,17 @@ let previewShown = false
 // Set while the mod's own /clear runs with the pane already closed, so the
 // /clear hook goes straight through (clearAndContinue).
 let paneChecked = false
+// Set while the mod's own /clear runs. The marker stays armed until the
+// successor's SessionStart consumes it, so the band still offers the button
+// meanwhile; a second /clear would end the conversation the handoff started,
+// so a press then does nothing.
+let clearing = false
+// cs's last refusal of this session's control files, toasted once: the band
+// asks on every render while a handoff is armed.
+let lastRefusal: string | undefined
+// Counts presses of the clear button: a press acts only if no later press or
+// prompt came while cs was answering it.
+let pressCount = 0
 
 // Which conversation the turns belong to, and whether it is being judged. A
 // conversation that begins past the force threshold did not get there by
@@ -237,15 +251,17 @@ let finishProblemShown = false
 
 export function register(on: On) {
   // A (re)load has no countdown: the engine cancelled the old one's timers.
-  left = undefined; ticker = undefined; bandIdle = false; turnRunning = false; preview = undefined; previewShown = false; adopted = undefined; clearSeen = false; paneChecked = false; birth = undefined; startPercent = undefined; registered = false
+  left = undefined; ticker = undefined; bandIdle = false; turnRunning = false; preview = undefined; previewShown = false; adopted = undefined; clearSeen = false; paneChecked = false; clearing = false; birth = undefined; startPercent = undefined; registered = false
   finishWatch = undefined; finishTurnOver = false; finishShown = new Set(); finishGate = undefined; finishProblemShown = false
+  lastRefusal = undefined
   on('session.start', async ($, e, next) => {
     if (!registered) {
       registered = true
       await $.command.register({ name: 'queue', description: "Add a task to this cs session's walk-away queue, or list it.", argumentHint: '[task]', immediate: true })
     }
-    // Only in a cs session; anywhere else the mod stays silent.
-    if ((await $.fs.exists(`${e.cwd}/.cs/local`)) && (await isCsSession($, e.cwd))) {
+    // Only in a cs session; anywhere else the mod stays silent. Nor while git
+    // tracks the session's control files: the heartbeat would change them.
+    if ((await $.fs.exists(`${e.cwd}/.cs/local`)) && (await isCsSession($, e.cwd)) && (await sessionVetted($, e.cwd))) {
       await $.fs.write(`${e.cwd}/${HEARTBEAT}`, `${new Date().toISOString()}\n`)
     }
     return next(e)
@@ -308,6 +324,11 @@ export function register(on: On) {
   // not done with: the countdown stops and the prompt goes through untouched.
   on('prompt.submit', async ($, e, next) => {
     if (ticker) stopCountdown($)
+    // A new turn asks afresh, as the Stop hook says it afresh each turn: the
+    // band draws the handoff again, and its press asks cs before it clears.
+    // A press still waiting on cs is dropped.
+    lastRefusal = undefined
+    pressCount += 1
     return next(e)
   })
 
@@ -344,7 +365,9 @@ export function register(on: On) {
     turnRunning = e.props.isWorking
     bandIdle = !e.props.hasSurvey && !e.props.isWorking
     if (!bandIdle) return drawn
-    const armed = await handoffArmed($)
+    // The band draws on every redraw and asks cs nothing: it shows the last
+    // answer cs gave (sessionVetted), which every step that acts asks afresh.
+    const armed = lastRefusal === undefined && (await handoffArmed($))
     const { context } = await $.session.usage()
     const percent = context.percent
     if (!armed && (percent === undefined || percent < (await threshold($)))) return drawn
@@ -390,9 +413,9 @@ export function register(on: On) {
             {key(ROTATE_ACTION)}
             {armed
               ? <Button key="cs-rotate" action={ROTATE_ACTION} plain label="/clear and continue from the handoff"
-                        onPress={() => clearAndContinue($)} />
+                        onPress={() => pressClear($)} />
               : <Button key="cs-rotate" action={ROTATE_ACTION} plain label="rotate this conversation"
-                        onPress={() => rotate($)} />}
+                        onPress={() => pressRotate($)} />}
             {/* a Button is a block: nested in a Text the engine refuses the whole tree (measured), so the separator stands beside it */}
             {!armed && !wrapped && <Text dimColor>{'  \u00b7  '}</Text>}
             {!armed && !wrapped && key(WRAP_ACTION)}
@@ -492,12 +515,14 @@ async function forceRotation($: EngineInterface) {
     }
   }
   if (await handoffArmed($)) {
-    if (!ticker) startCountdown($)
+    if (!ticker && (await sessionVetted($, await $.session.cwd()))) startCountdown($)
     return
   }
   if (startPercent !== undefined && startPercent >= force) return
   if (context.percent === undefined || context.percent < force) return
-  const forced = `${await $.session.cwd()}/${FORCED}`
+  const cwd = await $.session.cwd()
+  if (!(await sessionVetted($, cwd))) return
+  const forced = `${cwd}/${FORCED}`
   if ((await $.fs.exists(forced)) && (await $.fs.read(forced)).trim() === id) return
   await $.fs.write(forced, `${id}\n`)
   $.clock.after(0, () => {
@@ -528,7 +553,7 @@ function startCountdown($: EngineInterface) {
     // The count holds at zero through the reads below: a prompt or a press
     // landing meanwhile stops it (left becomes undefined), and this tick
     // then does nothing, so nothing clears twice or behind a new turn.
-    const idle = bandIdle && (await handoffArmed($)) && (await ownsRotation($))
+    const idle = bandIdle && (await handoffArmed($)) && (await ownsRotation($)) && (await sessionVetted($, await $.session.cwd()))
     if (left !== 0) return
     // The pane closes while the count still holds at zero, for the same
     // reason: a prompt landing during the close stops the /clear.
@@ -636,7 +661,9 @@ async function threshold($: EngineInterface): Promise<number> {
 
 // Armed means the marker names a handoff the SessionStart hook will accept
 // after the /clear: a bare basename (the hook rejects a separator), a file in
-// the store, and frontmatter that still says unconsumed. A marker an aborted
+// the store, and frontmatter that still says unconsumed. Whether cs trusts the
+// session's control files is asked apart (sessionVetted), by each step that
+// acts on the handoff, never by the band's drawing. A marker an aborted
 // rotation left behind, or one naming a handoff since consumed, would offer a
 // /clear that lands in a conversation with nothing to continue from, so it
 // does not arm. One exists per render; the reads only while the marker is there.
@@ -668,6 +695,33 @@ async function armedHandoff($: EngineInterface): Promise<string | undefined> {
     }
   }
   return undefined
+}
+
+// Whether cs trusts the session's control files, by cs's own rule (the one
+// SessionStart, the Stop hook and the queue verbs ask): while git tracks a
+// file in .cs/local or .cs/private, a pull can put a marker there, and the
+// SessionStart hook refuses the rotation it names. An answer cs cannot give
+// is a no. Each new refusal is toasted once. Each answer starts a cs process
+// (0.15-0.44 s measured), so only the steps that act ask: a countdown's start
+// and zero, a forced /rotate, and a press of the clear or the rotate button.
+async function sessionVetted($: EngineInterface, cwd: string): Promise<boolean> {
+  const bin = await $.env.get("CS_BIN")
+  let refusal: string | undefined
+  if (!bin) {
+    refusal = 'the launch did not say where cs is (CS_BIN)'
+  } else {
+    try {
+      const result = await $.process.run([bin, '-vet-session', cwd], { timeoutMs: VET_TIMEOUT_MS })
+      if (result.exitCode !== 0) {
+        refusal = result.stderr.split('\n').filter(l => l.trim() !== '').slice(-1)[0] ?? `cs -vet-session exited ${result.exitCode}`
+      }
+    } catch (err) {
+      refusal = `cs -vet-session did not run: ${String(err instanceof Error ? err.message : err)}`
+    }
+  }
+  if (refusal !== undefined && refusal !== lastRefusal) $.ui.toast(`cs: no rotation in this session: ${refusal}`)
+  lastRefusal = refusal
+  return refusal === undefined
 }
 
 // The hook's own rule (_handoff_is_unconsumed in hooks/session-start.sh): a
@@ -820,6 +874,12 @@ async function rotate($: EngineInterface) {
   await $.command.run({ command: 'rotate', args: '' })
 }
 
+// The rotate button's press. The skill ends by arming a marker in .cs/local,
+// so the press asks cs first, as the forced /rotate does before it runs.
+async function pressRotate($: EngineInterface) {
+  if (await sessionVetted($, await $.session.cwd())) await rotate($)
+}
+
 // /wrap's last pass writes WRAPPED naming the conversation it ran in
 // (CLAUDE_CODE_SESSION_ID, so a teammate's wrap names the teammate), so a wrap
 // that finished is the conversation's latest act and the key has nothing to
@@ -833,6 +893,8 @@ async function wrapFinished($: EngineInterface): Promise<boolean> {
 async function clearWrapped($: EngineInterface) {
   const marker = await readWrapped($)
   if (marker === '' || marker !== (await $.session.id())) return
+  // A marker git tracks stays as git has it, like every control file then.
+  if (!(await sessionVetted($, await $.session.cwd()))) return
   await $.fs.write(`${await $.session.cwd()}/${WRAPPED}`, '').catch(() => {})
 }
 
@@ -946,6 +1008,23 @@ async function offerToStart($: EngineInterface, bin: string, count: number) {
   }
 }
 
+// The clear button's press: the /clear runs only once cs says it trusts the
+// session's control files, as at a countdown's zero. The press stops the count
+// before it asks, so the zero tick cannot clear while cs answers, and only the
+// latest press acts. It closes the pane before asking again whether a prompt
+// came, as the zero tick does: a prompt landing during the close is a new turn.
+async function pressClear($: EngineInterface) {
+  if (clearing) return
+  if (ticker) stopCountdown($, false)
+  const press = ++pressCount
+  const vetted = await sessionVetted($, await $.session.cwd())
+  if (press !== pressCount) return
+  if (!vetted) return stopCountdown($)
+  await closeHandoffPane($)
+  if (press !== pressCount) return
+  await clearAndContinue($, true)
+}
+
 // /clear ends this conversation, and cs's SessionStart hook then starts the
 // armed handoff's next step in the new one.
 // Measured: the run resolves once the screen has cleared and a new transcript
@@ -959,6 +1038,7 @@ async function clearAndContinue($: EngineInterface, paneClosed = false) {
   if (ticker) stopCountdown($, false)
   if (!paneClosed) await closeHandoffPane($)
   paneChecked = true
+  clearing = true
   try {
     await $.command.run({ command: 'clear', args: '' })
   } catch (err) {
@@ -966,6 +1046,7 @@ async function clearAndContinue($: EngineInterface, paneClosed = false) {
     throw err
   } finally {
     paneChecked = false
+    clearing = false
   }
 }
 

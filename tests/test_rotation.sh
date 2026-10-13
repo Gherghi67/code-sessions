@@ -2684,6 +2684,47 @@ test_rotate_skill_routes_an_encrypted_session_into_the_vault() {
         "the skill arms an encrypted session's marker in the vault" || return 1
 }
 
+# Step 9's command arms the marker only once cs says it trusts the session's
+# control files: a marker git tracks is one a pull can rewrite, and the
+# SessionStart hook refuses the rotation it names. Run as written, it arms
+# .cs/local (.cs/private in an encrypted session), and while git tracks a
+# control file it fails, writing nothing, so the skill can say why.
+test_rotate_skill_arms_the_marker_only_when_cs_vets_the_session() {
+    local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md" block dir rc
+    block=$(awk '/^9\. Arm it/{p=1; next} /^10\. /{p=0} p && /^ *```/{f=!f; next} p && f' "$skill" | sed 's/^   //')
+    [ -n "$block" ] || { echo "  FAIL: step 9 has no command block"; return 1; }
+    dir=$(mktemp -d "${TMPDIR:-/tmp}/rotate-arm.XXXXXX")
+    mkdir -p "$dir/s/.cs/local" "$dir/e/.cs/local" "$dir/e/.cs/private" "$dir/bin"
+    ln -s "$SCRIPT_DIR/../bin/cs" "$dir/bin/cs"
+    (cd "$dir/s" && PATH="$dir/bin:$PATH" HANDOFF=2026-01-01-next.md bash -c "$block") \
+        || { echo "  FAIL: step 9 failed in a plain session"; rm -rf "$dir"; return 1; }
+    assert_eq "2026-01-01-next.md" "$(cat "$dir/s/.cs/local/pending-handoff" 2>/dev/null)" \
+        "a plain session arms .cs/local" || { rm -rf "$dir"; return 1; }
+    (cd "$dir/e" && PATH="$dir/bin:$PATH" HANDOFF=2026-01-01-next.md bash -c "$block") \
+        || { echo "  FAIL: step 9 failed in an encrypted session"; rm -rf "$dir"; return 1; }
+    assert_eq "2026-01-01-next.md" "$(cat "$dir/e/.cs/private/pending-handoff" 2>/dev/null)" \
+        "an encrypted session arms .cs/private" || { rm -rf "$dir"; return 1; }
+    assert_not_exists "$dir/e/.cs/local/pending-handoff" "and not .cs/local" || { rm -rf "$dir"; return 1; }
+    # A locked vault leaves .cs/private a link to nowhere: the session is still
+    # encrypted, and nothing reads a marker from .cs/local there.
+    mkdir -p "$dir/l/.cs/local"
+    ln -s "$dir/nowhere" "$dir/l/.cs/private"
+    rc=0
+    (cd "$dir/l" && PATH="$dir/bin:$PATH" HANDOFF=2026-01-01-next.md bash -c "$block" 2>/dev/null) || rc=$?
+    assert_eq "1" "$rc" "step 9 fails in a locked encrypted session" || { rm -rf "$dir"; return 1; }
+    assert_not_exists "$dir/l/.cs/local/pending-handoff" "and arms no .cs/local marker" || { rm -rf "$dir"; return 1; }
+    rm -f "$dir/s/.cs/local/pending-handoff"
+    printf 'claude_session_id: x\n' > "$dir/s/.cs/local/state"
+    git -C "$dir/s" init -q
+    git -C "$dir/s" add -f .cs/local/state
+    git -C "$dir/s" -c user.name=t -c user.email=t@example.com commit -qm tracked
+    rc=0
+    (cd "$dir/s" && PATH="$dir/bin:$PATH" HANDOFF=2026-01-01-next.md bash -c "$block" 2>/dev/null) || rc=$?
+    assert_eq "1" "$rc" "step 9 fails while git tracks a control file" || { rm -rf "$dir"; return 1; }
+    assert_not_exists "$dir/s/.cs/local/pending-handoff" "and arms nothing" || { rm -rf "$dir"; return 1; }
+    rm -rf "$dir"
+}
+
 run_test test_encrypted_rotate_answer_arms_the_private_marker
 run_test test_encrypted_discard_retires_the_vault_handoff
 run_test test_encrypted_session_with_plaintext_handoffs_refuses_to_open
@@ -2691,5 +2732,6 @@ run_test test_encrypted_pending_handoff_is_consumed_in_the_vault
 run_test test_encrypted_clear_rotation_keeps_the_handoff_name_out_of_the_timeline
 run_test test_locked_encrypted_session_consumes_no_handoff
 run_test test_rotate_skill_routes_an_encrypted_session_into_the_vault
+run_test test_rotate_skill_arms_the_marker_only_when_cs_vets_the_session
 
 report_results

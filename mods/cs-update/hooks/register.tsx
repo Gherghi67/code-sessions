@@ -29,6 +29,7 @@ export const STATE = '.cs/local/state'
 export const NOTES = (home: string, version: string) => `${home}/.cache/cs/update-notes-full-${version}`
 // How long `cs -update` may take: the download, the checksum, the signature.
 export const UPDATE_TIMEOUT_MS = 600000
+const VET_TIMEOUT_MS = 10000
 
 export type Section = { version: string; lines: string[] }
 
@@ -86,7 +87,7 @@ export function register(on: On, options: PluginOptions) {
       registered = true
       await $.command.register({ name: 'cs-update', description: 'Release notes for the pending cs update, with 1 to install it.' })
     }
-    if (await $.fs.exists(`${e.cwd}/.cs/local`)) {
+    if ((await $.fs.exists(`${e.cwd}/.cs/local`)) && (await sessionVetted($, e.cwd))) {
       await $.fs.write(`${e.cwd}/${HEARTBEAT}`, `${new Date().toISOString()}\n`)
     }
     if (!shown && await isLead($, e.cwd)) {
@@ -217,12 +218,28 @@ async function restoreDone($: EngineInterface, cwd: string): Promise<boolean> {
   if (!doneVersion || line === undefined) return false
   const pending = await $.env.get('CS_UPDATE_AVAILABLE')
   if (pending !== doneVersion) {
-    await $.fs.write(`${cwd}/${DONE}`, '')
+    if (await sessionVetted($, cwd)) await $.fs.write(`${cwd}/${DONE}`, '')
     return false
   }
   shown = true; phase = 'done'; outcome = line
   await openPane($, cwd, doneVersion)
   return true
+}
+
+// Whether cs trusts this session's control files, by the rule the cs mod and
+// the hooks ask (cs -vet-session): while git tracks a file in .cs/local or
+// .cs/private, this mod writes nothing there. An answer cs cannot give is a
+// no. Nothing is said here: the cs mod toasts the same refusal once.
+async function sessionVetted($: EngineInterface, cwd: string): Promise<boolean> {
+  const bin = await $.env.get('CS_BIN')
+  if (!bin) return false
+  try {
+    const { exitCode } = await $.process.run([bin, '-vet-session', cwd], { timeoutMs: VET_TIMEOUT_MS })
+    return exitCode === 0
+  } catch {
+    // A spawn that fails is a refusal: the write it guards is skipped.
+    return false
+  }
 }
 
 // Runs the update cs would run from the shell, by the path launch exported
@@ -251,7 +268,7 @@ async function runUpdate($: EngineInterface) {
       phase = 'done'; outcome = 'Update finished. Takes effect on your next launch.'
       try {
         const cwd = await $.session.cwd()
-        await $.fs.write(`${cwd}/${DONE}`, `${version}\n${outcome}\n`)
+        if (await sessionVetted($, cwd)) await $.fs.write(`${cwd}/${DONE}`, `${version}\n${outcome}\n`)
       } catch (err) {
         $.ui.toast(`cs-update: could not record the finished update: ${String(err instanceof Error ? err.message : err)}`)
       }
