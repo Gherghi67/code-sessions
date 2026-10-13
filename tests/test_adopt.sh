@@ -796,6 +796,163 @@ test_adopt_gitignores_the_session_locks() {
     assert_eq "" "$(git -C "$dir" log --format= --name-only | grep 'session\.' || true)" "no commit carries a session lock" || return 1
 }
 
+# A git checkout at <dir> whose .gitignore holds <content> exactly, with both
+# session locks and a Cargo.lock on disk.
+_locks_checkout() {  # dir, .gitignore content
+    mkdir -p "$1/.cs"
+    git -C "$1" init -q || return 1
+    printf '%s' "$2" > "$1/.gitignore"
+    printf '1\n' > "$1/.cs/session.lock"
+    : > "$1/.cs/session.mutex.lock"
+    : > "$1/Cargo.lock"
+}
+
+# Run ensure_cs_gitignore_entries on <dir> under set -e, as cs runs it, and
+# print its output and then "ran" when it returned.
+_ensure_gitignore() {  # dir
+    bash -c 'set -euo pipefail; source "$1"; source "$2"; ensure_cs_gitignore_entries "$3"; echo ran' _ \
+        "$SCRIPT_DIR/../hooks/cs-shared.sh" "$SCRIPT_DIR/../lib/85-adopt-uninstall.sh" "$1" 2>&1
+}
+
+# Every entry cs keeps in a project's .gitignore, one per line, in its order.
+CS_GITIGNORE_ENTRIES='.cs/local/
+.cs/private/
+.cs/archives/
+.cs/vault-mnt/
+.cs/.narrative-reminder-cooldown
+.cs/session.lock
+.cs/session.mutex.lock
+.claude/settings.local.json
+CLAUDE.local.md
+.obsidian/
+.cs-tmp.*
+'
+
+# A project that lists cs's lock rules and then a negation (!*.lock) shows
+# the session locks to git, as the later line wins. Adopt appends the two
+# rules again at the end so they win; an open that runs the migration does
+# the same once the order is back. Cargo.lock stays visible.
+test_adopt_gitignores_the_session_locks_past_a_later_negation() {
+    local dir="$TEST_TMPDIR/negated-locks" f
+    mkdir -p "$dir"
+    (cd "$dir" && git init -q && printf '.cs/session.lock\n.cs/session.mutex.lock\n!*.lock\n' > .gitignore \
+        && "$CS_BIN" -adopt negated-session >/dev/null 2>&1) || { echo "  FAIL: adopt failed"; return 1; }
+    printf '1\n' > "$dir/.cs/session.lock"
+    : > "$dir/.cs/session.mutex.lock"
+    : > "$dir/Cargo.lock"
+    for f in .cs/session.lock .cs/session.mutex.lock; do
+        git -C "$dir" check-ignore -q "$f" || { echo "  FAIL: after adopt, $f is not ignored"; return 1; }
+    done
+    if git -C "$dir" check-ignore -q Cargo.lock; then
+        echo "  FAIL: the project's own Cargo.lock is ignored"; return 1
+    fi
+
+    printf '%s!*.lock\n' "$CS_GITIGNORE_ENTRIES" > "$dir/.gitignore"
+    rm -f "$dir/.cs/local/migrated"
+    "$CS_BIN" negated-session <<< "" >/dev/null 2>&1 || { echo "  FAIL: the reopen failed"; return 1; }
+    for f in .cs/session.lock .cs/session.mutex.lock; do
+        git -C "$dir" check-ignore -q "$f" || { echo "  FAIL: after the migration, $f is not ignored"; return 1; }
+    done
+    if git -C "$dir" check-ignore -q Cargo.lock; then
+        echo "  FAIL: after the migration, Cargo.lock is ignored"; return 1
+    fi
+}
+
+# The two rules are appended once, after a last line with no newline, and
+# every later run leaves the file byte for byte as the first left it.
+test_gitignore_appends_the_overridden_lock_rules_once() {
+    local dir="$TEST_TMPDIR/once" out i
+    _locks_checkout "$dir" "${CS_GITIGNORE_ENTRIES}!*.lock" || { echo "  FAIL: fixture"; return 1; }
+    out=$(_ensure_gitignore "$dir")
+    assert_eq "ran" "$out" "the first run returns quietly" || return 1
+    assert_eq "${CS_GITIGNORE_ENTRIES}!*.lock
+.cs/session.lock
+.cs/session.mutex.lock" "$(cat "$dir/.gitignore")" "the two rules follow the negation, which keeps its line" || return 1
+    [ "$(tail -c 1 "$dir/.gitignore" | od -An -c | tr -d ' ')" = '\n' ] || { echo "  FAIL: the file does not end in a newline"; return 1; }
+    cp "$dir/.gitignore" "$TEST_TMPDIR/once.after-first"
+    for i in 2 3 4 5 6 7 8 9 10; do
+        out=$(_ensure_gitignore "$dir")
+        assert_eq "ran" "$out" "run $i returns quietly" || return 1
+        cmp -s "$TEST_TMPDIR/once.after-first" "$dir/.gitignore" || { echo "  FAIL: run $i changed the file"; return 1; }
+    done
+    git -C "$dir" check-ignore -q .cs/session.lock || { echo "  FAIL: .cs/session.lock is not ignored"; return 1; }
+    git -C "$dir" check-ignore -q .cs/session.mutex.lock || { echo "  FAIL: .cs/session.mutex.lock is not ignored"; return 1; }
+    if git -C "$dir" check-ignore -q Cargo.lock; then
+        echo "  FAIL: Cargo.lock is ignored"; return 1
+    fi
+}
+
+# A lock file the project already tracks is judged by the rules alone, not by
+# git's "tracked, so not ignored": with the rules winning nothing is appended,
+# ever; with a later negation the rules are appended once.
+test_gitignore_judges_a_tracked_lock_by_the_rules() {
+    local dir="$TEST_TMPDIR/tracked" i
+    _locks_checkout "$dir" "$CS_GITIGNORE_ENTRIES" || { echo "  FAIL: fixture"; return 1; }
+    git -C "$dir" add -f .cs/session.lock && git -C "$dir" commit -qm tracked || { echo "  FAIL: commit"; return 1; }
+    for i in 1 2 3; do
+        assert_eq "ran" "$(_ensure_gitignore "$dir")" "run $i returns quietly" || return 1
+        assert_eq "$CS_GITIGNORE_ENTRIES" "$(cat "$dir/.gitignore")
+" "run $i leaves the file as it was" || return 1
+    done
+
+    printf '%s!*.lock\n' "$CS_GITIGNORE_ENTRIES" > "$dir/.gitignore"
+    for i in 1 2 3; do
+        assert_eq "ran" "$(_ensure_gitignore "$dir")" "negated run $i returns quietly" || return 1
+        assert_eq "${CS_GITIGNORE_ENTRIES}!*.lock
+.cs/session.lock
+.cs/session.mutex.lock" "$(cat "$dir/.gitignore")" "negated run $i leaves the rules appended once" || return 1
+    done
+}
+
+# A negation in a deeper .gitignore outranks the project's own file whatever
+# its order, so appending there cannot help: the file is left as it is,
+# however many runs.
+test_gitignore_leaves_a_negation_in_a_deeper_gitignore() {
+    local dir="$TEST_TMPDIR/deeper" i
+    _locks_checkout "$dir" "$CS_GITIGNORE_ENTRIES" || { echo "  FAIL: fixture"; return 1; }
+    printf '!session.lock\n' > "$dir/.cs/.gitignore"
+    for i in 1 2 3; do
+        assert_eq "ran" "$(_ensure_gitignore "$dir")" "run $i returns quietly" || return 1
+        assert_eq "$CS_GITIGNORE_ENTRIES" "$(cat "$dir/.gitignore")
+" "run $i leaves the file as it was" || return 1
+    done
+}
+
+# Where git cannot answer (no repository, a git that fails, no git at all) the
+# lock rules count as present, as they are written: nothing is appended and
+# nothing is printed.
+test_gitignore_without_an_answer_from_git_appends_nothing() {
+    local plain="$TEST_TMPDIR/not-a-repo" dir="$TEST_TMPDIR/no-answer" bin="$TEST_TMPDIR/failing-git" \
+        nogit="$TEST_TMPDIR/no-git" want="${CS_GITIGNORE_ENTRIES}!*.lock" t
+    mkdir -p "$plain/.cs"
+    printf '%s' "$want" > "$plain/.gitignore"
+    assert_eq "ran" "$(_ensure_gitignore "$plain")" "outside a repository it returns quietly" || return 1
+    assert_eq "$want" "$(cat "$plain/.gitignore")" "and leaves the file as it was" || return 1
+
+    _locks_checkout "$dir" "$want" || { echo "  FAIL: fixture"; return 1; }
+    mkdir -p "$bin" "$nogit"
+    printf '#!/bin/sh\necho "fatal: cannot answer" >&2\nexit 128\n' > "$bin/git"
+    chmod +x "$bin/git"
+    assert_eq "ran" "$(PATH="$bin:$PATH" _ensure_gitignore "$dir")" "with a git that fails it returns quietly" || return 1
+    assert_eq "$want" "$(cat "$dir/.gitignore")" "and leaves the file as it was" || return 1
+
+    for t in bash cat grep tail env; do ln -s "$(command -v "$t")" "$nogit/$t"; done
+    assert_eq "ran" "$(PATH="$nogit" _ensure_gitignore "$dir")" "with no git it returns quietly" || return 1
+    assert_eq "$want" "$(cat "$dir/.gitignore")" "and leaves the file as it was" || return 1
+}
+
+# A caller's GIT_DIR, GIT_WORK_TREE or GIT_INDEX_FILE (git hands one to every
+# hook) does not change which checkout git is asked about.
+test_gitignore_asks_about_its_own_checkout_whatever_the_environment() {
+    local dir="$TEST_TMPDIR/env-locks" out
+    _locks_checkout "$dir" "${CS_GITIGNORE_ENTRIES}!*.lock" || { echo "  FAIL: fixture"; return 1; }
+    out=$(GIT_DIR="$TEST_TMPDIR/nowhere/.git" GIT_WORK_TREE="$TEST_TMPDIR/nowhere" \
+        GIT_INDEX_FILE="$TEST_TMPDIR/nowhere/index" _ensure_gitignore "$dir")
+    assert_eq "ran" "$out" "it returns quietly" || return 1
+    git -C "$dir" check-ignore -q .cs/session.lock || { echo "  FAIL: .cs/session.lock is not ignored"; return 1; }
+    git -C "$dir" check-ignore -q .cs/session.mutex.lock || { echo "  FAIL: .cs/session.mutex.lock is not ignored"; return 1; }
+}
+
 # ============================================================================
 # First launch after adopt
 # ============================================================================
@@ -1089,6 +1246,12 @@ run_test test_adopt_gitignores_the_vault_mount
 run_test test_adopt_gitignores_a_private_directory_and_not_its_link
 run_test test_adopt_gitignores_atomic_write_temps
 run_test test_adopt_gitignores_the_session_locks
+run_test test_adopt_gitignores_the_session_locks_past_a_later_negation
+run_test test_gitignore_appends_the_overridden_lock_rules_once
+run_test test_gitignore_judges_a_tracked_lock_by_the_rules
+run_test test_gitignore_leaves_a_negation_in_a_deeper_gitignore
+run_test test_gitignore_without_an_answer_from_git_appends_nothing
+run_test test_gitignore_asks_about_its_own_checkout_whatever_the_environment
 run_test test_adopt_sets_memory_merge_driver
 
 run_test test_adopt_creates_cs_structure
