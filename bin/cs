@@ -4099,6 +4099,8 @@ $conflicts"
     # leaves alone is no reason to refuse, whatever it holds.
     local settings carried=0
     _permission_rules_carried "$wt_dir" "$base_dir" || carried=$?
+    [ "$carried" != 3 ] \
+        || error "$wt_dir/.claude/settings.local.json is a link, and cs reads the feature's permission rules only from a file of its own. Nothing was removed. Put the rules in a file there, or delete the link, then run /finish $task again."
     if [ "$carried" = 2 ]; then
         _settings_rules_readable "$wt_dir/.claude/settings.local.json" \
             || error "$wt_dir/.claude/settings.local.json is not one JSON object, or its permissions is not an object, or its permissions.allow, deny or ask is not a list, so cs cannot list the feature's permission rules that $base_dir/.claude/settings.local.json, a link, does not take. Nothing was removed. Fix it, then run /finish $task again."
@@ -4248,11 +4250,14 @@ _settings_tracked() {  # dir
 # a union would bring back a rule the base dropped or never took). Returns 2
 # for a link at the base's path, wherever it points: the link is the user's
 # way of sharing the file, and cs writes nothing through it; the retire lists
-# the rules the base lacks instead.
+# the rules the base lacks instead. Returns 3 for a link at the feature's
+# path, leading anywhere or nowhere: cs reads the feature's rules only from a
+# file of its own, and the retire refuses it.
 _permission_rules_carried() {  # wt_dir base_dir
-    [ -s "$1/.claude/settings.local.json" ] || return 1
+    [ -s "$1/.claude/settings.local.json" ] || [ -L "$1/.claude/settings.local.json" ] || return 1
     ! _settings_tracked "$1" || return 1
     ! _settings_tracked "$2" || return 1
+    [ ! -L "$1/.claude/settings.local.json" ] || return 3
     [ ! -L "$2/.claude/settings.local.json" ] || return 2
 }
 
