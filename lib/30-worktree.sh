@@ -927,9 +927,16 @@ _settings_rules_count() {
 # Whether the index of the checkout at <dir> holds .claude/settings.local.json
 # in any letter case: a checkout on a volume that folds case puts a tracked
 # .claude/Settings.local.json at the path cs reads, as cs_tracked_files_notice
-# finds for .cs.
+# finds for .cs. A git that cannot answer has not said the file is untracked:
+# the retire refuses then, with git's own error, before anything is removed.
 _settings_tracked() {  # dir
-    _cs_git_at "$1" ls-files --error-unmatch -- ':(icase,literal).claude/settings.local.json' >/dev/null 2>&1
+    local listed why
+    if listed=$(_cs_git_at "$1" ls-files -- ':(icase,literal).claude/settings.local.json' 2>/dev/null); then
+        [ -n "$listed" ]
+        return
+    fi
+    why=$(_cs_git_at "$1" ls-files -- ':(icase,literal).claude/settings.local.json' 2>&1 >/dev/null) || true
+    error "cs could not ask git whether it tracks $1/.claude/settings.local.json: $(_cs_git_complaint "$why"). Nothing was removed."
 }
 
 # Whether the retire adds the feature's permission rules to the base's
