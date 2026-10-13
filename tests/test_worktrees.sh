@@ -2251,6 +2251,60 @@ test_retire_ignored_mode_retires_over_a_memory_file_once_nothing_goes_there() {
 
 run_test test_retire_ignored_mode_retires_over_a_memory_file_once_nothing_goes_there
 
+# A base encrypted after the feature was made keeps .cs/memory, plans,
+# claude-config and private as links into its vault, and a locked vault
+# leaves them all dangling. The retire says to mount it, before and instead
+# of listing the records that cannot go through the dangling links: deleting
+# them, as that list says, would delete the feature's only narrative.
+test_retire_refuses_a_locked_base_vault_before_listing_records() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0 sub
+    local mnt="$CS_SESSIONS_ROOT/proj/.cs/vault-mnt"
+    mkdir -p "$base_dir/.cs"/{memory,local}
+    printf '%s\n' '- [Kept](kept.md): a topic' > "$base_dir/.cs/memory/MEMORY.md"
+    echo "kept topic" > "$base_dir/.cs/memory/kept.md"
+    echo "# P" > "$base_dir/README.md"
+    printf '.cs/\n.claude/settings.local.json\n' > "$base_dir/.gitignore"
+    (cd "$base_dir" && git init -q && git config core.autocrlf false && git config user.email tester@example.com \
+        && git add -A && git commit -q -m init)
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    printf '## Task finding\n' >> "$wt/.cs/memory/narrative.tester-example-com.md"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    for sub in memory plans claude-config private; do
+        mkdir -p "$mnt/$sub"
+        if [ -d "$base_dir/.cs/$sub" ]; then
+            cp -R "$base_dir/.cs/$sub/." "$mnt/$sub/" && rm -r "$base_dir/.cs/$sub" || return 1
+        fi
+        ln -s "vault-mnt/$sub" "$base_dir/.cs/$sub"
+    done
+    _mark_hand_made_vault "$base_dir"
+    mv "$mnt" "$TEST_TMPDIR/vault-unmounted"
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_output_contains "$output" "Error: cannot fuse the worktree's records: $base_dir/.cs/private is locked. Mount it, then retry." \
+        "the refusal says to mount the vault" || return 1
+    assert_output_not_contains "$output" "by hand" "and lists no records to merge or delete" || return 1
+    assert_file_contains "$wt/.cs/memory/narrative.tester-example-com.md" "^## Task finding$" "nothing was removed" || return 1
+    # Any one link dangling is the same refusal, naming that link.
+    mv "$TEST_TMPDIR/vault-unmounted" "$mnt"
+    mv "$mnt/memory" "$TEST_TMPDIR/memory-away"
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_output_contains "$output" "Error: cannot fuse the worktree's records: $base_dir/.cs/memory is locked. Mount it, then retry." \
+        "the refusal names the dangling link" || return 1
+    assert_output_not_contains "$output" "by hand" "and lists no records to merge or delete" || return 1
+    # Positive control: mounted whole, the narrative lands in the vault.
+    mv "$TEST_TMPDIR/memory-away" "$mnt/memory"
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire goes through: $output" || return 1
+    assert_file_contains "$mnt/memory/narrative.tester-example-com.md" "^## Task finding$" "the narrative lands in the vault" || return 1
+}
+
+run_test test_retire_refuses_a_locked_base_vault_before_listing_records
+
 # The feature's log is appended to the base's machine-local log, so that is
 # the destination checked before anything is removed.
 test_retire_ignored_mode_refuses_a_log_the_base_cannot_take() {
