@@ -782,6 +782,45 @@ charlie
 test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
 }
 
+# A TERM to a rename while it stores a Keychain entry under the new name puts
+# the move back once that store is done: the entry is alpha's alone again,
+# with no marker and no lock left. The store is held in flight for two
+# seconds at most.
+test_a_term_to_a_rename_puts_back_what_it_moved() {
+    local bindir; bindir=$(_make_fake_security)
+    local kc="$TEST_TMPDIR/kc-store" hold="$TEST_TMPDIR/hold"
+    _kcs() {
+        PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kc" "$CS_SECRETS_BIN" "$@"
+    }
+    mkdir -p "$CS_SESSIONS_ROOT/alpha/.cs"
+    printf 'value-one' > "$TEST_TMPDIR/v1"
+    _kcs --session alpha set K1 < "$TEST_TMPDIR/v1" >/dev/null 2>&1 || { echo "  FAIL: fixture: set K1 failed"; return 1; }
+    mv "$CS_SESSIONS_ROOT/alpha" "$CS_SESSIONS_ROOT/bravo"
+
+    # Started directly, not through _kcs: the TERM must reach cs-secrets, not
+    # a subshell running the function.
+    PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kc" FAKE_SECURITY_HOLD_STORE="$hold" \
+        "$CS_SECRETS_BIN" --session alpha rename bravo > "$TEST_TMPDIR/rename.out" 2>&1 &
+    local rpid=$! waited=0 rc=0
+    until [ -f "$hold.began" ]; do sleep 0.05; waited=$((waited + 1)); [ "$waited" -gt 200 ] && break; done
+    [ -f "$hold.began" ] || { echo "  FAIL: fixture: the rename never reached its Keychain store"; wait "$rpid"; return 1; }
+    kill -TERM "$rpid"
+    wait "$rpid" || rc=$?
+
+    assert_eq "143" "$rc" "the rename exits 143: $(cat "$TEST_TMPDIR/rename.out")" || return 1
+    assert_eq "" "$(cat "$TEST_TMPDIR/rename.out")" "the rename prints nothing" || return 1
+    local f services=""
+    for f in "$kc"/*; do
+        [ -f "$f" ] && services="$services$(head -1 "$f") "
+    done
+    assert_eq "cs:alpha:K1 " "$services" "the Keychain holds alpha's entry and none of bravo's" || return 1
+    assert_eq "value-one" "$(_kcs --session alpha get K1 2>&1)" "K1 reads under alpha" || return 1
+    assert_not_exists "$HOME/.cs-secrets/.rename.alpha" "no marker is left" || return 1
+    assert_not_exists "$HOME/.cs-secrets/sessions/bravo" "no age state is left under bravo" || return 1
+    assert_eq "bravo
+test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
+}
+
 run_test test_encrypted_salt_write_is_atomic_under_concurrency
 run_test test_encrypted_signal_terminates_writer_mid_critical_section
 run_test test_encrypted_purge_serialized_with_concurrent_store
@@ -794,5 +833,6 @@ run_test test_keychain_set_during_a_rename_is_moved_with_the_session
 run_test test_a_set_that_waited_on_the_write_lock_refuses_a_session_moved_away
 run_test test_a_term_keeps_the_write_lock_until_the_keychain_write_finishes
 run_test test_a_rename_that_waited_on_the_write_lock_refuses_over_a_move_begun_meanwhile
+run_test test_a_term_to_a_rename_puts_back_what_it_moved
 
 report_results
