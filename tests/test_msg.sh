@@ -431,6 +431,19 @@ test_queue_accept_queues_a_mailed_task_by_id() {
         "the user's accept re-opens the gate" || return 1
 }
 
+# The body was written by another session, and the accept prints it to this
+# one's terminal: control bytes are dropped from what is shown, counted as raw
+# bytes rather than matched as text. The queued task keeps the body as mailed.
+test_queue_accept_shows_the_task_without_its_control_bytes() {
+    _forge_mail 0000000001-esc '{"id":"esc1","ts":1,"from":"peer","kind":"task","body":"copy \u001b]52;c;QUJD\u0007\u001b[2J done"}'
+    local out; out=$(rcv -queue accept esc1 2>&1) || { echo "  accept failed"; return 1; }
+    assert_eq "queued: copy ]52;c;QUJD[2J done" "$out" "the task is shown with its control bytes dropped" || return 1
+    assert_eq "0" "$(printf '%s' "$out" | LC_ALL=C tr -dc '\033\007' | wc -c | tr -d '[:space:]')" \
+        "no raw ESC or BEL reaches the terminal" || return 1
+    assert_eq "$(printf 'copy \033]52;c;QUJD\007\033[2J done')" "$(cat "$(RQUEUE)"/*)" \
+        "the queued task is the body as mailed" || return 1
+}
+
 test_queue_accept_finds_a_task_already_read() {
     "$CS_BIN" -msg receiver -k task "review the tui diff" >/dev/null 2>&1 || return 1
     local id; id=$(jq -r .id "$(FIRST_MSG)")
@@ -870,6 +883,7 @@ run_test test_send_reads_body_from_stdin
 run_test test_task_kind_waits_in_the_mailbox_not_the_queue
 run_test test_task_kind_leaves_the_declined_flag
 run_test test_queue_accept_queues_a_mailed_task_by_id
+run_test test_queue_accept_shows_the_task_without_its_control_bytes
 run_test test_queue_accept_finds_a_task_already_read
 run_test test_queue_accept_refuses_a_text_message
 run_test test_queue_accept_refuses_a_kind_that_only_trims_to_task
