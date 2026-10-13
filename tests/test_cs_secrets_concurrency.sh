@@ -981,6 +981,72 @@ Public key: $key" ;;
 test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
 }
 
+# An age add, age remove or export-file for alpha that waits on alpha's age
+# lock while alpha is renamed to bravo refuses once it holds the lock: alpha
+# is no session any more. It writes nothing: no recipient, no sync file, no
+# pin of this machine's key, and no age directory under alpha. PID 1 stands
+# for the rename holding the lock; the picker's move of the session directory
+# and the rename's removal of alpha's age directory, lock and all, follow
+# once the sleep shim's marker shows the command is waiting.
+test_a_command_waiting_on_the_age_lock_through_a_rename_refuses_the_old_name() {
+    local shim="$TEST_TMPDIR/sleep-shim" age="$HOME/.cs-secrets/sessions/alpha" real_sleep cmd pid rc waited
+    local key="age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqs3290gq"
+    real_sleep=$(command -v sleep)
+    mkdir -p "$shim" "$HOME/.cs-secrets"
+    cat > "$shim/sleep" <<SHIM
+#!/usr/bin/env bash
+: > "$TEST_TMPDIR/waiting"
+exec "$real_sleep" "\$@"
+SHIM
+    chmod +x "$shim/sleep"
+    printf '%s\n' "$key" > "$TEST_TMPDIR/laptop.pub"
+    printf 'value-one' > "$TEST_TMPDIR/v1"
+    # This machine's key, so a command that runs on under alpha pins it there.
+    printf 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOwnMachineKeyBodyForTheTestOnly test@example.com\n' \
+        > "$HOME/.cs-secrets/id_ed25519.pub"
+
+    for cmd in age-add age-remove export-file; do
+        rm -rf "$age" "$TEST_TMPDIR/gone" "$TEST_TMPDIR/waiting" "$TEST_TMPDIR/sync.enc" \
+            "$CS_SESSIONS_ROOT/alpha" "$CS_SESSIONS_ROOT/bravo"
+        mkdir -p "$CS_SESSIONS_ROOT/alpha/.cs/age-recipients" "$age"
+        printf '%s\n' "$key" > "$CS_SESSIONS_ROOT/alpha/.cs/age-recipients/peer.pub"
+        CLAUDE_SESSION_NAME=alpha "$CS_SECRETS_BIN" set K1 < "$TEST_TMPDIR/v1" >/dev/null 2>&1 \
+            || { echo "  FAIL: fixture: set K1 failed ($cmd)"; return 1; }
+        printf '1\n' > "$age/.age.lock"
+        case "$cmd" in
+            age-add)
+                PATH="$shim:$PATH" CS_SECRETS_LOCK_TIMEOUT=3 CLAUDE_SESSION_NAME=alpha \
+                    "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/laptop.pub" > "$TEST_TMPDIR/out" 2>&1 & ;;
+            age-remove)
+                PATH="$shim:$PATH" CS_SECRETS_LOCK_TIMEOUT=3 CLAUDE_SESSION_NAME=alpha \
+                    "$CS_SECRETS_BIN" age remove peer > "$TEST_TMPDIR/out" 2>&1 & ;;
+            export-file)
+                PATH="$shim:$PATH" CS_SECRETS_LOCK_TIMEOUT=3 CLAUDE_SESSION_NAME=alpha \
+                    "$CS_SECRETS_BIN" export-file "$TEST_TMPDIR/sync.enc" > "$TEST_TMPDIR/out" 2>&1 & ;;
+        esac
+        pid=$!
+        waited=0
+        until [ -f "$TEST_TMPDIR/waiting" ]; do sleep 0.05; waited=$((waited + 1)); [ "$waited" -gt 400 ] && break; done
+        [ -f "$TEST_TMPDIR/waiting" ] || { echo "  FAIL: fixture: $cmd never waited on the age lock"; kill "$pid"; wait "$pid"; return 1; }
+
+        # The picker moves the session; the rename releases its lock and
+        # removes alpha's age directory.
+        mv "$CS_SESSIONS_ROOT/alpha" "$CS_SESSIONS_ROOT/bravo"
+        mv "$age" "$TEST_TMPDIR/gone"
+        rc=0
+        wait "$pid" || rc=$?
+
+        assert_eq "1" "$rc" "$cmd for the old name exits 1: $(cat "$TEST_TMPDIR/out")" || return 1
+        assert_eq "Error: No session named 'alpha' in $CS_SESSIONS_ROOT" "$(cat "$TEST_TMPDIR/out")" \
+            "$cmd refuses the old name" || return 1
+        assert_not_exists "$age" "$cmd leaves no age directory, and no pin, under alpha" || return 1
+        assert_not_exists "$TEST_TMPDIR/sync.enc" "$cmd writes no sync file" || return 1
+        assert_eq "peer.pub" "$(ls -A "$CS_SESSIONS_ROOT/bravo/.cs/age-recipients")" "$cmd changes no recipient" || return 1
+    done
+    assert_eq "bravo
+test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
+}
+
 run_test test_encrypted_salt_write_is_atomic_under_concurrency
 run_test test_encrypted_signal_terminates_writer_mid_critical_section
 run_test test_encrypted_purge_serialized_with_concurrent_store
@@ -997,5 +1063,6 @@ run_test test_a_term_to_a_rename_puts_back_what_it_moved
 run_test test_a_signal_after_every_value_moved_does_not_end_a_rename_nonzero
 run_test test_a_term_keeps_the_write_lock_until_purge_has_removed_the_age_state
 run_test test_a_command_waiting_on_the_age_lock_takes_it_once_a_rename_removed_its_directory
+run_test test_a_command_waiting_on_the_age_lock_through_a_rename_refuses_the_old_name
 
 report_results
