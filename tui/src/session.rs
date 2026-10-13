@@ -2760,4 +2760,15 @@ mod tests {
 
         std::fs::remove_dir_all(&tmp).ok();
     }
+
+    // A test that builds an App without scoping a root deletes, renames and
+    // scans through sessions_root(), so an unscoped test build must resolve
+    // to a path that cannot exist, never CS_SESSIONS_ROOT or ~/.claude-sessions
+    // of whoever runs the suite.
+    #[test]
+    fn an_unscoped_test_build_never_resolves_the_real_sessions_root() {
+        let root = sessions_root();
+        assert_eq!(root, PathBuf::from("/nonexistent/cs-tui-test-sessions-root"));
+        assert!(root.symlink_metadata().is_err(), "the unscoped test root must not exist");
+    }
 }
