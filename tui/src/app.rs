@@ -2224,10 +2224,18 @@ impl App {
                 );
             } else {
                 match self.rename_session(&root, &old_name, &new_name) {
-                    Ok(()) => {
+                    Ok(RenameOutcome::Done) => {
                         rename_claude_projects_dir(&old, &new);
                         self.set_status(format!("Renamed to: {}", new_name), StatusLevel::Success);
                         self.flash_row(&new_name, FlashKind::Success);
+                        self.rescan_now();
+                    }
+                    Ok(RenameOutcome::SecretsUnfinished) => {
+                        rename_claude_projects_dir(&old, &new);
+                        self.set_status(
+                            format!("Rename incomplete: run `cs -secrets --session {} rename {}`", old_name, new_name),
+                            StatusLevel::Error,
+                        );
                         self.rescan_now();
                     }
                     Err(e) => {
@@ -2244,8 +2252,11 @@ impl App {
     /// which moves every store keyed by the name (the Keychain entries, the
     /// encrypted store and the age state) and needs the directory already
     /// moved. A failure at any step undoes the steps before it, so the session
-    /// keeps its old name whole; the error says what failed.
-    fn rename_session(&self, root: &Path, old: &str, new: &str) -> Result<(), String> {
+    /// keeps its old name whole; the error says what failed. The one
+    /// exception is a secrets move that stopped after it began: values are
+    /// under `new` already, so the session keeps `new` and the outcome says
+    /// the move is unfinished.
+    fn rename_session(&self, root: &Path, old: &str, new: &str) -> Result<RenameOutcome, String> {
         let (old_dir, new_dir) = (root.join(old), root.join(new));
         std::fs::rename(&old_dir, &new_dir).map_err(|e| e.to_string())?;
         let undo_dir = |reason: String| -> String {
@@ -2256,10 +2267,13 @@ impl App {
         };
         let moved = session::move_spawn_files(root, old, new).map_err(undo_dir)?;
         if let Err(reason) = move_secrets(old, new) {
+            if secrets_move_unfinished(old, new) {
+                return Ok(RenameOutcome::SecretsUnfinished);
+            }
             session::undo_spawn_moves(&moved);
             return Err(undo_dir(reason));
         }
-        Ok(())
+        Ok(RenameOutcome::Done)
     }
 
     /// Archive the selected session, or unarchive one that already is. The
@@ -2628,6 +2642,22 @@ fn age_state_dir(name: &str) -> Option<PathBuf> {
     Some(secrets_home()?.join(".cs-secrets/sessions").join(name))
 }
 
+/// True when cs-secrets began moving session `old`'s secrets to `new` and
+/// did not finish: its marker `~/.cs-secrets/.rename.<old>` holds the line
+/// `<new>`. It writes the marker before its first change and removes it
+/// last, so a refusal leaves none, or one naming another unfinished move.
+/// Twin of `marker` in rename_session_secrets in bin/cs-secrets; the two
+/// change together.
+fn secrets_move_unfinished(old: &str, new: &str) -> bool {
+    let Some(home) = secrets_home() else {
+        return false;
+    };
+    match std::fs::read(home.join(".cs-secrets").join(format!(".rename.{old}"))) {
+        Ok(bytes) => bytes == format!("{new}\n").as_bytes(),
+        Err(_) => false,
+    }
+}
+
 /// Remove the age state of a base session that was just deleted. The path
 /// when something was removed, None when there was nothing to remove.
 fn drop_age_state(name: &str) -> Result<Option<PathBuf>, String> {
@@ -2669,6 +2699,13 @@ fn drop_age_state(name: &str) -> Result<Option<PathBuf>, String> {
         Ok(()) => Ok(Some(dir)),
         Err(e) => Err(format!("could not remove age state {}: {e}", dir.display())),
     }
+}
+
+/// How a picker rename that kept the new name ended: everything moved, or the
+/// directory moved and the secrets move began but did not finish.
+enum RenameOutcome {
+    Done,
+    SecretsUnfinished,
 }
 
 /// Move session `old`'s secrets to `new` with `cs -secrets --session <old>
