@@ -1923,6 +1923,27 @@ test_web_install_places_nothing_when_a_later_download_breaks() {
     assert_file_not_exists "$home/.claude/hooks/cs/session-start.sh" "no hook was deployed" || return 1
 }
 
+# An installer read from a pipe (curl ... | bash) has no file of its own, so
+# it is the web install wherever it runs: started inside another project that
+# has a bin/cs, it downloads, and never installs that project's files. Here
+# curl and wget both fail, so the download is the step that stops it.
+test_piped_install_is_the_web_install_in_any_directory() {
+    local home="$TEST_TMPDIR/piped-home" proj="$TEST_TMPDIR/someproject" shim="$TEST_TMPDIR/piped-nonet" rc=0 tool
+    mkdir -p "$home/.local/bin" "$proj/bin" "$shim"
+    printf '#!/bin/sh\necho installed cs\n' > "$home/.local/bin/cs"
+    printf '#!/bin/sh\necho another project cs\n' > "$proj/bin/cs"
+    for tool in curl wget; do
+        printf '#!/bin/sh\necho "%s $*" >> "%s/calls"\nexit 7\n' "$tool" "$shim" > "$shim/$tool"
+        chmod +x "$shim/$tool"
+    done
+    (cd "$proj" && HOME="$home" PATH="$shim:$PATH" bash < "$INSTALL_SH") > "$TEST_TMPDIR/piped.out" 2>&1 || rc=$?
+    assert_eq "1" "$rc" "install exit status" || { cat "$TEST_TMPDIR/piped.out"; return 1; }
+    assert_file_contains "$TEST_TMPDIR/piped.out" "^Error: Failed to download bin/cs$" "the web install stops at its first download" || return 1
+    assert_eq "$(printf '#!/bin/sh\necho installed cs')" "$(cat "$home/.local/bin/cs")" "the installed cs is untouched" || return 1
+    assert_eq "curl -fsSL https://raw.githubusercontent.com/hex/claude-sessions/main/bin/cs -o" \
+        "$(sed 's/ [^ ]*$//' "$shim/calls")" "the one network call is the download of bin/cs" || return 1
+}
+
 # Positive control for the two above: the same stub with nothing broken
 # installs every file byte for byte, executables executable.
 test_web_install_deploys_the_payload_from_the_stub() {
@@ -2418,6 +2439,7 @@ run_test test_uninstall_removes_leftover_cs_tui_exe
 run_test test_web_install_keeps_the_installed_cs_when_its_download_breaks
 run_test test_web_install_places_nothing_when_a_later_download_breaks
 run_test test_web_install_deploys_the_payload_from_the_stub
+run_test test_piped_install_is_the_web_install_in_any_directory
 run_test test_web_install_refuses_a_payload_file_that_does_not_match
 run_test test_web_install_skips_a_completion_that_does_not_match
 run_test test_build_embeds_the_sha256_of_every_payload_file
