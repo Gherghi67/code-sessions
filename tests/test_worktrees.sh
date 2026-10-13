@@ -2207,6 +2207,50 @@ test_retire_ignored_mode_refuses_a_narrative_whose_directory_is_a_file_in_the_ba
 
 run_test test_retire_ignored_mode_refuses_a_narrative_whose_directory_is_a_file_in_the_base
 
+# The refusal says to delete what it lists. Once the feature holds nothing
+# the fuse has to put under .cs/memory (the copy it was handed of a topic is
+# left as it was), a file there in the base stands in no record's way: the
+# features screen reads merged, and the retire goes through.
+test_retire_ignored_mode_retires_over_a_memory_file_once_nothing_goes_there() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output line listed rel status=0
+    mkdir -p "$base_dir/.cs"/{memory,local}
+    printf '%s\n' '- [Kept](kept.md): a topic' > "$base_dir/.cs/memory/MEMORY.md"
+    echo "kept topic" > "$base_dir/.cs/memory/kept.md"
+    echo "# P" > "$base_dir/README.md"
+    printf '.cs/\n.claude/settings.local.json\n' > "$base_dir/.gitignore"
+    (cd "$base_dir" && git init -q && git config core.autocrlf false && git config user.email tester@example.com \
+        && git add -A && git commit -q -m init)
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    mkdir -p "$wt/.cs/plans"
+    echo "feature plan" > "$wt/.cs/plans/p.md"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    rm -r "$base_dir/.cs/memory"
+    echo "base notes" > "$base_dir/.cs/memory"
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    listed=$(printf '%s\n' "$output" | awk 'listed; /again:$/ { listed = 1 }')
+    assert_eq ".cs/memory/MEMORY.md
+.cs/memory/narrative.tester-example-com.md" "$listed" "the refusal lists the index and the narrative" || return 1
+    while IFS= read -r rel; do
+        rm "$wt/$rel" || return 1
+    done <<< "$listed"
+    assert_eq "kept.md" "$(ls -A "$wt/.cs/memory")" "the copy of the topic is all that is left there" || return 1
+    line=$("$CS_BIN" proj -features --porcelain 2>&1)
+    assert_eq "0" "$(_feat_field "$line" 7)" "no file at risk: $line" || return 1
+    assert_eq "merged" "$(_feat_field "$line" 10)" "the features screen reads merged: $line" || return 1
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire goes through: $output" || return 1
+    assert_not_exists "$wt" "the worktree is retired" || return 1
+    assert_eq "base notes" "$(cat "$base_dir/.cs/memory")" "the base's file is untouched" || return 1
+    assert_eq "feature plan" "$(cat "$base_dir/.cs/plans/p.md" 2>/dev/null)" "the plan lands" || return 1
+    assert_eq "" "$(find "$CS_SESSIONS_ROOT" -maxdepth 1 -name '.retire-*')" "nothing is left staged" || return 1
+}
+
+run_test test_retire_ignored_mode_retires_over_a_memory_file_once_nothing_goes_there
+
 # The feature's log is appended to the base's machine-local log, so that is
 # the destination checked before anything is removed.
 test_retire_ignored_mode_refuses_a_log_the_base_cannot_take() {
