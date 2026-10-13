@@ -4202,26 +4202,131 @@ mod tests {
         std::fs::remove_dir_all(&tmp).ok();
     }
 
-    // A move cs-secrets stops partway has values under the new name already,
-    // and its marker ~/.cs-secrets/.rename.<old> names the new name. Moving
-    // the directory back would leave those values under a name the sessions
-    // root does not have, so the session keeps the new name and the status
-    // gives the command that finishes the move.
+    /// Store `value` as secret `name` of session `session` through the cs
+    /// stand-in `rename_fixture` writes, on the encrypted backend.
+    #[cfg(unix)]
+    fn fixture_secret_set(tmp: &std::path::Path, session: &str, name: &str, value: &str) {
+        let file = tmp.join("value");
+        std::fs::write(&file, value).unwrap();
+        let out = std::process::Command::new(tmp.join("cs-stub"))
+            .args(["-secrets", "--session", session, "set", name])
+            .env("CS_SECRETS_PASSWORD", "fixture-password")
+            .stdin(std::fs::File::open(&file).unwrap())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "fixture set: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    /// Secret `name` of session `session` read through the cs stand-in, or
+    /// what cs-secrets printed on stderr when it could not read it.
+    #[cfg(unix)]
+    fn fixture_secret_get(tmp: &std::path::Path, session: &str, name: &str) -> Result<String, String> {
+        let out = std::process::Command::new(tmp.join("cs-stub"))
+            .args(["-secrets", "--session", session, "get", name])
+            .env("CS_SECRETS_PASSWORD", "fixture-password")
+            .output()
+            .unwrap();
+        if out.status.success() {
+            Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
+        } else {
+            Err(String::from_utf8_lossy(&out.stderr).into_owned())
+        }
+    }
+
+    /// An `ln` in the fixture's shim that refuses every link whose target
+    /// matches `pattern`, a sh case pattern, and hands the rest to /bin/ln.
+    #[cfg(unix)]
+    fn fixture_failing_ln(tmp: &std::path::Path, pattern: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(
+            tmp.join("shim/ln"),
+            format!("#!/bin/sh\ncase \"$2\" in\n    {pattern}) exit 1 ;;\nesac\nexec /bin/ln \"$@\"\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(tmp.join("shim/ln"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    // A move that fails after cs-secrets moved some of the secrets is put
+    // back whole: cs-secrets returns every value to the old name, and the
+    // picker moves the directory and the staged spawn seed back. The
+    // encrypted store moves and linking the pin list then fails.
     #[cfg(unix)]
     #[test]
-    fn a_rename_whose_secrets_move_stops_partway_keeps_the_new_name() {
+    fn a_rename_whose_secrets_move_fails_partway_keeps_the_old_name_whole() {
         use crate::session::test_root;
-        use std::os::unix::fs::PermissionsExt;
         let _env = CS_BIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (tmp, root, home) = rename_fixture("partial", false);
         let pins = home.join(".cs-secrets/sessions/proj");
         std::fs::create_dir_all(&pins).unwrap();
         std::fs::write(pins.join("age-trusted"), "0000000000000000000000000000000000000000000000000000000000000000\n")
             .unwrap();
-        // An ln that fails stops cs-secrets after it wrote its marker.
-        std::fs::create_dir_all(tmp.join("shim")).unwrap();
-        std::fs::write(tmp.join("shim/ln"), "#!/bin/sh\nexit 1\n").unwrap();
-        std::fs::set_permissions(tmp.join("shim/ln"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        fixture_secret_set(&tmp, "proj", "E1", "value-enc");
+        fixture_failing_ln(&tmp, "*/sessions/proj-old/*");
+        std::fs::create_dir_all(root.join(".spawn")).unwrap();
+        std::fs::write(root.join(".spawn/proj.seed"), "task\n").unwrap();
+        let encode = |p: &std::path::Path| -> String {
+            p.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
+        };
+        let transcripts = home.join(".claude/projects");
+        std::fs::create_dir_all(transcripts.join(encode(&root.join("proj")))).unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        std::env::set_var("CS_BIN", tmp.join("cs-stub"));
+        let mut app = app_on(&root, "proj");
+        app.mode = Mode::Rename;
+        app.rename_input.set("proj-old");
+
+        app.execute_rename();
+        std::env::remove_var("CS_BIN");
+
+        let secrets = home.join(".cs-secrets");
+        let status = app.status_message.as_ref().map(|m| (m.text.clone(), m.level));
+        assert_eq!(
+            status,
+            Some((
+                format!(
+                    "Rename failed: Error: Refusing to move the secrets of session 'proj' to 'proj-old': could not move {} to {}",
+                    secrets.join("sessions/proj/age-trusted").display(),
+                    secrets.join("sessions/proj-old/age-trusted").display()
+                ),
+                StatusLevel::Error
+            ))
+        );
+        assert!(root.join("proj/.cs").is_dir(), "the session keeps its name");
+        assert!(!root.join("proj-old").exists(), "no session under the new name");
+        assert!(root.join(".spawn/proj.seed").is_file(), "the seed is proj's");
+        assert!(!root.join(".spawn/proj-old.seed").exists());
+        assert!(transcripts.join(encode(&root.join("proj"))).is_dir(), "the transcripts stay under the old path's name");
+        assert!(!transcripts.join(encode(&root.join("proj-old"))).exists());
+        assert_eq!(fixture_secret_get(&tmp, "proj", "E1"), Ok("value-enc".to_string()), "E1 reads under proj");
+        assert!(!secrets.join("proj-old.enc").exists(), "no encrypted store under proj-old");
+        assert_eq!(
+            std::fs::read_to_string(pins.join("age-trusted")).unwrap_or_default(),
+            "0000000000000000000000000000000000000000000000000000000000000000\n",
+            "the pins are proj's"
+        );
+        assert!(!secrets.join("sessions/proj-old").exists(), "no age state under proj-old");
+        assert!(!secrets.join(".rename.proj").exists(), "no marker is left");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // A move cs-secrets could not put back keeps its marker, which names the
+    // new name, with values under both names. Moving the directory back
+    // would leave those under a name the sessions root does not have, so the
+    // session keeps the new name and the status gives the command that
+    // finishes the move.
+    #[cfg(unix)]
+    #[test]
+    fn a_rename_whose_secrets_move_cannot_be_put_back_keeps_the_new_name() {
+        use crate::session::test_root;
+        let _env = CS_BIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (tmp, root, home) = rename_fixture("unrestorable", false);
+        let pins = home.join(".cs-secrets/sessions/proj");
+        std::fs::create_dir_all(&pins).unwrap();
+        std::fs::write(pins.join("age-trusted"), "0000000000000000000000000000000000000000000000000000000000000000\n")
+            .unwrap();
+        fixture_secret_set(&tmp, "proj", "E1", "value-enc");
+        fixture_failing_ln(&tmp, "*/sessions/proj-old/*|*/proj.enc");
         std::fs::create_dir_all(root.join(".spawn")).unwrap();
         std::fs::write(root.join(".spawn/proj.seed"), "task\n").unwrap();
         let encode = |p: &std::path::Path| -> String {
@@ -4263,6 +4368,7 @@ mod tests {
             .output()
             .unwrap();
         assert!(out.status.success(), "rerun: {}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(fixture_secret_get(&tmp, "proj-old", "E1"), Ok("value-enc".to_string()), "E1 reads under proj-old");
         assert_eq!(
             std::fs::read_to_string(home.join(".cs-secrets/sessions/proj-old/age-trusted")).unwrap_or_default(),
             "0000000000000000000000000000000000000000000000000000000000000000\n",

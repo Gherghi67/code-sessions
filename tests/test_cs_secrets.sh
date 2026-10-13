@@ -3660,6 +3660,70 @@ test_rename_rerun_refuses_a_value_that_differs_under_both_names() {
         || { echo "  FAIL: alpha's K1 was deleted by a refused move"; return 1; }
 }
 
+# An ln stand-in that refuses every link whose target matches the pattern in
+# its first line and hands the rest to the real ln. Echoes its bin dir.
+_make_failing_ln() {  # target pattern (a case pattern)
+    local bindir="$TEST_TMPDIR/ln-bin" real_ln
+    real_ln=$(command -v ln)
+    mkdir -p "$bindir"
+    cat > "$bindir/ln" <<SHIM
+#!/usr/bin/env bash
+case "\$2" in
+    $1) exit 1 ;;
+esac
+exec "$real_ln" "\$@"
+SHIM
+    chmod +x "$bindir/ln"
+    echo "$bindir"
+}
+
+# A move that fails partway puts back what it moved before it exits: the
+# Keychain entries were moved and the encrypted store too when linking the
+# pin list fails, and every value is alpha's again, with no marker, so the
+# picker can move the session directory back.
+test_rename_that_fails_partway_puts_every_value_back_under_the_old_name() {
+    _seed_renamed_session || { echo "  FAIL: fixture: could not seed alpha's stores"; return 1; }
+    local lnbin out rc=0 sec="$HOME/.cs-secrets"
+    lnbin=$(_make_failing_ln "*/sessions/bravo/*")
+    out=$(PATH="$lnbin:$PATH" _kc_secrets --session alpha rename bravo 2>&1) || rc=$?
+    assert_eq "1" "$rc" "rename exits 1: $out" || return 1
+    assert_eq "Error: Refusing to move the secrets of session 'alpha' to 'bravo': could not move $sec/sessions/alpha/age-trusted to $sec/sessions/bravo/age-trusted" "$out" \
+        "rename names the step that failed" || return 1
+    assert_eq "cs:alpha:K1
+cs:alpha:K2" "$(_kc_services)" "the Keychain holds alpha's entries and none of bravo's" || return 1
+    _kc_secrets --session alpha get K1 > "$TEST_TMPDIR/got" 2>/dev/null \
+        || { echo "  FAIL: alpha's K1 does not read"; return 1; }
+    _get_matches "$TEST_TMPDIR/got" "$_RN_CANARY" || { echo "  FAIL: K1 did not come back byte-exact"; return 1; }
+    assert_eq "value-two" "$(_kc_secrets --session alpha get K2 2>&1)" "K2 is alpha's" || return 1
+    assert_eq "value-enc" "$("$CS_SECRETS_BIN" --session alpha get E1 2>&1)" "the encrypted store is alpha's" || return 1
+    assert_not_exists "$sec/bravo.enc" "no encrypted store under bravo" || return 1
+    assert_eq "pin-fingerprint" "$(cat "$sec/sessions/alpha/age-trusted" 2>&1)" "the pin list is alpha's" || return 1
+    assert_not_exists "$sec/sessions/bravo" "no age state under bravo" || return 1
+    assert_not_exists "$sec/.rename.alpha" "no marker is left" || return 1
+    assert_eq "bravo
+test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
+}
+
+# A move that cannot put back what it moved keeps its marker and says so: the
+# values are split across the names, and the rerun it names finishes the move.
+test_rename_that_cannot_put_a_failed_move_back_keeps_the_marker() {
+    _seed_renamed_session || { echo "  FAIL: fixture: could not seed alpha's stores"; return 1; }
+    local lnbin out rc=0 sec="$HOME/.cs-secrets"
+    lnbin=$(_make_failing_ln "*/sessions/bravo/*|*/alpha.enc")
+    out=$(PATH="$lnbin:$PATH" _kc_secrets --session alpha rename bravo 2>&1) || rc=$?
+    assert_eq "1" "$rc" "rename exits 1: $out" || return 1
+    assert_eq "Error: Refusing to move the secrets of session 'alpha' to 'bravo': could not move $sec/sessions/alpha/age-trusted to $sec/sessions/bravo/age-trusted
+Error: could not move the secrets of session 'alpha' back from 'bravo': could not move $sec/bravo.enc back to $sec/alpha.enc; rerun: cs -secrets --session alpha rename bravo" "$out" \
+        "rename names the step that failed and the one it could not put back" || return 1
+    assert_eq "bravo" "$(cat "$sec/.rename.alpha" 2>&1)" "the marker names the move to finish" || return 1
+    out=$(_kc_secrets --session alpha rename bravo 2>&1) || { echo "  FAIL: the rerun failed: $out"; return 1; }
+    assert_eq "Moved the secrets of session 'alpha' to 'bravo'" "$out" "the rerun finishes the move" || return 1
+    assert_eq "cs:bravo:K1
+cs:bravo:K2" "$(_kc_services)" "every Keychain entry is bravo's" || return 1
+    assert_eq "value-enc" "$("$CS_SECRETS_BIN" --session bravo get E1 2>&1)" "the encrypted store is bravo's" || return 1
+    assert_eq "pin-fingerprint" "$(cat "$sec/sessions/bravo/age-trusted" 2>&1)" "the pin list is bravo's" || return 1
+}
+
 # On a Mac the Keychain holds what a session stored there whatever backend a
 # later run uses, so rename on the encrypted backend reads it too. Run against
 # the fake security's store, as macOS.
@@ -4044,6 +4108,8 @@ run_test test_rename_refuses_a_second_name
 run_test test_rename_refuses_while_the_old_session_directory_exists
 run_test test_rename_on_the_encrypted_backend_moves_the_keychain_entries
 run_test test_rename_on_the_encrypted_backend_refuses_what_the_keychain_holds_or_hides
+run_test test_rename_that_fails_partway_puts_every_value_back_under_the_old_name
+run_test test_rename_that_cannot_put_a_failed_move_back_keeps_the_marker
 run_test test_rename_rerun_finishes_an_interrupted_move
 run_test test_rename_rerun_refuses_a_value_that_differs_under_both_names
 run_test test_rename_with_nothing_to_move_creates_no_cs_secrets
