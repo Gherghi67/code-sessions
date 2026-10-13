@@ -805,6 +805,29 @@ test_launch_keeps_the_seed_when_its_tasks_cannot_be_queued() {
     assert_eq "$(printf '%s\nboss\njob A\njob B' "$OWN_TOKEN")" "$(cat "$(SEED)")" "the seed is staged again, whole" || return 1
 }
 
+# An open that cannot record the spawner stops before it queues anything, so
+# the seed it keeps is the only copy of its tasks: the queue is neither filled
+# nor armed, and the retry that follows queues each task once.
+test_launch_that_cannot_record_the_spawner_queues_nothing() {
+    _launch_worker >/dev/null || return 1
+    mkdir "$(WQ)/spawned-by"
+    _stage_seed boss "job A"
+    local rc=0 out
+    out=$(_launch_worker) || rc=$?
+    assert_eq "1" "$rc" "the open stops" || return 1
+    assert_eq "0" "$(WQ_COUNT)" "nothing is queued" || return 1
+    assert_file_not_exists "$(WQ)/queue.state" "the queue is not armed" || return 1
+    assert_output_contains "$out" "Error: could not record the spawner in $(WQ)/spawned-by (seed kept; fix it and re-open the session to retry)" \
+        "the failure names the file" || return 1
+    assert_file_exists "$(SEED)" "the seed is staged again" || return 1
+    rmdir "$(WQ)/spawned-by"
+    _launch_worker >/dev/null || { echo "  the retry failed"; return 1; }
+    assert_eq "1" "$(WQ_COUNT)" "the retry queues the task once" || return 1
+    assert_eq "job A" "$(WQ_FIRST)" "and it is the seed's task" || return 1
+    assert_eq "armed" "$(cat "$(WQ)/queue.state")" "the retry arms the queue" || return 1
+    assert_eq "boss" "$(cat "$(WQ)/spawned-by")" "the spawner is recorded" || return 1
+}
+
 # The brief is written to the session's .cs/brief.md name itself: a link
 # planted there must not turn the delivery into a write over another file.
 test_launch_refuses_a_link_at_the_briefs_destination() {
@@ -960,6 +983,7 @@ run_test test_launch_terminated_at_the_ask_leaves_the_seed_staged_and_no_copy
 run_test test_launch_terminated_after_a_newer_seed_sets_the_claimed_one_aside
 run_test test_launch_failing_after_the_read_leaves_no_copy_of_the_seed
 run_test test_launch_keeps_the_seed_when_its_tasks_cannot_be_queued
+run_test test_launch_that_cannot_record_the_spawner_queues_nothing
 run_test test_launch_foreign_seed_y_consumes
 run_test test_launch_foreign_seed_unknown_key_asks_again
 run_test test_launch_foreign_seed_escape_declines
