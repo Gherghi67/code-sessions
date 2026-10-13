@@ -1990,22 +1990,19 @@ _seg_cost() {
 
 # Set _WIDTH to the display width (cells) of "$1": UTF-8 codepoints, not
 # bytes — every icon and label this script emits is single-width, so
-# codepoint count equals cell count. LC_ALL=C forces byte-wise indexing for
-# the duration of this function regardless of the ambient locale or this
-# bash's own multibyte awareness, so continuation bytes (the 0x80-0xBF range)
-# can be counted and subtracted out: every codepoint has exactly one leading
-# (non-continuation) byte. No subprocess. Used by bin/cs-subagent-statusline
-# (_fixed_width and _truncate); no caller in this file.
+# codepoint count equals cell count. Every codepoint has exactly one leading
+# (non-continuation) byte, so the width is the length of "$1" with its
+# continuation bytes (the 0x80-0xBF range) removed. Under a UTF-8 locale bash
+# sees whole characters and the pattern removes nothing; under the C locale,
+# or in a bash without multibyte support, it sees bytes and removes the
+# continuation bytes: the count is the same either way. The shell's own
+# locale is never changed, because a bash linked against libintl can die
+# setting one inside a command substitution. No subprocess. Used by
+# bin/cs-subagent-statusline (_fixed_width and _truncate); no caller in this
+# file.
 _display_width() {
-    local LC_ALL=C s="$1" i n=0
-    local len=${#s}
-    for ((i = 0; i < len; i++)); do
-        case "${s:i:1}" in
-            [$'\x80'-$'\xBF']) ;;
-            *) n=$((n + 1)) ;;
-        esac
-    done
-    _WIDTH=$n
+    local s="${1//[$'\x80'-$'\xBF']/}"
+    _WIDTH=${#s}
 }
 
 # Parse "$1" as an "r;g;b" triplet of 0-255 integers into _R/_G/_B. Returns 1
