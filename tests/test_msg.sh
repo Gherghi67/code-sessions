@@ -1966,7 +1966,7 @@ test_stop_wake_fires_for_task_kind_naming_the_sender() {
     local out; out=$(wake)
     assert_output_not_contains "$out" "cs task queue" \
         "the queue gate did not take the turn: nothing was queued" || return 1
-    assert_output_contains "$out" 'Unread cross-session mail (1), new from "sender"' \
+    assert_output_contains "$(jq -r .reason <<< "$out")" 'Unread cross-session mail (1), new from "sender"' \
         "a task-kind message wakes and names its sender" || return 1
 }
 
