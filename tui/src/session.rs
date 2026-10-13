@@ -1558,6 +1558,34 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    // git lists a repository nested in the worktree as one path ending in
+    // '/'; its entry counts every file under it, its .git included, as
+    // `cs -rm` does.
+    #[test]
+    fn unowned_entries_counts_the_files_in_a_nested_repository() {
+        let root = std::env::temp_dir().join(format!("cs-unowned-nested-{}", std::process::id()));
+        let base = root.join("proj");
+        fs::create_dir_all(&base).unwrap();
+        fs::write(base.join("tracked.txt"), "x").unwrap();
+        git_in(&base, &["init", "-q"]);
+        git_in(&base, &["add", "tracked.txt"]);
+        git_in(&base, &["commit", "-qm", "seed"]);
+        let wt = root.join("proj@task");
+        git_in(&base, &["worktree", "add", "-q", wt.to_str().unwrap(), "-b", "cs/task"]);
+        let other = root.join("other");
+        fs::create_dir_all(&other).unwrap();
+        git_in(&other, &["init", "-q"]);
+        fs::create_dir_all(wt.join("dep")).unwrap();
+        fs::write(wt.join("dep/.git"), format!("gitdir: {}\n", other.join(".git").display())).unwrap();
+        fs::write(wt.join("dep/a"), "").unwrap();
+        fs::write(wt.join("dep/b"), "").unwrap();
+
+        let got = unowned_entries("proj@task", &wt).unwrap();
+
+        assert_eq!(got, UnownedEntries::NotTrackedByGit(vec![untracked::Entry { path: "dep/".into(), files: 3 }]));
+        let _ = fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn unowned_entries_lists_untracked_and_ignored_files_in_a_worktree() {
         let root = std::env::temp_dir().join(format!("cs-unowned-wt-{}", std::process::id()));
