@@ -39,6 +39,7 @@ Feature worktree of session '$base_name' on branch cs/$task.
 
 [Describe this feature]
 EOF
+    _record_inherited "$wt_dir/.cs" README.md
     cat > "$wt_dir/.cs/local/session.log" << EOF
 Claude Code Session Log
 Session: $base_name@$task
@@ -58,12 +59,10 @@ EOF
 # the same reason, so a link inside it (to another session's plans, say) stays
 # behind; only regular files come over. A failed copy warns and the create
 # goes on; the feature only starts with less context.
-# Each topic copied is recorded as .cs/local/inherited-topics/<name>, a file
-# holding the copy's "<cksum> <bytes>", so the fuse can tell a topic the
-# feature wrote from one it was handed. One file per topic: the file system
-# keeps any name whole, and nothing has to parse one.
+# Each file copied is recorded (_record_inherited), so the fuse can tell a
+# file the feature edited from the copy it was handed.
 _copy_base_context() {  # base_meta wt_meta
-    local src="$1" dst="$2" f name sum
+    local src="$1" dst="$2" f name
     for f in "$src"/memory/*.md; do
         [ -f "$f" ] && [ ! -L "$f" ] || continue
         name="${f##*/}"
@@ -72,10 +71,7 @@ _copy_base_context() {  # base_meta wt_meta
             warn "could not copy memory/$name from the base"
             continue
         fi
-        sum=$(cksum < "$dst/memory/$name") \
-            && mkdir -p "$dst/local/inherited-topics" \
-            && printf '%s\n' "$sum" > "$dst/local/inherited-topics/$name" \
-            || warn "could not record memory/$name as inherited from the base"
+        _record_inherited "$dst" "memory/$name"
     done
     if [ -d "$src/plans" ] && [ ! -L "$src/plans" ]; then
         local rel parent
@@ -88,13 +84,48 @@ _copy_base_context() {  # base_meta wt_meta
             # option to it, and $( ) drops a trailing newline from a name.
             parent=.
             case "$rel" in */*) parent="${rel%/*}" ;; esac
-            { mkdir -p "$dst/plans/$parent" && cp "$src/plans/$rel" "$dst/plans/$rel"; } \
-                || warn "could not copy plans/$rel from the base"
+            if { mkdir -p "$dst/plans/$parent" && cp "$src/plans/$rel" "$dst/plans/$rel"; }; then
+                _record_inherited "$dst" "plans/$rel"
+            else
+                warn "could not copy plans/$rel from the base"
+            fi
         done || warn "could not list plans/ in the base"
     fi
     if [ -f "$src/summary.md" ] && [ ! -L "$src/summary.md" ]; then
-        cp "$src/summary.md" "$dst/summary.md" || warn "could not copy summary.md from the base"
+        if cp "$src/summary.md" "$dst/summary.md"; then
+            _record_inherited "$dst" summary.md
+        else
+            warn "could not copy summary.md from the base"
+        fi
     fi
+    return 0
+}
+
+# Where a feature's .cs keeps the record of one file the create put there,
+# for a path relative to .cs: a top-level memory topic at
+# local/inherited-topics/<name>, any other file at local/inherited/<path>. Sets
+# _CS_INHERITED_RECORD rather than printing it, since $( ) would drop a
+# trailing newline from a name.
+_inherited_record_path() {  # meta rel
+    case "$2" in
+        memory/*/*) _CS_INHERITED_RECORD="$1/local/inherited/$2" ;;
+        memory/*) _CS_INHERITED_RECORD="$1/local/inherited-topics/${2#memory/}" ;;
+        *) _CS_INHERITED_RECORD="$1/local/inherited/$2" ;;
+    esac
+}
+
+# Record a file the create just put in a feature's .cs, a copy of the base's
+# or one cs wrote, as its "<cksum> <bytes>". One record file per file: the
+# file system keeps any name whole, and nothing has to parse one. A record
+# that cannot be written warns and the create goes on; the fuse then takes the
+# file for one the feature wrote, which refuses rather than overwrites.
+_record_inherited() {  # meta rel
+    local sum
+    _inherited_record_path "$1" "$2"
+    sum=$(cksum < "$1/$2") \
+        && mkdir -p "${_CS_INHERITED_RECORD%/*}" \
+        && printf '%s\n' "$sum" > "$_CS_INHERITED_RECORD" \
+        || warn "could not record $2 as inherited from the base"
     return 0
 }
 
@@ -315,9 +346,14 @@ _feature_readiness() {  # base_name task
     [ -z "$hidden" ] || wt_dirty=1
     _tree_is_dirty "$base_dir" && base_dirty=1
 
-    local others
+    local others conflicts=""
     others=$(_worktree_untracked_at_risk "$wt_dir") \
         || error "Could not list the untracked files in $wt_dir"
+    if [ "$(_read_local_state "$wt_dir/.cs/local/state" cs_mode)" = "ignored" ]; then
+        conflicts=$(_fuse_conflicts "$wt_dir/.cs" "$base_dir/.cs") \
+            || error "Could not classify the session records in $wt_dir/.cs"
+    fi
+    others="$others${others:+${conflicts:+$'\n'}}$conflicts"
     if [ -n "$others" ]; then
         untracked=$(printf '%s\n' "$others" | wc -l | tr -d '[:space:]')
     fi
@@ -668,6 +704,14 @@ $hidden"
     if [ -n "$wt_untracked" ]; then
         error "Worktree has untracked files that removal would destroy; commit or remove them first:
 $wt_untracked"
+    fi
+    if [ "$mode" = "ignored" ]; then
+        local conflicts
+        conflicts=$(_fuse_conflicts "$wt_dir/.cs" "$base_dir/.cs") \
+            || error "Could not classify the session records in $wt_dir/.cs; nothing was removed"
+        [ -z "$conflicts" ] \
+            || error "The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt_dir/.cs, then run /finish $task again:
+$conflicts"
     fi
     # The base's own .cs/ bookkeeping is exempt: in tracked mode the integrate
     # that just landed this feature wrote a timeline event there, and removing
@@ -1186,28 +1230,135 @@ _append_missing_memory_pointers() {  # feature_index base_index
     printf '%s' "$(printf '%s\n' "$missing" | wc -l | tr -d ' ')"
 }
 
-# Says how a feature's topic relates to the copy it started with: "unchanged"
-# or "edited" for a topic the create recorded as inherited, nothing for one
-# the feature wrote itself (or one a create with no record handed over).
-# Fails when the record is there and cannot be read (the directory or the
-# topic's file), or the topic cannot be summed: answering "the feature wrote it" then would bring a deleted topic
-# back and call the fuse a success.
-_inherited_topic_state() {  # feature_meta topic_file
-    local dir="$1/local/inherited-topics" record was now
-    record="$dir/${2##*/}"
-    [ -e "$dir" ] || [ -L "$dir" ] || return 0
-    [ -d "$dir" ] && [ -r "$dir" ] && [ -x "$dir" ] || return 1
+# Print the record of the copy the create put at <rel> in a feature's .cs,
+# nothing when the create put no file there (or one it could not record).
+# Fails when a record may be there and cannot be read: a directory on its way
+# cannot be searched, or the record cannot be read. Answering "the feature
+# wrote it" then would bring a file the base deleted back, or call a copy
+# the feature never touched an edit.
+_inherited_sum() {  # feature_meta rel
+    local record dir rest
+    _inherited_record_path "$1" "$2"
+    record="$_CS_INHERITED_RECORD"
+    dir="$1/local"
+    rest="${record#"$dir"/}"
+    while case "$rest" in */*) true ;; *) false ;; esac; do
+        dir="$dir/${rest%%/*}"
+        rest="${rest#*/}"
+        [ -e "$dir" ] || [ -L "$dir" ] || return 0
+        [ -d "$dir" ] && [ -r "$dir" ] && [ -x "$dir" ] || return 1
+    done
     [ -e "$record" ] || [ -L "$record" ] || return 0
-    was=$(cat "$record") || return 1
-    now=$(cksum < "$2") || return 1
-    if [ "$now" = "$was" ]; then echo unchanged; else echo edited; fi
+    cat "$record"
+}
+
+# What the record fuse does with one file of a feature's .cs, given relative
+# to it, against the base's .cs:
+#   carry    the base has no file there: it gets the feature's
+#   restore  the same, for a copy the create handed over, the base deleted
+#            and the feature edited: the edit comes back, named
+#   replace  the create handed over a copy, the feature edited it and the base
+#            did not: the feature's version replaces the base's, named
+#   skip     nothing to carry: the base holds the same bytes, or the feature
+#            left the copy it was handed as it was
+#   conflict carrying it would overwrite a different file in the base, or it
+#            is a link or not a regular file
+# Fails when the record of the copy, or the file, cannot be read.
+_fuse_verdict() {  # feature_meta base_meta rel
+    local src="$1/$3" dst="$2/$3" was now
+    if [ -L "$src" ] || [ ! -f "$src" ]; then echo conflict; return 0; fi
+    was=$(_inherited_sum "$1" "$3") || return 1
+    if [ -n "$was" ]; then
+        now=$(cksum < "$src") || return 1
+        if [ "$now" = "$was" ]; then echo skip; return 0; fi
+    fi
+    if [ ! -e "$dst" ] && [ ! -L "$dst" ]; then
+        if [ -n "$was" ]; then echo restore; else echo carry; fi
+        return 0
+    fi
+    if [ -L "$dst" ] || [ ! -f "$dst" ]; then echo conflict; return 0; fi
+    if cmp -s "$src" "$dst"; then echo skip; return 0; fi
+    if [ -n "$was" ] && [ "$(cksum < "$dst")" = "$was" ]; then echo replace; else echo conflict; fi
+}
+
+# The files of a feature's .cs that fuse_session_records merges by a rule of
+# their own (the timeline, the log, the narratives, the memory index), and
+# cs's machine-local bookkeeping, which goes with the worktree.
+_fuse_own_rule() {  # rel
+    case "$1" in
+        local/*|session.lock|session.mutex.lock|.narrative-reminder-cooldown) return 0 ;;
+        timeline.jsonl|logs/session.log|memory/MEMORY.md) return 0 ;;
+        .DS_Store|*/.DS_Store) return 0 ;;
+        memory/narrative.*.md)
+            case "${1#memory/}" in */*) return 1 ;; esac
+            return 0 ;;
+    esac
+    return 1
+}
+
+# Write to <out> one NUL-terminated "<verdict> <rel>" for every other file of
+# a feature's .cs (_fuse_verdict). A directory holding a .git is a repository
+# nested under .cs: written once as "conflict <rel>/" and never walked. Links
+# are listed, never followed. Fails, naming the file, when one cannot be
+# classified, and when the walk fails.
+_fuse_plan() {  # feature_meta base_meta out
+    local list rel verdict
+    : > "$3" || return 1
+    [ -d "$1" ] && [ ! -L "$1" ] || return 0
+    list=$(mktemp "${TMPDIR:-/tmp}/cs-fuse-list.XXXXXX") || return 1
+    # local/ is machine-local (_fuse_own_rule) and never walked.
+    if ! (cd "$1" && find . -mindepth 1 \( -path ./local -prune \) \
+            -o \( -type d -exec test -e '{}/.git' \; -prune -print0 \) \
+            -o \( ! -type d -print0 \)) > "$list"; then
+        rm -f "$list"
+        return 1
+    fi
+    while IFS= read -r -d '' rel; do
+        rel="${rel#./}"
+        if [ -d "$1/$rel" ] && [ ! -L "$1/$rel" ]; then
+            printf 'conflict %s/\0' "$rel" >> "$3"
+            continue
+        fi
+        _fuse_own_rule "$rel" && continue
+        if ! verdict=$(_fuse_verdict "$1" "$2" "$rel"); then
+            warn "could not read what the feature inherited for $rel, so cs cannot tell whether the base deleted or changed it" >&2
+            rm -f "$list"
+            return 1
+        fi
+        printf '%s %s\0' "$verdict" "$rel" >> "$3"
+    done < "$list"
+    rm -f "$list"
+}
+
+# The files of a feature's .cs the record fuse cannot carry into the base,
+# one per line as ".cs/<rel>", sorted, a newline in a name shown as "?".
+# Retire refuses on any; the features screen counts them. Fails when the
+# classification fails.
+_fuse_conflicts() {  # feature_meta base_meta
+    local plan entry out=""
+    plan=$(mktemp "${TMPDIR:-/tmp}/cs-fuse-plan.XXXXXX") || return 1
+    if ! _fuse_plan "$1" "$2" "$plan"; then
+        rm -f "$plan"
+        return 1
+    fi
+    while IFS= read -r -d '' entry; do
+        case "$entry" in
+            "conflict "*)
+                entry="${entry#conflict }"
+                out="$out.cs/${entry//$'\n'/?}"$'\n' ;;
+        esac
+    done < "$plan"
+    rm -f "$plan"
+    [ -z "$out" ] || printf '%s' "$out" | LC_ALL=C sort
 }
 
 # Fuse session records from a worktree .cs into the base .cs (ignored mode:
 # the repo does not track .cs/, so git merge cannot carry these). Applies the
 # same semantics the merge drivers give tracked repos: union append for
-# timeline/log/narratives, copy-never-overwrite for memory topic files,
-# base-wins for MEMORY.md plus the feature's pointers to targets it lacks. Every write returns 1 on failure: the caller runs
+# timeline/log/narratives, base-wins for MEMORY.md plus the feature's pointers
+# to targets it lacks. Every other file goes back by _fuse_verdict: one the
+# base lacks is copied in, a copy only the feature edited replaces the base's,
+# and none ever overwrites a base file that changed. Every write returns 1 on failure: the caller runs
 # this in a subshell on the left of ||, where errexit is off, and deletes the
 # staged records only on success. Every write also goes through the link
 # check: the landing put the feature's tree in the base, and nothing has
@@ -1218,7 +1369,7 @@ _inherited_topic_state() {  # feature_meta topic_file
 # that pass would have to list the destinations a second time.
 fuse_session_records() {
     local src="$1" dst="$2"
-    local f base inherited
+    local f base
 
     # Worktrees never run migrate_session, so a task branch created before the
     # log moved to .cs/local/ still keeps its audit trail at .cs/logs/; fuse
@@ -1258,32 +1409,38 @@ fuse_session_records() {
         fi
     done
 
-    for f in "$src"/memory/*.md; do
-        [ -f "$f" ] || continue
-        base=$(basename "$f")
-        case "$base" in
-            MEMORY.md) continue ;;
-            narrative.*.md) continue ;;
+    # Every other file goes by its verdict. The retire refused any conflict
+    # before the removal; one here means the base changed since, and the
+    # staged records stay for the caller's error to name.
+    local plan entry verdict rel parent
+    plan=$(mktemp "${TMPDIR:-/tmp}/cs-fuse-plan.XXXXXX") || return 1
+    if ! _fuse_plan "$src" "$dst" "$plan"; then
+        rm -f "$plan"
+        return 1
+    fi
+    while IFS= read -r -d '' entry; do
+        verdict="${entry%% *}"
+        rel="${entry#* }"
+        case "$verdict" in
+            skip) continue ;;
+            carry|restore|replace) ;;
+            *)
+                warn "$rel cannot be carried into the base without overwriting what is there"
+                rm -f "$plan"
+                return 1 ;;
         esac
-        if [ -f "$dst/memory/$base" ]; then
-            # The feature started from a copy of the base's topics, so an
-            # unchanged one is the base's own file, not a collision.
-            cmp -s "$f" "$dst/memory/$base" \
-                || warn "memory/$base already exists in the base; skipped"
-        else
-            # A topic the feature inherited and the base no longer has was
-            # deleted in the base. Untouched, it stays deleted; edited, the
-            # feature's text comes back and the user is told.
-            if ! inherited=$(_inherited_topic_state "$src" "$f"); then
-                warn "could not read what the feature inherited for memory/$base, so cs cannot tell whether the base deleted it"
-                return 1
-            fi
-            [ "$inherited" != unchanged ] || continue
-            cs_write_atomic "$dst/memory/$base" cat "$f" || return 1
-            [ "$inherited" != edited ] \
-                || warn "memory/$base was deleted in the base and edited in the feature; the feature's version is back in the base"
+        parent="$dst"
+        case "$rel" in */*) parent="$dst/${rel%/*}" ;; esac
+        if ! { cs_mkdir_inside "$parent" && cs_write_atomic "$dst/$rel" cat "$src/$rel"; }; then
+            rm -f "$plan"
+            return 1
         fi
-    done
+        case "$verdict" in
+            restore) warn "$rel was deleted in the base and edited in the feature; the feature's version is back in the base" ;;
+            replace) warn "$rel was edited in the feature and not in the base; the feature's version is now in the base" ;;
+        esac
+    done < "$plan"
+    rm -f "$plan"
 
     local added
     added=$(_append_missing_memory_pointers "$src/memory/MEMORY.md" "$dst/memory/MEMORY.md") || return 1
