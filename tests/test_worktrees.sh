@@ -2255,6 +2255,39 @@ CLAUDE.local.md" "the refusal names the file" || return 1
 
 run_test test_retire_refuses_a_user_authored_claude_local_md
 
+# Claude Code writes the permission grants made in a feature to its
+# .claude/settings.local.json, which git does not carry. The retire adds each
+# allow entry the base lacks to the base's file, after the base's own, and
+# leaves every other key of both files where it is. Besides permissions.allow,
+# the feature's file holds cs's autoMemoryDirectory (the worktree's own
+# .cs/memory) and plansDirectory, and here a deny entry.
+test_retire_carries_the_feature_permission_grants_into_the_base() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    _ignored_base_with_two_topics
+    mkdir -p "$base_dir/.claude"
+    printf '%s\n' '{"env": {"A": "1"}, "permissions": {"allow": ["Bash(ls:*)", "Read"]}}' \
+        > "$base_dir/.claude/settings.local.json"
+    cs_launch "proj@t1"
+    assert_eq "$wt/.cs/memory" "$(jq -r .autoMemoryDirectory "$wt/.claude/settings.local.json")" \
+        "cs pointed the feature's memory at its own .cs" || return 1
+    jq '.permissions = {allow: ["Bash(make:*)", "Read", "Bash(make:*)"], deny: ["Bash(rm:*)"]}' \
+        "$wt/.claude/settings.local.json" > "$wt/.claude/s.json" && mv "$wt/.claude/s.json" "$wt/.claude/settings.local.json"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire succeeds: $output" || return 1
+    assert_eq '["Bash(ls:*)","Read","Bash(make:*)"]' "$(jq -c .permissions.allow "$base_dir/.claude/settings.local.json")" \
+        "the grant survives after the base's own, once" || return 1
+    assert_eq '{"A":"1"}' "$(jq -c .env "$base_dir/.claude/settings.local.json")" "the base's other keys stay" || return 1
+    assert_eq '["env","permissions"]' "$(jq -c 'keys_unsorted' "$base_dir/.claude/settings.local.json")" \
+        "no autoMemoryDirectory or plansDirectory from the feature" || return 1
+    assert_eq '["allow"]' "$(jq -c '.permissions | keys' "$base_dir/.claude/settings.local.json")" \
+        "and no deny entry" || return 1
+}
+
+run_test test_retire_carries_the_feature_permission_grants_into_the_base
+
 # The record of what the feature inherited is what tells a deleted topic from
 # a new one. A record that is there and cannot be read must stop the fuse:
 # guessing "new" would bring the deleted topic back and report success.
