@@ -12352,10 +12352,36 @@ Thumbs.db
 GITIGNORE
 }
 
+# True when a negation further down <dir>'s own .gitignore un-ignores <path>,
+# so a rule for it written above that line has no effect: git, asked by the
+# rules alone (--no-index, so a tracked file is judged as an untracked one
+# is), names a "!" line of that very file as the line that decides. The source
+# git names is relative to the repository's top, hence the prefix. A negation
+# in a deeper .gitignore (which outranks this file whatever its order), no
+# repository, or a git that cannot answer, is false.
+_cs_gitignore_negated_here() {  # dir, path
+    local prefix out
+    prefix=$(_cs_git_at "$1" rev-parse --show-prefix 2>/dev/null) || return 1
+    out=$(_cs_git_at "$1" check-ignore -v --no-index -- "$2" 2>/dev/null) || return 1
+    case "$out" in
+        "${prefix}.gitignore:"*) ;;
+        *) return 1 ;;
+    esac
+    out="${out#"${prefix}.gitignore:"}"
+    out="${out#*:}"
+    case "$out" in
+        "!"*) return 0 ;;
+    esac
+    return 1
+}
+
 # Append cs's .gitignore entries to a session's .gitignore if absent
 # (idempotent; never clobbers a project's existing .gitignore). Writes a fresh
 # cs .gitignore when none exists. Used by adopt and by migrate_session so older
 # sessions gain the .cs/local/ rule (per-actor state must never be committed).
+# The two session lock rules are appended again when a negation further down
+# the file (a project's !*.lock) overrides them, so the line at the end wins;
+# existing lines are never removed or reordered.
 ensure_cs_gitignore_entries() {
     local target_dir="$1"
     local gitignore="$target_dir/.gitignore"
@@ -12378,13 +12404,25 @@ CLAUDE.local.md
 .cs-tmp.*
 ENTRIES
     )
-    local line
+    local line append
     while IFS= read -r line; do
         [ -z "$line" ] && continue
         [[ "$line" == \#* ]] && continue
         # Whole lines only: a commented `# .cs/local/` or a negated
         # `!.cs/local/` mentions the entry without ignoring the path.
+        append=""
         if ! grep -qxF -- "$line" "$gitignore" 2>/dev/null; then
+            append=yes
+        else
+            case "$line" in
+                .cs/session.lock|.cs/session.mutex.lock)
+                    if _cs_gitignore_negated_here "$target_dir" "$line"; then
+                        append=yes
+                    fi
+                    ;;
+            esac
+        fi
+        if [ -n "$append" ]; then
             # A last line with no newline would swallow the entry appended to it.
             if [ -s "$gitignore" ] && [ -n "$(tail -c 1 "$gitignore")" ]; then
                 printf '\n' >> "$gitignore"
