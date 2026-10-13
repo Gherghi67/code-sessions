@@ -549,12 +549,14 @@ test_the_countdown_is_only_shown_when_something_enforces_it() {
 # plain number takes the default the rewriters use, and the countdown starts
 # there. The file named by PWNED_FILE is what a substitution in the value would
 # create. The vendor rewriter bounds itself with perl's alarm, so the
-# countdown is drawn on every runner.
+# countdown is drawn on every runner; the stand-in agy answers in the
+# stream-json shape the vendor rewriter reads, so the rewrite lands.
 test_the_countdown_reads_its_budget_as_data() {
     unset CS_REWRITE_CMD
     local bin="$TEST_TMPDIR/bin" pwned="$TEST_TMPDIR/pwned" value f out
     mkdir -p "$bin"
-    printf '#!/bin/bash\nsleep 0.9\nprintf "REWRITTEN"\n' > "$bin/agy"
+    printf '#!/bin/bash\nsleep 0.9\nprintf %%s\\\\n %s\n' \
+        "'{\"event\":\"result\",\"result\":{\"status\":\"SUCCESS\",\"response\":\"REWRITTEN\"}}'" > "$bin/agy"
     chmod +x "$bin/agy"
     for value in 'PATH[$(:>"$PWNED_FILE")]' 'soon' '0'; do
         rm -f "$pwned"
