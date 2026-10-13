@@ -164,9 +164,9 @@ It and `scripts/code-sessions-to-cs.py` need git 2.31 or later.
   folder of a cs session that has a copy, made by this run or an earlier one,
   by an absolute path (a `node_modules` or `.env` shared with the project) is
   pointed at that session's copy instead, so nothing writes through it. A
-  link into any other session's folder is left as it is and named as a
-  problem, since the copy would write through it into cs; the run that
-  copies that session puts it right.
+  link into any other session's folder, one inside the session's own
+  included, is left as it is and named as a problem, since the copy would
+  write through it into cs; the run that copies that session puts it right.
 - A Python virtual environment (a folder with `pyvenv.cfg`) names folders by
   absolute path in `pyvenv.cfg`, `bin/activate*`, each script's shebang and,
   for an editable install, its `.pth` file, finder module and

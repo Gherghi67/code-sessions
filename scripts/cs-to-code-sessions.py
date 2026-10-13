@@ -28,9 +28,9 @@ every one in ~/.claude-sessions, one after another:
   that copy, and so is each such path in a Python virtual environment's text
   files (pyvenv.cfg, bin/, an editable install's .pth, finder and
   direct_url.json); the run names each such environment once, with how many
-  of its files it rewrites. A link into any other session's folder is left
-  as it is and named as a problem; the run that copies that session puts it
-  right.
+  of its files it rewrites. A link into any other session's folder, one
+  inside the session's own included, is left as it is and named as a
+  problem; the run that copies that session puts it right.
 - The stable cs never reads the engine its state names: it opens Claude on
   claude_session_id. A copy whose cs state names another engine (left by
   trials of this fork) says claude, so ccs opens the same conversation; the
@@ -627,14 +627,16 @@ class Importer:
 
     def roots(self, session):
         """The folder of each cs session with a copy in code-sessions, made by this run or an earlier one, by
-        every spelling, -> where that copy is, for session's copy.
+        every spelling, -> where that copy is, for session's copy; the folder of any other session -> itself.
 
-        Inside a folder that holds another session's, the inner one's copy
-        wins, as the longer path, except in a folder session's repository
-        tracks (session.shared): that one is session's copy's own, so by its
-        path inside session it stays there. The folder of any other session
-        stays as it is (see relink). Built only once run() has set in_run, the
-        sessions this run copies.
+        Inside a folder that holds another session's, the inner one wins, as
+        the longer path: a path into an inner session with no copy stays as it
+        is (see relink), not sent into the outer copy, which has nothing there.
+        A folder session's repository tracks (session.shared) is the
+        exception: that one is session's copy's own, so by its path inside
+        session it stays there. Built only once run() has set in_run, the
+        sessions this run copies; a feature handle() then finds it cannot copy
+        (copy_blocker) still counts.
         """
         if self._roots is None:
             self._roots = {}
@@ -646,7 +648,9 @@ class Importer:
                 else:
                     self._no_copy += paths
         own = {os.path.join(path, rel) for path in self.spellings(session.name) for rel, _ in session.shared}
-        return {old: new for old, new in self._roots.items() if old not in own}
+        out = {path: path for path in self._no_copy if path not in own}
+        out.update((old, new) for old, new in self._roots.items() if old not in own)
+        return out
 
     def has_copy(self, name):
         """Whether code-sessions has the copy an earlier run made of the cs session name, by its record."""

@@ -1685,6 +1685,32 @@ test_a_nested_session_that_is_not_copied_gets_no_link() {
     assert_not_exists "$PROFILE/sessions/outer/inner"
 }
 
+# A link into a nested session with no copy is not pointed into the outer
+# copy, which has nothing there: it is left naming cs's folder and named, and
+# so is the path in a virtual environment.
+test_a_link_into_a_nested_session_with_no_copy_is_left_and_named() {
+    make_fixture
+    make_nested
+    printf '#!/bin/bash\n' > "$INNER_SRC/.cs/local/pre-open"
+    ln -s "$INNER_SRC/inner.txt" "$OUTER_SRC/inner-link.txt"
+    make_venv "$OUTER_SRC"
+    local pth=.venv/lib/python3.12/site-packages/inner.pth status=0
+    printf '%s/src\n' "$INNER_SRC" > "$OUTER_SRC/$pth"
+    run_move --session outer || status=$?
+    assert_eq 1 "$status" "the dry run did not name the link" || { echo "$OUT"; return 1; }
+    assert_output_contains "$OUT" "! links into cs's folder of a session with no copy here, left as they are.*inner/inner.txt" \
+        || return 1
+    status=0
+    run_move --session outer --apply || status=$?
+    assert_eq 1 "$status" || { echo "$OUT"; return 1; }
+    assert_output_contains "$OUT" "! links into cs's folder of a session with no copy here, left as they are.*inner/inner.txt" \
+        || return 1
+    assert_eq "$INNER_SRC/inner.txt" "$(readlink "$PROFILE/sessions/outer/inner-link.txt")" || return 1
+    assert_eq "$INNER_SRC/src" "$(cat "$PROFILE/sessions/outer/$pth")" || return 1
+    assert_eq "$PROFILE/sessions/outer/src" \
+        "$(cat "$PROFILE/sessions/outer/.venv/lib/python3.12/site-packages/_editable_impl_lab.pth")"
+}
+
 # A name code-sessions is still renaming away from is left. A rename of a
 # profile session moves its folder first, and its transcripts, prompt
 # history, settings and secrets after; until its record says finished they
@@ -2440,6 +2466,7 @@ run_test test_a_session_open_in_a_feature_inside_its_project_is_named
 run_test test_a_nested_layout_that_changes_after_the_copy
 run_test test_a_session_folder_the_outer_repository_tracks_comes_with_it
 run_test test_a_nested_session_that_is_not_copied_gets_no_link
+run_test test_a_link_into_a_nested_session_with_no_copy_is_left_and_named
 run_test test_a_name_code_sessions_is_still_renaming_is_left
 run_test test_a_session_folder_that_cannot_be_read_is_a_problem_not_gone
 run_test test_all_with_only_a_folder_gone_has_no_problem
