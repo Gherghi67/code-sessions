@@ -1124,6 +1124,73 @@ SHIM
 test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
 }
 
+# An age directory that cannot be made, or whose mode cannot be set while it
+# is there, fails the age lock at once: one try, no wait, the tool's own
+# error and the refusal. Only a directory that is gone again by the mode step
+# is made again. The command runs in the background so that one that kept
+# trying is stopped and reported instead of hanging the suite.
+test_an_age_directory_that_cannot_be_made_or_secured_fails_the_age_lock_at_once() {
+    local shim="$TEST_TMPDIR/once-shim" age="$HOME/.cs-secrets/sessions/test-session" real_sleep real_chmod how pid waited
+    local refusal="Error: Refusing to change the age recipients for session 'test-session': could not acquire the age recipients lock"
+    real_sleep=$(command -v sleep)
+    real_chmod=$(command -v chmod)
+    mkdir -p "$shim" "$CS_SESSIONS_ROOT/test-session/.cs/age-recipients"
+    printf 'age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqs3290gq\n' \
+        > "$CS_SESSIONS_ROOT/test-session/.cs/age-recipients/peer.pub"
+    cat > "$shim/sleep" <<SHIM
+#!/usr/bin/env bash
+: > "$TEST_TMPDIR/waiting"
+exec "$real_sleep" "\$@"
+SHIM
+    cat > "$shim/chmod" <<SHIM
+#!/usr/bin/env bash
+for a in "\$@"; do
+    if [ "\$a" = "$age" ]; then
+        printf 'x\n' >> "$TEST_TMPDIR/mode-steps"
+        if [ -f "$TEST_TMPDIR/refuse-mode" ]; then
+            echo "chmod: $age: Operation not permitted" >&2
+            exit 1
+        fi
+    fi
+done
+exec "$real_chmod" "\$@"
+SHIM
+    chmod +x "$shim/sleep" "$shim/chmod"
+
+    for how in unmakeable unsecurable; do
+        rm -rf "$HOME/.cs-secrets" "$TEST_TMPDIR/waiting" "$TEST_TMPDIR/mode-steps" "$TEST_TMPDIR/refuse-mode" "$TEST_TMPDIR/rc"
+        mkdir -p "$HOME/.cs-secrets"
+        case "$how" in
+            # A file where the directory of per-session age state belongs.
+            unmakeable) : > "$HOME/.cs-secrets/sessions" ;;
+            unsecurable) : > "$TEST_TMPDIR/refuse-mode" ;;
+        esac
+        ( rc=0
+          PATH="$shim:$PATH" "$CS_SECRETS_BIN" age remove peer > "$TEST_TMPDIR/out" 2>&1 || rc=$?
+          printf '%s\n' "$rc" > "$TEST_TMPDIR/rc" ) &
+        pid=$!
+        waited=0
+        until [ -f "$TEST_TMPDIR/rc" ]; do sleep 0.05; waited=$((waited + 1)); [ "$waited" -gt 200 ] && break; done
+        if [ ! -f "$TEST_TMPDIR/rc" ]; then
+            pkill -P "$pid" 2>/dev/null; kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+            echo "  FAIL: age remove kept trying an age directory it could not make or secure ($how): $(wc -l < "$TEST_TMPDIR/mode-steps" 2>/dev/null) mode steps"
+            return 1
+        fi
+        wait "$pid"
+        assert_eq "1" "$(cat "$TEST_TMPDIR/rc")" "age remove exits 1 ($how): $(cat "$TEST_TMPDIR/out")" || return 1
+        assert_eq "$refusal" "$(tail -1 "$TEST_TMPDIR/out")" "age remove says it could not take the lock ($how)" || return 1
+        assert_eq "2" "$(wc -l < "$TEST_TMPDIR/out" | tr -d ' ')" "one line from the tool that failed, then the refusal ($how)" || return 1
+        assert_not_exists "$TEST_TMPDIR/waiting" "age remove does not wait ($how)" || return 1
+        case "$how" in
+            unmakeable)
+                assert_not_exists "$TEST_TMPDIR/mode-steps" "no mode step follows a directory that was not made" || return 1 ;;
+            unsecurable)
+                assert_eq "chmod: $age: Operation not permitted" "$(head -1 "$TEST_TMPDIR/out")" "the mode step's own error is shown" || return 1 ;;
+        esac
+        assert_file_exists "$CS_SESSIONS_ROOT/test-session/.cs/age-recipients/peer.pub" "the recipient is left alone ($how)" || return 1
+    done
+}
+
 # `age add` and `age remove` change the recipient set an export snapshots, so
 # each waits while an export holds the session's age lock and runs once the
 # export is done. The export's age blocks on encrypt (-o) until the test
@@ -1251,6 +1318,7 @@ run_test test_a_term_keeps_the_write_lock_until_purge_has_removed_the_age_state
 run_test test_a_command_waiting_on_the_age_lock_takes_it_once_a_rename_removed_its_directory
 run_test test_a_command_waiting_on_the_age_lock_through_a_rename_refuses_the_old_name
 run_test test_a_rename_between_making_the_age_directory_and_setting_its_mode_is_waited_through
+run_test test_an_age_directory_that_cannot_be_made_or_secured_fails_the_age_lock_at_once
 run_test test_age_add_and_remove_wait_while_an_export_holds_the_age_lock
 run_test test_a_lock_timeout_that_is_not_a_positive_whole_number_is_the_default
 
