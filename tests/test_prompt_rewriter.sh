@@ -638,7 +638,7 @@ test_screen_mode_has_no_spinner() {
 # "not a composer file", "disabled", "slash command" and "rewriter declined" all
 # leave the buffer identical. The trace is the only way to tell them apart.
 test_the_trace_records_which_path_was_taken() {
-    local dir="$TEST_TMPDIR/meta"
+    local dir="$TEST_TMPDIR/session/.cs"
     mkdir -p "$dir"
     local f
     f=$(composer_file "/release")
