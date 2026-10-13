@@ -1463,25 +1463,30 @@ fn count_secrets_from_keychain() -> HashMap<String, u32> {
 /// Secret counts per session from the login Keychain's `security dump-keychain`.
 #[cfg(all(target_os = "macos", not(test)))]
 fn count_secrets_in_live_keychain() -> HashMap<String, u32> {
-    let mut counts = HashMap::new();
-
     let output = std::process::Command::new("security")
         .args(["dump-keychain"])
         .stderr(std::process::Stdio::null())
         .output();
 
-    if let Ok(output) = output {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            // Match: "svce"<blob>="cs:session_name:secret_name"
-            if let Some(rest) = line.strip_prefix("    \"svce\"<blob>=\"cs:") {
-                if let Some(session) = rest.split(':').next() {
-                    *counts.entry(session.to_string()).or_insert(0) += 1;
-                }
+    match output {
+        Ok(output) => secret_counts_in_keychain_dump(&String::from_utf8_lossy(&output.stdout)),
+        Err(_) => HashMap::new(),
+    }
+}
+
+/// Secret counts per session in the text of a `security dump-keychain`: one
+/// per item whose service attribute is `cs:<session>:<name>`.
+#[cfg(any(test, target_os = "macos"))]
+fn secret_counts_in_keychain_dump(dump: &str) -> HashMap<String, u32> {
+    let mut counts = HashMap::new();
+    for line in dump.lines() {
+        // Match: "svce"<blob>="cs:session_name:secret_name"
+        if let Some(rest) = line.strip_prefix("    \"svce\"<blob>=\"cs:") {
+            if let Some(session) = rest.split(':').next() {
+                *counts.entry(session.to_string()).or_insert(0) += 1;
             }
         }
     }
-
     counts
 }
 
