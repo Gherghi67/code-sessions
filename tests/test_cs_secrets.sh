@@ -3507,6 +3507,65 @@ test_rename_refuses_a_new_name_that_has_secrets_or_age_state() {
     assert_eq "other" "$(cat "$HOME/.cs-secrets/sessions/bravo/age-trusted")" "bravo's own pins are untouched" || return 1
 }
 
+# A session with no secrets of its own takes none from the new name either:
+# what an earlier session left under bravo would become the renamed session's
+# secrets and trust.
+test_rename_of_a_session_without_secrets_refuses_a_new_name_that_has_any() {
+    _RN_BIN=$(_make_fake_security)
+    mkdir -p "$CS_SESSIONS_ROOT/bravo/.cs"
+    printf 'value-two' > "$TEST_TMPDIR/v2"
+    local out rc kind
+    for kind in keychain enc age; do
+        rm -rf "$TEST_TMPDIR/kc-store/cs_bravo_"* "$HOME/.cs-secrets/bravo.enc" "$HOME/.cs-secrets/sessions/bravo"
+        case "$kind" in
+            keychain) _kc_secrets --session bravo set B1 < "$TEST_TMPDIR/v2" >/dev/null 2>&1 || return 1 ;;
+            enc) "$CS_SECRETS_BIN" --session bravo set B1 < "$TEST_TMPDIR/v2" >/dev/null 2>&1 || return 1 ;;
+            age) mkdir -p "$HOME/.cs-secrets/sessions/bravo" && printf 'other\n' > "$HOME/.cs-secrets/sessions/bravo/age-trusted" ;;
+        esac
+        rc=0
+        out=$(_kc_secrets --session alpha rename bravo 2>&1) || rc=$?
+        assert_eq "1" "$rc" "rename refuses when bravo has $kind state: $out" || return 1
+        case "$kind" in
+            keychain) assert_eq "Error: Refusing to move the secrets of session 'alpha' to 'bravo': 'bravo' already has Keychain secrets" "$out" "the refusal names the Keychain" || return 1
+                      assert_eq "value-two" "$(_kc_secrets --session bravo get B1 2>&1)" "bravo's Keychain entry stays" || return 1 ;;
+            enc) assert_eq "Error: Refusing to move the secrets of session 'alpha' to 'bravo': $HOME/.cs-secrets/bravo.enc already exists" "$out" "the refusal names the store" || return 1
+                 assert_eq "value-two" "$("$CS_SECRETS_BIN" --session bravo get B1 2>&1)" "bravo's encrypted store stays" || return 1 ;;
+            age) assert_eq "Error: Refusing to move the secrets of session 'alpha' to 'bravo': $HOME/.cs-secrets/sessions/bravo already exists" "$out" "the refusal names the age state" || return 1
+                 assert_eq "other" "$(cat "$HOME/.cs-secrets/sessions/bravo/age-trusted")" "bravo's pins stay" || return 1 ;;
+        esac
+        [ ! -e "$HOME/.cs-secrets/.rename.alpha" ] || { echo "  FAIL: a refused rename left a marker ($kind)"; return 1; }
+    done
+}
+
+# The new name is a session name, never a command or an option: a session
+# may be called purge, and renaming to it moves the secrets there.
+test_rename_takes_the_new_name_literally() {
+    _seed_renamed_session || { echo "  FAIL: fixture: could not seed alpha's stores"; return 1; }
+    local out rc=0
+    mv "$CS_SESSIONS_ROOT/bravo" "$CS_SESSIONS_ROOT/purge"
+    out=$(_kc_secrets --session alpha rename purge 2>&1) || rc=$?
+    assert_eq "0" "$rc" "rename to purge exits 0: $out" || return 1
+    assert_eq "Moved the secrets of session 'alpha' to 'purge'" "$out" "rename moves the secrets to purge" || return 1
+    assert_eq "cs:purge:K1
+cs:purge:K2" "$(_kc_services)" "the Keychain entries are purge's" || return 1
+    assert_eq "value-enc" "$("$CS_SECRETS_BIN" --session purge get E1 2>&1)" "the encrypted store is purge's" || return 1
+    assert_eq "pin-fingerprint" "$(cat "$HOME/.cs-secrets/sessions/purge/age-trusted" 2>&1)" "the pin list is purge's" || return 1
+}
+
+# A word after the new name is refused, not read as a command: every store
+# stays alpha's.
+test_rename_refuses_a_second_name() {
+    _seed_renamed_session || { echo "  FAIL: fixture: could not seed alpha's stores"; return 1; }
+    local out rc=0
+    out=$(_kc_secrets --session alpha rename bravo purge 2>&1) || rc=$?
+    assert_eq "1" "$rc" "rename with a second word exits 1: $out" || return 1
+    assert_eq "Error: rename takes one session name; unexpected: purge" "$out" "the refusal names the extra word" || return 1
+    assert_eq "cs:alpha:K1
+cs:alpha:K2" "$(_kc_services)" "alpha's Keychain entries stay" || return 1
+    assert_eq "value-enc" "$("$CS_SECRETS_BIN" --session alpha get E1 2>&1)" "alpha's encrypted store stays" || return 1
+    assert_eq "pin-fingerprint" "$(cat "$HOME/.cs-secrets/sessions/alpha/age-trusted" 2>&1)" "alpha's pins stay" || return 1
+}
+
 # The secrets follow the session directory, never lead it: while the sessions
 # root still has alpha, its secrets stay alpha's. bravo must be a session too,
 # so nothing is created under a name the root lacks.
@@ -3758,6 +3817,9 @@ run_test test_export_replaces_a_signature_that_does_not_verify
 run_test test_export_adds_this_machine_to_a_session_that_has_recipients
 run_test test_rename_moves_every_store_to_the_new_name
 run_test test_rename_refuses_a_new_name_that_has_secrets_or_age_state
+run_test test_rename_of_a_session_without_secrets_refuses_a_new_name_that_has_any
+run_test test_rename_takes_the_new_name_literally
+run_test test_rename_refuses_a_second_name
 run_test test_rename_refuses_while_the_old_session_directory_exists
 run_test test_rename_rerun_finishes_an_interrupted_move
 run_test test_rename_rerun_refuses_a_value_that_differs_under_both_names
