@@ -1206,7 +1206,7 @@ CS_KNOWN_SHA256=(
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
     "5ae406d0e947a9916c553010ddd69f92c9306dbf31ddbdb62f29368a3fd60cc9  bin/cs"
-    "fd8ca098d24677c0f04814518f981da1e502e8d897d88f17955fe9b4c902791b  bin/cs-secrets"
+    "53865bc18046bdb236b3bc644d3b197e5e2198890be4d22b449fea81c9ab41db  bin/cs-secrets"
     "a6d008e8bcba4e3d4c1599c76aaddc4ea1c4eb61e3ba861c60d9e4b91f706e78  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
     "8eb754cc99aa9a3b1478fefc31b6cb1486044022150334ec289ed727b3a98272  hooks/cs-resolve.sh"
@@ -1242,8 +1242,8 @@ CS_PAYLOAD_SHA256=(
     "7a97c18b6ae755d8ec7862532eb15bbf627170a1fab8cc90dd2f8f77a57164be  mods/cs-update/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-update/hooks/hooks.json"
     "8cd9e46d6d6cb24acc48f1e8506675698a0b382453a9d1e8c08e35bb7b332cd4  mods/cs-update/hooks/register.tsx"
-    "9ea60b6839947156cb361227363cd5a52059ff39a1157a10bcd6225e0294639c  completions/cs.bash"
-    "ef0b227b264c02f7654326b2d81c967bd309b2990ad130e78f74727a1d48b6fc  completions/_cs"
+    "1b1f194468645f5b3b4386f29b77b7933f14526152348b0549eb3d657c906dbd  completions/cs.bash"
+    "3bfd2d81585d8c0ec18098dd627ef653ee28585d66ccdbdd9fbb868ae99ad4ac  completions/_cs"
 )
 
 # Everything that lands in HOOKS_DIR, for the copy and cleanup loops. The
