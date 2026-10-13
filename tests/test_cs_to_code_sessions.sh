@@ -1556,6 +1556,29 @@ test_a_link_into_a_session_with_no_copy_is_left_and_named() {
     assert_eq "$CSROOT/vault/src" "$(cat "$PROFILE/sessions/lab/$pth")"
 }
 
+# A link cs added since the last run is named by a rerun's dry run, not only
+# by --apply; the hint holds for a session that may never get a copy.
+test_a_rerun_s_dry_run_names_a_link_cs_added_into_a_session_with_no_copy() {
+    make_fixture
+    make_created lab "$MINE_ID"
+    make_created vault "$OTHER_ID"
+    printf 'S=1\n' > "$CSROOT/vault/.env"
+    run_move --session lab --apply || { echo "$OUT"; return 1; }
+    wait_past_the_margin
+    ln -s "$CSROOT/vault/.env" "$CSROOT/lab/.env"
+    local status=0
+    run_move --session lab || status=$?
+    assert_eq 1 "$status" "the rerun's dry run did not name the link" || { echo "$OUT"; return 1; }
+    assert_output_contains "$OUT" \
+        "! links into cs's folder of a session with no copy here, left as they are.*vault/.env.*once that session has a copy here, a rerun points each at it" \
+        || return 1
+    assert_file_not_exists "$PROFILE/sessions/lab/.env" "the dry run copied the link" || return 1
+    status=0
+    run_move --session lab --apply || status=$?
+    assert_eq 1 "$status" || { echo "$OUT"; return 1; }
+    assert_eq "$CSROOT/vault/.env" "$(readlink "$PROFILE/sessions/lab/.env")"
+}
+
 # A session --all copies after the one linking into it still counts as copied.
 test_all_points_a_link_at_a_session_copied_later_in_the_same_run() {
     make_fixture
@@ -2461,6 +2484,7 @@ run_test test_the_way_back_never_links_a_nested_session_into_the_profile
 run_test test_the_way_back_names_a_link_into_a_session_it_does_not_copy
 run_test test_a_python_environment_in_the_copy_names_the_copy
 run_test test_a_link_into_a_session_with_no_copy_is_left_and_named
+run_test test_a_rerun_s_dry_run_names_a_link_cs_added_into_a_session_with_no_copy
 run_test test_all_points_a_link_at_a_session_copied_later_in_the_same_run
 run_test test_a_session_open_in_a_feature_inside_its_project_is_named
 run_test test_a_nested_layout_that_changes_after_the_copy

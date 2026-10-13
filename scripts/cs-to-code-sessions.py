@@ -689,8 +689,8 @@ class Importer:
     def say_into_cs(self, session, prefix=""):
         if session.into_cs:
             self.problem("%slinks into cs's folder of a session with no copy here, left as they are, so the copy "
-                         "would write into cs through them: %s; a rerun points each at that session's copy once it "
-                         "is copied" % (prefix, shown(sorted(tilde(t) for t in session.into_cs))))
+                         "would write into cs through them: %s; once that session has a copy here, a "
+                         "rerun points each at it" % (prefix, shown(sorted(tilde(t) for t in session.into_cs))))
 
     def rewrites(self, session):
         """What session's copy holds in place of cs's file: the memory folder at the copy's path, the engine cs

@@ -893,9 +893,10 @@ def sync_files(src, dst, mark, apply, rewrites=None, relink=None, only=None, pin
     .cs/local/state then). Each side's mark must have been taken before that
     side was read. rewrites maps a path to a function of its
     bytes giving what the copy should hold, or None to copy it as is (a
-    Rewrites does); relink places absolute link targets. A link or a rewritten
-    file that neither side changed is put right when relink or the rewrite
-    now gives something else. With only, just that folder is synced.
+    Rewrites does); relink places absolute link targets, and a dry run asks
+    it about each link it would copy too, so what it notes is the same. A
+    link or a rewritten file that neither side changed is put right when
+    relink or the rewrite now gives something else. With only, just that folder is synced.
     Paths in skip (another session's folder inside this one) are left alone
     on both sides, whatever either side has there.
     """
@@ -1031,6 +1032,8 @@ def sync_files(src, dst, mark, apply, rewrites=None, relink=None, only=None, pin
                     out.state_after = data.decode() if data is not None else read_text(sp)
                 if not apply:
                     out.paths.add(rel)
+                    if relink and stat.S_ISLNK(s.st_mode):
+                        relink(os.readlink(sp))
                 elif unchanged_since_read(rel, None) and attempt(rel, _put, sp, dp, data, relink, tmp_suffix):
                     out.paths.add(rel)
             else:

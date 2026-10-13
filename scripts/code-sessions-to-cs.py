@@ -595,7 +595,7 @@ class Copier:
             self.check_links(plan)
         if plan.into_profile:
             self.problem("links into the code-sessions profile left as they are, so cs would write there through "
-                         "them: %s; a rerun points each at cs's copy of its session once that is copied"
+                         "them: %s; once cs has a copy of its session, a rerun points each at it"
                          % shown(sorted(tilde(t) for t in plan.into_profile)))
 
         # 2. Claude conversations.
