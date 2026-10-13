@@ -4041,8 +4041,13 @@ retire_feature_worktree() {  # base_name task sha [--force]
     wt_untracked=$(_worktree_untracked_at_risk "$wt_dir") \
         || error "Could not list the untracked files in $wt_dir; nothing was removed"
     if [ -n "$wt_untracked" ]; then
-        error "Worktree has untracked files that removal would destroy; commit or remove them first:
-$wt_untracked"
+        local wt_listing wt_count wt_them=them nl=$'\n'
+        wt_listing=$(_untracked_listing "$wt_dir" "$wt_untracked") \
+            || error "Could not count the untracked files in $wt_dir; nothing was removed"
+        wt_count="${wt_listing%%"$nl"*}"
+        [ "$wt_count" != "1 file" ] || wt_them=it
+        error "Worktree has ${wt_count% *} untracked ${wt_count#* } that removal would destroy; commit or remove $wt_them first:
+${wt_listing#*"$nl"}"
     fi
     # The base's own .cs/ bookkeeping is exempt: in tracked mode the integrate
     # that just landed this feature wrote a timeline event there, and removing
