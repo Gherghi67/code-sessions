@@ -196,6 +196,53 @@ test_session_end_keeps_the_lock_for_a_child_that_inherited_the_contract() {
         "a nested claude that inherited the contract must not strip the lead's lock" || return 1
 }
 
+# A second terminal force-opened the session (--force or the collision menu's
+# force start), so the lock names that launch now. The first launch's lead
+# conversation then ends: the lock is not its own, and removing it leaves the
+# live session unlocked, so `cs -rm` deletes it under the second claude.
+test_session_end_leaves_the_lock_a_forced_open_took() {
+    create_lock_test_session "test-session"
+    local meta_dir="$CS_SESSIONS_ROOT/test-session/.cs"
+
+    sleep 300 &
+    local forced_pid=$!
+    echo "$forced_pid" > "$meta_dir/session.lock"
+
+    export CLAUDE_SESSION_NAME="test-session"
+    export CLAUDE_SESSION_DIR="$CS_SESSIONS_ROOT/test-session"
+    export CLAUDE_SESSION_META_DIR="$meta_dir"
+
+    # The ending claude is the first launch's lead: CLAUDE_PID is its launch pid.
+    echo '{"session_id": "lead-a", "reason": "other"}' \
+        | CS_RESOLVED_FROM=env CS_LEAD_PID=$$ CLAUDE_PID=$$ "$SCRIPT_DIR/../hooks/session-end.sh"
+    local kept
+    kept=$(cat "$meta_dir/session.lock" 2>/dev/null)
+    kill "$forced_pid" 2>/dev/null
+
+    assert_eq "$forced_pid" "$kept" \
+        "a lead whose lock a forced open replaced must leave that live lock" || return 1
+}
+
+# The lead ends and the lock names a launch that has since died (it crashed
+# after a forced open): the lock is stale, so the lead clears it, as a hook
+# that walked in would.
+test_session_end_lead_clears_a_stale_lock_it_does_not_own() {
+    create_lock_test_session "test-session"
+    local meta_dir="$CS_SESSIONS_ROOT/test-session/.cs" dead
+    bash -c 'exit 0' & dead=$!; wait "$dead"
+    echo "$dead" > "$meta_dir/session.lock"
+
+    export CLAUDE_SESSION_NAME="test-session"
+    export CLAUDE_SESSION_DIR="$CS_SESSIONS_ROOT/test-session"
+    export CLAUDE_SESSION_META_DIR="$meta_dir"
+
+    echo '{"session_id": "lead-a", "reason": "other"}' \
+        | CS_RESOLVED_FROM=env CS_LEAD_PID=$$ CLAUDE_PID=$$ "$SCRIPT_DIR/../hooks/session-end.sh"
+
+    assert_not_exists "$meta_dir/session.lock" \
+        "a dead holder's lock is cleared when the lead ends" || return 1
+}
+
 # The same child on a machine where ps cannot name its parent: nothing shows
 # it to be the lead, so its end still leaves a live holder's lock. The
 # stand-in leaves a file behind, so the test knows which ps answered.
@@ -896,6 +943,8 @@ run_test test_force_overrides_live_lock
 run_test test_lock_cleaned_on_session_end
 run_test test_session_end_keeps_the_lock_for_a_child_that_inherited_the_contract
 run_test test_session_end_keeps_the_lock_when_the_parent_cannot_be_read
+run_test test_session_end_leaves_the_lock_a_forced_open_took
+run_test test_session_end_lead_clears_a_stale_lock_it_does_not_own
 run_test test_session_end_keeps_the_lock_for_clear_and_resume
 run_test test_session_end_leaves_a_live_lock_it_does_not_own
 run_test test_session_end_clears_a_stale_lock_even_when_walked_in
