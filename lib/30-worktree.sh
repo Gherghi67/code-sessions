@@ -185,8 +185,13 @@ _worktree_untracked_at_risk() {  # wt_dir
         cs_own=(-e '^\.cs/local/' -e '^\.cs/session\.lock$' -e '^\.cs/session\.mutex\.lock$'
                 -e '^\.cs/\.narrative-reminder-cooldown$')
     fi
+    # The protocol file is cs's only while it carries cs's sentinel; one
+    # without it is the user's own (ensure_session_claude_md draws the same line).
+    if grep -qF '<!-- cs:session-protocol -->' "$1/CLAUDE.local.md" 2>/dev/null; then
+        cs_own+=(-e '^CLAUDE\.local\.md$')
+    fi
     printf '%s\n' "$listing" \
-        | LC_ALL=C grep -v "${cs_own[@]}" -e '^\.claude/settings\.local\.json$' -e '^CLAUDE\.local\.md$' \
+        | LC_ALL=C grep -v "${cs_own[@]}" -e '^\.claude/settings\.local\.json$' \
             -e '^\.DS_Store$' -e '/\.DS_Store$' \
         || [ $? -eq 1 ]
 }
