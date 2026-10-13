@@ -3472,8 +3472,12 @@ cs:bravo:K2" "$(_kc_services)" "the Keychain holds bravo's entries and none of a
 
     assert_eq "pin-fingerprint" "$(cat "$HOME/.cs-secrets/sessions/bravo/age-trusted" 2>&1)" "the pin list moved" || return 1
     [ ! -e "$HOME/.cs-secrets/sessions/alpha" ] || { echo "  FAIL: alpha's age state is still there"; return 1; }
-    assert_eq "" "$(ls -A "$HOME/.cs-secrets" | grep -v -e '^bravo\.enc$' -e '^sessions$' -e '^\.salt$')" \
-        "nothing but bravo's store is left in ~/.cs-secrets (no lock, no marker)" || return 1
+    local entry left=""
+    for entry in "$HOME/.cs-secrets"/* "$HOME/.cs-secrets"/.[!.]*; do
+        [ -e "$entry" ] || continue
+        case "$(basename "$entry")" in bravo.enc|sessions|.salt) ;; *) left="$left $(basename "$entry")" ;; esac
+    done
+    assert_eq "" "$left" "nothing but bravo's store is left in ~/.cs-secrets (no lock, no marker)" || return 1
     assert_eq "age-trusted" "$(ls -A "$HOME/.cs-secrets/sessions/bravo")" "bravo's age state holds the pin list only" || return 1
 }
 
