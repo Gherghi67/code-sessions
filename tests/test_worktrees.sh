@@ -349,7 +349,8 @@ __screenshots__/') || { echo "  FAIL: integrate fixture"; return 1; }
     apps/web/src/__screenshots__/  (2 files)
     apps/web/.env
     build.log
-retired task1 $sha" "$output" "retire names what it moved to the trash" || return 1
+MEMORY.md: appended 1 pointer(s) from the feature (base lines kept)
+retired task1 $sha" "$output" "retire names what it moved to the trash, then fuses the records" || return 1
     assert_eq "$wt/apps/web/src/__screenshots__
 $wt/apps/web/.env
 $wt/build.log" "$(cat "$TEST_TMPDIR/trash.log")" "the trash gets each entry once, by its full path" || return 1
@@ -372,7 +373,8 @@ __pycache__/
     : > "$wt/.venv/bin/python"
     output=$(PATH="$bin:$PATH" "$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1) || status=$?
     assert_eq "0" "$status" "retire proceeds: $output" || return 1
-    assert_eq "retired task1 $sha" "$output" "nothing is moved to the trash" || return 1
+    assert_eq "MEMORY.md: appended 1 pointer(s) from the feature (base lines kept)
+retired task1 $sha" "$output" "nothing is moved to the trash" || return 1
     assert_not_exists "$TEST_TMPDIR/trash.log" "the trash command is never run" || return 1
     assert_not_exists "$wt" "the worktree is retired" || return 1
 }
