@@ -109,10 +109,34 @@ test_resume_failure_emits_resume_failed_event() {
     assert_output_contains "$ev" '"reason":"resume-failed"' "fast resume failure recorded" || return 1
 }
 
+# cs stays as claude's parent on a resume it cannot be sure of, and a claude
+# that fails within three seconds is read as a conversation that would not
+# resume, so cs starts a fresh one. When that claude ended because its session
+# was removed (`cs -rm <name> --force` while it was exiting), the fresh start
+# would build the session's .cs/local/state again from its path and launch a
+# claude in a directory that is gone. cs exits with claude's status instead,
+# writing nothing and starting nothing.
+test_resume_failure_leaves_a_removed_session_removed() {
+    _rot_session "rot-gone"
+    local dir="$CS_SESSIONS_ROOT/rot-gone" out rc=0
+    cat > "$TEST_TMPDIR/claude-stub" << 'SCRIPT'
+#!/bin/bash
+case "$*" in *--resume*) rm -rf "$CS_TEST_REMOVE_DIR"; exit 1;; esac
+echo "STUB_ARGS: $*"
+exit 0
+SCRIPT
+    out=$(CS_TEST_REMOVE_DIR="$dir" "$CS_BIN" rot-gone <<< "" 2>&1) || rc=$?
+    assert_not_exists "$dir" "the removed session stays removed" || return 1
+    assert_output_not_contains "$out" "STUB_ARGS:" "no fresh claude starts for a removed session" || return 1
+    assert_output_not_contains "$out" "Starting fresh" "no fresh start is announced for a removed session" || return 1
+    assert_eq "1" "$rc" "cs exits with the status of the claude that ended" || return 1
+}
+
 run_test test_hook_mismatch_emits_rebind_event
 run_test test_hook_matching_uuid_emits_nothing
 run_test test_decline_resume_emits_declined_event
 run_test test_resume_failure_emits_resume_failed_event
+run_test test_resume_failure_leaves_a_removed_session_removed
 
 # ============================================================================
 # Cycle 2: the rotate skill ships and is registered
