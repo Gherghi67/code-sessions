@@ -2563,12 +2563,13 @@ fn rewrite_queue_task(
 /// Rename the Claude Code conversation history directory to match the session rename.
 /// The Claude home dir (`$HOME`), honoring a test-only thread-local override so
 /// tests exercise the projects-dir logic without mutating the process-global
-/// `HOME` (which races parallel tests' env reads). See [`test_home`].
+/// `HOME` (which races parallel tests' env reads). See [`test_home`]. Under
+/// test it is only ever that override: with none scoped it is None, so no
+/// test rename can move transcripts under the real `~/.claude`.
 fn claude_home() -> Option<String> {
     #[cfg(test)]
-    if let Some(h) = test_home::current() {
-        return Some(h.to_string_lossy().into_owned());
-    }
+    return test_home::current().map(|h| h.to_string_lossy().into_owned());
+    #[cfg(not(test))]
     session::home_dir()
 }
 
