@@ -3415,6 +3415,173 @@ test_keychain_export_file_keeps_values_off_argv() {
     _refute_argv_holds "$olog" "$pw" "CS_SECRETS_PASSWORD" || return 1
 }
 
+# ----------------------------------------------------------------------------
+# rename: a session's secrets follow it to a new name. The picker renames the
+# session directory, then runs `rename`; every store keyed by the name moves:
+# the Keychain entries cs:<old>:*, ~/.cs-secrets/<old>.enc and the age state
+# ~/.cs-secrets/sessions/<old>/.
+# ----------------------------------------------------------------------------
+
+# Run cs-secrets on the Keychain backend against the fake security's store.
+_kc_secrets() {
+    PATH="$_RN_BIN:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$TEST_TMPDIR/kc-store" \
+        "$CS_SECRETS_BIN" "$@"
+}
+
+# Session alpha, already renamed to bravo on disk, with a value in all three
+# stores: Keychain K1 (the argv canary) and K2, encrypted-store E1, and a pin
+# list. Leaves the fake security's bin dir in _RN_BIN.
+_seed_renamed_session() {
+    _RN_BIN=$(_make_fake_security)
+    mkdir -p "$CS_SESSIONS_ROOT/bravo/.cs"
+    _RN_CANARY=$(_argv_canary)
+    printf 'value-two' > "$TEST_TMPDIR/v2"
+    printf 'value-enc' > "$TEST_TMPDIR/ve"
+    _kc_secrets --session alpha set K1 < "$_RN_CANARY" >/dev/null 2>&1 || return 1
+    _kc_secrets --session alpha set K2 < "$TEST_TMPDIR/v2" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" --session alpha set E1 < "$TEST_TMPDIR/ve" >/dev/null 2>&1 || return 1
+    mkdir -p "$HOME/.cs-secrets/sessions/alpha"
+    printf 'pin-fingerprint\n' > "$HOME/.cs-secrets/sessions/alpha/age-trusted"
+}
+
+# The names a fake Keychain holds, one service per line, sorted.
+_kc_services() {
+    local f
+    for f in "$TEST_TMPDIR/kc-store"/*; do
+        [ -f "$f" ] && head -1 "$f"
+    done | sort
+}
+
+test_rename_moves_every_store_to_the_new_name() {
+    _seed_renamed_session || { echo "  FAIL: fixture: could not seed alpha's stores"; return 1; }
+    local out rc=0 argvlog="$TEST_TMPDIR/security-argv"
+    out=$(FAKE_SECURITY_ARGVLOG="$argvlog" _kc_secrets --session alpha rename bravo 2>&1) || rc=$?
+    assert_eq "0" "$rc" "rename exits 0: $out" || return 1
+    assert_output_contains "$out" "^Moved the secrets of session 'alpha' to 'bravo'$" "rename says what it did" || return 1
+
+    assert_eq "cs:bravo:K1
+cs:bravo:K2" "$(_kc_services)" "the Keychain holds bravo's entries and none of alpha's" || return 1
+    _kc_secrets --session bravo get K1 > "$TEST_TMPDIR/got" 2>/dev/null \
+        || { echo "  FAIL: bravo's K1 does not read"; return 1; }
+    _get_matches "$TEST_TMPDIR/got" "$_RN_CANARY" || { echo "  FAIL: K1 did not move byte-exact"; return 1; }
+    assert_eq "value-two" "$(_kc_secrets --session bravo get K2 2>&1)" "K2 moved" || return 1
+    _refute_argv_holds "$argvlog" "$_RN_CANARY" "the moved Keychain value" || return 1
+
+    assert_eq "value-enc" "$("$CS_SECRETS_BIN" --session bravo get E1 2>&1)" "the encrypted store moved" || return 1
+    [ ! -e "$HOME/.cs-secrets/alpha.enc" ] || { echo "  FAIL: alpha.enc is still there"; return 1; }
+
+    assert_eq "pin-fingerprint" "$(cat "$HOME/.cs-secrets/sessions/bravo/age-trusted" 2>&1)" "the pin list moved" || return 1
+    [ ! -e "$HOME/.cs-secrets/sessions/alpha" ] || { echo "  FAIL: alpha's age state is still there"; return 1; }
+    assert_eq "" "$(ls -A "$HOME/.cs-secrets" | grep -v -e '^bravo\.enc$' -e '^sessions$' -e '^\.salt$')" \
+        "nothing but bravo's store is left in ~/.cs-secrets (no lock, no marker)" || return 1
+    assert_eq "age-trusted" "$(ls -A "$HOME/.cs-secrets/sessions/bravo")" "bravo's age state holds the pin list only" || return 1
+}
+
+test_rename_refuses_a_new_name_that_has_secrets_or_age_state() {
+    _seed_renamed_session || { echo "  FAIL: fixture: could not seed alpha's stores"; return 1; }
+    local out rc kind
+    for kind in keychain enc age; do
+        rm -rf "$TEST_TMPDIR/kc-store/cs_bravo_"* "$HOME/.cs-secrets/bravo.enc" "$HOME/.cs-secrets/sessions/bravo"
+        case "$kind" in
+            keychain) _kc_secrets --session bravo set B1 < "$TEST_TMPDIR/v2" >/dev/null 2>&1 || return 1 ;;
+            enc) "$CS_SECRETS_BIN" --session bravo set B1 < "$TEST_TMPDIR/v2" >/dev/null 2>&1 || return 1 ;;
+            age) mkdir -p "$HOME/.cs-secrets/sessions/bravo" && printf 'other\n' > "$HOME/.cs-secrets/sessions/bravo/age-trusted" ;;
+        esac
+        rc=0
+        out=$(_kc_secrets --session alpha rename bravo 2>&1) || rc=$?
+        assert_eq "1" "$rc" "rename refuses when bravo has $kind state: $out" || return 1
+        case "$kind" in
+            keychain) assert_eq "Error: Refusing to move the secrets of session 'alpha' to 'bravo': 'bravo' already has Keychain secrets" "$out" "the refusal names the Keychain" || return 1 ;;
+            enc) assert_eq "Error: Refusing to move the secrets of session 'alpha' to 'bravo': $HOME/.cs-secrets/bravo.enc already exists" "$out" "the refusal names the store" || return 1 ;;
+            age) assert_eq "Error: Refusing to move the secrets of session 'alpha' to 'bravo': $HOME/.cs-secrets/sessions/bravo already exists" "$out" "the refusal names the age state" || return 1 ;;
+        esac
+        assert_eq "value-two" "$(_kc_secrets --session alpha get K2 2>&1)" "alpha's Keychain entry stays ($kind)" || return 1
+        assert_eq "value-enc" "$("$CS_SECRETS_BIN" --session alpha get E1 2>&1)" "alpha's encrypted store stays ($kind)" || return 1
+        assert_eq "pin-fingerprint" "$(cat "$HOME/.cs-secrets/sessions/alpha/age-trusted" 2>&1)" "alpha's pins stay ($kind)" || return 1
+        [ ! -e "$HOME/.cs-secrets/.rename.alpha" ] || { echo "  FAIL: a refused rename left a marker ($kind)"; return 1; }
+    done
+    assert_eq "other" "$(cat "$HOME/.cs-secrets/sessions/bravo/age-trusted")" "bravo's own pins are untouched" || return 1
+}
+
+# The secrets follow the session directory, never lead it: while the sessions
+# root still has alpha, its secrets stay alpha's. bravo must be a session too,
+# so nothing is created under a name the root lacks.
+test_rename_refuses_while_the_old_session_directory_exists() {
+    _seed_renamed_session || { echo "  FAIL: fixture: could not seed alpha's stores"; return 1; }
+    local out rc=0
+    mkdir -p "$CS_SESSIONS_ROOT/alpha/.cs"
+    out=$(_kc_secrets --session alpha rename bravo 2>&1) || rc=$?
+    assert_eq "1" "$rc" "rename refuses while alpha is a session: $out" || return 1
+    assert_eq "Error: Refusing to move the secrets of session 'alpha' to 'bravo': $CS_SESSIONS_ROOT/alpha still exists; rename the session directory first" "$out" \
+        "the refusal says the directory moves first" || return 1
+    rm -rf "$CS_SESSIONS_ROOT/alpha" "$CS_SESSIONS_ROOT/bravo"
+    rc=0
+    out=$(_kc_secrets --session alpha rename bravo 2>&1) || rc=$?
+    assert_eq "1" "$rc" "rename refuses a target the sessions root lacks: $out" || return 1
+    assert_eq "Error: No session named 'bravo' in $CS_SESSIONS_ROOT" "$out" "the refusal names the missing session" || return 1
+    assert_eq "cs:alpha:K1
+cs:alpha:K2" "$(_kc_services)" "alpha's Keychain entries stay" || return 1
+    [ -e "$HOME/.cs-secrets/alpha.enc" ] || { echo "  FAIL: alpha.enc moved"; return 1; }
+    [ -e "$HOME/.cs-secrets/sessions/alpha/age-trusted" ] || { echo "  FAIL: alpha's pins moved"; return 1; }
+    [ ! -e "$HOME/.cs-secrets/sessions/bravo" ] || { echo "  FAIL: a refused rename created bravo's age state"; return 1; }
+}
+
+# A move interrupted after its marker: K1 copied but alpha's copy not yet
+# deleted, K2 not copied, the encrypted store moved, one age file moved and
+# one not. The rerun finishes it and leaves nothing under alpha.
+test_rename_rerun_finishes_an_interrupted_move() {
+    _seed_renamed_session || { echo "  FAIL: fixture: could not seed alpha's stores"; return 1; }
+    local out rc=0 sec="$HOME/.cs-secrets"
+    _kc_secrets --session bravo set K1 < "$_RN_CANARY" >/dev/null 2>&1 || return 1
+    mv "$sec/alpha.enc" "$sec/bravo.enc"
+    mkdir -p "$sec/sessions/bravo"
+    mv "$sec/sessions/alpha/age-trusted" "$sec/sessions/bravo/age-trusted"
+    printf 'digest\n' > "$sec/sessions/alpha/age-exported-to"
+    printf 'bravo\n' > "$sec/.rename.alpha"
+    out=$(_kc_secrets --session alpha rename bravo 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the rerun exits 0: $out" || return 1
+    assert_output_contains "$out" "^Moved the secrets of session 'alpha' to 'bravo'$" "the rerun finishes" || return 1
+    assert_eq "cs:bravo:K1
+cs:bravo:K2" "$(_kc_services)" "every Keychain entry is bravo's" || return 1
+    assert_eq "value-two" "$(_kc_secrets --session bravo get K2 2>&1)" "K2 moved" || return 1
+    assert_eq "value-enc" "$("$CS_SECRETS_BIN" --session bravo get E1 2>&1)" "the encrypted store is bravo's" || return 1
+    assert_eq "age-exported-to
+age-trusted" "$(ls -A "$sec/sessions/bravo")" "both age files are bravo's" || return 1
+    [ ! -e "$sec/sessions/alpha" ] || { echo "  FAIL: alpha's age state is still there"; return 1; }
+    [ ! -e "$sec/.rename.alpha" ] || { echo "  FAIL: the marker outlived the finished move"; return 1; }
+}
+
+# On a rerun a value present under both names counts as moved only when it is
+# the same value; a different one is never overwritten.
+test_rename_rerun_refuses_a_value_that_differs_under_both_names() {
+    _seed_renamed_session || { echo "  FAIL: fixture: could not seed alpha's stores"; return 1; }
+    local out rc=0
+    printf 'not-the-same' > "$TEST_TMPDIR/vx"
+    _kc_secrets --session bravo set K2 < "$TEST_TMPDIR/vx" >/dev/null 2>&1 || return 1
+    printf 'bravo\n' > "$HOME/.cs-secrets/.rename.alpha"
+    out=$(_kc_secrets --session alpha rename bravo 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the rerun refuses: $out" || return 1
+    assert_eq "Error: Refusing to move the secrets of session 'alpha' to 'bravo': Keychain secret K2 differs under the two names; nothing was overwritten" "$out" \
+        "the refusal names the secret" || return 1
+    assert_eq "value-two" "$(_kc_secrets --session alpha get K2 2>&1)" "alpha's K2 stays" || return 1
+    assert_eq "not-the-same" "$(_kc_secrets --session bravo get K2 2>&1)" "bravo's K2 stays" || return 1
+    _kc_secrets --session alpha get K1 > "$TEST_TMPDIR/got" 2>/dev/null \
+        || { echo "  FAIL: alpha's K1 was deleted by a refused move"; return 1; }
+}
+
+# The picker runs rename on every rename, mostly for sessions with no secrets:
+# those must not gain a ~/.cs-secrets.
+test_rename_with_nothing_to_move_creates_no_cs_secrets() {
+    local bindir; bindir=$(_make_fake_security)
+    local out rc=0
+    mkdir -p "$CS_SESSIONS_ROOT/bravo/.cs"
+    out=$(PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$TEST_TMPDIR/kc-store" \
+        "$CS_SECRETS_BIN" --session alpha rename bravo 2>&1) || rc=$?
+    assert_eq "0" "$rc" "rename exits 0: $out" || return 1
+    assert_eq "No secrets to move for session: alpha" "$out" "rename says there was nothing" || return 1
+    [ ! -e "$HOME/.cs-secrets" ] || { echo "  FAIL: rename created ~/.cs-secrets"; return 1; }
+}
+
 # ============================================================================
 # Runner
 # ============================================================================
@@ -3585,6 +3752,12 @@ run_test test_first_export_without_ssh_keygen_refuses
 run_test test_export_signs_the_sync_file
 run_test test_export_replaces_a_signature_that_does_not_verify
 run_test test_export_adds_this_machine_to_a_session_that_has_recipients
+run_test test_rename_moves_every_store_to_the_new_name
+run_test test_rename_refuses_a_new_name_that_has_secrets_or_age_state
+run_test test_rename_refuses_while_the_old_session_directory_exists
+run_test test_rename_rerun_finishes_an_interrupted_move
+run_test test_rename_rerun_refuses_a_value_that_differs_under_both_names
+run_test test_rename_with_nothing_to_move_creates_no_cs_secrets
 run_test test_export_refuses_when_this_machines_recipient_file_holds_another_key
 run_test test_export_leaves_a_current_signed_file_alone
 run_test test_later_export_without_ssh_keygen_refuses_and_keeps_the_signed_file
