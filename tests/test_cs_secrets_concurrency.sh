@@ -1136,6 +1136,30 @@ re-encrypts only its own sync file, and copies in git history stay readable to t
     done
 }
 
+# CS_SECRETS_LOCK_TIMEOUT counts whole seconds. Anything but a positive whole
+# number (a word, a fraction, zero) is the default of 10: no arithmetic error,
+# and no giving up before the first wait. PID 1 holds the write lock for the
+# whole test; the three writers wait on it side by side, so the test takes
+# one timeout, not three.
+test_a_lock_timeout_that_is_not_a_positive_whole_number_is_the_default() {
+    local lock="$CS_SESSIONS_ROOT/.secrets-lock.test-session" value pid rc
+    printf '1\n' > "$lock"
+    printf 'value-one' > "$TEST_TMPDIR/v1"
+    for value in abc 1.5 0; do
+        CS_SECRETS_LOCK_TIMEOUT="$value" "$CS_SECRETS_BIN" set K1 < "$TEST_TMPDIR/v1" > "$TEST_TMPDIR/out.$value" 2>&1 &
+        printf '%s\n' "$!" > "$TEST_TMPDIR/pid.$value"
+    done
+    for value in abc 1.5 0; do
+        pid=$(cat "$TEST_TMPDIR/pid.$value")
+        rc=0
+        wait "$pid" || rc=$?
+        assert_eq "1" "$rc" "set with CS_SECRETS_LOCK_TIMEOUT=$value exits 1 once it times out" || return 1
+        assert_eq "Error: timed out after 10s acquiring the secrets write lock for session 'test-session' (held by PID 1). If no such process is running, remove: $lock
+Error: Refusing to change the secrets of session 'test-session': could not acquire the secrets write lock" \
+            "$(cat "$TEST_TMPDIR/out.$value")" "CS_SECRETS_LOCK_TIMEOUT=$value waits the default 10 seconds" || return 1
+    done
+}
+
 run_test test_encrypted_salt_write_is_atomic_under_concurrency
 run_test test_encrypted_signal_terminates_writer_mid_critical_section
 run_test test_encrypted_purge_serialized_with_concurrent_store
@@ -1154,5 +1178,6 @@ run_test test_a_term_keeps_the_write_lock_until_purge_has_removed_the_age_state
 run_test test_a_command_waiting_on_the_age_lock_takes_it_once_a_rename_removed_its_directory
 run_test test_a_command_waiting_on_the_age_lock_through_a_rename_refuses_the_old_name
 run_test test_age_add_and_remove_wait_while_an_export_holds_the_age_lock
+run_test test_a_lock_timeout_that_is_not_a_positive_whole_number_is_the_default
 
 report_results
