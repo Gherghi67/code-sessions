@@ -30,6 +30,11 @@ unset CLAUDE_SESSION_NAME CLAUDE_SESSION_DIR CLAUDE_SESSION_META_DIR CS_SECRETS_
 # CS_CLAUDE_DIR outranks HOME for Claude Code's settings.json, and a
 # SessionStart hook appends the session it ran for to CLAUDE_ENV_FILE.
 unset CS_CLAUDE_DIR CLAUDE_ENV_FILE 2>/dev/null || true
+# CLAUDE_PID and CS_LEAD_PID name the claude a hook fires for and the cs that
+# launched it: inherited, a hook under test reads the caller's own process, so
+# a suite run by a tmux teammate sees a teammate and one run by a lead sees
+# the lead. A test that models either sets it itself.
+unset CLAUDE_PID CS_LEAD_PID 2>/dev/null || true
 
 # --- State ---
 TESTS_RUN=0
