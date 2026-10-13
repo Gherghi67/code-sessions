@@ -3,9 +3,10 @@
 
 # One line per '## ' heading: the heading's byte offset, a space, the heading.
 # LC_ALL=C makes awk's length() count bytes, so offsets survive multibyte text
-# (real headings carry an em dash).
+# (real headings carry an em dash). env hands the locale to awk alone; the
+# shell's own locale is never changed.
 _narrative_headings() {  # file
-    LC_ALL=C awk 'BEGIN { off = 0 } { if (substr($0, 1, 3) == "## ") print off, $0; off += length($0) + 1 }' "$1"
+    env LC_ALL=C awk 'BEGIN { off = 0 } { if (substr($0, 1, 3) == "## ") print off, $0; off += length($0) + 1 }' "$1"
 }
 
 # Byte offset of the first heading to KEEP: the earliest one with at most KEEP

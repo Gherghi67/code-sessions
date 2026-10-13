@@ -1205,7 +1205,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "c9d66d0346696550824762b35abc952452f6b2c153670f8de4a98a28914c8576  bin/cs"
+    "781b08d7ca975fa2aea67177069e1928eb627dda25d9f8e33759e6af7dda2cfb  bin/cs"
     "3b4626c505845d0e94961cd06e3e5400c6f497340ff93dadf88770f02ff22524  bin/cs-secrets"
     "4798f2d5b9ebdf029c814e735856f4618e99c2e722d6308279497bc942bd2966  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
