@@ -1430,6 +1430,26 @@ test_the_way_back_never_links_a_nested_session_into_the_profile() {
     assert_not_exists "$PROFILE/sessions/inner/written-from-cs.txt" "a write in cs's copy landed in the profile"
 }
 
+# The same when the run does not name inner at all: the link is left leading
+# into the profile and named, not pointed at a cs copy that does not exist.
+test_the_way_back_names_a_link_into_a_session_it_does_not_copy() {
+    make_fixture
+    make_nested
+    run_move --session outer --session inner --apply || { echo "$OUT"; return 1; }
+    local status=0
+    python3 "$BACK" --apply --session outer > "$TEST_TMPDIR/back.log" 2>&1 || status=$?
+    assert_eq 1 "$status" || { cat "$TEST_TMPDIR/back.log"; return 1; }
+    assert_file_contains "$TEST_TMPDIR/back.log" \
+        '! links into the code-sessions profile left as they are, so cs would write there through them: .*sessions/inner' \
+        || { cat "$TEST_TMPDIR/back.log"; return 1; }
+    assert_eq "$PROFILE/sessions/inner" "$(readlink "$CSROOT/outer-ccs/inner")" || return 1
+
+    python3 "$BACK" --apply --session inner > "$TEST_TMPDIR/back.log" 2>&1 || { cat "$TEST_TMPDIR/back.log"; return 1; }
+    python3 "$BACK" --apply --session outer > "$TEST_TMPDIR/back.log" 2>&1 || { cat "$TEST_TMPDIR/back.log"; return 1; }
+    assert_eq "$CSROOT/inner-ccs" "$(readlink "$CSROOT/outer-ccs/inner")" || return 1
+    assert_dir "$CSROOT/inner-ccs"
+}
+
 # A Python virtual environment as python -m venv, uv and an editable install
 # leave it: its folder named by absolute path in pyvenv.cfg, bin/activate, each
 # script's shebang, and the project's in a .pth file and direct_url.json.
@@ -2341,6 +2361,7 @@ run_test test_all_copies_every_session_and_ends_with_a_summary
 run_test test_all_still_refuses_a_name_code_sessions_uses_for_another_session
 run_test test_all_and_session_together_is_an_error
 run_test test_the_way_back_never_links_a_nested_session_into_the_profile
+run_test test_the_way_back_names_a_link_into_a_session_it_does_not_copy
 run_test test_a_python_environment_in_the_copy_names_the_copy
 run_test test_a_session_open_in_a_feature_inside_its_project_is_named
 run_test test_a_nested_layout_that_changes_after_the_copy

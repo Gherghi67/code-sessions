@@ -269,16 +269,18 @@ class Copier:
         return self.records[base.cs_name]
 
     def roots(self):
-        """The folder of each code-sessions session that has a cs name, by every spelling, -> cs's copy of it.
+        """The folder of each code-sessions session cs has a copy of, or this run copies, by every spelling, -> that copy.
 
         Not the family's alone: a session folder inside another one's is a link
         in the outer copy (cs-to-code-sessions.py puts it there), which must
-        lead to cs's copy of the inner session, never into the profile.
+        lead to cs's copy of the inner session, never into the profile. A link
+        into any other session is left as it is, for relink to name.
         """
         real_root = os.path.realpath(self.sessions_root)
         roots = {}
         for other in self.plans:
-            if other.cs_name:
+            if other.cs_name and not other.gone and (
+                    other.cs_state == "ours" or (other.selected and not other.skip)):
                 for spelling in (other.path, other.source, os.path.join(real_root, other.name)):
                     roots[spelling] = self.cs_dir(other)
         return roots
