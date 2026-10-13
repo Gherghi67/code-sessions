@@ -1468,6 +1468,38 @@ test_age_add_refuses_what_is_not_a_key() {
     done
 }
 
+# A recipient is named after its key file, so two collaborators' keys can both
+# arrive as laptop.pub. The second `age add` refuses to replace the first
+# recipient, naming the file and both keys: replacing it would leave the first
+# collaborator unable to decrypt. Adding the same key again changes nothing.
+test_age_add_refuses_a_different_key_under_a_recipient_name_in_use() {
+    _use_real_age || return $?
+    local dir="$CS_SESSIONS_ROOT/test-session/.cs/age-recipients" out rc=0 k1 k2 fp2
+    mkdir -p "$TEST_TMPDIR/first" "$TEST_TMPDIR/second"
+    age-keygen 2>/dev/null | age-keygen -y > "$TEST_TMPDIR/first/laptop.pub" || { echo "  FAIL: fixture: age-keygen"; return 1; }
+    age-keygen 2>/dev/null | age-keygen -y > "$TEST_TMPDIR/second/laptop.pub" || { echo "  FAIL: fixture: age-keygen"; return 1; }
+    k1=$(cat "$TEST_TMPDIR/first/laptop.pub"); k2=$(cat "$TEST_TMPDIR/second/laptop.pub")
+    fp2=$(printf '%s' "$k2" | shasum -a 256 | cut -d' ' -f1)
+    "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/first/laptop.pub" >/dev/null 2>&1 || { echo "  FAIL: fixture: the first age add failed"; return 1; }
+
+    out=$("$CS_SECRETS_BIN" age add "$TEST_TMPDIR/second/laptop.pub" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a second key under the name laptop is refused" || return 1
+    assert_eq "Error: refusing to replace recipient laptop: $dir/laptop.pub holds $k1, not the key given, $k2. Give the key file another name, or run 'cs -secrets age remove laptop' first." \
+        "$out" "the refusal names the file and both keys" || return 1
+    assert_eq "$k1" "$(cat "$dir/laptop.pub")" "laptop.pub still holds the first key" || return 1
+    if grep -qxF "$fp2" "$HOME/.cs-secrets/sessions/test-session/age-trusted"; then
+        echo "  FAIL: the refused key was pinned"
+        return 1
+    fi
+
+    rc=0
+    out=$("$CS_SECRETS_BIN" age add "$TEST_TMPDIR/first/laptop.pub" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "adding the same key again succeeds" || return 1
+    assert_eq "Added recipient: laptop
+Public key: $k1" "$out" "adding the same key again says what it holds" || return 1
+    assert_eq "laptop.pub" "$(ls "$dir")" "no second recipient file is written" || return 1
+}
+
 # `age add` never offers to download age: with no age binary it fails at once,
 # pointing at `age init`, which is where the download is offered. It prompts
 # for nothing, reaches for no network, and writes no recipient, no pin and no
@@ -4258,6 +4290,7 @@ run_test test_export_on_a_fresh_clone_pins_nothing
 run_test test_age_remove_drops_the_pin
 run_test test_age_add_takes_an_ssh_ed25519_key_file
 run_test test_age_add_takes_a_raw_ssh_ed25519_key
+run_test test_age_add_refuses_a_different_key_under_a_recipient_name_in_use
 run_test test_age_add_without_age_points_at_age_init
 run_test test_age_add_refuses_what_is_not_a_key
 run_test test_import_file_reads_a_file_encrypted_to_this_machines_ssh_key
