@@ -4729,6 +4729,11 @@ _fuse_merge_blocked() {  # feature_meta base_meta rel dst_rel
     [ -e "$dst" ] && [ ! -f "$dst" ]
 }
 
+# Where a feature's .cs can hold a log, relative to it, in the order
+# fuse_session_records appends them to the base's: cs wrote at logs/ until
+# the log moved to local/, so the lines at logs/ are the earlier ones.
+CS_FUSED_LOGS="logs/session.log local/session.log"
+
 # The files of a feature's .cs that _fuse_plan's walk passes over: cs's
 # machine-local bookkeeping, which goes with the worktree, and the log, which
 # _fuse_plan checks apart: the fuse appends it to the base's machine-local
@@ -4769,16 +4774,15 @@ _fuse_plan() {  # feature_meta base_meta out
         printf 'conflict \0' >> "$3"
         return 0
     fi
-    # The fuse reads the log at local/session.log, else at logs/session.log,
-    # and appends it to the base's machine-local one. A locked vault has no
-    # machine-local log to check against; the retire refuses it by name.
+    # The fuse appends each log the feature has (CS_FUSED_LOGS) to the base's
+    # machine-local one. A locked vault has no machine-local log to check
+    # against; the retire refuses it by name.
     if logdir=$(cs_private_dir "$2"); then
-        for rel in local/session.log logs/session.log; do
+        for rel in $CS_FUSED_LOGS; do
             [ -e "$1/$rel" ] || [ -L "$1/$rel" ] || continue
             if _fuse_merge_blocked "$1" "$2" "$rel" "${logdir#"$2"/}/session.log"; then
                 printf 'conflict %s\0' "$rel" >> "$3"
             fi
-            break
         done
     fi
     list=$(mktemp "${TMPDIR:-/tmp}/cs-fuse-list.XXXXXX") || return 1
@@ -4854,15 +4858,16 @@ fuse_session_records() {
     local f base
 
     # Worktrees never run migrate_session, so a task branch created before the
-    # log moved to .cs/local/ still keeps its audit trail at .cs/logs/; fuse
-    # whichever the worktree has into the base's machine-local log.
+    # log moved to .cs/local/ still keeps its audit trail at .cs/logs/, and
+    # one used since has a log at .cs/local/ as well; fuse each the worktree
+    # has into the base's machine-local log, the one at .cs/logs/ first: its
+    # lines are the earlier ones.
     # An encrypted base keeps its log behind .cs/private; a locked one cannot
     # take the log, and .cs/local must not take it in plaintext instead.
     # Resolved before any write, so that refusal leaves the base untouched.
-    local candidate srclog="" dstlog=""
-    for candidate in "$src/local/session.log" "$src/logs/session.log"; do
-        if [ -f "$candidate" ]; then
-            srclog="$candidate"
+    local srclog dstlog=""
+    for srclog in $CS_FUSED_LOGS; do
+        if [ -f "$src/$srclog" ]; then
             dstlog=$(cs_private_dir "$dst") \
                 || error "cannot fuse the worktree's log: $dst/private is locked. Mount it, then retry."
             break
@@ -4870,10 +4875,11 @@ fuse_session_records() {
     done
 
     _append_jsonl "$src/timeline.jsonl" "$dst/timeline.jsonl" || return 1
-    if [ -n "$srclog" ]; then
+    for srclog in $CS_FUSED_LOGS; do
+        [ -f "$src/$srclog" ] || continue
         cs_mkdir_inside "$dstlog" || return 1
-        cs_append_inside "$dstlog/session.log" _blank_line_then_cat "$srclog" || return 1
-    fi
+        cs_append_inside "$dstlog/session.log" _blank_line_then_cat "$src/$srclog" || return 1
+    done
 
     cs_mkdir_inside "$dst/memory" || return 1
     for f in "$src"/memory/narrative.*.md; do
