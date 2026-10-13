@@ -432,6 +432,30 @@ test_launch_stops_loudly_when_state_cannot_be_written() {
     [ ! -f "$TEST_TMPDIR/claude-args" ] || { echo "  FAIL: claude must not launch unrecorded"; return 1; }
 }
 
+# cs writes state for a session whose .cs it has made: it makes the missing
+# .cs/local there, and leaves one that exists as it is. A session removed
+# under a running cs has no .cs, and the write then fails naming the directory
+# instead of building the session again from its path.
+test_state_write_makes_local_only_inside_an_existing_cs() {
+    local root="$TEST_TMPDIR/root" out rc=0
+    mkdir -p "$root/live/.cs"
+    _state_write() {  # state, key, value
+        "$BASH" -c '. "$1/02-shared.sh"; . "$1/05-term.sh"; . "$1/40-state.sh"; _set_local_state "$2" "$3" "$4"' _ \
+            "$SCRIPT_DIR/../lib" "$@" 2>&1
+    }
+    out=$(_state_write "$root/live/.cs/local/state" cs_mode tracked) || rc=$?
+    assert_eq "0" "$rc" "the first write makes .cs/local" || return 1
+    rc=0
+    out=$(_state_write "$root/live/.cs/local/state" cs_base live) || rc=$?
+    assert_eq "0" "$rc" "a write into an existing .cs/local succeeds" || return 1
+    assert_eq "cs_mode: tracked"$'\n'"cs_base: live" "$(cat "$root/live/.cs/local/state")" "both keys are recorded" || return 1
+    rc=0
+    out=$(_state_write "$root/gone/.cs/local/state" cs_mode tracked) || rc=$?
+    assert_eq "1" "$rc" "a write for a removed session fails" || return 1
+    assert_eq "Error: could not create $root/gone/.cs/local" "$out" "the failure names the directory" || return 1
+    assert_not_exists "$root/gone" "the removed session is not made again" || return 1
+}
+
 # ============================================================================
 # Cycle 2b: state and .gitattributes rewrites use a unique temp name, keep the
 # destination's mode, and serialise on a lock
@@ -1499,6 +1523,7 @@ run_test test_migration_moves_session_log_into_private
 run_test test_clone_with_a_readme_color_that_is_not_a_color_gets_a_fresh_one
 run_test test_launch_ignores_a_recorded_color_that_is_not_a_color
 run_test test_launch_stops_loudly_when_state_cannot_be_written
+run_test test_state_write_makes_local_only_inside_an_existing_cs
 run_test test_state_and_gitattributes_rewrites_leave_tmp_siblings_alone_and_keep_modes
 run_test test_lock_refuses_a_path_that_is_not_a_regular_file
 run_test test_lock_takers_never_hold_it_at_once
