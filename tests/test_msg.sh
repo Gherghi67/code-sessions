@@ -471,6 +471,32 @@ test_queue_accept_refuses_a_kind_that_only_trims_to_task() {
     assert_not_exists "$(RCV_META)/local/queue.accepted" "no receipt recorded" || return 1
 }
 
+# An accept names one mail. Two documents carrying the same id leave the
+# command unable to say which body the user agreed to, so it queues neither.
+test_queue_accept_refuses_an_id_two_mails_share() {
+    _forge_mail 0000000001-first '{"id":"dup2","ts":1,"from":"peer","kind":"task","body":"task body one"}'
+    _forge_mail 0000000002-second '{"id":"dup2","ts":2,"from":"peer","kind":"task","body":"task body two"}'
+    local out rc=0
+    out=$(rcv -queue accept dup2 2>&1) || rc=$?
+    assert_eq "1" "$rc" "accept exits 1" || return 1
+    assert_eq "Error: 2 mails in this session's mailbox carry the id dup2; cs -queue accept cannot tell which one was meant" \
+        "$out" "the refusal counts the mails" || return 1
+    assert_eq "0" "$(RQUEUE_LEN)" "nothing queued" || return 1
+    assert_not_exists "$(RCV_META)/local/queue.accepted" "no receipt recorded" || return 1
+}
+
+# A message id is at most 40 characters of A-Z a-z 0-9 . _ -, which is all the
+# digest ever offers; a longer one is refused even when a mail carries it.
+test_queue_accept_refuses_an_id_longer_than_the_digest_shows() {
+    local long; long=$(printf 'a%.0s' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41)
+    _forge_mail 0000000001-long "{\"id\":\"$long\",\"ts\":1,\"from\":\"peer\",\"kind\":\"task\",\"body\":\"shown task\"}"
+    local out rc=0
+    out=$(rcv -queue accept "$long" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "accept exits 1" || return 1
+    assert_eq "Error: cs -queue accept: $long is not a message id" "$out" "the refusal names the id" || return 1
+    assert_eq "0" "$(RQUEUE_LEN)" "nothing queued" || return 1
+}
+
 test_queue_accept_refuses_an_unknown_id() {
     local out rc=0
     out=$(rcv -queue accept no-such-id 2>&1) || rc=$?
@@ -583,6 +609,22 @@ test_read_shows_how_to_accept_a_task() {
     local id; id=$(jq -r .id "$(FIRST_MSG)")
     local out; out=$(rcv -msg 2>&1) || return 1
     assert_output_contains "$out" "cs -queue accept $id" "task line carries its accept command" || return 1
+}
+
+# The listing offers an accept command only for an id the command takes whole.
+# An id with a space would be typed as two words, and the first could name
+# another mail; a 41-character one is past what accept takes.
+test_read_offers_no_accept_for_an_id_accept_cannot_take() {
+    local long; long=$(printf 'b%.0s' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41)
+    _forge_mail 0000000001-spaced '{"id":"abc def","ts":1,"from":"peer","kind":"task","body":"spaced id task"}'
+    _forge_mail 0000000002-long "{\"id\":\"$long\",\"ts\":2,\"from\":\"peer\",\"kind\":\"task\",\"body\":\"long id task\"}"
+    _forge_mail 0000000003-newline '{"id":"good\n","ts":3,"from":"peer","kind":"task","body":"newline id task"}'
+    _forge_mail 0000000004-plain '{"id":"plain-1","ts":4,"from":"peer","kind":"task","body":"plain id task"}'
+    local out; out=$(rcv -msg 2>&1) || return 1
+    assert_eq "1" "$(grep -c 'cs -queue accept' <<< "$(printf '%s\n' "$out" | tail -n +2)")" \
+        "one accept command among four task lines" || return 1
+    assert_output_contains "$out" "plain id task  (accept into the queue: cs -queue accept plain-1)$" \
+        "the usable id keeps its command" || return 1
 }
 
 test_task_kind_rejects_multiline_body() {
@@ -831,6 +873,8 @@ run_test test_queue_accept_queues_a_mailed_task_by_id
 run_test test_queue_accept_finds_a_task_already_read
 run_test test_queue_accept_refuses_a_text_message
 run_test test_queue_accept_refuses_a_kind_that_only_trims_to_task
+run_test test_queue_accept_refuses_an_id_two_mails_share
+run_test test_queue_accept_refuses_an_id_longer_than_the_digest_shows
 run_test test_queue_accept_refuses_an_unknown_id
 run_test test_queue_accept_refuses_a_second_accept
 run_test test_queue_accept_refuses_while_another_holds_its_lock
@@ -841,6 +885,7 @@ run_test test_queue_accept_refuses_on_a_receipt_without_a_queued_copy
 run_test test_queue_accept_writes_the_receipt_before_the_queued_copy
 run_test test_queue_accept_serialises_concurrent_accepts
 run_test test_read_shows_how_to_accept_a_task
+run_test test_read_offers_no_accept_for_an_id_accept_cannot_take
 run_test test_task_kind_rejects_multiline_body
 run_test test_queue_add_from_another_session_is_sent_as_task_mail
 run_test test_queue_start_from_another_session_refuses
@@ -1159,6 +1204,23 @@ test_task_kind_inlined_as_untrusted_with_its_accept_command() {
     assert_output_not_contains "$out" "queued task" "no longer described as queued" || return 1
 }
 
+# The digest shows a message id cut to 40 characters and with other bytes
+# replaced, so the id it shows can be another mail's. It offers the accept
+# command only for an id it shows unchanged; for any other it says the task
+# cannot be accepted by that id.
+test_digest_offers_no_accept_for_an_id_it_cannot_show_whole() {
+    local cut; cut=$(printf 'c%.0s' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40)
+    _forge_mail 0000000001-long "{\"id\":\"${cut}c\",\"ts\":1,\"from\":\"peer\",\"kind\":\"task\",\"body\":\"long id task\"}"
+    _forge_mail 0000000002-spaced '{"id":"abc def","ts":2,"from":"peer","kind":"task","body":"spaced id task"}'
+    _forge_mail 0000000003-newline '{"id":"good\n","ts":3,"from":"peer","kind":"task","body":"newline id task"}'
+    _forge_mail 0000000004-plain '{"id":"plain-1","ts":4,"from":"peer","kind":"task","body":"plain id task"}'
+    local out; out=$(_prompt_as_receiver "hello" | jq -r '.hookSpecificOutput.additionalContext') || return 1
+    assert_eq "  a task proposed by peer, not queued: it enters the queue only when the user accepts it, via cs -queue accept plain-1" \
+        "$(grep 'cs -queue accept' <<< "$out")" "only the id shown whole carries an accept command" || return 1
+    assert_eq "3" "$(grep -c '^  a task proposed by peer, not queued: its message id is not one cs -queue accept takes, so it cannot be accepted$' <<< "$out")" \
+        "each of the other three says it cannot be accepted" || return 1
+}
+
 # Bounded: at most 5 bodies inline, with an "N more" overflow line and the total.
 # Seeded as files rather than via seven `cs -msg` runs: document names carry the
 # sending process's pid unpadded, so same-second sends from different pids sort
@@ -1352,6 +1414,7 @@ run_test test_mail_tag_ids_random_per_block
 run_test test_mail_tag_attributes_sanitised
 run_test test_task_kind_longer_than_the_preview_withholds_the_accept_command
 run_test test_task_kind_inlined_as_untrusted_with_its_accept_command
+run_test test_digest_offers_no_accept_for_an_id_it_cannot_show_whole
 run_test test_mail_bounded_at_five
 run_test test_mail_digest_bounds_messages_not_files
 run_test test_mail_digest_reports_when_nothing_parses
