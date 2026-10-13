@@ -54,6 +54,11 @@ land_feature() {  # base task
     printf '%s\n' "$sha"
 }
 
+# Field positions in a -features --porcelain record.
+_feat_field() {  # line field_number
+    printf '%s\n' "$1" | awk -F'\t' -v n="$2" '{print $n}'
+}
+
 # Build a ps seam for the ownership walk. Process inspection may be restricted
 # in a test sandbox; production uses BSD ps, while these integration tests
 # inject the one parent edge relevant to the scenario.
@@ -1853,11 +1858,12 @@ test_retire_ignored_mode_fuses_records() {
     merge_status=$?
     assert_eq "0" "$merge_status" "retire exits 0" \
         || { echo "  retire output: $output"; return 1; }
-    assert_output_contains "$output" "memory/note-base.md already exists in the base; skipped" \
-        "memory collision warned" || return 1
+    assert_output_contains "$output" "memory/note-base.md was edited in the feature and not in the base; the feature's version is now in the base" \
+        "an inherited topic the feature edited is named" || return 1
     assert_output_not_contains "$output" "note-shared.md" \
         "a topic byte-identical to the base's is skipped silently" || return 1
-    assert_eq "base note" "$(cat "$base_dir/.cs/memory/note-base.md")" "memory collision keeps base copy" || return 1
+    assert_eq "task version" "$(cat "$base_dir/.cs/memory/note-base.md")" \
+        "the feature's edit replaces the copy the base left unchanged" || return 1
     assert_file_contains "$base_dir/.cs/timeline.jsonl" "from-task" "timeline appended" || return 1
     assert_file_exists "$base_dir/.cs/memory/note-task.md" "memory file copied" || return 1
     assert_file_exists "$base_dir/.cs/memory/note-base.md" "base memory untouched" || return 1
@@ -2049,6 +2055,39 @@ test_retire_ignored_mode_brings_back_a_deleted_topic_the_feature_edited() {
 }
 
 run_test test_retire_ignored_mode_brings_back_a_deleted_topic_the_feature_edited
+
+# A topic both sides edited cannot go back without overwriting one edit: the
+# retire refuses before it removes anything, naming the topic, and the features
+# screen counts it as a file the removal would destroy.
+test_retire_ignored_mode_refuses_a_topic_both_sides_edited() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output line status=0
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    echo "kept topic, feature edit" > "$wt/.cs/memory/kept.md"
+    echo "kept topic, base edit" > "$base_dir/.cs/memory/kept.md"
+    echo "feature topic" > "$wt/.cs/memory/new.md"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    line=$("$CS_BIN" proj -features --porcelain 2>&1)
+    assert_eq "1" "$(_feat_field "$line" 7)" "one file at risk: $line" || return 1
+    assert_eq "untracked" "$(_feat_field "$line" 10)" "state: $line" || return 1
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_output_contains "$output" "The feature's session records hold files the base also changed, so the record fuse cannot carry them without overwriting the base's copy; nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:
+.cs/memory/kept.md" "the refusal names the topic" || return 1
+    assert_eq "kept topic, feature edit" "$(cat "$wt/.cs/memory/kept.md")" "the feature's edit is still there" || return 1
+    assert_eq "kept topic, base edit" "$(cat "$base_dir/.cs/memory/kept.md")" "the base's edit is untouched" || return 1
+    assert_file_not_exists "$base_dir/.cs/memory/new.md" "nothing was fused" || return 1
+    # Positive control: once the user settles the topic, the same worktree retires.
+    cp "$wt/.cs/memory/kept.md" "$base_dir/.cs/memory/kept.md"
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire proceeds: $output" || return 1
+    assert_eq "feature topic" "$(cat "$base_dir/.cs/memory/new.md")" "the feature's topic lands" || return 1
+}
+
+run_test test_retire_ignored_mode_refuses_a_topic_both_sides_edited
 
 # The record of what the feature inherited is what tells a deleted topic from
 # a new one. A record that is there and cannot be read must stop the fuse:
@@ -2456,11 +2495,6 @@ test_features_excludes_a_lookalike_whose_name_prefixes_a_real_one() {
 }
 
 run_test test_features_excludes_a_lookalike_whose_name_prefixes_a_real_one
-
-# Field positions in a -features --porcelain record.
-_feat_field() {  # line field_number
-    printf '%s\n' "$1" | awk -F'\t' -v n="$2" '{print $n}'
-}
 
 test_features_untracked_is_not_reported_as_dirty() {
     # _tree_is_dirty deliberately excludes untracked files: a worktree holding
