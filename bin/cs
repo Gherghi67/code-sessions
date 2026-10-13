@@ -4930,6 +4930,10 @@ _fuse_plan() {  # feature_meta base_meta out
         printf 'conflict \0' >> "$3"
         return 0
     fi
+    # A link at local/ would have the fuse read the log from wherever it
+    # leads. The walk below prunes local/ and so never sees it; it is named
+    # here. A link at logs/ the walk names like any other link.
+    [ ! -L "$1/local" ] || printf 'conflict local\0' >> "$3"
     # The fuse appends each log the feature has (CS_FUSED_LOGS) to the base's
     # machine-local one. A locked vault has no machine-local log to check
     # against; the retire refuses it by name.
