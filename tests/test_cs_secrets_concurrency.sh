@@ -926,6 +926,61 @@ SHIM
 test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
 }
 
+# An age add or an export that waits on a session's age lock while a rename
+# of that session removes the age directory the lock lives in takes the lock
+# once the rename is done: the wait makes the directory again before each
+# try. The directory goes in one step, lock and all, as the rename's release
+# and rmdir leave it; a two-step removal could hand the waiter the lock in
+# between. PID 1 stands for the rename holding the lock, and the sleep shim's
+# marker shows the command is waiting on it.
+test_a_command_waiting_on_the_age_lock_takes_it_once_a_rename_removed_its_directory() {
+    local shim="$TEST_TMPDIR/sleep-shim" age="$HOME/.cs-secrets/sessions/bravo" real_sleep cmd pid rc waited expected
+    local key="age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqs3290gq"
+    real_sleep=$(command -v sleep)
+    mkdir -p "$CS_SESSIONS_ROOT/bravo/.cs" "$shim"
+    cat > "$shim/sleep" <<SHIM
+#!/usr/bin/env bash
+: > "$TEST_TMPDIR/waiting"
+exec "$real_sleep" "\$@"
+SHIM
+    chmod +x "$shim/sleep"
+    printf '%s\n' "$key" > "$TEST_TMPDIR/laptop.pub"
+    printf 'value-one' > "$TEST_TMPDIR/v1"
+    CLAUDE_SESSION_NAME=bravo "$CS_SECRETS_BIN" set K1 < "$TEST_TMPDIR/v1" >/dev/null 2>&1 || { echo "  FAIL: fixture: set K1 failed"; return 1; }
+
+    for cmd in age-add export-file; do
+        rm -rf "$age" "$TEST_TMPDIR/gone" "$TEST_TMPDIR/waiting"
+        mkdir -p "$age"
+        printf '1\n' > "$age/.age.lock"
+        case "$cmd" in
+            age-add)
+                PATH="$shim:$PATH" CS_SECRETS_LOCK_TIMEOUT=3 CLAUDE_SESSION_NAME=bravo \
+                    "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/laptop.pub" > "$TEST_TMPDIR/out" 2>&1 &
+                expected="Added recipient: laptop
+Public key: $key" ;;
+            export-file)
+                PATH="$shim:$PATH" CS_SECRETS_LOCK_TIMEOUT=3 CLAUDE_SESSION_NAME=bravo \
+                    "$CS_SECRETS_BIN" export-file "$TEST_TMPDIR/sync.enc" > "$TEST_TMPDIR/out" 2>&1 &
+                expected="Exported 1 secret(s) to: $TEST_TMPDIR/sync.enc (password encrypted)" ;;
+        esac
+        pid=$!
+        waited=0
+        until [ -f "$TEST_TMPDIR/waiting" ]; do sleep 0.05; waited=$((waited + 1)); [ "$waited" -gt 400 ] && break; done
+        [ -f "$TEST_TMPDIR/waiting" ] || { echo "  FAIL: fixture: $cmd never waited on the age lock"; kill "$pid"; wait "$pid"; return 1; }
+
+        # The rename releases its lock and removes the directory.
+        mv "$age" "$TEST_TMPDIR/gone"
+        rc=0
+        wait "$pid" || rc=$?
+
+        assert_eq "0" "$rc" "$cmd exits 0: $(cat "$TEST_TMPDIR/out")" || return 1
+        assert_eq "$expected" "$(cat "$TEST_TMPDIR/out")" "$cmd says what it did" || return 1
+        assert_not_exists "$age/.age.lock" "$cmd releases the age lock" || return 1
+    done
+    assert_eq "bravo
+test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
+}
+
 run_test test_encrypted_salt_write_is_atomic_under_concurrency
 run_test test_encrypted_signal_terminates_writer_mid_critical_section
 run_test test_encrypted_purge_serialized_with_concurrent_store
@@ -941,5 +996,6 @@ run_test test_a_rename_that_waited_on_the_write_lock_refuses_over_a_move_begun_m
 run_test test_a_term_to_a_rename_puts_back_what_it_moved
 run_test test_a_signal_after_every_value_moved_does_not_end_a_rename_nonzero
 run_test test_a_term_keeps_the_write_lock_until_purge_has_removed_the_age_state
+run_test test_a_command_waiting_on_the_age_lock_takes_it_once_a_rename_removed_its_directory
 
 report_results
