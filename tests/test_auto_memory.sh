@@ -410,6 +410,27 @@ test_migration_derives_created_date() {
         "Should derive created date from Started line" || return 1
 }
 
+# A README with no Started line that git never recorded takes its created date
+# from its mtime. Homebrew's gnubin puts GNU stat first on a Mac's PATH, and
+# the date is still read in the dialect that stat speaks, not the one OSTYPE
+# names.
+test_migration_dates_an_untracked_readme_by_mtime_with_gnu_stat_first_on_a_mac() {
+    local gnubin session_dir="$CS_SESSIONS_ROOT/test-old"
+    gnubin=$(_gnu_stat_first_dir) || { echo "    SKIP: no GNU stat on this machine"; return 77; }
+    create_old_session "test-old"
+    (cd "$session_dir" && rm -rf .git && git init -q -b main && git config user.email t@t \
+        && git config user.name T && git add CLAUDE.md && git commit -q -m "init without the README")
+    sed -i.bak '/^\*\*Started:\*\*/d' "$session_dir/.cs/README.md" && rm -f "$session_dir/.cs/README.md.bak"
+    touch -t 202001020304 "$session_dir/.cs/README.md"
+    assert_eq "" "$(git -C "$session_dir" log --diff-filter=A --format=%as -- .cs/README.md)" \
+        "git holds no date for the README" || return 1
+
+    PATH="$gnubin:$PATH" OSTYPE=darwin "$CS_BIN" test-old <<< "" >/dev/null 2>&1 || true
+
+    assert_eq "created: 2020-01-02" "$(grep '^created:' "$session_dir/.cs/README.md")" \
+        "the created date is the README's mtime" || return 1
+}
+
 test_migration_adds_aliases_from_session_name() {
     create_old_session "test-old"
     "$CS_BIN" test-old <<< "" 2>&1 || true
@@ -1847,6 +1868,7 @@ run_test test_flat_layout_readme_linked_out_of_the_session_refuses_open
 run_test test_migration_adds_frontmatter_to_old_readme
 run_test test_migration_preserves_existing_content
 run_test test_migration_derives_created_date
+run_test test_migration_dates_an_untracked_readme_by_mtime_with_gnu_stat_first_on_a_mac
 run_test test_migration_adds_aliases_from_session_name
 run_test test_migration_skips_if_frontmatter_exists
 

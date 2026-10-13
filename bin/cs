@@ -2583,33 +2583,33 @@ _lock_collision_menu() {
     esac
 }
 
-# Acquire a PID-based session lock to prevent concurrent access. The lock is
-# taken by creating the file, which the filesystem does for exactly one
-# process (noclobber: the open fails when the file exists), never by a check
-# followed by a write: two opens started together both saw no lock, both
-# wrote their pid, and both launched a claude on one UUID. A loser reads the
-# winner's pid and takes the live-lock path; a lock whose holder is dead is
-# removed and the create tried again, with a bound so a lock that keeps
-# reappearing cannot spin forever. Creating and reclaiming take turns under
-# the .cs/session.mutex.lock mutex (_cs_lock): an opener that read a dead pid and then removed
-# the file could otherwise delete the live lock another opener had just made
-# in its place, and both would launch. A cs from before that mutex took a
-# session.lock.d directory instead, and the two do not wait on each other: an
-# older opener still between reading a dead pid and removing the file while
-# this version installs could remove a new opener's lock. That window is an
-# update run in the middle of an open; it is accepted and named in the
-# CHANGELOG rather than bridged with the old pid judgement. The mutex is let go before the
-# collision menu, which waits on a person. An opener that cannot take the
-# mutex (another cs still holds it after the wait) refuses rather than going on
-# without it, since that holder may be between reading a dead pid and removing
-# the file. A force (flag or collision menu) replaces the lock outright, as
-# before: that is what force means.
-acquire_session_lock() {
+# Take the PID-based session lock of <meta_dir> to prevent concurrent access.
+# The lock is taken by creating the file, which the filesystem does for
+# exactly one process (noclobber: the open fails when the file exists), never
+# by a check followed by a write: two opens started together both saw no
+# lock, both wrote their pid, and both launched a claude on one UUID. A loser
+# reads the winner's pid and takes the live-lock path; a lock whose holder is
+# dead is removed and the create tried again, with a bound so a lock that
+# keeps reappearing cannot spin forever. Creating and reclaiming take turns
+# under the .cs/session.mutex.lock mutex (_cs_lock): an opener that read a
+# dead pid and then removed the file could otherwise delete the live lock
+# another opener had just made in its place, and both would launch. A cs from
+# before that mutex took a session.lock.d directory instead, and the two do
+# not wait on each other: an older opener still between reading a dead pid
+# and removing the file while this version installs could remove a new
+# opener's lock. That window is an update run in the middle of an open; it is
+# accepted and named in the CHANGELOG rather than bridged with the old pid
+# judgement. A caller that cannot take the mutex (another cs still holds it
+# after the wait) must refuse rather than go on without it, since that holder
+# may be between reading a dead pid and removing the file.
+# Returns 0 holding the lock; 1 when a live process holds it, with its pid in
+# _CS_LOCK_LIVE_PID and the mutex released; 2 when the mutex cannot be taken,
+# with session.lock untouched. Exits when perl is missing or the bound is hit.
+_take_session_lock() {  # meta_dir
     local meta_dir="$1"
-    local force="${2:-}"
-    local session_name="$3"
-    local lock_file="$meta_dir/session.lock"
-    local lock_pid attempt=0 mutex=""
+    local lock_file="$meta_dir/session.lock" mutex="$meta_dir/session.mutex.lock"
+    local lock_pid attempt=0
+    _CS_LOCK_LIVE_PID=""
 
     # Without perl the mutex can never be taken, which is no sign of another
     # opener: say what is missing instead.
@@ -2617,12 +2617,7 @@ acquire_session_lock() {
         echo -e "${RED}Error: cs needs perl to lock this session ($meta_dir); install perl and retry${NC}" >&2
         exit 1
     fi
-    if ! _cs_lock "$meta_dir/session.mutex.lock"; then
-        echo -e "${RED}Error: Another cs is opening this session ($meta_dir/session.mutex.lock is held)${NC}" >&2
-        echo -e "${DIM}Try again in a moment: cs $session_name${NC}" >&2
-        exit 1
-    fi
-    mutex="$meta_dir/session.mutex.lock"
+    _cs_lock "$mutex" || return 2
     while :; do
         if ( set -C; echo "$$" > "$lock_file" ) 2>/dev/null; then
             # Verify: the create was ours only when the file still says so
@@ -2636,24 +2631,10 @@ acquire_session_lock() {
         lock_pid=$(cat "$lock_file" 2>/dev/null || echo "")
 
         if [ -n "$lock_pid" ] && kill -0 "$lock_pid" 2>/dev/null; then
-            _cs_unlock "$mutex"
             # PID is alive — session is in use
-            if [ "$force" = "true" ]; then
-                warn "Overriding active session lock (PID $lock_pid)"
-            elif cs_interactive; then
-                _lock_collision_menu "$session_name" "$lock_pid"
-                # The menu returns only when the user chose force. Record the
-                # choice so the rest of the launch (live-duplicate UUID guard
-                # included) honors it exactly like an explicit --force.
-                CS_COLLISION_FORCE=1
-                warn "Overriding active session lock (PID $lock_pid)"
-            else
-                echo -e "${RED}Error: Session is already open (PID $lock_pid)${NC}" >&2
-                echo -e "${DIM}Use --force to override: cs $session_name --force${NC}" >&2
-                exit 1
-            fi
-            echo "$$" > "$lock_file"
-            return 0
+            _cs_unlock "$mutex"
+            _CS_LOCK_LIVE_PID="$lock_pid"
+            return 1
         fi
 
         if [ "$attempt" -ge 5 ]; then
@@ -2670,17 +2651,84 @@ acquire_session_lock() {
     done
 }
 
-# Release session lock if owned by current process
+# Acquire the session lock for an open, through _take_session_lock. An opener
+# that cannot take the mutex refuses. A live holder meets the collision menu
+# at a terminal, which waits on a person, so the mutex is let go before it. A
+# force (flag or collision menu) replaces the lock outright: that is what
+# force means. It takes the mutex again to write the replacement, since a
+# SessionEnd clearing its own lock reads and removes it under the mutex.
+acquire_session_lock() {
+    local meta_dir="$1"
+    local force="${2:-}"
+    local session_name="$3"
+    local lock_file="$meta_dir/session.lock" mutex="$meta_dir/session.mutex.lock"
+    local lock_pid taken=0
+
+    _take_session_lock "$meta_dir" || taken=$?
+    case "$taken" in
+        0) return 0 ;;
+        1) lock_pid="$_CS_LOCK_LIVE_PID" ;;
+        2)
+            echo -e "${RED}Error: Another cs is opening this session ($mutex is held)${NC}" >&2
+            echo -e "${DIM}Try again in a moment: cs $session_name${NC}" >&2
+            exit 1
+            ;;
+        *) error "_take_session_lock returned $taken for $meta_dir" ;;
+    esac
+
+    if [ "$force" = "true" ]; then
+        warn "Overriding active session lock (PID $lock_pid)"
+    elif cs_interactive; then
+        _lock_collision_menu "$session_name" "$lock_pid"
+        # The menu returns only when the user chose force. Record the
+        # choice so the rest of the launch (live-duplicate UUID guard
+        # included) honors it exactly like an explicit --force.
+        CS_COLLISION_FORCE=1
+        warn "Overriding active session lock (PID $lock_pid)"
+    else
+        echo -e "${RED}Error: Session is already open (PID $lock_pid)${NC}" >&2
+        echo -e "${DIM}Use --force to override: cs $session_name --force${NC}" >&2
+        exit 1
+    fi
+    # The replacement is written under the mutex again: a SessionEnd
+    # that read its own pid while the mutex was free would otherwise
+    # remove this lock right after it is written.
+    if ! _cs_lock "$mutex"; then
+        echo -e "${RED}Error: Another cs is opening this session ($mutex is held)${NC}" >&2
+        echo -e "${DIM}Try again in a moment: cs $session_name --force${NC}" >&2
+        exit 1
+    fi
+    # The lock records one pid. When this forced open ends first, its
+    # exit removes the lock and the other holder runs unprotected;
+    # that is decided, and locks do not record every holder.
+    echo "$$" > "$lock_file"
+    _cs_unlock "$mutex"
+    return 0
+}
+
+# Release session lock if owned by current process. The read of the pid and
+# the removal happen under the openers' mutex (.cs/session.mutex.lock): a
+# forced open that replaced the lock between the two would otherwise have its
+# lock removed here and run on unlocked. This runs from cs's exit traps, so
+# when the mutex cannot be taken for any reason (perl missing, this process
+# already holding another _cs_lock, another cs holding it past the five-second
+# wait) the lock is left as it is, nothing is printed and the status is 0; the
+# lock left behind names a dead pid, and the next open reclaims it. The exit
+# can therefore wait up to five seconds while another cs holds the mutex. Both
+# are decided; do not re-fix.
 release_session_lock() {
     local meta_dir="$1"
     local lock_file="$meta_dir/session.lock"
+    local mutex="$meta_dir/session.mutex.lock"
 
     if [ -f "$lock_file" ]; then
+        _cs_lock "$mutex" 2>/dev/null || return 0
         local lock_pid
         lock_pid=$(cat "$lock_file" 2>/dev/null || echo "")
         if [ "$lock_pid" = "$$" ]; then
             rm -f "$lock_file"
         fi
+        _cs_unlock "$mutex"
     fi
 }
 
@@ -2740,13 +2788,12 @@ session_lock_owned_by_invoker() {  # session_name, lock_pid
         && _pid_is_self_or_ancestor "$2"
 }
 
-# Epoch mtime of a file (BSD/GNU stat), 0 on error. Arg: path.
+# Epoch mtime of a file, 0 on error. Arg: path. GNU stat is asked first, as
+# _cs_file_mode does: BSD stat rejects -c with no output, while GNU stat reads
+# -f as --file-system and prints that, and OSTYPE is no guide to which stat
+# PATH finds (Homebrew's gnubin puts GNU stat on a Mac).
 _epoch_mtime() {  # path
-    if [[ "${OSTYPE:-}" == darwin* ]]; then
-        stat -f %m "$1" 2>/dev/null || echo 0
-    else
-        stat -c %Y "$1" 2>/dev/null || echo 0
-    fi
+    stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0
 }
 
 # How long after the last statusline write a lockless conversation still counts
@@ -5176,6 +5223,9 @@ _is_bystander_transcript() {  # transcript_file
     local first
     first=$(grep -m1 '"type":"user"' "$1" 2>/dev/null) || return 1
     case "$first" in
+        # Any first prompt holding the text counts, so discovery and adopt
+        # skip a person's relocated conversation whose prompt quotes it.
+        # Decided; do not re-fix.
         *teammate-message*) return 0 ;;
         *'"entrypoint":"sdk-'*)
             # Any entrypoint value that does not begin `sdk-`.
@@ -5253,11 +5303,11 @@ _worktree_json_path() {  # wt_dir
     printf '%s' "$wt_real" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
-# Whether a transcript in the parent's project dir is the worktree's own
-# conversation, by the checks _discover_worktree_uuid_in describes: the
-# worktree record, a first prompt stamped with the worktree as cwd, and no
-# bystander.
-_is_worktree_own_transcript() {  # transcript_file, wt_json_path
+# Whether a transcript in the parent's project dir is a conversation that
+# began in the worktree: it carries the worktree's record, and its first
+# prompt is stamped with the worktree as cwd. This is the identity a bound
+# conversation is kept by (_relocated_worktree_transcript).
+_is_worktree_started_transcript() {  # transcript_file, wt_json_path
     local first
     # The closing quote pins the whole path: a worktree named `wt` must not
     # claim `wt2`'s conversation.
@@ -5267,7 +5317,13 @@ _is_worktree_own_transcript() {  # transcript_file, wt_json_path
         *"\"cwd\":\"$2\""*) ;;
         *) return 1 ;;
     esac
-    ! _is_bystander_transcript "$1"
+}
+
+# Whether a transcript in the parent's project dir is the worktree's own
+# conversation, by the checks _discover_worktree_uuid_in describes: it began
+# in the worktree, and it is no bystander.
+_is_worktree_own_transcript() {  # transcript_file, wt_json_path
+    _is_worktree_started_transcript "$1" "$2" && ! _is_bystander_transcript "$1"
 }
 
 # The first prompt somebody typed into a conversation, as an Objective line:
@@ -6102,10 +6158,11 @@ _migrate_session_documents() {  # session_dir, tracked_tree_is_ours
             created_date=$(git -C "$session_dir" log --diff-filter=A --format=%as -- .cs/README.md 2>/dev/null | tail -1 || true)
         fi
         if [ -z "$created_date" ]; then
-            if [[ "$OSTYPE" == "darwin"* ]]; then
-                created_date=$(stat -f '%Sm' -t '%Y-%m-%d' "$readme" 2>/dev/null || date '+%Y-%m-%d')
+            # GNU stat first, as _epoch_mtime asks it.
+            if created_date=$(stat -c '%y' "$readme" 2>/dev/null); then
+                created_date=${created_date%% *}
             else
-                created_date=$(stat -c '%y' "$readme" 2>/dev/null | cut -d' ' -f1 || date '+%Y-%m-%d')
+                created_date=$(stat -f '%Sm' -t '%Y-%m-%d' "$readme" 2>/dev/null || date '+%Y-%m-%d')
             fi
         fi
         local existing_content
@@ -6564,13 +6621,17 @@ migrate_session() {
     # conversation. A recorded UUID with no matching transcript file is an
     # orphan — the cs hooks/doctor cross-checks will warn about it on every
     # launch, and `--resume` will fail. Steady state ("recorded UUID present,
-    # transcript exists") is the fast path; cold paths run discovery.
+    # transcript exists") is the fast path; cold paths run discovery. A linked
+    # worktree's conversation whose transcript `claude --worktree` moved into
+    # the parent repo's project dir still exists and still resumes, so it is
+    # bound too (_relocated_worktree_transcript).
     {
         local _existing _proj _bind_uuid=""
         _existing=$(_read_local_state "$_state" claude_session_id)
         _proj=$(_claude_project_dir "$session_dir")
 
-        if [ -n "$_existing" ] && [ -f "$_proj/$_existing.jsonl" ]; then
+        if [ -n "$_existing" ] && { [ -f "$_proj/$_existing.jsonl" ] \
+            || _relocated_worktree_transcript "$session_dir" "$_existing" >/dev/null; }; then
             : # already bound — skip discovery entirely
         else
             local _discovered
@@ -6618,12 +6679,14 @@ migrate_session() {
 }
 
 # Cross-platform helpers
+# A file's mtime as local date and time, "-" when it cannot be read. GNU stat
+# is asked first, as _epoch_mtime does, and its answer keeps the seconds.
 get_file_mtime() {
-    local file="$1"
-    if [[ "$OSTYPE" == darwin* ]]; then
-        stat -f "%Sm" -t "%Y-%m-%d %H:%M" "$file" 2>/dev/null || echo "-"
+    local file="$1" mtime
+    if mtime=$(stat -c "%y" "$file" 2>/dev/null); then
+        printf '%s\n' "${mtime%%.*}"
     else
-        stat -c "%y" "$file" 2>/dev/null | cut -d. -f1 || echo "-"
+        stat -f "%Sm" -t "%Y-%m-%d %H:%M" "$file" 2>/dev/null || echo "-"
     fi
 }
 
@@ -10106,12 +10169,20 @@ _detach_opened_vault() {
 
 run_encrypt() {
     [ $# -eq 1 ] || error "Usage: cs -encrypt <name>"
-    local name="$1" meta container mnt sub
+    local name="$1" meta container mnt sub taken=0
     _encrypt_refuse "$name"
     meta="$SESSIONS_ROOT/$name/.cs"
     # Hold the session lock while the password prompts run, so an open in
     # another terminal meets the collision check instead of racing the moves.
-    echo "$$" > "$meta/session.lock"
+    # It is taken as an open takes it, under the openers' mutex: when an open
+    # took it after the live check above, cs -encrypt refuses and leaves it.
+    _take_session_lock "$meta" || taken=$?
+    case "$taken" in
+        0) ;;
+        1) error "$name: the session is running; close it, then encrypt." ;;
+        2) error "$name: another cs is opening this session ($meta/session.mutex.lock is held); try again in a moment." ;;
+        *) error "_take_session_lock returned $taken for $meta" ;;
+    esac
     # shellcheck disable=SC2064  # the path is fixed now, on purpose
     # printf %q quotes the path for the trap's own parse, so a space, a quote,
     # $( or a newline in it stays data (checked under bash 3.2, #895). The
@@ -11441,6 +11512,9 @@ launch_claude_code() {
     # Global, not local: the EXIT trap fires after this function has returned.
     _CS_LOCK_META_DIR="$session_dir/.cs"
     trap 'reset_tab_title; _spawn_put_back_claim; release_session_lock "$_CS_LOCK_META_DIR"; _detach_opened_vault' EXIT
+    # An INT that lands while cs_tmux_title_window holds the title lock makes
+    # release_session_lock skip (one _cs_lock at a time); the lock left names
+    # a dead pid and the next open reclaims it. Decided; do not re-fix.
     trap 'reset_tab_title; release_session_lock "$_CS_LOCK_META_DIR"; exit 130' INT TERM
 
     # Opening an archived session revives it. Placed after lock acquisition so
@@ -12244,12 +12318,15 @@ _resume_lands_in_place() {  # session_dir, conversation id
 # exited: Claude Code moves it into the parent repo's project dir, and
 # `claude --resume <id>` run from the worktree still finds it there (measured
 # on 2.1.289). That dir also holds the parent's own conversations, so the file
-# counts only when it is this worktree's by the record and first-prompt checks
-# of _discover_worktree_uuid_in, applied to that one file: the worktree can hold
-# older conversations than its newest, and the parent's other files are never
-# read. The base dir is the session's own, which is where the claude cs launches
-# for this session reads. Prints the path; fails when the session is no linked
-# worktree or the conversation is not its own.
+# counts only when it began in this worktree, by the record and first-prompt
+# checks of _discover_worktree_uuid_in, applied to that one file: the worktree
+# can hold older conversations than its newest, and the parent's other files
+# are never read. Discovery's bystander test is not applied: the id is the
+# session's already, and that test reads the first prompt's whole line, so a
+# prompt that only names the teammate frame would unbind it. The base dir is
+# the session's own, which is where the claude cs launches for this session
+# reads. Prints the path; fails when the session is no linked worktree or the
+# conversation did not begin in it.
 _relocated_worktree_transcript() {  # session_dir, conversation id
     local git_dir common parent proj
     git_dir=$(_git_path_abs "$1" --git-dir) || return 1
@@ -12258,7 +12335,7 @@ _relocated_worktree_transcript() {  # session_dir, conversation id
     parent=$(cd "$common/.." 2>/dev/null && pwd -P) || return 1
     proj="$(dirname "$(_claude_project_dir "$1")")/$(_claude_encode_path "$parent")"
     [ -f "$proj/$2.jsonl" ] || return 1
-    _is_worktree_own_transcript "$proj/$2.jsonl" "$(_worktree_json_path "$1")" || return 1
+    _is_worktree_started_transcript "$proj/$2.jsonl" "$(_worktree_json_path "$1")" || return 1
     printf '%s\n' "$proj/$2.jsonl"
 }
 

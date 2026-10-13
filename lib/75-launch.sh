@@ -232,6 +232,9 @@ launch_claude_code() {
     # Global, not local: the EXIT trap fires after this function has returned.
     _CS_LOCK_META_DIR="$session_dir/.cs"
     trap 'reset_tab_title; _spawn_put_back_claim; release_session_lock "$_CS_LOCK_META_DIR"; _detach_opened_vault' EXIT
+    # An INT that lands while cs_tmux_title_window holds the title lock makes
+    # release_session_lock skip (one _cs_lock at a time); the lock left names
+    # a dead pid and the next open reclaims it. Decided; do not re-fix.
     trap 'reset_tab_title; release_session_lock "$_CS_LOCK_META_DIR"; exit 130' INT TERM
 
     # Opening an archived session revives it. Placed after lock acquisition so
@@ -1035,12 +1038,15 @@ _resume_lands_in_place() {  # session_dir, conversation id
 # exited: Claude Code moves it into the parent repo's project dir, and
 # `claude --resume <id>` run from the worktree still finds it there (measured
 # on 2.1.289). That dir also holds the parent's own conversations, so the file
-# counts only when it is this worktree's by the record and first-prompt checks
-# of _discover_worktree_uuid_in, applied to that one file: the worktree can hold
-# older conversations than its newest, and the parent's other files are never
-# read. The base dir is the session's own, which is where the claude cs launches
-# for this session reads. Prints the path; fails when the session is no linked
-# worktree or the conversation is not its own.
+# counts only when it began in this worktree, by the record and first-prompt
+# checks of _discover_worktree_uuid_in, applied to that one file: the worktree
+# can hold older conversations than its newest, and the parent's other files
+# are never read. Discovery's bystander test is not applied: the id is the
+# session's already, and that test reads the first prompt's whole line, so a
+# prompt that only names the teammate frame would unbind it. The base dir is
+# the session's own, which is where the claude cs launches for this session
+# reads. Prints the path; fails when the session is no linked worktree or the
+# conversation did not begin in it.
 _relocated_worktree_transcript() {  # session_dir, conversation id
     local git_dir common parent proj
     git_dir=$(_git_path_abs "$1" --git-dir) || return 1
@@ -1049,7 +1055,7 @@ _relocated_worktree_transcript() {  # session_dir, conversation id
     parent=$(cd "$common/.." 2>/dev/null && pwd -P) || return 1
     proj="$(dirname "$(_claude_project_dir "$1")")/$(_claude_encode_path "$parent")"
     [ -f "$proj/$2.jsonl" ] || return 1
-    _is_worktree_own_transcript "$proj/$2.jsonl" "$(_worktree_json_path "$1")" || return 1
+    _is_worktree_started_transcript "$proj/$2.jsonl" "$(_worktree_json_path "$1")" || return 1
     printf '%s\n' "$proj/$2.jsonl"
 }
 

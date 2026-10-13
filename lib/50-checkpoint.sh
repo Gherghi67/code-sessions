@@ -1,12 +1,14 @@
 # ABOUTME: Labelled state checkpoints (save/list/show).
 # ABOUTME: Backs 'cs -checkpoint'.
 
+# A file's mtime as local date and time, "-" when it cannot be read. GNU stat
+# is asked first, as _epoch_mtime does, and its answer keeps the seconds.
 get_file_mtime() {
-    local file="$1"
-    if [[ "$OSTYPE" == darwin* ]]; then
-        stat -f "%Sm" -t "%Y-%m-%d %H:%M" "$file" 2>/dev/null || echo "-"
+    local file="$1" mtime
+    if mtime=$(stat -c "%y" "$file" 2>/dev/null); then
+        printf '%s\n' "${mtime%%.*}"
     else
-        stat -c "%y" "$file" 2>/dev/null | cut -d. -f1 || echo "-"
+        stat -f "%Sm" -t "%Y-%m-%d %H:%M" "$file" 2>/dev/null || echo "-"
     fi
 }
 
