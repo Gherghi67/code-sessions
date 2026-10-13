@@ -2341,6 +2341,35 @@ test_retire_refuses_a_settings_file_it_cannot_read() {
 
 run_test test_retire_refuses_a_settings_file_it_cannot_read
 
+# A settings file the repository tracks is carried by git like any other
+# file: the retire leaves the base's as the integrate and the base's own
+# commits made it, and does not bring back a grant the base dropped since.
+test_retire_leaves_a_tracked_settings_file_to_git() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0 before
+    _ignored_base_with_two_topics
+    mkdir -p "$base_dir/.claude"
+    printf '%s\n' '{"permissions": {"allow": ["Read", "Bash(old:*)"]}}' > "$base_dir/.claude/settings.local.json"
+    (cd "$base_dir" && git add -f .claude/settings.local.json && git commit -q -m "share settings")
+    cs_launch "proj@t1"
+    jq '.permissions.allow += ["Bash(make:*)"]' "$wt/.claude/settings.local.json" > "$wt/.claude/s.json" \
+        && mv "$wt/.claude/s.json" "$wt/.claude/settings.local.json"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt .claude/settings.local.json && git commit -q -m "task")
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    jq '.permissions.allow -= ["Bash(old:*)"]' "$base_dir/.claude/settings.local.json" > "$base_dir/.claude/s.json" \
+        && mv "$base_dir/.claude/s.json" "$base_dir/.claude/settings.local.json"
+    (cd "$base_dir" && git commit -q -m "drop a grant" -- .claude/settings.local.json)
+    before=$(cat "$base_dir/.claude/settings.local.json")
+    assert_eq '["Read","Bash(make:*)"]' "$(jq -c .permissions.allow "$base_dir/.claude/settings.local.json")" \
+        "the integrate landed the feature's grant" || return 1
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire succeeds: $output" || return 1
+    assert_eq "$before" "$(cat "$base_dir/.claude/settings.local.json")" "the base's file is as git left it" || return 1
+    assert_eq "" "$(git -C "$base_dir" status --porcelain -- .claude)" "and the base's checkout is clean" || return 1
+}
+
+run_test test_retire_leaves_a_tracked_settings_file_to_git
+
 # The record of what the feature inherited is what tells a deleted topic from
 # a new one. A record that is there and cannot be read must stop the fuse:
 # guessing "new" would bring the deleted topic back and report success.
