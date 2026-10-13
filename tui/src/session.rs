@@ -1234,6 +1234,51 @@ fn discard_spawn_seeds(root: &Path, name: &str) {
     }
 }
 
+/// The staged spawn files `cs -spawn` keeps for `name` that exist: one path
+/// per [`SPAWN_STAGING_SUFFIXES`] entry.
+pub fn staged_spawn_files(root: &Path, name: &str) -> Vec<PathBuf> {
+    SPAWN_STAGING_SUFFIXES
+        .iter()
+        .map(|suffix| root.join(".spawn").join(format!("{name}{suffix}")))
+        .filter(|p| p.symlink_metadata().is_ok())
+        .collect()
+}
+
+/// Move the staged spawn files of session `old` to session `new`, so a seed
+/// and brief go with a renamed session instead of arming the next session
+/// given the old name. Each move links the file under the new name and then
+/// unlinks the old one, so a file already staged under the new name is never
+/// replaced. On a failure the moves made so far are undone and the error,
+/// naming the file, is returned. The `(from, to)` pairs moved, for
+/// [`undo_spawn_moves`].
+pub fn move_spawn_files(root: &Path, old: &str, new: &str) -> Result<Vec<(PathBuf, PathBuf)>, String> {
+    let mut moved = Vec::new();
+    for from in staged_spawn_files(root, old) {
+        let file = from.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let to = root.join(".spawn").join(format!("{new}{}", &file[old.len()..]));
+        let result = fs::hard_link(&from, &to).and_then(|_| {
+            fs::remove_file(&from).inspect_err(|_| {
+                let _ = fs::remove_file(&to);
+            })
+        });
+        if let Err(e) = result {
+            undo_spawn_moves(&moved);
+            return Err(format!("could not move spawn file {}: {e}", from.display()));
+        }
+        moved.push((from, to));
+    }
+    Ok(moved)
+}
+
+/// Put back spawn files [`move_spawn_files`] moved, newest first.
+pub fn undo_spawn_moves(moved: &[(PathBuf, PathBuf)]) {
+    for (from, to) in moved.iter().rev() {
+        if fs::hard_link(to, from).is_ok() {
+            let _ = fs::remove_file(to);
+        }
+    }
+}
+
 /// Remove a worktree session (`base@task`) through git so the base repo's
 /// worktree registration goes with it; the task branch is left alone,
 /// matching `cs -rm` when its branch prompt is declined. Falls back to

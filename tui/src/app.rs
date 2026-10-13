@@ -2211,13 +2211,19 @@ impl App {
         }
 
         if let Some(session) = self.selected_session() {
+            let old_name = session.name.clone();
             let root = self.sessions_root.clone();
-            let old = root.join(&session.name);
+            let old = root.join(&old_name);
             let new = root.join(&new_name);
             if new.exists() {
                 self.set_status("Name already taken", StatusLevel::Error);
+            } else if let Some(taken) = session::staged_spawn_files(&root, &new_name).first() {
+                self.set_status(
+                    format!("Can't rename: a spawn is staged for {}: {}", new_name, taken.display()),
+                    StatusLevel::Error,
+                );
             } else {
-                match std::fs::rename(&old, &new) {
+                match self.rename_session(&root, &old_name, &new_name) {
                     Ok(()) => {
                         rename_claude_projects_dir(&old, &new);
                         self.set_status(format!("Renamed to: {}", new_name), StatusLevel::Success);
@@ -2231,6 +2237,29 @@ impl App {
             }
         }
         self.mode = Mode::Normal;
+    }
+
+    /// Move session `old` to `new`: its directory, its staged spawn files,
+    /// then its secrets through `cs -secrets --session <old> rename <new>`,
+    /// which moves every store keyed by the name (the Keychain entries, the
+    /// encrypted store and the age state) and needs the directory already
+    /// moved. A failure at any step undoes the steps before it, so the session
+    /// keeps its old name whole; the error says what failed.
+    fn rename_session(&self, root: &Path, old: &str, new: &str) -> Result<(), String> {
+        let (old_dir, new_dir) = (root.join(old), root.join(new));
+        std::fs::rename(&old_dir, &new_dir).map_err(|e| e.to_string())?;
+        let undo_dir = |reason: String| -> String {
+            match std::fs::rename(&new_dir, &old_dir) {
+                Ok(()) => reason,
+                Err(e) => format!("{reason}; and the session could not be moved back to {}: {e}", old_dir.display()),
+            }
+        };
+        let moved = session::move_spawn_files(root, old, new).map_err(undo_dir)?;
+        if let Err(reason) = move_secrets(old, new) {
+            session::undo_spawn_moves(&moved);
+            return Err(undo_dir(reason));
+        }
+        Ok(())
     }
 
     /// Archive the selected session, or unarchive one that already is. The
@@ -2639,6 +2668,24 @@ fn drop_age_state(name: &str) -> Result<Option<PathBuf>, String> {
     match removed {
         Ok(()) => Ok(Some(dir)),
         Err(e) => Err(format!("could not remove age state {}: {e}", dir.display())),
+    }
+}
+
+/// Move session `old`'s secrets to `new` with `cs -secrets --session <old>
+/// rename <new>`. The error is the last line cs printed on stderr, or how it
+/// ended when it printed none.
+fn move_secrets(old: &str, new: &str) -> Result<(), String> {
+    let out = std::process::Command::new(cs_bin())
+        .args(["-secrets", "--session", old, "rename", new])
+        .output()
+        .map_err(|e| format!("could not run cs -secrets rename: {e}"))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let err = String::from_utf8_lossy(&out.stderr);
+    match err.lines().rev().map(str::trim).find(|l| !l.is_empty()) {
+        Some(line) => Err(line.to_string()),
+        None => Err(format!("cs -secrets rename {}", out.status)),
     }
 }
 
