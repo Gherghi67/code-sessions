@@ -1896,10 +1896,6 @@ impl App {
             .and_then(|_| std::fs::rename(&staged, qdir.join(&fname)))
         {
             Ok(()) => {
-                // Queue changed: let the Stop-hook gate re-ask even if it was
-                // recently declined. Mirrors the CLI's `rm -f queue.declined`
-                // in bin/cs `_queue_add`.
-                let _ = std::fs::remove_file(dir.join("queue.declined"));
                 self.queue_input.clear();
                 self.refresh_queue_depth(name);
                 self.set_status(format!("Queued task for {}", name), StatusLevel::Success);
@@ -1915,7 +1911,6 @@ impl App {
     fn replace_notes_task(&mut self, name: &str, idx: usize, text: &str) {
         match rewrite_queue_task(name, idx, Some(text)) {
             Ok(()) => {
-                let _ = std::fs::remove_file(session::queue_dir(name).join("queue.declined"));
                 self.queue_input.clear();
                 self.notes_focus = NotesFocus::List;
                 let len = session::read_queue(name).len();
@@ -1943,7 +1938,6 @@ impl App {
         };
         match rewrite_queue_task(&name, idx, None) {
             Ok(()) => {
-                let _ = std::fs::remove_file(session::queue_dir(&name).join("queue.declined"));
                 let len = session::read_queue(&name).len();
                 if len == 0 {
                     self.notes_focus = NotesFocus::Input;
