@@ -79,6 +79,32 @@ test_narrative_reminder_tracks_per_actor() {
     assert_output_contains "$output" "narrative.alex.md" "Reminder should point at the per-actor narrative" || return 1
 }
 
+# Homebrew's coreutils can put GNU stat ahead of the system's on a Mac, and GNU
+# `stat -f` reports the file system rather than the file's mtime. The hook reads
+# the mtime by what the stat on PATH answers, so a stale narrative is still
+# found there. bash takes OSTYPE from the environment, so a Mac's value here
+# puts the same question to the hook on a Linux runner.
+test_narrative_reminder_reads_mtimes_with_gnu_stat_on_a_mac() {
+    local gnu shim="$TEST_TMPDIR/gnubin" output
+    if gstat --version 2>/dev/null | grep -q GNU; then
+        gnu=$(command -v gstat)
+    elif stat --version 2>/dev/null | grep -q GNU; then
+        gnu=$(command -v stat)
+    else
+        echo "  SKIP: no GNU stat on this machine"
+        return 77
+    fi
+    mkdir -p "$shim"
+    printf '#!/bin/sh\nexec "%s" "$@"\n' "$gnu" > "$shim/stat"
+    chmod +x "$shim/stat"
+    echo "# Session narrative" > "$CLAUDE_SESSION_META_DIR/memory/narrative.md"
+    _backdate "$CLAUDE_SESSION_META_DIR/memory/narrative.md"
+    rm -f "$CLAUDE_SESSION_META_DIR/.narrative-reminder-cooldown"
+    output=$(echo '{}' | PATH="$shim:$PATH" OSTYPE=darwin24 bash "$HOOKS_DIR/narrative-reminder.sh")
+    assert_output_contains "$output" "block" "a stale narrative is found with GNU stat first on a Mac" || return 1
+    assert_output_contains "$output" "narrative.md" "the reminder points at the narrative" || return 1
+}
+
 test_narrative_reminder_asks_for_appended_corrections_not_rewrites() {
     echo "# Session narrative (alice)" > "$CLAUDE_SESSION_META_DIR/memory/narrative.alice.md"
     _backdate "$CLAUDE_SESSION_META_DIR/memory/narrative.alice.md"
@@ -3204,6 +3230,7 @@ run_test test_narrative_reminder_approves_outside_session
 run_test test_narrative_reminder_approves_when_recently_modified
 run_test test_narrative_reminder_blocks_when_stale
 run_test test_narrative_reminder_tracks_per_actor
+run_test test_narrative_reminder_reads_mtimes_with_gnu_stat_on_a_mac
 run_test test_narrative_reminder_asks_for_appended_corrections_not_rewrites
 # Without the shared library the budget is unknown, and a warning built on a
 # guessed budget is worse than none: the reminder runs and says nothing about
