@@ -2326,11 +2326,34 @@ test_retire_carries_the_feature_permission_grants_into_the_base() {
     assert_eq '{"A":"1"}' "$(jq -c .env "$base_dir/.claude/settings.local.json")" "the base's other keys stay" || return 1
     assert_eq '["env","permissions"]' "$(jq -c 'keys_unsorted' "$base_dir/.claude/settings.local.json")" \
         "no autoMemoryDirectory or plansDirectory from the feature" || return 1
-    assert_eq '["allow"]' "$(jq -c '.permissions | keys' "$base_dir/.claude/settings.local.json")" \
-        "and no deny entry" || return 1
+    assert_eq '["Bash(rm:*)"]' "$(jq -c .permissions.deny "$base_dir/.claude/settings.local.json")" \
+        "the feature's deny rule comes too" || return 1
 }
 
 run_test test_retire_carries_the_feature_permission_grants_into_the_base
+
+# A feature's deny and ask rules go to the base with its grants, by the same
+# union: a feature that allows Bash(git:*) but denies Bash(git push:*) must
+# not leave the base allowing the push.
+test_retire_carries_the_feature_deny_and_ask_rules_into_the_base() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    _ignored_base_with_two_topics
+    mkdir -p "$base_dir/.claude"
+    printf '%s\n' '{"permissions": {"allow": ["Read"], "deny": ["Bash(rm:*)"]}}' > "$base_dir/.claude/settings.local.json"
+    cs_launch "proj@t1"
+    jq '.permissions = {allow: ["Bash(git:*)"], deny: ["Bash(git push:*)", "Bash(rm:*)"], ask: ["Bash(git commit:*)"]}' \
+        "$wt/.claude/settings.local.json" > "$wt/.claude/s.json" && mv "$wt/.claude/s.json" "$wt/.claude/settings.local.json"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire succeeds: $output" || return 1
+    assert_eq '{"allow":["Read","Bash(git:*)"],"deny":["Bash(rm:*)","Bash(git push:*)"],"ask":["Bash(git commit:*)"]}' \
+        "$(jq -c .permissions "$base_dir/.claude/settings.local.json")" \
+        "the base allows git and still denies the push, after its own rules, once" || return 1
+}
+
+run_test test_retire_carries_the_feature_deny_and_ask_rules_into_the_base
 
 # A base with no settings file gets one holding the feature's allow list only.
 test_retire_creates_the_base_settings_with_the_feature_grants_alone() {
@@ -2386,11 +2409,12 @@ test_retire_refuses_a_settings_file_it_cannot_read() {
     # allow list where they are present. A second document's grants would be
     # dropped, and a null would read as absent.
     local bad i
-    bad=("$wt/.claude/settings.local.json" '{"permissions": null}'
+    bad=("$wt/.claude/settings.local.json" '{"permissions": {"deny": "Bash(git push:*)"}}'
+         "$wt/.claude/settings.local.json" '{"permissions": null}'
          "$base_dir/.claude/settings.local.json" '{"permissions": {"allow": null}}'
          "$wt/.claude/settings.local.json" '{"permissions": {"allow": false}}'
          "$wt/.claude/settings.local.json" $'{"permissions": {"allow": ["Read"]}}\n{"permissions": {"allow": ["Bash(make:*)"]}}')
-    for i in 0 2 4 6; do
+    for i in 0 2 4 6 8; do
         printf '%s\n' '{"permissions": {"allow": ["Bash(make:*)"]}}' > "$wt/.claude/settings.local.json"
         printf '%s\n' '{"permissions": {"allow": ["Bash(ls:*)"]}}' > "$base_dir/.claude/settings.local.json"
         printf '%s\n' "${bad[$((i + 1))]}" > "${bad[$i]}"
