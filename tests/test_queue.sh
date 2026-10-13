@@ -906,9 +906,10 @@ test_drain_reports_a_state_it_cannot_write() {
     _allow_writes "$(QDIR)"
     assert_eq "0" "$rc" "the hook exits cleanly" || return 1
     assert_eq "approve" "$(jq -r '.decision' <<< "$out")" "the turn is allowed to end" || return 1
-    assert_eq "cs task queue: could not write $(QDIR)/queue.state" "$(jq -r '.systemMessage' <<< "$out")" \
-        "the user is told which file" || return 1
+    assert_eq "cs task queue: could not write $(QDIR)/queue.current" "$(jq -r '.systemMessage' <<< "$out")" \
+        "the user is told which file: the record of the task handed out is written first" || return 1
     assert_eq "armed" "$(cat "$(QDIR)/queue.state" | tr -d '[:space:]')" "the state is as it was" || return 1
+    assert_file_not_exists "$(QDIR)/queue.current" "no task is recorded handed out" || return 1
 }
 
 # Back to idle is the one state an absent file also means. When idle cannot be
