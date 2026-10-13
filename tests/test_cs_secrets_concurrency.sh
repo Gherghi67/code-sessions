@@ -726,6 +726,62 @@ test_a_term_keeps_the_write_lock_until_the_keychain_write_finishes() {
 test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
 }
 
+# Two renames of alpha to different names: the second waits on alpha's write
+# lock while the first writes its marker naming bravo and stops partway, with
+# K1 moved and K2 still alpha's. The second reads the marker once it holds the
+# lock and refuses, naming the move to finish; it moves nothing to charlie.
+# PID 1 stands for the first rename holding the lock, and the sleep shim's
+# marker shows the second is waiting on it.
+test_a_rename_that_waited_on_the_write_lock_refuses_over_a_move_begun_meanwhile() {
+    local bindir; bindir=$(_make_fake_security)
+    local kc="$TEST_TMPDIR/kc-store" shim="$TEST_TMPDIR/sleep-shim" lock="$CS_SESSIONS_ROOT/.secrets-lock.alpha"
+    local real_sleep; real_sleep=$(command -v sleep)
+    _kcs() {
+        PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kc" "$CS_SECRETS_BIN" "$@"
+    }
+    mkdir -p "$shim"
+    cat > "$shim/sleep" <<SHIM
+#!/usr/bin/env bash
+: > "$TEST_TMPDIR/waiting"
+exec "$real_sleep" "\$@"
+SHIM
+    chmod +x "$shim/sleep"
+    mkdir -p "$CS_SESSIONS_ROOT/alpha/.cs"
+    printf 'value-one' > "$TEST_TMPDIR/v1"
+    printf 'value-two' > "$TEST_TMPDIR/v2"
+    _kcs --session alpha set K1 < "$TEST_TMPDIR/v1" >/dev/null 2>&1 || { echo "  FAIL: fixture: set K1 failed"; return 1; }
+    _kcs --session alpha set K2 < "$TEST_TMPDIR/v2" >/dev/null 2>&1 || { echo "  FAIL: fixture: set K2 failed"; return 1; }
+    rm -rf "$CS_SESSIONS_ROOT/alpha"
+    mkdir -p "$CS_SESSIONS_ROOT/bravo/.cs" "$CS_SESSIONS_ROOT/charlie/.cs"
+    printf '1\n' > "$lock"
+
+    PATH="$shim:$PATH" CS_SECRETS_LOCK_TIMEOUT=30 _kcs --session alpha rename charlie > "$TEST_TMPDIR/rename.out" 2>&1 &
+    local rpid=$! waited=0 rc=0
+    until [ -f "$TEST_TMPDIR/waiting" ]; do sleep 0.05; waited=$((waited + 1)); [ "$waited" -gt 400 ] && break; done
+    [ -f "$TEST_TMPDIR/waiting" ] || { echo "  FAIL: fixture: the rename never waited on the write lock"; kill "$rpid"; wait "$rpid"; return 1; }
+
+    # The first rename's marker and its first move, K1, then it stops.
+    mkdir -p "$HOME/.cs-secrets"
+    printf 'bravo\n' > "$HOME/.cs-secrets/.rename.alpha"
+    _kcs --session bravo set K1 < "$TEST_TMPDIR/v1" >/dev/null 2>&1 || { echo "  FAIL: fixture: set bravo K1 failed"; wait "$rpid"; return 1; }
+    rm -f "$kc/cs_alpha_K1"
+    rm -f "$lock"
+    wait "$rpid" || rc=$?
+
+    assert_eq "1" "$rc" "the second rename exits 1: $(cat "$TEST_TMPDIR/rename.out")" || return 1
+    assert_eq "Error: Refusing to move the secrets of session 'alpha' to 'charlie': an earlier move of 'alpha' to 'bravo' did not finish; rerun: cs -secrets --session alpha rename bravo" \
+        "$(cat "$TEST_TMPDIR/rename.out")" "the refusal names the move to finish" || return 1
+    local f services=""
+    for f in "$kc"/*; do
+        [ -f "$f" ] && services="$services$(head -1 "$f") "
+    done
+    assert_eq "cs:alpha:K2 cs:bravo:K1 " "$services" "nothing moved to charlie" || return 1
+    assert_eq "bravo" "$(cat "$HOME/.cs-secrets/.rename.alpha")" "the marker still names bravo" || return 1
+    assert_eq "bravo
+charlie
+test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
+}
+
 run_test test_encrypted_salt_write_is_atomic_under_concurrency
 run_test test_encrypted_signal_terminates_writer_mid_critical_section
 run_test test_encrypted_purge_serialized_with_concurrent_store
@@ -737,5 +793,6 @@ run_test test_two_first_runs_keep_one_machine_key
 run_test test_keychain_set_during_a_rename_is_moved_with_the_session
 run_test test_a_set_that_waited_on_the_write_lock_refuses_a_session_moved_away
 run_test test_a_term_keeps_the_write_lock_until_the_keychain_write_finishes
+run_test test_a_rename_that_waited_on_the_write_lock_refuses_over_a_move_begun_meanwhile
 
 report_results
