@@ -207,29 +207,22 @@ _mail_send() {  # target, [--kind|-k KIND] [--reply THREAD] body
         fi
         thread="$(_mail_new_thread "$roots")"
     fi
-    # The body reaches jq as a file, never as an --arg: `cs -msg <target> -`
-    # exists precisely so a multi-KB handoff need not go through argv. Nor on
-    # stdin through -R: jq 1.7.1 splits a multibyte character at its 4096-byte
-    # read buffer there and stores a replacement character in its place, while
-    # --rawfile reads the file whole, byte for byte. printf is a builtin, so
-    # the body is in no process's argv on its way to the file; mktemp makes it
-    # readable by this user alone, and it is removed before either outcome.
-    local body_file rc=0
-    body_file=$(mktemp "${TMPDIR:-/tmp}/cs-mail-body.XXXXXX") \
-        || error "Failed to compose the message for $target: no temporary file for the body"
-    if printf '%s' "$body" > "$body_file"; then
-        line=$(jq -cn --rawfile body "$body_file" --arg id "$id" --argjson ts "$now" \
-            --arg thread "$thread" --arg to "$target" --arg parent "$reply_parent" \
-            --arg from "${CLAUDE_SESSION_NAME:-}" --arg actor "$(cs_actor_slug)" \
-            --arg kind "$kind" \
-            '{id:$id, ts:$ts, thread:$thread,
-              in_reply_to:(if $parent == "" then null else $parent end),
-              to:$to, from:$from, actor:$actor, kind:$kind, body:$body}') || rc=$?
-    else
-        rc=1
+    # The body rides on stdin, never as an --arg: `cs -msg <target> -` exists
+    # precisely so a multi-KB handoff need not go through argv. It is read with
+    # --rawfile /dev/stdin rather than -R: jq 1.7.1's -R splits a multibyte
+    # character at its 4096-byte read buffer and stores a replacement character
+    # in its place, while --rawfile reads the whole input byte for byte. No
+    # temporary file holds it, so a body bound for an encrypted session's vault
+    # is never written in plaintext outside it. printf adds nothing to it.
+    if ! line=$(printf '%s' "$body" | jq -cn --rawfile body /dev/stdin --arg id "$id" --argjson ts "$now" \
+        --arg thread "$thread" --arg to "$target" --arg parent "$reply_parent" \
+        --arg from "${CLAUDE_SESSION_NAME:-}" --arg actor "$(cs_actor_slug)" \
+        --arg kind "$kind" \
+        '{id:$id, ts:$ts, thread:$thread,
+          in_reply_to:(if $parent == "" then null else $parent end),
+          to:$to, from:$from, actor:$actor, kind:$kind, body:$body}'); then
+        error "Failed to compose the message for $target"
     fi
-    rm -f "$body_file"
-    [ "$rc" -eq 0 ] || error "Failed to compose the message for $target"
     # Zero-padded epoch keeps lexical order aligned with time order; NOT a
     # monotonic clock (same-second order is by unpadded pid, and the wall
     # clock can go backwards) — nothing may treat name order as arrival order.
@@ -251,12 +244,15 @@ _mail_send() {  # target, [--kind|-k KIND] [--reply THREAD] body
 # message this session received. Direction is taken from the record rather than
 # the file's directory, which keeps this a single line-oriented jq pass over
 # every document — and with no early-exit consumer, no SIGPIPE risk on big mail.
+# The documents are read whole with --rawfile and split into lines inside jq:
+# jq 1.7.1's -R splits a multibyte character at its 4096-byte read buffer and
+# shows a replacement character in its place.
 # The thread id is rendered because an agent cannot reply into a thread whose id
 # it was never shown; a received task carries its accept command for the same
 # reason.
 _mail_print_files() {  # file...
-    cat "$@" | jq -rR --arg me "${CLAUDE_SESSION_NAME:-}" '
-        fromjson? // empty |
+    cat "$@" | jq -rn --rawfile docs /dev/stdin --arg me "${CLAUDE_SESSION_NAME:-}" '
+        $docs | split("\n")[] | fromjson? // empty |
         (if $me != "" and (.from // "") == $me then "->" else "<-" end) as $dir |
         # The peer is whatever the sending process said it was: flattened and
         # cut inside jq so a forged name cannot start a line of its own.

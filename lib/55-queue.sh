@@ -282,14 +282,16 @@ _queue_log() {  # qdir
         return 0
     fi
     # Tolerant per-line parse (torn lines skipped); oldest-first is file order.
-    jq -rR '
-        fromjson? // empty |
+    # Read whole and split inside jq: jq 1.7.1's -R splits a multibyte
+    # character at its 4096-byte read buffer.
+    jq -rn --rawfile inbox "$inbox" '
+        $inbox | split("\n")[] | fromjson? // empty |
         (.ts | strflocaltime("%Y-%m-%d %H:%M")) + "  " + .event +
         (if .task then ": " + .task
          elif .reason then ": " + .reason + " (" + (.reading|tostring) + " >= " + (.limit|tostring) + "), " + (.remaining|tostring) + " remaining"
          elif .done then ": " + (.done|tostring) + " done"
          else "" end)
-    ' "$inbox" | _scrub_controls
+    ' | _scrub_controls
 }
 
 # Dispatcher. Runs inside a session (env) or via the session-scoped arm.
