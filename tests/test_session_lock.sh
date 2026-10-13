@@ -918,17 +918,21 @@ SHIM
         || { touch "$open_gate" "$hook_gate"; kill "$lead"; wait; return 1; }
     # The forced open goes on while the hook holds the mutex. Without the mutex
     # it writes its pid at once; with it, it waits, and the hook is let go
-    # after a bounded look.
+    # after a look of one to two seconds, well inside the five the open waits
+    # on the mutex.
+    local opener rc_open=0 deadline
+    opener=$(cat "$opener_pid")
     touch "$open_gate"
-    i=0
-    until [ "$(cat "$meta_dir/session.lock" 2>/dev/null)" = "$(cat "$opener_pid")" ] || [ "$i" -ge 40 ]; do
-        sleep 0.05; i=$((i + 1))
+    deadline=$((SECONDS + 2))
+    until [ "$(cat "$meta_dir/session.lock" 2>/dev/null)" = "$opener" ] || [ "$SECONDS" -ge "$deadline" ]; do
+        sleep 0.05
     done
     touch "$hook_gate"
     wait "$pid_hook" 2>/dev/null || true
-    wait "$pid_open" 2>/dev/null || true
+    wait "$pid_open" 2>/dev/null || rc_open=$?
     kill "$lead" 2>/dev/null
-    assert_eq "$(cat "$opener_pid")" "$(cat "$meta_dir/session.lock" 2>/dev/null)" \
+    assert_eq "0" "$rc_open" "the forced open took the lock" || return 1
+    assert_eq "$opener" "$(cat "$meta_dir/session.lock" 2>/dev/null)" \
         "the forced open still holds the lock after the lead's SessionEnd" || return 1
 }
 
