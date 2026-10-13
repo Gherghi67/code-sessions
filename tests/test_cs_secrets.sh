@@ -3671,6 +3671,8 @@ test_rename_with_nothing_to_move_creates_no_cs_secrets() {
     assert_eq "0" "$rc" "rename exits 0: $out" || return 1
     assert_eq "No secrets to move for session: alpha" "$out" "rename says there was nothing" || return 1
     [ ! -e "$HOME/.cs-secrets" ] || { echo "  FAIL: rename created ~/.cs-secrets"; return 1; }
+    assert_eq "bravo
+test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
 }
 
 # ----------------------------------------------------------------------------

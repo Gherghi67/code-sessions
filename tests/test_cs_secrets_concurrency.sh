@@ -649,6 +649,47 @@ test_keychain_set_during_a_rename_is_moved_with_the_session() {
 test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
 }
 
+# A set that waits on the write lock while the picker moves its session away
+# checks the session once it holds the lock: a value stored under the old name
+# is one no session reads. The lock wait's sleep is the only one cs-secrets
+# runs, so a sleep that leaves a marker shows the set is waiting; PID 1 stands
+# for the rename holding the lock.
+test_a_set_that_waited_on_the_write_lock_refuses_a_session_moved_away() {
+    local bindir; bindir=$(_make_fake_security)
+    local kc="$TEST_TMPDIR/kc-store" shim="$TEST_TMPDIR/sleep-shim" lock="$CS_SESSIONS_ROOT/.secrets-lock.alpha"
+    local real_sleep; real_sleep=$(command -v sleep)
+    _kcs() {
+        PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kc" "$CS_SECRETS_BIN" "$@"
+    }
+    mkdir -p "$shim"
+    cat > "$shim/sleep" <<SHIM
+#!/usr/bin/env bash
+: > "$TEST_TMPDIR/waiting"
+exec "$real_sleep" "\$@"
+SHIM
+    chmod +x "$shim/sleep"
+    mkdir -p "$CS_SESSIONS_ROOT/alpha/.cs"
+    printf 'late' > "$TEST_TMPDIR/late"
+    printf '1\n' > "$lock"
+
+    PATH="$shim:$PATH" CS_SECRETS_LOCK_TIMEOUT=30 _kcs --session alpha set K1 < "$TEST_TMPDIR/late" > "$TEST_TMPDIR/set.out" 2>&1 &
+    local spid=$! waited=0 rc=0
+    until [ -f "$TEST_TMPDIR/waiting" ]; do sleep 0.05; waited=$((waited + 1)); [ "$waited" -gt 400 ] && break; done
+    [ -f "$TEST_TMPDIR/waiting" ] || { echo "  FAIL: fixture: the set never waited on the write lock"; kill "$spid"; wait "$spid"; return 1; }
+
+    # The picker moves the directory; rename finds nothing and lets the lock go.
+    mv "$CS_SESSIONS_ROOT/alpha" "$CS_SESSIONS_ROOT/bravo"
+    rm -f "$lock"
+    wait "$spid" || rc=$?
+
+    assert_eq "1" "$rc" "the set exits 1: $(cat "$TEST_TMPDIR/set.out")" || return 1
+    assert_eq "Error: No session named 'alpha' in $CS_SESSIONS_ROOT" "$(cat "$TEST_TMPDIR/set.out")" \
+        "the set names the session it no longer finds" || return 1
+    assert_eq "No secrets stored for session: alpha" "$(_kcs --session alpha list 2>&1)" "nothing is stored under alpha" || return 1
+    assert_eq "bravo
+test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
+}
+
 run_test test_encrypted_salt_write_is_atomic_under_concurrency
 run_test test_encrypted_signal_terminates_writer_mid_critical_section
 run_test test_encrypted_purge_serialized_with_concurrent_store
@@ -658,5 +699,6 @@ run_test test_migrate_delete_source_tolerates_concurrently_deleted_key
 run_test test_export_holds_the_lock_across_encrypt_and_digest_on_every_backend
 run_test test_two_first_runs_keep_one_machine_key
 run_test test_keychain_set_during_a_rename_is_moved_with_the_session
+run_test test_a_set_that_waited_on_the_write_lock_refuses_a_session_moved_away
 
 report_results
