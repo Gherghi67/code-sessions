@@ -418,6 +418,24 @@ test_send_stores_a_multibyte_body_byte_for_byte() {
     done
 }
 
+# The body passes through a temporary file on its way to jq; nothing is left
+# of it in TMPDIR, whether the send works or jq fails, and a failure says the
+# message was not composed.
+test_send_leaves_no_copy_of_the_body_behind() {
+    local tmp="$TEST_TMPDIR/tmp" real_jq out rc=0
+    mkdir -p "$tmp" "$TEST_TMPDIR/jqbin"
+    printf 'secret body\n' | TMPDIR="$tmp" "$CS_BIN" -msg receiver - >/dev/null 2>&1 || { echo "  the send failed"; return 1; }
+    assert_eq "" "$(ls -A "$tmp")" "a delivered send leaves nothing in TMPDIR" || return 1
+    real_jq=$(command -v jq)
+    printf '#!/bin/sh\ncase "$*" in *--rawfile*) exit 3 ;; esac\nexec "%s" "$@"\n' "$real_jq" > "$TEST_TMPDIR/jqbin/jq"
+    chmod +x "$TEST_TMPDIR/jqbin/jq"
+    out=$(printf 'secret body\n' | TMPDIR="$tmp" PATH="$TEST_TMPDIR/jqbin:$PATH" "$CS_BIN" -msg receiver - 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a send jq cannot compose exits 1" || return 1
+    assert_eq "Error: Failed to compose the message for receiver" "$out" "and says so" || return 1
+    assert_eq "" "$(ls -A "$tmp")" "a failed send leaves nothing in TMPDIR" || return 1
+    assert_eq "1" "$(NEW_COUNT)" "only the first send was delivered" || return 1
+}
+
 # `cs -msg <session> -` reads the body from stdin — the channel that makes the
 # larger cap reachable, since a multi-KB handoff does not belong in argv.
 test_send_reads_body_from_stdin() {
@@ -944,6 +962,7 @@ run_test test_send_rejects_empty_and_oversize_body
 run_test test_send_accepts_body_at_the_cap
 run_test test_send_reads_body_from_stdin
 run_test test_send_stores_a_multibyte_body_byte_for_byte
+run_test test_send_leaves_no_copy_of_the_body_behind
 run_test test_task_kind_waits_in_the_mailbox_not_the_queue
 run_test test_queue_accept_queues_a_mailed_task_by_id
 run_test test_queue_accept_shows_the_task_without_its_control_bytes
