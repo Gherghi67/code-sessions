@@ -2777,28 +2777,41 @@ run_test test_retire_leaves_a_settings_file_the_base_tracks_since_to_git
 
 # The base's settings.local.json can be a link the base keeps ignored, to a
 # file it shares through git. cs writes nothing through a link at that path,
-# wherever it points: the file is left as it is, and the retire says so.
+# wherever it points: the file is left as it is, and the retire lists on
+# stdout each rule the union would have added, for the user to add by hand.
+# It reads the feature's file to list them, so a feature file it cannot read
+# is refused by name before anything is removed.
 test_retire_writes_no_permission_rules_through_a_settings_link() {
-    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0 before
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0 before rules
     _ignored_base_with_two_topics
     cs_launch "proj@t1"
-    jq '.permissions.allow = ["Read", "Bash(make:*)"]' "$wt/.claude/settings.local.json" > "$wt/.claude/s.json" \
-        && mv "$wt/.claude/s.json" "$wt/.claude/settings.local.json"
     echo "done" > "$wt/result.txt"
     (cd "$wt" && git add result.txt && git commit -q -m "task")
     sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
     mkdir -p "$base_dir/.claude"
-    printf '%s\n' '{"permissions": {"allow": ["Read"]}}' > "$base_dir/team-settings.json"
+    printf '%s\n' '{"permissions": {"allow": ["Read"], "deny": ["Bash(rm:*)"]}}' > "$base_dir/team-settings.json"
     ln -s ../team-settings.json "$base_dir/.claude/settings.local.json"
     (cd "$base_dir" && git add team-settings.json && git commit -q -m "share settings")
     before=$(cat "$base_dir/team-settings.json")
+    rules=$(cat "$wt/.claude/settings.local.json")
+    printf '{' > "$wt/.claude/settings.local.json"
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses a feature file it cannot read: $output" || return 1
+    assert_output_contains "$output" "Error: $wt/.claude/settings.local.json is not one JSON object, or its permissions is not an object, or its permissions.allow, deny or ask is not a list, so cs cannot list the feature's permission rules that $base_dir/.claude/settings.local.json, a link, does not take. Nothing was removed. Fix it, then run /finish t1 again." \
+        "the refusal names the feature's file" || return 1
+    assert_dir "$wt/.cs/memory" "nothing was removed" || return 1
+    printf '%s\n' "$rules" | jq '.permissions = {allow: ["Read", "Bash(make:*)", "Bash(make:*)"], deny: ["Bash(rm:*)"], ask: ["Bash(git push:*)"]}' \
+        > "$wt/.claude/settings.local.json"
+    status=0
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>"$TEST_TMPDIR/stderr") || status=$?
     assert_eq "0" "$status" "the retire succeeds: $output $(cat "$TEST_TMPDIR/stderr")" || return 1
     assert_eq "$before" "$(cat "$base_dir/team-settings.json")" "the shared file is as git left it" || return 1
     assert_eq "" "$(git -C "$base_dir" status --porcelain)" "and the base's checkout is clean" || return 1
     assert_symlink "$base_dir/.claude/settings.local.json" "the link stays" || return 1
-    assert_eq "1" "$(printf '%s\n' "$output" | grep -cxF "$base_dir/.claude/settings.local.json is a link, and cs writes nothing through it: the feature's permission rules were not added to it.")" \
-        "stdout says so: $output" || return 1
+    assert_eq "$base_dir/.claude/settings.local.json is a link, and cs writes nothing through it. Add by hand the feature's permission rules it lacks that the base needs:
+  allow: \"Bash(make:*)\"
+  ask: \"Bash(git push:*)\"" "$(printf '%s\n' "$output" | awk '/ is a link, and cs writes nothing through it/ { on = 1 } on && !/^(  |\/)/ { on = 0 } on')" \
+        "stdout lists each rule the union would have added, once: $output" || return 1
 }
 
 run_test test_retire_writes_no_permission_rules_through_a_settings_link
@@ -2846,6 +2859,11 @@ test_retire_reads_no_settings_file_it_leaves_alone() {
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
     assert_eq "0" "$status" "the retire goes through a link to a file it cannot read: $output" || return 1
     assert_eq '{"permissions": {"allow": "Read"}}' "$(cat "$base_dir/team-settings.json")" "the file is untouched" || return 1
+    # With the base's rules unreadable, every rule of the feature's is listed.
+    assert_eq "$base_dir/.claude/settings.local.json is a link, and cs writes nothing through it. Add by hand the feature's permission rules it lacks that the base needs:
+  allow: \"Read\"
+  allow: \"Bash(make:*)\"" "$(printf '%s\n' "$output" | awk '/ is a link, and cs writes nothing through it/ { on = 1 } on && !/^(  |\/)/ { on = 0 } on')" \
+        "stdout lists every rule of the feature's: $output" || return 1
     # The same file tracked at the base's own path.
     cs_launch "proj@t2"
     echo "done" > "$CS_SESSIONS_ROOT/proj@t2/result2.txt"
