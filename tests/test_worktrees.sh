@@ -2437,6 +2437,24 @@ test_features_untracked_is_not_reported_as_dirty() {
 
 run_test test_features_untracked_is_not_reported_as_dirty
 
+# The features screen reads the same fact the retire refuses on.
+test_features_reports_an_edit_git_diff_does_not_show_as_dirty() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" line
+    mkdir -p "$base_dir/.cs"/{memory,local}
+    echo "# P" > "$base_dir/README.md"
+    echo "default: 1" > "$base_dir/config.yml"
+    printf '.cs/\n' > "$base_dir/.gitignore"
+    (cd "$base_dir" && git init -q && git config core.autocrlf false && git add -A && git commit -q -m init)
+    cs_launch "proj@t1"
+    git -C "$wt" update-index --skip-worktree config.yml
+    echo "local: tuned" >> "$wt/config.yml"
+    line=$("$CS_BIN" proj -features --porcelain 2>&1)
+    assert_eq "1" "$(_feat_field "$line" 6)" "wt_dirty: $line" || return 1
+    assert_eq "dirty" "$(_feat_field "$line" 10)" "state: $line" || return 1
+}
+
+run_test test_features_reports_an_edit_git_diff_does_not_show_as_dirty
+
 test_features_does_not_count_the_bookkeeping_the_merge_gate_skips() {
     # A worktree created before cs excluded its own bookkeeping still has .cs/
     # untracked. The merge gate filters exactly that set and would succeed, so
