@@ -213,13 +213,13 @@ test_a_teammate_does_not_raise_the_attention_flag() {
         ps -o args= -p "$mate" 2>/dev/null | grep -q fake-claude && break
         i=$((i + 1)); sleep 0.1
     done
-    CS_NO_ITERM2= TERM_PROGRAM=iTerm.app CS_IT2_DIR="$it2_dir" CS_IT2_TTY="$TEST_TMPDIR/tty" _stop_hook "" "$mate" > /dev/null
+    CS_NO_ITERM2='' TERM_PROGRAM=iTerm.app CS_IT2_DIR="$it2_dir" CS_IT2_TTY="$TEST_TMPDIR/tty" _stop_hook "" "$mate" > /dev/null
     kill "$mate" 2>/dev/null
     assert_not_exists "$meta/local/attention" \
         "a teammate's Stop leaves the attention flag down" || return 1
     assert_not_exists "$it2_log" "a teammate's Stop does not bounce the dock" || return 1
 
-    CS_NO_ITERM2= TERM_PROGRAM=iTerm.app CS_IT2_DIR="$it2_dir" CS_IT2_TTY="$TEST_TMPDIR/tty" _stop_hook "" "$$" > /dev/null
+    CS_NO_ITERM2='' TERM_PROGRAM=iTerm.app CS_IT2_DIR="$it2_dir" CS_IT2_TTY="$TEST_TMPDIR/tty" _stop_hook "" "$$" > /dev/null
     assert_file_exists "$meta/local/attention" \
         "a front end's Stop raises the attention flag" || return 1
     assert_eq "start" "$(cat "$it2_log" 2>/dev/null)" "a front end's Stop bounces the dock" || return 1
