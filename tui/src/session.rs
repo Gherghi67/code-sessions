@@ -2785,6 +2785,17 @@ mod tests {
         assert!(!is_pid_alive(0));
     }
 
+    // A test build never reads the real ~/.claude: Claude Code's session
+    // records are read from a path that cannot exist, as the sessions root is
+    // when a test scoped none, so a record, a FIFO or a lock there cannot
+    // reach or stall the suite.
+    #[test]
+    fn a_test_build_reads_no_claude_sessions_dir_that_exists() {
+        let dir = claude_sessions_dir();
+        assert!(dir.starts_with("/nonexistent"), "a test build reads {}", dir.display());
+        assert!(!dir.exists(), "a test build reads {}, which exists", dir.display());
+    }
+
     // On non-macOS there is no keychain to scan, so the count is always empty.
     // On macOS the scan must at least run without panicking and return a map.
     #[test]
