@@ -3776,6 +3776,17 @@ test_keychain_commands_match_the_session_name_literally() {
     assert_eq "value-ab" "$(_kc_secrets --session a-b get K1 2>&1)" "a-b's K1 keeps its value" || return 1
 }
 
+# A rename refused before it made the new name's age directory leaves that
+# directory alone: an export or age add for the new name may have just made it.
+test_a_refused_rename_leaves_the_new_names_age_directory() {
+    _seed_renamed_session || { echo "  FAIL: fixture: could not seed alpha's stores"; return 1; }
+    local out rc=0
+    mkdir -p "$CS_SESSIONS_ROOT/alpha/.cs" "$HOME/.cs-secrets/sessions/bravo"
+    out=$(_kc_secrets --session alpha rename bravo 2>&1) || rc=$?
+    assert_eq "1" "$rc" "rename refuses while alpha is a session: $out" || return 1
+    [ -d "$HOME/.cs-secrets/sessions/bravo" ] || { echo "  FAIL: the refused rename removed bravo's age directory"; return 1; }
+}
+
 # On a Mac the Keychain holds what a session stored there whatever backend a
 # later run uses, so rename on the encrypted backend reads it too. Run against
 # the fake security's store, as macOS.
@@ -4164,6 +4175,7 @@ run_test test_rename_that_fails_partway_puts_every_value_back_under_the_old_name
 run_test test_rename_that_cannot_put_a_failed_move_back_keeps_the_marker
 run_test test_a_signal_right_after_the_marker_is_written_leaves_no_marker
 run_test test_keychain_commands_match_the_session_name_literally
+run_test test_a_refused_rename_leaves_the_new_names_age_directory
 run_test test_rename_rerun_finishes_an_interrupted_move
 run_test test_rename_rerun_refuses_a_value_that_differs_under_both_names
 run_test test_rename_with_nothing_to_move_creates_no_cs_secrets
