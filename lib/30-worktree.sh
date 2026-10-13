@@ -1011,7 +1011,22 @@ _carry_permission_rules() {  # wt_dir base_dir
     was=$(_settings_json_or_empty "$base" | _settings_rules_count) || return 1
     now=$(_settings_rules_union "$base" "$feat" | _settings_rules_count) || return 1
     [ "$now" != "$was" ] || return 0
-    cs_mkdir_inside "$2/.claude" && cs_write_atomic "$base" _settings_rules_union "$base" "$feat"
+    _make_base_claude_dir "$2" && cs_write_atomic "$base" _settings_rules_union "$base" "$feat"
+}
+
+# Make the base's .claude for its settings file. cs_mkdir_inside makes
+# directories only inside a .cs, and .claude sits beside it, one level under
+# a base checkout that exists. So a .claude that is missing gets the same link
+# check and then that one level, never the checkout above it; one that is
+# there goes to cs_mkdir_inside for the link check alone.
+_make_base_claude_dir() {  # base_dir
+    local dir="$1/.claude"
+    if [ -e "$dir" ] || [ -L "$dir" ]; then
+        cs_mkdir_inside "$dir"
+        return
+    fi
+    _cs_refuses_write cs_mkdir_inside "$dir" "$1" && return 1
+    mkdir "$dir"
 }
 
 # Remove the temp worktree and release the mutex on every exit path of
