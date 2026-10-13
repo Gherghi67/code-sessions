@@ -5380,13 +5380,14 @@ mod tests {
     }
 
     #[test]
-    fn notes_enter_clears_declined() {
-        let tmp = std::env::temp_dir().join(format!("cs-tui-notes-declined-{}", std::process::id()));
+    fn notes_enter_writes_only_the_queued_task() {
+        let tmp = std::env::temp_dir().join(format!("cs-tui-notes-only-task-{}", std::process::id()));
         let _root = session::test_root::scoped(tmp.clone());
         let name = "alpha"; // matches sample_sessions()[0].name
         let local = tmp.join(name).join(".cs/local");
         std::fs::create_dir_all(&local).unwrap();
-        // A prior gate decline left this cooldown marker behind.
+        // Another file of the session's, beside the queue: adding a task
+        // leaves it as it is.
         std::fs::write(local.join("queue.declined"), "1234567890\n").unwrap();
         let mut app = App::new(sample_sessions());
         app.table_state.select(Some(0));
@@ -5395,9 +5396,11 @@ mod tests {
             app.handle_key(KeyEvent::from(KeyCode::Char(c)));
         }
         app.handle_key(KeyEvent::from(KeyCode::Enter));
-        assert!(
-            !local.join("queue.declined").exists(),
-            "adding a task must clear queue.declined so the gate can re-ask"
+        assert!(session::read_queue(name).iter().any(|t| t.contains("do Y")), "the task is queued");
+        assert_eq!(
+            std::fs::read_to_string(local.join("queue.declined")).ok().as_deref(),
+            Some("1234567890\n"),
+            "adding a task writes nothing beside the queue"
         );
         std::fs::remove_dir_all(&tmp).ok();
     }

@@ -556,12 +556,30 @@ test_completions_cover_all_queue_subcommands() {
     done
 }
 
+# The other direction: a queue subcommand the completions offer is one
+# run_queue takes, so a retired verb leaves the completions too.
+test_completions_offer_no_retired_queue_subcommand() {
+    local cmds offered c
+    cmds=$(queue_subcommands)
+    local zsh_offered bash_offered
+    zsh_offered=$(sed -n "s/^ *'\([a-z-]*\):.*/\1/p" <<< "$(sed -n '/queue_cmds=(/,/^ *)/p' "$ZSH_COMP")")
+    bash_offered=$(sed -n 's/^ *local queue_cmds="\(.*\)"$/\1/p' "$BASH_COMP")
+    assert_output_contains "$zsh_offered" "^add$" "the zsh list is read" || return 1
+    assert_output_contains "$bash_offered" "add" "the bash list is read" || return 1
+    offered="$zsh_offered $bash_offered"
+    for c in $offered; do
+        grep -qx -- "$c" <<< "$cmds" || {
+            echo "  FAIL: the completions offer a queue subcommand run_queue does not take: $c"; return 1; }
+    done
+}
+
 run_test test_zsh_completion_covers_all_secrets_subcommands
 run_test test_bash_completion_covers_all_secrets_subcommands
 run_test test_secrets_flag_extraction_is_sane
 run_test test_both_completions_offer_every_secrets_flag
 run_test test_queue_extraction_is_sane
 run_test test_completions_cover_all_queue_subcommands
+run_test test_completions_offer_no_retired_queue_subcommand
 run_test test_bash_msg_completes_target_session
 run_test test_bash_spawn_completes_session_name
 run_test test_bash_rm_completes_beyond_first_name

@@ -726,6 +726,16 @@ test_queue_accept_from_another_session_refuses() {
 
 # Removing or clearing changes what the target's drain runs next:
 # the target's user does that too. Listing stays open.
+# defer is no queue verb, from any session: the usage says so, rather than a
+# refusal that implies another session's user could run it.
+test_queue_defer_from_another_session_is_no_verb() {
+    local out rc=0
+    out=$("$CS_BIN" receiver -queue defer 2>&1) || rc=$?
+    assert_eq "1" "$rc" "defer exits 1" || return 1
+    assert_eq 'Error: Usage: cs -queue [add "<task>" | accept <message id> | list | rm <n> | clear | log | start [subagents|workflow]]' \
+        "$out" "defer gets the usage" || return 1
+}
+
 test_queue_changes_from_another_session_refuse() {
     rcv -queue add "mine" >/dev/null 2>&1 || { echo "  receiver add failed"; return 1; }
     local verb out rc
@@ -942,6 +952,7 @@ run_test test_queue_start_from_another_session_refuses
 run_test test_queue_accept_from_another_session_refuses
 run_test test_queue_start_by_name_from_its_own_session_arms_it
 run_test test_queue_changes_from_another_session_refuse
+run_test test_queue_defer_from_another_session_is_no_verb
 
 # An encrypted session keeps its cs files on its vault volume: .cs/private
 # links into it. Mail is one of those files, at either end of a send.

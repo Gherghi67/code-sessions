@@ -1470,7 +1470,7 @@ test_plaintext_queue_files_left_beside_private_refuse_open() {
     _make_vaulted_session vt
     _make_vaulted_private vt
     local meta="$CS_SESSIONS_ROOT/vt/.cs" name out rc
-    for name in queue queue.tmp queue.state queue.done queue.declined queue.migrating \
+    for name in queue queue.tmp queue.state queue.done queue.current queue.migrating \
                 notifications.jsonl notifications.seen failures rewrite.trace pending-handoff \
                 finish-progress.json queue.mode; do
         case "$name" in queue|queue.tmp) mkdir -p "$meta/local/$name" ;; *) printf 'x\n' > "$meta/local/$name" ;; esac
