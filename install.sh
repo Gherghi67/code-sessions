@@ -1218,7 +1218,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "6e7100a9c2c0b3168895c414be75ea9066736db0450b5501f0f0e65fa420f45b  bin/cs"
+    "a212043c42d01e3053592ea69d543cd989109a9bdabbd6672abfb54342d7042b  bin/cs"
     "3b4626c505845d0e94961cd06e3e5400c6f497340ff93dadf88770f02ff22524  bin/cs-secrets"
     "f5c5600a9e08e623881893c5ca4f8e06d64adc5da414fbc0ad2166b6adea8775  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -1669,7 +1669,9 @@ for cmd in "${CS_COMMANDS[@]}"; do
 done
 
 # Drop commands earlier cs versions installed but no longer ship; only a file
-# cs wrote goes, and a user's own file of that name is kept.
+# cs wrote goes, and a user's own file of that name is kept. A linked
+# ~/.claude/commands is worked through by design, as the loop above deploys
+# into it: only content cs wrote is removed, so the link is no boundary here.
 for retired in "${RETIRED_COMMANDS[@]}"; do
     if [ -f "$COMMANDS_DIR/$retired" ] && _remove_retired "$COMMANDS_DIR/$retired"; then
         info "Removed retired command: $COMMANDS_DIR/$retired"

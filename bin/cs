@@ -13040,7 +13040,9 @@ run_uninstall() {
         done
     done
 
-    # Remove commands, current and retired
+    # Remove commands, current and retired. A linked commands directory is
+    # worked through by design, as install deploys into it: only content cs
+    # wrote is removed, so the link is no boundary here.
     for cmd in "${CS_COMMANDS[@]}" "${RETIRED_COMMANDS[@]}"; do
         if [ -f "$commands_dir/$cmd" ] && _cs_remove_if_owned "$commands_dir/$cmd"; then
             info "Removed $commands_dir/$cmd"

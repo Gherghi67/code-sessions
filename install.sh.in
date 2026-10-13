@@ -511,7 +511,9 @@ for cmd in "${CS_COMMANDS[@]}"; do
 done
 
 # Drop commands earlier cs versions installed but no longer ship; only a file
-# cs wrote goes, and a user's own file of that name is kept.
+# cs wrote goes, and a user's own file of that name is kept. A linked
+# ~/.claude/commands is worked through by design, as the loop above deploys
+# into it: only content cs wrote is removed, so the link is no boundary here.
 for retired in "${RETIRED_COMMANDS[@]}"; do
     if [ -f "$COMMANDS_DIR/$retired" ] && _remove_retired "$COMMANDS_DIR/$retired"; then
         info "Removed retired command: $COMMANDS_DIR/$retired"
