@@ -7502,19 +7502,29 @@ _mail_send() {  # target, [--kind|-k KIND] [--reply THREAD] body
         fi
         thread="$(_mail_new_thread "$roots")"
     fi
-    # The body rides on stdin, never as an --arg: `cs -msg <target> -` exists
-    # precisely so a multi-KB handoff need not go through argv, and putting it
-    # back into jq's argv undid that. -Rs makes the whole of stdin one string,
-    # byte for byte, and printf adds nothing to it.
-    if ! line=$(printf '%s' "$body" | jq -cRs --arg id "$id" --argjson ts "$now" \
-        --arg thread "$thread" --arg to "$target" --arg parent "$reply_parent" \
-        --arg from "${CLAUDE_SESSION_NAME:-}" --arg actor "$(cs_actor_slug)" \
-        --arg kind "$kind" \
-        '{id:$id, ts:$ts, thread:$thread,
-          in_reply_to:(if $parent == "" then null else $parent end),
-          to:$to, from:$from, actor:$actor, kind:$kind, body:.}'); then
-        error "Failed to compose the message for $target"
+    # The body reaches jq as a file, never as an --arg: `cs -msg <target> -`
+    # exists precisely so a multi-KB handoff need not go through argv. Nor on
+    # stdin through -R: jq 1.7.1 splits a multibyte character at its 4096-byte
+    # read buffer there and stores a replacement character in its place, while
+    # --rawfile reads the file whole, byte for byte. printf is a builtin, so
+    # the body is in no process's argv on its way to the file; mktemp makes it
+    # readable by this user alone, and it is removed before either outcome.
+    local body_file rc=0
+    body_file=$(mktemp "${TMPDIR:-/tmp}/cs-mail-body.XXXXXX") \
+        || error "Failed to compose the message for $target: no temporary file for the body"
+    if printf '%s' "$body" > "$body_file"; then
+        line=$(jq -cn --rawfile body "$body_file" --arg id "$id" --argjson ts "$now" \
+            --arg thread "$thread" --arg to "$target" --arg parent "$reply_parent" \
+            --arg from "${CLAUDE_SESSION_NAME:-}" --arg actor "$(cs_actor_slug)" \
+            --arg kind "$kind" \
+            '{id:$id, ts:$ts, thread:$thread,
+              in_reply_to:(if $parent == "" then null else $parent end),
+              to:$to, from:$from, actor:$actor, kind:$kind, body:$body}') || rc=$?
+    else
+        rc=1
     fi
+    rm -f "$body_file"
+    [ "$rc" -eq 0 ] || error "Failed to compose the message for $target"
     # Zero-padded epoch keeps lexical order aligned with time order; NOT a
     # monotonic clock (same-second order is by unpadded pid, and the wall
     # clock can go backwards) — nothing may treat name order as arrival order.
