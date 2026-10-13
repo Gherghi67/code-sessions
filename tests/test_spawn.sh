@@ -828,6 +828,70 @@ test_launch_that_cannot_record_the_spawner_queues_nothing() {
     assert_eq "boss" "$(cat "$(WQ)/spawned-by")" "the spawner is recorded" || return 1
 }
 
+# A stand-in mv that fails the Nth move into a queue directory, and with
+# SEAL_QUEUE set first takes write permission off that directory, so nothing
+# already in it can be removed either. Every other move is the real mv's.
+_failing_queue_mv() {  # n
+    local real_mv; real_mv=$(command -v mv)
+    mkdir -p "$TEST_TMPDIR/mvbin"
+    cat > "$TEST_TMPDIR/mvbin/mv" <<EOF
+#!/bin/sh
+case "\$*" in
+    */queue/*)
+        n=\$(cat "$TEST_TMPDIR/mv.count" 2>/dev/null || echo 0); n=\$((n + 1))
+        echo "\$n" > "$TEST_TMPDIR/mv.count"
+        if [ "\$n" -ge $1 ]; then
+            for last; do :; done
+            [ -z "\${SEAL_QUEUE:-}" ] || chmod 500 "\${last%/*}"
+            exit 1
+        fi ;;
+esac
+exec "$real_mv" "\$@"
+EOF
+    chmod +x "$TEST_TMPDIR/mvbin/mv"
+}
+
+# A seed whose third task cannot be queued takes back the two this open
+# queued before it stops: the seed, staged again, is then the only copy of its
+# tasks, and the retry queues each of them once.
+test_launch_takes_back_the_tasks_it_queued_when_a_later_one_fails() {
+    _launch_worker >/dev/null || return 1
+    _stage_seed boss "job A" "job B" "job C"
+    _failing_queue_mv 3
+    local rc=0 out
+    out=$(PATH="$TEST_TMPDIR/mvbin:$PATH" _launch_worker) || rc=$?
+    assert_eq "1" "$rc" "the open stops" || return 1
+    assert_eq "0" "$(WQ_COUNT)" "the tasks queued before the failure are taken back" || return 1
+    assert_output_contains "$out" "Error: could not write the task into $(WQ)/queue; it is not queued (seed kept; the 2 task(s) this open queued before it were taken back)" \
+        "the failure says what was taken back" || return 1
+    assert_file_not_exists "$(WQ)/queue.state" "the queue is not armed" || return 1
+    assert_file_exists "$(SEED)" "the seed is staged again" || return 1
+    _launch_worker >/dev/null || { echo "  the retry failed"; return 1; }
+    assert_eq "3" "$(WQ_COUNT)" "the retry queues the three tasks" || return 1
+    assert_eq "$(printf 'job A\njob B\njob C')" "$(cat "$(WQ)/queue"/* | sort)" "each exactly once" || return 1
+}
+
+# A take-back that cannot remove what it queued says so and names each file
+# left behind, so the person can remove them before the retry queues them
+# again; it never passes the failure off as a clean stop.
+test_launch_names_the_tasks_it_could_not_take_back() {
+    _launch_worker >/dev/null || return 1
+    _stage_seed boss "job A" "job B"
+    mkdir -p "$(WQ)/queue"
+    _deny_writes "$(WQ)/queue" || return 77
+    _allow_writes "$(WQ)/queue"
+    _failing_queue_mv 2
+    local rc=0 out
+    out=$(SEAL_QUEUE=1 PATH="$TEST_TMPDIR/mvbin:$PATH" _launch_worker) || rc=$?
+    _allow_writes "$(WQ)/queue"
+    assert_eq "1" "$rc" "the open stops" || return 1
+    local left; left=$(ls "$(WQ)/queue")
+    assert_eq "1" "$(WQ_COUNT)" "the task queued before the failure is still there" || return 1
+    assert_output_contains "$out" "Error: could not write the task into $(WQ)/queue; it is not queued, and 1 task(s) this open queued before it could not be taken back: $(WQ)/queue/$left. Remove them before re-opening the session, or the retry queues them again (seed kept)" \
+        "the failure names the file left behind" || return 1
+    assert_file_exists "$(SEED)" "the seed is staged again" || return 1
+}
+
 # The brief is written to the session's .cs/brief.md name itself: a link
 # planted there must not turn the delivery into a write over another file.
 test_launch_refuses_a_link_at_the_briefs_destination() {
@@ -984,6 +1048,8 @@ run_test test_launch_terminated_after_a_newer_seed_sets_the_claimed_one_aside
 run_test test_launch_failing_after_the_read_leaves_no_copy_of_the_seed
 run_test test_launch_keeps_the_seed_when_its_tasks_cannot_be_queued
 run_test test_launch_that_cannot_record_the_spawner_queues_nothing
+run_test test_launch_takes_back_the_tasks_it_queued_when_a_later_one_fails
+run_test test_launch_names_the_tasks_it_could_not_take_back
 run_test test_launch_foreign_seed_y_consumes
 run_test test_launch_foreign_seed_unknown_key_asks_again
 run_test test_launch_foreign_seed_escape_declines
