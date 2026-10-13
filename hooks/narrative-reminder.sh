@@ -910,11 +910,10 @@ fi
 NARRATIVE_OVER=""
 for _nf in "$META_DIR"/memory/narrative*.md; do
     [ -f "$_nf" ] || continue
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-        _m=$(stat -f %m "$_nf" 2>/dev/null || echo 0)
-    else
-        _m=$(stat -c %Y "$_nf" 2>/dev/null || echo 0)
-    fi
+    # GNU stat is asked first and BSD second, by which one answers rather than
+    # by OSTYPE: Homebrew's coreutils can put GNU stat ahead of the system's on
+    # a Mac, and GNU `stat -f` prints the file system's details, not the mtime.
+    _m=$(_num_or "$(stat -c %Y "$_nf" 2>/dev/null || stat -f %m "$_nf" 2>/dev/null)" 0)
     if [ "$_m" -ge "$NARRATIVE_MTIME" ]; then
         NARRATIVE_MTIME="$_m"
         NARRATIVE_FILE="$_nf"
