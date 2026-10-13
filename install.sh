@@ -1219,7 +1219,7 @@ CS_PAYLOAD_SHA256=(
     "da95b222c082bf6ad8cc3cbe6cd5f8f55f37c5f5e538de7872d1051aebb4e436  hooks/session-start.sh"
     "38e1585be0b3fee0cea8c5397d6177b2c67678b270ad2b1cfc191e3b71b6a723  hooks/autosave-commits.sh"
     "4fcc4c960992f36145d363308028f722592b491ee4836c1366487f7365bf1871  hooks/narrative-reminder.sh"
-    "ad1a2d324ff18dfcdd2e677bfb2630a04cdd21ea6b0ac619891eb7de12e6ce62  hooks/session-end.sh"
+    "41782bee734b46d070798a7c44c3b6f7dccce2eeaf27557020ed0aab9a194684  hooks/session-end.sh"
     "81a13835a65f4b4b35bb87493da0df9848de68375ca7ab1525d2d5079cf52bf1  hooks/subagent-context.sh"
     "53b16016dd6d087c3cc3db7e4acf8de6629e149e3b7f326f0731b36809574156  hooks/tool-failure-logger.sh"
     "40deb4f7592a2d87f8c4a0232ec94be91e66c8c4f9385806d9a7cb4c6085a96a  hooks/session-auto-approve.sh"
