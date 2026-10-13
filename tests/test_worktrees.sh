@@ -3082,6 +3082,108 @@ test_retire_writes_no_permission_rules_through_a_linked_claude_dir() {
 
 run_test test_retire_writes_no_permission_rules_through_a_linked_claude_dir
 
+# A feature can commit its .claude as a link, and git sees no file behind a
+# linked directory on that side either. One that does not lead to a directory
+# inside the worktree is refused by name before anything is removed, whether
+# the feature landed through the integrate or is retired with --force: cs
+# reads the feature's rules only from a file inside the worktree.
+test_retire_refuses_a_feature_claude_dir_that_links_out_of_the_worktree() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" sha1 sha2 output status=0 task wt
+    local out="$TEST_TMPDIR/outside-claude"
+    _ignored_base_with_two_topics
+    mkdir -p "$out"
+    printf '%s\n' '{"permissions": {"allow": ["Bash(elsewhere:*)"]}}' > "$out/settings.local.json"
+    for task in t1 t2; do
+        wt="$CS_SESSIONS_ROOT/proj@$task"
+        cs_launch "proj@$task"
+        rm -rf "$wt/.claude"
+        ln -s "$out" "$wt/.claude"
+        echo "done" > "$wt/result-$task.txt"
+        (cd "$wt" && git add "result-$task.txt" .claude && git commit -q -m "task $task")
+    done
+    sha1=$(git -C "$CS_SESSIONS_ROOT/proj@t1" rev-parse HEAD)
+    # Landed, then the base puts a directory of its own in the link's place.
+    sha2=$(land_feature proj t2) || { echo "  FAIL: integrate fixture t2"; return 1; }
+    (cd "$base_dir" && git rm -q .claude && mkdir .claude && echo x > .claude/keep \
+        && git add .claude/keep && git commit -q -m "a .claude of the base's own")
+    printf '%s\n' '{"permissions": {"allow": ["Read"]}}' > "$base_dir/.claude/settings.local.json"
+    output=$("$CS_BIN" "proj" -retire-feature "t2" "$sha2" 2>&1) || status=$?
+    wt="$CS_SESSIONS_ROOT/proj@t2"
+    assert_eq "1" "$status" "the retire refuses a landed feature: $output" || return 1
+    assert_output_contains "$output" "Error: $wt/.claude is a link that does not lead to a directory inside $wt, and cs reads the feature's permission rules only from a file inside it. Nothing was removed. Replace the link with a directory of the feature's own, or remove it, and commit that, then run /finish t2 again." \
+        "the refusal names the landed feature's link" || return 1
+    assert_dir "$wt/.cs/memory" "the landed feature's worktree is still there" || return 1
+    assert_eq '{"permissions": {"allow": ["Read"]}}' "$(cat "$base_dir/.claude/settings.local.json")" "the base's file is as it was" || return 1
+    # Not landed, retired with --force.
+    wt="$CS_SESSIONS_ROOT/proj@t1"
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha1" --force 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses with --force: $output" || return 1
+    assert_output_contains "$output" "Error: $wt/.claude is a link that does not lead to a directory inside $wt, and cs reads the feature's permission rules only from a file inside it. Nothing was removed. Replace the link with a directory of the feature's own, or remove it, and commit that, then run /finish t1 again." \
+        "the refusal names the link with --force" || return 1
+    assert_dir "$wt/.cs/memory" "the worktree is still there with --force" || return 1
+    assert_eq '{"permissions": {"allow": ["Read"]}}' "$(cat "$base_dir/.claude/settings.local.json")" "the base's file is as it was with --force" || return 1
+    assert_eq '{"permissions": {"allow": ["Bash(elsewhere:*)"]}}' "$(cat "$out/settings.local.json")" "the outside file is untouched" || return 1
+    # Positive control: the same rules in a directory of the feature's own go.
+    rm "$wt/.claude"
+    mkdir "$wt/.claude"
+    cp "$out/settings.local.json" "$wt/.claude/settings.local.json"
+    (cd "$wt" && git add -A .claude && git commit -q -m "a .claude of the feature's own")
+    sha1=$(git -C "$wt" rev-parse HEAD)
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha1" --force 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire succeeds: $output" || return 1
+    assert_eq '["Read","Bash(elsewhere:*)"]' "$(jq -c .permissions.allow "$base_dir/.claude/settings.local.json")" "the rules are carried" || return 1
+}
+
+run_test test_retire_refuses_a_feature_claude_dir_that_links_out_of_the_worktree
+
+# A feature .claude that links to a directory inside the worktree is read
+# where it leads. A settings file git tracks there is git's to carry, like one
+# tracked at .claude/settings.local.json: nothing is added to the base's. One
+# git does not track there is the feature's own file, and its rules go. Only
+# cs's own directories under .cs can hold such a file without the retire
+# refusing it as untracked work.
+test_retire_asks_git_about_the_file_a_feature_claude_link_leads_to() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    cs_launch "proj@t2"
+    rm -rf "$wt/.claude"
+    mkdir "$wt/team-claude"
+    printf '%s\n' '{"permissions": {"allow": ["Read", "Bash(make:*)"]}}' > "$wt/team-claude/settings.local.json"
+    ln -s team-claude "$wt/.claude"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt .claude team-claude/settings.local.json && git commit -q -m "task")
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    (cd "$base_dir" && git rm -q .claude && mkdir .claude && echo x > .claude/keep \
+        && git add .claude/keep && git commit -q -m "a .claude of the base's own")
+    printf '%s\n' '{"permissions": {"allow": ["Read"]}}' > "$base_dir/.claude/settings.local.json"
+    assert_eq "team-claude/settings.local.json" "$(git -C "$wt" ls-files -- team-claude .claude/settings.local.json)" \
+        "the feature tracks the file where the link leads, and git sees none behind the link" || return 1
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire succeeds: $output" || return 1
+    assert_eq '{"permissions": {"allow": ["Read"]}}' "$(cat "$base_dir/.claude/settings.local.json")" \
+        "nothing is added from a file git tracks where the link leads" || return 1
+    assert_output_not_contains "$output" "is a link" "and nothing is said about a link" || return 1
+    # A link into .cs/local, to a file git does not track.
+    wt="$CS_SESSIONS_ROOT/proj@t2"
+    rm -rf "$wt/.claude"
+    mkdir "$wt/.cs/local/claude"
+    printf '%s\n' '{"permissions": {"allow": ["Read", "Bash(lint:*)"]}}' > "$wt/.cs/local/claude/settings.local.json"
+    ln -s .cs/local/claude "$wt/.claude"
+    echo "done" > "$wt/result2.txt"
+    (cd "$wt" && git add result2.txt .claude && git commit -q -m "task two")
+    sha=$(git -C "$wt" rev-parse HEAD)
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t2" "$sha" --force 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire succeeds for a file git does not track: $output" || return 1
+    assert_eq '["Read","Bash(lint:*)"]' "$(jq -c .permissions.allow "$base_dir/.claude/settings.local.json")" \
+        "the rules of a file git does not track are carried" || return 1
+}
+
+run_test test_retire_asks_git_about_the_file_a_feature_claude_link_leads_to
+
 # The record of what the feature inherited is what tells a deleted topic from
 # a new one. A record that is there and cannot be read must stop the fuse:
 # guessing "new" would bring the deleted topic back and report success.
