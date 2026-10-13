@@ -5040,7 +5040,7 @@ mod tests {
         let rows = delete_confirm_rows(&root, 120, 20, "Also deletes");
 
         assert_eq!(
-            rows[..9],
+            rows[..10],
             [
                 "Also deletes 25 files git does not track:",
                 "    n01.txt",
@@ -5050,7 +5050,8 @@ mod tests {
                 "    n05.txt",
                 "    n06.txt",
                 "    n07.txt",
-                "    ... and 18 more",
+                "    n08.txt",
+                "    ... and 17 more",
             ]
         );
         assert!(rows.iter().any(|r| r == "[D] Delete those files too: no"), "the grant stays on screen: {rows:?}");
