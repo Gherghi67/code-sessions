@@ -7916,8 +7916,14 @@ _queue_accept() {  # qdir, message id
         fi
     done
     [ -n "$found" ] || error "no mail with id $id in this session's mailbox"
-    kind=$(jq -r '.kind // "text" | if type == "string" then . else tostring end' "$found")
-    [ "$kind" = "task" ] || error "message $id is $kind mail, not a task; only task-kind mail can be queued"
+    # The kind is judged inside jq, on the document's own value: $( ) drops a
+    # trailing newline and a NUL, so "task\n" would read as task out here
+    # while the digest and the listing, which compare the whole string, show
+    # it no accept command. Any other kind comes back marked, with every byte
+    # outside a plain word replaced, for the refusal to name.
+    kind=$(jq -r '(.kind // "text") | if . == "task" then "task"
+        else "other:" + ((if type == "string" then . else tostring end) | gsub("[^A-Za-z0-9._-]"; "_"))[0:16] end' "$found")
+    [ "$kind" = "task" ] || error "message $id is ${kind#other:} mail, not a task; only task-kind mail can be queued"
     body=$(jq -r '.body // "" | if type == "string" then . else tostring end' "$found")
     body="$(_trim "$body")"
     [ -n "$body" ] || error "message $id carries an empty task"
