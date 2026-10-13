@@ -1619,7 +1619,7 @@ _fuse_conflicts() {  # feature_meta base_meta
         esac
     done < "$plan"
     rm -f "$plan"
-    [ -z "$out" ] || printf '%s' "$out" | LC_ALL=C sort
+    [ -z "$out" ] || printf '%s' "$out" | env LC_ALL=C sort
 }
 
 # Fuse session records from a worktree .cs into the base .cs (ignored mode:
