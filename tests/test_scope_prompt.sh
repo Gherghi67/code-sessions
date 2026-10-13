@@ -915,6 +915,49 @@ test_sub_second_budget_is_the_default_on_a_second_resolution_clock() {
     fi
 }
 
+# Bash 3.2 has no $EPOCHREALTIME of its own and takes whatever the environment
+# holds, and the clock's parts reach shell arithmetic, which runs a command
+# substitution held in an operand. A value that is not seconds and a fraction,
+# both digits, is no clock: the run counts as on a shell without one, so the
+# launch mark comes from `date`, the stage marks from $SECONDS, and a
+# sub-second budget takes the default. The file named by PWNED_FILE is what a
+# substitution in the value would create; the payload names it through the
+# environment because the clock is split at the first dot. Needs a bash that
+# takes the variable from the environment (macOS's /bin/bash 3.2); bash 5
+# keeps its own clock whatever the environment says.
+test_a_clock_from_the_environment_is_read_as_data() {
+    local inherits="" b
+    for b in /bin/bash bash; do
+        if [ "$(env EPOCHREALTIME=probe "$b" -c 'printf %s "${EPOCHREALTIME:-}"' 2>/dev/null)" = probe ]; then
+            inherits="$b"
+            break
+        fi
+    done
+    if [ -z "$inherits" ]; then
+        echo "    SKIP: no bash here takes \$EPOCHREALTIME from the environment"
+        return 77
+    fi
+    seed_repo "src/api.ts"
+    # A cs launch has made .cs/local/ by the first prompt, and the launch mark
+    # is written only into one that exists.
+    mkdir -p "$CLAUDE_SESSION_META_DIR/local"
+    local in pwned="$TEST_TMPDIR/pwned" value rc
+    in=$(printf '%s' "fix the handler in src/api.ts" | jq -Rs '{prompt: ., hook_event_name: "UserPromptSubmit", session_id: "sid-test"}')
+    for value in '0+HOME[$(:>"$PWNED_FILE")].5' 'soon.later'; do
+        rm -f "$(_trace_file)" "$pwned"
+        env EPOCHREALTIME="$value" PWNED_FILE="$pwned" CS_SCOPE_BUDGET_MS=500 \
+            "$inherits" "$HOOK" <<< "$in" >/dev/null 2>&1 && rc=0 || rc=$?
+        assert_eq "0" "$rc" "the hook exits 0 ($value)" || return 1
+        assert_file_not_exists "$pwned" "the clock's content never runs ($value)" || return 1
+        awk '$3 == "launch" && $2 ~ /^[0-9]{10}000$/ { ok = 1 } END { exit !ok }' "$(_trace_file)" \
+            || { echo "  FAIL: the launch mark is whole seconds from date ($value): $(cat "$(_trace_file)" 2>/dev/null)"; return 1; }
+        awk '$3 != "launch" && $2 !~ /^[0-9]*000$/ && $2 != "0" { bad = 1 } END { exit bad }' "$(_trace_file)" \
+            || { echo "  FAIL: the stage marks count whole seconds ($value): $(cat "$(_trace_file)")"; return 1; }
+        assert_output_contains "$(_trace_stages)" "budget=1500" \
+            "a sub-second budget takes the default on the whole-second clock ($value)" || return 1
+    done
+}
+
 # The digest's surface-once budget is spent only by a delivered emission: an
 # emission the hook could not write leaves the cursor where it was, on the
 # deadline exit as on the others. Stdout is CLOSED here (`>&-`), which jq
@@ -1185,6 +1228,7 @@ run_test test_budget_within_runs_the_scan
 run_test test_budget_garbage_is_the_default
 run_test test_budget_of_one_millisecond_expires
 run_test test_sub_second_budget_is_the_default_on_a_second_resolution_clock
+run_test test_a_clock_from_the_environment_is_read_as_data
 run_test test_failed_emission_leaves_the_digest_cursor_unspent
 
 report_results

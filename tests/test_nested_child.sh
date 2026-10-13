@@ -195,6 +195,36 @@ test_a_teammate_leaves_the_armed_rotation_and_the_digest_to_the_lead() {
         "a front end with no launch pid still loads the rotation on /clear" || return 1
 }
 
+# A teammate's Stop ends a turn of its own, not the lead's, so it neither
+# raises the attention flag nor bounces the dock. A front end that walked in
+# has no launch pid and none of the teammate flags: its Stop raises both,
+# which is the positive control.
+test_a_teammate_does_not_raise_the_attention_flag() {
+    _nested_setup
+    local meta="$CLAUDE_SESSION_META_DIR" mate i=0
+    local it2_dir="$TEST_TMPDIR/it2" it2_log="$TEST_TMPDIR/it2.log"
+    mkdir -p "$it2_dir"
+    printf '#!/bin/sh\necho "$@" >> "%s"\n' "$it2_log" > "$it2_dir/it2attention"
+    chmod +x "$it2_dir/it2attention"
+    _fake_claude_script
+    "$TEST_TMPDIR/fake-claude.sh" --agent-id a1 --agent-name mate --team-name t >/dev/null 2>&1 &
+    mate=$!
+    while [ "$i" -lt 50 ]; do
+        ps -o args= -p "$mate" 2>/dev/null | grep -q fake-claude && break
+        i=$((i + 1)); sleep 0.1
+    done
+    CS_NO_ITERM2='' TERM_PROGRAM=iTerm.app CS_IT2_DIR="$it2_dir" CS_IT2_TTY="$TEST_TMPDIR/tty" _stop_hook "" "$mate" > /dev/null
+    kill "$mate" 2>/dev/null
+    assert_not_exists "$meta/local/attention" \
+        "a teammate's Stop leaves the attention flag down" || return 1
+    assert_not_exists "$it2_log" "a teammate's Stop does not bounce the dock" || return 1
+
+    CS_NO_ITERM2='' TERM_PROGRAM=iTerm.app CS_IT2_DIR="$it2_dir" CS_IT2_TTY="$TEST_TMPDIR/tty" _stop_hook "" "$$" > /dev/null
+    assert_file_exists "$meta/local/attention" \
+        "a front end's Stop raises the attention flag" || return 1
+    assert_eq "start" "$(cat "$it2_log" 2>/dev/null)" "a front end's Stop bounces the dock" || return 1
+}
+
 # On an exec launch the pid cs hands on is the lead claude's own, so a claude
 # started as its direct child (a mod's process run) has the lead for a
 # parent. A child of the lead is not the lead: cs says which way it started
@@ -288,6 +318,7 @@ run_test test_a_nested_child_leaves_the_armed_rotation_to_the_lead
 run_test test_a_rotation_marker_git_tracks_is_not_loaded
 run_test test_a_nested_child_leaves_the_queue_digest_to_the_lead
 run_test test_a_teammate_leaves_the_armed_rotation_and_the_digest_to_the_lead
+run_test test_a_teammate_does_not_raise_the_attention_flag
 run_test test_a_direct_child_of_the_lead_claude_is_not_the_lead
 run_test test_the_lead_keeps_its_rotation_when_its_prompt_names_the_teammate_flags
 run_test test_a_claude_whose_parent_cannot_be_read_is_not_taken_for_a_guest

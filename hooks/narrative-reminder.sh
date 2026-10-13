@@ -446,12 +446,19 @@ fi
 # on the next prompt and by session-start.sh at launch. Lives in .cs/local/
 # (per-machine state, never git-synced). Raised before the cooldown gates so
 # every turn end signals, not just the ones that remind. A claude started
-# from inside the session ends no turn of the lead's, so it raises nothing.
-IS_NESTED_CHILD=0
-if command -v cs_is_shown_nested_child >/dev/null 2>&1 && cs_is_shown_nested_child; then
-    IS_NESTED_CHILD=1
+# from inside the session and a tmux teammate end no turn of the lead's, so
+# they raise nothing. The guest is told apart as session-start.sh does: a
+# claude shown to be the lead is asked nothing further, since its launch
+# prompt can hold the flags the teammate check reads.
+IS_GUEST=0
+if command -v cs_is_lead >/dev/null 2>&1 && cs_is_lead; then
+    :
+elif command -v cs_is_shown_nested_child >/dev/null 2>&1 && cs_is_shown_nested_child; then
+    IS_GUEST=1
+elif command -v _cs_is_teammate >/dev/null 2>&1 && _cs_is_teammate; then
+    IS_GUEST=1
 fi
-if [ "$IS_NESTED_CHILD" != 1 ]; then
+if [ "$IS_GUEST" != 1 ]; then
     cs_mkdir_inside "$META_DIR/local" || true
     cs_append_inside "$META_DIR/local/attention" : || true
 fi
@@ -461,7 +468,7 @@ fi
 # aliases, not on PATH); escapes go to the tty directly because hook stdout is
 # captured by Claude Code. CS_NO_ITERM2=1 disables; CS_IT2_DIR/CS_IT2_TTY are
 # test seams. Silent everywhere it cannot apply.
-if [ "$IS_NESTED_CHILD" != 1 ] && [ -z "${CS_NO_ITERM2:-}" ] && [ "${TERM_PROGRAM:-}" = "iTerm.app" ]; then
+if [ "$IS_GUEST" != 1 ] && [ -z "${CS_NO_ITERM2:-}" ] && [ "${TERM_PROGRAM:-}" = "iTerm.app" ]; then
     _it2="${CS_IT2_DIR:-$HOME/.iterm2}/it2attention"
     { [ -x "$_it2" ] && "$_it2" start > "${CS_IT2_TTY:-/dev/tty}"; } 2>/dev/null || true
 fi
@@ -903,11 +910,10 @@ fi
 NARRATIVE_OVER=""
 for _nf in "$META_DIR"/memory/narrative*.md; do
     [ -f "$_nf" ] || continue
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-        _m=$(stat -f %m "$_nf" 2>/dev/null || echo 0)
-    else
-        _m=$(stat -c %Y "$_nf" 2>/dev/null || echo 0)
-    fi
+    # GNU stat is asked first and BSD second, by which one answers rather than
+    # by OSTYPE: Homebrew's coreutils can put GNU stat ahead of the system's on
+    # a Mac, and GNU `stat -f` prints the file system's details, not the mtime.
+    _m=$(_num_or "$(stat -c %Y "$_nf" 2>/dev/null || stat -f %m "$_nf" 2>/dev/null)" 0)
     if [ "$_m" -ge "$NARRATIVE_MTIME" ]; then
         NARRATIVE_MTIME="$_m"
         NARRATIVE_FILE="$_nf"
