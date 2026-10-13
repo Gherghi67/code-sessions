@@ -487,6 +487,36 @@ Add --delete-files to remove them with --force" "$out" "refusal collapses each u
     assert_file_exists "$wt/apps/web/.env" "ignored file must survive the refusal" || return 1
 }
 
+# git lists a repository nested in the worktree as one path ending in "/",
+# untracked or ignored; its count is every file under it, its .git included.
+test_remove_worktree_confirm_counts_the_files_in_a_nested_repository() {
+    local wt out other="$TEST_TMPDIR/other"
+    wt=$(_worktree_with_user_files wf6)
+    rm "$wt/notes.txt" "$wt/journal.img"
+    git init -q "$other"
+    printf 'vendor/\n' >> "$(git -C "$wt" rev-parse --git-common-dir)/info/exclude"
+    mkdir -p "$wt/dep" "$wt/vendor/dep2"
+    printf 'gitdir: %s\n' "$other/.git" > "$wt/dep/.git"
+    printf 'gitdir: %s\n' "$other/.git" > "$wt/vendor/dep2/.git"
+    touch "$wt/dep/a" "$wt/dep/b" "$wt/vendor/dep2/c"
+    out=$(printf 'n\n' | CS_ASSUME_TTY=1 "$CS_BIN" -rm wf6@t 2>&1) || return 1
+    assert_eq "Also deletes 5 files git does not track:
+    dep/     (3 files)
+    vendor/  (2 files)
+Cancelled" "$out" "a nested repository counts every file under it" || return 1
+}
+
+test_remove_force_refusal_names_one_file_as_it() {
+    local wt out rc=0
+    wt=$(_worktree_with_user_files wf7)
+    rm "$wt/journal.img"
+    out=$("$CS_BIN" -rm wf7@t --force </dev/null 2>&1) || rc=$?
+    assert_eq "1" "$rc" "--force refuses a worktree holding an untracked file" || return 1
+    assert_eq "Error: Worktree session 'wf7@t' holds 1 file git does not track:
+    notes.txt
+Add --delete-files to remove it with --force" "$out" "the refusal names one file as it" || return 1
+}
+
 # The pins and recipient digests `cs -secrets age add` keeps for a session
 # live under ~/.cs-secrets/sessions/<name>/, outside the session directory.
 # Removing a base session drops them and says so on one line naming the path.
@@ -747,6 +777,8 @@ run_test test_remove_force_with_delete_files_removes_worktree
 run_test test_remove_worktree_confirm_lists_untracked_files
 run_test test_remove_worktree_confirm_collapses_untracked_trees
 run_test test_remove_force_refusal_collapses_untracked_trees
+run_test test_remove_worktree_confirm_counts_the_files_in_a_nested_repository
+run_test test_remove_force_refusal_names_one_file_as_it
 run_test test_remove_force_on_adopted_removes_only_the_link
 run_test test_remove_refuses_while_the_vault_is_mounted_inside
 run_test test_remove_goes_ahead_once_the_vault_is_unmounted
