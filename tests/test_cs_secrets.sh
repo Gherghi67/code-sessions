@@ -2276,6 +2276,12 @@ test_import_file_refuses_a_named_file_behind_another_sessions_linked_directory()
     printf '{"b_token":"from-b"}\n' | openssl enc -aes-256-cbc -e -pbkdf2 -iter 100000 \
         -out "$other/.cs/secrets.b.enc" -pass env:CS_SECRETS_PASSWORD \
         || { echo "  FAIL: fixture: could not encrypt the other session's file"; return 1; }
+    # A link in this session into the other one leaves this session too.
+    ln -s "$other/.cs" "$CS_SESSIONS_ROOT/test-session/.cs/inbox"
+    rc=0
+    out=$("$CS_SECRETS_BIN" import-file "$CS_SESSIONS_ROOT/test-session/.cs/inbox/secrets.b.enc" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a file reached through a link into the other session is refused: $out" || return 1
+    _assert_secret_absent b_token "nothing from the other session is imported through the link" || return 1
     rc=0
     out=$("$CS_SECRETS_BIN" import-file "$other/.cs/secrets.b.enc" 2>&1) || rc=$?
     assert_eq "0 Imported 1 secret(s) from 1 sync file(s)." "$rc $out" "a file inside the other session imports" || return 1
