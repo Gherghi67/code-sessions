@@ -4038,8 +4038,9 @@ mod tests {
     /// A sessions root holding session `proj`, a home beside it, and a cs
     /// stand-in that logs its argv and hands `-secrets ...` to this checkout's
     /// bin/cs-secrets with HOME and the sessions root pointed at them, so the
-    /// picker's rename runs the real secrets move against scratch state. With
-    /// `fail` set the stand-in prints a refusal and exits 1 instead.
+    /// picker's rename runs the real secrets move against scratch state. A
+    /// tool a test puts in `<tmp>/shim` shadows the real one for cs-secrets.
+    /// With `fail` set the stand-in prints a refusal and exits 1 instead.
     #[cfg(unix)]
     fn rename_fixture(tag: &str, fail: bool) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
         use std::os::unix::fs::PermissionsExt;
@@ -4055,9 +4056,10 @@ mod tests {
         } else {
             format!(
                 "[ \"$1\" = -secrets ] || exit 9\nshift\n\
-                 HOME='{home}' CS_SESSIONS_ROOT='{root}' CS_SECRETS_BACKEND=encrypted exec '{secrets}' \"$@\"\n",
+                 HOME='{home}' CS_SESSIONS_ROOT='{root}' CS_SECRETS_BACKEND=encrypted PATH='{shim}':\"$PATH\" exec '{secrets}' \"$@\"\n",
                 home = home.display(),
                 root = root.display(),
+                shim = tmp.join("shim").display(),
                 secrets = secrets.display()
             )
         };
@@ -4154,6 +4156,111 @@ mod tests {
         assert!(root.join(".spawn/proj.seed").is_file(), "the seed stays proj's");
         assert!(!root.join(".spawn/proj-old.seed").exists());
         assert!(transcripts.is_dir(), "the transcripts stay under the old path's name");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // A move cs-secrets stops partway has values under the new name already,
+    // and its marker ~/.cs-secrets/.rename.<old> names the new name. Moving
+    // the directory back would leave those values under a name the sessions
+    // root does not have, so the session keeps the new name and the status
+    // gives the command that finishes the move.
+    #[cfg(unix)]
+    #[test]
+    fn a_rename_whose_secrets_move_stops_partway_keeps_the_new_name() {
+        use crate::session::test_root;
+        use std::os::unix::fs::PermissionsExt;
+        let _env = CS_BIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (tmp, root, home) = rename_fixture("partial", false);
+        let pins = home.join(".cs-secrets/sessions/proj");
+        std::fs::create_dir_all(&pins).unwrap();
+        std::fs::write(pins.join("age-trusted"), "0000000000000000000000000000000000000000000000000000000000000000\n")
+            .unwrap();
+        // An ln that fails stops cs-secrets after it wrote its marker.
+        std::fs::create_dir_all(tmp.join("shim")).unwrap();
+        std::fs::write(tmp.join("shim/ln"), "#!/bin/sh\nexit 1\n").unwrap();
+        std::fs::set_permissions(tmp.join("shim/ln"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::create_dir_all(root.join(".spawn")).unwrap();
+        std::fs::write(root.join(".spawn/proj.seed"), "task\n").unwrap();
+        let encode = |p: &std::path::Path| -> String {
+            p.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
+        };
+        let transcripts = home.join(".claude/projects");
+        std::fs::create_dir_all(transcripts.join(encode(&root.join("proj")))).unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        std::env::set_var("CS_BIN", tmp.join("cs-stub"));
+        let mut app = app_on(&root, "proj");
+        app.mode = Mode::Rename;
+        app.rename_input.set("proj-old");
+
+        app.execute_rename();
+        std::env::remove_var("CS_BIN");
+
+        let status = app.status_message.as_ref().map(|m| (m.text.as_str(), m.level));
+        assert_eq!(
+            status,
+            Some(("Rename incomplete: run `cs -secrets --session proj rename proj-old`", StatusLevel::Error))
+        );
+        assert!(root.join("proj-old/.cs").is_dir(), "the session keeps the new name");
+        assert!(!root.join("proj").exists(), "no session under the old name");
+        assert!(root.join(".spawn/proj-old.seed").is_file(), "the seed is proj-old's");
+        assert!(!root.join(".spawn/proj.seed").exists());
+        assert!(transcripts.join(encode(&root.join("proj-old"))).is_dir(), "the transcripts follow the session");
+        assert_eq!(
+            std::fs::read_to_string(home.join(".cs-secrets/.rename.proj")).unwrap_or_default(),
+            "proj-old\n",
+            "the marker names the move to finish"
+        );
+        assert!(pins.join("age-trusted").is_file(), "the move stopped before the pins moved");
+
+        // The command the status gives finishes the move.
+        std::fs::remove_file(tmp.join("shim/ln")).unwrap();
+        let out = std::process::Command::new(tmp.join("cs-stub"))
+            .args(["-secrets", "--session", "proj", "rename", "proj-old"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "rerun: {}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(
+            std::fs::read_to_string(home.join(".cs-secrets/sessions/proj-old/age-trusted")).unwrap_or_default(),
+            "0000000000000000000000000000000000000000000000000000000000000000\n",
+            "the pins are proj-old's now"
+        );
+        assert!(!home.join(".cs-secrets/.rename.proj").exists(), "the finished move removes its marker");
+        assert!(!pins.exists(), "nothing is left under proj");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // A refusal made before cs-secrets changed anything leaves a marker only
+    // when an earlier move of the session to another name did not finish: the
+    // marker names that other name, the refusal changed nothing, and the
+    // session keeps its old name.
+    #[cfg(unix)]
+    #[test]
+    fn a_rename_refused_over_an_earlier_unfinished_move_keeps_the_old_name() {
+        use crate::session::test_root;
+        let _env = CS_BIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (tmp, root, home) = rename_fixture("stale-marker", false);
+        std::fs::create_dir_all(home.join(".cs-secrets")).unwrap();
+        std::fs::write(home.join(".cs-secrets/.rename.proj"), "elsewhere\n").unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        std::env::set_var("CS_BIN", tmp.join("cs-stub"));
+        let mut app = app_on(&root, "proj");
+        app.mode = Mode::Rename;
+        app.rename_input.set("proj-old");
+
+        app.execute_rename();
+        std::env::remove_var("CS_BIN");
+
+        assert_eq!(
+            app.status_message.as_ref().map(|m| m.text.as_str()),
+            Some(
+                "Rename failed: Error: Refusing to move the secrets of session 'proj' to 'proj-old': an earlier \
+                 move of 'proj' to 'elsewhere' did not finish; rerun: cs -secrets --session proj rename elsewhere"
+            )
+        );
+        assert!(root.join("proj/.cs").is_dir(), "the session keeps its name");
+        assert!(!root.join("proj-old").exists(), "no session under the new name");
         std::fs::remove_dir_all(&tmp).ok();
     }
 
