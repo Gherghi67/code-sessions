@@ -797,7 +797,14 @@ $conflicts"
     local settings carried=0
     _permission_rules_carried "$wt_dir" "$base_dir" || carried=$?
     if [ "$carried" = 2 ]; then
-        info "$base_dir/.claude/settings.local.json is a link, and cs writes nothing through it: the feature's permission rules were not added to it."
+        _settings_rules_readable "$wt_dir/.claude/settings.local.json" \
+            || error "$wt_dir/.claude/settings.local.json is not one JSON object, or its permissions is not an object, or its permissions.allow, deny or ask is not a list, so cs cannot list the feature's permission rules that $base_dir/.claude/settings.local.json, a link, does not take. Nothing was removed. Fix it, then run /finish $task again."
+        local missing
+        missing=$(_settings_rules_missing "$base_dir/.claude/settings.local.json" "$wt_dir/.claude/settings.local.json") \
+            || error "Could not list the feature's permission rules that $base_dir/.claude/settings.local.json, a link, does not take; nothing was removed"
+        [ -z "$missing" ] \
+            || info "$base_dir/.claude/settings.local.json is a link, and cs writes nothing through it. Add by hand the feature's permission rules it lacks that the base needs:
+$missing"
     elif [ "$carried" = 0 ]; then
         for settings in "$wt_dir/.claude/settings.local.json" "$base_dir/.claude/settings.local.json"; do
             _settings_rules_readable "$settings" \
@@ -896,6 +903,21 @@ _settings_rules_union() {  # base_settings feature_settings
               end)'
 }
 
+# The rules _settings_rules_union would add to <base_settings> from
+# <feature_settings>, one per line as "  <list>: <rule as JSON>", in the
+# union's order. A base file _settings_rules_readable refuses holds no rule cs
+# can read, so then every rule of the feature's is listed.
+_settings_rules_missing() {  # base_settings feature_settings
+    local base="$1"
+    _settings_rules_readable "$base" || base=/dev/null
+    _settings_json_or_empty "$base" | jq -r --slurpfile f "$2" '
+        . as $b | ("allow", "deny", "ask") as $k
+        | ($b.permissions[$k] // []) as $have
+        | (reduce ($f[0].permissions[$k] // [])[] as $x ($have;
+              if any(.[]; . == $x) then . else . + [$x] end)) as $all
+        | $all[($have | length):][] | "  \($k): \(tojson)"'
+}
+
 # How many permission rules a settings file holds, allow, deny and ask
 # together, read from stdin.
 _settings_rules_count() {
@@ -915,7 +937,8 @@ _settings_tracked() {  # dir
 # one (git carried it with the integrate, or owns the base's copy since, and
 # a union would bring back a rule the base dropped or never took). Returns 2
 # for a link at the base's path, wherever it points: the link is the user's
-# way of sharing the file, and cs writes nothing through it.
+# way of sharing the file, and cs writes nothing through it; the retire lists
+# the rules the base lacks instead.
 _permission_rules_carried() {  # wt_dir base_dir
     [ -s "$1/.claude/settings.local.json" ] || return 1
     ! _settings_tracked "$1" || return 1
