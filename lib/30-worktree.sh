@@ -748,6 +748,15 @@ $hidden"
 $wt_untracked"
     fi
     if [ "$mode" = "ignored" ]; then
+        # A locked vault leaves its links dangling, and every record bound
+        # for one would read as a conflict to merge or delete by hand; the
+        # vault is named first, and mounting it is the remedy. private is
+        # asked first, so a vault locked whole is named by it.
+        local sub
+        for sub in private $CS_VAULT_LINKS; do
+            [ -L "$base_dir/.cs/$sub" ] && [ ! -d "$base_dir/.cs/$sub" ] \
+                && error "cannot fuse the worktree's records: $base_dir/.cs/$sub is locked. Mount it, then retry."
+        done
         local conflicts
         conflicts=$(_fuse_conflicts "$wt_dir/.cs" "$base_dir/.cs") \
             || error "Could not classify the session records in $wt_dir/.cs; nothing was removed"
@@ -772,7 +781,7 @@ $conflicts"
     # A fuse that refuses after the removal would strand the records in the
     # staging directory, so its one refusal is asked before anything moves.
     # Asked whether or not the worktree has a log: a locked vault takes the
-    # base's .cs/memory with it, which every fuse writes.
+    # base's .cs/memory with it, which the fuse writes for any narrative.
     # Claude Code writes the permission rules set in the feature (allow, deny,
     # ask) to its own .claude/settings.local.json, which git does not carry.
     # They go into the base's before the removal; a removal that then fails
