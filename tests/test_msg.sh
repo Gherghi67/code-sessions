@@ -566,6 +566,71 @@ test_task_kind_rejects_multiline_body() {
     assert_eq "0" "$(NEW_COUNT)" "no message delivered despite rejection" || return 1
 }
 
+# `cs <session> -queue` is the same accept gate seen from the queue's side:
+# another session's word goes to the mailbox as a task, and arming or accepting
+# stays with the target's own user. A terminal outside any session is that user
+# (test_queue_add_via_session_scoped_arm in test_queue.sh).
+test_queue_add_from_another_session_is_sent_as_task_mail() {
+    local out rc=0
+    out=$("$CS_BIN" receiver -queue add "review the tui diff" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the add exits 0" || return 1
+    assert_eq "0" "$(RQUEUE_LEN)" "nothing reaches the receiver's queue" || return 1
+    assert_eq "1" "$(NEW_COUNT)" "one message waits in the receiver's mailbox" || return 1
+    local msg; msg=$(FIRST_MSG)
+    assert_eq "task" "$(jq -r .kind "$msg")" "it is task mail" || return 1
+    assert_eq "review the tui diff" "$(jq -r .body "$msg")" "the task is the body" || return 1
+    assert_eq "sender" "$(jq -r .from "$msg")" "the sender is named" || return 1
+    assert_eq "sent to receiver (thread $(jq -r .thread "$msg")); queued only once its user accepts it (cs -queue accept $(jq -r .id "$msg"))" \
+        "$out" "the sender is told the task waits for an accept" || return 1
+}
+
+test_queue_start_from_another_session_refuses() {
+    local out rc=0
+    out=$("$CS_BIN" receiver -queue start 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the start exits 1" || return 1
+    assert_eq "Error: session sender cannot start receiver's queue; receiver's user starts it (cs -queue start inside receiver)" \
+        "$out" "the refusal names both sessions" || return 1
+    assert_not_exists "$(RCV_META)/local/queue.state" "the receiver's queue is not armed" || return 1
+}
+
+test_queue_accept_from_another_session_refuses() {
+    "$CS_BIN" -msg receiver -k task "review the tui diff" >/dev/null 2>&1 || return 1
+    local id; id=$(jq -r .id "$(FIRST_MSG)")
+    local out rc=0
+    out=$("$CS_BIN" receiver -queue accept "$id" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the accept exits 1" || return 1
+    assert_eq "Error: session sender cannot accept mail into receiver's queue; receiver's user accepts it (cs -queue accept $id inside receiver)" \
+        "$out" "the refusal names the accept to run" || return 1
+    assert_eq "0" "$(RQUEUE_LEN)" "nothing queued" || return 1
+    assert_not_exists "$(RCV_META)/local/queue.accepted" "no receipt recorded" || return 1
+}
+
+# Removing, clearing or deferring changes what the target's drain runs next:
+# the target's user does that too. Listing stays open.
+test_queue_changes_from_another_session_refuse() {
+    rcv -queue add "mine" >/dev/null 2>&1 || { echo "  receiver add failed"; return 1; }
+    local verb out rc
+    for verb in "rm 1" "clear" "defer"; do
+        rc=0
+        # shellcheck disable=SC2086 # the verb carries its own argument
+        out=$("$CS_BIN" receiver -queue $verb 2>&1) || rc=$?
+        assert_eq "1" "$rc" "$verb exits 1" || return 1
+        assert_eq "Error: session sender cannot change receiver's queue; receiver's user does that inside receiver (cs -queue ${verb%% *})" \
+            "$out" "$verb names who may change the queue" || return 1
+    done
+    assert_eq "1" "$(RQUEUE_LEN)" "the receiver's task is still queued" || return 1
+    assert_not_exists "$(RCV_META)/local/queue.declined" "the gate was not deferred" || return 1
+    out=$("$CS_BIN" receiver -queue list 2>&1) || { echo "  list refused: $out"; return 1; }
+    assert_output_contains "$out" "1. mine" "list still shows the queue" || return 1
+}
+
+# The rule compares the caller with the target: a session naming itself is its
+# own user, so the by-name form arms its own queue.
+test_queue_start_by_name_from_its_own_session_arms_it() {
+    rcv receiver -queue start >/dev/null 2>&1 || { echo "  start failed"; return 1; }
+    assert_eq "armed" "$(cat "$(RCV_META)/local/queue.state")" "the queue is armed" || return 1
+}
+
 run_test test_send_delivers_one_whole_document_per_message
 run_test test_send_writes_full_record
 run_test test_send_stamps_a_thread_and_keeps_a_sent_copy
@@ -748,6 +813,11 @@ run_test test_queue_accept_writes_the_receipt_before_the_queued_copy
 run_test test_queue_accept_serialises_concurrent_accepts
 run_test test_read_shows_how_to_accept_a_task
 run_test test_task_kind_rejects_multiline_body
+run_test test_queue_add_from_another_session_is_sent_as_task_mail
+run_test test_queue_start_from_another_session_refuses
+run_test test_queue_accept_from_another_session_refuses
+run_test test_queue_start_by_name_from_its_own_session_arms_it
+run_test test_queue_changes_from_another_session_refuse
 
 # An encrypted session keeps its cs files on its vault volume: .cs/private
 # links into it. Mail is one of those files, at either end of a send.

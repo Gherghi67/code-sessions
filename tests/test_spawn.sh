@@ -315,6 +315,35 @@ test_spawn_window_command_is_quoted_absolute() {
     assert_file_contains "$FAKE_TMUX_DIR/log" "'worker'" "name quoted" || return 1
 }
 
+# Work handed to a session that already exists goes through that session's
+# user: another session's tasks or brief would otherwise be queued, armed and
+# kicked by the spawn's own window with nobody asked.
+test_spawn_refuses_another_sessions_tasks_for_an_existing_session() {
+    create_test_session worker >/dev/null
+    local out rc=0
+    out=$(CLAUDE_SESSION_NAME="boss" "$CS_BIN" -spawn worker --task "first job" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the spawn exits 1" || return 1
+    assert_eq "Error: session boss cannot hand work to the existing session worker; send it as task mail for worker's user to accept: cs -msg worker --kind task \"<task>\"" \
+        "$out" "the refusal names the mail route" || return 1
+    assert_not_exists "$(SEED)" "no seed staged" || return 1
+    assert_not_exists "$FAKE_TMUX_DIR/log" "no window opened" || return 1
+}
+
+test_spawn_from_a_terminal_still_hands_an_existing_session_its_tasks() {
+    create_test_session worker >/dev/null
+    env -u CLAUDE_SESSION_NAME "$CS_BIN" -spawn worker --task "solo" >/dev/null 2>&1 || { echo "  spawn failed"; return 1; }
+    assert_eq "solo" "$(sed -n 3p "$(SEED)")" "the task is staged" || return 1
+}
+
+test_spawn_from_the_base_still_briefs_its_existing_feature() {
+    create_test_session base@feature >/dev/null
+    local brief="$TEST_TMPDIR/brief.md"
+    printf '# feature\n' > "$brief"
+    CLAUDE_SESSION_NAME="base" "$CS_BIN" -spawn base@feature --brief "$brief" >/dev/null 2>&1 \
+        || { echo "  spawn failed"; return 1; }
+    assert_file_exists "$CS_SESSIONS_ROOT/.spawn/base@feature.seed" "the brief is staged" || return 1
+}
+
 test_spawn_accepts_worktree_name() {
     "$CS_BIN" -spawn base@feature >/dev/null 2>&1 || return 1
     assert_file_contains "$FAKE_TMUX_DIR/log" "base@feature" "worktree window opened" || return 1
@@ -875,6 +904,9 @@ run_test test_spawn_rejects_multiline_and_empty_task
 run_test test_spawn_refuses_unmanaged_cs_session
 run_test test_spawn_refuses_duplicate_window
 run_test test_spawn_window_command_is_quoted_absolute
+run_test test_spawn_refuses_another_sessions_tasks_for_an_existing_session
+run_test test_spawn_from_a_terminal_still_hands_an_existing_session_its_tasks
+run_test test_spawn_from_the_base_still_briefs_its_existing_feature
 run_test test_spawn_accepts_worktree_name
 run_test test_spawn_new_session_race_falls_through_to_new_window
 run_test test_spawn_tmux_targets_are_exact_match_anchored

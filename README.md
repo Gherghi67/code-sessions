@@ -351,7 +351,7 @@ Queue up prompts and step away — cs drains them on its own at turn
 boundaries, once you've confirmed:
 
 ```bash
-cs -queue add "refactor the parser"   # add a task (or: cs <session> -queue add "..." from another terminal)
+cs -queue add "refactor the parser"   # add a task (or: cs <session> -queue add "..." from a terminal outside any session; from another session it arrives as task mail)
 cs -queue accept <id>                 # queue a task another session mailed (cs -msg shows the id)
 cs -queue                             # or `cs -queue list` — show pending + completed tasks
 cs -queue rm 2                        # remove pending task 2
