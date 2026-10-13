@@ -2228,6 +2228,44 @@ local: tuned" "$(cat "$wt/config.yml")" "the edit is still there" || return 1
 
 run_test test_retire_refuses_an_edit_git_diff_does_not_show
 
+# An initialised submodule is a checkout of its own: git ls-files in the
+# worktree does not list the files inside it, and removal destroys them.
+test_retire_refuses_untracked_and_ignored_work_inside_a_submodule() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" lib="$TEST_TMPDIR/sublib"
+    local sha output status=0
+    mkdir -p "$lib"
+    (cd "$lib" && git init -q && git config core.autocrlf false && echo lib > lib.txt \
+        && printf '*.env\n' > .gitignore && git add -A && git commit -q -m lib)
+    mkdir -p "$base_dir/.cs"/{memory,local}
+    echo "# P" > "$base_dir/README.md"
+    printf '.cs/\n' > "$base_dir/.gitignore"
+    (cd "$base_dir" && git init -q && git config core.autocrlf false && git add -A && git commit -q -m init \
+        && git config protocol.file.allow always \
+        && git submodule add -q "$lib" sub && git commit -q -m "add submodule")
+    cs_launch "proj@t1"
+    (cd "$wt" && git submodule update --init -q) \
+        || { echo "  FAIL: submodule fixture"; return 1; }
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    echo "secret" > "$wt/sub/secret.env"
+    echo "notes" > "$wt/sub/notes.txt"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_output_contains "$output" "Worktree has untracked files that removal would destroy; commit or remove them first:
+sub/notes.txt
+sub/secret.env" "the refusal names both files inside the submodule" || return 1
+    assert_eq "secret" "$(cat "$wt/sub/secret.env" 2>/dev/null)" "the ignored file is still there" || return 1
+    # Positive control: an initialised submodule holding nothing extra retires.
+    rm "$wt/sub/secret.env" "$wt/sub/notes.txt"
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "a clean submodule retires: $output" || return 1
+    assert_not_exists "$wt" "the worktree is retired" || return 1
+}
+
+run_test test_retire_refuses_untracked_and_ignored_work_inside_a_submodule
+
 test_rm_worktree_unregisters_and_prompts_branch() {
     local base_dir
     base_dir=$(create_test_session_with_git "myproj")
