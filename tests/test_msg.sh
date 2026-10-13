@@ -605,6 +605,25 @@ test_queue_accept_from_another_session_refuses() {
     assert_not_exists "$(RCV_META)/local/queue.accepted" "no receipt recorded" || return 1
 }
 
+# Removing, clearing or deferring changes what the target's drain runs next:
+# the target's user does that too. Listing stays open.
+test_queue_changes_from_another_session_refuse() {
+    rcv -queue add "mine" >/dev/null 2>&1 || { echo "  receiver add failed"; return 1; }
+    local verb out rc
+    for verb in "rm 1" "clear" "defer"; do
+        rc=0
+        # shellcheck disable=SC2086 # the verb carries its own argument
+        out=$("$CS_BIN" receiver -queue $verb 2>&1) || rc=$?
+        assert_eq "1" "$rc" "$verb exits 1" || return 1
+        assert_eq "Error: session sender cannot change receiver's queue; receiver's user does that inside receiver (cs -queue ${verb%% *})" \
+            "$out" "$verb names who may change the queue" || return 1
+    done
+    assert_eq "1" "$(RQUEUE_LEN)" "the receiver's task is still queued" || return 1
+    assert_not_exists "$(RCV_META)/local/queue.declined" "the gate was not deferred" || return 1
+    out=$("$CS_BIN" receiver -queue list 2>&1) || { echo "  list refused: $out"; return 1; }
+    assert_output_contains "$out" "1. mine" "list still shows the queue" || return 1
+}
+
 # The rule compares the caller with the target: a session naming itself is its
 # own user, so the by-name form arms its own queue.
 test_queue_start_by_name_from_its_own_session_arms_it() {
@@ -798,6 +817,7 @@ run_test test_queue_add_from_another_session_is_sent_as_task_mail
 run_test test_queue_start_from_another_session_refuses
 run_test test_queue_accept_from_another_session_refuses
 run_test test_queue_start_by_name_from_its_own_session_arms_it
+run_test test_queue_changes_from_another_session_refuse
 
 # An encrypted session keeps its cs files on its vault volume: .cs/private
 # links into it. Mail is one of those files, at either end of a send.
