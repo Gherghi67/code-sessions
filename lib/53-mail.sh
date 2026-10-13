@@ -246,7 +246,12 @@ _mail_print_files() {  # file...
         (.ts | if type == "number" then strflocaltime("%H:%M") else "--:--" end) + "  " +
         $dir + " " + $peer + "  [" + (.kind // "text") + "]  (" + (.thread // "------") + ")  " +
         ((.body // "") | gsub("[\n\r]"; " ")) +
+        # Only an id cs -queue accept takes whole: 1 to 40 of A-Z a-z 0-9 . _ -.
+        # Judged by what is left once those are deleted, since a regex "$"
+        # also matches before a final newline.
         (if $dir == "<-" and .kind == "task" and (.id | type) == "string"
+            and (.id | length) >= 1 and (.id | length) <= 40
+            and (.id | gsub("[A-Za-z0-9._-]"; "")) == ""
          then "  (accept into the queue: cs -queue accept " + .id + ")" else "" end)
     ' | _scrub_controls
 }

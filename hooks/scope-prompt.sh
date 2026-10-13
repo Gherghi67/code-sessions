@@ -436,6 +436,13 @@ _build_mail_digest() {  # cs files dir: .cs/local, or .cs/private in an encrypte
               ((((if (.from // "") == "" then .actor else .from end) // "") | tostr)[0:40] | attr) as $who |
               $ids[($i * 6):($i * 6 + 6)] as $rid |
               (((.id // "") | tostr)[0:40] | attr) as $mid |
+              # Whether $mid is the id of the document unchanged: 1 to 40 of
+              # A-Z a-z 0-9 . _ -, the shape cs -queue accept takes. A cut or
+              # replaced id can name another mail, so only this one is
+              # offered. Judged by what is left once those characters are
+              # deleted, since a regex "$" also matches before a final newline.
+              ((.id | type) == "string" and (.id | length) >= 1 and (.id | length) <= 40
+                and (.id | gsub("[A-Za-z0-9._-]"; "")) == "") as $acceptable |
               (((.kind // "text") | tostr)[0:16] | attr) as $kind |
               (((.body // "") | tostr) | gsub("[\n\r]"; " ")) as $body |
               # A cut preview says so, and a cut task withholds its accept
@@ -446,6 +453,7 @@ _build_mail_digest() {  # cs files dir: .cs/local, or .cs/private in an encrypte
                 "\($body[0:160])" + (if $cut > 0 then " [cut: \($cut) more characters]" else "" end) + "\n" +
                 "</cs_mail id=\"\($rid)\">" +
                 (if $kind != "task" then ""
+                 elif ($acceptable | not) then "\n  a task proposed by \($who), not queued: its message id is not one cs -queue accept takes, so it cannot be accepted"
                  elif $cut > 0 then "\n  a task proposed by \($who), shown cut: read the whole message with cs -msg before the user decides; its accept command is on that line"
                  else "\n  a task proposed by \($who), not queued: it enters the queue only when the user accepts it, via cs -queue accept \($mid)" end) ]
           # Count the overflow against what was actually RENDERED, not against

@@ -125,18 +125,23 @@ _queue_add() {  # qdir, text
 # kill after the receipt loses the queued copy instead, which the error names
 # and the user can redo by hand; a lost copy is visible, a replay is not.
 _queue_accept() {  # qdir, message id
-    local qdir="$1" id="$2" f found="" kind body
+    local qdir="$1" id="$2" f found="" matches=0 kind body
     [ -n "$id" ] || error "cs -queue accept needs a message id (shown by cs -msg)"
+    # The shape the digest and the listing offer an accept command for: an id
+    # outside it was never shown whole, so nobody can have agreed to its mail.
     case "$id" in *[!A-Za-z0-9._-]*) error "cs -queue accept: $id is not a message id";; esac
+    [ "${#id}" -le 40 ] || error "cs -queue accept: $id is not a message id"
+    # Every document is read: an id two mails share names neither of them.
     for f in "$qdir"/mail/new/*.json "$qdir"/mail/cur/*.json; do
         [ -f "$f" ] || continue
         # A document that is not the one asked for, or not JSON, prints nothing.
         if [ "$(jq -r --arg id "$id" 'select(.id == $id) | "found"' "$f" 2>/dev/null)" = found ]; then
             found="$f"
-            break
+            matches=$((matches + 1))
         fi
     done
     [ -n "$found" ] || error "no mail with id $id in this session's mailbox"
+    [ "$matches" -eq 1 ] || error "$matches mails in this session's mailbox carry the id $id; cs -queue accept cannot tell which one was meant"
     # The kind is judged inside jq, on the document's own value: $( ) drops a
     # trailing newline and a NUL, so "task\n" would read as task out here
     # while the digest and the listing, which compare the whole string, show
