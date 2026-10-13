@@ -2124,6 +2124,102 @@ test_import_file_refuses_a_session_whose_cs_is_a_link() {
     assert_eq "3 Error: secret not found: victim_token" "$rc $out" "nothing from the victim's store is imported" || return 1
 }
 
+# A file named outright is read from where its path leads, so a directory link
+# pushed inside the session (.cs/inbox -> ~/.cs-secrets) would hand over
+# another session's local store under a name that is itself no link.
+test_import_file_refuses_a_named_file_behind_a_linked_directory() {
+    local out rc=0 inbox="$CS_SESSIONS_ROOT/test-session/.cs/inbox" real
+    printf 'value-of-other\n' | "$CS_SECRETS_BIN" --session other-session set other_token >/dev/null 2>&1 \
+        || { echo "  FAIL: fixture: set in the other session failed"; return 1; }
+    ln -s "$HOME/.cs-secrets" "$inbox"
+    real=$(cd "$HOME/.cs-secrets" && /bin/pwd -P)
+    out=$("$CS_SECRETS_BIN" import-file "$inbox/other-session.enc" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the import is refused" || return 1
+    assert_eq "Error: Refusing to import $inbox/other-session.enc: its directory leads to $real, outside the session" \
+        "$out" "the refusal names the file and where its directory leads" || return 1
+    _assert_secret_absent other_token "nothing from the other session's store is imported" || return 1
+}
+
+# Writes a stand-in for <tool> at the front of PATH that, on the first call
+# whose arguments mention <word>, swaps the session's .cs for a link to
+# ~/.cs-secrets (keeping the real one as .cs.saved), then runs the real tool.
+_make_cs_swapper() {  # tool, word
+    local bindir="$TEST_TMPDIR/swap-bin" real
+    real=$(command -v "$1") || return 1
+    mkdir -p "$bindir"
+    cat > "$bindir/$1" <<EOF
+#!/bin/bash
+case "\$*" in *"$2"*)
+    if [ ! -e "$TEST_TMPDIR/swapped" ]; then
+        : > "$TEST_TMPDIR/swapped"
+        mv "$CS_SESSIONS_ROOT/test-session/.cs" "$CS_SESSIONS_ROOT/test-session/.cs.saved"
+        ln -s "$HOME/.cs-secrets" "$CS_SESSIONS_ROOT/test-session/.cs"
+    fi ;;
+esac
+exec "$real" "\$@"
+EOF
+    chmod +x "$bindir/$1"
+    printf '%s\n' "$bindir"
+}
+
+# The session's own legacy secrets.enc, and a session named secrets whose
+# local store ~/.cs-secrets/secrets.enc a swapped-in .cs link would expose.
+_seed_swap_fixture() {
+    printf 'value-of-victim\n' | "$CS_SECRETS_BIN" --session secrets set victim_token >/dev/null 2>&1 \
+        || { echo "  FAIL: fixture: set in the session named secrets failed"; return 1; }
+    printf '{"own_token":"mine"}\n' | openssl enc -aes-256-cbc -e -pbkdf2 -iter 100000 \
+        -out "$CS_SESSIONS_ROOT/test-session/.cs/secrets.enc" -pass env:CS_SECRETS_PASSWORD \
+        || { echo "  FAIL: fixture: could not encrypt the sync file"; return 1; }
+}
+
+# The .cs is checked once, then each file is copied: a checkout that swaps .cs
+# for a link before a copy starts must not lead that copy out of the session.
+test_import_file_refuses_a_cs_swapped_for_a_link_before_the_copy() {
+    local out rc=0 bindir
+    _seed_swap_fixture || return 1
+    bindir=$(_make_cs_swapper mktemp cs-import) || { echo "  FAIL: fixture: no mktemp"; return 1; }
+    out=$(PATH="$bindir:$PATH" "$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_file_exists "$TEST_TMPDIR/swapped" "positive control: the swap happened during the import" || return 1
+    assert_output_contains "$out" "^Skipped secrets\.enc: its directory changed while it was read\.$" \
+        "the skip says why" || return 1
+    _assert_secret_absent victim_token "nothing from the victim's store is imported" || return 1
+}
+
+# A swap that lands while the copy itself runs must not lead it out either.
+test_import_file_reads_the_cs_it_checked_when_swapped_during_the_copy() {
+    local out rc=0 bindir
+    _seed_swap_fixture || return 1
+    bindir=$(_make_cs_swapper cp secrets.enc) || { echo "  FAIL: fixture: no cp"; return 1; }
+    out=$(PATH="$bindir:$PATH" "$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_file_exists "$TEST_TMPDIR/swapped" "positive control: the swap happened during the import" || return 1
+    assert_eq "0 Imported 1 secret(s) from 1 sync file(s)." "$rc $out" "the session's own file is imported" || return 1
+    assert_eq "mine" "$("$CS_SECRETS_BIN" get own_token 2>&1)" "the value is the session's own" || return 1
+    _assert_secret_absent victim_token "nothing from the victim's store is imported" || return 1
+}
+
+# A Keychain value larger than the kernel lets a process carry in its
+# environment (1 MiB on macOS) must still reach the backup: export-file builds
+# the backup through jq, which never starts if the value rides in env.
+test_keychain_export_file_carries_a_value_past_the_exec_limit() {
+    local bindir; bindir=$(_make_fake_security)
+    local kcstore="$TEST_TMPDIR/kc-store" mid; mid=$(_machine_id)
+    local f="$CS_SESSIONS_ROOT/test-session/.cs/secrets.${mid}.enc" len rc=0 out
+    mkdir -p "$kcstore"
+    {
+        printf 'cs:test-session:big_blob\n'
+        head -c 1200000 /dev/zero | tr '\0' 'A'
+        printf '\n'
+    } > "$kcstore/cs_test-session_big_blob"
+    out=$(PATH="$bindir:$(_ageless_path)" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        "$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "export-file succeeds: $out" || return 1
+    openssl enc -aes-256-cbc -d -pbkdf2 -iter 100000 -in "$f" -pass env:CS_SECRETS_PASSWORD \
+        > "$TEST_TMPDIR/backup.json" 2>/dev/null \
+        || { echo "  FAIL: the sync file does not decrypt with the test password"; return 1; }
+    len=$(jq -r '.big_blob | length' "$TEST_TMPDIR/backup.json")
+    assert_eq "1200000" "$len" "the backup carries the whole value" || return 1
+}
+
 # A store that already holds two JSON documents (a corrupt or hand-edited
 # file) comes back from jq as two documents; writing them would keep a store
 # that every reader takes as missing secrets.
@@ -3354,6 +3450,10 @@ run_test test_import_file_skips_a_sync_file_that_is_a_symbolic_link
 run_test test_import_file_skips_a_password_sync_file_that_is_a_symbolic_link
 run_test test_import_file_keeps_the_store_when_a_value_exceeds_the_exec_limit
 run_test test_import_file_refuses_a_session_whose_cs_is_a_link
+run_test test_import_file_refuses_a_named_file_behind_a_linked_directory
+run_test test_import_file_refuses_a_cs_swapped_for_a_link_before_the_copy
+run_test test_import_file_reads_the_cs_it_checked_when_swapped_during_the_copy
+run_test test_keychain_export_file_carries_a_value_past_the_exec_limit
 run_test test_set_refuses_to_write_a_store_of_more_than_one_document
 run_test test_import_file_skips_a_file_whose_signature_cannot_be_read
 run_test test_import_file_skips_a_file_signed_for_another_session
