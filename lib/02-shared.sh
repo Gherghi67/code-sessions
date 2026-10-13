@@ -662,7 +662,8 @@ cs_append_inside() {  # file, command [args...]
 # the session it lies in. cs makes a session's .cs when it creates, adopts or
 # migrates the session; a writer that finds it gone is running for a session
 # removed under it, so the levels to make must lie below an existing .cs and
-# must not themselves hold a .cs, judged by spelling as the session is. The
+# must not themselves hold a .cs, judged by spelling as the session is; a
+# directory that already exists makes nothing and gets only the link check. The
 # levels mkdir -p would make do not exist yet, so the nearest one that does
 # is what gets resolved: a link there carries every level made below it.
 cs_mkdir_inside() {  # dir
@@ -672,13 +673,15 @@ cs_mkdir_inside() {  # dir
     while [ -n "$e" ] && [ ! -e "$e" ] && [ ! -L "$e" ]; do
         e="${e%/*}"
     done
-    case "$e/" in
-        */.cs/*) ;;
-        *) e="" ;;
-    esac
-    case "${dir#"$e"}/" in
-        */.cs/*) e="" ;;
-    esac
+    if [ "$e" != "$dir" ]; then
+        case "$e/" in
+            */.cs/*) ;;
+            *) e="" ;;
+        esac
+        case "${dir#"$e"}/" in
+            */.cs/*) e="" ;;
+        esac
+    fi
     if [ -z "$e" ]; then
         [ -n "${CS_WRITE_QUIET:-}" ] || echo "cs_mkdir_inside: $dir is not inside an existing .cs" >&2
         return 1
