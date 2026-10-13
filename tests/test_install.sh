@@ -1000,6 +1000,46 @@ test_install_keeps_a_mod_directory_linked_at_the_users_files() {
         || { echo "  FAIL: the other mod was not deployed"; return 1; }
 }
 
+# A skill directory linked elsewhere (a dotfiles repo, say) is the user's,
+# whatever the files behind it hold: cs never makes such a link. Install
+# keeps the link, writes nothing through it, names it once and lists it after
+# the completion line; uninstall leaves what it points at as it was. Covers a
+# link at the skill directory, whose target holds content cs wrote and the
+# user's own, and one at a skill's scripts/ directory.
+test_install_keeps_a_symlinked_skill_directory_and_writes_nothing_through_it() {
+    local home="$TEST_TMPDIR/skilllink-home" ext="$TEST_TMPDIR/skilllink-ext" out rc=0 l
+    mkdir -p "$home/.claude/skills/write-as-me" "$ext/rotate" "$ext/finish/scripts" "$ext/scripts"
+    _cs_shipped_content > "$ext/rotate/SKILL.md"
+    printf 'my finish skill\n' > "$ext/finish/SKILL.md"
+    printf 'my finish script\n' > "$ext/finish/scripts/finish.sh"
+    _cs_shipped_content > "$ext/scripts/build-corpus.sh"
+    ln -s "$ext/rotate" "$home/.claude/skills/rotate"
+    ln -s "$ext/finish" "$home/.claude/skills/finish"
+    ln -s "$ext/scripts" "$home/.claude/skills/write-as-me/scripts"
+    out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || rc=$?
+    assert_eq "0" "$rc" "install exit status" || { echo "$out"; return 1; }
+    for l in rotate finish write-as-me/scripts; do
+        [ -L "$home/.claude/skills/$l" ] || { echo "  FAIL: the link at skills/$l was not kept"; return 1; }
+        assert_eq "1" "$(printf '%s\n' "$out" | grep -c "Kept $(_bre_literal "$home/.claude/skills/$l"): a symlink, so cs wrote nothing through it and the skill files under it were not deployed$")" \
+            "one warning names the link at skills/$l" || return 1
+        printf '%s\n' "$out" | sed -n '/Installation complete/,$p' | grep -q "^ *$(_bre_literal "$home/.claude/skills/$l")$" \
+            || { echo "  FAIL: skills/$l is not listed after the completion line"; return 1; }
+    done
+    assert_eq "$(_cs_shipped_content)" "$(cat "$ext/rotate/SKILL.md")" "the rotate link's target is untouched" || return 1
+    assert_eq "my finish skill" "$(cat "$ext/finish/SKILL.md")" "the finish link's SKILL.md is untouched" || return 1
+    assert_eq "my finish script" "$(cat "$ext/finish/scripts/finish.sh")" "the finish link's script is untouched" || return 1
+    assert_eq "$(_cs_shipped_content)" "$(cat "$ext/scripts/build-corpus.sh")" "the scripts link's target is untouched" || return 1
+    cmp -s "$SCRIPT_DIR/../skills/write-as-me/SKILL.md" "$home/.claude/skills/write-as-me/SKILL.md" \
+        || { echo "  FAIL: the SKILL.md beside a linked scripts/ was not deployed"; return 1; }
+    cmp -s "$SCRIPT_DIR/../skills/feature/SKILL.md" "$home/.claude/skills/feature/SKILL.md" \
+        || { echo "  FAIL: an unlinked skill was not deployed"; return 1; }
+    printf 'y\n' | HOME="$home" "$CS_BIN" -uninstall > "$TEST_TMPDIR/skilllink.un" 2>&1 \
+        || { cat "$TEST_TMPDIR/skilllink.un"; echo "  FAIL: cs -uninstall exited non-zero"; return 1; }
+    assert_eq "$(_cs_shipped_content)" "$(cat "$ext/rotate/SKILL.md")" "uninstall leaves the rotate link's target" || return 1
+    assert_eq "my finish script" "$(cat "$ext/finish/scripts/finish.sh")" "uninstall leaves the finish link's target" || return 1
+    assert_eq "$(_cs_shipped_content)" "$(cat "$ext/scripts/build-corpus.sh")" "uninstall leaves the scripts link's target" || return 1
+}
+
 test_skill_files_exist_in_repo() {
     local entry
     for entry in $(extract_array "$SCRIPT_DIR/../install.sh" CS_SKILL_FILES); do
@@ -2444,6 +2484,7 @@ run_test test_uninstall_refuses_to_delete_session_data_while_a_dotted_session_is
 run_test test_uninstall_refuses_a_live_session_even_with_a_volume_mounted_inside
 run_test test_install_replaces_a_symlinked_mod_directory
 run_test test_install_keeps_a_mod_directory_linked_at_the_users_files
+run_test test_install_keeps_a_symlinked_skill_directory_and_writes_nothing_through_it
 run_test test_strip_filters_in_sync
 run_test test_install_deploys_hooks_to_cs_subdir
 run_test test_install_migrates_flat_hook_layout
