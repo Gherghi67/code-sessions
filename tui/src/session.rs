@@ -2843,6 +2843,39 @@ mod tests {
         assert!(count_secrets_from_keychain().is_empty());
     }
 
+    // A test build runs no `security` on any machine, whatever its Keychain
+    // holds: the counting test above runs again in a child whose PATH starts
+    // with a stand-in `security` that records that it ran and lists one cs
+    // entry. A build that reached for the Keychain would count that entry and
+    // leave the record, and would read the stand-in, never the real Keychain.
+    #[cfg(unix)]
+    #[test]
+    fn a_test_build_runs_no_security() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = std::env::temp_dir().join(format!("cs-test-no-security-{}", std::process::id()));
+        std::fs::remove_dir_all(&tmp).ok();
+        std::fs::create_dir_all(&tmp).unwrap();
+        let ran = tmp.join("security-ran");
+        std::fs::write(
+            tmp.join("security"),
+            format!("#!/bin/sh\n: > '{}'\nprintf '    \"svce\"<blob>=\"cs:demo:K1\"\\n'\n", ran.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(tmp.join("security"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = format!("{}:{}", tmp.display(), std::env::var("PATH").unwrap_or_default());
+
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["session::tests::a_test_build_counts_no_keychain_secrets", "--exact", "--test-threads=1"])
+            .env("PATH", path)
+            .output()
+            .unwrap();
+
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("test result: ok. 1 passed;"), "the counting test ran once and passed:\n{stdout}");
+        assert!(!ran.exists(), "a test build ran security");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
     // The Keychain panel counts one secret per generic password whose
     // service is cs:<session>:<name>, by session. A label or an account that
     // reads cs:..., and a service that is not cs's, count for nothing.
