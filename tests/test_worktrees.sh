@@ -2207,6 +2207,32 @@ test_retire_ignored_mode_refuses_a_narrative_whose_directory_is_a_file_in_the_ba
 
 run_test test_retire_ignored_mode_refuses_a_narrative_whose_directory_is_a_file_in_the_base
 
+# The feature's log is appended to the base's machine-local log, so that is
+# the destination checked before anything is removed.
+test_retire_ignored_mode_refuses_a_log_the_base_cannot_take() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    printf 'feature command\n' > "$wt/.cs/local/session.log"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    mkdir "$base_dir/.cs/local/session.log"
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_dir "$wt/.cs/memory" "nothing was removed: $output" || return 1
+    assert_eq ".cs/local/session.log" "$(printf '%s\n' "$output" | awk 'listed; /again:$/ { listed = 1 }')" \
+        "the refusal names the log" || return 1
+    # Positive control: with the directory out of the way, the log lands.
+    rmdir "$base_dir/.cs/local/session.log"
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire proceeds: $output" || return 1
+    assert_file_contains "$base_dir/.cs/local/session.log" "^feature command$" "the log lands" || return 1
+}
+
+run_test test_retire_ignored_mode_refuses_a_log_the_base_cannot_take
+
 # Every record under .cs that the base lacks goes back to it, at any depth,
 # not just topics and narratives: plans, a summary, handoffs, a brief,
 # artifacts, archived narrative sections, a nested topic, a non-.md note. A
