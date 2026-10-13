@@ -3445,10 +3445,12 @@ _tree_is_dirty() {
 # worktree about to be removed only; in a base the flags usually mark local
 # config the user means to keep uncommitted. A link counts by its target, as
 # git stores it, and a link where the index has a file (or the reverse) is an
-# edit. A file the flag leaves absent (sparse checkout) holds no edit. Fails
-# when git cannot list the index, never answering "none" on a listing it did
-# not get.
-_hidden_tracked_edits() {  # checkout_dir
+# edit. A file the flag leaves absent (sparse checkout) holds no edit. An
+# initialised submodule keeps an index of its own: its hidden edits are listed
+# too, at any depth, each path prefixed with <prefix> as
+# _untracked_and_ignored_lines does. Fails when git cannot list an index,
+# never answering "none" on a listing it did not get.
+_hidden_tracked_edits() {  # checkout_dir [prefix]
     local entry tag mode oid path now target
     git -C "$1" ls-files -v -s -z > /dev/null 2>&1 || return 1
     # Each entry reads "<tag> <mode> <oid> <stage>\t<path>".
@@ -3459,6 +3461,11 @@ _hidden_tracked_edits() {  # checkout_dir
         entry="${entry#* }"
         oid="${entry%% *}"
         path="${entry#*$'\t'}"
+        if [ "$mode" = 160000 ]; then
+            [ -e "$1/$path/.git" ] || continue
+            _hidden_tracked_edits "$1/$path" "${2:-}${path//$'\n'/?}/" || return 1
+            continue
+        fi
         case "$tag" in S|[[:lower:]]) ;; *) continue ;; esac
         if [ -L "$1/$path" ]; then
             if [ "$mode" = 120000 ]; then
@@ -3476,7 +3483,7 @@ _hidden_tracked_edits() {  # checkout_dir
         else
             continue
         fi
-        [ "$now" = "$oid" ] || printf '%s\n' "$path"
+        [ "$now" = "$oid" ] || printf '%s%s\n' "${2:-}" "$path"
     done < <(git -C "$1" ls-files -v -s -z 2>/dev/null)
     return 0
 }
