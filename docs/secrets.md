@@ -75,9 +75,9 @@ cs -secrets --session my-session list
 
 `set` refuses a value that is a placeholder rather than a secret: anything starting with `[REDACTED:`, a run of asterisks, `<redacted>`, or `YOUR_API_KEY`. Storing one would replace a working secret with junk that breaks whatever reads it later.
 
-`set` and `rm` refuse a session name the sessions root does not have (`No session named '<name>' in <root>`), on both backends: a value stored under a removed session's name, or under the old name of a renamed one, is a value no session reads. `purge` takes such a name, because it is how the secrets a removed session left are removed.
+`set`, `rm`, `import-file` and `migrate-backend` refuse a session name the sessions root does not have (`No session named '<name>' in <root>`), on both backends: a value stored under a removed session's name, or under the old name of a renamed one, is a value no session reads. `purge` takes such a name: purging is how you remove the secrets a removed session left.
 
-`set`, `rm` and `purge` hold one lock per session while they write, `<sessions root>/.secrets-lock.<session>`. It lives in the sessions root so that a Keychain write never creates `~/.cs-secrets`. A write that cannot take it within `CS_SECRETS_LOCK_TIMEOUT` seconds fails and names the file.
+`set`, `rm`, `purge` and the stores `import-file`, `migrate` and `migrate-backend` make hold one lock per session while they write, `<sessions root>/.secrets-lock.<session>`. It lives in the sessions root so that a Keychain write never creates `~/.cs-secrets`. A write that cannot take it within `CS_SECRETS_LOCK_TIMEOUT` seconds fails and names the file.
 
 ### Renaming a session
 
@@ -88,9 +88,9 @@ cs-secrets keys every store by the session's name: the Keychain entries `cs:<ses
 cs -secrets --session old-name rename new-name
 ```
 
-The new name is the last argument and is taken literally, so a session named `purge` or `--redact` is a name here, not a command or an option. Options such as `--session` go before `rename`; a word after the new name is refused (`rename takes one session name; unexpected: <words>`).
+`rename` reads the new name, its last argument, literally, so a session named `purge` or `--redact` is a name here, not a command or an option. Options such as `--session` go before `rename`; `rename` refuses a word after the new name (`rename takes one session name; unexpected: <words>`).
 
-`rename` refuses while the sessions root still has the old name, when it does not have the new one, and when the new name already has Keychain secrets, an encrypted store or age state. It never merges or overwrites. It takes the same per-session locks as `set`, `rm`, `purge`, `export-file`, `age add` and `age remove`, for both names, so a write that lands during a rename is moved with the session or waits for the move. It moves Keychain entries only on the Keychain backend.
+`rename` refuses while the sessions root still has the old name, when it does not have the new one, and when the new name already has Keychain secrets, an encrypted store or age state. It never merges or overwrites. It takes the same per-session locks as `set`, `rm`, `purge`, `export-file`, `age add` and `age remove`, for both names, so a write that lands during a rename moves with the session or waits for the move. It moves Keychain entries only on the Keychain backend.
 
 An interrupted move loses no secret. `rename` stores every Keychain entry under the new name and reads it back before it deletes any old entry, and links each file under the new name before it unlinks the old one. `~/.cs-secrets/.rename.<old>` records the move until it finishes, so running the same command again completes it.
 
