@@ -133,6 +133,98 @@ _worktree_untracked_at_risk() {  # wt_dir
         || [ $? -eq 1 ]
 }
 
+# The listing of files a removal would destroy, from three lists on stdin
+# separated by empty lines: the checkout's tracked paths; "<count><TAB><path>"
+# for each directory git does not list into (a nested repository, shown by
+# git as one path ending in "/"); and the paths at risk. Prints the count
+# phrase ("1 file", "60,882 files"), then one indented line per entry: a
+# directory holding no tracked file is one entry with the number of files at
+# risk under it, any other path is listed alone. Entries holding the most
+# files come first, at most 20, then how many entries are not shown.
+_untracked_listing_render() {
+    local tab=$'\t'
+    LC_ALL=C awk '
+        BEGIN { section = 0 }
+        $0 == "" { section++; next }
+        section == 0 {
+            dir = $0
+            if (!sub(/\/[^\/]*$/, "/", dir) || (dir in tracked)) next
+            n = split(dir, seg, "/")
+            dir = ""
+            for (i = 1; i < n; i++) { dir = dir seg[i] "/"; tracked[dir] = 1 }
+            next
+        }
+        section == 1 {
+            cut = index($0, "\t")
+            inside[substr($0, cut + 1)] = substr($0, 1, cut - 1)
+            next
+        }
+        {
+            files = 1
+            if ($0 ~ /\/$/) {
+                if (!($0 in inside)) { unknown = $0; exit }
+                files = inside[$0]
+            }
+            entry = $0
+            n = split($0, seg, "/")
+            dir = ""
+            for (i = 1; i < n; i++) {
+                dir = dir seg[i] "/"
+                if (!(dir in tracked)) { entry = dir; break }
+            }
+            count[entry] += files
+        }
+        END {
+            if (unknown != "") {
+                printf "no file count for the directory %s\n", unknown > "/dev/stderr"
+                exit 1
+            }
+            for (entry in count) printf "%d\t%s\n", count[entry], entry
+        }' \
+    | LC_ALL=C sort -t "$tab" -k1,1nr -k2 \
+    | LC_ALL=C awk -v shown=20 '
+        function grouped(n,    s) {
+            s = sprintf("%d", n)
+            while (s ~ /[0-9][0-9][0-9][0-9]/) sub(/[0-9][0-9][0-9]($|,)/, ",&", s)
+            return s
+        }
+        function files(n) { return grouped(n) (n == 1 ? " file" : " files") }
+        {
+            cut = index($0, "\t")
+            total += substr($0, 1, cut - 1)
+            if (NR > shown) next
+            held[NR] = substr($0, 1, cut - 1)
+            path[NR] = substr($0, cut + 1)
+            if (path[NR] ~ /\/$/ && length(path[NR]) > width) width = length(path[NR])
+        }
+        END {
+            print files(total)
+            for (i = 1; i <= NR && i <= shown; i++) {
+                if (path[i] ~ /\/$/) printf "    %-" width "s  (%s)\n", path[i], files(held[i])
+                else printf "    %s\n", path[i]
+            }
+            if (NR > shown) printf "    ... and %s more\n", grouped(NR - shown)
+        }'
+}
+
+# The listing of files a removal of the checkout would destroy, for the paths
+# at risk given one per line (_untracked_listing_render has the format). git
+# lists a nested repository as one path ending in "/", so the files under each
+# are counted here. Fails when git cannot list the tracked paths or a nested
+# repository cannot be read.
+_untracked_listing() {  # checkout_dir paths
+    local dir="$1" paths="$2" tracked nested="" repo files
+    tracked=$(git -C "$dir" ls-files -z | LC_ALL=C tr '\n\0' '?\n') || return 1
+    while IFS= read -r repo; do
+        [ -n "$repo" ] || continue
+        files=$(find "$dir/$repo" ! -type d | wc -l) || return 1
+        nested="$nested${files//[[:space:]]/}"$'\t'"$repo"$'\n'
+    done <<< "$(printf '%s\n' "$paths" | LC_ALL=C grep '/$' || [ $? -eq 1 ])"
+    { [ -z "$tracked" ] || printf '%s\n' "$tracked"
+      printf '\n%s\n' "$nested"
+      printf '%s\n' "$paths"; } | _untracked_listing_render
+}
+
 # Print the PID of a live lock on a session that the invoker does not own:
 # empty when the lock is absent, its process is dead, or the lock is the
 # invoking conversation's own (session_lock_owned_by_invoker). The integrate
