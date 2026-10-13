@@ -743,6 +743,13 @@ $conflicts"
     # staging directory, so its one refusal is asked before anything moves.
     # Asked whether or not the worktree has a log: a locked vault takes the
     # base's .cs/memory with it, which every fuse writes.
+    # Claude Code writes the permissions granted in the feature to its own
+    # .claude/settings.local.json, which git does not carry. They go into the
+    # base's before the removal; a removal that then fails leaves them there,
+    # and the retry's union changes nothing.
+    _carry_permission_grants "$wt_dir" "$base_dir" \
+        || error "Could not add the feature's permission grants to $base_dir/.claude/settings.local.json; nothing was removed"
+
     local aside=""
     if [ "$mode" = "ignored" ]; then
         cs_private_dir "$base_dir/.cs" >/dev/null \
@@ -785,6 +792,33 @@ $remove_err"
         '{ts: $ts, event: $event, task: $task}'
     _finish_progress_write retired
     printf 'retired %s %s\n' "$task" "$sha"
+}
+
+# A Claude Code settings file's JSON, or {} for a missing or zero-byte one.
+_settings_json_or_empty() {  # file
+    if [ -s "$1" ]; then cat "$1"; else printf '{}\n'; fi
+}
+
+# The base's settings with each permissions.allow entry of the feature's
+# that the base lacks appended after the base's own, in the feature's order,
+# once. Every other key of both files is left as it is.
+_settings_allow_union() {  # base_settings feature_settings
+    _settings_json_or_empty "$1" | jq --slurpfile f "$2" '
+        ($f[0].permissions.allow // []) as $add
+        | .permissions.allow = reduce $add[] as $x ((.permissions.allow // []);
+            if any(.[]; . == $x) then . else . + [$x] end)'
+}
+
+# Add the feature's permission grants to the base's settings.local.json
+# (_settings_allow_union), creating it when the base has none. Writes nothing
+# when the base already holds every grant.
+_carry_permission_grants() {  # wt_dir base_dir
+    local feat="$1/.claude/settings.local.json" base="$2/.claude/settings.local.json" was now
+    [ -s "$feat" ] || return 0
+    was=$(_settings_json_or_empty "$base" | jq '(.permissions.allow // []) | length') || return 1
+    now=$(_settings_allow_union "$base" "$feat" | jq '.permissions.allow | length') || return 1
+    [ "$now" != "$was" ] || return 0
+    cs_mkdir_inside "$2/.claude" && cs_write_atomic "$base" _settings_allow_union "$base" "$feat"
 }
 
 # Remove the temp worktree and release the mutex on every exit path of
