@@ -333,12 +333,17 @@ test_resume_of_a_parent_conversation_under_the_worktree_id_keeps_cs_as_the_paren
 # plain claude run in the worktree outside cs leaves another transcript in the
 # worktree's own project dir. The bound one still exists, so the open keeps it
 # and resumes it; the other conversation is not taken for its replacement.
-test_open_keeps_a_relocated_conversation_beside_a_newer_local_one() {
+# The bound conversation's first prompt is rewritten after the adoption bound
+# it, as the caller says.
+_assert_open_keeps_the_relocated_conversation() {  # first prompt of the bound conversation
     local repo="$TEST_TMPDIR/repo"
     _make_repo "$repo" moved-wt
     local wt="$repo/.claude/worktrees/moved-wt"
     _seed_relocated_conversation "$repo" "$wt" "$UUID_A" "Port the sync engine to the worktree branch"
     (cd "$repo" && "$CS_BIN" -adopt --worktrees >/dev/null 2>&1) || { echo "  FAIL: adopt should succeed"; return 1; }
+    assert_eq "$UUID_A" "$(awk '/^claude_session_id:/ { print $2; exit }' "$wt/.cs/local/state")" \
+        "the adoption bound the relocated conversation" || return 1
+    _seed_relocated_conversation "$repo" "$wt" "$UUID_A" "$1"
     _seed_conversation "$wt" "$UUID_B" "a quick unrelated question asked outside cs"
     _launch_recording_stub
     local output
@@ -349,6 +354,18 @@ test_open_keeps_a_relocated_conversation_beside_a_newer_local_one() {
         "a bound conversation whose transcript was relocated is no orphan" || return 1
     assert_output_contains "$(sed -n 's/^args=//p' "$TEST_TMPDIR/claude-launch")" "--resume $UUID_A" \
         "the open resumes the bound, relocated conversation" || return 1
+}
+
+test_open_keeps_a_relocated_conversation_beside_a_newer_local_one() {
+    _assert_open_keeps_the_relocated_conversation "Port the sync engine to the worktree branch"
+}
+
+# A bound conversation is kept by what it is, the worktree's record and a first
+# prompt stamped with the worktree as cwd. The teammate test that discovery
+# applies reads the first prompt's whole line, so a prompt that only mentions
+# the teammate frame by name must not unbind a conversation already bound.
+test_open_keeps_a_relocated_conversation_whose_prompt_names_the_teammate_frame() {
+    _assert_open_keeps_the_relocated_conversation "Explain how teammate-message is handled"
 }
 
 # A worktree that held two `claude --worktree` conversations has both in the
@@ -634,6 +651,7 @@ run_test test_resume_of_a_relocated_conversation_runs_claude_in_place_of_cs
 run_test test_resume_of_a_parent_conversation_under_the_worktree_id_keeps_cs_as_the_parent
 run_test test_resume_of_an_older_relocated_conversation_runs_claude_in_place_of_cs
 run_test test_open_keeps_a_relocated_conversation_beside_a_newer_local_one
+run_test test_open_keeps_a_relocated_conversation_whose_prompt_names_the_teammate_frame
 run_test test_a_symlink_to_another_project_is_not_adopted
 run_test test_open_leaves_a_tracked_claude_md_with_cs_markers_alone
 run_test test_an_exclude_file_without_a_final_newline_keeps_its_last_rule
