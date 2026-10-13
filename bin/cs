@@ -12365,6 +12365,8 @@ ensure_cs_gitignore_entries() {
 .cs/archives/
 .cs/vault-mnt/
 .cs/.narrative-reminder-cooldown
+.cs/session.lock
+.cs/session.mutex.lock
 .claude/settings.local.json
 CLAUDE.local.md
 .obsidian/
