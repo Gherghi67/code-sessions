@@ -3987,6 +3987,77 @@ test_session_end_clears_a_stale_lock() {
 run_test test_session_end_spares_a_live_sessions_lock
 run_test test_session_end_clears_a_stale_lock
 
+# `cs -rm <name> --force` can land while the claude it removes is still ending:
+# its SessionEnd has already found the session directory and goes on writing.
+# Nothing it writes may bring the directory back, or the picker shows an empty
+# shell holding the end's log line, timeline event and lock files. A DEBUG trap
+# loaded through BASH_ENV removes the directory before the hook's Nth command,
+# for every N the hook runs, so wherever the removal lands is covered without
+# naming a line or a command of the hook. Run under /bin/bash (cs's 3.2 floor)
+# and under the bash running this suite.
+test_session_end_never_recreates_a_removed_session() {
+    local seam="$TEST_TMPDIR/remove-at-step.sh" root="$TEST_TMPDIR/rm-sessions"
+    local dir="$root/ending" steps_file="$TEST_TMPDIR/steps" sh steps n rc
+    cat > "$seam" << 'SEAM'
+_cs_test_step=0
+_cs_test_remove_at_step() {
+    case "$1" in */session-end.sh) ;; *) return 0 ;; esac
+    _cs_test_step=$((_cs_test_step + 1))
+    if [ "$_cs_test_step" = "${CS_TEST_REMOVE_AT:-}" ]; then
+        rm -rf "$CS_TEST_REMOVE_DIR"
+        : > "$CS_TEST_REMOVED_MARK"
+    fi
+    printf '%s\n' "$_cs_test_step" > "$CS_TEST_STEPS_FILE"
+    return 0
+}
+trap '_cs_test_remove_at_step "${BASH_SOURCE[0]:-}"' DEBUG
+SEAM
+    _stage_ending_session() {
+        rm -rf "$dir"
+        mkdir -p "$dir/.cs/local"
+        printf '# Session: ending\n' > "$dir/.cs/README.md"
+        : > "$dir/.cs/local/session.log"
+        printf '%s\n' "$$" > "$dir/.cs/session.lock"
+    }
+    _run_ending_hook() {  # bash, step to remove at ("" for none)
+        env -i HOME="$TEST_TMPDIR" PATH="$PATH" CS_SESSIONS_ROOT="$root" \
+            CLAUDE_SESSION_NAME=ending CLAUDE_SESSION_DIR="$dir" \
+            CS_RESOLVED_FROM=env CS_LEAD_PID=$$ CLAUDE_PID=$$ \
+            BASH_ENV="$seam" CS_TEST_REMOVE_AT="$2" CS_TEST_REMOVE_DIR="$dir" \
+            CS_TEST_REMOVED_MARK="$TEST_TMPDIR/removed" CS_TEST_STEPS_FILE="$steps_file" \
+            "$1" "$HOOKS_DIR/session-end.sh" \
+            <<< '{"session_id":"11111111-2222-4333-8444-555555555555","reason":"other"}' \
+            >/dev/null 2>&1
+    }
+    mkdir -p "$root"
+    for sh in /bin/bash "$BASH"; do
+        [ "$sh" = /bin/bash ] || [ ! "$sh" -ef /bin/bash ] || continue
+        # Positive control: untouched, the hook writes its end into the session.
+        _stage_ending_session
+        _run_ending_hook "$sh" "" || { echo "  FAIL: $sh: session-end failed with no removal"; return 1; }
+        assert_file_contains "$dir/.cs/timeline.jsonl" '"event":"ended"' \
+            "$sh: the hook records the end when the session stays" || return 1
+        steps=$(cat "$steps_file")
+        [ "$steps" -ge 20 ] || { echo "  FAIL: $sh: the seam counted only $steps hook commands"; return 1; }
+        n=1
+        while [ "$n" -le "$steps" ]; do
+            _stage_ending_session
+            rm -f "$TEST_TMPDIR/removed"
+            rc=0
+            _run_ending_hook "$sh" "$n" || rc=$?
+            assert_exists "$TEST_TMPDIR/removed" "$sh: the session was removed before hook command $n" || return 1
+            assert_eq "0" "$rc" "$sh: session-end exits 0 when the session goes before command $n" || return 1
+            if [ -e "$dir" ]; then
+                echo "  FAIL: $sh: removed before hook command $n of $steps, the session came back holding: $(cd "$root" && find ending | tr '\n' ' ')"
+                return 1
+            fi
+            n=$((n + 1))
+        done
+    done
+}
+
+run_test test_session_end_never_recreates_a_removed_session
+
 
 # --- A torn JSONL tail must not take the next record down with it ---
 # A process killed mid-append leaves a last line with no newline. The next `>>`
