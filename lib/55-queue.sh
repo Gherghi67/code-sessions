@@ -110,7 +110,6 @@ _queue_add() {  # qdir, text
         rm -f "$qdir/queue.tmp/$fname"
         error "could not write the task into $qdir/queue; it is not queued"
     fi
-    rm -f "$qdir/queue.declined"   # queue changed: allow the gate to re-ask
 }
 
 # Queue a task that arrived as task-kind mail, by its message id. The user's
@@ -179,7 +178,6 @@ _queue_accept() {  # qdir, message id
         error "could not write the task into $qdir/queue; its accept is recorded, so re-queue it with: cs -queue add"
     fi
     _cs_unlock "$lock"
-    rm -f "$qdir/queue.declined"   # the user's accept re-opens the gate
     # Accepting is reading: the message leaves new/ so it neither wakes nor
     # digests again. A failed move leaves it unread, which over-shows the
     # accept command but never re-queues.
@@ -232,9 +230,7 @@ _queue_rm() {  # qdir, index
     case "$n" in ''|*[!0-9]*) error "cs -queue rm needs a task number";; esac
     len=$(_queue_len "$qdir")
     [ "$len" -gt 0 ] || { error "queue is empty"; }
-    # Refuse before touching anything: an index past the end used to fall
-    # through the loop silently and still clear queue.declined below, re-arming
-    # the gate so a later drain ran the task the user believed they had removed.
+    # Refuse before touching anything: an index past the end names no task.
     if [ "$n" -lt 1 ] || [ "$n" -gt "$len" ]; then
         error "no task $n in the queue (1-$len)"
     fi
@@ -247,13 +243,12 @@ _queue_rm() {  # qdir, index
             break
         fi
     done
-    rm -f "$qdir/queue.declined"
 }
 
 _queue_clear() {  # qdir
     local qdir="$1"
     rm -rf "$qdir/queue" "$qdir/queue.tmp"
-    rm -f "$qdir/queue.state" "$qdir/queue.declined" "$qdir/queue.mode" "$qdir/queue.failed" "$qdir/queue.current"
+    rm -f "$qdir/queue.state" "$qdir/queue.mode" "$qdir/queue.failed" "$qdir/queue.current"
 }
 
 # Arms the queue and records how its tasks run: in the conversation (no mode
@@ -311,9 +306,6 @@ run_queue() {
         rm)    shift; _queue_rm "$qdir" "${1:-}";;
         clear) _queue_clear "$qdir";;
         start) shift; _queue_start "$qdir" "${1:-}";;
-        defer) mkdir -p "$qdir"; cs_write_atomic "$qdir/queue.declined" printf '%s\n' "$(date +%s)"
-               _append_record "$qdir/notifications.jsonl" \
-                   --arg ts "$(date +%s)" '{ts: ($ts|tonumber), event: "gate_declined"}';;
         log)   _queue_log "$qdir";;
         *)     error "Usage: cs -queue [add \"<task>\" | accept <message id> | list | rm <n> | clear | log | start [subagents|workflow]]";;
     esac

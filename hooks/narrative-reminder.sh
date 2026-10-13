@@ -479,8 +479,9 @@ if [ "$IS_GUEST" != 1 ] && [ -z "${CS_NO_ITERM2:-}" ] && [ "${TERM_PROGRAM:-}" =
 fi
 
 # --- Task queue drain (walk-away mode) ---------------------------------------
-# Hands the agent its next queued task when armed; asks once when idle. Wins
-# over the narrative nag (returns early). Queue text is arbitrary -> jq emit.
+# Hands the agent its next queued task when armed or draining. An idle queue,
+# tasks or not, is left to the person: the cs mod's band offers its start.
+# Wins over the narrative nag (returns early). Queue text is arbitrary -> jq emit.
 QDIR="$CS_FILES"
 # A queue a link carries out of the session is not this session's: the drain
 # would move and delete the files there before any checked write.
@@ -504,9 +505,9 @@ QCURRENT_FILE="$QDIR/queue.current"
 #
 # No lock guards the file, by decision (#808): a drain writing idle and a
 # concurrent `cs -queue start` writing armed are last-rename-wins, and the
-# loser is an arm on a queue that just emptied. That costs one prompt, never
-# a task: a non-empty queue left idle takes the idle branch below, which
-# offers the gate again. Benign by design; do not add a lock here.
+# loser is an arm on a queue that just emptied. That costs one press, never a
+# task: a non-empty queue left idle is offered again by the cs mod's band.
+# Benign by design; do not add a lock here.
 _qstate_write() {  # state word
     cs_write_atomic "$QSTATE_FILE" printf '%s\n' "$1" && return 0
     if [ "$1" = idle ] && rm -f "$QSTATE_FILE" 2>/dev/null \
@@ -662,7 +663,7 @@ _qpark() {  # kind reading limit remaining note
     exit 0
 }
 
-# Only the lead's Stop advances or gates the queue. A tmux teammate shares the
+# Only the lead's Stop advances the queue. A tmux teammate shares the
 # session directory and fires its own top-level Stop, so ungated its every
 # idle turn pops a task: an eight-task queue reads "all tasks complete" after
 # eight reviewer turns with nothing done. A teammate falls through to the
@@ -817,37 +818,8 @@ $RUN_MODE$SCOPE"
         fi
     fi
 
-    if [ "$QSTATE" = "idle" ]; then
-        DECLINED="$QDIR/queue.declined"
-        GATE=1
-        if [ -f "$DECLINED" ]; then
-            # A stamp is data: anything but a plain number reads as 0, a
-            # decline long past, and never reaches the arithmetic below, which
-            # would run a command substitution held in it.
-            DECL_AT=$(_num_or "$(cat "$DECLINED" 2>/dev/null | tr -d '[:space:]')" 0)
-            NOW=$(date +%s)
-            if [ -n "$DECL_AT" ] && [ $((NOW - DECL_AT)) -lt 600 ]; then
-                GATE=0            # within cooldown: fall through to narrative
-            else
-                rm -f "$DECLINED"
-            fi
-        fi
-        if [ "$GATE" = "1" ]; then
-            CTX=$(cat "$LOCAL/context-pct" 2>/dev/null | tr -d '[:space:]' || true)
-            CTX_LINE=""
-            COMPACT=""
-            case "$CTX" in
-                ''|*[!0-9]*) : ;;
-                *) CTX_LINE=" Context is at ${CTX}%."
-                   [ "$CTX" -ge 60 ] && COMPACT=" Context is heavy: offer a third option 'Compact first'. If chosen, run no queue command and tell the user to run /compact; you will be asked again afterward." ;;
-            esac
-            REASON="cs task queue: $QLEN task(s) are queued for a walk-away run.$CTX_LINE$COMPACT Use AskUserQuestion to ask, in one call, whether to work through them now (options: Start / Not yet) and how to run them (options: In this conversation / In subagents / As workflows). On Start, run: cs -queue start, or cs -queue start subagents, or cs -queue start workflow, by the second answer (then stop; I will hand you each task). On Not yet, run: cs -queue defer."
-            jq -nc --arg r "$REASON" '{decision:"block", reason:$r}'
-            exit 0
-        fi
-    fi
 fi
-# (falls through to the narrative reminder below when not gating/draining)
+# (falls through to the narrative reminder below when not draining)
 
 # --- Mail wake (Stop) ---------------------------------------------------------
 # The turn-end half. Reached only when the queue is not active: every armed or
