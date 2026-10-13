@@ -2103,6 +2103,24 @@ test_each_python_environment_the_copy_rewrites_is_named_once() {
     assert_output_contains "$OUT" 'lab/\.venv, a Python virtual environment: 1 text file(s) would be rewritten to name the copy$'
 }
 
+# apply copies a linked folder as the link it is, so a file reached through one
+# is no file of the copy: the dry run counts what apply rewrites, no more.
+test_a_linked_folder_in_a_python_environment_is_not_counted() {
+    make_fixture
+    make_created lab "$MINE_ID"
+    make_venv "$CSROOT/lab"
+    local site="$CSROOT/lab/.venv/lib/python3.12/site-packages"
+    mv "$site" "$TEST_TMPDIR/outside-site"
+    ln -s "$TEST_TMPDIR/outside-site" "$site"
+    run_move --session lab || { echo "$OUT"; return 1; }
+    assert_output_contains "$OUT" 'lab/\.venv, a Python virtual environment: 3 text file(s) would be rewritten to name the copy$' \
+        || { echo "$OUT"; return 1; }
+    run_move --session lab --apply || { echo "$OUT"; return 1; }
+    assert_output_contains "$OUT" 'lab/\.venv, a Python virtual environment: 3 text file(s) rewritten to name the copy$' \
+        || { echo "$OUT"; return 1; }
+    assert_file_contains "$TEST_TMPDIR/outside-site/_editable_impl_lab.pth" "$CSROOT/lab/src"
+}
+
 test_all_and_session_together_is_an_error() {
     make_fixture
     local status=0
@@ -2574,6 +2592,7 @@ run_test test_the_codex_thread_a_session_binds_comes_with_it
 run_test test_the_resume_line_names_the_conversation_after_the_run
 run_test test_pasted_contents_of_the_prompt_history_come_along
 run_test test_each_python_environment_the_copy_rewrites_is_named_once
+run_test test_a_linked_folder_in_a_python_environment_is_not_counted
 run_test test_a_rerun_adds_the_tags_cs_has_and_keeps_one_code_sessions_moved
 run_test test_a_rerun_brings_the_remote_tracking_refs_cs_fetched
 run_test test_a_rerun_gives_branches_and_remotes_the_settings_cs_has

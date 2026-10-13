@@ -545,7 +545,8 @@ class Rewrites:
         """The virtual environments' text files a fresh copy of root rewrites (see apply), found without copying.
 
         Only a folder with pyvenv.cfg is looked into, and in it only the
-        places _venv_folder covers; paths in skip are passed by whole.
+        places _venv_folder covers; a folder reached through a link is not
+        entered, as apply does not; paths in skip are passed by whole.
         """
         if self._pattern is None:
             return []
@@ -567,7 +568,21 @@ class Rewrites:
 
     def _venv_candidates(self, folder):
         """Each path in the virtual environment at folder that _venv_folder would take for one of its files."""
+        def real_dir(*parts):
+            # Down from folder each step is looked at, not followed: apply copies a linked folder as one link.
+            here = self.root
+            for part in filter(None, os.path.join(folder, *parts).split(os.sep)):
+                here = os.path.join(here, part)
+                try:
+                    if not stat.S_ISDIR(os.lstat(here).st_mode):
+                        return False
+                except OSError:
+                    return False
+            return True
+
         def names(*parts):
+            if not real_dir(*parts):
+                return []
             try:
                 return sorted(os.listdir(os.path.join(self.root, folder, *parts)))
             except OSError:
@@ -580,7 +595,7 @@ class Rewrites:
             for name in names(site):
                 if name.endswith((".pth", ".egg-link")) or (name.startswith("__editable__") and name.endswith(".py")):
                     out.append(os.path.join(folder, site, name))
-                elif name.endswith(".dist-info"):
+                elif name.endswith(".dist-info") and real_dir(site, name):
                     out.append(os.path.join(folder, site, name, "direct_url.json"))
         return out
 
