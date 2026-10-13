@@ -157,6 +157,7 @@ CS_COMMANDS=(
 # does not. A command file left behind keeps answering its name, so install.sh
 # and run_uninstall both remove each one cs wrote; a user's own file of the
 # same name is kept. When retiring a command, add its filename here.
+# shellcheck disable=SC2034  # read by install.sh and run_uninstall
 RETIRED_COMMANDS=(
     compact-discoveries.md  # retired with the discoveries machinery; the session narrative replaced it
     skillify.md             # retired with CLI command capture (command-tracker.sh), whose log it promoted to skills
@@ -1217,7 +1218,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "aff52a6ba62a3789ee80ec14036ac1fcd4994cadcdd834202926902cb1eed7e8  bin/cs"
+    "399b6fba59241bd326503d3b2e21570ad662f9dc22e1b09d776be17c0dcff9ed  bin/cs"
     "3b4626c505845d0e94961cd06e3e5400c6f497340ff93dadf88770f02ff22524  bin/cs-secrets"
     "f5c5600a9e08e623881893c5ca4f8e06d64adc5da414fbc0ad2166b6adea8775  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"

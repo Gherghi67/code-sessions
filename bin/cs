@@ -93,6 +93,7 @@ CS_COMMANDS=(
 # does not. A command file left behind keeps answering its name, so install.sh
 # and run_uninstall both remove each one cs wrote; a user's own file of the
 # same name is kept. When retiring a command, add its filename here.
+# shellcheck disable=SC2034  # read by install.sh and run_uninstall
 RETIRED_COMMANDS=(
     compact-discoveries.md  # retired with the discoveries machinery; the session narrative replaced it
     skillify.md             # retired with CLI command capture (command-tracker.sh), whose log it promoted to skills
