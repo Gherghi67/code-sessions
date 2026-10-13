@@ -1510,6 +1510,41 @@ test_install_and_uninstall_keep_a_flat_shape_hook_entry() {
         "uninstall strips every cs registration" || return 1
 }
 
+# Runs install and uninstall over a HOME whose settings.json holds entry $2
+# (JSON) as the only SessionStart entry, and checks the entry comes through
+# both unchanged, with cs's registration appended after it by install and
+# taken away by uninstall. $1 names the HOME.
+_install_and_uninstall_keep_a_session_start_entry() {  # label, entry-json
+    local home="$TEST_TMPDIR/$1-home" s rc=0 cs_entry expected
+    s="$home/.claude/settings.json"
+    cs_entry='{"hooks":[{"type":"command","command":"~/.claude/hooks/cs/session-start.sh","timeout":30}]}'
+    mkdir -p "$home/.claude"
+    printf '{"hooks":{"SessionStart":[%s]}}\n' "$2" > "$s"
+    HOME="$home" bash "$INSTALL_SH" > "$TEST_TMPDIR/$1.out" 2>&1 < /dev/null || rc=$?
+    assert_eq "0" "$rc" "install exit status" || { cat "$TEST_TMPDIR/$1.out"; return 1; }
+    expected=$(jq -cnS --argjson e "$2" --argjson c "$cs_entry" '[$e, $c]')
+    assert_eq "$expected" "$(jq -cS '.hooks.SessionStart' "$s")" \
+        "install keeps the entry and appends cs's registration" || return 1
+    printf 'y\n' | HOME="$home" "$CS_BIN" -uninstall > "$TEST_TMPDIR/$1.un" 2>&1 || rc=$?
+    assert_eq "0" "$rc" "uninstall exit status" || { cat "$TEST_TMPDIR/$1.un"; return 1; }
+    assert_eq "[$(jq -cnS --argjson e "$2" '$e')]" "$(jq -cS '.hooks.SessionStart' "$s")" \
+        "uninstall keeps the entry and strips cs's registration" || return 1
+}
+
+# A .hooks value that is not an array is the user's to shape, in an event cs
+# registers too: install and uninstall pass the entry through as it is.
+test_install_and_uninstall_keep_a_hooks_false_entry() {
+    _install_and_uninstall_keep_a_session_start_entry hooks-false '{"matcher":"startup","hooks":false}'
+}
+
+test_install_and_uninstall_keep_a_hooks_object_entry() {
+    _install_and_uninstall_keep_a_session_start_entry hooks-object '{"hooks":{"custom":{"type":"command","command":"notify"}}}'
+}
+
+test_install_and_uninstall_keep_a_hooks_string_entry() {
+    _install_and_uninstall_keep_a_session_start_entry hooks-string '{"hooks":"notify"}'
+}
+
 # ============================================================================
 # Cycle: cs-statusline deployment + statusLine registration
 # ============================================================================
@@ -2518,6 +2553,9 @@ run_test test_install_migrates_flat_hook_layout
 run_test test_install_writes_version_stamp
 run_test test_uninstall_strips_hook_registrations
 run_test test_install_and_uninstall_keep_a_flat_shape_hook_entry
+run_test test_install_and_uninstall_keep_a_hooks_false_entry
+run_test test_install_and_uninstall_keep_a_hooks_object_entry
+run_test test_install_and_uninstall_keep_a_hooks_string_entry
 run_test test_install_deploys_statusline_binary
 run_test test_install_deploys_subagent_statusline_binary
 run_test test_install_skips_statusline_noninteractive
