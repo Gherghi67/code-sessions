@@ -251,7 +251,7 @@ test_ignored_mode_worktree_retires_without_a_manual_exclude() {
     local sha output
     sha=$(land_feature proj task1) || { echo "  FAIL: integrate fixture"; return 1; }
     output=$("$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1 || true)
-    assert_output_not_contains "$output" "untracked files that removal would destroy" \
+    assert_output_not_contains "$output" "that removal would destroy" \
         "cs must not refuse over the .cs skeleton it wrote itself" || return 1
     assert_not_exists "$wt" "the worktree is retired" || return 1
 }
@@ -288,7 +288,7 @@ test_retire_tolerates_a_worktree_predating_the_cs_exclude() {
     local sha output
     sha=$(land_feature proj task1) || { echo "  FAIL: integrate fixture"; return 1; }
     output=$("$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1 || true)
-    assert_output_not_contains "$output" "untracked files that removal would destroy" \
+    assert_output_not_contains "$output" "that removal would destroy" \
         "an older worktree's .cs skeleton must not block retirement" || return 1
     assert_not_exists "$wt" "the worktree is retired" || return 1
 }
@@ -308,9 +308,8 @@ test_retire_still_refuses_real_untracked_work() {
     local sha output
     sha=$(land_feature proj task1) || { echo "  FAIL: integrate fixture"; return 1; }
     output=$("$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1 || true)
-    assert_output_contains "$output" "untracked files that removal would destroy" \
-        "real untracked work must still refuse" || return 1
-    assert_output_contains "$output" "notes.txt" "the refusal names the file at risk" || return 1
+    assert_eq "Error: Worktree has 1 untracked file that removal would destroy; commit or remove it first:
+    notes.txt" "$output" "real untracked work must still refuse, naming the file at risk" || return 1
     assert_dir "$wt" "the worktree survives a refusal" || return 1
 }
 
@@ -332,10 +331,8 @@ test_retire_refuses_ignored_work() {
     sha=$(land_feature proj task1) || { echo "  FAIL: integrate fixture"; return 1; }
     output=$("$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1) || status=$?
     assert_eq "1" "$status" "retire refuses: $output" || return 1
-    assert_output_contains "$output" "untracked files that removal would destroy" \
-        "ignored work refuses like untracked work" || return 1
-    assert_output_contains "$output" "build.log" "the refusal names the ignored file" || return 1
-    assert_output_not_contains "$output" ".DS_Store" "Finder metadata is not work" || return 1
+    assert_eq "Error: Worktree has 1 untracked file that removal would destroy; commit or remove it first:
+    build.log" "$output" "ignored work refuses like untracked work, and Finder metadata is not work" || return 1
     assert_file_exists "$wt/build.log" "the ignored file survives the refusal" || return 1
     # Positive control: with the ignored file gone, the same worktree retires.
     rm "$wt/build.log"
@@ -982,6 +979,40 @@ run_test test_ignored_mode_worktree_retires_without_a_manual_exclude
 run_test test_retire_tolerates_a_worktree_predating_the_cs_exclude
 run_test test_retire_still_refuses_real_untracked_work
 run_test test_retire_refuses_ignored_work
+
+# Ignored build trees hold tens of thousands of files. The refusal names each
+# whole tree once with its file count, under the total, so the files that are
+# the user's work stay readable beside them.
+test_retire_refusal_collapses_untracked_trees() {
+    local base_dir="$CS_SESSIONS_ROOT/proj"
+    mkdir -p "$base_dir/.cs"/{memory,local} "$base_dir/apps/web/src"
+    echo "# Project readme" > "$base_dir/README.md"
+    echo 'export {}' > "$base_dir/apps/web/src/app.ts"
+    printf 'node_modules/\n.svelte-kit/\n.env\n' > "$base_dir/.gitignore"
+    (cd "$base_dir" && git init -q && git config core.autocrlf false \
+        && git add README.md .gitignore apps && git commit -q -m init)
+    cs_launch "proj@task1"
+    local wt="$CS_SESSIONS_ROOT/proj@task1"
+    mkdir -p "$wt/apps/web/node_modules/pkg" "$wt/apps/web/.svelte-kit/out" "$wt/apps/web/src/__screenshots__"
+    (cd "$wt/apps/web/node_modules/pkg" && touch f{1..3000})
+    (cd "$wt/apps/web/.svelte-kit/out" && touch f{1..1200})
+    touch "$wt/apps/web/src/__screenshots__/a.png" "$wt/apps/web/src/__screenshots__/b.png"
+    echo KEY=value > "$wt/apps/web/.env"
+    echo draft > "$wt/notes.txt"
+    local sha output status=0
+    sha=$(land_feature proj task1) || { echo "  FAIL: integrate fixture"; return 1; }
+    output=$("$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "retire refuses: $output" || return 1
+    assert_eq "Error: Worktree has 4,204 untracked files that removal would destroy; commit or remove them first:
+    apps/web/node_modules/         (3,000 files)
+    apps/web/.svelte-kit/          (1,200 files)
+    apps/web/src/__screenshots__/  (2 files)
+    apps/web/.env
+    notes.txt" "$output" "the refusal collapses each untracked tree to one counted line" || return 1
+    assert_file_exists "$wt/apps/web/.env" "the ignored file survives the refusal" || return 1
+}
+
+run_test test_retire_refusal_collapses_untracked_trees
 
 # cs and the TUI list files a removal would destroy in one format, pinned by
 # one fixture both render: input.txt holds the tracked paths, the file count
