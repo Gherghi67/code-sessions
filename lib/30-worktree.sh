@@ -770,17 +770,17 @@ $conflicts"
     # staging directory, so its one refusal is asked before anything moves.
     # Asked whether or not the worktree has a log: a locked vault takes the
     # base's .cs/memory with it, which every fuse writes.
-    # Claude Code writes the permissions granted in the feature to its own
-    # .claude/settings.local.json, which git does not carry. They go into the
-    # base's before the removal; a removal that then fails leaves them there,
-    # and the retry's union changes nothing.
+    # Claude Code writes the permission rules set in the feature (allow, deny,
+    # ask) to its own .claude/settings.local.json, which git does not carry.
+    # They go into the base's before the removal; a removal that then fails
+    # leaves them there, and the retry's union changes nothing.
     local settings
     for settings in "$wt_dir/.claude/settings.local.json" "$base_dir/.claude/settings.local.json"; do
-        _settings_allow_readable "$settings" \
-            || error "$settings is not one JSON object, or its permissions is not an object, or its permissions.allow is not a list, so cs cannot add the feature's permission grants to $base_dir/.claude/settings.local.json. Nothing was removed. Fix it, then run /finish $task again."
+        _settings_rules_readable "$settings" \
+            || error "$settings is not one JSON object, or its permissions is not an object, or its permissions.allow, deny or ask is not a list, so cs cannot add the feature's permission rules to $base_dir/.claude/settings.local.json. Nothing was removed. Fix it, then run /finish $task again."
     done
-    _carry_permission_grants "$wt_dir" "$base_dir" \
-        || error "Could not add the feature's permission grants to $base_dir/.claude/settings.local.json; nothing was removed"
+    _carry_permission_rules "$wt_dir" "$base_dir" \
+        || error "Could not add the feature's permission rules to $base_dir/.claude/settings.local.json; nothing was removed"
 
     local aside=""
     if [ "$mode" = "ignored" ]; then
@@ -826,16 +826,17 @@ $remove_err"
     printf 'retired %s %s\n' "$task" "$sha"
 }
 
-# Whether _settings_allow_union can read a Claude Code settings file: a
+# Whether _settings_rules_union can read a Claude Code settings file: a
 # missing or zero-byte one reads as {}; any other must hold exactly one JSON
 # value, an object whose permissions, when present, is an object and whose
-# permissions.allow, when present, is a list. A null is present, not absent:
-# the union reads only the first document and takes a null for none.
-_settings_allow_readable() {  # file
+# permissions.allow, deny and ask, each when present, are lists. A null is
+# present, not absent: the union reads only the first document and takes a
+# null for none.
+_settings_rules_readable() {  # file
     [ -s "$1" ] || return 0
     jq -s -e 'length == 1 and (.[0] | type == "object"
-        and ((has("permissions") | not) or (.permissions | type == "object"
-            and ((has("allow") | not) or (.allow | type == "array")))))' "$1" >/dev/null 2>&1
+        and ((has("permissions") | not) or (.permissions | type == "object" and (. as $p
+            | all("allow", "deny", "ask"; . as $k | ($p | has($k) | not) or ($p[$k] | type == "array"))))))' "$1" >/dev/null 2>&1
 }
 
 # A Claude Code settings file's JSON, or {} for a missing or zero-byte one.
@@ -843,29 +844,39 @@ _settings_json_or_empty() {  # file
     if [ -s "$1" ]; then cat "$1"; else printf '{}\n'; fi
 }
 
-# The base's settings with each permissions.allow entry of the feature's
-# that the base lacks appended after the base's own, in the feature's order,
-# once. Every other key of both files is left as it is.
-_settings_allow_union() {  # base_settings feature_settings
+# The base's settings with each entry of the feature's permissions.allow,
+# deny and ask that the base's same list lacks appended after the base's own,
+# in the feature's order, once. A list the feature does not add to is left as
+# it is, absent or not; every other key of both files is too.
+_settings_rules_union() {  # base_settings feature_settings
     _settings_json_or_empty "$1" | jq --slurpfile f "$2" '
-        ($f[0].permissions.allow // []) as $add
-        | .permissions.allow = reduce $add[] as $x ((.permissions.allow // []);
-            if any(.[]; . == $x) then . else . + [$x] end)'
+        reduce ("allow", "deny", "ask") as $k (.;
+            ($f[0].permissions[$k] // []) as $add
+            | if $add == [] then . else
+                .permissions[$k] = reduce $add[] as $x ((.permissions[$k] // []);
+                    if any(.[]; . == $x) then . else . + [$x] end)
+              end)'
 }
 
-# Add the feature's permission grants to the base's settings.local.json
-# (_settings_allow_union), creating it when the base has none. Writes nothing
-# when the base already holds every grant, and nothing when the repository
+# How many permission rules a settings file holds, allow, deny and ask
+# together, read from stdin.
+_settings_rules_count() {
+    jq '[(.permissions // {}) | .allow, .deny, .ask | length] | add'
+}
+
+# Add the feature's permission rules to the base's settings.local.json
+# (_settings_rules_union), creating it when the base has none. Writes nothing
+# when the base already holds every rule, and nothing when the repository
 # tracks the file: git carried it with the integrate, and a union would bring
-# back a grant the base dropped since.
-_carry_permission_grants() {  # wt_dir base_dir
+# back a rule the base dropped since.
+_carry_permission_rules() {  # wt_dir base_dir
     local feat="$1/.claude/settings.local.json" base="$2/.claude/settings.local.json" was now
     [ -s "$feat" ] || return 0
     ! git -C "$1" ls-files --error-unmatch -- .claude/settings.local.json >/dev/null 2>&1 || return 0
-    was=$(_settings_json_or_empty "$base" | jq '(.permissions.allow // []) | length') || return 1
-    now=$(_settings_allow_union "$base" "$feat" | jq '.permissions.allow | length') || return 1
+    was=$(_settings_json_or_empty "$base" | _settings_rules_count) || return 1
+    now=$(_settings_rules_union "$base" "$feat" | _settings_rules_count) || return 1
     [ "$now" != "$was" ] || return 0
-    cs_mkdir_inside "$2/.claude" && cs_write_atomic "$base" _settings_allow_union "$base" "$feat"
+    cs_mkdir_inside "$2/.claude" && cs_write_atomic "$base" _settings_rules_union "$base" "$feat"
 }
 
 # Remove the temp worktree and release the mutex on every exit path of
