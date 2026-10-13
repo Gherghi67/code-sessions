@@ -3537,6 +3537,19 @@ test_rename_of_a_session_without_secrets_refuses_a_new_name_that_has_any() {
     done
 }
 
+# An empty age-state directory under the new name holds no pins and no
+# digest; a refused move leaves one behind when its lock was the only entry.
+# It is not state the new name has, so it does not block the move.
+test_rename_moves_into_an_empty_age_state_directory() {
+    _seed_renamed_session || { echo "  FAIL: fixture: could not seed alpha's stores"; return 1; }
+    local out rc=0
+    mkdir -p "$HOME/.cs-secrets/sessions/bravo"
+    out=$(_kc_secrets --session alpha rename bravo 2>&1) || rc=$?
+    assert_eq "0" "$rc" "rename exits 0: $out" || return 1
+    assert_eq "Moved the secrets of session 'alpha' to 'bravo'" "$out" "rename moves the secrets" || return 1
+    assert_eq "pin-fingerprint" "$(cat "$HOME/.cs-secrets/sessions/bravo/age-trusted" 2>&1)" "the pin list is bravo's" || return 1
+}
+
 # The new name is a session name, never a command or an option: a session
 # may be called purge, and renaming to it moves the secrets there.
 test_rename_takes_the_new_name_literally() {
@@ -3818,6 +3831,7 @@ run_test test_export_adds_this_machine_to_a_session_that_has_recipients
 run_test test_rename_moves_every_store_to_the_new_name
 run_test test_rename_refuses_a_new_name_that_has_secrets_or_age_state
 run_test test_rename_of_a_session_without_secrets_refuses_a_new_name_that_has_any
+run_test test_rename_moves_into_an_empty_age_state_directory
 run_test test_rename_takes_the_new_name_literally
 run_test test_rename_refuses_a_second_name
 run_test test_rename_refuses_while_the_old_session_directory_exists
