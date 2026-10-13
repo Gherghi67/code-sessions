@@ -2307,6 +2307,40 @@ test_retire_creates_the_base_settings_with_the_feature_grants_alone() {
 
 run_test test_retire_creates_the_base_settings_with_the_feature_grants_alone
 
+# A settings file the union cannot read, the feature's or the base's, refuses
+# the retire before anything is removed and names the file.
+test_retire_refuses_a_settings_file_it_cannot_read() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0 before
+    _ignored_base_with_two_topics
+    mkdir -p "$base_dir/.claude"
+    printf '%s\n' '{"permissions": {"allow": ["Read"]}}' > "$base_dir/.claude/settings.local.json"
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    printf '{' > "$wt/.claude/settings.local.json"
+    before=$(cat "$base_dir/.claude/settings.local.json")
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_output_contains "$output" "Error: $wt/.claude/settings.local.json is not valid JSON, or its permissions.allow is not a list, so cs cannot add the feature's permission grants to $base_dir/.claude/settings.local.json. Nothing was removed. Fix it, then run /finish t1 again." \
+        "the refusal names the feature's file" || return 1
+    assert_dir "$wt/.cs/memory" "the worktree is still there" || return 1
+    assert_eq "$before" "$(cat "$base_dir/.claude/settings.local.json")" "the base's file is as it was" || return 1
+
+    printf '%s\n' '{"permissions": {"allow": ["Bash(make:*)"]}}' > "$wt/.claude/settings.local.json"
+    printf '%s\n' '{"permissions": {"allow": "Read"}}' > "$base_dir/.claude/settings.local.json"
+    before=$(cat "$base_dir/.claude/settings.local.json")
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_output_contains "$output" "Error: $base_dir/.claude/settings.local.json is not valid JSON, or its permissions.allow is not a list, so cs cannot add the feature's permission grants to $base_dir/.claude/settings.local.json. Nothing was removed. Fix it, then run /finish t1 again." \
+        "the refusal names the base's file" || return 1
+    assert_dir "$wt/.cs/memory" "the worktree is still there" || return 1
+    assert_eq "$before" "$(cat "$base_dir/.claude/settings.local.json")" "the base's file is as it was" || return 1
+}
+
+run_test test_retire_refuses_a_settings_file_it_cannot_read
+
 # The record of what the feature inherited is what tells a deleted topic from
 # a new one. A record that is there and cannot be read must stop the fuse:
 # guessing "new" would bring the deleted topic back and report success.
