@@ -366,13 +366,30 @@ pub fn parse_agent_record(text: &str) -> Option<AgentRecord> {
     })
 }
 
-/// Where Claude Code publishes its session records.
+/// Where Claude Code publishes its session records. Under test it is
+/// [`UNSCOPED_CLAUDE_SESSIONS`], a path that cannot exist, as the sessions
+/// root is: no test reads the real `~/.claude` of whoever runs the suite,
+/// where a record or a FIFO could change or stall the run.
 fn claude_sessions_dir() -> PathBuf {
+    #[cfg(test)]
+    return PathBuf::from(UNSCOPED_CLAUDE_SESSIONS);
+    #[cfg(not(test))]
+    live_claude_sessions_dir()
+}
+
+/// The directory Claude Code publishes its session records in on this
+/// machine: `$CS_CLAUDE_DIR/sessions`, else `~/.claude/sessions`.
+fn live_claude_sessions_dir() -> PathBuf {
     let base = std::env::var_os("CS_CLAUDE_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(home_dir().expect("HOME not set")).join(".claude"));
     base.join("sessions")
 }
+
+/// The records directory a test build reads; under `/nonexistent`, which
+/// only root can create.
+#[cfg(test)]
+const UNSCOPED_CLAUDE_SESSIONS: &str = "/nonexistent/cs-tui-test-claude-dir/sessions";
 
 /// Map each session name to the state Claude Code advertises for it.
 ///
@@ -1425,9 +1442,20 @@ fn extract_user_repo(url: &str) -> Option<String> {
 /// Only macOS ships the `security` tool and a keychain; on Linux the TUI's
 /// keychain panel is empty by design (secrets there live in the encrypted-file
 /// backend, which this view does not enumerate). Gated to macOS so non-macOS
-/// builds don't spawn a missing binary on every refresh.
+/// builds don't spawn a missing binary on every refresh. A test build counts
+/// none and runs no `security`: no test reads the Keychain of whoever runs
+/// the suite.
 #[cfg(target_os = "macos")]
 fn count_secrets_from_keychain() -> HashMap<String, u32> {
+    #[cfg(test)]
+    return HashMap::new();
+    #[cfg(not(test))]
+    count_secrets_in_live_keychain()
+}
+
+/// Secret counts per session from the login Keychain's `security dump-keychain`.
+#[cfg(all(target_os = "macos", not(test)))]
+fn count_secrets_in_live_keychain() -> HashMap<String, u32> {
     let mut counts = HashMap::new();
 
     let output = std::process::Command::new("security")
@@ -1770,7 +1798,7 @@ mod tests {
     #[test]
     #[ignore]
     fn agent_statuses_read_the_live_registry() {
-        let dir = claude_sessions_dir();
+        let dir = live_claude_sessions_dir();
         let published = fs::read_dir(&dir).map(|e| e.count()).unwrap_or(0);
         let statuses = agent_statuses_in(&dir);
         eprintln!("{} document(s) in {:?} -> {:?}", published, dir, statuses);
@@ -2796,15 +2824,11 @@ mod tests {
         assert!(!dir.exists(), "a test build reads {}, which exists", dir.display());
     }
 
-    // On non-macOS there is no keychain to scan, so the count is always empty.
-    // On macOS the scan must at least run without panicking and return a map.
+    // A test build counts no Keychain secrets on any platform: off macOS
+    // there is no Keychain, and on macOS a test build runs no `security`.
     #[test]
-    fn keychain_secret_count_is_empty_off_macos() {
-        let counts = count_secrets_from_keychain();
-        #[cfg(not(target_os = "macos"))]
-        assert!(counts.is_empty());
-        #[cfg(target_os = "macos")]
-        let _ = counts; // content depends on the login keychain; only assert no panic
+    fn a_test_build_counts_no_keychain_secrets() {
+        assert!(count_secrets_from_keychain().is_empty());
     }
 
     #[test]
