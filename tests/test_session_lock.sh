@@ -1070,19 +1070,36 @@ test_cancelled_open_cleanup_leaves_the_lock_when_the_mutex_stays_held() {
 # holding a pid. One left on disk, even naming a live process, is not the
 # mutex: an open goes ahead at once and leaves it as it was. The mutex file
 # an open leaves behind is ignored by the session's .gitignore, so it is
-# never committed.
+# never committed. "At once" is read from what the open runs, not the clock:
+# taking a directory lock means a mkdir of it, and waiting on its holder
+# means polling with sleep, so stand-ins on PATH log every mkdir naming the
+# directory and every sleep, and both logs stay empty.
 test_open_ignores_a_mutex_directory_and_leaves_its_mutex_file_ignored() {
-    local session_dir="$CS_SESSIONS_ROOT/lockdir" meta_dir rc=0 start took
+    local session_dir="$CS_SESSIONS_ROOT/lockdir" meta_dir rc=0
+    local shim="$TEST_TMPDIR/dirshim" calls="$TEST_TMPDIR/dirshim.log"
     meta_dir="$session_dir/.cs"
     "$CS_BIN" lockdir <<< "" >/dev/null 2>&1 || { echo "  FAIL: the first launch failed"; return 1; }
     rm -f "$meta_dir/session.lock"
     mkdir "$meta_dir/session.lock.d"
     echo "$$" > "$meta_dir/session.lock.d/pid"
-    start=$SECONDS
-    "$CS_BIN" lockdir <<< "" >/dev/null 2>&1 || rc=$?
-    took=$((SECONDS - start))
+    mkdir -p "$shim"
+    : > "$calls"
+    cat > "$shim/mkdir" <<SHIM
+#!/bin/bash
+case "\$*" in
+    *session.lock.d*) echo "mkdir \$*" >> "$calls" ;;
+esac
+exec "$(command -v mkdir)" "\$@"
+SHIM
+    cat > "$shim/sleep" <<SHIM
+#!/bin/bash
+echo "sleep \$*" >> "$calls"
+exec "$(command -v sleep)" "\$@"
+SHIM
+    chmod +x "$shim/mkdir" "$shim/sleep"
+    PATH="$shim:$PATH" "$CS_BIN" lockdir <<< "" >/dev/null 2>&1 || rc=$?
     assert_eq "0" "$rc" "the open succeeds beside a mutex directory" || return 1
-    [ "$took" -le 3 ] || { echo "  FAIL: the open waited on the directory (took ${took}s)"; return 1; }
+    assert_eq "" "$(cat "$calls")" "the open neither took nor waited on the directory" || return 1
     assert_eq "$$" "$(cat "$meta_dir/session.lock.d/pid")" "the directory is left as it was" || return 1
     assert_file_exists "$meta_dir/session.mutex.lock" "the open took the mutex file" || return 1
     git -C "$session_dir" check-ignore -q .cs/session.mutex.lock \
