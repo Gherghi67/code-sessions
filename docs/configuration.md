@@ -333,6 +333,7 @@ process and its hooks can find the session:
 
 - `CLAUDE_SESSION_NAME` - The session name (e.g., `myproject`)
 - `CS_CLAUDE_SESSION_ID` - The conversation UUID cs launched or resumed, exported so hooks can tell the launched conversation from any other claude that resolves the same session
+- `CS_LEAD_PID` - Exported by every cs launch, never set by hand: the pid cs hands to claude. A hook takes a claude as the one cs launched when its `CLAUDE_PID` equals this or when the claim that claude's SessionStart wrote to `.cs/local/lead-pid` names it (see [hooks.md](hooks.md#how-a-hook-finds-its-session-cs-resolvesh))
 - `CS_REAL_EDITOR` - Your own `$EDITOR`, captured before cs repoints `EDITOR`/`VISUAL` at the prompt-rewriter shim. The shim hands every file that is not a composer buffer back to it, so `/memory` and commit messages still open your editor. Set it yourself to pin which editor that is
 - `CS_SECRETS_SESSION` - For a worktree session, the base session its secrets key to, so a feature worktree reads the same store as its parent (see [secrets.md](secrets.md))
 - `CLAUDE_SESSION_DIR` - Full path to the session directory (workspace root)
