@@ -720,7 +720,7 @@ test_a_link_out_of_the_session_under_the_archive_refuses_the_run() {
 # run reads the date, after the check; with nothing to make, the same
 # stand-in lets the run through.
 test_a_link_that_appears_mid_run_is_refused_at_the_write() {
-    local day out_dir out_p root_md link target out rc
+    local day out_dir out_p link target out rc
     day=$(date +%Y-%m-%d)
     out_dir="$TEST_TMPDIR/outside"
     mkdir -p "$TEST_TMPDIR/bin"
