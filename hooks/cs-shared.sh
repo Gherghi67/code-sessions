@@ -725,6 +725,11 @@ _cs_refuses_write() {  # writer, path, [probe]
     case "$e" in /*) ;; *) e="$PWD/$e" ;; esac
     root=$(_cs_session_root_of "$p") || return 1
     out=$(_cs_write_leaves_session "$root" "$e") || return 1
+    # A clone chooses where a committed link leads, so a path is printed as a
+    # plain name; the phrases _cs_write_leaves_session prints in place of a
+    # path (a chain of too many links, a name ending in a newline) are cs's
+    # own and start with no "/".
+    case "$out" in /*) out=$(_cs_plain_name "$out" 160) ;; esac
     echo "$1: $p leads to $out${p#"$e"}, outside the session $root" >&2
 }
 
