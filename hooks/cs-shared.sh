@@ -132,12 +132,13 @@ _cs_git_at() {  # dir, git arguments...
 
 # The first directory from <dir> up to, and not including, the session at
 # <session_dir> that holds a HEAD, relative to the session; fails when none
-# does. git, asked about a directory, takes the nearest one above it that holds
-# HEAD (beside objects/ and refs/, or a commondir naming them) for the
-# repository and runs the commands its config names. A clone can commit that
-# layout anywhere under .cs with git add -f, so it is looked for before git is
-# asked anything. Any HEAD counts, a dangling link too: git accepts a link
-# into refs/ whether or not it leads anywhere.
+# does. git, asked about a directory, takes the nearest directory at or above
+# it that holds HEAD (beside objects/ and refs/, or a commondir naming them)
+# for the repository and runs the commands its config names. A clone can
+# commit that layout anywhere in the session, with git add -f where its
+# .gitignore hides the path, so it is looked for before git is asked
+# anything. Any HEAD counts, a dangling link too: git accepts a link into
+# refs/ whether or not it leads anywhere.
 _cs_head_below_session() {  # physical dir, session_dir
     local d="$1" root
     root=$(cd -P "$2" 2>/dev/null && pwd -P && printf x) || return 1
