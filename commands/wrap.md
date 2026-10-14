@@ -2,7 +2,7 @@
 model: opus
 ---
 
-Wrap up this session: distill durable memory entries, write a comprehensive summary, then rotate the narrative. Run the three passes back-to-back and report.
+Wrap up this session: distill durable memory entries, write a comprehensive summary, then rotate the narrative and archive completed task rows. Run the passes back-to-back and report.
 
 You are working in a cs session. The user has signaled they're winding down. Do the passes in order — memory first (so durable facts land in the right place before the narrative absorbs them), summary second (so the narrative reflects the final state including any memory entries just written), rotation third (so the summary was written from the whole live narrative before its oldest sections leave it).
 
@@ -22,9 +22,13 @@ Stop after step 4. Step 5's prose critic belongs to standalone `/summary`: it sp
 
 Run `cs -narrative rotate` once and keep its single output line. It archives the oldest `## ` sections of your narrative verbatim into `.cs/narrative-archive/<actor>/` (in an encrypted session, into the vault) when the live file is over its byte budget, and prints `nothing to rotate` otherwise. Do not read or edit the narrative yourself for this pass; the helper does the byte-exact cut and commits it when the session is tracked.
 
-## Pass 4 — Mark the wrap finished
+## Pass 4 — Task archive
 
-Run this once, from the session root, only after the three passes above completed:
+Archive the native task list's completed rows, exactly as the rotate skill's step 8 does: read `~/.claude/skills/rotate/SKILL.md` step 8 with the Read tool and follow its first part, the `cs -archive-tasks plan` answer and the one question it may ask (`/wrap` is never a forced rotation, so the `CS_ROTATE_FORCE_CTX` exception does not apply). Then commit the archive directory `cs -archive-tasks run` named, by name, unless `git check-ignore -q --no-index -- <path>` exits 0 or it sits in the vault under `.cs/private/`. A refusal moved nothing and does not fail the wrap; report its line.
+
+## Pass 5 — Mark the wrap finished
+
+Run this once, from the session root, only after the four passes above completed:
 
 ```sh
 if [ -n "$CLAUDE_CODE_SESSION_ID" ] && cs -vet-session . >/dev/null; then
@@ -36,10 +40,11 @@ It names the conversation this wrap finished in (its own id, so a teammate's wra
 
 ## Report
 
-Output a brief report with the three labeled items below. No long prose; the summary IS the prose.
+Output a brief report with the four labeled items below. No long prose; the summary IS the prose.
 
 1. **Memory:** list the file paths you wrote in Pass 1, one per line. Or write `nothing to add` if the session didn't warrant memory entries.
 2. **Summary:** confirm `.cs/summary.md` was created.
 3. **Narrative:** the line `cs -narrative rotate` printed.
+4. **Tasks:** the line `cs -archive-tasks run` printed, or why the archive was skipped (the session answered no, nothing to archive, or the `Error:` line).
 
 That's it. Don't recap the conversation; the summary file does that already.

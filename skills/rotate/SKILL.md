@@ -256,10 +256,32 @@ vault is locked: tell the user to mount it and stop.
    time: mtime would read as "all new" on a fresh machine and prune nothing,
    while saying nothing about when the handoff was written. Stage the
    deletions with step 8's commit.
-8. Commit the supersedings, every consumed handoff whose uncommitted change
-   is a `## Successor report` appended by the conversation that took it
-   over, and any tracked session state, like narratives. Stage those paths
-   by name, skipping every ignored one (the step 4 check).
+8. Archive the native task list's completed rows, then commit. Run
+   `cs -archive-tasks plan` once; its `answer:` line is the session's
+   standing answer, given once and kept in `.cs/local/task-archive`:
+
+   - `answer: unasked`, with an `archive:` line naming rows: ask once with
+     AskUserQuestion whether this session moves completed task rows out of
+     the live list at each `/rotate` and `/wrap` (they land in
+     `.cs/task-archive/<date>/` with a readable `tasks.md`), record the
+     reply with `cs -archive-tasks answer yes` or `cs -archive-tasks answer
+     no`, and on yes run as below. When `$CS_ROTATE_FORCE_CTX` is set the
+     rotation is driving itself: do not ask, skip the archive this time.
+   - `answer: yes`, with rows to archive: run `cs -archive-tasks run` and
+     keep its one line for your reply.
+   - `answer: no`, or `archive: nothing`: skip it.
+
+   An `Error:` from either command moved nothing (cs refuses a task store
+   it does not recognise); put its line in your reply and go on with the
+   rotation. The highest-numbered row always stays in the live list, so
+   Claude Code never hands an archived number to a new task.
+
+   Then commit the supersedings, every consumed handoff whose uncommitted
+   change is a `## Successor report` appended by the conversation that took
+   it over, the archive directory `cs -archive-tasks run` named (unless it
+   sits in the vault, under `.cs/private/`), and any tracked session state,
+   like narratives. Stage those paths by name, skipping every ignored one
+   (the step 4 check).
 9. Arm it, LAST: write its basename (no path) to `.cs/local/pending-handoff`
    (`.cs/private/pending-handoff` in an encrypted session).
    Machine-local state — never commit it. Run this once from the session
