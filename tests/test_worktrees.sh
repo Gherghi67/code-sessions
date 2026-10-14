@@ -1357,6 +1357,22 @@ test_feature_of_an_adopted_base_is_tracked_once_cs_is_committed() {
     assert_not_exists "$wt" "the worktree is retired" || return 1
 }
 
+# Git's answer wins once it tracks .cs: a feature is tracked even where the
+# base still records ignored, since the record fuse would rewrite the tracked
+# records the checkout already holds.
+test_feature_is_tracked_once_git_tracks_cs_whatever_the_record_says() {
+    local dir
+    dir=$(adopted_base proj) || { echo "  FAIL: adopt fixture"; return 1; }
+    awk '!/^cs_mode:/' "$dir/.cs/local/state" > "$dir/.cs/local/state.tmp" && mv "$dir/.cs/local/state.tmp" "$dir/.cs/local/state"
+    printf 'cs_mode: ignored\n' >> "$dir/.cs/local/state"
+    (cd "$dir" && git add .cs .gitignore .gitattributes && git commit -q -m "track cs") || { echo "  FAIL: commit fixture"; return 1; }
+
+    cs_launch proj@t1
+
+    assert_file_contains "$CS_SESSIONS_ROOT/proj@t1/.cs/local/state" '^cs_mode: tracked$' "the feature is tracked" || return 1
+    assert_file_not_contains "$(common_exclude "$dir")" '^\.cs/$' "nothing hides the base's .cs" || return 1
+}
+
 # A recorded ignored keeps .cs out of git: the feature hides it through the
 # common exclude, and the record fuse carries its records back at retire.
 test_feature_of_an_adopted_base_recorded_ignored_keeps_cs_out_of_git() {
@@ -1472,6 +1488,7 @@ run_test test_ignored_mode_worktree_starts_with_nothing_untracked
 run_test test_ignored_mode_worktree_retires_without_a_manual_exclude
 run_test test_feature_of_an_adopted_base_waits_for_git_to_carry_cs
 run_test test_feature_of_an_adopted_base_is_tracked_once_cs_is_committed
+run_test test_feature_is_tracked_once_git_tracks_cs_whatever_the_record_says
 run_test test_feature_of_an_adopted_base_recorded_ignored_keeps_cs_out_of_git
 run_test test_feature_of_a_base_with_no_recorded_mode_infers_it
 run_test test_feature_refuses_a_recorded_mode_it_does_not_know
