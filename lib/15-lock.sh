@@ -307,10 +307,10 @@ _called_from_other_session() {  # name
     [ -n "${CLAUDE_SESSION_NAME:-}" ] && [ "$CLAUDE_SESSION_NAME" != "$1" ]
 }
 
-# Refuses to remove or archive session <name> while its claude is running
-# when cs runs inside a session that does not own it, --force or not: the
-# flag skips the live check only from a terminal outside every session and
-# for the caller's own sessions. A session owns itself and, from its base,
+# Refuses <verb> (remove, archive, rotate the narrative of) on session <name>
+# while its claude is running when cs runs inside a session that does not own
+# it, --force or not: the flag skips the live check only from a terminal
+# outside every session and for the caller's own sessions. A session owns itself and, from its base,
 # its own features (<base>@<task>); a feature owns neither its base nor a
 # sibling. An idle target is left to the verb's own checks. Called directly,
 # never in $(...), so the error ends cs.

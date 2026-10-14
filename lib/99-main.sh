@@ -385,6 +385,9 @@ main() {
                 # and misnames this one's fault.
                 is_session_dir "$SESSIONS_ROOT/$session_name" \
                     || error "No such session: $session_name"
+                # The cut rewrites the narrative a running conversation
+                # appends to; from inside another session that waits.
+                _refuse_live_other_session "$session_name" "$SESSIONS_ROOT/$session_name/.cs" "rotate the narrative of"
                 _vet_named_session "$SESSIONS_ROOT/$session_name"
                 export CLAUDE_SESSION_NAME="$session_name"
                 export CLAUDE_SESSION_DIR="$SESSIONS_ROOT/$session_name"
