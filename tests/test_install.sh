@@ -1008,6 +1008,21 @@ test_statusline_enable_and_disable_cover_codex() {
     assert_eq 'model = "mine"' "$(cat "$codex/config.toml")" "and leaves ~/.codex alone" || return 1
 }
 
+test_codex_only_install_can_disable_its_status_line() {
+    _need_tomllib || return
+    local fake_home="$TEST_TMPDIR/codex-sl-disable"
+    mkdir -p "$fake_home"
+    HOME="$fake_home" CS_INSTALL_ENGINES=codex bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || return 1
+    assert_not_exists "$fake_home/.claude" "a Codex-only install has no Claude settings" || return 1
+    assert_eq weekly-limit "$(_codex_status_items "$fake_home/.codex/config.toml" | tail -1)" || return 1
+    HOME="$fake_home" "$fake_home/.local/bin/cs" -statusline disable > /dev/null 2>&1 || return 1
+    assert_eq none "$(_codex_status_items "$fake_home/.codex/config.toml")" "disable removes Codex's line directly after install" || return 1
+    assert_exists "$fake_home/.config/cs/statusline-declined" "disable records the preference" || return 1
+    assert_not_exists "$fake_home/.claude" "disable needs no Claude directory" || return 1
+    HOME="$fake_home" CS_INSTALL_ENGINES=codex bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || return 1
+    assert_eq none "$(_codex_status_items "$fake_home/.codex/config.toml")" "reinstall respects disable" || return 1
+}
+
 # A group the user added after cs's moves up when cs's goes, and its trust
 # table has to move with it, or Codex stops running it.
 test_uninstall_renumbers_trust_for_later_codex_hooks() {
@@ -1904,6 +1919,7 @@ run_test test_codex_status_line_keeps_the_users_own
 run_test test_codex_status_line_reads_toml_shapes
 run_test test_install_skips_the_codex_status_line_when_declined
 run_test test_statusline_enable_and_disable_cover_codex
+run_test test_codex_only_install_can_disable_its_status_line
 run_test test_uninstall_renumbers_trust_for_later_codex_hooks
 run_test test_install_leaves_an_unreadable_codex_hooks_file_alone
 run_test test_uninstall_removes_only_cs_skills_from_codex

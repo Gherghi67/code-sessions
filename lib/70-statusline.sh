@@ -122,23 +122,24 @@ run_statusline_cmd() {
             _statusline_codex enable
             ;;
         disable)
-            [ -f "$settings" ] || { info "No settings.json; nothing to disable."; return 0; }
             # Capture each stripper's exit code with `|| rc=$?`: a bare call
             # returning non-zero (foreign or absent registration) would trip
             # `set -e` before the following case ran, aborting the second strip.
             local slrc=0 subrc=0
-            _strip_statusline_registration "$settings" || slrc=$?
-            case $slrc in
-                0) info "Removed the cs-statusline registration" ;;
-                1) info "Status line is not cs-statusline; leaving it untouched." ;;
-                *) error "Could not update $settings" ;;
-            esac
-            _strip_subagent_statusline_registration "$settings" || subrc=$?
-            case $subrc in
-                0) info "Removed the cs-subagent-statusline registration" ;;
-                1) : ;;
-                *) error "Could not update $settings" ;;
-            esac
+            if [ -f "$settings" ]; then
+                _strip_statusline_registration "$settings" || slrc=$?
+                case $slrc in
+                    0) info "Removed the cs-statusline registration" ;;
+                    1) info "Status line is not cs-statusline; leaving it untouched." ;;
+                    *) error "Could not update $settings" ;;
+                esac
+                _strip_subagent_statusline_registration "$settings" || subrc=$?
+                case $subrc in
+                    0) info "Removed the cs-subagent-statusline registration" ;;
+                    1) : ;;
+                    *) error "Could not update $settings" ;;
+                esac
+            fi
             _statusline_codex disable
             # Guarded for the reason install.sh documents: this runs under
             # errexit, so an unwritable config dir would abort after the
