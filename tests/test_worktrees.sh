@@ -2935,7 +2935,8 @@ run_test test_retire_ignored_mode_carries_every_record_the_base_lacks
 # What the fuse cannot carry without overwriting the base, it refuses to
 # destroy: a plan both sides edited, a brief each side wrote, the feature's
 # README once edited, a repository nested under .cs with its history, and a
-# link. The refusal lists them all and nothing moves, not even what could go.
+# link. The refusal lists them all, each control character in a name as "?",
+# and nothing moves, not even what could go.
 test_retire_ignored_mode_refuses_records_it_cannot_carry() {
     local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output line status=0
     _ignored_base_with_two_topics
@@ -2953,18 +2954,20 @@ test_retire_ignored_mode_refuses_records_it_cannot_carry() {
     mkdir -p "$wt/.cs/scratch-repo"
     (cd "$wt/.cs/scratch-repo" && git init -q && echo kept > kept.txt && git add kept.txt && git commit -q -m kept)
     ln -s "$base_dir/README.md" "$wt/.cs/plans/link.md"
+    ln -s "$base_dir/README.md" "$wt/.cs/plans/esc"$'\033'"[31m"$'\n'"line.md"
     echo "could land" > "$wt/.cs/plans/new.md"
     sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
     line=$("$CS_BIN" proj -features --porcelain 2>&1)
-    assert_eq "5" "$(_feat_field "$line" 7)" "five files at risk: $line" || return 1
+    assert_eq "6" "$(_feat_field "$line" 7)" "six files at risk: $line" || return 1
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
     assert_eq "1" "$status" "the retire refuses: $output" || return 1
     assert_eq "Error: The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:
 .cs/README.md
 .cs/brief.md
 .cs/plans/base-plan.md
+.cs/plans/esc?[31m?line.md
 .cs/plans/link.md
-.cs/scratch-repo/" "$output" "the refusal names all five and nothing else" || return 1
+.cs/scratch-repo/" "$output" "the refusal names all six, each control character as ?, and nothing else" || return 1
     assert_eq "kept" "$(git -C "$wt/.cs/scratch-repo" show HEAD:kept.txt 2>/dev/null)" "the nested repository keeps its history" || return 1
     assert_eq "base plan, base edit" "$(cat "$base_dir/.cs/plans/base-plan.md")" "the base's plan is untouched" || return 1
     assert_file_not_exists "$base_dir/.cs/plans/new.md" "nothing was fused" || return 1
@@ -3785,12 +3788,15 @@ run_test test_retire_refuses_a_worktree_whose_state_names_no_mode
 
 # A tracked file marked skip-worktree (or assume-unchanged) hides its edit
 # from git diff, and git keeps no copy of the edit: removal would destroy it.
+# The refusal shows each control character in a name as "?".
 test_retire_refuses_an_edit_git_diff_does_not_show() {
-    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0 name
+    name="esc"$'\033'"[31m"$'\n'"line.yml"
     mkdir -p "$base_dir/.cs"/{memory,local}
     echo "# P" > "$base_dir/README.md"
     echo "default: 1" > "$base_dir/config.yml"
     echo "default: 2" > "$base_dir/other.yml"
+    echo "default: 3" > "$base_dir/$name"
     ln -s defaults-a "$base_dir/profile"
     printf 'defaults-a' > "$base_dir/alias"
     printf '.cs/\n' > "$base_dir/.gitignore"
@@ -3800,6 +3806,8 @@ test_retire_refuses_an_edit_git_diff_does_not_show() {
     (cd "$wt" && git add result.txt && git commit -q -m "task")
     git -C "$wt" update-index --skip-worktree config.yml
     echo "local: tuned" >> "$wt/config.yml"
+    git -C "$wt" update-index --skip-worktree -- "$name"
+    echo "local: tuned as well" >> "$wt/$name"
     git -C "$wt" update-index --assume-unchanged other.yml
     echo "local: tuned too" >> "$wt/other.yml"
     git -C "$wt" update-index --assume-unchanged profile
@@ -3814,14 +3822,17 @@ test_retire_refuses_an_edit_git_diff_does_not_show() {
         "the refusal says why" || return 1
     assert_eq "alias
 config.yml
+esc?[31m?line.yml
 other.yml
-profile" "$(printf '%s\n' "$output" | awk 'listed; /first:$/ { listed = 1 }')" "the refusal names the two files, the retargeted link and the file now a link" || return 1
+profile" "$(printf '%s\n' "$output" | awk 'listed; /first:$/ { listed = 1 }')" "the refusal names the three files, the retargeted link and the file now a link" || return 1
     assert_eq "default: 1
 local: tuned" "$(cat "$wt/config.yml")" "the edit is still there" || return 1
     assert_eq "defaults-b" "$(readlink "$wt/profile")" "the link still has its new target" || return 1
     # Positive control: an unedited flagged file or link is no reason to refuse.
     git -C "$wt" update-index --no-assume-unchanged other.yml
     git -C "$wt" checkout -q -- other.yml
+    git -C "$wt" update-index --no-skip-worktree -- "$name"
+    git -C "$wt" checkout -q -- "$name"
     git -C "$wt" show HEAD:config.yml > "$wt/config.yml"
     ln -sfn defaults-a "$wt/profile"
     rm "$wt/alias" && printf 'defaults-a' > "$wt/alias"
@@ -3951,9 +3962,10 @@ run_test test_retire_trashes_only_the_ignored_file_beside_an_unpopulated_submodu
 
 # A submodule keeps its own index, so a flagged file inside it hides its edit
 # from the submodule's git diff and from the worktree's: removal destroys it.
+# The refusal shows a control character in the submodule's path as "?".
 test_retire_refuses_an_edit_git_diff_does_not_show_inside_a_submodule() {
     local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" lib="$TEST_TMPDIR/sublib"
-    local sha output line status=0
+    local sha output line status=0 sub="sub"$'\033'"x"
     mkdir -p "$lib"
     (cd "$lib" && git init -q && git config core.autocrlf false && echo lib > lib.txt \
         && git add -A && git commit -q -m lib)
@@ -3962,7 +3974,7 @@ test_retire_refuses_an_edit_git_diff_does_not_show_inside_a_submodule() {
     printf '.cs/\n' > "$base_dir/.gitignore"
     (cd "$base_dir" && git init -q && git config core.autocrlf false && git add -A && git commit -q -m init \
         && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always \
-            git submodule add -q "$lib" sub && git commit -q -m "add submodule") \
+            git submodule add -q "$lib" "$sub" && git commit -q -m "add submodule") \
         || { echo "  FAIL: submodule fixture"; return 1; }
     cs_launch "proj@t1"
     (cd "$wt" && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always \
@@ -3970,8 +3982,8 @@ test_retire_refuses_an_edit_git_diff_does_not_show_inside_a_submodule() {
         || { echo "  FAIL: submodule fixture"; return 1; }
     echo "done" > "$wt/result.txt"
     (cd "$wt" && git add result.txt && git commit -q -m "task")
-    git -C "$wt/sub" update-index --assume-unchanged lib.txt
-    echo "local: tuned" >> "$wt/sub/lib.txt"
+    git -C "$wt/$sub" update-index --assume-unchanged lib.txt
+    echo "local: tuned" >> "$wt/$sub/lib.txt"
     # The integrate updates submodules in its temporary worktree.
     sha=$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always \
         land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
@@ -3981,12 +3993,12 @@ test_retire_refuses_an_edit_git_diff_does_not_show_inside_a_submodule() {
     assert_eq "1" "$status" "the retire refuses: $output" || return 1
     assert_output_contains "$output" "Worktree has edits git diff does not show (skip-worktree or assume-unchanged), which removal would destroy; commit them, or undo them and clear the flag (git update-index --no-skip-worktree / --no-assume-unchanged), first:" \
         "the refusal says why" || return 1
-    assert_eq "sub/lib.txt" "$(printf '%s\n' "$output" | awk 'listed; /first:$/ { listed = 1 }')" \
+    assert_eq "sub?x/lib.txt" "$(printf '%s\n' "$output" | awk 'listed; /first:$/ { listed = 1 }')" \
         "the refusal names the file inside the submodule" || return 1
     assert_eq "lib
-local: tuned" "$(cat "$wt/sub/lib.txt")" "the edit is still there" || return 1
+local: tuned" "$(cat "$wt/$sub/lib.txt")" "the edit is still there" || return 1
     # Positive control: the flagged file left as committed retires.
-    echo lib > "$wt/sub/lib.txt"
+    echo lib > "$wt/$sub/lib.txt"
     status=0
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
     assert_eq "0" "$status" "an unedited flagged file in a submodule retires: $output" || return 1
