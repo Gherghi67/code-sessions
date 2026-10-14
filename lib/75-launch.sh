@@ -877,7 +877,9 @@ EOF
                 local _origin=""
                 _handoff_is_local "$pending_handoff" "$session_dir" \
                     || _origin=" ${DIM}(from another checkout)${NC}"
-                printf "${DIM}Rotation handoff pending:${NC} %s%b\n" "$(basename "$pending_handoff")" "$_origin"
+                # .cs/handoffs/ is tracked, so a clone chooses the file name:
+                # it is printed as a plain name.
+                printf "${DIM}Rotation handoff pending:${NC} %s%b\n" "$(_cs_plain_name "$(basename "$pending_handoff")" 160)" "$_origin"
                 # One answer per row, key first, laid out like the already-open
                 # menu; the keys stay the letters the one-line ask used.
                 echo
@@ -941,7 +943,7 @@ EOF
                         }
                         { print }
                     ' "$pending_handoff" 2>/dev/null || true
-                    printf "${DIM}Handoff discarded:${NC} %s\n" "$(basename "$pending_handoff")"
+                    printf "${DIM}Handoff discarded:${NC} %s\n" "$(_cs_plain_name "$(basename "$pending_handoff")" 160)"
                 fi
                 # d without a pending handoff was never offered: treat as the
                 # default resume answer.
