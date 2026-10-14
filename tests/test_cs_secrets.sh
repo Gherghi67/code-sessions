@@ -3533,6 +3533,68 @@ test_keychain_set_never_sends_a_line_whose_failure_security_would_hide() {
     done
 }
 
+# migrate-backend names each secret that did not reach the target, and shows
+# what the store said about it: for a value too long for the Keychain, the
+# limit and the backend that holds larger values.
+test_migrate_backend_shows_why_the_keychain_refused_a_value() {
+    _RN_BIN=$(_make_fake_security)
+    local out rc=0
+    head -c 2015 /dev/zero | tr '\0' 'v' > "$TEST_TMPDIR/over"
+    printf 'small' > "$TEST_TMPDIR/small"
+    _backend_secrets encrypted set BIG < "$TEST_TMPDIR/over" >/dev/null 2>&1 || { echo "  FAIL: fixture: set BIG"; return 1; }
+    _backend_secrets encrypted set SMALL < "$TEST_TMPDIR/small" >/dev/null 2>&1 || { echo "  FAIL: fixture: set SMALL"; return 1; }
+
+    out=$(USER=tester _backend_secrets keychain migrate-backend keychain --from encrypted 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a migration that left a secret behind exits 1" || return 1
+    assert_eq "Migrating secrets from 'encrypted' to 'keychain'...
+
+Found 2 secret(s) to migrate
+Error: refusing to store BIG in the Keychain: its value is 2015 bytes, over the 2014 bytes a Keychain value can hold under this session and name. Store larger values with the encrypted backend (CS_SECRETS_BACKEND=encrypted).
+  Failed: BIG
+  Migrated: SMALL
+
+Migrated 1 of 2 secret(s) to keychain
+Error: Migration incomplete: only 1 of 2 secret(s) reached keychain" "$out" "the migration shows the store's refusal beside the secret it names" || return 1
+    assert_eq "small" "$(USER=tester _backend_secrets keychain get SMALL 2>&1)" "the secret that fits is in the Keychain" || return 1
+    _backend_secrets encrypted get BIG > "$TEST_TMPDIR/got" 2>/dev/null \
+        || { echo "  FAIL: BIG no longer reads from the encrypted store"; return 1; }
+    _get_matches "$TEST_TMPDIR/got" "$TEST_TMPDIR/over" || { echo "  FAIL: BIG changed in the encrypted store"; return 1; }
+}
+
+# A rename that fails after it has emptied the old name puts each Keychain
+# value back under it. When the Keychain refuses one, the undo shows the
+# store's own refusal before it names the secret and the rerun. K1 is stored
+# the way a cs that passed values on argv stored it: 2015 bytes, over the
+# 2007 the old name's `security -i` line holds, within the 2020 of the new
+# one. The ln on PATH fails, so the move of the pin list, which follows the
+# Keychain entries, is what fails.
+test_a_rename_undo_shows_why_the_keychain_refused_a_value() {
+    _RN_BIN=$(_make_fake_security)
+    local old="a-much-longer-session-name" new="b" shim="$TEST_TMPDIR/ln-shim" out rc=0
+    local old_age="$HOME/.cs-secrets/sessions/a-much-longer-session-name" new_age="$HOME/.cs-secrets/sessions/b"
+    mkdir -p "$CS_SESSIONS_ROOT/$new/.cs" "$old_age" "$shim"
+    head -c 2015 /dev/zero | tr '\0' 'v' > "$TEST_TMPDIR/v"
+    PATH="$_RN_BIN:$PATH" FAKE_SECURITY_STORE="$TEST_TMPDIR/kc-store" \
+        security add-generic-password -a tester -s "cs:$old:K1" -w "$(cat "$TEST_TMPDIR/v")" -U \
+        || { echo "  FAIL: fixture: could not seed K1"; return 1; }
+    printf 'pin-fingerprint\n' > "$old_age/age-trusted"
+    printf '#!/bin/sh\necho "ln: refused" >&2\nexit 1\n' > "$shim/ln"
+    chmod +x "$shim/ln"
+
+    out=$(PATH="$shim:$PATH" USER=tester _kc_secrets --session "$old" rename "$new" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the rename fails: $out" || return 1
+    assert_eq "ln: refused
+Error: Refusing to move the secrets of session '$old' to '$new': could not move $old_age/age-trusted to $new_age/age-trusted
+Error: refusing to store K1 in the Keychain: its value is 2015 bytes, over the 2007 bytes a Keychain value can hold under this session and name. Store larger values with the encrypted backend (CS_SECRETS_BACKEND=encrypted).
+Error: could not move the secrets of session '$old' back from '$new': could not store Keychain secret K1 under '$old' again; rerun: cs -secrets --session $old rename $new" \
+        "$out" "the undo shows the store's refusal for the secret it names" || return 1
+    assert_eq "cs:$new:K1" "$(_kc_services)" "K1 stays under the new name, where it still reads" || return 1
+    mkdir -p "$CS_SESSIONS_ROOT/$new/.cs"
+    USER=tester _kc_secrets --session "$new" get K1 > "$TEST_TMPDIR/got" 2>/dev/null \
+        || { echo "  FAIL: K1 does not read under the new name"; return 1; }
+    _get_matches "$TEST_TMPDIR/got" "$TEST_TMPDIR/v" || { echo "  FAIL: K1 changed"; return 1; }
+}
+
 test_encrypted_set_keeps_value_and_password_off_argv() {
     local bindir="$TEST_TMPDIR/argv-bin"
     local olog="$TEST_TMPDIR/openssl-argv" jlog="$TEST_TMPDIR/jq-argv"
@@ -4391,6 +4453,8 @@ run_test test_keychain_set_keeps_the_value_off_argv
 run_test test_keychain_set_round_trips_a_multiline_quoted_value
 run_test test_keychain_set_refuses_a_value_too_long_for_one_security_line
 run_test test_keychain_set_never_sends_a_line_whose_failure_security_would_hide
+run_test test_migrate_backend_shows_why_the_keychain_refused_a_value
+run_test test_a_rename_undo_shows_why_the_keychain_refused_a_value
 run_test test_encrypted_set_keeps_value_and_password_off_argv
 run_test test_encrypted_derived_key_stays_off_argv
 run_test test_sync_export_import_keep_values_off_argv
