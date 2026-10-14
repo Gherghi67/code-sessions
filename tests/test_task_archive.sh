@@ -66,6 +66,30 @@ _archived_ids() {
     printf '%s\n' $ids | sort -n | tr '\n' ' ' | sed 's/ $//'
 }
 
+# A stand-in cp first on PATH: it logs each source it is given, fails without
+# copying when the source is $FAKE_CP_FAIL, and after copying
+# $FAKE_CP_TOUCH appends a space to it (still the same JSON value), as a
+# write Claude Code makes in that moment would change it.
+_stand_in_cp() {
+    mkdir -p "$TEST_TMPDIR/bin"
+    cat > "$TEST_TMPDIR/bin/cp" <<'SH'
+#!/bin/sh
+src=""
+for a in "$@"; do
+    case "$a" in -*) ;; *) [ -n "$src" ] || src="$a" ;; esac
+done
+printf '%s\n' "$src" >> "${FAKE_CP_LOG:-/dev/null}"
+if [ -n "${FAKE_CP_FAIL:-}" ] && [ "$src" = "$FAKE_CP_FAIL" ]; then
+    exit 1
+fi
+/bin/cp "$@" || exit $?
+if [ -n "${FAKE_CP_TOUCH:-}" ] && [ "$src" = "$FAKE_CP_TOUCH" ]; then
+    printf ' ' >> "$src"
+fi
+SH
+    chmod +x "$TEST_TMPDIR/bin/cp"
+}
+
 _agree() {
     "$CS_BIN" -archive-tasks answer yes > /dev/null 2>&1 || { echo "  FAIL: answer yes failed"; return 1; }
 }
@@ -636,6 +660,36 @@ Error: could not make .cs/task-archive/$day/alice/json; nothing archived" "$out"
     assert_eq "Archived 1 completed task row to .cs/task-archive/$day/alice" "$out" "with no link made, the run archives" || return 1
 }
 
+# A row that changes between its copy and its removal (Claude Code updating it
+# in that moment) stays live with its new bytes, and its copy leaves the
+# archive; the other rows move. With nothing changed, the same stand-in cp
+# lets every row through.
+test_a_row_that_changes_while_it_is_archived_stays_live() {
+    _stand_in_cp
+    _row 1 completed "One"
+    _row 2 completed "Two"
+    _row 3 pending "Three"
+    _agree || return 1
+    local out day
+    out=$(PATH="$TEST_TMPDIR/bin:$PATH" FAKE_CP_TOUCH="$STORE/1.json" FAKE_CP_LOG="$TEST_TMPDIR/cp.log" \
+        "$CS_BIN" -archive-tasks run 2>&1) || { echo "  FAIL: run failed: $out"; return 1; }
+    day=$(ls "$SESSION_DIR/.cs/task-archive")
+    assert_eq "Task row #1 changed while it was archived; it stays in the live list
+Archived 1 completed task row to .cs/task-archive/$day/alice" "$out" "the changed row is named and stays" || return 1
+    assert_eq "1" "$(grep -cx "$STORE/1.json" "$TEST_TMPDIR/cp.log")" "the stand-in cp copied row #1" || return 1
+    assert_eq "1 3" "$(_live_ids)" "the changed row and the open row stay live" || return 1
+    assert_eq "2" "$(_archived_ids)" "only the unchanged row is archived" || return 1
+    assert_eq " " "$(tail -c 1 "$STORE/1.json")" "the live row keeps its change" || return 1
+    rm -rf "$SESSION_DIR/.cs/task-archive" "$STORE"
+    mkdir -p "$STORE"
+    _row 1 completed "One"
+    _row 2 completed "Two"
+    _row 3 pending "Three"
+    out=$(PATH="$TEST_TMPDIR/bin:$PATH" FAKE_CP_LOG="$TEST_TMPDIR/cp.log" "$CS_BIN" -archive-tasks run 2>&1) \
+        || { echo "  FAIL: the stand-in cp alone breaks the run: $out"; return 1; }
+    assert_eq "Archived 2 completed task rows to .cs/task-archive/$day/alice" "$out" "unchanged rows all move" || return 1
+}
+
 echo "Running test_task_archive.sh"
 echo ""
 
@@ -666,5 +720,6 @@ run_test test_an_archived_row_is_never_overwritten
 run_test test_each_actor_archives_into_its_own_directory
 run_test test_a_link_out_of_the_session_under_the_archive_refuses_the_run
 run_test test_a_link_that_appears_mid_run_is_refused_at_the_write
+run_test test_a_row_that_changes_while_it_is_archived_stays_live
 
 report_results
