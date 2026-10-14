@@ -831,6 +831,29 @@ test_session_end_waiter_reads_the_lock_by_the_one_lock_rule() {
     done
 }
 
+# A waiter whose cs-shared.sh lacks live_lock_pid cannot read the lock by the
+# one rule, so it leaves the vault mounted for the next open to handle, even
+# over the lock of the claude that has just exited.
+test_session_end_waiter_without_the_lock_rule_keeps_the_vault() {
+    _encrypted_session enc || return 1
+    local partial="$TEST_TMPDIR/partial-hooks"
+    mkdir -p "$partial"
+    cp "$SCRIPT_DIR/../hooks/"*.sh "$partial/"
+    printf '\nunset -f live_lock_pid\n' >> "$partial/cs-shared.sh"
+    sleep 300 &
+    local claude=$!
+    echo "$claude" > "$CS_SESSIONS_ROOT/enc/.cs/session.lock"
+    printf '{"session_id":"11111111-2222-3333-4444-555555555555","reason":"prompt_input_exit"}' |
+        CLAUDE_SESSION_NAME=enc CLAUDE_SESSION_DIR="$CS_SESSIONS_ROOT/enc" \
+        CLAUDE_SESSION_META_DIR="$CS_SESSIONS_ROOT/enc/.cs" \
+        CLAUDE_PID="$claude" CS_LEAD_PID="$claude" FAKE_MOUNTED=1 \
+        bash "$partial/session-end.sh" >/dev/null 2>&1
+    [ -s "$CS_SESSIONS_ROOT/enc/.cs/local/vault-waiter.pid" ] || { kill "$claude"; echo "  FAIL: no waiter recorded"; return 1; }
+    kill "$claude" 2>/dev/null; wait "$claude" 2>/dev/null
+    _waiter_gone enc || { echo "  FAIL: waiter still running"; return 1; }
+    assert_eq "" "$(cat "$FAKE_HDIUTIL_LOG")" "the vault stays mounted" || return 1
+}
+
 test_session_end_waiter_spares_a_vault_a_holder_keeps() {
     _encrypted_session enc || return 1
     sleep 300 &
@@ -899,6 +922,7 @@ run_test test_session_end_ignores_a_session_cs_did_not_encrypt
 run_test test_session_end_waiter_records_nothing_while_git_tracks_the_control_files
 run_test test_session_end_waiter_spares_a_reopened_session
 run_test test_session_end_waiter_reads_the_lock_by_the_one_lock_rule
+run_test test_session_end_waiter_without_the_lock_rule_keeps_the_vault
 run_test test_session_end_waiter_spares_a_vault_a_holder_keeps
 run_test test_session_end_waiter_leaves_a_busy_vault_mounted
 report_results
