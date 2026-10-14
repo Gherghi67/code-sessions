@@ -1397,19 +1397,32 @@ cs_tracked_files_notice() {  # dir, session_dir
     # The x keeps a trailing newline in a name that $( ) drops.
     real=$(cd -P "$here" 2>/dev/null && pwd -P && printf x) || return 1
     real=${real%$'\n'x}
-    if ! top=$(_cs_git_at "$real" rev-parse --show-toplevel 2>/dev/null && printf x); then
-        why=$(_cs_git_at "$real" rev-parse --show-toplevel 2>&1 >/dev/null) || true
+    # The repository's top and the directory's place in it, one line each from
+    # one git: two newlines in all, unless a name holds one, and then each is
+    # asked on its own.
+    if ! top=$(_cs_git_at "$real" rev-parse --show-toplevel --show-prefix 2>/dev/null && printf x); then
+        why=$(_cs_git_at "$real" rev-parse --show-toplevel --show-prefix 2>&1 >/dev/null) || true
         ! _cs_git_not_a_repo "$why" || return 1
         _cs_git_cannot_answer "$1" "$why"
         return 0
     fi
-    top=${top%$'\n'x}
-    if ! prefix=$(_cs_git_at "$real" rev-parse --show-prefix 2>/dev/null && printf x); then
-        why=$(_cs_git_at "$real" rev-parse --show-prefix 2>&1 >/dev/null) || true
-        _cs_git_cannot_answer "$1" "$why"
-        return 0
-    fi
-    prefix=${prefix%$'\n'x}
+    case "$top" in
+        *$'\n'*$'\n'*$'\n'*)
+            if ! top=$(_cs_git_at "$real" rev-parse --show-toplevel 2>/dev/null && printf x) \
+                || ! prefix=$(_cs_git_at "$real" rev-parse --show-prefix 2>/dev/null && printf x); then
+                why=$(_cs_git_at "$real" rev-parse --show-toplevel --show-prefix 2>&1 >/dev/null) || true
+                _cs_git_cannot_answer "$1" "$why"
+                return 0
+            fi
+            top=${top%$'\n'x}
+            prefix=${prefix%$'\n'x}
+            ;;
+        *)
+            prefix=${top#*$'\n'}
+            prefix=${prefix%$'\n'x}
+            top=${top%%$'\n'*}
+            ;;
+    esac
     [ -z "$missing" ] || prefix="$prefix${missing#/}/"
     real="$real$missing"
     # :(icase): a case-insensitive checkout (macOS by default) puts a
@@ -1734,11 +1747,11 @@ _cs_write_target() {  # path
 # the session's index never lists (Codex r2 #4). The gitlink outlives a
 # removed .cs/.git, so the index is checked as well; the pathspec also lists
 # entries below .cs, so only a gitlink whose whole path is .cs counts. A git
-# that fails here reads as "not nested"; both callers go on to ask
-# cs_tracked_files_notice, which refuses on the same failure.
+# that fails here, outside a repository among other reasons, lists nothing and
+# reads as "not nested"; both callers go on to ask cs_tracked_files_notice,
+# which refuses on any failure but that one.
 _cs_nested_cs() {  # root
     [ -e "$1/.cs/.git" ] && return 0
-    _cs_git_at "$1" rev-parse --git-dir >/dev/null 2>&1 || return 1
     _cs_git_at "$1" ls-files -s -- ':(icase).cs' 2>/dev/null \
         | awk -F'\t' '{ split($1, m, " "); if (m[1] == "160000" && tolower($2) == ".cs") hit = 1 } END { exit !hit }' 2>/dev/null
 }
