@@ -178,9 +178,15 @@ the handoff and runs its first turn on its own. `$switch` does the same across
 engines (see [Switching engines](#switching-engines)). The Claude hooks and
 function-hook mods do not run in Codex. Codex does
 not yet participate in CS autosave and crash recovery, queue delivery, usage
-reporting, encrypted sessions, observed runtime status, or native
+reporting (`cs -usage`), encrypted sessions, observed runtime status, or native
 terminal controls. CS session-management commands continue to manage the shared
 workspace, including manual `cs -status` updates through `CS_SESSION_*`; native runtime observations remain Claude-specific for now.
+
+Codex's own bar under the prompt does show the context and the 5-hour and
+weekly limits: the installer sets `[tui] status_line` in
+`$CODEX_HOME/config.toml` where it has none, and `cs -statusline
+enable|disable` adds or removes it. A status line you set yourself stays. See
+[Status line: Codex](statusline.md#codex).
 
 The shared internal dispatch, binding, and context interfaces are described in
 [Engine adapters](engine-adapters.md).

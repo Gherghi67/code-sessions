@@ -224,7 +224,7 @@ cs -archive <name>...       # Archive sessions (hidden from listings; --force if
 cs -unarchive <name>...     # Restore archived sessions
 cs -encrypt <name>          # Move a closed session into an encrypted vault (macOS)
 cs -list --archived         # List only archived sessions
-cs -statusline enable|disable  # Enable or remove the cs status line + agent-panel rows
+cs -statusline enable|disable  # Enable or remove the cs status line + agent-panel rows (and Codex's bar items)
 cs -detect-theme            # Show the detected terminal light/dark theme
 cs -list, -ls               # List all sessions
 cs -live                    # List sessions running right now on this machine, with what each is doing

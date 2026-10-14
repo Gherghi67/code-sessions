@@ -402,6 +402,146 @@ _codex_hooks_unregister() {  # codex_dir
     _codex_trust_tables_edit "$config" "$file" "$shift_from" "$file:session_start:$index:$handler"
 }
 
+# Codex draws the bar under its prompt from [tui] status_line in config.toml,
+# and its default bar leaves out the context and the 5-hour and weekly limits.
+# This line is the Codex side of cs-statusline: install.sh and cs -statusline
+# enable add it where config.toml has no status line, a status line the user
+# wrote stays theirs, and cs -statusline disable and cs -uninstall take back
+# only this exact line. A change to the list must still recognise this one.
+CS_CODEX_STATUS_LINE='status_line = ["project-name", "git-branch", "model-with-reasoning", "task-progress", "context-used", "five-hour-limit", "weekly-limit"]'
+
+# config.toml read line by line the way a TOML parser places each line: a
+# header opens a table unless it sits inside a multi-line string or array.
+# The first pass finds [tui] and the status line; MODE then decides:
+#   state  print none (no status line), cs (cs's line), own (the user's), or
+#          by-hand (tui as an inline table or dotted keys, which a [tui]
+#          header added after them would define twice)
+#   set    the config with cs's line at the top of [tui], or with a [tui]
+#          table of its own before the first table (at the end when there
+#          is none): cs's Codex hook re-appends its trust table on every
+#          install, and a [tui] after it would move each time
+#   unset  the config without cs's line, and without the [tui] header when
+#          nothing else is left in that table
+# shellcheck disable=SC2016  # awk program, expanded by awk
+_codex_status_line_awk='
+function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+# Count brackets outside strings and comments, and notice a multi-line string.
+function scan(s,    i, j, c, q) {
+    q = ""
+    for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (q == "" && (substr(s, i, 3) == "\"\"\"" || substr(s, i, 3) == "\047\047\047")) {
+            j = index(substr(s, i + 3), substr(s, i, 3))
+            if (j == 0) { ml = substr(s, i, 3); return }
+            i += j + 4; continue
+        }
+        if (q != "") { if (c == "\\" && q == "\"") { i++; continue } if (c == q) q = ""; continue }
+        if (c == "\"" || c == "\047") { q = c; continue }
+        if (c == "#") return
+        if (c == "[") depth++
+        else if (c == "]") depth--
+    }
+}
+FNR == 1 { pass++ }
+pass == 1 {
+    lines = FNR
+    if (ml != "") { if (index($0, ml)) ml = ""; next }
+    if (depth == 0 && $0 ~ /^[ \t]*\[/) {
+        table = $0; sub(/^[ \t]*\[\[?/, "", table); sub(/\]\]?[ \t]*(#.*)?$/, "", table); table = trim(table)
+        if (table == "tui" && !tui) tui = FNR
+        if (!head) head = FNR
+        next
+    }
+    if (depth == 0) {
+        if (table == "tui" && $0 ~ /^[ \t]*status_line[ \t]*=/) {
+            if (trim($0) == OURS) ours = FNR; else own = 1
+        } else if (table == "" && $0 ~ /^[ \t]*tui[ \t]*\.[ \t]*status_line[ \t]*=/) own = 1
+        else if (table == "" && $0 ~ /^[ \t]*tui[ \t]*[.=]/) byhand = 1
+        if (table == "tui" && FNR != ours && $0 !~ /^[ \t]*$/) others++
+    }
+    scan($0)
+    next
+}
+MODE == "set" {
+    if (!tui && FNR == head) { print "[tui]"; print OURS; print "" }
+    print; if (FNR == tui) print OURS; last = $0; next
+}
+MODE == "unset" {
+    if (FNR == ours) next
+    # Blank lines wait for the next line that survives, so a dropped [tui]
+    # at the end takes the blank line before it along.
+    if ($0 ~ /^[ \t]*$/) { if (!dropping) held++; next }
+    if (FNR == tui && !others) { dropping = 1; next }
+    dropping = 0
+    while (held > 0) { print ""; held-- }
+    print
+}
+END {
+    if (MODE == "state") print (ours ? "cs" : own ? "own" : byhand ? "by-hand" : "none")
+    if (MODE == "set" && !tui && !head) {
+        if (lines && last !~ /^[ \t]*$/) print ""
+        print "[tui]"; print OURS
+    }
+    if (MODE == "unset" && !dropping) while (held > 0) { print ""; held-- }
+}'
+
+_codex_status_line_state() {  # config
+    [ -f "$1" ] || { echo none; return 0; }
+    awk -v MODE=state -v OURS="$CS_CODEX_STATUS_LINE" "$_codex_status_line_awk" "$1"
+}
+
+# With a Python that has tomllib (3.11+), an edit must leave TOML that Codex
+# reads with cs's list as [tui] status_line (set) or none there (unset).
+# Without one there is nothing to check against.
+_codex_status_line_check() {  # set|unset, file
+    local py
+    for py in python3 /usr/bin/python3; do
+        command -v "$py" >/dev/null 2>&1 || continue
+        "$py" -c 'import tomllib' 2>/dev/null || continue
+        "$py" -c '
+import sys, tomllib
+mode, path, line = sys.argv[1:]
+try:
+    with open(path, "rb") as f:
+        tui = tomllib.load(f).get("tui", {})
+    want = tomllib.loads(line)["status_line"]
+except Exception:
+    sys.exit(1)
+sys.exit(0 if (tui.get("status_line") == want if mode == "set" else "status_line" not in tui) else 1)
+' "$1" "$2" "$CS_CODEX_STATUS_LINE"
+        return
+    done
+    return 0
+}
+
+_codex_status_line_edit() {  # set|unset, config
+    local tmp
+    tmp=$(mktemp "$2.cs.XXXXXX") || return 2
+    awk -v MODE="$1" -v OURS="$CS_CODEX_STATUS_LINE" "$_codex_status_line_awk" "$2" "$2" > "$tmp" \
+        && _codex_status_line_check "$1" "$tmp" && mv "$tmp" "$2" || { rm -f "$tmp"; return 2; }
+}
+
+# Add cs's status line to <codex_dir>/config.toml where it has none.
+# 0 added; 1 left as it is, with the state found on stdout (cs, own or
+# by-hand); 2 the write failed.
+_codex_status_line_add() {  # codex_dir
+    local config="$1/config.toml" state
+    state=$(_codex_status_line_state "$config") || return 2
+    [ "$state" = none ] || { printf '%s\n' "$state"; return 1; }
+    [ -f "$config" ] || { : > "$config" && chmod 600 "$config"; } || return 2
+    _codex_status_line_edit set "$config"
+}
+
+# Take cs's status line back out of <codex_dir>/config.toml. 0 removed; 1
+# not cs's, with the state found on stdout (none, own or by-hand); 2 the
+# write failed.
+_codex_status_line_remove() {  # codex_dir
+    local config="$1/config.toml" state
+    state=$(_codex_status_line_state "$config") || return 2
+    [ "$state" = cs ] || { printf '%s\n' "$state"; return 1; }
+    _codex_status_line_edit unset "$config"
+}
+
 # The Claude Code keybindings cs offers to add. Ctrl+X R and Ctrl+X W are
 # "command:<name>" actions, which submit /<name>. Ctrl+X 1 and Ctrl+X 2 are
 # the engine actions the cs mod's band Buttons answer to, so they press the
@@ -896,6 +1036,29 @@ if command -v jq >/dev/null 2>&1; then
         || warn "Could not register the Codex hook in $CODEX_DIR/hooks.json; rotation after /clear needs it"
 else
     warn "jq not found - the Codex hook (rotation after /clear) was not registered."
+fi
+
+# Codex's own bar, showing the context and the 5-hour and weekly limits (see
+# CS_CODEX_STATUS_LINE). A status line already in config.toml is the user's
+# and stays. A declined status line declines this one too: the marker is the
+# one the Claude question and cs -statusline disable write (KEEP IN SYNC with
+# lib/70-statusline.sh).
+_codex_statusline_declined="${CS_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/cs}/statusline-declined"
+if [ -f "$_codex_statusline_declined" ]; then
+    info "Codex status line not set (declined earlier). Set it any time with: cs -statusline enable"
+else
+    _codex_sl_rc=0
+    _codex_sl_state=$(_codex_status_line_add "$CODEX_DIR") || _codex_sl_rc=$?
+    case "$_codex_sl_rc:$_codex_sl_state" in
+        0:*) installed "Codex status line" "$CODEX_DIR/config.toml" ;;
+        1:cs) ;;
+        1:own) info "Codex status line: keeping the one in $CODEX_DIR/config.toml" ;;
+        1:by-hand)
+            warn "Codex status line not set: $CODEX_DIR/config.toml writes tui as an inline table or dotted keys."
+            warn_more "Add it there by hand: $CS_CODEX_STATUS_LINE"
+            ;;
+        *) warn "Could not set the Codex status line in $CODEX_DIR/config.toml" ;;
+    esac
 fi
 fi
 

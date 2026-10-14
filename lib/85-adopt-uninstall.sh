@@ -635,6 +635,13 @@ run_uninstall() {
             warn "Could not remove the cs hook from ${codex_skills_dir%/skills}/hooks.json; remove its SessionStart entry by hand"
         fi
     fi
+    local codex_sl_rc=0
+    _codex_status_line_remove "${codex_skills_dir%/skills}" > /dev/null || codex_sl_rc=$?
+    case $codex_sl_rc in
+        0) info "Removed cs's status line from ${codex_skills_dir%/skills}/config.toml" ;;
+        1) ;;
+        *) warn "Could not remove cs's status line from ${codex_skills_dir%/skills}/config.toml; remove its [tui] status_line by hand" ;;
+    esac
     fi
 
     # Remove shell completions
