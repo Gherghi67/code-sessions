@@ -369,7 +369,7 @@ pub enum Action {
     Quit,
     Open(String),
     ForceOpen(String),
-    /// Exit and hand cs a session plus argv words. `lib/99-main.sh` reads line
+    /// Exit and hand cs a session plus argv words. `lib/65-sessions.sh` reads line
     /// 1 as the session and each following line as one argument.
     OpenWith {
         session: String,
