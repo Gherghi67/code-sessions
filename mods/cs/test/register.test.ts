@@ -554,10 +554,10 @@ test('a marker naming a handoff whose name is not plain does not arm', async () 
   expect(findButton(await band()).props.label).toBe('/clear and continue from the handoff')
 })
 
-// The marker is read as the SessionStart hook reads it (tr -d '[:space:]'):
-// ASCII whitespace is dropped and nothing else, so a marker whose name starts
-// with U+FEFF, U+00A0 or U+2028 names a file the hook will not load, and arms
-// nothing.
+// The marker is read as the SessionStart hook reads it (tr -d '[:space:]' in
+// the C locale): ASCII whitespace is dropped and nothing else, so a marker
+// whose name starts with U+FEFF, U+00A0 or U+2028 names a file the hook will
+// not load, and arms nothing.
 test('a marker is read as the hook reads it: only ASCII whitespace is dropped', async () => {
   percent = 39
   for (const lead of ['﻿', ' ', ' ']) {
