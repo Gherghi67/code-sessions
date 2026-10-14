@@ -716,6 +716,28 @@ test_handoff_prompt_lists_one_answer_per_row() {
     fi
 }
 
+# .cs/handoffs/ is tracked, so a clone chooses a handoff's file name, and the
+# name can carry a terminal escape: a raw ESC or BEL byte, or backslash text
+# echo -e would turn into one. The offer and the discard name the handoff as a
+# plain name, each character a plain name lacks replaced by _.
+test_handoff_offer_names_the_handoff_as_a_plain_name() {
+    _rot_session "rot-plain-name"
+    local dir="$CS_SESSIONS_ROOT/rot-plain-name" output named
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m
+    _seed_handoff "$dir" "2026-07-16-$bad.md" "unconsumed"
+    output=$("$CS_BIN" rot-plain-name <<< "d" 2>&1) || true
+    assert_eq "Rotation handoff pending: 2026-07-16-$shown.md (from another checkout)" \
+        "$(grep '^Rotation handoff pending:' <<< "$output")" \
+        "the offer names the handoff as a plain name" || return 1
+    assert_eq "Handoff discarded: 2026-07-16-$shown.md" \
+        "$(grep '^Handoff discarded:' <<< "$output")" \
+        "the discard names the handoff as a plain name" || return 1
+    # The banner above the offer carries cs's own colours; the lines that
+    # name the handoff carry none.
+    named=$(grep -a 'handoff pending\|Handoff discarded\|2026-07-16' <<< "$output")
+    assert_no_escape_bytes "$named" "no escape byte reaches the terminal" || return 1
+}
+
 # The r launch auto-starts the handoff: its positional prompt is the handoff
 # continuation (displacing the /color re-apply for this one launch), so the fresh
 # conversation reads the handoff and continues without the user typing first.
@@ -1140,6 +1162,7 @@ test_orphaned_marker_disarm_does_not_offer_a_spent_handoff() {
 run_test test_orphaned_marker_disarm_does_not_offer_a_spent_handoff
 run_test test_rotate_answer_consumes_pending_handoff
 run_test test_handoff_prompt_lists_one_answer_per_row
+run_test test_handoff_offer_names_the_handoff_as_a_plain_name
 run_test test_rotate_answer_auto_starts_handoff
 run_test test_continue_and_no_leave_handoff_unconsumed
 run_test test_consumed_handoffs_do_not_trigger_prompt
