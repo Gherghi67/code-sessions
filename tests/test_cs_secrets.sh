@@ -4671,15 +4671,18 @@ _receiver_refusal_for() {  # caller pid
     printf 'Error: session %s cannot change the secrets of session receiver while it is live (pid %s); --force does not override that from another session. Close receiver first.' "$1" "$2"
 }
 
+# The cs arms set the caller themselves, over a CS_SECRETS_CALLER the shell
+# carried in; a target named by its feature is refused against its base.
 test_secrets_delete_of_a_live_other_session_is_refused_on_every_route() {
     _live_receiver || return 1
     local route out rc
-    for route in named session-flag direct; do
+    for route in named session-flag direct feature-name; do
         rc=0
         case "$route" in
-            named) out=$(CLAUDE_SESSION_NAME=sender "$CS_BIN" receiver -secrets delete API_KEY </dev/null 2>&1) || rc=$? ;;
-            session-flag) out=$(CLAUDE_SESSION_NAME=sender "$CS_BIN" -secrets --session receiver delete API_KEY </dev/null 2>&1) || rc=$? ;;
+            named) out=$(CLAUDE_SESSION_NAME=sender CS_SECRETS_CALLER=receiver "$CS_BIN" receiver -secrets delete API_KEY </dev/null 2>&1) || rc=$? ;;
+            session-flag) out=$(CLAUDE_SESSION_NAME=sender CS_SECRETS_CALLER=receiver "$CS_BIN" -secrets --session receiver delete API_KEY </dev/null 2>&1) || rc=$? ;;
             direct) out=$(CLAUDE_SESSION_NAME=sender "$CS_SECRETS_BIN" -s receiver delete API_KEY </dev/null 2>&1) || rc=$? ;;
+            feature-name) out=$(CLAUDE_SESSION_NAME=sender "$CS_SECRETS_BIN" -s receiver@feat delete API_KEY </dev/null 2>&1) || rc=$? ;;
         esac
         assert_eq "1" "$rc" "the $route delete exits 1" || { _stop_receiver; return 1; }
         assert_eq "$(_receiver_refusal sender)" "$out" "the $route refusal names both sessions" || { _stop_receiver; return 1; }
@@ -4710,12 +4713,14 @@ test_secrets_every_writing_command_is_refused_for_a_live_other_session() {
 
 test_secrets_reads_of_a_live_other_session_still_work() {
     _live_receiver || return 1
-    local got listed rc=0
+    local got listed exported rc=0
     got=$(CLAUDE_SESSION_NAME=sender "$CS_SECRETS_BIN" -s receiver get API_KEY 2>&1) || rc=$?
     listed=$(CLAUDE_SESSION_NAME=sender "$CS_BIN" receiver -secrets list 2>&1) || rc=$?
+    exported=$(CLAUDE_SESSION_NAME=sender "$CS_SECRETS_BIN" -s receiver export 2>&1) || rc=$?
     _stop_receiver
-    assert_eq "0" "$rc" "get and list exit 0" || return 1
+    assert_eq "0" "$rc" "get, list and export exit 0" || return 1
     assert_eq "v1" "$got" "get reads the value" || return 1
+    assert_eq "export CS_SECRET_API_KEY=v1" "$exported" "export reads the value" || return 1
     assert_eq "Secrets for session: receiver
   - API_KEY" "$listed" "list names the secret" || return 1
 }
