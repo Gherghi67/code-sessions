@@ -142,6 +142,42 @@ test_uninstall_keeping_secrets_keeps_age_state_and_removes_the_settings_lock() {
         "settings.json stays with the user's own settings" || return 1
 }
 
+# "Delete secrets from keychain?" waits on a person too. A session that opens
+# while it is pending is live when cs-secrets purges, and from inside another
+# session cs-secrets refuses that purge. The uninstall says whose secrets it
+# kept and why, and purges the rest. The answers are: go ahead, (the session
+# opens) delete the secrets, then keep the data.
+test_uninstall_names_each_session_whose_secrets_it_kept() {
+    local home="$TEST_TMPDIR/sk-home" root="$TEST_TMPDIR/sk-sessions" stub="$TEST_TMPDIR/mount-stub-sk"
+    _stage_install "$home"
+    cp "$SCRIPT_DIR/../bin/cs-secrets" "$home/.local/bin/cs-secrets"
+    mkdir -p "$root/opens-late/.cs" "$root/closed/.cs"
+    _stub_mount_table "$stub" "/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled)" || return 1
+    local s
+    for s in opens-late closed; do
+        printf 'v1' | HOME="$home" CS_SESSIONS_ROOT="$root" CS_SECRETS_BACKEND=encrypted \
+            CS_SECRETS_PASSWORD=test-password-for-ci CLAUDE_SESSION_NAME="$s" \
+            "$home/.local/bin/cs-secrets" set API_KEY >/dev/null 2>&1 \
+            || { echo "  FAIL: fixture: could not seed $s's secret"; return 1; }
+    done
+    sleep 300 &
+    local pid=$! rc=0 out kept left
+    { printf 'y'; sleep 2; echo "$pid" > "$root/opens-late/.cs/session.lock"; printf 'yn'; } \
+        | HOME="$home" CS_SESSIONS_ROOT="$root" PATH="$stub:$PATH" CS_SECRETS_BACKEND=encrypted \
+            CS_SECRETS_PASSWORD=test-password-for-ci CLAUDE_SESSION_NAME=sender "$CS_BIN" -uninstall \
+        > "$TEST_TMPDIR/sk.out" 2>&1 || rc=$?
+    out=$(cat "$TEST_TMPDIR/sk.out")
+    kept=$(grep -F "Kept the secrets of session" <<< "$out")
+    left=$(HOME="$home" CS_SESSIONS_ROOT="$root" CS_SECRETS_BACKEND=encrypted CS_SECRETS_PASSWORD=test-password-for-ci \
+        CLAUDE_SESSION_NAME=opens-late "$SCRIPT_DIR/../bin/cs-secrets" export 2>&1)
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    assert_output_contains "$out" "^Secrets may exist in OS keychain for these sessions:$" "the secrets question was reached: $out" || return 1
+    assert_eq "Kept the secrets of session opens-late: session sender cannot change the secrets of session opens-late while it is live (pid $pid); --force does not override that from another session. Close opens-late first." \
+        "$kept" "the uninstall names the session whose secrets it kept, and why" || return 1
+    assert_output_contains "$out" "^Purged 1 secret(s) for session: closed$" "the closed session's secrets are purged" || return 1
+    assert_eq "export CS_SECRET_API_KEY=v1" "$left" "the live session's secret stays" || return 1
+}
+
 echo ""
 echo "cs -uninstall ordering"
 echo "======================"
@@ -152,5 +188,6 @@ run_test test_uninstall_rechecks_live_sessions_after_the_confirmation
 run_test test_uninstall_rechecks_live_sessions_after_the_data_question
 run_test test_uninstall_rechecks_mounts_after_the_data_question
 run_test test_uninstall_keeping_secrets_keeps_age_state_and_removes_the_settings_lock
+run_test test_uninstall_names_each_session_whose_secrets_it_kept
 
 report_results
