@@ -1578,6 +1578,60 @@ $age_said" "$err" "the failure names age's error" || return 1
     cmp -s "$f" "$TEST_TMPDIR/before.age" || { echo "  FAIL: the failed export changed the age sync file"; return 1; }
 }
 
+# A key given raw has no file to be named after: it gets recipient-<seconds>,
+# and a number after that while the name is taken, so keys added within one
+# second each get a recipient of their own. A raw key some recipient file
+# already holds is that recipient: adding it again, whenever, writes no
+# second file. The date on PATH answers `+%s` from a file, so the test says
+# what second it is.
+test_age_add_gives_each_raw_key_a_free_recipient_name() {
+    _use_real_age || return $?
+    local dir="$CS_SESSIONS_ROOT/test-session/.cs/age-recipients" shim="$TEST_TMPDIR/date-shim" real_date n out rc
+    local k1 k2 k3
+    real_date=$(command -v date)
+    mkdir -p "$shim"
+    cat > "$shim/date" <<SHIM
+#!/usr/bin/env bash
+if [ "\${1:-}" = "+%s" ]; then cat "$TEST_TMPDIR/now"; exit 0; fi
+exec "$real_date" "\$@"
+SHIM
+    chmod +x "$shim/date"
+    for n in 1 2 3; do
+        age-keygen 2>/dev/null | age-keygen -y > "$TEST_TMPDIR/k$n" || { echo "  FAIL: fixture: age-keygen"; return 1; }
+    done
+    k1=$(cat "$TEST_TMPDIR/k1"); k2=$(cat "$TEST_TMPDIR/k2"); k3=$(cat "$TEST_TMPDIR/k3")
+    printf '1700000000\n' > "$TEST_TMPDIR/now"
+
+    rc=0; out=$(PATH="$shim:$PATH" "$CS_SECRETS_BIN" age add "$k1" 2>&1) || rc=$?
+    assert_eq "0 Added recipient: recipient-1700000000
+Public key: $k1" "$rc $out" "the first raw key takes the second's name" || return 1
+    rc=0; out=$(PATH="$shim:$PATH" "$CS_SECRETS_BIN" age add "$k2" 2>&1) || rc=$?
+    assert_eq "0 Added recipient: recipient-1700000000-2
+Public key: $k2" "$rc $out" "a second raw key in the same second gets a name of its own" || return 1
+    rc=0; out=$(PATH="$shim:$PATH" "$CS_SECRETS_BIN" age add "$k3" 2>&1) || rc=$?
+    assert_eq "0 Added recipient: recipient-1700000000-3
+Public key: $k3" "$rc $out" "and so does a third" || return 1
+
+    rc=0; out=$(PATH="$shim:$PATH" "$CS_SECRETS_BIN" age add "$k1" 2>&1) || rc=$?
+    assert_eq "0 Added recipient: recipient-1700000000
+Public key: $k1" "$rc $out" "the first key again, in the same second, is the recipient it already is" || return 1
+    printf '1700000005\n' > "$TEST_TMPDIR/now"
+    rc=0; out=$(PATH="$shim:$PATH" "$CS_SECRETS_BIN" age add "$k2" 2>&1) || rc=$?
+    assert_eq "0 Added recipient: recipient-1700000000-2
+Public key: $k2" "$rc $out" "the second key again, seconds later, is the recipient it already is" || return 1
+
+    assert_eq "recipient-1700000000-2.pub
+recipient-1700000000-3.pub
+recipient-1700000000.pub" "$(ls "$dir" | env LC_ALL=C sort)" "three keys, three recipient files" || return 1
+    assert_eq "$k1 $k2 $k3" \
+        "$(cat "$dir/recipient-1700000000.pub") $(cat "$dir/recipient-1700000000-2.pub") $(cat "$dir/recipient-1700000000-3.pub")" \
+        "each file holds its own key" || return 1
+    for n in 1 2 3; do
+        grep -qxF "$(printf '%s' "$(cat "$TEST_TMPDIR/k$n")" | shasum -a 256 | cut -d' ' -f1)" \
+            "$HOME/.cs-secrets/sessions/test-session/age-trusted" || { echo "  FAIL: key $n is not pinned"; return 1; }
+    done
+}
+
 # `age add` never offers to download age: with no age binary it fails at once,
 # pointing at `age init`, which is where the download is offered. It prompts
 # for nothing, reaches for no network, and writes no recipient, no pin and no
@@ -4478,6 +4532,7 @@ run_test test_age_add_refuses_a_different_key_under_a_recipient_name_in_use
 run_test test_age_add_refuses_an_age_key_age_does_not_accept
 run_test test_age_add_refuses_an_ssh_key_age_does_not_accept
 run_test test_export_fails_when_age_cannot_encrypt
+run_test test_age_add_gives_each_raw_key_a_free_recipient_name
 run_test test_age_add_without_age_points_at_age_init
 run_test test_age_add_refuses_what_is_not_a_key
 run_test test_import_file_reads_a_file_encrypted_to_this_machines_ssh_key
