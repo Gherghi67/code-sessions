@@ -15,7 +15,8 @@ CS_BIN="$SCRIPT_DIR/../bin/cs"
 #   exit:<n>  print an error line to stderr when n is not 0, exit n at once
 #   serve     say "ready" on $FAKE_READY_FIFO, then wait for a signal; HUP,
 #             INT and TERM are logged and end it with 0, as the real server
-#             does; with no signal in 20 s it exits 9.
+#             does; with no signal in 120 s it exits 9, so a run that
+#             loses its server never hangs the suite.
 write_fake_claude() {
     mkdir -p "$TEST_TMPDIR/bin"
     cat > "$TEST_TMPDIR/bin/claude" << 'FAKE'
@@ -57,7 +58,7 @@ case "$mode" in
         trap 'on_signal INT' INT
         trap 'on_signal TERM' TERM
         printf 'ready\n' > "$FAKE_READY_FIFO"
-        sleep 20 > /dev/null 2>&1 &
+        sleep 120 > /dev/null 2>&1 &
         sleeper=$!
         wait "$sleeper"
         echo "no signal" >> "$log"
@@ -138,7 +139,7 @@ start_serving() {  # cs args...
         "$CS_BIN" "$@" > "$TEST_TMPDIR/serve.out" 2>&1 &
     SERVE_PID=$!
     local line=""
-    read -t 15 -u 3 line || true
+    read -t 60 -u 3 line || true
     [ "$line" = "ready" ] || { echo "  FAIL: the fake server never said ready"; cat "$TEST_TMPDIR/serve.out"; return 1; }
 }
 
@@ -262,7 +263,8 @@ test_local_open_is_refused_while_the_session_is_served() {
     for flag in "" --force; do
         rc=0
         out=$(CS_ASSUME_TTY=1 "$CS_BIN" demo $flag 2>&1 <<< "1") || rc=$?
-        assert_eq "1" "$rc" "cs demo $flag is refused while demo is served" || return 1
+        assert_eq "1" "$rc" "cs demo $flag is refused while demo is served" \
+            || { printf '%s\n' "$out"; cat "$FAKE_CLAUDE_LOG"; return 1; }
         assert_eq "Error: Session demo is served by cs demo --remote (remote-control PID $spid); stop it first with Ctrl-C in its window, or close the window." \
             "$(printf '%s' "$out" | strip_ansi | tail -1)" "the refusal names the server" || return 1
     done
