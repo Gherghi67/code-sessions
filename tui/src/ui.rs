@@ -1613,7 +1613,14 @@ fn render_preview_pane(app: &App, frame: &mut Frame, area: Rect) {
         .as_deref()
         .map(|s| format!(" \u{b7} {s}"))
         .unwrap_or_default();
-    let (state_value, state_color, state_dot) = if let Some(pid) = session.liveness.lock_pid() {
+    let (state_value, state_color, state_dot) = if let crate::session::Liveness::Served { server, .. } = session.liveness {
+        // Served by `cs <name> --remote`: the pid worth showing is the server's.
+        (
+            format!("\u{25a0} live \u{b7} remote {}{}", server, agent),
+            p.teal,
+            None,
+        )
+    } else if let Some(pid) = session.liveness.lock_pid() {
         (
             format!("\u{25a0} live \u{b7} locked {}{}", pid, agent),
             p.teal,

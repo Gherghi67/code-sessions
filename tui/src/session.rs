@@ -12,6 +12,10 @@ use std::path::{Path, PathBuf};
 pub enum Liveness {
     /// cs holds the process lock; the PID is the running conversation.
     Locked(u32),
+    /// `cs <name> --remote` holds the lock for a `claude remote-control`
+    /// server it waits on: `lock` is that cs, `server` the pid it recorded in
+    /// `.cs/local/remote.pid`.
+    Served { lock: u32, server: u32 },
     /// No lock, but the statusline touched `.cs/local/context-pct` within the
     /// heartbeat window — a conversation opened outside cs.
     Heartbeat,
@@ -26,13 +30,13 @@ impl Liveness {
     }
     /// True only when cs holds the process lock (not merely heartbeat-live).
     pub fn is_locked(self) -> bool {
-        matches!(self, Liveness::Locked(_))
+        matches!(self, Liveness::Locked(_) | Liveness::Served { .. })
     }
     /// The locking process's PID, if cs holds the lock.
     pub fn lock_pid(self) -> Option<u32> {
         match self {
-            Liveness::Locked(pid) => Some(pid),
-            _ => None,
+            Liveness::Locked(pid) | Liveness::Served { lock: pid, .. } => Some(pid),
+            Liveness::Heartbeat | Liveness::Dormant => None,
         }
     }
 }
@@ -695,7 +699,10 @@ fn read_session(path: &Path, secret_counts: &HashMap<String, u32>) -> Session {
         .map(|f| parse_modified(f))
         .unwrap_or((None, None));
     let liveness = match read_lock_pid(&meta_dir) {
-        Some(pid) => Liveness::Locked(pid),
+        Some(lock) => match read_remote_pid(&meta_dir) {
+            Some(server) => Liveness::Served { lock, server },
+            None => Liveness::Locked(lock),
+        },
         None if heartbeat_alive(&meta_dir, std::time::SystemTime::now()) => Liveness::Heartbeat,
         None => Liveness::Dormant,
     };
@@ -1350,6 +1357,15 @@ fn unread_mail_count(meta_dir: &Path) -> u32 {
 fn read_lock_pid(meta_dir: &Path) -> Option<u32> {
     let lock_file = meta_dir.join("session.lock");
     let content = fs::read_to_string(&lock_file).ok()?;
+    let pid = content.trim().parse::<u32>().ok()?;
+    if is_pid_alive(pid) { Some(pid) } else { None }
+}
+
+/// The pid in `.cs/local/remote.pid`, which `cs <name> --remote` writes for
+/// the `claude remote-control` server it runs, while that process is alive.
+/// The twin of `_remote_server_pid` in lib/76-remote.sh.
+fn read_remote_pid(meta_dir: &Path) -> Option<u32> {
+    let content = fs::read_to_string(meta_dir.join("local/remote.pid")).ok()?;
     let pid = content.trim().parse::<u32>().ok()?;
     if is_pid_alive(pid) { Some(pid) } else { None }
 }
