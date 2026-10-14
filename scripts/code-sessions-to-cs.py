@@ -489,11 +489,7 @@ class Copier:
                 changed = re.sub(r"^cs_base:.*$", "cs_base: " + plan.base_plan.cs_name, changed, flags=re.M)
             if changed != text:
                 write_atomic(state, changed.encode(), prefix=".code-sessions-to-cs.")
-        settings = os.path.join(root, SETTINGS)
-        raw = read_text(settings)
-        changed = raw is not None and self.rekey_settings(raw, plan)
-        if changed:
-            write_atomic(settings, changed, prefix=".code-sessions-to-cs.")
+        # settings.local.json is rekeyed by rewrites(), which apply and a rerun both run.
         self.write_marker(plan, root)
 
     def write_marker(self, plan, root):

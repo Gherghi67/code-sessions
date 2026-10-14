@@ -242,6 +242,20 @@ test_apply_copies_sessions_conversations_and_secrets() {
     assert_eq "$before" "$(profile_fingerprint)" "the profile changed"
 }
 
+# The copy's settings are rekeyed by the copy itself, which writes nothing
+# through a link: a settings.local.json that is a link stays one.
+test_a_linked_settings_file_stays_a_link_in_the_copy() {
+    make_fixture
+    mv "$ALPHA/.claude/settings.local.json" "$ALPHA/.claude/settings.real.json"
+    ln -s settings.real.json "$ALPHA/.claude/settings.local.json"
+    run_copy --apply || { echo "$OUT"; return 1; }
+    local copy="$CSROOT/alpha-ccs"
+    assert_symlink "$copy/.claude/settings.local.json" || return 1
+    assert_eq "settings.real.json" "$(readlink "$copy/.claude/settings.local.json")" || return 1
+    cmp "$ALPHA/.claude/settings.real.json" "$copy/.claude/settings.real.json" \
+        || { echo "  FAIL: the file the link leads to was rewritten"; return 1; }
+}
+
 test_rerun_brings_over_only_what_grew() {
     make_fixture
     run_copy --apply || { echo "$OUT"; return 1; }
@@ -508,6 +522,7 @@ test_a_code_sessions_environment_does_not_redirect_the_copy() {
 
 run_test test_dry_run_changes_nothing
 run_test test_apply_copies_sessions_conversations_and_secrets
+run_test test_a_linked_settings_file_stays_a_link_in_the_copy
 run_test test_rerun_brings_over_only_what_grew
 run_test test_a_record_and_origin_marker_from_the_ags_era_are_adopted
 run_test test_a_file_cs_kept_stays_kept_when_code_sessions_changes_it_later
