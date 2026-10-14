@@ -9904,11 +9904,10 @@ _doctor_check_iterm2() {
 }
 
 # One row per session `cs <name> --remote` serves or served: cs records the
-# server's pid in .cs/local/remote.pid and removes the file when the server
-# exits. A file whose pid is not running means cs never got to, which happens
-# when cs and its server are killed outright (SIGKILL); that leaves the
-# server's spawned session running. The doctor removes such a file and says
-# so.
+# server's pid in .cs/local/remote.pid, and a process it starts beside the
+# server removes the file once the server exits. A file whose pid is not
+# running means that process never got to (it was killed, or the machine
+# restarted). The doctor removes such a file and says so.
 _doctor_check_remote() {
     local f meta name pid
     for f in "$SESSIONS_ROOT"/*/.cs/local/remote.pid; do
@@ -9921,7 +9920,7 @@ _doctor_check_remote() {
         fi
         pid=$(head -n 1 "$f" 2>/dev/null | tr -d '[:space:]') || pid=""
         if rm -f "$f" 2>/dev/null && [ ! -e "$f" ]; then
-            _doctor_warn "Remote: $name's .cs/local/remote.pid named PID ${pid:-(none)}, which is not running; removed it. A server killed with SIGKILL leaves its spawned session running: look for it with ps."
+            _doctor_warn "Remote: $name's .cs/local/remote.pid named PID ${pid:-(none)}, which is not running, and nothing removed it when that server ended; removed it now."
         else
             _doctor_warn "Remote: $name's .cs/local/remote.pid named PID ${pid:-(none)}, which is not running, and could not be removed: $f"
         fi
