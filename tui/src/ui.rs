@@ -4210,6 +4210,15 @@ mod tests {
     }
 
     #[test]
+    fn preview_state_row_shows_a_served_session_as_remote_with_the_server_pid() {
+        let mut app = preview_test_app();
+        app.sessions[0].liveness = Liveness::Served { lock: 4242, server: 777 };
+        let text = render_wide(&mut app);
+        assert!(text.contains("live \u{b7} remote 777"), "state row must name the server:\n{text}");
+        assert!(!text.contains("locked"), "a served session is not shown as a plain lock:\n{text}");
+    }
+
+    #[test]
     fn preview_state_row_omits_agent_status_when_none_is_advertised() {
         let mut app = preview_test_app();
         app.sessions[0].liveness = Liveness::Locked(4242);

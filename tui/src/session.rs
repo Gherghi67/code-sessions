@@ -1922,6 +1922,47 @@ mod tests {
         assert!(!Liveness::Dormant.is_live());
         assert!(!Liveness::Dormant.is_locked());
         assert_eq!(Liveness::Dormant.lock_pid(), None);
+
+        let served = Liveness::Served { lock: 42, server: 77 };
+        assert!(served.is_live());
+        assert!(served.is_locked());
+        assert_eq!(served.lock_pid(), Some(42), "the lock is cs's, not the server's");
+    }
+
+    /// A session `cs <name> --remote` serves: the lock names the cs that waits
+    /// on the server, and .cs/local/remote.pid names the server.
+    fn served_session(tag: &str, remote_pid: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("cs-served-{tag}-{}", std::process::id()));
+        fs::create_dir_all(dir.join(".cs/local")).unwrap();
+        fs::write(dir.join(".cs/session.lock"), format!("{}\n", std::process::id())).unwrap();
+        fs::write(dir.join(".cs/local/remote.pid"), remote_pid).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_session_with_a_running_server_reads_as_served_with_both_pids() {
+        let mut server = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let dir = served_session("live", &format!("{}\n", server.id()));
+
+        let session = read_session(&dir, &HashMap::new());
+
+        let _ = server.kill();
+        let _ = server.wait();
+        assert_eq!(
+            session.liveness,
+            Liveness::Served { lock: std::process::id(), server: server.id() }
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_session_whose_server_pid_is_not_running_reads_as_locked() {
+        let dir = served_session("stale", "99999999\n");
+
+        let session = read_session(&dir, &HashMap::new());
+
+        assert_eq!(session.liveness, Liveness::Locked(std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
