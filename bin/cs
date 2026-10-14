@@ -2916,13 +2916,18 @@ _refuse_live_other_session() {  # name meta_dir verb
 # repository. Only a terminal outside every session and the base itself are
 # not refused; a sibling feature is, and so is the live feature itself, whose
 # own worktree the base holds. Called directly, never in $(...), so the error
-# ends cs.
+# ends cs. A feature is <name>'s when <name>@<its task> is the same directory
+# as the feature's (-ef), not when the names match as strings: a volume that
+# ignores letter case or Unicode normalization finds one directory under
+# several spellings, and a glob compares bytes.
 _refuse_base_with_live_feature() {  # name verb
     [ -n "${CLAUDE_SESSION_NAME:-}" ] || return 0
     [ "$CLAUDE_SESSION_NAME" != "$1" ] || return 0
     case "$1" in *@*) return 0 ;; esac
-    local feature pid
-    for feature in "$SESSIONS_ROOT/$1"@*; do
+    local feature entry pid
+    for feature in "$SESSIONS_ROOT"/*@*; do
+        entry="${feature##*/}"
+        [ "$SESSIONS_ROOT/$1@${entry#*@}" -ef "$feature" ] || continue
         [ -d "$feature/.cs" ] || continue
         pid="$(live_lock_pid "$feature/.cs")"
         [ -n "$pid" ] || continue
