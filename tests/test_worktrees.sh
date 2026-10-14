@@ -1449,7 +1449,7 @@ test_feature_of_a_base_with_no_commit_is_refused() {
     printf '# P\n' > "$dir/README.md"
     (cd "$dir" && "$CS_BIN" -adopt proj < /dev/null > /dev/null 2>&1) || { echo "  FAIL: adopt fixture"; return 1; }
     dir=$(cd "$dir" && pwd -P)
-    for mode in tracked ignored; do
+    for mode in ignored tracked; do
         awk '!/^cs_mode:/' "$dir/.cs/local/state" > "$dir/.cs/local/state.tmp" && mv "$dir/.cs/local/state.tmp" "$dir/.cs/local/state"
         printf 'cs_mode: %s\n' "$mode" >> "$dir/.cs/local/state"
         rc=0
