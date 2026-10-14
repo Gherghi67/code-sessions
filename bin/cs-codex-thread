@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# ABOUTME: Creates or refreshes an exact Codex thread without invoking a model.
+# ABOUTME: Creates or refreshes an exact Codex thread, or reads its newest turn, without a model.
 # ABOUTME: Persists CS context through app-server and verifies it in a fresh process.
 """Requires Codex app-server's experimental thread/inject_items API."""
 
@@ -22,6 +22,8 @@ class BootstrapError(Exception):
 
 # Codex thread IDs are UUIDs. Reject control characters and accidental selectors.
 THREAD_ID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\Z")
+# A turn ID is compared, never passed on: any short plain token will do.
+TURN_ID = re.compile(r"[0-9A-Za-z_.:-]{1,128}\Z")
 MAX_MESSAGE = 4 * 1024 * 1024
 
 
@@ -223,34 +225,65 @@ def bootstrap(args):
     return thread_id
 
 
+def latest_turn(args):
+    # The thread's persisted history, read without loading the thread: the
+    # newest turn's ID, or "" for a thread no turn has started in. A turn is
+    # recorded as it starts, so one a crashed or killed CLI left is here too.
+    codex_home = os.environ.get("CODEX_HOME")
+    if codex_home and not Path(codex_home).is_dir():
+        raise BootstrapError("CODEX_HOME points to " + codex_home + ", which does not exist")
+    cwd = str(Path(args.cwd).resolve(strict=True))
+    with AppServer(args.codex_bin, cwd, time.monotonic() + args.timeout) as server:
+        server.initialize()
+        result = server.request("thread/turns/list", {
+            "threadId": args.thread_id, "limit": 1, "sortDirection": "desc", "itemsView": "notLoaded",
+        })
+    turns = result.get("data")
+    if not isinstance(turns, list):
+        raise BootstrapError("codex app-server returned an invalid thread/turns/list response")
+    if not turns:
+        return ""
+    value = turns[0].get("id") if isinstance(turns[0], dict) else None
+    if not isinstance(value, str) or not TURN_ID.fullmatch(value):
+        raise BootstrapError("codex app-server did not return an exact turn ID")
+    return value
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--codex-bin", required=True)
     parser.add_argument("--cwd", required=True)
-    parser.add_argument("--instructions-file", required=True)
+    parser.add_argument("--instructions-file")
     parser.add_argument("--thread-id")
+    parser.add_argument("--latest-turn", action="store_true",
+                        help="print the thread's newest turn ID (empty for none) and change nothing")
     parser.add_argument("--timeout", type=float, default=30)
     args = parser.parse_args()
     if not math.isfinite(args.timeout) or not 0 < args.timeout <= 300:
         parser.error("--timeout must be between 0 and 300 seconds")
     if args.thread_id is not None and not THREAD_ID.fullmatch(args.thread_id):
         parser.error("--thread-id must be an exact Codex UUID")
+    if args.latest_turn and args.thread_id is None:
+        parser.error("--latest-turn needs --thread-id")
+    if not args.latest_turn and args.instructions_file is None:
+        parser.error("--instructions-file is required")
 
     def interrupted(_signum, _frame):
         raise KeyboardInterrupt
 
     signal.signal(signal.SIGTERM, interrupted)
     try:
-        thread_id = bootstrap(args)
+        printed = latest_turn(args) if args.latest_turn else bootstrap(args)
     except KeyboardInterrupt:
         print("cs-codex-thread: interrupted", file=sys.stderr)
         return 130
     except (BootstrapError, OSError, UnicodeError) as exc:
         # File and process errors may contain paths or server text; keep them private.
-        message = str(exc) if isinstance(exc, BootstrapError) else "could not read bootstrap inputs"
+        message = str(exc) if isinstance(exc, BootstrapError) else (
+            "could not read the thread's turns" if args.latest_turn else "could not read bootstrap inputs")
         print("cs-codex-thread: " + message, file=sys.stderr)
         return 1
-    print(thread_id)
+    print(printed)
     return 0
 
 
