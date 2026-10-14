@@ -774,10 +774,9 @@ create_worktree_session() {
     _require_base_commit "$base_dir" "$base_name"
     # Who carries .cs from the feature back to the base: git (tracked) or the
     # record fuse (ignored). Git's answer wins once it tracks .cs. Otherwise a
-    # mode the base records decides (adopt records tracked, since it commits
-    # nothing and the user may commit .cs later), and only a base with no
-    # record is inferred ignored. Decided before the worktree exists, so a
-    # refusal leaves nothing behind.
+    # mode the base records decides (adopt_session records one, since it
+    # commits nothing), and only a base with no record is inferred ignored.
+    # Decided before the worktree exists, so a refusal leaves nothing behind.
     local mode state_file="$base_dir/.cs/local/state" recorded
     if [ -n "$(git -C "$base_dir" ls-files -- .cs 2>/dev/null)" ]; then
         mode="tracked"

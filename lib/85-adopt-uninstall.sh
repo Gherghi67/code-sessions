@@ -203,8 +203,9 @@ adopt_session() {  # name, [--yes|-y], in any order
     validate_session_name "$session_name"
 
     # Adopting a directory with no .git runs git init there and writes cs's
-    # files into it: never the home directory or the filesystem root. -ef, not a string compare: either may be reached
-    # through a symlink or typed in another case.
+    # files into it: never the home directory or the filesystem root. -ef,
+    # not a string compare: either may be reached through a symlink or typed
+    # in another case.
     if [ "$target_dir" -ef "${HOME:-}" ]; then
         error "Refusing to adopt your home directory ($target_dir). Run cs -adopt from a project directory."
     fi
@@ -331,7 +332,6 @@ adopt_session() {  # name, [--yes|-y], in any order
     # walking up from it has nothing to read. Record it where that walk looks
     # (hooks/cs-resolve.sh's _cs_session_name).
     _set_local_state "$target_dir/.cs/local/state" session_name "$session_name"
-
 
     # A project Claude Code already ran in has said what it is about: its
     # newest conversation's first prompt becomes the Objective, the line the
