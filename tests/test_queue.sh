@@ -684,6 +684,26 @@ test_vet_session_says_git_is_missing_when_no_git_is_on_path() {
         "$out" "and says git is missing" || return 1
 }
 
+# A session named relative to the current directory is named that way in the
+# untrack command, which the user pastes into zsh or bash: a name starting with
+# "=" (zsh reads =git as git's own path), "-" or "~" (bash 3.2 leaves the
+# tilde bare) is spelled from the current directory. cs runs under the
+# suite's own bash, whose printf %q spells the name.
+test_vet_session_names_a_relative_session_from_the_current_directory() {
+    local w="$TEST_TMPDIR/w" name out rc
+    for name in =git -git '~git'; do
+        mkdir -p "$w/$name/.cs/local"
+        printf 'x\n' > "$w/$name/.cs/local/pre-open"
+        git -C "$w/$name" init -q
+        git -C "$w/$name" add -f .cs/local/pre-open
+        rc=0
+        out=$(cd "$w" && env -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR "$BASH" "$CS_BIN" -vet-session "$name" 2>&1) || rc=$?
+        assert_eq "1" "$rc" "cs -vet-session refuses $name" || return 1
+        assert_eq "Error: .cs/local/pre-open is tracked in git (per-actor state must stay local). Fix with: git -C ./$name --literal-pathspecs rm -r --cached -- .cs/local && git -C ./$name commit -m 'stop tracking .cs/local'" \
+            "$out" "the command names ./$name" || return 1
+    done
+}
+
 # A checkout whose configuration calls it bare answers the same, but its index
 # still lists what a pull put there: that is a git that cannot answer.
 test_vet_session_refuses_a_checkout_git_reads_as_bare() {
@@ -1174,6 +1194,7 @@ run_test test_vet_session_refuses_a_tracked_marker_whose_directory_is_gone
 run_test test_vet_session_passes_a_session_in_no_repository_while_git_traces
 run_test test_vet_session_refuses_a_session_inside_a_git_directory
 run_test test_vet_session_refuses_a_checkout_git_reads_as_bare
+run_test test_vet_session_names_a_relative_session_from_the_current_directory
 run_test test_vet_session_says_git_is_missing_when_no_git_is_on_path
 run_test test_vet_session_passes_a_session_whose_control_files_git_ignores
 run_test test_vet_session_judges_the_directory_it_is_given
