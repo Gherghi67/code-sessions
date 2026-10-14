@@ -120,6 +120,25 @@ test_rotate_archives_oldest_sections_and_keeps_tail() {
 
 # The live narrative is rewritten through a temp file; it keeps the mode it
 # had. 750 carries an execute bit, which no umask gives a newly written file.
+# Claude runs cs -narrative rotate from whatever directory its shell is in. A
+# clone can commit a directory laid out like a git repository anywhere in the
+# session, with a config naming a clean filter for every file; git, run from
+# inside it, would take it for the repository and run that filter on the
+# archived text. The rotation runs no command the clone's config names.
+test_rotate_runs_no_filter_from_a_repository_layout_it_is_run_in() {
+    local g="$SESSION_DIR/vendor/pkg" rc=0
+    mkdir -p "$g/objects" "$g/refs" "$g/info"
+    printf 'ref: refs/heads/main\n' > "$g/HEAD"
+    printf '[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tworktree = .\n[filter "x"]\n\tclean = touch %s; cat\n' \
+        "$TEST_TMPDIR/filter-ran" > "$g/config"
+    printf '* filter=x\n' > "$g/info/attributes"
+    _make_narrative "$LIVE" 10 500
+    (cd "$g" && "$CS_BIN" -narrative rotate > /dev/null 2>&1) || rc=$?
+    assert_file_not_exists "$TEST_TMPDIR/filter-ran" "git must not run the layout's clean filter" || return 1
+    assert_eq "0" "$rc" "the rotation succeeds" || return 1
+    assert_file_not_contains "$LIVE" "section 1$" "the rotation happened" || return 1
+}
+
 test_rotate_keeps_the_live_files_mode() {
     _make_narrative "$LIVE" 10 500
     chmod 750 "$LIVE"
@@ -1031,6 +1050,7 @@ run_test test_rotate_requires_a_session
 run_test test_rotate_rejects_unknown_subcommand
 run_test test_help_shows_narrative
 run_test test_rotate_archives_oldest_sections_and_keeps_tail
+run_test test_rotate_runs_no_filter_from_a_repository_layout_it_is_run_in
 run_test test_rotate_keeps_the_live_files_mode
 run_test test_rotate_writes_through_a_symlinked_narrative
 run_test test_rotate_refuses_a_narrative_linked_out_of_the_session
