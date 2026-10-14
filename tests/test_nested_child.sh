@@ -576,6 +576,50 @@ test_the_lead_end_leaves_a_claim_naming_another_claude() {
         "the lead's end leaves the claim naming another claude" || return 1
 }
 
+# The lead <lead> of launch <launch> starts and claims, a rotation is armed,
+# and the lead's terminal SessionEnd runs while the lead still lives. Then
+# <claude>, started by one of that SessionEnd's hooks, starts and stops.
+# Prints "<rotations> <recorded> <marker> <handoff status> <flag> <claim>".
+_a_claude_starts_at_the_lead_end() {  # launch lead claude
+    local meta="$CLAUDE_SESSION_META_DIR" handoff out flag=absent
+    rm -f "$meta/local/lead-pid" "$meta/local/attention" "$meta/local/state"
+    echo "$1" > "$meta/session.lock"
+    _start_hook "$1" "$2" startup aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa > /dev/null
+    handoff=$(_arm_rotation)
+    printf '{"session_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","reason":"prompt_input_exit"}\n' \
+        | CS_RESOLVED_FROM=env CS_LEAD_PID="$1" CLAUDE_PID="$2" bash "$HOOKS_DIR/session-end.sh" >/dev/null 2>&1
+    out=$(_start_hook "$1" "$3" startup bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb)
+    _stop_hook "$1" "$3" > /dev/null
+    [ -e "$meta/local/attention" ] && flag=raised
+    printf '%s %s %s %s %s [%s]\n' "$(grep -c 'Conversation Rotation' <<< "$out")" "$(_recorded_conversation)" \
+        "$(cat "$meta/local/pending-handoff" 2>/dev/null || echo none)" "$(sed -n 2p "$handoff" | tr -d ' ')" \
+        "$flag" "$(cat "$meta/local/lead-pid" 2>/dev/null || echo none)"
+}
+
+# Claude Code runs SessionEnd hooks while the ending claude still lives, and
+# one of them may start a claude of its own (a `claude -p` that summarises
+# the conversation): the lead, then the hook's shell, then that claude, so it
+# descends from the launch as the lead does. The lead's end leaves its claim,
+# so that claude finds the claim naming a live claude it did not start and is
+# a guest: the recorded conversation stays the lead's, the armed rotation
+# stays armed for the next open, its Stop leaves the attention flag down, and
+# the claim still names the lead. On the exec arm the lead carries the launch
+# pid; on the resume arm, or behind a wrapper that forks claude, it is below.
+test_a_claude_started_at_the_lead_end_is_a_guest() {
+    _nested_setup
+    local launch direct wrapper grand exec_arm forked
+    _launch_tree || return 1
+    read -r launch direct wrapper grand < "$TEST_TMPDIR/tree"
+    exec_arm=$(_a_claude_starts_at_the_lead_end "$launch" "$launch" "$grand")
+    forked=$(_a_claude_starts_at_the_lead_end "$launch" "$wrapper" "$grand")
+    _kill_launch_tree
+
+    assert_eq "0 aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa 2026-01-01-topic.md status:unconsumed absent [$launch $launch aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa]" \
+        "$exec_arm" "on the exec arm a claude started at the lead's end is a guest" || return 1
+    assert_eq "0 aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa 2026-01-01-topic.md status:unconsumed absent [$launch $wrapper aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa]" \
+        "$forked" "below the launch pid a claude started at the lead's end is a guest" || return 1
+}
+
 # A claim whose claude died without its SessionEnd shows no one to be a guest:
 # a claude under the launch that has not claimed (a Stop never claims) still
 # raises the attention flag, as it would with no claim at all. A claim naming
@@ -795,6 +839,7 @@ run_test test_a_claim_naming_no_live_claude_leaves_the_launch_to_the_lead
 run_test test_a_claim_that_is_a_link_or_a_directory_names_no_lead
 run_test test_a_claim_for_another_launch_or_none_names_no_lead
 run_test test_the_lead_end_leaves_a_claim_naming_another_claude
+run_test test_a_claude_started_at_the_lead_end_is_a_guest
 run_test test_a_claim_whose_claude_died_shows_no_one_a_guest
 run_test test_a_launch_that_takes_no_claim_has_only_the_launch_pid_for_its_lead
 run_test test_a_claude_p_under_a_launch_that_takes_no_claim_is_a_guest

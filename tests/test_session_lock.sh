@@ -247,9 +247,10 @@ test_session_end_lead_clears_a_stale_lock_it_does_not_own() {
 # the launch pid; its claim on the launch (.cs/local/lead-pid) names it. A
 # /clear ends a conversation but not that claude, so the claim and the lock
 # stay; another claude's end leaves both too; the lead's own end removes the
-# lock its launch holds and the claim with it. The launch is one that takes
-# the claim (CS_LEAD_CLAIM), as every launch cs makes is.
-test_session_end_removes_the_lead_claim_with_the_lock() {
+# lock its launch holds and leaves the claim, which the next launch clears.
+# The launch is one that takes the claim (CS_LEAD_CLAIM), as every launch cs
+# makes is.
+test_session_end_removes_the_lock_and_leaves_the_lead_claim() {
     create_lock_test_session "test-session"
     local meta_dir="$CS_SESSIONS_ROOT/test-session/.cs" lead
     bash -c 'exit 0' & lead=$!; wait "$lead"
@@ -273,13 +274,15 @@ test_session_end_removes_the_lead_claim_with_the_lock() {
     after_child_claim=$(cat "$meta_dir/local/lead-pid" 2>/dev/null)
     echo '{"session_id": "lead-a", "reason": "other"}' \
         | CS_RESOLVED_FROM=env CS_LEAD_CLAIM=1 CS_LEAD_PID=$$ CLAUDE_PID="$lead" "$SCRIPT_DIR/../hooks/session-end.sh"
+    local after_end_claim
+    after_end_claim=$(cat "$meta_dir/local/lead-pid" 2>/dev/null)
 
     assert_eq "$$" "$after_clear_lock" "a /clear leaves the lock" || return 1
     assert_eq "$$ $lead lead-a" "$after_clear_claim" "a /clear leaves the claim" || return 1
     assert_eq "$$" "$after_child_lock" "another claude's end leaves the lock" || return 1
     assert_eq "$$ $lead lead-a" "$after_child_claim" "another claude's end leaves the claim" || return 1
     assert_not_exists "$meta_dir/session.lock" "the lead's end removes its launch's lock" || return 1
-    assert_not_exists "$meta_dir/local/lead-pid" "the lead's end removes its claim" || return 1
+    assert_eq "$$ $lead lead-a" "$after_end_claim" "the lead's end leaves its claim" || return 1
 }
 
 # /clear and /resume end a conversation but not the claude that holds the
@@ -1130,7 +1133,7 @@ run_test test_stale_lock_is_reclaimed
 run_test test_force_overrides_live_lock
 run_test test_lock_cleaned_on_session_end
 run_test test_session_end_keeps_the_lock_for_a_child_that_inherited_the_contract
-run_test test_session_end_removes_the_lead_claim_with_the_lock
+run_test test_session_end_removes_the_lock_and_leaves_the_lead_claim
 run_test test_session_end_leaves_the_lock_a_forced_open_took
 run_test test_session_end_lead_clears_a_stale_lock_it_does_not_own
 run_test test_session_end_keeps_the_lock_for_clear_and_resume
