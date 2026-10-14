@@ -10328,6 +10328,33 @@ _cs_claude_json_path() {  # config_dir, fallback_json
     fi
 }
 
+# Native locks must stay empty. Keep their inode identity outside the directory
+# so a stale-lock takeover cannot turn our cleanup into the successor's unlock.
+_cs_claude_lock_identity() {  # lock directory
+    if stat --version >/dev/null 2>&1; then
+        stat -L -c '%d:%i' "$1"
+    else
+        stat -L -f '%d:%i' "$1"
+    fi
+}
+
+_cs_claude_lock_heartbeat() {  # lock directory, identity, readiness file
+    local started ready="$3"
+    # Only the parent retains the FIFO's writer. EOF stops us even if SIGKILL
+    # prevents its EXIT trap from running. Bash 3.2 returns 1 for both EOF and
+    # a timed read, so distinguish them by the time spent waiting.
+    exec 8>&-
+    while [ ! -L "$1" ] && [ "$(_cs_claude_lock_identity "$1" 2>/dev/null)" = "$2" ]; do
+        # Descriptor 9 retains the acquired inode across a stale-lock takeover.
+        touch /dev/fd/9 || return 1
+        if [ -n "$ready" ]; then : > "$ready"; ready=""; fi
+        started=$SECONDS
+        IFS= read -r -t 2 <&7 || true
+        [ $((SECONDS - started)) -ge 1 ] || return 0
+    done
+    return 1
+}
+
 # Carry shell preferences on first creation, then refresh only the selected
 # login. Claude and the sidebar use proper-lockfile directories without pid
 # files: never reclaim their lock with cs's pid-based lock helper.
@@ -10351,8 +10378,22 @@ _seed_session_claude_json() (  # session_config_dir, shell_claude_json
     lock="$dest.lock"
     # Bash 3.2 unwinds function locals before an EXIT trap after error().
     # These cleanup names live only in this subshell and survive that unwind.
-    _cs_seed_temp_file="" _cs_seed_lock="$lock" _cs_seed_lock_held=""
-    trap '[ -z "$_cs_seed_temp_file" ] || rm -f "$_cs_seed_temp_file"; [ -z "$_cs_seed_lock_held" ] || rmdir "$_cs_seed_lock" 2>/dev/null || true' EXIT
+    _cs_seed_temp_file="" _cs_seed_ready_file="" _cs_seed_watch_fifo="" _cs_seed_heartbeat=""
+    _cs_seed_lock="$lock" _cs_seed_lock_identity=""
+    trap '
+        [ -z "$_cs_seed_temp_file" ] || rm -f "$_cs_seed_temp_file"
+        [ -z "$_cs_seed_ready_file" ] || rm -f "$_cs_seed_ready_file"
+        [ -z "$_cs_seed_watch_fifo" ] || rm -f "$_cs_seed_watch_fifo"
+        if [ -n "$_cs_seed_lock_identity" ] &&
+            [ ! -L "$_cs_seed_lock" ] &&
+            [ "$(_cs_claude_lock_identity "$_cs_seed_lock")" = "$_cs_seed_lock_identity" ]; then
+            rmdir "$_cs_seed_lock" 2>/dev/null || true
+        fi
+        if [ -n "$_cs_seed_heartbeat" ]; then
+            kill "$_cs_seed_heartbeat" 2>/dev/null || true
+            wait "$_cs_seed_heartbeat" 2>/dev/null || true
+        fi
+    ' EXIT
     trap 'exit 143' TERM
     trap 'exit 130' INT
     if ! mkdir "$lock" 2>/dev/null; then
@@ -10366,20 +10407,38 @@ _seed_session_claude_json() (  # session_config_dir, shell_claude_json
             error "Claude config is busy: $dest; retry after its writer finishes."
         fi
     fi
-    _cs_seed_lock_held=1
+    _cs_seed_lock_identity=$(_cs_claude_lock_identity "$lock") || error "could not identify Claude config lock: $lock"
+    exec 9<"$lock" || error "could not open Claude config lock: $lock"
+    [ ! -L "$lock" ] && [ "$(_cs_claude_lock_identity "$lock")" = "$_cs_seed_lock_identity" ] \
+        || error "lost Claude config lock: $lock"
     tmp=$(mktemp "$parent/.claude.json.XXXXXX") || error "could not create a temporary file in $parent."
     _cs_seed_temp_file="$tmp"
+    _cs_seed_ready_file="$tmp.ready"
+    _cs_seed_watch_fifo="$tmp.watch"
+    mkfifo "$_cs_seed_watch_fifo" || error "could not create Claude config lock heartbeat pipe."
+    exec 8<>"$_cs_seed_watch_fifo" 7<"$_cs_seed_watch_fifo"
+    _cs_claude_lock_heartbeat "$lock" "$_cs_seed_lock_identity" "$_cs_seed_ready_file" &
+    _cs_seed_heartbeat=$!
+    exec 7<&-
+    while [ ! -f "$_cs_seed_ready_file" ]; do
+        kill -0 "$_cs_seed_heartbeat" 2>/dev/null || error "could not heartbeat Claude config lock: $lock"
+        sleep 0.05
+    done
     if [ -e "$dest" ]; then
         jq -es 'if length != 2 or any(.[]; type != "object") then error("expected objects")
             else .[0] as $shell | .[1] |
                 if ($shell | has("oauthAccount")) then .oauthAccount = $shell.oauthAccount
-                else del(.oauthAccount) end end' "$2" "$dest" > "$tmp" 2>/dev/null || rc=1
+                else del(.oauthAccount) end end' "$2" "$dest" > "$tmp" 2>/dev/null 8>&- || rc=1
     else
         jq -e 'if type == "object" then .projects = {} else error("expected object") end' \
-            "$2" > "$tmp" 2>/dev/null || rc=1
+            "$2" > "$tmp" 2>/dev/null 8>&- || rc=1
     fi
     if [ "$rc" = 0 ]; then
-        cs_write_atomic "$dest" cat "$tmp" && chmod 600 "$dest" || rc=1
+        kill -0 "$_cs_seed_heartbeat" 2>/dev/null &&
+            [ ! -L "$lock" ] &&
+            [ "$(_cs_claude_lock_identity "$lock")" = "$_cs_seed_lock_identity" ] \
+            || error "lost Claude config lock: $lock; retry after its writer finishes."
+        cs_write_atomic "$dest" cat "$tmp" 8>&- && chmod 600 "$dest" || rc=1
     fi
     [ "$rc" = 0 ] || error "could not refresh $dest from $2; fix its JSON, then reopen."
 )

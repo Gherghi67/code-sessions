@@ -135,6 +135,67 @@ test_signal_releases_only_our_config_lock_and_preserves_outer_trap() {
     [ -z "$(find "$TEST_TMPDIR/config" -name '.claude.json.*' -type f)" ] || return 1
 }
 
+test_slow_login_refresh_keeps_native_lock_fresh() {
+    local source="$TEST_TMPDIR/shell.json" dest="$TEST_TMPDIR/config/.claude.json"
+    local ready="$TEST_TMPDIR/ready" contender status=0
+    printf '%s\n' '{"oauthAccount":{"accountUuid":"seed"}}' > "$source"
+    printf '%s\n' '{"oauthAccount":{"accountUuid":"old"},"theme":"session"}' > "$dest"
+    python3 - "$dest" "$ready" <<'PY' &
+import json, os, sys, time
+dest, ready = sys.argv[1:]
+deadline = time.monotonic() + 10
+while not os.path.exists(ready):
+    if time.monotonic() >= deadline:
+        sys.exit("refresh did not reach JSON processing")
+    time.sleep(0.05)
+time.sleep(10.5)
+lock = dest + ".lock"
+if time.time() - os.stat(lock).st_mtime > 10:
+    os.rename(lock, lock + ".displaced")
+    os.mkdir(lock)
+    with open(dest, "w") as stream:
+        json.dump({"oauthAccount": {"accountUuid": "successor"}, "theme": "successor"}, stream)
+    with open(ready + ".stolen", "w") as stream:
+        stream.write("stale lock was reclaimed")
+PY
+    contender=$!
+    (
+        jq() {
+            command jq "$@" || return 1
+            : > "$ready"
+            sleep 12
+        }
+        _seed_session_claude_json "$TEST_TMPDIR/config" "$source"
+    ) || status=$?
+    wait "$contender" || return 1
+    assert_not_exists "$ready.stolen" "a live refresh must not look stale after ten seconds" || return 1
+    assert_eq 0 "$status" || return 1
+    assert_eq seed "$(jq -r .oauthAccount.accountUuid "$dest")" || return 1
+    assert_eq session "$(jq -r .theme "$dest")" || return 1
+    assert_not_exists "$dest.lock" || return 1
+}
+
+test_lost_login_lock_aborts_write_and_keeps_successor_lock() {
+    local source="$TEST_TMPDIR/shell.json" dest="$TEST_TMPDIR/config/.claude.json"
+    local output status=0
+    printf '%s\n' '{"oauthAccount":{"accountUuid":"seed"}}' > "$source"
+    printf '%s\n' '{"oauthAccount":{"accountUuid":"old"}}' > "$dest"
+    output=$(
+        jq() {
+            command jq "$@" || return 1
+            mv "$dest.lock" "$TEST_TMPDIR/displaced-lock"
+            mkdir "$dest.lock"
+            printf '%s\n' '{"oauthAccount":{"accountUuid":"successor"},"theme":"successor"}' > "$dest"
+        }
+        _seed_session_claude_json "$TEST_TMPDIR/config" "$source" 2>&1
+    ) || status=$?
+    [ "$status" -ne 0 ] || { echo "a refresh that lost its lock still succeeded"; return 1; }
+    assert_eq successor "$(jq -r .oauthAccount.accountUuid "$dest")" || return 1
+    assert_eq successor "$(jq -r .theme "$dest")" || return 1
+    assert_dir "$dest.lock" "cleanup must leave the successor's lock alone" || return 1
+    [ -z "$(find "$TEST_TMPDIR/config" -name '.claude.json.*' -type f)" ] || return 1
+}
+
 echo 'Launch options and login synchronization tests'
 run_test test_login_refresh_preserves_session_projects_and_preferences
 run_test test_native_writer_lock_is_never_reclaimed
@@ -145,4 +206,6 @@ run_test test_native_legacy_config_wins_for_source_and_destination
 run_test test_symlink_target_lock_blocks_login_refresh
 run_test test_abandoned_stale_native_lock_can_be_reclaimed
 run_test test_signal_releases_only_our_config_lock_and_preserves_outer_trap
+run_test test_slow_login_refresh_keeps_native_lock_fresh
+run_test test_lost_login_lock_aborts_write_and_keeps_successor_lock
 report_results
