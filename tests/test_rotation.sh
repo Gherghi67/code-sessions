@@ -172,13 +172,13 @@ test_rotate_skill_has_a_home_for_rejected_alternatives() {
 # them no container and step 4 said "pass two is where exact readings live".
 # In 4 sampled handoffs, 3 writers invented their own section for these facts;
 # the one that did not carried both of the wrong claims found. A named section
-# in pass one, checked item by item before the first commit, closes both.
+# in pass one, checked item by item as pass one is written, closes both.
 test_rotate_skill_has_a_home_for_conversation_only_facts() {
     local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md"
     assert_file_contains "$skill" "3\. Conversation-only facts" \
         "the body needs a pass-one section for facts that exist nowhere else" || return 1
     assert_file_contains "$skill" "check each one off" \
-        "and a checklist before the first commit" || return 1
+        "and a checklist as pass one is written" || return 1
     if grep -q 'pass two is where exact readings live' "$skill"; then
         echo "  FAIL: exact readings belong to pass one, not pass two"; return 1
     fi
@@ -246,9 +246,9 @@ test_rotate_skill_requires_provenance_on_claims() {
 # The successor is told to execute the next-step section, and in-document
 # retrieval degrades with length — so the thing it needs first must not be the
 # thing it finds last. "Write it first" only means anything as tool-call order:
-# a Write lands whole or not at all, so the first pass is committed before the
-# second pass appends to it, or a compaction mid-rotation loses exactly what
-# was meant to survive it.
+# a Write lands whole or not at all, so the first pass is a Write of its own,
+# on disk before the second pass appends to it, or a compaction mid-rotation
+# loses exactly what was meant to survive it.
 test_rotate_skill_puts_the_next_step_first() {
     local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md"
     assert_file_contains "$skill" "1\. Next Step" \
@@ -268,8 +268,24 @@ test_rotate_skill_puts_the_next_step_first() {
         "a Next Step that needs a clean worktree must name the consumed flip" || return 1
     assert_file_contains "$skill" "append" \
         "the second pass must append, since a Write replaces the whole file" || return 1
-    assert_file_contains "$skill" "second commit" \
-        "and land as its own commit, never an amend of the durable one" || return 1
+    # Pass one is durable once the Write returns: it is on disk, and the
+    # autosave hook snapshots every Write into the conversation's shadow ref
+    # wherever git does not ignore .cs/. A commit between the passes added
+    # nothing but a model-written commit to the project's history, two per
+    # rotation, and models copied its invented subject. One commit, after
+    # pass two, under a subject the skill names.
+    assert_file_contains "$skill" "the rotation's one commit" \
+        "the rotation commits once, after the second pass" || return 1
+    assert_file_contains "$skill" "Pass one needs no commit of its own" \
+        "and says why the first pass is safe uncommitted" || return 1
+    assert_file_contains "$skill" "autosave-commits\.sh" \
+        "naming the hook that keeps it" || return 1
+    assert_file_contains "$skill" '`session: handoff <basename>`' \
+        "the commit subject is named, so a model does not invent one" || return 1
+    assert_file_not_contains "$skill" "second commit" \
+        "there is no second commit" || return 1
+    assert_file_not_contains "$skill" "Commit the first pass" \
+        "and no commit of the first pass" || return 1
     if grep -q -- '--amend\|amend the' "$skill"; then
         echo "  FAIL: amending replaces the only faithful copy of pass one"; return 1
     fi
@@ -279,20 +295,26 @@ test_rotate_skill_puts_the_next_step_first() {
 # Y, n or Enter and nothing re-arms it, while an unarmed committed handoff is
 # still offered by that prompt's scan — so arming before the ritual can finish
 # turns an interruption into a bare /clear. Pinned by ORDER in the file: the arm
-# step must come after both commits and after the retire step.
+# step must come after the one commit and after the retire step, and the
+# commit after the retire step whose supersedings it carries.
 test_rotate_skill_arms_last() {
     local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md"
-    local arm commit2 retire tell
+    local arm commit retire tell steps
     arm=$(grep -n '^[0-9]*\. Arm it' "$skill" | head -1 | cut -d: -f1)
-    commit2=$(grep -n '^[0-9]*\. Second commit' "$skill" | head -1 | cut -d: -f1)
+    commit=$(grep -n "^[0-9]*\. .*the rotation's one commit" "$skill" | head -1 | cut -d: -f1)
     retire=$(grep -n '^[0-9]*\. Retire this machine' "$skill" | head -1 | cut -d: -f1)
     tell=$(grep -n '^[0-9]*\. Tell the user' "$skill" | head -1 | cut -d: -f1)
-    [ -n "$arm" ] && [ -n "$commit2" ] && [ -n "$retire" ] && [ -n "$tell" ] \
-        || { echo "  FAIL: could not locate the arm, second-commit, retire and tell steps"; return 1; }
-    [ "$arm" -gt "$commit2" ] && [ "$arm" -gt "$retire" ] \
-        || { echo "  FAIL: arming must follow the second commit and the retire step (arm at $arm)"; return 1; }
+    [ -n "$arm" ] && [ -n "$commit" ] && [ -n "$retire" ] && [ -n "$tell" ] \
+        || { echo "  FAIL: could not locate the arm, commit, retire and tell steps"; return 1; }
+    [ "$commit" -gt "$retire" ] \
+        || { echo "  FAIL: the commit must follow the retire step (commit at $commit, retire at $retire)"; return 1; }
+    [ "$arm" -gt "$commit" ] && [ "$arm" -gt "$retire" ] \
+        || { echo "  FAIL: arming must follow the commit and the retire step (arm at $arm)"; return 1; }
     [ "$arm" -lt "$tell" ] \
         || { echo "  FAIL: arming must precede telling the user to /clear"; return 1; }
+    # Exactly one numbered step commits.
+    steps=$(grep -E '^[0-9]+\. ' "$skill" | grep -ci 'commit')
+    assert_eq "1" "$steps" "one numbered step commits" || return 1
 }
 
 test_rotate_skill_pins_a_model_that_cannot_refuse() {
@@ -413,7 +435,7 @@ test_rotate_skill_documents_the_clear_route() {
 
 test_rotate_skill_governs_what_goes_into_the_handoff() {
     # The handoff is written by a model summarising a conversation, committed
-    # by step 4 into a store the session .gitignore does not cover, and read
+    # by step 8 into a store the session .gitignore does not cover, and read
     # back as the next conversation's prompt. Published and re-read: both
     # halves are why the body needs rules.
     local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md"
