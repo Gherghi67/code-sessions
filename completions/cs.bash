@@ -14,7 +14,7 @@ _cs_completions() {
     local global_flags="-tui -list -ls -adopt -remove -rm -whoami -who -secrets -checkpoint -narrative -queue -msg -spawn -conversations -search -statusline -detect-theme -doctor -diag -update -uninstall -help -h -version -v -live -usage -status -tag -archive -unarchive -encrypt"
 
     # Secrets subcommands
-    local secrets_cmds="set store get list ls delete rm purge export export-file import-file migrate migrate-backend backend age"
+    local secrets_cmds="set store get list ls delete rm purge rename export export-file import-file migrate migrate-backend backend age"
 
     # Secrets options
     local secrets_flags="--session --replace --allow-unsigned --redact --from --delete-source --help"
@@ -24,7 +24,7 @@ _cs_completions() {
     local narrative_cmds="rotate"
 
     # Queue subcommands
-    local queue_cmds="add accept list ls rm clear start defer log"
+    local queue_cmds="add accept list ls rm clear start log"
 
     # Tag subcommands
     local tag_cmds="add rm list"

@@ -30,6 +30,11 @@ unset CLAUDE_SESSION_NAME CLAUDE_SESSION_DIR CLAUDE_SESSION_META_DIR CS_SECRETS_
 # CS_CLAUDE_DIR outranks HOME for Claude Code's settings.json, and a
 # SessionStart hook appends the session it ran for to CLAUDE_ENV_FILE.
 unset CS_CLAUDE_DIR CLAUDE_ENV_FILE 2>/dev/null || true
+# CLAUDE_PID and CS_LEAD_PID name the claude a hook fires for and the cs that
+# launched it: inherited, a hook under test reads the caller's own process, so
+# a suite run by a tmux teammate sees a teammate and one run by a lead sees
+# the lead. A test that models either sets it itself.
+unset CLAUDE_PID CS_LEAD_PID 2>/dev/null || true
 
 # --- State ---
 TESTS_RUN=0
@@ -669,4 +674,37 @@ link_path_without() {  # dir, name glob
             [ -e "$1/${f##*/}" ] || ln -s "$f" "$1/${f##*/}"
         done
     done
+}
+
+# Every bash this machine offers, one path a line: /bin/bash, then each other
+# one on PATH. A Mac with Homebrew has two (3.2 and 5.x); a Linux runner one.
+every_bash() {
+    local seen=" " b
+    for b in /bin/bash $(type -aP bash 2>/dev/null); do
+        [ -x "$b" ] || continue
+        case "$seen" in *" $b "*) continue ;; esac
+        seen="$seen$b "
+        printf '%s\n' "$b"
+    done
+}
+
+# A UTF-8 locale this machine has, empty when it has none.
+utf8_locale() {
+    local have name
+    have="$(locale -a 2>/dev/null || true)"
+    for name in en_US.UTF-8 C.UTF-8 en_US.utf8 C.utf8; do
+        case "
+$have
+" in *"
+$name
+"*) printf '%s' "$name"; return 0 ;; esac
+    done
+}
+
+# The locale assignments a bash made to itself, read from the set -x trace in
+# file $1 (default PS4): a temporary `LC_ALL=C cmd` traces as a line of its
+# own, while a locale handed to a command as an argument of env traces inside
+# the env line. Empty when the shell assigned none.
+shell_locale_assignments() {  # trace file
+    grep -E '^\++ ((local|export|declare|typeset|readonly) )?(LC_[A-Z_]+|LANG|LANGUAGE)=' "$1" || true
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ABOUTME: Tests for the cs -queue verb and the Stop-hook drain.
-# ABOUTME: Covers add/list/rm/clear/start/defer and the outside-a-session error.
+# ABOUTME: Covers add/list/rm/clear/start and the outside-a-session error.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/test_lib.sh"
@@ -88,15 +88,13 @@ test_queue_rm_removes_by_index() {
     assert_output_not_contains "$out" "drop" "removed task is gone" || return 1
 }
 
-# An index past the end removed nothing and said nothing, but still cleared
-# queue.declined — so the gate re-armed and a later drain ran the very task the
-# user believed they had deleted.
+# An index past the end names no task: the removal is refused and says which
+# numbers there are, and nothing is removed.
 test_queue_rm_rejects_an_index_past_the_end() {
     local q="$CLAUDE_SESSION_META_DIR/local/queue"
     mkdir -p "$q"
     printf 'keep\n' > "$q/0000000001-00001-0001-1"
     printf 'also keep\n' > "$q/0000000002-00001-0002-2"
-    printf 'declined\n' > "$CLAUDE_SESSION_META_DIR/local/queue.declined"
 
     local out status
     out=$("$CS_BIN" -queue rm 7 2>&1)
@@ -108,10 +106,6 @@ test_queue_rm_rejects_an_index_past_the_end() {
     fi
     assert_output_contains "$out" "1-2" "the error should name the valid range" || return 1
     assert_eq "2" "$(QCOUNT)" "both tasks remain" || return 1
-    if [ ! -f "$CLAUDE_SESSION_META_DIR/local/queue.declined" ]; then
-        echo "  FAIL: a refused removal must not re-arm the gate"
-        return 1
-    fi
 }
 
 test_queue_clear_empties_and_resets_state() {
@@ -154,10 +148,17 @@ test_queue_clear_forgets_the_mode() {
     assert_file_not_exists "$CLAUDE_SESSION_META_DIR/local/queue.mode" "clear forgets how the run was to go" || return 1
 }
 
-test_queue_defer_writes_declined_epoch() {
-    "$CS_BIN" -queue defer >/dev/null 2>&1
-    assert_file_exists "$CLAUDE_SESSION_META_DIR/local/queue.declined" "defer stamps declined" || return 1
+# The queue's start is offered by the cs mod's band, never by a Stop-hook
+# question, so there is no decline to record: defer is no verb.
+test_queue_defer_is_not_a_verb() {
+    local out rc=0
+    out=$("$CS_BIN" -queue defer 2>&1) || rc=$?
+    assert_eq "1" "$rc" "defer exits 1" || return 1
+    assert_eq 'Error: Usage: cs -queue [add "<task>" | accept <message id> | list | rm <n> | clear | log | start [subagents|workflow]]' \
+        "$out" "defer gets the usage" || return 1
+    assert_file_not_exists "$CLAUDE_SESSION_META_DIR/local/queue.declined" "nothing is stamped" || return 1
 }
+
 
 # A leftover or foreign file at the fixed name <file>.tmp must not stand between
 # cs and the file it is writing: every write goes through a uniquely named temp
@@ -169,18 +170,7 @@ test_queue_start_ignores_a_stale_state_tmp() {
         "start arms past a stale queue.state.tmp" || return 1
 }
 
-test_queue_defer_ignores_a_stale_declined_tmp() {
-    mkdir "$CLAUDE_SESSION_META_DIR/local/queue.declined.tmp"
-    "$CS_BIN" -queue defer >/dev/null 2>&1 || true
-    assert_file_exists "$CLAUDE_SESSION_META_DIR/local/queue.declined" \
-        "defer stamps declined past a stale queue.declined.tmp" || return 1
-}
 
-test_queue_add_clears_declined() {
-    "$CS_BIN" -queue defer >/dev/null 2>&1
-    "$CS_BIN" -queue add "new" >/dev/null 2>&1
-    assert_file_not_exists "$CLAUDE_SESSION_META_DIR/local/queue.declined" "add re-enables gating" || return 1
-}
 
 # The done log and the listing are line-oriented, so a task body is one line,
 # as cs -msg --kind task and cs -spawn --task already require.
@@ -191,6 +181,22 @@ test_queue_add_rejects_a_multiline_task() {
     fi
     assert_output_contains "$out" "Error: task bodies must be a single line (the queue's done log and listing are line-oriented)" "names the single-line rule" || return 1
     assert_eq "0" "$(QCOUNT)" "nothing queued despite the rejection" || return 1
+}
+
+# A task that cannot be written is not queued, and the add says so: the
+# staging directory takes no new file, so the write itself is what fails.
+test_queue_add_fails_when_the_task_cannot_be_written() {
+    local q="$CLAUDE_SESSION_META_DIR/local" out rc=0
+    mkdir -p "$q/queue" "$q/queue.tmp"
+    _deny_writes "$q/queue.tmp" || return 77
+    out=$("$CS_BIN" -queue add "a task" 2>/dev/null) || rc=$?
+    local err; err=$("$CS_BIN" -queue add "a task" 2>&1 >/dev/null | tail -1) || true
+    _allow_writes "$q/queue.tmp"
+    assert_eq "1" "$rc" "an add that wrote nothing exits 1" || return 1
+    assert_eq "" "$out" "nothing is reported queued" || return 1
+    assert_eq "Error: could not write the task into $q/queue; it is not queued" "$err" \
+        "the error names the queue" || return 1
+    assert_eq "0" "$(QCOUNT)" "no task file landed" || return 1
 }
 
 test_queue_requires_session() {
@@ -376,11 +382,10 @@ run_test test_queue_start_sets_armed
 run_test test_queue_start_records_how_the_tasks_run
 run_test test_queue_start_refuses_an_unknown_mode
 run_test test_queue_clear_forgets_the_mode
-run_test test_queue_defer_writes_declined_epoch
+run_test test_queue_defer_is_not_a_verb
 run_test test_queue_start_ignores_a_stale_state_tmp
-run_test test_queue_defer_ignores_a_stale_declined_tmp
-run_test test_queue_add_clears_declined
 run_test test_queue_add_rejects_a_multiline_task
+run_test test_queue_add_fails_when_the_task_cannot_be_written
 run_test test_queue_requires_session
 run_test test_queue_add_via_session_scoped_arm
 
@@ -402,6 +407,13 @@ qseed() {
     done
 }
 
+# A run in progress: the drain has handed out the task file named, and records
+# its name beside the state.
+qdraining() {  # basename of the task handed out
+    printf 'draining\n' > "$(QDIR)/queue.state"
+    printf '%s\n' "$1" > "$(QDIR)/queue.current"
+}
+
 # Count task files in the queue directory.
 qlen() {
     local f n=0
@@ -412,12 +424,21 @@ qlen() {
     printf '%s' "$n"
 }
 
-test_drain_gates_when_idle_nonempty() {
-    qseed "do the thing"
+
+# A queue with tasks that nobody started is left to the person: the turn ends
+# as it would with no queue, and nothing is recorded. The cs mod's band offers
+# the start instead.
+test_drain_leaves_an_idle_queue_alone() {
+    qseed "do the thing" "and the other"
     local out; out=$(drain)
-    assert_output_contains "$out" '"block"' "idle+nonempty blocks to gate" || return 1
-    assert_output_contains "$out" "AskUserQuestion" "gate tells agent to ask" || return 1
-    assert_file_not_exists "$(QDIR)/queue.state" "gate does not change state" || return 1
+    assert_eq '{"decision": "approve"}' "$out" "the Stop ends as one with no queue does" || return 1
+    printf 'idle\n' > "$(QDIR)/queue.state"
+    out=$(drain)
+    assert_eq '{"decision": "approve"}' "$out" "and so does one whose queue is recorded idle" || return 1
+    assert_eq "idle" "$(cat "$(QDIR)/queue.state")" "the state is untouched" || return 1
+    assert_file_not_exists "$(QDIR)/queue.declined" "no cooldown is stamped" || return 1
+    assert_file_not_exists "$(QDIR)/queue.current" "nothing was handed out" || return 1
+    assert_eq "2" "$(qlen)" "every task stays queued" || return 1
 }
 
 test_drain_armed_injects_first_task_no_pop() {
@@ -445,7 +466,7 @@ test_drain_skips_a_done_log_linked_out_of_the_session() {
     t=$(cd "$TEST_TMPDIR" && pwd -P); o="$t/outside"
     printf 'USER-OWNED\n' > "$o"
     qseed "task one" "task two"
-    printf 'draining\n' > "$(QDIR)/queue.state"
+    qdraining 0000000001-seed
     ln -s "$o" "$(QDIR)/queue.done"
     out=$(printf '{}\n' | CS_LEAD_PID=$$ CLAUDE_PID=$$ bash "$HOOKS_DIR/narrative-reminder.sh" 2>"$err")
     assert_eq "USER-OWNED" "$(cat "$o")" "nothing is appended outside the session" || return 1
@@ -733,7 +754,7 @@ test_drain_leaves_a_queue_linked_out_of_the_session_alone() {
 
 test_drain_draining_pops_and_injects_next() {
     qseed "task one" "task two"
-    printf 'draining\n' > "$(QDIR)/queue.state"
+    qdraining 0000000001-seed
     local out; out=$(drain)
     assert_output_contains "$out" "task two" "draining injects the next task" || return 1
     assert_file_contains "$(QDIR)/queue.done" "task one" "finished task logged to done" || return 1
@@ -776,7 +797,7 @@ test_drain_frames_the_next_task_with_a_fresh_id() {
 # reads "all tasks complete" with nothing done.
 test_drain_ignores_a_teammate_stop() {
     qseed "task one" "task two"
-    printf 'draining\n' > "$(QDIR)/queue.state"
+    qdraining 0000000001-seed
     local out
     out=$(teammate_drain)
     assert_output_not_contains "$out" "task two" "a teammate's stop injects nothing" || return 1
@@ -788,14 +809,6 @@ test_drain_ignores_a_teammate_stop() {
     assert_eq "1" "$(qlen)" "and pops one" || return 1
 }
 
-test_drain_gate_ignores_a_teammate_stop() {
-    qseed "do the thing"
-    local out
-    out=$(teammate_drain)
-    assert_output_not_contains "$out" "walk-away run" "a teammate is not asked to start the queue" || return 1
-    out=$(drain)
-    assert_output_contains "$out" '"block"' "the lead still gets the gate" || return 1
-}
 
 # The fail-safe: if the pop's rename fails, the drain disarms rather than
 # re-injecting the task it could not claim. A read-only queue directory makes
@@ -803,7 +816,7 @@ test_drain_gate_ignores_a_teammate_stop() {
 # branch — a second drain winning the race is not reproducible on demand.
 test_drain_disarms_when_the_pop_fails() {
     qseed "task one" "task two"
-    printf 'draining\n' > "$(QDIR)/queue.state"
+    qdraining 0000000001-seed
     _deny_writes "$(QDIR)/queue" || return 77
     local out; out=$(drain)
     _allow_writes "$(QDIR)/queue"
@@ -827,7 +840,7 @@ test_drain_advances_past_a_stale_state_tmp() {
 
 test_drain_disarms_after_a_failed_pop_past_a_stale_state_tmp() {
     qseed "task one" "task two"
-    printf 'draining\n' > "$(QDIR)/queue.state"
+    qdraining 0000000001-seed
     mkdir "$(QDIR)/queue.state.tmp"
     _deny_writes "$(QDIR)/queue" || return 77
     drain >/dev/null || true
@@ -882,9 +895,10 @@ test_drain_reports_a_state_it_cannot_write() {
     _allow_writes "$(QDIR)"
     assert_eq "0" "$rc" "the hook exits cleanly" || return 1
     assert_eq "approve" "$(jq -r '.decision' <<< "$out")" "the turn is allowed to end" || return 1
-    assert_eq "cs task queue: could not write $(QDIR)/queue.state" "$(jq -r '.systemMessage' <<< "$out")" \
-        "the user is told which file" || return 1
+    assert_eq "cs task queue: could not write $(QDIR)/queue.current" "$(jq -r '.systemMessage' <<< "$out")" \
+        "the user is told which file: the record of the task handed out is written first" || return 1
     assert_eq "armed" "$(cat "$(QDIR)/queue.state" | tr -d '[:space:]')" "the state is as it was" || return 1
+    assert_file_not_exists "$(QDIR)/queue.current" "no task is recorded handed out" || return 1
 }
 
 # Back to idle is the one state an absent file also means. When idle cannot be
@@ -897,6 +911,7 @@ test_drain_falls_back_to_no_state_file_when_idle_cannot_be_written() {
     mkdir -p "$TEST_TMPDIR/state-home"
     printf 'draining\n' > "$TEST_TMPDIR/state-home/queue.state"
     ln -s "$TEST_TMPDIR/state-home/queue.state" "$(QDIR)/queue.state"
+    printf '0000000001-seed\n' > "$(QDIR)/queue.current"
     _deny_writes "$TEST_TMPDIR/state-home" || return 77
     local out; out=$(drain) || true
     _allow_writes "$TEST_TMPDIR/state-home"
@@ -935,47 +950,69 @@ test_drain_pops_nothing_when_a_trip_cannot_record_idle() {
     assert_eq "2" "$(qlen)" "task b and task c stay queued until handed out" || return 1
 }
 
+# Only the task the drain handed out is logged done. Removed mid-run, it is
+# logged nothing, and the next Stop hands out what is first now; it never
+# marks that task done unrun.
+test_drain_logs_nothing_done_when_the_handed_out_task_was_removed() {
+    qseed "task one" "task two"
+    printf 'armed\n' > "$(QDIR)/queue.state"
+    drain >/dev/null || true
+    "$CS_BIN" -queue rm 1 >/dev/null 2>&1 || return 1
+    local reason; reason=$(drain | jq -r .reason)
+    assert_file_not_exists "$(QDIR)/queue.done" "nothing is logged done" || return 1
+    assert_output_contains "$reason" "^cs task queue: next task (1 remaining)" "the next task is handed out" || return 1
+    assert_output_contains "$reason" "^task two$" "and it is task two" || return 1
+    assert_eq "1" "$(qlen)" "task two stays queued until it is done" || return 1
+    assert_eq "draining" "$(cat "$(QDIR)/queue.state")" "the run goes on" || return 1
+}
+
+# A task accepted into a run whose handed-out task was removed is handed out,
+# never logged done in its place and announced as the run's end.
+test_drain_hands_out_a_task_accepted_after_the_handed_out_one_was_removed() {
+    qseed "only task"
+    printf 'armed\n' > "$(QDIR)/queue.state"
+    drain >/dev/null || true
+    "$CS_BIN" -queue rm 1 >/dev/null 2>&1 || return 1
+    printf 'accepted task\n' > "$(QDIR)/queue/9999999999-accept-m1"
+    local reason; reason=$(drain | jq -r .reason)
+    assert_file_not_exists "$(QDIR)/queue.done" "nothing is logged done" || return 1
+    assert_output_not_contains "$reason" "all tasks complete" "the run does not end" || return 1
+    assert_output_contains "$reason" "^accepted task$" "the accepted task is handed out" || return 1
+    assert_eq "1" "$(qlen)" "it stays queued until it is done" || return 1
+}
+
+# A draining queue with no record of what was handed out cannot say which task
+# finished: the run parks with every task still queued, logging none done.
+test_drain_parks_a_run_with_no_record_of_the_task_handed_out() {
+    qseed "task one" "task two"
+    printf 'draining\n' > "$(QDIR)/queue.state"
+    local out; out=$(drain)
+    assert_eq "approve" "$(jq -r .decision <<< "$out")" "the turn ends" || return 1
+    assert_eq "cs task queue: no record of which task was handed out ($(QDIR)/queue.current), so none is logged done. The queue is parked with 2 task(s); re-arm with: cs -queue start" \
+        "$(jq -r .systemMessage <<< "$out")" "the user is told why" || return 1
+    assert_file_not_exists "$(QDIR)/queue.done" "nothing is logged done" || return 1
+    assert_eq "2" "$(qlen)" "every task stays queued" || return 1
+    assert_eq "idle" "$(cat "$(QDIR)/queue.state")" "the queue is parked" || return 1
+}
+
 test_drain_empties_and_returns_idle() {
     qseed "last task"
-    printf 'draining\n' > "$(QDIR)/queue.state"
+    qdraining 0000000001-seed
     local out; out=$(drain)
     assert_output_contains "$out" "complete" "announces completion" || return 1
     assert_eq "idle" "$(cat "$(QDIR)/queue.state" | tr -d '[:space:]')" "returns to idle" || return 1
 }
 
-test_drain_declined_within_cooldown_falls_through() {
-    qseed "queued"
-    printf '%s\n' "$(date +%s)" > "$(QDIR)/queue.declined"
-    local out; out=$(drain)
-    assert_output_not_contains "$out" "AskUserQuestion" "recent decline suppresses the gate" || return 1
-}
 
-# The stamp's content reaches shell arithmetic, which runs a command
-# substitution found in an operand's array subscript. The hook strips
-# whitespace from it, so the stand-in command holds none; the array is PATH
-# because the hook runs under set -u, which stops on an unset name before the
-# substitution is reached.
-test_drain_reads_a_declined_stamp_as_data() {
-    qseed "queued"
-    printf 'PATH[$(:>%s)]\n' "$TEST_TMPDIR/ran-from-declined" > "$(QDIR)/queue.declined"
-    local out; out=$(drain 2>/dev/null)
-    assert_file_not_exists "$TEST_TMPDIR/ran-from-declined" "a declined stamp's content must never run" || return 1
-    assert_output_contains "$out" "AskUserQuestion" "a stamp that is not a time counts as no decline: the gate asks" || return 1
-}
 
 test_drain_ignores_subagents() {
     qseed "queued"
+    printf 'armed\n' > "$(QDIR)/queue.state"
     local out; out=$(drain '{"agent_id":"sub-1"}')
-    assert_output_not_contains "$out" "AskUserQuestion" "subagent stop never drains" || return 1
+    assert_output_not_contains "$out" "walk-away run" "subagent stop never drains" || return 1
+    assert_eq "armed" "$(cat "$(QDIR)/queue.state")" "the queue stays armed for the lead" || return 1
 }
 
-test_drain_gate_mentions_high_context() {
-    qseed "queued"
-    printf '82\n' > "$(QDIR)/context-pct"
-    local out; out=$(drain)
-    assert_output_contains "$out" "82" "gate surfaces context %" || return 1
-    assert_output_contains "$out" "compact" "gate recommends compaction when high" || return 1
-}
 
 test_drain_armed_states_stop_mechanic() {
     # The armed message must make the turn-driven contract explicit: end the turn
@@ -1008,15 +1045,6 @@ test_drain_scopes_each_task_to_what_it_asks() {
         "next-task message must scope extras to the summary" || return 1
 }
 
-# The gate asks how to run the tasks as well as whether, and names the start
-# command for each answer.
-test_drain_gate_offers_subagents_and_workflows() {
-    qseed "queued"
-    local out; out=$(drain)
-    assert_output_contains "$out" "In this conversation / In subagents / As workflows" "the gate asks how the tasks run" || return 1
-    assert_output_contains "$out" "cs -queue start subagents" "In subagents names its start" || return 1
-    assert_output_contains "$out" "cs -queue start workflow" "As workflows names its start" || return 1
-}
 
 # Every handed task carries the run's mode, the first and each next one.
 test_drain_hands_each_task_to_a_subagent_when_chosen() {
@@ -1052,7 +1080,7 @@ test_drain_without_a_mode_names_none() {
 # spawn seeds and arms one) runs in the conversation.
 test_drain_completion_forgets_the_mode() {
     qseed "last task"
-    printf 'draining\n' > "$(QDIR)/queue.state"
+    qdraining 0000000001-seed
     printf 'subagents\n' > "$(QDIR)/queue.mode"
     drain >/dev/null
     assert_file_not_exists "$(QDIR)/queue.mode" "the finished run forgets its mode" || return 1
@@ -1062,22 +1090,12 @@ test_drain_completion_asks_for_debrief() {
     # Popping the last task must close the final native task and prompt a debrief,
     # not merely announce that the queue is empty (which leaves a dangling in-progress).
     qseed "last task"
-    printf 'draining\n' > "$(QDIR)/queue.state"
+    qdraining 0000000001-seed
     local out; out=$(drain)
     assert_output_contains "$out" "final native task" "completion must close the final native task" || return 1
     assert_output_contains "$out" "summary" "completion must ask for a walk-away summary" || return 1
 }
 
-test_drain_high_context_defines_compact_action() {
-    # The heavy-context gate offers a third 'Compact first' option; that option must
-    # define its follow-through (run no queue command) so the agent does not guess
-    # start/defer and either mis-arm or suppress the re-ask.
-    qseed "queued"
-    printf '82\n' > "$(QDIR)/context-pct"
-    local out; out=$(drain)
-    assert_output_contains "$out" "Compact first" "heavy-context gate offers a Compact first option" || return 1
-    assert_output_contains "$out" "run no queue command" "Compact first must define its follow-through" || return 1
-}
 
 test_drain_narrative_reminder_scopes_to_own() {
     # With no queue the hook falls through to the narrative nag. In a shared session
@@ -1093,7 +1111,7 @@ test_drain_narrative_reminder_scopes_to_own() {
 }
 
 run_test test_drain_works_after_legacy_conversion
-run_test test_drain_gates_when_idle_nonempty
+run_test test_drain_leaves_an_idle_queue_alone
 run_test test_drain_armed_injects_first_task_no_pop
 run_test test_drain_armed_mentions_queue_list
 run_test test_drain_draining_pops_and_injects_next
@@ -1120,8 +1138,10 @@ run_test test_drain_ignores_an_inherited_tracked_files_answer
 run_test test_drain_frames_the_first_task_as_untrusted
 run_test test_drain_frames_the_next_task_with_a_fresh_id
 run_test test_drain_ignores_a_teammate_stop
-run_test test_drain_gate_ignores_a_teammate_stop
 run_test test_drain_disarms_when_the_pop_fails
+run_test test_drain_logs_nothing_done_when_the_handed_out_task_was_removed
+run_test test_drain_hands_out_a_task_accepted_after_the_handed_out_one_was_removed
+run_test test_drain_parks_a_run_with_no_record_of_the_task_handed_out
 run_test test_drain_empties_and_returns_idle
 run_test test_drain_reports_a_state_it_cannot_write
 run_test test_drain_keeps_a_failure_report_it_could_not_park_on
@@ -1129,19 +1149,14 @@ run_test test_drain_falls_back_to_no_state_file_when_idle_cannot_be_written
 run_test test_drain_pops_nothing_when_a_trip_cannot_record_idle
 run_test test_drain_advances_past_a_stale_state_tmp
 run_test test_drain_disarms_after_a_failed_pop_past_a_stale_state_tmp
-run_test test_drain_declined_within_cooldown_falls_through
-run_test test_drain_reads_a_declined_stamp_as_data
 run_test test_drain_ignores_subagents
-run_test test_drain_gate_mentions_high_context
 run_test test_drain_armed_states_stop_mechanic
 run_test test_drain_scopes_each_task_to_what_it_asks
-run_test test_drain_gate_offers_subagents_and_workflows
 run_test test_drain_hands_each_task_to_a_subagent_when_chosen
 run_test test_drain_runs_each_task_as_a_workflow_when_chosen
 run_test test_drain_without_a_mode_names_none
 run_test test_drain_completion_forgets_the_mode
 run_test test_drain_completion_asks_for_debrief
-run_test test_drain_high_context_defines_compact_action
 run_test test_drain_narrative_reminder_scopes_to_own
 
 test_statusline_stamps_context_pct() {
@@ -1203,6 +1218,14 @@ test_queue_list_strips_control_bytes_from_the_done_log() {
     assert_eq "0" "$(_esc_bytes "$out")" "no raw ESC reaches the terminal" || return 1
 }
 
+# The log shows a multibyte task whole, past jq's 4096-byte read buffer.
+test_queue_log_shows_a_multibyte_task_whole() {
+    local task; task=$(python3 -c "print('\u00e9' * 3000)")
+    printf '{"ts":0,"event":"task_done","task":"%s"}\n' "$task" > "$CLAUDE_SESSION_META_DIR/local/notifications.jsonl"
+    local out; out=$(TZ=UTC "$CS_BIN" -queue log 2>&1) || return 1
+    assert_eq "1970-01-01 00:00  task_done: $task" "$out" "the task is shown as queued" || return 1
+}
+
 test_queue_log_strips_control_bytes() {
     # jq -r DECODES the  the drain stored, so the raw byte reappears here
     # even though the journal on disk holds none.
@@ -1217,6 +1240,7 @@ test_queue_log_strips_control_bytes() {
 run_test test_queue_list_strips_control_bytes_from_a_pending_task
 run_test test_queue_list_strips_control_bytes_from_the_done_log
 run_test test_queue_log_strips_control_bytes
+run_test test_queue_log_shows_a_multibyte_task_whole
 
 # An encrypted session keeps its queue with its other cs files, behind
 # .cs/private (a link into its vault); a locked vault refuses rather than
@@ -1234,13 +1258,13 @@ test_queue_in_an_encrypted_session_lives_in_its_vault() {
         "sealed task" "the task is in the vault" || return 1
     local out; out=$("$CS_BIN" -queue list 2>&1) || return 1
     assert_output_contains "$out" "sealed task" "list reads the vault" || return 1
-    "$CS_BIN" -queue defer >/dev/null 2>&1 || return 1
-    assert_file_exists "$TEST_TMPDIR/vault/private/queue.declined" "defer records in the vault" || return 1
-    assert_file_exists "$TEST_TMPDIR/vault/private/notifications.jsonl" "the inbox is in the vault" || return 1
     "$CS_BIN" -queue start >/dev/null 2>&1 || return 1
     assert_eq "armed" "$(cat "$TEST_TMPDIR/vault/private/queue.state")" "start arms the vault's queue" || return 1
+    drain >/dev/null || true
+    assert_file_exists "$TEST_TMPDIR/vault/private/notifications.jsonl" "the drain's inbox is in the vault" || return 1
+    assert_file_exists "$TEST_TMPDIR/vault/private/queue.current" "the task handed out is recorded in the vault" || return 1
     local f
-    for f in queue queue.tmp queue.state queue.declined notifications.jsonl; do
+    for f in queue queue.tmp queue.state queue.current notifications.jsonl; do
         assert_not_exists "$CLAUDE_SESSION_META_DIR/local/$f" "no plaintext $f" || return 1
     done
 }

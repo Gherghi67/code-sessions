@@ -590,10 +590,42 @@ launch_claude_code() {
             # id and stays in .cs/local (docs/session-layout.md).
             _qdir=$(cs_private_dir "$session_dir/.cs") \
                 || error "$session_name: .cs/private dangles after the open checked it (vault unmounted mid-launch?). Mount it, then reopen. (seed kept)"
+            # Every write that can fail runs before the first task is queued:
+            # a failure stops the open with the seed staged again, and that
+            # seed is then the only copy of its tasks, so the retry queues
+            # each one once.
+            if [ -n "$_spawner" ] && { [ "$_n" -gt 0 ] || [ "$_has_brief" = 1 ]; }; then
+                printf '%s\n' "$_spawner" > "$session_dir/.cs/local/spawned-by" 2>/dev/null \
+                    || error "could not record the spawner in $session_dir/.cs/local/spawned-by (seed kept; fix it and re-open the session to retry)"
+            fi
+            # A task that cannot be queued takes back the ones this open queued
+            # before it, so the seed put back is the only copy of its tasks. A
+            # take-back that fails names every file left, for the person to
+            # remove before a retry queues them again.
+            local _queued=() _left=() _f
             for _line in ${_tasks[@]+"${_tasks[@]}"}; do
-                _queue_add "$_qdir" "$_line"
+                if _queue_write_task "$_qdir" "$_line"; then
+                    _queued+=("$_QUEUE_ADDED")
+                    continue
+                fi
+                for _f in ${_queued[@]+"${_queued[@]}"}; do
+                    rm -f "$_f" 2>/dev/null && [ ! -e "$_f" ] || _left+=("$_f")
+                done
+                if [ "${#_left[@]}" -gt 0 ]; then
+                    error "could not write the task into $_qdir/queue; it is not queued, and ${#_left[@]} task(s) this open queued before it could not be taken back: ${_left[*]}. Remove them before re-opening the session, or the retry queues them again (seed kept)"
+                fi
+                error "could not write the task into $_qdir/queue; it is not queued (seed kept; the ${#_queued[@]} task(s) this open queued before it were taken back)"
             done
-            [ "$_n" -eq 0 ] || _queue_set_state "$_qdir" armed
+            # Once its tasks are queued the seed is spent: only the claimed
+            # seed is deleted (one published since stays staged for its own
+            # open), and a failure from here on cannot put it back to be
+            # queued a second time.
+            _CS_SPAWN_CLAIM=""
+            rm -f "$_claim"
+            if [ "$_n" -gt 0 ]; then
+                _queue_set_state "$_qdir" armed \
+                    || error "the seed's $_n task(s) are queued but the queue could not be armed; arm it with: cs $session_name -queue start"
+            fi
             if [ "$_n" -gt 0 ] || [ "$_has_brief" = 1 ]; then
                 local _work=""
                 [ "$_has_brief" = 1 ] && _work="Your brief is .cs/brief.md: read it first."
@@ -603,16 +635,11 @@ launch_claude_code() {
                     _work="$_work Then begin."
                 fi
                 if [ -n "$_spawner" ]; then
-                    printf '%s\n' "$_spawner" > "$session_dir/.cs/local/spawned-by"
                     spawn_kick="Spawned by $_spawner. $_work Send results with: cs -msg $_spawner -k result \"...\""
                 else
                     spawn_kick="$_work"
                 fi
             fi
-            # Only the claimed seed is deleted: one published since stays
-            # staged for its own open.
-            _CS_SPAWN_CLAIM=""
-            rm -f "$_claim"
         fi
     fi
     # Arming the ritual is an explicit action the user took seconds ago, so it

@@ -368,13 +368,30 @@ pub fn parse_agent_record(text: &str) -> Option<AgentRecord> {
     })
 }
 
-/// Where Claude Code publishes its session records.
+/// Where Claude Code publishes its session records. Under test it is
+/// [`UNSCOPED_CLAUDE_SESSIONS`], a path that cannot exist, as the sessions
+/// root is: no test reads the real `~/.claude` of whoever runs the suite,
+/// where a record or a FIFO could change or stall the run.
 fn claude_sessions_dir() -> PathBuf {
+    #[cfg(test)]
+    return PathBuf::from(UNSCOPED_CLAUDE_SESSIONS);
+    #[cfg(not(test))]
+    live_claude_sessions_dir()
+}
+
+/// The directory Claude Code publishes its session records in on this
+/// machine: `$CS_CLAUDE_DIR/sessions`, else `~/.claude/sessions`.
+fn live_claude_sessions_dir() -> PathBuf {
     let base = std::env::var_os("CS_CLAUDE_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(home_dir().expect("HOME not set")).join(".claude"));
     base.join("sessions")
 }
+
+/// The records directory a test build reads; under `/nonexistent`, which
+/// only root can create.
+#[cfg(test)]
+const UNSCOPED_CLAUDE_SESSIONS: &str = "/nonexistent/cs-tui-test-claude-dir/sessions";
 
 /// Map each session name to the state Claude Code advertises for it.
 ///
@@ -438,11 +455,14 @@ pub fn agent_statuses_in(dir: &Path) -> HashMap<String, String> {
     out
 }
 
+/// The sessions root: `$CS_SESSIONS_ROOT`, else `~/.claude-sessions`. Under
+/// test it is only ever the [`test_root`] override; with none scoped it is
+/// [`test_root::UNSCOPED`], a path that cannot exist, so no test run can
+/// delete, rename or scan the real sessions of whoever runs the suite.
 pub fn sessions_root() -> PathBuf {
     #[cfg(test)]
-    if let Some(root) = test_root::current() {
-        return root;
-    }
+    return test_root::current().unwrap_or_else(|| PathBuf::from(test_root::UNSCOPED));
+    #[cfg(not(test))]
     std::env::var("CS_SESSIONS_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
@@ -451,9 +471,9 @@ pub fn sessions_root() -> PathBuf {
         })
 }
 
-/// Test-only sessions-root override. `set_var("CS_SESSIONS_ROOT")` is a
-/// process-global mutation that races the many parallel tests reading env
-/// through `sessions_root()` (a logical data race on shared state). Cargo runs
+/// Test-only sessions-root override. A test build never reads
+/// `CS_SESSIONS_ROOT`, and setting it would be a process-global mutation
+/// racing the many parallel tests (a logical data race on shared state). Cargo runs
 /// each test on its own thread, so a thread-local root is naturally isolated per
 /// test: `scoped(root)` sets it for the life of the returned guard and clears it
 /// on drop (panic-safe, so a reused test thread never leaks it).
@@ -461,6 +481,10 @@ pub fn sessions_root() -> PathBuf {
 pub mod test_root {
     use std::cell::RefCell;
     use std::path::PathBuf;
+
+    /// The root a test sees when it scoped none. Under `/nonexistent`, which
+    /// only root can create, so a write fails and a delete finds nothing.
+    pub const UNSCOPED: &str = "/nonexistent/cs-tui-test-sessions-root";
 
     thread_local! {
         static ROOT: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
@@ -1281,6 +1305,58 @@ fn discard_spawn_seeds(root: &Path, name: &str) {
     }
 }
 
+/// The staged spawn files `cs -spawn` keeps for `name` that exist: one path
+/// per [`SPAWN_STAGING_SUFFIXES`] entry.
+pub fn staged_spawn_files(root: &Path, name: &str) -> Vec<PathBuf> {
+    SPAWN_STAGING_SUFFIXES
+        .iter()
+        .map(|suffix| root.join(".spawn").join(format!("{name}{suffix}")))
+        .filter(|p| p.symlink_metadata().is_ok())
+        .collect()
+}
+
+/// Move the staged spawn files of session `old` to session `new`, so a seed
+/// and brief go with a renamed session instead of arming the next session
+/// given the old name. Each move links the file under the new name and then
+/// unlinks the old one, so a file already staged under the new name is never
+/// replaced. On a failure the moves made so far are undone and the error,
+/// naming the file, is returned. The `(from, to)` pairs moved, for
+/// [`undo_spawn_moves`].
+pub fn move_spawn_files(root: &Path, old: &str, new: &str) -> Result<Vec<(PathBuf, PathBuf)>, String> {
+    let mut moved = Vec::new();
+    for from in staged_spawn_files(root, old) {
+        let file = from.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let to = root.join(".spawn").join(format!("{new}{}", &file[old.len()..]));
+        let result = fs::hard_link(&from, &to).and_then(|_| {
+            fs::remove_file(&from).inspect_err(|_| {
+                let _ = fs::remove_file(&to);
+            })
+        });
+        if let Err(e) = result {
+            let failed = format!("could not move spawn file {}: {e}", from.display());
+            return Err(match undo_spawn_moves(&moved) {
+                Ok(()) => failed,
+                Err(left) => format!("{failed}; {left}"),
+            });
+        }
+        moved.push((from, to));
+    }
+    Ok(moved)
+}
+
+/// Put back spawn files [`move_spawn_files`] moved, newest first. Every move
+/// is tried; the error names each file left under the new name.
+pub fn undo_spawn_moves(moved: &[(PathBuf, PathBuf)]) -> Result<(), String> {
+    let mut left = Vec::new();
+    for (from, to) in moved.iter().rev() {
+        let back = fs::hard_link(to, from).and_then(|_| fs::remove_file(to));
+        if let Err(e) = back {
+            left.push(format!("could not move spawn file {} back to {}: {e}", to.display(), from.display()));
+        }
+    }
+    if left.is_empty() { Ok(()) } else { Err(left.join("; ")) }
+}
+
 /// Remove a worktree session (`base@task`) through git so the base repo's
 /// worktree registration goes with it; the task branch is left alone,
 /// matching `cs -rm` when its branch prompt is declined. Falls back to
@@ -1427,28 +1503,44 @@ fn extract_user_repo(url: &str) -> Option<String> {
 /// Only macOS ships the `security` tool and a keychain; on Linux the TUI's
 /// keychain panel is empty by design (secrets there live in the encrypted-file
 /// backend, which this view does not enumerate). Gated to macOS so non-macOS
-/// builds don't spawn a missing binary on every refresh.
+/// builds don't spawn a missing binary on every refresh. A test build counts
+/// none and runs no `security`: no test reads the Keychain of whoever runs
+/// the suite.
 #[cfg(target_os = "macos")]
 fn count_secrets_from_keychain() -> HashMap<String, u32> {
-    let mut counts = HashMap::new();
+    #[cfg(test)]
+    return HashMap::new();
+    #[cfg(not(test))]
+    count_secrets_in_live_keychain()
+}
 
+/// Secret counts per session from the login Keychain's `security dump-keychain`.
+#[cfg(all(target_os = "macos", not(test)))]
+fn count_secrets_in_live_keychain() -> HashMap<String, u32> {
     let output = std::process::Command::new("security")
         .args(["dump-keychain"])
         .stderr(std::process::Stdio::null())
         .output();
 
-    if let Ok(output) = output {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            // Match: "svce"<blob>="cs:session_name:secret_name"
-            if let Some(rest) = line.strip_prefix("    \"svce\"<blob>=\"cs:") {
-                if let Some(session) = rest.split(':').next() {
-                    *counts.entry(session.to_string()).or_insert(0) += 1;
-                }
+    match output {
+        Ok(output) => secret_counts_in_keychain_dump(&String::from_utf8_lossy(&output.stdout)),
+        Err(_) => HashMap::new(),
+    }
+}
+
+/// Secret counts per session in the text of a `security dump-keychain`: one
+/// per item whose service attribute is `cs:<session>:<name>`.
+#[cfg(any(test, target_os = "macos"))]
+fn secret_counts_in_keychain_dump(dump: &str) -> HashMap<String, u32> {
+    let mut counts = HashMap::new();
+    for line in dump.lines() {
+        // Match: "svce"<blob>="cs:session_name:secret_name"
+        if let Some(rest) = line.strip_prefix("    \"svce\"<blob>=\"cs:") {
+            if let Some(session) = rest.split(':').next() {
+                *counts.entry(session.to_string()).or_insert(0) += 1;
             }
         }
     }
-
     counts
 }
 
@@ -1828,7 +1920,7 @@ mod tests {
     #[test]
     #[ignore]
     fn agent_statuses_read_the_live_registry() {
-        let dir = claude_sessions_dir();
+        let dir = live_claude_sessions_dir();
         let published = fs::read_dir(&dir).map(|e| e.count()).unwrap_or(0);
         let statuses = agent_statuses_in(&dir);
         eprintln!("{} document(s) in {:?} -> {:?}", published, dir, statuses);
@@ -2843,15 +2935,110 @@ mod tests {
         assert!(!is_pid_alive(0));
     }
 
-    // On non-macOS there is no keychain to scan, so the count is always empty.
-    // On macOS the scan must at least run without panicking and return a map.
+    // A test build never reads the real ~/.claude: Claude Code's session
+    // records are read from a path that cannot exist, as the sessions root is
+    // when a test scoped none, so a record, a FIFO or a lock there cannot
+    // reach or stall the suite.
     #[test]
-    fn keychain_secret_count_is_empty_off_macos() {
-        let counts = count_secrets_from_keychain();
-        #[cfg(not(target_os = "macos"))]
-        assert!(counts.is_empty());
-        #[cfg(target_os = "macos")]
-        let _ = counts; // content depends on the login keychain; only assert no panic
+    fn a_test_build_reads_no_claude_sessions_dir_that_exists() {
+        let dir = claude_sessions_dir();
+        assert!(dir.starts_with("/nonexistent"), "a test build reads {}", dir.display());
+        assert!(!dir.exists(), "a test build reads {}, which exists", dir.display());
+    }
+
+    // A test build counts no Keychain secrets on any platform: off macOS
+    // there is no Keychain, and on macOS a test build runs no `security`.
+    #[test]
+    fn a_test_build_counts_no_keychain_secrets() {
+        assert!(count_secrets_from_keychain().is_empty());
+    }
+
+    // A test build runs no `security` on any machine, whatever its Keychain
+    // holds: the counting test above runs again in a child whose PATH starts
+    // with a stand-in `security` that records that it ran and lists one cs
+    // entry. A build that reached for the Keychain would count that entry and
+    // leave the record, and would read the stand-in, never the real Keychain.
+    #[cfg(unix)]
+    #[test]
+    fn a_test_build_runs_no_security() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = std::env::temp_dir().join(format!("cs-test-no-security-{}", std::process::id()));
+        std::fs::remove_dir_all(&tmp).ok();
+        std::fs::create_dir_all(&tmp).unwrap();
+        let ran = tmp.join("security-ran");
+        std::fs::write(
+            tmp.join("security"),
+            format!("#!/bin/sh\n: > '{}'\nprintf '    \"svce\"<blob>=\"cs:demo:K1\"\\n'\n", ran.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(tmp.join("security"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = format!("{}:{}", tmp.display(), std::env::var("PATH").unwrap_or_default());
+
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["session::tests::a_test_build_counts_no_keychain_secrets", "--exact", "--test-threads=1"])
+            .env("PATH", path)
+            .output()
+            .unwrap();
+
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("test result: ok. 1 passed;"), "the counting test ran once and passed:\n{stdout}");
+        assert!(!ran.exists(), "a test build ran security");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // The Keychain panel counts one secret per generic password whose
+    // service is cs:<session>:<name>, by session. A label or an account that
+    // reads cs:..., and a service that is not cs's, count for nothing.
+    #[test]
+    fn a_keychain_dump_counts_cs_secrets_per_session() {
+        let dump = r#"keychain: "/Users/example/Library/Keychains/login.keychain-db"
+version: 512
+class: "genp"
+attributes:
+    0x00000007 <blob>="cs:alpha:API_KEY"
+    "acct"<blob>="example"
+    "labl"<blob>="cs:alpha:API_KEY"
+    "svce"<blob>="cs:alpha:API_KEY"
+keychain: "/Users/example/Library/Keychains/login.keychain-db"
+version: 512
+class: "genp"
+attributes:
+    "acct"<blob>="example"
+    "svce"<blob>="cs:alpha:TOKEN"
+keychain: "/Users/example/Library/Keychains/login.keychain-db"
+version: 512
+class: "genp"
+attributes:
+    "acct"<blob>="example"
+    "svce"<blob>="cs:a.b:K1"
+keychain: "/Users/example/Library/Keychains/login.keychain-db"
+version: 512
+class: "genp"
+attributes:
+    "acct"<blob>="cs:gamma:K1"
+    "svce"<blob>="cs:beta:DB_URL"
+keychain: "/Users/example/Library/Keychains/login.keychain-db"
+version: 512
+class: "genp"
+attributes:
+    "acct"<blob>="example"
+    "labl"<blob>="cs:delta:K1"
+    "svce"<blob>="com.example.app"
+keychain: "/Users/example/Library/Keychains/login.keychain-db"
+version: 512
+class: "inet"
+attributes:
+    "acct"<blob>="example"
+    "srvr"<blob>="example.com"
+    "svce"<blob>="cs-other:alpha:K1"
+"#;
+        let mut counts: Vec<(String, u32)> = secret_counts_in_keychain_dump(dump).into_iter().collect();
+        counts.sort();
+        assert_eq!(
+            counts,
+            vec![("a.b".to_string(), 1), ("alpha".to_string(), 2), ("beta".to_string(), 1)]
+        );
+        assert!(secret_counts_in_keychain_dump("").is_empty(), "an empty dump counts nothing");
     }
 
     #[test]
@@ -2869,5 +3056,16 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // A test that builds an App without scoping a root deletes, renames and
+    // scans through sessions_root(), so an unscoped test build must resolve
+    // to a path that cannot exist, never CS_SESSIONS_ROOT or ~/.claude-sessions
+    // of whoever runs the suite.
+    #[test]
+    fn an_unscoped_test_build_never_resolves_the_real_sessions_root() {
+        let root = sessions_root();
+        assert_eq!(root, PathBuf::from("/nonexistent/cs-tui-test-sessions-root"));
+        assert!(root.symlink_metadata().is_err(), "the unscoped test root must not exist");
     }
 }

@@ -326,7 +326,7 @@ main() {
                         accept)
                             error "session $caller cannot accept mail into $session_name's queue; $session_name's user accepts it (cs -queue accept ${2:-<id>} inside $session_name)"
                             ;;
-                        rm|clear|defer)
+                        rm|clear)
                             error "session $caller cannot change $session_name's queue; $session_name's user does that inside $session_name (cs -queue $1)"
                             ;;
                     esac

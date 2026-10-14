@@ -131,8 +131,9 @@ cleanup (7).
   via git as normal): `--merge` fuses the worktree's session records into the
   base's `.cs` explicitly, mirroring driver semantics — append `timeline.jsonl`
   and `session.log` (union), append per-actor `narrative.*.md` bodies (union),
-  jq-merge `MANIFEST.json` (same dedupe as the driver), copy new memory files
-  and artifacts (skip collisions with a warning; never overwrite). MEMORY.md
+  jq-merge `MANIFEST.json` (same dedupe as the driver), copy back every file
+  the base lacks (a file both sides changed, a link or a nested repository
+  stops the retire before it removes anything; never overwrite). MEMORY.md
   index lines from the worktree are reported, not merged (parity with
   merge=ours).
 - The clean-worktree preflight applies to *tracked* files only in these repos;

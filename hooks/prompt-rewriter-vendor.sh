@@ -280,10 +280,15 @@ case "$_engine" in
         # Go's flag package, which stops parsing at the first positional.
         _args=(--sandbox --input-format stream-json --output-format stream-json)
         [ -n "$_model" ] && _args+=(--model "$_model")
+        # Both jq reads take the whole input with --rawfile: jq 1.7.1's -R
+        # splits a multibyte character 4095 bytes into a line and puts a
+        # replacement character in its place, and a pasted prompt or its
+        # rewrite can run that long on one line.
         out=$(printf '%s\n\n%s' "$_system" "$prompt" \
-            | jq -Rsc '{event: "user", message: {content: .}}' \
+            | jq -cn --rawfile p /dev/stdin '{event: "user", message: {content: $p}}' \
             | _run_cli agy ${_args[@]+"${_args[@]}"} -p= \
-            | jq -rR 'fromjson? | select(.event == "result" and .result.status == "SUCCESS")
+            | jq -rn --rawfile events /dev/stdin '$events | split("\n")[] | fromjson?
+                | select(.event == "result" and .result.status == "SUCCESS")
                 | .result.response // empty') || _rc=$?
         ;;
     codex)

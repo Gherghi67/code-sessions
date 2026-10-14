@@ -39,6 +39,7 @@ Feature worktree of session '$base_name' on branch cs/$task.
 
 [Describe this feature]
 EOF
+    _record_inherited "$wt_dir/.cs" README.md
     cat > "$wt_dir/.cs/local/session.log" << EOF
 Claude Code Session Log
 Session: $base_name@$task
@@ -58,12 +59,10 @@ EOF
 # the same reason, so a link inside it (to another session's plans, say) stays
 # behind; only regular files come over. A failed copy warns and the create
 # goes on; the feature only starts with less context.
-# Each topic copied is recorded as .cs/local/inherited-topics/<name>, a file
-# holding the copy's "<cksum> <bytes>", so the fuse can tell a topic the
-# feature wrote from one it was handed. One file per topic: the file system
-# keeps any name whole, and nothing has to parse one.
+# Each file copied is recorded (_record_inherited), so the fuse can tell a
+# file the feature edited from the copy it was handed.
 _copy_base_context() {  # base_meta wt_meta
-    local src="$1" dst="$2" f name sum
+    local src="$1" dst="$2" f name
     for f in "$src"/memory/*.md; do
         [ -f "$f" ] && [ ! -L "$f" ] || continue
         name="${f##*/}"
@@ -72,10 +71,7 @@ _copy_base_context() {  # base_meta wt_meta
             warn "could not copy memory/$name from the base"
             continue
         fi
-        sum=$(cksum < "$dst/memory/$name") \
-            && mkdir -p "$dst/local/inherited-topics" \
-            && printf '%s\n' "$sum" > "$dst/local/inherited-topics/$name" \
-            || warn "could not record memory/$name as inherited from the base"
+        _record_inherited "$dst" "memory/$name"
     done
     if [ -d "$src/plans" ] && [ ! -L "$src/plans" ]; then
         local rel parent
@@ -88,13 +84,48 @@ _copy_base_context() {  # base_meta wt_meta
             # option to it, and $( ) drops a trailing newline from a name.
             parent=.
             case "$rel" in */*) parent="${rel%/*}" ;; esac
-            { mkdir -p "$dst/plans/$parent" && cp "$src/plans/$rel" "$dst/plans/$rel"; } \
-                || warn "could not copy plans/$rel from the base"
+            if { mkdir -p "$dst/plans/$parent" && cp "$src/plans/$rel" "$dst/plans/$rel"; }; then
+                _record_inherited "$dst" "plans/$rel"
+            else
+                warn "could not copy plans/$rel from the base"
+            fi
         done || warn "could not list plans/ in the base"
     fi
     if [ -f "$src/summary.md" ] && [ ! -L "$src/summary.md" ]; then
-        cp "$src/summary.md" "$dst/summary.md" || warn "could not copy summary.md from the base"
+        if cp "$src/summary.md" "$dst/summary.md"; then
+            _record_inherited "$dst" summary.md
+        else
+            warn "could not copy summary.md from the base"
+        fi
     fi
+    return 0
+}
+
+# Where a feature's .cs keeps the record of one file the create put there,
+# for a path relative to .cs: a top-level memory topic at
+# local/inherited-topics/<name>, any other file at local/inherited/<path>. Sets
+# _CS_INHERITED_RECORD rather than printing it, since $( ) would drop a
+# trailing newline from a name.
+_inherited_record_path() {  # meta rel
+    case "$2" in
+        memory/*/*) _CS_INHERITED_RECORD="$1/local/inherited/$2" ;;
+        memory/*) _CS_INHERITED_RECORD="$1/local/inherited-topics/${2#memory/}" ;;
+        *) _CS_INHERITED_RECORD="$1/local/inherited/$2" ;;
+    esac
+}
+
+# Record a file the create just put in a feature's .cs, a copy of the base's
+# or one cs wrote, as its "<cksum> <bytes>". One record file per file: the
+# file system keeps any name whole, and nothing has to parse one. A record
+# that cannot be written warns and the create goes on; the fuse then takes the
+# file for one the feature wrote, which refuses rather than overwrites.
+_record_inherited() {  # meta rel
+    local sum
+    _inherited_record_path "$1" "$2"
+    sum=$(cksum < "$1/$2") \
+        && mkdir -p "${_CS_INHERITED_RECORD%/*}" \
+        && printf '%s\n' "$sum" > "$_CS_INHERITED_RECORD" \
+        || warn "could not record $2 as inherited from the base"
     return 0
 }
 
@@ -115,36 +146,147 @@ _names_as_lines() {
                  chomp; s/\\/\\\\/g; s/\n/\\n/g; print "$_\n"'
 }
 
-# Paths in a worktree that git does not track, one per line, leaving out cs's
-# own bookkeeping: the whole .cs tree in ignored mode, plus the settings and
-# protocol files, none of it the user's to commit (ignored-mode fusion carries
-# .cs into the base before the removal, and the removal passes --force
-# precisely because these are expected). Finder's .DS_Store is no one's work
-# either, as cs -rm also treats it. With --ignored, the ignored paths; else
-# the untracked ones git does not ignore.
+# Tracked files marked skip-worktree or assume-unchanged whose working copy
+# differs from the index, one per line: git diff hides these edits and git
+# keeps no copy of them, so removing a worktree destroys them. Checked on a
+# worktree about to be removed only; in a base the flags usually mark local
+# config the user means to keep uncommitted. A link counts by its target, as
+# git stores it, and a link where the index has a file (or the reverse) is an
+# edit. A file the flag leaves absent (sparse checkout) holds no edit. An
+# initialised submodule keeps an index of its own: its hidden edits are listed
+# too, at any depth, each path prefixed with <prefix>, the submodule's path.
+# Fails when git cannot list an index, never answering "none" on a listing it
+# did not get.
+_hidden_tracked_edits() {  # checkout_dir [prefix]
+    local entry tag mode oid path now target
+    git -C "$1" ls-files -v -s -z > /dev/null 2>&1 || return 1
+    # Each entry reads "<tag> <mode> <oid> <stage>\t<path>".
+    while IFS= read -r -d '' entry; do
+        tag="${entry%% *}"
+        entry="${entry#* }"
+        mode="${entry%% *}"
+        entry="${entry#* }"
+        oid="${entry%% *}"
+        path="${entry#*$'\t'}"
+        if [ "$mode" = 160000 ]; then
+            [ -e "$1/$path/.git" ] || continue
+            _hidden_tracked_edits "$1/$path" "${2:-}${path//$'\n'/?}/" || return 1
+            continue
+        fi
+        case "$tag" in S|[[:lower:]]) ;; *) continue ;; esac
+        if [ -L "$1/$path" ]; then
+            if [ "$mode" = 120000 ]; then
+                target=$(readlink -n "$1/$path" && printf x) || target=""
+                now=$(printf '%s' "${target%x}" | git -C "$1" hash-object --stdin 2>/dev/null) || now=""
+            else
+                now=""
+            fi
+        elif [ -f "$1/$path" ]; then
+            if [ "$mode" != 120000 ]; then
+                now=$(git -C "$1" hash-object -- "$path" 2>/dev/null) || now=""
+            else
+                now=""
+            fi
+        else
+            continue
+        fi
+        [ "$now" = "$oid" ] || printf '%s%s\n' "${2:-}" "$path"
+    done < <(git -C "$1" ls-files -v -s -z 2>/dev/null)
+    return 0
+}
+
+# The paths of a worktree given one per line on stdin, without cs's own
+# bookkeeping. cs writes it into every worktree — .cs/local, the session
+# locks, the settings and protocol files — and none of it is the user's to
+# commit; the removal passes --force precisely because these are expected. In
+# ignored mode the whole .cs tree is left to _fuse_conflicts, which knows what
+# the record fuse carries. In tracked mode git carries .cs, so any other
+# untracked file there is at risk like one anywhere else. Finder's .DS_Store
+# is no one's work either, as cs -rm also treats it.
+_without_cs_bookkeeping() {  # wt_dir
+    local -a cs_own=(-e '^\.cs/')
+    if [ "$(_read_local_state "$1/.cs/local/state" cs_mode)" != "ignored" ]; then
+        cs_own=(-e '^\.cs/local/' -e '^\.cs/session\.lock$' -e '^\.cs/session\.mutex\.lock$'
+                -e '^\.cs/\.narrative-reminder-cooldown$')
+    fi
+    # The protocol file is cs's only while it carries cs's sentinel; one
+    # without it is the user's own (ensure_session_claude_md draws the same line).
+    if grep -qF '<!-- cs:session-protocol -->' "$1/CLAUDE.local.md" 2>/dev/null; then
+        cs_own+=(-e '^CLAUDE\.local\.md$')
+    fi
+    env LC_ALL=C grep -v "${cs_own[@]}" -e '^\.claude/settings\.local\.json$' \
+        -e '^\.DS_Store$' -e '/\.DS_Store$' \
+        || [ $? -eq 1 ]
+}
+
+# Paths in a worktree's own checkout that git does not track, one per line
+# (_names_as_lines), without cs's own bookkeeping: with --ignored the paths
+# git ignores, else the untracked ones it does not. git lists nothing inside
+# a submodule; _submodule_others does.
 _worktree_others() {  # wt_dir [--ignored]
     # -z, then one name per line (_names_as_lines): without -z git quotes any
     # name holding a newline or a non-ASCII byte, and the quote in front
-    # hides cs's own files from the patterns below. A listing that fails is a
-    # failure, never an empty list: the caller would remove the worktree on
-    # it.
+    # hides cs's own files from the patterns of _without_cs_bookkeeping. A
+    # listing that fails is a failure, never an empty list: the caller would
+    # remove the worktree on it.
     local listing
     listing=$(git -C "$1" ls-files -z --others ${2:+"$2"} --exclude-standard 2>/dev/null \
               | _names_as_lines) || return 1
     [ -n "$listing" ] || return 0
-    printf '%s\n' "$listing" \
-        | LC_ALL=C grep -v -e '^\.cs/' -e '^\.claude/settings\.local\.json$' -e '^CLAUDE\.local\.md$' \
-            -e '^\.DS_Store$' -e '/\.DS_Store$' \
-        || [ $? -eq 1 ]
+    printf '%s\n' "$listing" | _without_cs_bookkeeping "$1"
 }
 
-# Untracked files in a worktree that git does not ignore, one per line: work
-# the user has not committed, which retire refuses over. The merge gate and
-# the readiness screen MUST read from this one definition; when they
-# disagreed, a worktree predating the cs exclude reported blocked on a merge
-# that would have gone straight through.
+# The untracked and ignored files inside every initialised submodule of a
+# checkout, at any depth, one per line (_names_as_lines), each path prefixed
+# with <prefix> and its submodule's path. git ls-files never lists the files
+# inside a submodule: it is a checkout of its own, and removing the worktree
+# removes it with them. Fails when any listing fails.
+_submodule_others() {  # checkout_dir prefix
+    local entry sub at listing line
+    git -C "$1" ls-files -s -z > /dev/null 2>&1 || return 1
+    # A gitlink's index entry reads "160000 <oid> <stage>\t<path>"; one with a
+    # .git inside is initialised.
+    while IFS= read -r -d '' entry; do
+        case "$entry" in 160000\ *) ;; *) continue ;; esac
+        sub="${entry#*$'\t'}"
+        [ -e "$1/$sub/.git" ] || continue
+        at=$(printf '%s\0' "$sub" | _names_as_lines) || return 1
+        listing=$({ git -C "$1/$sub" ls-files -z --others --exclude-standard \
+                    && git -C "$1/$sub" ls-files -z --others --ignored --exclude-standard; } 2>/dev/null \
+                  | _names_as_lines) || return 1
+        if [ -n "$listing" ]; then
+            while IFS= read -r line; do
+                printf '%s%s/%s\n' "$2" "$at" "$line"
+            done <<< "$listing"
+        fi
+        _submodule_others "$1/$sub" "$2$at/" || return 1
+    done < <(git -C "$1" ls-files -s -z 2>/dev/null)
+    return 0
+}
+
+# Files in a worktree that removal would destroy and the retire refuses over,
+# one per line (_names_as_lines), without cs's own bookkeeping: the untracked
+# files git does not ignore, work the user has not committed, and every
+# untracked or ignored file inside an initialised submodule. The ignored
+# files of the worktree's own checkout are not among them: the retire trashes
+# those or deletes them with the worktree (_retire_trash_ignored_work). The
+# one exception is a root CLAUDE.local.md of the user's own: cs's exclude is
+# what ignores that name, not a choice of theirs, so it is at risk whether
+# git ignores it or not.
+# The merge gate and the readiness screen MUST read from this one definition;
+# when they disagreed, a worktree predating the cs exclude reported blocked on a
+# merge that would have gone straight through.
 _worktree_untracked_at_risk() {  # wt_dir
-    _worktree_others "$1"
+    local listing more
+    listing=$(git -C "$1" ls-files -z --others --exclude-standard 2>/dev/null \
+              | _names_as_lines) || return 1
+    more=$(git -C "$1" ls-files -z --others --ignored --exclude-standard -- CLAUDE.local.md 2>/dev/null \
+           | _names_as_lines) || return 1
+    [ -z "$more" ] || listing="${listing:+$listing$'\n'}$more"
+    more=$(_submodule_others "$1" "") || return 1
+    [ -z "$more" ] || listing="${listing:+$listing$'\n'}$more"
+    [ -n "$listing" ] || return 0
+    printf '%s\n' "$listing" | _without_cs_bookkeeping "$1"
 }
 
 # Directory names whose contents a build, an install or a test run writes
@@ -169,7 +311,7 @@ CS_TRASH_CALL_BYTES=131072
 # directory (keep=regenerable) or that do not (keep=other). A path's last
 # component is its own name, so only the directories above it count.
 _regenerable_filter() {  # regenerable|other
-    LC_ALL=C awk -F/ -v keep="$1" -v names="${CS_REGENERABLE_DIRS[*]}" '
+    env LC_ALL=C awk -F/ -v keep="$1" -v names="${CS_REGENERABLE_DIRS[*]}" '
         BEGIN { n = split(names, list, " "); for (i = 1; i <= n; i++) regenerable[list[i]] = 1 }
         {
             under = 0
@@ -199,7 +341,7 @@ _system_trash_command() {
 # holding the most files first, then by path as its line is written.
 _untracked_entries() {
     local tab=$'\t'
-    LC_ALL=C awk '
+    env LC_ALL=C awk '
         BEGIN { section = 0 }
         $0 == "" { section++; next }
         section == 0 {
@@ -237,7 +379,7 @@ _untracked_entries() {
             }
             for (entry in count) printf "%d\t%s\n", count[entry], entry
         }' \
-    | LC_ALL=C sort -t "$tab" -k1,1nr -k2
+    | env LC_ALL=C sort -t "$tab" -k1,1nr -k2
 }
 
 # The listing of the entries on stdin (_untracked_entries): the count phrase
@@ -247,7 +389,7 @@ _untracked_entries() {
 # shown; with "all", every entry. An entry prints as its name with a newline
 # in it shown as "?", after the directory given as $2, if any.
 _untracked_listing_format() {  # shown|all [directory]
-    env CS_LISTING_DIRECTORY="${2:-}" LC_ALL=C awk -v shown="$1" '
+    env LC_ALL=C CS_LISTING_DIRECTORY="${2:-}" awk -v shown="$1" '
         function grouped(n,    s) {
             s = sprintf("%d", n)
             while (s ~ /[0-9][0-9][0-9][0-9]/) sub(/[0-9][0-9][0-9]($|,)/, ",&", s)
@@ -301,18 +443,20 @@ _untracked_listing_render() {
 # checkout given one per line, and paths that stay beside the tracked ones
 # (deleted anyway, so never inside a collapsed entry). git lists a nested
 # repository as one path ending in "/", so the files under each are counted
-# here. Fails when git cannot list the tracked paths or a nested repository
-# cannot be read.
+# here. The tracked paths include those of every initialised submodule, so a
+# path at risk inside one (_submodule_others) is an entry of its own. Fails
+# when git cannot list the tracked paths or a nested repository cannot be
+# read.
 _untracked_listing_input() {  # checkout_dir paths [staying_paths]
     local dir="$1" paths="$2" staying="${3:-}" tracked nested="" repo name files
-    tracked=$(git -C "$dir" ls-files -z | _names_as_lines) || return 1
+    tracked=$(git -C "$dir" ls-files -z --recurse-submodules | _names_as_lines) || return 1
     while IFS= read -r repo; do
         [ -n "$repo" ] || continue
         printf -v name '%b' "$repo"
         # One NUL per file: a path may hold a newline.
         files=$(find "$dir/$name" ! -type d -print0 | env LC_ALL=C tr -dc '\0' | wc -c) || return 1
         nested="$nested${files//[[:space:]]/}"$'\t'"$repo"$'\n'
-    done <<< "$(printf '%s\n' "$paths" | LC_ALL=C grep '/$' || [ $? -eq 1 ])"
+    done <<< "$(printf '%s\n' "$paths" | env LC_ALL=C grep '/$' || [ $? -eq 1 ])"
     [ -z "$tracked" ] || printf '%s\n' "$tracked"
     [ -z "$staying" ] || printf '%s\n' "$staying"
     printf '\n%s\n' "$nested"
@@ -455,11 +599,33 @@ _feature_readiness() {  # base_name task
     fi
 
     _tree_is_dirty "$wt_dir" && wt_dirty=1
+    local hidden
+    hidden=$(_hidden_tracked_edits "$wt_dir") \
+        || error "Could not list the index of $wt_dir"
+    [ -z "$hidden" ] || wt_dirty=1
     _tree_is_dirty "$base_dir" && base_dirty=1
 
-    local others
+    # The screen does not read either checkout's .claude/settings.local.json,
+    # so it predicts none of the refusals the retire makes over them, each
+    # before it removes anything: a file it would add the feature's rules to
+    # and cannot read, a link at the feature's file, a feature .claude link
+    # cs cannot follow to a directory inside the worktree, a base .claude
+    # that links out of the session when a rule would be written through it,
+    # and a git that cannot say whether a checkout tracks the file.
+    # A locked base vault is the retire's refusal before the records are
+    # classified, and every record bound for it would read as at risk, so the
+    # records are not classified then.
+    local others conflicts="" vault_locked=""
     others=$(_worktree_untracked_at_risk "$wt_dir") \
         || error "Could not list the untracked files in $wt_dir"
+    if [ "$(_read_local_state "$wt_dir/.cs/local/state" cs_mode)" = "ignored" ]; then
+        vault_locked=$(_locked_vault_link "$base_dir/.cs")
+        if [ -z "$vault_locked" ]; then
+            conflicts=$(_fuse_conflicts "$wt_dir/.cs" "$base_dir/.cs") \
+                || error "Could not classify the session records in $wt_dir/.cs"
+        fi
+    fi
+    others="$others${others:+${conflicts:+$'\n'}}$conflicts"
     if [ -n "$others" ]; then
         untracked=$(printf '%s\n' "$others" | wc -l | tr -d '[:space:]')
     fi
@@ -489,6 +655,8 @@ _feature_readiness() {  # base_name task
         state="dirty"
     elif [ "$untracked" != 0 ]; then
         state="untracked"
+    elif [ -n "$vault_locked" ]; then
+        state="vault-locked"
     elif [ "$base_dirty" = 1 ]; then
         state="base-dirty"
     elif [ "$merged" = 1 ]; then
@@ -781,7 +949,7 @@ $(_retire_trashed_note " before this failed")"
 # each under the directory given and counted with one byte to end it, within
 # CS_TRASH_CALL_BYTES, and never fewer than one.
 _retire_trash_call_sizes() {  # directory
-    env CS_TRASH_DIRECTORY="$1" LC_ALL=C awk -v budget="$CS_TRASH_CALL_BYTES" '
+    env LC_ALL=C CS_TRASH_DIRECTORY="$1" awk -v budget="$CS_TRASH_CALL_BYTES" '
         {
             bytes = length(ENVIRON["CS_TRASH_DIRECTORY"]) + length($0) - index($0, "\t") + 1
             if (held > 0 && sum + bytes > budget) { print held; held = 0; sum = 0 }
@@ -885,6 +1053,21 @@ retire_feature_worktree() {  # base_name task sha [--force]
     if _tree_is_dirty "$wt_dir"; then
         error "Worktree has uncommitted changes; commit them in $wt_dir first (cs never commits for you)"
     fi
+    local hidden
+    hidden=$(_hidden_tracked_edits "$wt_dir") \
+        || error "Could not list the index of $wt_dir; nothing was removed"
+    if [ -n "$hidden" ]; then
+        error "Worktree has edits git diff does not show (skip-worktree or assume-unchanged), which removal would destroy; commit them, or undo them and clear the flag (git update-index --no-skip-worktree / --no-assume-unchanged), first:
+$hidden"
+    fi
+    # The mode says who carries .cs into the base: git (tracked) or the record
+    # fuse below (ignored). Without one, nothing under .cs is known to survive.
+    local mode
+    mode=$(_read_local_state "$wt_dir/.cs/local/state" cs_mode)
+    case "$mode" in
+        tracked|ignored) ;;
+        *) error "$wt_dir/.cs/local/state names no cs_mode, so cs cannot tell whether git or the record fuse carries $wt_dir/.cs; nothing was removed. Add the line 'cs_mode: tracked' if git tracks .cs in $base_name, else 'cs_mode: ignored', then run /finish $task again." ;;
+    esac
     local wt_untracked
     wt_untracked=$(_worktree_untracked_at_risk "$wt_dir") \
         || error "Could not list the untracked files in $wt_dir; nothing was removed"
@@ -896,6 +1079,21 @@ retire_feature_worktree() {  # base_name task sha [--force]
         [ "$wt_count" != "1 file" ] || wt_them=it
         error "Worktree has ${wt_count% *} untracked ${wt_count#* } that removal would destroy; commit or remove $wt_them first:
 ${wt_listing#*"$nl"}"
+    fi
+    if [ "$mode" = "ignored" ]; then
+        # A locked vault leaves its links dangling, and every record bound
+        # for one would read as a conflict to merge or delete by hand; the
+        # vault is named first, and mounting it is the remedy.
+        local locked
+        locked=$(_locked_vault_link "$base_dir/.cs")
+        [ -z "$locked" ] \
+            || error "cannot fuse the worktree's records: $base_dir/.cs/$locked is locked. Mount it, then retry."
+        local conflicts
+        conflicts=$(_fuse_conflicts "$wt_dir/.cs" "$base_dir/.cs") \
+            || error "Could not classify the session records in $wt_dir/.cs; nothing was removed"
+        [ -z "$conflicts" ] \
+            || error "The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt_dir/.cs, then run /finish $task again:
+$conflicts"
     fi
     # The base's own .cs/ bookkeeping is exempt: in tracked mode the integrate
     # that just landed this feature wrote a timeline event there, and removing
@@ -914,9 +1112,40 @@ ${wt_listing#*"$nl"}"
     # A fuse that refuses after the removal would strand the records in the
     # staging directory, so its one refusal is asked before anything moves.
     # Asked whether or not the worktree has a log: a locked vault takes the
-    # base's .cs/memory with it, which every fuse writes.
-    local mode aside=""
-    mode=$(_read_local_state "$wt_dir/.cs/local/state" cs_mode)
+    # base's .cs/memory with it, which the fuse writes for any narrative.
+    # Claude Code writes the permission rules set in the feature (allow, deny,
+    # ask) to its own .claude/settings.local.json, which git does not carry.
+    # They go into the base's before the removal; a removal that then fails
+    # leaves them there, and the retry's union changes nothing.
+    # The files are read only when the rules are carried: one the retire
+    # leaves alone is no reason to refuse, whatever it holds.
+    local settings carried=0
+    _permission_rules_carried "$wt_dir" "$base_dir" || carried=$?
+    if [ "$carried" = 3 ]; then
+        [ ! -L "$wt_dir/.claude/settings.local.json" ] \
+            || error "$wt_dir/.claude/settings.local.json is a link, and cs reads the feature's permission rules only from a file of its own. Nothing was removed. Put the rules in a file there, or delete the link, then run /finish $task again."
+        error "$wt_dir/.claude is a link cs cannot follow to a directory inside $wt_dir, and cs reads the feature's permission rules only from a file inside it. Nothing was removed. Replace the link with a directory of the feature's own, or remove it, and commit that, then run /finish $task again."
+    fi
+    if [ "$carried" = 2 ]; then
+        local link missing
+        link=$(_settings_link "$base_dir")
+        _settings_rules_readable "$wt_dir/.claude/settings.local.json" \
+            || error "$wt_dir/.claude/settings.local.json is not one JSON object, or its permissions is not an object, or its permissions.allow, deny or ask is not a list, so cs cannot list the feature's permission rules that $link, a link, does not take. Nothing was removed. Fix it, then run /finish $task again."
+        missing=$(_settings_rules_missing "$base_dir/.claude/settings.local.json" "$wt_dir/.claude/settings.local.json") \
+            || error "Could not list the feature's permission rules that $link, a link, does not take; nothing was removed"
+        [ -z "$missing" ] \
+            || info "$link is a link, and cs writes nothing through it. Add by hand the feature's permission rules it lacks that the base needs:
+$missing"
+    elif [ "$carried" = 0 ]; then
+        for settings in "$wt_dir/.claude/settings.local.json" "$base_dir/.claude/settings.local.json"; do
+            _settings_rules_readable "$settings" \
+                || error "$settings is not one JSON object, or its permissions is not an object, or its permissions.allow, deny or ask is not a list, so cs cannot add the feature's permission rules to $base_dir/.claude/settings.local.json. Nothing was removed. Fix it, then run /finish $task again."
+        done
+        _carry_permission_rules "$wt_dir" "$base_dir" \
+            || error "Could not add the feature's permission rules to $base_dir/.claude/settings.local.json; nothing was removed"
+    fi
+
+    local aside=""
     if [ "$mode" = "ignored" ]; then
         cs_private_dir "$base_dir/.cs" >/dev/null \
             || error "cannot fuse the worktree's records: $base_dir/.cs/private is locked. Mount it, then retry."
@@ -964,6 +1193,152 @@ $remove_err${trashed:+$nl$trashed}"
     _finish_progress_write retired
     _retire_trashed_note ""
     printf 'retired %s %s\n' "$task" "$sha"
+}
+
+# The first of a base's vault links (CS_VAULT_LINKS) that dangles, the vault
+# it leads into locked, or nothing. private is asked first, so a vault locked
+# whole is named by it.
+_locked_vault_link() {  # base_meta
+    local sub
+    for sub in private $CS_VAULT_LINKS; do
+        if [ -L "$1/$sub" ] && [ ! -d "$1/$sub" ]; then
+            printf '%s\n' "$sub"
+            return 0
+        fi
+    done
+}
+
+# Whether _settings_rules_union can read a Claude Code settings file: a
+# missing or zero-byte one reads as {}; any other must hold exactly one JSON
+# value, an object whose permissions, when present, is an object and whose
+# permissions.allow, deny and ask, each when present, are lists. A null is
+# present, not absent: the union reads only the first document and takes a
+# null for none.
+_settings_rules_readable() {  # file
+    [ -s "$1" ] || return 0
+    jq -s -e 'length == 1 and (.[0] | type == "object"
+        and ((has("permissions") | not) or (.permissions | type == "object" and (. as $p
+            | all("allow", "deny", "ask"; . as $k | ($p | has($k) | not) or ($p[$k] | type == "array"))))))' "$1" >/dev/null 2>&1
+}
+
+# A Claude Code settings file's JSON, or {} for a missing or zero-byte one.
+_settings_json_or_empty() {  # file
+    if [ -s "$1" ]; then cat "$1"; else printf '{}\n'; fi
+}
+
+# The base's settings with each entry of the feature's permissions.allow,
+# deny and ask that the base's same list lacks appended after the base's own,
+# in the feature's order, once. A list the feature does not add to is left as
+# it is, absent or not; every other key of both files is too.
+_settings_rules_union() {  # base_settings feature_settings
+    _settings_json_or_empty "$1" | jq --slurpfile f "$2" '
+        reduce ("allow", "deny", "ask") as $k (.;
+            ($f[0].permissions[$k] // []) as $add
+            | if $add == [] then . else
+                .permissions[$k] = reduce $add[] as $x ((.permissions[$k] // []);
+                    if any(.[]; . == $x) then . else . + [$x] end)
+              end)'
+}
+
+# The rules _settings_rules_union would add to <base_settings> from
+# <feature_settings>, one per line as "  <list>: <rule as JSON>", in the
+# union's order. A base file _settings_rules_readable refuses holds no rule cs
+# can read, so then every rule of the feature's is listed.
+_settings_rules_missing() {  # base_settings feature_settings
+    local base="$1"
+    _settings_rules_readable "$base" || base=/dev/null
+    _settings_json_or_empty "$base" | jq -r --slurpfile f "$2" '
+        . as $b | ("allow", "deny", "ask") as $k
+        | ($b.permissions[$k] // []) as $have
+        | (reduce ($f[0].permissions[$k] // [])[] as $x ($have;
+              if any(.[]; . == $x) then . else . + [$x] end)) as $all
+        | $all[($have | length):][] | "  \($k): \(tojson)"'
+}
+
+# How many permission rules a settings file holds, allow, deny and ask
+# together, read from stdin.
+_settings_rules_count() {
+    jq '[(.permissions // {}) | .allow, .deny, .ask | length] | add'
+}
+
+# Whether the index of the checkout at <dir> holds .claude/settings.local.json
+# in any letter case: a checkout on a volume that folds case puts a tracked
+# .claude/Settings.local.json at the path cs reads, as cs_tracked_files_notice
+# finds for .cs. A git that cannot answer has not said the file is untracked:
+# the retire refuses then, with git's own error, before anything is removed.
+# <claude_dir> is the directory a linked .claude leads to, relative to the
+# checkout and empty for the checkout itself: git lists the file there, and
+# none behind the link.
+_settings_tracked() {  # dir [claude_dir]
+    local listed why at="${2-.claude}" spec
+    spec=":(icase,literal)${at:+$at/}settings.local.json"
+    if listed=$(_cs_git_at "$1" ls-files -- "$spec" 2>/dev/null); then
+        [ -n "$listed" ]
+        return
+    fi
+    why=$(_cs_git_at "$1" ls-files -- "$spec" 2>&1 >/dev/null) || true
+    error "cs could not ask git whether it tracks $1/.claude/settings.local.json: $(_cs_git_complaint "$why"). Nothing was removed."
+}
+
+# Whether the retire adds the feature's permission rules to the base's
+# settings.local.json: the feature has a file, and neither checkout tracks
+# one (git carried it with the integrate, or owns the base's copy since, and
+# a union would bring back a rule the base dropped or never took). Returns 2
+# for a link at the base's path, wherever it points: the link is the user's
+# way of sharing the file, and cs writes nothing through it; the retire lists
+# the rules the base lacks instead. The same for a link at the base's .claude
+# that stays inside the session: git sees no file behind a linked directory,
+# tracked or not, so it is a way of sharing the file git cannot answer for.
+# One that leads out of the session is left to the union: its write
+# (cs_mkdir_inside) refuses it, and a retire with no rule to add writes
+# nothing and goes through. A dangling one whose target has no directory to
+# resolve reads as staying inside. Returns 3 for a link at the feature's
+# path, leading anywhere or nowhere: cs reads the feature's rules only from a
+# file of its own, and the retire refuses it. Returns 3 as well for a link at
+# the feature's .claude that cs cannot follow to a directory inside the
+# worktree: it leads out, or through more links than _cs_write_target
+# follows. One cs can follow is read where it leads: a file git tracks there
+# is git's to carry, like one tracked at the feature's path, and any other is
+# the feature's own.
+_permission_rules_carried() {  # wt_dir base_dir
+    local dir root
+    [ -s "$1/.claude/settings.local.json" ] || [ -L "$1/.claude/settings.local.json" ] || return 1
+    ! _settings_tracked "$1" || return 1
+    ! _settings_tracked "$2" || return 1
+    [ ! -L "$1/.claude/settings.local.json" ] || return 3
+    if [ -L "$1/.claude" ]; then
+        dir=$(_cs_write_target "$1/.claude") && root=$(cd -P "$1" 2>/dev/null && pwd -P) || return 3
+        case "$dir/" in "$root"/*) ;; *) return 3 ;; esac
+        dir="${dir#"$root"}"
+        ! _settings_tracked "$1" "${dir#/}" || return 1
+    fi
+    [ ! -L "$2/.claude/settings.local.json" ] || return 2
+    if [ -L "$2/.claude" ] \
+        && ! _cs_refuses_write cs_mkdir_inside "$2/.claude" "$2/.claude" 2>/dev/null; then
+        return 2
+    fi
+}
+
+# The link _permission_rules_carried returned 2 for: the base's
+# settings.local.json, or else its .claude.
+_settings_link() {  # base_dir
+    if [ -L "$1/.claude/settings.local.json" ]; then
+        printf '%s\n' "$1/.claude/settings.local.json"
+    else
+        printf '%s\n' "$1/.claude"
+    fi
+}
+
+# Add the feature's permission rules to the base's settings.local.json
+# (_settings_rules_union), creating it when the base has none, for a retire
+# _permission_rules_carried says carries them. Writes nothing when the base
+# already holds every rule.
+_carry_permission_rules() {  # wt_dir base_dir
+    local feat="$1/.claude/settings.local.json" base="$2/.claude/settings.local.json" was now
+    was=$(_settings_json_or_empty "$base" | _settings_rules_count) || return 1
+    now=$(_settings_rules_union "$base" "$feat" | _settings_rules_count) || return 1
+    [ "$now" != "$was" ] || return 0
+    cs_mkdir_inside "$2/.claude" && cs_write_atomic "$base" _settings_rules_union "$base" "$feat"
 }
 
 # Remove the temp worktree and release the mutex on every exit path of
@@ -1402,7 +1777,7 @@ _append_missing_memory_pointers() {  # feature_index base_index
     [ -f "$dst" ] || have=/dev/null
     # Bytes, not characters: the index is UTF-8 in any locale, and awk stops
     # on a line a multibyte locale cannot decode.
-    missing=$(LC_ALL=C awk '
+    missing=$(env LC_ALL=C awk '
         function target(s) {
             if (s !~ /^- \[/ || !match(s, /]\([^)]*\)/)) return ""
             return substr(s, RSTART + 2, RLENGTH - 3)
@@ -1423,28 +1798,214 @@ _append_missing_memory_pointers() {  # feature_index base_index
     printf '%s' "$(printf '%s\n' "$missing" | wc -l | tr -d ' ')"
 }
 
-# Says how a feature's topic relates to the copy it started with: "unchanged"
-# or "edited" for a topic the create recorded as inherited, nothing for one
-# the feature wrote itself (or one a create with no record handed over).
-# Fails when the record is there and cannot be read (the directory or the
-# topic's file), or the topic cannot be summed: answering "the feature wrote it" then would bring a deleted topic
-# back and call the fuse a success.
-_inherited_topic_state() {  # feature_meta topic_file
-    local dir="$1/local/inherited-topics" record was now
-    record="$dir/${2##*/}"
-    [ -e "$dir" ] || [ -L "$dir" ] || return 0
-    [ -d "$dir" ] && [ -r "$dir" ] && [ -x "$dir" ] || return 1
+# Print the record of the copy the create put at <rel> in a feature's .cs,
+# nothing when the create put no file there (or one it could not record).
+# Fails when a record may be there and cannot be read: a directory on its way
+# cannot be searched, or the record cannot be read. Answering "the feature
+# wrote it" then would bring a file the base deleted back, or call a copy
+# the feature never touched an edit.
+_inherited_sum() {  # feature_meta rel
+    local record dir rest
+    _inherited_record_path "$1" "$2"
+    record="$_CS_INHERITED_RECORD"
+    dir="$1/local"
+    rest="${record#"$dir"/}"
+    while case "$rest" in */*) true ;; *) false ;; esac; do
+        dir="$dir/${rest%%/*}"
+        rest="${rest#*/}"
+        [ -e "$dir" ] || [ -L "$dir" ] || return 0
+        [ -d "$dir" ] && [ -r "$dir" ] && [ -x "$dir" ] || return 1
+    done
     [ -e "$record" ] || [ -L "$record" ] || return 0
-    was=$(cat "$record") || return 1
-    now=$(cksum < "$2") || return 1
-    if [ "$now" = "$was" ]; then echo unchanged; else echo edited; fi
+    cat "$record"
+}
+
+# What the record fuse does with one file of a feature's .cs, given relative
+# to it, against the base's .cs:
+#   carry    the base has no file there: it gets the feature's
+#   restore  the same, for a copy the create handed over, the base deleted
+#            and the feature edited: the edit comes back, named
+#   replace  the create handed over a copy, the feature edited it and the base
+#            did not: the feature's version replaces the base's, named
+#   skip     nothing to carry: the base holds the same bytes, or the feature
+#            left the copy it was handed as it was
+#   conflict carrying it would overwrite a different file in the base, the
+#            base holds a file where it needs a directory or a link that
+#            takes it out of the session, or it is a link or not a regular
+#            file
+# Fails when the record of the copy, or the file, cannot be read.
+_fuse_verdict() {  # feature_meta base_meta rel
+    local src="$1/$3" dst="$2/$3" was now
+    if [ -L "$src" ] || [ ! -f "$src" ]; then echo conflict; return 0; fi
+    was=$(_inherited_sum "$1" "$3") || return 1
+    if [ -n "$was" ]; then
+        now=$(cksum < "$src") || return 1
+        if [ "$now" = "$was" ]; then echo skip; return 0; fi
+    fi
+    if _fuse_path_blocked "$2" "$3"; then echo conflict; return 0; fi
+    if [ ! -e "$dst" ] && [ ! -L "$dst" ]; then
+        if [ -n "$was" ]; then echo restore; else echo carry; fi
+        return 0
+    fi
+    if [ -L "$dst" ] || [ ! -f "$dst" ]; then echo conflict; return 0; fi
+    if cmp -s "$src" "$dst"; then echo skip; return 0; fi
+    if [ -n "$was" ] && [ "$(cksum < "$dst")" = "$was" ]; then echo replace; else echo conflict; fi
+}
+
+# Whether the fuse cannot make the directories on the way to <rel> in the
+# base's .cs. It makes them with cs_mkdir_inside, which cannot make one where
+# the base holds a file or a dangling link, and refuses one a link takes out
+# of the session. A link that stays inside (an encrypted session's
+# .cs/memory, say) is a directory like any other.
+_fuse_path_blocked() {  # base_meta rel
+    local dir="$1" rest="$2" near="$1" linked=""
+    while case "$rest" in */*) true ;; *) false ;; esac; do
+        dir="$dir/${rest%%/*}"
+        rest="${rest#*/}"
+        [ ! -L "$dir" ] || linked=1
+        if [ -e "$dir" ]; then
+            [ -d "$dir" ] || return 0
+            near="$dir"
+        elif [ -L "$dir" ]; then
+            return 0
+        else
+            break
+        fi
+    done
+    [ -n "$linked" ] && _cs_refuses_write cs_mkdir_inside "$1/$2" "$near" 2>/dev/null
+}
+
+# Whether fuse_session_records cannot merge the feature's <rel> into the
+# base's <dst_rel>: it merges only a regular file, into a regular file or
+# none, at the end of a path _fuse_path_blocked lets it make.
+_fuse_merge_blocked() {  # feature_meta base_meta rel dst_rel
+    local dst="$2/$4"
+    if [ -L "$1/$3" ] || [ ! -f "$1/$3" ]; then return 0; fi
+    if _fuse_path_blocked "$2" "$4"; then return 0; fi
+    if [ -L "$dst" ]; then return 0; fi
+    [ -e "$dst" ] && [ ! -f "$dst" ]
+}
+
+# Where a feature's .cs can hold a log, relative to it, in the order
+# fuse_session_records appends them to the base's: cs wrote at logs/ until
+# the log moved to local/, so the lines at logs/ are the earlier ones.
+CS_FUSED_LOGS="logs/session.log local/session.log"
+
+# The files of a feature's .cs that _fuse_plan's walk passes over: cs's
+# machine-local bookkeeping, which goes with the worktree, and the log, which
+# _fuse_plan checks apart: the fuse appends it to the base's machine-local
+# log, not to the same path.
+_fuse_walk_skips() {  # rel
+    case "$1" in
+        local/*|session.lock|session.mutex.lock|.narrative-reminder-cooldown) return 0 ;;
+        logs/session.log|.DS_Store|*/.DS_Store) return 0 ;;
+    esac
+    return 1
+}
+
+# The files of a feature's .cs that fuse_session_records merges into the
+# same path of the base's by a rule of its own: the timeline, the narratives
+# and the memory index.
+_fuse_merged_record() {  # rel
+    case "$1" in
+        timeline.jsonl|memory/MEMORY.md) return 0 ;;
+        memory/narrative.*.md)
+            case "${1#memory/}" in */*) return 1 ;; esac
+            return 0 ;;
+    esac
+    return 1
+}
+
+# Write to <out> one NUL-terminated "<verdict> <rel>" for every file of a
+# feature's .cs the fuse copies (_fuse_verdict), and "conflict <rel>" for one
+# it merges that it cannot (_fuse_merge_blocked). A directory holding a .git
+# is a repository nested under .cs: written once as "conflict <rel>/" and
+# never walked, and .cs itself holding one is written as "conflict " with an
+# empty path. Links are listed, never followed. Fails, naming the file, when
+# one cannot be classified, and when the walk fails.
+_fuse_plan() {  # feature_meta base_meta out
+    local list rel verdict logdir
+    : > "$3" || return 1
+    [ -d "$1" ] && [ ! -L "$1" ] || return 0
+    if [ -e "$1/.git" ] || [ -L "$1/.git" ]; then
+        printf 'conflict \0' >> "$3"
+        return 0
+    fi
+    # A link at local/ would have the fuse read the log from wherever it
+    # leads. The walk below prunes local/ and so never sees it; it is named
+    # here. A link at logs/ the walk names like any other link.
+    [ ! -L "$1/local" ] || printf 'conflict local\0' >> "$3"
+    # The fuse appends each log the feature has (CS_FUSED_LOGS) to the base's
+    # machine-local one. A locked vault has no machine-local log to check
+    # against; the retire refuses it by name.
+    if logdir=$(cs_private_dir "$2"); then
+        for rel in $CS_FUSED_LOGS; do
+            [ -e "$1/$rel" ] || [ -L "$1/$rel" ] || continue
+            if _fuse_merge_blocked "$1" "$2" "$rel" "${logdir#"$2"/}/session.log"; then
+                printf 'conflict %s\0' "$rel" >> "$3"
+            fi
+        done
+    fi
+    list=$(mktemp "${TMPDIR:-/tmp}/cs-fuse-list.XXXXXX") || return 1
+    # local/ is machine-local (_fuse_walk_skips) and never walked.
+    if ! (cd "$1" && find . -mindepth 1 \( -path ./local -prune \) \
+            -o \( -type d -exec test -e '{}/.git' \; -prune -print0 \) \
+            -o \( ! -type d -print0 \)) > "$list"; then
+        rm -f "$list"
+        return 1
+    fi
+    while IFS= read -r -d '' rel; do
+        rel="${rel#./}"
+        if [ -d "$1/$rel" ] && [ ! -L "$1/$rel" ]; then
+            printf 'conflict %s/\0' "$rel" >> "$3"
+            continue
+        fi
+        _fuse_walk_skips "$rel" && continue
+        if _fuse_merged_record "$rel"; then
+            if _fuse_merge_blocked "$1" "$2" "$rel" "$rel"; then
+                printf 'conflict %s\0' "$rel" >> "$3"
+            fi
+            continue
+        fi
+        if ! verdict=$(_fuse_verdict "$1" "$2" "$rel"); then
+            warn "could not read what the feature inherited for $rel, so cs cannot tell whether the base deleted or changed it" >&2
+            rm -f "$list"
+            return 1
+        fi
+        printf '%s %s\0' "$verdict" "$rel" >> "$3"
+    done < "$list"
+    rm -f "$list"
+}
+
+# The files of a feature's .cs the record fuse cannot carry into the base,
+# one per line as ".cs/<rel>", sorted, a newline in a name shown as "?".
+# Retire refuses on any; the features screen counts them. Fails when the
+# classification fails.
+_fuse_conflicts() {  # feature_meta base_meta
+    local plan entry out=""
+    plan=$(mktemp "${TMPDIR:-/tmp}/cs-fuse-plan.XXXXXX") || return 1
+    if ! _fuse_plan "$1" "$2" "$plan"; then
+        rm -f "$plan"
+        return 1
+    fi
+    while IFS= read -r -d '' entry; do
+        case "$entry" in
+            "conflict "*)
+                entry="${entry#conflict }"
+                out="$out.cs/${entry//$'\n'/?}"$'\n' ;;
+        esac
+    done < "$plan"
+    rm -f "$plan"
+    [ -z "$out" ] || printf '%s' "$out" | env LC_ALL=C sort
 }
 
 # Fuse session records from a worktree .cs into the base .cs (ignored mode:
 # the repo does not track .cs/, so git merge cannot carry these). Applies the
 # same semantics the merge drivers give tracked repos: union append for
-# timeline/log/narratives, copy-never-overwrite for memory topic files,
-# base-wins for MEMORY.md plus the feature's pointers to targets it lacks. Every write returns 1 on failure: the caller runs
+# timeline/log/narratives, base-wins for MEMORY.md plus the feature's pointers
+# to targets it lacks. Every other file goes back by _fuse_verdict: one the
+# base lacks is copied in, a copy only the feature edited replaces the base's,
+# and none ever overwrites a base file that changed. Every write returns 1 on failure: the caller runs
 # this in a subshell on the left of ||, where errexit is off, and deletes the
 # staged records only on success. Every write also goes through the link
 # check: the landing put the feature's tree in the base, and nothing has
@@ -1455,18 +2016,19 @@ _inherited_topic_state() {  # feature_meta topic_file
 # that pass would have to list the destinations a second time.
 fuse_session_records() {
     local src="$1" dst="$2"
-    local f base inherited
+    local f base
 
     # Worktrees never run migrate_session, so a task branch created before the
-    # log moved to .cs/local/ still keeps its audit trail at .cs/logs/; fuse
-    # whichever the worktree has into the base's machine-local log.
+    # log moved to .cs/local/ still keeps its audit trail at .cs/logs/, and
+    # one used since has a log at .cs/local/ as well; fuse each the worktree
+    # has into the base's machine-local log, the one at .cs/logs/ first: its
+    # lines are the earlier ones.
     # An encrypted base keeps its log behind .cs/private; a locked one cannot
     # take the log, and .cs/local must not take it in plaintext instead.
     # Resolved before any write, so that refusal leaves the base untouched.
-    local candidate srclog="" dstlog=""
-    for candidate in "$src/local/session.log" "$src/logs/session.log"; do
-        if [ -f "$candidate" ]; then
-            srclog="$candidate"
+    local srclog dstlog=""
+    for srclog in $CS_FUSED_LOGS; do
+        if [ -f "$src/$srclog" ]; then
             dstlog=$(cs_private_dir "$dst") \
                 || error "cannot fuse the worktree's log: $dst/private is locked. Mount it, then retry."
             break
@@ -1474,14 +2036,18 @@ fuse_session_records() {
     done
 
     _append_jsonl "$src/timeline.jsonl" "$dst/timeline.jsonl" || return 1
-    if [ -n "$srclog" ]; then
+    for srclog in $CS_FUSED_LOGS; do
+        [ -f "$src/$srclog" ] || continue
         cs_mkdir_inside "$dstlog" || return 1
-        cs_append_inside "$dstlog/session.log" _blank_line_then_cat "$srclog" || return 1
-    fi
+        cs_append_inside "$dstlog/session.log" _blank_line_then_cat "$src/$srclog" || return 1
+    done
 
-    cs_mkdir_inside "$dst/memory" || return 1
+    # .cs/memory is made for a narrative to merge and for nothing else:
+    # _fuse_plan checks the path of each it will merge, and a feature with
+    # none must not fail on a base whose .cs/memory is a file.
     for f in "$src"/memory/narrative.*.md; do
         [ -f "$f" ] || continue
+        cs_mkdir_inside "$dst/memory" || return 1
         base=$(basename "$f")
         if [ -f "$dst/memory/$base" ]; then
             # Append the body past the closing --- of the YAML frontmatter.
@@ -1497,32 +2063,38 @@ fuse_session_records() {
         fi
     done
 
-    for f in "$src"/memory/*.md; do
-        [ -f "$f" ] || continue
-        base=$(basename "$f")
-        case "$base" in
-            MEMORY.md) continue ;;
-            narrative.*.md) continue ;;
+    # Every other file goes by its verdict. The retire refused any conflict
+    # before the removal; one here means the base changed since, and the
+    # staged records stay for the caller's error to name.
+    local plan entry verdict rel parent
+    plan=$(mktemp "${TMPDIR:-/tmp}/cs-fuse-plan.XXXXXX") || return 1
+    if ! _fuse_plan "$src" "$dst" "$plan"; then
+        rm -f "$plan"
+        return 1
+    fi
+    while IFS= read -r -d '' entry; do
+        verdict="${entry%% *}"
+        rel="${entry#* }"
+        case "$verdict" in
+            skip) continue ;;
+            carry|restore|replace) ;;
+            *)
+                warn "$rel cannot be carried into the base without overwriting what is there"
+                rm -f "$plan"
+                return 1 ;;
         esac
-        if [ -f "$dst/memory/$base" ]; then
-            # The feature started from a copy of the base's topics, so an
-            # unchanged one is the base's own file, not a collision.
-            cmp -s "$f" "$dst/memory/$base" \
-                || warn "memory/$base already exists in the base; skipped"
-        else
-            # A topic the feature inherited and the base no longer has was
-            # deleted in the base. Untouched, it stays deleted; edited, the
-            # feature's text comes back and the user is told.
-            if ! inherited=$(_inherited_topic_state "$src" "$f"); then
-                warn "could not read what the feature inherited for memory/$base, so cs cannot tell whether the base deleted it"
-                return 1
-            fi
-            [ "$inherited" != unchanged ] || continue
-            cs_write_atomic "$dst/memory/$base" cat "$f" || return 1
-            [ "$inherited" != edited ] \
-                || warn "memory/$base was deleted in the base and edited in the feature; the feature's version is back in the base"
+        parent="$dst"
+        case "$rel" in */*) parent="$dst/${rel%/*}" ;; esac
+        if ! { cs_mkdir_inside "$parent" && cs_write_atomic "$dst/$rel" cat "$src/$rel"; }; then
+            rm -f "$plan"
+            return 1
         fi
-    done
+        case "$verdict" in
+            restore) warn "$rel was deleted in the base and edited in the feature; the feature's version is back in the base" ;;
+            replace) warn "$rel was edited in the feature and not in the base; the feature's version is now in the base" ;;
+        esac
+    done < "$plan"
+    rm -f "$plan"
 
     local added
     added=$(_append_missing_memory_pointers "$src/memory/MEMORY.md" "$dst/memory/MEMORY.md") || return 1

@@ -2012,6 +2012,7 @@ fn render_merge(app: &mut App, frame: &mut Frame, area: Rect) {
                 "locked" => (format!("{} session is open", f.lock), p.amber),
                 "dirty" => ("uncommitted changes".to_string(), p.amber),
                 "base-dirty" => ("base has uncommitted changes".to_string(), p.amber),
+                "vault-locked" => ("base vault is locked".to_string(), p.amber),
                 other => (other.to_string(), p.amber),
             };
             Row::new(vec![
@@ -2096,6 +2097,8 @@ fn render_merge(app: &mut App, frame: &mut Frame, area: Rect) {
         // and worktree locks want different remedies, so name the side.
         let (base_label, base_color) = if f.lock == "base" {
             ("base session open".to_string(), p.amber)
+        } else if f.state == "vault-locked" {
+            ("vault locked".to_string(), p.amber)
         } else if f.base_dirty {
             ("uncommitted changes".to_string(), p.amber)
         } else {
@@ -4701,6 +4704,20 @@ mod tests {
             !text.contains("base      clean"),
             "a locked base must not also read clean:\n{text}"
         );
+    }
+
+    #[test]
+    fn merge_screen_names_a_locked_base_vault() {
+        // The retire refuses a locked base vault before anything else in the
+        // base, and mounting it is the remedy, so the row and the base line
+        // both say so rather than the raw state or "clean".
+        let mut app = merge_app();
+        app.merge_features[0].state = "vault-locked".into();
+        app.merge_selected = 0;
+        let text = render_wide(&mut app);
+        assert!(text.contains("base vault is locked"), "the row must name the vault:\n{text}");
+        assert!(text.contains("base      vault locked"), "the base line must name the vault:\n{text}");
+        assert!(!text.contains("base      clean"), "a locked vault must not read clean:\n{text}");
     }
 
     #[test]

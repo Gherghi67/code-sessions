@@ -152,10 +152,14 @@ export CLAUDE_CODE_BIN="$(_make_env_stub)"
 # the developer's base session instead: on the keychain backend, in the real
 # keychain.
 test_secrets_identity_does_not_reach_a_suite_from_its_caller() {
-    local home="$TEST_TMPDIR/probe-home"
-    mkdir -p "$home"
+    local home="$TEST_TMPDIR/probe-home" root="$TEST_TMPDIR/probe-sessions"
+    mkdir -p "$home" "$root"
+    # set refuses a session the sessions root lacks, so the root holds both
+    # names: a leaked caller-base would store, under the wrong name.
     local probe
-    probe=$(_overriding_suite "export HOME=$(printf '%q' "$home")"'
+    probe=$(_overriding_suite "export HOME=$(printf '%q' "$home") CS_SESSIONS_ROOT=$(printf '%q' "$root")"'
+create_test_session fixture >/dev/null
+create_test_session caller-base >/dev/null
 export CS_SECRETS_BACKEND=encrypted CS_SECRETS_PASSWORD=fixture-password CLAUDE_SESSION_NAME=fixture
 "$_CS_TEST_BIN/cs-secrets" set probe_key < <(printf v) >/dev/null 2>&1 || { echo SET_FAILED; exit 1; }')
     local out

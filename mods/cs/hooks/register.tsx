@@ -1,7 +1,7 @@
 /* @jsxRuntime classic */
 /* @jsx h */
 /* @jsxFrag Fragment */
-// ABOUTME: cs mod: keys above the prompt: rotate past the threshold, wrap up, or /clear once a handoff is armed.
+// ABOUTME: cs mod: keys above the prompt: rotate past the threshold, wrap up, /clear once a handoff is armed, or start a queue nothing runs.
 // ABOUTME: A turn ending past CS_ROTATE_FORCE_CTX (default 80, off disables) runs /rotate itself, then counts down to the /clear (session colour, amber, crit); session.start writes a heartbeat for doctor.
 // ABOUTME: /queue adds a task to the session's walk-away queue through `cs -queue add`, at once even mid-turn; bare, it prints `cs -queue list`. /finish toasts its start and outcome and, while its gate runs, draws a band with the elapsed time.
 import type { On, EngineInterface } from 'claude-code'
@@ -370,9 +370,13 @@ export function register(on: On) {
     const armed = lastRefusal === undefined && (await handoffArmed($))
     const { context } = await $.session.usage()
     const percent = context.percent
-    if (!armed && (percent === undefined || percent < (await threshold($)))) return drawn
+    const rotating = armed || (percent !== undefined && percent >= (await threshold($)))
+    // Tasks queued and nothing running them, at any context. An armed
+    // handoff draws its clear key alone, so the count is not asked for then.
+    const waiting = armed ? 0 : await idleQueueLength($)
+    if (!rotating && waiting === 0) return drawn
     if (!(await ownsRotation($))) return drawn
-    const wrapped = !armed && (await wrapFinished($))
+    const wrapped = rotating && !armed && (await wrapFinished($))
     const fill = surfaceColor(await $.env.get("CS_TERM_BG_RGB"))
     const chords = await boundChords($)
     const own = paletteColor(await sessionColor($))
@@ -410,16 +414,19 @@ export function register(on: On) {
             {caps && <Text color={chipFill}>{CAP_LEFT}</Text>}
             <Box paddingX={1} backgroundColor={chipFill}><Text bold color={chipInk}>cs</Text></Box>
             <Box key="cs-rotate-band-body" paddingX={1} backgroundColor={fill}>
-            {key(ROTATE_ACTION)}
-            {armed
+            {rotating && key(ROTATE_ACTION)}
+            {rotating && (armed
               ? <Button key="cs-rotate" action={ROTATE_ACTION} plain label="/clear and continue from the handoff"
                         onPress={() => pressClear($)} />
               : <Button key="cs-rotate" action={ROTATE_ACTION} plain label="rotate this conversation"
-                        onPress={() => pressRotate($)} />}
+                        onPress={() => pressRotate($)} />)}
             {/* a Button is a block: nested in a Text the engine refuses the whole tree (measured), so the separator stands beside it */}
-            {!armed && !wrapped && <Text dimColor>{'  \u00b7  '}</Text>}
-            {!armed && !wrapped && key(WRAP_ACTION)}
-            {!armed && !wrapped && <Button key="cs-wrap" action={WRAP_ACTION} plain label="wrap up this session" onPress={() => askToWrap($)} />}
+            {rotating && !armed && !wrapped && <Text dimColor>{'  \u00b7  '}</Text>}
+            {rotating && !armed && !wrapped && key(WRAP_ACTION)}
+            {rotating && !armed && !wrapped && <Button key="cs-wrap" action={WRAP_ACTION} plain label="wrap up this session" onPress={() => askToWrap($)} />}
+            {/* the queue's start key: no action or hotkey of its own, so a click or Enter under the band's focus presses it */}
+            {waiting > 0 && rotating && <Text dimColor>{'  \u00b7  '}</Text>}
+            {waiting > 0 && <Button key="cs-queue" plain label={`queue ${waiting} \u00b7 start`} onPress={() => pressQueueStart($)} />}
             {/* the forced rotation's grace: the seconds left before the mod runs the /clear itself */}
             {armed && left !== undefined && <Text dimColor>{'  \u00b7  '}</Text>}
             {armed && left !== undefined && <Text bold color={await rampColor($, left)}>{`/clear in ${left}s`}</Text>}
@@ -849,7 +856,8 @@ async function resolvedPath($: EngineInterface, path: string): Promise<string | 
   }
 }
 
-// Only the lead conversation of a cs session may be offered a rotation. The
+// Only the lead conversation of a cs session may be offered a rotation, or the
+// queue's start key: the Stop hook drains on the lead's turns alone. The
 // rotate skill refuses outside a cs session, .cs/local/disabled opts a
 // directory out of cs entirely, and the handoff it writes carries the UUID in
 // .cs/local/state, which belongs to the one conversation cs launched: a
@@ -943,9 +951,39 @@ async function queueRunning($: EngineInterface): Promise<boolean> {
   return false
 }
 
+// How many tasks are queued while nothing runs them; 0 when the queue is
+// armed or draining, empty, or cannot be read. The queue is one file per task,
+// behind .cs/private in an encrypted session (where a locked vault lists
+// nothing) and in .cs/local otherwise.
+async function idleQueueLength($: EngineInterface): Promise<number> {
+  const cwd = await $.session.cwd()
+  const dir = (await $.fs.exists(`${cwd}/.cs/private`)) ? 'private' : 'local'
+  let entries: { kind: string }[]
+  try {
+    entries = await $.fs.list(`${cwd}/.cs/${dir}/queue`)
+  } catch {
+    return 0 // no queue directory: nothing queued
+  }
+  const count = entries.filter(entry => entry.kind === 'file').length
+  if (count === 0 || (await queueRunning($))) return 0
+  return count
+}
+
+// The start key's press: the offer bare /queue makes, for the tasks queued
+// now. A queue started or emptied since the band drew is left alone.
+async function pressQueueStart($: EngineInterface) {
+  const bin = await $.env.get("CS_BIN")
+  if (!bin) {
+    $.ui.toast('cs: the launch did not say where cs is (CS_BIN); run cs -queue start from a shell in this session')
+    return
+  }
+  const count = await idleQueueLength($)
+  if (count > 0) await offerToStart($, bin, count)
+}
+
 // Asked after bare /queue has printed the list, so the tasks are on screen
-// when the question is. Start arms the queue; Not yet defers it the way the
-// Stop hook's own offer does, so that offer does not ask again straight away.
+// when the question is, and by the band's start key. Start arms the queue; Not
+// yet leaves it as it is, and the band keeps offering its start key.
 // Compact compacts the conversation first, then starts as Start does; a
 // compaction that does not happen leaves the queue unarmed. Start and Compact
 // then ask how the tasks run, before any compaction, so a dismissed second
@@ -957,22 +995,18 @@ async function offerToStart($: EngineInterface, bin: string, count: number) {
   } catch {
     return // dismissed, or a `-p` run with nobody to ask
   }
-  const starting = answer === QUEUE_START || answer === QUEUE_COMPACT
-  let mode: string[] = []
-  if (starting) {
-    let how: string
-    try {
-      how = await $.ui.ask(QUEUE_MODE_QUESTION, { header: 'Queue', options: [QUEUE_HERE, QUEUE_SUBAGENTS, QUEUE_WORKFLOWS] })
-    } catch {
-      return
-    }
-    const words = QUEUE_MODE_WORDS[how]
-    if (words === undefined) {
-      // Free text typed under "Other" names no mode cs knows.
-      $.ui.toast(`cs: '${how}' is not a way to run the queue; it is not started`)
-      return
-    }
-    mode = words
+  if (answer !== QUEUE_START && answer !== QUEUE_COMPACT) return
+  let how: string
+  try {
+    how = await $.ui.ask(QUEUE_MODE_QUESTION, { header: 'Queue', options: [QUEUE_HERE, QUEUE_SUBAGENTS, QUEUE_WORKFLOWS] })
+  } catch {
+    return
+  }
+  const mode = QUEUE_MODE_WORDS[how]
+  if (mode === undefined) {
+    // Free text typed under "Other" names no mode cs knows.
+    $.ui.toast(`cs: '${how}' is not a way to run the queue; it is not started`)
+    return
   }
   if (answer === QUEUE_COMPACT) {
     let reason: string | undefined
@@ -987,20 +1021,19 @@ async function offerToStart($: EngineInterface, bin: string, count: number) {
       return
     }
   }
-  const verb = starting ? 'start' : 'defer'
   let result: { exitCode: number; stdout: string; stderr: string }
   try {
-    result = await $.process.run([bin, '-queue', verb, ...mode])
+    result = await $.process.run([bin, '-queue', 'start', ...mode])
   } catch (err) {
-    $.ui.toast(`cs: cs -queue ${verb} did not run: ${String(err instanceof Error ? err.message : err)}`)
+    $.ui.toast(`cs: cs -queue start did not run: ${String(err instanceof Error ? err.message : err)}`)
     return
   }
   if (result.exitCode !== 0) {
     const tail = result.stderr.split('\n').filter(l => l.trim() !== '').slice(-1)[0] ?? ''
-    $.ui.toast(`cs: cs -queue ${verb} exited ${result.exitCode}${tail === '' ? '' : `: ${tail}`}`)
+    $.ui.toast(`cs: cs -queue start exited ${result.exitCode}${tail === '' ? '' : `: ${tail}`}`)
     return
   }
-  if (verb !== 'start' || turnRunning) return
+  if (turnRunning) return
   try {
     await $.prompt.submit({ text: QUEUE_KICK })
   } catch (err) {
