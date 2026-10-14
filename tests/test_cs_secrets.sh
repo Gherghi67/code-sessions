@@ -4753,8 +4753,46 @@ test_secrets_delete_from_a_plain_shell_takes_a_live_session() {
     assert_eq "" "$listed" "the secret is gone" || return 1
 }
 
+# `rename` writes two sessions' secrets: the old name's and the new one's. The
+# old name's directory is gone by the time it runs, so the new name is the one
+# that can be live. alpha left secrets when its directory went; bravo is
+# another session, open and holding none.
+test_secrets_rename_into_a_live_other_session_is_refused() {
+    _RN_BIN=$(_make_fake_security)
+    mkdir -p "$CS_SESSIONS_ROOT/alpha/.cs" "$CS_SESSIONS_ROOT/bravo/.cs"
+    printf 'value-one' > "$TEST_TMPDIR/v1"
+    CLAUDE_SESSION_NAME=alpha _kc_secrets set K1 < "$TEST_TMPDIR/v1" >/dev/null 2>&1 \
+        || { echo "  FAIL: fixture: could not seed alpha's secret"; return 1; }
+    rm -rf "$CS_SESSIONS_ROOT/alpha"
+    sleep 300 &
+    local pid=$! out rc=0
+    echo "$pid" > "$CS_SESSIONS_ROOT/bravo/.cs/session.lock"
+    out=$(CLAUDE_SESSION_NAME=sender _kc_secrets -s alpha rename bravo 2>&1) || rc=$?
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    assert_eq "1" "$rc" "the rename exits 1" || return 1
+    assert_eq "Error: session sender cannot change the secrets of session bravo while it is live (pid $pid); --force does not override that from another session. Close bravo first." \
+        "$out" "the refusal names the live new name" || return 1
+    assert_eq "cs:alpha:K1" "$(_kc_services)" "alpha's secret stays under alpha" || return 1
+}
+
+# The picker renames a closed session by moving its directory, then running
+# `cs -secrets --session <old> rename <new>`; from inside another session
+# that move still goes through.
+test_secrets_rename_of_a_closed_session_from_inside_another_session_moves_it() {
+    _seed_renamed_session || { echo "  FAIL: fixture: could not seed alpha's stores"; return 1; }
+    local out rc=0
+    out=$(CLAUDE_SESSION_NAME=sender PATH="$_RN_BIN:$PATH" CS_SECRETS_BACKEND=keychain \
+        FAKE_SECURITY_STORE="$TEST_TMPDIR/kc-store" "$CS_BIN" -secrets --session alpha rename bravo </dev/null 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the rename exits 0: $out" || return 1
+    assert_eq "cs:bravo:K1
+cs:bravo:K2" "$(_kc_services)" "the Keychain entries moved to bravo" || return 1
+    assert_eq "value-enc" "$("$CS_SECRETS_BIN" --session bravo get E1 2>&1)" "the encrypted store moved" || return 1
+}
+
 run_test test_secrets_delete_of_a_live_other_session_is_refused_on_every_route
 run_test test_secrets_every_writing_command_is_refused_for_a_live_other_session
+run_test test_secrets_rename_into_a_live_other_session_is_refused
+run_test test_secrets_rename_of_a_closed_session_from_inside_another_session_moves_it
 run_test test_secrets_reads_of_a_live_other_session_still_work
 run_test test_secrets_delete_of_an_idle_other_session_works
 run_test test_secrets_a_feature_and_its_base_write_the_live_base_secrets
