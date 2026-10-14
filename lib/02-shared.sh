@@ -532,18 +532,19 @@ _cs_file_mode() {  # path
 # status 3 when a name in the path, in a link's target or in the directory it
 # resolves to ends in a newline: $(...) strips a trailing one, here and in the
 # caller, so the path read would not be the one the kernel follows, and a
-# decoy beside it would pass.
+# decoy beside it would pass. Each command takes the path after --, so a
+# relative name starting with a dash is a name, not an option.
 _cs_write_target() {  # path
     local dest="$1" link dir hops=0 nl=$'\n'
     case "$dest" in *"$nl"/*|*"$nl") return 3 ;; esac
     while [ -L "$dest" ] && [ "$hops" -lt 16 ]; do
         # -n and the x keep a trailing newline that $(...) would strip
         # (macOS readlink adds none of its own to a target ending in one).
-        link=$(readlink -n "$dest" && printf x) || return 1
+        link=$(readlink -n -- "$dest" && printf x) || return 1
         link=${link%x}
         case "$link" in
             /*) dest="$link" ;;
-            *) dest="$(dirname "$dest")/$link" ;;
+            *) dest="$(dirname -- "$dest")/$link" ;;
         esac
         case "$dest" in *"$nl"/*|*"$nl") return 3 ;; esac
         hops=$((hops + 1))
@@ -552,7 +553,7 @@ _cs_write_target() {  # path
     # A directory that exists resolves whole, its last component included:
     # appending a final ".." to its resolved parent would read as inside.
     if [ -d "$dest" ]; then
-        dir=$(cd -P "$dest" 2>/dev/null && pwd -P && printf x) || return 1
+        dir=$(cd -P -- "$dest" 2>/dev/null && pwd -P && printf x) || return 1
         dir=${dir%"$nl"x}
         case "$dir" in *"$nl") return 3 ;; esac
         printf '%s\n' "$dir"
@@ -562,9 +563,9 @@ _cs_write_target() {  # path
     # collapse `link/..` to the link's own parent, not the target's. The x
     # keeps a directory's trailing newline; the name after it keeps it from
     # the caller's $(...).
-    dir=$(cd -P "$(dirname "$dest")" 2>/dev/null && pwd -P && printf x) || return 1
+    dir=$(cd -P -- "$(dirname -- "$dest")" 2>/dev/null && pwd -P && printf x) || return 1
     dir=${dir%"$nl"x}
-    printf '%s/%s\n' "${dir%/}" "$(basename "$dest")"
+    printf '%s/%s\n' "${dir%/}" "$(basename -- "$dest")"
 }
 
 # True when .cs at <root> is a submodule or nested repository, whose files
@@ -614,7 +615,7 @@ _cs_hand_made_vault() {  # root
 # ...") in place of where it lands: still a write that leaves the session.
 _cs_write_leaves_session() {  # root, path
     local root="$1" root_p real sub vault=0 why="" via=""
-    root_p=$(cd "$root" 2>/dev/null && pwd -P) || return 1
+    root_p=$(cd -- "$root" 2>/dev/null && pwd -P) || return 1
     case "$2" in
         "$root"/*|"$root_p"/*) ;;
         *) return 1 ;;
