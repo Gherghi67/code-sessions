@@ -244,7 +244,7 @@ _emit_session_commits_block() {
 <!-- cs:session-commits -->
 ## Committing session files
 
-Files under `.cs/` (narratives, handoffs, `.cs/README.md`, `.cs/summary.md`, memory entries) never get a commit of their own. They go in with the next handoff commit (the `rotate` skill) or the `/wrap` commit, or with the project change they describe. Uncommitted, they are safe: autosave snapshots every Write and Edit to a shadow ref. Never push a commit that holds only session files; push it with real changes or when the user asks.
+Files under `.cs/` (narratives, handoffs, `.cs/README.md`, `.cs/summary.md`, memory entries) never get a commit of their own. They go in with the next handoff commit (the `rotate` skill) or the `/wrap` commit, or with the project change they describe. Uncommitted, they are safe: autosave snapshots every Write and Edit to a shadow ref.
 
 To opt out, delete the prose above but keep the `cs:session-commits` HTML comment as a tombstone — cs treats the sentinel's presence as "managed, do not re-add."
 EOF
