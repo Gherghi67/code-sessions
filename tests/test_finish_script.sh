@@ -718,6 +718,22 @@ SHIM
     assert_eq "b" "$(printf '%s\n' "$out" | sed -n 's/^retire_differs: //p')" "and it is b, not a" || return 1
 }
 
+# A base whose HEAD git cannot read has no base_head to check against: the
+# report says so on an error line and stops. The ceiling keeps git from
+# finding a repository above the sessions root.
+test_report_says_error_when_the_base_is_not_a_git_checkout() {
+    local sha out status=0 base="$CS_SESSIONS_ROOT/myproj" wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    mkdir -p "$base"
+    git init -q "$wt"
+    (cd "$wt" && echo work > work.txt && git add work.txt && git commit -q -m "work")
+    sha=$(git -C "$wt" rev-parse HEAD)
+    out=$(GIT_CEILING_DIRECTORIES="$CS_SESSIONS_ROOT" report_for myproj fix-auth "$sha") || status=$?
+    assert_eq "1" "$status" "the report fails" || return 1
+    assert_eq "error: git rev-parse HEAD failed in the base $base" "$(printf '%s\n' "$out" | tail -1)" \
+        "and says so last" || return 1
+    assert_output_not_contains "$out" "retire:" "with no retire line" || return 1
+}
+
 # A content check that succeeds without counting the paths it checked has
 # vouched for nothing: here perl exits 0 and prints nothing.
 test_report_says_error_when_the_content_check_counts_no_paths() {
@@ -859,6 +875,7 @@ run_test test_report_checks_more_path_bytes_than_a_command_line_holds
 run_test test_report_names_a_non_utf8_path_under_a_utf8_locale
 run_test test_report_says_error_when_the_content_check_stops_without_one
 run_test test_report_checks_the_base_head_it_prints_while_the_base_moves
+run_test test_report_says_error_when_the_base_is_not_a_git_checkout
 run_test test_report_says_error_when_the_content_check_counts_no_paths
 
 report_results
