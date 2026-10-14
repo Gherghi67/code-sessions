@@ -700,6 +700,21 @@ test_vet_session_refuses_a_git_repository_layout_at_cs() {
     assert_eq "Error: $(_git_dir_layout_refusal .cs)" "$out" "the refusal names the layout" || return 1
 }
 
+# git takes a directory whose HEAD is a link into refs/ for a repository
+# whether or not the link leads anywhere, so a dangling one is refused too.
+test_vet_session_refuses_a_git_repository_layout_whose_head_is_a_dangling_link() {
+    local s="$CLAUDE_SESSION_DIR" out rc=0
+    _commit_git_dir_layout .cs/local
+    rm "$s/.cs/local/HEAD"
+    ln -s refs/heads/main "$s/.cs/local/HEAD"
+    git -C "$s" add -f .cs/local/HEAD
+    git -C "$s" -c user.email=jane.roe@example.com -c user.name="Jane Roe" commit -q -m "ship HEAD as a link"
+    out=$(env -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR "$CS_BIN" -vet-session "$s" 2>&1) || rc=$?
+    assert_file_not_exists "$TEST_TMPDIR/fsmonitor-ran" "git must not run the layout's core.fsmonitor" || return 1
+    assert_eq "1" "$rc" "cs -vet-session refuses: $out" || return 1
+    assert_eq "Error: $(_git_dir_layout_refusal .cs/local)" "$out" "the refusal names the layout" || return 1
+}
+
 # .cs/private takes .cs/local's place once it exists, and is asked first.
 test_vet_session_refuses_a_git_repository_layout_at_cs_private() {
     local s="$CLAUDE_SESSION_DIR" out rc=0
@@ -1242,6 +1257,7 @@ run_test test_vet_session_refuses_a_tracked_marker_whose_directory_is_gone
 run_test test_a_named_verb_refuses_a_git_repository_layout_at_cs_local
 run_test test_a_named_verb_refuses_a_git_repository_layout_beside_a_link_out
 run_test test_vet_session_refuses_a_git_repository_layout_at_cs
+run_test test_vet_session_refuses_a_git_repository_layout_whose_head_is_a_dangling_link
 run_test test_vet_session_refuses_a_git_repository_layout_at_cs_private
 run_test test_queue_verbs_refuse_a_git_repository_layout_at_cs_local
 run_test test_drain_hands_out_nothing_from_a_git_repository_layout_at_cs_local
