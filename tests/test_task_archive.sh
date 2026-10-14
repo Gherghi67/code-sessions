@@ -135,6 +135,183 @@ test_nothing_to_archive_says_so_and_writes_nothing() {
     assert_eq "1 2" "$(_live_ids)" "the store is untouched" || return 1
 }
 
+# ============================================================================
+# Fail closed: a store cs does not recognise is left exactly as it is
+# ============================================================================
+
+# A run that refuses must move nothing and write nothing: the store keeps every
+# row and no archive directory appears.
+_assert_refused() {  # expected error line, output, live ids before
+    assert_eq "$1" "$2" "the refusal names its reason" || return 1
+    assert_eq "$3" "$(_live_ids)" "every row stays in the store" || return 1
+    assert_not_exists "$SESSION_DIR/.cs/task-archive" "nothing is written to the archive" || return 1
+}
+
+test_an_unknown_file_in_the_store_refuses_the_run() {
+    _row 1 completed "One"
+    _row 2 pending "Two"
+    printf 'scratch\n' > "$STORE/notes.txt"
+    _agree || return 1
+    local out rc=0
+    out=$("$CS_BIN" -archive-tasks run 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the run fails" || return 1
+    _assert_refused "Error: refusing to archive: $STORE holds notes.txt, which is not part of the task store layout cs knows (<id>.json rows, .lock, .highwatermark); nothing archived" \
+        "$out" "1 2" || return 1
+}
+
+test_a_directory_in_the_store_refuses_the_run() {
+    _row 1 completed "One"
+    _row 2 pending "Two"
+    mkdir "$STORE/3.json"
+    _agree || return 1
+    local out rc=0
+    out=$("$CS_BIN" -archive-tasks run 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the run fails" || return 1
+    _assert_refused "Error: refusing to archive: $STORE holds 3.json, which is not part of the task store layout cs knows (<id>.json rows, .lock, .highwatermark); nothing archived" \
+        "$out" "1 2" || return 1
+}
+
+test_a_linked_row_refuses_the_run() {
+    _row 1 completed "One"
+    _row 2 pending "Two"
+    printf '{}' > "$TEST_TMPDIR/elsewhere.json"
+    ln -s "$TEST_TMPDIR/elsewhere.json" "$STORE/3.json"
+    _agree || return 1
+    local out rc=0
+    out=$("$CS_BIN" -archive-tasks run 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the run fails" || return 1
+    _assert_refused "Error: refusing to archive: $STORE holds 3.json, which is not part of the task store layout cs knows (<id>.json rows, .lock, .highwatermark); nothing archived" \
+        "$out" "1 2 3" || return 1
+    assert_eq "{}" "$(cat "$TEST_TMPDIR/elsewhere.json")" "the link's target is untouched" || return 1
+}
+
+# Every row is checked against the schema Claude Code's own reader enforces:
+# id (matching the file name), subject, description, a known status, and the
+# two dependency arrays. A row that fails any of them means a format cs was not
+# written for.
+test_a_row_outside_the_task_schema_refuses_the_run() {
+    local bad
+    for bad in 'not json' \
+        '{"id":"3","subject":"s","description":"d","status":"done","blocks":[],"blockedBy":[]}' \
+        '{"id":"4","subject":"s","description":"d","status":"completed","blocks":[],"blockedBy":[]}' \
+        '{"id":"3","subject":"s","status":"completed","blocks":[],"blockedBy":[]}' \
+        '{"id":"3","subject":"s","description":"d","status":"completed","blocks":{},"blockedBy":[]}' \
+        '["3"]'; do
+        rm -rf "$STORE"
+        mkdir -p "$STORE"
+        _row 1 completed "One"
+        _row 2 pending "Two"
+        printf '%s' "$bad" > "$STORE/3.json"
+        _agree || return 1
+        local out rc=0
+        out=$("$CS_BIN" -archive-tasks run 2>&1) || rc=$?
+        assert_eq "1" "$rc" "the run fails on: $bad" || return 1
+        _assert_refused "Error: refusing to archive: $STORE/3.json is not a task row in the format cs knows; nothing archived" \
+            "$out" "1 2 3" || return 1
+    done
+}
+
+# Claude Code holds a list lock (.lock.lock) or a row lock (<id>.json.lock)
+# while it writes; a run then could race the write it is making.
+test_a_held_lock_refuses_the_run() {
+    local lock
+    for lock in .lock.lock 2.json.lock; do
+        rm -rf "$STORE"
+        mkdir -p "$STORE/$lock"
+        _row 1 completed "One"
+        _row 2 pending "Two"
+        _agree || return 1
+        local out rc=0
+        out=$("$CS_BIN" -archive-tasks run 2>&1) || rc=$?
+        assert_eq "1" "$rc" "the run fails while $lock is held" || return 1
+        _assert_refused "Error: Claude Code is writing the task list ($STORE/$lock exists); nothing archived. Run it again once the write is done" \
+            "$out" "1 2" || return 1
+    done
+}
+
+test_an_unset_task_list_id_refuses_the_run() {
+    _row 1 completed "One"
+    _row 2 pending "Two"
+    _agree || return 1
+    local out rc=0
+    out=$(env -u CLAUDE_CODE_TASK_LIST_ID "$CS_BIN" -archive-tasks run 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the run fails" || return 1
+    _assert_refused "Error: CLAUDE_CODE_TASK_LIST_ID is not set, so the session's task list is unknown; nothing archived" \
+        "$out" "1 2" || return 1
+}
+
+test_a_missing_store_is_nothing_to_archive() {
+    rm -rf "$STORE"
+    _agree || return 1
+    local out
+    out=$("$CS_BIN" -archive-tasks run 2>&1) || { echo "  FAIL: run failed: $out"; return 1; }
+    assert_eq "Nothing to archive: no task list at $STORE" "$out" "the missing store is named" || return 1
+    assert_not_exists "$SESSION_DIR/.cs/task-archive" "nothing is written" || return 1
+}
+
+# ============================================================================
+# Where the store and the archive are
+# ============================================================================
+
+# Claude Code turns every character of the list id outside [a-zA-Z0-9_-] into
+# '-': a feature worktree's base@task list lives in tasks/base-task.
+test_the_list_id_is_read_the_way_claude_code_names_its_directory() {
+    rm -rf "$STORE"
+    export CLAUDE_CODE_TASK_LIST_ID="demo@fix.it"
+    STORE="$HOME/.claude/tasks/demo-fix-it"
+    mkdir -p "$STORE"
+    _row 1 completed "One"
+    _row 2 pending "Two"
+    _agree || return 1
+    "$CS_BIN" -archive-tasks run > /dev/null 2>&1 || { echo "  FAIL: run failed"; return 1; }
+    assert_eq "2" "$(_live_ids)" "the row moved out of tasks/demo-fix-it" || return 1
+    assert_eq "1" "$(_archived_ids)" "and into the archive" || return 1
+}
+
+test_claude_config_dir_moves_the_store() {
+    rm -rf "$STORE"
+    export CLAUDE_CONFIG_DIR="$TEST_TMPDIR/config"
+    STORE="$CLAUDE_CONFIG_DIR/tasks/demo"
+    mkdir -p "$STORE"
+    _row 1 completed "One"
+    _row 2 pending "Two"
+    _agree || return 1
+    local rc=0
+    "$CS_BIN" -archive-tasks run > /dev/null 2>&1 || rc=$?
+    unset CLAUDE_CONFIG_DIR
+    assert_eq "0" "$rc" "the run succeeds" || return 1
+    assert_eq "2" "$(_live_ids)" "the row moved out of the config dir's store" || return 1
+}
+
+# An encrypted session keeps its content in the vault behind .cs/private; task
+# text is session content, so its archive goes there too, and a locked vault
+# (a link to a missing directory) refuses rather than write plaintext.
+test_an_encrypted_session_archives_into_its_vault() {
+    mkdir -p "$TEST_TMPDIR/vault"
+    ln -s "$TEST_TMPDIR/vault" "$SESSION_DIR/.cs/private"
+    _row 1 completed "One"
+    _row 2 pending "Two"
+    _agree || return 1
+    local out day
+    out=$("$CS_BIN" -archive-tasks run 2>&1) || { echo "  FAIL: run failed: $out"; return 1; }
+    day=$(ls "$TEST_TMPDIR/vault/task-archive")
+    assert_eq "Archived 1 completed task row to .cs/private/task-archive/$day" "$out" "the vault path is reported" || return 1
+    assert_exists "$TEST_TMPDIR/vault/task-archive/$day/json/1.json" "the row is in the vault" || return 1
+    assert_not_exists "$SESSION_DIR/.cs/task-archive" "nothing is written in plaintext" || return 1
+}
+
+test_a_locked_vault_refuses_the_run() {
+    ln -s "$TEST_TMPDIR/unmounted" "$SESSION_DIR/.cs/private"
+    _row 1 completed "One"
+    _row 2 pending "Two"
+    _agree || return 1
+    local out rc=0
+    out=$("$CS_BIN" -archive-tasks run 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the run fails" || return 1
+    _assert_refused "Error: the session's vault is locked (.cs/private leads to a missing directory); mount it, then archive again. Nothing archived" \
+        "$out" "1 2" || return 1
+}
+
 echo "Running test_task_archive.sh"
 echo ""
 
@@ -142,5 +319,16 @@ run_test test_completed_rows_move_and_the_highest_stays_live
 run_test test_every_completed_row_moves_when_the_highest_is_open
 run_test test_the_store_keeps_its_highest_id_so_numbers_are_never_reused
 run_test test_nothing_to_archive_says_so_and_writes_nothing
+run_test test_an_unknown_file_in_the_store_refuses_the_run
+run_test test_a_directory_in_the_store_refuses_the_run
+run_test test_a_linked_row_refuses_the_run
+run_test test_a_row_outside_the_task_schema_refuses_the_run
+run_test test_a_held_lock_refuses_the_run
+run_test test_an_unset_task_list_id_refuses_the_run
+run_test test_a_missing_store_is_nothing_to_archive
+run_test test_the_list_id_is_read_the_way_claude_code_names_its_directory
+run_test test_claude_config_dir_moves_the_store
+run_test test_an_encrypted_session_archives_into_its_vault
+run_test test_a_locked_vault_refuses_the_run
 
 report_results
