@@ -232,6 +232,22 @@ _cs_is_plain_name() {  # name
     [ -n "$1" ] && [ "$(_cs_plain_name "$1" 160)" = "$1" ]
 }
 
+# Strip C0 control characters (keeping tab and newline) and DEL from stdin, so
+# text another session wrote cannot smuggle an escape sequence into this
+# session's terminal. cs is multi-session by design — presence, queued tasks and
+# mail all cross a session boundary — and the reader does not trust the writer.
+# Text a cloned session's repo carries (a file cs -search matches, a recipient
+# file age list previews) is cleaned the same way.
+# C0 and DEL only: 8-bit C1 (0x80-0x9F, where 0x9B is CSI) is deliberately out
+# of scope, because a UTF-8 terminal does not decode raw C1 bytes as controls.
+# The C locale reaches tr as an argument of env, never as an assignment the
+# shell makes for itself: every caller pipes into this function, so it runs in
+# a forked copy of the shell, and a bash linked against libintl (Homebrew's)
+# can crash when it changes its own locale there.
+_scrub_controls() {
+    env LC_ALL=C tr -d '\000-\010\013-\037\177'
+}
+
 # Prints the line that says git tracks <tracked> and how to stop: untrack
 # <sub>, a path relative to <top>, and commit, both in <top>. The repository
 # chose both names and the user is asked to paste the command, so each path is
