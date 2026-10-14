@@ -702,6 +702,24 @@ test_auto_approve_prompts_inside_any_directory_that_holds_head() {
         "a narrative under a .cs/ that holds HEAD" || return 1
 }
 
+# That rule lives in the shared library (cs-shared.sh). A partial deployment
+# without it cannot tell a git directory from content, so every write
+# prompts, and stderr says what is missing.
+test_auto_approve_declines_without_the_shared_library() {
+    local partial="$TEST_TMPDIR/partial-hooks" input output err="$TEST_TMPDIR/partial-hook.err"
+    mkdir -p "$partial" "$CLAUDE_SESSION_META_DIR/memory"
+    cp "$HOOKS_DIR"/*.sh "$partial/"
+    rm "$partial/cs-shared.sh"
+    input=$(jq -n --arg path "$CLAUDE_SESSION_META_DIR/memory/narrative.md" \
+        '{tool_name: "Write", tool_input: {file_path: $path}}')
+    output=$(echo "$input" | bash "$partial/session-auto-approve.sh" 2>"$err")
+    assert_eq "" "$output" "a narrative write falls through to the prompt" || return 1
+    assert_eq "cs auto-approve: not approving, $partial/cs-shared.sh is missing or outdated" "$(cat "$err")" \
+        "the hook names the missing library" || return 1
+    output=$(echo "$input" | bash "$HOOKS_DIR/session-auto-approve.sh")
+    assert_output_contains "$output" '"allow"' "the same write is approved with the library" || return 1
+}
+
 # The same for a session whose own path has a .git component above .cs/: the
 # git-directory rule reads the path below .cs/ only.
 test_auto_approve_allows_content_in_a_session_below_a_git_named_directory() {
@@ -3349,6 +3367,7 @@ run_test test_auto_approve_prompts_for_a_folded_control_name
 run_test test_auto_approve_prompts_inside_a_git_directory_below_cs
 run_test test_auto_approve_prompts_inside_a_git_directory_reached_by_another_name
 run_test test_auto_approve_prompts_inside_any_directory_that_holds_head
+run_test test_auto_approve_declines_without_the_shared_library
 run_test test_auto_approve_allows_ascii_content_under_a_non_ascii_session_path
 run_test test_auto_approve_allows_content_in_a_session_below_a_git_named_directory
 run_test test_auto_approve_rejects_config_linked_into_content
