@@ -167,19 +167,6 @@ RETIRED_COMMANDS=(
     store-secret.md         # moved to skills/store-secret; deployed only by an install from a checkout
 )
 
-# Stop with an error naming the first RETIRED_COMMANDS entry that is not a
-# plain file name. install.sh and run_uninstall join each entry onto the
-# commands directory, so one holding a path component would reach outside it;
-# both call this before they change anything.
-_check_retired_command_names() {
-    local entry
-    for entry in "${RETIRED_COMMANDS[@]}"; do
-        case "$entry" in
-            ''|.|..|*/*) error "RETIRED_COMMANDS entry '$entry' is not a file name" ;;
-        esac
-    done
-}
-
 # Skills cs ships; each deploys as ~/.claude/skills/<name>/SKILL.md.
 CS_SKILLS=(
     store-secret
@@ -207,6 +194,29 @@ RETIRED_SKILLS=(
     cs-hint # a mod (deployed under skills/ like every mod): the hint line under the prompt, retired
     cs-rotate # a mod: renamed to cs, cs's in-session mod (the rotate band, forced rotation, the wrap key)
 )
+
+# install.sh and run_uninstall join each entry of the three retired lists
+# onto one directory (a hook or command file name, a skill directory name),
+# so an entry holding a path component would reach outside it, and '..' as a
+# skill would name all of ~/.claude. Both call this before they change
+# anything: it stops with an error naming the list and the first such entry.
+_check_retired_names() {
+    _check_retired_entries RETIRED_HOOKS file "${RETIRED_HOOKS[@]}"
+    _check_retired_entries RETIRED_COMMANDS file "${RETIRED_COMMANDS[@]}"
+    _check_retired_entries RETIRED_SKILLS directory "${RETIRED_SKILLS[@]}"
+}
+
+# Stop with an error naming list $1 and the first of its entries ($3...) that
+# is not a plain $2 name: empty, '.', '..', or holding a '/'.
+_check_retired_entries() {  # list name, kind (file or directory), entries...
+    local list="$1" kind="$2" entry
+    shift 2
+    for entry in "$@"; do
+        case "$entry" in
+            ''|.|..|*/*) error "$list entry '$entry' is not a $kind name" ;;
+        esac
+    done
+}
 
 # Support files skills ship beyond SKILL.md, as skills/<skill>/<path> entries.
 CS_SKILL_FILES=(
@@ -1233,7 +1243,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "1ca731897db86b99059869b9f74602acedf7e6f31d575dccc69b0bb1defec3e7  bin/cs"
+    "b1db02f9958d220ddb9fd9f0a678133a2fb7ea35e092d945d6a26481d8f4354a  bin/cs"
     "53865bc18046bdb236b3bc644d3b197e5e2198890be4d22b449fea81c9ab41db  bin/cs-secrets"
     "a6d008e8bcba4e3d4c1599c76aaddc4ea1c4eb61e3ba861c60d9e4b91f706e78  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -1280,7 +1290,7 @@ CS_PAYLOAD_SHA256=(
 # the library they source.
 CS_HOOK_FILES=("${CS_HOOK_LIBS[@]}" "${CS_HOOKS[@]}")
 
-_check_retired_command_names
+_check_retired_names
 
 # Minisign public key for verifying signed releases
 CS_SIGN_PUBKEY="RWQvs3IVdvrS8PJs0V0gwdJGPw/x5waQ6z6iqPQm90JfpxfcsSy9b9Vo"

@@ -75,19 +75,6 @@ RETIRED_COMMANDS=(
     store-secret.md         # moved to skills/store-secret; deployed only by an install from a checkout
 )
 
-# Stop with an error naming the first RETIRED_COMMANDS entry that is not a
-# plain file name. install.sh and run_uninstall join each entry onto the
-# commands directory, so one holding a path component would reach outside it;
-# both call this before they change anything.
-_check_retired_command_names() {
-    local entry
-    for entry in "${RETIRED_COMMANDS[@]}"; do
-        case "$entry" in
-            ''|.|..|*/*) error "RETIRED_COMMANDS entry '$entry' is not a file name" ;;
-        esac
-    done
-}
-
 # Skills cs ships; each deploys as ~/.claude/skills/<name>/SKILL.md.
 CS_SKILLS=(
     store-secret
@@ -115,6 +102,29 @@ RETIRED_SKILLS=(
     cs-hint # a mod (deployed under skills/ like every mod): the hint line under the prompt, retired
     cs-rotate # a mod: renamed to cs, cs's in-session mod (the rotate band, forced rotation, the wrap key)
 )
+
+# install.sh and run_uninstall join each entry of the three retired lists
+# onto one directory (a hook or command file name, a skill directory name),
+# so an entry holding a path component would reach outside it, and '..' as a
+# skill would name all of ~/.claude. Both call this before they change
+# anything: it stops with an error naming the list and the first such entry.
+_check_retired_names() {
+    _check_retired_entries RETIRED_HOOKS file "${RETIRED_HOOKS[@]}"
+    _check_retired_entries RETIRED_COMMANDS file "${RETIRED_COMMANDS[@]}"
+    _check_retired_entries RETIRED_SKILLS directory "${RETIRED_SKILLS[@]}"
+}
+
+# Stop with an error naming list $1 and the first of its entries ($3...) that
+# is not a plain $2 name: empty, '.', '..', or holding a '/'.
+_check_retired_entries() {  # list name, kind (file or directory), entries...
+    local list="$1" kind="$2" entry
+    shift 2
+    for entry in "$@"; do
+        case "$entry" in
+            ''|.|..|*/*) error "$list entry '$entry' is not a $kind name" ;;
+        esac
+    done
+}
 
 # Support files skills ship beyond SKILL.md, as skills/<skill>/<path> entries.
 CS_SKILL_FILES=(
