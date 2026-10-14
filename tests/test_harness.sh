@@ -129,6 +129,18 @@ run_throwaway_suite() {  # body of the suite's tests, as bash source
     rm -rf "$dir"
 }
 
+test_suites_clear_the_launchers_profile_overrides() {
+    local out
+    out=$(CS_CLAUDE_DIR="$TEST_TMPDIR/live-claude" CODE_SESSIONS_HOME="$TEST_TMPDIR/live-profile" \
+        run_throwaway_suite '
+test_profile_isolation() {
+    [ -z "${CS_CLAUDE_DIR:-}" ] && [ -z "${CODE_SESSIONS_HOME:-}" ]
+}
+run_test test_profile_isolation')
+    assert_output_contains "$out" 'Results: 1/1 passed, 0 failed' \
+        "a suite must use its fixture home even when launched from a profile" || return 1
+}
+
 test_results_line_omits_the_skip_column_when_nothing_skipped() {
     local out
     out="$(run_throwaway_suite 'test_ok() { return 0; }
@@ -152,6 +164,7 @@ run_test test_output_not_contains_survives_a_large_output
 run_test test_output_contains_still_fails_on_a_real_miss
 run_test test_output_not_contains_still_fails_on_a_real_hit
 run_test test_setup_isolates_the_process_table
+run_test test_suites_clear_the_launchers_profile_overrides
 run_test test_process_table_isolation_survives_a_suite_that_overrides_setup
 run_test test_process_table_stub_passes_through_other_ps_forms
 run_test test_results_line_omits_the_skip_column_when_nothing_skipped
