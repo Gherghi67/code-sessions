@@ -4665,7 +4665,10 @@ _stop_receiver() {
     return 0
 }
 _receiver_refusal() {  # caller
-    printf 'Error: session %s cannot change the secrets of session receiver while it is live (pid %s); --force does not override that from another session. Close receiver first.' "$1" "$RECEIVER_PID"
+    _receiver_refusal_for "$1" "$RECEIVER_PID"
+}
+_receiver_refusal_for() {  # caller pid
+    printf 'Error: session %s cannot change the secrets of session receiver while it is live (pid %s); --force does not override that from another session. Close receiver first.' "$1" "$2"
 }
 
 test_secrets_delete_of_a_live_other_session_is_refused_on_every_route() {
@@ -4789,6 +4792,36 @@ cs:bravo:K2" "$(_kc_services)" "the Keychain entries moved to bravo" || return 1
     assert_eq "value-enc" "$("$CS_SECRETS_BIN" --session bravo get E1 2>&1)" "the encrypted store moved" || return 1
 }
 
+# cs and cs-secrets read a session lock by one rule: the text, surrounding
+# whitespace removed, is a decimal pid from 1 to 2147483647 that kill -0
+# reaches. Each content below is fed to both, through the refusals of
+# `cs receiver -narrative rotate` and `cs-secrets -s receiver set` from
+# inside sender, and both must call it live (refuse, naming the pid) or not.
+test_cs_and_cs_secrets_read_a_session_lock_by_one_rule() {
+    mkdir -p "$CS_SESSIONS_ROOT/receiver/.cs"
+    sleep 300 &
+    local pid=$! entry content want out got_cs got_secrets
+    local entries=("live|$pid" "live| $pid" "live|$pid " "live|	$pid
+
+" "live|00$pid" "idle|-1" "idle|0" "idle|000" "idle|abc" "idle|" "idle|${pid}x" \
+        "idle|+$pid" "idle|4294967295" "idle|99999999999999999999")
+    for entry in "${entries[@]}"; do
+        want="${entry%%|*}"
+        content="${entry#*|}"
+        printf '%s' "$content" > "$CS_SESSIONS_ROOT/receiver/.cs/session.lock"
+        out=$(CLAUDE_SESSION_NAME=sender "$CS_BIN" receiver -narrative rotate </dev/null 2>&1)
+        got_cs=idle
+        [ "$out" = "Error: session sender cannot rotate the narrative of session receiver while it is live (pid $pid); --force does not override that from another session. Close receiver first." ] && got_cs=live
+        out=$(printf 'v' | CLAUDE_SESSION_NAME=sender "$CS_SECRETS_BIN" -s receiver set K 2>&1)
+        got_secrets=idle
+        [ "$out" = "$(_receiver_refusal_for sender "$pid")" ] && got_secrets=live
+        assert_eq "$want" "$got_cs" "cs reads the lock '$content'" || { kill "$pid"; wait "$pid" 2>/dev/null; return 1; }
+        assert_eq "$want" "$got_secrets" "cs-secrets reads the lock '$content'" || { kill "$pid"; wait "$pid" 2>/dev/null; return 1; }
+    done
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    return 0
+}
+
 run_test test_secrets_delete_of_a_live_other_session_is_refused_on_every_route
 run_test test_secrets_every_writing_command_is_refused_for_a_live_other_session
 run_test test_secrets_rename_into_a_live_other_session_is_refused
@@ -4797,5 +4830,6 @@ run_test test_secrets_reads_of_a_live_other_session_still_work
 run_test test_secrets_delete_of_an_idle_other_session_works
 run_test test_secrets_a_feature_and_its_base_write_the_live_base_secrets
 run_test test_secrets_delete_from_a_plain_shell_takes_a_live_session
+run_test test_cs_and_cs_secrets_read_a_session_lock_by_one_rule
 
 report_results
