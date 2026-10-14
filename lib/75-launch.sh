@@ -398,9 +398,17 @@ launch_claude_code() {
     else
         export CLAUDE_CODE_ENABLE_FUNCTION_HOOKS="${CLAUDE_CODE_ENABLE_FUNCTION_HOOKS:-1}"
     fi
+    # The secrets identity is this session's alone: a base launched from a
+    # shell inside a feature, or from one a cs -secrets arm started, would
+    # otherwise hand its claude that session's target (CS_SECRETS_SESSION) or
+    # caller (CS_SECRETS_CALLER), and cs-secrets reads both ahead of
+    # CLAUDE_SESSION_NAME.
     if [ -n "$cs_base" ]; then
         export CS_SECRETS_SESSION="$cs_base"
+    else
+        unset CS_SECRETS_SESSION
     fi
+    unset CS_SECRETS_CALLER
     # Export both names defensively: Claude Code's auto-memory resolver reads
     # CLAUDE_COWORK_MEMORY_PATH_OVERRIDE; the older CLAUDE_CODE_AUTO_MEMORY_PATH
     # is kept in case other Claude Code versions honor it instead.
