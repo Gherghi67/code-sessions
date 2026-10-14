@@ -641,6 +641,21 @@ test_adopt_into_a_repo_that_ignores_cs_records_ignored() {
         "the session records that .cs stays out of git" || return 1
 }
 
+# A rule for a file type ignores some of .cs's files, not .cs: git would show
+# any other file cs writes there, so the session's features expect git to
+# carry .cs.
+test_adopt_into_a_repo_that_ignores_markdown_records_tracked() {
+    local project_dir="$TEST_TMPDIR/my-project"
+    mkdir -p "$project_dir"
+    printf '*.md\n' > "$project_dir/.gitignore"
+    (cd "$project_dir" && git init -q && git config user.email tester@example.com && git config user.name Tester && git add .gitignore && git commit -q -m "initial")
+
+    (cd "$project_dir" && "$CS_BIN" -adopt my-session >/dev/null 2>&1)
+
+    assert_eq "tracked" "$(awk -F': ' '/^cs_mode:/{print $2}' "$project_dir/.cs/local/state")" \
+        "the session records that git is to carry .cs" || return 1
+}
+
 # Re-adopted records keep the mode the user chose for the session's features.
 test_readopt_keeps_a_recorded_cs_mode() {
     local project_dir="$TEST_TMPDIR/my-project"
@@ -1406,6 +1421,7 @@ run_test test_adopt_into_git_repo_leaves_its_files_untracked
 run_test test_adopt_leaves_the_users_staged_work_alone
 run_test test_readopt_keeps_a_recorded_cs_mode
 run_test test_adopt_into_a_repo_that_ignores_cs_records_ignored
+run_test test_adopt_into_a_repo_that_ignores_markdown_records_tracked
 
 # First launch after adopt
 run_test test_first_launch_after_adopt_starts_fresh_without_asking
