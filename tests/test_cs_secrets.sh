@@ -4797,28 +4797,35 @@ cs:bravo:K2" "$(_kc_services)" "the Keychain entries moved to bravo" || return 1
     assert_eq "value-enc" "$("$CS_SECRETS_BIN" --session bravo get E1 2>&1)" "the encrypted store moved" || return 1
 }
 
-# A base's secrets are its features' too, so from inside a session of another
-# base they are not written while one of its features is live; the base's own
-# sessions and a plain terminal write them as before. receiver is closed here.
+# A base's secrets are its features' too, so while one of its features is
+# live they are written only by the base itself, by that live feature (its
+# own secrets) and from a plain terminal: another base and a sibling feature
+# are refused. receiver is closed here.
 test_secrets_writes_to_a_base_wait_for_its_live_feature() {
     _live_receiver || return 1
     _stop_receiver
     mkdir -p "$CS_SESSIONS_ROOT/receiver@x/.cs"
     sleep 300 &
-    local pid=$! out rc=0
+    local pid=$! out sibling rc=0 sibling_rc=0
     echo "$pid" > "$CS_SESSIONS_ROOT/receiver@x/.cs/session.lock"
     out=$(printf 'v2' | CLAUDE_SESSION_NAME=sender "$CS_SECRETS_BIN" -s receiver set API_KEY 2>&1) || rc=$?
-    local own=0 plain=0
-    printf 'v3' | CLAUDE_SESSION_NAME=receiver@y CS_SECRETS_SESSION=receiver "$CS_SECRETS_BIN" set OWN_KEY >/dev/null 2>&1 || own=$?
-    printf 'v4' | ( unset CLAUDE_SESSION_NAME; "$CS_SECRETS_BIN" -s receiver set PLAIN_KEY ) >/dev/null 2>&1 || plain=$?
+    sibling=$(printf 'v3' | CLAUDE_SESSION_NAME=receiver@y CS_SECRETS_SESSION=receiver "$CS_SECRETS_BIN" set SIBLING_KEY 2>&1) || sibling_rc=$?
+    local base=0 own=0 plain=0
+    printf 'v4' | CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" set BASE_KEY >/dev/null 2>&1 || base=$?
+    printf 'v5' | CLAUDE_SESSION_NAME=receiver@x CS_SECRETS_SESSION=receiver "$CS_SECRETS_BIN" set OWN_KEY >/dev/null 2>&1 || own=$?
+    printf 'v6' | ( unset CLAUDE_SESSION_NAME; "$CS_SECRETS_BIN" -s receiver set PLAIN_KEY ) >/dev/null 2>&1 || plain=$?
     kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
     assert_eq "1" "$rc" "the write from sender exits 1" || return 1
     assert_eq "Error: session sender cannot change the secrets of session receiver while its feature receiver@x is live (pid $pid); --force does not override that from another session. Close receiver@x first." \
         "$out" "the refusal names the live feature" || return 1
-    assert_eq "0 0" "$own $plain" "the base's own feature and a plain terminal write" || return 1
+    assert_eq "1" "$sibling_rc" "the write from the sibling feature receiver@y exits 1" || return 1
+    assert_eq "Error: session receiver@y cannot change the secrets of session receiver while its feature receiver@x is live (pid $pid); --force does not override that from another session. Close receiver@x first." \
+        "$sibling" "the sibling's refusal names the live feature" || return 1
+    assert_eq "0 0 0" "$base $own $plain" "the base, the live feature itself and a plain terminal write" || return 1
     assert_eq "export CS_SECRET_API_KEY=v1
-export CS_SECRET_OWN_KEY=v3
-export CS_SECRET_PLAIN_KEY=v4" "$(CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" export 2>&1)" "only the refused write is missing" || return 1
+export CS_SECRET_BASE_KEY=v4
+export CS_SECRET_OWN_KEY=v5
+export CS_SECRET_PLAIN_KEY=v6" "$(CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" export 2>&1)" "only the refused writes are missing" || return 1
 }
 
 # cs and cs-secrets read a session lock by one rule: the text, surrounding

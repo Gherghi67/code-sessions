@@ -717,35 +717,38 @@ test_remove_from_a_feature_refuses_its_live_base_and_a_live_sibling() {
     return 0
 }
 
-# A feature's worktree points into its base's repository, so from inside a
-# session of another base a base is not removed while one of its features is
-# live, --force or not.
+# A feature's worktree points into its base's repository, so from inside any
+# session but the base itself a base is not removed while one of its features
+# is live, --force or not: not from another base, not from a sibling feature,
+# and not from the live feature itself.
 test_remove_base_refused_while_its_feature_is_live() {
     create_test_session receiver >/dev/null
     create_test_session receiver@x >/dev/null
     sleep 300 &
-    local live_pid=$! flag out rc
+    local live_pid=$! caller flag out rc
     echo "$live_pid" > "$CS_SESSIONS_ROOT/receiver@x/.cs/session.lock"
-    for flag in "" --force; do
-        rc=0
-        # shellcheck disable=SC2086 # an empty flag is no argument
-        out=$(CLAUDE_SESSION_NAME=sender "$CS_BIN" -rm receiver $flag </dev/null 2>&1) || rc=$?
-        assert_eq "1" "$rc" "removing receiver ${flag:-without --force} exits 1" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
-        assert_eq "Error: session sender cannot remove session receiver while its feature receiver@x is live (pid $live_pid); --force does not override that from another session. Close receiver@x first." \
-            "$out" "the refusal names the live feature" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
-        assert_dir "$CS_SESSIONS_ROOT/receiver" "receiver survives" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
+    for caller in sender receiver@y receiver@x; do
+        for flag in "" --force; do
+            rc=0
+            # shellcheck disable=SC2086 # an empty flag is no argument
+            out=$(CLAUDE_SESSION_NAME="$caller" "$CS_BIN" -rm receiver $flag </dev/null 2>&1) || rc=$?
+            assert_eq "1" "$rc" "removing receiver from $caller ${flag:-without --force} exits 1" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
+            assert_eq "Error: session $caller cannot remove session receiver while its feature receiver@x is live (pid $live_pid); --force does not override that from another session. Close receiver@x first." \
+                "$out" "the refusal from $caller names the live feature" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
+            assert_dir "$CS_SESSIONS_ROOT/receiver" "receiver survives" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
+        done
     done
     kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
     return 0
 }
 
-# The base's own sessions and a plain terminal remove an idle base whose
-# feature is live, as they always have.
-test_remove_base_with_a_live_feature_from_its_own_feature_and_a_plain_shell() {
+# The base itself and a plain terminal remove an idle base whose feature is
+# live, as they always have.
+test_remove_base_with_a_live_feature_from_itself_and_a_plain_shell() {
     local caller out rc
     sleep 300 &
     local live_pid=$!
-    for caller in receiver@y ""; do
+    for caller in receiver ""; do
         create_test_session receiver >/dev/null
         create_test_session receiver@x >/dev/null
         echo "$live_pid" > "$CS_SESSIONS_ROOT/receiver@x/.cs/session.lock"
@@ -781,7 +784,7 @@ run_test test_remove_idle_other_session_from_inside_a_session
 run_test test_remove_live_own_feature_from_its_base_with_force
 run_test test_remove_from_a_feature_refuses_its_live_base_and_a_live_sibling
 run_test test_remove_base_refused_while_its_feature_is_live
-run_test test_remove_base_with_a_live_feature_from_its_own_feature_and_a_plain_shell
+run_test test_remove_base_with_a_live_feature_from_itself_and_a_plain_shell
 run_test test_remove_from_inside_a_session_checks_every_name_first
 run_test test_remove_empty_name_rejected_before_any_deletion
 run_test test_remove_base_session_drops_its_age_state
