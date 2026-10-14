@@ -2180,6 +2180,14 @@ impl App {
             self.mode = Mode::Normal;
             return;
         }
+        // Same liveness guard as Delete and Rotate: a live claude keeps
+        // writing under the old path, and the move takes its lock and
+        // transcripts from under it.
+        if let Some(refusal) = self.locked_selection_refusal() {
+            self.set_status(refusal, StatusLevel::Error);
+            self.mode = Mode::Normal;
+            return;
+        }
 
         // Renaming a worktree session (<base>@<task>) via fs::rename would
         // desync git's worktree registration; refuse it here.
