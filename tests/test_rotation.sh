@@ -128,6 +128,14 @@ test_rotate_skill_exists_with_frontmatter() {
     assert_file_contains "$skill" ".cs/handoffs/" "skill targets the tracked handoff store" || return 1
 }
 
+# cs offers and loads only a handoff whose file name is plain, so the skill
+# that names the file keeps the slug inside that rule by construction.
+test_rotate_skill_slug_is_a_plain_name() {
+    local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md"
+    assert_file_contains "$skill" "slug is ASCII: lowercase letters, digits and hyphens only, at most 60" \
+        "the skill limits the slug to characters cs offers" || return 1
+}
+
 # Nothing else in cs deletes a handoff, so without a prune rule .cs/handoffs/
 # grows without bound in a tracked, shared directory. The rule has to be
 # spelled out precisely: which statuses are droppable, the age source, and the
@@ -476,6 +484,7 @@ test_rotate_skill_reads_parent_from_state_not_the_launch_env() {
 }
 
 run_test test_rotate_skill_exists_with_frontmatter
+run_test test_rotate_skill_slug_is_a_plain_name
 run_test test_rotate_skill_never_force_adds_an_ignored_handoff
 run_test test_rotate_skill_has_a_home_for_rejected_alternatives
 run_test test_rotate_skill_has_a_home_for_conversation_only_facts
