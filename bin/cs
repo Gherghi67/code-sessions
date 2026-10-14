@@ -7449,8 +7449,17 @@ _migrate_session_documents() {  # session_dir, tracked_tree_is_ours
     # The exact lines cs wrote get their /wrap wording, as in CLAUDE.local.md
     # (_ensure_claude_local_sections). It runs after the .cs/ test above,
     # which the /wrap sentence's ".cs/summary.md" would otherwise change.
-    if [ "$tracked_tree_is_ours" = 1 ]; then
-        _wrap_only_migrate "$claude_md"
+    # Every CLAUDE.md cs wrote opens with "# Session Documentation Protocol";
+    # one that opens otherwise is the user's and is left alone. A CLAUDE.md
+    # cs cannot read or rewrite is named and left, and the open goes on
+    # without its stamp, so the next open tries again.
+    if [ "$tracked_tree_is_ours" = 1 ] && [ -f "$claude_md" ]; then
+        local first_line
+        if ! first_line=$(awk '/[^[:space:]]/ { print; exit }' "$claude_md" 2>/dev/null) \
+            || { [ "$first_line" = "# Session Documentation Protocol" ] && ! _wrap_only_migrate "$claude_md"; }; then
+            warn "could not rewrite CLAUDE.md; any /summary line cs wrote there still points at a command that is gone"
+            _CS_MIGRATE_CLEAN=0
+        fi
     fi
 
     # Phase 6: Add YAML frontmatter to README.md if missing
@@ -7706,14 +7715,15 @@ _wrap_only_rewrite() {  # check|print, file
     ' "$2"
 }
 
-# Phase 16 on file $1, a CLAUDE.local.md or a CLAUDE.md cs may write: rewrite
-# what _wrap_only_rewrite matches and name what changed.
+# Phase 16 on file $1, a CLAUDE.local.md or a CLAUDE.md cs wrote: rewrite
+# what _wrap_only_rewrite matches and name what changed. Returns 1, the file
+# as it was, when it cannot read or rewrite the file; the caller says so.
 _wrap_only_migrate() {  # file
     local f="$1" changes
     [ -f "$f" ] || return 0
-    changes=$(_wrap_only_rewrite check "$f") || error "could not read $f"
+    changes=$(_wrap_only_rewrite check "$f") || return 1
     [ -n "$changes" ] || return 0
-    cs_write_atomic "$f" _wrap_only_rewrite print "$f" || error "could not rewrite $f"
+    cs_write_atomic "$f" _wrap_only_rewrite print "$f" || return 1
     case "$changes" in
         *cue*) warn "Dropped the /sweep and /summary offers cs wrote into ${f##*/}; it offers /wrap alone" ;;
     esac
@@ -7799,7 +7809,7 @@ _ensure_claude_local_sections() {  # session_dir
     # sentence offering /summary and /sweep on their own, and the protocol
     # line, Best Practices bullet and heading cs wrote for /summary take their
     # /wrap wording. _migrate_session_documents does the same to CLAUDE.md.
-    _wrap_only_migrate "$claude_md_p9"
+    _wrap_only_migrate "$claude_md_p9" || error "could not rewrite $claude_md_p9"
 
     # Phase 14: an encrypted session (.cs/private present; a locked one was
     # refused before migrate) gains the encrypted protocol. The sentinel is a
