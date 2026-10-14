@@ -1291,7 +1291,7 @@ CS_PAYLOAD_SHA256=(
     "12dca7f6d02f19f75865fa2f6e91384a5c8e727b0962e269a6adbb491a95971f  commands/summary.md"
     "9e06eaa16960dff49881234c8a479c2f8d2dd8d672283056e1591c4528e755ab  commands/checkpoint.md"
     "df9db21017a995e93fdab7135ee2c6d3d7ce0ff660f76bd6d29015854b3a1aa3  commands/sweep.md"
-    "4804601ffde2d8023808335c58e88e2af65b6817d6fedb216491466e27241b9c  commands/wrap.md"
+    "083b9d82c8d74b6ba48dadff29100238e3838365ae64e2dd0d09df343792e97e  commands/wrap.md"
     "2520a6d54d75e3e9f1768160826a8b9f21e38e2234538cc62e3ec6337008fc28  skills/store-secret/SKILL.md"
     "63db6214c1afcb6b3f107383ff77dd0a738802e11ae8f7ed120988c496b9f431  skills/prose-hygiene/SKILL.md"
     "8addfa52298a1625db72efad6387e491d8052d4fddf5b67ec9457c87053ff16a  skills/rotate/SKILL.md"
