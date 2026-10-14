@@ -989,8 +989,8 @@ pub enum UnownedEntries {
 }
 
 /// The delete confirm's account of one thing a removal would take: a line of
-/// text, and under it the entries of a listing of files git does not track
-/// (empty for any other warning).
+/// text, and under it the entries it lists one per row, the files git does
+/// not track or the names cs did not create (empty for any other warning).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeleteWarning {
     pub text: String,
@@ -1004,12 +1004,16 @@ impl DeleteWarning {
 }
 
 impl UnownedEntries {
-    /// The confirm's warning, in `cs -rm`'s words; None when nothing is at risk.
+    /// The confirm's warning, in `cs -rm`'s words, its names or paths listed
+    /// one per row under it; None when nothing is at risk.
     pub fn warning(&self) -> Option<DeleteWarning> {
         match self {
-            UnownedEntries::NotCreatedByCs(p) if !p.is_empty() => {
-                Some(DeleteWarning::line(format!("Also deletes files cs did not create: {}", p.join(", "))))
-            }
+            // Each name is one entry without a trailing '/', so the listing
+            // draws it alone, with no file count.
+            UnownedEntries::NotCreatedByCs(p) if !p.is_empty() => Some(DeleteWarning {
+                text: "Also deletes files cs did not create:".to_string(),
+                entries: p.iter().map(|name| untracked::Entry { path: name.clone(), files: 1 }).collect(),
+            }),
             UnownedEntries::NotTrackedByGit(e) if !e.is_empty() => Some(DeleteWarning {
                 text: format!("Also deletes {} git does not track:", untracked::count_phrase(e)),
                 entries: e.clone(),
