@@ -6800,6 +6800,36 @@ mod tests {
         std::fs::remove_dir_all(&tmp).ok();
     }
 
+    // A session that opens while the rotate confirm is up is refused too, as
+    // rename and delete refuse it: the picker holds its rescans while a modal
+    // is open, so the row still reads dormant and only the lock file says
+    // otherwise.
+    #[cfg(unix)]
+    #[test]
+    fn rotate_refuses_a_session_that_went_live_after_the_scan() {
+        let _env = CS_BIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = archive_root("rotate-live-later");
+        let stub = rotate_stub(&tmp, "echo rotated");
+        let _root = session::test_root::scoped(tmp.clone());
+        std::env::set_var("CS_BIN", &stub);
+
+        let mut app = App::new(session::scan_sessions());
+        app.handle_key(KeyEvent::from(KeyCode::Char('R')));
+        assert_eq!(app.mode, Mode::ConfirmRotate, "a dormant row is offered the confirm");
+        let pid = std::process::id();
+        std::fs::write(tmp.join("alpha/.cs/session.lock"), format!("{pid}\n")).unwrap();
+        app.handle_key(KeyEvent::from(KeyCode::Char('y')));
+        std::env::remove_var("CS_BIN");
+
+        assert_eq!(
+            app.status_message.as_ref().map(|m| (m.text.clone(), m.level)),
+            Some((format!("alpha is live (pid {pid}) — close it first"), StatusLevel::Error))
+        );
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(!rotate_was_invoked(&tmp), "cs must not have rotated");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
     #[cfg(unix)]
     #[test]
     fn declining_the_rotate_confirm_runs_nothing() {
