@@ -596,6 +596,15 @@ test_a_rerun_after_an_interrupted_run_finishes_with_one_snapshot() {
         assert_eq "1" "$(grep -c '^# Task list as of ' "$SESSION_DIR/.cs/task-archive/$day/alice/tasks.md")" \
             "one snapshot after a stop at #$stop" || return 1
     done
+    # A stop after the copies, once row #1 had left the store and before #2
+    # did: the store no longer matches the snapshot, and the copy of #2 is
+    # what tells the rerun that snapshot is already there.
+    cp "$SESSION_DIR/.cs/task-archive/$day/alice/json/2.json" "$STORE/2.json"
+    out=$("$CS_BIN" -archive-tasks run 2>&1) || { echo "  FAIL: the rerun after a stop between removals failed: $out"; return 1; }
+    assert_eq "Archived 1 completed task row to .cs/task-archive/$day/alice" "$out" "the rerun finishes row #2" || return 1
+    assert_eq "3" "$(_live_ids)" "only the open row stays" || return 1
+    assert_eq "1" "$(grep -c '^# Task list as of ' "$SESSION_DIR/.cs/task-archive/$day/alice/tasks.md")" \
+        "one snapshot after a stop between removals" || return 1
 }
 
 # Every machine numbers its own copy of a list from 1, so two actors archiving
