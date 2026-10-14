@@ -1322,16 +1322,16 @@ _cs_git_at() {  # dir, git arguments...
 }
 
 # What git said on stderr when the same call through _cs_git_at failed, its
-# answer discarded. A git that could not be run at all (exit 127, from env or
-# the shell) is named as missing, in place of their wording of it.
+# answer discarded. A git that could not be run at all is named in place of
+# env's wording: missing (exit 127), or found but not runnable (exit 126).
 _cs_git_error_at() {  # dir, git arguments...
     local why rc=0
     why=$(_cs_git_at "$@" 2>&1 >/dev/null) || rc=$?
-    if [ "$rc" = 127 ]; then
-        printf 'git is not installed or not on PATH\n'
-    else
-        printf '%s\n' "$why"
-    fi
+    case "$rc" in
+        127) printf 'git is not installed or not on PATH\n' ;;
+        126) printf 'git was found on PATH but could not be run\n' ;;
+        *) printf '%s\n' "$why" ;;
+    esac
 }
 
 # True when git's error output says it found no repository at all, the one
