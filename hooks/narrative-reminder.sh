@@ -173,9 +173,9 @@ _qlen() {  # queue dir
     echo "$n"
 }
 
-# Only the launched conversation wakes, by the same two shapes session-start.sh
-# calls the lead: claude carrying cs's pid from the exec arm, or claude as cs's
-# child from the resume arm. A tmux-backed teammate is a full claude with its
+# Only the launched conversation wakes, by the same test session-start.sh
+# calls the lead: claude carrying cs's pid from the exec arm, or the claude the
+# lead's claim names (cs_is_lead). A tmux-backed teammate is a full claude with its
 # own top-level Stop — the agent_id guard above catches in-process subagents,
 # not tmux ones — and cs is neither its process nor its parent, so CS_LEAD_PID
 # is absent from its environment. Ungated, one arrival wakes the lead and every

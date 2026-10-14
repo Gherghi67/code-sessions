@@ -271,33 +271,53 @@ test_session_end_lead_clears_a_stale_lock_it_does_not_own() {
         "a dead holder's lock is cleared when the lead ends" || return 1
 }
 
-# The same child on a machine where ps cannot name its parent: nothing shows
-# it to be the lead, so its end still leaves a live holder's lock. The
-# stand-in leaves a file behind, so the test knows which ps answered.
-test_session_end_keeps_the_lock_when_the_parent_cannot_be_read() {
+# The resume arm runs claude as cs's child, so the lead's CLAUDE_PID is not
+# the launch pid; its claim on the launch (.cs/local/lead-pid) names it. A
+# /clear or a /resume ends a conversation but not that claude, so the claim
+# and the lock stay as they are; another claude's end leaves both too; the
+# lead's own end removes the lock its launch holds and marks the claim ended,
+# which the next launch clears. The launch is one that takes the claim
+# (CS_LEAD_CLAIM), as every launch cs makes is.
+test_session_end_removes_the_lock_and_marks_the_lead_claim_ended() {
     create_lock_test_session "test-session"
-    local meta_dir="$CS_SESSIONS_ROOT/test-session/.cs" shim="$TEST_TMPDIR/shim"
-
-    sleep 300 &
-    local lead_pid=$!
-    echo "$lead_pid" > "$meta_dir/session.lock"
-    mkdir -p "$shim"
-    printf '#!/bin/sh\n: > "%s/ps-asked"\nexit 126\n' "$TEST_TMPDIR" > "$shim/ps"
-    chmod +x "$shim/ps"
+    local meta_dir="$CS_SESSIONS_ROOT/test-session/.cs" lead
+    bash -c 'exit 0' & lead=$!; wait "$lead"
+    echo "$$" > "$meta_dir/session.lock"
+    mkdir -p "$meta_dir/local"
+    printf '%s %s %s\n' "$$" "$lead" "lead-a" > "$meta_dir/local/lead-pid"
 
     export CLAUDE_SESSION_NAME="test-session"
     export CLAUDE_SESSION_DIR="$CS_SESSIONS_ROOT/test-session"
     export CLAUDE_SESSION_META_DIR="$meta_dir"
 
+    echo '{"session_id": "lead-a", "reason": "clear"}' \
+        | CS_RESOLVED_FROM=env CS_LEAD_CLAIM=1 CS_LEAD_PID=$$ CLAUDE_PID="$lead" "$SCRIPT_DIR/../hooks/session-end.sh"
+    local after_clear_lock after_clear_claim
+    after_clear_lock=$(cat "$meta_dir/session.lock" 2>/dev/null)
+    after_clear_claim=$(cat "$meta_dir/local/lead-pid" 2>/dev/null)
+    echo '{"session_id": "lead-a", "reason": "resume"}' \
+        | CS_RESOLVED_FROM=env CS_LEAD_CLAIM=1 CS_LEAD_PID=$$ CLAUDE_PID="$lead" "$SCRIPT_DIR/../hooks/session-end.sh"
+    local after_resume_lock after_resume_claim
+    after_resume_lock=$(cat "$meta_dir/session.lock" 2>/dev/null)
+    after_resume_claim=$(cat "$meta_dir/local/lead-pid" 2>/dev/null)
     echo '{"session_id": "child-1", "reason": "other"}' \
-        | PATH="$shim:$PATH" CS_RESOLVED_FROM=env CS_LEAD_IS_PARENT=1 CS_LEAD_PID="$lead_pid" CLAUDE_PID=$$ "$SCRIPT_DIR/../hooks/session-end.sh"
-    local kept
-    kept=$(cat "$meta_dir/session.lock" 2>/dev/null)
-    kill "$lead_pid" 2>/dev/null
+        | CS_RESOLVED_FROM=env CS_LEAD_CLAIM=1 CS_LEAD_PID=$$ CLAUDE_PID=999999 "$SCRIPT_DIR/../hooks/session-end.sh"
+    local after_child_lock after_child_claim
+    after_child_lock=$(cat "$meta_dir/session.lock" 2>/dev/null)
+    after_child_claim=$(cat "$meta_dir/local/lead-pid" 2>/dev/null)
+    echo '{"session_id": "lead-a", "reason": "other"}' \
+        | CS_RESOLVED_FROM=env CS_LEAD_CLAIM=1 CS_LEAD_PID=$$ CLAUDE_PID="$lead" "$SCRIPT_DIR/../hooks/session-end.sh"
+    local after_end_claim
+    after_end_claim=$(cat "$meta_dir/local/lead-pid" 2>/dev/null)
 
-    assert_file_exists "$TEST_TMPDIR/ps-asked" "the stand-in ps was the one asked" || return 1
-    assert_eq "$lead_pid" "$kept" \
-        "a claude whose parent cannot be read must not strip a live holder's lock" || return 1
+    assert_eq "$$" "$after_clear_lock" "a /clear leaves the lock" || return 1
+    assert_eq "$$ $lead lead-a" "$after_clear_claim" "a /clear leaves the claim" || return 1
+    assert_eq "$$" "$after_resume_lock" "a /resume leaves the lock" || return 1
+    assert_eq "$$ $lead lead-a" "$after_resume_claim" "a /resume leaves the claim" || return 1
+    assert_eq "$$" "$after_child_lock" "another claude's end leaves the lock" || return 1
+    assert_eq "$$ $lead lead-a" "$after_child_claim" "another claude's end leaves the claim" || return 1
+    assert_not_exists "$meta_dir/session.lock" "the lead's end removes its launch's lock" || return 1
+    assert_eq "$$ $lead lead-a ended" "$after_end_claim" "the lead's end marks its claim ended" || return 1
 }
 
 # /clear and /resume end a conversation but not the claude that holds the
@@ -1149,7 +1169,7 @@ run_test test_force_overrides_live_lock
 run_test test_open_reads_the_lock_by_the_one_lock_rule
 run_test test_lock_cleaned_on_session_end
 run_test test_session_end_keeps_the_lock_for_a_child_that_inherited_the_contract
-run_test test_session_end_keeps_the_lock_when_the_parent_cannot_be_read
+run_test test_session_end_removes_the_lock_and_marks_the_lead_claim_ended
 run_test test_session_end_leaves_the_lock_a_forced_open_took
 run_test test_session_end_lead_clears_a_stale_lock_it_does_not_own
 run_test test_session_end_keeps_the_lock_for_clear_and_resume

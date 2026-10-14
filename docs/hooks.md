@@ -102,24 +102,101 @@ session fires its hooks — agent-team teammates (full claude processes with the
 top-level `SessionStart`, not in-process subagents), headless `claude -p` children,
 desktop conversations, a bare `claude` started in a session folder. The session's
 recorded conversation (`claude_session_id`) is a single slot, so exactly one of them
-may write it: the one `cs` launched. `cs` exports `CS_LEAD_PID` with the pid it hands
-to claude and Claude Code stamps every hook env with `CLAUDE_PID`, which the hook
-matches two ways, because `cs` launches two ways. The fresh-spawn arms `exec`, so
-claude carries `cs`'s own pid; the resume arm runs claude as a child — it needs the
-exit status to fall through to a fresh rebind when there is nothing to resume — so
-there `cs` is claude's parent. A context-limit fork and an in-process `/clear` keep
-the process either way. Environment cannot answer this on its own: children inherit
-exports, so a teammate carries `CS_LEAD_PID` while owning a different pid.
+may write it: the one `cs` launched (the lead). `cs` exports `CS_LEAD_PID` with the pid
+it hands to claude and Claude Code stamps every hook env with `CLAUDE_PID`. The
+fresh-spawn arms `exec`, so there claude carries `cs`'s own pid and the two are
+equal. The resume arm runs claude as a child, since it needs the exit status to fall
+through to a fresh rebind when there is nothing to resume, and a `CLAUDE_CODE_BIN`
+that forks claude rather than `exec`-ing it (`op run --`, a script without `exec`)
+puts claude below the launch pid on any arm. What the lead starts (a mod's process
+run, a `claude -p` from the Bash tool) sits below the launch pid as well and inherits
+every export, so neither the environment nor the process tree tells the lead from
+its children.
 
-`cs` says which way it launched in `CS_LEAD_IS_PARENT`: `1` on the one resume command
-that runs claude as its child, `0` on every other launch. A hook asks `ps` for the
-parent unless the value is `0`. After an `exec` launch `CS_LEAD_PID` is the lead
-claude's own pid, so there a claude that is a *direct* child of the lead claude (a
-mod's process run, a hook that `exec`-chains into `claude -p`) would pass for the
-lead if the parent counted; at `0` it does not, and neither does a `claude -p` run
-through the Bash tool, which is a grandchild under an intermediate shell. Nothing in
-cs spawns a direct child. A session started by a `cs` that did not export the value
-keeps the parent check, and with it this gap, until you relaunch it.
+Instead, the lead claims its launch. Every launch exports `CS_LEAD_CLAIM=1` beside
+`CS_LEAD_PID`, and under it, on every `SessionStart` source, session-start.sh
+writes `.cs/local/lead-pid` as `<CS_LEAD_PID> <CLAUDE_PID> <session_id>`
+(`cs_lead_claim`). The claude carrying the launch pid always claims. Any other claude
+claims only when `ps` shows the launch pid among its ancestors, and only while no
+live claude holds the claim or the holder is one it started. Reading the holder and
+writing the claim are one step under `.cs/local/lead-pid.mutex.lock`, so two claudes
+that start at once take turns. The lead's
+`SessionStart` runs before the lead can start anything, so the first claude under
+the launch to claim is the lead and keeps the claim while it lives; a claude the
+lead started before its own `SessionStart` ran (another plugin's `SessionStart` hook
+running `claude -p`) claims first and gives way when the lead's turn comes, and gives
+way too when the two claim at the same moment. A hook
+takes a claude as the lead (`cs_is_lead`) when `CLAUDE_PID` equals `CS_LEAD_PID` or
+the claim for this launch names `CLAUDE_PID`. A claim keyed by another launch pid
+counts for nothing, and every launch removes the file once it holds the session lock,
+before claude starts, so a claim cannot speak for a later launch that drew the same
+pid. A claim whose claude pid is not a positive number (`0`, `00`, `-1`), or whose
+line goes on past the conversation id with anything but a single `ended`, is no claim
+to any hook: it names no lead, shows no claude a guest, and a claude under the launch
+claims over it. A claim with no end mark that names no live claude (its claude died
+without a `SessionEnd`) holds nothing and shows no one a guest, so the lead claims over
+it. Only a regular file is a claim:
+a hook never follows a link in its place and writes neither through a link nor over
+a directory there, silently. A launch removes a link there; it refuses to open while
+a directory sits there, and names it, since cs does not remove a directory it did not
+make. The lead's `SessionEnd`, at an end other than `/clear` or `/resume`, marks the
+claim ended, `<CS_LEAD_PID> <CLAUDE_PID> <session_id> ended`, under the same lock
+(`cs_lead_claim_end`), and leaves it in place. Claude Code runs `SessionEnd` hooks
+while the lead still lives, and a claude another `SessionEnd` hook starts then (a
+`claude -p` that summarises the session) finds the claim naming a live claude it did
+not start and gives way. Claude Code cancels a `SessionEnd` hook that runs past its
+timeout, and a claude that hook started may outlive it, so that claude may start, or
+stop, after the lead has exited. Under an ended claim every claude that is not the lead shows as
+a guest whether the lead still lives or not, so it neither rebinds the recorded
+conversation nor takes an armed rotation, the queue digest or the attention flag.
+Once the lead has exited, a claude its hooks left running is no longer under the
+launch pid, so it cannot claim either. The fresh conversation the resume arm starts
+after a quick failure carries the launch pid and claims over the ended claim; behind a
+`CLAUDE_CODE_BIN` that forks claude that conversation runs as the launch pid's child
+and claims over it too, since the lead the claim names has exited. The next launch removes the file. A
+context-limit fork, an in-process `/clear` and a compaction keep the process, and the
+next start renews the claim under the conversation now running; a `/clear` or a
+`/resume` leaves the claim unchanged.
+
+The hooks take the first claude under the launch to claim for the lead, and that sets
+the contract for a `CLAUDE_CODE_BIN` wrapper: it must `exec` claude, or start exactly
+one claude. A claude session the wrapper runs before it `exec`s or starts the real one
+(a `claude -p` that tests a login, say) reaches its `SessionStart` while no claim stands
+and takes it. While that claude lives the launch has two leads: it rebinds
+`claude_session_id` to its own conversation, loads an armed rotation and raises the
+attention flag, and its end removes the session lock, so the real claude runs with no
+lock and the next `cs <name>` opens a duplicate without the collision menu. No hook can
+tell that claude from the real one.
+
+A session opened by a `cs` from before the claim carries no `CS_LEAD_CLAIM`, and an
+update can install these hooks while the session runs. Its hooks write and read no
+claim, so the claude carrying the launch pid is its only lead until the next
+`cs <name>`, and every other claude under the launch shows as a guest. On the exec
+arm that is every `claude -p` the lead runs: it cannot rebind the recorded
+conversation or remove the lock, and it takes neither the armed rotation nor the
+queue digest nor the attention flag. On the resume arm, or behind a
+`CLAUDE_CODE_BIN` that forks claude, the lead itself shows as a guest: no claude
+rebinds the recorded conversation or removes the lock at its end, a `/clear` loads
+no rotation, the digest stays unread, and its `Stop` raises no attention flag and
+bounces no dock. An armed rotation stays armed and unconsumed, so the next
+`cs <name>` offers it. Its hooks do none of the lead's other work either: its `Stop`
+runs no queue drain, no mail wake and no rotation nudge and gives no narrative
+reminder, and no hook arms the mailbox watch that wakes it when mail arrives. Its
+`SessionStart` sets no tab title (the tmux window or the terminal tab), and its
+`SessionEnd` does not hand the tmux window back. Behind a forking `CLAUDE_CODE_BIN`
+on a launch where claude replaces cs, an encrypted session's vault stays attached
+when the lead ends, until the next open detaches it; on the resume arm cs, still
+claude's parent, detaches it when claude exits.
+
+A claude under the launch that the claim does not name is a guest. A hook *shows*
+it to be one (`cs_is_shown_nested_child`) when the claim names another claude that
+is still alive, when the claim carries the end mark, or when the launch takes no claim and the
+claude does not carry the launch pid. Where no claim stands under a launch that takes claims, because the
+lead's `SessionStart` could not write one (git tracks a file under `.cs/local`) or
+`ps` could not show the lead was under the launch, no claude shows as a guest: what
+a guest must not take from the lead (the armed rotation, the once-only queue
+digest, the attention flag) stays with whichever claude asks, and what a guest must
+not remove (the lock) stays where it is.
 
 Each hook also asks git one question as it resolves its session: does it track a file
 in the directory that holds the queue, the mailbox and the rotation marker (`.cs/local`,
@@ -160,12 +237,13 @@ and refuses all three with exit 2, naming the file.
 Runs when Claude Code starts a session:
 - Logs session start (including source: `startup`, `resume`, `clear`, `compact`) to `.cs/local/session.log` (`.cs/private/session.log` in an [encrypted session](session-layout.md#encrypted-sessions), and nowhere while its vault is locked) and appends a `started` event to `.cs/timeline.jsonl`
 - On all sources: clears the statusline's attention marker (`.cs/local/attention`) — a fresh session is attended by definition — and, inside iTerm2 with shell integration installed, cancels any dock bounce the previous conversation left running (`CS_NO_ITERM2=1` disables)
-- On all sources, **for the launched conversation only** (`CLAUDE_PID` = `CS_LEAD_PID`, see above): rebinds `claude_session_id` in the machine-local `.cs/local/state` to the live conversation UUID from the hook input. Claude Code forks a new UUID when a conversation is continued past the context limit (the old transcript stays on disk), so the recorded binding can silently go stale and `cs` would resume the pre-fork conversation. Non-UUID session ids are ignored; each rebind is logged to `session.log`. Any other claude resolving the same session — teammate, `claude -p` child, desktop, walked-in — leaves the slot alone, so `cs <name>` always resumes the conversation that was opened and the `rotated` timeline lineage stays true
+- On all sources, for a claude `cs` launched under `CS_LEAD_CLAIM`: claims the launch in `.cs/local/lead-pid` (`cs_lead_claim`, see [How a hook finds its session](#how-a-hook-finds-its-session-cs-resolvesh)) before anything else asks which claude is the lead. It writes nothing while git tracks a file under `.cs/local`
+- On all sources, **for the launched conversation only** (`cs_is_lead`, after this start's claim): rebinds `claude_session_id` in the machine-local `.cs/local/state` to the live conversation UUID from the hook input. Claude Code forks a new UUID when a conversation is continued past the context limit (the old transcript stays on disk), so the recorded binding can silently go stale and `cs` would resume the pre-fork conversation. Non-UUID session ids are ignored; each rebind is logged to `session.log`. Any other claude resolving the same session — teammate, `claude -p` child, desktop, walked-in — leaves the slot alone, so `cs <name>` always resumes the conversation that was opened and the `rotated` timeline lineage stays true
 - On `startup`/`resume` only: configures `transfer.hideRefs`, and recovers autosaved changes from a crash of **this conversation only** — it reads just the current conversation's own ref (`refs/worktree/cs/session/<conversation-uuid>`), so a live sibling session's in-flight ref is never misread as a crash. It also renames its ref across a context-fork UUID rebind (a clean continuation), claims any pre-upgrade shared ref once via a compare-and-swap delete, and garbage-collects other conversations' refs older than 14 days. The whole-tree restore (`checkout <shadow ref> -- .`) is offered only when the snapshot's recorded base HEAD still matches the current HEAD; if HEAD has moved since the snapshot (a commit or rebase) or the snapshot predates base recording, it instead warns and points at per-file inspection — a blanket restore over diverged history would overwrite committed work
 - On `resume` only: injects dynamic context (last activity, recent commits, objective, up to 5 most recently active sibling sessions with their objectives, followed by the full `cs -msg <session> "<body>"` send form and its `--kind` values, which appear only when a sibling exists to send to; scope-prompt.sh's digest already carries inbound mail, so this block is the only place cs states the outbound form. The block asks Claude to raise an AskUserQuestion before starting work that belongs to a sibling's stated goal rather than merely sharing its vocabulary, and to offer both paths rather than push one; the bar sits high on purpose, since a routing prompt that fires on every overlap becomes a block nobody reads), and a per-actor digest of shared memory/narrative activity since this actor's `.cs/local/watermark` (grouped by git author; and, for each teammate narrative that grew since that watermark, committed or not, the added-section count and the line the new content starts on, taken from the first added hunk of a diff against the working tree, so the actor reads its own file in full and only those lines of the others; a narrative nobody has committed goes unmentioned, since nothing exists to measure it against, and the hook names uncommitted growth again on every resume until a commit carries it), then advances the watermark and stamps the day's date into `last_resumed`
 - In a feature worktree (when `task_branch` is in machine-local state): injects a Feature Worktree contract instructing Claude that integration and retirement both go through `/finish <feature>` in the base session, that retirement waits for this conversation to close, and never to merge the branch manually
 - Where the conversation genuinely starts clean — source `clear`, or source `startup` with `CS_FRESH_REBIND=1` — injects a Fresh Conversation notice so Claude treats the turn as a clean break. The source is part of the test because `CS_FRESH_REBIND` is exported before `exec` and outlives the launch: on its own it would tell a later `/compact` of a rebound session that its transcript is not loaded while it still is
-- When a `.cs/local/pending-handoff` marker is armed (by the `rotate` skill, or by the launch prompt's `r` answer): consumes it — flips the named `.cs/handoffs/` file's frontmatter to `consumed` (recording the new conversation UUID), removes the marker, and injects a Conversation Rotation preamble pointing Claude at the handoff to read first and asking it to reconcile its native task list with the handoff before executing: cs launches claude with `CLAUDE_CODE_TASK_LIST_ID` set to the session name, so the list survives `/clear` and the successor inherits it; a mirror into it would duplicate every carried item (mutually exclusive with the Fresh Conversation notice above, since a rotation is also a fresh start). The preamble also asks Claude, once the handoff's next step is done, to append a `## Successor report` to the handoff it consumed: what it had to look up again, re-derive, or found wrong, or `none`. Nothing commits that report (cs commits no session file; the user does, when they ask), and the rotate skill's prune skips a handoff with uncommitted changes or one git does not track, so a report is never deleted before it is recorded. The instruction rides only the `startup` and `clear` injections, so a compaction before the next step finishes drops it. Consumption requires source `startup` or `clear` **and** a handoff whose frontmatter still says `unconsumed`; a marker naming a spent or missing handoff is stale and is removed silently. On any other source the marker is left untouched, so a compaction or a context-limit fork between the rotate skill and `/clear` cannot eat a pending rotation. The same resolution decides the rebind's timeline label — `handoff` with the name, or `rebind`. A `claude` started from inside the session (a `claude -p` the lead's Bash tool ran) and a tmux teammate get no rotation and leave the marker and the handoff as they are: the rotation is the lead's. A `claude` whose parent `ps` cannot name counts as neither and keeps the rotation, and a `claude` shown to be the lead is never taken for a teammate, whatever its command line holds
+- When a `.cs/local/pending-handoff` marker is armed (by the `rotate` skill, or by the launch prompt's `r` answer): consumes it — flips the named `.cs/handoffs/` file's frontmatter to `consumed` (recording the new conversation UUID), removes the marker, and injects a Conversation Rotation preamble pointing Claude at the handoff to read first and asking it to reconcile its native task list with the handoff before executing: cs launches claude with `CLAUDE_CODE_TASK_LIST_ID` set to the session name, so the list survives `/clear` and the successor inherits it; a mirror into it would duplicate every carried item (mutually exclusive with the Fresh Conversation notice above, since a rotation is also a fresh start). The preamble also asks Claude, once the handoff's next step is done, to append a `## Successor report` to the handoff it consumed: what it had to look up again, re-derive, or found wrong, or `none`. Nothing commits that report (cs commits no session file; the user does, when they ask), and the rotate skill's prune skips a handoff with uncommitted changes or one git does not track, so a report is never deleted before it is recorded. The instruction rides only the `startup` and `clear` injections, so a compaction before the next step finishes drops it. Consumption requires source `startup` or `clear` **and** a handoff whose frontmatter still says `unconsumed`; a marker naming a spent or missing handoff is stale and is removed silently. On any other source the marker is left untouched, so a compaction or a context-limit fork between the rotate skill and `/clear` cannot eat a pending rotation. The same resolution decides the rebind's timeline label — `handoff` with the name, or `rebind`. A `claude` started from inside the session (a `claude -p` the lead's Bash tool ran) and a tmux teammate get no rotation and leave the marker and the handoff as they are: the rotation is the lead's. A `claude` whose parent `ps` cannot name counts as neither and keeps the rotation, and a `claude` shown to be the lead is never taken for a teammate, whatever its command line holds. Under a launch that takes no claim (no `CS_LEAD_CLAIM`), only the claude carrying the launch pid gets the rotation: on the resume arm or behind a forking `CLAUDE_CODE_BIN` the lead does not, and the marker and the handoff wait for the next `cs <name>`
 - On all sources: surfaces the same queue-inbox digest as scope-prompt.sh — unseen entries in `.cs/local/notifications.jsonl` (task counts, the last breaker trip if any), gated by the `.cs/local/notifications.seen` cursor so it's shown at most once. Whichever of the two injection points runs first (this hook fires once at session start/resume; scope-prompt.sh fires on every prompt) claims the surfacing and advances the cursor for the other. Shares the `_build_digest` jq recipe verbatim with scope-prompt.sh ; the recipe has not moved into `cs-shared.sh`, so an edit to one copy goes into the other as well. A `claude` started from inside the session, or a tmux teammate, is not shown the digest and does not move the cursor
 - Does NOT surface the cross-session mail digest: that lives only in scope-prompt.sh now (it fires on every prompt), so duplicating it here would double-inject the same unread bodies on every startup and resume
 - On all sources: names the current actor and its narrative file in the injected context, and states that the durable memory buckets are shared while only narratives are per-actor, so an entry naming someone else as the user was written by or for another actor. `.cs/memory/` is one store for every actor on a git-synced session, so a `type: user` entry written as an unconditional claim loads for all of them and reads as settled fact; a bare identity line is not enough, because a global instruction naming the right person was already in context and lost to such an entry. The actor precedence (`$CS_ACTOR`, then `.cs/local/identity`, then git `user.email`/`user.name`) is `cs_actor_raw` from `cs-shared.sh`, the same function `cs -whoami` runs; shelling out to `cs` instead would make the hook depend on `cs` being on `PATH`
@@ -200,7 +278,7 @@ Registered for three events. On `CwdChanged` it only re-arms the maildir watch a
 - The reason names the count and the senders — `Unread cross-session mail (2), new from "alice"` — so a woken session knows who is writing before it opens the mailbox. Each sender comes out of the same `jq` call that already reads the document's `.kind`, so naming costs no extra pass, and repeat senders collapse to one name. Each name is cut to 40 characters, anything in it outside letters, digits and `. _ @ : -` becomes `_`, and it is quoted, so a name that reads as words cannot run on into the instruction beside it. The clause says **new from** because the two halves describe different sets: the count covers every unread document, while the names come only from the ones this wake announces, since the discharge skip runs ahead of the read that would learn a sender. Naming every unread sender instead would cost one `jq` per unread document per turn end — what the scan is built to avoid, and what the wake ceiling makes ordinary rather than rare. A sender is the document's `.from`, falling back to `.actor` when `.from` is empty: `cs -msg` records `.from` as the sending session's name, which is empty for a send from a plain terminal, and jq's `//` fires on null but not on `""`
 - Fires once per arrival. `.cs/local/mail/woke` holds the filenames already discharged, meaning announced by a wake, written tmp-then-rename under a per-process name because both events write it and the idle one overlaps itself. Neither a count nor a newest-filename mark would work: unread drops to zero whenever `cs -msg` moves files to `cur/`, and filenames are not ordered by arrival
 - A run silenced by `CS_NO_MAIL_WAKE=1` or by an armed/draining queue records nothing, so the message still wakes once the gate lifts. An empty queue never gates, whatever `queue.state` records
-- Only the launched conversation wakes (the same `CS_LEAD_PID`/`CLAUDE_PID` test session-start.sh uses): a tmux teammate is a full claude with its own `Stop`, and N wakers on one maildir race to read it where the first `mv` wins
+- Only the launched conversation wakes (the same `cs_is_lead` test session-start.sh uses): a tmux teammate is a full claude with its own `Stop`, and N wakers on one maildir race to read it where the first `mv` wins
 - Bounded by `CS_MAIL_WAKE_MAX` (default 5) wakes, counted in `.cs/local/mail/wakes` and cleared by the next user prompt — nothing else caps two sessions volleying at each other
 
 On `Stop`, also:
@@ -225,6 +303,7 @@ Runs when Claude Code session ends:
 - Logs session end time and the end reason Claude Code sends (`clear`, `resume`, `logout`, `prompt_input_exit` or `other`; `missing` when the payload has none) and appends an `ended` event to `.cs/timeline.jsonl`
 - Deletes only the ending conversation's own shadow ref (`refs/worktree/cs/session/<conversation-uuid>`); a concurrent sibling's ref is left untouched
 - Cleans up `.cs/session.lock`, but only one this launch owns. Only `cs` writes a lock, so a hook that resolved by walking the directory belongs to another front end: closing a desktop conversation on a directory a CLI session is live in would otherwise strip that session's lock, letting `cs <name>` open a duplicate with no collision menu. A walked-in hook still clears a lock whose process is gone, so a crashed session is never left locked out. A `/clear` or `/resume` keeps the lock, because the claude that holds it keeps running
+- At the launched conversation's end (not a `/clear` or `/resume`, which leave it unchanged), marks the lead's claim (`.cs/local/lead-pid`) ended and leaves it in place: this hook runs while the lead still lives, and the ended claim keeps a claude that another `SessionEnd` hook starts a guest, before the lead exits and after. The next launch removes it
 - For a session `cs -encrypt` built (`.cs/local/vault` names its container), an end other than `/clear` or `/resume` in the launched conversation leaves a background waiter (`.cs/local/vault-waiter.pid`). Once that Claude Code exits, the waiter detaches the vault with a plain `hdiutil detach` (`.cs/local/vault-detach.pid` while it runs), unless the session reopened or a pid in `.cs/local/vault-holders` is still alive. See [Encrypting a session with cs -encrypt](session-layout.md#encrypting-a-session-with-cs--encrypt)
 - Regenerates the sessions index (`<sessions-root>/index.md`) — a table of every session's status, objective, and created date. Written only where sessions actually live: the session's own directory must sit under the sessions root, compared physically on both sides so a `$HOME` reached through a symlink still matches. An adopted session, whose directory is an unrelated project path, writes no index beside that project
 - Inside tmux, for the launched conversation only (`cs_is_lead`): releases this pane's `@cs_session` and renames the window, and the iTerm tab, after the cs sessions still running there; with none left the window names itself again (`automatic-rename on`). A `claude -p` run inside the session inherits `TMUX_PANE`, so without the lead check its end would release the lead's claim. A `/clear` ends here too, and its SessionStart claims the pane back. If cs's launch exits without reaching claude (a cancelled resume prompt), its cleanup trap releases the pane the same way

@@ -176,6 +176,13 @@ if _log_dir=$(cs_private_dir "$META_DIR"); then SESSION_LOG="$_log_dir/session.l
 cs_append_inside "$SESSION_LOG" printf '%s\n' "$(date '+%Y-%m-%d %H:%M:%S') - Session started (source: $SOURCE, ID: $SESSION_ID)" \
     "  Working directory: $CWD" "" || true
 
+# The lead claims its launch before anything below asks which claude is the
+# lead (cs_lead_claim, cs-resolve.sh). On every source: a /clear or a
+# compaction renews the claim under the conversation now running.
+if [ -n "$LOCAL_DIR" ] && command -v cs_lead_claim >/dev/null 2>&1; then
+    cs_lead_claim "$LOCAL_DIR" "$SESSION_ID" || true
+fi
+
 
 # Auto-pull and crash recovery only on fresh start or resume
 # Skip on clear/compact since the session is already running
@@ -473,9 +480,10 @@ UUID_RE='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F
 # slot leaves `cs <name>` resuming a conversation nobody opened, and stamps the
 # timeline with a lineage that never happened.
 #
-# cs_is_lead (cs-resolve.sh) says which claude is the launch; the resume arm's
+# cs_is_lead (cs-resolve.sh) says which claude is the launch: the one carrying
+# the launch pid, or the one the claim made above names (the resume arm's
 # claude is cs's child because it needs the exit status to fall through to a
-# fresh rebind when there is nothing to resume. Without the library nothing is
+# fresh rebind when there is nothing to resume). Without the library nothing is
 # the lead: declining the slot is the safe side.
 IS_LEAD=0
 if command -v cs_is_lead >/dev/null 2>&1 && cs_is_lead; then

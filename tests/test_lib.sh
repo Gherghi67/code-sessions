@@ -35,8 +35,10 @@ unset CS_CLAUDE_DIR CLAUDE_ENV_FILE 2>/dev/null || true
 # CLAUDE_PID and CS_LEAD_PID name the claude a hook fires for and the cs that
 # launched it: inherited, a hook under test reads the caller's own process, so
 # a suite run by a tmux teammate sees a teammate and one run by a lead sees
-# the lead. A test that models either sets it itself.
-unset CLAUDE_PID CS_LEAD_PID 2>/dev/null || true
+# the lead. A test that models either sets it itself. CS_LEAD_CLAIM says the
+# launch takes the lead's claim; inherited from a lead's launch, it would turn
+# the claim on for a test that models a launch without it.
+unset CLAUDE_PID CS_LEAD_PID CS_LEAD_CLAIM 2>/dev/null || true
 
 # --- State ---
 TESTS_RUN=0
