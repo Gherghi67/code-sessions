@@ -962,6 +962,9 @@ migrate_session() {
     if [ "$tracked_tree_is_ours" = 1 ] && [ "$repair" = all ]; then
         setup_merge_attributes "$session_dir"
         ensure_cs_gitignore_entries "$session_dir"
+        # The one caller that leaves the appended rules uncommitted, so the
+        # one that says what they are.
+        _explain_gitignore_additions "$session_dir"
     fi
 
     # Phase 1: Structural migration (flat layout -> .cs/ directory)
