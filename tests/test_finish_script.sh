@@ -313,18 +313,172 @@ test_report_is_ready_to_retire_over_uncommitted_bookkeeping() {
     assert_eq "ready" "$(key "$out" retire)" "ready despite the uncommitted bookkeeping" || return 1
 }
 
-test_report_after_a_squash_landing_gives_the_squash_notice() {
+# Squash-shaped landing: the branch's content arrives on the base as one
+# unrelated commit, so the captured commit is never an ancestor.
+squash_land() {  # base task
+    (cd "$CS_SESSIONS_ROOT/$1" && git merge -q --squash "cs/$2" >/dev/null && git commit -q -m "$2 (#7)")
+}
+
+report_for() {  # base task sha
+    CLAUDE_SESSION_DIR="$CS_SESSIONS_ROOT/$1" CLAUDE_SESSION_NAME="$1" bash "$FINISH" report "$1" "$2" "$3" 2>&1
+}
+
+# A MERGED PR for cs/fix-auth whose head is <head-oid>, with no checks.
+stub_merged_pr() {  # head-oid
+    stub_gh_routes '[{"number":7,"state":"MERGED","url":"https://github.com/example-org/example-repo/pull/7","mergeCommit":{"oid":"abc123"},"mergedAt":"2026-09-12T09:00:00Z","baseRefName":"main","headRefOid":"'"$1"'","headRepositoryOwner":{"login":"example-org"},"isCrossRepository":false}]' \
+        '{"check_runs":[]}' '{"statuses":[]}'
+}
+
+# The tree is the evidence: a branch whose every changed path is byte for
+# byte on the base loses nothing but history when it goes, so no PR at all
+# (a local squash, a cherry-pick) is no reason to keep it. The retire entry
+# then takes it under --force.
+test_report_after_a_squash_landing_with_no_pr_is_content_landed() {
     local sha out
     sha=$(finish_fixture myproj fix-auth)
     stub_gh '[]'
-    # Squash-shaped landing: the content arrives as an unrelated commit, F is not an ancestor.
-    (cd "$CS_SESSIONS_ROOT/myproj" && git merge -q --squash cs/fix-auth >/dev/null && git commit -q -m "feature (#7)")
-    out=$(CLAUDE_SESSION_DIR="$CS_SESSIONS_ROOT/myproj" CLAUDE_SESSION_NAME="myproj" \
-        bash "$FINISH" report myproj fix-auth "$sha" 2>&1)
+    squash_land myproj fix-auth
+    out=$(report_for myproj fix-auth "$sha")
     assert_eq "no" "$(key "$out" landed)" "F is not an ancestor after a squash" || return 1
-    assert_eq "not-landed" "$(key "$out" retire)" "a squash landing is not retirable on ancestry" || return 1
+    assert_eq "none" "$(key "$out" pr_state)" "there is no PR" || return 1
+    assert_eq "content-landed" "$(key "$out" retire)" "every changed path is on the base" || return 1
+    assert_eq "1" "$(key "$out" retire_paths_checked)" "the one path the branch changed was checked" || return 1
+    assert_output_contains "$out" "retire_note: cs/fix-auth is not an ancestor of base, but every path it changed is identical on base HEAD; retire with --force" \
+        "the note says why force is safe" || return 1
+    out=$("$CS_BIN" myproj -retire-feature fix-auth "$sha" --force 2>&1) || { echo "  FAIL: retire refused: $out"; return 1; }
+    assert_eq "retired fix-auth $sha" "$out" "the entry retires it under --force" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/myproj@fix-auth" "the worktree is gone" || return 1
+}
+
+# Today's PR evidence (MERGED, head == captured sha) and the content check
+# agree on a clean squash landing.
+test_report_content_landed_with_a_pr_head_equal_to_the_capture() {
+    local sha out
+    sha=$(finish_fixture myproj fix-auth)
+    stub_merged_pr "$sha"
+    squash_land myproj fix-auth
+    out=$(report_for myproj fix-auth "$sha")
+    assert_eq "MERGED" "$(key "$out" pr_state)" "the PR merged" || return 1
+    assert_eq "$sha" "$(key "$out" pr_head_oid)" "its head is the capture" || return 1
+    assert_eq "content-landed" "$(key "$out" retire)" "and the content is on the base" || return 1
+}
+
+# The PR's head is not the capture (the PR landed through other commits), but
+# every path the branch changed is on the base: the PR head says nothing the
+# tree does not settle.
+test_report_content_landed_whatever_the_pr_head_says() {
+    local sha out
+    sha=$(finish_fixture myproj fix-auth)
+    stub_merged_pr a1a1
+    squash_land myproj fix-auth
+    out=$(report_for myproj fix-auth "$sha")
+    assert_eq "a1a1" "$(key "$out" pr_head_oid)" "the PR head differs from the capture" || return 1
+    assert_eq "content-landed" "$(key "$out" retire)" "the content check decides" || return 1
+    assert_eq "1" "$(key "$out" retire_paths_checked)" "one path checked" || return 1
+}
+
+# One path the base holds differently keeps the refusal, and the refusal
+# names it. The base carries the other path exactly as the branch has it.
+test_report_refuses_a_branch_with_one_path_not_on_the_base() {
+    local sha out wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    finish_fixture myproj fix-auth > /dev/null
+    echo "second" > "$wt/second.txt"
+    (cd "$wt" && git add second.txt && git commit -q -m "second")
+    sha=$(git -C "$wt" rev-parse HEAD)
+    stub_gh '[]'
+    (cd "$CS_SESSIONS_ROOT/myproj" && echo "feature work" > feature.txt && echo "not the branch's" > second.txt \
+        && git add feature.txt second.txt && git commit -q -m "partial landing")
+    out=$(report_for myproj fix-auth "$sha")
+    assert_eq "not-landed" "$(key "$out" retire)" "a path that differs is not landed" || return 1
     assert_output_contains "$out" "retire_note: cs/fix-auth is not an ancestor of base (a squash or rebase landing); retire with --force only on a MERGED pr_state" \
         "the note says when force is legitimate" || return 1
+    assert_eq "1 of 2" "$(key "$out" retire_paths_differing)" "one of the two changed paths differs" || return 1
+    assert_eq "second.txt" "$(printf '%s\n' "$out" | sed -n 's/^retire_differs: //p')" "and only it is named" || return 1
+}
+
+# The base edited the landed path again after the squash: the branch's
+# version is no longer what the base holds, so the check refuses. The PR
+# evidence (MERGED, head == capture) stays for the skill's own --force arm.
+test_report_refuses_a_path_the_base_edited_after_the_landing() {
+    local sha out
+    sha=$(finish_fixture myproj fix-auth)
+    stub_merged_pr "$sha"
+    squash_land myproj fix-auth
+    (cd "$CS_SESSIONS_ROOT/myproj" && echo "edited on the base" >> feature.txt && git commit -q -am "edit")
+    out=$(report_for myproj fix-auth "$sha")
+    assert_eq "not-landed" "$(key "$out" retire)" "the base's later edit means the content differs" || return 1
+    assert_eq "1 of 1" "$(key "$out" retire_paths_differing)" "the one path differs" || return 1
+    assert_eq "feature.txt" "$(key "$out" retire_differs)" "and is named" || return 1
+    assert_eq "MERGED" "$(key "$out" pr_state)" "the PR state still reports" || return 1
+    assert_eq "$sha" "$(key "$out" pr_head_oid)" "with the head the skill compares" || return 1
+}
+
+# A deletion lands when the path is absent on the base too; a rename is a
+# deletion and an addition, both checked.
+test_report_content_landed_counts_a_deleted_and_a_renamed_path() {
+    local sha out base="$CS_SESSIONS_ROOT/myproj" wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    create_test_session_with_git myproj > /dev/null
+    git -C "$base" remote add origin "git@github.com:example-org/example-repo.git"
+    (cd "$base" && echo gone > gone.txt && echo moved > old-name.txt && git add gone.txt old-name.txt && git commit -q -m "base files")
+    cs_launch "myproj@fix-auth"
+    (cd "$wt" && git rm -q gone.txt && git mv old-name.txt new-name.txt && git commit -q -m "delete and rename")
+    sha=$(git -C "$wt" rev-parse HEAD)
+    stub_gh '[]'
+    squash_land myproj fix-auth
+    out=$(report_for myproj fix-auth "$sha")
+    assert_eq "content-landed" "$(key "$out" retire)" "the deletion and the rename landed" || return 1
+    assert_eq "3" "$(key "$out" retire_paths_checked)" "gone.txt, old-name.txt and new-name.txt" || return 1
+    # The same branch against a base that kept the deleted file.
+    (cd "$base" && echo gone > gone.txt && git add gone.txt && git commit -q -m "restore")
+    out=$(report_for myproj fix-auth "$sha")
+    assert_eq "not-landed" "$(key "$out" retire)" "a deleted path the base still holds differs" || return 1
+    assert_eq "gone.txt" "$(key "$out" retire_differs)" "and is named" || return 1
+}
+
+# The same bytes with another mode are not the branch's content.
+test_report_refuses_a_mode_change_the_base_lacks() {
+    local sha out base="$CS_SESSIONS_ROOT/myproj" wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    create_test_session_with_git myproj > /dev/null
+    git -C "$base" remote add origin "git@github.com:example-org/example-repo.git"
+    (cd "$base" && printf '#!/bin/sh\n' > run.sh && git add run.sh && git commit -q -m "script")
+    cs_launch "myproj@fix-auth"
+    (cd "$wt" && chmod +x run.sh && git commit -q -am "make it executable")
+    sha=$(git -C "$wt" rev-parse HEAD)
+    stub_gh '[]'
+    (cd "$base" && git commit -q --allow-empty -m "unrelated")
+    out=$(report_for myproj fix-auth "$sha")
+    assert_eq "not-landed" "$(key "$out" retire)" "the mode change is not on the base" || return 1
+    assert_eq "run.sh" "$(key "$out" retire_differs)" "and is named" || return 1
+}
+
+# The refusal names ten paths at most and counts the rest.
+test_report_names_at_most_ten_differing_paths() {
+    local sha out i wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    finish_fixture myproj fix-auth > /dev/null
+    for i in 01 02 03 04 05 06 07 08 09 10 11 12; do echo "$i" > "$wt/p$i.txt"; done
+    (cd "$wt" && git add p*.txt && git commit -q -m "twelve")
+    sha=$(git -C "$wt" rev-parse HEAD)
+    stub_gh '[]'
+    (cd "$CS_SESSIONS_ROOT/myproj" && git commit -q --allow-empty -m "unrelated")
+    out=$(report_for myproj fix-auth "$sha")
+    assert_eq "13 of 13" "$(key "$out" retire_paths_differing)" "every changed path differs" || return 1
+    assert_eq "feature.txt p01.txt p02.txt p03.txt p04.txt p05.txt p06.txt p07.txt p08.txt p09.txt" \
+        "$(printf '%s\n' "$out" | sed -n 's/^retire_differs: //p' | tr '\n' ' ' | sed 's/ $//')" "the first ten are named" || return 1
+    assert_eq "3" "$(key "$out" retire_differs_more)" "the rest are counted" || return 1
+}
+
+# A tip past the captured commit holds work no landing carried; the entry
+# refuses it under --force, so the report says what to do instead.
+test_report_content_landed_waits_for_commits_after_the_capture() {
+    local sha out wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    sha=$(finish_fixture myproj fix-auth)
+    stub_gh '[]'
+    squash_land myproj fix-auth
+    (cd "$wt" && git commit -q --allow-empty -m "after capture")
+    out=$(report_for myproj fix-auth "$sha")
+    assert_output_contains "$out" "retire: 1 commit(s) on cs/fix-auth after the captured commit are not integrated; run /finish fix-auth again before retiring" \
+        "the later commit is named before any retire" || return 1
+    assert_output_not_contains "$out" "content-landed" "content-landed is not claimed" || return 1
 }
 
 run_test test_prepare_in_feature_session_hands_off
@@ -430,6 +584,14 @@ run_test test_prepare_skips_the_lookup_for_a_non_github_origin
 run_test test_report_after_a_local_integrate_gives_the_retire_line
 run_test test_report_with_an_integrated_tip_gives_the_plain_retire_line
 run_test test_report_is_ready_to_retire_over_uncommitted_bookkeeping
-run_test test_report_after_a_squash_landing_gives_the_squash_notice
+run_test test_report_after_a_squash_landing_with_no_pr_is_content_landed
+run_test test_report_content_landed_with_a_pr_head_equal_to_the_capture
+run_test test_report_content_landed_whatever_the_pr_head_says
+run_test test_report_refuses_a_branch_with_one_path_not_on_the_base
+run_test test_report_refuses_a_path_the_base_edited_after_the_landing
+run_test test_report_content_landed_counts_a_deleted_and_a_renamed_path
+run_test test_report_refuses_a_mode_change_the_base_lacks
+run_test test_report_names_at_most_ten_differing_paths
+run_test test_report_content_landed_waits_for_commits_after_the_capture
 
 report_results
