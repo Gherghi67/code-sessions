@@ -218,6 +218,7 @@ fi
 # The user is back: drop the statusline's attention marker before any
 # other gate (slash commands and short prompts clear it too). A directory git
 # tracks keeps the marker as git has it (cs_local_dir).
+# Any claude's prompt clears it, a guest's or a teammate's; only the lead raises it.
 [ -n "${CLAUDE_SESSION_META_DIR:-}" ] && _attention_dir=$(cs_local_dir "$CLAUDE_SESSION_META_DIR") \
     && rm -f "$_attention_dir/attention" 2>/dev/null
 
