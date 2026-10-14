@@ -5012,8 +5012,14 @@ mod tests {
         git_in(&base, &["init", "-q"]);
         git_in(&base, &["add", "src", ".gitignore"]);
         git_in(&base, &["commit", "-qm", "seed"]);
-        let wt = root.join("proj@task");
-        git_in(&base, &["worktree", "add", "-q", wt.to_str().unwrap(), "-b", "cs/task"]);
+        feature_worktree(root, "task")
+    }
+
+    /// Another worktree session `proj@<task>` of the base `worktree_session`
+    /// made under `root`.
+    fn feature_worktree(root: &std::path::Path, task: &str) -> std::path::PathBuf {
+        let wt = root.join(format!("proj@{task}"));
+        git_in(&root.join("proj"), &["worktree", "add", "-q", wt.to_str().unwrap(), "-b", &format!("cs/{task}")]);
         std::fs::create_dir_all(wt.join(".cs/local")).unwrap();
         wt
     }
@@ -5021,15 +5027,27 @@ mod tests {
     /// The delete confirm for `proj@task`, rendered: the text of each popup
     /// row from the row holding `first` on, without the popup's borders.
     fn delete_confirm_rows(root: &std::path::Path, width: u16, height: u16, first: &str) -> Vec<String> {
+        delete_confirm_rows_of(root, &["proj@task"], width, height, first)
+    }
+
+    /// The delete confirm for the sessions `names` (one: `d` on it; more:
+    /// each marked, then `D`), rendered: the text of each popup row from the
+    /// row holding `first` on, without the popup's borders.
+    fn delete_confirm_rows_of(root: &std::path::Path, names: &[&str], width: u16, height: u16, first: &str) -> Vec<String> {
         let _guard = crate::session::test_root::scoped(root.to_path_buf());
         let mut app = App::new(crate::session::scan_sessions());
-        let pos = app.filtered.iter().position(|&i| app.sessions[i].name == "proj@task").unwrap();
-        app.table_state.select(Some(pos));
-        app.mode = Mode::SessionMenu;
-        app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+        if let [name] = names {
+            let pos = app.filtered.iter().position(|&i| app.sessions[i].name == *name).unwrap();
+            app.table_state.select(Some(pos));
+            app.mode = Mode::SessionMenu;
+            app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+        } else {
+            app.marked_sessions.extend(names.iter().map(|n| n.to_string()));
+            app.handle_key(KeyEvent::from(KeyCode::Char('D')));
+        }
         let rows = rows_at(&mut app, width, height);
         let top = rows.iter().position(|r| r.contains(first)).unwrap_or_else(|| panic!("no row holds {first:?}:\n{}", rows.join("\n")));
-        let left = rows[top].chars().position(|c| c == first.chars().next().unwrap()).unwrap();
+        let left = rows[top][..rows[top].find(first).unwrap()].chars().count();
         rows[top..]
             .iter()
             .map(|r| r.chars().skip(left).take_while(|&c| c != '\u{2502}').collect::<String>().trim_end().to_string())
@@ -5176,6 +5194,118 @@ mod tests {
             ]
         );
         assert!(rows[6].starts_with("[y] Confirm"), "the key hint stays on screen: {rows:?}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A 40-character worktree session name under the `worktree_session` base.
+    const LONG_TASK: &str = "abcdefghijklmnopqrstuvwxyz012345678";
+
+    // Every line of the delete confirm takes one row, the question naming
+    // the session and the listing's header included: one wider than the
+    // popup is shortened in the middle, so the grant and the key hint stay
+    // on screen for a long session name. At 80 columns the popup holds 38,
+    // at 120 it holds 58.
+    #[test]
+    fn delete_confirm_gives_each_line_one_row_for_a_long_session_name() {
+        let root = std::env::temp_dir().join(format!("cs-ui-del-name-{}", std::process::id()));
+        worktree_session(&root);
+        let wt = feature_worktree(&root, LONG_TASK);
+        let name = format!("proj@{LONG_TASK}");
+        assert_eq!(name.chars().count(), 40, "fixture: a 40-character session name");
+        for file in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(wt.join(file), "").unwrap();
+        }
+
+        let rows = delete_confirm_rows_of(&root, &[&name], 80, 24, "Delete session");
+        assert_eq!(
+            rows[..10],
+            [
+                "Delete session 'pro…tuvwxyz012345678'?",
+                "This cannot be undone.",
+                "",
+                "Also deletes 3 file…it does not track:",
+                "    a.txt",
+                "    b.txt",
+                "    c.txt",
+                "",
+                "[D] Delete those files too: no",
+                "",
+            ]
+        );
+        assert!(rows[10].starts_with("[y] Confirm"), "the key hint stays on screen at 80x24: {rows:?}");
+
+        let rows = delete_confirm_rows_of(&root, &[&name], 120, 40, "Delete session");
+        assert_eq!(
+            rows[..10],
+            [
+                "Delete session 'proj@abcdefghijklmnopqrstuvwxyz012345678'?",
+                "This cannot be undone.",
+                "",
+                "Also deletes 3 files git does not track:",
+                "    a.txt",
+                "    b.txt",
+                "    c.txt",
+                "",
+                "[D] Delete those files too: no",
+                "",
+            ]
+        );
+        assert!(rows[10].starts_with("[y] Confirm"), "the key hint stays on screen at 120x40: {rows:?}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    // The batch delete confirm gives each line one row too: the list of
+    // names and a warning naming its session are shortened in the middle.
+    // At 80 columns the popup holds 42, at 120 it holds 64.
+    #[test]
+    fn batch_delete_confirm_gives_each_line_one_row_for_long_session_names() {
+        let root = std::env::temp_dir().join(format!("cs-ui-batch-name-{}", std::process::id()));
+        worktree_session(&root);
+        let wt = feature_worktree(&root, LONG_TASK);
+        feature_worktree(&root, "bbcdefghijklmnopqrstuvwxyz012345678");
+        for file in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(wt.join(file), "").unwrap();
+        }
+        let names = [format!("proj@{LONG_TASK}"), "proj@bbcdefghijklmnopqrstuvwxyz012345678".to_string()];
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+
+        let rows = delete_confirm_rows_of(&root, &names, 80, 24, "Delete 2 sessions?");
+        assert_eq!(
+            rows[..11],
+            [
+                "Delete 2 sessions?",
+                "proj@abcdefghijklmnop…pqrstuvwxyz012345678",
+                "",
+                "proj@abcdefghijklmnop… git does not track:",
+                "    a.txt",
+                "    b.txt",
+                "    c.txt",
+                "",
+                "[D] Delete those files too: no",
+                "",
+                "This cannot be undone.",
+            ]
+        );
+        assert!(rows[11].starts_with("[y] Confirm"), "the key hint stays on screen at 80x24: {rows:?}");
+
+        let rows = delete_confirm_rows_of(&root, &names, 120, 40, "Delete 2 sessions?");
+        assert_eq!(
+            rows[..11],
+            [
+                "Delete 2 sessions?",
+                "proj@abcdefghijklmnopqrstuvwxyz0…efghijklmnopqrstuvwxyz012345678",
+                "",
+                "proj@abcdefghijklmnopqrstuvwxyz0…tes 3 files git does not track:",
+                "    a.txt",
+                "    b.txt",
+                "    c.txt",
+                "",
+                "[D] Delete those files too: no",
+                "",
+                "This cannot be undone.",
+            ]
+        );
+        assert!(rows[11].starts_with("[y] Confirm"), "the key hint stays on screen at 120x40: {rows:?}");
         std::fs::remove_dir_all(&root).ok();
     }
 }
