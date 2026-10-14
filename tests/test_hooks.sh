@@ -1322,6 +1322,9 @@ session_start_setup() {
     # a child claude or a walked-in front end override CLAUDE_PID inline.
     export CS_LEAD_PID=$$
     export CLAUDE_PID=$$
+    # The launch is this cs's, which takes the lead's claim, so a child claude
+    # cs's resume arm runs is the lead once its SessionStart claims.
+    export CS_LEAD_CLAIM=1
     # test_lib scopes TMUX and the title device at source time; the title
     # tests read the escape from a file of their own.
     export CS_TITLE_TTY="$TEST_TMPDIR/title-tty"
