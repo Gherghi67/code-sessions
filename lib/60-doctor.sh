@@ -218,24 +218,25 @@ _doctor_check_iterm2() {
 
 # One row per session `cs <name> --remote` serves or served: cs records the
 # server's pid in .cs/local/remote.pid, and a process it starts beside the
-# server removes the file once the server exits. A file whose pid is not
-# running means that process never got to (it was killed, or the machine
-# restarted). The doctor removes such a file and says so.
+# server removes the file once the server exits. A file whose pid no longer
+# runs that server (_remote_server_pid) means that process never got to (it
+# was killed, or the machine restarted), and the pid is gone or belongs to
+# another program by now. The doctor removes such a file and says so.
 _doctor_check_remote() {
     local f meta name pid
     for f in "$SESSIONS_ROOT"/*/.cs/local/remote.pid; do
         [ -e "$f" ] || continue
         meta="${f%/local/remote.pid}"
         name="$(basename "$(dirname "$meta")")"
-        if pid=$(_remote_server_pid "$meta"); then
+        if pid=$(_remote_server_pid "$meta" "$name"); then
             _doctor_ok "Remote: $name is served by claude remote-control (PID $pid)"
             continue
         fi
         pid=$(head -n 1 "$f" 2>/dev/null | tr -d '[:space:]') || pid=""
         if rm -f "$f" 2>/dev/null && [ ! -e "$f" ]; then
-            _doctor_warn "Remote: $name's .cs/local/remote.pid named PID ${pid:-(none)}, which is not running, and nothing removed it when that server ended; removed it now."
+            _doctor_warn "Remote: $name's .cs/local/remote.pid named PID ${pid:-(none)}, which is no longer $name's claude remote-control server, and nothing removed it when that server ended; removed it now."
         else
-            _doctor_warn "Remote: $name's .cs/local/remote.pid named PID ${pid:-(none)}, which is not running, and could not be removed: $f"
+            _doctor_warn "Remote: $name's .cs/local/remote.pid named PID ${pid:-(none)}, which is no longer $name's claude remote-control server, and could not be removed: $f"
         fi
     done
 }

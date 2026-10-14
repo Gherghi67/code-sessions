@@ -697,7 +697,7 @@ cmd_live() {
         # A session cs <name> --remote serves: the server is no conversation
         # Claude Code advertises, so the agent column says remote and the
         # status leads with the server's pid.
-        if spid="$(_remote_server_pid "$meta")"; then
+        if spid="$(_remote_server_pid "$meta" "$name")"; then
             agent="remote"
             status="remote-control PID $spid${status:+ · $status}"
         fi

@@ -700,7 +700,7 @@ fn read_session(path: &Path, secret_counts: &HashMap<String, u32>) -> Session {
         .map(|f| parse_modified(f))
         .unwrap_or((None, None));
     let liveness = match read_lock_pid(&meta_dir) {
-        Some(lock) => match read_remote_pid(&meta_dir) {
+        Some(lock) => match read_remote_pid(&meta_dir, &name) {
             Some(server) => Liveness::Served { lock, server },
             None => Liveness::Locked(lock),
         },
@@ -1363,12 +1363,27 @@ fn read_lock_pid(meta_dir: &Path) -> Option<u32> {
 }
 
 /// The pid in `.cs/local/remote.pid`, which `cs <name> --remote` writes for
-/// the `claude remote-control` server it runs, while that process is alive.
-/// The twin of `_remote_server_pid` in lib/76-remote.sh.
-fn read_remote_pid(meta_dir: &Path) -> Option<u32> {
+/// the `claude remote-control` server it runs, while that pid runs
+/// `remote-control --name <name>`. A file a server's release never removed
+/// can name a pid another program has taken since, so a live pid alone is not
+/// enough. The twin of `_remote_server_pid` in lib/76-remote.sh.
+fn read_remote_pid(meta_dir: &Path, name: &str) -> Option<u32> {
     let content = fs::read_to_string(meta_dir.join("local/remote.pid")).ok()?;
     let pid = content.trim().parse::<u32>().ok()?;
-    if is_pid_alive(pid) { Some(pid) } else { None }
+    if pid == 0 || pid > i32::MAX as u32 {
+        return None;
+    }
+    let o = std::process::Command::new("ps")
+        .args(["-ww", "-o", "args=", "-p", &pid.to_string()])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !o.status.success() {
+        return None;
+    }
+    // Padded on both sides, so demo does not match demo-2.
+    let args = format!(" {} ", String::from_utf8_lossy(&o.stdout).trim_end());
+    args.contains(&format!(" remote-control --name {name} ")).then_some(pid)
 }
 
 /// True when a process with `pid` is alive on this machine, via `kill -0`.
