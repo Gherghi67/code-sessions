@@ -104,8 +104,9 @@ Left behind, and said so: an encrypted session, a session whose folder is
 there but cannot be read, a feature worktree git does not list or whose base
 is not copied, anything whose name code-sessions already uses for something
 else, and a name whose rename in the profile (.rename-profile-session/) has
-not finished. A session whose folder is gone (nothing at its link's target)
-is left too, as a note rather than a problem, since cs cannot open it either,
+not finished or left a record that cannot be read. A session whose folder is
+gone (nothing at its link's target) is left too, as a note rather than a
+problem, since cs cannot open it either,
 and so is each of its features whose folder is gone too; its Claude
 conversations and prompt history still come, under the same names, as
 history. --all ends with a line per session and the count of problems.
