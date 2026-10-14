@@ -3439,9 +3439,9 @@ test_keychain_set_round_trips_a_multiline_quoted_value() {
         || { echo "  FAIL: a multi-line value with quotes and a backslash did not read back byte-exact"; return 1; }
 }
 
-# `security -i` reads one command per line into a 4096-byte buffer, so a line
-# runs whole only up to 4095 bytes; the rest of a longer line is read as the
-# next command. The store line for account "tester" and secret BIG of
+# `security -i` reads one command per line into a 4096-byte buffer: the rest
+# of a line over 4095 bytes is read as the next command, and cs sends none
+# over 4094. The store line for account "tester" and secret BIG of
 # test-session is 37 fixed bytes, the quoted account (8) and service
 # "cs:test-session:BIG" (21), and two hex digits per value byte:
 # 66 + 2 * 2014 = 4094 fits, 66 + 2 * 2015 = 4096 does not. A value over the
