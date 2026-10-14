@@ -218,6 +218,23 @@ test_tag_list_bare_counts_across_sessions() {
     assert_output_contains "$output" "infra (1)" "infra counted once" || return 1
 }
 
+# .cs/README.md is tracked, so a clone chooses its tags, and cs checks a tag
+# only when it writes one. A tag can carry a terminal escape: a raw ESC or BEL
+# byte, or backslash text echo -e would turn into one. Both listings print it
+# as a plain name, each character a plain name lacks replaced by _.
+test_tag_list_prints_a_tag_a_clone_chose_as_a_plain_name() {
+    unset CLAUDE_SESSION_NAME CLAUDE_SESSION_DIR CLAUDE_SESSION_META_DIR
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m output
+    _session_with_readme "cloned" "tags: [ok, $bad]" >/dev/null
+    output=$("$CS_BIN" -tag list cloned 2>&1) || true
+    assert_eq "ok
+$shown" "$output" "the session's listing prints the tag as a plain name" || return 1
+    assert_no_escape_bytes "$output" "no escape byte reaches the terminal from the session's listing" || return 1
+    output=$("$CS_BIN" -tag list 2>&1) || true
+    assert_output_contains "$output" "^$shown (1)$" "the count prints the tag as a plain name" || return 1
+    assert_no_escape_bytes "$output" "no escape byte reaches the terminal from the count" || return 1
+}
+
 test_tag_list_bare_in_session_shows_all_sessions() {
     # Bare `cs -tag list` scans all sessions everywhere, including from
     # inside a session — it must not shrink to the ambient session's own
@@ -282,6 +299,7 @@ run_test test_tag_add_inserts_before_closing_fence_when_no_status_line
 run_test test_tag_add_outside_session_errors
 run_test test_tag_site_b_targets_named_session
 run_test test_tag_list_bare_counts_across_sessions
+run_test test_tag_list_prints_a_tag_a_clone_chose_as_a_plain_name
 run_test test_tag_list_bare_in_session_shows_all_sessions
 test_tag_add_fails_loudly_when_the_write_anchors_on_nothing() {
     # An unterminated frontmatter block with no `status:` line leaves the insert
