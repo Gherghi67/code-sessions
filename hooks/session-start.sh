@@ -671,11 +671,12 @@ if [ "$SOURCE" = "resume" ] && git -C "$SESSION_DIR" rev-parse --git-dir >/dev/n
     if [ "$COMMIT_COUNT" -gt 0 ]; then
         # The session's repo chooses the file names, and git quotes a control
         # byte in one but not a shell metacharacter, so only a plain name is
-        # listed.
+        # listed. Each check forks, so only the first five files are checked,
+        # however many the commits touched.
         RECENT_FILES=$(git -C "$SESSION_DIR" diff --name-only "HEAD~${COMMIT_COUNT}" HEAD 2>/dev/null \
-            | while IFS= read -r _recent; do
+            | head -5 | while IFS= read -r _recent; do
                 _cs_is_plain_name "${_recent##*/}" && printf '%s\n' "${_recent##*/}"
-            done | head -5 | paste -sd', ' - 2>/dev/null || true)
+            done | paste -sd', ' - 2>/dev/null || true)
         DYNAMIC="${DYNAMIC}Recent commits: ${COMMIT_COUNT} in last 7 days"
         if [ -n "$RECENT_FILES" ]; then
             DYNAMIC="${DYNAMIC} (${RECENT_FILES})"
