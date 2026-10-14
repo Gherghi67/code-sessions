@@ -864,21 +864,24 @@ test_vet_session_passes_a_session_in_no_repository_while_git_traces() {
     assert_eq "" "$out" "and prints nothing" || return 1
 }
 
-# Inside a git directory, a bare repository or a checkout's .git, git answers
-# "this operation must be run in a work tree" and lists nothing. A clone can
-# make its own .cs/local look like one, and an outer project can commit a bare
-# repository with a session in it, so that answer is a git that cannot answer.
+# Inside a git directory, a bare repository or a checkout's .git, git takes
+# that directory for the repository and runs the commands its config names. An
+# outer project can commit a bare repository with a session in it, so the
+# refusal names the git directory before git is asked anything. It lies outside
+# the session and may be the user's own repository, so the refusal offers
+# cs -rm and never says to delete its HEAD.
 test_vet_session_refuses_a_session_inside_a_git_directory() {
-    local out rc=0 s
+    local out rc=0 s t
     git init -q --bare "$TEST_TMPDIR/bare.git"
     git init -q "$TEST_TMPDIR/checkout"
-    for s in "$TEST_TMPDIR/bare.git/s" "$TEST_TMPDIR/checkout/.git/s"; do
-        mkdir -p "$s/.cs/local"
+    t=$(cd -P -- "$TEST_TMPDIR" && pwd -P)
+    for s in bare.git checkout/.git; do
+        mkdir -p "$TEST_TMPDIR/$s/s/.cs/local"
         rc=0
-        out=$(env -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR "$CS_BIN" -vet-session "$s" 2>&1) || rc=$?
-        assert_eq "1" "$rc" "cs -vet-session refuses ${s#"$TEST_TMPDIR"/}" || return 1
-        assert_eq "Error: cs could not ask git whether it tracks a file in .cs/local: fatal: this operation must be run in a work tree" \
-            "$out" "and names git's own error (${s#"$TEST_TMPDIR"/})" || return 1
+        out=$(env -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR "$CS_BIN" -vet-session "$TEST_TMPDIR/$s/s" 2>&1) || rc=$?
+        assert_eq "1" "$rc" "cs -vet-session refuses $s/s" || return 1
+        assert_eq "Error: $t/$s holds HEAD, so git takes it for a repository and would run commands its config names. cs -rm the session." \
+            "$out" "and names the git directory with no advice to delete its HEAD ($s/s)" || return 1
     done
 }
 
