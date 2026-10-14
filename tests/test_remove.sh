@@ -517,6 +517,27 @@ test_remove_force_refusal_names_one_file_as_it() {
 Add --delete-files to remove it with --force" "$out" "the refusal names one file as it" || return 1
 }
 
+# A worktree's .claude/ holds the settings file cs writes beside what the
+# user keeps there. Only the settings file is cs's: the rest is listed like
+# any other file git does not track, as retire lists it.
+test_remove_worktree_lists_the_users_files_under_dot_claude() {
+    local wt out rc=0
+    wt=$(_worktree_with_user_files wf8)
+    rm "$wt/notes.txt" "$wt/journal.img"
+    mkdir -p "$wt/.claude/commands" "$wt/.claude/agents"
+    echo "ship" > "$wt/.claude/commands/ship.md"
+    git -C "$wt" add .claude/commands/ship.md
+    git -C "$wt" -c user.email=t@example.com -c user.name=t commit -qm "a project command"
+    echo '{}' > "$wt/.claude/settings.local.json"
+    echo "review" > "$wt/.claude/agents/reviewer.md"
+    out=$("$CS_BIN" -rm wf8@t --force </dev/null 2>&1) || rc=$?
+    assert_eq "1" "$rc" "--force refuses a worktree holding the user's own .claude files: $out" || return 1
+    assert_eq "Error: Worktree session 'wf8@t' holds 1 file git does not track:
+    .claude/agents/  (1 file)
+Add --delete-files to remove it with --force" "$out" "the refusal lists the user's file and not cs's settings" || return 1
+    assert_file_exists "$wt/.claude/agents/reviewer.md" "the user's file survives the refusal" || return 1
+}
+
 # The pins and recipient digests `cs -secrets age add` keeps for a session
 # live under ~/.cs-secrets/sessions/<name>/, outside the session directory.
 # Removing a base session drops them and says so on one line naming the path.
@@ -779,6 +800,7 @@ run_test test_remove_worktree_confirm_collapses_untracked_trees
 run_test test_remove_force_refusal_collapses_untracked_trees
 run_test test_remove_worktree_confirm_counts_the_files_in_a_nested_repository
 run_test test_remove_force_refusal_names_one_file_as_it
+run_test test_remove_worktree_lists_the_users_files_under_dot_claude
 run_test test_remove_force_on_adopted_removes_only_the_link
 run_test test_remove_refuses_while_the_vault_is_mounted_inside
 run_test test_remove_goes_ahead_once_the_vault_is_unmounted

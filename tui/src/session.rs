@@ -1609,6 +1609,33 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    // A worktree's .claude/ holds the settings file cs writes beside what the
+    // user keeps there. Only the settings file is cs's: the rest is listed
+    // like any other file git does not track, as `cs -rm` lists it.
+    #[test]
+    fn unowned_entries_lists_the_users_files_under_dot_claude_in_a_worktree() {
+        let root = std::env::temp_dir().join(format!("cs-unowned-claude-{}", std::process::id()));
+        let base = root.join("proj");
+        fs::create_dir_all(base.join(".claude/commands")).unwrap();
+        fs::write(base.join(".claude/commands/ship.md"), "ship").unwrap();
+        git_in(&base, &["init", "-q"]);
+        git_in(&base, &["add", ".claude/commands/ship.md"]);
+        git_in(&base, &["commit", "-qm", "seed"]);
+        let wt = root.join("proj@task");
+        git_in(&base, &["worktree", "add", "-q", wt.to_str().unwrap(), "-b", "cs/task"]);
+        fs::create_dir_all(wt.join(".claude/agents")).unwrap();
+        fs::write(wt.join(".claude/settings.local.json"), "{}").unwrap();
+        fs::write(wt.join(".claude/agents/reviewer.md"), "review").unwrap();
+
+        let got = unowned_entries("proj@task", &wt).unwrap();
+
+        assert_eq!(
+            got,
+            UnownedEntries::NotTrackedByGit(vec![untracked::Entry { path: ".claude/agents/".into(), files: 1 }])
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
     fn setup_session(root: &Path, name: &str) -> PathBuf {
         let dir = root.join(name);
         fs::create_dir_all(dir.join(".cs/local")).unwrap();
