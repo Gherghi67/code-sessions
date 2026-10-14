@@ -89,14 +89,13 @@ add_release_hashes() {
 # commit, first adds that release's payload to CS_KNOWN_SHA256, so an install
 # knows the release's files as cs's even when the install record naming them
 # is gone. hooks/cs-shared.sh is part of that payload and is built here, so the
-# table is extended after one build and folded into bin/cs and install.sh by a
-# second.
+# table is extended after a plain build, and the build below folds it into
+# bin/cs and install.sh.
 case "$#:${1:-}" in
     0:) ;;
     1:--add-release-hashes)
         bash ./build.sh
         add_release_hashes
-        exec bash ./build.sh
         ;;
     *)
         echo "error: build.sh takes no argument, or --add-release-hashes (got: $*)" >&2
