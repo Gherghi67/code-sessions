@@ -10635,6 +10635,38 @@ _task_store_dir() {
     printf '%s\n' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/tasks/$id"
 }
 
+# Checks that the store holds only what Claude Code's file store writes: one
+# regular <id>.json per row, a regular .lock anchor and .highwatermark. A held
+# lock (.lock.lock for the list, <id>.json.lock for a row) means Claude Code is
+# writing. Anything else is a layout cs was not written for. Errors on either,
+# before anything is moved.
+_task_store_check() {  # store
+    local f name
+    for f in "$1"/* "$1"/.*; do
+        name=$(basename "$f")
+        case "$name" in
+            .|..) continue ;;
+            '*'|'.*') [ -e "$f" ] || [ -L "$f" ] || continue ;;
+        esac
+        case "$name" in
+            .lock.lock|*.json.lock)
+                error "Claude Code is writing the task list ($f exists); nothing archived. Run it again once the write is done" ;;
+        esac
+        if [ ! -L "$f" ] && [ -f "$f" ]; then
+            case "$name" in
+                .lock|.highwatermark) continue ;;
+                *.json)
+                    case "${name%.json}" in
+                        ''|*[!0-9]*) ;;
+                        *) continue ;;
+                    esac
+                    ;;
+            esac
+        fi
+        error "refusing to archive: $1 holds $name, which is not part of the task store layout cs knows (<id>.json rows, .lock, .highwatermark); nothing archived"
+    done
+}
+
 # The ids of the rows in the store, one per line, ascending by number.
 _task_store_ids() {  # store
     local f
@@ -10643,6 +10675,38 @@ _task_store_ids() {  # store
         f=$(basename "$f")
         printf '%s\n' "${f%.json}"
     done | sort -n
+}
+
+# A row's status when the row matches the schema Claude Code reads a task
+# with (id equal to the file's number, subject, description, a known status,
+# blocks and blockedBy arrays); errors naming the file otherwise.
+_task_row_status() {  # store, id
+    local status
+    status=$(jq -r --arg id "$2" '
+        if type == "object" and .id == $id
+            and (.subject | type) == "string" and (.description | type) == "string"
+            and (.status == "pending" or .status == "in_progress" or .status == "completed")
+            and (.blocks | type) == "array" and (.blockedBy | type) == "array"
+        then .status else "unrecognised" end' "$1/$2.json" 2>/dev/null) || status="unrecognised"
+    [ "$status" != "unrecognised" ] \
+        || error "refusing to archive: $1/$2.json is not a task row in the format cs knows; nothing archived"
+    printf '%s\n' "$status"
+}
+
+# Where the session keeps its task archive: in the vault behind .cs/private
+# for an encrypted session, else .cs/task-archive. Errors when the vault is
+# locked or the path leads out of the session.
+_task_archive_root() {  # session_dir, meta_dir
+    local root="$2/task-archive" out
+    if [ -L "$2/private" ] || [ -e "$2/private" ]; then
+        [ -d "$2/private" ] \
+            || error "the session's vault is locked (.cs/private leads to a missing directory); mount it, then archive again. Nothing archived"
+        root="$2/private/task-archive"
+    fi
+    if out=$(_cs_write_leaves_session "$1" "$root"); then
+        error ".cs/${root#"$2"/} leads to $out, outside the session; nothing archived"
+    fi
+    printf '%s\n' "$root"
 }
 
 # One row of the readable copy: its heading, then its description.
@@ -10669,6 +10733,7 @@ archive_tasks_run() {
         return 0
     fi
 
+    _task_store_check "$store"
     local ids top id status
     ids=$(_task_store_ids "$store")
     if [ -z "$ids" ]; then
@@ -10678,7 +10743,7 @@ archive_tasks_run() {
     top=$(printf '%s\n' "$ids" | tail -n 1)
     local moving=() top_done=0
     while read -r id; do
-        status=$(jq -r '.status' "$store/$id.json")
+        status=$(_task_row_status "$store" "$id")
         [ "$status" = "completed" ] || continue
         if [ "$id" = "$top" ]; then
             top_done=1
@@ -10697,8 +10762,9 @@ EOF
         return 0
     fi
 
-    local day_dir
-    day_dir="$meta_dir/task-archive/$(date +%Y-%m-%d)"
+    local session_dir="${CLAUDE_SESSION_DIR:-$(dirname "$meta_dir")}" root day_dir
+    root=$(_task_archive_root "$session_dir" "$meta_dir")
+    day_dir="$root/$(date +%Y-%m-%d)"
     mkdir -p "$day_dir/json"
     {
         printf '# Task list as of %s (before archiving completed rows)\n\n' "$(date '+%Y-%m-%d %H:%M')"
