@@ -602,6 +602,21 @@ test_report_refuses_paths_the_branch_renamed_and_the_base_renamed_elsewhere() {
         "and only b and y are named" || return 1
 }
 
+# A worktree path that holds a plain directory has no HEAD to read: the
+# report says so on an error line and stops. The ceiling keeps git from
+# finding a repository above the sessions root.
+test_report_says_error_when_the_worktree_is_not_a_git_checkout() {
+    local sha out status=0 wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    create_test_session_with_git myproj > /dev/null
+    sha=$(git -C "$CS_SESSIONS_ROOT/myproj" rev-parse HEAD)
+    mkdir -p "$wt"
+    out=$(GIT_CEILING_DIRECTORIES="$CS_SESSIONS_ROOT" report_for myproj fix-auth "$sha") || status=$?
+    assert_eq "1" "$status" "the report fails" || return 1
+    assert_eq "error: git rev-parse HEAD failed in the worktree $wt" "$(printf '%s\n' "$out" | tail -1)" \
+        "and says so last" || return 1
+    assert_output_not_contains "$out" "retire:" "with no retire line" || return 1
+}
+
 # A branch whose changed path names add up to more bytes than one command
 # line holds (ARG_MAX, measured here) is checked like any other. The paths
 # are about 490 bytes each and live only in the index and the commits, never
@@ -786,6 +801,7 @@ run_test test_report_refuses_a_pathspec_magic_name_the_base_holds_differently
 run_test test_report_refuses_a_newline_name_the_base_holds_differently
 run_test test_report_refuses_a_capture_with_no_merge_base
 run_test test_report_refuses_paths_the_branch_renamed_and_the_base_renamed_elsewhere
+run_test test_report_says_error_when_the_worktree_is_not_a_git_checkout
 run_test test_report_checks_more_path_bytes_than_a_command_line_holds
 run_test test_report_names_a_non_utf8_path_under_a_utf8_locale
 run_test test_report_says_error_when_the_content_check_stops_without_one
