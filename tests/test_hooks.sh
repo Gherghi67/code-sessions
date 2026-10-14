@@ -3622,6 +3622,26 @@ test_install_merge_filter_copy_matches_install_sh_in() {
     assert_eq "$theirs" "$ours" "the copy of the merge filter matches install.sh.in" || return 1
 }
 
+# An event whose value is not a list is the user's: the merge stops, naming
+# the event, rather than rewrite it. A null event is one the merge creates.
+test_install_merge_stops_on_an_event_that_is_not_a_list() {
+    local tilde="~/.claude/hooks/session-start.sh" value out rc
+    for value in '{"custom":{"hooks":[]}}' 'false' '"notify"' '7'; do
+        rc=0
+        out=$(jq -n --argjson value "$value" '{hooks: {SessionStart: $value}}' | jq -c \
+            --arg event "SessionStart" --arg path "$HOME/.claude/hooks/session-start.sh" \
+            --arg tilde "$tilde" --argjson timeout 30 "$(_install_merge_filter)" 2>&1) || rc=$?
+        assert_eq "5" "$rc" "jq exit status for the value $value" || { echo "$out"; return 1; }
+        assert_output_contains "$out" "^jq: error (at <stdin>:[0-9]*): hooks\.SessionStart is not a list$" \
+            "the error names the event for the value $value" || return 1
+    done
+    out=$(echo '{"hooks":{"SessionStart":null}}' | jq -c \
+        --arg event "SessionStart" --arg path "$HOME/.claude/hooks/session-start.sh" \
+        --arg tilde "$tilde" --argjson timeout 30 "$(_install_merge_filter)" 2>&1)
+    assert_eq '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"~/.claude/hooks/session-start.sh","timeout":30}]}]}}' "$out" \
+        "a null event becomes the list holding cs's entry" || return 1
+}
+
 test_install_preserves_coshipped_hook_in_wrapper() {
     # User has a non-cs hook co-located inside the same wrapper as cs's hook.
     # Common pattern when the user hand-edited settings.json to add another
@@ -3709,6 +3729,7 @@ test_install_leaves_flat_entries_alone() {
 }
 
 run_test test_install_merge_filter_copy_matches_install_sh_in
+run_test test_install_merge_stops_on_an_event_that_is_not_a_list
 run_test test_install_preserves_coshipped_hook_in_wrapper
 run_test test_install_drops_emptied_wrapper_when_only_cs_hook_present
 run_test test_install_leaves_flat_entries_alone
