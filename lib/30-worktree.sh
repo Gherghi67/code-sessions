@@ -692,8 +692,10 @@ retire_feature_worktree() {  # base_name task sha [--force]
         error "This is the '$wt_name' conversation itself, and a worktree can't remove the directory it is running in. Close this session, then run /finish $task in '$base_name'."
     fi
 
-    sha=$(git -C "$base_dir" rev-parse -q --verify "$sha^{commit}" 2>/dev/null) \
+    local commit
+    commit=$(git -C "$base_dir" rev-parse -q --verify "$sha^{commit}" 2>/dev/null) \
         || error "Commit not found in $base_name: $sha"
+    sha="$commit"
     _FINISH_SHA="$sha"
     local tip
     tip=$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null) || error "Not a git checkout: $wt_dir"
@@ -1090,8 +1092,10 @@ integrate_feature_worktree() {  # base_name task sha [--from-remote [--ci-green]
     pid=$(_foreign_live_lock_pid "$base_name" "$base_dir/.cs")
     [ -z "$pid" ] || error "Base session '$base_name' is open elsewhere (PID $pid); run /finish $task from that conversation"
 
-    sha=$(git -C "$base_dir" rev-parse -q --verify "$sha^{commit}" 2>/dev/null) \
+    local commit
+    commit=$(git -C "$base_dir" rev-parse -q --verify "$sha^{commit}" 2>/dev/null) \
         || error "Commit not found in $base_name: $sha"
+    sha="$commit"
     _FINISH_SHA="$sha"
     # Before the split: a detached base has no branch to land on either way,
     # and the ff-only would move a detached HEAD while the branch stays put.
