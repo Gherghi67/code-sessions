@@ -1449,23 +1449,51 @@ test_install_and_uninstall_remove_retired_commands_cs_wrote() {
     local home="$TEST_TMPDIR/retired-cmd-home" d rc=0 out c
     d="$home/.claude/commands"
     mkdir -p "$d"
-    for c in compact-discoveries learn store-secret; do
+    for c in compact-discoveries learn store-secret sweep summary; do
         _cs_shipped_content > "$d/$c.md"
     done
     printf 'my skillify command\n' > "$d/skillify.md"
+    printf 'my own command\n' > "$d/mine.md"
     out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || rc=$?
     assert_eq "0" "$rc" "install exit status" || { echo "$out"; return 1; }
-    for c in compact-discoveries learn store-secret; do
+    for c in compact-discoveries learn store-secret sweep summary; do
         assert_file_not_exists "$d/$c.md" "install removes the retired $c.md cs wrote" || return 1
     done
     assert_eq "my skillify command" "$(cat "$d/skillify.md")" "install keeps the user's skillify.md" || return 1
+    assert_eq "my own command" "$(cat "$d/mine.md")" "install keeps the user's command of a name cs never shipped" || return 1
     assert_output_contains "$out" "Kept $(_bre_literal "$d/skillify.md"): cs did not write it$" "install names the kept command" || return 1
     _cs_shipped_content > "$d/compact-discoveries.md"
+    _cs_shipped_content > "$d/sweep.md"
     out=$(printf 'y\n' | HOME="$home" "$CS_BIN" -uninstall 2>&1) || rc=$?
     assert_eq "0" "$rc" "uninstall exit status" || { echo "$out"; return 1; }
     assert_file_not_exists "$d/compact-discoveries.md" "uninstall removes the retired command cs wrote" || return 1
+    assert_file_not_exists "$d/sweep.md" "uninstall removes the retired sweep.md cs wrote" || return 1
     assert_eq "my skillify command" "$(cat "$d/skillify.md")" "uninstall keeps the user's skillify.md" || return 1
+    assert_eq "my own command" "$(cat "$d/mine.md")" "uninstall keeps the user's mine.md" || return 1
     assert_output_contains "$out" "Kept $(_bre_literal "$d/skillify.md"): cs did not write it" "uninstall names the kept command" || return 1
+}
+
+# /wrap runs the memory pass and the summary pass, and no slash command of
+# their own answers for either: a fresh install deploys /wrap and
+# /checkpoint as commands, and every file wrap.md tells the model to read
+# under ~/.claude is in place, each the checkout's copy.
+test_install_deploys_wrap_and_the_passes_it_reads_but_no_pass_command() {
+    local home="$TEST_TMPDIR/wrap-home" rc=0 out reads p src
+    mkdir -p "$home"
+    out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || rc=$?
+    assert_eq "0" "$rc" "install exit status" || { echo "$out"; return 1; }
+    assert_eq "$(printf 'checkpoint.md\nwrap.md')" "$(cd "$home/.claude/commands" && ls)" \
+        "the commands cs deploys" || return 1
+    reads=$(grep -o '`~/\.claude/[^`]*\.md`' "$home/.claude/commands/wrap.md" | sed 's|^`~/\.claude/||; s|`$||' | sort -u)
+    assert_eq "$(printf '%s\n' hooks/cs/wrap-summary.md hooks/cs/wrap-sweep.md skills/rotate/SKILL.md)" \
+        "$reads" "the files under ~/.claude that wrap.md reads" || return 1
+    for p in $reads; do
+        case "$p" in
+            hooks/cs/*) src="$SCRIPT_DIR/../hooks/${p#hooks/cs/}" ;;
+            *) src="$SCRIPT_DIR/../$p" ;;
+        esac
+        cmp -s "$src" "$home/.claude/$p" || { echo "  FAIL: ~/.claude/$p is not the checkout's $src"; return 1; }
+    done
 }
 
 # Every path under directory $1, and each file's checksum, on stdout: two
@@ -2325,13 +2353,13 @@ STUB
     printf '%s' "$sandbox/home"
 }
 
-# Seeds a sandbox HOME with an installed cs and a deployed /summary command, so
+# Seeds a sandbox HOME with an installed cs and a deployed /wrap command, so
 # a failed web install can be checked for what it left in their place.
 _seed_installed_cs() {  # home
     mkdir -p "$1/.local/bin" "$1/.claude/commands"
     printf '#!/bin/sh\necho installed cs\n' > "$1/.local/bin/cs"
     chmod 755 "$1/.local/bin/cs"
-    printf 'installed summary command\n' > "$1/.claude/commands/summary.md"
+    printf 'installed wrap command\n' > "$1/.claude/commands/wrap.md"
 }
 
 # A web install whose own download of cs drops halfway fails, and the cs
@@ -2351,11 +2379,11 @@ test_web_install_keeps_the_installed_cs_when_its_download_breaks() {
 test_web_install_places_nothing_when_a_later_download_breaks() {
     local home
     _seed_installed_cs "$TEST_TMPDIR/break-late/home"
-    home=$(CS_TEST_BREAK=commands/summary.md _web_install break-late)
+    home=$(CS_TEST_BREAK=commands/wrap.md _web_install break-late)
     assert_eq "1" "$(cat "$TEST_TMPDIR/break-late/install.rc")" "install exit status" \
         || { cat "$TEST_TMPDIR/break-late/install.out"; return 1; }
     assert_eq "$(printf '#!/bin/sh\necho installed cs')" "$(cat "$home/.local/bin/cs")" "cs is untouched" || return 1
-    assert_eq "installed summary command" "$(cat "$home/.claude/commands/summary.md")" "the command is untouched" || return 1
+    assert_eq "installed wrap command" "$(cat "$home/.claude/commands/wrap.md")" "the command is untouched" || return 1
     assert_file_not_exists "$home/.claude/hooks/cs/session-start.sh" "no hook was deployed" || return 1
 }
 
@@ -2390,12 +2418,13 @@ test_web_install_deploys_the_payload_from_the_stub() {
         || { cat "$TEST_TMPDIR/web-ok/install.out"; return 1; }
     cmp -s "$repo/bin/cs" "$home/.local/bin/cs" || { echo "  FAIL: bin/cs differs"; return 1; }
     cmp -s "$repo/hooks/session-start.sh" "$home/.claude/hooks/cs/session-start.sh" || { echo "  FAIL: hook differs"; return 1; }
-    cmp -s "$repo/commands/summary.md" "$home/.claude/commands/summary.md" || { echo "  FAIL: command differs"; return 1; }
+    cmp -s "$repo/commands/wrap.md" "$home/.claude/commands/wrap.md" || { echo "  FAIL: command differs"; return 1; }
     cmp -s "$repo/mods/cs/hooks/register.tsx" "$home/.claude/skills/cs/hooks/register.tsx" || { echo "  FAIL: mod differs"; return 1; }
     assert_eq "755" "$(_file_mode "$home/.local/bin/cs")" "cs mode" || return 1
     assert_eq "755" "$(_file_mode "$home/.claude/hooks/cs/cs-iterm-tab.py")" "hook library mode" || return 1
     assert_eq "755" "$(_file_mode "$home/.claude/skills/finish/scripts/finish.sh")" "skill script mode" || return 1
-    assert_eq "644" "$(_file_mode "$home/.claude/commands/summary.md")" "command mode" || return 1
+    assert_eq "644" "$(_file_mode "$home/.claude/commands/wrap.md")" "command mode" || return 1
+    assert_eq "644" "$(_file_mode "$home/.claude/hooks/cs/wrap-sweep.md")" "wrap pass mode" || return 1
     [ -z "$(find "$home" -name '.cs-install.*')" ] || { echo "  FAIL: a staging temp file was left beside a destination"; return 1; }
 }
 
@@ -2410,7 +2439,7 @@ test_web_install_refuses_a_payload_file_that_does_not_match() {
         || { cat "$TEST_TMPDIR/tamper/install.out"; return 1; }
     assert_file_contains "$TEST_TMPDIR/tamper/install.out" "hooks/session-start\.sh does not match" "the refusal names the file" || return 1
     assert_eq "$(printf '#!/bin/sh\necho installed cs')" "$(cat "$home/.local/bin/cs")" "cs is untouched" || return 1
-    assert_eq "installed summary command" "$(cat "$home/.claude/commands/summary.md")" "the command is untouched" || return 1
+    assert_eq "installed wrap command" "$(cat "$home/.claude/commands/wrap.md")" "the command is untouched" || return 1
     assert_file_not_exists "$home/.claude/hooks/cs/session-start.sh" "the altered hook was not deployed" || return 1
 }
 
@@ -2494,17 +2523,17 @@ test_install_keeps_user_files_that_share_a_cs_name() {
     mkdir -p "$home/.claude/hooks" "$home/.claude/commands" "$home/.claude/skills/feature" "$home/.claude/skills/merge"
     printf '#!/bin/sh\necho my session-start\n' > "$home/.claude/hooks/session-start.sh"
     printf '#!/bin/sh\necho my prose lint\n' > "$home/.claude/hooks/prose-lint.sh"
-    printf 'my summary command\n' > "$home/.claude/commands/summary.md"
+    printf 'my checkpoint command\n' > "$home/.claude/commands/checkpoint.md"
     printf 'my feature skill\n' > "$home/.claude/skills/feature/SKILL.md"
     printf 'my merge skill\n' > "$home/.claude/skills/merge/SKILL.md"
     out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || rc=$?
     assert_eq "0" "$rc" "install exit status" || { echo "$out"; return 1; }
     assert_eq "$(printf '#!/bin/sh\necho my session-start')" "$(cat "$home/.claude/hooks/session-start.sh")" "flat hook kept" || return 1
     assert_eq "$(printf '#!/bin/sh\necho my prose lint')" "$(cat "$home/.claude/hooks/prose-lint.sh")" "retired-name hook kept" || return 1
-    assert_eq "my summary command" "$(cat "$home/.claude/commands/summary.md")" "command kept" || return 1
+    assert_eq "my checkpoint command" "$(cat "$home/.claude/commands/checkpoint.md")" "command kept" || return 1
     assert_eq "my feature skill" "$(cat "$home/.claude/skills/feature/SKILL.md")" "skill kept" || return 1
     assert_eq "my merge skill" "$(cat "$home/.claude/skills/merge/SKILL.md")" "retired-name skill kept" || return 1
-    for f in hooks/session-start.sh hooks/prose-lint.sh commands/summary.md skills/feature/SKILL.md skills/merge/SKILL.md; do
+    for f in hooks/session-start.sh hooks/prose-lint.sh commands/checkpoint.md skills/feature/SKILL.md skills/merge/SKILL.md; do
         assert_output_contains "$out" "$home/\.claude/$f" "a warning names $f" || return 1
     done
     # Everything that is not in the way is still installed.
@@ -2512,7 +2541,7 @@ test_install_keeps_user_files_that_share_a_cs_name() {
     cmp -s "$SCRIPT_DIR/../hooks/session-start.sh" "$home/.claude/hooks/cs/session-start.sh" || { echo "  FAIL: hook not installed"; return 1; }
     # The skipped paths are reported again after the completion line.
     assert_output_contains "$out" "Installation complete" "the install finished" || return 1
-    printf '%s\n' "$out" | sed -n '/Installation complete/,$p' | grep -q "$home/.claude/commands/summary.md" \
+    printf '%s\n' "$out" | sed -n '/Installation complete/,$p' | grep -q "$home/.claude/commands/checkpoint.md" \
         || { echo "  FAIL: the skipped command is not listed after the completion line"; return 1; }
 }
 
@@ -2524,17 +2553,17 @@ test_install_keeps_a_symlink_that_holds_no_cs_content() {
     local home="$TEST_TMPDIR/link-home" rc=0 out
     mkdir -p "$home/.claude/commands"
     ln -s "$TEST_TMPDIR/nowhere/wrap.md" "$home/.claude/commands/wrap.md"
-    _cs_shipped_content > "$TEST_TMPDIR/old-sweep.md"
-    ln -s "$TEST_TMPDIR/old-sweep.md" "$home/.claude/commands/sweep.md"
+    _cs_shipped_content > "$TEST_TMPDIR/old-checkpoint.md"
+    ln -s "$TEST_TMPDIR/old-checkpoint.md" "$home/.claude/commands/checkpoint.md"
     out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || rc=$?
     assert_eq "0" "$rc" "install exit status" || { echo "$out"; return 1; }
     assert_eq "$TEST_TMPDIR/nowhere/wrap.md" "$(readlink "$home/.claude/commands/wrap.md")" "the dangling link is kept" || return 1
     assert_output_contains "$out" "Kept $(_bre_literal "$home/.claude/commands/wrap.md")" "the kept link is named" || return 1
-    [ ! -L "$home/.claude/commands/sweep.md" ] \
+    [ ! -L "$home/.claude/commands/checkpoint.md" ] \
         || { echo "  FAIL: the link to cs's own content was not replaced"; return 1; }
-    cmp -s "$SCRIPT_DIR/../commands/sweep.md" "$home/.claude/commands/sweep.md" \
-        || { echo "  FAIL: sweep.md was not deployed"; return 1; }
-    assert_eq '{"modules":["./register.tsx"]}' "$(cat "$TEST_TMPDIR/old-sweep.md")" "the link's target is untouched" || return 1
+    cmp -s "$SCRIPT_DIR/../commands/checkpoint.md" "$home/.claude/commands/checkpoint.md" \
+        || { echo "  FAIL: checkpoint.md was not deployed"; return 1; }
+    assert_eq '{"modules":["./register.tsx"]}' "$(cat "$TEST_TMPDIR/old-checkpoint.md")" "the link's target is untouched" || return 1
     # The binaries go through the same gate: a link to the user's own script
     # where cs-statusline goes is kept, the script untouched.
     local bin_home="$TEST_TMPDIR/link-bin-home"
@@ -2660,13 +2689,13 @@ test_install_follows_its_record() {
     grep -v 'commands/wrap\.md$' "$record" > "$record.tmp"
     printf '%s  .claude/commands/wrap.md\n' "$digest" >> "$record.tmp"
     mv "$record.tmp" "$record"
-    # The user edits the /sweep command cs installed.
-    printf 'my own sweep\n' > "$home/.claude/commands/sweep.md"
+    # The user edits the /checkpoint command cs installed.
+    printf 'my own checkpoint\n' > "$home/.claude/commands/checkpoint.md"
     out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || { echo "$out"; echo "  FAIL: second install failed"; return 1; }
     cmp -s "$SCRIPT_DIR/../commands/wrap.md" "$home/.claude/commands/wrap.md" \
         || { echo "  FAIL: a file matching its record was not replaced"; return 1; }
-    assert_eq "my own sweep" "$(cat "$home/.claude/commands/sweep.md")" "an edited file is kept" || return 1
-    assert_output_contains "$out" "$home/\.claude/commands/sweep\.md" "the kept file is named" || return 1
+    assert_eq "my own checkpoint" "$(cat "$home/.claude/commands/checkpoint.md")" "an edited file is kept" || return 1
+    assert_output_contains "$out" "$home/\.claude/commands/checkpoint\.md" "the kept file is named" || return 1
 }
 
 # An install that stops partway leaves a record true of every file: the ones
@@ -2749,13 +2778,13 @@ test_uninstall_removes_only_files_cs_wrote() {
     local home="$TEST_TMPDIR/own-uninstall" out
     mkdir -p "$home"
     HOME="$home" bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || { echo "  FAIL: install failed"; return 1; }
-    printf 'my summary command\n' > "$home/.claude/commands/summary.md"
+    printf 'my checkpoint command\n' > "$home/.claude/commands/checkpoint.md"
     printf 'my notes\n' > "$home/.claude/skills/cs/notes.md"
     mkdir -p "$home/.claude/skills/merge" "$home/.claude/hooks"
     printf 'my merge skill\n' > "$home/.claude/skills/merge/SKILL.md"
     printf '#!/bin/sh\necho mine\n' > "$home/.claude/hooks/bash-logger.sh"
     out=$(printf 'y\n' | HOME="$home" "$CS_BIN" -uninstall 2>&1) || { echo "$out"; echo "  FAIL: cs -uninstall exited non-zero"; return 1; }
-    assert_eq "my summary command" "$(cat "$home/.claude/commands/summary.md")" "user's command kept" || return 1
+    assert_eq "my checkpoint command" "$(cat "$home/.claude/commands/checkpoint.md")" "user's command kept" || return 1
     assert_eq "my merge skill" "$(cat "$home/.claude/skills/merge/SKILL.md")" "user's retired-name skill kept" || return 1
     assert_eq "my notes" "$(cat "$home/.claude/skills/cs/notes.md")" "user's file inside the mod kept" || return 1
     assert_eq "$(printf '#!/bin/sh\necho mine')" "$(cat "$home/.claude/hooks/bash-logger.sh")" "user's flat hook kept" || return 1
@@ -2763,7 +2792,7 @@ test_uninstall_removes_only_files_cs_wrote() {
     assert_file_not_exists "$home/.claude/skills/cs/hooks/register.tsx" "cs's mod file removed" || return 1
     assert_file_not_exists "$home/.claude/skills/feature/SKILL.md" "cs's skill removed" || return 1
     [ ! -e "$home/.claude/hooks/cs" ] || { echo "  FAIL: hooks/cs left behind"; return 1; }
-    assert_output_contains "$out" "$home/\.claude/commands/summary\.md" "the kept command is named" || return 1
+    assert_output_contains "$out" "$home/\.claude/commands/checkpoint\.md" "the kept command is named" || return 1
     assert_output_contains "$out" "$home/\.claude/skills/cs/notes\.md" "the kept mod file is named" || return 1
 }
 
@@ -3437,6 +3466,7 @@ run_test test_a_retired_hook_replaced_during_a_question_is_kept
 run_test test_a_retired_hook_replaced_by_a_link_to_a_device_is_kept_unread
 run_test test_install_removes_the_mod_under_its_old_name
 run_test test_install_and_uninstall_remove_retired_commands_cs_wrote
+run_test test_install_deploys_wrap_and_the_passes_it_reads_but_no_pass_command
 run_test test_install_and_uninstall_refuse_a_retired_command_with_a_path
 run_test test_install_and_uninstall_refuse_a_retired_command_that_names_no_file
 run_test test_install_and_uninstall_refuse_a_retired_hook_with_a_path

@@ -436,9 +436,9 @@ A run the deadline below stops early ends `budget=1500`, `skip`, `exit` instead 
 
 A run that overruns the hook's timeout leaves a trail that stops mid-run, which names the stage it hung on — the only evidence such a run ever produces, since it never reaches an exit where it could write a summary. A trail ending anywhere but `exit` or `emit` marks a killed run. Before anything that can stall (the library parse-check, its source, the session resolve), a run in a cs-launched session writes a `launch` line carrying absolute epoch milliseconds, so a run killed before the trace opens still leaves that one line: `launch` with no `start` after it means the process started and stalled in its first forks, and no `launch` at all means it never ran. The line needs an existing `.cs/local/` and creates nothing itself. It reads `$EPOCHREALTIME` without a fork; bash 3.2 has no builtin epoch clock, so there one `date` fork supplies whole seconds, and a `date` that stalls leaves no line. The rest of the trace reads the clock through shell builtins only (`$EPOCHREALTIME`, or `$SECONDS` on bash 3.2), so it adds no forks to a hook already under suspicion for running slow. The file is machine-local — which machine was slow is half the finding — and one run in 64 trims it to its last 2000 lines. Opt-out per-session: `export CS_SCOPE_TRACE_DISABLE=1`.
 
-## memory-index-guard.sh (not a hook — run by `/sweep`)
+## memory-index-guard.sh (not a hook — run by `/wrap`'s memory pass)
 
-Ships in `hooks/` and deploys alongside the hooks as a library, never registered against an event. It sources `cs-shared.sh` for the snapshot's location and exits 2 when that file is missing. `/sweep` runs it from the session root to check its own rewrites of `.cs/memory/MEMORY.md`:
+Ships in `hooks/` and deploys alongside the hooks as a library, never registered against an event. It sources `cs-shared.sh` for the snapshot's location and exits 2 when that file is missing. `/wrap`'s memory pass (`wrap-sweep.md`, deployed beside it) runs it from the session root to check its own rewrites of `.cs/memory/MEMORY.md`:
 
 - `snapshot` copies `MEMORY.md` to `.cs/local/memory-index.snapshot` (`.cs/private/` in an encrypted session, exit 2 while its vault is locked), before the sweep edits anything. Claude Code writes `MEMORY.md` with the first memory entry, so in a session that has none yet it records an empty snapshot; outside a session root (no `.cs/memory`) it exits 2.
 - `check` exits 1 and names each problem when a pointer in the snapshot is gone, when an entry in the four memory buckets (`user_`, `feedback_`, `project_`, `reference_`) has no pointer, or when the file is over the 24400-byte budget. A pointer is a line opening with `- [title](file)`; a link later on that line is supporting text. It always prints the size against the budget. With no snapshot, an unreadable one, or no `MEMORY.md` it exits 2, so a skipped snapshot never passes as a clean rewrite. The bucket check covers entries written after the snapshot and a second sweep that snapshotted an index the first had already damaged; the snapshot itself is one per session, so two concurrent sweeps share it.
@@ -504,8 +504,8 @@ while it names this one the band draws the rotate key alone. The next turn
 that starts from a prompt empties it and the wrap key comes back: queued work,
 a new request, or a second `/wrap` (which, if it fails a pass, leaves no marker
 of its own). A continuation turn, one started with no prompt as a Stop hook's
-feedback starts one, leaves it in place. A summary written any other way,
-a standalone `/summary` included, hides nothing, and a wrap that fails a pass
+feedback starts one, leaves it in place. A summary written any other way
+hides nothing, and a wrap that fails a pass
 skips the marker. Below the band the mod draws nothing, and it draws nothing while a
 turn runs or while a survey holds the band; the `/finish` gate band below is the
 one exception. It never submits a prompt of its own.

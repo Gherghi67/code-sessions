@@ -228,6 +228,20 @@ test_doctor_warns_on_hook_drift() {
         "doctor should warn when a deployed hook differs from checkout source" || return 1
 }
 
+# The passes /wrap reads deploy beside the hooks, so an edited pass the
+# installer has not copied is hook drift too.
+test_doctor_warns_on_wrap_pass_drift() {
+    local checkout="$TEST_TMPDIR/checkout" deployed="$TEST_TMPDIR/deployed"
+    make_fake_checkout "$checkout" "$deployed"
+    echo 'source pass' > "$checkout/hooks/wrap-sweep.md"
+    echo 'deployed pass' > "$deployed/wrap-sweep.md"
+
+    local output
+    output=$(cd "$checkout" && CS_HOOKS_DIR="$deployed" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" "Hook drift: deployed copy differs from source: wrap-sweep.md" \
+        "doctor should warn when a deployed wrap pass differs from checkout source" || return 1
+}
+
 test_doctor_warns_on_undeployed_hook() {
     local checkout="$TEST_TMPDIR/checkout" deployed="$TEST_TMPDIR/deployed"
     make_fake_checkout "$checkout" "$deployed"
@@ -1041,6 +1055,7 @@ run_test test_doctor_exits_nonzero_on_failure
 run_test test_doctor_completes_when_the_deploy_stamp_is_absent
 run_test test_doctor_drift_ignores_a_checkout_that_did_not_produce_the_install
 run_test test_doctor_warns_on_hook_drift
+run_test test_doctor_warns_on_wrap_pass_drift
 run_test test_doctor_warns_on_undeployed_hook
 run_test test_doctor_drift_silent_when_in_sync
 run_test test_doctor_warns_on_mod_drift

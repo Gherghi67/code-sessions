@@ -136,7 +136,9 @@ CS_HOOKS=(
 # rather than files Claude Code invokes as hooks. Deployed and removed alongside
 # the hooks, never registered against an event. The prompt-rewriter scripts are
 # reached through $EDITOR, not through any hook event; memory-index-guard.sh is
-# run by the /sweep command.
+# run by /wrap's memory pass. wrap-sweep.md and wrap-summary.md are the memory
+# and summary passes /wrap reads: under ~/.claude/hooks/cs/ no slash menu lists
+# them, where a file under ~/.claude/commands/ answers as a command of its own.
 CS_HOOK_LIBS=(
     cs-resolve.sh
     cs-shared.sh
@@ -145,13 +147,13 @@ CS_HOOK_LIBS=(
     prompt-rewriter.sh
     prompt-rewriter-model.sh
     prompt-rewriter-vendor.sh
+    wrap-sweep.md
+    wrap-summary.md
 )
 
 # Slash commands cs ships; deployed to ~/.claude/commands/.
 CS_COMMANDS=(
-    summary.md
     checkpoint.md
-    sweep.md
     wrap.md
 )
 
@@ -165,6 +167,8 @@ RETIRED_COMMANDS=(
     skillify.md             # retired with CLI command capture (command-tracker.sh), whose log it promoted to skills
     learn.md                # wrapped cs -learn, removed with the learnings log; deployed only by an install from a checkout
     store-secret.md         # moved to skills/store-secret; deployed only by an install from a checkout
+    sweep.md                # /wrap's memory pass, deployed as hooks/cs/wrap-sweep.md; /wrap is the one command that runs it
+    summary.md              # /wrap's summary pass, deployed as hooks/cs/wrap-summary.md; its standalone prose critic went with the command
 )
 
 # Skills cs ships; each deploys as ~/.claude/skills/<name>/SKILL.md.
@@ -1278,17 +1282,19 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "e49ab59bfcfc78b3b04263328f8b51ebbfed50fa597f9df555cb1189b20ea58c  bin/cs"
+    "90d72df7c2a239231d6b59563411eb867c2d55ded01d323ca03653aabdd9dc16  bin/cs"
     "42d2f9ecbc9a89f3b119958360fb753962c89df18b51ef7b85db109b2644e7de  bin/cs-secrets"
     "105416b75a58aa582dfd6a8d22a9b165ec896e1e366070c3cc97ee7d78a4cb1d  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
     "e0f9e99693748006df3f35951e592ce3528950a1f330eaeb3d425f0739592447  hooks/cs-resolve.sh"
     "fe548d449c42f2d93e6497bf34ea0335b1cd40c49d5252a64e0b695293f5d9a6  hooks/cs-shared.sh"
     "50d63ce0995e68fddd8503700c15f9585d11938c9cd3872a883146de7707c765  hooks/cs-iterm-tab.py"
-    "c43aa22ff0b680c849d3d04b4c4811ceab0e599d0994ba967c34b587511ca1dc  hooks/memory-index-guard.sh"
+    "aabaa0b1d4d33b8599c645c3eb49a67bb28c0e2557f542967da7eefe6220ad4e  hooks/memory-index-guard.sh"
     "6c9a9db966b02d1d99c24a4358abdcf005a0e56e1c7c2defc7c75d9fde516612  hooks/prompt-rewriter.sh"
     "c4688a9bc8cfb8f906a73aebc4ecf8d81fb70db4e2f0bfb4a15ce7c1df1aa01e  hooks/prompt-rewriter-model.sh"
     "5f34183b1082edef2ebd27176f1474cac88647b5d8578fccbb548fc262c0694f  hooks/prompt-rewriter-vendor.sh"
+    "71fa44ba9751b4bb565734c46ed2a737e62842f31507a19560dc46b329cf8b9f  hooks/wrap-sweep.md"
+    "0d304935cf53b79ffa4fe35b1dc2eb7d64952f40f4bb632f642c494760e7ab9c  hooks/wrap-summary.md"
     "502ea44d8d09aa115ffd19b9406122b398bb52d99c941673ac07cd3959818559  hooks/session-start.sh"
     "cae9775702513f11b1abff031928047766ab69714e3a9b1db82ff080e186f20b  hooks/autosave-commits.sh"
     "349c3e78626fdc783f3a40e257405b44dc50669bc27f7c2ed21be20f85b74ac7  hooks/narrative-reminder.sh"
@@ -1297,12 +1303,10 @@ CS_PAYLOAD_SHA256=(
     "53b16016dd6d087c3cc3db7e4acf8de6629e149e3b7f326f0731b36809574156  hooks/tool-failure-logger.sh"
     "01f5ad4f2959d6c404022aeb2ac03602ee0d3a83a8a37491ced7d43bd0385666  hooks/session-auto-approve.sh"
     "4d9cc740dd81c397d8ec6a391e9a7ca522f20f077ed1deea796010a15f038904  hooks/scope-prompt.sh"
-    "12dca7f6d02f19f75865fa2f6e91384a5c8e727b0962e269a6adbb491a95971f  commands/summary.md"
     "9e06eaa16960dff49881234c8a479c2f8d2dd8d672283056e1591c4528e755ab  commands/checkpoint.md"
-    "df9db21017a995e93fdab7135ee2c6d3d7ce0ff660f76bd6d29015854b3a1aa3  commands/sweep.md"
-    "083b9d82c8d74b6ba48dadff29100238e3838365ae64e2dd0d09df343792e97e  commands/wrap.md"
+    "a96f895b90053e26e5cb983392a808d2d31c0597d181288c66aaa8efd88d69b0  commands/wrap.md"
     "2520a6d54d75e3e9f1768160826a8b9f21e38e2234538cc62e3ec6337008fc28  skills/store-secret/SKILL.md"
-    "63db6214c1afcb6b3f107383ff77dd0a738802e11ae8f7ed120988c496b9f431  skills/prose-hygiene/SKILL.md"
+    "eaf2ade4ce76f74b8d6ab979f536007606e77308a0c33dfedf28d31befd1eaec  skills/prose-hygiene/SKILL.md"
     "88df8470aaec5d50d53000249b541ff7f33abbd6956b9be8f3e736a808bfb5ef  skills/rotate/SKILL.md"
     "af130ee52736381050b2bdbb0078f24dbbade29c5ce8a3e11f1d942b737d87ff  skills/finish/SKILL.md"
     "7915ca859bf53215b4f5c41833dca3a0c661921523eb5424d1f146befefae922  skills/feature/SKILL.md"
@@ -1388,9 +1392,11 @@ _download() {  # url, out
 }
 
 # The mode a payload file is deployed with, as the repo tracks it: the
-# binaries, the hook files and the skill support scripts are executable.
+# binaries, the hook files and the skill support scripts are executable; the
+# Markdown passes /wrap reads from the hooks directory are not.
 _payload_mode() {  # repo-path
     case "$1" in
+        hooks/*.md) echo 644 ;;
         bin/*|hooks/*|skills/*/scripts/*) echo 755 ;;
         *) echo 644 ;;
     esac

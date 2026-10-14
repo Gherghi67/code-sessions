@@ -6,17 +6,17 @@ Wrap up this session: distill durable memory entries, write a comprehensive summ
 
 You are working in a cs session. The user has signaled they're winding down. Do the passes in order — memory first (so durable facts land in the right place before the narrative absorbs them), summary second (so the narrative reflects the final state including any memory entries just written), rotation third (so the summary was written from the whole live narrative before its oldest sections leave it).
 
-Each pass is owned by its own command file. Read that file with the Read tool, one call per file (not `cat` through Bash, whose zsh can stop a command list part-way), and apply it — do not work from a remembered paraphrase. This command adds only the ordering and the combined report.
+The first two passes are owned by their own files, which cs installs beside its hooks. Read each with the Read tool, one call per file (not `cat` through Bash, whose zsh can stop a command list part-way), and apply it — do not work from a remembered paraphrase. This command adds only the ordering and the combined report.
 
 ## Pass 1 — Memory distillation
 
-Read `~/.claude/commands/sweep.md` and execute it end to end: the strict bar with its bucket routing table, the dedup and `MEMORY.md` index rules, and the looser-bar narrative sweep. Skip its final report; the combined report below replaces it.
+Read `~/.claude/hooks/cs/wrap-sweep.md` and execute it end to end: the strict bar with its bucket routing table, the dedup and `MEMORY.md` index rules, and the looser-bar narrative sweep. Skip its final report; the combined report below replaces it.
 
 ## Pass 2 — Session summary
 
-Read `~/.claude/commands/summary.md` and execute its steps 1-4: read the session documentation it lists (your own `.cs/memory/narrative.<actor>.md` in full; a teammate's only from the line the resume digest named, never whole) and synthesize the narrative at `.cs/summary.md` using its structure. If `.cs/summary.md` already exists, this run **replaces** it — `/wrap` writes the canonical end-of-session narrative.
+Read `~/.claude/hooks/cs/wrap-summary.md` and execute it end to end: read the session documentation it lists (your own `.cs/memory/narrative.<actor>.md` in full; a teammate's only from the line the resume digest named, never whole) and synthesize the narrative at `.cs/summary.md` using its structure. If `.cs/summary.md` already exists, this run **replaces** it — `/wrap` writes the canonical end-of-session narrative.
 
-Stop after step 4. Step 5's prose critic belongs to standalone `/summary`: it spawns a judge subagent and can run it twice, which is most of what a wrap costs. `/wrap` is the winding-down path and trades that pass for speed, so write the summary well the first time rather than planning to revise it.
+The pass has no review step, so write the summary well the first time rather than planning to revise it.
 
 ## Pass 3 — Narrative rotation
 
