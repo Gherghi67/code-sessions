@@ -2135,6 +2135,38 @@ test_retire_ignored_mode_refuses_a_record_whose_directory_is_a_file_in_the_base(
 
 run_test test_retire_ignored_mode_refuses_a_record_whose_directory_is_a_file_in_the_base
 
+# A record in a directory named .cs inside the feature's .cs (a session tree
+# copied into plans/, say) needs that directory made in the base, and cs makes
+# a directory named .cs only as a session's own. The retire refuses before it
+# removes anything, naming the record; once the record is out of the way the
+# retire goes through.
+test_retire_ignored_mode_refuses_a_record_under_a_directory_named_cs() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    mkdir -p "$wt/.cs/plans/.cs"
+    echo "a note" > "$wt/.cs/plans/.cs/note.md"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_dir "$wt/.cs/memory" "the worktree is still there: $output" || return 1
+    assert_output_contains "$output" "Nothing was removed." "the refusal comes before the removal" || return 1
+    assert_eq ".cs/plans/.cs/note.md" "$(printf '%s\n' "$output" | awk 'listed; /again:$/ { listed = 1 }')" \
+        "the refusal names the record" || return 1
+    assert_not_exists "$base_dir/.cs/plans/.cs" "nothing is made in the base" || return 1
+    assert_eq "" "$(cd "$CS_SESSIONS_ROOT" && ls -d .retire-* 2>/dev/null)" "no records are set aside" || return 1
+    # Positive control: without the record the retire goes through.
+    rm -r "$wt/.cs/plans/.cs"
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire goes through: $output" || return 1
+    assert_not_exists "$wt" "the worktree is removed" || return 1
+}
+
+run_test test_retire_ignored_mode_refuses_a_record_under_a_directory_named_cs
+
 # The narratives merge by a rule of their own, but only a regular file can be
 # merged. A narrative that is a link into the feature's own .cs/local reads as
 # missing once .cs is set aside, and deleting the staging directory would then
