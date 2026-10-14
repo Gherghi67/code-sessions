@@ -30,9 +30,10 @@ _version_at_least() {  # have, want
 
 # Resolve and vet the claude that runs remote-control; sets _CS_REMOTE_BIN.
 # check_dependencies has already found the command word on PATH. The text
-# after the command word is named as written, blanks around it trimmed. The
-# tmux window is handed _CS_REMOTE_BIN, with nothing after it, so its run
-# drops nothing and the line is printed once, on the caller's terminal.
+# after the command word is named as written, blanks around it trimmed, and
+# when there is any, the word's --version must name Claude Code. The tmux
+# window is handed _CS_REMOTE_BIN, with nothing after it, so its run drops
+# nothing and the line is printed once, on the caller's terminal.
 _remote_claude_bin() {
     local word rest found output version rc=0
     word=$(_claude_bin_word)
@@ -47,6 +48,15 @@ _remote_claude_bin() {
     output=$("$found" --version 2>/dev/null) || rc=$?
     [ "$rc" -eq 0 ] \
         || error "cs --remote needs Claude Code $_REMOTE_MIN_CLAUDE_VERSION or later for claude remote-control; $found --version exited with status $rc."
+    # With options dropped, the command word can be a wrapper in front of
+    # claude (op run -- claude), whose own --version can pass the floor by
+    # number; Claude Code's --version carries its name.
+    if [ -n "$rest" ]; then
+        case "$output" in
+            *"(Claude Code)"*) ;;
+            *) error "cs --remote runs $word remote-control, and $word is not Claude Code: $word --version printed \"$output\". Set CLAUDE_CODE_BIN to claude itself for --remote." ;;
+        esac
+    fi
     version=$(awk 'match($0, /[0-9]+\.[0-9]+\.[0-9]+/) { print substr($0, RSTART, RLENGTH); exit }' <<< "$output")
     [ -n "$version" ] \
         || error "cs --remote needs Claude Code $_REMOTE_MIN_CLAUDE_VERSION or later for claude remote-control; $found --version printed no version number."
