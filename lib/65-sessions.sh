@@ -436,14 +436,14 @@ _volume_mounted_under() {  # dir
 }
 
 # Paths in a worktree session that git does not track (untracked or
-# ignored), one per line with a newline inside a name shown as "?"; git
-# worktree remove --force deletes them with no copy on the branch. cs's own
+# ignored), one per line (_names_as_lines); git worktree remove --force
+# deletes them with no copy on the branch. cs's own
 # .cs/, .claude/ and CLAUDE.local.md, and Finder's .DS_Store, are left out.
 # Fails when git cannot list them.
 _worktree_untracked_paths() {  # worktree_dir
     { git -C "$1" ls-files -z --others --exclude-standard \
         && git -C "$1" ls-files -z --others --ignored --exclude-standard; } \
-        | LC_ALL=C tr '\n\0' '?\n' \
+        | _names_as_lines \
         | LC_ALL=C awk -F/ '$1 != ".cs" && $1 != ".claude" && $1 != "CLAUDE.local.md" && $1 != ".DS_Store"'
 }
 

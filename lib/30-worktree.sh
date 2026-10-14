@@ -105,6 +105,16 @@ _tree_is_dirty() {
         || ! git -C "$1" diff --cached --quiet 2>/dev/null
 }
 
+# The names `git ls-files -z` prints, read on stdin, one per line. A name may
+# hold any byte, so a backslash in one is written "\\" and a newline "\n":
+# each line stands for exactly one name, and printf's %b gives the name back.
+# Names are bytes, whatever the locale. Fails without perl, as the session
+# lock does.
+_names_as_lines() {
+    perl -0 -ne 'BEGIN { binmode STDIN; binmode STDOUT }
+                 chomp; s/\\/\\\\/g; s/\n/\\n/g; print "$_\n"'
+}
+
 # Paths in a worktree that git does not track, one per line, leaving out cs's
 # own bookkeeping: the whole .cs tree in ignored mode, plus the settings and
 # protocol files, none of it the user's to commit (ignored-mode fusion carries
@@ -113,15 +123,14 @@ _tree_is_dirty() {
 # either, as cs -rm also treats it. With --ignored, the ignored paths; else
 # the untracked ones git does not ignore.
 _worktree_others() {  # wt_dir [--ignored]
-    # -z, then one path per line with a newline inside a name shown as "?":
-    # without it git quotes any name holding a newline or a non-ASCII byte,
-    # and the quote in front hides cs's own files from the patterns below.
-    # Names are bytes here (LC_ALL=C): in a multibyte locale that cannot
-    # decode one, tr stops mid-list. A listing that fails is a failure, never
-    # an empty list: the caller would remove the worktree on it.
+    # -z, then one name per line (_names_as_lines): without -z git quotes any
+    # name holding a newline or a non-ASCII byte, and the quote in front
+    # hides cs's own files from the patterns below. A listing that fails is a
+    # failure, never an empty list: the caller would remove the worktree on
+    # it.
     local listing
     listing=$(git -C "$1" ls-files -z --others ${2:+"$2"} --exclude-standard 2>/dev/null \
-              | LC_ALL=C tr '\n\0' '?\n') || return 1
+              | _names_as_lines) || return 1
     [ -n "$listing" ] || return 0
     printf '%s\n' "$listing" \
         | LC_ALL=C grep -v -e '^\.cs/' -e '^\.claude/settings\.local\.json$' -e '^CLAUDE\.local\.md$' \
@@ -176,10 +185,11 @@ _system_trash_command() {
 # lists on stdin separated by empty lines: the checkout's paths that stay
 # (tracked, or deleted anyway); "<count><TAB><path>" for each directory git
 # does not list into (a nested repository, shown by git as one path ending in
-# "/"); and the paths at risk. A directory holding no path that stays is one
-# entry with the number of files at risk under it, any other path is an
-# entry alone. Prints "<files><TAB><entry>", the entries holding the most
-# files first, then by path.
+# "/"); and the paths at risk. Each path is a line of _names_as_lines, so two
+# names are one entry only when they are the same name. A directory holding
+# no path that stays is one entry with the number of files at risk under it,
+# any other path is an entry alone. Prints "<files><TAB><entry>", the entries
+# holding the most files first, then by path as its line is written.
 _untracked_entries() {
     local tab=$'\t'
     LC_ALL=C awk '
@@ -227,22 +237,32 @@ _untracked_entries() {
 # ("1 file", "60,882 files"), then one line per entry indented four spaces, a
 # directory with its file count in a column past the longest directory
 # shown. With a number, at most that many entries, then how many are not
-# shown; with "all", every entry.
-_untracked_listing_format() {  # shown|all
-    LC_ALL=C awk -v shown="$1" '
+# shown; with "all", every entry. An entry prints as its name with a newline
+# in it shown as "?", after the directory given as $2, if any.
+_untracked_listing_format() {  # shown|all [directory]
+    env CS_LISTING_DIRECTORY="${2:-}" LC_ALL=C awk -v shown="$1" '
         function grouped(n,    s) {
             s = sprintf("%d", n)
             while (s ~ /[0-9][0-9][0-9][0-9]/) sub(/[0-9][0-9][0-9]($|,)/, ",&", s)
             return s
         }
         function files(n) { return grouped(n) (n == 1 ? " file" : " files") }
+        # The name a line stands for (_names_as_lines), a newline in it as "?".
+        function printed(line,    name, at) {
+            name = ""
+            while ((at = index(line, "\\")) > 0) {
+                name = name substr(line, 1, at - 1) (substr(line, at + 1, 1) == "n" ? "?" : "\\")
+                line = substr(line, at + 2)
+            }
+            return name line
+        }
         BEGIN { if (shown == "all") shown = -1 }
         {
             cut = index($0, "\t")
             total += substr($0, 1, cut - 1)
             if (shown >= 0 && NR > shown) next
             held[NR] = substr($0, 1, cut - 1)
-            path[NR] = substr($0, cut + 1)
+            path[NR] = ENVIRON["CS_LISTING_DIRECTORY"] printed(substr($0, cut + 1))
             if (path[NR] ~ /\/$/ && length(path[NR]) > width) width = length(path[NR])
         }
         END {
@@ -268,11 +288,13 @@ _untracked_listing_render() {
 # here. Fails when git cannot list the tracked paths or a nested repository
 # cannot be read.
 _untracked_listing_input() {  # checkout_dir paths [staying_paths]
-    local dir="$1" paths="$2" staying="${3:-}" tracked nested="" repo files
-    tracked=$(git -C "$dir" ls-files -z | LC_ALL=C tr '\n\0' '?\n') || return 1
+    local dir="$1" paths="$2" staying="${3:-}" tracked nested="" repo name files
+    tracked=$(git -C "$dir" ls-files -z | _names_as_lines) || return 1
     while IFS= read -r repo; do
         [ -n "$repo" ] || continue
-        files=$(find "$dir/$repo" ! -type d | wc -l) || return 1
+        printf -v name '%b' "$repo"
+        # One NUL per file: a path may hold a newline.
+        files=$(find "$dir/$name" ! -type d -print0 | env LC_ALL=C tr -dc '\0' | wc -c) || return 1
         nested="$nested${files//[[:space:]]/}"$'\t'"$repo"$'\n'
     done <<< "$(printf '%s\n' "$paths" | LC_ALL=C grep '/$' || [ $? -eq 1 ])"
     [ -z "$tracked" ] || printf '%s\n' "$tracked"
@@ -695,35 +717,18 @@ _retire_trash_ignored_work() {  # wt_dir task
     listing=$(printf '%s\n' "$entries" | _untracked_listing_format 20)
     count="${listing%%"$nl"*}"
     [ "$count" != "1 file" ] || them=it
-    local -a trash_cmd=() targets=() named=()
-    local word entry raw
+    local -a trash_cmd=() targets=()
+    local word entry name
     while IFS= read -r word; do trash_cmd+=("$word"); done <<< "$(_system_trash_command)"
     [ -n "${trash_cmd[0]:-}" ] \
         || error "Worktree has ${count% *} ignored ${count#* } that retiring moves to the system trash, but neither trash nor gio is installed, so nothing was removed. Move or delete $them, then run /finish $task here again:
 ${listing#*"$nl"}"
-    # The lists show a newline inside a name as "?", so a "?" in an entry is
-    # looked up among the names on disk that hold a newline: the trash
-    # command gets the name as it is. Both are one character, so the entry's
-    # length is the length of the name it stands for.
-    case "$entries" in
-        *'?'*)
-            while IFS= read -r -d '' raw; do
-                case "$raw" in *"$nl"*) named+=("$raw") ;; esac
-            done < <(git -C "$wt_dir" ls-files -z --others --ignored --exclude-standard 2>/dev/null)
-            ;;
-    esac
+    # An entry is a line of _names_as_lines: the trash command gets the name
+    # it stands for, as it is on disk.
     while IFS= read -r entry; do
         entry="${entry#*$'\t'}"
-        case "$entry" in
-            *'?'*)
-                for raw in ${named[@]+"${named[@]}"}; do
-                    case "${raw//"$nl"/?}" in
-                        "$entry"*) entry="${raw:0:${#entry}}"; break ;;
-                    esac
-                done
-                ;;
-        esac
-        targets+=("$wt_dir/${entry%/}")
+        printf -v name '%b' "${entry%/}"
+        targets+=("$wt_dir/$name")
     done <<< "$entries"
     local trash_err
     trash_err=$("${trash_cmd[@]}" "${targets[@]}" 2>&1 >/dev/null) \
@@ -731,9 +736,7 @@ ${listing#*"$nl"}"
 ${listing#*"$nl"}
 ${trash_cmd[0]}: ${trash_err:-exited with an error}"
     _RETIRE_TRASHED_COUNT="$count"
-    _RETIRE_TRASHED_LINES=$(printf '%s\n' "$entries" \
-        | LC_ALL=C awk -v dir="$wt_dir/" '{ cut = index($0, "\t"); print substr($0, 1, cut) dir substr($0, cut + 1) }' \
-        | _untracked_listing_format all | tail -n +2)
+    _RETIRE_TRASHED_LINES=$(printf '%s\n' "$entries" | _untracked_listing_format all "$wt_dir/" | tail -n +2)
 }
 
 # What _retire_trash_ignored_work moved to the system trash, as a heading
