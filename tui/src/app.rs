@@ -3981,7 +3981,10 @@ mod tests {
         assert!(matches!(app.mode, Mode::ConfirmDelete));
         assert_eq!(
             app.delete_warnings,
-            vec![session::DeleteWarning::line("Also deletes files cs did not create: journal.sparsebundle".to_string())]
+            vec![session::DeleteWarning {
+                text: "Also deletes files cs did not create:".to_string(),
+                entries: vec![crate::untracked::Entry { path: "journal.sparsebundle".to_string(), files: 1 }],
+            }]
         );
         std::fs::remove_dir_all(&root).ok();
     }
