@@ -409,14 +409,15 @@ _cs_remove_tree_if_owned() {  # dir, [remove-function]
     [ ! -e "$1" ]
 }
 
-# The sha256 of every version of every file a cs release deployed under
-# ~/.claude (hooks, commands, skills and their scripts, mods), retired names
-# included: every version in the repo's history up to the install record's
-# introduction, then each release's payload, which the release build
+# The sha256 of the files cs deployed under ~/.claude (hooks, commands,
+# skills and their scripts, mods), retired names included: every version in
+# the repo's history up to the first release that keeps an install record,
+# then each later release's payload, which the release build
 # (./build.sh --add-release-hashes) adds. A file holding content listed here
 # is cs's even when the install record that names it is gone, as after
 # ~/.claude/hooks/cs is deleted by hand. One sha256 per line, sorted, no
-# repeats; content an unreleased checkout installed is not listed.
+# repeats. Content committed after that first release and never released is
+# not listed.
 CS_KNOWN_SHA256=(
     0007ced8c46eb1ba6a56c5102f144c3bdf4f7fa66537eafa79cdcec10ae04935
     007fe70b85b0e2dcd341109783f086804bce8b59987df6f67bc941782baef1f6
