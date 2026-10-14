@@ -122,8 +122,8 @@ test_adopt_leaves_a_claude_local_md_with_the_protocol_alone() {
 }
 
 # A project with a .gitignore but no git repo keeps every ignore rule it had;
-# cs only adds its own. The rules matter before the adopt commit: a lost
-# `.env` line would commit the file it was hiding.
+# cs only adds its own. The rules matter for the user's first commit: a lost
+# `.env` line would let `git add -A` stage the file it was hiding.
 test_adopt_without_git_keeps_the_existing_gitignore_lines() {
     local project_dir="$TEST_TMPDIR/my-project"
     mkdir -p "$project_dir"
@@ -138,8 +138,8 @@ test_adopt_without_git_keeps_the_existing_gitignore_lines() {
         "the project's last rule, without a trailing newline, must survive whole" || return 1
     assert_file_contains "$project_dir/.gitignore" '^\.cs/local/$' \
         "cs adds its .cs/local/ rule" || return 1
-    assert_eq "" "$(git -C "$project_dir" ls-files .env)" \
-        "the ignored .env must not be committed by the adopt" || return 1
+    assert_eq ".env" "$(git -C "$project_dir" check-ignore .env)" \
+        "git still ignores the .env" || return 1
 }
 
 # The same merge in a project that is already a git repo: a last line with no
@@ -178,8 +178,8 @@ test_adopt_adds_its_rule_beside_a_commented_or_negated_mention() {
         "git ignores the per-actor log" || return 1
 }
 
-# The home directory is never a project: adopting it would git init and
-# commit everything under it. Refused before anything is written.
+# The home directory is never a project: adopting it would git init there.
+# Refused before anything is written.
 test_adopt_refuses_the_home_directory() {
     local output rc=0
     output=$(cd "$HOME" && "$CS_BIN" -adopt home-session 2>&1) || rc=$?
@@ -197,8 +197,8 @@ test_adopt_refuses_the_home_directory() {
 }
 
 # The sessions root holds every session, and adopting it, or a directory that
-# contains it, would git init and commit all of them and link a session into
-# itself. Refused before anything is written, like $HOME.
+# contains it, would git init a repo holding all of them and link a session
+# into itself. Refused before anything is written, like $HOME.
 test_adopt_refuses_the_sessions_root_and_its_parents() {
     local root parent dir output rc
     root=$(cd "$CS_SESSIONS_ROOT" && pwd -P)

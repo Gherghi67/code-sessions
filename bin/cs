@@ -13985,9 +13985,8 @@ adopt_session() {  # name, [--yes|-y], in any order
 
     validate_session_name "$session_name"
 
-    # Adopting a directory with no .git runs git init and commits everything
-    # under it, and writes cs's files into it: never the home directory or the
-    # filesystem root. -ef, not a string compare: either may be reached
+    # Adopting a directory with no .git runs git init there and writes cs's
+    # files into it: never the home directory or the filesystem root. -ef, not a string compare: either may be reached
     # through a symlink or typed in another case.
     if [ "$target_dir" -ef "${HOME:-}" ]; then
         error "Refusing to adopt your home directory ($target_dir). Run cs -adopt from a project directory."
@@ -13995,8 +13994,8 @@ adopt_session() {  # name, [--yes|-y], in any order
     if [ "$target_dir" -ef / ]; then
         error "Refusing to adopt the filesystem root. Run cs -adopt from a project directory."
     fi
-    # Nor the sessions root or a directory above it: that commit would sweep
-    # in every session, and the session link would land inside the project.
+    # Nor the sessions root or a directory above it: the repo would hold
+    # every session, and the session link would land inside the project.
     # Walked up on the physical path, each step compared by -ef.
     local root ancestor
     root=$(cd "$SESSIONS_ROOT" 2>/dev/null && pwd -P) || root="$SESSIONS_ROOT"
@@ -14009,10 +14008,10 @@ adopt_session() {  # name, [--yes|-y], in any order
     done
 
     # A linked git worktree keeps a `.git` FILE, so the init path below would
-    # read it as "not a repo", `git init` over it and `git add -A` the user's
-    # PR branch. Claude Code's worktrees have their own verb.
+    # read it as "not a repo" and `git init` over the user's PR branch.
+    # Claude Code's worktrees have their own verb.
     if [ -f "$target_dir/.git" ]; then
-        error "$target_dir is a linked git worktree. For Claude Code's worktrees run cs -adopt --worktrees from the repo; plain cs -adopt would commit into this branch."
+        error "$target_dir is a linked git worktree. For Claude Code's worktrees run cs -adopt --worktrees from the repo; plain cs -adopt would run git init over this branch's checkout."
     fi
 
     # Adopt appends to .gitignore, .gitattributes and CLAUDE.local.md and
@@ -14133,12 +14132,13 @@ adopt_session() {  # name, [--yes|-y], in any order
     mkdir -p "$SESSIONS_ROOT"
     ln -s "$target_dir" "$session_link"
 
-    # Initialize git if not already a repo
+    # Initialize git if not already a repo. Nothing is committed: the user's
+    # files and cs's are left for the user's own first commit.
     if [ ! -d "$target_dir/.git" ]; then
         (
             cd "$target_dir" || exit 0
             # Merged, not written: the project's own rules (an .env, a key
-            # file) must keep hiding those files from the add -A below.
+            # file) must keep hiding those files from the user's first add.
             ensure_cs_gitignore_entries "$target_dir"
             git init -q 2>/dev/null || true
             # See the session-init path: autocrlf would rewrite .gitignore to
@@ -14146,9 +14146,8 @@ adopt_session() {  # name, [--yes|-y], in any order
             git config core.autocrlf false 2>/dev/null || true
             git branch -M main 2>/dev/null || true
             setup_merge_attributes "$target_dir"
-            git add -A 2>/dev/null || true
-            git commit -q -m "Adopt as cs session: $session_name" 2>/dev/null || true
         )
+        _explain_nothing_committed "$target_dir" .cs .gitignore .gitattributes
     else
         # Merge cs's .gitignore entries into the project's existing .gitignore
         ensure_cs_gitignore_entries "$target_dir"
