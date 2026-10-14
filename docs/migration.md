@@ -256,7 +256,10 @@ code-sessions left the same thing alone, and keeps what code-sessions changed:
   the rest are written. The `branch.<name>` settings of a branch both have
   (its upstream) and the `remote.<name>` settings come where the copy has no
   such section; one the copy has is never changed, and one it removed stays
-  removed. The dry run counts each kind and names the first ten.
+  removed. A `remote.<name>` section is carried whole, every key it holds
+  (`url`, `fetch`, `pushurl`, `proxy`, `uploadpack` and `receivepack`
+  included), so a command or proxy set there in cs is set in the copy. The
+  dry run counts each kind and names the first ten.
 - Reflogs: a branch or remote-tracking ref that ends the run on the original's
   commit takes the original's reflog, as a fresh copy has it, when the copy's
   holds nothing of its own: each of its lines one of the original's, in the
