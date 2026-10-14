@@ -664,7 +664,7 @@ _git_dir_layout_refusal() {  # dir
 # The refusal for a git directory at <dir>, a whole path outside the session,
 # which can be the user's own repository: it carries no advice to delete HEAD.
 _git_dir_outside_refusal() {  # dir
-    printf '%s holds HEAD, so git takes it for a repository and would run commands its config names. cs -rm the session.' "$1"
+    printf '%s holds HEAD, so git takes it for a repository and would run commands its config names. Run cs -rm to remove the session.' "$1"
 }
 
 # A named verb vets the session before it reads it: the layout is refused by
@@ -890,6 +890,25 @@ test_vet_session_refuses_a_session_inside_a_git_directory() {
         assert_eq "1" "$rc" "cs -vet-session refuses $s/s" || return 1
         assert_eq "Error: $(_git_dir_outside_refusal "$t/$s")" \
             "$out" "and names the git directory with no advice to delete its HEAD ($s/s)" || return 1
+    done
+}
+
+# A bare repository used as the session directory holds HEAD at the session
+# root. It is the user's repository, so it gets the outside text: its whole
+# path and cs -rm, never advice to delete its HEAD. A whole path is printed
+# uncut, so a long one still names the directory that holds HEAD.
+test_vet_session_names_a_bare_repository_session_root_by_its_whole_path() {
+    local out rc s t long
+    long=$(printf '%0170d' 0 | tr 0 d)
+    t=$(cd -P -- "$TEST_TMPDIR" && pwd -P)
+    for s in root.git "$long.git"; do
+        git init -q --bare "$TEST_TMPDIR/$s"
+        mkdir -p "$TEST_TMPDIR/$s/.cs/local"
+        rc=0
+        out=$(env -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR "$CS_BIN" -vet-session "$TEST_TMPDIR/$s" 2>&1) || rc=$?
+        assert_eq "1" "$rc" "cs -vet-session refuses a bare repository session root" || return 1
+        assert_eq "Error: $(_git_dir_outside_refusal "$t/$s")" \
+            "$out" "and names the root by its whole path with no advice to delete its HEAD" || return 1
     done
 }
 
@@ -1441,6 +1460,7 @@ run_test test_vet_session_names_a_private_link_to_the_session_in_another_case_wi
 run_test test_git_questions_never_run_a_repository_core_fsmonitor
 run_test test_vet_session_passes_a_session_in_no_repository_while_git_traces
 run_test test_vet_session_refuses_a_session_inside_a_git_directory
+run_test test_vet_session_names_a_bare_repository_session_root_by_its_whole_path
 run_test test_vet_session_refuses_a_checkout_git_reads_as_bare
 run_test test_vet_session_names_a_relative_session_from_the_current_directory
 run_test test_vet_session_says_why_no_git_can_run
