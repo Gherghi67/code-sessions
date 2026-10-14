@@ -205,6 +205,19 @@ mod tests {
         assert_eq!(got, expected.lines().collect::<Vec<_>>());
     }
 
+    // The count column sits past the widest directory in the columns it
+    // takes on screen, where a double-width character takes two: "一二/"
+    // takes five columns, two fewer than "abcdef/", so it gets two more
+    // spaces before its count. (cs pads by characters, so this name stays
+    // out of the shared fixture.)
+    #[test]
+    fn listing_pads_a_double_width_directory_by_its_columns() {
+        let at_risk = ["abcdef/x".to_string(), "一二/y".to_string()];
+        let entries = entries(&["README.md".to_string()], &HashMap::new(), &at_risk).unwrap();
+
+        assert_eq!(entry_lines(&entries, SHOWN_ENTRIES), ["    abcdef/  (1 file)", "    一二/    (1 file)"]);
+    }
+
     #[test]
     fn a_nested_repository_without_a_file_count_is_an_error() {
         let got = entries(&[], &HashMap::new(), &["vendor/dep/".to_string()]);
