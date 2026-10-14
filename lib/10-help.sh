@@ -14,6 +14,8 @@ Usage: cs                             Open the session manager
 Commands:
   <name>              Create or resume session <name> (locks session)
   <name> --force      Override active session lock
+  <name> --remote     Serve <name> through claude remote-control instead of opening claude (in its own window of the cs tmux session when run inside tmux)
+  <name> --remote --permission-mode <mode>  The permission mode of the sessions the server starts (default: default)
   <base>@<feature>    Open a parallel feature worktree of session <base>
   <base> -features          List a base's feature worktrees and their merge readiness
   <base> -finish <feature>  Open <base> and run /finish for <feature> (integrate, then retire the worktree)

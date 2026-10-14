@@ -98,9 +98,11 @@ _cs_tmux_managed() {
 
 # Pre-window checks that must pass BEFORE the seed is written, so a refused
 # spawn never leaves a pending seed behind.
-_spawn_precheck() {  # name
-    local name="$1"
-    command -v "${CS_TMUX_BIN:-tmux}" >/dev/null 2>&1 || error "cs -spawn needs tmux"
+# The window to open is named <window>, the session name unless given, and
+# <asker> names the cs command that wants it (cs -spawn unless given).
+_spawn_precheck() {  # name, [window], [asker]
+    local name="$1" window="${2:-$1}" asker="${3:-cs -spawn}"
+    command -v "${CS_TMUX_BIN:-tmux}" >/dev/null 2>&1 || error "$asker needs tmux"
     if session_is_live "$SESSIONS_ROOT/$name/.cs"; then
         error "Session $name is already live"
     fi
@@ -111,8 +113,8 @@ _spawn_precheck() {  # name
         # rename a window out from under this name match, and the only cost of a
         # miss is a duplicate window name in the cs session, never a second live
         # launch. Do not add locking here for that benign case.
-        if _tmux list-windows -t =cs -F '#{window_name}' 2>/dev/null | grep -Fxq "$name"; then
-            error "A window named $name already exists in tmux session cs"
+        if _tmux list-windows -t =cs -F '#{window_name}' 2>/dev/null | grep -Fxq "$window"; then
+            error "A window named $window already exists in tmux session cs"
         fi
     fi
 }
@@ -128,7 +130,7 @@ _spawn_attach_hint() {
 }
 
 _spawn_window() {  # name, token
-    local name="$1" token="$2" cmd wid
+    local name="$1" token="$2" cmd
     # The token proves to the launch that this window is the spawn's own, so
     # only it consumes the seed unasked (see the seed consumer in
     # lib/75-launch.sh). It is correlation, not a secret: anyone who can read
@@ -136,19 +138,26 @@ _spawn_window() {  # name, token
     # `env` rather than a VAR=value prefix, which tmux's default-shell need
     # not understand.
     cmd="env $(_sq "CS_SPAWN_TOKEN=$token") $(_sq "$(_cs_self)") $(_sq "$name")"
+    _cs_tmux_window "$name" "$cmd"
+    info "spawned $name in tmux session cs (window $_CS_TMUX_WID). Attach: $(_spawn_attach_hint)"
+}
+
+# Open a window named <window> running <cmd> in the cs-owned tmux session, and
+# leave its id in _CS_TMUX_WID. A global rather than printed: the options call
+# below would print into a capture, and error would end only the capture.
+_CS_TMUX_WID=""
+_cs_tmux_window() {  # window, cmd
     # Try to create the cs session outright: tmux rejects a duplicate -s name,
     # so "already exists" and "a concurrent spawner just created it" collapse
     # into the same fallthrough to new-window.
-    if wid=$(_tmux new-session -d -s cs -n "$name" -P -F '#{window_id}' "$cmd" 2>/dev/null); then
+    if _CS_TMUX_WID=$(_tmux new-session -d -s cs -n "$1" -P -F '#{window_id}' "$2" 2>/dev/null); then
         # Plain target: tmux 3.6a rejects '=' anchors on the options commands;
         # exact 'cs' was just created by new-session, so this cannot misfire.
         _tmux set-option -t cs @cs_managed 1
-        info "spawned $name in tmux session cs (window $wid). Attach: $(_spawn_attach_hint)"
         return 0
     fi
-    wid=$(_tmux new-window -t =cs -n "$name" -P -F '#{window_id}' "$cmd") \
-        || error "tmux new-window failed for $name"
-    info "spawned $name in tmux session cs (window $wid). Attach: $(_spawn_attach_hint)"
+    _CS_TMUX_WID=$(_tmux new-window -t =cs -n "$1" -P -F '#{window_id}' "$2") \
+        || error "tmux new-window failed for $1"
 }
 
 run_spawn() {

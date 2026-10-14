@@ -14,6 +14,11 @@ use crate::untracked;
 pub enum Liveness {
     /// cs holds the process lock; the PID is the running conversation.
     Locked(u32),
+    /// `cs <name> --remote` serves the session through a `claude
+    /// remote-control` server: `lock` is the pid in the session lock, `server`
+    /// the pid in `.cs/local/remote.pid`. cs execs the server, so both name
+    /// the same process; each is read from its own file.
+    Served { lock: u32, server: u32 },
     /// No lock, but the statusline touched `.cs/local/context-pct` within the
     /// heartbeat window — a conversation opened outside cs.
     Heartbeat,
@@ -28,13 +33,13 @@ impl Liveness {
     }
     /// True only when cs holds the process lock (not merely heartbeat-live).
     pub fn is_locked(self) -> bool {
-        matches!(self, Liveness::Locked(_))
+        matches!(self, Liveness::Locked(_) | Liveness::Served { .. })
     }
     /// The locking process's PID, if cs holds the lock.
     pub fn lock_pid(self) -> Option<u32> {
         match self {
-            Liveness::Locked(pid) => Some(pid),
-            _ => None,
+            Liveness::Locked(pid) | Liveness::Served { lock: pid, .. } => Some(pid),
+            Liveness::Heartbeat | Liveness::Dormant => None,
         }
     }
 }
@@ -697,7 +702,10 @@ fn read_session(path: &Path, secret_counts: &HashMap<String, u32>) -> Session {
         .map(|f| parse_modified(f))
         .unwrap_or((None, None));
     let liveness = match read_lock_pid(&meta_dir) {
-        Some(pid) => Liveness::Locked(pid),
+        Some(lock) => match read_remote_pid(&meta_dir, &name) {
+            Some(server) => Liveness::Served { lock, server },
+            None => Liveness::Locked(lock),
+        },
         None if heartbeat_alive(&meta_dir, std::time::SystemTime::now()) => Liveness::Heartbeat,
         None => Liveness::Dormant,
     };
@@ -1515,6 +1523,30 @@ fn read_lock_pid(meta_dir: &Path) -> Option<u32> {
     if is_pid_alive(pid) { Some(pid) } else { None }
 }
 
+/// The pid in `.cs/local/remote.pid`, which `cs <name> --remote` writes for
+/// the `claude remote-control` server it runs, while that pid runs
+/// `remote-control --name <name>`. A file a server's release never removed
+/// can name a pid another program has taken since, so a live pid alone is not
+/// enough. The twin of `_remote_server_pid` in lib/76-remote.sh.
+fn read_remote_pid(meta_dir: &Path, name: &str) -> Option<u32> {
+    let content = fs::read_to_string(meta_dir.join("local/remote.pid")).ok()?;
+    let pid = content.trim().parse::<u32>().ok()?;
+    if pid == 0 || pid > i32::MAX as u32 {
+        return None;
+    }
+    let o = std::process::Command::new("ps")
+        .args(["-ww", "-o", "args=", "-p", &pid.to_string()])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !o.status.success() {
+        return None;
+    }
+    // Padded on both sides, so demo does not match demo-2.
+    let args = format!(" {} ", String::from_utf8_lossy(&o.stdout).trim_end());
+    args.contains(&format!(" remote-control --name {name} ")).then_some(pid)
+}
+
 /// True when a process with `pid` is alive on this machine, via `kill -0`.
 /// A missing tool or a spawn error is treated as "not alive" (the caller then
 /// falls back to the statusline heartbeat), never a crash.
@@ -2289,6 +2321,76 @@ mod tests {
         assert!(!Liveness::Dormant.is_live());
         assert!(!Liveness::Dormant.is_locked());
         assert_eq!(Liveness::Dormant.lock_pid(), None);
+
+        let served = Liveness::Served { lock: 42, server: 77 };
+        assert!(served.is_live());
+        assert!(served.is_locked());
+        assert_eq!(served.lock_pid(), Some(42), "lock_pid reads the lock, not remote.pid");
+    }
+
+    /// A session `cs <name> --remote` serves: a live session lock, and
+    /// .cs/local/remote.pid naming the server.
+    fn served_session(tag: &str, remote_pid: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("cs-served-{tag}-{}", std::process::id()));
+        fs::create_dir_all(dir.join(".cs/local")).unwrap();
+        fs::write(dir.join(".cs/session.lock"), format!("{}\n", std::process::id())).unwrap();
+        fs::write(dir.join(".cs/local/remote.pid"), remote_pid).unwrap();
+        dir
+    }
+
+    /// A process whose argv carries `remote-control --name <name>`, as the
+    /// server of session <name> does.
+    fn fake_server_process(name: &str) -> std::process::Child {
+        std::process::Command::new("perl")
+            .args(["-e", "sleep 30", "remote-control", "--name", name, "--permission-mode", "default"])
+            .spawn()
+            .unwrap()
+    }
+
+    fn dir_name(dir: &Path) -> String {
+        dir.file_name().unwrap().to_string_lossy().to_string()
+    }
+
+    #[test]
+    fn a_session_with_a_running_server_reads_as_served_with_both_pids() {
+        let dir = served_session("live", "");
+        let mut server = fake_server_process(&dir_name(&dir));
+        fs::write(dir.join(".cs/local/remote.pid"), format!("{}\n", server.id())).unwrap();
+
+        let session = read_session(&dir, &HashMap::new());
+
+        let _ = server.kill();
+        let _ = server.wait();
+        assert_eq!(
+            session.liveness,
+            Liveness::Served { lock: std::process::id(), server: server.id() }
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A server whose release never ran leaves remote.pid naming its pid; once
+    /// another program has that pid, the session is not served.
+    #[test]
+    fn a_session_whose_server_pid_runs_another_program_reads_as_locked() {
+        let mut other = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let dir = served_session("reused", &format!("{}\n", other.id()));
+
+        let session = read_session(&dir, &HashMap::new());
+
+        let _ = other.kill();
+        let _ = other.wait();
+        assert_eq!(session.liveness, Liveness::Locked(std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_session_whose_server_pid_is_not_running_reads_as_locked() {
+        let dir = served_session("stale", "99999999\n");
+
+        let session = read_session(&dir, &HashMap::new());
+
+        assert_eq!(session.liveness, Liveness::Locked(std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

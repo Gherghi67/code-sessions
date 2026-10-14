@@ -170,10 +170,14 @@ _take_session_lock() {  # meta_dir
 # force (flag or collision menu) replaces the lock outright: that is what
 # force means. It takes the mutex again to write the replacement, since a
 # SessionEnd clearing its own lock reads and removes it under the mutex.
+# Before any of that, a live holder that is a `cs <name> --remote` server
+# refuses every open, and an open for --remote (remote set) refuses any live
+# holder (_remote_refuse_live).
 acquire_session_lock() {
     local meta_dir="$1"
     local force="${2:-}"
     local session_name="$3"
+    local remote="${4:-}"
     local lock_file="$meta_dir/session.lock" mutex="$meta_dir/session.mutex.lock"
     local lock_pid taken=0
 
@@ -189,6 +193,7 @@ acquire_session_lock() {
         *) error "_take_session_lock returned $taken for $meta_dir" ;;
     esac
 
+    _remote_refuse_live "$session_name" "$meta_dir" "$lock_pid" "$remote"
     if [ "$force" = "true" ]; then
         warn "Overriding active session lock (PID $lock_pid)"
     elif cs_interactive; then

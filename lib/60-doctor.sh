@@ -216,6 +216,31 @@ _doctor_check_iterm2() {
     fi
 }
 
+# One row per session `cs <name> --remote` serves or served: cs records the
+# server's pid in .cs/local/remote.pid, and a process it starts beside the
+# server removes the file once the server exits. A file whose pid no longer
+# runs that server (_remote_server_pid) means that process never got to (it
+# was killed, or the machine restarted), and the pid is gone or belongs to
+# another program by now. The doctor removes such a file and says so.
+_doctor_check_remote() {
+    local f meta name pid
+    for f in "$SESSIONS_ROOT"/*/.cs/local/remote.pid; do
+        [ -e "$f" ] || continue
+        meta="${f%/local/remote.pid}"
+        name="$(basename "$(dirname "$meta")")"
+        if pid=$(_remote_server_pid "$meta" "$name"); then
+            _doctor_ok "Remote: $name is served by claude remote-control (PID $pid)"
+            continue
+        fi
+        pid=$(head -n 1 "$f" 2>/dev/null | tr -d '[:space:]') || pid=""
+        if rm -f "$f" 2>/dev/null && [ ! -e "$f" ]; then
+            _doctor_warn "Remote: $name's .cs/local/remote.pid named PID ${pid:-(none)}, which is no longer $name's claude remote-control server, and nothing removed it when that server ended; removed it now."
+        else
+            _doctor_warn "Remote: $name's .cs/local/remote.pid named PID ${pid:-(none)}, which is no longer $name's claude remote-control server, and could not be removed: $f"
+        fi
+    done
+}
+
 # Spawn hygiene, all best-effort warnings:
 #   - .seed.stale and .brief.md.stale files accumulate in .spawn/ (the launch
 #     path sets aged-out seeds aside but never deletes them),
@@ -912,6 +937,7 @@ run_doctor() {
     _doctor_check_rotate_wrap_keys
     _doctor_check_iterm2
     _doctor_check_spawn
+    _doctor_check_remote
     _doctor_check_hook_authority
 
     if [ -n "${CLAUDE_SESSION_META_DIR:-}" ] && [ -d "${CLAUDE_SESSION_META_DIR:-}" ]; then

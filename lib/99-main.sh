@@ -263,6 +263,7 @@ main() {
     local session_name="$cmd"
     local force_flag=""
     local merge_feature=""
+    local remote_flag="" remote_mode=""
 
     # Validate inputs
     local wt_base="" wt_task=""
@@ -447,11 +448,40 @@ main() {
                 force_flag="true"
                 shift
                 ;;
+            --remote)
+                remote_flag="true"
+                shift
+                ;;
+            --permission-mode)
+                case "${2:-}" in
+                    ''|-*) error "--permission-mode needs a mode: cs $session_name --remote --permission-mode <mode>" ;;
+                esac
+                remote_mode="$2"
+                shift 2
+                ;;
             *)
-                error "Unknown session command: $1. Use -secrets, -queue, -msg, -narrative, -conversations, -usage, -tag, -features, -finish, or --force."
+                error "Unknown session command: $1. Use -secrets, -queue, -msg, -narrative, -conversations, -usage, -tag, -features, -finish, --force, --remote, or --permission-mode."
                 ;;
         esac
     done
+
+    # --remote serves the session through claude remote-control. The mode is
+    # passed through as given; remote-control refuses one it does not know.
+    if [ -n "$remote_mode" ] && [ -z "$remote_flag" ]; then
+        error "--permission-mode is an option of --remote: cs $session_name --remote --permission-mode $remote_mode"
+    fi
+    local remote_in_window=""
+    if [ -n "$remote_flag" ]; then
+        [ -z "$force_flag" ] \
+            || error "--force cannot be used with --remote: a served session never shares its directory with another claude."
+        [ -z "$merge_feature" ] \
+            || error "-finish cannot be used with --remote: remote-control takes no prompt to run /finish with."
+        remote_mode="${remote_mode:-default}"
+        # Set only on the command _remote_open_window gives the server's tmux
+        # window, and kept from everything this run starts.
+        remote_in_window="${CS_REMOTE_WINDOW:-}"
+        unset CS_REMOTE_WINDOW
+    fi
 
     local session_dir="$SESSIONS_ROOT/$session_name"
 
@@ -459,6 +489,14 @@ main() {
 
     # Check for updates (non-blocking)
     check_update_notify
+
+    if [ -n "$remote_flag" ]; then
+        _remote_claude_bin
+        if [ -n "${TMUX:-}" ] && [ -z "$remote_in_window" ]; then
+            _remote_open_window "$session_name" "$remote_mode"
+            return 0
+        fi
+    fi
 
     # Define paths (resolve symlinks for adopted sessions so Claude Code
     # sees the original project path, preserving conversation continuity)
@@ -561,7 +599,7 @@ $merge_feature
     fi
 
     # Launch Claude Code
-    launch_claude_code "$session_name" "$session_dir" "$is_new" "$force_flag" "$merge_feature"
+    launch_claude_code "$session_name" "$session_dir" "$is_new" "$force_flag" "$merge_feature" "$remote_mode"
 }
 
 main "$@"

@@ -239,7 +239,7 @@ export CS_NO_TASK_TOOLS="1"
 # cs keeps a value already in the shell (0 keeps function hooks off).
 export CS_NO_FUNCTION_HOOKS="1"
 
-# Override the tmux binary cs -spawn uses (default: tmux on PATH)
+# Override the tmux binary cs -spawn and cs <name> --remote use (default: tmux on PATH)
 export CS_TMUX_BIN="/opt/homebrew/bin/tmux"
 
 # Not a setting. cs -spawn puts the staged seed's token here in the tmux
@@ -247,6 +247,15 @@ export CS_TMUX_BIN="/opt/homebrew/bin/tmux"
 # other open of the name is asked. The launch drops it before claude
 # starts. Setting it by hand does nothing unless it matches the seed.
 # export CS_SPAWN_TOKEN
+
+# Not a setting. cs <name> --remote run inside tmux opens a window
+# remote:<name> in the cs tmux session that runs cs <name> --remote again
+# with this set, so that run serves in its window instead of opening
+# another. cs drops it before the server starts. The window's command also
+# sets CS_SESSIONS_ROOT and CLAUDE_CODE_BIN to the caller's sessions root and
+# the absolute claude the caller checked, since tmux starts a window with the
+# tmux server's environment.
+# export CS_REMOTE_WINDOW
 
 # Force the detected platform instead of probing for it; any other
 # value is rejected. Read by cs -secrets only, to choose between the

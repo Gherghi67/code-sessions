@@ -1627,7 +1627,14 @@ fn render_preview_pane(app: &App, frame: &mut Frame, area: Rect) {
         .as_deref()
         .map(|s| format!(" \u{b7} {s}"))
         .unwrap_or_default();
-    let (state_value, state_color, state_dot) = if let Some(pid) = session.liveness.lock_pid() {
+    let (state_value, state_color, state_dot) = if let crate::session::Liveness::Served { server, .. } = session.liveness {
+        // Served by `cs <name> --remote`: the pid worth showing is the server's.
+        (
+            format!("\u{25a0} live \u{b7} remote {}{}", server, agent),
+            p.teal,
+            None,
+        )
+    } else if let Some(pid) = session.liveness.lock_pid() {
         (
             format!("\u{25a0} live \u{b7} locked {}{}", pid, agent),
             p.teal,
@@ -4227,6 +4234,15 @@ mod tests {
             text.contains("locked 4242 \u{b7} waiting"),
             "state row must carry the advertised status beside the pid:\n{text}"
         );
+    }
+
+    #[test]
+    fn preview_state_row_shows_a_served_session_as_remote_with_the_server_pid() {
+        let mut app = preview_test_app();
+        app.sessions[0].liveness = Liveness::Served { lock: 4242, server: 777 };
+        let text = render_wide(&mut app);
+        assert!(text.contains("live \u{b7} remote 777"), "state row must name the server:\n{text}");
+        assert!(!text.contains("locked"), "a served session is not shown as a plain lock:\n{text}");
     }
 
     #[test]

@@ -203,6 +203,9 @@ launch_claude_code() {
     local is_new="$3"
     local force="${4:-}"
     local merge_feature="${5:-}"
+    # Set for `cs <name> --remote`: the permission mode the server passes to
+    # the sessions it starts. Empty for every other open.
+    local remote_mode="${6:-}"
 
     # Terminal theme (and its real background RGB when known) for the statusline
     # and hooks, detected while cs still owns the tty and reused by the session
@@ -223,7 +226,7 @@ launch_claude_code() {
     unset CS_SPAWN_TOKEN
 
     # Acquire session lock before anything else
-    acquire_session_lock "$session_dir/.cs" "$force" "$session_name"
+    acquire_session_lock "$session_dir/.cs" "$force" "$session_name" "${remote_mode:+remote}"
     # A force chosen at the collision menu is equivalent to --force for the
     # rest of the launch.
     [ "${CS_COLLISION_FORCE:-}" = "1" ] && force="true"
@@ -446,6 +449,16 @@ launch_claude_code() {
     unset CS_UPDATE_AVAILABLE
     if [ -n "$UPDATE_AVAILABLE" ]; then
         export CS_UPDATE_AVAILABLE="$UPDATE_AVAILABLE"
+    fi
+
+    # The session is open and every export above is in place: `--remote`
+    # serves it through claude remote-control instead of starting claude.
+    # A staged spawn seed stays staged for an interactive open, since the
+    # server takes no prompt to kick it with, and one line says so.
+    if [ -n "$remote_mode" ]; then
+        [ ! -f "$SESSIONS_ROOT/.spawn/$session_name.seed" ] \
+            || warn "A spawn seed is staged for $session_name; it stays staged for the next cs $session_name, since claude remote-control takes no prompt to start it with."
+        _serve_remote "$session_name" "$session_dir" "$remote_mode"
     fi
 
     # Spawn seed: tasks and a brief staged by cs -spawn for this session.
