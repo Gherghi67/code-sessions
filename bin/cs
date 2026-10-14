@@ -1242,11 +1242,10 @@ cs_actor_slug() {
 # and the live file runs from the tail up to the budget between rotations, so
 # the pair sets what each resume costs: about 96 KiB on average, near 42k
 # tokens (a 171 KB narrative measured about 75k). The busiest session writes
-# about 39 KB a day (2026-09-16 to 2026-10-13, from its archive), so the tail
-# holds a day and a half of it and a week or more of a quieter session. The
-# Read tool refuses a file over 256 KiB and the resume reads the narrative in
-# one call; the budget leaves that much room for appends made while the
-# over-budget warning is on screen. The 2:1 ratio keeps rotation infrequent: a
+# about 39 KB a day, so the tail holds a day and a half of it and a week or
+# more of a quieter session. The Read tool refuses a file over 256 KiB and the
+# resume reads the narrative in one call; the budget leaves that much room for
+# appends made while the over-budget warning is on screen. The 2:1 ratio keeps rotation infrequent: a
 # full tail's worth must accumulate again before the next one.
 CS_NARRATIVE_MAX_DEFAULT=131072
 CS_NARRATIVE_KEEP_DEFAULT=65536
