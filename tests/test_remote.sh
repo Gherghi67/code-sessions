@@ -171,17 +171,22 @@ group_gone_within_10s() {  # pgid
     ! kill -0 -- -"$1" 2>/dev/null
 }
 
-# Run `cs <args>` to its end in a process group of its own, as a terminal runs
-# it, with its output in $TEST_TMPDIR/out and its status in CS_RC. The release
-# cs leaves beside the server runs in that group too, so the run is over only
-# once the group is empty; the wait keeps the next step from racing it.
-run_cs() {  # cs args...
+# Run a command to its end in a process group of its own, as a terminal runs
+# it, with its input from RUN_CS_STDIN (/dev/null when unset), its output in
+# $TEST_TMPDIR/out and its status in CS_RC. The release cs leaves beside the
+# server runs in that group too, so the run is over only once the group is
+# empty; the wait keeps the next step from racing it.
+run_in_its_own_group() {  # command...
     CS_RC=0
-    perl -e 'setpgrp(0,0); exec @ARGV' "$CS_BIN" "$@" > "$TEST_TMPDIR/out" 2>&1 < /dev/null &
+    perl -e 'setpgrp(0,0); exec @ARGV' "$@" > "$TEST_TMPDIR/out" 2>&1 < "${RUN_CS_STDIN:-/dev/null}" &
     local leader=$!
     wait "$leader" || CS_RC=$?
     group_gone_within_10s "$leader" \
-        || { echo "  FAIL: cs $* left process group $leader running 10 s after it ended"; return 1; }
+        || { echo "  FAIL: $* left process group $leader running 10 s after it ended"; return 1; }
+}
+
+run_cs() {  # cs args...
+    run_in_its_own_group "$CS_BIN" "$@"
 }
 
 # run_cs, failing unless cs exits 0; cs's output is shown when it does not.
@@ -582,7 +587,8 @@ test_a_remote_pid_another_process_took_over_serves_nothing() {
     local out
     out=$("$CS_BIN" -live 2>&1 | strip_ansi | grep ' demo ') || { echo "  FAIL: demo is not listed live"; return 1; }
     assert_output_not_contains "$out" "remote" "-live does not show the other process as demo's server: $out" || return 1
-    run_cs_ok demo --force || return 1
+    printf '\n' > "$TEST_TMPDIR/enter"
+    RUN_CS_STDIN="$TEST_TMPDIR/enter" run_cs_ok demo --force || return 1
     assert_eq "Overriding active session lock (PID $OTHER_PID)" \
         "$(strip_ansi < "$TEST_TMPDIR/out" | grep -F 'Overriding active session lock')" "--force overrides the lock" || { cat "$TEST_TMPDIR/out"; return 1; }
     assert_eq "1" "$(grep -c '^argv=' "$FAKE_CLAUDE_LOG")" "claude opened the session" || return 1
