@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ABOUTME: Tests for cs -narrative rotate: byte-budgeted archival of a narrative's oldest sections
-# ABOUTME: Pins the cut rule, content addressing, concurrency guards, git commit and union-merge safety
+# ABOUTME: Pins the cut rule, content addressing, concurrency guards, that it makes no commit, and union-merge safety
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/test_lib.sh"
@@ -473,47 +473,37 @@ _init_tracked_repo() {
         && git add -A && git commit -q -m init)
 }
 
-test_rotate_commits_live_and_chunk_when_tracked() {
-    _make_narrative "$LIVE" 10 500
-    _init_tracked_repo
-    "$CS_BIN" -narrative rotate > /dev/null 2>&1 || return 1
-    local subject dirty
-    subject=$(git -C "$SESSION_DIR" log -1 --format=%s)
-    assert_eq "session: rotate narrative.alice (7 sections -> narrative-archive)" "$subject" "one commit with the rotation subject" || return 1
-    dirty=$(git -C "$SESSION_DIR" status --porcelain -- .cs/memory .cs/narrative-archive)
-    assert_eq "" "$dirty" "live file and chunk are both committed" || return 1
-}
-
-# Rotation commits inside the user's own checkout — and an adopted session IS
-# their project repo. A pathspec-less commit would sweep whatever they had
-# staged into a commit titled "session: rotate narrative", which is now reachable
-# for any session from the picker rather than only the one you are sitting in.
-test_rotate_commits_only_its_own_two_files() {
+# cs -narrative rotate makes no commit (Alex, 2026-10-14: "No commits at
+# all"): the trimmed live file and the new archive chunk stay on disk,
+# uncommitted, and nothing is staged, so work the user had staged stays
+# staged and alone. The output is the one line the wrap reports.
+test_rotate_makes_no_commit_and_leaves_the_cut_on_disk() {
     _make_narrative "$LIVE" 10 500
     _init_tracked_repo
     printf 'work in progress\n' > "$SESSION_DIR/user-file.txt"
     git -C "$SESSION_DIR" add -- user-file.txt
-    "$CS_BIN" -narrative rotate > /dev/null 2>&1 || return 1
-    local subject files staged
-    # HEAD must BE the rotation commit first: the fixture commits before the
-    # user's file exists, so "HEAD does not contain user-file.txt" is also true
-    # when the rotation commit never happened.
-    subject=$(git -C "$SESSION_DIR" log -1 --format=%s)
-    case "$subject" in "session: rotate narrative"*) ;; *) echo "  FAIL: HEAD is not the rotation commit: $subject"; return 1 ;; esac
-    files=$(git -C "$SESSION_DIR" show --name-only --format= HEAD | grep -c 'user-file.txt' || true)
-    assert_eq "0" "$files" "the user's staged file must not ride along in the rotation commit" || return 1
-    staged=$(git -C "$SESSION_DIR" diff --cached --name-only -- user-file.txt)
-    assert_eq "user-file.txt" "$staged" "and it must still be staged afterwards" || return 1
+    local head output status staged chunk
+    head=$(git -C "$SESSION_DIR" rev-parse HEAD)
+    output=$("$CS_BIN" -narrative rotate 2>&1) || { echo "  FAIL: rotate failed: $output"; return 1; }
+    assert_eq "$head" "$(git -C "$SESSION_DIR" rev-parse HEAD)" "no commit is made" || return 1
+    chunk=$(find "$ARCHIVE_DIR" -name '*.md' | head -1)
+    case "$output" in
+        "rotated 7 sections ("*") -> .cs/narrative-archive/alice/$(basename "$chunk"); live file now "*" KB") ;;
+        *) echo "  FAIL: the output is not the one rotation line: $output"; return 1 ;;
+    esac
+    status=$(git -C "$SESSION_DIR" status --porcelain -- .cs/memory .cs/narrative-archive)
+    assert_eq " M .cs/memory/narrative.alice.md
+?? .cs/narrative-archive/" "$status" "the cut is on disk, uncommitted and unstaged" || return 1
+    staged=$(git -C "$SESSION_DIR" diff --cached --name-only)
+    assert_eq "user-file.txt" "$staged" "only the user's own staged file is staged" || return 1
+    assert_file_not_contains "$LIVE" "section 1$" "the rotation happened" || return 1
 }
 
-# Naming a pathspec makes the commit a PARTIAL commit, which git refuses inside
-# a repo mid-merge — a state the old pathspec-less commit committed straight
-# through. The refusal is the safer half of that trade, but the reason must
-# survive: the bare message sends the reader looking for a broken rotation.
-test_rotate_names_the_merge_state_when_the_commit_is_refused() {
+# Mid-merge, the rotation still cuts and stages nothing, so nothing of it
+# rides into the user's merge commit.
+test_rotate_mid_merge_stages_nothing() {
     _make_narrative "$LIVE" 10 500
     _init_tracked_repo
-    # Manufacture a merge in progress: two divergent branches, conflicting file.
     git -C "$SESSION_DIR" checkout -q -b other
     printf 'theirs\n' > "$SESSION_DIR/conflict.txt"
     git -C "$SESSION_DIR" add -- conflict.txt
@@ -526,65 +516,44 @@ test_rotate_names_the_merge_state_when_the_commit_is_refused() {
     printf 'resolved\n' > "$SESSION_DIR/conflict.txt"
     git -C "$SESSION_DIR" add -- conflict.txt
     [ -f "$SESSION_DIR/.git/MERGE_HEAD" ] || { echo "  FAIL: fixture did not reach a mid-merge state"; return 1; }
-
     local output
-    output=$("$CS_BIN" -narrative rotate 2>&1) || true
-    assert_output_contains "$output" "mid-merge" "the warning must name the real reason" || return 1
+    output=$("$CS_BIN" -narrative rotate 2>&1) || { echo "  FAIL: rotate failed: $output"; return 1; }
+    assert_eq "conflict.txt" "$(git -C "$SESSION_DIR" diff --cached --name-only)" "only the user's resolution is staged" || return 1
     assert_file_not_contains "$LIVE" "section 1$" "the rotation itself still happened" || return 1
+    [ -f "$SESSION_DIR/.git/MERGE_HEAD" ] || { echo "  FAIL: the merge is no longer in progress"; return 1; }
 }
 
-test_rotate_skips_the_commit_when_cs_is_ignored() {
-    _make_narrative "$LIVE" 10 500
-    printf '.cs/\n' > "$SESSION_DIR/.gitignore"
-    (cd "$SESSION_DIR" && git init -q -b main && git config user.email alice@example.com && git config user.name alice \
-        && git add -A && git commit -q -m init)
-    local before output after
-    before=$(git -C "$SESSION_DIR" rev-list --count HEAD)
-    output=$("$CS_BIN" -narrative rotate 2>&1) || return 1
-    after=$(git -C "$SESSION_DIR" rev-list --count HEAD)
-    assert_eq "$before" "$after" "no commit when the narrative is not tracked" || return 1
-    assert_output_contains "$output" "not tracked" "says the archive was left uncommitted" || return 1
-    assert_file_contains "$LIVE" "section 8$" "the rotation itself still ran" || return 1
-}
-
-# A repo can ignore .cs/ wholesale and still track the narrative, because
-# something once ran `git add -f` on it. cs never force-adds into an ignored
-# tree: committing there is how session notes leak into a public repo. The
-# rotation still runs, nothing is committed, and the warning names the way out.
-test_rotate_never_force_adds_into_an_ignored_cs() {
-    _make_narrative "$LIVE" 10 500
-    printf '.cs/\n' > "$SESSION_DIR/.gitignore"
-    (cd "$SESSION_DIR" && git init -q -b main && git config user.email alice@example.com && git config user.name alice \
-        && git add -- .gitignore && git add -f -- .cs/memory/narrative.alice.md && git commit -q -m init)
-    local before output after tracked staged
-    before=$(git -C "$SESSION_DIR" rev-list --count HEAD)
-    output=$("$CS_BIN" -narrative rotate 2>&1) || return 1
-    after=$(git -C "$SESSION_DIR" rev-list --count HEAD)
-    assert_eq "$before" "$after" "no commit into an ignored .cs/" || return 1
-    tracked=$(git -C "$SESSION_DIR" ls-files -- .cs/narrative-archive | wc -l | tr -d ' ')
-    assert_eq "0" "$tracked" "the archive chunk is not added to the index" || return 1
-    staged=$(git -C "$SESSION_DIR" diff --cached --name-only | wc -l | tr -d ' ')
-    assert_eq "0" "$staged" "nothing is left staged" || return 1
-    assert_output_contains "$output" "git rm -r --cached .cs" "the warning names how to untrack it" || return 1
-    assert_file_contains "$LIVE" "section 8$" "the rotation itself still ran" || return 1
-}
-
-# Ignoring only the archive directory is the other way into an ignored path.
-# Committing the trimmed live file without its chunk would drop the archived
-# sections from git, so nothing is committed, and the warning names the path
-# that is actually ignored rather than advising to untrack all of .cs/.
-test_rotate_names_an_ignored_archive_directory() {
-    _make_narrative "$LIVE" 10 500
-    printf '.cs/narrative-archive/\n' > "$SESSION_DIR/.gitignore"
-    (cd "$SESSION_DIR" && git init -q -b main && git config user.email alice@example.com && git config user.name alice \
-        && git add -- .gitignore .cs/memory/narrative.alice.md && git commit -q -m init)
-    local before output after
-    before=$(git -C "$SESSION_DIR" rev-list --count HEAD)
-    output=$("$CS_BIN" -narrative rotate 2>&1) || return 1
-    after=$(git -C "$SESSION_DIR" rev-list --count HEAD)
-    assert_eq "$before" "$after" "no commit when the archive chunk is ignored" || return 1
-    assert_output_contains "$output" "is gitignored here" "the warning says which path is ignored" || return 1
-    assert_output_not_contains "$output" "git rm -r --cached .cs" "untracking .cs/ is not the fix here" || return 1
+# However the repo ignores the session's files (all of .cs/, all of it with
+# the narrative force-added once, or only the archive), the rotation runs,
+# makes no commit, stages nothing and prints only its rotation line.
+test_rotate_in_an_ignored_tree_commits_and_stages_nothing() {
+    local shape before output after
+    for shape in cs-ignored force-added archive-ignored; do
+        rm -rf "$SESSION_DIR/.git" "$SESSION_DIR/.gitignore" "$SESSION_DIR/.cs/narrative-archive"
+        _make_narrative "$LIVE" 10 500
+        case "$shape" in
+            cs-ignored)
+                printf '.cs/\n' > "$SESSION_DIR/.gitignore"
+                (cd "$SESSION_DIR" && git init -q -b main && git config user.email alice@example.com && git config user.name alice \
+                    && git add -A && git commit -q -m init) ;;
+            force-added)
+                printf '.cs/\n' > "$SESSION_DIR/.gitignore"
+                (cd "$SESSION_DIR" && git init -q -b main && git config user.email alice@example.com && git config user.name alice \
+                    && git add -- .gitignore && git add -f -- .cs/memory/narrative.alice.md && git commit -q -m init) ;;
+            archive-ignored)
+                printf '.cs/narrative-archive/\n' > "$SESSION_DIR/.gitignore"
+                (cd "$SESSION_DIR" && git init -q -b main && git config user.email alice@example.com && git config user.name alice \
+                    && git add -- .gitignore .cs/memory/narrative.alice.md && git commit -q -m init) ;;
+        esac
+        before=$(git -C "$SESSION_DIR" rev-list --count HEAD)
+        output=$("$CS_BIN" -narrative rotate 2>&1) || { echo "  FAIL: rotate failed ($shape): $output"; return 1; }
+        after=$(git -C "$SESSION_DIR" rev-list --count HEAD)
+        assert_eq "$before" "$after" "no commit ($shape)" || return 1
+        assert_eq "" "$(git -C "$SESSION_DIR" diff --cached --name-only)" "nothing is staged ($shape)" || return 1
+        assert_eq "1" "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" "one output line ($shape): $output" || return 1
+        case "$output" in rotated\ 7\ sections*) ;; *) echo "  FAIL: not the rotation line ($shape): $output"; return 1 ;; esac
+        assert_file_contains "$LIVE" "section 8$" "the rotation itself still ran ($shape)" || return 1
+    done
 }
 
 test_rotate_outside_git_still_rotates() {
@@ -690,9 +659,12 @@ _make_clones() {
     git clone -q "$SESSION_DIR" "$CLONE_B" && git -C "$CLONE_B" config user.email alice@example.com && git -C "$CLONE_B" config user.name alice
 }
 
+# Rotates in a clone, then commits the cut the way its user would: cs makes no
+# commit of its own, so what reaches the other clone is the user's commit.
 _rotate_in() {  # clone dir, [keep bytes]
     CLAUDE_SESSION_DIR="$1" CLAUDE_SESSION_META_DIR="$1/.cs" CS_NARRATIVE_KEEP_BYTES="${2:-$CS_NARRATIVE_KEEP_BYTES}" \
-        "$CS_BIN" -narrative rotate > /dev/null 2>&1
+        "$CS_BIN" -narrative rotate > /dev/null 2>&1 || return 1
+    git -C "$1" add -- .cs/memory .cs/narrative-archive .cs/timeline.jsonl && git -C "$1" commit -q -m "user commits the rotation"
 }
 
 test_rotate_then_peer_append_merges_without_resurrection() {
@@ -1059,12 +1031,9 @@ run_test test_rotate_midpoint_seam_never_executes_its_value
 run_test test_rotate_leaves_no_temp_files_behind
 run_test test_rotate_refuses_an_unreadable_narrative
 run_test test_rotate_refuses_an_unwritable_archive_dir
-run_test test_rotate_commits_live_and_chunk_when_tracked
-run_test test_rotate_commits_only_its_own_two_files
-run_test test_rotate_names_the_merge_state_when_the_commit_is_refused
-run_test test_rotate_skips_the_commit_when_cs_is_ignored
-run_test test_rotate_never_force_adds_into_an_ignored_cs
-run_test test_rotate_names_an_ignored_archive_directory
+run_test test_rotate_makes_no_commit_and_leaves_the_cut_on_disk
+run_test test_rotate_mid_merge_stages_nothing
+run_test test_rotate_in_an_ignored_tree_commits_and_stages_nothing
 run_test test_rotate_outside_git_still_rotates
 run_test test_rotate_appends_a_timeline_event
 run_test test_rotate_archives_an_encrypted_narrative_behind_private
