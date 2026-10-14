@@ -262,6 +262,11 @@ EOF
 WRAP_LINE_WITH_CHECKPOINT='When the session is complete, use the `/wrap` command to distill durable memory entries and generate an intelligent summary of the entire session (.cs/summary.md). Use `/summary` for the narrative alone, or `/sweep` for the memory pass alone. Mid-session, use `/checkpoint <label>` to snapshot git state and the narrative — e.g. before a risky refactor or destructive operation, and after reaching a green milestone (tests passing, a feature working) — saved under .cs/checkpoints/.'
 WRAP_LINE_SHORT='When the session is complete, use the `/wrap` command to distill durable memory entries and generate an intelligent summary of the entire session (.cs/summary.md). Use `/summary` for the narrative alone, or `/sweep` for the memory pass alone.'
 
+# The session protocol's line pointing at /summary, as cs wrote it from
+# 2026-02-06 to 2026-06-11, and as it wrote it from 2025-11-24 to 2026-02-05.
+SUMMARY_LINE_CS_DIR='When the session is complete, use the `/summary` command to generate an intelligent summary of the entire session. This will create a .cs/summary.md file synthesizing all documentation.'
+SUMMARY_LINE_ROOT='When the session is complete, use the `/summary` command to generate an intelligent summary of the entire session. This will create a summary.md file synthesizing all documentation.'
+
 # ============================================================================
 # The cue offers /wrap or nothing, and no session text names /sweep or /summary
 # ============================================================================
@@ -318,6 +323,40 @@ test_open_drops_the_sweep_and_summary_sentence_from_the_short_wrap_line() {
     assert_file_not_contains "$dir/CLAUDE.local.md" '/sweep' "the line no longer names /sweep" || return 1
 }
 
+# The line cs wrote pointing at /summary, either wording, becomes the /wrap
+# sentence; a second open changes nothing.
+test_open_rewrites_each_summary_line_cs_wrote() {
+    local v line dir
+    for v in cs-dir root; do
+        case "$v" in
+            cs-dir) line=$SUMMARY_LINE_CS_DIR ;;
+            root) line=$SUMMARY_LINE_ROOT ;;
+        esac
+        dir=$(_fresh_session "summary-line-$v")
+        _splice_wrap_line "$dir/CLAUDE.local.md" "$line"
+        assert_file_contains "$dir/CLAUDE.local.md" '^When the session is complete, use the `/summary` command' \
+            "precondition: the $v session carries the /summary line" || return 1
+        _reopen_with_migration "summary-line-$v"
+        assert_eq 'When the session is complete, use the `/wrap` command to distill durable memory entries and generate an intelligent summary of the entire session (.cs/summary.md).' \
+            "$(grep '^When the session is complete' "$dir/CLAUDE.local.md")" "the $v line becomes the /wrap sentence" || return 1
+        cp "$dir/CLAUDE.local.md" "$TEST_TMPDIR/summary-line-$v.once"
+        _reopen_with_migration "summary-line-$v"
+        cmp -s "$TEST_TMPDIR/summary-line-$v.once" "$dir/CLAUDE.local.md" \
+            || { echo "  FAIL: a second open changed the $v session's CLAUDE.local.md"; return 1; }
+    done
+}
+
+# A /summary line the user edited is theirs: an open leaves the file as it was.
+test_open_leaves_an_edited_summary_line_alone() {
+    local dir
+    dir=$(_fresh_session summary-line-edited)
+    _splice_wrap_line "$dir/CLAUDE.local.md" 'When the session is complete, use the `/summary` command to generate an intelligent summary of the entire session. This will create a .cs/summary.md file synthesizing all my notes.'
+    cp "$dir/CLAUDE.local.md" "$TEST_TMPDIR/summary-line-edited.seeded"
+    _reopen_with_migration summary-line-edited
+    cmp -s "$TEST_TMPDIR/summary-line-edited.seeded" "$dir/CLAUDE.local.md" \
+        || { echo "  FAIL: an open changed the edited /summary line"; diff "$TEST_TMPDIR/summary-line-edited.seeded" "$dir/CLAUDE.local.md" | head -20; return 1; }
+}
+
 # A cue block or a /wrap line the user edited is theirs: an open leaves the
 # file as it was.
 test_open_leaves_an_edited_cue_and_wrap_line_alone() {
@@ -344,4 +383,6 @@ run_test test_appended_cue_block_matches_the_template
 run_test test_open_rewrites_each_four_option_cue_cs_wrote
 run_test test_open_drops_the_sweep_and_summary_sentence_from_the_short_wrap_line
 run_test test_open_leaves_an_edited_cue_and_wrap_line_alone
+run_test test_open_rewrites_each_summary_line_cs_wrote
+run_test test_open_leaves_an_edited_summary_line_alone
 report_results
