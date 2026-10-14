@@ -140,7 +140,9 @@ _cs_git_at() {  # dir, git arguments...
 # filesystem and never by how its path is spelled, whether it holds .git (the
 # search ends there, finding nothing) or HEAD (found). Any HEAD counts, a dangling
 # link too: git accepts a link into refs/ whether or not it leads anywhere. A
-# session root without .git is asked like any other directory. A link out of
+# session root without .git is asked like any other directory. Such a root
+# is outside the threat a clone or pull brings, so the hooks and verbs that
+# ask git at a session root do not walk from it first. A link out of
 # the session, a vault mounted elsewhere among them, is walked from where it
 # leads up to its first .git or / like any other directory.
 # The directory found is printed relative to <session_dir> when it lies below
