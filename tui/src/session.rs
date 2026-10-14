@@ -1063,7 +1063,7 @@ pub fn unowned_entries(name: &str, path: &Path) -> Result<UnownedEntries, String
     if path.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false) {
         return Ok(UnownedEntries::NotCreatedByCs(Vec::new()));
     }
-    if worktree_parts(name).is_some() && path.join(".git").is_file() {
+    if is_worktree_beside_its_base(name, path) {
         return worktree_untracked(path).map(UnownedEntries::NotTrackedByGit);
     }
     let entries = match fs::read_dir(path) {
@@ -1084,6 +1084,16 @@ pub fn unowned_entries(name: &str, path: &Path) -> Result<UnownedEntries, String
     }
     names.sort();
     Ok(UnownedEntries::NotCreatedByCs(names))
+}
+
+/// Whether session `name` at `path` is a worktree git can list: a
+/// `<base>@<task>` checkout with its `.git` file, beside a base directory (a
+/// link to one followed). `cs -rm` asks the same before it lists with git
+/// (lib/65-sessions.sh `_remove_one_session`); a worktree whose base is gone
+/// has no repository to ask, so both list it as a plain directory.
+fn is_worktree_beside_its_base(name: &str, path: &Path) -> bool {
+    let Some((base, _)) = worktree_parts(name) else { return false };
+    path.join(".git").is_file() && path.parent().is_some_and(|root| root.join(base).is_dir())
 }
 
 /// The NUL-separated paths `git ls-files <args>` prints in `path`.
