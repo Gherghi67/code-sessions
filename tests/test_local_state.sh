@@ -1143,6 +1143,23 @@ test_atomic_write_refuses_a_link_out_of_the_session() {
     assert_eq "USER-OWNED" "$(cat "$o")" "the target outside is untouched" || return 1
 }
 
+# A clone chooses where a committed link leads, and the name there can carry
+# a terminal escape: a raw ESC or BEL byte, or backslash text echo -e would
+# turn into one. The refusal names where the write lands as a plain path,
+# each character a plain path lacks replaced by _.
+test_atomic_write_names_where_a_link_leads_as_a_plain_path() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m
+    local s="$t/sess" o="$t/out" out rc=0
+    mkdir -p "$s/.cs" "$o$bad"
+    ln -s "$o$bad" "$s/.cs/memory"
+    out=$(_atomic_write_in "$s" "$s/.cs/memory/MEMORY.md" new 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the write must fail" || return 1
+    assert_eq "cs_write_atomic: $s/.cs/memory/MEMORY.md leads to $o$shown/MEMORY.md, outside the session $s" "$out" "the refusal names where it lands as a plain path" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal" || return 1
+    assert_eq "" "$(ls -A "$o$bad")" "nothing is written into the directory outside" || return 1
+}
+
 test_atomic_write_refuses_a_directory_link_out_of_the_session() {
     local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
     local s="$t/sess" o="$t/outside-dir" out rc=0
@@ -1545,6 +1562,7 @@ run_test test_vault_holder_drop_keeps_a_concurrent_add
 run_test test_atomic_write_keeps_the_mode_with_gnu_stat_on_a_mac
 run_test test_atomic_write_refuses_a_directory_destination
 run_test test_atomic_write_refuses_a_link_out_of_the_session
+run_test test_atomic_write_names_where_a_link_leads_as_a_plain_path
 run_test test_atomic_write_refuses_a_directory_link_out_of_the_session
 run_test test_atomic_write_refuses_a_dangling_link_out_of_the_session
 run_test test_atomic_write_checks_the_session_the_destination_is_in
