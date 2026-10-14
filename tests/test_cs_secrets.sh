@@ -4900,9 +4900,13 @@ test_secrets_rename_into_a_base_named_in_another_case_waits_for_its_live_feature
 # whitespace removed, is a decimal pid from 1 to 2147483647 that kill -0
 # reaches. Each content below is fed to both, through the refusals of
 # `cs receiver -narrative rotate` and `cs-secrets -s receiver set` from
-# inside sender, and both must call it live (refuse, naming the pid) or not.
+# inside sender, and both must call it live (refuse, naming the pid) or idle
+# (rotate finds nothing to rotate; the secret is stored). Any other output
+# fails the test: a refusal that names the pid in another form is neither.
 test_cs_and_cs_secrets_read_a_session_lock_by_one_rule() {
-    mkdir -p "$CS_SESSIONS_ROOT/receiver/.cs"
+    mkdir -p "$CS_SESSIONS_ROOT/receiver/.cs/memory"
+    printf '# Narrative\n' > "$CS_SESSIONS_ROOT/receiver/.cs/memory/narrative.tester.md"
+    local rotated="nothing to rotate: narrative.tester.md is 0 KB (budget 64 KB)"
     sleep 300 &
     local pid=$! entry content want out got_cs got_secrets
     local entries=("live|$pid" "live| $pid" "live|$pid " "live|	$pid
@@ -4913,12 +4917,24 @@ test_cs_and_cs_secrets_read_a_session_lock_by_one_rule() {
         want="${entry%%|*}"
         content="${entry#*|}"
         printf '%s' "$content" > "$CS_SESSIONS_ROOT/receiver/.cs/session.lock"
-        out=$(CLAUDE_SESSION_NAME=sender "$CS_BIN" receiver -narrative rotate </dev/null 2>&1)
-        got_cs=idle
-        [ "$out" = "Error: session sender cannot rotate the narrative of session receiver while it is live (pid $pid); --force does not override that from another session. Close receiver first." ] && got_cs=live
+        out=$(CLAUDE_SESSION_NAME=sender CS_ACTOR=tester CS_NARRATIVE_MAX_BYTES=65536 "$CS_BIN" receiver -narrative rotate </dev/null 2>&1)
+        if [ "$out" = "Error: session sender cannot rotate the narrative of session receiver while it is live (pid $pid); --force does not override that from another session. Close receiver first." ]; then
+            got_cs=live
+        elif [ "$out" = "$rotated" ]; then
+            got_cs=idle
+        else
+            echo "  FAIL: cs reads the lock '$content' as neither live nor idle: $out"
+            kill "$pid"; wait "$pid" 2>/dev/null; return 1
+        fi
         out=$(printf 'v' | CLAUDE_SESSION_NAME=sender "$CS_SECRETS_BIN" -s receiver set K 2>&1)
-        got_secrets=idle
-        [ "$out" = "$(_receiver_refusal_for sender "$pid")" ] && got_secrets=live
+        if [ "$out" = "$(_receiver_refusal_for sender "$pid")" ]; then
+            got_secrets=live
+        elif [ "$out" = "Stored secret: K" ]; then
+            got_secrets=idle
+        else
+            echo "  FAIL: cs-secrets reads the lock '$content' as neither live nor idle: $out"
+            kill "$pid"; wait "$pid" 2>/dev/null; return 1
+        fi
         assert_eq "$want" "$got_cs" "cs reads the lock '$content'" || { kill "$pid"; wait "$pid" 2>/dev/null; return 1; }
         assert_eq "$want" "$got_secrets" "cs-secrets reads the lock '$content'" || { kill "$pid"; wait "$pid" 2>/dev/null; return 1; }
     done
