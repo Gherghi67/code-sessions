@@ -26,7 +26,7 @@ twins (`cs_append_inside`, `cs_mkdir_inside`), the link check all three run firs
 session is the nearest directory above the destination that holds a `.cs`, unless a link
 inside an outer session leads to it, and then the outer session is the one checked; the writer
 refuses a write a link would carry out of it and names the link on stderr, and checks a
-new directory at its nearest existing level; a path or link target with a name ending in a newline is refused,
+new directory at its nearest existing level, makes it only inside a `.cs` that exists and never the `.cs` or anything above it, one level at a time, so a writer for a session removed under it fails instead of building it again; a path or link target with a name ending in a newline is refused,
 since `$(...)` drops that newline and would check a different path; hooks set `CS_WRITE_QUIET=1`, so any other write
 failure stays silent), and the
 machine-local state writers (`cs_local_state_set`, `cs_local_state_unset`), which take a
