@@ -35,6 +35,12 @@ run_archive() {
         esac
     done
     [ "${#names[@]}" -ge 1 ] || error "Usage: cs -archive <name>... [--force]"
+    # Before any marker is written: a live session of another conversation's
+    # user stops the whole run. One already archived is left alone below.
+    for name in "${names[@]}"; do
+        [ -f "$SESSIONS_ROOT/$name/.cs/archived" ] \
+            || _refuse_live_other_session "$name" "$SESSIONS_ROOT/$name/.cs" archive
+    done
     for name in "${names[@]}"; do
         _archive_resolve "$name"
         if [ -f "$ARCHIVE_MARKER" ]; then

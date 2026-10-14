@@ -364,6 +364,11 @@ remove_session() {
     # Set by _remove_one_session when a session went but its age state did
     # not: the other names still go, and the run ends non-zero.
     local age_state_left=""
+    # Before any name goes: a live session of another conversation's user
+    # stops the whole run, so none of the names before it is removed either.
+    for _name in "${names[@]}"; do
+        _refuse_live_other_session "$_name" "$SESSIONS_ROOT/$_name/.cs" remove
+    done
     for _name in "${names[@]}"; do
         _remove_one_session "$_name" "$force" "$delete_files"
     done

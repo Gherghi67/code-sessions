@@ -313,7 +313,7 @@ main() {
                 # session's user to accept, and arming or accepting stays with
                 # that user. A terminal outside any session is the user.
                 local caller="${CLAUDE_SESSION_NAME:-}"
-                if [ -n "$caller" ] && [ "$caller" != "$session_name" ]; then
+                if _called_from_other_session "$session_name"; then
                     case "${1:-}" in
                         add)
                             shift

@@ -301,6 +301,29 @@ session_lock_owned_by_invoker() {  # session_name, lock_pid
         && _pid_is_self_or_ancestor "$2"
 }
 
+# True when cs runs inside a session (CLAUDE_SESSION_NAME) other than <name>.
+# A terminal outside every session is the user, never another session.
+_called_from_other_session() {  # name
+    [ -n "${CLAUDE_SESSION_NAME:-}" ] && [ "$CLAUDE_SESSION_NAME" != "$1" ]
+}
+
+# Refuses to remove or archive session <name> while its claude is running
+# when cs runs inside a session that does not own it, --force or not: the
+# flag skips the live check only from a terminal outside every session and
+# for the caller's own sessions. A session owns itself and, from its base,
+# its own features (<base>@<task>); a feature owns neither its base nor a
+# sibling. An idle target is left to the verb's own checks. Called directly,
+# never in $(...), so the error ends cs.
+_refuse_live_other_session() {  # name meta_dir verb
+    _called_from_other_session "$1" || return 0
+    case "$CLAUDE_SESSION_NAME" in
+        *@*) ;;
+        *) case "$1" in "$CLAUDE_SESSION_NAME"@*) return 0 ;; esac ;;
+    esac
+    session_is_live "$2" || return 0
+    error "session $CLAUDE_SESSION_NAME cannot $3 session $1 while it is live (pid $(read_lock_pid "$2")); --force does not override that from another session. Close $1 first."
+}
+
 # Epoch mtime of a file, 0 on error. Arg: path. GNU stat is asked first, as
 # _cs_file_mode does: BSD stat rejects -c with no output, while GNU stat reads
 # -f as --file-system and prints that, and OSTYPE is no guide to which stat
