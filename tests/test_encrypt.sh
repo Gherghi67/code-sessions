@@ -574,6 +574,26 @@ test_open_that_stops_leaves_a_running_session_vault_mounted() {
     assert_eq "" "$(cat "$FAKE_HDIUTIL_LOG")" "joined the mount, never detached it" || return 1
 }
 
+# The open's exit reads the lock by live_lock_pid's rule: "-1" and "0" name
+# process groups and "+<pid>" is not a pid, so no running session holds the
+# vault and the open that mounted it detaches it.
+test_open_that_stops_reads_the_lock_by_the_one_lock_rule() {
+    _encrypted_session enc || return 1
+    echo "plaintext" > "$CS_SESSIONS_ROOT/enc/.cs/local/session.log"
+    local text out rc
+    for text in "-1" "0" "+$$"; do
+        : > "$FAKE_HDIUTIL_LOG"
+        rm -f "$TEST_TMPDIR/mounted"
+        printf '%s\n' "$text" > "$CS_SESSIONS_ROOT/enc/.cs/session.lock"
+        rc=0
+        out=$(_open enc 2>&1) || rc=$?
+        assert_eq "1" "$rc" "the open over a lock of '$text' stops: $out" || return 1
+        assert_output_contains "$out" "still holds session.log in plaintext" "stops at the plaintext refusal" || return 1
+        assert_eq "attach -nobrowse -mountpoint $FAKE_MNT $(_vault_path enc)
+detach $FAKE_MNT" "$(cat "$FAKE_HDIUTIL_LOG")" "a lock of '$text' does not keep the vault mounted" || return 1
+    done
+}
+
 # The resume prompt belongs to a session with a conversation to resume; one
 # with none starts its first without asking. The fixture's state line is not in
 # state-file form, so it records no conversation.
@@ -847,6 +867,7 @@ run_test test_pre_open_refuses_without_a_terminal
 run_test test_pre_open_attaches_with_a_prompt
 run_test test_open_that_stops_detaches_the_vault_it_mounted
 run_test test_open_that_stops_leaves_a_running_session_vault_mounted
+run_test test_open_that_stops_reads_the_lock_by_the_one_lock_rule
 run_test test_open_cancelled_at_a_prompt_detaches_the_vault_it_mounted
 run_test test_open_that_stops_leaves_a_vault_another_holder_keeps
 run_test test_open_handing_off_to_the_session_manager_leaves_the_holders
