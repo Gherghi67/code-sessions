@@ -10620,20 +10620,27 @@ _task_archive_answer() {  # meta_dir
     esac
 }
 
-# Whether the cs mod ran this /rotate on its own: yes when
-# .cs/local/cs.forced, which the mod writes with the conversation's id before
-# it runs a forced rotation, names the conversation .cs/local/state names;
-# no otherwise. CS_ROTATE_FORCE_CTX is only the threshold the mod forces at
+# Whether the cs mod ran this /rotate for the person, on its own or from its
+# one-key rotate button: yes when .cs/local/cs.forced or .cs/local/cs.pressed
+# names the conversation .cs/local/state names; no otherwise. The mod writes
+# the conversation's id to cs.forced before it runs a forced rotation, and to
+# cs.pressed before it runs a press's /rotate, emptying cs.pressed once that
+# turn is over. CS_ROTATE_FORCE_CTX is only the threshold the mod forces at
 # (forcing is on when it is unset), so it says nothing about this rotation.
 _task_archive_forced() {  # meta_dir
-    local now forced=""
+    local now marker named
     now=$(_read_local_state "$1/local/state" claude_session_id)
-    if [ -f "$1/local/cs.forced" ]; then
-        # A last line with no newline still sets forced; read's status is
-        # only that missing newline.
-        IFS= read -r forced < "$1/local/cs.forced" || true
+    if [ -n "$now" ]; then
+        for marker in cs.forced cs.pressed; do
+            [ -f "$1/local/$marker" ] || continue
+            named=""
+            # A last line with no newline still sets named; read's status is
+            # only that missing newline.
+            IFS= read -r named < "$1/local/$marker" || true
+            if [ "$named" = "$now" ]; then echo yes; return 0; fi
+        done
     fi
-    if [ -n "$now" ] && [ "$forced" = "$now" ]; then echo yes; else echo no; fi
+    echo no
 }
 
 # Claude Code's file store for the session's task list:
