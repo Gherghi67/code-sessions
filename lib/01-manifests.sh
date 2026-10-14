@@ -164,11 +164,30 @@ CS_COMPLETION_FILES=(
     completions/_cs
 )
 
+# The events install.sh registers a cs hook under: the first column of
+# _register_cs_hooks, which a test compares with this list. install.sh reads
+# it before it deploys anything, to refuse a settings.json that holds one of
+# them as something other than a list.
+# shellcheck disable=SC2034  # read by install.sh
+CS_HOOK_EVENTS=(
+    SessionStart
+    PostToolUse
+    Stop
+    SessionEnd
+    SubagentStart
+    PostToolUseFailure
+    PermissionRequest
+    UserPromptSubmit
+    FileChanged
+    CwdChanged
+)
+
 # Remove a hook registration from any event in a settings JSON string,
 # matching either path spelling; drops wrappers that empty out. An entry with
 # no .hooks array (its command at the top level, or not an object at all)
 # passes through untouched, and so does an element of a .hooks array that is
-# not an object: neither can be cs's registration.
+# not an object: neither can be cs's registration. An event whose value is
+# not a list is the user's and stays as it is.
 # A wrapper whose .hooks array is empty goes whether the strip emptied it or
 # the user wrote it that way; the filter cannot tell the two apart and an
 # empty one does nothing in Claude Code. Deliberate: not a defect to fix.
@@ -179,8 +198,10 @@ _strip_hook_registration() {
         if .hooks then
             .hooks |= with_entries(
                 .value |= (
-                    map(if type == "object" and (.hooks | type) == "array" then .hooks |= map(select(type != "object" or (.command != $p and .command != $t))) else . end)
-                    | map(select(type != "object" or (.hooks | type) != "array" or (.hooks | length > 0)))
+                    if type == "array" then
+                        map(if type == "object" and (.hooks | type) == "array" then .hooks |= map(select(type != "object" or (.command != $p and .command != $t))) else . end)
+                        | map(select(type != "object" or (.hooks | type) != "array" or (.hooks | length > 0)))
+                    else . end
                 )
             )
         else . end

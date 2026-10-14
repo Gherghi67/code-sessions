@@ -3586,14 +3586,18 @@ run_test test_retired_hooks_strip_preserves_coexisting_hook
 # leave flat or unrelated wrappers untouched, then append the cs entry.
 _install_merge_filter() {
     cat << 'JQ'
-.hooks[$event] = (
-    ((.hooks[$event] // []) | map(
-        if type == "object" and (.hooks | type) == "array" then
-            .hooks |= map(select(type != "object" or (.command != $path and .command != $tilde)))
-        else . end
-    ) | map(select(type != "object" or (.hooks | type) != "array" or (.hooks | length > 0))))
-    + [{ "hooks": [{ "type": "command", "command": $tilde, "timeout": $timeout }] }]
-)
+if .hooks[$event] != null and (.hooks[$event] | type) != "array" then
+    error("hooks.\($event) is not a list")
+else
+    .hooks[$event] = (
+        ((.hooks[$event] // []) | map(
+            if type == "object" and (.hooks | type) == "array" then
+                .hooks |= map(select(type != "object" or (.command != $path and .command != $tilde)))
+            else . end
+        ) | map(select(type != "object" or (.hooks | type) != "array" or (.hooks | length > 0))))
+        + [{ "hooks": [{ "type": "command", "command": $tilde, "timeout": $timeout }] }]
+    )
+end
 JQ
 }
 

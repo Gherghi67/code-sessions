@@ -192,11 +192,30 @@ CS_COMPLETION_FILES=(
     completions/_cs
 )
 
+# The events install.sh registers a cs hook under: the first column of
+# _register_cs_hooks, which a test compares with this list. install.sh reads
+# it before it deploys anything, to refuse a settings.json that holds one of
+# them as something other than a list.
+# shellcheck disable=SC2034  # read by install.sh
+CS_HOOK_EVENTS=(
+    SessionStart
+    PostToolUse
+    Stop
+    SessionEnd
+    SubagentStart
+    PostToolUseFailure
+    PermissionRequest
+    UserPromptSubmit
+    FileChanged
+    CwdChanged
+)
+
 # Remove a hook registration from any event in a settings JSON string,
 # matching either path spelling; drops wrappers that empty out. An entry with
 # no .hooks array (its command at the top level, or not an object at all)
 # passes through untouched, and so does an element of a .hooks array that is
-# not an object: neither can be cs's registration.
+# not an object: neither can be cs's registration. An event whose value is
+# not a list is the user's and stays as it is.
 # A wrapper whose .hooks array is empty goes whether the strip emptied it or
 # the user wrote it that way; the filter cannot tell the two apart and an
 # empty one does nothing in Claude Code. Deliberate: not a defect to fix.
@@ -207,8 +226,10 @@ _strip_hook_registration() {
         if .hooks then
             .hooks |= with_entries(
                 .value |= (
-                    map(if type == "object" and (.hooks | type) == "array" then .hooks |= map(select(type != "object" or (.command != $p and .command != $t))) else . end)
-                    | map(select(type != "object" or (.hooks | type) != "array" or (.hooks | length > 0)))
+                    if type == "array" then
+                        map(if type == "object" and (.hooks | type) == "array" then .hooks |= map(select(type != "object" or (.command != $p and .command != $t))) else . end)
+                        | map(select(type != "object" or (.hooks | type) != "array" or (.hooks | length > 0)))
+                    else . end
                 )
             )
         else . end
@@ -13638,9 +13659,10 @@ _uninstall_rotate_wrap_keys() {
 }
 
 # Settings JSON on stdin without any cs hook, current or retired, on stdout:
-# stripped from any event, event-agnostic, matching both path spellings ($HOME
-# and ~) in both deployment layouts (subdirectory and flat). Drops wrappers
-# that empty out; sibling user hooks co-shipped in a wrapper survive. A hook
+# stripped from any event that is a list, event-agnostic, matching both path
+# spellings ($HOME and ~) in both deployment layouts (subdirectory and flat).
+# Drops wrappers that empty out; sibling user hooks co-shipped in a wrapper
+# survive, and an event that is not a list stays as it is. A hook
 # file still present in either layout was kept as the user's (uninstall
 # removes only the files cs wrote), so its registration is the user's too
 # and stays.
@@ -13656,10 +13678,13 @@ _strip_cs_hook_registrations() {  # hooks_dir, hooks_parent_dir
         fi
     done
 
-    # Clean up empty hook arrays
+    # Clean up empty hook arrays. An event whose list is empty goes whether
+    # the strips emptied it or the user wrote it that way: the filter cannot
+    # tell the two apart and an empty list does nothing in Claude Code
+    # (deliberate: not a defect to fix). An event that is not a list stays.
     echo "$settings" | jq '
         if .hooks then
-            .hooks |= with_entries(select(.value | length > 0))
+            .hooks |= with_entries(select((.value | type) != "array" or (.value | length > 0)))
             | if .hooks == {} then del(.hooks) else . end
         else . end
     '

@@ -572,9 +572,10 @@ _uninstall_rotate_wrap_keys() {
 }
 
 # Settings JSON on stdin without any cs hook, current or retired, on stdout:
-# stripped from any event, event-agnostic, matching both path spellings ($HOME
-# and ~) in both deployment layouts (subdirectory and flat). Drops wrappers
-# that empty out; sibling user hooks co-shipped in a wrapper survive. A hook
+# stripped from any event that is a list, event-agnostic, matching both path
+# spellings ($HOME and ~) in both deployment layouts (subdirectory and flat).
+# Drops wrappers that empty out; sibling user hooks co-shipped in a wrapper
+# survive, and an event that is not a list stays as it is. A hook
 # file still present in either layout was kept as the user's (uninstall
 # removes only the files cs wrote), so its registration is the user's too
 # and stays.
@@ -590,10 +591,13 @@ _strip_cs_hook_registrations() {  # hooks_dir, hooks_parent_dir
         fi
     done
 
-    # Clean up empty hook arrays
+    # Clean up empty hook arrays. An event whose list is empty goes whether
+    # the strips emptied it or the user wrote it that way: the filter cannot
+    # tell the two apart and an empty list does nothing in Claude Code
+    # (deliberate: not a defect to fix). An event that is not a list stays.
     echo "$settings" | jq '
         if .hooks then
-            .hooks |= with_entries(select(.value | length > 0))
+            .hooks |= with_entries(select((.value | type) != "array" or (.value | length > 0)))
             | if .hooks == {} then del(.hooks) else . end
         else . end
     '

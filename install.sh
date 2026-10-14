@@ -256,11 +256,30 @@ CS_COMPLETION_FILES=(
     completions/_cs
 )
 
+# The events install.sh registers a cs hook under: the first column of
+# _register_cs_hooks, which a test compares with this list. install.sh reads
+# it before it deploys anything, to refuse a settings.json that holds one of
+# them as something other than a list.
+# shellcheck disable=SC2034  # read by install.sh
+CS_HOOK_EVENTS=(
+    SessionStart
+    PostToolUse
+    Stop
+    SessionEnd
+    SubagentStart
+    PostToolUseFailure
+    PermissionRequest
+    UserPromptSubmit
+    FileChanged
+    CwdChanged
+)
+
 # Remove a hook registration from any event in a settings JSON string,
 # matching either path spelling; drops wrappers that empty out. An entry with
 # no .hooks array (its command at the top level, or not an object at all)
 # passes through untouched, and so does an element of a .hooks array that is
-# not an object: neither can be cs's registration.
+# not an object: neither can be cs's registration. An event whose value is
+# not a list is the user's and stays as it is.
 # A wrapper whose .hooks array is empty goes whether the strip emptied it or
 # the user wrote it that way; the filter cannot tell the two apart and an
 # empty one does nothing in Claude Code. Deliberate: not a defect to fix.
@@ -271,8 +290,10 @@ _strip_hook_registration() {
         if .hooks then
             .hooks |= with_entries(
                 .value |= (
-                    map(if type == "object" and (.hooks | type) == "array" then .hooks |= map(select(type != "object" or (.command != $p and .command != $t))) else . end)
-                    | map(select(type != "object" or (.hooks | type) != "array" or (.hooks | length > 0)))
+                    if type == "array" then
+                        map(if type == "object" and (.hooks | type) == "array" then .hooks |= map(select(type != "object" or (.command != $p and .command != $t))) else . end)
+                        | map(select(type != "object" or (.hooks | type) != "array" or (.hooks | length > 0)))
+                    else . end
                 )
             )
         else . end
@@ -1248,7 +1269,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "0cb31a7d8986c28b193c4b643925b2f9d501d4ac1dbff85476d871b138d97c07  bin/cs"
+    "5310c02cb585ee86ec9c68755b9a741224cd0dfcbae9ff15ffc8e91fcd84c411  bin/cs"
     "53865bc18046bdb236b3bc644d3b197e5e2198890be4d22b449fea81c9ab41db  bin/cs-secrets"
     "a6d008e8bcba4e3d4c1599c76aaddc4ea1c4eb61e3ba861c60d9e4b91f706e78  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -1296,6 +1317,26 @@ CS_PAYLOAD_SHA256=(
 CS_HOOK_FILES=("${CS_HOOK_LIBS[@]}" "${CS_HOOKS[@]}")
 
 _check_retired_names
+
+# Stop, before anything is deployed, on a settings.json that holds one of the
+# events cs registers a hook under (CS_HOOK_EVENTS) as something other than a
+# list: that value is the user's and stays as it is, so cs's hook cannot be
+# added to it. A missing or null event is one cs creates. Without jq no hook
+# is registered at all, and a file jq cannot parse stops the install at the
+# settings step, further down.
+_refuse_a_hook_event_that_is_not_a_list() {
+    local event
+    command -v jq >/dev/null 2>&1 || return 0
+    [ -s "$CLAUDE_SETTINGS" ] || return 0
+    event=$(jq -r --arg events "${CS_HOOK_EVENTS[*]}" '
+        (if type == "object" then .hooks else null end) as $hooks
+        | if ($hooks | type) == "object" then
+            first(($events | split(" "))[] | select($hooks[.] != null and ($hooks[.] | type) != "array"))
+        else empty end
+    ' "$CLAUDE_SETTINGS" 2>/dev/null) || return 0
+    [ -z "$event" ] || error "$CLAUDE_SETTINGS holds a hooks.$event that is not a list, so cs's hook cannot be added to it; nothing was installed"
+}
+_refuse_a_hook_event_that_is_not_a_list
 
 # Minisign public key for verifying signed releases
 CS_SIGN_PUBKEY="RWQvs3IVdvrS8PJs0V0gwdJGPw/x5waQ6z6iqPQm90JfpxfcsSy9b9Vo"
@@ -1881,10 +1922,13 @@ else
             _strip_flat_hook "$hook"
         done
 
-        # Drop events that emptied out entirely after the strips
+        # Drop events that emptied out entirely after the strips. An event
+        # whose list is empty goes whether the strips emptied it or the user
+        # wrote it that way (deliberate, see _strip_hook_registration); an
+        # event that is not a list stays.
         SETTINGS=$(echo "$SETTINGS" | jq '
             if .hooks then
-                .hooks |= with_entries(select(.value | length > 0))
+                .hooks |= with_entries(select((.value | type) != "array" or (.value | length > 0)))
                 | if .hooks == {} then del(.hooks) else . end
             else . end
         ')
@@ -1903,7 +1947,11 @@ else
     # array that is not an object: only an object in an array `.hooks` can be
     # cs's registration, as in _strip_hook_registration. A wrapper whose
     # `.hooks` array is empty is dropped whether the strip emptied it or the
-    # user wrote it that way (deliberate, see _strip_hook_registration). The
+    # user wrote it that way (deliberate, see _strip_hook_registration). An
+    # event that is not a list (and not null) is the user's and is never
+    # rewritten: _refuse_a_hook_event_that_is_not_a_list stops the install on
+    # one before anything is deployed, and the filter fails on one that
+    # appears afterwards, which leaves settings.json as it was. The
     # spec tests in tests/test_hooks.sh run a copy of this filter,
     # _install_merge_filter, and one of them compares the two texts.
     _merge_cs_hook() {
@@ -1940,14 +1988,18 @@ else
             --arg path "$path" \
             --arg tilde "$tilde" \
             --argjson append "$append" '
-            .hooks[$event] = (
-                ((.hooks[$event] // []) | map(
-                    if type == "object" and (.hooks | type) == "array" then
-                        .hooks |= map(select(type != "object" or (.command != $path and .command != $tilde)))
-                    else . end
-                ) | map(select(type != "object" or (.hooks | type) != "array" or (.hooks | length > 0))))
-                + [$append]
-            )
+            if .hooks[$event] != null and (.hooks[$event] | type) != "array" then
+                error("hooks.\($event) is not a list")
+            else
+                .hooks[$event] = (
+                    ((.hooks[$event] // []) | map(
+                        if type == "object" and (.hooks | type) == "array" then
+                            .hooks |= map(select(type != "object" or (.command != $path and .command != $tilde)))
+                        else . end
+                    ) | map(select(type != "object" or (.hooks | type) != "array" or (.hooks | length > 0))))
+                    + [$append]
+                )
+            end
         ')
     }
 
