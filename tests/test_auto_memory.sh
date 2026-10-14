@@ -697,6 +697,34 @@ test_pre_open_tracked_by_git_is_refused() {
     assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
 }
 
+# A clone can commit the three files that make a directory a bare git
+# directory (HEAD, objects/, refs/) into .cs/local or .cs beside a pre-open.
+# git then answers from that directory as from inside a repository's git
+# directory and lists nothing, though the clone's own index lists the pre-open.
+test_pre_open_tracked_beside_planted_git_directory_files_is_refused() {
+    local root="$CS_SESSIONS_ROOT/vt" at out rc
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    _write_pre_open vt "touch \"$TEST_TMPDIR/pre-open-ran\""
+    _make_launch_sentinel
+    for at in .cs/local .cs; do
+        mkdir -p "$root/$at/objects" "$root/$at/refs"
+        printf 'ref: refs/heads/main\n' > "$root/$at/HEAD"
+        : > "$root/$at/objects/k"
+        : > "$root/$at/refs/k"
+        git -C "$root" add -f .cs/local/pre-open "$at/HEAD" "$at/objects/k" "$at/refs/k"
+        git -C "$root" commit -q -m "ship a pre-open beside git directory files in $at"
+        rc=0
+        out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+        assert_eq "1" "$rc" "cs should exit 1 with the files in $at" || return 1
+        assert_eq "Error: cs could not ask git whether it tracks a file in .cs/local: fatal: this operation must be run in a work tree" \
+            "$out" "cs should refuse, naming git's error, with the files in $at" || return 1
+        assert_file_not_exists "$TEST_TMPDIR/pre-open-ran" "the committed pre-open must not run with the files in $at" || return 1
+        assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch with the files in $at" || return 1
+        git -C "$root" rm -q -r --cached "$at/HEAD" "$at/objects" "$at/refs"
+        rm -rf "$root/$at/HEAD" "$root/$at/objects" "$root/$at/refs"
+    done
+}
+
 # A case-insensitive checkout (macOS by default) puts a committed
 # .cs/LOCAL/pre-open at .cs/local/pre-open on disk, where a case-sensitive
 # pathspec never sees it. The commit is built in the index so the fixture
@@ -1961,6 +1989,7 @@ run_test test_pre_open_mounts_then_session_opens
 run_test test_pre_open_failure_aborts_open
 run_test test_pre_open_not_executable_is_refused
 run_test test_pre_open_tracked_by_git_is_refused
+run_test test_pre_open_tracked_beside_planted_git_directory_files_is_refused
 run_test test_pre_open_tracked_under_a_case_variant_is_refused
 run_test test_cs_files_tracked_in_cs_private_are_refused
 run_test test_cs_files_tracked_behind_a_cs_private_link_are_refused

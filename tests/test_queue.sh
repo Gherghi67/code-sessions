@@ -652,10 +652,11 @@ test_vet_session_passes_a_session_in_no_repository_while_git_traces() {
     assert_eq "" "$out" "and prints nothing" || return 1
 }
 
-# A directory inside a git directory, a bare repository or a checkout's .git,
-# has no working tree: no checkout or pull puts a file there, so git tracks
-# none, though git answers "this operation must be run in a work tree".
-test_vet_session_passes_a_session_inside_a_git_directory() {
+# Inside a git directory, a bare repository or a checkout's .git, git answers
+# "this operation must be run in a work tree" and lists nothing. A clone can
+# make its own .cs/local look like one, and an outer project can commit a bare
+# repository with a session in it, so that answer is a git that cannot answer.
+test_vet_session_refuses_a_session_inside_a_git_directory() {
     local out rc=0 s
     git init -q --bare "$TEST_TMPDIR/bare.git"
     git init -q "$TEST_TMPDIR/checkout"
@@ -663,8 +664,9 @@ test_vet_session_passes_a_session_inside_a_git_directory() {
         mkdir -p "$s/.cs/local"
         rc=0
         out=$(env -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR "$CS_BIN" -vet-session "$s" 2>&1) || rc=$?
-        assert_eq "0" "$rc" "cs -vet-session passes ${s#"$TEST_TMPDIR"/}: $out" || return 1
-        assert_eq "" "$out" "and prints nothing (${s#"$TEST_TMPDIR"/})" || return 1
+        assert_eq "1" "$rc" "cs -vet-session refuses ${s#"$TEST_TMPDIR"/}" || return 1
+        assert_eq "Error: cs could not ask git whether it tracks a file in .cs/local: fatal: this operation must be run in a work tree" \
+            "$out" "and names git's own error (${s#"$TEST_TMPDIR"/})" || return 1
     done
 }
 
@@ -1170,7 +1172,7 @@ run_test test_a_named_verb_refuses_when_git_cannot_answer
 run_test test_a_named_verb_refuses_when_git_cannot_read_the_index
 run_test test_vet_session_refuses_a_tracked_marker_whose_directory_is_gone
 run_test test_vet_session_passes_a_session_in_no_repository_while_git_traces
-run_test test_vet_session_passes_a_session_inside_a_git_directory
+run_test test_vet_session_refuses_a_session_inside_a_git_directory
 run_test test_vet_session_refuses_a_checkout_git_reads_as_bare
 run_test test_vet_session_says_git_is_missing_when_no_git_is_on_path
 run_test test_vet_session_passes_a_session_whose_control_files_git_ignores
