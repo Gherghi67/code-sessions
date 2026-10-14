@@ -192,8 +192,8 @@ _replace_line() {  # file, old, new
         && mv "$1.splice" "$1"
 }
 
-# The Best Practices section as cs wrote it from 2025-11-24 to 2026-07-06,
-# with $1 as its bullet naming the command to run at the end.
+# The Best Practices section as cs wrote it on either side of 2026-06-12: the
+# two differ only in $1, the bullet naming the command to run at the end.
 _best_practices_section() {  # run-bullet
     printf '%s\n' '' '## Best Practices' '' \
         "- Document discoveries as you find them - don't wait until the end" \
