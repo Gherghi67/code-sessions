@@ -1514,7 +1514,22 @@ test_queue_in_a_locked_session_is_refused() {
     assert_not_exists "$CLAUDE_SESSION_META_DIR/local/queue" "no plaintext queue" || return 1
 }
 
+# A clone chooses the text a committed .cs/private points at, and it can carry
+# a terminal escape: a raw ESC or BEL byte, or backslash text echo -e would
+# turn into one. The refusal prints it as a plain name, each character a plain
+# path lacks replaced by _.
+test_queue_names_a_locked_vault_by_a_plain_target() {
+    local out rc=0 bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m
+    ln -s "../unmounted$bad/private" "$CLAUDE_SESSION_META_DIR/private"
+    out=$("$CS_BIN" -queue add "sealed task" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "add exits 1" || return 1
+    assert_eq "Error: this session keeps its queue in encrypted storage that is not mounted (.cs/private points at ../unmounted$shown/private). Mount it, then retry." \
+        "$out" "the link's target is named as a plain path" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal" || return 1
+}
+
 run_test test_queue_in_an_encrypted_session_lives_in_its_vault
 run_test test_queue_in_a_locked_session_is_refused
+run_test test_queue_names_a_locked_vault_by_a_plain_target
 
 report_results

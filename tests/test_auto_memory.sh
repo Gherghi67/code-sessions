@@ -1780,6 +1780,85 @@ test_a_link_to_a_directory_named_with_a_newline_refuses_open() {
     assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
 }
 
+# A clone chooses a committed link's name and the text it points at, and
+# either can carry a terminal escape: a raw ESC or BEL byte, or backslash text
+# echo -e would turn into one. The open's refusals print both as plain names,
+# each character a plain path lacks replaced by _.
+_ESCAPING_NAME=$'e\033[1mb\007\\e[0m'
+_ESCAPING_NAME_SHOWN=e__1mb__e_0m
+
+test_a_link_out_of_the_session_is_named_as_a_plain_path() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt" bad="$_ESCAPING_NAME" shown="$_ESCAPING_NAME_SHOWN" out rc=0
+    mkdir -p "$TEST_TMPDIR/out$bad"
+    ln -s "../../../out$bad" "$root/.cs/link$bad"
+    git -C "$root" add -A
+    git -C "$root" commit -q -m "ship a link out with an escape in its name"
+    rm -f "$root/.cs/local/migrated"
+    _make_launch_sentinel
+
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: .cs/link$shown is a symlink to ../../../out$shown, outside the session, and cs writes through it. Replace it with a real file or directory, or cs -rm the session." \
+        "$out" "the link and its target are named as plain paths" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
+}
+
+test_a_link_to_a_directory_named_with_a_newline_is_named_as_a_plain_path() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt" bad="$_ESCAPING_NAME" shown="$_ESCAPING_NAME_SHOWN" out rc=0 nl=$'pay\nload'
+    mkdir -p "$root/$nl"
+    ln -s "../$nl" "$root/.cs/link$bad"
+    git -C "$root" add -A
+    git -C "$root" commit -q -m "alias a directory through a newline"
+    rm -f "$root/.cs/local/migrated"
+    _make_launch_sentinel
+
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: .cs/link$shown leads to a directory with a newline in its name, which cs cannot check for links out of the session. Rename it, or cs -rm the session." \
+        "$out" "the link is named as a plain path" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
+}
+
+test_a_symlinked_cs_local_is_named_by_a_plain_target() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt" bad="$_ESCAPING_NAME" shown="$_ESCAPING_NAME_SHOWN" out rc=0
+    mv "$root/.cs/local" "$root/pay$bad"
+    ln -s "../pay$bad" "$root/.cs/local"
+    git -C "$root" add -A
+    git -C "$root" commit -q -m "ship .cs/local as a link"
+    _make_launch_sentinel
+
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: .cs/local is a symlink to ../pay$shown (cs state must be a real directory inside the session). Delete .cs/local/pre-open unless you wrote it, replace the link with the directory, then reopen." \
+        "$out" "the link's target is named as a plain path" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
+}
+
+test_an_unmounted_vault_link_is_named_by_a_plain_target() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local meta="$CS_SESSIONS_ROOT/vt/.cs" bad="$_ESCAPING_NAME" shown="$_ESCAPING_NAME_SHOWN" out rc=0
+    rm -rf "$meta/memory"
+    ln -s "vault$bad/memory" "$meta/memory"
+    _make_launch_sentinel
+
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: vt: .cs/memory points at vault$shown/memory, which is missing (encrypted storage not mounted?). Mount it, then reopen." \
+        "$out" "the dangling link's target is named as a plain path" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
+}
+
 # A clone can commit cs's encrypted layout: .cs/claude-config linked to a real
 # .cs/vault-mnt/claude-config holding a link out. With no pre-open there is no
 # vault, so the open walks that directory like any other.
@@ -1986,6 +2065,10 @@ run_test test_a_committed_claude_local_link_out_of_the_session_refuses_open
 run_test test_a_link_out_behind_an_in_session_directory_link_refuses_open
 run_test test_a_link_to_a_directory_named_with_a_newline_refuses_open
 run_test test_a_link_to_a_directory_named_with_a_trailing_newline_refuses_open
+run_test test_a_link_out_of_the_session_is_named_as_a_plain_path
+run_test test_a_link_to_a_directory_named_with_a_newline_is_named_as_a_plain_path
+run_test test_a_symlinked_cs_local_is_named_by_a_plain_target
+run_test test_an_unmounted_vault_link_is_named_by_a_plain_target
 run_test test_a_committed_vault_config_lookalike_refuses_open
 run_test test_a_hand_made_vault_refuses_open_with_gits_error_when_git_cannot_answer
 run_test test_global_msg_refuses_a_target_linked_out_of_the_session

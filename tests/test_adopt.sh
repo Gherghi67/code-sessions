@@ -392,6 +392,47 @@ test_adopt_refuses_a_committed_link_it_would_write_through() {
     done
 }
 
+# A clone chooses the text a committed link points at, and it can carry a
+# terminal escape: a raw ESC or BEL byte, or backslash text echo -e would
+# turn into one. Adopt's refusals print it as a plain name, each character a
+# plain path lacks replaced by _.
+_ESCAPING_NAME=$'e\033[1mb\007\\e[0m'
+_ESCAPING_NAME_SHOWN=e__1mb__e_0m
+
+test_adopt_names_a_committed_link_by_a_plain_target() {
+    local project_dir="$TEST_TMPDIR/proj" bad="$_ESCAPING_NAME" shown="$_ESCAPING_NAME_SHOWN" out rc=0
+    mkdir -p "$project_dir"
+    printf 'a file that is not the project'"'"'s\n' > "$TEST_TMPDIR/outside$bad"
+    ( cd "$project_dir" && git init -q && git config user.email jane.roe@example.com \
+        && git config user.name "Jane Roe" && ln -s "../outside$bad" CLAUDE.local.md \
+        && git add -A && git commit -q -m "a project with a committed link" )
+
+    out=$(cd "$project_dir" && "$CS_BIN" -adopt "linked" </dev/null 2>&1) || rc=$?
+
+    assert_eq 1 "$rc" "adopt refuses the linked CLAUDE.local.md: $out" || return 1
+    assert_eq "Error: CLAUDE.local.md is a symlink to ../outside$shown, outside the session, and cs writes through it. Replace it with a real file or directory, or cs -rm the session." \
+        "$out" "the link's target is named as a plain path" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/linked" "no session link" || return 1
+}
+
+test_readopt_names_a_dangling_vault_link_by_a_plain_target() {
+    local project_dir="$TEST_TMPDIR/my-project" bad="$_ESCAPING_NAME" shown="$_ESCAPING_NAME_SHOWN" out rc=0
+    mkdir -p "$project_dir"
+    (cd "$project_dir" && "$CS_BIN" -adopt old-name >/dev/null 2>&1)
+    rm "$CS_SESSIONS_ROOT/old-name"
+    rm "$project_dir/.cs/local/session.log"
+    rm -rf "$project_dir/.cs/memory"
+    ln -s "vault$bad/memory" "$project_dir/.cs/memory"
+
+    out=$(cd "$project_dir" && "$CS_BIN" -adopt new-name --yes </dev/null 2>&1) || rc=$?
+    assert_eq 1 "$rc" "the re-adopt refuses: $out" || return 1
+    assert_eq "Error: Cannot re-adopt as 'new-name': .cs/memory points at vault$shown/memory, which is missing (encrypted storage not mounted?). Mount it and run cs -adopt again; nothing was changed." \
+        "$out" "the dangling link's target is named as a plain path" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/new-name" "no session link" || return 1
+}
+
 # Records the open would refuse are refused by the re-adopt too, before it
 # links a session that can never open: here a queue committed in .cs/private.
 test_readopt_refuses_records_the_open_would_refuse() {
@@ -1302,6 +1343,8 @@ run_test test_readopt_of_an_encrypted_session_keeps_its_log_in_the_vault
 run_test test_readopt_of_an_encrypted_session_with_a_locked_vault_refuses
 run_test test_readopt_with_every_vault_link_dangling_refuses_naming_memory
 run_test test_adopt_refuses_a_committed_link_it_would_write_through
+run_test test_adopt_names_a_committed_link_by_a_plain_target
+run_test test_readopt_names_a_dangling_vault_link_by_a_plain_target
 run_test test_readopt_refuses_records_the_open_would_refuse
 run_test test_adopt_orphaned_records_noninteractive_hints
 run_test test_adopt_orphaned_records_decline_cancels
