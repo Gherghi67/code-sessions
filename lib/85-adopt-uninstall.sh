@@ -332,14 +332,6 @@ adopt_session() {  # name, [--yes|-y], in any order
     # (hooks/cs-resolve.sh's _cs_session_name).
     _set_local_state "$target_dir/.cs/local/state" session_name "$session_name"
 
-    # Adopt commits nothing, so git tracks no .cs until the user commits it,
-    # and a feature that inferred its mode from that would hide the base's
-    # .cs through the common info/exclude. Recorded instead: the user's
-    # features expect git to carry .cs (create_worktree_session reads this),
-    # until the user records ignored. Re-adopted records keep their choice.
-    if [ -z "$(_read_local_state "$target_dir/.cs/local/state" cs_mode)" ]; then
-        _set_local_state "$target_dir/.cs/local/state" cs_mode tracked
-    fi
 
     # A project Claude Code already ran in has said what it is about: its
     # newest conversation's first prompt becomes the Objective, the line the
@@ -381,6 +373,20 @@ adopt_session() {  # name, [--yes|-y], in any order
         ensure_cs_gitignore_entries "$target_dir"
         setup_merge_attributes "$target_dir"
         _explain_nothing_committed "$target_dir" .cs .gitignore .gitattributes
+    fi
+
+    # Adopt commits nothing, so git tracks no .cs until the user commits it,
+    # and a feature that inferred its mode from that would hide the base's
+    # .cs through the common info/exclude. Recorded instead, for
+    # create_worktree_session: features expect git to carry .cs, unless the
+    # project's own rules already keep it out of git (cs's rules name only
+    # paths inside .cs, never its README). Re-adopted records keep theirs.
+    if [ -z "$(_read_local_state "$target_dir/.cs/local/state" cs_mode)" ]; then
+        local feature_mode=tracked
+        if _cs_git_at "$target_dir" check-ignore -q -- .cs/README.md 2>/dev/null; then
+            feature_mode=ignored
+        fi
+        _set_local_state "$target_dir/.cs/local/state" cs_mode "$feature_mode"
     fi
 
     info "Adopted $(basename "$target_dir") as session '$session_name'"
