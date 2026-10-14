@@ -96,14 +96,13 @@ similar gitignored transient at the `.cs/` root — the narrative reminder's
 `CLAUDE.local.md`, also at the session root, carries the cs session protocol:
 it is machine-local and gitignored, cs regenerates it on each machine, and a
 user-owned `CLAUDE.md` is never touched. Its `cs:session-commits` section says
-files under `.cs/` never get a commit of their own: they go in with the next
-handoff commit (the `rotate` skill, subject `session: handoff <basename>`) or
-the `/wrap` commit (`session: wrap <date>`), or with the project change they
-describe. `cs -narrative rotate` commits its own cut as
-`session: rotate narrative.<actor> (<N> sections -> narrative-archive)`; every
-commit of session files has a `session:` subject, and each names its paths, so
-work the user had already staged stays out of it. An open adds the section to a session that lacks it; delete its text
-but keep the comment to opt out.
+cs, its skills and its commands never commit files under `.cs/`, and the model
+commits them only when the user asks: `/rotate` leaves the handoff, its
+supersedings and prunes and the task archive on disk, `/wrap` leaves the memory
+entries, the summary and the task archive, and `cs -narrative rotate` leaves
+the trimmed narrative and its archive chunk, all uncommitted. An open adds the
+section to a session that lacks it; delete its text but keep the comment to
+opt out.
 
 ## Machine-local files (`.cs/local/`, gitignored)
 
@@ -272,8 +271,8 @@ With `.cs/private` present, the session protocol changes too:
   only its frontmatter. The first open adds a `cs:encrypted-protocol` section
   to `CLAUDE.local.md` that says so. Delete its text but keep the comment to
   opt out.
-- The rotate skill writes the handoff into `.cs/private/handoffs/` and commits
-  nothing from the vault.
+- The rotate skill writes the handoff into `.cs/private/handoffs/`; like
+  every rotation, it commits nothing.
 - The launch prompt after answering `r` does not name the handoff file, and
   the `rotated` event in `timeline.jsonl` records the rotation without the
   file name. A handoff's name is its topic, and both of those are plaintext.
