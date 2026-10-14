@@ -431,7 +431,10 @@ launch_claude_code() {
     # pid, which this one may have drawn again, so it goes before claude starts.
     # After the lock: a launch that met a live session and stopped at the
     # collision menu never gets here, so it leaves the live lead's claim.
+    # CS_LEAD_CLAIM tells the hooks this launch clears the file and takes the
+    # claim; under a launch without it they know the lead by the pid alone.
     rm -f "$session_dir/.cs/local/lead-pid"
+    export CS_LEAD_CLAIM=1
 
     # Where this cs is, for the mods: `$.process.run` takes no shell and the
     # claude process's PATH is not this shell's. Set on every launch, so a

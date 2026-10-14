@@ -172,6 +172,14 @@ _cs_find_session_root() {  # start_dir
 # before claude starts (lib/75-launch.sh) and a claim keyed by another launch
 # pid is ignored, so a claim cannot speak for a later launch. The lead's
 # SessionEnd removes it with the lock (cs_lead_release).
+#
+# The claim counts only under a launch that clears the file and expects it:
+# such a launch exports CS_LEAD_CLAIM=1. A session a cs from before the claim
+# opened carries no marker and, open across an update of the hooks, no claim
+# either, so the first `claude -p` its lead ran would claim it. Without the
+# marker nothing is claimed or read, and the claude carrying the launch pid is
+# the only lead. Every claude under the launch inherits the marker: it says
+# the launch takes claims, never which claude is the lead.
 
 # The claim for this launch: sets _CS_CLAIM_PID and returns 0, or returns 1
 # when there is none. A pid that is not a plain number is no claim: kill -0
@@ -179,6 +187,7 @@ _cs_find_session_root() {  # start_dir
 _cs_lead_claim_read() {
     local launch="" pid=""
     _CS_CLAIM_PID=""
+    [ "${CS_LEAD_CLAIM:-}" = 1 ] || return 1
     [ -n "${CLAUDE_SESSION_META_DIR:-}" ] && [ -n "${CS_LEAD_PID:-}" ] || return 1
     { read -r launch pid _ < "$CLAUDE_SESSION_META_DIR/local/lead-pid"; } 2>/dev/null || return 1
     [ "$launch" = "$CS_LEAD_PID" ] || return 1
@@ -210,6 +219,7 @@ _cs_pid_descends_from() {  # pid ancestor
 # launch pid is above every claude under the launch, so a holder carrying it
 # is never displaced.
 cs_lead_claim() {  # local_dir session_id
+    [ "${CS_LEAD_CLAIM:-}" = 1 ] || return 1
     [ -n "$1" ] && [ -n "${CS_LEAD_PID:-}" ] && [ -n "${CLAUDE_PID:-}" ] || return 1
     if [ "$CLAUDE_PID" != "$CS_LEAD_PID" ]; then
         _cs_pid_descends_from "$CLAUDE_PID" "$CS_LEAD_PID" || return 1
@@ -266,7 +276,8 @@ cs_is_nested_child() {
 # True when a live claude other than this one holds the claim: the claude is
 # shown to be a guest, where cs_is_nested_child only fails to show it is the
 # lead. The two differ where no claim stands (the lead's SessionStart could not
-# write one, or ps could not show it was under the launch), and each caller
+# write one, ps could not show it was under the launch, or the launch takes no
+# claim, so no claude under it is shown a guest), and each caller
 # takes the side that loses nothing. What a guest must not take from the lead
 # (the armed rotation, the once-only digest, the attention flag) asks this
 # one, so a lead with no claim keeps them. What a guest must not remove (the

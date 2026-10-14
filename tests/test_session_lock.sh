@@ -247,7 +247,8 @@ test_session_end_lead_clears_a_stale_lock_it_does_not_own() {
 # the launch pid; its claim on the launch (.cs/local/lead-pid) names it. A
 # /clear ends a conversation but not that claude, so the claim and the lock
 # stay; another claude's end leaves both too; the lead's own end removes the
-# lock its launch holds and the claim with it.
+# lock its launch holds and the claim with it. The launch is one that takes
+# the claim (CS_LEAD_CLAIM), as every launch cs makes is.
 test_session_end_removes_the_lead_claim_with_the_lock() {
     create_lock_test_session "test-session"
     local meta_dir="$CS_SESSIONS_ROOT/test-session/.cs" lead
@@ -261,17 +262,17 @@ test_session_end_removes_the_lead_claim_with_the_lock() {
     export CLAUDE_SESSION_META_DIR="$meta_dir"
 
     echo '{"session_id": "lead-a", "reason": "clear"}' \
-        | CS_RESOLVED_FROM=env CS_LEAD_PID=$$ CLAUDE_PID="$lead" "$SCRIPT_DIR/../hooks/session-end.sh"
+        | CS_RESOLVED_FROM=env CS_LEAD_CLAIM=1 CS_LEAD_PID=$$ CLAUDE_PID="$lead" "$SCRIPT_DIR/../hooks/session-end.sh"
     local after_clear_lock after_clear_claim
     after_clear_lock=$(cat "$meta_dir/session.lock" 2>/dev/null)
     after_clear_claim=$(cat "$meta_dir/local/lead-pid" 2>/dev/null)
     echo '{"session_id": "child-1", "reason": "other"}' \
-        | CS_RESOLVED_FROM=env CS_LEAD_PID=$$ CLAUDE_PID=999999 "$SCRIPT_DIR/../hooks/session-end.sh"
+        | CS_RESOLVED_FROM=env CS_LEAD_CLAIM=1 CS_LEAD_PID=$$ CLAUDE_PID=999999 "$SCRIPT_DIR/../hooks/session-end.sh"
     local after_child_lock after_child_claim
     after_child_lock=$(cat "$meta_dir/session.lock" 2>/dev/null)
     after_child_claim=$(cat "$meta_dir/local/lead-pid" 2>/dev/null)
     echo '{"session_id": "lead-a", "reason": "other"}' \
-        | CS_RESOLVED_FROM=env CS_LEAD_PID=$$ CLAUDE_PID="$lead" "$SCRIPT_DIR/../hooks/session-end.sh"
+        | CS_RESOLVED_FROM=env CS_LEAD_CLAIM=1 CS_LEAD_PID=$$ CLAUDE_PID="$lead" "$SCRIPT_DIR/../hooks/session-end.sh"
 
     assert_eq "$$" "$after_clear_lock" "a /clear leaves the lock" || return 1
     assert_eq "$$ $lead lead-a" "$after_clear_claim" "a /clear leaves the claim" || return 1
