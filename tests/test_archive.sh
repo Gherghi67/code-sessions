@@ -395,6 +395,20 @@ test_archive_base_named_in_another_case_refused_while_its_feature_is_live() {
     return 0
 }
 
+# Only the base's own features hold it: another base's live feature does not,
+# even when that base's name starts with this one's.
+test_archive_base_not_held_by_another_base_live_feature() {
+    _archive_session "receiver"
+    _archive_session "receiver2@x"
+    sleep 300 &
+    local live_pid=$! out rc=0
+    echo "$live_pid" > "$CS_SESSIONS_ROOT/receiver2@x/.cs/session.lock"
+    out=$(CLAUDE_SESSION_NAME=sender "$CS_BIN" -archive receiver --force 2>&1) || rc=$?
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    assert_eq "0" "$rc" "archiving receiver exits 0: $out" || return 1
+    assert_file_exists "$CS_SESSIONS_ROOT/receiver/.cs/archived" "receiver is archived" || return 1
+}
+
 test_archive_idle_other_session_from_inside_a_session() {
     _archive_session "receiver"
     CLAUDE_SESSION_NAME=sender "$CS_BIN" -archive receiver >/dev/null 2>&1 || return 1
@@ -465,6 +479,7 @@ run_test test_archive_from_a_feature_refuses_its_live_base
 run_test test_archive_base_refused_while_its_feature_is_live
 run_test test_archive_base_with_a_live_feature_from_itself_and_a_plain_shell
 run_test test_archive_base_named_in_another_case_refused_while_its_feature_is_live
+run_test test_archive_base_not_held_by_another_base_live_feature
 run_test test_archive_rejects_empty_name_before_acting
 run_test test_archive_multiple_names
 run_test test_unarchive_multiple_names

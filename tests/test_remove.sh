@@ -834,6 +834,20 @@ test_remove_base_named_in_another_normalization_refused_while_its_feature_is_liv
     assert_dir "$CS_SESSIONS_ROOT/$nfc" "the base survives" || return 1
 }
 
+# Only the base's own features hold it: another base's live feature does not,
+# even when that base's name starts with this one's.
+test_remove_base_not_held_by_another_base_live_feature() {
+    create_test_session receiver >/dev/null
+    create_test_session receiver2@x >/dev/null
+    sleep 300 &
+    local live_pid=$! out rc=0
+    echo "$live_pid" > "$CS_SESSIONS_ROOT/receiver2@x/.cs/session.lock"
+    out=$(CLAUDE_SESSION_NAME=sender "$CS_BIN" -rm receiver --force </dev/null 2>&1) || rc=$?
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    assert_eq "0" "$rc" "removing receiver exits 0: $out" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/receiver" "receiver is removed" || return 1
+}
+
 # Every name is checked before any goes: an idle session listed first is not
 # removed when a later name is another session that is live.
 test_remove_from_inside_a_session_checks_every_name_first() {
@@ -861,6 +875,7 @@ run_test test_remove_base_with_a_live_feature_from_itself_and_a_plain_shell
 run_test test_remove_base_named_in_another_case_refused_while_its_feature_is_live
 run_test test_remove_base_refused_while_a_feature_spelled_in_another_case_is_live
 run_test test_remove_base_named_in_another_normalization_refused_while_its_feature_is_live
+run_test test_remove_base_not_held_by_another_base_live_feature
 run_test test_remove_from_inside_a_session_checks_every_name_first
 run_test test_remove_empty_name_rejected_before_any_deletion
 run_test test_remove_base_session_drops_its_age_state

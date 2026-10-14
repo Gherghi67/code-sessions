@@ -4859,6 +4859,22 @@ direct: $refusal
     assert_eq "export CS_SECRET_API_KEY=v1" "$(CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" export 2>&1)" "receiver's store is as it was" || return 1
 }
 
+# Only the base's own features hold its secrets: another base's live feature
+# does not, even when that base's name starts with this one's.
+test_secrets_writes_to_a_base_not_held_by_another_base_live_feature() {
+    _live_receiver || return 1
+    _stop_receiver
+    mkdir -p "$CS_SESSIONS_ROOT/receiver2@x/.cs"
+    sleep 300 &
+    local pid=$! out rc=0
+    echo "$pid" > "$CS_SESSIONS_ROOT/receiver2@x/.cs/session.lock"
+    out=$(printf 'v2' | CLAUDE_SESSION_NAME=sender "$CS_SECRETS_BIN" -s receiver set OTHER_KEY 2>&1) || rc=$?
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    assert_eq "0" "$rc" "the write exits 0: $out" || return 1
+    assert_eq "export CS_SECRET_API_KEY=v1
+export CS_SECRET_OTHER_KEY=v2" "$(CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" export 2>&1)" "the write landed in receiver's store" || return 1
+}
+
 # The same holds for the new name of a rename: alpha left secrets when its
 # directory went, and bravo, spelled BRAVO, is idle while bravo@x is live.
 test_secrets_rename_into_a_base_named_in_another_case_waits_for_its_live_feature() {
@@ -4922,5 +4938,6 @@ run_test test_cs_and_cs_secrets_read_a_session_lock_by_one_rule
 run_test test_secrets_writes_to_a_base_wait_for_its_live_feature
 run_test test_secrets_writes_to_a_base_named_in_another_case_wait_for_its_live_feature
 run_test test_secrets_rename_into_a_base_named_in_another_case_waits_for_its_live_feature
+run_test test_secrets_writes_to_a_base_not_held_by_another_base_live_feature
 
 report_results
