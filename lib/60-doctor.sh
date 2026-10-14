@@ -696,7 +696,8 @@ _doctor_check_narrative_size() {
         [ -f "$f" ] || continue
         sz=$(wc -c < "$f" 2>/dev/null | tr -d ' ' || echo 0)
         if [ "$sz" -gt "$max" ]; then
-            _doctor_warn "Narrative: $(basename "$f") is $((sz / 1024)) KB (budget $((max / 1024)) KB) — run cs -narrative rotate"
+            # .cs/memory is tracked, so a clone chooses the file name.
+            _doctor_warn "Narrative: $(_cs_plain_name "$(basename "$f")" 160) is $((sz / 1024)) KB (budget $((max / 1024)) KB) — run cs -narrative rotate"
             over=$((over + 1))
         fi
     done
