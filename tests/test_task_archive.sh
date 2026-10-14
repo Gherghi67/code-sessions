@@ -476,6 +476,37 @@ test_plan_says_whether_the_cs_mod_forced_this_rotation() {
     assert_eq "forced: no" "$(printf '%s\n' "$out" | sed -n 2p)" "an empty marker and no id do not match" || return 1
 }
 
+# The cs mod's rotate button runs /rotate for the person in one key, so that
+# rotation must not stop to ask either: the mod writes the conversation's id
+# to .cs/local/cs.pressed before it runs the press's /rotate, and empties it
+# once that turn is over. plan's forced: line is yes while either marker names
+# the conversation .cs/local/state names.
+test_plan_counts_a_press_of_the_rotate_button_as_forced() {
+    _row 1 completed "One"
+    _row 2 pending "Two"
+    printf 'claude_session_id: "uuid-now"\n' > "$SESSION_DIR/.cs/local/state"
+    local out
+    printf 'uuid-now\n' > "$SESSION_DIR/.cs/local/cs.pressed"
+    out=$("$CS_BIN" -archive-tasks plan 2>&1) || { echo "  FAIL: plan failed: $out"; return 1; }
+    assert_eq "forced: yes" "$(printf '%s\n' "$out" | sed -n 2p)" "this conversation's press: forced" || return 1
+    printf 'uuid-earlier\n' > "$SESSION_DIR/.cs/local/cs.forced"
+    out=$("$CS_BIN" -archive-tasks plan 2>&1) || { echo "  FAIL: plan failed: $out"; return 1; }
+    assert_eq "forced: yes" "$(printf '%s\n' "$out" | sed -n 2p)" "a press beside an earlier conversation's forced marker: forced" || return 1
+    printf 'uuid-earlier\n' > "$SESSION_DIR/.cs/local/cs.pressed"
+    out=$("$CS_BIN" -archive-tasks plan 2>&1) || { echo "  FAIL: plan failed: $out"; return 1; }
+    assert_eq "forced: no" "$(printf '%s\n' "$out" | sed -n 2p)" "an earlier conversation's press: not forced" || return 1
+    : > "$SESSION_DIR/.cs/local/cs.pressed"
+    out=$("$CS_BIN" -archive-tasks plan 2>&1) || { echo "  FAIL: plan failed: $out"; return 1; }
+    assert_eq "forced: no" "$(printf '%s\n' "$out" | sed -n 2p)" "a press the mod emptied after its turn: not forced" || return 1
+    printf 'uuid-now' > "$SESSION_DIR/.cs/local/cs.pressed"
+    rm "$SESSION_DIR/.cs/local/cs.forced"
+    out=$("$CS_BIN" -archive-tasks plan 2>&1) || { echo "  FAIL: plan failed: $out"; return 1; }
+    assert_eq "forced: yes" "$(printf '%s\n' "$out" | sed -n 2p)" "a press marker with no newline: forced" || return 1
+    rm "$SESSION_DIR/.cs/local/state"
+    out=$("$CS_BIN" -archive-tasks plan 2>&1) || { echo "  FAIL: plan failed: $out"; return 1; }
+    assert_eq "forced: no" "$(printf '%s\n' "$out" | sed -n 2p)" "no conversation id to match: not forced" || return 1
+}
+
 test_plan_refuses_a_store_it_does_not_recognise() {
     _row 1 completed "One"
     printf 'scratch\n' > "$STORE/notes.txt"
@@ -824,6 +855,7 @@ run_test test_answer_takes_only_yes_or_no
 run_test test_plan_names_the_answer_and_the_rows_and_moves_nothing
 run_test test_plan_refuses_a_store_it_does_not_recognise
 run_test test_plan_says_whether_the_cs_mod_forced_this_rotation
+run_test test_plan_counts_a_press_of_the_rotate_button_as_forced
 run_test test_tasks_md_is_a_readable_snapshot_of_the_whole_list
 run_test test_a_second_run_the_same_day_adds_to_the_archive
 run_test test_an_archived_row_is_never_overwritten
