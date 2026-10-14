@@ -1299,7 +1299,7 @@ CS_PAYLOAD_SHA256=(
     "7915ca859bf53215b4f5c41833dca3a0c661921523eb5424d1f146befefae922  skills/feature/SKILL.md"
     "343016f4d62029a85cfae3c0911b8a7a2bff99a31bd868e04ca83ec4002d6f48  skills/write-as-me/SKILL.md"
     "9d42a50e396f05c53d62f13f4a6e21ba20ee04abf7b532023e0d8e5be988e2d3  skills/write-as-me/scripts/build-corpus.sh"
-    "bb3d18eee0f4d25c961f78b92f9d53e9bae1acabe500058a1664bd363537ab7d  skills/finish/scripts/finish.sh"
+    "a5559ef37221d283ffbfcbeeed118126aca8d707e096bd159deeb1ab1d1902a8  skills/finish/scripts/finish.sh"
     "144391d7d2df6a89742528729ee8da1e51063b3783023a656571bec0f2235458  mods/cs/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs/hooks/hooks.json"
     "6a8d256e1e805d19ede14602caa94c29c426ed44eade6f13d73474d6ebebe9f3  mods/cs/hooks/register.tsx"

@@ -256,32 +256,34 @@ cmd_prepare() {  # [feature]
 
 # Whether the content of a branch that is not an ancestor of the base landed
 # anyway (a squash or rebase landing, a cherry-pick): every path <sha> changed
-# since its merge base with the base's HEAD must be the same on that HEAD,
+# since its merge base with <base_head>, the base's HEAD as the report printed
+# it, must be the same on <base_head>,
 # the same mode and blob or absent from both. A rename is a deletion and an
 # addition, both checked. A submodule's pointer counts whatever .gitmodules or
 # diff.ignoreSubmodules says, since the branch may be the one ref holding it.
 # Prints content_paths_checked and, one per line, content_differs for each
-# path HEAD holds differently. The local HEAD is the
+# path <base_head> holds differently. The local HEAD is the
 # evidence, not origin's branch: the retire acts on this base, the PR path has
 # already fast-forwarded it onto the landing, and origin may have moved since.
-content_landing() {  # sha
+content_landing() {  # sha base_head
     local top mb tmp status=0
     top=$(git -C "$session_dir" rev-parse --show-toplevel) \
         || { echo "error: $session_dir is not a git checkout"; return 1; }
     # No merge base: the branch shares no history with the base, so there is
     # no "what the branch changed" to check.
-    mb=$(git -C "$top" merge-base "$1" HEAD 2>/dev/null) || { echo "content_paths_checked: none"; return 0; }
+    mb=$(git -C "$top" merge-base "$1" "$2" 2>/dev/null) || { echo "content_paths_checked: none"; return 0; }
     tmp=$(mktemp -d "${TMPDIR:-/tmp}/finish-paths.XXXXXX") \
         || { echo "error: could not create a temporary directory to compare paths in"; return 1; }
     git -C "$top" diff --no-renames --ignore-submodules=none --name-only -z "$mb" "$1" > "$tmp/changed" \
         || { rm -rf "$tmp"; echo "error: git diff failed listing the paths $1 changed since $mb"; return 1; }
-    # Every path HEAD holds differently from <sha>, over the whole tree, so no
-    # path list goes on a command line (ARG_MAX). Listed twice: NUL-separated
+    # Every path <base_head> holds differently from <sha>, over the whole tree,
+    # so no path list goes on a command line (ARG_MAX). <base_head>, never
+    # HEAD: a base commit while this runs must not change what is listed. Listed twice: NUL-separated
     # to match against the changed paths, and as git quotes names to print
     # them. git lists both in the same order. -C0: names are bytes, whatever
     # PERL_UNICODE says.
-    git -C "$top" diff --no-renames --ignore-submodules=none --name-only -z "$1" HEAD > "$tmp/differ" \
-        && git -C "$top" diff --no-renames --ignore-submodules=none --name-only "$1" HEAD > "$tmp/named" \
+    git -C "$top" diff --no-renames --ignore-submodules=none --name-only -z "$1" "$2" > "$tmp/differ" \
+        && git -C "$top" diff --no-renames --ignore-submodules=none --name-only "$1" "$2" > "$tmp/named" \
         || { rm -rf "$tmp"; echo "error: git diff failed comparing $1 with base HEAD"; return 1; }
     perl -C0 -e '
         my ($changed_file, $differ_file, $named_file) = @ARGV;
@@ -317,7 +319,10 @@ cmd_report() {  # base task sha
         landed="yes"
     fi
     echo "landed: $landed"
-    echo "base_head: $(git -C "$session_dir" rev-parse HEAD)"
+    local base_head
+    base_head=$(git -C "$session_dir" rev-parse HEAD) \
+        || { echo "error: git rev-parse HEAD failed in the base $session_dir"; exit 1; }
+    echo "base_head: $base_head"
     local tip n_after
     tip=$(git -C "$wt" rev-parse HEAD) || { echo "error: git rev-parse HEAD failed in the worktree $wt"; exit 1; }
     n_after=$(git -C "$wt" rev-list --count "$sha..HEAD" 2>/dev/null || echo 0)
@@ -342,7 +347,7 @@ cmd_report() {  # base task sha
     # Run captured, so its error line comes back here to print. Path names
     # are bytes in any encoding (core.quotePath false prints them raw), so
     # every sed and grep over them runs in the C locale.
-    content=$(content_landing "$sha") || status=$?
+    content=$(content_landing "$sha" "$base_head") || status=$?
     if [ "$status" != 0 ]; then
         printf '%s\n' "$content" | grep '^error: ' \
             || echo "error: comparing the paths cs/$task changed with base HEAD failed (exit $status)"
