@@ -653,6 +653,92 @@ test_remove_force_on_adopted_removes_only_the_link() {
     assert_dir "$project_dir/.cs" "project .cs/ should still be present" || return 1
 }
 
+# A conversation inside one session cannot pull another session out from
+# under its running claude: --force skips the live check only for the
+# caller's own sessions and from a terminal outside every session.
+test_remove_live_other_session_refused_even_with_force() {
+    local dir out rc=0
+    dir=$(create_test_session receiver)
+    mkdir -p "$dir/.cs/local/queue"
+    echo "review the diff" > "$dir/.cs/local/queue/0001"
+    sleep 300 &
+    local live_pid=$!
+    echo "$live_pid" > "$dir/.cs/session.lock"
+    out=$(CLAUDE_SESSION_NAME=sender "$CS_BIN" -rm receiver --force --delete-files </dev/null 2>&1) || rc=$?
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    assert_eq "1" "$rc" "the removal exits 1" || return 1
+    assert_eq "Error: session sender cannot remove session receiver while it is live (pid $live_pid); --force does not override that from another session. Close receiver first." \
+        "$out" "the refusal names both sessions" || return 1
+    assert_file_exists "$dir/.cs/local/queue/0001" "the receiver and its queue survive" || return 1
+}
+
+# An idle session goes from inside another one exactly as it does today.
+test_remove_idle_other_session_from_inside_a_session() {
+    local dir
+    dir=$(create_test_session receiver)
+    mkdir -p "$dir/.cs/local/queue"
+    echo "review the diff" > "$dir/.cs/local/queue/0001"
+    CLAUDE_SESSION_NAME=sender "$CS_BIN" -rm receiver --force --delete-files </dev/null >/dev/null 2>&1 || return 1
+    assert_not_exists "$dir" "the idle session is removed" || return 1
+}
+
+# A base owns its own features, so --force still takes a live one from it.
+test_remove_live_own_feature_from_its_base_with_force() {
+    local wt
+    wt=$(_worktree_with_user_files sender)
+    sleep 300 &
+    local live_pid=$!
+    echo "$live_pid" > "$wt/.cs/session.lock"
+    local out rc=0
+    out=$(CLAUDE_SESSION_NAME=sender "$CS_BIN" -rm sender@t --force --delete-files </dev/null 2>&1) || rc=$?
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    assert_eq "0" "$rc" "the base removes its own live feature (output: $out)" || return 1
+    assert_not_exists "$wt" "the feature is gone" || return 1
+}
+
+# A feature owns neither its base nor a sibling feature.
+test_remove_from_a_feature_refuses_its_live_base_and_a_live_sibling() {
+    create_test_session sender >/dev/null
+    create_test_session sender@b >/dev/null
+    sleep 300 &
+    local live_pid=$!
+    echo "$live_pid" > "$CS_SESSIONS_ROOT/sender/.cs/session.lock"
+    echo "$live_pid" > "$CS_SESSIONS_ROOT/sender@b/.cs/session.lock"
+    local target out rc
+    for target in sender sender@b; do
+        rc=0
+        out=$(CLAUDE_SESSION_NAME=sender@a "$CS_BIN" -rm "$target" --force </dev/null 2>&1) || rc=$?
+        assert_eq "1" "$rc" "removing $target exits 1" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
+        assert_eq "Error: session sender@a cannot remove session $target while it is live (pid $live_pid); --force does not override that from another session. Close $target first." \
+            "$out" "the refusal names $target" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
+        assert_dir "$CS_SESSIONS_ROOT/$target" "$target survives" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
+    done
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+}
+
+# Every name is checked before any goes: an idle session listed first is not
+# removed when a later name is another session that is live.
+test_remove_from_inside_a_session_checks_every_name_first() {
+    create_test_session idle1 >/dev/null
+    create_test_session receiver >/dev/null
+    sleep 300 &
+    local live_pid=$!
+    echo "$live_pid" > "$CS_SESSIONS_ROOT/receiver/.cs/session.lock"
+    local out rc=0
+    out=$(CLAUDE_SESSION_NAME=sender "$CS_BIN" -rm idle1 receiver --force </dev/null 2>&1) || rc=$?
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    assert_eq "1" "$rc" "the removal exits 1" || return 1
+    assert_eq "Error: session sender cannot remove session receiver while it is live (pid $live_pid); --force does not override that from another session. Close receiver first." \
+        "$out" "the refusal names the live session" || return 1
+    assert_dir "$CS_SESSIONS_ROOT/idle1" "the idle session listed first survives" || return 1
+    assert_dir "$CS_SESSIONS_ROOT/receiver" "the live session survives" || return 1
+}
+
+run_test test_remove_live_other_session_refused_even_with_force
+run_test test_remove_idle_other_session_from_inside_a_session
+run_test test_remove_live_own_feature_from_its_base_with_force
+run_test test_remove_from_a_feature_refuses_its_live_base_and_a_live_sibling
+run_test test_remove_from_inside_a_session_checks_every_name_first
 run_test test_remove_empty_name_rejected_before_any_deletion
 run_test test_remove_base_session_drops_its_age_state
 run_test test_remove_base_session_without_age_state_prints_no_age_line

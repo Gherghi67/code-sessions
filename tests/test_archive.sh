@@ -298,6 +298,71 @@ test_list_tag_trailer_counts_only_tagged_archived() {
     assert_output_contains "$output" "1 archived (cs -list --archived)" "trailer counts only the tag-matching archived session" || return 1
 }
 
+# From inside one session, --force does not archive another session whose
+# claude is running; an idle one archives as it does from anywhere.
+test_archive_live_other_session_refused_even_with_force() {
+    _archive_session "receiver"
+    sleep 300 &
+    local live_pid=$!
+    echo "$live_pid" > "$CS_SESSIONS_ROOT/receiver/.cs/session.lock"
+    local out rc=0
+    out=$(CLAUDE_SESSION_NAME=sender "$CS_BIN" -archive receiver --force 2>&1) || rc=$?
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    assert_eq "1" "$rc" "the archive exits 1" || return 1
+    assert_eq "Error: session sender cannot archive session receiver while it is live (pid $live_pid); --force does not override that from another session. Close receiver first." \
+        "$out" "the refusal names both sessions" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/receiver/.cs/archived" "no marker written" || return 1
+}
+
+test_archive_idle_other_session_from_inside_a_session() {
+    _archive_session "receiver"
+    CLAUDE_SESSION_NAME=sender "$CS_BIN" -archive receiver >/dev/null 2>&1 || return 1
+    assert_file_exists "$CS_SESSIONS_ROOT/receiver/.cs/archived" "the idle session is archived" || return 1
+}
+
+# Every name is checked before any marker is written.
+test_archive_from_inside_a_session_checks_every_name_first() {
+    _archive_session "idle1"
+    _archive_session "receiver"
+    sleep 300 &
+    local live_pid=$!
+    echo "$live_pid" > "$CS_SESSIONS_ROOT/receiver/.cs/session.lock"
+    local out rc=0
+    out=$(CLAUDE_SESSION_NAME=sender "$CS_BIN" -archive idle1 receiver --force 2>&1) || rc=$?
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    assert_eq "1" "$rc" "the archive exits 1" || return 1
+    assert_eq "Error: session sender cannot archive session receiver while it is live (pid $live_pid); --force does not override that from another session. Close receiver first." \
+        "$out" "the refusal names the live session" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/idle1/.cs/archived" "the idle session listed first is not archived" || return 1
+}
+
+# A base owns its own features; a feature does not own its base.
+test_archive_live_own_feature_from_its_base_with_force() {
+    _archive_session "sender@feat"
+    sleep 300 &
+    local live_pid=$!
+    echo "$live_pid" > "$CS_SESSIONS_ROOT/sender@feat/.cs/session.lock"
+    local out rc=0
+    out=$(CLAUDE_SESSION_NAME=sender "$CS_BIN" -archive sender@feat --force 2>&1) || rc=$?
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    assert_eq "0" "$rc" "the base archives its own live feature (output: $out)" || return 1
+    assert_file_exists "$CS_SESSIONS_ROOT/sender@feat/.cs/archived" "the feature is archived" || return 1
+}
+
+test_archive_from_a_feature_refuses_its_live_base() {
+    _archive_session "sender"
+    sleep 300 &
+    local live_pid=$!
+    echo "$live_pid" > "$CS_SESSIONS_ROOT/sender/.cs/session.lock"
+    local out rc=0
+    out=$(CLAUDE_SESSION_NAME=sender@feat "$CS_BIN" -archive sender --force 2>&1) || rc=$?
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    assert_eq "1" "$rc" "the archive exits 1" || return 1
+    assert_eq "Error: session sender@feat cannot archive session sender while it is live (pid $live_pid); --force does not override that from another session. Close sender first." \
+        "$out" "the refusal names both sessions" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/sender/.cs/archived" "no marker written" || return 1
+}
+
 test_search_flag_before_query() {
     _archive_session "ffq"
     echo "needle-ffq here" >> "$CS_SESSIONS_ROOT/ffq/.cs/README.md"
@@ -311,6 +376,11 @@ run_test test_search_skips_archived_by_default
 run_test test_search_empty_query_still_errors
 run_test test_open_auto_unarchives_with_notice
 run_test test_unarchive_rejects_flags
+run_test test_archive_live_other_session_refused_even_with_force
+run_test test_archive_idle_other_session_from_inside_a_session
+run_test test_archive_from_inside_a_session_checks_every_name_first
+run_test test_archive_live_own_feature_from_its_base_with_force
+run_test test_archive_from_a_feature_refuses_its_live_base
 run_test test_archive_rejects_empty_name_before_acting
 run_test test_archive_multiple_names
 run_test test_unarchive_multiple_names
