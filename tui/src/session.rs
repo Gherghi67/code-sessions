@@ -2032,6 +2032,55 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    // The mode is the value `_read_local_state` reads (lib/40-state.sh): the
+    // first line that starts `cs_mode:` wins, whitespace after the colon and
+    // every double quote go, a CR before the newline stays (so a CRLF file
+    // names no mode cs knows), and a last line without a newline counts.
+    #[test]
+    fn worktree_cs_mode_reads_the_value_cs_reads() {
+        let dir = std::env::temp_dir().join(format!("cs-mode-read-{}", std::process::id()));
+        fs::create_dir_all(dir.join(".cs/local")).unwrap();
+        for (state, mode) in [
+            (&b"cs_mode: ignored\r\n"[..], Some("ignored\r")),
+            (b"cs_mode: tracked\ncs_mode: ignored\n", Some("tracked")),
+            (b"cs_mode: \"ignored\"\n", Some("ignored")),
+            (b"cs_mode:\t  ignored", Some("ignored")),
+            (b" cs_mode: ignored\n", None),
+            (b"task_branch: cs/t\n", None),
+        ] {
+            fs::write(dir.join(".cs/local/state"), state).unwrap();
+
+            assert_eq!(worktree_cs_mode(&dir).as_deref(), mode, "{:?}", String::from_utf8_lossy(state));
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // A `<base>@<task>` directory whose .git is a directory, not a worktree's
+    // .git file, is no worktree of the base, so it is listed and removed as a
+    // plain directory, as `cs -rm` does (it asks `[ -f .git ]`).
+    #[test]
+    fn a_worktree_name_whose_git_is_a_directory_is_listed_and_removed_as_a_plain_directory() {
+        let root = std::env::temp_dir().join(format!("cs-unowned-git-dir-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("proj/.cs/local")).unwrap();
+        let wt = root.join("proj@task");
+        fs::create_dir_all(wt.join(".cs/local")).unwrap();
+        git_in(&wt, &["init", "-q"]);
+        fs::write(wt.join("notes.txt"), "draft").unwrap();
+        assert!(wt.join(".git").is_dir(), "fixture: .git is a directory");
+
+        let got = unowned_entries("proj@task", &wt);
+
+        assert_eq!(got, Ok(UnownedEntries::NotCreatedByCs(vec!["notes.txt".into()])));
+        let refused = remove_session_path(&root, "proj@task", &wt, RemoveGrants::default()).map_err(|e| e.to_string());
+        assert_eq!(refused, Err("proj@task holds files cs did not create: notes.txt".to_string()));
+        let granted = RemoveGrants { unowned_files: true, ..RemoveGrants::default() };
+        assert_eq!(remove_session_path(&root, "proj@task", &wt, granted).map_err(|e| e.to_string()), Ok(()));
+        assert!(!wt.exists(), "the directory is removed");
+        assert!(root.join("proj").is_dir(), "the base is left alone");
+        let _ = fs::remove_dir_all(&root);
+    }
+
     // A worktree session whose base is gone has no repository for git to ask,
     // so it is listed and removed as a plain directory, as `cs -rm` does:
     // every top-level entry cs did not create, tracked or not, then the
