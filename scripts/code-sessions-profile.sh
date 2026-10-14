@@ -41,6 +41,10 @@ esac
 # and hid ~/.ssh and every other credential from the session. Each tool is
 # pointed at the profile through the directory variable it honours instead.
 export CLAUDE_CONFIG_DIR="$profile_home/.claude" CODEX_HOME="$profile_home/.codex"
+# Claude subscription switching belongs to the sidebar. Share its credential
+# entry so every profile sees the refreshed login rather than a token copy.
+# Native launch refreshes only oauthAccount in the profile's own config.
+export CLAUDE_SECURESTORAGE_CONFIG_DIR=''
 export CS_INSTALL_DIR="$profile_home/.local/bin"
 export CS_SESSIONS_ROOT="$profile_home/sessions" CS_CLAUDE_DIR="$profile_home/.claude"
 export CS_HOOKS_DIR="$profile_home/.claude/hooks/cs" CS_TRANSCRIPTS_DIR="$profile_home/.claude/projects"

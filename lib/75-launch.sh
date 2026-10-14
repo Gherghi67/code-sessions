@@ -221,7 +221,7 @@ _export_session_claude_config() {  # session_dir
     _link_shared_claude_config "$config" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
     # Claude Code keeps .claude.json beside the config dir by default, inside it
     # when CLAUDE_CONFIG_DIR is set.
-    _seed_session_claude_json "$config" "${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json"
+    _seed_session_claude_json "$config" "$(_cs_claude_json_path "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" "${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json")" || return $?
     export CLAUDE_SECURESTORAGE_CONFIG_DIR="${CLAUDE_SECURESTORAGE_CONFIG_DIR-${CLAUDE_CONFIG_DIR-}}"
     export CLAUDE_CONFIG_DIR="$config"
 }
@@ -242,21 +242,95 @@ _link_shared_claude_config() {  # session_config_dir, shell_config_dir
     done
 }
 
-# The session's .claude.json starts once as a copy of the shell's, so the
-# login's onboarding and preferences carry over, with every project's record
-# dropped: each keeps that project's last prompt in plaintext. From then on it
-# is the session's own. jq exits 0 on an empty file and prints nothing, so -e
-# is what turns an empty or unreadable source into a refusal.
-_seed_session_claude_json() {  # session_config_dir, shell_claude_json
-    local dest="$1/.claude.json" tmp
-    [ -e "$dest" ] || [ -L "$dest" ] && return 0
-    [ -e "$2" ] || return 0
-    tmp=$(mktemp "$1/.claude.json.XXXXXX") || error "could not create a temporary file in $1."
-    if ! jq -e '.projects = {}' "$2" > "$tmp" 2>/dev/null; then
-        rm -f "$tmp"
-        error "$2 is not a JSON object cs can copy into $1; fix it, then reopen."
+# Claude reads a legacy global config inside its config directory first.
+_cs_claude_json_path() {  # config_dir, fallback_json
+    if [ -e "$1/.config.json" ]; then
+        printf '%s/.config.json\n' "$1"
+    else
+        printf '%s\n' "$2"
     fi
-    mv "$tmp" "$dest" || { rm -f "$tmp"; error "could not write $dest."; }
+}
+
+# Carry shell preferences on first creation, then refresh only the selected
+# login. Claude and the sidebar use proper-lockfile directories without pid
+# files: never reclaim their lock with cs's pid-based lock helper.
+_seed_session_claude_json() (  # session_config_dir, shell_claude_json
+    local dest tmp="" lock="" rc=0 link hops=0 parent
+    [ -e "$2" ] || return 0
+    dest=$(_cs_claude_json_path "$1" "$1/.claude.json")
+    # proper-lockfile locks the canonical config target. A symlink alias must
+    # therefore share its target's lock, as well as its atomic write.
+    while [ -L "$dest" ]; do
+        [ "$hops" -lt 16 ] || error "too many config symlinks: $dest"
+        link=$(readlink "$dest") || return 1
+        case "$link" in
+            /*) dest="$link" ;;
+            *) dest="$(dirname "$dest")/$link" ;;
+        esac
+        hops=$((hops + 1))
+    done
+    parent=$(cd "$(dirname "$dest")" && pwd -P) || return 1
+    dest="$parent/$(basename "$dest")"
+    lock="$dest.lock"
+    # Bash 3.2 unwinds function locals before an EXIT trap after error().
+    # These cleanup names live only in this subshell and survive that unwind.
+    _cs_seed_temp_file="" _cs_seed_lock="$lock" _cs_seed_lock_held=""
+    trap '[ -z "$_cs_seed_temp_file" ] || rm -f "$_cs_seed_temp_file"; [ -z "$_cs_seed_lock_held" ] || rmdir "$_cs_seed_lock" 2>/dev/null || true' EXIT
+    trap 'exit 143' TERM
+    trap 'exit 130' INT
+    if ! mkdir "$lock" 2>/dev/null; then
+        # Native locks heartbeat and become stale after ten seconds. Wait a
+        # conservative minute before reclaiming an empty abandoned directory,
+        # including one a SIGKILL left. Never use cs's two-second pid protocol.
+        if [ -d "$lock" ] && [ ! -L "$lock" ] && [ -n "$(find "$lock" -prune -mmin +1 2>/dev/null)" ]; then
+            rmdir "$lock" 2>/dev/null && mkdir "$lock" 2>/dev/null \
+                || error "Claude config is busy: $dest; retry after its writer finishes."
+        else
+            error "Claude config is busy: $dest; retry after its writer finishes."
+        fi
+    fi
+    _cs_seed_lock_held=1
+    tmp=$(mktemp "$parent/.claude.json.XXXXXX") || error "could not create a temporary file in $parent."
+    _cs_seed_temp_file="$tmp"
+    if [ -e "$dest" ]; then
+        jq -es 'if length != 2 or any(.[]; type != "object") then error("expected objects")
+            else .[0] as $shell | .[1] |
+                if ($shell | has("oauthAccount")) then .oauthAccount = $shell.oauthAccount
+                else del(.oauthAccount) end end' "$2" "$dest" > "$tmp" 2>/dev/null || rc=1
+    else
+        jq -e 'if type == "object" then .projects = {} else error("expected object") end' \
+            "$2" > "$tmp" 2>/dev/null || rc=1
+    fi
+    if [ "$rc" = 0 ]; then
+        cs_write_atomic "$dest" cat "$tmp" && chmod 600 "$dest" || rc=1
+    fi
+    [ "$rc" = 0 ] || error "could not refresh $dest from $2; fix its JSON, then reopen."
+)
+
+# Values travel through argv and the switch marker, never shell evaluation.
+_cs_launch_option_value() {  # option, value
+    case "${2:-}" in
+        ''|*$'\n'*|*$'\r'*) error "$1 needs a nonempty single-line value" ;;
+    esac
+}
+
+_cs_native_launch_options() {  # engine; sets CS_NATIVE_LAUNCH_ARGS
+    CS_NATIVE_LAUNCH_ARGS=()
+    [ -z "${CS_LAUNCH_MODEL:-}" ] || CS_NATIVE_LAUNCH_ARGS+=(--model "$CS_LAUNCH_MODEL")
+    case "$1" in
+        claude)
+            [ -z "${CS_LAUNCH_EFFORT:-}" ] || CS_NATIVE_LAUNCH_ARGS+=(--effort "$CS_LAUNCH_EFFORT")
+            [ "${CS_LAUNCH_APPROVAL:-}" != auto ] || CS_NATIVE_LAUNCH_ARGS+=(--permission-mode auto)
+            ;;
+        codex)
+            if [ -n "${CS_LAUNCH_EFFORT:-}" ]; then
+                local quoted_effort
+                quoted_effort=$(printf '%s' "$CS_LAUNCH_EFFORT" | jq -Rs .) || return 1
+                CS_NATIVE_LAUNCH_ARGS+=(-c "model_reasoning_effort=$quoted_effort")
+            fi
+            [ "${CS_LAUNCH_APPROVAL:-auto}" = native ] || CS_NATIVE_LAUNCH_ARGS+=(--approve-for-me)
+            ;;
+    esac
 }
 
 # One row of the pending-handoff answers: the key, a padded label, and a dim
@@ -284,7 +358,7 @@ _cs_claude_adapter_capabilities() {
     # memory_index: .cs/memory/MEMORY.md loads at every session start.
     # mail_delivery: hooks surface `cs -msg` mail inside the conversation.
     printf '%s\n' launch exact_resume startup_context feature_finish \
-        rotation spawn_brief memory_index mail_delivery
+        rotation spawn_brief memory_index mail_delivery recovery_autosave
 }
 
 _claude_native_id_valid() {  # native conversation ID
@@ -300,6 +374,8 @@ launch_claude_code() {
 }
 
 _launch_claude_bound() {
+    local -a CS_NATIVE_LAUNCH_ARGS
+    _cs_native_launch_options claude || return 1
     # Claude Code downgrades its branding (logo, "thinking" animation) and statusline
     # truecolor to a muted palette when it detects tmux, regardless of actual color
     # support (anthropics/claude-code#35148). cs owns the environment before it execs
@@ -495,7 +571,10 @@ _launch_claude_bound() {
     local memory_path="$session_dir/.cs/memory"
     export CLAUDE_CODE_AUTO_MEMORY_PATH="$memory_path"
     export CLAUDE_COWORK_MEMORY_PATH_OVERRIDE="$memory_path"
-    _export_session_claude_config "$session_dir"
+    if [ -n "${CODE_SESSIONS_HOME:-}" ] && [ "${CLAUDE_SECURESTORAGE_CONFIG_DIR-unset}" = "" ]; then
+        _seed_session_claude_json "$CODE_SESSIONS_HOME/.claude" "$(_cs_claude_json_path "$HOME/.claude" "$HOME/.claude.json")" || return $?
+    fi
+    _export_session_claude_config "$session_dir" || return $?
     # Expose the recorded session UUID to hooks. Hooks can use this to
     # reverse-look-up which cs session they're firing inside without having
     # to depend on $CLAUDE_CODE_SESSION_ID (set by Claude Code itself, but
@@ -918,7 +997,7 @@ EOF
         # an explicit --fresh choice, independent of how quickly native exit occurs.
         local rc=0
         # shellcheck disable=SC2086
-        cs_run_child $CLAUDE_CODE_BIN --name "$session_name" --resume "$resume_id" ${launch_prompt:+"$launch_prompt"} || rc=$?
+        cs_run_child $CLAUDE_CODE_BIN ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} --name "$session_name" --resume "$resume_id" ${launch_prompt:+"$launch_prompt"} || rc=$?
         if [ "$rc" -ne 0 ]; then
             printf 'Could not resume the recorded Claude conversation; binding preserved. Retry or run: cs %s --engine claude --fresh\n' "$session_name" >&2
         fi
@@ -934,7 +1013,7 @@ EOF
         #     always writes one; handled defensively): naked exec.
         if [ "$is_new" = "true" ] && [ -n "$claude_session_id" ]; then
             # shellcheck disable=SC2086
-            cs_run_child $CLAUDE_CODE_BIN --name "$session_name" --session-id "$claude_session_id" ${launch_prompt:+"$launch_prompt"}
+            cs_run_child $CLAUDE_CODE_BIN ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} --name "$session_name" --session-id "$claude_session_id" ${launch_prompt:+"$launch_prompt"}
         elif [ "$is_new" = "false" ]; then
             _disarm_rotation_marker "$session_dir"
             # An explicit --fresh never asked anything, so it is not a decline.
@@ -944,7 +1023,7 @@ EOF
             _exec_fresh_rebind "$session_dir" "$_rebind_reason" "" "$spawn_kick" "$merge_kick"
         else
             # shellcheck disable=SC2086
-            cs_run_child $CLAUDE_CODE_BIN --name "$session_name" ${launch_prompt:+"$launch_prompt"}
+            cs_run_child $CLAUDE_CODE_BIN ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} --name "$session_name" ${launch_prompt:+"$launch_prompt"}
         fi
     fi
 }

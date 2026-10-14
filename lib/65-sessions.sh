@@ -196,8 +196,12 @@ run_tui() {
     if [ -n "$tui_output" ]; then
         local selected="${tui_output%%$'\n'*}"
         if [ "$tui_output" != "$selected" ]; then
-            local tui_flags="${tui_output#*$'\n'}"
-            exec "$0" "$selected" $tui_flags
+            local tui_flags="${tui_output#*$'\n'}" word
+            local -a tui_args=()
+            while IFS= read -r word; do
+                tui_args+=("$word")
+            done < <(printf '%s\n' "$tui_flags")
+            exec "$0" "$selected" "${tui_args[@]}"
         else
             exec "$0" "$selected"
         fi

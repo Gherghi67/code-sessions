@@ -242,6 +242,8 @@ main() {
     local force_flag=""
     local merge_feature=""
     local explicit_engine=""
+    local CS_LAUNCH_MODEL="" CS_LAUNCH_EFFORT="" CS_LAUNCH_APPROVAL=""
+    local _cs_switch_next_model="" _cs_switch_next_effort="" _cs_switch_next_approval=""
     local launch_intent=auto
     # cs -switch (lib/78-switch.sh): set by its relaunch's hidden flag, and by
     # _switch_settle when the run that ends here armed a switch.
@@ -273,6 +275,26 @@ main() {
     esac
     while [ $# -gt 0 ]; do
         case "$1" in
+            --model|--effort)
+                [ $# -ge 2 ] || error "$1 needs a value"
+                _cs_launch_option_value "$1" "$2"
+                if [ "$1" = --model ]; then CS_LAUNCH_MODEL="$2"; else CS_LAUNCH_EFFORT="$2"; fi
+                shift 2
+                ;;
+            --model=*|--effort=*)
+                _cs_launch_option_value "${1%%=*}" "${1#*=}"
+                # Adapter launch helpers read these dynamically scoped values.
+                # shellcheck disable=SC2034
+                if [ "${1%%=*}" = --model ]; then CS_LAUNCH_MODEL="${1#*=}"; else CS_LAUNCH_EFFORT="${1#*=}"; fi
+                shift
+                ;;
+            --approve-for-me) CS_LAUNCH_APPROVAL=auto; shift ;;
+            --native-approval)
+                # Read by the selected adapter's launch helper.
+                # shellcheck disable=SC2034
+                CS_LAUNCH_APPROVAL=native
+                shift
+                ;;
             --engine)
                 [ $# -ge 2 ] && [ -n "$2" ] || error "--engine needs claude or codex"
                 cs_engine_known "$2" || error "Unknown engine: $2. Choose claude or codex."
@@ -433,7 +455,7 @@ main() {
                 shift
                 ;;
             *)
-                error "Unknown session command: $1. Use -secrets, -queue, -msg, -narrative, -conversations, -usage, -tag, -features, -finish, --engine, --fresh, --resume, --from-handoff, or --force."
+                error "Unknown session command: $1. Use -secrets, -queue, -msg, -narrative, -conversations, -usage, -tag, -features, -finish, --engine, --model, --effort, --approve-for-me, --native-approval, --fresh, --resume, --from-handoff, or --force."
                 ;;
         esac
     done

@@ -120,12 +120,16 @@ Runs when Claude Code starts a session:
 - On all sources, for the launched conversation only: sets the tab title back to `cs: <name>`. cs sets it at launch and restores it on exit; the hook also restores it after in-process transitions such as `/clear`. Inside tmux it goes through the server: `select-pane -T` titles the pane with this session alone, and the window is named after every cs session running in its panes, `cs: a | b` in pane order, each pane recording its own in the `@cs_session` pane option. iTerm's tmux integration keeps the tab's title itself and never takes it from a tmux rename, so when `LC_TERMINAL` is `iTerm2` (and `CS_NO_ITERM2` is unset) every claim and release also starts `cs-iterm-tab.py` in the background, which sets the tab showing this window to the same `cs: a | b` through iTerm's Python API (the `iterm2` module, on the first `python3` in `PATH`). A tab counts only when iTerm's attachment answers for the same tmux server (`#{pid}` and `#{socket_path}`), since window numbers repeat across servers; if the last session leaves while the title is being set, the helper hands the window back to `automatic-rename` as the release did. Nothing waits on it and its output is discarded, so without iTerm's API or the module the tab keeps its last title and nothing else changes. Every claim turns `allow-rename` and `allow-set-title` off again, so a window a `/clear` briefly released does not rename itself after the running program. Outside it the hook writes the OSC 0 escape to the terminal device, and a front end with no terminal skips it
 - On all sources: exports session environment variables, injects session context into Claude's system prompt
 
-## autosave-commits.sh (PostToolUse on Write/Edit)
+## autosave-commits.sh (completed file changes)
 
-Runs after any file modification (Write or Edit), providing crash recovery for all session files:
+Runs after successful Claude Write/Edit reports or completed Codex patches,
+through the adapters' common `files_changed` event. Codex reports a whole
+patch's file list at once; both engines use this same consumer. Failed and
+unrelated tools produce no snapshot. The recovery copy protects all session files:
 - Autosaves the entire working tree to the conversation's own shadow ref `refs/worktree/cs/session/<conversation-uuid>` (keyed on the hook input's `session_id`) using git plumbing commands. Each conversation writes, recovers, and deletes only its own ref, so concurrent sessions on one checkout — and parallel worktree sessions — never share or clobber each other's snapshot chain
 - Does not create commits on `main` or touch the working tree index
 - Chains each snapshot onto that conversation's previous one (a linked list per conversation)
+- Skips a duplicate when both the working tree and recorded base HEAD match the previous snapshot
 - Records the HEAD the snapshot sits on as a `cs-base` commit trailer, read before the tree is written so a HEAD that moves mid-snapshot is never mislabelled; crash recovery uses it to tell whether HEAD has since moved and refuse an unsafe whole-tree restore
 - Skips the snapshot (never waits) while `<git-dir>/cs/integrate.lock` exists — the per-checkout mutex `cs <base> -integrate-feature` holds while it fast-forwards the base, so only the checkout being landed on pauses — and holds that same directory itself for the duration of the tree write
 - For narrative file edits, also logs the latest heading/bullet to `session.log` (behind `.cs/private/` in an encrypted session, and nowhere while its vault is locked)

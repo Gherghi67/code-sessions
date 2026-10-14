@@ -23,7 +23,7 @@ cs_engine_call() {  # engine operation [arguments...]
         return 2
     fi
     case "$operation" in
-        dependencies|capabilities|prepare_workspace|launch) ;;
+        dependencies|capabilities|prepare_workspace|launch|files_changed) ;;
         *) printf 'Error: Unknown adapter operation: %s\n' "$operation" >&2; return 2 ;;
     esac
     handler="_cs_${engine}_adapter_${operation}"

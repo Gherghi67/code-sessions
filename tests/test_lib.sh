@@ -31,6 +31,10 @@ unset CS_DEFAULT_ENGINE CODEX_BIN CS_CODEX_THREAD_BIN CODEX_HOME 2>/dev/null || 
 # copies in its mail/out, a tag in its README).
 unset CS_SESSION_NAME CS_SESSION_DIR CS_SESSION_META_DIR 2>/dev/null || true
 unset CLAUDE_SESSION_NAME CLAUDE_SESSION_DIR CLAUDE_SESSION_META_DIR 2>/dev/null || true
+# A suite launched inside code-sessions must own its fake login, secrets and
+# run identity. These ambient selectors outrank the fixture's HOME/session.
+unset CS_RUN_ID CS_RUN_ENGINE CS_RUN_OWNER_PID CS_LEAD_PID CS_PROFILE CODE_SESSIONS_HOME \
+    CS_SECRETS_SESSION CS_SECRETS_KEYCHAIN_PREFIX CLAUDE_SECURESTORAGE_CONFIG_DIR 2>/dev/null || true
 
 # --- State ---
 TESTS_RUN=0
@@ -246,7 +250,8 @@ unset XDG_DATA_HOME
 # The same goes for the config and cache roots and for the directory overrides
 # the profile launcher exports: tests assert the default placement under their
 # private HOME, so none of these may leak in from the shell that started the run.
-unset XDG_CONFIG_HOME XDG_CACHE_HOME CS_INSTALL_DIR CS_CONFIG_DIR CS_CACHE_DIR CS_DATA_DIR CS_SECRETS_DIR CS_HOOK_PATHS CS_CLAUDE_DIR
+unset XDG_CONFIG_HOME XDG_CACHE_HOME CS_INSTALL_DIR CS_CONFIG_DIR CS_CACHE_DIR CS_DATA_DIR CS_SECRETS_DIR CS_HOOK_PATHS CS_CLAUDE_DIR \
+    CS_HOOKS_DIR CS_COMMANDS_DIR CS_SKILLS_DIR CS_TRANSCRIPTS_DIR
 # Nor may the launcher's -spawn tmux server and session: the suites pin the
 # default server and 'cs'.
 unset CS_TMUX_SOCKET CS_TMUX_SESSION

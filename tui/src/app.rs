@@ -249,6 +249,7 @@ pub enum Mode {
     Normal,
     Search,
     SessionMenu,
+    LaunchOptions,
     ConfirmDelete,
     ConfirmBatchDelete,
     ConfirmForceOpen,
@@ -333,6 +334,7 @@ pub enum MenuAction {
     Secrets,
     Archive,
     RotateNarrative,
+    LaunchOptions,
 }
 
 /// The session menu, in display order: what the entry does, its label, and the
@@ -348,6 +350,7 @@ pub const MENU_ITEMS: &[(MenuAction, &str, &str)] = &[
     (MenuAction::Secrets, "Secrets", "s"),
     (MenuAction::Archive, "Archive", "a"),
     (MenuAction::RotateNarrative, "Rotate narrative", "R"),
+    (MenuAction::LaunchOptions, "Engine / model / effort", "e"),
 ];
 
 /// The action a single-character shortcut selects, for both the menu and the
@@ -367,8 +370,11 @@ pub enum Action {
     Open(String),
     ForceOpen(String),
     /// Exit and hand cs a session plus argv words. `lib/99-main.sh` reads line
-    /// 1 as the session and word-splits the rest, so no word may hold a space.
-    OpenWith { session: String, args: Vec<String> },
+    /// 1 as the session and each following line as one argument.
+    OpenWith {
+        session: String,
+        args: Vec<String>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -423,6 +429,35 @@ pub struct StatusMessage {
     pub set_at: std::time::Instant,
 }
 
+#[derive(Clone, Debug)]
+pub struct LaunchChoice {
+    pub engine: String,
+    pub model: String,
+    pub effort: String,
+    pub automatic: bool,
+}
+
+impl LaunchChoice {
+    fn args(&self) -> Vec<String> {
+        let mut args = vec!["--engine".into(), self.engine.clone()];
+        if !self.model.is_empty() {
+            args.extend(["--model".into(), self.model.clone()]);
+        }
+        if !self.effort.is_empty() {
+            args.extend(["--effort".into(), self.effort.clone()]);
+        }
+        args.push(
+            if self.automatic {
+                "--approve-for-me"
+            } else {
+                "--native-approval"
+            }
+            .into(),
+        );
+        args
+    }
+}
+
 pub struct App {
     pub sessions: Vec<Session>,
     pub filtered: Vec<usize>,
@@ -440,6 +475,12 @@ pub struct App {
     pub secrets_selected: usize,
     pub return_to_secrets: bool,
     pub menu_selected: usize,
+    pub launch_choices: HashMap<String, LaunchChoice>,
+    pub launch_engine: String,
+    pub launch_model: TextInput,
+    pub launch_effort: TextInput,
+    pub launch_automatic: bool,
+    pub launch_row: usize,
     pub status_message: Option<StatusMessage>,
     pub row_flashes: HashMap<String, (FlashKind, std::time::Instant)>,
     pub table_area: ratatui::layout::Rect,
@@ -614,6 +655,12 @@ impl App {
             secrets_selected: 0,
             return_to_secrets: false,
             menu_selected: 0,
+            launch_choices: HashMap::new(),
+            launch_engine: "claude".into(),
+            launch_model: TextInput::new(),
+            launch_effort: TextInput::new(),
+            launch_automatic: false,
+            launch_row: 0,
             status_message: None,
             row_flashes: HashMap::new(),
             visible_sort_columns: Vec::new(),
@@ -1031,6 +1078,7 @@ impl App {
             Mode::Normal => self.handle_normal(key),
             Mode::Search => self.handle_search(key),
             Mode::SessionMenu => self.handle_session_menu(key),
+            Mode::LaunchOptions => self.handle_launch_options(key),
             Mode::ConfirmDelete => self.handle_confirm_delete(key),
             Mode::ConfirmBatchDelete => self.handle_confirm_batch_delete(key),
             Mode::ConfirmForceOpen => self.handle_confirm_force_open(key),
@@ -1536,6 +1584,27 @@ impl App {
     fn execute_menu_action(&mut self, action: MenuAction) -> Action {
         self.mode = Mode::Normal;
         match action {
+            MenuAction::LaunchOptions => {
+                if let Some(name) = self.selected_session_name() {
+                    let choice = self.launch_choices.get(&name).cloned().unwrap_or_else(|| {
+                        let engine = session::launch_engine(&name);
+                        let automatic = engine == "codex";
+                        LaunchChoice {
+                            engine,
+                            model: String::new(),
+                            effort: String::new(),
+                            automatic,
+                        }
+                    });
+                    self.launch_engine = choice.engine;
+                    self.launch_model.set(&choice.model);
+                    self.launch_effort.set(&choice.effort);
+                    self.launch_automatic = choice.automatic;
+                    self.launch_row = 0;
+                    self.mode = Mode::LaunchOptions;
+                }
+                Action::None
+            }
             MenuAction::Open => {
                 // Open: same as old Enter logic
                 if let Some(session) = self.selected_session() {
@@ -1543,7 +1612,7 @@ impl App {
                         self.mode = Mode::ConfirmForceOpen;
                         Action::None
                     } else {
-                        Action::Open(session.name.clone())
+                        self.open_action(false)
                     }
                 } else {
                     Action::None
@@ -1684,11 +1753,94 @@ impl App {
         Action::None
     }
 
+    fn open_action(&self, force: bool) -> Action {
+        let Some(name) = self.selected_session_name() else {
+            return Action::None;
+        };
+        if let Some(choice) = self.launch_choices.get(&name) {
+            let mut args = choice.args();
+            if force {
+                args.push("--force".into());
+            }
+            Action::OpenWith {
+                session: name,
+                args,
+            }
+        } else if force {
+            Action::ForceOpen(name)
+        } else {
+            Action::Open(name)
+        }
+    }
+
+    fn handle_launch_options(&mut self, key: KeyEvent) -> Action {
+        match key.code {
+            KeyCode::Esc => self.mode = Mode::SessionMenu,
+            KeyCode::Tab | KeyCode::Down => self.launch_row = (self.launch_row + 1) % 4,
+            KeyCode::BackTab | KeyCode::Up => self.launch_row = (self.launch_row + 3) % 4,
+            KeyCode::Enter => {
+                if let Some(name) = self.selected_session_name() {
+                    if !matches!(self.launch_engine.as_str(), "claude" | "codex") {
+                        self.set_status(
+                            "Choose Claude or Codex with left/right",
+                            StatusLevel::Error,
+                        );
+                        return Action::None;
+                    }
+                    self.launch_choices.insert(
+                        name,
+                        LaunchChoice {
+                            engine: self.launch_engine.clone(),
+                            model: self.launch_model.text().to_owned(),
+                            effort: self.launch_effort.text().to_owned(),
+                            automatic: self.launch_automatic,
+                        },
+                    );
+                }
+                self.mode = Mode::SessionMenu;
+            }
+            KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') if self.launch_row == 0 => {
+                self.launch_engine = if self.launch_engine == "claude" {
+                    "codex"
+                } else {
+                    "claude"
+                }
+                .into();
+                self.launch_model.clear();
+                self.launch_effort.clear();
+                self.launch_automatic = self.launch_engine == "codex";
+            }
+            KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') if self.launch_row == 3 => {
+                self.launch_automatic = !self.launch_automatic;
+            }
+            _ if self.launch_row == 1 || self.launch_row == 2 => {
+                let input = if self.launch_row == 1 {
+                    &mut self.launch_model
+                } else {
+                    &mut self.launch_effort
+                };
+                match key.code {
+                    KeyCode::Left => input.move_left(),
+                    KeyCode::Right => input.move_right(),
+                    KeyCode::Home => input.move_home(),
+                    KeyCode::End => input.move_end(),
+                    KeyCode::Backspace => input.delete_back(),
+                    KeyCode::Delete => input.delete_forward(),
+                    KeyCode::Char(c) if !c.is_control() => input.insert(c),
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+        Action::None
+    }
+
     fn handle_confirm_force_open(&mut self, key: KeyEvent) -> Action {
         match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
                 if let Some(name) = self.selected_session_name() {
-                    return Action::ForceOpen(name);
+                    let _ = name;
+                    return self.open_action(true);
                 }
                 self.mode = Mode::Normal;
                 Action::None
@@ -5867,5 +6019,72 @@ mod tests {
         let status = app.status_message.as_ref().expect("the refusal must be reported");
         assert_eq!(status.level, StatusLevel::Error, "a refusal is not a success");
         std::fs::remove_dir_all(&tmp).ok();
+    }
+    #[test]
+    fn launch_options_keep_literal_model_and_normal_open_uses_saved_choices() {
+        let mut app = App::new(sample_sessions());
+        app.handle_key(KeyEvent::from(KeyCode::Char('e')));
+        assert_eq!(app.mode, Mode::LaunchOptions);
+        app.launch_engine = "codex".into();
+        app.launch_model.set("model with spaces $(literal)");
+        app.launch_effort.set("xhigh");
+        app.launch_automatic = true;
+        app.handle_key(KeyEvent::from(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::SessionMenu);
+        match app.execute_menu_action(MenuAction::Open) {
+            Action::OpenWith { session, args } => {
+                assert_eq!(session, "alpha");
+                assert_eq!(
+                    args,
+                    [
+                        "--engine",
+                        "codex",
+                        "--model",
+                        "model with spaces $(literal)",
+                        "--effort",
+                        "xhigh",
+                        "--approve-for-me"
+                    ]
+                );
+            }
+            other => panic!("wrong launch action: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn changing_engine_clears_model_and_effort_and_escape_keeps_saved_choices() {
+        let mut app = App::new(sample_sessions());
+        app.execute_menu_action(MenuAction::LaunchOptions);
+        app.launch_engine = "claude".into();
+        app.launch_model.set("claude model");
+        app.launch_effort.set("max");
+        app.handle_key(KeyEvent::from(KeyCode::Right));
+        assert_eq!(app.launch_engine, "codex");
+        assert_eq!(app.launch_model.text(), "");
+        assert_eq!(app.launch_effort.text(), "");
+        assert!(app.launch_automatic);
+        app.handle_key(KeyEvent::from(KeyCode::Esc));
+        assert!(app.launch_choices.is_empty());
+    }
+
+    #[test]
+    fn force_open_keeps_configured_launch_options() {
+        let mut app = App::new(sample_sessions());
+        app.launch_choices.insert(
+            "alpha".into(),
+            LaunchChoice {
+                engine: "claude".into(),
+                model: "selected".into(),
+                effort: String::new(),
+                automatic: false,
+            },
+        );
+        match app.handle_confirm_force_open(KeyEvent::from(KeyCode::Char('y'))) {
+            Action::OpenWith { args, .. } => {
+                assert!(args.contains(&"--force".into()));
+                assert!(args.contains(&"selected".into()));
+            }
+            other => panic!("wrong force action: {other:?}"),
+        }
     }
 }

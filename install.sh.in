@@ -482,6 +482,21 @@ installed "Codex skills" "$CODEX_SKILLS_DIR/"
 [ -d "$CODEX_DIR" ] || { mkdir -p "$CODEX_DIR" && chmod 700 "$CODEX_DIR"; }
 _deploy_skills "$CODEX_SKILLS_DIR"
 
+# Both native engines call the same recovery consumer with a normalized event.
+# A Codex-only install carries these files in its own runtime home.
+CODEX_RECOVERY_DIR="$CODEX_DIR/hooks/cs"
+mkdir -p "$CODEX_RECOVERY_DIR"
+for hook in autosave-commits.sh cs-resolve.sh cs-shared.sh cs-engine-events.sh; do
+    if [ "$INSTALL_METHOD" = local ]; then
+        cp "$HOOKS_SOURCE/$hook" "$CODEX_RECOVERY_DIR/"
+    elif command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$REPO_URL/hooks/$hook" -o "$CODEX_RECOVERY_DIR/$hook" || error "Failed to download $hook"
+    else
+        wget -q "$REPO_URL/hooks/$hook" -O "$CODEX_RECOVERY_DIR/$hook" || error "Failed to download $hook"
+    fi
+    chmod 755 "$CODEX_RECOVERY_DIR/$hook"
+done
+
 # One SessionStart hook: after /clear it rebinds the session to the new
 # thread and loads an armed rotation handoff. Codex skips a hook nobody has
 # trusted, so the registration writes its trust hash too.
@@ -489,6 +504,9 @@ if command -v jq >/dev/null 2>&1; then
     installed "Codex hook" "$CODEX_DIR/hooks.json"
     _codex_hooks_register "$CODEX_DIR" "$(_codex_hook_command "$INSTALL_DIR/cs")" \
         || warn "Could not register the Codex hook in $CODEX_DIR/hooks.json; rotation after /clear needs it"
+    _codex_hooks_register "$CODEX_DIR" "$(_codex_hook_command "$INSTALL_DIR/cs" files-changed)" \
+        PostToolUse post_tool_use files-changed \
+        || warn "Could not register Codex automatic recovery in $CODEX_DIR/hooks.json"
 else
     warn "jq not found - the Codex hook (rotation after /clear) was not registered."
 fi

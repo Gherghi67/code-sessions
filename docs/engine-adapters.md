@@ -19,6 +19,7 @@ letters, digits, or underscores, and appears in that registry.
 | `capabilities` | Print supported capability names, one per line. |
 | `prepare_workspace` | Prepare native integration for a session directory and mode (`create`, `migrate_storage`, `migrate`, or `worktree`). Return failure to abort the shared operation. Codex is a no-op; shared storage is already prepared. |
 | `launch` | Start the selected engine with the positional launch arguments supplied by the shared command. |
+| `files_changed` | Read a native successful tool-completion JSON object on stdin; print a `files_changed` JSON event, or nothing for failed, unrelated, or malformed input. |
 
 Each registered implementation is named
 `_cs_<engine>_adapter_<operation>`. Dispatch validates both the registry entry
@@ -31,8 +32,8 @@ The capability check `cs_engine_supports <engine> <capability>` performs an
 exact line match against `capabilities` output. The initial capabilities
 describe the checked-in integration: Claude supports `launch`, `exact_resume`,
 `startup_context`, `feature_finish`, `rotation`, `spawn_brief`,
-`memory_index`, and `mail_delivery`; Codex supports `launch`, `exact_resume`,
-`startup_context`, `feature_finish` and `rotation`. These
+`memory_index`, `mail_delivery`, and `recovery_autosave`; Codex supports `launch`, `exact_resume`,
+`startup_context`, `feature_finish`, `rotation`, and `recovery_autosave`. These
 names describe the integration's behavior, not a guarantee about every
 installed runtime version. Shared commands should check a capability before
 performing any side effect that depends on it. In particular, feature finish
@@ -256,11 +257,11 @@ rather than the handoff, whose name is the session's topic.
 
 ## Deferred boundaries
 
-Hooks, recovery, usage, and TUI runtime observations retain their Claude
-integration, apart from the one Codex hook below. They are not a normalized
+Usage and TUI runtime observations retain their Claude
+integration. Most hooks are not a normalized
 core event bus yet. A full move to
 `core/` and `adapters/` directories should follow these behavior boundaries.
-Codex native event delivery remains separate work; shared supervision does not
+Codex turn-boundary event delivery remains separate work; shared supervision does not
 provide turn-boundary observation, queue delivery, or forced rotation.
 Codex refuses encrypted sessions, a stopgap until it keeps a `CODEX_HOME` of
 its own inside the vault: main checks before the pre-open, and
@@ -292,3 +293,31 @@ explicit `--fresh` with a rotation armed) adds the handoff to the new thread's
 context, consumes it, and starts the thread with `codex resume <id> <prompt>`.
 These paths read `.cs/handoffs` and `.cs/local/pending-handoff` only, so Codex
 rotation does not yet work in an encrypted session.
+
+## Completed file changes and recovery copies
+
+Both adapters normalize completed file edits in `lib/25-engine-events.sh`:
+Claude translates each successful `Write` or `Edit`; Codex translates a
+successful `apply_patch` PostToolUse report into one event containing every
+added, updated, deleted, and moved path (both sides of a rename).
+
+```json
+{"type":"files_changed","engine":"codex","session_id":"<native UUID>","cwd":"/workspace","files":["login.ts","users.ts"]}
+```
+
+The shared `hooks/autosave-commits.sh` consumer accepts this event through
+`--event`. Claude's existing hook calls its adapter first; the installed
+`cs -codex-hook files-changed` PostToolUse handler calls Codex's adapter and
+then the same consumer. The consumer validates the conversation UUID and
+requires a changed path inside the checkout before saving the whole working
+tree to `refs/worktree/cs/session/<UUID>`. It preserves HEAD and the user's
+index, records the base HEAD, excludes vault storage, and skips identical
+snapshots. Failed tools and non-file operations create no recovery copy.
+
+The installer deploys the consumer and its libraries to
+`$CODEX_HOME/hooks/cs/` even in a Codex-only installation, registers and trusts
+the PostToolUse handler, and removes only its own handler and files on
+uninstall. Build generates `hooks/cs-engine-events.sh` from the adapter registry
+and translators so standalone hooks and the assembled command use one contract.
+Claude's SessionStart recovery prompt remains available; Codex snapshots can
+be inspected through their shadow ref.

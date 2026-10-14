@@ -18,7 +18,7 @@ _cs_codex_adapter_capabilities() {
     # the armed handoff; the launch prompt's r starts a thread from it.
     # feature_finish: -finish starts the thread on `$finish <task>`, as
     # Claude's starts on /finish <task>.
-    printf '%s\n' launch exact_resume startup_context feature_finish rotation
+    printf '%s\n' launch exact_resume startup_context feature_finish rotation recovery_autosave
 }
 
 _cs_codex_adapter_prepare_workspace() {  # session_dir, mode
@@ -432,11 +432,13 @@ _launch_codex_bound() {
         turn_before=$(_codex_turn_mark "$helper" "$codex_bin" "$session_dir" "$thread_id") || turn_before=""
     fi
 
-    printf '%s\n' 'Codex via cs: session context, exact resume and rotation are enabled; Claude hooks, autosave, and task queue integration are unavailable.'
+    printf '%s\n' 'Codex via cs: session context, exact resume and rotation are enabled; automatic recovery is enabled; Claude task queue integration is unavailable.'
     # A dedicated native writer lives for this supervised CLI lifetime.
     # Signals and lock cleanup belong to the shared controller.
     local status=0
-    cs_run_child "$codex_bin" --no-daemon resume "$thread_id" -C "$session_dir" ${kick:+"$kick"} || status=$?
+    local -a CS_NATIVE_LAUNCH_ARGS
+    _cs_native_launch_options codex || return 1
+    cs_run_child "$codex_bin" --no-daemon resume "$thread_id" -C "$session_dir" ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} ${kick:+"$kick"} || status=$?
     if [ "$status" -ne 0 ] && [ -n "$spent" ]; then
         # A switch relaunch's settle reads it too (lib/78-switch.sh).
         _cs_switch_ran=""
