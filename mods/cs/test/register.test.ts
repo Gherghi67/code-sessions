@@ -554,6 +554,20 @@ test('a marker naming a handoff whose name is not plain does not arm', async () 
   expect(findButton(await band()).props.label).toBe('/clear and continue from the handoff')
 })
 
+// The marker is read as the SessionStart hook reads it (tr -d '[:space:]'):
+// ASCII whitespace is dropped and nothing else, so a marker whose name starts
+// with U+FEFF, U+00A0 or U+2028 names a file the hook will not load, and arms
+// nothing.
+test('a marker is read as the hook reads it: only ASCII whitespace is dropped', async () => {
+  percent = 39
+  for (const lead of ['﻿', ' ', ' ']) {
+    arm(); files[MARKER] = `${lead}2026-09-15-next-step.md\n`
+    expect(await band()).toBe(DRAWN)
+  }
+  arm(); files[MARKER] = '\t 2026-09-15-next-step.md\r\n'
+  expect(findButton(await band()).props.label).toBe('/clear and continue from the handoff')
+})
+
 // An encrypted session keeps the marker and its handoffs behind .cs/private.
 const PRIVATE_MARKER = '/work/.cs/private/pending-handoff'
 const PRIVATE_HANDOFF = '/work/.cs/private/handoffs/2026-09-15-next-step.md'
