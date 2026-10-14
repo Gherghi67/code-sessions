@@ -108,7 +108,7 @@ esac
 # Autosave to shadow ref using git plumbing (does not touch HEAD or main branch)
 # Fires on ALL Write/Edit — protects all files, not just the narrative
 autosave_to_shadow_ref() {
-    cd "$SESSION_DIR" || return 0
+    cd -- "$SESSION_DIR" || return 0
 
     # The HEAD this snapshot sits on, read BEFORE the tree is written. An
     # integrate can fast-forward HEAD while the snapshot is in flight; a label
@@ -154,7 +154,7 @@ autosave_to_shadow_ref() {
         top=$(pwd -P)
         for sub in $CS_VAULT_LINKS; do
             [ -L "$META_DIR/$sub" ] || continue
-            target=$(cd "$META_DIR/$sub" 2>/dev/null && pwd -P) || continue
+            target=$(cd -- "$META_DIR/$sub" 2>/dev/null && pwd -P) || continue
             case "$target" in "$top"/*) excludes+=(":(exclude)${target#"$top"/}") ;; esac
         done
         GIT_INDEX_FILE="$TEMP_INDEX" git add -A -- ':/' "${excludes[@]}" 2>/dev/null || { rm -f "$TEMP_INDEX"; exit 0; }

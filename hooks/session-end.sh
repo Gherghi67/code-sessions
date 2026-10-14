@@ -191,7 +191,7 @@ if [ -f "$META_DIR/local/vault" ] && [ "${CS_RESOLVED_FROM:-env}" = "env" ] \
                 if [ -z "$held" ] && [ -f "$dir/.cs/local/vault-holders" ]; then
                     while read -r h; do alive "$h" && held=1; done < "$dir/.cs/local/vault-holders"
                 fi
-                if [ -z "$held" ] && mnt=$(cd "$dir/.cs/vault-mnt" 2>/dev/null && pwd -P) \
+                if [ -z "$held" ] && mnt=$(cd -- "$dir/.cs/vault-mnt" 2>/dev/null && pwd -P) \
                     && mount | grep -F " on $mnt (" >/dev/null; then
                     # A child with a recorded pid, so a reopen can stop it.
                     # Long after the open checked the session: the builtin
@@ -232,9 +232,9 @@ fi
 _cs_root_default="${HOME:-/nonexistent}/.claude-sessions"
 SESSIONS_ROOT="${CS_SESSIONS_ROOT:-$_cs_root_default}"
 if [ -d "$SESSIONS_ROOT" ]; then
-    SESSIONS_ROOT=$(cd "$SESSIONS_ROOT" 2>/dev/null && pwd -P) || SESSIONS_ROOT="${CS_SESSIONS_ROOT:-$_cs_root_default}"
+    SESSIONS_ROOT=$(cd -- "$SESSIONS_ROOT" 2>/dev/null && pwd -P) || SESSIONS_ROOT="${CS_SESSIONS_ROOT:-$_cs_root_default}"
 fi
-SESSION_DIR_PHYS=$(cd "$SESSION_DIR" 2>/dev/null && pwd -P) || SESSION_DIR_PHYS="$SESSION_DIR"
+SESSION_DIR_PHYS=$(cd -- "$SESSION_DIR" 2>/dev/null && pwd -P) || SESSION_DIR_PHYS="$SESSION_DIR"
 case "$SESSION_DIR_PHYS" in
     "$SESSIONS_ROOT"/*) : ;;
     *) [ -n "${CS_SESSIONS_ROOT:-}" ] || SESSIONS_ROOT="" ;;

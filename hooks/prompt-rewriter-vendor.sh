@@ -122,7 +122,7 @@ _limit="${_CS_REWRITE_LIMIT:-25}"
 # failure on every machine without timeout(1).
 _run_cli() {  # binary, args...  (stdin: the prompt)
     local bin="$1"; shift
-    ( cd "$_cfg" 2>/dev/null || exit 1
+    ( cd -- "$_cfg" 2>/dev/null || exit 1
       perl -e 'alarm shift; exec @ARGV' "$_limit" "$bin" "$@" 2>/dev/null )
 }
 
