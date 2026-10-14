@@ -502,14 +502,13 @@ _cs_remove_tree_if_owned() {  # dir, [remove-function]
 }
 
 # The sha256 of the files cs deployed under ~/.claude (hooks, commands,
-# skills and their scripts, mods), retired names included: every version in
-# the repo's history up to the first release that keeps an install record,
-# then each later release's payload, which the release build
-# (./build.sh --add-release-hashes) adds. A file holding content listed here
-# is cs's even when the install record that names it is gone, as after
-# ~/.claude/hooks/cs is deleted by hand. One sha256 per line, sorted, no
-# repeats. Content committed after that first release and never released is
-# not listed.
+# skills and their scripts, mods), retired names included: every version
+# committed before install.sh wrote an install record, plus each release's
+# payload, which the release build (./build.sh --add-release-hashes) adds. A
+# file holding content listed here is cs's even when the install record that
+# names it is gone, as after ~/.claude/hooks/cs is deleted by hand. One
+# sha256 per line, sorted, no repeats. Content committed after install.sh
+# began writing the record, between releases, is not listed.
 CS_KNOWN_SHA256=(
     0007ced8c46eb1ba6a56c5102f144c3bdf4f7fa66537eafa79cdcec10ae04935
     007fe70b85b0e2dcd341109783f086804bce8b59987df6f67bc941782baef1f6
@@ -1279,7 +1278,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "e18447fff3f6da98ab7bd1d11065123ffe681bb1a144987b988f1b671cf5e06e  bin/cs"
+    "3a9eceb5e9540403de9ac2eab0c45c393bd235ca080ca6ae8618ea19aa64eb4a  bin/cs"
     "d54f9dd8797c86d7815f4c1f300a56cf1d4bb344cbcd645ec8f71659d6a70ff6  bin/cs-secrets"
     "a6d008e8bcba4e3d4c1599c76aaddc4ea1c4eb61e3ba861c60d9e4b91f706e78  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"

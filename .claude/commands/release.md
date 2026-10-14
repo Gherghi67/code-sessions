@@ -283,7 +283,9 @@ SHA=$(git rev-parse HEAD)
 **Inspect the `git status` output before `git add -A`.** If it shows files unrelated to
 the release — scratch scripts, test artifacts, `.DS_Store`, stray build output — do NOT
 use `-A`: stage the release files explicitly (`git add lib/00-header.sh
-lib/01-manifests.sh bin/cs install.sh CHANGELOG.md <docs you touched>`) and ask the user about the strays before committing.
+lib/01-manifests.sh bin/cs install.sh hooks/cs-shared.sh CHANGELOG.md <docs you touched>`,
+plus every file under `hooks/`, `commands/`, `skills/` and `mods/` that Steps 2-7
+changed) and ask the user about the strays before committing.
 `-A` is only safe when status shows exactly the release's own changes.
 
 ### 8b. Ghost Gate on the Release Commit
@@ -340,7 +342,10 @@ per-job conclusions of the run whose commit is `$SHA`, never by
 `gh run watch`'s exit status, which can return 1 while a job is still running.
 A job `cancelled` with zero steps is infrastructure, not code: check
 `https://www.githubstatus.com/api/v2/incidents/unresolved.json`, then
-`gh run rerun <databaseId> --failed`. Do not tag until every job is `success`.
+`gh run rerun <databaseId> --failed`. A code failure gets a fix in a new
+commit; repeat Step 8 from its `./build.sh --add-release-hashes` line (the fix
+may touch a hook, command, skill or mod file), then Steps 8b and 8c on the new
+sha. Do not tag until every job is `success`.
 
 ### 9. Create GitHub Release
 

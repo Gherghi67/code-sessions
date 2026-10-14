@@ -22,12 +22,20 @@ SHA_MARKER='# @@CS_PAYLOAD_SHA256@@'
 # checkout holds it, to CS_KNOWN_SHA256 in lib/01-manifests.sh, keeping the
 # table one sha256 per line, sorted and without repeats; a table already
 # holding them all is left byte for byte as it was. Refuses a table holding a
-# line that is not a sha256 (a comment, a blank line) rather than drop it.
+# line that is not a sha256 (a comment, a blank line) rather than drop it,
+# and an empty table.
 add_release_hashes() {
     local table="CS_KNOWN_SHA256" found before after f digest
     found=$(grep -c "^$table=($" "$MANIFESTS_SRC" || true)
     if [ "$found" != 1 ]; then
         echo "error: $MANIFESTS_SRC must carry exactly one '$table=(' line (found $found)" >&2
+        exit 1
+    fi
+    # An empty table is refused here: no cs is without one, and bash 3.2
+    # under set -u fails on the empty array expansion below.
+    before=$(awk -v start="$table=(" '$0 == start { f = 1; next } f && $0 == ")" { exit } f { n++ } END { print n + 0 }' "$MANIFESTS_SRC")
+    if [ "$before" = 0 ]; then
+        echo "error: $table in $MANIFESTS_SRC is empty" >&2
         exit 1
     fi
     # Global, not local: the EXIT trap runs after an exit inside this
@@ -51,7 +59,6 @@ add_release_hashes() {
         echo "error: $table in $MANIFESTS_SRC holds an entry that is not a sha256: $(grep -vx '[0-9a-f]\{64\}' "$merged" | head -1)" >&2
         exit 1
     fi
-    before=$(awk -v start="$table=(" '$0 == start { f = 1; next } f && $0 == ")" { exit } f { n++ } END { print n + 0 }' "$MANIFESTS_SRC")
     awk -v start="$table=(" -v table="$table" -v merged="$merged" -v src="$MANIFESTS_SRC" '
         state == 0 {
             print
