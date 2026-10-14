@@ -2240,9 +2240,10 @@ test_integrate_tracked_mode_skips_pointers_to_base_deleted_topics() {
 run_test test_integrate_tracked_mode_skips_pointers_to_base_deleted_topics
 
 test_retire_ignored_mode_fuses_records() {
-    local base_dir="$CS_SESSIONS_ROOT/proj"
+    local base_dir="$CS_SESSIONS_ROOT/proj" esc="esc"$'\033'"[31m.md"
     mkdir -p "$base_dir/.cs"/{memory,local}
     echo "base note" > "$base_dir/.cs/memory/note-base.md"
+    echo "esc note" > "$base_dir/.cs/memory/$esc"
     echo "shared note" > "$base_dir/.cs/memory/note-shared.md"
     printf -- '---\ndescription: seed\n---\n# Session narrative (tester)\n\n## Prior finding\n' \
         > "$base_dir/.cs/memory/narrative.tester.md"
@@ -2267,6 +2268,7 @@ test_retire_ignored_mode_fuses_records() {
     printf -- '# Session narrative (plain)\n\n## Plain finding\n' \
         > "$wt/.cs/memory/narrative.plain.md"
     echo "task version" > "$wt/.cs/memory/note-base.md"
+    echo "esc task version" > "$wt/.cs/memory/$esc"
     echo "shared note" > "$wt/.cs/memory/note-shared.md"
     local output merge_status
     local sha
@@ -2277,6 +2279,8 @@ test_retire_ignored_mode_fuses_records() {
         || { echo "  retire output: $output"; return 1; }
     assert_output_contains "$output" "memory/note-base.md was edited in the feature and not in the base; the feature's version is now in the base" \
         "an inherited topic the feature edited is named" || return 1
+    assert_eq "memory/esc?[31m.md was edited in the feature and not in the base; the feature's version is now in the base" \
+        "$(printf '%s\n' "$output" | grep -F 'memory/esc')" "a control character in the topic's name shows as ?" || return 1
     assert_output_not_contains "$output" "note-shared.md" \
         "a topic byte-identical to the base's is skipped silently" || return 1
     assert_eq "task version" "$(cat "$base_dir/.cs/memory/note-base.md")" \
@@ -2448,15 +2452,18 @@ run_test test_retire_ignored_mode_leaves_a_base_deleted_topic_deleted
 
 # The feature edited a topic it inherited and the base deleted meanwhile: the
 # edit is work, so the feature's text comes back, its pointer with it, and
-# the retire says which topic.
+# the retire says which topic, each control character in its name as "?".
 test_retire_ignored_mode_brings_back_a_deleted_topic_the_feature_edited() {
     local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    local esc="esc"$'\033'"[31m.md"
     _ignored_base_with_two_topics
+    echo "esc topic" > "$base_dir/.cs/memory/$esc"
     cs_launch "proj@t1"
     echo "done" > "$wt/result.txt"
     (cd "$wt" && git add result.txt && git commit -q -m "task")
     echo "gone topic, with a feature note" > "$wt/.cs/memory/gone.md"
-    rm "$base_dir/.cs/memory/gone.md" "$base_dir/.cs/memory/kept.md"
+    echo "esc topic, with a feature note" > "$wt/.cs/memory/$esc"
+    rm "$base_dir/.cs/memory/gone.md" "$base_dir/.cs/memory/kept.md" "$base_dir/.cs/memory/$esc"
     : > "$base_dir/.cs/memory/MEMORY.md"
     sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
@@ -2465,6 +2472,8 @@ test_retire_ignored_mode_brings_back_a_deleted_topic_the_feature_edited() {
         "the feature's edit is back in the base" || return 1
     assert_output_contains "$output" "memory/gone.md was deleted in the base and edited in the feature" \
         "the retire names the topic" || return 1
+    assert_eq "memory/esc?[31m.md was deleted in the base and edited in the feature; the feature's version is back in the base" \
+        "$(printf '%s\n' "$output" | grep -F 'memory/esc')" "the retire shows a control character in the topic's name as ?" || return 1
     assert_eq "- [Gone](gone.md): a topic" "$(grep -F 'gone.md' "$base_dir/.cs/memory/MEMORY.md")" \
         "its pointer comes back with it" || return 1
     assert_file_not_exists "$base_dir/.cs/memory/kept.md" "the untouched deleted topic stays deleted" || return 1
