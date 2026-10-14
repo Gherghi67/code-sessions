@@ -219,6 +219,13 @@ _launch_codex_bound() {
         /*) ;;
         *) codex_bin="$(cd "$(dirname "$codex_bin")" && pwd -P)/$(basename "$codex_bin")" || return 1 ;;
     esac
+    # Refuse before native preparation can bind a thread or spend its handoff.
+    local codex_help
+    if ! codex_help=$(cs_run_child "$codex_bin" --help 2>/dev/null) \
+        || ! printf '%s\n' "$codex_help" | grep -E '^[[:space:]]*--approve-for-me([[:space:]]|$)' >/dev/null; then
+        _codex_launch_error "Codex at $codex_bin must support --approve-for-me. Upgrade Codex or set CODEX_BIN to a build whose --help lists --approve-for-me."
+        return 1
+    fi
     helper=$(_codex_thread_helper) || {
         _codex_launch_error "Cannot locate cs-codex-thread beside the cs executable."
         return 1

@@ -36,7 +36,10 @@ automatically.
 CS selects **Approve for me** on every Codex launch, including new threads,
 exact resumes, and engine switches, by passing `--approve-for-me`. This requires
 a Codex build that supports the flag; it is verified with
-`0.162.0-alpha.17.2`. The mode uses a `workspace-write` sandbox with
+`0.162.0-alpha.17.2`. Before preparing a thread or consuming a handoff, CS
+requires a successful `codex --help` that lists the option. Unsupported builds
+are refused; upgrade Codex or point `CODEX_BIN` at a supporting build.
+The mode uses a `workspace-write` sandbox with
 `on-request` approvals and an `auto_review` reviewer. Routine workspace
 operations run directly; eligible approval requests go through automatic review,
 which can reject an action. You can change the active mode with `/permissions`.

@@ -39,6 +39,10 @@ exit 0
 CLAUDE
     cat > "$CODEX_BIN" <<'CODEX'
 #!/usr/bin/env bash
+if [ "${1:-}" = --help ]; then
+    printf '      --approve-for-me\n'
+    exit 0
+fi
 printf '%s\n' "$*" >> "$CS_CODEX_LOG"
 exit 0
 CODEX

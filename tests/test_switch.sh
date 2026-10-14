@@ -113,6 +113,10 @@ jq -r '.hooks.SessionStart[]?
 TURN
     cat > "$stub/codex" <<'CODEX'
 #!/usr/bin/env bash
+if [ "${1:-}" = --help ]; then
+    printf '      --approve-for-me\n'
+    exit 0
+fi
 STUB_PPID=$PPID "$CS_STUB_DIR/record" codex "$@"
 if [ -f "$CS_STUB_DIR/codex.fail-early" ]; then
     rc=$(cat "$CS_STUB_DIR/codex.fail-early"); rm -f "$CS_STUB_DIR/codex.fail-early"; exit "$rc"

@@ -346,7 +346,13 @@ test_switching_engines_restamps_for_each() {
     version=${version#cs }
     version=${version%% *}
     mkdir -p "$stub"
-    printf '#!/bin/sh\nexit 0\n' > "$stub/codex"
+    cat > "$stub/codex" <<'CODEX'
+#!/bin/sh
+if [ "${1:-}" = --help ]; then
+    printf '      --approve-for-me\n'
+fi
+exit 0
+CODEX
     printf '#!/bin/sh\necho 12345678-1234-1234-1234-123456789abc\n' > "$stub/codex-thread"
     chmod +x "$stub/codex" "$stub/codex-thread"
     _stamped_session both || return 1
