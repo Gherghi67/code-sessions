@@ -186,6 +186,22 @@ _splice_wrap_line() {  # file, line
         && mv "$1.splice" "$1"
 }
 
+# Replace each line of file $1 equal to $2 with $3.
+_replace_line() {  # file, old, new
+    OLD="$2" NEW="$3" awk '$0 == ENVIRON["OLD"] { print ENVIRON["NEW"]; next } { print }' "$1" > "$1.splice" \
+        && mv "$1.splice" "$1"
+}
+
+# The Best Practices section as cs wrote it from 2025-11-24 to 2026-07-06,
+# with $1 as its bullet naming the command to run at the end.
+_best_practices_section() {  # run-bullet
+    printf '%s\n' '' '## Best Practices' '' \
+        "- Document discoveries as you find them - don't wait until the end" \
+        '- Use .cs/artifacts/ for any reusable scripts or configs' \
+        "$1" \
+        '- Never write raw API keys or passwords to artifact files - use cs -secrets'
+}
+
 # A new session named $1; its CLAUDE.local.md as cs writes it is copied to
 # $TEST_TMPDIR/$1.fresh. Prints the session directory.
 _fresh_session() {  # name
@@ -267,6 +283,11 @@ WRAP_LINE_SHORT='When the session is complete, use the `/wrap` command to distil
 SUMMARY_LINE_CS_DIR='When the session is complete, use the `/summary` command to generate an intelligent summary of the entire session. This will create a .cs/summary.md file synthesizing all documentation.'
 SUMMARY_LINE_ROOT='When the session is complete, use the `/summary` command to generate an intelligent summary of the entire session. This will create a summary.md file synthesizing all documentation.'
 
+# The Best Practices bullet cs wrote from 2025-11-24 to 2026-06-11, and the
+# one it wrote from 2026-06-12 to 2026-07-06.
+SUMMARY_BULLET='- Run `/summary` at the end to create a cohesive record'
+WRAP_BULLET='- Run `/wrap` at the end to distill memory and create a cohesive record'
+
 # ============================================================================
 # The cue offers /wrap or nothing, and no session text names /sweep or /summary
 # ============================================================================
@@ -346,15 +367,54 @@ test_open_rewrites_each_summary_line_cs_wrote() {
     done
 }
 
-# A /summary line the user edited is theirs: an open leaves the file as it was.
+# A /summary line, Best Practices bullet or Summary Command heading the user
+# edited is theirs: an open leaves the file as it was.
 test_open_leaves_an_edited_summary_line_alone() {
     local dir
     dir=$(_fresh_session summary-line-edited)
     _splice_wrap_line "$dir/CLAUDE.local.md" 'When the session is complete, use the `/summary` command to generate an intelligent summary of the entire session. This will create a .cs/summary.md file synthesizing all my notes.'
+    _replace_line "$dir/CLAUDE.local.md" '## Wrap-up Command' '## Summary Commands'
+    _best_practices_section '- Run `/summary` at the end to create a cohesive record of the work' >> "$dir/CLAUDE.local.md"
+    assert_file_contains "$dir/CLAUDE.local.md" '^## Summary Commands$' "precondition: the heading carries the edit" || return 1
     cp "$dir/CLAUDE.local.md" "$TEST_TMPDIR/summary-line-edited.seeded"
     _reopen_with_migration summary-line-edited
     cmp -s "$TEST_TMPDIR/summary-line-edited.seeded" "$dir/CLAUDE.local.md" \
         || { echo "  FAIL: an open changed the edited /summary line"; diff "$TEST_TMPDIR/summary-line-edited.seeded" "$dir/CLAUDE.local.md" | head -20; return 1; }
+}
+
+# The Best Practices bullet cs wrote pointing at /summary becomes the bullet
+# cs later wrote pointing at /wrap, and nothing else changes; a second open
+# changes nothing.
+test_open_rewrites_the_best_practices_bullet_cs_wrote() {
+    local dir
+    dir=$(_fresh_session summary-bullet)
+    _best_practices_section "$SUMMARY_BULLET" >> "$dir/CLAUDE.local.md"
+    assert_file_contains "$dir/CLAUDE.local.md" '^- Run `/summary` at the end to create a cohesive record$' \
+        "precondition: the session carries the /summary bullet" || return 1
+    { cat "$TEST_TMPDIR/summary-bullet.fresh"; _best_practices_section "$WRAP_BULLET"; } > "$TEST_TMPDIR/summary-bullet.expected"
+    _reopen_with_migration summary-bullet
+    cmp -s "$TEST_TMPDIR/summary-bullet.expected" "$dir/CLAUDE.local.md" \
+        || { echo "  FAIL: the bullet becomes the /wrap bullet"; diff "$TEST_TMPDIR/summary-bullet.expected" "$dir/CLAUDE.local.md" | head -20; return 1; }
+    _reopen_with_migration summary-bullet
+    cmp -s "$TEST_TMPDIR/summary-bullet.expected" "$dir/CLAUDE.local.md" \
+        || { echo "  FAIL: a second open changed the bullet session's CLAUDE.local.md"; return 1; }
+}
+
+# The "## Summary Command" heading cs wrote becomes the template's
+# "## Wrap-up Command", leaving the file a new session's; a second open
+# changes nothing.
+test_open_rewrites_the_summary_command_heading() {
+    local dir
+    dir=$(_fresh_session summary-heading)
+    _replace_line "$dir/CLAUDE.local.md" '## Wrap-up Command' '## Summary Command'
+    assert_file_contains "$dir/CLAUDE.local.md" '^## Summary Command$' \
+        "precondition: the session carries the Summary Command heading" || return 1
+    _reopen_with_migration summary-heading
+    cmp -s "$TEST_TMPDIR/summary-heading.fresh" "$dir/CLAUDE.local.md" \
+        || { echo "  FAIL: the heading becomes Wrap-up Command"; diff "$TEST_TMPDIR/summary-heading.fresh" "$dir/CLAUDE.local.md" | head -20; return 1; }
+    _reopen_with_migration summary-heading
+    cmp -s "$TEST_TMPDIR/summary-heading.fresh" "$dir/CLAUDE.local.md" \
+        || { echo "  FAIL: a second open changed the heading session's CLAUDE.local.md"; return 1; }
 }
 
 # A cue block or a /wrap line the user edited is theirs: an open leaves the
@@ -385,4 +445,6 @@ run_test test_open_drops_the_sweep_and_summary_sentence_from_the_short_wrap_line
 run_test test_open_leaves_an_edited_cue_and_wrap_line_alone
 run_test test_open_rewrites_each_summary_line_cs_wrote
 run_test test_open_leaves_an_edited_summary_line_alone
+run_test test_open_rewrites_the_best_practices_bullet_cs_wrote
+run_test test_open_rewrites_the_summary_command_heading
 report_results
