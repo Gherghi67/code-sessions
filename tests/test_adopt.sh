@@ -601,55 +601,63 @@ test_adopt_inits_git_when_none_exists() {
     assert_file_contains "$project_dir/.gitignore" '^\.cs/local/$' "cs's rules are in the .gitignore" || return 1
     assert_output_contains "$out" "cs committed nothing; it left .cs/, .gitignore and .gitattributes for you to commit" \
         "one line names what adopt left" || return 1
+    assert_eq "tracked" "$(awk -F': ' '/^cs_mode:/{print $2}' "$project_dir/.cs/local/state")" \
+        "the session records that git is to carry .cs" || return 1
 }
 
-test_adopt_into_git_repo_without_claude_md_stages_bookkeeping() {
-    local project_dir="$TEST_TMPDIR/my-project"
+# Adopting into the user's repo commits nothing and stages nothing: cs's
+# files stay untracked, one line names them, and the session records that
+# its features expect git to carry .cs once the user commits it.
+test_adopt_into_git_repo_leaves_its_files_untracked() {
+    local project_dir="$TEST_TMPDIR/my-project" head_before out
     mkdir -p "$project_dir"
-
     (cd "$project_dir" && git init -q && git config user.email a@b.c && git config user.name A && git commit --allow-empty -m "initial" -q)
+    head_before=$(git -C "$project_dir" rev-parse HEAD)
 
-    (cd "$project_dir" && "$CS_BIN" -adopt my-session)
+    out=$(cd "$project_dir" && "$CS_BIN" -adopt my-session 2>&1)
 
-    local tracked
-    tracked=$(git -C "$project_dir" ls-files .cs/README.md)
-    if [[ -z "$tracked" ]]; then
-        echo "  FAIL: .cs/README.md should be tracked by git after adopting a repo with no CLAUDE.md"
-        return 1
-    fi
-
-    local log_output
-    log_output=$(git -C "$project_dir" log --oneline --format="%s")
-    if ! grep -q "^Adopt as cs session: my-session$" <<< "$log_output"; then
-        echo "  FAIL: Adopt commit 'Adopt as cs session: my-session' not found in history"
-        echo "  History: $log_output"
-        return 1
-    fi
+    assert_eq "$head_before" "$(git -C "$project_dir" rev-parse HEAD)" "adopt makes no commit" || return 1
+    assert_eq "" "$(git -C "$project_dir" ls-files)" "and stages nothing" || return 1
+    assert_eq "?? .cs/
+?? .gitattributes
+?? .gitignore" "$(git -C "$project_dir" status --porcelain)" "cs's files are untracked" || return 1
+    assert_output_contains "$out" "cs committed nothing; it left .cs/, .gitignore and .gitattributes for you to commit" \
+        "one line names what adopt left" || return 1
+    assert_eq "tracked" "$(awk -F': ' '/^cs_mode:/{print $2}' "$project_dir/.cs/local/state")" \
+        "the session records that git is to carry .cs" || return 1
 }
 
-# Adoption commits inside the user's own project repo. A bare `git commit`
-# there commits the whole index, so work they had staged is swept into a commit
-# titled "Adopt as cs session" — the same defect the narrative rotation commit
-# carried, at the other site where cs commits into a checkout it does not own.
-test_adopt_commits_only_its_own_bookkeeping() {
-    local project_dir="$TEST_TMPDIR/staged-project"
+# Re-adopted records keep the mode the user chose for the session's features.
+test_readopt_keeps_a_recorded_cs_mode() {
+    local project_dir="$TEST_TMPDIR/my-project"
+    mkdir -p "$project_dir/.cs/local"
+    (cd "$project_dir" && git init -q && git config user.email a@b.c && git config user.name A && git commit --allow-empty -m "initial" -q)
+    printf '# Session\n' > "$project_dir/.cs/README.md"
+    printf 'cs_mode: ignored\n' > "$project_dir/.cs/local/state"
+
+    (cd "$project_dir" && "$CS_BIN" -adopt my-session --yes >/dev/null 2>&1)
+
+    assert_dir "$CS_SESSIONS_ROOT/my-session" "the records are re-adopted" || return 1
+    assert_eq "ignored" "$(awk -F': ' '/^cs_mode:/{print $2}' "$project_dir/.cs/local/state")" \
+        "the recorded mode is kept" || return 1
+}
+
+# Work the user had staged before adopting stays staged, alone, and is not
+# committed: adopt never touches the index.
+test_adopt_leaves_the_users_staged_work_alone() {
+    local project_dir="$TEST_TMPDIR/staged-project" head_before
     mkdir -p "$project_dir"
     (cd "$project_dir" && git init -q && git config user.email a@b.c && git config user.name A && git commit --allow-empty -m "initial" -q)
     printf 'work in progress\n' > "$project_dir/user-file.txt"
     git -C "$project_dir" add -- user-file.txt
+    head_before=$(git -C "$project_dir" rev-parse HEAD)
 
-    (cd "$project_dir" && "$CS_BIN" -adopt staged-session)
+    (cd "$project_dir" && "$CS_BIN" -adopt staged-session >/dev/null 2>&1)
 
-    local subject swept staged
-    # HEAD must BE the adopt commit first: the fixture's initial commit predates
-    # user-file.txt, so "HEAD does not contain it" holds even when no adopt
-    # commit was made at all.
-    subject=$(git -C "$project_dir" log -1 --format=%s)
-    assert_eq "Adopt as cs session: staged-session" "$subject" "HEAD must be the adopt commit" || return 1
-    swept=$(git -C "$project_dir" show --name-only --format= HEAD | grep -c 'user-file.txt' || true)
-    assert_eq "0" "$swept" "the user's staged file must not ride along in the adopt commit" || return 1
-    staged=$(git -C "$project_dir" diff --cached --name-only -- user-file.txt)
-    assert_eq "user-file.txt" "$staged" "and it must still be staged afterwards" || return 1
+    assert_eq "$head_before" "$(git -C "$project_dir" rev-parse HEAD)" "adopt makes no commit" || return 1
+    assert_eq "user-file.txt" "$(git -C "$project_dir" diff --cached --name-only)" \
+        "the user's file is still staged, and alone" || return 1
+    assert_eq "" "$(git -C "$project_dir" ls-files .cs .gitignore .gitattributes)" "cs's files are untracked" || return 1
 }
 
 # ============================================================================
@@ -1377,8 +1385,9 @@ run_test test_list_shows_adopted_sessions
 run_test test_remove_adopted_session_removes_symlink_only
 run_test test_adopt_preserves_existing_git_repo
 run_test test_adopt_inits_git_when_none_exists
-run_test test_adopt_into_git_repo_without_claude_md_stages_bookkeeping
-run_test test_adopt_commits_only_its_own_bookkeeping
+run_test test_adopt_into_git_repo_leaves_its_files_untracked
+run_test test_adopt_leaves_the_users_staged_work_alone
+run_test test_readopt_keeps_a_recorded_cs_mode
 
 # First launch after adopt
 run_test test_first_launch_after_adopt_starts_fresh_without_asking
