@@ -94,6 +94,11 @@ if ! command -v _cs_terminate_jsonl >/dev/null 2>&1; then
         cs_append_inside "$1" printf '\n' || true
     }
 fi
+# A name a clone chose is printed through the library's _cs_plain_name;
+# without it the hook prints no such name, only "?".
+if ! command -v _cs_plain_name >/dev/null 2>&1; then
+    _cs_plain_name() { printf '?'; }
+fi
 # Not in a cs session, do nothing. Resolves from the env under the CLI and
 # from the opened directory under front ends that cannot export one.
 cs_resolve_session "$INPUT" || exit 0
@@ -419,6 +424,7 @@ local_state_set() {
 # An encrypted session keeps both the marker and its handoffs in the vault; a
 # locked one has neither to offer.
 ROTATION_HANDOFF=""
+ROTATION_HANDOFF_SHOWN=""
 PENDING_MARKER=""
 HANDOFF_DIR=""
 if _marker_dir=$(cs_private_dir "$META_DIR") && HANDOFF_DIR=$(cs_handoff_dir "$META_DIR"); then
@@ -457,6 +463,9 @@ case "$SOURCE" in
             if [ -n "$HANDOFF_BASENAME" ] && [ -f "$HANDOFF_FILE" ] \
                 && _handoff_is_unconsumed "$HANDOFF_FILE"; then
                 ROTATION_HANDOFF="$HANDOFF_BASENAME"
+                # .cs/handoffs/ is tracked, so a clone chooses the file name:
+                # it is printed as a plain name.
+                ROTATION_HANDOFF_SHOWN=$(_cs_plain_name "$ROTATION_HANDOFF" 160)
             else
                 rm -f "$PENDING_MARKER" 2>/dev/null || true
             fi
@@ -621,7 +630,7 @@ for _nf in "$META_DIR"/memory/narrative.*.md; do
     else
         _whose="not yours: read it only from the line the digest names, never whole"
     fi
-    NARRATIVE_OVER="${NARRATIVE_OVER}- $_nb is $((_sz / 1024)) KB, over the $((NARRATIVE_MAX / 1024)) KB budget; $_whose
+    NARRATIVE_OVER="${NARRATIVE_OVER}- $(_cs_plain_name "$_nb" 160) is $((_sz / 1024)) KB, over the $((NARRATIVE_MAX / 1024)) KB budget; $_whose
 "
 done
 if [ -n "$NARRATIVE_OVER" ]; then
@@ -668,9 +677,13 @@ if [ "$SOURCE" = "resume" ] && git -C "$SESSION_DIR" rev-parse --git-dir >/dev/n
     HEAD_SHA=$(git -C "$SESSION_DIR" rev-parse -q --verify HEAD 2>/dev/null || true)
     if [ -n "$LAST_SEEN" ] && [ -n "$HEAD_SHA" ] \
         && git -C "$SESSION_DIR" rev-parse -q --verify "$LAST_SEEN" >/dev/null 2>&1; then
+        # The clone's history chooses its author names, and git keeps a control
+        # byte in one: each is printed as a plain name.
         DIGEST=$(git -C "$SESSION_DIR" log --no-merges --format='%an' "$LAST_SEEN..HEAD" -- .cs/memory 2>/dev/null \
             | sort | uniq -c | sort -rn \
-            | sed 's/^[[:space:]]*\([0-9][0-9]*\)[[:space:]]*\(.*\)$/\2 (\1)/' \
+            | while read -r _count _author; do
+                printf '%s (%s)\n' "$(_cs_plain_name "$_author" 160)" "$_count"
+            done \
             | paste -sd', ' - 2>/dev/null || true)
         # Reading a whole teammate narrative is not an option (one dormant
         # file measured 801 KB); the digest names where each one grew
@@ -956,11 +969,11 @@ if [ -n "$ROTATION_HANDOFF" ]; then
     CONTEXT="${CONTEXT}
 
 --- Conversation Rotation ---
-This fresh conversation continues rotated work. Read $HANDOFF_REL/$ROTATION_HANDOFF FIRST — it is the previous conversation's handoff; the prior transcript is not loaded, and the handoff plus your own .cs/memory/narrative.$ACTOR_SLUG.md carry the context.
+This fresh conversation continues rotated work. Read $HANDOFF_REL/$ROTATION_HANDOFF_SHOWN FIRST — it is the previous conversation's handoff; the prior transcript is not loaded, and the handoff plus your own .cs/memory/narrative.$ACTOR_SLUG.md carry the context.
 
 Nothing has run yet. $ROTATION_START A BARE NUDGE — \"go\", \"continue\", \"ok\" — means begin: reconcile your native task list, which carried over from the previous conversation, with the handoff (mark what it says is done, add any next-step step that is missing, one task per step), then execute the next step and report what you did, without re-summarising it or asking which part to start with. A first message carrying its own content takes precedence over the handoff; answer that instead. Ask first only where you normally would: the handoff is missing, unreadable, or genuinely ambiguous, or its next step is destructive or irreversible.
 
-Once that next step is done, append a \`## Successor report\` section to the end of $HANDOFF_REL/$ROTATION_HANDOFF: each thing you had to look up again, re-derive, or found wrong in the handoff, with how you found out, or \`none\`. Append only; never rewrite what the previous conversation wrote."
+Once that next step is done, append a \`## Successor report\` section to the end of $HANDOFF_REL/$ROTATION_HANDOFF_SHOWN: each thing you had to look up again, re-derive, or found wrong in the handoff, with how you found out, or \`none\`. Append only; never rewrite what the previous conversation wrote."
 elif [ -n "$FRESH_NOTICE" ]; then
     CONTEXT="${CONTEXT}
 
@@ -1062,9 +1075,9 @@ fi
 SYSTEM_MESSAGE=""
 if [ -n "$ROTATION_HANDOFF" ] && [ "$SOURCE" = "clear" ]; then
     if [ -n "$ROTATION_KICK" ]; then
-        SYSTEM_MESSAGE="Rotation loaded from $ROTATION_HANDOFF — continuing automatically in a moment. Type to take over instead, or if nothing happens in a few seconds, send any message to start it."
+        SYSTEM_MESSAGE="Rotation loaded from $ROTATION_HANDOFF_SHOWN — continuing automatically in a moment. Type to take over instead, or if nothing happens in a few seconds, send any message to start it."
     else
-        SYSTEM_MESSAGE="Rotation loaded from $ROTATION_HANDOFF — send any message (\"go\") to continue where the previous conversation left off."
+        SYSTEM_MESSAGE="Rotation loaded from $ROTATION_HANDOFF_SHOWN — send any message (\"go\") to continue where the previous conversation left off."
     fi
 fi
 
