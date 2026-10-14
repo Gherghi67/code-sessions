@@ -132,6 +132,34 @@ test_narrative_reminder_flags_a_narrative_over_budget() {
     assert_output_contains "$output" "cs -narrative rotate" "points at the rotation" || return 1
 }
 
+# .cs/memory is tracked, so a clone chooses a narrative's file name, and the
+# name can carry a terminal escape: a raw ESC or BEL byte, or backslash text
+# echo -e would turn into one. The Stop hook's reason names the newest
+# narrative and the one over budget as plain names, each character a plain
+# name lacks replaced by _. Without the shared library it names neither.
+test_narrative_reminder_names_a_narrative_as_a_plain_name() {
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m
+    local nf="$CLAUDE_SESSION_META_DIR/memory/narrative.a$bad.md" partial="$TEST_TMPDIR/partial-hooks"
+    { echo "# Session narrative"; head -c 3000 /dev/zero | tr '\0' 'x'; echo; } > "$nf"
+    _backdate "$nf"
+    rm -f "$CLAUDE_SESSION_META_DIR/.narrative-reminder-cooldown"
+    local reason newest
+    reason=$(echo '{}' | CS_NARRATIVE_MAX_BYTES=2048 bash "$HOOKS_DIR/narrative-reminder.sh" | jq -r '.reason')
+    newest=$(sed -n 's/.*Newest on disk is \([^ ]*\) .*/\1/p' <<< "$reason")
+    assert_eq "narrative.a$shown.md." "${newest##*/}" "the reason names the newest narrative as a plain name" || return 1
+    assert_output_contains "$reason" " narrative\.a$shown\.md is 2 KB, over the 2 KB budget" \
+        "the reason names the narrative over budget as a plain name" || return 1
+    assert_no_escape_bytes "$reason" "no escape byte reaches Claude" || return 1
+    mkdir -p "$partial"
+    cp "$HOOKS_DIR"/*.sh "$partial/"
+    rm "$partial/cs-shared.sh"
+    rm -f "$CLAUDE_SESSION_META_DIR/.narrative-reminder-cooldown"
+    reason=$(echo '{}' | bash "$partial/narrative-reminder.sh" | jq -r '.reason')
+    newest=$(sed -n 's/.*Newest on disk is \([^ ]*\) .*/\1/p' <<< "$reason")
+    assert_eq "?." "${newest##*/}" "without the library the reason withholds the name" || return 1
+    assert_no_escape_bytes "$reason" "no escape byte reaches Claude without the library" || return 1
+}
+
 # The same octal trap as SessionStart's: `08` passes _num_or and aborts the
 # KB arithmetic, and a Stop hook that dies emits no decision at all.
 test_narrative_reminder_reads_a_leading_zero_budget_as_decimal() {
@@ -2080,6 +2108,21 @@ test_session_start_names_a_teammate_narrative_over_budget_as_theirs() {
         "the rotate instruction is for the actor's own file only" || return 1
 }
 
+# A clone chooses a narrative's file name; the over-budget notice names it as a
+# plain name, each character a plain name lacks replaced by _.
+test_session_start_names_a_narrative_over_budget_as_a_plain_name() {
+    session_start_setup
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m context
+    { echo "# Session narrative"; head -c 3000 /dev/zero | tr '\0' 'x'; echo; } \
+        > "$CLAUDE_SESSION_META_DIR/memory/narrative.b$bad.md"
+    context=$(echo '{"session_id":"s","source":"startup","cwd":"'"$CLAUDE_SESSION_DIR"'","hook_event_name":"SessionStart"}' \
+        | CS_NARRATIVE_MAX_BYTES=2048 CS_ACTOR=alice bash "$HOOKS_DIR/session-start.sh" 2>/dev/null \
+        | jq -r '.hookSpecificOutput.additionalContext') || return 1
+    assert_eq "- narrative.b$shown.md is 2 KB, over the 2 KB budget; not yours: read it only from the line the digest names, never whole" \
+        "$(grep '^- narrative\.b' <<< "$context")" "the notice names the narrative as a plain name" || return 1
+    assert_no_escape_bytes "$context" "no escape byte reaches Claude" || return 1
+}
+
 # Within budget, nothing is added: the warning would otherwise ride every
 # conversation start as noise and stop reading as a warning.
 test_session_start_is_silent_when_narratives_fit() {
@@ -2313,6 +2356,23 @@ test_resume_digest_reports_memory_activity() {
     head=$(git -C "$CLAUDE_SESSION_DIR" rev-parse HEAD)
     wm=$(cat "$CLAUDE_SESSION_META_DIR/local/watermark")
     assert_eq "$head" "$wm" "watermark should advance to HEAD after resume" || return 1
+}
+
+# A clone's history chooses its commit author names, and git keeps an ESC or
+# BEL byte in one. The digest names each author as a plain name, each
+# character a plain name lacks replaced by _.
+test_resume_digest_names_an_author_as_a_plain_name() {
+    session_start_setup
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m context
+    mkdir -p "$CLAUDE_SESSION_META_DIR/local"
+    git -C "$CLAUDE_SESSION_DIR" rev-parse HEAD > "$CLAUDE_SESSION_META_DIR/local/watermark"
+    ( cd "$CLAUDE_SESSION_DIR" && mkdir -p .cs/memory && echo "fact" > .cs/memory/new-fact.md \
+        && git add -A && GIT_AUTHOR_NAME="Jane $bad" GIT_AUTHOR_EMAIL=jane.roe@example.com git commit -q -m "add memory" )
+    context=$(echo '{"session_id":"s","source":"resume","cwd":"'"$CLAUDE_SESSION_DIR"'","hook_event_name":"SessionStart"}' \
+        | bash "$HOOKS_DIR/session-start.sh" 2>/dev/null | jq -r '.hookSpecificOutput.additionalContext') || return 1
+    assert_output_contains "$context" "(author: commits): Jane_$shown (1);" \
+        "the digest names the author as a plain name" || return 1
+    assert_no_escape_bytes "$context" "no escape byte reaches Claude" || return 1
 }
 
 # Nobody can read a teammate's whole narrative on resume (one dormant file
@@ -3373,6 +3433,7 @@ test_narrative_reminder_skips_the_budget_check_without_the_shared_library() {
 }
 
 run_test test_narrative_reminder_flags_a_narrative_over_budget
+run_test test_narrative_reminder_names_a_narrative_as_a_plain_name
 # A zero budget in any spelling is the default, not "warn on everything": the
 # validator runs its zero check on the normalised number, and the hook reads
 # the result rather than keeping a rule of its own.
@@ -3504,6 +3565,7 @@ run_test test_session_start_reasserts_tab_title_on_the_terminal_device
 run_test test_session_start_tab_title_skips_silently_without_a_terminal
 run_test test_session_start_warns_about_an_over_budget_narrative
 run_test test_session_start_names_a_teammate_narrative_over_budget_as_theirs
+run_test test_session_start_names_a_narrative_over_budget_as_a_plain_name
 run_test test_session_start_is_silent_when_narratives_fit
 run_test test_session_start_survives_a_leading_zero_budget_override
 run_test test_session_start_emits_session_state_on_resume
@@ -3519,6 +3581,7 @@ run_test test_subagent_context_deliverable_is_final_message
 run_test test_session_start_narrative_is_per_actor
 run_test test_session_start_secrets_guidance_is_stdin_and_backend_neutral
 run_test test_resume_digest_reports_memory_activity
+run_test test_resume_digest_names_an_author_as_a_plain_name
 run_test test_resume_digest_silent_without_watermark
 run_test test_resume_digest_names_where_a_teammates_narrative_grew
 run_test test_resume_digest_delta_survives_a_rotated_teammate_narrative

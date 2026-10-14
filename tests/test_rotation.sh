@@ -1328,6 +1328,33 @@ test_rotation_tells_the_user_one_message_starts_it() {
     esac
 }
 
+# A clone chooses a handoff's file name. The rotation preamble tells Claude to
+# read it and the notice tells the user it loaded, each naming it as a plain
+# name. The name carries ESC and BEL but no backslash: the marker check refuses
+# a name with one, so that spelling never reaches a rotation.
+test_rotation_names_the_handoff_as_a_plain_name() {
+    _rot_hook_session "rot-plain-hook"
+    local bad=$'e\033[1mb\007x' shown=e__1mb_x
+    _seed_handoff "$CLAUDE_SESSION_DIR" "2026-07-16-$bad.md" "unconsumed"
+    printf '%s\n' "2026-07-16-$bad.md" > "$CLAUDE_SESSION_META_DIR/local/pending-handoff"
+    printf 'claude_session_id: %s\n' "$UUID_A" > "$CLAUDE_SESSION_META_DIR/local/state"
+    local out context msg
+    out=$(_start_hook "$UUID_B" clear) || return 1
+    context=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext')
+    msg=$(printf '%s' "$out" | jq -r '.systemMessage // ""')
+    assert_output_contains "$context" "Read \.cs/handoffs/2026-07-16-$shown\.md FIRST" \
+        "the preamble names the handoff as a plain name" || return 1
+    assert_output_contains "$context" "to the end of \.cs/handoffs/2026-07-16-$shown\.md: each thing" \
+        "the successor-report line names the handoff as a plain name" || return 1
+    case "$msg" in
+        "Rotation loaded from 2026-07-16-$shown.md "*) ;;
+        *) echo "  FAIL: the notice names the handoff as a plain name: $(printf '%s' "$msg" | cat -v)"; return 1 ;;
+    esac
+    assert_no_escape_bytes "$context$msg" "no escape byte reaches Claude or the user" || return 1
+    assert_file_contains "$CLAUDE_SESSION_META_DIR/handoffs/2026-07-16-$bad.md" "status: consumed" \
+        "the handoff itself is consumed under its own name" || return 1
+}
+
 # Scoped to a rotation: a plain /clear is a blank slate and has nothing to say.
 test_plain_clear_says_nothing_to_the_user() {
     _rot_hook_session "rot-nosysmsg"
@@ -1854,6 +1881,7 @@ test_fork_with_armed_marker_records_rebind() {
 
 run_test test_clear_source_consumes_pending_handoff
 run_test test_rotation_tells_the_user_one_message_starts_it
+run_test test_rotation_names_the_handoff_as_a_plain_name
 run_test test_plain_clear_says_nothing_to_the_user
 run_test test_startup_rotation_does_not_tell_the_user_to_send_a_message
 run_test test_rotation_preamble_makes_the_first_message_mean_begin
