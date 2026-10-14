@@ -885,6 +885,28 @@ test_the_untrack_command_names_a_directory_called_tilde_as_a_path() {
         "$out" "the command names ./~" || return 1
 }
 
+# A tracked file the repository gave a long name is named by its first 160
+# characters, while the command to paste and its commit message keep the
+# directory's whole name, so the command still untracks that directory.
+test_the_refusal_cuts_a_long_tracked_name_and_keeps_the_command_whole() {
+    local up="$TEST_TMPDIR/upstream" root="$CS_SESSIONS_ROOT/vt" long first
+    long=$(printf 'x%.0s' $(seq 1 170))
+    first=$(printf 'x%.0s' $(seq 1 156))
+    _upstream_session_repo "$up"
+    ln -s "$long/private" "$up/.cs/private"
+    git -C "$up" add .cs/private
+    _commit_armed_queue "$up" ".cs/$long/private"
+    git clone -q "$up" "$root"
+    _make_launch_sentinel
+
+    local out rc=0
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: .cs/$first is tracked in git (per-actor state must stay local). Fix with: git -C $root --literal-pathspecs rm -r --cached -- .cs/$long/private && git -C $root commit -m 'stop tracking .cs/$long/private'" \
+        "$out" "the file is named by its first 160 characters and the command by the whole path" || return 1
+}
+
 # The refusal is about what git tracks: the same queue in a .cs/private made
 # by hand and never committed opens.
 test_an_untracked_cs_private_directory_opens() {
@@ -1919,6 +1941,7 @@ run_test test_the_untrack_command_untracks_only_the_directory_it_names
 run_test test_tracked_files_in_a_directory_named_with_a_trailing_newline_are_seen
 run_test test_a_cs_private_link_to_the_session_itself_is_refused_without_an_untrack_command
 run_test test_the_untrack_command_names_a_directory_called_tilde_as_a_path
+run_test test_the_refusal_cuts_a_long_tracked_name_and_keeps_the_command_whole
 run_test test_an_untracked_cs_private_directory_opens
 run_test test_a_cs_private_link_into_a_vault_outside_any_repository_opens
 run_test test_an_inherited_tracked_files_answer_does_not_stop_the_open
