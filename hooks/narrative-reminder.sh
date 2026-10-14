@@ -904,9 +904,10 @@ CURRENT_TIME=$(date +%s)
 
 # Cooldown: don't nag if we reminded recently
 if [ -f "$COOLDOWN_FILE" ]; then
-    # The stamp sits at the .cs root, where a write needs no approval, and
-    # arithmetic runs a command substitution held in an operand: anything but
-    # a plain number reads as 0, a reminder long past.
+    # The stamp is data whatever wrote it: the Bash tool reaches the .cs root
+    # without the permission hook, and arithmetic runs a command substitution
+    # held in an operand. Anything but a plain number reads as 0, a reminder
+    # long past.
     LAST_REMINDER=$(_num_or "$(cat "$COOLDOWN_FILE" 2>/dev/null | tr -d '[:space:]')" 0)
     ELAPSED=$((CURRENT_TIME - LAST_REMINDER))
     if [ "$ELAPSED" -lt "$COOLDOWN_SECONDS" ]; then

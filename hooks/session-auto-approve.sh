@@ -187,12 +187,16 @@ case "$BASENAME_LC" in
     claude.md|claude.local.md) exit 0 ;;
 esac
 
-# A file named HEAD makes the directory that holds it a git directory, to cs
-# and, beside objects/ and refs/ that a clone can deliver, to git; a commondir
-# names the store such a HEAD uses. Writing either completes a layout no rule
-# below sees yet, since none of them looks at the file being written.
+# The files that make a directory a git directory, or that git reads once it
+# is one: HEAD beside objects/ and refs/, or beside a commondir naming another
+# store, is a repository to git; config and config.worktree are read from it
+# (core.pager, core.fsmonitor and the like run commands); a worktree's own
+# directory names its checkout in gitdir. The checks below ask what a
+# directory already holds, so writes in the right order could assemble one
+# that none of them sees. A write of any of these names prompts, in any case,
+# since the volume may fold it. cs keeps no content under these names.
 case "$BASENAME_LC" in
-    head|commondir) exit 0 ;;
+    head|commondir|gitdir|config|config.worktree) exit 0 ;;
 esac
 
 # A repository kept below .cs/ (a clone under a notes directory) has a git
