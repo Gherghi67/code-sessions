@@ -1543,6 +1543,26 @@ Public key: $k1" "$out" "adding the same key again says what it holds" || return
     assert_eq "laptop.pub" "$(ls "$dir")" "no second recipient file is written" || return 1
 }
 
+# A clone chooses a recipient file's name. When the name in use is not plain
+# (_cs_plain_name changes it), the refusal names it as a plain name but
+# suggests no `age remove`: the command would name a recipient that does not
+# exist.
+test_age_add_refusal_suggests_age_remove_only_for_a_plain_name() {
+    _use_real_age || return $?
+    local dir="$CS_SESSIONS_ROOT/test-session/.cs/age-recipients" out rc=0 k1 k2
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m
+    mkdir -p "$dir" "$TEST_TMPDIR/second"
+    age-keygen 2>/dev/null | age-keygen -y > "$dir/i$bad.pub" || { echo "  FAIL: fixture: age-keygen"; return 1; }
+    age-keygen 2>/dev/null | age-keygen -y > "$TEST_TMPDIR/second/i$bad.pub" || { echo "  FAIL: fixture: age-keygen"; return 1; }
+    k1=$(cat "$dir/i$bad.pub"); k2=$(cat "$TEST_TMPDIR/second/i$bad.pub")
+    out=$("$CS_SECRETS_BIN" age add "$TEST_TMPDIR/second/i$bad.pub" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a second key under the name in use is refused" || return 1
+    assert_eq "Error: refusing to replace recipient i$shown: $dir/i$shown.pub holds $k1, not the key given, $k2. Give the key file another name." \
+        "$out" "the refusal suggests no age remove for a name that is not plain" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal" || return 1
+    assert_eq "$k1" "$(cat "$dir/i$bad.pub")" "the recipient file still holds the first key" || return 1
+}
+
 # An age1... key age cannot encrypt to is refused at `age add`, before it is
 # written or pinned: pinned, it made every later export of the session fail.
 # One key is not bech32 at all; the other has the right shape and characters
@@ -4667,6 +4687,7 @@ run_test test_age_remove_drops_the_pin
 run_test test_age_add_takes_an_ssh_ed25519_key_file
 run_test test_age_add_takes_a_raw_ssh_ed25519_key
 run_test test_age_add_refuses_a_different_key_under_a_recipient_name_in_use
+run_test test_age_add_refusal_suggests_age_remove_only_for_a_plain_name
 run_test test_age_add_refuses_an_age_key_age_does_not_accept
 run_test test_age_add_refuses_an_ssh_key_age_does_not_accept
 run_test test_export_fails_when_age_cannot_encrypt
