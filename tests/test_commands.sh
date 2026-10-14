@@ -538,35 +538,25 @@ test_wrap_rotates_the_narrative_after_the_summary() {
         "the report gains a third item" || return 1
 }
 
-# Files under .cs/ never get a commit of their own (the session protocol's
-# cs:session-commits rule): a wrap's memory entries, summary and task archive
-# go in one commit at the end of the archive pass, under a subject the command
-# names, so a model does not invent a cs: one. It stages by name, never an
-# ignored path or one in the vault, and never force-adds.
-test_wrap_commits_the_session_files_once() {
+# A wrap makes no commit (Alex, 2026-10-14: "No commits at all"): the memory
+# entries, the summary, the narrative cut and the task archive stay on disk,
+# and files under .cs/ are committed only when the user asks. The command says
+# so in its archive pass, gives no git add or git commit to run, and its
+# report has no commit item.
+test_wrap_makes_no_commit() {
     local pass4
     pass4=$(awk '/^## Pass 4 /{p=1; print; next} /^## /{p=0} p' "$COMMANDS_DIR/wrap.md")
-    assert_eq "## Pass 4 — Task archive and the wrap's commit" "$(printf '%s\n' "$pass4" | head -1)" \
-        "the fourth pass ends in the wrap's commit" || return 1
-    assert_output_contains "$pass4" "Then make the wrap's one commit." "one commit" || return 1
-    assert_output_contains "$pass4" '`session: wrap <YYYY-MM-DD>`' "under a named subject" || return 1
-    assert_output_contains "$pass4" 'the memory files Pass 1 wrote, `.cs/summary.md`, the archive directory' \
-        "carrying the memory entries, the summary and the archive" || return 1
-    assert_output_contains "$pass4" 'git check-ignore -q --no-index -- <path>' "skipping ignored paths" || return 1
-    assert_output_contains "$pass4" 'Never `git add -f`' "never force-adding" || return 1
-    # A bare `git commit` would take whatever the user had already staged.
-    assert_output_contains "$pass4" "git commit -m 'session: wrap <YYYY-MM-DD>' -- <paths>" \
-        "the commit names the paths it stages" || return 1
-    assert_output_contains "$pass4" "work the user had already staged stays staged and out of it" \
-        "and says why" || return 1
-    assert_output_contains "$pass4" '`session: rotate narrative.<actor> (<N> sections -> narrative-archive)`' \
-        "Pass 3's own commit has a session: subject too" || return 1
-    assert_output_contains "$pass4" 'no `cs:` subject exists' "and no cs: subject exists" || return 1
-    assert_file_not_contains "$COMMANDS_DIR/wrap.md" 'is one cs writes itself' \
-        "cs writes no cs: subject" || return 1
-    assert_output_contains "$pass4" '`.cs/memory`, `.cs/plans` and `.cs/private`' "and nothing from the vault" || return 1
-    assert_file_contains "$COMMANDS_DIR/wrap.md" '^5\. \*\*Commit:\*\*' "the report names the commit" || return 1
-    assert_file_contains "$COMMANDS_DIR/wrap.md" 'the five labeled items below' "in a fifth item" || return 1
+    assert_eq "## Pass 4 — Task archive" "$(printf '%s\n' "$pass4" | head -1)" \
+        "the fourth pass is the task archive alone" || return 1
+    assert_output_contains "$pass4" "The wrap makes no commit." "the pass says no commit is made" || return 1
+    assert_output_contains "$pass4" "stay on disk, uncommitted" "and that the files stay on disk" || return 1
+    assert_output_contains "$pass4" "commit them only when the user asks." \
+        "and that only the user's ask commits them" || return 1
+    assert_file_not_contains "$COMMANDS_DIR/wrap.md" "git commit" "the wrap runs no git commit" || return 1
+    assert_file_not_contains "$COMMANDS_DIR/wrap.md" "git add" "and stages nothing" || return 1
+    assert_file_not_contains "$COMMANDS_DIR/wrap.md" "session: wrap" "and names no commit subject" || return 1
+    assert_file_not_contains "$COMMANDS_DIR/wrap.md" '\*\*Commit:\*\*' "the report has no commit item" || return 1
+    assert_file_contains "$COMMANDS_DIR/wrap.md" 'the four labeled items below' "it has four items" || return 1
 }
 
 # /wrap archives completed task rows the way /rotate does, from the one place
@@ -594,7 +584,7 @@ test_summary_reads_live_narratives_not_archives() {
 }
 
 run_test test_wrap_rotates_the_narrative_after_the_summary
-run_test test_wrap_commits_the_session_files_once
+run_test test_wrap_makes_no_commit
 run_test test_wrap_archives_completed_task_rows
 run_test test_wrap_marks_the_wrapped_conversation
 run_test test_summary_reads_live_narratives_not_archives
