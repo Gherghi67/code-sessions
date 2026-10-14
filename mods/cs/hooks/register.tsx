@@ -720,8 +720,12 @@ async function armedHandoff($: EngineInterface): Promise<string | undefined> {
 // file in .cs/local or .cs/private, a pull can put a marker there, and the
 // SessionStart hook refuses the rotation it names. An answer cs cannot give
 // is a no. Each new refusal is toasted once. Each answer starts a cs process
-// (0.15-0.44 s measured), so only the steps that act ask: a countdown's start
-// and zero, a forced /rotate, and a press of the clear or the rotate button.
+// (0.15-0.44 s measured), so only the steps that act ask: the session start's
+// heartbeat, a countdown's start and zero, a forced /rotate, a press of the
+// clear or the rotate button, and the emptying of the wrap marker
+// (clearWrapped, as a prompt starts a turn) and of the press marker
+// (clearPressed, at a main-loop turn's end or when the engine refuses the
+// press's run).
 async function sessionVetted($: EngineInterface, cwd: string): Promise<boolean> {
   const bin = await $.env.get("CS_BIN")
   let refusal: string | undefined
