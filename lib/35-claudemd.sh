@@ -234,6 +234,22 @@ Claude's built-in memory writes durable facts to `.cs/memory/` (cs redirects via
 EOF
 }
 
+# The rule for committing session files (cs:session-commits section). Single
+# source used by _emit_session_claude_md (new sessions) and migrate_session
+# Phase 15 (existing sessions). Models committed each narrative append and
+# each handoff pass on their own, under subjects they made up; the rule names
+# the commits session files ride in instead.
+_emit_session_commits_block() {
+    cat << 'EOF'
+<!-- cs:session-commits -->
+## Committing session files
+
+Files under `.cs/` (narratives, handoffs, `.cs/README.md`, `.cs/summary.md`, memory entries) never get a commit of their own. They go in with the next handoff commit (the `rotate` skill) or the `/wrap` commit, or with the project change they describe. Uncommitted, they are safe: autosave snapshots every Write and Edit to a shadow ref. Never push a commit that holds only session files; push it with real changes or when the user asks.
+
+To opt out, delete the prose above but keep the `cs:session-commits` HTML comment as a tombstone — cs treats the sentinel's presence as "managed, do not re-add."
+EOF
+}
+
 # The protocol for an encrypted session: migrate_session appends it once
 # .cs/private exists. It overrides the README instructions of the base
 # protocol, which every session gets from _emit_session_claude_md.
@@ -285,6 +301,10 @@ Update the markdown documentation files throughout the session:
 3. **End of session:** Complete the .cs/README.md outcome section
 
 Treat these files as a lab notebook - document as you go, not just at the end.
+
+EOF
+    _emit_session_commits_block
+    cat << 'EOF'
 
 ## Wrap-up Command
 
