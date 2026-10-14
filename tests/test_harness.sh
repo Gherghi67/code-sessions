@@ -131,12 +131,20 @@ run_throwaway_suite() {  # body of the suite's tests, as bash source
 
 test_suites_clear_the_launchers_profile_overrides() {
     local out
-    out=$(CS_CLAUDE_DIR="$TEST_TMPDIR/live-claude" CODE_SESSIONS_HOME="$TEST_TMPDIR/live-profile" \
+    out=$(
+        export CS_CLAUDE_DIR="$TEST_TMPDIR/live-claude" CODE_SESSIONS_HOME="$TEST_TMPDIR/live-profile"
+        export CS_HOOKS_DIR="$TEST_TMPDIR/live-hooks" CS_COMMANDS_DIR="$TEST_TMPDIR/live-commands" CS_SKILLS_DIR="$TEST_TMPDIR/live-skills"
+        export CS_RUN_ID=live-run CS_RUN_OWNER_PID=123 CS_RUN_ENGINE=codex CS_LEAD_PID=123
+        export CS_SECRETS_SESSION=live-session CS_SECRETS_KEYCHAIN_PREFIX=live-prefix
         run_throwaway_suite '
 test_profile_isolation() {
-    [ -z "${CS_CLAUDE_DIR:-}" ] && [ -z "${CODE_SESSIONS_HOME:-}" ]
+    local name
+    for name in CS_CLAUDE_DIR CODE_SESSIONS_HOME CS_HOOKS_DIR CS_COMMANDS_DIR CS_SKILLS_DIR CS_RUN_ID CS_RUN_OWNER_PID CS_RUN_ENGINE CS_LEAD_PID CS_SECRETS_SESSION CS_SECRETS_KEYCHAIN_PREFIX; do
+        [ -z "${!name:-}" ] || return 1
+    done
 }
-run_test test_profile_isolation')
+run_test test_profile_isolation'
+    )
     assert_output_contains "$out" 'Results: 1/1 passed, 0 failed' \
         "a suite must use its fixture home even when launched from a profile" || return 1
 }
