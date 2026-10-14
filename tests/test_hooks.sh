@@ -1085,6 +1085,24 @@ test_auto_approve_allows_content_without_links() {
         "an approval says nothing on stderr" || return 1
 }
 
+# A clone chooses the name of a link it commits under the project's .claude/,
+# and the name can carry a terminal escape: a raw ESC or BEL byte, or
+# backslash text echo -e would turn into one. The decline names the link as a
+# plain path, each character a plain path lacks replaced by _.
+test_auto_approve_names_a_control_link_as_a_plain_path() {
+    local root="$CLAUDE_SESSION_DIR" meta="$CLAUDE_SESSION_META_DIR" err real
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m
+    mkdir -p "$root/.claude/skills"
+    ln -s "$TEST_TMPDIR/outside" "$root/.claude/skills/link$bad"
+    _assert_falls_through Write "$meta/memory/narrative.md" \
+        "a narrative beside a link in the project's .claude/" || return 1
+    real="$(cd "$root/.claude/skills" && pwd -P)"
+    err=$(_auto_approve_stderr Write "$meta/memory/narrative.md")
+    assert_eq "$(_link_reason "$real/link$shown")" "$err" \
+        "the decline names the link as a plain path" || return 1
+    assert_no_escape_bytes "$err" "no escape byte reaches the terminal" || return 1
+}
+
 # cs links the shell's shared config names into .cs/claude-config
 # (lib/75-launch.sh _link_shared_claude_config). Those links, by those names
 # and pointing where cs points them, are the only ones allowed there.
@@ -3407,6 +3425,7 @@ run_test test_auto_approve_rejects_newline_file_path
 run_test test_auto_approve_rejects_config_dir_inside_session
 run_test test_auto_approve_rejects_git_dir_inside_content
 run_test test_auto_approve_declines_on_any_control_link
+run_test test_auto_approve_names_a_control_link_as_a_plain_path
 run_test test_auto_approve_allows_content_without_links
 run_test test_auto_approve_allows_cs_shared_config_links
 run_test test_auto_approve_rejects_foreign_config_link
