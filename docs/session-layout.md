@@ -83,9 +83,12 @@ recipients. See [secrets.md](secrets.md) for the sync model.
 is open and is cleaned up on exit. Opens take turns on `.cs/session.mutex.lock`,
 an empty file, while they check and write that lock. They hold it through
 flock(2), so the kernel releases it when its holder dies. The file stays on
-disk, ignored by the `*.lock` rule, like the other `*.mutex.lock` files beside
-the files cs rewrites (`.cs/local/state`, `.cs/local/vault-holders`,
-`~/.claude/settings.json`). `.cs/.narrative-reminder-cooldown` is a
+disk, like the other `*.mutex.lock` files beside the files cs rewrites
+(`.cs/local/state`, `.cs/local/vault-holders`, `~/.claude/settings.json`);
+`cs -uninstall` removes the `settings.json` one. The `*.lock` rule in a
+session's own `.gitignore` hides both lock files, and `cs -adopt` adds
+`.cs/session.lock` and `.cs/session.mutex.lock` by name to a project's
+`.gitignore`. `.cs/.narrative-reminder-cooldown` is a
 similar gitignored transient at the `.cs/` root — the narrative reminder's
 5-minute cooldown stamp.
 

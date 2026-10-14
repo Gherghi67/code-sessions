@@ -117,6 +117,7 @@ masked; `run_all.sh` reports every failing suite.
 2. **Register it**:
    - Add the filename to the `CS_HOOKS` array in `lib/01-manifests.sh`, then run `./build.sh`, which folds it into `bin/cs` and splices it into `install.sh` (deploy, flat-layout cleanup, registration stripping, uninstall and doctor all derive from it)
    - Add a `_merge_cs_hook <Event> your-hook.sh <timeout> [matcher] [async]` call in `install.sh.in` alongside the existing ones (see the block around its `_merge_cs_hook SessionStart ...` calls) to register it in `settings.json` under the appropriate event (`SessionStart`, `PreToolUse`, `PostToolUse`, etc.); it derives the deploy and `~`-relative paths from the filename
+   - If cs has no hook under that event yet, add the event to `CS_HOOK_EVENTS` in `lib/01-manifests.sh`: the installer reads it to refuse a `settings.json` whose value for one of those events is not a list, and `tests/test_install.sh` fails until it names every event `_register_cs_hooks` registers under
 
 3. **Never edit `install.sh` or `bin/cs` by hand** — `./build.sh` writes both. `tests/test_install.sh` fails if the committed built files differ from the build or the array disagrees with the actual contents of `hooks/`.
 
@@ -129,6 +130,8 @@ masked; `run_all.sh` reports every failing suite.
 1. **Create `commands/name.md`** with YAML frontmatter specifying `allowed-tools` (hyphen — Claude Code ignores the `allowed_tools` underscore form).
 
 2. **Add the filename to the `CS_COMMANDS` array** in `lib/01-manifests.sh`, then run `./build.sh`, which folds it into `bin/cs` and splices it into `install.sh`. Install (download + copy), `run_uninstall()`, and doctor all loop over the array, so no per-command variable or cleanup edit is needed. `tests/test_install.sh` fails if the array disagrees with the actual `commands/` files.
+
+3. **To retire a command**, delete `commands/name.md`, drop it from `CS_COMMANDS` and add the filename to `RETIRED_COMMANDS` in `lib/01-manifests.sh`. Install and uninstall then remove the deployed file when its content is one cs wrote.
 
 ## Adding a Skill
 
