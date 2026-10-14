@@ -11611,7 +11611,7 @@ _task_archive_root() {  # session_dir, meta_dir
     if [ -d "$root" ]; then
         while IFS= read -r -d '' link; do
             if out=$(_cs_write_leaves_session "$1" "$link"); then
-                error ".cs/${link#"$2"/} leads to $out, outside the session; nothing archived"
+                error ".cs/$(_cs_plain_name "${link#"$2"/}" 160) leads to $out, outside the session; nothing archived"
             fi
         done < <(find -H "$root" -type l -print0)
     fi

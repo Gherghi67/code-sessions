@@ -746,6 +746,26 @@ test_a_link_out_of_the_session_under_the_archive_refuses_the_run() {
     done
 }
 
+# A clone chooses the name of a link it commits under .cs/task-archive, and
+# the name can carry a terminal escape: a raw ESC or BEL byte, or backslash
+# text echo -e would turn into one. The refusal names the link as a plain
+# name, each character a plain name lacks replaced by _.
+test_a_link_out_of_the_archive_is_named_as_a_plain_name() {
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m out_dir out_p out rc=0
+    out_dir="$TEST_TMPDIR/outside"
+    mkdir -p "$out_dir" "$SESSION_DIR/.cs/task-archive/2026-01-01"
+    out_p=$(cd -P "$out_dir" && pwd -P)
+    ln -s "$out_dir" "$SESSION_DIR/.cs/task-archive/2026-01-01/l$bad"
+    _row 1 completed "One"
+    _row 2 pending "Two"
+    _agree || return 1
+    out=$("$CS_BIN" -archive-tasks plan 2>&1) || rc=$?
+    assert_eq "1" "$rc" "plan fails" || return 1
+    assert_eq "Error: .cs/task-archive/2026-01-01/l$shown leads to $out_p, outside the session; nothing archived" "$out" \
+        "plan names the link as a plain name" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal" || return 1
+}
+
 # A link that appears after that check (a pull landing mid-run) meets the
 # writes themselves: the archive's directories and the snapshot go through
 # cs's in-session writers. A stand-in date makes the link at the moment the
@@ -864,6 +884,7 @@ run_test test_an_archived_copy_of_a_row_that_stays_live_refuses_the_run
 run_test test_a_rerun_after_an_interrupted_run_finishes_with_one_snapshot
 run_test test_each_actor_archives_into_its_own_directory
 run_test test_a_link_out_of_the_session_under_the_archive_refuses_the_run
+run_test test_a_link_out_of_the_archive_is_named_as_a_plain_name
 run_test test_a_link_that_appears_mid_run_is_refused_at_the_write
 run_test test_a_row_that_changes_while_it_is_archived_stays_live
 
