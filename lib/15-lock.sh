@@ -101,8 +101,9 @@ _lock_collision_menu() {
 # exactly one process (noclobber: the open fails when the file exists), never
 # by a check followed by a write: two opens started together both saw no
 # lock, both wrote their pid, and both launched a claude on one UUID. A loser
-# reads the winner's pid and takes the live-lock path; a lock whose holder is
-# dead is removed and the create tried again, with a bound so a lock that
+# reads the winner's pid and takes the live-lock path; a lock that names no
+# running process by live_lock_pid's rule ("0" and "-1" included) is removed
+# and the create tried again, with a bound so a lock that
 # keeps reappearing cannot spin forever. Creating and reclaiming take turns
 # under the .cs/session.mutex.lock mutex (_cs_lock): an opener that read a
 # dead pid and then removed the file could otherwise delete the live lock
@@ -141,14 +142,15 @@ _take_session_lock() {  # meta_dir
             fi
         fi
         attempt=$((attempt + 1))
-        lock_pid=$(cat "$lock_file" 2>/dev/null || echo "")
+        lock_pid="$(live_lock_pid "$meta_dir")"
 
-        if [ -n "$lock_pid" ] && kill -0 "$lock_pid" 2>/dev/null; then
+        if [ -n "$lock_pid" ]; then
             # PID is alive — session is in use
             _cs_unlock "$mutex"
             _CS_LOCK_LIVE_PID="$lock_pid"
             return 1
         fi
+        lock_pid="$(read_lock_pid "$meta_dir")"
 
         if [ "$attempt" -ge 5 ]; then
             _cs_unlock "$mutex"
