@@ -734,6 +734,17 @@ test_drain_hands_out_nothing_from_a_git_repository_layout_at_cs_local() {
     assert_eq "armed" "$(cat "$(QDIR)/queue.state")" "the state is left as it was" || return 1
 }
 
+# Each question cs asks git about a session's files goes through _cs_git_at,
+# which never lets the repository's config run a filesystem monitor: the
+# layout's core.fsmonitor stays unrun even when git is asked from inside it.
+test_git_questions_never_run_a_repository_core_fsmonitor() {
+    local g="$CLAUDE_SESSION_META_DIR/local" out rc=0
+    _commit_git_dir_layout .cs/local
+    out=$(bash -c 'source "$1"; _cs_git_at "$2" ls-files -z -- .' _ "$HOOKS_DIR/cs-shared.sh" "$g" 2>&1) || rc=$?
+    assert_file_not_exists "$TEST_TMPDIR/fsmonitor-ran" "git must not run the layout's core.fsmonitor" || return 1
+    assert_eq "0" "$rc" "git answers from the layout: $out" || return 1
+}
+
 # Git's trace output shares stderr with its answer, from the environment or
 # from configuration; a session in no repository is still in no repository.
 test_vet_session_passes_a_session_in_no_repository_while_git_traces() {
@@ -1234,6 +1245,7 @@ run_test test_vet_session_refuses_a_git_repository_layout_at_cs
 run_test test_vet_session_refuses_a_git_repository_layout_at_cs_private
 run_test test_queue_verbs_refuse_a_git_repository_layout_at_cs_local
 run_test test_drain_hands_out_nothing_from_a_git_repository_layout_at_cs_local
+run_test test_git_questions_never_run_a_repository_core_fsmonitor
 run_test test_vet_session_passes_a_session_in_no_repository_while_git_traces
 run_test test_vet_session_passes_a_session_whose_control_files_git_ignores
 run_test test_vet_session_judges_the_directory_it_is_given
