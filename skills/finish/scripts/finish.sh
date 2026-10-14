@@ -339,14 +339,17 @@ cmd_report() {  # base task sha
         return 0
     fi
     local content checked differing n_differing status=0
-    # Run captured, so its error line comes back here to print.
+    # Run captured, so its error line comes back here to print. Path names
+    # are bytes in any encoding (core.quotePath false prints them raw), so
+    # every sed and grep over them runs in the C locale.
     content=$(content_landing "$sha") || status=$?
     if [ "$status" != 0 ]; then
-        printf '%s\n' "$content" | grep '^error: '
+        printf '%s\n' "$content" | grep '^error: ' \
+            || echo "error: comparing the paths cs/$task changed with base HEAD failed (exit $status)"
         exit 1
     fi
-    checked=$(printf '%s\n' "$content" | sed -n 's/^content_paths_checked: //p')
-    differing=$(printf '%s\n' "$content" | sed -n 's/^content_differs: //p')
+    checked=$(printf '%s\n' "$content" | LC_ALL=C sed -n 's/^content_paths_checked: //p')
+    differing=$(printf '%s\n' "$content" | LC_ALL=C sed -n 's/^content_differs: //p')
     if [ "$checked" != none ] && [ -z "$differing" ]; then
         # The entry refuses a tip past the captured commit under --force too.
         if [ "$n_after" != 0 ]; then
@@ -361,9 +364,9 @@ cmd_report() {  # base task sha
     echo "retire: not-landed"
     echo "retire_note: cs/$task is not an ancestor of base (a squash or rebase landing); retire with --force only on a MERGED pr_state"
     if [ -n "$differing" ]; then
-        n_differing=$(printf '%s\n' "$differing" | grep -c .)
+        n_differing=$(printf '%s\n' "$differing" | LC_ALL=C grep -c .)
         echo "retire_paths_differing: $n_differing of $checked"
-        printf '%s\n' "$differing" | sed -n '1,10s/^/retire_differs: /p'
+        printf '%s\n' "$differing" | LC_ALL=C sed -n '1,10s/^/retire_differs: /p'
         [ "$n_differing" -le 10 ] || echo "retire_differs_more: $((n_differing - 10))"
     fi
 }
