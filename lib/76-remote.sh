@@ -29,7 +29,7 @@ _version_at_least() {  # have, want
 # Resolve and vet the claude that runs remote-control; sets _CS_REMOTE_BIN.
 # check_dependencies has already found the command word on PATH.
 _remote_claude_bin() {
-    local word rest found version
+    local word rest found output version rc=0
     word=$(_claude_bin_word)
     rest=$(_trim "${CLAUDE_CODE_BIN#*"$word"}")
     [ -z "$rest" ] || error "cs --remote runs claude remote-control, which refuses options before its verb; CLAUDE_CODE_BIN carries \"$rest\" after the command. Set CLAUDE_CODE_BIN to the command alone for --remote."
@@ -38,8 +38,10 @@ _remote_claude_bin() {
         /*) ;;
         *) found="$(cd "$(dirname "$found")" && pwd)/$(basename "$found")" ;;
     esac
-    version=$("$found" --version 2>/dev/null \
-        | awk 'match($0, /[0-9]+\.[0-9]+\.[0-9]+/) { print substr($0, RSTART, RLENGTH); exit }') || version=""
+    output=$("$found" --version 2>/dev/null) || rc=$?
+    [ "$rc" -eq 0 ] \
+        || error "cs --remote needs Claude Code $_REMOTE_MIN_CLAUDE_VERSION or later for claude remote-control; $found --version exited with status $rc."
+    version=$(awk 'match($0, /[0-9]+\.[0-9]+\.[0-9]+/) { print substr($0, RSTART, RLENGTH); exit }' <<< "$output")
     [ -n "$version" ] \
         || error "cs --remote needs Claude Code $_REMOTE_MIN_CLAUDE_VERSION or later for claude remote-control; $found --version printed no version number."
     _version_at_least "$version" "$_REMOTE_MIN_CLAUDE_VERSION" \
