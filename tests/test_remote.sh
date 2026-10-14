@@ -481,7 +481,7 @@ test_remote_permission_mode_given_wins_over_the_one_carried() {
 # separators. A quoted mode is one word that is no mode, and the words after
 # it are words of their own, the command word among them, so the refusal
 # names them all, one blank apart.
-test_remote_names_dropped_options_exactly_as_written() {
+test_remote_names_carried_and_refused_options_as_written() {
     local err="$TEST_TMPDIR/err" rc=0 out
     CLAUDE_CODE_BIN=" claude  --permission-mode=plan   --allow-dangerously-skip-permissions " \
         RUN_CS_STDERR="$err" run_cs_ok demo --remote || { cat "$err"; return 1; }
@@ -925,7 +925,7 @@ run_test test_remote_refuses_a_claude_that_names_no_version
 run_test test_remote_refuses_a_claude_whose_version_check_fails
 run_test test_remote_carries_the_permission_mode_in_claude_code_bin_and_says_so
 run_test test_remote_permission_mode_given_wins_over_the_one_carried
-run_test test_remote_names_dropped_options_exactly_as_written
+run_test test_remote_names_carried_and_refused_options_as_written
 run_test test_remote_carries_each_permission_option
 run_test test_remote_refuses_options_it_cannot_drop_before_opening_anything
 run_test test_remote_inside_tmux_refuses_an_option_it_cannot_drop_before_any_window
