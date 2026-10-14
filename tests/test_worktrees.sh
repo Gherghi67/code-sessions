@@ -444,6 +444,21 @@ test_worktree_launch_exports_base_identity() {
     assert_output_contains "$env_out" "CS_SECRETS_SESSION=myproj" "secrets stay keyed to the base" || return 1
 }
 
+# A shell inside a feature carries its base in CS_SECRETS_SESSION, and one a
+# cs -secrets arm started carries CS_SECRETS_CALLER. A base session launched
+# from such a shell is keyed to itself and is its own caller, so its claude
+# gets neither.
+test_base_launch_drops_an_inherited_secrets_identity() {
+    create_test_session "otherbase" > /dev/null
+    local stub="$TEST_TMPDIR/claude-secrets-identity" seen="$TEST_TMPDIR/secrets-identity" out
+    printf '#!/bin/sh\necho "CS_SECRETS_SESSION=${CS_SECRETS_SESSION-<unset>} CS_SECRETS_CALLER=${CS_SECRETS_CALLER-<unset>}" > "%s"\n' "$seen" > "$stub"
+    chmod +x "$stub"
+    out=$(CS_SECRETS_SESSION=myproj CS_SECRETS_CALLER=myproj@fix-auth CLAUDE_CODE_BIN="$stub" \
+        "$CS_BIN" "otherbase" <<< "n" 2>&1) || { echo "  FAIL: the launch failed: $out"; return 1; }
+    assert_eq "CS_SECRETS_SESSION=<unset> CS_SECRETS_CALLER=<unset>" "$(cat "$seen" 2>&1)" \
+        "the launched claude carries no other session's secrets identity" || return 1
+}
+
 # Claude Code v2.1.233+ leaves the Task tools out on Opus 4.8, Sonnet 5 and
 # Fable 5 unless the session opts in. cs's rotation wake, the walk-away drain
 # and the rotate skill all address the native task list, so a launch has to
@@ -993,6 +1008,7 @@ run_test test_worktree_reopen_preserves_project_claude_md
 run_test test_worktree_reopen_refuses_a_symlinked_cs_local
 run_test test_worktree_creation_refuses_a_committed_cs_local_link
 run_test test_worktree_launch_exports_base_identity
+run_test test_base_launch_drops_an_inherited_secrets_identity
 run_test test_launch_enables_the_task_tools_unless_opted_out
 run_test test_launch_enables_function_hooks_unless_opted_out
 run_test test_retire_after_integrate_removes_worktree_and_branch
