@@ -395,7 +395,12 @@ session launched before `keybindings.json` existed gets the file at its next
 launch.
 
 Ctrl+X 1 runs `/rotate`, as if typed: the `rotate` skill draws the purpose from
-the conversation. Beside it the band draws `wrap up this session`. That key
+the conversation. Before it runs, the press writes the conversation id to
+`.cs/local/cs.pressed`, so `cs -archive-tasks plan` reports `forced: yes` and
+the one-key rotation skips the task-archive question as a forced one does. The
+end of the main loop's next turn, whatever ended it, empties the file, and so
+does a run the engine refuses, so a `/rotate` typed later in the conversation
+asks as a manual one does. Beside it the band draws `wrap up this session`. That key
 runs `/wrap`, which distills memory, replaces `.cs/summary.md` and rotates the
 narrative: two Opus passes and a shell helper, minutes and real tokens, so the
 press asks first. Ctrl+X 2 opens the engine's own AskUserQuestion dialog —
