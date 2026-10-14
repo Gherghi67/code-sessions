@@ -310,6 +310,7 @@ states_for() {  # session-name, name-value, status-value
     printf '{"pid":%s,"name":"%s","status":"%s","procStart":"%s"}\n' \
         "$pid" "$2" "$3" "$start" > "$CS_CLAUDE_DIR/sessions/$pid.json"
     ( source "$SCRIPT_DIR/../lib/05-term.sh"
+      source "$SCRIPT_DIR/../lib/02-shared.sh"
       source "$SCRIPT_DIR/../lib/56-presence.sh"
       agent_states )
 }
@@ -342,6 +343,7 @@ test_agent_states_refuses_a_pid_that_is_not_a_number() {
     printf '{"pid":"%s","name":"demo","status":"busy","procStart":"%s"}\n' \
         "$pid" "$start" > "$CS_CLAUDE_DIR/sessions/$pid.json"
     out="$( source "$SCRIPT_DIR/../lib/05-term.sh"
+            source "$SCRIPT_DIR/../lib/02-shared.sh"
             source "$SCRIPT_DIR/../lib/56-presence.sh"
             agent_states )"
     assert_eq "" "$out" "a quoted pid must earn no state" || return 1
@@ -388,6 +390,7 @@ test_agent_states_emits_one_row_when_a_later_record_is_malformed() {
         > "$CS_CLAUDE_DIR/sessions/999999999.json"
     local rows state
     rows="$( source "$SCRIPT_DIR/../lib/05-term.sh"
+             source "$SCRIPT_DIR/../lib/02-shared.sh"
              source "$SCRIPT_DIR/../lib/56-presence.sh"
              agent_states | grep -c '^healthy' || true )"
     assert_eq "1" "$rows" "agent_states must emit exactly one row for a session" || return 1
@@ -397,6 +400,7 @@ test_agent_states_emits_one_row_when_a_later_record_is_malformed() {
     # than two clean ones, whose status field reads "busy<pid>...". Assert the
     # value, which is what the render surfaces.
     state="$( source "$SCRIPT_DIR/../lib/05-term.sh"
+              source "$SCRIPT_DIR/../lib/02-shared.sh"
               source "$SCRIPT_DIR/../lib/56-presence.sh"
               agent_state_of "$(agent_states)" healthy )"
     assert_eq "busy" "$state" "the state must survive intact, not absorb the next record" || return 1
@@ -449,9 +453,9 @@ _scrub_grid() {  # bash, locale assignment or ""
         row no_newline "x"
     '
     if [ -n "$2" ]; then
-        env -i PATH="$PATH" HOME="$HOME" "$2" "$1" -c "$script" x "$SCRIPT_DIR/../lib/05-term.sh"
+        env -i PATH="$PATH" HOME="$HOME" "$2" "$1" -c "$script" x "$SCRIPT_DIR/../lib/02-shared.sh"
     else
-        env -i PATH="$PATH" HOME="$HOME" "$1" -c "$script" x "$SCRIPT_DIR/../lib/05-term.sh"
+        env -i PATH="$PATH" HOME="$HOME" "$1" -c "$script" x "$SCRIPT_DIR/../lib/02-shared.sh"
     fi
 }
 
@@ -503,7 +507,7 @@ test_scrub_controls_leaves_the_shells_own_locale_alone() {
     local b out own
     for b in $(every_bash); do
         out="$(printf 'a\001b' | env -i PATH="$PATH" HOME="$HOME" "$b" -c '
-            source "$1"; set -x; _scrub_controls' x "$SCRIPT_DIR/../lib/05-term.sh" \
+            source "$1"; set -x; _scrub_controls' x "$SCRIPT_DIR/../lib/02-shared.sh" \
             2>"$TEST_TMPDIR/trace")"
         assert_eq "ab" "$out" "$b scrubs while traced" || return 1
         own="$(shell_locale_assignments "$TEST_TMPDIR/trace")"
