@@ -395,6 +395,51 @@ test_the_lead_takes_the_claim_from_a_claude_it_started() {
     assert_eq "absent" "$guest_flag" "the other claude's Stop leaves the attention flag down" || return 1
 }
 
+# The lead and a claude it started can reach their SessionStarts together.
+# Each reads the claim and writes its own as one step, taken in turns, so the
+# lead holds the claim whichever comes first. The test fixes the order that
+# would let both pass the read: the other claude is held between its read and
+# its write (its mktemp, which the write makes only after the read passed,
+# waits on a fifo), the lead's claim starts, and the fifo opens once the lead
+# has either written its claim or is waiting for its turn (it ran perl on the
+# lock file). Nothing depends on how long a step takes.
+test_the_lead_holds_the_claim_when_a_claude_it_started_claims_at_once() {
+    _nested_setup
+    local meta="$CLAUDE_SESSION_META_DIR" shim="$TEST_TMPDIR/shim" launch direct wrapper grand
+    local hold="$TEST_TMPDIR/hold" w_waits="$TEST_TMPDIR/lead-waits" w_done="$TEST_TMPDIR/lead-done"
+    local i=0 g w
+    _launch_tree || return 1
+    read -r launch direct wrapper grand < "$TEST_TMPDIR/tree"
+    mkdir -p "$shim"
+    mkfifo "$hold"
+    printf '#!/bin/sh\nif [ -n "${CS_TEST_HOLD:-}" ]; then : > "$CS_TEST_HOLD.held"; read _ < "$CS_TEST_HOLD"; fi\nexec %s "$@"\n' \
+        "$(command -v mktemp)" > "$shim/mktemp"
+    printf '#!/bin/sh\nfor a in "$@"; do last=$a; done\ncase "${CS_TEST_TURN:-}:${last:-}" in ?*:*.mutex.lock) : > "$CS_TEST_TURN" ;; esac\nexec %s "$@"\n' \
+        "$(command -v perl)" > "$shim/perl"
+    chmod +x "$shim/mktemp" "$shim/perl"
+    _claim_as() {  # claude_pid session_id
+        PATH="$shim:$PATH" CS_LEAD_PID="$launch" CLAUDE_PID="$1" bash -c \
+            '. "$1/cs-shared.sh"; . "$1/cs-resolve.sh"; cs_lead_claim "$2" "$3"' _ "$HOOKS_DIR" "$meta/local" "$2" 2>/dev/null
+    }
+
+    CS_TEST_HOLD="$hold" _claim_as "$grand" 77777777-7777-4777-8777-777777777777 &
+    g=$!
+    while [ "$i" -lt 100 ] && [ ! -e "$hold.held" ]; do i=$((i + 1)); sleep 0.1; done
+    [ -e "$hold.held" ] || { kill "$g" 2>/dev/null; _kill_launch_tree; echo "  FAIL: the other claude never reached its write"; return 1; }
+    { CS_TEST_TURN="$w_waits" _claim_as "$wrapper" 66666666-6666-4666-8666-666666666666; : > "$w_done"; } &
+    w=$!
+    i=0
+    while [ "$i" -lt 100 ] && [ ! -e "$w_waits" ] && [ ! -e "$w_done" ]; do i=$((i + 1)); sleep 0.1; done
+    echo go > "$hold"
+    wait "$g" "$w"
+    local claim
+    claim=$(cat "$meta/local/lead-pid" 2>/dev/null)
+    _kill_launch_tree
+
+    assert_eq "$launch $wrapper 66666666-6666-4666-8666-666666666666" "$claim" \
+        "the lead holds the claim when both claim at once" || return 1
+}
+
 # A session opened by a cs that predates the claim carries no CS_LEAD_CLAIM,
 # and stays open while the hooks are updated. Nothing under that launch
 # claims it, so the claude carrying the launch pid is its only lead. A
@@ -487,6 +532,7 @@ run_test test_a_claude_the_launch_forked_is_the_lead_once_it_claims
 run_test test_a_claude_an_exec_launch_forked_is_the_lead_once_it_claims
 run_test test_a_direct_child_of_the_lead_claude_is_not_the_lead
 run_test test_the_lead_takes_the_claim_from_a_claude_it_started
+run_test test_the_lead_holds_the_claim_when_a_claude_it_started_claims_at_once
 run_test test_a_launch_that_takes_no_claim_has_only_the_launch_pid_for_its_lead
 run_test test_the_lead_keeps_its_rotation_when_its_prompt_names_the_teammate_flags
 run_test test_a_claude_whose_ancestry_cannot_be_read_is_not_taken_for_a_guest
