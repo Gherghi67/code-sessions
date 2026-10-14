@@ -146,6 +146,7 @@ All notable changes to cs are documented here. Release notes are also available 
 - The installer and `cs -uninstall` check cs's three lists of retired hooks, commands and skills before they change anything, and stop, naming the list and the entry, when one is not a plain name. An entry with a path in it could have removed files cs wrote outside `~/.claude/hooks/cs`, `~/.claude/commands` or `~/.claude/skills`.
 - The installer and `cs -uninstall` keep a hook entry, or an item in an entry's `hooks` list, that is not an object (a string, a number, a list, `false`). Either used to stop the settings update: the installer exited after copying its files, and `cs -uninstall` reported success and left every cs hook registered.
 - The installer and `cs -uninstall` leave alone a hook event in `settings.json` whose value is not a list. They rewrote it into a list and lost its keys. When cs adds a hook to that event, the installer stops before it installs anything and names the event.
+- After you delete `~/.claude/hooks/cs` by hand, and the install record in it, an install still replaces the hooks, commands, skills and mod files an earlier release wrote. Each release now adds the content of those files to the list cs checks when there is no record. A file installed from a checkout between releases is still kept in that case.
 
 ## 2026.10.7
 
