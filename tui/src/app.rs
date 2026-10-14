@@ -221,18 +221,20 @@ pub fn fuzzy_match(pattern: &str, text: &str) -> Option<(i32, Vec<usize>)> {
 /// validate_session_name: empty, "."/"..", a leading dot (cs's own staging
 /// dirs, .spawn and .usage, sit at the sessions root under dot names), a
 /// leading hyphen (`cs -uninstall` runs a verb), or anything but ASCII
-/// alphanumerics plus `-` `_` `.`. None for a name cs accepts. Keeps
-/// TUI-created/renamed sessions openable by `cs` (Unicode letters or spaces
-/// would produce a dir cs rejects).
+/// alphanumerics plus `-` `_` `.`, each in cs's own words. None for a name cs
+/// accepts. Keeps TUI-created/renamed sessions openable by `cs` (Unicode
+/// letters or spaces would produce a dir cs rejects).
 pub fn session_name_refusal(name: &str) -> Option<&'static str> {
     if name.is_empty() {
-        Some("Name cannot be empty")
+        Some("Session name cannot be empty")
+    } else if name == "." || name == ".." {
+        Some("Session name cannot be '.' or '..'")
     } else if name.starts_with('.') {
-        Some("Invalid name: a session name cannot start with a dot")
+        Some("Session name cannot start with a dot")
     } else if name.starts_with('-') {
-        Some("Invalid name: a session name cannot start with a hyphen")
+        Some("Session name cannot start with a hyphen")
     } else if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.') {
-        Some("Invalid name: use letters, digits, - _ . only")
+        Some("Session name must contain only alphanumeric characters, hyphens, underscores, and dots")
     } else {
         None
     }
@@ -1816,11 +1818,6 @@ impl App {
 
     fn execute_create(&mut self) -> Action {
         let name = self.create_input.text().trim().to_string();
-        if name.is_empty() {
-            self.set_status("Name cannot be empty", StatusLevel::Error);
-            self.mode = Mode::Normal;
-            return Action::None;
-        }
         if let Some(refusal) = session_name_refusal(&name) {
             self.set_status(refusal, StatusLevel::Error);
             self.mode = Mode::Normal;
@@ -2170,11 +2167,6 @@ impl App {
 
     fn execute_rename(&mut self) {
         let new_name = self.rename_input.text().trim().to_string();
-        if new_name.is_empty() {
-            self.set_status("Name cannot be empty", StatusLevel::Error);
-            self.mode = Mode::Normal;
-            return;
-        }
         if let Some(refusal) = session_name_refusal(&new_name) {
             self.set_status(refusal, StatusLevel::Error);
             self.mode = Mode::Normal;
