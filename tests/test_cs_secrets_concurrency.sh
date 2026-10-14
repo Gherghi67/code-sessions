@@ -934,8 +934,10 @@ test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions ro
 # between. PID 1 stands for the rename holding the lock, and the sleep shim's
 # marker shows the command is waiting on it.
 test_a_command_waiting_on_the_age_lock_takes_it_once_a_rename_removed_its_directory() {
-    local shim="$TEST_TMPDIR/sleep-shim" age="$HOME/.cs-secrets/sessions/bravo" real_sleep cmd pid rc waited expected
+    local shim="$TEST_TMPDIR/sleep-shim" age="$HOME/.cs-secrets/sessions/bravo" real_sleep cmd pid rc waited expected age_bin
     local key="age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqs3290gq"
+    # age add needs age; the export runs without it, so it takes the password path.
+    age_bin=$(command -v age 2>/dev/null) || { echo "    SKIP (age is not installed)"; return 77; }
     real_sleep=$(command -v sleep)
     mkdir -p "$CS_SESSIONS_ROOT/bravo/.cs" "$shim"
     cat > "$shim/sleep" <<SHIM
@@ -954,7 +956,7 @@ SHIM
         printf '1\n' > "$age/.age.lock"
         case "$cmd" in
             age-add)
-                PATH="$shim:$PATH" CS_SECRETS_LOCK_TIMEOUT=3 CLAUDE_SESSION_NAME=bravo \
+                PATH="$shim:$PATH" CS_SECRETS_LOCK_TIMEOUT=3 CLAUDE_SESSION_NAME=bravo CS_AGE_BIN="$age_bin" \
                     "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/laptop.pub" > "$TEST_TMPDIR/out" 2>&1 &
                 expected="Added recipient: laptop
 Public key: $key" ;;
@@ -989,8 +991,10 @@ test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions ro
 # and the rename's removal of alpha's age directory, lock and all, follow
 # once the sleep shim's marker shows the command is waiting.
 test_a_command_waiting_on_the_age_lock_through_a_rename_refuses_the_old_name() {
-    local shim="$TEST_TMPDIR/sleep-shim" age="$HOME/.cs-secrets/sessions/alpha" real_sleep cmd pid rc waited
+    local shim="$TEST_TMPDIR/sleep-shim" age="$HOME/.cs-secrets/sessions/alpha" real_sleep cmd pid rc waited age_bin
     local key="age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqs3290gq"
+    # age add needs age; remove and the export run without it.
+    age_bin=$(command -v age 2>/dev/null) || { echo "    SKIP (age is not installed)"; return 77; }
     real_sleep=$(command -v sleep)
     mkdir -p "$shim" "$HOME/.cs-secrets"
     cat > "$shim/sleep" <<SHIM
@@ -1015,7 +1019,7 @@ SHIM
         printf '1\n' > "$age/.age.lock"
         case "$cmd" in
             age-add)
-                PATH="$shim:$PATH" CS_SECRETS_LOCK_TIMEOUT=3 CLAUDE_SESSION_NAME=alpha \
+                PATH="$shim:$PATH" CS_SECRETS_LOCK_TIMEOUT=3 CLAUDE_SESSION_NAME=alpha CS_AGE_BIN="$age_bin" \
                     "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/laptop.pub" > "$TEST_TMPDIR/out" 2>&1 & ;;
             age-remove)
                 PATH="$shim:$PATH" CS_SECRETS_LOCK_TIMEOUT=3 CLAUDE_SESSION_NAME=alpha \
@@ -1047,6 +1051,268 @@ SHIM
 test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
 }
 
+# A command waiting on alpha's age lock makes alpha's age directory and then
+# sets its mode before every try. A rename that removes the directory between
+# those two steps leaves the mode step nothing to act on; the waiter makes the
+# directory again, takes the lock and refuses the old name, as it does when
+# the removal lands anywhere else in its wait. The chmod on PATH is the
+# rename: on the first mode step after the command has started waiting (the
+# sleep shim's marker), it moves the session and removes alpha's age
+# directory, lock and all, and then runs the real chmod on what is left.
+test_a_rename_between_making_the_age_directory_and_setting_its_mode_is_waited_through() {
+    local shim="$TEST_TMPDIR/race-shim" age="$HOME/.cs-secrets/sessions/alpha" real_sleep real_chmod cmd rc age_bin
+    local key="age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqs3290gq"
+    # age add needs age; remove and the export run without it.
+    age_bin=$(command -v age 2>/dev/null) || { echo "    SKIP (age is not installed)"; return 77; }
+    real_sleep=$(command -v sleep)
+    real_chmod=$(command -v chmod)
+    mkdir -p "$shim" "$HOME/.cs-secrets"
+    cat > "$shim/sleep" <<SHIM
+#!/usr/bin/env bash
+: > "$TEST_TMPDIR/waiting"
+exec "$real_sleep" "\$@"
+SHIM
+    cat > "$shim/chmod" <<SHIM
+#!/usr/bin/env bash
+if [ -f "$TEST_TMPDIR/waiting" ] && [ ! -e "$TEST_TMPDIR/gone" ]; then
+    for a in "\$@"; do
+        if [ "\$a" = "$age" ]; then
+            mv "$CS_SESSIONS_ROOT/alpha" "$CS_SESSIONS_ROOT/bravo"
+            mv "$age" "$TEST_TMPDIR/gone"
+            break
+        fi
+    done
+fi
+exec "$real_chmod" "\$@"
+SHIM
+    chmod +x "$shim/sleep" "$shim/chmod"
+    printf '%s\n' "$key" > "$TEST_TMPDIR/laptop.pub"
+    printf 'value-one' > "$TEST_TMPDIR/v1"
+    printf 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOwnMachineKeyBodyForTheTestOnly test@example.com\n' \
+        > "$HOME/.cs-secrets/id_ed25519.pub"
+
+    for cmd in age-add age-remove export-file; do
+        rm -rf "$age" "$TEST_TMPDIR/gone" "$TEST_TMPDIR/waiting" "$TEST_TMPDIR/sync.enc" \
+            "$CS_SESSIONS_ROOT/alpha" "$CS_SESSIONS_ROOT/bravo"
+        mkdir -p "$CS_SESSIONS_ROOT/alpha/.cs/age-recipients" "$age"
+        printf '%s\n' "$key" > "$CS_SESSIONS_ROOT/alpha/.cs/age-recipients/peer.pub"
+        CLAUDE_SESSION_NAME=alpha "$CS_SECRETS_BIN" set K1 < "$TEST_TMPDIR/v1" >/dev/null 2>&1 \
+            || { echo "  FAIL: fixture: set K1 failed ($cmd)"; return 1; }
+        printf '1\n' > "$age/.age.lock"
+        rc=0
+        case "$cmd" in
+            age-add)
+                PATH="$shim:$PATH" CS_SECRETS_LOCK_TIMEOUT=3 CLAUDE_SESSION_NAME=alpha CS_AGE_BIN="$age_bin" \
+                    "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/laptop.pub" > "$TEST_TMPDIR/out" 2>&1 || rc=$? ;;
+            age-remove)
+                PATH="$shim:$PATH" CS_SECRETS_LOCK_TIMEOUT=3 CLAUDE_SESSION_NAME=alpha \
+                    "$CS_SECRETS_BIN" age remove peer > "$TEST_TMPDIR/out" 2>&1 || rc=$? ;;
+            export-file)
+                PATH="$shim:$PATH" CS_SECRETS_LOCK_TIMEOUT=3 CLAUDE_SESSION_NAME=alpha \
+                    "$CS_SECRETS_BIN" export-file "$TEST_TMPDIR/sync.enc" > "$TEST_TMPDIR/out" 2>&1 || rc=$? ;;
+        esac
+
+        [ -d "$TEST_TMPDIR/gone" ] || { echo "  FAIL: fixture: the removal never landed in $cmd's mode step: $(cat "$TEST_TMPDIR/out")"; return 1; }
+        assert_eq "1" "$rc" "$cmd for the old name exits 1: $(cat "$TEST_TMPDIR/out")" || return 1
+        assert_eq "Error: No session named 'alpha' in $CS_SESSIONS_ROOT" "$(cat "$TEST_TMPDIR/out")" \
+            "$cmd refuses the old name" || return 1
+        assert_not_exists "$age" "$cmd leaves no age directory, and no pin, under alpha" || return 1
+        assert_not_exists "$TEST_TMPDIR/sync.enc" "$cmd writes no sync file" || return 1
+        assert_eq "peer.pub" "$(ls -A "$CS_SESSIONS_ROOT/bravo/.cs/age-recipients")" "$cmd changes no recipient" || return 1
+    done
+    assert_eq "bravo
+test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
+}
+
+# An age directory that cannot be made, or whose mode cannot be set while it
+# is there, fails the age lock at once: one try, no wait, the tool's own
+# error and the refusal. Only a directory that is gone again by the mode step
+# is made again. The command runs in the background so that one that kept
+# trying is stopped and reported instead of hanging the suite.
+test_an_age_directory_that_cannot_be_made_or_secured_fails_the_age_lock_at_once() {
+    local shim="$TEST_TMPDIR/once-shim" age="$HOME/.cs-secrets/sessions/test-session" real_sleep real_chmod how pid waited
+    local refusal="Error: Refusing to change the age recipients for session 'test-session': could not acquire the age recipients lock"
+    real_sleep=$(command -v sleep)
+    real_chmod=$(command -v chmod)
+    mkdir -p "$shim" "$CS_SESSIONS_ROOT/test-session/.cs/age-recipients"
+    printf 'age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqs3290gq\n' \
+        > "$CS_SESSIONS_ROOT/test-session/.cs/age-recipients/peer.pub"
+    cat > "$shim/sleep" <<SHIM
+#!/usr/bin/env bash
+: > "$TEST_TMPDIR/waiting"
+exec "$real_sleep" "\$@"
+SHIM
+    cat > "$shim/chmod" <<SHIM
+#!/usr/bin/env bash
+for a in "\$@"; do
+    if [ "\$a" = "$age" ]; then
+        printf 'x\n' >> "$TEST_TMPDIR/mode-steps"
+        if [ -f "$TEST_TMPDIR/refuse-mode" ]; then
+            echo "chmod: $age: Operation not permitted" >&2
+            exit 1
+        fi
+    fi
+done
+exec "$real_chmod" "\$@"
+SHIM
+    chmod +x "$shim/sleep" "$shim/chmod"
+
+    for how in unmakeable unsecurable; do
+        rm -rf "$HOME/.cs-secrets" "$TEST_TMPDIR/waiting" "$TEST_TMPDIR/mode-steps" "$TEST_TMPDIR/refuse-mode" "$TEST_TMPDIR/rc"
+        mkdir -p "$HOME/.cs-secrets"
+        case "$how" in
+            # A file where the directory of per-session age state belongs.
+            unmakeable) : > "$HOME/.cs-secrets/sessions" ;;
+            unsecurable) : > "$TEST_TMPDIR/refuse-mode" ;;
+        esac
+        ( rc=0
+          PATH="$shim:$PATH" "$CS_SECRETS_BIN" age remove peer > "$TEST_TMPDIR/out" 2>&1 || rc=$?
+          printf '%s\n' "$rc" > "$TEST_TMPDIR/rc" ) &
+        pid=$!
+        waited=0
+        until [ -f "$TEST_TMPDIR/rc" ]; do sleep 0.05; waited=$((waited + 1)); [ "$waited" -gt 200 ] && break; done
+        if [ ! -f "$TEST_TMPDIR/rc" ]; then
+            pkill -P "$pid" 2>/dev/null; kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+            echo "  FAIL: age remove kept trying an age directory it could not make or secure ($how): $(wc -l < "$TEST_TMPDIR/mode-steps" 2>/dev/null) mode steps"
+            return 1
+        fi
+        wait "$pid"
+        assert_eq "1" "$(cat "$TEST_TMPDIR/rc")" "age remove exits 1 ($how): $(cat "$TEST_TMPDIR/out")" || return 1
+        assert_eq "$refusal" "$(tail -1 "$TEST_TMPDIR/out")" "age remove says it could not take the lock ($how)" || return 1
+        assert_eq "2" "$(wc -l < "$TEST_TMPDIR/out" | tr -d ' ')" "one line from the tool that failed, then the refusal ($how)" || return 1
+        assert_not_exists "$TEST_TMPDIR/waiting" "age remove does not wait ($how)" || return 1
+        case "$how" in
+            unmakeable)
+                assert_not_exists "$TEST_TMPDIR/mode-steps" "no mode step follows a directory that was not made" || return 1 ;;
+            unsecurable)
+                assert_eq "chmod: $age: Operation not permitted" "$(head -1 "$TEST_TMPDIR/out")" "the mode step's own error is shown" || return 1 ;;
+        esac
+        assert_file_exists "$CS_SESSIONS_ROOT/test-session/.cs/age-recipients/peer.pub" "the recipient is left alone ($how)" || return 1
+    done
+}
+
+# `age add` and `age remove` change the recipient set an export snapshots, so
+# each waits while an export holds the session's age lock and runs once the
+# export is done. The export's age blocks on encrypt (-o) until the test
+# releases it, so the export holds the lock for as long as the test looks;
+# the sleep shim's marker shows the add or remove is waiting on that lock.
+test_age_add_and_remove_wait_while_an_export_holds_the_age_lock() {
+    local age_bin keygen_bin real_sleep cmd pid xpid rc waited expected key
+    local shim="$TEST_TMPDIR/sleep-shim" slow="$TEST_TMPDIR/held-age"
+    age_bin=$(command -v age 2>/dev/null) || age_bin=""
+    keygen_bin=$(command -v age-keygen 2>/dev/null) || keygen_bin=""
+    if [ -z "$age_bin" ] || [ -z "$keygen_bin" ]; then
+        echo "    SKIP (age and age-keygen are not installed)"
+        return 77
+    fi
+    real_sleep=$(command -v sleep)
+    mkdir -p "$shim"
+    cat > "$shim/sleep" <<SHIM
+#!/usr/bin/env bash
+: > "$TEST_TMPDIR/waiting"
+exec "$real_sleep" "\$@"
+SHIM
+    chmod +x "$shim/sleep"
+    cat > "$slow" <<SHIM
+#!/usr/bin/env bash
+for a in "\$@"; do
+    if [ "\$a" = "-o" ]; then
+        : > "$TEST_TMPDIR/encrypting"
+        n=0
+        until [ -f "$TEST_TMPDIR/release" ] || [ "\$n" -ge 200 ]; do "$real_sleep" 0.05; n=\$((n + 1)); done
+        break
+    fi
+done
+exec "$age_bin" "\$@"
+SHIM
+    chmod +x "$slow"
+    "$keygen_bin" -o "$TEST_TMPDIR/r.key" 2>/dev/null || { echo "  FAIL: fixture: age-keygen"; return 1; }
+    "$keygen_bin" -y "$TEST_TMPDIR/r.key" > "$TEST_TMPDIR/r.pub" || return 1
+    key=$(cat "$TEST_TMPDIR/r.pub")
+    CS_AGE_BIN="$age_bin" "$CS_SECRETS_BIN" age init >/dev/null 2>&1 || { echo "  FAIL: fixture: age init"; return 1; }
+
+    for cmd in age-add age-remove; do
+        rm -f "$TEST_TMPDIR/waiting" "$TEST_TMPDIR/encrypting" "$TEST_TMPDIR/release" "$TEST_TMPDIR/out"
+        printf 'value-%s' "$cmd" > "$TEST_TMPDIR/v"
+        "$CS_SECRETS_BIN" set api_key < "$TEST_TMPDIR/v" >/dev/null 2>&1 || { echo "  FAIL: fixture: set ($cmd)"; return 1; }
+        CS_AGE_BIN="$slow" "$CS_SECRETS_BIN" export-file > "$TEST_TMPDIR/export.out" 2>&1 &
+        xpid=$!
+        waited=0
+        until [ -f "$TEST_TMPDIR/encrypting" ]; do sleep 0.05; waited=$((waited + 1)); [ "$waited" -gt 400 ] && break; done
+        [ -f "$TEST_TMPDIR/encrypting" ] || { echo "  FAIL: fixture: the export never reached its encrypt ($cmd): $(cat "$TEST_TMPDIR/export.out")"; kill "$xpid"; wait "$xpid"; return 1; }
+
+        case "$cmd" in
+            age-add)
+                PATH="$shim:$PATH" CS_AGE_BIN="$age_bin" "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/r.pub" > "$TEST_TMPDIR/out" 2>&1 &
+                expected="Added recipient: r
+Public key: $key" ;;
+            age-remove)
+                PATH="$shim:$PATH" CS_AGE_BIN="$age_bin" "$CS_SECRETS_BIN" age remove r > "$TEST_TMPDIR/out" 2>&1 &
+                expected="Removed recipient: r
+
+Note: Existing secrets.age files can still be decrypted by this recipient.
+Run 'cs -secrets export-file' to re-encrypt without this recipient; each machine
+re-encrypts only its own sync file, and copies in git history stay readable to them." ;;
+        esac
+        pid=$!
+        waited=0
+        until [ -f "$TEST_TMPDIR/waiting" ] || ! kill -0 "$pid" 2>/dev/null; do sleep 0.05; waited=$((waited + 1)); [ "$waited" -gt 400 ] && break; done
+        if ! kill -0 "$pid" 2>/dev/null; then
+            : > "$TEST_TMPDIR/release"; wait "$xpid"; wait "$pid"
+            echo "  FAIL: $cmd finished while the export held the age lock: $(cat "$TEST_TMPDIR/out")"
+            return 1
+        fi
+        [ -f "$TEST_TMPDIR/waiting" ] || { echo "  FAIL: fixture: $cmd never waited"; : > "$TEST_TMPDIR/release"; kill "$pid"; wait "$xpid"; wait "$pid"; return 1; }
+        assert_eq "" "$(cat "$TEST_TMPDIR/out")" "$cmd says nothing while it waits" || { : > "$TEST_TMPDIR/release"; wait "$xpid"; wait "$pid"; return 1; }
+
+        : > "$TEST_TMPDIR/release"
+        rc=0
+        wait "$xpid" || rc=$?
+        assert_eq "0" "$rc" "the export holding the lock exits 0 ($cmd): $(cat "$TEST_TMPDIR/export.out")" || { wait "$pid"; return 1; }
+        rc=0
+        wait "$pid" || rc=$?
+        assert_eq "0" "$rc" "$cmd exits 0 once the export is done" || return 1
+        assert_eq "$expected" "$(cat "$TEST_TMPDIR/out")" "$cmd says what it did" || return 1
+    done
+}
+
+# CS_SECRETS_LOCK_TIMEOUT counts whole seconds. Anything but a positive whole
+# number (a word, a fraction, zero) is the default of 10: no arithmetic error,
+# and no giving up before the first wait. PID 1 holds the write lock for the
+# whole test; the three writers wait on it side by side, so the test takes
+# one timeout, not three.
+test_a_lock_timeout_that_is_not_a_positive_whole_number_is_the_default() {
+    local lock="$CS_SESSIONS_ROOT/.secrets-lock.test-session" value pid rc
+    printf '1\n' > "$lock"
+    printf 'value-one' > "$TEST_TMPDIR/v1"
+    for value in abc 1.5 0; do
+        CS_SECRETS_LOCK_TIMEOUT="$value" "$CS_SECRETS_BIN" set K1 < "$TEST_TMPDIR/v1" > "$TEST_TMPDIR/out.$value" 2>&1 &
+        printf '%s\n' "$!" > "$TEST_TMPDIR/pid.$value"
+    done
+    for value in abc 1.5 0; do
+        pid=$(cat "$TEST_TMPDIR/pid.$value")
+        rc=0
+        wait "$pid" || rc=$?
+        assert_eq "1" "$rc" "set with CS_SECRETS_LOCK_TIMEOUT=$value exits 1 once it times out" || return 1
+        assert_eq "Error: timed out after 10s acquiring the secrets write lock for session 'test-session' (held by PID 1). If no such process is running, remove: $lock
+Error: Refusing to change the secrets of session 'test-session': could not acquire the secrets write lock" \
+            "$(cat "$TEST_TMPDIR/out.$value")" "CS_SECRETS_LOCK_TIMEOUT=$value waits the default 10 seconds" || return 1
+    done
+}
+
+# A timeout with a leading zero is read in base 10: 08 is eight seconds, not
+# an octal number that does not exist. PID 1 holds the write lock.
+test_a_lock_timeout_with_a_leading_zero_is_read_in_base_ten() {
+    local lock="$CS_SESSIONS_ROOT/.secrets-lock.test-session" out rc=0
+    printf '1\n' > "$lock"
+    printf 'value-one' > "$TEST_TMPDIR/v1"
+    out=$(CS_SECRETS_LOCK_TIMEOUT=08 "$CS_SECRETS_BIN" set K1 < "$TEST_TMPDIR/v1" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "set exits 1 once it times out" || return 1
+    assert_eq "Error: timed out after 8s acquiring the secrets write lock for session 'test-session' (held by PID 1). If no such process is running, remove: $lock
+Error: Refusing to change the secrets of session 'test-session': could not acquire the secrets write lock" \
+        "$out" "CS_SECRETS_LOCK_TIMEOUT=08 waits eight seconds" || return 1
+}
+
 run_test test_encrypted_salt_write_is_atomic_under_concurrency
 run_test test_encrypted_signal_terminates_writer_mid_critical_section
 run_test test_encrypted_purge_serialized_with_concurrent_store
@@ -1064,5 +1330,10 @@ run_test test_a_signal_after_every_value_moved_does_not_end_a_rename_nonzero
 run_test test_a_term_keeps_the_write_lock_until_purge_has_removed_the_age_state
 run_test test_a_command_waiting_on_the_age_lock_takes_it_once_a_rename_removed_its_directory
 run_test test_a_command_waiting_on_the_age_lock_through_a_rename_refuses_the_old_name
+run_test test_a_rename_between_making_the_age_directory_and_setting_its_mode_is_waited_through
+run_test test_an_age_directory_that_cannot_be_made_or_secured_fails_the_age_lock_at_once
+run_test test_age_add_and_remove_wait_while_an_export_holds_the_age_lock
+run_test test_a_lock_timeout_that_is_not_a_positive_whole_number_is_the_default
+run_test test_a_lock_timeout_with_a_leading_zero_is_read_in_base_ten
 
 report_results

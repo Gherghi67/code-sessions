@@ -123,6 +123,19 @@ sess="${FAKE_SECURITY_SESSION:-test-session}"
 # and \" escapes) and carry on as if it had been argv.
 if [ "$sub" = "-i" ]; then
     IFS= read -r line || true
+    # The real tool takes at most 4095 bytes of a line as one command and
+    # reads what is left, the newline included, as the next one; an empty
+    # command returns 0 and the exit status is the last command's. So a line
+    # of exactly 4095 bytes runs whole and exits 0 whatever its command did,
+    # and a longer line is cut. FAKE_SECURITY_LINELOG records each line's
+    # length in bytes.
+    line_bytes=$(printf '%s' "$line" | wc -c | tr -d ' ')
+    [ -n "${FAKE_SECURITY_LINELOG:-}" ] && printf '%s\n' "$line_bytes" >> "$FAKE_SECURITY_LINELOG"
+    if [ "$line_bytes" -gt 4095 ]; then
+        echo "security: a command line over 4095 bytes is cut" >&2
+        exit 1
+    fi
+    [ "$line_bytes" -eq 4095 ] && trap 'exit 0' EXIT
     eval "set -- $line"
     sub="${1:-}"
 fi
@@ -458,8 +471,9 @@ test_purge_removes_all() {
 # that went with them goes too: a later session under the same name must not
 # inherit recipients nobody pinned for it.
 test_purge_drops_the_sessions_age_state() {
+    _use_real_age || return $?
     local state="$HOME/.cs-secrets/sessions/test-session"
-    printf 'age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq0000000\n' > "$TEST_TMPDIR/peer.pub"
+    printf 'age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqs3290gq\n' > "$TEST_TMPDIR/peer.pub"
     "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
     "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/peer.pub" >/dev/null 2>&1 || { echo "  FAIL: age add failed"; return 1; }
     assert_file_exists "$state/age-trusted" "fixture: age add wrote the pin list" || return 1
@@ -1465,6 +1479,175 @@ test_age_add_refuses_what_is_not_a_key() {
         assert_eq "" "$(ls "$meta/age-recipients" 2>/dev/null)" "no recipient file is written for '$candidate'" || return 1
         assert_not_exists "$HOME/.cs-secrets/sessions/test-session/age-trusted" "nothing is pinned for '$candidate'" || return 1
     done
+}
+
+# A recipient is named after its key file, so two collaborators' keys can both
+# arrive as laptop.pub. The second `age add` refuses to replace the first
+# recipient, naming the file and both keys: replacing it would leave the first
+# collaborator unable to decrypt. Adding the same key again changes nothing.
+test_age_add_refuses_a_different_key_under_a_recipient_name_in_use() {
+    _use_real_age || return $?
+    local dir="$CS_SESSIONS_ROOT/test-session/.cs/age-recipients" out rc=0 k1 k2 fp2
+    mkdir -p "$TEST_TMPDIR/first" "$TEST_TMPDIR/second"
+    age-keygen 2>/dev/null | age-keygen -y > "$TEST_TMPDIR/first/laptop.pub" || { echo "  FAIL: fixture: age-keygen"; return 1; }
+    age-keygen 2>/dev/null | age-keygen -y > "$TEST_TMPDIR/second/laptop.pub" || { echo "  FAIL: fixture: age-keygen"; return 1; }
+    k1=$(cat "$TEST_TMPDIR/first/laptop.pub"); k2=$(cat "$TEST_TMPDIR/second/laptop.pub")
+    fp2=$(printf '%s' "$k2" | shasum -a 256 | cut -d' ' -f1)
+    "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/first/laptop.pub" >/dev/null 2>&1 || { echo "  FAIL: fixture: the first age add failed"; return 1; }
+
+    out=$("$CS_SECRETS_BIN" age add "$TEST_TMPDIR/second/laptop.pub" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a second key under the name laptop is refused" || return 1
+    assert_eq "Error: refusing to replace recipient laptop: $dir/laptop.pub holds $k1, not the key given, $k2. Give the key file another name, or run 'cs -secrets age remove laptop' first." \
+        "$out" "the refusal names the file and both keys" || return 1
+    assert_eq "$k1" "$(cat "$dir/laptop.pub")" "laptop.pub still holds the first key" || return 1
+    if grep -qxF "$fp2" "$HOME/.cs-secrets/sessions/test-session/age-trusted"; then
+        echo "  FAIL: the refused key was pinned"
+        return 1
+    fi
+
+    rc=0
+    out=$("$CS_SECRETS_BIN" age add "$TEST_TMPDIR/first/laptop.pub" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "adding the same key again succeeds" || return 1
+    assert_eq "Added recipient: laptop
+Public key: $k1" "$out" "adding the same key again says what it holds" || return 1
+    assert_eq "laptop.pub" "$(ls "$dir")" "no second recipient file is written" || return 1
+}
+
+# An age1... key age cannot encrypt to is refused at `age add`, before it is
+# written or pinned: pinned, it made every later export of the session fail.
+# One key is not bech32 at all; the other has the right shape and characters
+# and fails only its checksum.
+test_age_add_refuses_an_age_key_age_does_not_accept() {
+    _use_real_age || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs" candidate out rc
+    for candidate in age1notakey age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq0000000; do
+        rc=0
+        out=$("$CS_SECRETS_BIN" age add "$candidate" 2>&1) || rc=$?
+        assert_eq "1" "$rc" "age add exits 1 for '$candidate'" || return 1
+        assert_eq "Error: Invalid public key: age does not accept $candidate as a recipient" "$out" "the refusal names the key ('$candidate')" || return 1
+        assert_eq "" "$(ls "$meta/age-recipients" 2>/dev/null)" "no recipient file is written for '$candidate'" || return 1
+        assert_not_exists "$HOME/.cs-secrets/sessions/test-session/age-trusted" "nothing is pinned for '$candidate'" || return 1
+    done
+}
+
+# The same holds for an ssh-ed25519 key: its body can be all base64
+# characters and still be no key. One is given raw, with a body too short to
+# hold a key type; the other arrives in a key file, with a well-formed header
+# and twenty key bytes where thirty-two belong.
+test_age_add_refuses_an_ssh_key_age_does_not_accept() {
+    _use_real_age || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs" short="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG9ubHkgdHdlbnR5IGJ5dGVz" out rc=0
+    out=$("$CS_SECRETS_BIN" age add "ssh-ed25519 AAAA" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "age add exits 1 for a raw malformed ssh key" || return 1
+    assert_eq "Error: Invalid public key: age does not accept ssh-ed25519 AAAA as a recipient" "$out" "the refusal names the raw key" || return 1
+    assert_eq "" "$(ls "$meta/age-recipients" 2>/dev/null)" "no recipient file is written for the raw key" || return 1
+    assert_not_exists "$HOME/.cs-secrets/sessions/test-session/age-trusted" "nothing is pinned for the raw key" || return 1
+
+    printf '%s peer@example.com\n' "$short" > "$TEST_TMPDIR/peer.pub"
+    rc=0
+    out=$("$CS_SECRETS_BIN" age add "$TEST_TMPDIR/peer.pub" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "age add exits 1 for a key file holding a malformed ssh key" || return 1
+    assert_eq "Error: Invalid public key: age does not accept $short as a recipient" "$out" "the refusal names the key the file holds" || return 1
+    assert_eq "" "$(ls "$meta/age-recipients" 2>/dev/null)" "no recipient file is written for the key file" || return 1
+    assert_not_exists "$HOME/.cs-secrets/sessions/test-session/age-trusted" "nothing is pinned for the key file" || return 1
+}
+
+# When age cannot encrypt the export, the export fails and says what age said.
+# It writes no password-encrypted file in its place: a later import would read
+# the stale .age beside it and restore an old value. The bad key is pinned the
+# way a pin list holds one that was added before `age add` checked keys.
+test_export_fails_when_age_cannot_encrypt() {
+    _use_real_age || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs" f bad err rc=0 fp age_said
+    f="$meta/secrets.$(_machine_id).age"
+    bad="age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq0000000"
+    "$CS_SECRETS_BIN" set api_key "v1" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: fixture: the first export failed"; return 1; }
+    cp "$f" "$TEST_TMPDIR/before.age"
+    printf '%s\n' "$bad" > "$meta/age-recipients/bad.pub"
+    fp=$(printf '%s' "$bad" | shasum -a 256 | cut -d' ' -f1)
+    printf '%s\n' "$fp" >> "$HOME/.cs-secrets/sessions/test-session/age-trusted"
+    age_said=$(age -r "$bad" -o /dev/null < /dev/null 2>&1) && { echo "  FAIL: fixture: age accepted the bad key"; return 1; }
+    "$CS_SECRETS_BIN" set api_key "v2" >/dev/null 2>&1 || return 1
+
+    err=$("$CS_SECRETS_BIN" export-file 2>&1 >/dev/null) || rc=$?
+    assert_eq "1" "$rc" "the export fails when age cannot encrypt" || return 1
+    assert_eq "Error: age could not encrypt the export for session 'test-session' (existing sync file left intact):
+$age_said" "$err" "the failure names age's error" || return 1
+    assert_file_not_exists "$meta/secrets.$(_machine_id).enc" "no password-encrypted file is written instead" || return 1
+    cmp -s "$f" "$TEST_TMPDIR/before.age" || { echo "  FAIL: the failed export changed the age sync file"; return 1; }
+}
+
+# A key given raw has no file to be named after: it gets recipient-<seconds>,
+# and a number after that while the name is taken, so keys added within one
+# second each get a recipient of their own. A raw key some recipient file
+# already holds is that recipient: adding it again, whenever, writes no
+# second file. The date on PATH answers `+%s` from a file, so the test says
+# what second it is.
+test_age_add_gives_each_raw_key_a_free_recipient_name() {
+    _use_real_age || return $?
+    local dir="$CS_SESSIONS_ROOT/test-session/.cs/age-recipients" shim="$TEST_TMPDIR/date-shim" real_date n out rc
+    local k1 k2 k3
+    real_date=$(command -v date)
+    mkdir -p "$shim"
+    cat > "$shim/date" <<SHIM
+#!/usr/bin/env bash
+if [ "\${1:-}" = "+%s" ]; then cat "$TEST_TMPDIR/now"; exit 0; fi
+exec "$real_date" "\$@"
+SHIM
+    chmod +x "$shim/date"
+    for n in 1 2 3; do
+        age-keygen 2>/dev/null | age-keygen -y > "$TEST_TMPDIR/k$n" || { echo "  FAIL: fixture: age-keygen"; return 1; }
+    done
+    k1=$(cat "$TEST_TMPDIR/k1"); k2=$(cat "$TEST_TMPDIR/k2"); k3=$(cat "$TEST_TMPDIR/k3")
+    printf '1700000000\n' > "$TEST_TMPDIR/now"
+
+    rc=0; out=$(PATH="$shim:$PATH" "$CS_SECRETS_BIN" age add "$k1" 2>&1) || rc=$?
+    assert_eq "0 Added recipient: recipient-1700000000
+Public key: $k1" "$rc $out" "the first raw key takes the second's name" || return 1
+    rc=0; out=$(PATH="$shim:$PATH" "$CS_SECRETS_BIN" age add "$k2" 2>&1) || rc=$?
+    assert_eq "0 Added recipient: recipient-1700000000-2
+Public key: $k2" "$rc $out" "a second raw key in the same second gets a name of its own" || return 1
+    rc=0; out=$(PATH="$shim:$PATH" "$CS_SECRETS_BIN" age add "$k3" 2>&1) || rc=$?
+    assert_eq "0 Added recipient: recipient-1700000000-3
+Public key: $k3" "$rc $out" "and so does a third" || return 1
+
+    rc=0; out=$(PATH="$shim:$PATH" "$CS_SECRETS_BIN" age add "$k1" 2>&1) || rc=$?
+    assert_eq "0 Added recipient: recipient-1700000000
+Public key: $k1" "$rc $out" "the first key again, in the same second, is the recipient it already is" || return 1
+    printf '1700000005\n' > "$TEST_TMPDIR/now"
+    rc=0; out=$(PATH="$shim:$PATH" "$CS_SECRETS_BIN" age add "$k2" 2>&1) || rc=$?
+    assert_eq "0 Added recipient: recipient-1700000000-2
+Public key: $k2" "$rc $out" "the second key again, seconds later, is the recipient it already is" || return 1
+
+    assert_eq "recipient-1700000000-2.pub
+recipient-1700000000-3.pub
+recipient-1700000000.pub" "$(ls "$dir" | env LC_ALL=C sort)" "three keys, three recipient files" || return 1
+    assert_eq "$k1 $k2 $k3" \
+        "$(cat "$dir/recipient-1700000000.pub") $(cat "$dir/recipient-1700000000-2.pub") $(cat "$dir/recipient-1700000000-3.pub")" \
+        "each file holds its own key" || return 1
+    for n in 1 2 3; do
+        grep -qxF "$(printf '%s' "$(cat "$TEST_TMPDIR/k$n")" | shasum -a 256 | cut -d' ' -f1)" \
+            "$HOME/.cs-secrets/sessions/test-session/age-trusted" || { echo "  FAIL: key $n is not pinned"; return 1; }
+    done
+}
+
+# `age add` never offers to download age: with no age binary it fails at once,
+# pointing at `age init`, which is where the download is offered. It prompts
+# for nothing, reaches for no network, and writes no recipient, no pin and no
+# machine key. The curl on PATH logs a call and fails.
+test_age_add_without_age_points_at_age_init() {
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs" netbin="$TEST_TMPDIR/net-bin" out rc=0
+    mkdir -p "$netbin"
+    printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nexit 1\n' "$TEST_TMPDIR/curl-argv" > "$netbin/curl"
+    chmod +x "$netbin/curl"
+    out=$(PATH="$netbin:$PATH" "$CS_SECRETS_BIN" age add age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqs3290gq 2>&1) || rc=$?
+    assert_eq "1" "$rc" "age add exits 1 with no age binary" || return 1
+    assert_eq "Error: age binary not found. Run: cs -secrets age init" "$out" "the refusal points at age init and offers no download" || return 1
+    assert_not_exists "$TEST_TMPDIR/curl-argv" "age add reaches for no network" || return 1
+    assert_eq "" "$(ls "$meta/age-recipients" 2>/dev/null)" "no recipient file is written" || return 1
+    assert_not_exists "$HOME/.cs-secrets/sessions/test-session/age-trusted" "nothing is pinned" || return 1
+    assert_not_exists "$HOME/.cs-secrets/id_ed25519" "no machine key is made" || return 1
 }
 
 _stage_machine_ssh_key() {  # this machine's ssh key under the test HOME
@@ -3332,6 +3515,173 @@ test_keychain_set_round_trips_a_multiline_quoted_value() {
         || { echo "  FAIL: a multi-line value with quotes and a backslash did not read back byte-exact"; return 1; }
 }
 
+# `security -i` reads one command per line into a 4096-byte buffer: the rest
+# of a line over 4095 bytes is read as the next command, and cs sends none
+# over 4094. The store line for account "tester" and secret BIG of
+# test-session is 37 fixed bytes, the quoted account (8) and service
+# "cs:test-session:BIG" (21), and two hex digits per value byte:
+# 66 + 2 * 2014 = 4094 fits, 66 + 2 * 2015 = 4096 does not. A value over the
+# limit is refused before `security` runs at all; one at the limit is stored.
+test_keychain_set_refuses_a_value_too_long_for_one_security_line() {
+    local bindir; bindir=$(_make_fake_security)
+    local argvlog="$TEST_TMPDIR/security-argv" kcstore="$TEST_TMPDIR/kc-store" out rc=0
+    head -c 2015 /dev/zero | tr '\0' 'v' > "$TEST_TMPDIR/over"
+    head -c 2014 /dev/zero | tr '\0' 'v' > "$TEST_TMPDIR/at"
+
+    out=$(PATH="$bindir:$PATH" USER=tester CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        FAKE_SECURITY_ARGVLOG="$argvlog" "$CS_SECRETS_BIN" set BIG < "$TEST_TMPDIR/over" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a value one byte over the limit is refused" || return 1
+    assert_eq "Error: refusing to store BIG in the Keychain: its value is 2015 bytes, over the 2014 bytes a Keychain value can hold under this session and name. Store larger values with the encrypted backend (CS_SECRETS_BACKEND=encrypted)." \
+        "$out" "the refusal names the limit and the encrypted backend" || return 1
+    assert_not_exists "$argvlog" "security is never called for a value over the limit" || return 1
+
+    rc=0
+    out=$(PATH="$bindir:$PATH" USER=tester CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        FAKE_SECURITY_ARGVLOG="$argvlog" "$CS_SECRETS_BIN" set BIG < "$TEST_TMPDIR/at" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "a value at the limit is stored: $out" || return 1
+    PATH="$bindir:$PATH" USER=tester CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        "$CS_SECRETS_BIN" get BIG > "$TEST_TMPDIR/got" 2>/dev/null \
+        || { echo "  FAIL: keychain get exited nonzero"; return 1; }
+    _get_matches "$TEST_TMPDIR/got" "$TEST_TMPDIR/at" \
+        || { echo "  FAIL: the value at the limit did not read back byte-exact"; return 1; }
+}
+
+# A line of exactly 4095 bytes runs whole, but `security -i` then reads its
+# newline as an empty command and exits 0: an add that failed is reported as
+# stored. So the longest line cs sends is 4094 bytes, and the boundary sits
+# on both kinds of name. Account "tester" and session test-session give a
+# fixed part of 67 bytes for BIGH and 66 for BIG:
+#   BIGH: 67 + 2 * 2013 = 4093 is sent, 67 + 2 * 2014 = 4095 is refused
+#   BIG:  66 + 2 * 2014 = 4094 is sent, 66 + 2 * 2015 = 4096 is refused
+# Every add fails here, so a line sent at 4095 bytes shows as a false
+# "Stored secret".
+test_keychain_set_never_sends_a_line_whose_failure_security_would_hide() {
+    local bindir; bindir=$(_make_fake_security)
+    local name at over fixed out rc
+    for name in BIGH BIG; do
+        case "$name" in
+            BIGH) at=2013; fixed=67 ;;
+            BIG)  at=2014; fixed=66 ;;
+        esac
+        over=$((at + 1))
+        head -c "$over" /dev/zero | tr '\0' 'v' > "$TEST_TMPDIR/over"
+        head -c "$at" /dev/zero | tr '\0' 'v' > "$TEST_TMPDIR/at"
+        rm -f "$TEST_TMPDIR/argv" "$TEST_TMPDIR/lines"
+
+        rc=0
+        out=$(PATH="$bindir:$PATH" USER=tester CS_SECRETS_BACKEND=keychain FAKE_SECURITY_MODE=storefail \
+            FAKE_SECURITY_ARGVLOG="$TEST_TMPDIR/argv" FAKE_SECURITY_LINELOG="$TEST_TMPDIR/lines" \
+            "$CS_SECRETS_BIN" set "$name" < "$TEST_TMPDIR/over" 2>&1) || rc=$?
+        assert_eq "1" "$rc" "$name: a value of $over bytes is refused: $out" || return 1
+        assert_eq "Error: refusing to store $name in the Keychain: its value is $over bytes, over the $at bytes a Keychain value can hold under this session and name. Store larger values with the encrypted backend (CS_SECRETS_BACKEND=encrypted)." \
+            "$out" "$name: the refusal names the limit" || return 1
+        assert_not_exists "$TEST_TMPDIR/argv" "$name: security is never called for a value over the limit" || return 1
+
+        rc=0
+        out=$(PATH="$bindir:$PATH" USER=tester CS_SECRETS_BACKEND=keychain FAKE_SECURITY_MODE=storefail \
+            FAKE_SECURITY_ARGVLOG="$TEST_TMPDIR/argv" FAKE_SECURITY_LINELOG="$TEST_TMPDIR/lines" \
+            "$CS_SECRETS_BIN" set "$name" < "$TEST_TMPDIR/at" 2>&1) || rc=$?
+        assert_eq "$((fixed + 2 * at))" "$(cat "$TEST_TMPDIR/lines" 2>/dev/null)" "$name: a value of $at bytes is sent as one line of that length" || return 1
+        assert_eq "1" "$rc" "$name: the failed add of a value at the limit is reported as failed: $out" || return 1
+        assert_eq "Error: failed to store secret in Keychain: $name" "$out" "$name: the failure names the secret" || return 1
+    done
+}
+
+# The limit counts the bytes of the line, not its characters. The account
+# here is six characters and eight bytes (two two-byte letters), so the fixed
+# part for secret X is 37 + 10 + 19 = 66 bytes and the limit 2014; counted in
+# characters it would be 64 and 2015, and a 2015-byte value would go out on a
+# 4096-byte line. cs runs under a UTF-8 locale, where a shell counts
+# characters; the test is skipped where the machine has none.
+test_keychain_limit_counts_bytes_for_a_non_ascii_account() {
+    local bindir; bindir=$(_make_fake_security)
+    local account=$'t\xc3\xabst\xc3\xa9r' utf8 kcstore="$TEST_TMPDIR/kc-store" out rc=0
+    utf8=$(locale -a 2>/dev/null | grep -i -E '^(en_US|C)\.utf-?8$' | head -1)
+    [ -n "$utf8" ] || { echo "    SKIP (no UTF-8 locale on this machine)"; return 77; }
+    head -c 2015 /dev/zero | tr '\0' 'v' > "$TEST_TMPDIR/over"
+    head -c 2014 /dev/zero | tr '\0' 'v' > "$TEST_TMPDIR/at"
+
+    out=$(PATH="$bindir:$PATH" LC_ALL="$utf8" USER="$account" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        FAKE_SECURITY_ARGVLOG="$TEST_TMPDIR/argv" "$CS_SECRETS_BIN" set X < "$TEST_TMPDIR/over" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a value one byte over the byte limit is refused: $out" || return 1
+    assert_eq "Error: refusing to store X in the Keychain: its value is 2015 bytes, over the 2014 bytes a Keychain value can hold under this session and name. Store larger values with the encrypted backend (CS_SECRETS_BACKEND=encrypted)." \
+        "$out" "the limit is the one the line's bytes give" || return 1
+    assert_not_exists "$TEST_TMPDIR/argv" "security is never called for a value over the limit" || return 1
+
+    rc=0
+    out=$(PATH="$bindir:$PATH" LC_ALL="$utf8" USER="$account" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        FAKE_SECURITY_LINELOG="$TEST_TMPDIR/lines" "$CS_SECRETS_BIN" set X < "$TEST_TMPDIR/at" 2>&1) || rc=$?
+    assert_eq "0 Stored secret: X" "$rc $out" "a value at the limit is stored" || return 1
+    assert_eq "4094" "$(cat "$TEST_TMPDIR/lines")" "its line is 4094 bytes" || return 1
+    PATH="$bindir:$PATH" LC_ALL="$utf8" USER="$account" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        "$CS_SECRETS_BIN" get X > "$TEST_TMPDIR/got" 2>/dev/null \
+        || { echo "  FAIL: keychain get exited nonzero"; return 1; }
+    _get_matches "$TEST_TMPDIR/got" "$TEST_TMPDIR/at" \
+        || { echo "  FAIL: the value at the limit did not read back byte-exact"; return 1; }
+}
+
+# migrate-backend names each secret that did not reach the target, and shows
+# what the store said about it: for a value too long for the Keychain, the
+# limit and the backend that holds larger values.
+test_migrate_backend_shows_why_the_keychain_refused_a_value() {
+    _RN_BIN=$(_make_fake_security)
+    local out rc=0
+    head -c 2015 /dev/zero | tr '\0' 'v' > "$TEST_TMPDIR/over"
+    printf 'small' > "$TEST_TMPDIR/small"
+    _backend_secrets encrypted set BIG < "$TEST_TMPDIR/over" >/dev/null 2>&1 || { echo "  FAIL: fixture: set BIG"; return 1; }
+    _backend_secrets encrypted set SMALL < "$TEST_TMPDIR/small" >/dev/null 2>&1 || { echo "  FAIL: fixture: set SMALL"; return 1; }
+
+    out=$(USER=tester _backend_secrets keychain migrate-backend keychain --from encrypted 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a migration that left a secret behind exits 1" || return 1
+    assert_eq "Migrating secrets from 'encrypted' to 'keychain'...
+
+Found 2 secret(s) to migrate
+Error: refusing to store BIG in the Keychain: its value is 2015 bytes, over the 2014 bytes a Keychain value can hold under this session and name. Store larger values with the encrypted backend (CS_SECRETS_BACKEND=encrypted).
+  Failed: BIG
+  Migrated: SMALL
+
+Migrated 1 of 2 secret(s) to keychain
+Error: Migration incomplete: only 1 of 2 secret(s) reached keychain" "$out" "the migration shows the store's refusal beside the secret it names" || return 1
+    assert_eq "small" "$(USER=tester _backend_secrets keychain get SMALL 2>&1)" "the secret that fits is in the Keychain" || return 1
+    _backend_secrets encrypted get BIG > "$TEST_TMPDIR/got" 2>/dev/null \
+        || { echo "  FAIL: BIG no longer reads from the encrypted store"; return 1; }
+    _get_matches "$TEST_TMPDIR/got" "$TEST_TMPDIR/over" || { echo "  FAIL: BIG changed in the encrypted store"; return 1; }
+}
+
+# A rename that fails after it has emptied the old name puts each Keychain
+# value back under it. When the Keychain refuses one, the undo shows the
+# store's own refusal before it names the secret and the rerun. K1 is stored
+# the way a cs that passed values on argv stored it: 2015 bytes, over the
+# 2007 the old name's `security -i` line holds, within the 2020 of the new
+# one. The ln on PATH fails, so the move of the pin list, which follows the
+# Keychain entries, is what fails.
+test_a_rename_undo_shows_why_the_keychain_refused_a_value() {
+    _RN_BIN=$(_make_fake_security)
+    local old="a-much-longer-session-name" new="b" shim="$TEST_TMPDIR/ln-shim" out rc=0
+    local old_age="$HOME/.cs-secrets/sessions/a-much-longer-session-name" new_age="$HOME/.cs-secrets/sessions/b"
+    mkdir -p "$CS_SESSIONS_ROOT/$new/.cs" "$old_age" "$shim"
+    head -c 2015 /dev/zero | tr '\0' 'v' > "$TEST_TMPDIR/v"
+    PATH="$_RN_BIN:$PATH" FAKE_SECURITY_STORE="$TEST_TMPDIR/kc-store" \
+        security add-generic-password -a tester -s "cs:$old:K1" -w "$(cat "$TEST_TMPDIR/v")" -U \
+        || { echo "  FAIL: fixture: could not seed K1"; return 1; }
+    printf 'pin-fingerprint\n' > "$old_age/age-trusted"
+    printf '#!/bin/sh\necho "ln: refused" >&2\nexit 1\n' > "$shim/ln"
+    chmod +x "$shim/ln"
+
+    out=$(PATH="$shim:$PATH" USER=tester _kc_secrets --session "$old" rename "$new" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the rename fails: $out" || return 1
+    assert_eq "ln: refused
+Error: Refusing to move the secrets of session '$old' to '$new': could not move $old_age/age-trusted to $new_age/age-trusted
+Error: refusing to store K1 in the Keychain: its value is 2015 bytes, over the 2007 bytes a Keychain value can hold under this session and name. Store larger values with the encrypted backend (CS_SECRETS_BACKEND=encrypted).
+Error: could not move the secrets of session '$old' back from '$new': could not store Keychain secret K1 under '$old' again; rerun: cs -secrets --session $old rename $new" \
+        "$out" "the undo shows the store's refusal for the secret it names" || return 1
+    assert_eq "cs:$new:K1" "$(_kc_services)" "K1 stays under the new name, where it still reads" || return 1
+    mkdir -p "$CS_SESSIONS_ROOT/$new/.cs"
+    USER=tester _kc_secrets --session "$new" get K1 > "$TEST_TMPDIR/got" 2>/dev/null \
+        || { echo "  FAIL: K1 does not read under the new name"; return 1; }
+    _get_matches "$TEST_TMPDIR/got" "$TEST_TMPDIR/v" || { echo "  FAIL: K1 changed"; return 1; }
+}
+
 test_encrypted_set_keeps_value_and_password_off_argv() {
     local bindir="$TEST_TMPDIR/argv-bin"
     local olog="$TEST_TMPDIR/openssl-argv" jlog="$TEST_TMPDIR/jq-argv"
@@ -4013,9 +4363,9 @@ test_set_delete_and_purge_take_the_session_write_lock() {
         for verb in "set K2" "delete K1" "purge"; do
             rc=0
             # shellcheck disable=SC2086  # $verb is a verb and its argument
-            out=$(CS_SECRETS_LOCK_TIMEOUT=0 _backend_secrets "$backend" $verb < "$TEST_TMPDIR/v1" 2>&1) || rc=$?
+            out=$(CS_SECRETS_LOCK_TIMEOUT=1 _backend_secrets "$backend" $verb < "$TEST_TMPDIR/v1" 2>&1) || rc=$?
             assert_eq "1" "$rc" "$backend $verb exits 1: $out" || return 1
-            assert_eq "Error: timed out after 0s acquiring the secrets write lock for session 'test-session' (held by PID 1). If no such process is running, remove: $lock
+            assert_eq "Error: timed out after 1s acquiring the secrets write lock for session 'test-session' (held by PID 1). If no such process is running, remove: $lock
 Error: Refusing to change the secrets of session 'test-session': could not acquire the secrets write lock" "$out" \
                 "$backend $verb names the lock" || return 1
         done
@@ -4036,9 +4386,9 @@ test_rename_takes_the_write_lock_of_both_names() {
         lock="$CS_SESSIONS_ROOT/.secrets-lock.$name"
         printf '1\n' > "$lock"
         rc=0
-        out=$(CS_SECRETS_LOCK_TIMEOUT=0 _kc_secrets --session alpha rename bravo 2>&1) || rc=$?
+        out=$(CS_SECRETS_LOCK_TIMEOUT=1 _kc_secrets --session alpha rename bravo 2>&1) || rc=$?
         assert_eq "1" "$rc" "rename exits 1 while $name's write lock is held: $out" || return 1
-        assert_eq "Error: timed out after 0s acquiring the secrets write lock for session '$name' (held by PID 1). If no such process is running, remove: $lock
+        assert_eq "Error: timed out after 1s acquiring the secrets write lock for session '$name' (held by PID 1). If no such process is running, remove: $lock
 Error: Refusing to move the secrets of session 'alpha' to 'bravo': could not acquire the secrets write locks" "$out" \
             "rename names $name's lock" || return 1
         rm -f "$lock"
@@ -4188,6 +4538,11 @@ run_test test_keychain_export_does_not_require_cs_secrets_dir
 # No secret on a child's argv (audit H3)
 run_test test_keychain_set_keeps_the_value_off_argv
 run_test test_keychain_set_round_trips_a_multiline_quoted_value
+run_test test_keychain_set_refuses_a_value_too_long_for_one_security_line
+run_test test_keychain_set_never_sends_a_line_whose_failure_security_would_hide
+run_test test_keychain_limit_counts_bytes_for_a_non_ascii_account
+run_test test_migrate_backend_shows_why_the_keychain_refused_a_value
+run_test test_a_rename_undo_shows_why_the_keychain_refused_a_value
 run_test test_encrypted_set_keeps_value_and_password_off_argv
 run_test test_encrypted_derived_key_stays_off_argv
 run_test test_sync_export_import_keep_values_off_argv
@@ -4207,6 +4562,12 @@ run_test test_export_on_a_fresh_clone_pins_nothing
 run_test test_age_remove_drops_the_pin
 run_test test_age_add_takes_an_ssh_ed25519_key_file
 run_test test_age_add_takes_a_raw_ssh_ed25519_key
+run_test test_age_add_refuses_a_different_key_under_a_recipient_name_in_use
+run_test test_age_add_refuses_an_age_key_age_does_not_accept
+run_test test_age_add_refuses_an_ssh_key_age_does_not_accept
+run_test test_export_fails_when_age_cannot_encrypt
+run_test test_age_add_gives_each_raw_key_a_free_recipient_name
+run_test test_age_add_without_age_points_at_age_init
 run_test test_age_add_refuses_what_is_not_a_key
 run_test test_import_file_reads_a_file_encrypted_to_this_machines_ssh_key
 run_test test_import_file_still_reads_a_file_encrypted_to_the_earlier_age_key

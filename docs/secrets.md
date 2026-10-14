@@ -15,6 +15,8 @@ The `cs -secrets` command auto-detects the best available backend for the platfo
 
 Override the choice with `CS_SECRETS_BACKEND=keychain|encrypted`.
 
+The Keychain backend has a value limit. cs hands a value to `security` on one command line, so it refuses a value over about 2000 bytes (the exact number depends on the user, session and secret name) and names the limit. Store larger values with the encrypted backend.
+
 **Encrypted File Backend:**
 
 The encrypted file backend uses AES-256-CBC with PBKDF2 key derivation (100,000 iterations). The default key is derived from `USER@hostname` plus a random salt stored in `~/.cs-secrets/.salt`, beside the ciphertext. This provides protection against:
@@ -176,6 +178,11 @@ cs -secrets export-file
   session (`base@task`) or an adopted session's link leaves that state alone:
   a feature session uses its base's secrets. Neither touches the stored secrets
   in the Keychain or the encrypted store; `cs -secrets purge` removes those
+- `age add` needs the age binary and never downloads one; without it, it says to run
+  `cs -secrets age init`. It asks age whether it can encrypt to the key before it writes or
+  pins it, and refuses a key file whose name already belongs to a recipient with a different
+  key. A raw key gets the name `recipient-<seconds>`, with `-2`, `-3` added while another
+  recipient has that name; a raw key some recipient file already holds is that recipient
 - `age add`, `age remove`, `export-file` and `import-file` refuse a session name the sessions
   root does not have (`No session named '<name>' in <root>`), so a removed or
   mistyped name never gets a directory or a pin list. A command already past
@@ -279,7 +286,8 @@ writes its own sync file**, named after its hostname-derived machine id:
 - `.cs/secrets.<machine-id>.age` - age-encrypted, what a machine with age writes
 - `.cs/secrets.<machine-id>.age.sig` - this machine's signature over that file
 - `.cs/secrets.<machine-id>.enc` - password-encrypted (requires `CS_SECRETS_PASSWORD`),
-  what a machine without age writes
+  what a machine without age writes. An export that age cannot encrypt fails with age's
+  error; it never falls back to this file
 
 The `<machine-id>` is `${USER}@<short-hostname>` (the same id used to name age
 recipients under `.cs/age-recipients/`).
@@ -378,4 +386,4 @@ cs -secrets age remove <name>
 - `CS_SECRETS_SESSION` - Overrides the session namespace; worktree feature sessions export it so their secrets land in the base session's store, and `cs <name> -secrets` sets it so an explicit target outranks ambient env
 - `CS_SECRETS_BACKEND` - Force a specific backend (`keychain` or `encrypted`)
 - `CS_SECRETS_PASSWORD` - Master password for legacy sync (only needed if not using age)
-- `CS_SECRETS_LOCK_TIMEOUT` - Seconds to wait for a secrets lock (the write lock, the encrypted store's lock, the age lock) before giving up (default 10)
+- `CS_SECRETS_LOCK_TIMEOUT` - Seconds to wait for a secrets lock (the write lock, the encrypted store's lock, the age lock) before giving up (default 10; a value that is not a positive whole number uses the default)
