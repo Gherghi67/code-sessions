@@ -671,8 +671,9 @@ test_vet_session_refuses_a_session_inside_a_git_directory() {
 }
 
 # With no git to run, cs cannot ask, so it refuses as for any git that cannot
-# answer, and says what is missing rather than repeating the shell's words.
-test_vet_session_says_git_is_missing_when_no_git_is_on_path() {
+# answer, and says why rather than repeating the shell's words: no git on
+# PATH, or a git there that is not executable.
+test_vet_session_says_why_no_git_can_run() {
     local s="$CLAUDE_SESSION_DIR" out rc=0 bindir="$TEST_TMPDIR/no-git-bin"
     _arm_handoff no
     # The system directories alone hold every tool cs needs; linking the
@@ -682,6 +683,13 @@ test_vet_session_says_git_is_missing_when_no_git_is_on_path() {
     assert_eq "1" "$rc" "cs -vet-session refuses" || return 1
     assert_eq "Error: cs could not ask git whether it tracks a file in .cs/local: git is not installed or not on PATH" \
         "$out" "and says git is missing" || return 1
+    printf '#!/bin/sh\nexit 0\n' > "$bindir/git"
+    chmod 644 "$bindir/git"
+    rc=0
+    out=$(env -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR PATH="$bindir" "$BASH" "$CS_BIN" -vet-session "$s" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "cs -vet-session refuses with a git it cannot run" || return 1
+    assert_eq "Error: cs could not ask git whether it tracks a file in .cs/local: git was found on PATH but could not be run" \
+        "$out" "and says git cannot be run" || return 1
 }
 
 # A session named relative to the current directory is named that way in the
@@ -1195,7 +1203,7 @@ run_test test_vet_session_passes_a_session_in_no_repository_while_git_traces
 run_test test_vet_session_refuses_a_session_inside_a_git_directory
 run_test test_vet_session_refuses_a_checkout_git_reads_as_bare
 run_test test_vet_session_names_a_relative_session_from_the_current_directory
-run_test test_vet_session_says_git_is_missing_when_no_git_is_on_path
+run_test test_vet_session_says_why_no_git_can_run
 run_test test_vet_session_passes_a_session_whose_control_files_git_ignores
 run_test test_vet_session_judges_the_directory_it_is_given
 run_test test_vet_session_refuses_a_directory_that_is_no_session
