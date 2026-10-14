@@ -9,10 +9,59 @@ _REMOTE_MIN_CLAUDE_VERSION="2.1.299"
 # The absolute path of the claude remote-control is run by, in
 # _CS_REMOTE_BIN. remote-control refuses root options before its verb, and
 # the mode of the sessions it starts is --remote's own --permission-mode, so
-# remote-control runs with CLAUDE_CODE_BIN's command word alone: whatever
-# CLAUDE_CODE_BIN carries after it is dropped, and one line on stderr names
-# it, before anything is opened.
+# remote-control runs with CLAUDE_CODE_BIN's command word alone. The options
+# CLAUDE_CODE_BIN carries after it that set or loosen the permission mode
+# are dropped, and one line on stderr names them; any other option is
+# refused by name, since the sessions remote-control starts would run without
+# it. Both come before anything is opened.
 _CS_REMOTE_BIN=""
+
+# True when <mode> is one Claude Code 2.1.299's --permission-mode accepts.
+_remote_is_claude_permission_mode() {  # mode
+    case "$1" in
+        acceptEdits|auto|bypassPermissions|default|dontAsk|plan|manual) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# The words of <words> --remote cannot drop, one blank apart; empty when each
+# one sets or loosens the permission mode. These are the options Claude Code
+# 2.1.299's parser has for that: --permission-mode and
+# --inherit-permission-mode take the next word, or the value after "=",
+# --dangerously-skip-permissions, --allow-dangerously-skip-permissions and
+# --enable-auto-mode take none. A mode option's value must be one of
+# claude's modes, else the option and its value are kept, so a value that
+# is an option is never dropped with it; a mode option with no word after it
+# is dropped.
+_remote_kept_options() {  # words...
+    local kept=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --dangerously-skip-permissions|--allow-dangerously-skip-permissions|--enable-auto-mode)
+                shift
+                ;;
+            --permission-mode=*|--inherit-permission-mode=*)
+                _remote_is_claude_permission_mode "${1#*=}" || kept="$kept $1"
+                shift
+                ;;
+            --permission-mode|--inherit-permission-mode)
+                if [ $# -eq 1 ]; then
+                    shift
+                elif _remote_is_claude_permission_mode "$2"; then
+                    shift 2
+                else
+                    kept="$kept $1 $2"
+                    shift 2
+                fi
+                ;;
+            *)
+                kept="$kept $1"
+                shift
+                ;;
+        esac
+    done
+    printf '%s' "${kept# }"
+}
 
 # True when dotted version <have> is <want> or later, compared field by field
 # as numbers (2.1.1000 is later than 2.1.299). Both are three dot-separated
@@ -30,14 +79,21 @@ _version_at_least() {  # have, want
 
 # Resolve and vet the claude that runs remote-control; sets _CS_REMOTE_BIN.
 # check_dependencies has already found the command word on PATH. The text
-# after the command word is named as written, blanks around it trimmed, and
-# when there is any, the word's --version must name Claude Code. The tmux
-# window is handed _CS_REMOTE_BIN, with nothing after it, so its run drops
-# nothing and the line is printed once, on the caller's terminal.
+# after the command word is split into words as every launch site splits
+# CLAUDE_CODE_BIN, on IFS with globs off, so a quote is a character of a
+# word; a word it cannot drop is named in the refusal. Dropped text is named
+# as written, blanks around it trimmed, and when there is any, the word's
+# --version must name Claude Code. The tmux window is handed _CS_REMOTE_BIN,
+# with nothing after it, so its run drops nothing and the line is printed
+# once, on the caller's terminal.
 _remote_claude_bin() {
-    local word rest found output version rc=0
+    local word rest kept found output version rc=0
     word=$(_claude_bin_word)
     rest=$(_trim "${CLAUDE_CODE_BIN#*"$word"}")
+    # shellcheck disable=SC2086
+    kept=$(set -f; _remote_kept_options $rest)
+    [ -z "$kept" ] \
+        || error "CLAUDE_CODE_BIN carries $kept, which cs --remote cannot pass to $word remote-control: it drops only the options that set the permission mode, which --remote's --permission-mode replaces. Set CLAUDE_CODE_BIN to the command alone, or with only permission options, for --remote."
     [ -z "$rest" ] \
         || warn "cs --remote runs $word remote-control without the rest of CLAUDE_CODE_BIN; --remote's own --permission-mode sets the permission mode of the sessions it starts. Dropped: $rest" >&2
     found=$(command -v -- "$word") || error "cs --remote cannot find $word on PATH"
@@ -48,9 +104,10 @@ _remote_claude_bin() {
     output=$("$found" --version 2>/dev/null) || rc=$?
     [ "$rc" -eq 0 ] \
         || error "cs --remote needs Claude Code $_REMOTE_MIN_CLAUDE_VERSION or later for claude remote-control; $found --version exited with status $rc."
-    # With options dropped, the command word can be a wrapper in front of
-    # claude (op run -- claude), whose own --version can pass the floor by
-    # number; Claude Code's --version carries its name.
+    # With options dropped, the command word can be a program other than
+    # claude carrying permission options alone (op --permission-mode plan),
+    # whose own --version can pass the floor by number; Claude Code's
+    # --version carries its name.
     if [ -n "$rest" ]; then
         case "$output" in
             *"(Claude Code)"*) ;;
