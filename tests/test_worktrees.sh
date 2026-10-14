@@ -1395,6 +1395,22 @@ test_feature_of_an_adopted_base_recorded_ignored_keeps_cs_out_of_git() {
     assert_eq "feature finding" "$(cat "$dir/.cs/memory/note-feature.md")" "the feature's record reached the base" || return 1
 }
 
+# A project that ignores .cs itself gets ignored-mode features with no hand
+# edit, once the user commits the rules adopt added to its .gitignore.
+test_feature_of_an_adopted_base_that_ignores_cs_is_ignored() {
+    local dir="$TEST_TMPDIR/proj" out
+    mkdir -p "$dir"
+    printf '.cs/\n' > "$dir/.gitignore"
+    (cd "$dir" && git init -q && git config core.autocrlf false && git add .gitignore && git commit -q -m init)
+    (cd "$dir" && "$CS_BIN" -adopt proj < /dev/null > /dev/null 2>&1) || { echo "  FAIL: adopt fixture"; return 1; }
+    dir=$(cd "$dir" && pwd -P)
+    (cd "$dir" && git commit -q -m "cs rules" -- .gitignore) || { echo "  FAIL: commit fixture"; return 1; }
+
+    out=$("$CS_BIN" proj@t1 < /dev/null 2>&1) || { echo "  FAIL: the feature was refused: $out"; return 1; }
+
+    assert_file_contains "$CS_SESSIONS_ROOT/proj@t1/.cs/local/state" '^cs_mode: ignored$' "the feature is ignored" || return 1
+}
+
 # A session adopted before adopt recorded a mode, with .cs untracked, keeps
 # the inference from the index: the feature is ignored.
 test_feature_of_a_base_with_no_recorded_mode_infers_it() {
@@ -1490,6 +1506,7 @@ run_test test_feature_of_an_adopted_base_waits_for_git_to_carry_cs
 run_test test_feature_of_an_adopted_base_is_tracked_once_cs_is_committed
 run_test test_feature_is_tracked_once_git_tracks_cs_whatever_the_record_says
 run_test test_feature_of_an_adopted_base_recorded_ignored_keeps_cs_out_of_git
+run_test test_feature_of_an_adopted_base_that_ignores_cs_is_ignored
 run_test test_feature_of_a_base_with_no_recorded_mode_infers_it
 run_test test_feature_refuses_a_recorded_mode_it_does_not_know
 run_test test_feature_of_a_base_with_no_commit_is_refused

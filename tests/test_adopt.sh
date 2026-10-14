@@ -627,6 +627,20 @@ test_adopt_into_git_repo_leaves_its_files_untracked() {
         "the session records that git is to carry .cs" || return 1
 }
 
+# A project whose own rules already keep .cs out of git has said what its
+# features need: adopt records ignored, so they are not refused.
+test_adopt_into_a_repo_that_ignores_cs_records_ignored() {
+    local project_dir="$TEST_TMPDIR/my-project"
+    mkdir -p "$project_dir"
+    printf '.cs/\n' > "$project_dir/.gitignore"
+    (cd "$project_dir" && git init -q && git config user.email a@b.c && git config user.name A && git add .gitignore && git commit -q -m "initial")
+
+    (cd "$project_dir" && "$CS_BIN" -adopt my-session >/dev/null 2>&1)
+
+    assert_eq "ignored" "$(awk -F': ' '/^cs_mode:/{print $2}' "$project_dir/.cs/local/state")" \
+        "the session records that .cs stays out of git" || return 1
+}
+
 # Re-adopted records keep the mode the user chose for the session's features.
 test_readopt_keeps_a_recorded_cs_mode() {
     local project_dir="$TEST_TMPDIR/my-project"
@@ -1388,6 +1402,7 @@ run_test test_adopt_inits_git_when_none_exists
 run_test test_adopt_into_git_repo_leaves_its_files_untracked
 run_test test_adopt_leaves_the_users_staged_work_alone
 run_test test_readopt_keeps_a_recorded_cs_mode
+run_test test_adopt_into_a_repo_that_ignores_cs_records_ignored
 
 # First launch after adopt
 run_test test_first_launch_after_adopt_starts_fresh_without_asking
