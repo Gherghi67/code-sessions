@@ -5391,4 +5391,34 @@ mod tests {
         assert!(rows[2 + expected.len()].starts_with("[y] Confirm"), "32 warned: {rows:?}");
         std::fs::remove_dir_all(&root).ok();
     }
+
+    // When the screen leaves the warnings one row, the confirm spends it on
+    // the count rather than on the blank row above it, so warnings that exist
+    // are never hidden while [D] and [y] show. At 80x10 the batch confirm with
+    // the [D] grant leaves exactly one.
+    #[test]
+    fn batch_delete_confirm_counts_its_warnings_in_the_one_row_left() {
+        let root = std::env::temp_dir().join(format!("cs-ui-batch-one-row-{}", std::process::id()));
+        let names = warned_worktrees(&root, 2);
+        let marked: Vec<&str> = names.iter().map(String::as_str).collect();
+
+        let rows = delete_confirm_rows_of(&root, &marked, 80, 10, "Delete 2 sessions?");
+
+        assert_eq!(
+            rows[..7],
+            [
+                "Delete 2 sessions?",
+                "proj@t01, proj@t02",
+                "... and 2 more warnings",
+                "",
+                "[D] Delete those files too: no",
+                "",
+                "This cannot be undone.",
+            ],
+            "{}",
+            rows.join("\n")
+        );
+        assert!(rows[7].starts_with("[y] Confirm"), "the key hint stays on screen: {rows:?}");
+        std::fs::remove_dir_all(&root).ok();
+    }
 }
