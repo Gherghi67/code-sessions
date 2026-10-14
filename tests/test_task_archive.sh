@@ -283,25 +283,26 @@ test_claude_config_dir_moves_the_store() {
     assert_eq "2" "$(_live_ids)" "the row moved out of the config dir's store" || return 1
 }
 
-# An encrypted session keeps its content in the vault behind .cs/private; task
-# text is session content, so its archive goes there too, and a locked vault
-# (a link to a missing directory) refuses rather than write plaintext.
+# An encrypted session keeps its content in the vault behind .cs/private (cs
+# -encrypt links it to vault-mnt/private, the mounted volume); task text is
+# session content, so its archive goes there too, and a locked vault (the
+# volume detached, the link dangling) refuses rather than write plaintext.
 test_an_encrypted_session_archives_into_its_vault() {
-    mkdir -p "$TEST_TMPDIR/vault"
-    ln -s "$TEST_TMPDIR/vault" "$SESSION_DIR/.cs/private"
+    mkdir -p "$SESSION_DIR/.cs/vault-mnt/private"
+    ln -s vault-mnt/private "$SESSION_DIR/.cs/private"
     _row 1 completed "One"
     _row 2 pending "Two"
     _agree || return 1
     local out day
     out=$("$CS_BIN" -archive-tasks run 2>&1) || { echo "  FAIL: run failed: $out"; return 1; }
-    day=$(ls "$TEST_TMPDIR/vault/task-archive")
+    day=$(ls "$SESSION_DIR/.cs/vault-mnt/private/task-archive")
     assert_eq "Archived 1 completed task row to .cs/private/task-archive/$day" "$out" "the vault path is reported" || return 1
-    assert_exists "$TEST_TMPDIR/vault/task-archive/$day/json/1.json" "the row is in the vault" || return 1
+    assert_exists "$SESSION_DIR/.cs/vault-mnt/private/task-archive/$day/json/1.json" "the row is in the vault" || return 1
     assert_not_exists "$SESSION_DIR/.cs/task-archive" "nothing is written in plaintext" || return 1
 }
 
 test_a_locked_vault_refuses_the_run() {
-    ln -s "$TEST_TMPDIR/unmounted" "$SESSION_DIR/.cs/private"
+    ln -s vault-mnt/private "$SESSION_DIR/.cs/private"
     _row 1 completed "One"
     _row 2 pending "Two"
     _agree || return 1
