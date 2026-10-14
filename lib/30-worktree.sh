@@ -723,6 +723,14 @@ _resolve_session_dir() {
     printf '%s\n' "$dir"
 }
 
+# Refuse a base whose HEAD names no commit: a folder cs -adopt ran git init
+# in has none until the user makes one, and git would make a feature of it an
+# orphan branch, then fail on HEAD when landing it.
+_require_base_commit() {  # base_dir base_name
+    git -C "$1" rev-parse -q --verify 'HEAD^{commit}' >/dev/null 2>&1 \
+        || error "Session '$2' has no commit yet, so a feature has nothing to branch from or land on. Make a first commit in $1 (cs commits nothing for you), then try again."
+}
+
 # Gate worktree creation on the base checkout's tracked state. Runs in the
 # main shell so a declined consent can exit cs cleanly (the creator is
 # command-substituted, where an exit only leaves the subshell). Clean base
@@ -732,6 +740,7 @@ _resolve_session_dir() {
 confirm_clean_worktree_base() {
     local base_dir="$1" base_name="$2"
     git -C "$base_dir" rev-parse --git-dir >/dev/null 2>&1 || return 0
+    _require_base_commit "$base_dir" "$base_name"
     _tree_is_dirty "$base_dir" || return 0
     if cs_interactive; then
         printf '\n    %b⚠%b  %s has uncommitted changes; the feature branches from the\n       last commit and will not include them.\n' \
@@ -762,6 +771,7 @@ create_worktree_session() {
     if [ -f "$base_dir/.git" ]; then
         error "Session '$base_name' is itself a worktree; create features from the main checkout"
     fi
+    _require_base_commit "$base_dir" "$base_name"
     # Who carries .cs from the feature back to the base: git (tracked) or the
     # record fuse (ignored). Git's answer wins once it tracks .cs. Otherwise a
     # mode the base records decides (adopt records tracked, since it commits
@@ -1065,6 +1075,7 @@ retire_feature_worktree() {  # base_name task sha [--force]
     [ -d "$base_dir" ] || error "Base session not found: $base_name"
     [ -d "$wt_dir" ] || error "No worktree for feature '$task' (expected $wt_dir)"
     _finish_progress_begin "$base_dir" "$task"
+    _require_base_commit "$base_dir" "$base_name"
 
     local wt_name="$base_name@$task"
     if [ "${CLAUDE_SESSION_NAME:-}" = "$wt_name" ]; then
@@ -1482,6 +1493,7 @@ integrate_feature_worktree() {  # base_name task sha [--from-remote [--ci-green]
     [ -d "$base_dir" ] || error "Base session not found: $base_name"
     [ -d "$wt_dir" ] || error "No worktree for feature '$task' (expected $wt_dir)"
     _finish_progress_begin "$base_dir" "$task"
+    _require_base_commit "$base_dir" "$base_name"
     # Herestring, not a pipe: grep -q's early exit would SIGPIPE the writer
     # and pipefail would read that as "not registered".
     local features
