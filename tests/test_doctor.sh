@@ -62,6 +62,23 @@ test_doctor_reports_pass_for_healthy_session() {
     assert_output_contains "$output" "OK" "healthy session should show OK status" || return 1
 }
 
+# .cs/memory is tracked, so a clone chooses a narrative's file name, and the
+# name can carry a terminal escape: a raw ESC or BEL byte, or backslash text
+# echo -e would turn into one. The warning names it as a plain name, each
+# character a plain name lacks replaced by _.
+test_doctor_names_a_narrative_over_budget_as_a_plain_name() {
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m output msg
+    { echo "# Session narrative"; head -c 3000 /dev/zero | tr '\0' 'x'; echo; } \
+        > "$CLAUDE_SESSION_META_DIR/memory/narrative.a$bad.md"
+    output=$(CS_NARRATIVE_MAX_BYTES=2048 "$CS_BIN" -doctor 2>&1) || true
+    # The [WARN] tag before the message carries cs's own colours.
+    msg=$(grep 'Narrative: narrative\.a' <<< "$output")
+    msg="Narrative: ${msg#*Narrative: }"
+    assert_eq "Narrative: narrative.a$shown.md is 2 KB (budget 2 KB) — run cs -narrative rotate" "$msg" \
+        "the warning names the narrative as a plain name" || return 1
+    assert_no_escape_bytes "$msg" "no escape byte reaches the terminal" || return 1
+}
+
 test_doctor_warns_on_a_narrative_over_budget() {
     local nf="$CLAUDE_SESSION_META_DIR/memory/narrative.alice.md"
     { echo "# Session narrative (alice)"; head -c 3000 /dev/zero | tr '\0' 'x'; echo; } > "$nf"
@@ -1015,6 +1032,7 @@ run_test test_doctor_subcommand_exists
 run_test test_doctor_runs_default_checks_from_session
 run_test test_doctor_reports_pass_for_healthy_session
 run_test test_doctor_warns_on_a_narrative_over_budget
+run_test test_doctor_names_a_narrative_over_budget_as_a_plain_name
 run_test test_doctor_reads_a_leading_zero_budget_as_decimal
 run_test test_doctor_reports_ok_when_narratives_fit
 run_test test_doctor_survives_an_unreadable_narrative
