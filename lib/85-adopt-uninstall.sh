@@ -332,6 +332,15 @@ adopt_session() {  # name, [--yes|-y], in any order
     # (hooks/cs-resolve.sh's _cs_session_name).
     _set_local_state "$target_dir/.cs/local/state" session_name "$session_name"
 
+    # Adopt commits nothing, so git tracks no .cs until the user commits it,
+    # and a feature that inferred its mode from that would hide the base's
+    # .cs through the common info/exclude. Recorded instead: the user's
+    # features expect git to carry .cs (create_worktree_session reads this),
+    # until the user records ignored. Re-adopted records keep their choice.
+    if [ -z "$(_read_local_state "$target_dir/.cs/local/state" cs_mode)" ]; then
+        _set_local_state "$target_dir/.cs/local/state" cs_mode tracked
+    fi
+
     # A project Claude Code already ran in has said what it is about: its
     # newest conversation's first prompt becomes the Objective, the line the
     # picker previews and searches. The prompt hook does the same for a live
@@ -366,25 +375,12 @@ adopt_session() {  # name, [--yes|-y], in any order
         )
         _explain_nothing_committed "$target_dir" .cs .gitignore .gitattributes
     else
-        # Merge cs's .gitignore entries into the project's existing .gitignore
+        # The project's own repo: cs merges its rules and attributes into the
+        # working tree and never touches the index, so whatever the user had
+        # staged stays staged and nothing is committed.
         ensure_cs_gitignore_entries "$target_dir"
-
-        # Commit the adoption
-        (
-            cd "$target_dir" || exit 0
-            setup_merge_attributes "$target_dir"
-            git add .cs/ .gitignore .gitattributes 2>/dev/null || true
-            # The commit names its own paths: this runs inside the user's
-            # project repo, and a bare `git commit` would sweep whatever they
-            # had staged into a commit titled "Adopt as cs session". The
-            # --cached check is scoped the same way, or a user's unrelated
-            # staged file would make cs commit when it has nothing to say.
-            # (`git commit -- <paths>` only matches TRACKED paths, so the add
-            # above is what makes the new .cs files eligible.)
-            if ! git diff --cached --quiet -- .cs/ .gitignore .gitattributes 2>/dev/null; then
-                git commit -q -m "Adopt as cs session: $session_name" -- .cs/ .gitignore .gitattributes 2>/dev/null || true
-            fi
-        )
+        setup_merge_attributes "$target_dir"
+        _explain_nothing_committed "$target_dir" .cs .gitignore .gitattributes
     fi
 
     info "Adopted $(basename "$target_dir") as session '$session_name'"
