@@ -1,0 +1,1313 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mods Design Lab</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+:root{
+  --page:#EFE9E0; --panel:#F7F3EC; --line:#D8D0C4; --fg:#2B2620; --fg2:#7A7065;
+  --term:#F6F2EA; --term-fg:#2E2A26; --surface:#E3DCD2; --ink:#4F4A44; --ink2:#7D766E;
+  --coral:#D97757; --amber:#B45309; --crit:#D70015; --hot:#5769F7; --neutral:#2E2A26;
+  --claude:#D97757; --warning:#B8860B; --error:#C62828; --texttok:#2E2A26;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --page:#1B1917; --panel:#232019; --line:#3A352F; --fg:#EDE7DF; --fg2:#A39A8F;
+  --term:#1E1B18; --term-fg:#E6E1DA; --surface:#8C847A; --ink:#F2EEE8; --ink2:#DCD6CE;
+  --amber:#FDE68A; --crit:#FF453A; --hot:#929EFA; --neutral:#E6E1DA;
+  --warning:#F0C349; --error:#FF6B6B; --texttok:#E6E1DA;
+}}
+:root[data-theme="dark"]{
+  --page:#1B1917; --panel:#232019; --line:#3A352F; --fg:#EDE7DF; --fg2:#A39A8F;
+  --term:#1E1B18; --term-fg:#E6E1DA; --surface:#8C847A; --ink:#F2EEE8; --ink2:#DCD6CE;
+  --amber:#FDE68A; --crit:#FF453A; --hot:#929EFA; --neutral:#E6E1DA;
+  --warning:#F0C349; --error:#FF6B6B; --texttok:#E6E1DA;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--page);color:var(--fg);font:14px/1.5 "IBM Plex Sans",system-ui,sans-serif;padding-block:28px;padding-inline:clamp(16px,4vw,48px)}
+h1{font-size:22px;font-weight:600;margin:0 0 4px;letter-spacing:-.01em}
+.sub{color:var(--fg2);margin:0 0 18px;max-width:72ch}
+.top{display:flex;gap:18px;align-items:center;flex-wrap:wrap;margin-bottom:22px}
+.top label{display:flex;gap:8px;align-items:center;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--fg2)}
+select,input[type=text],input[type=number],textarea{font:inherit;color:var(--fg);background:var(--term);border:1px solid var(--line);padding:6px 8px;text-transform:none;letter-spacing:0}
+textarea{font:12.5px/1.45 "JetBrains Mono",ui-monospace,monospace;width:100%;min-height:90px}
+input[type=range]{padding:0}
+nav.toc{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 26px}
+nav.toc a{font-size:12px;text-decoration:none;color:var(--fg);background:var(--panel);border:1px solid var(--line);padding:4px 10px;border-radius:999px}
+nav.toc a:hover{border-color:var(--coral)}
+h2{font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--fg2);margin:34px 0 10px}
+h2 .src{font-weight:400;text-transform:none;letter-spacing:0;margin-left:10px;font-family:"JetBrains Mono",monospace;font-size:11.5px}
+h3{font-size:15px;font-weight:600;margin:0 0 6px}
+.lab{display:grid;grid-template-columns:280px 1fr;gap:24px;align-items:start;margin-bottom:10px}
+@media (max-width:860px){.lab{grid-template-columns:1fr}}
+.controls{background:var(--panel);border:1px solid var(--line);padding:14px;display:flex;flex-direction:column;gap:11px}
+.controls label{display:flex;flex-direction:column;gap:4px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--fg2)}
+.controls label.inline{flex-direction:row;align-items:center;gap:6px;text-transform:none;letter-spacing:0;font-size:13px;color:var(--fg)}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.term{background:var(--term);color:var(--term-fg);font:15px/1.35 "JetBrains Mono",ui-monospace,Menlo,monospace;padding:18px 20px 14px;border:1px solid var(--line);white-space:pre;overflow-x:auto}
+.term .dim{opacity:.55}
+.term .prompt{margin-top:8px}
+.term .rule{color:var(--line)}
+.term .hov:hover{filter:brightness(1.12) saturate(1.2)}
+.term .cell{display:inline-block;width:1ch}
+.bar{margin-top:6px;color:var(--ink2)}
+.bar .cap{background:var(--surface);color:var(--ink);padding:0 2px}
+.cap-caps{color:var(--surface)}
+pre.spec{background:var(--panel);border:1px solid var(--line);padding:12px 14px;font:12.5px/1.5 "JetBrains Mono",ui-monospace,monospace;overflow-x:auto;margin:10px 0 0;white-space:pre-wrap}
+.gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:14px}
+.card{background:var(--panel);border:1px solid var(--line);padding:12px;cursor:pointer;display:flex;flex-direction:column;gap:8px}
+.card:hover,.card:focus-visible{border-color:var(--coral);outline:none}
+.card.active{border-color:var(--coral);box-shadow:inset 0 0 0 1px var(--coral)}
+.card .term{padding:12px 14px;font-size:13px}
+.card .name{font-weight:600;font-size:13px}
+.card .why{color:var(--fg2);font-size:12px;margin:0}
+.notes{font-size:13px;color:var(--fg2);max-width:78ch;padding-left:18px}
+.notes li{margin:3px 0}
+.notes code,p code,td code,li code{font:12px "JetBrains Mono",monospace;background:var(--panel);padding:0 4px;border:1px solid var(--line)}
+table.props{border-collapse:collapse;width:100%;font-size:12.5px;background:var(--panel);border:1px solid var(--line)}
+table.props th,table.props td{text-align:left;padding:6px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+table.props th{font-weight:600;color:var(--fg2);font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+table.props td:first-child{font-family:"JetBrains Mono",monospace;white-space:nowrap}
+.swatches{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
+.sw{background:var(--panel);border:1px solid var(--line);padding:8px;font-size:12px}
+.sw .chip{height:22px;border:1px solid var(--line);margin-bottom:6px;display:flex}
+.sw .chip span{flex:1}
+.sw .k{font-family:"JetBrains Mono",monospace}
+.sw .v{color:var(--fg2);font-size:11px}
+.tabs{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:10px}
+.tabs button{font:inherit;font-size:12.5px;background:var(--panel);color:var(--fg);border:1px solid var(--line);padding:5px 10px;cursor:pointer}
+.tabs button.on{border-color:var(--coral);box-shadow:inset 0 0 0 1px var(--coral)}
+.site{display:none}.site.on{display:block}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:start}
+.screen{background:var(--term);color:var(--term-fg);font:13px/1.4 "JetBrains Mono",ui-monospace,Menlo,monospace;border:1px solid var(--line);padding:0;white-space:pre;overflow-x:auto;margin:0 0 18px;max-width:100%}
+.screen .titlebar{font:11.5px "IBM Plex Sans",sans-serif;color:var(--fg2);background:var(--panel);border-bottom:1px solid var(--line);padding:5px 10px;display:flex;gap:6px;align-items:center;white-space:normal}
+.screen .titlebar i{width:9px;height:9px;border-radius:50%;background:var(--line);display:inline-block}
+.screen .body{padding:10px 12px 8px;display:grid;grid-template-columns:1fr;gap:0}
+.screen .body.docked{grid-template-columns:minmax(0,1fr) 34%;column-gap:10px}
+.screen .site{display:block;padding:1px 4px;margin:1px -4px;border:1px solid transparent;border-radius:2px;opacity:.42;transition:opacity .2s ease-out,border-color .2s ease-out,background .2s ease-out}
+.screen .site.on{opacity:1;border-color:var(--coral);background:color-mix(in srgb,var(--coral) 8%,transparent)}
+.screen .site .tag{float:right;font:10px "IBM Plex Sans",sans-serif;color:var(--coral);letter-spacing:.06em;text-transform:uppercase;opacity:0;margin-left:8px}
+.screen .site.on .tag{opacity:1}
+.screen .dimline{opacity:.42}
+.screen .pane{border:1px solid var(--line);padding:4px 6px;align-self:start;grid-column:2;grid-row:1}
+.screen .body.docked > div:first-child{grid-column:1;grid-row:1;min-width:0;overflow:hidden}
+.screen .cap{background:var(--surface);color:var(--ink);padding:0 2px}
+@media (prefers-reduced-motion:reduce){.screen .site{transition:none}}
+@media (max-width:860px){.two{grid-template-columns:1fr}}
+.b{font-weight:700}
+.ok{color:#2C7A39}.no{color:var(--error)}
+details summary{cursor:pointer;font-weight:600;font-size:13px}
+
+/* ---- shell: rail + stage, one panel on screen ---- */
+body{padding:0}
+.shell{display:grid;grid-template-columns:232px 1fr;min-height:100vh}
+.rail{position:sticky;top:0;height:100vh;overflow-y:auto;border-right:1px solid var(--line);padding:22px 12px;display:flex;flex-direction:column;gap:2px;background:var(--page)}
+.rail .grp{font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--fg2);margin:14px 8px 4px}
+.rail .grp:first-child{margin-top:0}
+.rail a{display:flex;align-items:baseline;gap:8px;padding:6px 8px;border-radius:4px;color:var(--fg);text-decoration:none;font-size:13.5px;border:1px solid transparent;transition:background .12s ease-out,border-color .12s ease-out}
+.rail a:hover{background:var(--panel)}
+.rail a.on{background:var(--panel);border-color:var(--line);box-shadow:inset 2px 0 0 var(--coral)}
+.rail a .hk{font:12px "JetBrains Mono",monospace;color:var(--hot);min-width:1.2ch}
+.rail a.on .hk{color:var(--coral)}
+.rail a .cnt{margin-left:auto;font-size:11px;color:var(--fg2)}
+.stage{min-width:0}
+.head{position:sticky;top:0;z-index:5;background:var(--page);border-bottom:1px solid var(--line);padding:14px clamp(16px,3vw,40px) 10px;display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 18px}
+.head h1{margin:0;font-size:18px}
+.head .sub{margin:0;font-size:12.5px;flex:1 1 320px}
+.head .top{flex-basis:100%}
+.top{margin-bottom:0}
+.keys{margin-left:auto;font-size:11.5px;color:var(--fg2)}
+kbd{font:11px "JetBrains Mono",monospace;background:var(--panel);border:1px solid var(--line);border-bottom-width:2px;border-radius:3px;padding:0 5px}
+.content{padding:6px clamp(16px,3vw,40px) 60px}
+.panel{display:none}
+.panel.on{display:block;animation:panelIn .2s cubic-bezier(.16,1,.3,1)}
+@keyframes panelIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.panel h2{margin-top:20px}
+.lab{grid-template-columns:280px minmax(0,1fr)}
+.lab > div:last-child{position:sticky;top:calc(var(--head-h,96px) + 12px);max-height:calc(100vh - var(--head-h,96px) - 24px);overflow-y:auto}
+.controls{max-height:calc(100vh - var(--head-h,96px) - 24px);overflow-y:auto;position:sticky;top:calc(var(--head-h,96px) + 12px)}
+.term{transition:box-shadow .25s ease-out}
+.term.tick{box-shadow:0 0 0 2px var(--coral) inset}
+.specwrap{position:relative}
+.specwrap pre.spec{padding-right:72px}
+.panel h2{scroll-margin-top:calc(var(--head-h,96px) + 12px)}
+.copy{position:absolute;top:8px;right:8px;font:11.5px "IBM Plex Sans",sans-serif;background:var(--page);color:var(--fg2);border:1px solid var(--line);padding:3px 8px;cursor:pointer;border-radius:3px;transition:color .12s,border-color .12s}
+.copy:hover{color:var(--fg);border-color:var(--coral)}
+.copy.done{color:var(--coral);border-color:var(--coral)}
+.finder{position:fixed;inset:auto 0 0 0;margin:0 auto;bottom:24px;width:min(560px,90vw);background:var(--panel);border:1px solid var(--line);box-shadow:0 12px 32px rgba(0,0,0,.18);z-index:9;display:none;padding:8px}
+.finder.on{display:block;animation:panelIn .18s cubic-bezier(.16,1,.3,1)}
+.finder input{width:100%;font-size:14px}
+.finder .hits{max-height:40vh;overflow:auto;margin-top:6px}
+.finder .hit{display:flex;gap:10px;padding:6px 8px;cursor:pointer;font-size:13px;border-radius:3px}
+.finder .hit:hover,.finder .hit.on{background:var(--page)}
+.finder .hit code{border:0;background:none;padding:0}
+.finder .hit .where{margin-left:auto;color:var(--fg2);font-size:12px}
+@media (max-width:900px){.shell{grid-template-columns:1fr}.rail{position:static;height:auto;flex-direction:row;flex-wrap:wrap;border-right:0;border-bottom:1px solid var(--line)}.rail .grp{display:none}.lab > div:last-child{position:static}.controls{max-height:none}}
+@media (prefers-reduced-motion:reduce){.panel.on,.finder.on{animation:none}.term,.rail a,.copy{transition:none}}
+/* ---- compose ---- */
+.compose{display:grid;grid-template-columns:minmax(220px,300px) 1fr;gap:18px;align-items:start}
+.compose .tree{border:1px solid var(--line);border-radius:10px;padding:8px;background:var(--panel)}
+.compose .tree ul{list-style:none;margin:0;padding:0 0 0 14px}
+.compose .tree>ul{padding-left:0}
+.compose .node{display:flex;align-items:center;gap:6px;width:100%;text-align:left;border:1px solid transparent;border-radius:6px;padding:3px 6px;background:none;color:var(--fg);font:inherit;font-size:13px;cursor:pointer}
+.compose .node:hover{border-color:var(--line)}
+.compose .node.on{border-color:var(--accent);background:var(--panel2,rgba(127,127,127,.12))}
+.compose .node .ty{font-weight:600}
+.compose .node .sum{color:var(--fg2);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.compose .treebar{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.compose .treebar button{font:inherit;font-size:12px;padding:3px 8px;border:1px solid var(--line);border-radius:6px;background:var(--page);color:var(--fg);cursor:pointer}
+.compose .treebar button:hover{border-color:var(--accent)}
+.compose .insp{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px 14px;margin-bottom:14px}
+.compose .insp label{display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--fg2)}
+.compose .insp label.inline{flex-direction:row;align-items:center;gap:6px}
+.compose .refuse{border-left:3px solid var(--error);padding:6px 10px;margin:0 0 12px;color:var(--error);font-size:13px}
+
+</style>
+
+<div class="shell">
+<aside class="rail" id="rail"></aside>
+<div class="stage">
+<header class="head">
+<h1>Mods Design Lab</h1>
+<p class="sub">Everything a Claude Code mod can draw on the terminal, from the contract shipped with 2.1.273. Pick a panel, move a knob, copy the JSX.</p>
+
+<div class="top">
+  <label>Theme <select id="theme"><option value="light">light (cream terminal)</option><option value="dark">dark</option></select></label>
+  <label>Columns <input id="cols" type="number" min="40" max="200" value="80" style="width:70px"></label>
+  <span class="sub" style="margin:0;font-size:12px" title="~/.claude/plugins/marketplaces/claude-code-plugins/mods/types/claude-code.d.ts and the 2.1.273 binary (border glyphs, palette)">Source: <code>claude-code.d.ts</code> + binary</span>
+  <span class="keys" aria-hidden="true">↑↓ or hotkey switches panels · <kbd>t</kbd> theme · <kbd>/</kbd> find a prop</span>
+</div>
+</header>
+
+<main class="content">
+
+<!-- ============================== COMPOSE ============================== -->
+<section class="panel" id="p-compose">
+<h2 id="compose">Compose a band <span class="src">Box · Text · Button</span></h2>
+<p class="sub">Build the tree a <code>ui.render</code> hook returns for <code>AbovePrompt</code>. Pick a node, set its props, watch the strip. The JSX underneath is what you paste into the mod. The other six elements are in their own panels; the canvas draws these three.</p>
+<div class="compose">
+  <div>
+    <div class="tree" id="cp-tree"></div>
+    <div class="treebar">
+      <button type="button" data-add="Box">+ Box</button>
+      <button type="button" data-add="Text">+ Text</button>
+      <button type="button" data-add="Button">+ Button</button>
+      <button type="button" id="cp-up">↑</button>
+      <button type="button" id="cp-down">↓</button>
+      <button type="button" id="cp-del">delete</button>
+      <button type="button" id="cp-preset">load the rotate band</button>
+    </div>
+    <p class="why" style="margin-top:10px">A new node lands inside the selected Box, or beside the selected leaf, so a Text never takes one: the engine drops a tree that nests a Box or a Button in a Text, and says nothing about it. The refusal you can still reach — a hover with no key to scope it — prints above the strip.</p>
+  </div>
+  <div>
+    <div class="insp" id="cp-insp"></div>
+    <div id="cp-refuse"></div>
+    <div class="term" id="cp-term"></div>
+    <div id="cp-over"></div>
+    <pre class="spec" id="cp-spec"></pre>
+  </div>
+</div>
+
+</section>
+<!-- ============================== SITES ============================== -->
+<section class="panel" id="p-sites">
+<h2 id="sites">Where a mod draws <span class="src">RenderComponent, RenderPropsOf</span></h2>
+<p class="sub">Source: <code>~/.claude/plugins/marketplaces/claude-code-plugins/mods/types/claude-code.d.ts</code> (10.8k lines) and the 2.1.273 binary for border glyphs and the palette. A hook on <code>ui.render</code> matches one component. Two sites take a tree of the mod's own (AbovePrompt, Pane); the others draw the engine's component from props the hook may rewrite. Only the band honours hotkeys.</p>
+<div class="tabs" id="siteTabs"></div>
+<div id="siteBody"></div>
+
+<!-- ============================== BOX ============================== -->
+</section>
+<section class="panel" id="p-box">
+<h2 id="box">Box <span class="src">BoxProps, BoxHoverProps</span></h2>
+<div class="lab">
+  <div class="controls">
+    <label>flexDirection <select id="bx-dir"><option>row</option><option>column</option><option>row-reverse</option><option>column-reverse</option></select></label>
+    <label>justifyContent <select id="bx-just"><option>flex-start</option><option>center</option><option>flex-end</option><option>space-between</option><option>space-around</option><option>space-evenly</option></select></label>
+    <label>alignItems <select id="bx-align"><option>flex-start</option><option>center</option><option>flex-end</option><option>stretch</option></select></label>
+    <label>flexWrap <select id="bx-wrap"><option>nowrap</option><option>wrap</option><option>wrap-reverse</option></select></label>
+    <label>gap <input id="bx-gap" type="range" min="0" max="6" value="2"></label>
+    <label>width (cells, 0 = content) <input id="bx-width" type="range" min="0" max="80" value="48"></label>
+    <label>height (rows, 0 = content) <input id="bx-height" type="range" min="0" max="8" value="0"></label>
+    <label>paddingX / paddingY <div class="row"><input id="bx-px" type="range" min="0" max="4" value="1" style="width:45%"><input id="bx-py" type="range" min="0" max="2" value="0" style="width:45%"></div></label>
+    <label>marginX / marginY <div class="row"><input id="bx-mx" type="range" min="0" max="4" value="0" style="width:45%"><input id="bx-my" type="range" min="0" max="2" value="0" style="width:45%"></div></label>
+    <label>borderStyle <select id="bx-border"><option value="">(none)</option><option>single</option><option>double</option><option selected>round</option><option>bold</option><option>singleDouble</option><option>doubleSingle</option><option>classic</option><option>arrow</option></select></label>
+    <label>borderColor <select id="bx-bcol" class="colorpick"></select></label>
+    <label class="inline"><input id="bx-bdim" type="checkbox"> borderDimColor</label>
+    <label>backgroundColor <select id="bx-bg" class="colorpick"><option value="">(none)</option></select></label>
+    <label>overflow <select id="bx-over"><option>visible</option><option>hidden</option></select></label>
+    <label>display <select id="bx-disp"><option>flex</option><option>none</option></select></label>
+    <label>children <select id="bx-kids"><option value="3">three Text items</option><option value="1">one Text</option><option value="6">six Text items (wrap test)</option></select></label>
+    <label class="inline"><input id="bx-key" type="checkbox" checked> key (hover scope)</label>
+    <label>hover.borderColor <select id="bx-hcol" class="colorpick"><option value="">(none)</option></select></label>
+    <label>hover.backgroundColor <select id="bx-hbg" class="colorpick"><option value="">(none)</option></select></label>
+    <label class="inline"><input id="bx-hovered" type="checkbox"> preview: pointer over it</label>
+    <label>hover.scope <input id="bx-scope" type="text" placeholder="(none) 1-64 chars" value=""></label>
+  </div>
+  <div>
+    <div class="term" id="bx-term"></div>
+    <pre class="spec" id="bx-spec"></pre>
+    <ul class="notes">
+      <li><code>flexGrow</code>, <code>flexShrink</code>, <code>alignSelf</code>, <code>columnGap</code>/<code>rowGap</code>, <code>minWidth</code>/<code>minHeight</code> and the per-side margins and paddings exist too; they follow CSS flexbox and the lab draws the aggregate knobs.</li>
+      <li><code>hover</code> restyles without a hook run: never a layout change. Refused on a Box that is not keyed unless it names a <code>scope</code>. A <code>scope</code> lights every element the same plugin drew with that string, in any site.</li>
+      <li>Reveal on hover: a child Box <code>display="none"</code> with <code>hover={{display:"flex"}}</code> inside a visible keyed Box. A scoped hover never reveals.</li>
+      <li>Colors are a theme key (see <a href="#palette">Palette</a>) or a raw color (<code>rgb(…)</code>, <code>#rrggbb</code>).</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ============================== TEXT ============================== -->
+</section>
+<section class="panel" id="p-text">
+<h2 id="text">Text <span class="src">TextProps, TextHoverProps</span></h2>
+<div class="lab">
+  <div class="controls">
+    <label>text <input id="tx-text" type="text" value="rotate this conversation before the context window fills"></label>
+    <label>color <select id="tx-color" class="colorpick"><option value="">(inherit)</option></select></label>
+    <label>backgroundColor <select id="tx-bg" class="colorpick"><option value="">(none)</option></select></label>
+    <div class="row">
+      <label class="inline"><input id="tx-bold" type="checkbox"> bold</label>
+      <label class="inline"><input id="tx-dim" type="checkbox"> dimColor</label>
+      <label class="inline"><input id="tx-italic" type="checkbox"> italic</label>
+      <label class="inline"><input id="tx-under" type="checkbox"> underline</label>
+      <label class="inline"><input id="tx-strike" type="checkbox"> strikethrough</label>
+      <label class="inline"><input id="tx-inverse" type="checkbox"> inverse</label>
+    </div>
+    <label>wrap <select id="tx-wrap"><option>wrap</option><option>end</option><option>middle</option><option>truncate</option><option>truncate-start</option><option>truncate-middle</option><option>truncate-end</option></select></label>
+    <label>room (cells) <input id="tx-room" type="range" min="8" max="80" value="28"></label>
+    <label>hover (inside a keyed Box) <select id="tx-hover"><option value="">none</option><option value="bold">bold</option><option value="under">underline</option><option value="inverse">inverse</option><option value="color">color: claude</option></select></label>
+    <label class="inline"><input id="tx-hovered" type="checkbox"> preview: pointer over the Box</label>
+  </div>
+  <div>
+    <div class="term" id="tx-term"></div>
+    <pre class="spec" id="tx-spec"></pre>
+    <ul class="notes">
+      <li>Seven <code>wrap</code> spellings. <code>end</code>/<code>truncate</code>/<code>truncate-end</code> cut at the edge, <code>truncate-start</code> keeps the tail, <code>middle</code>/<code>truncate-middle</code> keep both ends; the lab draws them as the names read.</li>
+      <li>A Text nested in a Text follows its hover group but cannot heat it.</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ============================== BUTTON ============================== -->
+</section>
+<section class="panel" id="p-button">
+<h2 id="button">Button <span class="src">ButtonProps</span></h2>
+<div class="lab">
+  <div class="controls">
+    <label>label <input id="bt-label" type="text" value="rotate this conversation"></label>
+    <label>key (defaults to label) <input id="bt-key" type="text" value="cs-rotate"></label>
+    <label>hotkey <select id="bt-hk"><option value="">(none)</option><option>1</option><option>2</option><option>9</option><option>r</option><option>w</option></select></label>
+    <label>action (keybinding) <input id="bt-action" type="text" placeholder="app:cycleDiffBase" value=""></label>
+    <div class="row">
+      <label class="inline"><input id="bt-plain" type="checkbox" checked> plain</label>
+      <label class="inline"><input id="bt-dim" type="checkbox"> dimColor</label>
+      <label class="inline"><input id="bt-auto" type="checkbox"> autoFocus</label>
+    </div>
+    <label>state <select id="bt-state"><option value="rest">at rest</option><option value="focus">focused (ring)</option><option value="pointer">under the pointer</option></select></label>
+    <label>hover (label, in a keyed Box) <select id="bt-hover"><option value="">none</option><option value="bold">bold</option><option value="color">color: claude</option><option value="under">underline</option></select></label>
+    <label class="inline"><input id="bt-hovered" type="checkbox"> preview: Box hovered</label>
+    <label>site <select id="bt-site"><option>AbovePrompt</option><option>Pane</option><option>ToolUse</option></select></label>
+  </div>
+  <div>
+    <div class="term" id="bt-term"></div>
+    <pre class="spec" id="bt-spec"></pre>
+    <ul class="notes">
+      <li><code>hotkey</code>: one digit or one lowercase letter, honoured only in the AbovePrompt band; anywhere else it is refused. A digit presses from an empty composer; a digit or letter presses while a band Button has the focus. Two Buttons on one hotkey: the later wins.</li>
+      <li><code>plain</code> draws <code>1: label</code> in the accent color, as a survey row; without <code>plain</code>, the surface's own button chrome (<code>[ label ]</code> in the terminal). A one-glyph plain label is a control by itself.</li>
+      <li><code>action</code> names an engine keybinding whose chord presses the button from the prompt; unknown names are refused. A pane's over the band's over another's, then the last drawn.</li>
+      <li><code>autoFocus</code>: the site's focus ring starts here when the site takes the keyboard; the first drawn of several wins. Under the pointer the button inverts regardless of <code>hover</code>.</li>
+      <li><code>onPress</code> runs in the plugin's environment; the host holds a handle for the drawing's life. It cannot run a command inside a hook the turn waits on: schedule with <code>$.clock.after(0, …)</code>.</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ============================== INPUT ============================== -->
+</section>
+<section class="panel" id="p-input">
+<h2 id="input">Input <span class="src">InputProps</span></h2>
+<div class="lab">
+  <div class="controls">
+    <label>key (required) <input id="in-key" type="text" value="purpose"></label>
+    <label>label <input id="in-label" type="text" value="purpose"></label>
+    <label>placeholder <input id="in-ph" type="text" value="what the next conversation is for"></label>
+    <label>value <input id="in-val" type="text" value=""></label>
+    <label>submitLabel <input id="in-submit" type="text" value="rotate"></label>
+    <label class="inline"><input id="in-auto" type="checkbox" checked> autoFocus</label>
+    <label>state <select id="in-state"><option value="rest">at rest</option><option value="focus">focused, typing</option></select></label>
+    <label class="inline"><input id="in-oninput" type="checkbox"> onInput handler too</label>
+  </div>
+  <div>
+    <div class="term" id="in-term"></div>
+    <pre class="spec" id="in-spec"></pre>
+    <ul class="notes">
+      <li>Enter runs <code>onSubmit(value, e)</code>, the bottom of a <code>ui.input</code> chain of kind <code>submit</code>; no model turn unless the handler asks one. <code>onInput</code> fires on every change (kind <code>change</code>).</li>
+      <li>Terminal, desktop and VS Code have Input; the mobile surface has none yet.</li>
+      <li>Focused through the same ring as Button (<code>abovePrompt:focus</code>): click, or ctrl+x tab in the band.</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ============================== SELECT ============================== -->
+</section>
+<section class="panel" id="p-select">
+<h2 id="select">Select <span class="src">SelectProps, SelectOption</span></h2>
+<div class="lab">
+  <div class="controls">
+    <label>key (required) <input id="se-key" type="text" value="handoff"></label>
+    <label>label <input id="se-label" type="text" value="continue from"></label>
+    <label>options, one per line as value|label <textarea id="se-opts">2026-09-16-release|the held release
+2026-09-16-git-segment|git segment pointer
+none|start fresh</textarea></label>
+    <label>value (selected) <input id="se-val" type="text" value="2026-09-16-release"></label>
+    <label class="inline"><input id="se-auto" type="checkbox"> autoFocus</label>
+    <label>state <select id="se-state"><option value="rest">at rest</option><option value="open">focused, list open</option></select></label>
+  </div>
+  <div>
+    <div class="term" id="se-term"></div>
+    <pre class="spec" id="se-spec"></pre>
+    <ul class="notes">
+      <li>At least one option, values unique. A pick runs <code>onSelect(value, e)</code>, the bottom of a <code>ui.select</code> chain; the person's pick replaces <code>value</code> until the hook draws another.</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ============================== LINK ============================== -->
+</section>
+<section class="panel" id="p-link">
+<h2 id="link">Link <span class="src">LinkProps</span></h2>
+<div class="lab">
+  <div class="controls">
+    <label>href <input id="ln-href" type="text" value="https://github.com/example/cs/blob/main/docs/hooks.md"></label>
+    <label>label (empty = the URL) <input id="ln-label" type="text" value="docs/hooks.md"></label>
+  </div>
+  <div>
+    <div class="term" id="ln-term"></div>
+    <pre class="spec" id="ln-spec"></pre>
+    <ul class="notes">
+      <li><code>https:</code> only (or <code>http://localhost</code>), at most 2048 printable ASCII characters, spelled as <code>new URL(href).href</code>; no user@host, raw <code>@</code>, space or non-ASCII. A bad href refuses the whole tree the Link is in.</li>
+      <li>The terminal draws an OSC 8 hyperlink: the label underlined, the URL on hover in terminals that support it.</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ============================== CODE ============================== -->
+</section>
+<section class="panel" id="p-code">
+<h2 id="code">Code <span class="src">CodeProps</span></h2>
+<div class="lab">
+  <div class="controls">
+    <label>format <select id="cd-format"><option>source</option><option>diff</option></select></label>
+    <label>language (source) <select id="cd-lang"><option value="">(infer from path)</option><option>typescript</option><option>bash</option><option>json</option><option>markdown</option></select></label>
+    <label>path (language inference) <input id="cd-path" type="text" value="hooks/register.tsx"></label>
+    <label>startLine (0 = no gutter) <input id="cd-start" type="number" min="0" max="9999" value="42" style="width:90px"></label>
+    <label>wrap <select id="cd-wrap"><option>wrap</option><option>truncate-end</option></select></label>
+    <label>source <textarea id="cd-src">on('turn.complete', async ($, e, next) => {
+  if (e.reason === 'answer' && e.agentId === undefined) await forceRotation($)
+  return next(e)
+})</textarea></label>
+  </div>
+  <div>
+    <div class="term" id="cd-term"></div>
+    <pre class="spec" id="cd-spec"></pre>
+    <ul class="notes">
+      <li>At most 10000 characters; tab and newline are the only control characters allowed. Nothing touches the disk: <code>path</code> only names the language.</li>
+      <li><code>format: 'diff'</code> reads unified hunks (<code>@@ -a,b +c,d @@</code> then <code> </code>, <code>+</code>, <code>-</code> lines); a leading <code>---</code>/<code>+++</code> pair is read past. A source that does not parse as hunks is refused. <code>startLine</code> is ignored, hunks carry their numbers.</li>
+      <li>Only two wrap spellings here; Text's others are refused because the gutter leaves them no sense.</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ============================== RASTER ============================== -->
+</section>
+<section class="panel" id="p-raster">
+<h2 id="raster">Raster <span class="src">RasterProps, $.ui.blit</span></h2>
+<div class="lab">
+  <div class="controls">
+    <label>key <input id="ra-key" type="text" value="meter"></label>
+    <label>columns (1-512) <input id="ra-cols" type="range" min="1" max="60" value="24"></label>
+    <label>rows (1-256) <input id="ra-rows" type="range" min="1" max="8" value="2"></label>
+    <label>pattern <select id="ra-pat"><option value="meter">context meter (fill by %)</option><option value="gradient">gradient bar</option><option value="braille">braille sparkline</option><option value="checker">checkerboard</option></select></label>
+    <label>fill % <input id="ra-pct" type="range" min="0" max="100" value="47"></label>
+    <label>foreground <select id="ra-fg" class="colorpick"></select></label>
+    <label>background <select id="ra-bg" class="colorpick"><option value="default">terminal default (0x01000000)</option></select></label>
+    <label class="inline"><input id="ra-anim" type="checkbox"> animate with $.ui.blit every 33 ms</label>
+  </div>
+  <div>
+    <div class="term" id="ra-term"></div>
+    <pre class="spec" id="ra-spec"></pre>
+    <details><summary>encoded cells (what the JSX carries)</summary><pre class="spec" id="ra-cells"></pre></details>
+    <ul class="notes">
+      <li>Every cell is a little-endian u32 triplet <code>[codePoint, foreground, background]</code>, row-major, padded base64 of <code>columns × rows</code> triplets. A code point must be one printable width-1 BMP character (blocks, box drawing, braille are fine); a color is <code>0x00RRGGBB</code>, or <code>0x01000000</code> for the terminal's default. A bad cell refuses the tree naming its index.</li>
+      <li><code>$.ui.blit({requestId, key, cells})</code> repaints a mounted Raster of this plugin's without a redraw, at the surface's frame rate: blits between frames fold into one. The size must be the mounted one; a resize is a redraw.</li>
+      <li>Terminal only. The desktop and mobile tables have <code>Svg</code> instead (source up to 131072 chars, required <code>alt</code>, optional sandboxed interactivity).</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ============================== CLIENT ============================== -->
+</section>
+<section class="panel" id="p-client">
+<h2 id="client">Client <span class="src">ClientProps, ClientElements</span></h2>
+<div class="lab">
+  <div class="controls">
+    <label>key <input id="cl-key" type="text" value="handoff-preview"></label>
+    <label>module (literal path, in the plugin) <input id="cl-module" type="text" value="./preview.tsx"></label>
+    <label>props (JSON) <textarea id="cl-props">{"handoff":"2026-09-16-release.md","lines":40}</textarea></label>
+    <label>width <input id="cl-width" type="text" value="60%"></label>
+    <label>height (rows) <input id="cl-height" type="text" value="6"></label>
+    <label>flexGrow <input id="cl-grow" type="number" min="0" max="3" value="0" style="width:70px"></label>
+  </div>
+  <div>
+    <div class="term" id="cl-term"></div>
+    <pre class="spec" id="cl-spec"></pre>
+    <ul class="notes">
+      <li>A Client hosts a surface module: a component that runs on the drawing thread under a time budget, keeps local state and timers across the plugin's redraws while a Client under this key stays in the tree, and draws from <code>surface.elements</code> (the terminal table minus Client and Raster). It receives key events through <code>surface.onKey</code> (Escape never arrives: it returns the focus) and posts back through <code>ui.message</code>.</li>
+      <li><code>module</code> must be a string literal relative to the hooks file; a variable, a path outside the plugin or a missing file is refused at load. <code>props</code> is plain JSON, bounded like a tree's text, never closures.</li>
+      <li>A throw or an overrun unmounts the instance and draws one line naming the plugin and the module in its place.</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ============================== BORDERS ============================== -->
+</section>
+<section class="panel" id="p-borders">
+<h2 id="borders">Border styles <span class="src">borderStyle, from the 2.1.273 binary</span></h2>
+<div class="gallery" id="borders-gallery"></div>
+
+<!-- ============================== PALETTE ============================== -->
+</section>
+<section class="panel" id="p-palette">
+<h2 id="palette">Theme palette <span class="src">the theme keys a color prop accepts</span></h2>
+<p class="sub">The keys below are the ones a mod would reach for; the theme object in the binary has about seventy. A raw <code>rgb(r,g,b)</code> or <code>#rrggbb</code> bypasses the theme. ANSI themes map the same keys to the sixteen terminal colors.</p>
+<div class="swatches" id="swatches"></div>
+
+<!-- ============================== RULES ============================== -->
+</section>
+<section class="panel" id="p-rules">
+<h2 id="rules">Rules the contract enforces</h2>
+<div class="two">
+  <div>
+    <h3>Redraw and time</h3>
+    <ul class="notes">
+      <li><code>ui.render</code> runs once per input value (props, viewport width), plugin load, or <code>$.ui.invalidate("ui.render")</code>. A height change alone redraws nothing.</li>
+      <li><code>$.ui.invalidate</code>: at most ten a second, thirty for the shown pane and the band; calls sooner fold.</li>
+      <li><code>$.ui.blit</code>: frame rate, Raster only, size fixed to the mount.</li>
+      <li><code>$.clock.every(ms, fn)</code> and <code>$.clock.after(ms, fn)</code> are the only timers; a hook the turn waits on cannot run a command, a 0 ms timer scheduled inside it can.</li>
+      <li><code>$.ui.toast(text, {timeoutMs})</code>: the notification line under the prompt, 4000 ms by default. <code>$.ui.log(text)</code>: one dim transcript line, not sent to the model.</li>
+    </ul>
+    <h3>Focus and keys</h3>
+    <ul class="notes">
+      <li>Focus sites: <code>Pane</code> and <code>AbovePrompt</code> (<code>UiFocusComponent</code>). The person focuses the band with a click or ctrl+x tab, collapses it with ctrl+x ctrl+a; Escape hands the keys back.</li>
+      <li><code>autoFocus</code> on Button, Input, Select: first drawn wins, raises <code>ui.focus</code> with origin this plugin; a ring the person moved stays put.</li>
+      <li>Scroll sites: the same two. A band tree taller than <code>maxRows</code> scrolls in a window one row shorter over a dim <code>n more</code> row, and a bare digit then arms none of its hotkeys.</li>
+    </ul>
+  </div>
+  <div>
+    <h3>Panes</h3>
+    <ul class="notes">
+      <li><code>$.ui.open({id, title, focus, closeOnEscape, holdToasts, rows})</code>: id 1-64 of letters, digits, <code>_</code> and <code>-</code>; one pane per id, a second open retitles. <code>focus</code> is a request granted only over an empty composer. <code>rows</code> is a request too; a size the person set wins; default a third.</li>
+      <li>Placement: docked beside the transcript in fullscreen from 110 columns, else inline above the prompt. The person closes with ctrl+x x or the engine's mark (<code>ui.close</code>, origin <code>person</code>, which a hook may refuse); <code>unload</code> cannot be refused.</li>
+    </ul>
+    <h3>Surfaces</h3>
+    <ul class="notes">
+      <li><code>terminal</code>: Box, Text, Button, Input, Select, Link, Code, Client, Raster.</li>
+      <li><code>desktop</code>, <code>vscode</code>: the same minus Raster, plus Svg. Native buttons.</li>
+      <li><code>mobile</code>: Box, Text, Button, Svg, Link, Code. No Input or Select yet (the control protocol carries presses only).</li>
+      <li><code>$.ui.resolve(e)</code> returns the frozen element table for <code>e.surface</code>; a tree that names an element the surface lacks is refused.</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ============================== ROTATE ============================== -->
+</section>
+<section class="panel" id="p-rotate">
+<h2 id="rotate">Rotate capsule presets <span class="src">the cs mod's rotate band, as shipped</span></h2>
+<p class="sub">The band the cs mod draws above the prompt. Move the knobs, pick a preset, read the JSX it maps to. Inks come from <code>bin/cs-statusline</code>; the shipped capsule is the "Inked" preset.</p>
+<div class="lab">
+  <div class="controls">
+    <label>Context <span id="ctxv" style="text-transform:none;letter-spacing:0"></span><input id="ctx" type="range" min="0" max="99" value="47"></label>
+    <div class="row"><label class="inline"><input id="armed" type="checkbox"> handoff armed</label></div>
+    <label>Border <select id="border"><option value="round">round</option><option value="single">single</option><option value="double">double</option><option value="bold">bold</option><option value="singleDouble">singleDouble</option><option value="doubleSingle">doubleSingle</option><option value="classic">classic</option><option value="arrow">arrow</option><option value="none">none</option></select></label>
+    <label>Fill <select id="fill"><option value="none">none</option><option value="surface">bar surface (taupe)</option><option value="band">band colour</option></select></label>
+    <label>Colours <select id="inks"><option value="theme">theme keys</option><option value="bar">bar inks (raw rgb)</option></select></label>
+    <label>Hotkey <select id="hk"><option value="plain">1: label</option><option value="box">[1] label</option><option value="under">1 label, underlined</option><option value="button">[ label ] (Button default)</option></select></label>
+    <label>Gauge <select id="gauge"><option value="pie">pie + number</option><option value="cells">10-cell meter</option><option value="raster">Raster meter</option><option value="number">number only</option><option value="off">off</option></select></label>
+    <div class="row"><label class="inline"><input id="mark" type="checkbox" checked> ✳ mark</label><label class="inline"><input id="caps" type="checkbox"> rounded caps</label><label class="inline"><input id="hover" type="checkbox" checked> hover</label></div>
+    <label>Label <input id="label" type="text" value="rotate this conversation"></label>
+  </div>
+  <div>
+    <div class="term" id="work"></div>
+    <pre class="spec" id="spec"></pre>
+  </div>
+</div>
+<h2>Presets, drawn in the state above</h2>
+<div class="gallery" id="gallery"></div>
+<ul class="notes" style="margin-top:14px">
+  <li>Rounded caps are Powerline glyphs (U+E0B6/E0B4): they need the caps font, the same consent the bar asks for.</li>
+  <li>The mod reads <code>CS_TERM_THEME</code> through <code>$.env.get</code>; each variable it reads must be spelled as a literal, <code>claude plugin validate</code> lists them.</li>
+</ul>
+
+<!-- ============================== COVERAGE ============================== -->
+</section>
+<section class="panel" id="p-coverage">
+<h2 id="coverage">Coverage check</h2>
+<p class="sub">The prop names this page knows, per element, against the contract. Regenerate the contract list with the command below and paste it in; the page reports what it lacks. Empty means the lab covers every prop the contract names.</p>
+<pre class="spec">awk '/export type (BoxProps|TextProps|ButtonProps|InputProps|SelectProps|LinkProps|CodeProps|RasterProps|ClientProps) = \{/{t=$3} \
+     t && /^  \};/{t=""} t && /^      [a-zA-Z]+\??:/{p=$1; sub(/\??:.*/,"",p); print t, p}' \
+  ~/.claude/plugins/marketplaces/claude-code-plugins/mods/types/claude-code.d.ts | sort -u</pre>
+<textarea id="cov-in" placeholder="paste the command's output here"></textarea>
+<pre class="spec" id="cov-out">Known to the page: (loads below)</pre>
+
+</section>
+</main>
+</div>
+</div>
+<script src="mods-layout.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;");
+const span=(t,style,cls)=>`<span${cls?` class="${cls}"`:""} style="${style||""}">${esc(t)}</span>`;
+const cols=()=>Math.max(40,Math.min(200,+$("cols").value||80));
+const theme=()=>$("theme").value;
+
+// ---------- palette (read from the 2.1.273 binary: the light and dark rgb themes) ----------
+const PALETTE={
+  claude:{light:"rgb(215,119,87)",dark:"rgb(215,119,87)",why:"the accent; the bullet, the logo, a plain Button's hotkey"},
+  text:{light:"rgb(0,0,0)",dark:"rgb(255,255,255)",why:"default ink"},
+  inverseText:{light:"rgb(255,255,255)",dark:"rgb(0,0,0)",why:"ink on an inverted or filled cell"},
+  inactive:{light:"rgb(102,102,102)",dark:"rgb(153,153,153)",why:"what dimColor reads as"},
+  subtle:{light:"rgb(175,175,175)",dark:"rgb(80,80,80)",why:"rules, hints, the n more row"},
+  suggestion:{light:"rgb(87,105,247)",dark:"rgb(177,185,249)",why:"a survey's hotkey digit, links to act on"},
+  permission:{light:"rgb(87,105,247)",dark:"rgb(177,185,249)",why:"the permission dialog's border"},
+  promptBorder:{light:"rgb(153,153,153)",dark:"rgb(136,136,136)",why:"the composer's frame"},
+  success:{light:"rgb(44,122,57)",dark:"rgb(78,186,101)",why:"a done mark"},
+  warning:{light:"rgb(150,108,30)",dark:"rgb(255,193,7)",why:"the amber band"},
+  error:{light:"rgb(171,43,63)",dark:"rgb(255,107,128)",why:"the red band, a failed row"},
+  planMode:{light:"rgb(0,102,102)",dark:"rgb(72,150,140)",why:"plan mode's teal"},
+  autoAccept:{light:"rgb(135,0,255)",dark:"rgb(175,135,255)",why:"auto-accept's violet"},
+  merged:{light:"rgb(135,0,255)",dark:"rgb(175,135,255)",why:"a merged PR"},
+  remember:{light:"rgb(0,0,255)",dark:"rgb(177,185,249)",why:"memory notices"},
+  diffAdded:{light:"rgb(105,219,124)",dark:"rgb(34,92,43)",why:"Code diff + background"},
+  diffRemoved:{light:"rgb(255,168,180)",dark:"rgb(122,41,54)",why:"Code diff - background"},
+};
+const RAW={CORAL:"rgb(217,119,87)",AMBER_L:"rgb(180,83,9)",AMBER_D:"rgb(253,230,138)",CRIT_L:"rgb(215,0,21)",CRIT_D:"rgb(255,69,58)"};
+const col=k=>{ if(!k) return ""; if(PALETTE[k]) return PALETTE[k][theme()]; if(RAW[k]) return RAW[k]; return k; };
+const colExpr=k=>!k?"":PALETTE[k]?`"${k}"`:RAW[k]?`{${k}}`:`"${k}"`;
+function fillColorPicks(){
+  document.querySelectorAll("select.colorpick").forEach(s=>{
+    const keep=[...s.options].filter(o=>o.value===""||o.value==="default").map(o=>o.outerHTML).join("");
+    const keys=Object.keys(PALETTE).map(k=>`<option value="${k}">${k}</option>`).join("");
+    const raws=Object.keys(RAW).map(k=>`<option value="${k}">${k} (raw ${RAW[k]})</option>`).join("");
+    s.innerHTML=keep+keys+raws;
+    if(s.id==="bx-bcol") s.value="warning"; if(s.id==="ra-fg") s.value="warning"; if(s.id==="tx-color") s.value=""; if(s.id==="bx-hcol") s.value="claude";
+  });
+}
+fillColorPicks();
+
+// ---------- borders (glyph tables from the binary) ----------
+const BORDERS={
+  single:{tl:"┌",t:"─",tr:"┐",r:"│",br:"┘",b:"─",bl:"└",l:"│"},
+  double:{tl:"╔",t:"═",tr:"╗",r:"║",br:"╝",b:"═",bl:"╚",l:"║"},
+  round:{tl:"╭",t:"─",tr:"╮",r:"│",br:"╯",b:"─",bl:"╰",l:"│"},
+  bold:{tl:"┏",t:"━",tr:"┓",r:"┃",br:"┛",b:"━",bl:"┗",l:"┃"},
+  singleDouble:{tl:"╓",t:"─",tr:"╖",r:"║",br:"╜",b:"─",bl:"╙",l:"║"},
+  doubleSingle:{tl:"╒",t:"═",tr:"╕",r:"│",br:"╛",b:"═",bl:"╘",l:"│"},
+  classic:{tl:"+",t:"-",tr:"+",r:"|",br:"+",b:"-",bl:"+",l:"|"},
+  arrow:{tl:"↘",t:"↓",tr:"↙",r:"←",br:"↖",b:"↑",bl:"↗",l:"→"},
+};
+// Frame `lines` (array of html strings of equal visible width w) in a border.
+function frame(lines,w,style,edgeStyle){
+  if(!style||!BORDERS[style]) return lines.join("\n");
+  const g=BORDERS[style], e=edgeStyle||"";
+  const top=span(g.tl+g.t.repeat(w)+g.tr,e), bot=span(g.bl+g.b.repeat(w)+g.br,e);
+  return [top,...lines.map(l=>span(g.l,e)+l+span(g.r,e)),bot].join("\n");
+}
+const pad=(s,w)=>s+" ".repeat(Math.max(0,w-[...s].length));
+const vis=s=>[...s.replace(/<[^>]+>/g,"").replace(/&amp;/g,"&").replace(/&lt;/g,"<")].length;
+
+function bordersGallery(){
+  const g=$("borders-gallery"); g.innerHTML="";
+  Object.keys(BORDERS).forEach(k=>{
+    const d=document.createElement("div"); d.className="card"; d.style.cursor="default";
+    const inner=[" "+span("1",`color:${col("suggestion")}`)+span(": rotate this conversation")+" "];
+    d.innerHTML=`<div class="name">${k}</div><div class="term">${frame(inner,vis(inner[0]),k,`color:${col("warning")}`)}</div><p class="why"><code>borderStyle="${k}"</code></p>`;
+    g.appendChild(d);
+  });
+}
+
+function swatches(){
+  const g=$("swatches"); g.innerHTML="";
+  Object.entries(PALETTE).forEach(([k,v])=>{
+    g.insertAdjacentHTML("beforeend",`<div class="sw"><div class="chip"><span style="background:${v.light}" title="light"></span><span style="background:${v.dark}" title="dark"></span></div><div class="k">${k}</div><div class="v">${v.light} · ${v.dark}</div><div class="v">${v.why}</div></div>`);
+  });
+}
+
+// ---------- sites ----------
+const SITES=[
+  {name:"AbovePrompt",own:true,blurb:"The band directly above the prompt input, where the surveys draw; the engine draws nothing of its own here. A hook draws a tree, or passes. One instance, terminal only. The person collapses it (ctrl+x ctrl+a) or focuses it (click, ctrl+x tab): an Input types, a Button arms the hotkeys, a tree taller than maxRows scrolls.",
+   props:[["hasSurvey","boolean","true while a survey holds the band; a hook yields to it"],["isWorking","boolean","true while a model turn runs"],["maxRows","number","rows the band may take; a taller tree scrolls in a window of scroll.bodyRows over a dim n more row, and a bare digit then arms no hotkey"],["bodyColumns","number","cells across the band: the terminal's width, or the transcript column's while a Pane is docked"],["scroll","SiteScroll {offset, bodyRows}","engine-owned window over a tall tree"],["view","SiteView {agentId?}","which transcript is on screen: main, or one agent's"]],
+   can:["hotkey on Button","Input, Select, Client, Raster","focus ring, scroll","hover, scope"],cannot:["a second instance","drawing while a survey holds it (yield)"]},
+  {name:"Pane",own:true,blurb:"The framed region a plugin opened with $.ui.open({id}): one instance per id (requestId), its body the hook's tree, one shown, the rest tabs. Docked beside the transcript in fullscreen from 110 columns, else inline above the prompt. The person switches with ctrl+x tab, closes with ctrl+x x or the engine's mark (ui.close, origin person, refusable).",
+   props:[["title","string","the tab label while more than one pane is open; retitled by another $.ui.open"],["isFocused","boolean","true while the person gave the pane the keyboard"],["bodyColumns","number","cells across the body, inside the frame"],["placement","'dock' | 'inline'","where the surface seated it"],["scroll","SiteScroll","engine-owned window, moved by the person's keys while focused"],["view","SiteView","the transcript beside the pane; the pane stays open across a switch"]],
+   can:["Input, Select, Client, Raster, Code","focus, scroll, closeOnEscape, holdToasts, rows request"],cannot:["hotkey (band only)","placement or size as a grant: both are requests"]},
+  {name:"PromptHint",own:false,blurb:"The dim hint line under the prompt (? for shortcuts). A hook rewrites hint and the rewrite is drawn in the line's place, or draws its own tree.",props:[["isDraft","boolean","true while the prompt holds typed text (read-only)"],["isWorking","boolean","true while a turn runs (read-only)"],["hint","string","the line's text; one string, so a rewrite replaces the line"]],can:["text rewrite","own tree"],cannot:["hotkeys","focus"]},
+  {name:"SessionMode",own:false,blurb:"The dim mode labels at the right of the prompt footer (focus, memory). A hook adds a mode by rewriting modes, removes one by filtering.",props:[["modes","readonly string[]","the labels, in order; empty when none"]],can:["add or remove a label"],cannot:["own tree of arbitrary shape"]},
+  {name:"InfoNotice",own:false,blurb:"One dim status line under the logo (the model source, an experiment).",props:[["text","string","flattened to one string"],["command","string | null","the slash command appended after the text"]],can:["rewrite text"],cannot:[]},
+  {name:"Spinner",own:false,blurb:"The line that animates while a turn runs (Sauteing… 12s).",props:[["word","string","the animated verb sampled for this turn"],["message","string | null","text drawn instead of the word while a state overrides it"],["mode","'requesting' | 'responding' | 'thinking' | 'tool-input' | 'tool-use'","what the turn is doing"]],can:["rewrite the word or message"],cannot:[]},
+  {name:"TurnDuration",own:false,blurb:"The line that closes a turn in the transcript (Baked for 3s). Terminal only.",props:[["word","string","the past-tense verb sampled for this line"],["durationMs","number","as the line formats it"]],can:["rewrite"],cannot:[]},
+  {name:"UserMessage",own:false,blurb:"The person's own prompt row in the transcript; a rewrite is drawn there and nowhere else, the stored message untouched.",props:[["text","string","the prompt's text as the row draws it"],["origin","PromptOrigin","read-only; a rewrite that changes or drops it is refused"]],can:["rewrite the drawn text"],cannot:["change origin","change the stored message"]},
+  {name:"AssistantMessage",own:false,blurb:"One text block of an assistant reply; a rewrite changes the drawing and leaves the stored message alone.",props:[["text","string","markdown as the transcript will draw it"],["isFirstOfReply","boolean","true on the block that draws the bullet"]],can:["rewrite text"],cannot:["change the stored message"]},
+  {name:"ToolUse",own:false,blurb:"A tool call's row in the transcript. The call was decided by tool.call, so a rewrite here changes the row alone. Its requestId is the tool_use_id, which a Raster in it is blitted under.",props:[["tool_use_id","string","read-only; the row's requestId"],["tool","string","Bash, Read, a plugin's tool"],["input","unknown","as the model sent it"],["isRunning","boolean",""],["isErrored","boolean",""],["isInterrupted","boolean","an abort cut it; the row draws Interrupted"],["output?","unknown","the stored result once resolved"]],can:["rewrite the row","a mark on the message that shares a hover scope with a Pane row"],cannot:["change the call","hotkeys"]},
+  {name:"ToolResult",own:false,blurb:"The result block under a standalone tool row, drawn by the tool's own result renderer from output.",props:[["tool_use_id","string","read-only"],["tool","string","read-only"],["output","unknown","the tool's result object; a rewrite is checked against the tool's output schema"],["isErrored","boolean","read-only"]],can:["rewrite output within schema"],cannot:["draw when errored (error text is drawn instead)"]},
+  {name:"ToolGroup",own:false,blurb:"A run of tool calls the transcript folds into one count line (Read 3 files, ran 2 shell commands).",props:[["isExpanded","boolean","the one prop of the three a rewrite changes on screen"]],can:["expand or fold"],cannot:[]},
+  {name:"CommandOutput",own:false,blurb:"The output row a slash command printed in the transcript, under its echo.",props:[["command","string","read-only, no slash"],["args","string","as the echo shows them"],["text","string","what the command printed, or a hook's text"],["isErrored","boolean","the run's error line"]],can:["rewrite text"],cannot:["change command"]},
+  {name:"AskUserQuestion",own:false,blurb:"The dialog the AskUserQuestion tool opens. A rewrite must still fit the tool's schema or the original is drawn.",props:[["tool","string","AskUserQuestion"],["questions","unknown[]","the tool's input as the dialog draws it"],["metadataSource?","string","who asked; analytics only"]],can:["rewrite questions within schema"],cannot:["free-form tree"]},
+];
+// A Claude Code screen with every render site in its place; `lit` is the one the tab shows.
+function screenMock(lit){
+  const S=(name,inner,extra="")=>`<span class="site${name===lit?" on":""}" data-site="${name}"${extra}>${inner}<span class="tag">${name}</span></span>`;
+  const dim=t=>`<span class="dimline">${esc(t)}</span>`;
+  const c=k=>`color:${col(k)}`;
+  const claude=span("✳",c("claude")+";font-weight:700");
+  const docked=lit==="Pane";
+  const left=[
+    S("InfoNotice", span("  ",c("claude"))+span("Claude Code",c("claude")+";font-weight:700")+span(" v2.1.273",c("inactive"))+"\n  "+span("Fable 5.1 · low effort · ",c("inactive"))+span("/model to change",c("suggestion"))),
+    " ",
+    S("UserMessage", span("❯ ",c("promptBorder"))+"rotate this conversation when it gets heavy"),
+    " ",
+    S("AssistantMessage", claude+" I will add a band above the prompt that offers the rotation once the\n  context passes the warn threshold, and runs /rotate on a press."),
+    " ",
+    S("ToolUse", span("⏺ ",c("success"))+span("Read",";font-weight:700")+"(mods/cs/hooks/register.tsx)"),
+    S("ToolResult", "  ⎿  "+span("Read 374 lines",c("inactive"))+"\n     "+span("export function register(on: On) {",c("inactive"))),
+    " ",
+    S("ToolGroup", span("⏺ ",c("success"))+span("Read 3 files, ran 2 shell commands",c("inactive"))+span("  ctrl+o to expand",c("subtle"))),
+    " ",
+    S("CommandOutput", span("❯ ",c("promptBorder"))+span("/rotate",c("suggestion"))+"\n  ⎿  "+"handoff written: .cs/handoffs/2026-09-16-release.md, armed"),
+    " ",
+    S("AskUserQuestion", span("╭─ ",c("permission"))+span("Which comes first?",";font-weight:700")+"\n  "+span("1: ",c("suggestion"))+"the held release   "+span("2: ",c("suggestion"))+"the statusline cost   "+span("3: ",c("suggestion"))+"other"),
+    " ",
+    S("Spinner", span("✻ ",c("claude"))+span("Cooking… ",c("claude"))+span("(12s · ↓ 2.1k tokens · esc to interrupt)",c("inactive"))),
+    S("TurnDuration", span("✻ Baked for 11s",c("inactive"))),
+    " ",
+    S("AbovePrompt", span("╭",c("warning"))+span("─".repeat(44),c("warning"))+span("╮",c("warning"))+"\n"+span("│",c("warning"))+" "+claude+" "+span("1",c("suggestion"))+": rotate this conversation  ·  "+span("◑ 47%",c("warning")+";font-weight:700")+" "+span("│",c("warning"))+"\n"+span("╰",c("warning"))+span("─".repeat(44),c("warning"))+span("╯",c("warning"))),
+    span("─".repeat(docked?52:78),c("subtle")),
+    span("❯ ",c("promptBorder"))+span("Try \"fix the failing test\"",c("subtle")),
+    span("─".repeat(docked?52:78),c("subtle")),
+    S("PromptHint", span("? for shortcuts",c("inactive")))+"   "+S("SessionMode", span("auto-accept  ·  focus",c("inactive"))),
+    dim(" ")+`<span class="dimline"><span class="cap"> ✳ claude-sessions · ⎇ main </span> <span class="cap"> ✦ Fable 5.1 low </span> <span class="cap"> ◑ ctx 47% · 5h 18% </span></span>`+span("  ← statusLine: a shell command, not a render site",c("subtle")),
+  ].join("\n");
+  const pane=docked?`<div class="pane">${S("Pane", span("handoff preview",";font-weight:700")+span("  ⌃x x to close",c("subtle"))+"\n"+span("─".repeat(28),c("subtle"))+"\n"+span("## 1. Next Step",c("suggestion"))+"\nNothing is in flight. Main is\nat d98c755, 81 commits ahead\nof origin, nothing pushed.\n\n"+span("## 2. Settled",c("suggestion"))+"\n- the bar is not a defect\n- hide-the-segment rejected\n"+span("\n▾ 30 more",c("subtle")))}</div>`:"";
+  return `<div class="titlebar"><i></i><i></i><i></i>&nbsp; claude — cs: claude-sessions &nbsp;·&nbsp; ${docked?"fullscreen, ≥110 columns, pane docked":"main screen"}</div><div class="body${docked?" docked":""}"><div>${left}</div>${pane}</div>`;
+}
+function drawScreens(){ document.querySelectorAll(".screen[data-screen]").forEach(el=>{ el.innerHTML=screenMock(el.dataset.screen); }); }
+function sitesUI(){
+  const tabs=$("siteTabs"), body=$("siteBody");
+  SITES.forEach((s,i)=>{
+    const b=document.createElement("button"); b.textContent=s.name+(s.own?" ✦":""); b.onclick=()=>{[...tabs.children].forEach(x=>x.classList.remove("on")); b.classList.add("on"); [...body.children].forEach(x=>x.classList.remove("on")); $("site-"+i).classList.add("on");}; if(i===0) b.classList.add("on"); tabs.appendChild(b);
+    const d=document.createElement("div"); d.className="site"+(i===0?" on":""); d.id="site-"+i;
+    const rows=s.props.map(p=>`<tr><td>${esc(p[0])}</td><td><code>${esc(p[1])}</code></td><td>${esc(p[2])}</td></tr>`).join("");
+    d.innerHTML=`<div class="screen" data-screen="${s.name}"></div><div class="two"><div><h3>${s.name}${s.own?" <span style='font-weight:400;color:var(--fg2);font-size:12px'>draws the mod's own tree</span>":" <span style='font-weight:400;color:var(--fg2);font-size:12px'>rewrites the engine's props</span>"}</h3><p class="sub" style="font-size:13px">${esc(s.blurb)}</p>
+      <table class="props"><tr><th>e.props</th><th>type</th><th></th></tr>${rows}</table></div>
+      <div><h3>Works here</h3><ul class="notes">${s.can.map(c=>`<li class="ok">✓ ${esc(c)}</li>`).join("")}${s.cannot.map(c=>`<li class="no">✗ ${esc(c)}</li>`).join("")}</ul>
+      <pre class="spec">on('ui.render', { component: '${s.name}' }, async ($, e, next) => {
+  const drawn = await next(e)${s.own?`
+  const { Box, Text, Button } = $.ui.resolve(e)
+  return <Box flexDirection="column">{drawn}<Text dimColor>mine</Text></Box>`:`
+  // e.props is frozen: rewrite by passing a copy to next
+  // return next({ ...e, props: { ...e.props, ${s.props[0][0].replace("?","")}: … } })
+  return drawn`}
+})</pre></div></div>`;
+    body.appendChild(d);
+  });
+}
+
+// ---------- BOX ----------
+function boxRender(){
+  const v=id=>$(id).value, on=id=>$(id).checked;
+  const dir=v("bx-dir"), just=v("bx-just"), align=v("bx-align"), wrap=v("bx-wrap"), gap=+v("bx-gap"), W=+v("bx-width"), H=+v("bx-height");
+  const px=+v("bx-px"), py=+v("bx-py"), mx=+v("bx-mx"), my=+v("bx-my"), border=v("bx-border"), bcol=v("bx-bcol"), bdim=on("bx-bdim"), bg=v("bx-bg"), over=v("bx-over"), disp=v("bx-disp");
+  const nk=+v("bx-kids"), keyed=on("bx-key"), hcol=v("bx-hcol"), hbg=v("bx-hbg"), hovered=on("bx-hovered"), scope=v("bx-scope").trim();
+  const kidsAll=["✳ mark","1: rotate this conversation","◑ 47%","· 5h 18%","◶ wk 51%","Fable 5.1"].slice(0,nk);
+  const inks=[col("claude"),"",col("warning"),"","",""];
+  let out="";
+  if(disp==="none"){ out=span("(display: none — nothing drawn, no room taken)","opacity:.5"); }
+  else{
+    const edgeCol=hovered&&hcol?col(hcol):col(bcol);
+    const fill=hovered&&hbg?col(hbg):(bg?col(bg):"");
+    const edgeStyle=`color:${edgeCol};${bdim?"opacity:.55":""}`;
+    const isRow=dir.startsWith("row"), rev=dir.endsWith("reverse");
+    let kids=kidsAll.map((k,i)=>({t:k,c:inks[i]})); if(rev) kids=kids.reverse();
+    const innerW=W?Math.max(4,W-2*px-(border?2:0)):0;
+    let lines=[];
+    if(isRow){
+      // pack into lines by wrap
+      let groups=[[]], used=0;
+      kids.forEach(k=>{ const w=[...k.t].length; if(wrap!=="nowrap"&&innerW&&groups[groups.length-1].length&&used+gap+w>innerW){groups.push([]);used=0;} used+= (groups[groups.length-1].length?gap:0)+w; groups[groups.length-1].push(k); });
+      if(wrap==="wrap-reverse") groups=groups.reverse();
+      groups.forEach(g=>{
+        const total=g.reduce((a,k)=>a+[...k.t].length,0), room=innerW||total+gap*(g.length-1);
+        let free=Math.max(0,room-total), between=gap, lead=0;
+        if(g.length>1&&free>=gap*(g.length-1)){
+          if(just==="space-between") between=Math.floor(free/(g.length-1));
+          else if(just==="space-around"){between=Math.floor(free/g.length);lead=Math.floor(between/2);}
+          else if(just==="space-evenly"){between=Math.floor(free/(g.length+1));lead=between;}
+        }
+        const content=g.map(k=>span(k.t,k.c?`color:${k.c}`:"")).join(" ".repeat(between));
+        const cw=g.reduce((a,k)=>a+[...k.t].length,0)+between*(g.length-1)+lead;
+        let line=" ".repeat(lead)+content;
+        if(innerW){ const slack=Math.max(0,innerW-cw); if(just==="center") line=" ".repeat(Math.floor(slack/2))+line+" ".repeat(slack-Math.floor(slack/2)); else if(just==="flex-end") line=" ".repeat(slack)+line; else line=line+" ".repeat(slack); }
+        lines.push(line);
+      });
+    } else {
+      const maxw=Math.max(...kids.map(k=>[...k.t].length)); const room=innerW||maxw;
+      kids.forEach((k,i)=>{ const w=[...k.t].length, slack=Math.max(0,room-w); let l=span(k.t,k.c?`color:${k.c}`:""); if(align==="center") l=" ".repeat(Math.floor(slack/2))+l+" ".repeat(slack-Math.floor(slack/2)); else if(align==="flex-end") l=" ".repeat(slack)+l; else l=l+" ".repeat(slack); lines.push(l); if(i<kids.length-1) for(let g=0;g<gap;g++) lines.push(" ".repeat(room)); });
+    }
+    const w=Math.max(...lines.map(vis));
+    lines=lines.map(l=>l+" ".repeat(w-vis(l)));
+    if(H){ const bodyH=Math.max(1,H-2*py-(border?2:0)); if(lines.length>bodyH&&over==="hidden") lines=lines.slice(0,bodyH); while(lines.length<bodyH) lines.push(" ".repeat(w)); }
+    const padL=" ".repeat(px), padR=" ".repeat(px);
+    let body=lines.map(l=>padL+l+padR); for(let i=0;i<py;i++){ body.unshift(" ".repeat(w+2*px)); body.push(" ".repeat(w+2*px)); }
+    if(fill) body=body.map(l=>`<span style="background:${fill}">${l}</span>`);
+    let block=frame(body,w+2*px,border,edgeStyle);
+    if(mx||my){ const ml=" ".repeat(mx); block=block.split("\n").map(l=>ml+l).join("\n"); for(let i=0;i<my;i++) block="\n"+block+"\n"; }
+    out=(keyed?`<span class="hov">`:"")+block+(keyed?"</span>":"");
+  }
+  $("bx-term").innerHTML=out+`\n<span class="rule">${"─".repeat(Math.min(cols(),100))}</span>\n<span class="prompt">❯ </span>`;
+  const attrs=[];
+  if(keyed) attrs.push(`key="cs-band"`);
+  attrs.push(`flexDirection="${dir}"`); if(just!=="flex-start") attrs.push(`justifyContent="${just}"`); if(align!=="flex-start") attrs.push(`alignItems="${align}"`); if(wrap!=="nowrap") attrs.push(`flexWrap="${wrap}"`);
+  if(gap) attrs.push(`gap={${gap}}`); if(W) attrs.push(`width={${W}}`); if(H) attrs.push(`height={${H}}`);
+  if(px) attrs.push(`paddingX={${px}}`); if(py) attrs.push(`paddingY={${py}}`); if(mx) attrs.push(`marginX={${mx}}`); if(my) attrs.push(`marginY={${my}}`);
+  if(border) attrs.push(`borderStyle="${border}" borderColor=${colExpr(bcol)}`); if(bdim) attrs.push("borderDimColor");
+  if(bg) attrs.push(`backgroundColor=${colExpr(bg)}`); if(over!=="visible") attrs.push(`overflow="${over}"`); if(disp!=="flex") attrs.push(`display="${disp}"`);
+  const hov=[]; if(scope) hov.push(`scope: "${scope}"`); if(hcol) hov.push(`borderColor: ${colExpr(hcol).replace(/[{}]/g,"")}`); if(hbg) hov.push(`backgroundColor: ${colExpr(hbg).replace(/[{}]/g,"")}`);
+  if(hov.length) attrs.push(`hover={{ ${hov.join(", ")} }}`);
+  const kidsJ=kidsAll.map((k,i)=>`  <Text${i===0?` color="claude" bold`:i===2?` color="warning"`:""}>${esc(k)}</Text>`).join("\n");
+  let warn=""; if(hov.length&&!keyed&&!scope) warn="\n// refused: hover on an unkeyed Box needs a scope";
+  $("bx-spec").textContent=`<Box ${attrs.join(" ")}>\n${kidsJ}\n</Box>${warn}`;
+}
+
+// ---------- TEXT ----------
+function textRender(){
+  const v=id=>$(id).value, on=id=>$(id).checked;
+  const t=v("tx-text"), color=v("tx-color"), bg=v("tx-bg"), wrap=v("tx-wrap"), room=+v("tx-room"), hv=v("tx-hover"), hovered=on("tx-hovered");
+  const chars=[...t]; let lines=[];
+  if(wrap==="wrap"){ for(let i=0;i<chars.length;i+=room) lines.push(chars.slice(i,i+room).join("")); }
+  else if(chars.length<=room) lines=[t];
+  else if(wrap==="truncate-start") lines=["…"+chars.slice(chars.length-room+1).join("")];
+  else if(wrap==="middle"||wrap==="truncate-middle"){ const h=Math.floor((room-1)/2); lines=[chars.slice(0,h).join("")+"…"+chars.slice(chars.length-(room-1-h)).join("")]; }
+  else lines=[chars.slice(0,room-1).join("")+"…"];
+  let st=[]; if(color) st.push(`color:${col(color)}`); if(bg) st.push(`background:${col(bg)}`);
+  let bold=on("tx-bold"), dim=on("tx-dim"), italic=on("tx-italic"), under=on("tx-under"), strike=on("tx-strike"), inverse=on("tx-inverse");
+  if(hovered&&hv){ if(hv==="bold") bold=true; if(hv==="under") under=true; if(hv==="inverse") inverse=true; if(hv==="color") st=[...st.filter(x=>!x.startsWith("color")),`color:${col("claude")}`]; }
+  if(bold) st.push("font-weight:700"); if(dim) st.push("opacity:.55"); if(italic) st.push("font-style:italic");
+  const deco=[under?"underline":"",strike?"line-through":""].filter(Boolean).join(" "); if(deco) st.push(`text-decoration:${deco}`);
+  if(inverse) st.push(`background:${col("text")};color:${col("inverseText")}`);
+  const ruler=span("┆"+" ".repeat(room-2)+"┆",`color:${col("subtle")}`);
+  $("tx-term").innerHTML=ruler+"\n"+lines.map(l=>span(l,st.join(";"))).join("\n")+`\n${ruler}  ${span(`room ${room} cells`,"opacity:.5")}`;
+  const a=[]; if(color) a.push(`color=${colExpr(color)}`); if(bg) a.push(`backgroundColor=${colExpr(bg)}`);
+  [["tx-bold","bold"],["tx-dim","dimColor"],["tx-italic","italic"],["tx-under","underline"],["tx-strike","strikethrough"],["tx-inverse","inverse"]].forEach(([id,p])=>{if(on(id)) a.push(p);});
+  if(wrap!=="wrap") a.push(`wrap="${wrap}"`);
+  if(hv) a.push(`hover={{ ${hv==="bold"?"bold: true":hv==="under"?"underline: true":hv==="inverse"?"inverse: true":'color: "claude"'} }}`);
+  $("tx-spec").textContent=(hv?`<Box key="row">  {/* hover needs a keyed Box or a scope */}\n  `:"")+`<Text ${a.join(" ")}>${esc(t)}</Text>`+(hv?"\n</Box>":"");
+}
+
+// ---------- BUTTON ----------
+function buttonRender(){
+  const v=id=>$(id).value, on=id=>$(id).checked;
+  const label=v("bt-label"), key=v("bt-key"), hk=v("bt-hk"), action=v("bt-action").trim(), plain=on("bt-plain"), dim=on("bt-dim"), auto=on("bt-auto"), state=v("bt-state"), hv=v("bt-hover"), hovered=on("bt-hovered"), site=v("bt-site");
+  const accent=col("suggestion"); let lbl=[];
+  let lblStyle=dim&&state==="rest"?"opacity:.55":"";
+  if(hovered&&hv==="bold") lblStyle+=";font-weight:700"; if(hovered&&hv==="under") lblStyle+=";text-decoration:underline"; if(hovered&&hv==="color") lblStyle+=`;color:${col("claude")}`;
+  let html;
+  if(plain){ html=(hk&&site==="AbovePrompt"?span(hk,`color:${accent}`)+span(": ",lblStyle):"")+span(label,lblStyle); }
+  else html=span("[ ",lblStyle)+span(label,lblStyle)+span(" ]",lblStyle);
+  if(state==="pointer"||state==="focus") html=`<span style="background:${col("text")};color:${col("inverseText")}">${html.replace(/color:[^;"]+/g,"")}</span>`;
+  if(state==="focus") html=span("▸ ",`color:${col("claude")}`)+html;
+  const refused=hk&&site!=="AbovePrompt";
+  $("bt-term").innerHTML=(refused?span(`// hotkey="${hk}" refused: ${site} does not honour one\n`,`color:${col("error")}`):"")+html+`\n<span class="rule">${"─".repeat(Math.min(cols(),100))}</span>\n<span class="prompt">❯ </span>${state==="focus"?span("  (band focused: Enter presses ▸)","opacity:.5"):hk&&site==="AbovePrompt"?span(`  (empty composer: ${hk} presses)`,"opacity:.5"):""}`;
+  const a=[]; if(key&&key!==label) a.push(`key="${key}"`); if(hk) a.push(`hotkey="${hk}"`); if(action) a.push(`action="${action}"`); if(plain) a.push("plain"); if(dim) a.push("dimColor"); if(auto) a.push("autoFocus");
+  a.push(`label="${label}"`); if(hv) a.push(`hover={{ ${hv==="bold"?"bold: true":hv==="under"?"underline: true":'color: "claude"'} }}`);
+  a.push(`onPress={() => $.clock.after(0, () => rotate($))}`);
+  $("bt-spec").textContent=`on('ui.render', { component: '${site}' }, async ($, e, next) => {\n  const { Box, Button } = $.ui.resolve(e)\n  return <Box key="cs-rotate-band">{await next(e)}\n    <Button ${a.join(" ")} />\n  </Box>\n})`;
+}
+
+// ---------- INPUT ----------
+function inputRender(){
+  const v=id=>$(id).value, on=id=>$(id).checked;
+  const key=v("in-key"), label=v("in-label"), ph=v("in-ph"), val=v("in-val"), sub=v("in-submit")||"submit", auto=on("in-auto"), state=v("in-state"), oninput=on("in-oninput");
+  const W=Math.max(12,Math.min(cols()-20,40));
+  const field=val?pad(val,W):span(pad(ph,W),"opacity:.5");
+  const focused=state==="focus";
+  const box=span("[",`color:${col(focused?"claude":"promptBorder")}`)+(val?span(val):field)+(val?" ".repeat(Math.max(0,W-[...val].length)):"")+(focused?span("▏",`color:${col("claude")}`):"")+span("]",`color:${col(focused?"claude":"promptBorder")}`);
+  const tail=focused?"  "+span("⏎ "+sub,`color:${col("inactive")}`):"";
+  $("in-term").innerHTML=(label?span(label+" ",`color:${col("inactive")}`):"")+box+tail+`\n<span class="rule">${"─".repeat(Math.min(cols(),100))}</span>\n<span class="prompt">❯ </span>`;
+  const a=[`key="${key}"`]; if(label) a.push(`label="${label}"`); if(ph) a.push(`placeholder="${ph}"`); if(val) a.push(`value="${val}"`); if(sub!=="submit") a.push(`submitLabel="${sub}"`); if(auto) a.push("autoFocus");
+  $("in-spec").textContent=`<Input ${a.join(" ")}${oninput?`\n  onInput={(value, e) => { draft = value; $.ui.invalidate('ui.render') }}`:""}\n  onSubmit={(value, e) => $.clock.after(0, () => $.command.run({ command: 'rotate', args: value }))} />`;
+}
+
+// ---------- SELECT ----------
+function selectRender(){
+  const v=id=>$(id).value, on=id=>$(id).checked;
+  const key=v("se-key"), label=v("se-label"), state=v("se-state"), auto=on("se-auto");
+  const opts=v("se-opts").split("\n").map(l=>l.trim()).filter(Boolean).map(l=>{const [val,lab]=l.split("|");return {value:val.trim(),label:(lab||"").trim()};});
+  let val=v("se-val"); if(!opts.some(o=>o.value===val)) val=opts[0]?.value||"";
+  const cur=opts.find(o=>o.value===val); const shown=cur?(cur.label||cur.value):"";
+  let html=(label?span(label+" ",`color:${col("inactive")}`):"")+span("‹ ",`color:${col("promptBorder")}`)+span(shown)+span(" ›",`color:${col("promptBorder")}`);
+  if(state==="open") html+="\n"+opts.map(o=>(o.value===val?span("❯ ",`color:${col("claude")}`):"  ")+span(o.label||o.value,o.value===val?"font-weight:700":"")).join("\n");
+  const dupe=new Set(opts.map(o=>o.value)).size!==opts.length;
+  $("se-term").innerHTML=(dupe?span("// refused: option values must be unique\n",`color:${col("error")}`):"")+(opts.length?"":span("// refused: at least one option\n",`color:${col("error")}`))+html+`\n<span class="rule">${"─".repeat(Math.min(cols(),100))}</span>\n<span class="prompt">❯ </span>`;
+  const a=[`key="${key}"`]; if(label) a.push(`label="${label}"`); if(val) a.push(`value="${val}"`); if(auto) a.push("autoFocus");
+  $("se-spec").textContent=`<Select ${a.join(" ")}\n  options={[\n${opts.map(o=>`    { value: "${o.value}"${o.label?`, label: "${o.label}"`:""} },`).join("\n")}\n  ]}\n  onSelect={(value, e) => { picked = value; $.ui.invalidate('ui.render') }} />`;
+}
+
+// ---------- LINK ----------
+function linkRender(){
+  const href=$("ln-href").value, label=$("ln-label").value;
+  let ok=true, why=""; try{ const u=new URL(href); if(!(u.protocol==="https:"||(u.protocol==="http:"&&u.hostname==="localhost"))){ok=false;why="https: only (or http://localhost)";} if(u.username||/[^\x20-\x7e]/.test(href)||/\s/.test(href)) {ok=false;why="no user@host, space or non-ASCII";} if(href.length>2048){ok=false;why="over 2048 chars";} if(ok&&u.href!==href){why=`spelled as new URL(href).href → ${u.href}`;} }catch{ok=false;why="not a URL";}
+  $("ln-term").innerHTML=(ok?"":span(`// refused: ${why} — the whole tree the Link is in\n`,`color:${col("error")}`))+(ok&&why?span(`// note: ${why}\n`,"opacity:.5"):"")+span(label||href,`color:${col("suggestion")};text-decoration:underline`)+`\n<span class="rule">${"─".repeat(Math.min(cols(),100))}</span>\n<span class="prompt">❯ </span>`;
+  $("ln-spec").textContent=`<Link href="${href}"${label?` label="${label}"`:""} />`;
+}
+
+// ---------- CODE ----------
+function codeRender(){
+  const v=id=>$(id).value;
+  const format=v("cd-format"), lang=v("cd-lang"), path=v("cd-path"), start=+v("cd-start"), wrap=v("cd-wrap"), src=v("cd-src");
+  const room=Math.min(cols(),100)-8;
+  let lines=src.split("\n"), out=[];
+  const gutter=n=>span(String(n).padStart(4," ")+" ",`color:${col("inactive")}`);
+  const cut=l=>{ const c=[...l]; if(c.length<=room) return [esc(l)]; if(wrap==="truncate-end") return [esc(c.slice(0,room-1).join(""))+"…"]; const r=[]; for(let i=0;i<c.length;i+=room) r.push(esc(c.slice(i,i+room).join(""))); return r; };
+  if(format==="diff"){
+    const hunk=/^@@ -\d+(,\d+)? \+\d+(,\d+)? @@/; let a=0,b=0, parses=lines.some(l=>hunk.test(l));
+    if(!parses) out.push(span("// refused: source does not parse as unified-diff hunks","color:"+col("error")));
+    lines.forEach(l=>{
+      if(/^(---|\+\+\+) /.test(l)||/^\\ No newline/.test(l)) return;
+      const m=l.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/); if(m){a=+m[1];b=+m[2];out.push(span(l,`color:${col("suggestion")}`));return;}
+      const k=l[0], body=l.slice(1);
+      if(k==="+"){ out.push(span("     ",`color:${col("inactive")}`)+gutter(b++)+`<span style="background:${col("diffAdded")}">+ ${esc(body)}</span>`); }
+      else if(k==="-"){ out.push(gutter(a++)+span("     ",`color:${col("inactive")}`)+`<span style="background:${col("diffRemoved")}">- ${esc(body)}</span>`); }
+      else { out.push(gutter(a++)+gutter(b++)+"  "+esc(body)); }
+    });
+  } else {
+    const tokens=s=>esc(s).replace(/(\/\/.*)$/,m=>span(m,`color:${col("inactive")}`,"")).replace(/\b(const|let|async|await|return|if|export|function|on)\b/g,m=>span(m,`color:${col("suggestion")}`)).replace(/'([^']*)'/g,m=>span(m,`color:${col("success")}`));
+    lines.forEach((l,i)=>{ const parts=cut(l); parts.forEach((p,j)=>{ const g=start?(j===0?gutter(start+i):"     "):""; out.push(g+(parts.length===1?tokens(l):p)); }); });
+  }
+  const tooLong=src.length>10000, badCtl=/[^\t\n\x20-\uffff]/.test(src);
+  $("cd-term").innerHTML=(tooLong?span("// refused: over 10000 characters\n",`color:${col("error")}`):"")+(badCtl?span("// refused: a control character other than tab or newline\n",`color:${col("error")}`):"")+out.join("\n");
+  const a=[]; if(format!=="source") a.push(`format="diff"`); if(lang) a.push(`language="${lang}"`); if(path) a.push(`path="${path}"`); if(start&&format==="source") a.push(`startLine={${start}}`); if(wrap!=="wrap") a.push(`wrap="${wrap}"`);
+  $("cd-spec").textContent=`<Code ${a.join(" ")}\n  source={${JSON.stringify(src)}} />`;
+}
+$("cd-format").addEventListener("change",()=>{ if($("cd-format").value==="diff"&&!/^@@/m.test($("cd-src").value)) $("cd-src").value=`@@ -171,7 +171,7 @@ _curl_json() {\n     printf '%s' "$payload" > "$_body_file" || return 1\n     curl -s --max-time "$_limit" --config "$_cfg_file" \\\n-        -H 'Content-Type: application/json' --data-binary @"$_body_file" "$url" || rc=$?\n+        -H 'Content-Type: application/json' --data-binary @"$_body_file" -H "X-Trace: 1" "$url" || rc=$?\n     return "$rc"`; });
+
+// ---------- RASTER ----------
+function rgbToU32(rgb){ if(rgb==="default") return 0x01000000; const m=String(rgb).match(/(\d+),\s*(\d+),\s*(\d+)/); if(!m) return 0x01000000; return (+m[1]<<16)|(+m[2]<<8)|(+m[3]); }
+function u32ToCss(u){ if(u&0x01000000) return "transparent"; return `rgb(${(u>>16)&255},${(u>>8)&255},${u&255})`; }
+function encodeCells(cells){ const words=new Uint32Array(cells.length*3); cells.forEach((c,i)=>{words[i*3]=c[0];words[i*3+1]=c[1];words[i*3+2]=c[2];}); const bytes=new Uint8Array(words.buffer); let s=""; for(let i=0;i<bytes.length;i+=0x8000) s+=String.fromCharCode.apply(null,bytes.subarray(i,i+0x8000)); return btoa(s); }
+function rasterCells(C,R,pat,pct,fg,bg,tick){
+  const cells=[]; const fill=Math.round(C*pct/100);
+  for(let r=0;r<R;r++) for(let c=0;c<C;c++){
+    let cp=0x20, f=fg, b=bg;
+    if(pat==="meter"){ const idx=(c+tick)%C; cp=c<fill?0x2588:0x2591; if(c>=fill) f=rgbToU32(col("subtle")); void idx; }
+    else if(pat==="gradient"){ const t=c/(C-1||1); const from=[0x2C,0x7A,0x39], to=[0xD7,0x00,0x15]; const rr=Math.round(from[0]+(to[0]-from[0])*t), gg=Math.round(from[1]+(to[1]-from[1])*t), bb=Math.round(from[2]+(to[2]-from[2])*t); cp=c<fill?0x2588:0x2591; f=c<fill?((rr<<16)|(gg<<8)|bb):rgbToU32(col("subtle")); }
+    else if(pat==="braille"){ const h=Math.round(3*Math.abs(Math.sin((c+tick)/3+r)));  cp=[0x2800,0x2840,0x28C4,0x28E6][h]; }
+    else { cp=((c+r+tick)%2)?0x2588:0x2591; }
+    cells.push([cp,f,b]);
+  }
+  return cells;
+}
+let raTick=0, raTimer=null;
+function rasterRender(){
+  const v=id=>$(id).value;
+  const key=v("ra-key"), C=+v("ra-cols"), R=+v("ra-rows"), pat=v("ra-pat"), pct=+v("ra-pct"), fg=rgbToU32(col(v("ra-fg"))), bg=v("ra-bg")==="default"?0x01000000:rgbToU32(col(v("ra-bg")));
+  const cells=rasterCells(C,R,pat,pct,fg,bg,raTick);
+  let html=""; for(let r=0;r<R;r++){ for(let c=0;c<C;c++){ const [cp,f,b]=cells[r*C+c]; html+=`<span class="cell" style="color:${u32ToCss(f)};background:${u32ToCss(b)}">${String.fromCodePoint(cp)}</span>`; } html+="\n"; }
+  $("ra-term").innerHTML=html+span(`${C}×${R} cells, ${C*R*12} bytes before base64`,"opacity:.5")+`\n<span class="rule">${"─".repeat(Math.min(cols(),100))}</span>\n<span class="prompt">❯ </span>`;
+  const enc=encodeCells(cells);
+  $("ra-cells").textContent=enc.length>600?enc.slice(0,600)+`… (${enc.length} chars)`:enc;
+  const anim=$("ra-anim").checked;
+  $("ra-spec").textContent=`// build the cells: little-endian u32 triplets [codePoint, fg, bg], row-major\nconst words = new Uint32Array(${C} * ${R} * 3)\n// words[i*3] = 0x2588; words[i*3+1] = 0x${(fg>>>0).toString(16).padStart(8,"0")}; words[i*3+2] = 0x${(bg>>>0).toString(16).padStart(8,"0")}\nconst cells = new Uint8Array(words.buffer).toBase64()\n\n<Raster key="${key}" columns={${C}} rows={${R}} cells={cells} />${anim?`\n\n// repaint without a redraw, at the frame rate; requestId is the site's (the band's, a pane id, a tool_use_id)\nconst stop = $.clock.every(33, () => $.ui.blit({ requestId, key: "${key}", cells: frame() }))`:""}`;
+  if(anim&&!raTimer) raTimer=setInterval(()=>{raTick++;rasterRender();},120);
+  if(!anim&&raTimer){clearInterval(raTimer);raTimer=null;}
+}
+
+// ---------- CLIENT ----------
+function clientRender(){
+  const v=id=>$(id).value;
+  const key=v("cl-key"), mod=v("cl-module"), props=v("cl-props"), W=v("cl-width"), H=+v("cl-height")||3, grow=+v("cl-grow");
+  let pj="", bad=""; try{ pj=JSON.stringify(JSON.parse(props)); }catch{ bad="// refused: props must be plain JSON\n"; }
+  const badMod=!/^\.\/[\w.-]+\.(tsx|jsx|ts|js|mjs)$/.test(mod)?"// refused at load: module must be a literal relative path inside the plugin (./name.tsx|jsx|ts|js|mjs)\n":"";
+  const total=Math.min(cols(),100); const w=/%$/.test(W)?Math.round(total*parseInt(W)/100):(+W||30);
+  const body=[]; for(let r=0;r<H;r++) body.push(r===0?pad(` ${mod} · ${key}`,w-2):r===1?span(pad(`  props ${pj.slice(0,w-10)}`,w-2),"opacity:.6"):" ".repeat(w-2));
+  $("cl-term").innerHTML=(bad?span(bad,`color:${col("error")}`):"")+(badMod?span(badMod,`color:${col("error")}`):"")+frame(body,w-2,"single",`color:${col("subtle")}`)+`\n${span(`region ${w} cells × ${H} rows${grow?`, flexGrow ${grow}`:""}; the module draws inside from surface.elements`,"opacity:.5")}\n<span class="rule">${"─".repeat(total)}</span>\n<span class="prompt">❯ </span>`;
+  $("cl-spec").textContent=`// hooks/register.tsx\n<Client key="${key}" module="${mod}" props={${pj||"{}"}} width="${W}" height={${H}}${grow?` flexGrow={${grow}}`:""} />\n\n// ${mod.replace("./","")} — a surface module: (props, surface) => tree, on the drawing thread\nexport default function Preview(props, surface) {\n  const { Box, Text } = surface.elements\n  surface.onKey?.((k) => { /* k.key, k.ctrl, k.shift, k.meta; Escape never arrives */ })\n  return <Box flexDirection="column"><Text bold>{props.handoff}</Text></Box>\n}`;
+}
+
+// ---------- ROTATE (the shipped capsule lab) ----------
+const PRESETS=[
+ {name:"Today",why:"round box, theme keys, plain 1: label",cfg:{border:"round",fill:"none",inks:"theme",hk:"plain",gauge:"pie",mark:true,caps:false}},
+ {name:"Inked",why:"same shape, gauge and border in the bar's own amber and crit (shipped)",cfg:{border:"round",fill:"none",inks:"bar",hk:"plain",gauge:"pie",mark:true,caps:false}},
+ {name:"Bar capsule",why:"no border, the status bar's surface as fill: reads as a fourth capsule",cfg:{border:"none",fill:"surface",inks:"bar",hk:"plain",gauge:"pie",mark:true,caps:true}},
+ {name:"Band fill",why:"the fill is the band itself: amber at warn, red at crit, coral when armed",cfg:{border:"none",fill:"band",inks:"bar",hk:"plain",gauge:"pie",mark:true,caps:true}},
+ {name:"Meter",why:"ten cells instead of a pie, the number kept",cfg:{border:"round",fill:"none",inks:"bar",hk:"plain",gauge:"cells",mark:true,caps:false}},
+ {name:"Raster meter",why:"a Raster instead of glyphs: any color per cell, repaintable with blit",cfg:{border:"round",fill:"none",inks:"bar",hk:"plain",gauge:"raster",mark:true,caps:false}},
+ {name:"Bare line",why:"no box at all: mark, underlined hotkey, gauge; least chrome \u2014 but the hand-drawn hotkey is refused in practice: see the JSX",cfg:{border:"none",fill:"none",inks:"bar",hk:"under",gauge:"pie",mark:true,caps:false}},
+ {name:"Bold frame",why:"heavy border in the band colour, label alone",cfg:{border:"bold",fill:"none",inks:"bar",hk:"box",gauge:"number",mark:false,caps:false}},
+ {name:"Button",why:"the surface's own [ label ] button, no styling",cfg:{border:"none",fill:"none",inks:"theme",hk:"button",gauge:"off",mark:false,caps:false}},
+];
+const css=v=>getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+function pie(p){return p>=88?"●":p>=65?"◕":p>=40?"◑":p>=13?"◔":"○"}
+function bandTok(p,inks){ if(inks==="bar") return p>=65?css("--crit"):p>=40?css("--amber"):css("--neutral"); return p>=65?css("--error"):p>=40?css("--warning"):css("--texttok"); }
+function rcfg(){return {theme:theme(),ctx:+$("ctx").value,armed:$("armed").checked,border:$("border").value,fill:$("fill").value,inks:$("inks").value,hk:$("hk").value,gauge:$("gauge").value,mark:$("mark").checked,caps:$("caps").checked,hover:$("hover").checked,label:$("label").value};}
+function capsule(c){
+  const p=c.ctx, band=bandTok(p,c.inks), coral=css("--coral"), hot=css("--hot"), ink2=css("--ink2");
+  const armed=c.armed, label=armed?"/clear and continue from the handoff":c.label;
+  const edge=armed?coral:band;
+  const fillCol=c.fill==="surface"?css("--surface"):c.fill==="band"?edge:null;
+  const onFill=fillCol&&c.fill==="band"?"#FFFFFF":css("--ink");
+  const fg=fillCol?onFill:null;
+  let inner="";
+  if(c.mark) inner+=span("✳ ",`color:${fillCol&&c.fill==="band"?"#FFFFFF":coral};font-weight:700`);
+  const hkCol=fg||hot, lblCol=fg||"inherit";
+  if(c.hk==="plain") inner+=span("1",`color:${hkCol}`)+span(": "+label,`color:${lblCol}`);
+  else if(c.hk==="box") inner+=span("[1]",`color:${hkCol};font-weight:700`)+span(" "+label,`color:${lblCol}`);
+  else if(c.hk==="under") inner+=span("1",`color:${hkCol};text-decoration:underline;font-weight:700`)+span(" "+label,`color:${lblCol}`);
+  else inner+=span("[ "+label+" ]",`color:${lblCol}`);
+  if(c.gauge!=="off"){
+    inner+=span("  ·  ",`color:${fg||ink2}`);
+    const gcol=fg||band;
+    if(c.gauge==="pie") inner+=span(`${pie(p)} ctx ${p}%`,`color:${gcol};font-weight:700`);
+    else if(c.gauge==="cells"){const n=Math.round(p/10);inner+=span("█".repeat(n),`color:${gcol}`)+span("░".repeat(10-n),`color:${fg||ink2}`)+span(` ${p}%`,`color:${gcol};font-weight:700`);}
+    else if(c.gauge==="raster"){const n=Math.round(p/5);for(let i=0;i<20;i++){const t=i/19;inner+=`<span class="cell" style="color:${i<n?`rgb(${Math.round(44+(215-44)*t)},${Math.round(122-(122)*t)},${Math.round(57-(57-21)*t)})`:ink2}">${i<n?"█":"░"}</span>`;} inner+=span(` ${p}%`,`color:${gcol};font-weight:700`);}
+    else inner+=span(`ctx ${p}%`,`color:${gcol};font-weight:700`);
+  }
+  const w=vis(inner);
+  const hov=c.hover?" class=\"hov\"":"";
+  if(fillCol){
+    const body=`<span${hov} style="background:${fillCol};color:${onFill};padding:0 1px"> ${inner} </span>`;
+    const cap=c.caps?span("",`color:${fillCol}`):"", capR=c.caps?span("",`color:${fillCol}`):"";
+    return (c.caps?"":" ")+cap+body+capR+"\n";
+  }
+  if(c.border==="none") return " "+`<span${hov}>${inner}</span>`+"\n";
+  return frame([" "+`<span${hov}>${inner}</span>`+" "],w+2,c.border,`color:${edge}`)+"\n";
+}
+function bar(c){
+  const p=c.ctx, cap=(t)=>`<span class="cap">${esc(t)}</span>`, caps=c.caps?`<span class="cap-caps"></span>`:" ", capsR=c.caps?`<span class="cap-caps"></span>`:" ";
+  const g=`${pie(p)} ctx ${p}%`;
+  return `<div class="bar">${caps}${cap(" ✳ claude-sessions  ·  ⎇ main ")}${capsR} ${caps}${cap(" ✦ Fable 5.1 low ")}${capsR} ${caps}${cap(" "+g+" ◷ 5h 18% ⋮ ◶ wk 51% ")}${capsR}</div>`;
+}
+function terminal(c,small){
+  const top=small?"":`<span class="dim">⏺ ok\n\n✻ Cooked for 11s · done 4:54 PM</span>\n\n`;
+  return top+capsule(c)+`<span class="rule">${"─".repeat(small?44:72)}</span>\n<span class="prompt">❯ </span>\n<span class="rule">${"─".repeat(small?44:72)}</span>`+bar(c)+`\n<span class="dim">  ⏵⏵ auto mode on (shift+tab to cycle)</span>`;
+}
+function rjsx(c){
+  const band=c.inks==="bar"?"gaugeInk(percent, bands)":"gaugeColor(percent, bands)";
+  const border=c.border==="none"?"":`borderStyle="${c.border}" borderColor={armed ? ${c.inks==="bar"?"CORAL":"'claude'"} : ${band}} `;
+  const fill=c.fill==="none"?"":`backgroundColor={${c.fill==="surface"?"SURFACE":"armed ? CORAL : "+band}} `;
+  const key=c.hover?`key="cs-rotate-band" `:"";
+  const lbl=c.armed?"/clear and continue from the handoff":c.label;
+  const hk=c.hk==="button"?`<Button key="cs-rotate" hotkey="1" label="${lbl}" onPress={press} />`
+    :c.hk==="plain"?`<Button key="cs-rotate" hotkey="1" plain label="${lbl}" onPress={press} />`
+    :`<Text color=${c.inks==="bar"?"{HOT}":"'suggestion'"} ${c.hk==="under"?"underline ":""}bold>1</Text><Text> ${lbl}</Text>\n    <Button key="cs-rotate" hotkey="1" plain label="" onPress={press} />\n    {/* REFUSED as drawn: a plain Button prints "1: " even with an empty label (measured on 2.1.273), so this draws the hotkey twice. Let the engine draw it, or draw it by hand and give the press to something that is not a Button. */}`;
+  const gauge=c.gauge==="off"?"":c.gauge==="pie"?`\n    <Text dimColor>{'  ·  '}</Text><Text color={${band}} bold>{\`\${pie(percent, bands)} ctx \${percent}%\`}</Text>`
+    :c.gauge==="cells"?`\n    <Text dimColor>{'  ·  '}</Text><Text color={${band}}>{'█'.repeat(n)}</Text><Text dimColor>{'░'.repeat(10-n)}</Text><Text bold> {percent}%</Text>`
+    :c.gauge==="raster"?`\n    <Text dimColor>{'  ·  '}</Text><Raster key="ctx-meter" columns={20} rows={1} cells={meterCells(percent)} /><Text color={${band}} bold> {percent}%</Text>  {/* $.ui.blit repaints it */}`
+    :`\n    <Text dimColor>{'  ·  '}</Text><Text color={${band}} bold>ctx {percent}%</Text>`;
+  const caps=c.caps?`\n  {/* rounded caps: <Text color={SURFACE}>{'\\uE0B6'}</Text> … {'\\uE0B4'} — needs the caps font */}`:"";
+  return `<Box ${key}${border}${fill}paddingX={1}${c.hover?' hover={{ borderColor: CORAL }}':''}>${caps}\n  ${c.mark?`<Text color=${c.inks==="bar"?"{CORAL}":"'claude'"} bold>{'\\u2733 '}</Text>\n  `:""}${hk}${gauge}\n</Box>`;
+}
+function rotateRender(){
+  const c=rcfg();
+  $("ctxv").textContent=c.ctx+"%  ("+(c.ctx>=65?"crit":c.ctx>=40?"warn":"neutral")+")";
+  $("work").innerHTML=terminal(c,false);
+  $("spec").textContent=rjsx(c);
+  const g=$("gallery"); g.innerHTML="";
+  PRESETS.forEach(p=>{
+    const pc=Object.assign({},c,p.cfg);
+    const d=document.createElement("div"); d.className="card"; d.tabIndex=0;
+    const same=Object.keys(p.cfg).every(k=>String(c[k])===String(p.cfg[k])); if(same) d.classList.add("active");
+    d.innerHTML=`<div class="name">${p.name}</div><div class="term">${terminal(pc,true)}</div><p class="why">${p.why}</p>`;
+    const apply=()=>{Object.entries(p.cfg).forEach(([k,v])=>{const el=$(k);if(el.type==="checkbox")el.checked=v;else el.value=v;});renderAll();};
+    d.onclick=apply; d.onkeydown=e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();apply();}};
+    g.appendChild(d);
+  });
+}
+
+// ---------- COVERAGE ----------
+const KNOWN={
+  BoxProps:["key","hover","flexDirection","flexGrow","flexShrink","flexWrap","alignItems","alignSelf","justifyContent","gap","columnGap","rowGap","width","height","minWidth","minHeight","margin","marginX","marginY","marginTop","marginBottom","marginLeft","marginRight","padding","paddingX","paddingY","paddingTop","paddingBottom","paddingLeft","paddingRight","borderStyle","borderColor","borderDimColor","backgroundColor","overflow","display"],
+  TextProps:["hover","color","backgroundColor","dimColor","bold","italic","underline","strikethrough","inverse","wrap"],
+  ButtonProps:["key","label","hotkey","action","plain","dimColor","autoFocus","hover","onPress"],
+  InputProps:["key","label","placeholder","value","submitLabel","autoFocus","onInput","onSubmit"],
+  SelectProps:["key","label","options","value","autoFocus","onSelect"],
+  LinkProps:["href","label"],
+  CodeProps:["source","language","path","startLine","format","wrap"],
+  RasterProps:["key","columns","rows","cells"],
+  ClientProps:["key","module","props","width","height","flexGrow"],
+};
+function coverage(){
+  const txt=$("cov-in").value.trim();
+  let out="Known to the page:\n"+Object.entries(KNOWN).map(([k,v])=>`  ${k}: ${v.length} props`).join("\n");
+  if(txt){
+    const missing=[], extra=[]; const seen={};
+    txt.split("\n").forEach(l=>{const [t,p]=l.trim().split(/\s+/); if(!t||!p) return; (seen[t]=seen[t]||[]).push(p); if(!KNOWN[t]||!KNOWN[t].includes(p)) missing.push(`${t}.${p}`);});
+    Object.entries(KNOWN).forEach(([t,ps])=>ps.forEach(p=>{ if(seen[t]&&!seen[t].includes(p)) extra.push(`${t}.${p}`); }));
+    out+=`\n\nIn the contract, not on the page: ${missing.length?"\n  "+missing.join("\n  "):"(none)"}\nOn the page, not in the pasted contract: ${extra.length?"\n  "+extra.join("\n  "):"(none)"}`;
+  }
+  $("cov-out").textContent=out;
+}
+
+
+// ---------- COMPOSE ----------
+// One tree, edited in place. Nodes carry an id so the outline can name the
+// selection without holding a reference the re-render would stale.
+const CP_SCHEMA={
+  Box:[
+    ["key","text","a key scopes hover and keeps the node's identity across redraws"],
+    ["flexDirection","select",["row","column","row-reverse","column-reverse"]],
+    ["justifyContent","select",["flex-start","center","flex-end","space-between","space-around","space-evenly"]],
+    ["alignItems","select",["flex-start","center","flex-end"]],
+    ["gap","num"],["flexGrow","num"],["width","num"],["height","num"],
+    ["borderStyle","select",["","single","double","round","bold","singleDouble","doubleSingle","classic","arrow"]],
+    ["borderColor","color"],["borderDimColor","bool"],
+    ["paddingX","num"],["paddingY","num"],["marginX","num"],["marginY","num"],
+    ["backgroundColor","color"],
+    ["overflow","select",["visible","hidden"]],["display","select",["flex","none"]],
+    ["hoverBorderColor","color","hover={{ borderColor }} — needs a key"],
+    ["hoverBackgroundColor","color","hover={{ backgroundColor }} — needs a key"],
+  ],
+  Text:[
+    ["text","text","what it says"],
+    ["color","color"],["backgroundColor","color"],
+    ["bold","bool"],["dimColor","bool"],["italic","bool"],["underline","bool"],["strikethrough","bool"],["inverse","bool"],
+    ["wrap","select",["wrap","end","middle","truncate","truncate-start","truncate-middle","truncate-end"]],
+    ["flexGrow","num"],
+  ],
+  Button:[
+    ["label","text"],["key","text"],["hotkey","text","a digit or a letter the band arms"],
+    ["action","text","a keybinding to run instead of onPress"],
+    ["plain","bool"],["dimColor","bool"],["autoFocus","bool"],["flexGrow","num"],
+  ],
+};
+let cpId=0;
+const cpNode=(type,props,kids)=>({id:++cpId,type,props:props||{},kids:kids||[]});
+let cpTree=null, cpSel=0;
+
+function cpRotatePreset(){
+  const band=cpNode("Box",{key:"cs-rotate-band",borderStyle:"round",borderColor:"CORAL",paddingX:1,hoverBorderColor:"CORAL"},[
+    cpNode("Text",{text:"✳ ",color:"CORAL",bold:true}),
+    cpNode("Button",{key:"cs-rotate",hotkey:"1",plain:true,label:"rotate this conversation"}),
+    cpNode("Text",{text:"  ·  ",dimColor:true}),
+    cpNode("Button",{key:"cs-wrap",hotkey:"2",plain:true,label:"wrap up this session"}),
+    cpNode("Text",{text:"  ·  ",dimColor:true}),
+    cpNode("Text",{text:"█████",color:"warning"}),
+    cpNode("Text",{text:"░░░░░",dimColor:true}),
+    cpNode("Text",{text:" 47%",color:"warning",bold:true}),
+  ]);
+  return cpNode("Box",{flexDirection:"column"},[band]);
+}
+// The tree the editor holds carries editor-only props (text, hoverBorderColor);
+// this is the shape the engine and the JSX printer read.
+function cpToEngine(n){
+  const p=Object.assign({},n.props);
+  const text=p.text||""; delete p.text;
+  const hb=p.hoverBorderColor, hg=p.hoverBackgroundColor;
+  delete p.hoverBorderColor; delete p.hoverBackgroundColor;
+  if(hb||hg){ p.hover={}; if(hb) p.hover.borderColor=hb; if(hg) p.hover.backgroundColor=hg; }
+  Object.keys(p).forEach(k=>{ if(p[k]===""||p[k]===false||p[k]===undefined) delete p[k]; });
+  if(n.type==="Text") return {type:"Text",props:p,children:[text]};
+  if(n.type==="Button") return {type:"Button",props:p,children:[]};
+  return {type:"Box",props:p,children:n.kids.map(cpToEngine)};
+}
+function cpFind(n,id,parent){ if(n.id===id) return {node:n,parent:parent}; for(const k of n.kids){ const hit=cpFind(k,id,n); if(hit) return hit; } return null; }
+function cpSelected(){ return cpFind(cpTree,cpSel,null)||{node:cpTree,parent:null}; }
+
+function cpOutline(n,depth){
+  const sum=n.type==="Text"?(n.props.text||"").slice(0,24):n.type==="Button"?(n.props.label||""):`${n.kids.length} child${n.kids.length===1?"":"ren"}`;
+  let html=`<li><button type="button" class="node${n.id===cpSel?" on":""}" data-node="${n.id}"><span class="ty">${n.type}</span><span class="sum">${esc(sum)}</span></button>`;
+  if(n.kids.length) html+=`<ul>${n.kids.map(k=>cpOutline(k,depth+1)).join("")}</ul>`;
+  return html+"</li>";
+}
+function cpInspector(){
+  const n=cpSelected().node, rows=CP_SCHEMA[n.type]||[];
+  return rows.map(([name,kind,extra])=>{
+    const v=n.props[name], hint=typeof extra==="string"?` title="${esc(extra)}"`:"";
+    if(kind==="bool") return `<label class="inline"${hint}><input type="checkbox" name="${name}" data-prop="${name}" data-kind="bool"${v?" checked":""}> ${name}</label>`;
+    if(kind==="num") return `<label${hint}>${name} <input type="number" name="${name}" data-prop="${name}" data-kind="num" value="${v===undefined?"":v}" style="width:80px"></label>`;
+    if(kind==="color") return `<label${hint}>${name} <select name="${name}" data-prop="${name}" data-kind="text" class="cpcolor">${cpColorOptions(v)}</select></label>`;
+    if(kind==="select") return `<label${hint}>${name} <select name="${name}" data-prop="${name}" data-kind="text">${(extra||[]).map(o=>`<option value="${o}"${String(v||"")===o?" selected":""}>${o||"(none)"}</option>`).join("")}</select></label>`;
+    return `<label${hint}>${name} <input type="text" name="${name}" data-prop="${name}" data-kind="text" value="${esc(String(v==null?"":v)).replace(/"/g,"&quot;")}"></label>`;
+  }).join("");
+}
+function cpColorOptions(v){
+  const raw=Object.keys(RAW);
+  const opts=['<option value="">(none)</option>'].concat(
+    Object.keys(PALETTE).map(k=>`<option value="${k}"${v===k?" selected":""}>${k}</option>`),
+    raw.map(k=>`<option value="${k}"${v===k?" selected":""}>${k} (const)</option>`));
+  return opts.join("");
+}
+// Grid of cells -> spans, one span per run of cells that share a style.
+function cpPaint(g){
+  return g.rows.map(row=>{
+    let html="",i=0;
+    while(i<row.length){
+      const st=row[i].st; let j=i,txt="";
+      while(j<row.length&&row[j].st===st){ txt+=row[j].ch; j++; }
+      const css=[];
+      if(st.color) css.push(`color:${col(st.color)}`);
+      if(st.bg) css.push(`background:${col(st.bg)}`);
+      if(st.bold) css.push("font-weight:700");
+      if(st.dim) css.push("opacity:.55");
+      if(st.italic) css.push("font-style:italic");
+      const deco=[st.underline?"underline":"",st.strikethrough?"line-through":""].filter(Boolean).join(" ");
+      if(deco) css.push(`text-decoration:${deco}`);
+      if(st.inverse) css.push(`background:${col("text")};color:${col("inverseText")}`);
+      html+=span(txt,css.join(";"));
+      i=j;
+    }
+    return html;
+  }).join("\n");
+}
+function composeRender(){
+  if(!cpTree) cpTree=cpLoad()||cpRotatePreset();
+  $("cp-tree").innerHTML=`<ul>${cpOutline(cpTree,0)}</ul>`;
+  $("cp-insp").innerHTML=cpInspector();
+  const tree=cpToEngine(cpTree);
+  const refused=ModLayout.validate(tree);
+  $("cp-refuse").innerHTML=refused.length?`<p class="refuse">${refused.map(esc).join("<br>")}</p>`:"";
+  const g=ModLayout.layout(tree,cols());
+  // A band wider than the terminal is clipped here, as the terminal clips it.
+  // Yoga would shrink a Text to fit; the canvas does not, so it says so rather
+  // than drawing a band that could never look like this.
+  const over=g.w>cols();
+  const shown=over?{w:cols(),h:g.h,rows:g.rows.map(r=>r.slice(0,cols()))}:g;
+  $("cp-term").innerHTML=cpPaint(shown)+`\n<span class="rule">${"─".repeat(Math.min(cols(),100))}</span>\n<span class="prompt">❯ </span>`;
+  $("cp-over").innerHTML=over?`<p class="why">The tree measures ${g.w} cells and the band has ${cols()}: clipped above. The engine would shrink a Text to fit; the canvas does not, so narrow it by hand.</p>`:"";
+  $("cp-spec").textContent=ModLayout.toJsx(tree);
+  cpSave();
+}
+function cpSave(){ try{ localStorage.setItem("mods-lab-band",JSON.stringify(cpTree)); }catch{} }
+function cpLoad(){ try{ const raw=localStorage.getItem("mods-lab-band"); if(!raw) return null; const t=JSON.parse(raw); cpId=cpMaxId(t); return t; }catch{ return null; } }
+function cpMaxId(n){ return n.kids.reduce((a,k)=>Math.max(a,cpMaxId(k)),n.id||0); }
+function cpAdd(type){
+  const {node,parent}=cpSelected();
+  const fresh=type==="Text"?cpNode("Text",{text:"new text"}):type==="Button"?cpNode("Button",{label:"press me",plain:true}):cpNode("Box",{});
+  if(node.type==="Box"){ node.kids.push(fresh); }
+  else if(parent){ parent.kids.splice(parent.kids.indexOf(node)+1,0,fresh); }
+  else { cpTree.kids.push(fresh); }
+  cpSel=fresh.id; composeRender();
+}
+function cpMove(d){
+  const {node,parent}=cpSelected(); if(!parent) return;
+  const i=parent.kids.indexOf(node), j=i+d;
+  if(j<0||j>=parent.kids.length) return;
+  parent.kids.splice(i,1); parent.kids.splice(j,0,node); composeRender();
+}
+function cpDelete(){
+  const {node,parent}=cpSelected(); if(!parent) return;
+  parent.kids.splice(parent.kids.indexOf(node),1); cpSel=parent.id; composeRender();
+}
+function composeUI(){
+  $("cp-tree").addEventListener("click",e=>{ const b=e.target.closest("[data-node]"); if(!b) return; cpSel=+b.dataset.node; composeRender(); });
+  document.querySelectorAll("[data-add]").forEach(b=>b.onclick=()=>cpAdd(b.dataset.add));
+  $("cp-up").onclick=()=>cpMove(-1); $("cp-down").onclick=()=>cpMove(1); $("cp-del").onclick=cpDelete;
+  $("cp-preset").onclick=()=>{ cpTree=cpRotatePreset(); cpSel=0; composeRender(); };
+  $("cp-insp").addEventListener("input",e=>{
+    const el=e.target, name=el.dataset.prop; if(!name) return;
+    const n=cpSelected().node;
+    if(el.dataset.kind==="bool") n.props[name]=el.checked;
+    else if(el.dataset.kind==="num") n.props[name]=el.value===""?undefined:+el.value;
+    else n.props[name]=el.value;
+    if(n.props[name]===undefined||n.props[name]===""||n.props[name]===false) delete n.props[name];
+    const keep=document.activeElement===el?[name,el.selectionStart]:null;
+    composeRender();
+    if(keep){ const again=$("cp-insp").querySelector(`[data-prop="${keep[0]}"]`); if(again){ again.focus(); if(again.setSelectionRange&&keep[1]!=null) try{ again.setSelectionRange(keep[1],keep[1]); }catch{} } }
+  });
+}
+
+// ---------- shell: rail, hotkeys, finder, copy ----------
+const NAV=[
+  {grp:"Compose"},{id:"compose",hk:"d",label:"Band designer",cnt:"canvas"},
+  {grp:"Where"},{id:"sites",hk:"1",label:"Render sites",cnt:"14"},
+  {grp:"Elements"},{id:"box",hk:"2",label:"Box",cnt:"36 props"},{id:"text",hk:"3",label:"Text",cnt:"10"},{id:"button",hk:"4",label:"Button",cnt:"9"},{id:"input",hk:"5",label:"Input",cnt:"8"},{id:"select",hk:"6",label:"Select",cnt:"6"},{id:"link",hk:"7",label:"Link",cnt:"2"},{id:"code",hk:"8",label:"Code",cnt:"6"},{id:"raster",hk:"9",label:"Raster",cnt:"4"},{id:"client",hk:"0",label:"Client",cnt:"6"},
+  {grp:"Reference"},{id:"borders",hk:"b",label:"Border styles",cnt:"8"},{id:"palette",hk:"p",label:"Palette",cnt:"17"},{id:"rules",hk:"u",label:"Rules"},
+  {grp:"cs mod"},{id:"rotate",hk:"r",label:"Rotate capsule",cnt:"9 presets"},{id:"coverage",hk:"c",label:"Coverage check"},
+];
+const PANELS=NAV.filter(n=>n.id);
+function buildRail(){
+  const r=$("rail"); r.innerHTML="";
+  NAV.forEach(n=>{ if(n.grp){ r.insertAdjacentHTML("beforeend",`<div class="grp">${n.grp}</div>`); return; }
+    r.insertAdjacentHTML("beforeend",`<a href="#${n.id}" data-id="${n.id}"><span class="hk">${n.hk}</span>${n.label}${n.cnt?`<span class="cnt">${n.cnt}</span>`:""}</a>`); });
+}
+function show(id,push=true){
+  if(!PANELS.some(p=>p.id===id)) id="compose";
+  document.querySelectorAll(".panel").forEach(p=>p.classList.toggle("on",p.id==="p-"+id));
+  document.querySelectorAll(".rail a").forEach(a=>a.classList.toggle("on",a.dataset.id===id));
+  if(push&&location.hash!=="#"+id) history.replaceState(null,"","#"+id);
+  $("rail").querySelector("a.on")?.scrollIntoView({block:"nearest"});
+  requestAnimationFrame(()=>window.scrollTo({top:0,behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth"}));
+}
+history.scrollRestoration="manual";
+const current=()=>PANELS.findIndex(p=>document.getElementById("p-"+p.id).classList.contains("on"));
+function step(d){ const i=current(); show(PANELS[(i+d+PANELS.length)%PANELS.length].id); }
+// The same rule the band follows: a hotkey presses from an empty composer, never while typing.
+document.addEventListener("keydown",e=>{
+  const typing=/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName||"");
+  if(e.key==="Escape"){ $("finder").classList.remove("on"); document.activeElement?.blur(); return; }
+  if(typing) return;
+  if(e.key==="/"){ e.preventDefault(); openFinder(); return; }
+  if(e.key==="ArrowDown"||e.key==="j"){ e.preventDefault(); step(1); return; }
+  if(e.key==="ArrowUp"||e.key==="k"){ e.preventDefault(); step(-1); return; }
+  if(e.key==="t"){ $("theme").value=theme()==="light"?"dark":"light"; renderAll(); return; }
+  const hit=PANELS.find(p=>p.hk===e.key); if(hit) show(hit.id);
+});
+window.addEventListener("hashchange",()=>show(location.hash.slice(1),false));
+// Copy buttons on every JSX block.
+function copyButtons(){
+  document.querySelectorAll("pre.spec").forEach(pre=>{
+    if(pre.parentElement.classList.contains("specwrap")) return;
+    const w=document.createElement("div"); w.className="specwrap"; pre.replaceWith(w); w.appendChild(pre);
+    const b=document.createElement("button"); b.className="copy"; b.textContent="copy"; b.type="button";
+    b.onclick=async()=>{ try{ await navigator.clipboard.writeText(pre.textContent); b.textContent="copied"; b.classList.add("done"); setTimeout(()=>{b.textContent="copy";b.classList.remove("done");},1200); }catch{ b.textContent="select it"; } };
+    w.appendChild(b);
+  });
+}
+// A knob change flashes the preview it changed, so the eye lands on what moved.
+function tick(el){ if(!el) return; el.classList.remove("tick"); void el.offsetWidth; el.classList.add("tick"); clearTimeout(el._t); el._t=setTimeout(()=>el.classList.remove("tick"),350); }
+// Finder: every prop and site name → the panel that has it.
+const INDEX=[];
+function buildIndex(){
+  Object.entries(KNOWN).forEach(([t,ps])=>{ const id=t.replace("Props","").toLowerCase(); ps.forEach(p=>INDEX.push({k:p,where:t.replace("Props",""),id})); });
+  SITES.forEach(s=>{ INDEX.push({k:s.name,where:"render site",id:"sites"}); s.props.forEach(p=>INDEX.push({k:p[0].replace("?",""),where:s.name,id:"sites"})); });
+  Object.keys(BORDERS).forEach(b=>INDEX.push({k:b,where:"borderStyle",id:"borders"}));
+  Object.keys(PALETTE).forEach(c=>INDEX.push({k:c,where:"theme key",id:"palette"}));
+  ["invalidate","blit","toast","log","clock.every","clock.after","open","close","focus","scroll","hotkey rule","surfaces"].forEach(k=>INDEX.push({k,where:"rules",id:"rules"}));
+}
+function openFinder(){ const f=$("finder"); f.classList.add("on"); const i=f.querySelector("input"); i.value=""; i.focus(); renderHits(""); }
+function renderHits(q){
+  const hits=$("finder").querySelector(".hits"); q=q.trim().toLowerCase();
+  const list=(q?INDEX.filter(x=>x.k.toLowerCase().includes(q)||x.where.toLowerCase().includes(q)):INDEX.slice(0,12)).slice(0,40);
+  hits.innerHTML=list.map((x,i)=>`<div class="hit${i===0?" on":""}" data-id="${x.id}"><code>${esc(x.k)}</code><span class="where">${esc(x.where)}</span></div>`).join("")||`<div class="hit">nothing named that</div>`;
+  hits.querySelectorAll(".hit[data-id]").forEach(h=>h.onclick=()=>{ show(h.dataset.id); $("finder").classList.remove("on"); });
+}
+function finderUI(){
+  document.body.insertAdjacentHTML("beforeend",`<div class="finder" id="finder" role="dialog" aria-label="find a prop"><input type="text" placeholder="prop, element, site, theme key…" aria-label="find"><div class="hits"></div></div>`);
+  const f=$("finder"), i=f.querySelector("input");
+  i.addEventListener("input",()=>renderHits(i.value));
+  i.addEventListener("keydown",e=>{ const hs=[...f.querySelectorAll(".hit[data-id]")]; let n=hs.findIndex(h=>h.classList.contains("on"));
+    if(e.key==="ArrowDown"){e.preventDefault(); hs[n]?.classList.remove("on"); hs[Math.min(hs.length-1,n+1)]?.classList.add("on");}
+    else if(e.key==="ArrowUp"){e.preventDefault(); hs[n]?.classList.remove("on"); hs[Math.max(0,n-1)]?.classList.add("on");}
+    else if(e.key==="Enter"){ hs[n]?.click(); }
+    else if(e.key==="Escape"){ f.classList.remove("on"); } });
+  document.addEventListener("click",e=>{ if(f.classList.contains("on")&&!f.contains(e.target)) f.classList.remove("on"); });
+}
+
+// ---------- wire ----------
+function renderAll(){
+  document.documentElement.setAttribute("data-theme",theme());
+  drawScreens(); composeRender(); boxRender(); textRender(); buttonRender(); inputRender(); selectRender(); linkRender(); codeRender(); rasterRender(); clientRender(); bordersGallery(); swatches(); rotateRender(); coverage();
+}
+sitesUI(); composeUI(); buildRail(); buildIndex(); finderUI();
+const headH=()=>document.documentElement.style.setProperty("--head-h",document.querySelector(".head").offsetHeight+"px"); new ResizeObserver(headH).observe(document.querySelector(".head")); headH();
+document.querySelectorAll("input,select,textarea").forEach(el=>el.addEventListener("input",()=>{ renderAll(); tick(el.closest(".lab")?.querySelector(".term")); }));
+renderAll(); copyButtons();
+show(location.hash.slice(1)||"compose",false);
+</script>

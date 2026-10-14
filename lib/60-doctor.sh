@@ -1,0 +1,945 @@
+# ABOUTME: Health checks for keychain, hooks, shadow ref, memory, statusline, and tokens.
+# ABOUTME: Backs 'cs -doctor' / 'cs -diag'.
+
+_doctor_ok()   { printf "  ${GREEN}[ OK ]${NC} %s\n" "$1"; }
+_doctor_warn() { printf "  ${YELLOW}[WARN]${NC} %s\n" "$1"; DOCTOR_WARN=$((DOCTOR_WARN+1)); }
+_doctor_fail() { printf "  ${RED}[FAIL]${NC} %s\n" "$1"; DOCTOR_FAIL=$((DOCTOR_FAIL+1)); }
+
+# True when the settings file parses as JSON. Every settings check below reads
+# it through jq with stderr discarded, where a parse failure is indistinguishable
+# from an empty result — which is how a single syntax error produced a screen of
+# OKs: no hooks missing, no hook paths broken, "0 hooks, 0 MCPs", statusline
+# "not registered (optional)". Consumers ask this first and say "unreadable"
+# instead of "none".
+# CALLERS MUST CHECK `command -v jq` FIRST. With no jq this returns false via
+# exit 127, which is indistinguishable from a parse failure — so an unguarded
+# caller states, falsely and with confidence, that a perfectly good settings
+# file is malformed. That is the lying-diagnostic class this whole family of
+# gates exists to remove.
+_doctor_settings_parse_ok() {  # settings
+    jq -e . "$1" >/dev/null 2>&1
+}
+
+_doctor_check_settings_valid() {
+    local settings="${CS_CLAUDE_DIR:-$HOME/.claude}/settings.json"
+    # A missing file is the hooks check's story to tell, with its own advice.
+    [ -f "$settings" ] || return 0
+    if ! command -v jq >/dev/null 2>&1; then
+        _doctor_warn "Settings: jq not installed; $settings could not be validated"
+        return 0
+    fi
+    if _doctor_settings_parse_ok "$settings"; then
+        _doctor_ok "Settings: $settings is valid JSON"
+    else
+        _doctor_fail "Settings: $settings is not valid JSON — fix it first; every check below that reads it is unreliable"
+    fi
+}
+
+_doctor_check_keychain() {
+    local script
+    if ! script=$(find_secrets_script); then
+        _doctor_warn "Keychain: cs-secrets binary not found on PATH"
+        return
+    fi
+    local backend_line
+    backend_line=$("$script" backend 2>/dev/null | grep '^Storage backend:' | head -1 || true)
+    if [ -z "$backend_line" ]; then
+        _doctor_fail "Keychain: cs-secrets backend check failed"
+        return
+    fi
+    _doctor_ok "Keychain: ${backend_line#Storage backend: }"
+}
+
+_doctor_check_hooks_registered() {
+    local hooks_dir="$HOOKS_DEPLOY_DIR"
+    local settings="${CS_CLAUDE_DIR:-$HOME/.claude}/settings.json"
+    if [ ! -f "$settings" ]; then
+        _doctor_warn "Hooks: $settings not found (cs may not be installed via install.sh)"
+        return
+    fi
+    if [ ! -d "$hooks_dir" ]; then
+        _doctor_warn "Hooks: directory $hooks_dir not found"
+        return
+    fi
+    local names registered missing=()
+    names=$(cd "$hooks_dir" && ls *.sh 2>/dev/null || true)
+    [ -z "$names" ] && { _doctor_warn "Hooks: no .sh files in $hooks_dir"; return; }
+    if ! command -v jq >/dev/null 2>&1; then
+        _doctor_warn "Hooks: jq not installed; registration in $settings could not be checked"
+        return
+    fi
+    if ! _doctor_settings_parse_ok "$settings"; then
+        _doctor_fail "Hooks: cannot read $settings (invalid JSON); registration unknown"
+        return
+    fi
+    # The registered set is the hook COMMANDS, not the whole file. Matching the
+    # file as text passed a broken install whenever a hook path lingered in an
+    # unrelated permission rule or env value: the hook never fires, and doctor
+    # called the install healthy.
+    registered=$(jq -r '.hooks // {} | to_entries[].value[].hooks[]?.command // empty' "$settings" 2>/dev/null || true)
+    local name lib is_lib
+    while IFS= read -r name; do
+        [ -z "$name" ] && continue
+        # Hook libraries are sourced by the hooks, never invoked by Claude Code,
+        # so they ship into the deploy dir without ever being named in
+        # settings.json. Absent this skip, the glob below reports every one of
+        # them as a missing registration on a correct install.
+        is_lib=0
+        for lib in "${CS_HOOK_LIBS[@]}"; do
+            [ "$name" = "$lib" ] && { is_lib=1; break; }
+        done
+        [ "$is_lib" = 1 ] && continue
+        case "$registered" in
+            *"/$name"*) ;;
+            *) missing+=("$name") ;;
+        esac
+    done <<< "$names"
+    if [ ${#missing[@]} -eq 0 ]; then
+        _doctor_ok "Hooks: all registered in settings.json"
+    else
+        _doctor_fail "Hooks: missing in settings.json: ${missing[*]}"
+    fi
+}
+
+_doctor_check_hook_files_executable() {
+    local hooks_dir="$HOOKS_DEPLOY_DIR"
+    if [ ! -d "$hooks_dir" ]; then
+        _doctor_warn "Hooks: directory $hooks_dir not found"
+        return
+    fi
+    local non_exec=()
+    local f
+    for f in "$hooks_dir"/*.sh; do
+        [ -e "$f" ] || continue
+        if [ ! -x "$f" ]; then
+            non_exec+=("$(basename "$f")")
+        fi
+    done
+    if [ ${#non_exec[@]} -eq 0 ]; then
+        _doctor_ok "Hooks: all files executable"
+    else
+        _doctor_fail "Hooks: not executable: ${non_exec[*]}"
+    fi
+}
+
+# Compares deployable artifacts in the current directory's cs source checkout
+# (hooks/*.sh, skills/*/SKILL.md and their support files, mods) against their
+# deployed copies, Codex's copies of the skills included. A source edit only takes effect once install.sh deploys it, so
+# silent drift between the two means the running install doesn't match what
+# the source says it does. Silent outside a checkout.
+_doctor_check_hook_drift() {
+    local hooks_dir="$HOOKS_DEPLOY_DIR"
+    local skills_dir="${CS_SKILLS_DIR:-$HOME/.claude/skills}"
+    [ -d "hooks" ] && [ -f "install.sh" ] && [ -f "bin/cs" ] || return 0
+
+    # Those three names are not proof this checkout produced the install. Any
+    # directory holding them passes, and a scratch copy of the repo is an
+    # ordinary thing to be standing in — comparing its hooks against the
+    # deployed ones reports drift naming files nobody edited, and advises
+    # `./install.sh`, which from there installs something else. install.sh
+    # stamps the deploy directory with the version it shipped, so compare
+    # against that and stay silent when it is a different tree.
+    # Both reads are guarded on the file existing rather than leaning on 2>/dev/null:
+    # a missing file makes the first stage of the pipe exit non-zero, pipefail
+    # promotes that to the assignment, and errexit ends the whole run here — so
+    # every check after this one would silently never print. A machine with
+    # nothing installed has no stamp, which is the ordinary case, not an error.
+    local src_version="" deployed_version=""
+    [ -f "bin/cs" ] &&
+        src_version=$(sed -n 's/^VERSION="\([^"]*\)".*/\1/p' bin/cs 2>/dev/null | head -1)
+    [ -f "$hooks_dir/.version" ] &&
+        deployed_version=$(tr -d '[:space:]' < "$hooks_dir/.version" 2>/dev/null)
+    [ -n "$src_version" ] && [ "$src_version" = "$deployed_version" ] || return 0
+
+    local clean=1
+
+    # area label, deploy root, source paths — reported per artifact kind.
+    # Skills deploy as <name>/SKILL.md; everything else deploys flat, keyed
+    # on the source path shape so the label stays purely cosmetic.
+    _drift_scan() {
+        local label="$1" deploy_root="$2"
+        shift 2
+        local drifted=() missing=() src name deployed
+        for src in "$@"; do
+            [ -e "$src" ] || continue
+            if [[ "$src" == */SKILL.md ]]; then
+                name=$(basename "$(dirname "$src")")
+                deployed="$deploy_root/$name/SKILL.md"
+            elif [[ "$src" == skills/* ]]; then
+                name="${src#skills/}"
+                deployed="$deploy_root/$name"
+            elif [[ "$src" == mods/* ]]; then
+                name="${src#mods/}"
+                deployed="$deploy_root/$name"
+            else
+                name=$(basename "$src")
+                deployed="$deploy_root/$name"
+            fi
+            if [ ! -f "$deployed" ]; then
+                missing+=("$name")
+            elif ! cmp -s "$src" "$deployed"; then
+                drifted+=("$name")
+            fi
+        done
+        if [ ${#drifted[@]} -gt 0 ]; then
+            _doctor_warn "$label drift: deployed copy differs from source: ${drifted[*]} (run ./install.sh)"
+            clean=0
+        fi
+        if [ ${#missing[@]} -gt 0 ]; then
+            _doctor_warn "$label drift: not deployed: ${missing[*]} (run ./install.sh)"
+            clean=0
+        fi
+    }
+
+    _drift_scan "Hook" "$hooks_dir" hooks/*.sh hooks/*.png
+    local skill_sources=(skills/*/SKILL.md skills/*/scripts/*.sh skills/*/agents/*.yaml)
+    _drift_scan "Skill" "$skills_dir" "${skill_sources[@]}"
+    _drift_scan "Mod" "$skills_dir" mods/*/.claude-plugin/plugin.json mods/*/hooks/*
+
+    # Codex gets the same skills in its own home. A machine where Codex never
+    # ran has no such home, and nothing there to compare.
+    local engines codex_dir="${CODEX_HOME:-$HOME/.codex}"
+    engines=$(cat "${CS_INSTALL_DIR:-$HOME/.local/bin}/.cs-install-engines" 2>/dev/null) || engines=claude,codex
+    if [[ ",$engines," == *,codex,* ]] && [ -d "$codex_dir" ]; then
+        _drift_scan "Codex skill" "$codex_dir/skills" "${skill_sources[@]}"
+    fi
+
+    if [ "$clean" = "1" ]; then
+        _doctor_ok "Deploy drift: hooks, skills, and mods match checkout source"
+    fi
+}
+
+# iTerm2 awareness, reported only when running inside iTerm2: tab color and
+# title ship via native escapes regardless; the attention dock bounce needs
+# the it2 utilities from iTerm2 shell integration (~/.iterm2, not on PATH).
+_doctor_check_iterm2() {
+    [ "${TERM_PROGRAM:-}" = "iTerm.app" ] || return 0
+    if [ -n "${CS_NO_ITERM2:-}" ]; then
+        _doctor_ok "iTerm2: integrations disabled (CS_NO_ITERM2)"
+    elif [ -x "${CS_IT2_DIR:-$HOME/.iterm2}/it2attention" ]; then
+        _doctor_ok "iTerm2: tab color + attention bounce active (it2 utilities found)"
+    else
+        _doctor_ok "iTerm2: tab color active; attention bounce off (shell integration not installed)"
+    fi
+}
+
+# Spawn hygiene, all best-effort warnings:
+#   - .seed.stale and .brief.md.stale files accumulate in .spawn/ (the launch
+#     path sets aged-out seeds and their briefs aside but never deletes them),
+#   - a pending .seed for a session that does not exist blocks re-spawning
+#     that name until it is removed,
+#   - a spawned-by pointer at a deleted session sends the drain notify nowhere,
+#   - a tmux session named 'cs' (or CS_TMUX_SESSION) without the @cs_managed
+#     stamp is one cs -spawn will refuse to reuse.
+_doctor_check_spawn() {
+    local spawn_dir="$SESSIONS_ROOT/.spawn"
+    local stale=() orphan=() dangling=() clean=1
+    local f name
+
+    if [ -d "$spawn_dir" ]; then
+        for f in "$spawn_dir"/*.seed.stale "$spawn_dir"/*.brief.md.stale; do
+            [ -e "$f" ] || continue
+            stale+=("$(basename "$f")")
+        done
+        for f in "$spawn_dir"/*.seed; do
+            [ -e "$f" ] || continue
+            name=$(basename "$f" .seed)
+            is_session_dir "$SESSIONS_ROOT/$name" || orphan+=("$name")
+        done
+    fi
+    if [ ${#stale[@]} -gt 0 ]; then
+        _doctor_warn "Spawn seeds: ${#stale[@]} aged-out .stale file(s) in .spawn/ (nothing prunes them; safe to delete): ${stale[*]}"
+        clean=0
+    fi
+    if [ ${#orphan[@]} -gt 0 ]; then
+        _doctor_warn "Spawn seeds: pending seed(s) with no session: ${orphan[*]} (cs -spawn refuses these names until the seed is removed)"
+        clean=0
+    fi
+
+    local dir sb spawner
+    while IFS= read -r -d '' dir; do
+        is_session_dir "$dir" || continue
+        sb="$dir/.cs/local/spawned-by"
+        [ -s "$sb" ] || continue
+        IFS= read -r spawner < "$sb" || true
+        spawner=$(printf '%s' "$spawner" | tr -d '[:space:]')
+        [ -n "$spawner" ] || continue
+        is_session_dir "$SESSIONS_ROOT/$spawner" || dangling+=("$(basename "$dir") -> $spawner")
+    done < <(find "$SESSIONS_ROOT" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) -print0 2>/dev/null | sort -z)
+    if [ ${#dangling[@]} -gt 0 ]; then
+        _doctor_warn "Spawn links: spawned-by names a missing session: ${dangling[*]} (the drain notify goes nowhere)"
+        clean=0
+    fi
+
+    local tmux_session="${CS_TMUX_SESSION:-cs}"
+    if command -v "${CS_TMUX_BIN:-tmux}" >/dev/null 2>&1 && _spawn_tmux has-session -t "=$tmux_session" 2>/dev/null; then
+        if ! _cs_tmux_managed; then
+            _doctor_warn "tmux: a session named '$tmux_session' exists but is not cs-managed (@cs_managed unset); cs -spawn will refuse to use it"
+            clean=0
+        fi
+    fi
+
+    # An `if` (not `[ ... ] && ...`) so the function returns 0 even when a
+    # warning fired: under `set -e` a non-zero return here would abort the
+    # whole `cs -doctor` run before its later checks and the summary.
+    if [ "$clean" = "1" ]; then
+        _doctor_ok "Spawn: no stale seeds, dangling spawned-by links, or foreign '$tmux_session' tmux session"
+    fi
+}
+
+# Compares the version stamped into the deployed hooks directory at install
+# time against this binary's VERSION. A mismatch means cs was updated without
+# re-deploying its artifacts (or vice versa). Skips silently when no stamp
+# exists.
+_doctor_check_deployed_version() {
+    local stamp="$HOOKS_DEPLOY_DIR/.version"
+    [ -f "$stamp" ] || return 0
+    local deployed
+    deployed=$(cat "$stamp" 2>/dev/null || true)
+    [ -n "$deployed" ] || return 0
+    if [ "$deployed" = "$VERSION" ]; then
+        _doctor_ok "Deployed version: artifacts stamped $deployed match cs $VERSION"
+    else
+        _doctor_warn "Deployed version: artifacts stamped $deployed but cs is $VERSION (run install.sh)"
+    fi
+}
+
+# Inverse of _doctor_check_hooks_registered: walks every hook command in
+# settings.json and warns when its `command` path doesn't exist on disk.
+# Catches orphans left behind by feature branches that registered a hook
+# without ever shipping the corresponding file.
+_doctor_check_settings_hooks_resolve() {
+    local claude_dir="${CS_CLAUDE_DIR:-$HOME/.claude}"
+    local settings="$claude_dir/settings.json"
+    if [ ! -f "$settings" ]; then
+        return
+    fi
+    if ! command -v jq >/dev/null 2>&1; then
+        _doctor_warn "Hook paths: jq not installed; $settings could not be read"
+        return
+    fi
+    if ! _doctor_settings_parse_ok "$settings"; then
+        _doctor_fail "Hook paths: cannot read $settings (invalid JSON)"
+        return
+    fi
+    local commands
+    commands=$(jq -r '.hooks // {} | to_entries[].value[].hooks[]?.command // empty' "$settings" 2>/dev/null)
+    if [ -z "$commands" ]; then
+        _doctor_ok "Hook paths: no hooks registered in settings.json"
+        return
+    fi
+    local missing=() cmd resolved
+    while IFS= read -r cmd; do
+        [ -z "$cmd" ] && continue
+        resolved="${cmd/#~/$HOME}"
+        resolved="${resolved%% *}"
+        # Only validate commands that reference a script by absolute path. Inline
+        # shell snippets (e.g. `if [ -z "$TMUX" ]; then ...`) and wrapped commands
+        # (`bash ...`) are valid hooks, not file paths — skip them so they are not
+        # mis-reported as missing files.
+        case "$resolved" in
+            /*) ;;
+            *) continue ;;
+        esac
+        if [ ! -f "$resolved" ]; then
+            missing+=("$(basename "$resolved")")
+        fi
+    done <<< "$commands"
+    if [ ${#missing[@]} -eq 0 ]; then
+        _doctor_ok "Hook paths: all registered hooks resolve to existing files"
+    else
+        _doctor_warn "Hook paths: ${#missing[@]} registered hook(s) point at missing files: ${missing[*]}"
+    fi
+}
+
+_doctor_check_worktrees() {
+    local root="$SESSIONS_ROOT"
+    local d name base_name base_dir d_real pinned head_branch
+    for d in "$root"/*@*; do
+        [ -d "$d" ] || continue
+        name=$(basename "$d")
+        base_name="${name%%@*}"
+        base_dir=$(_resolve_session_dir "$base_name")
+        if [ ! -d "$base_dir" ]; then
+            _doctor_warn "Worktrees: $name has no base session '$base_name'"
+            continue
+        fi
+        # Ask git for the path so both sides of the comparison come from the
+        # same binary; a shell's own spelling of the directory need not match
+        # git's.
+        d_real=$(git -C "$d" rev-parse --show-toplevel 2>/dev/null) \
+            || d_real=$(cd "$d" 2>/dev/null && pwd -P || echo "$d")
+        if ! git -C "$base_dir" worktree list --porcelain 2>/dev/null \
+            | grep -qx "worktree $d_real"; then
+            _doctor_warn "Worktrees: $name is not a registered worktree of $base_name (pruned or created by hand?)"
+            continue
+        fi
+        pinned=$(_read_local_state "$d/.cs/local/state" task_branch)
+        head_branch=$(git -C "$d" branch --show-current 2>/dev/null || echo "")
+        if [ -n "$pinned" ] && [ "$head_branch" != "$pinned" ]; then
+            _doctor_warn "Worktrees: $name HEAD is '$head_branch', expected '$pinned'"
+            continue
+        fi
+        # "Fully merged" needs the tip strictly behind base HEAD: a fresh
+        # worktree's branch sits AT base HEAD, where is-ancestor is also true.
+        if [ -n "$pinned" ] \
+            && git -C "$base_dir" merge-base --is-ancestor "$pinned" HEAD 2>/dev/null \
+            && [ "$(git -C "$base_dir" rev-parse "$pinned" 2>/dev/null)" != "$(git -C "$base_dir" rev-parse HEAD 2>/dev/null)" ]; then
+            _doctor_warn "Worktrees: $name branch $pinned is fully merged; retire it with: /finish ${name#*@} in $base_name"
+        else
+            _doctor_ok "Worktrees: $name on ${head_branch:-<detached>}"
+        fi
+    done
+}
+
+_doctor_check_shadow_ref() {
+    local dir="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-$PWD}}"
+    if ! git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
+        _doctor_warn "Shadow ref: session directory is not a git repo"
+        return
+    fi
+    # Autosave is per-conversation: refs/worktree/cs/session/<uuid>, keyed on
+    # the session_id of the conversation that made the edit. The caller's own
+    # id comes first: .cs/local/state holds one id per checkout, rebound by the
+    # lead only, so a teammate would be judged by the lead's ref. The recorded
+    # id covers a plain shell in the session; CS_CLAUDE_SESSION_ID is the
+    # launch id and goes stale after the first /clear, so it comes last.
+    local uuid ref=""
+    uuid="${CLAUDE_CODE_SESSION_ID:-}"
+    [ -n "$uuid" ] || uuid=$(_read_local_state "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-$dir/.cs}}/local/state" claude_session_id)
+    [ -n "$uuid" ] || uuid="${CS_CLAUDE_SESSION_ID:-}"
+    if [[ "$uuid" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+        ref="refs/worktree/cs/session/$uuid"
+    fi
+    local shadow_sha=""
+    [ -n "$ref" ] && shadow_sha=$(git -C "$dir" show-ref --verify "$ref" 2>/dev/null | awk '{print $1}' || true)
+    # No ref is not evidence of a broken hook: autosave fires on Edit/Write
+    # only, and SessionEnd deletes a conversation's ref on a clean /clear, so a
+    # dirty tree with no ref is the normal state before the first Edit/Write.
+    # What doctor can still check is that the hook which would write it is
+    # registered: the file and registration rows enumerate what IS deployed or
+    # registered, so a hook missing from both is invisible to them. An absent
+    # or unreadable settings file is reported by those rows already.
+    if [ -z "$ref" ]; then
+        _doctor_ok "Shadow ref: no conversation id to check"
+    elif [ -n "$shadow_sha" ]; then
+        local ts now age
+        ts=$(git -C "$dir" log -1 --format=%ct "$shadow_sha" 2>/dev/null || echo 0)
+        now=$(date +%s)
+        age=$((now - ts))
+        _doctor_ok "Shadow ref: $ref present (${age}s old)"
+    else
+        local settings="${CS_CLAUDE_DIR:-$HOME/.claude}/settings.json" commands
+        if [ -f "$settings" ] && command -v jq >/dev/null 2>&1 && _doctor_settings_parse_ok "$settings"; then
+            # A registration counts only if it runs the hook on both Write and
+            # Edit (the hook exits at once for any other tool) and the command
+            # is the hook itself, not a script whose name merely ends the same
+            # way. The matcher is a regex, as Claude Code reads it; an empty or
+            # "*" matcher covers every tool. An invalid regex counts as no
+            # match for its own entry only, since a registration under it
+            # cannot fire; the entries after it are still read.
+            commands=$(jq -r '
+                .hooks.PostToolUse // [] | .[]
+                | select((.matcher // "") as $m
+                    | $m == "" or $m == "*"
+                      or (try (("Write" | test("^(" + $m + ")$")) and ("Edit" | test("^(" + $m + ")$"))) catch false))
+                | .hooks[]?.command // empty
+                | select(test("(^|[ /])autosave-commits\\.sh$"))
+            ' "$settings" 2>/dev/null || true)
+            if [ -z "$commands" ]; then
+                _doctor_warn "Shadow ref: autosave-commits.sh is not registered for PostToolUse on Write and Edit in $settings; edits are not snapshotted"
+                return
+            fi
+        fi
+        _doctor_ok "Shadow ref: no snapshot for this conversation yet (autosave runs on Edit/Write)"
+    fi
+}
+
+_doctor_check_claude_audit() {
+    local claude_dir="${CS_CLAUDE_DIR:-$HOME/.claude}"
+    local settings="$claude_dir/settings.json"
+    if [ ! -f "$settings" ]; then
+        _doctor_warn "Audit: $settings not found"
+        return
+    fi
+    if ! command -v jq >/dev/null 2>&1; then
+        _doctor_warn "Audit: jq not installed; $settings could not be read"
+        return
+    fi
+    if ! _doctor_settings_parse_ok "$settings"; then
+        _doctor_fail "Audit: cannot read $settings (invalid JSON)"
+        return
+    fi
+    # .hooks is event -> [{matcher, hooks: [{type, command, ...}]}]; flatten 3 levels for command count.
+    local counts hooks_count mcps_count perms_count env_count
+    counts=$(jq -r '
+        "\([.hooks // {} | to_entries[].value[].hooks[]?] | length) " +
+        "\(.mcpServers // {} | length) " +
+        "\(((.permissions.allow // []) + (.permissions.deny // [])) | length) " +
+        "\(.env // {} | length)"
+    ' "$settings" 2>/dev/null || echo "0 0 0 0")
+    read -r hooks_count mcps_count perms_count env_count <<< "$counts"
+    _doctor_ok "Audit: ${hooks_count} hooks, ${mcps_count} MCPs, ${perms_count} perm rules, ${env_count} env vars in settings.json"
+}
+
+_doctor_check_statusline() {
+    local claude_dir="${CS_CLAUDE_DIR:-$HOME/.claude}"
+    local settings="$claude_dir/settings.json"
+    local cmd=""
+    if [ -f "$settings" ]; then
+        cmd=$(jq -r '.statusLine.command // ""' "$settings" 2>/dev/null) || cmd=""
+    fi
+    # cs-statusline is the only writer of .cs/local/context-pct, and two gates
+    # read it: the Stop hook's rotation nudge and the queue drain's context
+    # circuit breaker. Both skip silently when the file is absent, so anything
+    # other than cs-statusline leaves them inert with nothing said. Report that
+    # as a WARN rather than a clean OK — the gates being off is the news, the
+    # statusline itself is genuinely optional.
+    local gating="context-pct is never written, so the rotation nudge and the queue context breaker stay inert"
+    if [ -z "$cmd" ]; then
+        _doctor_warn "Statusline: not registered — $gating (enable with: cs -statusline enable)"
+        return
+    fi
+    case "$cmd" in
+        */cs-statusline)
+            local bin="${cmd/#\~/$HOME}"
+            if [ -x "$bin" ]; then
+                _doctor_ok "Statusline: cs-statusline registered and executable"
+            else
+                _doctor_fail "Statusline: registered as $cmd but the binary is missing or not executable"
+            fi
+            # The rounded caps are drawn only once this machine has answered
+            # the font question; until then the bar shows square ends.
+            local caps_file caps=""
+            caps_file="$(_statusline_caps_file)"
+            [ -f "$caps_file" ] && [ -r "$caps_file" ] && { IFS= read -r caps < "$caps_file"; } 2>/dev/null
+            case "$caps" in
+                on)  _doctor_ok "Statusline caps: rounded (this machine's font has the Powerline caps)" ;;
+                off) _doctor_ok "Statusline caps: square (answered off; cs -statusline caps ask to revisit)" ;;
+                *)   _doctor_warn "Statusline caps: square until answered — run: cs -statusline caps ask" ;;
+            esac
+            ;;
+        *)
+            _doctor_warn "Statusline: using a foreign status line ($cmd) — $gating"
+            ;;
+    esac
+}
+
+# The Ctrl+X bindings the installer offers: the answer this
+# machine gave, and whether keybindings.json still holds cs's keys. Not asked
+# and declined are healthy; a key the user binds to something else (or a bare
+# ctrl+x a chord would shadow), a yes whose keys are gone or are still an
+# earlier cs's Option+1 / Option+2, and a file Claude Code cannot read either
+# are warnings.
+_doctor_check_rotate_wrap_keys() {
+    local file answer_file answer status state key action prefix retired bound=0 total=0 commands_bound=0
+    file="$(_cs_keybindings_file)"
+    answer_file="$(_cs_rotate_wrap_keys_answer_file)"
+    if ! command -v jq >/dev/null 2>&1; then
+        _doctor_warn "Rotate/wrap keys: jq not installed; $file could not be read"
+        return
+    fi
+    if [ -e "$file" ] && ! _cs_keybindings_shape_ok "$file"; then
+        _doctor_warn "Rotate/wrap keys: $file is unparseable (not JSON with a \"bindings\" array)"
+        return
+    fi
+    if [ -e "$file" ]; then
+        status=$(_cs_rotate_wrap_keys_status < "$file") || status=""
+    else
+        status=$(printf '{"bindings":[]}\n' | _cs_rotate_wrap_keys_status) || status=""
+    fi
+    while IFS=$'\t' read -r state key action prefix; do
+        [ -n "$state" ] || continue
+        total=$((total + 1))
+        if [ "$state" = bound ]; then bound=$((bound + 1)); fi
+    done <<< "$status"
+    if [ "$total" -gt 0 ] && [ "$bound" = "$total" ]; then
+        retired=$(_cs_keybindings_held "$CS_RETIRED_OPTION_KEYS" < "$file") || retired=""
+        if [ -n "$retired" ]; then
+            _doctor_warn "Rotate/wrap keys: $retired still hold cs's earlier bindings in $file (run cs -update to remove them)"
+        else
+            _doctor_ok "Rotate/wrap keys: bound (Ctrl+X R runs /rotate, Ctrl+X W runs /wrap, Ctrl+X 1 and Ctrl+X 2 press the cs band)"
+        fi
+        return
+    fi
+    answer=$(cat "$answer_file" 2>/dev/null) || answer=""
+    case "$answer" in
+        yes)
+            while IFS=$'\t' read -r state key action prefix; do
+                case "$state $key" in
+                    "bound ctrl+x r"|"bound ctrl+x w") commands_bound=$((commands_bound + 1)) ;;
+                esac
+                case "$state" in
+                    conflict)
+                        if [ -n "$prefix" ]; then
+                            _doctor_warn "Rotate/wrap keys: conflict on $key ($prefix is bound to $action in $file)"
+                        else
+                            _doctor_warn "Rotate/wrap keys: conflict on $key (bound to $action in $file)"
+                        fi
+                        ;;
+                    free) _doctor_warn "Rotate/wrap keys: $key not bound (run cs -update to bind it)" ;;
+                esac
+            done <<< "$status"
+            # With /rotate and /wrap on their chords, the next update takes
+            # cs's Option keys back whatever a band chord holds.
+            if [ "$commands_bound" = 2 ]; then
+                retired=$(_cs_keybindings_held "$CS_RETIRED_OPTION_KEYS" < "$file") || retired=""
+                if [ -n "$retired" ]; then
+                    _doctor_warn "Rotate/wrap keys: $retired still hold cs's earlier bindings in $file (run cs -update to remove them)"
+                fi
+            fi
+            ;;
+        no)
+            _doctor_ok "Rotate/wrap keys: declined (to be asked again, remove $answer_file and run cs -update in a terminal)"
+            ;;
+        *)
+            _doctor_ok "Rotate/wrap keys: not asked (run cs -update in a terminal to be asked)"
+            ;;
+    esac
+}
+
+_doctor_check_subagent_statusline() {
+    local claude_dir="${CS_CLAUDE_DIR:-$HOME/.claude}"
+    local settings="$claude_dir/settings.json"
+    local cmd=""
+    if [ -f "$settings" ]; then
+        cmd=$(jq -r '.subagentStatusLine.command // ""' "$settings" 2>/dev/null) || cmd=""
+    fi
+    if [ -z "$cmd" ]; then
+        _doctor_ok "Subagent statusline: not registered (optional; enable with: cs -statusline enable)"
+        return
+    fi
+    case "$cmd" in
+        */cs-subagent-statusline)
+            local bin="${cmd/#\~/$HOME}"
+            if [ -x "$bin" ]; then
+                _doctor_ok "Subagent statusline: cs-subagent-statusline registered and executable"
+            else
+                _doctor_fail "Subagent statusline: registered as $cmd but the binary is missing or not executable"
+            fi
+            ;;
+        *)
+            _doctor_ok "Subagent statusline: using a foreign row renderer ($cmd)"
+            ;;
+    esac
+}
+
+_doctor_check_token_cost() {
+    local proj_dir
+    proj_dir=$(_claude_project_dir "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-$PWD}}")
+
+    local files=("$proj_dir"/*.jsonl)
+    if [ ! -e "${files[0]:-}" ]; then
+        _doctor_ok "Tokens (this project): no transcripts found yet"
+        return
+    fi
+    local sums in_l out_l
+    sums=$(_usage_scan "" "" "${files[@]}")
+    in_l=$(printf '%s' "$sums" | awk '{print $7}')
+    out_l=$(printf '%s' "$sums" | awk '{print $9}')
+    _doctor_ok "Tokens (this project): $(_usage_fmt "$in_l") input, $(_usage_fmt "$out_l") output"
+}
+
+_doctor_check_auto_memory() {
+    local dir="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/memory"
+    if [ ! -d "$dir" ]; then
+        _doctor_warn "Auto-memory: $dir does not exist"
+        return
+    fi
+    if [ -w "$dir" ]; then
+        _doctor_ok "Auto-memory: $dir writable"
+    else
+        _doctor_fail "Auto-memory: $dir not writable"
+    fi
+}
+
+# A narrative past CS_NARRATIVE_MAX_BYTES is what `cs -narrative rotate` exists
+# for; doctor only reports, it never rotates.
+_doctor_check_narrative_size() {
+    local dir="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/memory"
+    local max over=0 f sz
+    max=$(_narrative_budget "${CS_NARRATIVE_MAX_BYTES:-}" "$CS_NARRATIVE_MAX_DEFAULT")
+    for f in "$dir"/narrative*.md; do
+        [ -f "$f" ] || continue
+        sz=$(wc -c < "$f" 2>/dev/null | tr -d ' ' || echo 0)
+        if [ "$sz" -gt "$max" ]; then
+            _doctor_warn "Narrative: $(basename "$f") is $((sz / 1024)) KB (budget $((max / 1024)) KB) — run cs -narrative rotate"
+            over=$((over + 1))
+        fi
+    done
+    [ "$over" -gt 0 ] || _doctor_ok "Narrative: all within the $((max / 1024)) KB budget"
+}
+
+# Cross-check the session UUID recorded in .cs/local/state against
+# the live $CLAUDE_CODE_SESSION_ID (set by Claude Code inside its own session).
+# A mismatch means the running claude conversation is not the one cs thinks
+# it is — usually because the user launched claude outside cs in this dir,
+# or because migrate_session backfilled a UUID after Claude Code had already
+# resolved its own session ID. The recorded UUID is the source of truth for
+# cs and hooks; doctor surfaces the divergence so the user can decide whether
+# to relaunch via cs or accept the drift.
+# Every place a cs hook changes what the model sees, with the switch that turns
+# it off. The consent rule covers what the user looks at — status line, titles —
+# but a hook that injects context installs silently, so this is where that
+# authority is made visible. State is read live, not from config: a switch that
+# is set shows the injection as off.
+_doctor_check_hook_authority() {
+    echo ""
+    echo "  Authority — hooks that inject into the model's context:"
+    local disabled_all=""
+    if [ -n "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}" ] && [ -f "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/disabled" ]; then
+        disabled_all=1
+    fi
+    # The hooks read their switch as `= "1"`, so the row must too: an exported
+    # 0 leaves the injection on and has to read as on here.
+    _doctor_authority_row() {  # label hook switch value
+        local state="on"
+        if [ -n "$disabled_all" ] || [ "$4" = "1" ]; then state="off"; fi
+        printf "    %-4s %-22s %-20s off: %s\n" "$state" "$1" "$2" "$3"
+    }
+    _doctor_authority_row "grounding"     "scope-prompt"       'CS_SCOPE_DISABLE=1'             "${CS_SCOPE_DISABLE:-}"
+    _doctor_authority_row "clarify"       "scope-prompt"       'CS_CLARIFY_DISABLE=1'           "${CS_CLARIFY_DISABLE:-}"
+    _doctor_authority_row "date reminder" "scope-prompt"       'CS_DATE_REMINDER_DISABLE=1'     "${CS_DATE_REMINDER_DISABLE:-}"
+    _doctor_authority_row "objective"     "scope-prompt"       'CS_OBJECTIVE_CAPTURE_DISABLE=1' "${CS_OBJECTIVE_CAPTURE_DISABLE:-}"
+    _doctor_authority_row "rewrite"       "prompt-rewriter"    'CS_REWRITE_DISABLE=1'           "${CS_REWRITE_DISABLE:-}"
+    _doctor_authority_row "narrative"     "narrative-reminder" '.cs/local/disabled'             ""
+    _doctor_authority_row "council nudge" "narrative-reminder" '.cs/local/disabled or uninstall the plugin' ""
+    _doctor_authority_row "ctx warning"   "narrative-reminder" 'CS_CTX_WARN_CTX=101'            ""
+    _doctor_authority_row "rotate nudge"  "narrative-reminder" 'CS_ROTATE_NUDGE_CTX=101'        ""
+    _doctor_authority_row "subagent ctx"  "subagent-context"   '.cs/local/disabled'             ""
+    _doctor_authority_row "session ctx"   "session-start"      '.cs/local/disabled'             ""
+    echo "    .cs/local/disabled turns every row off for that session."
+}
+
+# setup_merge_attributes writes the per-clone merge driver with `|| true`, so a
+# clone where that write failed keeps a .gitattributes that says merge=ours with
+# nothing behind it, and MEMORY.md text-merges on the next pull. The driver is
+# deliberately per-clone and never global — cs does not write to ~/.gitconfig —
+# so a clone cs has not launched in is out of reach; this names the one it can see.
+_doctor_check_merge_driver() {
+    local dir="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}"
+    [ -n "$dir" ] || return 0
+    git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || return 0
+    grep -q 'merge=ours' "$dir/.gitattributes" 2>/dev/null || return 0
+    if [ "$(git -C "$dir" config --get merge.ours.driver 2>/dev/null)" = "true" ]; then
+        _doctor_ok "Merge driver: merge.ours.driver set for this clone"
+    else
+        _doctor_warn "Merge driver: merge.ours.driver not set in this clone — MEMORY.md will text-merge on pull. Launch the session once with cs, or: git config merge.ours.driver true"
+    fi
+}
+
+# The stamp an open trusts to skip the one-time migration phases, judged by
+# the same probe the open runs (_migration_stamp_state). Read-only. A feature
+# worktree never runs the migration, so it has no stamp to report.
+_doctor_check_migration_stamp() {
+    local dir="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" state
+    [ -n "$dir" ] || return 0
+    if [ -n "$(_read_local_state "$dir/.cs/local/state" cs_base)" ]; then
+        return 0
+    fi
+    state=$(_migration_stamp_state "$dir" "$(cs_actor_raw "$dir" "$dir/.cs")")
+    case "$state" in
+        fresh)
+            _doctor_ok "Migration stamp: current for cs $VERSION; opens skip the one-time migration checks. To force them: rm .cs/local/migrated" ;;
+        narrative)
+            _doctor_ok "Migration stamp: current but for MEMORY.md; the next open re-checks the narrative pointer and restamps. To force every check: rm .cs/local/migrated" ;;
+        *)
+            _doctor_ok "Migration stamp: stale (${state#stale: }); the next open runs the full migration and restamps. Reset by hand: rm .cs/local/migrated" ;;
+    esac
+}
+
+# `cs <base> -integrate-feature` takes <git-dir>/cs/integrate.lock for the
+# length of a landing, and the autosave hook skips its snapshot while it
+# exists. A lock left behind by a killed integrate silences this checkout's
+# autosave with nothing on screen to say why, so name it and the one command
+# that clears it.
+_doctor_check_integrate_lock() {
+    local dir="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}"
+    [ -n "$dir" ] || return 0
+    local git_dir lock
+    git_dir=$(_git_path_abs "$dir" --git-dir) || return 0
+    lock="$git_dir/cs/integrate.lock"
+    [ -d "$lock" ] || return 0
+    # The integrate writes its pid into the lock; that pid is the evidence, not
+    # a process listing, which would answer for any integrate on the machine.
+    #
+    # A lock with no pid is not a stale lock. The autosave hook takes this same
+    # directory and records nothing in it, for as long as a snapshot takes (its
+    # registration allows ten seconds), so a doctor run inside that window sees
+    # exactly this. Removing it would not stop that worker either: it would let
+    # an integrate take the directory while autosave keeps committing, which is
+    # the interleaving the lock exists to prevent. So an absent pid is reported
+    # as a thing cs cannot judge, and carries no removal command.
+    # (The worker cannot simply record its own pid: on stock bash 3.2 `$$`
+    # inside the backgrounded subshell is the parent, which has already exited,
+    # and BASHPID does not exist there — cs would write a pid that is dead on
+    # arrival and doctor would call a live worker stale.)
+    local pid
+    pid=$(cat "$lock/pid" 2>/dev/null || true)
+    case "$pid" in
+        0|*[!0-9]*|"") pid="" ;;
+    esac
+    # kill -0 through the shell builtin, not ps: kill(2) sees a process that a
+    # restricted /proc hides from ps, and its errno tells a holder owned by
+    # another user (EPERM) from a pid that is gone (ESRCH). Only ESRCH is
+    # evidence of absence; anything else the check cannot read is unknown,
+    # and an unknown must not come with removal advice. LC_ALL=C pins the
+    # message the builtin prints, which is the only channel for the errno;
+    # it is assigned inside the subshell rather than as a command prefix
+    # because bash 3.2 does not apply a prefix assignment to a builtin's
+    # locale (probed: `$(LC_ALL=C printf "%.1f" 1)` prints 1,0 under fr_FR).
+    local verdict="unrecorded" err=""
+    if [ -n "$pid" ]; then
+        if err=$( LC_ALL=C; kill -0 "$pid" 2>&1 ); then
+            verdict="held"
+        else
+            case "$err" in
+                *"No such process"*)        verdict="stale" ;;
+                *"Operation not permitted"*) verdict="eperm" ;;
+                *)                           verdict="unknown" ;;
+            esac
+        fi
+    fi
+    case "$verdict" in
+        held)    _doctor_ok "Integrate lock: $lock held by a running integrate (pid $pid)" ;;
+        eperm)   _doctor_ok "Integrate lock: $lock held by a running integrate (pid $pid; signalling it is not permitted here, which is a process that exists)" ;;
+        unknown) _doctor_warn "Integrate lock: $lock records pid $pid and cs cannot tell whether it is running (${err##*: })" ;;
+        # ESRCH is absence only in this process's pid namespace, and pids are
+        # recycled, so the removal stays conditional on what the person can see.
+        stale)   _doctor_warn "Integrate lock: $lock records pid $pid, which this process cannot see; the lock is probably stale. Autosave skips while it exists. Once nothing is using this checkout, clear it with: rm -r \"$lock\"" ;;
+        *)       _doctor_warn "Integrate lock: $lock has no holder pid, so cs cannot tell an active autosave or integrate from a lock left behind. Autosave skips while it exists. Recheck once nothing is working in this checkout." ;;
+    esac
+}
+
+_doctor_check_session_id_match() {
+    local state="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/state"
+    local recorded
+    recorded=$(_read_local_state "$state" claude_session_id)
+    if [ -z "$recorded" ]; then
+        _doctor_warn "Session UUID: not recorded in .cs/local/state — the next cs launch binds the folder's newest conversation, or starts one and records it"
+        return
+    fi
+    local current="${CLAUDE_CODE_SESSION_ID:-}"
+    if [ -z "$current" ]; then
+        _doctor_ok "Session UUID: $recorded (\$CLAUDE_CODE_SESSION_ID unset, cannot verify)"
+        return
+    fi
+    if [ "$recorded" = "$current" ]; then
+        _doctor_ok "Session UUID: $recorded matches \$CLAUDE_CODE_SESSION_ID"
+    else
+        _doctor_warn "Session UUID mismatch: recorded $recorded, but \$CLAUDE_CODE_SESSION_ID=$current"
+    fi
+}
+
+# A mod (cs, cs-update) is a Claude Code function-hooks plugin the
+# installer deploys under ~/.claude/skills. Absent, it is not news. Present, the
+# row reads the heartbeat the mod writes when Claude Code loads it, never the
+# directory: the loader sits behind CLAUDE_CODE_ENABLE_FUNCTION_HOOKS, which a
+# cs launch exports and CS_NO_FUNCTION_HOOKS withholds, and a managed machine's
+# policy can load a mod and never run it, so presence proves nothing.
+# The heartbeat is per session, hence the session guard around the call. A
+# teammate process with the flag on writes it too, so OK says the mod ran in
+# this directory, not that the lead's shell carries the flag.
+_doctor_check_mod() {  # mod name
+    local mod="$1" claude_dir="${CS_CLAUDE_DIR:-$HOME/.claude}"
+    [ -d "$claude_dir/skills/$mod" ] || return 0
+    local beat="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/$mod.heartbeat" stamp=""
+    if [ -f "$beat" ] && [ -r "$beat" ]; then
+        { IFS= read -r stamp < "$beat"; } 2>/dev/null || stamp=""
+    fi
+    if [ -n "$stamp" ]; then
+        _doctor_ok "$mod mod: last ran $stamp in this session"
+    else
+        _doctor_warn "$mod mod: installed but has not run in this session — no cs launch since the install, function hooks withheld (CS_NO_FUNCTION_HOOKS, or CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=0), or Claude Code no longer loads mods behind that flag"
+    fi
+}
+
+run_doctor() {
+    local DOCTOR_FAIL=0
+    local DOCTOR_WARN=0
+
+    echo "cs doctor - running health checks"
+    echo ""
+
+    local engine session_dir
+    session_dir="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-$PWD}}"
+    engine=$(_session_engine "$session_dir" "") || return $?
+    if [ "$engine" = claude ]; then
+    _doctor_check_settings_valid
+    _doctor_check_keychain
+    _doctor_check_hooks_registered
+    _doctor_check_hook_files_executable
+    _doctor_check_hook_drift
+    _doctor_check_deployed_version
+    _doctor_check_settings_hooks_resolve
+    _doctor_check_claude_audit
+    _doctor_check_statusline
+    _doctor_check_subagent_statusline
+    _doctor_check_rotate_wrap_keys
+    _doctor_check_iterm2
+    _doctor_check_spawn
+    _doctor_check_hook_authority
+
+    if [ -n "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}" ] && [ -d "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}" ]; then
+        _doctor_check_shadow_ref
+        _doctor_check_merge_driver
+        _doctor_check_migration_stamp
+        _doctor_check_integrate_lock
+        _doctor_check_worktrees
+        _doctor_check_auto_memory
+        _doctor_check_narrative_size
+        _doctor_check_session_id_match
+        _doctor_check_token_cost
+        _doctor_check_mod cs
+        _doctor_check_mod cs-update
+    fi
+
+    else
+        _doctor_check_keychain
+        local missing dependency capabilities binding
+        if missing=$(cs_engine_call "$engine" dependencies); then
+            if [ -n "$missing" ]; then
+                while IFS= read -r dependency; do
+                    _doctor_fail "Codex dependency missing: $dependency"
+                done <<< "$missing"
+            else
+                _doctor_ok "Codex dependencies available"
+            fi
+        else
+            _doctor_fail "Codex dependency probe failed"
+        fi
+        capabilities=$(cs_engine_call "$engine" capabilities) || return $?
+        _doctor_ok "Codex integration capabilities: ${capabilities//$'\n'/, }"
+        echo "  Codex hooks, automatic queue delivery, and usage observations are unavailable."
+        if [ -d "$session_dir/.cs" ]; then
+            if binding=$(cs_binding_read "$session_dir" codex); then
+                if [ -z "$binding" ]; then
+                    _doctor_ok "Codex binding: not created yet"
+                elif _codex_thread_id_valid "$binding"; then
+                    _doctor_ok "Codex binding: $binding"
+                else
+                    _doctor_fail "Codex binding is invalid; repair before launching"
+                fi
+            else
+                _doctor_fail "Codex binding cannot be read"
+            fi
+            _doctor_check_merge_driver
+            _doctor_check_integrate_lock
+            _doctor_check_worktrees
+            _doctor_check_narrative_size
+        fi
+    fi
+
+    echo ""
+    if [ "$DOCTOR_FAIL" -gt 0 ]; then
+        echo -e "${RED}Failed: $DOCTOR_FAIL  Warnings: $DOCTOR_WARN${NC}"
+        return 1
+    elif [ "$DOCTOR_WARN" -gt 0 ]; then
+        echo -e "${YELLOW}Complete with $DOCTOR_WARN warning(s).${NC}"
+    else
+        echo -e "${GREEN}All checks OK.${NC}"
+    fi
+    return 0
+}
+
+# Search across all sessions' metadata

@@ -1,0 +1,93 @@
+# ABOUTME: Runs the bash test suites (macOS + Linux) and the Rust TUI tests on push/PR
+# ABOUTME: The release workflow only builds binaries; this is the gate that runs tests
+
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  bash:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      # Bare runners have no global git identity; cs creates commits when it
+      # initializes a session, so the session-lifecycle suites need one.
+      - name: Configure git identity
+        run: |
+          git config --global user.email "ci@claude-sessions.test"
+          git config --global user.name "cs CI"
+
+      - name: Install jq (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Run bash test suites
+        run: bash tests/run_all.sh
+
+  build-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Verify the built files are in sync with lib/ and install.sh.in
+        run: |
+          bash build.sh
+          git diff --exit-code bin/cs bin/cs-secrets bin/cs-codex-thread \
+            bin/cs-statusline bin/cs-subagent-statusline hooks/cs-shared.sh \
+            skills/sweep/scripts/cs-shared.sh install.sh \
+            || { echo "::error::bin/cs or its helpers, hooks/cs-shared.sh, or install.sh is out of sync with lib/ or install.sh.in. Run ./build.sh and commit the generated files."; exit 1; }
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # A linter ships new checks in every release, so an unpinned one reddens
+      # main on a commit nobody touched. This job blocks, so the binary is pinned
+      # by digest: the tag names a release, only the hash names the bytes.
+      - name: Install shellcheck
+        env:
+          SHELLCHECK_VERSION: v0.11.0
+          SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+        run: |
+          curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors -o shellcheck.tar.xz \
+            "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          echo "${SHELLCHECK_SHA256}  shellcheck.tar.xz" | sha256sum -c -
+          sudo tar -xJf shellcheck.tar.xz --strip-components=1 -C /usr/local/bin \
+            "shellcheck-${SHELLCHECK_VERSION}/shellcheck"
+          shellcheck --version
+
+      # Errors fail outright. Warnings are held to the count in
+      # .shellcheck-warnings: a rise fails, and so does a fall until the
+      # baseline is lowered with it, so the count only ever shrinks.
+      # .shellcheckrc declares the shell for the lib/ fragments and excludes
+      # the test harness's deliberate subshells.
+      - name: Lint shell scripts
+        run: bash tests/lint_shell.sh
+
+      # The lint's own tests skip wherever shellcheck is missing; this job has
+      # the pinned one, so they always run here.
+      - name: Test the shell lint
+        run: bash tests/test_lint_shell.sh
+
+  rust:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Run TUI tests
+        run: cargo test --manifest-path tui/Cargo.toml

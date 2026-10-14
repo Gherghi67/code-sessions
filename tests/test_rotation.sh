@@ -1,0 +1,2722 @@
+#!/usr/bin/env bash
+# ABOUTME: Tests for conversation rotation: the rotated timeline event, the
+# ABOUTME: handoff handshake (prompt, consumption), the context nudge, and cs -conversations.
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=tests/test_lib.sh
+source "$SCRIPT_DIR/test_lib.sh"
+
+
+# This suite feeds answers through pipes. Keep those launches explicitly on
+# the interactive path; unattended launches are covered separately below.
+export CS_ASSUME_TTY=1
+
+HOOKS_DIR="$SCRIPT_DIR/../hooks"
+
+UUID_A="11111111-1111-4111-8111-111111111111"
+UUID_B="22222222-2222-4222-8222-222222222222"
+
+# Calls the real SessionStart hook for binding acknowledgement; optional mode
+# simulates a Claude failure after an exact resume was attempted.
+_stub_claude() {  # [fail-resume]
+    local mode="${1:-}"
+    export CS_TEST_SESSION_START_HOOK="$HOOKS_DIR/session-start.sh"
+    if [ "$mode" = "fail-resume" ]; then
+        cat > "$TEST_TMPDIR/claude-stub" << 'SCRIPT'
+#!/bin/bash
+echo "STUB_ARGS: $*"
+session_id=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --session-id|--resume) session_id="${2:-}"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+if [ -n "$session_id" ] && [ "${CS_FRESH_REBIND:-}" = 1 ]; then
+    jq -nc --arg session_id "$session_id" --arg cwd "$CLAUDE_SESSION_DIR" \
+        '{session_id:$session_id,cwd:$cwd,source:"startup",hook_event_name:"SessionStart"}' \
+        | CLAUDE_PID=$$ bash "$CS_TEST_SESSION_START_HOOK" >/dev/null 2>&1
+fi
+exit 1
+SCRIPT
+    else
+        cat > "$TEST_TMPDIR/claude-stub" << 'SCRIPT'
+#!/bin/bash
+echo "STUB_ARGS: $*"
+session_id=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --session-id|--resume) session_id="${2:-}"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+if [ -n "$session_id" ] && [ "${CS_FRESH_REBIND:-}" = 1 ]; then
+    jq -nc --arg session_id "$session_id" --arg cwd "$CLAUDE_SESSION_DIR" \
+        '{session_id:$session_id,cwd:$cwd,source:"startup",hook_event_name:"SessionStart"}' \
+        | CLAUDE_PID=$$ bash "$CS_TEST_SESSION_START_HOOK" >/dev/null 2>&1
+fi
+exit 0
+SCRIPT
+    fi
+    chmod +x "$TEST_TMPDIR/claude-stub"
+    export CLAUDE_CODE_BIN="$TEST_TMPDIR/claude-stub"
+}
+
+# Create a real session via cs itself (is_new=true launches without a prompt;
+# the stub exits immediately). Returns nothing; the dir is $CS_SESSIONS_ROOT/$1.
+_rot_session() {  # name
+    _stub_claude
+    "$CS_BIN" "$1" </dev/null >/dev/null 2>&1 || true
+}
+
+# Ambient env + session dir for driving hooks directly (no cs launch).
+_rot_hook_session() {  # name
+    local dir="$CS_SESSIONS_ROOT/$1"
+    mkdir -p "$dir/.cs/local"
+    touch "$dir/.cs/local/session.log"
+    # Model a cs-launched lead: rotation events come from the rebind, which the
+    # hook performs only for the claude cs exec'd into, matched by pid.
+    export CS_LEAD_PID=$$
+    export CLAUDE_PID=$$
+    export CLAUDE_SESSION_NAME="$1"
+    export CLAUDE_SESSION_DIR="$dir"
+    export CLAUDE_SESSION_META_DIR="$dir/.cs"
+}
+
+_timeline() { cat "$CLAUDE_SESSION_META_DIR/timeline.jsonl" 2>/dev/null; }
+
+# ============================================================================
+# Cycle 1: rotated event emission
+# ============================================================================
+
+test_hook_mismatch_emits_rebind_event() {
+    _rot_hook_session "rot-hook"
+    printf 'claude_session_id: %s\n' "$UUID_A" > "$CLAUDE_SESSION_META_DIR/local/state"
+    echo "{\"session_id\":\"$UUID_B\",\"cwd\":\"$CLAUDE_SESSION_DIR\",\"source\":\"resume\"}" \
+        | bash "$HOOKS_DIR/session-start.sh" >/dev/null 2>&1 || return 1
+    local ev
+    ev=$(_timeline | jq -c 'select(.event == "rotated")' 2>/dev/null)
+    [ -n "$ev" ] || { echo "  FAIL: no rotated event emitted"; return 1; }
+    assert_output_contains "$ev" "\"from\":\"$UUID_A\"" "event carries the old UUID" || return 1
+    assert_output_contains "$ev" "\"to\":\"$UUID_B\"" "event carries the new UUID" || return 1
+    assert_output_contains "$ev" '"reason":"rebind"' "hook-discovered change is a rebind" || return 1
+}
+
+test_hook_matching_uuid_emits_nothing() {
+    _rot_hook_session "rot-hook-same"
+    printf 'claude_session_id: %s\n' "$UUID_A" > "$CLAUDE_SESSION_META_DIR/local/state"
+    echo "{\"session_id\":\"$UUID_A\",\"cwd\":\"$CLAUDE_SESSION_DIR\",\"source\":\"resume\"}" \
+        | bash "$HOOKS_DIR/session-start.sh" >/dev/null 2>&1 || return 1
+    local n
+    n=$(_timeline | grep -c '"event":"rotated"' 2>/dev/null || true)
+    assert_eq "0" "$n" "matching UUIDs must not emit a rotated event" || return 1
+}
+
+test_decline_resume_emits_declined_event() {
+    _rot_session "rot-decline"
+    local dir="$CS_SESSIONS_ROOT/rot-decline"
+    local old
+    old=$(awk '/^claude_session_id:/ { print $2; exit }' "$dir/.cs/local/state")
+    "$CS_BIN" rot-decline <<< "n" >/dev/null 2>&1 || true
+    local new
+    new=$(awk '/^claude_session_id:/ { print $2; exit }' "$dir/.cs/local/state")
+    [ "$new" != "$old" ] || { echo "  FAIL: decline did not rebind"; return 1; }
+    local ev
+    ev=$(jq -c 'select(.event == "rotated")' "$dir/.cs/timeline.jsonl" 2>/dev/null | tail -1)
+    assert_output_contains "$ev" '"reason":"declined-resume"' "decline reason recorded" || return 1
+    assert_output_contains "$ev" "\"from\":\"$old\"" "old UUID recorded" || return 1
+    assert_output_contains "$ev" "\"to\":\"$new\"" "new UUID recorded" || return 1
+}
+
+test_unattended_resume_failure_preserves_binding_without_lineage() {
+    _rot_session "rot-fail"
+    local dir="$CS_SESSIONS_ROOT/rot-fail"
+    local old status=0 output rotated
+    old=$(awk '/^claude_session_id:/ { print $2; exit }' "$dir/.cs/local/state")
+    _stub_claude fail-resume
+    output=$(env -u CS_ASSUME_TTY "$CS_BIN" rot-fail </dev/null 2>&1) || status=$?
+    assert_eq 1 "$status" "an unattended failed resume returns Claude's failure" || return 1
+    assert_output_contains "$output" "Could not resume the recorded Claude conversation" \
+        "the failed exact resume is reported" || return 1
+    assert_eq "$old" "$(awk '/^claude_session_id:/ { print $2; exit }' "$dir/.cs/local/state")" \
+        "a failed resume preserves its binding" || return 1
+    assert_output_contains "$output" "STUB_ARGS: --name rot-fail --resume $old" \
+        "unattended startup resumes the recorded conversation exactly" || return 1
+    rotated=$(jq -c 'select(.event == "rotated")' "$dir/.cs/timeline.jsonl" 2>/dev/null || true)
+    assert_eq "" "$rotated" "a failed resume creates no fallback lineage" || return 1
+}
+
+# Adoption made a directory that already existed into a session, so its first
+# open is not "new" — and create_session_structure had staged a Claude id for
+# it anyway. The launch then asked "Continue previous conversation?" about a
+# conversation that never existed, and the default answer could only fail.
+test_adopted_project_first_launch_starts_fresh_without_asking() {
+    _stub_claude
+    local proj="$TEST_TMPDIR/adopted first launch" output new ev
+    mkdir -p "$proj"
+    (cd "$proj" && "$CS_BIN" -adopt rot-adopted >/dev/null 2>&1) || return 1
+    assert_eq "" "$(awk '/^claude_session_id:/ { print $2; exit }' "$proj/.cs/local/state")" \
+        "adoption records no conversation before one exists" || return 1
+    output=$(CS_ASSUME_TTY=1 "$CS_BIN" rot-adopted <<< "y" 2>&1) || { echo "$output"; return 1; }
+    if grep -q "Continue previous conversation" <<< "$output"; then
+        echo "  FAIL: asked to continue a conversation that never existed"
+        return 1
+    fi
+    assert_output_contains "$output" "(+ new)" "the card calls the first conversation new" || return 1
+    # Staged for SessionStart to commit; the stub runs that hook only for a
+    # rebind, and a first conversation is not one.
+    new=$(jq -r '.candidate_id // empty' "$proj/.cs/local/pending-binding-claude.json" 2>/dev/null)
+    [ -n "$new" ] || { echo "  FAIL: the first launch staged no conversation"; return 1; }
+    assert_output_contains "$output" "STUB_ARGS: --name rot-adopted --session-id $new" \
+        "the first launch starts the conversation it then records" || return 1
+    # A first conversation rotates from nothing, so the timeline records none.
+    if jq -e 'select(.event == "rotated")' "$proj/.cs/timeline.jsonl" >/dev/null 2>&1; then
+        echo "  FAIL: the first conversation rotates from nothing: $(grep rotated "$proj/.cs/timeline.jsonl")"
+        return 1
+    fi
+}
+
+# An explicit --fresh starts a new conversation. The card said "resuming" and
+# showed the previous conversation's context figure, and the timeline recorded
+# "declined-resume" for a question the user was never asked.
+test_fresh_launch_is_labelled_and_recorded_as_fresh() {
+    _rot_session "rot-fresh"
+    local dir="$CS_SESSIONS_ROOT/rot-fresh" output ev
+    printf '64\n' > "$dir/.cs/local/context-pct"
+    output=$("$CS_BIN" rot-fresh --fresh </dev/null 2>&1) || { echo "$output"; return 1; }
+    assert_output_contains "$output" "(+ fresh)" "the card says the launch is fresh" || return 1
+    if grep -q "resuming" <<< "$output"; then
+        echo "  FAIL: a fresh launch must not be labelled resuming"
+        return 1
+    fi
+    if grep -q "64% context used" <<< "$output"; then
+        echo "  FAIL: the previous conversation's context does not describe a fresh one"
+        return 1
+    fi
+    ev=$(jq -c 'select(.event == "rotated")' "$dir/.cs/timeline.jsonl" 2>/dev/null | tail -1)
+    assert_output_contains "$ev" '"reason":"fresh"' "an explicit --fresh is recorded as fresh" || return 1
+}
+
+run_test test_hook_mismatch_emits_rebind_event
+run_test test_hook_matching_uuid_emits_nothing
+run_test test_decline_resume_emits_declined_event
+run_test test_adopted_project_first_launch_starts_fresh_without_asking
+run_test test_fresh_launch_is_labelled_and_recorded_as_fresh
+run_test test_unattended_resume_failure_preserves_binding_without_lineage
+
+# ============================================================================
+# Cycle 2: the rotate skill ships and is registered
+# ============================================================================
+
+test_rotate_skill_exists_with_frontmatter() {
+    local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md"
+    [ -f "$skill" ] || { echo "  FAIL: skills/rotate/SKILL.md missing"; return 1; }
+    assert_eq "---" "$(head -1 "$skill")" "SKILL.md opens with YAML frontmatter" || return 1
+    assert_file_contains "$skill" "name: rotate" "frontmatter names the skill" || return 1
+    assert_file_contains "$skill" "description:" "frontmatter has a description" || return 1
+    assert_file_contains "$skill" "status: unconsumed" "skill teaches the frontmatter contract" || return 1
+    assert_file_contains "$skill" ".cs/handoffs/" "skill targets the tracked handoff store" || return 1
+}
+
+# Nothing else in cs deletes a handoff, so without a prune rule .cs/handoffs/
+# grows without bound in a tracked, shared directory. The rule has to be
+# spelled out precisely: which statuses are droppable, the age source, and the
+# floor that keeps a burst of rotations from emptying the store.
+# The skill's last line is the only manual step left in a rotation, and a hook
+# cannot take it: nothing reachable from a tool result or a hook can submit to
+# Claude Code's command queue, so /clear is always the user's keystroke. That
+# makes it the one thing the skill must not bury in prose.
+# The handoff is the only artifact that survives the /clear: the transcript is
+# gone, and whatever the handoff failed to carry is simply unknown to the next
+# conversation. That failure is silent — nothing looks broken, the work just
+# proceeds without facts nobody can tell are missing — so it runs on the
+# strongest model available rather than on whatever the session happened to be
+# using when context ran out.
+# The 7 body sections are Claude Code's own compaction template with two
+# deleted, and one of the deleted ones — "Errors and fixes", which the bundle
+# describes as covering user feedback and what was done differently — is where
+# "a rejected alternative and the reason it lost" belongs. That rule was added
+# later with no section to hold it, and across ten real handoffs the fact class
+# scattered across five different sections while 8 of 10 invented their own
+# structure for it. At 80% context the heading list is the writer's recall
+# scaffold: a fact with no container is not misfiled, it is never remembered.
+test_rotate_skill_has_a_home_for_rejected_alternatives() {
+    local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md"
+    assert_file_contains "$skill" "Settled and rejected" \
+        "the body needs a section for decisions and dead ends" || return 1
+    assert_file_contains "$skill" "rejected with the reason they lost" \
+        "and it must name rejected alternatives explicitly" || return 1
+    # An empty section must be stated, not skipped: a heading a writer may
+    # silently omit is the same as no heading under context pressure.
+    assert_file_contains "$skill" "none" \
+        "an empty section must say so rather than vanish" || return 1
+}
+
+# The one MEASURED silent failure in the corpus was provenance, not length: a
+# handoff asserted as fact that a tool rewrites a prompt, and its successor
+# recorded "It does not. I built an entire investigation on that unchecked
+# characterisation." The template asks for no epistemic status, so a claim read
+# off a README and a claim measured live look identical to a reader with zero
+# memory of how either was learned.
+# Pass one must carry every conversation-only fact, but the section list gave
+# them no container and step 4 said "pass two is where exact readings live".
+# In 4 sampled handoffs, 3 writers invented their own section for these facts;
+# the one that did not carried both of the wrong claims found. A named section
+# in pass one, checked item by item before the first commit, closes both.
+test_rotate_skill_has_a_home_for_conversation_only_facts() {
+    local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md"
+    assert_file_contains "$skill" "3\. Conversation-only facts" \
+        "the body needs a pass-one section for facts that exist nowhere else" || return 1
+    assert_file_contains "$skill" "check each one off" \
+        "and a checklist before the first commit" || return 1
+    if grep -q 'pass two is where exact readings live' "$skill"; then
+        echo "  FAIL: exact readings belong to pass one, not pass two"; return 1
+    fi
+}
+
+# A successor appends its report to the handoff it consumed, and nothing
+# committed it: step 7's prune deletes spent handoffs on the premise that git
+# history keeps them, which is false for an uncommitted report (Codex and
+# Fable, 2026-09-24). The prune must skip a handoff with uncommitted changes,
+# and step 8 must stage the report.
+test_rotate_skill_keeps_successor_reports() {
+    local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md"
+    assert_file_contains "$skill" "it has no uncommitted changes" \
+        "the prune must not delete an uncommitted successor report" || return 1
+    assert_file_contains "$skill" "Successor report" \
+        "step 8 must stage consumed handoffs carrying a report" || return 1
+}
+
+# .cs/ is gitignored in some checkouts, and `git status --porcelain` prints
+# nothing for an ignored file, so the uncommitted-changes check passes a
+# handoff git never saw: 2026-08-24-theme-and-claide-followup.md was consumed,
+# 30+ days old and outside the newest 10, and pruning it would have deleted the
+# only copy (2026-09-24). The prune must require the file to be tracked.
+test_rotate_skill_prunes_only_tracked_handoffs() {
+    local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md"
+    assert_file_contains "$skill" "git ls-files --error-unmatch" \
+        "the prune must skip a handoff git does not track" || return 1
+}
+
+test_rotate_skill_requires_provenance_on_claims() {
+    local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md"
+    assert_file_contains "$skill" "was established" \
+        "behavioural claims must carry their provenance" || return 1
+    assert_file_contains "$skill" "assumed" \
+        "and an honest default when the writer cannot recall it" || return 1
+    # Measured 2026-09-24 across 40 handoffs: "measured" in 38, "assumed" in 1.
+    # The label landed per bullet, so a cause inferred beside a measured symptom
+    # rode under MEASURED and its successor built on it; and a bare "--host
+    # ghost fails" sent a full suite to the local machine when the working
+    # host was already in memory.
+    assert_file_contains "$skill" "on the claim, not on the bullet" \
+        "an inferred cause inside a measured bullet needs its own label" || return 1
+    assert_file_contains "$skill" "the command that failed" \
+        "a claim that something fails must carry the failing command" || return 1
+}
+
+# The successor is told to execute the next-step section, and in-document
+# retrieval degrades with length — so the thing it needs first must not be the
+# thing it finds last. "Write it first" only means anything as tool-call order:
+# a Write lands whole or not at all, so the first pass is committed before the
+# second pass appends to it, or a compaction mid-rotation loses exactly what
+# was meant to survive it.
+test_rotate_skill_puts_the_next_step_first() {
+    local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md"
+    assert_file_contains "$skill" "1\. Next Step" \
+        "Next Step must open the body, not close it" || return 1
+    # The successor acts on Next Step before it reads anything else, so a fact
+    # the first action needs has to be there even when it also lives in a
+    # committed file or in memory.
+    assert_file_contains "$skill" "without looking anything up" \
+        "Next Step must carry every fact its first action needs" || return 1
+    # A/B 2026-09-24: a Next Step said "no rc= line -> rerun the suite" while
+    # the run could still be going, which starts a second full suite beside it.
+    assert_file_contains "$skill" "already done or still running" \
+        "an action that starts work must say how to check it is not in flight" || return 1
+    # 2026-09-25: a Next Step said to switch branches; session start had
+    # flipped the handoff to consumed, so git refused the switch.
+    assert_file_contains "$skill" "flips its \`status:\` to \`consumed\`" \
+        "a Next Step that needs a clean worktree must name the consumed flip" || return 1
+    assert_file_contains "$skill" "append" \
+        "the second pass must append, since a Write replaces the whole file" || return 1
+    assert_file_contains "$skill" "second commit" \
+        "and land as its own commit, never an amend of the durable one" || return 1
+    if grep -q -- '--amend\|amend the' "$skill"; then
+        echo "  FAIL: amending replaces the only faithful copy of pass one"; return 1
+    fi
+}
+
+# Arming is the last step. An armed marker is disarmed by the launch prompt on
+# Y, n or Enter and nothing re-arms it, while an unarmed committed handoff is
+# still offered by that prompt's scan — so arming before the ritual can finish
+# turns an interruption into a bare /clear. Pinned by ORDER in the file: the arm
+# step must come after both commits and after the retire step.
+test_rotate_skill_arms_last() {
+    local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md"
+    local arm commit2 retire tell
+    arm=$(grep -n '^[0-9]*\. Arm it' "$skill" | head -1 | cut -d: -f1)
+    commit2=$(grep -n '^[0-9]*\. Second commit' "$skill" | head -1 | cut -d: -f1)
+    retire=$(grep -n '^[0-9]*\. Retire this machine' "$skill" | head -1 | cut -d: -f1)
+    tell=$(grep -n '^[0-9]*\. Tell the user' "$skill" | head -1 | cut -d: -f1)
+    [ -n "$arm" ] && [ -n "$commit2" ] && [ -n "$retire" ] && [ -n "$tell" ] \
+        || { echo "  FAIL: could not locate the arm, second-commit, retire and tell steps"; return 1; }
+    [ "$arm" -gt "$commit2" ] && [ "$arm" -gt "$retire" ] \
+        || { echo "  FAIL: arming must follow the second commit and the retire step (arm at $arm)"; return 1; }
+    [ "$arm" -lt "$tell" ] \
+        || { echo "  FAIL: arming must precede telling the user to /clear"; return 1; }
+}
+
+test_rotate_skill_pins_a_model_that_cannot_refuse() {
+    local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md"
+    # A handoff is selection under judgment, and author draw moves what a
+    # successor can recover as much as length does, so the artifact gets a
+    # quality floor rather than whatever model the session happens to be on.
+    # The family alias, not a point release: a point release keeps an older
+    # Opus once a newer one ships, and a prefix regex would match both ids and
+    # never notice the pin aging. Fable is unusable here whatever its quality:
+    # it is the one model that requires usage credits, so a session out of
+    # credits loses the command at the exact moment context is nearly full.
+    assert_file_contains "$skill" "^model: opus$" \
+        "the rotate skill must pin the opus family, not a point release and not a credit-gated model" || return 1
+    if [ "$(head -1 "$skill")" != "---" ]; then
+        echo "  FAIL: the skill must open with a YAML frontmatter block"
+        return 1
+    fi
+}
+
+# The handoff carries two voices, and they do not compress equally. What the
+# user said, asked for or corrected is the part a successor cannot re-derive
+# and the part most likely to drift when paraphrased; the writer's own
+# reasoning compresses to what it concluded. The best handoffs in this store
+# quote the user's corrections verbatim in the request section; this pin makes
+# that an instruction rather than a habit.
+test_rotate_skill_keeps_the_users_words_close() {
+    local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md"
+    assert_file_contains "$skill" "close to their own words" \
+        "what the user said must stay close to their own words" || return 1
+}
+
+# The skill asks for length on the facts that exist nowhere else. Without a
+# counterweight that reads as licence for length everywhere, and a long handoff
+# degrades retrieval of exactly the facts it was meant to carry. There is no byte cap (a cap drops facts the
+# skill cannot rank), so the shape is asymmetric: complete on the
+# unrecoverable, concise on the rest.
+test_rotate_skill_spends_length_asymmetrically() {
+    local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md"
+    assert_file_contains "$skill" "keep everything else concise" \
+        "length is for the unrecoverable facts only; the rest stays concise" || return 1
+}
+
+# cs launches claude with CLAUDE_CODE_TASK_LIST_ID set to the session name
+# (lib/75-launch.sh), and Claude Code resolves ~/.claude/tasks/<id>/ from it,
+# so under cs the native task list is keyed to the SESSION and survives the
+# /clear: the successor inherits it. The skill has to say so, or a writer
+# assumes the default per-conversation keying and a successor mirrors a list
+# it already holds, splitting progress across duplicates. Measured 2026-09-02
+# against the 2.1.258 bundle and the live processes.
+test_rotate_skill_says_native_tasks_survive_the_clear() {
+    local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md"
+    assert_file_contains "$skill" "native task list is keyed to the session" \
+        "the skill must state that the native list is per session under cs" || return 1
+    assert_file_contains "$skill" "inherits it" \
+        "and that the successor inherits it rather than starting empty" || return 1
+}
+
+test_rotate_skill_ends_on_the_one_manual_step() {
+    local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md"
+    # The property is what the skill INSTRUCTS Claude to emit, not where the
+    # instruction sits in the file. Pin the three parts that make it
+    # unmissable: the final line is the /clear call to action, nothing follows
+    # it, and it is set apart rather than folded into prose.
+    assert_file_contains "$skill" "End your response with the instruction" \
+        "the skill must direct the instruction to the end of the response" || return 1
+    assert_file_contains "$skill" "nothing after it" \
+        "and forbid a summary trailing it, which is what buried it before" || return 1
+    assert_file_contains "$skill" 'Run `/clear` now' \
+        "and give the exact line to emit, set apart in bold" || return 1
+}
+
+# The auto-start made the old wording false. "It will not act until they send
+# their next message" is precisely what the kick removed, and a skill that still
+# says it teaches the user to sit and wait for a prompt that never comes.
+test_rotate_skill_does_not_promise_the_rotation_waits() {
+    local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md"
+    assert_file_not_contains "$skill" "will not act until" \
+        "the rotation now starts itself; the skill must not say otherwise" || return 1
+    assert_file_contains "$skill" "on its own" \
+        "and must say the fresh conversation begins the work by itself" || return 1
+}
+
+test_rotate_skill_teaches_the_prune_rule() {
+    local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md"
+    assert_file_contains "$skill" "30 days" \
+        "skill names the age cutoff" || return 1
+    assert_file_contains "$skill" "10 newest" \
+        "skill names the floor that survives the cutoff" || return 1
+    assert_file_contains "$skill" "created:" \
+        "skill reads the age from the frontmatter date" || return 1
+    grep -q "never the file's mtime" "$skill" \
+        || { echo "  FAIL: skill must rule out mtime as the age source"; return 1; }
+    grep -q "never .status: unconsumed." "$skill" \
+        || { echo "  FAIL: skill must forbid deleting an unconsumed handoff"; return 1; }
+}
+
+test_rotate_skill_registered_in_both_manifests() {
+    grep -A 5 '^CS_SKILLS=(' "$SCRIPT_DIR/../lib/01-manifests.sh" | grep -q 'rotate' \
+        || { echo "  FAIL: rotate missing from lib/01-manifests.sh CS_SKILLS"; return 1; }
+    grep -A 5 '^CS_SKILLS=(' "$SCRIPT_DIR/../install.sh" | grep -q 'rotate' \
+        || { echo "  FAIL: rotate missing from install.sh CS_SKILLS"; return 1; }
+}
+
+test_rotate_skill_documents_the_clear_route() {
+    local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md"
+    assert_file_contains "$skill" "pending-handoff" \
+        "skill arms the marker itself" || return 1
+    assert_file_contains "$skill" "/clear" \
+        "skill points the user at the in-process route" || return 1
+    assert_file_contains "$skill" "superseded" \
+        "skill retires its own stale handoffs" || return 1
+    assert_file_contains "$skill" "session.log" \
+        "superseding is scoped by this machine's own conversation log" || return 1
+    assert_file_not_contains "$skill" "never edits .cs/local/state" \
+        "the stale no-state contract is gone" || return 1
+}
+
+test_rotate_skill_governs_what_goes_into_the_handoff() {
+    # The handoff is written by a model summarising a conversation, committed
+    # by step 4 into a store the session .gitignore does not cover, and read
+    # back as the next conversation's prompt. Published and re-read: both
+    # halves are why the body needs rules.
+    local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md"
+    assert_file_contains "$skill" "Redact" \
+        "the skill must tell the writer to redact secrets" || return 1
+    assert_file_contains "$skill" "tokens" \
+        "the redaction rule must name what to look for" || return 1
+    assert_file_contains "$skill" "personally identifying" \
+        "redaction covers personal data, not just credentials" || return 1
+    assert_file_contains "$skill" "Reference committed work" \
+        "the skill must stop the handoff re-summarising committed work" || return 1
+    # A handoff scored 0 of 60 on facts that existed only in the conversation —
+    # rejected alternatives, exact readings, run ids, event order. The reference
+    # rule is right for committed work and silently drops everything else,
+    # because there is no path to point at.
+    assert_file_contains "$skill" "restate what a successor cannot recover" \
+        "the skill must require conversation-only facts be written down" || return 1
+    # A handoff said "use drive.sh" for a cs session; drive.sh ran bare claude,
+    # and the successor spent 23 tool calls finding out and writing a new one.
+    assert_file_contains "$skill" "says in one clause what it does" \
+        "a pointer to a script must say what the script does" || return 1
+    # Rotation fires when context is hot, and past ~88% an autocompaction can
+    # land first — the handoff would then be distilled from a summary, losing
+    # the verbatim facts, with nothing to show it happened.
+    assert_file_contains "$skill" "say so in the handoff" \
+        "a handoff written without full fidelity must label itself" || return 1
+    # The restate rule asks for exact readings written down as they were, and an
+    # exact reading is where a secret hides — in a tracked, shared file, judged
+    # at hot context. Redaction has to survive that pressure.
+    assert_file_contains "$skill" "Re-read the finished body" \
+        "redaction must be re-checked after the body is written" || return 1
+    # A handoff kept a user's body stats out as "personal data" yet quoted
+    # their pain history verbatim in USER, while the plan holding the same
+    # detail stayed untracked on purpose. Not identifying, still sensitive,
+    # and the verbatim rule pulled it in.
+    assert_file_contains "$skill" "sensitive personal detail" \
+        "redaction covers sensitive personal detail, not only identifying data" || return 1
+    assert_file_contains "$skill" "Redaction outranks every rule" \
+        "neither the verbatim ledger nor Next Step's inline rule may override redaction" || return 1
+    # A handoff's Next Step listed the question that gated all its work as the
+    # fifth bullet, after the steps it blocked.
+    assert_file_contains "$skill" "the blocker opens Next Step" \
+        "a blocker must lead Next Step, ahead of the steps it gates" || return 1
+}
+
+test_rotate_skill_never_force_adds_an_ignored_handoff() {
+    local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md"
+    # A plain `git add` of a handoff under an ignored .cs/ exits 1, and
+    # rotations answered that with `git add -f`, publishing every handoff in
+    # a public repo that meant to keep .cs/ private.
+    assert_file_contains "$skill" "check-ignore -q --no-index" \
+        "the skill must test whether a path is ignored before staging it" || return 1
+    assert_file_contains "$skill" "Never \`git add -f\`" \
+        "the skill must forbid force-adding an ignored path" || return 1
+}
+
+test_rotate_skill_reads_parent_from_state_not_the_launch_env() {
+    # CS_CLAUDE_SESSION_ID is the LAUNCH uuid: exported once per cs process
+    # (lib/75-launch.sh) and never refreshed, on purpose — session-start.sh
+    # keys its ref-rename guard on it still naming this process's predecessor.
+    # .cs/local/state is what tracks the current conversation, rebound by the
+    # hook on every fresh conversation. The two agree only until the first
+    # /clear, so preferring the env var writes the GRANDPARENT as parent: on a
+    # second rotation, and step 7 supersedes by matching parent: against the
+    # session log.
+    local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md"
+    local state_line env_line
+    state_line=$(grep -n 'claude_session_id' "$skill" | head -1 | cut -d: -f1)
+    env_line=$(grep -n 'CS_CLAUDE_SESSION_ID' "$skill" | head -1 | cut -d: -f1)
+    [ -n "$state_line" ] || { echo "  FAIL: skill never names .cs/local/state's claude_session_id"; return 1; }
+    [ -n "$env_line" ] || { echo "  FAIL: skill never names CS_CLAUDE_SESSION_ID"; return 1; }
+    [ "$state_line" -lt "$env_line" ] || {
+        echo "  FAIL: skill offers CS_CLAUDE_SESSION_ID (line $env_line) before the state file (line $state_line); the launch uuid is stale after a /clear"
+        return 1
+    }
+    assert_file_contains "$skill" "launch" \
+        "the skill says why the env var is only a fallback" || return 1
+}
+
+run_test test_rotate_skill_exists_with_frontmatter
+run_test test_rotate_skill_never_force_adds_an_ignored_handoff
+run_test test_rotate_skill_has_a_home_for_rejected_alternatives
+run_test test_rotate_skill_has_a_home_for_conversation_only_facts
+run_test test_rotate_skill_keeps_successor_reports
+run_test test_rotate_skill_prunes_only_tracked_handoffs
+run_test test_rotate_skill_requires_provenance_on_claims
+run_test test_rotate_skill_puts_the_next_step_first
+run_test test_rotate_skill_arms_last
+run_test test_rotate_skill_pins_a_model_that_cannot_refuse
+run_test test_rotate_skill_keeps_the_users_words_close
+run_test test_rotate_skill_spends_length_asymmetrically
+run_test test_rotate_skill_says_native_tasks_survive_the_clear
+run_test test_rotate_skill_ends_on_the_one_manual_step
+run_test test_rotate_skill_does_not_promise_the_rotation_waits
+run_test test_rotate_skill_teaches_the_prune_rule
+run_test test_rotate_skill_registered_in_both_manifests
+run_test test_rotate_skill_documents_the_clear_route
+run_test test_rotate_skill_governs_what_goes_into_the_handoff
+run_test test_rotate_skill_reads_parent_from_state_not_the_launch_env
+
+# ============================================================================
+# Cycle 3: three-way launch prompt
+# ============================================================================
+
+_seed_handoff() {  # session_dir, basename, status
+    mkdir -p "$1/.cs/handoffs"
+    cat > "$1/.cs/handoffs/$2" << EOF
+---
+parent: $UUID_A
+created: 2026-07-16T10:00:00Z
+purpose: test rotation
+status: $3
+---
+
+## 7. Next Step
+Continue the test.
+EOF
+}
+
+test_prompt_unchanged_without_handoff() {
+    _rot_session "rot-plain"
+    local output
+    output=$("$CS_BIN" rot-plain <<< "n" 2>&1) || true
+    assert_output_contains "$output" "Continue previous conversation?" "prompt present" || return 1
+    grep -q '\[Y/n\] ' <<< "$output" \
+        || { echo "  FAIL: two-way prompt suffix must stay byte-identical"; return 1; }
+    if grep -q '\[Y/n/r/d\]' <<< "$output"; then
+        echo "  FAIL: handoff prompt must not appear without a pending handoff"
+        return 1
+    fi
+    if grep -q "Rotation handoff pending" <<< "$output"; then
+        echo "  FAIL: pending notice must not appear without a pending handoff"
+        return 1
+    fi
+}
+
+# The launch card asks whether to continue a conversation without saying how
+# much room is left. cs-statusline stamps the figure every render, keyed by
+# session name — so the card reports the last conversation to render HERE, and
+# says exactly that rather than attributing it to the one being resumed.
+test_resume_prompt_shows_the_previous_conversations_context() {
+    _rot_session "rot-ctx"
+    printf '64\n' > "$CS_SESSIONS_ROOT/rot-ctx/.cs/local/context-pct"
+    local output
+    output=$("$CS_BIN" rot-ctx <<< "n" 2>&1) || true
+    # Piped stdout has no colour at all (setup_palette blanks every code when
+    # stdout is not a TTY), so the escape belongs in the pty test below; here
+    # only the text is assertable.
+    assert_output_contains "$output" "64% context used" "the card must carry a context row" || return 1
+    assert_output_contains "$output" "Continue previous conversation?" "prompt still present" || return 1
+}
+
+# The readout is a row in the launch card, carrying the gradient bar and sitting
+# with the other session facts — not a loose line above the prompt with nothing
+# separating it from the question. No pty needed: the card renders the same on a
+# pipe, and a pty here would stop on the resume prompt with nothing to answer it.
+test_context_row_sits_in_the_card_above_the_prompt() {
+    _rot_session "rot-card"
+    printf '64\n' > "$CS_SESSIONS_ROOT/rot-card/.cs/local/context-pct"
+    local output ctx_line prompt_line
+    output=$("$CS_BIN" rot-card <<< "n" 2>&1) || true
+    ctx_line=$(printf '%s\n' "$output" | grep -n "64% context used" | head -1 | cut -d: -f1)
+    prompt_line=$(printf '%s\n' "$output" | grep -n "Continue previous conversation" | head -1 | cut -d: -f1)
+    [ -n "$ctx_line" ] || { echo "  FAIL: no context row in the card"; return 1; }
+    [ -n "$prompt_line" ] || { echo "  FAIL: no resume prompt"; return 1; }
+    [ "$ctx_line" -lt "$prompt_line" ] \
+        || { echo "  FAIL: the context row must sit above the prompt (row $ctx_line, prompt $prompt_line)"; return 1; }
+    # The card's bar prefixes the row, which is what separates it from the prompt.
+    grep -q "▌.*64% context used" <<< "$output" \
+        || { echo "  FAIL: the context row must carry the card's bar"; return 1; }
+}
+
+# Secrets and context are both one short fact each, and stacking them made the
+# card two rows taller than it needed to be. They share a row when both are
+# present. Either alone still gets its own row, so the row is not conditional
+# on the pair.
+#
+# Drives the real seam rather than a fabricated one: the card counts via
+# `cs-secrets list`, so the test stores a secret in an isolated store and lets
+# the card find it. A test that stubbed the count would assert the layout
+# against a number the card never actually computes.
+test_secrets_and_context_share_one_card_row() {
+    _rot_session "rot-pair"
+    printf '64\n' > "$CS_SESSIONS_ROOT/rot-pair/.cs/local/context-pct"
+    # No SKIP branch: test_lib puts bin/ on PATH and scopes HOME, so the seed
+    # runs the tree under review into a throwaway store, on CI as much as
+    # here. A skip would return 0 exactly where the suite is gated.
+    printf 'v\n' | CS_SECRETS_BACKEND=encrypted CS_SECRETS_PASSWORD=test-pw \
+        CLAUDE_SESSION_NAME=rot-pair "$SCRIPT_DIR/../bin/cs-secrets" set PAIRKEY >/dev/null 2>&1 \
+        || { echo "  FAIL: could not seed a secret into the scoped store"; return 1; }
+    local output line
+    output=$(CS_SECRETS_BACKEND=encrypted CS_SECRETS_PASSWORD=test-pw \
+        "$CS_BIN" rot-pair <<< "n" 2>&1) || true
+    line=$(printf '%s\n' "$output" | grep "context used" | head -1)
+    [ -n "$line" ] || { echo "  FAIL: no context row"; return 1; }
+    case "$line" in
+        *secret*) ;;
+        *) echo "  FAIL: secrets and context must share one row, got: $line"; return 1 ;;
+    esac
+    # The separator is a literal glyph. An echo -e escape (\u00b7) is printed
+    # as six characters by /bin/bash 3.2, the floor and the macOS CI lane, so
+    # assert the glyph itself rather than just the two facts around it.
+    case "$line" in
+        *'·'*) ;;
+        *) echo "  FAIL: the row must join its two facts with a middle dot, got: $line"; return 1 ;;
+    esac
+    case "$line" in
+        *'\u00b7'*) echo "  FAIL: the separator escape reached the terminal literally"; return 1 ;;
+    esac
+    # One row, not two.
+    local n; n=$(printf '%s\n' "$output" | grep -c 'secret')
+    [ "$n" -eq 1 ] \
+        || { echo "  FAIL: the secret count appears on $n rows, want 1"; return 1; }
+}
+
+# Context alone keeps its own row — the merge must not make one fact depend on
+# the other being present. No secret is seeded here, so the count is zero.
+test_context_alone_still_gets_a_row() {
+    _rot_session "rot-ctxonly"
+    printf '64\n' > "$CS_SESSIONS_ROOT/rot-ctxonly/.cs/local/context-pct"
+    local output
+    output=$("$CS_BIN" rot-ctxonly <<< "n" 2>&1) || true
+    assert_output_contains "$output" "64% context used" "context still renders alone" || return 1
+    grep -q "▌.*64% context used" <<< "$output" \
+        || { echo "  FAIL: the lone context row must still carry the card's bar"; return 1; }
+}
+
+# Best-effort: the stamp only exists where cs-statusline is installed, so its
+# absence must cost nothing rather than print a blank or a zero.
+test_resume_prompt_omits_context_when_never_stamped() {
+    _rot_session "rot-noctx"
+    rm -f "$CS_SESSIONS_ROOT/rot-noctx/.cs/local/context-pct"
+    local output
+    output=$("$CS_BIN" rot-noctx <<< "n" 2>&1) || true
+    assert_output_not_contains "$output" "context used" "no readout without a stamp" || return 1
+    assert_output_contains "$output" "Continue previous conversation?" "prompt still present" || return 1
+}
+
+test_resume_prompt_ignores_a_junk_context_stamp() {
+    _rot_session "rot-junk"
+    printf 'not-a-number\n' > "$CS_SESSIONS_ROOT/rot-junk/.cs/local/context-pct"
+    local output
+    output=$("$CS_BIN" rot-junk <<< "n" 2>&1) || true
+    assert_output_not_contains "$output" "context used" "a junk stamp reads as no stamp" || return 1
+}
+
+test_resume_prompt_ignores_an_out_of_range_context_stamp() {
+    _rot_session "rot-over"
+    printf '150\n' > "$CS_SESSIONS_ROOT/rot-over/.cs/local/context-pct"
+    local output
+    output=$("$CS_BIN" rot-over <<< "n" 2>&1) || true
+    assert_output_not_contains "$output" "context used" "a percentage over 100 is not a percentage" || return 1
+}
+
+# A zero-padded stamp must not be read as octal, and 08/09 would be a hard
+# arithmetic error rather than a wrong number.
+test_resume_prompt_reads_a_zero_padded_context_stamp() {
+    _rot_session "rot-pad"
+    printf '08\n' > "$CS_SESSIONS_ROOT/rot-pad/.cs/local/context-pct"
+    local output
+    output=$("$CS_BIN" rot-pad <<< "n" 2>&1) || true
+    assert_output_contains "$output" "8% context used" "08 is eight percent, not an octal error" || return 1
+}
+
+# ESC at the continue prompt cancels the launch: the stub must not run.
+test_esc_at_continue_prompt_cancels_launch() {
+    _rot_session "rot-esc"
+    local output rc=0
+    output=$("$CS_BIN" rot-esc <<< "$(printf '\033')" 2>&1) || rc=$?
+    if grep -q 'STUB_ARGS:' <<< "$output"; then
+        echo "  FAIL: ESC must cancel the launch — the stub must not run"; return 1
+    fi
+    [ "$rc" -ne 0 ] || { echo "  FAIL: ESC cancel should exit non-zero"; return 1; }
+}
+
+test_rotate_answer_consumes_pending_handoff() {
+    _rot_session "rot-r"
+    local dir="$CS_SESSIONS_ROOT/rot-r"
+    _seed_handoff "$dir" "2026-07-16-test.md" "unconsumed"
+    local old
+    old=$(awk '/^claude_session_id:/ { print $2; exit }' "$dir/.cs/local/state")
+    local output
+    output=$("$CS_BIN" rot-r <<< "r" 2>&1) || true
+    assert_output_contains "$output" "Rotation handoff pending" "notice names the pending handoff" || return 1
+    assert_output_contains "$output" "2026-07-16-test.md" "notice carries the basename" || return 1
+    local new
+    new=$(awk '/^claude_session_id:/ { print $2; exit }' "$dir/.cs/local/state")
+    [ "$new" != "$old" ] || { echo "  FAIL: r must rebind to a fresh UUID"; return 1; }
+    assert_file_contains "$dir/.cs/handoffs/2026-07-16-test.md" "status: consumed" \
+        "the fresh SessionStart acknowledges and consumes the selected handoff" || return 1
+    assert_file_contains "$dir/.cs/handoffs/2026-07-16-test.md" "consumed_by: $new" \
+        "the new conversation is recorded as its consumer" || return 1
+    assert_not_exists "$dir/.cs/local/pending-handoff" \
+        "the SessionStart acknowledgement removes the pending marker" || return 1
+    assert_output_contains "$output" "STUB_ARGS: " "stub launched" || return 1
+    assert_output_contains "$output" "--session-id $new" "fresh conversation via --session-id" || return 1
+    local ev
+    ev=$(jq -c 'select(.event == "rotated")' "$dir/.cs/timeline.jsonl" 2>/dev/null | tail -1)
+    assert_output_contains "$ev" '"reason":"handoff"' "deliberate rotation reason" || return 1
+    assert_output_contains "$ev" '"handoff":"2026-07-16-test.md"' "event names the handoff" || return 1
+}
+
+# Four answers crammed into one line with a parenthetical gloss for two of them
+# hid the choice that matters (fresh conversation from the handoff) at the end
+# of the line. Each answer gets its own row, key first, like the already-open
+# menu, and the keys stay the letters people have been typing.
+test_handoff_prompt_lists_one_answer_per_row() {
+    _rot_session "rot-rows"
+    local dir="$CS_SESSIONS_ROOT/rot-rows"
+    _seed_handoff "$dir" "2026-07-16-test.md" "unconsumed"
+    local output
+    output=$("$CS_BIN" rot-rows <<< "n" 2>&1) || true
+    assert_output_contains "$output" "Rotation handoff pending: 2026-07-16-test.md" "notice names the handoff" || return 1
+    local rows
+    rows=$(printf '%s\n' "$output" | grep -E '^    [yrnd]  ')
+    assert_eq "    y  resume          continue the previous conversation · default
+    r  from handoff    fresh conversation that picks up the handoff
+    n  fresh           fresh conversation; the handoff waits for later
+    d  discard         retire the handoff, then resume" "$rows" "one row per answer, in this order" || return 1
+    if grep -q 'Y/n/r/d' <<< "$output"; then
+        echo "  FAIL: the one-line answer list must be gone"; return 1
+    fi
+}
+
+# The r launch auto-starts the handoff: its positional prompt is the handoff
+# continuation (displacing the /color re-apply for this one launch), so the fresh
+# conversation reads the handoff and continues without the user typing first.
+test_rotate_answer_auto_starts_handoff() {
+    _rot_session "rot-autostart"
+    local dir="$CS_SESSIONS_ROOT/rot-autostart"
+    _seed_handoff "$dir" "2026-07-16-test.md" "unconsumed"
+    local output
+    output=$("$CS_BIN" rot-autostart <<< "r" 2>&1) || true
+    assert_output_contains "$output" ".cs/handoffs/2026-07-16-test.md" \
+        "the launch prompt points claude at the pending handoff" || return 1
+    if grep -q -- '/color' <<< "$output"; then
+        echo "  FAIL: the handoff prompt must displace /color for this launch"
+        return 1
+    fi
+    return 0
+}
+
+test_continue_and_no_leave_handoff_unconsumed() {
+    _rot_session "rot-yn"
+    local dir="$CS_SESSIONS_ROOT/rot-yn"
+    _seed_handoff "$dir" "2026-07-16-test.md" "unconsumed"
+    "$CS_BIN" rot-yn <<< "n" >/dev/null 2>&1 || true
+    assert_file_contains "$dir/.cs/handoffs/2026-07-16-test.md" "status: unconsumed" \
+        "n leaves the handoff pending" || return 1
+    [ ! -f "$dir/.cs/local/pending-handoff" ] || { echo "  FAIL: n must not set the marker"; return 1; }
+}
+
+test_consumed_handoffs_do_not_trigger_prompt() {
+    _rot_session "rot-consumed"
+    local dir="$CS_SESSIONS_ROOT/rot-consumed"
+    _seed_handoff "$dir" "2026-07-16-done.md" "consumed"
+    local output
+    output=$("$CS_BIN" rot-consumed <<< "n" 2>&1) || true
+    if grep -q "Rotation handoff pending" <<< "$output"; then
+        echo "  FAIL: consumed handoff must not resurface"
+        return 1
+    fi
+}
+
+test_newest_of_multiple_handoffs_wins() {
+    _rot_session "rot-multi"
+    local dir="$CS_SESSIONS_ROOT/rot-multi"
+    _seed_handoff "$dir" "2026-07-14-old.md" "unconsumed"
+    _seed_handoff "$dir" "2026-07-16-new.md" "unconsumed"
+    local output
+    output=$("$CS_BIN" rot-multi <<< "r" 2>&1) || true
+    local new
+    new=$(awk '/^claude_session_id:/ { print $2; exit }' "$dir/.cs/local/state")
+    assert_file_contains "$dir/.cs/handoffs/2026-07-16-new.md" "status: consumed" \
+        "the lexicographically latest handoff is selected and acknowledged" || return 1
+    assert_file_contains "$dir/.cs/handoffs/2026-07-16-new.md" "consumed_by: $new" \
+        "the new conversation consumed the selected handoff" || return 1
+    assert_not_exists "$dir/.cs/local/pending-handoff" \
+        "the acknowledgement removes its pending marker" || return 1
+    assert_file_contains "$dir/.cs/handoffs/2026-07-14-old.md" "status: unconsumed" \
+        "older handoff untouched" || return 1
+}
+
+# The launcher picks by lexicographic basename, but .cs/handoffs/ is shared and
+# nothing ever deletes a handoff: a co-worker's file, or one from a checkout that
+# no longer exists, keeps status: unconsumed forever because the rotate skill
+# refuses to supersede a handoff whose parent is absent from this machine's
+# session.log. If it sorts last it shadows the handoff this machine actually
+# armed, and r rotates into someone else's plan. The armed marker is an explicit
+# choice and outranks the scan.
+test_armed_marker_outranks_a_later_sorting_orphan() {
+    _rot_session "rot-orphan"
+    local dir="$CS_SESSIONS_ROOT/rot-orphan"
+    _seed_handoff "$dir" "2026-07-14-mine.md" "unconsumed"
+    _seed_handoff "$dir" "2026-07-16-orphan.md" "unconsumed"
+    printf '%s\n' "2026-07-14-mine.md" > "$dir/.cs/local/pending-handoff"
+    local output
+    output=$("$CS_BIN" rot-orphan <<< "r" 2>&1) || true
+    assert_output_contains "$output" "2026-07-14-mine.md" \
+        "the prompt names the armed handoff, not the orphan" || return 1
+    # The stub runs the real SessionStart hook, so the fresh conversation
+    # consumes whichever handoff r armed; its consumer line is the evidence.
+    local new
+    new=$(awk '/^claude_session_id:/ { print $2; exit }' "$dir/.cs/local/state")
+    assert_file_contains "$dir/.cs/handoffs/2026-07-14-mine.md" "consumed_by: $new" \
+        "r rotates into the armed handoff" || return 1
+    assert_not_exists "$dir/.cs/local/pending-handoff" \
+        "the acknowledgement removes the marker r armed" || return 1
+    assert_file_contains "$dir/.cs/handoffs/2026-07-16-orphan.md" "status: unconsumed" \
+        "the orphan is left alone, not retired behind the user's back" || return 1
+}
+
+# Fallback must be exact: a marker naming a spent or absent file is stale, and
+# the directory scan still owns the answer.
+test_stale_marker_falls_back_to_the_scan() {
+    _rot_session "rot-stale-marker"
+    local dir="$CS_SESSIONS_ROOT/rot-stale-marker"
+    _seed_handoff "$dir" "2026-07-16-real.md" "unconsumed"
+    _seed_handoff "$dir" "2026-07-15-spent.md" "consumed"
+    printf '%s\n' "2026-07-15-spent.md" > "$dir/.cs/local/pending-handoff"
+    local output
+    output=$("$CS_BIN" rot-stale-marker <<< "r" 2>&1) || true
+    assert_output_contains "$output" "2026-07-16-real.md" \
+        "a marker naming a consumed file falls back to the scan" || return 1
+    local new
+    new=$(awk '/^claude_session_id:/ { print $2; exit }' "$dir/.cs/local/state")
+    assert_file_contains "$dir/.cs/handoffs/2026-07-16-real.md" "consumed_by: $new" \
+        "the scan's pick is the handoff the fresh conversation consumes" || return 1
+    assert_file_not_contains "$dir/.cs/handoffs/2026-07-15-spent.md" "consumed_by:" \
+        "the spent handoff the marker named is not consumed again" || return 1
+    assert_not_exists "$dir/.cs/local/pending-handoff" \
+        "the stale marker does not survive the launch" || return 1
+    _rot_session "rot-absent-marker"
+    local dir2="$CS_SESSIONS_ROOT/rot-absent-marker"
+    _seed_handoff "$dir2" "2026-07-16-real.md" "unconsumed"
+    printf '%s\n' "2026-07-01-gone.md" > "$dir2/.cs/local/pending-handoff"
+    output=$("$CS_BIN" rot-absent-marker <<< "r" 2>&1) || true
+    assert_output_contains "$output" "2026-07-16-real.md" \
+        "a marker naming a missing file falls back to the scan" || return 1
+    new=$(awk '/^claude_session_id:/ { print $2; exit }' "$dir2/.cs/local/state")
+    assert_file_contains "$dir2/.cs/handoffs/2026-07-16-real.md" "consumed_by: $new" \
+        "the scan's pick is consumed when the marker named a missing file" || return 1
+    assert_not_exists "$dir2/.cs/local/pending-handoff" \
+        "the marker naming a missing file does not survive the launch" || return 1
+}
+
+# The launcher now reads the marker, so it inherits the same traversal guard the
+# SessionStart consume path carries: a marker is a basename, never a path.
+test_launcher_marker_with_a_path_falls_back_to_the_scan() {
+    _rot_session "rot-marker-path"
+    local dir="$CS_SESSIONS_ROOT/rot-marker-path"
+    _seed_handoff "$dir" "2026-07-16-real.md" "unconsumed"
+    printf '%s\n' "../../../etc/passwd" > "$dir/.cs/local/pending-handoff"
+    local output
+    output=$("$CS_BIN" rot-marker-path <<< "r" 2>&1) || true
+    assert_output_contains "$output" "2026-07-16-real.md" \
+        "a marker carrying a path is rejected and the scan wins" || return 1
+    local new
+    new=$(awk '/^claude_session_id:/ { print $2; exit }' "$dir/.cs/local/state")
+    assert_file_contains "$dir/.cs/handoffs/2026-07-16-real.md" "consumed_by: $new" \
+        "the scan's pick is what the fresh conversation consumes" || return 1
+    assert_not_exists "$dir/.cs/local/pending-handoff" \
+        "the path-carrying marker does not survive the launch" || return 1
+}
+
+# .cs/handoffs/ is shared and nothing retires a handoff written by another
+# checkout, so the offer recurs for one indefinitely. Answering it blind is the
+# hazard: r arms the marker with that basename and the next SessionStart flips
+# a colleague's live rotation to consumed under this machine's UUID. The pick
+# stays as it is — filtering on parent would also drop a same-user second-machine
+# handoff, which works today — so the offer says whose it is instead.
+test_offer_labels_a_handoff_from_another_checkout() {
+    _rot_session "rot-foreign"
+    local dir="$CS_SESSIONS_ROOT/rot-foreign"
+    _seed_handoff "$dir" "2026-07-16-theirs.md" "unconsumed"
+    local output
+    output=$("$CS_BIN" rot-foreign <<< "n" 2>&1) || true
+    assert_output_contains "$output" "another checkout" \
+        "a handoff whose parent this checkout never ran is labelled" || return 1
+}
+
+# hooks/bash-logger.sh appends every Bash command to the same session.log, so a
+# bare substring match reads a logged `claude --resume <uuid>` as proof this
+# checkout ran that conversation — silently dropping the one warning shown
+# before r mutates a colleague's handoff.
+test_a_logged_command_naming_a_uuid_is_not_provenance() {
+    _rot_session "rot-logline"
+    local dir="$CS_SESSIONS_ROOT/rot-logline"
+    _seed_handoff "$dir" "2026-07-16-theirs.md" "unconsumed"
+    printf '[2026-07-16 10:00:00] BASH: claude --resume %s\n' "$UUID_A" \
+        >> "$dir/.cs/local/session.log"
+    local output
+    output=$("$CS_BIN" rot-logline <<< "n" 2>&1) || true
+    assert_output_contains "$output" "another checkout" \
+        "a logged command mentioning the uuid is not a session this checkout ran" || return 1
+}
+
+# A handoff written with CRLF, or with a trailing space after the uuid, must
+# still be recognised as this checkout's — otherwise the user's own handoff is
+# labelled as a colleague's and the label stops meaning anything.
+test_a_trailing_carriage_return_still_reads_as_local() {
+    _rot_session "rot-crlf"
+    local dir="$CS_SESSIONS_ROOT/rot-crlf"
+    mkdir -p "$dir/.cs/handoffs"
+    printf -- '---\r\nparent: %s \r\ncreated: 2026-07-16T10:00:00Z\r\npurpose: t\r\nstatus: unconsumed\r\n---\r\n' \
+        "$UUID_A" > "$dir/.cs/handoffs/2026-07-16-mine.md"
+    printf '2026-07-16 10:00:00 - Session started (source: startup, ID: %s)\n' "$UUID_A" \
+        >> "$dir/.cs/local/session.log"
+    local output
+    output=$("$CS_BIN" rot-crlf <<< "n" 2>&1) || true
+    assert_output_not_contains "$output" "another checkout" \
+        "a trailing CR must not make this checkout's own handoff read as foreign" || return 1
+}
+
+test_offer_leaves_a_local_handoff_unlabelled() {
+    _rot_session "rot-local"
+    local dir="$CS_SESSIONS_ROOT/rot-local"
+    _seed_handoff "$dir" "2026-07-16-mine.md" "unconsumed"
+    printf '%s - Session started (source: startup, ID: %s)\n' \
+        "2026-07-16 10:00:00" "$UUID_A" >> "$dir/.cs/local/session.log"
+    local output
+    output=$("$CS_BIN" rot-local <<< "n" 2>&1) || true
+    assert_output_contains "$output" "Rotation handoff pending" \
+        "the offer is still made for a local handoff" || return 1
+    assert_output_not_contains "$output" "another checkout" \
+        "a handoff this checkout wrote carries no foreign label" || return 1
+}
+
+# An encrypted session keeps its log behind .cs/private; the provenance check
+# reads it there, so the session's own handoff is not labelled foreign.
+test_offer_reads_provenance_from_the_private_log() {
+    _rot_session "rot-private"
+    local dir="$CS_SESSIONS_ROOT/rot-private"
+    _seed_handoff "$dir" "2026-07-16-mine.md" "unconsumed"
+    mkdir -p "$TEST_TMPDIR/vault/private"
+    mv "$dir/.cs/local/session.log" "$TEST_TMPDIR/vault/private/session.log"
+    # An encrypted session keeps its handoffs in the vault too.
+    mv "$dir/.cs/handoffs" "$TEST_TMPDIR/vault/private/handoffs"
+    ln -s "$TEST_TMPDIR/vault/private" "$dir/.cs/private"
+    printf '%s - Session started (source: startup, ID: %s)\n' \
+        "2026-07-16 10:00:00" "$UUID_A" >> "$TEST_TMPDIR/vault/private/session.log"
+    local output
+    output=$("$CS_BIN" rot-private <<< "n" 2>&1) || true
+    assert_output_contains "$output" "Rotation handoff pending" \
+        "the offer is still made for a local handoff" || return 1
+    assert_output_not_contains "$output" "another checkout" \
+        "a handoff this checkout wrote carries no foreign label" || return 1
+}
+
+# A session with no recorded conversation (the first open after cs -adopt, a
+# clone whose .cs/local did not travel) has nothing to resume, so it starts a
+# new conversation without asking. A pending handoff is still a choice the user
+# makes: the offer is made with the rows that apply, and resume is not one.
+_rot_unbound_session() {  # name
+    _rot_session "$1"
+    local state="$CS_SESSIONS_ROOT/$1/.cs/local/state"
+    awk 'index($0, "claude_session_id:") != 1' "$state" > "$state.tmp" && mv "$state.tmp" "$state"
+}
+
+test_unbound_session_with_a_pending_handoff_still_offers_it() {
+    _rot_unbound_session "rot-unbound-offer"
+    local dir="$CS_SESSIONS_ROOT/rot-unbound-offer"
+    _seed_handoff "$dir" "2026-07-16-test.md" "unconsumed"
+    local output
+    output=$("$CS_BIN" rot-unbound-offer <<< "n" 2>&1) || true
+    assert_output_contains "$output" "Rotation handoff pending: 2026-07-16-test.md" "the handoff is offered" || return 1
+    assert_output_not_contains "$output" "Continue previous conversation?" "nothing to resume, so no resume question" || return 1
+    local rows
+    rows=$(printf '%s\n' "$output" | grep -E '^    [yrnd]  ')
+    assert_eq "    r  from handoff    fresh conversation that picks up the handoff
+    n  fresh           fresh conversation; the handoff waits for later · default
+    d  discard         retire the handoff, then start fresh" "$rows" "the rows that apply, fresh as the default" || return 1
+    assert_file_contains "$dir/.cs/handoffs/2026-07-16-test.md" "status: unconsumed" "n leaves the handoff for later" || return 1
+    [ ! -f "$dir/.cs/local/pending-handoff" ] || { echo "  FAIL: n must not arm the marker"; return 1; }
+    assert_output_contains "$output" "STUB_ARGS: " "launch continues" || return 1
+    assert_output_contains "$output" "\-\-session-id " "a new conversation starts" || return 1
+    assert_output_not_contains "$output" "\-\-resume" "nothing to resume" || return 1
+}
+
+test_unbound_session_r_answer_arms_the_handoff() {
+    _rot_unbound_session "rot-unbound-r"
+    local dir="$CS_SESSIONS_ROOT/rot-unbound-r"
+    _seed_handoff "$dir" "2026-07-16-test.md" "unconsumed"
+    local output
+    output=$("$CS_BIN" rot-unbound-r <<< "r" 2>&1) || true
+    assert_eq "2026-07-16-test.md" "$(cat "$dir/.cs/local/pending-handoff" 2>/dev/null | tr -d '[:space:]')" \
+        "r arms the marker for the SessionStart hook" || return 1
+    local new
+    # Staged for SessionStart to commit (see the adopted first launch above).
+    new=$(jq -r '.candidate_id // empty' "$dir/.cs/local/pending-binding-claude.json" 2>/dev/null)
+    [ -n "$new" ] || { echo "  FAIL: r must stage the conversation it starts"; return 1; }
+    assert_output_contains "$output" "--session-id $new" "the new conversation is the recorded one" || return 1
+    assert_output_contains "$output" "Continue from the pending rotation handoff" "the handoff kick rides the launch" || return 1
+    if grep -q '"event":"rotated"' "$dir/.cs/timeline.jsonl" 2>/dev/null; then
+        echo "  FAIL: a first conversation rotates from nothing"; return 1
+    fi
+}
+
+# An armed marker on an unbound session: the default answer starts fresh and
+# disarms it, so the SessionStart hook never marks the handoff consumed under
+# a conversation nobody chose for it.
+test_unbound_session_default_answer_disarms_an_armed_marker() {
+    _rot_unbound_session "rot-unbound-armed"
+    local dir="$CS_SESSIONS_ROOT/rot-unbound-armed"
+    _seed_handoff "$dir" "2026-07-16-test.md" "unconsumed"
+    printf '2026-07-16-test.md\n' > "$dir/.cs/local/pending-handoff"
+    local output
+    output=$("$CS_BIN" rot-unbound-armed <<< "" 2>&1) || true
+    [ ! -f "$dir/.cs/local/pending-handoff" ] || { echo "  FAIL: the default answer must disarm the marker"; return 1; }
+    assert_file_contains "$dir/.cs/handoffs/2026-07-16-test.md" "status: unconsumed" "the handoff waits for later" || return 1
+    assert_output_contains "$output" "\-\-session-id " "a new conversation starts" || return 1
+}
+
+# A spawned launch is unattended: an unbound session starts fresh and leaves
+# the handoff pending rather than parking the window on the offer.
+test_unbound_spawned_launch_starts_fresh_and_keeps_the_handoff() {
+    _rot_unbound_session "rot-unbound-spawn"
+    local dir="$CS_SESSIONS_ROOT/rot-unbound-spawn"
+    _seed_handoff "$dir" "2026-07-16-test.md" "unconsumed"
+    mkdir -p "$CS_SESSIONS_ROOT/.spawn"
+    printf 'spawner\ndo the thing\n' > "$CS_SESSIONS_ROOT/.spawn/rot-unbound-spawn.seed"
+    local output
+    output=$("$CS_BIN" rot-unbound-spawn </dev/null 2>&1) || true
+    assert_output_not_contains "$output" "Rotation handoff pending" "an unattended launch asks nothing" || return 1
+    assert_output_contains "$output" "\-\-session-id " "a new conversation starts" || return 1
+    assert_file_contains "$dir/.cs/handoffs/2026-07-16-test.md" "status: unconsumed" "the handoff waits for an attended open" || return 1
+}
+
+# The discarded flip holds the same promise as the consumed one.
+test_discarding_a_handoff_leaves_a_tmp_sibling_alone_and_keeps_the_mode() {
+    _rot_session "rot-d-sib"
+    local dir="$CS_SESSIONS_ROOT/rot-d-sib"
+    _seed_handoff "$dir" "2026-07-16-test.md" "unconsumed"
+    local f="$dir/.cs/handoffs/2026-07-16-test.md"
+    printf 'USER-OWNED\n' > "$f.tmp"
+    chmod 750 "$f"
+    "$CS_BIN" rot-d-sib <<< "d" >/dev/null 2>&1 || true
+    assert_file_contains "$f" "status: discarded" "d flips the handoff to discarded" || return 1
+    assert_eq "USER-OWNED" "$(cat "$f.tmp" 2>/dev/null)" "the .tmp sibling is untouched" || return 1
+    assert_eq "750" "$(_file_mode "$f")" "the handoff keeps its mode" || return 1
+}
+
+test_discard_answer_dismisses_pending_handoff() {
+    _rot_session "rot-d"
+    local dir="$CS_SESSIONS_ROOT/rot-d"
+    _seed_handoff "$dir" "2026-07-16-test.md" "unconsumed"
+    local output
+    output=$("$CS_BIN" rot-d <<< "d" 2>&1) || true
+    grep -q "^    d  discard         retire the handoff, then resume$" <<< "$output" \
+        || { echo "  FAIL: prompt must offer the d answer"; return 1; }
+    assert_file_contains "$dir/.cs/handoffs/2026-07-16-test.md" "status: discarded" \
+        "d flips the handoff to discarded" || return 1
+    assert_file_not_contains "$dir/.cs/handoffs/2026-07-16-test.md" "status: unconsumed" \
+        "unconsumed line replaced" || return 1
+    [ ! -f "$dir/.cs/local/pending-handoff" ] || { echo "  FAIL: d must not set the r marker"; return 1; }
+    assert_output_contains "$output" "STUB_ARGS: " "launch continues" || return 1
+    grep -q -- '--resume' <<< "$output" \
+        || { echo "  FAIL: d proceeds with the default resume"; return 1; }
+    output=$("$CS_BIN" rot-d <<< "n" 2>&1) || true
+    if grep -q "Rotation handoff pending" <<< "$output"; then
+        echo "  FAIL: discarded handoff must not re-prompt"
+        return 1
+    fi
+}
+
+test_discard_flip_spares_a_body_quote() {
+    _rot_session "rot-dq"
+    local dir="$CS_SESSIONS_ROOT/rot-dq"
+    _seed_handoff "$dir" "2026-07-16-test.md" "unconsumed"
+    printf 'status: unconsumed\n' >> "$dir/.cs/handoffs/2026-07-16-test.md"
+    "$CS_BIN" rot-dq <<< "d" >/dev/null 2>&1 || true
+    assert_file_contains "$dir/.cs/handoffs/2026-07-16-test.md" "status: discarded" \
+        "frontmatter status flipped" || return 1
+    assert_file_contains "$dir/.cs/handoffs/2026-07-16-test.md" "status: unconsumed" \
+        "flush-left body quote untouched" || return 1
+}
+
+# The allow-list stops a declined marker misfiring immediately (a resumed
+# conversation cannot consume). This closes the deferred misfire: left armed,
+# the marker would be consumed by an unrelated /clear hours later.
+test_declining_resume_disarms_the_marker() {
+    local ans
+    for ans in "" n d; do
+        local name="rot-disarm-${ans:-default}"
+        _rot_session "$name"
+        local dir="$CS_SESSIONS_ROOT/$name"
+        _seed_handoff "$dir" "2026-07-16-test.md" "unconsumed"
+        printf '%s\n' "2026-07-16-test.md" > "$dir/.cs/local/pending-handoff"
+        local output
+        output=$("$CS_BIN" "$name" <<< "$ans" 2>&1) || true
+        [ ! -f "$dir/.cs/local/pending-handoff" ] \
+            || { echo "  FAIL: answer '${ans:-default}' must disarm the marker"; return 1; }
+        assert_output_contains "$output" "Rotation marker disarmed" \
+            "answer '${ans:-default}' announces the disarm" || return 1
+    done
+}
+
+# A marker whose handoff was consumed elsewhere leaves the prompt at [Y/n] —
+# the disarm must not be nested inside the pending-handoff arms.
+test_marker_without_pending_handoff_is_disarmed() {
+    _rot_session "rot-disarm-orphan"
+    local dir="$CS_SESSIONS_ROOT/rot-disarm-orphan"
+    _seed_handoff "$dir" "2026-07-16-test.md" "consumed"
+    printf '%s\n' "2026-07-16-test.md" > "$dir/.cs/local/pending-handoff"
+    "$CS_BIN" rot-disarm-orphan <<< "n" >/dev/null 2>&1 || true
+    [ ! -f "$dir/.cs/local/pending-handoff" ] \
+        || { echo "  FAIL: an orphaned marker must be disarmed too"; return 1; }
+}
+
+run_test test_prompt_unchanged_without_handoff
+run_test test_resume_prompt_shows_the_previous_conversations_context
+run_test test_context_row_sits_in_the_card_above_the_prompt
+run_test test_secrets_and_context_share_one_card_row
+run_test test_context_alone_still_gets_a_row
+run_test test_resume_prompt_omits_context_when_never_stamped
+run_test test_resume_prompt_ignores_a_junk_context_stamp
+run_test test_resume_prompt_ignores_an_out_of_range_context_stamp
+run_test test_resume_prompt_reads_a_zero_padded_context_stamp
+run_test test_esc_at_continue_prompt_cancels_launch
+# r is only offered alongside a pending handoff. Pressed without one it falls
+# through to the resume default, which is a decline like any other.
+test_r_without_a_pending_handoff_disarms_the_marker() {
+    _rot_session "rot-disarm-r"
+    local dir="$CS_SESSIONS_ROOT/rot-disarm-r"
+    _seed_handoff "$dir" "2026-07-16-test.md" "consumed"
+    printf '%s\n' "2026-07-16-test.md" > "$dir/.cs/local/pending-handoff"
+    "$CS_BIN" rot-disarm-r <<< "r" >/dev/null 2>&1 || true
+    [ ! -f "$dir/.cs/local/pending-handoff" ] \
+        || { echo "  FAIL: r without a pending handoff must disarm like any decline"; return 1; }
+}
+
+# d retires the handoff, so the disarm notice must not also offer to rotate
+# into it later — that guidance is true for every other decline and false for
+# this one.
+test_discard_does_not_offer_the_retired_handoff() {
+    _rot_session "rot-disarm-discard"
+    local dir="$CS_SESSIONS_ROOT/rot-disarm-discard"
+    _seed_handoff "$dir" "2026-07-16-test.md" "unconsumed"
+    printf '%s\n' "2026-07-16-test.md" > "$dir/.cs/local/pending-handoff"
+    local output
+    output=$("$CS_BIN" rot-disarm-discard <<< "d" 2>&1) || true
+    assert_output_contains "$output" "Rotation marker disarmed" \
+        "d still announces the disarm" || return 1
+    assert_output_contains "$output" "Handoff discarded" \
+        "d retires the handoff" || return 1
+    assert_output_not_contains "$output" "stays pending" \
+        "a discarded handoff must not be described as still pending" || return 1
+}
+
+run_test test_declining_resume_disarms_the_marker
+run_test test_marker_without_pending_handoff_is_disarmed
+run_test test_r_without_a_pending_handoff_disarms_the_marker
+run_test test_discard_does_not_offer_the_retired_handoff
+
+# An orphaned marker names a handoff that is already spent, so no handoff is
+# left to rotate into. Every answer that disarms one must say so, not offer r.
+test_orphaned_marker_disarm_does_not_offer_a_spent_handoff() {
+    local ans
+    for ans in "" n d r; do
+        local name="rot-orphan-${ans:-default}"
+        _rot_session "$name"
+        local dir="$CS_SESSIONS_ROOT/$name"
+        _seed_handoff "$dir" "2026-07-16-test.md" "consumed"
+        printf '%s\n' "2026-07-16-test.md" > "$dir/.cs/local/pending-handoff"
+        local output
+        output=$("$CS_BIN" "$name" <<< "$ans" 2>&1) || true
+        assert_output_contains "$output" "Rotation marker disarmed" \
+            "answer '${ans:-default}' announces the orphaned disarm" || return 1
+        assert_output_not_contains "$output" "stays pending" \
+            "answer '${ans:-default}' must not offer a handoff that is already spent" || return 1
+    done
+}
+
+run_test test_orphaned_marker_disarm_does_not_offer_a_spent_handoff
+run_test test_rotate_answer_consumes_pending_handoff
+run_test test_handoff_prompt_lists_one_answer_per_row
+run_test test_rotate_answer_auto_starts_handoff
+run_test test_continue_and_no_leave_handoff_unconsumed
+run_test test_consumed_handoffs_do_not_trigger_prompt
+run_test test_newest_of_multiple_handoffs_wins
+run_test test_offer_labels_a_handoff_from_another_checkout
+run_test test_offer_leaves_a_local_handoff_unlabelled
+run_test test_offer_reads_provenance_from_the_private_log
+run_test test_a_logged_command_naming_a_uuid_is_not_provenance
+run_test test_a_trailing_carriage_return_still_reads_as_local
+run_test test_armed_marker_outranks_a_later_sorting_orphan
+run_test test_stale_marker_falls_back_to_the_scan
+run_test test_launcher_marker_with_a_path_falls_back_to_the_scan
+run_test test_unbound_session_with_a_pending_handoff_still_offers_it
+run_test test_unbound_session_r_answer_arms_the_handoff
+run_test test_unbound_session_default_answer_disarms_an_armed_marker
+run_test test_unbound_spawned_launch_starts_fresh_and_keeps_the_handoff
+run_test test_discard_answer_dismisses_pending_handoff
+run_test test_discarding_a_handoff_leaves_a_tmp_sibling_alone_and_keeps_the_mode
+run_test test_discard_flip_spares_a_body_quote
+
+# ============================================================================
+# Cycle 4: SessionStart consumes the pending handoff
+# ============================================================================
+
+# The kick's detached child outlives the hook by design, so every clear-path
+# test would otherwise leave a real sleeper writing into a directory the harness
+# is about to tear down. Default it off; the tests that exercise the child set
+# CS_ROTATION_KICK_DELAY themselves, and the ones that exercise the opt-out set
+# CS_NO_ROTATION_WAKE explicitly — both override this, since a value the caller
+# exported wins over the default below.
+_start_hook() {  # session_id [source] [extra env pre-exported by caller]
+    local no_wake="${CS_NO_ROTATION_WAKE:-}"
+    [ -n "$no_wake" ] || [ -n "${CS_ROTATION_KICK_DELAY:-}" ] || no_wake=1
+    echo "{\"session_id\":\"$1\",\"cwd\":\"$CLAUDE_SESSION_DIR\",\"source\":\"${2:-startup}\"}" \
+        | CS_NO_ROTATION_WAKE="$no_wake" bash "$HOOKS_DIR/session-start.sh" 2>/dev/null
+}
+
+# The consumed flip rewrites the handoff through a uniquely named temp file: a
+# sibling named <handoff>.tmp is left alone and the handoff keeps its mode.
+test_consuming_a_handoff_leaves_a_tmp_sibling_alone_and_keeps_the_mode() {
+    _rot_hook_session "rot-consume-sib"
+    _seed_handoff "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" "2026-07-16-test.md" "unconsumed"
+    local f="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/handoffs/2026-07-16-test.md"
+    printf 'USER-OWNED\n' > "$f.tmp"
+    chmod 750 "$f"
+    printf '%s\n' "2026-07-16-test.md" > "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/pending-handoff"
+    printf 'claude_session_id: %s\n' "$UUID_B" > "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/state"
+    _start_hook "$UUID_B" >/dev/null || return 1
+    assert_file_contains "$f" "consumed_by: $UUID_B" "consumer recorded" || return 1
+    assert_eq "USER-OWNED" "$(cat "$f.tmp" 2>/dev/null)" "the .tmp sibling is untouched" || return 1
+    assert_eq "750" "$(_file_mode "$f")" "the handoff keeps its mode" || return 1
+}
+
+test_pending_handoff_is_consumed_and_injected() {
+    _rot_hook_session "rot-consume"
+    _seed_handoff "$CLAUDE_SESSION_DIR" "2026-07-16-test.md" "unconsumed"
+    printf '%s\n' "2026-07-16-test.md" > "$CLAUDE_SESSION_META_DIR/local/pending-handoff"
+    printf 'claude_session_id: %s\n' "$UUID_B" > "$CLAUDE_SESSION_META_DIR/local/state"
+    local out
+    out=$(_start_hook "$UUID_B") || return 1
+    assert_output_contains "$out" "Conversation Rotation" "rotation preamble injected" || return 1
+    assert_output_contains "$out" ".cs/handoffs/2026-07-16-test.md" "preamble names the handoff path" || return 1
+    assert_file_contains "$CLAUDE_SESSION_META_DIR/handoffs/2026-07-16-test.md" "status: consumed" \
+        "frontmatter flipped" || return 1
+    assert_file_contains "$CLAUDE_SESSION_META_DIR/handoffs/2026-07-16-test.md" "consumed_by: $UUID_B" \
+        "consumer recorded" || return 1
+    [ ! -f "$CLAUDE_SESSION_META_DIR/local/pending-handoff" ] || { echo "  FAIL: marker must be removed"; return 1; }
+    assert_output_contains "$out" "managed Claude Code session" "existing context spliced, not replaced" || return 1
+}
+
+test_rotation_preamble_wins_over_fresh_rebind_block() {
+    _rot_hook_session "rot-precedence"
+    _seed_handoff "$CLAUDE_SESSION_DIR" "2026-07-16-test.md" "unconsumed"
+    printf '%s\n' "2026-07-16-test.md" > "$CLAUDE_SESSION_META_DIR/local/pending-handoff"
+    printf 'claude_session_id: %s\n' "$UUID_B" > "$CLAUDE_SESSION_META_DIR/local/state"
+    export CS_FRESH_REBIND=1
+    local out
+    out=$(_start_hook "$UUID_B") || { unset CS_FRESH_REBIND; return 1; }
+    unset CS_FRESH_REBIND
+    assert_output_contains "$out" "Conversation Rotation" "rotation preamble present" || return 1
+    if grep -q "Fresh Conversation" <<< "$out"; then
+        echo "  FAIL: fresh-rebind block must yield to the rotation preamble"
+        return 1
+    fi
+}
+
+test_fresh_rebind_block_survives_without_handoff() {
+    _rot_hook_session "rot-fresh-only"
+    printf 'claude_session_id: %s\n' "$UUID_B" > "$CLAUDE_SESSION_META_DIR/local/state"
+    export CS_FRESH_REBIND=1
+    local out
+    out=$(_start_hook "$UUID_B") || { unset CS_FRESH_REBIND; return 1; }
+    unset CS_FRESH_REBIND
+    assert_output_contains "$out" "Fresh Conversation" "fresh block still fires alone" || return 1
+}
+
+test_stale_marker_is_removed_silently() {
+    _rot_hook_session "rot-stale"
+    printf '%s\n' "2026-01-01-gone.md" > "$CLAUDE_SESSION_META_DIR/local/pending-handoff"
+    printf 'claude_session_id: %s\n' "$UUID_B" > "$CLAUDE_SESSION_META_DIR/local/state"
+    local out
+    out=$(_start_hook "$UUID_B") || return 1
+    [ ! -f "$CLAUDE_SESSION_META_DIR/local/pending-handoff" ] || { echo "  FAIL: stale marker must be removed"; return 1; }
+    if grep -q "Conversation Rotation" <<< "$out"; then
+        echo "  FAIL: stale marker must not inject a preamble"
+        return 1
+    fi
+}
+
+test_handoff_with_hostile_purpose_survives_flip() {
+    _rot_hook_session "rot-hostile"
+    mkdir -p "$CLAUDE_SESSION_DIR/.cs/handoffs"
+    cat > "$CLAUDE_SESSION_DIR/.cs/handoffs/2026-07-16-hostile.md" << 'EOF'
+---
+parent: 11111111-1111-4111-8111-111111111111
+created: 2026-07-16T10:00:00Z
+purpose: continue "phase 2" of $(dangerous) `work`
+status: unconsumed
+---
+
+Body with $(subshell) and "quotes".
+EOF
+    printf '%s\n' "2026-07-16-hostile.md" > "$CLAUDE_SESSION_META_DIR/local/pending-handoff"
+    printf 'claude_session_id: %s\n' "$UUID_B" > "$CLAUDE_SESSION_META_DIR/local/state"
+    _start_hook "$UUID_B" >/dev/null || return 1
+    local f="$CLAUDE_SESSION_META_DIR/handoffs/2026-07-16-hostile.md"
+    assert_file_contains "$f" "status: consumed" "flip succeeded despite hostile content" || return 1
+    assert_file_contains "$f" 'continue "phase 2" of .(dangerous)' "purpose intact (quotes, subshell)" || return 1
+    assert_file_contains "$f" 'Body with .(subshell) and "quotes".' "body intact" || return 1
+}
+
+# The marker is consumable only where a genuinely fresh conversation begins.
+test_clear_source_consumes_pending_handoff() {
+    _rot_hook_session "rot-clear"
+    _seed_handoff "$CLAUDE_SESSION_DIR" "2026-07-16-test.md" "unconsumed"
+    printf '%s\n' "2026-07-16-test.md" > "$CLAUDE_SESSION_META_DIR/local/pending-handoff"
+    printf 'claude_session_id: %s\n' "$UUID_A" > "$CLAUDE_SESSION_META_DIR/local/state"
+    local out
+    out=$(_start_hook "$UUID_B" clear) || return 1
+    assert_output_contains "$out" "Conversation Rotation" "clear consumes the marker" || return 1
+    assert_file_contains "$CLAUDE_SESSION_META_DIR/handoffs/2026-07-16-test.md" "status: consumed" \
+        "frontmatter flipped on clear" || return 1
+    [ ! -f "$CLAUDE_SESSION_META_DIR/local/pending-handoff" ] \
+        || { echo "  FAIL: marker must be removed after a clear consumption"; return 1; }
+}
+
+# additionalContext reaches the MODEL; systemMessage reaches the PERSON. After a
+# /clear the conversation is idle holding a loaded handoff, and without a line
+# addressed to the user that state is invisible — it reads as cs having done
+# nothing. Top-level field, not inside hookSpecificOutput.
+test_rotation_tells_the_user_one_message_starts_it() {
+    _rot_hook_session "rot-sysmsg"
+    _seed_handoff "$CLAUDE_SESSION_DIR" "2026-07-16-test.md" "unconsumed"
+    printf '%s\n' "2026-07-16-test.md" > "$CLAUDE_SESSION_META_DIR/local/pending-handoff"
+    printf 'claude_session_id: %s\n' "$UUID_A" > "$CLAUDE_SESSION_META_DIR/local/state"
+    local out msg
+    out=$(_start_hook "$UUID_B" clear) || return 1
+    msg=$(printf '%s' "$out" | jq -r '.systemMessage // ""')
+    [ -n "$msg" ] || { echo "  FAIL: the user must be told the rotation is loaded"; return 1; }
+    case "$msg" in
+        *2026-07-16-test.md*) ;;
+        *) echo "  FAIL: the notice must name the handoff: $msg"; return 1 ;;
+    esac
+}
+
+# Scoped to a rotation: a plain /clear is a blank slate and has nothing to say.
+test_plain_clear_says_nothing_to_the_user() {
+    _rot_hook_session "rot-nosysmsg"
+    printf 'claude_session_id: %s\n' "$UUID_A" > "$CLAUDE_SESSION_META_DIR/local/state"
+    local out msg
+    out=$(_start_hook "$UUID_B" clear) || return 1
+    msg=$(printf '%s' "$out" | jq -r '.systemMessage // ""')
+    # Positive anchor first: without it this passes when the hook early-exits or
+    # never produced output at all, which is true of a feature that was removed.
+    assert_output_contains "$out" "managed Claude Code session" "the hook must have run and produced its context" || return 1
+    [ -z "$msg" ] || { echo "  FAIL: a plain /clear must not announce anything: $msg"; return 1; }
+}
+
+# The r-answer path resolves the same handoff on source=startup, but cs has
+# already sent a positional kick there — the turn is starting. Telling the user
+# to send a message would be false, and it is the one render Fable caught me
+# measuring while believing I had measured /clear.
+test_startup_rotation_does_not_tell_the_user_to_send_a_message() {
+    _rot_hook_session "rot-startup-sys"
+    _seed_handoff "$CLAUDE_SESSION_DIR" "2026-07-16-test.md" "unconsumed"
+    printf '%s\n' "2026-07-16-test.md" > "$CLAUDE_SESSION_META_DIR/local/pending-handoff"
+    printf 'claude_session_id: %s\n' "$UUID_A" > "$CLAUDE_SESSION_META_DIR/local/state"
+    local out msg
+    out=$(_start_hook "$UUID_B" startup) || return 1
+    assert_output_contains "$out" "Conversation Rotation" "startup still consumes and injects" || return 1
+    msg=$(printf '%s' "$out" | jq -r '.systemMessage // ""')
+    [ -z "$msg" ] || { echo "  FAIL: the r-path already kicked; the notice must not fire: $msg"; return 1; }
+}
+
+# A hook cannot start a turn, so the user sends one word. The preamble has to
+# make that word mean "begin" — otherwise the fresh conversation spends it
+# re-summarising the handoff and asking where to start, and the rotation costs
+# two round trips instead of one keystroke.
+# Under cs the native task list survives the /clear (see the skill test
+# above), so the successor holds the predecessor's items already. Told to
+# "mirror" the handoff into it, the model creates duplicates and progress
+# splits across two copies; told to reconcile, it closes what the handoff
+# says is done and adds only the next-step steps that are missing. Pinned on
+# preamble-only wording, since "native task list" also appears in
+# always-emitted context.
+test_rotation_preamble_reconciles_the_inherited_native_tasks() {
+    _rot_hook_session "rot-preamble-tasks"
+    _seed_handoff "$CLAUDE_SESSION_DIR" "2026-07-16-test.md" "unconsumed"
+    printf '%s\n' "2026-07-16-test.md" > "$CLAUDE_SESSION_META_DIR/local/pending-handoff"
+    printf 'claude_session_id: %s\n' "$UUID_A" > "$CLAUDE_SESSION_META_DIR/local/state"
+    local out
+    out=$(_start_hook "$UUID_B" clear) || return 1
+    assert_output_contains "$out" "reconcile your native task list" \
+        "the preamble must ask for a reconcile, not a mirror into an empty list" || return 1
+    assert_output_contains "$out" "carried over from the previous conversation" \
+        "and say the list is inherited, so the model does not assume it is empty" || return 1
+    # Whether a handoff carried enough was only knowable by digging through
+    # transcripts afterwards; the successor is the one reader who knows.
+    assert_output_contains "$out" "## Successor report" \
+        "the successor must append what it had to re-derive or found wrong" || return 1
+}
+
+test_rotation_preamble_makes_the_first_message_mean_begin() {
+    _rot_hook_session "rot-preamble"
+    _seed_handoff "$CLAUDE_SESSION_DIR" "2026-07-16-test.md" "unconsumed"
+    printf '%s\n' "2026-07-16-test.md" > "$CLAUDE_SESSION_META_DIR/local/pending-handoff"
+    printf 'claude_session_id: %s\n' "$UUID_A" > "$CLAUDE_SESSION_META_DIR/local/state"
+    local out
+    out=$(_start_hook "$UUID_B" clear) || return 1
+    assert_output_contains "$out" "BARE NUDGE" "a bare nudge must read as begin" || return 1
+    assert_output_contains "$out" "without re-summarising" "and must not spend the turn restating the handoff" || return 1
+    # A first message with content is an instruction, not a go signal — the
+    # unnarrowed wording told the model to ignore what the user actually said.
+    assert_output_contains "$out" "takes precedence over the handoff" "content in the first message wins" || return 1
+    # The escape hatch covers missing/ambiguous; destructive needs its own.
+    assert_output_contains "$out" "destructive or irreversible" "a destructive next step still gets confirmed" || return 1
+    # The quotes were eaten by the enclosing double-quoted assignment: the text
+    # written was not the text delivered.
+    assert_output_contains "$out" '\\"go\\"' "the quotes around go must survive to the model" || return 1
+}
+
+# The hook must NOT emit initialUserMessage. It looks like the auto-start field
+# and Claude Code accepts it, but its only consumer feeds the stdin line-reader
+# of --input-format stream-json; an interactive TUI drops it. Measured on
+# 2.1.252 with a real logged-in terminal: handoff consumed, no turn started.
+# Pinned so nobody re-adds a field that reads as a working feature.
+test_clear_does_not_emit_a_dead_autostart_field() {
+    _rot_hook_session "rot-nodead"
+    _seed_handoff "$CLAUDE_SESSION_DIR" "2026-07-16-test.md" "unconsumed"
+    printf '%s\n' "2026-07-16-test.md" > "$CLAUDE_SESSION_META_DIR/local/pending-handoff"
+    printf 'claude_session_id: %s\n' "$UUID_A" > "$CLAUDE_SESSION_META_DIR/local/state"
+    local out msg
+    out=$(_start_hook "$UUID_B" clear) || return 1
+    msg=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.initialUserMessage // ""')
+    [ -z "$msg" ] \
+        || { echo "  FAIL: initialUserMessage is dropped by the interactive TUI; do not emit it"; return 1; }
+    assert_output_contains "$out" "Conversation Rotation" "the preamble is still injected" || return 1
+}
+
+# --- the /clear auto-start ----------------------------------------------------
+# A hook cannot start a turn, but it can arm one. A file appearing under a
+# watched path fires FileChanged, and that hook exiting 2 (asyncRewake) wakes an
+# idle interactive session — measured on 2.1.252 against a real /clear, in a
+# conversation with zero turns. So the rotation watches its own kick directory
+# and drops a file into it a second later.
+test_clear_rotation_arms_a_kick_watch() {
+    _rot_hook_session "rot-kickwatch"
+    _seed_handoff "$CLAUDE_SESSION_DIR" "2026-07-16-test.md" "unconsumed"
+    printf '%s\n' "2026-07-16-test.md" > "$CLAUDE_SESSION_META_DIR/local/pending-handoff"
+    printf 'claude_session_id: %s\n' "$UUID_A" > "$CLAUDE_SESSION_META_DIR/local/state"
+    local out watches
+    out=$(CS_ROTATION_KICK_DELAY=0 _start_hook "$UUID_B" clear) || return 1
+    watches=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.watchPaths // [] | join(" ")')
+    case "$watches" in
+        *"/local/rotation-kick"*) ;;
+        *) echo "  FAIL: the kick directory must be watched, got: $watches"; return 1 ;;
+    esac
+    # The watcher is handed the path with no existence check, and a watch armed
+    # on a missing directory never fires again for the process's lifetime.
+    [ -d "$CLAUDE_SESSION_META_DIR/local/rotation-kick" ] \
+        || { echo "  FAIL: the kick directory must exist before it is watched"; return 1; }
+    # The mail watch is not displaced by it.
+    case "$watches" in
+        *"/local/mail/new"*) ;;
+        *) echo "  FAIL: arming the kick must not drop the mail watch, got: $watches"; return 1 ;;
+    esac
+}
+
+# The rm of `delivered` at arm time is the ONLY thing that ever deletes it, and
+# every other test starts from a fresh session dir — so deleting that line would
+# silently cost every rotation after the first in a session's lifetime its wake,
+# with the whole suite still green.
+test_a_second_rotation_in_the_same_session_still_wakes() {
+    _rot_hook_session "rot-kick-second"
+    local d="$CLAUDE_SESSION_META_DIR/local/rotation-kick"
+    mkdir -p "$d"
+    : > "$d/delivered"                       # a previous rotation's marker
+    _seed_handoff "$CLAUDE_SESSION_DIR" "2026-07-16-test.md" "unconsumed"
+    printf '%s\n' "2026-07-16-test.md" > "$CLAUDE_SESSION_META_DIR/local/pending-handoff"
+    printf 'claude_session_id: %s\n' "$UUID_A" > "$CLAUDE_SESSION_META_DIR/local/state"
+    CS_ROTATION_KICK_DELAY=0 _start_hook "$UUID_B" clear >/dev/null || return 1
+    [ ! -f "$d/delivered" ] \
+        || { echo "  FAIL: a stale delivered marker makes the new kick a no-op"; return 1; }
+}
+
+# A /clear that arms NO kick must spend any kick still in flight from a previous
+# one. Otherwise: /clear #1 arms and the child sleeps; the user runs /clear #2
+# at ~T+1.9 wanting a genuinely clean break (the handoff is consumed now, so the
+# fresh-conversation notice fires instead); the child's write lands before the
+# watch list is replaced, and the wake tells a conversation explicitly told
+# "clean break, not a continuation" to go execute a handoff.
+test_a_clear_without_a_rotation_spends_an_in_flight_kick() {
+    _rot_hook_session "rot-kick-inflight"
+    local d="$CLAUDE_SESSION_META_DIR/local/rotation-kick"
+    mkdir -p "$d"
+    printf '%s\n' "$(date +%s)" > "$d/rotation.kick"   # a kick already in flight
+    printf 'claude_session_id: %s\n' "$UUID_A" > "$CLAUDE_SESSION_META_DIR/local/state"
+    CS_ROTATION_KICK_DELAY=0 _start_hook "$UUID_B" clear >/dev/null || return 1  # no handoff: arms nothing
+    [ -f "$d/delivered" ] \
+        || { echo "  FAIL: an in-flight kick must be spent, or it wakes a clean-break conversation"; return 1; }
+    # And the wake itself must now decline.
+    local rc=0
+    _rot_filechanged "$d/rotation.kick" add >/dev/null 2>&1 || rc=$?
+    assert_eq "0" "$rc" "the spent kick must not wake" || return 1
+}
+
+# Spending is the lead's call alone. Every claude resolving the session runs
+# this hook, and a teammate's /clear marking `delivered` would stop the lead's
+# retries and make the lead's own wake decline: the rotation strands.
+test_a_teammate_clear_leaves_the_leads_kick_alone() {
+    _rot_hook_session "rot-kick-teammate"
+    local d="$CLAUDE_SESSION_META_DIR/local/rotation-kick"
+    mkdir -p "$d"
+    printf '%s\n' "$(date +%s)" > "$d/rotation.kick"   # the lead's kick in flight
+    printf 'claude_session_id: %s\n' "$UUID_A" > "$CLAUDE_SESSION_META_DIR/local/state"
+    CLAUDE_PID=1 CS_ROTATION_KICK_DELAY=0 _start_hook "$UUID_B" clear >/dev/null || return 1
+    [ ! -f "$d/delivered" ] \
+        || { echo "  FAIL: a non-lead /clear spent the lead's kick"; return 1; }
+}
+
+# Scoped exactly like the notice. A plain /clear has nothing to continue, and
+# the startup path has already been kicked by _exec_fresh_rebind — a wake there
+# would arrive on top of a turn that is already running.
+test_kick_watch_is_scoped_to_a_clear_rotation() {
+    local src
+    for src in startup resume compact; do
+        _rot_hook_session "rot-kickscope-$src"
+        _seed_handoff "$CLAUDE_SESSION_DIR" "2026-07-16-test.md" "unconsumed"
+        printf '%s\n' "2026-07-16-test.md" > "$CLAUDE_SESSION_META_DIR/local/pending-handoff"
+        printf 'claude_session_id: %s\n' "$UUID_A" > "$CLAUDE_SESSION_META_DIR/local/state"
+        local out watches
+        out=$(CS_ROTATION_KICK_DELAY=0 _start_hook "$UUID_B" "$src") || return 1
+        watches=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.watchPaths // [] | join(" ")')
+        case "$watches" in
+            *rotation-kick*) echo "  FAIL: source $src must not arm a kick: $watches"; return 1 ;;
+        esac
+    done
+    # And a /clear with no rotation loaded.
+    _rot_hook_session "rot-kickscope-bare"
+    printf 'claude_session_id: %s\n' "$UUID_A" > "$CLAUDE_SESSION_META_DIR/local/state"
+    local out watches
+    out=$(CS_ROTATION_KICK_DELAY=0 _start_hook "$UUID_B" clear) || return 1
+    watches=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.watchPaths // [] | join(" ")')
+    case "$watches" in
+        *rotation-kick*) echo "  FAIL: a bare /clear must not arm a kick: $watches"; return 1 ;;
+    esac
+    assert_output_contains "$out" "managed Claude Code session" "the hook still ran" || return 1
+}
+
+# The preamble is written for the path that actually happens. With a kick armed
+# the turn starts on a system-reminder, so "the first message comes from the
+# user" is simply false — and a model told to wait for a user message may treat
+# the wake as background noise rather than as the signal to begin.
+test_armed_rotation_preamble_expects_a_wake_not_a_message() {
+    _rot_hook_session "rot-preamble-armed"
+    _seed_handoff "$CLAUDE_SESSION_DIR" "2026-07-16-test.md" "unconsumed"
+    printf '%s\n' "2026-07-16-test.md" > "$CLAUDE_SESSION_META_DIR/local/pending-handoff"
+    printf 'claude_session_id: %s\n' "$UUID_A" > "$CLAUDE_SESSION_META_DIR/local/state"
+    local out
+    out=$(CS_ROTATION_KICK_DELAY=0 _start_hook "$UUID_B" clear) || return 1
+    assert_output_contains "$out" "system-reminder" "the armed preamble names how the turn starts" || return 1
+    if grep -q "the first message comes from the user" <<< "$out"; then
+        echo "  FAIL: an armed rotation does not wait for a user message"
+        return 1
+    fi
+    # The kick can still lose the arm race, so the typed fallback must survive.
+    assert_output_contains "$out" "BARE NUDGE" "a typed nudge still means begin" || return 1
+    assert_output_contains "$out" "destructive or irreversible" "the confirm valve survives both paths" || return 1
+}
+
+# With no kick (the opt-out, or a teammate) the old wording is the true one.
+test_unarmed_rotation_preamble_still_expects_a_message() {
+    _rot_hook_session "rot-preamble-unarmed"
+    _seed_handoff "$CLAUDE_SESSION_DIR" "2026-07-16-test.md" "unconsumed"
+    printf '%s\n' "2026-07-16-test.md" > "$CLAUDE_SESSION_META_DIR/local/pending-handoff"
+    printf 'claude_session_id: %s\n' "$UUID_A" > "$CLAUDE_SESSION_META_DIR/local/state"
+    local out
+    out=$(CS_NO_ROTATION_WAKE=1 _start_hook "$UUID_B" clear) || return 1
+    assert_output_contains "$out" "the first message comes from the user" \
+        "without a kick the turn really does wait for the user" || return 1
+    if grep -q "system-reminder" <<< "$out"; then
+        echo "  FAIL: no wake is coming, so the preamble must not promise one"
+        return 1
+    fi
+}
+
+# The opt-out has to reach the WATCH too, not just the wording — an armed watch
+# with no kick behind it is a watch that never fires.
+test_rotation_wake_opt_out_arms_nothing() {
+    _rot_hook_session "rot-optout"
+    _seed_handoff "$CLAUDE_SESSION_DIR" "2026-07-16-test.md" "unconsumed"
+    printf '%s\n' "2026-07-16-test.md" > "$CLAUDE_SESSION_META_DIR/local/pending-handoff"
+    printf 'claude_session_id: %s\n' "$UUID_A" > "$CLAUDE_SESSION_META_DIR/local/state"
+    local out watches
+    out=$(CS_NO_ROTATION_WAKE=1 _start_hook "$UUID_B" clear) || return 1
+    watches=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.watchPaths // [] | join(" ")')
+    case "$watches" in
+        *rotation-kick*) echo "  FAIL: the opt-out must arm no kick: $watches"; return 1 ;;
+    esac
+    # And the user is still told what to do, since nothing will start on its own.
+    local msg; msg=$(printf '%s' "$out" | jq -r '.systemMessage // ""')
+    [ -n "$msg" ] || { echo "  FAIL: with no wake coming the notice matters more, not less"; return 1; }
+}
+
+# The one component with no coverage otherwise. Every other kick test either
+# asserts the watchPaths JSON or plants rotation.kick by hand — so the bridge
+# between them, the detached child actually producing the file, was untested.
+# Break the spawn (a refactor mangles the redirects, the subshell dies under
+# errexit) and every other test stays green while the feature is silently dead,
+# reverting to "type a word" — which nobody reports as a bug.
+test_the_detached_child_actually_writes_the_kick() {
+    _rot_hook_session "rot-kickchild"
+    _seed_handoff "$CLAUDE_SESSION_DIR" "2026-07-16-test.md" "unconsumed"
+    printf '%s\n' "2026-07-16-test.md" > "$CLAUDE_SESSION_META_DIR/local/pending-handoff"
+    printf 'claude_session_id: %s\n' "$UUID_A" > "$CLAUDE_SESSION_META_DIR/local/state"
+    CS_ROTATION_KICK_DELAY=0 _start_hook "$UUID_B" clear >/dev/null || return 1
+    # The child outlives the hook, so the file need not exist the instant the
+    # hook returns even at delay 0. Poll rather than sleep a fixed time.
+    local kick="$CLAUDE_SESSION_META_DIR/local/rotation-kick/rotation.kick" i=0
+    while [ ! -f "$kick" ] && [ "$i" -lt 50 ]; do
+        i=$((i + 1))
+        sleep 0.1
+    done
+    [ -f "$kick" ] \
+        || { echo "  FAIL: the detached child never wrote the kick; the wake can never fire"; return 1; }
+    [ -s "$kick" ] || { echo "  FAIL: the kick is empty; the child died mid-write"; return 1; }
+}
+
+# The watch arms only once session-start.sh has RETURNED its watchPaths, so a
+# write landing before that is an event nobody hears. On 2026-09-23 the hook
+# ran 21 s under a loaded machine and both of the old fixed writes (+2 s, +4 s
+# after spawn) landed before the arm: the rotation sat idle. The child has to
+# keep re-writing until the wake records `delivered`, however long the hook
+# took. Each consumed kick below stands in for a write the watcher never saw.
+test_the_kick_is_rewritten_until_delivered() {
+    _rot_hook_session "rot-kick-retry"
+    _seed_handoff "$CLAUDE_SESSION_DIR" "2026-07-16-test.md" "unconsumed"
+    printf '%s\n' "2026-07-16-test.md" > "$CLAUDE_SESSION_META_DIR/local/pending-handoff"
+    printf 'claude_session_id: %s\n' "$UUID_A" > "$CLAUDE_SESSION_META_DIR/local/state"
+    CS_ROTATION_KICK_DELAY=1 _start_hook "$UUID_B" clear >/dev/null || return 1
+    local d="$CLAUDE_SESSION_META_DIR/local/rotation-kick" n i
+    for n in 1 2 3; do
+        i=0
+        while [ ! -f "$d/rotation.kick" ] && [ "$i" -lt 30 ]; do
+            i=$((i + 1))
+            sleep 0.1
+        done
+        [ -f "$d/rotation.kick" ] \
+            || { echo "  FAIL: write $n never came; a kick the watcher missed is never retried"; : > "$d/delivered"; return 1; }
+        rm -f "$d/rotation.kick"
+    done
+    # Delivery ends the retries. A write already past its check when the
+    # marker lands may still finish (the wake declines it), so allow that one,
+    # then require silence for longer than two more delays.
+    : > "$d/delivered"
+    sleep 1.5
+    rm -f "$d/rotation.kick"
+    sleep 2.5
+    [ ! -f "$d/rotation.kick" ] \
+        || { echo "  FAIL: the child kept writing after the wake was delivered"; return 1; }
+}
+
+# --- the wake itself ----------------------------------------------------------
+# Drives narrative-reminder's FileChanged branch as this session's lead. The
+# payload rides on stderr and delivery IS the exit code, so streams pass
+# through untouched.
+_rot_filechanged() {  # file_path, [event]
+    jq -nc --arg p "$1" --arg e "${2:-add}" \
+        '{hook_event_name: "FileChanged", file_path: $p, event: $e}' \
+        | bash "$HOOKS_DIR/narrative-reminder.sh"
+}
+
+_arm_kick() {  # returns the kick file path on stdout
+    local d="$CLAUDE_SESSION_META_DIR/local/rotation-kick"
+    mkdir -p "$d"
+    printf '%s\n' "$(date +%s)" > "$d/rotation.kick"
+    printf '%s\n' "$d/rotation.kick"
+}
+
+test_rotation_kick_wakes_the_model() {
+    _rot_hook_session "rot-wake"
+    local kick; kick=$(_arm_kick)
+    local err rc=0
+    err=$(_rot_filechanged "$kick" add 2>&1 >/dev/null) || rc=$?
+    assert_eq "2" "$rc" "the kick delivers by exiting 2 (asyncRewake)" || return 1
+    # The wake arrives as a system-reminder, NOT a user message, so the reason
+    # has to carry the instruction the user's "go" would otherwise have carried.
+    assert_output_contains "$err" "rotation" "the reason names what woke it" || return 1
+    assert_output_contains "$err" "next-step" "and says to execute the handoff" || return 1
+    # The wake restates the preamble's instruction rather than referring back
+    # to it (see the hook), so the reconcile step has to be restated too or the
+    # default /clear path never carries it.
+    assert_output_contains "$err" "reconcile your native task list" \
+        "and carries the reconcile step the preamble asks for" || return 1
+    # The notice invites the user to type instead, and the kick is written
+    # regardless — so a user who types inside the arm window gets the wake
+    # ENQUEUED behind their own message, carrying an unconditional "execute the
+    # handoff now". The preamble's content-takes-precedence rule covers the
+    # FIRST message, not a system-reminder arriving after one. Without a yield
+    # clause the auto-start overrides the person it told to take over.
+    assert_output_contains "$err" "already sent a message" "the wake yields to a user who took over" || return 1
+}
+
+# One kick, one wake. The watcher fires on unlink as well as add, and the hook
+# clears the kick after delivering — so without a delivered-marker the cleanup
+# re-fires the event and the session wakes on its own tail forever.
+test_rotation_kick_wakes_exactly_once() {
+    _rot_hook_session "rot-wake-once"
+    local kick; kick=$(_arm_kick)
+    local rc=0
+    _rot_filechanged "$kick" add >/dev/null 2>&1 || rc=$?
+    assert_eq "2" "$rc" "first delivery wakes" || return 1
+    rc=0
+    _rot_filechanged "$kick" add >/dev/null 2>&1 || rc=$?
+    assert_eq "0" "$rc" "a second event on the same kick must not wake again" || return 1
+}
+
+# The kick does NOT yield to the queue, and that is the opposite of the mail
+# wake on purpose. Nothing resets queue.state on /clear (only bin/cs writes it),
+# so a drain that was armed or interrupted before the rotation leaves a STALE
+# armed/draining state behind — and 2s after a /clear no drain turn can be in
+# flight anyway. Yielding there swallowed the one event this kick will ever
+# produce, with no Stop-path retry to recover it (the mail wake has one; the
+# kick has none). Both the rotation AND the queue were then stranded: the drain
+# is Stop-driven, so with no wake there is no turn, and with no turn there is no
+# Stop. Waking runs the rotation turn, whose Stop then resumes the drain.
+test_rotation_kick_does_not_yield_to_a_stale_queue_state() {
+    _rot_hook_session "rot-wake-queue"
+    mkdir -p "$CLAUDE_SESSION_META_DIR/local/queue"
+    printf '{"kind":"task"}\n' > "$CLAUDE_SESSION_META_DIR/local/queue/t1.json"
+    printf 'draining\n' > "$CLAUDE_SESSION_META_DIR/local/queue.state"
+    local kick; kick=$(_arm_kick)
+    local rc=0
+    _rot_filechanged "$kick" add >/dev/null 2>&1 || rc=$?
+    assert_eq "2" "$rc" \
+        "a stale drain state must not swallow the only kick event" || return 1
+}
+
+# Deleting a watched file fires FileChanged too — measured: rm of the kick
+# produced events on the still-armed watch. An unlink must never wake.
+test_rotation_kick_ignores_unlink() {
+    _rot_hook_session "rot-wake-unlink"
+    local kick; kick=$(_arm_kick)
+    local rc=0
+    _rot_filechanged "$kick" unlink >/dev/null 2>&1 || rc=$?
+    assert_eq "0" "$rc" "an unlink of the kick must not wake" || return 1
+}
+
+# A kick file that is not there is not a rotation. Guards the same class the
+# mail path guards: the path shape is not proof the document exists.
+test_rotation_kick_requires_the_file_to_exist() {
+    _rot_hook_session "rot-wake-ghost"
+    local d="$CLAUDE_SESSION_META_DIR/local/rotation-kick"
+    mkdir -p "$d"
+    local rc=0
+    _rot_filechanged "$d/rotation.kick" add >/dev/null 2>&1 || rc=$?
+    assert_eq "0" "$rc" "a missing kick file must not wake" || return 1
+}
+
+# compact and fork keep the transcript loaded, so consuming there would inject
+# "the prior transcript is not loaded" into a conversation where it is. The
+# marker is left ARMED — the pending rotation is still legitimate.
+test_compact_and_fork_leave_marker_armed() {
+    local src
+    for src in compact fork resume; do
+        _rot_hook_session "rot-armed-$src"
+        _seed_handoff "$CLAUDE_SESSION_DIR" "2026-07-16-test.md" "unconsumed"
+        printf '%s\n' "2026-07-16-test.md" > "$CLAUDE_SESSION_META_DIR/local/pending-handoff"
+        printf 'claude_session_id: %s\n' "$UUID_A" > "$CLAUDE_SESSION_META_DIR/local/state"
+        local out
+        out=$(_start_hook "$UUID_B" "$src") || return 1
+        if grep -q "Conversation Rotation" <<< "$out"; then
+            echo "  FAIL: source $src must not consume the marker"; return 1
+        fi
+        assert_file_contains "$CLAUDE_SESSION_META_DIR/handoffs/2026-07-16-test.md" "status: unconsumed" \
+            "$src leaves the handoff unconsumed" || return 1
+        [ -f "$CLAUDE_SESSION_META_DIR/local/pending-handoff" ] \
+            || { echo "  FAIL: source $src must leave the marker armed"; return 1; }
+    done
+}
+
+# A handoff consumed elsewhere (another machine, then pulled) must not
+# re-inject its preamble, and its status must not be rewritten.
+test_spent_handoff_is_not_reconsumed() {
+    _rot_hook_session "rot-spent"
+    _seed_handoff "$CLAUDE_SESSION_DIR" "2026-07-16-test.md" "consumed"
+    printf '%s\n' "2026-07-16-test.md" > "$CLAUDE_SESSION_META_DIR/local/pending-handoff"
+    printf 'claude_session_id: %s\n' "$UUID_B" > "$CLAUDE_SESSION_META_DIR/local/state"
+    local out
+    out=$(_start_hook "$UUID_B") || return 1
+    if grep -q "Conversation Rotation" <<< "$out"; then
+        echo "  FAIL: a spent handoff must not inject a preamble"; return 1
+    fi
+    assert_file_not_contains "$CLAUDE_SESSION_META_DIR/handoffs/2026-07-16-test.md" "consumed_by:" \
+        "no consumer recorded for a spent handoff" || return 1
+    [ ! -f "$CLAUDE_SESSION_META_DIR/local/pending-handoff" ] \
+        || { echo "  FAIL: a marker naming a spent handoff is stale and must be removed"; return 1; }
+}
+
+# The status check is frontmatter-scoped: a body quoting the contract line
+# flush-left must not make a discarded handoff look pending.
+test_body_quote_does_not_revive_a_discarded_handoff() {
+    _rot_hook_session "rot-revive"
+    _seed_handoff "$CLAUDE_SESSION_DIR" "2026-07-16-test.md" "discarded"
+    printf 'status: unconsumed\n' >> "$CLAUDE_SESSION_DIR/.cs/handoffs/2026-07-16-test.md"
+    printf '%s\n' "2026-07-16-test.md" > "$CLAUDE_SESSION_META_DIR/local/pending-handoff"
+    printf 'claude_session_id: %s\n' "$UUID_B" > "$CLAUDE_SESSION_META_DIR/local/state"
+    local out
+    out=$(_start_hook "$UUID_B") || return 1
+    if grep -q "Conversation Rotation" <<< "$out"; then
+        echo "  FAIL: a flush-left body quote must not revive a discarded handoff"; return 1
+    fi
+}
+
+run_test test_pending_handoff_is_consumed_and_injected
+run_test test_consuming_a_handoff_leaves_a_tmp_sibling_alone_and_keeps_the_mode
+run_test test_rotation_preamble_wins_over_fresh_rebind_block
+run_test test_fresh_rebind_block_survives_without_handoff
+run_test test_stale_marker_is_removed_silently
+run_test test_handoff_with_hostile_purpose_survives_flip
+# A /clear rotation has no launcher to emit the event, so the hook's rebind
+# block is the sole emitter and must not label a deliberate rotation "rebind".
+test_clear_rotation_records_handoff_reason() {
+    _rot_hook_session "rot-label"
+    _seed_handoff "$CLAUDE_SESSION_DIR" "2026-07-16-test.md" "unconsumed"
+    printf '%s\n' "2026-07-16-test.md" > "$CLAUDE_SESSION_META_DIR/local/pending-handoff"
+    printf 'claude_session_id: %s\n' "$UUID_A" > "$CLAUDE_SESSION_META_DIR/local/state"
+    _start_hook "$UUID_B" clear >/dev/null || return 1
+    local ev
+    ev=$(_timeline | jq -c 'select(.event == "rotated")' 2>/dev/null | tail -1)
+    assert_output_contains "$ev" '"reason":"handoff"' "clear rotation is a handoff" || return 1
+    assert_output_contains "$ev" '"handoff":"2026-07-16-test.md"' "event names the handoff" || return 1
+}
+
+# A fork with an armed marker rebinds but does not rotate: labelling it
+# "handoff" would record a rotation that never happened, and the real /clear
+# would then emit a second event for the same file.
+test_fork_with_armed_marker_records_rebind() {
+    _rot_hook_session "rot-label-fork"
+    _seed_handoff "$CLAUDE_SESSION_DIR" "2026-07-16-test.md" "unconsumed"
+    printf '%s\n' "2026-07-16-test.md" > "$CLAUDE_SESSION_META_DIR/local/pending-handoff"
+    printf 'claude_session_id: %s\n' "$UUID_A" > "$CLAUDE_SESSION_META_DIR/local/state"
+    _start_hook "$UUID_B" fork >/dev/null || return 1
+    local ev
+    ev=$(_timeline | jq -c 'select(.event == "rotated")' 2>/dev/null | tail -1)
+    assert_output_contains "$ev" '"reason":"rebind"' "a fork is not a handoff rotation" || return 1
+    if grep -q '"handoff"' <<< "$ev"; then
+        echo "  FAIL: a fork event must carry no handoff field"; return 1
+    fi
+}
+
+run_test test_clear_source_consumes_pending_handoff
+run_test test_rotation_tells_the_user_one_message_starts_it
+run_test test_plain_clear_says_nothing_to_the_user
+run_test test_startup_rotation_does_not_tell_the_user_to_send_a_message
+run_test test_rotation_preamble_makes_the_first_message_mean_begin
+run_test test_rotation_preamble_reconciles_the_inherited_native_tasks
+run_test test_clear_does_not_emit_a_dead_autostart_field
+run_test test_clear_rotation_arms_a_kick_watch
+run_test test_kick_watch_is_scoped_to_a_clear_rotation
+run_test test_a_second_rotation_in_the_same_session_still_wakes
+run_test test_a_clear_without_a_rotation_spends_an_in_flight_kick
+run_test test_a_teammate_clear_leaves_the_leads_kick_alone
+run_test test_the_detached_child_actually_writes_the_kick
+run_test test_the_kick_is_rewritten_until_delivered
+run_test test_rotation_kick_wakes_the_model
+run_test test_rotation_kick_wakes_exactly_once
+run_test test_rotation_kick_does_not_yield_to_a_stale_queue_state
+run_test test_rotation_kick_ignores_unlink
+run_test test_rotation_kick_requires_the_file_to_exist
+run_test test_armed_rotation_preamble_expects_a_wake_not_a_message
+run_test test_unarmed_rotation_preamble_still_expects_a_message
+run_test test_rotation_wake_opt_out_arms_nothing
+run_test test_compact_and_fork_leave_marker_armed
+run_test test_spent_handoff_is_not_reconsumed
+run_test test_body_quote_does_not_revive_a_discarded_handoff
+test_fresh_notice_absent_on_compact() {
+    _rot_hook_session "rot-fresh-compact"
+    printf 'claude_session_id: %s\n' "$UUID_B" > "$CLAUDE_SESSION_META_DIR/local/state"
+    export CS_FRESH_REBIND=1
+    local out
+    out=$(_start_hook "$UUID_B" compact) || { unset CS_FRESH_REBIND; return 1; }
+    unset CS_FRESH_REBIND
+    if grep -q "Fresh Conversation" <<< "$out"; then
+        echo "  FAIL: a compaction continues the conversation — no clean-break notice"
+        return 1
+    fi
+}
+
+# A /clear IS a clean break, whether or not the launch was a rebind.
+test_fresh_notice_present_on_clear_without_rebind_env() {
+    _rot_hook_session "rot-fresh-clear"
+    printf 'claude_session_id: %s\n' "$UUID_B" > "$CLAUDE_SESSION_META_DIR/local/state"
+    local out
+    out=$(_start_hook "$UUID_B" clear) || return 1
+    assert_output_contains "$out" "Fresh Conversation" "clear is a clean break" || return 1
+}
+
+# The marker names a basename. A path in it must not reach outside the
+# handoff store — the file it lands on would be rewritten and named to Claude.
+test_marker_with_a_path_is_rejected() {
+    _rot_hook_session "rot-traverse"
+    local outside="$CLAUDE_SESSION_DIR/outside.md"
+    cat > "$outside" << 'EOF'
+---
+status: unconsumed
+---
+EOF
+    mkdir -p "$CLAUDE_SESSION_DIR/.cs/handoffs"
+    printf '../../outside.md\n' > "$CLAUDE_SESSION_META_DIR/local/pending-handoff"
+    printf 'claude_session_id: %s\n' "$UUID_B" > "$CLAUDE_SESSION_META_DIR/local/state"
+    local out
+    out=$(_start_hook "$UUID_B" clear) || return 1
+    if grep -q "Conversation Rotation" <<< "$out"; then
+        echo "  FAIL: a marker naming a path must not rotate"; return 1
+    fi
+    assert_file_not_contains "$outside" "status: consumed" \
+        "a file outside the handoff store must not be rewritten" || return 1
+    [ ! -f "$CLAUDE_SESSION_META_DIR/local/pending-handoff" ] \
+        || { echo "  FAIL: a marker naming a path is stale and must be removed"; return 1; }
+}
+
+run_test test_clear_rotation_records_handoff_reason
+run_test test_fork_with_armed_marker_records_rebind
+run_test test_fresh_notice_absent_on_compact
+run_test test_fresh_notice_present_on_clear_without_rebind_env
+# A backslash is a separator in some spellings. Trivial on POSIX; the point is
+# the lane where the escape would otherwise work.
+test_marker_with_a_backslash_path_is_rejected() {
+    _rot_hook_session "rot-traverse-bs"
+    mkdir -p "$CLAUDE_SESSION_DIR/.cs/handoffs"
+    # Seed a file the marker would resolve to. On POSIX the backslashes are an
+    # ordinary filename, which is what makes this assertion able to fail here;
+    # elsewhere the same name resolves out of the store, which is the real target.
+    printf -- '---\nstatus: unconsumed\n---\n' \
+        > "$CLAUDE_SESSION_DIR/.cs/handoffs/..\\..\\outside.md" 2>/dev/null || true
+    printf '..\\..\\outside.md\n' > "$CLAUDE_SESSION_META_DIR/local/pending-handoff"
+    printf 'claude_session_id: %s\n' "$UUID_B" > "$CLAUDE_SESSION_META_DIR/local/state"
+    local out
+    out=$(_start_hook "$UUID_B" clear) || return 1
+    if grep -q "Conversation Rotation" <<< "$out"; then
+        echo "  FAIL: a marker naming a backslash path must not rotate"; return 1
+    fi
+    [ ! -f "$CLAUDE_SESSION_META_DIR/local/pending-handoff" ] \
+        || { echo "  FAIL: a marker naming a backslash path is stale and must be removed"; return 1; }
+}
+
+run_test test_marker_with_a_path_is_rejected
+run_test test_marker_with_a_backslash_path_is_rejected
+
+# ============================================================================
+# Cycle 5: context nudge (Stop hook)
+# ============================================================================
+
+_stop_with_ctx() {  # ctx-pct-or-empty, session_id
+    if [ -n "$1" ]; then
+        printf '%s\n' "$1" > "$CLAUDE_SESSION_META_DIR/local/context-pct"
+    else
+        rm -f "$CLAUDE_SESSION_META_DIR/local/context-pct"
+    fi
+    echo "{\"session_id\":\"$2\"}" | bash "$HOOKS_DIR/narrative-reminder.sh"
+}
+
+test_nudge_fires_once_at_threshold() {
+    _rot_hook_session "rot-nudge"
+    local out
+    out=$(_stop_with_ctx 65 "$UUID_A") || return 1
+    assert_output_contains "$out" '"decision":"block"' "nudge delivered as a block" || return 1
+    assert_output_contains "$out" "rotate skill" "nudge names the rotate skill" || return 1
+    assert_output_contains "$out" "Context is at 65%" "nudge names the reading" || return 1
+    assert_eq "$UUID_A" "$(cat "$CLAUDE_SESSION_META_DIR/local/rotate-nudged" | tr -d '[:space:]')" \
+        "cursor records the nudged conversation" || return 1
+    out=$(_stop_with_ctx 85 "$UUID_A") || return 1
+    if grep -q "rotate skill" <<< "$out"; then
+        echo "  FAIL: same conversation must not be nudged twice"
+        return 1
+    fi
+}
+
+test_nudge_rearms_for_new_conversation() {
+    _rot_hook_session "rot-nudge-rearm"
+    _stop_with_ctx 65 "$UUID_A" >/dev/null || return 1
+    local out
+    out=$(_stop_with_ctx 65 "$UUID_B") || return 1
+    assert_output_contains "$out" "rotate skill" "new conversation UUID re-arms the nudge" || return 1
+}
+
+test_nudge_silent_below_threshold_and_without_signal() {
+    _rot_hook_session "rot-nudge-quiet"
+    local out
+    out=$(_stop_with_ctx 64 "$UUID_A") || return 1
+    if grep -q "rotate skill" <<< "$out"; then
+        echo "  FAIL: 64 must not nudge at default threshold"
+        return 1
+    fi
+    out=$(_stop_with_ctx "" "$UUID_A") || return 1
+    if grep -q "rotate skill" <<< "$out"; then
+        echo "  FAIL: missing context-pct must never nudge"
+        return 1
+    fi
+    out=$(_stop_with_ctx "hot" "$UUID_A") || return 1
+    if grep -q "rotate skill" <<< "$out"; then
+        echo "  FAIL: non-numeric context-pct must never nudge"
+        return 1
+    fi
+}
+
+test_nudge_threshold_override() {
+    _rot_hook_session "rot-nudge-env"
+    export CS_ROTATE_NUDGE_CTX=90
+    local out
+    out=$(_stop_with_ctx 85 "$UUID_A") || { unset CS_ROTATE_NUDGE_CTX; return 1; }
+    if grep -q "rotate skill" <<< "$out"; then
+        unset CS_ROTATE_NUDGE_CTX
+        echo "  FAIL: 85 under a 90 override must not nudge"
+        return 1
+    fi
+    # 85 lands in the warning band, whose copy promises the nudge. The promise
+    # is the effective threshold or it is a lie: a literal cannot pass here.
+    assert_output_contains "$out" "follows at 90%" \
+        "the warning promises the nudge at the overridden threshold" || return 1
+    out=$(_stop_with_ctx 90 "$UUID_A") || { unset CS_ROTATE_NUDGE_CTX; return 1; }
+    unset CS_ROTATE_NUDGE_CTX
+    assert_output_contains "$out" "rotate skill" "90 at a 90 override nudges" || return 1
+    # A non-numeric override falls back to the default, so the fallback is only
+    # pinned by readings that straddle it: 80 would pass under any default at or
+    # below 80, including the 80 this branch replaced.
+    _rot_hook_session "rot-nudge-env2"
+    export CS_ROTATE_NUDGE_CTX=banana
+    out=$(_stop_with_ctx 65 "$UUID_B") || { unset CS_ROTATE_NUDGE_CTX; return 1; }
+    assert_output_contains "$out" "rotate skill" "non-numeric override falls back to 65" || return 1
+    _rot_hook_session "rot-nudge-env3"
+    out=$(_stop_with_ctx 64 "$UUID_A") || { unset CS_ROTATE_NUDGE_CTX; return 1; }
+    unset CS_ROTATE_NUDGE_CTX
+    if grep -q "rotate skill" <<< "$out"; then
+        echo "  FAIL: 64 under the 65 fallback must not nudge"
+        return 1
+    fi
+    # Twenty digits wrap past 64 bits to a huge positive number, which would
+    # silence the nudge for good; the override must fall back instead.
+    _rot_hook_session "rot-nudge-env4"
+    export CS_ROTATE_NUDGE_CTX=99999999999999999999
+    out=$(_stop_with_ctx 65 "$UUID_B") || { unset CS_ROTATE_NUDGE_CTX; return 1; }
+    unset CS_ROTATE_NUDGE_CTX
+    assert_output_contains "$out" "rotate skill" "a 64-bit-overflowing override falls back to 65" || return 1
+}
+
+test_nudge_yields_to_queue_drain() {
+    _rot_hook_session "rot-nudge-queue"
+    mkdir -p "$CLAUDE_SESSION_META_DIR/local/queue"
+    printf 'task one\n' > "$CLAUDE_SESSION_META_DIR/local/queue/0000000001-seed"
+    printf 'armed\n' > "$CLAUDE_SESSION_META_DIR/local/queue.state"
+    local out
+    out=$(_stop_with_ctx 80 "$UUID_A") || return 1
+    assert_output_contains "$out" "cs task queue" "queue owns the turn loop" || return 1
+    if grep -q "rotate skill" <<< "$out"; then
+        echo "  FAIL: nudge must yield to an armed queue"
+        return 1
+    fi
+}
+
+run_test test_nudge_fires_once_at_threshold
+run_test test_nudge_rearms_for_new_conversation
+run_test test_nudge_silent_below_threshold_and_without_signal
+run_test test_nudge_threshold_override
+run_test test_nudge_yields_to_queue_drain
+
+# ============================================================================
+# Cycle 6: cs -conversations
+# ============================================================================
+
+test_conversations_renders_chain() {
+    _rot_hook_session "rot-view"
+    printf 'claude_session_id: %s\n' "$UUID_B" > "$CLAUDE_SESSION_META_DIR/local/state"
+    cat > "$CLAUDE_SESSION_META_DIR/timeline.jsonl" << EOF
+{"ts":"2026-07-14T09:00:00Z","event":"started","source":"startup","session_id":"$UUID_A","branch":"main"}
+{"ts":"2026-07-14T12:00:00Z","event":"started","source":"resume","session_id":"$UUID_A","branch":"main"}
+{"ts":"2026-07-15T08:00:00Z","event":"checkpoint","label":"x","file":"y","branch":"main"}
+{"ts":"2026-07-16T10:00:00Z","event":"rotated","from":"$UUID_A","to":"$UUID_B","reason":"handoff","handoff":"2026-07-16-test.md"}
+{"ts":"2026-07-16T10:00:05Z","event":"started","source":"startup","session_id":"$UUID_B","branch":"main"}
+EOF
+    local out
+    out=$("$CS_BIN" -conversations 2>&1) || return 1
+    assert_output_contains "$out" "11111111  started (startup, resumed 1x)" "first conversation folds resumes" || return 1
+    assert_output_contains "$out" "11111111 > 22222222  rotated (handoff: 2026-07-16-test.md)" "rotation arrow with handoff" || return 1
+    # Escaped: assert_output_contains greps a BRE, where [current] is a character
+    # class matching any one of c/u/r/e/n/t — which every line of this output
+    # already contains, so the unescaped form passed with the marker removed.
+    assert_output_contains "$out" '\[current\]' "live conversation marked" || return 1
+    if grep -q "checkpoint" <<< "$out"; then
+        echo "  FAIL: non-conversation events must not render"
+        return 1
+    fi
+}
+
+test_conversations_empty_timeline() {
+    _rot_hook_session "rot-view-empty"
+    rm -f "$CLAUDE_SESSION_META_DIR/timeline.jsonl"
+    local out
+    out=$("$CS_BIN" -conversations 2>&1) || return 1
+    assert_output_contains "$out" "No conversation history recorded." "empty message" || return 1
+}
+
+test_conversations_requires_session_context() {
+    local out rc=0
+    out=$(env -u CLAUDE_SESSION_META_DIR -u CLAUDE_SESSION_NAME -u CLAUDE_SESSION_DIR "$CS_BIN" -conversations 2>&1) || rc=$?
+    [ "$rc" -ne 0 ] || { echo "  FAIL: must error outside a session"; return 1; }
+    assert_output_contains "$out" "inside a cs session" "error names the requirement" || return 1
+}
+
+test_conversations_session_scoped_form() {
+    _rot_hook_session "rot-view-scoped"
+    printf 'claude_session_id: %s\n' "$UUID_A" > "$CLAUDE_SESSION_META_DIR/local/state"
+    printf '{"ts":"2026-07-14T09:00:00Z","event":"started","source":"startup","session_id":"%s","branch":"main"}\n' "$UUID_A" \
+        > "$CLAUDE_SESSION_META_DIR/timeline.jsonl"
+    local out
+    out=$(env -u CLAUDE_SESSION_META_DIR -u CLAUDE_SESSION_NAME -u CLAUDE_SESSION_DIR \
+        "$CS_BIN" rot-view-scoped -conversations 2>&1) || return 1
+    assert_output_contains "$out" "11111111  started (startup)" "scoped form renders" || return 1
+}
+
+run_test test_conversations_renders_chain
+run_test test_conversations_empty_timeline
+run_test test_conversations_requires_session_context
+run_test test_conversations_session_scoped_form
+
+# ============================================================================
+# Cycle 7: final-review fixes — rebind ordering (I1), frontmatter scoping (M-new)
+# ============================================================================
+
+test_rebind_orders_rotated_before_started() {
+    _rot_hook_session "rot-order"
+    printf 'claude_session_id: %s\n' "$UUID_A" > "$CLAUDE_SESSION_META_DIR/local/state"
+    echo "{\"session_id\":\"$UUID_B\",\"cwd\":\"$CLAUDE_SESSION_DIR\",\"source\":\"resume\"}" \
+        | bash "$HOOKS_DIR/session-start.sh" >/dev/null 2>&1 || return 1
+    local rotated_line started_line
+    rotated_line=$(grep -n '"event":"rotated"' "$CLAUDE_SESSION_META_DIR/timeline.jsonl" | head -1 | cut -d: -f1)
+    started_line=$(grep -n "\"event\":\"started\".*\"session_id\":\"$UUID_B\"" "$CLAUDE_SESSION_META_DIR/timeline.jsonl" | head -1 | cut -d: -f1)
+    [ -n "$rotated_line" ] || { echo "  FAIL: no rotated line found in timeline.jsonl"; return 1; }
+    [ -n "$started_line" ] || { echo "  FAIL: no started line for $UUID_B found in timeline.jsonl"; return 1; }
+    if [ "$rotated_line" -ge "$started_line" ]; then
+        echo "  FAIL: rotated event (line $rotated_line) must precede the new conversation's started event (line $started_line)"
+        return 1
+    fi
+
+    local out
+    out=$("$CS_BIN" -conversations 2>&1) || return 1
+    local arrow_line started_out_line
+    arrow_line=$(printf '%s\n' "$out" | awk '/ > /{print NR; exit}')
+    started_out_line=$(printf '%s\n' "$out" | awk '/22222222  started/{print NR; exit}')
+    [ -n "$arrow_line" ] || { echo "  FAIL: no rotated arrow line in cs -conversations output"; return 1; }
+    [ -n "$started_out_line" ] || { echo "  FAIL: no '22222222  started' line in cs -conversations output"; return 1; }
+    if [ "$arrow_line" -ge "$started_out_line" ]; then
+        echo "  FAIL: rendered rotated arrow (line $arrow_line) must precede the started line (line $started_out_line)"
+        return 1
+    fi
+}
+
+run_test test_rebind_orders_rotated_before_started
+
+# A handoff's body may legitimately quote the frontmatter contract (the
+# rotate skill's own doc does). The launch-side scan must only look at the
+# frontmatter block, not the whole file.
+_seed_handoff_body_echoes_contract() {  # session_dir, basename, frontmatter_status
+    mkdir -p "$1/.cs/handoffs"
+    cat > "$1/.cs/handoffs/$2" << EOF
+---
+parent: $UUID_A
+created: 2026-07-16T10:00:00Z
+purpose: test rotation
+status: $3
+---
+
+## 3. Contract
+The handoff frontmatter must contain a line reading exactly:
+status: unconsumed
+
+## 7. Next Step
+Continue the test.
+EOF
+}
+
+test_launch_grep_ignores_body_status_line() {
+    _rot_session "rot-body-consumed"
+    local dir="$CS_SESSIONS_ROOT/rot-body-consumed"
+    _seed_handoff_body_echoes_contract "$dir" "2026-07-16-consumed.md" "consumed"
+    local output
+    output=$("$CS_BIN" rot-body-consumed <<< "n" 2>&1) || true
+    if grep -q "Rotation handoff pending" <<< "$output"; then
+        echo "  FAIL: consumed handoff must not resurface because its body echoes the contract line"
+        return 1
+    fi
+}
+
+test_launch_grep_scoped_to_frontmatter_and_body_survives_consumption() {
+    _rot_session "rot-body-unconsumed"
+    local dir="$CS_SESSIONS_ROOT/rot-body-unconsumed"
+    _seed_handoff_body_echoes_contract "$dir" "2026-07-16-active.md" "unconsumed"
+    local output
+    output=$("$CS_BIN" rot-body-unconsumed <<< "r" 2>&1) || true
+    assert_output_contains "$output" "Rotation handoff pending" "genuinely unconsumed handoff is still offered" || return 1
+    assert_output_contains "$output" "2026-07-16-active.md" "notice names the handoff" || return 1
+
+    local new
+    new=$(awk '/^claude_session_id:/ { print $2; exit }' "$dir/.cs/local/state")
+    _rot_hook_session "rot-body-unconsumed"
+    _start_hook "$new" >/dev/null || return 1
+
+    local f="$dir/.cs/handoffs/2026-07-16-active.md"
+    assert_file_contains "$f" "status: consumed" "frontmatter flipped" || return 1
+    assert_file_contains "$f" "consumed_by: $new" "consumer recorded" || return 1
+    local n
+    n=$(grep -c '^status: unconsumed$' "$f" 2>/dev/null || true)
+    assert_eq "1" "$n" "only the body's quoted contract line remains; frontmatter's own line was flipped" || return 1
+    [ ! -f "$dir/.cs/local/pending-handoff" ] || { echo "  FAIL: marker must be removed"; return 1; }
+}
+
+run_test test_launch_grep_ignores_body_status_line
+run_test test_launch_grep_scoped_to_frontmatter_and_body_survives_consumption
+
+# ============================================================================
+# Cycle 8: context warning (Stop hook, [warn, nudge) band)
+# ============================================================================
+
+# 40 rather than a comfortable interior reading: the band's lower edge is
+# inclusive, and only a case sitting exactly on it separates `-ge` from `-gt`.
+test_ctx_warning_fires_once_in_band() {
+    _rot_hook_session "rot-warn"
+    local out
+    out=$(_stop_with_ctx 40 "$UUID_A") || return 1
+    assert_output_contains "$out" '"decision":"block"' "warning delivered as a block" || return 1
+    assert_output_contains "$out" "Context is at 40%" "warning names the reading" || return 1
+    assert_output_contains "$out" "natural stopping point" "warning carries the frozen copy" || return 1
+    assert_output_contains "$out" "follows at 65%" "warning promises the nudge at its real threshold" || return 1
+    assert_eq "$UUID_A" "$(cat "$CLAUDE_SESSION_META_DIR/local/ctx-warned" | tr -d '[:space:]')" \
+        "cursor records the warned conversation" || return 1
+    out=$(_stop_with_ctx 40 "$UUID_A") || return 1
+    if grep -q "stopping point" <<< "$out"; then
+        echo "  FAIL: same conversation must not be warned twice"
+        return 1
+    fi
+}
+
+test_ctx_warning_rearms_for_new_conversation() {
+    _rot_hook_session "rot-warn-rearm"
+    _stop_with_ctx 60 "$UUID_A" >/dev/null || return 1
+    local out
+    out=$(_stop_with_ctx 60 "$UUID_B") || return 1
+    assert_output_contains "$out" "stopping point" "new conversation UUID re-arms the warning" || return 1
+}
+
+test_ctx_warning_silent_below_band() {
+    _rot_hook_session "rot-warn-low"
+    local out
+    out=$(_stop_with_ctx 39 "$UUID_A") || return 1
+    if grep -q "stopping point" <<< "$out"; then
+        echo "  FAIL: 39 must not warn at default threshold"
+        return 1
+    fi
+}
+
+test_ctx_warning_yields_to_nudge_at_high_ctx() {
+    _rot_hook_session "rot-warn-high"
+    local out
+    out=$(_stop_with_ctx 80 "$UUID_A") || return 1
+    assert_output_contains "$out" "rotate skill" "nudge owns readings at its threshold" || return 1
+    if grep -q "stopping point" <<< "$out"; then
+        echo "  FAIL: warning must not fire at or above the nudge threshold"
+        return 1
+    fi
+    out=$(_stop_with_ctx 85 "$UUID_A") || return 1
+    if grep -q "stopping point" <<< "$out"; then
+        echo "  FAIL: after the nudge, the warning may not fire"
+        return 1
+    fi
+    if grep -q "rotate skill" <<< "$out"; then
+        echo "  FAIL: after the nudge, the nudge may not fire again"
+        return 1
+    fi
+}
+
+test_ctx_warning_threshold_override() {
+    _rot_hook_session "rot-warn-env"
+    export CS_CTX_WARN_CTX=50
+    local out
+    out=$(_stop_with_ctx 45 "$UUID_A") || { unset CS_CTX_WARN_CTX; return 1; }
+    if grep -q "stopping point" <<< "$out"; then
+        unset CS_CTX_WARN_CTX
+        echo "  FAIL: 45 under a 50 override must not warn"
+        return 1
+    fi
+    out=$(_stop_with_ctx 50 "$UUID_A") || { unset CS_CTX_WARN_CTX; return 1; }
+    unset CS_CTX_WARN_CTX
+    assert_output_contains "$out" "stopping point" "50 at a 50 override warns" || return 1
+    _rot_hook_session "rot-warn-env2"
+    export CS_CTX_WARN_CTX=banana
+    out=$(_stop_with_ctx 40 "$UUID_B") || { unset CS_CTX_WARN_CTX; return 1; }
+    unset CS_CTX_WARN_CTX
+    assert_output_contains "$out" "stopping point" "non-numeric override falls back to 40" || return 1
+}
+
+test_ctx_warning_escalates_to_nudge_same_conversation() {
+    _rot_hook_session "rot-warn-escalate"
+    local out
+    out=$(_stop_with_ctx 60 "$UUID_A") || return 1
+    assert_output_contains "$out" "stopping point" "warning fires first at 60" || return 1
+    out=$(_stop_with_ctx 80 "$UUID_A") || return 1
+    assert_output_contains "$out" "rotate skill" "nudge still escalates after the warning" || return 1
+    if grep -q "stopping point" <<< "$out"; then
+        echo "  FAIL: the 80 reading belongs to the nudge alone"
+        return 1
+    fi
+}
+
+test_ctx_warning_band_edges() {
+    _rot_hook_session "rot-warn-edges"
+    local out
+    out=$(_stop_with_ctx 64 "$UUID_A") || return 1
+    assert_output_contains "$out" "stopping point" "64 is inside the band" || return 1
+    _rot_hook_session "rot-warn-edge65"
+    out=$(_stop_with_ctx 65 "$UUID_B") || return 1
+    assert_output_contains "$out" "rotate skill" "the nudge owns exactly 65 under defaults" || return 1
+    out=$(_stop_with_ctx 65 "$UUID_B") || return 1
+    if grep -q "stopping point" <<< "$out"; then
+        echo "  FAIL: exactly the nudge threshold is outside the band even when the nudge is spent"
+        return 1
+    fi
+}
+
+# A tmux-backed teammate is a full claude sharing this session directory: its
+# Stop passes the agent_id guard, reads the same stamped context-pct, and wrote
+# its own UUID into the single-slot cursor, so the lead's next stop saw a
+# mismatch and warned again. Measured live: five "one-time" notices in a row
+# while ten teammates ran. Every conversation still gets its one notice; none
+# may cancel another's.
+test_ctx_warning_survives_an_interleaved_teammate() {
+    _rot_hook_session "rot-warn-teammate"
+    _stop_with_ctx 60 "$UUID_A" >/dev/null || return 1
+    _stop_with_ctx 60 "$UUID_B" >/dev/null || return 1
+    local out
+    out=$(_stop_with_ctx 60 "$UUID_A") || return 1
+    if grep -q "stopping point" <<< "$out"; then
+        echo "  FAIL: a teammate's warning must not re-arm the lead's"
+        return 1
+    fi
+    out=$(_stop_with_ctx 85 "$UUID_A") || return 1
+    assert_output_contains "$out" "consider rotating" "the nudge still fires once for A" || return 1
+    _stop_with_ctx 85 "$UUID_B" >/dev/null || return 1
+    out=$(_stop_with_ctx 85 "$UUID_A") || return 1
+    if grep -q "consider rotating" <<< "$out"; then
+        echo "  FAIL: a teammate's nudge must not re-arm the lead's"
+        return 1
+    fi
+}
+
+# context-pct holds the LEAD's reading only (the status line writes it for the
+# launched conversation alone), so a teammate acting on it announces someone
+# else's context as its own: a Sonnet teammate at 4% told its user "context is
+# at 60%" on 2026-09-05. Both tiers stay silent unless the firing claude is the
+# lead. The cursor fix of 2026-09-02 kept each conversation's notice separate;
+# this keeps the reading with the conversation it describes.
+_stop_with_ctx_as_teammate() {  # ctx-pct, session_id
+    printf '%s\n' "$1" > "$CLAUDE_SESSION_META_DIR/local/context-pct"
+    echo "{\"session_id\":\"$2\"}" | CLAUDE_PID=999999 bash "$HOOKS_DIR/narrative-reminder.sh"
+}
+
+test_ctx_tiers_are_silent_for_a_teammate() {
+    _rot_hook_session "rot-ctx-teammate"
+    local out
+    out=$(_stop_with_ctx_as_teammate 64 "$UUID_B") || return 1
+    if grep -q "stopping point" <<< "$out"; then
+        echo "  FAIL: a teammate must not be warned with the lead's reading"
+        return 1
+    fi
+    if grep -qx "$UUID_B" "$CLAUDE_SESSION_META_DIR/local/ctx-warned" 2>/dev/null; then
+        echo "  FAIL: a teammate must not spend a warning cursor on the lead's reading"
+        return 1
+    fi
+    out=$(_stop_with_ctx_as_teammate 85 "$UUID_B") || return 1
+    if grep -q "consider rotating" <<< "$out"; then
+        echo "  FAIL: a teammate must not be nudged to rotate on the lead's reading"
+        return 1
+    fi
+    # The lead, same directory, same reading: the notice is its.
+    out=$(_stop_with_ctx 64 "$UUID_A") || return 1
+    assert_output_contains "$out" "stopping point" "the lead is still warned" || return 1
+}
+
+# Forced rotation ships on. A machine that has not been told so gets one
+# notice at launch, naming the threshold and the way out; after that the marker
+# keeps it quiet. The notice is skipped where the forcing is off, since there is
+# nothing to announce.
+test_force_notice_prints_once_per_machine() {
+    local home="$TEST_TMPDIR/notice-home"
+    mkdir -p "$home"
+    local out
+    out=$(HOME="$home" XDG_CONFIG_HOME="$home/.config" CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 bash -c '
+        . "'"$SCRIPT_DIR"'/../lib/75-launch.sh"
+        _rotate_force_notice; _rotate_force_notice' 2>&1) || return 1
+    assert_output_contains "$out" "80%" "the notice names the threshold" || return 1
+    assert_output_contains "$out" "CS_ROTATE_FORCE_CTX=off" "and the way out" || return 1
+    [ "$(grep -c 'CS_ROTATE_FORCE_CTX=off' <<< "$out")" = "1" ] \
+        || { echo "  FAIL: the notice printed more than once"; return 1; }
+    assert_file_exists "$home/.config/cs/rotate-force-notice" "the marker records it" || return 1
+}
+
+test_force_notice_is_silent_when_the_forcing_is_off() {
+    local home="$TEST_TMPDIR/notice-off"
+    mkdir -p "$home"
+    local out
+    out=$(HOME="$home" XDG_CONFIG_HOME="$home/.config" CS_ROTATE_FORCE_CTX=off bash -c '
+        . "'"$SCRIPT_DIR"'/../lib/75-launch.sh"
+        _rotate_force_notice' 2>&1) || return 1
+    [ -z "$out" ] || { echo "  FAIL: a machine with the forcing off was told about it: $out"; return 1; }
+    [ ! -f "$home/.config/cs/rotate-force-notice" ] \
+        || { echo "  FAIL: a marker was written with nothing to announce"; return 1; }
+}
+
+test_force_notice_names_an_overridden_threshold() {
+    local home="$TEST_TMPDIR/notice-override"
+    mkdir -p "$home"
+    local out
+    out=$(HOME="$home" XDG_CONFIG_HOME="$home/.config" CS_ROTATE_FORCE_CTX=55 CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 bash -c '
+        . "'"$SCRIPT_DIR"'/../lib/75-launch.sh"
+        _rotate_force_notice' 2>&1) || return 1
+    assert_output_contains "$out" "55%" "the notice quotes the threshold in force" || return 1
+}
+
+# The rotate mod is a function-hooks plugin, so without the loader flag no
+# rotation is forced however the threshold reads. Announcing one anyway would
+# describe a rotation that never comes, and burn the once-per-machine marker
+# before the day the flag is on and the forcing really starts.
+test_force_notice_is_silent_when_function_hooks_are_off() {
+    local home="$TEST_TMPDIR/notice-nohooks"
+    mkdir -p "$home"
+    local out
+    out=$(env -u CLAUDE_CODE_ENABLE_FUNCTION_HOOKS HOME="$home" XDG_CONFIG_HOME="$home/.config" bash -c '
+        . "'"$SCRIPT_DIR"'/../lib/75-launch.sh"
+        _rotate_force_notice' 2>&1) || return 1
+    [ -z "$out" ] || { echo "  FAIL: flag unset: announced a rotation the mod cannot run: $out"; return 1; }
+    out=$(CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=0 HOME="$home" XDG_CONFIG_HOME="$home/.config" bash -c '
+        . "'"$SCRIPT_DIR"'/../lib/75-launch.sh"
+        _rotate_force_notice' 2>&1) || return 1
+    [ -z "$out" ] || { echo "  FAIL: flag 0: announced a rotation the mod cannot run: $out"; return 1; }
+    [ ! -f "$home/.config/cs/rotate-force-notice" ] \
+        || { echo "  FAIL: the marker was spent with nothing to announce"; return 1; }
+}
+
+# Both readers of CS_ROTATE_FORCE_CTX must agree on every spelling, and the
+# mod's trims only the ends: "1 5" is a typo, so the default, not fifteen.
+test_force_threshold_trims_only_the_ends_like_the_mod() {
+    local got
+    got=$(CS_ROTATE_FORCE_CTX="1 5" bash -c '. "'"$SCRIPT_DIR"'/../lib/75-launch.sh"; _rotate_force_threshold')
+    assert_eq "80" "$got" "an inner space is a typo, read as the default" || return 1
+    got=$(CS_ROTATE_FORCE_CTX=" 55 " bash -c '. "'"$SCRIPT_DIR"'/../lib/75-launch.sh"; _rotate_force_threshold')
+    assert_eq "55" "$got" "outer whitespace is trimmed" || return 1
+    got=$(CS_ROTATE_FORCE_CTX=" off" bash -c '. "'"$SCRIPT_DIR"'/../lib/75-launch.sh"; _rotate_force_threshold')
+    assert_eq "" "$got" "off survives outer whitespace" || return 1
+}
+
+# The notice is only worth anything if a launch prints it: the unit tests above
+# call the function, this one goes through cs.
+test_launch_prints_the_force_notice_once_and_only_with_hooks_on() {
+    _stub_claude
+    local cfg="$TEST_TMPDIR/notice-cfg" out
+    out=$(env -u CLAUDE_CODE_ENABLE_FUNCTION_HOOKS -u CS_NO_FUNCTION_HOOKS XDG_CONFIG_HOME="$cfg" \
+        "$CS_BIN" "notice-on" </dev/null 2>&1 || true)
+    assert_output_contains "$out" "STUB_ARGS:" "the launch reached claude" || return 1
+    assert_output_contains "$out" "cs now rotates a conversation on its own" "a launch with hooks on announces the forcing" || return 1
+    assert_file_exists "$cfg/cs/rotate-force-notice" "and records it" || return 1
+    out=$(env -u CLAUDE_CODE_ENABLE_FUNCTION_HOOKS -u CS_NO_FUNCTION_HOOKS XDG_CONFIG_HOME="$cfg" \
+        "$CS_BIN" "notice-again" </dev/null 2>&1 || true)
+    assert_output_contains "$out" "STUB_ARGS:" "the second launch reached claude" || return 1
+    assert_output_not_contains "$out" "cs now rotates" "the second launch on the machine is quiet" || return 1
+    rm -f "$cfg/cs/rotate-force-notice"
+    out=$(env -u CLAUDE_CODE_ENABLE_FUNCTION_HOOKS CS_NO_FUNCTION_HOOKS=1 XDG_CONFIG_HOME="$cfg" \
+        "$CS_BIN" "notice-nohooks" </dev/null 2>&1 || true)
+    assert_output_contains "$out" "STUB_ARGS:" "the opted-out launch reached claude" || return 1
+    assert_output_not_contains "$out" "cs now rotates" "a launch without function hooks announces nothing" || return 1
+    [ ! -f "$cfg/cs/rotate-force-notice" ] || { echo "  FAIL: the marker was spent by a launch that forces nothing"; return 1; }
+}
+
+run_test test_force_notice_prints_once_per_machine
+run_test test_force_notice_is_silent_when_the_forcing_is_off
+run_test test_force_notice_names_an_overridden_threshold
+run_test test_force_notice_is_silent_when_function_hooks_are_off
+run_test test_force_threshold_trims_only_the_ends_like_the_mod
+run_test test_launch_prints_the_force_notice_once_and_only_with_hooks_on
+run_test test_ctx_warning_fires_once_in_band
+run_test test_ctx_tiers_are_silent_for_a_teammate
+run_test test_ctx_warning_survives_an_interleaved_teammate
+run_test test_ctx_warning_rearms_for_new_conversation
+run_test test_ctx_warning_silent_below_band
+run_test test_ctx_warning_yields_to_nudge_at_high_ctx
+run_test test_ctx_warning_threshold_override
+run_test test_ctx_warning_escalates_to_nudge_same_conversation
+run_test test_ctx_warning_band_edges
+
+# ============================================================================
+# Encrypted session: handoffs and the marker live behind .cs/private
+# ============================================================================
+
+# Turn a launched session into an encrypted one: its .cs/private links into a
+# vault dir, and the plaintext session.log the first launch wrote moves in
+# (the open refuses one left beside the link).
+_encrypt_session() {  # session_dir -> prints the vault's private dir
+    local vault
+    vault="$TEST_TMPDIR/vault-${1##*/}/private"
+    mkdir -p "$vault/handoffs"
+    [ -f "$1/.cs/local/session.log" ] && mv "$1/.cs/local/session.log" "$vault/session.log"
+    ln -s "$vault" "$1/.cs/private"
+    echo "$vault"
+}
+
+test_encrypted_rotate_answer_arms_the_private_marker() {
+    _rot_session "rot-enc-r"
+    local dir="$CS_SESSIONS_ROOT/rot-enc-r" vault
+    vault=$(_encrypt_session "$dir")
+    _seed_handoff "$vault/.." "2026-07-16-secret-topic.md" "unconsumed"
+    mv "$vault/../.cs/handoffs/2026-07-16-secret-topic.md" "$vault/handoffs/" 2>/dev/null
+    local output
+    output=$("$CS_BIN" rot-enc-r <<< "r" 2>&1) || true
+    assert_output_contains "$output" "Rotation handoff pending: 2026-07-16-secret-topic.md" \
+        "the vault's handoff is offered" || return 1
+    # r arms the marker in the vault, and the SessionStart the stub runs for a
+    # rebind consumes it there: the hook reads the marker only from the vault,
+    # so a consumed handoff is the marker having been armed inside it.
+    assert_file_contains "$vault/handoffs/2026-07-16-secret-topic.md" "status: consumed" \
+        "the marker armed inside the vault rotated into the handoff" || return 1
+    assert_file_contains "$vault/handoffs/2026-07-16-secret-topic.md" \
+        "consumed_by: $(awk '/^claude_session_id:/ { print $2; exit }' "$dir/.cs/local/state")" \
+        "the new conversation consumed it" || return 1
+    [ ! -e "$dir/.cs/local/pending-handoff" ] \
+        || { echo "  FAIL: an encrypted session's marker must not land in .cs/local"; return 1; }
+    local args
+    args=$(grep '^STUB_ARGS: ' <<< "$output")
+    assert_output_contains "$args" "Continue from the pending rotation handoff" \
+        "the launch still kicks the fresh conversation" || return 1
+    assert_output_not_contains "$args" "secret-topic" \
+        "claude's argv never carries the handoff's name" || return 1
+    local ev
+    ev=$(jq -c 'select(.event == "rotated")' "$dir/.cs/timeline.jsonl" 2>/dev/null | tail -1)
+    assert_output_contains "$ev" '"reason":"handoff"' "the rotation is still recorded" || return 1
+    assert_output_not_contains "$ev" "secret-topic" \
+        "the plaintext timeline never carries the handoff's name" || return 1
+}
+
+test_encrypted_discard_retires_the_vault_handoff() {
+    _rot_session "rot-enc-d"
+    local dir="$CS_SESSIONS_ROOT/rot-enc-d" vault
+    vault=$(_encrypt_session "$dir")
+    _seed_handoff "$vault/.." "2026-07-16-test.md" "unconsumed"
+    mv "$vault/../.cs/handoffs/2026-07-16-test.md" "$vault/handoffs/" 2>/dev/null
+    "$CS_BIN" rot-enc-d <<< "d" >/dev/null 2>&1 || true
+    assert_file_contains "$vault/handoffs/2026-07-16-test.md" "status: discarded" \
+        "d flips the vault's handoff" || return 1
+}
+
+test_encrypted_session_with_plaintext_handoffs_refuses_to_open() {
+    _rot_session "rot-enc-leftover"
+    local dir="$CS_SESSIONS_ROOT/rot-enc-leftover"
+    _encrypt_session "$dir" >/dev/null
+    _seed_handoff "$dir" "2026-07-16-test.md" "consumed"
+    local output
+    output=$("$CS_BIN" rot-enc-leftover <<< "y" 2>&1) || true
+    assert_output_contains "$output" ".cs/handoffs" "the refusal names the plaintext handoffs" || return 1
+    assert_output_not_contains "$output" "STUB_ARGS" "claude is not launched" || return 1
+}
+
+test_encrypted_pending_handoff_is_consumed_in_the_vault() {
+    _rot_hook_session "rot-enc-consume"
+    local vault="$TEST_TMPDIR/vault-consume/private"
+    mkdir -p "$vault"
+    ln -s "$vault" "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/private"
+    _seed_handoff "$TEST_TMPDIR/vault-consume/stage" "2026-07-16-test.md" "unconsumed"
+    mkdir -p "$vault/handoffs"
+    mv "$TEST_TMPDIR/vault-consume/stage/.cs/handoffs/2026-07-16-test.md" "$vault/handoffs/"
+    printf '%s\n' "2026-07-16-test.md" > "$vault/pending-handoff"
+    printf 'claude_session_id: %s\n' "$UUID_B" > "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/state"
+    local out
+    out=$(_start_hook "$UUID_B") || return 1
+    assert_output_contains "$out" "Conversation Rotation" "rotation preamble injected" || return 1
+    assert_output_contains "$out" ".cs/private/handoffs/2026-07-16-test.md" \
+        "the preamble names the vault's handoff" || return 1
+    assert_file_contains "$vault/handoffs/2026-07-16-test.md" "consumed_by: $UUID_B" \
+        "the vault's handoff is consumed" || return 1
+    [ ! -f "$vault/pending-handoff" ] || { echo "  FAIL: the vault's marker must be removed"; return 1; }
+}
+
+test_encrypted_clear_rotation_keeps_the_handoff_name_out_of_the_timeline() {
+    _rot_hook_session "rot-enc-label"
+    local vault="$TEST_TMPDIR/vault-label/private"
+    mkdir -p "$vault"
+    ln -s "$vault" "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/private"
+    _seed_handoff "$TEST_TMPDIR/vault-label/stage" "2026-07-16-secret-topic.md" "unconsumed"
+    mkdir -p "$vault/handoffs"
+    mv "$TEST_TMPDIR/vault-label/stage/.cs/handoffs/2026-07-16-secret-topic.md" "$vault/handoffs/"
+    printf '%s\n' "2026-07-16-secret-topic.md" > "$vault/pending-handoff"
+    printf 'claude_session_id: %s\n' "$UUID_A" > "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/state"
+    _start_hook "$UUID_B" clear >/dev/null || return 1
+    local ev
+    ev=$(_timeline | jq -c 'select(.event == "rotated")' 2>/dev/null | tail -1)
+    assert_output_contains "$ev" '"reason":"handoff"' "clear rotation is a handoff" || return 1
+    assert_output_not_contains "$ev" "secret-topic" \
+        "the plaintext timeline never carries the handoff's name" || return 1
+}
+
+test_locked_encrypted_session_consumes_no_handoff() {
+    _rot_hook_session "rot-enc-locked"
+    ln -s "$TEST_TMPDIR/unmounted/private" "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/private"
+    _seed_handoff "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" "2026-07-16-test.md" "unconsumed"
+    printf '%s\n' "2026-07-16-test.md" > "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/pending-handoff"
+    printf 'claude_session_id: %s\n' "$UUID_B" > "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/state"
+    local out
+    out=$(_start_hook "$UUID_B") || return 1
+    assert_output_not_contains "$out" "Conversation Rotation" \
+        "a locked session starts no rotation" || return 1
+    assert_file_contains "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/handoffs/2026-07-16-test.md" "status: unconsumed" \
+        "nothing outside the vault is consumed" || return 1
+}
+
+test_rotate_skill_routes_an_encrypted_session_into_the_vault() {
+    local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md"
+    assert_file_contains "$skill" '\.cs/private/handoffs/' \
+        "the skill writes an encrypted session's handoff into the vault" || return 1
+    assert_file_contains "$skill" '\.cs/private/pending-handoff' \
+        "the skill arms an encrypted session's marker in the vault" || return 1
+}
+
+run_test test_encrypted_rotate_answer_arms_the_private_marker
+run_test test_encrypted_discard_retires_the_vault_handoff
+run_test test_encrypted_session_with_plaintext_handoffs_refuses_to_open
+run_test test_encrypted_pending_handoff_is_consumed_in_the_vault
+run_test test_encrypted_clear_rotation_keeps_the_handoff_name_out_of_the_timeline
+run_test test_locked_encrypted_session_consumes_no_handoff
+run_test test_rotate_skill_routes_an_encrypted_session_into_the_vault
+
+report_results

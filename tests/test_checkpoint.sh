@@ -1,0 +1,288 @@
+#!/usr/bin/env bash
+# ABOUTME: Tests for cs -checkpoint save/list/show subcommands
+# ABOUTME: Validates checkpoint creation, listing, content snapshot, and timeline integration
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/test_lib.sh"
+
+# Override setup to provide a full session environment
+setup() {
+    TEST_TMPDIR="$(mktemp -d)"
+    export CS_SESSIONS_ROOT="$TEST_TMPDIR/sessions"
+    export CLAUDE_CODE_BIN="echo"
+    mkdir -p "$CS_SESSIONS_ROOT"
+
+    # Create a session
+    local session_dir="$CS_SESSIONS_ROOT/test-session"
+    mkdir -p "$session_dir/.cs"/{local,memory}
+    cat > "$session_dir/.cs/README.md" << 'EOF'
+---
+status: active
+created: 2026-04-09
+tags: []
+aliases: ["test-session"]
+---
+# Session: test-session
+
+## Objective
+Test checkpoints
+EOF
+    cat > "$session_dir/.cs/memory/narrative.md" << 'EOF'
+# Session narrative
+
+## Auth refactor complete
+Moved JWT validation to middleware layer.
+
+## Migration strategy
+Rolling deploy with feature flag.
+EOF
+    echo "# Test" > "$session_dir/CLAUDE.md"
+    (cd "$session_dir" && git init -q -b main && git config user.email t@t && git config user.name T && git add -A && git commit -q -m init)
+
+    export CLAUDE_SESSION_NAME="test-session"
+    export CLAUDE_SESSION_DIR="$session_dir"
+    export CLAUDE_SESSION_META_DIR="$session_dir/.cs"
+}
+
+teardown() {
+    if [[ -n "$TEST_TMPDIR" ]] && [[ -d "$TEST_TMPDIR" ]]; then
+        rm -rf "$TEST_TMPDIR"
+    fi
+    unset CS_SESSIONS_ROOT CLAUDE_CODE_BIN 2>/dev/null || true
+    unset CLAUDE_SESSION_NAME CLAUDE_SESSION_DIR CLAUDE_SESSION_META_DIR 2>/dev/null || true
+}
+
+# ============================================================================
+# -checkpoint save
+# ============================================================================
+
+test_checkpoint_creates_file() {
+    "$CS_BIN" -checkpoint "auth refactor done" > /dev/null 2>&1
+    assert_dir "$CLAUDE_SESSION_META_DIR/checkpoints" "checkpoints dir should exist" || return 1
+    local count
+    count=$(find "$CLAUDE_SESSION_META_DIR/checkpoints" -name "*.md" | wc -l | tr -d ' ')
+    assert_eq "1" "$count" "Should have 1 checkpoint file" || return 1
+}
+
+test_checkpoint_filename_has_timestamp() {
+    "$CS_BIN" -checkpoint "test label" > /dev/null 2>&1
+    local f
+    f=$(find "$CLAUDE_SESSION_META_DIR/checkpoints" -name "*.md" | head -1)
+    local name
+    name=$(basename "$f")
+    if ! [[ "$name" =~ ^20[0-9]{2}-[0-9]{2}-[0-9]{2}- ]]; then
+        echo "  FAIL: Filename should start with date: $name"
+        return 1
+    fi
+}
+
+test_checkpoint_includes_label() {
+    "$CS_BIN" -checkpoint "finished auth" > /dev/null 2>&1
+    local f
+    f=$(find "$CLAUDE_SESSION_META_DIR/checkpoints" -name "*.md" | head -1)
+    assert_file_contains "$f" "finished auth" "Checkpoint should include label" || return 1
+}
+
+test_checkpoint_snapshots_narrative() {
+    "$CS_BIN" -checkpoint "test" > /dev/null 2>&1
+    local f
+    f=$(find "$CLAUDE_SESSION_META_DIR/checkpoints" -name "*.md" | head -1)
+    assert_file_contains "$f" "Auth refactor complete" \
+        "Checkpoint should snapshot narrative" || return 1
+}
+
+test_checkpoint_includes_all_actor_narratives() {
+    printf '%s\n' '# narrative (alex)' 'ALEX_MARKER' > "$CLAUDE_SESSION_META_DIR/memory/narrative.alex.md"
+    printf '%s\n' '# narrative (bob)'  'BOB_MARKER'  > "$CLAUDE_SESSION_META_DIR/memory/narrative.bob.md"
+    "$CS_BIN" -checkpoint "two actors" > /dev/null 2>&1
+    local f
+    f=$(find "$CLAUDE_SESSION_META_DIR/checkpoints" -name "*.md" | head -1)
+    assert_file_contains "$f" "ALEX_MARKER" "checkpoint should include alex's narrative" || return 1
+    assert_file_contains "$f" "BOB_MARKER" "checkpoint should include bob's narrative" || return 1
+}
+
+test_checkpoint_records_git_head() {
+    "$CS_BIN" -checkpoint "test" > /dev/null 2>&1
+    local f
+    f=$(find "$CLAUDE_SESSION_META_DIR/checkpoints" -name "*.md" | head -1)
+    # Should contain a git SHA (at least 7 hex chars)
+    if ! grep -qE 'HEAD.*[0-9a-f]{7}' "$f"; then
+        echo "  FAIL: Should record git HEAD SHA"
+        cat "$f"
+        return 1
+    fi
+}
+
+test_checkpoint_requires_label() {
+    if "$CS_BIN" -checkpoint 2>&1 > /dev/null; then
+        echo "  FAIL: Should fail without label"
+        return 1
+    fi
+}
+
+test_checkpoint_requires_active_session() {
+    unset CLAUDE_SESSION_NAME
+    if "$CS_BIN" -checkpoint "orphan" 2>&1 > /dev/null; then
+        echo "  FAIL: Should fail without CLAUDE_SESSION_NAME"
+        return 1
+    fi
+}
+
+test_checkpoint_appends_to_timeline() {
+    "$CS_BIN" -checkpoint "timeline test" > /dev/null 2>&1
+    assert_exists "$CLAUDE_SESSION_META_DIR/timeline.jsonl" \
+        "Timeline should be written" || return 1
+    if ! jq -e 'select(.event == "checkpoint" and .label == "timeline test")' \
+        "$CLAUDE_SESSION_META_DIR/timeline.jsonl" > /dev/null; then
+        echo "  FAIL: Should append checkpoint event to timeline"
+        cat "$CLAUDE_SESSION_META_DIR/timeline.jsonl"
+        return 1
+    fi
+}
+
+test_multiple_checkpoints() {
+    "$CS_BIN" -checkpoint "first" > /dev/null 2>&1
+    sleep 1
+    "$CS_BIN" -checkpoint "second" > /dev/null 2>&1
+    local count
+    count=$(find "$CLAUDE_SESSION_META_DIR/checkpoints" -name "*.md" | wc -l | tr -d ' ')
+    assert_eq "2" "$count" "Should have 2 checkpoints" || return 1
+}
+
+# ============================================================================
+# -checkpoint list
+# ============================================================================
+
+test_checkpoint_list_empty() {
+    local output
+    output=$("$CS_BIN" -checkpoint list 2>&1)
+    assert_output_contains "$output" "No checkpoints" \
+        "Should show empty message" || return 1
+}
+
+test_checkpoint_list_shows_all() {
+    "$CS_BIN" -checkpoint "first label" > /dev/null 2>&1
+    sleep 1
+    "$CS_BIN" -checkpoint "second label" > /dev/null 2>&1
+
+    local output
+    output=$("$CS_BIN" -checkpoint list 2>&1)
+    assert_output_contains "$output" "first label" "Should list first" || return 1
+    assert_output_contains "$output" "second label" "Should list second" || return 1
+}
+
+# ============================================================================
+# -checkpoint show
+# ============================================================================
+
+test_checkpoint_show_prints_content() {
+    "$CS_BIN" -checkpoint "auth done" > /dev/null 2>&1
+    local f
+    f=$(find "$CLAUDE_SESSION_META_DIR/checkpoints" -name "*.md" | head -1)
+    local name
+    name=$(basename "$f" .md)
+
+    local output
+    output=$("$CS_BIN" -checkpoint show "$name" 2>&1)
+    assert_output_contains "$output" "auth done" "Should show label" || return 1
+    assert_output_contains "$output" "Auth refactor complete" "Should show narrative snapshot" || return 1
+}
+
+# ============================================================================
+# Help text
+# ============================================================================
+
+test_help_shows_checkpoint() {
+    local output
+    output=$("$CS_BIN" -help 2>&1)
+    assert_output_contains "$output" "-checkpoint" \
+        "Help should mention -checkpoint" || return 1
+}
+
+# ============================================================================
+# Runner
+# ============================================================================
+
+echo ""
+echo "cs checkpoint tests"
+echo "==================="
+echo ""
+
+run_test test_checkpoint_creates_file
+run_test test_checkpoint_filename_has_timestamp
+run_test test_checkpoint_includes_label
+run_test test_checkpoint_snapshots_narrative
+run_test test_checkpoint_includes_all_actor_narratives
+run_test test_checkpoint_records_git_head
+run_test test_checkpoint_requires_label
+run_test test_checkpoint_requires_active_session
+run_test test_checkpoint_appends_to_timeline
+run_test test_multiple_checkpoints
+run_test test_checkpoint_list_empty
+run_test test_checkpoint_list_shows_all
+run_test test_checkpoint_show_prints_content
+run_test test_help_shows_checkpoint
+
+
+# An encrypted session: the checkpoint copies the vault narrative, so it is
+# kept behind .cs/private, and its label (topic text) stays off the plaintext
+# timeline.
+_vault_session() {
+    VAULT="$TEST_TMPDIR/vault"
+    mkdir -p "$VAULT"
+    mv "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/memory" "$VAULT/memory"
+    ln -s "$VAULT/memory" "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/memory"
+}
+
+test_checkpoint_of_an_encrypted_session_stays_in_the_vault() {
+    _vault_session
+    mkdir -p "$VAULT/private"
+    ln -s "$VAULT/private" "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/private"
+    "$CS_BIN" -checkpoint "sealed topic" > /dev/null 2>&1 || return 1
+    local saved name
+    saved=$(ls "$VAULT/private/checkpoints"/*-sealed-topic.md 2>/dev/null | head -1)
+    [ -n "$saved" ] || { echo "  FAIL: the checkpoint belongs in .cs/private/checkpoints"; return 1; }
+    assert_file_contains "$saved" "Moved JWT validation" "it snapshots the vault narrative" || return 1
+    assert_not_exists "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/checkpoints" "nothing in plaintext .cs/checkpoints" || return 1
+    jq -e 'select(.event == "checkpoint")' "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/timeline.jsonl" > /dev/null \
+        || { echo "  FAIL: the timeline still records that a checkpoint was taken"; return 1; }
+    assert_file_not_contains "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/timeline.jsonl" "sealed" "no label or file name on the timeline" || return 1
+    name=$(basename "$saved" .md)
+    assert_output_contains "$("$CS_BIN" -checkpoint list 2>&1)" "$name" "list reads the vault" || return 1
+    assert_output_contains "$("$CS_BIN" -checkpoint show "$name" 2>&1)" "Checkpoint: sealed topic" "show reads the vault" || return 1
+}
+
+test_checkpoint_refuses_an_encrypted_narrative_without_private() {
+    _vault_session
+    local output rc=0
+    output=$("$CS_BIN" -checkpoint "sealed topic" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the checkpoint refuses" || return 1
+    assert_output_contains "$output" "this session's narrative lives on encrypted storage (.cs/memory is a link), and .cs/private is not there to hold the checkpoint" \
+        "names the missing link" || return 1
+    assert_not_exists "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/checkpoints" "nothing in plaintext .cs/checkpoints" || return 1
+    assert_not_exists "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/timeline.jsonl" "no timeline event" || return 1
+}
+
+run_test test_checkpoint_of_an_encrypted_session_stays_in_the_vault
+run_test test_checkpoint_refuses_an_encrypted_narrative_without_private
+
+test_checkpoint_does_not_splice_onto_a_torn_timeline() {
+    # The lib-side counterpart of the hook guard: a checkpoint appended after an
+    # interrupted write must not fuse onto the torn line and take it down too.
+    local timeline="$CS_SESSIONS_ROOT/test-session/.cs/timeline.jsonl"
+    printf '{"ts":"2026-01-01T00:00:00Z","event":"started","session_id":"1111"}\n' > "$timeline"
+    printf '{"ts":"2026-01-02T00:00:00Z","event":"rotated","reason":"torn"}' >> "$timeline"
+    jsonl_tail_is_torn "$timeline" \
+        || { echo "  FAIL: fixture is terminated; the splice cannot happen"; return 1; }
+
+    "$CS_BIN" -checkpoint "green milestone" >/dev/null 2>&1 || return 1
+
+    local events
+    events=$(jsonl_events "$timeline")
+    assert_output_contains "$events" "rotated" "the torn record survives" || return 1
+    assert_output_contains "$events" "checkpoint" "and so does the record appended after it" || return 1
+}
+
+run_test test_checkpoint_does_not_splice_onto_a_torn_timeline
+
+report_results

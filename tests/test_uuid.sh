@@ -1,0 +1,1337 @@
+#!/usr/bin/env bash
+# ABOUTME: Tests for Claude session UUID pre-allocation and frontmatter binding
+# ABOUTME: Validates new-session UUID write, resume reads, env export, lazy migration
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=tests/test_lib.sh
+source "$SCRIPT_DIR/test_lib.sh"
+export CS_ASSUME_TTY=1
+
+
+# Override teardown to also unset cs session env vars (matches test_auto_memory.sh pattern)
+teardown() {
+    if [[ -n "$TEST_TMPDIR" ]] && [[ -d "$TEST_TMPDIR" ]]; then
+        rm -rf "$TEST_TMPDIR"
+    fi
+    unset CS_SESSIONS_ROOT CLAUDE_CODE_BIN CS_TRANSCRIPTS_DIR
+    unset CLAUDE_SESSION_NAME CLAUDE_SESSION_DIR CLAUDE_SESSION_META_DIR 2>/dev/null || true
+    unset CS_CLAUDE_SESSION_ID 2>/dev/null || true
+}
+
+_make_ack_stub() {
+    local stub="$TEST_TMPDIR/claude-ack"
+    export CS_TEST_START_HOOK="$SCRIPT_DIR/../hooks/session-start.sh"
+    cat > "$stub" <<'STUB'
+#!/bin/bash
+args="$*"
+uuid=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in --session-id|--resume) uuid="$2"; shift 2 ;; *) shift ;; esac
+done
+if [ -n "$uuid" ]; then
+    jq -nc --arg session_id "$uuid" --arg cwd "$CS_SESSION_DIR" \
+        '{session_id:$session_id,cwd:$cwd,source:"startup"}' \
+        | CLAUDE_PID=$$ bash "$CS_TEST_START_HOOK" >/dev/null
+fi
+printf '%s\n' "$args"
+STUB
+    chmod +x "$stub"
+    printf '%s\n' "$stub"
+}
+
+# UUID v4 regex: 8-4-4-4-12 hex, version nibble = 4, variant nibble in 8-b.
+# Used both to validate generated UUIDs and to anchor regex assertions in tests.
+UUID_V4_RE='^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+
+# Extract claude_session_id value from a session's .cs/local/state file.
+# Prints empty string if absent. Mirrors _read_local_state in bin/cs so the
+# test can introspect the state without sourcing bin/cs.
+_extract_session_uuid() {
+    local state="$1"
+    grep -E '^claude_session_id:' "$state" 2>/dev/null \
+        | head -1 \
+        | sed -E 's/^claude_session_id:[[:space:]]*//; s/^"//; s/"$//' \
+        || true
+}
+
+# ============================================================================
+# Cycle 1: new-session writes UUID to frontmatter AND passes --session-id
+# ============================================================================
+
+test_new_session_allocates_and_records_uuid() {
+    # Capture spawn output. CLAUDE_CODE_BIN=echo (set by setup) means cs's
+    # `exec $CLAUDE_CODE_BIN <args>` prints the args to stdout — that's how
+    # we inspect what claude would have been invoked with.
+    local output
+    output=$("$CS_BIN" test-session <<< "" 2>&1) || true
+
+    local session_dir="$CS_SESSIONS_ROOT/test-session"
+
+    assert_file_exists "$session_dir/.cs/README.md" \
+        "session README should exist after first cs launch" || return 1
+
+    assert_file_contains "$session_dir/.cs/local/state" "^claude_session_id:" \
+        "local state should record claude_session_id" || return 1
+
+    local recorded_uuid
+    recorded_uuid=$(_extract_session_uuid "$session_dir/.cs/local/state")
+
+    if [[ ! "$recorded_uuid" =~ $UUID_V4_RE ]]; then
+        echo "  FAIL: recorded claude_session_id is not a valid v4 UUID"
+        echo "    recorded: '$recorded_uuid'"
+        return 1
+    fi
+
+    assert_output_contains "$output" "--session-id $recorded_uuid" \
+        "claude spawn should pass --session-id <recorded-uuid>" || return 1
+}
+
+# ============================================================================
+# Cycle 2: resume reads the recorded UUID and passes --resume
+# ============================================================================
+
+test_resume_uses_recorded_uuid() {
+    # First run creates the session and records the UUID.
+    "$CS_BIN" test-session <<< "" >/dev/null 2>&1 || true
+
+    local session_dir="$CS_SESSIONS_ROOT/test-session"
+    local recorded_uuid
+    recorded_uuid=$(_extract_session_uuid "$session_dir/.cs/local/state")
+
+    if [[ ! "$recorded_uuid" =~ $UUID_V4_RE ]]; then
+        echo "  FAIL: precondition - first launch did not record a v4 UUID"
+        return 1
+    fi
+
+    # Second run resumes. Empty stdin -> default 'Y' to "Continue previous conversation?"
+    local output
+    output=$("$CS_BIN" test-session <<< "" 2>&1) || true
+
+    assert_output_contains "$output" "--resume $recorded_uuid" \
+        "claude spawn on resume should pass --resume <recorded-uuid>" || return 1
+
+    # Resume must not rewrite the UUID.
+    local recorded_after
+    recorded_after=$(_extract_session_uuid "$session_dir/.cs/local/state")
+    assert_eq "$recorded_uuid" "$recorded_after" \
+        "frontmatter UUID should remain stable across resumes" || return 1
+}
+
+# ============================================================================
+# Cycle 3: lazy migration backfills claude_session_id on legacy sessions
+# ============================================================================
+
+test_lazy_migration_backfills_uuid() {
+    export CS_TEST_START_HOOK="$SCRIPT_DIR/../hooks/session-start.sh"
+    CLAUDE_CODE_BIN=$(_make_ack_stub) || return 1
+    export CLAUDE_CODE_BIN
+    # Build a "legacy" session — has .cs/README.md with frontmatter but no
+    # claude_session_id (created on a cs version before this feature).
+    local session_dir="$CS_SESSIONS_ROOT/legacy-session"
+    mkdir -p "$session_dir/.cs"/{local,memory}
+    cat > "$session_dir/.cs/README.md" << 'EOF'
+---
+status: active
+created: 2026-01-01
+tags: []
+aliases: ["legacy-session"]
+---
+# Session: legacy-session
+
+**Started:** 2026-01-01 09:00:00
+EOF
+    echo "# Session narrative" > "$session_dir/.cs/memory/narrative.md"
+    cat > "$session_dir/CLAUDE.md" << 'EOF'
+# Session Documentation Protocol
+
+This is a Claude Code session managed by cs. Session metadata lives in the .cs/ directory.
+EOF
+    (cd "$session_dir" && git init -q && git add -A && git commit -q -m "init")
+
+    # Precondition.
+    assert_file_not_contains "$session_dir/.cs/local/state" "^claude_session_id:" \
+        "precondition: legacy session must lack claude_session_id" || return 1
+
+    # First open backfills. With no transcript there is nothing to resume, so
+    # it does not ask: it starts the first conversation and records its id.
+    local output
+    output=$("$CS_BIN" legacy-session <<< "" 2>&1) || true
+
+    assert_file_contains "$session_dir/.cs/local/state" "^claude_session_id:" \
+        "lazy migration should backfill claude_session_id" || return 1
+
+    local backfilled
+    backfilled=$(_extract_session_uuid "$session_dir/.cs/local/state")
+
+    if [[ ! "$backfilled" =~ $UUID_V4_RE ]]; then
+        echo "  FAIL: backfilled value is not a valid v4 UUID: '$backfilled'"
+        return 1
+    fi
+    assert_output_not_contains "$output" "Continue previous conversation" "a session with no conversation offers nothing to resume" || return 1
+    assert_output_contains "$output" "--session-id $backfilled" \
+        "the first open starts the conversation it records" || return 1
+
+    # Second resume must be idempotent: same value, no duplication.
+    "$CS_BIN" legacy-session <<< "" >/dev/null 2>&1 || true
+
+    local after
+    after=$(_extract_session_uuid "$session_dir/.cs/local/state")
+    assert_eq "$backfilled" "$after" \
+        "second resume must not rewrite the backfilled UUID" || return 1
+
+    local count
+    count=$(grep -cE '^claude_session_id:' "$session_dir/.cs/local/state")
+    assert_eq "1" "$count" \
+        "claude_session_id must appear exactly once in local state" || return 1
+}
+
+# ============================================================================
+# Cycle 3b: lazy migration binds to an existing claude transcript when one
+# exists for the session cwd, instead of allocating a fresh orphan UUID.
+# ============================================================================
+
+# Drop a fake claude transcript file at the location bin/cs's discovery helper
+# will look. Tests use this to simulate "claude has run here before".
+_seed_claude_transcript() {
+    local cwd="$1"
+    local uuid="$2"
+    local encoded proj
+    encoded=$(_encode_cwd_for_claude_test "$cwd")
+    proj="$CS_TRANSCRIPTS_DIR/$encoded"
+    mkdir -p "$proj"
+    echo '{}' > "$proj/$uuid.jsonl"
+}
+
+# Build a minimal session with optional claude_session_id in frontmatter.
+# Returns the session_dir path. Centralizes the layout (mkdir +
+# README frontmatter + narrative + git init) so tests don't reimplement it.
+_seed_legacy_session() {
+    local name="$1"
+    local uuid="${2:-}"
+    local session_dir="$CS_SESSIONS_ROOT/$name"
+    mkdir -p "$session_dir/.cs"/{local,memory}
+    {
+        echo "---"
+        echo "status: active"
+        echo "created: 2026-01-01"
+        [ -n "$uuid" ] && echo "claude_session_id: $uuid"
+        echo "tags: []"
+        echo "aliases: [\"$name\"]"
+        echo "---"
+        echo "# Session: $name"
+    } > "$session_dir/.cs/README.md"
+    echo "# Session narrative" > "$session_dir/.cs/memory/narrative.md"
+    echo "# Session" > "$session_dir/CLAUDE.md"
+    (cd "$session_dir" && git init -q && git add -A && git commit -q -m "init")
+    echo "$session_dir"
+}
+
+test_lazy_migration_binds_to_existing_transcript() {
+    local session_dir
+    session_dir=$(_seed_legacy_session "legacy-session")
+
+    local existing_uuid="abcd1234-5678-4abc-9def-fedcba987654"
+    _seed_claude_transcript "$session_dir" "$existing_uuid"
+
+    "$CS_BIN" legacy-session <<< "" >/dev/null 2>&1 || true
+
+    local recorded
+    recorded=$(_extract_session_uuid "$session_dir/.cs/local/state")
+    assert_eq "$existing_uuid" "$recorded" \
+        "backfill should bind to the existing transcript UUID, not allocate fresh" || return 1
+}
+
+# ============================================================================
+# Cycle 3c: lazy migration self-heals a recorded UUID with no matching
+# transcript by rewriting it to the most-recent real transcript.
+# ============================================================================
+
+test_lazy_migration_preserves_missing_transcript_binding() {
+    local orphan_uuid="00000000-0000-4000-8000-000000000000"
+    local session_dir
+    session_dir=$(_seed_legacy_session "legacy-session" "$orphan_uuid")
+
+    local real_uuid="abcd1234-5678-4abc-9def-fedcba987654"
+    _seed_claude_transcript "$session_dir" "$real_uuid"
+
+    "$CS_BIN" legacy-session <<< "" >/dev/null 2>&1 || true
+
+    local recorded
+    recorded=$(_extract_session_uuid "$session_dir/.cs/local/state")
+    assert_eq "$orphan_uuid" "$recorded" \
+        "missing transcript must preserve the recorded native identity" || return 1
+
+    # Idempotent: a second resume must not flip the value back.
+    "$CS_BIN" legacy-session <<< "" >/dev/null 2>&1 || true
+    local after
+    after=$(_extract_session_uuid "$session_dir/.cs/local/state")
+    assert_eq "$orphan_uuid" "$after" \
+        "second resume must preserve the original recorded identity" || return 1
+}
+
+test_lazy_migration_preserves_uuid_when_transcript_matches() {
+    # Guards against accidental rewrites that would invalidate a valid binding.
+    local good_uuid="abcd1234-5678-4abc-9def-fedcba987654"
+    local session_dir
+    session_dir=$(_seed_legacy_session "bound-session" "$good_uuid")
+
+    _seed_claude_transcript "$session_dir" "$good_uuid"
+    # A NEWER transcript with a different UUID must not be chased — the
+    # recorded UUID is already valid.
+    local newer_uuid="11111111-2222-4333-8444-555555555555"
+    _seed_claude_transcript "$session_dir" "$newer_uuid"
+    local encoded
+    encoded=$(_encode_cwd_for_claude_test "$session_dir")
+    touch "$CS_TRANSCRIPTS_DIR/$encoded/$newer_uuid.jsonl"
+
+    "$CS_BIN" bound-session <<< "" >/dev/null 2>&1 || true
+
+    local recorded
+    recorded=$(_extract_session_uuid "$session_dir/.cs/local/state")
+    assert_eq "$good_uuid" "$recorded" \
+        "recorded UUID with a matching transcript must not be rewritten" || return 1
+}
+
+# Claude Code names a project dir by replacing every character outside
+# [A-Za-z0-9] in the realpath'd cwd with '-'. Measured on 2.1.289: a one-turn
+# run in '.../scratchpad/enc_probe dir' created
+# '-private-tmp-...-scratchpad-enc-probe-dir'. A cwd with an underscore or a
+# space must resolve to that dir, or discovery looks where claude never writes.
+test_project_dir_encodes_underscore_and_space_like_claude() {
+    local cwd="$TEST_TMPDIR/enc_probe dir"
+    mkdir -p "$cwd"
+    (
+        # shellcheck source=lib/05-term.sh
+        source "$SCRIPT_DIR/../lib/05-term.sh"
+        # shellcheck source=lib/40-state.sh
+        source "$SCRIPT_DIR/../lib/40-state.sh"
+        # shellcheck source=lib/42-claude-state.sh
+        source "$SCRIPT_DIR/../lib/42-claude-state.sh"
+        local got
+        got=$(_claude_project_dir "$cwd")
+        case "$got" in
+            "$CS_TRANSCRIPTS_DIR"/*-enc-probe-dir) ;;
+            *)
+                echo "  FAIL: project dir does not end in -enc-probe-dir"
+                echo "    got: $got"
+                exit 1 ;;
+        esac
+        # The transcripts root itself may carry an underscore (CI's TMPDIR
+        # does); only the encoded leaf is under test.
+        case "${got##*/}" in
+            *_*|*' '*)
+                echo "  FAIL: project dir still carries an underscore or a space"
+                echo "    got: $got"
+                exit 1 ;;
+        esac
+        [ "$got" = "$CS_TRANSCRIPTS_DIR/$(_encode_cwd_for_claude_test "$cwd")" ] || {
+            echo "  FAIL: the test seeder and _claude_project_dir disagree"
+            echo "    cs:     $got"
+            echo "    seeder: $CS_TRANSCRIPTS_DIR/$(_encode_cwd_for_claude_test "$cwd")"
+            exit 1
+        }
+    )
+}
+
+# A recorded conversation id is passed to claude as an argument, so only a UUID
+# counts as one; everything else is treated as no id at all.
+test_is_uuid_accepts_only_a_uuid() {
+    (
+        # shellcheck source=lib/40-state.sh
+        source "$SCRIPT_DIR/../lib/40-state.sh"
+        _is_uuid "abcd1234-5678-4abc-9def-fedcba987654" || { echo "  FAIL: a v4 UUID is a UUID"; exit 1; }
+        _is_uuid "ABCD1234-5678-4ABC-9DEF-FEDCBA987654" || { echo "  FAIL: so is an upper-case one"; exit 1; }
+        local bad
+        for bad in "" "--dangerously-skip-permissions" \
+            "abcd1234-5678-4abc-9def-fedcba987654 --model x" \
+            "--resume abcd1234-5678-4abc-9def-fedcba987654" \
+            "abcd1234-5678-4abc-9def-fedcba98765" \
+            "abcd1234-5678-4abc-9def-fedcba98765g" \
+            $'abcd1234-5678-4abc-9def-fedcba987654\n--model'; do
+            if _is_uuid "$bad"; then
+                echo "  FAIL: accepted '$bad'"; exit 1
+            fi
+        done
+    )
+}
+
+# ============================================================================
+# Runner
+# ============================================================================
+echo "Running test_uuid.sh"
+echo ""
+run_test test_is_uuid_accepts_only_a_uuid
+run_test test_project_dir_encodes_underscore_and_space_like_claude
+run_test test_new_session_allocates_and_records_uuid
+run_test test_resume_uses_recorded_uuid
+run_test test_lazy_migration_backfills_uuid
+run_test test_lazy_migration_binds_to_existing_transcript
+run_test test_lazy_migration_preserves_missing_transcript_binding
+run_test test_lazy_migration_preserves_uuid_when_transcript_matches
+
+# ============================================================================
+# Cycle 7: declining resume rebinds the session UUID to a fresh one and
+# launches claude with --session-id <new>. Prevents the "user said N then
+# next launch resumes the OLD conversation" footgun.
+# ============================================================================
+
+test_decline_resume_rebinds_to_fresh_uuid() {
+    local old_uuid="abcd1234-5678-4abc-9def-fedcba987654"
+    local session_dir
+    session_dir=$(_seed_legacy_session "test-session" "$old_uuid")
+    _seed_claude_transcript "$session_dir" "$old_uuid"
+
+    # Answer N to "Continue previous conversation?".
+    local output
+    output=$("$CS_BIN" test-session <<< "n" 2>&1) || true
+
+    local recorded candidate
+    recorded=$(_extract_session_uuid "$session_dir/.cs/local/state")
+    candidate=$(jq -r '.candidate_id' "$session_dir/.cs/local/pending-binding-claude.json")
+    assert_eq "$old_uuid" "$recorded" "unacknowledged fresh launch preserves old binding" || return 1
+    [[ "$candidate" =~ $UUID_V4_RE ]] || { echo "  FAIL: candidate is not a UUID: $candidate"; return 1; }
+    [ "$candidate" != "$old_uuid" ] || { echo '  FAIL: fresh candidate reused old binding'; return 1; }
+    assert_output_contains "$output" "--session-id $candidate" "native launch uses staged candidate" || return 1
+
+}
+
+run_test test_decline_resume_rebinds_to_fresh_uuid
+
+test_decline_resume_exports_fresh_rebind_signal() {
+    # The CS_FRESH_REBIND=1 env signals to hooks (session-start.sh) that the
+    # user declined to resume — used to tailor SessionStart additionalContext.
+    export CLAUDE_CODE_BIN="$(_make_env_stub)"
+
+    local old_uuid="abcd1234-5678-4abc-9def-fedcba987654"
+    local session_dir
+    session_dir=$(_seed_legacy_session "test-session" "$old_uuid")
+    _seed_claude_transcript "$session_dir" "$old_uuid"
+
+    local output
+    output=$("$CS_BIN" test-session <<< "n" 2>&1) || true
+
+    assert_output_contains "$output" "CS_FRESH_REBIND=1" \
+        "CS_FRESH_REBIND=1 should be exported when user declines resume" || return 1
+}
+
+run_test test_decline_resume_exports_fresh_rebind_signal
+
+# ============================================================================
+# Cycle 4: CS_CLAUDE_SESSION_ID is exported to the claude process environment
+# ============================================================================
+
+test_env_var_exported_with_uuid() {
+    # Override CLAUDE_CODE_BIN with a stub that prints `env`. This captures
+    # what variables are exported into claude's process environment — echo
+    # (the default test stub) doesn't show env at all.
+    export CLAUDE_CODE_BIN="$(_make_env_stub)"
+
+    local output
+    output=$("$CS_BIN" test-session <<< "" 2>&1) || true
+
+    local session_dir="$CS_SESSIONS_ROOT/test-session"
+    local recorded
+    recorded=$(_extract_session_uuid "$session_dir/.cs/local/state")
+
+    if [[ ! "$recorded" =~ $UUID_V4_RE ]]; then
+        echo "  FAIL: precondition - cs did not record a v4 UUID"
+        return 1
+    fi
+
+    assert_output_contains "$output" "CS_CLAUDE_SESSION_ID=$recorded" \
+        "CS_CLAUDE_SESSION_ID env var should be exported with the recorded UUID" || return 1
+}
+
+run_test test_env_var_exported_with_uuid
+
+test_launch_exports_lead_pid_of_the_claude_process() {
+    # Hooks tell the launched conversation from any other claude resolving the
+    # same session by comparing CS_LEAD_PID against Claude Code's CLAUDE_PID.
+    # That only holds if the exported value is the pid claude actually runs
+    # under, which is what exec buys: the launch shell's image is replaced and
+    # the pid carries over. The stub reports its own $$ — ground truth for the
+    # launched process's pid, arrived at independently of the exported value.
+    local stub="$TEST_TMPDIR/claude-pid-stub"
+    cat > "$stub" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "CS_LEAD_PID_SEEN=${CS_LEAD_PID:-unset} LAUNCHED_PID=$PPID"
+STUB_EOF
+    chmod +x "$stub"
+    export CLAUDE_CODE_BIN="$stub"
+
+    local output
+    output=$("$CS_BIN" test-session <<< "" 2>&1) || true
+
+    local exported launched
+    exported=$(printf '%s' "$output" | sed -n 's/.*CS_LEAD_PID_SEEN=\([^ ]*\).*/\1/p')
+    launched=$(printf '%s' "$output" | sed -n 's/.*LAUNCHED_PID=\([0-9]*\).*/\1/p')
+
+    if [ -z "$launched" ]; then
+        echo "  FAIL: precondition - stub never ran (output: $output)"
+        return 1
+    fi
+
+    assert_eq "$launched" "$exported" \
+        "CS_LEAD_PID must be the supervising parent of launched Claude" || return 1
+}
+
+test_preserves_binding_with_subdirectory_transcript() {
+    # A claude working in a SUBDIRECTORY of a session writes its transcript
+    # under that subdirectory's project dir, never the session's. A conversation
+    # like that could take the session's recorded slot, leaving a uuid that
+    # resolves for `claude` while naming no conversation of this session.
+    # Discovery only ever looks in the session's own project dir, so the value
+    # reads as an orphan there and heals to the session's newest real
+    # conversation — no separate repair path needed for the case.
+    local intruder="00000000-0000-4000-8000-0000000000ff"
+    local session_dir
+    session_dir=$(_seed_legacy_session "legacy-session" "$intruder")
+
+    # The intruder's transcript DOES exist — under the subdirectory's project
+    # dir. That is what makes this different from a plain missing-file orphan.
+    mkdir -p "$session_dir/sub-project"
+    _seed_claude_transcript "$session_dir/sub-project" "$intruder"
+    local real_uuid="abcd1234-5678-4abc-9def-fedcba987654"
+    _seed_claude_transcript "$session_dir" "$real_uuid"
+
+    "$CS_BIN" legacy-session <<< "" >/dev/null 2>&1 || true
+
+    assert_eq "$intruder" "$(_extract_session_uuid "$session_dir/.cs/local/state")" \
+        "a transcript in another directory must not authorize a new binding" || return 1
+}
+
+run_test test_preserves_binding_with_subdirectory_transcript
+
+test_resume_reports_a_newer_conversation_than_the_recorded_one() {
+    # The recorded conversation still resolves, so `claude --resume` SUCCEEDS
+    # and the sub-3-second failure fallback never fires. But a newer
+    # conversation exists in this session's own transcript dir — what a
+    # `/desktop` handoff or a claude opened on the folder leaves behind. Only
+    # the launched conversation may rebind the slot, so cs never learns of it;
+    # without this notice the launch silently continues a superseded prefix.
+    local recorded="abcd1234-5678-4abc-9def-fedcba987654"
+    local session_dir
+    session_dir=$(_seed_legacy_session "legacy-session" "$recorded")
+    _seed_claude_transcript "$session_dir" "$recorded"
+
+    local newer="11111111-2222-4333-8444-555555555555"
+    _seed_claude_transcript "$session_dir" "$newer"
+    # Pin the ordering rather than relying on write order: same-second mtimes
+    # would leave `ls -t` free to pick either, making the test flaky.
+    local proj
+    proj="$CS_TRANSCRIPTS_DIR/$(_encode_cwd_for_claude_test "$session_dir")"
+    touch -t 203001010000 "$proj/$newer.jsonl"
+
+    local output
+    output=$("$CS_BIN" legacy-session <<< "" 2>&1) || true
+
+    assert_output_contains "$output" "$newer" \
+        "launch must name the newer conversation it is not resuming" || return 1
+}
+
+run_test test_resume_reports_a_newer_conversation_than_the_recorded_one
+
+test_resume_ignores_a_newer_teammate_transcript() {
+    local recorded="abcd1234-5678-4abc-9def-fedcba987654"
+    local session_dir
+    session_dir=$(_seed_legacy_session "legacy-session" "$recorded")
+    _seed_claude_transcript "$session_dir" "$recorded"
+
+    # An agent-team teammate started with the session as its working directory
+    # writes a TOP-LEVEL transcript into the same project dir as the lead —
+    # indistinguishable by filename, and routinely the newest, because the
+    # teammate outlives the turn that spawned it. It is never the session's own
+    # conversation, so offering to resume it is always wrong.
+    local teammate="99999999-8888-4777-8666-555555555555"
+    _seed_claude_transcript "$session_dir" "$teammate"
+    local proj
+    proj="$CS_TRANSCRIPTS_DIR/$(_encode_cwd_for_claude_test "$session_dir")"
+    printf '%s\n' '{"type":"user","message":{"content":"<teammate-message teammate_id=\"team-lead\">review the branch</teammate-message>"}}' \
+        > "$proj/$teammate.jsonl"
+    # Pad well past the 64KB pipe buffer. A real transcript runs to megabytes,
+    # and the detection reads it whole: an implementation that piped the file
+    # into an early-exiting consumer would SIGPIPE the producer and, under
+    # pipefail, take cs down at 141 — which a small fixture never reaches.
+    local pad
+    pad=$(printf '%0.sx' $(seq 1 1000))
+    local i=0
+    while [ "$i" -lt 100 ]; do
+        printf '{"type":"assistant","message":{"content":"%s"}}\n' "$pad" >> "$proj/$teammate.jsonl"
+        i=$((i + 1))
+    done
+    touch -t 203001010000 "$proj/$teammate.jsonl"
+
+    local size
+    size=$(wc -c < "$proj/$teammate.jsonl" | tr -d '[:space:]')
+    if [ "$size" -le 65536 ]; then
+        echo "  FAIL: precondition - fixture must exceed the 64KB pipe buffer (got $size)"
+        return 1
+    fi
+
+    local output rc=0
+    output=$("$CS_BIN" legacy-session <<< "" 2>&1) || rc=$?
+
+    if [ "$rc" = 141 ]; then
+        echo "  FAIL: cs died of SIGPIPE (141) reading a large transcript"
+        return 1
+    fi
+    assert_output_not_contains "$output" "$teammate" \
+        "a teammate's conversation must never be offered as the newer one" || return 1
+}
+
+run_test test_resume_ignores_a_newer_teammate_transcript
+
+test_resume_reports_a_lead_that_received_teammate_reports() {
+    local recorded="abcd1234-5678-4abc-9def-fedcba987654"
+    local session_dir
+    session_dir=$(_seed_legacy_session "legacy-session" "$recorded")
+    _seed_claude_transcript "$session_dir" "$recorded"
+
+    # A lead that merely RECEIVES teammate reports carries the same frame
+    # mid-file — Claude Code injects an inbound message as "Another Claude
+    # session sent a message: <teammate-message ...>". Only a teammate's OWN
+    # brief is its first user turn. Matching the marker anywhere would
+    # classify every team-using lead as a teammate, which is precisely the
+    # population the filter exists to serve.
+    local lead="77777777-6666-4555-8444-333333333333"
+    _seed_claude_transcript "$session_dir" "$lead"
+    local proj
+    proj="$CS_TRANSCRIPTS_DIR/$(_encode_cwd_for_claude_test "$session_dir")"
+    {
+        printf '%s\n' '{"type":"user","message":{"content":"start the review"}}'
+        printf '%s\n' '{"type":"assistant","message":{"content":"working"}}'
+        printf '%s\n' '{"type":"user","message":{"content":"Another Claude session sent a message: <teammate-message teammate_id=\"reviewer\">done</teammate-message>"}}'
+    } > "$proj/$lead.jsonl"
+    touch -t 203001010000 "$proj/$lead.jsonl"
+
+    local output
+    output=$("$CS_BIN" legacy-session <<< "" 2>&1) || true
+
+    assert_output_contains "$output" "$lead" \
+        "a lead that received teammate reports is still the session's own conversation" || return 1
+}
+
+run_test test_resume_reports_a_lead_that_received_teammate_reports
+
+test_resume_stays_silent_when_the_discovered_conversation_is_older() {
+    # A slot already taken by a teammate (the state this release exists to
+    # stop happening) leaves the recorded transcript NEWER than any real
+    # conversation. Discovery correctly skips the teammate and returns an
+    # older one — so "newer" has to be checked against the clock rather than
+    # inferred from "discovery returned something different".
+    local recorded="99999999-8888-4777-8666-555555555555"
+    local session_dir
+    session_dir=$(_seed_legacy_session "legacy-session" "$recorded")
+    local proj
+    proj="$CS_TRANSCRIPTS_DIR/$(_encode_cwd_for_claude_test "$session_dir")"
+
+    local older="abcd1234-5678-4abc-9def-fedcba987654"
+    _seed_claude_transcript "$session_dir" "$older"
+    touch -t 200001010000 "$proj/$older.jsonl"
+
+    _seed_claude_transcript "$session_dir" "$recorded"
+    printf '%s\n' '{"type":"user","message":{"content":"<teammate-message teammate_id=\"team-lead\">go</teammate-message>"}}' \
+        > "$proj/$recorded.jsonl"
+    touch -t 203001010000 "$proj/$recorded.jsonl"
+
+    local output
+    output=$("$CS_BIN" legacy-session <<< "" 2>&1) || true
+
+    assert_output_not_contains "$output" "newer conversation" \
+        "an older conversation must never be announced as newer" || return 1
+}
+
+run_test test_resume_stays_silent_when_the_discovered_conversation_is_older
+
+# The first user line of a transcript a headless run leaves in the session's
+# project dir, in the shape Claude Code 2.1.274 writes it: the prompt precedes
+# the entrypoint on the line, as it does in a real file.
+_seed_first_user_line() {  # transcript_file, entrypoint
+    printf '%s\n' '{"parentUuid":null,"isSidechain":false,"type":"user","message":{"role":"user","content":"Review this change for security vulnerabilities."},"uuid":"8f8a372f-1f5e-4db4-bad4-40c9eb1f827b","timestamp":"2030-01-01T00:00:00.000Z","permissionMode":"default","userType":"external","entrypoint":"'"$2"'","cwd":"/work","sessionId":"x","version":"2.1.274","gitBranch":"main"}' \
+        > "$1"
+}
+
+test_resume_ignores_a_newer_headless_transcript() {
+    # An Agent SDK run (`sdk-py`) or a `claude -p` (`sdk-cli`) with the session
+    # as its working directory writes a top-level transcript beside the
+    # session's own. Nobody can continue one from a terminal in any useful
+    # sense, so naming it as "a newer conversation" is a false alarm.
+    local recorded="abcd1234-5678-4abc-9def-fedcba987654"
+    local session_dir
+    session_dir=$(_seed_legacy_session "legacy-session" "$recorded")
+    _seed_claude_transcript "$session_dir" "$recorded"
+    local proj
+    proj="$CS_TRANSCRIPTS_DIR/$(_encode_cwd_for_claude_test "$session_dir")"
+
+    local sdk_run="11111111-2222-4333-8444-555555555555"
+    _seed_first_user_line "$proj/$sdk_run.jsonl" "sdk-py"
+    touch -t 203001010000 "$proj/$sdk_run.jsonl"
+    local print_run="22222222-3333-4444-8555-666666666666"
+    _seed_first_user_line "$proj/$print_run.jsonl" "sdk-cli"
+    touch -t 203001020000 "$proj/$print_run.jsonl"
+
+    local output
+    output=$("$CS_BIN" legacy-session <<< "" 2>&1) || true
+
+    assert_output_not_contains "$output" "newer conversation" \
+        "a headless run is not a conversation to continue" || return 1
+}
+
+run_test test_resume_ignores_a_newer_headless_transcript
+
+test_resume_reports_a_newer_desktop_conversation() {
+    # The other direction: `claude-desktop` is a person's conversation (what a
+    # `/desktop` handoff leaves), and so is `cli`. Skipping either would
+    # silence the notice for the very case it was written for.
+    local recorded="abcd1234-5678-4abc-9def-fedcba987654"
+    local session_dir
+    session_dir=$(_seed_legacy_session "legacy-session" "$recorded")
+    _seed_claude_transcript "$session_dir" "$recorded"
+    local proj
+    proj="$CS_TRANSCRIPTS_DIR/$(_encode_cwd_for_claude_test "$session_dir")"
+
+    local desktop="33333333-4444-4555-8666-777777777777"
+    _seed_first_user_line "$proj/$desktop.jsonl" "claude-desktop"
+    touch -t 203001010000 "$proj/$desktop.jsonl"
+
+    local output
+    output=$("$CS_BIN" legacy-session <<< "" 2>&1) || true
+    assert_output_contains "$output" "$desktop" \
+        "a desktop conversation is still named" || return 1
+
+    local terminal="44444444-5555-4666-8777-888888888888"
+    _seed_first_user_line "$proj/$terminal.jsonl" "cli"
+    touch -t 203001020000 "$proj/$terminal.jsonl"
+    output=$("$CS_BIN" legacy-session <<< "" 2>&1) || true
+    assert_output_contains "$output" "$terminal" \
+        "a terminal conversation is still named" || return 1
+}
+
+run_test test_resume_reports_a_newer_desktop_conversation
+
+test_orphan_repair_never_binds_a_headless_transcript() {
+    # The repair BINDS what discovery returns, so a headless run that happens
+    # to be newest would become the conversation `cs <name>` resumes from then
+    # on. The session's own older conversation is the one to bind.
+    local orphan="00000000-0000-4000-8000-0000000000aa"
+    local session_dir
+    session_dir=$(_seed_legacy_session "legacy-session" "$orphan")
+    local proj
+    proj="$CS_TRANSCRIPTS_DIR/$(_encode_cwd_for_claude_test "$session_dir")"
+
+    local own="abcd1234-5678-4abc-9def-fedcba987654"
+    _seed_claude_transcript "$session_dir" "$own"
+    _seed_first_user_line "$proj/$own.jsonl" "cli"
+    touch -t 200001010000 "$proj/$own.jsonl"
+
+    local sdk_run="11111111-2222-4333-8444-555555555555"
+    _seed_first_user_line "$proj/$sdk_run.jsonl" "sdk-py"
+    touch -t 203001010000 "$proj/$sdk_run.jsonl"
+
+    "$CS_BIN" legacy-session <<< "" >/dev/null 2>&1 || true
+
+    assert_eq "$orphan" "$(_extract_session_uuid "$session_dir/.cs/local/state")" \
+        "a missing recorded transcript must never cause discovery to replace its identity" || return 1
+}
+
+run_test test_orphan_repair_never_binds_a_headless_transcript
+
+test_a_headless_run_continued_from_a_terminal_is_a_conversation() {
+    # `claude --resume <id>` on a transcript an SDK run started makes it a
+    # person's conversation from then on: its first user line still says
+    # `sdk-py`, the lines after it say `cli`. Judging the file by its first
+    # line would hide a conversation someone has been working in.
+    local recorded="abcd1234-5678-4abc-9def-fedcba987654"
+    local session_dir
+    session_dir=$(_seed_legacy_session "legacy-session" "$recorded")
+    _seed_claude_transcript "$session_dir" "$recorded"
+    local proj
+    proj="$CS_TRANSCRIPTS_DIR/$(_encode_cwd_for_claude_test "$session_dir")"
+
+    local adopted="55555555-6666-4777-8888-999999999999"
+    _seed_first_user_line "$proj/$adopted.jsonl" "sdk-py"
+    printf '%s\n' '{"type":"assistant","message":{"content":"no findings"}}' >> "$proj/$adopted.jsonl"
+    printf '%s\n' '{"parentUuid":"a","isSidechain":false,"type":"user","message":{"role":"user","content":"carry on from here"},"userType":"external","entrypoint":"cli","cwd":"/work","sessionId":"x","version":"2.1.274"}' >> "$proj/$adopted.jsonl"
+    touch -t 203001010000 "$proj/$adopted.jsonl"
+
+    local output
+    output=$("$CS_BIN" legacy-session <<< "" 2>&1) || true
+
+    assert_output_contains "$output" "$adopted" \
+        "a run a person continued from a terminal is named like any other conversation" || return 1
+}
+
+run_test test_a_headless_run_continued_from_a_terminal_is_a_conversation
+
+test_a_later_entrypoint_shorter_than_the_prefix_still_marks_a_conversation() {
+    # The "does not start sdk-" test has to accept values the prefix test can
+    # swallow whole: the empty string, `s`, `sd`, `sdk`. A regex built from
+    # "one more character, then anything" misses exactly these.
+    local recorded="abcd1234-5678-4abc-9def-fedcba987654"
+    local session_dir
+    session_dir=$(_seed_legacy_session "legacy-session" "$recorded")
+    _seed_claude_transcript "$session_dir" "$recorded"
+    local proj
+    proj="$CS_TRANSCRIPTS_DIR/$(_encode_cwd_for_claude_test "$session_dir")"
+
+    local v n=0 uuid output
+    for v in "" s sd sdk; do
+        n=$((n+1))
+        uuid="6666666${n}-7777-4888-8999-000000000000"
+        _seed_first_user_line "$proj/$uuid.jsonl" "sdk-py"
+        printf '%s\n' '{"type":"user","message":{"role":"user","content":"more"},"entrypoint":"'"$v"'"}' >> "$proj/$uuid.jsonl"
+        touch -t "20300101000$n" "$proj/$uuid.jsonl"
+        output=$("$CS_BIN" legacy-session <<< "" 2>&1) || true
+        assert_output_contains "$output" "$uuid" \
+            "a later entrypoint of \"$v\" is not sdk-, so the file is a conversation" || return 1
+    done
+}
+
+run_test test_a_later_entrypoint_shorter_than_the_prefix_still_marks_a_conversation
+
+run_test test_launch_exports_lead_pid_of_the_claude_process
+
+test_resume_launch_exports_lead_pid_as_the_parent() {
+    # The resume arm runs claude rather than exec'ing into it, so there the
+    # launched conversation is cs's child and CS_LEAD_PID is its parent, not
+    # its own pid. The hook accepts both shapes; this pins the one the exec
+    # test cannot see, on the commonest launch there is. The stub reports its
+    # own $PPID — ground truth for who started it, independent of the exported
+    # value.
+    local stub="$TEST_TMPDIR/claude-ppid-stub"
+    cat > "$stub" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "CS_LEAD_PID_SEEN=${CS_LEAD_PID:-unset} LAUNCHED_BY=$PPID"
+STUB_EOF
+    chmod +x "$stub"
+    export CLAUDE_CODE_BIN="$stub"
+
+    # First run creates the session; the second resumes (default 'Y').
+    "$CS_BIN" test-session <<< "" >/dev/null 2>&1 || true
+    local output
+    output=$("$CS_BIN" test-session <<< "" 2>&1) || true
+
+    local exported parent
+    exported=$(printf '%s' "$output" | sed -n 's/.*CS_LEAD_PID_SEEN=\([^ ]*\).*/\1/p' | tail -1)
+    parent=$(printf '%s' "$output" | sed -n 's/.*LAUNCHED_BY=\([0-9]*\).*/\1/p' | tail -1)
+
+    if [ -z "$parent" ]; then
+        echo "  FAIL: precondition - stub never ran on the resume path (output: $output)"
+        return 1
+    fi
+
+    assert_eq "$parent" "$exported" \
+        "CS_LEAD_PID must be the pid that started the resumed claude" || return 1
+}
+
+run_test test_resume_launch_exports_lead_pid_as_the_parent
+
+# ============================================================================
+# Cycle 5: doctor check verifies recorded UUID against $CLAUDE_CODE_SESSION_ID
+# ============================================================================
+
+# Build a session with a fixed UUID in local state and the minimal layout
+# needed for `cs -doctor` to run its in-session checks. Returns the path.
+_seed_doctor_session() {
+    local name="$1"
+    local uuid="$2"
+    local session_dir="$CS_SESSIONS_ROOT/$name"
+    mkdir -p "$session_dir/.cs"/{memory,local}
+    cat > "$session_dir/.cs/README.md" << EOF
+---
+status: active
+created: 2026-04-21
+tags: []
+aliases: ["$name"]
+---
+# Session: $name
+EOF
+    echo "# Session narrative" > "$session_dir/.cs/memory/narrative.md"
+    echo "# Session" > "$session_dir/CLAUDE.md"
+    (cd "$session_dir" && git init -q -b main && git config user.email t@t \
+        && git config user.name T && git add -A && git commit -q -m init)
+    # Seed after the commit — .cs/local/ must never be tracked in git
+    # (cs refuses to launch when it is).
+    echo "claude_session_id: $uuid" > "$session_dir/.cs/local/state"
+    echo "$session_dir"
+}
+
+test_doctor_session_id_match_reports_ok() {
+    local uuid="11111111-2222-4333-8444-555555555555"
+    local session_dir
+    session_dir=$(_seed_doctor_session "test-session" "$uuid")
+
+    local output
+    output=$(CLAUDE_SESSION_DIR="$session_dir" \
+             CLAUDE_SESSION_META_DIR="$session_dir/.cs" \
+             CLAUDE_SESSION_NAME="test-session" \
+             CLAUDE_CODE_SESSION_ID="$uuid" \
+             "$CS_BIN" -doctor 2>&1) || true
+
+    assert_output_contains "$output" "Session UUID" \
+        "doctor should print a Session UUID check line" || return 1
+    assert_output_contains "$output" "$uuid" \
+        "doctor output should include the matching UUID for context" || return 1
+}
+
+test_doctor_session_id_mismatch_warns() {
+    local recorded="11111111-2222-4333-8444-555555555555"
+    local current="99999999-aaaa-4bbb-8ccc-dddddddddddd"
+    local session_dir
+    session_dir=$(_seed_doctor_session "test-session" "$recorded")
+
+    local output
+    output=$(CLAUDE_SESSION_DIR="$session_dir" \
+             CLAUDE_SESSION_META_DIR="$session_dir/.cs" \
+             CLAUDE_SESSION_NAME="test-session" \
+             CLAUDE_CODE_SESSION_ID="$current" \
+             "$CS_BIN" -doctor 2>&1) || true
+
+    assert_output_contains "$output" "WARN" \
+        "doctor should WARN when CLAUDE_CODE_SESSION_ID does not match frontmatter" || return 1
+    assert_output_contains "$output" "$recorded" \
+        "warning text should reference the recorded UUID" || return 1
+}
+
+run_test test_doctor_session_id_match_reports_ok
+run_test test_doctor_session_id_mismatch_warns
+
+# ============================================================================
+# Cycle 6: live-duplicate guard refuses second spawn; --force overrides
+# ============================================================================
+
+# Build a ps stub that emits a fake process line containing the given UUID.
+# bin/cs reads CS_PS_BIN in place of `ps` so we can inject canned output
+# without PATH manipulation.
+_seed_ps_stub_with_uuid() {
+    local uuid="$1"
+    local stub="$TEST_TMPDIR/ps-stub"
+    cat > "$stub" << STUB
+#!/usr/bin/env bash
+echo "  47533 ??       0:00.42 claude --resume $uuid"
+STUB
+    chmod +x "$stub"
+    echo "$stub"
+}
+
+test_live_duplicate_refuses_without_force() {
+    local uuid="11111111-2222-4333-8444-555555555555"
+    local session_dir
+    session_dir=$(_seed_doctor_session "test-session" "$uuid")
+
+    local stub
+    stub=$(_seed_ps_stub_with_uuid "$uuid")
+
+    local output rc=0
+    output=$(CS_PS_BIN="$stub" "$CS_BIN" test-session <<< "" 2>&1) || rc=$?
+
+    if [ "$rc" -eq 0 ]; then
+        echo "  FAIL: cs should have refused with non-zero exit (got 0)"
+        echo "    output: $(echo "$output" | tail -5)"
+        return 1
+    fi
+
+    assert_output_contains "$output" "already running" \
+        "error should call out the live duplicate" || return 1
+    assert_output_contains "$output" "$uuid" \
+        "error should mention the UUID for traceability" || return 1
+}
+
+test_live_duplicate_force_overrides() {
+    local uuid="11111111-2222-4333-8444-555555555555"
+    local session_dir
+    session_dir=$(_seed_doctor_session "test-session" "$uuid")
+
+    local stub
+    stub=$(_seed_ps_stub_with_uuid "$uuid")
+
+    local output
+    output=$(CS_PS_BIN="$stub" "$CS_BIN" test-session --force <<< "" 2>&1) || true
+
+    assert_output_contains "$output" "--resume $uuid" \
+        "with --force the spawn should proceed and use --resume <uuid>" || return 1
+    assert_output_not_contains "$output" "already running" \
+        "with --force the live-duplicate refusal must not fire" || return 1
+}
+
+# A Bash-tool child inherits the session's UUID in its argv: the shell snapshot
+# it is started from exports it (a plugin's CODEX_COMPANION_SESSION_ID), and a
+# probe left running in the background outlives the conversation as an orphan.
+# Seen 2026-09-15: a port-forward loop three hours old blocked a relaunch while
+# `cs -live` showed nothing running. Only claude's own argv shapes count.
+test_live_duplicate_ignores_the_uuid_in_a_non_claude_argv() {
+    local uuid="11111111-2222-4333-8444-555555555555"
+    _seed_doctor_session "test-session" "$uuid" > /dev/null
+
+    local stub="$TEST_TMPDIR/ps-stub-child"
+    cat > "$stub" << STUB
+#!/usr/bin/env bash
+echo "  40334 ??       0:00.10 /bin/zsh -c source snapshot.sh && export CODEX_COMPANION_SESSION_ID='$uuid' && sleep 300"
+STUB
+    chmod +x "$stub"
+
+    local output
+    output=$(CS_PS_BIN="$stub" "$CS_BIN" test-session <<< "" 2>&1) || true
+
+    assert_output_not_contains "$output" "already running" \
+        "a UUID inside another program's argv is not a live claude" || return 1
+    assert_output_contains "$output" "--resume $uuid" \
+        "the launch proceeds to resume the recorded conversation" || return 1
+}
+
+# `claude -r <uuid>` is the short spelling of --resume; a conversation opened
+# that way by hand is as live as one cs launched.
+test_live_duplicate_refuses_a_short_resume_flag() {
+    local uuid="11111111-2222-4333-8444-555555555555"
+    _seed_doctor_session "test-session" "$uuid" > /dev/null
+    local stub="$TEST_TMPDIR/ps-stub-r"
+    cat > "$stub" << STUB
+#!/usr/bin/env bash
+echo "claude -r $uuid"
+STUB
+    chmod +x "$stub"
+    local output rc=0
+    output=$(CS_PS_BIN="$stub" "$CS_BIN" test-session <<< "" 2>&1) || rc=$?
+    [ "$rc" -ne 0 ] || { echo "  FAIL: a claude resumed with -r must count as running"; return 1; }
+    assert_output_contains "$output" "already running" "the short resume flag is a live claude" || return 1
+}
+
+# A teammate pane carries the lead's UUID as --parent-session-id and nothing
+# else the guard reads (no --name, no --resume). One that outlived its lead is
+# still writing to .cs/local/, so a second lead must not start over it.
+test_live_duplicate_refuses_a_surviving_teammate() {
+    local uuid="11111111-2222-4333-8444-555555555555"
+    _seed_doctor_session "test-session" "$uuid" > /dev/null
+    local stub="$TEST_TMPDIR/ps-stub-teammate"
+    cat > "$stub" << STUB
+#!/usr/bin/env bash
+echo "/usr/local/bin/claude --agent-id reviewer@session-abc --team-name t --parent-session-id $uuid --model opus"
+STUB
+    chmod +x "$stub"
+    local output rc=0
+    output=$(CS_PS_BIN="$stub" "$CS_BIN" test-session <<< "" 2>&1) || rc=$?
+    [ "$rc" -ne 0 ] || { echo "  FAIL: a teammate holding the UUID must count as running"; return 1; }
+    assert_output_contains "$output" "already running" "a surviving teammate holds the session" || return 1
+}
+
+# The hand-typed `--resume=<uuid>` spelling is the same live claude.
+test_live_duplicate_refuses_the_equals_spelling() {
+    local uuid="11111111-2222-4333-8444-555555555555"
+    _seed_doctor_session "test-session" "$uuid" > /dev/null
+    local stub="$TEST_TMPDIR/ps-stub-eq"
+    cat > "$stub" << STUB
+#!/usr/bin/env bash
+echo "claude --resume=$uuid"
+STUB
+    chmod +x "$stub"
+    local output rc=0
+    output=$(CS_PS_BIN="$stub" "$CS_BIN" test-session <<< "" 2>&1) || rc=$?
+    [ "$rc" -ne 0 ] || { echo "  FAIL: --resume=<uuid> must count as running"; return 1; }
+    assert_output_contains "$output" "already running" "the = spelling is a live claude" || return 1
+}
+
+# Build a ps stub whose argv names a session but carries an unrelated UUID —
+# the shape a live conversation takes after an in-app /clear rebinds state.
+_seed_ps_stub_with_name() {  # session_name, launch_uuid
+    local name="$1" uuid="$2"
+    local stub="$TEST_TMPDIR/ps-stub-name"
+    cat > "$stub" << STUB
+#!/usr/bin/env bash
+echo "  47533 ??       0:00.42 claude --name $name --session-id $uuid"
+STUB
+    chmod +x "$stub"
+    echo "$stub"
+}
+
+# A session with no recorded conversation has no UUID to match, so the guard
+# used to skip entirely; the --name half needs no UUID.
+test_live_duplicate_detected_on_an_unbound_session() {
+    local launched="99999999-8888-4777-8666-555555555555"
+    _seed_doctor_session "test-session" "11111111-2222-4333-8444-555555555555" >/dev/null
+    local state="$CS_SESSIONS_ROOT/test-session/.cs/local/state"
+    awk 'index($0, "claude_session_id:") != 1' "$state" > "$state.tmp" && mv "$state.tmp" "$state"
+    local stub
+    stub=$(_seed_ps_stub_with_name "test-session" "$launched")
+
+    local output rc=0
+    output=$(CS_PS_BIN="$stub" "$CS_BIN" test-session <<< "" 2>&1) || rc=$?
+
+    [ "$rc" -ne 0 ] || { echo "  FAIL: a live claude --name must be detected with no recorded UUID"; return 1; }
+    assert_output_contains "$output" "already running" "the --name half of the guard still runs" || return 1
+    assert_output_not_contains "$output" "(UUID " "no UUID to name" || return 1
+}
+
+test_live_duplicate_detected_after_clear_rebind() {
+    local recorded="11111111-2222-4333-8444-555555555555"
+    local launched="99999999-8888-4777-8666-555555555555"
+    _seed_doctor_session "test-session" "$recorded" >/dev/null
+    local stub
+    stub=$(_seed_ps_stub_with_name "test-session" "$launched")
+
+    local output rc=0
+    output=$(CS_PS_BIN="$stub" "$CS_BIN" test-session <<< "" 2>&1) || rc=$?
+
+    if [ "$rc" -eq 0 ]; then
+        echo "  FAIL: a live conversation whose UUID was rebound by /clear must still be detected"
+        echo "    output: $(echo "$output" | tail -5)"
+        return 1
+    fi
+    assert_output_contains "$output" "already running" \
+        "error should call out the live duplicate" || return 1
+}
+
+# A session name that prefixes another session's must not collide.
+test_live_duplicate_ignores_a_longer_sibling_name() {
+    local recorded="11111111-2222-4333-8444-555555555555"
+    local launched="99999999-8888-4777-8666-555555555555"
+    _seed_doctor_session "test-session" "$recorded" >/dev/null
+    local stub
+    stub=$(_seed_ps_stub_with_name "test-session-extra" "$launched")
+
+    local output
+    output=$(CS_PS_BIN="$stub" "$CS_BIN" test-session <<< "" 2>&1) || true
+
+    assert_output_not_contains "$output" "already running" \
+        "a longer sibling name must not block the launch" || return 1
+}
+
+run_test test_live_duplicate_refuses_without_force
+run_test test_live_duplicate_force_overrides
+run_test test_live_duplicate_ignores_the_uuid_in_a_non_claude_argv
+run_test test_live_duplicate_refuses_a_short_resume_flag
+run_test test_live_duplicate_refuses_a_surviving_teammate
+run_test test_live_duplicate_refuses_the_equals_spelling
+run_test test_live_duplicate_detected_on_an_unbound_session
+run_test test_live_duplicate_detected_after_clear_rebind
+run_test test_live_duplicate_ignores_a_longer_sibling_name
+
+# ============================================================================
+# Cycle 7: --name <session-name> passed to claude on every launch path.
+# Surfaces the cs session name in claude's /resume picker, terminal title,
+# and prompt-box display — symmetry between cs's primary identifier and
+# claude's native display label.
+# ============================================================================
+
+test_new_session_launch_passes_name() {
+    local output
+    output=$("$CS_BIN" my-test-session <<< "" 2>&1) || true
+    assert_output_contains "$output" "--name my-test-session" \
+        "new-session launch must pass --name <session>" || return 1
+}
+
+test_resume_launch_passes_name() {
+    # First run creates the session.
+    "$CS_BIN" my-test-session <<< "" >/dev/null 2>&1 || true
+
+    # Second run resumes (default 'Y').
+    local output
+    output=$("$CS_BIN" my-test-session <<< "" 2>&1) || true
+    assert_output_contains "$output" "--name my-test-session" \
+        "resume launch must pass --name <session>" || return 1
+}
+
+test_decline_resume_launch_passes_name() {
+    # First run creates the session.
+    "$CS_BIN" my-test-session <<< "" >/dev/null 2>&1 || true
+
+    # Second run, user says N -> fresh-rebind path.
+    local output
+    output=$("$CS_BIN" my-test-session <<< "n" 2>&1) || true
+    assert_output_contains "$output" "--name my-test-session" \
+        "fresh-rebind (N path) must pass --name <session>" || return 1
+}
+
+run_test test_new_session_launch_passes_name
+run_test test_resume_launch_passes_name
+run_test test_decline_resume_launch_passes_name
+
+# ============================================================================
+# Cycle 8: random color picked at session creation, stored in frontmatter,
+# and passed to claude as a /color slash-command on every launch path.
+# Symmetric in spirit with --name pass-through — claude doesn't have a
+# --color CLI flag, so the slash command is the only mechanism.
+# ============================================================================
+
+# The 8 colors claude accepts via /color (the binary errors on anything else).
+# Verified against claude 2.1.162's own error message; the prior agent answer
+# inflated this list with teal/magenta/etc — those are NOT valid.
+VALID_COLORS_RE='^(red|blue|green|yellow|purple|orange|pink|cyan)$'
+
+_extract_session_color() {
+    local state="$1"
+    grep -E '^claude_session_color:' "$state" 2>/dev/null \
+        | head -1 \
+        | sed -E 's/^claude_session_color:[[:space:]]*//; s/^"//; s/"$//' \
+        || true
+}
+
+test_new_session_records_random_color_in_local_state() {
+    "$CS_BIN" my-test-session <<< "" >/dev/null 2>&1 || true
+
+    local state="$CS_SESSIONS_ROOT/my-test-session/.cs/local/state"
+
+    assert_file_contains "$state" '^claude_session_color:' \
+        "local state should record claude_session_color" || return 1
+
+    local color
+    color=$(_extract_session_color "$state")
+
+    if [[ ! "$color" =~ $VALID_COLORS_RE ]]; then
+        echo "  FAIL: recorded color is not in the valid 8-color set"
+        echo "    recorded: '$color'"
+        return 1
+    fi
+}
+
+test_new_session_launch_passes_color_slash_command() {
+    local output
+    output=$("$CS_BIN" my-test-session <<< "" 2>&1) || true
+
+    local state="$CS_SESSIONS_ROOT/my-test-session/.cs/local/state"
+    local color
+    color=$(_extract_session_color "$state")
+
+    assert_output_contains "$output" "/color $color" \
+        "new-session launch must pass /color <color> as a positional prompt" || return 1
+}
+
+test_resume_launch_passes_color_slash_command() {
+    "$CS_BIN" my-test-session <<< "" >/dev/null 2>&1 || true
+
+    local state="$CS_SESSIONS_ROOT/my-test-session/.cs/local/state"
+    local color
+    color=$(_extract_session_color "$state")
+
+    local output
+    output=$("$CS_BIN" my-test-session <<< "" 2>&1) || true
+
+    assert_output_contains "$output" "/color $color" \
+        "resume launch must pass /color <color>" || return 1
+}
+
+test_decline_resume_launch_passes_color_slash_command() {
+    "$CS_BIN" my-test-session <<< "" >/dev/null 2>&1 || true
+
+    local state="$CS_SESSIONS_ROOT/my-test-session/.cs/local/state"
+    local color
+    color=$(_extract_session_color "$state")
+
+    local output
+    output=$("$CS_BIN" my-test-session <<< "n" 2>&1) || true
+
+    assert_output_contains "$output" "/color $color" \
+        "fresh-rebind (N path) must pass /color <color>" || return 1
+}
+
+test_color_persists_across_resumes() {
+    # The color is allocated ONCE at session creation and must stay stable
+    # across subsequent resumes — never re-randomized.
+    "$CS_BIN" my-test-session <<< "" >/dev/null 2>&1 || true
+
+    local state="$CS_SESSIONS_ROOT/my-test-session/.cs/local/state"
+    local first_color
+    first_color=$(_extract_session_color "$state")
+
+    "$CS_BIN" my-test-session <<< "" >/dev/null 2>&1 || true
+    local second_color
+    second_color=$(_extract_session_color "$state")
+
+    assert_eq "$first_color" "$second_color" \
+        "color must remain stable across resumes (never re-randomized)" || return 1
+}
+
+test_legacy_session_backfills_color_on_next_launch() {
+    # Build a "legacy" session with claude_session_id but no
+    # claude_session_color in frontmatter — simulates a session created
+    # before v2026.5.7 shipped. Phase 11 should allocate + persist a color
+    # on first launch under v5.7.
+    local session_dir="$CS_SESSIONS_ROOT/legacy-no-color"
+    mkdir -p "$session_dir/.cs"/{local,memory}
+    cat > "$session_dir/.cs/README.md" << 'EOF'
+---
+status: active
+created: 2026-01-01
+claude_session_id: abcd1234-5678-4abc-9def-fedcba987654
+tags: []
+aliases: ["legacy-no-color"]
+---
+# Session: legacy-no-color
+EOF
+    echo "# Session narrative" > "$session_dir/.cs/memory/narrative.md"
+    echo "# Session" > "$session_dir/CLAUDE.md"
+    (cd "$session_dir" && git init -q && git add -A && git commit -q -m "init")
+
+    assert_file_not_contains "$session_dir/.cs/local/state" '^claude_session_color:' \
+        "precondition: legacy session must lack claude_session_color" || return 1
+
+    "$CS_BIN" legacy-no-color <<< "" >/dev/null 2>&1 || true
+
+    assert_file_contains "$session_dir/.cs/local/state" '^claude_session_color:' \
+        "Phase 11 should backfill claude_session_color on legacy session" || return 1
+
+    local color
+    color=$(_extract_session_color "$session_dir/.cs/local/state")
+    if [[ ! "$color" =~ $VALID_COLORS_RE ]]; then
+        echo "  FAIL: backfilled color is not in the valid 8-color set: '$color'"
+        return 1
+    fi
+
+    # Idempotent: second launch must NOT re-randomize.
+    "$CS_BIN" legacy-no-color <<< "" >/dev/null 2>&1 || true
+    local color_after
+    color_after=$(_extract_session_color "$session_dir/.cs/local/state")
+    assert_eq "$color" "$color_after" \
+        "second migration must not change the backfilled color" || return 1
+
+    local count
+    count=$(grep -cE '^claude_session_color:' "$session_dir/.cs/local/state")
+    assert_eq "1" "$count" \
+        "claude_session_color must appear exactly once in local state" || return 1
+}
+
+run_test test_new_session_records_random_color_in_local_state
+run_test test_new_session_launch_passes_color_slash_command
+run_test test_resume_launch_passes_color_slash_command
+run_test test_decline_resume_launch_passes_color_slash_command
+run_test test_color_persists_across_resumes
+run_test test_legacy_session_backfills_color_on_next_launch
+test_explicit_fresh_is_available_without_a_terminal() {
+    local old_uuid=abcd1234-5678-4abc-9def-fedcba987654 session_dir output candidate
+    session_dir=$(_seed_legacy_session test-session "$old_uuid")
+    output=$(CS_ASSUME_TTY=0 "$CS_BIN" test-session --fresh </dev/null 2>&1) || { echo "$output"; return 1; }
+    candidate=$(jq -r '.candidate_id' "$session_dir/.cs/local/pending-binding-claude.json")
+    assert_eq "$old_uuid" "$(_extract_session_uuid "$session_dir/.cs/local/state")" "no ack leaves prior binding" || return 1
+    assert_output_contains "$output" "--session-id $candidate" "fresh intent skips interactive menu" || return 1
+    assert_output_not_contains "$output" 'Continue previous conversation?' || return 1
+}
+
+test_failed_resume_keeps_binding_and_native_status() {
+    local old_uuid=abcd1234-5678-4abc-9def-fedcba987654 session_dir output status=0
+    session_dir=$(_seed_legacy_session test-session "$old_uuid")
+    printf 'claude_session_id: %s\n' "$old_uuid" > "$session_dir/.cs/local/state"
+    local stub="$TEST_TMPDIR/fail-resume"
+    printf '#!/bin/bash\necho "attempt: $*"\nexit 17\n' > "$stub"
+    chmod +x "$stub"
+    output=$(CLAUDE_CODE_BIN="$stub" "$CS_BIN" test-session --resume </dev/null 2>&1) || status=$?
+    assert_eq 17 "$status" "native resume status preserved" || return 1
+    assert_eq "$old_uuid" "$(_extract_session_uuid "$session_dir/.cs/local/state")" "resume failure does not replace binding" || return 1
+    assert_output_contains "$output" "--resume $old_uuid" || return 1
+    assert_output_not_contains "$output" '--session-id' "no automatic fresh fallback" || return 1
+    assert_not_exists "$session_dir/.cs/local/pending-binding-claude.json" "no replacement staged" || return 1
+    assert_not_exists "$session_dir/.cs/session.lock" "failed resume releases lease" || return 1
+}
+
+test_malformed_claude_binding_refuses_native_invocation() {
+    local session_dir output status=0
+    session_dir=$(_seed_legacy_session test-session 'invalid --dangerously-skip-permissions')
+    printf 'claude_session_id: invalid --dangerously-skip-permissions\n' > "$session_dir/.cs/local/state"
+    output=$("$CS_BIN" test-session --resume </dev/null 2>&1) || status=$?
+    assert_eq 1 "$status" "malformed native ID rejected" || return 1
+    assert_output_contains "$output" 'Invalid Claude conversation binding' || return 1
+    assert_not_exists "$session_dir/.cs/local/pending-binding-claude.json" || return 1
+}
+
+run_test test_explicit_fresh_is_available_without_a_terminal
+run_test test_failed_resume_keeps_binding_and_native_status
+run_test test_malformed_claude_binding_refuses_native_invocation
+report_results

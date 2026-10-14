@@ -1,0 +1,1942 @@
+// ABOUTME: Unit tests for the cs mod against a fake engine `$`.
+// ABOUTME: Covers the band's gate (crit, working, survey), the three presses and the wrap key's two-press guard, the armed handoff, the heartbeat, /queue, and the /finish toasts and gate band.
+// ABOUTME: And a pending engine switch: the armed key and the count run /exit instead of /clear, only for the record of this run and the armed handoff.
+import { test, expect, beforeEach } from 'bun:test'
+
+// The plugin realm provides `h` and `Fragment` as globals; the test does the same.
+;(globalThis as any).h = (type: any, props: any, ...children: any[]) => ({ type, props: props ?? {}, children })
+;(globalThis as any).Fragment = 'Fragment'
+
+import { register, DEFAULT_PERCENT, GRACE_SECONDS, PREVIEW_PANE, WRAP_QUESTION, WRAP_YES, QUEUE_START, QUEUE_COMPACT, QUEUE_KICK, QUEUE_MODE_QUESTION, QUEUE_HERE, QUEUE_SUBAGENTS, QUEUE_WORKFLOWS, MARKDOWN_LIMIT, nextStep, surfaceColor, isUnconsumed, switchFields, countVerb } from '../hooks/register.tsx'
+
+type Hook = ($: any, e: any, next: (e: any) => Promise<any>) => Promise<any>
+const hooks: Record<string, Hook> = {}
+const on = (event: string, a: any, b?: any) => {
+  const matcher = b ? a : undefined
+  const fn: Hook = b ?? a
+  const narrowed = matcher?.component ?? matcher?.command ?? matcher?.skill
+  hooks[narrowed ? `${event}:${narrowed}` : event] = fn
+}
+
+let percent: number | undefined
+let filled: any[]
+let ran: any[]
+let written: Record<string, string>
+let existing: Set<string>
+let files: Record<string, string>
+let sessionId: string
+let envVars: Record<string, string | undefined>
+let timers: { ms: number; fn: () => void; kind: 'after' | 'every'; cancelled: boolean }[]
+let invalidated: string[]
+let toasts: string[]
+let asks: { question: string; options: any }[]
+let panes: { op: 'open' | 'close'; args: any }[]
+// What the person does with the next dialog: a label, or a rejection (dismissed, or a `-p` run).
+let answer: string | Error
+// What the person answers to the queue's "how should the tasks run" question.
+let modeAnswer: string | Error
+// What `$.process.run` was asked to run, and what it answers with (or rejects with).
+let runs: { argv: string[]; init: any }[]
+let runResult: { exitCode: number; stdout: string; stderr: string } | Error
+// Answers for the next runs in order, ahead of runResult; empty means runResult answers.
+let nextRuns: ({ exitCode: number; stdout: string; stderr: string } | Error)[]
+// What `$.prompt.submit` was handed.
+let submitted: any[]
+// How many process runs had happened when `$.session.compact` was called, and what it answers with (or rejects with).
+let compactedAt: number[]
+let compactResult: any
+let commands: any[]
+// The clock `$.clock.now` reads, and the pids `kill -0` finds alive.
+let nowMs: number
+let livePids: Set<string>
+const timer = (kind: 'after' | 'every') => (ms: number, fn: () => void) => {
+  const t = { ms, fn, kind, cancelled: false }
+  timers.push(t)
+  return { cancel: () => { t.cancelled = true } }
+}
+const $ = {
+  env: { get: async (name: string) => envVars[name] },
+  session: {
+    usage: async () => ({ context: { percent } }),
+    cwd: async () => '/work',
+    id: async () => sessionId,
+    compact: async () => {
+      compactedAt.push(runs.length)
+      if (compactResult instanceof Error) throw compactResult
+      return compactResult
+    },
+  },
+  prompt: {
+    fill: async (args: any) => { filled.push(args); return { isFilled: true } },
+    submit: async (args: any) => { submitted.push(args); return {} },
+  },
+  command: {
+    run: async (args: any) => { ran.push(args); return { text: '' } },
+    register: async (spec: any) => { commands.push(spec); return { command: spec.name } },
+  },
+  process: {
+    run: async (argv: string[], init: any) => {
+      if (argv[0] === 'kill' && argv[1] === '-0') return { exitCode: livePids.has(argv[2]) ? 0 : 1, stdout: '', stderr: '' }
+      runs.push({ argv, init })
+      const r = nextRuns.length > 0 ? nextRuns.shift()! : runResult
+      if (r instanceof Error) throw r
+      return r
+    },
+  },
+  ui: {
+    resolve: async () => ({ Box: 'Box', Text: 'Text', Button: 'Button', Markdown: 'Markdown' }),
+    invalidate: (event: string) => { invalidated.push(event) },
+    toast: (text: string) => { toasts.push(text) },
+    open: async (args: any) => { panes.push({ op: 'open', args }) },
+    close: async (args: any) => { panes.push({ op: 'close', args }) },
+    ask: async (question: string, options: any) => {
+      asks.push({ question, options })
+      const reply = question === QUEUE_MODE_QUESTION ? modeAnswer : answer
+      if (reply instanceof Error) throw reply
+      return reply
+    },
+  },
+  clock: { after: timer('after'), every: timer('every'), now: async () => nowMs },
+  fs: {
+    write: async (path: string, text: string) => { written[path] = text; files[path] = text },
+    exists: async (path: string) => existing.has(path) || path in files,
+    read: async (path: string) => { if (path in files) return files[path]; throw new Error(`ENOENT ${path}`) },
+  },
+}
+
+const DRAWN = { type: 'Survey', props: {}, children: [] }
+const band = (props: Partial<{ isWorking: boolean; hasSurvey: boolean }> = {}) =>
+  hooks['ui.render:AbovePrompt']($, { props: { isWorking: false, hasSurvey: false, ...props } }, async () => DRAWN)
+
+function buttons(tree: any): any[] {
+  if (!tree || typeof tree !== 'object') return []
+  if (tree.type === 'Button') return [tree]
+  return (tree.children ?? []).flatMap(buttons)
+}
+const findButton = (tree: any) => buttons(tree)[0]
+
+beforeEach(() => {
+  for (const k of Object.keys(hooks)) delete hooks[k]
+  percent = undefined; filled = []; ran = []; written = {}; existing = new Set(['/work/.cs/local'])
+  timers = []; invalidated = []; toasts = []; asks = []; answer = WRAP_YES; modeAnswer = QUEUE_HERE; panes = []
+  runs = []; runResult = { exitCode: 0, stdout: '', stderr: '' }; nextRuns = []; submitted = []; commands = []
+  compactedAt = []; compactResult = { messages: [] }
+  nowMs = 1_800_000_000_000; livePids = new Set()
+  // The default fixture is the lead conversation of a cs session.
+  sessionId = 'uuid-lead'
+  envVars = {}
+  files = { '/work/.cs/local/state': 'claude_session_color: red\nclaude_session_id: uuid-lead\n' }
+  register(on as any)
+})
+
+test('the default threshold is the statusline warn band', () => {
+  expect(DEFAULT_PERCENT).toBe(40)
+})
+
+test('CS_STATUSLINE_CTX_WARN moves the band with the bar', async () => {
+  envVars.CS_STATUSLINE_CTX_WARN = '50'
+  percent = 49
+  expect(await band()).toBe(DRAWN)
+  percent = 50
+  expect(findButton(await band())).toBeDefined()
+  envVars.CS_ROTATE_BUTTON_CTX = '10'
+  percent = 10
+  expect(findButton(await band())).toBeDefined()
+})
+
+test('below the threshold the band passes the drawn tree through untouched', async () => {
+  percent = 39
+  expect(await band()).toBe(DRAWN)
+})
+
+test('CS_ROTATE_BUTTON_CTX in the process environment sets the threshold', async () => {
+  envVars.CS_ROTATE_BUTTON_CTX = '55'
+  percent = 54
+  expect(await band()).toBe(DRAWN)
+  percent = 55
+  expect(findButton(await band())).toBeDefined()
+})
+
+test('an unusable CS_ROTATE_BUTTON_CTX falls back to the default', async () => {
+  envVars.CS_ROTATE_BUTTON_CTX = 'soon'
+  percent = 39
+  expect(await band()).toBe(DRAWN)
+  percent = 40
+  expect(findButton(await band())).toBeDefined()
+})
+
+test('a quoted claude_session_id in state still names the lead', async () => {
+  files['/work/.cs/local/state'] = 'claude_session_id: "uuid-lead"  \n'
+  percent = 40
+  expect(findButton(await band())).toBeDefined()
+})
+
+test('at the threshold the band adds the rotate key on the strip:jump1 action, first, beneath what was drawn', async () => {
+  percent = 40
+  const tree = await band()
+  expect(tree).not.toBe(DRAWN)
+  expect(buttons(tree)).toHaveLength(2)
+  const button = findButton(tree)
+  expect(button.props.action).toBe('strip:jump1')
+  // No bare digit: a hotkey fires from an empty composer, where a digit typed
+  // as an answer to a numbered question belongs (measured live).
+  expect(button.props.hotkey).toBeUndefined()
+  expect(button.props.plain).toBe(true)
+  expect(button.props.label).toBe('rotate this conversation')
+  const json1 = JSON.stringify(tree)
+  expect(json1).toContain('"Survey"')
+  expect(json1).not.toContain('borderStyle')
+})
+
+// The engine draws a Button with no hotkey as its label alone, so the band
+// spells the key itself: the chord the person's keybindings.json gives the
+// Button's action, as written there, and nothing when no chord presses it.
+const KEYS = '/home/.claude/keybindings.json'
+const bindKeys = (bindings: Record<string, string | null>, context = 'Global') => {
+  files[KEYS] = JSON.stringify({ bindings: [{ context, bindings }] })
+}
+const words = (tree: any): string[] => texts(tree).map(textOf)
+
+test('the band spells the chord keybindings.json binds to each Button\'s action', async () => {
+  envVars.HOME = '/home'
+  bindKeys({ 'ctrl+x 1': 'strip:jump1', 'ctrl+x 2': 'strip:jump2', 'ctrl+x r': 'command:rotate' })
+  percent = 40
+  expect(words(await band())).toEqual(expect.arrayContaining(['ctrl+x 1', 'ctrl+x 2']))
+  arm()
+  expect(words(await band())).toEqual(expect.arrayContaining(['ctrl+x 1']))
+  expect(words(await band())).not.toContain('ctrl+x 2')
+})
+
+test('a chord bound elsewhere is spelled as the person wrote it', async () => {
+  envVars.HOME = '/home'
+  bindKeys({ 'Ctrl+K 9': 'strip:jump1' })
+  percent = 40
+  const drawn = words(await band())
+  expect(drawn).toContain('Ctrl+K 9')
+  expect(drawn.join(' ')).not.toContain('ctrl+x')
+})
+
+test('with no chord bound the band draws no key, and the Buttons stay', async () => {
+  envVars.HOME = '/home'
+  percent = 40
+  const cases: (() => void)[] = [
+    () => { delete files[KEYS] },
+    () => { files[KEYS] = '{ not json' },
+    () => { files[KEYS] = '[]' },
+    () => bindKeys({ 'ctrl+x 1': null, 'ctrl+x 2': 'command:wrap' }),
+    () => bindKeys({ 'ctrl+x 1': 'strip:jump1' }, 'Transcript'),
+  ]
+  for (const arrange of cases) {
+    arrange()
+    const tree = await band()
+    expect(buttons(tree)).toHaveLength(2)
+    expect(words(tree).join(' ')).not.toContain('+')
+  }
+})
+
+test('CLAUDE_CONFIG_DIR names the keybindings.json the band reads, as it does for Claude Code', async () => {
+  envVars.HOME = '/home'
+  envVars.CLAUDE_CONFIG_DIR = '/cfg'
+  bindKeys({ 'ctrl+x 1': 'strip:jump1' })
+  percent = 40
+  expect(words(await band()).join(' ')).not.toContain('ctrl+x 1')
+  files['/cfg/keybindings.json'] = files[KEYS]
+  expect(words(await band())).toContain('ctrl+x 1')
+})
+
+test('the band draws no context gauge: the status bar already carries it', async () => {
+  percent = 71
+  const tree = JSON.stringify(await band())
+  expect(tree).not.toContain('ctx')
+  expect(tree).not.toContain('71%')
+})
+
+// One blank line above it, and the status bar's own capsule surface under it,
+// so the keys read as a band of their own rather than as the last row of
+// whatever the transcript ended with.
+test('the band sits a line clear of what is above it, on the bar\'s capsule surface', async () => {
+  envVars.CS_TERM_BG_RGB = '252;247;229'
+  percent = 40
+  const tree = JSON.stringify(await band())
+  expect(tree).toContain('"marginTop":1')
+  expect(tree).toContain('"backgroundColor":"rgb(226,222,206)"')
+})
+
+// Claude Code draws its footer (the status bar and the mode line) two columns
+// in from the prompt's rule (measured on 2.1.292); the band starts in the same
+// column so the twins line up.
+test('the band starts in the status bar\'s column, two in from the prompt\'s rule', async () => {
+  percent = 40
+  const tree = await band()
+  expect(boxes(tree).find((b: any) => b.props.key === 'cs-rotate-band').props.marginLeft).toBe(2)
+})
+
+test('without a measured terminal background the band keeps the spacing and paints no surface', async () => {
+  percent = 40
+  const tree = await band()
+  expect(JSON.stringify(tree)).toContain('"marginTop":1')
+  // the body has no surface to paint; the chip's session colour needs no measurement
+  expect(boxes(tree).find((b: any) => b.props.key === 'cs-rotate-band-body').props.backgroundColor).toBeUndefined()
+  expect(chip(tree).props.backgroundColor).toBe('rgb(220,38,38)')
+})
+
+// KEEP IN SYNC with _bg_shade in bin/cs-statusline (tests/test_mod_rotate.sh
+// pins the shift against that file): a tenth away from the background's own
+// luminance, darker on a light terminal and lighter on a dark one.
+test('the surface is the shade the status bar shades the terminal background to', () => {
+  expect(surfaceColor('252;247;229')).toBe('rgb(226,222,206)')
+  expect(surfaceColor('30;30;30')).toBe('rgb(52,52,52)')
+  expect(surfaceColor(undefined)).toBeUndefined()
+  expect(surfaceColor('not a colour')).toBeUndefined()
+  expect(surfaceColor('252;247')).toBeUndefined()
+  expect(surfaceColor('252;247;300')).toBeUndefined()
+})
+
+// A bare line: no box to draw, so no border to light up under the pointer and
+// no Claude mark in front of the keys. The key stays: it is the band's identity.
+test('the capsule is a keyed box with no border, no hover and no Claude mark', async () => {
+  percent = 40
+  const tree = JSON.stringify(await band())
+  expect(tree).toContain('"key":"cs-rotate-band"')
+  expect(tree).not.toContain('borderStyle')
+  expect(tree).not.toContain('borderColor')
+  expect(tree).not.toContain('hover')
+  expect(tree).not.toContain('\u2733')
+  expect(tree).not.toContain('"claude"')
+})
+
+// The band is the status bar's twin: a `cs` chip on the session's own colour
+// leads the capsule, as the session name leads the bar, and the keys are
+// spelled bold in that colour on the bar's surface. Armed, the chip turns
+// Claude coral, the bar's brand ink, so the armed /clear reads apart; the body
+// keeps the surface so the count's ramp keeps its contrast.
+const boxes = (tree: any): any[] => {
+  if (!tree || typeof tree !== 'object') return []
+  const own = tree.type === 'Box' ? [tree] : []
+  return [...own, ...(tree.children ?? []).flatMap(boxes)]
+}
+const chip = (tree: any) => boxes(tree).find((b: any) => (b.children ?? []).some((c: any) => c?.type === 'Text' && textOf(c) === 'cs'))
+const chipText = (tree: any) => texts(chip(tree)).find((t: any) => textOf(t) === 'cs')
+
+test('a cs chip on the session colour leads the band, the keys bold in that colour', async () => {
+  envVars.HOME = '/home'
+  envVars.CS_TERM_BG_RGB = '252;247;229'
+  bindKeys({ 'ctrl+x 1': 'strip:jump1', 'ctrl+x 2': 'strip:jump2' })
+  percent = 40
+  const tree = await band()
+  expect(chip(tree).props.backgroundColor).toBe('rgb(220,38,38)')
+  expect(chipText(tree).props.bold).toBe(true)
+  expect(chipText(tree).props.color).toBe('rgb(255,255,255)')
+  const key = texts(tree).find((t: any) => textOf(t) === 'ctrl+x 1')
+  expect(key.props.bold).toBe(true)
+  expect(key.props.color).toBe('rgb(220,38,38)')
+  // the chip comes before every key and Button
+  const order = JSON.stringify(tree)
+  expect(order.indexOf('"cs"')).toBeLessThan(order.indexOf('strip:jump1'))
+  expect(order.indexOf('"cs"')).toBeLessThan(order.indexOf('ctrl+x 1'))
+})
+
+test('the chip\'s white softens on a dark terminal, as the bar\'s does', async () => {
+  envVars.CS_TERM_THEME = 'dark'
+  percent = 40
+  expect(chipText(await band()).props.color).toBe('rgb(230,230,230)')
+})
+
+test('a session with no colour in the palette gets the chip on the surface, in the terminal\'s own ink', async () => {
+  envVars.CS_TERM_BG_RGB = '252;247;229'
+  files['/work/.cs/local/state'] = 'claude_session_id: uuid-lead\n'
+  percent = 40
+  const tree = await band()
+  expect(chip(tree).props.backgroundColor).toBe('rgb(226,222,206)')
+  expect(chipText(tree).props.color).toBeUndefined()
+  expect(chipText(tree).props.bold).toBe(true)
+})
+
+test('an armed handoff turns the chip Claude coral and keeps the body on the surface', async () => {
+  envVars.CS_TERM_BG_RGB = '252;247;229'
+  arm(); percent = 90
+  const tree = await band()
+  expect(chip(tree).props.backgroundColor).toBe('rgb(217,119,87)')
+  expect(chipText(tree).props.color).toBe('rgb(255,255,255)')
+  expect(boxes(tree).find((b: any) => b.props.key === 'cs-rotate-band-body').props.backgroundColor).toBe('rgb(226,222,206)')
+})
+
+// The rounded ends are the bar's Powerline caps, U+E0B6 and U+E0B4, drawn in
+// the fill they close on the terminal's own background. They wait on the
+// same consent the bar's do: CS_STATUSLINE_CAPS=1/0, else the per-machine
+// answer file holding `on`. Without a measured background there is no fill
+// to close, so no caps either.
+const CAP_L = ''
+const CAP_R = ''
+const CAPS_FILE = '/home/.config/cs/statusline-caps'
+const caps = async () => {
+  const drawn = texts(await band())
+  return [drawn.find((t: any) => textOf(t) === CAP_L)?.props.color, drawn.find((t: any) => textOf(t) === CAP_R)?.props.color]
+}
+
+test('the band draws the bar\'s rounded caps in the fills they close, where the bar would', async () => {
+  envVars.HOME = '/home'
+  envVars.CS_TERM_BG_RGB = '252;247;229'
+  percent = 40
+  envVars.CS_STATUSLINE_CAPS = '1'
+  expect(await caps()).toEqual(['rgb(220,38,38)', 'rgb(226,222,206)'])
+  envVars.CS_STATUSLINE_CAPS = '0'
+  files[CAPS_FILE] = 'on\n'
+  expect(await caps()).toEqual([undefined, undefined])
+  delete envVars.CS_STATUSLINE_CAPS
+  expect(await caps()).toEqual(['rgb(220,38,38)', 'rgb(226,222,206)'])
+  envVars.XDG_CONFIG_HOME = '/xdg'
+  expect(await caps()).toEqual([undefined, undefined])
+  files['/xdg/cs/statusline-caps'] = 'on\n'
+  expect(await caps()).toEqual(['rgb(220,38,38)', 'rgb(226,222,206)'])
+  files['/xdg/cs/statusline-caps'] = 'off\n'
+  expect(await caps()).toEqual([undefined, undefined])
+  arm()
+  files['/xdg/cs/statusline-caps'] = 'on\n'
+  expect(await caps()).toEqual(['rgb(217,119,87)', 'rgb(226,222,206)'])
+})
+
+test('without a measured background the band draws no caps, whatever the consent', async () => {
+  envVars.CS_STATUSLINE_CAPS = '1'
+  percent = 40
+  expect(await caps()).toEqual([undefined, undefined])
+})
+
+test('while a turn runs the button is hidden', async () => {
+  percent = 90
+  expect(await band({ isWorking: true })).toBe(DRAWN)
+})
+
+test('while a survey holds the band the hook yields', async () => {
+  percent = 90
+  expect(await band({ hasSurvey: true })).toBe(DRAWN)
+})
+
+test('an unknown percentage draws nothing', async () => {
+  percent = undefined
+  expect(await band()).toBe(DRAWN)
+})
+
+test('a press runs the rotate skill and fills nothing', async () => {
+  percent = 80
+  const button = findButton(await band())
+  await button.props.onPress()
+  expect(ran).toEqual([{ command: 'rotate', args: '' }])
+  expect(filled).toEqual([])
+})
+
+test('outside a cs session the band draws nothing at crit', async () => {
+  percent = 90
+  existing = new Set(); files = {}
+  expect(await band()).toBe(DRAWN)
+})
+
+test('a session opted out with .cs/local/disabled gets no button', async () => {
+  percent = 90
+  existing.add('/work/.cs/local/disabled')
+  expect(await band()).toBe(DRAWN)
+})
+
+test('a teammate conversation (not the one .cs/local/state names) gets no button', async () => {
+  percent = 90
+  sessionId = 'uuid-teammate'
+  expect(await band()).toBe(DRAWN)
+})
+
+test('with no state file to name the lead the band draws nothing', async () => {
+  percent = 90
+  files = {}
+  expect(await band()).toBe(DRAWN)
+})
+
+const MARKER = '/work/.cs/local/pending-handoff'
+const HANDOFF = '/work/.cs/handoffs/2026-09-15-next-step.md'
+const UNCONSUMED = '---\nparent: uuid-lead\nstatus: unconsumed\n---\n\n## 1. Next Step\n'
+// Armed the way the rotate skill leaves it: an unconsumed handoff, then the marker.
+const arm = () => { files[HANDOFF] = UNCONSUMED; files[MARKER] = '2026-09-15-next-step.md\n' }
+
+test('an armed handoff turns the button into the clear button, whatever the context', async () => {
+  arm()
+  for (const p of [undefined, 3, 90]) {
+    percent = p
+    const tree = await band()
+    expect(buttons(tree)).toHaveLength(1)
+    const button = findButton(tree)
+    expect(button.props.action).toBe('strip:jump1')
+    expect(button.props.hotkey).toBeUndefined()
+    expect(button.props.plain).toBe(true)
+    expect(findButton(tree).props.label).toBe('/clear and continue from the handoff')
+    const json = JSON.stringify(tree)
+    expect(json).not.toContain('borderStyle')
+    expect(json).not.toContain('borderColor')
+    expect(json).not.toContain('undefined')
+    expect(json).not.toContain('ctx')
+  }
+})
+
+test('pressing the clear button runs /clear and fills nothing', async () => {
+  arm(); percent = 3
+  await findButton(await band()).props.onPress()
+  expect(ran).toEqual([{ command: 'clear', args: '' }])
+  expect(filled).toEqual([])
+})
+
+test('the rotate press never clears', async () => {
+  percent = 80
+  await findButton(await band()).props.onPress()
+  expect(ran).not.toContainEqual({ command: 'clear', args: '' })
+})
+
+test('an armed handoff is still lead-only and yields to a running turn', async () => {
+  arm(); percent = 90
+  expect(await band({ isWorking: true })).toBe(DRAWN)
+  expect(await band({ hasSurvey: true })).toBe(DRAWN)
+  sessionId = 'uuid-teammate'
+  expect(await band()).toBe(DRAWN)
+})
+
+test('a marker naming a handoff that is gone, consumed, or outside the store does not arm', async () => {
+  percent = 39
+  arm(); delete files[HANDOFF]
+  expect(await band()).toBe(DRAWN)
+  arm(); files[HANDOFF] = UNCONSUMED.replace('status: unconsumed', 'status: consumed')
+  expect(await band()).toBe(DRAWN)
+  arm(); files[HANDOFF] = '## no frontmatter\nstatus: unconsumed\n'
+  expect(await band()).toBe(DRAWN)
+  arm(); files[MARKER] = '../local/state\n'
+  expect(await band()).toBe(DRAWN)
+  percent = 40
+  expect(findButton(await band()).props.label).toBe('rotate this conversation')
+})
+
+// An encrypted session keeps the marker and its handoffs behind .cs/private.
+const PRIVATE_MARKER = '/work/.cs/private/pending-handoff'
+const PRIVATE_HANDOFF = '/work/.cs/private/handoffs/2026-09-15-next-step.md'
+
+test('an encrypted session arms from the marker and handoff behind .cs/private', async () => {
+  files[PRIVATE_HANDOFF] = UNCONSUMED; files[PRIVATE_MARKER] = '2026-09-15-next-step.md\n'
+  percent = 3
+  expect(findButton(await band()).props.label).toBe('/clear and continue from the handoff')
+})
+
+test('a private marker never arms from the plaintext handoff store', async () => {
+  files[HANDOFF] = UNCONSUMED; files[PRIVATE_MARKER] = '2026-09-15-next-step.md\n'
+  percent = 39
+  expect(await band()).toBe(DRAWN)
+})
+
+test('an empty marker names no handoff, so the band behaves as unarmed', async () => {
+  files[MARKER] = '\n'
+  percent = 39
+  expect(await band()).toBe(DRAWN)
+  percent = 40
+  expect(findButton(await band()).props.label).toBe('rotate this conversation')
+})
+
+test('session.start writes a heartbeat under the session meta dir', async () => {
+  const r = await hooks['session.start']($, { cwd: '/work', surface: 'terminal', isInteractive: true }, async (e) => ({ cwd: e.cwd }))
+  expect(r).toEqual({ cwd: '/work' })
+  const text = written['/work/.cs/local/cs.heartbeat']
+  expect(text).toMatch(/^\d{4}-\d{2}-\d{2}T.*Z\n$/)
+})
+
+test('outside a cs session no heartbeat is written', async () => {
+  await hooks['session.start']($, { cwd: '/plain', surface: 'terminal', isInteractive: true }, async (e) => ({ cwd: e.cwd }))
+  expect(Object.keys(written)).toEqual([])
+})
+
+// A turn's end, the way the engine reports it: answered on the main loop unless said otherwise.
+const turnComplete = (e: Partial<{ reason: string; agentId: string }> = {}) =>
+  hooks['turn.complete']($, { reason: 'answer', answer: 'ok', durationMs: 1, isAborted: false, turnId: 't1', ...e }, async () => ({ text: 'ok' }))
+// The pending `after` timers, run the way the clock would run them.
+const fireAfter = async () => { for (const t of timers.filter(t => t.kind === 'after' && !t.cancelled)) { t.cancelled = true; await t.fn() } }
+
+test('with CS_ROTATE_FORCE_CTX set, a turn ending past it schedules /rotate from a timer, not from the hook', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  percent = 70
+  await turnComplete()
+  expect(ran).toEqual([])
+  expect(timers.map(t => t.kind)).toEqual(['after'])
+  await fireAfter()
+  expect(ran).toEqual([{ command: 'rotate', args: '' }])
+})
+
+test('without CS_ROTATE_FORCE_CTX a turn ending past the 80% default forces a rotation', async () => {
+  percent = 80
+  await turnComplete()
+  expect(timers.map(t => t.kind)).toEqual(['after'])
+  await fireAfter()
+  expect(ran).toEqual([{ command: 'rotate', args: '' }])
+})
+
+test('under the default a turn ending below 80% forces nothing', async () => {
+  percent = 79
+  await turnComplete()
+  expect(timers).toEqual([])
+  expect(ran).toEqual([])
+})
+
+test('CS_ROTATE_FORCE_CTX=off, and 0, turn the forcing off entirely', async () => {
+  for (const value of ['off', 'OFF', '0']) {
+    envVars.CS_ROTATE_FORCE_CTX = value
+    percent = 100
+    await turnComplete()
+    expect(timers).toEqual([])
+    expect(ran).toEqual([])
+  }
+})
+
+test('below the force threshold, or with an unusable value, a turn ending forces nothing', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  percent = 69
+  await turnComplete()
+  // An unusable value is the default, not "off": a typo must not quietly
+  // disable a rotation the person is relying on. 100 is past 80, so it forces.
+  envVars.CS_ROTATE_FORCE_CTX = 'critical'
+  percent = 100
+  await turnComplete()
+  expect(timers.map(t => t.kind)).toEqual(['after'])
+})
+
+test('a forced rotation runs once per conversation, and a failed /rotate is not retried', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  percent = 80
+  await turnComplete()
+  expect(written['/work/.cs/local/cs.forced']).toBe('uuid-lead\n')
+  await turnComplete(); await turnComplete()
+  expect(timers).toHaveLength(1)
+  // the marker is written before the timer is scheduled, so a rejected run stays rejected
+  $.command.run = async () => { throw new Error('unknown command') }
+  await fireAfter()
+  expect(toasts).toEqual(['cs: /rotate did not run: Error: unknown command'])
+  await turnComplete()
+  expect(timers).toHaveLength(1)
+  $.command.run = async (args: any) => { ran.push(args); return { text: '' } }
+  // a marker from an earlier conversation of the session does not count
+  files['/work/.cs/local/cs.forced'] ='uuid-earlier\n'
+  await turnComplete()
+  expect(timers).toHaveLength(2)
+})
+
+test('a subagent\'s turn, an aborted, errored or refused one, a teammate, or an unarmed non-cs directory forces nothing', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  percent = 90
+  await turnComplete({ agentId: 'agent-1' })
+  await turnComplete({ reason: 'aborted' })
+  await turnComplete({ reason: 'error' })
+  await turnComplete({ reason: 'refusal' })
+  sessionId = 'uuid-teammate'
+  await turnComplete()
+  sessionId = 'uuid-lead'; existing = new Set(); files = {}
+  await turnComplete()
+  expect(timers).toEqual([])
+  expect(Object.keys(written)).toEqual([])
+})
+
+test('a turn ending past the force threshold with a handoff already armed runs no second /rotate', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  percent = 90
+  arm()
+  await turnComplete()
+  await fireAfter()
+  expect(ran).toEqual([])
+})
+
+// The countdown's ticker, and one tick of it as the clock would run it.
+const ticker = () => timers.find(t => t.kind === 'every' && !t.cancelled)
+const tick = async (n = 1) => { for (let i = 0; i < n; i++) await ticker()!.fn() }
+const promptSubmit = (text = 'keep going') =>
+  hooks['prompt.submit']($, { text, wait: false, origin: { kind: 'composer' } }, async (e) => ({ text: e.text }))
+
+test('with the handoff armed and force on, a turn ending starts a countdown the band shows, one redraw a second', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); percent = 80
+  await band()
+  await turnComplete()
+  expect(ticker()?.ms).toBe(1000)
+  expect(GRACE_SECONDS).toBe(20)
+  expect(JSON.stringify(await band())).toContain(`/clear in ${GRACE_SECONDS}s`)
+  await tick(3)
+  expect(invalidated).toEqual(['ui.render', 'ui.render', 'ui.render'])
+  expect(JSON.stringify(await band())).toContain(`/clear in ${GRACE_SECONDS - 3}s`)
+  expect(ran).toEqual([])
+  // one countdown at a time: another turn ending does not start a second
+  await turnComplete()
+  expect(timers.filter(t => t.kind === 'every')).toHaveLength(1)
+})
+
+test('at zero the countdown runs /clear, once, and stops ticking', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); percent = 80
+  await band()
+  await turnComplete()
+  const t = ticker()!
+  await tick(GRACE_SECONDS)
+  expect(ran).toEqual([{ command: 'clear', args: '' }])
+  expect(t.cancelled).toBe(true)
+  expect(JSON.stringify(await band())).not.toContain('/clear in')
+})
+
+test('a prompt entering the session stops the countdown and passes through', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); percent = 80
+  await band()
+  await turnComplete()
+  await tick(2)
+  const t = ticker()!
+  expect(await promptSubmit('one more thing')).toEqual({ text: 'one more thing' })
+  expect(t.cancelled).toBe(true)
+  expect(JSON.stringify(await band())).not.toContain('/clear in')
+  expect(ran).toEqual([])
+  // the next turn ending restarts it from the top
+  await turnComplete()
+  expect(JSON.stringify(await band())).toContain(`/clear in ${GRACE_SECONDS}s`)
+})
+
+test('pressing the clear button mid-countdown stops the ticker before it clears', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); percent = 80
+  await band()
+  await turnComplete()
+  await tick(2)
+  const t = ticker()!
+  await findButton(await band()).props.onPress()
+  expect(t.cancelled).toBe(true)
+  expect(ran).toEqual([{ command: 'clear', args: '' }])
+})
+
+test('a countdown reaching zero while a turn runs or a survey holds the band clears nothing and stops', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); percent = 80
+  for (const props of [{ isWorking: true }, { hasSurvey: true }]) {
+    await band()
+    await turnComplete()
+    const t = ticker()!
+    await band(props)
+    await tick(GRACE_SECONDS)
+    expect(ran).toEqual([])
+    expect(t.cancelled).toBe(true)
+  }
+})
+
+test('a countdown reaching zero re-checks the handoff: one consumed meanwhile clears nothing', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); percent = 80
+  await band()
+  await turnComplete()
+  files[HANDOFF] = UNCONSUMED.replace('status: unconsumed', 'status: consumed')
+  await tick(GRACE_SECONDS)
+  expect(ran).toEqual([])
+})
+
+test('with the forcing off, or outside the lead, an armed handoff starts no countdown and prompt.submit passes through', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = 'off'
+  arm(); percent = 80
+  await turnComplete()
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  sessionId = 'uuid-teammate'
+  await turnComplete()
+  expect(timers).toEqual([])
+  expect(toasts).toEqual([])
+  expect(await promptSubmit()).toEqual({ text: 'keep going' })
+})
+
+test('a prompt arriving while the zero tick is still checking the handoff wins: nothing clears', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); percent = 80
+  await band()
+  await turnComplete()
+  await tick(GRACE_SECONDS - 1)
+  const zero = tick()
+  await promptSubmit('wait, one more thing')
+  await zero
+  expect(ran).toEqual([])
+  // and a press racing the zero tick clears once, not twice
+  await turnComplete()
+  await tick(GRACE_SECONDS - 1)
+  const button = findButton(await band())
+  const zero2 = tick()
+  await button.props.onPress()
+  await zero2
+  expect(ran).toEqual([{ command: 'clear', args: '' }])
+})
+
+test('a /clear run from anywhere else ends the countdown, so no timer outlives the conversation', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); percent = 80
+  await band()
+  await turnComplete()
+  const t = ticker()!
+  const e = { command: 'clear', args: '', origin: { kind: 'composer' }, presentation: { layout: 'main', columns: 80 } }
+  expect(await hooks['command.run:clear']($, e, async () => ({ text: '' }))).toEqual({ text: '' })
+  expect(t.cancelled).toBe(true)
+  expect(JSON.stringify(await band())).not.toContain('/clear in')
+})
+
+test('a rejected /clear at zero shows a toast and clears nothing else', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); percent = 80
+  await band()
+  await turnComplete()
+  await fireAfter() // the handoff pane's open, spent
+  $.command.run = async () => { throw new Error('no session') }
+  await tick(GRACE_SECONDS)
+  $.command.run = async (args: any) => { ran.push(args); return { text: '' } }
+  expect(toasts).toEqual(['cs: /clear did not run: Error: no session'])
+  expect(ran).toEqual([])
+})
+
+// A switch to the other engine: the switch skill arms its handoff as rotate
+// does, then `cs -switch` records the move. The mod runs only under Claude,
+// so a pending switch means leaving it: /exit, after which cs reopens the
+// session under the target. A /clear would hand the handoff to Claude again.
+// cs carries out only the record of the run that just ended, and only while
+// the handoff it names is unconsumed, so the mod reads the record the same way.
+const SWITCH = '/work/.cs/local/pending-switch'
+const PRIVATE_SWITCH = '/work/.cs/private/pending-switch'
+const RUN = 'run-0001'
+const SWITCH_RECORD = `engine=codex\nmode=fresh\nhandoff=2026-09-15-next-step.md\nrun=${RUN}\n`
+// Recorded the way `cs -switch` leaves it, inside the run the mod belongs to.
+const recordSwitch = (text = SWITCH_RECORD, at = SWITCH) => { files[at] = text; envVars.CS_RUN_ID = RUN }
+const EXIT = { command: 'exit', args: '' }
+
+test('a pending switch turns the armed key into the exit key, naming the target engine', async () => {
+  arm(); recordSwitch(); percent = 3
+  const tree = await band()
+  expect(buttons(tree)).toHaveLength(1)
+  const button = findButton(tree)
+  expect(button.props.action).toBe('strip:jump1')
+  expect(button.props.plain).toBe(true)
+  expect(button.props.label).toBe('/exit and continue in codex')
+  await button.props.onPress()
+  expect(ran).toEqual([EXIT])
+  expect(filled).toEqual([])
+  // the press consumes nothing: the marker and the record are cs's
+  expect(files[MARKER]).toBe('2026-09-15-next-step.md\n')
+  expect(files[SWITCH]).toBe(SWITCH_RECORD)
+})
+
+test('with no switch pending the armed key and the count keep their /clear', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  envVars.CS_RUN_ID = RUN
+  arm(); percent = 80
+  expect(findButton(await band()).props.label).toBe('/clear and continue from the handoff')
+  await turnComplete()
+  expect(JSON.stringify(await band())).toContain(`/clear in ${GRACE_SECONDS}s`)
+  await tick(GRACE_SECONDS)
+  expect(ran).toEqual([{ command: 'clear', args: '' }])
+})
+
+test('with a switch pending the count reads /exit and runs /exit at zero, once', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); recordSwitch(); percent = 80
+  await band()
+  await turnComplete()
+  const t = ticker()!
+  const json = JSON.stringify(await band())
+  expect(json).toContain(`/exit in ${GRACE_SECONDS}s`)
+  expect(json).not.toContain('/clear')
+  await tick(3)
+  expect(texts(await band()).some(n => textOf(n) === `/exit in ${GRACE_SECONDS - 3}s`)).toBe(true)
+  await tick(GRACE_SECONDS - 3)
+  expect(ran).toEqual([EXIT])
+  expect(t.cancelled).toBe(true)
+  expect(JSON.stringify(await band())).not.toContain('/exit in')
+})
+
+test('the pane counts down to the /exit and says where the session goes', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); files[HANDOFF] = HANDOFF_WITH_STEP; recordSwitch(); percent = 80
+  await band(); await turnComplete(); await fireAfter()
+  const body = JSON.stringify(await pane())
+  expect(body).toContain('Run the secrets suites solo.')
+  expect(body).toContain(`/exit in ${GRACE_SECONDS}s`)
+  expect(body).toContain('press 1 to exit now and continue in codex, or send a prompt to stay')
+  expect(body).not.toContain('/clear')
+})
+
+test('a prompt stops a switch\'s count as it stops a rotation\'s, and nothing exits', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); recordSwitch(); percent = 80
+  await band(); await turnComplete()
+  await tick(2)
+  const t = ticker()!
+  expect(await promptSubmit('one more thing')).toEqual({ text: 'one more thing' })
+  expect(t.cancelled).toBe(true)
+  expect(JSON.stringify(await band())).not.toContain('/exit in')
+  expect(ran).toEqual([])
+})
+
+test('pressing the exit key mid-countdown stops the ticker before it exits', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); recordSwitch(); percent = 80
+  await band(); await turnComplete()
+  await tick(2)
+  const t = ticker()!
+  await findButton(await band()).props.onPress()
+  expect(t.cancelled).toBe(true)
+  expect(ran).toEqual([EXIT])
+})
+
+test('a switch recorded or cancelled mid-count decides the action at zero', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); percent = 80
+  await band(); await turnComplete()
+  await tick(5)
+  recordSwitch()
+  await tick(GRACE_SECONDS - 5)
+  expect(ran).toEqual([EXIT])
+
+  // cancelled (`cs -switch cancel` removes the record): the /clear is back
+  register(on as any); ran = []
+  arm(); recordSwitch()
+  await band(); await turnComplete()
+  await tick(5)
+  delete files[SWITCH]
+  await tick(GRACE_SECONDS - 5)
+  expect(ran).toEqual([{ command: 'clear', args: '' }])
+})
+
+test('a switch count reaching zero while a turn runs exits nothing and stops', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); recordSwitch(); percent = 80
+  await band(); await turnComplete()
+  const t = ticker()!
+  await band({ isWorking: true })
+  await tick(GRACE_SECONDS)
+  expect(ran).toEqual([])
+  expect(t.cancelled).toBe(true)
+})
+
+test('a rejected /exit at zero shows a toast and runs nothing else', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); recordSwitch(); percent = 80
+  await band(); await turnComplete(); await fireAfter()
+  $.command.run = async () => { throw new Error('no session') }
+  try {
+    await tick(GRACE_SECONDS)
+  } finally {
+    $.command.run = async (args: any) => { ran.push(args); return { text: '' } }
+  }
+  expect(toasts).toEqual(['cs: /exit did not run: Error: no session'])
+  expect(ran).toEqual([])
+})
+
+test('with the forcing off a pending switch starts no count, and the key still exits', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = 'off'
+  arm(); recordSwitch(); percent = 80
+  await turnComplete()
+  expect(timers).toEqual([])
+  await findButton(await band()).props.onPress()
+  expect(ran).toEqual([EXIT])
+})
+
+test('a teammate conversation gets no exit key either', async () => {
+  arm(); recordSwitch(); percent = 90
+  sessionId = 'uuid-teammate'
+  expect(await band()).toBe(DRAWN)
+})
+
+test('a record of another run, another handoff, or no usable engine leaves the /clear', async () => {
+  arm(); percent = 3
+  const label = async () => findButton(await band()).props.label
+  const CLEAR = '/clear and continue from the handoff'
+  // another run's record: cs would not carry it out after this one
+  recordSwitch(SWITCH_RECORD.replace(`run=${RUN}`, 'run=run-older'))
+  expect(await label()).toBe(CLEAR)
+  // no run id to compare with: nothing proves the record is this run's
+  recordSwitch(); delete envVars.CS_RUN_ID
+  expect(await label()).toBe(CLEAR)
+  recordSwitch(SWITCH_RECORD.replace(`run=${RUN}\n`, ''))
+  expect(await label()).toBe(CLEAR)
+  // neither side naming a run is no match either
+  recordSwitch(SWITCH_RECORD.replace(`run=${RUN}\n`, '')); delete envVars.CS_RUN_ID
+  expect(await label()).toBe(CLEAR)
+  // a handoff other than the armed one
+  recordSwitch(SWITCH_RECORD.replace('handoff=2026-09-15-next-step.md', 'handoff=2026-09-14-older.md'))
+  expect(await label()).toBe(CLEAR)
+  // no engine, an empty one, or one that is not a name
+  for (const engine of ['', 'engine=\n', 'engine=co dex\n', 'engine=../x\n', 'engine=Codex\n', 'engine=codex \n', ' engine=codex\n']) {
+    recordSwitch(SWITCH_RECORD.replace('engine=codex\n', engine))
+    expect(await label()).toBe(CLEAR)
+  }
+  // and the record back as written: the exit key
+  recordSwitch()
+  expect(await label()).toBe('/exit and continue in codex')
+})
+
+test('a pending switch without an armed handoff draws nothing of its own', async () => {
+  recordSwitch(); percent = 39
+  expect(await band()).toBe(DRAWN)
+  percent = 40
+  expect(findButton(await band()).props.label).toBe('rotate this conversation')
+  // the marker naming a consumed handoff arms nothing, record or not
+  arm(); files[HANDOFF] = UNCONSUMED.replace('status: unconsumed', 'status: consumed')
+  expect(findButton(await band()).props.label).toBe('rotate this conversation')
+})
+
+test('an encrypted session reads its switch behind .cs/private, beside its marker, never across stores', async () => {
+  files[PRIVATE_HANDOFF] = UNCONSUMED; files[PRIVATE_MARKER] = '2026-09-15-next-step.md\n'
+  recordSwitch(SWITCH_RECORD, PRIVATE_SWITCH); percent = 3
+  expect(findButton(await band()).props.label).toBe('/exit and continue in codex')
+  // a private record never pairs with the plaintext marker
+  delete files[PRIVATE_MARKER]; delete files[PRIVATE_HANDOFF]
+  arm()
+  expect(findButton(await band()).props.label).toBe('/clear and continue from the handoff')
+  // nor a plaintext record with the vault's marker
+  delete files[PRIVATE_SWITCH]; delete files[MARKER]; delete files[HANDOFF]
+  files[PRIVATE_HANDOFF] = UNCONSUMED; files[PRIVATE_MARKER] = '2026-09-15-next-step.md\n'
+  recordSwitch(SWITCH_RECORD, SWITCH)
+  expect(findButton(await band()).props.label).toBe('/clear and continue from the handoff')
+})
+
+// cs's own reader (_switch_field in lib/78-switch.sh): the key from the first
+// column, the value verbatim after the first `=`, the first line of a key.
+test('switchFields reads key=value lines as cs does: the first of a key wins, values verbatim', () => {
+  expect(switchFields(SWITCH_RECORD)).toEqual({ engine: 'codex', mode: 'fresh', handoff: '2026-09-15-next-step.md', run: RUN })
+  expect(switchFields('engine=claude\nengine=codex\n=x\nnoise\nmode=resume\n')).toEqual({ engine: 'claude', mode: 'resume' })
+  expect(switchFields('handoff=a=b.md\nengine=codex \n mode=fresh\n')).toEqual({ handoff: 'a=b.md', engine: 'codex ', ' mode': 'fresh' })
+  expect(switchFields('')).toEqual({})
+  expect(countVerb(undefined)).toBe('/clear')
+  expect(countVerb('codex')).toBe('/exit')
+})
+
+// The SessionStart hook's own rule (_handoff_is_unconsumed): the frontmatter
+// must close, and the status must sit inside it.
+test('isUnconsumed follows the hook: unclosed frontmatter, or a status after it, is not armed', () => {
+  expect(isUnconsumed('---\nstatus: unconsumed\n---\n')).toBe(true)
+  expect(isUnconsumed('---\nstatus: unconsumed\n')).toBe(false)
+  expect(isUnconsumed('---\nparent: x\n---\nstatus: unconsumed\n')).toBe(false)
+  expect(isUnconsumed('---\nstatus: consumed\n---\n')).toBe(false)
+  expect(isUnconsumed('')).toBe(false)
+})
+
+test('a tick that lands while the zero tick is still reading does not push the count negative or clear twice', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); percent = 80
+  await band()
+  await turnComplete()
+  await tick(GRACE_SECONDS - 1)
+  const t = ticker()!
+  const first = t.fn()
+  const second = t.fn()
+  await first; await second
+  expect(ran).toEqual([{ command: 'clear', args: '' }])
+  expect(JSON.stringify(await band())).not.toContain('/clear in -')
+})
+
+
+test('a conversation met at load is forced whatever it started at; one born of a /clear that starts past the threshold is not, and says so once', async () => {
+  // resumed (or launched) already past the line: forced, as asked
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  percent = 72
+  await turnComplete()
+  expect(timers.map(t => t.kind)).toEqual(['after'])
+  expect(toasts).toEqual([])
+  // the successor wakes past the line: that is the loop, and it stops here
+  await clearRun()
+  sessionId = 'uuid-next'
+  files['/work/.cs/local/state'] = 'claude_session_id: uuid-next\n'
+  percent = 71
+  await turnComplete(); await turnComplete()
+  expect(timers).toHaveLength(1)
+  expect(toasts).toEqual(['cs: CS_ROTATE_FORCE_CTX=70 is below this conversation\'s starting context (71%); not forcing a rotation'])
+  // a teammate past the line is not the lead: no rotation, and no toast about one
+  sessionId = 'uuid-teammate'
+  percent = 90
+  await turnComplete()
+  expect(timers).toHaveLength(1)
+  expect(toasts).toHaveLength(1)
+  // a successor that starts below and works its way past is forced as usual
+  sessionId = 'uuid-later'
+  files['/work/.cs/local/state'] = 'claude_session_id: uuid-later\n'
+  percent = 30
+  await turnComplete()
+  percent = 90
+  await turnComplete()
+  expect(timers).toHaveLength(2)
+  // a reload forgets: the conversation it meets next is adopted, whatever it reads
+  register(on as any)
+  sessionId = 'uuid-reloaded'
+  files['/work/.cs/local/state'] = 'claude_session_id: uuid-reloaded\n'
+  percent = 95
+  await turnComplete()
+  expect(timers).toHaveLength(3)
+})
+
+const clearRun = () =>
+  hooks['command.run:clear']($, { command: 'clear', args: '', origin: { kind: 'composer' }, presentation: { layout: 'main', columns: 80 } }, async () => ({ text: '' }))
+
+test('a successor that starts past the threshold still gets the countdown once the person arms a handoff themselves', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  percent = 30
+  await turnComplete()
+  await clearRun()
+  sessionId = 'uuid-next'
+  files['/work/.cs/local/state'] = 'claude_session_id: uuid-next\n'
+  percent = 75
+  await turnComplete()
+  expect(timers).toEqual([])
+  arm()
+  await turnComplete()
+  expect(ticker()).toBeDefined()
+})
+
+test('a /clear before any turn ends still marks the next conversation as /clear-born: past the threshold it is not forced', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  await clearRun()
+  sessionId = 'uuid-next'
+  files['/work/.cs/local/state'] = 'claude_session_id: uuid-next\n'
+  percent = 75
+  await turnComplete()
+  expect(timers).toEqual([])
+  expect(toasts).toHaveLength(1)
+})
+
+test('a new conversation id with no /clear seen in this process is a resume: adopted and forced as asked', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  percent = 30
+  await turnComplete()
+  sessionId = 'uuid-resumed'
+  files['/work/.cs/local/state'] = 'claude_session_id: uuid-resumed\n'
+  percent = 72
+  await turnComplete()
+  expect(timers.map(t => t.kind)).toEqual(['after'])
+  expect(toasts).toEqual([])
+})
+
+test('the /clear the mod runs itself marks the successor as /clear-born too, so a wake past the threshold is not forced', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); percent = 80
+  await band()
+  await turnComplete()
+  await fireAfter() // the handoff pane's open, spent
+  await findButton(await band()).props.onPress()
+  expect(ran).toEqual([{ command: 'clear', args: '' }])
+  files = { '/work/.cs/local/state': 'claude_session_id: uuid-next\n' }
+  sessionId = 'uuid-next'
+  percent = 75
+  await turnComplete()
+  expect(timers.filter(t => t.kind === 'after' && !t.cancelled)).toEqual([])
+  expect(toasts).toHaveLength(1)
+})
+
+test('a /clear whose successor never answers does not mark a later /resume as /clear-born: the band drawn in the successor consumes the birth', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  percent = 30
+  await turnComplete()
+  await clearRun()
+  sessionId = 'uuid-wake'
+  files['/work/.cs/local/state'] = 'claude_session_id: uuid-wake\n'
+  await band()
+  sessionId = 'uuid-resumed'
+  files['/work/.cs/local/state'] = 'claude_session_id: uuid-resumed\n'
+  percent = 72
+  await turnComplete()
+  expect(timers.map(t => t.kind)).toEqual(['after'])
+  expect(toasts).toEqual([])
+})
+
+test('resuming a conversation that was once judged adopts it afresh: the old judgment is dropped', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  percent = 30
+  await turnComplete()
+  await clearRun()
+  sessionId = 'uuid-judged'
+  files['/work/.cs/local/state'] = 'claude_session_id: uuid-judged\n'
+  percent = 75
+  await turnComplete()
+  expect(timers).toEqual([])
+  sessionId = 'uuid-other'
+  files['/work/.cs/local/state'] = 'claude_session_id: uuid-other\n'
+  percent = 20
+  await turnComplete()
+  sessionId = 'uuid-judged'
+  files['/work/.cs/local/state'] = 'claude_session_id: uuid-judged\n'
+  percent = 75
+  await turnComplete()
+  expect(timers.map(t => t.kind)).toEqual(['after'])
+  expect(toasts).toHaveLength(1)
+})
+
+test('a /clear the mod runs itself that is rejected leaves no birth behind: a later /resume past the threshold is forced', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); percent = 80
+  await band()
+  await turnComplete()
+  await fireAfter() // the handoff pane's open, spent
+  $.command.run = async () => { throw new Error('no session') }
+  await tick(GRACE_SECONDS)
+  $.command.run = async (args: any) => { ran.push(args); return { text: '' } }
+  expect(toasts).toEqual(['cs: /clear did not run: Error: no session'])
+  files = { '/work/.cs/local/state': 'claude_session_id: uuid-resumed\n' }
+  sessionId = 'uuid-resumed'
+  percent = 72
+  await turnComplete()
+  expect(timers.filter(t => t.kind === 'after' && !t.cancelled)).toHaveLength(1)
+  expect(toasts).toHaveLength(1)
+})
+
+test('a typed /clear that the engine refuses leaves no birth behind either', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  percent = 30
+  await turnComplete()
+  const e = { command: 'clear', args: '', origin: { kind: 'composer' }, presentation: { layout: 'main', columns: 80 } }
+  await expect(hooks['command.run:clear']($, e, async () => { throw new Error('refused') })).rejects.toThrow('refused')
+  files = { '/work/.cs/local/state': 'claude_session_id: uuid-resumed\n' }
+  sessionId = 'uuid-resumed'
+  percent = 72
+  await turnComplete()
+  expect(timers.map(t => t.kind)).toEqual(['after'])
+  expect(toasts).toEqual([])
+})
+
+// The wrap key: a second button on the strip:jump2 action that runs /wrap. It
+// draws only where the band draws unarmed; once a handoff is armed the band's
+// one job is the /clear.
+const wrapButton = (tree: any) => buttons(tree).find((b: any) => b.props.action === 'strip:jump2')
+test('at the threshold the band adds a second button on strip:jump2 that reads as the wrap key, after the rotate key', async () => {
+  percent = 40
+  const tree = await band()
+  expect(buttons(tree)).toHaveLength(2)
+  expect(buttons(tree)[0].props.action).toBe('strip:jump1')
+  const button = wrapButton(tree)
+  expect(button.props.hotkey).toBeUndefined()
+  expect(button.props.plain).toBe(true)
+  expect(wrapButton(tree).props.label).toBe('wrap up this session')
+})
+
+// One key, then the engine's own dialog. /wrap replaces .cs/summary.md and
+// runs two Opus passes, so the press asks rather than acts; a held `2` repeats
+// on keydown (contract) and each repeat only re-opens the same question.
+test('pressing 2 asks before /wrap, and only the yes runs it', async () => {
+  percent = 40
+  answer = WRAP_YES
+  await wrapButton(await band()).props.onPress()
+  expect(asks).toEqual([{ question: WRAP_QUESTION, options: { header: 'Wrap', options: [WRAP_YES, 'Not now'] } }])
+  expect(ran).toEqual([{ command: 'wrap', args: '' }])
+
+  answer = 'Not now'
+  await wrapButton(await band()).props.onPress()
+  expect(asks).toHaveLength(2)
+  expect(ran).toHaveLength(1)
+
+  // dismissed, or a `-p` run with nobody to ask: nothing runs and nothing is said
+  answer = new Error('dismissed')
+  await wrapButton(await band()).props.onPress()
+  expect(ran).toHaveLength(1)
+  expect(toasts).toEqual([])
+})
+
+test('a /wrap the answer runs that the engine refuses is said once', async () => {
+  percent = 40
+  answer = WRAP_YES
+  $.command.run = async () => { throw new Error('no session') }
+  await wrapButton(await band()).props.onPress()
+  $.command.run = async (args: any) => { ran.push(args); return { text: '' } }
+  expect(toasts).toEqual(['cs: /wrap did not run: Error: no session'])
+  expect(ran).toEqual([])
+})
+
+// A wrap that finished leaves nothing for the key to do until the conversation
+// moves on. /wrap's last pass writes .cs/local/wrapped naming the conversation
+// it ran in; the band draws the rotate key alone while the marker names this
+// one, and the next turn that starts from a prompt empties it. A continuation
+// (a turn started with no prompt, as a Stop hook's feedback starts one) does not.
+// A summary written any other way proves nothing.
+const WRAPPED = '/work/.cs/local/wrapped'
+const turnStart = (text: string) => hooks['turn.start']($, { text, turnId: `turn-${text.length}` }, async (e: any) => ({ turnId: e.turnId }))
+
+test('a finished wrap hides the wrap key until a turn starts from a prompt', async () => {
+  percent = 40
+  await turnStart('please wrap up')
+  files[WRAPPED] = 'uuid-lead\n'
+  expect(wrapButton(await band())).toBeUndefined()
+  expect(findButton(await band()).props.action).toBe('strip:jump1')
+
+  await turnStart('')
+  expect(wrapButton(await band())).toBeUndefined()
+
+  await turnStart('next thing')
+  expect(files[WRAPPED]).toBe('')
+  expect(wrapButton(await band())).toBeDefined()
+})
+
+// Work queued behind the wrap starts its own turn, and a second wrap that fails
+// a pass writes no marker of its own: either way the first wrap's marker is gone.
+test('queued work, or a second wrap that fails, brings the key back', async () => {
+  percent = 40
+  files[WRAPPED] = 'uuid-lead\n'
+  await turnStart('and then fix the tests')
+  expect(wrapButton(await band())).toBeDefined()
+
+  files[WRAPPED] = 'uuid-lead\n'
+  await turnStart('/wrap')
+  expect(wrapButton(await band())).toBeDefined()
+})
+
+test('a summary with no wrap marker, or a marker naming another conversation, keeps the wrap key', async () => {
+  percent = 40
+  files['/work/.cs/summary.md'] = '# Session Summary\n'
+  expect(wrapButton(await band())).toBeDefined()
+  files[WRAPPED] = 'uuid-teammate\n'
+  expect(wrapButton(await band())).toBeDefined()
+  await turnStart('x')
+  expect(files[WRAPPED]).toBe('uuid-teammate\n')
+})
+
+test('an armed handoff draws the clear key alone: no wrap key', async () => {
+  arm(); percent = 90
+  expect(buttons(await band())).toHaveLength(1)
+  expect(wrapButton(await band())).toBeUndefined()
+})
+
+// The engine refuses a tree with a Button under an inline element (measured
+// on 2.1.273: "Button inside an inline element; drawing the engine's own"),
+// and the whole band vanishes with it.
+function buttonsUnderText(tree: any, inText = false): number {
+  if (!tree || typeof tree !== 'object') return 0
+  if (tree.type === 'Button' && inText) return 1
+  const inline = inText || tree.type === 'Text'
+  return (tree.children ?? []).reduce((n: number, c: any) => n + buttonsUnderText(c, inline), 0)
+}
+
+test('no button is ever nested in a Text, armed or not', async () => {
+  percent = 40
+  expect(buttonsUnderText(await band())).toBe(0)
+  arm()
+  expect(buttonsUnderText(await band())).toBe(0)
+})
+
+// The contract lets a held key repeat on keydown, and a digit with no button
+// on it lands in the composer (measured: a second `2` while armed typed `2`,
+// and a non-empty composer takes every hotkey with it). So `2` keeps a button
+// while armed: each press only re-arms, the window restarts, nothing is typed,
+// and the confirmation sits on `3`.
+
+// The first grace of a session opens a pane beside the band that shows what
+// the handoff will do next, so the twenty seconds are spent reading it. The
+// pane carries no keys: stopping the count stays on the band. Later graces in
+// the same session keep to the band alone.
+const pane = (requestId = PREVIEW_PANE) =>
+  hooks['ui.render:Pane']($, { requestId, props: { title: 'Handoff', isFocused: false, bodyColumns: 60, placement: 'dock' } }, async () => DRAWN)
+const HANDOFF_WITH_STEP = '---\nparent: uuid-lead\nstatus: unconsumed\n---\n\n# Next Step\n\nRun the secrets suites solo.\nTriage the store file.\n\n# Settled\n\nNothing.\n'
+
+test('the first grace in a session opens the handoff pane from a timer, and it shows the next step and the count', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); files[HANDOFF] = HANDOFF_WITH_STEP; percent = 80
+  await band()
+  await turnComplete()
+  expect(panes).toEqual([])
+  await fireAfter()
+  expect(panes).toEqual([{ op: 'open', args: { id: PREVIEW_PANE, title: 'Handoff' } }])
+  const body = JSON.stringify(await pane())
+  expect(body).toContain('Run the secrets suites solo.')
+  expect(body).toContain('Triage the store file.')
+  expect(body).not.toContain('Settled')
+  expect(body).toContain(`/clear in ${GRACE_SECONDS}s`)
+  expect(buttons(await pane())).toEqual([])
+  await tick(2)
+  expect(JSON.stringify(await pane())).toContain(`/clear in ${GRACE_SECONDS - 2}s`)
+})
+
+test('any end of the count closes the pane: a prompt, a press, zero', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); percent = 80
+  await band(); await turnComplete(); await fireAfter()
+  await promptSubmit()
+  expect(panes.at(-1)).toEqual({ op: 'close', args: { id: PREVIEW_PANE } })
+
+  register(on as any); panes = []
+  arm()
+  await band(); await turnComplete(); await fireAfter()
+  await findButton(await band()).props.onPress()
+  expect(panes.at(-1)).toEqual({ op: 'close', args: { id: PREVIEW_PANE } })
+
+  register(on as any); panes = []; ran = []
+  arm()
+  await band(); await turnComplete(); await fireAfter()
+  await tick(GRACE_SECONDS)
+  expect(ran).toEqual([{ command: 'clear', args: '' }])
+  expect(panes.at(-1)).toEqual({ op: 'close', args: { id: PREVIEW_PANE } })
+})
+
+// The open is a round trip: a prompt landing while it is in flight stops the
+// count and asks for a close that the engine may apply before the open lands.
+// A pane opened after its count ended must still be closed, or nothing ever
+// closes it.
+test('a count that ends while the pane is still opening closes the pane once it lands', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); percent = 80
+  let land!: () => void
+  $.ui.open = (args: any) => new Promise<void>(resolve => { land = () => { panes.push({ op: 'open', args }); resolve() } })
+  try {
+    await band(); await turnComplete()
+    const opening = fireAfter()
+    await new Promise(r => setTimeout(r, 0))
+    await promptSubmit()
+    land()
+    await opening
+  } finally {
+    $.ui.open = async (args: any) => { panes.push({ op: 'open', args }) }
+  }
+  expect(panes.map(p => p.op)).toContain('open')
+  expect(panes.at(-1)).toEqual({ op: 'close', args: { id: PREVIEW_PANE } })
+})
+
+test('a later grace in the same session keeps to the band: the pane opens once', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); percent = 80
+  await band(); await turnComplete(); await fireAfter()
+  await promptSubmit()
+  await turnComplete(); await fireAfter()
+  expect(ticker()).toBeDefined()
+  expect(panes.filter(p => p.op === 'open')).toHaveLength(1)
+})
+
+test('a pane drawn for any other id passes through, and a closed preview draws nothing of its own', async () => {
+  expect(await pane('someone-else')).toBe(DRAWN)
+  expect(await pane()).toBe(DRAWN)
+})
+
+test('nextStep reads the handoff\'s Next Step section as written, however it is numbered', () => {
+  expect(nextStep(HANDOFF_WITH_STEP)).toEqual({ text: 'Run the secrets suites solo.\nTriage the store file.', cut: false })
+  expect(nextStep('---\nstatus: unconsumed\n---\n\n## 1. Next Step\n\nOne thing.\n\n- a\n- b\n')).toEqual({ text: 'One thing.\n\n- a\n- b', cut: false })
+  expect(nextStep('---\nstatus: unconsumed\n---\n\nNo heading here.\n')).toEqual({ text: '', cut: false })
+  // no line cap: 300 lines come through whole
+  const long = '# Next Step\n\n' + Array.from({ length: 300 }, (_, i) => `line ${i}`).join('\n') + '\n\n# Settled\n\nNothing.\n'
+  expect(nextStep(long).text.split('\n')).toHaveLength(300)
+  expect(nextStep(long).cut).toBe(false)
+})
+
+test('a step past the engine\'s markdown bound is cut at a line and says so', () => {
+  const line = 'x'.repeat(99)
+  const huge = '# Next Step\n\n' + Array.from({ length: 200 }, () => line).join('\n') + '\n'
+  const step = nextStep(huge)
+  expect(step.cut).toBe(true)
+  expect(step.text.length).toBeLessThanOrEqual(MARKDOWN_LIMIT)
+  expect(step.text.split('\n').every(l => l === line)).toBe(true)
+  expect(step.text.split('\n')).toHaveLength(100)
+  // one line past the bound has no line to stop at: it is cut at the bound
+  const wide = nextStep('# Next Step\n\n' + 'y'.repeat(MARKDOWN_LIMIT + 50) + '\n')
+  expect(wide).toEqual({ text: 'y'.repeat(MARKDOWN_LIMIT), cut: true })
+})
+
+test('a # line inside a fenced block belongs to the step, not to a new section', () => {
+  const step = '## Next Step\n\nRun:\n\n```bash\n# build first\n./build.sh\n```\n\n~~~\n## not a heading\n~~~\nThen merge.\n\n## Settled\n\nNothing.\n'
+  expect(nextStep(step)).toEqual({ text: 'Run:\n\n```bash\n# build first\n./build.sh\n```\n\n~~~\n## not a heading\n~~~\nThen merge.', cut: false })
+})
+
+test('nextStep keeps an indented first line\'s indent', () => {
+  expect(nextStep('# Next Step\n\n    make test\n\nThen merge.\n').text).toBe('    make test\n\nThen merge.')
+})
+
+// The count's colour ramp: the session's own colour while there is time, the
+// bar's amber from ten seconds, its crit red under five. The band's
+// `/clear in Ns` and the pane's bar and count wear it alike. Inks KEEP IN SYNC
+// with _sgr in bin/cs-statusline (tests/test_mod_rotate.sh pins them).
+function texts(tree: any): any[] {
+  if (!tree || typeof tree !== 'object') return []
+  if (Array.isArray(tree)) return tree.flatMap(texts)
+  const own = tree.type === 'Text' ? [tree] : []
+  return [...own, ...(tree.children ?? []).flatMap(texts)]
+}
+const textOf = (node: any): string => (node.children ?? []).map((c: any) => typeof c === 'string' ? c : '').join('')
+function markdowns(tree: any): any[] {
+  if (!tree || typeof tree !== 'object') return []
+  if (Array.isArray(tree)) return tree.flatMap(markdowns)
+  return [...(tree.type === 'Markdown' ? [tree] : []), ...(tree.children ?? []).flatMap(markdowns)]
+}
+const countText = (tree: any) => texts(tree).find(t => /^\/clear in \d+s$/.test(textOf(t)))
+const startGrace = async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  arm(); files[HANDOFF] = HANDOFF_WITH_STEP; percent = 80
+  await band()
+  await turnComplete()
+}
+
+test('the band\'s count ramps: session colour past ten seconds, amber from ten to five, crit red under five', async () => {
+  envVars.CS_TERM_BG_RGB = '252;247;229'
+  await startGrace()
+  let count = countText(await band())
+  expect(count.props).toMatchObject({ bold: true, color: 'rgb(220,38,38)' })
+  await tick(9) // 11 s left
+  expect(countText(await band()).props.color).toBe('rgb(220,38,38)')
+  await tick(1) // 10
+  expect(countText(await band()).props.color).toBe('rgb(180,83,9)')
+  await tick(5) // 5
+  expect(countText(await band()).props.color).toBe('rgb(180,83,9)')
+  await tick(1) // 4
+  count = countText(await band())
+  expect(textOf(count)).toBe('/clear in 4s')
+  expect(count.props.color).toBe('rgb(215,0,21)')
+})
+
+test('on a dark terminal the ramp takes the bar\'s dark inks', async () => {
+  envVars.CS_TERM_BG_RGB = '30;30;30'
+  envVars.CS_TERM_THEME = 'dark'
+  files['/work/.cs/local/state'] = 'claude_session_color: cyan\nclaude_session_id: uuid-lead\n'
+  await startGrace()
+  expect(countText(await band()).props.color).toBe('rgb(8,145,178)')
+  await tick(10)
+  expect(countText(await band()).props.color).toBe('rgb(253,230,138)')
+  await tick(6)
+  expect(countText(await band()).props.color).toBe('rgb(255,69,58)')
+})
+
+test('a session with no colour, or one outside the palette, keeps the band\'s own ink until the amber', async () => {
+  files['/work/.cs/local/state'] = 'claude_session_color: chartreuse\nclaude_session_id: uuid-lead\n'
+  await startGrace()
+  expect(countText(await band()).props.color).toBeUndefined()
+  files['/work/.cs/local/state'] = 'claude_session_id: uuid-lead\n'
+  expect(countText(await band()).props.color).toBeUndefined()
+  await tick(10)
+  // no measured background and no theme: the light amber, as the bar picks
+  expect(countText(await band()).props.color).toBe('rgb(180,83,9)')
+})
+
+test('the pane opens on a header in the session colour and draws the step as markdown', async () => {
+  await startGrace(); await fireAfter()
+  const tree = await pane()
+  const all = texts(tree)
+  expect(textOf(all[0])).toBe('Handoff')
+  expect(all[0].props).toMatchObject({ bold: true, color: 'rgb(220,38,38)' })
+  expect(markdowns(tree)).toEqual([{ type: 'Markdown', props: { key: 'step', text: 'Run the secrets suites solo.\nTriage the store file.' }, children: [] }])
+  expect(JSON.stringify(tree)).not.toContain('rest of the step')
+})
+
+test('a step cut at the markdown bound ends on a dim note', async () => {
+  const huge = Array.from({ length: 200 }, () => 'x'.repeat(99)).join('\n')
+  await startGrace(); files[HANDOFF] = `---\nparent: uuid-lead\nstatus: unconsumed\n---\n\n# Next Step\n\n${huge}\n`
+  await fireAfter()
+  const note = texts(await pane()).find(t => textOf(t) === '… the rest of the step is in the handoff')
+  expect(note.props.dimColor).toBe(true)
+})
+
+test('the pane counts down on a twenty-block bar in the ramp\'s colour, beside the same count', async () => {
+  envVars.CS_TERM_BG_RGB = '252;247;229'
+  await startGrace(); await fireAfter()
+  const bar = (tree: any) => texts(tree).find(t => /^[█░]+$/.test(textOf(t)))
+  let b = bar(await pane())
+  expect(textOf(b)).toBe('█'.repeat(20))
+  expect(b.props.color).toBe('rgb(220,38,38)')
+  expect(countText(await pane()).props.color).toBe('rgb(220,38,38)')
+  await tick(15) // 5 left
+  b = bar(await pane())
+  expect(textOf(b)).toBe('█'.repeat(5) + '░'.repeat(15))
+  expect(b.props.color).toBe('rgb(180,83,9)')
+  expect(JSON.stringify(await pane())).toContain('press 1 to clear now, or send a prompt to stay')
+})
+
+// /queue hands the task to `cs -queue add` by the path the launch exported,
+// which resolves this session's queue from the environment claude inherited.
+const startSession = () => hooks['session.start']($, { cwd: '/work', surface: 'terminal', isInteractive: true }, async (e) => ({ cwd: e.cwd }))
+const queue = (args: string) => hooks['command.run:queue']($, { command: 'queue', args }, async () => ({ text: 'unhandled' }))
+
+test('the mod registers /queue at load, to run at once even mid-turn', async () => {
+  await startSession()
+  expect(commands).toHaveLength(1)
+  expect(commands[0]).toMatchObject({ name: 'queue', immediate: true, argumentHint: '[task]' })
+  expect(commands[0].description).toBe("Add a task to this cs session's walk-away queue, or list it.")
+})
+
+test('/queue with a task runs cs -queue add with the task as one argument and says it is queued', async () => {
+  envVars.CS_BIN = '/opt/cs/bin/cs'
+  const r = await queue('fix the flaky "rotate" test; then rerun it')
+  expect(runs.map(x => x.argv)).toEqual([['/opt/cs/bin/cs', '-queue', 'add', 'fix the flaky "rotate" test; then rerun it']])
+  expect(r).toEqual({ text: 'Queued: fix the flaky "rotate" test; then rerun it' })
+  expect(toasts).toEqual(['cs: queued: fix the flaky "rotate" test; then rerun it'])
+  await settle()
+  expect(asks).toEqual([])
+})
+
+// The toast is one line under the prompt; a long task is cut so it fits.
+test('/queue with a long task confirms it in a toast cut to 60 characters', async () => {
+  envVars.CS_BIN = '/opt/cs/bin/cs'
+  const task = 'a'.repeat(59) + 'bc' + ' tail'
+  await queue(`  ${task}  `)
+  expect(toasts).toEqual([`cs: queued: ${'a'.repeat(59)}b…`])
+})
+
+test('/queue with no task, or only spaces, prints cs -queue list', async () => {
+  envVars.CS_BIN = '/opt/cs/bin/cs'
+  runResult = { exitCode: 0, stdout: 'Pending:\n  1. first\n  2. second\n', stderr: '' }
+  expect(await queue('')).toEqual({ text: 'Pending:\n  1. first\n  2. second' })
+  expect(await queue('   ')).toEqual({ text: 'Pending:\n  1. first\n  2. second' })
+  expect(runs.map(x => x.argv)).toEqual([['/opt/cs/bin/cs', '-queue', 'list'], ['/opt/cs/bin/cs', '-queue', 'list']])
+  expect(toasts).toEqual([])
+})
+
+// The offer is made after the listing is back on screen, so the person reads
+// the tasks before answering; the drain itself belongs to the Stop hook.
+const settle = () => new Promise(r => setTimeout(r, 0))
+const LISTED = { exitCode: 0, stdout: 'Pending (2)\n  1. first\n  2. second\n\nDone (1)\n  - shipped\n', stderr: '' }
+
+test('/queue with pending tasks offers to start them; Start while idle arms the queue and starts a turn', async () => {
+  envVars.CS_BIN = '/opt/cs/bin/cs'
+  runResult = LISTED
+  answer = QUEUE_START
+  expect(await queue('')).toEqual({ text: 'Pending (2)\n  1. first\n  2. second\n\nDone (1)\n  - shipped' })
+  await settle()
+  expect(asks).toEqual([
+    { question: 'Start the 2 queued tasks now?', options: { header: 'Queue', options: [QUEUE_START, 'Not yet', QUEUE_COMPACT] } },
+    { question: QUEUE_MODE_QUESTION, options: { header: 'Queue', options: [QUEUE_HERE, QUEUE_SUBAGENTS, QUEUE_WORKFLOWS] } },
+  ])
+  expect(runs.map(x => x.argv)).toEqual([['/opt/cs/bin/cs', '-queue', 'list'], ['/opt/cs/bin/cs', '-queue', 'start']])
+  expect(submitted).toEqual([{ text: QUEUE_KICK }])
+})
+
+// Start also asks how the tasks run: here, each in a subagent, or each as a
+// workflow; the answer rides on cs -queue start.
+test('Start then In subagents or As workflows arms the queue in that mode', async () => {
+  envVars.CS_BIN = '/opt/cs/bin/cs'
+  runResult = LISTED
+  answer = QUEUE_START
+  modeAnswer = QUEUE_SUBAGENTS
+  await queue('')
+  await settle()
+  modeAnswer = QUEUE_WORKFLOWS
+  await queue('')
+  await settle()
+  expect(runs.map(x => x.argv.slice(1))).toEqual([['-queue', 'list'], ['-queue', 'start', 'subagents'], ['-queue', 'list'], ['-queue', 'start', 'workflow']])
+})
+
+test('Not yet asks nothing more', async () => {
+  envVars.CS_BIN = '/opt/cs/bin/cs'
+  runResult = LISTED
+  answer = 'Not yet'
+  await queue('')
+  await settle()
+  expect(asks.map(a => a.question)).toEqual(['Start the 2 queued tasks now?'])
+})
+
+// A dismissed second question starts nothing and compacts nothing, as a
+// dismissed first one does.
+test('a dismissed mode question starts nothing', async () => {
+  envVars.CS_BIN = '/opt/cs/bin/cs'
+  runResult = LISTED
+  modeAnswer = new Error('dismissed')
+  for (const a of [QUEUE_START, QUEUE_COMPACT]) {
+    answer = a
+    await queue('')
+    await settle()
+  }
+  expect(runs.map(x => x.argv[2])).toEqual(['list', 'list'])
+  expect(compactedAt).toEqual([])
+  expect(submitted).toEqual([])
+})
+
+// Free text typed under "Other" names no mode cs knows, so nothing starts.
+test('an answer that is no mode starts nothing and says so', async () => {
+  envVars.CS_BIN = '/opt/cs/bin/cs'
+  runResult = LISTED
+  answer = QUEUE_START
+  modeAnswer = 'in parallel please'
+  await queue('')
+  await settle()
+  expect(runs.map(x => x.argv[2])).toEqual(['list'])
+  expect(toasts).toEqual(["cs: 'in parallel please' is not a way to run the queue; it is not started"])
+})
+
+test('Compact asks the mode before compacting, then starts in it', async () => {
+  envVars.CS_BIN = '/opt/cs/bin/cs'
+  runResult = LISTED
+  answer = QUEUE_COMPACT
+  modeAnswer = QUEUE_WORKFLOWS
+  await queue('')
+  await settle()
+  expect(asks.map(a => a.question)).toEqual(['Start the 2 queued tasks now?', QUEUE_MODE_QUESTION])
+  expect(compactedAt).toEqual([1])
+  expect(runs.map(x => x.argv.slice(1))).toEqual([['-queue', 'list'], ['-queue', 'start', 'workflow']])
+})
+
+// A turn already running reaches a stop on its own, where the Stop hook hands
+// over the first task; a prompt sent now would wait out the whole drain.
+test('Start while a turn is running arms the queue and sends no prompt', async () => {
+  envVars.CS_BIN = '/opt/cs/bin/cs'
+  runResult = LISTED
+  answer = QUEUE_START
+  await band({ isWorking: true })
+  await queue('')
+  await settle()
+  expect(runs.map(x => x.argv[2])).toEqual(['list', 'start'])
+  expect(submitted).toEqual([])
+})
+
+// Not yet is the Stop hook's own "Not yet": it holds that offer back for a
+// while instead of asking again at the next turn end.
+test('Not yet defers the queue and sends no prompt', async () => {
+  envVars.CS_BIN = '/opt/cs/bin/cs'
+  runResult = LISTED
+  answer = 'Not yet'
+  await queue('')
+  await settle()
+  expect(runs.map(x => x.argv[2])).toEqual(['list', 'defer'])
+  expect(submitted).toEqual([])
+})
+
+test('a queue already armed or draining is listed without an offer', async () => {
+  envVars.CS_BIN = '/opt/cs/bin/cs'
+  runResult = LISTED
+  for (const state of ['armed\n', 'draining\n']) {
+    files['/work/.cs/local/queue.state'] = state
+    await queue('')
+    await settle()
+  }
+  expect(asks).toEqual([])
+  expect(runs.map(x => x.argv[2])).toEqual(['list', 'list'])
+})
+
+test('an encrypted session\'s queue state is read behind .cs/private', async () => {
+  envVars.CS_BIN = '/opt/cs/bin/cs'
+  runResult = LISTED
+  files['/work/.cs/private/queue.state'] = 'draining\n'
+  await queue('')
+  await settle()
+  expect(asks).toEqual([])
+  expect(runs.map(x => x.argv[2])).toEqual(['list'])
+})
+
+test('an empty queue is listed without an offer', async () => {
+  envVars.CS_BIN = '/opt/cs/bin/cs'
+  runResult = { exitCode: 0, stdout: 'Queue is empty.\n\nDone (1)\n  - shipped\n', stderr: '' }
+  await queue('')
+  await settle()
+  expect(asks).toEqual([])
+})
+
+test('a start cs refuses, or one that cannot run, says so and sends no prompt', async () => {
+  envVars.CS_BIN = '/opt/cs/bin/cs'
+  answer = QUEUE_START
+  nextRuns = [LISTED, { exitCode: 1, stdout: '', stderr: 'Error: the queue is locked\n' }, LISTED, new Error('spawn ENOENT')]
+  await queue('')
+  await settle()
+  await queue('')
+  await settle()
+  expect(toasts).toEqual(['cs -queue start exited 1: Error: the queue is locked', 'cs -queue start did not run: spawn ENOENT'])
+  expect(submitted).toEqual([])
+})
+
+test('a prompt the engine refuses is shown, not dropped', async () => {
+  envVars.CS_BIN = '/opt/cs/bin/cs'
+  runResult = LISTED
+  answer = QUEUE_START
+  $.prompt.submit = async () => { throw new Error('session closed') }
+  try {
+    await queue('')
+    await settle()
+  } finally {
+    $.prompt.submit = async (args: any) => { submitted.push(args); return {} }
+  }
+  expect(toasts).toEqual(['cs: the queue is armed, but its first turn did not start: session closed'])
+})
+
+// Compact frees the context the drain will need first: the conversation is
+// compacted before the queue is armed, so a compaction that does not happen
+// leaves the queue exactly as it was.
+test('Compact compacts the conversation, then arms the queue and starts a turn', async () => {
+  envVars.CS_BIN = '/opt/cs/bin/cs'
+  runResult = LISTED
+  answer = QUEUE_COMPACT
+  await queue('')
+  await settle()
+  expect(compactedAt).toEqual([1])
+  expect(runs.map(x => x.argv[2])).toEqual(['list', 'start'])
+  expect(submitted).toEqual([{ text: QUEUE_KICK }])
+  expect(toasts).toEqual([])
+})
+
+test('a compaction a hook vetoes leaves the queue unarmed and says why', async () => {
+  envVars.CS_BIN = '/opt/cs/bin/cs'
+  runResult = LISTED
+  answer = QUEUE_COMPACT
+  compactResult = { skip: 'a PreCompact hook blocked it' }
+  await queue('')
+  await settle()
+  expect(runs.map(x => x.argv[2])).toEqual(['list'])
+  expect(submitted).toEqual([])
+  expect(toasts).toEqual(['cs: the conversation was not compacted (a PreCompact hook blocked it); the queue is not started'])
+})
+
+// The engine refuses a compaction while a turn runs.
+test('a compaction the engine refuses leaves the queue unarmed and says so', async () => {
+  envVars.CS_BIN = '/opt/cs/bin/cs'
+  runResult = LISTED
+  answer = QUEUE_COMPACT
+  compactResult = new Error('a turn is running')
+  await queue('')
+  await settle()
+  expect(runs.map(x => x.argv[2])).toEqual(['list'])
+  expect(submitted).toEqual([])
+  expect(toasts).toEqual(['cs: the conversation was not compacted (a turn is running); the queue is not started'])
+})
+
+test('a dismissed offer runs nothing more', async () => {
+  envVars.CS_BIN = '/opt/cs/bin/cs'
+  runResult = LISTED
+  answer = new Error('dismissed')
+  await queue('')
+  await settle()
+  expect(runs.map(x => x.argv[2])).toEqual(['list'])
+  expect(submitted).toEqual([])
+  expect(toasts).toEqual([])
+})
+
+test('a refused add prints the exit code and cs\'s own stderr, verbatim', async () => {
+  envVars.CS_BIN = '/opt/cs/bin/cs'
+  runResult = { exitCode: 1, stdout: '', stderr: "warning: an earlier line\n\nError: task bodies must be a single line (the queue's done log and listing are line-oriented)\n" }
+  const r = await queue('one\ntwo')
+  expect(runs[0].argv).toEqual(['/opt/cs/bin/cs', '-queue', 'add', 'one\ntwo'])
+  expect(r).toEqual({ text: "cs -queue add exited 1.\nwarning: an earlier line\nError: task bodies must be a single line (the queue's done log and listing are line-oriented)" })
+  expect(toasts).toEqual([])
+})
+
+test('a run that cannot start says why', async () => {
+  envVars.CS_BIN = '/opt/cs/bin/cs'
+  runResult = new Error('spawn ENOENT')
+  expect(await queue('')).toEqual({ text: 'cs -queue list did not run: spawn ENOENT' })
+})
+
+test('without CS_BIN /queue says the launch did not say where cs is, and runs nothing', async () => {
+  const r = await queue('something')
+  expect(runs).toHaveLength(0)
+  expect(r).toEqual({ text: 'The launch did not say where cs is (CS_BIN); run `cs -queue add "<task>"` from a shell in this session.' })
+})
+
+// /finish progress: cs writes one record per step while it integrates and
+// retires; the mod reads it on a one-second watch that /finish starts.
+const RECORD = '/work/.cs/local/finish-progress.json'
+const SHA = '1234567' + 'f'.repeat(33)
+const RESULT = '89abcde' + '0'.repeat(33)
+const NOW = 1_800_000_000
+const record = (r: any, path = RECORD) => { files[path] = JSON.stringify(r) }
+const running = (step: string, extra: any = {}) => ({ id: '4242-1799999990', pid: 4242, task: 'fix-auth', sha: SHA, step, ts: NOW, ...extra })
+const startFinish = () => hooks['skill.prompt:finish']($, { skill: 'finish', text: 'land it' }, async (e: any) => ({ text: e.text }))
+const watches = () => timers.filter(t => t.kind === 'every' && t.ms === 1000)
+const watchTick = async () => {
+  const live = watches().filter(t => !t.cancelled)
+  expect(live).toHaveLength(1)
+  await live[0].fn()
+}
+
+test('/finish starts one watch, passes its prompt through, and never toasts the outcome of an earlier run', async () => {
+  record({ id: '100-1', pid: 100, task: 'old-task', sha: SHA, step: 'landed', result: RESULT, ts: 1 })
+  expect(await startFinish()).toEqual({ text: 'land it' })
+  await startFinish()
+  expect(watches()).toHaveLength(1)
+  await watchTick()
+  expect(toasts).toEqual([])
+})
+
+test('a /finish that starts toasts its task once, however many steps follow', async () => {
+  livePids.add('4242')
+  await startFinish()
+  record(running('started'))
+  await watchTick()
+  record(running('merging'))
+  await watchTick()
+  record(running('fast-forward'))
+  await watchTick()
+  expect(toasts).toEqual(['cs: finishing fix-auth'])
+})
+
+test('each outcome toasts once, in its own words, and not again on the next tick', async () => {
+  await startFinish()
+  record(running('landed', { result: RESULT }))
+  await watchTick()
+  await watchTick()
+  record({ id: '5151-1800000001', pid: 5151, task: 'fix-auth', sha: SHA, step: 'refused', reason: 'Base /work moved during the gates (was abc, now def); re-run /finish fix-auth', ts: NOW })
+  await watchTick()
+  await watchTick()
+  record({ id: '6161-1800000002', pid: 6161, task: 'fix-auth', sha: SHA, step: 'retired', ts: NOW })
+  await watchTick()
+  await watchTick()
+  expect(toasts).toEqual([
+    'cs: landed fix-auth 1234567 -> 89abcde',
+    'cs: /finish fix-auth refused: Base /work moved during the gates (was abc, now def); re-run /finish fix-auth',
+    'cs: retired fix-auth',
+  ])
+})
+
+test('a long task is cut in the toast as /queue cuts it', async () => {
+  livePids.add('4242')
+  await startFinish()
+  record(running('started', { task: 'a'.repeat(59) + 'bc tail' }))
+  await watchTick()
+  expect(toasts).toEqual([`cs: finishing ${'a'.repeat(59)}b…`])
+})
+
+test('an encrypted session\'s record is read behind .cs/private', async () => {
+  await startFinish()
+  record({ id: '6161-1800000002', pid: 6161, task: 'fix-auth', sha: SHA, step: 'retired', ts: NOW }, '/work/.cs/private/finish-progress.json')
+  await watchTick()
+  expect(toasts).toEqual(['cs: retired fix-auth'])
+})
+
+test('while a gate runs under a live pid the band shows the task and the time since the gate started, even mid-turn', async () => {
+  livePids.add('4242')
+  nowMs = NOW * 1000
+  await startFinish()
+  record(running('gate', { gate_started: NOW - 75 }))
+  await watchTick()
+  expect(invalidated).toContain('ui.render')
+  const tree = JSON.stringify(await band({ isWorking: true }))
+  expect(tree).toContain('"Survey"')
+  expect(tree).toContain('finishing fix-auth · gate 1m 15s')
+  nowMs += 10_000
+  expect(JSON.stringify(await band({ isWorking: true }))).toContain('finishing fix-auth · gate 1m 25s')
+  nowMs = (NOW - 75 + 42) * 1000
+  expect(JSON.stringify(await band({ isWorking: true }))).toContain('finishing fix-auth · gate 42s')
+})
+
+test('a gate whose pid is dead, or a record past its gate, draws no band', async () => {
+  nowMs = NOW * 1000
+  await startFinish()
+  record(running('gate', { gate_started: NOW - 5 }))
+  await watchTick()
+  expect(await band({ isWorking: true })).toBe(DRAWN)
+  livePids.add('4242')
+  await watchTick()
+  expect(JSON.stringify(await band({ isWorking: true }))).toContain('gate 5s')
+  record(running('fast-forward', { gate_started: NOW - 5 }))
+  invalidated = []
+  await watchTick()
+  expect(invalidated).toContain('ui.render')
+  expect(await band({ isWorking: true })).toBe(DRAWN)
+  record(running('gate', { gate_started: NOW - 5 }))
+  await watchTick()
+  record(running('landed', { gate_started: NOW - 5, result: RESULT }))
+  await watchTick()
+  expect(await band({ isWorking: true })).toBe(DRAWN)
+})
+
+test('with the rotation keys up, the gate band draws above them and both keys stay', async () => {
+  livePids.add('4242')
+  nowMs = NOW * 1000
+  percent = 40
+  await startFinish()
+  record(running('gate', { gate_started: NOW - 3 }))
+  await watchTick()
+  const tree = await band()
+  expect(buttons(tree)).toHaveLength(2)
+  const json = JSON.stringify(tree)
+  expect(json.indexOf('finishing fix-auth · gate 3s')).toBeGreaterThan(json.indexOf('"Survey"'))
+  expect(json.indexOf('finishing fix-auth · gate 3s')).toBeLessThan(json.indexOf('rotate this conversation'))
+})
+
+test('the watch ends once the turn is over and nothing runs, and not while a step still runs', async () => {
+  livePids.add('4242')
+  await startFinish()
+  record(running('gate', { gate_started: NOW }))
+  await watchTick()
+  await hooks['turn.complete']($, { reason: 'answer' }, async () => ({ text: '' }))
+  await watchTick()
+  expect(watches()[0].cancelled).toBe(false)
+  record({ id: '6161-1800000002', pid: 6161, task: 'fix-auth', sha: SHA, step: 'retired', ts: NOW })
+  await watchTick()
+  expect(toasts).toEqual(['cs: finishing fix-auth', 'cs: retired fix-auth'])
+  expect(watches()[0].cancelled).toBe(true)
+  // the next /finish watches afresh
+  await startFinish()
+  expect(watches().filter(t => !t.cancelled)).toHaveLength(1)
+})

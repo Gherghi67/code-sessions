@@ -1,0 +1,494 @@
+#!/usr/bin/env bash
+# ABOUTME: Tests for cs memory disclosure note in the session protocol file
+# ABOUTME: Covers new sessions, legacy retirement (v1/v2 rules block → note), tombstone opt-outs
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=tests/test_lib.sh
+source "$SCRIPT_DIR/test_lib.sh"
+
+teardown() {
+    if [[ -n "$TEST_TMPDIR" ]] && [[ -d "$TEST_TMPDIR" ]]; then
+        rm -rf "$TEST_TMPDIR"
+    fi
+    unset CS_SESSIONS_ROOT CLAUDE_CODE_BIN
+    unset CLAUDE_SESSION_NAME CLAUDE_SESSION_DIR CLAUDE_SESSION_META_DIR 2>/dev/null || true
+}
+
+# Current sentinel — managed by cs, marks the disclosure note section.
+NOTE_SENTINEL='<!-- cs:memory-note -->'
+# Legacy sentinel — retired in v2026.5.5 along with the imperative bucket-
+# guidance block. Phase 9 still respects its tombstone form (sentinel-only,
+# no header) as a user opt-out signal for the entire cs memory-documentation
+# surface, which carries over to the replacement note.
+LEGACY_SENTINEL='<!-- cs:memory-rules -->'
+
+# ============================================================================
+# Cycle 1: new session CLAUDE.md contains the memory-note (not the rules block)
+# ============================================================================
+
+test_new_session_has_memory_note() {
+    "$CS_BIN" test-session <<< "" >/dev/null 2>&1 || true
+
+    local claude_md="$CS_SESSIONS_ROOT/test-session/CLAUDE.local.md"
+
+    assert_file_exists "$claude_md" "session CLAUDE.local.md should exist" || return 1
+    assert_file_contains "$claude_md" "cs:memory-note" \
+        "CLAUDE.local.md should contain the cs:memory-note sentinel" || return 1
+    assert_file_contains "$claude_md" 'CLAUDE_COWORK_MEMORY_PATH_OVERRIDE' \
+        "note should mention the env var cs uses to redirect memory" || return 1
+    assert_file_contains "$claude_md" '\.cs/memory/' \
+        "note should mention the .cs/memory/ destination" || return 1
+}
+
+test_new_session_has_no_legacy_rules_block() {
+    "$CS_BIN" test-session <<< "" >/dev/null 2>&1 || true
+    local claude_md="$CS_SESSIONS_ROOT/test-session/CLAUDE.local.md"
+
+    assert_file_not_contains "$claude_md" "cs:memory-rules" \
+        "new sessions must not ship the retired memory-rules sentinel" || return 1
+    assert_file_not_contains "$claude_md" "Auto-memory bucket guidance" \
+        "new sessions must not ship the retired imperative prose" || return 1
+    assert_file_not_contains "$claude_md" "Never pause to ask" \
+        "new sessions must not ship behavioral instruction prose" || return 1
+}
+
+# The secrets guidance must not teach piping a value into `cs -secrets set`: the
+# bash-logger captures the whole Bash command into .cs/local/session.log, so a
+# `printf '%s' secret | cs -secrets set` lands the plaintext in the log. The safe
+# form (per the store-secret skill) feeds the value in via a stdin redirect.
+test_new_session_secret_guidance_is_log_safe() {
+    "$CS_BIN" test-session <<< "" >/dev/null 2>&1 || true
+    local claude_md="$CS_SESSIONS_ROOT/test-session/CLAUDE.local.md"
+
+    assert_file_not_contains "$claude_md" "| cs -secrets set" \
+        "must not pipe a secret into cs -secrets set (bash-logger logs the command)" || return 1
+    assert_file_contains "$claude_md" "store-secret" \
+        "should point at the store-secret skill's log-safe procedure" || return 1
+}
+
+# Narratives are per-actor (narrative.<actor>.md) so co-developers never conflict;
+# the generated protocol file must not instruct writing to the bare, pre-per-actor
+# .cs/memory/narrative.md — that recreates an orphaned notebook hidden from resume.
+test_new_session_narrative_guidance_is_per_actor() {
+    "$CS_BIN" test-session <<< "" >/dev/null 2>&1 || true
+    local claude_md="$CS_SESSIONS_ROOT/test-session/CLAUDE.local.md"
+
+    assert_file_not_contains "$claude_md" 'narrative\.md with findings' \
+        "must not tell agents to write the bare narrative.md" || return 1
+    assert_file_not_contains "$claude_md" 'narrative\.md as you go' \
+        "must not tell agents to write the bare narrative.md" || return 1
+    assert_file_contains "$claude_md" 'narrative\.<actor>\.md' \
+        "should direct writes to the per-actor narrative.<actor>.md" || return 1
+}
+
+# Build a "legacy" session whose CLAUDE.md predates any cs memory documentation.
+_seed_legacy_session() {
+    local name="$1"
+    local session_dir="$CS_SESSIONS_ROOT/$name"
+    mkdir -p "$session_dir/.cs"/{local,memory}
+    cat > "$session_dir/.cs/README.md" << EOF
+---
+status: active
+created: 2026-01-01
+tags: []
+aliases: ["$name"]
+---
+# Session: $name
+EOF
+    echo "# Session narrative" > "$session_dir/.cs/memory/narrative.md"
+    cat > "$session_dir/CLAUDE.md" << 'EOF'
+# Session Documentation Protocol
+
+This is a Claude Code session managed by cs. Session metadata lives in the .cs/ directory.
+
+## Documentation
+
+Update .cs/memory/narrative.md and .cs/README.md as you work.
+EOF
+    (cd "$session_dir" && git init -q && git add -A && git commit -q -m "init")
+    echo "$session_dir"
+}
+
+# ============================================================================
+# Cycle 2: a pre-sentinel legacy CLAUDE.md (references .cs/, carries no cs:
+# sentinel) stays on CLAUDE.md untouched — extraction cannot be surgical
+# without a sentinel, so cs never adds a second protocol file for it.
+# ============================================================================
+
+test_presentinel_legacy_session_gets_no_note() {
+    local session_dir
+    session_dir=$(_seed_legacy_session "legacy-claude")
+
+    assert_file_not_contains "$session_dir/CLAUDE.md" "cs:memory-note" \
+        "precondition: legacy CLAUDE.md should lack the sentinel" || return 1
+
+    "$CS_BIN" legacy-claude <<< "" >/dev/null 2>&1 || true
+
+    assert_file_not_contains "$session_dir/CLAUDE.md" "cs:memory-note" \
+        "a pre-sentinel legacy CLAUDE.md must not gain the note" || return 1
+    assert_file_not_exists "$session_dir/CLAUDE.local.md" \
+        "a pre-sentinel legacy session gets no CLAUDE.local.md" || return 1
+}
+
+test_presentinel_legacy_session_idempotent() {
+    local session_dir
+    session_dir=$(_seed_legacy_session "legacy-claude")
+
+    "$CS_BIN" legacy-claude <<< "" >/dev/null 2>&1 || true
+    local first_size
+    first_size=$(wc -c < "$session_dir/CLAUDE.md" | tr -d ' ')
+
+    "$CS_BIN" legacy-claude <<< "" >/dev/null 2>&1 || true
+    local second_size
+    second_size=$(wc -c < "$session_dir/CLAUDE.md" | tr -d ' ')
+
+    assert_eq "$first_size" "$second_size" \
+        "repeated launches must not change CLAUDE.md size" || return 1
+    assert_file_not_exists "$session_dir/CLAUDE.local.md" \
+        "repeated launches must not create CLAUDE.local.md for a pre-sentinel session" || return 1
+}
+
+# ============================================================================
+# Cycle 3: legacy cs:memory-rules tombstone opt-out is respected
+# (user kept the sentinel, deleted the prose — applies to the replacement too)
+# ============================================================================
+
+test_legacy_rules_tombstone_prevents_note_addition() {
+    local name="opted-out"
+    local session_dir="$CS_SESSIONS_ROOT/$name"
+    mkdir -p "$session_dir/.cs"/{local,memory}
+    cat > "$session_dir/.cs/README.md" << EOF
+---
+status: active
+created: 2026-01-01
+tags: []
+aliases: ["$name"]
+---
+# Session: $name
+EOF
+    echo "# Session narrative" > "$session_dir/.cs/memory/narrative.md"
+    # User opted out: kept the legacy sentinel as a tombstone, deleted the block.
+    # That intent ("no cs memory documentation in my CLAUDE.md") carries over to
+    # the replacement note — Phase 9 must NOT add cs:memory-note here.
+    cat > "$session_dir/CLAUDE.md" << 'EOF'
+# Session Documentation Protocol
+
+This is a Claude Code session managed by cs. Session metadata lives in the .cs/ directory.
+
+<!-- cs:memory-rules -->
+EOF
+    (cd "$session_dir" && git init -q && git add -A && git commit -q -m init)
+
+    "$CS_BIN" opted-out <<< "" >/dev/null 2>&1 || true
+
+    assert_file_contains "$session_dir/CLAUDE.md" "Session Documentation Protocol" \
+        "the head above the tombstone sentinel stays in CLAUDE.md" || return 1
+    assert_file_not_contains "$session_dir/CLAUDE.local.md" "cs:memory-note" \
+        "legacy tombstone must prevent addition of the replacement note" || return 1
+    assert_file_not_contains "$session_dir/CLAUDE.local.md" "CLAUDE_COWORK_MEMORY_PATH_OVERRIDE" \
+        "legacy tombstone must prevent addition of any cs memory documentation" || return 1
+
+    local sentinel_count
+    sentinel_count=$(grep -cF '<!-- cs:memory-rules -->' "$session_dir/CLAUDE.local.md")
+    assert_eq "1" "$sentinel_count" \
+        "legacy tombstone sentinel must not duplicate" || return 1
+}
+
+# ============================================================================
+# Cycle 4: legacy rules block (v1 or v2) gets stripped + replaced with note
+# in place, so adjacent cs:wrap-cues block keeps its order.
+# ============================================================================
+
+_seed_session_with_legacy_rules_block() {
+    # Args: $1 = session name, $2 = "v1" or "v2" — controls header shape
+    local name="$1"
+    local variant="$2"
+    local session_dir="$CS_SESSIONS_ROOT/$name"
+    mkdir -p "$session_dir/.cs"/{local,memory}
+    cat > "$session_dir/.cs/README.md" << EOF
+---
+status: active
+created: 2026-01-01
+tags: []
+aliases: ["$name"]
+---
+# Session: $name
+EOF
+    echo "# Session narrative" > "$session_dir/.cs/memory/narrative.md"
+
+    local header
+    if [ "$variant" = "v2" ]; then
+        header='## Auto-memory bucket guidance (scoop mode — passive, continuous)'
+    else
+        header='## Auto-memory bucket guidance'
+    fi
+
+    cat > "$session_dir/CLAUDE.md" << EOF
+# Session Documentation Protocol
+
+This is a Claude Code session managed by cs. Session metadata lives in the .cs/ directory.
+
+<!-- cs:memory-rules -->
+$header
+
+When the user shares a durable fact worth saving, listen for signals and pick a bucket.
+
+Discipline:
+- Read before writing.
+- One bucket per fact.
+- Never invent.
+
+<!-- cs:wrap-cues -->
+## Session wrap-up cues
+
+(wrap-cues content here)
+EOF
+    (cd "$session_dir" && git init -q && git add -A && git commit -q -m init)
+    echo "$session_dir"
+}
+
+test_phase9_retires_v1_block_to_note() {
+    local session_dir
+    session_dir=$(_seed_session_with_legacy_rules_block "v1-session" "v1")
+
+    assert_file_contains "$session_dir/CLAUDE.md" '<!-- cs:memory-rules -->' \
+        "precondition: v1 sentinel present" || return 1
+    assert_file_contains "$session_dir/CLAUDE.md" '^## Auto-memory bucket guidance$' \
+        "precondition: v1 header (no suffix) present" || return 1
+
+    "$CS_BIN" v1-session <<< "" >/dev/null 2>&1 || true
+
+    assert_file_contains "$session_dir/CLAUDE.md" "Session Documentation Protocol" \
+        "the head above the sentinel stays in CLAUDE.md" || return 1
+    assert_file_not_contains "$session_dir/CLAUDE.md" 'cs:memory-rules' \
+        "v1 sentinel must be gone after retirement" || return 1
+    assert_file_not_contains "$session_dir/CLAUDE.md" "Auto-memory bucket guidance" \
+        "v1 header must be gone after retirement" || return 1
+    assert_file_contains "$session_dir/CLAUDE.local.md" 'cs:memory-note' \
+        "memory-note must be added in v1's place" || return 1
+    assert_file_contains "$session_dir/CLAUDE.local.md" '<!-- cs:wrap-cues -->' \
+        "adjacent cs:wrap-cues block must be preserved across retirement" || return 1
+}
+
+test_phase9_retires_v2_block_to_note() {
+    local session_dir
+    session_dir=$(_seed_session_with_legacy_rules_block "v2-session" "v2")
+
+    assert_file_contains "$session_dir/CLAUDE.md" "(scoop mode" \
+        "precondition: v2 header (with scoop mode suffix) present" || return 1
+
+    "$CS_BIN" v2-session <<< "" >/dev/null 2>&1 || true
+
+    assert_file_contains "$session_dir/CLAUDE.md" "Session Documentation Protocol" \
+        "the head above the sentinel stays in CLAUDE.md" || return 1
+    assert_file_not_contains "$session_dir/CLAUDE.md" 'cs:memory-rules' \
+        "v2 sentinel must be gone after retirement" || return 1
+    assert_file_not_contains "$session_dir/CLAUDE.md" "(scoop mode" \
+        "v2 header must be gone after retirement" || return 1
+    assert_file_not_contains "$session_dir/CLAUDE.md" "Never pause to ask" \
+        "v2 imperative instructions must be gone after retirement" || return 1
+    assert_file_contains "$session_dir/CLAUDE.local.md" 'cs:memory-note' \
+        "memory-note must be added in v2's place" || return 1
+    assert_file_contains "$session_dir/CLAUDE.local.md" '<!-- cs:wrap-cues -->' \
+        "adjacent cs:wrap-cues block must be preserved across retirement" || return 1
+}
+
+test_phase9_idempotent_when_already_on_note() {
+    "$CS_BIN" already-on-note <<< "" >/dev/null 2>&1 || true
+    local claude_md="$CS_SESSIONS_ROOT/already-on-note/CLAUDE.local.md"
+    local before_size after_size
+    before_size=$(wc -c < "$claude_md" | tr -d ' ')
+
+    "$CS_BIN" already-on-note <<< "" >/dev/null 2>&1 || true
+    after_size=$(wc -c < "$claude_md" | tr -d ' ')
+
+    assert_eq "$before_size" "$after_size" \
+        "second launch on session already-on-note must not change CLAUDE.md size" || return 1
+
+    local sentinel_count
+    sentinel_count=$(grep -cF '<!-- cs:memory-note -->' "$claude_md")
+    assert_eq "1" "$sentinel_count" \
+        "memory-note sentinel must appear exactly once after re-launch" || return 1
+}
+
+# ============================================================================
+# Cycle 5: structural invariants — single source of truth + no behavioral prose
+# ============================================================================
+
+test_note_single_source_of_truth_in_bin_cs() {
+    # Pick a content-unique phrase that only appears in the helper HEREDOC
+    # (NOT in Phase 9 state-detection greps, which legitimately reference
+    # the sentinel literal). Catches future drift if someone re-inlines the
+    # note's prose at another call site.
+    local cs_bin="$SCRIPT_DIR/../bin/cs"
+    local content_count
+    content_count=$(grep -cF "Claude's built-in memory writes durable facts" "$cs_bin")
+    assert_eq "1" "$content_count" \
+        "unique note-content phrase must appear exactly once in bin/cs (only inside _emit_memory_note_block)" || return 1
+}
+
+test_note_has_no_behavioral_instruction() {
+    # The retirement explicitly removes behavioral prose. Catches a regression
+    # where someone restores imperative content under the new sentinel name.
+    "$CS_BIN" test-session <<< "" >/dev/null 2>&1 || true
+    local claude_md="$CS_SESSIONS_ROOT/test-session/CLAUDE.local.md"
+
+    for forbidden in \
+        "Never pause to ask" \
+        "Writing is eager" \
+        "action sequence" \
+        "non-negotiable" \
+        "Signals it's time to Read"; do
+        assert_file_not_contains "$claude_md" "$forbidden" \
+            "note must not contain behavioral instruction phrase '$forbidden'" || return 1
+    done
+}
+
+# ============================================================================
+# Cycle 6: secrets read-path + scratch-cleanup guardrails, memory-note structure
+# ============================================================================
+
+# The retrieval block invites `cs -secrets get` / `cs -secrets export`; on its
+# own that leaks plaintext into the tool result and transcript. The guidance
+# must also demonstrate consuming the value inline via command substitution
+# ($(cs -secrets get ...)) so the read path is as log-safe as the write path.
+test_new_session_secret_retrieval_is_transcript_safe() {
+    "$CS_BIN" test-session <<< "" >/dev/null 2>&1 || true
+    local claude_md="$CS_SESSIONS_ROOT/test-session/CLAUDE.local.md"
+
+    assert_file_exists "$claude_md" "session CLAUDE.local.md should exist" || return 1
+    assert_file_contains "$claude_md" '\$(cs -secrets get' \
+        "retrieval guidance must show the inline-substitution safe form" || return 1
+}
+
+# Detecting a secret and hand-rolling the store (the snippet is right there)
+# leaves the plaintext scratch file on disk unless the guidance mandates its
+# removal — the very leak the section exists to prevent.
+test_new_session_secret_detection_mandates_scratch_cleanup() {
+    "$CS_BIN" test-session <<< "" >/dev/null 2>&1 || true
+    local claude_md="$CS_SESSIONS_ROOT/test-session/CLAUDE.local.md"
+
+    assert_file_contains "$claude_md" "delete the scratch file" \
+        "detection guidance must mandate deleting the scratch file" || return 1
+}
+
+# Structure invariant: the memory-note is a peer section, not a headingless
+# sentence orphaned between two headed sections — the line after its sentinel
+# must be a markdown heading.
+test_memory_note_renders_under_heading() {
+    "$CS_BIN" test-session <<< "" >/dev/null 2>&1 || true
+    local claude_md="$CS_SESSIONS_ROOT/test-session/CLAUDE.local.md"
+
+    assert_file_exists "$claude_md" "session CLAUDE.local.md should exist" || return 1
+    local after
+    after=$(awk '/<!-- cs:memory-note -->/{getline; print; exit}' "$claude_md")
+    case "$after" in
+        "## "*) : ;;
+        *) echo "  FAIL: memory-note must be introduced by a '## ' heading, got: $after"; return 1 ;;
+    esac
+}
+
+# ============================================================================
+# Runner
+# ============================================================================
+echo "Running test_memory_rules.sh"
+echo ""
+run_test test_new_session_has_memory_note
+run_test test_new_session_has_no_legacy_rules_block
+run_test test_new_session_secret_guidance_is_log_safe
+run_test test_new_session_narrative_guidance_is_per_actor
+run_test test_presentinel_legacy_session_gets_no_note
+run_test test_presentinel_legacy_session_idempotent
+run_test test_legacy_rules_tombstone_prevents_note_addition
+run_test test_phase9_retires_v1_block_to_note
+run_test test_phase9_retires_v2_block_to_note
+run_test test_phase9_idempotent_when_already_on_note
+run_test test_note_single_source_of_truth_in_bin_cs
+run_test test_note_has_no_behavioral_instruction
+run_test test_new_session_secret_retrieval_is_transcript_safe
+run_test test_new_session_secret_detection_mandates_scratch_cleanup
+run_test test_memory_note_renders_under_heading
+
+# The note is descriptive, so this states the fact rather than instructing:
+# narratives are per-actor and the durable buckets are not. Without it, nothing
+# in the session protocol reveals that a memory entry may describe someone else.
+test_memory_note_discloses_shared_store() {
+    "$CS_BIN" test-session <<< "" >/dev/null 2>&1 || true
+    local claude_md="$CS_SESSIONS_ROOT/test-session/CLAUDE.local.md"
+
+    assert_file_contains "$claude_md" "shared by every actor" \
+        "the note must disclose that the durable store is not per-actor" || return 1
+}
+
+run_test test_memory_note_discloses_shared_store
+
+# SessionStart resolves the actor and injects "Current actor: <slug>. Your
+# narrative is .cs/memory/narrative.<slug>.md" into every conversation, and
+# subagent-context.sh tells subagents to keep no narrative at all. Every
+# surviving `cs -whoami` on an always-loaded surface therefore spends tokens on
+# every turn to look up an answer already sitting in context, in both the
+# protocol file and the injected block that names the actor four lines earlier.
+# The command stays a documented verb, and the two on-demand surfaces that need
+# it — commands/sweep.md and the narrative reminder — keep theirs.
+test_always_loaded_surfaces_do_not_re_derive_the_resolved_actor() {
+    "$CS_BIN" test-session <<< "" >/dev/null 2>&1 || true
+    local claude_md="$CS_SESSIONS_ROOT/test-session/CLAUDE.local.md"
+    local hook="$SCRIPT_DIR/../hooks/session-start.sh"
+
+    assert_file_exists "$claude_md" "session CLAUDE.local.md should exist" || return 1
+    assert_file_not_contains "$claude_md" "cs -whoami" \
+        "the protocol must not re-derive an actor the session context already names" || return 1
+    # Both absences are only safe while the hook still resolves and states it.
+    assert_file_contains "$hook" "Current actor: " \
+        "SessionStart must still name the resolved actor" || return 1
+    assert_file_contains "$hook" 'narrative\.\$ACTOR_SLUG\.md' \
+        "SessionStart must still name the agent's own narrative path" || return 1
+    assert_file_not_contains "$hook" "run 'cs -whoami' for your actor" \
+        "the injected block must not re-derive the actor it just named" || return 1
+    assert_file_contains "$claude_md" 'narrative\.<actor>\.md' \
+        "the protocol still names the per-actor path" || return 1
+}
+
+run_test test_always_loaded_surfaces_do_not_re_derive_the_resolved_actor
+
+# The section names a path on which the store-secret skill is, by definition,
+# not loaded: "doing it by hand". Every rule whose only copy lives in the skill
+# has zero force there, so the two that convert directly into an unrecoverable
+# leak must stay inline. Neither is covered by the pins above, so both could be
+# compressed away as "duplication" without a single test going red.
+test_secrets_section_keeps_the_rules_the_skill_less_path_needs() {
+    "$CS_BIN" test-session <<< "" >/dev/null 2>&1 || true
+    local claude_md="$CS_SESSIONS_ROOT/test-session/CLAUDE.local.md"
+
+    assert_file_exists "$claude_md" "session CLAUDE.local.md should exist" || return 1
+    # bash-logger records the whole Bash command, so stdin alone is not safety:
+    # a pipe or a heredoc puts the plaintext in .cs/local/session.log verbatim.
+    assert_file_contains "$claude_md" "into a pipe or a Bash heredoc" \
+        "the section must forbid the two stdin forms the command log captures" || return 1
+    assert_file_contains "$claude_md" "bash-logger" \
+        "the prohibition must carry its reason" || return 1
+    # A Write inside the session directory is snapshotted into the autosave ref
+    # and survives the later rm, so location is the mechanism, not cleanup.
+    assert_file_contains "$claude_md" "OUTSIDE the session" \
+        "the scratch file's location rule must be stated, not left to the skill" || return 1
+    assert_file_contains "$claude_md" "autosave ref" \
+        "the location rule must carry its reason" || return 1
+}
+
+run_test test_secrets_section_keeps_the_rules_the_skill_less_path_needs
+# Subagents get their own always-loaded rules, and bash-logger records their Bash
+# commands too — so the pipe form leaks a secret there exactly as it does in the
+# lead. This surface was the one the secrets pass missed.
+test_subagent_secrets_rule_names_the_redirect_form() {
+    local hook="$SCRIPT_DIR/../hooks/subagent-context.sh"
+    assert_file_contains "$hook" "FILE REDIRECT" \
+        "the subagent rule must name the form that keeps the value out of the log" || return 1
+    assert_file_contains "$hook" "bash-logger" \
+        "and carry its reason" || return 1
+    assert_file_not_contains "$hook" "value on stdin) and reference" \
+        "the bare stdin wording implied any stdin form was safe" || return 1
+}
+
+run_test test_subagent_secrets_rule_names_the_redirect_form
+
+report_results

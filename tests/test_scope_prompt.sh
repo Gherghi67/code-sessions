@@ -1,0 +1,1151 @@
+#!/usr/bin/env bash
+# ABOUTME: Tests for the scope-prompt UserPromptSubmit hook
+# ABOUTME: Validates classifier, grounded scan, exclusions, token cap, and defensive no-ops
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/test_lib.sh"
+
+HOOK="$SCRIPT_DIR/../hooks/scope-prompt.sh"
+
+# Inline snapshot of the adversarial corpus. SPEC: .cs/scope-probe/corpus.md (owned by
+# Adversary). Embedded here because tests/ is tracked but .cs/ is gitignored — reading the
+# corpus at runtime would break on a fresh CI checkout. `classifier_fires` is the expected
+# output of the v1 regex classifier (verb-union OR file-extension match), derived from each
+# fixture's corpus `why` analysis; `expect` is the ground-truth label (kept for documentation).
+FIXTURES=$(cat <<'CORPUS'
+{"prompt": "implement a retry wrapper around the fetch call in src/api.ts so failed requests back off exponentially", "expect": "positive", "classifier_fires": true, "attack_category": "clear-code-task"}
+{"prompt": "good morning! how's it going today?", "expect": "negative", "classifier_fires": false, "attack_category": "pure-chitchat"}
+{"prompt": "honestly that was one of the most genuinely helpful sessions I have had in a really long while", "expect": "negative", "classifier_fires": false, "attack_category": "pure-chitchat"}
+{"prompt": "what's the difference between a mutex and a semaphore?", "expect": "negative", "classifier_fires": false, "attack_category": "code-question-not-task"}
+{"prompt": "should I add an index on this column, or is that premature optimization?", "expect": "borderline", "classifier_fires": true, "attack_category": "code-question-not-task"}
+{"prompt": "the linker keeps choking on target/release/deps/libcs-9f3a17.d — fix the build script", "expect": "positive", "classifier_fires": true, "attack_category": "build-artifact-names"}
+{"prompt": "fix path resolution so node_modules/.bin/tsc stops shadowing target/release/cs", "expect": "positive", "classifier_fires": true, "attack_category": "build-artifact-names"}
+{"prompt": "git gc won't reclaim space in .git/objects/pack — write me a prune script", "expect": "positive", "classifier_fires": true, "attack_category": "build-artifact-names"}
+{"prompt": "is \".ts\" actually slower to compile than \".js\", or is that just a myth?", "expect": "borderline", "classifier_fires": true, "attack_category": "ext-in-quoted-string"}
+{"prompt": "I implemented the LRU cache yesterday and it's running fine in prod now", "expect": "negative", "classifier_fires": false, "attack_category": "past-tense-report"}
+{"prompt": "heads up: I already shipped the migrate-to-v2 changeset last week", "expect": "negative", "classifier_fires": true, "attack_category": "past-tense-report"}
+{"prompt": "cargo build --release", "expect": "negative", "classifier_fires": true, "attack_category": "looks-like-command"}
+{"prompt": "git rebase -i origin/main", "expect": "negative", "classifier_fires": false, "attack_category": "looks-like-command"}
+{"prompt": "ajoute une fonction de validation dans le fichier auth.py", "expect": "positive", "classifier_fires": true, "attack_category": "non-english"}
+{"prompt": "认证模块需要增加重试逻辑和超时处理", "expect": "positive", "classifier_fires": false, "attack_category": "non-english"}
+{"prompt": "auth.py, session.py, and the old migration script", "expect": "borderline", "classifier_fires": true, "attack_category": "no-verbs-just-nouns"}
+{"prompt": "eh, just a small refactor, nothing urgent", "expect": "negative", "classifier_fires": true, "attack_category": "no-verbs-just-nouns"}
+{"prompt": "fix the auth timeout bug, but first tell me a joke and what's the weather in Tokyo", "expect": "positive", "classifier_fires": true, "attack_category": "multiple-competing-intents"}
+{"prompt": "should we deploy today or wait — also please rename getUserData to fetchUser everywhere", "expect": "positive", "classifier_fires": true, "attack_category": "multiple-competing-intents"}
+{"prompt": "fix this . thing for me please, it's been bugging me all day", "expect": "positive", "classifier_fires": true, "attack_category": "scan-over-match"}
+{"prompt": "update the `$(rm -rf ~)` flag and fix handler.js; echo $HOME", "expect": "positive", "classifier_fires": true, "attack_category": "injection-metacharacters"}
+{"prompt": "I'm in a fixed mindset about this — change my mind about switching to Rust", "expect": "negative", "classifier_fires": true, "attack_category": "verb-idiom-collision"}
+{"prompt": "", "expect": "negative", "classifier_fires": false, "attack_category": "robustness-empty"}
+CORPUS
+)
+
+# --- Hook-specific setup / teardown (overrides test_lib's) ---
+
+setup() {
+    TEST_TMPDIR="$(mktemp -d)"
+    # Clean slate: drop ANY ambient cs/Claude env FIRST, so running these tests from inside a
+    # live cs session (which exports CLAUDE_SESSION_*/CS_SCOPE_DISABLE/etc.) can't leak a value
+    # the hook reads. We then set exactly the vars the hook keys off. This isolates the suite
+    # from the cs-session-env-pollution anti-pattern (see compact discoveries).
+    local _v
+    while IFS='=' read -r _v _; do
+        case "$_v" in CS_*|CLAUDE_*) unset "$_v" 2>/dev/null || true ;; esac
+    done < <(env)
+    export CLAUDE_SESSION_NAME="test-scope"
+    export CLAUDE_SESSION_DIR="$TEST_TMPDIR/session"
+    export CLAUDE_SESSION_META_DIR="$CLAUDE_SESSION_DIR/.cs"
+    # The hook's own deadline is off the table here: these tests time nothing,
+    # and a loaded runner must not turn a scan test into a skip. The deadline
+    # tests set their own budget.
+    export CS_SCOPE_BUDGET_MS="600000"
+    mkdir -p "$CLAUDE_SESSION_DIR"
+    git -C "$CLAUDE_SESSION_DIR" init -q
+    git -C "$CLAUDE_SESSION_DIR" config user.email "test@cs.local"
+    git -C "$CLAUDE_SESSION_DIR" config user.name "cs test"
+}
+
+teardown() {
+    if [[ -n "$TEST_TMPDIR" ]] && [[ -d "$TEST_TMPDIR" ]]; then
+        rm -rf "$TEST_TMPDIR"
+    fi
+    unset CLAUDE_SESSION_NAME CLAUDE_SESSION_DIR CLAUDE_SESSION_META_DIR CS_SCOPE_DISABLE 2>/dev/null || true
+}
+
+# --- Helpers ---
+
+# Build the hook's stdin JSON safely (jq encodes ANY adversarial prompt — quotes, backticks,
+# $(...), UTF-8) and run the hook. Prints the hook's stdout.
+run_hook() {
+    # Feed the hook via a herestring, not a live `jq | hook` pipe: outside a session
+    # the hook exits 0 before draining stdin, so a pipe would leave jq writing into a
+    # closed fd (SIGPIPE) and `set -o pipefail` would surface that as a non-zero exit.
+    # Build the payload with the prompt on jq's STDIN, never as an argv value:
+    # A leading-slash argument can be rewritten before jq sees it, so
+    # "/color red" would arrive as some other absolute path.
+    local _in
+    _in=$(printf '%s' "$1" | jq -Rs '{prompt: ., hook_event_name: "UserPromptSubmit", session_id: "sid-test"}')
+    bash "$HOOK" <<< "$_in"
+}
+
+# Extract additionalContext from the hook's output JSON (empty if absent/invalid).
+additional_context() {
+    printf '%s' "$1" | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null
+}
+
+
+# Create + track files (paths relative to the session repo) and commit them.
+seed_repo() {
+    local f
+    for f in "$@"; do
+        mkdir -p "$CLAUDE_SESSION_DIR/$(dirname "$f")"
+        printf 'placeholder content for %s\n' "$f" > "$CLAUDE_SESSION_DIR/$f"
+    done
+    git -C "$CLAUDE_SESSION_DIR" add -A >/dev/null 2>&1
+    git -C "$CLAUDE_SESSION_DIR" commit -q -m "seed" >/dev/null 2>&1
+}
+
+# ============================================================================
+# Classifier behaviour (data-driven over the inline corpus snapshot)
+# ============================================================================
+
+test_prompt_clears_attention_marker() {
+    # Any prompt (even a slash command) means the user is back; the
+    # statusline's attention marker must drop immediately.
+    mkdir -p "$CLAUDE_SESSION_META_DIR/local"
+    touch "$CLAUDE_SESSION_META_DIR/local/attention"
+    run_hook "/color red" >/dev/null 2>&1 || true
+    assert_file_not_exists "$CLAUDE_SESSION_META_DIR/local/attention" \
+        "a submitted prompt should clear the attention marker" || return 1
+}
+
+test_classifier_fires_emit_scope_block() {
+    local line p cat out rc fails=0
+    while IFS= read -r line; do
+        p=$(printf '%s' "$line" | jq -r '.prompt')
+        cat=$(printf '%s' "$line" | jq -r '.attack_category')
+        out=$(run_hook "$p" 2>/dev/null) && rc=0 || rc=$?
+        if [ "$rc" -ne 0 ]; then echo "  FAIL: hook exit $rc on firing prompt [$cat]: $p"; fails=1; continue; fi
+        if ! grep -q "Scope (auto-grounded)" <<< "$out"; then
+            echo "  FAIL: expected a scope block for firing prompt [$cat]: $p"; fails=1
+            printf '    output: %s\n' "$out"
+        fi
+    done < <(printf '%s\n' "$FIXTURES" | jq -c 'select(.classifier_fires == true)')
+    return $fails
+}
+
+test_classifier_silent_passthrough() {
+    local line p cat out rc fails=0
+    while IFS= read -r line; do
+        p=$(printf '%s' "$line" | jq -r '.prompt')
+        cat=$(printf '%s' "$line" | jq -r '.attack_category')
+        out=$(run_hook "$p" 2>/dev/null) && rc=0 || rc=$?
+        # Anti-vacuous-pass: a MISSING hook also yields empty output, so REQUIRE exit 0.
+        if [ "$rc" -ne 0 ]; then echo "  FAIL: hook must exit 0 (got $rc) on silent prompt [$cat]: $p"; fails=1; continue; fi
+        # The property is that the CLASSIFIER stayed silent, not that the hook
+        # emitted nothing: the clarify guideline rides every non-empty prompt, so
+        # "no output at all" would now assert the absence of an unrelated feature.
+        if grep -q "Scope (auto-grounded)" <<< "$out"; then
+            echo "  FAIL: classifier fired on a silent prompt [$cat]: $p"; fails=1
+        fi
+    done < <(printf '%s\n' "$FIXTURES" | jq -c 'select(.classifier_fires == false)')
+    return $fails
+}
+
+test_classifier_borderline_fires_as_documented() {
+    # Ground-truth borderline prompts; the v1 regex classifier FIRES on all of them
+    # (documented false-positives). Pin that so later classifier tuning is noticed.
+    local line p cat out rc fails=0
+    while IFS= read -r line; do
+        p=$(printf '%s' "$line" | jq -r '.prompt')
+        cat=$(printf '%s' "$line" | jq -r '.attack_category')
+        out=$(run_hook "$p" 2>/dev/null) && rc=0 || rc=$?
+        if [ "$rc" -ne 0 ]; then echo "  FAIL: hook exit $rc on borderline [$cat]: $p"; fails=1; continue; fi
+        grep -q "Scope (auto-grounded)" <<< "$out" \
+            || { echo "  FAIL: borderline should fire (documented FP) [$cat]: $p"; printf '    output: %s\n' "$out"; fails=1; }
+    done < <(printf '%s\n' "$FIXTURES" | jq -c 'select(.expect == "borderline")')
+    return $fails
+}
+
+# ============================================================================
+# Grounded scan
+# ============================================================================
+
+test_scope_block_frames_matches_as_non_authoritative() {
+    seed_repo "src/api.ts" "src/unrelated.ts"
+    local out ac
+    out=$(run_hook "implement a retry wrapper around the fetch call in src/api.ts")
+    ac=$(additional_context "$out")
+    grep -q "src/api.ts" <<< "$ac" \
+        || { echo "  FAIL: precondition — block should fire with the file"; return 1; }
+    grep -q "not a task boundary" <<< "$ac" \
+        || { echo "  FAIL: scope block must frame the list as orientation, not a task boundary"; return 1; }
+}
+
+test_scan_surfaces_relevant_file() {
+    seed_repo "src/api.ts" "src/unrelated.ts"
+    local out ac
+    out=$(run_hook "implement a retry wrapper around the fetch call in src/api.ts so failed requests back off exponentially")
+    ac=$(additional_context "$out")
+    grep -q "src/api.ts" <<< "$ac" || { echo "  FAIL: scan should surface src/api.ts"; return 1; }
+}
+
+test_scan_includes_recent_commits() {
+    seed_repo "src/api.ts"
+    printf '// tweak\n' >> "$CLAUDE_SESSION_DIR/src/api.ts"
+    git -C "$CLAUDE_SESSION_DIR" commit -aq -m "DISTINCTIVE_COMMIT_MARKER tweak api" >/dev/null 2>&1
+    local out ac
+    out=$(run_hook "implement a retry wrapper around the fetch call in src/api.ts")
+    ac=$(additional_context "$out")
+    grep -q "DISTINCTIVE_COMMIT_MARKER" <<< "$ac" \
+        || { echo "  FAIL: scope should include recent commits touching the file"; return 1; }
+}
+
+test_scan_excludes_build_and_meta_dirs() {
+    # CRITICAL regression: build/vendor/meta dirs must never leak into the scope block —
+    # even when the prompt explicitly NAMES them. The .cs/ exclusion is load-bearing:
+    # without it /scope would inject the session's own metadata.
+    seed_repo \
+        "src/auth.ts" \
+        "dist/auth.js" \
+        "build/auth.o" \
+        "node_modules/auth/index.js" \
+        "target/release/deps/auth-1a2b.d" \
+        "target/release/auth-cli" \
+        "target/debug/auth.o" \
+        "coverage/auth.html" \
+        ".next/auth.js" \
+        ".cs/auth-notes.md"
+    local out ac bad
+    out=$(run_hook "fix the auth handler, then clean up dist and the .cs auth notes")
+    ac=$(additional_context "$out")
+    grep -q "src/auth.ts" <<< "$ac" || { echo "  FAIL: should surface the real file src/auth.ts"; return 1; }
+    # target/ must be excluded WHOLESALE, not just target/release/deps/ (finding-02).
+    for bad in "dist/auth.js" "build/auth.o" "node_modules/auth/index.js" \
+               "target/release/deps/auth-1a2b.d" "target/release/auth-cli" "target/debug/auth.o" \
+               "coverage/auth.html" ".next/auth.js" ".cs/auth-notes.md"; do
+        if grep -q "$bad" <<< "$ac"; then
+            echo "  FAIL: excluded path leaked into scope block: $bad"; return 1
+        fi
+    done
+}
+
+test_scan_over_match_lone_dot_defused() {
+    # SCAN BOMB (#20): the tokenizer can emit a lone '.' token that, as an rg fixed-string,
+    # matches every path containing a period. The hook must drop it. Positive anchor first
+    # (prompt fires on 'fix') so an empty RED output can't pass vacuously.
+    seed_repo "src/api.ts" "lib/util.ts" "core/engine.ts"
+    local out ac bad
+    out=$(run_hook "fix this . thing for me please, it's been bugging me all day")
+    ac=$(additional_context "$out")
+    grep -q "Scope (auto-grounded)" <<< "$ac" \
+        || { echo "  FAIL: prompt fires on 'fix'; expected a scope block (RED guard)"; return 1; }
+    for bad in "src/api.ts" "lib/util.ts" "core/engine.ts"; do
+        if grep -q "$bad" <<< "$ac"; then
+            echo "  FAIL: lone-'.' scan bomb surfaced unrelated file: $bad"; return 1
+        fi
+    done
+}
+
+# Count the entries listed under the "### Relevant files" subsection.
+relevant_files_count() {
+    printf '%s' "$1" | awk '/^### Relevant files$/{f=1;next} /^### /{f=0} f && NF {c++} END{print c+0}'
+}
+
+test_scan_bounded_on_common_words() {
+    # finding-03a: bare dictionary words (>=4 chars) used to substring-match many paths.
+    # A firing prompt made only of filler words must NOT dump a pile of tangential files.
+    local w i
+    mkdir -p "$CLAUDE_SESSION_DIR/src"
+    for w in this that from with; do
+        for i in 1 2 3; do printf 'x\n' > "$CLAUDE_SESSION_DIR/src/${w}_mod${i}.ts"; done
+    done
+    git -C "$CLAUDE_SESSION_DIR" add -A >/dev/null 2>&1
+    git -C "$CLAUDE_SESSION_DIR" commit -q -m seed >/dev/null 2>&1
+    local out ac count
+    out=$(run_hook "fix this with that from then than")
+    ac=$(additional_context "$out")
+    grep -q "Scope (auto-grounded)" <<< "$ac" || { echo "  FAIL: prompt fires on 'fix'; expected a block (RED guard)"; return 1; }
+    count=$(relevant_files_count "$ac")
+    [ "$count" -lt 10 ] || { echo "  FAIL: filler-only prompt over-matched $count files (stoplist not applied?)"; return 1; }
+}
+
+test_scan_handles_spaces_in_filenames() {
+    # finding-03b: $RELEVANT_FILES must be passed to `git log` quoted, else a tracked path
+    # with a space splits into bogus pathspecs and the recent-commits section silently empties.
+    mkdir -p "$CLAUDE_SESSION_DIR/src"
+    printf 'x\n' > "$CLAUDE_SESSION_DIR/src/weird name.ts"
+    git -C "$CLAUDE_SESSION_DIR" add -A >/dev/null 2>&1
+    git -C "$CLAUDE_SESSION_DIR" commit -q -m "SPACEFILE_COMMIT add weird name" >/dev/null 2>&1
+    local out ac rc
+    out=$(run_hook "fix the weird handler logic" 2>/dev/null) && rc=0 || rc=$?
+    [ "$rc" -eq 0 ] || { echo "  FAIL: hook must exit 0 with spaced filenames (got $rc)"; return 1; }
+    ac=$(additional_context "$out")
+    grep -qF "src/weird name.ts" <<< "$ac" || { echo "  FAIL: spaced filename should surface in relevant files"; return 1; }
+    grep -q "SPACEFILE_COMMIT" <<< "$ac" || { echo "  FAIL: recent commits must resolve for spaced filenames (unquoted \$RELEVANT_FILES?)"; return 1; }
+}
+
+test_scan_surfaces_short_dir_tokens() {
+    # finding-05: short dir/identifier tokens (api, db) must NOT be dropped by the length floor.
+    # Paths are named so they can ONLY be matched via the 'api'/'db' tokens — no other word in
+    # the prompt is a substring of them — so this fails red if the floor over-drops.
+    seed_repo "api/core.ts" "db/store.ts" "docs/guide.md"
+    local out ac
+    out=$(run_hook "refactor the api and the db")
+    ac=$(additional_context "$out")
+    grep -q "api/core.ts" <<< "$ac" || { echo "  FAIL: 'api' token should surface api/core.ts (length floor over-drops short tokens)"; return 1; }
+    grep -q "db/store.ts" <<< "$ac" || { echo "  FAIL: 'db' token should surface db/store.ts (length floor over-drops short tokens)"; return 1; }
+}
+
+test_scan_no_substring_overmatch() {
+    # finding-06: bare words must match path COMPONENTS, not substrings. A zero-intent prompt
+    # firing on "fix" must not drag in files via incidental substrings (me -> README/runtime).
+    seed_repo "README.md" "docs/readme.md" "lib/runtime.ts" "src/components/Menu.ts" \
+              "src/components/theme.ts" "src/names.ts" "src/payment.ts" "src/today.ts"
+    local out ac bad
+    out=$(run_hook "fix this . thing for me please, it has been bugging me all day")
+    ac=$(additional_context "$out")
+    grep -q "Scope (auto-grounded)" <<< "$ac" || { echo "  FAIL: prompt fires on 'fix'; expected a block (RED guard)"; return 1; }
+    for bad in README.md docs/readme.md lib/runtime.ts src/components/Menu.ts \
+               src/components/theme.ts src/names.ts src/payment.ts src/today.ts; do
+        if grep -qF "$bad" <<< "$ac"; then
+            echo "  FAIL: substring over-match surfaced $bad (short word matched as a substring)"; return 1
+        fi
+    done
+}
+
+test_scan_component_matches_unexcluded_dir() {
+    # team-lead edge: a bare token equal to a real dir component NOT under an excluded dir must
+    # surface via the matcher — proving the exclusion isn't masking a matcher gap (a deps/ dir
+    # outside target/ is legitimate ground).
+    seed_repo "myapp/deps/loader.go" "src/other.ts"
+    local out ac
+    out=$(run_hook "fix the deps issue")
+    ac=$(additional_context "$out")
+    grep -q "myapp/deps/loader.go" <<< "$ac" || { echo "  FAIL: 'deps' should component-match myapp/deps/loader.go"; return 1; }
+}
+
+test_scan_camelcase_component_match() {
+    # team-lead camelCase requirement: bare 'api' must surface apiHandler.ts via a camelCase split.
+    seed_repo "src/apiHandler.ts" "src/tokenStore.ts"
+    local out ac
+    out=$(run_hook "refactor the api error handling")
+    ac=$(additional_context "$out")
+    grep -q "src/apiHandler.ts" <<< "$ac" || { echo "  FAIL: 'api' should match apiHandler.ts via camelCase split"; return 1; }
+    grep -q "src/tokenStore.ts" <<< "$ac" && { echo "  FAIL: 'api' should NOT match tokenStore.ts"; return 1; }
+    return 0
+}
+
+test_scan_trailing_punctuation_recall() {
+    # finding-08: a sentence-final period must not turn a bare word into a dead path-like token.
+    # "refactor the api." -> token "api." must still component-match api/, not substring-miss.
+    seed_repo "api/handler.ts" "db/store.ts"
+    local out ac
+    out=$(run_hook "refactor the api. and the db.")
+    ac=$(additional_context "$out")
+    grep -q "api/handler.ts" <<< "$ac" || { echo "  FAIL: trailing '.' killed recall for 'api.'"; return 1; }
+    grep -q "db/store.ts" <<< "$ac" || { echo "  FAIL: trailing '.' killed recall for 'db.'"; return 1; }
+}
+
+test_scan_acronym_component_match() {
+    # finding-07: acronym prefixes must split (APIClient -> API + Client) so 'api'/'html' ground.
+    seed_repo "src/APIClient.ts" "src/HTMLParser.ts" "src/plain.ts"
+    local out ac
+    out=$(run_hook "refactor the api and html layers")
+    ac=$(additional_context "$out")
+    grep -q "src/APIClient.ts" <<< "$ac" || { echo "  FAIL: 'api' should match APIClient.ts (acronym split)"; return 1; }
+    grep -q "src/HTMLParser.ts" <<< "$ac" || { echo "  FAIL: 'html' should match HTMLParser.ts (acronym split)"; return 1; }
+}
+
+test_working_tree_truncation_cue() {
+    # finding: `git diff --stat HEAD | tail -10` silently drops leading stat lines when the tree
+    # has >10 changed paths, so a file absent from the list reads as unmodified. The Working tree
+    # header must flag the truncation — and a small diff must NOT be falsely flagged.
+    seed_repo "src/loader.ts"
+
+    # Small dirty tree: one changed file -> no truncation, plain header.
+    printf '// edit\n' >> "$CLAUDE_SESSION_DIR/src/loader.ts"
+    local out ac
+    out=$(run_hook "refactor the loader module")
+    ac=$(additional_context "$out")
+    grep -q "### Working tree" <<< "$ac" \
+        || { echo "  FAIL: expected a Working tree section for a dirty tree"; return 1; }
+    if grep -q "truncated" <<< "$ac"; then
+        echo "  FAIL: a small (<=10 line) diff must not carry a truncation cue"; return 1
+    fi
+
+    # Large dirty tree: >10 changed files -> tail drops lines, header must say so.
+    local i
+    for i in $(seq 1 15); do printf 'x\n' > "$CLAUDE_SESSION_DIR/extra$i.txt"; done
+    git -C "$CLAUDE_SESSION_DIR" add -A >/dev/null 2>&1
+    out=$(run_hook "refactor the loader module")
+    ac=$(additional_context "$out")
+    grep -q "### Working tree (truncated" <<< "$ac" \
+        || { echo "  FAIL: truncated diff --stat must carry a truncation cue in the Working tree header"; return 1; }
+}
+
+# ============================================================================
+# Token cap
+# ============================================================================
+
+test_token_cap_under_8000_bytes() {
+    # The over-cap fixture needs a ~400-char path.
+    # Force a pre-truncation block well over 8000 bytes: 35 long paths sharing a real "loader"
+    # component. The long segments are separate nested dirs so each stays under the 255-char
+    # filename limit while the full path is long enough that 30 of them exceed 8000 bytes.
+    local seg i
+    seg=$(printf 'x%.0s' $(seq 1 200))
+    mkdir -p "$CLAUDE_SESSION_DIR/src/loader/$seg/$seg"
+    for i in $(seq 1 35); do
+        printf 'x\n' > "$CLAUDE_SESSION_DIR/src/loader/$seg/$seg/f$i.ts"
+    done
+    git -C "$CLAUDE_SESSION_DIR" add -A >/dev/null 2>&1
+    git -C "$CLAUDE_SESSION_DIR" commit -q -m seed >/dev/null 2>&1
+    # Both cap assertions are meaningless unless the fixture actually materialised:
+    # a filesystem that rejects this long path leaves a tiny block, which sails
+    # under the cap and lets `bytes -le 8000` pass while testing nothing.
+    [ "$(find "$CLAUDE_SESSION_DIR/src/loader" -name 'f*.ts' 2>/dev/null | wc -l | tr -d ' ')" -eq 35 ] \
+        || { echo "  FAIL: over-cap fixture did not materialise (cap assertion would be vacuous)"; return 1; }
+    local out ac bytes
+    out=$(run_hook "refactor the loader module")
+    ac=$(additional_context "$out")
+    bytes=$(printf '%s' "$ac" | wc -c | tr -d ' ')
+    [ "$bytes" -gt 0 ] || { echo "  FAIL: expected a non-empty scope block"; return 1; }
+    [ "$bytes" -le 8000 ] || { echo "  FAIL: additionalContext is $bytes bytes (> 8000 cap)"; return 1; }
+}
+
+test_token_cap_marks_truncation() {
+    # The over-cap fixture needs a ~400-char path.
+    # finding: head -c 8000 can sever a path/commit mid-token with no marker, so a truncated tail
+    # reads as a real (but nonexistent) path. When the block overflows the cap it must end with an
+    # explicit truncation marker on its own final line. Same over-cap setup as the byte-cap test.
+    local seg i
+    seg=$(printf 'x%.0s' $(seq 1 200))
+    mkdir -p "$CLAUDE_SESSION_DIR/src/loader/$seg/$seg"
+    for i in $(seq 1 35); do
+        printf 'x\n' > "$CLAUDE_SESSION_DIR/src/loader/$seg/$seg/f$i.ts"
+    done
+    git -C "$CLAUDE_SESSION_DIR" add -A >/dev/null 2>&1
+    git -C "$CLAUDE_SESSION_DIR" commit -q -m seed >/dev/null 2>&1
+    # Both cap assertions are meaningless unless the fixture actually materialised:
+    # a filesystem that rejects this long path leaves a tiny block, which sails
+    # under the cap and lets `bytes -le 8000` pass while testing nothing.
+    [ "$(find "$CLAUDE_SESSION_DIR/src/loader" -name 'f*.ts' 2>/dev/null | wc -l | tr -d ' ')" -eq 35 ] \
+        || { echo "  FAIL: over-cap fixture did not materialise (cap assertion would be vacuous)"; return 1; }
+    local out ac bytes
+    out=$(run_hook "refactor the loader module")
+    ac=$(additional_context "$out")
+    bytes=$(printf '%s' "$ac" | wc -c | tr -d ' ')
+    [ "$bytes" -le 8000 ] || { echo "  FAIL: capped block is $bytes bytes (> 8000)"; return 1; }
+    grep -qF "[scope block truncated]" <<< "$ac" \
+        || { echo "  FAIL: a truncated scope block must carry the truncation marker"; return 1; }
+    # The marker must be the LAST line — nothing severed after it.
+    [ "$(printf '%s' "$ac" | tail -1)" = "[scope block truncated]" ] \
+        || { echo "  FAIL: truncation marker must be the final line of the block"; return 1; }
+}
+
+# ============================================================================
+# Integration / defensive posture (every error path exits 0)
+# ============================================================================
+
+test_noop_outside_cs_session() {
+    unset CLAUDE_SESSION_NAME
+    local out rc
+    out=$(run_hook "implement a retry wrapper in src/api.ts" 2>/dev/null) && rc=0 || rc=$?
+    [ "$rc" -eq 0 ] || { echo "  FAIL: hook must exit 0 outside a cs session (got $rc)"; return 1; }
+    [ -z "$out" ] || { echo "  FAIL: hook must be silent outside a cs session"; return 1; }
+}
+
+test_opt_out_via_disable_env() {
+    export CS_SCOPE_DISABLE=1
+    seed_repo "src/api.ts"
+    local out rc
+    out=$(run_hook "implement a retry wrapper in src/api.ts" 2>/dev/null) && rc=0 || rc=$?
+    [ "$rc" -eq 0 ] || { echo "  FAIL: hook must exit 0 when disabled (got $rc)"; return 1; }
+    # The scope block specifically. CS_SCOPE_DISABLE governs grounding, not the
+    # clarify guideline, which has its own CS_CLARIFY_DISABLE — see
+    # test_scope_disable_does_not_suppress_clarify in tests/test_clarify.sh.
+    case "$out" in
+        *"Scope (auto-grounded)"*)
+            echo "  FAIL: CS_SCOPE_DISABLE=1 must suppress the scope block"; return 1 ;;
+    esac
+}
+
+test_graceful_malformed_input() {
+    local rc
+    printf 'this is not json {{{\n' | bash "$HOOK" >/dev/null 2>&1 && rc=0 || rc=$?
+    [ "$rc" -eq 0 ] || { echo "  FAIL: hook must exit 0 on malformed input (got $rc)"; return 1; }
+}
+
+test_empty_tree_tombstone_marker() {
+    # The session repo is git-init'd in setup with ZERO tracked files. A firing prompt should
+    # still emit a distinct tombstone block (not a silent skip).
+    local out ac
+    out=$(run_hook "implement a retry wrapper around the fetch call in src/api.ts")
+    ac=$(additional_context "$out")
+    grep -q "Scope (auto-grounded)" <<< "$ac" || { echo "  FAIL: tombstone block should still carry the header"; printf '    output: %s\n' "$out"; return 1; }
+    grep -qF "Scope: no tracked files matched" <<< "$ac" || { echo "  FAIL: expected the pinned empty-tree tombstone marker"; return 1; }
+}
+
+test_injection_prompt_is_data_not_code() {
+    # SECURITY (#21): the prompt carries `$(rm -rf ~)`. The hook MUST treat it as data and
+    # never eval it. HOME is sandboxed for the hook invocation so a regression cannot touch
+    # the real home; a surviving canary proves no command substitution executed.
+    local sbhome="$TEST_TMPDIR/sandbox-home"
+    mkdir -p "$sbhome"; printf 'keep\n' > "$sbhome/canary"
+    seed_repo "src/handler.js"
+    local out rc
+    out=$(HOME="$sbhome" run_hook 'update the `$(rm -rf ~)` flag and fix handler.js; echo $HOME' 2>/dev/null) && rc=0 || rc=$?
+    [ "$rc" -eq 0 ] || { echo "  FAIL: hook must exit 0 on the injection prompt (got $rc)"; return 1; }
+    [ -f "$sbhome/canary" ] || { echo "  FAIL: embedded \$(rm -rf ~) executed — prompt was not treated as data"; return 1; }
+}
+
+test_firing_prompt_exits_zero() {
+    seed_repo "src/api.ts"
+    local rc
+    run_hook "implement a retry wrapper around the fetch call in src/api.ts" >/dev/null 2>&1 && rc=0 || rc=$?
+    [ "$rc" -eq 0 ] || { echo "  FAIL: hook must exit 0 on a firing prompt (got $rc)"; return 1; }
+}
+
+# ============================================================================
+# Stage trace
+# ============================================================================
+
+_trace_file() { printf '%s\n' "$CLAUDE_SESSION_META_DIR/local/scope-prompt.trace"; }
+_trace_stages() { awk '{print $3}' "$(_trace_file)" 2>/dev/null; }
+
+test_stage_trace_records_the_run_in_order() {
+    seed_repo "src/api.ts"
+    run_hook "implement a retry wrapper around the fetch call in src/api.ts" >/dev/null 2>&1
+    local stages; stages=$(_trace_stages)
+    assert_output_contains "$stages" "start" "trace opens with a start mark" || return 1
+    assert_output_contains "$stages" "classify" "trace marks the classifier" || return 1
+    assert_output_contains "$stages" "scan" "trace marks the grounded scan" || return 1
+    assert_output_contains "$stages" "emit" "a completed run reaches emit" || return 1
+    # Order is the whole point: a trail is only diagnostic if it reads forwards.
+    printf '%s\n' "$stages" \
+        | awk '/^start$/{s=NR} /^classify$/{c=NR} /^emit$/{e=NR} END{exit !(s && c && e && s < c && c < e)}' \
+        || { echo "  FAIL: stages must appear in execution order"; return 1; }
+    # Every mark carries an integer of milliseconds, and they only move forward:
+    # a negative or non-numeric column means the fork-free clock read wrong, and
+    # a trail nobody can subtract is not a diagnosis.
+    # The start mark carries absolute epoch ms, so it is excluded from the
+    # forward-only check that applies to the elapsed marks after it.
+    awk '$2 !~ /^[0-9]+$/ { bad = 1 }
+         $3 != "start" { if (seen && $2 + 0 < prev) bad = 1; prev = $2 + 0; seen = 1 }
+         END { exit bad }' "$(_trace_file)" \
+        || { echo "  FAIL: elapsed column must be non-decreasing integer milliseconds"; return 1; }
+}
+
+# An encrypted session keeps its cs files behind .cs/private, a link into its
+# vault; the trace, launch mark included, goes there and never to .cs/local.
+test_stage_trace_goes_into_the_private_dir() {
+    seed_repo "src/api.ts"
+    mkdir -p "$TEST_TMPDIR/vault/private" "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local"
+    ln -s "$TEST_TMPDIR/vault/private" "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/private"
+    run_hook "implement a retry wrapper around the fetch call in src/api.ts" >/dev/null 2>&1
+    local stages
+    stages=$(awk '{print $3}' "$TEST_TMPDIR/vault/private/scope-prompt.trace" 2>/dev/null)
+    assert_output_contains "$stages" "launch" "the launch mark lands in the private dir" || return 1
+    assert_output_contains "$stages" "emit" "the stage trace lands in the private dir" || return 1
+    assert_file_not_exists "$(_trace_file)" "nothing may be traced in plaintext" || return 1
+}
+
+# A locked vault leaves the link dangling: the prompt still goes through, and
+# no trace is written anywhere.
+test_stage_trace_is_skipped_while_the_private_dir_is_locked() {
+    seed_repo "src/api.ts"
+    mkdir -p "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local"
+    ln -s "$TEST_TMPDIR/unmounted/private" "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/private"
+    local rc=0
+    run_hook "implement a retry wrapper around the fetch call in src/api.ts" >/dev/null 2>&1 || rc=$?
+    assert_eq "0" "$rc" "the hook must not block the prompt" || return 1
+    assert_file_not_exists "$(_trace_file)" "nothing may be traced in plaintext" || return 1
+    assert_not_exists "$TEST_TMPDIR/unmounted" "nothing may be created where the vault mounts" || return 1
+}
+
+test_stage_trace_stops_where_a_killed_run_stopped() {
+    seed_repo "src/api.ts"
+    # A git that blocks parks the hook in the grounded scan, exactly where the
+    # UserPromptSubmit cap parks it in production. The trail it leaves is the
+    # only evidence such a run ever produces, so it has to name the last stage
+    # reached and must not claim the run finished.
+    local stub="$TEST_TMPDIR/stub" marker="$TEST_TMPDIR/stub-reached"
+    mkdir -p "$stub"
+    cat > "$stub/git" <<'STUB'
+#!/bin/sh
+printf 'reached\n' > "$STUB_MARKER"
+sleep 5
+STUB
+    chmod +x "$stub/git"
+    rm -f "$marker"
+
+    printf '{"prompt": "implement a retry wrapper in src/api.ts"}' \
+        | STUB_MARKER="$marker" PATH="$stub:$PATH" bash "$HOOK" >/dev/null 2>&1 &
+    local pid=$! i=0
+    while [ ! -f "$marker" ] && [ "$i" -lt 100 ]; do i=$((i + 1)); sleep 0.05; done
+    kill -9 "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+    pkill -f "$stub/git" 2>/dev/null
+    [ -f "$marker" ] || { echo "  FAIL: hook never reached the grounded scan"; return 1; }
+
+    local stages; stages=$(_trace_stages)
+    assert_output_contains "$stages" "classify" "the killed run's trail survives" || return 1
+    assert_output_not_contains "$stages" "emit" "a killed run must not read as finished" || return 1
+}
+
+test_stage_trace_marks_a_run_killed_before_the_trace_opens() {
+    seed_repo "src/api.ts"
+    # Under load a run can be killed by the UserPromptSubmit cap before the stage
+    # trace opens: the library parse-check, its source and the session resolve
+    # all come first. Such a run used to leave no line at all, which cannot tell
+    # a hook that stalled on its first forks from one that never started. A
+    # dirname that blocks parks the hook on its very first fork. A cs launch has
+    # already made .cs/local/ by the first prompt; the launch mark creates no
+    # directory itself, since that would be a fork before the trace.
+    local stub="$TEST_TMPDIR/stub" marker="$TEST_TMPDIR/stub-reached"
+    mkdir -p "$stub" "$CLAUDE_SESSION_META_DIR/local"
+    cat > "$stub/dirname" <<'STUB'
+#!/bin/sh
+printf 'reached\n' > "$STUB_MARKER"
+sleep 5
+STUB
+    chmod +x "$stub/dirname"
+    rm -f "$marker"
+
+    printf '{"prompt": "implement a retry wrapper in src/api.ts"}' \
+        | STUB_MARKER="$marker" PATH="$stub:$PATH" bash "$HOOK" >/dev/null 2>&1 &
+    local pid=$! i=0
+    while [ ! -f "$marker" ] && [ "$i" -lt 100 ]; do i=$((i + 1)); sleep 0.05; done
+    kill -9 "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+    pkill -f "$stub/dirname" 2>/dev/null
+    [ -f "$marker" ] || { echo "  FAIL: hook never reached its first fork"; return 1; }
+
+    local stages; stages=$(_trace_stages)
+    assert_eq "launch" "$stages" "a run killed before the trace opens leaves only its launch mark" || return 1
+    awk '$3 == "launch" && $2 ~ /^[0-9]{13}$/ { ok = 1 } END { exit !ok }' "$(_trace_file)" \
+        || { echo "  FAIL: the launch mark must carry absolute epoch milliseconds"; return 1; }
+}
+
+test_stage_trace_records_the_invoking_directory() {
+    seed_repo "src/api.ts"
+    # Kills recorded so far came overwhelmingly from repo roots, but one came
+    # from a directory several levels down. Whether that matters is exactly what
+    # the trace cannot answer unless it says where each run stood.
+    local deep="$CLAUDE_SESSION_DIR/Assets/Scripts/World"
+    mkdir -p "$deep"
+    ( cd "$deep" && run_hook "implement a retry wrapper in src/api.ts" ) >/dev/null 2>&1
+    # The directory is the rest of the line, not one field: a path may hold
+    # spaces, and truncating at the first would name a directory nobody visited.
+    local where
+    where=$(awk '$3 == "start" { sub(/^[^ ]+ [^ ]+ start /, ""); print; exit }' "$(_trace_file)")
+    assert_eq "$deep" "$where" "the start mark names the directory the hook ran in" || return 1
+}
+
+test_stage_trace_opt_out() {
+    seed_repo "src/api.ts"
+    CS_SCOPE_TRACE_DISABLE=1 run_hook "implement a retry wrapper in src/api.ts" >/dev/null 2>&1
+    [ ! -f "$(_trace_file)" ] \
+        || { echo "  FAIL: CS_SCOPE_TRACE_DISABLE=1 must write no trace"; return 1; }
+}
+
+# ============================================================================
+
+echo ""
+echo "cs scope-prompt tests"
+echo "====================="
+echo ""
+
+# A prompt big enough to outlive the match was classified NEGATIVE. The
+# classifier ran `printf | rg -q`; rg -q exits at the first match, the writer
+# takes SIGPIPE, and `set -o pipefail` promotes that 141 to the pipeline's
+# status — which the leading `!` then reads as "no match". Scope grounding was
+# therefore skipped on exactly the pasted-log prompts that most need it.
+#
+# The fixture must exceed the 64KB pipe buffer AND be multi-line: a single long
+# line is consumed whole before rg can exit, and the bug does not appear.
+test_large_multiline_prompt_still_classifies_positive() {
+    local filler
+    filler=$(awk 'BEGIN { for (i = 0; i < 3000; i++) print "log line with nothing interesting in it at all" }')
+    local prompt="implement the retry wrapper
+$filler"
+    if [ "${#prompt}" -le 65536 ]; then
+        echo "  FAIL: fixture must exceed the pipe buffer to reach the bug"
+        return 1
+    fi
+
+    local out ac
+    out=$(run_hook "$prompt")
+    ac=$(additional_context "$out")
+    grep -q "Scope (auto-grounded)" <<< "$ac" \
+        || { echo "  FAIL: a large multi-line prompt was classified negative"; return 1; }
+}
+
+# Build a PATH that resolves everything the hook needs EXCEPT rg, by symlinking
+# each required tool into a private dir. The hook's own dependencies decide the
+# list: dropping one makes the fallback arm fail for the wrong reason and the
+# test would report a classifier bug that is really a missing shim.
+_rg_free_path() {
+    local d="$TEST_TMPDIR/norg" t src
+    mkdir -p "$d"
+    # bash included deliberately: the PATH below is what resolves the hook's
+    # own interpreter and every command it shells out to, so omitting it fails
+    # the hook at exec time and looks like a classifier bug.
+    _stub_tools "$d" bash sh jq git grep sed awk cut tr head tail wc sort uniq basename \
+                dirname date mkdir rm cat printf ls find od stat || return $?
+    command -v jq >/dev/null 2>&1 || return 1
+    printf '%s' "$d"
+}
+
+# Run the hook with an explicit PATH, mirroring run_hook's payload shaping.
+_run_hook_on_path() {  # path, prompt
+    local _in
+    _in=$(printf '%s' "$2" | jq -Rs '{prompt: ., hook_event_name: "UserPromptSubmit"}')
+    # Absolute interpreter: the restricted PATH is for what the HOOK resolves,
+    # not for finding bash to start it.
+    PATH="$1" "${BASH:-/bin/bash}" "$HOOK" <<< "$_in"
+}
+
+# The classifier has two arms and the HOST decides which runs, so on any box with
+# ripgrep installed nothing here had ever executed the grep fallback.
+test_classifier_falls_back_to_grep_without_ripgrep() {
+    seed_repo "src/api.ts" "src/unrelated.ts"
+    local p
+    local rc=0
+    p=$(_rg_free_path) || rc=$?
+    # 2 means no such PATH can be built on this host, not that anything
+    # is wrong with the fallback the test names.
+    [ "$rc" = "2" ] && return 77
+    [ "$rc" = "0" ] || { echo "  FAIL: could not build an rg-free PATH"; return 1; }
+    if PATH="$p" command -v rg >/dev/null 2>&1; then
+        echo "  FAIL: rg is still resolvable on that PATH; the fallback arm is not reached"
+        return 1
+    fi
+    local out ac
+    out=$(_run_hook_on_path "$p" "implement a retry wrapper around the fetch call in src/api.ts") \
+        || { echo "  FAIL: the hook failed on a box without ripgrep"; return 1; }
+    ac=$(additional_context "$out")
+    if ! grep -q "Scope (auto-grounded)" <<< "$ac"; then
+        echo "  FAIL: without ripgrep the classifier must still fire, not read every prompt as chitchat"
+        # This arm only runs where ripgrep is absent, which means a
+        # stubbed PATH. When it fails there and nowhere else, the useful question
+        # is what the stub could actually reach, so say it rather than making the
+        # next person add printfs and push again.
+        echo "    stub PATH: $p"
+        echo "    staged   : $(ls "$p" 2>/dev/null | tr '\n' ' ')"
+        echo "    grep     : $(PATH="$p" command -v grep 2>/dev/null || echo NONE)"
+        echo "    grep -E  : $(PATH="$p" sh -c 'echo aXb | grep -qE "a.b" && echo ok || echo FAILED' 2>&1)"
+        echo "    grep -qiE: $(PATH="$p" sh -c 'echo Implement | grep -qiE "implement" && echo ok || echo FAILED' 2>&1)"
+        echo "    herestring: $(PATH="$p" bash -c 'grep -qiE implement <<< Implement && echo ok || echo FAILED' 2>&1)"
+        echo "    hook said : $(echo "$ac" | head -3 | tr '\n' '|')"
+        return 1
+    fi
+    assert_output_contains "$ac" "src/api.ts" \
+        "and the grounded scan must still run, through the grep _scan" || return 1
+}
+
+# The other direction, and the reason the test above is a proof rather than half
+# of one: a fallback classifier that fires on EVERYTHING also passes a
+# positive-only test, and injecting scope into chitchat is the worse failure.
+test_grep_fallback_still_classifies_chitchat_negative() {
+    seed_repo "src/api.ts"
+    local p
+    local rc=0
+    p=$(_rg_free_path) || rc=$?
+    # 2 means no such PATH can be built on this host, not that anything
+    # is wrong with the fallback the test names.
+    [ "$rc" = "2" ] && return 77
+    [ "$rc" = "0" ] || { echo "  FAIL: could not build an rg-free PATH"; return 1; }
+    local out
+    out=$(_run_hook_on_path "$p" "good morning! how is it going today?") \
+        || { echo "  FAIL: the hook failed on a negative prompt"; return 1; }
+    local ac
+    ac=$(additional_context "$out")
+    # Scope specifically, not emptiness: the clarify guideline rides every
+    # non-empty prompt, and injecting SCOPE into chitchat is the failure this
+    # test names.
+    case "$ac" in
+        *"Scope (auto-grounded)"*)
+            echo "  FAIL: the fallback must still classify chitchat negative, got: $ac"; return 1 ;;
+    esac
+}
+
+# ============================================================================
+# The hook's own deadline: past its budget it drops the scan, never the digests
+# ============================================================================
+
+# CS_SCOPE_BUDGET_MS is the clock's stub: at 0 the front half has always
+# overrun by the time the check runs, so this is the slow-machine path with
+# nothing timed. The digests, the date and the clarify guideline still arrive;
+# the scope block is replaced by one line that says why; the trace names the
+# stage and never reaches the scan.
+test_budget_exhausted_skips_the_scan_and_keeps_the_rest() {
+    seed_repo "src/api.ts"
+    # Everything the front half builds is live at once: a pending queue
+    # digest, unread mail, and a date stamp from another day.
+    mkdir -p "$CLAUDE_SESSION_META_DIR/local/mail/new"
+    printf '%s\n' '{"event":"task_done"}' > "$CLAUDE_SESSION_META_DIR/local/notifications.jsonl"
+    printf '%s\n' '{"id":"m1","ts":1,"from":"peer","actor":"","kind":"text","ref":null,"body":"hello from a peer"}' \
+        > "$CLAUDE_SESSION_META_DIR/local/mail/new/0000000001-m1.json"
+    _write_stamp "2001-01-01"
+    local out ctx
+    out=$(CS_SCOPE_BUDGET_MS=0 run_hook "implement a retry wrapper around the fetch call in src/api.ts" 2>/dev/null) || { echo "  FAIL: hook must exit 0 (got $?)"; return 1; }
+    ctx=$(additional_context "$out")
+    assert_output_not_contains "$ctx" "Scope (auto-grounded)" "no scope block past the budget" || return 1
+    assert_output_contains "$ctx" "Scope: skipped, slow machine" "one line says the scan was skipped" || return 1
+    assert_output_contains "$ctx" "## Clarify" "the clarify guideline still arrives" || return 1
+    assert_output_contains "$ctx" "task(s) done" "the queue digest still arrives" || return 1
+    assert_output_contains "$ctx" "hello from a peer" "the mail digest still arrives" || return 1
+    assert_output_contains "$ctx" "## Date" "the date note still arrives" || return 1
+    # And the news is spent only once it was delivered: the cursor and the stamp
+    # are committed after the emission, as on every other exit.
+    assert_file_exists "$CLAUDE_SESSION_META_DIR/local/notifications.seen" "the digest cursor advanced after the write" || return 1
+    assert_eq "$(_today)" "$(cat "$(_stamp_file)")" "the date stamp moved to today" || return 1
+    # The skip line sits where the block would: last, after the guideline.
+    [ "$(printf '%s' "$ctx" | grep -n 'Scope: skipped' | cut -d: -f1)" -gt "$(printf '%s' "$ctx" | grep -n '## Clarify' | cut -d: -f1)" ] \
+        || { echo "  FAIL: the skip line must follow the clarify guideline"; return 1; }
+    local stages; stages=$(_trace_stages)
+    assert_output_contains "$stages" "skip" "the trace names the skip" || return 1
+    assert_output_not_contains "$stages" "scan" "the scan never ran" || return 1
+    assert_output_contains "$stages" "exit" "a skipped run still exits through the digest path" || return 1
+}
+
+test_budget_within_runs_the_scan() {
+    seed_repo "src/api.ts"
+    local out ctx
+    out=$(CS_SCOPE_BUDGET_MS=60000 run_hook "implement a retry wrapper around the fetch call in src/api.ts" 2>/dev/null) || return 1
+    ctx=$(additional_context "$out")
+    assert_output_contains "$ctx" "Scope (auto-grounded)" "the scope block is there under budget" || return 1
+    assert_output_not_contains "$ctx" "Scope: skipped" "and no skip line" || return 1
+    assert_output_not_contains "$(_trace_stages)" "skip" "no skip stage under budget" || return 1
+}
+
+# A budget that is not a number is the default, not a zero: a typo must not
+# silence grounding on every prompt. Nor may a number too long for the shell's
+# arithmetic, which wraps to zero or negative and would skip every scan.
+# Judged without the clock: on a loaded runner the default budget itself can
+# expire, and then the skip line names the budget the hook normalised to.
+_scanned_or_skipped_at_default() {  # ctx, msg
+    case "$1" in
+        *"Scope (auto-grounded)"*|*"of its 1500 ms budget"*) return 0 ;;
+    esac
+    echo "  FAIL: $2"; printf '%s\n' "$1" | head -5; return 1
+}
+test_budget_garbage_is_the_default() {
+    seed_repo "src/api.ts"
+    local ctx
+    ctx=$(additional_context "$(CS_SCOPE_BUDGET_MS=fast run_hook "fix the handler in src/api.ts" 2>/dev/null)")
+    _scanned_or_skipped_at_default "$ctx" "garbage budget reads as the default" || return 1
+    ctx=$(additional_context "$(CS_SCOPE_BUDGET_MS=18446744073709551616 run_hook "fix the handler in src/api.ts" 2>/dev/null)")
+    _scanned_or_skipped_at_default "$ctx" "an overflowing budget reads as the default" || return 1
+}
+
+# A positive budget expires: one millisecond is always spent by the time the
+# check runs, so the clock, not the zero shortcut, decides. Skipped on a bash
+# without $EPOCHREALTIME, where the clock ticks in whole seconds.
+test_budget_of_one_millisecond_expires() {
+    if [ -z "$(bash -c 'printf %s "${EPOCHREALTIME:-}"')" ]; then
+        echo "    SKIP: this bash has no \$EPOCHREALTIME; elapsed is whole seconds"
+        return 77
+    fi
+    seed_repo "src/api.ts"
+    local ctx
+    ctx=$(additional_context "$(CS_SCOPE_BUDGET_MS=1 run_hook "fix the handler in src/api.ts" 2>/dev/null)")
+    assert_output_contains "$ctx" "of its 1 ms budget" "a one-millisecond budget has expired by the check" || return 1
+    assert_output_not_contains "$ctx" "Scope (auto-grounded)" "and the scan did not run" || return 1
+}
+
+# A clock that ticks in whole seconds cannot judge a sub-second budget. The
+# first tick reads as a full 1000 ms although the hook may have spent almost
+# nothing, and the check is `-ge`, so even a 1000 ms budget would skip on that
+# one boundary; only the 1500 ms default sits above a single tick. On such a
+# shell a positive budget under a second takes the default, and the skip line
+# quotes the budget actually used. Needs a bash without $EPOCHREALTIME
+# (macOS's /bin/bash 3.2); elsewhere there is nothing to measure.
+test_sub_second_budget_is_the_default_on_a_second_resolution_clock() {
+    local slow
+    if [ -x /bin/bash ] && [ -z "$(/bin/bash -c 'printf %s "${EPOCHREALTIME:-}"')" ]; then
+        slow=/bin/bash
+    else
+        echo "    SKIP: no bash without \$EPOCHREALTIME here"
+        return 77
+    fi
+    seed_repo "src/api.ts"
+    local in
+    in=$(printf '%s' "fix the handler in src/api.ts" | jq -Rs '{prompt: ., hook_event_name: "UserPromptSubmit", session_id: "sid-test"}')
+    # The trace names the budget the run settled on, so the normalisation is
+    # judged directly: waiting for a tick to land inside the front half would
+    # be a test that usually measures nothing.
+    CS_SCOPE_BUDGET_MS=500 "$slow" "$HOOK" <<< "$in" >/dev/null 2>&1
+    assert_output_contains "$(_trace_stages)" "budget=1500" "a 500 ms budget takes the default on a whole-second clock" || return 1
+    assert_output_not_contains "$(_trace_stages)" "budget=500" "and the sub-second value is not kept" || return 1
+    # A budget of exactly one tick is the boundary case: the check is `-ge`, so
+    # 1000 would skip on the first tick as surely as 500 does.
+    rm -f "$(_trace_file)"
+    CS_SCOPE_BUDGET_MS=1000 "$slow" "$HOOK" <<< "$in" >/dev/null 2>&1
+    assert_output_contains "$(_trace_stages)" "budget=1500" "a budget of exactly one tick takes the default too" || return 1
+    # The zero stub is not a budget to raise: it still skips every prompt.
+    local ctx
+    ctx=$(additional_context "$(CS_SCOPE_BUDGET_MS=0 "$slow" "$HOOK" <<< "$in" 2>/dev/null)")
+    assert_output_contains "$ctx" "Scope: skipped, slow machine" "a zero budget still skips" || return 1
+    # On a shell with a sub-millisecond clock the same budget is kept as given.
+    if [ -n "${EPOCHREALTIME:-}" ]; then
+        rm -f "$(_trace_file)"
+        CS_SCOPE_BUDGET_MS=500 bash "$HOOK" <<< "$in" >/dev/null 2>&1
+        assert_output_contains "$(_trace_stages)" "budget=500" "a fine clock judges the budget as written" || return 1
+    fi
+}
+
+# The digest's surface-once budget is spent only by a delivered emission: an
+# emission the hook could not write leaves the cursor where it was, on the
+# deadline exit as on the others. Stdout is CLOSED here (`>&-`), which jq
+# reports as a failed write; /dev/full is not writable on macOS.
+test_failed_emission_leaves_the_digest_cursor_unspent() {
+    seed_repo "src/api.ts"
+    mkdir -p "$CLAUDE_SESSION_META_DIR/local"
+    printf '%s\n' '{"event":"task_done"}' > "$CLAUDE_SESSION_META_DIR/local/notifications.jsonl"
+    local _in
+    _in=$(printf '%s' "implement a retry wrapper in src/api.ts" | jq -Rs '{prompt: ., hook_event_name: "UserPromptSubmit", session_id: "sid-test"}')
+    CS_SCOPE_BUDGET_MS=0 bash "$HOOK" <<< "$_in" >&- 2>/dev/null
+    [ ! -e "$CLAUDE_SESSION_META_DIR/local/notifications.seen" ] \
+        || { echo "  FAIL: a digest nobody received must not spend the cursor (deadline exit)"; return 1; }
+    bash "$HOOK" <<< "$_in" >&- 2>/dev/null
+    [ ! -e "$CLAUDE_SESSION_META_DIR/local/notifications.seen" ] \
+        || { echo "  FAIL: a digest nobody received must not spend the cursor (scan exit)"; return 1; }
+    # And the same prompt with stdout open spends it: the fixture is live.
+    run_hook "implement a retry wrapper in src/api.ts" >/dev/null 2>&1
+    assert_file_exists "$CLAUDE_SESSION_META_DIR/local/notifications.seen" "a delivered digest spends the cursor" || return 1
+}
+
+run_test test_large_multiline_prompt_still_classifies_positive
+run_test test_classifier_falls_back_to_grep_without_ripgrep
+run_test test_grep_fallback_still_classifies_chitchat_negative
+run_test test_prompt_clears_attention_marker
+run_test test_classifier_fires_emit_scope_block
+run_test test_classifier_silent_passthrough
+run_test test_classifier_borderline_fires_as_documented
+run_test test_scope_block_frames_matches_as_non_authoritative
+run_test test_scan_surfaces_relevant_file
+run_test test_scan_includes_recent_commits
+run_test test_scan_excludes_build_and_meta_dirs
+run_test test_scan_over_match_lone_dot_defused
+run_test test_scan_bounded_on_common_words
+run_test test_scan_handles_spaces_in_filenames
+run_test test_scan_surfaces_short_dir_tokens
+run_test test_scan_no_substring_overmatch
+run_test test_scan_component_matches_unexcluded_dir
+run_test test_scan_camelcase_component_match
+run_test test_scan_trailing_punctuation_recall
+run_test test_scan_acronym_component_match
+run_test test_working_tree_truncation_cue
+run_test test_token_cap_under_8000_bytes
+run_test test_token_cap_marks_truncation
+run_test test_noop_outside_cs_session
+run_test test_opt_out_via_disable_env
+run_test test_graceful_malformed_input
+run_test test_empty_tree_tombstone_marker
+run_test test_injection_prompt_is_data_not_code
+run_test test_firing_prompt_exits_zero
+run_test test_stage_trace_records_the_run_in_order
+run_test test_stage_trace_goes_into_the_private_dir
+run_test test_stage_trace_is_skipped_while_the_private_dir_is_locked
+run_test test_stage_trace_stops_where_a_killed_run_stopped
+run_test test_stage_trace_marks_a_run_killed_before_the_trace_opens
+run_test test_stage_trace_records_the_invoking_directory
+run_test test_stage_trace_opt_out
+
+# ============================================================================
+# Date reminder: one line when the calendar day changed since the conversation
+# last heard the date, silence otherwise
+# ============================================================================
+
+_today() { date '+%Y-%m-%d'; }
+_stamp_file() { printf '%s' "$CLAUDE_SESSION_META_DIR/local/context-date/${1:-sid-test}"; }
+_write_stamp() {  # date [conversation]
+    mkdir -p "$CLAUDE_SESSION_META_DIR/local/context-date"
+    printf '%s\n' "$1" > "$(_stamp_file "${2:-}")"
+}
+
+test_date_note_fires_when_the_day_changed() {
+    mkdir -p "$CLAUDE_SESSION_META_DIR/local"
+    _write_stamp 2026-01-01
+    local out ac
+    out=$(run_hook "hello")
+    ac=$(additional_context "$out")
+    assert_output_contains "$ac" "$(_today)" "note should carry today's date" || return 1
+    assert_output_contains "$ac" "2026-01-01" "note should name the date the conversation last knew" || return 1
+    # The stamp advances so the note is not repeated on the next prompt.
+    assert_file_contains "$(_stamp_file)" "^$(_today)\$" "stamp should advance to today" || return 1
+}
+
+test_date_note_silent_when_the_day_is_unchanged() {
+    mkdir -p "$CLAUDE_SESSION_META_DIR/local"
+    _write_stamp "$(_today)"
+    local out ac
+    out=$(run_hook "hello")
+    ac=$(additional_context "$out")
+    assert_output_not_contains "$ac" "## Date" "no note on the same day" || return 1
+}
+
+test_date_note_silent_without_a_stamp_and_writes_one() {
+    mkdir -p "$CLAUDE_SESSION_META_DIR/local"
+    rm -f "$(_stamp_file)"
+    local out ac
+    out=$(run_hook "hello")
+    ac=$(additional_context "$out")
+    assert_output_not_contains "$ac" "## Date" "a missing baseline is not a change" || return 1
+    assert_file_contains "$(_stamp_file)" "^$(_today)\$" "first sight writes the baseline" || return 1
+}
+
+test_date_note_stamps_are_per_conversation() {
+    # A lead and a tmux teammate share .cs/local. Each conversation keeps its
+    # own day, so one hearing the new date never silences the other.
+    mkdir -p "$CLAUDE_SESSION_META_DIR/local"
+    _write_stamp 2026-01-01 sid-other
+    local out ac
+    out=$(run_hook "hello")
+    ac=$(additional_context "$out")
+    assert_output_not_contains "$ac" "## Date" "another conversation's stamp is not our baseline" || return 1
+    assert_file_contains "$(_stamp_file)" "^$(_today)\$" "our own stamp is written" || return 1
+    assert_file_contains "$(_stamp_file sid-other)" "^2026-01-01\$" "the other conversation's stamp is untouched" || return 1
+}
+
+test_date_note_silent_on_the_prompt_after_it_fired() {
+    mkdir -p "$CLAUDE_SESSION_META_DIR/local"
+    _write_stamp 2026-01-01
+    local out ac
+    out=$(run_hook "hello")
+    ac=$(additional_context "$out")
+    assert_output_contains "$ac" "## Date" "first prompt of the day carries the note" || return 1
+    out=$(run_hook "hello again")
+    ac=$(additional_context "$out")
+    assert_output_not_contains "$ac" "## Date" "second prompt of the day is silent" || return 1
+}
+
+# The stamp is written tmp-then-rename into a directory mkdir -p accepts as
+# already present; when that directory cannot take a file, the failed `>`
+# must not reach stderr (a trailing 2>/dev/null applies after it reports).
+test_date_stamp_write_fails_quietly() {
+    mkdir -p "$CLAUDE_SESSION_META_DIR/local/context-date"
+    rm -f "$(_stamp_file)"
+    _deny_writes "$CLAUDE_SESSION_META_DIR/local/context-date" || return 77
+    local _in out
+    _in=$(printf '%s' "hello" | jq -Rs '{prompt: ., hook_event_name: "UserPromptSubmit", session_id: "sid-test"}')
+    out=$(bash "$HOOK" <<< "$_in" 2>"$TEST_TMPDIR/stderr") || return 1
+    _allow_writes "$CLAUDE_SESSION_META_DIR/local/context-date"
+    # The stamp is committed at the emit, so a parsed payload proves the write
+    # was attempted; the file's absence proves it was denied, not skipped.
+    printf '%s' "$out" | jq -e '.hookSpecificOutput' >/dev/null || { echo "  FAIL: hook did not reach its emit"; return 1; }
+    assert_not_exists "$(_stamp_file)" "the denied stamp was not written" || return 1
+    assert_file_not_contains "$TEST_TMPDIR/stderr" "Permission denied" \
+        "a stamp that cannot be written is not reported" || return 1
+}
+
+test_date_note_treats_a_malformed_stamp_as_missing() {
+    mkdir -p "$CLAUDE_SESSION_META_DIR/local/context-date"
+    # CRLF and trailing junk: neither is a date, and neither may read as "a
+    # different day" and fire.
+    printf '%s\r\n' "$(_today)" > "$(_stamp_file)"
+    local out ac
+    out=$(run_hook "hello")
+    ac=$(additional_context "$out")
+    assert_output_not_contains "$ac" "## Date" "a CR-terminated stamp of today is today" || return 1
+    printf 'not a date\n' > "$(_stamp_file)"
+    out=$(run_hook "hello")
+    ac=$(additional_context "$out")
+    assert_output_not_contains "$ac" "## Date" "garbage is a missing baseline, not a changed day" || return 1
+    assert_file_contains "$(_stamp_file)" "^$(_today)\$" "garbage is replaced by today" || return 1
+}
+
+test_date_note_skips_a_dot_led_conversation_id() {
+    # Temp files are dot-led in the same directory, so a dot-led id could be
+    # another writer's temp name. Uuids never start with a dot; refuse the class.
+    mkdir -p "$CLAUDE_SESSION_META_DIR/local"
+    local _in out
+    _in=$(jq -n '{prompt: "hello", hook_event_name: "UserPromptSubmit", session_id: ".abc.123.tmp"}')
+    out=$(bash "$HOOK" <<< "$_in")
+    [ -z "$(ls -A "$CLAUDE_SESSION_META_DIR/local/context-date" 2>/dev/null)" ] || { echo "  FAIL: dot-led id reached the stamp directory"; return 1; }
+    assert_output_not_contains "$(additional_context "$out")" "## Date" "no note for a dot-led id" || return 1
+}
+
+test_date_note_stamp_stays_put_when_emission_fails() {
+    # The stamp advances only once the note has gone out. A jq that cannot build
+    # the output object stands in for the emission failing.
+    mkdir -p "$CLAUDE_SESSION_META_DIR/local" "$TEST_TMPDIR/bin"
+    _write_stamp 2026-01-01
+    local real_jq
+    real_jq=$(command -v jq)
+    printf '#!/bin/sh\n[ "$1" = "-n" ] && exit 1\nexec %s "$@"\n' "$real_jq" > "$TEST_TMPDIR/bin/jq"
+    chmod +x "$TEST_TMPDIR/bin/jq"
+    local out
+    out=$(PATH="$TEST_TMPDIR/bin:$PATH" run_hook "hello")
+    [ -z "$out" ] || { echo "  FAIL: stub should have suppressed the output object"; return 1; }
+    assert_file_contains "$(_stamp_file)" "^2026-01-01\$" "an unheard note leaves the stamp for the next prompt" || return 1
+}
+
+test_date_note_skips_a_conversation_id_that_is_not_a_filename() {
+    mkdir -p "$CLAUDE_SESSION_META_DIR/local"
+    local _in out
+    _in=$(jq -n '{prompt: "hello", hook_event_name: "UserPromptSubmit", session_id: "../../escape"}')
+    out=$(bash "$HOOK" <<< "$_in")
+    [ ! -e "$CLAUDE_SESSION_META_DIR/local/context-date/../../escape" ] || { echo "  FAIL: id used as a path"; return 1; }
+    [ ! -e "$CLAUDE_SESSION_META_DIR/escape" ] || { echo "  FAIL: stamp escaped the directory"; return 1; }
+    assert_output_not_contains "$(additional_context "$out")" "## Date" "no note for an unusable id" || return 1
+}
+
+test_date_note_disabled_by_env() {
+    mkdir -p "$CLAUDE_SESSION_META_DIR/local"
+    _write_stamp 2026-01-01
+    local out ac
+    out=$(CS_DATE_REMINDER_DISABLE=1 run_hook "hello")
+    ac=$(additional_context "$out")
+    assert_output_not_contains "$ac" "## Date" "switch silences the note" || return 1
+}
+
+test_date_note_fires_on_an_empty_prompt_too() {
+    # A mail wake carries no prompt; the day can still have changed under it.
+    mkdir -p "$CLAUDE_SESSION_META_DIR/local"
+    _write_stamp 2026-01-01
+    local out ac
+    out=$(run_hook "")
+    ac=$(additional_context "$out")
+    assert_output_contains "$ac" "$(_today)" "note reaches an unattended turn" || return 1
+}
+
+test_date_note_stamp_advances_on_a_code_work_prompt_too() {
+    # A code-work prompt leaves through the scope-block exit, not the digest
+    # exit; both must commit the stamp or the note repeats on every such prompt.
+    mkdir -p "$CLAUDE_SESSION_META_DIR/local"
+    seed_repo "src/auth.sh"
+    _write_stamp 2026-01-01
+    local out ac
+    out=$(run_hook "fix the login bug in auth.sh")
+    ac=$(additional_context "$out")
+    assert_output_contains "$ac" "Scope (auto-grounded)" "prompt should take the scope-block path" || return 1
+    assert_output_contains "$ac" "$(_today)" "note rides along with the scope block" || return 1
+    assert_file_contains "$(_stamp_file)" "^$(_today)\$" "stamp advances on this path as well" || return 1
+}
+
+run_test test_date_note_fires_when_the_day_changed
+run_test test_date_note_silent_when_the_day_is_unchanged
+run_test test_date_note_silent_without_a_stamp_and_writes_one
+run_test test_date_note_stamps_are_per_conversation
+run_test test_date_note_silent_on_the_prompt_after_it_fired
+run_test test_date_note_treats_a_malformed_stamp_as_missing
+run_test test_date_stamp_write_fails_quietly
+run_test test_date_note_skips_a_conversation_id_that_is_not_a_filename
+run_test test_date_note_skips_a_dot_led_conversation_id
+run_test test_date_note_stamp_stays_put_when_emission_fails
+run_test test_date_note_disabled_by_env
+run_test test_date_note_fires_on_an_empty_prompt_too
+run_test test_date_note_stamp_advances_on_a_code_work_prompt_too
+
+# The deadline tests use the date-stamp helpers defined above, so they run after them.
+run_test test_budget_exhausted_skips_the_scan_and_keeps_the_rest
+run_test test_budget_within_runs_the_scan
+run_test test_budget_garbage_is_the_default
+run_test test_budget_of_one_millisecond_expires
+run_test test_sub_second_budget_is_the_default_on_a_second_resolution_clock
+run_test test_failed_emission_leaves_the_digest_cursor_unspent
+
+report_results

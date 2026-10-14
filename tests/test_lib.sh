@@ -1,0 +1,657 @@
+#!/usr/bin/env bash
+# ABOUTME: Shared test framework for cs shell tests
+# ABOUTME: Provides assertion functions, test runner, setup/teardown, and result reporting
+
+# Guard against double-sourcing
+[[ -n "${_CS_TEST_LIB_LOADED:-}" ]] && return 0
+_CS_TEST_LIB_LOADED=1
+
+set -euo pipefail
+
+# Hooks resolve a session from the directory they are opened on, so an ambient
+# CLAUDE_PROJECT_DIR binds a hook under test to a REAL session: assertions that
+# it declines outside a session fail, and — worse — ones that assert silence
+# stay green while the hook writes into that live session. Cleared here rather
+# than in setup() because suites override setup() and this must hold for all of
+# them. CS_ACTOR is cleared for the same reason: it decides resolved identity.
+# The two conversation ids go too: doctor judges the shadow ref of whichever id
+# it inherits, so a suite run inside a live conversation would check that
+# conversation's ref instead of the state the test set up.
+# CLAUDE_CONFIG_DIR goes because it outranks HOME: an install or uninstall
+# under a fake HOME would still read and write the keybindings.json of the
+# config dir the suite was started from.
+unset CLAUDE_PROJECT_DIR CS_ACTOR CLAUDE_CODE_SESSION_ID CS_CLAUDE_SESSION_ID CLAUDE_CONFIG_DIR 2>/dev/null || true
+# A developer's preferred runtime must not turn a legacy Claude fixture into
+# a real Codex launch. Runtime suites set their own isolated overrides.
+# CODEX_HOME goes too: a cs Codex session exports it, and an install under
+# test would deploy into that real Codex home instead of the test HOME.
+unset CS_DEFAULT_ENGINE CODEX_BIN CS_CODEX_THREAD_BIN CODEX_HOME 2>/dev/null || true
+# The session a suite runs inside is not the session under test: a cs
+# session exports these, and a suite that inherits them writes into it (mail
+# copies in its mail/out, a tag in its README).
+unset CS_SESSION_NAME CS_SESSION_DIR CS_SESSION_META_DIR 2>/dev/null || true
+unset CLAUDE_SESSION_NAME CLAUDE_SESSION_DIR CLAUDE_SESSION_META_DIR 2>/dev/null || true
+
+# --- State ---
+TESTS_RUN=0
+TESTS_PASSED=0
+TESTS_FAILED=0
+TESTS_SKIPPED=0
+FAILURES=()
+SKIPS=()
+
+# --- Paths ---
+# SCRIPT_DIR must be set by the sourcing test file before calling any helpers
+# CS_BIN is derived from SCRIPT_DIR
+unset CS_BIN
+CS_BIN="${SCRIPT_DIR:?SCRIPT_DIR must be set before sourcing test_lib.sh}/../bin/cs"
+TEST_TMPDIR=""
+
+# Portable octal file-mode reader. BSD (macOS) uses `stat -f "%Lp"`; GNU (Linux)
+# uses `stat -c "%a"`. They are NOT interchangeable via a `stat -f ... || stat -c`
+# fallback: GNU's `-f` is --file-system, which prints a block of text to stdout
+# and only THEN errors on the bogus `%Lp` operand — so `$(A || B)` captures that
+# leaked text concatenated with B's output. Select the implementation up front;
+# only GNU stat carries --version. Reads through a symlink (-L), so a linked
+# file reports its target's mode, not the link's own 755.
+_file_mode() {
+    if stat --version >/dev/null 2>&1; then
+        stat -L -c "%a" "$1"
+    else
+        stat -L -f "%Lp" "$1"
+    fi
+}
+
+# Make a directory reject new files, and prove it did. A filesystem that does
+# not enforce the POSIX mode bits against the owner leaves the directory
+# writable after `chmod 500`, and a test modelling a FAILED write silently
+# models a successful one -- it then reports the code as broken for not
+# handling a failure that never happened. Returns 2 when the denial cannot be
+# established, so callers skip rather than assert against a fixture that never
+# reached the branch. Pair with _allow_writes.
+_deny_writes() {  # dir
+    local dir="$1"
+    chmod 500 "$dir" 2>/dev/null || return 2
+    if { : > "$dir/.write-probe"; } 2>/dev/null; then
+        rm -f "$dir/.write-probe" 2>/dev/null || true
+        chmod 700 "$dir" 2>/dev/null || true
+        echo "    SKIP (this filesystem does not deny the owner writes to a read-only directory)"
+        return 2
+    fi
+    return 0
+}
+
+# Stage a read-only FILE and confirm this process is actually denied writing
+# through it: as root, or on a filesystem that ignores mode bits, chmod 400
+# denies nothing and a test built on it would report broken error handling in
+# code that is fine. Returns 2 when the write is not denied, the same shape
+# _deny_writes uses, so callers return 77 (skipped).
+_deny_file_write() {  # path
+    local f="$1"
+    : > "$f" 2>/dev/null || return 2
+    chmod 400 "$f" 2>/dev/null || return 2
+    if { : > "$f"; } 2>/dev/null; then
+        chmod 600 "$f" 2>/dev/null || true
+        rm -f "$f" 2>/dev/null || true
+        echo "    SKIP (this filesystem does not deny the owner writes to a read-only file)"
+        return 2
+    fi
+    return 0
+}
+
+_allow_writes() {  # dir
+    chmod 700 "$1" 2>/dev/null || true
+}
+
+# Stage one tool into a stub PATH directory, for tests that build a PATH missing
+# exactly one command. Returns non-zero when the tool cannot be staged, so
+# callers can say so.
+_stub_tool() {  # dir, tool
+    local dir="$1" tool="$2" src
+    src=$(command -v "$tool" 2>/dev/null) || return 1
+    # A builtin or function answers with its own name, not a path. It travels
+    # with the shell, so there is nothing to stage and nothing missing.
+    case "$src" in /*) ;; *) return 0 ;; esac
+    [ -e "$src" ] || return 1
+    ln -sf "$src" "$dir/$tool" 2>/dev/null || cp -p "$src" "$dir/$tool" 2>/dev/null || return 1
+    return 0
+}
+
+# Stage a whole whitelist into a stub PATH dir. Tools genuinely absent from the
+# host are skipped; a tool present but unstageable is a harness failure, since a
+# silently missing one turns "X is absent" into "everything is absent".
+# Staging is then proved by RUNNING one of them: a staged file can
+# resolve on the PATH and still refuse to launch, which reads downstream as a
+# defect in whatever the test was actually checking.
+_stub_tools() {  # dir, tools...
+    local dir="$1"; shift
+    local t missing="" probe=""
+    for t in "$@"; do
+        command -v "$t" >/dev/null 2>&1 || continue
+        if _stub_tool "$dir" "$t"; then
+            case "$t" in cat|echo|true) ;; *) [ -n "$probe" ] || probe="$t" ;; esac
+        else
+            missing="$missing $t"
+        fi
+    done
+    if [ -n "$probe" ]; then
+        local rc=0
+        PATH="$dir" "$probe" --version >/dev/null 2>&1 || rc=$?
+        # Only 126 (found, not executable) and 127 (not found) mean it failed to
+        # launch. Every other status says it ran, including the usage error a
+        # BSD tool gives for --version, so the probe stays tool-agnostic.
+        #
+        # Some hosts cannot run this harness: a tool that resolves its own
+        # libraries beside the executable means a
+        # relocated copy will not start. Removing the PATH entries that hold the
+        # suppressed tool is no better there, because rg, jq and grep share
+        # /usr/bin. Return 2 for "cannot build one here" so callers skip rather
+        # than report a defect in whatever they were checking.
+        if [ "$rc" = "126" ] || [ "$rc" = "127" ]; then
+            echo "    SKIP (a stub PATH is not constructible here: staged '$probe' will not run, exit $rc)"
+            return 2
+        fi
+    fi
+    [ -z "$missing" ] || { echo "  FAIL: could not stage into the stub PATH:$missing"; return 1; }
+    return 0
+}
+
+# Name claude's per-project transcript dir for a cwd the way Claude Code does:
+# realpath it, then replace every character outside [A-Za-z0-9] with '-'
+# (2.1.289: `.replace(/[^a-zA-Z0-9]/g,"-")`). Tests seed transcripts at this
+# name so cs's discovery (_claude_project_dir) finds them.
+_encode_cwd_for_claude_test() {  # cwd
+    local resolved
+    resolved=$(cd "$1" && pwd -P)
+    printf '%s' "$resolved" | sed 's/[^A-Za-z0-9]/-/g'
+}
+
+# Stage a `mount` into dir that prints the given lines as the mount table, for
+# a test that runs cs with dir first on PATH. Returns non-zero when the stub
+# cannot be staged.
+_stub_mount_table() {  # dir, line...
+    local dir="$1"; shift
+    mkdir -p "$dir" || return 1
+    printf '%s\n' "$@" > "$dir/table" || return 1
+    printf '#!/bin/sh\ncat "%s"\n' "$dir/table" > "$dir/mount" || return 1
+    chmod +x "$dir/mount"
+}
+
+# Stage a `mount` into dir that fails to read the mount table. Returns non-zero
+# when the stub cannot be staged.
+_stub_mount_unreadable() {  # dir
+    mkdir -p "$1" || return 1
+    printf '#!/bin/sh\necho "mount: cannot read table" >&2\nexit 1\n' > "$1/mount" || return 1
+    chmod +x "$1/mount"
+}
+
+
+# cs's live-duplicate guard scans the machine's whole process table for the
+# session name or its UUID. The gate runs suites in parallel and many of them
+# launch a session called test-session, so a suite reading the real `ps` sees a
+# sibling suite's process and is told the session is already running elsewhere.
+#
+# This is installed at source time, not in setup(): two dozen suites define
+# their own setup() and never call the shared one, and those are the heaviest
+# `cs` users — the collision would stay live in exactly the suites most likely
+# to hit it. Sourcing test_lib.sh is the one thing every suite does.
+#
+# It answers ONLY the machine-wide argv scan. The other consumers of CS_PS_BIN
+# read real per-process facts and must keep getting them: lib/15-lock.sh asks
+# `-o ppid=` to walk the invoker's ancestry, lib/56-presence.sh asks
+# `-o pid=,lstart=` to join against recycled pids. Answering those with silence
+# would make the ancestry walk fail closed and the presence join find nothing,
+# so a test touching either would pass or fail on the stub's invention.
+CS_PS_STUB="${TMPDIR:-/tmp}/cs-test-ps-stub.$$"
+cat > "$CS_PS_STUB" <<'PSSTUB'
+#!/bin/sh
+for _arg in "$@"; do
+    case "$_arg" in
+        -*A*o|-Ao|args=) exec true ;;
+    esac
+done
+exec /bin/ps "$@"
+PSSTUB
+chmod +x "$CS_PS_STUB"
+export CS_PS_STUB
+export CS_PS_BIN="$CS_PS_STUB"
+# No EXIT trap here: several suites set their own, and the last one registered
+# wins — a trap installed at source time is silently replaced, then fires in
+# whichever suite did not, where `set -u` makes the expansion fatal. The stub is
+# one small file under the temp dir the OS reclaims; leaking it beats owning an
+# exit path that belongs to the suite.
+
+# --- Suite-wide isolation, applied when this file is sourced ---
+#
+# At source time rather than in setup(): 22 suites define their own setup()
+# and never call this one, so anything placed there reaches only the suites
+# that happen to inherit it. Sourcing is the one step every suite shares.
+#
+# A private HOME per suite process. A test that seeds a secret, a config
+# marker or a settings.json must never land it in the developer's real
+# dotfiles, and a launched cs must never write the real update cache.
+# git reads its identity from $HOME/.gitconfig, so the real one is carried
+# across in env-var form first, with a placeholder when there is none:
+# a bare CI runner has no global config, and every session-creating suite
+# commits.
+export GIT_AUTHOR_NAME="${GIT_AUTHOR_NAME:-$(git config --global user.name 2>/dev/null || echo cs-test)}"
+export GIT_AUTHOR_EMAIL="${GIT_AUTHOR_EMAIL:-$(git config --global user.email 2>/dev/null || echo cs-test@example.com)}"
+export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME" GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
+export HOME="$(mktemp -d)/home"
+mkdir -p "$HOME"
+# XDG_DATA_HOME inherited from the developer's shell would point the install
+# and uninstall tests at the real data directory, whatever HOME says. Scoped
+# here, at source time, as HOME is.
+unset XDG_DATA_HOME
+# The same goes for the config and cache roots and for the directory overrides
+# the profile launcher exports: tests assert the default placement under their
+# private HOME, so none of these may leak in from the shell that started the run.
+unset XDG_CONFIG_HOME XDG_CACHE_HOME CS_INSTALL_DIR CS_CONFIG_DIR CS_CACHE_DIR CS_DATA_DIR CS_SECRETS_DIR CS_HOOK_PATHS
+# Nor may the launcher's -spawn tmux server and session: the suites pin the
+# default server and 'cs'.
+unset CS_TMUX_SOCKET CS_TMUX_SESSION
+# The scope-prompt hook's own deadline (CS_SCOPE_BUDGET_MS) is off the table
+# for every suite that drives the hook: tests time nothing, and a loaded
+# runner must not turn a scan assertion into a skip. The deadline tests in
+# test_scope_prompt.sh set their own budgets per run.
+export CS_SCOPE_BUDGET_MS="600000"
+# The SessionStart hook re-asserts the session's tab title: through the tmux
+# server when TMUX is set, else as an escape on a terminal device. Fourteen
+# suites run that hook, and under the developer's own tmux the fixture's name
+# lands on the live window (`cs: test-session`). Scoped here, at source time,
+# so no suite has to remember to.
+unset TMUX TMUX_PANE
+export CS_TITLE_TTY="$HOME/title-tty"
+# A title claim under iTerm2 also runs the iTerm tab helper, which reaches the
+# developer's real iTerm through its Python API. Dropped here for the same
+# reason as TMUX; the tab-helper tests set it per call.
+unset LC_TERMINAL
+export CS_NO_UPDATE_CHECK=1
+# The binaries under review come first on PATH, so a test that runs
+# `cs-secrets` exercises this tree and not whatever install.sh last put in
+# ~/.local/bin — and CI, which installs nothing, finds them at all.
+_CS_TEST_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/bin"
+case ":$PATH:" in *":$_CS_TEST_BIN:"*) ;; *) export PATH="$_CS_TEST_BIN:$PATH" ;; esac
+
+# --- Setup / Teardown ---
+
+setup() {
+    TEST_TMPDIR="$(mktemp -d)"
+    export HOME="$TEST_TMPDIR/home"
+    mkdir -p "$HOME"
+    export CS_SESSIONS_ROOT="$TEST_TMPDIR/sessions"
+    export CLAUDE_CODE_BIN="echo"
+    # Never hit GitHub or the real ~/.cache/cs from a test session launch.
+    export CS_NO_UPDATE_CHECK=1
+    # Never fire iTerm2 escapes (dock bounce) at the developer's terminal from
+    # a test run; the iterm2 suite re-enables this per test with its own seams.
+    export CS_NO_ITERM2=1
+    # Isolate from the developer's real ~/.claude/projects/ so transcript
+    # discovery sees only what the test seeds. Same env var used by
+    # _doctor_check_token_cost and the Phase 8 binding helpers.
+    export CS_TRANSCRIPTS_DIR="$TEST_TMPDIR/claude-projects"
+    mkdir -p "$CS_SESSIONS_ROOT" "$CS_TRANSCRIPTS_DIR"
+    # cs's live-duplicate guard scans the machine's whole process table for the
+    # session name or UUID. Suites run in parallel and many launch a session
+    # called test-session, so reading the real `ps` lets one suite see another
+    # suite's process and call the session already running. Report no processes
+    # by default; a test that exercises the guard overrides CS_PS_BIN with its
+    # own canned output.
+    # cs's terminal-theme signals are env-based, and a real cs session exports
+    # them at launch. Clear them so a test controls its own inputs instead of
+    # inheriting the developer's session.
+    unset CS_TERM_THEME CS_TERM_BG_RGB 2>/dev/null || true
+}
+
+teardown() {
+    if [[ -n "$TEST_TMPDIR" ]] && [[ -d "$TEST_TMPDIR" ]]; then
+        rm -rf "$TEST_TMPDIR"
+    fi
+    unset CS_SESSIONS_ROOT CLAUDE_CODE_BIN CS_TRANSCRIPTS_DIR CS_NO_UPDATE_CHECK CS_NO_ITERM2
+    # A fake keychain's directory is gone with TEST_TMPDIR; left on PATH, the
+    # next test's `security` would be the machine's own again.
+    if [[ -n "${FAKE_KEYCHAIN_SAVED_PATH:-}" ]]; then
+        export PATH="$FAKE_KEYCHAIN_SAVED_PATH"
+        unset FAKE_KEYCHAIN_SAVED_PATH FAKE_KEYCHAIN
+    fi
+}
+
+# A keychain for the test: a `security` first on PATH that keeps each item in
+# a file under $FAKE_KEYCHAIN, so nothing a test stores reaches the login
+# keychain of the machine running it. It answers the calls cs-secrets makes:
+# add, find and delete one item by its service name, and dump them all.
+use_fake_keychain() {
+    local bindir="$TEST_TMPDIR/fake-keychain-bin"
+    FAKE_KEYCHAIN="$TEST_TMPDIR/fake-keychain"
+    export FAKE_KEYCHAIN
+    mkdir -p "$bindir" "$FAKE_KEYCHAIN"
+    cat > "$bindir/security" <<'FAKE'
+#!/usr/bin/env bash
+set -u
+sub="${1:-}"
+[ $# -gt 0 ] && shift
+service=""; value=""; have_value=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -s) service="${2:-}"; shift 2 ;;
+        -a) shift 2 ;;
+        -w) if [ $# -ge 2 ] && [ "${2#-}" = "$2" ]; then value="$2"; have_value=1; shift 2; else shift; fi ;;
+        *) shift ;;
+    esac
+done
+slot="$FAKE_KEYCHAIN/$(printf '%s' "$service" | od -An -tx1 | tr -d ' \n')"
+case "$sub" in
+    dump-keychain)
+        for item in "$FAKE_KEYCHAIN"/*; do
+            [ -f "$item" ] || continue
+            printf '    "svce"<blob>="%s"\n' "$(head -n 1 "$item")"
+        done ;;
+    find-generic-password)
+        [ -f "$slot" ] || exit 44
+        tail -n +2 "$slot"; echo ;;
+    add-generic-password)
+        { printf '%s\n' "$service"; [ "$have_value" -eq 0 ] || printf '%s' "$value"; } > "$slot" ;;
+    delete-generic-password)
+        [ -f "$slot" ] || exit 44
+        rm -f "$slot" ;;
+esac
+exit 0
+FAKE
+    chmod +x "$bindir/security"
+    : "${FAKE_KEYCHAIN_SAVED_PATH:=$PATH}"
+    export FAKE_KEYCHAIN_SAVED_PATH PATH="$bindir:$PATH"
+}
+
+# The service names the fake keychain holds, one per line, sorted.
+fake_keychain_items() {
+    local item
+    for item in "$FAKE_KEYCHAIN"/*; do
+        [ -f "$item" ] && head -n 1 "$item"
+    done | LC_ALL=C sort
+}
+
+# cs-secrets picks the keychain on its own only on macOS. Elsewhere a test that
+# leaves the backend to it gets the encrypted store, and the fake keychain
+# holds only what the test put there by naming the backend itself.
+keychain_is_default() {
+    [ "$(uname -s)" = Darwin ]
+}
+
+# --- Test Runner ---
+
+# Status 77 is "skipped", not "passed": a test whose fixture the machine cannot
+# produce (a privilege it does not have, a kernel answer it cannot provoke) has
+# proven nothing, and counting it as OK is how missing coverage hides. The test
+# says why on its way out; the tally keeps skips in their own column so a run
+# that skips everything cannot read as a green one.
+run_test() {
+    local test_name="$1" status=0
+    TESTS_RUN=$((TESTS_RUN + 1))
+    echo "  $test_name..."
+    setup
+    "$test_name" 2>&1 || status=$?
+    if [ "$status" -eq 0 ]; then
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+        echo "    OK"
+    elif [ "$status" -eq 77 ]; then
+        TESTS_SKIPPED=$((TESTS_SKIPPED + 1))
+        SKIPS+=("$test_name")
+    else
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        FAILURES+=("$test_name")
+    fi
+    teardown
+}
+
+# --- Result Reporting ---
+
+report_results() {
+    local skip_column=""
+    [[ ${TESTS_SKIPPED:-0} -gt 0 ]] && skip_column=", $TESTS_SKIPPED skipped"
+    echo ""
+    echo "Results: $TESTS_PASSED/$TESTS_RUN passed, $TESTS_FAILED failed$skip_column"
+    if [[ ${#SKIPS[@]} -gt 0 ]]; then
+        echo "Skipped tests:"
+        for s in "${SKIPS[@]}"; do
+            echo "  - $s"
+        done
+    fi
+    if [[ ${#FAILURES[@]} -gt 0 ]]; then
+        echo "Failed tests:"
+        for f in "${FAILURES[@]}"; do
+            echo "  - $f"
+        done
+        exit 1
+    fi
+    echo ""
+}
+
+# --- Assertions ---
+
+assert_eq() {
+    local expected="$1" actual="$2" msg="${3:-}"
+    if [[ "$expected" != "$actual" ]]; then
+        echo "  FAIL: $msg"
+        echo "    expected: $expected"
+        echo "    actual:   $actual"
+        return 1
+    fi
+}
+
+assert_exists() {
+    local path="$1"; local msg="${2:-$path should exist}"
+    if [[ ! -e "$path" ]]; then
+        echo "  FAIL: $msg (path does not exist: $path)"
+        return 1
+    fi
+}
+
+assert_not_exists() {
+    local path="$1"; local msg="${2:-$path should not exist}"
+    if [[ -e "$path" ]]; then
+        echo "  FAIL: $msg (path exists: $path)"
+        return 1
+    fi
+}
+
+assert_dir() {
+    local path="$1"; local msg="${2:-$path should be a directory}"
+    if [[ ! -d "$path" ]]; then
+        echo "  FAIL: $msg (not a directory: $path)"
+        return 1
+    fi
+}
+
+assert_symlink() {
+    local path="$1"; local msg="${2:-$path should be a symlink}"
+    if [[ ! -L "$path" ]]; then
+        echo "  FAIL: $msg (not a symlink: $path)"
+        return 1
+    fi
+}
+
+assert_file_exists() {
+    local path="$1"; local msg="${2:-$path should be a file}"
+    if [[ ! -f "$path" ]]; then
+        echo "  FAIL: $msg (not a file: $path)"
+        return 1
+    fi
+}
+
+assert_file_not_exists() {
+    local path="$1"; local msg="${2:-$path should not exist}"
+    if [[ -f "$path" ]]; then
+        echo "  FAIL: $msg (file exists: $path)"
+        return 1
+    fi
+}
+
+assert_file_contains() {
+    local file="$1"; local pattern="$2"; local msg="${3:-$file should contain '$pattern'}"
+    if ! grep -q "$pattern" "$file" 2>/dev/null; then
+        echo "  FAIL: $msg"
+        if [[ -f "$file" ]]; then
+            echo "    file contents: $(head -20 "$file")"
+        else
+            echo "    file does not exist"
+        fi
+        return 1
+    fi
+}
+
+assert_file_not_contains() {
+    local file="$1"; local pattern="$2"; local msg="${3:-$file should not contain '$pattern'}"
+    if grep -q "$pattern" "$file" 2>/dev/null; then
+        echo "  FAIL: $msg"
+        return 1
+    fi
+}
+
+# Fed by here-string rather than by a pipe, and deliberately so: `grep -q` exits
+# at the first match, so `echo "$output" | grep -q` leaves echo writing into a
+# closed pipe. echo dies of SIGPIPE (141), `pipefail` promotes that to the
+# pipeline's status, and a pattern that MATCHED is reported as a failure -- the
+# earlier the match and the larger the output, the likelier it is. A here-string
+# is a file, not a pipe, so there is no reader to close.
+assert_output_contains() {
+    local output="$1"; local pattern="$2"; local msg="${3:-output should contain '$pattern'}"
+    if ! grep -q -- "$pattern" <<< "$output"; then
+        echo "  FAIL: $msg"
+        echo "    output: $(head -5 <<< "$output")"
+        return 1
+    fi
+}
+
+assert_output_not_contains() {
+    local output="$1"; local pattern="$2"; local msg="${3:-output should not contain '$pattern'}"
+    if grep -q -- "$pattern" <<< "$output"; then
+        echo "  FAIL: $msg"
+        return 1
+    fi
+}
+
+# --- Terminal Helpers ---
+
+# Run a command with a real pty on stdout and stderr, for the code paths gated
+# on `[ -t 1 ]` / `[ -t 2 ]`. script(1) is the only way to get one, and its
+# argument order is not portable: BSD (macOS) takes `script -q FILE CMD ARGS`,
+# util-linux takes `script -q -c "CMD ARGS" FILE`. Handed the BSD form,
+# util-linux treats the command as a filename and never runs it — which reads as
+# "the command drew nothing" and fails rendering assertions on the Linux lane
+# while every one of them passes on a mac.
+_pty_run() {  # command, args...
+    # A pty makes `[ -t 1 ]` true, so every terminal side effect cs normally
+    # suppresses under test fires for real — including `tmux rename-window` and
+    # `allow-rename off`, which renamed the DEVELOPER's live window to the
+    # fixture's session name and locked it there ("cs: adopted-name" is a test
+    # fixture, and it stuck because reset_tab_title never runs across cs's exec).
+    # TMUX is what set_tab_title branches on, so dropping it here contains every
+    # such test at the harness rather than asking each one to remember.
+    if script --version 2>/dev/null | grep -q util-linux; then
+        # A newline, not /dev/null: util-linux hands the child a pty that never
+        # reaches EOF, so a command that stops to ask something waits on it for
+        # as long as the runner allows -- a cs launch asking whether to continue
+        # the previous conversation hung the whole Linux lane until the job's
+        # own timeout. The newline answers the way the rest of the suite does,
+        # by taking the default, and `timeout` bounds anything that asks twice
+        # so the next such prompt fails in seconds and names itself.
+        ( unset TMUX; printf '\n' | timeout 60 script -q -c "$*" /dev/null )
+    else
+        # script(1) tcgetattr's its OWN stdin and dies on a socket, which is
+        # what a CI runner or an agent harness often hands it; /dev/null still
+        # gets the child a pty.
+        #
+        # No `timeout` on this arm, unlike the util-linux one: timeout is GNU
+        # coreutils and stock BSD userland has none, so calling it here fails
+        # every pty suite on macos-latest with "command not found". Backgrounding
+        # script(1) under a watchdog instead costs it the controlling terminal it
+        # exists to provide. So a command that stops to ask something WILL hang
+        # this arm — a test that would prompt belongs on a plain pipe, where the
+        # same output renders and a here-string can answer.
+        ( unset TMUX; script -q /dev/null "$@" < /dev/null )
+    fi
+}
+
+# --- Launch Helpers ---
+
+# Create an executable stub that prints its environment, so a test can assert
+# what cs exported into the claude process. Point CLAUDE_CODE_BIN at the echoed
+# path. Used by launch/theme tests in place of the default "echo" stub, which
+# does not show env.
+_make_env_stub() {
+    local stub="$TEST_TMPDIR/claude-env-stub"
+    cat > "$stub" << 'STUB_EOF'
+#!/usr/bin/env bash
+env
+STUB_EOF
+    chmod +x "$stub"
+    echo "$stub"
+}
+
+# Point CLAUDE_CODE_BIN, exported, at a claude stub that appends "launched" to
+# $TEST_TMPDIR/launched on each launch, so a test can tell a refusal from a
+# launch. The export lands in the calling shell; a call inside $(...) would
+# leave CLAUDE_CODE_BIN as it was.
+_make_launch_sentinel() {
+    printf '#!/bin/bash\necho launched >> "%s"\n' "$TEST_TMPDIR/launched" > "$TEST_TMPDIR/claude"
+    chmod +x "$TEST_TMPDIR/claude"
+    export CLAUDE_CODE_BIN="$TEST_TMPDIR/claude"
+}
+
+# --- Session Helpers ---
+
+# Create a minimal cs session directory structure
+create_test_session() {
+    local name="$1"
+    local session_dir="$CS_SESSIONS_ROOT/$name"
+    mkdir -p "$session_dir/.cs"/{memory,local}
+    printf '# Session: %s\n' "$name" > "$session_dir/.cs/README.md"
+    echo "# Session" > "$session_dir/CLAUDE.md"
+    echo "$session_dir"
+}
+
+# Create a session with a git repo initialized. Ships the same .gitignore
+# a real `cs <name>` launch writes (see create_session_gitignore in bin/cs)
+# so per-machine state (.cs/local/, *.lock, .claude/settings.local.json)
+# reads as ignored rather than untracked, matching a real base session.
+create_test_session_with_git() {
+    local name="$1"
+    local session_dir
+    session_dir=$(create_test_session "$name")
+    cat > "$session_dir/.gitignore" << 'GITIGNORE'
+*.lock
+*.tmp
+*.bak
+.cs/local/
+.cs/archives/
+.cs/.narrative-reminder-cooldown
+.claude/settings.local.json
+CLAUDE.local.md
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.obsidian/
+*.swp
+*.swo
+*~
+GITIGNORE
+    (cd "$session_dir" && git init -q && git add -A && git commit -q -m "init")
+    echo "$session_dir"
+}
+
+# Parse a JSONL file the way cs reads it — one record per line, malformed lines
+# dropped (lib/54-conversations.sh's `fromjson? // empty`) — and print each
+# surviving record's .event, comma-joined. A line holding two records spliced
+# together yields NEITHER, which is what makes this the right lens for a torn
+# tail: it shows the loss the reader actually suffers, not the bytes on disk.
+jsonl_events() {  # file
+    jq -rRs '[split("\n")[] | select(length > 0) | (fromjson? // empty) | .event] | join(",")' \
+        "$1" 2>/dev/null
+}
+
+# True when a file's last byte is not a newline. Command substitution strips
+# trailing newlines, so a terminated file yields the empty string here.
+jsonl_tail_is_torn() {  # file
+    [ -s "$1" ] && [ -n "$(tail -c 1 "$1" 2>/dev/null)" ]
+}

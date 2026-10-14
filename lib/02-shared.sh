@@ -1,0 +1,442 @@
+# ABOUTME: Actor identity, narrative budget, private-dir, tmux window-title, atomic file rewrite and state-file
+# ABOUTME: lock code that cs AND its hooks run. build.sh folds this into bin/cs and copies it to hooks/cs-shared.sh.
+
+# The core session identity is independent of the selected runtime. Keep the
+# aliases while shipped hooks and shared commands still read the older names.
+# Always replace all six values together: a nested launch may inherit a parent.
+cs_export_session_context() {  # session_name, session_dir
+    export CS_SESSION_NAME="$1" CS_SESSION_DIR="$2" CS_SESSION_META_DIR="$2/.cs"
+    export CLAUDE_SESSION_NAME="$CS_SESSION_NAME" CLAUDE_SESSION_DIR="$CS_SESSION_DIR"
+    export CLAUDE_SESSION_META_DIR="$CS_SESSION_META_DIR"
+    # Feature sessions share their base's secrets, regardless of runtime.
+    export CS_SECRETS_SESSION="${1%@*}"
+}
+
+# Read legacy callers while preferring the canonical neutral interface.
+cs_import_session_context() {
+    export CS_SESSION_NAME="${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}}"
+    export CS_SESSION_DIR="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}"
+    export CS_SESSION_META_DIR="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+}
+
+# Normalize an arbitrary identity string to a filesystem-safe slug.
+_slugify() {
+    printf '%s' "$1" \
+        | tr '[:upper:]' '[:lower:]' \
+        | sed 's/[^a-z0-9][^a-z0-9]*/-/g; s/^-//; s/-*$//'
+}
+
+# The raw identity driving a session, before slugging. Args: the session root
+# (where git config is read) and its meta dir (where the pinned identity lives);
+# either may be empty. Precedence: $CS_ACTOR > <meta>/local/identity > git
+# user.email > git user.name > "unknown". if/elif/else, not three independent
+# tests: a pinned identity file ends the search by EXISTING, so a blank pin
+# resolves to "unknown" rather than falling through to git.
+cs_actor_raw() {  # session_dir, meta_dir
+    local sdir="${1:-}" meta="${2:-}" raw=""
+    if [ -n "${CS_ACTOR:-}" ]; then
+        raw="$CS_ACTOR"
+    elif [ -n "$meta" ] && [ -f "$meta/local/identity" ]; then
+        IFS= read -r raw < "$meta/local/identity" || true
+    else
+        local gitdir="${sdir:-.}"
+        raw=$(git -C "$gitdir" config user.email 2>/dev/null || true)
+        [ -z "$raw" ] && raw=$(git -C "$gitdir" config user.name 2>/dev/null || true)
+    fi
+    [ -z "$raw" ] && raw="unknown"
+    printf '%s\n' "$raw"
+}
+
+# Resolve the current actor as a slug. With a session_dir arg, resolve the
+# pinned identity and git config from that dir (callers may run before
+# CS_SESSION_META_DIR (or its legacy alias) is exported). Without, use env + cwd.
+cs_actor_slug() {
+    local sdir="${1:-}" meta=""
+    if [ -n "$sdir" ]; then
+        meta="$sdir/.cs"
+    else
+        meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+    fi
+    _slugify "$(cs_actor_raw "$sdir" "$meta")"
+}
+
+# 224 KiB budget, 112 KiB tail. The ceiling is the Read tool's: it refuses a
+# file over 256 KiB, and the resume reads the live narrative in one call, so a
+# file past that size cannot be read in full at all. The budget sits under the
+# ceiling with room for the appends made while the over-budget warning is on
+# screen and before anyone rotates. The tail is what a resume actually costs;
+# sections run about 2 KB and an active day produces 60-odd of them, so 112 KiB
+# is most of a day. The 2:1 ratio keeps rotation infrequent: a full tail's
+# worth must accumulate again before the next one.
+CS_NARRATIVE_MAX_DEFAULT=229376
+CS_NARRATIVE_KEEP_DEFAULT=114688
+
+# A positive integer override, else the default. Empty, non-numeric and zero
+# in any spelling (0, 00) all fall back: a zero budget would rotate on every
+# run. The zero check runs on the number, not the text, and the number is
+# decimal: a leading zero would reach the callers' arithmetic as an octal
+# literal, and `08` aborts it. Sixteen digits or more fall back too: bash
+# arithmetic wraps past 64 bits, and a wrapped budget is a silent wrong one.
+_narrative_budget() {  # value, default
+    local n
+    case "${1:-}" in ''|*[!0-9]*|????????????????*) echo "$2"; return;; esac
+    n=$((10#$1))
+    if [ "$n" -gt 0 ]; then echo "$n"; else echo "$2"; fi
+}
+
+# The four names under .cs/ that an encrypted session links into its vault;
+# see docs/session-layout.md "Encrypted sessions".
+# shellcheck disable=SC2034  # read by cs and by the hooks that source this file
+CS_VAULT_LINKS="memory plans claude-config private"
+
+# The directory holding a session's cs content files (command log, mail,
+# traces). An encrypted session links .cs/private into its vault; any other
+# keeps them in .cs/local. Fails, printing nothing, when .cs/private is a link
+# whose vault is locked: a writer drops its line rather than write it anywhere
+# else in plaintext.
+cs_private_dir() {  # meta_dir
+    if [ -L "$1/private" ] || [ -e "$1/private" ]; then
+        [ -d "$1/private" ] || return 1
+        printf '%s\n' "$1/private"
+    else
+        printf '%s\n' "$1/local"
+    fi
+}
+
+# Says what an unusable .cs/private is, for an error message: the vault it
+# points at, or that it is not a directory at all.
+cs_private_state() {  # meta_dir
+    if [ -L "$1/private" ]; then
+        printf 'points at %s\n' "$(readlink "$1/private")"
+    else
+        printf 'is not a directory\n'
+    fi
+}
+
+# The rotation handoff store: .cs/private/handoffs in an encrypted session,
+# .cs/handoffs in every other. Fails, like cs_private_dir, while .cs/private
+# dangles: a locked vault has no handoffs to offer or consume.
+cs_handoff_dir() {  # meta_dir
+    if [ -L "$1/private" ] || [ -e "$1/private" ]; then
+        [ -d "$1/private" ] || return 1
+        printf '%s\n' "$1/private/handoffs"
+    else
+        printf '%s\n' "$1/handoffs"
+    fi
+}
+
+# Names a tmux window after every cs session running in its panes: "cs: a | b",
+# in pane order, each name once. Under iTerm's tmux integration the window name
+# is the tab's title, and one window holds every pane of a tab, so a single
+# session writing its own name took the tab from the other. Each pane records
+# its session in the pane option @cs_session; an empty name releases the pane.
+# A named window is locked against Claude Code's own titles, as the launch
+# locks it: a /clear releases the window and claims it back, and the claim must
+# lock it again. With no cs session left it names itself again. Every tmux call
+# is best-effort: a title must never fail a launch or a hook. The claim, the
+# read of every claim and the rename run under the window's lock, since panes
+# claim at the same moment (a layout restore, two /clears) and a rename written
+# from a read before another pane's claim would drop that pane's name.
+cs_tmux_title_window() {  # pane, session name ("" releases the pane)
+    local pane="$1" name="$2" names lock
+    [ -n "$pane" ] || return 0
+    lock=$(_cs_tmux_title_lock "$pane")
+    if [ -n "$name" ]; then
+        tmux set-option -p -t "$pane" @cs_session "$name" 2>/dev/null || true
+    else
+        tmux set-option -p -u -t "$pane" @cs_session 2>/dev/null || true
+    fi
+    names=$(tmux list-panes -t "$pane" -F '#{@cs_session}' 2>/dev/null \
+        | awk 'NF && !seen[$0]++ { out = out (out == "" ? "" : " | ") $0 } END { print out }') || names=""
+    if [ -n "$names" ]; then
+        tmux rename-window -t "$pane" "cs: $names" 2>/dev/null || true
+        tmux set-window-option -t "$pane" allow-rename off 2>/dev/null || true
+        tmux set-window-option -t "$pane" allow-set-title off 2>/dev/null || true
+    else
+        tmux set-window-option -t "$pane" automatic-rename on 2>/dev/null || true
+        tmux set-window-option -t "$pane" allow-rename on 2>/dev/null || true
+        tmux set-window-option -t "$pane" allow-set-title on 2>/dev/null || true
+    fi
+    _cs_mkdir_unlock "$lock"
+    _cs_iterm_tab_title "$pane"
+}
+
+# Under iTerm's tmux integration the tab shows a title iTerm keeps for itself:
+# tmux window renames never reach it, and only iTerm's Python API sets it.
+# Hands the window to cs-iterm-tab.py in the background, after the lock is
+# released, since the helper takes about a second and reads the claims itself
+# when it runs. Its output is discarded and nothing waits on it, so a machine
+# without iTerm's API or the iterm2 python module goes without the tab title
+# and nothing else.
+_cs_iterm_tab_title() {  # pane
+    local helper window
+    [ "${LC_TERMINAL:-}" = iTerm2 ] && [ -z "${CS_NO_ITERM2:-}" ] || return 0
+    helper="${CS_HOOKS_DIR:-$HOME/.claude/hooks/cs}/cs-iterm-tab.py"
+    [ -f "$helper" ] && command -v python3 >/dev/null 2>&1 || return 0
+    window=$(tmux display-message -p -t "$1" '#{window_id}' 2>/dev/null) || return 0
+    ( python3 "$helper" "$window" </dev/null >/dev/null 2>&1 & )
+}
+
+# Takes the lock on a pane's window and prints its directory: a directory per
+# tmux server and window under $TMPDIR, through _cs_mkdir_lock. A call is a few
+# tmux round trips (385 ms measured on a loaded machine, so six panes queue for
+# two seconds), and past the wait the title is written without the lock, as a
+# title must never stall a hook. Prints nothing when it holds nothing.
+_cs_tmux_title_lock() {  # pane
+    local key lock
+    key=$(tmux display-message -p -t "$1" '#{socket_path}#{window_id}' 2>/dev/null) || key=""
+    [ -n "$key" ] || return 0
+    lock="${TMPDIR:-/tmp}/cs-title-$(printf '%s' "$key" | tr -c 'A-Za-z0-9@_.-' '_').lock"
+    _cs_mkdir_lock "$lock" || return 0
+    printf '%s\n' "$lock"
+}
+
+# The one mkdir lock cs and its hooks take wherever two processes may write
+# the same thing at once (a window title, the state file): a directory holding
+# the holder's pid, since mkdir is atomic and bash 3.2 has no flock. A holder
+# whose pid is gone died holding it and is taken over at once; an empty pid
+# file older than two seconds is a holder that died between the mkdir and the
+# write, taken over too. A takeover renames the dead lock to a name of its own
+# before removing it, and rename is atomic, so of two waiters that saw the
+# same dead pid only one reclaims; the other's rename fails and it goes back
+# to waiting on whichever lock the winner then makes. Two windows are left
+# alone: a holder that pauses over two seconds between its mkdir and its pid
+# write is taken for dead, and a holder running as another user answers
+# kill -0 with EPERM, which reads as dead too; cs sessions run as one user,
+# and a line lost to either costs one resume prompt or one title, not data.
+# A live holder is waited for, but for no more than five seconds: past that
+# the caller goes ahead without the lock, since a launch or a hook must never
+# stall on a lock a stray process holds, and a lock older than a minute is
+# removed on the way out so the next caller is not taxed again (a real hold
+# lasts milliseconds). A lock that vanishes between the failed mkdir and the
+# look at it was just released, and the next mkdir is tried at once. Returns
+# 0 holding the lock with its pid written, 1 holding nothing; a directory
+# that cannot hold a lock at all (missing, read-only) is not waited on.
+_cs_mkdir_lock() {  # lock dir
+    local lock="$1" dir holder deadline=$((SECONDS + 5)) empty_since=""
+    dir=$(dirname "$lock")
+    until mkdir "$lock" 2>/dev/null; do
+        [ -d "$dir" ] && [ -w "$dir" ] || return 1
+        if [ "$SECONDS" -ge "$deadline" ]; then
+            [ -z "$(find "$lock" -prune -mmin +1 2>/dev/null)" ] || _cs_mkdir_reclaim "$lock" ""
+            return 1
+        fi
+        if [ ! -d "$lock" ]; then
+            empty_since=""
+            continue
+        fi
+        holder=""
+        { read -r holder < "$lock/pid"; } 2>/dev/null || true
+        if [ -n "$holder" ]; then
+            empty_since=""
+            kill -0 "$holder" 2>/dev/null || _cs_mkdir_reclaim "$lock" "$holder"
+        else
+            : "${empty_since:=$SECONDS}"
+            if [ $((SECONDS - empty_since)) -ge 2 ]; then
+                _cs_mkdir_reclaim "$lock" ""
+                empty_since=""
+            fi
+        fi
+        sleep 0.05
+    done
+    echo "$$" > "$lock/pid" 2>/dev/null || true
+}
+
+# Remove a dead holder's lock through a rename only this process can win. The
+# pid the caller judged dead is checked again after the rename: a lock with a
+# different pid is a NEW holder's, made between the judgement and the rename,
+# and goes back where it was.
+_cs_mkdir_reclaim() {  # lock dir, judged pid ("" accepts any)
+    local moved="$1.dead.$$" now=""
+    mv "$1" "$moved" 2>/dev/null || return 0
+    if [ -n "$2" ]; then
+        { read -r now < "$moved/pid"; } 2>/dev/null || true
+        if [ -n "$now" ] && [ "$now" != "$2" ]; then
+            mv "$moved" "$1" 2>/dev/null || true
+            return 0
+        fi
+    fi
+    rm -f "$moved/pid"; rmdir "$moved" 2>/dev/null || true
+}
+
+# Release the lock, but only one this process still holds: a lock taken over
+# from us in the meantime belongs to someone else.
+_cs_mkdir_unlock() {  # lock dir ("" when none was held)
+    [ -n "$1" ] || return 0
+    local holder=""
+    { read -r holder < "$1/pid"; } 2>/dev/null || true
+    [ "$holder" = "$$" ] || return 0
+    rm -f "$1/pid"; rmdir "$1" 2>/dev/null || true
+}
+
+# Octal permission bits of a file, as chmod takes them (644), read through a
+# symlink so a linked destination reports its target's mode, not the link's
+# 755. GNU stat is tried first: BSD stat rejects -c with no output, while GNU
+# stat given -f reads it as "file system" and prints something, so the order
+# matters and OSTYPE is no guide (Homebrew's gnubin puts GNU stat on a Mac).
+_cs_file_mode() {  # path
+    stat -L -c %a "$1" 2>/dev/null || stat -L -f %Lp "$1"
+}
+
+# Replace a file with a command's stdout, atomically: the output goes to a
+# uniquely named temp file in the same directory, which is renamed over the
+# destination only once the command has succeeded. The temp file's name starts
+# with .cs-tmp., the prefix a session's .gitignore names, so one left by a
+# killed writer never reaches an autosave snapshot. A symlinked destination is
+# followed to its target, so a shared or linked file is rewritten in place and
+# the link survives. The destination keeps the
+# permission bits it had, and a new file gets the umask's; the temp file takes
+# them BEFORE the rename, so a shared directory never sees a 0600 window. A
+# failed command, chmod or rename leaves the destination as it was, the temp
+# file removed, and returns the failing status. Callers that want a message
+# add it: hooks source this file, and `error` is cs's alone.
+# Usage: cs_write_atomic <dest> <command> [args...]
+cs_write_atomic() {  # dest, command [args...]
+    local dest="$1"; shift
+    (
+        local dir tmp mode link hops=0
+        while [ -L "$dest" ] && [ "$hops" -lt 16 ]; do
+            link=$(readlink "$dest") || exit 1
+            case "$link" in
+                /*) dest="$link" ;;
+                *) dest="$(dirname "$dest")/$link" ;;
+            esac
+            hops=$((hops + 1))
+        done
+        if [ -d "$dest" ]; then
+            echo "cs_write_atomic: $dest is a directory" >&2
+            exit 1
+        fi
+        dir=$(dirname "$dest")
+        tmp=$(mktemp "$dir/.cs-tmp.$(basename "$dest").XXXXXX") || exit 1
+        trap 'rm -f "$tmp"' EXIT
+        "$@" > "$tmp" || exit $?
+        if [ -f "$dest" ]; then
+            mode=$(_cs_file_mode "$dest") || exit 1
+        else
+            mode=$(printf '%o' $((0666 & ~0$(umask))))
+        fi
+        chmod "$mode" "$tmp" && mv -f "$tmp" "$dest"
+    )
+}
+
+# The machine-local state file (.cs/local/state) is rewritten whole from its
+# old contents, by cs and by the SessionStart hook, so two writers can lose an
+# update unless they take turns: the lock is _cs_mkdir_lock on a directory
+# beside the file. The vault holder list takes turns through it too. Prints the lock directory when it holds it, nothing when it
+# does not.
+_cs_local_state_lock() {  # state
+    _cs_mkdir_lock "$1.lock" || return 0
+    printf '%s\n' "$1.lock"
+}
+
+# The state file's new contents: every line but the key's, then the key's new
+# line when a value is given. Three args set, two unset. A failed read or
+# write fails the render, so cs_write_atomic leaves the old file in place
+# instead of replacing it with a partial one.
+_cs_local_state_render() {  # state, key [, value]
+    if [ -f "$1" ]; then
+        awk -v key="$2" 'index($0, key ":") != 1' "$1" || return 1
+    fi
+    if [ $# -ge 3 ]; then
+        printf '%s: %s\n' "$2" "$3" || return 1
+    fi
+}
+
+# Write 'key: value' into a machine-local state file, replacing any existing
+# line for that key, under the state lock. Returns non-zero when the write
+# failed; the file is then as it was.
+cs_local_state_set() {  # state, key, value
+    local lock rc=0
+    lock=$(_cs_local_state_lock "$1")
+    cs_write_atomic "$1" _cs_local_state_render "$1" "$2" "$3" || rc=$?
+    _cs_mkdir_unlock "$lock"
+    return "$rc"
+}
+
+# Remove a key's line from a machine-local state file, under the state lock.
+# A missing file is a no-op.
+cs_local_state_unset() {  # state, key
+    [ -f "$1" ] || return 0
+    local lock rc=0
+    lock=$(_cs_local_state_lock "$1")
+    cs_write_atomic "$1" _cs_local_state_render "$1" "$2" || rc=$?
+    _cs_mkdir_unlock "$lock"
+    return "$rc"
+}
+
+# Serialize ownership changes on a persistent inode. The descriptor belongs to
+# this subshell, so the kernel releases it even after a signal or SIGKILL.
+# Never unlink the guard: waiters must all lock the same inode. BSD lockf and
+# Linux flock both lock the inherited open file description, not just their
+# short-lived utility process. Callback variable assignments stay in this
+# subshell; callers communicate through files and the callback's exit status.
+cs_run_guarded() (  # meta_dir, callback, arguments...
+    local meta="$1" mask
+    shift
+    mkdir -p "$meta/local" || return 1
+    # The guard is private; what the callback writes takes the caller's umask.
+    mask=$(umask)
+    umask 077
+    { exec 9> "$meta/local/run-lease.guard"; } 2>/dev/null \
+        || { printf 'Error: could not write %s\n' "$meta/local/run-lease.guard" >&2; return 1; }
+    umask "$mask"
+    if command -v flock >/dev/null 2>&1; then
+        flock -w 5 9 || { printf 'Error: Could not acquire run ownership guard: %s\n' "$meta" >&2; return 1; }
+    elif command -v lockf >/dev/null 2>&1; then
+        lockf -s -t 5 9 || { printf 'Error: Could not acquire run ownership guard: %s\n' "$meta" >&2; return 1; }
+    else
+        printf 'Error: Run ownership requires flock (Linux) or lockf (macOS).\n' >&2
+        return 1
+    fi
+    "$@"
+)
+
+# A read predicate for hooks. Mutations must use cs_run_with_lease so a forced
+# successor cannot replace ownership between this check and a binding write.
+cs_run_lease_owned() {  # meta_dir
+    local meta="$1" owner="${CS_RUN_OWNER_PID:-}" lock_pid=""
+    [ -n "${CS_RUN_ID:-}" ] && [ -n "${CS_RUN_ENGINE:-}" ] || return 1
+    case "$owner" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$owner" -gt 1 ] && kill -0 "$owner" 2>/dev/null || return 1
+    { IFS= read -r lock_pid < "$meta/session.lock"; } 2>/dev/null || return 1
+    [ "$lock_pid" = "$owner" ] || return 1
+    jq -e --arg id "$CS_RUN_ID" --arg engine "$CS_RUN_ENGINE" --arg owner "$owner" \
+        '.run_id == $id and .engine == $engine and (.owner_pid | tostring) == $owner' \
+        "$meta/local/run-lease.json" >/dev/null 2>&1
+}
+
+_cs_run_owned_callback() {  # meta_dir, callback, arguments...
+    local meta="$1"
+    shift
+    cs_run_lease_owned "$meta" || return 1
+    "$@"
+}
+
+cs_run_with_lease() {  # meta_dir, callback, arguments...
+    local meta="$1"
+    shift
+    cs_run_guarded "$meta" _cs_run_owned_callback "$meta" "$@"
+}
+
+# .cs/local/vault-holders lists the pids whose life keeps an encrypted
+# session's vault mounted, one per line. An add appends; a drop rewrites the
+# list without one pid. Both take the lock beside the file, so a drop never
+# renames its copy over a line another opener added meanwhile.
+cs_vault_holder_add() {  # holders, pid
+    local lock rc=0
+    lock=$(_cs_local_state_lock "$1")
+    { printf '%s\n' "$2" >> "$1"; } 2>/dev/null || rc=$?
+    _cs_mkdir_unlock "$lock"
+    return "$rc"
+}
+
+# A missing list is a no-op. Other lines stay as they are.
+cs_vault_holder_drop() {  # holders, pid
+    [ -f "$1" ] || return 0
+    local lock rc=0
+    lock=$(_cs_local_state_lock "$1")
+    cs_write_atomic "$1" awk -v pid="$2" '$0 != pid' "$1" || rc=$?
+    _cs_mkdir_unlock "$lock"
+    return "$rc"
+}

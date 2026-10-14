@@ -1,0 +1,217 @@
+#!/usr/bin/env bash
+# ABOUTME: Contract pins for the reference docs: env-var coverage and backend lists.
+# ABOUTME: Derives its expectations from source rather than a hand-written list.
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/test_lib.sh"
+
+REPO="$SCRIPT_DIR/.."
+
+# README.md points at docs/configuration.md as "Every environment variable cs
+# reads", so README is the promise and configuration.md is the payload. Deriving
+# the required set from README rather than from a list in this file is the whole
+# point: a variable documented in one place and not the other fails here without
+# anyone remembering to update a pin.
+#
+# Deliberately NOT derived from a `${CS_*}` scan of lib/ and hooks/: that set
+# includes internal plumbing (test seams, values cs exports to its own children)
+# which is not a user contract, and promoting it to one is a product decision.
+test_configuration_documents_every_env_var_the_readme_names() {
+    local missing
+    missing=$(comm -23 \
+        <(grep -oE 'CS_[A-Z0-9_]+' "$REPO/README.md" | sort -u) \
+        <(grep -oE 'CS_[A-Z0-9_]+' "$REPO/docs/configuration.md" | sort -u))
+    if [ -n "$missing" ]; then
+        echo "  FAIL: README names these but docs/configuration.md does not carry them:"
+        printf '    %s\n' $missing
+        return 1
+    fi
+    # Reachability: the comparison is worthless if either side reads empty.
+    local count
+    count=$(grep -coE 'CS_[A-Z0-9_]+' "$REPO/docs/configuration.md" | tr -d '[:space:]')
+    [ "${count:-0}" -gt 5 ] \
+        || { echo "  FAIL: configuration.md yielded $count env vars; the extraction is broken"; return 1; }
+}
+
+# The secrets backend name is spelled in the code that validates it plus three
+# prose copies. `wcm` was absent from all three while the code accepted it.
+test_every_backend_the_code_accepts_is_documented() {
+    local backends f b
+    # The validated set, from the one place that rejects anything else.
+    # Read the alternation the validator rejects everything else against, and
+    # split it. No hardcoded fallback: with one, a fourth backend added to the
+    # code and omitted from the docs shipped green, which is the entire drift
+    # class this test exists for. An extraction that finds nothing is a broken
+    # test, not a passing one.
+    backends=$(grep -oE '^[[:space:]]*keychain\|[a-z|]+\)' "$REPO/bin/cs-secrets" \
+        | head -1 | tr -d ' )' | tr '|' ' ')
+    [ -n "$backends" ] \
+        || { echo "  FAIL: could not read the backend set from bin/cs-secrets"; return 1; }
+    case "$backends" in
+        *keychain*) ;;
+        *) echo "  FAIL: extraction produced '$backends', which is not the backend set"; return 1 ;;
+    esac
+    for f in "$REPO/docs/secrets.md" "$REPO/docs/configuration.md" "$REPO/bin/cs-secrets"; do
+        for b in $backends; do
+            grep -qF "$b" "$f" \
+                || { echo "  FAIL: $(basename "$f") never names the '$b' backend"; return 1; }
+        done
+    done
+}
+
+# The closing summary claimed hooks detect a session via CLAUDE_SESSION_NAME and
+# are inert without it. cs-resolve.sh has a second arm that walks up from the
+# opened directory, so a front end that exports nothing still activates them —
+# and the page's own resolution section says so. Pin both halves: the false
+# mechanism must stay gone, and the real one must stay stated.
+test_hooks_doc_states_both_resolution_arms() {
+    local doc="$REPO/docs/hooks.md"
+    assert_file_not_contains "$doc" "detected via .CLAUDE_SESSION_NAME. environment variable" \
+        "the env-var-only activation claim must not return" || return 1
+    assert_file_contains "$doc" "walking up from the directory" \
+        "the doc must state the arm that makes the claim false" || return 1
+    assert_file_contains "$doc" "cs_resolve_session" \
+        "and name the function that owns the contract" || return 1
+    assert_file_contains "$doc" "CLAUDE_CODE_ENTRYPOINT" \
+        "and the front-end test that keeps a terminal claude out of the walk" || return 1
+}
+
+
+# Rotation made "read all narratives on resume" false, and size made "read the
+# live narratives" false too (one teammate file measured 801 KB): a resume reads
+# its own narrative in full and a teammate's only from the line the digest
+# names. No user-facing surface may say otherwise: the lib templates, the
+# hooks, the skills, README and docs.
+# Core/Claude migration fragments are exempt: migrate_narrative_resume_wording's grep/sed/awk
+# patterns must name the dead sentence verbatim to find and rewrite it in files
+# cs already wrote. That is a matcher, not a surface telling anyone to read
+# every narrative.
+test_no_surface_tells_a_resume_to_read_every_narrative() {
+    local hits
+    hits=$(grep -rniE "read all narrative|read all of them|reads all of them|everyone reads all|read the live narrative|reads the live files|read the live files|read all the session documentation" \
+        "$REPO/lib" "$REPO/hooks" "$REPO/skills" "$REPO/README.md" "$REPO/docs"/*.md 2>/dev/null \
+        | grep -vE '/lib/(45-migrate|46-claude-workspace)\.sh:' || true)
+    if [ -n "$hits" ]; then
+        echo "  FAIL: these surfaces still tell a resume to read every narrative:"
+        printf '    %s\n' "$hits"
+        return 1
+    fi
+}
+
+# A `grep -q` exits at its first match, so feeding it from a pipe leaves the
+# writer with nowhere to put the rest: the writer dies of SIGPIPE, `pipefail`
+# promotes 141 to the pipeline's status, and a pattern that MATCHED reads as a
+# failure. Measured on a loaded runner as 3 red runs in 40 (see the
+# assert_output_contains comment in test_lib.sh, which is the fix: a here-string
+# is a file, and a file has no reader to close). The class is closed here rather
+# than site by site, since every new suite would otherwise reintroduce it.
+#
+# The search is for a writer piping into `grep -q`; a `grep -q <<< "$var"` and a
+# `grep -q -- pattern file` are both fine. Comment lines are skipped so the
+# prose that explains the trap (here and in test_lib.sh) is not a hit, and so is
+# anything inside `sh -c`: test_scope_prompt probes a PATH's own grep through a
+# real pipeline there, and a here-string is not POSIX sh.
+test_no_writer_pipes_into_grep_q() {
+    local writers='(printf|echo)' sink='grep -q'
+    local hits
+    hits=$(grep -rnE "${writers}[^|]*\| *${sink}" \
+        "$REPO/tests" "$REPO/hooks" "$REPO/lib" "$REPO/bin" "$REPO/mods" 2>/dev/null \
+        | grep -vE ':[0-9]+: *#' | grep -v ' sh -c ' || true)
+    if [ -n "$hits" ]; then
+        echo "  FAIL: these sites pipe a writer into grep -q; read from a here-string instead:"
+        printf '    %s\n' "$hits" | head -20
+        echo "    ($(printf '%s\n' "$hits" | grep -c . ) site(s) total)"
+        return 1
+    fi
+    # Reachability: a search that can no longer find the shape proves nothing,
+    # so the same expression must still find a known-bad line. Assembled from
+    # halves rather than written out, so a sweep that rewrites the real sites
+    # cannot quietly rewrite the canary and leave the test passing on nothing.
+    local canary
+    canary=$(printf '%s | %s' '    if echo "$output"' 'grep -q "x"; then')
+    grep -qE "${writers}[^|]*\| *${sink}" <<< "$canary" || {
+        echo "  FAIL: the search no longer matches a known-bad line"
+        return 1
+    }
+}
+
+# A test that cannot run on this host returns 77, which run_test counts as
+# skipped and names in the tally. Returning 0 instead reports a pass that
+# proved nothing, and a whole lane can read green with its coverage gone (a
+# runner without bun passed every mod unit test that way). This closes the
+# class: a SKIP message followed by `return 0`, a helper's "cannot build it
+# here" status (2) turned into `return 0`, and `_deny_writes ... || return 0`.
+_skips_that_pass() {  # files...
+    awk '
+        /^[[:space:]]*#/ { prev = ""; next }
+        /SKIP/ && /return 0/ { print FILENAME ":" FNR ": " $0 }
+        prev != "" && /^[[:space:]]*return 0[[:space:]]*$/ { print FILENAME ":" FNR ": " prev }
+        /_deny_writes .*\|\| return 0/ { print FILENAME ":" FNR ": " $0 }
+        /"\$rc" = "2" \] && return 0/ { print FILENAME ":" FNR ": " $0 }
+        /2\) return 0/ { print FILENAME ":" FNR ": " $0 }
+        { prev = ($0 ~ /echo .*SKIP/) ? $0 : "" }
+    ' "$@"
+}
+
+test_no_skip_counts_as_a_pass() {
+    local hits suite
+    local -a suites=()
+    for suite in "$REPO"/tests/test_*.sh; do
+        case "$suite" in */test_docs.sh|*/test_harness.sh) continue ;; esac
+        suites+=("$suite")
+    done
+    hits=$(_skips_that_pass "${suites[@]}")
+    if [ -n "$hits" ]; then
+        echo "  FAIL: these skips return 0, which counts as a pass; return 77 instead:"
+        printf '    %s\n' "$hits" | head -30
+        return 1
+    fi
+    # Reachability, as in the grep -q guard: the search must still find each
+    # known-bad shape, assembled at runtime so a sweep cannot rewrite the canary.
+    local canary="$TEST_TMPDIR/canary.sh" zero
+    zero="return $((1 - 1))"
+    {
+        printf '        echo "    SKIP: no tool"\n        %s\n' "$zero"
+        printf '    _deny_writes "$d" || %s\n' "$zero"
+        printf '    [ "$rc" = "2" ] && %s\n' "$zero"
+    } > "$canary"
+    [ "$(_skips_that_pass "$canary" | wc -l | tr -d ' ')" = "3" ] || {
+        echo "  FAIL: the search no longer finds all three known-bad shapes"
+        return 1
+    }
+}
+
+test_code_sessions_is_a_fork_started_as_ccs() {
+    assert_file_contains "$REPO/README.md" '^\*\*code-sessions\*\* is a fork of' \
+        "README must say code-sessions is a fork of cs" || return 1
+    assert_file_contains "$REPO/README.md" 'start it as `code-sessions`, or `ccs`' \
+        "README must name the launchers" || return 1
+    assert_file_contains "$REPO/README.md" 'docs/getting-started.md' \
+        "README must link the practical getting-started guide" || return 1
+    assert_file_contains "$REPO/docs/migration.md" 'Launchers: `code-sessions` and `ccs`' \
+        "migration policy must name the launchers" || return 1
+    assert_file_not_contains "$REPO/README.md" '`ags' "README still names the ags command" || return 1
+    assert_file_not_contains "$REPO/docs/getting-started.md" '`ags' "the guide still names the ags command"
+}
+
+test_getting_started_covers_main_workflows_and_codex_limit() {
+    local guide="$REPO/docs/getting-started.md"
+    for heading in '## Install this checkout' '## Adopt a project or create a workspace' \
+        '## Resume and switch engines' '## Work in a parallel feature worktree' \
+        '## Save a manual checkpoint' '## Current Codex limits'; do
+        assert_file_contains "$guide" "$heading" "getting-started guide must include $heading" || return 1
+    done
+    assert_file_contains "$guide" 'unpublished' \
+        "guide must warn that the fork is unpublished" || return 1
+}
+
+run_test test_code_sessions_is_a_fork_started_as_ccs
+run_test test_getting_started_covers_main_workflows_and_codex_limit
+run_test test_configuration_documents_every_env_var_the_readme_names
+run_test test_every_backend_the_code_accepts_is_documented
+run_test test_hooks_doc_states_both_resolution_arms
+run_test test_no_surface_tells_a_resume_to_read_every_narrative
+run_test test_no_writer_pipes_into_grep_q
+run_test test_no_skip_counts_as_a_pass
+
+report_results

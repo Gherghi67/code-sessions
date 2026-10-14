@@ -1,0 +1,276 @@
+# ABOUTME: Claude adapter auto-memory setup and native instruction template.
+# ABOUTME: Seeds and maintains a session's documentation scaffolding.
+
+setup_auto_memory() {
+    local session_dir="$1"
+    mkdir -p "$session_dir/.cs"/{memory,plans}
+    # Merge cs settings into settings.local.json (don't overwrite user's other settings)
+    # autoMemoryDirectory requires absolute paths; plansDirectory supports relative paths
+    local settings_file="$session_dir/.claude/settings.local.json"
+    local memory_path="$session_dir/.cs/memory"
+    mkdir -p "$session_dir/.claude"
+    if [ -f "$settings_file" ] && command -v jq >/dev/null 2>&1; then
+        # Write through a temp file: redirecting jq's output onto the settings
+        # file truncates it before jq parses, so one syntax error in a
+        # hand-edited file would cost the user every setting it holds. A file
+        # jq cannot read is left alone, like the no-jq case below.
+        if ! cs_write_atomic "$settings_file" jq --arg m "$memory_path" \
+            '.autoMemoryDirectory = $m | .plansDirectory = ".cs/plans"' \
+            "$settings_file" 2>/dev/null; then
+            # stderr, not stdout: create_worktree_session returns its directory
+            # by echoing it, and lib/99-main.sh captures that in a command
+            # substitution, so anything on stdout here lands inside the path.
+            warn "Could not parse $settings_file — left unchanged; cs memory settings not applied" >&2
+        fi
+    elif [ -f "$settings_file" ]; then
+        # No jq, file exists — leave it alone rather than risk clobbering
+        :
+    else
+        cat > "$settings_file" << SETTINGS
+{
+  "autoMemoryDirectory": "$memory_path",
+  "plansDirectory": ".cs/plans"
+}
+SETTINGS
+    fi
+
+    # Migrate existing auto memory from the default location
+    local real_path
+    real_path="$(cd "$session_dir" 2>/dev/null && pwd -P)"
+    local encoded_path
+    encoded_path=$(_claude_encode_path "$real_path")
+    # Claude's projects directory as this launch sees it (CS_TRANSCRIPTS_DIR when
+    # the profile launcher or a test relocates it), never the user's stable one:
+    # the migration deletes the source once copied.
+    local old_memory_dir="${CS_TRANSCRIPTS_DIR:-$HOME/.claude/projects}/${encoded_path}/memory"
+    if [ -d "$old_memory_dir" ] && [ "$(ls -A "$old_memory_dir" 2>/dev/null)" ]; then
+        cp -n "$old_memory_dir"/* "$session_dir/.cs/memory/" 2>/dev/null || true
+        rm -rf "$old_memory_dir"
+    fi
+}
+
+# Emit the cs memory disclosure note (cs:memory-note section).
+# Single source of truth used by write_session_claude_md (new sessions) and
+# migrate_session Phase 9 (lazy migration on existing sessions). The note
+# documents what cs actually owns — path redirect via
+# CLAUDE_COWORK_MEMORY_PATH_OVERRIDE and the MEMORY.md index — without
+# claiming ownership of capture behavior, which is owned by Claude's
+# built-in auto-memory harness.
+_emit_memory_note_block() {
+    cat << 'EOF'
+<!-- cs:memory-note -->
+## Where memory lives
+
+Claude's built-in memory writes durable facts to `.cs/memory/` (cs redirects via `CLAUDE_COWORK_MEMORY_PATH_OVERRIDE`); the `MEMORY.md` index lists entries and individual `<bucket>_*.md` files are loaded lazily. Only `narrative.<actor>.md` is per-actor: the durable buckets and their index are shared by every actor working in this session, so an entry may describe a different person than the one present.
+EOF
+}
+
+# The protocol for an encrypted session: migrate_session appends it once
+# .cs/private exists. It overrides the README instructions of the base
+# protocol, which every session gets from _emit_session_claude_md.
+_emit_encrypted_protocol_block() {
+    cat << 'EOF'
+<!-- cs:encrypted-protocol -->
+## Encrypted session
+
+This session keeps its private files in an encrypted vault: `.cs/memory`, `.cs/plans` and `.cs/private` link into it. Every other path in the session directory is plaintext on disk and in backups. These rules override the Session Files and Documentation Discipline sections above:
+
+- Keep the objective, environment and outcome at the top of your narrative (`.cs/memory/narrative.<actor>.md`), and read them from there on resume. `.cs/README.md` stays frontmatter only; cs does not copy your first prompt into it.
+- The bash-logger records every Bash command in `.cs/private/session.log`, inside the vault. The secrets rule above still applies.
+- Rotation handoffs live in `.cs/private/handoffs/` and are never committed; the `rotate` skill says how.
+- `cs -narrative rotate` archives your narrative's older sections into `.cs/private/narrative-archive/<actor>/` (or through a `.cs/narrative-archive` link into the vault); grep there on demand.
+- `/checkpoint` saves under `.cs/private/checkpoints/`, and the timeline records no label.
+- Keep session notes (research, scratch, drafts) under `.cs/memory`, `.cs/plans` or `.cs/private`.
+EOF
+}
+
+# Emit the session CLAUDE.md template to stdout. The leading sentinel lets both
+# the create path (overwrite) and the migrate path (guarded append) detect
+# whether the protocol is already present.
+_emit_session_claude_md() {
+    cs_session_context "" "" '<actor>' _claude_emit_session_context
+}
+
+# Render the shared file inventory within Claude's existing native protocol.
+_claude_emit_session_context() {
+    cat << EOF
+<!-- cs:session-protocol -->
+# Session Documentation Protocol
+
+This is a Claude Code session managed by the cs tool. Session metadata lives in the .cs/ directory. The session root is your workspace for project files.
+
+## Session Files - READ THESE ON RESUME
+
+At the start of every conversation in this session, read the following files to restore context (any conversation after the first is a resume; on a true first run they are stubs). Skip any that don't exist yet — they are created as the session progresses.
+
+1. **$CS_CONTEXT_SUMMARY** - If exists, read first for previous session overview
+2. **$CS_CONTEXT_OBJECTIVE** - Session objective, environment, and outcome
+3. **$CS_CONTEXT_NARRATIVE** - Per-actor lab notebooks: findings, in-progress state, observations. Yours in full; a teammate's only where the resume digest says it grew
+
+Narratives are per-actor (narrative.<actor>.md) so co-developers never conflict.
+Append only to your own; on resume read your own in full, and a teammate narrative only
+from the line the resume digest names for it (nothing, when it names none). Older sections
+sit under $CS_CONTEXT_ARCHIVE/ — grep on demand, never preload.
+
+## Documentation Discipline
+
+Update the markdown documentation files throughout the session:
+
+1. **Once the objective is clear** (from the first substantive request): fill in the $CS_CONTEXT_OBJECTIVE objective and environment — don't block the user's first answer on this; on resume, update the existing text rather than overwriting it
+2. **As you work:** Update your narrative ($CS_CONTEXT_NARRATIVE) with findings
+3. **End of session:** Complete the $CS_CONTEXT_OBJECTIVE outcome section
+
+Treat these files as a lab notebook - document as you go, not just at the end.
+
+## Wrap-up Command
+
+When the session is complete, use the \`/wrap\` command to distill durable memory entries and generate an intelligent summary of the entire session ($CS_CONTEXT_SUMMARY). Use \`/summary\` for the narrative alone, or \`/sweep\` for the memory pass alone. Mid-session, use \`/checkpoint <label>\` to snapshot git state and the narrative — e.g. before a risky refactor or destructive operation, and after reaching a green milestone (tests passing, a feature working) — saved under $CS_CONTEXT_CHECKPOINTS/.
+
+When a conversation's context grows heavy or a work phase completes, invoke the \`rotate\` skill: it writes a handoff to $CS_CONTEXT_HANDOFFS/ and arms it, so the user can run \`/clear\` to continue in a fresh conversation without leaving Claude Code (exiting and answering \`r\` at the next launch does the same). \`cs -conversations\` shows the session's conversation chain.
+
+EOF
+    cat << 'EOF'
+## Secure Secrets Handling
+
+Secrets live in the cs session store, never in a project file. `cs -secrets set`
+and the `store-secret` skill read the value on **stdin** via a file redirect —
+never `echo`/`printf` a secret into a pipe or a Bash heredoc: the bash-logger
+records the whole Bash command, plaintext and all, in `.cs/local/session.log`.
+
+Consume a secret inline — `some-command --token "$(cs -secrets get API_KEY)"` —
+so it stays out of the tool result and the transcript. A retrieved value is read
+by a command, never printed, echoed, piped, or written to a file (that includes
+`cs -secrets export` output). `cs -secrets --help` lists the rest of the verbs.
+
+**When you find a credential already in the workspace**, invoke the
+`store-secret` skill — it carries the full procedure. Replace the literal with
+the reference the file wants — `${API_KEY}` in a config, `$(cs -secrets get
+API_KEY)` in a shell script. Doing it by hand instead, the safe path is exactly
+this: write the value with the **Write** tool to a file OUTSIDE the session
+directory (any Write inside it is snapshotted into the autosave ref and survives
+`rm`), run `cs -secrets set NAME < that-file`, then delete the scratch file
+immediately.
+
+EOF
+    _emit_memory_note_block
+    cat << 'EOF'
+
+<!-- cs:wrap-cues -->
+## Session wrap-up cues
+
+When the conversation reaches a natural stopping point — work shipped, a PR merged, a deploy completed, a bug fixed, or the user signaling they're winding down — proactively offer to distill the session via AskUserQuestion BEFORE the conversation drifts.
+
+**Strong signals (sufficient on their own — but only when the phrase describes work that actually completed; never fire when it reports a problem, is negated, or is part of a plan for later):**
+- "shipped", "PR merged", "PR up", "deployed", "released"
+- "let's call it", "wraps up", "done for the day", "good place to stop"
+- "all good now", "that did it", "ready to ship"
+
+**Soft signals (require a corroborating signal — a recent commit, an explicit "done", or two or more soft signals in succession):**
+- "that works", "looks good", "we're good", "all set"
+
+**When fired**, use AskUserQuestion with header "Wrap up?" and these options:
+- "Run /wrap" — distill memory entries AND write a session summary in sequence (the usual choice)
+- "Run /sweep only" — just the memory pass; skip the narrative summary
+- "Run /summary only" — just the narrative; skip the memory pass
+- "Not yet — keep working"
+
+Do not fire on every short affirmative ("yes", "ok", "thanks"). Fire when the *work itself* has reached a coherent stopping point, not when a single answer satisfied a single question. False positives erode the signal — be picky.
+
+To opt out, delete the prose above but keep the `cs:wrap-cues` HTML comment as a tombstone — cs treats the sentinel's presence as "managed, do not re-add."
+EOF
+}
+
+# Write the session protocol template to the given directory (create path).
+# Targets CLAUDE.local.md: machine-local, gitignored, regenerated by cs, so
+# a user-owned CLAUDE.md is never touched.
+write_session_claude_md() {
+    local session_dir="$1"
+    _emit_session_claude_md > "$session_dir/CLAUDE.local.md"
+}
+
+# Move cs-managed content from a session's CLAUDE.md into CLAUDE.local.md.
+# A pure function of the file's content (no timestamps, no local state), so
+# two clones migrating the same tracked file produce byte-identical edits.
+# SAFETY: cs never wrote CLAUDE.local.md before this feature, so an existing
+# CLAUDE.local.md without the protocol sentinel is USER content — it is only
+# ever APPENDED to, never overwritten. No pipes feed a grep -q whose early
+# exit could SIGPIPE the producer under pipefail (GNU grep exits on first
+# match; BSD drains) — head detection uses a case glob on captured text.
+# Cases:
+#   - CLAUDE.md absent, sentinel-free, or CLAUDE.local.md already carries
+#     the protocol: no-op.
+#   - Nothing but whitespace above the first cs sentinel (nothing of the
+#     user's), OR the head's first non-blank line is exactly
+#     "# Session Documentation Protocol" AND the first sentinel is not the
+#     legacy cs:memory-rules block (the pre-leading-sentinel template era
+#     wrote that heading first and gained sentinels only for later
+#     sections, so the whole head is cs's, not the user's): the whole file
+#     moves; CLAUDE.md is removed. Appended, not moved, when a user
+#     CLAUDE.local.md exists.
+#   - Old head immediately followed by an unretired cs:memory-rules block:
+#     mixed-split as below, unmoved — Phase 9 still needs the split layout
+#     to retire that block in place before the file can be a wholesale-move
+#     candidate.
+#   - User head above the first sentinel: head stays in CLAUDE.md (trailing
+#     blank lines of the head collapse — deterministic), sentinel-to-EOF
+#     moves (or appends); both files kept.
+migrate_claude_md_to_local() {
+    local session_dir="$1"
+    local claude_md="$session_dir/CLAUDE.md"
+    local local_md="$session_dir/CLAUDE.local.md"
+    if [ ! -f "$claude_md" ] || ! grep -q '<!-- cs:' "$claude_md"; then
+        return 0
+    fi
+    if [ -f "$local_md" ] && grep -q 'cs:session-protocol' "$local_md"; then
+        return 0
+    fi
+    local split_line
+    split_line=$(awk '/<!-- cs:/{print NR; exit}' "$claude_md")
+    local head_text=""
+    if [ "$split_line" -gt 1 ]; then
+        head_text=$(sed -n "1,$((split_line - 1))p" "$claude_md")
+    fi
+    # The head's first non-blank line, read from the file directly (no
+    # pipe: a consumer quitting early would SIGPIPE a producer still
+    # writing a >64KB head, and under pipefail that kills the launch).
+    local first_head_line
+    first_head_line=$(awk -v n="$split_line" 'NR >= n { exit } /[^[:space:]]/ { print; exit }' "$claude_md")
+    local first_sentinel
+    first_sentinel=$(awk '/<!-- cs:/{print; exit}' "$claude_md")
+    local wholesale=0
+    case "$head_text" in
+        *[![:space:]]*)
+            if [ "$first_head_line" = "# Session Documentation Protocol" ] \
+                && [ "$first_sentinel" != "<!-- cs:memory-rules -->" ]; then
+                wholesale=1
+            fi
+            ;;
+        *)
+            wholesale=1
+            ;;
+    esac
+    if [ "$wholesale" -eq 1 ]; then
+        if [ -f "$local_md" ]; then
+            printf '\n' >> "$local_md"
+            cat "$claude_md" >> "$local_md"
+            rm "$claude_md"
+        else
+            mv "$claude_md" "$local_md"
+        fi
+        warn "Moved the cs session protocol from CLAUDE.md to CLAUDE.local.md"
+    else
+        if [ -f "$local_md" ]; then
+            printf '\n' >> "$local_md"
+            sed -n "${split_line},\$p" "$claude_md" >> "$local_md"
+        else
+            sed -n "${split_line},\$p" "$claude_md" > "$local_md"
+        fi
+        cs_write_atomic "$claude_md" printf '%s\n' "$head_text" || error "could not rewrite $claude_md"
+        warn "Moved cs-managed sections from CLAUDE.md to CLAUDE.local.md; your own content stays in CLAUDE.md"
+    fi
+    return 0
+}
+
+# Generate a v4 UUID, lowercased. uuidgen on BSD (macOS) returns uppercase;
+# Linux uuidgen and /proc are already lowercase. Lowercasing keeps the
+# value consistent with how Claude Code stores its session jsonl paths.

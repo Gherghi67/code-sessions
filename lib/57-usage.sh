@@ -1,0 +1,379 @@
+# ABOUTME: cs -usage: per-session token attribution over the 5-hour and weekly
+# ABOUTME: rate-limit windows, computed on demand from Claude Code transcripts.
+
+# Epoch seconds -> ISO-8601 UTC without timezone suffix, so it lexicographically
+# lower-bounds transcript timestamps like 2026-07-14T12:42:40.123Z within the
+# same second. BSD date first, GNU fallback.
+_usage_epoch_to_iso() {
+    date -u -r "$1" +%Y-%m-%dT%H:%M:%S 2>/dev/null \
+        || date -u -d "@$1" +%Y-%m-%dT%H:%M:%S 2>/dev/null
+}
+
+# Humanize a token count: 999 -> 999, 1500 -> 1.5K, 2036303 -> 2.0M.
+_usage_fmt() {
+    awk -v n="${1:-0}" 'BEGIN {
+        if (n >= 1000000) printf "%.1fM", n/1000000
+        else if (n >= 1000) printf "%.1fK", n/1000
+        else printf "%d", n
+    }'
+}
+
+# A Read tool result returning more lines than this is a large read.
+_USAGE_LARGE_READ_LINES=350
+
+# Scan transcript files: dedup usage lines by requestId (streamed responses
+# repeat message.usage once per content block), then sum token components per
+# window. Windows are [boundary, now]; an empty boundary skips that window.
+# Args: five_start_iso week_start_iso file...
+# Output: "in5 cc5 out5 inW ccW outW inL ccL outL lrW lruW lrcW lrL lruL lrcL model".
+# The model is the last one seen in the FIRST file, which callers make the
+# conversation's own transcript: subagent files follow it and may run a
+# different model; it stays the final field because a model name may contain
+# spaces and `read` gives its last variable the rest of the line. The lr*
+# fields count large Read tool results (see _USAGE_LARGE_READ_LINES) for the
+# week and lifetime: all of them, the untargeted ones, and the untargeted
+# characters. Untargeted large reads are the ones a size gate could intercept,
+# so the two are counted apart. Bash reads (cat, head) leave no file shape and
+# are not seen here. Consumers read fields positionally.
+#
+# A Read result reaches the transcript in one of two shapes. Top-level
+# conversations carry `toolUseResult.file`, with the line counts already
+# broken out. Subagent transcripts (<uuid>/subagents/agent-*.jsonl) usually
+# carry no `toolUseResult` at all and keep the file text only in the
+# `tool_result` content block, so the fallback counts that block's own lines;
+# 78% of subagent Read results arrive that way, and reading only the first
+# shape hid 36% of the large reads in a corpus of 8489 transcripts.
+#
+# A read is targeted when the model's Read input carried an offset or a limit,
+# which is why the scan tracks Read tool_use ids as it goes and joins each
+# result back to its call. Returning fewer lines than the file holds is NOT
+# the same thing: the harness caps a bare Read of a long file, and those
+# default-capped reads are the largest untargeted reads there are — 44 of them
+# in the same corpus were being filed as slices and dropped from the character
+# total the column exists to report. A dict-shaped result whose tool_use is
+# not among the scanned files counts as untargeted (none occurred in the
+# corpus; the alternative is dropping a read that plainly happened).
+#
+# Carrying that state means one `foreach` over every line of every file, so a
+# jq error no longer costs one line — it would end the scan for all remaining
+# files, silently, since stderr goes to /dev/null. The update is therefore
+# wrapped in try/catch: a malformed entry is skipped and the state survives.
+_usage_scan() {
+    local w5="$1" wk="$2"
+    shift 2
+    [ $# -gt 0 ] || { echo "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 -"; return 0; }
+    jq -R -r -n --arg main "$1" --argjson big "$_USAGE_LARGE_READ_LINES" '
+        def obj: if type == "object" then . else {} end;
+        def blocktext:
+          if type == "string" then .
+          elif type == "array" then
+            ([ .[] | select(type == "object" and .type == "text") | .text // "" ] | add // "")
+          else "" end;
+        foreach inputs as $line (
+          {fn: null, uses: {}, out: []};
+          . as $prev
+          | try (
+              (input_filename) as $f
+              | (if $f == .fn then .out = [] else {fn: $f, uses: {}, out: []} end)
+              | ($line | fromjson? // null) as $e
+              | if ($e | type) != "object" then .
+                elif $e.type == "assistant" then
+                  .uses = (reduce ($e.message | obj | .content
+                                   | if type == "array" then .[] else empty end) as $b
+                             (.uses;
+                              if ($b | type) == "object" and $b.type == "tool_use"
+                                 and $b.name == "Read"
+                              then .[($b.id // "" | tostring)] =
+                                     (($b.input | obj) as $i |
+                                      if ($i.offset != null) or ($i.limit != null)
+                                      then 1 else 0 end)
+                              else . end))
+                  | if ($e.message | obj | .usage) != null then
+                      .out = [[ "u", ($e.timestamp // ""),
+                                ($e.requestId // $e.message.id // $e.uuid // ""),
+                                ($e.message.usage.input_tokens // 0),
+                                ($e.message.usage.cache_creation_input_tokens // 0),
+                                ($e.message.usage.output_tokens // 0),
+                                ($e.message.model // ""), ($f == $main) ]]
+                    else . end
+                elif $e.type == "user" then
+                  . as $s
+                  | ($e.toolUseResult | obj | .file | obj) as $tf
+                  | ([ $e.message | obj | .content
+                       | if type == "array" then .[] else empty end
+                       | select(type == "object" and .type == "tool_result") ]) as $blocks
+                  | if ($tf.numLines | type) == "number" and $tf.numLines > $big then
+                      .out = [[ "r", ($e.timestamp // ""), ($e.uuid // ""),
+                                ($tf.content | if type == "string" then length else 0 end),
+                                ($s.uses[($blocks[0].tool_use_id // "" | tostring)] // 0) ]]
+                    elif ($tf | length) == 0 then
+                      .out = [ $blocks[]
+                               | ($s.uses[(.tool_use_id // "" | tostring)]) as $t
+                               | select($t != null)
+                               | (.content | blocktext) as $txt
+                               | select(($txt | length) > 0
+                                        and (($txt / "\n") | length) > $big)
+                               | [ "r", ($e.timestamp // ""), ($e.uuid // ""),
+                                   ($txt | length), $t ] ]
+                    else . end
+                else . end
+            ) catch ($prev | .out = []);
+          .out[] | @tsv
+        )' "$@" 2>/dev/null \
+    | awk -F'\t' -v w5="$w5" -v wk="$wk" '
+        $1 == "r" {
+            lrL++; if ($5 == 0) { lruL++; lrcL += $4 }
+            if (wk != "" && $2 >= wk) { lrW++; if ($5 == 0) { lruW++; lrcW += $4 } }
+            next
+        }
+        seen[$3]++ { next }
+        {
+            if ($7 != "" && $8 == "true") model = $7
+            inL += $4; ccL += $5; outL += $6
+            if (w5 != "" && $2 >= w5) { in5 += $4; cc5 += $5; out5 += $6 }
+            if (wk != "" && $2 >= wk) { inW += $4; ccW += $5; outW += $6 }
+        }
+        END {
+            if (model == "") model = "-"
+            printf "%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %s\n", \
+                in5, cc5, out5, inW, ccW, outW, inL, ccL, outL, \
+                lrW, lruW, lrcW, lrL, lruL, lrcL, model
+        }'
+}
+
+# Subagent transcripts for a conversation live under a directory named after
+# it: <uuid>/subagents/agent-*.jsonl for Agent-tool subagents, and one level
+# deeper again (<uuid>/subagents/workflows/<run>/agent-*.jsonl) for workflow
+# agents. The depth keeps changing with Claude Code releases, so walk the whole
+# conversation directory rather than pinning one. Extra find predicates (an
+# mtime prefilter, say) are passed through. One path per line on stdout.
+_usage_subagent_files() {
+    local proj="$1" uuid="$2"
+    shift 2
+    [ -d "$proj/$uuid" ] || return 0
+    find "$proj/$uuid" -type f -name '*.jsonl' "$@" 2>/dev/null
+}
+
+# List transcript files for a session dir worth parsing for the window table:
+# top-level conversations plus every subagent transcript beneath them, skipping
+# files untouched for 8+ days (they cannot contribute to either window).
+# One path per line on stdout.
+_usage_window_files() {
+    local proj="$1"
+    [ -d "$proj" ] || return 0
+    local f
+    for f in "$proj"/*.jsonl; do
+        [ -e "$f" ] || continue
+        find "$f" -mtime -8 2>/dev/null
+        _usage_subagent_files "$proj" "$(basename "$f" .jsonl)" -mtime -8
+    done
+}
+
+# Render large reads as "untargeted/all ~tokens", the tokens being the
+# untargeted characters at 4 per token, or "-" when there were none. The cell
+# fits its 15-column slot up to 999 reads; past that it widens the row, as
+# every other cell does at its own extreme, and that is accepted.
+_usage_reads_cell() {
+    local all="$1" untargeted="$2" chars="$3"
+    if [ "$all" -eq 0 ]; then
+        printf -- '-'
+    else
+        printf '%s/%s ~%s' "$untargeted" "$all" "$(_usage_fmt $((chars / 4)))"
+    fi
+}
+
+# Render "IN / OUT" with humanized numbers, or "-" when both are zero.
+_usage_cell() {
+    local in_sum="$1" out_sum="$2"
+    if [ "$in_sum" -eq 0 ] && [ "$out_sum" -eq 0 ]; then
+        printf -- '-'
+    else
+        printf '%s / %s' "$(_usage_fmt "$in_sum")" "$(_usage_fmt "$out_sum")"
+    fi
+}
+
+# Newest rate-limit stamp across all sessions (account limits are global, so
+# the freshest statusline render wins). Sets globals rather than printing:
+# callers need multiple values and command substitution runs in a subshell.
+_usage_read_limits() {
+    U_5H_PCT=""; U_5H_RESET=""; U_WK_PCT=""; U_WK_RESET=""; U_STAMP=0
+    local f stamp
+    for f in "$SESSIONS_ROOT"/*/.cs/local/limits; do
+        [ -f "$f" ] || continue
+        stamp=$(_read_local_state "$f" stamped_at)
+        case "$stamp" in ''|*[!0-9]*) continue ;; esac
+        if [ "$stamp" -gt "$U_STAMP" ]; then
+            U_STAMP=$stamp
+            U_5H_PCT=$(_read_local_state "$f" five_hour_used_pct)
+            U_5H_RESET=$(_read_local_state "$f" five_hour_resets_at)
+            U_WK_PCT=$(_read_local_state "$f" seven_day_used_pct)
+            U_WK_RESET=$(_read_local_state "$f" seven_day_resets_at)
+        fi
+    done
+}
+
+# Epoch -> local HH:MM for the header's reset display.
+_usage_epoch_to_hhmm() {
+    date -r "$1" +%H:%M 2>/dev/null || date -d "@$1" +%H:%M 2>/dev/null
+}
+
+# Compute the 5h/week window-start boundaries, anchored at the newest
+# rate-limit stamp when one exists AND its reset epoch is still in the future
+# (a past resets_at means a stale limits file, which must not smear the
+# rolling window). Sets globals: U_NOW, U_W5_ISO, U_WK_ISO, U_5H_ANCHORED,
+# U_WK_ANCHORED (globals, not stdout — callers need several values and the
+# limits read already sets U_* the same way).
+_usage_window_anchors() {
+    U_NOW=$(date +%s)
+    _usage_read_limits
+    local start5 startw
+    start5=$((U_NOW - 18000))
+    startw=$((U_NOW - 604800))
+    U_5H_ANCHORED=""; U_WK_ANCHORED=""
+    if [ "$U_STAMP" -gt 0 ]; then
+        case "$U_5H_RESET" in
+            *[!0-9]*|'') ;;
+            *) [ "$U_5H_RESET" -gt "$U_NOW" ] && { start5=$((U_5H_RESET - 18000)); U_5H_ANCHORED=1; } ;;
+        esac
+        case "$U_WK_RESET" in
+            *[!0-9]*|'') ;;
+            *) [ "$U_WK_RESET" -gt "$U_NOW" ] && { startw=$((U_WK_RESET - 604800)); U_WK_ANCHORED=1; } ;;
+        esac
+    fi
+    U_W5_ISO=$(_usage_epoch_to_iso "$start5")
+    U_WK_ISO=$(_usage_epoch_to_iso "$startw")
+}
+
+# Per-conversation breakdown for one session: a row per transcript file with
+# window sums plus a lifetime column (single-dir scan; no mtime prefilter).
+_usage_session_detail() {
+    local name="$1"
+    local dir="$SESSIONS_ROOT/$name"
+    [ -d "$dir" ] || [ -L "$dir" ] || error "No such session: $name"
+
+    _usage_window_anchors
+
+    local proj
+    proj=$(_claude_project_dir "$dir")
+    local files=("$proj"/*.jsonl)
+    if [ ! -e "${files[0]:-}" ]; then
+        echo "No transcripts for session: $name"
+        return 0
+    fi
+
+    printf '%-10s  %-22s  %-15s  %-15s  %-15s  %-15s  %s\n' \
+        "CONV" "MODEL" "5H IN/OUT" "WEEK IN/OUT" "LIFETIME" "READS>350L" "LAST ACTIVE"
+    local f uuid sums model age
+    local in5 cc5 out5 inW ccW outW inL ccL outL lrW lruW lrcW lrL lruL lrcL
+    for f in "${files[@]}"; do
+        uuid=$(basename "$f" .jsonl)
+        # Lifetime column, so no mtime prefilter on the subagent walk.
+        local extra=() sub
+        while IFS= read -r sub; do
+            [ -n "$sub" ] && extra+=("$sub")
+        done <<EOF
+$(_usage_subagent_files "$proj" "$uuid")
+EOF
+        sums=$(_usage_scan "$U_W5_ISO" "$U_WK_ISO" "$f" ${extra[@]+"${extra[@]}"})
+        read -r in5 cc5 out5 inW ccW outW inL ccL outL lrW lruW lrcW lrL lruL lrcL model <<EOF
+$sums
+EOF
+        age=$(_humanize_secs $(( U_NOW - $(_epoch_mtime "$f") )))
+        printf '%-10s  %-22s  %-15s  %-15s  %-15s  %-15s  %s\n' \
+            "$(printf '%.8s' "$uuid")" "$model" \
+            "$(_usage_cell $((in5 + cc5)) "$out5")" \
+            "$(_usage_cell $((inW + ccW)) "$outW")" \
+            "$(_usage_cell $((inL + ccL)) "$outL")" \
+            "$(_usage_reads_cell "$lrL" "$lruL" "$lrcL")" \
+            "$age"
+    done
+}
+
+run_usage() {
+    local all_flag="" target=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --all) all_flag=1; shift ;;
+            -*) error "Unknown usage option: $1. Use 'cs -usage [--all] [<session>]'" ;;
+            *)
+                [ -z "$target" ] || error "Unknown usage option: $1. Use 'cs -usage [--all] [<session>]'"
+                target="$1"; shift ;;
+        esac
+    done
+    if [ -n "$target" ]; then
+        _usage_session_detail "$target"
+        return $?
+    fi
+
+    _usage_window_anchors
+    local header="Rate limits: unknown (statusline not running); windows are rolling"
+    if [ "$U_STAMP" -gt 0 ]; then
+        if [ -n "$U_5H_ANCHORED" ] || [ -n "$U_WK_ANCHORED" ]; then
+            # A percentage is current only while its own window is still the one
+            # the stamp measured. Once that window's reset has passed the usage
+            # it reported has already rolled over, so the figure is dead and the
+            # window reads unknown rather than printing as though it were live.
+            # Reading each window's own anchor flag, not the OR of both, is what
+            # keeps the header agreeing with the table beneath it — which is
+            # computed on the rolling window either way.
+            if [ -n "$U_5H_ANCHORED" ]; then
+                header="Rate limits: 5h ${U_5H_PCT:-?}% (resets $(_usage_epoch_to_hhmm "$U_5H_RESET"))"
+            else
+                header="Rate limits: 5h ? (window reset since last stamp)"
+            fi
+            if [ -n "$U_WK_ANCHORED" ]; then
+                header="$header · week ${U_WK_PCT:-?}%"
+            else
+                header="$header · week ? (window reset since last stamp)"
+            fi
+        else
+            header="Rate limits: unknown (stale rate-limit stamp); windows are rolling"
+        fi
+    fi
+
+    echo "$header"
+    echo ""
+
+    printf '%-24s  %-15s  %-15s  %-15s  %s\n' "SESSION" "5H IN/OUT" "WEEK IN/OUT" "READS>350L" "LAST ACTIVE"
+    local rows dir name proj files sums marker age newest old_ifs
+    local in5 cc5 out5 inW ccW outW inL ccL outL lrW lruW lrcW rest
+    rows=$(while IFS= read -r -d '' dir; do
+        is_session_dir "$dir" || continue
+        name=$(basename "$dir")
+        proj=$(_claude_project_dir "$dir")
+        files=$(_usage_window_files "$proj")
+        in5=0; cc5=0; out5=0; inW=0; ccW=0; outW=0; lrW=0; lruW=0; lrcW=0
+        if [ -n "$files" ]; then
+            old_ifs="$IFS"; IFS=$'\n'
+            # shellcheck disable=SC2086
+            set -- $files
+            IFS="$old_ifs"
+            sums=$(_usage_scan "$U_W5_ISO" "$U_WK_ISO" "$@")
+            read -r in5 cc5 out5 inW ccW outW inL ccL outL lrW lruW lrcW rest <<EOF
+$sums
+EOF
+        fi
+        if [ $((in5 + cc5 + out5 + inW + ccW + outW)) -eq 0 ] && [ -z "$all_flag" ]; then
+            continue
+        fi
+        marker=" "
+        session_display_live "$dir/.cs" "$U_NOW" && marker=$(printf "${GREEN}●${NC}")
+        age="-"
+        newest=$(ls -t "$proj"/*.jsonl 2>/dev/null | head -1 || true)
+        if [ -n "$newest" ]; then
+            age=$(_humanize_secs $(( U_NOW - $(_epoch_mtime "$newest") )))
+        fi
+        printf '%s\t%s\t%s\n' "$((in5 + cc5 + out5))" "$((inW + ccW + outW))" \
+            "$(printf '%-22s %s  %-15s  %-15s  %-15s  %s' "$name" "$marker" \
+                "$(_usage_cell $((in5 + cc5)) "$out5")" \
+                "$(_usage_cell $((inW + ccW)) "$outW")" \
+                "$(_usage_reads_cell "$lrW" "$lruW" "$lrcW")" \
+                "$age")"
+    done < <(find "$SESSIONS_ROOT" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) -print0 2>/dev/null | sort -z))
+
+    if [ -z "$rows" ]; then
+        echo "No usage in the current windows."
+        return 0
+    fi
+    printf '%s\n' "$rows" | sort -t"$(printf '\t')" -k1,1rn -k2,2rn | cut -f3-
+}

@@ -1,0 +1,226 @@
+# ABOUTME: Rotates the current actor's narrative once it passes its byte budget: the
+# ABOUTME: oldest '## ' sections move verbatim to .cs/narrative-archive/. Backs 'cs -narrative'.
+
+# One line per '## ' heading: the heading's byte offset, a space, the heading.
+# LC_ALL=C makes awk's length() count bytes, so offsets survive multibyte text
+# (real headings carry an em dash).
+_narrative_headings() {  # file
+    LC_ALL=C awk 'BEGIN { off = 0 } { if (substr($0, 1, 3) == "## ") print off, $0; off += length($0) + 1 }' "$1"
+}
+
+# Byte offset of the first heading to KEEP: the earliest one with at most KEEP
+# bytes between it and EOF. When even the final section is larger than KEEP,
+# that final heading is the cut, so the tail is one oversized section rather
+# than nothing.
+_narrative_cut() {  # headings, size, keep
+    local headings="$1" size="$2" keep="$3" off line
+    while read -r off line; do
+        [ -n "$off" ] || continue
+        if [ $((size - off)) -le "$keep" ]; then
+            echo "$off"
+            return 0
+        fi
+    done <<EOF
+$headings
+EOF
+    printf '%s\n' "$headings" | tail -1 | cut -d' ' -f1
+}
+
+# What the live narrative holds after a rotation: its header block from the
+# snapshot, then everything in the live file past the cut.
+_narrative_kept_text() {  # snap, live, head_end, cut
+    if [ "$3" -gt 0 ]; then
+        head -c "$3" "$1" || return 1
+    fi
+    tail -c +$(($4 + 1)) "$2"
+}
+
+# Archive the oldest sections of this actor's narrative when the file is over
+# CS_NARRATIVE_MAX_BYTES, leaving a tail of about CS_NARRATIVE_KEEP_BYTES.
+rotate_narrative() {
+    if [ -z "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}" ] || [ ! -d "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}" ]; then
+        error "cs -narrative rotate must be run from inside a cs session"
+    fi
+    local meta_dir="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
+    local session_dir="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-$(dirname "$meta_dir")}}"
+    local actor
+    actor=$(cs_actor_slug "$session_dir")
+    local live="$meta_dir/memory/narrative.$actor.md"
+    [ -f "$live" ] || error "No narrative for actor $actor at $live"
+    [ -r "$live" ] || error "Cannot read $live"
+
+    local max keep size
+    max=$(_narrative_budget "${CS_NARRATIVE_MAX_BYTES:-}" "$CS_NARRATIVE_MAX_DEFAULT")
+    keep=$(_narrative_budget "${CS_NARRATIVE_KEEP_BYTES:-}" "$CS_NARRATIVE_KEEP_DEFAULT")
+    size=$(wc -c < "$live" | tr -d ' ')
+    if [ "$size" -le "$max" ]; then
+        info "nothing to rotate: narrative.$actor.md is $((size / 1024)) KB (budget $((max / 1024)) KB)"
+        return 0
+    fi
+    # Work from a snapshot: the cut is computed on bytes that cannot change under
+    # us, and the live file is compared against that snapshot before it is rewritten.
+    local snap="$meta_dir/memory/.narrative.$actor.rotate.$$"
+    cp "$live" "$snap"
+    # grep -c exits 1 on zero matches; under set -e -o pipefail that would end
+    # cs instead of reaching the warning below, hence the || true.
+    local headings count head_end cut
+    headings=$(_narrative_headings "$snap")
+    count=$(printf '%s\n' "$headings" | grep -c . || true)
+    if [ "$count" -lt 2 ]; then
+        rm -f "$snap"
+        warn "narrative.$actor.md is over budget but has fewer than two sections; nothing can be archived without touching the tail"
+        return 0
+    fi
+    local first
+    first="${headings%%$'\n'*}"
+    head_end="${first%% *}"
+    cut=$(_narrative_cut "$headings" "$size" "$keep")
+    if [ "$cut" -le "$head_end" ]; then
+        rm -f "$snap"
+        info "nothing to rotate: the first section already starts the retained tail"
+        return 0
+    fi
+
+    local sections through
+    sections=$(printf '%s\n' "$headings" | awk -v c="$cut" '$1 + 0 < c + 0' | grep -c . || true)
+    through=$(printf '%s\n' "$headings" | awk -v c="$cut" '$1 + 0 < c + 0' \
+        | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | tail -1 || true)
+    [ -n "$through" ] || through="undated"
+
+    # An encrypted session's narrative sits in the vault behind the .cs/memory
+    # link, so its archive must too. A .cs/narrative-archive link is used as
+    # it is; otherwise .cs/private holds the archive. With neither, the only
+    # place left is plaintext, so the rotation refuses.
+    local arch_root="$meta_dir/narrative-archive"
+    if [ -L "$meta_dir/memory" ] && [ ! -L "$arch_root" ]; then
+        if [ ! -d "$meta_dir/private" ]; then
+            rm -f "$snap"
+            error "narrative.$actor.md lives on encrypted storage (.cs/memory is a link), and neither .cs/private nor .cs/narrative-archive is there to hold its archive. Link one of them into the vault, then run cs -narrative rotate again."
+        fi
+        arch_root="$meta_dir/private/narrative-archive"
+    fi
+    local arch_dir="$arch_root/$actor"
+    mkdir -p "$arch_dir"
+    [ -w "$arch_dir" ] || { rm -f "$snap"; error "Cannot write to $arch_dir"; }
+    local body="$arch_dir/.body.$$"
+    # head first, tail second: the bounded producer runs to completion and the
+    # consumer reads all of it. The other order lets head close the pipe early
+    # and tail die of SIGPIPE, which pipefail turns into a failed rotation on
+    # any file whose kept tail is larger than the pipe buffer.
+    head -c "$cut" "$snap" | tail -c +$((head_end + 1)) > "$body"
+    local blob chunk chunk_tmp
+    blob=$(git hash-object "$body" | cut -c1-8)
+    chunk="$arch_dir/$through-$blob.md"
+    # The fixed temp name is safe here and needs no unique one: it carries the
+    # hash of the bytes it will hold, so two rotations that share it are
+    # writing the same file.
+    chunk_tmp="$arch_dir/.$through-$blob.md.tmp"
+    {
+        printf '<!-- rotated from narrative.%s.md: %s sections through %s -->\n' "$actor" "$sections" "$through"
+        printf '<!-- verbatim copy of the sections that preceded the live tail; never edited -->\n\n'
+        cat "$body"
+    } > "$chunk_tmp"
+    rm -f "$body"
+    local created=0
+    if [ -f "$chunk" ]; then
+        if cmp -s "$chunk" "$chunk_tmp"; then
+            rm -f "$chunk_tmp"
+        else
+            rm -f "$chunk_tmp" "$snap"
+            error "archive chunk $chunk exists with different content; refusing to overwrite"
+        fi
+    else
+        mv "$chunk_tmp" "$chunk"
+        created=1
+    fi
+
+    # Test seam: lets a suite change the live file between the snapshot and the
+    # rewrite, which is the window every guard below exists for.
+    if [ -n "${CS_NARRATIVE_ROTATE_MIDPOINT:-}" ]; then
+        eval "$CS_NARRATIVE_ROTATE_MIDPOINT"
+    fi
+
+    # The live file must still open with the same bytes the snapshot did up to the
+    # cut; a peer merge or an edit inside the archived run means the cut no longer
+    # describes this file. Compared as equal-length truncated streams, not via
+    # `cmp -n`: on this platform's cmp, -n misreports EOF whenever the two files'
+    # total lengths differ, even when both are longer than the requested window.
+    if ! cmp -s <(head -c "$cut" "$snap") <(head -c "$cut" "$live"); then
+        rm -f "$snap"
+        [ "$created" -eq 1 ] && rm -f "$chunk"
+        error "narrative.$actor.md changed during rotation; run cs -narrative rotate again"
+    fi
+    cs_write_atomic "$live" _narrative_kept_text "$snap" "$live" "$head_end" "$cut" \
+        || error "could not rewrite narrative.$actor.md"
+    rm -f "$snap"
+
+    local chunk_rel=".cs/${arch_root#"$meta_dir"/}/$actor/$(basename "$chunk")"
+    if git -C "$session_dir" rev-parse --git-dir >/dev/null 2>&1 \
+        && git -C "$session_dir" ls-files --error-unmatch -- "$live" >/dev/null 2>&1 \
+        && { git -C "$session_dir" check-ignore -q --no-index -- "$live" \
+            || git -C "$session_dir" check-ignore -q --no-index -- "$chunk"; }; then
+        # Tracked under an ignored tree means something once ran `git add -f`.
+        # Committing here would need another force-add, which is how session
+        # notes reach a public repo, so cs leaves both paths alone. Committing
+        # the live file without its ignored chunk would drop the archived
+        # sections from git, so that case commits nothing either.
+        if git -C "$session_dir" check-ignore -q --no-index -- "$live"; then
+            warn "rotation written but not committed: .cs/memory/narrative.$actor.md is tracked although .cs/ is gitignored here. Untrack it with: git rm -r --cached .cs"
+        else
+            warn "rotation written but not committed: $chunk_rel is gitignored here, and cs never force-adds an ignored path. Commit .cs/memory/narrative.$actor.md and the archive together by hand, or stop ignoring the archive"
+        fi
+    elif git -C "$session_dir" rev-parse --git-dir >/dev/null 2>&1 \
+        && git -C "$session_dir" ls-files --error-unmatch -- "$live" >/dev/null 2>&1; then
+        # The commit carries an explicit pathspec: rotation runs inside the
+        # user's own checkout — an adopted session IS their project repo — and a
+        # bare `git commit` would sweep whatever they had staged into a commit
+        # titled "cs: rotate narrative". The `add` still runs first so the newly
+        # written chunk is known to git and the pathspec can match it.
+        if ! { git -C "$session_dir" add -- "$live" "$chunk" \
+            && git -C "$session_dir" commit -q -m "cs: rotate narrative.$actor ($sections sections -> narrative-archive)" -- "$live" "$chunk"; } 2>/dev/null; then
+            # Naming a pathspec makes this a PARTIAL commit, which git refuses
+            # outright mid-merge — a state the old bare commit committed
+            # straight through. Refusing is the safer half of that trade; the
+            # message just has to say which failure it was.
+            if git -C "$session_dir" rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
+                warn "rotation written but the commit was refused: $session_dir is mid-merge, and cs commits only its own paths. .cs/memory/narrative.$actor.md and $chunk_rel are staged, so they go into the merge commit unless you unstage them first"
+            else
+                warn "rotation written but the commit failed; commit .cs/memory/narrative.$actor.md and $chunk_rel by hand"
+            fi
+        fi
+    else
+        info "narrative.$actor.md is not tracked by git here; the archive chunk is left uncommitted"
+    fi
+
+    local timeline="$meta_dir/timeline.jsonl"
+    _terminate_jsonl "$timeline"
+    { jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+           --arg actor "$actor" \
+           --argjson sections "$sections" \
+           --argjson bytes "$((cut - head_end))" \
+           --arg archive "$chunk_rel" \
+           '{ts: $ts, event: "narrative_rotated", actor: $actor, sections: $sections, bytes: $bytes, archive: $archive}' \
+        >> "$timeline"; } 2>/dev/null || true
+
+    local archived_kb now_kb
+    archived_kb=$(( (cut - head_end) / 1024 ))
+    now_kb=$(( $(wc -c < "$live" | tr -d ' ') / 1024 ))
+    echo "rotated $sections sections (${archived_kb} KB) -> $chunk_rel; live file now ${now_kb} KB"
+}
+
+# Dispatcher for cs -narrative
+run_narrative() {
+    local sub="${1:-}"
+    case "$sub" in
+        rotate)
+            rotate_narrative
+            ;;
+        *)
+            # Names both forms: this dispatcher is reached from inside a
+            # session AND from `cs <name> -narrative`, and a message that
+            # prescribes only the first sends a caller who correctly named a
+            # session off to rotate whichever one their shell is standing in.
+            error "Usage: cs -narrative rotate   |   cs <name> -narrative rotate"
+            ;;
+    esac
+}
