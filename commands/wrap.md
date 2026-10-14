@@ -22,9 +22,11 @@ Stop after step 4. Step 5's prose critic belongs to standalone `/summary`: it sp
 
 Run `cs -narrative rotate` once and keep its single output line. It archives the oldest `## ` sections of your narrative verbatim into `.cs/narrative-archive/<actor>/` (in an encrypted session, into the vault) when the live file is over its byte budget, and prints `nothing to rotate` otherwise. Do not read or edit the narrative yourself for this pass; the helper does the byte-exact cut and commits it when the session is tracked.
 
-## Pass 4 — Task archive
+## Pass 4 — Task archive and the wrap's commit
 
-Archive the native task list's completed rows, exactly as the rotate skill's step 8 does: read `~/.claude/skills/rotate/SKILL.md` step 8 with the Read tool and follow its first part, the `cs -archive-tasks plan` answer and the one question it may ask (`/wrap` is never a forced rotation, so the `CS_ROTATE_FORCE_CTX` exception does not apply). Then commit the archive directory `cs -archive-tasks run` named, by name, unless `git check-ignore -q --no-index -- <path>` exits 0 or it sits in the vault under `.cs/private/`. A refusal moved nothing and does not fail the wrap; report its line.
+Archive the native task list's completed rows, exactly as the rotate skill's step 8 does: read `~/.claude/skills/rotate/SKILL.md` step 8 with the Read tool and follow its first part, the `cs -archive-tasks plan` answer and the one question it may ask (`/wrap` is never a forced rotation, so the `CS_ROTATE_FORCE_CTX` exception does not apply). A refusal moved nothing and does not fail the wrap; report its line.
+
+Then make the wrap's one commit. Files under `.cs/` never get a commit of their own, so this one carries what the wrap wrote: stage by name the memory files Pass 1 wrote, `.cs/summary.md`, the archive directory `cs -archive-tasks run` named, and any other tracked session state you changed (your narrative's appends, `.cs/README.md`). Skip every path `git check-ignore -q --no-index -- <path>` reports ignored (exit 0; one path per call), and in an encrypted session everything in the vault: `.cs/memory`, `.cs/plans` and `.cs/private` link into it there. Never `git add -f`. Commit them as one new commit with the subject `session: wrap <YYYY-MM-DD>` (today's date) and invent no other; the `cs:` subject of Pass 3's commit is one cs writes itself. When nothing is left to stage, there is no commit.
 
 ## Pass 5 — Mark the wrap finished
 
@@ -40,11 +42,12 @@ It names the conversation this wrap finished in (its own id, so a teammate's wra
 
 ## Report
 
-Output a brief report with the four labeled items below. No long prose; the summary IS the prose.
+Output a brief report with the five labeled items below. No long prose; the summary IS the prose.
 
 1. **Memory:** list the file paths you wrote in Pass 1, one per line. Or write `nothing to add` if the session didn't warrant memory entries.
 2. **Summary:** confirm `.cs/summary.md` was created.
 3. **Narrative:** the line `cs -narrative rotate` printed.
 4. **Tasks:** the line `cs -archive-tasks run` printed, or why the archive was skipped (the session answered no, nothing to archive, or the `Error:` line).
+5. **Commit:** the wrap's commit as `git log --oneline -1` prints it, or why there was none (every path ignored or in the vault).
 
 That's it. Don't recap the conversation; the summary file does that already.
