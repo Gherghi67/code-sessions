@@ -1288,6 +1288,36 @@ test_export_refuses_an_unpinned_pushed_recipient() {
     assert_file_not_exists "$meta/secrets.$(_machine_id).enc" "the refusal must not fall back to a password export" || return 1
 }
 
+# A clone chooses the name of a recipient file it pushes. The export's refusal
+# lists it, age list names it and age add, given the pin command's path,
+# reports it, each as a plain name: each character a plain name lacks becomes _.
+test_recipient_names_a_clone_chose_print_as_plain_names() {
+    _use_real_age || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m
+    local out rc=0 key
+    _make_age_identity intruder || { echo "  FAIL: could not create a test identity"; return 1; }
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
+    cp "$TEST_TMPDIR/intruder.pub" "$meta/age-recipients/i$bad.pub"
+    key=$(cat "$TEST_TMPDIR/intruder.pub")
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the export is refused" || return 1
+    assert_eq "  i$shown.pub" "$(grep '^  i' <<< "$out")" \
+        "the refusal lists the recipient file as a plain name" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal from the refusal" || return 1
+    out=$("$CS_SECRETS_BIN" age list 2>&1) || return 1
+    assert_eq "  - i$shown: ${key:0:20}..." "$(grep '^  - i' <<< "$out")" \
+        "age list names the recipient as a plain name" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal from age list" || return 1
+    out=$("$CS_SECRETS_BIN" age add "$meta/age-recipients/i$bad.pub" 2>&1) || return 1
+    assert_eq "Added recipient: i$shown
+Public key: $key" "$out" "age add names the recipient as a plain name" || return 1
+    out=$("$CS_SECRETS_BIN" age add "$key" 2>&1) || return 1
+    assert_eq "Added recipient: i$shown
+Public key: $key" "$out" "age add of the raw key names the file that holds it as a plain name" || return 1
+}
+
 test_export_encrypts_to_a_recipient_pinned_by_age_add() {
     _use_real_age || return $?
     local meta="$CS_SESSIONS_ROOT/test-session/.cs"
@@ -1818,6 +1848,25 @@ test_export_switches_this_machine_to_its_ssh_key() {
     assert_file_not_exists "$TEST_TMPDIR/peer-after.age" "the refused export writes nothing" || return 1
 }
 
+# A clone can commit a recipient file under any name holding this machine's
+# earlier age key, which is public. The switch to the ssh key rewrites it and
+# names it as a plain name.
+test_export_switch_names_a_recipient_file_as_a_plain_name() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local mid; mid=$(_machine_id)
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m
+    local out rc=0
+    _stage_session_from_before_the_ssh_key || { echo "  FAIL: could not stage the earlier session"; return 1; }
+    cp "$meta/age-recipients/$mid.pub" "$meta/age-recipients/c$bad.pub" || return 1
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the export exits 0: $out" || return 1
+    assert_eq "Switched c$shown.pub from this machine's age key to its ssh key." \
+        "$(grep '^Switched c' <<< "$out")" "the switch names the recipient file as a plain name" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal" || return 1
+}
+
 # With age on the machine an export encrypts to keys, and it needs ssh-keygen
 # for this machine's key. Without it the export stops and says so; it does not
 # fall back to a password file.
@@ -2120,6 +2169,29 @@ test_import_file_skips_a_file_signed_by_an_unpinned_key() {
     assert_output_contains "$out" "^Skipped $(basename "$peer_file"): it is signed by $(basename "$peer_pub"), a key this machine has not pinned\. If you trust it: cs -secrets --session test-session age add " \
         "the skip names the signer's file and the pin command" || return 1
     _assert_secret_absent from_peer "nothing from the file is stored" || return 1
+}
+
+# A clone chooses the names of the sync files and recipient files it commits,
+# and a name can carry a terminal escape: a raw ESC or BEL byte, or backslash
+# text echo -e would turn into one. The skip names the sync file and its
+# signer's file as plain names, each character a plain name lacks replaced by _.
+test_import_file_names_a_sync_file_and_its_signer_as_plain_names() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m
+    local out rc=0 line
+    _peer_exports from_peer "vp" || { echo "  FAIL: fixture: the peer could not export"; return 1; }
+    mv "$(_peer_sync_file)" "$meta/secrets.p$bad.age" || return 1
+    mv "$(_peer_sync_file).sig" "$meta/secrets.p$bad.age.sig" 2>/dev/null \
+        || mv "$meta"/secrets.peer@*.age.sig "$meta/secrets.p$bad.age.sig" || return 1
+    mv "$(_peer_recipient_file)" "$meta/age-recipients/p$bad.pub" || return 1
+    out=$("$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the import exits 0" || return 1
+    line=$(grep '^Skipped' <<< "$out")
+    assert_eq "Skipped secrets.p$shown.age: it is signed by p$shown.pub, a key this machine has not pinned. If you trust it: cs -secrets --session test-session age add " \
+        "${line%%age add *}age add " "the skip names the file and its signer as plain names" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal" || return 1
 }
 
 # A signature by a key no recipient file holds says nothing about who wrote
@@ -4585,6 +4657,7 @@ run_test test_age_recipient_digest_leaves_the_shells_own_locale_alone
 run_test test_age_add_reencrypts_an_unchanged_store
 run_test test_age_remove_reencrypts_an_unchanged_store
 run_test test_export_refuses_an_unpinned_pushed_recipient
+run_test test_recipient_names_a_clone_chose_print_as_plain_names
 run_test test_export_encrypts_to_a_recipient_pinned_by_age_add
 run_test test_export_never_pins_from_a_forged_sync_file
 run_test test_export_ignores_a_pin_list_planted_in_the_checkout
@@ -4607,6 +4680,7 @@ run_test test_age_init_names_a_missing_ssh_keygen
 run_test test_first_export_makes_this_machines_ssh_key_the_recipient
 run_test test_export_encrypts_to_age_and_ssh_recipients_together
 run_test test_export_switches_this_machine_to_its_ssh_key
+run_test test_export_switch_names_a_recipient_file_as_a_plain_name
 run_test test_first_export_without_ssh_keygen_refuses
 run_test test_export_signs_the_sync_file
 run_test test_export_replaces_a_signature_that_does_not_verify
@@ -4645,6 +4719,7 @@ run_test test_import_file_takes_a_file_signed_by_a_pinned_peer
 run_test test_import_file_skips_an_unsigned_age_file
 run_test test_import_file_skips_an_unsigned_file_under_this_machines_name
 run_test test_import_file_skips_a_file_signed_by_an_unpinned_key
+run_test test_import_file_names_a_sync_file_and_its_signer_as_plain_names
 run_test test_import_file_skips_a_file_signed_by_a_key_outside_the_session
 run_test test_import_file_skips_a_signed_file_changed_after_signing
 run_test test_import_file_decrypts_the_bytes_it_verified
