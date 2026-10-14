@@ -581,6 +581,23 @@ test_report_refuses_a_capture_with_no_merge_base() {
     assert_output_not_contains "$out" "retire_differs" "and no path names" || return 1
 }
 
+# The branch renames a to b and edits a line of it; the base renames a to c
+# and leaves it as it was. The branch's edit is in b and nowhere on the base,
+# however alike b and c are.
+test_report_refuses_a_renamed_and_edited_path_the_base_renamed_elsewhere() {
+    local sha out base="$CS_SESSIONS_ROOT/myproj" wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    plain_fixture
+    (cd "$wt" && printf 'line1\nline2\nline3\nline4\nline5\n' > a && git add a && git commit -q -m "a")
+    git -C "$base" merge -q --ff-only cs/fix-auth
+    (cd "$wt" && git mv a b && printf 'line1\nline2\nbranch edit\nline4\nline5\n' > b && git commit -q -am "a to b, edited")
+    sha=$(git -C "$wt" rev-parse HEAD)
+    (cd "$base" && git mv a c && git commit -q -m "a to c")
+    out=$(report_for myproj fix-auth "$sha")
+    assert_eq "not-landed" "$(key "$out" retire)" "the edit in b is not on the base" || return 1
+    assert_eq "1 of 2" "$(key "$out" retire_paths_differing)" "a is gone on both sides, b is not on the base" || return 1
+    assert_eq "b" "$(printf '%s\n' "$out" | sed -n 's/^retire_differs: //p')" "and only b is named" || return 1
+}
+
 # A branch whose changed path names add up to more bytes than one command
 # line holds (ARG_MAX, measured here) is checked like any other. The paths
 # are about 490 bytes each and live only in the index and the commits, never
@@ -764,6 +781,7 @@ run_test test_report_refuses_a_submodule_bump_diff_config_ignores
 run_test test_report_refuses_a_pathspec_magic_name_the_base_holds_differently
 run_test test_report_refuses_a_newline_name_the_base_holds_differently
 run_test test_report_refuses_a_capture_with_no_merge_base
+run_test test_report_refuses_a_renamed_and_edited_path_the_base_renamed_elsewhere
 run_test test_report_checks_more_path_bytes_than_a_command_line_holds
 run_test test_report_names_a_non_utf8_path_under_a_utf8_locale
 run_test test_report_says_error_when_the_content_check_stops_without_one
