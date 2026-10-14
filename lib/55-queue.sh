@@ -3,7 +3,7 @@
 
 _queue_set_state() {  # atomic single-word write; "" removes the file
     local qdir="$1" val="$2"
-    mkdir -p "$qdir"
+    cs_mkdir_inside "$qdir"
     if [ -z "$val" ]; then rm -f "$qdir/queue.state"; return 0; fi
     cs_write_atomic "$qdir/queue.state" printf '%s\n' "$val"
 }
@@ -35,12 +35,13 @@ _queue_convert_legacy() {  # qdir
     [ -f "$legacy" ] || return 0
     # The pre-directory layout used queue.tmp as an awk TEMP FILE, so a killed
     # old-cs rm or drain pop leaves a regular file exactly where the staging
-    # directory now goes. mkdir -p fails over it, which under errexit aborts
+    # directory now goes. Making the directory fails over it, which under errexit aborts
     # every entry point that converts — including session open, leaving the
     # session unopenable. Clear a non-directory at either path first.
     [ -d "$qdir/queue" ]     || rm -f "$qdir/queue"
     [ -d "$qdir/queue.tmp" ] || rm -f "$qdir/queue.tmp"
-    mkdir -p "$qdir/queue" "$qdir/queue.tmp"
+    cs_mkdir_inside "$qdir/queue"
+    cs_mkdir_inside "$qdir/queue.tmp"
     local line seq=0 fname failed=0
     while IFS= read -r line || [ -n "$line" ]; do
         case "$line" in *[![:space:]]*) : ;; *) continue ;; esac
@@ -104,7 +105,8 @@ _queue_write_task() {  # qdir, text
     # Senders write into other sessions' queues (task-kind mail), so a
     # recipient that has not reopened since the upgrade converts here.
     _queue_convert_legacy "$qdir"
-    mkdir -p "$qdir/queue" "$qdir/queue.tmp"
+    cs_mkdir_inside "$qdir/queue"
+    cs_mkdir_inside "$qdir/queue.tmp"
     # The zero-padded per-process sequence keeps several adds from one process
     # inside one second (a spawn seed's task list) in submission order; guard
     # against an inherited same-named env var poisoning the counter. The random
@@ -165,7 +167,8 @@ _queue_accept() {  # qdir, message id
     [ -n "$body" ] || error "message $id carries an empty task"
     _queue_require_single_line "$body"
     _queue_convert_legacy "$qdir"
-    mkdir -p "$qdir/queue" "$qdir/queue.tmp"
+    cs_mkdir_inside "$qdir/queue"
+    cs_mkdir_inside "$qdir/queue.tmp"
     local lock="$qdir/queue.accept.mutex.lock" fname
     _cs_lock "$lock" || error "another cs -queue accept holds $lock; retry in a moment"
     if [ -f "$qdir/queue.accepted" ] && grep -qxF -- "$id" "$qdir/queue.accepted"; then
@@ -268,8 +271,8 @@ _queue_clear() {  # qdir
 _queue_start() {  # qdir, [mode]
     local qdir="$1" mode="${2:-}"
     case "$mode" in
-        '') mkdir -p "$qdir"; rm -f "$qdir/queue.mode" ;;
-        subagents|workflow) mkdir -p "$qdir"; cs_write_atomic "$qdir/queue.mode" printf '%s\n' "$mode" ;;
+        '') cs_mkdir_inside "$qdir"; rm -f "$qdir/queue.mode" ;;
+        subagents|workflow) cs_mkdir_inside "$qdir"; cs_write_atomic "$qdir/queue.mode" printf '%s\n' "$mode" ;;
         *) error "cs -queue start takes subagents or workflow, not '$mode'" ;;
     esac
     _queue_set_state "$qdir" armed
@@ -299,6 +302,9 @@ run_queue() {
     if [ -z "${CLAUDE_SESSION_META_DIR:-}" ]; then
         error "cs -queue must be run inside a cs session, or as: cs <session> -queue ..."
     fi
+    # A claude still running after its session was removed keeps the
+    # session's environment; its queue is gone with it.
+    [ -d "$CLAUDE_SESSION_META_DIR" ] || error "No such session: ${CLAUDE_SESSION_NAME:-${CLAUDE_SESSION_META_DIR%/.cs}}"
     # The queue sits with the session's other cs files: behind .cs/private in
     # an encrypted session, where a locked vault refuses rather than queue a
     # task beside it in plaintext.
