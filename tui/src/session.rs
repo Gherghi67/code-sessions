@@ -2063,6 +2063,38 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    // git reads the worktree path after --, so a path starting with a dash is
+    // a path and not an option. A relative one is taken from the base repo,
+    // the directory git runs in (-C).
+    #[test]
+    fn remove_worktree_session_removes_a_worktree_whose_path_starts_with_a_dash() {
+        let root = std::env::temp_dir().join(format!("cs-wt-dash-{}", std::process::id()));
+        let base = root.join("proj");
+        fs::create_dir_all(&base).unwrap();
+        git_in(&base, &["init", "-q"]);
+        fs::write(base.join("f"), "x").unwrap();
+        git_in(&base, &["add", "f"]);
+        git_in(&base, &["commit", "-qm", "seed"]);
+        let wt = base.join("-rtask");
+        git_in(&base, &["worktree", "add", "-q", wt.to_str().unwrap(), "-b", "cs/task"]);
+        assert!(wt.join(".git").is_file(), "worktree marker file expected");
+
+        remove_worktree_session(&root, "proj@task", Path::new("-rtask")).unwrap();
+
+        assert!(!wt.exists(), "worktree directory should be gone");
+        let list = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&base)
+            .args(["worktree", "list"])
+            .output()
+            .unwrap();
+        assert!(
+            !String::from_utf8_lossy(&list.stdout).contains("-rtask"),
+            "base repo must not keep a stale worktree registration"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
     // `cs -rm` stops when git refuses to remove a worktree; deleting the
     // directory anyway would leave the base repo registering a worktree that
     // is gone. A locked worktree is one git refuses under a single --force.
