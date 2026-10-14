@@ -102,7 +102,7 @@ _cs_nl='
 '
 _cs_realdir() {
     local real
-    real="$(cd "$1" 2>/dev/null && pwd -P && printf x)" || return 1
+    real="$(cd -- "$1" 2>/dev/null && pwd -P && printf x)" || return 1
     real="${real%x}"
     real="${real%"$_cs_nl"}"
     case "$real" in *"$_cs_nl"*) return 1 ;; esac

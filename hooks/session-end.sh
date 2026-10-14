@@ -202,7 +202,7 @@ if [ -f "$META_DIR/local/vault" ] && [ "${CS_RESOLVED_FROM:-env}" = "env" ] \
                 if [ -z "$held" ] && [ -f "$dir/.cs/local/vault-holders" ]; then
                     while read -r h; do alive "$h" && held=1; done < "$dir/.cs/local/vault-holders"
                 fi
-                if [ -z "$held" ] && mnt=$(cd "$dir/.cs/vault-mnt" 2>/dev/null && pwd -P) \
+                if [ -z "$held" ] && mnt=$(cd -- "$dir/.cs/vault-mnt" 2>/dev/null && pwd -P) \
                     && mount | grep -F " on $mnt (" >/dev/null; then
                     # A child with a recorded pid, so a reopen can stop it.
                     # Long after the open checked the session: the builtin
@@ -228,12 +228,13 @@ if [ -f "$META_DIR/local/vault" ] && [ "${CS_RESOLVED_FROM:-env}" = "env" ] \
 fi
 
 # Regenerate sessions index.md at the sessions root
-# CS_SESSIONS_ROOT is not exported into a session, so this used to fall back to
-# the session's parent directory unconditionally. That is right for a session
-# living under the sessions root and wrong for an adopted one, whose directory
-# is an unrelated project path — the index landed in that project's parent.
-# Default to the sessions root itself, and only write an index where sessions
-# actually live.
+# cs exports CS_SESSIONS_ROOT into a session only when the user set it, made
+# absolute when it was relative; unset, the root is the default below. The
+# session's parent directory is no stand-in: right for a session living under
+# the sessions root, wrong for an adopted one, whose directory is an unrelated
+# project path, so the index would land in that project's parent. Default to
+# the sessions root itself, and only write an index where sessions actually
+# live.
 # Compare physical against physical, on BOTH sides. The resolver reports a
 # physical SESSION_DIR (cd + pwd -P) while the CLI exports a logical one built
 # from $HOME, so normalizing only the root stops the index being written for any
@@ -243,9 +244,9 @@ fi
 _cs_root_default="${HOME:-/nonexistent}/.claude-sessions"
 SESSIONS_ROOT="${CS_SESSIONS_ROOT:-$_cs_root_default}"
 if [ -d "$SESSIONS_ROOT" ]; then
-    SESSIONS_ROOT=$(cd "$SESSIONS_ROOT" 2>/dev/null && pwd -P) || SESSIONS_ROOT="${CS_SESSIONS_ROOT:-$_cs_root_default}"
+    SESSIONS_ROOT=$(cd -- "$SESSIONS_ROOT" 2>/dev/null && pwd -P) || SESSIONS_ROOT="${CS_SESSIONS_ROOT:-$_cs_root_default}"
 fi
-SESSION_DIR_PHYS=$(cd "$SESSION_DIR" 2>/dev/null && pwd -P) || SESSION_DIR_PHYS="$SESSION_DIR"
+SESSION_DIR_PHYS=$(cd -- "$SESSION_DIR" 2>/dev/null && pwd -P) || SESSION_DIR_PHYS="$SESSION_DIR"
 case "$SESSION_DIR_PHYS" in
     "$SESSIONS_ROOT"/*) : ;;
     *) [ -n "${CS_SESSIONS_ROOT:-}" ] || SESSIONS_ROOT="" ;;

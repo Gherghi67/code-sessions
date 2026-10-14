@@ -6,7 +6,7 @@
 # ABOUTME: and install.sh from install.sh.in with lib/01-manifests.sh spliced in at its marker
 # ABOUTME: and the sha256 of every payload file a web install downloads at a second marker.
 set -euo pipefail
-cd "$(dirname "$0")"
+cd -- "$(dirname -- "$0")"
 
 LIB_DIR="lib"
 OUT="bin/cs"

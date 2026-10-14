@@ -681,6 +681,25 @@ test_the_trace_goes_behind_private() {
     assert_not_exists "$dir/local/rewrite.trace" "a locked vault gets no trace" || return 1
 }
 run_test test_the_trace_goes_behind_private
+
+# A trace is a write into .cs/local, and while git tracks a file there a
+# repository wrote it: the shim still does its job and adds nothing beside it.
+test_the_trace_stands_down_while_git_tracks_a_control_file() {
+    local s="$TEST_TMPDIR/session" f
+    mkdir -p "$s/.cs/local"
+    printf 'armed\n' > "$s/.cs/local/queue.state"
+    git -C "$s" init -q
+    git -C "$s" add .cs/local/queue.state
+    f=$(composer_file "/release")
+    CLAUDE_SESSION_META_DIR="$s/.cs" "$SHIM" "$f"
+    assert_eq "/release" "$(cat "$f")" "the slash command passes through" || return 1
+    assert_not_exists "$s/.cs/local/rewrite.trace" "no trace beside a tracked file" || return 1
+    git -C "$s" rm -q --cached .cs/local/queue.state
+    CLAUDE_SESSION_META_DIR="$s/.cs" "$SHIM" "$f"
+    assert_file_contains "$s/.cs/local/rewrite.trace" 'exit passthrough-prefix' \
+        "once untracked, the trace is written" || return 1
+}
+run_test test_the_trace_stands_down_while_git_tracks_a_control_file
 run_test test_screen_mode_frames_the_prompt_in_a_margin
 run_test test_screen_mode_counts_down_not_up
 run_test test_the_countdown_is_only_shown_when_something_enforces_it

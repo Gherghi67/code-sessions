@@ -1360,6 +1360,33 @@ test_append_inside_checks_a_relative_destination() {
     assert_eq "USER-OWNED" "$(cat "$o")" "the target outside is untouched" || return 1
 }
 
+# Run a cs-shared.sh function from <dir>, stderr folded into its output.
+_shared_in() {  # dir, function, [args...]
+    local dir="$1"; shift
+    (cd "$dir" && bash -c 'source "$1"; shift; "$@"' _ "$SCRIPT_DIR/../hooks/cs-shared.sh" "$@" 2>&1)
+}
+
+# A relative path whose first name starts with a dash is a name, never an
+# option: a directory named -P must resolve to itself, not to cd -P's
+# $HOME, and dirname, basename and readlink must take such a name as a path.
+# A session given as -s is checked like any other, so a link out of it is
+# named.
+test_write_target_resolves_a_relative_name_starting_with_a_dash() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local w="$t/w" o="$t/outside-dir" out rc
+    mkdir -p "$w/-P" "$w/-s/.cs" "$o"
+    ln -s -- -P "$w/-L"
+    ln -s "$o" "$w/-s/.cs/memory"
+    rc=0; out=$(_shared_in "$w" _cs_write_target -P) || rc=$?
+    assert_eq "0 $w/-P" "$rc $out" "a directory named -P resolves to itself" || return 1
+    rc=0; out=$(_shared_in "$w" _cs_write_target -P/f) || rc=$?
+    assert_eq "0 $w/-P/f" "$rc $out" "a file in -P resolves under it" || return 1
+    rc=0; out=$(_shared_in "$w" _cs_write_target -L) || rc=$?
+    assert_eq "0 $w/-P" "$rc $out" "a link named -L is followed to -P" || return 1
+    rc=0; out=$(_shared_in "$w" _cs_write_leaves_session -s -s/.cs/memory/n.md) || rc=$?
+    assert_eq "0 $o/n.md" "$rc $out" "a write through -s/.cs/memory leaves the session -s" || return 1
+}
+
 # The kernel follows up to 32 links (macOS) and the check follows 16: a
 # longer chain is refused rather than written where the check stopped looking.
 test_append_inside_refuses_a_chain_longer_than_it_follows() {
@@ -1705,6 +1732,7 @@ run_test test_mkdir_inside_makes_levels_only_inside_an_existing_cs
 run_test test_mkdir_inside_never_rebuilds_a_session_removed_under_it
 run_test test_atomic_write_checks_a_relative_destination
 run_test test_append_inside_checks_a_relative_destination
+run_test test_write_target_resolves_a_relative_name_starting_with_a_dash
 run_test test_append_inside_refuses_a_chain_longer_than_it_follows
 run_test test_append_inside_is_not_rerooted_by_a_link_to_another_session
 run_test test_append_inside_checks_every_append

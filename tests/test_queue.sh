@@ -652,6 +652,78 @@ test_vet_session_passes_a_session_in_no_repository_while_git_traces() {
     assert_eq "" "$out" "and prints nothing" || return 1
 }
 
+# Inside a git directory, a bare repository or a checkout's .git, git answers
+# "this operation must be run in a work tree" and lists nothing. A clone can
+# make its own .cs/local look like one, and an outer project can commit a bare
+# repository with a session in it, so that answer is a git that cannot answer.
+test_vet_session_refuses_a_session_inside_a_git_directory() {
+    local out rc=0 s
+    git init -q --bare "$TEST_TMPDIR/bare.git"
+    git init -q "$TEST_TMPDIR/checkout"
+    for s in "$TEST_TMPDIR/bare.git/s" "$TEST_TMPDIR/checkout/.git/s"; do
+        mkdir -p "$s/.cs/local"
+        rc=0
+        out=$(env -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR "$CS_BIN" -vet-session "$s" 2>&1) || rc=$?
+        assert_eq "1" "$rc" "cs -vet-session refuses ${s#"$TEST_TMPDIR"/}" || return 1
+        assert_eq "Error: cs could not ask git whether it tracks a file in .cs/local: fatal: this operation must be run in a work tree" \
+            "$out" "and names git's own error (${s#"$TEST_TMPDIR"/})" || return 1
+    done
+}
+
+# With no git to run, cs cannot ask, so it refuses as for any git that cannot
+# answer, and says why rather than repeating the shell's words: no git on
+# PATH, or a git there that is not executable.
+test_vet_session_says_why_no_git_can_run() {
+    local s="$CLAUDE_SESSION_DIR" out rc=0 bindir="$TEST_TMPDIR/no-git-bin"
+    _arm_handoff no
+    # The system directories alone hold every tool cs needs; linking the
+    # whole PATH would cost a link per command a package manager installed.
+    PATH=/usr/bin:/bin link_path_without "$bindir" 'git'
+    out=$(env -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR PATH="$bindir" "$BASH" "$CS_BIN" -vet-session "$s" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "cs -vet-session refuses" || return 1
+    assert_eq "Error: cs could not ask git whether it tracks a file in .cs/local: git is not installed or not on PATH" \
+        "$out" "and says git is missing" || return 1
+    printf '#!/bin/sh\nexit 0\n' > "$bindir/git"
+    chmod 644 "$bindir/git"
+    rc=0
+    out=$(env -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR PATH="$bindir" "$BASH" "$CS_BIN" -vet-session "$s" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "cs -vet-session refuses with a git it cannot run" || return 1
+    assert_eq "Error: cs could not ask git whether it tracks a file in .cs/local: git was found on PATH but could not be run" \
+        "$out" "and says git cannot be run" || return 1
+}
+
+# A session named relative to the current directory is named that way in the
+# untrack command, which the user pastes into zsh or bash: a name starting with
+# "=" (zsh reads =git as git's own path), "-" or "~" (bash 3.2 leaves the
+# tilde bare) is spelled from the current directory. cs runs under the
+# suite's own bash, whose printf %q spells the name.
+test_vet_session_names_a_relative_session_from_the_current_directory() {
+    local w="$TEST_TMPDIR/w" name out rc
+    for name in =git -git '~git'; do
+        mkdir -p "$w/$name/.cs/local"
+        printf 'x\n' > "$w/$name/.cs/local/pre-open"
+        git -C "$w/$name" init -q
+        git -C "$w/$name" add -f .cs/local/pre-open
+        rc=0
+        out=$(cd "$w" && env -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR "$BASH" "$CS_BIN" -vet-session "$name" 2>&1) || rc=$?
+        assert_eq "1" "$rc" "cs -vet-session refuses $name" || return 1
+        assert_eq "Error: .cs/local/pre-open is tracked in git (per-actor state must stay local). Fix with: git -C ./$name --literal-pathspecs rm -r --cached -- .cs/local && git -C ./$name commit -m 'stop tracking .cs/local'" \
+            "$out" "the command names ./$name" || return 1
+    done
+}
+
+# A checkout whose configuration calls it bare answers the same, but its index
+# still lists what a pull put there: that is a git that cannot answer.
+test_vet_session_refuses_a_checkout_git_reads_as_bare() {
+    local s="$CLAUDE_SESSION_DIR" out rc=0
+    _arm_handoff yes
+    git -C "$s" config core.bare true
+    out=$(env -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR "$CS_BIN" -vet-session "$s" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "cs -vet-session refuses" || return 1
+    assert_eq "Error: cs could not ask git whether it tracks a file in .cs/local: fatal: this operation must be run in a work tree" \
+        "$out" "and names git's own error" || return 1
+}
+
 test_vet_session_passes_a_session_whose_control_files_git_ignores() {
     local out rc=0
     _arm_handoff no
@@ -1133,6 +1205,10 @@ run_test test_a_named_verb_refuses_when_git_cannot_answer
 run_test test_a_named_verb_refuses_when_git_cannot_read_the_index
 run_test test_vet_session_refuses_a_tracked_marker_whose_directory_is_gone
 run_test test_vet_session_passes_a_session_in_no_repository_while_git_traces
+run_test test_vet_session_refuses_a_session_inside_a_git_directory
+run_test test_vet_session_refuses_a_checkout_git_reads_as_bare
+run_test test_vet_session_names_a_relative_session_from_the_current_directory
+run_test test_vet_session_says_why_no_git_can_run
 run_test test_vet_session_passes_a_session_whose_control_files_git_ignores
 run_test test_vet_session_judges_the_directory_it_is_given
 run_test test_vet_session_refuses_a_directory_that_is_no_session

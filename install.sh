@@ -1278,24 +1278,24 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "4d88e80b233b2d587d226985674eb11426f250cffaaac8f36011c46049d0b82d  bin/cs"
-    "d54f9dd8797c86d7815f4c1f300a56cf1d4bb344cbcd645ec8f71659d6a70ff6  bin/cs-secrets"
+    "fad520fe0bf8c0b80ec3f9aa58ec6304286376b2ede3aad5c55a5c58eeadb17d  bin/cs"
+    "2c64292ae775b0a9448e2087beefd94822b7d19097ee018a6f4ff2df5d02e1db  bin/cs-secrets"
     "105416b75a58aa582dfd6a8d22a9b165ec896e1e366070c3cc97ee7d78a4cb1d  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
-    "8eb754cc99aa9a3b1478fefc31b6cb1486044022150334ec289ed727b3a98272  hooks/cs-resolve.sh"
-    "0ce5379facb81ecb08143f00241575a35fc64060edb560f8c0f58ae7349fb610  hooks/cs-shared.sh"
+    "abef450250b13a3d70cecd1e04e1275f31585ebe06a9493d0f6a572719560c21  hooks/cs-resolve.sh"
+    "0895e684773309e8842696d91627fa3681f52659cbd0cd85a2c9e65eae86c265  hooks/cs-shared.sh"
     "50d63ce0995e68fddd8503700c15f9585d11938c9cd3872a883146de7707c765  hooks/cs-iterm-tab.py"
-    "5ad0e64e99ddbccdb2bc437f8ad0b7865689d9bf1170e95a70756a07a998dfc6  hooks/memory-index-guard.sh"
-    "d7eff4467d4ffaf9c9a617cfdf2dd6b3249b3f797f9a2f2583c2658906946a3f  hooks/prompt-rewriter.sh"
-    "749db28afb6c76a28a7633214e22b6cd8153b0334adf4b4426e27df25d7515ef  hooks/prompt-rewriter-model.sh"
-    "c96c1affc10329c18531bc54811e155b6156b345ca5be86c9cbdcdde96161a5b  hooks/prompt-rewriter-vendor.sh"
+    "0c1ee69a915976c70ddf39e266dcff15e10eb1931e16e28bf952ab8c16314f98  hooks/memory-index-guard.sh"
+    "6c9a9db966b02d1d99c24a4358abdcf005a0e56e1c7c2defc7c75d9fde516612  hooks/prompt-rewriter.sh"
+    "c4688a9bc8cfb8f906a73aebc4ecf8d81fb70db4e2f0bfb4a15ce7c1df1aa01e  hooks/prompt-rewriter-model.sh"
+    "5f34183b1082edef2ebd27176f1474cac88647b5d8578fccbb548fc262c0694f  hooks/prompt-rewriter-vendor.sh"
     "de4d1bb258cc1e2888911dd464623f567d2a4370b65dc7c7139ca5a71c4f337f  hooks/session-start.sh"
-    "38e1585be0b3fee0cea8c5397d6177b2c67678b270ad2b1cfc191e3b71b6a723  hooks/autosave-commits.sh"
-    "4fcc4c960992f36145d363308028f722592b491ee4836c1366487f7365bf1871  hooks/narrative-reminder.sh"
-    "146e541fb7adceecf1aa19b0cf75fdfde4c2127a972566dc707fc1fecfe3cccd  hooks/session-end.sh"
+    "cae9775702513f11b1abff031928047766ab69714e3a9b1db82ff080e186f20b  hooks/autosave-commits.sh"
+    "c4b5cb46e9bb70a6cb50aeb4a2538dafbf88d70614691467aa50188c09a39f43  hooks/narrative-reminder.sh"
+    "5aefa7c0f0f83af414f122e8025786b83530f4062c856f6d59c0da6b3f3f3176  hooks/session-end.sh"
     "81a13835a65f4b4b35bb87493da0df9848de68375ca7ab1525d2d5079cf52bf1  hooks/subagent-context.sh"
     "53b16016dd6d087c3cc3db7e4acf8de6629e149e3b7f326f0731b36809574156  hooks/tool-failure-logger.sh"
-    "40deb4f7592a2d87f8c4a0232ec94be91e66c8c4f9385806d9a7cb4c6085a96a  hooks/session-auto-approve.sh"
+    "2504d95bb13283a67daec8b09c95f5bdff4281721eefb2ced78084507482e501  hooks/session-auto-approve.sh"
     "5390f2cb4d0192b43711578b8bdcef145de5fd011c166e900023183d65c05ab3  hooks/scope-prompt.sh"
     "12dca7f6d02f19f75865fa2f6e91384a5c8e727b0962e269a6adbb491a95971f  commands/summary.md"
     "9e06eaa16960dff49881234c8a479c2f8d2dd8d672283056e1591c4528e755ab  commands/checkpoint.md"
@@ -1315,8 +1315,8 @@ CS_PAYLOAD_SHA256=(
     "7a97c18b6ae755d8ec7862532eb15bbf627170a1fab8cc90dd2f8f77a57164be  mods/cs-update/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-update/hooks/hooks.json"
     "8cd9e46d6d6cb24acc48f1e8506675698a0b382453a9d1e8c08e35bb7b332cd4  mods/cs-update/hooks/register.tsx"
-    "23612945ea1b5ce52a999a817d62f097c8c0aa05b93126d853c09ea81f59d8d1  completions/cs.bash"
-    "5ad0d80a9c1250c35327fdcb70b3620ecfe04ba7cd4412ff3e458aa17d589e25  completions/_cs"
+    "d9adfb82412597f096190d1dfcd36d9ae67adbc5a230c9baa5d8485b010f8e78  completions/cs.bash"
+    "fa1619b5039452a62dafd4e373546dd2606db4e61a76f6c13af8272ec5be7d5e  completions/_cs"
 )
 
 # Everything that lands in HOOKS_DIR, for the copy and cleanup loops. The
@@ -1355,7 +1355,7 @@ CS_SIGN_PUBKEY="RWQvs3IVdvrS8PJs0V0gwdJGPw/x5waQ6z6iqPQm90JfpxfcsSy9b9Vo"
 # directory it was started in, and never takes that directory as a checkout.
 SCRIPT_DIR=""
 if [ -n "${BASH_SOURCE[0]:-}" ]; then
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+    SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
 fi
 if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/bin/cs" ]; then
     # Running from cloned repo

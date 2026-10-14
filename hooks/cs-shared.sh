@@ -127,6 +127,19 @@ _cs_git_at() {  # dir, git arguments...
         -u LANGUAGE LC_ALL=C git -C "$dir" "$@"
 }
 
+# What git said on stderr when the same call through _cs_git_at failed, its
+# answer discarded. A git that could not be run at all is named in place of
+# env's wording: missing (exit 127), or found but not runnable (exit 126).
+_cs_git_error_at() {  # dir, git arguments...
+    local why rc=0
+    why=$(_cs_git_at "$@" 2>&1 >/dev/null) || rc=$?
+    case "$rc" in
+        127) printf 'git is not installed or not on PATH\n' ;;
+        126) printf 'git was found on PATH but could not be run\n' ;;
+        *) printf '%s\n' "$why" ;;
+    esac
+}
+
 # True when git's error output says it found no repository at all, the one
 # failure that answers "nothing tracked". The line is looked for anywhere in
 # the output: GIT_TRACE and trace2 settings, from the environment or from
@@ -161,18 +174,22 @@ _cs_git_cannot_answer() {  # dir, git's error output
 # <sub>, a path relative to <top>, and commit, both in <top>. The repository
 # chose both names and the user is asked to paste the command, so each path is
 # quoted for the shell and taken literally by git (a directory named "*" would
-# otherwise untrack every file), a path starting with "~" is spelled from the
-# current directory (bash 3.2 leaves the tilde bare), the commit runs in the
+# otherwise untrack every file), a path starting with "~" or "=" is spelled
+# from the current directory (bash 3.2 leaves the tilde bare, and zsh reads
+# =git as git's own path), and so is a repository starting with "-", which
+# git -C takes as a path but a reader takes for an option, the commit runs in the
 # same repository wherever the command is pasted, and the file name and the
-# commit message keep only characters a plain path has. The name also reaches
-# Claude, in the Stop hook's message.
+# commit message keep only characters a plain path has. The name also shows in
+# the Stop hook's message, a systemMessage, which Claude Code shows the user and
+# leaves out of what it sends the model.
 cs_untrack_notice() {  # tracked, top, sub
-    local shown said sub="$3"
+    local shown said top="$2" sub="$3"
     shown=$(printf '%s' "$1" | env LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_' | cut -c1-160) || return 1
     said=$(printf '%s' "$sub" | env LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_') || return 1
-    case "$sub" in '~'*) sub="./$sub" ;; esac
+    case "$top" in '~'* | '='* | '-'*) top="./$top" ;; esac
+    case "$sub" in '~'* | '='*) sub="./$sub" ;; esac
     printf "%s is tracked in git (per-actor state must stay local). Fix with: git -C %q --literal-pathspecs rm -r --cached -- %q && git -C %q commit -m 'stop tracking %s'\n" \
-        "$shown" "$2" "$sub" "$2" "$said"
+        "$shown" "$top" "$sub" "$top" "$said"
 }
 
 # Says which file git tracks in <dir> and how to stop tracking it; fails,
@@ -192,28 +209,46 @@ cs_untrack_notice() {  # tracked, top, sub
 # the session's own files is named, with no command: untracking it would
 # untrack the project.
 cs_tracked_files_notice() {  # dir, session_dir
-    local real top prefix tracked status why meta sub rest n here="$1" missing=""
+    local real top prefix tracked status why failed meta sub rest n here="$1" missing=""
     while [ ! -e "$here" ] && [ ! -L "$here" ]; do
         case "$here" in */?*) ;; *) return 1 ;; esac
         missing="/${here##*/}$missing"
         here=${here%/*}
     done
-    # The x keeps a trailing newline in a name that $( ) drops.
-    real=$(cd -P "$here" 2>/dev/null && pwd -P && printf x) || return 1
+    # The x keeps a trailing newline in a name that $( ) drops; -- keeps a
+    # name starting with "-" from reading as cd's option, a cd that fails
+    # into "nothing tracked".
+    real=$(cd -P -- "$here" 2>/dev/null && pwd -P && printf x) || return 1
     real=${real%$'\n'x}
-    if ! top=$(_cs_git_at "$real" rev-parse --show-toplevel 2>/dev/null && printf x); then
-        why=$(_cs_git_at "$real" rev-parse --show-toplevel 2>&1 >/dev/null) || true
+    # The repository's top and the directory's place in it, one line each from
+    # one git: two newlines in all, unless a name holds one, and then each is
+    # asked on its own.
+    if ! top=$(_cs_git_at "$real" rev-parse --show-toplevel --show-prefix 2>/dev/null && printf x); then
+        why=$(_cs_git_error_at "$real" rev-parse --show-toplevel --show-prefix)
         ! _cs_git_not_a_repo "$why" || return 1
         _cs_git_cannot_answer "$1" "$why"
         return 0
     fi
-    top=${top%$'\n'x}
-    if ! prefix=$(_cs_git_at "$real" rev-parse --show-prefix 2>/dev/null && printf x); then
-        why=$(_cs_git_at "$real" rev-parse --show-prefix 2>&1 >/dev/null) || true
-        _cs_git_cannot_answer "$1" "$why"
-        return 0
-    fi
-    prefix=${prefix%$'\n'x}
+    case "$top" in
+        *$'\n'*$'\n'*$'\n'*)
+            failed=""
+            top=$(_cs_git_at "$real" rev-parse --show-toplevel 2>/dev/null && printf x) || failed=--show-toplevel
+            [ -n "$failed" ] || prefix=$(_cs_git_at "$real" rev-parse --show-prefix 2>/dev/null && printf x) \
+                || failed=--show-prefix
+            if [ -n "$failed" ]; then
+                why=$(_cs_git_error_at "$real" rev-parse "$failed")
+                _cs_git_cannot_answer "$1" "$why"
+                return 0
+            fi
+            top=${top%$'\n'x}
+            prefix=${prefix%$'\n'x}
+            ;;
+        *)
+            prefix=${top#*$'\n'}
+            prefix=${prefix%$'\n'x}
+            top=${top%%$'\n'*}
+            ;;
+    esac
     [ -z "$missing" ] || prefix="$prefix${missing#/}/"
     real="$real$missing"
     # :(icase): a case-insensitive checkout (macOS by default) puts a
@@ -229,11 +264,11 @@ cs_tracked_files_notice() {  # dir, session_dir
     tracked=${tracked%x}
     if [ -z "$tracked" ]; then
         [ "$status" != 0 ] || return 1
-        why=$(_cs_git_at "$top" ls-files -z -- ":(icase,literal)${prefix:-.}" 2>&1 >/dev/null) || true
+        why=$(_cs_git_error_at "$top" ls-files -z -- ":(icase,literal)${prefix:-.}")
         _cs_git_cannot_answer "$1" "$why"
         return 0
     fi
-    meta=$(cd -P "$2/.cs" 2>/dev/null && pwd -P && printf x) && meta=${meta%$'\n'x}
+    meta=$(cd -P -- "$2/.cs" 2>/dev/null && pwd -P && printf x) && meta=${meta%$'\n'x}
     case "$meta/" in
         "$real"/*)
             printf "%s leads to a directory that holds this session's own files, where git tracks %s (per-actor state must stay local). Make %s a directory of its own.\n" \
@@ -499,18 +534,19 @@ _cs_file_mode() {  # path
 # status 3 when a name in the path, in a link's target or in the directory it
 # resolves to ends in a newline: $(...) strips a trailing one, here and in the
 # caller, so the path read would not be the one the kernel follows, and a
-# decoy beside it would pass.
+# decoy beside it would pass. Each command takes the path after --, so a
+# relative name starting with a dash is a name, not an option.
 _cs_write_target() {  # path
     local dest="$1" link dir hops=0 nl=$'\n'
     case "$dest" in *"$nl"/*|*"$nl") return 3 ;; esac
     while [ -L "$dest" ] && [ "$hops" -lt 16 ]; do
         # -n and the x keep a trailing newline that $(...) would strip
         # (macOS readlink adds none of its own to a target ending in one).
-        link=$(readlink -n "$dest" && printf x) || return 1
+        link=$(readlink -n -- "$dest" && printf x) || return 1
         link=${link%x}
         case "$link" in
             /*) dest="$link" ;;
-            *) dest="$(dirname "$dest")/$link" ;;
+            *) dest="$(dirname -- "$dest")/$link" ;;
         esac
         case "$dest" in *"$nl"/*|*"$nl") return 3 ;; esac
         hops=$((hops + 1))
@@ -519,7 +555,7 @@ _cs_write_target() {  # path
     # A directory that exists resolves whole, its last component included:
     # appending a final ".." to its resolved parent would read as inside.
     if [ -d "$dest" ]; then
-        dir=$(cd -P "$dest" 2>/dev/null && pwd -P && printf x) || return 1
+        dir=$(cd -P -- "$dest" 2>/dev/null && pwd -P && printf x) || return 1
         dir=${dir%"$nl"x}
         case "$dir" in *"$nl") return 3 ;; esac
         printf '%s\n' "$dir"
@@ -529,20 +565,20 @@ _cs_write_target() {  # path
     # collapse `link/..` to the link's own parent, not the target's. The x
     # keeps a directory's trailing newline; the name after it keeps it from
     # the caller's $(...).
-    dir=$(cd -P "$(dirname "$dest")" 2>/dev/null && pwd -P && printf x) || return 1
+    dir=$(cd -P -- "$(dirname -- "$dest")" 2>/dev/null && pwd -P && printf x) || return 1
     dir=${dir%"$nl"x}
-    printf '%s/%s\n' "${dir%/}" "$(basename "$dest")"
+    printf '%s/%s\n' "${dir%/}" "$(basename -- "$dest")"
 }
 
 # True when .cs at <root> is a submodule or nested repository, whose files
 # the session's index never lists (Codex r2 #4). The gitlink outlives a
 # removed .cs/.git, so the index is checked as well; the pathspec also lists
 # entries below .cs, so only a gitlink whose whole path is .cs counts. A git
-# that fails here reads as "not nested"; both callers go on to ask
-# cs_tracked_files_notice, which refuses on the same failure.
+# that fails here, outside a repository among other reasons, lists nothing and
+# reads as "not nested"; both callers go on to ask cs_tracked_files_notice,
+# which refuses on any failure but that one.
 _cs_nested_cs() {  # root
     [ -e "$1/.cs/.git" ] && return 0
-    _cs_git_at "$1" rev-parse --git-dir >/dev/null 2>&1 || return 1
     _cs_git_at "$1" ls-files -s -- ':(icase).cs' 2>/dev/null \
         | awk -F'\t' '{ split($1, m, " "); if (m[1] == "160000" && tolower($2) == ".cs") hit = 1 } END { exit !hit }' 2>/dev/null
 }
@@ -551,14 +587,19 @@ _cs_nested_cs() {  # root
 # .cs/local/pre-open the open would run. A clone can commit one or link one
 # in, so it counts only as a real file under a real .cs/local, untracked (the
 # same rules cs_assert_local_untracked enforces at open; a standalone command
-# like cs <name> -queue never ran that check).
+# like cs <name> -queue never ran that check). Fails with status 2, printing
+# git's error ("cs could not ask git ..."), when git cannot answer whether it
+# tracks the pre-open: that is no vault either, so no link out of the session
+# is let through, and a caller can say why.
 _cs_hand_made_vault() {  # root
-    local pre="$1/.cs/local/pre-open"
+    local pre="$1/.cs/local/pre-open" notice
     [ -f "$pre" ] && [ ! -L "$pre" ] && [ ! -L "$1/.cs" ] && [ ! -L "$1/.cs/local" ] || return 1
     ! _cs_nested_cs "$1" || return 1
-    # A git that cannot answer has not said "untracked": no vault, and so no
-    # link out of the session is let through.
-    ! cs_tracked_files_notice "$1/.cs/local" "$1" >/dev/null
+    notice=$(cs_tracked_files_notice "$1/.cs/local" "$1") || return 0
+    case "$notice" in
+        "cs could not ask git"*) printf '%s\n' "$notice"; return 2 ;;
+    esac
+    return 1
 }
 
 # True when a path lies in the session at <root> by its spelling (as typed,
@@ -570,19 +611,27 @@ _cs_hand_made_vault() {  # root
 # session, whose .cs/claude-config links settings, skills and the rest to the
 # shell's own config: cs -encrypt writes the pre-open. A clone cannot ship a
 # pre-open (cs_assert_local_untracked refuses one tracked or linked in), but
-# it can commit the vault's layout, so the layout alone earns nothing.
+# it can commit the vault's layout, so the layout alone earns nothing. When
+# git cannot answer whether the vault is hand made, a write through one of
+# those links that lands outside prints git's error ("cs could not ask git
+# ...") in place of where it lands: still a write that leaves the session.
 _cs_write_leaves_session() {  # root, path
-    local root="$1" root_p real sub
-    root_p=$(cd "$root" 2>/dev/null && pwd -P) || return 1
+    local root="$1" root_p real sub vault=0 why="" via=""
+    # A root spelled exactly - is OLDPWD to cd even after --; cs never exports
+    # a session dir spelled so, so that spelling is accepted, not re-fixed.
+    root_p=$(cd -- "$root" 2>/dev/null && pwd -P) || return 1
     case "$2" in
         "$root"/*|"$root_p"/*) ;;
         *) return 1 ;;
     esac
-    if _cs_hand_made_vault "$root"; then
+    why=$(_cs_hand_made_vault "$root") || vault=$?
+    if [ "$vault" != 1 ]; then
         for sub in $CS_VAULT_LINKS narrative-archive; do
             [ -L "$root/.cs/$sub" ] || continue
             case "$2" in
-                "$root/.cs/$sub"|"$root/.cs/$sub"/*|"$root_p/.cs/$sub"|"$root_p/.cs/$sub"/*) return 1 ;;
+                "$root/.cs/$sub"|"$root/.cs/$sub"/*|"$root_p/.cs/$sub"|"$root_p/.cs/$sub"/*)
+                    [ "$vault" != 0 ] || return 1
+                    via=1 ;;
             esac
         done
     fi
@@ -597,7 +646,11 @@ _cs_write_leaves_session() {  # root, path
     case "$real/" in
         "$root_p"/*) return 1 ;;
     esac
-    printf '%s\n' "$real"
+    if [ -n "$via" ]; then
+        printf '%s\n' "$why"
+    else
+        printf '%s\n' "$real"
+    fi
 }
 
 # The session a path lies in, by its spelling: the nearest directory above it
@@ -649,7 +702,10 @@ _cs_refuses_write() {  # writer, path, [probe]
     case "$e" in /*) ;; *) e="$PWD/$e" ;; esac
     root=$(_cs_session_root_of "$p") || return 1
     out=$(_cs_write_leaves_session "$root" "$e") || return 1
-    echo "$1: $p leads to $out${p#"$e"}, outside the session $root" >&2
+    case "$out" in
+        "cs could not ask git"*) echo "$1: $p not written: $out" >&2 ;;
+        *) echo "$1: $p leads to $out${p#"$e"}, outside the session $root" >&2 ;;
+    esac
 }
 
 # Append a command's output to a file, unless a link takes the file out of the
@@ -735,6 +791,9 @@ cs_write_atomic() {  # dest, command [args...]
         local dir tmp mode link hops=0
         ! _cs_refuses_write cs_write_atomic "$dest" || exit 1
         [ -z "${CS_WRITE_QUIET:-}" ] || exec 2>/dev/null
+        # readlink, dirname and basename below take dest without --: a
+        # relative dest starting with a dash fails at them or at mktemp and
+        # writes nothing, so that spelling is accepted, not re-fixed.
         while [ -L "$dest" ] && [ "$hops" -lt 16 ]; do
             link=$(readlink -n "$dest" && printf x) || exit 1
             link=${link%x}

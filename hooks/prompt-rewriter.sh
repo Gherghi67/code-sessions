@@ -26,6 +26,11 @@ _trace() {  # stage
         [ -r "$lib" ] && "${BASH:-/bin/bash}" -n "$lib" 2>/dev/null && . "$lib" 2>/dev/null
         command -v cs_append_inside >/dev/null 2>&1 || return 0
         CS_WRITE_QUIET=1
+        # While git tracks a file where the trace goes, a repository wrote
+        # it, and nothing is added beside it: cs_private_dir fails for the
+        # session named here. Asked once a run, as the library loads.
+        # shellcheck disable=SC2034  # read by cs_private_dir (cs-shared.sh)
+        ! cs_files_tracked_notice "$dir" "${dir%/*}" >/dev/null || CS_TRACKED_FILES_META=$dir
     fi
     # An encrypted session keeps its cs files behind .cs/private, and a locked
     # one gets no trace.

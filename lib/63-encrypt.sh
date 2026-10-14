@@ -141,7 +141,7 @@ _vault_live_holder_besides() {  # meta_dir, pid -> true if another listed holder
 
 _vault_mountpoint_if_mounted() {  # meta_dir -> prints the mountpoint, or fails
     local mnt
-    mnt=$(cd "$1/vault-mnt" 2>/dev/null && pwd -P) || return 1
+    mnt=$(cd -- "$1/vault-mnt" 2>/dev/null && pwd -P) || return 1
     mount | grep -F " on $mnt (" >/dev/null || return 1
     printf '%s\n' "$mnt"
 }

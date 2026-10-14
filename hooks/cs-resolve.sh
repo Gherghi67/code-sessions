@@ -137,9 +137,9 @@ _cs_note_tracked_files() {
 # stray folder.
 _cs_find_session_root() {  # start_dir
     local d
-    d=$(cd "$1" 2>/dev/null && pwd -P) || return 1
+    d=$(cd -- "$1" 2>/dev/null && pwd -P) || return 1
     local home_p
-    home_p=$(cd "${HOME:-/nonexistent}" 2>/dev/null && pwd -P || printf '/nonexistent')
+    home_p=$(cd -- "${HOME:-/nonexistent}" 2>/dev/null && pwd -P || printf '/nonexistent')
     while [ -n "$d" ] && [ "$d" != "/" ]; do
         # Boundary before the marker test, so $HOME itself is never a session
         # root: a stray ~/.cs would otherwise adopt every project directly under

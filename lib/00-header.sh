@@ -6,6 +6,17 @@ set -euo pipefail
 
 # Configuration
 VERSION="2026.10.7"
+# A relative CS_SESSIONS_ROOT names a directory under the one cs started in.
+# cs moves into a session before it launches claude, and claude's hooks, the
+# status line and cs-secrets read the variable from wherever they run, so it is
+# made absolute here, once, in the environment cs hands on. $PWD rather than
+# cd, because the root may not exist yet. Unset or empty keeps the default.
+# A ./x or ../x root keeps its dots, which _cs_session_root_of's string stop
+# never matches, so its link walk runs past that root: accepted, not re-fixed.
+case "${CS_SESSIONS_ROOT:-/}" in
+    /*) ;;
+    *) export CS_SESSIONS_ROOT="${PWD%/}/$CS_SESSIONS_ROOT" ;;
+esac
 SESSIONS_ROOT="${CS_SESSIONS_ROOT:-$HOME/.claude-sessions}"
 CLAUDE_CODE_BIN="${CLAUDE_CODE_BIN:-claude}"
 

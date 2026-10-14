@@ -17,6 +17,14 @@ if ! _snapshot_dir=$(cs_private_dir .cs); then
     printf 'memory-index-guard: .cs/private is locked; mount the session'"'"'s vault, then retry\n' >&2
     exit 2
 fi
+# While git tracks a file in that directory, a repository wrote it: a
+# snapshot taken there would sit beside it, and a committed one restored would
+# put the repository's index over this session's. Nothing runs until it is
+# untracked.
+if _tracked=$(cs_files_tracked_notice .cs "$PWD"); then
+    printf 'memory-index-guard: %s\n' "$_tracked" >&2
+    exit 2
+fi
 SNAPSHOT="$_snapshot_dir/memory-index.snapshot"
 # Claude Code loads MEMORY.md at every session start and cuts it past a limit;
 # pointers beyond the cut are never read again. Bytes, not characters.

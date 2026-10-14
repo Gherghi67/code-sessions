@@ -36,7 +36,7 @@ SETTINGS
 
     # Migrate existing auto memory from the default location
     local real_path
-    real_path="$(cd "$session_dir" 2>/dev/null && pwd -P)"
+    real_path="$(cd -- "$session_dir" 2>/dev/null && pwd -P)"
     local encoded_path
     encoded_path=$(_claude_encode_path "$real_path")
     local old_memory_dir="$HOME/.claude/projects/${encoded_path}/memory"

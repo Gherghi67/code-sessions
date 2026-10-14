@@ -697,6 +697,34 @@ test_pre_open_tracked_by_git_is_refused() {
     assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
 }
 
+# A clone can commit the three files that make a directory a bare git
+# directory (HEAD, objects/, refs/) into .cs/local or .cs beside a pre-open.
+# git then answers from that directory as from inside a repository's git
+# directory and lists nothing, though the clone's own index lists the pre-open.
+test_pre_open_tracked_beside_planted_git_directory_files_is_refused() {
+    local root="$CS_SESSIONS_ROOT/vt" at out rc
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    _write_pre_open vt "touch \"$TEST_TMPDIR/pre-open-ran\""
+    _make_launch_sentinel
+    for at in .cs/local .cs; do
+        mkdir -p "$root/$at/objects" "$root/$at/refs"
+        printf 'ref: refs/heads/main\n' > "$root/$at/HEAD"
+        : > "$root/$at/objects/k"
+        : > "$root/$at/refs/k"
+        git -C "$root" add -f .cs/local/pre-open "$at/HEAD" "$at/objects/k" "$at/refs/k"
+        git -C "$root" commit -q -m "ship a pre-open beside git directory files in $at"
+        rc=0
+        out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+        assert_eq "1" "$rc" "cs should exit 1 with the files in $at" || return 1
+        assert_eq "Error: cs could not ask git whether it tracks a file in .cs/local: fatal: this operation must be run in a work tree" \
+            "$out" "cs should refuse, naming git's error, with the files in $at" || return 1
+        assert_file_not_exists "$TEST_TMPDIR/pre-open-ran" "the committed pre-open must not run with the files in $at" || return 1
+        assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch with the files in $at" || return 1
+        git -C "$root" rm -q -r --cached "$at/HEAD" "$at/objects" "$at/refs"
+        rm -rf "$root/$at/HEAD" "$root/$at/objects" "$root/$at/refs"
+    done
+}
+
 # A case-insensitive checkout (macOS by default) puts a committed
 # .cs/LOCAL/pre-open at .cs/local/pre-open on disk, where a case-sensitive
 # pathspec never sees it. The commit is built in the index so the fixture
@@ -849,6 +877,41 @@ test_tracked_files_in_a_directory_named_with_a_trailing_newline_are_seen() {
         "$out" "the notice names the file and quotes the directory" || return 1
 }
 
+# git answers the repository's top and the directory's place in it one line
+# each; a repository whose own name ends in a newline still has its tracked
+# file found and named.
+test_tracked_files_in_a_repository_named_with_a_trailing_newline_are_seen() {
+    local s="$TEST_TMPDIR/s"$'\n' out rc=0
+    mkdir -p "$s/.cs/local"
+    git -C "$s" init -q
+    printf 'armed\n' > "$s/.cs/local/queue.state"
+    git -C "$s" add .cs/local/queue.state
+    out=$(bash -c 'source "$1"; cs_tracked_files_notice "$2" "$3"' _ "$SCRIPT_DIR/../hooks/cs-shared.sh" "$s/.cs/local" "$s") || rc=$?
+    assert_eq "0" "$rc" "the tracked file is found" || return 1
+    assert_eq ".cs/local/queue.state is tracked in git (per-actor state must stay local). Fix with: git -C $(printf '%q' "$s") --literal-pathspecs rm -r --cached -- .cs/local && git -C $(printf '%q' "$s") commit -m 'stop tracking .cs/local'" \
+        "$out" "the notice names the file and quotes the repository" || return 1
+}
+
+# In that one-call-per-answer fallback, the message carries the error of the
+# call that failed. Real git fails both calls or neither, so a stand-in git
+# fails only the --show-prefix call and runs the real git for every other.
+test_a_failed_answer_in_the_newline_fallback_names_that_calls_error() {
+    local s="$TEST_TMPDIR/s"$'\n' bin="$TEST_TMPDIR/stand-in" real_git out rc=0
+    real_git=$(command -v git)
+    mkdir -p "$s/.cs/local" "$bin"
+    git -C "$s" init -q
+    printf 'armed\n' > "$s/.cs/local/queue.state"
+    git -C "$s" add .cs/local/queue.state
+    printf '#!/bin/bash\nif [ "$#" = 4 ] && [ "$3" = rev-parse ] && [ "$4" = --show-prefix ]; then\n    printf "asked\\n" >> %q\n    printf "fatal: the stand-in refuses --show-prefix\\n" >&2\n    exit 128\nfi\nexec %q "$@"\n' \
+        "$TEST_TMPDIR/stand-in-asked" "$real_git" > "$bin/git"
+    chmod +x "$bin/git"
+    out=$(PATH="$bin:$PATH" bash -c 'source "$1"; cs_tracked_files_notice "$2" "$3"' _ "$SCRIPT_DIR/../hooks/cs-shared.sh" "$s/.cs/local" "$s") || rc=$?
+    assert_file_exists "$TEST_TMPDIR/stand-in-asked" "the stand-in was asked for the prefix" || return 1
+    assert_eq "0" "$rc" "the check refuses" || return 1
+    assert_eq "cs could not ask git whether it tracks a file in .cs/local: fatal: the stand-in refuses --show-prefix" \
+        "$out" "and names the error of the call that failed" || return 1
+}
+
 # A .cs/private that leads to the session itself would have cs keep its queue
 # among the project's files, and the command that untracks a directory would
 # untrack the project. The open names the link instead and prints no command.
@@ -883,6 +946,22 @@ test_the_untrack_command_names_a_directory_called_tilde_as_a_path() {
     assert_eq "0" "$rc" "the tracked file is found" || return 1
     assert_eq "_/seed is tracked in git (per-actor state must stay local). Fix with: git -C $s --literal-pathspecs rm -r --cached -- ./~ && git -C $s commit -m 'stop tracking _'" \
         "$out" "the command names ./~" || return 1
+}
+
+# zsh reads a word that starts with "=" as a command's path (=git is
+# /usr/bin/git) and printf %q leaves it bare: the command names the path from
+# the current one.
+test_the_untrack_command_names_a_directory_called_equals_as_a_path() {
+    local s="$TEST_TMPDIR/s" out rc=0
+    mkdir -p "$s/.cs" "$s/=git"
+    git -C "$s" init -q
+    ln -s '../=git' "$s/.cs/private"
+    printf 'x\n' > "$s/=git/seed"
+    git -C "$s" add .cs/private "$s/=git/seed"
+    out=$(bash -c 'source "$1"; cs_tracked_files_notice "$2" "$3"' _ "$SCRIPT_DIR/../hooks/cs-shared.sh" "$s/.cs/private" "$s") || rc=$?
+    assert_eq "0" "$rc" "the tracked file is found" || return 1
+    assert_eq "_git/seed is tracked in git (per-actor state must stay local). Fix with: git -C $s --literal-pathspecs rm -r --cached -- ./=git && git -C $s commit -m 'stop tracking _git'" \
+        "$out" "the command names ./=git" || return 1
 }
 
 # The refusal is about what git tracks: the same queue in a .cs/private made
@@ -1780,6 +1859,50 @@ test_a_hand_made_vault_refuses_open_with_gits_error_when_git_cannot_answer() {
     assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
 }
 
+# A hook's write through a vault link refuses while git cannot answer whether
+# the vault was set up by hand, and says that, in git's words, rather than that
+# the link leads out of the session.
+test_a_write_through_a_hand_made_vault_link_names_gits_error_when_git_cannot_answer() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt" meta="$CS_SESSIONS_ROOT/vt/.cs" t outside cfg="$TEST_TMPDIR/broken-gitconfig" out rc=0
+    t=$(cd "$TEST_TMPDIR" && pwd -P); outside="$t/outside-settings"
+    printf 'USER-OWNED\n' > "$outside"
+    _make_vaulted_config vt
+    ln -s "$outside" "$meta/vault-mnt/claude-config/settings.json"
+    printf '[core\nbad\n' > "$cfg"
+    out=$(cd "$root" && GIT_CONFIG_GLOBAL="$cfg" bash -c 'source "$1"; cs_write_atomic "$2" printf "{}\n"' \
+        _ "$SCRIPT_DIR/../hooks/cs-shared.sh" "$meta/claude-config/settings.json" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the write refuses" || return 1
+    assert_eq "cs_write_atomic: $meta/claude-config/settings.json not written: cs could not ask git whether it tracks a file in .cs/local: fatal: bad config line 1 in file $cfg" \
+        "$out" "and names git's error" || return 1
+    assert_eq "USER-OWNED" "$(cat "$outside")" "the file outside is untouched" || return 1
+    rc=0
+    out=$(cd "$root" && bash -c 'source "$1"; cs_write_atomic "$2" printf "{}\n"' \
+        _ "$SCRIPT_DIR/../hooks/cs-shared.sh" "$meta/claude-config/settings.json" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "once git answers, the vault's write goes through: $out" || return 1
+}
+
+# The same for cs -narrative rotate, whose narrative sits behind the vault's
+# .cs/memory link.
+test_narrative_rotate_through_a_hand_made_vault_names_gits_error_when_git_cannot_answer() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt" meta="$CS_SESSIONS_ROOT/vt/.cs" cfg="$TEST_TMPDIR/broken-gitconfig" out rc=0 i
+    mkdir -p "$TEST_TMPDIR/vault/memory" "$TEST_TMPDIR/vault/narrative-archive"
+    rm -rf "$meta/memory"
+    ln -s "$TEST_TMPDIR/vault/memory" "$meta/memory"
+    ln -s "$TEST_TMPDIR/vault/narrative-archive" "$meta/narrative-archive"
+    _mark_hand_made_vault "$root"
+    { printf '# Session narrative (alice)\n\n'
+      for i in 1 2 3; do printf '## 2026-01-0%s\n' "$i"; head -c 3000 /dev/zero | tr '\0' x; printf '\n\n'; done
+    } > "$TEST_TMPDIR/vault/memory/narrative.alice.md"
+    printf '[core\nbad\n' > "$cfg"
+    out=$(GIT_CONFIG_GLOBAL="$cfg" CLAUDE_SESSION_DIR="$root" CLAUDE_SESSION_META_DIR="$meta" CS_ACTOR=alice \
+        CS_NARRATIVE_MAX_BYTES=4096 CS_NARRATIVE_KEEP_BYTES=2048 "$CS_BIN" -narrative rotate 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the rotation refuses" || return 1
+    assert_eq "Error: cs could not ask git whether it tracks a file in .cs/local: fatal: bad config line 1 in file $cfg" \
+        "$out" "and names git's error" || return 1
+}
+
 # Codex r3 #1: a trailing newline is stripped by command substitution, so the
 # physical path came back as a sibling without it and the scan walked nothing.
 test_a_link_to_a_directory_named_with_a_trailing_newline_refuses_open() {
@@ -1886,14 +2009,18 @@ run_test test_pre_open_mounts_then_session_opens
 run_test test_pre_open_failure_aborts_open
 run_test test_pre_open_not_executable_is_refused
 run_test test_pre_open_tracked_by_git_is_refused
+run_test test_pre_open_tracked_beside_planted_git_directory_files_is_refused
 run_test test_pre_open_tracked_under_a_case_variant_is_refused
 run_test test_cs_files_tracked_in_cs_private_are_refused
 run_test test_cs_files_tracked_behind_a_cs_private_link_are_refused
 run_test test_the_untrack_command_quotes_a_directory_name_the_repository_chose
 run_test test_the_untrack_command_untracks_only_the_directory_it_names
 run_test test_tracked_files_in_a_directory_named_with_a_trailing_newline_are_seen
+run_test test_tracked_files_in_a_repository_named_with_a_trailing_newline_are_seen
+run_test test_a_failed_answer_in_the_newline_fallback_names_that_calls_error
 run_test test_a_cs_private_link_to_the_session_itself_is_refused_without_an_untrack_command
 run_test test_the_untrack_command_names_a_directory_called_tilde_as_a_path
+run_test test_the_untrack_command_names_a_directory_called_equals_as_a_path
 run_test test_an_untracked_cs_private_directory_opens
 run_test test_a_cs_private_link_into_a_vault_outside_any_repository_opens
 run_test test_an_inherited_tracked_files_answer_does_not_stop_the_open
@@ -1939,6 +2066,8 @@ run_test test_a_link_to_a_directory_named_with_a_newline_refuses_open
 run_test test_a_link_to_a_directory_named_with_a_trailing_newline_refuses_open
 run_test test_a_committed_vault_config_lookalike_refuses_open
 run_test test_a_hand_made_vault_refuses_open_with_gits_error_when_git_cannot_answer
+run_test test_a_write_through_a_hand_made_vault_link_names_gits_error_when_git_cannot_answer
+run_test test_narrative_rotate_through_a_hand_made_vault_names_gits_error_when_git_cannot_answer
 run_test test_global_msg_refuses_a_target_linked_out_of_the_session
 
 report_results

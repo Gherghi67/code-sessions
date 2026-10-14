@@ -44,8 +44,15 @@ rotate_narrative() {
     if [ -z "${CLAUDE_SESSION_META_DIR:-}" ] || [ ! -d "${CLAUDE_SESSION_META_DIR}" ]; then
         error "cs -narrative rotate must be run from inside a cs session"
     fi
-    local meta_dir="$CLAUDE_SESSION_META_DIR"
-    local session_dir="${CLAUDE_SESSION_DIR:-$(dirname "$meta_dir")}"
+    local session_dir="${CLAUDE_SESSION_DIR:-$(dirname -- "$CLAUDE_SESSION_META_DIR")}"
+    # The leave checks read a path as in the session by its spelling under
+    # session_dir, so every path here is spelled from it: a metadata dir
+    # spelled another way (relative, through a linked parent, with a ./)
+    # would never match and would skip them. One that is a different
+    # directory names a different session, and cs will not pick one.
+    [ "$CLAUDE_SESSION_META_DIR" -ef "$session_dir/.cs" ] \
+        || error "CLAUDE_SESSION_META_DIR is $CLAUDE_SESSION_META_DIR, not $session_dir/.cs; cs -narrative rotate needs both to name one session."
+    local meta_dir="$session_dir/.cs"
     local actor
     actor=$(cs_actor_slug "$session_dir")
     local live="$meta_dir/memory/narrative.$actor.md"
@@ -76,12 +83,16 @@ rotate_narrative() {
     # session does not own (audit M8); refuse before the first write.
     local out
     if out=$(_cs_write_leaves_session "$session_dir" "$live"); then
+        case "$out" in "cs could not ask git"*) error "$out" ;; esac
         error "${live#"$session_dir"/} leads to $out, outside the session; cs will not rotate through it."
     fi
     # Work from a snapshot: the cut is computed on bytes that cannot change under
     # us, and the live file is compared against that snapshot before it is rewritten.
     # Its name is unpredictable: a clone can plant a link at any name it can
-    # guess, and cp would follow it (Codex r2 #5).
+    # guess, and cp would follow it (Codex r2 #5). It is made in the
+    # directory the live file's name sits in, which a .cs/memory link can
+    # take out of the session even when the narrative there links back in.
+    ! _cs_refuses_write rotate_narrative "$meta_dir/memory" || error "Cannot write to $meta_dir/memory"
     local snap
     snap=$(mktemp "$meta_dir/memory/.narrative.$actor.rotate.XXXXXX") || error "Cannot write to $meta_dir/memory"
     cp "$live" "$snap"
@@ -114,9 +125,13 @@ rotate_narrative() {
     # Nor may the archive chunk land outside the session.
     if out=$(_cs_write_leaves_session "$session_dir" "$arch_dir"); then
         rm -f "$snap"
+        case "$out" in "cs could not ask git"*) error "$out" ;; esac
         error "${arch_dir#"$session_dir"/} leads to $out, outside the session; cs will not rotate through it."
     fi
-    mkdir -p "$arch_dir"
+    # The check above resolves the archive dir's parent, which need not
+    # exist yet; mkdir -p makes every missing level under the nearest one
+    # that does, so cs_mkdir_inside checks that one.
+    cs_mkdir_inside "$arch_dir" || { rm -f "$snap"; error "Cannot write to $arch_dir"; }
     [ -w "$arch_dir" ] || { rm -f "$snap"; error "Cannot write to $arch_dir"; }
     # Every temp name here is unpredictable: a clone can commit any name it
     # can guess, as a link out of the session (audit M8, Codex r1).
@@ -176,8 +191,11 @@ rotate_narrative() {
         [ "$created" -eq 1 ] && rm -f "$chunk"
         error "narrative.$actor.md changed during rotation; run cs -narrative rotate again"
     fi
-    cs_write_atomic "$live" _narrative_kept_text "$snap" "$live" "$head_end" "$cut" \
-        || error "could not rewrite narrative.$actor.md"
+    if ! cs_write_atomic "$live" _narrative_kept_text "$snap" "$live" "$head_end" "$cut"; then
+        rm -f "$snap"
+        [ "$created" -eq 1 ] && rm -f "$chunk"
+        error "could not rewrite narrative.$actor.md"
+    fi
     rm -f "$snap"
 
     local chunk_rel=".cs/${arch_root#"$meta_dir"/}/$actor/$(basename "$chunk")"

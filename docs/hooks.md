@@ -140,9 +140,9 @@ since a literal pathspec would match no file and read as nothing tracked, and so
 configuration settings passed through the environment (`GIT_CONFIG_COUNT`,
 `GIT_CONFIG_PARAMETERS`). Git that fails to answer for any reason other than "not a git
 repository" (a broken `~/.gitconfig`, a bad repository config, an unreadable index, a
-`safe.directory` refusal) counts as tracked: the hooks stand down the same way, `cs` refuses
+`safe.directory` refusal, no git on `PATH` or one that cannot run, a session inside a bare repository or a checkout's `.git`) counts as tracked: the hooks stand down the same way, `cs` refuses
 to open the session, a named verb (`cs <name> -queue` and the rest) refuses, and the message
-carries git's first `fatal:` or `error:` line. Lines that `GIT_TRACE` or a trace2 setting
+carries git's first `fatal:` or `error:` line, or says git is not installed or not on `PATH`, or that the git it found there cannot run. Lines that `GIT_TRACE` or a trace2 setting
 print ahead of it are not a failure. A file git tracks there still counts after you delete
 its directory. One write stays: the prompt hook's launch
 mark in `scope-prompt.trace`, made before anything that can stall, including git. `cs -queue` and `cs -msg` run inside the session
@@ -151,8 +151,9 @@ and the `git rm --cached` command that untracks it. That message is all the Stop
 does until then: it sends no narrative reminder and no rotation nudge, and raises no
 attention flag. Its other two events do nothing: no mail wake, no rotation kick, no
 watch re-armed. The check is one `git ls-files` per
-hook run, about 0.05 to 0.09 s. `memory-index-guard.sh` and `prompt-rewriter.sh` resolve
-no session and do not ask.
+hook run, about 0.05 to 0.09 s. `prompt-rewriter.sh` asks once per run and writes no
+`rewrite.trace` while git tracks one; `memory-index-guard.sh` asks before each subcommand
+and refuses all three with exit 2, naming the file.
 
 ## session-start.sh (SessionStart)
 
@@ -306,7 +307,7 @@ You cannot interrupt a rewrite from the keyboard, and the screen does not preten
 
 The shim still handles `INT` and `TERM`, for the case where it receives one anyway. The handler exists to reap, not to cancel: it signals the rewriter's whole process group, restores nothing because it has written nothing, and exits 0. Without it, a shim dying alongside its session would orphan the `claude -p` it started — detached, invisible, and still billed until it finished. That matters most in exactly the situation nothing can prevent.
 
-Every invocation appends one line to `.cs/local/rewrite.trace` naming the path it took — `exit passthrough-prefix`, `exit real-editor`, `rewriter-forked`, `exit rewritten`, and so on. This shim is driven by a keypress and draws onto a screen that is torn down, and each of its do-nothing paths leaves the buffer byte-identical, so without the trace a rewrite that declined, one that was disabled, and one that was never a composer buffer at all are indistinguishable after the fact. The trace is machine-local and written only when `CLAUDE_SESSION_META_DIR` resolves to a real session.
+Every invocation appends one line to `.cs/local/rewrite.trace` naming the path it took — `exit passthrough-prefix`, `exit real-editor`, `rewriter-forked`, `exit rewritten`, and so on. This shim is driven by a keypress and draws onto a screen that is torn down, and each of its do-nothing paths leaves the buffer byte-identical, so without the trace a rewrite that declined, one that was disabled, and one that was never a composer buffer at all are indistinguishable after the fact. The trace is machine-local and written only when `CLAUDE_SESSION_META_DIR` resolves to a real session. While git tracks a file in `.cs/local` (or `.cs/private`), the shim writes no trace.
 
 Every drawing path checks `[ -t 2 ]` first, so a piped or scripted run emits nothing.
 
@@ -353,6 +354,7 @@ Ships in `hooks/` and deploys alongside the hooks as a library, never registered
 - `snapshot` copies `MEMORY.md` to `.cs/local/memory-index.snapshot` (`.cs/private/` in an encrypted session, exit 2 while its vault is locked), before the sweep edits anything. Claude Code writes `MEMORY.md` with the first memory entry, so in a session that has none yet it records an empty snapshot; outside a session root (no `.cs/memory`) it exits 2.
 - `check` exits 1 and names each problem when a pointer in the snapshot is gone, when an entry in the four memory buckets (`user_`, `feedback_`, `project_`, `reference_`) has no pointer, or when the file is over the 24400-byte budget. A pointer is a line opening with `- [title](file)`; a link later on that line is supporting text. It always prints the size against the budget. With no snapshot, an unreadable one, or no `MEMORY.md` it exits 2, so a skipped snapshot never passes as a clean rewrite. The bucket check covers entries written after the snapshot and a second sweep that snapshotted an index the first had already damaged; the snapshot itself is one per session, so two concurrent sweeps share it.
 - `restore` copies the snapshot back byte for byte.
+- While git tracks a file in `.cs/local` (or `.cs/private`), all three exit 2 and name the file, so the guard never restores a committed snapshot over `MEMORY.md` and writes none beside it.
 
 `check` never restores on its own. A sweep that pushes the file over budget by adding a pointer has to compress other pointers, and an automatic restore would throw the new pointer away, leaving its entry unindexed.
 

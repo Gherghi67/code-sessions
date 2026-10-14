@@ -1025,6 +1025,119 @@ test_rotate_does_not_move_the_chunk_through_a_planted_link() {
     assert_eq "" "$(ls -A "$t/away")" "nothing lands in the directory outside" || return 1
 }
 
+# The checks read a path as in the session by its spelling under
+# CLAUDE_SESSION_DIR, so a CLAUDE_SESSION_META_DIR naming the same .cs another
+# way (relative, through a linked parent, with a ./ in it) is checked as the
+# session's own .cs.
+test_rotate_checks_a_metadata_dir_spelled_another_way() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local meta out rc
+    mkdir -p "$t/away"
+    ln -s "$t/away" "$SESSION_DIR/.cs/narrative-archive"
+    ln -s "$CS_SESSIONS_ROOT" "$TEST_TMPDIR/sessions-link"
+    _make_narrative "$LIVE" 10 500
+    for meta in test-session/.cs "$TEST_TMPDIR/sessions-link/test-session/.cs" "$SESSION_DIR/./.cs"; do
+        rc=0
+        out=$(cd "$CS_SESSIONS_ROOT" && CLAUDE_SESSION_META_DIR="$meta" "$CS_BIN" -narrative rotate 2>&1) || rc=$?
+        assert_eq "1" "$rc" "the rotation must fail with the metadata dir spelled $meta" || return 1
+        assert_eq "Error: .cs/narrative-archive/alice leads to $t/away/alice, outside the session; cs will not rotate through it." \
+            "$out" "the refusal names the link (metadata dir $meta)" || return 1
+        assert_eq "" "$(ls -A "$t/away")" "nothing was archived outside (metadata dir $meta)" || return 1
+    done
+    assert_file_contains "$LIVE" "section 1$" "the live narrative is whole" || return 1
+}
+
+# The same for a .cs/memory link out: the refusal comes before the snapshot,
+# so no copy of the narrative is left beside it outside the session.
+test_rotate_leaves_nothing_beside_a_memory_link_out_with_a_relative_metadata_dir() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local out rc=0 before
+    mkdir -p "$t/away" "$SESSION_DIR/.cs/private"
+    rmdir "$SESSION_DIR/.cs/memory"
+    ln -s "$t/away" "$SESSION_DIR/.cs/memory"
+    _make_narrative "$t/away/narrative.alice.md" 10 500
+    before=$(cat "$t/away/narrative.alice.md")
+    out=$(cd "$CS_SESSIONS_ROOT" && CLAUDE_SESSION_META_DIR=test-session/.cs "$CS_BIN" -narrative rotate 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the rotation must fail" || return 1
+    assert_eq "Error: .cs/memory/narrative.alice.md leads to $t/away/narrative.alice.md, outside the session; cs will not rotate through it." \
+        "$out" "the refusal names the link" || return 1
+    assert_eq "narrative.alice.md" "$(ls -A "$t/away")" "no snapshot is left outside" || return 1
+    assert_eq "$before" "$(cat "$t/away/narrative.alice.md")" "the narrative is untouched" || return 1
+    assert_not_exists "$SESSION_DIR/.cs/private/narrative-archive" "nothing was archived" || return 1
+}
+
+# A metadata dir that is not the session's own .cs names a different session
+# from the one the checks are made against; cs refuses rather than pick one.
+test_rotate_refuses_a_metadata_dir_of_another_session() {
+    local other="$CS_SESSIONS_ROOT/other" out rc=0
+    mkdir -p "$other/.cs/memory"
+    _make_narrative "$other/.cs/memory/narrative.alice.md" 10 500
+    _make_narrative "$LIVE" 10 500
+    out=$(CLAUDE_SESSION_META_DIR="$other/.cs" "$CS_BIN" -narrative rotate 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the rotation must fail" || return 1
+    assert_eq "Error: CLAUDE_SESSION_META_DIR is $other/.cs, not $SESSION_DIR/.cs; cs -narrative rotate needs both to name one session." \
+        "$out" "the refusal names both directories" || return 1
+    assert_file_contains "$other/.cs/memory/narrative.alice.md" "section 1$" "the other narrative is whole" || return 1
+    assert_file_contains "$LIVE" "section 1$" "this narrative is whole" || return 1
+    assert_not_exists "$other/.cs/narrative-archive" "nothing was archived in the other session" || return 1
+}
+
+# mkdir -p makes every level the archive needs, so a link above the levels
+# that do not exist yet decides where they land: .cs/private leading out
+# would put the archive outside the session. The leave check on the archive
+# dir alone cannot see that, because its parent does not exist yet.
+test_rotate_refuses_an_archive_dir_mkdir_would_make_outside_the_session() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local out rc=0
+    mkdir -p "$t/away" "$SESSION_DIR/mem"
+    rmdir "$SESSION_DIR/.cs/memory"
+    ln -s ../mem "$SESSION_DIR/.cs/memory"
+    ln -s "$t/away" "$SESSION_DIR/.cs/private"
+    _make_narrative "$LIVE" 10 500
+    out=$("$CS_BIN" -narrative rotate 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the rotation must fail" || return 1
+    assert_eq "cs_mkdir_inside: $SESSION_DIR/.cs/private/narrative-archive/alice leads to $t/away/narrative-archive/alice, outside the session $SESSION_DIR
+Error: Cannot write to $SESSION_DIR/.cs/private/narrative-archive/alice" "$out" "the refusal names where mkdir would land" || return 1
+    assert_eq "" "$(ls -A "$t/away")" "nothing was made outside" || return 1
+    assert_eq "narrative.alice.md" "$(ls -A "$SESSION_DIR/mem")" "no snapshot is left behind" || return 1
+    assert_file_contains "$LIVE" "section 1$" "the live narrative is whole" || return 1
+}
+
+# The snapshot is made in the directory the live file's name sits in, so a
+# .cs/memory link out is refused even when the narrative there links back in.
+test_rotate_refuses_a_memory_dir_linked_out_for_its_snapshot() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local out rc=0
+    mkdir -p "$t/away" "$SESSION_DIR/notes" "$SESSION_DIR/.cs/private"
+    _make_narrative "$SESSION_DIR/notes/narrative.md" 10 500
+    rmdir "$SESSION_DIR/.cs/memory"
+    ln -s "$t/away" "$SESSION_DIR/.cs/memory"
+    ln -s "$SESSION_DIR/notes/narrative.md" "$t/away/narrative.alice.md"
+    out=$("$CS_BIN" -narrative rotate 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the rotation must fail" || return 1
+    assert_eq "rotate_narrative: $SESSION_DIR/.cs/memory leads to $t/away, outside the session $SESSION_DIR
+Error: Cannot write to $SESSION_DIR/.cs/memory" "$out" "the refusal names the link" || return 1
+    assert_eq "narrative.alice.md" "$(ls -A "$t/away")" "no snapshot is made outside" || return 1
+    assert_file_contains "$SESSION_DIR/notes/narrative.md" "section 1$" "the narrative is whole" || return 1
+}
+
+# A rewrite that fails takes back what the rotation wrote: the snapshot and
+# the chunk it made, so the archive never holds sections the live file kept.
+test_rotate_takes_back_its_snapshot_and_chunk_when_the_rewrite_fails() {
+    local out rc=0
+    mkdir -p "$SESSION_DIR/notes"
+    _make_narrative "$SESSION_DIR/notes/narrative.md" 10 500
+    ln -s ../../notes/narrative.md "$LIVE"
+    chmod 555 "$SESSION_DIR/notes"
+    out=$("$CS_BIN" -narrative rotate 2>&1) || rc=$?
+    chmod 755 "$SESSION_DIR/notes"
+    assert_eq "1" "$rc" "the rotation must fail" || return 1
+    assert_eq "Error: could not rewrite narrative.alice.md" "$(printf '%s\n' "$out" | tail -1)" "names the failed rewrite" || return 1
+    assert_eq "" "$(find "$SESSION_DIR/.cs/memory" -name '.narrative.*.rotate.*')" "the snapshot is not left behind" || return 1
+    assert_eq "" "$(ls -A "$ARCHIVE_DIR")" "the chunk is taken back" || return 1
+    assert_file_contains "$SESSION_DIR/notes/narrative.md" "section 1$" "the narrative is whole" || return 1
+}
+
 run_test test_rotate_is_a_recognised_subcommand
 run_test test_rotate_under_budget_is_a_noop
 run_test test_rotate_requires_a_session
@@ -1037,6 +1150,12 @@ run_test test_rotate_refuses_a_narrative_linked_out_of_the_session
 run_test test_rotate_refuses_an_archive_linked_out_without_a_pre_open
 run_test test_rotate_does_not_write_through_a_planted_temp_link
 run_test test_rotate_does_not_move_the_chunk_through_a_planted_link
+run_test test_rotate_checks_a_metadata_dir_spelled_another_way
+run_test test_rotate_leaves_nothing_beside_a_memory_link_out_with_a_relative_metadata_dir
+run_test test_rotate_refuses_a_metadata_dir_of_another_session
+run_test test_rotate_refuses_an_archive_dir_mkdir_would_make_outside_the_session
+run_test test_rotate_refuses_a_memory_dir_linked_out_for_its_snapshot
+run_test test_rotate_takes_back_its_snapshot_and_chunk_when_the_rewrite_fails
 run_test test_rotate_keeps_the_header_block
 run_test test_rotate_cuts_on_a_heading_boundary
 run_test test_rotate_writes_one_chunk_whose_body_is_verbatim

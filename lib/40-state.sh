@@ -113,7 +113,7 @@ _unset_local_state() {
 _claude_project_dir() {
     local cwd="$1"
     local resolved base="${CS_TRANSCRIPTS_DIR:-$HOME/.claude/projects}"
-    resolved=$( (cd "$cwd" 2>/dev/null && pwd -P) || printf '%s' "$cwd" )
+    resolved=$( (cd -- "$cwd" 2>/dev/null && pwd -P) || printf '%s' "$cwd" )
     if [ -e "$cwd/.cs/claude-config" ] || [ -L "$cwd/.cs/claude-config" ]; then
         base="$cwd/.cs/claude-config/projects"
     fi
@@ -244,7 +244,7 @@ _discover_worktree_uuid_in() {  # parent_project_dir, wt_dir
 # cwd under /private/tmp, so pwd -P is the matching side (#814).
 _worktree_json_path() {  # wt_dir
     local wt_real
-    wt_real=$( (cd "$1" 2>/dev/null && pwd -P) || printf '%s' "$1" )
+    wt_real=$( (cd -- "$1" 2>/dev/null && pwd -P) || printf '%s' "$1" )
     printf '%s' "$wt_real" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 

@@ -259,6 +259,29 @@ test_snapshot_refuses_a_locked_private_dir() {
         "nothing may be copied into .cs/local" || return 1
 }
 
+# The snapshot lives in .cs/local, and while git tracks a file there a
+# repository wrote it: a snapshot taken there would sit beside it, and a
+# committed one restored would put the repository's index over the session's.
+# Every subcommand refuses, naming the file, and touches nothing.
+test_every_subcommand_refuses_while_git_tracks_a_control_file() {
+    _guard_session
+    local before snap="$SESSION/.cs/local/memory-index.snapshot" sub out rc
+    printf -- '- [Planted](project_planted.md): from the repository\n' > "$snap"
+    git -C "$SESSION" init -q
+    git -C "$SESSION" add .cs/local/memory-index.snapshot
+    before=$(cat "$INDEX")
+    for sub in snapshot check restore; do
+        rc=0
+        out=$(_guard "$sub" 2>&1) || rc=$?
+        assert_eq 2 "$rc" "$sub refuses" || return 1
+        assert_eq "memory-index-guard: .cs/local/memory-index.snapshot is tracked in git (per-actor state must stay local). Fix with: git -C $SESSION --literal-pathspecs rm -r --cached -- .cs/local && git -C $SESSION commit -m 'stop tracking .cs/local'" \
+            "$out" "$sub names the tracked file" || return 1
+        assert_eq "$before" "$(cat "$INDEX")" "$sub leaves MEMORY.md as it was" || return 1
+        assert_eq "- [Planted](project_planted.md): from the repository" "$(cat "$snap")" \
+            "$sub leaves the snapshot as it was" || return 1
+    done
+}
+
 # The pointers and the entries are compared with comm, which needs them sorted
 # the way it reads them: both sorts and comm get the C locale through env, so
 # the lists come out in byte order (uppercase, then "_", then lowercase) in any
@@ -308,6 +331,7 @@ run_test test_snapshot_outside_a_session_root_is_an_error
 run_test test_check_with_an_unreadable_snapshot_is_an_error
 run_test test_snapshot_goes_into_the_private_dir
 run_test test_snapshot_refuses_a_locked_private_dir
+run_test test_every_subcommand_refuses_while_git_tracks_a_control_file
 run_test test_check_lists_in_byte_order_without_the_shell_assigning_its_own_locale
 
 report_results

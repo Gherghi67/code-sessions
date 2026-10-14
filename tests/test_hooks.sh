@@ -3264,7 +3264,29 @@ test_narrative_reminder_skips_the_budget_check_without_the_shared_library() {
     assert_output_not_contains "$output" "over the" "no budget warning without the budget" || return 1
 }
 
+# The tracked-files notice is one hook run's answer. A value that came in with
+# the environment changes nothing, even where no shared library loads to drop
+# it: the Stop hook gives the turn the answer it gives without one.
+test_stop_ignores_an_inherited_tracked_files_notice_without_the_shared_library() {
+    local nf="$CLAUDE_SESSION_META_DIR/memory/narrative.alice.md"
+    printf '# Session narrative (alice)\n' > "$nf"
+    _backdate "$nf"
+    local partial="$TEST_TMPDIR/partial-hooks"
+    mkdir -p "$partial"
+    cp "$HOOKS_DIR"/*.sh "$partial/"
+    rm "$partial/cs-shared.sh"
+    local plain inherited
+    rm -f "$CLAUDE_SESSION_META_DIR/.narrative-reminder-cooldown"
+    plain=$(echo '{}' | bash "$partial/narrative-reminder.sh")
+    rm -f "$CLAUDE_SESSION_META_DIR/.narrative-reminder-cooldown"
+    inherited=$(echo '{}' | CS_TRACKED_FILES_NOTICE="x is tracked in git" CS_TRACKED_FILES_META="$CLAUDE_SESSION_META_DIR" \
+        bash "$partial/narrative-reminder.sh")
+    assert_output_contains "$plain" "Narrative check" "the reminder fires" || return 1
+    assert_eq "$plain" "$inherited" "an inherited notice changes nothing" || return 1
+}
+
 run_test test_narrative_reminder_flags_a_narrative_over_budget
+run_test test_stop_ignores_an_inherited_tracked_files_notice_without_the_shared_library
 # A zero budget in any spelling is the default, not "warn on everything": the
 # validator runs its zero check on the normalised number, and the hook reads
 # the result rather than keeping a rule of its own.

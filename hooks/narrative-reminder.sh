@@ -63,6 +63,10 @@ _cs_shared="$(dirname "$0")/cs-shared.sh"
 # Claude Code's blocking code. Whatever the source defined before failing
 # still stands; the check below decides whether it is usable.
 case $- in *e*) _cs_had_e=1 ;; *) _cs_had_e=0 ;; esac
+# Whether git tracks the session's control files is this run's question
+# (cs_resolve_session asks it). cs-shared.sh drops an answer inherited from
+# the environment as it loads; without that library this line does.
+unset CS_TRACKED_FILES_NOTICE CS_TRACKED_FILES_META
 set +e
 [ -r "$_cs_lib" ] && "${BASH:-/bin/bash}" -n "$_cs_lib" 2>/dev/null && . "$_cs_lib"
 # shellcheck source=cs-shared.sh

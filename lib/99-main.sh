@@ -122,7 +122,7 @@ main() {
             cmd_complete "${2:-}"
             return 0
             ;;
-        -vet-session) # hidden: asked by the cs mod before it arms a rotation, not typed by a user
+        -vet-session) # asked by the cs mod, /rotate and /wrap before they write into a session
             shift
             cmd_vet_session "$@"
             return 0
@@ -562,7 +562,7 @@ main() {
 
         # Initialize local git repo by default
         (
-            cd "$session_dir" || exit 0
+            cd -- "$session_dir" || exit 0
             create_session_gitignore "$session_dir"
             git init -q 2>/dev/null || true
             # cs writes its bookkeeping files with LF. A global core.autocrlf

@@ -126,7 +126,7 @@ _securestore="${CLAUDE_SECURESTORAGE_CONFIG_DIR-${CLAUDE_CONFIG_DIR-}}"
 _attempt() {  # 1 = drop the ambient key, 0 = keep it
     local scrub="$1"
     if [ "$scrub" = 1 ]; then
-        cd "$_rundir" 2>/dev/null && printf '%s' "$prompt" | CLAUDE_CONFIG_DIR="$cfg" \
+        cd -- "$_rundir" 2>/dev/null && printf '%s' "$prompt" | CLAUDE_CONFIG_DIR="$cfg" \
             CLAUDE_SECURESTORAGE_CONFIG_DIR="$_securestore" \
             env -u CLAUDE_COWORK_MEMORY_PATH_OVERRIDE -u CLAUDE_CODE_AUTO_MEMORY_PATH \
                 -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR -u CLAUDE_SESSION_NAME \
@@ -137,7 +137,7 @@ _attempt() {  # 1 = drop the ambient key, 0 = keep it
             --tools "" \
             --system-prompt "$_system" 2>/dev/null
     else
-        cd "$_rundir" 2>/dev/null && printf '%s' "$prompt" | CLAUDE_CONFIG_DIR="$cfg" \
+        cd -- "$_rundir" 2>/dev/null && printf '%s' "$prompt" | CLAUDE_CONFIG_DIR="$cfg" \
             CLAUDE_SECURESTORAGE_CONFIG_DIR="$_securestore" \
             env -u CLAUDE_COWORK_MEMORY_PATH_OVERRIDE -u CLAUDE_CODE_AUTO_MEMORY_PATH \
                 -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR -u CLAUDE_SESSION_NAME \
