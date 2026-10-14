@@ -7,9 +7,11 @@
 _REMOTE_MIN_CLAUDE_VERSION="2.1.299"
 
 # The absolute path of the claude remote-control is run by, in
-# _CS_REMOTE_BIN. remote-control refuses root options before its verb rather
-# than drop them, so a CLAUDE_CODE_BIN carrying options after the command is
-# refused here the same way, by name, before anything is opened.
+# _CS_REMOTE_BIN. remote-control refuses root options before its verb, and
+# the mode of the sessions it starts is --remote's own --permission-mode, so
+# remote-control runs with CLAUDE_CODE_BIN's command word alone: whatever
+# CLAUDE_CODE_BIN carries after it is dropped, and one line on stderr names
+# it, before anything is opened.
 _CS_REMOTE_BIN=""
 
 # True when dotted version <have> is <want> or later, compared field by field
@@ -27,12 +29,16 @@ _version_at_least() {  # have, want
 }
 
 # Resolve and vet the claude that runs remote-control; sets _CS_REMOTE_BIN.
-# check_dependencies has already found the command word on PATH.
+# check_dependencies has already found the command word on PATH. The text
+# after the command word is named as written, blanks around it trimmed. The
+# tmux window is handed _CS_REMOTE_BIN, with nothing after it, so its run
+# drops nothing and the line is printed once, on the caller's terminal.
 _remote_claude_bin() {
     local word rest found output version rc=0
     word=$(_claude_bin_word)
     rest=$(_trim "${CLAUDE_CODE_BIN#*"$word"}")
-    [ -z "$rest" ] || error "cs --remote runs claude remote-control, which refuses options before its verb; CLAUDE_CODE_BIN carries \"$rest\" after the command. Set CLAUDE_CODE_BIN to the command alone for --remote."
+    [ -z "$rest" ] \
+        || warn "cs --remote runs $word remote-control without the rest of CLAUDE_CODE_BIN; --remote's own --permission-mode sets the permission mode of the sessions it starts. Dropped: $rest" >&2
     found=$(command -v -- "$word") || error "cs --remote cannot find $word on PATH"
     case "$found" in
         /*) ;;
