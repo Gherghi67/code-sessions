@@ -538,6 +538,28 @@ Add --delete-files to remove it with --force" "$out" "the refusal lists the user
     assert_file_exists "$wt/.claude/agents/reviewer.md" "the user's file survives the refusal" || return 1
 }
 
+# Finder's .DS_Store is no one's work at any depth, as retire treats it: it
+# neither counts in a listing nor makes --force refuse.
+test_remove_worktree_leaves_out_ds_store_at_any_depth() {
+    local wt out rc=0
+    wt=$(_worktree_with_user_files wf9)
+    rm "$wt/notes.txt" "$wt/journal.img"
+    mkdir -p "$wt/docs/deep"
+    echo "draft" > "$wt/docs/deep/notes.md"
+    : > "$wt/docs/deep/.DS_Store"
+    : > "$wt/docs/.DS_Store"
+    out=$("$CS_BIN" -rm wf9@t --force </dev/null 2>&1) || rc=$?
+    assert_eq "1" "$rc" "--force refuses over the user's file: $out" || return 1
+    assert_eq "Error: Worktree session 'wf9@t' holds 1 file git does not track:
+    docs/  (1 file)
+Add --delete-files to remove it with --force" "$out" "the listing counts the user's file and no .DS_Store" || return 1
+    rm "$wt/docs/deep/notes.md"
+    rc=0
+    out=$("$CS_BIN" -rm wf9@t --force </dev/null 2>&1) || rc=$?
+    assert_eq "0" "$rc" "a worktree holding only .DS_Store files goes with --force: $out" || return 1
+    assert_not_exists "$wt" "the worktree is removed" || return 1
+}
+
 # The pins and recipient digests `cs -secrets age add` keeps for a session
 # live under ~/.cs-secrets/sessions/<name>/, outside the session directory.
 # Removing a base session drops them and says so on one line naming the path.
@@ -801,6 +823,7 @@ run_test test_remove_force_refusal_collapses_untracked_trees
 run_test test_remove_worktree_confirm_counts_the_files_in_a_nested_repository
 run_test test_remove_force_refusal_names_one_file_as_it
 run_test test_remove_worktree_lists_the_users_files_under_dot_claude
+run_test test_remove_worktree_leaves_out_ds_store_at_any_depth
 run_test test_remove_force_on_adopted_removes_only_the_link
 run_test test_remove_refuses_while_the_vault_is_mounted_inside
 run_test test_remove_goes_ahead_once_the_vault_is_unmounted

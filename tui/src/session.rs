@@ -1732,6 +1732,33 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    // Finder's .DS_Store is no one's work at any depth, as retire and
+    // `cs -rm` treat it: a directory holding one beside the user's file
+    // counts the user's file only.
+    #[test]
+    fn unowned_entries_leaves_out_ds_store_at_any_depth_in_a_worktree() {
+        let root = std::env::temp_dir().join(format!("cs-unowned-ds-{}", std::process::id()));
+        let base = root.join("proj");
+        fs::create_dir_all(&base).unwrap();
+        fs::write(base.join("tracked.txt"), "x").unwrap();
+        git_in(&base, &["init", "-q"]);
+        git_in(&base, &["add", "tracked.txt"]);
+        git_in(&base, &["commit", "-qm", "seed"]);
+        let wt = root.join("proj@task");
+        git_in(&base, &["worktree", "add", "-q", wt.to_str().unwrap(), "-b", "cs/task"]);
+        fs::create_dir_all(wt.join("docs/deep")).unwrap();
+        fs::write(wt.join("docs/deep/notes.md"), "draft").unwrap();
+        fs::write(wt.join("docs/deep/.DS_Store"), "").unwrap();
+        fs::write(wt.join("docs/.DS_Store"), "").unwrap();
+
+        let got = unowned_entries("proj@task", &wt).unwrap();
+
+        assert_eq!(got, UnownedEntries::NotTrackedByGit(vec![untracked::Entry { path: "docs/".into(), files: 1 }]));
+        fs::remove_file(wt.join("docs/deep/notes.md")).unwrap();
+        assert_eq!(unowned_entries("proj@task", &wt).unwrap(), UnownedEntries::NotTrackedByGit(Vec::new()));
+        let _ = fs::remove_dir_all(&root);
+    }
+
     fn setup_session(root: &Path, name: &str) -> PathBuf {
         let dir = root.join(name);
         fs::create_dir_all(dir.join(".cs/local")).unwrap();
