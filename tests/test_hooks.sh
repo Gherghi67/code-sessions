@@ -677,6 +677,31 @@ test_auto_approve_prompts_inside_a_git_directory_reached_by_another_name() {
         "the config of a worktree's git directory kept below .cs" || return 1
 }
 
+# A directory is a git directory to the hook by the rule cs refuses a
+# session's state by: it holds HEAD. A HEAD that is a link into refs/ counts
+# whether or not the link leads anywhere (git takes the directory for a
+# repository either way), so does a HEAD with nothing beside it, and so does
+# one at the root of .cs/ itself. A write in or below any of them prompts.
+test_auto_approve_prompts_inside_any_directory_that_holds_head() {
+    local meta="$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$meta/artifacts/linked/objects" "$meta/artifacts/linked/refs" "$meta/artifacts/linked/hooks"
+    ln -s refs/heads/main "$meta/artifacts/linked/HEAD"
+    _assert_falls_through Write "$meta/artifacts/linked/config" \
+        "the config of a layout whose HEAD is a dangling link" || return 1
+    _assert_falls_through Write "$meta/artifacts/linked/hooks/pre-commit" \
+        "a hook of a layout whose HEAD is a dangling link" || return 1
+    _assert_allowed Write "$meta/artifacts/notes.md" \
+        "a note beside that layout" || return 1
+    mkdir -p "$meta/research/lone"
+    echo 'ref: refs/heads/main' > "$meta/research/lone/HEAD"
+    _assert_falls_through Write "$meta/research/lone/notes.md" \
+        "a note in a directory holding HEAD and nothing else" || return 1
+    mkdir -p "$meta/memory" "$meta/objects" "$meta/refs"
+    echo 'ref: refs/heads/main' > "$meta/HEAD"
+    _assert_falls_through Write "$meta/memory/narrative.md" \
+        "a narrative under a .cs/ that holds HEAD" || return 1
+}
+
 # The same for a session whose own path has a .git component above .cs/: the
 # git-directory rule reads the path below .cs/ only.
 test_auto_approve_allows_content_in_a_session_below_a_git_named_directory() {
@@ -3323,6 +3348,7 @@ run_test test_auto_approve_prompts_for_a_non_ascii_name_in_content
 run_test test_auto_approve_prompts_for_a_folded_control_name
 run_test test_auto_approve_prompts_inside_a_git_directory_below_cs
 run_test test_auto_approve_prompts_inside_a_git_directory_reached_by_another_name
+run_test test_auto_approve_prompts_inside_any_directory_that_holds_head
 run_test test_auto_approve_allows_ascii_content_under_a_non_ascii_session_path
 run_test test_auto_approve_allows_content_in_a_session_below_a_git_named_directory
 run_test test_auto_approve_rejects_config_linked_into_content
