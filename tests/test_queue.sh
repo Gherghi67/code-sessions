@@ -661,6 +661,12 @@ _git_dir_layout_refusal() {  # dir
     printf '%s holds HEAD, so git takes it for a repository and would run commands its config names (cs state must be a plain directory inside the session). Delete %s/HEAD, or cs -rm the session.' "$1" "$1"
 }
 
+# The refusal for a git directory at <dir>, a whole path outside the session,
+# which can be the user's own repository: it carries no advice to delete HEAD.
+_git_dir_outside_refusal() {  # dir
+    printf '%s holds HEAD, so git takes it for a repository and would run commands its config names. cs -rm the session.' "$1"
+}
+
 # A named verb vets the session before it reads it: the layout is refused by
 # name, and git never runs the command its config names.
 test_a_named_verb_refuses_a_git_repository_layout_at_cs_local() {
@@ -796,7 +802,9 @@ test_session_start_arms_no_handoff_from_a_layout_a_link_leads_into() {
     assert_file_exists "$mark" "the session is marked as one whose control files the hooks do not trust" || return 1
 }
 
-# The refusal names such a layout by its path, as it is outside the session.
+# The refusal names such a layout by its path, as it is outside the session,
+# and does not say to delete its HEAD: cs cannot tell a planted layout from
+# the user's own repository there.
 test_vet_session_refuses_a_layout_a_link_leads_into_outside_the_session() {
     local o="$CS_SESSIONS_ROOT/other" out rc=0 shown
     mkdir -p "$o"
@@ -806,7 +814,7 @@ test_vet_session_refuses_a_layout_a_link_leads_into_outside_the_session() {
     out=$(env -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR "$CS_BIN" -vet-session "$CLAUDE_SESSION_DIR" 2>&1) || rc=$?
     assert_file_not_exists "$TEST_TMPDIR/fsmonitor-ran" "git must not run the layout's core.fsmonitor" || return 1
     assert_eq "1" "$rc" "cs -vet-session refuses: $out" || return 1
-    assert_eq "Error: $(_git_dir_layout_refusal "$shown")" "$out" "the refusal names the layout by its path" || return 1
+    assert_eq "Error: $(_git_dir_outside_refusal "$shown")" "$out" "the refusal names the layout by its path" || return 1
 }
 
 # On a volume that folds case a link can spell the session's own directory in
@@ -880,7 +888,7 @@ test_vet_session_refuses_a_session_inside_a_git_directory() {
         rc=0
         out=$(env -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR "$CS_BIN" -vet-session "$TEST_TMPDIR/$s/s" 2>&1) || rc=$?
         assert_eq "1" "$rc" "cs -vet-session refuses $s/s" || return 1
-        assert_eq "Error: $t/$s holds HEAD, so git takes it for a repository and would run commands its config names. cs -rm the session." \
+        assert_eq "Error: $(_git_dir_outside_refusal "$t/$s")" \
             "$out" "and names the git directory with no advice to delete its HEAD ($s/s)" || return 1
     done
 }
