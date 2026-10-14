@@ -997,8 +997,8 @@ pub enum UnownedEntries {
 }
 
 /// The delete confirm's account of one thing a removal would take: a line of
-/// text, and under it the entries of a listing of files git does not track
-/// (empty for any other warning).
+/// text, and under it the entries it lists one per row, the files git does
+/// not track or the names cs did not create (empty for any other warning).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeleteWarning {
     pub text: String,
@@ -1012,12 +1012,16 @@ impl DeleteWarning {
 }
 
 impl UnownedEntries {
-    /// The confirm's warning, in `cs -rm`'s words; None when nothing is at risk.
+    /// The confirm's warning, in `cs -rm`'s words, its names or paths listed
+    /// one per row under it; None when nothing is at risk.
     pub fn warning(&self) -> Option<DeleteWarning> {
         match self {
-            UnownedEntries::NotCreatedByCs(p) if !p.is_empty() => {
-                Some(DeleteWarning::line(format!("Also deletes files cs did not create: {}", p.join(", "))))
-            }
+            // Each name is one entry without a trailing '/', so the listing
+            // draws it alone, with no file count.
+            UnownedEntries::NotCreatedByCs(p) if !p.is_empty() => Some(DeleteWarning {
+                text: "Also deletes files cs did not create:".to_string(),
+                entries: p.iter().map(|name| untracked::Entry { path: name.clone(), files: 1 }).collect(),
+            }),
             UnownedEntries::NotTrackedByGit(e) if !e.is_empty() => Some(DeleteWarning {
                 text: format!("Also deletes {} git does not track:", untracked::count_phrase(e)),
                 entries: e.clone(),
@@ -1071,7 +1075,7 @@ pub fn unowned_entries(name: &str, path: &Path) -> Result<UnownedEntries, String
     if path.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false) {
         return Ok(UnownedEntries::NotCreatedByCs(Vec::new()));
     }
-    if worktree_parts(name).is_some() && path.join(".git").is_file() {
+    if is_worktree_beside_its_base(name, path) {
         return worktree_untracked(path).map(UnownedEntries::NotTrackedByGit);
     }
     let entries = match fs::read_dir(path) {
@@ -1092,6 +1096,16 @@ pub fn unowned_entries(name: &str, path: &Path) -> Result<UnownedEntries, String
     }
     names.sort();
     Ok(UnownedEntries::NotCreatedByCs(names))
+}
+
+/// Whether session `name` at `path` is a worktree git can list: a
+/// `<base>@<task>` checkout with its `.git` file, beside a base directory (a
+/// link to one followed). `cs -rm` asks the same before it lists with git
+/// (lib/65-sessions.sh `_remove_one_session`); a worktree whose base is gone
+/// has no repository to ask, so both list it as a plain directory.
+fn is_worktree_beside_its_base(name: &str, path: &Path) -> bool {
+    let Some((base, _)) = worktree_parts(name) else { return false };
+    path.join(".git").is_file() && path.parent().is_some_and(|root| root.join(base).is_dir())
 }
 
 /// The NUL-separated paths `git ls-files <args>` prints in `path`.
@@ -1125,10 +1139,15 @@ fn files_under(dir: &Path) -> Result<u64, String> {
 }
 
 /// The `cs_mode` a worktree's `.cs/local/state` names, read as
-/// `_read_local_state` reads it; `None` when the file or the key is absent.
+/// `_read_local_state` reads it: line by line as bytes, so a byte that is
+/// not UTF-8 elsewhere in the file leaves the line readable; `None` when the
+/// file or the key is absent.
 fn worktree_cs_mode(path: &Path) -> Option<String> {
-    let state = fs::read_to_string(path.join(".cs/local/state")).ok()?;
-    state.lines().find_map(|line| line.strip_prefix("cs_mode:")).map(|value| value.trim_start().replace('"', ""))
+    let state = fs::read(path.join(".cs/local/state")).ok()?;
+    state
+        .split(|&byte| byte == b'\n')
+        .find_map(|line| line.strip_prefix(b"cs_mode:"))
+        .map(|value| String::from_utf8_lossy(value).trim_start().replace('"', ""))
 }
 
 /// The test of whether a path in the worktree at `path` is cs's own
@@ -1339,7 +1358,7 @@ pub fn remove_session_path(root: &Path, name: &str, path: &Path, grants: RemoveG
     // was scanned earlier and the session may have opened since.
     if !grants.past_live_lock {
         if let Some(pid) = read_lock_pid(&path.join(".cs")) {
-            return Err(std::io::Error::other(format!("{name} is live (pid {pid}) — close it first")));
+            return Err(std::io::Error::other(live_refusal(name, pid)));
         }
     }
     let is_link = path.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false);
@@ -1516,7 +1535,9 @@ fn unread_mail_count(meta_dir: &Path) -> u32 {
         .unwrap_or(0)
 }
 
-fn read_lock_pid(meta_dir: &Path) -> Option<u32> {
+/// The pid in `meta_dir`'s session.lock when that process is alive, read at
+/// the moment of asking.
+pub fn read_lock_pid(meta_dir: &Path) -> Option<u32> {
     let lock_file = meta_dir.join("session.lock");
     let content = fs::read_to_string(&lock_file).ok()?;
     let pid = content.trim().parse::<u32>().ok()?;
@@ -1545,6 +1566,11 @@ fn read_remote_pid(meta_dir: &Path, name: &str) -> Option<u32> {
     // Padded on both sides, so demo does not match demo-2.
     let args = format!(" {} ", String::from_utf8_lossy(&o.stdout).trim_end());
     args.contains(&format!(" remote-control --name {name} ")).then_some(pid)
+}
+
+/// Why a picker action refuses session `name`, whose claude runs as `pid`.
+pub fn live_refusal(name: &str, pid: u32) -> String {
+    format!("{name} is live (pid {pid}) — close it first")
 }
 
 /// True when a process with `pid` is alive on this machine, via `kill -0`.
@@ -2018,6 +2044,96 @@ mod tests {
         assert_eq!(got, UnownedEntries::NotTrackedByGit(vec![untracked::Entry { path: ".cs/memory/".into(), files: 1 }]));
         fs::write(wt.join(".cs/local/state"), "cs_mode: ignored\n").unwrap();
         assert_eq!(unowned_entries("proj@task", &wt).unwrap(), UnownedEntries::NotTrackedByGit(Vec::new()));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // The mode is read from the state file's bytes, as `_read_local_state`
+    // reads them: a byte that is not UTF-8 on another line leaves the
+    // `cs_mode` line readable, so an ignored-mode worktree's .cs stays cs's.
+    #[test]
+    fn unowned_entries_reads_the_mode_from_a_state_file_holding_a_non_utf8_byte() {
+        let root = std::env::temp_dir().join(format!("cs-unowned-state-bytes-{}", std::process::id()));
+        let wt = worktree_beside_base(&root);
+        fs::create_dir_all(wt.join(".cs/memory")).unwrap();
+        fs::write(wt.join(".cs/memory/topic.md"), "topic").unwrap();
+        fs::write(wt.join(".cs/local/state"), b"task_branch: cs/t\xff\ncs_mode: ignored\n").unwrap();
+
+        let got = unowned_entries("proj@task", &wt).unwrap();
+
+        assert_eq!(got, UnownedEntries::NotTrackedByGit(Vec::new()));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // The mode is the value `_read_local_state` reads (lib/40-state.sh): the
+    // first line that starts `cs_mode:` wins, whitespace after the colon and
+    // every double quote go, a CR before the newline stays (so a CRLF file
+    // names no mode cs knows), and a last line without a newline counts.
+    #[test]
+    fn worktree_cs_mode_reads_the_value_cs_reads() {
+        let dir = std::env::temp_dir().join(format!("cs-mode-read-{}", std::process::id()));
+        fs::create_dir_all(dir.join(".cs/local")).unwrap();
+        for (state, mode) in [
+            (&b"cs_mode: ignored\r\n"[..], Some("ignored\r")),
+            (b"cs_mode: tracked\ncs_mode: ignored\n", Some("tracked")),
+            (b"cs_mode: \"ignored\"\n", Some("ignored")),
+            (b"cs_mode:\t  ignored", Some("ignored")),
+            (b" cs_mode: ignored\n", None),
+            (b"task_branch: cs/t\n", None),
+        ] {
+            fs::write(dir.join(".cs/local/state"), state).unwrap();
+
+            assert_eq!(worktree_cs_mode(&dir).as_deref(), mode, "{:?}", String::from_utf8_lossy(state));
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // A `<base>@<task>` directory whose .git is a directory, not a worktree's
+    // .git file, is no worktree of the base, so it is listed and removed as a
+    // plain directory, as `cs -rm` does (it asks `[ -f .git ]`).
+    #[test]
+    fn a_worktree_name_whose_git_is_a_directory_is_listed_and_removed_as_a_plain_directory() {
+        let root = std::env::temp_dir().join(format!("cs-unowned-git-dir-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("proj/.cs/local")).unwrap();
+        let wt = root.join("proj@task");
+        fs::create_dir_all(wt.join(".cs/local")).unwrap();
+        git_in(&wt, &["init", "-q"]);
+        fs::write(wt.join("notes.txt"), "draft").unwrap();
+        assert!(wt.join(".git").is_dir(), "fixture: .git is a directory");
+
+        let got = unowned_entries("proj@task", &wt);
+
+        assert_eq!(got, Ok(UnownedEntries::NotCreatedByCs(vec!["notes.txt".into()])));
+        let refused = remove_session_path(&root, "proj@task", &wt, RemoveGrants::default()).map_err(|e| e.to_string());
+        assert_eq!(refused, Err("proj@task holds files cs did not create: notes.txt".to_string()));
+        let granted = RemoveGrants { unowned_files: true, ..RemoveGrants::default() };
+        assert_eq!(remove_session_path(&root, "proj@task", &wt, granted).map_err(|e| e.to_string()), Ok(()));
+        assert!(!wt.exists(), "the directory is removed");
+        assert!(root.join("proj").is_dir(), "the base is left alone");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // A worktree session whose base is gone has no repository for git to ask,
+    // so it is listed and removed as a plain directory, as `cs -rm` does:
+    // every top-level entry cs did not create, tracked or not, then the
+    // directory itself once those are granted.
+    #[test]
+    fn a_worktree_whose_base_is_gone_is_listed_and_removed_as_a_plain_directory() {
+        let root = std::env::temp_dir().join(format!("cs-unowned-orphan-wt-{}", std::process::id()));
+        let wt = worktree_beside_base(&root);
+        fs::write(wt.join("notes.txt"), "draft").unwrap();
+        fs::remove_dir_all(root.join("proj")).unwrap();
+        assert!(wt.join(".git").is_file(), "fixture: the worktree still has its .git file");
+
+        let got = unowned_entries("proj@task", &wt);
+
+        assert_eq!(got, Ok(UnownedEntries::NotCreatedByCs(vec!["notes.txt".into(), "tracked.txt".into()])));
+        let refused = remove_session_path(&root, "proj@task", &wt, RemoveGrants::default()).map_err(|e| e.to_string());
+        assert_eq!(refused, Err("proj@task holds files cs did not create: notes.txt, tracked.txt".to_string()));
+        assert!(wt.join("notes.txt").exists(), "a refused removal keeps the files");
+        let granted = RemoveGrants { unowned_files: true, ..RemoveGrants::default() };
+        assert_eq!(remove_session_path(&root, "proj@task", &wt, granted).map_err(|e| e.to_string()), Ok(()));
+        assert!(!wt.exists(), "the worktree directory is removed");
         let _ = fs::remove_dir_all(&root);
     }
 

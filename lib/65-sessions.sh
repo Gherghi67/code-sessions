@@ -370,14 +370,15 @@ remove_session() {
     [ -z "$age_state_left" ] || return 1
 }
 
-# Top-level entries of a session root that cs did not put there, as one
-# comma-separated line (empty when there are none). cs owns .cs/, .claude/,
-# the session git files and the two CLAUDE files; .DS_Store is Finder's.
-# notes.md, changes.md, discoveries.md, logs/ and artifacts/ are where legacy
-# cs layouts kept session files at the root. A third-party cache (.omc,
-# .claude-crawl) is not cs's to delete silently, so it still counts.
+# Top-level entries of a session root that cs did not put there, one name
+# per line as _names_as_lines writes them (nothing when there are none). cs
+# owns .cs/, .claude/, the session git files and the two CLAUDE files;
+# .DS_Store is Finder's. notes.md, changes.md, discoveries.md, logs/ and
+# artifacts/ are where legacy cs layouts kept session files at the root. A
+# third-party cache (.omc, .claude-crawl) is not cs's to delete silently, so
+# it still counts. Fails without perl, as _names_as_lines does.
 _session_foreign_entries() {  # session_dir
-    local dir="$1" entry name out=""
+    local dir="$1" entry name
     for entry in "$dir"/* "$dir"/.[!.]* "$dir"/..?*; do
         [ -e "$entry" ] || [ -L "$entry" ] || continue
         name="${entry##*/}"
@@ -385,9 +386,29 @@ _session_foreign_entries() {  # session_dir
             .cs|.claude|.git|.gitignore|.gitattributes|CLAUDE.md|CLAUDE.local.md|.DS_Store) continue ;;
             notes.md|changes.md|discoveries.md|logs|artifacts) continue ;;
         esac
+        printf '%s\0' "$name"
+    done | _names_as_lines
+}
+
+# The names _session_foreign_entries prints, as one comma-separated line,
+# each control character in them as "?" (_printable_name).
+_session_foreign_line() {  # foreign_entries
+    local line name out=""
+    while IFS= read -r line; do
+        printf -v name '%b' "$line"
         out="${out:+$out, }$name"
-    done
-    printf '%s' "$out"
+    done <<< "$1"
+    _printable_name "$out"
+}
+
+# The confirm's listing of the names _session_foreign_entries prints, one
+# per line indented four spaces as _untracked_listing_format prints a file,
+# at most 20, then how many are not shown.
+_session_foreign_listing() {  # foreign_entries
+    local line listing nl=$'\n'
+    listing=$(while IFS= read -r line; do printf '1\t%s\n' "$line"; done <<< "$1" \
+        | _untracked_listing_format 20) || return 1
+    printf '%s' "${listing#*"$nl"}"
 }
 
 # The first mount point at or under a directory, from the mount table text on
@@ -570,10 +591,14 @@ Add --delete-files to remove $them with --force"
     # those in the confirm, and make --force ask for them by name.
     local foreign=""
     if [ ! -L "$session_dir" ]; then
-        foreign=$(_session_foreign_entries "$session_dir")
+        foreign=$(_session_foreign_entries "$session_dir") \
+            || error "cs could not list the files in $session_dir; refusing to remove what it cannot list"
     fi
     if [ -n "$foreign" ] && [ -n "$force" ] && [ -z "$delete_files" ]; then
-        error "Session '$session_name' holds files cs did not create: $foreign. Add --delete-files to remove them with --force"
+        local foreign_line
+        foreign_line=$(_session_foreign_line "$foreign") \
+            || error "cs could not list the files in $session_dir; refusing to remove what it cannot list"
+        error "Session '$session_name' holds files cs did not create: $foreign_line. Add --delete-files to remove them with --force"
     fi
 
     # Confirm deletion
@@ -587,7 +612,12 @@ Add --delete-files to remove $them with --force"
     else
         # read -p only shows its prompt on a terminal; the list must reach
         # the user even when the answer is piped in.
-        [ -z "$foreign" ] || printf '%bAlso deletes files cs did not create: %s%b\n' "$RED" "$foreign" "$NC" >&2
+        if [ -n "$foreign" ]; then
+            local foreign_listing
+            foreign_listing=$(_session_foreign_listing "$foreign") \
+                || error "cs could not list the files in $session_dir; refusing to remove what it cannot list"
+            printf '%bAlso deletes files cs did not create:\n%s%b\n' "$RED" "$foreign_listing" "$NC" >&2
+        fi
         read -r -p $'\033[0;31mRemove session '"'$session_name'"$'? [y/N] \033[0m' confirm
     fi
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then

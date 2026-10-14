@@ -3629,8 +3629,16 @@ _names_as_lines() {
                  chomp; s/\\/\\\\/g; s/\n/\\n/g; print "$_\n"'
 }
 
+# A name as a message prints it: each control character in it (a newline,
+# an escape, a carriage return) as "?", so no name can break a line or drive
+# the terminal. Names are bytes, whatever the locale.
+_printable_name() {  # name
+    printf '%s' "$1" | env LC_ALL=C tr '[:cntrl:]' '[?*]'
+}
+
 # Tracked files marked skip-worktree or assume-unchanged whose working copy
-# differs from the index, one per line: git diff hides these edits and git
+# differs from the index, one per line, each control character in a path
+# shown as "?" (_printable_name): git diff hides these edits and git
 # keeps no copy of them, so removing a worktree destroys them. Checked on a
 # worktree about to be removed only; in a base the flags usually mark local
 # config the user means to keep uncommitted. A link counts by its target, as
@@ -3653,7 +3661,7 @@ _hidden_tracked_edits() {  # checkout_dir [prefix]
         path="${entry#*$'\t'}"
         if [ "$mode" = 160000 ]; then
             [ -e "$1/$path/.git" ] || continue
-            _hidden_tracked_edits "$1/$path" "${2:-}${path//$'\n'/?}/" || return 1
+            _hidden_tracked_edits "$1/$path" "${2:-}$(_printable_name "$path")/" || return 1
             continue
         fi
         case "$tag" in S|[[:lower:]]) ;; *) continue ;; esac
@@ -3673,7 +3681,7 @@ _hidden_tracked_edits() {  # checkout_dir [prefix]
         else
             continue
         fi
-        [ "$now" = "$oid" ] || printf '%s%s\n' "${2:-}" "$path"
+        [ "$now" = "$oid" ] || printf '%s%s\n' "${2:-}" "$(_printable_name "$path")"
     done < <(git -C "$1" ls-files -v -s -z 2>/dev/null)
     return 0
 }
@@ -4674,9 +4682,13 @@ $missing"
     fi
 
     local aside=""
-    if [ "$mode" = "ignored" ]; then
-        cs_private_dir "$base_dir/.cs" >/dev/null \
-            || error "cannot fuse the worktree's records: $base_dir/.cs/private is locked. Mount it, then retry."
+    if [ "$mode" = "ignored" ] && ! cs_private_dir "$base_dir/.cs" >/dev/null; then
+        # A link here is a vault locked since the vault-link check above;
+        # anything else is a .cs/private that is no directory at all, which
+        # no mount fixes.
+        [ -L "$base_dir/.cs/private" ] \
+            || error "cannot fuse the worktree's records: $base_dir/.cs/private is not a directory. Nothing was removed. Move it out of $base_dir/.cs, then run /finish $task again."
+        error "cannot fuse the worktree's records: $base_dir/.cs/private is locked. Mount it, then retry."
     fi
     _retire_trash_ignored_work "$wt_dir" "$task"
     local trashed nl=$'\n'
@@ -5527,7 +5539,8 @@ _fuse_plan() {  # feature_meta base_meta out
 }
 
 # The files of a feature's .cs the record fuse cannot carry into the base,
-# one per line as ".cs/<rel>", sorted, a newline in a name shown as "?".
+# one per line as ".cs/<rel>", sorted, each control character in a name
+# shown as "?" (_printable_name).
 # Retire refuses on any; the features screen counts them. Fails when the
 # classification fails.
 _fuse_conflicts() {  # feature_meta base_meta
@@ -5541,7 +5554,7 @@ _fuse_conflicts() {  # feature_meta base_meta
         case "$entry" in
             "conflict "*)
                 entry="${entry#conflict }"
-                out="$out.cs/${entry//$'\n'/?}"$'\n' ;;
+                out="$out.cs/$(_printable_name "$entry")"$'\n' ;;
         esac
     done < "$plan"
     rm -f "$plan"
@@ -5639,8 +5652,8 @@ fuse_session_records() {
             return 1
         fi
         case "$verdict" in
-            restore) warn "$rel was deleted in the base and edited in the feature; the feature's version is back in the base" ;;
-            replace) warn "$rel was edited in the feature and not in the base; the feature's version is now in the base" ;;
+            restore) warn "$(_printable_name "$rel") was deleted in the base and edited in the feature; the feature's version is back in the base" ;;
+            replace) warn "$(_printable_name "$rel") was edited in the feature and not in the base; the feature's version is now in the base" ;;
         esac
     done < "$plan"
     rm -f "$plan"
@@ -11736,14 +11749,15 @@ remove_session() {
     [ -z "$age_state_left" ] || return 1
 }
 
-# Top-level entries of a session root that cs did not put there, as one
-# comma-separated line (empty when there are none). cs owns .cs/, .claude/,
-# the session git files and the two CLAUDE files; .DS_Store is Finder's.
-# notes.md, changes.md, discoveries.md, logs/ and artifacts/ are where legacy
-# cs layouts kept session files at the root. A third-party cache (.omc,
-# .claude-crawl) is not cs's to delete silently, so it still counts.
+# Top-level entries of a session root that cs did not put there, one name
+# per line as _names_as_lines writes them (nothing when there are none). cs
+# owns .cs/, .claude/, the session git files and the two CLAUDE files;
+# .DS_Store is Finder's. notes.md, changes.md, discoveries.md, logs/ and
+# artifacts/ are where legacy cs layouts kept session files at the root. A
+# third-party cache (.omc, .claude-crawl) is not cs's to delete silently, so
+# it still counts. Fails without perl, as _names_as_lines does.
 _session_foreign_entries() {  # session_dir
-    local dir="$1" entry name out=""
+    local dir="$1" entry name
     for entry in "$dir"/* "$dir"/.[!.]* "$dir"/..?*; do
         [ -e "$entry" ] || [ -L "$entry" ] || continue
         name="${entry##*/}"
@@ -11751,9 +11765,29 @@ _session_foreign_entries() {  # session_dir
             .cs|.claude|.git|.gitignore|.gitattributes|CLAUDE.md|CLAUDE.local.md|.DS_Store) continue ;;
             notes.md|changes.md|discoveries.md|logs|artifacts) continue ;;
         esac
+        printf '%s\0' "$name"
+    done | _names_as_lines
+}
+
+# The names _session_foreign_entries prints, as one comma-separated line,
+# each control character in them as "?" (_printable_name).
+_session_foreign_line() {  # foreign_entries
+    local line name out=""
+    while IFS= read -r line; do
+        printf -v name '%b' "$line"
         out="${out:+$out, }$name"
-    done
-    printf '%s' "$out"
+    done <<< "$1"
+    _printable_name "$out"
+}
+
+# The confirm's listing of the names _session_foreign_entries prints, one
+# per line indented four spaces as _untracked_listing_format prints a file,
+# at most 20, then how many are not shown.
+_session_foreign_listing() {  # foreign_entries
+    local line listing nl=$'\n'
+    listing=$(while IFS= read -r line; do printf '1\t%s\n' "$line"; done <<< "$1" \
+        | _untracked_listing_format 20) || return 1
+    printf '%s' "${listing#*"$nl"}"
 }
 
 # The first mount point at or under a directory, from the mount table text on
@@ -11936,10 +11970,14 @@ Add --delete-files to remove $them with --force"
     # those in the confirm, and make --force ask for them by name.
     local foreign=""
     if [ ! -L "$session_dir" ]; then
-        foreign=$(_session_foreign_entries "$session_dir")
+        foreign=$(_session_foreign_entries "$session_dir") \
+            || error "cs could not list the files in $session_dir; refusing to remove what it cannot list"
     fi
     if [ -n "$foreign" ] && [ -n "$force" ] && [ -z "$delete_files" ]; then
-        error "Session '$session_name' holds files cs did not create: $foreign. Add --delete-files to remove them with --force"
+        local foreign_line
+        foreign_line=$(_session_foreign_line "$foreign") \
+            || error "cs could not list the files in $session_dir; refusing to remove what it cannot list"
+        error "Session '$session_name' holds files cs did not create: $foreign_line. Add --delete-files to remove them with --force"
     fi
 
     # Confirm deletion
@@ -11953,7 +11991,12 @@ Add --delete-files to remove $them with --force"
     else
         # read -p only shows its prompt on a terminal; the list must reach
         # the user even when the answer is piped in.
-        [ -z "$foreign" ] || printf '%bAlso deletes files cs did not create: %s%b\n' "$RED" "$foreign" "$NC" >&2
+        if [ -n "$foreign" ]; then
+            local foreign_listing
+            foreign_listing=$(_session_foreign_listing "$foreign") \
+                || error "cs could not list the files in $session_dir; refusing to remove what it cannot list"
+            printf '%bAlso deletes files cs did not create:\n%s%b\n' "$RED" "$foreign_listing" "$NC" >&2
+        fi
         read -r -p $'\033[0;31mRemove session '"'$session_name'"$'? [y/N] \033[0m' confirm
     fi
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then

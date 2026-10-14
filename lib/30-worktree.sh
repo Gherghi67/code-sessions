@@ -146,8 +146,16 @@ _names_as_lines() {
                  chomp; s/\\/\\\\/g; s/\n/\\n/g; print "$_\n"'
 }
 
+# A name as a message prints it: each control character in it (a newline,
+# an escape, a carriage return) as "?", so no name can break a line or drive
+# the terminal. Names are bytes, whatever the locale.
+_printable_name() {  # name
+    printf '%s' "$1" | env LC_ALL=C tr '[:cntrl:]' '[?*]'
+}
+
 # Tracked files marked skip-worktree or assume-unchanged whose working copy
-# differs from the index, one per line: git diff hides these edits and git
+# differs from the index, one per line, each control character in a path
+# shown as "?" (_printable_name): git diff hides these edits and git
 # keeps no copy of them, so removing a worktree destroys them. Checked on a
 # worktree about to be removed only; in a base the flags usually mark local
 # config the user means to keep uncommitted. A link counts by its target, as
@@ -170,7 +178,7 @@ _hidden_tracked_edits() {  # checkout_dir [prefix]
         path="${entry#*$'\t'}"
         if [ "$mode" = 160000 ]; then
             [ -e "$1/$path/.git" ] || continue
-            _hidden_tracked_edits "$1/$path" "${2:-}${path//$'\n'/?}/" || return 1
+            _hidden_tracked_edits "$1/$path" "${2:-}$(_printable_name "$path")/" || return 1
             continue
         fi
         case "$tag" in S|[[:lower:]]) ;; *) continue ;; esac
@@ -190,7 +198,7 @@ _hidden_tracked_edits() {  # checkout_dir [prefix]
         else
             continue
         fi
-        [ "$now" = "$oid" ] || printf '%s%s\n' "${2:-}" "$path"
+        [ "$now" = "$oid" ] || printf '%s%s\n' "${2:-}" "$(_printable_name "$path")"
     done < <(git -C "$1" ls-files -v -s -z 2>/dev/null)
     return 0
 }
@@ -1191,9 +1199,13 @@ $missing"
     fi
 
     local aside=""
-    if [ "$mode" = "ignored" ]; then
-        cs_private_dir "$base_dir/.cs" >/dev/null \
-            || error "cannot fuse the worktree's records: $base_dir/.cs/private is locked. Mount it, then retry."
+    if [ "$mode" = "ignored" ] && ! cs_private_dir "$base_dir/.cs" >/dev/null; then
+        # A link here is a vault locked since the vault-link check above;
+        # anything else is a .cs/private that is no directory at all, which
+        # no mount fixes.
+        [ -L "$base_dir/.cs/private" ] \
+            || error "cannot fuse the worktree's records: $base_dir/.cs/private is not a directory. Nothing was removed. Move it out of $base_dir/.cs, then run /finish $task again."
+        error "cannot fuse the worktree's records: $base_dir/.cs/private is locked. Mount it, then retry."
     fi
     _retire_trash_ignored_work "$wt_dir" "$task"
     local trashed nl=$'\n'
@@ -2044,7 +2056,8 @@ _fuse_plan() {  # feature_meta base_meta out
 }
 
 # The files of a feature's .cs the record fuse cannot carry into the base,
-# one per line as ".cs/<rel>", sorted, a newline in a name shown as "?".
+# one per line as ".cs/<rel>", sorted, each control character in a name
+# shown as "?" (_printable_name).
 # Retire refuses on any; the features screen counts them. Fails when the
 # classification fails.
 _fuse_conflicts() {  # feature_meta base_meta
@@ -2058,7 +2071,7 @@ _fuse_conflicts() {  # feature_meta base_meta
         case "$entry" in
             "conflict "*)
                 entry="${entry#conflict }"
-                out="$out.cs/${entry//$'\n'/?}"$'\n' ;;
+                out="$out.cs/$(_printable_name "$entry")"$'\n' ;;
         esac
     done < "$plan"
     rm -f "$plan"
@@ -2156,8 +2169,8 @@ fuse_session_records() {
             return 1
         fi
         case "$verdict" in
-            restore) warn "$rel was deleted in the base and edited in the feature; the feature's version is back in the base" ;;
-            replace) warn "$rel was edited in the feature and not in the base; the feature's version is now in the base" ;;
+            restore) warn "$(_printable_name "$rel") was deleted in the base and edited in the feature; the feature's version is back in the base" ;;
+            replace) warn "$(_printable_name "$rel") was edited in the feature and not in the base; the feature's version is now in the base" ;;
         esac
     done < "$plan"
     rm -f "$plan"

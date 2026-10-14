@@ -646,7 +646,8 @@ test_retire_moves_ignored_work_with_gio_when_trash_is_missing() {
 test_retire_refuses_before_it_trashes_anything() {
     local wt="$CS_SESSIONS_ROOT/proj@task1" base_dir="$CS_SESSIONS_ROOT/proj" sha bin case expected output status
     bin=$(fake_trash_bin moves trash)
-    for case in hidden-edit no-mode untracked own-claude-local-md locked-vault base-dirty; do
+    for case in hidden-edit no-mode untracked own-claude-local-md locked-vault base-dirty \
+        settings-link unreadable-settings failed-carry private-not-a-directory; do
         rm -rf "$wt" "$base_dir" "$TEST_TMPDIR/trash.log"
         sha=$(_landed_feature_ignoring '.env') || { echo "  FAIL: $case: integrate fixture"; return 1; }
         echo "KEY=value" > "$wt/apps/web/.env"
@@ -674,6 +675,29 @@ README.md" ;;
             base-dirty)
                 echo "an edit" >> "$base_dir/README.md"
                 expected="Error: Base session has uncommitted changes; commit them in $base_dir first" ;;
+            settings-link)
+                printf '%s\n' '{"permissions": {"allow": ["Bash(make:*)"]}}' > "$TEST_TMPDIR/elsewhere.json"
+                rm -f "$wt/.claude/settings.local.json"
+                ln -s "$TEST_TMPDIR/elsewhere.json" "$wt/.claude/settings.local.json"
+                expected="Error: $wt/.claude/settings.local.json is a link, and cs reads the feature's permission rules only from a file of its own. Nothing was removed. Put the rules in a file there, or delete the link, then run /finish task1 again." ;;
+            unreadable-settings)
+                printf '%s\n' '{"permissions": [1, 2]}' > "$wt/.claude/settings.local.json"
+                expected="Error: $wt/.claude/settings.local.json is not one JSON object, or its permissions is not an object, or its permissions.allow, deny or ask is not a list, so cs cannot add the feature's permission rules to $base_dir/.claude/settings.local.json. Nothing was removed. Fix it, then run /finish task1 again." ;;
+            failed-carry)
+                printf '%s\n' '{"permissions": {"allow": ["Bash(make:*)"]}}' > "$wt/.claude/settings.local.json"
+                rm -rf "$base_dir/.claude" "$TEST_TMPDIR/outside-claude"
+                mkdir -p "$TEST_TMPDIR/outside-claude"
+                ln -s "$TEST_TMPDIR/outside-claude" "$base_dir/.claude"
+                expected="cs_mkdir_inside: $base_dir/.claude leads to $(cd "$TEST_TMPDIR/outside-claude" && pwd -P), outside the session $base_dir
+Error: Could not add the feature's permission rules to $base_dir/.claude/settings.local.json; nothing was removed" ;;
+            private-not-a-directory)
+                # A regular file, not a link: the vault-link check before the
+                # base-dirty check passes it, and the record fuse's own check
+                # after the rules carry refuses it.
+                rm -rf "$base_dir/.cs/private"
+                echo "not a vault" > "$base_dir/.cs/private"
+                expected="cs: /finish progress not recorded: .cs/private is not a directory
+Error: cannot fuse the worktree's records: $base_dir/.cs/private is not a directory. Nothing was removed. Move it out of $base_dir/.cs, then run /finish task1 again." ;;
         esac
         status=0
         output=$(PATH="$bin:$PATH" "$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1) || status=$?
@@ -2216,9 +2240,10 @@ test_integrate_tracked_mode_skips_pointers_to_base_deleted_topics() {
 run_test test_integrate_tracked_mode_skips_pointers_to_base_deleted_topics
 
 test_retire_ignored_mode_fuses_records() {
-    local base_dir="$CS_SESSIONS_ROOT/proj"
+    local base_dir="$CS_SESSIONS_ROOT/proj" esc="esc"$'\033'"[31m.md"
     mkdir -p "$base_dir/.cs"/{memory,local}
     echo "base note" > "$base_dir/.cs/memory/note-base.md"
+    echo "esc note" > "$base_dir/.cs/memory/$esc"
     echo "shared note" > "$base_dir/.cs/memory/note-shared.md"
     printf -- '---\ndescription: seed\n---\n# Session narrative (tester)\n\n## Prior finding\n' \
         > "$base_dir/.cs/memory/narrative.tester.md"
@@ -2243,6 +2268,7 @@ test_retire_ignored_mode_fuses_records() {
     printf -- '# Session narrative (plain)\n\n## Plain finding\n' \
         > "$wt/.cs/memory/narrative.plain.md"
     echo "task version" > "$wt/.cs/memory/note-base.md"
+    echo "esc task version" > "$wt/.cs/memory/$esc"
     echo "shared note" > "$wt/.cs/memory/note-shared.md"
     local output merge_status
     local sha
@@ -2253,6 +2279,8 @@ test_retire_ignored_mode_fuses_records() {
         || { echo "  retire output: $output"; return 1; }
     assert_output_contains "$output" "memory/note-base.md was edited in the feature and not in the base; the feature's version is now in the base" \
         "an inherited topic the feature edited is named" || return 1
+    assert_eq "memory/esc?[31m.md was edited in the feature and not in the base; the feature's version is now in the base" \
+        "$(printf '%s\n' "$output" | grep -F 'memory/esc')" "a control character in the topic's name shows as ?" || return 1
     assert_output_not_contains "$output" "note-shared.md" \
         "a topic byte-identical to the base's is skipped silently" || return 1
     assert_eq "task version" "$(cat "$base_dir/.cs/memory/note-base.md")" \
@@ -2424,15 +2452,18 @@ run_test test_retire_ignored_mode_leaves_a_base_deleted_topic_deleted
 
 # The feature edited a topic it inherited and the base deleted meanwhile: the
 # edit is work, so the feature's text comes back, its pointer with it, and
-# the retire says which topic.
+# the retire says which topic, each control character in its name as "?".
 test_retire_ignored_mode_brings_back_a_deleted_topic_the_feature_edited() {
     local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    local esc="esc"$'\033'"[31m.md"
     _ignored_base_with_two_topics
+    echo "esc topic" > "$base_dir/.cs/memory/$esc"
     cs_launch "proj@t1"
     echo "done" > "$wt/result.txt"
     (cd "$wt" && git add result.txt && git commit -q -m "task")
     echo "gone topic, with a feature note" > "$wt/.cs/memory/gone.md"
-    rm "$base_dir/.cs/memory/gone.md" "$base_dir/.cs/memory/kept.md"
+    echo "esc topic, with a feature note" > "$wt/.cs/memory/$esc"
+    rm "$base_dir/.cs/memory/gone.md" "$base_dir/.cs/memory/kept.md" "$base_dir/.cs/memory/$esc"
     : > "$base_dir/.cs/memory/MEMORY.md"
     sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
@@ -2441,6 +2472,8 @@ test_retire_ignored_mode_brings_back_a_deleted_topic_the_feature_edited() {
         "the feature's edit is back in the base" || return 1
     assert_output_contains "$output" "memory/gone.md was deleted in the base and edited in the feature" \
         "the retire names the topic" || return 1
+    assert_eq "memory/esc?[31m.md was deleted in the base and edited in the feature; the feature's version is back in the base" \
+        "$(printf '%s\n' "$output" | grep -F 'memory/esc')" "the retire shows a control character in the topic's name as ?" || return 1
     assert_eq "- [Gone](gone.md): a topic" "$(grep -F 'gone.md' "$base_dir/.cs/memory/MEMORY.md")" \
         "its pointer comes back with it" || return 1
     assert_file_not_exists "$base_dir/.cs/memory/kept.md" "the untouched deleted topic stays deleted" || return 1
@@ -2943,7 +2976,8 @@ run_test test_retire_ignored_mode_carries_every_record_the_base_lacks
 # What the fuse cannot carry without overwriting the base, it refuses to
 # destroy: a plan both sides edited, a brief each side wrote, the feature's
 # README once edited, a repository nested under .cs with its history, and a
-# link. The refusal lists them all and nothing moves, not even what could go.
+# link. The refusal lists them all, each control character in a name as "?",
+# and nothing moves, not even what could go.
 test_retire_ignored_mode_refuses_records_it_cannot_carry() {
     local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output line status=0
     _ignored_base_with_two_topics
@@ -2961,18 +2995,20 @@ test_retire_ignored_mode_refuses_records_it_cannot_carry() {
     mkdir -p "$wt/.cs/scratch-repo"
     (cd "$wt/.cs/scratch-repo" && git init -q && echo kept > kept.txt && git add kept.txt && git commit -q -m kept)
     ln -s "$base_dir/README.md" "$wt/.cs/plans/link.md"
+    ln -s "$base_dir/README.md" "$wt/.cs/plans/esc"$'\033'"[31m"$'\n'"line.md"
     echo "could land" > "$wt/.cs/plans/new.md"
     sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
     line=$("$CS_BIN" proj -features --porcelain 2>&1)
-    assert_eq "5" "$(_feat_field "$line" 7)" "five files at risk: $line" || return 1
+    assert_eq "6" "$(_feat_field "$line" 7)" "six files at risk: $line" || return 1
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
     assert_eq "1" "$status" "the retire refuses: $output" || return 1
     assert_eq "Error: The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the path needs a new directory named .cs, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:
 .cs/README.md
 .cs/brief.md
 .cs/plans/base-plan.md
+.cs/plans/esc?[31m?line.md
 .cs/plans/link.md
-.cs/scratch-repo/" "$output" "the refusal names all five and nothing else" || return 1
+.cs/scratch-repo/" "$output" "the refusal names all six, each control character as ?, and nothing else" || return 1
     assert_eq "kept" "$(git -C "$wt/.cs/scratch-repo" show HEAD:kept.txt 2>/dev/null)" "the nested repository keeps its history" || return 1
     assert_eq "base plan, base edit" "$(cat "$base_dir/.cs/plans/base-plan.md")" "the base's plan is untouched" || return 1
     assert_file_not_exists "$base_dir/.cs/plans/new.md" "nothing was fused" || return 1
@@ -3818,12 +3854,15 @@ run_test test_retire_refuses_a_worktree_whose_state_names_no_mode
 
 # A tracked file marked skip-worktree (or assume-unchanged) hides its edit
 # from git diff, and git keeps no copy of the edit: removal would destroy it.
+# The refusal shows each control character in a name as "?".
 test_retire_refuses_an_edit_git_diff_does_not_show() {
-    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0 name
+    name="esc"$'\033'"[31m"$'\n'"line.yml"
     mkdir -p "$base_dir/.cs"/{memory,local}
     echo "# P" > "$base_dir/README.md"
     echo "default: 1" > "$base_dir/config.yml"
     echo "default: 2" > "$base_dir/other.yml"
+    echo "default: 3" > "$base_dir/$name"
     ln -s defaults-a "$base_dir/profile"
     printf 'defaults-a' > "$base_dir/alias"
     printf '.cs/\n' > "$base_dir/.gitignore"
@@ -3833,6 +3872,8 @@ test_retire_refuses_an_edit_git_diff_does_not_show() {
     (cd "$wt" && git add result.txt && git commit -q -m "task")
     git -C "$wt" update-index --skip-worktree config.yml
     echo "local: tuned" >> "$wt/config.yml"
+    git -C "$wt" update-index --skip-worktree -- "$name"
+    echo "local: tuned as well" >> "$wt/$name"
     git -C "$wt" update-index --assume-unchanged other.yml
     echo "local: tuned too" >> "$wt/other.yml"
     git -C "$wt" update-index --assume-unchanged profile
@@ -3847,14 +3888,17 @@ test_retire_refuses_an_edit_git_diff_does_not_show() {
         "the refusal says why" || return 1
     assert_eq "alias
 config.yml
+esc?[31m?line.yml
 other.yml
-profile" "$(printf '%s\n' "$output" | awk 'listed; /first:$/ { listed = 1 }')" "the refusal names the two files, the retargeted link and the file now a link" || return 1
+profile" "$(printf '%s\n' "$output" | awk 'listed; /first:$/ { listed = 1 }')" "the refusal names the three files, the retargeted link and the file now a link" || return 1
     assert_eq "default: 1
 local: tuned" "$(cat "$wt/config.yml")" "the edit is still there" || return 1
     assert_eq "defaults-b" "$(readlink "$wt/profile")" "the link still has its new target" || return 1
     # Positive control: an unedited flagged file or link is no reason to refuse.
     git -C "$wt" update-index --no-assume-unchanged other.yml
     git -C "$wt" checkout -q -- other.yml
+    git -C "$wt" update-index --no-skip-worktree -- "$name"
+    git -C "$wt" checkout -q -- "$name"
     git -C "$wt" show HEAD:config.yml > "$wt/config.yml"
     ln -sfn defaults-a "$wt/profile"
     rm "$wt/alias" && printf 'defaults-a' > "$wt/alias"
@@ -3984,9 +4028,10 @@ run_test test_retire_trashes_only_the_ignored_file_beside_an_unpopulated_submodu
 
 # A submodule keeps its own index, so a flagged file inside it hides its edit
 # from the submodule's git diff and from the worktree's: removal destroys it.
+# The refusal shows a control character in the submodule's path as "?".
 test_retire_refuses_an_edit_git_diff_does_not_show_inside_a_submodule() {
     local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" lib="$TEST_TMPDIR/sublib"
-    local sha output line status=0
+    local sha output line status=0 sub="sub"$'\033'"x"
     mkdir -p "$lib"
     (cd "$lib" && git init -q && git config core.autocrlf false && echo lib > lib.txt \
         && git add -A && git commit -q -m lib)
@@ -3995,7 +4040,7 @@ test_retire_refuses_an_edit_git_diff_does_not_show_inside_a_submodule() {
     printf '.cs/\n' > "$base_dir/.gitignore"
     (cd "$base_dir" && git init -q && git config core.autocrlf false && git add -A && git commit -q -m init \
         && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always \
-            git submodule add -q "$lib" sub && git commit -q -m "add submodule") \
+            git submodule add -q "$lib" "$sub" && git commit -q -m "add submodule") \
         || { echo "  FAIL: submodule fixture"; return 1; }
     cs_launch "proj@t1"
     (cd "$wt" && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always \
@@ -4003,8 +4048,8 @@ test_retire_refuses_an_edit_git_diff_does_not_show_inside_a_submodule() {
         || { echo "  FAIL: submodule fixture"; return 1; }
     echo "done" > "$wt/result.txt"
     (cd "$wt" && git add result.txt && git commit -q -m "task")
-    git -C "$wt/sub" update-index --assume-unchanged lib.txt
-    echo "local: tuned" >> "$wt/sub/lib.txt"
+    git -C "$wt/$sub" update-index --assume-unchanged lib.txt
+    echo "local: tuned" >> "$wt/$sub/lib.txt"
     # The integrate updates submodules in its temporary worktree.
     sha=$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always \
         land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
@@ -4014,12 +4059,12 @@ test_retire_refuses_an_edit_git_diff_does_not_show_inside_a_submodule() {
     assert_eq "1" "$status" "the retire refuses: $output" || return 1
     assert_output_contains "$output" "Worktree has edits git diff does not show (skip-worktree or assume-unchanged), which removal would destroy; commit them, or undo them and clear the flag (git update-index --no-skip-worktree / --no-assume-unchanged), first:" \
         "the refusal says why" || return 1
-    assert_eq "sub/lib.txt" "$(printf '%s\n' "$output" | awk 'listed; /first:$/ { listed = 1 }')" \
+    assert_eq "sub?x/lib.txt" "$(printf '%s\n' "$output" | awk 'listed; /first:$/ { listed = 1 }')" \
         "the refusal names the file inside the submodule" || return 1
     assert_eq "lib
-local: tuned" "$(cat "$wt/sub/lib.txt")" "the edit is still there" || return 1
+local: tuned" "$(cat "$wt/$sub/lib.txt")" "the edit is still there" || return 1
     # Positive control: the flagged file left as committed retires.
-    echo lib > "$wt/sub/lib.txt"
+    echo lib > "$wt/$sub/lib.txt"
     status=0
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
     assert_eq "0" "$status" "an unedited flagged file in a submodule retires: $output" || return 1

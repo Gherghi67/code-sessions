@@ -1120,9 +1120,13 @@ fn render_confirm_delete(app: &App, frame: &mut Frame) {
     };
     let hint_color = if remaining > 0 { p.comment } else { p.fg };
 
+    // Borders, question, note, the blank above the hint and the hint.
+    let fixed_rows = 6;
     let columns = popup_columns(50, frame.area());
-    let warnings = warning_lines(&app.delete_warnings, frame.area().height, 7 + grant_rows(app), columns, p.red);
-    let popup_area = centered_rect(50, 7 + warnings.len() as u16 + grant_rows(app), frame.area());
+    let separator = grant_separator(app, frame.area().height, fixed_rows);
+    let grants = grant_rows(app, separator);
+    let warnings = warning_lines(&app.delete_warnings, frame.area().height, fixed_rows + grants, columns, p.red);
+    let popup_area = centered_rect(50, fixed_rows + warnings.len() as u16 + grants, frame.area());
     frame.render_widget(Clear, popup_area);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -1132,7 +1136,7 @@ fn render_confirm_delete(app: &App, frame: &mut Frame) {
 
     let mut lines = vec![one_row(&question, columns, p.fg), one_row(note, columns, p.fg)];
     lines.extend(warnings);
-    push_grant_lines(&mut lines, app, columns);
+    push_grant_lines(&mut lines, app, columns, separator);
     lines.push(Line::from(""));
     lines.push(one_row(&hint, columns, hint_color));
     let text = Paragraph::new(lines)
@@ -1162,9 +1166,13 @@ fn render_confirm_batch_delete(app: &App, frame: &mut Frame) {
     };
     let hint_color = if remaining > 0 { p.comment } else { p.fg };
 
+    // Borders, question, names, the blank above the note, the note and the hint.
+    let fixed_rows = 7;
     let columns = popup_columns(55, frame.area());
-    let warnings = warning_lines(&app.delete_warnings, frame.area().height, 7 + grant_rows(app), columns, p.red);
-    let popup_area = centered_rect(55, 7 + warnings.len() as u16 + grant_rows(app), frame.area());
+    let separator = grant_separator(app, frame.area().height, fixed_rows);
+    let grants = grant_rows(app, separator);
+    let warnings = warning_lines(&app.delete_warnings, frame.area().height, fixed_rows + grants, columns, p.red);
+    let popup_area = centered_rect(55, fixed_rows + warnings.len() as u16 + grants, frame.area());
     frame.render_widget(Clear, popup_area);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -1174,7 +1182,7 @@ fn render_confirm_batch_delete(app: &App, frame: &mut Frame) {
 
     let mut lines = vec![one_row(&format!("Delete {} sessions?", count), columns, p.fg), one_row(&list, columns, p.comment)];
     lines.extend(warnings);
-    push_grant_lines(&mut lines, app, columns);
+    push_grant_lines(&mut lines, app, columns, separator);
     lines.push(Line::from(""));
     lines.push(one_row("This cannot be undone.", columns, p.red));
     lines.push(one_row(&hint, columns, hint_color));
@@ -1199,18 +1207,30 @@ fn grant_lines(app: &App) -> Vec<String> {
     lines
 }
 
-/// Rows the grant lines take: a blank separator, then one row each.
-fn grant_rows(app: &App) -> u16 {
-    let n = grant_lines(app).len() as u16;
-    if n == 0 { 0 } else { 1 + n }
+/// Whether the grant lines get a blank separator above them: they do,
+/// unless warnings exist and the `height`-row screen would leave them no row
+/// with it but one without it. That row then holds the warning or their
+/// count, directly over the grant it explains. `fixed_rows` are the popup's
+/// rows besides its warnings and grants.
+fn grant_separator(app: &App, height: u16, fixed_rows: u16) -> bool {
+    app.delete_warnings.is_empty() || height != fixed_rows + grant_rows(app, true)
 }
 
-fn push_grant_lines(lines: &mut Vec<Line<'static>>, app: &App, columns: u16) {
+/// Rows the grant lines take: the blank separator when `separator`, then
+/// one row each.
+fn grant_rows(app: &App, separator: bool) -> u16 {
+    let n = grant_lines(app).len() as u16;
+    if n == 0 { 0 } else { separator as u16 + n }
+}
+
+fn push_grant_lines(lines: &mut Vec<Line<'static>>, app: &App, columns: u16, separator: bool) {
     let grants = grant_lines(app);
     if grants.is_empty() {
         return;
     }
-    lines.push(Line::from(""));
+    if separator {
+        lines.push(Line::from(""));
+    }
     for text in grants {
         lines.push(one_row(&text, columns, app.theme.fg));
     }
@@ -1225,28 +1245,43 @@ fn one_row(text: &str, columns: u16, color: Color) -> Line<'static> {
 
 /// The delete warnings as confirm popup lines: a blank separator, then each
 /// warning, a listing of files git does not track one entry per row (as
-/// `cs -rm` prints it) under its own. A popup whose other lines take `other`
-/// rows of a `height`-row screen lists fewer than the usual twenty entries
-/// when they would not fit, so its key hint stays on screen. A warning and
-/// an entry are each one row of the popup's `columns`: one too wide for it
-/// is shortened in the middle.
+/// `cs -rm` prints it) under its own. The lines take at most the rows a
+/// `height`-row screen leaves a popup whose other lines take `other`, so its
+/// grant and key hint stay on screen: each warning gets its row first, and
+/// the entries share what is left, the first warnings' first, fewer than the
+/// usual twenty when they would not fit and none once the rows run out. When
+/// even one row per warning does not fit, the last row counts the warnings
+/// left out. When the screen leaves a single row, it holds that warning or
+/// the count, with no blank separator above it. A warning and an entry are
+/// each one row of the popup's `columns`: one too wide for it is shortened
+/// in the middle.
 fn warning_lines(warnings: &[DeleteWarning], height: u16, other: u16, columns: u16, color: Color) -> Vec<Line<'static>> {
-    if warnings.is_empty() {
+    let room = (height as usize).saturating_sub(other as usize);
+    if warnings.is_empty() || room == 0 {
         return Vec::new();
     }
     let style = Style::default().fg(color);
-    let mut rows_left = (height as usize).saturating_sub(other as usize + 1 + warnings.len());
-    let mut lines = vec![Line::from("")];
+    let (mut lines, rows) = if room == 1 { (Vec::new(), 1) } else { (vec![Line::from("")], room - 1) };
+    if warnings.len() > rows {
+        let shown = rows - 1;
+        lines.extend(warnings[..shown].iter().map(|w| one_row(&w.text, columns, color)));
+        lines.push(one_row(&format!("... and {} more warnings", warnings.len() - shown), columns, color));
+        return lines;
+    }
+    let mut rows_left = rows - warnings.len();
     for warning in warnings {
         lines.push(one_row(&warning.text, columns, color));
         let entries = &warning.entries;
+        if rows_left == 0 {
+            continue;
+        }
         let shown = if entries.len() <= rows_left.min(untracked::SHOWN_ENTRIES) {
             entries.len()
         } else {
-            rows_left.min(untracked::SHOWN_ENTRIES + 1).saturating_sub(1)
+            rows_left.min(untracked::SHOWN_ENTRIES + 1) - 1
         };
         for text in untracked::entry_lines_within(entries, shown, columns as usize) {
-            rows_left = rows_left.saturating_sub(1);
+            rows_left -= 1;
             lines.push(Line::from(Span::styled(text, style)));
         }
     }
@@ -5098,6 +5133,30 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    // A session root's files cs did not create are listed one name per row,
+    // as a worktree's untracked files are, and capped the same way, so [D]
+    // says which files it deletes. The popup takes the rows its lines use:
+    // at 80x24 the rows left hold thirteen names and the count of the rest,
+    // and the popup's border follows the key hint.
+    #[test]
+    fn delete_confirm_lists_files_cs_did_not_create_one_per_row() {
+        let root = std::env::temp_dir().join(format!("cs-ui-del-root-files-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("rel/.cs/local")).unwrap();
+        for i in 0..15 {
+            std::fs::write(root.join(format!("rel/quarterly-report-draft-{i:02}.md")), "x").unwrap();
+        }
+
+        let rows = delete_confirm_rows_of(&root, &["rel"], 80, 24, "Also deletes");
+
+        let mut expected = vec!["Also deletes files cs did not create:".to_string()];
+        expected.extend((0..13).map(|i| format!("    quarterly-report-draft-{i:02}.md")));
+        expected.extend(["    ... and 2 more", "", "[D] Delete those files too: no", ""].map(String::from));
+        assert_eq!(rows.iter().take(expected.len()).collect::<Vec<_>>(), expected.iter().collect::<Vec<_>>());
+        assert!(rows[expected.len()].starts_with("[y] Confirm"), "the key hint stays on screen: {rows:?}");
+        assert!(rows[expected.len() + 1].starts_with('\u{2500}'), "the popup's border follows the key hint: {rows:?}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     // On a terminal too short for twenty entries the confirm lists fewer, so
     // the grant and the key hint under the list stay on screen.
     #[test]
@@ -5111,7 +5170,7 @@ mod tests {
         let rows = delete_confirm_rows(&root, 120, 20, "Also deletes");
 
         assert_eq!(
-            rows[..10],
+            rows[..11],
             [
                 "Also deletes 25 files git does not track:",
                 "    n01.txt",
@@ -5122,7 +5181,8 @@ mod tests {
                 "    n06.txt",
                 "    n07.txt",
                 "    n08.txt",
-                "    ... and 17 more",
+                "    n09.txt",
+                "    ... and 16 more",
             ]
         );
         assert!(rows.iter().any(|r| r == "[D] Delete those files too: no"), "the grant stays on screen: {rows:?}");
@@ -5247,6 +5307,7 @@ mod tests {
             ]
         );
         assert!(rows[10].starts_with("[y] Confirm"), "the key hint stays on screen at 80x24: {rows:?}");
+        assert!(rows[11].starts_with('\u{2500}'), "the popup's border follows the key hint: {rows:?}");
 
         let rows = delete_confirm_rows_of(&root, &[&name], 120, 40, "Delete session");
         assert_eq!(
@@ -5320,6 +5381,151 @@ mod tests {
             ]
         );
         assert!(rows[11].starts_with("[y] Confirm"), "the key hint stays on screen at 120x40: {rows:?}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Worktree sessions `proj@t01`..`proj@t<count>` of the `worktree_session`
+    /// base under `root`, each holding one file git does not track, `a.txt`.
+    fn warned_worktrees(root: &std::path::Path, count: usize) -> Vec<String> {
+        worktree_session(root);
+        (1..=count)
+            .map(|i| {
+                let task = format!("t{i:02}");
+                std::fs::write(feature_worktree(root, &task).join("a.txt"), "").unwrap();
+                format!("proj@{task}")
+            })
+            .collect()
+    }
+
+    // However many marked sessions carry a warning, the batch confirm keeps
+    // its grant and its key hint on screen: the warnings share the rows the
+    // screen has left, and those past them are counted on one row.
+    #[test]
+    fn batch_delete_confirm_keeps_its_keys_on_screen_for_any_number_of_warned_sessions() {
+        let root = std::env::temp_dir().join(format!("cs-ui-batch-many-{}", std::process::id()));
+        let names = warned_worktrees(&root, 18);
+        // At 80x24, 8 warned sessions overrun the rows left and 16 overrun
+        // them with headers alone; at 120x40, 17 overrun them.
+        for (width, height, n) in [(80, 24, 7), (80, 24, 8), (80, 24, 10), (80, 24, 16), (120, 40, 17), (120, 40, 18)] {
+            let marked: Vec<&str> = names[..n].iter().map(String::as_str).collect();
+            let rows = delete_confirm_rows_of(&root, &marked, width, height, &format!("Delete {n} sessions?"));
+            let hint = rows
+                .iter()
+                .position(|r| r.starts_with("[y] Confirm"))
+                .unwrap_or_else(|| panic!("{n} warned at {width}x{height}: no key hint on screen:\n{}", rows.join("\n")));
+            assert_eq!(
+                rows[hint - 4..hint],
+                ["", "[D] Delete those files too: no", "", "This cannot be undone."],
+                "{n} warned at {width}x{height}: the grant stays on screen above the hint:\n{}",
+                rows.join("\n")
+            );
+        }
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    // The warnings fill the rows the screen has left in order: each gets its
+    // header row, the first ones their entries until the rows run out, and
+    // when even the headers do not fit, the last row counts the rest. At
+    // 120x40 the batch confirm with the [D] grant leaves 30 rows for them.
+    #[test]
+    fn batch_delete_confirm_fills_the_rows_left_with_warnings_in_order() {
+        let root = std::env::temp_dir().join(format!("cs-ui-batch-fill-{}", std::process::id()));
+        let names = warned_worktrees(&root, 32);
+        let header = |name: &str| format!("{name}: Also deletes 1 file git does not track:");
+
+        let marked: Vec<&str> = names[..17].iter().map(String::as_str).collect();
+        let rows = delete_confirm_rows_of(&root, &marked, 120, 40, "Delete 17 sessions?");
+        let mut expected = vec![String::new()];
+        for (i, name) in marked.iter().enumerate() {
+            expected.push(header(name));
+            if i < 13 {
+                expected.push("    a.txt".to_string());
+            }
+        }
+        expected.extend(["", "[D] Delete those files too: no", "", "This cannot be undone."].map(String::from));
+        assert_eq!(rows[2..2 + expected.len()], expected[..], "17 warned:\n{}", rows.join("\n"));
+        assert!(rows[2 + expected.len()].starts_with("[y] Confirm"), "17 warned: {rows:?}");
+
+        let marked: Vec<&str> = names.iter().map(String::as_str).collect();
+        let rows = delete_confirm_rows_of(&root, &marked, 120, 40, "Delete 32 sessions?");
+        let mut expected = vec![String::new()];
+        expected.extend(marked[..29].iter().map(|name| header(name)));
+        expected.extend(["... and 3 more warnings", "", "[D] Delete those files too: no", "", "This cannot be undone."].map(String::from));
+        assert_eq!(rows[2..2 + expected.len()], expected[..], "32 warned:\n{}", rows.join("\n"));
+        assert!(rows[2 + expected.len()].starts_with("[y] Confirm"), "32 warned: {rows:?}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    // When the screen leaves the warnings one row, the confirm spends it on
+    // the count rather than on the blank row above it, so warnings that exist
+    // are never hidden while [D] and [y] show. At 80x10 the batch confirm with
+    // the [D] grant leaves exactly one.
+    #[test]
+    fn batch_delete_confirm_counts_its_warnings_in_the_one_row_left() {
+        let root = std::env::temp_dir().join(format!("cs-ui-batch-one-row-{}", std::process::id()));
+        let names = warned_worktrees(&root, 2);
+        let marked: Vec<&str> = names.iter().map(String::as_str).collect();
+
+        let rows = delete_confirm_rows_of(&root, &marked, 80, 10, "Delete 2 sessions?");
+
+        assert_eq!(
+            rows[..7],
+            [
+                "Delete 2 sessions?",
+                "proj@t01, proj@t02",
+                "... and 2 more warnings",
+                "",
+                "[D] Delete those files too: no",
+                "",
+                "This cannot be undone.",
+            ],
+            "{}",
+            rows.join("\n")
+        );
+        assert!(rows[7].starts_with("[y] Confirm"), "the key hint stays on screen: {rows:?}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    // When the screen leaves the warnings no row at all, the confirm gives
+    // them the blank row above its grant, so the count sits directly over
+    // [D] Delete those files too. At 80x9 the batch confirm's other lines
+    // fill the screen, as the single confirm's do at 80x8.
+    #[test]
+    fn delete_confirms_count_their_warnings_over_the_grant_when_no_row_is_left() {
+        let root = std::env::temp_dir().join(format!("cs-ui-batch-no-row-{}", std::process::id()));
+        let names = warned_worktrees(&root, 2);
+        let marked: Vec<&str> = names.iter().map(String::as_str).collect();
+
+        let rows = delete_confirm_rows_of(&root, &marked, 80, 9, "Delete 2 sessions?");
+        assert_eq!(
+            rows[..6],
+            [
+                "Delete 2 sessions?",
+                "proj@t01, proj@t02",
+                "... and 2 more warnings",
+                "[D] Delete those files too: no",
+                "",
+                "This cannot be undone.",
+            ],
+            "batch at 80x9:\n{}",
+            rows.join("\n")
+        );
+        assert!(rows[6].starts_with("[y] Confirm"), "the key hint stays on screen at 80x9: {rows:?}");
+
+        let rows = delete_confirm_rows_of(&root, &["proj@t01"], 80, 8, "Delete session");
+        assert_eq!(
+            rows[..5],
+            [
+                "Delete session 'proj@t01'?",
+                "This cannot be undone.",
+                "Also deletes 1 file…it does not track:",
+                "[D] Delete those files too: no",
+                "",
+            ],
+            "single at 80x8:\n{}",
+            rows.join("\n")
+        );
+        assert!(rows[5].starts_with("[y] Confirm"), "the key hint stays on screen at 80x8: {rows:?}");
         std::fs::remove_dir_all(&root).ok();
     }
 }

@@ -217,16 +217,27 @@ pub fn fuzzy_match(pattern: &str, text: &str) -> Option<(i32, Vec<usize>)> {
     Some((score, indices))
 }
 
-/// Whether a name is one the `cs` CLI would accept, mirroring bash
-/// validate_session_name: non-empty, not "."/"..", and only ASCII
-/// alphanumerics plus `-` `_` `.`. Keeps TUI-created/renamed sessions openable
-/// by `cs` (Unicode letters or spaces would produce a dir cs rejects).
-pub fn is_valid_session_name(name: &str) -> bool {
-    if name.is_empty() || name == "." || name == ".." {
-        return false;
+/// Why the `cs` CLI would refuse a name, mirroring bash
+/// validate_session_name: empty, "."/"..", a leading dot (cs's own staging
+/// dirs, .spawn and .usage, sit at the sessions root under dot names), a
+/// leading hyphen (`cs -uninstall` runs a verb), or anything but ASCII
+/// alphanumerics plus `-` `_` `.`, each in cs's own words. None for a name cs
+/// accepts. Keeps TUI-created/renamed sessions openable by `cs` (Unicode
+/// letters or spaces would produce a dir cs rejects).
+pub fn session_name_refusal(name: &str) -> Option<&'static str> {
+    if name.is_empty() {
+        Some("Session name cannot be empty")
+    } else if name == "." || name == ".." {
+        Some("Session name cannot be '.' or '..'")
+    } else if name.starts_with('.') {
+        Some("Session name cannot start with a dot")
+    } else if name.starts_with('-') {
+        Some("Session name cannot start with a hyphen")
+    } else if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.') {
+        Some("Session name must contain only alphanumeric characters, hyphens, underscores, and dots")
+    } else {
+        None
     }
-    name.chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1807,16 +1818,8 @@ impl App {
 
     fn execute_create(&mut self) -> Action {
         let name = self.create_input.text().trim().to_string();
-        if name.is_empty() {
-            self.set_status("Name cannot be empty", StatusLevel::Error);
-            self.mode = Mode::Normal;
-            return Action::None;
-        }
-        if !is_valid_session_name(&name) {
-            self.set_status(
-                "Invalid name: use letters, digits, - _ . only",
-                StatusLevel::Error,
-            );
+        if let Some(refusal) = session_name_refusal(&name) {
+            self.set_status(refusal, StatusLevel::Error);
             self.mode = Mode::Normal;
             return Action::None;
         }
@@ -2021,10 +2024,19 @@ impl App {
     fn locked_selection_refusal(&self) -> Option<String> {
         let session = self.selected_session()?;
         let pid = session.liveness.lock_pid().filter(|&pid| session::is_pid_alive(pid))?;
-        Some(format!(
-            "{} is live (pid {}) — close it first",
-            session.name, pid
-        ))
+        Some(session::live_refusal(&session.name, pid))
+    }
+
+    /// `locked_selection_refusal`, then the selected session's lock read
+    /// again from disk, as delete's removal reads it: rescans wait while a
+    /// modal is open, so the session may have opened since its row was
+    /// scanned. Rename and rotate ask this when they act.
+    fn live_selection_refusal_now(&self) -> Option<String> {
+        self.locked_selection_refusal().or_else(|| {
+            let session = self.selected_session()?;
+            let pid = session::read_lock_pid(&self.sessions_root.join(&session.name).join(".cs"))?;
+            Some(session::live_refusal(&session.name, pid))
+        })
     }
 
     /// The confirm lines for `names` and the escalations they need: a line
@@ -2167,16 +2179,16 @@ impl App {
 
     fn execute_rename(&mut self) {
         let new_name = self.rename_input.text().trim().to_string();
-        if new_name.is_empty() {
-            self.set_status("Name cannot be empty", StatusLevel::Error);
+        if let Some(refusal) = session_name_refusal(&new_name) {
+            self.set_status(refusal, StatusLevel::Error);
             self.mode = Mode::Normal;
             return;
         }
-        if !is_valid_session_name(&new_name) {
-            self.set_status(
-                "Invalid name: use letters, digits, - _ . only",
-                StatusLevel::Error,
-            );
+        // Same liveness guard as Delete and Rotate: a live claude keeps
+        // writing under the old path, and the move takes its lock and
+        // transcripts from under it.
+        if let Some(refusal) = self.live_selection_refusal_now() {
+            self.set_status(refusal, StatusLevel::Error);
             self.mode = Mode::Normal;
             return;
         }
@@ -2403,6 +2415,12 @@ impl App {
                 return;
             }
         };
+        // The menu's liveness guard, asked again now the answer is in.
+        if let Some(refusal) = self.live_selection_refusal_now() {
+            self.set_status(refusal, StatusLevel::Error);
+            self.mode = Mode::Normal;
+            return;
+        }
         match std::process::Command::new(cs_bin())
             .args([name.as_str(), "-narrative", "rotate"])
             .output()
@@ -3501,7 +3519,10 @@ mod tests {
         app.rename_input.set("bad/name");
         app.handle_key(KeyEvent::from(KeyCode::Enter));
         assert_eq!(app.mode, Mode::Normal);
-        assert!(app.status_message.as_ref().unwrap().text.contains("Invalid"));
+        assert_eq!(
+            app.status_message.as_ref().map(|m| (m.text.as_str(), m.level)),
+            Some(("Session name must contain only alphanumeric characters, hyphens, underscores, and dots", StatusLevel::Error))
+        );
     }
 
     #[test]
@@ -3972,7 +3993,10 @@ mod tests {
         assert!(matches!(app.mode, Mode::ConfirmDelete));
         assert_eq!(
             app.delete_warnings,
-            vec![session::DeleteWarning::line("Also deletes files cs did not create: journal.sparsebundle".to_string())]
+            vec![session::DeleteWarning {
+                text: "Also deletes files cs did not create:".to_string(),
+                entries: vec![crate::untracked::Entry { path: "journal.sparsebundle".to_string(), files: 1 }],
+            }]
         );
         std::fs::remove_dir_all(&root).ok();
     }
@@ -4005,6 +4029,9 @@ mod tests {
     fn delete_confirm_stays_closed_when_the_file_list_cannot_be_read() {
         use crate::session::test_root;
         let root = std::env::temp_dir().join(format!("cs-test-del-broken-{}", std::process::id()));
+        // The base is there, so the worktree is listed through git, which
+        // cannot read the gitdir its .git file names.
+        std::fs::create_dir_all(root.join("proj")).unwrap();
         std::fs::create_dir_all(root.join("proj@t/.cs/local")).unwrap();
         std::fs::write(root.join("proj@t/.git"), "gitdir: /nonexistent/worktree\n").unwrap();
         let _guard = test_root::scoped(root.clone());
@@ -4166,6 +4193,117 @@ mod tests {
             "0000000000000000000000000000000000000000000000000000000000000000\n",
             "the pins are proj-old's now"
         );
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // A live session is not renamed, as it is not deleted or rotated: its
+    // claude keeps writing under the old path, and the lock and transcripts
+    // would move from under it. The refusal is the one delete and rotate give.
+    #[cfg(unix)]
+    #[test]
+    fn rename_refuses_a_live_session() {
+        use crate::session::test_root;
+        let _env = CS_BIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (tmp, root, home) = rename_fixture("live", false);
+        let pid = std::process::id();
+        std::fs::write(root.join("proj/.cs/session.lock"), format!("{pid}\n")).unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        std::env::set_var("CS_BIN", tmp.join("cs-stub"));
+        let mut app = app_on(&root, "proj");
+        app.handle_key(KeyEvent::from(KeyCode::Char('r')));
+        app.rename_input.set("calm");
+
+        app.handle_key(KeyEvent::from(KeyCode::Enter));
+        std::env::remove_var("CS_BIN");
+
+        assert_eq!(
+            app.status_message.as_ref().map(|m| (m.text.clone(), m.level)),
+            Some((format!("proj is live (pid {pid}) — close it first"), StatusLevel::Error))
+        );
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(
+            std::fs::read_to_string(root.join("proj/.cs/session.lock")).unwrap_or_default(),
+            format!("{pid}\n"),
+            "the session and its lock stay where its claude has them"
+        );
+        assert!(!root.join("calm").exists(), "nothing is moved to the new name");
+        assert!(!tmp.join("argv").exists(), "cs-secrets is never asked to move anything");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // A session that opens while the rename modal is up is refused too, as
+    // delete refuses it: the picker holds its rescans while a modal is open,
+    // so the row still reads dormant and only the lock file says otherwise.
+    #[cfg(unix)]
+    #[test]
+    fn rename_refuses_a_session_that_went_live_after_the_scan() {
+        use crate::session::test_root;
+        let _env = CS_BIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (tmp, root, home) = rename_fixture("live-later", false);
+        let _guard = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        std::env::set_var("CS_BIN", tmp.join("cs-stub"));
+        let mut app = app_on(&root, "proj");
+        app.handle_key(KeyEvent::from(KeyCode::Char('r')));
+        let pid = std::process::id();
+        std::fs::write(root.join("proj/.cs/session.lock"), format!("{pid}\n")).unwrap();
+        app.rename_input.set("calm");
+
+        app.handle_key(KeyEvent::from(KeyCode::Enter));
+        std::env::remove_var("CS_BIN");
+
+        assert_eq!(
+            app.status_message.as_ref().map(|m| (m.text.clone(), m.level)),
+            Some((format!("proj is live (pid {pid}) — close it first"), StatusLevel::Error))
+        );
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(
+            std::fs::read_to_string(root.join("proj/.cs/session.lock")).unwrap_or_default(),
+            format!("{pid}\n"),
+            "the session and its lock stay where its claude has them"
+        );
+        assert!(!root.join("calm").exists(), "nothing is moved to the new name");
+        assert!(!tmp.join("argv").exists(), "cs-secrets is never asked to move anything");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // A rename to a name cs refuses, one with a leading dot or hyphen, is
+    // refused by the rule's name in cs's words: a session renamed to `.work`
+    // drops out of every listing, and one named `-rm` reads as a cs verb.
+    #[cfg(unix)]
+    #[test]
+    fn rename_refuses_a_name_cs_refuses_in_cs_words() {
+        use crate::session::test_root;
+        let _env = CS_BIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (tmp, root, home) = rename_fixture("lead", true);
+        let _guard = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        std::env::set_var("CS_BIN", tmp.join("cs-stub"));
+        for (name, refusal) in [
+            (".work", "Session name cannot start with a dot"),
+            ("-rm", "Session name cannot start with a hyphen"),
+            ("..", "Session name cannot be '.' or '..'"),
+            ("  ", "Session name cannot be empty"),
+        ] {
+            let mut app = app_on(&root, "proj");
+            app.handle_key(KeyEvent::from(KeyCode::Char('r')));
+            app.rename_input.set(name);
+
+            app.handle_key(KeyEvent::from(KeyCode::Enter));
+
+            assert_eq!(
+                app.status_message.as_ref().map(|m| (m.text.as_str(), m.level)),
+                Some((refusal, StatusLevel::Error)),
+                "{name}"
+            );
+            assert!(root.join("proj/.cs").is_dir(), "{name}: the session keeps its name");
+            let listed: Vec<String> =
+                std::fs::read_dir(&root).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+            assert_eq!(listed, ["proj"], "{name}: nothing is moved to the refused name");
+        }
+        std::env::remove_var("CS_BIN");
+        assert!(!tmp.join("argv").exists(), "cs-secrets is never asked to move anything");
         std::fs::remove_dir_all(&tmp).ok();
     }
 
@@ -4842,7 +4980,10 @@ mod tests {
         app.create_input.set("bad/name");
         app.handle_key(KeyEvent::from(KeyCode::Enter));
         assert_eq!(app.mode, Mode::Normal);
-        assert!(app.status_message.as_ref().unwrap().text.contains("Invalid"));
+        assert_eq!(
+            app.status_message.as_ref().map(|m| (m.text.as_str(), m.level)),
+            Some(("Session name must contain only alphanumeric characters, hyphens, underscores, and dots", StatusLevel::Error))
+        );
     }
 
     #[test]
@@ -4858,6 +4999,36 @@ mod tests {
         app.create_input.set("brand-new-session");
         let action = app.handle_key(KeyEvent::from(KeyCode::Enter));
         assert!(matches!(action, Action::Open(name) if name == "brand-new-session"));
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // cs refuses a name with a leading dot (its own staging dirs, .spawn and
+    // .usage, sit at the sessions root under dot names) or a leading hyphen
+    // (`cs -uninstall` runs a verb), so the picker creates neither, and says
+    // which rule the name breaks in cs's words, as it does for an empty name.
+    #[test]
+    fn create_session_refuses_a_name_cs_refuses_in_cs_words() {
+        let tmp = std::env::temp_dir().join(format!("cs-tui-create-lead-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).ok();
+        let _root = session::test_root::scoped(tmp.clone());
+        for (name, refusal) in [
+            ("-uninstall", "Session name cannot start with a hyphen"),
+            (".spawn", "Session name cannot start with a dot"),
+            ("..", "Session name cannot be '.' or '..'"),
+            ("  ", "Session name cannot be empty"),
+        ] {
+            let mut app = App::new(sample_sessions());
+            app.mode = Mode::CreateSession;
+            app.create_input.set(name);
+            let action = app.handle_key(KeyEvent::from(KeyCode::Enter));
+            assert!(matches!(action, Action::None), "{name}: nothing is opened, got {action:?}");
+            assert_eq!(app.mode, Mode::Normal);
+            assert_eq!(
+                app.status_message.as_ref().map(|m| (m.text.as_str(), m.level)),
+                Some((refusal, StatusLevel::Error)),
+                "{name}"
+            );
+        }
         std::fs::remove_dir_all(&tmp).ok();
     }
 
@@ -5526,19 +5697,24 @@ mod tests {
     }
 
     #[test]
-    fn is_valid_session_name_matches_cs_rules() {
+    fn session_name_refusal_matches_cs_rules() {
         // Accepted by bash cs validate_session_name.
-        assert!(is_valid_session_name("debug-api"));
-        assert!(is_valid_session_name("v2026.7.4"));
-        assert!(is_valid_session_name("my_session"));
+        assert_eq!(session_name_refusal("debug-api"), None);
+        assert_eq!(session_name_refusal("v2026.7.4"), None);
+        assert_eq!(session_name_refusal("my_session"), None);
         // Rejected — these would produce a dir the cs CLI can't open, or traverse.
-        assert!(!is_valid_session_name(""));
-        assert!(!is_valid_session_name("."));
-        assert!(!is_valid_session_name(".."));
-        assert!(!is_valid_session_name("has space"));
-        assert!(!is_valid_session_name("café")); // non-ASCII letter
-        assert!(!is_valid_session_name("base@task")); // worktree separator
-        assert!(!is_valid_session_name("a/b"));
+        // Each refusal is cs's own text, word for word.
+        let dots = Some("Session name cannot be '.' or '..'");
+        let chars = Some("Session name must contain only alphanumeric characters, hyphens, underscores, and dots");
+        assert_eq!(session_name_refusal(""), Some("Session name cannot be empty"));
+        assert_eq!(session_name_refusal("."), dots);
+        assert_eq!(session_name_refusal(".."), dots);
+        assert_eq!(session_name_refusal(".spawn"), Some("Session name cannot start with a dot"));
+        assert_eq!(session_name_refusal("-rm"), Some("Session name cannot start with a hyphen"));
+        assert_eq!(session_name_refusal("has space"), chars);
+        assert_eq!(session_name_refusal("café"), chars); // non-ASCII letter
+        assert_eq!(session_name_refusal("base@task"), chars); // worktree separator
+        assert_eq!(session_name_refusal("a/b"), chars);
     }
 
     #[test]
@@ -6633,6 +6809,36 @@ mod tests {
             !rotate_was_invoked(&tmp),
             "cs must not have rotated before the answer"
         );
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // A session that opens while the rotate confirm is up is refused too, as
+    // rename and delete refuse it: the picker holds its rescans while a modal
+    // is open, so the row still reads dormant and only the lock file says
+    // otherwise.
+    #[cfg(unix)]
+    #[test]
+    fn rotate_refuses_a_session_that_went_live_after_the_scan() {
+        let _env = CS_BIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = archive_root("rotate-live-later");
+        let stub = rotate_stub(&tmp, "echo rotated");
+        let _root = session::test_root::scoped(tmp.clone());
+        std::env::set_var("CS_BIN", &stub);
+
+        let mut app = App::new(session::scan_sessions());
+        app.handle_key(KeyEvent::from(KeyCode::Char('R')));
+        assert_eq!(app.mode, Mode::ConfirmRotate, "a dormant row is offered the confirm");
+        let pid = std::process::id();
+        std::fs::write(tmp.join("alpha/.cs/session.lock"), format!("{pid}\n")).unwrap();
+        app.handle_key(KeyEvent::from(KeyCode::Char('y')));
+        std::env::remove_var("CS_BIN");
+
+        assert_eq!(
+            app.status_message.as_ref().map(|m| (m.text.clone(), m.level)),
+            Some((format!("alpha is live (pid {pid}) — close it first"), StatusLevel::Error))
+        );
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(!rotate_was_invoked(&tmp), "cs must not have rotated");
         std::fs::remove_dir_all(&tmp).ok();
     }
 
