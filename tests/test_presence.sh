@@ -190,4 +190,20 @@ test_status_refuses_a_removed_session() {
 
 run_test test_status_refuses_a_removed_session
 
+# A removal landing after that check, while the status is being set, meets
+# the writer instead: it makes nothing outside a .cs that is there, so the
+# status fails and the session is not built again.
+test_status_refuses_a_session_removed_after_its_check() {
+    local out rc=0 seam
+    seam=$(_seam_remove_after_the_meta_check "$CLAUDE_SESSION_DIR")
+    out=$(BASH_ENV="$seam" "$CS_BIN" -status "still working" 2>&1) || rc=$?
+    assert_exists "$seam.removed" "the session was removed after the check: $out" || return 1
+    assert_eq "1" "$rc" "the status fails: $out" || return 1
+    assert_eq "cs_mkdir_inside: $CLAUDE_SESSION_META_DIR/local is not inside an existing .cs" "$out" \
+        "the writer names the directory it would not make" || return 1
+    assert_not_exists "$CLAUDE_SESSION_DIR" "the removed session is not built again" || return 1
+}
+
+run_test test_status_refuses_a_session_removed_after_its_check
+
 report_results

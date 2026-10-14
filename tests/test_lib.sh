@@ -567,6 +567,31 @@ _mark_hand_made_vault() {  # session_dir
     chmod +x "$1/.cs/local/pre-open"
 }
 
+# Write a BASH_ENV file whose DEBUG trap removes <session_dir> just after a
+# cs verb's own "is the .cs there" check ([ -d "$CLAUDE_SESSION_META_DIR" ])
+# passes, the way `cs -rm --force` can land while the verb runs, so the
+# writers behind that check are what meet the removal. It removes once and
+# leaves <file>.removed when it has. Prints the file's path.
+_seam_remove_after_the_meta_check() {  # session_dir
+    local seam="$TEST_TMPDIR/seam-after-check.sh"
+    {
+        printf 'SEAM_DIR=%q\nSEAM_MARK=%q\n' "$1" "$seam"
+        cat <<'SEAM'
+set -o functrace
+_seam_after_check() {
+    [ ! -e "$SEAM_MARK.removed" ] || return 0
+    if [ -e "$SEAM_MARK.armed" ]; then
+        rm -rf "$SEAM_DIR"; : > "$SEAM_MARK.removed"; return 0
+    fi
+    case "$BASH_COMMAND" in '[ -d "$CLAUDE_SESSION_META_DIR" ]') : > "$SEAM_MARK.armed" ;; esac
+    return 0
+}
+trap _seam_after_check DEBUG
+SEAM
+    } > "$seam"
+    printf '%s' "$seam"
+}
+
 # --- Session Helpers ---
 
 # Create a minimal cs session directory structure
