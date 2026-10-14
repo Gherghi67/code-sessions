@@ -1120,9 +1120,11 @@ fn render_confirm_delete(app: &App, frame: &mut Frame) {
     };
     let hint_color = if remaining > 0 { p.comment } else { p.fg };
 
+    // Borders, question, note, the blank above the hint and the hint.
+    let fixed_rows = 6;
     let columns = popup_columns(50, frame.area());
-    let warnings = warning_lines(&app.delete_warnings, frame.area().height, 7 + grant_rows(app), columns, p.red);
-    let popup_area = centered_rect(50, 7 + warnings.len() as u16 + grant_rows(app), frame.area());
+    let warnings = warning_lines(&app.delete_warnings, frame.area().height, fixed_rows + grant_rows(app), columns, p.red);
+    let popup_area = centered_rect(50, fixed_rows + warnings.len() as u16 + grant_rows(app), frame.area());
     frame.render_widget(Clear, popup_area);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -5134,7 +5136,7 @@ mod tests {
         let rows = delete_confirm_rows(&root, 120, 20, "Also deletes");
 
         assert_eq!(
-            rows[..10],
+            rows[..11],
             [
                 "Also deletes 25 files git does not track:",
                 "    n01.txt",
@@ -5145,7 +5147,8 @@ mod tests {
                 "    n06.txt",
                 "    n07.txt",
                 "    n08.txt",
-                "    ... and 17 more",
+                "    n09.txt",
+                "    ... and 16 more",
             ]
         );
         assert!(rows.iter().any(|r| r == "[D] Delete those files too: no"), "the grant stays on screen: {rows:?}");
