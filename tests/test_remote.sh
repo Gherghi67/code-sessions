@@ -154,6 +154,60 @@ stop_serving() {  # signal
     SERVE_PID=""
 }
 
+# Run `cs demo --remote` on a pseudo-terminal of its own, as a tmux window or
+# a terminal tab runs it: cs is the session leader there. Once the fake server
+# says ready, either type Ctrl-C (ctrlc) or close the terminal (hangup), then
+# print cs's exit status. Only the kernel signals anything here.
+drive_on_a_terminal() {  # ctrlc|hangup
+    mkfifo "$FAKE_READY_FIFO"
+    FAKE_CLAUDE_MODE=serve python3 - "$1" "$CS_BIN" "$FAKE_READY_FIFO" << 'PY'
+import os, pty, select, sys, time
+mode, cs, fifo = sys.argv[1], sys.argv[2], sys.argv[3]
+rfd = os.open(fifo, os.O_RDWR)
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp(cs, [cs, "demo", "--remote"])
+out, ready, start = b"", False, time.time()
+while time.time() - start < 60 and not ready:
+    r, _, _ = select.select([fd, rfd], [], [], 0.5)
+    if rfd in r:
+        os.read(rfd, 64)
+        ready = True
+    if fd in r:
+        try:
+            out += os.read(fd, 65536)
+        except OSError:
+            break
+if not ready:
+    print("never ready: " + out.decode("utf-8", "replace")[-1000:])
+    os.kill(pid, 9)
+    sys.exit(0)
+if mode == "ctrlc":
+    os.write(fd, b"\x03")
+    while True:
+        try:
+            if not os.read(fd, 65536):
+                break
+        except OSError:
+            break
+else:
+    os.close(fd)
+_, status = os.waitpid(pid, 0)
+print("exit %d" % os.WEXITSTATUS(status) if os.WIFEXITED(status) else "signal %d" % os.WTERMSIG(status))
+PY
+}
+
+# True once <file> is gone, waiting up to 10 s: what cs leaves behind is
+# removed just after the server exits, not by it.
+gone_within_10s() {  # file
+    local i=0
+    while [ -e "$1" ] && [ "$i" -lt 50 ]; do
+        sleep 0.2
+        i=$((i + 1))
+    done
+    [ ! -e "$1" ]
+}
+
 # A session directory with a lock held by a running process, as an open
 # `cs <name>` leaves it. Called directly, never through $(...): the sleeper
 # would hold the substitution's pipe open.
@@ -293,6 +347,24 @@ test_remote_stops_cleanly_on_ctrl_c() {
     assert_file_not_exists "$CS_SESSIONS_ROOT/demo/.cs/session.lock" "the lock is released after the server exits" || return 1
 }
 
+test_remote_stops_cleanly_when_its_terminal_closes() {
+    local result
+    result=$(drive_on_a_terminal hangup)
+    assert_eq "exit 0" "$result" "the server stops cleanly when its terminal goes away" || { cat "$FAKE_CLAUDE_LOG"; return 1; }
+    assert_eq "1" "$(grep -cx 'signal HUP' "$FAKE_CLAUDE_LOG")" "the server got the hangup itself" || { cat "$FAKE_CLAUDE_LOG"; return 1; }
+    gone_within_10s "$CS_SESSIONS_ROOT/demo/.cs/local/remote.pid" || { echo "  FAIL: remote.pid is left after the server exits"; return 1; }
+    gone_within_10s "$CS_SESSIONS_ROOT/demo/.cs/session.lock" || { echo "  FAIL: the lock is left after the server exits"; return 1; }
+}
+
+test_remote_stops_cleanly_on_ctrl_c_typed_at_its_terminal() {
+    local result
+    result=$(drive_on_a_terminal ctrlc)
+    assert_eq "exit 0" "$result" "the server stops cleanly on Ctrl-C" || { cat "$FAKE_CLAUDE_LOG"; return 1; }
+    assert_eq "1" "$(grep -cx 'signal INT' "$FAKE_CLAUDE_LOG")" "the server got the interrupt itself" || return 1
+    gone_within_10s "$CS_SESSIONS_ROOT/demo/.cs/local/remote.pid" || { echo "  FAIL: remote.pid is left after the server exits"; return 1; }
+    gone_within_10s "$CS_SESSIONS_ROOT/demo/.cs/session.lock" || { echo "  FAIL: the lock is left after the server exits"; return 1; }
+}
+
 test_remote_refuses_force_finish_and_a_mode_without_remote() {
     local rc out
     rc=0; out=$("$CS_BIN" demo --remote --force 2>&1) || rc=$?
@@ -392,6 +464,8 @@ run_test test_remote_refuses_a_session_open_locally
 run_test test_local_open_is_refused_while_the_session_is_served
 run_test test_remote_stops_cleanly_when_its_window_hangs_up
 run_test test_remote_stops_cleanly_on_ctrl_c
+run_test test_remote_stops_cleanly_when_its_terminal_closes
+run_test test_remote_stops_cleanly_on_ctrl_c_typed_at_its_terminal
 run_test test_remote_refuses_force_finish_and_a_mode_without_remote
 run_test test_remote_inside_tmux_opens_its_own_window_in_the_cs_session
 run_test test_remote_in_its_window_serves_there_instead_of_opening_another
