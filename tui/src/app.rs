@@ -2027,6 +2027,18 @@ impl App {
         Some(session::live_refusal(&session.name, pid))
     }
 
+    /// `locked_selection_refusal`, then the selected session's lock read
+    /// again from disk, as delete's removal reads it: rescans wait while a
+    /// modal is open, so the session may have opened since its row was
+    /// scanned. Rename and rotate ask this when they act.
+    fn live_selection_refusal_now(&self) -> Option<String> {
+        self.locked_selection_refusal().or_else(|| {
+            let session = self.selected_session()?;
+            let pid = session::read_lock_pid(&self.sessions_root.join(&session.name).join(".cs"))?;
+            Some(session::live_refusal(&session.name, pid))
+        })
+    }
+
     /// The confirm lines for `names` and the escalations they need: a line
     /// per live session (offering the live-lock grant) and a line per session
     /// holding files beyond cs's own (offering the files grant), the latter
@@ -2174,14 +2186,8 @@ impl App {
         }
         // Same liveness guard as Delete and Rotate: a live claude keeps
         // writing under the old path, and the move takes its lock and
-        // transcripts from under it. The lock is read again now, as delete's
-        // removal reads it: rescans wait while the modal is open, so the
-        // session may have opened since its row was scanned.
-        let live_now = self.selected_session().and_then(|s| {
-            session::read_lock_pid(&self.sessions_root.join(&s.name).join(".cs"))
-                .map(|pid| session::live_refusal(&s.name, pid))
-        });
-        if let Some(refusal) = self.locked_selection_refusal().or(live_now) {
+        // transcripts from under it.
+        if let Some(refusal) = self.live_selection_refusal_now() {
             self.set_status(refusal, StatusLevel::Error);
             self.mode = Mode::Normal;
             return;
@@ -2409,6 +2415,12 @@ impl App {
                 return;
             }
         };
+        // The menu's liveness guard, asked again now the answer is in.
+        if let Some(refusal) = self.live_selection_refusal_now() {
+            self.set_status(refusal, StatusLevel::Error);
+            self.mode = Mode::Normal;
+            return;
+        }
         match std::process::Command::new(cs_bin())
             .args([name.as_str(), "-narrative", "rotate"])
             .output()
