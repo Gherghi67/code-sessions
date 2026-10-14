@@ -2090,7 +2090,7 @@ const bandBody = (tree: any): any[] => {
 test('a queue with tasks and nothing running them draws a start key, below the threshold too', async () => {
   queueTasks(2)
   const tree = await band()
-  expect(buttons(tree).map((b: any) => b.props.label)).toEqual(['queue 2 \u00b7 start'])
+  expect(buttons(tree).map((b: any) => b.props.label)).toEqual(['\u25a4 queue 2 \u00b7 start'])
   expect(queueKey(tree).props).toMatchObject({ key: 'cs-queue', plain: true })
   expect(queueKey(tree).props.action).toBeUndefined()
   expect(buttonsUnderText(tree)).toBe(0)
@@ -2104,7 +2104,7 @@ test('the start key is gone while the queue is armed or draining, and while it i
     expect(await band()).toBe(DRAWN)
   }
   files['/work/.cs/local/queue.state'] = 'idle\n'
-  expect(queueKey(await band()).props.label).toBe('queue 1 \u00b7 start')
+  expect(queueKey(await band()).props.label).toBe('\u25a4 queue 1 \u00b7 start')
 })
 
 test('past the threshold the start key comes after the rotate and wrap keys, a separator before it', async () => {
@@ -2137,7 +2137,7 @@ test('an encrypted session counts its tasks, and reads its state, behind .cs/pri
   existing.add('/work/.cs/private')
   queueTasks(5)
   queueTasks(2, '/work/.cs/private/queue')
-  expect(queueKey(await band()).props.label).toBe('queue 2 \u00b7 start')
+  expect(queueKey(await band()).props.label).toBe('\u25a4 queue 2 \u00b7 start')
   files['/work/.cs/private/queue.state'] = 'draining\n'
   expect(await band()).toBe(DRAWN)
 })

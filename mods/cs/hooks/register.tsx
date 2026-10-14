@@ -437,7 +437,7 @@ export function register(on: On) {
             {rotating && !armed && !wrapped && <Button key="cs-wrap" action={WRAP_ACTION} plain label="wrap up this session" onPress={() => askToWrap($)} />}
             {/* the queue's start key: no action or hotkey of its own, so a click or Enter under the band's focus presses it */}
             {waiting > 0 && rotating && <Text dimColor>{'  \u00b7  '}</Text>}
-            {waiting > 0 && <Button key="cs-queue" plain label={`queue ${waiting} \u00b7 start`} onPress={() => pressQueueStart($)} />}
+            {waiting > 0 && <Button key="cs-queue" plain label={`\u25a4 queue ${waiting} \u00b7 start`} onPress={() => pressQueueStart($)} />}
             {/* the forced rotation's grace: the seconds left before the mod runs the /clear itself */}
             {armed && left !== undefined && <Text dimColor>{'  \u00b7  '}</Text>}
             {armed && left !== undefined && <Text bold color={await rampColor($, left)}>{`/clear in ${left}s`}</Text>}

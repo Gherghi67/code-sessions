@@ -372,7 +372,7 @@ cs -queue log                         # Walk-away run journal (tasks done, break
 ```
 
 When tasks are queued and nothing is running them, the `cs` mod's band
-above the prompt shows a `queue N · start` key. Press it and cs asks whether
+above the prompt shows a `▤ queue N · start` key. Press it and cs asks whether
 to work through them (Start, Not yet, or Compact, which compacts the
 conversation and then starts) and how: in this conversation, each task in a
 subagent, or each task as a workflow (choosing workflows is your go-ahead
