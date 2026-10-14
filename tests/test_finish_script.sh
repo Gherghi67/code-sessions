@@ -683,6 +683,24 @@ test_report_says_error_when_the_content_check_stops_without_one() {
     assert_output_not_contains "$out" "retire:" "with no retire line" || return 1
 }
 
+# A content check that succeeds without counting the paths it checked has
+# vouched for nothing: here perl exits 0 and prints nothing.
+test_report_says_error_when_the_content_check_counts_no_paths() {
+    local sha out status=0 wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    plain_fixture
+    (cd "$wt" && echo work > work.txt && git add work.txt && git commit -q -m "work")
+    sha=$(git -C "$wt" rev-parse HEAD)
+    mkdir -p "$TEST_TMPDIR/bin"
+    printf '#!/bin/sh\nexit 0\n' > "$TEST_TMPDIR/bin/perl"
+    chmod +x "$TEST_TMPDIR/bin/perl"
+    out=$(PATH="$TEST_TMPDIR/bin:$PATH" CLAUDE_SESSION_DIR="$CS_SESSIONS_ROOT/myproj" CLAUDE_SESSION_NAME=myproj \
+        bash "$FINISH" report myproj fix-auth "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the report fails" || return 1
+    assert_eq "error: comparing the paths cs/fix-auth changed with base HEAD gave '' as the path count, not none or a number" \
+        "$(printf '%s\n' "$out" | tail -1)" "and says so last" || return 1
+    assert_output_not_contains "$out" "retire:" "with no retire line" || return 1
+}
+
 run_test test_prepare_in_feature_session_hands_off
 run_test test_prepare_in_base_captures_sha_branch_and_dirt
 run_test test_prepare_in_a_plain_checkout_says_so
@@ -805,5 +823,6 @@ run_test test_report_says_error_when_the_worktree_is_not_a_git_checkout
 run_test test_report_checks_more_path_bytes_than_a_command_line_holds
 run_test test_report_names_a_non_utf8_path_under_a_utf8_locale
 run_test test_report_says_error_when_the_content_check_stops_without_one
+run_test test_report_says_error_when_the_content_check_counts_no_paths
 
 report_results
