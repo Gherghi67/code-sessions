@@ -158,6 +158,13 @@ CS_REGENERABLE_DIRS=(
     test-results playwright-report
 )
 
+# Bytes of paths one call of the trash command gets. The system refuses to
+# run a command line longer than its limit (1 MiB on macOS, 2 MiB on Linux,
+# the environment and a pointer per argument included), so a long list goes
+# over several calls. 128 KiB is the size GNU xargs builds by default: an
+# eighth of the smaller limit, which leaves the rest to the environment.
+CS_TRASH_CALL_BYTES=131072
+
 # The paths given one per line on stdin that lie under a regenerable
 # directory (keep=regenerable) or that do not (keep=other). A path's last
 # component is its own name, so only the directories above it count.
@@ -701,8 +708,9 @@ _finish_progress_exit() {  # exit status
 # regenerable directory (CS_REGENERABLE_DIRS) go with the worktree. Leaves
 # what it moved in _RETIRE_TRASHED_COUNT and _RETIRE_TRASHED_LINES (one line
 # per entry, by absolute path) for _retire_trashed_note. Refuses, having
-# removed nothing, when no trash command is installed or the one that is
-# fails.
+# removed nothing, when no trash command is installed or its first call
+# fails; when a later call fails, refuses naming what the earlier calls
+# moved.
 _retire_trash_ignored_work() {  # wt_dir task
     local wt_dir="$1" task="$2" ignored trash_paths regenerable input entries listing count them=them nl=$'\n'
     ignored=$(_worktree_others "$wt_dir" --ignored) \
@@ -730,13 +738,57 @@ ${listing#*"$nl"}"
         printf -v name '%b' "${entry%/}"
         targets+=("$wt_dir/$name")
     done <<< "$entries"
-    local trash_err
-    trash_err=$("${trash_cmd[@]}" "${targets[@]}" 2>&1 >/dev/null) \
-        || error "Could not move ${count% *} ignored ${count#* } to the system trash, so nothing was removed; anything the trash command did move is in the trash. Move or delete $them, then run /finish $task here again:
+    # The trash command gets the entries over as many calls as keep each
+    # within CS_TRASH_CALL_BYTES. A call that fails ends the retire. When it
+    # is the first, nothing is known to have moved; when it is a later one,
+    # the entries of the calls before it are in the trash, and the refusal
+    # lists them after the ones still in the worktree.
+    local trash_err sizes size first=0
+    sizes=$(printf '%s\n' "$entries" | _retire_trash_call_sizes "$wt_dir/") \
+        || error "Could not size the calls of ${trash_cmd[0]} for $wt_dir; nothing was removed"
+    while IFS= read -r size; do
+        if ! trash_err=$("${trash_cmd[@]}" "${targets[@]:first:size}" 2>&1 >/dev/null); then
+            [ "$first" -gt 0 ] \
+                || error "Could not move ${count% *} ignored ${count#* } to the system trash, so nothing was removed; anything the trash command did move is in the trash. Move or delete $them, then run /finish $task here again:
 ${listing#*"$nl"}
 ${trash_cmd[0]}: ${trash_err:-exited with an error}"
-    _RETIRE_TRASHED_COUNT="$count"
-    _RETIRE_TRASHED_LINES=$(printf '%s\n' "$entries" | _untracked_listing_format all "$wt_dir/" | tail -n +2)
+            _retire_trashed_set "$wt_dir" "$(printf '%s\n' "$entries" | awk -v moved="$first" 'NR <= moved')"
+            listing=$(printf '%s\n' "$entries" | tail -n "+$((first + 1))" | _untracked_listing_format 20)
+            count="${listing%%"$nl"*}"
+            them=them
+            [ "$count" != "1 file" ] || them=it
+            error "Could not move ${count% *} ignored ${count#* } to the system trash, so the worktree was not removed; anything the trash command did move is in the trash. Move or delete $them, then run /finish $task here again:
+${listing#*"$nl"}
+${trash_cmd[0]}: ${trash_err:-exited with an error}
+$(_retire_trashed_note " before this failed")"
+        fi
+        first=$((first + size))
+    done <<< "$sizes"
+    _retire_trashed_set "$wt_dir" "$entries"
+}
+
+# How many of the entries on stdin (_untracked_entries) each call of the
+# trash command gets, one number per line: as many as keep the call's paths,
+# each under the directory given and counted with one byte to end it, within
+# CS_TRASH_CALL_BYTES, and never fewer than one.
+_retire_trash_call_sizes() {  # directory
+    env CS_TRASH_DIRECTORY="$1" LC_ALL=C awk -v budget="$CS_TRASH_CALL_BYTES" '
+        {
+            bytes = length(ENVIRON["CS_TRASH_DIRECTORY"]) + length($0) - index($0, "\t") + 1
+            if (held > 0 && sum + bytes > budget) { print held; held = 0; sum = 0 }
+            held++
+            sum += bytes
+        }
+        END { if (held > 0) print held }'
+}
+
+# Record the entries given (_untracked_entries) as moved to the system trash
+# from the worktree, for _retire_trashed_note.
+_retire_trashed_set() {  # wt_dir entries
+    local listing nl=$'\n'
+    listing=$(printf '%s\n' "$2" | _untracked_listing_format all "$1/")
+    _RETIRE_TRASHED_COUNT="${listing%%"$nl"*}"
+    _RETIRE_TRASHED_LINES="${listing#*"$nl"}"
 }
 
 # What _retire_trash_ignored_work moved to the system trash, as a heading
