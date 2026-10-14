@@ -861,6 +861,39 @@ PY
     assert_eq 'model = "mine"' "$(cat "$fake_home/.codex/config.toml")" || return 1
 }
 
+test_codex_status_line_refuses_edits_without_tomllib() {
+    (
+        source "$SCRIPT_DIR/../lib/01-manifests.sh"
+        # Model either candidate lacking tomllib, including on Python 3.11+ CI.
+        python3() { return 1; }
+        /usr/bin/python3() { return 1; }
+        local dir="$TEST_TMPDIR/no-tomllib" shape rc
+        mkdir -p "$dir"
+        for shape in quoted-table quoted-key crlf owned; do
+            case "$shape" in
+                quoted-table) printf '["tui"]\nstatus_line = ["model-name"]\n' ;;
+                quoted-key) printf '[tui]\n"status_line" = ["model-name"]\n' ;;
+                crlf) printf '[tui]\r\nstatus_line = ["model-name"]\r\n' ;;
+                owned) printf '[tui]\n%s\n' "$CS_CODEX_STATUS_LINE" ;;
+            esac > "$dir/config.toml"
+            cp "$dir/config.toml" "$dir/orig"
+            rc=0
+            if [ "$shape" = owned ]; then
+                _codex_status_line_remove "$dir" > /dev/null || rc=$?
+            else
+                _codex_status_line_add "$dir" > /dev/null || rc=$?
+            fi
+            assert_eq 2 "$rc" "$shape must refuse an unchecked edit" || return 1
+            cmp -s "$dir/orig" "$dir/config.toml" \
+                || { echo "  FAIL: $shape changed without a TOML parser"; return 1; }
+        done
+        rm "$dir/config.toml"
+        rc=0; _codex_status_line_add "$dir" > /dev/null || rc=$?
+        assert_eq 2 "$rc" "a new config also requires a parser" || return 1
+        assert_not_exists "$dir/config.toml" "refusal must not create a config" || return 1
+    )
+}
+
 # Codex's default bar leaves out the context and the rate limits, so a Codex
 # install gives its config.toml cs's status line, once.
 test_install_sets_the_codex_status_line() {
@@ -1865,6 +1898,7 @@ run_test test_install_registers_a_trusted_codex_hook
 run_test test_codex_hook_keeps_the_users_hooks_and_trust
 run_test test_install_sets_the_codex_status_line
 run_test test_codex_status_line_never_imports_project_python
+run_test test_codex_status_line_refuses_edits_without_tomllib
 run_test test_install_puts_the_codex_status_line_into_an_existing_tui
 run_test test_codex_status_line_keeps_the_users_own
 run_test test_codex_status_line_reads_toml_shapes

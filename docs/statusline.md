@@ -303,6 +303,8 @@ That covers the session's folder, the branch, the model and its reasoning effort
 
 The installer adds the line only where `config.toml` has no status line, under an existing `[tui]` or in a `[tui]` of its own before the first table. A status line you set is yours, written by hand or with Codex's `/statusline`, and cs leaves it alone. A `tui` written as an inline table or as dotted keys gets a warning with the line to add by hand. A declined status line (the marker below) declines this one too. `cs -statusline enable` adds the line the same way, `cs -statusline disable` takes it back, and so does `cs -uninstall`. Both remove only this exact line, plus a `[tui]` header that has nothing else in it.
 
+Changing the Codex list requires Python 3.11 or newer with `tomllib`. If neither `python3` on PATH nor `/usr/bin/python3` has it, cs leaves the config alone and reports that it could not change the status line.
+
 ## Install, uninstall, doctor
 
 `install.sh` deploys the `cs-statusline` and `cs-subagent-statusline` binaries to `~/.local/bin` unconditionally, but the status bar itself is claimed only with consent: with a terminal attached the installer renders a sample of the bar (a fixed payload, pinned to the segments that need no live session, in the terminal's theme where it publishes one) and then asks before registering (default yes; it also asks before replacing an existing status line), and a non-interactive install registers nothing and prints how to enable later. Consent registers both keys — the bar and the [subagent rows](#subagent-rows) — exactly as `cs -statusline enable` does.

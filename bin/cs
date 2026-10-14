@@ -409,15 +409,25 @@ _codex_status_line_state() {  # config
     awk -v MODE=state -v OURS="$CS_CODEX_STATUS_LINE" "$_codex_status_line_awk" "$1"
 }
 
-# With a Python that has tomllib (3.11+), an edit must leave TOML that Codex
-# reads with cs's list as [tui] status_line (set) or none there (unset).
-# Without one there is nothing to check against.
-_codex_status_line_check() {  # set|unset, file
+# Never rewrite config.toml without a real parser. Isolated mode also keeps
+# imports away from project files and Python environment overrides.
+_codex_status_line_python() {
     local py
     for py in python3 /usr/bin/python3; do
         command -v "$py" >/dev/null 2>&1 || continue
         "$py" -I -c 'import tomllib' 2>/dev/null || continue
-        "$py" -I -c '
+        printf '%s\n' "$py"
+        return 0
+    done
+    return 1
+}
+
+# An edit must leave TOML that Codex reads with cs's list as [tui]
+# status_line (set) or none there (unset).
+_codex_status_line_check() {  # set|unset, file
+    local py
+    py=$(_codex_status_line_python) || return 1
+    "$py" -I -c '
 import sys, tomllib
 mode, path, line = sys.argv[1:]
 try:
@@ -428,9 +438,6 @@ except Exception:
     sys.exit(1)
 sys.exit(0 if (tui.get("status_line") == want if mode == "set" else "status_line" not in tui) else 1)
 ' "$1" "$2" "$CS_CODEX_STATUS_LINE"
-        return
-    done
-    return 0
 }
 
 _codex_status_line_edit() {  # set|unset, config
@@ -447,7 +454,10 @@ _codex_status_line_add() {  # codex_dir
     local config="$1/config.toml" state
     state=$(_codex_status_line_state "$config") || return 2
     [ "$state" = none ] || { printf '%s\n' "$state"; return 1; }
-    [ -f "$config" ] || { : > "$config" && chmod 600 "$config"; } || return 2
+    if [ ! -f "$config" ]; then
+        _codex_status_line_python >/dev/null || return 2
+        : > "$config" && chmod 600 "$config" || return 2
+    fi
     _codex_status_line_edit set "$config"
 }
 
