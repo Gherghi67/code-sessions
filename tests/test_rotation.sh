@@ -317,6 +317,26 @@ test_rotate_skill_arms_last() {
     assert_eq "1" "$steps" "one numbered step commits" || return 1
 }
 
+# The rotation commits inside the user's own checkout, and an adopted session
+# IS their project repo: a bare `git commit` takes whatever they had staged
+# into the handoff commit. Naming the paths makes a partial commit of only
+# those, as cs -narrative rotate does. Every session-file commit has a
+# session: subject, so the skill names all three and says no cs: one exists.
+test_rotate_skill_commits_only_the_paths_it_names() {
+    local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md" step8
+    step8=$(awk '/^8\. /{p=1} /^9\. /{p=0} p' "$skill")
+    assert_output_contains "$step8" "git commit -m 'session: handoff <basename>' -- <paths>" \
+        "the commit names the paths it stages" || return 1
+    assert_output_contains "$step8" "work the user had already staged stays staged and out of it" \
+        "and says why" || return 1
+    assert_output_contains "$step8" '`session: rotate narrative.<actor> (<N> sections -> narrative-archive)`' \
+        "the skill names cs's own narrative-rotation subject" || return 1
+    assert_output_contains "$step8" '`session: wrap <YYYY-MM-DD>`' "and the wrap's" || return 1
+    assert_output_contains "$step8" 'no `cs:` subject exists' "and says no cs: subject exists" || return 1
+    assert_file_not_contains "$skill" 'is one cs writes itself' \
+        "cs writes no cs: subject" || return 1
+}
+
 test_rotate_skill_pins_a_model_that_cannot_refuse() {
     local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md"
     # A handoff is selection under judgment, and author draw moves what a
@@ -525,6 +545,7 @@ run_test test_rotate_skill_requires_provenance_on_claims
 run_test test_rotate_skill_archives_completed_task_rows_before_arming
 run_test test_rotate_skill_puts_the_next_step_first
 run_test test_rotate_skill_arms_last
+run_test test_rotate_skill_commits_only_the_paths_it_names
 run_test test_rotate_skill_pins_a_model_that_cannot_refuse
 run_test test_rotate_skill_keeps_the_users_words_close
 run_test test_rotate_skill_spends_length_asymmetrically

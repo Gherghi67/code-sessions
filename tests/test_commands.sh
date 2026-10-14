@@ -554,6 +554,16 @@ test_wrap_commits_the_session_files_once() {
         "carrying the memory entries, the summary and the archive" || return 1
     assert_output_contains "$pass4" 'git check-ignore -q --no-index -- <path>' "skipping ignored paths" || return 1
     assert_output_contains "$pass4" 'Never `git add -f`' "never force-adding" || return 1
+    # A bare `git commit` would take whatever the user had already staged.
+    assert_output_contains "$pass4" "git commit -m 'session: wrap <YYYY-MM-DD>' -- <paths>" \
+        "the commit names the paths it stages" || return 1
+    assert_output_contains "$pass4" "work the user had already staged stays staged and out of it" \
+        "and says why" || return 1
+    assert_output_contains "$pass4" '`session: rotate narrative.<actor> (<N> sections -> narrative-archive)`' \
+        "Pass 3's own commit has a session: subject too" || return 1
+    assert_output_contains "$pass4" 'no `cs:` subject exists' "and no cs: subject exists" || return 1
+    assert_file_not_contains "$COMMANDS_DIR/wrap.md" 'is one cs writes itself' \
+        "cs writes no cs: subject" || return 1
     assert_output_contains "$pass4" '`.cs/memory`, `.cs/plans` and `.cs/private`' "and nothing from the vault" || return 1
     assert_file_contains "$COMMANDS_DIR/wrap.md" '^5\. \*\*Commit:\*\*' "the report names the commit" || return 1
     assert_file_contains "$COMMANDS_DIR/wrap.md" 'the five labeled items below' "in a fifth item" || return 1

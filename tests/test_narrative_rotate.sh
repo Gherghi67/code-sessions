@@ -479,14 +479,14 @@ test_rotate_commits_live_and_chunk_when_tracked() {
     "$CS_BIN" -narrative rotate > /dev/null 2>&1 || return 1
     local subject dirty
     subject=$(git -C "$SESSION_DIR" log -1 --format=%s)
-    assert_eq "cs: rotate narrative.alice (7 sections -> narrative-archive)" "$subject" "one commit with the rotation subject" || return 1
+    assert_eq "session: rotate narrative.alice (7 sections -> narrative-archive)" "$subject" "one commit with the rotation subject" || return 1
     dirty=$(git -C "$SESSION_DIR" status --porcelain -- .cs/memory .cs/narrative-archive)
     assert_eq "" "$dirty" "live file and chunk are both committed" || return 1
 }
 
 # Rotation commits inside the user's own checkout — and an adopted session IS
 # their project repo. A pathspec-less commit would sweep whatever they had
-# staged into a commit titled "cs: rotate narrative", which is now reachable
+# staged into a commit titled "session: rotate narrative", which is now reachable
 # for any session from the picker rather than only the one you are sitting in.
 test_rotate_commits_only_its_own_two_files() {
     _make_narrative "$LIVE" 10 500
@@ -499,7 +499,7 @@ test_rotate_commits_only_its_own_two_files() {
     # user's file exists, so "HEAD does not contain user-file.txt" is also true
     # when the rotation commit never happened.
     subject=$(git -C "$SESSION_DIR" log -1 --format=%s)
-    case "$subject" in "cs: rotate narrative"*) ;; *) echo "  FAIL: HEAD is not the rotation commit: $subject"; return 1 ;; esac
+    case "$subject" in "session: rotate narrative"*) ;; *) echo "  FAIL: HEAD is not the rotation commit: $subject"; return 1 ;; esac
     files=$(git -C "$SESSION_DIR" show --name-only --format= HEAD | grep -c 'user-file.txt' || true)
     assert_eq "0" "$files" "the user's staged file must not ride along in the rotation commit" || return 1
     staged=$(git -C "$SESSION_DIR" diff --cached --name-only -- user-file.txt)
