@@ -749,6 +749,96 @@ test_drain_hands_out_nothing_from_a_git_repository_layout_at_cs_local() {
     assert_eq "armed" "$(cat "$(QDIR)/queue.state")" "the state is left as it was" || return 1
 }
 
+# A repository layout committed at <repo>/evil, with a rotation armed below it:
+# evil/x holds a pending-handoff marker and the unconsumed handoff it names.
+# git asked about evil/x finds evil, whose empty index lists nothing.
+_commit_layout_with_a_handoff() {  # repository directory
+    local r="$1" g="$1/evil"
+    mkdir -p "$g/objects" "$g/refs" "$g/x/handoffs"
+    : > "$g/objects/.keep"
+    : > "$g/refs/.keep"
+    printf 'ref: refs/heads/main\n' > "$g/HEAD"
+    printf '[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tworktree = .\n\tfsmonitor = touch %s; false\n' \
+        "$TEST_TMPDIR/fsmonitor-ran" > "$g/config"
+    printf -- '---\nstatus: unconsumed\n---\n\n## 1. Next Step\n' > "$g/x/handoffs/h.md"
+    printf 'h.md\n' > "$g/x/pending-handoff"
+    [ -e "$r/.git" ] || git -C "$r" init -q
+    git -C "$r" add -f evil
+    git -C "$r" -c user.email=jane.roe@example.com -c user.name="Jane Roe" commit -q -m "ship a repository layout"
+}
+
+# The session's .cs/private, committed as a link to <target>.
+_commit_private_link() {  # target
+    local s="$CLAUDE_SESSION_DIR"
+    ln -s "$1" "$CLAUDE_SESSION_META_DIR/private"
+    printf '.cs/local/\n' > "$s/.gitignore"
+    [ -e "$s/.git" ] || git -C "$s" init -q
+    git -C "$s" add -f .gitignore .cs/private
+    git -C "$s" -c user.email=jane.roe@example.com -c user.name="Jane Roe" commit -q -m "ship a link"
+}
+
+# A committed link can lead .cs/private out of the session, into a layout
+# committed in another directory a clone made (another session, by its name).
+# The layout is refused by name wherever it lies: SessionStart arms nothing
+# from it, leaves the handoff and its marker as committed, and marks the
+# session as one whose control files the hooks do not trust.
+test_session_start_arms_no_handoff_from_a_layout_a_link_leads_into() {
+    local o="$CS_SESSIONS_ROOT/other" mark="$HOME/.cache/cs/tracked/test-session" out rc=0
+    rm -f "$mark"
+    mkdir -p "$o"
+    _commit_layout_with_a_handoff "$o"
+    _commit_private_link ../../other/evil/x
+    out=$(printf '{"source":"startup","session_id":"0b7c6a52-5d1e-4c3f-9a8b-1c2d3e4f5a6b","hook_event_name":"SessionStart"}\n' \
+        | CS_LEAD_PID=$$ CLAUDE_PID=$$ CS_NO_ROTATION_WAKE=1 bash "$HOOKS_DIR/session-start.sh" 2>&1) || rc=$?
+    assert_file_not_exists "$TEST_TMPDIR/fsmonitor-ran" "git must not run the layout's core.fsmonitor" || return 1
+    assert_eq "0" "$rc" "SessionStart stands down, it does not fail: $out" || return 1
+    assert_eq "" "$(git -C "$o" status --porcelain)" "the handoff and its marker are left as committed" || return 1
+    assert_file_exists "$mark" "the session is marked as one whose control files the hooks do not trust" || return 1
+}
+
+# The refusal names such a layout by its path, as it is outside the session.
+test_vet_session_refuses_a_layout_a_link_leads_into_outside_the_session() {
+    local o="$CS_SESSIONS_ROOT/other" out rc=0 shown
+    mkdir -p "$o"
+    _commit_layout_with_a_handoff "$o"
+    _commit_private_link ../../other/evil/x
+    shown=$(cd -P "$o/evil" && pwd -P)
+    out=$(env -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR "$CS_BIN" -vet-session "$CLAUDE_SESSION_DIR" 2>&1) || rc=$?
+    assert_file_not_exists "$TEST_TMPDIR/fsmonitor-ran" "git must not run the layout's core.fsmonitor" || return 1
+    assert_eq "1" "$rc" "cs -vet-session refuses: $out" || return 1
+    assert_eq "Error: $(_git_dir_layout_refusal "$shown")" "$out" "the refusal names the layout by its path" || return 1
+}
+
+# On a volume that folds case a link can spell the session's own directory in
+# another case (../../TEST-SESSION/evil/x for test-session), and pwd -P keeps
+# the case the link spells. The layout it reaches is the session's all the same,
+# and is refused by its name in the session.
+test_vet_session_refuses_a_layout_a_link_reaches_by_another_case_of_the_sessions_name() {
+    local out rc=0
+    mkdir -p "$TEST_TMPDIR/Probe"
+    [ -d "$TEST_TMPDIR/probe" ] || return 77
+    _commit_layout_with_a_handoff "$CLAUDE_SESSION_DIR"
+    _commit_private_link ../../TEST-SESSION/evil/x
+    out=$(env -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR "$CS_BIN" -vet-session "$CLAUDE_SESSION_DIR" 2>&1) || rc=$?
+    assert_file_not_exists "$TEST_TMPDIR/fsmonitor-ran" "git must not run the layout's core.fsmonitor" || return 1
+    assert_eq "1" "$rc" "cs -vet-session refuses: $out" || return 1
+    assert_eq "Error: $(_git_dir_layout_refusal evil)" "$out" "the refusal names the layout" || return 1
+}
+
+# A .cs/private that leads to the session itself holds the session's own files
+# by any spelling: the refusal names the link and prints no command, which
+# would untrack the project.
+test_vet_session_names_a_private_link_to_the_session_in_another_case_without_a_command() {
+    local out rc=0
+    mkdir -p "$TEST_TMPDIR/Probe"
+    [ -d "$TEST_TMPDIR/probe" ] || return 77
+    _commit_private_link ../../TEST-SESSION
+    out=$(env -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR "$CS_BIN" -vet-session "$CLAUDE_SESSION_DIR" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "cs -vet-session refuses: $out" || return 1
+    assert_eq "Error: .cs/private leads to a directory that holds this session's own files, where git tracks .cs/private (per-actor state must stay local). Make .cs/private a directory of its own." \
+        "$out" "the refusal names the link and prints no command" || return 1
+}
+
 # Each question cs asks git about a session's files goes through _cs_git_at,
 # which never lets the repository's config run a filesystem monitor: the
 # layout's core.fsmonitor stays unrun even when git is asked from inside it.
@@ -1261,6 +1351,10 @@ run_test test_vet_session_refuses_a_git_repository_layout_whose_head_is_a_dangli
 run_test test_vet_session_refuses_a_git_repository_layout_at_cs_private
 run_test test_queue_verbs_refuse_a_git_repository_layout_at_cs_local
 run_test test_drain_hands_out_nothing_from_a_git_repository_layout_at_cs_local
+run_test test_session_start_arms_no_handoff_from_a_layout_a_link_leads_into
+run_test test_vet_session_refuses_a_layout_a_link_leads_into_outside_the_session
+run_test test_vet_session_refuses_a_layout_a_link_reaches_by_another_case_of_the_sessions_name
+run_test test_vet_session_names_a_private_link_to_the_session_in_another_case_without_a_command
 run_test test_git_questions_never_run_a_repository_core_fsmonitor
 run_test test_vet_session_passes_a_session_in_no_repository_while_git_traces
 run_test test_vet_session_passes_a_session_whose_control_files_git_ignores
