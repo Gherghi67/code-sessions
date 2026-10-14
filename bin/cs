@@ -10631,6 +10631,12 @@ _task_archive_forced() {  # meta_dir
     local now marker named
     now=$(_read_local_state "$1/local/state" claude_session_id)
     if [ -n "$now" ]; then
+        # Nothing empties cs.forced: it is the mod's retry guard (forceRotation
+        # forces no conversation it already names), so a forced rotation that
+        # fails is not run again at every turn's end. The cost: once the mod
+        # has forced a rotation here, a /rotate typed later in the same
+        # conversation, as after a forced rotation that never armed, reads as
+        # forced too and skips the archive question.
         for marker in cs.forced cs.pressed; do
             [ -f "$1/local/$marker" ] || continue
             named=""
