@@ -29,6 +29,30 @@ test_flat_layout_migration_keeps_the_sessions_gitignore() {
         "the ignored key file is not committed by the migration" || return 1
 }
 
+# The structural migration moves the flat layout into .cs/ and commits
+# nothing: the moves stay in the working tree, and one line names what the
+# user is left to commit.
+test_flat_layout_migration_commits_nothing() {
+    local dir="$CS_SESSIONS_ROOT/flat-session" head_before out
+    mkdir -p "$dir/logs"
+    printf 'Claude Code Session Log\nSession: flat-session\n' > "$dir/logs/session.log"
+    printf '# Session: flat-session\n' > "$dir/README.md"
+    printf '# Session Documentation Protocol\n' > "$dir/CLAUDE.md"
+    (cd "$dir" && git init -q && git config core.autocrlf false && git add -A && git commit -q -m initial)
+    head_before=$(git -C "$dir" rev-parse HEAD)
+
+    out=$("$CS_BIN" flat-session <<< "" 2>&1 || true)
+
+    assert_eq "$head_before" "$(git -C "$dir" rev-parse HEAD)" "the migration makes no commit" || return 1
+    assert_eq "" "$(git -C "$dir" diff --cached --name-only)" "and stages nothing" || return 1
+    assert_file_exists "$dir/.cs/README.md" "the README moved into .cs/ in the working tree" || return 1
+    assert_file_not_exists "$dir/README.md" "and left the root" || return 1
+    assert_eq "README.md" "$(git -C "$dir" ls-files README.md)" "git still tracks the README at the root" || return 1
+    assert_eq "" "$(git -C "$dir" ls-files .cs)" "and nothing under .cs/" || return 1
+    assert_output_contains "$out" "cs committed nothing; it left .cs/, logs/, README.md, .gitignore and .gitattributes for you to commit" \
+        "one line names what the migration left" || return 1
+}
+
 # The sessions root also holds directories that are not sessions (editor
 # config, a worktree holder). Opening one by name is refused before cs writes
 # its session files into it.
@@ -57,6 +81,7 @@ echo "===================================================="
 echo ""
 
 run_test test_flat_layout_migration_keeps_the_sessions_gitignore
+run_test test_flat_layout_migration_commits_nothing
 run_test test_open_refuses_a_directory_that_is_not_a_session
 
 report_results
