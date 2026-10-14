@@ -482,6 +482,25 @@ test_pre_open_without_the_lock_pid_detaches_and_asks_again() {
 attach -nobrowse -mountpoint $FAKE_MNT $(_vault_path enc)" "$(cat "$FAKE_HDIUTIL_LOG")" "detach, then a prompting attach" || return 1
 }
 
+# A CS_LIVE_LOCK_PID that names no running process (a dead pid, or 0 and 00,
+# which kill -0 takes for the caller's process group) is not a running
+# session either: run by hand with one, the pre-open detaches the mount and
+# asks for the password again.
+test_pre_open_with_a_lock_pid_that_is_not_running_detaches_and_asks_again() {
+    _encrypted_session enc || return 1
+    sleep 300 &
+    local dead=$! value rc
+    kill "$dead" 2>/dev/null; wait "$dead" 2>/dev/null
+    for value in "$dead" 0 00; do
+        : > "$FAKE_HDIUTIL_LOG"
+        rc=0
+        _pre_open enc FAKE_MOUNTED=1 CS_ASSUME_TTY=1 CS_LIVE_LOCK_PID="$value" >/dev/null 2>&1 || rc=$?
+        assert_eq "0" "$rc" "exit 0 with CS_LIVE_LOCK_PID=$value" || return 1
+        assert_eq "detach $FAKE_MNT
+attach -nobrowse -mountpoint $FAKE_MNT $(_vault_path enc)" "$(cat "$FAKE_HDIUTIL_LOG")" "CS_LIVE_LOCK_PID=$value: detach, then a prompting attach" || return 1
+    done
+}
+
 # /clear used to drop the lock while claude ran on; the holder list still names it.
 test_pre_open_joins_a_mount_whose_holder_is_alive_without_a_lock() {
     _encrypted_session enc || return 1
@@ -938,6 +957,7 @@ run_test test_encrypt_stops_when_attach_fails
 run_test test_encrypt_stops_on_a_failed_move_and_names_what_moved
 run_test test_pre_open_joins_a_mount_held_by_a_running_session
 run_test test_pre_open_without_the_lock_pid_detaches_and_asks_again
+run_test test_pre_open_with_a_lock_pid_that_is_not_running_detaches_and_asks_again
 run_test test_pre_open_joins_a_mount_whose_holder_is_alive_without_a_lock
 run_test test_pre_open_stops_a_waiter_detach_in_flight
 run_test test_pre_open_detaches_a_leftover_mount_and_asks_again
