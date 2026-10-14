@@ -614,8 +614,10 @@ _migrate_session_documents() {  # session_dir, tracked_tree_is_ours
     # The exact lines cs wrote get their /wrap wording, as in CLAUDE.local.md
     # (_ensure_claude_local_sections). It runs after the .cs/ test above,
     # which the /wrap sentence's ".cs/summary.md" would otherwise change.
-    # Every CLAUDE.md cs wrote opens with "# Session Documentation Protocol";
-    # one that opens otherwise is the user's and is left alone. A CLAUDE.md
+    # Every CLAUDE.md Phase 5 leaves in place opens with "# Session
+    # Documentation Protocol" (the July 2026 template, which opens with a
+    # cs:session-protocol sentinel, is moved to CLAUDE.local.md); one that
+    # opens otherwise is the user's and is left alone. A CLAUDE.md
     # cs cannot read or rewrite is named and left, and the open goes on
     # without its stamp, so the next open tries again.
     if [ "$tracked_tree_is_ours" = 1 ] && [ -f "$claude_md" ]; then
