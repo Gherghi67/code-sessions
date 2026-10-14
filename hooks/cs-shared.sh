@@ -176,18 +176,20 @@ _cs_git_cannot_answer() {  # dir, git's error output
 # quoted for the shell and taken literally by git (a directory named "*" would
 # otherwise untrack every file), a path starting with "~" or "=" is spelled
 # from the current directory (bash 3.2 leaves the tilde bare, and zsh reads
-# =git as git's own path), the commit runs in the
+# =git as git's own path), and so is a repository starting with "-", which
+# git -C takes as a path but a reader takes for an option, the commit runs in the
 # same repository wherever the command is pasted, and the file name and the
 # commit message keep only characters a plain path has. The name also shows in
 # the Stop hook's message, a systemMessage, which Claude Code shows the user and
 # leaves out of what it sends the model.
 cs_untrack_notice() {  # tracked, top, sub
-    local shown said sub="$3"
+    local shown said top="$2" sub="$3"
     shown=$(printf '%s' "$1" | env LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_' | cut -c1-160) || return 1
     said=$(printf '%s' "$sub" | env LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_') || return 1
+    case "$top" in '~'* | '='* | '-'*) top="./$top" ;; esac
     case "$sub" in '~'* | '='*) sub="./$sub" ;; esac
     printf "%s is tracked in git (per-actor state must stay local). Fix with: git -C %q --literal-pathspecs rm -r --cached -- %q && git -C %q commit -m 'stop tracking %s'\n" \
-        "$shown" "$2" "$sub" "$2" "$said"
+        "$shown" "$top" "$sub" "$top" "$said"
 }
 
 # Says which file git tracks in <dir> and how to stop tracking it; fails,
