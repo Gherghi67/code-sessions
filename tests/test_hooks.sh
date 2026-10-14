@@ -1224,7 +1224,8 @@ test_auto_approve_allows_vaulted_session_content() {
     ln -s "$TEST_TMPDIR" "$meta/vault-mnt/private/handoffs/planted"
     HOME="$home" CLAUDE_CONFIG_DIR="$meta/claude-config" \
         _assert_falls_through Write "$meta/memory/narrative.md" \
-        "a narrative beside a link planted inside the vault" || return 1
+        "a narrative beside a link planted inside the vault" \
+        "$(_link_reason "$(cd "$meta" && pwd -P)/vault-mnt/private/handoffs/planted")" || return 1
 }
 
 # `claude --worktree` keeps whole checkouts under the project's
@@ -1241,7 +1242,8 @@ test_auto_approve_skips_project_worktrees_only() {
         "a narrative beside a link inside a claude worktree" || return 1
     ln -s "$outside" "$root/.claude/skills/x/worktrees/planted"
     _assert_falls_through Write "$meta/memory/narrative.md" \
-        "a narrative beside a link under a nested worktrees/" || return 1
+        "a narrative beside a link under a nested worktrees/" \
+        "$(_link_reason "$(cd "$root" && pwd -P)/.claude/skills/x/worktrees/planted")" || return 1
     rm "$root/.claude/skills/x/worktrees/planted"
     local odd="$TEST_TMPDIR/odd [x]*"
     mkdir -p "$odd"
@@ -1260,7 +1262,8 @@ test_auto_approve_declines_on_config_debug_link() {
     printf 'log\n' > "$meta/claude-config/debug/x.txt"
     ln -s "$meta/claude-config/debug/x.txt" "$meta/claude-config/debug/latest"
     _assert_falls_through Write "$meta/memory/narrative.md" \
-        "a narrative beside Claude Code's debug/latest link" || return 1
+        "a narrative beside Claude Code's debug/latest link" \
+        "$(_link_reason "$(cd "$meta" && pwd -P)/claude-config/debug/latest")" || return 1
 }
 
 test_auto_approve_skips_outside_session() {
