@@ -1231,15 +1231,17 @@ fn one_row(text: &str, columns: u16, color: Color) -> Line<'static> {
 /// the entries share what is left, the first warnings' first, fewer than the
 /// usual twenty when they would not fit and none once the rows run out. When
 /// even one row per warning does not fit, the last row counts the warnings
-/// left out. A warning and an entry are each one row of the popup's
-/// `columns`: one too wide for it is shortened in the middle.
+/// left out. When the screen leaves a single row, it holds that warning or
+/// the count, with no blank separator above it. A warning and an entry are
+/// each one row of the popup's `columns`: one too wide for it is shortened
+/// in the middle.
 fn warning_lines(warnings: &[DeleteWarning], height: u16, other: u16, columns: u16, color: Color) -> Vec<Line<'static>> {
-    let rows = (height as usize).saturating_sub(other as usize + 1);
-    if warnings.is_empty() || rows == 0 {
+    let room = (height as usize).saturating_sub(other as usize);
+    if warnings.is_empty() || room == 0 {
         return Vec::new();
     }
     let style = Style::default().fg(color);
-    let mut lines = vec![Line::from("")];
+    let (mut lines, rows) = if room == 1 { (Vec::new(), 1) } else { (vec![Line::from("")], room - 1) };
     if warnings.len() > rows {
         let shown = rows - 1;
         lines.extend(warnings[..shown].iter().map(|w| one_row(&w.text, columns, color)));
