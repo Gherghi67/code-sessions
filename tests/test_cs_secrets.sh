@@ -1530,6 +1530,28 @@ test_age_add_refuses_an_age_key_age_does_not_accept() {
     done
 }
 
+# The same holds for an ssh-ed25519 key: its body can be all base64
+# characters and still be no key. One is given raw, with a body too short to
+# hold a key type; the other arrives in a key file, with a well-formed header
+# and twenty key bytes where thirty-two belong.
+test_age_add_refuses_an_ssh_key_age_does_not_accept() {
+    _use_real_age || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs" short="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG9ubHkgdHdlbnR5IGJ5dGVz" out rc=0
+    out=$("$CS_SECRETS_BIN" age add "ssh-ed25519 AAAA" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "age add exits 1 for a raw malformed ssh key" || return 1
+    assert_eq "Error: Invalid public key: age does not accept ssh-ed25519 AAAA as a recipient" "$out" "the refusal names the raw key" || return 1
+    assert_eq "" "$(ls "$meta/age-recipients" 2>/dev/null)" "no recipient file is written for the raw key" || return 1
+    assert_not_exists "$HOME/.cs-secrets/sessions/test-session/age-trusted" "nothing is pinned for the raw key" || return 1
+
+    printf '%s peer@example.com\n' "$short" > "$TEST_TMPDIR/peer.pub"
+    rc=0
+    out=$("$CS_SECRETS_BIN" age add "$TEST_TMPDIR/peer.pub" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "age add exits 1 for a key file holding a malformed ssh key" || return 1
+    assert_eq "Error: Invalid public key: age does not accept $short as a recipient" "$out" "the refusal names the key the file holds" || return 1
+    assert_eq "" "$(ls "$meta/age-recipients" 2>/dev/null)" "no recipient file is written for the key file" || return 1
+    assert_not_exists "$HOME/.cs-secrets/sessions/test-session/age-trusted" "nothing is pinned for the key file" || return 1
+}
+
 # When age cannot encrypt the export, the export fails and says what age said.
 # It writes no password-encrypted file in its place: a later import would read
 # the stale .age beside it and restore an old value. The bad key is pinned the
@@ -4390,6 +4412,7 @@ run_test test_age_add_takes_an_ssh_ed25519_key_file
 run_test test_age_add_takes_a_raw_ssh_ed25519_key
 run_test test_age_add_refuses_a_different_key_under_a_recipient_name_in_use
 run_test test_age_add_refuses_an_age_key_age_does_not_accept
+run_test test_age_add_refuses_an_ssh_key_age_does_not_accept
 run_test test_export_fails_when_age_cannot_encrypt
 run_test test_age_add_without_age_points_at_age_init
 run_test test_age_add_refuses_what_is_not_a_key
