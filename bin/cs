@@ -12406,8 +12406,10 @@ launch_claude_code() {
     # The session is open and every export above is in place: `--remote`
     # serves it through claude remote-control instead of starting claude.
     # A staged spawn seed stays staged for an interactive open, since the
-    # server takes no prompt to kick it with.
+    # server takes no prompt to kick it with, and one line says so.
     if [ -n "$remote_mode" ]; then
+        [ ! -f "$SESSIONS_ROOT/.spawn/$session_name.seed" ] \
+            || warn "A spawn seed is staged for $session_name; it stays staged for the next cs $session_name, since claude remote-control takes no prompt to start it with."
         _serve_remote "$session_name" "$session_dir" "$remote_mode"
     fi
 
