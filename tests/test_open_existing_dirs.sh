@@ -25,8 +25,8 @@ test_flat_layout_migration_keeps_the_sessions_gitignore() {
         "the session's own .gitignore rule survives the migration" || return 1
     assert_file_contains "$dir/.gitignore" '^\.cs/local/$' \
         "cs's .cs/local/ rule is merged in" || return 1
-    assert_eq "" "$(git -C "$dir" ls-files secret.key)" \
-        "the ignored key file is not committed by the migration" || return 1
+    assert_eq "secret.key" "$(git -C "$dir" check-ignore secret.key)" \
+        "git still ignores the key file" || return 1
 }
 
 # The structural migration moves the flat layout into .cs/ and commits
