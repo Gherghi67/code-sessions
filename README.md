@@ -485,8 +485,10 @@ outright. A handoff this checkout never wrote is labelled `(from another
 checkout)` at the prompt — it is still offered, because continuing your own
 rotation from a second machine is a working flow, but `r` on a colleague's live
 handoff consumes their artifact under your UUID, so the offer says whose it is.
+cs offers only a handoff whose file name is plain (letters, digits and `._@-`,
+at most 160 characters); it passes over any other and says so in one line.
 An armed marker names the handoff to offer; without one, or when it names a
-spent or missing file, the lexicographically last unconsumed basename wins — the `YYYY-MM-DD-` prefix makes that the newest. The marker takes
+spent, missing or not plain file, the lexicographically last unconsumed basename wins — the `YYYY-MM-DD-` prefix makes that the newest. The marker takes
 precedence because `.cs/handoffs/` is shared and nothing deletes a handoff: a
 co-worker's file stays unconsumed indefinitely, and sorting last it would
 otherwise shadow the rotation this checkout armed.
@@ -540,7 +542,7 @@ README objective instead.
 
 ## Slash Commands
 
-- `/wrap` — The end-of-session command, in four passes: distills the session into durable auto-memory entries (strict bar) and sweeps findings into the narrative, checking its `MEMORY.md` rewrites for removed links and the byte budget and, when a check could enforce a rule an entry states, adding a task to build that check and keeping the entry; writes the narrative summary to `.cs/summary.md`; runs `cs -narrative rotate`; archives completed task rows. It commits nothing
+- `/wrap` — The end-of-session command: distills the session into durable auto-memory entries (strict bar) and sweeps findings into the narrative, checking its `MEMORY.md` rewrites for removed links and the byte budget and, when a check could enforce a rule an entry states, adding a task to build that check and keeping the entry; writes the narrative summary to `.cs/summary.md`; runs `cs -narrative rotate`; archives completed task rows. It commits nothing
 - `/checkpoint <label>` — Save a labelled state snapshot (narrative, changes, git HEAD)
 - `/queue <task>` — Add a task to this session's walk-away queue through `cs -queue add`, even mid-turn; `/queue` alone lists the queue and offers to start pending tasks (from the `cs` mod)
 - `/cs-update` — Open the release notes for a pending cs update, with `1` to install it (from the `cs-update` mod)
