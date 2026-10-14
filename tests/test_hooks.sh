@@ -3629,6 +3629,7 @@ test_install_merge_filter_copy_matches_install_sh_in() {
 # An event whose value is not a list is the user's: the merge stops, naming
 # the event, rather than rewrite it. A null event is one the merge creates.
 test_install_merge_stops_on_an_event_that_is_not_a_list() {
+    # shellcheck disable=SC2088  # the spelling settings.json holds, never expanded
     local tilde="~/.claude/hooks/session-start.sh" value out rc
     for value in '{"custom":{"hooks":[]}}' 'false' '"notify"' '7'; do
         rc=0
