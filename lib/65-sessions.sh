@@ -390,7 +390,8 @@ _session_foreign_entries() {  # session_dir
             .cs|.claude|.git|.gitignore|.gitattributes|CLAUDE.md|CLAUDE.local.md|.DS_Store) continue ;;
             notes.md|changes.md|discoveries.md|logs|artifacts) continue ;;
         esac
-        out="${out:+$out, }$name"
+        # A cloned session's repo chooses the names at its root.
+        out="${out:+$out, }$(_cs_plain_name "$name" 160)"
     done
     printf '%s' "$out"
 }
