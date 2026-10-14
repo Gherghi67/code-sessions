@@ -12155,10 +12155,8 @@ launch_claude_code() {
     local force="${4:-}"
     local merge_feature="${5:-}"
     # Set for `cs <name> --remote`: the permission mode the server passes to
-    # the sessions it starts, and whether this run is the server's own tmux
-    # window. Empty for every other open.
+    # the sessions it starts. Empty for every other open.
     local remote_mode="${6:-}"
-    local remote_in_window="${7:-}"
 
     # Terminal theme (and its real background RGB when known) for the statusline
     # and hooks, detected while cs still owns the tty and reused by the session
@@ -12409,7 +12407,7 @@ launch_claude_code() {
     # A staged spawn seed stays staged for an interactive open, since the
     # server takes no prompt to kick it with.
     if [ -n "$remote_mode" ]; then
-        _serve_remote "$session_name" "$session_dir" "$remote_mode" "$remote_in_window"
+        _serve_remote "$session_name" "$session_dir" "$remote_mode"
     fi
 
     # Spawn seed: tasks and a brief staged by cs -spawn for this session.
@@ -13135,10 +13133,6 @@ _REMOTE_MIN_CLAUDE_VERSION="2.1.299"
 # refused here the same way, by name, before anything is opened.
 _CS_REMOTE_BIN=""
 
-# Path of the running server's pid file; the EXIT trap of _serve_remote reads
-# it from this global when it fires.
-_CS_REMOTE_PID_FILE=""
-
 # True when dotted version <have> is <want> or later, compared field by field
 # as numbers (2.1.1000 is later than 2.1.299). Both are three dot-separated
 # runs of digits.
@@ -13205,7 +13199,10 @@ _remote_refuse_live() {  # session_name, meta_dir, lock_pid, [remote]
 # folder-trust prompts. The window runs `cs <name> --remote` again with
 # CS_REMOTE_WINDOW set, so that run serves in place instead of opening
 # another window. The refusals a window would show and then lose with the
-# window are made here first, on the caller's terminal.
+# window are made here first, on the caller's terminal. A server that fails
+# later would take its error with the window, so a sh in front waits for
+# Enter after a failure; it is the window's first process, and when the
+# window closes it ends and the server, its foreground job, gets the hangup.
 _remote_open_window() {  # session_name, permission_mode
     local name="$1" mode="$2" meta="$SESSIONS_ROOT/$1/.cs"
     if session_is_live "$meta"; then
@@ -13213,46 +13210,54 @@ _remote_open_window() {  # session_name, permission_mode
     fi
     _spawn_precheck "$name" "remote:$name"
     _cs_tmux_window "remote:$name" \
-        "env CS_REMOTE_WINDOW=1 $(_sq "$(_cs_self)") $(_sq "$name") --remote --permission-mode $(_sq "$mode")"
+        "sh -c $(_sq '"$@" || { s=$?; printf "\nclaude remote-control exited with status %s. Press Enter to close this window.\n" "$s"; read -r _; exit "$s"; }') cs-remote env CS_REMOTE_WINDOW=1 $(_sq "$(_cs_self)") $(_sq "$name") --remote --permission-mode $(_sq "$mode")"
     info "remote:$name runs in tmux session cs (window $_CS_TMUX_WID). Attach: $(_spawn_attach_hint)"
 }
 
-# Run claude remote-control in the session directory, which launch_claude_code
-# has opened with every export a claude launch gets: the server hands its
-# whole environment to the sessions it starts, so cs's hooks, memory path,
-# task list and secrets scope reach them. Never returns.
+# After the server <pid> exits: remove .cs/local/remote.pid while it names
+# <pid>, release the session lock (which names <pid> as well), and detach a
+# vault this open mounted. Run in the background before the exec, so $$ here
+# is the pid the server takes over. It ignores the signals that stop the
+# server, holds no terminal, and checks once a second, like the vault waiter
+# SessionEnd leaves.
+_remote_release_after() {  # pid, meta_dir
+    local pid=""
+    trap - EXIT
+    trap '' HUP INT TERM
+    while kill -0 "$1" 2>/dev/null; do
+        sleep 1
+    done
+    { IFS= read -r pid < "$2/local/remote.pid"; } 2>/dev/null || true
+    if [ "$pid" = "$1" ]; then
+        rm -f "$2/local/remote.pid"
+    fi
+    release_session_lock "$2"
+    _detach_opened_vault
+}
+
+# Serve the session through claude remote-control, in place of this cs:
+# launch_claude_code has opened it with every export a claude launch gets, and
+# the server hands its whole environment to the sessions it starts, so cs's
+# hooks, memory path, task list and secrets scope reach them. Never returns.
 #
-# The server is cs's foreground child, so it shares cs's terminal, and a
-# Ctrl-C or the hangup of a closed window reaches it directly; cs holds the
-# session lock until it exits. A sh in front records its own pid in
-# .cs/local/remote.pid and then execs claude, so the file names the server.
-# Signals to cs only wait for the server: bash runs a trap after its
-# foreground child ends, and ':' rather than an ignored signal, since an
-# ignored one would be ignored by the server too. cs then exits with the
-# server's status, and the EXIT trap removes the pid file and the lock.
-#
-# A server that fails in its tmux window would take its error with the
-# window, so there it waits for a key first.
-_serve_remote() {  # session_name, session_dir, permission_mode, in_window
-    local name="$1" dir="$2" mode="$3" in_window="$4" rc=0
-    _CS_REMOTE_PID_FILE="$dir/.cs/local/remote.pid"
-    trap '[ -n "${TMUX:-}" ] || reset_tab_title; rm -f "$_CS_REMOTE_PID_FILE"; release_session_lock "$_CS_LOCK_META_DIR"; _detach_opened_vault' EXIT
-    trap ':' HUP INT TERM
+# cs execs the server, as every other launch execs claude, so the server
+# keeps this pid: the session lock and .cs/local/remote.pid name it, and the
+# server meets Ctrl-C and the hangup of a closed window or terminal exactly
+# as when run by hand, which stops it cleanly (measured on 2.1.299). Its
+# exit status is the run's. What cs leaves behind goes once the server has
+# exited, through _remote_release_after.
+_serve_remote() {  # session_name, session_dir, permission_mode
+    local name="$1" dir="$2" mode="$3" meta="$2/.cs"
     # remote-control refuses to start while an API key is set.
     unset ANTHROPIC_API_KEY
     # Inside tmux the window keeps its remote:<name> name, which
     # _spawn_precheck reads to refuse a second window.
     [ -n "${TMUX:-}" ] || set_tab_title "cs: $name (remote)" "auto:$name"
     cd "$dir" || error "could not enter $dir"
+    printf '%s\n' "$$" > "$meta/local/remote.pid" || error "could not write $meta/local/remote.pid"
+    _remote_release_after "$$" "$meta" < /dev/null > /dev/null 2>&1 &
     info "Serving $name through claude remote-control (permission mode $mode). Ctrl-C or closing the window stops it."
-    sh -c 'printf "%s\n" "$$" > "$1" || exit 1; shift; exec "$@"' cs-remote \
-        "$_CS_REMOTE_PID_FILE" "$_CS_REMOTE_BIN" remote-control --name "$name" --permission-mode "$mode" \
-        || rc=$?
-    if [ "$rc" -ne 0 ] && [ -n "$in_window" ] && cs_interactive; then
-        printf '%s\n' "claude remote-control exited with status $rc. Press a key to close this window."
-        IFS= read -rsn1 _ || true
-    fi
-    exit "$rc"
+    exec "$_CS_REMOTE_BIN" remote-control --name "$name" --permission-mode "$mode"
 }
 run_secrets() {
     local secrets_script
@@ -14782,7 +14787,7 @@ $merge_feature
     fi
 
     # Launch Claude Code
-    launch_claude_code "$session_name" "$session_dir" "$is_new" "$force_flag" "$merge_feature" "$remote_mode" "$remote_in_window"
+    launch_claude_code "$session_name" "$session_dir" "$is_new" "$force_flag" "$merge_feature" "$remote_mode"
 }
 
 main "$@"

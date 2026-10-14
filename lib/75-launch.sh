@@ -204,10 +204,8 @@ launch_claude_code() {
     local force="${4:-}"
     local merge_feature="${5:-}"
     # Set for `cs <name> --remote`: the permission mode the server passes to
-    # the sessions it starts, and whether this run is the server's own tmux
-    # window. Empty for every other open.
+    # the sessions it starts. Empty for every other open.
     local remote_mode="${6:-}"
-    local remote_in_window="${7:-}"
 
     # Terminal theme (and its real background RGB when known) for the statusline
     # and hooks, detected while cs still owns the tty and reused by the session
@@ -458,7 +456,7 @@ launch_claude_code() {
     # A staged spawn seed stays staged for an interactive open, since the
     # server takes no prompt to kick it with.
     if [ -n "$remote_mode" ]; then
-        _serve_remote "$session_name" "$session_dir" "$remote_mode" "$remote_in_window"
+        _serve_remote "$session_name" "$session_dir" "$remote_mode"
     fi
 
     # Spawn seed: tasks and a brief staged by cs -spawn for this session.

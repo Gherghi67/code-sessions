@@ -599,7 +599,7 @@ $merge_feature
     fi
 
     # Launch Claude Code
-    launch_claude_code "$session_name" "$session_dir" "$is_new" "$force_flag" "$merge_feature" "$remote_mode" "$remote_in_window"
+    launch_claude_code "$session_name" "$session_dir" "$is_new" "$force_flag" "$merge_feature" "$remote_mode"
 }
 
 main "$@"

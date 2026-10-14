@@ -154,19 +154,22 @@ stop_serving() {  # signal
     SERVE_PID=""
 }
 
-# Run `cs demo --remote` on a pseudo-terminal of its own, as a tmux window or
-# a terminal tab runs it: cs is the session leader there. Once the fake server
-# says ready, either type Ctrl-C (ctrlc) or close the terminal (hangup), then
-# print cs's exit status. Only the kernel signals anything here.
-drive_on_a_terminal() {  # ctrlc|hangup
+# Run a command on a pseudo-terminal of its own, as a tmux window or a
+# terminal tab runs it: the command is the session leader there. Once the
+# fake server says ready, either type Ctrl-C (ctrlc) or close the terminal
+# (hangup), then print how the command ended. Only the kernel signals
+# anything here.
+drive_on_a_terminal() {  # ctrlc|hangup, command...
+    local mode="$1"
+    shift
     mkfifo "$FAKE_READY_FIFO"
-    FAKE_CLAUDE_MODE=serve python3 - "$1" "$CS_BIN" "$FAKE_READY_FIFO" << 'PY'
+    FAKE_CLAUDE_MODE=serve python3 - "$mode" "$FAKE_READY_FIFO" "$@" << 'PY'
 import os, pty, select, sys, time
-mode, cs, fifo = sys.argv[1], sys.argv[2], sys.argv[3]
+mode, fifo, cmd = sys.argv[1], sys.argv[2], sys.argv[3:]
 rfd = os.open(fifo, os.O_RDWR)
 pid, fd = pty.fork()
 if pid == 0:
-    os.execvp(cs, [cs, "demo", "--remote"])
+    os.execvp(cmd[0], cmd)
 out, ready, start = b"", False, time.time()
 while time.time() - start < 60 and not ready:
     r, _, _ = select.select([fd, rfd], [], [], 0.5)
@@ -218,6 +221,13 @@ make_open_session() {  # name
     printf '%s\n' "$!" > "$sdir/.cs/session.lock"
 }
 
+# The command the server's tmux window runs for demo in plan mode.
+window_command() {
+    local self
+    self="$(cd "$SCRIPT_DIR/../bin" && pwd)/cs"
+    printf '%s' "sh -c '\"\$@\" || { s=\$?; printf \"\\nclaude remote-control exited with status %s. Press Enter to close this window.\\n\" \"\$s\"; read -r _; exit \"\$s\"; }' cs-remote env CS_REMOTE_WINDOW=1 '$self' 'demo' --remote --permission-mode 'plan'"
+}
+
 strip_ansi() {
     sed $'s/\033\\[[0-9;]*m//g'
 }
@@ -252,10 +262,10 @@ test_remote_strips_the_api_key_and_keeps_the_cs_exports() {
 
 test_remote_holds_the_lock_and_records_the_server_pid_while_it_runs() {
     "$CS_BIN" demo --remote > /dev/null 2>&1 || return 1
-    assert_eq "$(log_value ppid)" "$(log_value lock)" "the lock names cs, the server's parent, while it serves" || return 1
+    assert_eq "$(log_value pid)" "$(log_value lock)" "the lock names the server while it serves" || return 1
     assert_eq "$(log_value pid)" "$(log_value remote_pid)" ".cs/local/remote.pid names the server" || return 1
-    assert_file_not_exists "$CS_SESSIONS_ROOT/demo/.cs/session.lock" "the lock is released when the server exits" || return 1
-    assert_file_not_exists "$CS_SESSIONS_ROOT/demo/.cs/local/remote.pid" "remote.pid is removed when the server exits" || return 1
+    gone_within_10s "$CS_SESSIONS_ROOT/demo/.cs/session.lock" || { echo "  FAIL: the lock is left after the server exits"; return 1; }
+    gone_within_10s "$CS_SESSIONS_ROOT/demo/.cs/local/remote.pid" || { echo "  FAIL: remote.pid is left after the server exits"; return 1; }
 }
 
 test_remote_shows_the_servers_error_and_exits_with_its_status() {
@@ -263,8 +273,8 @@ test_remote_shows_the_servers_error_and_exits_with_its_status() {
     out=$(FAKE_CLAUDE_MODE=exit:1 "$CS_BIN" demo --remote 2>&1) || rc=$?
     assert_eq "1" "$rc" "cs exits with the server's status" || return 1
     assert_output_contains "$out" "Error: You must be logged in to use Remote Control." "the server's own error is shown as is" || return 1
-    assert_file_not_exists "$CS_SESSIONS_ROOT/demo/.cs/session.lock" "the lock is released after a failed start" || return 1
-    assert_file_not_exists "$CS_SESSIONS_ROOT/demo/.cs/local/remote.pid" "remote.pid is removed after a failed start" || return 1
+    gone_within_10s "$CS_SESSIONS_ROOT/demo/.cs/session.lock" || { echo "  FAIL: the lock is left after a failed start"; return 1; }
+    gone_within_10s "$CS_SESSIONS_ROOT/demo/.cs/local/remote.pid" || { echo "  FAIL: remote.pid is left after a failed start"; return 1; }
 }
 
 test_remote_refuses_a_claude_older_than_the_measured_version() {
@@ -335,8 +345,8 @@ test_remote_stops_cleanly_when_its_window_hangs_up() {
     stop_serving HUP
     assert_eq "0" "$SERVE_RC" "cs exits 0 when the server stops cleanly on SIGHUP" || { cat "$TEST_TMPDIR/serve.out"; return 1; }
     assert_eq "1" "$(grep -cx 'signal HUP' "$FAKE_CLAUDE_LOG")" "the server got the hangup" || return 1
-    assert_file_not_exists "$CS_SESSIONS_ROOT/demo/.cs/local/remote.pid" "remote.pid is removed after the server exits" || return 1
-    assert_file_not_exists "$CS_SESSIONS_ROOT/demo/.cs/session.lock" "the lock is released after the server exits" || return 1
+    gone_within_10s "$CS_SESSIONS_ROOT/demo/.cs/local/remote.pid" || { echo "  FAIL: remote.pid is left after the server exits"; return 1; }
+    gone_within_10s "$CS_SESSIONS_ROOT/demo/.cs/session.lock" || { echo "  FAIL: the lock is left after the server exits"; return 1; }
 }
 
 test_remote_stops_cleanly_on_ctrl_c() {
@@ -344,12 +354,12 @@ test_remote_stops_cleanly_on_ctrl_c() {
     stop_serving INT
     assert_eq "0" "$SERVE_RC" "cs exits with the server's 0, not 130" || { cat "$TEST_TMPDIR/serve.out"; return 1; }
     assert_eq "1" "$(grep -cx 'signal INT' "$FAKE_CLAUDE_LOG")" "the server got the interrupt" || return 1
-    assert_file_not_exists "$CS_SESSIONS_ROOT/demo/.cs/session.lock" "the lock is released after the server exits" || return 1
+    gone_within_10s "$CS_SESSIONS_ROOT/demo/.cs/session.lock" || { echo "  FAIL: the lock is left after the server exits"; return 1; }
 }
 
 test_remote_stops_cleanly_when_its_terminal_closes() {
     local result
-    result=$(drive_on_a_terminal hangup)
+    result=$(drive_on_a_terminal hangup "$CS_BIN" demo --remote)
     assert_eq "exit 0" "$result" "the server stops cleanly when its terminal goes away" || { cat "$FAKE_CLAUDE_LOG"; return 1; }
     assert_eq "1" "$(grep -cx 'signal HUP' "$FAKE_CLAUDE_LOG")" "the server got the hangup itself" || { cat "$FAKE_CLAUDE_LOG"; return 1; }
     gone_within_10s "$CS_SESSIONS_ROOT/demo/.cs/local/remote.pid" || { echo "  FAIL: remote.pid is left after the server exits"; return 1; }
@@ -358,7 +368,7 @@ test_remote_stops_cleanly_when_its_terminal_closes() {
 
 test_remote_stops_cleanly_on_ctrl_c_typed_at_its_terminal() {
     local result
-    result=$(drive_on_a_terminal ctrlc)
+    result=$(drive_on_a_terminal ctrlc "$CS_BIN" demo --remote)
     assert_eq "exit 0" "$result" "the server stops cleanly on Ctrl-C" || { cat "$FAKE_CLAUDE_LOG"; return 1; }
     assert_eq "1" "$(grep -cx 'signal INT' "$FAKE_CLAUDE_LOG")" "the server got the interrupt itself" || return 1
     gone_within_10s "$CS_SESSIONS_ROOT/demo/.cs/local/remote.pid" || { echo "  FAIL: remote.pid is left after the server exits"; return 1; }
@@ -395,8 +405,7 @@ test_remote_inside_tmux_opens_its_own_window_in_the_cs_session() {
     local rc=0 out self
     out=$(TMUX="/tmp/fake,1,0" "$CS_BIN" demo --remote --permission-mode plan 2>&1) || rc=$?
     assert_eq "0" "$rc" "the window opens" || { printf '%s\n' "$out"; return 1; }
-    self="$(cd "$SCRIPT_DIR/../bin" && pwd)/cs"
-    assert_eq "new-session -d -s cs -n remote:demo -P -F #{window_id} env CS_REMOTE_WINDOW=1 '$self' 'demo' --remote --permission-mode 'plan'" \
+    assert_eq "new-session -d -s cs -n remote:demo -P -F #{window_id} $(window_command)" \
         "$(grep '^new-session' "$FAKE_TMUX_LOG")" "the window runs cs --remote by absolute path, marked as the window" || return 1
     assert_eq "remote:demo runs in tmux session cs (window @0). Attach: tmux switch-client -t cs" \
         "$(printf '%s' "$out" | strip_ansi | tail -1)" "the caller is told where it runs" || return 1
@@ -412,12 +421,21 @@ test_remote_in_its_window_serves_there_instead_of_opening_another() {
     assert_eq "" "$(log_value CS_REMOTE_WINDOW)" "the window marker never reaches the server" || return 1
 }
 
-test_remote_failure_in_its_window_waits_for_a_key() {
+test_remote_failure_in_its_window_waits_for_enter() {
     local rc=0 out
-    out=$(FAKE_CLAUDE_MODE=exit:1 CS_REMOTE_WINDOW=1 TMUX="/tmp/fake,1,0" CS_ASSUME_TTY=1 "$CS_BIN" demo --remote 2>&1 <<< "x") || rc=$?
-    assert_eq "1" "$rc" "cs exits with the server's status" || return 1
-    assert_eq "claude remote-control exited with status 1. Press a key to close this window." \
+    out=$(FAKE_CLAUDE_MODE=exit:1 TMUX="/tmp/fake,1,0" sh -c "$(window_command)" 2>&1 <<< "") || rc=$?
+    assert_eq "1" "$rc" "the window ends with the server's status" || return 1
+    assert_eq "claude remote-control exited with status 1. Press Enter to close this window." \
         "$(printf '%s' "$out" | strip_ansi | tail -1)" "the window stays until the error is read" || return 1
+}
+
+test_remote_window_close_reaches_the_server() {
+    local result
+    result=$(TMUX="/tmp/fake,1,0" drive_on_a_terminal hangup sh -c "$(window_command)")
+    assert_eq "1" "$(grep -cx 'signal HUP' "$FAKE_CLAUDE_LOG")" "the server got the hangup through the window's sh: $result" \
+        || { cat "$FAKE_CLAUDE_LOG"; return 1; }
+    gone_within_10s "$CS_SESSIONS_ROOT/demo/.cs/local/remote.pid" || { echo "  FAIL: remote.pid is left after the server exits"; return 1; }
+    gone_within_10s "$CS_SESSIONS_ROOT/demo/.cs/session.lock" || { echo "  FAIL: the lock is left after the server exits"; return 1; }
 }
 
 test_live_shows_a_served_session_as_remote_with_the_server_pid() {
@@ -469,7 +487,8 @@ run_test test_remote_stops_cleanly_on_ctrl_c_typed_at_its_terminal
 run_test test_remote_refuses_force_finish_and_a_mode_without_remote
 run_test test_remote_inside_tmux_opens_its_own_window_in_the_cs_session
 run_test test_remote_in_its_window_serves_there_instead_of_opening_another
-run_test test_remote_failure_in_its_window_waits_for_a_key
+run_test test_remote_failure_in_its_window_waits_for_enter
+run_test test_remote_window_close_reaches_the_server
 run_test test_live_shows_a_served_session_as_remote_with_the_server_pid
 run_test test_doctor_reports_a_live_server_and_removes_a_stale_pid_file
 
