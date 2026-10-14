@@ -598,12 +598,13 @@ _a_claude_starts_at_the_lead_end() {  # launch lead claude
 # Claude Code runs SessionEnd hooks while the ending claude still lives, and
 # one of them may start a claude of its own (a `claude -p` that summarises
 # the conversation): the lead, then the hook's shell, then that claude, so it
-# descends from the launch as the lead does. The lead's end leaves its claim,
-# so that claude finds the claim naming a live claude it did not start and is
-# a guest: the recorded conversation stays the lead's, the armed rotation
-# stays armed for the next open, its Stop leaves the attention flag down, and
-# the claim still names the lead. On the exec arm the lead carries the launch
-# pid; on the resume arm, or behind a wrapper that forks claude, it is below.
+# descends from the launch as the lead does. The lead's end marks its claim
+# ended and leaves it, so that claude finds the claim naming a live claude it
+# did not start and is a guest: the recorded conversation stays the lead's,
+# the armed rotation stays armed for the next open, its Stop leaves the
+# attention flag down, and the ended claim still names the lead. On the exec
+# arm the lead carries the launch pid; on the resume arm, or behind a wrapper
+# that forks claude, it is below.
 test_a_claude_started_at_the_lead_end_is_a_guest() {
     _nested_setup
     local launch direct wrapper grand exec_arm forked
@@ -613,10 +614,173 @@ test_a_claude_started_at_the_lead_end_is_a_guest() {
     forked=$(_a_claude_starts_at_the_lead_end "$launch" "$wrapper" "$grand")
     _kill_launch_tree
 
-    assert_eq "0 aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa 2026-01-01-topic.md status:unconsumed absent [$launch $launch aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa]" \
+    assert_eq "0 aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa 2026-01-01-topic.md status:unconsumed absent [$launch $launch aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa ended]" \
         "$exec_arm" "on the exec arm a claude started at the lead's end is a guest" || return 1
-    assert_eq "0 aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa 2026-01-01-topic.md status:unconsumed absent [$launch $wrapper aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa]" \
+    assert_eq "0 aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa 2026-01-01-topic.md status:unconsumed absent [$launch $wrapper aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa ended]" \
         "$forked" "below the launch pid a claude started at the lead's end is a guest" || return 1
+}
+
+# Stand-ins for a chain of processes below the test, each the parent of the
+# next, written to $TEST_TMPDIR/chain one pid a line from the top down:
+# <levels> processes below the first, the last a sleep. Every other one waits
+# on its child and, once that child is gone, stays alive as a sleep, so a
+# kill of one in the middle hands what is below it to init and leaves what
+# is above it running, as when a lead claude exits under a cs that lives on.
+_chain() {  # levels
+    local i=0
+    rm -f "$TEST_TMPDIR/chain"
+    printf '%s\n' '#!/usr/bin/env bash' \
+        'echo "$$" >> "$1"' \
+        '[ "$2" -gt 0 ] || exec sleep 300' \
+        'bash "$0" "$1" "$(($2 - 1))" &' \
+        'wait' \
+        'exec sleep 300' > "$TEST_TMPDIR/chain.sh"
+    bash "$TEST_TMPDIR/chain.sh" "$TEST_TMPDIR/chain" "$1" >/dev/null 2>&1 &
+    while [ "$i" -lt 100 ] && [ "$(wc -l < "$TEST_TMPDIR/chain" 2>/dev/null | tr -d ' ')" != "$(($1 + 1))" ]; do
+        i=$((i + 1)); sleep 0.1
+    done
+    [ "$(wc -l < "$TEST_TMPDIR/chain" 2>/dev/null | tr -d ' ')" = "$(($1 + 1))" ] \
+        || { echo "  FAIL: the stand-in chain did not start"; return 1; }
+}
+
+# The lead starts and claims, a rotation is armed and the queue holds news,
+# the lead's terminal SessionEnd runs, and the lead exits. Then a claude that
+# one of that SessionEnd's hooks started (the lead, the hook's shell, that
+# claude), handed to init when the lead exited, starts and stops. <depth> is
+# the lead's place below the launch pid: 0 on the exec arm, where the lead
+# carries it; 1 on the resume arm, or behind a CLAUDE_CODE_BIN that forks
+# claude where claude replaces cs; 2 behind such a wrapper on the resume
+# arm. Prints "<rotations> <digests> <cursor> <recorded> <marker> <handoff
+# status> <flag> [<claim>]", the claim with "launch" and "lead" for the pids.
+_a_claude_starts_after_the_lead_exits() {  # depth
+    local meta="$CLAUDE_SESSION_META_DIR" handoff out flag=absent launch lead shell claude i=0
+    rm -f "$meta/local/lead-pid" "$meta/local/attention" "$meta/local/state" \
+        "$meta/local/notifications.jsonl" "$meta/local/notifications.seen"
+    _chain "$(($1 + 2))" || return 1
+    launch=$(sed -n 1p "$TEST_TMPDIR/chain")
+    lead=$(sed -n "$(($1 + 1))p" "$TEST_TMPDIR/chain")
+    shell=$(sed -n "$(($1 + 2))p" "$TEST_TMPDIR/chain")
+    claude=$(sed -n "$(($1 + 3))p" "$TEST_TMPDIR/chain")
+    echo "$launch" > "$meta/session.lock"
+    _start_hook "$launch" "$lead" startup aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa > /dev/null
+    handoff=$(_arm_rotation)
+    printf '{"ts":1,"event":"task_done","task":"t"}\n{"ts":2,"event":"drain_finished"}\n' \
+        > "$meta/local/notifications.jsonl"
+    printf '{"session_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","reason":"prompt_input_exit"}\n' \
+        | CS_RESOLVED_FROM=env CS_LEAD_PID="$launch" CLAUDE_PID="$lead" bash "$HOOKS_DIR/session-end.sh" >/dev/null 2>&1
+    kill "$lead" 2>/dev/null
+    [ "$1" -gt 0 ] || wait "$lead" 2>/dev/null
+    while [ "$i" -lt 100 ] && { kill -0 "$lead" 2>/dev/null \
+        || [ "$(ps -o ppid= -p "$shell" 2>/dev/null | tr -d '[:space:]')" = "$lead" ]; }; do
+        i=$((i + 1)); sleep 0.1
+    done
+    kill -0 "$lead" 2>/dev/null && { echo "  FAIL: the stand-in lead did not exit"; return 1; }
+    out=$(_start_hook "$launch" "$claude" startup bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb)
+    _stop_hook "$launch" "$claude" > /dev/null
+    [ -e "$meta/local/attention" ] && flag=raised
+    printf '%s %s %s %s %s %s %s [%s]\n' "$(grep -c 'Conversation Rotation' <<< "$out")" \
+        "$(grep -c 'cs queue while you were away' <<< "$out")" \
+        "$(cat "$meta/local/notifications.seen" 2>/dev/null || echo absent)" "$(_recorded_conversation)" \
+        "$(cat "$meta/local/pending-handoff" 2>/dev/null || echo none)" "$(sed -n 2p "$handoff" | tr -d ' ')" \
+        "$flag" "$(awk -v l="$launch" -v d="$lead" '{ if ($1 == l) $1 = "launch"; if ($2 == d) $2 = "lead"; print }' \
+            "$meta/local/lead-pid" 2>/dev/null)"
+    # shellcheck disable=SC2046
+    kill $(cat "$TEST_TMPDIR/chain") 2>/dev/null
+}
+
+# A claude a SessionEnd hook of the lead started may outlive the lead: Claude
+# Code aborts a SessionEnd hook that runs past its timeout, and the claude
+# that hook started lives on and starts after the lead has exited. The
+# lead's terminal end marked its claim ended, so that claude is a guest
+# though the claude the claim names is gone: the recorded conversation stays
+# the lead's, the armed rotation stays armed for the next open, the queue
+# digest is neither shown nor marked read, and its Stop leaves the attention
+# flag down. On the exec arm, on the resume arm and behind a CLAUDE_CODE_BIN
+# that forks claude on the resume arm.
+test_a_claude_started_at_the_lead_end_is_a_guest_after_the_lead_exits() {
+    _nested_setup
+    local exec_arm resume_arm wrapped
+    exec_arm=$(_a_claude_starts_after_the_lead_exits 0) || { echo "$exec_arm"; return 1; }
+    resume_arm=$(_a_claude_starts_after_the_lead_exits 1) || { echo "$resume_arm"; return 1; }
+    wrapped=$(_a_claude_starts_after_the_lead_exits 2) || { echo "$wrapped"; return 1; }
+    local guest="0 0 absent aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa 2026-01-01-topic.md status:unconsumed absent"
+    guest="$guest [launch lead aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa ended]"
+    assert_eq "$guest" "$exec_arm" "on the exec arm a claude started at the lead's end is a guest after the lead exits" || return 1
+    assert_eq "$guest" "$resume_arm" "on the resume arm a claude started at the lead's end is a guest after the lead exits" || return 1
+    assert_eq "$guest" "$wrapped" "behind a forking wrapper a claude started at the lead's end is a guest after the lead exits" || return 1
+}
+
+# An ended claim keeps no claude from claiming the launch. The fresh
+# conversation the resume arm execs after a quick failure carries the launch
+# pid and claims over it; behind a wrapper that forks claude that fresh
+# claude is the launch pid's child, and it claims over an ended claim whose
+# claude has exited. Either one is the lead: it loads the armed rotation and
+# rebinds, its claim carries no end mark, and the Stop of a claude below the
+# launch is a guest's again, by the claim naming a live claude.
+test_a_claude_that_claims_over_an_ended_claim_is_the_lead() {
+    _nested_setup
+    local meta="$CLAUDE_SESSION_META_DIR" launch direct wrapper grand dead claude out row flag rows=""
+    bash -c 'exit 0' & dead=$!
+    wait "$dead"
+    _launch_tree || return 1
+    read -r launch direct wrapper grand < "$TEST_TMPDIR/tree"
+    for claude in "$launch" "$direct"; do
+        rm -f "$meta/local/attention" "$meta/local/state"
+        _arm_rotation > /dev/null
+        printf '%s %s aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa ended\n' "$launch" "$dead" > "$meta/local/lead-pid"
+        out=$(_start_hook "$launch" "$claude" startup cccccccc-cccc-4ccc-8ccc-cccccccccccc)
+        _stop_hook "$launch" "$grand" > /dev/null
+        flag=absent
+        [ ! -e "$meta/local/attention" ] || flag=raised
+        row="$(grep -c 'Conversation Rotation' <<< "$out") $(_recorded_conversation) [$(cat "$meta/local/lead-pid" 2>/dev/null || echo none)]"
+        rows="$rows$row $flag;"
+    done
+    _kill_launch_tree
+
+    assert_eq "1 cccccccc-cccc-4ccc-8ccc-cccccccccccc [$launch $launch cccccccc-cccc-4ccc-8ccc-cccccccccccc] absent" \
+        "${rows%%;*}" "the claude carrying the launch pid claims over an ended claim and is the lead" || return 1
+    rows=${rows#*;}
+    assert_eq "1 cccccccc-cccc-4ccc-8ccc-cccccccccccc [$launch $direct cccccccc-cccc-4ccc-8ccc-cccccccccccc] absent" \
+        "${rows%%;*}" "a claude below the launch pid claims over an ended claim whose claude exited and is the lead" || return 1
+}
+
+# A claim is "<launch> <claude> <conversation>", or that and "ended". Any
+# other fourth field, or a fifth, makes the file no claim to every reader:
+# the claude it names is no lead (its end leaves the lock and the file as they
+# are), the Stop of another claude below the launch is not shown a guest's
+# (it raises the attention flag, as with no claim), and a claude below the
+# launch claims over it though the claude it names lives. An ended claim
+# naming the same live claude is the positive control: that claude is the
+# lead, the Stop is a guest's and the other claude gives way.
+test_a_claim_with_any_other_fourth_field_is_no_claim() {
+    _nested_setup
+    local meta="$CLAUDE_SESSION_META_DIR" launch direct wrapper grand shape row flag rows=""
+    _launch_tree || return 1
+    read -r launch direct wrapper grand < "$TEST_TMPDIR/tree"
+    for shape in ended bogus "ended extra"; do
+        rm -f "$meta/local/attention"
+        echo "$launch" > "$meta/session.lock"
+        printf '%s %s 77777777-7777-4777-8777-777777777777 %s\n' "$launch" "$wrapper" "$shape" > "$meta/local/lead-pid"
+        printf '{"session_id":"77777777-7777-4777-8777-777777777777","reason":"other"}\n' \
+            | CS_RESOLVED_FROM=env CS_LEAD_PID="$launch" CLAUDE_PID="$wrapper" bash "$HOOKS_DIR/session-end.sh" >/dev/null 2>&1
+        row="$(cat "$meta/session.lock" 2>/dev/null || echo none) [$(cat "$meta/local/lead-pid" 2>/dev/null || echo none)]"
+        _stop_hook "$launch" "$grand" > /dev/null
+        flag=absent
+        [ ! -e "$meta/local/attention" ] || flag=raised
+        _start_hook "$launch" "$direct" startup 88888888-8888-4888-8888-888888888888 > /dev/null
+        rows="$rows$row $flag [$(cat "$meta/local/lead-pid" 2>/dev/null || echo none)];"
+    done
+    _kill_launch_tree
+
+    local claim="$launch $wrapper 77777777-7777-4777-8777-777777777777"
+    assert_eq "none [$claim ended] absent [$claim ended]" "${rows%%;*}" \
+        "an ended claim names its lead, shows a guest and holds the launch while its claude lives" || return 1
+    rows=${rows#*;}
+    assert_eq "$launch [$claim bogus] raised [$launch $direct 88888888-8888-4888-8888-888888888888]" "${rows%%;*}" \
+        "a claim whose fourth field is not ended is no claim" || return 1
+    rows=${rows#*;}
+    assert_eq "$launch [$claim ended extra] raised [$launch $direct 88888888-8888-4888-8888-888888888888]" "${rows%%;*}" \
+        "a claim with a fifth field is no claim" || return 1
 }
 
 # A claim whose claude died without its SessionEnd shows no one to be a guest:
@@ -839,6 +1003,9 @@ run_test test_a_claim_that_is_a_link_or_a_directory_names_no_lead
 run_test test_a_claim_for_another_launch_or_none_names_no_lead
 run_test test_the_lead_end_leaves_a_claim_naming_another_claude
 run_test test_a_claude_started_at_the_lead_end_is_a_guest
+run_test test_a_claude_started_at_the_lead_end_is_a_guest_after_the_lead_exits
+run_test test_a_claude_that_claims_over_an_ended_claim_is_the_lead
+run_test test_a_claim_with_any_other_fourth_field_is_no_claim
 run_test test_a_claim_whose_claude_died_shows_no_one_a_guest
 run_test test_a_launch_that_takes_no_claim_has_only_the_launch_pid_for_its_lead
 run_test test_a_claude_p_under_a_launch_that_takes_no_claim_is_a_guest
