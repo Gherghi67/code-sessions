@@ -11376,8 +11376,9 @@ search_sessions() {
             while IFS= read -r line; do
                 # %s for the matched line: `echo -e` ate escapes in file content,
                 # so a line containing \c truncated the result there and dropped
-                # everything after it.
-                printf "${GOLD}%s${NC}: ${DIM}%s${NC}: %s\n" "$session_name" "$relpath" "$line"
+                # everything after it. The line is what the session's repo
+                # says, so its control bytes are deleted.
+                printf "${GOLD}%s${NC}: ${DIM}%s${NC}: %s\n" "$session_name" "$relpath" "$(printf '%s' "$line" | _scrub_controls)"
                 found=$((found + 1))
             done <<< "$matches"
         done
@@ -11392,14 +11393,18 @@ search_sessions() {
         for glob in "${search_globs[@]}"; do
             for filepath in "$real_dir"/$glob; do
                 [ -f "$filepath" ] || continue
-                local relpath="${filepath#"$real_dir"/}"
+                # .cs/memory and the narrative archive are tracked, so a clone
+                # chooses the file name: it is printed as a plain name.
+                local relpath
+                relpath=$(_cs_plain_name "${filepath#"$real_dir"/}" 160)
                 local matches
                 matches=$(grep -in -- "$query" "$filepath" 2>/dev/null) || continue
                 while IFS= read -r line; do
                     # %s for the matched line: `echo -e` ate escapes in file content,
                     # so a line containing \c truncated the result there and dropped
-                    # everything after it.
-                    printf "${GOLD}%s${NC}: ${DIM}%s${NC}: %s\n" "$session_name" "$relpath" "$line"
+                    # everything after it. The line is what the session's repo
+                    # says, so its control bytes are deleted.
+                    printf "${GOLD}%s${NC}: ${DIM}%s${NC}: %s\n" "$session_name" "$relpath" "$(printf '%s' "$line" | _scrub_controls)"
                     found=$((found + 1))
                 done <<< "$matches"
             done
