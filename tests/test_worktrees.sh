@@ -1303,6 +1303,110 @@ test_worktree_excludes_protocol_file() {
              echo "  status: $( (cd "$wt" && git status --porcelain) | tr '\n' ' ')"; return 1; }
 }
 
+# A project adopted with cs -adopt: a repo with one commit of its own, and
+# cs's files in the working tree, uncommitted. Prints the project dir.
+adopted_base() {  # name
+    local dir="$TEST_TMPDIR/$1"
+    mkdir -p "$dir"
+    printf '# P\n' > "$dir/README.md"
+    (cd "$dir" && git init -q && git config core.autocrlf false && git add README.md && git commit -q -m init)
+    (cd "$dir" && "$CS_BIN" -adopt "$1" < /dev/null > /dev/null 2>&1) || return 1
+    (cd "$dir" && pwd -P)
+}
+
+# The common info/exclude of the repo at <dir>.
+common_exclude() {  # dir
+    printf '%s/info/exclude\n' "$(cd "$1" && cd "$(git rev-parse --git-common-dir)" && pwd -P)"
+}
+
+# Adopt records that the session's features expect git to carry .cs. Until the
+# user commits it, a feature is refused, and the base's .cs stays visible to git.
+test_feature_of_an_adopted_base_waits_for_git_to_carry_cs() {
+    local dir out rc=0
+    dir=$(adopted_base proj) || { echo "  FAIL: adopt fixture"; return 1; }
+
+    out=$("$CS_BIN" proj@t1 < /dev/null 2>&1) || rc=$?
+
+    assert_eq 1 "$rc" "the feature is refused" || return 1
+    assert_eq "Error: Session 'proj' expects git to carry .cs (cs_mode: tracked in $dir/.cs/local/state), but git tracks nothing under .cs there. Commit it first (git add .cs .gitignore .gitattributes, then git commit, in $dir), or set that line to 'cs_mode: ignored' to keep .cs out of git, which features then hide through .git/info/exclude." \
+        "$out" "the refusal names both ways on" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/proj@t1" "no worktree is created" || return 1
+    assert_eq "" "$(git -C "$dir" branch --list cs/t1)" "no branch is created" || return 1
+    assert_file_not_contains "$(common_exclude "$dir")" '^\.cs/$' "the base's .cs is not hidden from git" || return 1
+    assert_eq "?? .cs/" "$(git -C "$dir" status --porcelain -- .cs)" "git still shows the base's .cs" || return 1
+}
+
+# Once the user commits .cs, git carries it: the feature is tracked, nothing
+# hides the base's .cs, and the feature lands and retires.
+test_feature_of_an_adopted_base_is_tracked_once_cs_is_committed() {
+    local dir wt sha out
+    dir=$(adopted_base proj) || { echo "  FAIL: adopt fixture"; return 1; }
+    (cd "$dir" && git add .cs .gitignore .gitattributes && git commit -q -m "track cs") || { echo "  FAIL: commit fixture"; return 1; }
+
+    cs_launch proj@t1
+    wt="$CS_SESSIONS_ROOT/proj@t1"
+
+    assert_file_contains "$wt/.cs/local/state" '^cs_mode: tracked$' "the feature is tracked" || return 1
+    assert_file_exists "$wt/.cs/README.md" "git carried .cs into the checkout" || return 1
+    assert_file_not_contains "$(common_exclude "$dir")" '^\.cs/$' "nothing hides the base's .cs" || return 1
+    printf 'work\n' > "$wt/work.txt"
+    (cd "$wt" && git add work.txt && git commit -q -m work)
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate failed"; return 1; }
+    assert_file_exists "$dir/work.txt" "the feature landed on the base" || return 1
+    out=$("$CS_BIN" proj -retire-feature t1 "$sha" < /dev/null 2>&1) || { echo "  FAIL: retire failed: $out"; return 1; }
+    assert_not_exists "$wt" "the worktree is retired" || return 1
+}
+
+# A recorded ignored keeps .cs out of git: the feature hides it through the
+# common exclude, and the record fuse carries its records back at retire.
+test_feature_of_an_adopted_base_recorded_ignored_keeps_cs_out_of_git() {
+    local dir wt sha out
+    dir=$(adopted_base proj) || { echo "  FAIL: adopt fixture"; return 1; }
+    printf 'cs_mode: ignored\n' >> "$dir/.cs/local/state"
+    awk '!/^cs_mode: tracked$/' "$dir/.cs/local/state" > "$dir/.cs/local/state.tmp" && mv "$dir/.cs/local/state.tmp" "$dir/.cs/local/state"
+
+    cs_launch proj@t1
+    wt="$CS_SESSIONS_ROOT/proj@t1"
+
+    assert_file_contains "$wt/.cs/local/state" '^cs_mode: ignored$' "the feature is ignored" || return 1
+    assert_file_contains "$(common_exclude "$dir")" '^\.cs/$' "the feature hides .cs through the common exclude" || return 1
+    printf 'work\n' > "$wt/work.txt"
+    (cd "$wt" && git add work.txt && git commit -q -m work)
+    printf 'feature finding\n' > "$wt/.cs/memory/note-feature.md"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate failed"; return 1; }
+    out=$("$CS_BIN" proj -retire-feature t1 "$sha" < /dev/null 2>&1) || { echo "  FAIL: retire failed: $out"; return 1; }
+    assert_not_exists "$wt" "the worktree is retired" || return 1
+    assert_eq "feature finding" "$(cat "$dir/.cs/memory/note-feature.md")" "the feature's record reached the base" || return 1
+}
+
+# A session adopted before adopt recorded a mode, with .cs untracked, keeps
+# the inference from the index: the feature is ignored.
+test_feature_of_a_base_with_no_recorded_mode_infers_it() {
+    local dir
+    dir=$(adopted_base proj) || { echo "  FAIL: adopt fixture"; return 1; }
+    awk '!/^cs_mode:/' "$dir/.cs/local/state" > "$dir/.cs/local/state.tmp" && mv "$dir/.cs/local/state.tmp" "$dir/.cs/local/state"
+
+    cs_launch proj@t1
+
+    assert_file_contains "$CS_SESSIONS_ROOT/proj@t1/.cs/local/state" '^cs_mode: ignored$' "the mode is inferred" || return 1
+    assert_file_contains "$(common_exclude "$dir")" '^\.cs/$' "and the base's .cs is hidden as before" || return 1
+}
+
+# A recorded mode cs does not know is refused, never guessed at.
+test_feature_refuses_a_recorded_mode_it_does_not_know() {
+    local dir out rc=0
+    dir=$(adopted_base proj) || { echo "  FAIL: adopt fixture"; return 1; }
+    awk '!/^cs_mode:/' "$dir/.cs/local/state" > "$dir/.cs/local/state.tmp" && mv "$dir/.cs/local/state.tmp" "$dir/.cs/local/state"
+    printf 'cs_mode: both\n' >> "$dir/.cs/local/state"
+
+    out=$("$CS_BIN" proj@t1 < /dev/null 2>&1) || rc=$?
+
+    assert_eq 1 "$rc" "the feature is refused" || return 1
+    assert_eq "Error: Session 'proj' names cs_mode 'both' in $dir/.cs/local/state; cs knows tracked and ignored. Fix that line, then create the feature again." \
+        "$out" "the refusal names the value" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/proj@t1" "no worktree is created" || return 1
+}
+
 run_test test_worktree_name_rejected_without_base
 run_test test_worktree_name_rejects_bad_task_half
 run_test test_worktree_name_rejects_a_leading_dot_in_either_half
@@ -1318,6 +1422,11 @@ run_test test_worktree_create_reuses_existing_branch
 run_test test_worktree_create_ignored_mode_bootstraps_cs
 run_test test_ignored_mode_worktree_starts_with_nothing_untracked
 run_test test_ignored_mode_worktree_retires_without_a_manual_exclude
+run_test test_feature_of_an_adopted_base_waits_for_git_to_carry_cs
+run_test test_feature_of_an_adopted_base_is_tracked_once_cs_is_committed
+run_test test_feature_of_an_adopted_base_recorded_ignored_keeps_cs_out_of_git
+run_test test_feature_of_a_base_with_no_recorded_mode_infers_it
+run_test test_feature_refuses_a_recorded_mode_it_does_not_know
 run_test test_retire_tolerates_a_worktree_predating_the_cs_exclude
 run_test test_retire_still_refuses_real_untracked_work
 run_test test_retire_moves_ignored_work_to_the_system_trash
