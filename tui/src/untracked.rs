@@ -90,24 +90,65 @@ pub fn count_phrase(entries: &[Entry]) -> String {
 /// directory shown, measured in the columns each takes on screen; then how
 /// many entries are left out, when any are.
 pub fn entry_lines(entries: &[Entry], shown: usize) -> Vec<String> {
+    entry_lines_within(entries, shown, usize::MAX)
+}
+
+/// `entry_lines` for a place `columns` wide: a path that would take its line
+/// past that is shortened in the middle with '…', so every entry is one row
+/// there. Directories keep their file counts in one column.
+pub fn entry_lines_within(entries: &[Entry], shown: usize, columns: usize) -> Vec<String> {
+    const INDENT: &str = "    ";
     let listed = &entries[..entries.len().min(shown)];
-    let paths: Vec<String> = listed.iter().map(|e| printed(&e.path)).collect();
-    let width = paths.iter().filter(|p| p.ends_with('/')).map(|p| p.width()).max().unwrap_or(0);
-    let mut lines: Vec<String> = listed
+    let counts: Vec<Option<String>> =
+        listed.iter().map(|e| e.path.ends_with('/').then(|| format!("  ({})", files_phrase(e.files)))).collect();
+    let widest_count = counts.iter().flatten().map(|count| count.width()).max().unwrap_or(0);
+    let file_room = columns.saturating_sub(INDENT.len());
+    let directory_room = file_room.saturating_sub(widest_count);
+    let paths: Vec<String> = listed
         .iter()
-        .zip(&paths)
-        .map(|(e, path)| {
-            if path.ends_with('/') {
-                format!("    {path}{}  ({})", " ".repeat(width - path.width()), files_phrase(e.files))
-            } else {
-                format!("    {path}")
-            }
+        .zip(&counts)
+        .map(|(e, count)| shortened(&printed(&e.path), if count.is_some() { directory_room } else { file_room }))
+        .collect();
+    let width = paths.iter().zip(&counts).filter(|(_, count)| count.is_some()).map(|(p, _)| p.width()).max().unwrap_or(0);
+    let mut lines: Vec<String> = paths
+        .iter()
+        .zip(&counts)
+        .map(|(path, count)| match count {
+            Some(count) => format!("{INDENT}{path}{}{count}", " ".repeat(width - path.width())),
+            None => format!("{INDENT}{path}"),
         })
         .collect();
     if entries.len() > shown {
-        lines.push(format!("    ... and {} more", grouped((entries.len() - shown) as u64)));
+        lines.push(format!("{INDENT}... and {} more", grouped((entries.len() - shown) as u64)));
     }
     lines
+}
+
+/// `text`, or when it takes more than `room` columns, its start and its end
+/// around a '…': as much of each as fits, the start getting the odd column.
+fn shortened(text: &str, room: usize) -> String {
+    if text.width() <= room {
+        return text.to_string();
+    }
+    let kept = room.saturating_sub(1);
+    let end_room = kept / 2;
+    let mut start = String::new();
+    for c in text.chars() {
+        start.push(c);
+        if start.width() > kept - end_room {
+            start.pop();
+            break;
+        }
+    }
+    let mut end = String::new();
+    for c in text.chars().rev() {
+        end.insert(0, c);
+        if end.width() > end_room {
+            end.remove(0);
+            break;
+        }
+    }
+    format!("{start}…{end}")
 }
 
 #[cfg(test)]

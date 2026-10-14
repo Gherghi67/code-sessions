@@ -1123,7 +1123,8 @@ fn render_confirm_delete(app: &App, frame: &mut Frame) {
     };
     let hint_color = if remaining > 0 { p.comment } else { p.fg };
 
-    let warnings = warning_lines(&app.delete_warnings, frame.area().height, 7 + grant_rows(app), p.red);
+    let warnings =
+        warning_lines(&app.delete_warnings, frame.area().height, 7 + grant_rows(app), popup_columns(50, frame.area()), p.red);
     let popup_area = centered_rect(50, 7 + warnings.len() as u16 + grant_rows(app), frame.area());
     frame.render_widget(Clear, popup_area);
     let block = Block::default()
@@ -1164,7 +1165,8 @@ fn render_confirm_batch_delete(app: &App, frame: &mut Frame) {
     };
     let hint_color = if remaining > 0 { p.comment } else { p.fg };
 
-    let warnings = warning_lines(&app.delete_warnings, frame.area().height, 7 + grant_rows(app), p.red);
+    let warnings =
+        warning_lines(&app.delete_warnings, frame.area().height, 7 + grant_rows(app), popup_columns(55, frame.area()), p.red);
     let popup_area = centered_rect(55, 7 + warnings.len() as u16 + grant_rows(app), frame.area());
     frame.render_widget(Clear, popup_area);
     let block = Block::default()
@@ -1227,8 +1229,10 @@ fn push_grant_lines(lines: &mut Vec<Line<'static>>, app: &App) {
 /// warning, a listing of files git does not track one entry per row (as
 /// `cs -rm` prints it) under its own. A popup whose other lines take `other`
 /// rows of a `height`-row screen lists fewer than the usual twenty entries
-/// when they would not fit, so its key hint stays on screen.
-fn warning_lines(warnings: &[DeleteWarning], height: u16, other: u16, color: Color) -> Vec<Line<'static>> {
+/// when they would not fit, so its key hint stays on screen. An entry is one
+/// row of the popup's `columns`: a path too wide for it is shortened in the
+/// middle.
+fn warning_lines(warnings: &[DeleteWarning], height: u16, other: u16, columns: u16, color: Color) -> Vec<Line<'static>> {
     if warnings.is_empty() {
         return Vec::new();
     }
@@ -1243,7 +1247,7 @@ fn warning_lines(warnings: &[DeleteWarning], height: u16, other: u16, color: Col
         } else {
             rows_left.min(untracked::SHOWN_ENTRIES + 1).saturating_sub(1)
         };
-        for text in untracked::entry_lines(entries, shown) {
+        for text in untracked::entry_lines_within(entries, shown, columns as usize) {
             rows_left = rows_left.saturating_sub(1);
             lines.push(Line::from(Span::styled(text, style)));
         }
@@ -2163,6 +2167,12 @@ fn centered_cols(width: u16, height: u16, area: Rect) -> Rect {
         width,
         height,
     }
+}
+
+/// Columns of text a popup `percent_x` of `area` wide holds between its
+/// side borders.
+fn popup_columns(percent_x: u16, area: Rect) -> u16 {
+    centered_rect(percent_x, 0, area).width.saturating_sub(2)
 }
 
 fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
