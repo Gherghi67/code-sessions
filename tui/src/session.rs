@@ -1021,7 +1021,11 @@ const SESSION_ROOT_OWNED: &[&str] = &[
 ];
 
 /// Top-level names in a worktree that are cs's, not the user's.
-const WORKTREE_OWNED: &[&str] = &[".cs", ".claude", "CLAUDE.local.md", ".DS_Store"];
+const WORKTREE_OWNED: &[&str] = &[".cs", "CLAUDE.local.md", ".DS_Store"];
+
+/// The one path under a worktree's `.claude/` that is cs's: the settings
+/// file it writes. Anything else there is the user's.
+const WORKTREE_OWNED_SETTINGS: &str = ".claude/settings.local.json";
 
 /// What removing the session at `path` would delete that cs did not put
 /// there. An adopted session (a symlink) loses only its link, so nothing.
@@ -1091,7 +1095,7 @@ fn worktree_untracked(path: &Path) -> Result<Vec<untracked::Entry>, String> {
     at_risk.extend(git_ls_files(path, &["--others", "--ignored", "--exclude-standard"])?);
     at_risk.retain(|p| {
         let top = p.split('/').next().unwrap_or(p);
-        !WORKTREE_OWNED.contains(&top)
+        !WORKTREE_OWNED.contains(&top) && p != WORKTREE_OWNED_SETTINGS
     });
     if at_risk.is_empty() {
         return Ok(Vec::new());
