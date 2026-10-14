@@ -146,6 +146,13 @@ _names_as_lines() {
                  chomp; s/\\/\\\\/g; s/\n/\\n/g; print "$_\n"'
 }
 
+# A name as a message prints it: each control character in it (a newline,
+# an escape, a carriage return) as "?", so no name can break a line or drive
+# the terminal. Names are bytes, whatever the locale.
+_printable_name() {  # name
+    printf '%s' "$1" | env LC_ALL=C tr '[:cntrl:]' '[?*]'
+}
+
 # Tracked files marked skip-worktree or assume-unchanged whose working copy
 # differs from the index, one per line: git diff hides these edits and git
 # keeps no copy of them, so removing a worktree destroys them. Checked on a

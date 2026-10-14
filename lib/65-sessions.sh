@@ -390,14 +390,15 @@ _session_foreign_entries() {  # session_dir
     done | _names_as_lines
 }
 
-# The names _session_foreign_entries prints, as one comma-separated line.
+# The names _session_foreign_entries prints, as one comma-separated line,
+# each control character in them as "?" (_printable_name).
 _session_foreign_line() {  # foreign_entries
     local line name out=""
     while IFS= read -r line; do
         printf -v name '%b' "$line"
         out="${out:+$out, }$name"
     done <<< "$1"
-    printf '%s' "$out"
+    _printable_name "$out"
 }
 
 # The confirm's listing of the names _session_foreign_entries prints, one
@@ -594,7 +595,10 @@ Add --delete-files to remove $them with --force"
             || error "cs could not list the files in $session_dir; refusing to remove what it cannot list"
     fi
     if [ -n "$foreign" ] && [ -n "$force" ] && [ -z "$delete_files" ]; then
-        error "Session '$session_name' holds files cs did not create: $(_session_foreign_line "$foreign"). Add --delete-files to remove them with --force"
+        local foreign_line
+        foreign_line=$(_session_foreign_line "$foreign") \
+            || error "cs could not list the files in $session_dir; refusing to remove what it cannot list"
+        error "Session '$session_name' holds files cs did not create: $foreign_line. Add --delete-files to remove them with --force"
     fi
 
     # Confirm deletion
