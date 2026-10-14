@@ -236,11 +236,18 @@ CS_MOD_FILES=(
 )
 
 # Every file install.sh deploys from the repo, one repo path per line: the
-# binaries, the hook files (libraries first), commands, skills, skill support
-# files and mod files. The web install downloads exactly these.
+# binaries, then the files deployed under ~/.claude. The web install
+# downloads exactly these.
 _cs_payload_files() {
-    local f
     printf '%s\n' bin/cs bin/cs-secrets bin/cs-statusline bin/cs-subagent-statusline
+    _cs_claude_payload_files
+}
+
+# The files install.sh deploys under ~/.claude, one repo path per line: the
+# hook files (libraries first), commands, skills, skill support files and mod
+# files. build.sh --add-release-hashes adds their sha256s to CS_KNOWN_SHA256.
+_cs_claude_payload_files() {
+    local f
     for f in "${CS_HOOK_LIBS[@]}" "${CS_HOOKS[@]}"; do printf 'hooks/%s\n' "$f"; done
     for f in "${CS_COMMANDS[@]}"; do printf 'commands/%s\n' "$f"; done
     for f in "${CS_SKILLS[@]}"; do printf 'skills/%s/SKILL.md\n' "$f"; done
@@ -494,12 +501,14 @@ _cs_remove_tree_if_owned() {  # dir, [remove-function]
     [ ! -e "$1" ]
 }
 
-# The sha256 of every version of every file cs deployed under ~/.claude
-# (hooks, commands, skills and their scripts, mods), retired names included,
-# in the repo's history up to the first release that keeps an install record.
-# An install from before that record wrote only content listed here, so it is
-# how such a file is still known as cs's. Complete as it stands: every later
-# install records what it writes, so this list is never extended.
+# The sha256 of the files cs deployed under ~/.claude (hooks, commands,
+# skills and their scripts, mods), retired names included: every version
+# committed before install.sh wrote an install record, plus each release's
+# payload, which the release build (./build.sh --add-release-hashes) adds. A
+# file holding content listed here is cs's even when the install record that
+# names it is gone, as after ~/.claude/hooks/cs is deleted by hand. One
+# sha256 per line, sorted, no repeats. Content committed after install.sh
+# began writing the record, between releases, is not listed.
 CS_KNOWN_SHA256=(
     0007ced8c46eb1ba6a56c5102f144c3bdf4f7fa66537eafa79cdcec10ae04935
     007fe70b85b0e2dcd341109783f086804bce8b59987df6f67bc941782baef1f6
@@ -1269,7 +1278,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "7d504cbcc798e4811bcdef5ed0205f24cc7f45edf28293897f1aacfa0d29d9d2  bin/cs"
+    "cf2063f76ec26c5633c1c36cea6718be3438bd99aa72791d942cf8861a36c8f5  bin/cs"
     "d54f9dd8797c86d7815f4c1f300a56cf1d4bb344cbcd645ec8f71659d6a70ff6  bin/cs-secrets"
     "a6d008e8bcba4e3d4c1599c76aaddc4ea1c4eb61e3ba861c60d9e4b91f706e78  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"

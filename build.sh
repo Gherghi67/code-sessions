@@ -18,6 +18,98 @@ INSTALL_OUT="install.sh"
 MARKER='# @@CS_MANIFESTS@@'
 SHA_MARKER='# @@CS_PAYLOAD_SHA256@@'
 
+# Adds the sha256 of every file the installer deploys under ~/.claude, as this
+# checkout holds it, to CS_KNOWN_SHA256 in lib/01-manifests.sh, keeping the
+# table one sha256 per line, sorted and without repeats; a table already
+# holding them all is left byte for byte as it was. Refuses a table holding a
+# line that is not a sha256 (a comment, a blank line) rather than drop it,
+# and an empty table.
+add_release_hashes() {
+    local table="CS_KNOWN_SHA256" found before after f digest
+    found=$(grep -c "^$table=($" "$MANIFESTS_SRC" || true)
+    if [ "$found" != 1 ]; then
+        echo "error: $MANIFESTS_SRC must carry exactly one '$table=(' line (found $found)" >&2
+        exit 1
+    fi
+    # An empty table is refused here: no cs is without one, and bash 3.2
+    # under set -u fails on the empty array expansion below.
+    before=$(awk -v start="$table=(" '$0 == start { f = 1; next } f && $0 == ")" { exit } f { n++ } END { print n + 0 }' "$MANIFESTS_SRC")
+    if [ "$before" = 0 ]; then
+        echo "error: $table in $MANIFESTS_SRC is empty" >&2
+        exit 1
+    fi
+    # Global, not local: the EXIT trap runs after an exit inside this
+    # function, and bash 5 runs it without this function's locals.
+    merged="$(mktemp)"
+    trap 'rm -f "$merged" "$merged.files" "$merged.src"' EXIT
+    (
+        # shellcheck source=lib/01-manifests.sh
+        . "$MANIFESTS_SRC"
+        printf '%s\n' "${CS_KNOWN_SHA256[@]}"
+        _cs_claude_payload_files > "$merged.files"
+        while IFS= read -r f; do
+            digest=$(_cs_sha256_file "$f") || {
+                echo "error: could not compute the sha256 of payload file $f (missing or unreadable, or no sha256sum or shasum)" >&2
+                exit 1
+            }
+            printf '%s\n' "$digest"
+        done < "$merged.files"
+    ) | LC_ALL=C sort -u > "$merged"
+    if grep -vqx '[0-9a-f]\{64\}' "$merged"; then
+        echo "error: $table in $MANIFESTS_SRC holds an entry that is not a sha256: $(grep -vx '[0-9a-f]\{64\}' "$merged" | head -1)" >&2
+        exit 1
+    fi
+    awk -v start="$table=(" -v table="$table" -v merged="$merged" -v src="$MANIFESTS_SRC" '
+        state == 0 {
+            print
+            if ($0 == start) {
+                state = 1
+                while ((getline line < merged) > 0) print "    " line
+                close(merged)
+            }
+            next
+        }
+        state == 1 && $0 == ")" { state = 2; print; next }
+        state == 1 {
+            if ($0 !~ /^    [0-9a-f]+$/ || length($0) != 68) {
+                printf "error: %s line %d, inside %s, is not a sha256: %s\n", src, NR, table, $0 > "/dev/stderr"
+                bad = 1
+            }
+            next
+        }
+        { print }
+        END {
+            if (state == 1) printf "error: %s has no \")\" line closing %s\n", src, table > "/dev/stderr"
+            if (bad || state != 2) exit 1
+        }' "$MANIFESTS_SRC" > "$merged.src"
+    after=$(wc -l < "$merged")
+    if ! cmp -s "$merged.src" "$MANIFESTS_SRC"; then
+        chmod 644 "$merged.src"
+        mv "$merged.src" "$MANIFESTS_SRC"
+    fi
+    rm -f "$merged" "$merged.files" "$merged.src"
+    trap - EXIT
+    echo "$table in $MANIFESTS_SRC: $((after)) sha256s, $((after - before)) added"
+}
+
+# ./build.sh builds. ./build.sh --add-release-hashes, run for a release
+# commit, first adds that release's payload to CS_KNOWN_SHA256, so an install
+# knows the release's files as cs's even when the install record naming them
+# is gone. hooks/cs-shared.sh is part of that payload and is built here, so the
+# table is extended after a plain build, and the build below folds it into
+# bin/cs and install.sh.
+case "$#:${1:-}" in
+    0:) ;;
+    1:--add-release-hashes)
+        bash ./build.sh
+        add_release_hashes
+        ;;
+    *)
+        echo "error: build.sh takes no argument, or --add-release-hashes (got: $*)" >&2
+        exit 1
+        ;;
+esac
+
 # The 2-digit numeric prefixes (00,05,10,...,99) give the fragments a total order
 # under a plain lexical glob, so the assembled bin/cs is deterministic. Using the
 # positional params keeps this portable to macOS's stock bash 3.2 (no mapfile).

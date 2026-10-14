@@ -660,6 +660,92 @@ test_build_outputs_are_world_readable() {
     done
 }
 
+# Prints the sha256 of file $1.
+_sha256_of() {  # file
+    shasum -a 256 < "$1" | awk '{print $1}'
+}
+
+# The release build adds the sha256 of every file the installer deploys
+# under ~/.claude to CS_KNOWN_SHA256 and builds the table into bin/cs and
+# install.sh; the table stays sorted without repeats, a second run changes
+# nothing, and a plain build adds nothing.
+test_release_build_adds_its_payload_to_the_known_table_once() {
+    local repo="$TEST_TMPDIR/hashes-repo" snap="$TEST_TMPDIR/hashes-snap" rel digest f
+    _copy_build_inputs "$repo"
+    printf '\n' >> "$repo/commands/wrap.md"
+    digest=$(_sha256_of "$repo/commands/wrap.md")
+    assert_eq "0" "$(grep -c "^    $digest$" "$repo/lib/01-manifests.sh")" "the changed wrap.md starts out unknown" || return 1
+    (cd "$repo" && bash build.sh --add-release-hashes > /dev/null) || { echo "  FAIL: the release build failed"; return 1; }
+    for f in lib/01-manifests.sh bin/cs install.sh; do
+        assert_eq "1" "$(grep -c "^    $digest$" "$repo/$f")" "$f lists the changed wrap.md once" || return 1
+    done
+    ( . "$repo/lib/01-manifests.sh"; _cs_payload_files ) | grep -v '^bin/' > "$TEST_TMPDIR/hashes-files"
+    while IFS= read -r rel; do
+        digest=$(_sha256_of "$repo/$rel")
+        assert_eq "1" "$(grep -c "^    $digest$" "$repo/lib/01-manifests.sh")" "the table lists $rel" || return 1
+    done < "$TEST_TMPDIR/hashes-files"
+    extract_array "$repo/lib/01-manifests.sh" CS_KNOWN_SHA256 | LC_ALL=C sort -c -u \
+        || { echo "  FAIL: CS_KNOWN_SHA256 is not sorted without repeats"; return 1; }
+    mkdir -p "$snap"
+    for f in lib/01-manifests.sh bin/cs install.sh; do cp "$repo/$f" "$snap/${f##*/}"; done
+    (cd "$repo" && bash build.sh --add-release-hashes > /dev/null) || { echo "  FAIL: the second release build failed"; return 1; }
+    for f in lib/01-manifests.sh bin/cs install.sh; do
+        cmp -s "$snap/${f##*/}" "$repo/$f" || { echo "  FAIL: a second release build changed $f"; return 1; }
+    done
+    printf '\n' >> "$repo/commands/wrap.md"
+    digest=$(_sha256_of "$repo/commands/wrap.md")
+    (cd "$repo" && bash build.sh > /dev/null) || { echo "  FAIL: the plain build failed"; return 1; }
+    cmp -s "$snap/01-manifests.sh" "$repo/lib/01-manifests.sh" || { echo "  FAIL: a plain build changed lib/01-manifests.sh"; return 1; }
+    assert_eq "0" "$(grep -c "^    $digest$" "$repo/install.sh")" "a plain build adds nothing to the table" || return 1
+}
+
+# A misspelt release flag must not pass for a plain build, or the release
+# commit ships without its payload in the table.
+test_build_refuses_an_unknown_argument() {
+    local repo="$TEST_TMPDIR/args-repo" out rc=0
+    _copy_build_inputs "$repo"
+    cp "$repo/lib/01-manifests.sh" "$TEST_TMPDIR/args-manifests"
+    out=$(cd "$repo" && bash build.sh --add-release-hash 2>&1) || rc=$?
+    assert_eq "1" "$rc" "build.sh exit status" || { echo "$out"; return 1; }
+    assert_eq "error: build.sh takes no argument, or --add-release-hashes (got: --add-release-hash)" "$out" "the error names the argument" || return 1
+    assert_not_exists "$repo/bin/cs" "nothing is built" || return 1
+    cmp -s "$TEST_TMPDIR/args-manifests" "$repo/lib/01-manifests.sh" || { echo "  FAIL: lib/01-manifests.sh changed"; return 1; }
+}
+
+# The release build rewrites the table from the sha256s it holds, so a line
+# in it that is not one (a comment) would be dropped; the build refuses it
+# instead and leaves the file as it was.
+test_release_build_refuses_a_table_line_that_is_not_a_sha256() {
+    local repo="$TEST_TMPDIR/note-repo" out rc=0 line
+    _copy_build_inputs "$repo"
+    awk '{ print } /^CS_KNOWN_SHA256=\($/ { print "    # a note" }' "$repo/lib/01-manifests.sh" > "$TEST_TMPDIR/note-manifests"
+    cp "$TEST_TMPDIR/note-manifests" "$repo/lib/01-manifests.sh"
+    line=$(grep -n '^    # a note$' "$repo/lib/01-manifests.sh" | cut -d: -f1)
+    out=$(cd "$repo" && bash build.sh --add-release-hashes 2>&1) || rc=$?
+    assert_eq "1" "$rc" "build.sh exit status" || { echo "$out"; return 1; }
+    assert_eq "error: lib/01-manifests.sh line $line, inside CS_KNOWN_SHA256, is not a sha256:     # a note" \
+        "$(printf '%s\n' "$out" | tail -1)" "the error names the line" || return 1
+    cmp -s "$TEST_TMPDIR/note-manifests" "$repo/lib/01-manifests.sh" || { echo "  FAIL: lib/01-manifests.sh changed"; return 1; }
+}
+
+# An empty table cannot be cs's: every install from before the record wrote
+# content listed there. The release build refuses it with its own error on
+# every bash (bash 3.2 under set -u fails on the empty array expansion) and
+# leaves the file as it was.
+test_release_build_refuses_an_empty_table() {
+    local repo="$TEST_TMPDIR/empty-repo" out rc=0
+    _copy_build_inputs "$repo"
+    awk '/^CS_KNOWN_SHA256=\($/ { print; skip = 1; next } skip && $0 == ")" { skip = 0 } !skip { print }' \
+        "$repo/lib/01-manifests.sh" > "$TEST_TMPDIR/empty-manifests"
+    cp "$TEST_TMPDIR/empty-manifests" "$repo/lib/01-manifests.sh"
+    assert_eq "0" "$(extract_array "$repo/lib/01-manifests.sh" CS_KNOWN_SHA256 | wc -l | tr -d ' ')" "the fixture's table is empty" || return 1
+    out=$(cd "$repo" && bash build.sh --add-release-hashes 2>&1) || rc=$?
+    assert_eq "1" "$rc" "build.sh exit status" || { echo "$out"; return 1; }
+    assert_eq "error: CS_KNOWN_SHA256 in lib/01-manifests.sh is empty" \
+        "$(printf '%s\n' "$out" | tail -1)" "the error says the table is empty" || return 1
+    cmp -s "$TEST_TMPDIR/empty-manifests" "$repo/lib/01-manifests.sh" || { echo "  FAIL: lib/01-manifests.sh changed"; return 1; }
+}
+
 # ============================================================================
 # Manifest arrays: install.sh and bin/cs must agree, and must match the repo
 # ============================================================================
@@ -2603,6 +2689,60 @@ test_install_record_holds_what_a_partial_install_placed() {
     assert_file_contains "$record" "^$zeros  \.claude/skills/rotate/SKILL\.md$" "a file never reached keeps its line" || return 1
 }
 
+# A release's files under ~/.claude stay cs's when the install record is
+# gone, because the release build (build.sh --add-release-hashes) adds their
+# sha256s to CS_KNOWN_SHA256. A scratch checkout whose every such file
+# differs from this checkout's is built as a release and installed; path $1
+# under ~/.claude, which holds the record, is deleted by hand; the next
+# checkout, every such file changed again, is installed over it and replaces
+# each one. hooks/cs-shared.sh is built from lib/, so it is not changed.
+_install_over_a_release_after_deleting() {  # path under ~/.claude
+    local repo="$TEST_TMPDIR/release-repo" home="$TEST_TMPDIR/release-home"
+    local files="$TEST_TMPDIR/release-files" out rc=0 rel dest
+    _copy_build_inputs "$repo"
+    ( . "$repo/lib/01-manifests.sh"; _cs_payload_files ) | grep -v '^bin/' > "$files"
+    while IFS= read -r rel; do
+        [ "$rel" = hooks/cs-shared.sh ] || printf '\n' >> "$repo/$rel"
+    done < "$files"
+    (cd "$repo" && bash build.sh --add-release-hashes > /dev/null) || { echo "  FAIL: the release build failed"; return 1; }
+    mkdir -p "$home"
+    HOME="$home" bash "$repo/install.sh" > "$TEST_TMPDIR/release-first.out" 2>&1 < /dev/null \
+        || { cat "$TEST_TMPDIR/release-first.out"; echo "  FAIL: the release install failed"; return 1; }
+    assert_file_exists "$home/.claude/hooks/cs/.installed" "the release install writes its record" || return 1
+    rm -rf "${home:?}/.claude/$1"
+    assert_file_not_exists "$home/.claude/hooks/cs/.installed" "the record is gone" || return 1
+    while IFS= read -r rel; do
+        [ "$rel" = hooks/cs-shared.sh ] || printf '\n' >> "$repo/$rel"
+    done < "$files"
+    (cd "$repo" && bash build.sh > /dev/null) || { echo "  FAIL: the next build failed"; return 1; }
+    out=$(HOME="$home" bash "$repo/install.sh" 2>&1 < /dev/null) || rc=$?
+    assert_eq "0" "$rc" "the next install's exit status" || { echo "$out"; return 1; }
+    assert_eq "0" "$(printf '%s\n' "$out" | grep -c 'Kept ')" "the next install keeps no file" \
+        || { printf '%s\n' "$out" | grep 'Kept '; return 1; }
+    while IFS= read -r rel; do
+        case "$rel" in
+            hooks/*) dest=".claude/hooks/cs/${rel#hooks/}" ;;
+            commands/*) dest=".claude/commands/${rel#commands/}" ;;
+            skills/*) dest=".claude/skills/${rel#skills/}" ;;
+            mods/*) dest=".claude/skills/${rel#mods/}" ;;
+            *) echo "  FAIL: no destination under ~/.claude for $rel"; return 1 ;;
+        esac
+        cmp -s "$repo/$rel" "$home/$dest" || { echo "  FAIL: ~/$dest is not the next checkout's $rel"; return 1; }
+    done < "$files"
+}
+
+# The whole hooks directory goes: the hooks are deployed fresh, and the
+# commands, skills and mods are replaced because the table knows them.
+test_install_replaces_a_releases_files_after_its_record_is_deleted() {
+    _install_over_a_release_after_deleting hooks/cs
+}
+
+# Only the record goes: the release's hooks stay in ~/.claude/hooks/cs, and
+# the table is what makes them cs's too.
+test_install_replaces_a_releases_files_after_only_its_record_is_deleted() {
+    _install_over_a_release_after_deleting hooks/cs/.installed
+}
+
 # Uninstall removes what cs installed and nothing that only shares its name:
 # a user's command, a user's skill, and a user's file inside a cs mod.
 test_uninstall_removes_only_files_cs_wrote() {
@@ -2817,6 +2957,8 @@ run_test test_install_never_sources_a_kept_deployed_cs_shared
 run_test test_install_replaces_files_cs_wrote_without_a_record
 run_test test_install_follows_its_record
 run_test test_install_record_holds_what_a_partial_install_placed
+run_test test_install_replaces_a_releases_files_after_its_record_is_deleted
+run_test test_install_replaces_a_releases_files_after_only_its_record_is_deleted
 run_test test_uninstall_removes_only_files_cs_wrote
 run_test test_uninstall_removes_subagent_statusline
 test_hook_registration_doc_matches_install() {
@@ -3273,6 +3415,10 @@ run_test test_build_generates_install_sh_from_its_template
 run_test test_build_refuses_a_template_without_the_marker
 run_test test_build_refuses_a_missing_manifests_source
 run_test test_build_outputs_are_world_readable
+run_test test_release_build_adds_its_payload_to_the_known_table_once
+run_test test_build_refuses_an_unknown_argument
+run_test test_release_build_refuses_a_table_line_that_is_not_a_sha256
+run_test test_release_build_refuses_an_empty_table
 run_test test_hook_registration_doc_matches_install
 run_test test_install_honors_declined_statusline_marker
 run_test test_install_declined_marker_honors_xdg_and_foreign_statusline

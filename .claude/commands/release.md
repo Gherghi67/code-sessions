@@ -81,8 +81,13 @@ MONTH=$(date +%-m)  # No leading zero
 - If current version's YYYY.MM matches today's YYYY.M: increment BUILD by 1
 - If current version's YYYY.MM is older: reset to YYYY.M.1
 
-Update the VERSION line in `lib/00-header.sh`, then run `./build.sh` to regenerate
-`bin/cs` from the `lib/` fragments. `bin/cs` is assembled — never edit it directly.
+Update the VERSION line in `lib/00-header.sh`, then run `./build.sh --add-release-hashes`
+to regenerate `bin/cs` from the `lib/` fragments. `bin/cs` is assembled — never edit it directly.
+
+The flag adds the sha256 of every file this release deploys under `~/.claude` to
+`CS_KNOWN_SHA256` in `lib/01-manifests.sh` before building, so a later install still
+knows those files as cs's and replaces them after someone deletes `~/.claude/hooks/cs`,
+install record included, by hand.
 
 ### 2. Verify Install/Uninstall Parity
 
@@ -257,6 +262,11 @@ The CHANGELOG entry is committed as part of the release commit in Step 8.
 ### 8. Commit
 
 ```bash
+# Steps 2-7 may have changed a hook, command, skill or mod file, and the table
+# must hold the payload this commit ships; a run with nothing to add changes
+# nothing
+./build.sh --add-release-hashes
+
 # Run git status first to verify what's being included
 git status
 
@@ -272,8 +282,10 @@ SHA=$(git rev-parse HEAD)
 
 **Inspect the `git status` output before `git add -A`.** If it shows files unrelated to
 the release — scratch scripts, test artifacts, `.DS_Store`, stray build output — do NOT
-use `-A`: stage the release files explicitly (`git add lib/00-header.sh bin/cs
-CHANGELOG.md <docs you touched>`) and ask the user about the strays before committing.
+use `-A`: stage the release files explicitly (`git add lib/00-header.sh
+lib/01-manifests.sh bin/cs install.sh hooks/cs-shared.sh CHANGELOG.md <docs you touched>`,
+plus every file under `hooks/`, `commands/`, `skills/` and `mods/` that Steps 2-7
+changed) and ask the user about the strays before committing.
 `-A` is only safe when status shows exactly the release's own changes.
 
 ### 8b. Ghost Gate on the Release Commit
@@ -330,7 +342,10 @@ per-job conclusions of the run whose commit is `$SHA`, never by
 `gh run watch`'s exit status, which can return 1 while a job is still running.
 A job `cancelled` with zero steps is infrastructure, not code: check
 `https://www.githubstatus.com/api/v2/incidents/unresolved.json`, then
-`gh run rerun <databaseId> --failed`. Do not tag until every job is `success`.
+`gh run rerun <databaseId> --failed`. A code failure gets a fix in a new
+commit; repeat Step 8 from its `./build.sh --add-release-hashes` line (the fix
+may touch a hook, command, skill or mod file), then Steps 8b and 8c on the new
+sha. Do not tag until every job is `success`.
 
 ### 9. Create GitHub Release
 
@@ -380,7 +395,7 @@ No manual signing is needed — CI handles everything on tag push.
 
 - Do NOT skip the documentation review - it's the most important part
 - If you find significant documentation issues, list them before fixing
-- The version bump is a single Edit to the VERSION line in `lib/00-header.sh`, followed by `./build.sh` — never edit `bin/cs` directly (it is assembled, and CI fails if it drifts from `lib/`)
+- The version bump is a single Edit to the VERSION line in `lib/00-header.sh`, followed by `./build.sh --add-release-hashes` — never edit `bin/cs` directly (it is assembled, and CI fails if it drifts from `lib/`)
 - Run `git status` before committing to verify what's being included
 - Create the GitHub release only after the release commit passed the ghost gate and every CI job, with `--target <full sha>`
 - Do NOT commit or push until release notes are approved
