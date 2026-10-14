@@ -83,7 +83,9 @@ CS_HOOKS=(
 # rather than files Claude Code invokes as hooks. Deployed and removed alongside
 # the hooks, never registered against an event. The prompt-rewriter scripts are
 # reached through $EDITOR, not through any hook event; memory-index-guard.sh is
-# run by the /sweep command.
+# run by /wrap's memory pass. wrap-sweep.md and wrap-summary.md are the memory
+# and summary passes /wrap reads: under ~/.claude/hooks/cs/ no slash menu lists
+# them, where a file under ~/.claude/commands/ answers as a command of its own.
 CS_HOOK_LIBS=(
     cs-resolve.sh
     cs-shared.sh
@@ -92,13 +94,13 @@ CS_HOOK_LIBS=(
     prompt-rewriter.sh
     prompt-rewriter-model.sh
     prompt-rewriter-vendor.sh
+    wrap-sweep.md
+    wrap-summary.md
 )
 
 # Slash commands cs ships; deployed to ~/.claude/commands/.
 CS_COMMANDS=(
-    summary.md
     checkpoint.md
-    sweep.md
     wrap.md
 )
 
@@ -112,6 +114,8 @@ RETIRED_COMMANDS=(
     skillify.md             # retired with CLI command capture (command-tracker.sh), whose log it promoted to skills
     learn.md                # wrapped cs -learn, removed with the learnings log; deployed only by an install from a checkout
     store-secret.md         # moved to skills/store-secret; deployed only by an install from a checkout
+    sweep.md                # /wrap's memory pass, deployed as hooks/cs/wrap-sweep.md; /wrap is the one command that runs it
+    summary.md              # /wrap's summary pass, deployed as hooks/cs/wrap-summary.md; its standalone prose critic went with the command
 )
 
 # Skills cs ships; each deploys as ~/.claude/skills/<name>/SKILL.md.
@@ -10500,7 +10504,7 @@ _doctor_check_hook_files_executable() {
 }
 
 # Compares deployable artifacts in the current directory's cs source checkout
-# (hooks/*.sh, commands/*.md, skills/*/SKILL.md) against their deployed
+# (hooks/*.sh, hooks/*.md, commands/*.md, skills/*/SKILL.md) against their deployed
 # copies. A source edit only takes effect once install.sh deploys it, so
 # silent drift between the two means the running install doesn't match what
 # the source says it does. Silent outside a checkout.
@@ -10569,7 +10573,7 @@ _doctor_check_hook_drift() {
         fi
     }
 
-    _drift_scan "Hook" "$hooks_dir" hooks/*.sh hooks/*.png
+    _drift_scan "Hook" "$hooks_dir" hooks/*.sh hooks/*.png hooks/*.md
     _drift_scan "Command" "$commands_dir" commands/*.md
     _drift_scan "Skill" "$skills_dir" skills/*/SKILL.md skills/*/scripts/*.sh
     _drift_scan "Mod" "$skills_dir" mods/*/.claude-plugin/plugin.json mods/*/hooks/*

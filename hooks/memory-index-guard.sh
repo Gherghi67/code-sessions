@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# ABOUTME: Guards /sweep's rewrites of .cs/memory/MEMORY.md: snapshot, check, restore.
-# ABOUTME: Run by the sweep command from the session root; not a hook itself.
+# ABOUTME: Guards /wrap's memory-pass rewrites of .cs/memory/MEMORY.md: snapshot, check, restore.
+# ABOUTME: Run by that pass (wrap-sweep.md) from the session root; not a hook itself.
 
 set -euo pipefail
 

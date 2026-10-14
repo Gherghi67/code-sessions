@@ -123,7 +123,7 @@ _doctor_check_hook_files_executable() {
 }
 
 # Compares deployable artifacts in the current directory's cs source checkout
-# (hooks/*.sh, commands/*.md, skills/*/SKILL.md) against their deployed
+# (hooks/*.sh, hooks/*.md, commands/*.md, skills/*/SKILL.md) against their deployed
 # copies. A source edit only takes effect once install.sh deploys it, so
 # silent drift between the two means the running install doesn't match what
 # the source says it does. Silent outside a checkout.
@@ -192,7 +192,7 @@ _doctor_check_hook_drift() {
         fi
     }
 
-    _drift_scan "Hook" "$hooks_dir" hooks/*.sh hooks/*.png
+    _drift_scan "Hook" "$hooks_dir" hooks/*.sh hooks/*.png hooks/*.md
     _drift_scan "Command" "$commands_dir" commands/*.md
     _drift_scan "Skill" "$skills_dir" skills/*/SKILL.md skills/*/scripts/*.sh
     _drift_scan "Mod" "$skills_dir" mods/*/.claude-plugin/plugin.json mods/*/hooks/*

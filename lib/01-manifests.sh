@@ -44,7 +44,9 @@ CS_HOOKS=(
 # rather than files Claude Code invokes as hooks. Deployed and removed alongside
 # the hooks, never registered against an event. The prompt-rewriter scripts are
 # reached through $EDITOR, not through any hook event; memory-index-guard.sh is
-# run by the /sweep command.
+# run by /wrap's memory pass. wrap-sweep.md and wrap-summary.md are the memory
+# and summary passes /wrap reads: under ~/.claude/hooks/cs/ no slash menu lists
+# them, where a file under ~/.claude/commands/ answers as a command of its own.
 CS_HOOK_LIBS=(
     cs-resolve.sh
     cs-shared.sh
@@ -53,13 +55,13 @@ CS_HOOK_LIBS=(
     prompt-rewriter.sh
     prompt-rewriter-model.sh
     prompt-rewriter-vendor.sh
+    wrap-sweep.md
+    wrap-summary.md
 )
 
 # Slash commands cs ships; deployed to ~/.claude/commands/.
 CS_COMMANDS=(
-    summary.md
     checkpoint.md
-    sweep.md
     wrap.md
 )
 
@@ -73,6 +75,8 @@ RETIRED_COMMANDS=(
     skillify.md             # retired with CLI command capture (command-tracker.sh), whose log it promoted to skills
     learn.md                # wrapped cs -learn, removed with the learnings log; deployed only by an install from a checkout
     store-secret.md         # moved to skills/store-secret; deployed only by an install from a checkout
+    sweep.md                # /wrap's memory pass, deployed as hooks/cs/wrap-sweep.md; /wrap is the one command that runs it
+    summary.md              # /wrap's summary pass, deployed as hooks/cs/wrap-summary.md; its standalone prose critic went with the command
 )
 
 # Skills cs ships; each deploys as ~/.claude/skills/<name>/SKILL.md.

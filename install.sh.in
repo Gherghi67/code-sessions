@@ -170,9 +170,11 @@ _download() {  # url, out
 }
 
 # The mode a payload file is deployed with, as the repo tracks it: the
-# binaries, the hook files and the skill support scripts are executable.
+# binaries, the hook files and the skill support scripts are executable; the
+# Markdown passes /wrap reads from the hooks directory are not.
 _payload_mode() {  # repo-path
     case "$1" in
+        hooks/*.md) echo 644 ;;
         bin/*|hooks/*|skills/*/scripts/*) echo 755 ;;
         *) echo 644 ;;
     esac
