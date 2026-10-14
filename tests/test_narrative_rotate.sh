@@ -875,12 +875,12 @@ test_narrative_budget_is_one_value_in_both_copies() {
     [ -n "$lib_max" ] && [ -n "$bin_max" ] || { echo "  FAIL: budget constant missing from lib or bin"; return 1; }
     assert_eq "$lib_max" "$bin_max" "the max budget must match between lib and bin" || return 1
     assert_eq "$lib_keep" "$bin_keep" "the keep budget must match between lib and bin" || return 1
-    # The resume reads the live file in one Read call, and that tool refuses a
-    # file over 256 KiB. The budget sits well under the ceiling so a file that
-    # has passed it is still readable while the warning is on screen, and the
-    # kept tail leaves a working day of headroom before the next rotation.
-    assert_eq "229376" "$lib_max" "the budget stays under the Read tool's 256 KiB ceiling" || return 1
-    assert_eq "114688" "$lib_keep" "and the kept tail is half of it" || return 1
+    # Every resume reads the whole live file, which runs between the tail and
+    # the budget, so the pair sets the recurring cost: 128 KiB and 64 KiB put
+    # an average resume near 96 KiB. Both sit far under the Read tool's 256 KiB
+    # ceiling, and the tail is half the budget so rotation stays infrequent.
+    assert_eq "131072" "$lib_max" "the budget is 128 KiB" || return 1
+    assert_eq "65536" "$lib_keep" "and the kept tail is half of it" || return 1
     # The hooks carry no copy of their own: both take the budget from
     # cs-shared.sh, build.sh's copy of the lib fragment (test_install pins that
     # file to the build). A numeric default left behind in a hook would keep
