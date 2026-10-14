@@ -471,6 +471,9 @@ test_plan_says_whether_the_cs_mod_forced_this_rotation() {
     rm "$SESSION_DIR/.cs/local/state"
     out=$("$CS_BIN" -archive-tasks plan 2>&1) || { echo "  FAIL: plan failed: $out"; return 1; }
     assert_eq "forced: no" "$(printf '%s\n' "$out" | sed -n 2p)" "no conversation id to match: not forced" || return 1
+    : > "$SESSION_DIR/.cs/local/cs.forced"
+    out=$("$CS_BIN" -archive-tasks plan 2>&1) || { echo "  FAIL: plan failed: $out"; return 1; }
+    assert_eq "forced: no" "$(printf '%s\n' "$out" | sed -n 2p)" "an empty marker and no id do not match" || return 1
 }
 
 test_plan_refuses_a_store_it_does_not_recognise() {
