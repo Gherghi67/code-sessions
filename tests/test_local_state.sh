@@ -1190,6 +1190,25 @@ test_write_refusal_names_the_path_asked_for_as_a_plain_path() {
     assert_eq "" "$(ls -A "$o")" "nothing is made in the directory outside" || return 1
 }
 
+# A plain name is a file name cs can print, arm and hand Claude as it is:
+# not empty, only letters, digits and ._@-, at most 160 characters, and never
+# holding a separator, so it cannot name a file outside the directory it is
+# looked up in.
+test_plain_name_is_one_file_name_of_plain_characters() {
+    local name verdict long
+    long=$(printf 'a%.0s' $(seq 1 160))
+    for name in "x.md" "2026-07-16-next.md" "a@b_c-d.e" "$long"; do
+        verdict=$(bash -c 'source "$1"; _cs_is_plain_name "$2" && echo plain || echo not' _ \
+            "$SCRIPT_DIR/../hooks/cs-shared.sh" "$name")
+        assert_eq "plain" "$verdict" "'${name:0:20}' is a plain name" || return 1
+    done
+    for name in "" "a/b" "../x" "/x" "x/" "a b" $'e\033[1mb' "${long}a"; do
+        verdict=$(bash -c 'source "$1"; _cs_is_plain_name "$2" && echo plain || echo not' _ \
+            "$SCRIPT_DIR/../hooks/cs-shared.sh" "$name")
+        assert_eq "not" "$verdict" "'${name:0:20}' is not a plain name" || return 1
+    done
+}
+
 test_atomic_write_refuses_a_directory_link_out_of_the_session() {
     local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
     local s="$t/sess" o="$t/outside-dir" out rc=0
@@ -1594,6 +1613,7 @@ run_test test_atomic_write_refuses_a_directory_destination
 run_test test_atomic_write_refuses_a_link_out_of_the_session
 run_test test_atomic_write_names_where_a_link_leads_as_a_plain_path
 run_test test_write_refusal_names_the_path_asked_for_as_a_plain_path
+run_test test_plain_name_is_one_file_name_of_plain_characters
 run_test test_atomic_write_refuses_a_directory_link_out_of_the_session
 run_test test_atomic_write_refuses_a_dangling_link_out_of_the_session
 run_test test_atomic_write_checks_the_session_the_destination_is_in
