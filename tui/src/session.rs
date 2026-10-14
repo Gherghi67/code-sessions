@@ -12,9 +12,10 @@ use std::path::{Path, PathBuf};
 pub enum Liveness {
     /// cs holds the process lock; the PID is the running conversation.
     Locked(u32),
-    /// `cs <name> --remote` holds the lock for a `claude remote-control`
-    /// server it waits on: `lock` is that cs, `server` the pid it recorded in
-    /// `.cs/local/remote.pid`.
+    /// `cs <name> --remote` serves the session through a `claude
+    /// remote-control` server: `lock` is the pid in the session lock, `server`
+    /// the pid in `.cs/local/remote.pid`. cs execs the server, so both name
+    /// the same process; each is read from its own file.
     Served { lock: u32, server: u32 },
     /// No lock, but the statusline touched `.cs/local/context-pct` within the
     /// heartbeat window — a conversation opened outside cs.
@@ -1942,11 +1943,11 @@ mod tests {
         let served = Liveness::Served { lock: 42, server: 77 };
         assert!(served.is_live());
         assert!(served.is_locked());
-        assert_eq!(served.lock_pid(), Some(42), "the lock is cs's, not the server's");
+        assert_eq!(served.lock_pid(), Some(42), "lock_pid reads the lock, not remote.pid");
     }
 
-    /// A session `cs <name> --remote` serves: the lock names the cs that waits
-    /// on the server, and .cs/local/remote.pid names the server.
+    /// A session `cs <name> --remote` serves: a live session lock, and
+    /// .cs/local/remote.pid naming the server.
     fn served_session(tag: &str, remote_pid: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("cs-served-{tag}-{}", std::process::id()));
         fs::create_dir_all(dir.join(".cs/local")).unwrap();
