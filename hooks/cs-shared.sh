@@ -116,6 +116,9 @@ cs_local_dir() {  # meta_dir
 # GIT_CONFIG_COUNT (with its KEY_n/VALUE_n pairs) and GIT_CONFIG_PARAMETERS
 # hand git configuration, and a bad value makes every call fail. git speaks
 # in the C locale here so a caller can tell "not a repository" from a failure.
+# The repository's core.fsmonitor names a command git runs on every ls-files;
+# an empty value turns it off, on every git version, so no question asked
+# here runs a program the repository's config names.
 # Every check that decides whether cs trusts a session's files asks through
 # here.
 _cs_git_at() {  # dir, git arguments...
@@ -124,7 +127,29 @@ _cs_git_at() {  # dir, git arguments...
     env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR -u GIT_OBJECT_DIRECTORY \
         -u GIT_CEILING_DIRECTORIES -u GIT_LITERAL_PATHSPECS -u GIT_GLOB_PATHSPECS \
         -u GIT_NOGLOB_PATHSPECS -u GIT_ICASE_PATHSPECS -u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS \
-        -u LANGUAGE LC_ALL=C git -C "$dir" "$@"
+        -u LANGUAGE LC_ALL=C git -c core.fsmonitor= -C "$dir" "$@"
+}
+
+# The first directory from <dir> up to, and not including, the session at
+# <session_dir> that holds a HEAD, relative to the session; fails when none
+# does. git, asked about a directory, takes the nearest one above it that holds
+# HEAD (beside objects/ and refs/, or a commondir naming them) for the
+# repository and runs the commands its config names. A clone can commit that
+# layout anywhere under .cs with git add -f, so it is looked for before git is
+# asked anything. Any HEAD counts, a dangling link too: git accepts a link
+# into refs/ whether or not it leads anywhere.
+_cs_head_below_session() {  # physical dir, session_dir
+    local d="$1" root
+    root=$(cd -P "$2" 2>/dev/null && pwd -P && printf x) || return 1
+    root=${root%$'\n'x}
+    while :; do
+        case "$d" in "$root"/*) ;; *) return 1 ;; esac
+        if [ -e "$d/HEAD" ] || [ -L "$d/HEAD" ]; then
+            printf '%s\n' "${d#"$root"/}"
+            return 0
+        fi
+        d=${d%/*}
+    done
 }
 
 # True when git's error output says it found no repository at all, the one
@@ -190,9 +215,10 @@ cs_untrack_notice() {  # tracked, top, sub
 # <session_dir> is the session as its caller names it, printed in place of the
 # repository's own path when the two are one directory. A directory that holds
 # the session's own files is named, with no command: untracking it would
-# untrack the project.
+# untrack the project. A directory in the session laid out like a repository,
+# at or above the one asked about, is named before git is asked anything.
 cs_tracked_files_notice() {  # dir, session_dir
-    local real top prefix tracked status why meta sub rest n here="$1" missing=""
+    local real top prefix tracked status why meta sub rest n layout here="$1" missing=""
     while [ ! -e "$here" ] && [ ! -L "$here" ]; do
         case "$here" in */?*) ;; *) return 1 ;; esac
         missing="/${here##*/}$missing"
@@ -201,6 +227,12 @@ cs_tracked_files_notice() {  # dir, session_dir
     # The x keeps a trailing newline in a name that $( ) drops.
     real=$(cd -P "$here" 2>/dev/null && pwd -P && printf x) || return 1
     real=${real%$'\n'x}
+    if layout=$(_cs_head_below_session "$real" "$2"); then
+        layout=$(printf '%s' "$layout" | env LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_' | cut -c1-160) || return 1
+        printf '%s holds HEAD, so git takes it for a repository and would run commands its config names (cs state must be a plain directory inside the session). Delete %s/HEAD, or cs -rm the session.\n' \
+            "$layout" "$layout"
+        return 0
+    fi
     if ! top=$(_cs_git_at "$real" rev-parse --show-toplevel 2>/dev/null && printf x); then
         why=$(_cs_git_at "$real" rev-parse --show-toplevel 2>&1 >/dev/null) || true
         ! _cs_git_not_a_repo "$why" || return 1
