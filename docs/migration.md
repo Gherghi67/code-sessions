@@ -338,9 +338,10 @@ points at a file), a project whose `.git` is not a folder, a feature folder
 git does not list as a worktree or whose base is not copied, a name
 code-sessions already uses for something else, and a name code-sessions is
 still renaming (a record in the profile's `.rename-profile-session/` that is
-not finished: until then the old session's transcripts, prompt history,
-settings and secrets may still be under that name, a copy would merge into
-them, and the rename could no longer finish). Each of these, and anything
+not finished, or that cannot be read or understood: until then the old
+session's transcripts, prompt history, settings and secrets may still be under
+that name, a copy would merge into them, and the rename could no longer
+finish). Each of these, and anything
 kept on both sides, is a problem and makes the run exit 1. A session whose
 folder is gone (nothing is at its link's target any more) is left too, but as
 a note: the original cs cannot open it either. So is each of its features

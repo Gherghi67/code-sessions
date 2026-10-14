@@ -346,14 +346,20 @@ class Importer:
         and secrets after; its record in <profile>/.rename-profile-session/
         says finished once all have moved. Until then they may still be under
         the old name, a copy under that name would merge into them, and the
-        rename could no longer finish. Only read: nothing here writes there.
+        rename could no longer finish. A record that cannot be read or
+        understood counts as not finished. Only read: nothing here writes there.
         """
         folder = os.path.join(self.profile, ".rename-profile-session")
         for entry in sorted(os.listdir(folder)) if os.path.isdir(folder) else []:
             if not (entry.startswith(name + "-to-") and entry.endswith(".json")):
                 continue
+            text = read_text(os.path.join(folder, entry))
+            if text is None:
+                return ("the rename record %s of code-sessions's own %s cannot be read, so it is not known whether "
+                        "the rename has finished; make it readable, then rerun"
+                        % (tilde(os.path.join(folder, entry)), name))
             try:
-                record = json.loads(read_text(os.path.join(folder, entry)) or "{}")
+                record = json.loads(text)
             except ValueError:
                 record = {"old": name, "new": entry[len(name + "-to-"):-len(".json")]}
             if isinstance(record, dict) and record.get("old") == name and not record.get("finished"):

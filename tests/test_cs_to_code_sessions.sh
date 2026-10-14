@@ -1801,6 +1801,23 @@ test_a_name_code_sessions_is_still_renaming_is_left() {
     assert_eq 1 "$status" "an unreadable record let the copy go ahead" || { echo "$OUT"; return 1; }
     assert_output_contains "$OUT" "! the rename of code-sessions's own ask to ask-ags has not finished" || return 1
     assert_not_exists "$PROFILE/sessions/ask" || return 1
+    : > "$PROFILE/.rename-profile-session/ask-to-ask-ags.json"
+    status=0
+    run_move --session ask --apply || status=$?
+    assert_eq 1 "$status" "an empty record let the copy go ahead" || { echo "$OUT"; return 1; }
+    assert_output_contains "$OUT" "! the rename of code-sessions's own ask to ask-ags has not finished" || return 1
+    assert_not_exists "$PROFILE/sessions/ask" || return 1
+    # A record that is there but cannot be opened is not known to be finished either.
+    printf '{"old": "ask", "new": "ask-ags", "started": "x", "finished": null}\n' \
+        > "$PROFILE/.rename-profile-session/ask-to-ask-ags.json"
+    chmod 000 "$PROFILE/.rename-profile-session/ask-to-ask-ags.json"
+    status=0
+    run_move --session ask --apply || status=$?
+    chmod 600 "$PROFILE/.rename-profile-session/ask-to-ask-ags.json"
+    assert_eq 1 "$status" "a record that cannot be read let the copy go ahead" || { echo "$OUT"; return 1; }
+    assert_output_contains "$OUT" "! the rename record .*ask-to-ask-ags.json of code-sessions's own ask cannot be read" \
+        || { echo "$OUT"; return 1; }
+    assert_not_exists "$PROFILE/sessions/ask" || return 1
     # Finished: the conversations moved with it, and cs's ask is copied under the name.
     mv "$PROFILE/.claude/projects/$key" "$PROFILE/.claude/projects/$key-ags"
     printf '{"old": "ask", "new": "ask-ags", "started": "x", "finished": "y"}\n' \
