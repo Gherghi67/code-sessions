@@ -666,9 +666,13 @@ async function threshold($: EngineInterface): Promise<number> {
   )
 }
 
+// A handoff name the SessionStart hook loads: letters, digits and ._@-, at
+// most 160 characters, so never one with a separator.
+const PLAIN_NAME = /^[A-Za-z0-9._@-]{1,160}$/
+
 // Armed means the marker names a handoff the SessionStart hook will accept
-// after the /clear: a bare basename (the hook rejects a separator), a file in
-// the store, and frontmatter that still says unconsumed. Whether cs trusts the
+// after the /clear: a plain basename (PLAIN_NAME), a file in the store, and
+// frontmatter that still says unconsumed. Whether cs trusts the
 // session's control files is asked apart (sessionVetted), by each step that
 // acts on the handoff, never by the band's drawing. A marker an aborted
 // rotation left behind, or one naming a handoff since consumed, would offer a
@@ -693,7 +697,7 @@ async function armedHandoff($: EngineInterface): Promise<string | undefined> {
     } catch {
       continue
     }
-    if (name === '' || /[/\\]/.test(name)) return undefined
+    if (!PLAIN_NAME.test(name)) return undefined
     try {
       const text = await $.fs.read(`${cwd}/${store}/${name}`)
       return isUnconsumed(text) ? text : undefined
