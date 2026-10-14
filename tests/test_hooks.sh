@@ -675,6 +675,8 @@ test_auto_approve_prompts_inside_a_git_directory_reached_by_another_name() {
     echo '/elsewhere/.git' > "$meta/research/admin/commondir"
     _assert_falls_through Write "$meta/research/admin/config.worktree" \
         "the config of a worktree's git directory kept below .cs" || return 1
+    _assert_falls_through Write "$meta/research/admin/index" \
+        "the index of a worktree's git directory kept below .cs" || return 1
 }
 
 # A git directory can be assembled one write at a time. Git takes a directory
@@ -981,10 +983,14 @@ test_auto_approve_rejects_git_dir_inside_content() {
     ln -s .cs/memory/repo "$root/.git"
     _assert_falls_through Edit "$meta/memory/repo/config" \
         "git config behind a relocated .git link" || return 1
+    _assert_falls_through Write "$meta/memory/repo/description" \
+        "a file in the git directory a .git link leads to" || return 1
     rm "$root/.git"
     printf 'gitdir: .cs/memory/repo\n' > "$root/.git"
     _assert_falls_through Edit "$meta/memory/repo/config" \
         "git config behind a .git file" || return 1
+    _assert_falls_through Write "$meta/memory/repo/description" \
+        "a file in the git directory a .git file names" || return 1
     _assert_allowed Write "$meta/memory/narrative.md" \
         "a narrative beside the relocated git dir" || return 1
 }
