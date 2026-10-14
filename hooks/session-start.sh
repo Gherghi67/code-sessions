@@ -99,6 +99,11 @@ fi
 if ! command -v _cs_plain_name >/dev/null 2>&1; then
     _cs_plain_name() { printf '?'; }
 fi
+# A rotation loads only a handoff whose name is plain; without the library's
+# _cs_is_plain_name no name is, so no handoff loads.
+if ! command -v _cs_is_plain_name >/dev/null 2>&1; then
+    _cs_is_plain_name() { return 1; }
+fi
 # Not in a cs session, do nothing. Resolves from the env under the CLI and
 # from the opened directory under front ends that cannot export one.
 cs_resolve_session "$INPUT" || exit 0
@@ -459,6 +464,9 @@ case "$SOURCE" in
             case "$HANDOFF_BASENAME" in
                 */*|*\\*) HANDOFF_BASENAME="" ;;
             esac
+            # .cs/handoffs/ is tracked, so a clone chooses the file name. Only
+            # a plain one loads, so the name Claude is told is the file itself.
+            _cs_is_plain_name "$HANDOFF_BASENAME" || HANDOFF_BASENAME=""
             HANDOFF_FILE="$HANDOFF_DIR/$HANDOFF_BASENAME"
             if [ -n "$HANDOFF_BASENAME" ] && [ -f "$HANDOFF_FILE" ] \
                 && _handoff_is_unconsumed "$HANDOFF_FILE"; then

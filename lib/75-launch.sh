@@ -837,11 +837,19 @@ EOF
             || error "$session_name: .cs/private dangles after the open checked it (vault unmounted mid-launch?). Mount it, then reopen."
         _marker_dir=$(cs_private_dir "$session_dir/.cs") \
             || error "$session_name: .cs/private dangles after the open checked it (vault unmounted mid-launch?). Mount it, then reopen."
+        # .cs/handoffs/ is tracked, so a clone chooses the file names. Only a
+        # plain one is offered: the name printed, armed and handed to Claude
+        # is then the file itself. Any other is passed over, and one line says
+        # so without naming it.
+        local _skipped=""
         for _hf in "$_handoff_dir"/*.md; do
             [ -f "$_hf" ] || continue
             _handoff_is_unconsumed "$_hf" || continue
+            _cs_is_plain_name "${_hf##*/}" || { _skipped=1; continue; }
             pending_handoff="$_hf"
         done
+        [ -z "$_skipped" ] \
+            || printf "${DIM}Skipped a rotation handoff whose file name is not plain (only letters, digits and ._@-, at most 160 characters); rename it to have it offered.${NC}\n"
         # .cs/handoffs/ is shared and nothing ever deletes a handoff, so a file
         # belonging to another checkout keeps status: unconsumed indefinitely —
         # the rotate skill will not supersede one whose parent is absent from
@@ -850,11 +858,13 @@ EOF
         # else's plan. An armed marker is an explicit choice, so it outranks the
         # scan; a marker naming a spent or absent file is stale and the scan
         # still answers. The marker names a basename, never a path: a separator
-        # would resolve outside the handoff store.
+        # would resolve outside the handoff store. It names a plain one, as
+        # the scan offers, or nothing.
         local _marker="$_marker_dir/pending-handoff" _armed
         if [ -f "$_marker" ]; then
             _armed=$(cat "$_marker" 2>/dev/null | tr -d '[:space:]' || true)
             case "$_armed" in */*|*\\*) _armed="" ;; esac
+            _cs_is_plain_name "$_armed" || _armed=""
             if [ -n "$_armed" ] && [ -f "$_handoff_dir/$_armed" ] \
                 && _handoff_is_unconsumed "$_handoff_dir/$_armed"; then
                 pending_handoff="$_handoff_dir/$_armed"
