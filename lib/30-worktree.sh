@@ -728,6 +728,14 @@ _resolve_session_dir() {
     printf '%s\n' "$dir"
 }
 
+# Refuse a base whose HEAD names no commit: a folder cs -adopt ran git init
+# in has none until the user makes one, and git would make a feature of it an
+# orphan branch, then fail on HEAD when landing it.
+_require_base_commit() {  # base_dir base_name
+    git -C "$1" rev-parse -q --verify 'HEAD^{commit}' >/dev/null 2>&1 \
+        || error "Session '$2' has no commit yet, so a feature has nothing to branch from or land on. Make a first commit in $1 (cs commits nothing for you), then try again."
+}
+
 # Gate worktree creation on the base checkout's tracked state. Runs in the
 # main shell so a declined consent can exit cs cleanly (the creator is
 # command-substituted, where an exit only leaves the subshell). Clean base
@@ -737,6 +745,7 @@ _resolve_session_dir() {
 confirm_clean_worktree_base() {
     local base_dir="$1" base_name="$2"
     git -C "$base_dir" rev-parse --git-dir >/dev/null 2>&1 || return 0
+    _require_base_commit "$base_dir" "$base_name"
     _tree_is_dirty "$base_dir" || return 0
     if cs_interactive; then
         printf '\n    %b⚠%b  %s has uncommitted changes; the feature branches from the\n       last commit and will not include them.\n' \
@@ -767,6 +776,24 @@ create_worktree_session() {
     if [ -f "$base_dir/.git" ]; then
         error "Session '$base_name' is itself a worktree; create features from the main checkout"
     fi
+    _require_base_commit "$base_dir" "$base_name"
+    # Who carries .cs from the feature back to the base: git (tracked) or the
+    # record fuse (ignored). Git's answer wins once it tracks .cs. Otherwise a
+    # mode the base records decides (adopt and the flat-layout migration
+    # record one, since they commit nothing), and only a base with no record
+    # is inferred ignored.
+    # Decided before the worktree exists, so a refusal leaves nothing behind.
+    local mode state_file="$base_dir/.cs/local/state" recorded
+    if [ -n "$(git -C "$base_dir" ls-files -- .cs 2>/dev/null)" ]; then
+        mode="tracked"
+    else
+        recorded=$(_read_local_state "$state_file" cs_mode)
+        case "$recorded" in
+            ""|ignored) mode="ignored" ;;
+            tracked) error "Session '$base_name' expects git to carry .cs (cs_mode: tracked in $state_file), but git tracks nothing under .cs there. Commit it first (git add .cs .gitignore .gitattributes, then git commit, in $base_dir), or set that line to 'cs_mode: ignored' to keep .cs out of git, which features then hide through .git/info/exclude." ;;
+            *) error "Session '$base_name' names cs_mode '$recorded' in $state_file; cs knows tracked and ignored. Fix that line, then create the feature again." ;;
+        esac
+    fi
     # Dirty-state gating happens in the caller (confirm_clean_worktree_base):
     # this function runs command-substituted, where an exit cannot stop cs.
     local untracked
@@ -787,9 +814,7 @@ create_worktree_session() {
     # base's history; refuse before the state writes below go through it.
     cs_assert_local_untracked "$wt_dir"
 
-    local mode="tracked"
-    if [ -z "$(git -C "$base_dir" ls-files -- .cs 2>/dev/null)" ]; then
-        mode="ignored"
+    if [ "$mode" = "ignored" ]; then
         bootstrap_worktree_meta "$wt_dir" "$base_name" "$task" "$base_dir"
     fi
 
@@ -1055,6 +1080,7 @@ retire_feature_worktree() {  # base_name task sha [--force]
     [ -d "$base_dir" ] || error "Base session not found: $base_name"
     [ -d "$wt_dir" ] || error "No worktree for feature '$task' (expected $wt_dir)"
     _finish_progress_begin "$base_dir" "$task"
+    _require_base_commit "$base_dir" "$base_name"
 
     local wt_name="$base_name@$task"
     if [ "${CLAUDE_SESSION_NAME:-}" = "$wt_name" ]; then
@@ -1478,6 +1504,7 @@ integrate_feature_worktree() {  # base_name task sha [--from-remote [--ci-green]
     [ -d "$base_dir" ] || error "Base session not found: $base_name"
     [ -d "$wt_dir" ] || error "No worktree for feature '$task' (expected $wt_dir)"
     _finish_progress_begin "$base_dir" "$task"
+    _require_base_commit "$base_dir" "$base_name"
     # Herestring, not a pipe: grep -q's early exit would SIGPIPE the writer
     # and pipefail would read that as "not registered".
     local features

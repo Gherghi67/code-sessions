@@ -140,6 +140,66 @@ _explain_gitignore_additions() {  # dir
     info "cs added $_CS_GITIGNORE_ADDED to the tracked .gitignore so cs's machine-local files are never staged; commit it with your next change"
 }
 
+# One line saying cs committed nothing, naming each of <path>... that git
+# shows as changed or untracked in <dir>, in the order given, a directory with
+# a trailing slash: what adopt and the flat-layout migration leave for the user
+# to commit. No line when git shows none of them or cannot say.
+_explain_nothing_committed() {  # dir, path...
+    local dir="$1" entry path shown=$'\n' p left="" count=0
+    shift
+    # -z: a name git would quote on a plain line keeps its leading component
+    # readable. A staged rename's second field reads as a name matching none
+    # of <path>, so it is skipped like any other.
+    while IFS= read -r -d '' entry; do
+        path="${entry:3}"
+        case "$path" in
+            */*) shown="$shown${path%%/*}/"$'\n' ;;
+            *) shown="$shown$path"$'\n' ;;
+        esac
+    done < <(_cs_git_at "$dir" --no-optional-locks status --porcelain -z --untracked-files=normal -- "$@" 2>/dev/null)
+    for p in "$@"; do
+        case "$shown" in
+            *$'\n'"$p/"$'\n'*) p="$p/" ;;
+            *$'\n'"$p"$'\n'*) ;;
+            *) continue ;;
+        esac
+        count=$((count + 1))
+        left="$left${left:+$'\n'}$p"
+    done
+    [ "$count" -gt 0 ] || return 0
+    local joined="" i=0
+    while IFS= read -r p; do
+        i=$((i + 1))
+        if [ "$i" -eq 1 ]; then
+            joined="$p"
+        elif [ "$i" -eq "$count" ]; then
+            joined="$joined and $p"
+        else
+            joined="$joined, $p"
+        fi
+    done <<< "$left"
+    info "cs committed nothing; it left $joined for you to commit"
+}
+
+# Record in <dir>/.cs/local/state the mode the session's features take, for
+# create_worktree_session, unless a cs_mode is already recorded there. Adopt
+# and the flat-layout migration commit nothing, so git tracks no .cs until the
+# user commits it, and a feature that inferred its mode from that would hide
+# the base's .cs through the common info/exclude. Features expect git to carry
+# .cs (tracked), unless the project's own rules already keep it out of git
+# (ignored). Asked of the directory, not a file in it: a file-type rule such
+# as *.md hides some of .cs's files and leaves the rest for git to show, and
+# cs's own rules name only paths inside .cs. `.cs/`, `.cs`, `/.cs/`, `.cs/*`
+# and `.cs/**` all match it.
+_record_feature_mode() {  # dir
+    local state="$1/.cs/local/state" mode=tracked
+    [ -z "$(_read_local_state "$state" cs_mode)" ] || return 0
+    if _cs_git_at "$1" check-ignore -q -- .cs/ 2>/dev/null; then
+        mode=ignored
+    fi
+    _set_local_state "$state" cs_mode "$mode"
+}
+
 # Adopt an existing project directory as a cs session. --yes (-y) answers the
 # one question adopt asks, whether to re-adopt orphaned records, so it runs
 # without a terminal.
@@ -161,18 +221,18 @@ adopt_session() {  # name, [--yes|-y], in any order
 
     validate_session_name "$session_name"
 
-    # Adopting a directory with no .git runs git init and commits everything
-    # under it, and writes cs's files into it: never the home directory or the
-    # filesystem root. -ef, not a string compare: either may be reached
-    # through a symlink or typed in another case.
+    # Adopting a directory with no .git runs git init there and writes cs's
+    # files into it: never the home directory or the filesystem root. -ef,
+    # not a string compare: either may be reached through a symlink or typed
+    # in another case.
     if [ "$target_dir" -ef "${HOME:-}" ]; then
         error "Refusing to adopt your home directory ($target_dir). Run cs -adopt from a project directory."
     fi
     if [ "$target_dir" -ef / ]; then
         error "Refusing to adopt the filesystem root. Run cs -adopt from a project directory."
     fi
-    # Nor the sessions root or a directory above it: that commit would sweep
-    # in every session, and the session link would land inside the project.
+    # Nor the sessions root or a directory above it: the repo would hold
+    # every session, and the session link would land inside the project.
     # Walked up on the physical path, each step compared by -ef.
     local root ancestor
     root=$(cd -- "$SESSIONS_ROOT" 2>/dev/null && pwd -P) || root="$SESSIONS_ROOT"
@@ -185,10 +245,10 @@ adopt_session() {  # name, [--yes|-y], in any order
     done
 
     # A linked git worktree keeps a `.git` FILE, so the init path below would
-    # read it as "not a repo", `git init` over it and `git add -A` the user's
-    # PR branch. Claude Code's worktrees have their own verb.
+    # read it as "not a repo" and `git init` over the user's PR branch.
+    # Claude Code's worktrees have their own verb.
     if [ -f "$target_dir/.git" ]; then
-        error "$target_dir is a linked git worktree. For Claude Code's worktrees run cs -adopt --worktrees from the repo; plain cs -adopt would commit into this branch."
+        error "$target_dir is a linked git worktree. For Claude Code's worktrees run cs -adopt --worktrees from the repo; plain cs -adopt would run git init over this branch's checkout."
     fi
 
     # Adopt appends to .gitignore, .gitattributes and CLAUDE.local.md and
@@ -309,12 +369,13 @@ adopt_session() {  # name, [--yes|-y], in any order
     mkdir -p "$SESSIONS_ROOT"
     ln -s "$target_dir" "$session_link"
 
-    # Initialize git if not already a repo
+    # Initialize git if not already a repo. Nothing is committed: the user's
+    # files and cs's are left for the user's own first commit.
     if [ ! -d "$target_dir/.git" ]; then
         (
             cd -- "$target_dir" || exit 0
             # Merged, not written: the project's own rules (an .env, a key
-            # file) must keep hiding those files from the add -A below.
+            # file) must keep hiding those files from the user's first add.
             ensure_cs_gitignore_entries "$target_dir"
             git init -q 2>/dev/null || true
             # See the session-init path: autocrlf would rewrite .gitignore to
@@ -322,30 +383,19 @@ adopt_session() {  # name, [--yes|-y], in any order
             git config core.autocrlf false 2>/dev/null || true
             git branch -M main 2>/dev/null || true
             setup_merge_attributes "$target_dir"
-            git add -A 2>/dev/null || true
-            git commit -q -m "Adopt as cs session: $session_name" 2>/dev/null || true
         )
+        _explain_nothing_committed "$target_dir" .cs .gitignore .gitattributes
     else
-        # Merge cs's .gitignore entries into the project's existing .gitignore
+        # The project's own repo: cs merges its rules and attributes into the
+        # working tree and never touches the index, so whatever the user had
+        # staged stays staged and nothing is committed.
         ensure_cs_gitignore_entries "$target_dir"
-
-        # Commit the adoption
-        (
-            cd -- "$target_dir" || exit 0
-            setup_merge_attributes "$target_dir"
-            git add .cs/ .gitignore .gitattributes 2>/dev/null || true
-            # The commit names its own paths: this runs inside the user's
-            # project repo, and a bare `git commit` would sweep whatever they
-            # had staged into a commit titled "Adopt as cs session". The
-            # --cached check is scoped the same way, or a user's unrelated
-            # staged file would make cs commit when it has nothing to say.
-            # (`git commit -- <paths>` only matches TRACKED paths, so the add
-            # above is what makes the new .cs files eligible.)
-            if ! git diff --cached --quiet -- .cs/ .gitignore .gitattributes 2>/dev/null; then
-                git commit -q -m "Adopt as cs session: $session_name" -- .cs/ .gitignore .gitattributes 2>/dev/null || true
-            fi
-        )
+        setup_merge_attributes "$target_dir"
+        _explain_nothing_committed "$target_dir" .cs .gitignore .gitattributes
     fi
+
+    # Re-adopted records keep the mode they hold.
+    _record_feature_mode "$target_dir"
 
     info "Adopted $(basename "$target_dir") as session '$session_name'"
     echo -e "${DIM}Symlink: $session_link -> $target_dir${NC}"
@@ -369,8 +419,10 @@ _append_exclude_once() {  # exclude_file, entry...
 }
 
 # The .cs/ skeleton for a Claude Code worktree adopted as a session. Not
-# create_session_structure: that commits into the checkout, and the checkout
-# is a live PR branch. Not bootstrap_worktree_meta: its README names a base
+# create_session_structure: its README takes the directory's name as the
+# session's and asks for the Environment a new session works in, where an
+# adopted worktree's session is <repo>.<worktree> and its README names the
+# worktree it came from. Not bootstrap_worktree_meta: its README names a base
 # session and a cs/<task> branch, which an adopted worktree has neither of.
 _bootstrap_adopted_worktree_meta() {  # wt_dir, session_name
     local wt_dir="$1" session_name="$2"

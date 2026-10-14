@@ -473,7 +473,7 @@ migrate_mailbox() {  # session_dir
 }
 
 # Check if session needs migration from flat layout to .cs/ directory. The
-# migration moves README.md, rewrites .gitignore and commits, so it needs proof
+# migration moves README.md and rewrites .gitignore, so it needs proof
 # the directory is a cs session, not just a logs/ dir any project can have:
 # every flat-layout session cs created opened logs/session.log with the line
 # "Claude Code Session Log".
@@ -875,10 +875,11 @@ _migration_stamp_state() {  # session_dir, actor_raw
             return 0
         fi
     done
-    # setup_merge_attributes sets merge.ours.driver in a checkout cs commits
-    # into, and the doctor's advice for a missing one is to launch once. Every
-    # `git config` write rewrites .git/config (SessionStart's hideRefs on each
-    # launch among them), so its modification time says nothing: read the value.
+    # setup_merge_attributes sets merge.ours.driver in every checkout but an
+    # adopted Claude Code worktree, and the doctor's advice for a missing one
+    # is to launch once. Every `git config` write rewrites .git/config
+    # (SessionStart's hideRefs on each launch among them), so its modification
+    # time says nothing: read the value.
     if [ -e "$1/.git" ] && [ "$(_read_local_state "$1/.cs/local/state" git_bookkeeping)" != "exclude" ] \
         && [ "$(git -C "$1" config --get merge.ours.driver 2>/dev/null)" != "true" ]; then
         echo "stale: merge.ours.driver is not set"
@@ -976,8 +977,9 @@ migrate_session() {
     if [ "$tracked_tree_is_ours" = 1 ] && [ "$repair" = all ]; then
         setup_merge_attributes "$session_dir"
         ensure_cs_gitignore_entries "$session_dir"
-        # The one caller that leaves the appended rules uncommitted, so the
-        # one that says what they are.
+        # Names the rules just appended to a tracked .gitignore. Adopt merges
+        # the same rules and names .gitignore in its own line of what it left
+        # (_explain_nothing_committed) instead.
         _explain_gitignore_additions "$session_dir"
     fi
 
@@ -997,8 +999,8 @@ migrate_session() {
         migrate_if_exists "$session_dir/secrets.enc" "$session_dir/.cs/secrets.enc"
         migrate_if_exists "$session_dir/secrets.age" "$session_dir/.cs/secrets.age"
 
-        # Merged, not written: the session's own rules must keep hiding
-        # their files from the add -A below.
+        # Merged, not written: the session's own rules keep hiding their
+        # files from the user's next `git add`.
         ensure_cs_gitignore_entries "$session_dir"
 
         echo ""
@@ -1006,15 +1008,12 @@ migrate_session() {
         echo -e "${DIM}Session metadata moved to .cs/ - your workspace root is now clean for project files.${NC}"
         echo ""
 
-        # Commit the migration if git is initialized
+        # The moves stay in the working tree for the user to commit, and the
+        # session records the mode its features take, as adopt does.
         if [ -d "$session_dir/.git" ]; then
-            (
-                cd -- "$session_dir" || exit 0
-                git add -A 2>/dev/null || true
-                if ! git diff --cached --quiet 2>/dev/null; then
-                    git commit -q -m "Migrate session structure to .cs/ metadata directory" 2>/dev/null || true
-                fi
-            )
+            _explain_nothing_committed "$session_dir" .cs logs archives age-recipients \
+                README.md discoveries.md summary.md secrets.enc secrets.age .gitignore .gitattributes
+            _record_feature_mode "$session_dir"
         fi
     fi
 

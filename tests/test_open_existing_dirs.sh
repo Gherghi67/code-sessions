@@ -7,8 +7,8 @@ source "$SCRIPT_DIR/test_lib.sh"
 
 # A flat-layout session cs created long ago (its logs/session.log opens with
 # cs's header), in a git repo whose .gitignore hides a key file. The structural
-# migration commits with add -A, so the user's rule must still be there when
-# it does.
+# migration merges cs's rules into that file, so the user's rule must still be
+# there for their next `git add`.
 test_flat_layout_migration_keeps_the_sessions_gitignore() {
     local dir="$CS_SESSIONS_ROOT/flat-session"
     mkdir -p "$dir/logs"
@@ -25,8 +25,60 @@ test_flat_layout_migration_keeps_the_sessions_gitignore() {
         "the session's own .gitignore rule survives the migration" || return 1
     assert_file_contains "$dir/.gitignore" '^\.cs/local/$' \
         "cs's .cs/local/ rule is merged in" || return 1
-    assert_eq "" "$(git -C "$dir" ls-files secret.key)" \
-        "the ignored key file is not committed by the migration" || return 1
+    assert_eq "secret.key" "$(git -C "$dir" check-ignore secret.key)" \
+        "git still ignores the key file" || return 1
+}
+
+# The structural migration moves the flat layout into .cs/ and commits
+# nothing: the moves stay in the working tree, and one line names what the
+# user is left to commit.
+test_flat_layout_migration_commits_nothing() {
+    local dir="$CS_SESSIONS_ROOT/flat-session" head_before out
+    mkdir -p "$dir/logs"
+    printf 'Claude Code Session Log\nSession: flat-session\n' > "$dir/logs/session.log"
+    printf '# Session: flat-session\n' > "$dir/README.md"
+    printf '# Session Documentation Protocol\n' > "$dir/CLAUDE.md"
+    (cd "$dir" && git init -q && git config core.autocrlf false && git add -A && git commit -q -m initial)
+    head_before=$(git -C "$dir" rev-parse HEAD)
+
+    out=$("$CS_BIN" flat-session <<< "" 2>&1 || true)
+
+    assert_eq "$head_before" "$(git -C "$dir" rev-parse HEAD)" "the migration makes no commit" || return 1
+    assert_eq "" "$(git -C "$dir" diff --cached --name-only)" "and stages nothing" || return 1
+    assert_file_exists "$dir/.cs/README.md" "the README moved into .cs/ in the working tree" || return 1
+    assert_file_not_exists "$dir/README.md" "and left the root" || return 1
+    assert_eq "README.md" "$(git -C "$dir" ls-files README.md)" "git still tracks the README at the root" || return 1
+    assert_eq "" "$(git -C "$dir" ls-files .cs)" "and nothing under .cs/" || return 1
+    assert_output_contains "$out" "cs committed nothing; it left .cs/, logs/, README.md, .gitignore and .gitattributes for you to commit" \
+        "one line names what the migration left" || return 1
+    assert_eq "tracked" "$(awk -F': ' '/^cs_mode:/{print $2}' "$dir/.cs/local/state")" \
+        "the session records that git is to carry .cs" || return 1
+}
+
+# The migration records the mode the session's features take, as adopt does.
+# A user who then commits only the tracked side of the moves (git add -u)
+# leaves .cs untracked, so a feature is refused instead of hiding the base's
+# .cs from git through the common info/exclude.
+test_feature_of_a_migrated_session_waits_for_git_to_carry_cs() {
+    local dir="$CS_SESSIONS_ROOT/flat-session" out rc=0
+    mkdir -p "$dir/logs"
+    printf 'Claude Code Session Log\nSession: flat-session\n' > "$dir/logs/session.log"
+    printf '# Session: flat-session\n' > "$dir/README.md"
+    printf '# Session Documentation Protocol\n' > "$dir/CLAUDE.md"
+    (cd "$dir" && git init -q && git config core.autocrlf false && git add -A && git commit -q -m initial)
+    "$CS_BIN" flat-session <<< "" >/dev/null 2>&1 || true
+    (cd "$dir" && git add -u && git commit -q -m "commit the moves of tracked files") \
+        || { echo "  FAIL: commit fixture"; return 1; }
+
+    out=$("$CS_BIN" flat-session@t < /dev/null 2>&1) || rc=$?
+
+    assert_eq 1 "$rc" "the feature is refused" || return 1
+    assert_eq "Error: Session 'flat-session' expects git to carry .cs (cs_mode: tracked in $dir/.cs/local/state), but git tracks nothing under .cs there. Commit it first (git add .cs .gitignore .gitattributes, then git commit, in $dir), or set that line to 'cs_mode: ignored' to keep .cs out of git, which features then hide through .git/info/exclude." \
+        "$out" "the refusal names both ways on" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/flat-session@t" "no worktree is created" || return 1
+    assert_eq "" "$(git -C "$dir" branch --list cs/t)" "no branch is created" || return 1
+    assert_file_not_contains "$dir/.git/info/exclude" '^\.cs/$' "the base's .cs is not hidden from git" || return 1
+    assert_eq "?? .cs/" "$(git -C "$dir" status --porcelain -- .cs)" "git still shows the base's .cs" || return 1
 }
 
 # The sessions root also holds directories that are not sessions (editor
@@ -91,6 +143,8 @@ echo "===================================================="
 echo ""
 
 run_test test_flat_layout_migration_keeps_the_sessions_gitignore
+run_test test_flat_layout_migration_commits_nothing
+run_test test_feature_of_a_migrated_session_waits_for_git_to_carry_cs
 run_test test_open_refuses_a_directory_that_is_not_a_session
 run_test test_open_under_a_relative_sessions_root_makes_it_absolute
 
