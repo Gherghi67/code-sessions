@@ -375,10 +375,12 @@ _cs_tmux_title_lock_path() {  # pane
 #   regular file fd 9 has open. Only a link swapped in between those two
 #   steps, by a live process of the same user, is followed, and the lock is
 #   then refused.
-# - The file is never removed: a removed lock file lets the next taker lock a
-#   fresh file while a waiter locks the removed one. A waiter that finds the
-#   path naming another file once it holds the lock lets it go and takes the
-#   lock on the file the path names.
+# - The file is never removed, but by cs -uninstall, which removes
+#   ~/.claude/settings.json.mutex.lock while it holds it: a removed lock file
+#   lets the next taker lock a fresh file while a waiter locks the removed one.
+#   A taker that finds the path gone after it opened the file, or naming
+#   another file once it holds the lock, lets it go and takes the lock on the
+#   file the path names, trying three times in all.
 # - A directory that is missing, or cannot take a new file, refuses at once.
 # - A live holder is waited for, but for no more than five seconds: past that
 #   the caller goes ahead without the lock or gives up, as it chooses, since a
@@ -427,7 +429,8 @@ _cs_lock() {  # lock file
 # _cs_lock's perl, run on the lock file with bash's fd 9 open on it. Exits 0
 # holding the lock; 1 after five seconds of a live holder; 2 when the path is
 # not the regular file fd 9 has open (a link, or another type); 3 when the
-# path names another regular file than fd 9 has, so the caller opens that one.
+# path names another regular file than fd 9 has, or nothing at all, so the
+# caller opens the path again.
 _CS_LOCK_PERL='
 use Fcntl qw(:flock);
 open(my $fd, "+<&=", 9) or exit 1;
@@ -438,6 +441,7 @@ sub path_names_held {
     return @path && -f _ && $path[0] == $held[0] && $path[1] == $held[1];
 }
 my @path = lstat($ARGV[0]);
+exit 3 if !@path && $!{ENOENT};
 exit 2 unless @path && -f _;
 exit 3 unless path_names_held();
 for my $poll (0 .. 100) {

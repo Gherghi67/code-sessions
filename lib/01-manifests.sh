@@ -7,6 +7,8 @@
 # and on uninstall, wherever an older cs left them.
 # install.sh and run_uninstall both clean these up.
 # When retiring a hook in a release, add its filename here.
+# The three retired lists only ever grow and none may be emptied: bash 3.2
+# under set -u fails on an empty array expansion, and their loops expand them bare.
 RETIRED_HOOKS=(
     narrative-precompact.sh   # retired: PreCompact cannot inject context (no hookSpecificOutput/additionalContext); Stop reminder covers capture
     discovery-commits.sh      # renamed to autosave-commits.sh (general all-file crash recovery, not discoveries-specific)
@@ -61,6 +63,18 @@ CS_COMMANDS=(
     wrap.md
 )
 
+# Slash commands past versions deployed to ~/.claude/commands/ and this one
+# does not. A command file left behind keeps answering its name, so install.sh
+# and run_uninstall both remove each one cs wrote; a user's own file of the
+# same name is kept. When retiring a command, add its filename here.
+# shellcheck disable=SC2034  # read by install.sh and run_uninstall
+RETIRED_COMMANDS=(
+    compact-discoveries.md  # retired with the discoveries machinery; the session narrative replaced it
+    skillify.md             # retired with CLI command capture (command-tracker.sh), whose log it promoted to skills
+    learn.md                # wrapped cs -learn, removed with the learnings log; deployed only by an install from a checkout
+    store-secret.md         # moved to skills/store-secret; deployed only by an install from a checkout
+)
+
 # Skills cs ships; each deploys as ~/.claude/skills/<name>/SKILL.md.
 CS_SKILLS=(
     store-secret
@@ -88,6 +102,29 @@ RETIRED_SKILLS=(
     cs-hint # a mod (deployed under skills/ like every mod): the hint line under the prompt, retired
     cs-rotate # a mod: renamed to cs, cs's in-session mod (the rotate band, forced rotation, the wrap key)
 )
+
+# install.sh and run_uninstall join each entry of the three retired lists
+# onto one directory (a hook or command file name, a skill directory name),
+# so an entry holding a path component would reach outside it, and '..' as a
+# skill would name all of ~/.claude. Both call this before they change
+# anything: it stops with an error naming the list and the first such entry.
+_check_retired_names() {
+    _check_retired_entries RETIRED_HOOKS file "${RETIRED_HOOKS[@]}"
+    _check_retired_entries RETIRED_COMMANDS file "${RETIRED_COMMANDS[@]}"
+    _check_retired_entries RETIRED_SKILLS directory "${RETIRED_SKILLS[@]}"
+}
+
+# Stop with an error naming list $1 and the first of its entries ($3...) that
+# is not a plain $2 name: empty, '.', '..', or holding a '/'.
+_check_retired_entries() {  # list name, kind (file or directory), entries...
+    local list="$1" kind="$2" entry
+    shift 2
+    for entry in "$@"; do
+        case "$entry" in
+            ''|.|..|*/*) error "$list entry '$entry' is not a $kind name" ;;
+        esac
+    done
+}
 
 # Support files skills ship beyond SKILL.md, as skills/<skill>/<path> entries.
 CS_SKILL_FILES=(
@@ -127,17 +164,44 @@ CS_COMPLETION_FILES=(
     completions/_cs
 )
 
+# The events install.sh registers a cs hook under: the first column of
+# _register_cs_hooks, which a test compares with this list. install.sh reads
+# it before it deploys anything, to refuse a settings.json that holds one of
+# them as something other than a list.
+# shellcheck disable=SC2034  # read by install.sh
+CS_HOOK_EVENTS=(
+    SessionStart
+    PostToolUse
+    Stop
+    SessionEnd
+    SubagentStart
+    PostToolUseFailure
+    PermissionRequest
+    UserPromptSubmit
+    FileChanged
+    CwdChanged
+)
+
 # Remove a hook registration from any event in a settings JSON string,
-# matching either path spelling; drops wrappers that empty out. Prints the
-# updated JSON.
+# matching either path spelling; drops wrappers that empty out. An entry with
+# no .hooks array (its command at the top level, or not an object at all)
+# passes through untouched, and so does an element of a .hooks array that is
+# not an object: neither can be cs's registration. An event whose value is
+# not a list is the user's and stays as it is.
+# A wrapper whose .hooks array is empty goes whether the strip emptied it or
+# the user wrote it that way; the filter cannot tell the two apart and an
+# empty one does nothing in Claude Code. Deliberate: not a defect to fix.
+# Prints the updated JSON.
 _strip_hook_registration() {
     local settings="$1" p="$2" t="$3"
     echo "$settings" | jq --arg p "$p" --arg t "$t" '
         if .hooks then
             .hooks |= with_entries(
                 .value |= (
-                    map(.hooks |= map(select(.command != $p and .command != $t)))
-                    | map(select(.hooks | length > 0))
+                    if type == "array" then
+                        map(if type == "object" and (.hooks | type) == "array" then .hooks |= map(select(type != "object" or (.command != $p and .command != $t))) else . end)
+                        | map(select(type != "object" or (.hooks | type) != "array" or (.hooks | length > 0)))
+                    else . end
                 )
             )
         else . end

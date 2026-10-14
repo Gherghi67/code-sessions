@@ -679,7 +679,7 @@ extract_array() {
 
 test_manifest_arrays_in_sync() {
     local arr a b
-    for arr in CS_HOOKS CS_HOOK_LIBS RETIRED_HOOKS CS_COMMANDS CS_SKILLS RETIRED_SKILLS CS_SKILL_FILES CS_MOD_FILES; do
+    for arr in CS_HOOKS CS_HOOK_LIBS RETIRED_HOOKS CS_COMMANDS RETIRED_COMMANDS CS_SKILLS RETIRED_SKILLS CS_SKILL_FILES CS_MOD_FILES; do
         a=$(extract_array "$SCRIPT_DIR/../install.sh" "$arr" | sort)
         b=$(extract_array "$CS_BIN" "$arr" | sort)
         if [ -z "$a" ]; then
@@ -1000,6 +1000,46 @@ test_install_keeps_a_mod_directory_linked_at_the_users_files() {
         || { echo "  FAIL: the other mod was not deployed"; return 1; }
 }
 
+# A skill directory linked elsewhere (a dotfiles repo, say) is the user's,
+# whatever the files behind it hold: cs never makes such a link. Install
+# keeps the link, writes nothing through it, names it once and lists it after
+# the completion line; uninstall leaves what it points at as it was. Covers a
+# link at the skill directory, whose target holds content cs wrote and the
+# user's own, and one at a skill's scripts/ directory.
+test_install_keeps_a_symlinked_skill_directory_and_writes_nothing_through_it() {
+    local home="$TEST_TMPDIR/skilllink-home" ext="$TEST_TMPDIR/skilllink-ext" out rc=0 l
+    mkdir -p "$home/.claude/skills/write-as-me" "$ext/rotate" "$ext/finish/scripts" "$ext/scripts"
+    _cs_shipped_content > "$ext/rotate/SKILL.md"
+    printf 'my finish skill\n' > "$ext/finish/SKILL.md"
+    printf 'my finish script\n' > "$ext/finish/scripts/finish.sh"
+    _cs_shipped_content > "$ext/scripts/build-corpus.sh"
+    ln -s "$ext/rotate" "$home/.claude/skills/rotate"
+    ln -s "$ext/finish" "$home/.claude/skills/finish"
+    ln -s "$ext/scripts" "$home/.claude/skills/write-as-me/scripts"
+    out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || rc=$?
+    assert_eq "0" "$rc" "install exit status" || { echo "$out"; return 1; }
+    for l in rotate finish write-as-me/scripts; do
+        [ -L "$home/.claude/skills/$l" ] || { echo "  FAIL: the link at skills/$l was not kept"; return 1; }
+        assert_eq "1" "$(printf '%s\n' "$out" | grep -c "Kept $(_bre_literal "$home/.claude/skills/$l"): a symlink, so cs wrote nothing through it and the skill files under it were not deployed$")" \
+            "one warning names the link at skills/$l" || return 1
+        printf '%s\n' "$out" | sed -n '/Installation complete/,$p' | grep -q "^ *$(_bre_literal "$home/.claude/skills/$l")$" \
+            || { echo "  FAIL: skills/$l is not listed after the completion line"; return 1; }
+    done
+    assert_eq "$(_cs_shipped_content)" "$(cat "$ext/rotate/SKILL.md")" "the rotate link's target is untouched" || return 1
+    assert_eq "my finish skill" "$(cat "$ext/finish/SKILL.md")" "the finish link's SKILL.md is untouched" || return 1
+    assert_eq "my finish script" "$(cat "$ext/finish/scripts/finish.sh")" "the finish link's script is untouched" || return 1
+    assert_eq "$(_cs_shipped_content)" "$(cat "$ext/scripts/build-corpus.sh")" "the scripts link's target is untouched" || return 1
+    cmp -s "$SCRIPT_DIR/../skills/write-as-me/SKILL.md" "$home/.claude/skills/write-as-me/SKILL.md" \
+        || { echo "  FAIL: the SKILL.md beside a linked scripts/ was not deployed"; return 1; }
+    cmp -s "$SCRIPT_DIR/../skills/feature/SKILL.md" "$home/.claude/skills/feature/SKILL.md" \
+        || { echo "  FAIL: an unlinked skill was not deployed"; return 1; }
+    printf 'y\n' | HOME="$home" "$CS_BIN" -uninstall > "$TEST_TMPDIR/skilllink.un" 2>&1 \
+        || { cat "$TEST_TMPDIR/skilllink.un"; echo "  FAIL: cs -uninstall exited non-zero"; return 1; }
+    assert_eq "$(_cs_shipped_content)" "$(cat "$ext/rotate/SKILL.md")" "uninstall leaves the rotate link's target" || return 1
+    assert_eq "my finish script" "$(cat "$ext/finish/scripts/finish.sh")" "uninstall leaves the finish link's target" || return 1
+    assert_eq "$(_cs_shipped_content)" "$(cat "$ext/scripts/build-corpus.sh")" "uninstall leaves the scripts link's target" || return 1
+}
+
 test_skill_files_exist_in_repo() {
     local entry
     for entry in $(extract_array "$SCRIPT_DIR/../install.sh" CS_SKILL_FILES); do
@@ -1315,6 +1355,142 @@ test_install_removes_the_retired_hint_mod() {
     assert_dir "$fake_home/.claude/skills/cs" "the shipped mod is still deployed" || return 1
 }
 
+# A slash command a past version shipped and this one does not keeps
+# answering its name from ~/.claude/commands until something removes it.
+# Install removes each one cs wrote, by content, and uninstall removes one
+# still there; a user's own file under a retired name is kept by both.
+test_install_and_uninstall_remove_retired_commands_cs_wrote() {
+    local home="$TEST_TMPDIR/retired-cmd-home" d rc=0 out c
+    d="$home/.claude/commands"
+    mkdir -p "$d"
+    for c in compact-discoveries learn store-secret; do
+        _cs_shipped_content > "$d/$c.md"
+    done
+    printf 'my skillify command\n' > "$d/skillify.md"
+    out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || rc=$?
+    assert_eq "0" "$rc" "install exit status" || { echo "$out"; return 1; }
+    for c in compact-discoveries learn store-secret; do
+        assert_file_not_exists "$d/$c.md" "install removes the retired $c.md cs wrote" || return 1
+    done
+    assert_eq "my skillify command" "$(cat "$d/skillify.md")" "install keeps the user's skillify.md" || return 1
+    assert_output_contains "$out" "Kept $(_bre_literal "$d/skillify.md"): cs did not write it$" "install names the kept command" || return 1
+    _cs_shipped_content > "$d/compact-discoveries.md"
+    out=$(printf 'y\n' | HOME="$home" "$CS_BIN" -uninstall 2>&1) || rc=$?
+    assert_eq "0" "$rc" "uninstall exit status" || { echo "$out"; return 1; }
+    assert_file_not_exists "$d/compact-discoveries.md" "uninstall removes the retired command cs wrote" || return 1
+    assert_eq "my skillify command" "$(cat "$d/skillify.md")" "uninstall keeps the user's skillify.md" || return 1
+    assert_output_contains "$out" "Kept $(_bre_literal "$d/skillify.md"): cs did not write it" "uninstall names the kept command" || return 1
+}
+
+# Every path under directory $1, and each file's checksum, on stdout: two
+# listings are the same only when nothing there was added, removed or
+# rewritten.
+_tree_listing() {  # dir
+    (cd "$1" && find . -print | sort && find . -type f -exec cksum {} + | sort)
+}
+
+# Passes when the listing $1 (_tree_listing, taken earlier) still describes
+# directory $2; otherwise prints what differs.
+_assert_tree_unchanged() {  # listing, dir, message
+    local now
+    now=$(_tree_listing "$2")
+    if [ "$1" != "$now" ]; then
+        echo "  FAIL: $3"
+        diff <(printf '%s\n' "$1") <(printf '%s\n' "$now") | head -20
+        return 1
+    fi
+}
+
+# The retired lists (RETIRED_HOOKS, RETIRED_COMMANDS, RETIRED_SKILLS) name
+# files or directories inside one directory each, and install and uninstall
+# join every entry onto that directory. An entry that is not a plain name
+# would reach outside it, so both refuse the list, naming it and the entry,
+# before they change anything. The lists are cs's own, so a scratch build
+# carries the entry: $2 appended to list $1, refused as "not a $3 name".
+#
+# Install runs over a HOME holding what the entry could reach: the three
+# directories, a user's skill, an empty directory and a file cs wrote beside
+# them, and file $4 (a path under ~/.claude) with content cs wrote, when
+# given. Uninstall runs over the same HOME with the binaries, a hook cs wrote
+# and the status-line registration added: the first things it removes. Each
+# must leave the HOME exactly as it was.
+_install_and_uninstall_refuse_a_retired_entry() {  # list, entry, kind, [file under ~/.claude]
+    local list="$1" entry="$2" kind="$3" outside="${4:-}"
+    local repo="$TEST_TMPDIR/refused-${#entry}-repo" home="$TEST_TMPDIR/refused-${#entry}-home"
+    local refusal out rc f before
+    refusal="Error: $list entry '$(_bre_literal "$entry")' is not a $kind name"
+    _copy_build_inputs "$repo"
+    printf '%s\n' "$list+=('$entry')" >> "$repo/lib/01-manifests.sh"
+    (cd "$repo" && bash build.sh > /dev/null) || { echo "  FAIL: build.sh failed"; return 1; }
+    for f in install.sh bin/cs; do
+        assert_eq "1" "$(grep -c "^$list+=('$(_bre_literal "$entry")')$" "$repo/$f")" "the scratch $f carries the entry '$entry'" || return 1
+    done
+
+    mkdir -p "$home/.claude/commands" "$home/.claude/hooks/cs" "$home/.claude/skills/mine" "$home/.claude/agents"
+    echo "my skill" > "$home/.claude/skills/mine/SKILL.md"
+    _cs_shipped_content > "$home/.claude/plugin-copy.json"
+    if [ -n "$outside" ]; then
+        mkdir -p "$(dirname "$home/.claude/$outside")"
+        _cs_shipped_content > "$home/.claude/$outside"
+    fi
+    before=$(_tree_listing "$home")
+    rc=0
+    out=$(HOME="$home" bash "$repo/install.sh" 2>&1 < /dev/null) || rc=$?
+    assert_eq "1" "$rc" "install exit status for '$entry'" || { echo "$out"; return 1; }
+    assert_output_contains "$out" "$refusal" "install names the list and the entry '$entry'" || return 1
+    _assert_tree_unchanged "$before" "$home" "install changes nothing for '$entry'" || return 1
+
+    mkdir -p "$home/.local/bin"
+    for f in cs cs-secrets cs-statusline cs-subagent-statusline cs-tui; do
+        echo "#!/bin/sh" > "$home/.local/bin/$f"
+    done
+    _cs_shipped_content > "$home/.claude/hooks/cs/session-start.sh"
+    jq -n --arg bin "$home/.local/bin" '{
+        statusLine: {type: "command", command: "\($bin)/cs-statusline", refreshInterval: 60},
+        subagentStatusLine: {type: "command", command: "\($bin)/cs-subagent-statusline"}
+    }' > "$home/.claude/settings.json"
+    before=$(_tree_listing "$home")
+    rc=0
+    out=$(printf 'y\n' | HOME="$home" "$repo/bin/cs" -uninstall 2>&1) || rc=$?
+    assert_eq "1" "$rc" "uninstall exit status for '$entry'" || { echo "$out"; return 1; }
+    assert_output_contains "$out" "$refusal" "uninstall names the list and the entry '$entry'" || return 1
+    _assert_tree_unchanged "$before" "$home" "uninstall changes nothing for '$entry'" || return 1
+}
+
+# Runs _install_and_uninstall_refuse_a_retired_entry for each entry that
+# names no file or directory in the list's directory: the empty one, '.' and
+# '..', which name that directory or its parent.
+_install_and_uninstall_refuse_retired_entries_that_name_nothing() {  # list, kind
+    local entry
+    for entry in '' '.' '..'; do
+        _install_and_uninstall_refuse_a_retired_entry "$1" "$entry" "$2" || return 1
+    done
+}
+
+test_install_and_uninstall_refuse_a_retired_command_with_a_path() {
+    _install_and_uninstall_refuse_a_retired_entry RETIRED_COMMANDS '../x' file x
+}
+
+test_install_and_uninstall_refuse_a_retired_command_that_names_no_file() {
+    _install_and_uninstall_refuse_retired_entries_that_name_nothing RETIRED_COMMANDS file
+}
+
+test_install_and_uninstall_refuse_a_retired_hook_with_a_path() {
+    _install_and_uninstall_refuse_a_retired_entry RETIRED_HOOKS '../../y' file y
+}
+
+test_install_and_uninstall_refuse_a_retired_hook_that_names_no_file() {
+    _install_and_uninstall_refuse_retired_entries_that_name_nothing RETIRED_HOOKS file
+}
+
+test_install_and_uninstall_refuse_a_retired_skill_with_a_path() {
+    _install_and_uninstall_refuse_a_retired_entry RETIRED_SKILLS '../x' directory x/SKILL.md
+}
+
+test_install_and_uninstall_refuse_a_retired_skill_that_names_no_directory() {
+    _install_and_uninstall_refuse_retired_entries_that_name_nothing RETIRED_SKILLS directory
+}
+
 # The cs mod shipped as cs-rotate before it took the name cs; a copy left
 # under the old name keeps loading into every Claude Code the machine starts,
 # beside the mod under its current name.
@@ -1394,6 +1570,200 @@ EOF
         echo "  FAIL: non-cs hook registration was removed (expected it preserved)"
         return 1
     fi
+}
+
+# An event entry with its command at the top level and no .hooks array is the
+# user's, and passes through install and uninstall as it is, while cs's own
+# registrations beside it are added and then stripped.
+test_install_and_uninstall_keep_a_flat_shape_hook_entry() {
+    local home="$TEST_TMPDIR/flat-entry-home" s rc=0 flat='[{"type":"command","command":"/usr/local/bin/notify-me"}]'
+    s="$home/.claude/settings.json"
+    mkdir -p "$home/.claude"
+    printf '{"permissions":{"allow":["Bash(ls:*)"]},"hooks":{"Notification":%s}}\n' "$flat" > "$s"
+    HOME="$home" bash "$INSTALL_SH" > "$TEST_TMPDIR/flat-entry.out" 2>&1 < /dev/null || rc=$?
+    assert_eq "0" "$rc" "install exit status" || { cat "$TEST_TMPDIR/flat-entry.out"; return 1; }
+    assert_eq "$flat" "$(jq -c '.hooks.Notification' "$s")" "install keeps the flat entry" || return 1
+    assert_eq "1" "$(jq '[.hooks.SessionStart[]? | .hooks[]?.command | select(. == "~/.claude/hooks/cs/session-start.sh")] | length' "$s")" \
+        "install registers cs's hooks beside it" || return 1
+    printf 'y\n' | HOME="$home" "$CS_BIN" -uninstall > "$TEST_TMPDIR/flat-entry.un" 2>&1 || rc=$?
+    assert_eq "0" "$rc" "uninstall exit status" || { cat "$TEST_TMPDIR/flat-entry.un"; return 1; }
+    assert_eq "$flat" "$(jq -c '.hooks.Notification' "$s")" "uninstall keeps the flat entry" || return 1
+    assert_eq "0" "$(jq '[.hooks[][] | .hooks[]?.command | select(test("hooks/cs/"))] | length' "$s")" \
+        "uninstall strips every cs registration" || return 1
+}
+
+# cs's registration under each event the shape tests below use, as install
+# writes it (jq -c), and the hooks-list shapes that are the user's to keep:
+# no .hooks at all, then false, null, a number, a string, an object, and a
+# list of hooks that are not cs's.
+SESSION_START_REGISTRATION='{"hooks":[{"type":"command","command":"~/.claude/hooks/cs/session-start.sh","timeout":30}]}'
+STOP_REGISTRATION='{"hooks":[{"type":"command","command":"~/.claude/hooks/cs/narrative-reminder.sh","timeout":10}]}'
+USER_HOOK_SHAPES='[{"type":"command","command":"notify"},{"matcher":"a","hooks":false},{"matcher":"b","hooks":null},{"hooks":7},{"hooks":"notify"},{"hooks":{"custom":{"type":"command","command":"notify"}}},{"matcher":"c","hooks":[{"type":"command","command":"notify","timeout":5},{"type":"command","command":"log-it"}]}]'
+
+# Runs install and then uninstall over a HOME whose settings.json holds the
+# entries $3 (a JSON list, written as jq -c prints it) as the whole of event
+# $2. They must come through both exactly as written and in order: after
+# install the event holds them followed by $4, cs's registration there ("" for
+# an event cs registers nothing under, which then holds them alone); after
+# uninstall settings.json is the file it was, byte for byte. $1 names the HOME.
+_install_and_uninstall_keep_hook_entries() {  # label, event, entries, cs's entry
+    local home="$TEST_TMPDIR/$1-home" s rc=0 expected="$3"
+    s="$home/.claude/settings.json"
+    mkdir -p "$home/.claude"
+    jq -n --arg event "$2" --argjson entries "$3" '{hooks: {($event): $entries}}' > "$s"
+    cp "$s" "$TEST_TMPDIR/$1.before"
+    HOME="$home" bash "$INSTALL_SH" > "$TEST_TMPDIR/$1.out" 2>&1 < /dev/null || rc=$?
+    assert_eq "0" "$rc" "install exit status" || { cat "$TEST_TMPDIR/$1.out"; return 1; }
+    [ -z "$4" ] || expected="${3%]},$4]"
+    assert_eq "$expected" "$(jq -c --arg event "$2" '.hooks[$event]' "$s")" \
+        "install keeps the $2 entries in order, with cs's registration after them" || return 1
+    printf 'y\n' | HOME="$home" "$CS_BIN" -uninstall > "$TEST_TMPDIR/$1.un" 2>&1 || rc=$?
+    assert_eq "0" "$rc" "uninstall exit status" || { cat "$TEST_TMPDIR/$1.un"; return 1; }
+    assert_eq "$(cat "$TEST_TMPDIR/$1.before")" "$(cat "$s")" \
+        "uninstall leaves settings.json as it was before install" || return 1
+    cmp -s "$TEST_TMPDIR/$1.before" "$s" || { echo "  FAIL: settings.json after uninstall differs from the file before install"; return 1; }
+}
+
+# A .hooks value that is not an array is the user's to shape, in an event cs
+# registers too: install and uninstall pass the entry through as it is.
+test_install_and_uninstall_keep_a_hooks_false_entry() {
+    _install_and_uninstall_keep_hook_entries hooks-false SessionStart '[{"matcher":"startup","hooks":false}]' "$SESSION_START_REGISTRATION"
+}
+
+test_install_and_uninstall_keep_a_hooks_object_entry() {
+    _install_and_uninstall_keep_hook_entries hooks-object SessionStart '[{"hooks":{"custom":{"type":"command","command":"notify"}}}]' "$SESSION_START_REGISTRATION"
+}
+
+test_install_and_uninstall_keep_a_hooks_string_entry() {
+    _install_and_uninstall_keep_hook_entries hooks-string SessionStart '[{"hooks":"notify"}]' "$SESSION_START_REGISTRATION"
+}
+
+# Every shape together, in an event cs registers its own hook under (Stop)
+# and in one it does not (PreToolUse): the entries keep their order and their
+# keys' order.
+test_install_and_uninstall_keep_every_hooks_shape_in_order() {
+    _install_and_uninstall_keep_hook_entries shapes-stop Stop "$USER_HOOK_SHAPES" "$STOP_REGISTRATION"
+}
+
+test_install_and_uninstall_keep_every_hooks_shape_in_an_event_cs_registers_nothing_under() {
+    _install_and_uninstall_keep_hook_entries shapes-pretooluse PreToolUse "$USER_HOOK_SHAPES" ""
+}
+
+# A hooks list may hold elements that are not objects (a string, a number,
+# null, a list, false). None of them is cs's registration, so each stays where
+# it is, beside the user's hook in the same list.
+test_install_and_uninstall_keep_hooks_list_elements_that_are_not_objects() {
+    _install_and_uninstall_keep_hook_entries hooks-elements SessionStart \
+        '[{"matcher":"startup","hooks":["notify",7,null,["x"],false,{"type":"command","command":"user-start"}]}]' \
+        "$SESSION_START_REGISTRATION"
+}
+
+# An event's list may hold entries that are not objects. None of them holds
+# cs's registration, so each stays where it is.
+test_install_and_uninstall_keep_event_entries_that_are_not_objects() {
+    _install_and_uninstall_keep_hook_entries event-entries SessionStart \
+        '["notify",7,null,["x"],false,{"hooks":[{"type":"command","command":"user-start"}]}]' \
+        "$SESSION_START_REGISTRATION"
+}
+
+# cs's registration found beside an element that is not an object is still
+# taken out of that list, and added once in its own entry.
+test_install_takes_its_registration_out_of_a_hooks_list_holding_a_string() {
+    local home="$TEST_TMPDIR/hooks-shared-home" s rc=0
+    s="$home/.claude/settings.json"
+    mkdir -p "$home/.claude"
+    printf '{"hooks":{"SessionStart":[{"hooks":["notify",%s]}]}}\n' \
+        '{"type":"command","command":"~/.claude/hooks/cs/session-start.sh","timeout":5}' > "$s"
+    HOME="$home" bash "$INSTALL_SH" > "$TEST_TMPDIR/hooks-shared.out" 2>&1 < /dev/null || rc=$?
+    assert_eq "0" "$rc" "install exit status" || { cat "$TEST_TMPDIR/hooks-shared.out"; return 1; }
+    assert_eq "[{\"hooks\":[\"notify\"]},$SESSION_START_REGISTRATION]" "$(jq -c '.hooks.SessionStart' "$s")" \
+        "install keeps the string and registers cs once, in its own entry" || return 1
+}
+
+# Entries written into settings.json after an install: a hooks list holding a
+# string under one event, a bare string under another. Uninstall still takes
+# every cs registration out and leaves the two as they are.
+test_uninstall_strips_cs_beside_entries_that_are_not_objects() {
+    local home="$TEST_TMPDIR/strip-beside-home" s rc=0
+    s="$home/.claude/settings.json"
+    HOME="$home" bash "$INSTALL_SH" > "$TEST_TMPDIR/strip-beside.out" 2>&1 < /dev/null || rc=$?
+    assert_eq "0" "$rc" "install exit status" || { cat "$TEST_TMPDIR/strip-beside.out"; return 1; }
+    jq '.hooks.PreToolUse = [{"matcher":"Bash","hooks":["notify"]}] | .hooks.Notification = ["notify"]' "$s" > "$s.new" || return 1
+    mv "$s.new" "$s"
+    printf 'y\n' | HOME="$home" "$CS_BIN" -uninstall > "$TEST_TMPDIR/strip-beside.un" 2>&1 || rc=$?
+    assert_eq "0" "$rc" "uninstall exit status" || { cat "$TEST_TMPDIR/strip-beside.un"; return 1; }
+    assert_eq '{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":["notify"]}],"Notification":["notify"]}}' "$(jq -c . "$s")" \
+        "uninstall leaves only the two entries" || { cat "$TEST_TMPDIR/strip-beside.un"; return 1; }
+}
+
+# The value of an event is the user's when it is not a list. Install adds its
+# own hook to ten events and cannot add it to a value like that, so it stops
+# before it deploys anything, naming the event, whichever of its events holds
+# the value and whatever the value is.
+test_install_refuses_an_event_cs_registers_that_is_not_a_list() {
+    local home s out rc before pair event value
+    for pair in 'SessionStart={"custom":{"hooks":[{"type":"command","command":"user-start"}]}}' \
+        'Stop=false' 'FileChanged="notify"' 'CwdChanged=7'; do
+        event="${pair%%=*}" value="${pair#*=}"
+        home="$TEST_TMPDIR/event-$event-home" s="$TEST_TMPDIR/event-$event-home/.claude/settings.json"
+        mkdir -p "$home/.claude"
+        jq -n --arg event "$event" --argjson value "$value" '{hooks: {($event): $value}}' > "$s"
+        before=$(_tree_listing "$home")
+        rc=0
+        out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || rc=$?
+        assert_eq "1" "$rc" "install exit status for $event" || { echo "$out"; return 1; }
+        assert_output_contains "$out" \
+            "Error: $(_bre_literal "$s") holds a hooks\.$event that is not a list, so cs's hook cannot be added to it; nothing was installed$" \
+            "install names $event" || return 1
+        _assert_tree_unchanged "$before" "$home" "install changes nothing for $event" || return 1
+    done
+}
+
+# Events cs registers nothing under pass through install and uninstall as they
+# are, whatever their value: an object, false, a string, a number or null.
+test_install_and_uninstall_keep_events_that_are_not_lists() {
+    local home="$TEST_TMPDIR/event-values-home" s rc=0 hooks
+    hooks='{"PreCompact":{"custom":{"hooks":[{"type":"command","command":"user-pc"}]}},"Notification":false,"PreToolUse":"notify","SubagentStop":7,"PostCompact":null}'
+    s="$home/.claude/settings.json"
+    mkdir -p "$home/.claude"
+    jq -n --argjson hooks "$hooks" '{hooks: $hooks}' > "$s"
+    cp "$s" "$TEST_TMPDIR/event-values.before"
+    HOME="$home" bash "$INSTALL_SH" > "$TEST_TMPDIR/event-values.out" 2>&1 < /dev/null || rc=$?
+    assert_eq "0" "$rc" "install exit status" || { cat "$TEST_TMPDIR/event-values.out"; return 1; }
+    assert_eq "$hooks" "$(jq -c '.hooks | with_entries(select(.key | IN("PreCompact", "Notification", "PreToolUse", "SubagentStop", "PostCompact")))' "$s")" \
+        "install keeps the five events as they are" || return 1
+    assert_eq "$SESSION_START_REGISTRATION" "$(jq -c '.hooks.SessionStart[]' "$s")" "install registers cs's hooks beside them" || return 1
+    printf 'y\n' | HOME="$home" "$CS_BIN" -uninstall > "$TEST_TMPDIR/event-values.un" 2>&1 || rc=$?
+    assert_eq "0" "$rc" "uninstall exit status" || { cat "$TEST_TMPDIR/event-values.un"; return 1; }
+    assert_eq "$(cat "$TEST_TMPDIR/event-values.before")" "$(cat "$s")" "uninstall leaves settings.json as it was before install" || return 1
+    cmp -s "$TEST_TMPDIR/event-values.before" "$s" || { echo "  FAIL: settings.json after uninstall differs from the file before install"; return 1; }
+}
+
+# An event cs registered under, turned into an object after the install, is
+# the user's from then on: uninstall leaves it as it is, cs's registration
+# inside it included, and still strips the events that are lists.
+test_uninstall_leaves_an_event_that_is_not_a_list() {
+    local home="$TEST_TMPDIR/event-object-home" s rc=0
+    s="$home/.claude/settings.json"
+    HOME="$home" bash "$INSTALL_SH" > "$TEST_TMPDIR/event-object.out" 2>&1 < /dev/null || rc=$?
+    assert_eq "0" "$rc" "install exit status" || { cat "$TEST_TMPDIR/event-object.out"; return 1; }
+    jq '.hooks.Stop = {custom: .hooks.Stop[0]}' "$s" > "$s.new" || return 1
+    mv "$s.new" "$s"
+    printf 'y\n' | HOME="$home" "$CS_BIN" -uninstall > "$TEST_TMPDIR/event-object.un" 2>&1 || rc=$?
+    assert_eq "0" "$rc" "uninstall exit status" || { cat "$TEST_TMPDIR/event-object.un"; return 1; }
+    assert_eq "{\"hooks\":{\"Stop\":{\"custom\":$STOP_REGISTRATION}}}" "$(jq -c . "$s")" \
+        "uninstall leaves the object event and strips the rest" || { cat "$TEST_TMPDIR/event-object.un"; return 1; }
+}
+
+# install.sh reads CS_HOOK_EVENTS before it deploys anything, to refuse an
+# event that is not a list; the events it then registers under are the rows of
+# _register_cs_hooks. The two are written apart, so they are compared here.
+test_hook_events_list_matches_the_registration_table() {
+    local listed registered
+    listed=$(bash -c '. "$1" && printf "%s\n" "${CS_HOOK_EVENTS[@]}"' _ "$SCRIPT_DIR/../lib/01-manifests.sh" 2>/dev/null | sort)
+    registered=$(awk '$1 == "_merge_cs_hook" && $2 ~ /^[A-Z]/ { print $2 }' "$SCRIPT_DIR/../install.sh.in" | sort -u)
+    [ -n "$registered" ] || { echo "  FAIL: no _merge_cs_hook row found in install.sh.in"; return 1; }
+    assert_eq "$registered" "$listed" "CS_HOOK_EVENTS names the events _register_cs_hooks registers under" || return 1
 }
 
 # ============================================================================
@@ -1903,6 +2273,27 @@ test_web_install_places_nothing_when_a_later_download_breaks() {
     assert_file_not_exists "$home/.claude/hooks/cs/session-start.sh" "no hook was deployed" || return 1
 }
 
+# An installer read from a pipe (curl ... | bash) has no file of its own, so
+# it is the web install wherever it runs: started inside another project that
+# has a bin/cs, it downloads, and never installs that project's files. Here
+# curl and wget both fail, so the download is the step that stops it.
+test_piped_install_is_the_web_install_in_any_directory() {
+    local home="$TEST_TMPDIR/piped-home" proj="$TEST_TMPDIR/someproject" shim="$TEST_TMPDIR/piped-nonet" rc=0 tool
+    mkdir -p "$home/.local/bin" "$proj/bin" "$shim"
+    printf '#!/bin/sh\necho installed cs\n' > "$home/.local/bin/cs"
+    printf '#!/bin/sh\necho another project cs\n' > "$proj/bin/cs"
+    for tool in curl wget; do
+        printf '#!/bin/sh\necho "%s $*" >> "%s/calls"\nexit 7\n' "$tool" "$shim" > "$shim/$tool"
+        chmod +x "$shim/$tool"
+    done
+    (cd "$proj" && HOME="$home" PATH="$shim:$PATH" bash < "$INSTALL_SH") > "$TEST_TMPDIR/piped.out" 2>&1 || rc=$?
+    assert_eq "1" "$rc" "install exit status" || { cat "$TEST_TMPDIR/piped.out"; return 1; }
+    assert_file_contains "$TEST_TMPDIR/piped.out" "^Error: Failed to download bin/cs$" "the web install stops at its first download" || return 1
+    assert_eq "$(printf '#!/bin/sh\necho installed cs')" "$(cat "$home/.local/bin/cs")" "the installed cs is untouched" || return 1
+    assert_eq "curl -fsSL https://raw.githubusercontent.com/hex/claude-sessions/main/bin/cs -o" \
+        "$(sed 's/ [^ ]*$//' "$shim/calls")" "the one network call is the download of bin/cs" || return 1
+}
+
 # Positive control for the two above: the same stub with nothing broken
 # installs every file byte for byte, executables executable.
 test_web_install_deploys_the_payload_from_the_stub() {
@@ -2376,11 +2767,26 @@ run_test test_uninstall_refuses_to_delete_session_data_while_a_dotted_session_is
 run_test test_uninstall_refuses_a_live_session_even_with_a_volume_mounted_inside
 run_test test_install_replaces_a_symlinked_mod_directory
 run_test test_install_keeps_a_mod_directory_linked_at_the_users_files
+run_test test_install_keeps_a_symlinked_skill_directory_and_writes_nothing_through_it
 run_test test_strip_filters_in_sync
 run_test test_install_deploys_hooks_to_cs_subdir
 run_test test_install_migrates_flat_hook_layout
 run_test test_install_writes_version_stamp
 run_test test_uninstall_strips_hook_registrations
+run_test test_install_and_uninstall_keep_a_flat_shape_hook_entry
+run_test test_install_and_uninstall_keep_a_hooks_false_entry
+run_test test_install_and_uninstall_keep_a_hooks_object_entry
+run_test test_install_and_uninstall_keep_a_hooks_string_entry
+run_test test_install_and_uninstall_keep_every_hooks_shape_in_order
+run_test test_install_and_uninstall_keep_every_hooks_shape_in_an_event_cs_registers_nothing_under
+run_test test_install_and_uninstall_keep_hooks_list_elements_that_are_not_objects
+run_test test_install_and_uninstall_keep_event_entries_that_are_not_objects
+run_test test_install_takes_its_registration_out_of_a_hooks_list_holding_a_string
+run_test test_uninstall_strips_cs_beside_entries_that_are_not_objects
+run_test test_install_refuses_an_event_cs_registers_that_is_not_a_list
+run_test test_install_and_uninstall_keep_events_that_are_not_lists
+run_test test_uninstall_leaves_an_event_that_is_not_a_list
+run_test test_hook_events_list_matches_the_registration_table
 run_test test_install_deploys_statusline_binary
 run_test test_install_deploys_subagent_statusline_binary
 run_test test_install_skips_statusline_noninteractive
@@ -2397,6 +2803,7 @@ run_test test_uninstall_removes_leftover_cs_tui_exe
 run_test test_web_install_keeps_the_installed_cs_when_its_download_breaks
 run_test test_web_install_places_nothing_when_a_later_download_breaks
 run_test test_web_install_deploys_the_payload_from_the_stub
+run_test test_piped_install_is_the_web_install_in_any_directory
 run_test test_web_install_refuses_a_payload_file_that_does_not_match
 run_test test_web_install_skips_a_completion_that_does_not_match
 run_test test_build_embeds_the_sha256_of_every_payload_file
@@ -2883,6 +3290,13 @@ run_test test_a_retired_hook_known_by_its_record_survives_a_run_without_jq
 run_test test_a_retired_hook_replaced_during_a_question_is_kept
 run_test test_a_retired_hook_replaced_by_a_link_to_a_device_is_kept_unread
 run_test test_install_removes_the_mod_under_its_old_name
+run_test test_install_and_uninstall_remove_retired_commands_cs_wrote
+run_test test_install_and_uninstall_refuse_a_retired_command_with_a_path
+run_test test_install_and_uninstall_refuse_a_retired_command_that_names_no_file
+run_test test_install_and_uninstall_refuse_a_retired_hook_with_a_path
+run_test test_install_and_uninstall_refuse_a_retired_hook_that_names_no_file
+run_test test_install_and_uninstall_refuse_a_retired_skill_with_a_path
+run_test test_install_and_uninstall_refuse_a_retired_skill_that_names_no_directory
 run_test test_rotate_wrap_keys_yes_creates_the_file_with_only_cs_block
 run_test test_rotate_wrap_keys_merge_into_the_existing_global_block
 run_test test_rotate_wrap_keys_never_overwrite_a_user_binding
