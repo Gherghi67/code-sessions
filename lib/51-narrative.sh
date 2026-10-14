@@ -200,10 +200,10 @@ rotate_narrative() {
         # The commit carries an explicit pathspec: rotation runs inside the
         # user's own checkout — an adopted session IS their project repo — and a
         # bare `git commit` would sweep whatever they had staged into a commit
-        # titled "cs: rotate narrative". The `add` still runs first so the newly
+        # titled "session: rotate narrative". The `add` still runs first so the newly
         # written chunk is known to git and the pathspec can match it.
         if ! { git -C "$session_dir" add -- "$live" "$chunk" \
-            && git -C "$session_dir" commit -q -m "cs: rotate narrative.$actor ($sections sections -> narrative-archive)" -- "$live" "$chunk"; } 2>/dev/null; then
+            && git -C "$session_dir" commit -q -m "session: rotate narrative.$actor ($sections sections -> narrative-archive)" -- "$live" "$chunk"; } 2>/dev/null; then
             # Naming a pathspec makes this a PARTIAL commit, which git refuses
             # outright mid-merge — a state the old bare commit committed
             # straight through. Refusing is the safer half of that trade; the
