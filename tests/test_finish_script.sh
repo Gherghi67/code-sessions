@@ -526,6 +526,61 @@ test_report_refuses_a_submodule_bump_diff_config_ignores() {
     assert_eq "mod" "$(key "$out" retire_differs)" "and the submodule is named" || return 1
 }
 
+# A base session and its worktree on cs/fix-auth, both plain git: the report
+# reads only their trees, so no cs launch.
+plain_fixture() {
+    create_test_session_with_git myproj > /dev/null
+    git -C "$CS_SESSIONS_ROOT/myproj" worktree add -q -b cs/fix-auth "$CS_SESSIONS_ROOT/myproj@fix-auth"
+}
+
+# The branch adds one file named <name>; the base adds the same name with
+# other content. Prints the captured sha.
+one_name_differs_fixture() {  # name
+    local base="$CS_SESSIONS_ROOT/myproj" wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    plain_fixture
+    (cd "$wt" && printf 'branch\n' > "$1" && git add -A && git commit -q -m "branch")
+    (cd "$base" && printf 'base\n' > "$1" && git add -A && git commit -q -m "base")
+    git -C "$wt" rev-parse HEAD
+}
+
+# A path name is a name, never a pathspec: `:(glob)zz` names a file, and the
+# base holding that file differently is a refusal.
+test_report_refuses_a_pathspec_magic_name_the_base_holds_differently() {
+    local sha out
+    sha=$(one_name_differs_fixture ':(glob)zz')
+    out=$(report_for myproj fix-auth "$sha")
+    assert_eq "not-landed" "$(key "$out" retire)" "the file differs on the base" || return 1
+    assert_eq "1 of 1" "$(key "$out" retire_paths_differing)" "the one path differs" || return 1
+    assert_eq ":(glob)zz" "$(key "$out" retire_differs)" "and is named as it is" || return 1
+}
+
+# A newline inside a name is one path, never two: the refusal names it once,
+# in git's quoted form.
+test_report_refuses_a_newline_name_the_base_holds_differently() {
+    local sha out
+    sha=$(one_name_differs_fixture $'nl\nname')
+    out=$(report_for myproj fix-auth "$sha")
+    assert_eq "not-landed" "$(key "$out" retire)" "the file differs on the base" || return 1
+    assert_eq "1 of 1" "$(key "$out" retire_paths_differing)" "the one path differs" || return 1
+    assert_eq '"nl\nname"' "$(printf '%s\n' "$out" | sed -n 's/^retire_differs: //p')" "and is named once, quoted" || return 1
+}
+
+# A capture that shares no history with the base has no "what the branch
+# changed" to compare, so nothing vouches for it.
+test_report_refuses_a_capture_with_no_merge_base() {
+    local sha tree out wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    plain_fixture
+    (cd "$wt" && echo orphan > orphan.txt && git add orphan.txt)
+    tree=$(git -C "$wt" write-tree)
+    sha=$(git -C "$wt" commit-tree -m orphan "$tree")
+    git -C "$wt" reset -q --hard "$sha"
+    out=$(report_for myproj fix-auth "$sha")
+    assert_eq "no" "$(key "$out" landed)" "the capture is not an ancestor" || return 1
+    assert_eq "not-landed" "$(key "$out" retire)" "no merge base is not landed" || return 1
+    assert_output_not_contains "$out" "retire_paths" "no path counts" || return 1
+    assert_output_not_contains "$out" "retire_differs" "and no path names" || return 1
+}
+
 run_test test_prepare_in_feature_session_hands_off
 run_test test_prepare_in_base_captures_sha_branch_and_dirt
 run_test test_prepare_in_a_plain_checkout_says_so
@@ -640,5 +695,8 @@ run_test test_report_names_at_most_ten_differing_paths
 run_test test_report_content_landed_waits_for_commits_after_the_capture
 run_test test_report_refuses_a_submodule_bump_gitmodules_ignores
 run_test test_report_refuses_a_submodule_bump_diff_config_ignores
+run_test test_report_refuses_a_pathspec_magic_name_the_base_holds_differently
+run_test test_report_refuses_a_newline_name_the_base_holds_differently
+run_test test_report_refuses_a_capture_with_no_merge_base
 
 report_results
