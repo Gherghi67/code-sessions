@@ -683,6 +683,41 @@ test_report_says_error_when_the_content_check_stops_without_one() {
     assert_output_not_contains "$out" "retire:" "with no retire line" || return 1
 }
 
+# The content check compares the capture with the base_head the report
+# prints, whatever the base commits while it runs. The branch has a=1 b=1,
+# the base a=1 b=2, so b differs. A git stand-in commits a=9 b=1 on the base
+# just before git lists the differing names as it quotes them; that later
+# commit must not make the report name a.
+test_report_checks_the_base_head_it_prints_while_the_base_moves() {
+    local sha head out realgit base="$CS_SESSIONS_ROOT/myproj" wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    plain_fixture
+    (cd "$wt" && echo 1 > a && echo 1 > b && git add a b && git commit -q -m "a and b")
+    sha=$(git -C "$wt" rev-parse HEAD)
+    (cd "$base" && echo 1 > a && echo 2 > b && git add a b && git commit -q -m "a, and b otherwise")
+    head=$(git -C "$base" rev-parse HEAD)
+    realgit=$(command -v git)
+    mkdir -p "$TEST_TMPDIR/racebin"
+    cat > "$TEST_TMPDIR/racebin/git" << SHIM
+#!/bin/sh
+case " \$* " in
+    *" -z "*) ;;
+    *" diff "*" --name-only $sha "*)
+        if [ ! -e "$TEST_TMPDIR/raced" ]; then
+            : > "$TEST_TMPDIR/raced"
+            (cd "$base" && echo 9 > a && echo 1 > b && "$realgit" commit -q -am "race") || exit 99
+        fi ;;
+esac
+exec "$realgit" "\$@"
+SHIM
+    chmod +x "$TEST_TMPDIR/racebin/git"
+    out=$(PATH="$TEST_TMPDIR/racebin:$PATH" report_for myproj fix-auth "$sha")
+    assert_eq "9" "$(git -C "$base" show HEAD:a)" "the base committed during the check" || return 1
+    assert_eq "$head" "$(key "$out" base_head)" "the report prints the base_head from before it" || return 1
+    assert_eq "not-landed" "$(key "$out" retire)" "b differs on that base_head" || return 1
+    assert_eq "1 of 2" "$(key "$out" retire_paths_differing)" "one of a and b differs" || return 1
+    assert_eq "b" "$(printf '%s\n' "$out" | sed -n 's/^retire_differs: //p')" "and it is b, not a" || return 1
+}
+
 # A content check that succeeds without counting the paths it checked has
 # vouched for nothing: here perl exits 0 and prints nothing.
 test_report_says_error_when_the_content_check_counts_no_paths() {
@@ -823,6 +858,7 @@ run_test test_report_says_error_when_the_worktree_is_not_a_git_checkout
 run_test test_report_checks_more_path_bytes_than_a_command_line_holds
 run_test test_report_names_a_non_utf8_path_under_a_utf8_locale
 run_test test_report_says_error_when_the_content_check_stops_without_one
+run_test test_report_checks_the_base_head_it_prints_while_the_base_moves
 run_test test_report_says_error_when_the_content_check_counts_no_paths
 
 report_results
