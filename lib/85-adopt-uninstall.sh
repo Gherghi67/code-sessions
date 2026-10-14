@@ -419,8 +419,10 @@ _append_exclude_once() {  # exclude_file, entry...
 }
 
 # The .cs/ skeleton for a Claude Code worktree adopted as a session. Not
-# create_session_structure: that commits into the checkout, and the checkout
-# is a live PR branch. Not bootstrap_worktree_meta: its README names a base
+# create_session_structure: its README takes the directory's name as the
+# session's and asks for the Environment a new session works in, where an
+# adopted worktree's session is <repo>.<worktree> and its README names the
+# worktree it came from. Not bootstrap_worktree_meta: its README names a base
 # session and a cs/<task> branch, which an adopted worktree has neither of.
 _bootstrap_adopted_worktree_meta() {  # wt_dir, session_name
     local wt_dir="$1" session_name="$2"

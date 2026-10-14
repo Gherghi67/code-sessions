@@ -467,7 +467,7 @@ migrate_mailbox() {  # session_dir
 }
 
 # Check if session needs migration from flat layout to .cs/ directory. The
-# migration moves README.md, rewrites .gitignore and commits, so it needs proof
+# migration moves README.md and rewrites .gitignore, so it needs proof
 # the directory is a cs session, not just a logs/ dir any project can have:
 # every flat-layout session cs created opened logs/session.log with the line
 # "Claude Code Session Log".
@@ -963,8 +963,9 @@ migrate_session() {
     if [ "$tracked_tree_is_ours" = 1 ] && [ "$repair" = all ]; then
         setup_merge_attributes "$session_dir"
         ensure_cs_gitignore_entries "$session_dir"
-        # The one caller that leaves the appended rules uncommitted, so the
-        # one that says what they are.
+        # Names the rules just appended to a tracked .gitignore. Adopt merges
+        # the same rules and names .gitignore in its own line of what it left
+        # (_explain_nothing_committed) instead.
         _explain_gitignore_additions "$session_dir"
     fi
 

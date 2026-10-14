@@ -7111,7 +7111,7 @@ migrate_mailbox() {  # session_dir
 }
 
 # Check if session needs migration from flat layout to .cs/ directory. The
-# migration moves README.md, rewrites .gitignore and commits, so it needs proof
+# migration moves README.md and rewrites .gitignore, so it needs proof
 # the directory is a cs session, not just a logs/ dir any project can have:
 # every flat-layout session cs created opened logs/session.log with the line
 # "Claude Code Session Log".
@@ -7607,8 +7607,9 @@ migrate_session() {
     if [ "$tracked_tree_is_ours" = 1 ] && [ "$repair" = all ]; then
         setup_merge_attributes "$session_dir"
         ensure_cs_gitignore_entries "$session_dir"
-        # The one caller that leaves the appended rules uncommitted, so the
-        # one that says what they are.
+        # Names the rules just appended to a tracked .gitignore. Adopt merges
+        # the same rules and names .gitignore in its own line of what it left
+        # (_explain_nothing_committed) instead.
         _explain_gitignore_additions "$session_dir"
     fi
 
@@ -14232,8 +14233,10 @@ _append_exclude_once() {  # exclude_file, entry...
 }
 
 # The .cs/ skeleton for a Claude Code worktree adopted as a session. Not
-# create_session_structure: that commits into the checkout, and the checkout
-# is a live PR branch. Not bootstrap_worktree_meta: its README names a base
+# create_session_structure: its README takes the directory's name as the
+# session's and asks for the Environment a new session works in, where an
+# adopted worktree's session is <repo>.<worktree> and its README names the
+# worktree it came from. Not bootstrap_worktree_meta: its README names a base
 # session and a cs/<task> branch, which an adopted worktree has neither of.
 _bootstrap_adopted_worktree_meta() {  # wt_dir, session_name
     local wt_dir="$1" session_name="$2"
