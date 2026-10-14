@@ -581,6 +581,28 @@ test_report_refuses_a_capture_with_no_merge_base() {
     assert_output_not_contains "$out" "retire_differs" "and no path names" || return 1
 }
 
+# A branch whose changed path names add up to more bytes than one command
+# line holds (ARG_MAX, measured here) is checked like any other. The paths
+# are about 490 bytes each and live only in the index and the commits, never
+# on disk; both sides get the same ones, so the content landed.
+test_report_checks_more_path_bytes_than_a_command_line_holds() {
+    local sha out n blob dir base="$CS_SESSIONS_ROOT/myproj" wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    plain_fixture
+    n=$(( $(getconf ARG_MAX) / 400 ))
+    blob=$(printf 'same\n' | git -C "$wt" hash-object -w --stdin)
+    dir="$(printf '%0240d' 0 | tr 0 d)/$(printf '%0240d' 0 | tr 0 e)"
+    awk -v n="$n" -v b="$blob" -v d="$dir" \
+        'BEGIN { for (i = 1; i <= n; i++) printf "100644 %s\t%s/f%06d\n", b, d, i }' > "$TEST_TMPDIR/index-info"
+    git -C "$wt" update-index --index-info < "$TEST_TMPDIR/index-info"
+    git -C "$wt" commit -q -m "many paths"
+    sha=$(git -C "$wt" rev-parse HEAD)
+    git -C "$base" update-index --index-info < "$TEST_TMPDIR/index-info"
+    git -C "$base" commit -q -m "the same paths"
+    out=$(report_for myproj fix-auth "$sha")
+    assert_eq "content-landed" "$(key "$out" retire)" "every path is on the base" || return 1
+    assert_eq "$n" "$(key "$out" retire_paths_checked)" "and every one was checked" || return 1
+}
+
 run_test test_prepare_in_feature_session_hands_off
 run_test test_prepare_in_base_captures_sha_branch_and_dirt
 run_test test_prepare_in_a_plain_checkout_says_so
@@ -698,5 +720,6 @@ run_test test_report_refuses_a_submodule_bump_diff_config_ignores
 run_test test_report_refuses_a_pathspec_magic_name_the_base_holds_differently
 run_test test_report_refuses_a_newline_name_the_base_holds_differently
 run_test test_report_refuses_a_capture_with_no_merge_base
+run_test test_report_checks_more_path_bytes_than_a_command_line_holds
 
 report_results
