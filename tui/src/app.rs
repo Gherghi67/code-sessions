@@ -217,16 +217,25 @@ pub fn fuzzy_match(pattern: &str, text: &str) -> Option<(i32, Vec<usize>)> {
     Some((score, indices))
 }
 
-/// Whether a name is one the `cs` CLI would accept, mirroring bash
-/// validate_session_name: non-empty, not "."/"..", and only ASCII
-/// alphanumerics plus `-` `_` `.`. Keeps TUI-created/renamed sessions openable
-/// by `cs` (Unicode letters or spaces would produce a dir cs rejects).
-pub fn is_valid_session_name(name: &str) -> bool {
-    if name.is_empty() || name == "." || name == ".." {
-        return false;
+/// Why the `cs` CLI would refuse a name, mirroring bash
+/// validate_session_name: empty, "."/"..", a leading dot (cs's own staging
+/// dirs, .spawn and .usage, sit at the sessions root under dot names), a
+/// leading hyphen (`cs -uninstall` runs a verb), or anything but ASCII
+/// alphanumerics plus `-` `_` `.`. None for a name cs accepts. Keeps
+/// TUI-created/renamed sessions openable by `cs` (Unicode letters or spaces
+/// would produce a dir cs rejects).
+pub fn session_name_refusal(name: &str) -> Option<&'static str> {
+    if name.is_empty() {
+        Some("Name cannot be empty")
+    } else if name.starts_with('.') {
+        Some("Invalid name: a session name cannot start with a dot")
+    } else if name.starts_with('-') {
+        Some("Invalid name: a session name cannot start with a hyphen")
+    } else if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.') {
+        Some("Invalid name: use letters, digits, - _ . only")
+    } else {
+        None
     }
-    name.chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1812,11 +1821,8 @@ impl App {
             self.mode = Mode::Normal;
             return Action::None;
         }
-        if !is_valid_session_name(&name) {
-            self.set_status(
-                "Invalid name: use letters, digits, - _ . only",
-                StatusLevel::Error,
-            );
+        if let Some(refusal) = session_name_refusal(&name) {
+            self.set_status(refusal, StatusLevel::Error);
             self.mode = Mode::Normal;
             return Action::None;
         }
@@ -2172,11 +2178,8 @@ impl App {
             self.mode = Mode::Normal;
             return;
         }
-        if !is_valid_session_name(&new_name) {
-            self.set_status(
-                "Invalid name: use letters, digits, - _ . only",
-                StatusLevel::Error,
-            );
+        if let Some(refusal) = session_name_refusal(&new_name) {
+            self.set_status(refusal, StatusLevel::Error);
             self.mode = Mode::Normal;
             return;
         }
@@ -5633,19 +5636,21 @@ mod tests {
     }
 
     #[test]
-    fn is_valid_session_name_matches_cs_rules() {
+    fn session_name_refusal_matches_cs_rules() {
         // Accepted by bash cs validate_session_name.
-        assert!(is_valid_session_name("debug-api"));
-        assert!(is_valid_session_name("v2026.7.4"));
-        assert!(is_valid_session_name("my_session"));
+        assert_eq!(session_name_refusal("debug-api"), None);
+        assert_eq!(session_name_refusal("v2026.7.4"), None);
+        assert_eq!(session_name_refusal("my_session"), None);
         // Rejected — these would produce a dir the cs CLI can't open, or traverse.
-        assert!(!is_valid_session_name(""));
-        assert!(!is_valid_session_name("."));
-        assert!(!is_valid_session_name(".."));
-        assert!(!is_valid_session_name("has space"));
-        assert!(!is_valid_session_name("café")); // non-ASCII letter
-        assert!(!is_valid_session_name("base@task")); // worktree separator
-        assert!(!is_valid_session_name("a/b"));
+        let dot = Some("Invalid name: a session name cannot start with a dot");
+        let chars = Some("Invalid name: use letters, digits, - _ . only");
+        assert_eq!(session_name_refusal(""), Some("Name cannot be empty"));
+        assert_eq!(session_name_refusal("."), dot);
+        assert_eq!(session_name_refusal(".."), dot);
+        assert_eq!(session_name_refusal("has space"), chars);
+        assert_eq!(session_name_refusal("café"), chars); // non-ASCII letter
+        assert_eq!(session_name_refusal("base@task"), chars); // worktree separator
+        assert_eq!(session_name_refusal("a/b"), chars);
     }
 
     #[test]
