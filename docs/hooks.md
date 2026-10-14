@@ -135,9 +135,15 @@ live claude holds nothing, so the lead claims over it. Only a regular file is a 
 a hook never follows a link in its place and writes neither through a link nor over
 a directory there, silently. A launch removes a link there; it refuses to open while
 a directory sits there, and names it, since cs does not remove a directory it did not
-make. The lead's `SessionEnd` removes the claim with the lock. A context-limit fork,
-an in-process `/clear` and a compaction keep the process, and the next start renews
-the claim under the conversation now running.
+make. The lead's `SessionEnd` leaves the claim in place. Claude Code runs
+`SessionEnd` hooks while the lead still lives, and a claude another `SessionEnd`
+hook starts then (a `claude -p` that summarises the session) finds the claim naming
+a live claude it did not start, gives way and shows as a guest, so it neither
+rebinds the recorded conversation nor takes an armed rotation. Once the lead has exited the claim names
+no live claude and holds nothing, and a claude its hooks left running is no longer
+under the launch pid, so it cannot claim either; the next launch removes the file. A
+context-limit fork, an in-process `/clear` and a compaction keep the process, and the
+next start renews the claim under the conversation now running.
 
 The hooks take the first claude under the launch to claim for the lead, and that sets
 the contract for a `CLAUDE_CODE_BIN` wrapper: it must `exec` claude, or start exactly
@@ -160,7 +166,14 @@ queue digest nor the attention flag. On the resume arm, or behind a
 rebinds the recorded conversation or removes the lock at its end, a `/clear` loads
 no rotation, the digest stays unread, and its `Stop` raises no attention flag and
 bounces no dock. An armed rotation stays armed and unconsumed, so the next
-`cs <name>` offers it.
+`cs <name>` offers it. Its hooks do none of the lead's other work either: its `Stop`
+runs no queue drain, no mail wake and no rotation nudge and gives no narrative
+reminder, and no hook arms the mailbox watch that wakes it when mail arrives. Its
+`SessionStart` sets no tab title (the tmux window or the terminal tab), and its
+`SessionEnd` does not hand the tmux window back. Behind a forking `CLAUDE_CODE_BIN`
+on a launch where claude replaces cs, an encrypted session's vault stays attached
+when the lead ends, until the next open detaches it; on the resume arm cs, still
+claude's parent, detaches it when claude exits.
 
 A claude under the launch that the claim does not name is a guest. A hook *shows*
 it to be one (`cs_is_shown_nested_child`) when the claim names another claude that
@@ -276,7 +289,7 @@ Runs when Claude Code session ends:
 - Logs session end time and the end reason Claude Code sends (`clear`, `resume`, `logout`, `prompt_input_exit` or `other`; `missing` when the payload has none) and appends an `ended` event to `.cs/timeline.jsonl`
 - Deletes only the ending conversation's own shadow ref (`refs/worktree/cs/session/<conversation-uuid>`); a concurrent sibling's ref is left untouched
 - Cleans up `.cs/session.lock`, but only one this launch owns. Only `cs` writes a lock, so a hook that resolved by walking the directory belongs to another front end: closing a desktop conversation on a directory a CLI session is live in would otherwise strip that session's lock, letting `cs <name>` open a duplicate with no collision menu. A walked-in hook still clears a lock whose process is gone, so a crashed session is never left locked out. A `/clear` or `/resume` keeps the lock, because the claude that holds it keeps running
-- Removes the lead's claim (`.cs/local/lead-pid`) on the same terms the lock goes: the launched conversation's end, never a `/clear` or `/resume` and never another claude's, and only a claim that names the ending claude
+- Leaves the lead's claim (`.cs/local/lead-pid`) in place, even at the launched conversation's end: this hook runs while the lead still lives, and the claim keeps a claude that another `SessionEnd` hook starts then a guest. The next launch removes it
 - For a session `cs -encrypt` built (`.cs/local/vault` names its container), an end other than `/clear` or `/resume` in the launched conversation leaves a background waiter (`.cs/local/vault-waiter.pid`). Once that Claude Code exits, the waiter detaches the vault with a plain `hdiutil detach` (`.cs/local/vault-detach.pid` while it runs), unless the session reopened or a pid in `.cs/local/vault-holders` is still alive. See [Encrypting a session with cs -encrypt](session-layout.md#encrypting-a-session-with-cs--encrypt)
 - Regenerates the sessions index (`<sessions-root>/index.md`) — a table of every session's status, objective, and created date. Written only where sessions actually live: the session's own directory must sit under the sessions root, compared physically on both sides so a `$HOME` reached through a symlink still matches. An adopted session, whose directory is an unrelated project path, writes no index beside that project
 - Inside tmux, for the launched conversation only (`cs_is_lead`): releases this pane's `@cs_session` and renames the window, and the iTerm tab, after the cs sessions still running there; with none left the window names itself again (`automatic-rename on`). A `claude -p` run inside the session inherits `TMUX_PANE`, so without the lead check its end would release the lead's claim. A `/clear` ends here too, and its SessionStart claims the pane back. If cs's launch exits without reaching claude (a cancelled resume prompt), its cleanup trap releases the pane the same way
