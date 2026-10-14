@@ -5070,4 +5070,85 @@ mod tests {
         assert!(rows.iter().any(|r| r.starts_with("[y] Confirm")), "the key hint stays on screen: {rows:?}");
         std::fs::remove_dir_all(&root).ok();
     }
+
+    // An entry takes one row whatever its length: a path wider than the
+    // popup is shortened in the middle, so the grant and the key hint under
+    // the list stay on screen. At 120 columns the popup holds 58, which
+    // leaves a directory 43 beside "(3 files)".
+    #[test]
+    fn delete_confirm_shortens_a_long_path_to_one_row() {
+        let root = std::env::temp_dir().join(format!("cs-ui-del-long-{}", std::process::id()));
+        let wt = worktree_session(&root);
+        let components =
+            ["accordion", "breadcrumb", "date-picker", "dropdown-menu", "navigation-menu", "pagination", "tooltip"];
+        for name in components {
+            let dir = wt.join("src/lib/components").join(name);
+            std::fs::create_dir_all(dir.join("__screenshots__")).unwrap();
+            std::fs::write(dir.join("index.ts"), "export {}").unwrap();
+        }
+        git_in(&wt, &["add", "src/lib"]);
+        git_in(&wt, &["commit", "-qm", "components"]);
+        for name in components {
+            for shot in ["a.png", "b.png", "c.png"] {
+                std::fs::write(wt.join("src/lib/components").join(name).join("__screenshots__").join(shot), "").unwrap();
+            }
+        }
+
+        let rows = delete_confirm_rows(&root, 120, 40, "Also deletes");
+
+        assert_eq!(
+            rows[..10],
+            [
+                "Also deletes 21 files git does not track:",
+                "    src/lib/components/ac…dion/__screenshots__/  (3 files)",
+                "    src/lib/components/br…rumb/__screenshots__/  (3 files)",
+                "    src/lib/components/da…cker/__screenshots__/  (3 files)",
+                "    src/lib/components/dr…menu/__screenshots__/  (3 files)",
+                "    src/lib/components/na…menu/__screenshots__/  (3 files)",
+                "    src/lib/components/pa…tion/__screenshots__/  (3 files)",
+                "    src/lib/components/tooltip/__screenshots__/  (3 files)",
+                "",
+                "[D] Delete those files too: no",
+            ]
+        );
+        assert!(rows[11].starts_with("[y] Confirm"), "the key hint stays on screen: {rows:?}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    // A path is measured in the columns it takes on screen, where a wide
+    // character takes two: a file gets the popup's 58 columns less the
+    // indent, a directory what "(1 file)" leaves of them.
+    #[test]
+    fn delete_confirm_shortens_by_the_columns_a_path_takes() {
+        use unicode_width::UnicodeWidthChar;
+        let root = std::env::temp_dir().join(format!("cs-ui-del-wide-{}", std::process::id()));
+        let wt = worktree_session(&root);
+        let wide = "一二三四五六七八九十一二三四五六七八九十";
+        std::fs::create_dir_all(wt.join("src").join(wide)).unwrap();
+        std::fs::write(wt.join("src").join(wide).join("a.png"), "").unwrap();
+        std::fs::write(
+            wt.join("src/a-component-with-a-very-long-descriptive-name-that-keeps-going.stories.ts"),
+            "",
+        )
+        .unwrap();
+        // The screen holds a wide character in one cell and a blank in the next.
+        let on_screen = |text: &str| -> String {
+            text.chars().flat_map(|c| if c.width() == Some(2) { vec![c, ' '] } else { vec![c] }).collect()
+        };
+
+        let rows = delete_confirm_rows(&root, 120, 40, "Also deletes");
+
+        assert_eq!(
+            rows[..5],
+            [
+                "Also deletes 2 files git does not track:".to_string(),
+                "    src/a-component-with-a-very…hat-keeps-going.stories.ts".to_string(),
+                on_screen("    src/一二三四五六七八九…一二三四五六七八九十/  (1 file)"),
+                String::new(),
+                "[D] Delete those files too: no".to_string(),
+            ]
+        );
+        assert!(rows[6].starts_with("[y] Confirm"), "the key hint stays on screen: {rows:?}");
+        std::fs::remove_dir_all(&root).ok();
+    }
 }
