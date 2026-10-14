@@ -188,6 +188,30 @@ test_a_linked_row_refuses_the_run() {
     assert_eq "{}" "$(cat "$TEST_TMPDIR/elsewhere.json")" "the link's target is untouched" || return 1
 }
 
+# Claude Code makes the store as a directory. One that is a link (live or
+# dangling) is a layout cs was not written for, and its rows are left where
+# they are.
+test_a_linked_store_refuses_the_run() {
+    _row 1 completed "One"
+    _row 2 pending "Two"
+    mv "$STORE" "$TEST_TMPDIR/elsewhere"
+    ln -s "$TEST_TMPDIR/elsewhere" "$STORE"
+    _agree || return 1
+    local out rc=0
+    out=$("$CS_BIN" -archive-tasks run 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the run fails" || return 1
+    assert_eq "Error: refusing to archive: $STORE is a link, not the task store directory Claude Code makes; nothing archived" \
+        "$out" "the link is named" || return 1
+    assert_eq "1.json 2.json" "$(ls "$TEST_TMPDIR/elsewhere" | tr '\n' ' ' | sed 's/ $//')" "every row stays where it is" || return 1
+    assert_not_exists "$SESSION_DIR/.cs/task-archive" "nothing is written to the archive" || return 1
+    rm -rf "$TEST_TMPDIR/elsewhere"
+    rc=0
+    out=$("$CS_BIN" -archive-tasks plan 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a dangling link refuses too" || return 1
+    assert_eq "Error: refusing to archive: $STORE is a link, not the task store directory Claude Code makes; nothing archived" \
+        "$out" "the dangling link is named" || return 1
+}
+
 # Every row is checked against the schema Claude Code's own reader enforces
 # (2.1.299): id (matching the file name), subject and description strings, a
 # known status, blocks and blockedBy arrays of ids, and, when present, an
@@ -622,6 +646,7 @@ run_test test_nothing_to_archive_says_so_and_writes_nothing
 run_test test_an_unknown_file_in_the_store_refuses_the_run
 run_test test_a_directory_in_the_store_refuses_the_run
 run_test test_a_linked_row_refuses_the_run
+run_test test_a_linked_store_refuses_the_run
 run_test test_a_row_outside_the_task_schema_refuses_the_run
 run_test test_a_row_with_every_optional_field_archives
 run_test test_a_held_lock_refuses_the_run
