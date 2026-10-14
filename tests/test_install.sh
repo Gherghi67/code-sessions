@@ -2603,6 +2603,47 @@ test_install_record_holds_what_a_partial_install_placed() {
     assert_file_contains "$record" "^$zeros  \.claude/skills/rotate/SKILL\.md$" "a file never reached keeps its line" || return 1
 }
 
+# A release's files under ~/.claude stay cs's when the install record is
+# gone, because the release build (build.sh --add-release-hashes) adds their
+# sha256s to CS_KNOWN_SHA256. A scratch checkout whose every such file
+# differs from this checkout's is built as a release and installed;
+# ~/.claude/hooks/cs, the record with it, is deleted by hand; the next
+# checkout, every such file changed again, is installed over it and replaces
+# each one. hooks/cs-shared.sh is built from lib/, so it is not changed.
+test_install_replaces_a_releases_files_after_its_record_is_deleted() {
+    local repo="$TEST_TMPDIR/release-repo" home="$TEST_TMPDIR/release-home"
+    local files="$TEST_TMPDIR/release-files" out rc=0 rel dest
+    _copy_build_inputs "$repo"
+    ( . "$repo/lib/01-manifests.sh"; _cs_payload_files ) | grep -v '^bin/' > "$files"
+    while IFS= read -r rel; do
+        [ "$rel" = hooks/cs-shared.sh ] || printf '\n' >> "$repo/$rel"
+    done < "$files"
+    (cd "$repo" && bash build.sh --add-release-hashes > /dev/null) || { echo "  FAIL: the release build failed"; return 1; }
+    mkdir -p "$home"
+    HOME="$home" bash "$repo/install.sh" > "$TEST_TMPDIR/release-first.out" 2>&1 < /dev/null \
+        || { cat "$TEST_TMPDIR/release-first.out"; echo "  FAIL: the release install failed"; return 1; }
+    assert_file_exists "$home/.claude/hooks/cs/.installed" "the release install writes its record" || return 1
+    rm -rf "$home/.claude/hooks/cs"
+    while IFS= read -r rel; do
+        [ "$rel" = hooks/cs-shared.sh ] || printf '\n' >> "$repo/$rel"
+    done < "$files"
+    (cd "$repo" && bash build.sh > /dev/null) || { echo "  FAIL: the next build failed"; return 1; }
+    out=$(HOME="$home" bash "$repo/install.sh" 2>&1 < /dev/null) || rc=$?
+    assert_eq "0" "$rc" "the next install's exit status" || { echo "$out"; return 1; }
+    assert_eq "0" "$(printf '%s\n' "$out" | grep -c 'Kept ')" "the next install keeps no file" \
+        || { printf '%s\n' "$out" | grep 'Kept '; return 1; }
+    while IFS= read -r rel; do
+        case "$rel" in
+            hooks/*) dest=".claude/hooks/cs/${rel#hooks/}" ;;
+            commands/*) dest=".claude/commands/${rel#commands/}" ;;
+            skills/*) dest=".claude/skills/${rel#skills/}" ;;
+            mods/*) dest=".claude/skills/${rel#mods/}" ;;
+            *) echo "  FAIL: no destination under ~/.claude for $rel"; return 1 ;;
+        esac
+        cmp -s "$repo/$rel" "$home/$dest" || { echo "  FAIL: ~/$dest is not the next checkout's $rel"; return 1; }
+    done < "$files"
+}
+
 # Uninstall removes what cs installed and nothing that only shares its name:
 # a user's command, a user's skill, and a user's file inside a cs mod.
 test_uninstall_removes_only_files_cs_wrote() {
@@ -2817,6 +2858,7 @@ run_test test_install_never_sources_a_kept_deployed_cs_shared
 run_test test_install_replaces_files_cs_wrote_without_a_record
 run_test test_install_follows_its_record
 run_test test_install_record_holds_what_a_partial_install_placed
+run_test test_install_replaces_a_releases_files_after_its_record_is_deleted
 run_test test_uninstall_removes_only_files_cs_wrote
 run_test test_uninstall_removes_subagent_statusline
 test_hook_registration_doc_matches_install() {
