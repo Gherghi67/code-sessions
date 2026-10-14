@@ -4643,4 +4643,121 @@ run_test test_import_file_allow_unsigned_still_skips_a_bad_signature
 run_test test_import_file_refuses_a_named_file_that_is_not_trusted
 run_test test_import_file_without_ssh_keygen_skips_signed_files_by_name
 
+# --- A session writing another session's secrets while that one is live ---
+#
+# A conversation inside one session changes another session's secrets only
+# while that session's claude is not running. Features share their base's
+# secrets, so a feature writes its base's freely; reads and a plain terminal
+# are never refused.
+
+# receiver, a session holding API_KEY=v1, whose lock a live process holds.
+# Sets RECEIVER_PID; _stop_receiver ends it.
+_live_receiver() {
+    mkdir -p "$CS_SESSIONS_ROOT/receiver/.cs"
+    printf 'v1' | CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" set API_KEY >/dev/null 2>&1 \
+        || { echo "  FAIL: could not seed receiver's secret"; return 1; }
+    sleep 300 &
+    RECEIVER_PID=$!
+    echo "$RECEIVER_PID" > "$CS_SESSIONS_ROOT/receiver/.cs/session.lock"
+}
+_stop_receiver() {
+    kill "$RECEIVER_PID" 2>/dev/null; wait "$RECEIVER_PID" 2>/dev/null
+    return 0
+}
+_receiver_refusal() {  # caller
+    printf 'Error: session %s cannot change the secrets of session receiver while it is live (pid %s); --force does not override that from another session. Close receiver first.' "$1" "$RECEIVER_PID"
+}
+
+test_secrets_delete_of_a_live_other_session_is_refused_on_every_route() {
+    _live_receiver || return 1
+    local route out rc
+    for route in named session-flag direct; do
+        rc=0
+        case "$route" in
+            named) out=$(CLAUDE_SESSION_NAME=sender "$CS_BIN" receiver -secrets delete API_KEY </dev/null 2>&1) || rc=$? ;;
+            session-flag) out=$(CLAUDE_SESSION_NAME=sender "$CS_BIN" -secrets --session receiver delete API_KEY </dev/null 2>&1) || rc=$? ;;
+            direct) out=$(CLAUDE_SESSION_NAME=sender "$CS_SECRETS_BIN" -s receiver delete API_KEY </dev/null 2>&1) || rc=$? ;;
+        esac
+        assert_eq "1" "$rc" "the $route delete exits 1" || { _stop_receiver; return 1; }
+        assert_eq "$(_receiver_refusal sender)" "$out" "the $route refusal names both sessions" || { _stop_receiver; return 1; }
+    done
+    out=$(CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" get API_KEY 2>&1)
+    _stop_receiver
+    assert_eq "v1" "$out" "receiver's secret survives" || return 1
+}
+
+test_secrets_every_writing_command_is_refused_for_a_live_other_session() {
+    _live_receiver || return 1
+    local cmd out rc
+    local cmds=("set NEW_KEY" "store NEW_KEY" "delete API_KEY" "rm API_KEY" "purge" "rename moved" \
+        "import-file" "import-file --replace" "migrate" "migrate --redact" \
+        "migrate-backend keychain" "migrate-backend keychain --delete-source" "export-file" \
+        "age add age1example" "age remove alice" "age rm alice")
+    for cmd in "${cmds[@]}"; do
+        rc=0
+        # shellcheck disable=SC2086 # each entry carries its own arguments
+        out=$(printf 'v2' | CLAUDE_SESSION_NAME=sender "$CS_SECRETS_BIN" -s receiver $cmd 2>&1) || rc=$?
+        assert_eq "1" "$rc" "$cmd exits 1" || { _stop_receiver; return 1; }
+        assert_eq "$(_receiver_refusal sender)" "$out" "$cmd is refused" || { _stop_receiver; return 1; }
+    done
+    out=$(CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" export 2>&1)
+    _stop_receiver
+    assert_eq "export CS_SECRET_API_KEY=v1" "$out" "receiver's store is as it was" || return 1
+}
+
+test_secrets_reads_of_a_live_other_session_still_work() {
+    _live_receiver || return 1
+    local got listed rc=0
+    got=$(CLAUDE_SESSION_NAME=sender "$CS_SECRETS_BIN" -s receiver get API_KEY 2>&1) || rc=$?
+    listed=$(CLAUDE_SESSION_NAME=sender "$CS_BIN" receiver -secrets list 2>&1) || rc=$?
+    _stop_receiver
+    assert_eq "0" "$rc" "get and list exit 0" || return 1
+    assert_eq "v1" "$got" "get reads the value" || return 1
+    assert_eq "Secrets for session: receiver
+  - API_KEY" "$listed" "list names the secret" || return 1
+}
+
+test_secrets_delete_of_an_idle_other_session_works() {
+    _live_receiver || return 1
+    _stop_receiver
+    CLAUDE_SESSION_NAME=sender "$CS_BIN" receiver -secrets delete API_KEY </dev/null >/dev/null 2>&1 \
+        || { echo "  FAIL: the idle delete was refused"; return 1; }
+    assert_eq "" "$(CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" export 2>&1)" "the secret is gone" || return 1
+}
+
+# A feature's secrets are its base's (the launch exports CS_SECRETS_SESSION),
+# so a feature writes them while the base is open; the base writes its own.
+test_secrets_a_feature_and_its_base_write_the_live_base_secrets() {
+    _live_receiver || return 1
+    local rc=0
+    printf 'v2' | CLAUDE_SESSION_NAME=receiver@feat CS_SECRETS_SESSION=receiver "$CS_SECRETS_BIN" set API_KEY >/dev/null 2>&1 || rc=$?
+    printf 'v3' | CLAUDE_SESSION_NAME=receiver@feat "$CS_BIN" receiver@feat -secrets set OTHER_KEY >/dev/null 2>&1 || rc=$?
+    printf 'v4' | CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" set THIRD_KEY >/dev/null 2>&1 || rc=$?
+    local got
+    got=$(CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" export 2>&1)
+    _stop_receiver
+    assert_eq "0" "$rc" "every write exits 0" || return 1
+    assert_eq "export CS_SECRET_API_KEY=v2
+export CS_SECRET_OTHER_KEY=v3
+export CS_SECRET_THIRD_KEY=v4" "$got" "every write landed in receiver's store" || return 1
+}
+
+test_secrets_delete_from_a_plain_shell_takes_a_live_session() {
+    _live_receiver || return 1
+    local rc=0
+    ( unset CLAUDE_SESSION_NAME; "$CS_BIN" receiver -secrets delete API_KEY </dev/null >/dev/null 2>&1 ) || rc=$?
+    local listed
+    listed=$(CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" export 2>&1)
+    _stop_receiver
+    assert_eq "0" "$rc" "the plain-shell delete exits 0" || return 1
+    assert_eq "" "$listed" "the secret is gone" || return 1
+}
+
+run_test test_secrets_delete_of_a_live_other_session_is_refused_on_every_route
+run_test test_secrets_every_writing_command_is_refused_for_a_live_other_session
+run_test test_secrets_reads_of_a_live_other_session_still_work
+run_test test_secrets_delete_of_an_idle_other_session_works
+run_test test_secrets_a_feature_and_its_base_write_the_live_base_secrets
+run_test test_secrets_delete_from_a_plain_shell_takes_a_live_session
+
 report_results
