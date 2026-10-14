@@ -237,14 +237,14 @@ EOF
 # The rule for committing session files (cs:session-commits section). Single
 # source used by _emit_session_claude_md (new sessions) and migrate_session
 # Phase 15 (existing sessions). Models committed each narrative append and
-# each handoff pass on their own, under subjects they made up; the rule names
-# the commits session files ride in instead.
+# each handoff pass on their own, under subjects they made up; the rule says
+# nothing commits session files unless the user asks.
 _emit_session_commits_block() {
     cat << 'EOF'
 <!-- cs:session-commits -->
 ## Committing session files
 
-Files under `.cs/` (narratives, handoffs, `.cs/README.md`, `.cs/summary.md`, memory entries) never get a commit of their own. They go in with the next handoff commit (the `rotate` skill) or the `/wrap` commit, or with the project change they describe. Uncommitted, they are safe: autosave snapshots every Write and Edit to a shadow ref.
+cs, its skills and its commands never commit files under `.cs/` (narratives, handoffs, `.cs/README.md`, `.cs/summary.md`, memory entries, the task archive), and neither do you on your own: commit them only when the user asks. Uncommitted, they are safe: autosave snapshots every Write and Edit to a shadow ref.
 
 To opt out, delete the prose above but keep the `cs:session-commits` HTML comment as a tombstone — cs treats the sentinel's presence as "managed, do not re-add."
 EOF

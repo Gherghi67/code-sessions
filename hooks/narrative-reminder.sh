@@ -1033,14 +1033,15 @@ cs_write_atomic "$COOLDOWN_FILE" echo "$CURRENT_TIME" || true
 
 # Sessions whose .cs/ is tracked were committing once per narrative append —
 # 328 such commits in one repo, 74 in a single day, burying the project's own
-# history. The session protocol's cs:session-commits section states the rule,
-# and the cadence rides on THIS string as well, because the protocol is read
+# history. The session protocol's cs:session-commits section states the rule
+# (nothing commits files under .cs/ unless the user asks), and it rides on
+# THIS string as well, because the protocol is read
 # once at startup and is a hundred turns stale by the time an append happens;
 # the reminder fires at the append itself. It is
 # unconditional on purpose: testing whether .cs/ is tracked would be cheap here,
 # but the advice is inert rather than wrong where it is gitignored, and a
 # condition the model must evaluate is one it will not.
-COMMIT_CADENCE=" Narrative appends never get a commit of their own: commit them with the next handoff (/rotate) or /wrap commit, or with the project change they describe, never one commit per append. Never push a commit that holds only narrative appends; push them with real changes or when the user asks. Uncommitted appends are safe — autosave snapshots every edit to a shadow ref."
+COMMIT_CADENCE=" Never commit narrative appends or anything else under .cs/ on your own, not even beside a project change: cs and its skills commit none of them, and they are committed only when the user asks. Never push a commit that holds narrative appends unless the user asks. Uncommitted appends are safe — autosave snapshots every edit to a shadow ref."
 
 REASON="Narrative check. Update only your own narrative (run \`cs -whoami\` if unsure which actor you are; never edit a teammate's narrative). Newest on disk is $NARRATIVE_FILE. (1) If recent work disproved or superseded one of your entries, append a dated correction that names it — never rewrite or delete earlier sections. (2) Append any new findings as plain dated notes. If nothing needs changing, say so in one line and stop.${COMMIT_CADENCE}${NARRATIVE_OVER}${ADVISOR_NUDGE}"
 

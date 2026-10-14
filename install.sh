@@ -1269,7 +1269,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "cb0b00f89fd6f2e178595653ccc35588d57075c05e13e8fde899112fecb5a27a  bin/cs"
+    "fbf00ba4c2fecf1af22450e0ec28e393efc299eb6cb489803156a5f86178e080  bin/cs"
     "d54f9dd8797c86d7815f4c1f300a56cf1d4bb344cbcd645ec8f71659d6a70ff6  bin/cs-secrets"
     "a6d008e8bcba4e3d4c1599c76aaddc4ea1c4eb61e3ba861c60d9e4b91f706e78  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -1282,7 +1282,7 @@ CS_PAYLOAD_SHA256=(
     "c96c1affc10329c18531bc54811e155b6156b345ca5be86c9cbdcdde96161a5b  hooks/prompt-rewriter-vendor.sh"
     "de4d1bb258cc1e2888911dd464623f567d2a4370b65dc7c7139ca5a71c4f337f  hooks/session-start.sh"
     "38e1585be0b3fee0cea8c5397d6177b2c67678b270ad2b1cfc191e3b71b6a723  hooks/autosave-commits.sh"
-    "5b4862878e3be0e13cded4b692d8eea3ebed0f19b88d492e9057de54911c66cb  hooks/narrative-reminder.sh"
+    "2c0fbd74114e04940f1da5e4dbf52a438a0ef633f8db059b62fcd72467af7d2c  hooks/narrative-reminder.sh"
     "ad1a2d324ff18dfcdd2e677bfb2630a04cdd21ea6b0ac619891eb7de12e6ce62  hooks/session-end.sh"
     "81a13835a65f4b4b35bb87493da0df9848de68375ca7ab1525d2d5079cf52bf1  hooks/subagent-context.sh"
     "53b16016dd6d087c3cc3db7e4acf8de6629e149e3b7f326f0731b36809574156  hooks/tool-failure-logger.sh"
