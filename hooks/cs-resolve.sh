@@ -154,38 +154,98 @@ _cs_find_session_root() {  # start_dir
     return 1
 }
 
-# True when the claude a hook fires for is the conversation cs launched. cs
-# starts claude two ways: the exec arms replace cs's own process, so claude
-# carries cs's pid; the resume arm runs claude as a child, since it needs the
-# exit status, and there claude's parent is cs. cs says which it did in
-# CS_LEAD_IS_PARENT: 1 on that one resume command, 0 everywhere else. After an
-# exec the launch pid is the lead claude's own, so at 0 the parent is never
-# asked, or a claude started as the lead's direct child would pass for it.
-# A session with no value was started by a cs that did not say; it keeps the
-# rule it was launched under, the parent check, until it is relaunched.
-# Anything else is not the lead: a tmux teammate (tmux starts it, and CS_LEAD_PID is absent from its
-# environment), a `claude -p` run from inside the session (its parent is a
-# shell), a front end that walked in from the directory. Both variables must be
-# non-empty, not merely equal: unset on both sides compares equal. Memoized: a
-# hook may ask more than once, and the resume-arm answer costs a ps fork. A ps
-# that names no parent leaves the answer at "not the lead" and records that
-# nothing was learned, which cs_is_shown_nested_child reads.
+# Which claude is the conversation cs launched. cs exports CS_LEAD_PID, the pid
+# it hands to claude, and Claude Code stamps CLAUDE_PID with the pid of
+# whichever claude fires a hook. The exec arms replace cs with claude, so there
+# the two are equal. The resume arm runs claude as cs's child, since it needs
+# the exit status, and a CLAUDE_CODE_BIN that forks claude (`op run --`, a
+# script without exec) puts claude below the launch pid on any arm. What the
+# lead starts (a mod's process run, a `claude -p` from the Bash tool) is below
+# the launch pid too, and inherits every export, so neither the environment
+# nor the process tree tells the lead from its children.
+#
+# So the lead says so itself. Its SessionStart claims the launch in
+# .cs/local/lead-pid as "<CS_LEAD_PID> <CLAUDE_PID> <session_id>"
+# (cs_lead_claim). The lead's SessionStart runs before the lead can start
+# anything, so the first claude under the launch to claim is the lead, and
+# the claim holds while that claude lives. Every launch clears the file
+# before claude starts (lib/75-launch.sh) and a claim keyed by another launch
+# pid is ignored, so a claim cannot speak for a later launch. The lead's
+# SessionEnd removes it with the lock (cs_lead_release).
+
+# The claim for this launch: sets _CS_CLAIM_PID and returns 0, or returns 1
+# when there is none. A pid that is not a plain number is no claim: kill -0
+# reads -1 as every process the user owns.
+_cs_lead_claim_read() {
+    local launch="" pid=""
+    _CS_CLAIM_PID=""
+    [ -n "${CLAUDE_SESSION_META_DIR:-}" ] && [ -n "${CS_LEAD_PID:-}" ] || return 1
+    { read -r launch pid _ < "$CLAUDE_SESSION_META_DIR/local/lead-pid"; } 2>/dev/null || return 1
+    [ "$launch" = "$CS_LEAD_PID" ] || return 1
+    case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+    _CS_CLAIM_PID="$pid"
+}
+
+# True when <ancestor> is <pid> or above it, by a walk up the parent pids ps
+# reports. A ps that cannot answer ends the walk with false.
+_cs_pid_descends_from() {  # pid ancestor
+    local p="$1" i=0
+    while [ "$i" -lt 16 ]; do
+        [ "$p" = "$2" ] && return 0
+        p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d '[:space:]') || return 1
+        case "$p" in ''|*[!0-9]*) return 1 ;; esac
+        [ "$p" -gt 1 ] || return 1
+        i=$((i + 1))
+    done
+    return 1
+}
+
+# Called by session-start.sh on every source, with the directory the claim is
+# written in (cs_local_dir's, so nothing is written while git tracks it) and
+# the payload's session id. The claude carrying the launch pid always claims.
+# Any other claude claims only from below the launch pid, and only while no
+# live claude holds the claim or the holder is one it started: a claude the
+# lead started before the lead's own SessionStart ran (another plugin's
+# SessionStart hook running `claude -p`) got there first and gives way. The
+# launch pid is above every claude under the launch, so a holder carrying it
+# is never displaced.
+cs_lead_claim() {  # local_dir session_id
+    [ -n "$1" ] && [ -n "${CS_LEAD_PID:-}" ] && [ -n "${CLAUDE_PID:-}" ] || return 1
+    if [ "$CLAUDE_PID" != "$CS_LEAD_PID" ]; then
+        _cs_pid_descends_from "$CLAUDE_PID" "$CS_LEAD_PID" || return 1
+        if _cs_lead_claim_read && [ "$_CS_CLAIM_PID" != "$CLAUDE_PID" ] \
+            && kill -0 "$_CS_CLAIM_PID" 2>/dev/null; then
+            _cs_pid_descends_from "$_CS_CLAIM_PID" "$CLAUDE_PID" || return 1
+        fi
+    fi
+    cs_write_atomic "$1/lead-pid" printf '%s %s %s\n' "$CS_LEAD_PID" "$CLAUDE_PID" "$2" || return 1
+    _CS_IS_LEAD=""
+}
+
+# Removes the claim when it names this claude, so an ending claude never takes
+# another's. session-end.sh calls it where it removes the launch's lock.
+cs_lead_release() {  # local_dir
+    [ -n "$1" ] || return 1
+    _cs_lead_claim_read && [ "$_CS_CLAIM_PID" = "${CLAUDE_PID:-}" ] || return 1
+    rm -f "$1/lead-pid"
+}
+
+# True when the claude a hook fires for is the lead: it carries the launch pid,
+# or the claim for this launch names it. Anything else is not the lead: a tmux
+# teammate (tmux starts it, and CS_LEAD_PID is absent from its environment), a
+# `claude -p` run from inside the session, a front end that walked in from the
+# directory. Both variables must be non-empty, not merely equal: unset on both
+# sides compares equal. Memoized, so a hook that asks more than once gets one
+# answer; cs_lead_claim drops the memo when it writes.
 _CS_IS_LEAD=""
-_CS_PARENT_UNREAD=0
 cs_is_lead() {
     if [ -z "$_CS_IS_LEAD" ]; then
         _CS_IS_LEAD=0
         if [ -n "${CS_LEAD_PID:-}" ] && [ -n "${CLAUDE_PID:-}" ]; then
             if [ "$CLAUDE_PID" = "$CS_LEAD_PID" ]; then
                 _CS_IS_LEAD=1
-            elif [ "${CS_LEAD_IS_PARENT:-}" != 0 ]; then
-                local parent
-                parent=$(ps -o ppid= -p "$CLAUDE_PID" 2>/dev/null | tr -d '[:space:]' || true)
-                if [ -z "$parent" ]; then
-                    _CS_PARENT_UNREAD=1
-                elif [ "$parent" = "$CS_LEAD_PID" ]; then
-                    _CS_IS_LEAD=1
-                fi
+            elif _cs_lead_claim_read && [ "$_CS_CLAIM_PID" = "$CLAUDE_PID" ]; then
+                _CS_IS_LEAD=1
             fi
         fi
     fi
@@ -195,7 +255,7 @@ cs_is_lead() {
 # True for a claude started from inside a cs session that is not the lead: a
 # `claude -p` the lead's Bash tool ran, a plugin, a script. It inherits the
 # exported contract (CS_LEAD_PID among it) so its hooks resolve from the env,
-# yet its pid is neither the launch nor the launch's child. Only the
+# yet its pid is not the launch and the claim does not name it. Only the
 # contract's presence makes this judgement: a front end that walked in, or a
 # session cs did not launch, carries no CS_LEAD_PID and is not a nested child.
 cs_is_nested_child() {
@@ -203,15 +263,17 @@ cs_is_nested_child() {
     ! cs_is_lead
 }
 
-# True when ps named the parent and it is not cs: the claude is shown to be a
-# guest, where cs_is_nested_child only fails to show it is the lead. The two
-# differ when ps cannot answer, and each caller takes the side that loses
-# nothing. What a guest must not take from the lead (the armed rotation, the
-# once-only digest, the attention flag) asks this one, so a resumed lead whose
-# parent cannot be read keeps them. What a guest must not remove (the lock)
-# asks cs_is_nested_child, so the same doubt leaves a live holder's lock.
+# True when a live claude other than this one holds the claim: the claude is
+# shown to be a guest, where cs_is_nested_child only fails to show it is the
+# lead. The two differ where no claim stands (the lead's SessionStart could not
+# write one, or ps could not show it was under the launch), and each caller
+# takes the side that loses nothing. What a guest must not take from the lead
+# (the armed rotation, the once-only digest, the attention flag) asks this
+# one, so a lead with no claim keeps them. What a guest must not remove (the
+# lock) asks cs_is_nested_child, so the same doubt leaves a live holder's lock.
 cs_is_shown_nested_child() {
-    cs_is_nested_child && [ "$_CS_PARENT_UNREAD" != 1 ]
+    cs_is_nested_child || return 1
+    _cs_lead_claim_read && kill -0 "$_CS_CLAIM_PID" 2>/dev/null
 }
 
 # Claude Code launches an agent-team teammate with --agent-id, --agent-name and

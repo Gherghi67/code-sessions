@@ -418,17 +418,20 @@ launch_claude_code() {
     # The pid this shell hands to claude. Every exec arm below replaces this
     # process image, so the launched claude keeps this pid, and Claude Code
     # stamps CLAUDE_PID with the pid of whichever claude fires a hook. Equality
-    # of the two is therefore the test for "this conversation is the one cs
-    # launched" — the session's single claude_session_id slot is its to rebind,
-    # and no other claude's. Identity has to be the process, not the
-    # environment: children inherit every exported variable, so a teammate or a
-    # headless `claude -p` carries this value while owning a different pid.
+    # of the two is one test for "this conversation is the one cs launched" —
+    # the session's single claude_session_id slot is its to rebind, and no
+    # other claude's. Identity has to be the process, not the environment:
+    # children inherit every exported variable, so a teammate or a headless
+    # `claude -p` carries this value while owning a different pid.
     export CS_LEAD_PID=$$
-    # Whether that pid is claude's parent rather than claude itself. Not here:
-    # the arms below exec. The one arm that runs claude as a child says 1 on
-    # its own command. Exported at 0 so that a hook can tell this launch from
-    # one made by a cs that said nothing (cs_is_lead).
-    export CS_LEAD_IS_PARENT=0
+    # The other test is the lead's claim on this launch, which its SessionStart
+    # writes to .cs/local/lead-pid (cs_lead_claim): the resume arm runs claude
+    # as this shell's child, and a CLAUDE_CODE_BIN that forks claude puts it
+    # further below. A claim a previous launch left is keyed by that launch's
+    # pid, which this one may have drawn again, so it goes before claude starts.
+    # After the lock: a launch that met a live session and stopped at the
+    # collision menu never gets here, so it leaves the live lead's claim.
+    rm -f "$session_dir/.cs/local/lead-pid"
 
     # Where this cs is, for the mods: `$.process.run` takes no shell and the
     # claude process's PATH is not this shell's. Set on every launch, so a
@@ -976,13 +979,11 @@ EOF
         # Otherwise claude decides whether the conversation resumes, and cs
         # stays to start a fresh one if it cannot and to detach a vault.
         # CS_LEAD_PID is this shell's pid and claude is its child here, so the
-        # hooks are told to find the lead by its parent (cs_is_lead). Said on
-        # this command alone: every other arm execs, and there a claude whose
-        # parent is the launch pid is the lead's child, not the lead.
+        # hooks know the lead by the claim its SessionStart writes (cs_is_lead).
         SECONDS=0
         local rc=0
         # shellcheck disable=SC2086
-        CS_LEAD_IS_PARENT=1 $CLAUDE_CODE_BIN --name "$session_name" --resume "$resume_id" ${launch_prompt:+"$launch_prompt"} || rc=$?
+        $CLAUDE_CODE_BIN --name "$session_name" --resume "$resume_id" ${launch_prompt:+"$launch_prompt"} || rc=$?
         if [ $rc -ne 0 ] && [ $SECONDS -lt 3 ]; then
             # Quick failure suggests no conversation to continue. Rebind so
             # the fresh transcript claude is about to create is tracked by

@@ -141,7 +141,8 @@ fi
 # A claude started from inside the session (a `claude -p` from the Bash tool,
 # a plugin, a script) inherits the exported contract, so it resolves from the
 # env like the lead; it is not the lead, and its end must not strip the lead's
-# lock either. cs_is_lead tells the two apart by the launch pid.
+# lock either. cs_is_lead tells the two apart by the launch pid and the
+# lead's claim on it.
 # Even the lead removes a live lock only when it names its own launch
 # (CS_LEAD_PID, the pid cs wrote): a forced open from another terminal
 # replaces the lock with its own pid while this conversation runs on, and that
@@ -166,6 +167,13 @@ if [ "$_cs_lock_clear" = 1 ] && command -v _cs_lock >/dev/null 2>&1 \
         *) kill -0 "$_cs_lock_pid" 2>/dev/null || rm -f "$META_DIR/session.lock" 2>/dev/null || true ;;
     esac
     _cs_unlock "$META_DIR/session.mutex.lock"
+fi
+# The lead's claim on its launch (cs_lead_claim, cs-resolve.sh) goes with the
+# lock, on the same terms: a lead whose claude ends, never a /clear or /resume
+# and never another claude. cs_lead_release removes only a claim naming this
+# claude.
+if [ -n "$_cs_lock_owner" ] && [ -n "$LOCAL_DIR" ] && command -v cs_lead_release >/dev/null 2>&1; then
+    cs_lead_release "$LOCAL_DIR" || true
 fi
 
 # A session cs -encrypt built detaches its vault when the lead conversation
