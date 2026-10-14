@@ -2408,6 +2408,46 @@ test_resume_digest_names_where_a_teammates_narrative_grew() {
         "the whole-file skim instruction is gone" || return 1
 }
 
+# A clone chooses a teammate narrative's file name, and the digest hands Claude
+# the path to read with sed. git quotes a control byte in a path, but not a
+# shell metacharacter, so a name a plain name lacks is passed over, as a
+# rotation handoff's is: the path Claude is told is always the file itself.
+test_resume_digest_passes_over_a_narrative_whose_name_is_not_plain() {
+    session_start_setup
+    mkdir -p "$CLAUDE_SESSION_META_DIR/local"
+    local bob="$CLAUDE_SESSION_DIR/.cs/memory/narrative.bob.md"
+    local odd="$CLAUDE_SESSION_DIR/.cs/memory/narrative.x;echo pwned;.md"
+    printf -- '# Session narrative (bob)\n\n## 2026-01-01 first\nold finding\n' > "$bob"
+    printf -- '# Session narrative\n\n## 2026-01-01 first\nold finding\n' > "$odd"
+    ( cd "$CLAUDE_SESSION_DIR" && git add -A && git commit -q -m "narratives" --author="Bob <bob@example.com>" )
+    git -C "$CLAUDE_SESSION_DIR" rev-parse HEAD > "$CLAUDE_SESSION_META_DIR/local/watermark"
+    printf -- '\n## 2026-01-02 second\nnew finding\n' >> "$bob"
+    printf -- '\n## 2026-01-02 second\nnew finding\n' >> "$odd"
+    ( cd "$CLAUDE_SESSION_DIR" && git add -A && git commit -q -m "append" --author="Bob <bob@example.com>" )
+
+    local context
+    context=$(echo '{"session_id":"s","source":"resume","cwd":"'"$CLAUDE_SESSION_DIR"'","hook_event_name":"SessionStart"}' \
+        | bash "$HOOKS_DIR/session-start.sh" 2>/dev/null | jq -r '.hookSpecificOutput.additionalContext') || return 1
+    assert_output_contains "$context" "teammate narratives grew: \.cs/memory/narrative\.bob\.md: 1 new section(s) from line 5\. Read your own" \
+        "the digest names only the plain teammate narrative" || return 1
+    assert_output_not_contains "$context" "pwned" "the digest never names the narrative whose name is not plain" || return 1
+}
+
+# The same holds for the files the recent commits touched: the hook names
+# each one Claude might open, so only a plain name is listed.
+test_session_start_lists_only_recent_files_with_plain_names() {
+    session_start_setup
+    ( cd "$CLAUDE_SESSION_DIR" && GIT_COMMITTER_DATE="2020-01-01T00:00:00Z" git commit -q --amend --no-edit --date="2020-01-01T00:00:00Z" \
+        && echo plan > plan.md && echo odd > "a;echo pwned;.md" && git add plan.md "a;echo pwned;.md" && git commit -q -m "recent" )
+
+    local context
+    context=$(echo '{"session_id":"s","source":"resume","cwd":"'"$CLAUDE_SESSION_DIR"'","hook_event_name":"SessionStart"}' \
+        | bash "$HOOKS_DIR/session-start.sh" 2>/dev/null | jq -r '.hookSpecificOutput.additionalContext') || return 1
+    assert_output_contains "$context" "^Recent commits: 1 in last 7 days (plan\.md)$" \
+        "the recent commits name only the file whose name is plain" || return 1
+    assert_output_not_contains "$context" "pwned" "the recent commits never name a file whose name is not plain" || return 1
+}
+
 # Rotation head-truncates a narrative (oldest sections move to the archive), so
 # the file can shrink at the top while it grows at the tail. The start line is
 # still (lines now - lines added + 1), and the count is of added sections only.
@@ -3584,6 +3624,8 @@ run_test test_resume_digest_reports_memory_activity
 run_test test_resume_digest_names_an_author_as_a_plain_name
 run_test test_resume_digest_silent_without_watermark
 run_test test_resume_digest_names_where_a_teammates_narrative_grew
+run_test test_resume_digest_passes_over_a_narrative_whose_name_is_not_plain
+run_test test_session_start_lists_only_recent_files_with_plain_names
 run_test test_resume_digest_delta_survives_a_rotated_teammate_narrative
 run_test test_resume_digest_counts_two_commits_and_an_uncommitted_tail
 run_test test_hooks_parse_under_bin_bash
