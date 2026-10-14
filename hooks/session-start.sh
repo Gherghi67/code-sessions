@@ -726,8 +726,10 @@ if [ "$SOURCE" = "resume" ] && git -C "$SESSION_DIR" rev-parse --git-dir >/dev/n
             # A clone chooses the file name and Claude is told the path to
             # read. git quotes a control byte in it but not a shell
             # metacharacter, so only a plain name is named, as only a plain
-            # rotation handoff loads.
-            _cs_is_plain_name "${_path##*/}" || continue
+            # rotation handoff loads. The case pattern's * matches "/", so the
+            # whole path below .cs/memory is checked: a narrative is one file
+            # there, never one in a subdirectory.
+            _cs_is_plain_name "${_path#.cs/memory/}" || continue
             [ -f "$SESSION_DIR/$_path" ] || continue
             case "$_added" in ''|-|0) continue ;; esac
             # One pass for both numbers: the diff of a rotated narrative is
