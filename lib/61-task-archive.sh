@@ -13,6 +13,22 @@ _task_archive_answer() {  # meta_dir
     esac
 }
 
+# Whether the cs mod ran this /rotate on its own: yes when
+# .cs/local/cs.forced, which the mod writes with the conversation's id before
+# it runs a forced rotation, names the conversation .cs/local/state names;
+# no otherwise. CS_ROTATE_FORCE_CTX is only the threshold the mod forces at
+# (forcing is on when it is unset), so it says nothing about this rotation.
+_task_archive_forced() {  # meta_dir
+    local now forced=""
+    now=$(_read_local_state "$1/local/state" claude_session_id)
+    if [ -f "$1/local/cs.forced" ]; then
+        # A last line with no newline still sets forced; read's status is
+        # only that missing newline.
+        IFS= read -r forced < "$1/local/cs.forced" || true
+    fi
+    if [ -n "$now" ] && [ "$forced" = "$now" ]; then echo yes; else echo no; fi
+}
+
 # Claude Code's file store for the session's task list:
 # <config dir>/tasks/<list id>, where every character of the list id outside
 # [a-zA-Z0-9_-] reads as '-' (a feature's base@task list is base-task).
@@ -233,8 +249,9 @@ IDS
 }
 
 # What a run would do, for the skill to read before it asks: the session's
-# answer, the store, the rows that would move and the row kept back. Moves
-# nothing; refuses on the same stores a run refuses.
+# answer, whether the cs mod forced this rotation, the store, the rows that
+# would move and the row kept back. Moves nothing; refuses on the same stores
+# a run refuses.
 archive_tasks_plan() {
     local meta_dir="$CLAUDE_SESSION_META_DIR"
     local session_dir="${CLAUDE_SESSION_DIR:-$(dirname "$meta_dir")}" answer
@@ -244,6 +261,7 @@ archive_tasks_plan() {
         _task_archive_place "$session_dir" "$meta_dir"
     fi
     echo "answer: $answer"
+    echo "forced: $(_task_archive_forced "$meta_dir")"
     echo "store: $TASK_ARCHIVE_STORE"
     if [ -n "$TASK_ARCHIVE_NOTHING" ]; then
         echo "archive: nothing: $TASK_ARCHIVE_NOTHING"
