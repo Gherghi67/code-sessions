@@ -474,6 +474,28 @@ retired task1 $sha" "$output" "each name is listed once" || return 1
     assert_eq "newline" "$(cat "$TEST_TMPDIR/trash-bin/2-$newline_name")" "the name holding a newline is in the trash" || return 1
 }
 
+# git lists a nested repository as one path. Retire counts the files under it
+# and trashes it by the name it has on disk: a backslash followed by "n" and
+# a newline are two different things in a name, and both are kept.
+test_retire_moves_an_ignored_nested_repository_named_with_a_backslash_and_a_newline() {
+    local wt="$CS_SESSIONS_ROOT/proj@task1" sha bin output status=0 name other="$TEST_TMPDIR/other"
+    sha=$(_landed_feature_ignoring 'dep*') || { echo "  FAIL: integrate fixture"; return 1; }
+    bin=$(fake_trash_bin moves trash)
+    name='dep\n'$'\n'"x"
+    git init -q "$other"
+    mkdir "$wt/$name"
+    printf 'gitdir: %s\n' "$other/.git" > "$wt/$name/.git"
+    echo "kept" > "$wt/$name/a"
+    output=$(PATH="$bin:$PATH" "$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "retire proceeds: $output" || return 1
+    assert_eq "MEMORY.md: appended 1 pointer(s) from the feature (base lines kept)
+Moved 2 ignored files to the system trash:
+    $wt/dep\\n?x/  (2 files)
+retired task1 $sha" "$output" "the listing shows the backslash as it is and the newline as ?" || return 1
+    assert_eq "$wt/$name" "$(cat "$TEST_TMPDIR/trash.log")" "the trash gets the directory by the name it has on disk" || return 1
+    assert_eq "kept" "$(cat "$TEST_TMPDIR/trash-bin/1-$name/a")" "the repository is in the trash, intact" || return 1
+}
+
 # A removal that fails after the trash step leaves the worktree, and the
 # refusal says what is already in the trash and where it came from.
 test_retire_lists_what_it_trashed_when_the_removal_then_fails() {
@@ -1150,6 +1172,7 @@ run_test test_retire_moves_ignored_work_with_gio_when_trash_is_missing
 run_test test_retire_moves_an_ignored_file_whose_name_holds_a_newline
 run_test test_retire_moves_two_ignored_names_that_print_alike
 run_test test_retire_moves_an_ignored_name_that_starts_another_shown_alike
+run_test test_retire_moves_an_ignored_nested_repository_named_with_a_backslash_and_a_newline
 run_test test_retire_lists_what_it_trashed_when_the_removal_then_fails
 
 # Ignored build trees hold tens of thousands of files. The refusal names each
