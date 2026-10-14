@@ -215,8 +215,10 @@ cs_tracked_files_notice() {  # dir, session_dir
         missing="/${here##*/}$missing"
         here=${here%/*}
     done
-    # The x keeps a trailing newline in a name that $( ) drops.
-    real=$(cd -P "$here" 2>/dev/null && pwd -P && printf x) || return 1
+    # The x keeps a trailing newline in a name that $( ) drops; -- keeps a
+    # name starting with "-" from reading as cd's option, a cd that fails
+    # into "nothing tracked".
+    real=$(cd -P -- "$here" 2>/dev/null && pwd -P && printf x) || return 1
     real=${real%$'\n'x}
     # The repository's top and the directory's place in it, one line each from
     # one git: two newlines in all, unless a name holds one, and then each is
@@ -263,7 +265,7 @@ cs_tracked_files_notice() {  # dir, session_dir
         _cs_git_cannot_answer "$1" "$why"
         return 0
     fi
-    meta=$(cd -P "$2/.cs" 2>/dev/null && pwd -P && printf x) && meta=${meta%$'\n'x}
+    meta=$(cd -P -- "$2/.cs" 2>/dev/null && pwd -P && printf x) && meta=${meta%$'\n'x}
     case "$meta/" in
         "$real"/*)
             printf "%s leads to a directory that holds this session's own files, where git tracks %s (per-actor state must stay local). Make %s a directory of its own.\n" \
