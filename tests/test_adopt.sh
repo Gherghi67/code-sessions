@@ -611,7 +611,7 @@ test_adopt_inits_git_when_none_exists() {
 test_adopt_into_git_repo_leaves_its_files_untracked() {
     local project_dir="$TEST_TMPDIR/my-project" head_before out
     mkdir -p "$project_dir"
-    (cd "$project_dir" && git init -q && git config user.email a@b.c && git config user.name A && git commit --allow-empty -m "initial" -q)
+    (cd "$project_dir" && git init -q && git config user.email tester@example.com && git config user.name Tester && git commit --allow-empty -m "initial" -q)
     head_before=$(git -C "$project_dir" rev-parse HEAD)
 
     out=$(cd "$project_dir" && "$CS_BIN" -adopt my-session 2>&1)
@@ -633,7 +633,7 @@ test_adopt_into_a_repo_that_ignores_cs_records_ignored() {
     local project_dir="$TEST_TMPDIR/my-project"
     mkdir -p "$project_dir"
     printf '.cs/\n' > "$project_dir/.gitignore"
-    (cd "$project_dir" && git init -q && git config user.email a@b.c && git config user.name A && git add .gitignore && git commit -q -m "initial")
+    (cd "$project_dir" && git init -q && git config user.email tester@example.com && git config user.name Tester && git add .gitignore && git commit -q -m "initial")
 
     (cd "$project_dir" && "$CS_BIN" -adopt my-session >/dev/null 2>&1)
 
@@ -645,7 +645,7 @@ test_adopt_into_a_repo_that_ignores_cs_records_ignored() {
 test_readopt_keeps_a_recorded_cs_mode() {
     local project_dir="$TEST_TMPDIR/my-project"
     mkdir -p "$project_dir/.cs/local"
-    (cd "$project_dir" && git init -q && git config user.email a@b.c && git config user.name A && git commit --allow-empty -m "initial" -q)
+    (cd "$project_dir" && git init -q && git config user.email tester@example.com && git config user.name Tester && git commit --allow-empty -m "initial" -q)
     printf '# Session\n' > "$project_dir/.cs/README.md"
     printf 'cs_mode: ignored\n' > "$project_dir/.cs/local/state"
 
@@ -661,7 +661,7 @@ test_readopt_keeps_a_recorded_cs_mode() {
 test_adopt_leaves_the_users_staged_work_alone() {
     local project_dir="$TEST_TMPDIR/staged-project" head_before
     mkdir -p "$project_dir"
-    (cd "$project_dir" && git init -q && git config user.email a@b.c && git config user.name A && git commit --allow-empty -m "initial" -q)
+    (cd "$project_dir" && git init -q && git config user.email tester@example.com && git config user.name Tester && git commit --allow-empty -m "initial" -q)
     printf 'work in progress\n' > "$project_dir/user-file.txt"
     git -C "$project_dir" add -- user-file.txt
     head_before=$(git -C "$project_dir" rev-parse HEAD)
