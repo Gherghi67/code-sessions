@@ -148,6 +148,9 @@ _task_archive_select() {
     TASK_ARCHIVE_IDS="" TASK_ARCHIVE_TOP="" TASK_ARCHIVE_TOP_DONE=0
     TASK_ARCHIVE_MOVING="" TASK_ARCHIVE_NOTHING=""
     local store="$TASK_ARCHIVE_STORE" id status
+    if [ -L "$store" ]; then
+        error "refusing to archive: $store is a link, not the task store directory Claude Code makes; nothing archived"
+    fi
     if [ ! -d "$store" ]; then
         TASK_ARCHIVE_NOTHING="no task list at $store"
         return 0
