@@ -2591,12 +2591,7 @@ impl App {
                 Action::None
             }
             MouseEventKind::Down(crossterm::event::MouseButton::Middle) => {
-                // Middle-click opens the selected session
-                if let Some(name) = self.selected_session_name() {
-                    Action::Open(name)
-                } else {
-                    Action::None
-                }
+                self.execute_menu_action(MenuAction::Open)
             }
             _ => Action::None,
         }
@@ -6020,6 +6015,99 @@ mod tests {
         assert_eq!(status.level, StatusLevel::Error, "a refusal is not a success");
         std::fs::remove_dir_all(&tmp).ok();
     }
+    #[test]
+    fn middle_click_uses_launch_options_saved_through_the_menu() {
+        for (engine, automatic) in [("codex", true), ("claude", false)] {
+            let mut app = App::new(sample_sessions());
+            save_launch_options_through_menu(&mut app, engine, automatic);
+
+            match middle_click(&mut app) {
+                Action::OpenWith { session, args } => {
+                    assert_eq!(session, "alpha");
+                    assert_eq!(args, saved_launch_args(engine, automatic));
+                }
+                other => panic!("wrong middle-click launch action: {other:?}"),
+            }
+            assert_eq!(app.mode, Mode::Normal);
+        }
+    }
+
+    #[test]
+    fn middle_click_requires_confirmation_before_force_opening_with_saved_options() {
+        let mut app = App::new(sample_sessions());
+        let gamma = app
+            .filtered
+            .iter()
+            .position(|&i| app.sessions[i].name == "gamma")
+            .unwrap();
+        app.table_state.select(Some(gamma));
+        save_launch_options_through_menu(&mut app, "codex", false);
+
+        assert!(matches!(middle_click(&mut app), Action::None));
+        assert_eq!(app.mode, Mode::ConfirmForceOpen);
+        match app.handle_key(KeyEvent::from(KeyCode::Char('y'))) {
+            Action::OpenWith { session, args } => {
+                assert_eq!(session, "gamma");
+                let mut expected = saved_launch_args("codex", false);
+                expected.push("--force".into());
+                assert_eq!(args, expected);
+            }
+            other => panic!("wrong confirmed middle-click launch action: {other:?}"),
+        }
+    }
+
+    fn middle_click(app: &mut App) -> Action {
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(crossterm::event::MouseButton::Middle),
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::empty(),
+        })
+    }
+
+    fn save_launch_options_through_menu(app: &mut App, engine: &str, automatic: bool) {
+        app.handle_key(KeyEvent::from(KeyCode::Char('e')));
+        assert_eq!(app.mode, Mode::LaunchOptions);
+        if app.launch_engine != engine {
+            app.handle_key(KeyEvent::from(KeyCode::Right));
+        }
+        app.handle_key(KeyEvent::from(KeyCode::Down));
+        for c in "model with spaces $(literal)".chars() {
+            app.handle_key(KeyEvent::from(KeyCode::Char(c)));
+        }
+        app.handle_key(KeyEvent::from(KeyCode::Down));
+        for c in "xhigh".chars() {
+            app.handle_key(KeyEvent::from(KeyCode::Char(c)));
+        }
+        app.handle_key(KeyEvent::from(KeyCode::Down));
+        if app.launch_automatic != automatic {
+            app.handle_key(KeyEvent::from(KeyCode::Right));
+        }
+        app.handle_key(KeyEvent::from(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::SessionMenu);
+        app.handle_key(KeyEvent::from(KeyCode::Esc));
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    fn saved_launch_args(engine: &str, automatic: bool) -> Vec<String> {
+        [
+            "--engine",
+            engine,
+            "--model",
+            "model with spaces $(literal)",
+            "--effort",
+            "xhigh",
+            if automatic {
+                "--approve-for-me"
+            } else {
+                "--native-approval"
+            },
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect()
+    }
+
     #[test]
     fn launch_options_keep_literal_model_and_normal_open_uses_saved_choices() {
         let mut app = App::new(sample_sessions());
