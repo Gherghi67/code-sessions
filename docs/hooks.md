@@ -215,16 +215,26 @@ runs. The mods and `/wrap` ask `cs -vet-session`. Git's pathspec settings in the
 environment (`GIT_LITERAL_PATHSPECS` and its three siblings) are cleared for the question,
 since a literal pathspec would match no file and read as nothing tracked, and so are
 configuration settings passed through the environment (`GIT_CONFIG_COUNT`,
-`GIT_CONFIG_PARAMETERS`). Git that fails to answer for any reason other than "not a git
+`GIT_CONFIG_PARAMETERS`), and cs passes `core.fsmonitor` empty, which turns it off, so a
+repository's config cannot make the question run a command. Before it asks git anything, cs
+walks from that directory up to the first directory that holds `.git`, as git's own search
+does, comparing directories by the filesystem rather than by the spelling of their paths. A
+directory on the way that holds `HEAD`, a link that leads nowhere included, counts as
+tracked, since git would take it for a repository and run the commands its config names; the
+walk catches a committed link into such a layout the same way, inside the session or out of
+it. The message names one inside the session relative to it, with the `HEAD` to delete. It
+names one outside it (a bare repository or a checkout's `.git` that holds the session, or a
+bare repository that is the session directory itself) by its whole path and ends `Run cs -rm
+to remove the session.` Git that fails to answer for any reason other than "not a git
 repository" (a broken `~/.gitconfig`, a bad repository config, an unreadable index, a
-`safe.directory` refusal, no git on `PATH` or one that cannot run, a session inside a bare repository or a checkout's `.git`) counts as tracked: the hooks stand down the same way, `cs` refuses
+`safe.directory` refusal, no git on `PATH` or one that cannot run) counts as tracked: the hooks stand down the same way, `cs` refuses
 to open the session, a named verb (`cs <name> -queue` and the rest) refuses, and the message
 carries git's first `fatal:` or `error:` line, or says git is not installed or not on `PATH`, or that the git it found there cannot run. Lines that `GIT_TRACE` or a trace2 setting
 print ahead of it are not a failure. A file git tracks there still counts after you delete
 its directory. One write stays: the prompt hook's launch
 mark in `scope-prompt.trace`, made before anything that can stall, including git. `cs -queue` and `cs -msg` run inside the session
 refuse on the same question. Each finished turn says why, in a system message that names the file
-and the `git rm --cached` command that untracks it. That message is all the Stop hook
+and the `git rm --cached` command that untracks it, or the directory git would take for a repository. That message is all the Stop hook
 does until then: it sends no narrative reminder and no rotation nudge, and raises no
 attention flag. Its other two events do nothing: no mail wake, no rotation kick, no
 watch re-armed. The check is one `git ls-files` per
@@ -329,7 +339,7 @@ Runs when Claude Code would show a permission dialog for Write or Edit:
 - Auto-approves writes to the content files inside the session's `.cs/` directory: README, summary, memory and narratives, plans, handoffs, checkpoints, research notes, and the `pending-handoff` marker the rotate skill arms (session-start.sh rejects any marker with a path separator in it)
 - Falls through to the normal permission prompt for everything cs itself acts on: every file under `.cs/local/` (`pre-open` runs at the next open, the queue and the mailbox execute, `state` and `identity` bind the checkout), `.cs/claude-config/`, `.cs/age-recipients/`, every file at the root of `.cs/` that is not Markdown (the `secrets.*` sync files, `session.lock`, `session.mutex.lock`, `archived`, `timeline.jsonl`, the reminder's cooldown stamp, and a file named like a control directory cs has not made yet), and everything in `.cs/private/` except `handoffs/`, `checkpoints/` and `narrative-archive/`
 - Falls through for an Edit of any executable file under `.cs/` (Edit keeps the mode bits), for a target that is itself a symlink, and for every write while `.cs` or `.cs/local` is a symlink (cs refuses to open such a session, but a `claude` started in the directory by hand still runs this hook)
-- Falls through for `CLAUDE.md` and `CLAUDE.local.md` anywhere under `.cs/` (Claude Code loads the one beside a file it reads) and for a write inside a git directory kept under `.cs/`: a `.git` directory or file, a `.git` that is a link, and a bare clone or a linked worktree's own directory under any name (a directory holding `HEAD` beside `objects/`, `refs/` or `commondir`)
+- Falls through for `CLAUDE.md` and `CLAUDE.local.md` anywhere under `.cs/` (Claude Code loads the one beside a file it reads) and for a write inside a git directory kept under `.cs/`: a `.git` directory or file, a `.git` that is a link, and a bare clone or a linked worktree's own directory under any name. The hook takes a directory for a git directory by the rule cs refuses a session's state by (`_cs_head_on_git_walk` in `cs-shared.sh`): the write's real parent, or a directory above it before the first that holds `.git`, holds `HEAD`, a link that leads nowhere included. A write of a file named `HEAD` or `commondir`, in any case, falls through too, since it would make its directory a git directory. When the hook cannot load `cs-shared.sh`, or finds no such rule in it, it approves nothing and prints `cs auto-approve: not approving, <path> is missing or outdated` on stderr
 - Falls through for any name under `.cs/` that holds a character outside ASCII. The Mac filesystem folds some of them (a long s reads as `s`, the Kelvin sign as `k`), so such a name can be another spelling of a control file, and comparing strings does not show it. Only the part of the path below `.cs/` counts: a session whose own directory has such a character keeps its approvals
 - Approves the first write into a directory that does not exist yet only for `handoffs`, `checkpoints`, `narrative-archive`, `memory`, `plans` and `research`, directly at the root of `.cs/` (the Write tool makes the directory). An encrypted session keeps those in its vault, so there a new one at the root prompts. Any other missing parent prompts
 - Classifies by where the write really lands, compared lowercased (the Mac filesystem keeps the case you typed, so `LOCAL/` is `local/`): the hook resolves each control directory to its real path, so a committed link from a shared directory into `.cs/local` counts as `.cs/local`, and an encrypted session's links into `vault-mnt/` classify as the names they carry
