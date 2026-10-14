@@ -10795,9 +10795,12 @@ _task_archive_last_rows() {  # tasks.md
 # completed), TASK_ARCHIVE_MOVING (the completed rows below it, space
 # separated) and TASK_ARCHIVE_NOTHING (why nothing moves; empty when rows do).
 # The highest row stays in the store whatever its status: Claude Code numbers
-# a new task one past the highest id it can see (or its .highwatermark, which
-# it writes only on a reset), so moving that row would hand its number to the
-# next task. Errors on a store it does not recognise.
+# a new task one past the larger of the highest row id in the store and
+# .highwatermark, and it raises .highwatermark only when it deletes a row,
+# resets the list, writes a row under a given id or skips an id (2.1.299),
+# never when a row file leaves the store any other way. Moving the highest
+# row would hand its number to the next task. Errors on a store it does not
+# recognise.
 _task_archive_select() {
     TASK_ARCHIVE_STORE=$(_task_store_dir)
     TASK_ARCHIVE_IDS="" TASK_ARCHIVE_TOP="" TASK_ARCHIVE_TOP_DONE=0

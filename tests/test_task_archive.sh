@@ -7,7 +7,7 @@ source "$SCRIPT_DIR/test_lib.sh"
 
 # One session, one task list under a scoped HOME. The store is laid out the
 # way Claude Code's file store writes it: one <id>.json per row, a .lock anchor
-# and (once a list has been reset) a .highwatermark.
+# and (once a row has been deleted or the list reset) a .highwatermark.
 setup() {
     TEST_TMPDIR="$(mktemp -d)"
     export HOME="$TEST_TMPDIR/home"
@@ -98,9 +98,10 @@ _agree() {
 # Which rows move
 # ============================================================================
 
-# Claude Code numbers a new task max(live ids, .highwatermark) + 1, and only
-# writes .highwatermark on a reset, so archiving the highest row would hand its
-# number to the next task. The highest row stays live even when it is done;
+# Claude Code numbers a new task max(live ids, .highwatermark) + 1, and raises
+# .highwatermark only through its own deletes, resets and id writes, never when
+# a row file leaves the store any other way, so archiving the highest row would
+# hand its number to the next task. The highest row stays live even when it is done;
 # every other completed row moves, byte for byte.
 test_completed_rows_move_and_the_highest_stays_live() {
     _row 3 completed "Write the parser"
