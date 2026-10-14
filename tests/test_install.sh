@@ -842,6 +842,25 @@ _need_tomllib() {
     python3 -c 'import tomllib' 2>/dev/null || { echo "    SKIP (no python3 with tomllib)"; return 77; }
 }
 
+test_codex_status_line_never_imports_project_python() {
+    _need_tomllib || return
+    local fake_home="$TEST_TMPDIR/codex-sl-import" project="$TEST_TMPDIR/project"
+    mkdir -p "$fake_home/.codex" "$project"
+    printf 'model = "mine"\n' > "$fake_home/.codex/config.toml"
+    cat > "$project/tomllib.py" <<'PY'
+from pathlib import Path
+Path("project-python-ran").touch()
+raise ImportError("project module must not run")
+PY
+    (
+        cd "$project" || exit 1
+        HOME="$fake_home" "$CS_BIN" -statusline enable > /dev/null 2>&1 || exit 1
+        HOME="$fake_home" "$CS_BIN" -statusline disable > /dev/null 2>&1 || exit 1
+    ) || return 1
+    assert_not_exists "$project/project-python-ran" "validation must not import from the caller's project" || return 1
+    assert_eq 'model = "mine"' "$(cat "$fake_home/.codex/config.toml")" || return 1
+}
+
 # Codex's default bar leaves out the context and the rate limits, so a Codex
 # install gives its config.toml cs's status line, once.
 test_install_sets_the_codex_status_line() {
@@ -1845,6 +1864,7 @@ run_test test_codex_hook_trust_hash_matches_codex
 run_test test_install_registers_a_trusted_codex_hook
 run_test test_codex_hook_keeps_the_users_hooks_and_trust
 run_test test_install_sets_the_codex_status_line
+run_test test_codex_status_line_never_imports_project_python
 run_test test_install_puts_the_codex_status_line_into_an_existing_tui
 run_test test_codex_status_line_keeps_the_users_own
 run_test test_codex_status_line_reads_toml_shapes

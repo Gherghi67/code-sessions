@@ -385,8 +385,8 @@ _codex_status_line_check() {  # set|unset, file
     local py
     for py in python3 /usr/bin/python3; do
         command -v "$py" >/dev/null 2>&1 || continue
-        "$py" -c 'import tomllib' 2>/dev/null || continue
-        "$py" -c '
+        "$py" -I -c 'import tomllib' 2>/dev/null || continue
+        "$py" -I -c '
 import sys, tomllib
 mode, path, line = sys.argv[1:]
 try:
