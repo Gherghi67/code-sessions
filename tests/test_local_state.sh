@@ -1160,6 +1160,36 @@ test_atomic_write_names_where_a_link_leads_as_a_plain_path() {
     assert_eq "" "$(ls -A "$o$bad")" "nothing is written into the directory outside" || return 1
 }
 
+# The path a write was asked for can hold a name a clone chose too: a file it
+# committed under a directory that links out. The refusal names the part of
+# that path below the session as a plain path, and so does the part of a new
+# directory's path that does not exist yet; the session's own path prints as
+# it is spelled.
+_mkdir_inside_in() {  # session dir, dir
+    CLAUDE_SESSION_DIR="$1" bash -c 'source "$1"; cs_mkdir_inside "$2"' _ \
+        "$SCRIPT_DIR/../hooks/cs-shared.sh" "$2"
+}
+
+test_write_refusal_names_the_path_asked_for_as_a_plain_path() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m
+    local s="$t/sess" o="$t/out" out rc=0
+    mkdir -p "$s/.cs" "$o"
+    ln -s "$o" "$s/.cs/memory"
+    out=$(_atomic_write_in "$s" "$s/.cs/memory/n$bad.md" new 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the write must fail" || return 1
+    assert_eq "cs_write_atomic: $s/.cs/memory/n$shown.md leads to $o/n$shown.md, outside the session $s" "$out" \
+        "the refusal names the file asked for as a plain path" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal from the write" || return 1
+    rc=0
+    out=$(_mkdir_inside_in "$s" "$s/.cs/memory/d$bad/x" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the mkdir must fail" || return 1
+    assert_eq "cs_mkdir_inside: $s/.cs/memory/d$shown/x leads to $o/d$shown/x, outside the session $s" "$out" \
+        "the refusal names the directories it would make as a plain path" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal from the mkdir" || return 1
+    assert_eq "" "$(ls -A "$o")" "nothing is made in the directory outside" || return 1
+}
+
 test_atomic_write_refuses_a_directory_link_out_of_the_session() {
     local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
     local s="$t/sess" o="$t/outside-dir" out rc=0
@@ -1563,6 +1593,7 @@ run_test test_atomic_write_keeps_the_mode_with_gnu_stat_on_a_mac
 run_test test_atomic_write_refuses_a_directory_destination
 run_test test_atomic_write_refuses_a_link_out_of_the_session
 run_test test_atomic_write_names_where_a_link_leads_as_a_plain_path
+run_test test_write_refusal_names_the_path_asked_for_as_a_plain_path
 run_test test_atomic_write_refuses_a_directory_link_out_of_the_session
 run_test test_atomic_write_refuses_a_dangling_link_out_of_the_session
 run_test test_atomic_write_checks_the_session_the_destination_is_in
