@@ -660,6 +660,58 @@ test_build_outputs_are_world_readable() {
     done
 }
 
+# Prints the sha256 of file $1.
+_sha256_of() {  # file
+    shasum -a 256 < "$1" | awk '{print $1}'
+}
+
+# The release build adds the sha256 of every file the installer deploys
+# under ~/.claude to CS_KNOWN_SHA256 and builds the table into bin/cs and
+# install.sh; the table stays sorted without repeats, a second run changes
+# nothing, and a plain build adds nothing.
+test_release_build_adds_its_payload_to_the_known_table_once() {
+    local repo="$TEST_TMPDIR/hashes-repo" snap="$TEST_TMPDIR/hashes-snap" rel digest f
+    _copy_build_inputs "$repo"
+    printf '\n' >> "$repo/commands/wrap.md"
+    digest=$(_sha256_of "$repo/commands/wrap.md")
+    assert_eq "0" "$(grep -c "^    $digest$" "$repo/lib/01-manifests.sh")" "the changed wrap.md starts out unknown" || return 1
+    (cd "$repo" && bash build.sh --add-release-hashes > /dev/null) || { echo "  FAIL: the release build failed"; return 1; }
+    for f in lib/01-manifests.sh bin/cs install.sh; do
+        assert_eq "1" "$(grep -c "^    $digest$" "$repo/$f")" "$f lists the changed wrap.md once" || return 1
+    done
+    ( . "$repo/lib/01-manifests.sh"; _cs_payload_files ) | grep -v '^bin/' > "$TEST_TMPDIR/hashes-files"
+    while IFS= read -r rel; do
+        digest=$(_sha256_of "$repo/$rel")
+        assert_eq "1" "$(grep -c "^    $digest$" "$repo/lib/01-manifests.sh")" "the table lists $rel" || return 1
+    done < "$TEST_TMPDIR/hashes-files"
+    extract_array "$repo/lib/01-manifests.sh" CS_KNOWN_SHA256 | LC_ALL=C sort -c -u \
+        || { echo "  FAIL: CS_KNOWN_SHA256 is not sorted without repeats"; return 1; }
+    mkdir -p "$snap"
+    for f in lib/01-manifests.sh bin/cs install.sh; do cp "$repo/$f" "$snap/${f##*/}"; done
+    (cd "$repo" && bash build.sh --add-release-hashes > /dev/null) || { echo "  FAIL: the second release build failed"; return 1; }
+    for f in lib/01-manifests.sh bin/cs install.sh; do
+        cmp -s "$snap/${f##*/}" "$repo/$f" || { echo "  FAIL: a second release build changed $f"; return 1; }
+    done
+    printf '\n' >> "$repo/commands/wrap.md"
+    digest=$(_sha256_of "$repo/commands/wrap.md")
+    (cd "$repo" && bash build.sh > /dev/null) || { echo "  FAIL: the plain build failed"; return 1; }
+    cmp -s "$snap/01-manifests.sh" "$repo/lib/01-manifests.sh" || { echo "  FAIL: a plain build changed lib/01-manifests.sh"; return 1; }
+    assert_eq "0" "$(grep -c "^    $digest$" "$repo/install.sh")" "a plain build adds nothing to the table" || return 1
+}
+
+# A misspelt release flag must not pass for a plain build, or the release
+# commit ships without its payload in the table.
+test_build_refuses_an_unknown_argument() {
+    local repo="$TEST_TMPDIR/args-repo" out rc=0
+    _copy_build_inputs "$repo"
+    cp "$repo/lib/01-manifests.sh" "$TEST_TMPDIR/args-manifests"
+    out=$(cd "$repo" && bash build.sh --add-release-hash 2>&1) || rc=$?
+    assert_eq "1" "$rc" "build.sh exit status" || { echo "$out"; return 1; }
+    assert_eq "error: build.sh takes no argument, or --add-release-hashes (got: --add-release-hash)" "$out" "the error names the argument" || return 1
+    assert_not_exists "$repo/bin/cs" "nothing is built" || return 1
+    cmp -s "$TEST_TMPDIR/args-manifests" "$repo/lib/01-manifests.sh" || { echo "  FAIL: lib/01-manifests.sh changed"; return 1; }
+}
+
 # ============================================================================
 # Manifest arrays: install.sh and bin/cs must agree, and must match the repo
 # ============================================================================
@@ -3315,6 +3367,8 @@ run_test test_build_generates_install_sh_from_its_template
 run_test test_build_refuses_a_template_without_the_marker
 run_test test_build_refuses_a_missing_manifests_source
 run_test test_build_outputs_are_world_readable
+run_test test_release_build_adds_its_payload_to_the_known_table_once
+run_test test_build_refuses_an_unknown_argument
 run_test test_hook_registration_doc_matches_install
 run_test test_install_honors_declined_statusline_marker
 run_test test_install_declined_marker_honors_xdg_and_foreign_statusline
