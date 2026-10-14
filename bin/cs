@@ -7749,9 +7749,9 @@ _ensure_claude_local_sections() {  # session_dir
     # migrated sessions; legacy sessions skip these phases.
     # Phases 9 and 10 manage sections in CLAUDE.local.md ONLY. Sessions
     # still on a legacy CLAUDE.md (pre-sentinel era, or a user file that
-    # merely mentions .cs/) get no cs section there; the one write cs makes
-    # to such a CLAUDE.md is Phase 16's rewrite of the exact /summary lines
-    # it wrote (_migrate_session_documents). Both phases' existing [ -f ]
+    # merely mentions .cs/) get no cs section there; cs only removes or
+    # rewrites lines it wrote in such a CLAUDE.md (Phase 7's command-tracker
+    # lines, Phase 16's /summary lines). Both phases' existing [ -f ]
     # guards make them no-ops when the local file is absent.
     local claude_md_p9="$session_dir/CLAUDE.local.md"
     if [ -f "$claude_md_p9" ]; then
