@@ -254,6 +254,35 @@ cmd_prepare() {  # [feature]
     pr_lookup "$session_dir" "cs/$task"
 }
 
+# Whether the content of a branch that is not an ancestor of the base landed
+# anyway (a squash or rebase landing, a cherry-pick): every path <sha> changed
+# since its merge base with the base's HEAD must be the same on that HEAD,
+# the same mode and blob or absent from both. A rename is a deletion and an
+# addition, both checked. Prints content_paths_checked and, one per line,
+# content_differs for each path HEAD holds differently. The local HEAD is the
+# evidence, not origin's branch: the retire acts on this base, the PR path has
+# already fast-forwarded it onto the landing, and origin may have moved since.
+content_landing() {  # sha
+    local top mb list p n=0
+    local -a paths=()
+    top=$(git -C "$session_dir" rev-parse --show-toplevel) \
+        || { echo "error: $session_dir is not a git checkout"; return 1; }
+    # No merge base: the branch shares no history with the base, so there is
+    # no "what the branch changed" to check.
+    mb=$(git -C "$top" merge-base "$1" HEAD 2>/dev/null) || { echo "content_paths_checked: none"; return 0; }
+    list=$(mktemp "${TMPDIR:-/tmp}/finish-paths.XXXXXX")
+    git -C "$top" diff --no-renames --name-only -z "$mb" "$1" > "$list" \
+        || { rm -f "$list"; echo "error: git diff failed listing the paths $1 changed since $mb"; return 1; }
+    while IFS= read -r -d '' p; do paths+=("$p"); n=$((n + 1)); done < "$list"
+    rm -f "$list"
+    echo "content_paths_checked: $n"
+    [ "$n" -gt 0 ] || return 0
+    local differing
+    differing=$(GIT_LITERAL_PATHSPECS=1 git -C "$top" diff --no-renames --name-only "$1" HEAD -- "${paths[@]}") \
+        || { echo "error: git diff failed comparing the paths $1 changed with base HEAD"; return 1; }
+    [ -z "$differing" ] || printf '%s\n' "$differing" | sed 's/^/content_differs: /'
+}
+
 cmd_report() {  # base task sha
     local base="$1" task="$2" sha="$3" wt="$sessions_root/$1@$2"
     [ -d "$wt" ] || { echo "error: no worktree at $wt"; exit 1; }
@@ -271,17 +300,45 @@ cmd_report() {  # base task sha
     pr_lookup "$session_dir" "cs/$task"
     # What the retire entry will do with this worktree. It removes the
     # worktree and branch and never merges, so a tip the base does not have
-    # is another /finish first, and a branch that is not an ancestor (a
-    # squash or rebase landing) is retirable only on the PR's own evidence.
+    # is another /finish first. A branch that is not an ancestor (a squash or
+    # rebase landing) is retirable when the base holds every path it changed
+    # as it has it, or else only on the PR's own evidence.
+    local not_integrated="retire: $n_after commit(s) on cs/$task after the captured commit are not integrated; run /finish $task again before retiring"
     if [ "$landed" = "yes" ]; then
         if git -C "$session_dir" merge-base --is-ancestor "$tip" HEAD 2>/dev/null; then
             echo "retire: ready"
         else
-            echo "retire: $n_after commit(s) on cs/$task after the captured commit are not integrated; run /finish $task again before retiring"
+            echo "$not_integrated"
         fi
-    else
-        echo "retire: not-landed"
-        echo "retire_note: cs/$task is not an ancestor of base (a squash or rebase landing); retire with --force only on a MERGED pr_state"
+        return 0
+    fi
+    local content checked differing n_differing status=0
+    # Run captured, so its error line comes back here to print.
+    content=$(content_landing "$sha") || status=$?
+    if [ "$status" != 0 ]; then
+        printf '%s\n' "$content" | grep '^error: '
+        exit 1
+    fi
+    checked=$(printf '%s\n' "$content" | sed -n 's/^content_paths_checked: //p')
+    differing=$(printf '%s\n' "$content" | sed -n 's/^content_differs: //p')
+    if [ "$checked" != none ] && [ -z "$differing" ]; then
+        # The entry refuses a tip past the captured commit under --force too.
+        if [ "$n_after" != 0 ]; then
+            echo "$not_integrated"
+            return 0
+        fi
+        echo "retire: content-landed"
+        echo "retire_paths_checked: $checked"
+        echo "retire_note: cs/$task is not an ancestor of base, but every path it changed is identical on base HEAD; retire with --force"
+        return 0
+    fi
+    echo "retire: not-landed"
+    echo "retire_note: cs/$task is not an ancestor of base (a squash or rebase landing); retire with --force only on a MERGED pr_state"
+    if [ -n "$differing" ]; then
+        n_differing=$(printf '%s\n' "$differing" | grep -c .)
+        echo "retire_paths_differing: $n_differing of $checked"
+        printf '%s\n' "$differing" | sed -n '1,10s/^/retire_differs: /p'
+        [ "$n_differing" -le 10 ] || echo "retire_differs_more: $((n_differing - 10))"
     fi
 }
 
