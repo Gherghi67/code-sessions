@@ -1044,8 +1044,9 @@ const SESSION_ROOT_OWNED: &[&str] = &[
     "notes.md", "changes.md", "discoveries.md", "logs", "artifacts",
 ];
 
-/// Top-level names in a worktree that are cs's, not the user's.
-const WORKTREE_OWNED: &[&str] = &[".cs", "CLAUDE.local.md", ".DS_Store"];
+/// Top-level names in a worktree that are cs's, not the user's. Finder's
+/// .DS_Store is no one's at any depth (`worktree_untracked`).
+const WORKTREE_OWNED: &[&str] = &[".cs", "CLAUDE.local.md"];
 
 /// The one path under a worktree's `.claude/` that is cs's: the settings
 /// file it writes. Anything else there is the user's.
@@ -1119,7 +1120,8 @@ fn worktree_untracked(path: &Path) -> Result<Vec<untracked::Entry>, String> {
     at_risk.extend(git_ls_files(path, &["--others", "--ignored", "--exclude-standard"])?);
     at_risk.retain(|p| {
         let top = p.split('/').next().unwrap_or(p);
-        !WORKTREE_OWNED.contains(&top) && p != WORKTREE_OWNED_SETTINGS
+        let name = p.rsplit('/').next().unwrap_or(p);
+        !WORKTREE_OWNED.contains(&top) && p != WORKTREE_OWNED_SETTINGS && name != ".DS_Store"
     });
     if at_risk.is_empty() {
         return Ok(Vec::new());

@@ -11551,14 +11551,14 @@ _volume_mounted_under() {  # dir
 # Paths in a worktree session that git does not track (untracked or
 # ignored), one per line (_names_as_lines); git worktree remove --force
 # deletes them with no copy on the branch. cs's own .cs/,
-# .claude/settings.local.json and CLAUDE.local.md, and Finder's .DS_Store,
-# are left out; anything else under .claude/ is the user's, as retire treats
-# it (_worktree_others). Fails when git cannot list them.
+# .claude/settings.local.json and CLAUDE.local.md, and Finder's .DS_Store at
+# any depth, are left out; anything else under .claude/ is the user's, as
+# retire treats it (_worktree_others). Fails when git cannot list them.
 _worktree_untracked_paths() {  # worktree_dir
     { git -C "$1" ls-files -z --others --exclude-standard \
         && git -C "$1" ls-files -z --others --ignored --exclude-standard; } \
         | _names_as_lines \
-        | env LC_ALL=C awk -F/ '$1 != ".cs" && $0 != ".claude/settings.local.json" && $1 != "CLAUDE.local.md" && $1 != ".DS_Store"'
+        | env LC_ALL=C awk -F/ '$1 != ".cs" && $0 != ".claude/settings.local.json" && $1 != "CLAUDE.local.md" && $NF != ".DS_Store"'
 }
 
 _remove_one_session() {
