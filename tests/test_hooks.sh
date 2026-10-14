@@ -4024,8 +4024,47 @@ test_session_end_clears_a_stale_lock() {
         || { echo "  FAIL: a stale lock was left behind"; return 1; }
 }
 
+# SessionEnd reads the lock by live_lock_pid's rule: "0" and "-1" name process
+# groups and "+<pid>" is not a pid, so each is a stale lock to clear.
+test_session_end_reads_the_lock_by_the_one_lock_rule() {
+    local proj="$TEST_TMPDIR/.claude-sessions/lockrule"
+    mkdir -p "$proj/.cs/local"
+    touch "$proj/.cs/local/session.log"
+    local text
+    for text in "0" "-1" "+$$"; do
+        printf '%s\n' "$text" > "$proj/.cs/session.lock"
+        env -i PATH="$PATH" HOME="$TEST_TMPDIR" CLAUDE_PROJECT_DIR="$proj" \
+            /bin/bash "$HOOKS_DIR/session-end.sh" \
+            <<< "{\"session_id\":\"11111111-2222-4333-8444-555555555555\",\"cwd\":\"$proj\",\"source\":\"user_exit\"}" \
+            >/dev/null 2>&1 || true
+        [ ! -f "$proj/.cs/session.lock" ] \
+            || { echo "  FAIL: a lock of '$text' was left behind: $(cat "$proj/.cs/session.lock")"; return 1; }
+    done
+}
+
+# A cs-shared.sh from before live_lock_pid shipped in it, under a newer
+# session-end.sh, cannot tell a live lock from a stale one, so the hook
+# leaves the lock to the next open rather than remove a live session's.
+test_session_end_without_the_lock_rule_leaves_the_lock() {
+    local partial="$TEST_TMPDIR/partial-hooks"
+    mkdir -p "$partial"
+    cp "$HOOKS_DIR"/*.sh "$partial/"
+    printf '\nunset -f live_lock_pid\n' >> "$partial/cs-shared.sh"
+    local proj="$TEST_TMPDIR/.claude-sessions/lockrule-old"
+    mkdir -p "$proj/.cs/local"
+    touch "$proj/.cs/local/session.log"
+    printf '%s\n' "$$" > "$proj/.cs/session.lock"
+    env -i PATH="$PATH" HOME="$TEST_TMPDIR" CLAUDE_PROJECT_DIR="$proj" \
+        /bin/bash "$partial/session-end.sh" \
+        <<< "{\"session_id\":\"11111111-2222-4333-8444-555555555555\",\"cwd\":\"$proj\",\"source\":\"user_exit\"}" \
+        >/dev/null 2>&1 || true
+    assert_eq "$$" "$(cat "$proj/.cs/session.lock" 2>/dev/null)" "the live lock is left as it was" || return 1
+}
+
 run_test test_session_end_spares_a_live_sessions_lock
 run_test test_session_end_clears_a_stale_lock
+run_test test_session_end_reads_the_lock_by_the_one_lock_rule
+run_test test_session_end_without_the_lock_rule_leaves_the_lock
 
 
 # --- A torn JSONL tail must not take the next record down with it ---
