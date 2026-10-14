@@ -92,7 +92,7 @@ No git repo required. No project structure needed. Just a name for what you're w
 - Bash 3.2+ (macOS system bash supported)
 - A UTF-8 locale. Under `ja_JP.eucJP`, `ko_KR.eucKR` or `zh_CN.eucCN`, bash stops with a syntax error in `cs` and two of its hooks.
 - `jq` for hook configuration
-- `perl`, which cs takes its file locks through (macOS and most Linux distributions ship it)
+- `perl`, which cs takes its file locks through and lists a worktree's untracked files with (macOS and most Linux distributions ship it)
 - `git` for local session history and crash recovery
 - Windows: WSL2 (see [Installation → Windows](#windows)); native Windows and Git Bash are not supported
 
@@ -169,7 +169,7 @@ cs -detect-theme            # Show the detected terminal light/dark theme
 cs -list, -ls               # List all sessions
 cs -live                    # List sessions running right now on this machine, with what each is doing
 cs -status "<text>"         # Set this session's status (also: cs -status, cs -status --clear)
-cs -remove, -rm <name>...   # Remove sessions (each asks its own confirm, naming files cs did not create; --force skips the confirm and the live lock, and refuses a session holding such files unless --delete-files is added; a base session's age pins under ~/.cs-secrets/sessions/<name>/ go with it)
+cs -remove, -rm <name>...   # Remove sessions (each asks its own confirm, naming files cs did not create and, for a worktree, the files git does not track, your own under `.claude/` included; --force skips the confirm and the live lock, and refuses a session holding such files unless --delete-files is added; a base session's age pins under ~/.cs-secrets/sessions/<name>/ go with it)
 cs -update [--check|--force]   # Update to latest (--check: check only; --force: reinstall)
 cs -uninstall               # Uninstall cs
 cs -help, -h                # Show help message
@@ -337,9 +337,12 @@ Each worktree is a full cs session (own conversation, color, crash
 recovery, task list) that shares the base session's secrets.
 
 cs never commits for you: retirement refuses dirty checkouts and untracked
-files and tells you what to commit. Git-ignored files in the worktree (build
-output, local secrets) are not checked and go with it, so keep anything you
-need that git ignores outside a feature worktree. Creating a feature from a base with uncommitted changes asks
+files and tells you what to commit. Git-ignored files do not block it. Those
+under a directory a build or install recreates (node_modules, target, .venv
+and the like) go with the worktree. Retirement moves every other ignored file,
+a `.env` or a local database, to the system trash first and lists each one
+(`trash` on macOS, `gio trash` on Linux; with neither it refuses and removes
+nothing). Creating a feature from a base with uncommitted changes asks
 before branching from the last commit (interactive sessions) or refuses
 (scripts). Abandon a feature with `cs -rm myproj@fix-auth`. Repos that
 gitignore `.cs/` get a per-worktree `.cs/` whose records are fused into the
