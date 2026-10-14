@@ -777,18 +777,16 @@ EOF
 # line, to one of the two four-option blocks above, and in a line opening
 # "When the session is complete, use the `/wrap` command" the exact sentence
 # offering /summary and /sweep alone. A block or line the user edited does
-# not match and is printed as it was. A trailing CR is ignored when comparing,
-# as a CRLF checkout of the CLAUDE.md the protocol came from leaves one.
+# not match and is printed as it was.
 _wrap_only_rewrite() {  # check|print, file
     OLD_TRIGGERS="$(_emit_four_option_cue_with_triggers)" \
     OLD_SIGNALS="$(_emit_four_option_cue_with_signals)" \
     NEW_BLOCK="$(_emit_wrap_cues_block)" \
     MODE="$1" awk '
-        function strip(s) { sub(/\r$/, "", s); return s }
         # Whether the n lines of old[] match the file from line i.
         function block_at(i, old, n,    k) {
             if (i + n - 1 > NR) return 0
-            for (k = 1; k <= n; k++) if (strip(line[i + k - 1]) != old[k]) return 0
+            for (k = 1; k <= n; k++) if (line[i + k - 1] != old[k]) return 0
             return 1
         }
         BEGIN {
@@ -802,7 +800,7 @@ _wrap_only_rewrite() {  # check|print, file
             changed = 0
             i = 1
             while (i <= NR) {
-                if (strip(line[i]) == "<!-- cs:wrap-cues -->") {
+                if (line[i] == "<!-- cs:wrap-cues -->") {
                     n = 0
                     if (block_at(i, trig, nt)) n = nt
                     else if (block_at(i, sig, ns)) n = ns
