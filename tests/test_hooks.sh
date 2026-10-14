@@ -4535,6 +4535,11 @@ test_reminder_carries_the_commit_cadence() {
     output=$(echo '{}' | bash "$HOOKS_DIR/narrative-reminder.sh" 2>/dev/null)
     assert_output_contains "$output" "never one commit per append" \
         "Reminder should carry the commit cadence" || return 1
+    # The session protocol's cs:session-commits rule says the same: session
+    # files never get a commit of their own, and ride in the handoff or /wrap
+    # commit or the project change they describe.
+    assert_output_contains "$output" "Narrative appends never get a commit of their own: commit them with the next handoff (/rotate) or /wrap commit, or with the project change they describe" \
+        "Cadence should name the commits appends ride in, as the protocol does" || return 1
     # Naming the safe alternative matters: without it the instruction reads as
     # a reason to delay appends, which loses work the autosave ref already holds.
     assert_output_contains "$output" "autosave" \
