@@ -5099,23 +5099,25 @@ mod tests {
 
     // A session root's files cs did not create are listed one name per row,
     // as a worktree's untracked files are, and capped the same way, so [D]
-    // says which files it deletes. At 80x24 the rows left hold twelve names
-    // and the count of the rest.
+    // says which files it deletes. The popup takes the rows its lines use:
+    // at 80x24 the rows left hold thirteen names and the count of the rest,
+    // and the popup's border follows the key hint.
     #[test]
     fn delete_confirm_lists_files_cs_did_not_create_one_per_row() {
         let root = std::env::temp_dir().join(format!("cs-ui-del-root-files-{}", std::process::id()));
         std::fs::create_dir_all(root.join("rel/.cs/local")).unwrap();
-        for i in 0..14 {
+        for i in 0..15 {
             std::fs::write(root.join(format!("rel/quarterly-report-draft-{i:02}.md")), "x").unwrap();
         }
 
         let rows = delete_confirm_rows_of(&root, &["rel"], 80, 24, "Also deletes");
 
         let mut expected = vec!["Also deletes files cs did not create:".to_string()];
-        expected.extend((0..12).map(|i| format!("    quarterly-report-draft-{i:02}.md")));
+        expected.extend((0..13).map(|i| format!("    quarterly-report-draft-{i:02}.md")));
         expected.extend(["    ... and 2 more", "", "[D] Delete those files too: no", ""].map(String::from));
         assert_eq!(rows.iter().take(expected.len()).collect::<Vec<_>>(), expected.iter().collect::<Vec<_>>());
         assert!(rows[expected.len()].starts_with("[y] Confirm"), "the key hint stays on screen: {rows:?}");
+        assert!(rows[expected.len() + 1].starts_with('\u{2500}'), "the popup's border follows the key hint: {rows:?}");
         std::fs::remove_dir_all(&root).ok();
     }
 
