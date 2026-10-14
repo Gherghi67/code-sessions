@@ -196,6 +196,7 @@ test_a_row_outside_the_task_schema_refuses_the_run() {
         '{"id":"4","subject":"s","description":"d","status":"completed","blocks":[],"blockedBy":[]}' \
         '{"id":"3","subject":"s","status":"completed","blocks":[],"blockedBy":[]}' \
         '{"id":"3","subject":"s","description":"d","status":"completed","blocks":{},"blockedBy":[]}' \
+        '{"id":"3","subject":"s","description":"d","status":"completed","blocks":[],"blockedBy":[]}{"id":"3","subject":"s","description":"d","status":"completed","blocks":[],"blockedBy":[]}' \
         '["3"]'; do
         rm -rf "$STORE"
         mkdir -p "$STORE"
