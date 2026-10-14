@@ -35,6 +35,8 @@ HOOKS_DEPLOY_DIR="${CS_HOOKS_DIR:-$HOME/.claude/hooks/cs}"
 # and on uninstall, wherever an older cs left them.
 # install.sh and run_uninstall both clean these up.
 # When retiring a hook in a release, add its filename here.
+# The three retired lists only ever grow and none may be emptied: bash 3.2
+# under set -u fails on an empty array expansion, and their loops expand them bare.
 RETIRED_HOOKS=(
     narrative-precompact.sh   # retired: PreCompact cannot inject context (no hookSpecificOutput/additionalContext); Stop reminder covers capture
     discovery-commits.sh      # renamed to autosave-commits.sh (general all-file crash recovery, not discoveries-specific)

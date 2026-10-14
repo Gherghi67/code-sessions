@@ -99,6 +99,8 @@ RELEASES_URL="https://github.com/hex/claude-sessions/releases/download"
 # and on uninstall, wherever an older cs left them.
 # install.sh and run_uninstall both clean these up.
 # When retiring a hook in a release, add its filename here.
+# The three retired lists only ever grow and none may be emptied: bash 3.2
+# under set -u fails on an empty array expansion, and their loops expand them bare.
 RETIRED_HOOKS=(
     narrative-precompact.sh   # retired: PreCompact cannot inject context (no hookSpecificOutput/additionalContext); Stop reminder covers capture
     discovery-commits.sh      # renamed to autosave-commits.sh (general all-file crash recovery, not discoveries-specific)
@@ -1231,7 +1233,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "fb5a4886f1727ea124192d6ed702f6edbae3f310c5f8dbf4b71677f9558c494e  bin/cs"
+    "1ca731897db86b99059869b9f74602acedf7e6f31d575dccc69b0bb1defec3e7  bin/cs"
     "53865bc18046bdb236b3bc644d3b197e5e2198890be4d22b449fea81c9ab41db  bin/cs-secrets"
     "a6d008e8bcba4e3d4c1599c76aaddc4ea1c4eb61e3ba861c60d9e4b91f706e78  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
