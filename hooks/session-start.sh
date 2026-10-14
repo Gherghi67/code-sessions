@@ -669,7 +669,13 @@ if [ "$SOURCE" = "resume" ] && git -C "$SESSION_DIR" rev-parse --git-dir >/dev/n
     # Recent commits since last session
     COMMIT_COUNT=$(git -C "$SESSION_DIR" rev-list --count --since="7 days ago" HEAD 2>/dev/null || echo "0")
     if [ "$COMMIT_COUNT" -gt 0 ]; then
-        RECENT_FILES=$(git -C "$SESSION_DIR" diff --name-only "HEAD~${COMMIT_COUNT}" HEAD 2>/dev/null | head -5 | xargs -n1 basename 2>/dev/null | paste -sd', ' - 2>/dev/null || true)
+        # The session's repo chooses the file names, and git quotes a control
+        # byte in one but not a shell metacharacter, so only a plain name is
+        # listed.
+        RECENT_FILES=$(git -C "$SESSION_DIR" diff --name-only "HEAD~${COMMIT_COUNT}" HEAD 2>/dev/null \
+            | while IFS= read -r _recent; do
+                _cs_is_plain_name "${_recent##*/}" && printf '%s\n' "${_recent##*/}"
+            done | head -5 | paste -sd', ' - 2>/dev/null || true)
         DYNAMIC="${DYNAMIC}Recent commits: ${COMMIT_COUNT} in last 7 days"
         if [ -n "$RECENT_FILES" ]; then
             DYNAMIC="${DYNAMIC} (${RECENT_FILES})"
@@ -717,6 +723,11 @@ if [ "$SOURCE" = "resume" ] && git -C "$SESSION_DIR" rev-parse --git-dir >/dev/n
         }
         while IFS=$'\t' read -r _added _deleted _path; do
             case "$_path" in .cs/memory/narrative.*.md) ;; *) continue ;; esac
+            # A clone chooses the file name and Claude is told the path to
+            # read. git quotes a control byte in it but not a shell
+            # metacharacter, so only a plain name is named, as only a plain
+            # rotation handoff loads.
+            _cs_is_plain_name "${_path##*/}" || continue
             [ -f "$SESSION_DIR/$_path" ] || continue
             case "$_added" in ''|-|0) continue ;; esac
             # One pass for both numbers: the diff of a rotated narrative is
