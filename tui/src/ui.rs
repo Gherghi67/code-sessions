@@ -1225,28 +1225,41 @@ fn one_row(text: &str, columns: u16, color: Color) -> Line<'static> {
 
 /// The delete warnings as confirm popup lines: a blank separator, then each
 /// warning, a listing of files git does not track one entry per row (as
-/// `cs -rm` prints it) under its own. A popup whose other lines take `other`
-/// rows of a `height`-row screen lists fewer than the usual twenty entries
-/// when they would not fit, so its key hint stays on screen. A warning and
-/// an entry are each one row of the popup's `columns`: one too wide for it
-/// is shortened in the middle.
+/// `cs -rm` prints it) under its own. The lines take at most the rows a
+/// `height`-row screen leaves a popup whose other lines take `other`, so its
+/// grant and key hint stay on screen: each warning gets its row first, and
+/// the entries share what is left, the first warnings' first, fewer than the
+/// usual twenty when they would not fit and none once the rows run out. When
+/// even one row per warning does not fit, the last row counts the warnings
+/// left out. A warning and an entry are each one row of the popup's
+/// `columns`: one too wide for it is shortened in the middle.
 fn warning_lines(warnings: &[DeleteWarning], height: u16, other: u16, columns: u16, color: Color) -> Vec<Line<'static>> {
-    if warnings.is_empty() {
+    let rows = (height as usize).saturating_sub(other as usize + 1);
+    if warnings.is_empty() || rows == 0 {
         return Vec::new();
     }
     let style = Style::default().fg(color);
-    let mut rows_left = (height as usize).saturating_sub(other as usize + 1 + warnings.len());
     let mut lines = vec![Line::from("")];
+    if warnings.len() > rows {
+        let shown = rows - 1;
+        lines.extend(warnings[..shown].iter().map(|w| one_row(&w.text, columns, color)));
+        lines.push(one_row(&format!("... and {} more warnings", warnings.len() - shown), columns, color));
+        return lines;
+    }
+    let mut rows_left = rows - warnings.len();
     for warning in warnings {
         lines.push(one_row(&warning.text, columns, color));
         let entries = &warning.entries;
+        if rows_left == 0 {
+            continue;
+        }
         let shown = if entries.len() <= rows_left.min(untracked::SHOWN_ENTRIES) {
             entries.len()
         } else {
-            rows_left.min(untracked::SHOWN_ENTRIES + 1).saturating_sub(1)
+            rows_left.min(untracked::SHOWN_ENTRIES + 1) - 1
         };
         for text in untracked::entry_lines_within(entries, shown, columns as usize) {
-            rows_left = rows_left.saturating_sub(1);
+            rows_left -= 1;
             lines.push(Line::from(Span::styled(text, style)));
         }
     }
