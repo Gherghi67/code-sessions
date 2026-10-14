@@ -269,7 +269,7 @@ WRAP_LINE_SHORT='When the session is complete, use the `/wrap` command to distil
 test_new_session_cue_offers_wrap_or_nothing() {
     local dir
     dir=$(_fresh_session cue-new)
-    assert_eq "$(printf '%s\n' '- "Run /wrap" — distill memory entries AND write a session summary in sequence (the usual choice)' '- "Not yet — keep working"')" \
+    assert_eq "$(printf '%s\n' '- "Run /wrap" — distill memory entries AND write a session summary in sequence' '- "Not yet — keep working"')" \
         "$(_cue_options "$dir/CLAUDE.local.md")" "the options the cue offers" || return 1
     assert_file_not_contains "$dir/CLAUDE.local.md" '/sweep' "no session text names /sweep" || return 1
     assert_file_not_contains "$dir/CLAUDE.local.md" '/summary[^.]' "no session text names /summary" || return 1
@@ -296,7 +296,7 @@ test_open_rewrites_each_four_option_cue_cs_wrote() {
         "_cue_block_with_$v" | _splice_cue_block "$dir/CLAUDE.local.md"
         _splice_wrap_line "$dir/CLAUDE.local.md" "$WRAP_LINE_WITH_CHECKPOINT"
         _reopen_with_migration "cue-$v"
-        assert_eq "$(printf '%s\n' '- "Run /wrap" — distill memory entries AND write a session summary in sequence (the usual choice)' '- "Not yet — keep working"')" \
+        assert_eq "$(printf '%s\n' '- "Run /wrap" — distill memory entries AND write a session summary in sequence' '- "Not yet — keep working"')" \
             "$(_cue_options "$dir/CLAUDE.local.md")" "the $v block offers /wrap or nothing" || return 1
         cmp -s "$TEST_TMPDIR/cue-$v.fresh" "$dir/CLAUDE.local.md" \
             || { echo "  FAIL: the $v session's CLAUDE.local.md is not the new session's"; diff "$TEST_TMPDIR/cue-$v.fresh" "$dir/CLAUDE.local.md" | head -20; return 1; }
