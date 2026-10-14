@@ -125,9 +125,10 @@ The platform is detected automatically. It decides one thing — whether secrets
 
 ## Concepts
 
-- **Sessions** — Isolated workspaces, each with their own git repo and documentation. `cs debug-api` creates one; running it again resumes it.
-- **Narrative** (`.cs/memory/narrative.<actor>.md`) — A per-actor lab notebook for findings, observations, and ideas during a session. Each co-developer writes their own file (so shared sessions never conflict) and reads it in full on resume. A teammate's file you only read from the line the resume digest names, never the whole thing. The notebook is append-only — a disproven entry gets a dated correction, never an edit — and `cs -narrative rotate` (run by `/wrap`, by the session manager's **Rotate narrative** entry, flagged at conversation start, by the Stop hook and by `cs -doctor`; `cs <name> -narrative rotate` reaches a session you are not in) moves the oldest sections verbatim into `.cs/narrative-archive/<actor>/` once a file passes `CS_NARRATIVE_MAX_BYTES` (224 KiB, under the Read tool's 256 KiB ceiling), keeping a `CS_NARRATIVE_KEEP_BYTES` (112 KiB) tail. Stored as native Claude Code memory files; see [docs/session-layout.md](docs/session-layout.md) for how that works.
+- **Sessions** — Isolated workspaces, each with their own git repo and documentation. `cs debug-api` creates one; running it again resumes it. `/rotate`, `/wrap` and `cs -narrative rotate` commit nothing under `.cs/`; what they write stays on disk until you commit it.
+- **Narrative** (`.cs/memory/narrative.<actor>.md`) — A per-actor lab notebook for findings, observations, and ideas during a session. Each co-developer writes their own file (so shared sessions never conflict) and reads it in full on resume. A teammate's file you only read from the line the resume digest names, never the whole thing. The notebook is append-only — a disproven entry gets a dated correction, never an edit — and `cs -narrative rotate` (run by `/wrap`, by the session manager's **Rotate narrative** entry, flagged at conversation start, by the Stop hook and by `cs -doctor`; `cs <name> -narrative rotate` reaches a session you are not in) moves the oldest sections verbatim into `.cs/narrative-archive/<actor>/` once a file passes `CS_NARRATIVE_MAX_BYTES` (128 KiB), keeping a `CS_NARRATIVE_KEEP_BYTES` (64 KiB) tail, so resuming reads about 96 KiB of narrative on average. Stored as native Claude Code memory files; see [docs/session-layout.md](docs/session-layout.md) for how that works.
 - **Checkpoints** (`.cs/checkpoints/`) — Labelled narrative snapshots you can save mid-session with `/checkpoint`, capturing the narrative, changes, and the current git HEAD.
+- **Task archive** (`.cs/task-archive/<date>/<actor>/<list>/`) — `/rotate` and `/wrap` move the completed rows of the session's native task list out of Claude Code's task store, once the session has agreed: each row byte for byte under `json/`, plus a readable `tasks.md`. The highest-numbered row stays live, so Claude Code never reuses an archived number. A feature's list gets its own directory, so `/finish` carries its archive into the base. An encrypted session keeps the archive in its vault.
 - **Timeline** (`.cs/timeline.jsonl`) — A structured event log recording session starts, ends, and checkpoints as newline-delimited JSON.
 - **Auto-memory** (`.cs/memory/`) — Claude Code's persistent operational notes, redirected into the session and cleaned up with `cs -rm`.
 
@@ -157,6 +158,7 @@ cs -msg <session> "note"    # Send mail to another session (--kind notify|task|t
 cs -msg --reply <thread> "note"  # Reply into a thread; the target comes from the thread
 cs -msg thread <id>         # Show one thread as a conversation, oldest first
 cs -msg log                 # This session's full mail history, sent and received
+cs -vet-session <dir>       # Exit 0 when git tracks no file in <dir>'s .cs/local or .cs/private, else name the file and how to untrack it (the cs mod, /rotate and /wrap ask before they write there)
 cs -spawn <name> [--brief <file>] [--task ..]  # Open a session in a cs-owned tmux window; --brief hands it a brief, --task arms its queue
 cs -doctor, -diag           # Run health checks (Keychain, hooks, memory, audit, tokens)
 cs -usage [--all] [<name>]  # Per-session token usage over the 5h/weekly rate-limit windows
@@ -418,7 +420,7 @@ cs -conversations                     # show this session's conversation chain
 Invoke the `rotate` skill yourself, or accept it when the narrative-reminder
 nudges you (see below). It distills the live conversation into a
 lineage-stamped handoff — parent UUID, purpose, and a continuation plan —
-commits it to `.cs/handoffs/YYYY-MM-DD-<slug>.md`, and arms it by naming it in
+writes it to `.cs/handoffs/YYYY-MM-DD-<slug>.md` (cs never commits it), and arms it by naming it in
 `.cs/local/pending-handoff`. Any earlier handoff of its own that is still
 pending is flipped to `superseded`, and the skill also prunes spent ones as it
 goes: it deletes a `consumed`, `discarded` or `superseded` handoff older than 30
@@ -429,7 +431,7 @@ history keeps every file the pass removes. The conversation keeps running;
 nothing has ended yet. An [encrypted session](docs/session-layout.md#encrypted-sessions)
 keeps the handoff and the marker in `.cs/private/` and commits neither.
 
-Because the handoff is committed and becomes the next conversation's opening
+Because you may commit the handoff and it becomes the next conversation's opening
 prompt, the skill redacts credentials, identifying data and sensitive
 personal detail such as health notes out of it (name the secret's purpose
 and its `cs -secrets get` key instead, and point at where the detail lives),
@@ -534,7 +536,7 @@ README objective instead.
 
 ## Slash Commands
 
-- `/wrap` — The canonical end-of-session command: runs the `/sweep` memory pass, then the `/summary` narrative, then `cs -narrative rotate`
+- `/wrap` — The canonical end-of-session command: runs the `/sweep` memory pass, then the `/summary` narrative, then `cs -narrative rotate`, then archives completed task rows; it commits nothing
 - `/sweep` — Distill the session into durable auto-memory entries (strict bar) and sweep findings into the narrative; checks its `MEMORY.md` rewrites for removed links and the byte budget; when a check could enforce a rule an entry states, adds a task to build that check and keeps the entry
 - `/summary` — Generate a narrative summary of the current session
 - `/checkpoint <label>` — Save a labelled state snapshot (narrative, changes, git HEAD)
@@ -573,6 +575,8 @@ cs runs with sensible defaults and needs no configuration. The one you're most l
 ```bash
 export CS_SESSIONS_ROOT="/path/to/sessions"   # default: ~/.claude-sessions
 ```
+
+cs and cs-secrets take a relative path from the directory they start in.
 
 For the full list — secrets backend, theme detection, status-line segments, Nerd Font icons, and the variables cs sets for you at launch — see [docs/configuration.md](docs/configuration.md).
 
