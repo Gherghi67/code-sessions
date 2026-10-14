@@ -493,28 +493,7 @@ else
     warn "jq not found - the Codex hook (rotation after /clear) was not registered."
 fi
 
-# Codex's own bar, showing the context and the 5-hour and weekly limits (see
-# CS_CODEX_STATUS_LINE). A status line already in config.toml is the user's
-# and stays. A declined status line declines this one too: the marker is the
-# one the Claude question and cs -statusline disable write (KEEP IN SYNC with
-# lib/70-statusline.sh).
-_codex_statusline_declined="${CS_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/cs}/statusline-declined"
-if [ -f "$_codex_statusline_declined" ]; then
-    info "Codex status line not set (declined earlier). Set it any time with: cs -statusline enable"
-else
-    _codex_sl_rc=0
-    _codex_sl_state=$(_codex_status_line_add "$CODEX_DIR") || _codex_sl_rc=$?
-    case "$_codex_sl_rc:$_codex_sl_state" in
-        0:*) installed "Codex status line" "$CODEX_DIR/config.toml" ;;
-        1:cs) ;;
-        1:own) info "Codex status line: keeping the one in $CODEX_DIR/config.toml" ;;
-        1:by-hand)
-            warn "Codex status line not set: $CODEX_DIR/config.toml writes tui as an inline table or dotted keys."
-            warn_more "Add it there by hand: $CS_CODEX_STATUS_LINE"
-            ;;
-        *) warn "Could not set the Codex status line in $CODEX_DIR/config.toml" ;;
-    esac
-fi
+
 fi
 
 # Install shell completions
@@ -710,6 +689,7 @@ else
     # which means a user pressing enter to skip one release opts out for good —
     # a decision they should see stated, not skim past.
     _remember_statusline_decline() {  # outcome_line, undo_hint
+        _statusline_declined_this_run=1
         if mkdir -p "$(dirname "$_statusline_declined")" 2>/dev/null \
             && touch "$_statusline_declined" 2>/dev/null; then
             info "$1"
@@ -1014,6 +994,34 @@ else
     fi
 fi
 
+fi
+
+# Apply Codex's bar after the Claude status-line consent decision.
+if _install_has_engine codex; then
+# Codex's own bar, showing the context and the 5-hour and weekly limits (see
+# CS_CODEX_STATUS_LINE). A status line already in config.toml is the user's
+# and stays. A declined status line declines this one too: the marker is the
+# one the Claude question and cs -statusline disable write (KEEP IN SYNC with
+# lib/70-statusline.sh).
+_codex_statusline_declined="${CS_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/cs}/statusline-declined"
+if [ "${_statusline_declined_this_run:-}" = 1 ]; then
+    info "Codex status line not set (declined). Set it any time with: cs -statusline enable"
+elif [ -f "$_codex_statusline_declined" ]; then
+    info "Codex status line not set (declined earlier). Set it any time with: cs -statusline enable"
+else
+    _codex_sl_rc=0
+    _codex_sl_state=$(_codex_status_line_add "$CODEX_DIR") || _codex_sl_rc=$?
+    case "$_codex_sl_rc:$_codex_sl_state" in
+        0:*) installed "Codex status line" "$CODEX_DIR/config.toml" ;;
+        1:cs) ;;
+        1:own) info "Codex status line: keeping the one in $CODEX_DIR/config.toml" ;;
+        1:by-hand)
+            warn "Codex status line not set: $CODEX_DIR/config.toml writes tui as an inline table or dotted keys."
+            warn_more "Add it there by hand: $CS_CODEX_STATUS_LINE"
+            ;;
+        *) warn "Could not set the Codex status line in $CODEX_DIR/config.toml" ;;
+    esac
+fi
 fi
 
 # Check if ~/.local/bin is in PATH

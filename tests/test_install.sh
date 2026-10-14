@@ -60,6 +60,9 @@ EXPECT
     assert_eq "/opt/other/bar" "$sl" "a foreign status line must be kept" || return 1
     jq -e '.hooks.SessionStart' "$fake_home/.claude/settings.json" >/dev/null 2>&1 \
         || { echo "  FAIL: hooks were not registered; the install aborted before finishing"; return 1; }
+    if grep -q '^status_line' "$fake_home/.codex/config.toml" 2>/dev/null; then
+        echo "  FAIL: Codex must honor the decline even if the memo cannot be written"; return 1
+    fi
 }
 
 # Declining is permanent, and that has to read as its own statement rather than
@@ -986,6 +989,30 @@ test_install_skips_the_codex_status_line_when_declined() {
     if grep -q '^status_line' "$fake_home/.codex/config.toml" 2>/dev/null; then
         echo "  FAIL: a declined status line was set for Codex"; return 1
     fi
+}
+
+test_install_first_decline_also_skips_codex_status_line() {
+    _need_tomllib || return
+    command -v expect >/dev/null 2>&1 \
+        || { echo "    SKIP (expect not installed; the decline needs a tty)"; return 77; }
+    local fake_home="$TEST_TMPDIR/codex-sl-first-decline" exp="$TEST_TMPDIR/first-decline.exp"
+    mkdir -p "$fake_home"
+    cat > "$exp" <<EXPECT
+set timeout 120
+spawn env HOME=$fake_home CS_INSTALL_ENGINES=claude,codex bash $INSTALL_SH
+expect {
+    -re {status line.*\[Y/n\]} { send "n"; exp_continue }
+    -re {$_ROTATE_WRAP_ASK_RE} { send "n"; exp_continue }
+    eof
+}
+catch wait result
+exit [lindex \$result 3]
+EXPECT
+    expect -f "$exp" > /dev/null 2>&1 || return 1
+    assert_exists "$fake_home/.config/cs/statusline-declined" "the first answer is recorded" || return 1
+    assert_eq none "$(_codex_status_items "$fake_home/.codex/config.toml")" "this install must honor its own decline" || return 1
+    HOME="$fake_home" CS_INSTALL_ENGINES=claude,codex bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || return 1
+    assert_eq none "$(_codex_status_items "$fake_home/.codex/config.toml")" "reinstall keeps Codex declined" || return 1
 }
 
 # enable sets Codex's line where it has a home, disable takes back only cs's.
@@ -1918,6 +1945,7 @@ run_test test_install_puts_the_codex_status_line_into_an_existing_tui
 run_test test_codex_status_line_keeps_the_users_own
 run_test test_codex_status_line_reads_toml_shapes
 run_test test_install_skips_the_codex_status_line_when_declined
+run_test test_install_first_decline_also_skips_codex_status_line
 run_test test_statusline_enable_and_disable_cover_codex
 run_test test_codex_only_install_can_disable_its_status_line
 run_test test_uninstall_renumbers_trust_for_later_codex_hooks
