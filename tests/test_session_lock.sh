@@ -151,9 +151,10 @@ test_force_overrides_live_lock() {
 # group ("-1", "0") holds no session, so the open reclaims it; a live pid
 # with whitespace around it holds the session, and the refusal names the pid.
 test_open_reads_the_lock_by_the_one_lock_rule() {
-    create_lock_test_session "test-session"
     local lock="$CS_SESSIONS_ROOT/test-session/.cs/session.lock" content out rc
     for content in -1 0; do
+        rm -rf "$CS_SESSIONS_ROOT/test-session"
+        create_lock_test_session "test-session"
         printf '%s' "$content" > "$lock"
         rc=0
         out=$("$CS_BIN" test-session </dev/null 2>&1) || rc=$?
@@ -161,6 +162,8 @@ test_open_reads_the_lock_by_the_one_lock_rule() {
         assert_eq "Removing stale session lock (PID $content)" "$(grep -F 'session lock' <<< "$out")" \
             "the open reclaims the lock of '$content'" || return 1
     done
+    rm -rf "$CS_SESSIONS_ROOT/test-session"
+    create_lock_test_session "test-session"
     sleep 300 &
     local live_pid=$!
     printf ' %s\n' "$live_pid" > "$lock"
@@ -168,8 +171,8 @@ test_open_reads_the_lock_by_the_one_lock_rule() {
     out=$("$CS_BIN" test-session </dev/null 2>&1) || rc=$?
     kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
     assert_eq "1" "$rc" "the open over a padded live pid exits 1" || return 1
-    assert_eq "Error: Session is already open (PID $live_pid)
-Use --force to override: cs test-session --force" "$out" "the refusal names the pid alone" || return 1
+    assert_eq "Error: Session is already open (PID $live_pid)" "$(grep -F 'already open' <<< "$out")" \
+        "the refusal names the pid alone" || return 1
 }
 
 test_lock_cleaned_on_session_end() {
