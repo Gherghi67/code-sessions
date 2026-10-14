@@ -1,5 +1,5 @@
 # ABOUTME: cs -archive-tasks: moves completed native task rows out of Claude Code's task
-# ABOUTME: store into the session's .cs/task-archive/<date>/<actor>/; plumbing /rotate and /wrap drive.
+# ABOUTME: store into the session's .cs/task-archive/<date>/<actor>/<list>/; plumbing /rotate and /wrap drive.
 
 # The session's answer to "archive completed task rows?", recorded once in
 # .cs/local and read by every later /rotate and /wrap: yes, no or unasked.
@@ -224,7 +224,7 @@ IDS
 
 # Where a run writes, and what the day's archive already holds of the live
 # list. Sets TASK_ARCHIVE_ROOT (_task_archive_root), TASK_ARCHIVE_DAY (this
-# actor's directory for today) and TASK_ARCHIVE_COPIED (the rows this run
+# actor's directory for this list today) and TASK_ARCHIVE_COPIED (the rows this run
 # moves that the day's archive already holds with the same bytes: an earlier
 # run copied them and stopped before it removed them). Any other archived
 # copy of a live row errors, naming the row and what to do: one with other
@@ -233,9 +233,12 @@ IDS
 _task_archive_place() {  # session_dir, meta_dir
     local store="$TASK_ARCHIVE_STORE" id dst why
     TASK_ARCHIVE_ROOT=$(_task_archive_root "$1" "$2") || exit 1
-    # Per actor: every machine numbers its copy of the list from 1, so two
-    # actors' rows share numbers, and one directory each keeps their paths apart.
-    TASK_ARCHIVE_DAY="$TASK_ARCHIVE_ROOT/$(date +%Y-%m-%d)/$(cs_actor_slug "$1")"
+    # Per actor, then per list: every machine numbers its copy of the list
+    # from 1, and so does every list (a feature's base@task beside its base on
+    # one machine), so rows of each share numbers; one directory per actor and
+    # list keeps their paths apart. The list's directory is named as Claude
+    # Code names its store.
+    TASK_ARCHIVE_DAY="$TASK_ARCHIVE_ROOT/$(date +%Y-%m-%d)/$(cs_actor_slug "$1")/${store##*/}"
     TASK_ARCHIVE_COPIED=""
     while read -r id; do
         dst="$TASK_ARCHIVE_DAY/json/$id.json"
@@ -288,7 +291,7 @@ archive_tasks_plan() {
 }
 
 # Moves the completed rows _task_archive_select picked into
-# .cs/task-archive/<date>/<actor>/json/, after appending a readable snapshot of
+# .cs/task-archive/<date>/<actor>/<list>/json/, after appending a readable snapshot of
 # the whole list to tasks.md there. It copies every row first and removes them
 # from the store only once all are copied, so a run that stops part way has
 # moved nothing. The next run finishes it: a live row the day's archive holds
