@@ -714,6 +714,7 @@ test_remove_from_a_feature_refuses_its_live_base_and_a_live_sibling() {
         assert_dir "$CS_SESSIONS_ROOT/$target" "$target survives" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
     done
     kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    return 0
 }
 
 # Every name is checked before any goes: an idle session listed first is not
