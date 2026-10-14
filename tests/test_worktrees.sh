@@ -2521,7 +2521,8 @@ run_test test_retire_ignored_mode_carries_every_record_the_base_lacks
 # under ~/.claude/tasks/<list id>, every character of the id outside
 # [a-zA-Z0-9_-] read as '-'. Keeps a copy of the row at $TEST_TMPDIR/<subject>.row.
 _archive_first_row_from() {  # dir list_id subject
-    local store="$HOME/.claude/tasks/$(printf '%s' "$2" | LC_ALL=C tr -c 'a-zA-Z0-9_-' '-')"
+    local store
+    store="$HOME/.claude/tasks/$(printf '%s' "$2" | LC_ALL=C tr -c 'a-zA-Z0-9_-' '-')"
     mkdir -p "$store"
     : > "$store/.lock"
     jq -n --arg subject "$3" '{id: "1", subject: $subject, description: "done", status: "completed", blocks: [], blockedBy: []}' \
