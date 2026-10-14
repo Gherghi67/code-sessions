@@ -5574,8 +5574,8 @@ fuse_session_records() {
             return 1
         fi
         case "$verdict" in
-            restore) warn "$rel was deleted in the base and edited in the feature; the feature's version is back in the base" ;;
-            replace) warn "$rel was edited in the feature and not in the base; the feature's version is now in the base" ;;
+            restore) warn "$(_printable_name "$rel") was deleted in the base and edited in the feature; the feature's version is back in the base" ;;
+            replace) warn "$(_printable_name "$rel") was edited in the feature and not in the base; the feature's version is now in the base" ;;
         esac
     done < "$plan"
     rm -f "$plan"
