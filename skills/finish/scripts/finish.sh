@@ -265,24 +265,48 @@ cmd_prepare() {  # [feature]
 # evidence, not origin's branch: the retire acts on this base, the PR path has
 # already fast-forwarded it onto the landing, and origin may have moved since.
 content_landing() {  # sha
-    local top mb list p n=0
-    local -a paths=()
+    local top mb tmp status=0
     top=$(git -C "$session_dir" rev-parse --show-toplevel) \
         || { echo "error: $session_dir is not a git checkout"; return 1; }
     # No merge base: the branch shares no history with the base, so there is
     # no "what the branch changed" to check.
     mb=$(git -C "$top" merge-base "$1" HEAD 2>/dev/null) || { echo "content_paths_checked: none"; return 0; }
-    list=$(mktemp "${TMPDIR:-/tmp}/finish-paths.XXXXXX")
-    git -C "$top" diff --no-renames --ignore-submodules=none --name-only -z "$mb" "$1" > "$list" \
-        || { rm -f "$list"; echo "error: git diff failed listing the paths $1 changed since $mb"; return 1; }
-    while IFS= read -r -d '' p; do paths+=("$p"); n=$((n + 1)); done < "$list"
-    rm -f "$list"
-    echo "content_paths_checked: $n"
-    [ "$n" -gt 0 ] || return 0
-    local differing
-    differing=$(GIT_LITERAL_PATHSPECS=1 git -C "$top" diff --no-renames --ignore-submodules=none --name-only "$1" HEAD -- "${paths[@]}") \
-        || { echo "error: git diff failed comparing the paths $1 changed with base HEAD"; return 1; }
-    [ -z "$differing" ] || printf '%s\n' "$differing" | sed 's/^/content_differs: /'
+    tmp=$(mktemp -d "${TMPDIR:-/tmp}/finish-paths.XXXXXX") \
+        || { echo "error: could not create a temporary directory to compare paths in"; return 1; }
+    git -C "$top" diff --no-renames --ignore-submodules=none --name-only -z "$mb" "$1" > "$tmp/changed" \
+        || { rm -rf "$tmp"; echo "error: git diff failed listing the paths $1 changed since $mb"; return 1; }
+    # Every path HEAD holds differently from <sha>, over the whole tree, so no
+    # path list goes on a command line (ARG_MAX). Listed twice: NUL-separated
+    # to match against the changed paths, and as git quotes names to print
+    # them. git lists both in the same order. -C0: names are bytes, whatever
+    # PERL_UNICODE says.
+    git -C "$top" diff --no-renames --ignore-submodules=none --name-only -z "$1" HEAD > "$tmp/differ" \
+        && git -C "$top" diff --no-renames --ignore-submodules=none --name-only "$1" HEAD > "$tmp/named" \
+        || { rm -rf "$tmp"; echo "error: git diff failed comparing $1 with base HEAD"; return 1; }
+    perl -C0 -e '
+        my ($changed_file, $differ_file, $named_file) = @ARGV;
+        my (%changed, @differ, @named);
+        {
+            local $/ = "\0";
+            open(my $c, "<", $changed_file) or die "error: cannot read $changed_file: $!\n";
+            while (my $p = <$c>) { chomp $p; $changed{$p} = 1 }
+            open(my $d, "<", $differ_file) or die "error: cannot read $differ_file: $!\n";
+            @differ = <$d>;
+            chomp @differ;
+        }
+        open(my $n, "<", $named_file) or die "error: cannot read $named_file: $!\n";
+        @named = <$n>;
+        chomp @named;
+        if (@differ != @named) {
+            printf "error: git listed %d paths that differ from base HEAD NUL-separated but %d quoted\n",
+                scalar @differ, scalar @named;
+            exit 1;
+        }
+        printf "content_paths_checked: %d\n", scalar keys %changed;
+        for my $i (0 .. $#differ) { print "content_differs: $named[$i]\n" if $changed{$differ[$i]} }
+    ' "$tmp/changed" "$tmp/differ" "$tmp/named" || status=$?
+    rm -rf "$tmp"
+    return "$status"
 }
 
 cmd_report() {  # base task sha
