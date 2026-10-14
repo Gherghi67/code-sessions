@@ -3515,7 +3515,10 @@ mod tests {
         app.rename_input.set("bad/name");
         app.handle_key(KeyEvent::from(KeyCode::Enter));
         assert_eq!(app.mode, Mode::Normal);
-        assert!(app.status_message.as_ref().unwrap().text.contains("Invalid"));
+        assert_eq!(
+            app.status_message.as_ref().map(|m| (m.text.as_str(), m.level)),
+            Some(("Session name must contain only alphanumeric characters, hyphens, underscores, and dots", StatusLevel::Error))
+        );
     }
 
     #[test]
@@ -4259,11 +4262,11 @@ mod tests {
     }
 
     // A rename to a name cs refuses, one with a leading dot or hyphen, is
-    // refused by the rule's name: a session renamed to `.work` drops out of
-    // every listing, and one named `-rm` reads as a cs verb.
+    // refused by the rule's name in cs's words: a session renamed to `.work`
+    // drops out of every listing, and one named `-rm` reads as a cs verb.
     #[cfg(unix)]
     #[test]
-    fn rename_refuses_a_leading_dot_or_hyphen() {
+    fn rename_refuses_a_name_cs_refuses_in_cs_words() {
         use crate::session::test_root;
         let _env = CS_BIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (tmp, root, home) = rename_fixture("lead", true);
@@ -4271,8 +4274,10 @@ mod tests {
         let _home = test_home::scoped(home.clone());
         std::env::set_var("CS_BIN", tmp.join("cs-stub"));
         for (name, refusal) in [
-            (".work", "Invalid name: a session name cannot start with a dot"),
-            ("-rm", "Invalid name: a session name cannot start with a hyphen"),
+            (".work", "Session name cannot start with a dot"),
+            ("-rm", "Session name cannot start with a hyphen"),
+            ("..", "Session name cannot be '.' or '..'"),
+            ("  ", "Session name cannot be empty"),
         ] {
             let mut app = app_on(&root, "proj");
             app.handle_key(KeyEvent::from(KeyCode::Char('r')));
@@ -4286,7 +4291,9 @@ mod tests {
                 "{name}"
             );
             assert!(root.join("proj/.cs").is_dir(), "{name}: the session keeps its name");
-            assert!(!root.join(name).exists(), "{name}: nothing is moved to the refused name");
+            let listed: Vec<String> =
+                std::fs::read_dir(&root).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+            assert_eq!(listed, ["proj"], "{name}: nothing is moved to the refused name");
         }
         std::env::remove_var("CS_BIN");
         assert!(!tmp.join("argv").exists(), "cs-secrets is never asked to move anything");
@@ -4966,7 +4973,10 @@ mod tests {
         app.create_input.set("bad/name");
         app.handle_key(KeyEvent::from(KeyCode::Enter));
         assert_eq!(app.mode, Mode::Normal);
-        assert!(app.status_message.as_ref().unwrap().text.contains("Invalid"));
+        assert_eq!(
+            app.status_message.as_ref().map(|m| (m.text.as_str(), m.level)),
+            Some(("Session name must contain only alphanumeric characters, hyphens, underscores, and dots", StatusLevel::Error))
+        );
     }
 
     #[test]
@@ -4988,15 +4998,17 @@ mod tests {
     // cs refuses a name with a leading dot (its own staging dirs, .spawn and
     // .usage, sit at the sessions root under dot names) or a leading hyphen
     // (`cs -uninstall` runs a verb), so the picker creates neither, and says
-    // which rule the name breaks.
+    // which rule the name breaks in cs's words, as it does for an empty name.
     #[test]
-    fn create_session_refuses_a_leading_dot_or_hyphen() {
+    fn create_session_refuses_a_name_cs_refuses_in_cs_words() {
         let tmp = std::env::temp_dir().join(format!("cs-tui-create-lead-{}", std::process::id()));
         std::fs::create_dir_all(&tmp).ok();
         let _root = session::test_root::scoped(tmp.clone());
         for (name, refusal) in [
-            ("-uninstall", "Invalid name: a session name cannot start with a hyphen"),
-            (".spawn", "Invalid name: a session name cannot start with a dot"),
+            ("-uninstall", "Session name cannot start with a hyphen"),
+            (".spawn", "Session name cannot start with a dot"),
+            ("..", "Session name cannot be '.' or '..'"),
+            ("  ", "Session name cannot be empty"),
         ] {
             let mut app = App::new(sample_sessions());
             app.mode = Mode::CreateSession;
@@ -5684,11 +5696,14 @@ mod tests {
         assert_eq!(session_name_refusal("v2026.7.4"), None);
         assert_eq!(session_name_refusal("my_session"), None);
         // Rejected — these would produce a dir the cs CLI can't open, or traverse.
-        let dot = Some("Invalid name: a session name cannot start with a dot");
-        let chars = Some("Invalid name: use letters, digits, - _ . only");
-        assert_eq!(session_name_refusal(""), Some("Name cannot be empty"));
-        assert_eq!(session_name_refusal("."), dot);
-        assert_eq!(session_name_refusal(".."), dot);
+        // Each refusal is cs's own text, word for word.
+        let dots = Some("Session name cannot be '.' or '..'");
+        let chars = Some("Session name must contain only alphanumeric characters, hyphens, underscores, and dots");
+        assert_eq!(session_name_refusal(""), Some("Session name cannot be empty"));
+        assert_eq!(session_name_refusal("."), dots);
+        assert_eq!(session_name_refusal(".."), dots);
+        assert_eq!(session_name_refusal(".spawn"), Some("Session name cannot start with a dot"));
+        assert_eq!(session_name_refusal("-rm"), Some("Session name cannot start with a hyphen"));
         assert_eq!(session_name_refusal("has space"), chars);
         assert_eq!(session_name_refusal("café"), chars); // non-ASCII letter
         assert_eq!(session_name_refusal("base@task"), chars); // worktree separator
