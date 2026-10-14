@@ -1294,7 +1294,7 @@ CS_PAYLOAD_SHA256=(
     "4804601ffde2d8023808335c58e88e2af65b6817d6fedb216491466e27241b9c  commands/wrap.md"
     "2520a6d54d75e3e9f1768160826a8b9f21e38e2234538cc62e3ec6337008fc28  skills/store-secret/SKILL.md"
     "63db6214c1afcb6b3f107383ff77dd0a738802e11ae8f7ed120988c496b9f431  skills/prose-hygiene/SKILL.md"
-    "a35f96ac7cdc5b80894c402b465320110a2d03fc276581edad5c6ed3d6e926fe  skills/rotate/SKILL.md"
+    "8addfa52298a1625db72efad6387e491d8052d4fddf5b67ec9457c87053ff16a  skills/rotate/SKILL.md"
     "b6eb9ffe2160e43bb95100b850427d2ae28d4c5e0e719564ba2f4b8d3c14a20a  skills/finish/SKILL.md"
     "7915ca859bf53215b4f5c41833dca3a0c661921523eb5424d1f146befefae922  skills/feature/SKILL.md"
     "343016f4d62029a85cfae3c0911b8a7a2bff99a31bd868e04ca83ec4002d6f48  skills/write-as-me/SKILL.md"
