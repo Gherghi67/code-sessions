@@ -200,7 +200,8 @@ volume, it stays mounted, and the next open unmounts it and asks for the
 password. A second conversation opened while the session runs joins the
 mounted volume without asking. `pre-open` learns that the session runs from
 `CS_LIVE_LOCK_PID` (see the table above) or from `.cs/local/vault-holders`;
-it never reads the lock itself. Run by hand, without the variable, it joins
+it never reads the lock itself. Run by hand, without the variable or with
+one that names no running process (a pid that has ended, `0`), it joins
 only a volume a listed holder keeps, and otherwise unmounts the volume and
 asks for the password. An open that stops before Claude Code starts
 (a refusal, or a cancelled prompt) unmounts the volume it mounted.
