@@ -1331,6 +1331,18 @@ test_age_list_preview_drops_control_bytes() {
     assert_no_escape_bytes "$out" "no escape byte reaches the terminal" || return 1
 }
 
+# A recipient file holds one key, on its first line. age list previews that
+# line only, so a newline in a file a clone chose cannot lay out a second row
+# naming a recipient that does not exist.
+test_age_list_previews_only_a_recipient_files_first_line() {
+    local dir="$CS_SESSIONS_ROOT/test-session/.cs/age-recipients" out
+    mkdir -p "$dir"
+    printf 'x\n  - bob: age1qqqqq\n' > "$dir/zz.pub"
+    out=$("$CS_SECRETS_BIN" age list 2>&1) || return 1
+    assert_eq "Recipients for session: test-session
+  - zz: x..." "$out" "age list shows one row, previewing the first line" || return 1
+}
+
 test_export_encrypts_to_a_recipient_pinned_by_age_add() {
     _use_real_age || return $?
     local meta="$CS_SESSIONS_ROOT/test-session/.cs"
@@ -4701,6 +4713,7 @@ run_test test_age_remove_reencrypts_an_unchanged_store
 run_test test_export_refuses_an_unpinned_pushed_recipient
 run_test test_recipient_names_a_clone_chose_print_as_plain_names
 run_test test_age_list_preview_drops_control_bytes
+run_test test_age_list_previews_only_a_recipient_files_first_line
 run_test test_export_encrypts_to_a_recipient_pinned_by_age_add
 run_test test_export_never_pins_from_a_forged_sync_file
 run_test test_export_ignores_a_pin_list_planted_in_the_checkout
