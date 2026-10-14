@@ -1414,6 +1414,34 @@ test_install_and_uninstall_refuse_a_retired_command_with_a_path() {
     assert_eq "$(_cs_shipped_content)" "$(cat "$home/.claude/hooks/cs/session-start.sh" 2>/dev/null)" "uninstall removes nothing" || return 1
 }
 
+# An entry that is empty, '.' or '..' names the commands directory or its
+# parent, not a file in it. Install and uninstall refuse each one as they
+# refuse an entry with a path component: naming it, with nothing deployed and
+# nothing removed.
+test_install_and_uninstall_refuse_a_retired_command_that_names_no_file() {
+    local entry repo home out rc
+    for entry in '' '.' '..'; do
+        repo="$TEST_TMPDIR/retired-nofile-${#entry}-repo" home="$TEST_TMPDIR/retired-nofile-${#entry}-home"
+        _copy_build_inputs "$repo"
+        printf '%s\n' "RETIRED_COMMANDS+=('$entry')" >> "$repo/lib/01-manifests.sh"
+        (cd "$repo" && bash build.sh > /dev/null) || { echo "  FAIL: build.sh failed"; return 1; }
+        mkdir -p "$home/.claude/commands"
+        rc=0
+        out=$(HOME="$home" bash "$repo/install.sh" 2>&1 < /dev/null) || rc=$?
+        assert_eq "1" "$rc" "install exit status for '$entry'" || { echo "$out"; return 1; }
+        assert_output_contains "$out" "Error: RETIRED_COMMANDS entry '$(_bre_literal "$entry")' is not a file name" "install names the entry '$entry'" || return 1
+        assert_not_exists "$home/.local" "install deploys nothing for '$entry'" || return 1
+        assert_eq "" "$(ls -A "$home/.claude/commands")" "install leaves the commands directory empty for '$entry'" || return 1
+        mkdir -p "$home/.claude/hooks/cs"
+        _cs_shipped_content > "$home/.claude/hooks/cs/session-start.sh"
+        rc=0
+        out=$(printf 'y\n' | HOME="$home" "$repo/bin/cs" -uninstall 2>&1) || rc=$?
+        assert_eq "1" "$rc" "uninstall exit status for '$entry'" || { echo "$out"; return 1; }
+        assert_output_contains "$out" "Error: RETIRED_COMMANDS entry '$(_bre_literal "$entry")' is not a file name" "uninstall names the entry '$entry'" || return 1
+        assert_eq "$(_cs_shipped_content)" "$(cat "$home/.claude/hooks/cs/session-start.sh" 2>/dev/null)" "uninstall removes nothing for '$entry'" || return 1
+    done
+}
+
 # The cs mod shipped as cs-rotate before it took the name cs; a copy left
 # under the old name keeps loading into every Claude Code the machine starts,
 # beside the mod under its current name.
@@ -3066,6 +3094,7 @@ run_test test_a_retired_hook_replaced_by_a_link_to_a_device_is_kept_unread
 run_test test_install_removes_the_mod_under_its_old_name
 run_test test_install_and_uninstall_remove_retired_commands_cs_wrote
 run_test test_install_and_uninstall_refuse_a_retired_command_with_a_path
+run_test test_install_and_uninstall_refuse_a_retired_command_that_names_no_file
 run_test test_rotate_wrap_keys_yes_creates_the_file_with_only_cs_block
 run_test test_rotate_wrap_keys_merge_into_the_existing_global_block
 run_test test_rotate_wrap_keys_never_overwrite_a_user_binding
