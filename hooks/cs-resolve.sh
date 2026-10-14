@@ -293,9 +293,10 @@ cs_is_nested_child() {
     ! cs_is_lead
 }
 
-# True when a live claude other than this one holds the claim: the claude is
-# shown to be a guest, where cs_is_nested_child only fails to show it is the
-# lead. The two differ where no claim stands under a launch that takes claims
+# True when a live claude other than this one holds the claim, or the launch
+# takes no claim and this claude is not the lead by pid: the claude is shown
+# to be a guest, where cs_is_nested_child only fails to show it is the lead.
+# The two differ where no claim stands under a launch that takes claims
 # (the lead's SessionStart could not write one, or ps could not show it was
 # under the launch), and each caller takes the side that loses nothing. What a
 # guest must not take from the lead (the armed rotation, the once-only digest,
