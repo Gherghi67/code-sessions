@@ -254,7 +254,8 @@ _untracked_and_ignored_lines() {  # checkout_dir prefix
 # Print the PID of a live lock on a session that the invoker does not own:
 # empty when the lock is absent, names no running process by live_lock_pid's
 # rule, or is the invoking conversation's own (session_lock_owned_by_invoker).
-# The integrate and retire entries both refuse on a non-empty answer.
+# The integrate and retire entries both refuse on a non-empty answer, and
+# -features reports it as the lock that would refuse them.
 _foreign_live_lock_pid() {  # session_name meta_dir
     local pid
     pid=$(live_lock_pid "$2")
