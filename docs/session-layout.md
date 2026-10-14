@@ -99,7 +99,10 @@ user-owned `CLAUDE.md` is never touched. Its `cs:session-commits` section says
 files under `.cs/` never get a commit of their own: they go in with the next
 handoff commit (the `rotate` skill, subject `session: handoff <basename>`) or
 the `/wrap` commit (`session: wrap <date>`), or with the project change they
-describe. An open adds the section to a session that lacks it; delete its text
+describe. `cs -narrative rotate` commits its own cut as
+`session: rotate narrative.<actor> (<N> sections -> narrative-archive)`; every
+commit of session files has a `session:` subject, and each names its paths, so
+work the user had already staged stays out of it. An open adds the section to a session that lacks it; delete its text
 but keep the comment to opt out.
 
 ## Machine-local files (`.cs/local/`, gitignored)

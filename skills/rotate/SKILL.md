@@ -286,12 +286,20 @@ vault is locked: tell the user to mount it and stop.
    appended by the conversation that took it over, step 7's prune
    deletions, the archive directory `cs -archive-tasks run` named (unless it
    sits in the vault, under `.cs/private/`), and any tracked session state,
-   like narratives. Commit them as one new commit, never an amend, with the
-   subject `session: handoff <basename>`: the handoff's basename without
-   `.md`, as in `session: handoff 2026-10-14-continue-f5-plan`. Use that
-   subject as written and invent no other; a `cs:` subject is one cs writes
-   itself. When every path is ignored there is nothing to commit; say so in
-   your reply.
+   like narratives. Stage them with `git add -- <paths>`, then commit with
+   `git commit -m 'session: handoff <basename>' -- <paths>`, naming the same
+   paths: a commit with paths takes only those, so
+   work the user had already staged stays staged and out of it. Git refuses
+   a commit with paths mid-merge; then make no commit and say so in your
+   reply. It is one new commit, never an amend, and its subject is
+   `session: handoff <basename>`: the handoff's basename without `.md`, as
+   in `session: handoff 2026-10-14-continue-f5-plan`. Use that subject as
+   written and invent no other. Every commit of session files has a
+   `session:` subject: this one, `/wrap`'s `session: wrap <YYYY-MM-DD>`, and
+   the one `cs -narrative rotate` makes,
+   `session: rotate narrative.<actor> (<N> sections -> narrative-archive)`;
+   no `cs:` subject exists. When every path is ignored there is nothing to
+   commit; say so in your reply.
 
    Once the commit lands, the handoff's CONTENT is safe: nothing left to
    lose. It is not yet armed — that is deliberate, see step 9.
