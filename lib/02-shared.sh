@@ -731,7 +731,10 @@ _cs_refuses_write() {  # writer, path, [probe]
     case "$e" in /*) ;; *) e="$PWD/$e" ;; esac
     root=$(_cs_session_root_of "$p") || return 1
     out=$(_cs_write_leaves_session "$root" "$e") || return 1
-    echo "$1: $p leads to $out${p#"$e"}, outside the session $root" >&2
+    # Below the session, the path can hold names a clone chose, so that part,
+    # and the part of it that does not exist yet, print as plain names; the
+    # session's own path prints as it is spelled.
+    echo "$1: $root/$(_cs_plain_name "${p#"$root"/}" 160) leads to $out$(_cs_plain_name "${p#"$e"}" 160), outside the session $root" >&2
 }
 
 # Append a command's output to a file, unless a link takes the file out of the
