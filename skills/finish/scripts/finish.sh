@@ -319,7 +319,7 @@ cmd_report() {  # base task sha
     echo "landed: $landed"
     echo "base_head: $(git -C "$session_dir" rev-parse HEAD)"
     local tip n_after
-    tip=$(git -C "$wt" rev-parse HEAD)
+    tip=$(git -C "$wt" rev-parse HEAD) || { echo "error: git rev-parse HEAD failed in the worktree $wt"; exit 1; }
     n_after=$(git -C "$wt" rev-list --count "$sha..HEAD" 2>/dev/null || echo 0)
     echo "not_integrated: $n_after"
     dirt_lines "$wt"
