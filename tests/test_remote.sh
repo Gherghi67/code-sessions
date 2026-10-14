@@ -126,6 +126,7 @@ setup() {
     export CS_NO_UPDATE_CHECK=1 CS_NO_ITERM2=1
     export FAKE_CLAUDE_LOG="$TEST_TMPDIR/claude.log"
     export FAKE_TMUX_LOG="$TEST_TMPDIR/tmux.log"
+    export FAKE_WRAPPER_LOG="$TEST_TMPDIR/wrapper.log"
     export FAKE_READY_FIFO="$TEST_TMPDIR/ready"
     write_fake_claude
     write_fake_tmux
@@ -174,12 +175,18 @@ group_gone_within_10s() {  # pgid
 
 # Run a command to its end in a process group of its own, as a terminal runs
 # it, with its input from RUN_CS_STDIN (/dev/null when unset), its output in
-# $TEST_TMPDIR/out and its status in CS_RC. The release cs leaves beside the
-# server runs in that group too, so the run is over only once the group is
-# empty; the wait keeps the next step from racing it.
+# $TEST_TMPDIR/out and its status in CS_RC. Its stderr goes to the file
+# RUN_CS_STDERR names when that is set, and into out with stdout otherwise.
+# The release cs leaves beside the server runs in that group too, so the run
+# is over only once the group is empty; the wait keeps the next step from
+# racing it.
 run_in_its_own_group() {  # command...
     CS_RC=0
-    perl -e 'setpgrp(0,0); exec @ARGV' "$@" > "$TEST_TMPDIR/out" 2>&1 < "${RUN_CS_STDIN:-/dev/null}" &
+    if [ -n "${RUN_CS_STDERR:-}" ]; then
+        perl -e 'setpgrp(0,0); exec @ARGV' "$@" > "$TEST_TMPDIR/out" 2> "$RUN_CS_STDERR" < "${RUN_CS_STDIN:-/dev/null}" &
+    else
+        perl -e 'setpgrp(0,0); exec @ARGV' "$@" > "$TEST_TMPDIR/out" 2>&1 < "${RUN_CS_STDIN:-/dev/null}" &
+    fi
     local leader=$!
     wait "$leader" || CS_RC=$?
     group_gone_within_10s "$leader" \
@@ -433,13 +440,96 @@ test_remote_refuses_a_claude_whose_version_check_fails() {
     assert_file_not_exists "$FAKE_CLAUDE_LOG" "remote-control never ran" || return 1
 }
 
-test_remote_refuses_options_carried_in_claude_code_bin() {
+test_remote_drops_options_carried_in_claude_code_bin_and_says_so() {
+    local err="$TEST_TMPDIR/err"
+    CLAUDE_CODE_BIN="claude --permission-mode bypassPermissions --allow-dangerously-skip-permissions" \
+        RUN_CS_STDERR="$err" run_cs_ok demo --remote --permission-mode plan || { cat "$err"; return 1; }
+    assert_eq "cs --remote runs claude remote-control without the rest of CLAUDE_CODE_BIN; --remote's own --permission-mode sets the permission mode of the sessions it starts. Dropped: --permission-mode bypassPermissions --allow-dangerously-skip-permissions" \
+        "$(strip_ansi < "$err" | grep -F 'Dropped:')" "one line on stderr names what was dropped" || { cat "$err"; return 1; }
+    assert_eq "1" "$(grep -c 'Dropped:' "$err")" "the line is printed once" || return 1
+    assert_eq "" "$(grep -F 'Dropped:' "$TEST_TMPDIR/out" || true)" "the line is not on stdout" || return 1
+    assert_eq "$TEST_TMPDIR/bin/claude" "$(log_value bin)" "claude runs by its absolute path" || return 1
+    assert_eq "[remote-control][--name][demo][--permission-mode][plan]" "$(log_value argv)" \
+        "remote-control gets none of the dropped options and the mode --remote was given" || return 1
+}
+
+# CLAUDE_CODE_BIN splits on blanks wherever cs runs it, so a quote in it is a
+# character of an option, not quoting: the line shows the text after the
+# command as written, blanks inside it kept, blanks around it trimmed.
+test_remote_names_dropped_options_exactly_as_written() {
+    local err="$TEST_TMPDIR/err"
+    CLAUDE_CODE_BIN=" claude  --append-system-prompt \"be brief\"  --add-dir '/tmp/a b' " \
+        RUN_CS_STDERR="$err" run_cs_ok demo --remote || { cat "$err"; return 1; }
+    assert_eq "cs --remote runs claude remote-control without the rest of CLAUDE_CODE_BIN; --remote's own --permission-mode sets the permission mode of the sessions it starts. Dropped: --append-system-prompt \"be brief\"  --add-dir '/tmp/a b'" \
+        "$(strip_ansi < "$err" | grep -F 'Dropped:')" "the dropped text is named exactly" || { cat "$err"; return 1; }
+    assert_eq "[remote-control][--name][demo][--permission-mode][default]" "$(log_value argv)" \
+        "remote-control gets none of it" || return 1
+}
+
+# The window is handed the claude checked here, an absolute path with no
+# options, so the line is printed once, on the caller's terminal, and the
+# window's own run has nothing to drop, whatever CLAUDE_CODE_BIN says in the
+# environment it starts from.
+test_remote_window_gets_the_command_alone_and_the_line_shows_once() {
+    local err="$TEST_TMPDIR/err" werr="$TEST_TMPDIR/window-err" cmd
+    CLAUDE_CODE_BIN="claude --permission-mode bypassPermissions" TMUX="/tmp/fake,1,0" \
+        RUN_CS_STDERR="$err" run_cs_ok demo --remote --permission-mode plan || { cat "$err"; return 1; }
+    assert_eq "cs --remote runs claude remote-control without the rest of CLAUDE_CODE_BIN; --remote's own --permission-mode sets the permission mode of the sessions it starts. Dropped: --permission-mode bypassPermissions" \
+        "$(strip_ansi < "$err" | grep -F 'Dropped:')" "the caller is told what was dropped" || { cat "$err"; return 1; }
+    assert_eq "new-session -d -s cs -n remote:demo -P -F #{window_id} $(window_command)" \
+        "$(grep '^new-session' "$FAKE_TMUX_LOG")" "the window gets the absolute claude with no options" || return 1
+    cmd=$(sed -n 's/^new-session -d -s cs -n remote:demo -P -F #{window_id} //p' "$FAKE_TMUX_LOG")
+    CLAUDE_CODE_BIN="claude --permission-mode bypassPermissions" TMUX="/tmp/fake,1,0" \
+        RUN_CS_STDERR="$werr" run_in_its_own_group sh -c "$cmd" || return 1
+    assert_eq "0" "$CS_RC" "the window's server ran" || { cat "$TEST_TMPDIR/out" "$werr"; return 1; }
+    assert_eq "0" "$(grep -c 'Dropped:' "$werr")" "the window prints no second line" || { cat "$werr"; return 1; }
+    assert_eq "[remote-control][--name][demo][--permission-mode][plan]" "$(log_value argv)" \
+        "the window's remote-control gets no dropped option and the mode it was given" || return 1
+}
+
+# CLAUDE_CODE_BIN's command word is what runs remote-control, so a wrapper in
+# front of claude is that word. One whose --version fails, as BSD env's does,
+# is refused by the version check, after the line naming what was dropped.
+test_remote_with_a_wrapper_whose_version_check_fails_is_refused() {
+    cat > "$TEST_TMPDIR/bin/with-env" << 'EOF'
+#!/bin/sh
+[ "$1" = --version ] && { echo "with-env: illegal option -- -" >&2; exit 1; }
+printf '[%s]' "$@" >> "$FAKE_WRAPPER_LOG"
+exit 0
+EOF
+    chmod +x "$TEST_TMPDIR/bin/with-env"
     local rc=0 out
-    out=$(CLAUDE_CODE_BIN="claude --permission-mode bypassPermissions" "$CS_BIN" demo --remote 2>&1) || rc=$?
-    assert_eq "1" "$rc" "options before the verb are refused" || return 1
-    assert_eq 'Error: cs --remote runs claude remote-control, which refuses options before its verb; CLAUDE_CODE_BIN carries "--permission-mode bypassPermissions" after the command. Set CLAUDE_CODE_BIN to the command alone for --remote.' \
-        "$(printf '%s' "$out" | strip_ansi)" "the refusal names the options" || return 1
-    assert_file_not_exists "$FAKE_CLAUDE_LOG" "remote-control never ran" || return 1
+    out=$(CLAUDE_CODE_BIN="with-env FOO=1 claude" "$CS_BIN" demo --remote 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the wrapper is refused" || { printf '%s\n' "$out"; return 1; }
+    assert_eq "cs --remote runs with-env remote-control without the rest of CLAUDE_CODE_BIN; --remote's own --permission-mode sets the permission mode of the sessions it starts. Dropped: FOO=1 claude
+Error: cs --remote needs Claude Code 2.1.299 or later for claude remote-control; $TEST_TMPDIR/bin/with-env --version exited with status 1." \
+        "$(printf '%s' "$out" | strip_ansi)" "the line names the wrapper and what was dropped, the refusal its version check" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/wrapper.log" "the wrapper never ran remote-control" || return 1
+    assert_file_not_exists "$FAKE_CLAUDE_LOG" "claude never ran" || return 1
+    [ ! -e "$CS_SESSIONS_ROOT/demo" ] || { echo "  FAIL: a refused --remote created the session"; return 1; }
+}
+
+# A wrapper whose --version prints a number at or past the floor, as
+# 1Password's op does (2.30.0), passes the check, and cs runs remote-control
+# through it: the wrapper's own error and status are the run's.
+test_remote_with_a_wrapper_whose_version_passes_runs_the_wrapper() {
+    cat > "$TEST_TMPDIR/bin/op" << 'EOF'
+#!/bin/sh
+[ "$1" = --version ] && { echo "2.30.0"; exit 0; }
+printf '[%s]' "$@" >> "$FAKE_WRAPPER_LOG"
+echo "[ERROR] unknown command \"$1\" for \"op\"" >&2
+exit 1
+EOF
+    chmod +x "$TEST_TMPDIR/bin/op"
+    local err="$TEST_TMPDIR/err"
+    CLAUDE_CODE_BIN="op run -- claude" RUN_CS_STDERR="$err" run_cs demo --remote || return 1
+    assert_eq "1" "$CS_RC" "cs exits with the wrapper's status" || { cat "$TEST_TMPDIR/out" "$err"; return 1; }
+    assert_eq "cs --remote runs op remote-control without the rest of CLAUDE_CODE_BIN; --remote's own --permission-mode sets the permission mode of the sessions it starts. Dropped: run -- claude" \
+        "$(strip_ansi < "$err" | grep -F 'Dropped:')" "the line names the wrapper and what was dropped" || { cat "$err"; return 1; }
+    assert_eq "[ERROR] unknown command \"remote-control\" for \"op\"" "$(grep -F '[ERROR]' "$err")" "the wrapper's own error is shown" || return 1
+    assert_eq "[remote-control][--name][demo][--permission-mode][default]" "$(cat "$TEST_TMPDIR/wrapper.log")" \
+        "remote-control's arguments go to the wrapper" || return 1
+    assert_file_not_exists "$FAKE_CLAUDE_LOG" "claude never ran" || return 1
 }
 
 test_remote_refuses_a_session_open_locally() {
@@ -720,7 +810,11 @@ run_test test_remote_refuses_a_claude_older_than_the_measured_version
 run_test test_remote_accepts_a_newer_claude_by_number_not_by_text
 run_test test_remote_refuses_a_claude_that_names_no_version
 run_test test_remote_refuses_a_claude_whose_version_check_fails
-run_test test_remote_refuses_options_carried_in_claude_code_bin
+run_test test_remote_drops_options_carried_in_claude_code_bin_and_says_so
+run_test test_remote_names_dropped_options_exactly_as_written
+run_test test_remote_window_gets_the_command_alone_and_the_line_shows_once
+run_test test_remote_with_a_wrapper_whose_version_check_fails_is_refused
+run_test test_remote_with_a_wrapper_whose_version_passes_runs_the_wrapper
 run_test test_remote_refuses_a_session_open_locally
 run_test test_local_open_is_refused_while_the_session_is_served
 run_test test_remote_stops_cleanly_when_its_window_hangs_up
