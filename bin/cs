@@ -14000,11 +14000,14 @@ _explain_nothing_committed() {  # dir, path...
 # user commits it, and a feature that inferred its mode from that would hide
 # the base's .cs through the common info/exclude. Features expect git to carry
 # .cs (tracked), unless the project's own rules already keep it out of git
-# (ignored; cs's own rules name only paths inside .cs, never its README).
+# (ignored). Asked of the directory, not a file in it: a file-type rule such
+# as *.md hides some of .cs's files and leaves the rest for git to show, and
+# cs's own rules name only paths inside .cs. `.cs/`, `.cs`, `/.cs/`, `.cs/*`
+# and `.cs/**` all match it.
 _record_feature_mode() {  # dir
     local state="$1/.cs/local/state" mode=tracked
     [ -z "$(_read_local_state "$state" cs_mode)" ] || return 0
-    if _cs_git_at "$1" check-ignore -q -- .cs/README.md 2>/dev/null; then
+    if _cs_git_at "$1" check-ignore -q -- .cs/ 2>/dev/null; then
         mode=ignored
     fi
     _set_local_state "$state" cs_mode "$mode"
