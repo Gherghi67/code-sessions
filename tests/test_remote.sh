@@ -7,6 +7,31 @@ source "$SCRIPT_DIR/test_lib.sh"
 
 CS_BIN="$SCRIPT_DIR/../bin/cs"
 
+# setup and teardown run under the suite's errexit and outside run_test's
+# count, so a command failing in either would end the suite with no FAIL line
+# and no Results line. SUITE_PHASE names the one running; an exit inside it
+# says which command stopped the suite, counts it as a failure and still
+# reports the results.
+SUITE_PHASE=""
+on_suite_exit() {
+    local rc=$? cmd="$BASH_COMMAND"
+    [ -n "$SUITE_PHASE" ] || return 0
+    echo "  FAIL: $SUITE_PHASE stopped the suite at \`$cmd\` (status $rc)"
+    TESTS_FAILED=$((TESTS_FAILED + 1))
+    FAILURES+=("$SUITE_PHASE")
+    SUITE_PHASE=""
+    report_results
+    exit 1
+}
+trap on_suite_exit EXIT
+
+# A teardown step that failed without stopping the suite: said, and counted.
+teardown_failed() {  # what
+    echo "  FAIL: $SUITE_PHASE: $1"
+    TESTS_FAILED=$((TESTS_FAILED + 1))
+    FAILURES+=("$SUITE_PHASE")
+}
+
 # The fake claude. --version prints FAKE_CLAUDE_VERSION. Any other call appends
 # what it was given to $FAKE_CLAUDE_LOG: argv, which cs variables are set (the
 # names only, never a value), its cwd, its pid and parent, and what the session
@@ -87,6 +112,9 @@ FAKE
 }
 
 setup() {
+    # test_name is run_test's local, visible here because bash scopes
+    # dynamically.
+    SUITE_PHASE="setup of ${test_name:-a test}"
     TEST_TMPDIR="$(mktemp -d)"
     export HOME="$TEST_TMPDIR/home"
     mkdir -p "$HOME"
@@ -105,23 +133,61 @@ setup() {
     unset FAKE_CLAUDE_MODE FAKE_CLAUDE_VERSION ANTHROPIC_API_KEY CS_REMOTE_WINDOW TMUX 2>/dev/null || true
     unset CLAUDE_SESSION_NAME CLAUDE_SESSION_DIR CLAUDE_SESSION_META_DIR CS_TERM_THEME CS_TERM_BG_RGB 2>/dev/null || true
     SERVE_PID=""
+    STARTED_PIDS=""
+    SUITE_PHASE=""
 }
 
+# Stops only what the test started: the serving process group, and the
+# processes it recorded in STARTED_PIDS. The serving group holds the release
+# cs leaves beside the server, so the session is removed only once that group
+# is empty.
 teardown() {
-    if [ -n "${SERVE_PID:-}" ] && kill -0 "$SERVE_PID" 2>/dev/null; then
+    SUITE_PHASE="teardown of ${test_name:-a test}"
+    if [ -n "${SERVE_PID:-}" ]; then
         kill -TERM -- -"$SERVE_PID" 2>/dev/null || true
         wait "$SERVE_PID" 2>/dev/null || true
+        group_gone_within_10s "$SERVE_PID" \
+            || { kill -KILL -- -"$SERVE_PID" 2>/dev/null || true; teardown_failed "process group $SERVE_PID still ran 10 s after its server was stopped"; }
+        SERVE_PID=""
     fi
-    exec 3<&- 2>/dev/null || true
-    local lf pid
-    for lf in "$CS_SESSIONS_ROOT"/*/.cs/session.lock "$CS_SESSIONS_ROOT"/*/.cs/local/remote.pid; do
-        [ -f "$lf" ] || continue
-        pid="$(cat "$lf" 2>/dev/null || true)"
-        case "$pid" in ''|*[!0-9]*) continue ;; esac
-        [ "$pid" = "$$" ] || kill "$pid" 2>/dev/null || true
+    local pid
+    for pid in $STARTED_PIDS; do
+        kill "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
     done
-    [ -n "${TEST_TMPDIR:-}" ] && [ -d "$TEST_TMPDIR" ] && rm -rf "$TEST_TMPDIR"
+    { exec 3<&-; } 2>/dev/null || true
+    rm -rf "$TEST_TMPDIR" || teardown_failed "could not remove $TEST_TMPDIR"
     unset CS_SESSIONS_ROOT CLAUDE_CODE_BIN CS_TMUX_BIN CS_TRANSCRIPTS_DIR CS_CLAUDE_DIR 2>/dev/null || true
+    SUITE_PHASE=""
+}
+
+# True once no process is left in process group <pgid>, waiting up to 10 s.
+group_gone_within_10s() {  # pgid
+    local i=0
+    while kill -0 -- -"$1" 2>/dev/null && [ "$i" -lt 50 ]; do
+        sleep 0.2
+        i=$((i + 1))
+    done
+    ! kill -0 -- -"$1" 2>/dev/null
+}
+
+# Run `cs <args>` to its end in a process group of its own, as a terminal runs
+# it, with its output in $TEST_TMPDIR/out and its status in CS_RC. The release
+# cs leaves beside the server runs in that group too, so the run is over only
+# once the group is empty; the wait keeps the next step from racing it.
+run_cs() {  # cs args...
+    CS_RC=0
+    perl -e 'setpgrp(0,0); exec @ARGV' "$CS_BIN" "$@" > "$TEST_TMPDIR/out" 2>&1 < /dev/null &
+    local leader=$!
+    wait "$leader" || CS_RC=$?
+    group_gone_within_10s "$leader" \
+        || { echo "  FAIL: cs $* left process group $leader running 10 s after it ended"; return 1; }
+}
+
+# run_cs, failing unless cs exits 0; cs's output is shown when it does not.
+run_cs_ok() {  # cs args...
+    run_cs "$@" || return 1
+    assert_eq "0" "$CS_RC" "cs $* exits 0" || { cat "$TEST_TMPDIR/out"; return 1; }
 }
 
 # One line of the fake's log, by key (the first such line).
@@ -147,19 +213,23 @@ start_serving() {  # cs args...
 }
 
 # Signal the serving process group, as closing a terminal or a tmux window
-# does, and collect cs's exit status into SERVE_RC.
+# does, collect cs's exit status into SERVE_RC, and wait for the release cs
+# left in the group to finish.
 stop_serving() {  # signal
     kill -"$1" -- -"$SERVE_PID"
     SERVE_RC=0
     wait "$SERVE_PID" || SERVE_RC=$?
+    group_gone_within_10s "$SERVE_PID" \
+        || { echo "  FAIL: process group $SERVE_PID still runs 10 s after its server stopped"; return 1; }
     SERVE_PID=""
 }
 
 # Run a command on a pseudo-terminal of its own, as a tmux window or a
 # terminal tab runs it: the command is the session leader there. Once the
 # fake server says ready, either type Ctrl-C (ctrlc) or close the terminal
-# (hangup), then print how the command ended. Only the kernel signals
-# anything here.
+# (hangup), then print how the command ended, once its process group (the
+# release cs leaves beside the server included) is empty. Only the kernel
+# signals anything here.
 drive_on_a_terminal() {  # ctrlc|hangup, command...
     local mode="$1"
     shift
@@ -174,6 +244,15 @@ if pid == 0:
     signal.signal(signal.SIGHUP, signal.SIG_DFL)
     signal.signal(signal.SIGINT, signal.SIG_DFL)
     os.execvp(cmd[0], cmd)
+def group_gone_within_10s():
+    end = time.time() + 10
+    while time.time() < end:
+        try:
+            os.killpg(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.2)
+    return False
 out, ready, start = b"", False, time.time()
 while time.time() - start < 60 and not ready:
     r, _, _ = select.select([fd, rfd], [], [], 0.5)
@@ -188,6 +267,8 @@ while time.time() - start < 60 and not ready:
 if not ready:
     print("never ready: " + out.decode("utf-8", "replace")[-1000:])
     os.kill(pid, 9)
+    os.waitpid(pid, 0)
+    group_gone_within_10s()
     sys.exit(0)
 if mode == "ctrlc":
     os.write(fd, b"\x03")
@@ -200,7 +281,8 @@ if mode == "ctrlc":
 else:
     os.close(fd)
 _, status = os.waitpid(pid, 0)
-print("exit %d" % os.WEXITSTATUS(status) if os.WIFEXITED(status) else "signal %d" % os.WTERMSIG(status))
+ended = "exit %d" % os.WEXITSTATUS(status) if os.WIFEXITED(status) else "signal %d" % os.WTERMSIG(status)
+print(ended if group_gone_within_10s() else ended + ", and its process group still ran 10 s later")
 PY
 }
 
@@ -217,12 +299,23 @@ gone_within_10s() {  # file
 
 # A session directory with a lock held by a running process, as an open
 # `cs <name>` leaves it. Called directly, never through $(...): the sleeper
-# would hold the substitution's pipe open.
+# would hold the substitution's pipe open, and its pid would not reach
+# STARTED_PIDS.
 make_open_session() {  # name
     local sdir="$CS_SESSIONS_ROOT/$1"
     mkdir -p "$sdir/.cs/local"
     sleep 60 > /dev/null 2>&1 &
+    STARTED_PIDS="$STARTED_PIDS $!"
     printf '%s\n' "$!" > "$sdir/.cs/session.lock"
+}
+
+# A running process the test started, as a stand-in for some other program.
+# Its pid is left in OTHER_PID. Called directly, for the reason
+# make_open_session is.
+start_unrelated_process() {
+    sleep 60 > /dev/null 2>&1 &
+    OTHER_PID=$!
+    STARTED_PIDS="$STARTED_PIDS $!"
 }
 
 # The command the server's tmux window runs for demo in plan mode.
@@ -239,9 +332,7 @@ strip_ansi() {
 # ---------------------------------------------------------------------------
 
 test_remote_runs_remote_control_by_absolute_path_with_the_default_mode() {
-    local rc=0
-    "$CS_BIN" demo --remote > "$TEST_TMPDIR/out" 2>&1 || rc=$?
-    assert_eq "0" "$rc" "cs exits with the server's status" || { cat "$TEST_TMPDIR/out"; return 1; }
+    run_cs_ok demo --remote || return 1
     assert_eq "$TEST_TMPDIR/bin/claude" "$(log_value bin)" "claude runs by its absolute path" || return 1
     assert_eq "[remote-control][--name][demo][--permission-mode][default]" "$(log_value argv)" \
         "remote-control gets the session name and the default permission mode, after the verb" || return 1
@@ -249,13 +340,13 @@ test_remote_runs_remote_control_by_absolute_path_with_the_default_mode() {
 }
 
 test_remote_passes_the_permission_mode_it_was_given() {
-    "$CS_BIN" demo --remote --permission-mode plan > /dev/null 2>&1 || return 1
+    run_cs_ok demo --remote --permission-mode plan || return 1
     assert_eq "[remote-control][--name][demo][--permission-mode][plan]" "$(log_value argv)" \
         "the mode given to --permission-mode reaches remote-control" || return 1
 }
 
 test_remote_strips_the_api_key_and_keeps_the_cs_exports() {
-    ANTHROPIC_API_KEY=sk-ant-example-not-a-key "$CS_BIN" demo --remote > /dev/null 2>&1 || return 1
+    ANTHROPIC_API_KEY=sk-ant-example-not-a-key run_cs_ok demo --remote || return 1
     assert_eq "" "$(log_value ANTHROPIC_API_KEY)" "ANTHROPIC_API_KEY is absent from the server's env" || return 1
     local v
     for v in CLAUDE_SESSION_NAME CLAUDE_SESSION_DIR CLAUDE_SESSION_META_DIR CLAUDE_CODE_TASK_LIST_ID \
@@ -265,20 +356,19 @@ test_remote_strips_the_api_key_and_keeps_the_cs_exports() {
 }
 
 test_remote_holds_the_lock_and_records_the_server_pid_while_it_runs() {
-    "$CS_BIN" demo --remote > /dev/null 2>&1 || return 1
+    run_cs_ok demo --remote || return 1
     assert_eq "$(log_value pid)" "$(log_value lock)" "the lock names the server while it serves" || return 1
     assert_eq "$(log_value pid)" "$(log_value remote_pid)" ".cs/local/remote.pid names the server" || return 1
-    gone_within_10s "$CS_SESSIONS_ROOT/demo/.cs/session.lock" || { echo "  FAIL: the lock is left after the server exits"; return 1; }
-    gone_within_10s "$CS_SESSIONS_ROOT/demo/.cs/local/remote.pid" || { echo "  FAIL: remote.pid is left after the server exits"; return 1; }
+    assert_file_not_exists "$CS_SESSIONS_ROOT/demo/.cs/session.lock" "the lock is gone once the release is done" || return 1
+    assert_file_not_exists "$CS_SESSIONS_ROOT/demo/.cs/local/remote.pid" "remote.pid is gone once the release is done" || return 1
 }
 
 test_remote_shows_the_servers_error_and_exits_with_its_status() {
-    local rc=0 out
-    out=$(FAKE_CLAUDE_MODE=exit:1 "$CS_BIN" demo --remote 2>&1) || rc=$?
-    assert_eq "1" "$rc" "cs exits with the server's status" || return 1
-    assert_output_contains "$out" "Error: You must be logged in to use Remote Control." "the server's own error is shown as is" || return 1
-    gone_within_10s "$CS_SESSIONS_ROOT/demo/.cs/session.lock" || { echo "  FAIL: the lock is left after a failed start"; return 1; }
-    gone_within_10s "$CS_SESSIONS_ROOT/demo/.cs/local/remote.pid" || { echo "  FAIL: remote.pid is left after a failed start"; return 1; }
+    FAKE_CLAUDE_MODE=exit:1 run_cs demo --remote || return 1
+    assert_eq "1" "$CS_RC" "cs exits with the server's status" || return 1
+    assert_output_contains "$(cat "$TEST_TMPDIR/out")" "Error: You must be logged in to use Remote Control." "the server's own error is shown as is" || return 1
+    assert_file_not_exists "$CS_SESSIONS_ROOT/demo/.cs/session.lock" "the lock is gone after a failed start" || return 1
+    assert_file_not_exists "$CS_SESSIONS_ROOT/demo/.cs/local/remote.pid" "remote.pid is gone after a failed start" || return 1
 }
 
 test_remote_refuses_a_claude_older_than_the_measured_version() {
@@ -291,7 +381,7 @@ test_remote_refuses_a_claude_older_than_the_measured_version() {
 }
 
 test_remote_accepts_a_newer_claude_by_number_not_by_text() {
-    FAKE_CLAUDE_VERSION=2.1.1000 "$CS_BIN" demo --remote > /dev/null 2>&1 || return 1
+    FAKE_CLAUDE_VERSION=2.1.1000 run_cs_ok demo --remote || return 1
     assert_eq "[remote-control][--name][demo][--permission-mode][default]" "$(log_value argv)" \
         "2.1.1000 is newer than 2.1.299" || return 1
 }
@@ -339,14 +429,14 @@ test_local_open_is_refused_while_the_session_is_served() {
             "$(printf '%s' "$out" | strip_ansi | tail -1)" "the refusal names the server" || return 1
     done
     assert_eq "1" "$(grep -c '^argv=' "$FAKE_CLAUDE_LOG")" "no second claude started in the served dir" || return 1
-    stop_serving TERM
+    stop_serving TERM || return 1
     assert_eq "0" "$SERVE_RC" "the server stopped cleanly" || return 1
 }
 
 test_remote_stops_cleanly_when_its_window_hangs_up() {
     start_serving demo --remote || return 1
     assert_file_exists "$CS_SESSIONS_ROOT/demo/.cs/local/remote.pid" "remote.pid is written while serving" || return 1
-    stop_serving HUP
+    stop_serving HUP || return 1
     assert_eq "0" "$SERVE_RC" "cs exits 0 when the server stops cleanly on SIGHUP" || { cat "$TEST_TMPDIR/serve.out"; return 1; }
     assert_eq "1" "$(grep -cx 'signal HUP' "$FAKE_CLAUDE_LOG")" "the server got the hangup" || return 1
     gone_within_10s "$CS_SESSIONS_ROOT/demo/.cs/local/remote.pid" || { echo "  FAIL: remote.pid is left after the server exits"; return 1; }
@@ -355,7 +445,7 @@ test_remote_stops_cleanly_when_its_window_hangs_up() {
 
 test_remote_stops_cleanly_on_ctrl_c() {
     start_serving demo --remote || return 1
-    stop_serving INT
+    stop_serving INT || return 1
     assert_eq "0" "$SERVE_RC" "cs exits with the server's 0, not 130" || { cat "$TEST_TMPDIR/serve.out"; return 1; }
     assert_eq "1" "$(grep -cx 'signal INT' "$FAKE_CLAUDE_LOG")" "the server got the interrupt" || return 1
     gone_within_10s "$CS_SESSIONS_ROOT/demo/.cs/session.lock" || { echo "  FAIL: the lock is left after the server exits"; return 1; }
@@ -417,9 +507,7 @@ test_remote_inside_tmux_opens_its_own_window_in_the_cs_session() {
 }
 
 test_remote_in_its_window_serves_there_instead_of_opening_another() {
-    local rc=0
-    CS_REMOTE_WINDOW=1 TMUX="/tmp/fake,1,0" "$CS_BIN" demo --remote > "$TEST_TMPDIR/out" 2>&1 || rc=$?
-    assert_eq "0" "$rc" "the window's cs serves" || { cat "$TEST_TMPDIR/out"; return 1; }
+    CS_REMOTE_WINDOW=1 TMUX="/tmp/fake,1,0" run_cs_ok demo --remote || return 1
     assert_eq "[remote-control][--name][demo][--permission-mode][default]" "$(log_value argv)" "the server runs in the window" || return 1
     assert_eq "" "$(grep -E '^new-(session|window)' "$FAKE_TMUX_LOG" 2>/dev/null || true)" "no further window opens" || return 1
     assert_eq "" "$(log_value CS_REMOTE_WINDOW)" "the window marker never reaches the server" || return 1
@@ -446,17 +534,18 @@ test_live_shows_a_served_session_as_remote_with_the_server_pid() {
     make_open_session demo
     sleep 60 > /dev/null 2>&1 &
     local spid=$!
+    STARTED_PIDS="$STARTED_PIDS $spid"
     printf '%s\n' "$spid" > "$CS_SESSIONS_ROOT/demo/.cs/local/remote.pid"
     local out
     out=$("$CS_BIN" -live 2>&1 | strip_ansi | grep ' demo ') || { echo "  FAIL: demo is not listed live"; return 1; }
     assert_output_contains "$out" "remote  remote-control PID $spid" "the agent column says remote and the status names the server" || return 1
-    kill "$spid" 2>/dev/null || true
 }
 
 test_doctor_reports_a_live_server_and_removes_a_stale_pid_file() {
     make_open_session live
     sleep 60 > /dev/null 2>&1 &
     local spid=$! dpid out
+    STARTED_PIDS="$STARTED_PIDS $spid"
     printf '%s\n' "$spid" > "$CS_SESSIONS_ROOT/live/.cs/local/remote.pid"
     mkdir -p "$CS_SESSIONS_ROOT/gone/.cs/local"
     sleep 60 > /dev/null 2>&1 &
@@ -470,7 +559,6 @@ test_doctor_reports_a_live_server_and_removes_a_stale_pid_file() {
         "$(grep -F 'Remote: gone' <<< "$out")" "a stale pid file is reported" || return 1
     assert_file_not_exists "$CS_SESSIONS_ROOT/gone/.cs/local/remote.pid" "the stale pid file is removed" || return 1
     assert_file_exists "$CS_SESSIONS_ROOT/live/.cs/local/remote.pid" "a live server's pid file is kept" || return 1
-    kill "$spid" 2>/dev/null || true
 }
 
 run_test test_remote_runs_remote_control_by_absolute_path_with_the_default_mode
