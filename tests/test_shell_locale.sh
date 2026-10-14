@@ -126,6 +126,58 @@ test_worktree_untracked_entries_sorts_in_byte_order() {
     done
 }
 
+# A path lies under a regenerable directory when a directory above its own
+# name has a regenerable name, a multibyte name above it included; a file
+# named like one is not under it.
+test_regenerable_filter_reads_paths_as_bytes() {
+    local b out
+    for b in $(every_bash); do
+        out="$(_traced "$b" 'printf "%s\n" "$@" | _regenerable_filter regenerable' \
+            node_modules/a.js "$(printf 'caf\303\251')/node_modules/x" src/.env a/__pycache__/b.pyc node_modules)"
+        assert_eq "$(printf 'node_modules/a.js\ncaf\303\251/node_modules/x\na/__pycache__/b.pyc')" "$out" \
+            "$b: the regenerable paths, byte for byte" || return 1
+        _assert_no_shell_locale "$b" _regenerable_filter || return 1
+        out="$(_traced "$b" 'printf "%s\n" "$@" | _regenerable_filter other' \
+            node_modules/a.js "$(printf 'caf\303\251')/node_modules/x" src/.env a/__pycache__/b.pyc node_modules)"
+        assert_eq "$(printf 'src/.env\nnode_modules')" "$out" "$b: the other paths, byte for byte" || return 1
+        _assert_no_shell_locale "$b" _regenerable_filter || return 1
+    done
+}
+
+# A trash call's budget counts bytes: under a 14-byte budget, the entry
+# café (5 bytes, 9 with the directory and its end) goes alone, and the next
+# two (6 and 5 bytes) share a call. Counted in characters, café would take
+# 8 and share the first call instead.
+test_retire_trash_call_sizes_count_bytes() {
+    local b out
+    for b in $(every_bash); do
+        out="$(_traced "$b" 'CS_TRASH_CALL_BYTES=14; printf "1\t%s\n" "$@" | _retire_trash_call_sizes /d/' \
+            "$(printf 'caf\303\251')" ab x)"
+        assert_eq "1
+2" "$out" "$b: the calls' sizes" || return 1
+        _assert_no_shell_locale "$b" _retire_trash_call_sizes || return 1
+    done
+}
+
+# A nested repository is counted one file per NUL, whatever its names hold:
+# the listing input names the tracked paths, the nested repository's count,
+# then the paths at risk.
+test_untracked_listing_input_counts_a_nested_repository_by_bytes() {
+    local w="$TEST_TMPDIR/w" b out
+    mkdir -p "$w/dep"
+    git -C "$w" init -q
+    : > "$w/t"
+    git -C "$w" add t
+    : > "$w/dep/a"
+    : > "$w/dep/$(printf 'caf\303\251')"
+    : > "$w/dep/$(printf 'na\nme')"
+    for b in $(every_bash); do
+        out="$(_traced "$b" '_untracked_listing_input "$1" "dep/"' "$w")"
+        assert_eq "$(printf 't\n\n3\tdep/\n\ndep/')" "$out" "$b: the listing input, byte for byte" || return 1
+        _assert_no_shell_locale "$b" _untracked_listing_input || return 1
+    done
+}
+
 echo ""
 echo "Shell locale tests"
 echo "=================="
@@ -136,5 +188,8 @@ run_test test_untrack_notice_keeps_plain_path_bytes_only
 run_test test_tracked_files_notice_names_a_link_to_the_session_in_plain_bytes
 run_test test_worktree_untracked_at_risk_lists_names_as_bytes
 run_test test_worktree_untracked_entries_sorts_in_byte_order
+run_test test_regenerable_filter_reads_paths_as_bytes
+run_test test_retire_trash_call_sizes_count_bytes
+run_test test_untracked_listing_input_counts_a_nested_repository_by_bytes
 
 report_results
