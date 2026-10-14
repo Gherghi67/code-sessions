@@ -37,3 +37,7 @@ docs/draft-19.md
 vendor/big/
 tmp/a/b/c.txt
 tmp/z.txt
+café/menu.txt
+café/prices.txt
+backup\nold.txt
+backup.txt

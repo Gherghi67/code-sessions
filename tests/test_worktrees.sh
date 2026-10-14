@@ -1295,6 +1295,10 @@ run_test test_retire_refusal_collapses_untracked_trees
 # one fixture both render: input.txt holds the tracked paths, the file count
 # of each directory git does not list into, and the paths at risk, separated
 # by empty lines; expected.txt holds the count phrase, then the entry lines.
+# A path is written as cs lists it, one per line: a newline in a name as "\n",
+# a backslash as "\\". The fixture holds a name with a newline, which prints
+# as "?", and a directory named in two-byte characters, which pads by
+# characters.
 test_untracked_listing_renders_the_shared_fixture() {
     local fixture="$SCRIPT_DIR/fixtures/untracked-listing" out status=0
     out=$( source "$SCRIPT_DIR/../lib/30-worktree.sh"

@@ -95,26 +95,48 @@ pub fn entry_lines(entries: &[Entry], shown: usize) -> Vec<String> {
 mod tests {
     use super::*;
 
+    /// The name a line of the fixture stands for: cs writes a name on one
+    /// line with a backslash in it as `\\` and a newline as `\n`.
+    fn name_of(line: &str) -> String {
+        let mut name = String::new();
+        let mut chars = line.chars();
+        while let Some(c) = chars.next() {
+            if c != '\\' {
+                name.push(c);
+                continue;
+            }
+            match chars.next() {
+                Some('\\') => name.push('\\'),
+                Some('n') => name.push('\n'),
+                other => panic!("a backslash followed by {other:?} in the fixture line {line:?}"),
+            }
+        }
+        name
+    }
+
     // cs and the TUI share one listing format, pinned by one fixture both
     // render: input.txt holds the tracked paths, the file count of each
     // directory git does not list into, and the paths at risk, separated by
     // empty lines; expected.txt holds the count phrase, then the entry lines.
+    // A path is written as cs lists it, one per line (`name_of` reads it
+    // back). The fixture holds a name with a newline, which prints as '?',
+    // and a directory named in two-byte characters, which pads by columns.
     #[test]
     fn listing_renders_the_shared_fixture() {
         let input = include_str!("../../tests/fixtures/untracked-listing/input.txt");
         let expected = include_str!("../../tests/fixtures/untracked-listing/expected.txt");
-        let sections: Vec<Vec<String>> =
-            input.split("\n\n").map(|s| s.lines().map(str::to_string).collect()).collect();
+        let sections: Vec<Vec<&str>> = input.split("\n\n").map(|s| s.lines().collect()).collect();
         assert_eq!(sections.len(), 3, "tracked paths, nested counts, paths at risk");
+        let names = |lines: &[&str]| lines.iter().map(|line| name_of(line)).collect::<Vec<String>>();
         let inside: HashMap<String, u64> = sections[1]
             .iter()
             .map(|line| {
                 let (files, path) = line.split_once('\t').expect("count, tab, path");
-                (path.to_string(), files.parse().expect("a file count"))
+                (name_of(path), files.parse().expect("a file count"))
             })
             .collect();
 
-        let entries = entries(&sections[0], &inside, &sections[2]).unwrap();
+        let entries = entries(&names(&sections[0]), &inside, &names(&sections[2])).unwrap();
         let mut got = vec![count_phrase(&entries)];
         got.extend(entry_lines(&entries, SHOWN_ENTRIES));
 
