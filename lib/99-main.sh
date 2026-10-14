@@ -122,7 +122,7 @@ main() {
             cmd_complete "${2:-}"
             return 0
             ;;
-        -vet-session) # hidden: asked by the cs mod before it arms a rotation, not typed by a user
+        -vet-session) # asked by the cs mod, /rotate and /wrap before they write into a session
             shift
             cmd_vet_session "$@"
             return 0

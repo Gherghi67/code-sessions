@@ -117,6 +117,7 @@ _cs() {
         '-unarchive:Restore an archived session'
         '-encrypt:Move a closed session into an encrypted vault (macOS)'
         '-status:Set or show this session'\''s advertised status'
+        '-vet-session:Check that git tracks no file in a session'\''s control directories'
         '-search:Search across all sessions'
         '-statusline:Manage the cs status line (enable|disable|caps)'
         '-detect-theme:Detect terminal background theme'

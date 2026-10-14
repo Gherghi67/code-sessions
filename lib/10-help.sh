@@ -54,6 +54,7 @@ Commands:
   -unarchive <name>...  Restore archived sessions to the listings
   -encrypt <name>     Move a closed session's private files into an encrypted vault (macOS; asks for a password at every open)
   -status "<text>"    Set this session's advertised status (also: -status, -status --clear/-c)
+  -vet-session <dir>  Exit 0 when git tracks no file in <dir>'s .cs/local or .cs/private, else name the file and how to untrack it (the cs mod, /rotate and /wrap ask before they write there)
   -remove, -rm <name>... [--force [--delete-files]]  Remove sessions (each asks its own confirm and names files cs did not create; --force if live; --delete-files lets --force remove those files; a base session's age pins in ~/.cs-secrets go too)
   -secrets <cmd>      Manage current session secrets (requires CLAUDE_SESSION_NAME)
   -update             Update cs to latest version
