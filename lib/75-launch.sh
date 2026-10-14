@@ -840,7 +840,8 @@ EOF
         # .cs/handoffs/ is tracked, so a clone chooses the file names. Only a
         # plain one is offered: the name printed, armed and handed to Claude
         # is then the file itself. Any other is passed over, and one line says
-        # so without naming it.
+        # so without naming it: it says which directory, and that the file may
+        # be a clone's, so renaming it is not adopting it blind.
         local _skipped=""
         for _hf in "$_handoff_dir"/*.md; do
             [ -f "$_hf" ] || continue
@@ -849,7 +850,8 @@ EOF
             pending_handoff="$_hf"
         done
         [ -z "$_skipped" ] \
-            || printf "${DIM}Skipped a rotation handoff whose file name is not plain (only letters, digits and ._@-, at most 160 characters); rename it to have it offered.${NC}\n"
+            || printf "${DIM}Skipped a rotation handoff in %s/ whose file name is not plain (only letters, digits and ._@-, at most 160 characters); check who wrote it before renaming it.${NC}\n" \
+                "${_handoff_dir#"$session_dir/"}"
         # .cs/handoffs/ is shared and nothing ever deletes a handoff, so a file
         # belonging to another checkout keeps status: unconsumed indefinitely —
         # the rotate skill will not supersede one whose parent is absent from
