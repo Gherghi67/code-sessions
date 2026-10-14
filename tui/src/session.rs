@@ -1999,6 +1999,23 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    // The mode is read from the state file's bytes, as `_read_local_state`
+    // reads them: a byte that is not UTF-8 on another line leaves the
+    // `cs_mode` line readable, so an ignored-mode worktree's .cs stays cs's.
+    #[test]
+    fn unowned_entries_reads_the_mode_from_a_state_file_holding_a_non_utf8_byte() {
+        let root = std::env::temp_dir().join(format!("cs-unowned-state-bytes-{}", std::process::id()));
+        let wt = worktree_beside_base(&root);
+        fs::create_dir_all(wt.join(".cs/memory")).unwrap();
+        fs::write(wt.join(".cs/memory/topic.md"), "topic").unwrap();
+        fs::write(wt.join(".cs/local/state"), b"task_branch: cs/t\xff\ncs_mode: ignored\n").unwrap();
+
+        let got = unowned_entries("proj@task", &wt).unwrap();
+
+        assert_eq!(got, UnownedEntries::NotTrackedByGit(Vec::new()));
+        let _ = fs::remove_dir_all(&root);
+    }
+
     // A worktree session whose base is gone has no repository for git to ask,
     // so it is listed and removed as a plain directory, as `cs -rm` does:
     // every top-level entry cs did not create, tracked or not, then the
