@@ -254,7 +254,7 @@ When the conversation reaches a natural stopping point — work shipped, a PR me
 - "that works", "looks good", "we're good", "all set"
 
 **When fired**, use AskUserQuestion with header "Wrap up?" and these options:
-- "Run /wrap" — distill memory entries AND write a session summary in sequence (the usual choice)
+- "Run /wrap" — distill memory entries AND write a session summary in sequence
 - "Not yet — keep working"
 
 Do not fire on every short affirmative ("yes", "ok", "thanks"). Fire when the *work itself* has reached a coherent stopping point, not when a single answer satisfied a single question. False positives erode the signal — be picky.
