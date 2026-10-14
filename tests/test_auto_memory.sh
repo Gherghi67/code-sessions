@@ -1811,6 +1811,50 @@ test_a_hand_made_vault_refuses_open_with_gits_error_when_git_cannot_answer() {
     assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
 }
 
+# A hook's write through a vault link refuses while git cannot answer whether
+# the vault was set up by hand, and says that, in git's words, rather than that
+# the link leads out of the session.
+test_a_write_through_a_hand_made_vault_link_names_gits_error_when_git_cannot_answer() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt" meta="$CS_SESSIONS_ROOT/vt/.cs" t outside cfg="$TEST_TMPDIR/broken-gitconfig" out rc=0
+    t=$(cd "$TEST_TMPDIR" && pwd -P); outside="$t/outside-settings"
+    printf 'USER-OWNED\n' > "$outside"
+    _make_vaulted_config vt
+    ln -s "$outside" "$meta/vault-mnt/claude-config/settings.json"
+    printf '[core\nbad\n' > "$cfg"
+    out=$(cd "$root" && GIT_CONFIG_GLOBAL="$cfg" bash -c 'source "$1"; cs_write_atomic "$2" printf "{}\n"' \
+        _ "$SCRIPT_DIR/../hooks/cs-shared.sh" "$meta/claude-config/settings.json" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the write refuses" || return 1
+    assert_eq "cs_write_atomic: $meta/claude-config/settings.json not written: cs could not ask git whether it tracks a file in .cs/local: fatal: bad config line 1 in file $cfg" \
+        "$out" "and names git's error" || return 1
+    assert_eq "USER-OWNED" "$(cat "$outside")" "the file outside is untouched" || return 1
+    rc=0
+    out=$(cd "$root" && bash -c 'source "$1"; cs_write_atomic "$2" printf "{}\n"' \
+        _ "$SCRIPT_DIR/../hooks/cs-shared.sh" "$meta/claude-config/settings.json" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "once git answers, the vault's write goes through: $out" || return 1
+}
+
+# The same for cs -narrative rotate, whose narrative sits behind the vault's
+# .cs/memory link.
+test_narrative_rotate_through_a_hand_made_vault_names_gits_error_when_git_cannot_answer() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt" meta="$CS_SESSIONS_ROOT/vt/.cs" cfg="$TEST_TMPDIR/broken-gitconfig" out rc=0 i
+    mkdir -p "$TEST_TMPDIR/vault/memory" "$TEST_TMPDIR/vault/narrative-archive"
+    rm -rf "$meta/memory"
+    ln -s "$TEST_TMPDIR/vault/memory" "$meta/memory"
+    ln -s "$TEST_TMPDIR/vault/narrative-archive" "$meta/narrative-archive"
+    _mark_hand_made_vault "$root"
+    { printf '# Session narrative (alice)\n\n'
+      for i in 1 2 3; do printf '## 2026-01-0%s\n' "$i"; head -c 3000 /dev/zero | tr '\0' x; printf '\n\n'; done
+    } > "$TEST_TMPDIR/vault/memory/narrative.alice.md"
+    printf '[core\nbad\n' > "$cfg"
+    out=$(GIT_CONFIG_GLOBAL="$cfg" CLAUDE_SESSION_DIR="$root" CLAUDE_SESSION_META_DIR="$meta" CS_ACTOR=alice \
+        CS_NARRATIVE_MAX_BYTES=4096 CS_NARRATIVE_KEEP_BYTES=2048 "$CS_BIN" -narrative rotate 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the rotation refuses" || return 1
+    assert_eq "Error: cs could not ask git whether it tracks a file in .cs/local: fatal: bad config line 1 in file $cfg" \
+        "$out" "and names git's error" || return 1
+}
+
 # Codex r3 #1: a trailing newline is stripped by command substitution, so the
 # physical path came back as a sibling without it and the scan walked nothing.
 test_a_link_to_a_directory_named_with_a_trailing_newline_refuses_open() {
@@ -1972,6 +2016,8 @@ run_test test_a_link_to_a_directory_named_with_a_newline_refuses_open
 run_test test_a_link_to_a_directory_named_with_a_trailing_newline_refuses_open
 run_test test_a_committed_vault_config_lookalike_refuses_open
 run_test test_a_hand_made_vault_refuses_open_with_gits_error_when_git_cannot_answer
+run_test test_a_write_through_a_hand_made_vault_link_names_gits_error_when_git_cannot_answer
+run_test test_narrative_rotate_through_a_hand_made_vault_names_gits_error_when_git_cannot_answer
 run_test test_global_msg_refuses_a_target_linked_out_of_the_session
 
 report_results
