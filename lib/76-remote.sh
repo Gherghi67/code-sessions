@@ -92,6 +92,10 @@ _remote_refuse_live() {  # session_name, meta_dir, lock_pid, [remote]
 # later would take its error with the window, so a sh in front waits for
 # Enter after a failure; it is the window's first process, and when the
 # window closes it ends and the server, its foreground job, gets the hangup.
+# tmux starts the window with the tmux server's environment, not this
+# shell's, so the command names the sessions root and the claude checked
+# here (_CS_REMOTE_BIN, an absolute path): the window serves this session
+# with that claude, whatever the tmux server's own settings and PATH say.
 _remote_open_window() {  # session_name, permission_mode
     local name="$1" mode="$2" meta="$SESSIONS_ROOT/$1/.cs"
     if session_is_live "$meta"; then
@@ -99,7 +103,7 @@ _remote_open_window() {  # session_name, permission_mode
     fi
     _spawn_precheck "$name" "remote:$name"
     _cs_tmux_window "remote:$name" \
-        "sh -c $(_sq '"$@" || { s=$?; printf "\nclaude remote-control exited with status %s. Press Enter to close this window.\n" "$s"; read -r _; exit "$s"; }') cs-remote env CS_REMOTE_WINDOW=1 $(_sq "$(_cs_self)") $(_sq "$name") --remote --permission-mode $(_sq "$mode")"
+        "sh -c $(_sq '"$@" || { s=$?; printf "\nclaude remote-control exited with status %s. Press Enter to close this window.\n" "$s"; read -r _; exit "$s"; }') cs-remote env CS_REMOTE_WINDOW=1 $(_sq "CS_SESSIONS_ROOT=$SESSIONS_ROOT") $(_sq "CLAUDE_CODE_BIN=$_CS_REMOTE_BIN") $(_sq "$(_cs_self)") $(_sq "$name") --remote --permission-mode $(_sq "$mode")"
     info "remote:$name runs in tmux session cs (window $_CS_TMUX_WID). Attach: $(_spawn_attach_hint)"
 }
 
