@@ -640,6 +640,50 @@ test_retire_moves_ignored_work_with_gio_when_trash_is_missing() {
     assert_not_exists "$wt" "the worktree is retired" || return 1
 }
 
+# Every refusal that says nothing was removed comes before the trash step:
+# a worktree holding an ignored file and refused for any other reason keeps
+# that file where it is, and the trash command is never run.
+test_retire_refuses_before_it_trashes_anything() {
+    local wt="$CS_SESSIONS_ROOT/proj@task1" base_dir="$CS_SESSIONS_ROOT/proj" sha bin case expected output status
+    bin=$(fake_trash_bin moves trash)
+    for case in hidden-edit no-mode untracked own-claude-local-md locked-vault base-dirty; do
+        rm -rf "$wt" "$base_dir" "$TEST_TMPDIR/trash.log"
+        sha=$(_landed_feature_ignoring '.env') || { echo "  FAIL: $case: integrate fixture"; return 1; }
+        echo "KEY=value" > "$wt/apps/web/.env"
+        case "$case" in
+            hidden-edit)
+                git -C "$wt" update-index --skip-worktree README.md
+                echo "local edit" >> "$wt/README.md"
+                expected="Error: Worktree has edits git diff does not show (skip-worktree or assume-unchanged), which removal would destroy; commit them, or undo them and clear the flag (git update-index --no-skip-worktree / --no-assume-unchanged), first:
+README.md" ;;
+            no-mode)
+                grep -v '^cs_mode:' "$wt/.cs/local/state" > "$TEST_TMPDIR/state" && mv "$TEST_TMPDIR/state" "$wt/.cs/local/state"
+                expected="Error: $wt/.cs/local/state names no cs_mode, so cs cannot tell whether git or the record fuse carries $wt/.cs; nothing was removed. Add the line 'cs_mode: tracked' if git tracks .cs in proj, else 'cs_mode: ignored', then run /finish task1 again." ;;
+            untracked)
+                echo "draft" > "$wt/notes.txt"
+                expected="Error: Worktree has 1 untracked file that removal would destroy; commit or remove it first:
+    notes.txt" ;;
+            own-claude-local-md)
+                echo "my own notes for this checkout" > "$wt/CLAUDE.local.md"
+                expected="Error: Worktree has 1 untracked file that removal would destroy; commit or remove it first:
+    CLAUDE.local.md" ;;
+            locked-vault)
+                rm -rf "$base_dir/.cs/plans"
+                ln -s "$TEST_TMPDIR/unmounted-vault/plans" "$base_dir/.cs/plans"
+                expected="Error: cannot fuse the worktree's records: $base_dir/.cs/plans is locked. Mount it, then retry." ;;
+            base-dirty)
+                echo "an edit" >> "$base_dir/README.md"
+                expected="Error: Base session has uncommitted changes; commit them in $base_dir first" ;;
+        esac
+        status=0
+        output=$(PATH="$bin:$PATH" "$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1) || status=$?
+        assert_eq "1" "$status" "$case: the retire refuses: $output" || return 1
+        assert_eq "$expected" "$output" "$case: the refusal" || return 1
+        assert_eq "KEY=value" "$(cat "$wt/apps/web/.env")" "$case: the ignored file is where it was" || return 1
+        assert_not_exists "$TEST_TMPDIR/trash.log" "$case: the trash command is never run" || return 1
+    done
+}
+
 test_worktree_of_worktree_refused() {
     create_test_session_with_git "myproj" > /dev/null
     cs_launch "myproj@fix-auth"
@@ -1281,6 +1325,7 @@ run_test test_retire_deletes_regenerable_trees_with_the_worktree
 run_test test_retire_refuses_when_the_trash_command_fails
 run_test test_retire_refuses_without_a_trash_command
 run_test test_retire_moves_ignored_work_with_gio_when_trash_is_missing
+run_test test_retire_refuses_before_it_trashes_anything
 run_test test_retire_moves_an_ignored_file_whose_name_holds_a_newline
 run_test test_retire_moves_an_ignored_file_whose_name_holds_control_characters
 run_test test_retire_moves_two_ignored_names_that_print_alike
