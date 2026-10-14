@@ -3597,6 +3597,31 @@ _install_merge_filter() {
 JQ
 }
 
+# A jq filter text on stdin without its indentation, blank lines or the line
+# that appends cs's entry (install.sh.in appends $append, the copy above a
+# fixed wrapper), on stdout.
+_merge_filter_strip_and_drop_lines() {
+    sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | grep -v -e '^$' -e '^+ \['
+}
+
+# The spec tests below run the copy above, never install.sh.in, so they say
+# something about the installer only while the two texts are the same: the
+# lines of _merge_cs_hook's filter that strip and drop are compared with the
+# copy's.
+test_install_merge_filter_copy_matches_install_sh_in() {
+    local theirs ours
+    theirs=$(awk '
+        /^[ \t]*_merge_cs_hook\(\) \{/ { infn=1 }
+        infn && /--argjson append "\$append" '\''$/ { grab=1; next }
+        grab {
+            if ($0 ~ /^[ \t]*'\''\)/) exit
+            print
+        }
+    ' "$SCRIPT_DIR/../install.sh.in" | _merge_filter_strip_and_drop_lines)
+    ours=$(_install_merge_filter | _merge_filter_strip_and_drop_lines)
+    assert_eq "$theirs" "$ours" "the copy of the merge filter matches install.sh.in" || return 1
+}
+
 test_install_preserves_coshipped_hook_in_wrapper() {
     # User has a non-cs hook co-located inside the same wrapper as cs's hook.
     # Common pattern when the user hand-edited settings.json to add another
@@ -3683,6 +3708,7 @@ test_install_leaves_flat_entries_alone() {
     fi
 }
 
+run_test test_install_merge_filter_copy_matches_install_sh_in
 run_test test_install_preserves_coshipped_hook_in_wrapper
 run_test test_install_drops_emptied_wrapper_when_only_cs_hook_present
 run_test test_install_leaves_flat_entries_alone
