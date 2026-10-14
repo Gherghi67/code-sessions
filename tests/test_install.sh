@@ -728,6 +728,24 @@ test_release_build_refuses_a_table_line_that_is_not_a_sha256() {
     cmp -s "$TEST_TMPDIR/note-manifests" "$repo/lib/01-manifests.sh" || { echo "  FAIL: lib/01-manifests.sh changed"; return 1; }
 }
 
+# An empty table cannot be cs's: every install from before the record wrote
+# content listed there. The release build refuses it with its own error on
+# every bash (bash 3.2 under set -u fails on the empty array expansion) and
+# leaves the file as it was.
+test_release_build_refuses_an_empty_table() {
+    local repo="$TEST_TMPDIR/empty-repo" out rc=0
+    _copy_build_inputs "$repo"
+    awk '/^CS_KNOWN_SHA256=\($/ { print; skip = 1; next } skip && $0 == ")" { skip = 0 } !skip { print }' \
+        "$repo/lib/01-manifests.sh" > "$TEST_TMPDIR/empty-manifests"
+    cp "$TEST_TMPDIR/empty-manifests" "$repo/lib/01-manifests.sh"
+    assert_eq "0" "$(extract_array "$repo/lib/01-manifests.sh" CS_KNOWN_SHA256 | wc -l | tr -d ' ')" "the fixture's table is empty" || return 1
+    out=$(cd "$repo" && bash build.sh --add-release-hashes 2>&1) || rc=$?
+    assert_eq "1" "$rc" "build.sh exit status" || { echo "$out"; return 1; }
+    assert_eq "error: CS_KNOWN_SHA256 in lib/01-manifests.sh is empty" \
+        "$(printf '%s\n' "$out" | tail -1)" "the error says the table is empty" || return 1
+    cmp -s "$TEST_TMPDIR/empty-manifests" "$repo/lib/01-manifests.sh" || { echo "  FAIL: lib/01-manifests.sh changed"; return 1; }
+}
+
 # ============================================================================
 # Manifest arrays: install.sh and bin/cs must agree, and must match the repo
 # ============================================================================
@@ -2674,11 +2692,11 @@ test_install_record_holds_what_a_partial_install_placed() {
 # A release's files under ~/.claude stay cs's when the install record is
 # gone, because the release build (build.sh --add-release-hashes) adds their
 # sha256s to CS_KNOWN_SHA256. A scratch checkout whose every such file
-# differs from this checkout's is built as a release and installed;
-# ~/.claude/hooks/cs, the record with it, is deleted by hand; the next
+# differs from this checkout's is built as a release and installed; path $1
+# under ~/.claude, which holds the record, is deleted by hand; the next
 # checkout, every such file changed again, is installed over it and replaces
 # each one. hooks/cs-shared.sh is built from lib/, so it is not changed.
-test_install_replaces_a_releases_files_after_its_record_is_deleted() {
+_install_over_a_release_after_deleting() {  # path under ~/.claude
     local repo="$TEST_TMPDIR/release-repo" home="$TEST_TMPDIR/release-home"
     local files="$TEST_TMPDIR/release-files" out rc=0 rel dest
     _copy_build_inputs "$repo"
@@ -2691,7 +2709,8 @@ test_install_replaces_a_releases_files_after_its_record_is_deleted() {
     HOME="$home" bash "$repo/install.sh" > "$TEST_TMPDIR/release-first.out" 2>&1 < /dev/null \
         || { cat "$TEST_TMPDIR/release-first.out"; echo "  FAIL: the release install failed"; return 1; }
     assert_file_exists "$home/.claude/hooks/cs/.installed" "the release install writes its record" || return 1
-    rm -rf "$home/.claude/hooks/cs"
+    rm -rf "${home:?}/.claude/$1"
+    assert_file_not_exists "$home/.claude/hooks/cs/.installed" "the record is gone" || return 1
     while IFS= read -r rel; do
         [ "$rel" = hooks/cs-shared.sh ] || printf '\n' >> "$repo/$rel"
     done < "$files"
@@ -2710,6 +2729,18 @@ test_install_replaces_a_releases_files_after_its_record_is_deleted() {
         esac
         cmp -s "$repo/$rel" "$home/$dest" || { echo "  FAIL: ~/$dest is not the next checkout's $rel"; return 1; }
     done < "$files"
+}
+
+# The whole hooks directory goes: the hooks are deployed fresh, and the
+# commands, skills and mods are replaced because the table knows them.
+test_install_replaces_a_releases_files_after_its_record_is_deleted() {
+    _install_over_a_release_after_deleting hooks/cs
+}
+
+# Only the record goes: the release's hooks stay in ~/.claude/hooks/cs, and
+# the table is what makes them cs's too.
+test_install_replaces_a_releases_files_after_only_its_record_is_deleted() {
+    _install_over_a_release_after_deleting hooks/cs/.installed
 }
 
 # Uninstall removes what cs installed and nothing that only shares its name:
@@ -2927,6 +2958,7 @@ run_test test_install_replaces_files_cs_wrote_without_a_record
 run_test test_install_follows_its_record
 run_test test_install_record_holds_what_a_partial_install_placed
 run_test test_install_replaces_a_releases_files_after_its_record_is_deleted
+run_test test_install_replaces_a_releases_files_after_only_its_record_is_deleted
 run_test test_uninstall_removes_only_files_cs_wrote
 run_test test_uninstall_removes_subagent_statusline
 test_hook_registration_doc_matches_install() {
@@ -3386,6 +3418,7 @@ run_test test_build_outputs_are_world_readable
 run_test test_release_build_adds_its_payload_to_the_known_table_once
 run_test test_build_refuses_an_unknown_argument
 run_test test_release_build_refuses_a_table_line_that_is_not_a_sha256
+run_test test_release_build_refuses_an_empty_table
 run_test test_hook_registration_doc_matches_install
 run_test test_install_honors_declined_statusline_marker
 run_test test_install_declined_marker_honors_xdg_and_foreign_statusline
