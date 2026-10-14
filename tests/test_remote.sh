@@ -32,7 +32,8 @@ teardown_failed() {  # what
     FAILURES+=("$SUITE_PHASE")
 }
 
-# The fake claude. --version prints FAKE_CLAUDE_VERSION. Any other call appends
+# The fake claude. --version prints FAKE_CLAUDE_VERSION and exits
+# FAKE_CLAUDE_VERSION_EXIT (0 by default). Any other call appends
 # what it was given to $FAKE_CLAUDE_LOG: argv, which cs variables are set (the
 # names only, never a value), its cwd, its pid and parent, and what the session
 # lock and .cs/local/remote.pid held when it started. FAKE_CLAUDE_MODE then
@@ -48,7 +49,7 @@ write_fake_claude() {
 #!/bin/bash
 if [ "${1:-}" = "--version" ]; then
     printf '%s (Claude Code)\n' "${FAKE_CLAUDE_VERSION:-2.1.299}"
-    exit 0
+    exit "${FAKE_CLAUDE_VERSION_EXIT:-0}"
 fi
 log="$FAKE_CLAUDE_LOG"
 meta="${CLAUDE_SESSION_META_DIR:-}"
@@ -378,6 +379,20 @@ test_remote_holds_the_lock_and_records_the_server_pid_while_it_runs() {
     assert_file_not_exists "$CS_SESSIONS_ROOT/demo/.cs/local/remote.pid" "remote.pid is gone once the release is done" || return 1
 }
 
+# remote-control takes no prompt, so a seed cs -spawn staged for the session
+# is not run; one line says it waits for the next interactive open.
+test_remote_says_a_staged_spawn_seed_stays_staged() {
+    mkdir -p "$CS_SESSIONS_ROOT/.spawn"
+    printf 'token-0\nspawner\nfirst task\n' > "$CS_SESSIONS_ROOT/.spawn/demo.seed"
+    run_cs_ok demo --remote || return 1
+    assert_eq "A spawn seed is staged for demo; it stays staged for the next cs demo, since claude remote-control takes no prompt to start it with." \
+        "$(strip_ansi < "$TEST_TMPDIR/out" | grep -F 'spawn seed')" "one line says the seed stays staged" || { cat "$TEST_TMPDIR/out"; return 1; }
+    assert_eq "token-0
+spawner
+first task" "$(cat "$CS_SESSIONS_ROOT/.spawn/demo.seed")" "the seed is left as it was" || return 1
+    assert_eq "[remote-control][--name][demo][--permission-mode][default]" "$(log_value argv)" "the server ran" || return 1
+}
+
 test_remote_shows_the_servers_error_and_exits_with_its_status() {
     FAKE_CLAUDE_MODE=exit:1 run_cs demo --remote || return 1
     assert_eq "1" "$CS_RC" "cs exits with the server's status" || return 1
@@ -407,6 +422,15 @@ test_remote_refuses_a_claude_that_names_no_version() {
     assert_eq "1" "$rc" "a version cs cannot read is refused" || return 1
     assert_eq "Error: cs --remote needs Claude Code 2.1.299 or later for claude remote-control; $TEST_TMPDIR/bin/claude --version printed no version number." \
         "$(printf '%s' "$out" | strip_ansi)" "the refusal says what was read" || return 1
+}
+
+test_remote_refuses_a_claude_whose_version_check_fails() {
+    local rc=0 out
+    out=$(FAKE_CLAUDE_VERSION_EXIT=1 "$CS_BIN" demo --remote 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a failed version check is refused" || return 1
+    assert_eq "Error: cs --remote needs Claude Code 2.1.299 or later for claude remote-control; $TEST_TMPDIR/bin/claude --version exited with status 1." \
+        "$(printf '%s' "$out" | strip_ansi)" "the refusal says the version check failed" || return 1
+    assert_file_not_exists "$FAKE_CLAUDE_LOG" "remote-control never ran" || return 1
 }
 
 test_remote_refuses_options_carried_in_claude_code_bin() {
@@ -539,6 +563,13 @@ test_remote_window_serves_the_callers_root_with_the_callers_claude() {
     [ ! -e "$other_root/demo" ] || { echo "  FAIL: the window created demo under the tmux server's root"; return 1; }
 }
 
+test_remote_inside_tmux_without_tmux_names_remote() {
+    local rc=0 out
+    out=$(CS_TMUX_BIN="$TEST_TMPDIR/no-such-tmux" TMUX="/tmp/fake,1,0" "$CS_BIN" demo --remote 2>&1) || rc=$?
+    assert_eq "1" "$rc" "no window opens without tmux" || return 1
+    assert_eq "Error: cs --remote needs tmux" "$(printf '%s' "$out" | strip_ansi)" "the error names --remote" || return 1
+}
+
 test_remote_in_its_window_serves_there_instead_of_opening_another() {
     CS_REMOTE_WINDOW=1 TMUX="/tmp/fake,1,0" run_cs_ok demo --remote || return 1
     assert_eq "[remote-control][--name][demo][--permission-mode][default]" "$(log_value argv)" "the server runs in the window" || return 1
@@ -622,10 +653,12 @@ run_test test_remote_runs_remote_control_by_absolute_path_with_the_default_mode
 run_test test_remote_passes_the_permission_mode_it_was_given
 run_test test_remote_strips_the_api_key_and_keeps_the_cs_exports
 run_test test_remote_holds_the_lock_and_records_the_server_pid_while_it_runs
+run_test test_remote_says_a_staged_spawn_seed_stays_staged
 run_test test_remote_shows_the_servers_error_and_exits_with_its_status
 run_test test_remote_refuses_a_claude_older_than_the_measured_version
 run_test test_remote_accepts_a_newer_claude_by_number_not_by_text
 run_test test_remote_refuses_a_claude_that_names_no_version
+run_test test_remote_refuses_a_claude_whose_version_check_fails
 run_test test_remote_refuses_options_carried_in_claude_code_bin
 run_test test_remote_refuses_a_session_open_locally
 run_test test_local_open_is_refused_while_the_session_is_served
@@ -635,6 +668,7 @@ run_test test_remote_stops_cleanly_when_its_terminal_closes
 run_test test_remote_stops_cleanly_on_ctrl_c_typed_at_its_terminal
 run_test test_remote_refuses_force_finish_and_a_mode_without_remote
 run_test test_remote_inside_tmux_opens_its_own_window_in_the_cs_session
+run_test test_remote_inside_tmux_without_tmux_names_remote
 run_test test_remote_in_its_window_serves_there_instead_of_opening_another
 run_test test_remote_window_serves_the_callers_root_with_the_callers_claude
 run_test test_remote_failure_in_its_window_waits_for_enter
