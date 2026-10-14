@@ -349,6 +349,13 @@ cmd_report() {  # base task sha
         exit 1
     fi
     checked=$(printf '%s\n' "$content" | LC_ALL=C sed -n 's/^content_paths_checked: //p')
+    # A check that counted nothing vouches for nothing.
+    case "$checked" in
+        none) ;;
+        ''|*[!0-9]*)
+            echo "error: comparing the paths cs/$task changed with base HEAD gave '$checked' as the path count, not none or a number"
+            exit 1 ;;
+    esac
     differing=$(printf '%s\n' "$content" | LC_ALL=C sed -n 's/^content_differs: //p')
     if [ "$checked" != none ] && [ -z "$differing" ]; then
         # The entry refuses a tip past the captured commit under --force too.
