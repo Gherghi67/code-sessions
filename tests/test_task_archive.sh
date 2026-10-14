@@ -429,6 +429,7 @@ test_plan_names_the_answer_and_the_rows_and_moves_nothing() {
     local out
     out=$("$CS_BIN" -archive-tasks plan 2>&1) || { echo "  FAIL: plan failed: $out"; return 1; }
     assert_eq "answer: unasked
+forced: no
 store: $STORE
 archive: 2 completed rows: #3 #7
 keep: #12, the highest id, stays live
@@ -439,8 +440,37 @@ target: .cs/task-archive" "$out" "plan describes the run" || return 1
     rm "$STORE/3.json" "$STORE/7.json"
     out=$("$CS_BIN" -archive-tasks plan 2>&1) || { echo "  FAIL: plan failed: $out"; return 1; }
     assert_eq "answer: yes
+forced: no
 store: $STORE
 archive: nothing: no completed task row below #12, the highest id" "$out" "plan says when there is nothing to move" || return 1
+}
+
+# plan's forced: line tells the rotate skill whether the cs mod ran this
+# /rotate on its own: the mod writes the conversation's id to
+# .cs/local/cs.forced before it runs a forced rotation, so the line is yes
+# only when that file names the conversation .cs/local/state names. A marker
+# from an earlier conversation is no, and CS_ROTATE_FORCE_CTX, a threshold the
+# person sets whether or not anything was forced, has no say either way.
+test_plan_says_whether_the_cs_mod_forced_this_rotation() {
+    _row 1 completed "One"
+    _row 2 pending "Two"
+    printf 'claude_session_id: "uuid-now"\n' > "$SESSION_DIR/.cs/local/state"
+    local out
+    out=$("$CS_BIN" -archive-tasks plan 2>&1) || { echo "  FAIL: plan failed: $out"; return 1; }
+    assert_eq "forced: no" "$(printf '%s\n' "$out" | sed -n 2p)" "no marker: not forced" || return 1
+    printf 'uuid-earlier\n' > "$SESSION_DIR/.cs/local/cs.forced"
+    out=$("$CS_BIN" -archive-tasks plan 2>&1) || { echo "  FAIL: plan failed: $out"; return 1; }
+    assert_eq "forced: no" "$(printf '%s\n' "$out" | sed -n 2p)" "an earlier conversation's marker: not forced" || return 1
+    out=$(CS_ROTATE_FORCE_CTX=70 "$CS_BIN" -archive-tasks plan 2>&1) || { echo "  FAIL: plan failed: $out"; return 1; }
+    assert_eq "forced: no" "$(printf '%s\n' "$out" | sed -n 2p)" "a threshold set: still not forced" || return 1
+    printf 'uuid-now\n' > "$SESSION_DIR/.cs/local/cs.forced"
+    out=$(env -u CS_ROTATE_FORCE_CTX "$CS_BIN" -archive-tasks plan 2>&1) || { echo "  FAIL: plan failed: $out"; return 1; }
+    assert_eq "forced: yes" "$(printf '%s\n' "$out" | sed -n 2p)" "this conversation's marker, no threshold set: forced" || return 1
+    out=$(CS_ROTATE_FORCE_CTX=off "$CS_BIN" -archive-tasks plan 2>&1) || { echo "  FAIL: plan failed: $out"; return 1; }
+    assert_eq "forced: yes" "$(printf '%s\n' "$out" | sed -n 2p)" "this conversation's marker: forced whatever the threshold" || return 1
+    rm "$SESSION_DIR/.cs/local/state"
+    out=$("$CS_BIN" -archive-tasks plan 2>&1) || { echo "  FAIL: plan failed: $out"; return 1; }
+    assert_eq "forced: no" "$(printf '%s\n' "$out" | sed -n 2p)" "no conversation id to match: not forced" || return 1
 }
 
 test_plan_refuses_a_store_it_does_not_recognise() {
@@ -790,6 +820,7 @@ run_test test_run_refuses_until_the_session_has_agreed
 run_test test_answer_takes_only_yes_or_no
 run_test test_plan_names_the_answer_and_the_rows_and_moves_nothing
 run_test test_plan_refuses_a_store_it_does_not_recognise
+run_test test_plan_says_whether_the_cs_mod_forced_this_rotation
 run_test test_tasks_md_is_a_readable_snapshot_of_the_whole_list
 run_test test_a_second_run_the_same_day_adds_to_the_archive
 run_test test_an_archived_row_is_never_overwritten

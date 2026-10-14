@@ -212,8 +212,12 @@ test_rotate_skill_prunes_only_tracked_handoffs() {
 # re-reads (443 of 454 rows in one session). The rotation moves them out
 # through cs -archive-tasks: plan first (the standing answer and the rows),
 # one question while the answer is unasked, recorded with answer yes|no, then
-# run. A forced rotation drives itself and must not stop to ask. All of it
-# happens before step 9 arms the handoff, which stays the last step.
+# run. A rotation the cs mod forced drives itself and must not stop to ask:
+# the skill reads that from plan's forced: line (cs compares .cs/local/cs.forced
+# with the conversation's id; test_task_archive.sh pins that), never from
+# CS_ROTATE_FORCE_CTX, a threshold that is unset by default while forcing is on
+# and that a person who rotates by hand may have set. All of it happens before
+# step 9 arms the handoff, which stays the last step.
 test_rotate_skill_archives_completed_task_rows_before_arming() {
     local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md" step8
     step8=$(awk '/^8\. /{p=1} /^9\. /{p=0} p' "$skill")
@@ -223,7 +227,11 @@ test_rotate_skill_archives_completed_task_rows_before_arming() {
     assert_output_contains "$step8" 'cs -archive-tasks answer yes' "a yes is recorded" || return 1
     assert_output_contains "$step8" 'cs -archive-tasks answer' "the answer is recorded through cs" || return 1
     assert_output_contains "$step8" 'cs -archive-tasks run' "and the run moves the rows" || return 1
-    assert_output_contains "$step8" 'CS_ROTATE_FORCE_CTX' "a forced rotation does not stop to ask" || return 1
+    assert_output_contains "$step8" '`forced: yes`' "a forced rotation is read from plan's forced: line" || return 1
+    assert_output_contains "$step8" 'With `forced: yes`, do not ask: skip the archive this time.' \
+        "and does not stop to ask" || return 1
+    assert_output_contains "$step8" 'With `forced: no`, ask' "any other /rotate asks" || return 1
+    assert_output_not_contains "$step8" 'CS_ROTATE_FORCE_CTX' "the threshold setting decides nothing here" || return 1
 }
 
 test_rotate_skill_requires_provenance_on_claims() {

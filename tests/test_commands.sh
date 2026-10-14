@@ -581,6 +581,9 @@ test_wrap_archives_completed_task_rows() {
     assert_file_contains "$COMMANDS_DIR/wrap.md" '/\.claude/skills/rotate/SKILL\.md` step 8' \
         "the pass follows the rotate skill's step rather than restating it" || return 1
     assert_file_contains "$COMMANDS_DIR/wrap.md" '4\. \*\*Tasks:\*\*' "the report gains a fourth item" || return 1
+    assert_file_contains "$COMMANDS_DIR/wrap.md" 'ask as step 8 does for `forced: no`, whatever the plan'"'"'s `forced:` line says' \
+        "a wrap is never a forced rotation, so it asks as a manual /rotate does" || return 1
+    assert_file_not_contains "$COMMANDS_DIR/wrap.md" 'CS_ROTATE_FORCE_CTX' "the threshold setting decides nothing here" || return 1
 }
 
 test_summary_reads_live_narratives_not_archives() {
