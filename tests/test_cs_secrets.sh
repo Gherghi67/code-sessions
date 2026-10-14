@@ -4797,6 +4797,30 @@ cs:bravo:K2" "$(_kc_services)" "the Keychain entries moved to bravo" || return 1
     assert_eq "value-enc" "$("$CS_SECRETS_BIN" --session bravo get E1 2>&1)" "the encrypted store moved" || return 1
 }
 
+# A base's secrets are its features' too, so from inside a session of another
+# base they are not written while one of its features is live; the base's own
+# sessions and a plain terminal write them as before. receiver is closed here.
+test_secrets_writes_to_a_base_wait_for_its_live_feature() {
+    _live_receiver || return 1
+    _stop_receiver
+    mkdir -p "$CS_SESSIONS_ROOT/receiver@x/.cs"
+    sleep 300 &
+    local pid=$! out rc=0
+    echo "$pid" > "$CS_SESSIONS_ROOT/receiver@x/.cs/session.lock"
+    out=$(printf 'v2' | CLAUDE_SESSION_NAME=sender "$CS_SECRETS_BIN" -s receiver set API_KEY 2>&1) || rc=$?
+    local own=0 plain=0
+    printf 'v3' | CLAUDE_SESSION_NAME=receiver@y CS_SECRETS_SESSION=receiver "$CS_SECRETS_BIN" set OWN_KEY >/dev/null 2>&1 || own=$?
+    printf 'v4' | ( unset CLAUDE_SESSION_NAME; "$CS_SECRETS_BIN" -s receiver set PLAIN_KEY ) >/dev/null 2>&1 || plain=$?
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    assert_eq "1" "$rc" "the write from sender exits 1" || return 1
+    assert_eq "Error: session sender cannot change the secrets of session receiver while its feature receiver@x is live (pid $pid); --force does not override that from another session. Close receiver@x first." \
+        "$out" "the refusal names the live feature" || return 1
+    assert_eq "0 0" "$own $plain" "the base's own feature and a plain terminal write" || return 1
+    assert_eq "export CS_SECRET_API_KEY=v1
+export CS_SECRET_OWN_KEY=v3
+export CS_SECRET_PLAIN_KEY=v4" "$(CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" export 2>&1)" "only the refused write is missing" || return 1
+}
+
 # cs and cs-secrets read a session lock by one rule: the text, surrounding
 # whitespace removed, is a decimal pid from 1 to 2147483647 that kill -0
 # reaches. Each content below is fed to both, through the refusals of
@@ -4836,5 +4860,6 @@ run_test test_secrets_delete_of_an_idle_other_session_works
 run_test test_secrets_a_feature_and_its_base_write_the_live_base_secrets
 run_test test_secrets_delete_from_a_plain_shell_takes_a_live_session
 run_test test_cs_and_cs_secrets_read_a_session_lock_by_one_rule
+run_test test_secrets_writes_to_a_base_wait_for_its_live_feature
 
 report_results

@@ -314,6 +314,47 @@ test_archive_live_other_session_refused_even_with_force() {
     assert_not_exists "$CS_SESSIONS_ROOT/receiver/.cs/archived" "no marker written" || return 1
 }
 
+# From inside a session of another base, a base is not archived while one of
+# its features is live, --force or not.
+test_archive_base_refused_while_its_feature_is_live() {
+    _archive_session "receiver"
+    _archive_session "receiver@x"
+    sleep 300 &
+    local live_pid=$! flag out rc
+    echo "$live_pid" > "$CS_SESSIONS_ROOT/receiver@x/.cs/session.lock"
+    for flag in "" --force; do
+        rc=0
+        # shellcheck disable=SC2086 # an empty flag is no argument
+        out=$(CLAUDE_SESSION_NAME=sender "$CS_BIN" -archive receiver $flag 2>&1) || rc=$?
+        assert_eq "1" "$rc" "archiving receiver ${flag:-without --force} exits 1" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
+        assert_eq "Error: session sender cannot archive session receiver while its feature receiver@x is live (pid $live_pid); --force does not override that from another session. Close receiver@x first." \
+            "$out" "the refusal names the live feature" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
+        assert_not_exists "$CS_SESSIONS_ROOT/receiver/.cs/archived" "no marker written" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
+    done
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    return 0
+}
+
+# The base's own sessions and a plain terminal archive an idle base whose
+# feature is live, as they always have.
+test_archive_base_with_a_live_feature_from_its_own_feature_and_a_plain_shell() {
+    local caller out rc
+    sleep 300 &
+    local live_pid=$!
+    for caller in receiver@y ""; do
+        rm -rf "$CS_SESSIONS_ROOT/receiver"
+        _archive_session "receiver"
+        _archive_session "receiver@x"
+        echo "$live_pid" > "$CS_SESSIONS_ROOT/receiver@x/.cs/session.lock"
+        rc=0
+        out=$(CLAUDE_SESSION_NAME="$caller" "$CS_BIN" -archive receiver 2>&1) || rc=$?
+        assert_eq "0" "$rc" "archiving receiver from '${caller:-a plain shell}' exits 0: $out" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
+        assert_file_exists "$CS_SESSIONS_ROOT/receiver/.cs/archived" "receiver is archived from '${caller:-a plain shell}'" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
+    done
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    return 0
+}
+
 test_archive_idle_other_session_from_inside_a_session() {
     _archive_session "receiver"
     CLAUDE_SESSION_NAME=sender "$CS_BIN" -archive receiver >/dev/null 2>&1 || return 1
@@ -381,6 +422,8 @@ run_test test_archive_idle_other_session_from_inside_a_session
 run_test test_archive_from_inside_a_session_checks_every_name_first
 run_test test_archive_live_own_feature_from_its_base_with_force
 run_test test_archive_from_a_feature_refuses_its_live_base
+run_test test_archive_base_refused_while_its_feature_is_live
+run_test test_archive_base_with_a_live_feature_from_its_own_feature_and_a_plain_shell
 run_test test_archive_rejects_empty_name_before_acting
 run_test test_archive_multiple_names
 run_test test_unarchive_multiple_names
