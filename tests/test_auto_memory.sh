@@ -885,6 +885,22 @@ test_the_untrack_command_names_a_directory_called_tilde_as_a_path() {
         "$out" "the command names ./~" || return 1
 }
 
+# zsh reads a word that starts with "=" as a command's path (=git is
+# /usr/bin/git) and printf %q leaves it bare: the command names the path from
+# the current one.
+test_the_untrack_command_names_a_directory_called_equals_as_a_path() {
+    local s="$TEST_TMPDIR/s" out rc=0
+    mkdir -p "$s/.cs" "$s/=git"
+    git -C "$s" init -q
+    ln -s '../=git' "$s/.cs/private"
+    printf 'x\n' > "$s/=git/seed"
+    git -C "$s" add .cs/private "$s/=git/seed"
+    out=$(bash -c 'source "$1"; cs_tracked_files_notice "$2" "$3"' _ "$SCRIPT_DIR/../hooks/cs-shared.sh" "$s/.cs/private" "$s") || rc=$?
+    assert_eq "0" "$rc" "the tracked file is found" || return 1
+    assert_eq "_git/seed is tracked in git (per-actor state must stay local). Fix with: git -C $s --literal-pathspecs rm -r --cached -- ./=git && git -C $s commit -m 'stop tracking _git'" \
+        "$out" "the command names ./=git" || return 1
+}
+
 # The refusal is about what git tracks: the same queue in a .cs/private made
 # by hand and never committed opens.
 test_an_untracked_cs_private_directory_opens() {
@@ -1894,6 +1910,7 @@ run_test test_the_untrack_command_untracks_only_the_directory_it_names
 run_test test_tracked_files_in_a_directory_named_with_a_trailing_newline_are_seen
 run_test test_a_cs_private_link_to_the_session_itself_is_refused_without_an_untrack_command
 run_test test_the_untrack_command_names_a_directory_called_tilde_as_a_path
+run_test test_the_untrack_command_names_a_directory_called_equals_as_a_path
 run_test test_an_untracked_cs_private_directory_opens
 run_test test_a_cs_private_link_into_a_vault_outside_any_repository_opens
 run_test test_an_inherited_tracked_files_answer_does_not_stop_the_open
