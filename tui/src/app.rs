@@ -4169,6 +4169,42 @@ mod tests {
         std::fs::remove_dir_all(&tmp).ok();
     }
 
+    // A live session is not renamed, as it is not deleted or rotated: its
+    // claude keeps writing under the old path, and the lock and transcripts
+    // would move from under it. The refusal is the one delete and rotate give.
+    #[cfg(unix)]
+    #[test]
+    fn rename_refuses_a_live_session() {
+        use crate::session::test_root;
+        let _env = CS_BIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (tmp, root, home) = rename_fixture("live", false);
+        let pid = std::process::id();
+        std::fs::write(root.join("proj/.cs/session.lock"), format!("{pid}\n")).unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        std::env::set_var("CS_BIN", tmp.join("cs-stub"));
+        let mut app = app_on(&root, "proj");
+        app.handle_key(KeyEvent::from(KeyCode::Char('r')));
+        app.rename_input.set("calm");
+
+        app.handle_key(KeyEvent::from(KeyCode::Enter));
+        std::env::remove_var("CS_BIN");
+
+        assert_eq!(
+            app.status_message.as_ref().map(|m| (m.text.clone(), m.level)),
+            Some((format!("proj is live (pid {pid}) — close it first"), StatusLevel::Error))
+        );
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(
+            std::fs::read_to_string(root.join("proj/.cs/session.lock")).unwrap_or_default(),
+            format!("{pid}\n"),
+            "the session and its lock stay where its claude has them"
+        );
+        assert!(!root.join("calm").exists(), "nothing is moved to the new name");
+        assert!(!tmp.join("argv").exists(), "cs-secrets is never asked to move anything");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
     // A spawn file the undo cannot move back is named in the status: the
     // refused rename otherwise reads as undone whole while the seed sits
     // under the new name. Here a seed staged under the old name while the
