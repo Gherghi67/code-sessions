@@ -131,13 +131,14 @@ log_value() {  # key
 
 # Start `cs <args>` serving in its own process group, as a tmux window or a
 # terminal runs it, and wait (on a fifo, no polling) until the fake server
-# says it is up. SIGINT is reset to its default: a background job of a
-# non-interactive shell starts with it ignored, which a terminal's Ctrl-C
-# never sees.
+# says it is up. SIGINT and SIGHUP are reset to their defaults: a background
+# job of a non-interactive shell starts with SIGINT ignored, a suite run
+# under nohup starts with SIGHUP ignored, and a shell cannot trap a signal it
+# started with ignored, so the fake would never see either.
 start_serving() {  # cs args...
     mkfifo "$FAKE_READY_FIFO"
     exec 3<>"$FAKE_READY_FIFO"
-    FAKE_CLAUDE_MODE=serve perl -e '$SIG{INT}="DEFAULT"; setpgrp(0,0); exec @ARGV' \
+    FAKE_CLAUDE_MODE=serve perl -e '$SIG{INT}="DEFAULT"; $SIG{HUP}="DEFAULT"; setpgrp(0,0); exec @ARGV' \
         "$CS_BIN" "$@" > "$TEST_TMPDIR/serve.out" 2>&1 &
     SERVE_PID=$!
     local line=""
@@ -164,11 +165,14 @@ drive_on_a_terminal() {  # ctrlc|hangup, command...
     shift
     mkfifo "$FAKE_READY_FIFO"
     FAKE_CLAUDE_MODE=serve python3 - "$mode" "$FAKE_READY_FIFO" "$@" << 'PY'
-import os, pty, select, sys, time
+import os, pty, select, signal, sys, time
 mode, fifo, cmd = sys.argv[1], sys.argv[2], sys.argv[3:]
 rfd = os.open(fifo, os.O_RDWR)
 pid, fd = pty.fork()
 if pid == 0:
+    # Defaults, as on a fresh terminal: a suite under nohup ignores SIGHUP.
+    signal.signal(signal.SIGHUP, signal.SIG_DFL)
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
     os.execvp(cmd[0], cmd)
 out, ready, start = b"", False, time.time()
 while time.time() - start < 60 and not ready:
