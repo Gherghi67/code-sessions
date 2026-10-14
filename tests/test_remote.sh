@@ -354,17 +354,20 @@ strip_ansi() {
 
 # ---------------------------------------------------------------------------
 
+# remote-control's first run in a git directory asks for a spawn mode at its
+# terminal, which nobody sees in a tmux window, unless --spawn names one; cs
+# names same-dir, so the sessions it starts run in the session dir.
 test_remote_runs_remote_control_by_absolute_path_with_the_default_mode() {
     run_cs_ok demo --remote || return 1
     assert_eq "$TEST_TMPDIR/bin/claude" "$(log_value bin)" "claude runs by its absolute path" || return 1
-    assert_eq "[remote-control][--name][demo][--permission-mode][default]" "$(log_value argv)" \
-        "remote-control gets the session name and the default permission mode, after the verb" || return 1
+    assert_eq "[remote-control][--name][demo][--permission-mode][default][--spawn=same-dir]" "$(log_value argv)" \
+        "remote-control gets the session name, the default permission mode and same-dir spawn mode, after the verb" || return 1
     assert_eq "$(cd "$CS_SESSIONS_ROOT/demo" && pwd -P)" "$(log_value pwd)" "the server runs in the session dir" || return 1
 }
 
 test_remote_passes_the_permission_mode_it_was_given() {
     run_cs_ok demo --remote --permission-mode plan || return 1
-    assert_eq "[remote-control][--name][demo][--permission-mode][plan]" "$(log_value argv)" \
+    assert_eq "[remote-control][--name][demo][--permission-mode][plan][--spawn=same-dir]" "$(log_value argv)" \
         "the mode given to --permission-mode reaches remote-control" || return 1
 }
 
@@ -397,7 +400,7 @@ test_remote_says_a_staged_spawn_seed_stays_staged() {
     assert_eq "token-0
 spawner
 first task" "$(cat "$CS_SESSIONS_ROOT/.spawn/demo.seed")" "the seed is left as it was" || return 1
-    assert_eq "[remote-control][--name][demo][--permission-mode][default]" "$(log_value argv)" "the server ran" || return 1
+    assert_eq "[remote-control][--name][demo][--permission-mode][default][--spawn=same-dir]" "$(log_value argv)" "the server ran" || return 1
 }
 
 test_remote_shows_the_servers_error_and_exits_with_its_status() {
@@ -419,7 +422,7 @@ test_remote_refuses_a_claude_older_than_the_measured_version() {
 
 test_remote_accepts_a_newer_claude_by_number_not_by_text() {
     FAKE_CLAUDE_VERSION=2.1.1000 run_cs_ok demo --remote || return 1
-    assert_eq "[remote-control][--name][demo][--permission-mode][default]" "$(log_value argv)" \
+    assert_eq "[remote-control][--name][demo][--permission-mode][default][--spawn=same-dir]" "$(log_value argv)" \
         "2.1.1000 is newer than 2.1.299" || return 1
 }
 
@@ -449,7 +452,7 @@ test_remote_drops_options_carried_in_claude_code_bin_and_says_so() {
     assert_eq "1" "$(grep -c 'Dropped:' "$err")" "the line is printed once" || return 1
     assert_eq "" "$(grep -F 'Dropped:' "$TEST_TMPDIR/out" || true)" "the line is not on stdout" || return 1
     assert_eq "$TEST_TMPDIR/bin/claude" "$(log_value bin)" "claude runs by its absolute path" || return 1
-    assert_eq "[remote-control][--name][demo][--permission-mode][plan]" "$(log_value argv)" \
+    assert_eq "[remote-control][--name][demo][--permission-mode][plan][--spawn=same-dir]" "$(log_value argv)" \
         "remote-control gets none of the dropped options and the mode --remote was given" || return 1
 }
 
@@ -462,7 +465,7 @@ test_remote_names_dropped_options_exactly_as_written() {
         RUN_CS_STDERR="$err" run_cs_ok demo --remote || { cat "$err"; return 1; }
     assert_eq "cs --remote runs claude remote-control without the rest of CLAUDE_CODE_BIN; --remote's own --permission-mode sets the permission mode of the sessions it starts. Dropped: --append-system-prompt \"be brief\"  --add-dir '/tmp/a b'" \
         "$(strip_ansi < "$err" | grep -F 'Dropped:')" "the dropped text is named exactly" || { cat "$err"; return 1; }
-    assert_eq "[remote-control][--name][demo][--permission-mode][default]" "$(log_value argv)" \
+    assert_eq "[remote-control][--name][demo][--permission-mode][default][--spawn=same-dir]" "$(log_value argv)" \
         "remote-control gets none of it" || return 1
 }
 
@@ -483,7 +486,7 @@ test_remote_window_gets_the_command_alone_and_the_line_shows_once() {
         RUN_CS_STDERR="$werr" run_in_its_own_group sh -c "$cmd" || return 1
     assert_eq "0" "$CS_RC" "the window's server ran" || { cat "$TEST_TMPDIR/out" "$werr"; return 1; }
     assert_eq "0" "$(grep -c 'Dropped:' "$werr")" "the window prints no second line" || { cat "$werr"; return 1; }
-    assert_eq "[remote-control][--name][demo][--permission-mode][plan]" "$(log_value argv)" \
+    assert_eq "[remote-control][--name][demo][--permission-mode][plan][--spawn=same-dir]" "$(log_value argv)" \
         "the window's remote-control gets no dropped option and the mode it was given" || return 1
 }
 
@@ -527,7 +530,7 @@ EOF
     assert_eq "cs --remote runs op remote-control without the rest of CLAUDE_CODE_BIN; --remote's own --permission-mode sets the permission mode of the sessions it starts. Dropped: run -- claude" \
         "$(strip_ansi < "$err" | grep -F 'Dropped:')" "the line names the wrapper and what was dropped" || { cat "$err"; return 1; }
     assert_eq "[ERROR] unknown command \"remote-control\" for \"op\"" "$(grep -F '[ERROR]' "$err")" "the wrapper's own error is shown" || return 1
-    assert_eq "[remote-control][--name][demo][--permission-mode][default]" "$(cat "$TEST_TMPDIR/wrapper.log")" \
+    assert_eq "[remote-control][--name][demo][--permission-mode][default][--spawn=same-dir]" "$(cat "$TEST_TMPDIR/wrapper.log")" \
         "remote-control's arguments go to the wrapper" || return 1
     assert_file_not_exists "$FAKE_CLAUDE_LOG" "claude never ran" || return 1
 }
@@ -723,7 +726,7 @@ test_remote_inside_tmux_refuses_an_open_or_served_session_on_the_callers_termina
 
 test_remote_in_its_window_serves_there_instead_of_opening_another() {
     CS_REMOTE_WINDOW=1 TMUX="/tmp/fake,1,0" run_cs_ok demo --remote || return 1
-    assert_eq "[remote-control][--name][demo][--permission-mode][default]" "$(log_value argv)" "the server runs in the window" || return 1
+    assert_eq "[remote-control][--name][demo][--permission-mode][default][--spawn=same-dir]" "$(log_value argv)" "the server runs in the window" || return 1
     assert_eq "" "$(grep -E '^new-(session|window)' "$FAKE_TMUX_LOG" 2>/dev/null || true)" "no further window opens" || return 1
     assert_eq "" "$(log_value CS_REMOTE_WINDOW)" "the window marker never reaches the server" || return 1
 }
