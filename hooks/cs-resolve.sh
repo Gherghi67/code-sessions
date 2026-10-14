@@ -249,6 +249,11 @@ cs_lead_claim() {  # local_dir session_id
     if [ "$CLAUDE_PID" != "$CS_LEAD_PID" ]; then
         _cs_pid_descends_from "$CLAUDE_PID" "$CS_LEAD_PID" || return 1
     fi
+    # A directory, fifo or link at lead-pid.mutex.lock makes _cs_lock print
+    # one "not a regular file" line on stderr, and the step then runs
+    # unlocked, as for every *.mutex.lock cs keeps. Only a writer with the
+    # user's own rights can put one there, and no launch clears it, as none
+    # clears the state lock's. Accepted as built; not to be hardened.
     _cs_with_state_lock "$1/lead-pid" _cs_lead_claim_write "$1" "$2" || return 1
     _CS_IS_LEAD=""
 }
@@ -260,6 +265,12 @@ cs_lead_claim() {  # local_dir session_id
 # directory by name (lib/75-launch.sh).
 _cs_lead_claim_write() {  # local_dir session_id
     [ ! -L "$1/lead-pid" ] && { [ -f "$1/lead-pid" ] || [ ! -e "$1/lead-pid" ]; } || return 1
+    # "Live" is kill -0's answer, so any live process the claim names holds
+    # it, claude or not. For that to keep the lead out, the claim must name a
+    # process that is no claude of this launch: a claude of it that exited and
+    # whose pid was drawn again before the lead's SessionStart, or a writer
+    # with the user's own rights. The next launch clears the claim either way.
+    # Accepted as built; not to be hardened.
     if [ "$CLAUDE_PID" != "$CS_LEAD_PID" ] && _cs_lead_claim_read \
         && [ "$_CS_CLAIM_PID" != "$CLAUDE_PID" ] && kill -0 "$_CS_CLAIM_PID" 2>/dev/null; then
         _cs_pid_descends_from "$_CS_CLAIM_PID" "$CLAUDE_PID" || return 1
