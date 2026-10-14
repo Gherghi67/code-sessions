@@ -428,7 +428,7 @@ run_test test_memory_note_discloses_shared_store
 # every turn to look up an answer already sitting in context, in both the
 # protocol file and the injected block that names the actor four lines earlier.
 # The command stays a documented verb, and the two on-demand surfaces that need
-# it — commands/sweep.md and the narrative reminder — keep theirs.
+# it — hooks/wrap-sweep.md (/wrap's memory pass) and the narrative reminder — keep theirs.
 test_always_loaded_surfaces_do_not_re_derive_the_resolved_actor() {
     "$CS_BIN" test-session <<< "" >/dev/null 2>&1 || true
     local claude_md="$CS_SESSIONS_ROOT/test-session/CLAUDE.local.md"
