@@ -348,10 +348,11 @@ test_a_launch_clears_the_lead_claim_a_previous_launch_left() {
 }
 
 # Something other than a file where the claim goes. A link (one that stays in
-# the session: the open refuses one that leads out) is removed, never
-# followed, so the file it names is left as it was and claude starts. A
-# directory may hold what someone put there, so cs removes nothing: it refuses
-# the open, names the directory, starts no claude and lets the session lock go.
+# the session: the open refuses one that leads out), to a file or to a
+# directory, is removed, never followed, so what it names is left as it was
+# and claude starts. A directory may hold what someone put there, so cs
+# removes nothing: it refuses the open, names the directory, starts no claude
+# and lets the session lock go.
 test_a_launch_removes_a_link_and_refuses_a_directory_in_place_of_the_claim() {
     _tab_launch_env 1
     local uuid out rc=0 claim="$CS_SESSIONS_ROOT/odd/.cs/local/lead-pid" target="$CS_SESSIONS_ROOT/odd/notes.txt"
@@ -362,6 +363,13 @@ test_a_launch_removes_a_link_and_refuses_a_directory_in_place_of_the_claim() {
     out=$("$CS_BIN" odd <<< "" 2>&1) || true
     assert_eq "none" "$(_launched "$out" claim)" "a launch removes a link in place of the claim" || return 1
     assert_eq "kept" "$(cat "$target")" "the file the link names is left as it was" || return 1
+    mkdir "$CS_SESSIONS_ROOT/odd/kept"
+    printf 'kept\n' > "$CS_SESSIONS_ROOT/odd/kept/notes.txt"
+    ln -s "$CS_SESSIONS_ROOT/odd/kept" "$claim"
+    out=$("$CS_BIN" odd <<< "" 2>&1) || true
+    assert_eq "none" "$(_launched "$out" claim)" "a launch removes a link to a directory in place of the claim" || return 1
+    assert_eq "kept" "$(cat "$CS_SESSIONS_ROOT/odd/kept/notes.txt")" \
+        "the directory the link names is left as it was" || return 1
     mkdir "$claim"
     out=$("$CS_BIN" odd <<< "" 2>&1) || rc=$?
     assert_eq "1" "$rc" "a launch with a directory in place of the claim fails" || return 1
