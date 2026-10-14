@@ -467,6 +467,8 @@ main() {
 
     # --remote serves the session through claude remote-control. The mode is
     # passed through as given; remote-control refuses one it does not know.
+    # With none given, _remote_claude_bin takes the one CLAUDE_CODE_BIN sets,
+    # else default.
     if [ -n "$remote_mode" ] && [ -z "$remote_flag" ]; then
         error "--permission-mode is an option of --remote: cs $session_name --remote --permission-mode $remote_mode"
     fi
@@ -476,7 +478,6 @@ main() {
             || error "--force cannot be used with --remote: a served session never shares its directory with another claude."
         [ -z "$merge_feature" ] \
             || error "-finish cannot be used with --remote: remote-control takes no prompt to run /finish with."
-        remote_mode="${remote_mode:-default}"
         # Set only on the command _remote_open_window gives the server's tmux
         # window, and kept from everything this run starts.
         remote_in_window="${CS_REMOTE_WINDOW:-}"
@@ -491,7 +492,8 @@ main() {
     check_update_notify
 
     if [ -n "$remote_flag" ]; then
-        _remote_claude_bin
+        _remote_claude_bin "$remote_mode"
+        remote_mode="$_CS_REMOTE_MODE"
         if [ -n "${TMUX:-}" ] && [ -z "$remote_in_window" ]; then
             _remote_open_window "$session_name" "$remote_mode"
             return 0
