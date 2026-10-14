@@ -570,6 +570,67 @@ test_remote_inside_tmux_without_tmux_names_remote() {
     assert_eq "Error: cs --remote needs tmux" "$(printf '%s' "$out" | strip_ansi)" "the error names --remote" || return 1
 }
 
+# A server restarted at once can have its lock and remote.pid written before
+# the release of the server before it wakes. That release removes only files
+# that still name its own server; another process stands in for the later
+# open here.
+test_remote_release_leaves_the_files_of_a_later_open() {
+    start_serving demo --remote || return 1
+    start_unrelated_process
+    printf '%s\n' "$OTHER_PID" > "$CS_SESSIONS_ROOT/demo/.cs/session.lock"
+    printf '%s\n' "$OTHER_PID" > "$CS_SESSIONS_ROOT/demo/.cs/local/remote.pid"
+    stop_serving TERM || return 1
+    assert_eq "$OTHER_PID" "$(cat "$CS_SESSIONS_ROOT/demo/.cs/session.lock" 2>/dev/null)" "the later open's lock is left" || return 1
+    assert_eq "$OTHER_PID" "$(cat "$CS_SESSIONS_ROOT/demo/.cs/local/remote.pid" 2>/dev/null)" "the later open's remote.pid is left" || return 1
+}
+
+# A session cs --remote serves this way gets its vault detached by the
+# release once the server exits, as SessionEnd detaches it after claude.
+# hdiutil and mount are PATH stubs: mount reports the vault mounted until
+# hdiutil detaches it, and hdiutil logs every call.
+test_remote_release_detaches_the_vault_its_open_mounted() {
+    run_cs_ok demo --remote || return 1
+    local meta="$CS_SESSIONS_ROOT/demo/.cs" stub="$TEST_TMPDIR/stub" mnt flag="$TEST_TMPDIR/mounted"
+    mkdir -p "$stub" "$meta/vault-mnt"
+    mnt="$(cd "$meta/vault-mnt" && pwd -P)"
+    cat > "$stub/hdiutil" << 'EOF'
+#!/bin/sh
+echo "$*" >> "$FAKE_HDIUTIL_LOG"
+[ "$1" = detach ] && rm -f "$FAKE_MOUNT_FLAG"
+exit 0
+EOF
+    cat > "$stub/mount" << 'EOF'
+#!/bin/sh
+[ -e "$FAKE_MOUNT_FLAG" ] && echo "/dev/disk9s1 on $FAKE_MNT (apfs, local, nodev, nosuid, journaled, noowners, nobrowse)"
+echo "/dev/disk3s1 on / (apfs, sealed, local, read-only, journaled)"
+EOF
+    printf '#!/bin/sh\nexit 0\n' > "$meta/local/pre-open"
+    chmod +x "$stub/hdiutil" "$stub/mount" "$meta/local/pre-open"
+    printf '%s\n' "$TEST_TMPDIR/demo.sparsebundle" > "$meta/local/vault"
+    : > "$flag"
+    FAKE_MOUNT_FLAG="$flag" FAKE_HDIUTIL_LOG="$TEST_TMPDIR/hdiutil.log" FAKE_MNT="$mnt" PATH="$stub:$PATH" \
+        run_cs_ok demo --remote || return 1
+    assert_eq "detach $mnt" "$(cat "$TEST_TMPDIR/hdiutil.log" 2>/dev/null)" "the release detached the vault" || { cat "$TEST_TMPDIR/out"; return 1; }
+}
+
+test_remote_inside_tmux_refuses_an_open_or_served_session_on_the_callers_terminal() {
+    make_open_session demo
+    local pid rc=0 out
+    pid="$(cat "$CS_SESSIONS_ROOT/demo/.cs/session.lock")"
+    out=$(TMUX="/tmp/fake,1,0" "$CS_BIN" demo --remote 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a session open locally is refused" || return 1
+    assert_eq "Error: Session demo is already open (PID $pid); cs demo --remote serves only a session that is not open. Close it first." \
+        "$(printf '%s' "$out" | strip_ansi | tail -1)" "the open refusal" || return 1
+    start_fake_server_process demo
+    printf '%s\n' "$FAKE_SERVER_PID" > "$CS_SESSIONS_ROOT/demo/.cs/local/remote.pid"
+    rc=0
+    out=$(TMUX="/tmp/fake,1,0" "$CS_BIN" demo --remote 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a served session is refused" || return 1
+    assert_eq "Error: Session demo is served by cs demo --remote (remote-control PID $FAKE_SERVER_PID); stop it first with Ctrl-C in its window, or close the window." \
+        "$(printf '%s' "$out" | strip_ansi | tail -1)" "the served refusal" || return 1
+    assert_eq "" "$(grep -E '^new-(session|window)' "$FAKE_TMUX_LOG" 2>/dev/null || true)" "no window opens" || return 1
+}
+
 test_remote_in_its_window_serves_there_instead_of_opening_another() {
     CS_REMOTE_WINDOW=1 TMUX="/tmp/fake,1,0" run_cs_ok demo --remote || return 1
     assert_eq "[remote-control][--name][demo][--permission-mode][default]" "$(log_value argv)" "the server runs in the window" || return 1
@@ -669,6 +730,9 @@ run_test test_remote_stops_cleanly_on_ctrl_c_typed_at_its_terminal
 run_test test_remote_refuses_force_finish_and_a_mode_without_remote
 run_test test_remote_inside_tmux_opens_its_own_window_in_the_cs_session
 run_test test_remote_inside_tmux_without_tmux_names_remote
+run_test test_remote_release_leaves_the_files_of_a_later_open
+run_test test_remote_release_detaches_the_vault_its_open_mounted
+run_test test_remote_inside_tmux_refuses_an_open_or_served_session_on_the_callers_terminal
 run_test test_remote_in_its_window_serves_there_instead_of_opening_another
 run_test test_remote_window_serves_the_callers_root_with_the_callers_claude
 run_test test_remote_failure_in_its_window_waits_for_enter
