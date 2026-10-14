@@ -306,7 +306,7 @@ test_native_claude_with_flags_runs_the_link_with_its_flags() {
 # A stub whose argv, parent and launch prompt the tests read.
 _resume_session() {  # name -> prints the recorded conversation id
     local inst="$TEST_TMPDIR/inst"
-    printf '#!/usr/bin/env bash\necho "argv0=$0"\necho "args=$*"\necho "parent=$(ps -o args= -p $PPID)"\necho "claim=$(cat "$CLAUDE_SESSION_META_DIR/local/lead-pid" 2>/dev/null || echo none)"\n' \
+    printf '#!/usr/bin/env bash\necho "argv0=$0"\necho "args=$*"\necho "parent=$(ps -o args= -p $PPID)"\necho "claim=$(cat "$CLAUDE_SESSION_META_DIR/local/lead-pid" 2>/dev/null || echo none)"\necho "marker=${CS_LEAD_CLAIM:-unset}"\n' \
         > "$inst/versions/9.9.9"
     "$CS_BIN" "$1" <<< "" > /dev/null 2>&1 || true
     awk '/^claude_session_id:/ { print $2; exit }' "$CS_SESSIONS_ROOT/$1/.cs/local/state"
@@ -327,7 +327,8 @@ _user_record() {
 # launch pid. A claim a previous launch left would speak for a later launch
 # that drew the same pid, so every launch clears it before claude starts: the
 # one where cs stays as claude's parent and the one where claude takes cs's
-# place alike.
+# place alike. Both say in CS_LEAD_CLAIM that they take the claim, which a
+# launch by a cs from before the claim does not say.
 test_a_launch_clears_the_lead_claim_a_previous_launch_left() {
     _tab_launch_env 1
     local uuid out claim="$CS_SESSIONS_ROOT/marked/.cs/local/lead-pid"
@@ -337,11 +338,13 @@ test_a_launch_clears_the_lead_claim_a_previous_launch_left() {
     out=$("$CS_BIN" marked <<< "" 2>&1) || true
     assert_output_contains "$(_launched "$out" parent)" "marked" "no transcript: cs stays the parent" || return 1
     assert_eq "none" "$(_launched "$out" claim)" "a launch that stays claude's parent clears the claim" || return 1
+    assert_eq "1" "$(_launched "$out" marker)" "a launch that stays claude's parent takes the claim" || return 1
     _user_record > "$(_transcript marked "$uuid")"
     printf '1 1 stale\n' > "$claim"
     out=$("$CS_BIN" marked <<< "" 2>&1) || true
     assert_output_not_contains "$(_launched "$out" parent)" "marked" "a real conversation: claude replaces cs" || return 1
     assert_eq "none" "$(_launched "$out" claim)" "a launch claude replaces clears the claim" || return 1
+    assert_eq "1" "$(_launched "$out" marker)" "a launch claude replaces takes the claim" || return 1
 }
 
 test_resume_of_a_real_conversation_runs_claude_in_place_of_cs() {

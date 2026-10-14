@@ -12,6 +12,9 @@ _nested_setup() {
     export CLAUDE_SESSION_DIR="$CS_SESSIONS_ROOT/nested"
     export CLAUDE_SESSION_META_DIR="$CLAUDE_SESSION_DIR/.cs"
     export CLAUDE_SESSION_NAME="nested"
+    # Every launch modelled here is one that takes the lead's claim, as every
+    # launch this cs makes does; a test of a launch without it unsets this.
+    export CS_LEAD_CLAIM=1
     mkdir -p "$CLAUDE_SESSION_META_DIR/memory" "$CLAUDE_SESSION_META_DIR/local"
     # A narrative older than the reminder's cooldown, so the lead WOULD be
     # reminded: that is what makes the child's silence a measurement.
@@ -392,6 +395,43 @@ test_the_lead_takes_the_claim_from_a_claude_it_started() {
     assert_eq "absent" "$guest_flag" "the other claude's Stop leaves the attention flag down" || return 1
 }
 
+# A session opened by a cs that predates the claim carries no CS_LEAD_CLAIM,
+# and stays open while the hooks are updated. Nothing under that launch
+# claims it, so the claude carrying the launch pid is its only lead. A
+# `claude -p` the lead's Bash tool runs (below a shell, so the launch's
+# grandchild) neither rebinds the recorded conversation nor writes a claim,
+# and its end leaves the lead's lock. The lead's own /clear still rebinds.
+test_a_launch_that_takes_no_claim_has_only_the_launch_pid_for_its_lead() {
+    _nested_setup
+    unset CS_LEAD_CLAIM
+    local meta="$CLAUDE_SESSION_META_DIR" launch direct wrapper grand
+    _launch_tree || return 1
+    read -r launch direct wrapper grand < "$TEST_TMPDIR/tree"
+    echo "$launch" > "$meta/session.lock"
+    printf 'claude_session_id: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\n' > "$meta/local/state"
+
+    _start_hook "$launch" "$grand" startup bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb > /dev/null
+    local child_recorded child_claim lock
+    child_recorded=$(_recorded_conversation)
+    child_claim=$(cat "$meta/local/lead-pid" 2>/dev/null || echo none)
+    printf '{"session_id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","reason":"other"}\n' \
+        | CS_RESOLVED_FROM=env CS_LEAD_PID="$launch" CLAUDE_PID="$grand" bash "$HOOKS_DIR/session-end.sh" >/dev/null 2>&1
+    lock=$(cat "$meta/session.lock" 2>/dev/null || echo none)
+    _start_hook "$launch" "$launch" clear cccccccc-cccc-4ccc-8ccc-cccccccccccc > /dev/null
+    local lead_recorded lead_claim
+    lead_recorded=$(_recorded_conversation)
+    lead_claim=$(cat "$meta/local/lead-pid" 2>/dev/null || echo none)
+    _kill_launch_tree
+
+    assert_eq "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" "$child_recorded" \
+        "the claude -p leaves the recorded conversation" || return 1
+    assert_eq "none" "$child_claim" "the claude -p writes no claim" || return 1
+    assert_eq "$launch" "$lock" "the claude -p's end leaves the lead's lock" || return 1
+    assert_eq "cccccccc-cccc-4ccc-8ccc-cccccccccccc" "$lead_recorded" \
+        "the claude carrying the launch pid rebinds the recorded conversation" || return 1
+    assert_eq "none" "$lead_claim" "nothing under the launch writes a claim" || return 1
+}
+
 # cs passes a launch prompt to claude as an argument, so the lead's own
 # command line can hold the three teammate flags as words of a prompt. A
 # claude shown to be the lead is the lead whatever its arguments say.
@@ -447,6 +487,7 @@ run_test test_a_claude_the_launch_forked_is_the_lead_once_it_claims
 run_test test_a_claude_an_exec_launch_forked_is_the_lead_once_it_claims
 run_test test_a_direct_child_of_the_lead_claude_is_not_the_lead
 run_test test_the_lead_takes_the_claim_from_a_claude_it_started
+run_test test_a_launch_that_takes_no_claim_has_only_the_launch_pid_for_its_lead
 run_test test_the_lead_keeps_its_rotation_when_its_prompt_names_the_teammate_flags
 run_test test_a_claude_whose_ancestry_cannot_be_read_is_not_taken_for_a_guest
 
