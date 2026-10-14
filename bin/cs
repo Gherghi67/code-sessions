@@ -6395,15 +6395,19 @@ _harden_session_meta() {  # session_dir
 # is never committed, so a cloned session cannot make cs run code (a file sync
 # copies it like any other file).
 # It runs in the session directory on the user's terminal (a password prompt
-# needs the TTY), and any non-zero exit aborts the open.
+# needs the TTY), and any non-zero exit aborts the open. CS_LIVE_LOCK_PID
+# carries the pid live_lock_pid reads from the session lock, empty when no
+# running process holds it, so the hook needs no lock rule of its own. The
+# open has not taken the lock yet, so the pid is the previous holder's.
 _run_pre_open() {  # session_name, session_dir
-    local hook="$2/.cs/local/pre-open" rc=0
+    local hook="$2/.cs/local/pre-open" rc=0 lock_pid
     [ -e "$hook" ] || return 0
     # `git add -f` can still commit into the ignored .cs/local/; refuse before
     # running anything a clone could have delivered.
     cs_assert_local_untracked "$2"
     [ -x "$hook" ] || error "$1: .cs/local/pre-open is not executable; chmod +x it, or remove it."
-    (cd "$2" && "$hook") || rc=$?
+    lock_pid=$(live_lock_pid "$2/.cs")
+    (cd "$2" && CS_LIVE_LOCK_PID="$lock_pid" "$hook") || rc=$?
     [ "$rc" -eq 0 ] || error "$1: .cs/local/pre-open exited $rc; not opening the session."
     _arm_vault_detach "$2"
 }
@@ -10762,6 +10766,9 @@ _encrypt_move_content() {  # session_name, meta_dir
 # The hook cs runs before every open: attaches the vault, asking for its
 # password each time. A mount whose session is not running is a leftover (a
 # crash, or a detach that failed), so it is detached and asked for again.
+# Whether the session is running comes from cs in CS_LIVE_LOCK_PID
+# (_run_pre_open); the hook never reads the lock, and without the variable
+# it counts the mount as held by no running session.
 _encrypt_write_pre_open() {  # meta_dir, container
     local hook="$1/local/pre-open"
     {
@@ -10774,7 +10781,7 @@ mkdir -p .cs/vault-mnt
 mnt=$(cd .cs/vault-mnt && pwd -P)
 mounted() { mount | grep -F " on $mnt (" >/dev/null; }
 alive() { case "$1" in ''|*[!0-9]*) return 1 ;; esac; kill -0 "$1" 2>/dev/null; }
-lock_alive() { alive "$(tr -d '[:space:]' < .cs/session.lock 2>/dev/null || true)"; }
+lock_alive() { [ -n "${CS_LIVE_LOCK_PID:-}" ]; }
 holder_alive() {
     local pid
     [ -f .cs/local/vault-holders ] || return 1

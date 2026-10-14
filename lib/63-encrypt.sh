@@ -73,6 +73,9 @@ _encrypt_move_content() {  # session_name, meta_dir
 # The hook cs runs before every open: attaches the vault, asking for its
 # password each time. A mount whose session is not running is a leftover (a
 # crash, or a detach that failed), so it is detached and asked for again.
+# Whether the session is running comes from cs in CS_LIVE_LOCK_PID
+# (_run_pre_open); the hook never reads the lock, and without the variable
+# it counts the mount as held by no running session.
 _encrypt_write_pre_open() {  # meta_dir, container
     local hook="$1/local/pre-open"
     {
@@ -85,7 +88,7 @@ mkdir -p .cs/vault-mnt
 mnt=$(cd .cs/vault-mnt && pwd -P)
 mounted() { mount | grep -F " on $mnt (" >/dev/null; }
 alive() { case "$1" in ''|*[!0-9]*) return 1 ;; esac; kill -0 "$1" 2>/dev/null; }
-lock_alive() { alive "$(tr -d '[:space:]' < .cs/session.lock 2>/dev/null || true)"; }
+lock_alive() { [ -n "${CS_LIVE_LOCK_PID:-}" ]; }
 holder_alive() {
     local pid
     [ -f .cs/local/vault-holders ] || return 1
