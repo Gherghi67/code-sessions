@@ -41,3 +41,4 @@ café/menu.txt
 café/prices.txt
 backup\nold.txt
 backup.txt
+a[31mred	x.txt

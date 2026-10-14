@@ -1,9 +1,10 @@
-1,234,639 files
+1,234,640 files
     vendor/                                     (1,234,567 files)
     apps/web/node_modules/                      (42 files)
     café/                                       (2 files)
     tmp/                                        (2 files)
     .env
+    a?[31mred?x.txt
     apps/web/.svelte-kit/                       (1 file)
     apps/web/src/routes/admin/__screenshots__/  (1 file)
     apps/web/src/scratch.ts
@@ -18,5 +19,4 @@
     docs/draft-06.md
     docs/draft-07.md
     docs/draft-08.md
-    docs/draft-09.md
-    ... and 10 more
+    ... and 11 more

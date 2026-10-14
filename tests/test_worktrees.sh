@@ -440,6 +440,25 @@ retired task1 $sha" "$output" "the listing shows the newline as ?" || return 1
     assert_eq "kept" "$(cat "$TEST_TMPDIR/trash-bin/1-$name")" "the file is in the trash, intact" || return 1
 }
 
+# A name holding an escape or a carriage return would recolour or overwrite
+# the listing on a terminal: the listing prints each control character as
+# "?", and the trash command gets the name as it is on disk.
+test_retire_moves_an_ignored_file_whose_name_holds_control_characters() {
+    local wt="$CS_SESSIONS_ROOT/proj@task1" sha bin output status=0 name
+    sha=$(_landed_feature_ignoring 'notes*') || { echo "  FAIL: integrate fixture"; return 1; }
+    bin=$(fake_trash_bin moves trash)
+    name="notes"$'\033'"[31m"$'\r'"final"$'\t'".txt"
+    echo "kept" > "$wt/$name"
+    output=$(PATH="$bin:$PATH" "$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "retire proceeds: $output" || return 1
+    assert_eq "MEMORY.md: appended 1 pointer(s) from the feature (base lines kept)
+Moved 1 ignored file to the system trash:
+    $wt/notes?[31m?final?.txt
+retired task1 $sha" "$output" "the listing shows each control character as ?" || return 1
+    assert_eq "$wt/$name" "$(cat "$TEST_TMPDIR/trash.log")" "the trash gets the name as it is on disk" || return 1
+    assert_eq "kept" "$(cat "$TEST_TMPDIR/trash-bin/1-$name")" "the file is in the trash, intact" || return 1
+}
+
 # A literal "?" and a newline print alike, but they are two names on disk:
 # each is its own entry and each reaches the trash.
 test_retire_moves_two_ignored_names_that_print_alike() {
@@ -1263,6 +1282,7 @@ run_test test_retire_refuses_when_the_trash_command_fails
 run_test test_retire_refuses_without_a_trash_command
 run_test test_retire_moves_ignored_work_with_gio_when_trash_is_missing
 run_test test_retire_moves_an_ignored_file_whose_name_holds_a_newline
+run_test test_retire_moves_an_ignored_file_whose_name_holds_control_characters
 run_test test_retire_moves_two_ignored_names_that_print_alike
 run_test test_retire_moves_an_ignored_name_that_starts_another_shown_alike
 run_test test_retire_moves_an_ignored_nested_repository_named_with_a_backslash_and_a_newline
@@ -1301,9 +1321,9 @@ run_test test_retire_refusal_collapses_untracked_trees
 # of each directory git does not list into, and the paths at risk, separated
 # by empty lines; expected.txt holds the count phrase, then the entry lines.
 # A path is written as cs lists it, one per line: a newline in a name as "\n",
-# a backslash as "\\". The fixture holds a name with a newline, which prints
-# as "?", and a directory named in two-byte characters, which pads by
-# characters.
+# a backslash as "\\". The fixture holds a name with a newline and one with
+# an escape and a tab, each control character printing as "?", and a
+# directory named in two-byte characters, which pads by characters.
 test_untracked_listing_renders_the_shared_fixture() {
     local fixture="$SCRIPT_DIR/fixtures/untracked-listing" out status=0
     out=$( source "$SCRIPT_DIR/../lib/30-worktree.sh"
