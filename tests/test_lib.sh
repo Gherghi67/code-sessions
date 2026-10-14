@@ -26,7 +26,9 @@ set -euo pipefail
 unset CLAUDE_PROJECT_DIR CS_ACTOR CLAUDE_CODE_SESSION_ID CS_CLAUDE_SESSION_ID CLAUDE_CONFIG_DIR 2>/dev/null || true
 # CS_SECRETS_SESSION is the same identity for cs-secrets, which reads it ahead
 # of the session name: a feature worktree exports its base session there.
-unset CLAUDE_SESSION_NAME CLAUDE_SESSION_DIR CLAUDE_SESSION_META_DIR CS_SECRETS_SESSION 2>/dev/null || true
+# CS_SECRETS_CALLER is the session cs-secrets refuses writes on behalf of,
+# set by cs's -secrets arms and read ahead of CLAUDE_SESSION_NAME.
+unset CLAUDE_SESSION_NAME CLAUDE_SESSION_DIR CLAUDE_SESSION_META_DIR CS_SECRETS_SESSION CS_SECRETS_CALLER 2>/dev/null || true
 # CS_CLAUDE_DIR outranks HOME for Claude Code's settings.json, and a
 # SessionStart hook appends the session it ran for to CLAUDE_ENV_FILE.
 unset CS_CLAUDE_DIR CLAUDE_ENV_FILE 2>/dev/null || true

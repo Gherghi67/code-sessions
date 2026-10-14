@@ -101,8 +101,9 @@ _lock_collision_menu() {
 # exactly one process (noclobber: the open fails when the file exists), never
 # by a check followed by a write: two opens started together both saw no
 # lock, both wrote their pid, and both launched a claude on one UUID. A loser
-# reads the winner's pid and takes the live-lock path; a lock whose holder is
-# dead is removed and the create tried again, with a bound so a lock that
+# reads the winner's pid and takes the live-lock path; a lock that names no
+# running process by live_lock_pid's rule ("0" and "-1" included) is removed
+# and the create tried again, with a bound so a lock that
 # keeps reappearing cannot spin forever. Creating and reclaiming take turns
 # under the .cs/session.mutex.lock mutex (_cs_lock): an opener that read a
 # dead pid and then removed the file could otherwise delete the live lock
@@ -141,14 +142,15 @@ _take_session_lock() {  # meta_dir
             fi
         fi
         attempt=$((attempt + 1))
-        lock_pid=$(cat "$lock_file" 2>/dev/null || echo "")
+        lock_pid="$(live_lock_pid "$meta_dir")"
 
-        if [ -n "$lock_pid" ] && kill -0 "$lock_pid" 2>/dev/null; then
+        if [ -n "$lock_pid" ]; then
             # PID is alive — session is in use
             _cs_unlock "$mutex"
             _CS_LOCK_LIVE_PID="$lock_pid"
             return 1
         fi
+        lock_pid="$(read_lock_pid "$meta_dir")"
 
         if [ "$attempt" -ge 5 ]; then
             _cs_unlock "$mutex"
@@ -250,19 +252,13 @@ release_session_lock() {
     fi
 }
 
-# Print the PID recorded in a session's lock file (empty if none). Arg: meta_dir.
-read_lock_pid() {  # meta_dir
-    local f="$1/session.lock"
-    [ -f "$f" ] || return 0
-    cat "$f" 2>/dev/null || true
-}
+# read_lock_pid and live_lock_pid live in lib/02-shared.sh, so the hooks read
+# a session lock by the same rule.
 
-# True (exit 0) when a session's process is currently alive on this machine.
-# Arg: meta_dir (the session's .cs dir).
+# True (exit 0) when a session's process is currently alive on this machine,
+# by live_lock_pid's rule. Arg: meta_dir (the session's .cs dir).
 session_is_live() {  # meta_dir
-    local pid
-    pid="$(read_lock_pid "$1")"
-    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+    [ -n "$(live_lock_pid "$1")" ]
 }
 
 # True when target_pid is this cs process or one of its live ancestors. A cs
@@ -304,6 +300,56 @@ session_lock_owned_by_invoker() {  # session_name, lock_pid
     [ -n "${CLAUDE_SESSION_NAME:-}" ] \
         && [ "$CLAUDE_SESSION_NAME" = "$1" ] \
         && _pid_is_self_or_ancestor "$2"
+}
+
+# True when cs runs inside a session (CLAUDE_SESSION_NAME) other than <name>.
+# A terminal outside every session is the user, never another session.
+_called_from_other_session() {  # name
+    [ -n "${CLAUDE_SESSION_NAME:-}" ] && [ "$CLAUDE_SESSION_NAME" != "$1" ]
+}
+
+# Refuses <verb> (remove, archive, rotate the narrative of) on session <name>
+# while its claude is running when cs runs inside a session that does not own
+# it, --force or not: the flag skips the live check only from a terminal
+# outside every session and for the caller's own sessions. A session owns itself and, from its base,
+# its own features (<base>@<task>); a feature owns neither its base nor a
+# sibling. An idle target is left to the verb's own checks. Called directly,
+# never in $(...), so the error ends cs.
+_refuse_live_other_session() {  # name meta_dir verb
+    _called_from_other_session "$1" || return 0
+    case "$CLAUDE_SESSION_NAME" in
+        *@*) ;;
+        *) case "$1" in "$CLAUDE_SESSION_NAME"@*) return 0 ;; esac ;;
+    esac
+    local pid
+    pid="$(live_lock_pid "$2")"
+    [ -n "$pid" ] || return 0
+    error "session $CLAUDE_SESSION_NAME cannot $3 session $1 while it is live (pid $pid); --force does not override that from another session. Close $1 first."
+}
+
+# Refuses <verb> (remove, archive) on base session <name> while one of its
+# features (<name>@<task>) is live, when cs runs inside any session but <name>
+# itself, --force or not: a feature's worktree points into its base's
+# repository. Only a terminal outside every session and the base itself are
+# not refused; a sibling feature is, and so is the live feature itself, whose
+# own worktree the base holds. Called directly, never in $(...), so the error
+# ends cs. A feature is <name>'s when <name>@<its task> is the same directory
+# as the feature's (-ef), not when the names match as strings: a volume that
+# ignores letter case or Unicode normalization finds one directory under
+# several spellings, and a glob compares bytes.
+_refuse_base_with_live_feature() {  # name verb
+    [ -n "${CLAUDE_SESSION_NAME:-}" ] || return 0
+    [ "$CLAUDE_SESSION_NAME" != "$1" ] || return 0
+    case "$1" in *@*) return 0 ;; esac
+    local feature entry pid
+    for feature in "$SESSIONS_ROOT"/*@*; do
+        entry="${feature##*/}"
+        [ "$SESSIONS_ROOT/$1@${entry#*@}" -ef "$feature" ] || continue
+        [ -d "$feature/.cs" ] || continue
+        pid="$(live_lock_pid "$feature/.cs")"
+        [ -n "$pid" ] || continue
+        error "session $CLAUDE_SESSION_NAME cannot $2 session $1 while its feature ${feature##*/} is live (pid $pid); --force does not override that from another session. Close ${feature##*/} first."
+    done
 }
 
 # Epoch mtime of a file, 0 on error. Arg: path. GNU stat is asked first, as

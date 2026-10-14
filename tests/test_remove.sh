@@ -56,6 +56,19 @@ test_remove_empty_name_rejected_before_any_deletion() {
     ! "$CS_BIN" -rm "" >/dev/null 2>&1 || return 1
 }
 
+# The live refusal names the pid live_lock_pid reads: whitespace and leading
+# zeros around a running pid are not part of it.
+test_remove_live_refusal_names_the_pid_the_lock_rule_reads() {
+    create_test_session live1 >/dev/null
+    printf '  00%s\n\n' "$$" > "$CS_SESSIONS_ROOT/live1/.cs/session.lock"
+    local out rc=0
+    out=$(printf 'y\n' | CS_ASSUME_TTY=1 "$CS_BIN" -rm live1 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the removal exits 1" || return 1
+    assert_eq "Error: Session 'live1' is live (pid $$); use --force to remove anyway" "$out" \
+        "the refusal names the pid alone" || return 1
+    assert_dir "$CS_SESSIONS_ROOT/live1" "the session stays" || return 1
+}
+
 test_remove_refuses_live_session_without_force() {
     create_test_session live1 >/dev/null
     sleep 300 &
@@ -914,6 +927,217 @@ test_remove_force_on_adopted_removes_only_the_link() {
     assert_dir "$project_dir/.cs" "project .cs/ should still be present" || return 1
 }
 
+# A conversation inside one session cannot pull another session out from
+# under its running claude: --force skips the live check only for the
+# caller's own sessions and from a terminal outside every session.
+test_remove_live_other_session_refused_even_with_force() {
+    local dir out rc=0
+    dir=$(create_test_session receiver)
+    mkdir -p "$dir/.cs/local/queue"
+    echo "review the diff" > "$dir/.cs/local/queue/0001"
+    sleep 300 &
+    local live_pid=$!
+    echo "$live_pid" > "$dir/.cs/session.lock"
+    out=$(CLAUDE_SESSION_NAME=sender "$CS_BIN" -rm receiver --force --delete-files </dev/null 2>&1) || rc=$?
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    assert_eq "1" "$rc" "the removal exits 1" || return 1
+    assert_eq "Error: session sender cannot remove session receiver while it is live (pid $live_pid); --force does not override that from another session. Close receiver first." \
+        "$out" "the refusal names both sessions" || return 1
+    assert_file_exists "$dir/.cs/local/queue/0001" "the receiver and its queue survive" || return 1
+}
+
+# An idle session goes from inside another one exactly as it does today.
+test_remove_idle_other_session_from_inside_a_session() {
+    local dir
+    dir=$(create_test_session receiver)
+    mkdir -p "$dir/.cs/local/queue"
+    echo "review the diff" > "$dir/.cs/local/queue/0001"
+    CLAUDE_SESSION_NAME=sender "$CS_BIN" -rm receiver --force --delete-files </dev/null >/dev/null 2>&1 || return 1
+    assert_not_exists "$dir" "the idle session is removed" || return 1
+}
+
+# A base owns its own features, so --force still takes a live one from it.
+test_remove_live_own_feature_from_its_base_with_force() {
+    local wt
+    wt=$(_worktree_with_user_files sender)
+    sleep 300 &
+    local live_pid=$!
+    echo "$live_pid" > "$wt/.cs/session.lock"
+    local out rc=0
+    out=$(CLAUDE_SESSION_NAME=sender "$CS_BIN" -rm sender@t --force --delete-files </dev/null 2>&1) || rc=$?
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    assert_eq "0" "$rc" "the base removes its own live feature (output: $out)" || return 1
+    assert_not_exists "$wt" "the feature is gone" || return 1
+}
+
+# A feature owns neither its base nor a sibling feature.
+test_remove_from_a_feature_refuses_its_live_base_and_a_live_sibling() {
+    create_test_session sender >/dev/null
+    create_test_session sender@b >/dev/null
+    sleep 300 &
+    local live_pid=$!
+    echo "$live_pid" > "$CS_SESSIONS_ROOT/sender/.cs/session.lock"
+    echo "$live_pid" > "$CS_SESSIONS_ROOT/sender@b/.cs/session.lock"
+    local target out rc
+    for target in sender sender@b; do
+        rc=0
+        out=$(CLAUDE_SESSION_NAME=sender@a "$CS_BIN" -rm "$target" --force </dev/null 2>&1) || rc=$?
+        assert_eq "1" "$rc" "removing $target exits 1" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
+        assert_eq "Error: session sender@a cannot remove session $target while it is live (pid $live_pid); --force does not override that from another session. Close $target first." \
+            "$out" "the refusal names $target" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
+        assert_dir "$CS_SESSIONS_ROOT/$target" "$target survives" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
+    done
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    return 0
+}
+
+# A feature's worktree points into its base's repository, so from inside any
+# session but the base itself a base is not removed while one of its features
+# is live, --force or not: not from another base, not from a sibling feature,
+# and not from the live feature itself.
+test_remove_base_refused_while_its_feature_is_live() {
+    create_test_session receiver >/dev/null
+    create_test_session receiver@x >/dev/null
+    sleep 300 &
+    local live_pid=$! caller flag out rc
+    echo "$live_pid" > "$CS_SESSIONS_ROOT/receiver@x/.cs/session.lock"
+    for caller in sender receiver@y receiver@x; do
+        for flag in "" --force; do
+            rc=0
+            # shellcheck disable=SC2086 # an empty flag is no argument
+            out=$(CLAUDE_SESSION_NAME="$caller" "$CS_BIN" -rm receiver $flag </dev/null 2>&1) || rc=$?
+            assert_eq "1" "$rc" "removing receiver from $caller ${flag:-without --force} exits 1" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
+            assert_eq "Error: session $caller cannot remove session receiver while its feature receiver@x is live (pid $live_pid); --force does not override that from another session. Close receiver@x first." \
+                "$out" "the refusal from $caller names the live feature" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
+            assert_dir "$CS_SESSIONS_ROOT/receiver" "receiver survives" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
+        done
+    done
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    return 0
+}
+
+# The base itself and a plain terminal remove an idle base whose feature is
+# live, as they always have.
+test_remove_base_with_a_live_feature_from_itself_and_a_plain_shell() {
+    local caller out rc
+    sleep 300 &
+    local live_pid=$!
+    for caller in receiver ""; do
+        create_test_session receiver >/dev/null
+        create_test_session receiver@x >/dev/null
+        echo "$live_pid" > "$CS_SESSIONS_ROOT/receiver@x/.cs/session.lock"
+        rc=0
+        out=$(CLAUDE_SESSION_NAME="$caller" "$CS_BIN" -rm receiver --force </dev/null 2>&1) || rc=$?
+        assert_eq "0" "$rc" "removing receiver from '${caller:-a plain shell}' exits 0: $out" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
+        assert_not_exists "$CS_SESSIONS_ROOT/receiver" "receiver is removed from '${caller:-a plain shell}'" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
+    done
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    return 0
+}
+
+# A volume that ignores letter case finds receiver under RECEIVER, so the base
+# named in another case is the same base and is refused the same way, from
+# another base and from a sibling feature.
+test_remove_base_named_in_another_case_refused_while_its_feature_is_live() {
+    create_test_session receiver >/dev/null
+    create_test_session receiver@x >/dev/null
+    [ -d "$CS_SESSIONS_ROOT/RECEIVER" ] || { echo "    SKIP: the sessions root tells letter case apart"; return 77; }
+    sleep 300 &
+    local live_pid=$! caller out rc
+    echo "$live_pid" > "$CS_SESSIONS_ROOT/receiver@x/.cs/session.lock"
+    for caller in sender receiver@y; do
+        create_test_session receiver >/dev/null
+        rc=0
+        out=$(CLAUDE_SESSION_NAME="$caller" "$CS_BIN" -rm RECEIVER --force </dev/null 2>&1) || rc=$?
+        assert_eq "1" "$rc" "removing RECEIVER from $caller exits 1" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
+        assert_eq "Error: session $caller cannot remove session RECEIVER while its feature receiver@x is live (pid $live_pid); --force does not override that from another session. Close receiver@x first." \
+            "$out" "the refusal from $caller names the live feature" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
+        assert_dir "$CS_SESSIONS_ROOT/receiver" "receiver survives" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
+    done
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    return 0
+}
+
+# The same holds when the feature's directory spells its base in another case
+# than the base's own directory does.
+test_remove_base_refused_while_a_feature_spelled_in_another_case_is_live() {
+    create_test_session receiver >/dev/null
+    [ -d "$CS_SESSIONS_ROOT/RECEIVER" ] || { echo "    SKIP: the sessions root tells letter case apart"; return 77; }
+    create_test_session Receiver@feat >/dev/null
+    sleep 300 &
+    local live_pid=$! out rc=0
+    echo "$live_pid" > "$CS_SESSIONS_ROOT/Receiver@feat/.cs/session.lock"
+    out=$(CLAUDE_SESSION_NAME=sender "$CS_BIN" -rm receiver --force </dev/null 2>&1) || rc=$?
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    assert_eq "1" "$rc" "removing receiver exits 1" || return 1
+    assert_eq "Error: session sender cannot remove session receiver while its feature Receiver@feat is live (pid $live_pid); --force does not override that from another session. Close Receiver@feat first." \
+        "$out" "the refusal names the live feature as its directory spells it" || return 1
+    assert_dir "$CS_SESSIONS_ROOT/receiver" "receiver survives" || return 1
+}
+
+# A volume that ignores Unicode normalization finds a base made in NFC under
+# its NFD spelling, so that spelling is refused the same way.
+test_remove_base_named_in_another_normalization_refused_while_its_feature_is_live() {
+    local nfc nfd
+    nfc=$(printf 'caf\303\251')
+    nfd=$(printf 'cafe\314\201')
+    create_test_session "$nfc" >/dev/null
+    create_test_session "$nfc@x" >/dev/null
+    [ -d "$CS_SESSIONS_ROOT/$nfd" ] || { echo "    SKIP: the sessions root tells Unicode normalization forms apart"; return 77; }
+    sleep 300 &
+    local live_pid=$! out rc=0
+    echo "$live_pid" > "$CS_SESSIONS_ROOT/$nfc@x/.cs/session.lock"
+    out=$(CLAUDE_SESSION_NAME=sender "$CS_BIN" -rm "$nfd" --force </dev/null 2>&1) || rc=$?
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    assert_eq "1" "$rc" "removing the NFD spelling exits 1" || return 1
+    assert_eq "Error: session sender cannot remove session $nfd while its feature $nfc@x is live (pid $live_pid); --force does not override that from another session. Close $nfc@x first." \
+        "$out" "the refusal names the live feature" || return 1
+    assert_dir "$CS_SESSIONS_ROOT/$nfc" "the base survives" || return 1
+}
+
+# Only the base's own features hold it: another base's live feature does not,
+# even when that base's name starts with this one's.
+test_remove_base_not_held_by_another_base_live_feature() {
+    create_test_session receiver >/dev/null
+    create_test_session receiver2@x >/dev/null
+    sleep 300 &
+    local live_pid=$! out rc=0
+    echo "$live_pid" > "$CS_SESSIONS_ROOT/receiver2@x/.cs/session.lock"
+    out=$(CLAUDE_SESSION_NAME=sender "$CS_BIN" -rm receiver --force </dev/null 2>&1) || rc=$?
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    assert_eq "0" "$rc" "removing receiver exits 0: $out" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/receiver" "receiver is removed" || return 1
+}
+
+# Every name is checked before any goes: an idle session listed first is not
+# removed when a later name is another session that is live.
+test_remove_from_inside_a_session_checks_every_name_first() {
+    create_test_session idle1 >/dev/null
+    create_test_session receiver >/dev/null
+    sleep 300 &
+    local live_pid=$!
+    echo "$live_pid" > "$CS_SESSIONS_ROOT/receiver/.cs/session.lock"
+    local out rc=0
+    out=$(CLAUDE_SESSION_NAME=sender "$CS_BIN" -rm idle1 receiver --force </dev/null 2>&1) || rc=$?
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    assert_eq "1" "$rc" "the removal exits 1" || return 1
+    assert_eq "Error: session sender cannot remove session receiver while it is live (pid $live_pid); --force does not override that from another session. Close receiver first." \
+        "$out" "the refusal names the live session" || return 1
+    assert_dir "$CS_SESSIONS_ROOT/idle1" "the idle session listed first survives" || return 1
+    assert_dir "$CS_SESSIONS_ROOT/receiver" "the live session survives" || return 1
+}
+
+run_test test_remove_live_other_session_refused_even_with_force
+run_test test_remove_idle_other_session_from_inside_a_session
+run_test test_remove_live_own_feature_from_its_base_with_force
+run_test test_remove_from_a_feature_refuses_its_live_base_and_a_live_sibling
+run_test test_remove_base_refused_while_its_feature_is_live
+run_test test_remove_base_with_a_live_feature_from_itself_and_a_plain_shell
+run_test test_remove_base_named_in_another_case_refused_while_its_feature_is_live
+run_test test_remove_base_refused_while_a_feature_spelled_in_another_case_is_live
+run_test test_remove_base_named_in_another_normalization_refused_while_its_feature_is_live
+run_test test_remove_base_not_held_by_another_base_live_feature
+run_test test_remove_from_inside_a_session_checks_every_name_first
 run_test test_remove_empty_name_rejected_before_any_deletion
 run_test test_remove_base_session_drops_its_age_state
 run_test test_remove_base_session_without_age_state_prints_no_age_line
@@ -927,6 +1151,7 @@ run_test test_remove_age_state_refuses_a_linked_secrets_parent
 run_test test_remove_age_state_unsearchable_parent_is_a_failure
 run_test test_remove_age_state_unsearchable_linked_parent_is_a_failure
 run_test test_remove_refuses_live_session_without_force
+run_test test_remove_live_refusal_names_the_pid_the_lock_rule_reads
 run_test test_remove_allows_heartbeat_only_session_without_force
 run_test test_remove_discards_pending_spawn_seeds
 run_test test_remove_discards_spawn_staging_under_a_root_with_a_space

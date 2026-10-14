@@ -113,6 +113,19 @@ test_archive_no_name_errors_with_usage() {
     assert_output_contains "$output" "Usage" "bare form shows usage" || return 1
 }
 
+# The live refusal names the pid live_lock_pid reads: whitespace and leading
+# zeros around a running pid are not part of it.
+test_archive_live_refusal_names_the_pid_the_lock_rule_reads() {
+    _archive_session "livesess"
+    printf '  00%s\n\n' "$$" > "$CS_SESSIONS_ROOT/livesess/.cs/session.lock"
+    local out rc=0
+    out=$("$CS_BIN" -archive livesess 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the archive exits 1" || return 1
+    assert_eq "Error: Session 'livesess' is live (pid $$); use --force to archive anyway" "$out" \
+        "the refusal names the pid alone" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/livesess/.cs/archived" "no marker written" || return 1
+}
+
 test_archive_refuses_live_session_without_force() {
     _archive_session "livesess"
     sleep 300 &
@@ -212,6 +225,7 @@ run_test test_archive_is_idempotent
 run_test test_archive_unknown_session_errors
 run_test test_archive_no_name_errors_with_usage
 run_test test_archive_refuses_live_session_without_force
+run_test test_archive_live_refusal_names_the_pid_the_lock_rule_reads
 run_test test_list_hides_archived_and_prints_trailer
 run_test test_list_archived_shows_only_archived
 run_test test_list_archived_composes_with_tag
@@ -298,6 +312,152 @@ test_list_tag_trailer_counts_only_tagged_archived() {
     assert_output_contains "$output" "1 archived (cs -list --archived)" "trailer counts only the tag-matching archived session" || return 1
 }
 
+# From inside one session, --force does not archive another session whose
+# claude is running; an idle one archives as it does from anywhere.
+test_archive_live_other_session_refused_even_with_force() {
+    _archive_session "receiver"
+    sleep 300 &
+    local live_pid=$!
+    echo "$live_pid" > "$CS_SESSIONS_ROOT/receiver/.cs/session.lock"
+    local out rc=0
+    out=$(CLAUDE_SESSION_NAME=sender "$CS_BIN" -archive receiver --force 2>&1) || rc=$?
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    assert_eq "1" "$rc" "the archive exits 1" || return 1
+    assert_eq "Error: session sender cannot archive session receiver while it is live (pid $live_pid); --force does not override that from another session. Close receiver first." \
+        "$out" "the refusal names both sessions" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/receiver/.cs/archived" "no marker written" || return 1
+}
+
+# From inside any session but the base itself, a base is not archived while
+# one of its features is live, --force or not: not from another base, not
+# from a sibling feature, and not from the live feature itself.
+test_archive_base_refused_while_its_feature_is_live() {
+    _archive_session "receiver"
+    _archive_session "receiver@x"
+    sleep 300 &
+    local live_pid=$! caller flag out rc
+    echo "$live_pid" > "$CS_SESSIONS_ROOT/receiver@x/.cs/session.lock"
+    for caller in sender receiver@y receiver@x; do
+        for flag in "" --force; do
+            rc=0
+            # shellcheck disable=SC2086 # an empty flag is no argument
+            out=$(CLAUDE_SESSION_NAME="$caller" "$CS_BIN" -archive receiver $flag 2>&1) || rc=$?
+            assert_eq "1" "$rc" "archiving receiver from $caller ${flag:-without --force} exits 1" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
+            assert_eq "Error: session $caller cannot archive session receiver while its feature receiver@x is live (pid $live_pid); --force does not override that from another session. Close receiver@x first." \
+                "$out" "the refusal from $caller names the live feature" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
+            assert_not_exists "$CS_SESSIONS_ROOT/receiver/.cs/archived" "no marker written" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
+        done
+    done
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    return 0
+}
+
+# The base itself and a plain terminal archive an idle base whose feature is
+# live, as they always have.
+test_archive_base_with_a_live_feature_from_itself_and_a_plain_shell() {
+    local caller out rc
+    sleep 300 &
+    local live_pid=$!
+    for caller in receiver ""; do
+        rm -rf "$CS_SESSIONS_ROOT/receiver"
+        _archive_session "receiver"
+        _archive_session "receiver@x"
+        echo "$live_pid" > "$CS_SESSIONS_ROOT/receiver@x/.cs/session.lock"
+        rc=0
+        out=$(CLAUDE_SESSION_NAME="$caller" "$CS_BIN" -archive receiver 2>&1) || rc=$?
+        assert_eq "0" "$rc" "archiving receiver from '${caller:-a plain shell}' exits 0: $out" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
+        assert_file_exists "$CS_SESSIONS_ROOT/receiver/.cs/archived" "receiver is archived from '${caller:-a plain shell}'" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
+    done
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    return 0
+}
+
+# A volume that ignores letter case finds receiver under RECEIVER, so the base
+# named in another case is the same base and is refused the same way, from
+# another base and from a sibling feature.
+test_archive_base_named_in_another_case_refused_while_its_feature_is_live() {
+    _archive_session "receiver"
+    _archive_session "receiver@x"
+    [ -d "$CS_SESSIONS_ROOT/RECEIVER" ] || { echo "    SKIP: the sessions root tells letter case apart"; return 77; }
+    sleep 300 &
+    local live_pid=$! caller out rc
+    echo "$live_pid" > "$CS_SESSIONS_ROOT/receiver@x/.cs/session.lock"
+    for caller in sender receiver@y; do
+        rm -f "$CS_SESSIONS_ROOT/receiver/.cs/archived"
+        rc=0
+        out=$(CLAUDE_SESSION_NAME="$caller" "$CS_BIN" -archive RECEIVER --force 2>&1) || rc=$?
+        assert_eq "1" "$rc" "archiving RECEIVER from $caller exits 1" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
+        assert_eq "Error: session $caller cannot archive session RECEIVER while its feature receiver@x is live (pid $live_pid); --force does not override that from another session. Close receiver@x first." \
+            "$out" "the refusal from $caller names the live feature" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
+        assert_not_exists "$CS_SESSIONS_ROOT/receiver/.cs/archived" "no marker written" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
+    done
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    return 0
+}
+
+# Only the base's own features hold it: another base's live feature does not,
+# even when that base's name starts with this one's.
+test_archive_base_not_held_by_another_base_live_feature() {
+    _archive_session "receiver"
+    _archive_session "receiver2@x"
+    sleep 300 &
+    local live_pid=$! out rc=0
+    echo "$live_pid" > "$CS_SESSIONS_ROOT/receiver2@x/.cs/session.lock"
+    out=$(CLAUDE_SESSION_NAME=sender "$CS_BIN" -archive receiver --force 2>&1) || rc=$?
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    assert_eq "0" "$rc" "archiving receiver exits 0: $out" || return 1
+    assert_file_exists "$CS_SESSIONS_ROOT/receiver/.cs/archived" "receiver is archived" || return 1
+}
+
+test_archive_idle_other_session_from_inside_a_session() {
+    _archive_session "receiver"
+    CLAUDE_SESSION_NAME=sender "$CS_BIN" -archive receiver >/dev/null 2>&1 || return 1
+    assert_file_exists "$CS_SESSIONS_ROOT/receiver/.cs/archived" "the idle session is archived" || return 1
+}
+
+# Every name is checked before any marker is written.
+test_archive_from_inside_a_session_checks_every_name_first() {
+    _archive_session "idle1"
+    _archive_session "receiver"
+    sleep 300 &
+    local live_pid=$!
+    echo "$live_pid" > "$CS_SESSIONS_ROOT/receiver/.cs/session.lock"
+    local out rc=0
+    out=$(CLAUDE_SESSION_NAME=sender "$CS_BIN" -archive idle1 receiver --force 2>&1) || rc=$?
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    assert_eq "1" "$rc" "the archive exits 1" || return 1
+    assert_eq "Error: session sender cannot archive session receiver while it is live (pid $live_pid); --force does not override that from another session. Close receiver first." \
+        "$out" "the refusal names the live session" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/idle1/.cs/archived" "the idle session listed first is not archived" || return 1
+}
+
+# A base owns its own features; a feature does not own its base.
+test_archive_live_own_feature_from_its_base_with_force() {
+    _archive_session "sender@feat"
+    sleep 300 &
+    local live_pid=$!
+    echo "$live_pid" > "$CS_SESSIONS_ROOT/sender@feat/.cs/session.lock"
+    local out rc=0
+    out=$(CLAUDE_SESSION_NAME=sender "$CS_BIN" -archive sender@feat --force 2>&1) || rc=$?
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    assert_eq "0" "$rc" "the base archives its own live feature (output: $out)" || return 1
+    assert_file_exists "$CS_SESSIONS_ROOT/sender@feat/.cs/archived" "the feature is archived" || return 1
+}
+
+test_archive_from_a_feature_refuses_its_live_base() {
+    _archive_session "sender"
+    sleep 300 &
+    local live_pid=$!
+    echo "$live_pid" > "$CS_SESSIONS_ROOT/sender/.cs/session.lock"
+    local out rc=0
+    out=$(CLAUDE_SESSION_NAME=sender@feat "$CS_BIN" -archive sender --force 2>&1) || rc=$?
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    assert_eq "1" "$rc" "the archive exits 1" || return 1
+    assert_eq "Error: session sender@feat cannot archive session sender while it is live (pid $live_pid); --force does not override that from another session. Close sender first." \
+        "$out" "the refusal names both sessions" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/sender/.cs/archived" "no marker written" || return 1
+}
+
 test_search_flag_before_query() {
     _archive_session "ffq"
     echo "needle-ffq here" >> "$CS_SESSIONS_ROOT/ffq/.cs/README.md"
@@ -311,6 +471,15 @@ run_test test_search_skips_archived_by_default
 run_test test_search_empty_query_still_errors
 run_test test_open_auto_unarchives_with_notice
 run_test test_unarchive_rejects_flags
+run_test test_archive_live_other_session_refused_even_with_force
+run_test test_archive_idle_other_session_from_inside_a_session
+run_test test_archive_from_inside_a_session_checks_every_name_first
+run_test test_archive_live_own_feature_from_its_base_with_force
+run_test test_archive_from_a_feature_refuses_its_live_base
+run_test test_archive_base_refused_while_its_feature_is_live
+run_test test_archive_base_with_a_live_feature_from_itself_and_a_plain_shell
+run_test test_archive_base_named_in_another_case_refused_while_its_feature_is_live
+run_test test_archive_base_not_held_by_another_base_live_feature
 run_test test_archive_rejects_empty_name_before_acting
 run_test test_archive_multiple_names
 run_test test_unarchive_multiple_names

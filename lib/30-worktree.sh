@@ -520,14 +520,14 @@ _untracked_listing() {  # checkout_dir paths
 }
 
 # Print the PID of a live lock on a session that the invoker does not own:
-# empty when the lock is absent, its process is dead, or the lock is the
-# invoking conversation's own (session_lock_owned_by_invoker). The integrate
-# and retire entries both refuse on a non-empty answer.
-_foreign_live_lock_pid() {  # session_name lock_file
+# empty when the lock is absent, names no running process by live_lock_pid's
+# rule, or is the invoking conversation's own (session_lock_owned_by_invoker).
+# The integrate and retire entries both refuse on a non-empty answer, and
+# -features reports it as the lock that would refuse them.
+_foreign_live_lock_pid() {  # session_name meta_dir
     local pid
-    [ -f "$2" ] || return 0
-    pid=$(cat "$2" 2>/dev/null || echo "")
-    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || return 0
+    pid=$(live_lock_pid "$2")
+    [ -n "$pid" ] || return 0
     session_lock_owned_by_invoker "$1" "$pid" && return 0
     printf '%s\n' "$pid"
 }
@@ -680,17 +680,14 @@ _feature_readiness() {  # base_name task
 
     # Gate order: base lock, then worktree lock. A lock owned by this invoker
     # is exempt, exactly as the merge gate treats it.
-    local lock_session lock_file pid
+    local lock_session lock_meta
     for lock_session in "$base_name" "$wt_name"; do
         if [ "$lock_session" = "$base_name" ]; then
-            lock_file="$base_dir/.cs/session.lock"
+            lock_meta="$base_dir/.cs"
         else
-            lock_file="$wt_dir/.cs/session.lock"
+            lock_meta="$wt_dir/.cs"
         fi
-        [ -f "$lock_file" ] || continue
-        pid=$(cat "$lock_file" 2>/dev/null || echo "")
-        [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || continue
-        session_lock_owned_by_invoker "$lock_session" "$pid" && continue
+        [ -n "$(_foreign_live_lock_pid "$lock_session" "$lock_meta")" ] || continue
         if [ "$lock_session" = "$base_name" ]; then lock="base"; else lock="worktree"; fi
         break
     done
@@ -1064,8 +1061,10 @@ retire_feature_worktree() {  # base_name task sha [--force]
         error "This is the '$wt_name' conversation itself, and a worktree can't remove the directory it is running in. Close this session, then run /finish $task in '$base_name'."
     fi
 
-    sha=$(git -C "$base_dir" rev-parse -q --verify "$sha^{commit}" 2>/dev/null) \
+    local commit
+    commit=$(git -C "$base_dir" rev-parse -q --verify "$sha^{commit}" 2>/dev/null) \
         || error "Commit not found in $base_name: $sha"
+    sha="$commit"
     _FINISH_SHA="$sha"
     local tip
     tip=$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null) || error "Not a git checkout: $wt_dir"
@@ -1086,11 +1085,11 @@ retire_feature_worktree() {  # base_name task sha [--force]
     fi
 
     local pid
-    pid=$(_foreign_live_lock_pid "$wt_name" "$wt_dir/.cs/session.lock")
+    pid=$(_foreign_live_lock_pid "$wt_name" "$wt_dir/.cs")
     if [ -n "$pid" ]; then
         error "The feature is landed, but its worktree is still here: the '$wt_name' conversation is open in it (PID $pid), and a directory can't be removed from under a running Claude. Close that session yourself (/exit there), then run /finish $task here again and it will be removed."
     fi
-    pid=$(_foreign_live_lock_pid "$base_name" "$base_dir/.cs/session.lock")
+    pid=$(_foreign_live_lock_pid "$base_name" "$base_dir/.cs")
     if [ -n "$pid" ]; then
         error "Base session '$base_name' is open elsewhere (PID $pid); run /finish $task from that conversation"
     fi
@@ -1490,11 +1489,13 @@ integrate_feature_worktree() {  # base_name task sha [--from-remote [--ci-green]
     # its conversation may stay open. A live base that is not this
     # conversation is a refusal, never a wait.
     local pid
-    pid=$(_foreign_live_lock_pid "$base_name" "$base_dir/.cs/session.lock")
+    pid=$(_foreign_live_lock_pid "$base_name" "$base_dir/.cs")
     [ -z "$pid" ] || error "Base session '$base_name' is open elsewhere (PID $pid); run /finish $task from that conversation"
 
-    sha=$(git -C "$base_dir" rev-parse -q --verify "$sha^{commit}" 2>/dev/null) \
+    local commit
+    commit=$(git -C "$base_dir" rev-parse -q --verify "$sha^{commit}" 2>/dev/null) \
         || error "Commit not found in $base_name: $sha"
+    sha="$commit"
     _FINISH_SHA="$sha"
     # Before the split: a detached base has no branch to land on either way,
     # and the ff-only would move a detached HEAD while the branch stays put.

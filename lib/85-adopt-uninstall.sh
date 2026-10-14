@@ -863,9 +863,23 @@ run_uninstall() {
                 done
 
                 if [ -n "$secrets_script" ]; then
-                    echo "$sessions" | while read -r s; do
-                        "$secrets_script" --session "$s" purge 2>/dev/null || true
-                    done
+                    # A purge cs-secrets refuses (another session's live one,
+                    # a lock it cannot take) keeps that session's secrets:
+                    # its last error line says why, and the rest go on.
+                    local purge_err purge_rc
+                    {
+                        echo "$sessions" | while read -r s; do
+                            purge_rc=0
+                            purge_err=$("$secrets_script" --session "$s" purge 2>&1 >&3) || purge_rc=$?
+                            if [ "$purge_rc" -eq 0 ]; then
+                                continue
+                            fi
+                            purge_err="${purge_err%"${purge_err##*[![:space:]]}"}"
+                            purge_err="${purge_err##*$'\n'}"
+                            purge_err="${purge_err#Error: }"
+                            warn "Kept the secrets of session $s: ${purge_err:-cs-secrets purge exited $purge_rc}"
+                        done
+                    } 3>&1
                 else
                     warn "cs-secrets not found - cannot purge secrets automatically"
                 fi

@@ -1535,12 +1535,19 @@ fn unread_mail_count(meta_dir: &Path) -> u32 {
         .unwrap_or(0)
 }
 
-/// The pid in `meta_dir`'s session.lock when that process is alive, read at
-/// the moment of asking.
+/// The pid a session's lock names when that process is running, by the rule
+/// cs and cs-secrets read a lock with (live_lock_pid): the text, surrounding
+/// whitespace removed, is decimal digits only (no sign), and is_pid_alive
+/// holds for it, which rules out 0 and anything past 2147483647. Read at the
+/// moment of asking.
 pub fn read_lock_pid(meta_dir: &Path) -> Option<u32> {
     let lock_file = meta_dir.join("session.lock");
     let content = fs::read_to_string(&lock_file).ok()?;
-    let pid = content.trim().parse::<u32>().ok()?;
+    let text = content.trim();
+    if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let pid = text.parse::<u32>().ok()?;
     if is_pid_alive(pid) { Some(pid) } else { None }
 }
 
@@ -3003,6 +3010,24 @@ mod tests {
         .unwrap();
 
         assert_eq!(read_lock_pid(&dir), Some(own_pid));
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // The lock rule cs and cs-secrets read by: the text, surrounding whitespace
+    // removed, is decimal digits naming a running process; a sign is not part
+    // of a pid, so "+<pid>" names none even when <pid> is running.
+    #[test]
+    fn read_lock_pid_reads_the_lock_by_the_one_lock_rule() {
+        let dir = std::env::temp_dir().join(format!("cs-test-lockrule-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let own_pid = std::process::id();
+
+        fs::write(dir.join("session.lock"), format!("+{own_pid}")).unwrap();
+        assert_eq!(read_lock_pid(&dir), None, "a signed pid is not a pid");
+
+        fs::write(dir.join("session.lock"), format!(" \t00{own_pid}\n\n")).unwrap();
+        assert_eq!(read_lock_pid(&dir), Some(own_pid), "whitespace and leading zeros are read past");
 
         fs::remove_dir_all(&dir).unwrap();
     }

@@ -176,15 +176,19 @@ _harden_session_meta() {  # session_dir
 # is never committed, so a cloned session cannot make cs run code (a file sync
 # copies it like any other file).
 # It runs in the session directory on the user's terminal (a password prompt
-# needs the TTY), and any non-zero exit aborts the open.
+# needs the TTY), and any non-zero exit aborts the open. CS_LIVE_LOCK_PID
+# carries the pid live_lock_pid reads from the session lock, empty when no
+# running process holds it, so the hook needs no lock rule of its own. The
+# open has not taken the lock yet, so the pid is the previous holder's.
 _run_pre_open() {  # session_name, session_dir
-    local hook="$2/.cs/local/pre-open" rc=0
+    local hook="$2/.cs/local/pre-open" rc=0 lock_pid
     [ -e "$hook" ] || return 0
     # `git add -f` can still commit into the ignored .cs/local/; refuse before
     # running anything a clone could have delivered.
     cs_assert_local_untracked "$2"
     [ -x "$hook" ] || error "$1: .cs/local/pre-open is not executable; chmod +x it, or remove it."
-    (cd -- "$2" && "$hook") || rc=$?
+    lock_pid=$(live_lock_pid "$2/.cs")
+    (cd -- "$2" && CS_LIVE_LOCK_PID="$lock_pid" "$hook") || rc=$?
     [ "$rc" -eq 0 ] || error "$1: .cs/local/pre-open exited $rc; not opening the session."
     _arm_vault_detach "$2"
 }

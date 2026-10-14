@@ -1717,6 +1717,35 @@ _cs_unlock() {  # lock file ("" when none was held)
     _CS_LOCK_HELD=""
 }
 
+# Print the PID recorded in a session's lock file (empty if none). Arg: meta_dir.
+read_lock_pid() {  # meta_dir
+    local f="$1/session.lock"
+    [ -f "$f" ] || return 0
+    cat "$f" 2>/dev/null || true
+}
+
+# Print the pid a session's lock names when that process is running on this
+# machine; print nothing otherwise. The rule: the lock's text, surrounding
+# whitespace removed, is a decimal number from 1 to 2147483647 (a pid_t;
+# leading zeros allowed) and kill -0 reaches it. "0" and "-1" name process
+# groups, not a process, and a larger number wraps on Linux. Every reader of
+# a session lock in cs and in its hooks decides "running" here. Twin of
+# live_lock_pid in bin/cs-secrets, which cannot source this file; the two
+# keep this rule together. Arg: meta_dir.
+live_lock_pid() {  # meta_dir
+    local text pid
+    text="$(read_lock_pid "$1")"
+    text="${text#"${text%%[![:space:]]*}"}"
+    text="${text%"${text##*[![:space:]]}"}"
+    case "$text" in
+        ''|*[!0-9]*) return 0 ;;
+    esac
+    pid="${text#"${text%%[!0]*}"}"
+    [ -n "$pid" ] && [ "${#pid}" -le 10 ] && [ "$pid" -le 2147483647 ] || return 0
+    kill -0 "$pid" 2>/dev/null || return 0
+    echo "$pid"
+}
+
 # Octal permission bits of a file, as chmod takes them (644), read through a
 # symlink so a linked destination reports its target's mode, not the link's
 # 755. GNU stat is tried first: BSD stat rejects -c with no output, while GNU
@@ -2554,8 +2583,8 @@ Commands:
   <base>@<feature>    Open a parallel feature worktree of session <base>
   <base> -features          List a base's feature worktrees and their merge readiness
   <base> -finish <feature>  Open <base> and run /finish for <feature> (integrate, then retire the worktree)
-  <name> -secrets <cmd>  Run secrets command on <name> without launching session
-  <name> -narrative rotate  Rotate <name>'s narrative without launching session
+  <name> -secrets <cmd>  Run secrets command on <name> without launching session (from inside another session, a write is refused while <name> is live)
+  <name> -narrative rotate  Rotate <name>'s narrative without launching session (refused from inside another session while <name> is live)
   -search <query>     Search across all sessions (--include-archived searches archived too)
   -checkpoint "<label>"  Save labelled state snapshot (run from inside a session)
   -checkpoint list    List checkpoints for current session
@@ -2587,13 +2616,13 @@ Commands:
   -live               List sessions running right now on this machine
   -usage              Per-session token usage over the 5h/weekly rate-limit windows
   -tag add|rm <tag>   Tag the current session (frontmatter); -tag list [<name>] to view
-  -archive <name>... [--force]  Archive sessions (hidden until reopened; --force if live)
+  -archive <name>... [--force]  Archive sessions (hidden until reopened; --force if live, but from inside a session not for another session's live one, nor for a base with a live feature unless run from that base)
   -unarchive <name>...  Restore archived sessions to the listings
   -encrypt <name>     Move a closed session's private files into an encrypted vault (macOS; asks for a password at every open)
   -status "<text>"    Set this session's advertised status (also: -status, -status --clear/-c)
   -vet-session <dir>  Exit 0 when git tracks no file in <dir>'s .cs/local or .cs/private, else name the file and how to untrack it (the cs mod, /rotate and /wrap ask before they write there)
-  -remove, -rm <name>... [--force [--delete-files]]  Remove sessions (each asks its own confirm and names files cs did not create; --force if live; --delete-files lets --force remove those files; a base session's age pins in ~/.cs-secrets go too)
-  -secrets <cmd>      Manage current session secrets (requires CLAUDE_SESSION_NAME)
+  -remove, -rm <name>... [--force [--delete-files]]  Remove sessions (each asks its own confirm and names files cs did not create; --force if live, but from inside a session not for another session's live one, nor for a base with a live feature unless run from that base; --delete-files lets --force remove those files; a base session's age pins in ~/.cs-secrets go too)
+  -secrets <cmd>      Manage current session secrets (requires CLAUDE_SESSION_NAME; from inside a session, a write to another session's secrets is refused while that session or one of its features is live, and a feature's write to its base's while a sibling feature is live)
   -update             Update cs to latest version
     --check, -c       Check for updates without installing
     --force, -f       Force reinstall even if up to date
@@ -2788,8 +2817,9 @@ _lock_collision_menu() {
 # exactly one process (noclobber: the open fails when the file exists), never
 # by a check followed by a write: two opens started together both saw no
 # lock, both wrote their pid, and both launched a claude on one UUID. A loser
-# reads the winner's pid and takes the live-lock path; a lock whose holder is
-# dead is removed and the create tried again, with a bound so a lock that
+# reads the winner's pid and takes the live-lock path; a lock that names no
+# running process by live_lock_pid's rule ("0" and "-1" included) is removed
+# and the create tried again, with a bound so a lock that
 # keeps reappearing cannot spin forever. Creating and reclaiming take turns
 # under the .cs/session.mutex.lock mutex (_cs_lock): an opener that read a
 # dead pid and then removed the file could otherwise delete the live lock
@@ -2828,14 +2858,15 @@ _take_session_lock() {  # meta_dir
             fi
         fi
         attempt=$((attempt + 1))
-        lock_pid=$(cat "$lock_file" 2>/dev/null || echo "")
+        lock_pid="$(live_lock_pid "$meta_dir")"
 
-        if [ -n "$lock_pid" ] && kill -0 "$lock_pid" 2>/dev/null; then
+        if [ -n "$lock_pid" ]; then
             # PID is alive — session is in use
             _cs_unlock "$mutex"
             _CS_LOCK_LIVE_PID="$lock_pid"
             return 1
         fi
+        lock_pid="$(read_lock_pid "$meta_dir")"
 
         if [ "$attempt" -ge 5 ]; then
             _cs_unlock "$mutex"
@@ -2937,19 +2968,13 @@ release_session_lock() {
     fi
 }
 
-# Print the PID recorded in a session's lock file (empty if none). Arg: meta_dir.
-read_lock_pid() {  # meta_dir
-    local f="$1/session.lock"
-    [ -f "$f" ] || return 0
-    cat "$f" 2>/dev/null || true
-}
+# read_lock_pid and live_lock_pid live in lib/02-shared.sh, so the hooks read
+# a session lock by the same rule.
 
-# True (exit 0) when a session's process is currently alive on this machine.
-# Arg: meta_dir (the session's .cs dir).
+# True (exit 0) when a session's process is currently alive on this machine,
+# by live_lock_pid's rule. Arg: meta_dir (the session's .cs dir).
 session_is_live() {  # meta_dir
-    local pid
-    pid="$(read_lock_pid "$1")"
-    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+    [ -n "$(live_lock_pid "$1")" ]
 }
 
 # True when target_pid is this cs process or one of its live ancestors. A cs
@@ -2991,6 +3016,56 @@ session_lock_owned_by_invoker() {  # session_name, lock_pid
     [ -n "${CLAUDE_SESSION_NAME:-}" ] \
         && [ "$CLAUDE_SESSION_NAME" = "$1" ] \
         && _pid_is_self_or_ancestor "$2"
+}
+
+# True when cs runs inside a session (CLAUDE_SESSION_NAME) other than <name>.
+# A terminal outside every session is the user, never another session.
+_called_from_other_session() {  # name
+    [ -n "${CLAUDE_SESSION_NAME:-}" ] && [ "$CLAUDE_SESSION_NAME" != "$1" ]
+}
+
+# Refuses <verb> (remove, archive, rotate the narrative of) on session <name>
+# while its claude is running when cs runs inside a session that does not own
+# it, --force or not: the flag skips the live check only from a terminal
+# outside every session and for the caller's own sessions. A session owns itself and, from its base,
+# its own features (<base>@<task>); a feature owns neither its base nor a
+# sibling. An idle target is left to the verb's own checks. Called directly,
+# never in $(...), so the error ends cs.
+_refuse_live_other_session() {  # name meta_dir verb
+    _called_from_other_session "$1" || return 0
+    case "$CLAUDE_SESSION_NAME" in
+        *@*) ;;
+        *) case "$1" in "$CLAUDE_SESSION_NAME"@*) return 0 ;; esac ;;
+    esac
+    local pid
+    pid="$(live_lock_pid "$2")"
+    [ -n "$pid" ] || return 0
+    error "session $CLAUDE_SESSION_NAME cannot $3 session $1 while it is live (pid $pid); --force does not override that from another session. Close $1 first."
+}
+
+# Refuses <verb> (remove, archive) on base session <name> while one of its
+# features (<name>@<task>) is live, when cs runs inside any session but <name>
+# itself, --force or not: a feature's worktree points into its base's
+# repository. Only a terminal outside every session and the base itself are
+# not refused; a sibling feature is, and so is the live feature itself, whose
+# own worktree the base holds. Called directly, never in $(...), so the error
+# ends cs. A feature is <name>'s when <name>@<its task> is the same directory
+# as the feature's (-ef), not when the names match as strings: a volume that
+# ignores letter case or Unicode normalization finds one directory under
+# several spellings, and a glob compares bytes.
+_refuse_base_with_live_feature() {  # name verb
+    [ -n "${CLAUDE_SESSION_NAME:-}" ] || return 0
+    [ "$CLAUDE_SESSION_NAME" != "$1" ] || return 0
+    case "$1" in *@*) return 0 ;; esac
+    local feature entry pid
+    for feature in "$SESSIONS_ROOT"/*@*; do
+        entry="${feature##*/}"
+        [ "$SESSIONS_ROOT/$1@${entry#*@}" -ef "$feature" ] || continue
+        [ -d "$feature/.cs" ] || continue
+        pid="$(live_lock_pid "$feature/.cs")"
+        [ -n "$pid" ] || continue
+        error "session $CLAUDE_SESSION_NAME cannot $2 session $1 while its feature ${feature##*/} is live (pid $pid); --force does not override that from another session. Close ${feature##*/} first."
+    done
 }
 
 # Epoch mtime of a file, 0 on error. Arg: path. GNU stat is asked first, as
@@ -4075,14 +4150,14 @@ _untracked_listing() {  # checkout_dir paths
 }
 
 # Print the PID of a live lock on a session that the invoker does not own:
-# empty when the lock is absent, its process is dead, or the lock is the
-# invoking conversation's own (session_lock_owned_by_invoker). The integrate
-# and retire entries both refuse on a non-empty answer.
-_foreign_live_lock_pid() {  # session_name lock_file
+# empty when the lock is absent, names no running process by live_lock_pid's
+# rule, or is the invoking conversation's own (session_lock_owned_by_invoker).
+# The integrate and retire entries both refuse on a non-empty answer, and
+# -features reports it as the lock that would refuse them.
+_foreign_live_lock_pid() {  # session_name meta_dir
     local pid
-    [ -f "$2" ] || return 0
-    pid=$(cat "$2" 2>/dev/null || echo "")
-    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || return 0
+    pid=$(live_lock_pid "$2")
+    [ -n "$pid" ] || return 0
     session_lock_owned_by_invoker "$1" "$pid" && return 0
     printf '%s\n' "$pid"
 }
@@ -4235,17 +4310,14 @@ _feature_readiness() {  # base_name task
 
     # Gate order: base lock, then worktree lock. A lock owned by this invoker
     # is exempt, exactly as the merge gate treats it.
-    local lock_session lock_file pid
+    local lock_session lock_meta
     for lock_session in "$base_name" "$wt_name"; do
         if [ "$lock_session" = "$base_name" ]; then
-            lock_file="$base_dir/.cs/session.lock"
+            lock_meta="$base_dir/.cs"
         else
-            lock_file="$wt_dir/.cs/session.lock"
+            lock_meta="$wt_dir/.cs"
         fi
-        [ -f "$lock_file" ] || continue
-        pid=$(cat "$lock_file" 2>/dev/null || echo "")
-        [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || continue
-        session_lock_owned_by_invoker "$lock_session" "$pid" && continue
+        [ -n "$(_foreign_live_lock_pid "$lock_session" "$lock_meta")" ] || continue
         if [ "$lock_session" = "$base_name" ]; then lock="base"; else lock="worktree"; fi
         break
     done
@@ -4619,8 +4691,10 @@ retire_feature_worktree() {  # base_name task sha [--force]
         error "This is the '$wt_name' conversation itself, and a worktree can't remove the directory it is running in. Close this session, then run /finish $task in '$base_name'."
     fi
 
-    sha=$(git -C "$base_dir" rev-parse -q --verify "$sha^{commit}" 2>/dev/null) \
+    local commit
+    commit=$(git -C "$base_dir" rev-parse -q --verify "$sha^{commit}" 2>/dev/null) \
         || error "Commit not found in $base_name: $sha"
+    sha="$commit"
     _FINISH_SHA="$sha"
     local tip
     tip=$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null) || error "Not a git checkout: $wt_dir"
@@ -4641,11 +4715,11 @@ retire_feature_worktree() {  # base_name task sha [--force]
     fi
 
     local pid
-    pid=$(_foreign_live_lock_pid "$wt_name" "$wt_dir/.cs/session.lock")
+    pid=$(_foreign_live_lock_pid "$wt_name" "$wt_dir/.cs")
     if [ -n "$pid" ]; then
         error "The feature is landed, but its worktree is still here: the '$wt_name' conversation is open in it (PID $pid), and a directory can't be removed from under a running Claude. Close that session yourself (/exit there), then run /finish $task here again and it will be removed."
     fi
-    pid=$(_foreign_live_lock_pid "$base_name" "$base_dir/.cs/session.lock")
+    pid=$(_foreign_live_lock_pid "$base_name" "$base_dir/.cs")
     if [ -n "$pid" ]; then
         error "Base session '$base_name' is open elsewhere (PID $pid); run /finish $task from that conversation"
     fi
@@ -5045,11 +5119,13 @@ integrate_feature_worktree() {  # base_name task sha [--from-remote [--ci-green]
     # its conversation may stay open. A live base that is not this
     # conversation is a refusal, never a wait.
     local pid
-    pid=$(_foreign_live_lock_pid "$base_name" "$base_dir/.cs/session.lock")
+    pid=$(_foreign_live_lock_pid "$base_name" "$base_dir/.cs")
     [ -z "$pid" ] || error "Base session '$base_name' is open elsewhere (PID $pid); run /finish $task from that conversation"
 
-    sha=$(git -C "$base_dir" rev-parse -q --verify "$sha^{commit}" 2>/dev/null) \
+    local commit
+    commit=$(git -C "$base_dir" rev-parse -q --verify "$sha^{commit}" 2>/dev/null) \
         || error "Commit not found in $base_name: $sha"
+    sha="$commit"
     _FINISH_SHA="$sha"
     # Before the split: a detached base has no branch to land on either way,
     # and the ff-only would move a detached HEAD while the branch stays put.
@@ -6898,15 +6974,19 @@ _harden_session_meta() {  # session_dir
 # is never committed, so a cloned session cannot make cs run code (a file sync
 # copies it like any other file).
 # It runs in the session directory on the user's terminal (a password prompt
-# needs the TTY), and any non-zero exit aborts the open.
+# needs the TTY), and any non-zero exit aborts the open. CS_LIVE_LOCK_PID
+# carries the pid live_lock_pid reads from the session lock, empty when no
+# running process holds it, so the hook needs no lock rule of its own. The
+# open has not taken the lock yet, so the pid is the previous holder's.
 _run_pre_open() {  # session_name, session_dir
-    local hook="$2/.cs/local/pre-open" rc=0
+    local hook="$2/.cs/local/pre-open" rc=0 lock_pid
     [ -e "$hook" ] || return 0
     # `git add -f` can still commit into the ignored .cs/local/; refuse before
     # running anything a clone could have delivered.
     cs_assert_local_untracked "$2"
     [ -x "$hook" ] || error "$1: .cs/local/pre-open is not executable; chmod +x it, or remove it."
-    (cd -- "$2" && "$hook") || rc=$?
+    lock_pid=$(live_lock_pid "$2/.cs")
+    (cd -- "$2" && CS_LIVE_LOCK_PID="$lock_pid" "$hook") || rc=$?
     [ "$rc" -eq 0 ] || error "$1: .cs/local/pre-open exited $rc; not opening the session."
     _arm_vault_detach "$2"
 }
@@ -10206,7 +10286,7 @@ _session_is_archived() {  # session_dir
 }
 
 run_archive() {
-    local force="" arg name
+    local force="" arg name live_pid
     local names
     names=()
     for arg in "$@"; do
@@ -10219,14 +10299,24 @@ run_archive() {
         esac
     done
     [ "${#names[@]}" -ge 1 ] || error "Usage: cs -archive <name>... [--force]"
+    # Before any marker is written: a live session of another conversation's
+    # user, or a base with a live feature when the caller is not that base,
+    # stops the whole run.
+    # One already archived is left alone below.
+    for name in "${names[@]}"; do
+        [ -f "$SESSIONS_ROOT/$name/.cs/archived" ] && continue
+        _refuse_live_other_session "$name" "$SESSIONS_ROOT/$name/.cs" archive
+        _refuse_base_with_live_feature "$name" archive
+    done
     for name in "${names[@]}"; do
         _archive_resolve "$name"
         if [ -f "$ARCHIVE_MARKER" ]; then
             info "Already archived: $name"
             continue
         fi
-        if [ -z "$force" ] && session_is_live "$ARCHIVE_DIR/.cs"; then
-            error "Session '$name' is live (pid $(read_lock_pid "$ARCHIVE_DIR/.cs")); use --force to archive anyway"
+        if [ -z "$force" ]; then
+            live_pid=$(live_lock_pid "$ARCHIVE_DIR/.cs")
+            [ -z "$live_pid" ] || error "Session '$name' is live (pid $live_pid); use --force to archive anyway"
         fi
         printf 'archived: %s by %s\n' "$(date +%Y-%m-%d)" "$(cs_actor_slug)" > "$ARCHIVE_MARKER"
         info "Archived: $name (opening it restores it; or run 'cs -unarchive $name')"
@@ -11691,6 +11781,12 @@ _encrypt_move_content() {  # session_name, meta_dir
 # The hook cs runs before every open: attaches the vault, asking for its
 # password each time. A mount whose session is not running is a leftover (a
 # crash, or a detach that failed), so it is detached and asked for again.
+# Whether the session is running comes from cs in CS_LIVE_LOCK_PID
+# (_run_pre_open); the hook never reads the lock, and without the variable,
+# or with one that names no running process, it counts the mount as held by
+# no running session. Its pid check takes only a number without leading
+# zeros, as cs writes them: kill -0 reads 0 as the caller's process group,
+# which is always there, and the leftover loop would signal that group.
 _encrypt_write_pre_open() {  # meta_dir, container
     local hook="$1/local/pre-open"
     {
@@ -11702,8 +11798,8 @@ _encrypt_write_pre_open() {  # meta_dir, container
 mkdir -p .cs/vault-mnt
 mnt=$(cd .cs/vault-mnt && pwd -P)
 mounted() { mount | grep -F " on $mnt (" >/dev/null; }
-alive() { case "$1" in ''|*[!0-9]*) return 1 ;; esac; kill -0 "$1" 2>/dev/null; }
-lock_alive() { alive "$(tr -d '[:space:]' < .cs/session.lock 2>/dev/null || true)"; }
+alive() { case "$1" in ''|0*|*[!0-9]*) return 1 ;; esac; kill -0 "$1" 2>/dev/null; }
+lock_alive() { alive "${CS_LIVE_LOCK_PID:-}"; }
 holder_alive() {
     local pid
     [ -f .cs/local/vault-holders ] || return 1
@@ -11788,8 +11884,8 @@ _detach_opened_vault() {
     local meta="$CS_OPENED_VAULT_META" mnt lock
     [ -n "$meta" ] || return 0
     _vault_live_holder_besides "$meta" "$$" && return 0
-    lock=$(read_lock_pid "$meta")
-    [ -n "$lock" ] && [ "$lock" != "$$" ] && kill -0 "$lock" 2>/dev/null && return 0
+    lock=$(live_lock_pid "$meta")
+    [ -n "$lock" ] && [ "$lock" != "$$" ] && return 0
     mnt=$(_vault_mountpoint_if_mounted "$meta") || return 0
     hdiutil detach "$mnt" >/dev/null 2>&1 && return 0
     _vault_mountpoint_if_mounted "$meta" >/dev/null || return 0
@@ -12220,6 +12316,13 @@ remove_session() {
     # Set by _remove_one_session when a session went but its age state did
     # not: the other names still go, and the run ends non-zero.
     local age_state_left=""
+    # Before any name goes: a live session of another conversation's user,
+    # or a base with a live feature when the caller is not that base, stops
+    # the whole run, so none of the names before it is removed either.
+    for _name in "${names[@]}"; do
+        _refuse_live_other_session "$_name" "$SESSIONS_ROOT/$_name/.cs" remove
+        _refuse_base_with_live_feature "$_name" remove
+    done
     for _name in "${names[@]}"; do
         _remove_one_session "$_name" "$force" "$delete_files"
     done
@@ -12349,8 +12452,10 @@ _remove_one_session() {
         error "Session not found: $session_name"
     fi
 
-    if [ -z "$force" ] && session_is_live "$session_dir/.cs"; then
-        error "Session '$session_name' is live (pid $(read_lock_pid "$session_dir/.cs")); use --force to remove anyway"
+    if [ -z "$force" ]; then
+        local live_pid
+        live_pid=$(live_lock_pid "$session_dir/.cs")
+        [ -z "$live_pid" ] || error "Session '$session_name' is live (pid $live_pid); use --force to remove anyway"
     fi
 
     # An encrypted session mounts its vault inside the session directory by
@@ -13353,9 +13458,17 @@ launch_claude_code() {
     else
         export CLAUDE_CODE_ENABLE_FUNCTION_HOOKS="${CLAUDE_CODE_ENABLE_FUNCTION_HOOKS:-1}"
     fi
+    # The secrets identity is this session's alone: a base launched from a
+    # shell inside a feature, or from one a cs -secrets arm started, would
+    # otherwise hand its claude that session's target (CS_SECRETS_SESSION) or
+    # caller (CS_SECRETS_CALLER), and cs-secrets reads both ahead of
+    # CLAUDE_SESSION_NAME.
     if [ -n "$cs_base" ]; then
         export CS_SECRETS_SESSION="$cs_base"
+    else
+        unset CS_SECRETS_SESSION
     fi
+    unset CS_SECRETS_CALLER
     # Export both names defensively: Claude Code's auto-memory resolver reads
     # CLAUDE_COWORK_MEMORY_PATH_OVERRIDE; the older CLAUDE_CODE_AUTO_MEMORY_PATH
     # is kept in case other Claude Code versions honor it instead.
@@ -15171,9 +15284,23 @@ run_uninstall() {
                 done
 
                 if [ -n "$secrets_script" ]; then
-                    echo "$sessions" | while read -r s; do
-                        "$secrets_script" --session "$s" purge 2>/dev/null || true
-                    done
+                    # A purge cs-secrets refuses (another session's live one,
+                    # a lock it cannot take) keeps that session's secrets:
+                    # its last error line says why, and the rest go on.
+                    local purge_err purge_rc
+                    {
+                        echo "$sessions" | while read -r s; do
+                            purge_rc=0
+                            purge_err=$("$secrets_script" --session "$s" purge 2>&1 >&3) || purge_rc=$?
+                            if [ "$purge_rc" -eq 0 ]; then
+                                continue
+                            fi
+                            purge_err="${purge_err%"${purge_err##*[![:space:]]}"}"
+                            purge_err="${purge_err##*$'\n'}"
+                            purge_err="${purge_err#Error: }"
+                            warn "Kept the secrets of session $s: ${purge_err:-cs-secrets purge exited $purge_rc}"
+                        done
+                    } 3>&1
                 else
                     warn "cs-secrets not found - cannot purge secrets automatically"
                 fi
@@ -15364,6 +15491,9 @@ main() {
             ;;
         -secrets)
             shift
+            # The session this cs runs in, empty outside every session:
+            # cs-secrets refuses its writes to another live session's secrets.
+            export CS_SECRETS_CALLER="${CLAUDE_SESSION_NAME:-}"
             run_secrets "$@"
             return 0
             ;;
@@ -15529,6 +15659,10 @@ main() {
                 # A worktree's secrets route to its base, so the base is the
                 # session cs-secrets writes into (Codex r3 #3).
                 [ -z "$wt_base" ] || _vet_named_session "$SESSIONS_ROOT/$wt_base"
+                # The caller's own session, kept before CLAUDE_SESSION_NAME
+                # becomes the target: cs-secrets refuses writes to another
+                # live session's secrets.
+                export CS_SECRETS_CALLER="${CLAUDE_SESSION_NAME:-}"
                 export CLAUDE_SESSION_NAME="$session_name"
                 # Worktree secrets live under the base session's namespace
                 # (no launched session ever uses cs:<base>@<task>:*); a plain
@@ -15547,7 +15681,7 @@ main() {
                 # session's user to accept, and arming or accepting stays with
                 # that user. A terminal outside any session is the user.
                 local caller="${CLAUDE_SESSION_NAME:-}"
-                if [ -n "$caller" ] && [ "$caller" != "$session_name" ]; then
+                if _called_from_other_session "$session_name"; then
                     case "${1:-}" in
                         add)
                             shift
@@ -15619,6 +15753,9 @@ main() {
                 # and misnames this one's fault.
                 is_session_dir "$SESSIONS_ROOT/$session_name" \
                     || error "No such session: $session_name"
+                # The cut rewrites the narrative a running conversation
+                # appends to; from inside another session that waits.
+                _refuse_live_other_session "$session_name" "$SESSIONS_ROOT/$session_name/.cs" "rotate the narrative of"
                 _vet_named_session "$SESSIONS_ROOT/$session_name"
                 export CLAUDE_SESSION_NAME="$session_name"
                 export CLAUDE_SESSION_DIR="$SESSIONS_ROOT/$session_name"

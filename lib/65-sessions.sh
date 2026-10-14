@@ -364,6 +364,13 @@ remove_session() {
     # Set by _remove_one_session when a session went but its age state did
     # not: the other names still go, and the run ends non-zero.
     local age_state_left=""
+    # Before any name goes: a live session of another conversation's user,
+    # or a base with a live feature when the caller is not that base, stops
+    # the whole run, so none of the names before it is removed either.
+    for _name in "${names[@]}"; do
+        _refuse_live_other_session "$_name" "$SESSIONS_ROOT/$_name/.cs" remove
+        _refuse_base_with_live_feature "$_name" remove
+    done
     for _name in "${names[@]}"; do
         _remove_one_session "$_name" "$force" "$delete_files"
     done
@@ -493,8 +500,10 @@ _remove_one_session() {
         error "Session not found: $session_name"
     fi
 
-    if [ -z "$force" ] && session_is_live "$session_dir/.cs"; then
-        error "Session '$session_name' is live (pid $(read_lock_pid "$session_dir/.cs")); use --force to remove anyway"
+    if [ -z "$force" ]; then
+        local live_pid
+        live_pid=$(live_lock_pid "$session_dir/.cs")
+        [ -z "$live_pid" ] || error "Session '$session_name' is live (pid $live_pid); use --force to remove anyway"
     fi
 
     # An encrypted session mounts its vault inside the session directory by

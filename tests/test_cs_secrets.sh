@@ -4672,4 +4672,317 @@ run_test test_import_file_allow_unsigned_still_skips_a_bad_signature
 run_test test_import_file_refuses_a_named_file_that_is_not_trusted
 run_test test_import_file_without_ssh_keygen_skips_signed_files_by_name
 
+# --- A session writing another session's secrets while that one is live ---
+#
+# A conversation inside one session changes another session's secrets only
+# while that session's claude is not running. Features share their base's
+# secrets, so a feature writes its base's freely; reads and a plain terminal
+# are never refused.
+
+# receiver, a session holding API_KEY=v1, whose lock a live process holds.
+# Sets RECEIVER_PID; _stop_receiver ends it.
+_live_receiver() {
+    mkdir -p "$CS_SESSIONS_ROOT/receiver/.cs"
+    printf 'v1' | CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" set API_KEY >/dev/null 2>&1 \
+        || { echo "  FAIL: could not seed receiver's secret"; return 1; }
+    sleep 300 &
+    RECEIVER_PID=$!
+    echo "$RECEIVER_PID" > "$CS_SESSIONS_ROOT/receiver/.cs/session.lock"
+}
+_stop_receiver() {
+    kill "$RECEIVER_PID" 2>/dev/null; wait "$RECEIVER_PID" 2>/dev/null
+    return 0
+}
+_receiver_refusal() {  # caller
+    _receiver_refusal_for "$1" "$RECEIVER_PID"
+}
+_receiver_refusal_for() {  # caller pid
+    printf 'Error: session %s cannot change the secrets of session receiver while it is live (pid %s); --force does not override that from another session. Close receiver first.' "$1" "$2"
+}
+
+# The cs arms set the caller themselves, over a CS_SECRETS_CALLER the shell
+# carried in; a target named by its feature is refused against its base.
+test_secrets_delete_of_a_live_other_session_is_refused_on_every_route() {
+    _live_receiver || return 1
+    local route out rc
+    for route in named session-flag direct feature-name; do
+        rc=0
+        case "$route" in
+            named) out=$(CLAUDE_SESSION_NAME=sender CS_SECRETS_CALLER=receiver "$CS_BIN" receiver -secrets delete API_KEY </dev/null 2>&1) || rc=$? ;;
+            session-flag) out=$(CLAUDE_SESSION_NAME=sender CS_SECRETS_CALLER=receiver "$CS_BIN" -secrets --session receiver delete API_KEY </dev/null 2>&1) || rc=$? ;;
+            direct) out=$(CLAUDE_SESSION_NAME=sender "$CS_SECRETS_BIN" -s receiver delete API_KEY </dev/null 2>&1) || rc=$? ;;
+            feature-name) out=$(CLAUDE_SESSION_NAME=sender "$CS_SECRETS_BIN" -s receiver@feat delete API_KEY </dev/null 2>&1) || rc=$? ;;
+        esac
+        assert_eq "1" "$rc" "the $route delete exits 1" || { _stop_receiver; return 1; }
+        assert_eq "$(_receiver_refusal sender)" "$out" "the $route refusal names both sessions" || { _stop_receiver; return 1; }
+    done
+    out=$(CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" get API_KEY 2>&1)
+    _stop_receiver
+    assert_eq "v1" "$out" "receiver's secret survives" || return 1
+}
+
+test_secrets_every_writing_command_is_refused_for_a_live_other_session() {
+    _live_receiver || return 1
+    local cmd out rc
+    local cmds=("set NEW_KEY" "store NEW_KEY" "delete API_KEY" "rm API_KEY" "purge" "rename moved" \
+        "import-file" "import-file --replace" "migrate" "migrate --redact" \
+        "migrate-backend keychain" "migrate-backend keychain --delete-source" "export-file" \
+        "age add age1example" "age remove alice" "age rm alice")
+    for cmd in "${cmds[@]}"; do
+        rc=0
+        # shellcheck disable=SC2086 # each entry carries its own arguments
+        out=$(printf 'v2' | CLAUDE_SESSION_NAME=sender "$CS_SECRETS_BIN" -s receiver $cmd 2>&1) || rc=$?
+        assert_eq "1" "$rc" "$cmd exits 1" || { _stop_receiver; return 1; }
+        assert_eq "$(_receiver_refusal sender)" "$out" "$cmd is refused" || { _stop_receiver; return 1; }
+    done
+    out=$(CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" export 2>&1)
+    _stop_receiver
+    assert_eq "export CS_SECRET_API_KEY=v1" "$out" "receiver's store is as it was" || return 1
+}
+
+test_secrets_reads_of_a_live_other_session_still_work() {
+    _live_receiver || return 1
+    local got listed exported rc=0
+    got=$(CLAUDE_SESSION_NAME=sender "$CS_SECRETS_BIN" -s receiver get API_KEY 2>&1) || rc=$?
+    listed=$(CLAUDE_SESSION_NAME=sender "$CS_BIN" receiver -secrets list 2>&1) || rc=$?
+    exported=$(CLAUDE_SESSION_NAME=sender "$CS_SECRETS_BIN" -s receiver export 2>&1) || rc=$?
+    _stop_receiver
+    assert_eq "0" "$rc" "get, list and export exit 0" || return 1
+    assert_eq "v1" "$got" "get reads the value" || return 1
+    assert_eq "export CS_SECRET_API_KEY=v1" "$exported" "export reads the value" || return 1
+    assert_eq "Secrets for session: receiver
+  - API_KEY" "$listed" "list names the secret" || return 1
+}
+
+test_secrets_delete_of_an_idle_other_session_works() {
+    _live_receiver || return 1
+    _stop_receiver
+    CLAUDE_SESSION_NAME=sender "$CS_BIN" receiver -secrets delete API_KEY </dev/null >/dev/null 2>&1 \
+        || { echo "  FAIL: the idle delete was refused"; return 1; }
+    assert_eq "" "$(CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" export 2>&1)" "the secret is gone" || return 1
+}
+
+# A feature's secrets are its base's (the launch exports CS_SECRETS_SESSION),
+# so a feature writes them while the base is open; the base writes its own.
+test_secrets_a_feature_and_its_base_write_the_live_base_secrets() {
+    _live_receiver || return 1
+    local rc=0
+    printf 'v2' | CLAUDE_SESSION_NAME=receiver@feat CS_SECRETS_SESSION=receiver "$CS_SECRETS_BIN" set API_KEY >/dev/null 2>&1 || rc=$?
+    printf 'v3' | CLAUDE_SESSION_NAME=receiver@feat "$CS_BIN" receiver@feat -secrets set OTHER_KEY >/dev/null 2>&1 || rc=$?
+    printf 'v4' | CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" set THIRD_KEY >/dev/null 2>&1 || rc=$?
+    local got
+    got=$(CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" export 2>&1)
+    _stop_receiver
+    assert_eq "0" "$rc" "every write exits 0" || return 1
+    assert_eq "export CS_SECRET_API_KEY=v2
+export CS_SECRET_OTHER_KEY=v3
+export CS_SECRET_THIRD_KEY=v4" "$got" "every write landed in receiver's store" || return 1
+}
+
+test_secrets_delete_from_a_plain_shell_takes_a_live_session() {
+    _live_receiver || return 1
+    local rc=0
+    ( unset CLAUDE_SESSION_NAME; "$CS_BIN" receiver -secrets delete API_KEY </dev/null >/dev/null 2>&1 ) || rc=$?
+    local listed
+    listed=$(CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" export 2>&1)
+    _stop_receiver
+    assert_eq "0" "$rc" "the plain-shell delete exits 0" || return 1
+    assert_eq "" "$listed" "the secret is gone" || return 1
+}
+
+# `rename` writes two sessions' secrets: the old name's and the new one's. The
+# old name's directory is gone by the time it runs, so the new name is the one
+# that can be live. alpha left secrets when its directory went; bravo is
+# another session, open and holding none.
+test_secrets_rename_into_a_live_other_session_is_refused() {
+    _RN_BIN=$(_make_fake_security)
+    mkdir -p "$CS_SESSIONS_ROOT/alpha/.cs" "$CS_SESSIONS_ROOT/bravo/.cs"
+    printf 'value-one' > "$TEST_TMPDIR/v1"
+    CLAUDE_SESSION_NAME=alpha _kc_secrets set K1 < "$TEST_TMPDIR/v1" >/dev/null 2>&1 \
+        || { echo "  FAIL: fixture: could not seed alpha's secret"; return 1; }
+    rm -rf "$CS_SESSIONS_ROOT/alpha"
+    sleep 300 &
+    local pid=$! out rc=0
+    echo "$pid" > "$CS_SESSIONS_ROOT/bravo/.cs/session.lock"
+    out=$(CLAUDE_SESSION_NAME=sender _kc_secrets -s alpha rename bravo 2>&1) || rc=$?
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    assert_eq "1" "$rc" "the rename exits 1" || return 1
+    assert_eq "Error: session sender cannot change the secrets of session bravo while it is live (pid $pid); --force does not override that from another session. Close bravo first." \
+        "$out" "the refusal names the live new name" || return 1
+    assert_eq "cs:alpha:K1" "$(_kc_services)" "alpha's secret stays under alpha" || return 1
+}
+
+# The picker renames a closed session by moving its directory, then running
+# `cs -secrets --session <old> rename <new>`; from inside another session
+# that move still goes through.
+test_secrets_rename_of_a_closed_session_from_inside_another_session_moves_it() {
+    _seed_renamed_session || { echo "  FAIL: fixture: could not seed alpha's stores"; return 1; }
+    local out rc=0
+    out=$(CLAUDE_SESSION_NAME=sender PATH="$_RN_BIN:$PATH" CS_SECRETS_BACKEND=keychain \
+        FAKE_SECURITY_STORE="$TEST_TMPDIR/kc-store" "$CS_BIN" -secrets --session alpha rename bravo </dev/null 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the rename exits 0: $out" || return 1
+    assert_eq "cs:bravo:K1
+cs:bravo:K2" "$(_kc_services)" "the Keychain entries moved to bravo" || return 1
+    assert_eq "value-enc" "$("$CS_SECRETS_BIN" --session bravo get E1 2>&1)" "the encrypted store moved" || return 1
+}
+
+# A base's secrets are its features' too, so while one of its features is
+# live they are written only by the base itself, by that live feature (its
+# own secrets) and from a plain terminal: another base and a sibling feature
+# are refused. receiver is closed here.
+test_secrets_writes_to_a_base_wait_for_its_live_feature() {
+    _live_receiver || return 1
+    _stop_receiver
+    mkdir -p "$CS_SESSIONS_ROOT/receiver@x/.cs"
+    sleep 300 &
+    local pid=$! out sibling rc=0 sibling_rc=0
+    echo "$pid" > "$CS_SESSIONS_ROOT/receiver@x/.cs/session.lock"
+    out=$(printf 'v2' | CLAUDE_SESSION_NAME=sender "$CS_SECRETS_BIN" -s receiver set API_KEY 2>&1) || rc=$?
+    sibling=$(printf 'v3' | CLAUDE_SESSION_NAME=receiver@y CS_SECRETS_SESSION=receiver "$CS_SECRETS_BIN" set SIBLING_KEY 2>&1) || sibling_rc=$?
+    local base=0 own=0 plain=0
+    printf 'v4' | CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" set BASE_KEY >/dev/null 2>&1 || base=$?
+    printf 'v5' | CLAUDE_SESSION_NAME=receiver@x CS_SECRETS_SESSION=receiver "$CS_SECRETS_BIN" set OWN_KEY >/dev/null 2>&1 || own=$?
+    printf 'v6' | ( unset CLAUDE_SESSION_NAME; "$CS_SECRETS_BIN" -s receiver set PLAIN_KEY ) >/dev/null 2>&1 || plain=$?
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    assert_eq "1" "$rc" "the write from sender exits 1" || return 1
+    assert_eq "Error: session sender cannot change the secrets of session receiver while its feature receiver@x is live (pid $pid); --force does not override that from another session. Close receiver@x first." \
+        "$out" "the refusal names the live feature" || return 1
+    assert_eq "1" "$sibling_rc" "the write from the sibling feature receiver@y exits 1" || return 1
+    assert_eq "Error: session receiver@y cannot change the secrets of session receiver while its feature receiver@x is live (pid $pid); --force does not override that from another session. Close receiver@x first." \
+        "$sibling" "the sibling's refusal names the live feature" || return 1
+    assert_eq "0 0 0" "$base $own $plain" "the base, the live feature itself and a plain terminal write" || return 1
+    assert_eq "export CS_SECRET_API_KEY=v1
+export CS_SECRET_BASE_KEY=v4
+export CS_SECRET_OWN_KEY=v5
+export CS_SECRET_PLAIN_KEY=v6" "$(CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" export 2>&1)" "only the refused writes are missing" || return 1
+}
+
+# A volume that ignores letter case keeps receiver's store under RECEIVER too,
+# so a write to RECEIVER waits for receiver's live feature on every route.
+test_secrets_writes_to_a_base_named_in_another_case_wait_for_its_live_feature() {
+    _live_receiver || return 1
+    _stop_receiver
+    [ -d "$CS_SESSIONS_ROOT/RECEIVER" ] || { echo "    SKIP: the sessions root tells letter case apart"; return 77; }
+    mkdir -p "$CS_SESSIONS_ROOT/receiver@x/.cs"
+    sleep 300 &
+    local pid=$! route out rc outs="" rcs=""
+    echo "$pid" > "$CS_SESSIONS_ROOT/receiver@x/.cs/session.lock"
+    for route in named session-flag direct; do
+        rc=0
+        case "$route" in
+            named) out=$(printf 'v2' | CLAUDE_SESSION_NAME=sender "$CS_BIN" RECEIVER -secrets set NAMED_KEY 2>&1) || rc=$? ;;
+            session-flag) out=$(printf 'v3' | CLAUDE_SESSION_NAME=sender "$CS_BIN" -secrets --session RECEIVER set FLAG_KEY 2>&1) || rc=$? ;;
+            direct) out=$(printf 'v4' | CLAUDE_SESSION_NAME=sender "$CS_SECRETS_BIN" -s RECEIVER set DIRECT_KEY 2>&1) || rc=$? ;;
+        esac
+        rcs="$rcs $route=$rc"
+        outs="$outs$route: $out
+"
+    done
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    local refusal="Error: session sender cannot change the secrets of session RECEIVER while its feature receiver@x is live (pid $pid); --force does not override that from another session. Close receiver@x first."
+    assert_eq " named=1 session-flag=1 direct=1" "$rcs" "every route exits 1" || return 1
+    assert_eq "named: $refusal
+session-flag: $refusal
+direct: $refusal
+" "$outs" "every route's refusal names the live feature" || return 1
+    assert_eq "export CS_SECRET_API_KEY=v1" "$(CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" export 2>&1)" "receiver's store is as it was" || return 1
+}
+
+# Only the base's own features hold its secrets: another base's live feature
+# does not, even when that base's name starts with this one's.
+test_secrets_writes_to_a_base_not_held_by_another_base_live_feature() {
+    _live_receiver || return 1
+    _stop_receiver
+    mkdir -p "$CS_SESSIONS_ROOT/receiver2@x/.cs"
+    sleep 300 &
+    local pid=$! out rc=0
+    echo "$pid" > "$CS_SESSIONS_ROOT/receiver2@x/.cs/session.lock"
+    out=$(printf 'v2' | CLAUDE_SESSION_NAME=sender "$CS_SECRETS_BIN" -s receiver set OTHER_KEY 2>&1) || rc=$?
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    assert_eq "0" "$rc" "the write exits 0: $out" || return 1
+    assert_eq "export CS_SECRET_API_KEY=v1
+export CS_SECRET_OTHER_KEY=v2" "$(CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" export 2>&1)" "the write landed in receiver's store" || return 1
+}
+
+# The same holds for the new name of a rename: alpha left secrets when its
+# directory went, and bravo, spelled BRAVO, is idle while bravo@x is live.
+test_secrets_rename_into_a_base_named_in_another_case_waits_for_its_live_feature() {
+    _RN_BIN=$(_make_fake_security)
+    mkdir -p "$CS_SESSIONS_ROOT/alpha/.cs" "$CS_SESSIONS_ROOT/bravo/.cs" "$CS_SESSIONS_ROOT/bravo@x/.cs"
+    [ -d "$CS_SESSIONS_ROOT/BRAVO" ] || { echo "    SKIP: the sessions root tells letter case apart"; return 77; }
+    printf 'value-one' > "$TEST_TMPDIR/v1"
+    CLAUDE_SESSION_NAME=alpha _kc_secrets set K1 < "$TEST_TMPDIR/v1" >/dev/null 2>&1 \
+        || { echo "  FAIL: fixture: could not seed alpha's secret"; return 1; }
+    rm -rf "$CS_SESSIONS_ROOT/alpha"
+    sleep 300 &
+    local pid=$! out rc=0
+    echo "$pid" > "$CS_SESSIONS_ROOT/bravo@x/.cs/session.lock"
+    out=$(CLAUDE_SESSION_NAME=sender _kc_secrets -s alpha rename BRAVO 2>&1) || rc=$?
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    assert_eq "1" "$rc" "the rename exits 1" || return 1
+    assert_eq "Error: session sender cannot change the secrets of session BRAVO while its feature bravo@x is live (pid $pid); --force does not override that from another session. Close bravo@x first." \
+        "$out" "the refusal names the live feature" || return 1
+    assert_eq "cs:alpha:K1" "$(_kc_services)" "alpha's secret stays under alpha" || return 1
+}
+
+# cs and cs-secrets read a session lock by one rule: the text, surrounding
+# whitespace removed, is a decimal pid from 1 to 2147483647 that kill -0
+# reaches. Each content below is fed to both, through the refusals of
+# `cs receiver -narrative rotate` and `cs-secrets -s receiver set` from
+# inside sender, and both must call it live (refuse, naming the pid) or idle
+# (rotate finds nothing to rotate; the secret is stored). Any other output
+# fails the test: a refusal that names the pid in another form is neither.
+test_cs_and_cs_secrets_read_a_session_lock_by_one_rule() {
+    mkdir -p "$CS_SESSIONS_ROOT/receiver/.cs/memory"
+    printf '# Narrative\n' > "$CS_SESSIONS_ROOT/receiver/.cs/memory/narrative.tester.md"
+    local rotated="nothing to rotate: narrative.tester.md is 0 KB (budget 64 KB)"
+    sleep 300 &
+    local pid=$! entry content want out got_cs got_secrets
+    local entries=("live|$pid" "live| $pid" "live|$pid " "live|	$pid
+
+" "live|00$pid" "idle|-1" "idle|0" "idle|000" "idle|abc" "idle|" "idle|${pid}x" \
+        "idle|+$pid" "idle|4294967295" "idle|99999999999999999999")
+    for entry in "${entries[@]}"; do
+        want="${entry%%|*}"
+        content="${entry#*|}"
+        printf '%s' "$content" > "$CS_SESSIONS_ROOT/receiver/.cs/session.lock"
+        out=$(CLAUDE_SESSION_NAME=sender CS_ACTOR=tester CS_NARRATIVE_MAX_BYTES=65536 "$CS_BIN" receiver -narrative rotate </dev/null 2>&1)
+        if [ "$out" = "Error: session sender cannot rotate the narrative of session receiver while it is live (pid $pid); --force does not override that from another session. Close receiver first." ]; then
+            got_cs=live
+        elif [ "$out" = "$rotated" ]; then
+            got_cs=idle
+        else
+            echo "  FAIL: cs reads the lock '$content' as neither live nor idle: $out"
+            kill "$pid"; wait "$pid" 2>/dev/null; return 1
+        fi
+        out=$(printf 'v' | CLAUDE_SESSION_NAME=sender "$CS_SECRETS_BIN" -s receiver set K 2>&1)
+        if [ "$out" = "$(_receiver_refusal_for sender "$pid")" ]; then
+            got_secrets=live
+        elif [ "$out" = "Stored secret: K" ]; then
+            got_secrets=idle
+        else
+            echo "  FAIL: cs-secrets reads the lock '$content' as neither live nor idle: $out"
+            kill "$pid"; wait "$pid" 2>/dev/null; return 1
+        fi
+        assert_eq "$want" "$got_cs" "cs reads the lock '$content'" || { kill "$pid"; wait "$pid" 2>/dev/null; return 1; }
+        assert_eq "$want" "$got_secrets" "cs-secrets reads the lock '$content'" || { kill "$pid"; wait "$pid" 2>/dev/null; return 1; }
+    done
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    return 0
+}
+
+run_test test_secrets_delete_of_a_live_other_session_is_refused_on_every_route
+run_test test_secrets_every_writing_command_is_refused_for_a_live_other_session
+run_test test_secrets_rename_into_a_live_other_session_is_refused
+run_test test_secrets_rename_of_a_closed_session_from_inside_another_session_moves_it
+run_test test_secrets_reads_of_a_live_other_session_still_work
+run_test test_secrets_delete_of_an_idle_other_session_works
+run_test test_secrets_a_feature_and_its_base_write_the_live_base_secrets
+run_test test_secrets_delete_from_a_plain_shell_takes_a_live_session
+run_test test_cs_and_cs_secrets_read_a_session_lock_by_one_rule
+run_test test_secrets_writes_to_a_base_wait_for_its_live_feature
+run_test test_secrets_writes_to_a_base_named_in_another_case_wait_for_its_live_feature
+run_test test_secrets_rename_into_a_base_named_in_another_case_waits_for_its_live_feature
+run_test test_secrets_writes_to_a_base_not_held_by_another_base_live_feature
+
 report_results

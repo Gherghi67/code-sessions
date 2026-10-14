@@ -802,6 +802,21 @@ test_worktree_launch_exports_base_identity() {
     assert_output_contains "$env_out" "CS_SECRETS_SESSION=myproj" "secrets stay keyed to the base" || return 1
 }
 
+# A shell inside a feature carries its base in CS_SECRETS_SESSION, and one a
+# cs -secrets arm started carries CS_SECRETS_CALLER. A base session launched
+# from such a shell is keyed to itself and is its own caller, so its claude
+# gets neither.
+test_base_launch_drops_an_inherited_secrets_identity() {
+    create_test_session "otherbase" > /dev/null
+    local stub="$TEST_TMPDIR/claude-secrets-identity" seen="$TEST_TMPDIR/secrets-identity" out
+    printf '#!/bin/sh\necho "CS_SECRETS_SESSION=${CS_SECRETS_SESSION-<unset>} CS_SECRETS_CALLER=${CS_SECRETS_CALLER-<unset>}" > "%s"\n' "$seen" > "$stub"
+    chmod +x "$stub"
+    out=$(CS_SECRETS_SESSION=myproj CS_SECRETS_CALLER=myproj@fix-auth CLAUDE_CODE_BIN="$stub" \
+        "$CS_BIN" "otherbase" <<< "n" 2>&1) || { echo "  FAIL: the launch failed: $out"; return 1; }
+    assert_eq "CS_SECRETS_SESSION=<unset> CS_SECRETS_CALLER=<unset>" "$(cat "$seen" 2>&1)" \
+        "the launched claude carries no other session's secrets identity" || return 1
+}
+
 # Claude Code v2.1.233+ leaves the Task tools out on Opus 4.8, Sonnet 5 and
 # Fable 5 unless the session opts in. cs's rotation wake, the walk-away drain
 # and the rotate skill all address the native task list, so a launch has to
@@ -1046,6 +1061,44 @@ test_retire_reused_live_pid_is_not_treated_as_own_lock() {
     [ "$status" -ne 0 ] || { echo "  FAIL: a reused foreign PID must not be exempted"; return 1; }
     assert_output_contains "$output" "is open elsewhere" "reused live PID keeps the hard refusal" || return 1
     assert_dir "$wt" "reused-PID refusal preserves the worktree" || return 1
+}
+
+# Retire reads the feature's lock by live_lock_pid's rule: "-1" and "0" name
+# process groups and "+<pid>" is not a pid, so none of them is the feature's
+# conversation. The live foreign base lock behind it is the next refusal.
+test_retire_reads_the_feature_lock_by_the_one_lock_rule() {
+    local base_dir
+    base_dir=$(create_test_session_with_git "myproj")
+    cs_launch "myproj@fix-auth"
+    local wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    local sha
+    sha=$(land_feature myproj fix-auth) || { echo "  FAIL: integrate fixture"; return 1; }
+    echo "$$" > "$base_dir/.cs/session.lock"
+
+    local text output status
+    for text in "-1" "0" "+$$"; do
+        printf '%s\n' "$text" > "$wt/.cs/session.lock"
+        status=0
+        output=$(CLAUDE_SESSION_NAME="foreign" \
+            "$CS_BIN" "myproj" -retire-feature "fix-auth" "$sha" 2>&1) || status=$?
+        assert_eq "1" "$status" "retire over a feature lock of '$text' exits 1: $output" || return 1
+        assert_eq "Error: Base session 'myproj' is open elsewhere (PID $$); run /finish fix-auth from that conversation" \
+            "$output" "a feature lock of '$text' is not a live conversation" || return 1
+        assert_dir "$wt" "the worktree stays over a feature lock of '$text'" || return 1
+    done
+}
+
+# A sha the base does not have is refused by name, the sha as given.
+test_retire_names_a_commit_the_base_lacks() {
+    create_test_session_with_git "myproj" > /dev/null
+    cs_launch "myproj@fix-auth"
+    local wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    land_feature myproj fix-auth > /dev/null || { echo "  FAIL: integrate fixture"; return 1; }
+    local missing="0123456789abcdef0123456789abcdef01234567" output status=0
+    output=$("$CS_BIN" "myproj" -retire-feature "fix-auth" "$missing" 2>&1) || status=$?
+    assert_eq "1" "$status" "a commit the base lacks is refused: $output" || return 1
+    assert_eq "Error: Commit not found in myproj: $missing" "$output" "the refusal names the sha given" || return 1
+    assert_dir "$wt" "worktree preserved" || return 1
 }
 
 test_retire_refuses_an_unintegrated_feature() {
@@ -1408,6 +1461,7 @@ run_test test_worktree_reopen_preserves_project_claude_md
 run_test test_worktree_reopen_refuses_a_symlinked_cs_local
 run_test test_worktree_creation_refuses_a_committed_cs_local_link
 run_test test_worktree_launch_exports_base_identity
+run_test test_base_launch_drops_an_inherited_secrets_identity
 run_test test_launch_enables_the_task_tools_unless_opted_out
 run_test test_launch_enables_function_hooks_unless_opted_out
 run_test test_retire_after_integrate_removes_worktree_and_branch
@@ -1419,6 +1473,8 @@ run_test test_retire_from_live_base_session_succeeds
 run_test test_retire_from_inside_the_feature_session_refuses
 run_test test_retire_foreign_live_base_lock_still_refuses
 run_test test_retire_reused_live_pid_is_not_treated_as_own_lock
+run_test test_retire_reads_the_feature_lock_by_the_one_lock_rule
+run_test test_retire_names_a_commit_the_base_lacks
 run_test test_retire_refuses_an_unintegrated_feature
 run_test test_retire_refuses_commits_after_the_captured_one
 run_test test_retire_force_takes_a_squash_landed_branch
@@ -1479,6 +1535,19 @@ test_integrate_reports_already_integrated_and_does_nothing() {
     assert_eq "$head" "$(git -C "$base_dir" rev-parse HEAD)" "no commit is made" || return 1
 }
 
+# A sha the base does not have is refused by name, the sha as given.
+test_integrate_names_a_commit_the_base_lacks() {
+    local base_dir head
+    integrate_fixture myproj fix-auth > /dev/null
+    base_dir="$CS_SESSIONS_ROOT/myproj"
+    head=$(git -C "$base_dir" rev-parse HEAD)
+    local missing="0123456789abcdef0123456789abcdef01234567" output status=0
+    output=$("$CS_BIN" myproj -integrate-feature fix-auth "$missing" -- true 2>&1) || status=$?
+    assert_eq "1" "$status" "a commit the base lacks is refused: $output" || return 1
+    assert_eq "Error: Commit not found in myproj: $missing" "$output" "the refusal names the sha given" || return 1
+    assert_eq "$head" "$(git -C "$base_dir" rev-parse HEAD)" "base HEAD unchanged" || return 1
+}
+
 test_integrate_refuses_dirty_base() {
     local sha base_dir
     sha=$(integrate_fixture myproj fix-auth)
@@ -1505,6 +1574,27 @@ test_integrate_refuses_foreign_live_base_lock() {
         "$CS_BIN" myproj -integrate-feature fix-auth "$sha" -- true 2>&1) || status=$?
     assert_eq "1" "$status" "a foreign live base lock refuses" || return 1
     assert_output_contains "$output" "open elsewhere" "names the live base" || return 1
+}
+
+# Integrate reads the base's lock by live_lock_pid's rule: a lock of "-1",
+# "0" or "+<pid>" names no running conversation, so integrate goes on: the
+# base's own HEAD, which the feature branch grew from, is already landed.
+test_integrate_reads_the_base_lock_by_the_one_lock_rule() {
+    local base_dir
+    integrate_fixture myproj fix-auth > /dev/null
+    base_dir="$CS_SESSIONS_ROOT/myproj"
+    local landed
+    landed=$(git -C "$base_dir" rev-parse HEAD)
+    local text output status
+    for text in "-1" "0" "+$$"; do
+        printf '%s\n' "$text" > "$base_dir/.cs/session.lock"
+        status=0
+        output=$(CLAUDE_SESSION_NAME="other" \
+            "$CS_BIN" myproj -integrate-feature fix-auth "$landed" -- true 2>&1) || status=$?
+        assert_eq "0" "$status" "integrate over a base lock of '$text' exits 0: $output" || return 1
+        assert_eq "already-integrated fix-auth $landed" "$output" \
+            "a base lock of '$text' is not a live conversation" || return 1
+    done
 }
 
 # A TERM'd integrate runs its cleanup from the signal handler and again from
@@ -1626,8 +1716,10 @@ test_integrate_and_autosave_spell_one_mutex_path() {
 run_test test_integrate_refuses_unknown_worktree
 run_test test_integrate_refuses_sha_not_on_feature_branch
 run_test test_integrate_reports_already_integrated_and_does_nothing
+run_test test_integrate_names_a_commit_the_base_lacks
 run_test test_integrate_refuses_dirty_base
 run_test test_integrate_refuses_foreign_live_base_lock
+run_test test_integrate_reads_the_base_lock_by_the_one_lock_rule
 run_test test_integrate_cleanup_releases_the_lock_only_once
 run_test test_integrate_cleanup_forgets_a_lock_it_could_not_remove
 run_test test_integrate_ignores_the_feature_lock
@@ -4529,6 +4621,26 @@ test_features_reports_a_live_worktree_lock_distinctly() {
 }
 
 run_test test_features_reports_a_live_worktree_lock_distinctly
+
+# -features reads both locks by live_lock_pid's rule: "-1", "0" and "+<pid>"
+# name no running conversation, so the record says lock=none.
+test_features_reads_the_locks_by_the_one_lock_rule() {
+    local base_dir
+    base_dir=$(create_test_session_with_git "myproj")
+    cs_launch "myproj@fix-auth"
+    local wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    local text line where
+    for where in "$wt" "$base_dir"; do
+        for text in "-1" "0" "+$$"; do
+            printf '%s\n' "$text" > "$where/.cs/session.lock"
+            line=$("$CS_BIN" "myproj" -features --porcelain 2>/dev/null)
+            rm -f "$where/.cs/session.lock"
+            assert_eq "none" "$(_feat_field "$line" 9)" "a lock of '$text' in $where is lock=none: $line" || return 1
+        done
+    done
+}
+
+run_test test_features_reads_the_locks_by_the_one_lock_rule
 
 test_features_reports_a_live_base_lock_distinctly() {
     local base_dir

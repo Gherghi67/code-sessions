@@ -166,15 +166,17 @@ if [ "${CS_RESOLVED_FROM:-env}" = "env" ] \
     esac
 fi
 if [ "$_cs_lock_clear" = 1 ] && command -v _cs_lock >/dev/null 2>&1 \
+    && command -v live_lock_pid >/dev/null 2>&1 \
     && _cs_lock "$META_DIR/session.mutex.lock"; then
     # Under the openers' mutex: a read of a dead pid followed by a remove would
     # otherwise delete the lock an opener took in between. A hook that cannot
-    # take the mutex leaves the lock; the next open reclaims a dead one itself.
-    _cs_lock_pid=$(cat "$META_DIR/session.lock" 2>/dev/null | tr -d '[:space:]') || true
-    case "${_cs_lock_pid:-}" in
-        ''|*[!0-9]*) rm -f "$META_DIR/session.lock" 2>/dev/null || true ;;
+    # take the mutex, or whose cs-shared.sh lacks live_lock_pid, leaves the
+    # lock; the next open reclaims a dead one itself. live_lock_pid prints
+    # nothing for a lock that names no running process by the one lock rule.
+    _cs_lock_pid=$(live_lock_pid "$META_DIR")
+    case "$_cs_lock_pid" in
+        '') rm -f "$META_DIR/session.lock" 2>/dev/null || true ;;
         "$_cs_lock_owner") rm -f "$META_DIR/session.lock" 2>/dev/null || true ;;
-        *) kill -0 "$_cs_lock_pid" 2>/dev/null || rm -f "$META_DIR/session.lock" 2>/dev/null || true ;;
     esac
     _cs_unlock "$META_DIR/session.mutex.lock"
 fi
@@ -194,11 +196,18 @@ if [ -f "$META_DIR/local/vault" ] && [ "${CS_RESOLVED_FROM:-env}" = "env" ] \
         clear|resume) ;;
         *)
             nohup /bin/bash -c '
-                dir=$1 pid=$2 ldir=$3
+                dir=$1 pid=$2 ldir=$3 shared=$4
                 while kill -0 "$pid" 2>/dev/null; do sleep 1; done
                 alive() { case "$1" in ""|*[!0-9]*) return 1 ;; esac; kill -0 "$1" 2>/dev/null; }
                 held=""
-                alive "$(tr -d "[:space:]" < "$dir/.cs/session.lock" 2>/dev/null)" && held=1
+                # The lock is read by live_lock_pid from cs-shared.sh, the
+                # one lock rule. A waiter that cannot load it keeps the vault
+                # mounted, and the next open handles the leftover.
+                if . "$shared" 2>/dev/null && command -v live_lock_pid >/dev/null 2>&1; then
+                    [ -z "$(live_lock_pid "$dir/.cs")" ] || held=1
+                else
+                    held=1
+                fi
                 if [ -z "$held" ] && [ -f "$dir/.cs/local/vault-holders" ]; then
                     while read -r h; do alive "$h" && held=1; done < "$dir/.cs/local/vault-holders"
                 fi
@@ -217,7 +226,7 @@ if [ -f "$META_DIR/local/vault" ] && [ "${CS_RESOLVED_FROM:-env}" = "env" ] \
                     [ -z "$ldir" ] || rm -f "$ldir/vault-detach.pid"
                 fi
                 [ -z "$ldir" ] || rm -f "$ldir/vault-waiter.pid"
-            ' cs-vault-waiter "$SESSION_DIR" "$CLAUDE_PID" "$LOCAL_DIR" </dev/null >/dev/null 2>&1 &
+            ' cs-vault-waiter "$SESSION_DIR" "$CLAUDE_PID" "$LOCAL_DIR" "$_cs_shared" </dev/null >/dev/null 2>&1 &
             # Written at once, not through cs_write_atomic: the waiter deletes
             # this file as it ends, and a slower write could land after that.
             # The builtin test refuses a planted link in its place.

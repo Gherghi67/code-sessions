@@ -137,6 +137,9 @@ main() {
             ;;
         -secrets)
             shift
+            # The session this cs runs in, empty outside every session:
+            # cs-secrets refuses its writes to another live session's secrets.
+            export CS_SECRETS_CALLER="${CLAUDE_SESSION_NAME:-}"
             run_secrets "$@"
             return 0
             ;;
@@ -302,6 +305,10 @@ main() {
                 # A worktree's secrets route to its base, so the base is the
                 # session cs-secrets writes into (Codex r3 #3).
                 [ -z "$wt_base" ] || _vet_named_session "$SESSIONS_ROOT/$wt_base"
+                # The caller's own session, kept before CLAUDE_SESSION_NAME
+                # becomes the target: cs-secrets refuses writes to another
+                # live session's secrets.
+                export CS_SECRETS_CALLER="${CLAUDE_SESSION_NAME:-}"
                 export CLAUDE_SESSION_NAME="$session_name"
                 # Worktree secrets live under the base session's namespace
                 # (no launched session ever uses cs:<base>@<task>:*); a plain
@@ -320,7 +327,7 @@ main() {
                 # session's user to accept, and arming or accepting stays with
                 # that user. A terminal outside any session is the user.
                 local caller="${CLAUDE_SESSION_NAME:-}"
-                if [ -n "$caller" ] && [ "$caller" != "$session_name" ]; then
+                if _called_from_other_session "$session_name"; then
                     case "${1:-}" in
                         add)
                             shift
@@ -392,6 +399,9 @@ main() {
                 # and misnames this one's fault.
                 is_session_dir "$SESSIONS_ROOT/$session_name" \
                     || error "No such session: $session_name"
+                # The cut rewrites the narrative a running conversation
+                # appends to; from inside another session that waits.
+                _refuse_live_other_session "$session_name" "$SESSIONS_ROOT/$session_name/.cs" "rotate the narrative of"
                 _vet_named_session "$SESSIONS_ROOT/$session_name"
                 export CLAUDE_SESSION_NAME="$session_name"
                 export CLAUDE_SESSION_DIR="$SESSIONS_ROOT/$session_name"

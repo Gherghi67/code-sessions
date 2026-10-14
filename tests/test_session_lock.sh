@@ -147,6 +147,34 @@ test_force_overrides_live_lock() {
     fi
 }
 
+# An open reads the lock by live_lock_pid's rule: a lock naming a process
+# group ("-1", "0") holds no session, so the open reclaims it; a live pid
+# with whitespace around it holds the session, and the refusal names the pid.
+test_open_reads_the_lock_by_the_one_lock_rule() {
+    local lock="$CS_SESSIONS_ROOT/test-session/.cs/session.lock" content out rc
+    for content in -1 0; do
+        rm -rf "$CS_SESSIONS_ROOT/test-session"
+        create_lock_test_session "test-session"
+        printf '%s' "$content" > "$lock"
+        rc=0
+        out=$("$CS_BIN" test-session </dev/null 2>&1) || rc=$?
+        assert_eq "0" "$rc" "the open over a lock of '$content' exits 0 (output: $out)" || return 1
+        assert_eq "Removing stale session lock (PID $content)" "$(grep -F 'session lock' <<< "$out")" \
+            "the open reclaims the lock of '$content'" || return 1
+    done
+    rm -rf "$CS_SESSIONS_ROOT/test-session"
+    create_lock_test_session "test-session"
+    sleep 300 &
+    local live_pid=$!
+    printf ' %s\n' "$live_pid" > "$lock"
+    rc=0
+    out=$("$CS_BIN" test-session </dev/null 2>&1) || rc=$?
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    assert_eq "1" "$rc" "the open over a padded live pid exits 1" || return 1
+    assert_eq "Error: Session is already open (PID $live_pid)" "$(grep -F 'already open' <<< "$out")" \
+        "the refusal names the pid alone" || return 1
+}
+
 test_lock_cleaned_on_session_end() {
     create_lock_test_session "test-session"
 
@@ -1118,6 +1146,7 @@ run_test test_open_ignores_a_mutex_directory_and_leaves_its_mutex_file_ignored
 run_test test_lock_prevents_duplicate_session
 run_test test_stale_lock_is_reclaimed
 run_test test_force_overrides_live_lock
+run_test test_open_reads_the_lock_by_the_one_lock_rule
 run_test test_lock_cleaned_on_session_end
 run_test test_session_end_keeps_the_lock_for_a_child_that_inherited_the_contract
 run_test test_session_end_keeps_the_lock_when_the_parent_cannot_be_read
