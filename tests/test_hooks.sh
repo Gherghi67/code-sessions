@@ -677,6 +677,45 @@ test_auto_approve_prompts_inside_a_git_directory_reached_by_another_name() {
         "the config of a worktree's git directory kept below .cs" || return 1
 }
 
+# A git directory can be assembled one write at a time. Git takes a directory
+# that holds HEAD beside objects/ and refs/, or beside a commondir naming
+# another store, and then reads config and config.worktree from it; a
+# worktree's own directory names its checkout in gitdir. A write of any of
+# these names prompts below .cs/ whatever is there already, and in any case,
+# since the Mac volume reads head as HEAD. Each file is written after its
+# prompt, as an approval would, so the next name meets what the last left.
+test_auto_approve_prompts_for_a_git_file_name_in_any_order() {
+    local meta="$CLAUDE_SESSION_META_DIR" name
+    for name in config config.worktree HEAD commondir gitdir; do
+        _assert_falls_through Write "$meta/memory/$name" \
+            ".cs/memory/$name written in turn" || return 1
+        case "$name" in
+            config|config.worktree) printf '[core]\n\tpager = echo planted\n' > "$meta/memory/$name" ;;
+            HEAD) echo 'ref: refs/heads/main' > "$meta/memory/$name" ;;
+            *) printf '%s\n' "$CLAUDE_SESSION_DIR/.git" > "$meta/memory/$name" ;;
+        esac
+        _assert_falls_through Edit "$meta/memory/$name" \
+            "an Edit of .cs/memory/$name" || return 1
+    done
+    mkdir -p "$meta/plans"
+    for name in Config CONFIG CONFIG.WORKTREE Config.Worktree head Head CommonDir \
+        COMMONDIR GitDir GITDIR; do
+        _assert_falls_through Write "$meta/plans/$name" \
+            ".cs/plans/$name in an empty directory" || return 1
+    done
+    for name in config.md headers.md commondir-notes.md gitdir.txt; do
+        _assert_allowed Write "$meta/plans/$name" \
+            "a note named .cs/plans/$name" || return 1
+    done
+    # A clone delivers objects/ and refs/ with no HEAD: the config and the
+    # HEAD that would make it a bare repository both prompt.
+    mkdir -p "$meta/research/x/objects" "$meta/research/x/refs"
+    _assert_falls_through Write "$meta/research/x/config" \
+        "the config of a bare layout with no HEAD yet" || return 1
+    _assert_falls_through Write "$meta/research/x/HEAD" \
+        "the HEAD that completes a bare layout" || return 1
+}
+
 # The same for a session whose own path has a .git component above .cs/: the
 # git-directory rule reads the path below .cs/ only.
 test_auto_approve_allows_content_in_a_session_below_a_git_named_directory() {
@@ -3348,6 +3387,7 @@ run_test test_auto_approve_prompts_for_a_non_ascii_name_in_content
 run_test test_auto_approve_prompts_for_a_folded_control_name
 run_test test_auto_approve_prompts_inside_a_git_directory_below_cs
 run_test test_auto_approve_prompts_inside_a_git_directory_reached_by_another_name
+run_test test_auto_approve_prompts_for_a_git_file_name_in_any_order
 run_test test_auto_approve_allows_ascii_content_under_a_non_ascii_session_path
 run_test test_auto_approve_allows_content_in_a_session_below_a_git_named_directory
 run_test test_auto_approve_rejects_config_linked_into_content
