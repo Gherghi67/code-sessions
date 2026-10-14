@@ -953,6 +953,51 @@ test_gitignore_asks_about_its_own_checkout_whatever_the_environment() {
     git -C "$dir" check-ignore -q .cs/session.mutex.lock || { echo "  FAIL: .cs/session.mutex.lock is not ignored"; return 1; }
 }
 
+# An adopted project whose committed .gitignore lacks two of cs's rules (the
+# team dropped them), with the open's migration armed again.
+_team_gitignore_project() {  # dir, session name
+    mkdir -p "$1"
+    (cd "$1" && git init -q && printf 'node_modules/\n' > .gitignore && git add .gitignore && git commit -q -m team \
+        && "$CS_BIN" -adopt "$2" >/dev/null 2>&1) || return 1
+    grep -vxF -e '.cs/vault-mnt/' -e '.cs-tmp.*' "$1/.gitignore" > "$1/.gitignore.team" || return 1
+    mv "$1/.gitignore.team" "$1/.gitignore"
+    git -C "$1" commit -q -m "team edit" -- .gitignore || return 1
+    rm -f "$1/.cs/local/migrated"
+}
+
+# On open, rules cs appends to a .gitignore git tracks show up as the team's
+# file changing for no stated reason, so cs says once what it added and why.
+test_open_explains_the_rules_it_adds_to_a_tracked_gitignore() {
+    local dir="$TEST_TMPDIR/team-project" out
+    _team_gitignore_project "$dir" team-session || { echo "  FAIL: fixture"; return 1; }
+    out=$("$CS_BIN" team-session <<< "" 2>&1) || { echo "  FAIL: the open failed: $out"; return 1; }
+    assert_output_contains "$out" "cs added .cs/vault-mnt/, .cs-tmp.\* to the tracked .gitignore so cs's machine-local files are never staged; commit it with your next change" \
+        "the open names both rules and why" || return 1
+    assert_eq "1" "$(printf '%s\n' "$out" | grep -c 'cs added')" "in one line" || return 1
+    assert_eq " M .gitignore" "$(git -C "$dir" status --porcelain -- .gitignore)" "the rules are left for the user to commit" || return 1
+    rm -f "$dir/.cs/local/migrated"
+    out=$("$CS_BIN" team-session <<< "" 2>&1) || { echo "  FAIL: the reopen failed: $out"; return 1; }
+    assert_output_not_contains "$out" "cs added" "an open that adds nothing says nothing" || return 1
+}
+
+# A .gitignore git does not track is no one else's file: cs appends its rules
+# and says nothing. Adopt commits the rules it adds, so it says nothing either.
+test_open_adds_rules_to_an_untracked_gitignore_quietly() {
+    local dir="$TEST_TMPDIR/own-project" out
+    mkdir -p "$dir"
+    (cd "$dir" && git init -q && printf 'node_modules/\n' > .gitignore && git add .gitignore && git commit -q -m team) \
+        || { echo "  FAIL: fixture"; return 1; }
+    out=$(cd "$dir" && "$CS_BIN" -adopt own-session 2>&1) || { echo "  FAIL: adopt failed: $out"; return 1; }
+    assert_output_not_contains "$out" "cs added" "adopt commits what it adds" || return 1
+    assert_eq "" "$(git -C "$dir" status --porcelain -- .gitignore)" "and leaves .gitignore committed" || return 1
+    git -C "$dir" rm -q --cached .gitignore && git -C "$dir" commit -q -m untrack || { echo "  FAIL: untrack"; return 1; }
+    grep -vxF '.cs/vault-mnt/' "$dir/.gitignore" > "$dir/.gitignore.own" && mv "$dir/.gitignore.own" "$dir/.gitignore"
+    rm -f "$dir/.cs/local/migrated"
+    out=$("$CS_BIN" own-session <<< "" 2>&1) || { echo "  FAIL: the open failed: $out"; return 1; }
+    assert_eq ".cs/vault-mnt/" "$(grep -xF '.cs/vault-mnt/' "$dir/.gitignore")" "the rule is appended" || return 1
+    assert_output_not_contains "$out" "cs added" "with no line about it" || return 1
+}
+
 # ============================================================================
 # First launch after adopt
 # ============================================================================
@@ -1282,6 +1327,8 @@ run_test test_gitignore_judges_a_tracked_lock_by_the_rules
 run_test test_gitignore_leaves_a_negation_in_a_deeper_gitignore
 run_test test_gitignore_without_an_answer_from_git_appends_nothing
 run_test test_gitignore_asks_about_its_own_checkout_whatever_the_environment
+run_test test_open_explains_the_rules_it_adds_to_a_tracked_gitignore
+run_test test_open_adds_rules_to_an_untracked_gitignore_quietly
 run_test test_adopt_sets_memory_merge_driver
 
 run_test test_adopt_creates_cs_structure

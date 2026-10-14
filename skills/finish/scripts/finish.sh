@@ -254,6 +254,63 @@ cmd_prepare() {  # [feature]
     pr_lookup "$session_dir" "cs/$task"
 }
 
+# Whether the content of a branch that is not an ancestor of the base landed
+# anyway (a squash or rebase landing, a cherry-pick): every path <sha> changed
+# since its merge base with <base_head>, the base's HEAD as the report printed
+# it, must be the same on <base_head>,
+# the same mode and blob or absent from both. A rename is a deletion and an
+# addition, both checked. A submodule's pointer counts whatever .gitmodules or
+# diff.ignoreSubmodules says, since the branch may be the one ref holding it.
+# Prints content_paths_checked and, one per line, content_differs for each
+# path <base_head> holds differently. The local HEAD is the
+# evidence, not origin's branch: the retire acts on this base, the PR path has
+# already fast-forwarded it onto the landing, and origin may have moved since.
+content_landing() {  # sha base_head
+    local top mb tmp status=0
+    top=$(git -C "$session_dir" rev-parse --show-toplevel) \
+        || { echo "error: $session_dir is not a git checkout"; return 1; }
+    # No merge base: the branch shares no history with the base, so there is
+    # no "what the branch changed" to check.
+    mb=$(git -C "$top" merge-base "$1" "$2" 2>/dev/null) || { echo "content_paths_checked: none"; return 0; }
+    tmp=$(mktemp -d "${TMPDIR:-/tmp}/finish-paths.XXXXXX") \
+        || { echo "error: could not create a temporary directory to compare paths in"; return 1; }
+    git -C "$top" diff --no-renames --ignore-submodules=none --name-only -z "$mb" "$1" > "$tmp/changed" \
+        || { rm -rf "$tmp"; echo "error: git diff failed listing the paths $1 changed since $mb"; return 1; }
+    # Every path <base_head> holds differently from <sha>, over the whole tree,
+    # so no path list goes on a command line (ARG_MAX). <base_head>, never
+    # HEAD: a base commit while this runs must not change what is listed. Listed twice: NUL-separated
+    # to match against the changed paths, and as git quotes names to print
+    # them. git lists both in the same order. -C0: names are bytes, whatever
+    # PERL_UNICODE says.
+    git -C "$top" diff --no-renames --ignore-submodules=none --name-only -z "$1" "$2" > "$tmp/differ" \
+        && git -C "$top" diff --no-renames --ignore-submodules=none --name-only "$1" "$2" > "$tmp/named" \
+        || { rm -rf "$tmp"; echo "error: git diff failed comparing $1 with base HEAD"; return 1; }
+    perl -C0 -e '
+        my ($changed_file, $differ_file, $named_file) = @ARGV;
+        my (%changed, @differ, @named);
+        {
+            local $/ = "\0";
+            open(my $c, "<", $changed_file) or die "error: cannot read $changed_file: $!\n";
+            while (my $p = <$c>) { chomp $p; $changed{$p} = 1 }
+            open(my $d, "<", $differ_file) or die "error: cannot read $differ_file: $!\n";
+            @differ = <$d>;
+            chomp @differ;
+        }
+        open(my $n, "<", $named_file) or die "error: cannot read $named_file: $!\n";
+        @named = <$n>;
+        chomp @named;
+        if (@differ != @named) {
+            printf "error: git listed %d paths that differ from base HEAD NUL-separated but %d quoted\n",
+                scalar @differ, scalar @named;
+            exit 1;
+        }
+        printf "content_paths_checked: %d\n", scalar keys %changed;
+        for my $i (0 .. $#differ) { print "content_differs: $named[$i]\n" if $changed{$differ[$i]} }
+    ' "$tmp/changed" "$tmp/differ" "$tmp/named" || status=$?
+    rm -rf "$tmp"
+    return "$status"
+}
+
 cmd_report() {  # base task sha
     local base="$1" task="$2" sha="$3" wt="$sessions_root/$1@$2"
     [ -d "$wt" ] || { echo "error: no worktree at $wt"; exit 1; }
@@ -262,26 +319,67 @@ cmd_report() {  # base task sha
         landed="yes"
     fi
     echo "landed: $landed"
-    echo "base_head: $(git -C "$session_dir" rev-parse HEAD)"
+    local base_head
+    base_head=$(git -C "$session_dir" rev-parse HEAD) \
+        || { echo "error: git rev-parse HEAD failed in the base $session_dir"; exit 1; }
+    echo "base_head: $base_head"
     local tip n_after
-    tip=$(git -C "$wt" rev-parse HEAD)
+    tip=$(git -C "$wt" rev-parse HEAD) || { echo "error: git rev-parse HEAD failed in the worktree $wt"; exit 1; }
     n_after=$(git -C "$wt" rev-list --count "$sha..HEAD" 2>/dev/null || echo 0)
     echo "not_integrated: $n_after"
     dirt_lines "$wt"
     pr_lookup "$session_dir" "cs/$task"
     # What the retire entry will do with this worktree. It removes the
     # worktree and branch and never merges, so a tip the base does not have
-    # is another /finish first, and a branch that is not an ancestor (a
-    # squash or rebase landing) is retirable only on the PR's own evidence.
+    # is another /finish first. A branch that is not an ancestor (a squash or
+    # rebase landing) is retirable when the base holds every path it changed
+    # as it has it, or else only on the PR's own evidence.
+    local not_integrated="retire: $n_after commit(s) on cs/$task after the captured commit are not integrated; run /finish $task again before retiring"
     if [ "$landed" = "yes" ]; then
         if git -C "$session_dir" merge-base --is-ancestor "$tip" HEAD 2>/dev/null; then
             echo "retire: ready"
         else
-            echo "retire: $n_after commit(s) on cs/$task after the captured commit are not integrated; run /finish $task again before retiring"
+            echo "$not_integrated"
         fi
-    else
-        echo "retire: not-landed"
-        echo "retire_note: cs/$task is not an ancestor of base (a squash or rebase landing); retire with --force only on a MERGED pr_state"
+        return 0
+    fi
+    local content checked differing n_differing status=0
+    # Run captured, so its error line comes back here to print. Path names
+    # are bytes in any encoding (core.quotePath false prints them raw), so
+    # every sed and grep over them runs in the C locale.
+    content=$(content_landing "$sha" "$base_head") || status=$?
+    if [ "$status" != 0 ]; then
+        printf '%s\n' "$content" | grep '^error: ' \
+            || echo "error: comparing the paths cs/$task changed with base HEAD failed (exit $status)"
+        exit 1
+    fi
+    checked=$(printf '%s\n' "$content" | LC_ALL=C sed -n 's/^content_paths_checked: //p')
+    # A check that counted nothing vouches for nothing.
+    case "$checked" in
+        none) ;;
+        ''|*[!0-9]*)
+            echo "error: comparing the paths cs/$task changed with base HEAD gave '$checked' as the path count, not none or a number"
+            exit 1 ;;
+    esac
+    differing=$(printf '%s\n' "$content" | LC_ALL=C sed -n 's/^content_differs: //p')
+    if [ "$checked" != none ] && [ -z "$differing" ]; then
+        # The entry refuses a tip past the captured commit under --force too.
+        if [ "$n_after" != 0 ]; then
+            echo "$not_integrated"
+            return 0
+        fi
+        echo "retire: content-landed"
+        echo "retire_paths_checked: $checked"
+        echo "retire_note: cs/$task is not an ancestor of base, but every path it changed is identical on base HEAD; retire with --force"
+        return 0
+    fi
+    echo "retire: not-landed"
+    echo "retire_note: cs/$task is not an ancestor of base (a squash or rebase landing); retire with --force only on a MERGED pr_state"
+    if [ -n "$differing" ]; then
+        n_differing=$(printf '%s\n' "$differing" | LC_ALL=C grep -c .)
+        echo "retire_paths_differing: $n_differing of $checked"
+        printf '%s\n' "$differing" | LC_ALL=C sed -n '1,10s/^/retire_differs: /p'
+        [ "$n_differing" -le 10 ] || echo "retire_differs_more: $((n_differing - 10))"
     fi
 }
 

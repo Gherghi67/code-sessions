@@ -75,10 +75,13 @@ _cs_gitignore_negated_here() {  # dir, path
 # sessions gain the .cs/local/ rule (per-actor state must never be committed).
 # The two session lock rules are appended again when a negation further down
 # the file (a project's !*.lock) overrides them, so the line at the end wins;
-# existing lines are never removed or reordered.
+# existing lines are never removed or reordered. The rules it appends to an
+# existing file are left in _CS_GITIGNORE_ADDED, comma-separated, for
+# _explain_gitignore_additions.
 ensure_cs_gitignore_entries() {
     local target_dir="$1"
     local gitignore="$target_dir/.gitignore"
+    _CS_GITIGNORE_ADDED=""
     if [ ! -f "$gitignore" ]; then
         create_session_gitignore "$target_dir"
         return 0
@@ -122,8 +125,19 @@ ENTRIES
                 printf '\n' >> "$gitignore"
             fi
             echo "$line" >> "$gitignore"
+            _CS_GITIGNORE_ADDED="${_CS_GITIGNORE_ADDED:+$_CS_GITIGNORE_ADDED, }$line"
         fi
     done <<< "$entries"
+}
+
+# One line naming the rules ensure_cs_gitignore_entries just appended, when
+# git tracks <dir>/.gitignore: in an adopted project that is the team's file,
+# and the rules would otherwise show up as an uncommitted change nobody
+# explained. A .gitignore git does not track, or a fresh one, gets no line.
+_explain_gitignore_additions() {  # dir
+    [ -n "${_CS_GITIGNORE_ADDED:-}" ] || return 0
+    _cs_git_at "$1" ls-files --error-unmatch -- .gitignore >/dev/null 2>&1 || return 0
+    info "cs added $_CS_GITIGNORE_ADDED to the tracked .gitignore so cs's machine-local files are never staged; commit it with your next change"
 }
 
 # Adopt an existing project directory as a cs session. --yes (-y) answers the

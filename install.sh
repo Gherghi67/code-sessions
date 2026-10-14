@@ -1278,7 +1278,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "f5819e5d2f17ed2e086f64e8dcc29bb5f6043203a4f5845a452fd3d15bbbf2a9  bin/cs"
+    "65dc23c0ad81ed29c94c7142145913755b1118e811a5c3eb2bb1150a84cc77d7  bin/cs"
     "d54f9dd8797c86d7815f4c1f300a56cf1d4bb344cbcd645ec8f71659d6a70ff6  bin/cs-secrets"
     "105416b75a58aa582dfd6a8d22a9b165ec896e1e366070c3cc97ee7d78a4cb1d  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -1304,11 +1304,11 @@ CS_PAYLOAD_SHA256=(
     "2520a6d54d75e3e9f1768160826a8b9f21e38e2234538cc62e3ec6337008fc28  skills/store-secret/SKILL.md"
     "63db6214c1afcb6b3f107383ff77dd0a738802e11ae8f7ed120988c496b9f431  skills/prose-hygiene/SKILL.md"
     "38b747534f83cb0b4355a351f3c1f53d66e76369cd0a636e12ca49d911807e7f  skills/rotate/SKILL.md"
-    "d6280bbbe0690c8e08f1a67b72dca4736eaf858fb27e6d2ba2478709332218de  skills/finish/SKILL.md"
+    "af130ee52736381050b2bdbb0078f24dbbade29c5ce8a3e11f1d942b737d87ff  skills/finish/SKILL.md"
     "7915ca859bf53215b4f5c41833dca3a0c661921523eb5424d1f146befefae922  skills/feature/SKILL.md"
     "343016f4d62029a85cfae3c0911b8a7a2bff99a31bd868e04ca83ec4002d6f48  skills/write-as-me/SKILL.md"
     "9d42a50e396f05c53d62f13f4a6e21ba20ee04abf7b532023e0d8e5be988e2d3  skills/write-as-me/scripts/build-corpus.sh"
-    "762ea9875fda791fd4f31fee1af5a6522a7fa5287f496eee267a561847a626bf  skills/finish/scripts/finish.sh"
+    "a5559ef37221d283ffbfcbeeed118126aca8d707e096bd159deeb1ab1d1902a8  skills/finish/scripts/finish.sh"
     "144391d7d2df6a89742528729ee8da1e51063b3783023a656571bec0f2235458  mods/cs/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs/hooks/hooks.json"
     "6a8d256e1e805d19ede14602caa94c29c426ed44eade6f13d73474d6ebebe9f3  mods/cs/hooks/register.tsx"
