@@ -440,6 +440,82 @@ test_the_lead_holds_the_claim_when_a_claude_it_started_claims_at_once() {
         "the lead holds the claim when both claim at once" || return 1
 }
 
+# A claim whose claude pid is no live claude's names no holder: pid 0 (kill -0
+# 0 signals the caller's own process group, so it reads as alive), a leading
+# zero, -1 (every process the user owns), or a claude that died without its
+# SessionEnd (a wrapper's first claude that crashed). The forked lead claims
+# over each, rebinds the recorded conversation, and no hook says a word.
+test_a_claim_naming_no_live_claude_leaves_the_launch_to_the_lead() {
+    _nested_setup
+    local meta="$CLAUDE_SESSION_META_DIR" launch direct wrapper grand dead pid claim recorded
+    bash -c 'exit 0' & dead=$!
+    wait "$dead"
+    _launch_tree || return 1
+    read -r launch direct wrapper grand < "$TEST_TMPDIR/tree"
+    for pid in 0 00 -1 "$dead"; do
+        printf '%s %s 77777777-7777-4777-8777-777777777777\n' "$launch" "$pid" > "$meta/local/lead-pid"
+        printf 'claude_session_id: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\n' > "$meta/local/state"
+        printf '{"session_id":"66666666-6666-4666-8666-666666666666","source":"startup","cwd":"%s","hook_event_name":"SessionStart"}\n' \
+            "$CLAUDE_SESSION_DIR" \
+            | CS_RESOLVED_FROM=env CS_LEAD_PID="$launch" CLAUDE_PID="$wrapper" CS_NO_ROTATION_WAKE=1 CS_NO_ITERM2=1 \
+                bash "$HOOKS_DIR/session-start.sh" >/dev/null 2>"$TEST_TMPDIR/err"
+        claim=$(cat "$meta/local/lead-pid" 2>/dev/null)
+        recorded=$(_recorded_conversation)
+        [ "$claim" = "$launch $wrapper 66666666-6666-4666-8666-666666666666" ] \
+            && [ "$recorded" = 66666666-6666-4666-8666-666666666666 ] && [ ! -s "$TEST_TMPDIR/err" ] || break
+    done
+    _kill_launch_tree
+
+    assert_eq "$launch $wrapper 66666666-6666-4666-8666-666666666666" "$claim" \
+        "the lead claims over a claim naming pid $pid" || return 1
+    assert_eq "66666666-6666-4666-8666-666666666666" "$recorded" \
+        "the lead rebinds the recorded conversation over a claim naming pid $pid" || return 1
+    assert_eq "" "$(cat "$TEST_TMPDIR/err")" "the lead's SessionStart is silent over a claim naming pid $pid" || return 1
+}
+
+# The claim is a regular file cs writes. A link in its place is not followed,
+# though it lead to a file naming a claude of this launch: that claude does
+# not become the lead, its end leaves the lead's lock, and the file the link
+# names is left as it was. A directory in its place stops no hook either. No
+# hook writes through either one, and none says a word.
+test_a_claim_that_is_a_link_or_a_directory_names_no_lead() {
+    _nested_setup
+    local meta="$CLAUDE_SESSION_META_DIR" launch direct wrapper grand outside="$TEST_TMPDIR/outside"
+    _launch_tree || return 1
+    read -r launch direct wrapper grand < "$TEST_TMPDIR/tree"
+    echo "$launch" > "$meta/session.lock"
+    printf 'claude_session_id: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\n' > "$meta/local/state"
+    printf '%s %s 77777777-7777-4777-8777-777777777777\n' "$launch" "$grand" > "$outside"
+    ln -s "$outside" "$meta/local/lead-pid"
+    _hooks_of() {  # claude_pid session_id -> stderr of its SessionStart, Stop and SessionEnd
+        printf '{"session_id":"%s","source":"startup","cwd":"%s","hook_event_name":"SessionStart"}\n' "$2" "$CLAUDE_SESSION_DIR" \
+            | CS_RESOLVED_FROM=env CS_LEAD_PID="$launch" CLAUDE_PID="$1" CS_NO_ROTATION_WAKE=1 CS_NO_ITERM2=1 \
+                bash "$HOOKS_DIR/session-start.sh" 2>&1 >/dev/null
+        printf '{"session_id":"%s","hook_event_name":"Stop","stop_hook_active":false}' "$2" \
+            | CS_RESOLVED_FROM=env CS_LEAD_PID="$launch" CLAUDE_PID="$1" bash "$HOOKS_DIR/narrative-reminder.sh" 2>&1 >/dev/null
+        printf '{"session_id":"%s","reason":"other"}\n' "$2" \
+            | CS_RESOLVED_FROM=env CS_LEAD_PID="$launch" CLAUDE_PID="$1" bash "$HOOKS_DIR/session-end.sh" 2>&1 >/dev/null
+    }
+    local link_err link_recorded link_lock link_outside
+    link_err=$(_hooks_of "$grand" 77777777-7777-4777-8777-777777777777)
+    link_recorded=$(_recorded_conversation)
+    link_lock=$(cat "$meta/session.lock" 2>/dev/null || echo none)
+    link_outside=$(cat "$outside")
+    rm -f "$meta/local/lead-pid"
+    mkdir "$meta/local/lead-pid"
+    local dir_err
+    dir_err=$(_hooks_of "$wrapper" 66666666-6666-4666-8666-666666666666)
+    _kill_launch_tree
+
+    assert_eq "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" "$link_recorded" \
+        "a claim reached through a link makes no lead" || return 1
+    assert_eq "$launch" "$link_lock" "the end of a claude a link names leaves the lead's lock" || return 1
+    assert_eq "$launch $grand 77777777-7777-4777-8777-777777777777" "$link_outside" \
+        "the file the link names is left as it was" || return 1
+    assert_eq "" "$link_err" "no hook says a word about a link in place of the claim" || return 1
+    assert_eq "" "$dir_err" "no hook says a word about a directory in place of the claim" || return 1
+}
+
 # A session opened by a cs that predates the claim carries no CS_LEAD_CLAIM,
 # and stays open while the hooks are updated. Nothing under that launch
 # claims it, so the claude carrying the launch pid is its only lead. A
@@ -533,6 +609,8 @@ run_test test_a_claude_an_exec_launch_forked_is_the_lead_once_it_claims
 run_test test_a_direct_child_of_the_lead_claude_is_not_the_lead
 run_test test_the_lead_takes_the_claim_from_a_claude_it_started
 run_test test_the_lead_holds_the_claim_when_a_claude_it_started_claims_at_once
+run_test test_a_claim_naming_no_live_claude_leaves_the_launch_to_the_lead
+run_test test_a_claim_that_is_a_link_or_a_directory_names_no_lead
 run_test test_a_launch_that_takes_no_claim_has_only_the_launch_pid_for_its_lead
 run_test test_the_lead_keeps_its_rotation_when_its_prompt_names_the_teammate_flags
 run_test test_a_claude_whose_ancestry_cannot_be_read_is_not_taken_for_a_guest

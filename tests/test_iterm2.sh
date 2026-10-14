@@ -347,6 +347,31 @@ test_a_launch_clears_the_lead_claim_a_previous_launch_left() {
     assert_eq "1" "$(_launched "$out" marker)" "a launch claude replaces takes the claim" || return 1
 }
 
+# Something other than a file where the claim goes. A link (one that stays in
+# the session: the open refuses one that leads out) is removed, never
+# followed, so the file it names is left as it was and claude starts. A
+# directory may hold what someone put there, so cs removes nothing: it refuses
+# the open, names the directory, starts no claude and lets the session lock go.
+test_a_launch_removes_a_link_and_refuses_a_directory_in_place_of_the_claim() {
+    _tab_launch_env 1
+    local uuid out rc=0 claim="$CS_SESSIONS_ROOT/odd/.cs/local/lead-pid" target="$CS_SESSIONS_ROOT/odd/notes.txt"
+    uuid=$(_resume_session odd)
+    [ -n "$uuid" ] || { echo "  FAIL: the first launch recorded no conversation"; return 1; }
+    printf 'kept\n' > "$target"
+    ln -s "$target" "$claim"
+    out=$("$CS_BIN" odd <<< "" 2>&1) || true
+    assert_eq "none" "$(_launched "$out" claim)" "a launch removes a link in place of the claim" || return 1
+    assert_eq "kept" "$(cat "$target")" "the file the link names is left as it was" || return 1
+    mkdir "$claim"
+    out=$("$CS_BIN" odd <<< "" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a launch with a directory in place of the claim fails" || return 1
+    assert_eq "Error: $claim is a directory, where cs keeps the lead's claim on its launch; remove it and open the session again" \
+        "$(printf '%s\n' "$out" | grep '^Error: ')" "the refusal names the directory" || return 1
+    assert_eq "" "$(_launched "$out" argv0)" "no claude starts" || return 1
+    assert_dir "$claim" "the directory is left in place" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/odd/.cs/session.lock" "the refused open lets the session lock go" || return 1
+}
+
 test_resume_of_a_real_conversation_runs_claude_in_place_of_cs() {
     _tab_launch_env 1
     local uuid out argv0
@@ -436,6 +461,7 @@ run_test test_launch_under_iterm_cc_shows_loader_and_icon
 run_test test_npm_shaped_claude_is_not_linked
 run_test test_claude_bin_without_a_command_is_refused_by_name
 run_test test_a_launch_clears_the_lead_claim_a_previous_launch_left
+run_test test_a_launch_removes_a_link_and_refuses_a_directory_in_place_of_the_claim
 run_test test_resume_of_a_real_conversation_runs_claude_in_place_of_cs
 run_test test_resume_that_might_not_land_keeps_cs_as_the_parent
 run_test test_native_claude_with_flags_runs_the_link_with_its_flags
