@@ -1269,7 +1269,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "87c77eab5ee23f7dc82eab8e09559a61dc968d6f46dabbd36913ba500e490ad6  bin/cs"
+    "08ff17c1a9c6540751cb682f3024f09de0fec1527a7516198f0a26e4ef3bac99  bin/cs"
     "d54f9dd8797c86d7815f4c1f300a56cf1d4bb344cbcd645ec8f71659d6a70ff6  bin/cs-secrets"
     "a6d008e8bcba4e3d4c1599c76aaddc4ea1c4eb61e3ba861c60d9e4b91f706e78  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -1291,10 +1291,10 @@ CS_PAYLOAD_SHA256=(
     "12dca7f6d02f19f75865fa2f6e91384a5c8e727b0962e269a6adbb491a95971f  commands/summary.md"
     "9e06eaa16960dff49881234c8a479c2f8d2dd8d672283056e1591c4528e755ab  commands/checkpoint.md"
     "df9db21017a995e93fdab7135ee2c6d3d7ce0ff660f76bd6d29015854b3a1aa3  commands/sweep.md"
-    "d04a5e2fadd2cbe91e6a9a09e9fff4c5d3e65d74e548a8e15aca64c2d51a71e9  commands/wrap.md"
+    "b1894fde51e743390ad2d343aa1cfaa83d73d78453ee51c29b24453667db1b77  commands/wrap.md"
     "2520a6d54d75e3e9f1768160826a8b9f21e38e2234538cc62e3ec6337008fc28  skills/store-secret/SKILL.md"
     "63db6214c1afcb6b3f107383ff77dd0a738802e11ae8f7ed120988c496b9f431  skills/prose-hygiene/SKILL.md"
-    "38b747534f83cb0b4355a351f3c1f53d66e76369cd0a636e12ca49d911807e7f  skills/rotate/SKILL.md"
+    "6ddc3bfb3484370fcdf2545388341bc44524fbad013b4338d464066b4f0752ff  skills/rotate/SKILL.md"
     "b6eb9ffe2160e43bb95100b850427d2ae28d4c5e0e719564ba2f4b8d3c14a20a  skills/finish/SKILL.md"
     "7915ca859bf53215b4f5c41833dca3a0c661921523eb5424d1f146befefae922  skills/feature/SKILL.md"
     "343016f4d62029a85cfae3c0911b8a7a2bff99a31bd868e04ca83ec4002d6f48  skills/write-as-me/SKILL.md"

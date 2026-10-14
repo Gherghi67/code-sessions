@@ -10688,9 +10688,11 @@ _task_row_status() {  # store, id
             and (.status == "pending" or .status == "in_progress" or .status == "completed")
             and (.blocks | type) == "array" and (.blockedBy | type) == "array"
         then .status else "unrecognised" end' "$1/$2.json" 2>/dev/null) || status="unrecognised"
-    [ "$status" != "unrecognised" ] \
-        || error "refusing to archive: $1/$2.json is not a task row in the format cs knows; nothing archived"
-    printf '%s\n' "$status"
+    # One known word or nothing: a file holding two JSON values prints two.
+    case "$status" in
+        pending|in_progress|completed) printf '%s\n' "$status" ;;
+        *) error "refusing to archive: $1/$2.json is not a task row in the format cs knows; nothing archived" ;;
+    esac
 }
 
 # Where the session keeps its task archive: in the vault behind .cs/private
@@ -10714,81 +10716,139 @@ _task_row_markdown() {  # row file
     jq -r '"## #\(.id) [\(.status)] \(.subject)\n\n\(.description)\n"' "$1"
 }
 
-# Moves the completed rows of the session's task list into
-# .cs/task-archive/<date>/json/, after appending a readable snapshot of the
-# whole list to tasks.md there. The row with the highest id stays in the store
-# whatever its status: Claude Code numbers a new task one past the highest id
-# it can see (or its .highwatermark, which it writes only on a reset), so the
-# highest row moving would hand its number to the next task.
-archive_tasks_run() {
-    local meta_dir="$CLAUDE_SESSION_META_DIR"
-    local answer
-    answer=$(_task_archive_answer "$meta_dir")
-    [ "$answer" = "yes" ] || error "this session has not agreed to task archiving (answer: $answer); ask first, then record it with cs -archive-tasks answer yes"
-
-    local store
-    store=$(_task_store_dir)
+# Reads the session's task list and decides what a run moves. Sets
+# TASK_ARCHIVE_STORE, TASK_ARCHIVE_IDS (every row, ascending by number),
+# TASK_ARCHIVE_TOP (the highest id), TASK_ARCHIVE_TOP_DONE (1 when that row is
+# completed), TASK_ARCHIVE_MOVING (the completed rows below it, space
+# separated) and TASK_ARCHIVE_NOTHING (why nothing moves; empty when rows do).
+# The highest row stays in the store whatever its status: Claude Code numbers
+# a new task one past the highest id it can see (or its .highwatermark, which
+# it writes only on a reset), so moving that row would hand its number to the
+# next task. Errors on a store it does not recognise.
+_task_archive_select() {
+    TASK_ARCHIVE_STORE=$(_task_store_dir)
+    TASK_ARCHIVE_IDS="" TASK_ARCHIVE_TOP="" TASK_ARCHIVE_TOP_DONE=0
+    TASK_ARCHIVE_MOVING="" TASK_ARCHIVE_NOTHING=""
+    local store="$TASK_ARCHIVE_STORE" id status
     if [ ! -d "$store" ]; then
-        echo "Nothing to archive: no task list at $store"
+        TASK_ARCHIVE_NOTHING="no task list at $store"
         return 0
     fi
-
     _task_store_check "$store"
-    local ids top id status
-    ids=$(_task_store_ids "$store")
-    if [ -z "$ids" ]; then
-        echo "Nothing to archive: no task rows in $store"
+    TASK_ARCHIVE_IDS=$(_task_store_ids "$store")
+    if [ -z "$TASK_ARCHIVE_IDS" ]; then
+        TASK_ARCHIVE_NOTHING="no task rows in $store"
         return 0
     fi
-    top=$(printf '%s\n' "$ids" | tail -n 1)
-    local moving=() top_done=0
+    TASK_ARCHIVE_TOP=$(printf '%s\n' "$TASK_ARCHIVE_IDS" | tail -n 1)
     while read -r id; do
         status=$(_task_row_status "$store" "$id")
         [ "$status" = "completed" ] || continue
-        if [ "$id" = "$top" ]; then
-            top_done=1
-            continue
-        fi
-        moving+=("$id")
-    done <<EOF
-$ids
-EOF
-    if [ "${#moving[@]}" -eq 0 ]; then
-        if [ "$top_done" -eq 1 ]; then
-            echo "Nothing to archive: no completed task row below #$top, the highest id"
+        if [ "$id" = "$TASK_ARCHIVE_TOP" ]; then
+            TASK_ARCHIVE_TOP_DONE=1
         else
-            echo "Nothing to archive: no completed task rows"
+            TASK_ARCHIVE_MOVING="$TASK_ARCHIVE_MOVING${TASK_ARCHIVE_MOVING:+ }$id"
         fi
+    done <<IDS
+$TASK_ARCHIVE_IDS
+IDS
+    if [ -z "$TASK_ARCHIVE_MOVING" ]; then
+        if [ "$TASK_ARCHIVE_TOP_DONE" -eq 1 ]; then
+            TASK_ARCHIVE_NOTHING="no completed task row below #$TASK_ARCHIVE_TOP, the highest id"
+        else
+            TASK_ARCHIVE_NOTHING="no completed task rows"
+        fi
+    fi
+}
+
+# What a run would do, for the skill to read before it asks: the session's
+# answer, the store, the rows that would move and the row kept back. Moves
+# nothing; refuses on the same stores a run refuses.
+archive_tasks_plan() {
+    local meta_dir="$CLAUDE_SESSION_META_DIR"
+    local session_dir="${CLAUDE_SESSION_DIR:-$(dirname "$meta_dir")}" answer root
+    answer=$(_task_archive_answer "$meta_dir")
+    _task_archive_select
+    echo "answer: $answer"
+    echo "store: $TASK_ARCHIVE_STORE"
+    if [ -n "$TASK_ARCHIVE_NOTHING" ]; then
+        echo "archive: nothing: $TASK_ARCHIVE_NOTHING"
         return 0
     fi
+    root=$(_task_archive_root "$session_dir" "$meta_dir")
+    local id count=0 list="" noun="rows"
+    for id in $TASK_ARCHIVE_MOVING; do
+        count=$((count + 1))
+        list="$list${list:+ }#$id"
+    done
+    [ "$count" -eq 1 ] && noun="row"
+    echo "archive: $count completed $noun: $list"
+    if [ "$TASK_ARCHIVE_TOP_DONE" -eq 1 ]; then
+        echo "keep: #$TASK_ARCHIVE_TOP, the highest id, stays live"
+    fi
+    echo "target: .cs/${root#"$meta_dir"/}"
+}
 
-    local session_dir="${CLAUDE_SESSION_DIR:-$(dirname "$meta_dir")}" root day_dir
+# Moves the completed rows _task_archive_select picked into
+# .cs/task-archive/<date>/json/, after appending a readable snapshot of the
+# whole list to tasks.md there. An archived row is never overwritten: a row
+# already archived under the same number with other bytes refuses the run
+# before anything is written, and one with the same bytes (a run that stopped
+# after its copy) finishes moving. A row that changes between its copy and
+# its removal stays live.
+archive_tasks_run() {
+    local meta_dir="$CLAUDE_SESSION_META_DIR"
+    local session_dir="${CLAUDE_SESSION_DIR:-$(dirname "$meta_dir")}" answer
+    answer=$(_task_archive_answer "$meta_dir")
+    [ "$answer" = "yes" ] || error "this session has not agreed to task archiving (answer: $answer); ask first, then record it with cs -archive-tasks answer yes"
+
+    _task_archive_select
+    if [ -n "$TASK_ARCHIVE_NOTHING" ]; then
+        echo "Nothing to archive: $TASK_ARCHIVE_NOTHING"
+        return 0
+    fi
+    local store="$TASK_ARCHIVE_STORE" root day_dir id dst
     root=$(_task_archive_root "$session_dir" "$meta_dir")
     day_dir="$root/$(date +%Y-%m-%d)"
+    for id in $TASK_ARCHIVE_MOVING; do
+        dst="$day_dir/json/$id.json"
+        if [ -e "$dst" ] || [ -L "$dst" ]; then
+            { [ ! -L "$dst" ] && cmp -s "$store/$id.json" "$dst"; } \
+                || error "refusing to archive: .cs/${dst#"$meta_dir"/} already holds a different row #$id; nothing archived"
+        fi
+    done
+
     mkdir -p "$day_dir/json"
     {
         printf '# Task list as of %s (before archiving completed rows)\n\n' "$(date '+%Y-%m-%d %H:%M')"
         while read -r id; do
             _task_row_markdown "$store/$id.json"
-        done <<EOF
-$ids
-EOF
+        done <<IDS
+$TASK_ARCHIVE_IDS
+IDS
     } >> "$day_dir/tasks.md"
 
-    local dst tmp moved=0
-    for id in "${moving[@]}"; do
+    local tmp moved=0
+    for id in $TASK_ARCHIVE_MOVING; do
         dst="$day_dir/json/$id.json"
-        tmp=$(mktemp "$day_dir/json/.row.XXXXXX")
-        cp "$store/$id.json" "$tmp"
-        mv "$tmp" "$dst"
+        if [ ! -e "$dst" ]; then
+            tmp=$(mktemp "$day_dir/json/.row.XXXXXX")
+            cp "$store/$id.json" "$tmp"
+            mv "$tmp" "$dst"
+            if ! cmp -s "$store/$id.json" "$dst"; then
+                rm -f "$dst"
+                warn "Task row #$id changed while it was archived; it stays in the live list"
+                continue
+            fi
+        fi
         rm -f "$store/$id.json"
         moved=$((moved + 1))
     done
 
     local rel=".cs/${day_dir#"$meta_dir"/}" noun="rows"
     [ "$moved" -eq 1 ] && noun="row"
-    if [ "$top_done" -eq 1 ]; then
-        echo "Archived $moved completed task $noun to $rel (#$top stays live: it is the highest id, and Claude Code numbers new tasks after it)"
+    if [ "$TASK_ARCHIVE_TOP_DONE" -eq 1 ]; then
+        echo "Archived $moved completed task $noun to $rel (#$TASK_ARCHIVE_TOP stays live: it is the highest id, and Claude Code numbers new tasks after it)"
     else
         echo "Archived $moved completed task $noun to $rel"
     fi
@@ -10808,9 +10868,10 @@ run_archive_tasks() {
         error "cs -archive-tasks must be run from inside a cs session"
     fi
     case "${1:-}" in
+        plan) archive_tasks_plan ;;
         run) archive_tasks_run ;;
         answer) shift; archive_tasks_record_answer "$@" ;;
-        *) error "Usage: cs -archive-tasks run|answer yes|no" ;;
+        *) error "Usage: cs -archive-tasks plan|run|answer yes|no" ;;
     esac
 }
 # Where the container lives: outside every session directory, so neither
