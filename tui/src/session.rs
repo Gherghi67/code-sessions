@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::untracked;
+
 /// Whether a session is running, and whether cs owns the lock. Collapsing the
 /// old `lock_pid`/`is_locked`/`is_live` trio into one value keeps the illegal
 /// "locked but not live" combination unrepresentable.
@@ -983,29 +985,54 @@ pub fn worktree_parts(name: &str) -> Option<(&str, &str)> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnownedEntries {
     NotCreatedByCs(Vec<String>),
-    NotTrackedByGit(Vec<String>),
+    NotTrackedByGit(Vec<untracked::Entry>),
+}
+
+/// The delete confirm's account of one thing a removal would take: a line of
+/// text, and under it the entries of a listing of files git does not track
+/// (empty for any other warning).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeleteWarning {
+    pub text: String,
+    pub entries: Vec<untracked::Entry>,
+}
+
+impl DeleteWarning {
+    pub fn line(text: String) -> Self {
+        DeleteWarning { text, entries: Vec::new() }
+    }
 }
 
 impl UnownedEntries {
-    /// What the paths are, in `cs -rm`'s words, and the paths.
-    fn described(&self) -> (&'static str, &[String]) {
+    /// The confirm's warning, in `cs -rm`'s words; None when nothing is at risk.
+    pub fn warning(&self) -> Option<DeleteWarning> {
         match self {
-            UnownedEntries::NotCreatedByCs(p) => ("cs did not create", p),
-            UnownedEntries::NotTrackedByGit(p) => ("git does not track", p),
+            UnownedEntries::NotCreatedByCs(p) if !p.is_empty() => {
+                Some(DeleteWarning::line(format!("Also deletes files cs did not create: {}", p.join(", "))))
+            }
+            UnownedEntries::NotTrackedByGit(e) if !e.is_empty() => Some(DeleteWarning {
+                text: format!("Also deletes {} git does not track:", untracked::count_phrase(e)),
+                entries: e.clone(),
+            }),
+            _ => None,
         }
     }
 
-    /// The confirm line, matching `cs -rm`'s wording; None when nothing is at risk.
-    pub fn warning(&self) -> Option<String> {
-        let (what, paths) = self.described();
-        (!paths.is_empty()).then(|| format!("Also deletes files {what}: {}", paths.join(", ")))
-    }
-
     /// Why a removal not granted these files refuses session `name`, as
-    /// `cs -rm --force` refuses without --delete-files; None when there are none.
+    /// `cs -rm --force` refuses without --delete-files, on one line for the
+    /// status bar; None when there are none.
     pub fn refusal(&self, name: &str) -> Option<String> {
-        let (what, paths) = self.described();
-        (!paths.is_empty()).then(|| format!("{name} holds files {what}: {}", paths.join(", ")))
+        match self {
+            UnownedEntries::NotCreatedByCs(p) if !p.is_empty() => {
+                Some(format!("{name} holds files cs did not create: {}", p.join(", ")))
+            }
+            UnownedEntries::NotTrackedByGit(e) if !e.is_empty() => {
+                let lines = untracked::entry_lines(e, untracked::SHOWN_ENTRIES);
+                let listed: Vec<&str> = lines.iter().map(|l| l.trim()).collect();
+                Some(format!("{name} holds {} git does not track: {}", untracked::count_phrase(e), listed.join(", ")))
+            }
+            _ => None,
+        }
     }
 }
 
@@ -1017,8 +1044,16 @@ const SESSION_ROOT_OWNED: &[&str] = &[
     "notes.md", "changes.md", "discoveries.md", "logs", "artifacts",
 ];
 
-/// Top-level names in a worktree that are cs's, not the user's.
-const WORKTREE_OWNED: &[&str] = &[".cs", ".claude", "CLAUDE.local.md", ".DS_Store"];
+/// The one path under a worktree's `.claude/` that is cs's: the settings
+/// file it writes. Anything else there is the user's.
+const WORKTREE_OWNED_SETTINGS: &str = ".claude/settings.local.json";
+
+/// The paths under a tracked-mode worktree's `.cs/` that are cs's own
+/// machine-local files; git carries the rest of `.cs/` there.
+const TRACKED_MODE_CS_OWNED: [&str; 3] = [".cs/session.lock", ".cs/session.mutex.lock", ".cs/.narrative-reminder-cooldown"];
+
+/// The line cs writes into the root CLAUDE.local.md it owns.
+const SESSION_PROTOCOL_SENTINEL: &[u8] = b"<!-- cs:session-protocol -->";
 
 /// What removing the session at `path` would delete that cs did not put
 /// there. An adopted session (a symlink) loses only its link, so nothing.
@@ -1051,31 +1086,157 @@ pub fn unowned_entries(name: &str, path: &Path) -> Result<UnownedEntries, String
     Ok(UnownedEntries::NotCreatedByCs(names))
 }
 
-fn worktree_untracked(path: &Path) -> Result<Vec<String>, String> {
+/// The NUL-separated paths `git ls-files <args>` prints in `path`.
+fn git_ls_files(path: &Path, args: &[&str]) -> Result<Vec<String>, String> {
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(path)
-        .args(["status", "--porcelain", "--ignored", "--untracked-files=normal"])
+        .args(["ls-files", "-z"])
+        .args(args)
         .output()
-        .map_err(|e| format!("cannot run git status in {}: {e}", path.display()))?;
+        .map_err(|e| format!("cannot run git ls-files in {}: {e}", path.display()))?;
     if !out.status.success() {
         return Err(format!(
-            "git status failed in {}: {}",
+            "git ls-files failed in {}: {}",
             path.display(),
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
-    let mut paths: Vec<String> = String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter(|l| l.starts_with("?? ") || l.starts_with("!! "))
-        .map(|l| l[3..].to_string())
-        .filter(|p| {
-            let top = p.split('/').next().unwrap_or(p);
-            !WORKTREE_OWNED.contains(&top)
-        })
-        .collect();
-    paths.sort();
+    Ok(String::from_utf8_lossy(&out.stdout).split('\0').filter(|p| !p.is_empty()).map(str::to_string).collect())
+}
+
+/// Files and links under `dir`, not following links: what removing it deletes.
+fn files_under(dir: &Path) -> Result<u64, String> {
+    let mut files = 0;
+    for entry in fs::read_dir(dir).map_err(|e| format!("cannot list {}: {e}", dir.display()))? {
+        let entry = entry.map_err(|e| format!("cannot list {}: {e}", dir.display()))?;
+        let kind = entry.file_type().map_err(|e| format!("cannot read {}: {e}", entry.path().display()))?;
+        files += if kind.is_dir() { files_under(&entry.path())? } else { 1 };
+    }
+    Ok(files)
+}
+
+/// The `cs_mode` a worktree's `.cs/local/state` names, read as
+/// `_read_local_state` reads it; `None` when the file or the key is absent.
+fn worktree_cs_mode(path: &Path) -> Option<String> {
+    let state = fs::read_to_string(path.join(".cs/local/state")).ok()?;
+    state.lines().find_map(|line| line.strip_prefix("cs_mode:")).map(|value| value.trim_start().replace('"', ""))
+}
+
+/// The test of whether a path in the worktree at `path` is cs's own
+/// bookkeeping, as lib/30-worktree.sh `_without_cs_bookkeeping` draws the
+/// line, the mode and the protocol file read once: all of `.cs/`
+/// in ignored mode, only its machine-local files otherwise (git carries the
+/// rest); the root CLAUDE.local.md only while it carries cs's sentinel; the
+/// settings file; and Finder's .DS_Store at any depth.
+fn cs_bookkeeping_in(path: &Path) -> impl Fn(&str) -> bool {
+    let ignored_mode = worktree_cs_mode(path).as_deref() == Some("ignored");
+    let protocol_file_is_cs = fs::read(path.join("CLAUDE.local.md"))
+        .map(|text| text.windows(SESSION_PROTOCOL_SENTINEL.len()).any(|w| w == SESSION_PROTOCOL_SENTINEL))
+        .unwrap_or(false);
+    move |p: &str| {
+        let cs_own = if ignored_mode {
+            p.starts_with(".cs/")
+        } else {
+            p.starts_with(".cs/local/") || TRACKED_MODE_CS_OWNED.contains(&p)
+        };
+        cs_own
+            || (protocol_file_is_cs && p == "CLAUDE.local.md")
+            || p == WORKTREE_OWNED_SETTINGS
+            || p.rsplit('/').next() == Some(".DS_Store")
+    }
+}
+
+/// The gitlink paths in the index of the checkout at `dir`.
+fn gitlinks(dir: &Path) -> Result<Vec<String>, String> {
+    // Each entry reads "<mode> <oid> <stage>\t<path>".
+    Ok(git_ls_files(dir, &["-s"])?
+        .into_iter()
+        .filter(|entry| entry.starts_with("160000 "))
+        .filter_map(|entry| entry.split_once('\t').map(|(_, path)| path.to_string()))
+        .collect())
+}
+
+/// The files and links under `dir`, not following links, each as its path
+/// from `dir`.
+fn paths_under(dir: &Path) -> Result<Vec<String>, String> {
+    let mut paths = Vec::new();
+    for entry in fs::read_dir(dir).map_err(|e| format!("cannot list {}: {e}", dir.display()))? {
+        let entry = entry.map_err(|e| format!("cannot list {}: {e}", dir.display()))?;
+        let kind = entry.file_type().map_err(|e| format!("cannot read {}: {e}", entry.path().display()))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if kind.is_dir() {
+            paths.extend(paths_under(&entry.path())?.into_iter().map(|p| format!("{name}/{p}")));
+        } else {
+            paths.push(name);
+        }
+    }
     Ok(paths)
+}
+
+/// The untracked and ignored files inside every initialised submodule of the
+/// checkout at `dir`, at any depth, each path prefixed with `prefix` and its
+/// submodule's path (lib/30-worktree.sh `_submodule_others`): git ls-files
+/// never lists inside a submodule, and removing the worktree removes them. A
+/// submodule the checkout never populated is an empty directory to git,
+/// which lists nothing inside it either, so every file there is listed.
+fn submodule_others(dir: &Path, prefix: &str) -> Result<Vec<String>, String> {
+    let mut others = Vec::new();
+    for sub in gitlinks(dir)? {
+        let checkout = dir.join(&sub);
+        let inner = format!("{prefix}{sub}/");
+        if !checkout.join(".git").exists() {
+            if checkout.symlink_metadata().map(|m| m.is_dir()).unwrap_or(false) {
+                others.extend(paths_under(&checkout)?.into_iter().map(|p| format!("{inner}{p}")));
+            }
+            continue;
+        }
+        let mut listed = git_ls_files(&checkout, &["--others", "--exclude-standard"])?;
+        listed.extend(git_ls_files(&checkout, &["--others", "--ignored", "--exclude-standard"])?);
+        others.extend(listed.into_iter().map(|p| format!("{inner}{p}")));
+        others.extend(submodule_others(&checkout, &inner)?);
+    }
+    Ok(others)
+}
+
+/// The path of every submodule of the checkout at `dir`, at any depth,
+/// populated or not, with '/' after it and `prefix` before it
+/// (lib/30-worktree.sh `_submodule_dirs`): `git ls-files
+/// --recurse-submodules` leaves out one that holds no file, and a listing
+/// must never collapse it or a directory above it.
+fn submodule_dirs(dir: &Path, prefix: &str) -> Result<Vec<String>, String> {
+    let mut dirs = Vec::new();
+    for sub in gitlinks(dir)? {
+        let inner = format!("{prefix}{sub}/");
+        dirs.push(inner.clone());
+        let checkout = dir.join(&sub);
+        if checkout.join(".git").exists() {
+            dirs.extend(submodule_dirs(&checkout, &inner)?);
+        }
+    }
+    Ok(dirs)
+}
+
+/// The entries of what git does not track in the worktree at `path`, as
+/// `cs -rm` lists them (lib/65-sessions.sh `_worktree_untracked_paths`): the
+/// worktree's own untracked and ignored files and every file inside a
+/// submodule, without cs's own bookkeeping.
+fn worktree_untracked(path: &Path) -> Result<Vec<untracked::Entry>, String> {
+    let mut at_risk = git_ls_files(path, &["--others", "--exclude-standard"])?;
+    at_risk.extend(git_ls_files(path, &["--others", "--ignored", "--exclude-standard"])?);
+    at_risk.extend(submodule_others(path, "")?);
+    let is_cs_own = cs_bookkeeping_in(path);
+    at_risk.retain(|p| !is_cs_own(p));
+    if at_risk.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut tracked = git_ls_files(path, &["--recurse-submodules"])?;
+    tracked.extend(submodule_dirs(path, "")?);
+    let mut inside = HashMap::new();
+    for repo in at_risk.iter().filter(|p| p.ends_with('/')) {
+        inside.insert(repo.clone(), files_under(&path.join(repo))?);
+    }
+    untracked::entries(&tracked, &inside, &at_risk)
 }
 
 /// The links an encrypted session keeps into its vault, under `.cs/`.
@@ -1600,6 +1761,34 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    // git lists a repository nested in the worktree as one path ending in
+    // '/'; its entry counts every file under it, its .git included, as
+    // `cs -rm` does.
+    #[test]
+    fn unowned_entries_counts_the_files_in_a_nested_repository() {
+        let root = std::env::temp_dir().join(format!("cs-unowned-nested-{}", std::process::id()));
+        let base = root.join("proj");
+        fs::create_dir_all(&base).unwrap();
+        fs::write(base.join("tracked.txt"), "x").unwrap();
+        git_in(&base, &["init", "-q"]);
+        git_in(&base, &["add", "tracked.txt"]);
+        git_in(&base, &["commit", "-qm", "seed"]);
+        let wt = root.join("proj@task");
+        git_in(&base, &["worktree", "add", "-q", wt.to_str().unwrap(), "-b", "cs/task"]);
+        let other = root.join("other");
+        fs::create_dir_all(&other).unwrap();
+        git_in(&other, &["init", "-q"]);
+        fs::create_dir_all(wt.join("dep")).unwrap();
+        fs::write(wt.join("dep/.git"), format!("gitdir: {}\n", other.join(".git").display())).unwrap();
+        fs::write(wt.join("dep/a"), "").unwrap();
+        fs::write(wt.join("dep/b"), "").unwrap();
+
+        let got = unowned_entries("proj@task", &wt).unwrap();
+
+        assert_eq!(got, UnownedEntries::NotTrackedByGit(vec![untracked::Entry { path: "dep/".into(), files: 3 }]));
+        let _ = fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn unowned_entries_lists_untracked_and_ignored_files_in_a_worktree() {
         let root = std::env::temp_dir().join(format!("cs-unowned-wt-{}", std::process::id()));
@@ -1618,7 +1807,185 @@ mod tests {
 
         let got = unowned_entries("proj@task", &wt).unwrap();
 
-        assert_eq!(got, UnownedEntries::NotTrackedByGit(vec!["journal.img".into(), "notes.txt".into()]));
+        let file = |path: &str| untracked::Entry { path: path.into(), files: 1 };
+        assert_eq!(got, UnownedEntries::NotTrackedByGit(vec![file("journal.img"), file("notes.txt")]));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // A worktree's .claude/ holds the settings file cs writes beside what the
+    // user keeps there. Only the settings file is cs's: the rest is listed
+    // like any other file git does not track, as `cs -rm` lists it.
+    #[test]
+    fn unowned_entries_lists_the_users_files_under_dot_claude_in_a_worktree() {
+        let root = std::env::temp_dir().join(format!("cs-unowned-claude-{}", std::process::id()));
+        let base = root.join("proj");
+        fs::create_dir_all(base.join(".claude/commands")).unwrap();
+        fs::write(base.join(".claude/commands/ship.md"), "ship").unwrap();
+        git_in(&base, &["init", "-q"]);
+        git_in(&base, &["add", ".claude/commands/ship.md"]);
+        git_in(&base, &["commit", "-qm", "seed"]);
+        let wt = root.join("proj@task");
+        git_in(&base, &["worktree", "add", "-q", wt.to_str().unwrap(), "-b", "cs/task"]);
+        fs::create_dir_all(wt.join(".claude/agents")).unwrap();
+        fs::write(wt.join(".claude/settings.local.json"), "{}").unwrap();
+        fs::write(wt.join(".claude/agents/reviewer.md"), "review").unwrap();
+
+        let got = unowned_entries("proj@task", &wt).unwrap();
+
+        assert_eq!(
+            got,
+            UnownedEntries::NotTrackedByGit(vec![untracked::Entry { path: ".claude/agents/".into(), files: 1 }])
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // Finder's .DS_Store is no one's work at any depth, as retire and
+    // `cs -rm` treat it: a directory holding one beside the user's file
+    // counts the user's file only.
+    #[test]
+    fn unowned_entries_leaves_out_ds_store_at_any_depth_in_a_worktree() {
+        let root = std::env::temp_dir().join(format!("cs-unowned-ds-{}", std::process::id()));
+        let base = root.join("proj");
+        fs::create_dir_all(&base).unwrap();
+        fs::write(base.join("tracked.txt"), "x").unwrap();
+        git_in(&base, &["init", "-q"]);
+        git_in(&base, &["add", "tracked.txt"]);
+        git_in(&base, &["commit", "-qm", "seed"]);
+        let wt = root.join("proj@task");
+        git_in(&base, &["worktree", "add", "-q", wt.to_str().unwrap(), "-b", "cs/task"]);
+        fs::create_dir_all(wt.join("docs/deep")).unwrap();
+        fs::write(wt.join("docs/deep/notes.md"), "draft").unwrap();
+        fs::write(wt.join("docs/deep/.DS_Store"), "").unwrap();
+        fs::write(wt.join("docs/.DS_Store"), "").unwrap();
+
+        let got = unowned_entries("proj@task", &wt).unwrap();
+
+        assert_eq!(got, UnownedEntries::NotTrackedByGit(vec![untracked::Entry { path: "docs/".into(), files: 1 }]));
+        fs::remove_file(wt.join("docs/deep/notes.md")).unwrap();
+        assert_eq!(unowned_entries("proj@task", &wt).unwrap(), UnownedEntries::NotTrackedByGit(Vec::new()));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A worktree session `proj@task` under `root`, beside its base, whose
+    /// repo tracks `tracked.txt` and ignores `.cs/local/` and what cs's
+    /// exclude names, with an empty `.cs/local/`.
+    fn worktree_beside_base(root: &Path) -> PathBuf {
+        let base = root.join("proj");
+        fs::create_dir_all(&base).unwrap();
+        fs::write(base.join("tracked.txt"), "x").unwrap();
+        fs::write(base.join(".gitignore"), ".cs/local/\n").unwrap();
+        git_in(&base, &["init", "-q"]);
+        git_in(&base, &["add", "tracked.txt", ".gitignore"]);
+        git_in(&base, &["commit", "-qm", "seed"]);
+        fs::write(base.join(".git/info/exclude"), "CLAUDE.local.md\n.claude/settings.local.json\n").unwrap();
+        let wt = root.join("proj@task");
+        git_in(&base, &["worktree", "add", "-q", wt.to_str().unwrap(), "-b", "cs/task"]);
+        fs::create_dir_all(wt.join(".cs/local")).unwrap();
+        wt
+    }
+
+    // cs writes the root CLAUDE.local.md with its protocol sentinel; one
+    // without it is the user's own, which retire refuses over and `cs -rm`
+    // lists.
+    #[test]
+    fn unowned_entries_lists_a_user_authored_claude_local_md_in_a_worktree() {
+        let root = std::env::temp_dir().join(format!("cs-unowned-local-md-{}", std::process::id()));
+        let wt = worktree_beside_base(&root);
+        fs::write(wt.join("CLAUDE.local.md"), "my own notes for this checkout\n").unwrap();
+
+        let got = unowned_entries("proj@task", &wt).unwrap();
+
+        assert_eq!(got, UnownedEntries::NotTrackedByGit(vec![untracked::Entry { path: "CLAUDE.local.md".into(), files: 1 }]));
+        fs::write(wt.join("CLAUDE.local.md"), "<!-- cs:session-protocol -->\n# Session protocol\n").unwrap();
+        assert_eq!(unowned_entries("proj@task", &wt).unwrap(), UnownedEntries::NotTrackedByGit(Vec::new()));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // An initialised submodule is a checkout of its own: git ls-files in the
+    // worktree does not list the files inside it, and removal destroys them.
+    // Each is an entry of its own, as `cs -rm` lists it.
+    #[test]
+    fn unowned_entries_lists_files_inside_an_initialised_submodule() {
+        let root = std::env::temp_dir().join(format!("cs-unowned-submodule-{}", std::process::id()));
+        let wt = worktree_beside_base(&root);
+        let lib = root.join("sublib");
+        fs::create_dir_all(&lib).unwrap();
+        fs::write(lib.join("lib.txt"), "lib").unwrap();
+        fs::write(lib.join(".gitignore"), "*.env\n").unwrap();
+        git_in(&lib, &["init", "-q"]);
+        git_in(&lib, &["add", "-A"]);
+        git_in(&lib, &["commit", "-qm", "lib"]);
+        git_in(&wt, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", lib.to_str().unwrap(), "sub"]);
+        git_in(&wt, &["commit", "-qm", "add submodule"]);
+        fs::write(wt.join("sub/secret.env"), "secret").unwrap();
+        fs::write(wt.join("sub/notes.txt"), "notes").unwrap();
+
+        let got = unowned_entries("proj@task", &wt).unwrap();
+
+        let file = |path: &str| untracked::Entry { path: path.into(), files: 1 };
+        assert_eq!(got, UnownedEntries::NotTrackedByGit(vec![file("sub/notes.txt"), file("sub/secret.env")]));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // git lists nothing inside a directory its index holds as a submodule,
+    // so files written into one the worktree never populated are listed
+    // under the submodule's path, and an ignored file beside it is an entry
+    // of its own: the directory holding the submodule is not collapsed.
+    #[test]
+    fn unowned_entries_lists_files_in_a_submodule_directory_never_populated() {
+        let root = std::env::temp_dir().join(format!("cs-unowned-unpopulated-{}", std::process::id()));
+        let wt = worktree_beside_base(&root);
+        let lib = root.join("sublib");
+        fs::create_dir_all(&lib).unwrap();
+        fs::write(lib.join("lib.txt"), "lib").unwrap();
+        git_in(&lib, &["init", "-q"]);
+        git_in(&lib, &["add", "-A"]);
+        git_in(&lib, &["commit", "-qm", "lib"]);
+        git_in(&wt, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", lib.to_str().unwrap(), "vendor/sub"]);
+        git_in(&wt, &["commit", "-qm", "add submodule"]);
+        git_in(&wt, &["submodule", "deinit", "-q", "-f", "vendor/sub"]);
+        assert_eq!(fs::read_dir(wt.join("vendor/sub")).unwrap().count(), 0, "fixture: the submodule directory is empty");
+        fs::write(wt.join("vendor/trace.log"), "trace").unwrap();
+        fs::write(root.join("proj/.git/info/exclude"), "CLAUDE.local.md\n.claude/settings.local.json\n*.log\n").unwrap();
+        fs::create_dir_all(wt.join("vendor/sub/build")).unwrap();
+        fs::write(wt.join("vendor/sub/build/notes.txt"), "notes").unwrap();
+        fs::write(wt.join("vendor/sub/local.env"), "KEY=value").unwrap();
+
+        let got = unowned_entries("proj@task", &wt).unwrap();
+
+        let entry = |path: &str| untracked::Entry { path: path.into(), files: 1 };
+        assert_eq!(
+            got,
+            UnownedEntries::NotTrackedByGit(vec![
+                entry("vendor/sub/build/"),
+                entry("vendor/sub/local.env"),
+                entry("vendor/trace.log"),
+            ])
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // A repo that tracks .cs carries it through git (tracked mode), so an
+    // untracked file under .cs is the user's work like one anywhere else;
+    // only cs's machine-local files are left out. In ignored mode the whole
+    // .cs is cs's.
+    #[test]
+    fn unowned_entries_lists_untracked_session_records_in_a_tracked_mode_worktree() {
+        let root = std::env::temp_dir().join(format!("cs-unowned-tracked-cs-{}", std::process::id()));
+        let wt = worktree_beside_base(&root);
+        fs::write(wt.join(".cs/README.md"), "# records").unwrap();
+        git_in(&wt, &["add", ".cs/README.md"]);
+        git_in(&wt, &["commit", "-qm", "session records"]);
+        fs::write(wt.join(".cs/local/state"), "cs_mode: tracked\n").unwrap();
+        fs::create_dir_all(wt.join(".cs/memory")).unwrap();
+        fs::write(wt.join(".cs/memory/new-topic.md"), "topic").unwrap();
+        fs::write(wt.join(".cs/session.lock"), "").unwrap();
+
+        let got = unowned_entries("proj@task", &wt).unwrap();
+
+        assert_eq!(got, UnownedEntries::NotTrackedByGit(vec![untracked::Entry { path: ".cs/memory/".into(), files: 1 }]));
+        fs::write(wt.join(".cs/local/state"), "cs_mode: ignored\n").unwrap();
+        assert_eq!(unowned_entries("proj@task", &wt).unwrap(), UnownedEntries::NotTrackedByGit(Vec::new()));
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -2167,7 +2534,7 @@ mod tests {
 
         let err = remove_session_path(&root, "proj@task", &wt, RemoveGrants::default()).unwrap_err();
 
-        assert_eq!(err.to_string(), "proj@task holds files git does not track: notes.txt");
+        assert_eq!(err.to_string(), "proj@task holds 1 file git does not track: notes.txt");
         assert!(wt.join("notes.txt").exists(), "the untracked file survives");
 
         let grants = RemoveGrants { unowned_files: true, ..RemoveGrants::default() };

@@ -451,9 +451,10 @@ pub struct App {
     pub row_hit_spans: Vec<(u16, u16, usize)>,
     pub visible_sort_columns: Vec<SortColumn>,
     pub delete_countdown_start: Option<std::time::Instant>,
-    /// Lines the delete confirm shows for files beyond cs's own that the
-    /// removal would take, read when the confirm opens (never in render).
-    pub delete_warnings: Vec<String>,
+    /// What the delete confirm warns of: live sessions and files beyond
+    /// cs's own that the removal would take, read when the confirm opens
+    /// (never in render).
+    pub delete_warnings: Vec<session::DeleteWarning>,
     /// The escalations the open delete confirm offers: the ones the sessions
     /// it would delete need, read when it opens.
     pub delete_offers: session::RemoveGrants,
@@ -2032,7 +2033,7 @@ impl App {
     /// prefixed with the session name when more than one is being deleted.
     /// Errors when a listing fails, so the confirm never opens on a list it
     /// could not read.
-    fn delete_confirm_lines(&self, names: &[String]) -> Result<(Vec<String>, session::RemoveGrants), String> {
+    fn delete_confirm_lines(&self, names: &[String]) -> Result<(Vec<session::DeleteWarning>, session::RemoveGrants), String> {
         let mut lines = Vec::new();
         let mut offers = session::RemoveGrants::default();
         for name in names {
@@ -2043,13 +2044,16 @@ impl App {
                 .and_then(|s| s.liveness.lock_pid())
                 .filter(|&pid| session::is_pid_alive(pid));
             if let Some(pid) = live_pid {
-                lines.push(format!("{name} is live (pid {pid})"));
+                lines.push(session::DeleteWarning::line(format!("{name} is live (pid {pid})")));
                 offers.past_live_lock = true;
             }
             let path = self.sessions_root.join(name);
             let entries = session::unowned_entries(name, &path)?;
-            if let Some(warning) = entries.warning() {
-                lines.push(if names.len() > 1 { format!("{name}: {warning}") } else { warning });
+            if let Some(mut warning) = entries.warning() {
+                if names.len() > 1 {
+                    warning.text = format!("{name}: {}", warning.text);
+                }
+                lines.push(warning);
                 offers.unowned_files = true;
             }
         }
@@ -3718,7 +3722,7 @@ mod tests {
         app.menu_selected = 1;
         app.handle_key(KeyEvent::from(KeyCode::Enter));
         assert_eq!(app.mode, Mode::ConfirmDelete);
-        assert_eq!(app.delete_warnings, vec![format!("gamma is live (pid {pid})")]);
+        assert_eq!(app.delete_warnings, vec![session::DeleteWarning::line(format!("gamma is live (pid {pid})"))]);
         assert_eq!(
             app.delete_offers,
             session::RemoveGrants { past_live_lock: true, unowned_files: false }
@@ -3968,7 +3972,7 @@ mod tests {
         assert!(matches!(app.mode, Mode::ConfirmDelete));
         assert_eq!(
             app.delete_warnings,
-            vec!["Also deletes files cs did not create: journal.sparsebundle".to_string()]
+            vec![session::DeleteWarning::line("Also deletes files cs did not create: journal.sparsebundle".to_string())]
         );
         std::fs::remove_dir_all(&root).ok();
     }

@@ -300,6 +300,42 @@ export CS_NO_UPDATE_CHECK=1
 _CS_TEST_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/bin"
 case ":$PATH:" in *":$_CS_TEST_BIN:"*) ;; *) export PATH="$_CS_TEST_BIN:$PATH" ;; esac
 
+# Retire moves ignored files to the system trash with `trash` (macOS) or
+# `gio trash` (Linux). No test may reach the developer's real trash: these
+# stand-ins come first on PATH for every suite and refuse loudly. A test that
+# exercises the trash puts its own stand-in in front (fake_trash_bin).
+_CS_TEST_TRASH_GUARD="${HOME%/home}/trash-guard"
+mkdir -p "$_CS_TEST_TRASH_GUARD"
+for _cs_trash_cmd in trash gio; do
+    printf '#!/usr/bin/env bash\necho "a test reached the system trash command: %s $*" >&2\nexit 1\n' \
+        "$_cs_trash_cmd" > "$_CS_TEST_TRASH_GUARD/$_cs_trash_cmd"
+    chmod +x "$_CS_TEST_TRASH_GUARD/$_cs_trash_cmd"
+done
+unset _cs_trash_cmd
+export PATH="$_CS_TEST_TRASH_GUARD:$PATH"
+
+# A directory holding a stand-in for the system trash command, to put first
+# on PATH: named `trash`, or `gio` taking `trash` as its first argument. Both
+# record each path they are given in $TEST_TMPDIR/trash.log; `moves` then
+# moves each into $TEST_TMPDIR/trash-bin as <n>-<name>, `fails` moves nothing
+# and exits 1.
+fake_trash_bin() {  # moves|fails trash|gio
+    local bin="$TEST_TMPDIR/fake-$2-$1" log="$TEST_TMPDIR/trash.log" can="$TEST_TMPDIR/trash-bin"
+    mkdir -p "$bin" "$can"
+    {
+        echo '#!/usr/bin/env bash'
+        [ "$2" = gio ] && echo '[ "$1" = trash ] || { echo "gio: unexpected command $1" >&2; exit 2; }; shift'
+        echo "for p in \"\$@\"; do printf '%s\\n' \"\$p\" >> '$log'; done"
+        if [ "$1" = moves ]; then
+            echo "n=0; for p in \"\$@\"; do n=\$((n + 1)); mv \"\$p\" '$can'/\"\$n-\${p##*/}\" || exit 1; done"
+        else
+            echo "echo 'trash: the items could not be moved (stand-in failure)' >&2; exit 1"
+        fi
+    } > "$bin/$2"
+    chmod +x "$bin/$2"
+    echo "$bin"
+}
+
 # --- Setup / Teardown ---
 
 setup() {

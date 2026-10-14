@@ -1,0 +1,44 @@
+README.md
+apps/web/package.json
+apps/web/src/app.ts
+apps/web/src/routes/admin/page.ts
+docs/guide.md
+
+1234567	vendor/big/
+40	apps/web/node_modules/dep-from-git/
+
+.env
+apps/web/node_modules/a/index.js
+apps/web/node_modules/a/package.json
+apps/web/node_modules/dep-from-git/
+apps/web/.svelte-kit/out/x.js
+apps/web/src/routes/admin/__screenshots__/one.png
+apps/web/src/scratch.ts
+build/only.o
+docs/draft-01.md
+docs/draft-02.md
+docs/draft-03.md
+docs/draft-04.md
+docs/draft-05.md
+docs/draft-06.md
+docs/draft-07.md
+docs/draft-08.md
+docs/draft-09.md
+docs/draft-10.md
+docs/draft-11.md
+docs/draft-12.md
+docs/draft-13.md
+docs/draft-14.md
+docs/draft-15.md
+docs/draft-16.md
+docs/draft-17.md
+docs/draft-18.md
+docs/draft-19.md
+vendor/big/
+tmp/a/b/c.txt
+tmp/z.txt
+café/menu.txt
+café/prices.txt
+backup\nold.txt
+backup.txt
+a[31mred	x.txt

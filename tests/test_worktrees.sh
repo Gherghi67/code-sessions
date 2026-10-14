@@ -256,7 +256,7 @@ test_ignored_mode_worktree_retires_without_a_manual_exclude() {
     local sha output
     sha=$(land_feature proj task1) || { echo "  FAIL: integrate fixture"; return 1; }
     output=$("$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1 || true)
-    assert_output_not_contains "$output" "untracked files that removal would destroy" \
+    assert_output_not_contains "$output" "that removal would destroy" \
         "cs must not refuse over the .cs skeleton it wrote itself" || return 1
     assert_not_exists "$wt" "the worktree is retired" || return 1
 }
@@ -293,7 +293,7 @@ test_retire_tolerates_a_worktree_predating_the_cs_exclude() {
     local sha output
     sha=$(land_feature proj task1) || { echo "  FAIL: integrate fixture"; return 1; }
     output=$("$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1 || true)
-    assert_output_not_contains "$output" "untracked files that removal would destroy" \
+    assert_output_not_contains "$output" "that removal would destroy" \
         "an older worktree's .cs skeleton must not block retirement" || return 1
     assert_not_exists "$wt" "the worktree is retired" || return 1
 }
@@ -313,41 +313,375 @@ test_retire_still_refuses_real_untracked_work() {
     local sha output
     sha=$(land_feature proj task1) || { echo "  FAIL: integrate fixture"; return 1; }
     output=$("$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1 || true)
-    assert_output_contains "$output" "untracked files that removal would destroy" \
-        "real untracked work must still refuse" || return 1
-    assert_output_contains "$output" "notes.txt" "the refusal names the file at risk" || return 1
+    assert_eq "Error: Worktree has 1 untracked file that removal would destroy; commit or remove it first:
+    notes.txt" "$output" "real untracked work must still refuse, naming the file at risk" || return 1
     assert_dir "$wt" "the worktree survives a refusal" || return 1
 }
 
-# An ignored file is as lost as an untracked one when the worktree goes: git
-# keeps no copy of either. Retire refuses over it and names it, while cs's own
-# ignored bookkeeping and Finder's .DS_Store still pass.
-test_retire_refuses_ignored_work() {
+# A landed feature proj@task1 whose base tracks apps/web/src/app.ts and
+# ignores what $1 lists, one pattern per line. Prints the landed sha.
+_landed_feature_ignoring() {  # gitignore-lines
     local base_dir="$CS_SESSIONS_ROOT/proj"
-    mkdir -p "$base_dir/.cs"/{memory,local}
+    mkdir -p "$base_dir/.cs"/{memory,local} "$base_dir/apps/web/src"
     echo "# Project readme" > "$base_dir/README.md"
-    printf '*.log\n.DS_Store\n' > "$base_dir/.gitignore"
+    echo 'export {}' > "$base_dir/apps/web/src/app.ts"
+    printf '%s\n' "$1" > "$base_dir/.gitignore"
     (cd "$base_dir" && git init -q && git config core.autocrlf false \
-        && git add README.md .gitignore && git commit -q -m init)
+        && git add README.md .gitignore apps && git commit -q -m init)
     cs_launch "proj@task1"
-    local wt="$CS_SESSIONS_ROOT/proj@task1"
+    land_feature proj task1
+}
+
+# git keeps no copy of an ignored file, so retire never deletes one it
+# cannot regenerate: it moves it to the system trash and says so, then
+# removes the worktree. cs's own ignored bookkeeping and Finder's .DS_Store
+# go with the worktree.
+test_retire_moves_ignored_work_to_the_system_trash() {
+    local wt="$CS_SESSIONS_ROOT/proj@task1" sha bin output status=0
+    sha=$(_landed_feature_ignoring '*.log
+.DS_Store
+.env
+__screenshots__/') || { echo "  FAIL: integrate fixture"; return 1; }
+    bin=$(fake_trash_bin moves trash)
     echo "unsaved" > "$wt/build.log"
     : > "$wt/.DS_Store"
-    local sha output status=0
-    sha=$(land_feature proj task1) || { echo "  FAIL: integrate fixture"; return 1; }
-    output=$("$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1) || status=$?
-    assert_eq "1" "$status" "retire refuses: $output" || return 1
-    assert_output_contains "$output" "untracked files that removal would destroy" \
-        "ignored work refuses like untracked work" || return 1
-    assert_output_contains "$output" "build.log" "the refusal names the ignored file" || return 1
-    assert_output_not_contains "$output" ".DS_Store" "Finder metadata is not work" || return 1
-    assert_file_exists "$wt/build.log" "the ignored file survives the refusal" || return 1
-    # Positive control: with the ignored file gone, the same worktree retires.
-    rm "$wt/build.log"
-    status=0
-    output=$("$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1) || status=$?
-    assert_eq "0" "$status" "retire proceeds without ignored work: $output" || return 1
+    echo "KEY=value" > "$wt/apps/web/.env"
+    mkdir -p "$wt/apps/web/src/__screenshots__"
+    touch "$wt/apps/web/src/__screenshots__/a.png" "$wt/apps/web/src/__screenshots__/b.png"
+    output=$(PATH="$bin:$PATH" "$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "retire proceeds: $output" || return 1
+    assert_eq "MEMORY.md: appended 1 pointer(s) from the feature (base lines kept)
+Moved 4 ignored files to the system trash:
+    $wt/apps/web/src/__screenshots__/  (2 files)
+    $wt/apps/web/.env
+    $wt/build.log
+retired task1 $sha" "$output" "retire names where each file it moved to the trash came from" || return 1
+    assert_eq "$wt/apps/web/src/__screenshots__
+$wt/apps/web/.env
+$wt/build.log" "$(cat "$TEST_TMPDIR/trash.log")" "the trash gets each entry once, by its full path" || return 1
+    assert_eq "KEY=value" "$(cat "$TEST_TMPDIR/trash-bin/2-.env")" "the ignored file is in the trash, intact" || return 1
     assert_not_exists "$wt" "the worktree is retired" || return 1
+}
+
+# Ignored trees a build or an install regenerates go with the worktree, a
+# file inside one included however precious its name: no refusal, no trash.
+test_retire_deletes_regenerable_trees_with_the_worktree() {
+    local wt="$CS_SESSIONS_ROOT/proj@task1" sha bin output status=0
+    sha=$(_landed_feature_ignoring 'node_modules/
+__pycache__/
+.venv/
+.dart_tool/
+.direnv/
+.hypothesis/') || { echo "  FAIL: integrate fixture"; return 1; }
+    bin=$(fake_trash_bin moves trash)
+    mkdir -p "$wt/apps/web/node_modules/pkg" "$wt/apps/web/src/__pycache__" "$wt/.venv/bin" \
+        "$wt/apps/mobile/.dart_tool" "$wt/.direnv" "$wt/.hypothesis/examples"
+    : > "$wt/apps/mobile/.dart_tool/package_config.json"
+    : > "$wt/.direnv/env"
+    : > "$wt/.hypothesis/examples/0a1b"
+    echo "module.exports = 1" > "$wt/apps/web/node_modules/pkg/index.js"
+    echo "TOKEN=x" > "$wt/apps/web/node_modules/pkg/.env"
+    : > "$wt/apps/web/src/__pycache__/app.cpython-312.pyc"
+    : > "$wt/.venv/bin/python"
+    output=$(PATH="$bin:$PATH" "$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "retire proceeds: $output" || return 1
+    assert_eq "MEMORY.md: appended 1 pointer(s) from the feature (base lines kept)
+retired task1 $sha" "$output" "nothing is moved to the trash" || return 1
+    assert_not_exists "$TEST_TMPDIR/trash.log" "the trash command is never run" || return 1
+    assert_not_exists "$wt" "the worktree is retired" || return 1
+}
+
+# A trash command that fails leaves everything where it was: retire refuses
+# before it removes anything, and lists what it could not move.
+test_retire_refuses_when_the_trash_command_fails() {
+    local wt="$CS_SESSIONS_ROOT/proj@task1" sha bin output status=0
+    sha=$(_landed_feature_ignoring '.env') || { echo "  FAIL: integrate fixture"; return 1; }
+    bin=$(fake_trash_bin fails trash)
+    echo "KEY=value" > "$wt/apps/web/.env"
+    output=$(PATH="$bin:$PATH" "$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "retire refuses: $output" || return 1
+    assert_eq "Error: Could not move 1 ignored file to the system trash, so nothing was removed; anything the trash command did move is in the trash. Move or delete it, then run /finish task1 here again:
+    apps/web/.env
+trash: trash: the items could not be moved (stand-in failure)" "$output" "the refusal names the file and the trash command's error" || return 1
+    assert_eq "KEY=value" "$(cat "$wt/apps/web/.env")" "the ignored file is where it was" || return 1
+    assert_dir "$wt" "the worktree survives" || return 1
+}
+
+# With no trash command at all, retire refuses rather than delete.
+test_retire_refuses_without_a_trash_command() {
+    local wt="$CS_SESSIONS_ROOT/proj@task1" sha bin="$TEST_TMPDIR/no-trash-bin" output status=0
+    sha=$(_landed_feature_ignoring '.env') || { echo "  FAIL: integrate fixture"; return 1; }
+    link_path_without "$bin" trash
+    rm -f "$bin/gio"
+    echo "KEY=value" > "$wt/apps/web/.env"
+    output=$(PATH="$bin" "$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "retire refuses: $output" || return 1
+    assert_eq "Error: Worktree has 1 ignored file that retiring moves to the system trash, but neither trash nor gio is installed, so nothing was removed. Move or delete it, then run /finish task1 here again:
+    apps/web/.env" "$output" "the refusal names the file and the missing commands" || return 1
+    assert_eq "KEY=value" "$(cat "$wt/apps/web/.env")" "the ignored file is where it was" || return 1
+    assert_dir "$wt" "the worktree survives" || return 1
+}
+
+# A name holding a newline reaches the trash command as it is on disk; the
+# listing shows the newline as "?".
+test_retire_moves_an_ignored_file_whose_name_holds_a_newline() {
+    local wt="$CS_SESSIONS_ROOT/proj@task1" sha bin output status=0 name
+    sha=$(_landed_feature_ignoring 'notes*') || { echo "  FAIL: integrate fixture"; return 1; }
+    bin=$(fake_trash_bin moves trash)
+    name="notes"$'\n'"final.txt"
+    echo "kept" > "$wt/$name"
+    output=$(PATH="$bin:$PATH" "$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "retire proceeds: $output" || return 1
+    assert_eq "MEMORY.md: appended 1 pointer(s) from the feature (base lines kept)
+Moved 1 ignored file to the system trash:
+    $wt/notes?final.txt
+retired task1 $sha" "$output" "the listing shows the newline as ?" || return 1
+    assert_eq "$wt/$name" "$(cat "$TEST_TMPDIR/trash.log")" "the trash gets the name with its newline" || return 1
+    assert_eq "kept" "$(cat "$TEST_TMPDIR/trash-bin/1-$name")" "the file is in the trash, intact" || return 1
+}
+
+# A name holding an escape or a carriage return would recolour or overwrite
+# the listing on a terminal: the listing prints each control character as
+# "?", and the trash command gets the name as it is on disk.
+test_retire_moves_an_ignored_file_whose_name_holds_control_characters() {
+    local wt="$CS_SESSIONS_ROOT/proj@task1" sha bin output status=0 name
+    sha=$(_landed_feature_ignoring 'notes*') || { echo "  FAIL: integrate fixture"; return 1; }
+    bin=$(fake_trash_bin moves trash)
+    name="notes"$'\033'"[31m"$'\r'"final"$'\t'".txt"
+    echo "kept" > "$wt/$name"
+    output=$(PATH="$bin:$PATH" "$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "retire proceeds: $output" || return 1
+    assert_eq "MEMORY.md: appended 1 pointer(s) from the feature (base lines kept)
+Moved 1 ignored file to the system trash:
+    $wt/notes?[31m?final?.txt
+retired task1 $sha" "$output" "the listing shows each control character as ?" || return 1
+    assert_eq "$wt/$name" "$(cat "$TEST_TMPDIR/trash.log")" "the trash gets the name as it is on disk" || return 1
+    assert_eq "kept" "$(cat "$TEST_TMPDIR/trash-bin/1-$name")" "the file is in the trash, intact" || return 1
+}
+
+# A literal "?" and a newline print alike, but they are two names on disk:
+# each is its own entry and each reaches the trash.
+test_retire_moves_two_ignored_names_that_print_alike() {
+    local wt="$CS_SESSIONS_ROOT/proj@task1" sha bin output status=0 newline_name
+    sha=$(_landed_feature_ignoring 'a?b*') || { echo "  FAIL: integrate fixture"; return 1; }
+    bin=$(fake_trash_bin moves trash)
+    newline_name="a"$'\n'"b"
+    echo "question mark" > "$wt/a?b"
+    echo "newline" > "$wt/$newline_name"
+    output=$(PATH="$bin:$PATH" "$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "retire proceeds: $output" || return 1
+    assert_eq "MEMORY.md: appended 1 pointer(s) from the feature (base lines kept)
+Moved 2 ignored files to the system trash:
+    $wt/a?b
+    $wt/a?b
+retired task1 $sha" "$output" "both names are listed, each showing a newline as ?" || return 1
+    assert_eq "question mark" "$(cat "$TEST_TMPDIR/trash-bin/1-a?b")" "the name holding ? is in the trash" || return 1
+    assert_eq "newline" "$(cat "$TEST_TMPDIR/trash-bin/2-$newline_name")" "the name holding a newline is in the trash" || return 1
+}
+
+# An entry stands for one name exactly: "a?b" is not the start of "a<newline>bc".
+test_retire_moves_an_ignored_name_that_starts_another_shown_alike() {
+    local wt="$CS_SESSIONS_ROOT/proj@task1" sha bin output status=0 newline_name
+    sha=$(_landed_feature_ignoring 'a?b*') || { echo "  FAIL: integrate fixture"; return 1; }
+    bin=$(fake_trash_bin moves trash)
+    newline_name="a"$'\n'"bc"
+    echo "question mark" > "$wt/a?b"
+    echo "newline" > "$wt/$newline_name"
+    output=$(PATH="$bin:$PATH" "$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "retire proceeds: $output" || return 1
+    assert_eq "MEMORY.md: appended 1 pointer(s) from the feature (base lines kept)
+Moved 2 ignored files to the system trash:
+    $wt/a?b
+    $wt/a?bc
+retired task1 $sha" "$output" "each name is listed once" || return 1
+    assert_eq "question mark" "$(cat "$TEST_TMPDIR/trash-bin/1-a?b")" "the name holding ? is in the trash" || return 1
+    assert_eq "newline" "$(cat "$TEST_TMPDIR/trash-bin/2-$newline_name")" "the name holding a newline is in the trash" || return 1
+}
+
+# git lists a nested repository as one path. Retire counts the files under it
+# and trashes it by the name it has on disk: a backslash followed by "n" and
+# a newline are two different things in a name, and both are kept.
+test_retire_moves_an_ignored_nested_repository_named_with_a_backslash_and_a_newline() {
+    local wt="$CS_SESSIONS_ROOT/proj@task1" sha bin output status=0 name other="$TEST_TMPDIR/other"
+    sha=$(_landed_feature_ignoring 'dep*') || { echo "  FAIL: integrate fixture"; return 1; }
+    bin=$(fake_trash_bin moves trash)
+    name='dep\n'$'\n'"x"
+    git init -q "$other"
+    mkdir "$wt/$name"
+    printf 'gitdir: %s\n' "$other/.git" > "$wt/$name/.git"
+    echo "kept" > "$wt/$name/a"
+    output=$(PATH="$bin:$PATH" "$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "retire proceeds: $output" || return 1
+    assert_eq "MEMORY.md: appended 1 pointer(s) from the feature (base lines kept)
+Moved 2 ignored files to the system trash:
+    $wt/dep\\n?x/  (2 files)
+retired task1 $sha" "$output" "the listing shows the backslash as it is and the newline as ?" || return 1
+    assert_eq "$wt/$name" "$(cat "$TEST_TMPDIR/trash.log")" "the trash gets the directory by the name it has on disk" || return 1
+    assert_eq "kept" "$(cat "$TEST_TMPDIR/trash-bin/1-$name/a")" "the repository is in the trash, intact" || return 1
+}
+
+# A directory holding a stand-in `trash` to put first on PATH. It records
+# each call on one line of $TEST_TMPDIR/trash-calls.log, as the number of
+# paths the call held and their size in bytes with a NUL after each. The
+# first $1 calls also record their paths in $TEST_TMPDIR/trash.log and move
+# them into $TEST_TMPDIR/trash-bin; every later call moves nothing and exits 1.
+measuring_trash_bin() {  # calls that succeed
+    local bin="$TEST_TMPDIR/measuring-trash" calls="$TEST_TMPDIR/trash-calls.log"
+    mkdir -p "$bin" "$TEST_TMPDIR/trash-bin"
+    : > "$calls"
+    cat > "$bin/trash" <<EOF
+#!/usr/bin/env bash
+printf '%s %s\n' "\$#" "\$(printf '%s\0' "\$@" | wc -c | tr -d '[:space:]')" >> '$calls'
+if [ "\$(wc -l < '$calls' | tr -d '[:space:]')" -gt $1 ]; then
+    echo 'trash: the items could not be moved (stand-in failure)' >&2
+    exit 1
+fi
+printf '%s\n' "\$@" >> '$TEST_TMPDIR/trash.log'
+mv "\$@" '$TEST_TMPDIR/trash-bin/'
+EOF
+    chmod +x "$bin/trash"
+    echo "$bin"
+}
+
+# 600 ignored files beside a tracked one, each its own entry, named
+# obj-<101..700>-<230 zeros>.o: their paths together are longer than the
+# 128 KiB one call of the trash command gets.
+_six_hundred_ignored_objects() {  # worktree
+    local i zeros
+    zeros=$(printf '%0230d' 0)
+    for i in $(seq 101 700); do : > "$1/obj-$i-$zeros.o"; done
+    echo "kept" > "$1/obj-101-$zeros.o"
+}
+
+# The system refuses to run a command line past a fixed size, so retire
+# hands the trash command its paths over several calls, none holding more
+# than 128 KiB of them.
+test_retire_trashes_more_ignored_files_than_one_command_line_holds() {
+    local wt="$CS_SESSIONS_ROOT/proj@task1" sha bin output status=0 zeros
+    sha=$(_landed_feature_ignoring '*.o') || { echo "  FAIL: integrate fixture"; return 1; }
+    bin=$(measuring_trash_bin 600)
+    zeros=$(printf '%0230d' 0)
+    _six_hundred_ignored_objects "$wt"
+    output=$(PATH="$bin:$PATH" "$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "retire proceeds: ${output:0:800}" || return 1
+    assert_eq "" "$(awk '$2 > 131072' "$TEST_TMPDIR/trash-calls.log")" \
+        "no call of the trash command holds more than 128 KiB of paths" || return 1
+    assert_eq "600" "$(awk '{ paths += $1 } END { print paths }' "$TEST_TMPDIR/trash-calls.log")" \
+        "the calls hold every path once" || return 1
+    assert_eq "$(for i in $(seq 101 700); do printf '%s/obj-%s-%s.o\n' "$wt" "$i" "$zeros"; done)" \
+        "$(cat "$TEST_TMPDIR/trash.log")" "the trash gets each file by its full path, in the listing's order" || return 1
+    assert_eq "kept" "$(cat "$TEST_TMPDIR/trash-bin/obj-101-$zeros.o")" "a file is in the trash, intact" || return 1
+    assert_eq "MEMORY.md: appended 1 pointer(s) from the feature (base lines kept)
+Moved 600 ignored files to the system trash:
+$(for i in $(seq 101 700); do printf '    %s/obj-%s-%s.o\n' "$wt" "$i" "$zeros"; done)
+retired task1 $sha" "$output" "retire lists every file it moved" || return 1
+    assert_not_exists "$wt" "the worktree is retired" || return 1
+}
+
+# When a later call of the trash command fails, retire refuses: it lists
+# what it could not move, and what the earlier calls moved to the trash.
+test_retire_lists_what_it_trashed_when_a_later_trash_call_fails() {
+    local wt="$CS_SESSIONS_ROOT/proj@task1" sha bin output status=0 zeros moved left
+    sha=$(_landed_feature_ignoring '*.o') || { echo "  FAIL: integrate fixture"; return 1; }
+    bin=$(measuring_trash_bin 1)
+    zeros=$(printf '%0230d' 0)
+    _six_hundred_ignored_objects "$wt"
+    output=$(PATH="$bin:$PATH" "$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "retire refuses: ${output:0:800}" || return 1
+    moved=$(sed -n 1p "$TEST_TMPDIR/trash-calls.log")
+    moved="${moved%% *}"
+    left=$((600 - moved))
+    if [ "$moved" -lt 1 ] || [ "$left" -lt 21 ]; then
+        echo "  FAIL: the first call must hold some of the 600 paths and leave more than 20, it held $moved"
+        return 1
+    fi
+    assert_eq "Error: Could not move $left ignored files to the system trash, so the worktree was not removed; anything the trash command did move is in the trash. Move or delete them, then run /finish task1 here again:
+$(for i in $(seq $((101 + moved)) $((120 + moved))); do printf '    obj-%s-%s.o\n' "$i" "$zeros"; done)
+    ... and $((left - 20)) more
+trash: trash: the items could not be moved (stand-in failure)
+Moved $moved ignored files to the system trash before this failed:
+$(for i in $(seq 101 $((100 + moved))); do printf '    %s/obj-%s-%s.o\n' "$wt" "$i" "$zeros"; done)" \
+        "$output" "the refusal lists what is left and what the first call moved" || return 1
+    assert_eq "kept" "$(cat "$TEST_TMPDIR/trash-bin/obj-101-$zeros.o")" "the first call's files are in the trash" || return 1
+    assert_file_exists "$wt/obj-$((101 + moved))-$zeros.o" "the first file of the failed call is where it was" || return 1
+    assert_file_exists "$wt/obj-700-$zeros.o" "the last file is where it was" || return 1
+    assert_dir "$wt" "the worktree survives" || return 1
+}
+
+# A removal that fails after the trash step leaves the worktree, and the
+# refusal says what is already in the trash and where it came from.
+test_retire_lists_what_it_trashed_when_the_removal_then_fails() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@task1" sha bin output status=0
+    sha=$(_landed_feature_ignoring '.env') || { echo "  FAIL: integrate fixture"; return 1; }
+    bin=$(fake_trash_bin moves trash)
+    echo "KEY=value" > "$wt/apps/web/.env"
+    git -C "$base_dir" worktree lock "$wt"
+    output=$(PATH="$bin:$PATH" "$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "a locked worktree cannot be removed: $output" || return 1
+    assert_eq "Error: git worktree remove failed for $wt; nothing was fused or deleted" "$(printf '%s\n' "$output" | head -n 1)" \
+        "the refusal names the failed removal" || return 1
+    assert_eq "Moved 1 ignored file to the system trash before this failed:
+    $wt/apps/web/.env" "$(printf '%s\n' "$output" | tail -n 2)" "and what is already in the trash" || return 1
+    assert_eq "KEY=value" "$(cat "$TEST_TMPDIR/trash-bin/1-.env")" "the file is in the trash" || return 1
+    assert_dir "$wt" "the worktree survives" || return 1
+}
+
+# Where macOS's trash is missing, GLib's `gio trash` stands in.
+test_retire_moves_ignored_work_with_gio_when_trash_is_missing() {
+    local wt="$CS_SESSIONS_ROOT/proj@task1" sha bin="$TEST_TMPDIR/no-trash-bin" gio output status=0
+    sha=$(_landed_feature_ignoring '.env') || { echo "  FAIL: integrate fixture"; return 1; }
+    link_path_without "$bin" trash
+    rm -f "$bin/gio"
+    gio=$(fake_trash_bin moves gio)
+    echo "KEY=value" > "$wt/apps/web/.env"
+    output=$(PATH="$gio:$bin" "$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "retire proceeds: $output" || return 1
+    assert_eq "$wt/apps/web/.env" "$(cat "$TEST_TMPDIR/trash.log")" "gio trash gets the file" || return 1
+    assert_not_exists "$wt" "the worktree is retired" || return 1
+}
+
+# Every refusal that says nothing was removed comes before the trash step:
+# a worktree holding an ignored file and refused for any other reason keeps
+# that file where it is, and the trash command is never run.
+test_retire_refuses_before_it_trashes_anything() {
+    local wt="$CS_SESSIONS_ROOT/proj@task1" base_dir="$CS_SESSIONS_ROOT/proj" sha bin case expected output status
+    bin=$(fake_trash_bin moves trash)
+    for case in hidden-edit no-mode untracked own-claude-local-md locked-vault base-dirty; do
+        rm -rf "$wt" "$base_dir" "$TEST_TMPDIR/trash.log"
+        sha=$(_landed_feature_ignoring '.env') || { echo "  FAIL: $case: integrate fixture"; return 1; }
+        echo "KEY=value" > "$wt/apps/web/.env"
+        case "$case" in
+            hidden-edit)
+                git -C "$wt" update-index --skip-worktree README.md
+                echo "local edit" >> "$wt/README.md"
+                expected="Error: Worktree has edits git diff does not show (skip-worktree or assume-unchanged), which removal would destroy; commit them, or undo them and clear the flag (git update-index --no-skip-worktree / --no-assume-unchanged), first:
+README.md" ;;
+            no-mode)
+                grep -v '^cs_mode:' "$wt/.cs/local/state" > "$TEST_TMPDIR/state" && mv "$TEST_TMPDIR/state" "$wt/.cs/local/state"
+                expected="Error: $wt/.cs/local/state names no cs_mode, so cs cannot tell whether git or the record fuse carries $wt/.cs; nothing was removed. Add the line 'cs_mode: tracked' if git tracks .cs in proj, else 'cs_mode: ignored', then run /finish task1 again." ;;
+            untracked)
+                echo "draft" > "$wt/notes.txt"
+                expected="Error: Worktree has 1 untracked file that removal would destroy; commit or remove it first:
+    notes.txt" ;;
+            own-claude-local-md)
+                echo "my own notes for this checkout" > "$wt/CLAUDE.local.md"
+                expected="Error: Worktree has 1 untracked file that removal would destroy; commit or remove it first:
+    CLAUDE.local.md" ;;
+            locked-vault)
+                rm -rf "$base_dir/.cs/plans"
+                ln -s "$TEST_TMPDIR/unmounted-vault/plans" "$base_dir/.cs/plans"
+                expected="Error: cannot fuse the worktree's records: $base_dir/.cs/plans is locked. Mount it, then retry." ;;
+            base-dirty)
+                echo "an edit" >> "$base_dir/README.md"
+                expected="Error: Base session has uncommitted changes; commit them in $base_dir first" ;;
+        esac
+        status=0
+        output=$(PATH="$bin:$PATH" "$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1) || status=$?
+        assert_eq "1" "$status" "$case: the retire refuses: $output" || return 1
+        assert_eq "$expected" "$output" "$case: the refusal" || return 1
+        assert_eq "KEY=value" "$(cat "$wt/apps/web/.env")" "$case: the ignored file is where it was" || return 1
+        assert_not_exists "$TEST_TMPDIR/trash.log" "$case: the trash command is never run" || return 1
+    done
 }
 
 test_worktree_of_worktree_refused() {
@@ -986,7 +1320,64 @@ run_test test_ignored_mode_worktree_starts_with_nothing_untracked
 run_test test_ignored_mode_worktree_retires_without_a_manual_exclude
 run_test test_retire_tolerates_a_worktree_predating_the_cs_exclude
 run_test test_retire_still_refuses_real_untracked_work
-run_test test_retire_refuses_ignored_work
+run_test test_retire_moves_ignored_work_to_the_system_trash
+run_test test_retire_deletes_regenerable_trees_with_the_worktree
+run_test test_retire_refuses_when_the_trash_command_fails
+run_test test_retire_refuses_without_a_trash_command
+run_test test_retire_moves_ignored_work_with_gio_when_trash_is_missing
+run_test test_retire_refuses_before_it_trashes_anything
+run_test test_retire_moves_an_ignored_file_whose_name_holds_a_newline
+run_test test_retire_moves_an_ignored_file_whose_name_holds_control_characters
+run_test test_retire_moves_two_ignored_names_that_print_alike
+run_test test_retire_moves_an_ignored_name_that_starts_another_shown_alike
+run_test test_retire_moves_an_ignored_nested_repository_named_with_a_backslash_and_a_newline
+run_test test_retire_trashes_more_ignored_files_than_one_command_line_holds
+run_test test_retire_lists_what_it_trashed_when_a_later_trash_call_fails
+run_test test_retire_lists_what_it_trashed_when_the_removal_then_fails
+
+# Ignored build trees hold tens of thousands of files. The refusal names each
+# whole tree once with its file count, under the total, so the files that are
+# the user's work stay readable beside them.
+test_retire_refusal_collapses_untracked_trees() {
+    local wt="$CS_SESSIONS_ROOT/proj@task1" sha output status=0
+    sha=$(_landed_feature_ignoring 'node_modules/
+.svelte-kit/
+.env') || { echo "  FAIL: integrate fixture"; return 1; }
+    mkdir -p "$wt/apps/web/node_modules/pkg" "$wt/apps/web/.svelte-kit/out" "$wt/apps/web/src/__screenshots__" "$wt/scratch"
+    (cd "$wt/apps/web/node_modules/pkg" && touch f{1..3000})
+    (cd "$wt/apps/web/.svelte-kit/out" && touch f{1..1200})
+    (cd "$wt/scratch" && touch f{1..1200})
+    touch "$wt/apps/web/src/__screenshots__/a.png" "$wt/apps/web/src/__screenshots__/b.png"
+    echo KEY=value > "$wt/apps/web/.env"
+    echo draft > "$wt/notes.txt"
+    output=$("$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "retire refuses: $output" || return 1
+    assert_eq "Error: Worktree has 1,203 untracked files that removal would destroy; commit or remove them first:
+    scratch/                       (1,200 files)
+    apps/web/src/__screenshots__/  (2 files)
+    notes.txt" "$output" "the refusal collapses each untracked tree to one counted line and lists no ignored file" || return 1
+    assert_file_exists "$wt/apps/web/.env" "the ignored file survives the refusal" || return 1
+}
+
+run_test test_retire_refusal_collapses_untracked_trees
+
+# cs and the TUI list files a removal would destroy in one format, pinned by
+# one fixture both render: input.txt holds the tracked paths, the file count
+# of each directory git does not list into, and the paths at risk, separated
+# by empty lines; expected.txt holds the count phrase, then the entry lines.
+# A path is written as cs lists it, one per line: a newline in a name as "\n",
+# a backslash as "\\". The fixture holds a name with a newline and one with
+# an escape and a tab, each control character printing as "?", and a
+# directory named in two-byte characters, which pads by characters.
+test_untracked_listing_renders_the_shared_fixture() {
+    local fixture="$SCRIPT_DIR/fixtures/untracked-listing" out status=0
+    out=$( source "$SCRIPT_DIR/../lib/30-worktree.sh"
+           _untracked_listing_render < "$fixture/input.txt" ) || status=$?
+    assert_eq "0" "$status" "the fixture renders: $out" || return 1
+    assert_eq "$(cat "$fixture/expected.txt")" "$out" "the listing matches the shared fixture" || return 1
+}
+
+run_test test_untracked_listing_renders_the_shared_fixture
 run_test test_worktree_of_worktree_refused
 run_test test_worktree_create_succeeds_with_untracked_base
 run_test test_worktree_reopen_preserves_project_claude_md
@@ -2076,8 +2467,8 @@ test_retire_ignored_mode_refuses_a_topic_both_sides_edited() {
     assert_eq "untracked" "$(_feat_field "$line" 10)" "state: $line" || return 1
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
     assert_eq "1" "$status" "the retire refuses: $output" || return 1
-    assert_output_contains "$output" "The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:
-.cs/memory/kept.md" "the refusal names the topic" || return 1
+    assert_eq "Error: The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:
+.cs/memory/kept.md" "$output" "the refusal names the topic and nothing else" || return 1
     assert_eq "kept topic, feature edit" "$(cat "$wt/.cs/memory/kept.md")" "the feature's edit is still there" || return 1
     assert_eq "kept topic, base edit" "$(cat "$base_dir/.cs/memory/kept.md")" "the base's edit is untouched" || return 1
     assert_file_not_exists "$base_dir/.cs/memory/new.md" "nothing was fused" || return 1
@@ -2290,7 +2681,8 @@ test_retire_and_features_name_a_locked_base_vault_before_any_record() {
     assert_eq "untracked" "$(_feat_field "$line" 10)" "untracked work comes first, as in the retire: $line" || return 1
     assert_eq "1" "$(_feat_field "$line" 7)" "counting only that file: $line" || return 1
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
-    assert_output_contains "$output" "Worktree has untracked files that removal would destroy" "the retire agrees: $output" || return 1
+    assert_eq "Error: Worktree has 1 untracked file that removal would destroy; commit or remove it first:
+    scratch.txt" "$(printf '%s\n' "$output" | tail -n 2)" "the retire agrees: $output" || return 1
     rm "$wt/scratch.txt"
     status=0
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
@@ -2453,8 +2845,8 @@ test_retire_ignored_mode_refuses_a_log_directory_that_is_a_link() {
         status=0
         output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
         assert_eq "1" "$status" "the retire refuses a .cs/$dir link: $output" || return 1
-        assert_output_contains "$output" "Error: The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:
-.cs/$dir" "the refusal says why for .cs/$dir" || return 1
+        assert_eq "Error: The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:
+.cs/$dir" "$output" "the refusal says why for .cs/$dir" || return 1
         assert_eq ".cs/$dir" "$(printf '%s\n' "$output" | awk 'listed; /again:$/ { listed = 1 }')" \
             "the refusal names only the linked .cs/$dir" || return 1
         assert_eq "1" "$(_feat_field "$line" 7)" "the features screen counts the .cs/$dir link: $line" || return 1
@@ -2543,12 +2935,12 @@ test_retire_ignored_mode_refuses_records_it_cannot_carry() {
     assert_eq "5" "$(_feat_field "$line" 7)" "five files at risk: $line" || return 1
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
     assert_eq "1" "$status" "the retire refuses: $output" || return 1
-    assert_output_contains "$output" "Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:
+    assert_eq "Error: The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:
 .cs/README.md
 .cs/brief.md
 .cs/plans/base-plan.md
 .cs/plans/link.md
-.cs/scratch-repo/" "the refusal names all five" || return 1
+.cs/scratch-repo/" "$output" "the refusal names all five and nothing else" || return 1
     assert_eq "kept" "$(git -C "$wt/.cs/scratch-repo" show HEAD:kept.txt 2>/dev/null)" "the nested repository keeps its history" || return 1
     assert_eq "base plan, base edit" "$(cat "$base_dir/.cs/plans/base-plan.md")" "the base's plan is untouched" || return 1
     assert_file_not_exists "$base_dir/.cs/plans/new.md" "nothing was fused" || return 1
@@ -2569,8 +2961,8 @@ test_retire_ignored_mode_refuses_a_cs_that_is_itself_a_repository() {
     sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
     assert_eq "1" "$status" "the retire refuses: $output" || return 1
-    assert_output_contains "$output" "then run /finish t1 again:
-.cs/" "the refusal names .cs itself" || return 1
+    assert_eq "Error: The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:
+.cs/" "$output" "the refusal names .cs itself and nothing else" || return 1
     assert_eq "notes history" "$(git -C "$wt/.cs" log -1 --format=%s 2>/dev/null)" ".cs keeps its history" || return 1
     assert_not_exists "$base_dir/.cs/.git" "the base's .cs gets no .git" || return 1
 }
@@ -2599,12 +2991,14 @@ test_retire_tracked_mode_refuses_untracked_session_records() {
     assert_eq "5" "$(_feat_field "$line" 7)" "five files at risk: $line" || return 1
     output=$("$CS_BIN" myproj -retire-feature t1 "$sha" 2>&1) || status=$?
     assert_eq "1" "$status" "the retire refuses: $output" || return 1
-    assert_output_contains "$output" "Worktree has untracked files that removal would destroy; commit or remove them first:
-.cs/handoffs/h.md
-.cs/memory/narrative.someone.md
-.cs/memory/new-topic.md
-.cs/plans/feat-plan.md
-.cs/summary.md" "the refusal names all five" || return 1
+    # git tracks nothing under these three directories, so each is one entry.
+    assert_eq "" "$(git -C "$wt" ls-files .cs/memory .cs/handoffs .cs/plans)" "fixture: git tracks nothing there" || return 1
+    assert_eq "Error: Worktree has 5 untracked files that removal would destroy; commit or remove them first:
+    .cs/memory/    (2 files)
+    .cs/handoffs/  (1 file)
+    .cs/plans/     (1 file)
+    .cs/summary.md" "$output" "the refusal counts all five and names where they are" || return 1
+    assert_eq "feature memory/new-topic.md" "$(cat "$wt/.cs/memory/new-topic.md")" "the topic is still there" || return 1
     assert_eq "feature plans/feat-plan.md" "$(cat "$wt/.cs/plans/feat-plan.md")" "the plan is still there" || return 1
     # Positive control: committed, they land with the feature and the worktree retires.
     (cd "$wt" && git add .cs && git commit -q -m "session records")
@@ -2631,8 +3025,8 @@ test_retire_refuses_a_user_authored_claude_local_md() {
     sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
     assert_eq "1" "$status" "the retire refuses: $output" || return 1
-    assert_output_contains "$output" "Worktree has untracked files that removal would destroy; commit or remove them first:
-CLAUDE.local.md" "the refusal names the file" || return 1
+    assert_eq "Error: Worktree has 1 untracked file that removal would destroy; commit or remove it first:
+    CLAUDE.local.md" "$output" "the refusal names the file" || return 1
     assert_eq "my own notes for this checkout" "$(cat "$wt/CLAUDE.local.md")" "the notes are still there" || return 1
 }
 
@@ -3259,8 +3653,8 @@ run_test test_retire_ignored_mode_refuses_when_the_inherited_directory_cannot_be
 # The list of files a removal would destroy is read as bytes. In a locale
 # that cannot decode a name, a failed conversion must never read as "nothing
 # to lose": the retire would force-remove the worktree and the user's
-# untracked file with it.
-test_retire_keeps_untracked_work_when_a_name_does_not_decode_in_the_locale() {
+# ignored file with it instead of moving it to the trash.
+test_retire_trashes_ignored_work_when_a_name_does_not_decode_in_the_locale() {
     # A multibyte locale that is not UTF-8 and in which bash still parses cs.
     local loc
     loc=$(locale -a 2>/dev/null | grep -m1 -x -e 'zh_CN\.GBK' -e 'ja_JP\.SJIS' -e 'zh_TW\.Big5') || true
@@ -3272,17 +3666,33 @@ test_retire_keeps_untracked_work_when_a_name_does_not_decode_in_the_locale() {
     echo "done" > "$wt/result.txt"
     (cd "$wt" && git add result.txt && git commit -q -m "task")
     echo "snow" > "$wt/.cs/memory/$(printf '\342\230\203').md"
+    # The records fused at retire are UTF-8 whatever the locale: a pointer
+    # and a narrative note holding a character GBK cannot decode.
+    printf -- '- [Snow \342\200\224 notes](snow.md): a topic\n' >> "$wt/.cs/memory/MEMORY.md"
+    echo "snow topic" > "$wt/.cs/memory/snow.md"
+    printf -- '---\nname: n\n---\nbase note\n' > "$base_dir/.cs/memory/narrative.alice.md"
+    printf -- '---\nname: n\n---\nfeature note \342\200\224 done\n' > "$wt/.cs/memory/narrative.alice.md"
     sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
     # Ignored, so git lists it after the .cs entries: past the name the
     # conversion stops on.
     echo "valuable" > "$wt/secret.env"
-    output=$(LC_ALL="$loc" "$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
-    assert_eq "valuable" "$(cat "$wt/secret.env" 2>/dev/null)" "the ignored file is still there" || return 1
-    assert_eq "1" "$status" "the retire refuses: $output" || return 1
-    assert_output_contains "$output" "secret.env" "and names the file" || return 1
+    local bin
+    bin=$(fake_trash_bin moves trash)
+    output=$(PATH="$bin:$PATH" LC_ALL="$loc" "$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire proceeds: $output" || return 1
+    assert_eq "$wt/secret.env" "$(cat "$TEST_TMPDIR/trash.log")" "the ignored file goes to the trash" || return 1
+    assert_eq "valuable" "$(cat "$TEST_TMPDIR/trash-bin/1-secret.env")" "intact" || return 1
+    assert_eq "- [Snow $(printf '\342\200\224') notes](snow.md): a topic" "$(tail -n 1 "$base_dir/.cs/memory/MEMORY.md")" \
+        "the feature's pointer reaches the base index" || return 1
+    assert_eq "---
+name: n
+---
+base note
+feature note $(printf '\342\200\224') done" "$(cat "$base_dir/.cs/memory/narrative.alice.md")" \
+        "the feature's narrative note is appended to the base's" || return 1
 }
 
-run_test test_retire_keeps_untracked_work_when_a_name_does_not_decode_in_the_locale
+run_test test_retire_trashes_ignored_work_when_a_name_does_not_decode_in_the_locale
 
 test_retire_fuse_survives_a_torn_timeline_tail() {
     # A crash mid-append leaves a last line with no newline. Appending onto it
@@ -3427,9 +3837,9 @@ test_retire_refuses_untracked_and_ignored_work_inside_a_submodule() {
         land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
     assert_eq "1" "$status" "the retire refuses: $output" || return 1
-    assert_output_contains "$output" "Worktree has untracked files that removal would destroy; commit or remove them first:
-sub/notes.txt
-sub/secret.env" "the refusal names both files inside the submodule" || return 1
+    assert_eq "Error: Worktree has 2 untracked files that removal would destroy; commit or remove them first:
+    sub/notes.txt
+    sub/secret.env" "$output" "the refusal names both files inside the submodule" || return 1
     assert_eq "secret" "$(cat "$wt/sub/secret.env" 2>/dev/null)" "the ignored file is still there" || return 1
     # Positive control: an initialised submodule holding nothing extra retires.
     rm "$wt/sub/secret.env" "$wt/sub/notes.txt"
@@ -3440,6 +3850,80 @@ sub/secret.env" "the refusal names both files inside the submodule" || return 1
 }
 
 run_test test_retire_refuses_untracked_and_ignored_work_inside_a_submodule
+
+# A landed feature proj@t1 whose base holds the submodule vendor/sub,
+# initialised in the base, and ignores *.log. git worktree add leaves
+# vendor/sub empty in the feature's worktree: the submodule is never
+# populated there. Prints the landed sha.
+_landed_feature_beside_an_unpopulated_submodule() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" lib="$TEST_TMPDIR/sublib"
+    mkdir -p "$lib"
+    (cd "$lib" && git init -q && git config core.autocrlf false && echo lib > lib.txt \
+        && git add -A && git commit -q -m lib) || return 1
+    mkdir -p "$base_dir/.cs"/{memory,local}
+    echo "# P" > "$base_dir/README.md"
+    printf '.cs/\n*.log\n' > "$base_dir/.gitignore"
+    (cd "$base_dir" && git init -q && git config core.autocrlf false && git add -A && git commit -q -m init \
+        && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always \
+            git submodule add -q "$lib" vendor/sub && git commit -q -m "add submodule") || return 1
+    cs_launch "proj@t1"
+    [ -d "$wt/vendor/sub" ] && [ ! -e "$wt/vendor/sub/.git" ] && [ -z "$(ls -A "$wt/vendor/sub")" ] || return 1
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task") || return 1
+    # The integrate updates submodules in its temporary worktree.
+    GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always land_feature proj t1
+}
+
+# git lists nothing inside a directory its index holds as a submodule, so
+# files written into one the worktree never populated are invisible to git
+# status, and removal destroys them: the retire refuses and names them, and
+# readiness counts them. The trash is never run.
+test_retire_refuses_files_in_a_submodule_directory_never_populated() {
+    local wt="$CS_SESSIONS_ROOT/proj@t1" sha bin line output status=0
+    sha=$(_landed_feature_beside_an_unpopulated_submodule) || { echo "  FAIL: submodule fixture"; return 1; }
+    bin=$(fake_trash_bin moves trash)
+    mkdir -p "$wt/vendor/sub/build"
+    echo "notes" > "$wt/vendor/sub/build/notes.txt"
+    echo "KEY=value" > "$wt/vendor/sub/local.env"
+    assert_eq "" "$(git -C "$wt" status --porcelain --ignored -- vendor)" "fixture: git status shows nothing there" || return 1
+    line=$("$CS_BIN" proj -features --porcelain 2>&1)
+    assert_eq "2" "$(_feat_field "$line" 7)" "readiness counts both files: $line" || return 1
+    output=$(PATH="$bin:$PATH" "$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_eq "Error: Worktree has 2 untracked files that removal would destroy; commit or remove them first:
+    vendor/sub/build/  (1 file)
+    vendor/sub/local.env" "$output" "the refusal names both files under the submodule's path" || return 1
+    assert_eq "notes" "$(cat "$wt/vendor/sub/build/notes.txt")" "the file is still there" || return 1
+    assert_not_exists "$TEST_TMPDIR/trash.log" "the trash command is never run" || return 1
+    # Positive control: the empty submodule directory retires.
+    rm -r "$wt/vendor/sub/build" "$wt/vendor/sub/local.env"
+    status=0
+    output=$(PATH="$bin:$PATH" "$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "an empty submodule directory retires: $output" || return 1
+    assert_not_exists "$wt" "the worktree is retired" || return 1
+}
+
+run_test test_retire_refuses_files_in_a_submodule_directory_never_populated
+
+# An ignored file beside a submodule the worktree never populated is an
+# entry of its own: the directory holding both is not collapsed, so the
+# trash gets that file and nothing at or above the submodule's path.
+test_retire_trashes_only_the_ignored_file_beside_an_unpopulated_submodule() {
+    local wt="$CS_SESSIONS_ROOT/proj@t1" sha bin output status=0
+    sha=$(_landed_feature_beside_an_unpopulated_submodule) || { echo "  FAIL: submodule fixture"; return 1; }
+    bin=$(fake_trash_bin moves trash)
+    echo "trace" > "$wt/vendor/trace.log"
+    output=$(PATH="$bin:$PATH" "$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire proceeds: $output" || return 1
+    assert_eq "MEMORY.md: appended 1 pointer(s) from the feature (base lines kept)
+Moved 1 ignored file to the system trash:
+    $wt/vendor/trace.log
+retired t1 $sha" "$output" "retire names the one file it moved" || return 1
+    assert_eq "$wt/vendor/trace.log" "$(cat "$TEST_TMPDIR/trash.log")" "the trash gets the file, not its directory" || return 1
+    assert_eq "trace" "$(cat "$TEST_TMPDIR/trash-bin/1-trace.log")" "the file is in the trash, intact" || return 1
+}
+
+run_test test_retire_trashes_only_the_ignored_file_beside_an_unpopulated_submodule
 
 # A submodule keeps its own index, so a flagged file inside it hides its edit
 # from the submodule's git diff and from the worktree's: removal destroys it.
@@ -3690,6 +4174,21 @@ test_features_untracked_is_not_reported_as_dirty() {
 }
 
 run_test test_features_untracked_is_not_reported_as_dirty
+
+# Readiness agrees with the retire gate: an ignored file does not block a
+# retire (it goes to the trash), so it is not counted as untracked work.
+test_features_does_not_count_ignored_files_as_untracked() {
+    create_test_session_with_git "myproj" > /dev/null
+    cs_launch "myproj@fix-auth"
+    local wt="$CS_SESSIONS_ROOT/myproj@fix-auth" line
+    printf '.env\n' >> "$(git -C "$wt" rev-parse --git-common-dir)/info/exclude"
+    echo "KEY=value" > "$wt/.env"
+    line=$("$CS_BIN" "myproj" -features --porcelain 2>/dev/null)
+    assert_eq "0" "$(_feat_field "$line" 7)" "an ignored file is not untracked work" || return 1
+    assert_eq "ready" "$(_feat_field "$line" 10)" "the feature is ready" || return 1
+}
+
+run_test test_features_does_not_count_ignored_files_as_untracked
 
 # The features screen reads the same fact the retire refuses on.
 test_features_reports_an_edit_git_diff_does_not_show_as_dirty() {

@@ -436,25 +436,21 @@ _volume_mounted_under() {  # dir
 }
 
 # Paths in a worktree session that git does not track (untracked or
-# ignored), as one comma-separated line; git worktree remove --force
-# deletes them with no copy on the branch. cs's own .cs/, .claude/ and
-# CLAUDE.local.md, and Finder's .DS_Store, are left out.
-_worktree_untracked_entries() {  # worktree_dir
-    local dir="$1" status line path top paths="" out=""
-    status=$(git -C "$dir" status --porcelain --ignored --untracked-files=normal) \
-        || error "git status failed in $dir; refusing to remove what it cannot list"
-    while IFS= read -r line; do
-        case "$line" in '?? '*|'!! '*) ;; *) continue ;; esac
-        path="${line:3}"
-        top="${path%%/*}"
-        case "$top" in .cs|.claude|CLAUDE.local.md|.DS_Store) continue ;; esac
-        paths="$paths$path"$'\n'
-    done <<< "$status"
-    [ -n "$paths" ] || return 0
-    while IFS= read -r path; do
-        out="${out:+$out, }$path"
-    done <<< "$(printf '%s' "$paths" | env LC_ALL=C sort)"
-    printf '%s' "$out"
+# ignored), one per line (_names_as_lines); git worktree remove --force
+# deletes them with no copy on the branch. The set retire reads: the
+# worktree's own untracked and ignored files and every file inside a
+# submodule, without cs's own bookkeeping (_without_cs_bookkeeping), so a
+# CLAUDE.local.md of the user's own and, in tracked mode, an untracked file
+# under .cs are listed. Fails when git cannot list them.
+_worktree_untracked_paths() {  # worktree_dir
+    local listing more
+    listing=$(_worktree_others "$1") || return 1
+    more=$(_worktree_others "$1" --ignored) || return 1
+    [ -z "$more" ] || listing="${listing:+$listing$'\n'}$more"
+    more=$(_submodule_others "$1" "") || return 1
+    [ -z "$more" ] || more=$(printf '%s\n' "$more" | _without_cs_bookkeeping "$1") || return 1
+    [ -z "$more" ] || listing="${listing:+$listing$'\n'}$more"
+    [ -z "$listing" ] || printf '%s\n' "$listing"
 }
 
 _remove_one_session() {
@@ -523,16 +519,26 @@ _remove_one_session() {
             if [ -d "$wt_base_dir" ] && [ -f "$session_dir/.git" ]; then
                 local wt_branch
                 wt_branch=$(_read_local_state "$session_dir/.cs/local/state" task_branch)
-                local untracked
-                untracked=$(_worktree_untracked_entries "$session_dir")
+                local untracked untracked_listing="" nl=$'\n'
+                untracked=$(_worktree_untracked_paths "$session_dir") \
+                    || error "git could not list the files in $session_dir; refusing to remove what it cannot list"
+                if [ -n "$untracked" ]; then
+                    untracked_listing=$(_untracked_listing "$session_dir" "$untracked") \
+                        || error "cs could not count the files git does not track in $session_dir; refusing to remove what it cannot list"
+                fi
                 if [ -n "$untracked" ] && [ -n "$force" ] && [ -z "$delete_files" ]; then
-                    error "Worktree session '$session_name' holds files git does not track: $untracked. Add --delete-files to remove them with --force"
+                    local untracked_count="${untracked_listing%%"$nl"*}" them=them
+                    [ "$untracked_count" != "1 file" ] || them=it
+                    error "Worktree session '$session_name' holds $untracked_count git does not track:
+${untracked_listing#*"$nl"}
+Add --delete-files to remove $them with --force"
                 fi
                 local confirm
                 if [ -n "$force" ]; then
                     confirm="y"
                 else
-                    [ -z "$untracked" ] || printf '%bAlso deletes files git does not track: %s%b\n' "$RED" "$untracked" "$NC" >&2
+                    [ -z "$untracked" ] || printf '%bAlso deletes %s git does not track:\n%s%b\n' "$RED" \
+                        "${untracked_listing%%"$nl"*}" "${untracked_listing#*"$nl"}" "$NC" >&2
                     read -r -p $'\033[0;31mRemove worktree session '"'$session_name'"$'? Uncommitted work in it is discarded. [y/N] \033[0m' confirm
                 fi
                 if [[ ! "$confirm" =~ ^[Yy]$ ]]; then

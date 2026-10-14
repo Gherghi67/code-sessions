@@ -407,8 +407,11 @@ test_remove_force_refuses_worktree_with_untracked_or_ignored_files() {
     local wt out rc=0
     wt=$(_worktree_with_user_files wf1)
     out=$("$CS_BIN" -rm wf1@t --force </dev/null 2>&1) || rc=$?
-    [ "$rc" -ne 0 ] || { echo "  FAIL: --force removed a worktree holding untracked files"; return 1; }
-    assert_output_contains "$out" "journal.img, notes.txt" "refusal names the untracked and ignored files" || return 1
+    assert_eq "1" "$rc" "--force refuses a worktree holding untracked files" || return 1
+    assert_eq "Error: Worktree session 'wf1@t' holds 2 files git does not track:
+    journal.img
+    notes.txt
+Add --delete-files to remove them with --force" "$out" "refusal counts and lists the untracked and ignored files" || return 1
     assert_file_exists "$wt/journal.img" "ignored file must survive the refusal" || return 1
 }
 
@@ -423,8 +426,239 @@ test_remove_worktree_confirm_lists_untracked_files() {
     local wt out
     wt=$(_worktree_with_user_files wf3)
     out=$(printf 'n\n' | CS_ASSUME_TTY=1 "$CS_BIN" -rm wf3@t 2>&1) || return 1
-    assert_output_contains "$out" "Also deletes files git does not track: journal.img, notes.txt" "confirm lists untracked and ignored files" || return 1
+    assert_eq "Also deletes 2 files git does not track:
+    journal.img
+    notes.txt
+Cancelled" "$out" "confirm counts and lists untracked and ignored files" || return 1
     assert_dir "$wt" "declined worktree must survive" || return 1
+}
+
+# A worktree session shaped like a web app after a dev run: ignored build
+# trees holding thousands of files, an untracked screenshot directory beside
+# tracked source, and two loose files. Echoes the worktree path.
+_worktree_with_build_trees() {  # base-name
+    local base="$CS_SESSIONS_ROOT/$1" wt="$CS_SESSIONS_ROOT/$1@t"
+    create_test_session "$1" >/dev/null
+    printf 'node_modules/\n.svelte-kit/\n.env\n.cs/local/\n' > "$base/.gitignore"
+    mkdir -p "$base/apps/web/src"
+    echo 'export {}' > "$base/apps/web/src/app.ts"
+    git -C "$base" init -q
+    git -C "$base" add CLAUDE.md .gitignore apps
+    git -C "$base" -c user.email=t@example.com -c user.name=t commit -qm seed
+    git -C "$base" worktree add -q "$wt" -b "cs/$1-t"
+    mkdir -p "$wt/.cs/local" "$wt/apps/web/node_modules/pkg" "$wt/apps/web/.svelte-kit/out" \
+        "$wt/apps/web/src/__screenshots__"
+    (cd "$wt/apps/web/node_modules/pkg" && touch f{1..3000})
+    (cd "$wt/apps/web/.svelte-kit/out" && touch f{1..1200})
+    touch "$wt/apps/web/src/__screenshots__/a.png" "$wt/apps/web/src/__screenshots__/b.png"
+    echo KEY=value > "$wt/apps/web/.env"
+    echo draft > "$wt/notes.txt"
+    echo "$wt"
+}
+
+# A whole ignored or untracked tree is one line carrying its file count, the
+# header carries the total, and loose files follow by path.
+test_remove_worktree_confirm_collapses_untracked_trees() {
+    local wt out
+    wt=$(_worktree_with_build_trees wf4)
+    out=$(printf 'n\n' | CS_ASSUME_TTY=1 "$CS_BIN" -rm wf4@t 2>&1) || return 1
+    assert_eq "Also deletes 4,204 files git does not track:
+    apps/web/node_modules/         (3,000 files)
+    apps/web/.svelte-kit/          (1,200 files)
+    apps/web/src/__screenshots__/  (2 files)
+    apps/web/.env
+    notes.txt
+Cancelled" "$out" "confirm collapses each untracked tree to one counted line" || return 1
+    assert_dir "$wt" "declined worktree must survive" || return 1
+}
+
+test_remove_force_refusal_collapses_untracked_trees() {
+    local wt out rc=0
+    wt=$(_worktree_with_build_trees wf5)
+    out=$("$CS_BIN" -rm wf5@t --force </dev/null 2>&1) || rc=$?
+    assert_eq "1" "$rc" "--force refuses a worktree holding untracked trees" || return 1
+    assert_eq "Error: Worktree session 'wf5@t' holds 4,204 files git does not track:
+    apps/web/node_modules/         (3,000 files)
+    apps/web/.svelte-kit/          (1,200 files)
+    apps/web/src/__screenshots__/  (2 files)
+    apps/web/.env
+    notes.txt
+Add --delete-files to remove them with --force" "$out" "refusal collapses each untracked tree to one counted line" || return 1
+    assert_file_exists "$wt/apps/web/.env" "ignored file must survive the refusal" || return 1
+}
+
+# git lists a repository nested in the worktree as one path ending in "/",
+# untracked or ignored; its count is every file under it, its .git included.
+test_remove_worktree_confirm_counts_the_files_in_a_nested_repository() {
+    local wt out other="$TEST_TMPDIR/other"
+    wt=$(_worktree_with_user_files wf6)
+    rm "$wt/notes.txt" "$wt/journal.img"
+    git init -q "$other"
+    printf 'vendor/\n' >> "$(git -C "$wt" rev-parse --git-common-dir)/info/exclude"
+    mkdir -p "$wt/dep" "$wt/vendor/dep2"
+    printf 'gitdir: %s\n' "$other/.git" > "$wt/dep/.git"
+    printf 'gitdir: %s\n' "$other/.git" > "$wt/vendor/dep2/.git"
+    touch "$wt/dep/a" "$wt/dep/b" "$wt/vendor/dep2/c"
+    out=$(printf 'n\n' | CS_ASSUME_TTY=1 "$CS_BIN" -rm wf6@t 2>&1) || return 1
+    assert_eq "Also deletes 5 files git does not track:
+    dep/     (3 files)
+    vendor/  (2 files)
+Cancelled" "$out" "a nested repository counts every file under it" || return 1
+}
+
+test_remove_force_refusal_names_one_file_as_it() {
+    local wt out rc=0
+    wt=$(_worktree_with_user_files wf7)
+    rm "$wt/journal.img"
+    out=$("$CS_BIN" -rm wf7@t --force </dev/null 2>&1) || rc=$?
+    assert_eq "1" "$rc" "--force refuses a worktree holding an untracked file" || return 1
+    assert_eq "Error: Worktree session 'wf7@t' holds 1 file git does not track:
+    notes.txt
+Add --delete-files to remove it with --force" "$out" "the refusal names one file as it" || return 1
+}
+
+# A worktree's .claude/ holds the settings file cs writes beside what the
+# user keeps there. Only the settings file is cs's: the rest is listed like
+# any other file git does not track, as retire lists it.
+test_remove_worktree_lists_the_users_files_under_dot_claude() {
+    local wt out rc=0
+    wt=$(_worktree_with_user_files wf8)
+    rm "$wt/notes.txt" "$wt/journal.img"
+    mkdir -p "$wt/.claude/commands" "$wt/.claude/agents"
+    echo "ship" > "$wt/.claude/commands/ship.md"
+    git -C "$wt" add .claude/commands/ship.md
+    git -C "$wt" -c user.email=t@example.com -c user.name=t commit -qm "a project command"
+    echo '{}' > "$wt/.claude/settings.local.json"
+    echo "review" > "$wt/.claude/agents/reviewer.md"
+    out=$("$CS_BIN" -rm wf8@t --force </dev/null 2>&1) || rc=$?
+    assert_eq "1" "$rc" "--force refuses a worktree holding the user's own .claude files: $out" || return 1
+    assert_eq "Error: Worktree session 'wf8@t' holds 1 file git does not track:
+    .claude/agents/  (1 file)
+Add --delete-files to remove it with --force" "$out" "the refusal lists the user's file and not cs's settings" || return 1
+    assert_file_exists "$wt/.claude/agents/reviewer.md" "the user's file survives the refusal" || return 1
+}
+
+# Finder's .DS_Store is no one's work at any depth, as retire treats it: it
+# neither counts in a listing nor makes --force refuse.
+test_remove_worktree_leaves_out_ds_store_at_any_depth() {
+    local wt out rc=0
+    wt=$(_worktree_with_user_files wf9)
+    rm "$wt/notes.txt" "$wt/journal.img"
+    mkdir -p "$wt/docs/deep"
+    echo "draft" > "$wt/docs/deep/notes.md"
+    : > "$wt/docs/deep/.DS_Store"
+    : > "$wt/docs/.DS_Store"
+    out=$("$CS_BIN" -rm wf9@t --force </dev/null 2>&1) || rc=$?
+    assert_eq "1" "$rc" "--force refuses over the user's file: $out" || return 1
+    assert_eq "Error: Worktree session 'wf9@t' holds 1 file git does not track:
+    docs/  (1 file)
+Add --delete-files to remove it with --force" "$out" "the listing counts the user's file and no .DS_Store" || return 1
+    rm "$wt/docs/deep/notes.md"
+    rc=0
+    out=$("$CS_BIN" -rm wf9@t --force </dev/null 2>&1) || rc=$?
+    assert_eq "0" "$rc" "a worktree holding only .DS_Store files goes with --force: $out" || return 1
+    assert_not_exists "$wt" "the worktree is removed" || return 1
+}
+
+# cs writes the root CLAUDE.local.md with its protocol sentinel, and cs's
+# exclude ignores that name. One without the sentinel is the user's own, as
+# retire treats it: it is listed, and --force refuses over it.
+test_remove_worktree_lists_a_user_authored_claude_local_md() {
+    local wt out rc=0
+    wt=$(_worktree_with_user_files wf10)
+    rm "$wt/notes.txt" "$wt/journal.img"
+    echo 'CLAUDE.local.md' >> "$(git -C "$wt" rev-parse --git-common-dir)/info/exclude"
+    echo "my own notes for this checkout" > "$wt/CLAUDE.local.md"
+    out=$("$CS_BIN" -rm wf10@t --force </dev/null 2>&1) || rc=$?
+    assert_eq "1" "$rc" "--force refuses over the user's CLAUDE.local.md: $out" || return 1
+    assert_eq "Error: Worktree session 'wf10@t' holds 1 file git does not track:
+    CLAUDE.local.md
+Add --delete-files to remove it with --force" "$out" "the refusal names the file" || return 1
+    printf '<!-- cs:session-protocol -->\n# Session protocol\n' > "$wt/CLAUDE.local.md"
+    rc=0
+    out=$("$CS_BIN" -rm wf10@t --force </dev/null 2>&1) || rc=$?
+    assert_eq "0" "$rc" "cs's own protocol file goes with --force: $out" || return 1
+    assert_not_exists "$wt" "the worktree is removed" || return 1
+}
+
+# An initialised submodule is a checkout of its own: git ls-files in the
+# worktree does not list the files inside it, and removal destroys them.
+# They are listed, as retire lists them, each as an entry of its own.
+test_remove_worktree_lists_files_inside_an_initialised_submodule() {
+    local wt out rc=0 lib="$TEST_TMPDIR/sublib"
+    wt=$(_worktree_with_user_files wf11)
+    rm "$wt/notes.txt" "$wt/journal.img"
+    mkdir -p "$lib"
+    (cd "$lib" && git init -q && echo lib > lib.txt && printf '*.env\n' > .gitignore && git add -A \
+        && git -c user.email=t@example.com -c user.name=t commit -q -m lib) || { echo "  FAIL: submodule fixture"; return 1; }
+    (cd "$wt" && git -c protocol.file.allow=always submodule add -q "$lib" sub \
+        && git -c user.email=t@example.com -c user.name=t commit -q -m "add submodule") \
+        || { echo "  FAIL: submodule fixture"; return 1; }
+    echo "secret" > "$wt/sub/secret.env"
+    echo "notes" > "$wt/sub/notes.txt"
+    out=$("$CS_BIN" -rm wf11@t --force </dev/null 2>&1) || rc=$?
+    assert_eq "1" "$rc" "--force refuses over files inside the submodule: $out" || return 1
+    assert_eq "Error: Worktree session 'wf11@t' holds 2 files git does not track:
+    sub/notes.txt
+    sub/secret.env
+Add --delete-files to remove them with --force" "$out" "the refusal names both files inside the submodule" || return 1
+    assert_eq "secret" "$(cat "$wt/sub/secret.env")" "the ignored file survives the refusal" || return 1
+}
+
+# git lists nothing inside a directory its index holds as a submodule, so
+# files written into one the worktree never populated are listed under the
+# submodule's path, as retire refuses over them, and an ignored file beside
+# it is an entry of its own: the directory holding the submodule is not
+# collapsed.
+test_remove_worktree_lists_files_in_a_submodule_directory_never_populated() {
+    local wt out rc=0 lib="$TEST_TMPDIR/sublib"
+    wt=$(_worktree_with_user_files wf13)
+    rm "$wt/notes.txt" "$wt/journal.img"
+    mkdir -p "$lib"
+    (cd "$lib" && git init -q && echo lib > lib.txt && git add -A \
+        && git -c user.email=t@example.com -c user.name=t commit -q -m lib) || { echo "  FAIL: submodule fixture"; return 1; }
+    (cd "$wt" && git -c protocol.file.allow=always submodule add -q "$lib" vendor/sub \
+        && git -c user.email=t@example.com -c user.name=t commit -q -m "add submodule" \
+        && git submodule deinit -q -f vendor/sub) || { echo "  FAIL: submodule fixture"; return 1; }
+    assert_eq "" "$(ls -A "$wt/vendor/sub")" "fixture: the submodule directory is empty" || return 1
+    mkdir -p "$wt/vendor/sub/build"
+    echo "notes" > "$wt/vendor/sub/build/notes.txt"
+    echo "KEY=value" > "$wt/vendor/sub/local.env"
+    echo "trace" > "$wt/vendor/trace.img"
+    out=$("$CS_BIN" -rm wf13@t --force </dev/null 2>&1) || rc=$?
+    assert_eq "1" "$rc" "--force refuses over the files in the submodule directory: $out" || return 1
+    assert_eq "Error: Worktree session 'wf13@t' holds 3 files git does not track:
+    vendor/sub/build/  (1 file)
+    vendor/sub/local.env
+    vendor/trace.img
+Add --delete-files to remove them with --force" "$out" "the refusal names each file, the submodule's directory never collapsed" || return 1
+    assert_eq "KEY=value" "$(cat "$wt/vendor/sub/local.env")" "the file survives the refusal" || return 1
+}
+
+# A repo that tracks .cs carries it through git (tracked mode), so an
+# untracked file under .cs is the user's work like one anywhere else, as
+# retire treats it. In ignored mode the whole .cs is cs's.
+test_remove_tracked_mode_worktree_lists_untracked_session_records() {
+    local wt out rc=0
+    wt=$(_worktree_with_user_files wf12)
+    rm "$wt/notes.txt" "$wt/journal.img"
+    echo "# records" > "$wt/.cs/README.md"
+    git -C "$wt" add .cs/README.md
+    git -C "$wt" -c user.email=t@example.com -c user.name=t commit -qm "session records"
+    printf 'cs_mode: tracked\n' > "$wt/.cs/local/state"
+    mkdir -p "$wt/.cs/memory"
+    echo "topic" > "$wt/.cs/memory/new-topic.md"
+    : > "$wt/.cs/session.lock"
+    out=$("$CS_BIN" -rm wf12@t --force </dev/null 2>&1) || rc=$?
+    assert_eq "1" "$rc" "--force refuses over an untracked record in tracked mode: $out" || return 1
+    assert_eq "Error: Worktree session 'wf12@t' holds 1 file git does not track:
+    .cs/memory/  (1 file)
+Add --delete-files to remove it with --force" "$out" "the refusal names the record and not cs's lock or state" || return 1
+    printf 'cs_mode: ignored\n' > "$wt/.cs/local/state"
+    rc=0
+    out=$("$CS_BIN" -rm wf12@t --force </dev/null 2>&1) || rc=$?
+    assert_eq "0" "$rc" "in ignored mode .cs is cs's and goes with --force: $out" || return 1
+    assert_not_exists "$wt" "the worktree is removed" || return 1
 }
 
 # The pins and recipient digests `cs -secrets age add` keeps for a session
@@ -685,6 +919,16 @@ run_test test_remove_confirm_lists_foreign_entries
 run_test test_remove_force_refuses_worktree_with_untracked_or_ignored_files
 run_test test_remove_force_with_delete_files_removes_worktree
 run_test test_remove_worktree_confirm_lists_untracked_files
+run_test test_remove_worktree_confirm_collapses_untracked_trees
+run_test test_remove_force_refusal_collapses_untracked_trees
+run_test test_remove_worktree_confirm_counts_the_files_in_a_nested_repository
+run_test test_remove_force_refusal_names_one_file_as_it
+run_test test_remove_worktree_lists_the_users_files_under_dot_claude
+run_test test_remove_worktree_leaves_out_ds_store_at_any_depth
+run_test test_remove_worktree_lists_a_user_authored_claude_local_md
+run_test test_remove_worktree_lists_files_inside_an_initialised_submodule
+run_test test_remove_worktree_lists_files_in_a_submodule_directory_never_populated
+run_test test_remove_tracked_mode_worktree_lists_untracked_session_records
 run_test test_remove_force_on_adopted_removes_only_the_link
 run_test test_remove_refuses_while_the_vault_is_mounted_inside
 run_test test_remove_goes_ahead_once_the_vault_is_unmounted

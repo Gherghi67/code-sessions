@@ -144,7 +144,11 @@ what creates them and fold it into the gate: `-- sh -c 'npm ci && npm test'`.
    - `retire: N commit(s) ... not integrated` — print it and stop; the next
      `/finish <task>` captures them.
 
-   The entry answers `retired <task> <sha>` or refuses. Print a refusal
+   The entry answers `retired <task> <sha>` or refuses. Before `retired` it
+   may print `Moved N ignored files to the system trash:` with one path per
+   line: relay that block whole, since the user's ignored files went there.
+   A refusal can carry the same block (`... before this failed:`); print it
+   with the refusal. Print a refusal
    verbatim: it is written for the user, and the one that matters most says
    the feature conversation is still open and asks them to close it
    themselves and run `/finish <task>` here again. Never work around a
