@@ -418,8 +418,9 @@ _untracked_entries() {
 # ("1 file", "60,882 files"), then one line per entry indented four spaces, a
 # directory with its file count in a column past the longest directory
 # shown. With a number, at most that many entries, then how many are not
-# shown; with "all", every entry. An entry prints as its name with a newline
-# in it shown as "?", after the directory given as $2, if any.
+# shown; with "all", every entry. An entry prints as its name with each
+# control character in it shown as "?", after the directory given as $2, if
+# any.
 _untracked_listing_format() {  # shown|all [directory]
     env LC_ALL=C CS_LISTING_DIRECTORY="${2:-}" awk -v shown="$1" '
         function grouped(n,    s) {
@@ -428,14 +429,18 @@ _untracked_listing_format() {  # shown|all [directory]
             return s
         }
         function files(n) { return grouped(n) (n == 1 ? " file" : " files") }
-        # The name a line stands for (_names_as_lines), a newline in it as "?".
+        # The name a line stands for (_names_as_lines), each control
+        # character in it (a newline, an escape, a carriage return) as "?",
+        # so no name can break a line or drive the terminal.
         function printed(line,    name, at) {
             name = ""
             while ((at = index(line, "\\")) > 0) {
                 name = name substr(line, 1, at - 1) (substr(line, at + 1, 1) == "n" ? "?" : "\\")
                 line = substr(line, at + 2)
             }
-            return name line
+            name = name line
+            gsub(/[[:cntrl:]]/, "?", name)
+            return name
         }
         # The characters in a name, each taken as one column: names are bytes
         # here, and a UTF-8 character is every byte but those that continue

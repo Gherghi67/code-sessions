@@ -56,10 +56,11 @@ fn line_form(path: &str) -> String {
     path.replace('\\', "\\\\").replace('\n', "\\n")
 }
 
-/// A path as the listing prints it: a newline in a name as '?', so every
-/// entry is one line.
+/// A path as the listing prints it: each control character in a name (a
+/// newline, an escape, a tab) as '?', so no name can break a line or drive
+/// the terminal. The same characters as cs's `printed` in the C locale.
 fn printed(path: &str) -> String {
-    path.replace('\n', "?")
+    path.chars().map(|c| if c.is_ascii_control() { '?' } else { c }).collect()
 }
 
 /// `n` with a comma between each group of three digits.
