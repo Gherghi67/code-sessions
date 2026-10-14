@@ -1127,10 +1127,15 @@ fn files_under(dir: &Path) -> Result<u64, String> {
 }
 
 /// The `cs_mode` a worktree's `.cs/local/state` names, read as
-/// `_read_local_state` reads it; `None` when the file or the key is absent.
+/// `_read_local_state` reads it: line by line as bytes, so a byte that is
+/// not UTF-8 elsewhere in the file leaves the line readable; `None` when the
+/// file or the key is absent.
 fn worktree_cs_mode(path: &Path) -> Option<String> {
-    let state = fs::read_to_string(path.join(".cs/local/state")).ok()?;
-    state.lines().find_map(|line| line.strip_prefix("cs_mode:")).map(|value| value.trim_start().replace('"', ""))
+    let state = fs::read(path.join(".cs/local/state")).ok()?;
+    state
+        .split(|&byte| byte == b'\n')
+        .find_map(|line| line.strip_prefix(b"cs_mode:"))
+        .map(|value| String::from_utf8_lossy(value).trim_start().replace('"', ""))
 }
 
 /// The test of whether a path in the worktree at `path` is cs's own
