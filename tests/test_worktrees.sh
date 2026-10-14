@@ -496,6 +496,94 @@ retired task1 $sha" "$output" "the listing shows the backslash as it is and the 
     assert_eq "kept" "$(cat "$TEST_TMPDIR/trash-bin/1-$name/a")" "the repository is in the trash, intact" || return 1
 }
 
+# A directory holding a stand-in `trash` to put first on PATH. It records
+# each call on one line of $TEST_TMPDIR/trash-calls.log, as the number of
+# paths the call held and their size in bytes with a NUL after each. The
+# first $1 calls also record their paths in $TEST_TMPDIR/trash.log and move
+# them into $TEST_TMPDIR/trash-bin; every later call moves nothing and exits 1.
+measuring_trash_bin() {  # calls that succeed
+    local bin="$TEST_TMPDIR/measuring-trash" calls="$TEST_TMPDIR/trash-calls.log"
+    mkdir -p "$bin" "$TEST_TMPDIR/trash-bin"
+    : > "$calls"
+    cat > "$bin/trash" <<EOF
+#!/usr/bin/env bash
+printf '%s %s\n' "\$#" "\$(printf '%s\0' "\$@" | wc -c | tr -d '[:space:]')" >> '$calls'
+if [ "\$(wc -l < '$calls' | tr -d '[:space:]')" -gt $1 ]; then
+    echo 'trash: the items could not be moved (stand-in failure)' >&2
+    exit 1
+fi
+printf '%s\n' "\$@" >> '$TEST_TMPDIR/trash.log'
+mv "\$@" '$TEST_TMPDIR/trash-bin/'
+EOF
+    chmod +x "$bin/trash"
+    echo "$bin"
+}
+
+# 600 ignored files beside a tracked one, each its own entry, named
+# obj-<101..700>-<230 zeros>.o: their paths together are longer than the
+# 128 KiB one call of the trash command gets.
+_six_hundred_ignored_objects() {  # worktree
+    local i zeros
+    zeros=$(printf '%0230d' 0)
+    for i in $(seq 101 700); do : > "$1/obj-$i-$zeros.o"; done
+    echo "kept" > "$1/obj-101-$zeros.o"
+}
+
+# The system refuses to run a command line past a fixed size, so retire
+# hands the trash command its paths over several calls, none holding more
+# than 128 KiB of them.
+test_retire_trashes_more_ignored_files_than_one_command_line_holds() {
+    local wt="$CS_SESSIONS_ROOT/proj@task1" sha bin output status=0 zeros
+    sha=$(_landed_feature_ignoring '*.o') || { echo "  FAIL: integrate fixture"; return 1; }
+    bin=$(measuring_trash_bin 600)
+    zeros=$(printf '%0230d' 0)
+    _six_hundred_ignored_objects "$wt"
+    output=$(PATH="$bin:$PATH" "$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "retire proceeds: ${output:0:800}" || return 1
+    assert_eq "" "$(awk '$2 > 131072' "$TEST_TMPDIR/trash-calls.log")" \
+        "no call of the trash command holds more than 128 KiB of paths" || return 1
+    assert_eq "600" "$(awk '{ paths += $1 } END { print paths }' "$TEST_TMPDIR/trash-calls.log")" \
+        "the calls hold every path once" || return 1
+    assert_eq "$(for i in $(seq 101 700); do printf '%s/obj-%s-%s.o\n' "$wt" "$i" "$zeros"; done)" \
+        "$(cat "$TEST_TMPDIR/trash.log")" "the trash gets each file by its full path, in the listing's order" || return 1
+    assert_eq "kept" "$(cat "$TEST_TMPDIR/trash-bin/obj-101-$zeros.o")" "a file is in the trash, intact" || return 1
+    assert_eq "MEMORY.md: appended 1 pointer(s) from the feature (base lines kept)
+Moved 600 ignored files to the system trash:
+$(for i in $(seq 101 700); do printf '    %s/obj-%s-%s.o\n' "$wt" "$i" "$zeros"; done)
+retired task1 $sha" "$output" "retire lists every file it moved" || return 1
+    assert_not_exists "$wt" "the worktree is retired" || return 1
+}
+
+# When a later call of the trash command fails, retire refuses: it lists
+# what it could not move, and what the earlier calls moved to the trash.
+test_retire_lists_what_it_trashed_when_a_later_trash_call_fails() {
+    local wt="$CS_SESSIONS_ROOT/proj@task1" sha bin output status=0 zeros moved left
+    sha=$(_landed_feature_ignoring '*.o') || { echo "  FAIL: integrate fixture"; return 1; }
+    bin=$(measuring_trash_bin 1)
+    zeros=$(printf '%0230d' 0)
+    _six_hundred_ignored_objects "$wt"
+    output=$(PATH="$bin:$PATH" "$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "retire refuses: ${output:0:800}" || return 1
+    moved=$(sed -n 1p "$TEST_TMPDIR/trash-calls.log")
+    moved="${moved%% *}"
+    left=$((600 - moved))
+    if [ "$moved" -lt 1 ] || [ "$left" -lt 21 ]; then
+        echo "  FAIL: the first call must hold some of the 600 paths and leave more than 20, it held $moved"
+        return 1
+    fi
+    assert_eq "Error: Could not move $left ignored files to the system trash, so the worktree was not removed; anything the trash command did move is in the trash. Move or delete them, then run /finish task1 here again:
+$(for i in $(seq $((101 + moved)) $((120 + moved))); do printf '    obj-%s-%s.o\n' "$i" "$zeros"; done)
+    ... and $((left - 20)) more
+trash: trash: the items could not be moved (stand-in failure)
+Moved $moved ignored files to the system trash before this failed:
+$(for i in $(seq 101 $((100 + moved))); do printf '    %s/obj-%s-%s.o\n' "$wt" "$i" "$zeros"; done)" \
+        "$output" "the refusal lists what is left and what the first call moved" || return 1
+    assert_eq "kept" "$(cat "$TEST_TMPDIR/trash-bin/obj-101-$zeros.o")" "the first call's files are in the trash" || return 1
+    assert_file_exists "$wt/obj-$((101 + moved))-$zeros.o" "the first file of the failed call is where it was" || return 1
+    assert_file_exists "$wt/obj-700-$zeros.o" "the last file is where it was" || return 1
+    assert_dir "$wt" "the worktree survives" || return 1
+}
+
 # A removal that fails after the trash step leaves the worktree, and the
 # refusal says what is already in the trash and where it came from.
 test_retire_lists_what_it_trashed_when_the_removal_then_fails() {
@@ -1173,6 +1261,8 @@ run_test test_retire_moves_an_ignored_file_whose_name_holds_a_newline
 run_test test_retire_moves_two_ignored_names_that_print_alike
 run_test test_retire_moves_an_ignored_name_that_starts_another_shown_alike
 run_test test_retire_moves_an_ignored_nested_repository_named_with_a_backslash_and_a_newline
+run_test test_retire_trashes_more_ignored_files_than_one_command_line_holds
+run_test test_retire_lists_what_it_trashed_when_a_later_trash_call_fails
 run_test test_retire_lists_what_it_trashed_when_the_removal_then_fails
 
 # Ignored build trees hold tens of thousands of files. The refusal names each
