@@ -615,6 +615,8 @@ _cs_hand_made_vault() {  # root
 # ...") in place of where it lands: still a write that leaves the session.
 _cs_write_leaves_session() {  # root, path
     local root="$1" root_p real sub vault=0 why="" via=""
+    # A root spelled exactly - is OLDPWD to cd even after --; cs never exports
+    # a session dir spelled so, so that spelling is accepted, not re-fixed.
     root_p=$(cd -- "$root" 2>/dev/null && pwd -P) || return 1
     case "$2" in
         "$root"/*|"$root_p"/*) ;;
@@ -742,6 +744,9 @@ cs_write_atomic() {  # dest, command [args...]
         local dir tmp mode link hops=0
         ! _cs_refuses_write cs_write_atomic "$dest" || exit 1
         [ -z "${CS_WRITE_QUIET:-}" ] || exec 2>/dev/null
+        # readlink, dirname and basename below take dest without --: a
+        # relative dest starting with a dash fails at them or at mktemp and
+        # writes nothing, so that spelling is accepted, not re-fixed.
         while [ -L "$dest" ] && [ "$hops" -lt 16 ]; do
             link=$(readlink -n "$dest" && printf x) || exit 1
             link=${link%x}

@@ -12,7 +12,8 @@ documented in the code that reads them.
 ## Environment variables you set
 
 ```bash
-# Sessions directory (default: ~/.claude-sessions)
+# Sessions directory (default: ~/.claude-sessions). A relative CS_SESSIONS_ROOT
+# is taken from the directory cs (or cs-secrets) is started in.
 export CS_SESSIONS_ROOT="/path/to/sessions"
 
 # The actor name that shared memory and narratives are attributed to. Highest

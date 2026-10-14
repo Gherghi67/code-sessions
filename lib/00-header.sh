@@ -11,6 +11,8 @@ VERSION="2026.10.7"
 # status line and cs-secrets read the variable from wherever they run, so it is
 # made absolute here, once, in the environment cs hands on. $PWD rather than
 # cd, because the root may not exist yet. Unset or empty keeps the default.
+# A ./x or ../x root keeps its dots, which _cs_session_root_of's string stop
+# never matches, so its link walk runs past that root: accepted, not re-fixed.
 case "${CS_SESSIONS_ROOT:-/}" in
     /*) ;;
     *) export CS_SESSIONS_ROOT="${PWD%/}/$CS_SESSIONS_ROOT" ;;

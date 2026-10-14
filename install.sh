@@ -1269,12 +1269,12 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "a5015efa0774f53222e0f0c9ff88066ec16bba152905ab5bb28e6ad106af9ff0  bin/cs"
-    "916a42741222e21bc0226bc64b6fe8e08c397e2a4c15ac734ffd6eeddf1d59de  bin/cs-secrets"
+    "8e613191ad9d5a7d0799f78e2563213195be8f944902948ccbf4ab71bae3ef4f  bin/cs"
+    "2c64292ae775b0a9448e2087beefd94822b7d19097ee018a6f4ff2df5d02e1db  bin/cs-secrets"
     "a6d008e8bcba4e3d4c1599c76aaddc4ea1c4eb61e3ba861c60d9e4b91f706e78  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
     "abef450250b13a3d70cecd1e04e1275f31585ebe06a9493d0f6a572719560c21  hooks/cs-resolve.sh"
-    "1aec5feecb8e22c16d40badb5db046b83ea0bfc4b4bca9ae4f632c190ffde59a  hooks/cs-shared.sh"
+    "831c53c9b064129778c2902c37145da50d0d331e24287fb95893ac972c65380c  hooks/cs-shared.sh"
     "50d63ce0995e68fddd8503700c15f9585d11938c9cd3872a883146de7707c765  hooks/cs-iterm-tab.py"
     "0c1ee69a915976c70ddf39e266dcff15e10eb1931e16e28bf952ab8c16314f98  hooks/memory-index-guard.sh"
     "6c9a9db966b02d1d99c24a4358abdcf005a0e56e1c7c2defc7c75d9fde516612  hooks/prompt-rewriter.sh"
@@ -1283,7 +1283,7 @@ CS_PAYLOAD_SHA256=(
     "de4d1bb258cc1e2888911dd464623f567d2a4370b65dc7c7139ca5a71c4f337f  hooks/session-start.sh"
     "cae9775702513f11b1abff031928047766ab69714e3a9b1db82ff080e186f20b  hooks/autosave-commits.sh"
     "c4b5cb46e9bb70a6cb50aeb4a2538dafbf88d70614691467aa50188c09a39f43  hooks/narrative-reminder.sh"
-    "1f16094e1d1939efff9c634120ecacbe129b5865bcac0dcfd77a3ec276225cea  hooks/session-end.sh"
+    "d241cec2d22e5b3855cd6d93490704f0e04d649ee7b4ec03e9ff27d84926dcb1  hooks/session-end.sh"
     "81a13835a65f4b4b35bb87493da0df9848de68375ca7ab1525d2d5079cf52bf1  hooks/subagent-context.sh"
     "53b16016dd6d087c3cc3db7e4acf8de6629e149e3b7f326f0731b36809574156  hooks/tool-failure-logger.sh"
     "2504d95bb13283a67daec8b09c95f5bdff4281721eefb2ced78084507482e501  hooks/session-auto-approve.sh"

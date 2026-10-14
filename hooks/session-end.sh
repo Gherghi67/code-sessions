@@ -217,12 +217,13 @@ if [ -f "$META_DIR/local/vault" ] && [ "${CS_RESOLVED_FROM:-env}" = "env" ] \
 fi
 
 # Regenerate sessions index.md at the sessions root
-# CS_SESSIONS_ROOT is not exported into a session, so this used to fall back to
-# the session's parent directory unconditionally. That is right for a session
-# living under the sessions root and wrong for an adopted one, whose directory
-# is an unrelated project path — the index landed in that project's parent.
-# Default to the sessions root itself, and only write an index where sessions
-# actually live.
+# cs exports CS_SESSIONS_ROOT into a session only when the user set it, made
+# absolute when it was relative; unset, the root is the default below. The
+# session's parent directory is no stand-in: right for a session living under
+# the sessions root, wrong for an adopted one, whose directory is an unrelated
+# project path, so the index would land in that project's parent. Default to
+# the sessions root itself, and only write an index where sessions actually
+# live.
 # Compare physical against physical, on BOTH sides. The resolver reports a
 # physical SESSION_DIR (cd + pwd -P) while the CLI exports a logical one built
 # from $HOME, so normalizing only the root stops the index being written for any

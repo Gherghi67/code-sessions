@@ -11,6 +11,8 @@ VERSION="2026.10.7"
 # status line and cs-secrets read the variable from wherever they run, so it is
 # made absolute here, once, in the environment cs hands on. $PWD rather than
 # cd, because the root may not exist yet. Unset or empty keeps the default.
+# A ./x or ../x root keeps its dots, which _cs_session_root_of's string stop
+# never matches, so its link walk runs past that root: accepted, not re-fixed.
 case "${CS_SESSIONS_ROOT:-/}" in
     /*) ;;
     *) export CS_SESSIONS_ROOT="${PWD%/}/$CS_SESSIONS_ROOT" ;;
@@ -1820,6 +1822,8 @@ _cs_hand_made_vault() {  # root
 # ...") in place of where it lands: still a write that leaves the session.
 _cs_write_leaves_session() {  # root, path
     local root="$1" root_p real sub vault=0 why="" via=""
+    # A root spelled exactly - is OLDPWD to cd even after --; cs never exports
+    # a session dir spelled so, so that spelling is accepted, not re-fixed.
     root_p=$(cd -- "$root" 2>/dev/null && pwd -P) || return 1
     case "$2" in
         "$root"/*|"$root_p"/*) ;;
@@ -1947,6 +1951,9 @@ cs_write_atomic() {  # dest, command [args...]
         local dir tmp mode link hops=0
         ! _cs_refuses_write cs_write_atomic "$dest" || exit 1
         [ -z "${CS_WRITE_QUIET:-}" ] || exec 2>/dev/null
+        # readlink, dirname and basename below take dest without --: a
+        # relative dest starting with a dash fails at them or at mktemp and
+        # writes nothing, so that spelling is accepted, not re-fixed.
         while [ -L "$dest" ] && [ "$hops" -lt 16 ]; do
             link=$(readlink -n "$dest" && printf x) || exit 1
             link=${link%x}
