@@ -95,7 +95,12 @@ similar gitignored transient at the `.cs/` root — the narrative reminder's
 
 `CLAUDE.local.md`, also at the session root, carries the cs session protocol:
 it is machine-local and gitignored, cs regenerates it on each machine, and a
-user-owned `CLAUDE.md` is never touched.
+user-owned `CLAUDE.md` is never touched. Its `cs:session-commits` section says
+files under `.cs/` never get a commit of their own: they go in with the next
+handoff commit (the `rotate` skill, subject `session: handoff <basename>`) or
+the `/wrap` commit (`session: wrap <date>`), or with the project change they
+describe. An open adds the section to a session that lacks it; delete its text
+but keep the comment to opt out.
 
 ## Machine-local files (`.cs/local/`, gitignored)
 
