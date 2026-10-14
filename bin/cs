@@ -1661,6 +1661,35 @@ _cs_unlock() {  # lock file ("" when none was held)
     _CS_LOCK_HELD=""
 }
 
+# Print the PID recorded in a session's lock file (empty if none). Arg: meta_dir.
+read_lock_pid() {  # meta_dir
+    local f="$1/session.lock"
+    [ -f "$f" ] || return 0
+    cat "$f" 2>/dev/null || true
+}
+
+# Print the pid a session's lock names when that process is running on this
+# machine; print nothing otherwise. The rule: the lock's text, surrounding
+# whitespace removed, is a decimal number from 1 to 2147483647 (a pid_t;
+# leading zeros allowed) and kill -0 reaches it. "0" and "-1" name process
+# groups, not a process, and a larger number wraps on Linux. Every reader of
+# a session lock in cs and in its hooks decides "running" here. Twin of
+# live_lock_pid in bin/cs-secrets, which cannot source this file; the two
+# keep this rule together. Arg: meta_dir.
+live_lock_pid() {  # meta_dir
+    local text pid
+    text="$(read_lock_pid "$1")"
+    text="${text#"${text%%[![:space:]]*}"}"
+    text="${text%"${text##*[![:space:]]}"}"
+    case "$text" in
+        ''|*[!0-9]*) return 0 ;;
+    esac
+    pid="${text#"${text%%[!0]*}"}"
+    [ -n "$pid" ] && [ "${#pid}" -le 10 ] && [ "$pid" -le 2147483647 ] || return 0
+    kill -0 "$pid" 2>/dev/null || return 0
+    echo "$pid"
+}
+
 # Octal permission bits of a file, as chmod takes them (644), read through a
 # symlink so a linked destination reports its target's mode, not the link's
 # 755. GNU stat is tried first: BSD stat rejects -c with no output, while GNU
@@ -2806,33 +2835,8 @@ release_session_lock() {
     fi
 }
 
-# Print the PID recorded in a session's lock file (empty if none). Arg: meta_dir.
-read_lock_pid() {  # meta_dir
-    local f="$1/session.lock"
-    [ -f "$f" ] || return 0
-    cat "$f" 2>/dev/null || true
-}
-
-# Print the pid a session's lock names when that process is running on this
-# machine; print nothing otherwise. The rule: the lock's text, surrounding
-# whitespace removed, is a decimal number from 1 to 2147483647 (a pid_t;
-# leading zeros allowed) and kill -0 reaches it. "0" and "-1" name process
-# groups, not a process, and a larger number wraps on Linux. Twin of
-# live_lock_pid in bin/cs-secrets, which cannot source this file; the two
-# keep this rule together. Arg: meta_dir.
-live_lock_pid() {  # meta_dir
-    local text pid
-    text="$(read_lock_pid "$1")"
-    text="${text#"${text%%[![:space:]]*}"}"
-    text="${text%"${text##*[![:space:]]}"}"
-    case "$text" in
-        ''|*[!0-9]*) return 0 ;;
-    esac
-    pid="${text#"${text%%[!0]*}"}"
-    [ -n "$pid" ] && [ "${#pid}" -le 10 ] && [ "$pid" -le 2147483647 ] || return 0
-    kill -0 "$pid" 2>/dev/null || return 0
-    echo "$pid"
-}
+# read_lock_pid and live_lock_pid live in lib/02-shared.sh, so the hooks read
+# a session lock by the same rule.
 
 # True (exit 0) when a session's process is currently alive on this machine,
 # by live_lock_pid's rule. Arg: meta_dir (the session's .cs dir).
