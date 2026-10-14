@@ -187,6 +187,14 @@ case "$BASENAME_LC" in
     claude.md|claude.local.md) exit 0 ;;
 esac
 
+# A file named HEAD makes the directory that holds it a git directory, to cs
+# and, beside objects/ and refs/ that a clone can deliver, to git; a commondir
+# names the store such a HEAD uses. Writing either completes a layout no rule
+# below sees yet, since none of them looks at the file being written.
+case "$BASENAME_LC" in
+    head|commondir) exit 0 ;;
+esac
+
 # A repository kept below .cs/ (a clone under a notes directory) has a git
 # directory of its own: git reads config and runs hooks from it whenever git
 # runs there, and a .git file names another directory to read them from. A

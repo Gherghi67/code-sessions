@@ -1295,7 +1295,7 @@ CS_PAYLOAD_SHA256=(
     "ad1a2d324ff18dfcdd2e677bfb2630a04cdd21ea6b0ac619891eb7de12e6ce62  hooks/session-end.sh"
     "81a13835a65f4b4b35bb87493da0df9848de68375ca7ab1525d2d5079cf52bf1  hooks/subagent-context.sh"
     "53b16016dd6d087c3cc3db7e4acf8de6629e149e3b7f326f0731b36809574156  hooks/tool-failure-logger.sh"
-    "e681f1d28bebac3fdfc17ff02726fcfceefc7d66673001254385b52e0517e78a  hooks/session-auto-approve.sh"
+    "c7cc99a7062170886dc31d4bfe8dccdd8dc40f6eae3be14ef455c0b1a00afaf5  hooks/session-auto-approve.sh"
     "5390f2cb4d0192b43711578b8bdcef145de5fd011c166e900023183d65c05ab3  hooks/scope-prompt.sh"
     "12dca7f6d02f19f75865fa2f6e91384a5c8e727b0962e269a6adbb491a95971f  commands/summary.md"
     "9e06eaa16960dff49881234c8a479c2f8d2dd8d672283056e1591c4528e755ab  commands/checkpoint.md"
