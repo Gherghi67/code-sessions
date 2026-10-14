@@ -603,6 +603,49 @@ test_report_checks_more_path_bytes_than_a_command_line_holds() {
     assert_eq "$n" "$(key "$out" retire_paths_checked)" "and every one was checked" || return 1
 }
 
+# A name that is not UTF-8, printed raw (core.quotePath false) under a UTF-8
+# locale, is reported like any other name. It goes in through the index, as
+# some filesystems refuse it on disk, so the worktree shows it deleted. The
+# output holds those bytes, so it is read in the C locale here too.
+test_report_names_a_non_utf8_path_under_a_utf8_locale() {
+    local sha out blob name=$'\xff\xfe.bin' base="$CS_SESSIONS_ROOT/myproj" wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    plain_fixture
+    git -C "$base" config core.quotePath false
+    (cd "$wt" && echo ok > good.txt && git add good.txt)
+    blob=$(printf 'branch\n' | git -C "$wt" hash-object -w --stdin)
+    git -C "$wt" update-index --add --cacheinfo "100644,$blob,$name"
+    git -C "$wt" commit -q -m "two files"
+    sha=$(git -C "$wt" rev-parse HEAD)
+    (cd "$base" && echo ok > good.txt && git add good.txt)
+    blob=$(printf 'base\n' | git -C "$base" hash-object -w --stdin)
+    git -C "$base" update-index --add --cacheinfo "100644,$blob,$name"
+    git -C "$base" commit -q -m "the same name, other content"
+    out=$(LC_ALL=C.UTF-8 CLAUDE_SESSION_DIR="$base" CLAUDE_SESSION_NAME=myproj \
+        bash "$FINISH" report myproj fix-auth "$sha" 2>&1)
+    assert_eq "dirt:  D $name" "$(printf '%s\n' "$out" | LC_ALL=C sed -n '/^dirt: /p')" "the worktree's missing file is named" || return 1
+    assert_eq "not-landed" "$(printf '%s\n' "$out" | LC_ALL=C sed -n 's/^retire: //p')" "the name differs on the base" || return 1
+    assert_eq "1 of 2" "$(printf '%s\n' "$out" | LC_ALL=C sed -n 's/^retire_paths_differing: //p')" "good.txt landed" || return 1
+    assert_eq "$name" "$(printf '%s\n' "$out" | LC_ALL=C sed -n 's/^retire_differs: //p')" "and the name is printed as git has it" || return 1
+}
+
+# Whatever stops the content check, the report ends on an error line, never
+# in silence: here perl, which matches the paths, fails without a word.
+test_report_says_error_when_the_content_check_stops_without_one() {
+    local sha out status=0 wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    plain_fixture
+    (cd "$wt" && echo work > work.txt && git add work.txt && git commit -q -m "work")
+    sha=$(git -C "$wt" rev-parse HEAD)
+    mkdir -p "$TEST_TMPDIR/bin"
+    printf '#!/bin/sh\nexit 3\n' > "$TEST_TMPDIR/bin/perl"
+    chmod +x "$TEST_TMPDIR/bin/perl"
+    out=$(PATH="$TEST_TMPDIR/bin:$PATH" CLAUDE_SESSION_DIR="$CS_SESSIONS_ROOT/myproj" CLAUDE_SESSION_NAME=myproj \
+        bash "$FINISH" report myproj fix-auth "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the report fails" || return 1
+    assert_eq "error: comparing the paths cs/fix-auth changed with base HEAD failed (exit 3)" \
+        "$(printf '%s\n' "$out" | tail -1)" "and says so last" || return 1
+    assert_output_not_contains "$out" "retire:" "with no retire line" || return 1
+}
+
 run_test test_prepare_in_feature_session_hands_off
 run_test test_prepare_in_base_captures_sha_branch_and_dirt
 run_test test_prepare_in_a_plain_checkout_says_so
@@ -721,5 +764,7 @@ run_test test_report_refuses_a_pathspec_magic_name_the_base_holds_differently
 run_test test_report_refuses_a_newline_name_the_base_holds_differently
 run_test test_report_refuses_a_capture_with_no_merge_base
 run_test test_report_checks_more_path_bytes_than_a_command_line_holds
+run_test test_report_names_a_non_utf8_path_under_a_utf8_locale
+run_test test_report_says_error_when_the_content_check_stops_without_one
 
 report_results
