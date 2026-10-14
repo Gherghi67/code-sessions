@@ -646,7 +646,8 @@ test_retire_moves_ignored_work_with_gio_when_trash_is_missing() {
 test_retire_refuses_before_it_trashes_anything() {
     local wt="$CS_SESSIONS_ROOT/proj@task1" base_dir="$CS_SESSIONS_ROOT/proj" sha bin case expected output status
     bin=$(fake_trash_bin moves trash)
-    for case in hidden-edit no-mode untracked own-claude-local-md locked-vault base-dirty; do
+    for case in hidden-edit no-mode untracked own-claude-local-md locked-vault base-dirty \
+        settings-link unreadable-settings failed-carry private-not-a-directory; do
         rm -rf "$wt" "$base_dir" "$TEST_TMPDIR/trash.log"
         sha=$(_landed_feature_ignoring '.env') || { echo "  FAIL: $case: integrate fixture"; return 1; }
         echo "KEY=value" > "$wt/apps/web/.env"
@@ -674,6 +675,29 @@ README.md" ;;
             base-dirty)
                 echo "an edit" >> "$base_dir/README.md"
                 expected="Error: Base session has uncommitted changes; commit them in $base_dir first" ;;
+            settings-link)
+                printf '%s\n' '{"permissions": {"allow": ["Bash(make:*)"]}}' > "$TEST_TMPDIR/elsewhere.json"
+                rm -f "$wt/.claude/settings.local.json"
+                ln -s "$TEST_TMPDIR/elsewhere.json" "$wt/.claude/settings.local.json"
+                expected="Error: $wt/.claude/settings.local.json is a link, and cs reads the feature's permission rules only from a file of its own. Nothing was removed. Put the rules in a file there, or delete the link, then run /finish task1 again." ;;
+            unreadable-settings)
+                printf '%s\n' '{"permissions": [1, 2]}' > "$wt/.claude/settings.local.json"
+                expected="Error: $wt/.claude/settings.local.json is not one JSON object, or its permissions is not an object, or its permissions.allow, deny or ask is not a list, so cs cannot add the feature's permission rules to $base_dir/.claude/settings.local.json. Nothing was removed. Fix it, then run /finish task1 again." ;;
+            failed-carry)
+                printf '%s\n' '{"permissions": {"allow": ["Bash(make:*)"]}}' > "$wt/.claude/settings.local.json"
+                rm -rf "$base_dir/.claude" "$TEST_TMPDIR/outside-claude"
+                mkdir -p "$TEST_TMPDIR/outside-claude"
+                ln -s "$TEST_TMPDIR/outside-claude" "$base_dir/.claude"
+                expected="cs_mkdir_inside: $base_dir/.claude leads to $(cd "$TEST_TMPDIR/outside-claude" && pwd -P), outside the session $base_dir
+Error: Could not add the feature's permission rules to $base_dir/.claude/settings.local.json; nothing was removed" ;;
+            private-not-a-directory)
+                # A regular file, not a link: the vault-link check before the
+                # base-dirty check passes it, and the record fuse's own check
+                # after the rules carry refuses it.
+                rm -rf "$base_dir/.cs/private"
+                echo "not a vault" > "$base_dir/.cs/private"
+                expected="cs: /finish progress not recorded: .cs/private is not a directory
+Error: cannot fuse the worktree's records: $base_dir/.cs/private is locked. Mount it, then retry." ;;
         esac
         status=0
         output=$(PATH="$bin:$PATH" "$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1) || status=$?
