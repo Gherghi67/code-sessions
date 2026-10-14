@@ -1484,11 +1484,10 @@ test_install_deploys_wrap_and_the_passes_it_reads_but_no_pass_command() {
     assert_eq "0" "$rc" "install exit status" || { echo "$out"; return 1; }
     assert_eq "$(printf 'checkpoint.md\nwrap.md')" "$(cd "$home/.claude/commands" && ls)" \
         "the commands cs deploys" || return 1
-    reads=$(grep -o '`~/\.claude/[^`]*\.md`' "$home/.claude/commands/wrap.md" | tr -d '`' | sort -u)
-    assert_eq "$(printf '%s\n' '~/.claude/hooks/cs/wrap-summary.md' '~/.claude/hooks/cs/wrap-sweep.md' '~/.claude/skills/rotate/SKILL.md')" \
-        "$reads" "the files wrap.md reads" || return 1
+    reads=$(grep -o '`~/\.claude/[^`]*\.md`' "$home/.claude/commands/wrap.md" | sed 's|^`~/\.claude/||; s|`$||' | sort -u)
+    assert_eq "$(printf '%s\n' hooks/cs/wrap-summary.md hooks/cs/wrap-sweep.md skills/rotate/SKILL.md)" \
+        "$reads" "the files under ~/.claude that wrap.md reads" || return 1
     for p in $reads; do
-        p="${p#\~/.claude/}"
         case "$p" in
             hooks/cs/*) src="$SCRIPT_DIR/../hooks/${p#hooks/cs/}" ;;
             *) src="$SCRIPT_DIR/../$p" ;;
