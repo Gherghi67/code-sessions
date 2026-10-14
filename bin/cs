@@ -1331,6 +1331,9 @@ cs_local_dir() {  # meta_dir
 # GIT_CONFIG_COUNT (with its KEY_n/VALUE_n pairs) and GIT_CONFIG_PARAMETERS
 # hand git configuration, and a bad value makes every call fail. git speaks
 # in the C locale here so a caller can tell "not a repository" from a failure.
+# The repository's core.fsmonitor names a command git runs on every ls-files;
+# an empty value turns it off, on every git version, so no question asked
+# here runs a program the repository's config names.
 # Every check that decides whether cs trusts a session's files asks through
 # here.
 _cs_git_at() {  # dir, git arguments...
@@ -1339,7 +1342,60 @@ _cs_git_at() {  # dir, git arguments...
     env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR -u GIT_OBJECT_DIRECTORY \
         -u GIT_CEILING_DIRECTORIES -u GIT_LITERAL_PATHSPECS -u GIT_GLOB_PATHSPECS \
         -u GIT_NOGLOB_PATHSPECS -u GIT_ICASE_PATHSPECS -u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS \
-        -u LANGUAGE LC_ALL=C git -C "$dir" "$@"
+        -u LANGUAGE LC_ALL=C git -c core.fsmonitor= -C "$dir" "$@"
+}
+
+# The directory git's own search would take for the repository by its HEAD,
+# looking up from <dir>; fails when the search ends without one. git, asked
+# about a directory, takes the nearest directory at or above it that holds a
+# .git, or one that itself holds HEAD (beside objects/ and refs/, or a
+# commondir naming them), and runs the commands its config names. A clone can
+# commit that layout anywhere, with git add -f where its .gitignore hides the
+# path, and a committed link can lead into one outside the session (another
+# directory a clone made), so it is looked for before git is asked anything.
+# The walk is git's: each directory from <dir> up to / is asked, by the
+# filesystem and never by how its path is spelled, whether it holds .git (the
+# search ends there, finding nothing) or HEAD (found). Any HEAD counts, a dangling
+# link too: git accepts a link into refs/ whether or not it leads anywhere. A
+# session root without .git is asked like any other directory. Such a root
+# is outside the threat a clone or pull brings, so the hooks and verbs that
+# ask git at a session root do not walk from it first. A link out of
+# the session, a vault mounted elsewhere among them, is walked from where it
+# leads up to its first .git or / like any other directory.
+# The directory found is printed relative to <session_dir> when it lies below
+# it, the session matched by identity (-ef), so a link that spells the
+# session's name in another case (pwd -P keeps the case a link spells) still
+# names it inside; otherwise its whole path is printed.
+_cs_head_on_git_walk() {  # physical dir, session_dir
+    local d="$1" up
+    while :; do
+        [ ! -e "$d/.git" ] || return 1
+        if [ -e "$d/HEAD" ] || [ -L "$d/HEAD" ]; then
+            break
+        fi
+        [ -n "$d" ] || return 1
+        d=${d%/*}
+    done
+    if up=$(_cs_spelling_of_ancestor "${d%/*}" "$2"); then
+        printf '%s\n' "${d#"$up"/}"
+    else
+        printf '%s\n' "${d:-/}"
+    fi
+}
+
+# The leading part of the absolute path <dir> that is the directory
+# <ancestor>, compared by identity (-ef) and printed as <dir> spells it: <dir>
+# itself or one of the directories above it. Fails when none is.
+_cs_spelling_of_ancestor() {  # dir, ancestor
+    local d="$1"
+    while [ -n "$d" ]; do
+        if [ "$d" -ef "$2" ]; then
+            printf '%s\n' "$d"
+            return 0
+        fi
+        d=${d%/*}
+    done
+    return 1
 }
 
 # What git said on stderr when the same call through _cs_git_at failed, its
@@ -1385,6 +1441,20 @@ _cs_git_cannot_answer() {  # dir, git's error output
     printf 'cs could not ask git whether it tracks a file in .cs/%s: %s\n' "${1##*/}" "$(_cs_git_complaint "$2")"
 }
 
+# <name> with every byte but A-Z, a-z, 0-9, ".", "_", "/", "@" and "-"
+# replaced by "_", cut to its first <longest> characters when that is given.
+# A name a repository chose (a file it tracks, a directory it commits) is
+# printed through here, so it never reaches the terminal, or Claude, raw: no
+# escape, control byte or newline survives. tr works on bytes in the C locale,
+# so each byte of a multibyte character is replaced on its own.
+_cs_plain_name() {  # name, [longest]
+    if [ -n "${2:-}" ]; then
+        printf '%s' "$1" | env LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_' | cut -c1-"$2"
+    else
+        printf '%s' "$1" | env LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_'
+    fi
+}
+
 # Prints the line that says git tracks <tracked> and how to stop: untrack
 # <sub>, a path relative to <top>, and commit, both in <top>. The repository
 # chose both names and the user is asked to paste the command, so each path is
@@ -1399,8 +1469,8 @@ _cs_git_cannot_answer() {  # dir, git's error output
 # leaves out of what it sends the model.
 cs_untrack_notice() {  # tracked, top, sub
     local shown said top="$2" sub="$3"
-    shown=$(printf '%s' "$1" | env LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_' | cut -c1-160) || return 1
-    said=$(printf '%s' "$sub" | env LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_') || return 1
+    shown=$(_cs_plain_name "$1" 160) || return 1
+    said=$(_cs_plain_name "$sub") || return 1
     case "$top" in '~'* | '='* | '-'*) top="./$top" ;; esac
     case "$sub" in '~'* | '='*) sub="./$sub" ;; esac
     printf "%s is tracked in git (per-actor state must stay local). Fix with: git -C %q --literal-pathspecs rm -r --cached -- %q && git -C %q commit -m 'stop tracking %s'\n" \
@@ -1422,9 +1492,12 @@ cs_untrack_notice() {  # tracked, top, sub
 # <session_dir> is the session as its caller names it, printed in place of the
 # repository's own path when the two are one directory. A directory that holds
 # the session's own files is named, with no command: untracking it would
-# untrack the project.
+# untrack the project, whatever case the link spells the session's name in. A
+# directory laid out like a repository where git's own search from the one
+# asked about would find it, inside the session or out of it, is named before
+# git is asked anything.
 cs_tracked_files_notice() {  # dir, session_dir
-    local real top prefix tracked status why failed meta sub rest n here="$1" missing=""
+    local real top prefix tracked status why failed meta sub rest n layout here="$1" missing=""
     while [ ! -e "$here" ] && [ ! -L "$here" ]; do
         case "$here" in */?*) ;; *) return 1 ;; esac
         missing="/${here##*/}$missing"
@@ -1435,6 +1508,12 @@ cs_tracked_files_notice() {  # dir, session_dir
     # into "nothing tracked".
     real=$(cd -P -- "$here" 2>/dev/null && pwd -P && printf x) || return 1
     real=${real%$'\n'x}
+    if layout=$(_cs_head_on_git_walk "$real" "$2"); then
+        layout=$(_cs_plain_name "$layout" 160) || return 1
+        printf '%s holds HEAD, so git takes it for a repository and would run commands its config names (cs state must be a plain directory inside the session). Delete %s/HEAD, or cs -rm the session.\n' \
+            "$layout" "$layout"
+        return 0
+    fi
     # The repository's top and the directory's place in it, one line each from
     # one git: two newlines in all, unless a name holds one, and then each is
     # asked on its own.
@@ -1484,13 +1563,11 @@ cs_tracked_files_notice() {  # dir, session_dir
         return 0
     fi
     meta=$(cd -P -- "$2/.cs" 2>/dev/null && pwd -P && printf x) && meta=${meta%$'\n'x}
-    case "$meta/" in
-        "$real"/*)
-            printf "%s leads to a directory that holds this session's own files, where git tracks %s (per-actor state must stay local). Make %s a directory of its own.\n" \
-                ".cs/${1##*/}" "$(printf '%s' "$tracked" | env LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_' | cut -c1-160)" ".cs/${1##*/}"
-            return 0
-            ;;
-    esac
+    if _cs_spelling_of_ancestor "$meta" "$real" >/dev/null; then
+        printf "%s leads to a directory that holds this session's own files, where git tracks %s (per-actor state must stay local). Make %s a directory of its own.\n" \
+            ".cs/${1##*/}" "$(_cs_plain_name "$tracked" 160)" ".cs/${1##*/}"
+        return 0
+    fi
     # The path to untrack, spelled as the index has it: a case variant is
     # removed under its own name.
     n=0 rest=$prefix
@@ -1516,10 +1593,11 @@ cs_files_tracked_notice() {  # meta_dir, session_dir
 }
 
 # Says what an unusable .cs/private is, for an error message: the vault it
-# points at, or that it is not a directory at all.
+# points at, as a plain name (a clone can commit the link), or that it is not
+# a directory at all.
 cs_private_state() {  # meta_dir
     if [ -L "$1/private" ]; then
-        printf 'points at %s\n' "$(readlink "$1/private")"
+        printf 'points at %s\n' "$(_cs_plain_name "$(readlink "$1/private")" 160)"
     else
         printf 'is not a directory\n'
     fi
@@ -1848,7 +1926,9 @@ _cs_hand_made_vault() {  # root
 
 # True when a path lies in the session at <root> by its spelling (as typed,
 # or under the root's physical path, the spelling an adopted session is
-# written by) but a write to it lands outside the root; prints where it lands.
+# written by) but a write to it lands outside the root; prints where it lands,
+# as a plain name cut at 160 characters, or one of two phrases when that
+# cannot be named.
 # A vault set up by hand mounts anywhere, from .cs/local/pre-open, so while
 # one exists the four vault links, and a .cs/narrative-archive link (which
 # cs -narrative rotate uses as it is), may lead out. That covers an encrypted
@@ -1892,9 +1972,13 @@ _cs_write_leaves_session() {  # root, path
     esac
     if [ -n "$via" ]; then
         printf '%s\n' "$why"
-    else
-        printf '%s\n' "$real"
+        return 0
     fi
+    # A clone chooses where a committed link leads, so a resolved path, which
+    # always starts with "/", is printed as a plain name; the two phrases
+    # above are cs's own and are printed as written.
+    case "$real" in /*) real=$(_cs_plain_name "$real" 160) ;; esac
+    printf '%s\n' "$real"
 }
 
 # The session a path lies in, by its spelling: the nearest directory above it
@@ -6872,7 +6956,7 @@ _refuse_links_out_of_session() {  # dir
         [ -L "$dir_p/$p" ] || continue
         out=$(_cs_write_leaves_session "$dir" "$dir_p/$p") || continue
         case "$out" in "cs could not ask git"*) error "$out" ;; esac
-        error "$p is a symlink to $(readlink "$dir_p/$p"), outside the session, and cs writes through it. Replace it with a real file or directory, or cs -rm the session."
+        error "$p is a symlink to $(_cs_plain_name "$(readlink "$dir_p/$p")" 160), outside the session, and cs writes through it. Replace it with a real file or directory, or cs -rm the session."
     done
     todo="$dir_p/.cs"
     while [ -n "$todo" ]; do
@@ -6892,12 +6976,12 @@ _refuse_links_out_of_session() {  # dir
                 # Named before the link check, which refuses the same link as
                 # leading out without saying why.
                 case "$real" in *$'\n'*)
-                    error "${link#"$dir_p"/} leads to a directory with a newline in its name, which cs cannot check for links out of the session. Rename it, or cs -rm the session." ;;
+                    error "$(_cs_plain_name "${link#"$dir_p"/}" 160) leads to a directory with a newline in its name, which cs cannot check for links out of the session. Rename it, or cs -rm the session." ;;
                 esac
             fi
             if out=$(_cs_write_leaves_session "$dir" "$p"); then
                 case "$out" in "cs could not ask git"*) error "$out" ;; esac
-                error "${p#"$dir_p"/} is a symlink to $(readlink "$p"), outside the session, and cs writes through it. Replace it with a real file or directory, or cs -rm the session."
+                error "$(_cs_plain_name "${p#"$dir_p"/}" 160) is a symlink to $(_cs_plain_name "$(readlink "$p")" 160), outside the session, and cs writes through it. Replace it with a real file or directory, or cs -rm the session."
             fi
             [ -n "$real" ] || continue
             todo="$todo${todo:+$'\n'}$real"
@@ -6913,7 +6997,7 @@ cs_assert_local_untracked() {
     local dir="$1" sub tracked
     for sub in .cs .cs/local; do
         [ -L "$dir/$sub" ] || continue
-        error "$sub is a symlink to $(readlink "$dir/$sub") (cs state must be a real directory inside the session). Delete .cs/local/pre-open unless you wrote it, replace the link with the directory, then reopen."
+        error "$sub is a symlink to $(_cs_plain_name "$(readlink "$dir/$sub")" 160) (cs state must be a real directory inside the session). Delete .cs/local/pre-open unless you wrote it, replace the link with the directory, then reopen."
     done
     # A submodule or nested repository at .cs keeps its files out of the
     # session's index, so the pathspec check below would never see them.
@@ -7032,7 +7116,7 @@ _refuse_unmounted_meta() {  # session_name, session_dir
             error "$1: .cs/$sub is a file, not a directory or a link into encrypted storage. Remove it, or link it into the vault, then reopen."
         fi
         [ -L "$link" ] && [ ! -e "$link" ] || continue
-        target=$(readlink "$link")
+        target=$(_cs_plain_name "$(readlink "$link")" 160)
         error "$1: .cs/$sub points at $target, which is missing (encrypted storage not mounted?). Mount it, then reopen."
     done
     _refuse_plaintext_beside_private "$1" "$2"
@@ -8319,7 +8403,10 @@ rotate_narrative() {
     # any file whose kept tail is larger than the pipe buffer.
     head -c "$cut" "$snap" | tail -c +$((head_end + 1)) > "$body"
     local blob chunk chunk_tmp
-    blob=$(git hash-object "$body" | cut -c1-8)
+    # The id of the text itself: git runs from the caller's directory, which
+    # can sit in a repository a clone laid out, and would otherwise run the
+    # clean filter that repository's config names on the text first.
+    blob=$(git hash-object --no-filters -- "$body" | cut -c1-8)
     chunk="$arch_dir/$through-$blob.md"
     if [ -L "$chunk" ]; then
         rm -f "$body" "$snap"
@@ -12498,7 +12585,7 @@ _remove_one_session() {
             real_target=$(cd -- "$link" 2>/dev/null && pwd -P) || continue
             case "$real_target" in
                 "$real_dir"/*)
-                    error "Session '$session_name' has encrypted storage mounted inside it: .cs/$sub points at $(readlink "$link"). Removing the session would delete what the vault holds; unmount it, then retry." ;;
+                    error "Session '$session_name' has encrypted storage mounted inside it: .cs/$sub points at $(_cs_plain_name "$(readlink "$link")" 160). Removing the session would delete what the vault holds; unmount it, then retry." ;;
             esac
         done
         # A cs -encrypt that stopped partway leaves its volume mounted with no
@@ -14854,7 +14941,7 @@ adopt_session() {  # name, [--yes|-y], in any order
         local sub
         for sub in $CS_VAULT_LINKS; do
             if [ -L "$target_dir/.cs/$sub" ] && [ ! -e "$target_dir/.cs/$sub" ]; then
-                error "Cannot re-adopt as '$session_name': .cs/$sub points at $(readlink "$target_dir/.cs/$sub"), which is missing (encrypted storage not mounted?). Mount it and run cs -adopt again; nothing was changed."
+                error "Cannot re-adopt as '$session_name': .cs/$sub points at $(_cs_plain_name "$(readlink "$target_dir/.cs/$sub")" 160), which is missing (encrypted storage not mounted?). Mount it and run cs -adopt again; nothing was changed."
             fi
         done
 
@@ -15068,20 +15155,41 @@ adopt_worktrees() {  # [--dry-run]
         fi
     done
 
-    local wt_dir wt_name session_name proj parent_proj uuid adopted=0 wt_top wt_common state tracked
+    local wt_dir wt_name wt_shown session_name proj parent_proj uuid adopted=0 wt_top wt_common wt_real layout state tracked
     for wt_dir in "$wt_root"/*/; do
         wt_dir="${wt_dir%/}"
         [ -d "$wt_dir" ] || continue
         wt_name=$(basename "$wt_dir")
+        # The repository chose the name, so it is printed with each character
+        # a plain path does not have replaced, and never through echo -e: a
+        # raw escape, or backslash text echo -e decodes into one, would reach
+        # the terminal.
+        wt_shown=$(_cs_plain_name "$wt_name")
         session_name="$repo_name.$wt_name"
         link="$SESSIONS_ROOT/$session_name"
         # Everything below writes into this directory, so it has to be a
         # checkout of this repo: its own worktree root, on this repo's common
         # git dir. A symlink to another project, or a plain folder, is neither.
-        wt_top=$(git -C "$wt_dir" rev-parse --show-toplevel 2>/dev/null) || wt_top=""
-        wt_common=$(cd -- "$wt_dir" && cd -- "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P) || wt_common=""
+        # git asked about it takes the nearest directory at or above it that
+        # holds HEAD for the repository, unless a .git comes first, and reads
+        # that directory's config, and a clone can commit such a layout here
+        # (git add -f), so one git's search from the entry would find is
+        # named before git is asked anything.
+        # The x keeps a trailing newline in a name that $( ) drops.
+        if ! wt_real=$(cd -P -- "$wt_dir" 2>/dev/null && pwd -P && printf x); then
+            printf '%b%s%b\n' "$DIM" "skip $wt_shown: not a worktree of $repo" "$NC"
+            continue
+        fi
+        wt_real=${wt_real%$'\n'x}
+        if layout=$(_cs_head_on_git_walk "$wt_real" "$repo"); then
+            layout=$(_cs_plain_name "$layout" 160)
+            printf '%b%s%b\n' "$DIM" "skip $wt_shown: $layout holds HEAD, so git takes it for a repository and would run commands its config names" "$NC"
+            continue
+        fi
+        wt_top=$(_cs_git_at "$wt_dir" rev-parse --show-toplevel 2>/dev/null) || wt_top=""
+        wt_common=$(cd -- "$wt_dir" && cd -- "$(_cs_git_at "$wt_dir" rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P) || wt_common=""
         if [ -L "$wt_dir" ] || [ -z "$wt_top" ] || ! [ "$wt_top" -ef "$wt_dir" ] || ! [ "$wt_common" -ef "$common" ]; then
-            echo -e "${DIM}skip $wt_name: not a worktree of $repo${NC}"
+            printf '%b%s%b\n' "$DIM" "skip $wt_shown: not a worktree of $repo" "$NC"
             continue
         fi
         state="$wt_dir/.cs/local/state"
@@ -15099,11 +15207,11 @@ adopt_worktrees() {  # [--dry-run]
                     && [ -L "$link" ] && [ "$(readlink "$link")" = "$wt_dir" ] && [ "$dry_run" != 1 ]; then
                     _set_local_state "$state" adopted "$(date '+%Y-%m-%d')"
                 fi
-                echo -e "${DIM}skip $wt_name: already carries .cs/${NC}"
+                printf '%b%s%b\n' "$DIM" "skip $wt_shown: already carries .cs/" "$NC"
                 continue
             fi
             if [ -n "$(_read_local_state "$state" adopted)" ]; then
-                echo -e "${DIM}skip $wt_name: removed with cs -rm (delete its .cs/ to adopt it again)${NC}"
+                printf '%b%s%b\n' "$DIM" "skip $wt_shown: removed with cs -rm (delete its .cs/ to adopt it again)" "$NC"
                 continue
             fi
         fi
@@ -15117,7 +15225,7 @@ adopt_worktrees() {  # [--dry-run]
             parent_proj=$(_claude_project_dir "$repo")
             uuid=$(_discover_worktree_uuid_in "$parent_proj" "$wt_dir")
             if [ -z "$uuid" ]; then
-                echo -e "${DIM}skip $wt_name: no conversation under $proj, none relocated into $parent_proj${NC}"
+                printf '%b%s%b\n' "$DIM" "skip $wt_shown: no conversation under $proj, none relocated into $parent_proj" "$NC"
                 continue
             fi
             proj="$parent_proj"
@@ -15127,9 +15235,9 @@ adopt_worktrees() {  # [--dry-run]
         tracked=$(_exclude_session_tracked_conflict "$wt_dir")
         if [ -n "$tracked" ]; then
             case "$tracked" in
-                "cs could not ask git"*) echo -e "${DIM}skip $wt_name: $tracked${NC}" ;;
-                *symlink) echo -e "${DIM}skip $wt_name: $tracked, and cs writes through it at every open${NC}" ;;
-                *) echo -e "${DIM}skip $wt_name: $tracked is tracked on its branch, and cs would rewrite it at every open${NC}" ;;
+                "cs could not ask git"*) printf '%b%s%b\n' "$DIM" "skip $wt_shown: $tracked" "$NC" ;;
+                *symlink) printf '%b%s%b\n' "$DIM" "skip $wt_shown: $tracked, and cs writes through it at every open" "$NC" ;;
+                *) printf '%b%s%b\n' "$DIM" "skip $wt_shown: $tracked is tracked on its branch, and cs would rewrite it at every open" "$NC" ;;
             esac
             continue
         fi
@@ -15138,7 +15246,7 @@ adopt_worktrees() {  # [--dry-run]
             error "Session '$session_name' already exists: the same repo name in two places? ($(readlink "$link" 2>/dev/null || echo "$link"))"
         fi
         if [ "$dry_run" = 1 ]; then
-            echo "would adopt $wt_name as '$session_name' (conversation $uuid)"
+            printf '%s\n' "would adopt $wt_shown as '$session_name' (conversation $uuid)"
             continue
         fi
         # Hidden before anything exists to hide, marked before anything else
@@ -15160,7 +15268,7 @@ adopt_worktrees() {  # [--dry-run]
         # from a session cs -rm removed.
         _set_local_state "$state" adopted "$(date '+%Y-%m-%d')"
         adopted=$((adopted + 1))
-        info "Adopted $wt_name as session '$session_name'"
+        info "Adopted $wt_shown as session '$session_name'"
     done
     [ "$dry_run" = 1 ] || echo -e "${DIM}$adopted adopted; open one with: cs $repo_name.<worktree>${NC}"
 }

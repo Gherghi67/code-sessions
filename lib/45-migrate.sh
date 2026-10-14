@@ -47,7 +47,7 @@ _refuse_links_out_of_session() {  # dir
         [ -L "$dir_p/$p" ] || continue
         out=$(_cs_write_leaves_session "$dir" "$dir_p/$p") || continue
         case "$out" in "cs could not ask git"*) error "$out" ;; esac
-        error "$p is a symlink to $(readlink "$dir_p/$p"), outside the session, and cs writes through it. Replace it with a real file or directory, or cs -rm the session."
+        error "$p is a symlink to $(_cs_plain_name "$(readlink "$dir_p/$p")" 160), outside the session, and cs writes through it. Replace it with a real file or directory, or cs -rm the session."
     done
     todo="$dir_p/.cs"
     while [ -n "$todo" ]; do
@@ -67,12 +67,12 @@ _refuse_links_out_of_session() {  # dir
                 # Named before the link check, which refuses the same link as
                 # leading out without saying why.
                 case "$real" in *$'\n'*)
-                    error "${link#"$dir_p"/} leads to a directory with a newline in its name, which cs cannot check for links out of the session. Rename it, or cs -rm the session." ;;
+                    error "$(_cs_plain_name "${link#"$dir_p"/}" 160) leads to a directory with a newline in its name, which cs cannot check for links out of the session. Rename it, or cs -rm the session." ;;
                 esac
             fi
             if out=$(_cs_write_leaves_session "$dir" "$p"); then
                 case "$out" in "cs could not ask git"*) error "$out" ;; esac
-                error "${p#"$dir_p"/} is a symlink to $(readlink "$p"), outside the session, and cs writes through it. Replace it with a real file or directory, or cs -rm the session."
+                error "$(_cs_plain_name "${p#"$dir_p"/}" 160) is a symlink to $(_cs_plain_name "$(readlink "$p")" 160), outside the session, and cs writes through it. Replace it with a real file or directory, or cs -rm the session."
             fi
             [ -n "$real" ] || continue
             todo="$todo${todo:+$'\n'}$real"
@@ -88,7 +88,7 @@ cs_assert_local_untracked() {
     local dir="$1" sub tracked
     for sub in .cs .cs/local; do
         [ -L "$dir/$sub" ] || continue
-        error "$sub is a symlink to $(readlink "$dir/$sub") (cs state must be a real directory inside the session). Delete .cs/local/pre-open unless you wrote it, replace the link with the directory, then reopen."
+        error "$sub is a symlink to $(_cs_plain_name "$(readlink "$dir/$sub")" 160) (cs state must be a real directory inside the session). Delete .cs/local/pre-open unless you wrote it, replace the link with the directory, then reopen."
     done
     # A submodule or nested repository at .cs keeps its files out of the
     # session's index, so the pathspec check below would never see them.
@@ -207,7 +207,7 @@ _refuse_unmounted_meta() {  # session_name, session_dir
             error "$1: .cs/$sub is a file, not a directory or a link into encrypted storage. Remove it, or link it into the vault, then reopen."
         fi
         [ -L "$link" ] && [ ! -e "$link" ] || continue
-        target=$(readlink "$link")
+        target=$(_cs_plain_name "$(readlink "$link")" 160)
         error "$1: .cs/$sub points at $target, which is missing (encrypted storage not mounted?). Mount it, then reopen."
     done
     _refuse_plaintext_beside_private "$1" "$2"

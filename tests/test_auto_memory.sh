@@ -964,6 +964,28 @@ test_the_untrack_command_names_a_directory_called_equals_as_a_path() {
         "$out" "the command names ./=git" || return 1
 }
 
+# A tracked file the repository gave a long name is named by its first 160
+# characters, while the command to paste and its commit message keep the
+# directory's whole name, so the command still untracks that directory.
+test_the_refusal_cuts_a_long_tracked_name_and_keeps_the_command_whole() {
+    local up="$TEST_TMPDIR/upstream" root="$CS_SESSIONS_ROOT/vt" long first
+    long=$(printf 'x%.0s' $(seq 1 170))
+    first=$(printf 'x%.0s' $(seq 1 156))
+    _upstream_session_repo "$up"
+    ln -s "$long/private" "$up/.cs/private"
+    git -C "$up" add .cs/private
+    _commit_armed_queue "$up" ".cs/$long/private"
+    git clone -q "$up" "$root"
+    _make_launch_sentinel
+
+    local out rc=0
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: .cs/$first is tracked in git (per-actor state must stay local). Fix with: git -C $root --literal-pathspecs rm -r --cached -- .cs/$long/private && git -C $root commit -m 'stop tracking .cs/$long/private'" \
+        "$out" "the file is named by its first 160 characters and the command by the whole path" || return 1
+}
+
 # The refusal is about what git tracks: the same queue in a .cs/private made
 # by hand and never committed opens.
 test_an_untracked_cs_private_directory_opens() {
@@ -1075,6 +1097,31 @@ test_a_cs_gitlink_is_refused_whatever_repository_the_shell_names() {
     rm -rf "$root/.cs/.git"
     assert_eq "160000" "$(git -C "$root" ls-files -s -- .cs | cut -d' ' -f1)" "the fixture must index .cs as a gitlink" || return 1
     _assert_refused_under_any_git_environment ".cs is a submodule or nested repository" || return 1
+}
+
+# A clone can commit .cs/local laid out like a git repository (git add -f),
+# with a config whose core.fsmonitor runs on every ls-files. git asked about
+# .cs/local would take it for the repository and run that command; the open
+# refuses it by name instead, and git runs nothing from it.
+test_a_git_repository_layout_at_cs_local_is_refused_whatever_repository_the_shell_names() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt" g="$CS_SESSIONS_ROOT/vt/.cs/local"
+    mkdir -p "$g/objects" "$g/refs"
+    : > "$g/objects/.keep"
+    : > "$g/refs/.keep"
+    printf 'ref: refs/heads/main\n' > "$g/HEAD"
+    printf '[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tworktree = .\n\tfsmonitor = touch %s; false\n' \
+        "$TEST_TMPDIR/fsmonitor-ran" > "$g/config"
+    git -C "$root" add -f .cs/local/HEAD .cs/local/config .cs/local/objects .cs/local/refs
+    git -C "$root" commit -q -m "ship a repository layout"
+    local out rc=0
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+    assert_file_not_exists "$TEST_TMPDIR/fsmonitor-ran" "git must not run the layout's core.fsmonitor" || return 1
+    assert_eq "1" "$rc" "cs should refuse the open: $out" || return 1
+    assert_eq "Error: .cs/local holds HEAD, so git takes it for a repository and would run commands its config names (cs state must be a plain directory inside the session). Delete .cs/local/HEAD, or cs -rm the session." \
+        "$out" "the refusal names the layout" || return 1
+    _assert_refused_under_any_git_environment ".cs/local holds HEAD" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/fsmonitor-ran" "git must not run the layout's core.fsmonitor under any git variable" || return 1
 }
 
 # A checkout cs hides itself in through info/exclude must track none of the
@@ -1812,6 +1859,85 @@ test_a_link_to_a_directory_named_with_a_newline_refuses_open() {
     assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
 }
 
+# A clone chooses a committed link's name and the text it points at, and
+# either can carry a terminal escape: a raw ESC or BEL byte, or backslash text
+# echo -e would turn into one. The open's refusals print both as plain names,
+# each character a plain path lacks replaced by _.
+_ESCAPING_NAME=$'e\033[1mb\007\\e[0m'
+_ESCAPING_NAME_SHOWN=e__1mb__e_0m
+
+test_a_link_out_of_the_session_is_named_as_a_plain_path() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt" bad="$_ESCAPING_NAME" shown="$_ESCAPING_NAME_SHOWN" out rc=0
+    mkdir -p "$TEST_TMPDIR/out$bad"
+    ln -s "../../../out$bad" "$root/.cs/link$bad"
+    git -C "$root" add -A
+    git -C "$root" commit -q -m "ship a link out with an escape in its name"
+    rm -f "$root/.cs/local/migrated"
+    _make_launch_sentinel
+
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: .cs/link$shown is a symlink to ../../../out$shown, outside the session, and cs writes through it. Replace it with a real file or directory, or cs -rm the session." \
+        "$out" "the link and its target are named as plain paths" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
+}
+
+test_a_link_to_a_directory_named_with_a_newline_is_named_as_a_plain_path() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt" bad="$_ESCAPING_NAME" shown="$_ESCAPING_NAME_SHOWN" out rc=0 nl=$'pay\nload'
+    mkdir -p "$root/$nl"
+    ln -s "../$nl" "$root/.cs/link$bad"
+    git -C "$root" add -A
+    git -C "$root" commit -q -m "alias a directory through a newline"
+    rm -f "$root/.cs/local/migrated"
+    _make_launch_sentinel
+
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: .cs/link$shown leads to a directory with a newline in its name, which cs cannot check for links out of the session. Rename it, or cs -rm the session." \
+        "$out" "the link is named as a plain path" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
+}
+
+test_a_symlinked_cs_local_is_named_by_a_plain_target() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt" bad="$_ESCAPING_NAME" shown="$_ESCAPING_NAME_SHOWN" out rc=0
+    mv "$root/.cs/local" "$root/pay$bad"
+    ln -s "../pay$bad" "$root/.cs/local"
+    git -C "$root" add -A
+    git -C "$root" commit -q -m "ship .cs/local as a link"
+    _make_launch_sentinel
+
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: .cs/local is a symlink to ../pay$shown (cs state must be a real directory inside the session). Delete .cs/local/pre-open unless you wrote it, replace the link with the directory, then reopen." \
+        "$out" "the link's target is named as a plain path" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
+}
+
+test_an_unmounted_vault_link_is_named_by_a_plain_target() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local meta="$CS_SESSIONS_ROOT/vt/.cs" bad="$_ESCAPING_NAME" shown="$_ESCAPING_NAME_SHOWN" out rc=0
+    rm -rf "$meta/memory"
+    ln -s "vault$bad/memory" "$meta/memory"
+    _make_launch_sentinel
+
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+
+    assert_eq "1" "$rc" "cs should exit 1" || return 1
+    assert_eq "Error: vt: .cs/memory points at vault$shown/memory, which is missing (encrypted storage not mounted?). Mount it, then reopen." \
+        "$out" "the dangling link's target is named as a plain path" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
+}
+
 # A clone can commit cs's encrypted layout: .cs/claude-config linked to a real
 # .cs/vault-mnt/claude-config holding a link out. With no pre-open there is no
 # vault, so the open walks that directory like any other.
@@ -2021,12 +2147,14 @@ run_test test_a_failed_answer_in_the_newline_fallback_names_that_calls_error
 run_test test_a_cs_private_link_to_the_session_itself_is_refused_without_an_untrack_command
 run_test test_the_untrack_command_names_a_directory_called_tilde_as_a_path
 run_test test_the_untrack_command_names_a_directory_called_equals_as_a_path
+run_test test_the_refusal_cuts_a_long_tracked_name_and_keeps_the_command_whole
 run_test test_an_untracked_cs_private_directory_opens
 run_test test_a_cs_private_link_into_a_vault_outside_any_repository_opens
 run_test test_an_inherited_tracked_files_answer_does_not_stop_the_open
 run_test test_a_tracked_pre_open_is_refused_whatever_repository_the_shell_names
 run_test test_tracked_cs_private_is_refused_whatever_repository_the_shell_names
 run_test test_a_cs_gitlink_is_refused_whatever_repository_the_shell_names
+run_test test_a_git_repository_layout_at_cs_local_is_refused_whatever_repository_the_shell_names
 run_test test_an_exclude_session_conflict_is_refused_whatever_repository_the_shell_names
 run_test test_a_tracked_pre_open_makes_no_hand_made_vault_whatever_repository_the_shell_names
 run_test test_pre_open_through_symlinked_cs_is_refused
@@ -2064,6 +2192,10 @@ run_test test_a_committed_claude_local_link_out_of_the_session_refuses_open
 run_test test_a_link_out_behind_an_in_session_directory_link_refuses_open
 run_test test_a_link_to_a_directory_named_with_a_newline_refuses_open
 run_test test_a_link_to_a_directory_named_with_a_trailing_newline_refuses_open
+run_test test_a_link_out_of_the_session_is_named_as_a_plain_path
+run_test test_a_link_to_a_directory_named_with_a_newline_is_named_as_a_plain_path
+run_test test_a_symlinked_cs_local_is_named_by_a_plain_target
+run_test test_an_unmounted_vault_link_is_named_by_a_plain_target
 run_test test_a_committed_vault_config_lookalike_refuses_open
 run_test test_a_hand_made_vault_refuses_open_with_gits_error_when_git_cannot_answer
 run_test test_a_write_through_a_hand_made_vault_link_names_gits_error_when_git_cannot_answer

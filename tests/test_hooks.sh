@@ -363,13 +363,16 @@ _auto_approve_output() {
 }
 
 _assert_falls_through() {
-    # $1 tool, $2 path, $3 what
+    # $1 tool, $2 path, $3 what, [$4 the decline the hook prints on stderr;
+    # without it the hook must print nothing there]
     local output
-    output=$(_auto_approve_output "$1" "$2")
+    output=$(_auto_approve_output "$1" "$2" 2>"$TEST_TMPDIR/auto-approve.err")
     if [[ -n "$output" ]]; then
         echo "  FAIL: $3 must fall through to the prompt, got: $output"
         return 1
     fi
+    assert_eq "${4:-}" "$(cat "$TEST_TMPDIR/auto-approve.err")" \
+        "what the hook prints on stderr for $3" || return 1
 }
 
 _assert_allowed() {
@@ -677,6 +680,67 @@ test_auto_approve_prompts_inside_a_git_directory_reached_by_another_name() {
         "the config of a worktree's git directory kept below .cs" || return 1
 }
 
+# A directory is a git directory to the hook by the rule cs refuses a
+# session's state by: it holds HEAD. A HEAD that is a link into refs/ counts
+# whether or not the link leads anywhere (git takes the directory for a
+# repository either way), so does a HEAD with nothing beside it, and so does
+# one at the root of .cs/ itself. A write in or below any of them prompts.
+test_auto_approve_prompts_inside_any_directory_that_holds_head() {
+    local meta="$CLAUDE_SESSION_META_DIR"
+    mkdir -p "$meta/artifacts/linked/objects" "$meta/artifacts/linked/refs" "$meta/artifacts/linked/hooks"
+    ln -s refs/heads/main "$meta/artifacts/linked/HEAD"
+    _assert_falls_through Write "$meta/artifacts/linked/config" \
+        "the config of a layout whose HEAD is a dangling link" || return 1
+    _assert_falls_through Write "$meta/artifacts/linked/hooks/pre-commit" \
+        "a hook of a layout whose HEAD is a dangling link" || return 1
+    _assert_allowed Write "$meta/artifacts/notes.md" \
+        "a note beside that layout" || return 1
+    mkdir -p "$meta/research/lone"
+    echo 'ref: refs/heads/main' > "$meta/research/lone/HEAD"
+    _assert_falls_through Write "$meta/research/lone/notes.md" \
+        "a note in a directory holding HEAD and nothing else" || return 1
+    mkdir -p "$meta/memory" "$meta/objects" "$meta/refs"
+    echo 'ref: refs/heads/main' > "$meta/HEAD"
+    _assert_falls_through Write "$meta/memory/narrative.md" \
+        "a narrative under a .cs/ that holds HEAD" || return 1
+}
+
+# A write can make a git directory, too: a clone delivers objects/, refs/ and
+# a config under .cs/memory with no HEAD (nothing there is a git directory
+# yet), and a file named HEAD completes the layout. A commondir names the
+# store a HEAD beside it uses. A write of either name prompts, in any case
+# (the volume may fold it), and a note beside them is still approved.
+test_auto_approve_prompts_for_a_file_that_makes_its_directory_a_git_directory() {
+    local meta="$CLAUDE_SESSION_META_DIR" name
+    mkdir -p "$meta/memory/objects" "$meta/memory/refs"
+    : > "$meta/memory/objects/.keep"
+    : > "$meta/memory/refs/.keep"
+    printf '[core]\n\tbare = false\n\tworktree = ..\n' > "$meta/memory/config"
+    for name in HEAD head Head commondir COMMONDIR; do
+        _assert_falls_through Write "$meta/memory/$name" "a write of $name beside objects/ and refs/" || return 1
+        _assert_falls_through Edit "$meta/memory/$name" "an Edit of $name beside objects/ and refs/" || return 1
+    done
+    _assert_allowed Write "$meta/memory/notes.md" "a note beside objects/ and refs/" || return 1
+}
+
+# That rule lives in the shared library (cs-shared.sh). A partial deployment
+# without it cannot tell a git directory from content, so every write
+# prompts, and stderr says what is missing.
+test_auto_approve_declines_without_the_shared_library() {
+    local partial="$TEST_TMPDIR/partial-hooks" input output err="$TEST_TMPDIR/partial-hook.err"
+    mkdir -p "$partial" "$CLAUDE_SESSION_META_DIR/memory"
+    cp "$HOOKS_DIR"/*.sh "$partial/"
+    rm "$partial/cs-shared.sh"
+    input=$(jq -n --arg path "$CLAUDE_SESSION_META_DIR/memory/narrative.md" \
+        '{tool_name: "Write", tool_input: {file_path: $path}}')
+    output=$(echo "$input" | bash "$partial/session-auto-approve.sh" 2>"$err")
+    assert_eq "" "$output" "a narrative write falls through to the prompt" || return 1
+    assert_eq "cs auto-approve: not approving, $partial/cs-shared.sh is missing or outdated" "$(cat "$err")" \
+        "the hook names the missing library" || return 1
+    output=$(echo "$input" | bash "$HOOKS_DIR/session-auto-approve.sh")
+    assert_output_contains "$output" '"allow"' "the same write is approved with the library" || return 1
+}
+
 # The same for a session whose own path has a .git component above .cs/: the
 # git-directory rule reads the path below .cs/ only.
 test_auto_approve_allows_content_in_a_session_below_a_git_named_directory() {
@@ -714,7 +778,8 @@ test_auto_approve_rejects_config_linked_into_content() {
     _assert_falls_through Write "$meta/memory/config/settings.json" \
         "a setting at the config link's target" || return 1
     _assert_falls_through Write "$meta/memory/narrative.md" \
-        "a narrative beside the linked config" || return 1
+        "a narrative beside the linked config" \
+        "$(_link_reason "$meta/claude-config")" || return 1
 }
 
 # A link beneath a control directory can point the other way, into content:
@@ -726,24 +791,26 @@ test_auto_approve_rejects_settings_link_target() {
     mkdir -p "$meta/claude-config"
     printf '{}\n' > "$meta/memory/config.json"
     ln -s ../memory/config.json "$meta/claude-config/settings.json"
+    local reason; reason=$(_link_reason "$(cd "$meta" && pwd -P)/claude-config/settings.json")
     _assert_falls_through Edit "$meta/memory/config.json" \
-        "the target of a settings link" || return 1
+        "the target of a settings link" "$reason" || return 1
     # A planted link under a control directory declines every write, not
     # only its target: the shapes compound and none is followed.
     _assert_falls_through Write "$meta/memory/narrative.md" \
-        "a narrative beside the planted link" || return 1
+        "a narrative beside the planted link" "$reason" || return 1
 }
 
 test_auto_approve_rejects_queue_link_target() {
     local meta="$CLAUDE_SESSION_META_DIR"
     mkdir -p "$meta/memory/tasks"
     ln -s ../memory/tasks "$meta/local/queue"
+    local reason; reason=$(_link_reason "$(cd "$meta" && pwd -P)/local/queue")
     _assert_falls_through Write "$meta/memory/tasks/0001" \
-        "a file under the target of a queue link" || return 1
+        "a file under the target of a queue link" "$reason" || return 1
     # A planted link under a control directory declines every write, not
     # only its target: the shapes compound and none is followed.
     _assert_falls_through Write "$meta/memory/narrative.md" \
-        "a narrative beside the planted link" || return 1
+        "a narrative beside the planted link" "$reason" || return 1
 }
 
 # The link under the control directory can point at another link in content,
@@ -755,7 +822,8 @@ test_auto_approve_rejects_settings_link_chain_target() {
     ln -s real.json "$meta/memory/hop.json"
     ln -s ../memory/hop.json "$meta/claude-config/settings.json"
     _assert_falls_through Edit "$meta/memory/real.json" \
-        "the end of a settings link chain" || return 1
+        "the end of a settings link chain" \
+        "$(_link_reason "$(cd "$meta" && pwd -P)/claude-config/settings.json")" || return 1
 }
 
 # A link inside a linked control directory: local/queue -> memory/tasks, and
@@ -767,7 +835,8 @@ test_auto_approve_rejects_link_inside_linked_control_dir() {
     ln -s ../memory/tasks "$meta/local/queue"
     ln -s ../task.txt "$meta/memory/tasks/0001"
     _assert_falls_through Edit "$meta/memory/task.txt" \
-        "the target of a link inside a linked queue" || return 1
+        "the target of a link inside a linked queue" \
+        "$(_link_reason "$(cd "$meta" && pwd -P)/local/queue")" || return 1
 }
 
 # A link name ending in a newline: $(readlink) strips it, so a hop-by-hop
@@ -786,7 +855,8 @@ test_auto_approve_rejects_newline_link_chain() {
     # resolver that lost the newline would call the link harmless.
     ln -s / "$meta/memory/hop"
     _assert_falls_through Edit "$meta/memory/real.json" \
-        "the end of a chain through a newline-named link" || return 1
+        "the end of a chain through a newline-named link" \
+        "$(_link_reason "$(cd "$meta" && pwd -P)/claude-config/settings.json")" || return 1
 }
 
 # Claude Code reads the project's own .claude/ and .mcp.json from the
@@ -800,11 +870,13 @@ test_auto_approve_rejects_project_claude_link_into_content() {
     printf '{}\n' > "$meta/memory/config.json"
     ln -s ../.cs/memory/config.json "$root/.claude/settings.json"
     _assert_falls_through Edit "$meta/memory/config.json" \
-        "the target of a project settings link" || return 1
+        "the target of a project settings link" \
+        "$(_link_reason "$(cd "$root" && pwd -P)/.claude/settings.json")" || return 1
     rm "$root/.claude/settings.json"
     ln -s ../.agents/skills/x "$root/.claude/skills"
     _assert_falls_through Write "$meta/memory/narrative.md" \
-        "a narrative beside a project skills link" || return 1
+        "a narrative beside a project skills link" \
+        "$(_link_reason "$(cd "$root" && pwd -P)/.claude/skills")" || return 1
 }
 
 # A hooks directory linked elsewhere in the session, whose entry links on
@@ -816,7 +888,8 @@ test_auto_approve_rejects_project_hook_link_behind_dir_link() {
     ln -s ../.agents/hooks "$root/.claude/hooks"
     ln -s ../../.cs/memory/notes.md "$root/.agents/hooks/pre.sh"
     _assert_falls_through Edit "$meta/memory/notes.md" \
-        "a hook reached through a linked directory" || return 1
+        "a hook reached through a linked directory" \
+        "$(_link_reason "$(cd "$root" && pwd -P)/.claude/hooks")" || return 1
 }
 
 # .mcp.json linked at a content file that does not exist yet: the Write
@@ -825,7 +898,8 @@ test_auto_approve_rejects_mcp_link_to_new_content() {
     local root="$CLAUDE_SESSION_DIR" meta="$CLAUDE_SESSION_META_DIR"
     ln -s .cs/memory/mcp.json "$root/.mcp.json"
     _assert_falls_through Write "$meta/memory/mcp.json" \
-        "the dangling target of an .mcp.json link" || return 1
+        "the dangling target of an .mcp.json link" \
+        "$(_link_reason "$root/.mcp.json")" || return 1
 }
 
 # The planted link can step out of .cs/ first: claude-config/settings.json
@@ -839,7 +913,8 @@ test_auto_approve_rejects_link_hopping_through_session_root() {
     ln -s .cs/memory/config.json "$CLAUDE_SESSION_DIR/hop.json"
     ln -s ../../hop.json "$meta/claude-config/settings.json"
     _assert_falls_through Edit "$meta/memory/config.json" \
-        "the end of a chain through the session root" || return 1
+        "the end of a chain through the session root" \
+        "$(_link_reason "$(cd "$meta" && pwd -P)/claude-config/settings.json")" || return 1
 }
 
 # On a case-sensitive filesystem SESSION/ beside session/ is another
@@ -884,7 +959,8 @@ test_auto_approve_rejects_queue_link_under_separate_meta_dir() {
     mkdir -p "$meta/local" "$meta/memory/tasks"
     ln -s ../memory/tasks "$meta/local/queue"
     _assert_falls_through Write "$meta/memory/tasks/0001" \
-        "a file under a queue link in a separate metadata root" || return 1
+        "a file under a queue link in a separate metadata root" \
+        "$(_link_reason "$(cd "$meta" && pwd -P)/local/queue")" || return 1
 }
 
 # .claude itself linked at a content directory, with no settings file yet:
@@ -894,7 +970,8 @@ test_auto_approve_rejects_new_file_under_linked_claude_dir() {
     local root="$CLAUDE_SESSION_DIR" meta="$CLAUDE_SESSION_META_DIR"
     ln -s .cs/memory "$root/.claude"
     _assert_falls_through Write "$meta/memory/settings.json" \
-        "a new file in a directory .claude links to" || return 1
+        "a new file in a directory .claude links to" \
+        "$(_link_reason "$root/.claude")" || return 1
 }
 
 # A requested path that ends in a newline: $(jq -r) strips it, so the hook
@@ -973,9 +1050,10 @@ test_auto_approve_declines_on_any_control_link() {
     mkdir -p "$outside" "$meta/private/handoffs"
     # A link under local/ that points outside the session entirely.
     ln -s "$outside" "$meta/local/elsewhere"
-    _assert_falls_through Write "$meta/memory/narrative.md" \
-        "a narrative beside a link in local/ pointing outside" || return 1
     real="$(cd "$meta/local" && pwd -P)"
+    _assert_falls_through Write "$meta/memory/narrative.md" \
+        "a narrative beside a link in local/ pointing outside" \
+        "$(_link_reason "$real/elsewhere")" || return 1
     assert_eq "$(_link_reason "$real/elsewhere")" \
         "$(_auto_approve_stderr Write "$meta/memory/narrative.md")" \
         "the decline names the link" || return 1
@@ -984,25 +1062,29 @@ test_auto_approve_declines_on_any_control_link() {
     mkdir -p "$meta/private/handoffs/a/b"
     ln -s "$outside" "$meta/private/handoffs/a/b/deep"
     _assert_falls_through Write "$meta/memory/narrative.md" \
-        "a narrative beside a nested link in private/" || return 1
+        "a narrative beside a nested link in private/" \
+        "$(_link_reason "$(cd "$meta" && pwd -P)/private/handoffs/a/b/deep")" || return 1
     rm "$meta/private/handoffs/a/b/deep"
     # private itself linked anywhere but the vault mount.
     mv "$meta/private" "$outside/private"
     ln -s "$outside/private" "$meta/private"
     _assert_falls_through Write "$meta/memory/narrative.md" \
-        "a narrative beside a private/ linked outside the vault" || return 1
+        "a narrative beside a private/ linked outside the vault" \
+        "$(_link_reason "$meta/private")" || return 1
     rm "$meta/private"
     # Under the project's .claude/, deep and pointing outside.
     mkdir -p "$root/.claude/skills/x/scripts"
     ln -s "$outside" "$root/.claude/skills/x/scripts/ref"
     _assert_falls_through Write "$meta/memory/narrative.md" \
-        "a narrative beside a link in the project's .claude/" || return 1
+        "a narrative beside a link in the project's .claude/" \
+        "$(_link_reason "$(cd "$root" && pwd -P)/.claude/skills/x/scripts/ref")" || return 1
     rm "$root/.claude/skills/x/scripts/ref"
     # .mcp.json as a link, wherever it points.
     printf '{}\n' > "$outside/mcp.json"
     ln -s "$outside/mcp.json" "$root/.mcp.json"
     _assert_falls_through Write "$meta/memory/narrative.md" \
-        "a narrative beside a linked .mcp.json" || return 1
+        "a narrative beside a linked .mcp.json" \
+        "$(_link_reason "$root/.mcp.json")" || return 1
     rm "$root/.mcp.json"
     _assert_allowed Write "$meta/memory/narrative.md" \
         "a narrative once every link is gone" || return 1
@@ -1022,6 +1104,25 @@ test_auto_approve_allows_content_without_links() {
         "a handoff in private/" || return 1
     assert_eq "" "$(_auto_approve_stderr Write "$meta/memory/narrative.md")" \
         "an approval says nothing on stderr" || return 1
+}
+
+# A clone chooses the name of a link it commits under the project's .claude/,
+# and the name can carry a terminal escape: a raw ESC or BEL byte, or
+# backslash text echo -e would turn into one. The decline names the link as a
+# plain path, each character a plain path lacks replaced by _.
+test_auto_approve_names_a_control_link_as_a_plain_path() {
+    local root="$CLAUDE_SESSION_DIR" meta="$CLAUDE_SESSION_META_DIR" err real
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m
+    mkdir -p "$root/.claude/skills"
+    ln -s "$TEST_TMPDIR/outside" "$root/.claude/skills/link$bad"
+    real="$(cd "$root/.claude/skills" && pwd -P)"
+    _assert_falls_through Write "$meta/memory/narrative.md" \
+        "a narrative beside a link in the project's .claude/" \
+        "$(_link_reason "$real/link$shown")" || return 1
+    err=$(_auto_approve_stderr Write "$meta/memory/narrative.md")
+    assert_eq "$(_link_reason "$real/link$shown")" "$err" \
+        "the decline names the link as a plain path" || return 1
+    assert_no_escape_bytes "$err" "no escape byte reaches the terminal" || return 1
 }
 
 # cs links the shell's shared config names into .cs/claude-config
@@ -1062,22 +1163,26 @@ test_auto_approve_rejects_foreign_config_link() {
     # A name cs never links, pointing into the shell config like the rest.
     printf '{}\n' > "$home/.claude/extra.json"
     ln -s "$home/.claude/extra.json" "$meta/claude-config/extra.json"
+    local config; config="$(cd "$meta/claude-config" && pwd -P)"
     HOME="$home" _assert_falls_through Write "$meta/memory/narrative.md" \
-        "a narrative beside a foreign-named config link" || return 1
+        "a narrative beside a foreign-named config link" \
+        "$(_link_reason "$config/extra.json")" || return 1
     rm "$meta/claude-config/extra.json"
     # A shared name pointing somewhere cs does not point it.
     printf '{}\n' > "$TEST_TMPDIR/other.json"
     rm "$meta/claude-config/settings.json"
     ln -s "$TEST_TMPDIR/other.json" "$meta/claude-config/settings.json"
     HOME="$home" _assert_falls_through Write "$meta/memory/narrative.md" \
-        "a narrative beside a settings link cs did not make" || return 1
+        "a narrative beside a settings link cs did not make" \
+        "$(_link_reason "$config/settings.json")" || return 1
     rm "$meta/claude-config/settings.json"
     ln -s "$home/.claude/settings.json" "$meta/claude-config/settings.json"
     # A shared name one level down is not where cs puts it.
     mkdir -p "$meta/claude-config/sub"
     ln -s "$home/.claude/rules" "$meta/claude-config/sub/rules"
     HOME="$home" _assert_falls_through Write "$meta/memory/narrative.md" \
-        "a narrative beside a shared name below the config root" || return 1
+        "a narrative beside a shared name below the config root" \
+        "$(_link_reason "$config/sub/rules")" || return 1
     rm -r "$meta/claude-config/sub"
     HOME="$home" _assert_allowed Write "$meta/memory/narrative.md" \
         "a narrative once only cs's links remain" || return 1
@@ -1119,7 +1224,8 @@ test_auto_approve_allows_vaulted_session_content() {
     ln -s "$TEST_TMPDIR" "$meta/vault-mnt/private/handoffs/planted"
     HOME="$home" CLAUDE_CONFIG_DIR="$meta/claude-config" \
         _assert_falls_through Write "$meta/memory/narrative.md" \
-        "a narrative beside a link planted inside the vault" || return 1
+        "a narrative beside a link planted inside the vault" \
+        "$(_link_reason "$(cd "$meta" && pwd -P)/vault-mnt/private/handoffs/planted")" || return 1
 }
 
 # `claude --worktree` keeps whole checkouts under the project's
@@ -1136,7 +1242,8 @@ test_auto_approve_skips_project_worktrees_only() {
         "a narrative beside a link inside a claude worktree" || return 1
     ln -s "$outside" "$root/.claude/skills/x/worktrees/planted"
     _assert_falls_through Write "$meta/memory/narrative.md" \
-        "a narrative beside a link under a nested worktrees/" || return 1
+        "a narrative beside a link under a nested worktrees/" \
+        "$(_link_reason "$(cd "$root" && pwd -P)/.claude/skills/x/worktrees/planted")" || return 1
     rm "$root/.claude/skills/x/worktrees/planted"
     local odd="$TEST_TMPDIR/odd [x]*"
     mkdir -p "$odd"
@@ -1155,7 +1262,8 @@ test_auto_approve_declines_on_config_debug_link() {
     printf 'log\n' > "$meta/claude-config/debug/x.txt"
     ln -s "$meta/claude-config/debug/x.txt" "$meta/claude-config/debug/latest"
     _assert_falls_through Write "$meta/memory/narrative.md" \
-        "a narrative beside Claude Code's debug/latest link" || return 1
+        "a narrative beside Claude Code's debug/latest link" \
+        "$(_link_reason "$(cd "$meta" && pwd -P)/claude-config/debug/latest")" || return 1
 }
 
 test_auto_approve_skips_outside_session() {
@@ -3348,6 +3456,9 @@ run_test test_auto_approve_prompts_for_a_non_ascii_name_in_content
 run_test test_auto_approve_prompts_for_a_folded_control_name
 run_test test_auto_approve_prompts_inside_a_git_directory_below_cs
 run_test test_auto_approve_prompts_inside_a_git_directory_reached_by_another_name
+run_test test_auto_approve_prompts_inside_any_directory_that_holds_head
+run_test test_auto_approve_prompts_for_a_file_that_makes_its_directory_a_git_directory
+run_test test_auto_approve_declines_without_the_shared_library
 run_test test_auto_approve_allows_ascii_content_under_a_non_ascii_session_path
 run_test test_auto_approve_allows_content_in_a_session_below_a_git_named_directory
 run_test test_auto_approve_rejects_config_linked_into_content
@@ -3368,6 +3479,7 @@ run_test test_auto_approve_rejects_newline_file_path
 run_test test_auto_approve_rejects_config_dir_inside_session
 run_test test_auto_approve_rejects_git_dir_inside_content
 run_test test_auto_approve_declines_on_any_control_link
+run_test test_auto_approve_names_a_control_link_as_a_plain_path
 run_test test_auto_approve_allows_content_without_links
 run_test test_auto_approve_allows_cs_shared_config_links
 run_test test_auto_approve_rejects_foreign_config_link

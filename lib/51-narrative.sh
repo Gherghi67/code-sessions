@@ -143,7 +143,10 @@ rotate_narrative() {
     # any file whose kept tail is larger than the pipe buffer.
     head -c "$cut" "$snap" | tail -c +$((head_end + 1)) > "$body"
     local blob chunk chunk_tmp
-    blob=$(git hash-object "$body" | cut -c1-8)
+    # The id of the text itself: git runs from the caller's directory, which
+    # can sit in a repository a clone laid out, and would otherwise run the
+    # clean filter that repository's config names on the text first.
+    blob=$(git hash-object --no-filters -- "$body" | cut -c1-8)
     chunk="$arch_dir/$through-$blob.md"
     if [ -L "$chunk" ]; then
         rm -f "$body" "$snap"

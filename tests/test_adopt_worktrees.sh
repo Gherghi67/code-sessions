@@ -400,6 +400,82 @@ test_a_symlink_to_another_project_is_not_adopted() {
     assert_output_contains "$output" "skip sneaky: not a worktree of" "the skip says why" || return 1
 }
 
+# A clone can commit, with git add -f, a directory laid out like a git
+# repository (HEAD, objects/, refs/, a config naming a worktree and a
+# core.fsmonitor) where Claude Code keeps its worktrees. git asked about that
+# entry takes it for the repository and reads that config, so the entry is
+# skipped by name before git is asked anything, and a real worktree beside it
+# is still adopted.
+_commit_git_dir_layout_in_repo() {  # repo_dir, directory under the repo
+    local g="$1/$2"
+    mkdir -p "$g/objects" "$g/refs"
+    : > "$g/objects/.keep"
+    : > "$g/refs/.keep"
+    printf 'ref: refs/heads/main\n' > "$g/HEAD"
+    printf '[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tworktree = .\n\tfsmonitor = touch %s; false\n' \
+        "$TEST_TMPDIR/fsmonitor-ran" > "$g/config"
+    git -C "$1" add -f "$2"
+    git -C "$1" commit -q -m "ship a repository layout"
+}
+
+test_a_committed_git_repository_layout_is_skipped_by_name() {
+    local repo="$TEST_TMPDIR/repo"
+    _make_repo "$repo" real-wt
+    _commit_git_dir_layout_in_repo "$repo" .claude/worktrees/planted
+    _seed_conversation "$repo/.claude/worktrees/planted" "$UUID_A" "Work in the planted layout"
+    _seed_conversation "$repo/.claude/worktrees/real-wt" "$UUID_B" "Work in the real worktree"
+    local output rc=0
+    output=$(cd "$repo" && "$CS_BIN" -adopt --worktrees 2>&1) || rc=$?
+    assert_file_not_exists "$TEST_TMPDIR/fsmonitor-ran" "git must not run the layout's core.fsmonitor" || return 1
+    assert_eq "0" "$rc" "adopt --worktrees goes on past the layout: $output" || return 1
+    assert_eq "skip planted: .claude/worktrees/planted holds HEAD, so git takes it for a repository and would run commands its config names" \
+        "$(printf '%s\n' "$output" | grep '^skip planted')" "the skip names the layout" || return 1
+    assert_not_exists "$repo/.claude/worktrees/planted/.cs" "the layout gets no .cs/" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/repo.planted" "no session is registered for it" || return 1
+    [ -L "$CS_SESSIONS_ROOT/repo.real-wt" ] || { echo "  FAIL: the real worktree beside it is adopted: $output"; return 1; }
+}
+
+# git asked about a plain entry walks up to the nearest directory holding
+# HEAD, so the layout committed at .claude/worktrees itself is named for it.
+test_a_committed_git_repository_layout_above_an_entry_is_skipped_by_name() {
+    local repo="$TEST_TMPDIR/repo"
+    _make_repo "$repo"
+    mkdir -p "$repo/.claude/worktrees/plain"
+    _seed_conversation "$repo/.claude/worktrees/plain" "$UUID_A" "Work in a plain folder"
+    _commit_git_dir_layout_in_repo "$repo" .claude/worktrees
+    local output rc=0
+    output=$(cd "$repo" && "$CS_BIN" -adopt --worktrees 2>&1) || rc=$?
+    assert_file_not_exists "$TEST_TMPDIR/fsmonitor-ran" "git must not run the layout's core.fsmonitor" || return 1
+    assert_eq "0" "$rc" "adopt --worktrees goes on past the layout: $output" || return 1
+    assert_eq "skip plain: .claude/worktrees holds HEAD, so git takes it for a repository and would run commands its config names" \
+        "$(printf '%s\n' "$output" | grep '^skip plain')" "the skip names the layout above the entry" || return 1
+    assert_not_exists "$repo/.claude/worktrees/plain/.cs" "the entry gets no .cs/" || return 1
+}
+
+# A clone chooses the names under .claude/worktrees, and a name can carry a
+# terminal escape: raw (ESC [2J clears the screen) or as backslash text that
+# echo -e would turn into one (\033]0;...\007 retitles the window). Every
+# line that names an entry prints it with each character a plain path does
+# not have replaced by _, so no escape reaches the terminal.
+test_a_worktree_name_is_printed_as_a_plain_path() {
+    local repo="$TEST_TMPDIR/repo" raw text output rc=0 real
+    _make_repo "$repo"
+    text='a\033]0;TITLE\007b'
+    raw=$(printf 'c\033[2Jd')
+    mkdir -p "$repo/.claude/worktrees/$text" "$repo/.claude/worktrees/$raw"
+    : > "$repo/.claude/worktrees/$text/f"
+    : > "$repo/.claude/worktrees/$raw/f"
+    git -C "$repo" add -f .claude/worktrees
+    git -C "$repo" commit -q -m "ship two folders"
+    real=$(cd -P "$repo" && pwd -P)
+    output=$(cd "$repo" && "$CS_BIN" -adopt --worktrees 2>&1) || rc=$?
+    assert_eq "0" "$rc" "adopt --worktrees goes on past both: $output" || return 1
+    assert_eq "0" "$(printf '%s' "$output" | LC_ALL=C tr -dc '\033\007' | wc -c | tr -d ' ')" \
+        "no ESC or BEL byte reaches the terminal" || return 1
+    assert_eq "$(printf 'skip a_033_0_TITLE_007b: not a worktree of %s\nskip c__2Jd: not a worktree of %s\n0 adopted; open one with: cs repo.<worktree>' "$real" "$real")" \
+        "$output" "each name is printed as a plain path" || return 1
+}
+
 test_open_leaves_a_tracked_claude_md_with_cs_markers_alone() {
     local repo="$TEST_TMPDIR/repo"
     _make_repo "$repo" marked
@@ -653,6 +729,9 @@ run_test test_resume_of_an_older_relocated_conversation_runs_claude_in_place_of_
 run_test test_open_keeps_a_relocated_conversation_beside_a_newer_local_one
 run_test test_open_keeps_a_relocated_conversation_whose_prompt_names_the_teammate_frame
 run_test test_a_symlink_to_another_project_is_not_adopted
+run_test test_a_committed_git_repository_layout_is_skipped_by_name
+run_test test_a_committed_git_repository_layout_above_an_entry_is_skipped_by_name
+run_test test_a_worktree_name_is_printed_as_a_plain_path
 run_test test_open_leaves_a_tracked_claude_md_with_cs_markers_alone
 run_test test_an_exclude_file_without_a_final_newline_keeps_its_last_rule
 run_test test_rerun_finishes_an_adoption_that_lost_its_link

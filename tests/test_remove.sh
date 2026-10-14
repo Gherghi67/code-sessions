@@ -295,6 +295,24 @@ test_remove_refuses_while_the_vault_is_mounted_inside() {
     assert_file_exists "$dir/.cs/vault-mnt/memory/narrative.md" "the vault's contents survive" || return 1
 }
 
+# A clone chooses the text a committed link points at, and it can carry a
+# terminal escape: a raw ESC or BEL byte, or backslash text echo -e would
+# turn into one. The refusal prints it as a plain name, each character a
+# plain path lacks replaced by _.
+test_remove_names_a_mounted_vault_link_by_a_plain_target() {
+    local dir out rc=0 bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m
+    dir=$(create_test_session v3)
+    mkdir -p "$dir/.cs/vault$bad/memory"
+    rm -rf "$dir/.cs/memory"
+    ln -s "vault$bad/memory" "$dir/.cs/memory"
+    out=$("$CS_BIN" -rm v3 --force --delete-files </dev/null 2>&1) || rc=$?
+    assert_eq "1" "$rc" "removal refuses" || return 1
+    assert_eq "Error: Session 'v3' has encrypted storage mounted inside it: .cs/memory points at vault$shown/memory. Removing the session would delete what the vault holds; unmount it, then retry." \
+        "$out" "the link's target is named as a plain path" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal" || return 1
+    assert_dir "$dir" "the session survives" || return 1
+}
+
 test_remove_goes_ahead_once_the_vault_is_unmounted() {
     local dir
     dir=$(_vaulted_session v2)
@@ -1184,6 +1202,7 @@ run_test test_remove_worktree_lists_files_in_a_submodule_directory_never_populat
 run_test test_remove_tracked_mode_worktree_lists_untracked_session_records
 run_test test_remove_force_on_adopted_removes_only_the_link
 run_test test_remove_refuses_while_the_vault_is_mounted_inside
+run_test test_remove_names_a_mounted_vault_link_by_a_plain_target
 run_test test_remove_goes_ahead_once_the_vault_is_unmounted
 run_test test_remove_refuses_a_volume_mounted_inside_without_vault_links
 run_test test_remove_reads_a_linux_mount_table

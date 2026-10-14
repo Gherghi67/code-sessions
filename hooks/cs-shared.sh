@@ -117,6 +117,9 @@ cs_local_dir() {  # meta_dir
 # GIT_CONFIG_COUNT (with its KEY_n/VALUE_n pairs) and GIT_CONFIG_PARAMETERS
 # hand git configuration, and a bad value makes every call fail. git speaks
 # in the C locale here so a caller can tell "not a repository" from a failure.
+# The repository's core.fsmonitor names a command git runs on every ls-files;
+# an empty value turns it off, on every git version, so no question asked
+# here runs a program the repository's config names.
 # Every check that decides whether cs trusts a session's files asks through
 # here.
 _cs_git_at() {  # dir, git arguments...
@@ -125,7 +128,60 @@ _cs_git_at() {  # dir, git arguments...
     env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR -u GIT_OBJECT_DIRECTORY \
         -u GIT_CEILING_DIRECTORIES -u GIT_LITERAL_PATHSPECS -u GIT_GLOB_PATHSPECS \
         -u GIT_NOGLOB_PATHSPECS -u GIT_ICASE_PATHSPECS -u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS \
-        -u LANGUAGE LC_ALL=C git -C "$dir" "$@"
+        -u LANGUAGE LC_ALL=C git -c core.fsmonitor= -C "$dir" "$@"
+}
+
+# The directory git's own search would take for the repository by its HEAD,
+# looking up from <dir>; fails when the search ends without one. git, asked
+# about a directory, takes the nearest directory at or above it that holds a
+# .git, or one that itself holds HEAD (beside objects/ and refs/, or a
+# commondir naming them), and runs the commands its config names. A clone can
+# commit that layout anywhere, with git add -f where its .gitignore hides the
+# path, and a committed link can lead into one outside the session (another
+# directory a clone made), so it is looked for before git is asked anything.
+# The walk is git's: each directory from <dir> up to / is asked, by the
+# filesystem and never by how its path is spelled, whether it holds .git (the
+# search ends there, finding nothing) or HEAD (found). Any HEAD counts, a dangling
+# link too: git accepts a link into refs/ whether or not it leads anywhere. A
+# session root without .git is asked like any other directory. Such a root
+# is outside the threat a clone or pull brings, so the hooks and verbs that
+# ask git at a session root do not walk from it first. A link out of
+# the session, a vault mounted elsewhere among them, is walked from where it
+# leads up to its first .git or / like any other directory.
+# The directory found is printed relative to <session_dir> when it lies below
+# it, the session matched by identity (-ef), so a link that spells the
+# session's name in another case (pwd -P keeps the case a link spells) still
+# names it inside; otherwise its whole path is printed.
+_cs_head_on_git_walk() {  # physical dir, session_dir
+    local d="$1" up
+    while :; do
+        [ ! -e "$d/.git" ] || return 1
+        if [ -e "$d/HEAD" ] || [ -L "$d/HEAD" ]; then
+            break
+        fi
+        [ -n "$d" ] || return 1
+        d=${d%/*}
+    done
+    if up=$(_cs_spelling_of_ancestor "${d%/*}" "$2"); then
+        printf '%s\n' "${d#"$up"/}"
+    else
+        printf '%s\n' "${d:-/}"
+    fi
+}
+
+# The leading part of the absolute path <dir> that is the directory
+# <ancestor>, compared by identity (-ef) and printed as <dir> spells it: <dir>
+# itself or one of the directories above it. Fails when none is.
+_cs_spelling_of_ancestor() {  # dir, ancestor
+    local d="$1"
+    while [ -n "$d" ]; do
+        if [ "$d" -ef "$2" ]; then
+            printf '%s\n' "$d"
+            return 0
+        fi
+        d=${d%/*}
+    done
+    return 1
 }
 
 # What git said on stderr when the same call through _cs_git_at failed, its
@@ -171,6 +227,20 @@ _cs_git_cannot_answer() {  # dir, git's error output
     printf 'cs could not ask git whether it tracks a file in .cs/%s: %s\n' "${1##*/}" "$(_cs_git_complaint "$2")"
 }
 
+# <name> with every byte but A-Z, a-z, 0-9, ".", "_", "/", "@" and "-"
+# replaced by "_", cut to its first <longest> characters when that is given.
+# A name a repository chose (a file it tracks, a directory it commits) is
+# printed through here, so it never reaches the terminal, or Claude, raw: no
+# escape, control byte or newline survives. tr works on bytes in the C locale,
+# so each byte of a multibyte character is replaced on its own.
+_cs_plain_name() {  # name, [longest]
+    if [ -n "${2:-}" ]; then
+        printf '%s' "$1" | env LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_' | cut -c1-"$2"
+    else
+        printf '%s' "$1" | env LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_'
+    fi
+}
+
 # Prints the line that says git tracks <tracked> and how to stop: untrack
 # <sub>, a path relative to <top>, and commit, both in <top>. The repository
 # chose both names and the user is asked to paste the command, so each path is
@@ -185,8 +255,8 @@ _cs_git_cannot_answer() {  # dir, git's error output
 # leaves out of what it sends the model.
 cs_untrack_notice() {  # tracked, top, sub
     local shown said top="$2" sub="$3"
-    shown=$(printf '%s' "$1" | env LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_' | cut -c1-160) || return 1
-    said=$(printf '%s' "$sub" | env LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_') || return 1
+    shown=$(_cs_plain_name "$1" 160) || return 1
+    said=$(_cs_plain_name "$sub") || return 1
     case "$top" in '~'* | '='* | '-'*) top="./$top" ;; esac
     case "$sub" in '~'* | '='*) sub="./$sub" ;; esac
     printf "%s is tracked in git (per-actor state must stay local). Fix with: git -C %q --literal-pathspecs rm -r --cached -- %q && git -C %q commit -m 'stop tracking %s'\n" \
@@ -208,9 +278,12 @@ cs_untrack_notice() {  # tracked, top, sub
 # <session_dir> is the session as its caller names it, printed in place of the
 # repository's own path when the two are one directory. A directory that holds
 # the session's own files is named, with no command: untracking it would
-# untrack the project.
+# untrack the project, whatever case the link spells the session's name in. A
+# directory laid out like a repository where git's own search from the one
+# asked about would find it, inside the session or out of it, is named before
+# git is asked anything.
 cs_tracked_files_notice() {  # dir, session_dir
-    local real top prefix tracked status why failed meta sub rest n here="$1" missing=""
+    local real top prefix tracked status why failed meta sub rest n layout here="$1" missing=""
     while [ ! -e "$here" ] && [ ! -L "$here" ]; do
         case "$here" in */?*) ;; *) return 1 ;; esac
         missing="/${here##*/}$missing"
@@ -221,6 +294,12 @@ cs_tracked_files_notice() {  # dir, session_dir
     # into "nothing tracked".
     real=$(cd -P -- "$here" 2>/dev/null && pwd -P && printf x) || return 1
     real=${real%$'\n'x}
+    if layout=$(_cs_head_on_git_walk "$real" "$2"); then
+        layout=$(_cs_plain_name "$layout" 160) || return 1
+        printf '%s holds HEAD, so git takes it for a repository and would run commands its config names (cs state must be a plain directory inside the session). Delete %s/HEAD, or cs -rm the session.\n' \
+            "$layout" "$layout"
+        return 0
+    fi
     # The repository's top and the directory's place in it, one line each from
     # one git: two newlines in all, unless a name holds one, and then each is
     # asked on its own.
@@ -270,13 +349,11 @@ cs_tracked_files_notice() {  # dir, session_dir
         return 0
     fi
     meta=$(cd -P -- "$2/.cs" 2>/dev/null && pwd -P && printf x) && meta=${meta%$'\n'x}
-    case "$meta/" in
-        "$real"/*)
-            printf "%s leads to a directory that holds this session's own files, where git tracks %s (per-actor state must stay local). Make %s a directory of its own.\n" \
-                ".cs/${1##*/}" "$(printf '%s' "$tracked" | env LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_' | cut -c1-160)" ".cs/${1##*/}"
-            return 0
-            ;;
-    esac
+    if _cs_spelling_of_ancestor "$meta" "$real" >/dev/null; then
+        printf "%s leads to a directory that holds this session's own files, where git tracks %s (per-actor state must stay local). Make %s a directory of its own.\n" \
+            ".cs/${1##*/}" "$(_cs_plain_name "$tracked" 160)" ".cs/${1##*/}"
+        return 0
+    fi
     # The path to untrack, spelled as the index has it: a case variant is
     # removed under its own name.
     n=0 rest=$prefix
@@ -302,10 +379,11 @@ cs_files_tracked_notice() {  # meta_dir, session_dir
 }
 
 # Says what an unusable .cs/private is, for an error message: the vault it
-# points at, or that it is not a directory at all.
+# points at, as a plain name (a clone can commit the link), or that it is not
+# a directory at all.
 cs_private_state() {  # meta_dir
     if [ -L "$1/private" ]; then
-        printf 'points at %s\n' "$(readlink "$1/private")"
+        printf 'points at %s\n' "$(_cs_plain_name "$(readlink "$1/private")" 160)"
     else
         printf 'is not a directory\n'
     fi
@@ -634,7 +712,9 @@ _cs_hand_made_vault() {  # root
 
 # True when a path lies in the session at <root> by its spelling (as typed,
 # or under the root's physical path, the spelling an adopted session is
-# written by) but a write to it lands outside the root; prints where it lands.
+# written by) but a write to it lands outside the root; prints where it lands,
+# as a plain name cut at 160 characters, or one of two phrases when that
+# cannot be named.
 # A vault set up by hand mounts anywhere, from .cs/local/pre-open, so while
 # one exists the four vault links, and a .cs/narrative-archive link (which
 # cs -narrative rotate uses as it is), may lead out. That covers an encrypted
@@ -678,9 +758,13 @@ _cs_write_leaves_session() {  # root, path
     esac
     if [ -n "$via" ]; then
         printf '%s\n' "$why"
-    else
-        printf '%s\n' "$real"
+        return 0
     fi
+    # A clone chooses where a committed link leads, so a resolved path, which
+    # always starts with "/", is printed as a plain name; the two phrases
+    # above are cs's own and are printed as written.
+    case "$real" in /*) real=$(_cs_plain_name "$real" 160) ;; esac
+    printf '%s\n' "$real"
 }
 
 # The session a path lies in, by its spelling: the nearest directory above it

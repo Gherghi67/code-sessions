@@ -187,6 +187,14 @@ case "$BASENAME_LC" in
     claude.md|claude.local.md) exit 0 ;;
 esac
 
+# A file named HEAD makes the directory that holds it a git directory, to cs
+# and, beside objects/ and refs/ that a clone can deliver, to git; a commondir
+# names the store such a HEAD uses. Writing either completes a layout no rule
+# below sees yet, since none of them looks at the file being written.
+case "$BASENAME_LC" in
+    head|commondir) exit 0 ;;
+esac
+
 # A repository kept below .cs/ (a clone under a notes directory) has a git
 # directory of its own: git reads config and runs hooks from it whenever git
 # runs there, and a .git file names another directory to read them from. A
@@ -208,18 +216,27 @@ case "$(_cs_lower "$_cs_spelled")/" in
     */.git/*) exit 0 ;;
 esac
 # The name is not what makes a git directory: a bare clone is one under any
-# name, and so is the target of a linked .git. Every directory from the
-# write's real parent up to the root of .cs/ is asked what it is: one that
-# holds HEAD beside objects/ or refs/, or beside commondir, which is how a
-# linked worktree's own directory names the shared one.
-_cs_up="$REAL_PARENT"
-while [ -n "$_cs_up" ] && [ "$_cs_up" != "$REAL_META" ] && [ "$_cs_up" != "$REAL_CS" ]; do
-    if [ -f "$_cs_up/HEAD" ] && { [ -d "$_cs_up/objects" ] || [ -d "$_cs_up/refs" ] \
-        || [ -f "$_cs_up/commondir" ]; }; then
-        exit 0
-    fi
-    _cs_up="${_cs_up%/*}"
-done
+# name, and so is the target of a linked .git. The write's real parent and
+# every directory above it, up to the first that holds .git as git's own
+# search goes, are asked what they are by the rule cs refuses a session's
+# state by (_cs_head_on_git_walk, cs-shared.sh): one that holds HEAD, a link
+# that leads nowhere included, is a git directory. The library is loaded here,
+# after cs_resolve_session: loaded before it, the resolve would ask git about
+# the session's files on every request. Without the rule nothing is
+# approved. Sourced as cs-resolve.sh is above, parse-checked, with errexit
+# suspended across the source.
+_cs_shared="$(dirname "$0")/cs-shared.sh"
+set +e
+# shellcheck source=cs-shared.sh
+[ -r "$_cs_shared" ] && "${BASH:-/bin/bash}" -n "$_cs_shared" 2>/dev/null && . "$_cs_shared"
+set -e
+if ! command -v _cs_head_on_git_walk >/dev/null 2>&1; then
+    printf 'cs auto-approve: not approving, %s is missing or outdated\n' "$_cs_shared" >&2
+    exit 0
+fi
+if _cs_head_on_git_walk "$REAL_PARENT" "$SESSION_DIR" >/dev/null; then
+    exit 0
+fi
 
 # Classify by where the write really lands, not by the spelled path: a
 # shared directory can carry a committed link into local/ (memory/notes ->
@@ -335,7 +352,8 @@ _cs_scan_links() {
         if [ "${2:-}" = config ] && _cs_shared_config_link "$1" "$_cs_link"; then
             continue
         fi
-        _cs_decline "symlink under a control directory: $_cs_link"
+        # A clone chooses the link's name: it is printed as a plain path.
+        _cs_decline "symlink under a control directory: $(_cs_plain_name "$_cs_link" 160)"
     done < "$_cs_links"
 }
 _cs_scan_root() {

@@ -286,7 +286,7 @@ adopt_session() {  # name, [--yes|-y], in any order
         local sub
         for sub in $CS_VAULT_LINKS; do
             if [ -L "$target_dir/.cs/$sub" ] && [ ! -e "$target_dir/.cs/$sub" ]; then
-                error "Cannot re-adopt as '$session_name': .cs/$sub points at $(readlink "$target_dir/.cs/$sub"), which is missing (encrypted storage not mounted?). Mount it and run cs -adopt again; nothing was changed."
+                error "Cannot re-adopt as '$session_name': .cs/$sub points at $(_cs_plain_name "$(readlink "$target_dir/.cs/$sub")" 160), which is missing (encrypted storage not mounted?). Mount it and run cs -adopt again; nothing was changed."
             fi
         done
 
@@ -500,20 +500,41 @@ adopt_worktrees() {  # [--dry-run]
         fi
     done
 
-    local wt_dir wt_name session_name proj parent_proj uuid adopted=0 wt_top wt_common state tracked
+    local wt_dir wt_name wt_shown session_name proj parent_proj uuid adopted=0 wt_top wt_common wt_real layout state tracked
     for wt_dir in "$wt_root"/*/; do
         wt_dir="${wt_dir%/}"
         [ -d "$wt_dir" ] || continue
         wt_name=$(basename "$wt_dir")
+        # The repository chose the name, so it is printed with each character
+        # a plain path does not have replaced, and never through echo -e: a
+        # raw escape, or backslash text echo -e decodes into one, would reach
+        # the terminal.
+        wt_shown=$(_cs_plain_name "$wt_name")
         session_name="$repo_name.$wt_name"
         link="$SESSIONS_ROOT/$session_name"
         # Everything below writes into this directory, so it has to be a
         # checkout of this repo: its own worktree root, on this repo's common
         # git dir. A symlink to another project, or a plain folder, is neither.
-        wt_top=$(git -C "$wt_dir" rev-parse --show-toplevel 2>/dev/null) || wt_top=""
-        wt_common=$(cd -- "$wt_dir" && cd -- "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P) || wt_common=""
+        # git asked about it takes the nearest directory at or above it that
+        # holds HEAD for the repository, unless a .git comes first, and reads
+        # that directory's config, and a clone can commit such a layout here
+        # (git add -f), so one git's search from the entry would find is
+        # named before git is asked anything.
+        # The x keeps a trailing newline in a name that $( ) drops.
+        if ! wt_real=$(cd -P -- "$wt_dir" 2>/dev/null && pwd -P && printf x); then
+            printf '%b%s%b\n' "$DIM" "skip $wt_shown: not a worktree of $repo" "$NC"
+            continue
+        fi
+        wt_real=${wt_real%$'\n'x}
+        if layout=$(_cs_head_on_git_walk "$wt_real" "$repo"); then
+            layout=$(_cs_plain_name "$layout" 160)
+            printf '%b%s%b\n' "$DIM" "skip $wt_shown: $layout holds HEAD, so git takes it for a repository and would run commands its config names" "$NC"
+            continue
+        fi
+        wt_top=$(_cs_git_at "$wt_dir" rev-parse --show-toplevel 2>/dev/null) || wt_top=""
+        wt_common=$(cd -- "$wt_dir" && cd -- "$(_cs_git_at "$wt_dir" rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P) || wt_common=""
         if [ -L "$wt_dir" ] || [ -z "$wt_top" ] || ! [ "$wt_top" -ef "$wt_dir" ] || ! [ "$wt_common" -ef "$common" ]; then
-            echo -e "${DIM}skip $wt_name: not a worktree of $repo${NC}"
+            printf '%b%s%b\n' "$DIM" "skip $wt_shown: not a worktree of $repo" "$NC"
             continue
         fi
         state="$wt_dir/.cs/local/state"
@@ -531,11 +552,11 @@ adopt_worktrees() {  # [--dry-run]
                     && [ -L "$link" ] && [ "$(readlink "$link")" = "$wt_dir" ] && [ "$dry_run" != 1 ]; then
                     _set_local_state "$state" adopted "$(date '+%Y-%m-%d')"
                 fi
-                echo -e "${DIM}skip $wt_name: already carries .cs/${NC}"
+                printf '%b%s%b\n' "$DIM" "skip $wt_shown: already carries .cs/" "$NC"
                 continue
             fi
             if [ -n "$(_read_local_state "$state" adopted)" ]; then
-                echo -e "${DIM}skip $wt_name: removed with cs -rm (delete its .cs/ to adopt it again)${NC}"
+                printf '%b%s%b\n' "$DIM" "skip $wt_shown: removed with cs -rm (delete its .cs/ to adopt it again)" "$NC"
                 continue
             fi
         fi
@@ -549,7 +570,7 @@ adopt_worktrees() {  # [--dry-run]
             parent_proj=$(_claude_project_dir "$repo")
             uuid=$(_discover_worktree_uuid_in "$parent_proj" "$wt_dir")
             if [ -z "$uuid" ]; then
-                echo -e "${DIM}skip $wt_name: no conversation under $proj, none relocated into $parent_proj${NC}"
+                printf '%b%s%b\n' "$DIM" "skip $wt_shown: no conversation under $proj, none relocated into $parent_proj" "$NC"
                 continue
             fi
             proj="$parent_proj"
@@ -559,9 +580,9 @@ adopt_worktrees() {  # [--dry-run]
         tracked=$(_exclude_session_tracked_conflict "$wt_dir")
         if [ -n "$tracked" ]; then
             case "$tracked" in
-                "cs could not ask git"*) echo -e "${DIM}skip $wt_name: $tracked${NC}" ;;
-                *symlink) echo -e "${DIM}skip $wt_name: $tracked, and cs writes through it at every open${NC}" ;;
-                *) echo -e "${DIM}skip $wt_name: $tracked is tracked on its branch, and cs would rewrite it at every open${NC}" ;;
+                "cs could not ask git"*) printf '%b%s%b\n' "$DIM" "skip $wt_shown: $tracked" "$NC" ;;
+                *symlink) printf '%b%s%b\n' "$DIM" "skip $wt_shown: $tracked, and cs writes through it at every open" "$NC" ;;
+                *) printf '%b%s%b\n' "$DIM" "skip $wt_shown: $tracked is tracked on its branch, and cs would rewrite it at every open" "$NC" ;;
             esac
             continue
         fi
@@ -570,7 +591,7 @@ adopt_worktrees() {  # [--dry-run]
             error "Session '$session_name' already exists: the same repo name in two places? ($(readlink "$link" 2>/dev/null || echo "$link"))"
         fi
         if [ "$dry_run" = 1 ]; then
-            echo "would adopt $wt_name as '$session_name' (conversation $uuid)"
+            printf '%s\n' "would adopt $wt_shown as '$session_name' (conversation $uuid)"
             continue
         fi
         # Hidden before anything exists to hide, marked before anything else
@@ -592,7 +613,7 @@ adopt_worktrees() {  # [--dry-run]
         # from a session cs -rm removed.
         _set_local_state "$state" adopted "$(date '+%Y-%m-%d')"
         adopted=$((adopted + 1))
-        info "Adopted $wt_name as session '$session_name'"
+        info "Adopted $wt_shown as session '$session_name'"
     done
     [ "$dry_run" = 1 ] || echo -e "${DIM}$adopted adopted; open one with: cs $repo_name.<worktree>${NC}"
 }

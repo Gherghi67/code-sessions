@@ -1278,12 +1278,12 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "8447033a79a64f3467364280da3e03f576be36e840d0bb5a7d8626c00ec84ec1  bin/cs"
-    "6003aaee9c34b94a2e190a71c00779be5ce3a5105b0474409d2c99214784bb93  bin/cs-secrets"
+    "3e6f42d46d4fd1aecdaa66173dc82a20292a04bc7e7c29fc510a1f9a28e0de3f  bin/cs"
+    "ccadae356a08408374d97c5d37abe7588ae1edd9d9be39c2edf16581d0888a8c  bin/cs-secrets"
     "105416b75a58aa582dfd6a8d22a9b165ec896e1e366070c3cc97ee7d78a4cb1d  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
     "e0f9e99693748006df3f35951e592ce3528950a1f330eaeb3d425f0739592447  hooks/cs-resolve.sh"
-    "3e9e09d4aba7d6684a955f9c42530eaeac6348884ad6e18c7acf38ca6982c521  hooks/cs-shared.sh"
+    "3349b13cdebcee5ba1ec03b1ef6fbf180fdcde081c21a9c0e65c485cac66b50c  hooks/cs-shared.sh"
     "50d63ce0995e68fddd8503700c15f9585d11938c9cd3872a883146de7707c765  hooks/cs-iterm-tab.py"
     "0c1ee69a915976c70ddf39e266dcff15e10eb1931e16e28bf952ab8c16314f98  hooks/memory-index-guard.sh"
     "6c9a9db966b02d1d99c24a4358abdcf005a0e56e1c7c2defc7c75d9fde516612  hooks/prompt-rewriter.sh"
@@ -1295,7 +1295,7 @@ CS_PAYLOAD_SHA256=(
     "e6a8487edd40c3afc5c068613bc4f13794925685400748f144e9ae7969c7a83a  hooks/session-end.sh"
     "81a13835a65f4b4b35bb87493da0df9848de68375ca7ab1525d2d5079cf52bf1  hooks/subagent-context.sh"
     "53b16016dd6d087c3cc3db7e4acf8de6629e149e3b7f326f0731b36809574156  hooks/tool-failure-logger.sh"
-    "2504d95bb13283a67daec8b09c95f5bdff4281721eefb2ced78084507482e501  hooks/session-auto-approve.sh"
+    "00b9b746a147883b97dd01ef29e1ccc7d3fdae62a41c674acc8614b8120ab7b7  hooks/session-auto-approve.sh"
     "5390f2cb4d0192b43711578b8bdcef145de5fd011c166e900023183d65c05ab3  hooks/scope-prompt.sh"
     "12dca7f6d02f19f75865fa2f6e91384a5c8e727b0962e269a6adbb491a95971f  commands/summary.md"
     "9e06eaa16960dff49881234c8a479c2f8d2dd8d672283056e1591c4528e755ab  commands/checkpoint.md"

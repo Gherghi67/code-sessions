@@ -438,6 +438,17 @@ assert_eq() {
     fi
 }
 
+# Fails when <text> holds an ESC (0x1b) or BEL (0x07) byte, the bytes that
+# start and end a terminal escape sequence.
+assert_no_escape_bytes() {
+    local text="$1" msg="${2:-}" n
+    n=$(printf '%s' "$text" | LC_ALL=C tr -dc '\033\007' | wc -c | tr -d ' ')
+    if [[ "$n" != 0 ]]; then
+        echo "  FAIL: $msg ($n ESC or BEL bytes)"
+        return 1
+    fi
+}
+
 assert_exists() {
     local path="$1"; local msg="${2:-$path should exist}"
     if [[ ! -e "$path" ]]; then

@@ -520,7 +520,7 @@ _remove_one_session() {
             real_target=$(cd -- "$link" 2>/dev/null && pwd -P) || continue
             case "$real_target" in
                 "$real_dir"/*)
-                    error "Session '$session_name' has encrypted storage mounted inside it: .cs/$sub points at $(readlink "$link"). Removing the session would delete what the vault holds; unmount it, then retry." ;;
+                    error "Session '$session_name' has encrypted storage mounted inside it: .cs/$sub points at $(_cs_plain_name "$(readlink "$link")" 160). Removing the session would delete what the vault holds; unmount it, then retry." ;;
             esac
         done
         # A cs -encrypt that stopped partway leaves its volume mounted with no

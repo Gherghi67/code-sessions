@@ -2334,6 +2334,37 @@ test_import_file_refuses_a_session_whose_cs_is_a_link() {
     assert_eq "3 Error: secret not found: victim_token" "$rc $out" "nothing from the victim's store is imported" || return 1
 }
 
+# A clone chooses where a committed link leads, and the name there can carry
+# a terminal escape: a raw ESC or BEL byte, or backslash text echo -e would
+# turn into one. Each import refusal names where the link leads as a plain
+# path, each character a plain path lacks replaced by _.
+test_import_file_names_where_a_linked_cs_leads_as_a_plain_path() {
+    local out rc=0 session_dir="$CS_SESSIONS_ROOT/linked-session" t
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m
+    t=$(cd "$TEST_TMPDIR" && /bin/pwd -P)
+    mkdir -p "$session_dir" "$t/cs$bad"
+    ln -s "$t/cs$bad" "$session_dir/.cs"
+    out=$("$CS_SECRETS_BIN" --session linked-session import-file 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the import is refused" || return 1
+    assert_eq "Error: Refusing to import for session 'linked-session': $session_dir/.cs leads to $t/cs$shown, outside the session" \
+        "$out" "the refusal names where the link leads as a plain path" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal" || return 1
+}
+
+test_import_file_names_where_a_linked_directory_leads_as_a_plain_path() {
+    local out rc=0 inbox="$CS_SESSIONS_ROOT/test-session/.cs/inbox" t
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m
+    t=$(cd "$TEST_TMPDIR" && /bin/pwd -P)
+    mkdir -p "$t/in$bad"
+    printf 'not a sync file\n' > "$t/in$bad/other-session.enc"
+    ln -s "$t/in$bad" "$inbox"
+    out=$("$CS_SECRETS_BIN" import-file "$inbox/other-session.enc" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the import is refused" || return 1
+    assert_eq "Error: Refusing to import $inbox/other-session.enc: its directory leads to $t/in$shown, outside the session" \
+        "$out" "the refusal names where the directory leads as a plain path" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal" || return 1
+}
+
 # A file named outright is read from where its path leads, so a directory link
 # pushed inside the session (.cs/inbox -> ~/.cs-secrets) would hand over
 # another session's local store under a name that is itself no link.
@@ -4653,6 +4684,8 @@ run_test test_import_file_skips_a_password_sync_file_that_is_a_symbolic_link
 run_test test_import_file_keeps_the_store_when_a_value_exceeds_the_exec_limit
 run_test test_import_file_refuses_a_session_whose_cs_is_a_link
 run_test test_import_file_refuses_a_named_file_behind_a_linked_directory
+run_test test_import_file_names_where_a_linked_cs_leads_as_a_plain_path
+run_test test_import_file_names_where_a_linked_directory_leads_as_a_plain_path
 run_test test_import_file_refuses_a_cs_swapped_for_a_link_before_the_copy
 run_test test_import_file_reads_the_cs_it_checked_when_swapped_during_the_copy
 run_test test_import_file_refuses_a_named_file_behind_a_linked_directory_however_spelled
