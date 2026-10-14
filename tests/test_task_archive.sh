@@ -313,6 +313,151 @@ test_a_locked_vault_refuses_the_run() {
         "$out" "1 2" || return 1
 }
 
+# ============================================================================
+# The answer, the plan, and a second run
+# ============================================================================
+
+# The session's answer is asked once and kept; run moves nothing without a yes,
+# so a skill that skipped the question cannot archive behind the user's back.
+test_run_refuses_until_the_session_has_agreed() {
+    _row 1 completed "One"
+    _row 2 pending "Two"
+    local out rc=0
+    out=$("$CS_BIN" -archive-tasks run 2>&1) || rc=$?
+    assert_eq "1" "$rc" "an unasked session refuses" || return 1
+    _assert_refused "Error: this session has not agreed to task archiving (answer: unasked); ask first, then record it with cs -archive-tasks answer yes" \
+        "$out" "1 2" || return 1
+    "$CS_BIN" -archive-tasks answer no > /dev/null 2>&1 || { echo "  FAIL: answer no failed"; return 1; }
+    assert_eq "no" "$(cat "$SESSION_DIR/.cs/local/task-archive")" "the answer is kept in .cs/local" || return 1
+    rc=0
+    out=$("$CS_BIN" -archive-tasks run 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a session that said no refuses" || return 1
+    _assert_refused "Error: this session has not agreed to task archiving (answer: no); ask first, then record it with cs -archive-tasks answer yes" \
+        "$out" "1 2" || return 1
+}
+
+test_answer_takes_only_yes_or_no() {
+    local out rc=0
+    out=$("$CS_BIN" -archive-tasks answer maybe 2>&1) || rc=$?
+    assert_eq "1" "$rc" "another word is refused" || return 1
+    assert_eq "Error: Usage: cs -archive-tasks answer yes|no" "$out" "the usage is named" || return 1
+    assert_not_exists "$SESSION_DIR/.cs/local/task-archive" "nothing is recorded" || return 1
+}
+
+# plan is what the skill reads before it asks: the standing answer, the store,
+# the rows a run would move and the row it would keep. It moves nothing.
+test_plan_names_the_answer_and_the_rows_and_moves_nothing() {
+    _row 3 completed "Write the parser"
+    _row 4 pending "Review the parser"
+    _row 7 completed "Ship the parser"
+    _row 12 completed "Tag the release"
+    local out
+    out=$("$CS_BIN" -archive-tasks plan 2>&1) || { echo "  FAIL: plan failed: $out"; return 1; }
+    assert_eq "answer: unasked
+store: $STORE
+archive: 2 completed rows: #3 #7
+keep: #12, the highest id, stays live
+target: .cs/task-archive" "$out" "plan describes the run" || return 1
+    assert_eq "3 4 7 12" "$(_live_ids)" "plan moves nothing" || return 1
+    assert_not_exists "$SESSION_DIR/.cs/task-archive" "plan writes nothing" || return 1
+    _agree || return 1
+    rm "$STORE/3.json" "$STORE/7.json"
+    out=$("$CS_BIN" -archive-tasks plan 2>&1) || { echo "  FAIL: plan failed: $out"; return 1; }
+    assert_eq "answer: yes
+store: $STORE
+archive: nothing: no completed task row below #12, the highest id" "$out" "plan says when there is nothing to move" || return 1
+}
+
+test_plan_refuses_a_store_it_does_not_recognise() {
+    _row 1 completed "One"
+    printf 'scratch\n' > "$STORE/notes.txt"
+    local out rc=0
+    out=$("$CS_BIN" -archive-tasks plan 2>&1) || rc=$?
+    assert_eq "1" "$rc" "plan fails" || return 1
+    assert_eq "Error: refusing to archive: $STORE holds notes.txt, which is not part of the task store layout cs knows (<id>.json rows, .lock, .highwatermark); nothing archived" \
+        "$out" "the same refusal run gives" || return 1
+}
+
+# tasks.md is a readable snapshot of the whole list as it stood before the
+# run, open rows included, in id order: the shape of the archive cs replaces.
+test_tasks_md_is_a_readable_snapshot_of_the_whole_list() {
+    _row 10 completed "Ship it" "Tagged and pushed."
+    _row 2 pending "Review it" "Two passes.
+
+Second paragraph."
+    _row 3 completed "Write it" "First draft."
+    _agree || return 1
+    "$CS_BIN" -archive-tasks run > /dev/null 2>&1 || { echo "  FAIL: run failed"; return 1; }
+    local md
+    md=$(ls "$SESSION_DIR"/.cs/task-archive/*/tasks.md)
+    case "$(head -n 1 "$md")" in
+        "# Task list as of "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]" "[0-9][0-9]:[0-9][0-9]" (before archiving completed rows)") ;;
+        *) echo "  FAIL: unexpected header: $(head -n 1 "$md")"; return 1 ;;
+    esac
+    assert_eq "
+## #2 [pending] Review it
+
+Two passes.
+
+Second paragraph.
+
+## #3 [completed] Write it
+
+First draft.
+
+## #10 [completed] Ship it
+
+Tagged and pushed.
+
+x" "$(tail -n +2 "$md"; printf x)" "every row, in id order, heading then description" || return 1
+}
+
+# A second run the same day adds to the day's archive: its snapshot is
+# appended, never written over, and the rows already there stay.
+test_a_second_run_the_same_day_adds_to_the_archive() {
+    _row 1 completed "One"
+    _row 2 completed "Two"
+    _row 3 pending "Three"
+    _agree || return 1
+    "$CS_BIN" -archive-tasks run > /dev/null 2>&1 || { echo "  FAIL: first run failed"; return 1; }
+    _row 4 completed "Four"
+    _row 5 pending "Five"
+    "$CS_BIN" -archive-tasks run > /dev/null 2>&1 || { echo "  FAIL: second run failed"; return 1; }
+    assert_eq "1 2 4" "$(_archived_ids)" "both runs' rows are archived" || return 1
+    assert_eq "3 5" "$(_live_ids)" "the open rows stay" || return 1
+    assert_eq "2" "$(grep -c '^# Task list as of ' "$SESSION_DIR"/.cs/task-archive/*/tasks.md)" \
+        "tasks.md holds both snapshots" || return 1
+}
+
+# An archived row is never overwritten. A live row whose number the day's
+# archive already holds with other content (a pull brought one in, or a store
+# was rebuilt) refuses the run; the same bytes mean an earlier run stopped
+# after the copy, and the row finishes moving.
+test_an_archived_row_is_never_overwritten() {
+    _row 1 completed "One"
+    _row 2 pending "Two"
+    _agree || return 1
+    "$CS_BIN" -archive-tasks run > /dev/null 2>&1 || { echo "  FAIL: first run failed"; return 1; }
+    local day archived
+    day=$(ls "$SESSION_DIR/.cs/task-archive")
+    archived="$SESSION_DIR/.cs/task-archive/$day/json/1.json"
+    cp "$archived" "$TEST_TMPDIR/1.archived"
+    _row 1 completed "Another one"
+    local out rc=0
+    out=$("$CS_BIN" -archive-tasks run 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a different row under an archived number refuses" || return 1
+    assert_eq "Error: refusing to archive: .cs/task-archive/$day/json/1.json already holds a different row #1; nothing archived" \
+        "$out" "the clash is named" || return 1
+    cmp -s "$TEST_TMPDIR/1.archived" "$archived" || { echo "  FAIL: the archived row was overwritten"; return 1; }
+    assert_eq "1 2" "$(_live_ids)" "the live row stays" || return 1
+    assert_eq "1" "$(grep -c '^# Task list as of ' "$SESSION_DIR/.cs/task-archive/$day/tasks.md")" \
+        "a refused run adds no snapshot" || return 1
+    cp "$archived" "$STORE/1.json"
+    out=$("$CS_BIN" -archive-tasks run 2>&1) || { echo "  FAIL: run over an identical copy failed: $out"; return 1; }
+    assert_eq "2" "$(_live_ids)" "an identical row finishes moving" || return 1
+    cmp -s "$TEST_TMPDIR/1.archived" "$archived" || { echo "  FAIL: the archived row changed"; return 1; }
+}
+
 echo "Running test_task_archive.sh"
 echo ""
 
@@ -331,5 +476,12 @@ run_test test_the_list_id_is_read_the_way_claude_code_names_its_directory
 run_test test_claude_config_dir_moves_the_store
 run_test test_an_encrypted_session_archives_into_its_vault
 run_test test_a_locked_vault_refuses_the_run
+run_test test_run_refuses_until_the_session_has_agreed
+run_test test_answer_takes_only_yes_or_no
+run_test test_plan_names_the_answer_and_the_rows_and_moves_nothing
+run_test test_plan_refuses_a_store_it_does_not_recognise
+run_test test_tasks_md_is_a_readable_snapshot_of_the_whole_list
+run_test test_a_second_run_the_same_day_adds_to_the_archive
+run_test test_an_archived_row_is_never_overwritten
 
 report_results
