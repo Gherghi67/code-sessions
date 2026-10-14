@@ -723,9 +723,8 @@ if [ "$SOURCE" = "resume" ] && git -C "$SESSION_DIR" rev-parse --git-dir >/dev/n
         # has nothing to measure against, so it goes unmentioned rather than
         # named whole on every resume.
         NARRATIVE_DELTA=""
-        # One renderer for both paths: the tracked loop and the untracked one
-        # below describe the same thing to the model, and two copies of the
-        # sentence drift apart while both their tests stay green.
+        # Append one teammate narrative's growth to NARRATIVE_DELTA as the
+        # sentence the model reads; the actor's own narrative is skipped.
         _add_delta() {  # path sections start
             [ "$1" = ".cs/memory/narrative.$ACTOR_SLUG.md" ] && return 0
             NARRATIVE_DELTA="${NARRATIVE_DELTA}${NARRATIVE_DELTA:+; }$1: $2 new section(s) from line $3"
