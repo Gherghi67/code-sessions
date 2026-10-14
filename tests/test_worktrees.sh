@@ -4031,20 +4031,23 @@ run_test test_retire_asks_git_about_the_file_a_feature_claude_link_leads_to
 # guessing "new" would bring the deleted topic back and report success.
 test_retire_ignored_mode_refuses_when_the_inherited_record_cannot_be_read() {
     local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    local odd=$'g\e[1mone\a.md'
     _ignored_base_with_two_topics
+    echo "odd topic" > "$base_dir/.cs/memory/$odd"
     cs_launch "proj@t1"
     echo "done" > "$wt/result.txt"
     (cd "$wt" && git add result.txt && git commit -q -m "task")
-    rm "$base_dir/.cs/memory/gone.md"
+    rm "$base_dir/.cs/memory/$odd"
     sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
-    find "$wt/.cs/local/inherited-topics" -type f -exec chmod 000 {} +
-    [ ! -r "$wt/.cs/local/inherited-topics/gone.md" ] || return 77
+    chmod 000 "$wt/.cs/local/inherited-topics/$odd"
+    [ ! -r "$wt/.cs/local/inherited-topics/$odd" ] || return 77
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
     find "$CS_SESSIONS_ROOT" -path '*/local/inherited-topics/*' -type f -exec chmod 600 {} + 2>/dev/null
     assert_eq "1" "$status" "the retire fails: $output" || return 1
-    assert_file_not_exists "$base_dir/.cs/memory/gone.md" "the deleted topic did not come back" || return 1
-    assert_output_contains "$output" "could not read what the feature inherited for memory/gone.md" \
-        "the error names the topic" || return 1
+    assert_file_not_exists "$base_dir/.cs/memory/$odd" "the deleted topic did not come back" || return 1
+    assert_output_contains "$output" "could not read what the feature inherited for memory/g?\[1mone?\.md" \
+        "the error names the topic, each control byte in its name as ?" || return 1
+    assert_no_escape_bytes "$output" "no escape byte in the name reaches the terminal" || return 1
     assert_output_contains "$output" "Could not classify the session records in $wt/.cs; nothing was removed" \
         "the retire refuses before it removes anything" || return 1
     assert_dir "$wt/.cs/memory" "the worktree and its records are still there" || return 1

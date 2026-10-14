@@ -5816,7 +5816,7 @@ _fuse_plan() {  # feature_meta base_meta out
             continue
         fi
         if ! verdict=$(_fuse_verdict "$1" "$2" "$rel"); then
-            warn "could not read what the feature inherited for $rel, so cs cannot tell whether the base deleted or changed it" >&2
+            warn "could not read what the feature inherited for $(_printable_name "$rel"), so cs cannot tell whether the base deleted or changed it" >&2
             rm -f "$list"
             return 1
         fi
