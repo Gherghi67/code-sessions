@@ -1885,6 +1885,44 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    // git lists nothing inside a directory its index holds as a submodule,
+    // so files written into one the worktree never populated are listed
+    // under the submodule's path, and an ignored file beside it is an entry
+    // of its own: the directory holding the submodule is not collapsed.
+    #[test]
+    fn unowned_entries_lists_files_in_a_submodule_directory_never_populated() {
+        let root = std::env::temp_dir().join(format!("cs-unowned-unpopulated-{}", std::process::id()));
+        let wt = worktree_beside_base(&root);
+        let lib = root.join("sublib");
+        fs::create_dir_all(&lib).unwrap();
+        fs::write(lib.join("lib.txt"), "lib").unwrap();
+        git_in(&lib, &["init", "-q"]);
+        git_in(&lib, &["add", "-A"]);
+        git_in(&lib, &["commit", "-qm", "lib"]);
+        git_in(&wt, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", lib.to_str().unwrap(), "vendor/sub"]);
+        git_in(&wt, &["commit", "-qm", "add submodule"]);
+        git_in(&wt, &["submodule", "deinit", "-q", "-f", "vendor/sub"]);
+        assert_eq!(fs::read_dir(wt.join("vendor/sub")).unwrap().count(), 0, "fixture: the submodule directory is empty");
+        fs::write(wt.join("vendor/trace.log"), "trace").unwrap();
+        fs::write(root.join("proj/.git/info/exclude"), "CLAUDE.local.md\n.claude/settings.local.json\n*.log\n").unwrap();
+        fs::create_dir_all(wt.join("vendor/sub/build")).unwrap();
+        fs::write(wt.join("vendor/sub/build/notes.txt"), "notes").unwrap();
+        fs::write(wt.join("vendor/sub/local.env"), "KEY=value").unwrap();
+
+        let got = unowned_entries("proj@task", &wt).unwrap();
+
+        let entry = |path: &str| untracked::Entry { path: path.into(), files: 1 };
+        assert_eq!(
+            got,
+            UnownedEntries::NotTrackedByGit(vec![
+                entry("vendor/sub/build/"),
+                entry("vendor/sub/local.env"),
+                entry("vendor/trace.log"),
+            ])
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
     // A repo that tracks .cs carries it through git (tracked mode), so an
     // untracked file under .cs is the user's work like one anywhere else;
     // only cs's machine-local files are left out. In ignored mode the whole

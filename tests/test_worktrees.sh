@@ -3786,6 +3786,80 @@ test_retire_refuses_untracked_and_ignored_work_inside_a_submodule() {
 
 run_test test_retire_refuses_untracked_and_ignored_work_inside_a_submodule
 
+# A landed feature proj@t1 whose base holds the submodule vendor/sub,
+# initialised in the base, and ignores *.log. git worktree add leaves
+# vendor/sub empty in the feature's worktree: the submodule is never
+# populated there. Prints the landed sha.
+_landed_feature_beside_an_unpopulated_submodule() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" lib="$TEST_TMPDIR/sublib"
+    mkdir -p "$lib"
+    (cd "$lib" && git init -q && git config core.autocrlf false && echo lib > lib.txt \
+        && git add -A && git commit -q -m lib) || return 1
+    mkdir -p "$base_dir/.cs"/{memory,local}
+    echo "# P" > "$base_dir/README.md"
+    printf '.cs/\n*.log\n' > "$base_dir/.gitignore"
+    (cd "$base_dir" && git init -q && git config core.autocrlf false && git add -A && git commit -q -m init \
+        && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always \
+            git submodule add -q "$lib" vendor/sub && git commit -q -m "add submodule") || return 1
+    cs_launch "proj@t1"
+    [ -d "$wt/vendor/sub" ] && [ ! -e "$wt/vendor/sub/.git" ] && [ -z "$(ls -A "$wt/vendor/sub")" ] || return 1
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task") || return 1
+    # The integrate updates submodules in its temporary worktree.
+    GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always land_feature proj t1
+}
+
+# git lists nothing inside a directory its index holds as a submodule, so
+# files written into one the worktree never populated are invisible to git
+# status, and removal destroys them: the retire refuses and names them, and
+# readiness counts them. The trash is never run.
+test_retire_refuses_files_in_a_submodule_directory_never_populated() {
+    local wt="$CS_SESSIONS_ROOT/proj@t1" sha bin line output status=0
+    sha=$(_landed_feature_beside_an_unpopulated_submodule) || { echo "  FAIL: submodule fixture"; return 1; }
+    bin=$(fake_trash_bin moves trash)
+    mkdir -p "$wt/vendor/sub/build"
+    echo "notes" > "$wt/vendor/sub/build/notes.txt"
+    echo "KEY=value" > "$wt/vendor/sub/local.env"
+    assert_eq "" "$(git -C "$wt" status --porcelain --ignored -- vendor)" "fixture: git status shows nothing there" || return 1
+    line=$("$CS_BIN" proj -features --porcelain 2>&1)
+    assert_eq "2" "$(_feat_field "$line" 7)" "readiness counts both files: $line" || return 1
+    output=$(PATH="$bin:$PATH" "$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_eq "Error: Worktree has 2 untracked files that removal would destroy; commit or remove them first:
+    vendor/sub/build/  (1 file)
+    vendor/sub/local.env" "$output" "the refusal names both files under the submodule's path" || return 1
+    assert_eq "notes" "$(cat "$wt/vendor/sub/build/notes.txt")" "the file is still there" || return 1
+    assert_not_exists "$TEST_TMPDIR/trash.log" "the trash command is never run" || return 1
+    # Positive control: the empty submodule directory retires.
+    rm -r "$wt/vendor/sub/build" "$wt/vendor/sub/local.env"
+    status=0
+    output=$(PATH="$bin:$PATH" "$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "an empty submodule directory retires: $output" || return 1
+    assert_not_exists "$wt" "the worktree is retired" || return 1
+}
+
+run_test test_retire_refuses_files_in_a_submodule_directory_never_populated
+
+# An ignored file beside a submodule the worktree never populated is an
+# entry of its own: the directory holding both is not collapsed, so the
+# trash gets that file and nothing at or above the submodule's path.
+test_retire_trashes_only_the_ignored_file_beside_an_unpopulated_submodule() {
+    local wt="$CS_SESSIONS_ROOT/proj@t1" sha bin output status=0
+    sha=$(_landed_feature_beside_an_unpopulated_submodule) || { echo "  FAIL: submodule fixture"; return 1; }
+    bin=$(fake_trash_bin moves trash)
+    echo "trace" > "$wt/vendor/trace.log"
+    output=$(PATH="$bin:$PATH" "$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire proceeds: $output" || return 1
+    assert_eq "MEMORY.md: appended 1 pointer(s) from the feature (base lines kept)
+Moved 1 ignored file to the system trash:
+    $wt/vendor/trace.log
+retired t1 $sha" "$output" "retire names the one file it moved" || return 1
+    assert_eq "$wt/vendor/trace.log" "$(cat "$TEST_TMPDIR/trash.log")" "the trash gets the file, not its directory" || return 1
+    assert_eq "trace" "$(cat "$TEST_TMPDIR/trash-bin/1-trace.log")" "the file is in the trash, intact" || return 1
+}
+
+run_test test_retire_trashes_only_the_ignored_file_beside_an_unpopulated_submodule
+
 # A submodule keeps its own index, so a flagged file inside it hides its edit
 # from the submodule's git diff and from the worktree's: removal destroys it.
 test_retire_refuses_an_edit_git_diff_does_not_show_inside_a_submodule() {

@@ -605,6 +605,36 @@ Add --delete-files to remove them with --force" "$out" "the refusal names both f
     assert_eq "secret" "$(cat "$wt/sub/secret.env")" "the ignored file survives the refusal" || return 1
 }
 
+# git lists nothing inside a directory its index holds as a submodule, so
+# files written into one the worktree never populated are listed under the
+# submodule's path, as retire refuses over them, and an ignored file beside
+# it is an entry of its own: the directory holding the submodule is not
+# collapsed.
+test_remove_worktree_lists_files_in_a_submodule_directory_never_populated() {
+    local wt out rc=0 lib="$TEST_TMPDIR/sublib"
+    wt=$(_worktree_with_user_files wf13)
+    rm "$wt/notes.txt" "$wt/journal.img"
+    mkdir -p "$lib"
+    (cd "$lib" && git init -q && echo lib > lib.txt && git add -A \
+        && git -c user.email=t@example.com -c user.name=t commit -q -m lib) || { echo "  FAIL: submodule fixture"; return 1; }
+    (cd "$wt" && git -c protocol.file.allow=always submodule add -q "$lib" vendor/sub \
+        && git -c user.email=t@example.com -c user.name=t commit -q -m "add submodule" \
+        && git submodule deinit -q -f vendor/sub) || { echo "  FAIL: submodule fixture"; return 1; }
+    assert_eq "" "$(ls -A "$wt/vendor/sub")" "fixture: the submodule directory is empty" || return 1
+    mkdir -p "$wt/vendor/sub/build"
+    echo "notes" > "$wt/vendor/sub/build/notes.txt"
+    echo "KEY=value" > "$wt/vendor/sub/local.env"
+    echo "trace" > "$wt/vendor/trace.img"
+    out=$("$CS_BIN" -rm wf13@t --force </dev/null 2>&1) || rc=$?
+    assert_eq "1" "$rc" "--force refuses over the files in the submodule directory: $out" || return 1
+    assert_eq "Error: Worktree session 'wf13@t' holds 3 files git does not track:
+    vendor/sub/build/  (1 file)
+    vendor/sub/local.env
+    vendor/trace.img
+Add --delete-files to remove them with --force" "$out" "the refusal names each file, the submodule's directory never collapsed" || return 1
+    assert_eq "KEY=value" "$(cat "$wt/vendor/sub/local.env")" "the file survives the refusal" || return 1
+}
+
 # A repo that tracks .cs carries it through git (tracked mode), so an
 # untracked file under .cs is the user's work like one anywhere else, as
 # retire treats it. In ignored mode the whole .cs is cs's.
@@ -897,6 +927,7 @@ run_test test_remove_worktree_lists_the_users_files_under_dot_claude
 run_test test_remove_worktree_leaves_out_ds_store_at_any_depth
 run_test test_remove_worktree_lists_a_user_authored_claude_local_md
 run_test test_remove_worktree_lists_files_inside_an_initialised_submodule
+run_test test_remove_worktree_lists_files_in_a_submodule_directory_never_populated
 run_test test_remove_tracked_mode_worktree_lists_untracked_session_records
 run_test test_remove_force_on_adopted_removes_only_the_link
 run_test test_remove_refuses_while_the_vault_is_mounted_inside
