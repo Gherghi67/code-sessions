@@ -3585,7 +3585,8 @@ _printable_name() {  # name
 }
 
 # Tracked files marked skip-worktree or assume-unchanged whose working copy
-# differs from the index, one per line: git diff hides these edits and git
+# differs from the index, one per line, each control character in a path
+# shown as "?" (_printable_name): git diff hides these edits and git
 # keeps no copy of them, so removing a worktree destroys them. Checked on a
 # worktree about to be removed only; in a base the flags usually mark local
 # config the user means to keep uncommitted. A link counts by its target, as
@@ -3608,7 +3609,7 @@ _hidden_tracked_edits() {  # checkout_dir [prefix]
         path="${entry#*$'\t'}"
         if [ "$mode" = 160000 ]; then
             [ -e "$1/$path/.git" ] || continue
-            _hidden_tracked_edits "$1/$path" "${2:-}${path//$'\n'/?}/" || return 1
+            _hidden_tracked_edits "$1/$path" "${2:-}$(_printable_name "$path")/" || return 1
             continue
         fi
         case "$tag" in S|[[:lower:]]) ;; *) continue ;; esac
@@ -3628,7 +3629,7 @@ _hidden_tracked_edits() {  # checkout_dir [prefix]
         else
             continue
         fi
-        [ "$now" = "$oid" ] || printf '%s%s\n' "${2:-}" "$path"
+        [ "$now" = "$oid" ] || printf '%s%s\n' "${2:-}" "$(_printable_name "$path")"
     done < <(git -C "$1" ls-files -v -s -z 2>/dev/null)
     return 0
 }
@@ -5460,7 +5461,8 @@ _fuse_plan() {  # feature_meta base_meta out
 }
 
 # The files of a feature's .cs the record fuse cannot carry into the base,
-# one per line as ".cs/<rel>", sorted, a newline in a name shown as "?".
+# one per line as ".cs/<rel>", sorted, each control character in a name
+# shown as "?" (_printable_name).
 # Retire refuses on any; the features screen counts them. Fails when the
 # classification fails.
 _fuse_conflicts() {  # feature_meta base_meta
@@ -5474,7 +5476,7 @@ _fuse_conflicts() {  # feature_meta base_meta
         case "$entry" in
             "conflict "*)
                 entry="${entry#conflict }"
-                out="$out.cs/${entry//$'\n'/?}"$'\n' ;;
+                out="$out.cs/$(_printable_name "$entry")"$'\n' ;;
         esac
     done < "$plan"
     rm -f "$plan"
