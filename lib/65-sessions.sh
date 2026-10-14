@@ -678,7 +678,7 @@ cmd_live() {
     now="$(date +%s)"
     current="${CLAUDE_SESSION_NAME:-}"
 
-    local dir name meta actor up agent status states
+    local dir name meta actor up agent status states spid
     states="$(agent_states)"
     while IFS= read -r -d '' dir; do
         is_session_dir "$dir" || continue
@@ -693,6 +693,13 @@ cmd_live() {
         else
             others=$(( others + 1 ))
             status="$(session_status "$dir")"
+        fi
+        # A session cs <name> --remote serves: the server is no conversation
+        # Claude Code advertises, so the agent column says remote and the
+        # status leads with the server's pid.
+        if spid="$(_remote_server_pid "$meta")"; then
+            agent="remote"
+            status="remote-control PID $spid${status:+ · $status}"
         fi
         # The agent column stays padded when Claude Code advertises nothing, so
         # the objective still lines up on a host that keeps no session records.

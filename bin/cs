@@ -2729,10 +2729,14 @@ _take_session_lock() {  # meta_dir
 # force (flag or collision menu) replaces the lock outright: that is what
 # force means. It takes the mutex again to write the replacement, since a
 # SessionEnd clearing its own lock reads and removes it under the mutex.
+# Before any of that, a live holder that is a `cs <name> --remote` server
+# refuses every open, and an open for --remote (remote set) refuses any live
+# holder (_remote_refuse_live).
 acquire_session_lock() {
     local meta_dir="$1"
     local force="${2:-}"
     local session_name="$3"
+    local remote="${4:-}"
     local lock_file="$meta_dir/session.lock" mutex="$meta_dir/session.mutex.lock"
     local lock_pid taken=0
 
@@ -2748,6 +2752,7 @@ acquire_session_lock() {
         *) error "_take_session_lock returned $taken for $meta_dir" ;;
     esac
 
+    _remote_refuse_live "$session_name" "$meta_dir" "$lock_pid" "$remote"
     if [ "$force" = "true" ]; then
         warn "Overriding active session lock (PID $lock_pid)"
     elif cs_interactive; then
@@ -7835,8 +7840,9 @@ _cs_tmux_managed() {
 
 # Pre-window checks that must pass BEFORE the seed is written, so a refused
 # spawn never leaves a pending seed behind.
-_spawn_precheck() {  # name
-    local name="$1"
+# The window to open is named <window>, the session name unless given.
+_spawn_precheck() {  # name, [window]
+    local name="$1" window="${2:-$1}"
     command -v "${CS_TMUX_BIN:-tmux}" >/dev/null 2>&1 || error "cs -spawn needs tmux"
     if session_is_live "$SESSIONS_ROOT/$name/.cs"; then
         error "Session $name is already live"
@@ -7848,8 +7854,8 @@ _spawn_precheck() {  # name
         # rename a window out from under this name match, and the only cost of a
         # miss is a duplicate window name in the cs session, never a second live
         # launch. Do not add locking here for that benign case.
-        if _tmux list-windows -t =cs -F '#{window_name}' 2>/dev/null | grep -Fxq "$name"; then
-            error "A window named $name already exists in tmux session cs"
+        if _tmux list-windows -t =cs -F '#{window_name}' 2>/dev/null | grep -Fxq "$window"; then
+            error "A window named $window already exists in tmux session cs"
         fi
     fi
 }
@@ -7865,7 +7871,7 @@ _spawn_attach_hint() {
 }
 
 _spawn_window() {  # name, token
-    local name="$1" token="$2" cmd wid
+    local name="$1" token="$2" cmd
     # The token proves to the launch that this window is the spawn's own, so
     # only it consumes the seed unasked (see the seed consumer in
     # lib/75-launch.sh). It is correlation, not a secret: anyone who can read
@@ -7873,19 +7879,26 @@ _spawn_window() {  # name, token
     # `env` rather than a VAR=value prefix, which tmux's default-shell need
     # not understand.
     cmd="env $(_sq "CS_SPAWN_TOKEN=$token") $(_sq "$(_cs_self)") $(_sq "$name")"
+    _cs_tmux_window "$name" "$cmd"
+    info "spawned $name in tmux session cs (window $_CS_TMUX_WID). Attach: $(_spawn_attach_hint)"
+}
+
+# Open a window named <window> running <cmd> in the cs-owned tmux session, and
+# leave its id in _CS_TMUX_WID. A global rather than printed: the options call
+# below would print into a capture, and error would end only the capture.
+_CS_TMUX_WID=""
+_cs_tmux_window() {  # window, cmd
     # Try to create the cs session outright: tmux rejects a duplicate -s name,
     # so "already exists" and "a concurrent spawner just created it" collapse
     # into the same fallthrough to new-window.
-    if wid=$(_tmux new-session -d -s cs -n "$name" -P -F '#{window_id}' "$cmd" 2>/dev/null); then
+    if _CS_TMUX_WID=$(_tmux new-session -d -s cs -n "$1" -P -F '#{window_id}' "$2" 2>/dev/null); then
         # Plain target: tmux 3.6a rejects '=' anchors on the options commands;
         # exact 'cs' was just created by new-session, so this cannot misfire.
         _tmux set-option -t cs @cs_managed 1
-        info "spawned $name in tmux session cs (window $wid). Attach: $(_spawn_attach_hint)"
         return 0
     fi
-    wid=$(_tmux new-window -t =cs -n "$name" -P -F '#{window_id}' "$cmd") \
-        || error "tmux new-window failed for $name"
-    info "spawned $name in tmux session cs (window $wid). Attach: $(_spawn_attach_hint)"
+    _CS_TMUX_WID=$(_tmux new-window -t =cs -n "$1" -P -F '#{window_id}' "$2") \
+        || error "tmux new-window failed for $1"
 }
 
 run_spawn() {
@@ -9888,6 +9901,31 @@ _doctor_check_iterm2() {
     fi
 }
 
+# One row per session `cs <name> --remote` serves or served: cs records the
+# server's pid in .cs/local/remote.pid and removes the file when the server
+# exits. A file whose pid is not running means cs never got to, which happens
+# when cs and its server are killed outright (SIGKILL); that leaves the
+# server's spawned session running. The doctor removes such a file and says
+# so.
+_doctor_check_remote() {
+    local f meta name pid
+    for f in "$SESSIONS_ROOT"/*/.cs/local/remote.pid; do
+        [ -e "$f" ] || continue
+        meta="${f%/local/remote.pid}"
+        name="$(basename "$(dirname "$meta")")"
+        if pid=$(_remote_server_pid "$meta"); then
+            _doctor_ok "Remote: $name is served by claude remote-control (PID $pid)"
+            continue
+        fi
+        pid=$(head -n 1 "$f" 2>/dev/null | tr -d '[:space:]') || pid=""
+        if rm -f "$f" 2>/dev/null && [ ! -e "$f" ]; then
+            _doctor_warn "Remote: $name's .cs/local/remote.pid named PID ${pid:-(none)}, which is not running; removed it. A server killed with SIGKILL leaves its spawned session running: look for it with ps."
+        else
+            _doctor_warn "Remote: $name's .cs/local/remote.pid named PID ${pid:-(none)}, which is not running, and could not be removed: $f"
+        fi
+    done
+}
+
 # Spawn hygiene, all best-effort warnings:
 #   - .seed.stale and .brief.md.stale files accumulate in .spawn/ (the launch
 #     path sets aged-out seeds aside but never deletes them),
@@ -10584,6 +10622,7 @@ run_doctor() {
     _doctor_check_rotate_wrap_keys
     _doctor_check_iterm2
     _doctor_check_spawn
+    _doctor_check_remote
     _doctor_check_hook_authority
 
     if [ -n "${CLAUDE_SESSION_META_DIR:-}" ] && [ -d "${CLAUDE_SESSION_META_DIR:-}" ]; then
@@ -11528,7 +11567,7 @@ cmd_live() {
     now="$(date +%s)"
     current="${CLAUDE_SESSION_NAME:-}"
 
-    local dir name meta actor up agent status states
+    local dir name meta actor up agent status states spid
     states="$(agent_states)"
     while IFS= read -r -d '' dir; do
         is_session_dir "$dir" || continue
@@ -11543,6 +11582,13 @@ cmd_live() {
         else
             others=$(( others + 1 ))
             status="$(session_status "$dir")"
+        fi
+        # A session cs <name> --remote serves: the server is no conversation
+        # Claude Code advertises, so the agent column says remote and the
+        # status leads with the server's pid.
+        if spid="$(_remote_server_pid "$meta")"; then
+            agent="remote"
+            status="remote-control PID $spid${status:+ · $status}"
         fi
         # The agent column stays padded when Claude Code advertises nothing, so
         # the objective still lines up on a host that keeps no session records.
@@ -12106,6 +12152,11 @@ launch_claude_code() {
     local is_new="$3"
     local force="${4:-}"
     local merge_feature="${5:-}"
+    # Set for `cs <name> --remote`: the permission mode the server passes to
+    # the sessions it starts, and whether this run is the server's own tmux
+    # window. Empty for every other open.
+    local remote_mode="${6:-}"
+    local remote_in_window="${7:-}"
 
     # Terminal theme (and its real background RGB when known) for the statusline
     # and hooks, detected while cs still owns the tty and reused by the session
@@ -12126,7 +12177,7 @@ launch_claude_code() {
     unset CS_SPAWN_TOKEN
 
     # Acquire session lock before anything else
-    acquire_session_lock "$session_dir/.cs" "$force" "$session_name"
+    acquire_session_lock "$session_dir/.cs" "$force" "$session_name" "${remote_mode:+remote}"
     # A force chosen at the collision menu is equivalent to --force for the
     # rest of the launch.
     [ "${CS_COLLISION_FORCE:-}" = "1" ] && force="true"
@@ -12349,6 +12400,14 @@ launch_claude_code() {
     unset CS_UPDATE_AVAILABLE
     if [ -n "$UPDATE_AVAILABLE" ]; then
         export CS_UPDATE_AVAILABLE="$UPDATE_AVAILABLE"
+    fi
+
+    # The session is open and every export above is in place: `--remote`
+    # serves it through claude remote-control instead of starting claude.
+    # A staged spawn seed stays staged for an interactive open, since the
+    # server takes no prompt to kick it with.
+    if [ -n "$remote_mode" ]; then
+        _serve_remote "$session_name" "$session_dir" "$remote_mode" "$remote_in_window"
     fi
 
     # Spawn seed: tasks and a brief staged by cs -spawn for this session.
@@ -13063,6 +13122,136 @@ _iterm_tab_through_tmux() {
 }
 
 # Run secrets subcommand
+# The Claude Code version remote-control was measured on (spike606, 2026-10-14):
+# its flags after the verb, the refusal of root flags before it, and the env
+# it hands the sessions it starts.
+_REMOTE_MIN_CLAUDE_VERSION="2.1.299"
+
+# The absolute path of the claude remote-control is run by, in
+# _CS_REMOTE_BIN. remote-control refuses root options before its verb rather
+# than drop them, so a CLAUDE_CODE_BIN carrying options after the command is
+# refused here the same way, by name, before anything is opened.
+_CS_REMOTE_BIN=""
+
+# Path of the running server's pid file; the EXIT trap of _serve_remote reads
+# it from this global when it fires.
+_CS_REMOTE_PID_FILE=""
+
+# True when dotted version <have> is <want> or later, compared field by field
+# as numbers (2.1.1000 is later than 2.1.299). Both are three dot-separated
+# runs of digits.
+_version_at_least() {  # have, want
+    local IFS=. h1 h2 h3 w1 w2 w3
+    read -r h1 h2 h3 <<< "$1"
+    read -r w1 w2 w3 <<< "$2"
+    h1=$((10#$h1)); h2=$((10#$h2)); h3=$((10#$h3))
+    w1=$((10#$w1)); w2=$((10#$w2)); w3=$((10#$w3))
+    [ "$h1" -eq "$w1" ] || return $(( h1 > w1 ? 0 : 1 ))
+    [ "$h2" -eq "$w2" ] || return $(( h2 > w2 ? 0 : 1 ))
+    return $(( h3 >= w3 ? 0 : 1 ))
+}
+
+# Resolve and vet the claude that runs remote-control; sets _CS_REMOTE_BIN.
+# check_dependencies has already found the command word on PATH.
+_remote_claude_bin() {
+    local word rest found version
+    word=$(_claude_bin_word)
+    rest=$(_trim "${CLAUDE_CODE_BIN#*"$word"}")
+    [ -z "$rest" ] || error "cs --remote runs claude remote-control, which refuses options before its verb; CLAUDE_CODE_BIN carries \"$rest\" after the command. Set CLAUDE_CODE_BIN to the command alone for --remote."
+    found=$(command -v -- "$word") || error "cs --remote cannot find $word on PATH"
+    case "$found" in
+        /*) ;;
+        *) found="$(cd "$(dirname "$found")" && pwd)/$(basename "$found")" ;;
+    esac
+    version=$("$found" --version 2>/dev/null \
+        | awk 'match($0, /[0-9]+\.[0-9]+\.[0-9]+/) { print substr($0, RSTART, RLENGTH); exit }') || version=""
+    [ -n "$version" ] \
+        || error "cs --remote needs Claude Code $_REMOTE_MIN_CLAUDE_VERSION or later for claude remote-control; $found --version printed no version number."
+    _version_at_least "$version" "$_REMOTE_MIN_CLAUDE_VERSION" \
+        || error "cs --remote needs Claude Code $_REMOTE_MIN_CLAUDE_VERSION or later for claude remote-control; $found is $version. Update Claude Code, then retry."
+    _CS_REMOTE_BIN="$found"
+}
+
+# The pid of the remote-control server serving a session, from its
+# .cs/local/remote.pid, when that process is running. Fails otherwise.
+_remote_server_pid() {  # meta_dir
+    local f="$1/local/remote.pid" pid=""
+    [ -f "$f" ] || return 1
+    IFS= read -r pid < "$f" 2>/dev/null || true
+    case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+    kill -0 "$pid" 2>/dev/null || return 1
+    printf '%s' "$pid"
+}
+
+# The refusals an open meets when the session's lock is held by a live
+# process: a session a remote-control server serves takes no other open, not
+# even a forced one (one claude family per session directory), and
+# `cs <name> --remote` serves only a session that is not open. Returns when
+# neither applies.
+_remote_refuse_live() {  # session_name, meta_dir, lock_pid, [remote]
+    local spid
+    if spid=$(_remote_server_pid "$2"); then
+        error "Session $1 is served by cs $1 --remote (remote-control PID $spid); stop it first with Ctrl-C in its window, or close the window."
+    fi
+    [ -z "${4:-}" ] \
+        || error "Session $1 is already open (PID $3); cs $1 --remote serves only a session that is not open. Close it first."
+    return 0
+}
+
+# Inside tmux the server gets a window of its own, remote:<name>, in the
+# cs-owned tmux session, where it has a terminal for its first-run and
+# folder-trust prompts. The window runs `cs <name> --remote` again with
+# CS_REMOTE_WINDOW set, so that run serves in place instead of opening
+# another window. The refusals a window would show and then lose with the
+# window are made here first, on the caller's terminal.
+_remote_open_window() {  # session_name, permission_mode
+    local name="$1" mode="$2" meta="$SESSIONS_ROOT/$1/.cs"
+    if session_is_live "$meta"; then
+        _remote_refuse_live "$name" "$meta" "$(read_lock_pid "$meta")" remote
+    fi
+    _spawn_precheck "$name" "remote:$name"
+    _cs_tmux_window "remote:$name" \
+        "env CS_REMOTE_WINDOW=1 $(_sq "$(_cs_self)") $(_sq "$name") --remote --permission-mode $(_sq "$mode")"
+    info "remote:$name runs in tmux session cs (window $_CS_TMUX_WID). Attach: $(_spawn_attach_hint)"
+}
+
+# Run claude remote-control in the session directory, which launch_claude_code
+# has opened with every export a claude launch gets: the server hands its
+# whole environment to the sessions it starts, so cs's hooks, memory path,
+# task list and secrets scope reach them. Never returns.
+#
+# The server is cs's foreground child, so it shares cs's terminal, and a
+# Ctrl-C or the hangup of a closed window reaches it directly; cs holds the
+# session lock until it exits. A sh in front records its own pid in
+# .cs/local/remote.pid and then execs claude, so the file names the server.
+# Signals to cs only wait for the server: bash runs a trap after its
+# foreground child ends, and ':' rather than an ignored signal, since an
+# ignored one would be ignored by the server too. cs then exits with the
+# server's status, and the EXIT trap removes the pid file and the lock.
+#
+# A server that fails in its tmux window would take its error with the
+# window, so there it waits for a key first.
+_serve_remote() {  # session_name, session_dir, permission_mode, in_window
+    local name="$1" dir="$2" mode="$3" in_window="$4" rc=0 key=""
+    _CS_REMOTE_PID_FILE="$dir/.cs/local/remote.pid"
+    trap '[ -n "${TMUX:-}" ] || reset_tab_title; rm -f "$_CS_REMOTE_PID_FILE"; release_session_lock "$_CS_LOCK_META_DIR"; _detach_opened_vault' EXIT
+    trap ':' HUP INT TERM
+    # remote-control refuses to start while an API key is set.
+    unset ANTHROPIC_API_KEY
+    # Inside tmux the window keeps its remote:<name> name, which
+    # _spawn_precheck reads to refuse a second window.
+    [ -n "${TMUX:-}" ] || set_tab_title "cs: $name (remote)" "auto:$name"
+    cd "$dir"
+    info "Serving $name through claude remote-control (permission mode $mode). Ctrl-C or closing the window stops it."
+    sh -c 'printf "%s\n" "$$" > "$1" || exit 1; shift; exec "$@"' cs-remote \
+        "$_CS_REMOTE_PID_FILE" "$_CS_REMOTE_BIN" remote-control --name "$name" --permission-mode "$mode" \
+        || rc=$?
+    if [ "$rc" -ne 0 ] && [ -n "$in_window" ] && cs_interactive; then
+        printf '%s\n' "claude remote-control exited with status $rc. Press a key to close this window."
+        IFS= read -rsn1 key || true
+    fi
+    exit "$rc"
+}
 run_secrets() {
     local secrets_script
     secrets_script=$(find_secrets_script) || error "cs-secrets not found. Try reinstalling with: cs -update --force"
@@ -14255,6 +14444,7 @@ main() {
     local session_name="$cmd"
     local force_flag=""
     local merge_feature=""
+    local remote_flag="" remote_mode=""
 
     # Validate inputs
     local wt_base="" wt_task=""
@@ -14439,11 +14629,38 @@ main() {
                 force_flag="true"
                 shift
                 ;;
+            --remote)
+                remote_flag="true"
+                shift
+                ;;
+            --permission-mode)
+                [ $# -ge 2 ] || error "--permission-mode needs a mode: cs $session_name --remote --permission-mode <mode>"
+                remote_mode="$2"
+                shift 2
+                ;;
             *)
-                error "Unknown session command: $1. Use -secrets, -queue, -msg, -narrative, -conversations, -usage, -tag, -features, -finish, or --force."
+                error "Unknown session command: $1. Use -secrets, -queue, -msg, -narrative, -conversations, -usage, -tag, -features, -finish, --force, --remote, or --permission-mode."
                 ;;
         esac
     done
+
+    # --remote serves the session through claude remote-control. The mode is
+    # passed through as given; remote-control refuses one it does not know.
+    if [ -n "$remote_mode" ] && [ -z "$remote_flag" ]; then
+        error "--permission-mode is an option of --remote: cs $session_name --remote --permission-mode $remote_mode"
+    fi
+    local remote_in_window=""
+    if [ -n "$remote_flag" ]; then
+        [ -z "$force_flag" ] \
+            || error "--force cannot be used with --remote: a served session never shares its directory with another claude."
+        [ -z "$merge_feature" ] \
+            || error "-finish cannot be used with --remote: remote-control takes no prompt to run /finish with."
+        remote_mode="${remote_mode:-default}"
+        # Set only on the command _remote_open_window gives the server's tmux
+        # window, and kept from everything this run starts.
+        remote_in_window="${CS_REMOTE_WINDOW:-}"
+        unset CS_REMOTE_WINDOW
+    fi
 
     local session_dir="$SESSIONS_ROOT/$session_name"
 
@@ -14451,6 +14668,14 @@ main() {
 
     # Check for updates (non-blocking)
     check_update_notify
+
+    if [ -n "$remote_flag" ]; then
+        _remote_claude_bin
+        if [ -n "${TMUX:-}" ] && [ -z "$remote_in_window" ]; then
+            _remote_open_window "$session_name" "$remote_mode"
+            return 0
+        fi
+    fi
 
     # Define paths (resolve symlinks for adopted sessions so Claude Code
     # sees the original project path, preserving conversation continuity)
@@ -14553,7 +14778,7 @@ $merge_feature
     fi
 
     # Launch Claude Code
-    launch_claude_code "$session_name" "$session_dir" "$is_new" "$force_flag" "$merge_feature"
+    launch_claude_code "$session_name" "$session_dir" "$is_new" "$force_flag" "$merge_feature" "$remote_mode" "$remote_in_window"
 }
 
 main "$@"

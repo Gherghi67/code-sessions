@@ -203,6 +203,11 @@ launch_claude_code() {
     local is_new="$3"
     local force="${4:-}"
     local merge_feature="${5:-}"
+    # Set for `cs <name> --remote`: the permission mode the server passes to
+    # the sessions it starts, and whether this run is the server's own tmux
+    # window. Empty for every other open.
+    local remote_mode="${6:-}"
+    local remote_in_window="${7:-}"
 
     # Terminal theme (and its real background RGB when known) for the statusline
     # and hooks, detected while cs still owns the tty and reused by the session
@@ -223,7 +228,7 @@ launch_claude_code() {
     unset CS_SPAWN_TOKEN
 
     # Acquire session lock before anything else
-    acquire_session_lock "$session_dir/.cs" "$force" "$session_name"
+    acquire_session_lock "$session_dir/.cs" "$force" "$session_name" "${remote_mode:+remote}"
     # A force chosen at the collision menu is equivalent to --force for the
     # rest of the launch.
     [ "${CS_COLLISION_FORCE:-}" = "1" ] && force="true"
@@ -446,6 +451,14 @@ launch_claude_code() {
     unset CS_UPDATE_AVAILABLE
     if [ -n "$UPDATE_AVAILABLE" ]; then
         export CS_UPDATE_AVAILABLE="$UPDATE_AVAILABLE"
+    fi
+
+    # The session is open and every export above is in place: `--remote`
+    # serves it through claude remote-control instead of starting claude.
+    # A staged spawn seed stays staged for an interactive open, since the
+    # server takes no prompt to kick it with.
+    if [ -n "$remote_mode" ]; then
+        _serve_remote "$session_name" "$session_dir" "$remote_mode" "$remote_in_window"
     fi
 
     # Spawn seed: tasks and a brief staged by cs -spawn for this session.
