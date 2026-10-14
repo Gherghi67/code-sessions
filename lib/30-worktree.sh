@@ -578,6 +578,11 @@ create_worktree_session() {
         fi
     fi
 
+    # Creating the feature is creating a session, so this makes its .cs: a
+    # tracked-mode checkout can lack one, when the branch is older than the
+    # base's .cs or HEAD does not hold a .cs the user has only staged. The
+    # state writes below make only the last level.
+    mkdir -p "$wt_dir/.cs/local" || error "could not create $wt_dir/.cs/local"
     local state="$wt_dir/.cs/local/state"
     _set_local_state "$state" claude_session_id "$(_alloc_uuid)"
     _set_local_state "$state" claude_session_color "$(_alloc_random_color)"
