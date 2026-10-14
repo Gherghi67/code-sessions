@@ -4267,6 +4267,34 @@ _backend_secrets() {  # backend, args...
         "$CS_SECRETS_BIN" "${@:2}"
 }
 
+# A relative sessions root names a directory under the one cs-secrets runs in,
+# and every path built from it is absolute: the refusal names the root that
+# way, and a root starting with a dash reaches rm and cat as a path, so each
+# write releases the lock and the next one takes it. x/y is the positive
+# control for the lock: it has no dash.
+test_a_relative_sessions_root_is_made_absolute() {
+    local w="$TEST_TMPDIR/w" root key out rc
+    mkdir -p "$w"
+    printf 'v1' > "$TEST_TMPDIR/v1"
+    for root in -r x/y; do
+        mkdir -p "$w/$root/demo-x/.cs"
+        for key in K1 K2; do
+            rc=0
+            out=$(cd "$w" && CS_SESSIONS_ROOT="$root" CS_SECRETS_LOCK_TIMEOUT=1 \
+                "$CS_SECRETS_BIN" --session demo-x set "$key" < "$TEST_TMPDIR/v1" 2>&1) || rc=$?
+            assert_eq 0 "$rc" "set $key under the root $root exits 0" || return 1
+            assert_eq "Stored secret: $key" "$out" "set $key under the root $root stores it" || return 1
+        done
+        assert_eq "demo-x" "$(ls -A "$w/$root")" "no write lock is left in $root" || return 1
+        rc=0
+        out=$(cd "$w" && CS_SESSIONS_ROOT="$root" \
+            "$CS_SECRETS_BIN" --session nosuch set K1 < "$TEST_TMPDIR/v1" 2>&1) || rc=$?
+        assert_eq 1 "$rc" "set for a session the root $root does not have exits 1" || return 1
+        assert_eq "Error: No session named 'nosuch' in $w/$root" "$out" \
+            "the refusal names the root $root as an absolute path" || return 1
+    done
+}
+
 # Session ghost with K1 on both backends and a pin list, then removed from
 # the sessions root: what `cs -rm`, or a rename away from the name, leaves.
 _seed_removed_session() {
@@ -4599,6 +4627,7 @@ run_test test_rename_rerun_finishes_an_interrupted_move
 run_test test_rename_rerun_refuses_a_value_that_differs_under_both_names
 run_test test_rename_with_nothing_to_move_creates_no_cs_secrets
 run_test test_set_and_delete_refuse_a_session_the_root_does_not_have
+run_test test_a_relative_sessions_root_is_made_absolute
 run_test test_migrate_backend_refuses_a_session_the_root_does_not_have
 run_test test_purge_removes_what_a_removed_session_left
 run_test test_keychain_writes_create_no_cs_secrets_dir

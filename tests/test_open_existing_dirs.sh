@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# ABOUTME: Tests opening a directory that already exists under the sessions root: a flat-layout
-# ABOUTME: session migrates into .cs/ keeping its .gitignore, and a non-session directory is refused.
+# ABOUTME: Tests opening under the sessions root: a flat-layout session migrates into .cs/ keeping its
+# ABOUTME: .gitignore, a non-session directory is refused, and a relative root is made absolute first.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/test_lib.sh"
@@ -51,6 +51,40 @@ test_open_refuses_a_directory_that_is_not_a_session() {
         || { echo "  FAIL: reopening a real session failed: $out"; return 1; }
 }
 
+# A relative sessions root names a directory under the one cs is started in.
+# cs moves into the session before it launches claude, and claude's hooks and
+# cs-secrets run from there, so the root and the session paths claude is
+# handed are absolute. A root starting with a dash is a path, not an option to
+# the commands cs gives it to. A nested root (x/y) is the positive control: it
+# has no dash, so it fails only where a relative root is used after a cd.
+test_open_under_a_relative_sessions_root_makes_it_absolute() {
+    local w="$TEST_TMPDIR/w" root out rc
+    mkdir -p "$w"
+    cat > "$TEST_TMPDIR/claude-stub" << 'SCRIPT'
+#!/bin/bash
+printf '%s\n' "CS_SESSIONS_ROOT=$CS_SESSIONS_ROOT" "CLAUDE_SESSION_DIR=$CLAUDE_SESSION_DIR" \
+    "CLAUDE_SESSION_META_DIR=$CLAUDE_SESSION_META_DIR" > "$CS_PROBE_ENV_OUT"
+SCRIPT
+    chmod +x "$TEST_TMPDIR/claude-stub"
+    for root in -r x/y; do
+        rc=0
+        out=$(cd "$w" && CS_SESSIONS_ROOT="$root" CLAUDE_CODE_BIN="$TEST_TMPDIR/claude-stub" \
+            CS_PROBE_ENV_OUT="$TEST_TMPDIR/env.out" "$CS_BIN" demo-x <<< "" 2>&1) || rc=$?
+        assert_eq 0 "$rc" "cs demo-x under the root $root exits 0 (output: $out)" || return 1
+        assert_dir "$w/$root/demo-x/.cs" "the session is created under \$PWD/$root" || return 1
+        assert_eq "CS_SESSIONS_ROOT=$w/$root
+CLAUDE_SESSION_DIR=$w/$root/demo-x
+CLAUDE_SESSION_META_DIR=$w/$root/demo-x/.cs" "$(cat "$TEST_TMPDIR/env.out" 2>&1)" \
+            "claude is handed the root $root and the session's paths absolute" || return 1
+        rm -f "$TEST_TMPDIR/env.out"
+        rc=0
+        out=$(cd "$w" && CS_SESSIONS_ROOT="$root" "$CS_BIN" -list 2>&1) || rc=$?
+        assert_eq 0 "$rc" "cs -list under the root $root exits 0 (output: $out)" || return 1
+        assert_eq 1 "$(printf '%s\n' "$out" | grep -c '^demo-x ')" \
+            "cs -list under the root $root lists demo-x (output: $out)" || return 1
+    done
+}
+
 echo ""
 echo "Opening existing directories under the sessions root"
 echo "===================================================="
@@ -58,5 +92,6 @@ echo ""
 
 run_test test_flat_layout_migration_keeps_the_sessions_gitignore
 run_test test_open_refuses_a_directory_that_is_not_a_session
+run_test test_open_under_a_relative_sessions_root_makes_it_absolute
 
 report_results
