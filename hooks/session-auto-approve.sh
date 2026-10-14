@@ -209,17 +209,30 @@ case "$(_cs_lower "$_cs_spelled")/" in
 esac
 # The name is not what makes a git directory: a bare clone is one under any
 # name, and so is the target of a linked .git. Every directory from the
-# write's real parent up to the root of .cs/ is asked what it is: one that
-# holds HEAD beside objects/ or refs/, or beside commondir, which is how a
-# linked worktree's own directory names the shared one.
-_cs_up="$REAL_PARENT"
-while [ -n "$_cs_up" ] && [ "$_cs_up" != "$REAL_META" ] && [ "$_cs_up" != "$REAL_CS" ]; do
-    if [ -f "$_cs_up/HEAD" ] && { [ -d "$_cs_up/objects" ] || [ -d "$_cs_up/refs" ] \
-        || [ -f "$_cs_up/commondir" ]; }; then
-        exit 0
-    fi
-    _cs_up="${_cs_up%/*}"
-done
+# write's real parent up to the metadata root it sits in, that root
+# included, is asked what it is by the rule cs refuses a session's state by
+# (_cs_head_below_session, cs-shared.sh): one that holds HEAD, a link that
+# leads nowhere included, is a git directory. The library is loaded here,
+# after cs_resolve_session: loaded before it, the resolve would ask git about
+# the session's files on every request. Without the rule nothing is
+# approved. Sourced as cs-resolve.sh is above, parse-checked, with errexit
+# suspended across the source.
+_cs_shared="$(dirname "$0")/cs-shared.sh"
+set +e
+# shellcheck source=cs-shared.sh
+[ -r "$_cs_shared" ] && "${BASH:-/bin/bash}" -n "$_cs_shared" 2>/dev/null && . "$_cs_shared"
+set -e
+if ! command -v _cs_head_below_session >/dev/null 2>&1; then
+    printf 'cs auto-approve: not approving, %s is missing or outdated\n' "$_cs_shared" >&2
+    exit 0
+fi
+case "$REAL_PARENT/" in
+    "${REAL_META:-/cs-no-meta}"/*) _cs_meta_root="$REAL_META" ;;
+    *) _cs_meta_root="$REAL_CS" ;;
+esac
+if _cs_head_below_session "$REAL_PARENT" "$_cs_meta_root/.." >/dev/null; then
+    exit 0
+fi
 
 # Classify by where the write really lands, not by the spelled path: a
 # shared directory can carry a committed link into local/ (memory/notes ->
