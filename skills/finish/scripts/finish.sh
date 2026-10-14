@@ -258,8 +258,10 @@ cmd_prepare() {  # [feature]
 # anyway (a squash or rebase landing, a cherry-pick): every path <sha> changed
 # since its merge base with the base's HEAD must be the same on that HEAD,
 # the same mode and blob or absent from both. A rename is a deletion and an
-# addition, both checked. Prints content_paths_checked and, one per line,
-# content_differs for each path HEAD holds differently. The local HEAD is the
+# addition, both checked. A submodule's pointer counts whatever .gitmodules or
+# diff.ignoreSubmodules says, since the branch may be the one ref holding it.
+# Prints content_paths_checked and, one per line, content_differs for each
+# path HEAD holds differently. The local HEAD is the
 # evidence, not origin's branch: the retire acts on this base, the PR path has
 # already fast-forwarded it onto the landing, and origin may have moved since.
 content_landing() {  # sha
@@ -271,14 +273,14 @@ content_landing() {  # sha
     # no "what the branch changed" to check.
     mb=$(git -C "$top" merge-base "$1" HEAD 2>/dev/null) || { echo "content_paths_checked: none"; return 0; }
     list=$(mktemp "${TMPDIR:-/tmp}/finish-paths.XXXXXX")
-    git -C "$top" diff --no-renames --name-only -z "$mb" "$1" > "$list" \
+    git -C "$top" diff --no-renames --ignore-submodules=none --name-only -z "$mb" "$1" > "$list" \
         || { rm -f "$list"; echo "error: git diff failed listing the paths $1 changed since $mb"; return 1; }
     while IFS= read -r -d '' p; do paths+=("$p"); n=$((n + 1)); done < "$list"
     rm -f "$list"
     echo "content_paths_checked: $n"
     [ "$n" -gt 0 ] || return 0
     local differing
-    differing=$(GIT_LITERAL_PATHSPECS=1 git -C "$top" diff --no-renames --name-only "$1" HEAD -- "${paths[@]}") \
+    differing=$(GIT_LITERAL_PATHSPECS=1 git -C "$top" diff --no-renames --ignore-submodules=none --name-only "$1" HEAD -- "${paths[@]}") \
         || { echo "error: git diff failed comparing the paths $1 changed with base HEAD"; return 1; }
     [ -z "$differing" ] || printf '%s\n' "$differing" | sed 's/^/content_differs: /'
 }
