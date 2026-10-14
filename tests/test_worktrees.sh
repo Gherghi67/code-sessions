@@ -697,7 +697,7 @@ Error: Could not add the feature's permission rules to $base_dir/.claude/setting
                 rm -rf "$base_dir/.cs/private"
                 echo "not a vault" > "$base_dir/.cs/private"
                 expected="cs: /finish progress not recorded: .cs/private is not a directory
-Error: cannot fuse the worktree's records: $base_dir/.cs/private is locked. Mount it, then retry." ;;
+Error: cannot fuse the worktree's records: $base_dir/.cs/private is not a directory. Nothing was removed. Move it out of $base_dir/.cs, then run /finish task1 again." ;;
         esac
         status=0
         output=$(PATH="$bin:$PATH" "$CS_BIN" "proj" -retire-feature "task1" "$sha" 2>&1) || status=$?
