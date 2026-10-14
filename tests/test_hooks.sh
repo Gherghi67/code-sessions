@@ -2412,17 +2412,23 @@ test_resume_digest_names_where_a_teammates_narrative_grew() {
 # the path to read with sed. git quotes a control byte in a path, but not a
 # shell metacharacter, so a name a plain name lacks is passed over, as a
 # rotation handoff's is: the path Claude is told is always the file itself.
+# A narrative is one file directly below .cs/memory, so one in a directory
+# whose name holds the metacharacters is passed over too.
 test_resume_digest_passes_over_a_narrative_whose_name_is_not_plain() {
     session_start_setup
     mkdir -p "$CLAUDE_SESSION_META_DIR/local"
     local bob="$CLAUDE_SESSION_DIR/.cs/memory/narrative.bob.md"
     local odd="$CLAUDE_SESSION_DIR/.cs/memory/narrative.x;echo pwned;.md"
+    local below="$CLAUDE_SESSION_DIR/.cs/memory/narrative.x;echo pwned;/y.md"
+    mkdir -p "${below%/*}"
     printf -- '# Session narrative (bob)\n\n## 2026-01-01 first\nold finding\n' > "$bob"
     printf -- '# Session narrative\n\n## 2026-01-01 first\nold finding\n' > "$odd"
+    printf -- '# Session narrative\n\n## 2026-01-01 first\nold finding\n' > "$below"
     ( cd "$CLAUDE_SESSION_DIR" && git add -A && git commit -q -m "narratives" --author="Bob <bob@example.com>" )
     git -C "$CLAUDE_SESSION_DIR" rev-parse HEAD > "$CLAUDE_SESSION_META_DIR/local/watermark"
     printf -- '\n## 2026-01-02 second\nnew finding\n' >> "$bob"
     printf -- '\n## 2026-01-02 second\nnew finding\n' >> "$odd"
+    printf -- '\n## 2026-01-02 second\nnew finding\n' >> "$below"
     ( cd "$CLAUDE_SESSION_DIR" && git add -A && git commit -q -m "append" --author="Bob <bob@example.com>" )
 
     local context
