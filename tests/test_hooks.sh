@@ -4054,10 +4054,12 @@ test_session_end_without_the_lock_rule_leaves_the_lock() {
     mkdir -p "$proj/.cs/local"
     touch "$proj/.cs/local/session.log"
     printf '%s\n' "$$" > "$proj/.cs/session.lock"
+    local rc=0
     env -i PATH="$PATH" HOME="$TEST_TMPDIR" CLAUDE_PROJECT_DIR="$proj" \
         /bin/bash "$partial/session-end.sh" \
         <<< "{\"session_id\":\"11111111-2222-4333-8444-555555555555\",\"cwd\":\"$proj\",\"source\":\"user_exit\"}" \
-        >/dev/null 2>&1 || true
+        >/dev/null 2>&1 || rc=$?
+    assert_eq "0" "$rc" "the hook runs to its end" || return 1
     assert_eq "$$" "$(cat "$proj/.cs/session.lock" 2>/dev/null)" "the live lock is left as it was" || return 1
 }
 
