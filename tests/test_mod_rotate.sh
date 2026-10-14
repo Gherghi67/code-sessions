@@ -155,11 +155,13 @@ test_mod_validate_inventories_the_hooks_and_calls() {
     assert_output_contains "$out" '$.clock.after (via forceRotation, startCountdown), $.clock.every (via startCountdown, watchFinish), $.clock.now (via withGateBand)' "the forced /rotate and the pane's open are one-shot timers, the grace and the /finish watch tickers, and the gate band alone reads the time" || return 1
     assert_output_contains "$out" '$.ui.ask (via askToWrap, offerToStart)' "the wrap key and the /queue start offer ask through the engine's own dialog" || return 1
     assert_output_contains "$out" '$.ui.close (via closeHandoffPane, openPreview, stopCountdown)' "the handoff pane closes where the count ends, where it lands after one, and before a /clear" || return 1
-    # validate cuts its calls line near 1000 characters, inside this entry, so
-    # the pin stops where the cut does.
-    assert_output_contains "$out" '$.ui.panes (via handoffPaneListed' "the engine's own list says whether the handoff pane is open, before a /clear and after its close" || return 1
+    # validate cuts its calls line near 1000 characters, just after the $.ui.
+    # that follows $.ui.open, so the pin stops where the cut does. $.ui.panes,
+    # $.ui.resolve and $.ui.toast sit past the cut; the bun tests cover the
+    # handoff pane's list.
+    assert_output_contains "$out" '$.ui.open (via openPreview), $.ui.' "the inventory lists the calls up to the ui entries, where validate cuts it" || return 1
     assert_output_contains "$out" '$.fs.list (via idleQueueLength)' "the band counts the queue's tasks by listing its directory, and nothing else lists one" || return 1
-    assert_output_contains "$out" '$.fs.read (via armedHandoff, boundChords, capsWanted, forceRotation, isCsSession, queueRunning, readFinish, readState, readWrapped)' "the wrap marker, the state (for the session's recorded name too), the queue's state, the /finish record, keybindings.json and the caps answer are read, never a file's age" || return 1
+    assert_output_contains "$out" '$.fs.read (via armedHandoff, boundChords, capsWanted, clearPressed, forceRotation, isCsSession, queueRunning, readFinish, readState, readWrapped)' "the wrap marker, the press marker, the state (for the session's recorded name too), the queue's state, the /finish record, keybindings.json and the caps answer are read, never a file's age" || return 1
     assert_output_contains "$out" '$.fs.stat (via resolvedPath)' "stat only resolves where a path lands, to prove the cwd is the sessions root's entry; no rule hangs on a modification time" || return 1
     assert_output_contains "$out" '$.ui.open (via openPreview)' "and opens in one place" || return 1
 }

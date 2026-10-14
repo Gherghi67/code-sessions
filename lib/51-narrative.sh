@@ -199,42 +199,8 @@ rotate_narrative() {
     rm -f "$snap"
 
     local chunk_rel=".cs/${arch_root#"$meta_dir"/}/$actor/$(basename "$chunk")"
-    if git -C "$session_dir" rev-parse --git-dir >/dev/null 2>&1 \
-        && git -C "$session_dir" ls-files --error-unmatch -- "$live" >/dev/null 2>&1 \
-        && { git -C "$session_dir" check-ignore -q --no-index -- "$live" \
-            || git -C "$session_dir" check-ignore -q --no-index -- "$chunk"; }; then
-        # Tracked under an ignored tree means something once ran `git add -f`.
-        # Committing here would need another force-add, which is how session
-        # notes reach a public repo, so cs leaves both paths alone. Committing
-        # the live file without its ignored chunk would drop the archived
-        # sections from git, so that case commits nothing either.
-        if git -C "$session_dir" check-ignore -q --no-index -- "$live"; then
-            warn "rotation written but not committed: .cs/memory/narrative.$actor.md is tracked although .cs/ is gitignored here. Untrack it with: git rm -r --cached .cs"
-        else
-            warn "rotation written but not committed: $chunk_rel is gitignored here, and cs never force-adds an ignored path. Commit .cs/memory/narrative.$actor.md and the archive together by hand, or stop ignoring the archive"
-        fi
-    elif git -C "$session_dir" rev-parse --git-dir >/dev/null 2>&1 \
-        && git -C "$session_dir" ls-files --error-unmatch -- "$live" >/dev/null 2>&1; then
-        # The commit carries an explicit pathspec: rotation runs inside the
-        # user's own checkout — an adopted session IS their project repo — and a
-        # bare `git commit` would sweep whatever they had staged into a commit
-        # titled "cs: rotate narrative". The `add` still runs first so the newly
-        # written chunk is known to git and the pathspec can match it.
-        if ! { git -C "$session_dir" add -- "$live" "$chunk" \
-            && git -C "$session_dir" commit -q -m "cs: rotate narrative.$actor ($sections sections -> narrative-archive)" -- "$live" "$chunk"; } 2>/dev/null; then
-            # Naming a pathspec makes this a PARTIAL commit, which git refuses
-            # outright mid-merge — a state the old bare commit committed
-            # straight through. Refusing is the safer half of that trade; the
-            # message just has to say which failure it was.
-            if git -C "$session_dir" rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
-                warn "rotation written but the commit was refused: $session_dir is mid-merge, and cs commits only its own paths. .cs/memory/narrative.$actor.md and $chunk_rel are staged, so they go into the merge commit unless you unstage them first"
-            else
-                warn "rotation written but the commit failed; commit .cs/memory/narrative.$actor.md and $chunk_rel by hand"
-            fi
-        fi
-    else
-        info "narrative.$actor.md is not tracked by git here; the archive chunk is left uncommitted"
-    fi
+    # No commit: the cut and the chunk stay on disk, and files under .cs/ are
+    # committed only when the user asks.
 
     local timeline="$meta_dir/timeline.jsonl"
     _append_record "$timeline" \

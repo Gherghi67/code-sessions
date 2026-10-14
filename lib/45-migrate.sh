@@ -709,7 +709,7 @@ _migrate_session_documents() {  # session_dir, tracked_tree_is_ours
     fi
 }
 
-# Phases 9, 10 and 14: the cs sections of CLAUDE.local.md.
+# Phases 9, 10, 14 and 15: the cs sections of CLAUDE.local.md.
 _ensure_claude_local_sections() {  # session_dir
     local session_dir="$1"
 
@@ -810,6 +810,14 @@ EOF
         && ! grep -q 'cs:encrypted-protocol' "$claude_md_p9"; then
         { echo; _emit_encrypted_protocol_block; } >> "$claude_md_p9"
         warn "Added the encrypted-session protocol to CLAUDE.local.md"
+    fi
+
+    # Phase 15: the rule for committing session files, which sessions created
+    # before it lack. The sentinel is a tombstone like cs:wrap-cues: present
+    # means managed, never re-added.
+    if [ -f "$claude_md_p9" ] && ! grep -q 'cs:session-commits' "$claude_md_p9"; then
+        { echo; _emit_session_commits_block; } >> "$claude_md_p9"
+        warn "Added the session-commits rule to CLAUDE.local.md"
     fi
 }
 

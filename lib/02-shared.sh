@@ -42,16 +42,17 @@ cs_actor_slug() {
     _slugify "$(cs_actor_raw "$sdir" "$meta")"
 }
 
-# 224 KiB budget, 112 KiB tail. The ceiling is the Read tool's: it refuses a
-# file over 256 KiB, and the resume reads the live narrative in one call, so a
-# file past that size cannot be read in full at all. The budget sits under the
-# ceiling with room for the appends made while the over-budget warning is on
-# screen and before anyone rotates. The tail is what a resume actually costs;
-# sections run about 2 KB and an active day produces 60-odd of them, so 112 KiB
-# is most of a day. The 2:1 ratio keeps rotation infrequent: a full tail's
-# worth must accumulate again before the next one.
-CS_NARRATIVE_MAX_DEFAULT=229376
-CS_NARRATIVE_KEEP_DEFAULT=114688
+# 128 KiB budget, 64 KiB tail. Every resume reads the whole live narrative,
+# and the live file runs from the tail up to the budget between rotations, so
+# the pair sets what each resume costs: about 96 KiB on average, near 42k
+# tokens (a 171 KB narrative measured about 75k). The busiest session writes
+# about 39 KB a day, so the tail holds a day and a half of it and a week or
+# more of a quieter session. The Read tool refuses a file over 256 KiB and the
+# resume reads the narrative in one call; the budget leaves that much room for
+# appends made while the over-budget warning is on screen. The 2:1 ratio keeps rotation infrequent: a
+# full tail's worth must accumulate again before the next one.
+CS_NARRATIVE_MAX_DEFAULT=131072
+CS_NARRATIVE_KEEP_DEFAULT=65536
 
 # A positive integer override, else the default. Empty, non-numeric and zero
 # in any spelling (0, 00) all fall back: a zero budget would rotate on every

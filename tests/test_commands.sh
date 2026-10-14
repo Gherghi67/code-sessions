@@ -418,8 +418,8 @@ echo ""
 # and still succeeds, since a wrap outside Claude Code has no band to hide.
 test_wrap_marks_the_wrapped_conversation() {
     local block dir
-    block=$(awk '/^## Pass 4/{p=1; next} /^## /{p=0} p && /^```/{f=!f; next} p && f' "$COMMANDS_DIR/wrap.md")
-    [ -n "$block" ] || { echo "  FAIL: wrap.md has no Pass 4 command block"; return 1; }
+    block=$(awk '/^## Pass [0-9]+ — Mark the wrap finished/{p=1; next} /^## /{p=0} p && /^```/{f=!f; next} p && f' "$COMMANDS_DIR/wrap.md")
+    [ -n "$block" ] || { echo "  FAIL: wrap.md has no command block under its Mark the wrap finished pass"; return 1; }
     dir="$TEST_TMPDIR/wrapped"
     mkdir -p "$dir/.cs/local" "$TEST_TMPDIR/csbin"
     ln -sf "$SCRIPT_DIR/../bin/cs" "$TEST_TMPDIR/csbin/cs"
@@ -538,6 +538,44 @@ test_wrap_rotates_the_narrative_after_the_summary() {
         "the report gains a third item" || return 1
 }
 
+# A wrap makes no commit (Alex, 2026-10-14: "No commits at all"): the memory
+# entries, the summary, the narrative cut and the task archive stay on disk,
+# and files under .cs/ are committed only when the user asks. The command says
+# so in its archive pass, gives no git add or git commit to run, and its
+# report has no commit item.
+test_wrap_makes_no_commit() {
+    local pass4
+    pass4=$(awk '/^## Pass 4 /{p=1; print; next} /^## /{p=0} p' "$COMMANDS_DIR/wrap.md")
+    assert_eq "## Pass 4 — Task archive" "$(printf '%s\n' "$pass4" | head -1)" \
+        "the fourth pass is the task archive alone" || return 1
+    assert_output_contains "$pass4" "The wrap makes no commit." "the pass says no commit is made" || return 1
+    assert_output_contains "$pass4" "stay on disk, uncommitted" "and that the files stay on disk" || return 1
+    assert_output_contains "$pass4" "commit them only when the user asks." \
+        "and that only the user's ask commits them" || return 1
+    assert_file_not_contains "$COMMANDS_DIR/wrap.md" "git commit" "the wrap runs no git commit" || return 1
+    assert_file_not_contains "$COMMANDS_DIR/wrap.md" "git add" "and stages nothing" || return 1
+    assert_file_not_contains "$COMMANDS_DIR/wrap.md" "session: wrap" "and names no commit subject" || return 1
+    assert_file_not_contains "$COMMANDS_DIR/wrap.md" '\*\*Commit:\*\*' "the report has no commit item" || return 1
+    assert_file_contains "$COMMANDS_DIR/wrap.md" 'the four labeled items below' "it has four items" || return 1
+}
+
+# /wrap archives completed task rows the way /rotate does, from the one place
+# the procedure is written (the rotate skill's step 8), after the narrative
+# pass and before the pass that marks the wrap finished, and reports the line.
+test_wrap_archives_completed_task_rows() {
+    local passes
+    passes=$(grep '^## Pass ' "$COMMANDS_DIR/wrap.md" | sed 's/ — .*//; s/^## //' | tr '\n' ',')
+    assert_eq "Pass 1,Pass 2,Pass 3,Pass 4,Pass 5," "$passes" "wrap runs five passes" || return 1
+    assert_file_contains "$COMMANDS_DIR/wrap.md" "^## Pass 4 — Task archive" "the fourth pass archives task rows" || return 1
+    assert_file_contains "$COMMANDS_DIR/wrap.md" "^## Pass 5 — Mark the wrap finished" "marking the wrap stays last" || return 1
+    assert_file_contains "$COMMANDS_DIR/wrap.md" '/\.claude/skills/rotate/SKILL\.md` step 8' \
+        "the pass follows the rotate skill's step rather than restating it" || return 1
+    assert_file_contains "$COMMANDS_DIR/wrap.md" '4\. \*\*Tasks:\*\*' "the report gains a fourth item" || return 1
+    assert_file_contains "$COMMANDS_DIR/wrap.md" 'ask as step 8 does for `forced: no`, whatever the plan'"'"'s `forced:` line says' \
+        "a wrap is never a forced rotation, so it asks as a manual /rotate does" || return 1
+    assert_file_not_contains "$COMMANDS_DIR/wrap.md" 'CS_ROTATE_FORCE_CTX' "the threshold setting decides nothing here" || return 1
+}
+
 test_summary_reads_live_narratives_not_archives() {
     assert_file_not_contains "$COMMANDS_DIR/summary.md" "read all of them" \
         "the read-all instruction is gone" || return 1
@@ -546,6 +584,8 @@ test_summary_reads_live_narratives_not_archives() {
 }
 
 run_test test_wrap_rotates_the_narrative_after_the_summary
+run_test test_wrap_makes_no_commit
+run_test test_wrap_archives_completed_task_rows
 run_test test_wrap_marks_the_wrapped_conversation
 run_test test_summary_reads_live_narratives_not_archives
 

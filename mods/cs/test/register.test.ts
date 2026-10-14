@@ -863,6 +863,84 @@ test('a subagent\'s turn, an aborted, errored or refused one, a teammate, or an 
   expect(Object.keys(written)).toEqual([])
 })
 
+// The rotate button runs /rotate for the person in one key, so that rotation
+// must not stop to ask either: before it runs, the press writes the
+// conversation's id to .cs/local/cs.pressed, which cs -archive-tasks plan
+// reads as a forced rotation. The end of the next main-loop turn empties it,
+// whatever ended that turn, so a /rotate typed later in the conversation asks
+// as a manual one does; a run the engine refuses empties it at once.
+const PRESSED = '/work/.cs/local/cs.pressed'
+
+test('a press names the conversation in cs.pressed before /rotate runs, and the end of the main loop\'s turn empties it', async () => {
+  percent = 80
+  let atRun: string | undefined
+  const run = $.command.run
+  $.command.run = async (args: any) => { atRun = files[PRESSED]; ran.push(args); return { text: '' } }
+  try {
+    await findButton(await band()).props.onPress()
+  } finally {
+    $.command.run = run
+  }
+  expect(ran).toEqual([{ command: 'rotate', args: '' }])
+  expect(atRun).toBe('uuid-lead\n')
+  await turnComplete({ agentId: 'agent-1' })
+  expect(files[PRESSED]).toBe('uuid-lead\n')
+  await turnComplete({ reason: 'aborted' })
+  expect(files[PRESSED]).toBe('')
+})
+
+test('a press whose /rotate the engine refuses empties cs.pressed at once', async () => {
+  percent = 80
+  const run = $.command.run
+  $.command.run = async () => { throw new Error('unknown command') }
+  let refused: unknown
+  try {
+    await findButton(await band()).props.onPress()
+  } catch (err) {
+    refused = err
+  } finally {
+    $.command.run = run
+  }
+  expect(String(refused)).toBe('Error: unknown command')
+  expect(files[PRESSED]).toBe('')
+})
+
+test('the end of a turn leaves a press marker naming another conversation, and one git tracks, as they are', async () => {
+  files[PRESSED] = 'uuid-earlier\n'
+  await turnComplete()
+  expect(runs).toEqual([])
+  expect(files[PRESSED]).toBe('uuid-earlier\n')
+  files[PRESSED] = 'uuid-lead\n'
+  runResult = tracked
+  await turnComplete()
+  expect(runs.map(r => r.argv)).toEqual([['/opt/cs/bin/cs', '-vet-session', '/work']])
+  expect(files[PRESSED]).toBe('uuid-lead\n')
+  expect(written).toEqual({})
+})
+
+// A marker that cannot be emptied would make a later typed /rotate read as
+// pressed, so the failure is said; the turn's end goes on to what follows it.
+test('a press marker the turn end cannot empty is said, and the turn end goes on', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  percent = 80
+  files[PRESSED] = 'uuid-lead\n'
+  const write = $.fs.write
+  $.fs.write = async (path: string, text: string) => {
+    if (path === PRESSED) throw new Error('EACCES')
+    return write(path, text)
+  }
+  let result: any
+  try {
+    result = await turnComplete()
+  } finally {
+    $.fs.write = write
+  }
+  expect(toasts).toEqual(['cs: could not empty .cs/local/cs.pressed: Error: EACCES'])
+  expect(files[PRESSED]).toBe('uuid-lead\n')
+  expect(result).toEqual({ text: 'ok' })
+  expect(timers.map(t => t.kind)).toEqual(['after'])
+})
+
 test('a turn ending past the force threshold with a handoff already armed runs no second /rotate', async () => {
   envVars.CS_ROTATE_FORCE_CTX = '70'
   percent = 90
