@@ -504,9 +504,10 @@ test_a_second_run_the_same_day_adds_to_the_archive() {
 }
 
 # An archived row is never overwritten. A live row whose number the day's
-# archive already holds with other content (a pull brought one in, or a store
-# was rebuilt) refuses the run; the same bytes mean an earlier run stopped
-# after the copy, and the row finishes moving.
+# archive already holds with other content (an earlier run stopped before it
+# removed the row, and the row changed since) refuses the run, naming both
+# files and what to do; the same bytes mean an earlier run stopped after the
+# copy, and the row finishes moving without a second snapshot.
 test_an_archived_row_is_never_overwritten() {
     _row 1 completed "One"
     _row 2 pending "Two"
@@ -520,8 +521,8 @@ test_an_archived_row_is_never_overwritten() {
     local out rc=0
     out=$("$CS_BIN" -archive-tasks run 2>&1) || rc=$?
     assert_eq "1" "$rc" "a different row under an archived number refuses" || return 1
-    assert_eq "Error: refusing to archive: .cs/task-archive/$day/alice/json/1.json already holds a different row #1; nothing archived" \
-        "$out" "the clash is named" || return 1
+    assert_eq "Error: refusing to archive: .cs/task-archive/$day/alice/json/1.json holds a different row #1 than $STORE/1.json, which is still live. Delete the archived copy to keep the live row (or the live row to keep the copy), then run again; nothing archived" \
+        "$out" "the clash is named with what to do" || return 1
     cmp -s "$TEST_TMPDIR/1.archived" "$archived" || { echo "  FAIL: the archived row was overwritten"; return 1; }
     assert_eq "1 2" "$(_live_ids)" "the live row stays" || return 1
     assert_eq "1" "$(grep -c '^# Task list as of ' "$SESSION_DIR/.cs/task-archive/$day/alice/tasks.md")" \
@@ -530,6 +531,71 @@ test_an_archived_row_is_never_overwritten() {
     out=$("$CS_BIN" -archive-tasks run 2>&1) || { echo "  FAIL: run over an identical copy failed: $out"; return 1; }
     assert_eq "2" "$(_live_ids)" "an identical row finishes moving" || return 1
     cmp -s "$TEST_TMPDIR/1.archived" "$archived" || { echo "  FAIL: the archived row changed"; return 1; }
+    assert_eq "1" "$(grep -c '^# Task list as of ' "$SESSION_DIR/.cs/task-archive/$day/alice/tasks.md")" \
+        "finishing the move adds no second snapshot" || return 1
+}
+
+# A live row the day's archive holds a copy of, that this run would not move
+# (an earlier run stopped before it removed the row, and the row reopened or
+# is now the highest id), is a copy the archive must not keep: the run
+# refuses, naming the row and what to do, and moves nothing.
+test_an_archived_copy_of_a_row_that_stays_live_refuses_the_run() {
+    _row 1 completed "One"
+    _row 2 completed "Two"
+    _row 3 pending "Three"
+    _agree || return 1
+    "$CS_BIN" -archive-tasks run > /dev/null 2>&1 || { echo "  FAIL: first run failed"; return 1; }
+    local day out rc
+    day=$(ls "$SESSION_DIR/.cs/task-archive")
+    cp "$SESSION_DIR/.cs/task-archive/$day/alice/json/2.json" "$STORE/2.json"
+    rm "$STORE/3.json"
+    rc=0
+    out=$("$CS_BIN" -archive-tasks run 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a copy of the highest row refuses" || return 1
+    assert_eq "Error: refusing to archive: .cs/task-archive/$day/alice/json/2.json holds a copy of row #2, which stays in the live list as the highest id. Delete the archived copy, then run again; nothing archived" \
+        "$out" "the copy is named with what to do" || return 1
+    _row 2 in_progress "Two"
+    _row 3 pending "Three"
+    rc=0
+    out=$("$CS_BIN" -archive-tasks run 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a copy of a reopened row refuses" || return 1
+    assert_eq "Error: refusing to archive: .cs/task-archive/$day/alice/json/2.json holds a different row #2 than $STORE/2.json, which is still live. Delete the archived copy to keep the live row (or the live row to keep the copy), then run again; nothing archived" \
+        "$out" "the reopened row is named with what to do" || return 1
+    assert_eq "2 3" "$(_live_ids)" "every row stays live" || return 1
+    assert_eq "1" "$(grep -c '^# Task list as of ' "$SESSION_DIR/.cs/task-archive/$day/alice/tasks.md")" \
+        "a refused run adds no snapshot" || return 1
+    rm "$SESSION_DIR/.cs/task-archive/$day/alice/json/2.json"
+    out=$("$CS_BIN" -archive-tasks run 2>&1) || { echo "  FAIL: the run after the advice failed: $out"; return 1; }
+    assert_eq "Nothing to archive: no completed task rows" "$out" "following the advice clears the refusal" || return 1
+}
+
+# A run that stops part way (here a copy fails) leaves every row live and what
+# it wrote in place. The next run finishes the move with one snapshot in
+# tasks.md, whether the stop came before the first copy or after one.
+test_a_rerun_after_an_interrupted_run_finishes_with_one_snapshot() {
+    _stand_in_cp
+    local stop out rc day
+    for stop in 1 2; do
+        rm -rf "$SESSION_DIR/.cs/task-archive" "$STORE"
+        mkdir -p "$STORE"
+        _row 1 completed "One"
+        _row 2 completed "Two"
+        _row 3 pending "Three"
+        _agree || return 1
+        rc=0
+        out=$(PATH="$TEST_TMPDIR/bin:$PATH" FAKE_CP_FAIL="$STORE/$stop.json" "$CS_BIN" -archive-tasks run 2>&1) || rc=$?
+        assert_eq "1" "$rc" "the run stops at row #$stop's copy" || return 1
+        day=$(ls "$SESSION_DIR/.cs/task-archive")
+        assert_eq "Error: could not copy task row #$stop to .cs/task-archive/$day/alice/json/$stop.json; every row is still in the live list" \
+            "$out" "the stop is named" || return 1
+        assert_eq "1 2 3" "$(_live_ids)" "every row stays live" || return 1
+        out=$("$CS_BIN" -archive-tasks run 2>&1) || { echo "  FAIL: the rerun after a stop at #$stop failed: $out"; return 1; }
+        assert_eq "Archived 2 completed task rows to .cs/task-archive/$day/alice" "$out" "the rerun finishes the move" || return 1
+        assert_eq "3" "$(_live_ids)" "only the open row stays" || return 1
+        assert_eq "1 2" "$(_archived_ids)" "both rows are archived" || return 1
+        assert_eq "1" "$(grep -c '^# Task list as of ' "$SESSION_DIR/.cs/task-archive/$day/alice/tasks.md")" \
+            "one snapshot after a stop at #$stop" || return 1
+    done
 }
 
 # Every machine numbers its own copy of a list from 1, so two actors archiving
@@ -717,6 +783,8 @@ run_test test_plan_refuses_a_store_it_does_not_recognise
 run_test test_tasks_md_is_a_readable_snapshot_of_the_whole_list
 run_test test_a_second_run_the_same_day_adds_to_the_archive
 run_test test_an_archived_row_is_never_overwritten
+run_test test_an_archived_copy_of_a_row_that_stays_live_refuses_the_run
+run_test test_a_rerun_after_an_interrupted_run_finishes_with_one_snapshot
 run_test test_each_actor_archives_into_its_own_directory
 run_test test_a_link_out_of_the_session_under_the_archive_refuses_the_run
 run_test test_a_link_that_appears_mid_run_is_refused_at_the_write
