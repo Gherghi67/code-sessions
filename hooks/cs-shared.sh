@@ -209,7 +209,7 @@ cs_untrack_notice() {  # tracked, top, sub
 # the session's own files is named, with no command: untracking it would
 # untrack the project.
 cs_tracked_files_notice() {  # dir, session_dir
-    local real top prefix tracked status why meta sub rest n here="$1" missing=""
+    local real top prefix tracked status why failed meta sub rest n here="$1" missing=""
     while [ ! -e "$here" ] && [ ! -L "$here" ]; do
         case "$here" in */?*) ;; *) return 1 ;; esac
         missing="/${here##*/}$missing"
@@ -231,9 +231,12 @@ cs_tracked_files_notice() {  # dir, session_dir
     fi
     case "$top" in
         *$'\n'*$'\n'*$'\n'*)
-            if ! top=$(_cs_git_at "$real" rev-parse --show-toplevel 2>/dev/null && printf x) \
-                || ! prefix=$(_cs_git_at "$real" rev-parse --show-prefix 2>/dev/null && printf x); then
-                why=$(_cs_git_error_at "$real" rev-parse --show-toplevel --show-prefix)
+            failed=""
+            top=$(_cs_git_at "$real" rev-parse --show-toplevel 2>/dev/null && printf x) || failed=--show-toplevel
+            [ -n "$failed" ] || prefix=$(_cs_git_at "$real" rev-parse --show-prefix 2>/dev/null && printf x) \
+                || failed=--show-prefix
+            if [ -n "$failed" ]; then
+                why=$(_cs_git_error_at "$real" rev-parse "$failed")
                 _cs_git_cannot_answer "$1" "$why"
                 return 0
             fi
