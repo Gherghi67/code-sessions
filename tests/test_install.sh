@@ -712,6 +712,22 @@ test_build_refuses_an_unknown_argument() {
     cmp -s "$TEST_TMPDIR/args-manifests" "$repo/lib/01-manifests.sh" || { echo "  FAIL: lib/01-manifests.sh changed"; return 1; }
 }
 
+# The release build rewrites the table from the sha256s it holds, so a line
+# in it that is not one (a comment) would be dropped; the build refuses it
+# instead and leaves the file as it was.
+test_release_build_refuses_a_table_line_that_is_not_a_sha256() {
+    local repo="$TEST_TMPDIR/note-repo" out rc=0 line
+    _copy_build_inputs "$repo"
+    awk '{ print } /^CS_KNOWN_SHA256=\($/ { print "    # a note" }' "$repo/lib/01-manifests.sh" > "$TEST_TMPDIR/note-manifests"
+    cp "$TEST_TMPDIR/note-manifests" "$repo/lib/01-manifests.sh"
+    line=$(grep -n '^    # a note$' "$repo/lib/01-manifests.sh" | cut -d: -f1)
+    out=$(cd "$repo" && bash build.sh --add-release-hashes 2>&1) || rc=$?
+    assert_eq "1" "$rc" "build.sh exit status" || { echo "$out"; return 1; }
+    assert_eq "error: lib/01-manifests.sh line $line, inside CS_KNOWN_SHA256, is not a sha256:     # a note" \
+        "$(printf '%s\n' "$out" | tail -1)" "the error names the line" || return 1
+    cmp -s "$TEST_TMPDIR/note-manifests" "$repo/lib/01-manifests.sh" || { echo "  FAIL: lib/01-manifests.sh changed"; return 1; }
+}
+
 # ============================================================================
 # Manifest arrays: install.sh and bin/cs must agree, and must match the repo
 # ============================================================================
@@ -3369,6 +3385,7 @@ run_test test_build_refuses_a_missing_manifests_source
 run_test test_build_outputs_are_world_readable
 run_test test_release_build_adds_its_payload_to_the_known_table_once
 run_test test_build_refuses_an_unknown_argument
+run_test test_release_build_refuses_a_table_line_that_is_not_a_sha256
 run_test test_hook_registration_doc_matches_install
 run_test test_install_honors_declined_statusline_marker
 run_test test_install_declined_marker_honors_xdg_and_foreign_statusline
