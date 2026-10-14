@@ -1592,39 +1592,108 @@ test_install_and_uninstall_keep_a_flat_shape_hook_entry() {
         "uninstall strips every cs registration" || return 1
 }
 
-# Runs install and uninstall over a HOME whose settings.json holds entry $2
-# (JSON) as the only SessionStart entry, and checks the entry comes through
-# both unchanged, with cs's registration appended after it by install and
-# taken away by uninstall. $1 names the HOME.
-_install_and_uninstall_keep_a_session_start_entry() {  # label, entry-json
-    local home="$TEST_TMPDIR/$1-home" s rc=0 cs_entry expected
+# cs's registration under each event the shape tests below use, as install
+# writes it (jq -c), and the hooks-list shapes that are the user's to keep:
+# no .hooks at all, then false, null, a number, a string, an object, and a
+# list of hooks that are not cs's.
+SESSION_START_REGISTRATION='{"hooks":[{"type":"command","command":"~/.claude/hooks/cs/session-start.sh","timeout":30}]}'
+STOP_REGISTRATION='{"hooks":[{"type":"command","command":"~/.claude/hooks/cs/narrative-reminder.sh","timeout":10}]}'
+USER_HOOK_SHAPES='[{"type":"command","command":"notify"},{"matcher":"a","hooks":false},{"matcher":"b","hooks":null},{"hooks":7},{"hooks":"notify"},{"hooks":{"custom":{"type":"command","command":"notify"}}},{"matcher":"c","hooks":[{"type":"command","command":"notify","timeout":5},{"type":"command","command":"log-it"}]}]'
+
+# Runs install and then uninstall over a HOME whose settings.json holds the
+# entries $3 (a JSON list, written as jq -c prints it) as the whole of event
+# $2. They must come through both exactly as written and in order: after
+# install the event holds them followed by $4, cs's registration there ("" for
+# an event cs registers nothing under, which then holds them alone); after
+# uninstall settings.json is the file it was, byte for byte. $1 names the HOME.
+_install_and_uninstall_keep_hook_entries() {  # label, event, entries, cs's entry
+    local home="$TEST_TMPDIR/$1-home" s rc=0 expected="$3"
     s="$home/.claude/settings.json"
-    cs_entry='{"hooks":[{"type":"command","command":"~/.claude/hooks/cs/session-start.sh","timeout":30}]}'
     mkdir -p "$home/.claude"
-    printf '{"hooks":{"SessionStart":[%s]}}\n' "$2" > "$s"
+    jq -n --arg event "$2" --argjson entries "$3" '{hooks: {($event): $entries}}' > "$s"
+    cp "$s" "$TEST_TMPDIR/$1.before"
     HOME="$home" bash "$INSTALL_SH" > "$TEST_TMPDIR/$1.out" 2>&1 < /dev/null || rc=$?
     assert_eq "0" "$rc" "install exit status" || { cat "$TEST_TMPDIR/$1.out"; return 1; }
-    expected=$(jq -cnS --argjson e "$2" --argjson c "$cs_entry" '[$e, $c]')
-    assert_eq "$expected" "$(jq -cS '.hooks.SessionStart' "$s")" \
-        "install keeps the entry and appends cs's registration" || return 1
+    [ -z "$4" ] || expected="${3%]},$4]"
+    assert_eq "$expected" "$(jq -c --arg event "$2" '.hooks[$event]' "$s")" \
+        "install keeps the $2 entries in order, with cs's registration after them" || return 1
     printf 'y\n' | HOME="$home" "$CS_BIN" -uninstall > "$TEST_TMPDIR/$1.un" 2>&1 || rc=$?
     assert_eq "0" "$rc" "uninstall exit status" || { cat "$TEST_TMPDIR/$1.un"; return 1; }
-    assert_eq "[$(jq -cnS --argjson e "$2" '$e')]" "$(jq -cS '.hooks.SessionStart' "$s")" \
-        "uninstall keeps the entry and strips cs's registration" || return 1
+    assert_eq "$(cat "$TEST_TMPDIR/$1.before")" "$(cat "$s")" \
+        "uninstall leaves settings.json as it was before install" || return 1
+    cmp -s "$TEST_TMPDIR/$1.before" "$s" || { echo "  FAIL: settings.json after uninstall differs from the file before install"; return 1; }
 }
 
 # A .hooks value that is not an array is the user's to shape, in an event cs
 # registers too: install and uninstall pass the entry through as it is.
 test_install_and_uninstall_keep_a_hooks_false_entry() {
-    _install_and_uninstall_keep_a_session_start_entry hooks-false '{"matcher":"startup","hooks":false}'
+    _install_and_uninstall_keep_hook_entries hooks-false SessionStart '[{"matcher":"startup","hooks":false}]' "$SESSION_START_REGISTRATION"
 }
 
 test_install_and_uninstall_keep_a_hooks_object_entry() {
-    _install_and_uninstall_keep_a_session_start_entry hooks-object '{"hooks":{"custom":{"type":"command","command":"notify"}}}'
+    _install_and_uninstall_keep_hook_entries hooks-object SessionStart '[{"hooks":{"custom":{"type":"command","command":"notify"}}}]' "$SESSION_START_REGISTRATION"
 }
 
 test_install_and_uninstall_keep_a_hooks_string_entry() {
-    _install_and_uninstall_keep_a_session_start_entry hooks-string '{"hooks":"notify"}'
+    _install_and_uninstall_keep_hook_entries hooks-string SessionStart '[{"hooks":"notify"}]' "$SESSION_START_REGISTRATION"
+}
+
+# Every shape together, in an event cs registers its own hook under (Stop)
+# and in one it does not (PreToolUse): the entries keep their order and their
+# keys' order.
+test_install_and_uninstall_keep_every_hooks_shape_in_order() {
+    _install_and_uninstall_keep_hook_entries shapes-stop Stop "$USER_HOOK_SHAPES" "$STOP_REGISTRATION"
+}
+
+test_install_and_uninstall_keep_every_hooks_shape_in_an_event_cs_registers_nothing_under() {
+    _install_and_uninstall_keep_hook_entries shapes-pretooluse PreToolUse "$USER_HOOK_SHAPES" ""
+}
+
+# A hooks list may hold elements that are not objects (a string, a number,
+# null, a list, false). None of them is cs's registration, so each stays where
+# it is, beside the user's hook in the same list.
+test_install_and_uninstall_keep_hooks_list_elements_that_are_not_objects() {
+    _install_and_uninstall_keep_hook_entries hooks-elements SessionStart \
+        '[{"matcher":"startup","hooks":["notify",7,null,["x"],false,{"type":"command","command":"user-start"}]}]' \
+        "$SESSION_START_REGISTRATION"
+}
+
+# An event's list may hold entries that are not objects. None of them holds
+# cs's registration, so each stays where it is.
+test_install_and_uninstall_keep_event_entries_that_are_not_objects() {
+    _install_and_uninstall_keep_hook_entries event-entries SessionStart \
+        '["notify",7,null,["x"],false,{"hooks":[{"type":"command","command":"user-start"}]}]' \
+        "$SESSION_START_REGISTRATION"
+}
+
+# cs's registration found beside an element that is not an object is still
+# taken out of that list, and added once in its own entry.
+test_install_takes_its_registration_out_of_a_hooks_list_holding_a_string() {
+    local home="$TEST_TMPDIR/hooks-shared-home" s rc=0
+    s="$home/.claude/settings.json"
+    mkdir -p "$home/.claude"
+    printf '{"hooks":{"SessionStart":[{"hooks":["notify",%s]}]}}\n' \
+        '{"type":"command","command":"~/.claude/hooks/cs/session-start.sh","timeout":5}' > "$s"
+    HOME="$home" bash "$INSTALL_SH" > "$TEST_TMPDIR/hooks-shared.out" 2>&1 < /dev/null || rc=$?
+    assert_eq "0" "$rc" "install exit status" || { cat "$TEST_TMPDIR/hooks-shared.out"; return 1; }
+    assert_eq "[{\"hooks\":[\"notify\"]},$SESSION_START_REGISTRATION]" "$(jq -c '.hooks.SessionStart' "$s")" \
+        "install keeps the string and registers cs once, in its own entry" || return 1
+}
+
+# Entries written into settings.json after an install: a hooks list holding a
+# string under one event, a bare string under another. Uninstall still takes
+# every cs registration out and leaves the two as they are.
+test_uninstall_strips_cs_beside_entries_that_are_not_objects() {
+    local home="$TEST_TMPDIR/strip-beside-home" s rc=0
+    s="$home/.claude/settings.json"
+    HOME="$home" bash "$INSTALL_SH" > "$TEST_TMPDIR/strip-beside.out" 2>&1 < /dev/null || rc=$?
+    assert_eq "0" "$rc" "install exit status" || { cat "$TEST_TMPDIR/strip-beside.out"; return 1; }
+    jq '.hooks.PreToolUse = [{"matcher":"Bash","hooks":["notify"]}] | .hooks.Notification = ["notify"]' "$s" > "$s.new" || return 1
+    mv "$s.new" "$s"
+    printf 'y\n' | HOME="$home" "$CS_BIN" -uninstall > "$TEST_TMPDIR/strip-beside.un" 2>&1 || rc=$?
+    assert_eq "0" "$rc" "uninstall exit status" || { cat "$TEST_TMPDIR/strip-beside.un"; return 1; }
+    assert_eq '{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":["notify"]}],"Notification":["notify"]}}' "$(jq -c . "$s")" \
+        "uninstall leaves only the two entries" || { cat "$TEST_TMPDIR/strip-beside.un"; return 1; }
 }
 
 # ============================================================================
@@ -2638,6 +2707,12 @@ run_test test_install_and_uninstall_keep_a_flat_shape_hook_entry
 run_test test_install_and_uninstall_keep_a_hooks_false_entry
 run_test test_install_and_uninstall_keep_a_hooks_object_entry
 run_test test_install_and_uninstall_keep_a_hooks_string_entry
+run_test test_install_and_uninstall_keep_every_hooks_shape_in_order
+run_test test_install_and_uninstall_keep_every_hooks_shape_in_an_event_cs_registers_nothing_under
+run_test test_install_and_uninstall_keep_hooks_list_elements_that_are_not_objects
+run_test test_install_and_uninstall_keep_event_entries_that_are_not_objects
+run_test test_install_takes_its_registration_out_of_a_hooks_list_holding_a_string
+run_test test_uninstall_strips_cs_beside_entries_that_are_not_objects
 run_test test_install_deploys_statusline_binary
 run_test test_install_deploys_subagent_statusline_binary
 run_test test_install_skips_statusline_noninteractive
