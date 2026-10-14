@@ -181,6 +181,22 @@ _explain_nothing_committed() {  # dir, path...
     info "cs committed nothing; it left $joined for you to commit"
 }
 
+# Record in <dir>/.cs/local/state the mode the session's features take, for
+# create_worktree_session, unless a cs_mode is already recorded there. Adopt
+# and the flat-layout migration commit nothing, so git tracks no .cs until the
+# user commits it, and a feature that inferred its mode from that would hide
+# the base's .cs through the common info/exclude. Features expect git to carry
+# .cs (tracked), unless the project's own rules already keep it out of git
+# (ignored; cs's own rules name only paths inside .cs, never its README).
+_record_feature_mode() {  # dir
+    local state="$1/.cs/local/state" mode=tracked
+    [ -z "$(_read_local_state "$state" cs_mode)" ] || return 0
+    if _cs_git_at "$1" check-ignore -q -- .cs/README.md 2>/dev/null; then
+        mode=ignored
+    fi
+    _set_local_state "$state" cs_mode "$mode"
+}
+
 # Adopt an existing project directory as a cs session. --yes (-y) answers the
 # one question adopt asks, whether to re-adopt orphaned records, so it runs
 # without a terminal.
@@ -375,19 +391,8 @@ adopt_session() {  # name, [--yes|-y], in any order
         _explain_nothing_committed "$target_dir" .cs .gitignore .gitattributes
     fi
 
-    # Adopt commits nothing, so git tracks no .cs until the user commits it,
-    # and a feature that inferred its mode from that would hide the base's
-    # .cs through the common info/exclude. Recorded instead, for
-    # create_worktree_session: features expect git to carry .cs, unless the
-    # project's own rules already keep it out of git (cs's rules name only
-    # paths inside .cs, never its README). Re-adopted records keep theirs.
-    if [ -z "$(_read_local_state "$target_dir/.cs/local/state" cs_mode)" ]; then
-        local feature_mode=tracked
-        if _cs_git_at "$target_dir" check-ignore -q -- .cs/README.md 2>/dev/null; then
-            feature_mode=ignored
-        fi
-        _set_local_state "$target_dir/.cs/local/state" cs_mode "$feature_mode"
-    fi
+    # Re-adopted records keep the mode they hold.
+    _record_feature_mode "$target_dir"
 
     info "Adopted $(basename "$target_dir") as session '$session_name'"
     echo -e "${DIM}Symlink: $session_link -> $target_dir${NC}"

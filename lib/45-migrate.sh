@@ -993,10 +993,12 @@ migrate_session() {
         echo -e "${DIM}Session metadata moved to .cs/ - your workspace root is now clean for project files.${NC}"
         echo ""
 
-        # The moves stay in the working tree for the user to commit.
+        # The moves stay in the working tree for the user to commit, and the
+        # session records the mode its features take, as adopt does.
         if [ -d "$session_dir/.git" ]; then
             _explain_nothing_committed "$session_dir" .cs logs archives age-recipients \
                 README.md discoveries.md summary.md secrets.enc secrets.age .gitignore .gitattributes
+            _record_feature_mode "$session_dir"
         fi
     fi
 
