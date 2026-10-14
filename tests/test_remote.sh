@@ -332,11 +332,12 @@ start_unrelated_process() {
     STARTED_PIDS="$STARTED_PIDS $!"
 }
 
-# The command the server's tmux window runs for demo in plan mode.
+# The command the server's tmux window runs for demo in plan mode, from a
+# caller whose sessions root is CS_SESSIONS_ROOT and whose claude is the fake.
 window_command() {
     local self
     self="$(cd "$SCRIPT_DIR/../bin" && pwd)/cs"
-    printf '%s' "sh -c '\"\$@\" || { s=\$?; printf \"\\nclaude remote-control exited with status %s. Press Enter to close this window.\\n\" \"\$s\"; read -r _; exit \"\$s\"; }' cs-remote env CS_REMOTE_WINDOW=1 '$self' 'demo' --remote --permission-mode 'plan'"
+    printf '%s' "sh -c '\"\$@\" || { s=\$?; printf \"\\nclaude remote-control exited with status %s. Press Enter to close this window.\\n\" \"\$s\"; read -r _; exit \"\$s\"; }' cs-remote env CS_REMOTE_WINDOW=1 'CS_SESSIONS_ROOT=$CS_SESSIONS_ROOT' 'CLAUDE_CODE_BIN=$TEST_TMPDIR/bin/claude' '$self' 'demo' --remote --permission-mode 'plan'"
 }
 
 strip_ansi() {
@@ -520,6 +521,24 @@ test_remote_inside_tmux_opens_its_own_window_in_the_cs_session() {
     assert_file_not_exists "$FAKE_CLAUDE_LOG" "the caller's own terminal starts no server" || return 1
 }
 
+# tmux starts a window with the tmux server's environment, not the caller's.
+# The window still serves the caller's sessions root with the claude the
+# caller checked, here against a server whose root and PATH lead elsewhere.
+test_remote_window_serves_the_callers_root_with_the_callers_claude() {
+    local other_root="$TEST_TMPDIR/server-sessions" other_bin="$TEST_TMPDIR/server-bin" cmd
+    mkdir -p "$other_root" "$other_bin"
+    cp "$TEST_TMPDIR/bin/claude" "$other_bin/claude"
+    TMUX="/tmp/fake,1,0" run_cs_ok demo --remote || return 1
+    cmd=$(sed -n 's/^new-session -d -s cs -n remote:demo -P -F #{window_id} //p' "$FAKE_TMUX_LOG")
+    [ -n "$cmd" ] || { echo "  FAIL: no window was opened"; cat "$FAKE_TMUX_LOG"; return 1; }
+    CS_SESSIONS_ROOT="$other_root" PATH="$other_bin:$PATH" CLAUDE_CODE_BIN=claude TMUX="/tmp/fake,1,0" \
+        run_in_its_own_group sh -c "$cmd" || return 1
+    assert_eq "0" "$CS_RC" "the window's server ran" || { cat "$TEST_TMPDIR/out"; return 1; }
+    assert_eq "$(cd "$CS_SESSIONS_ROOT" && pwd -P)/demo" "$(log_value pwd)" "the window serves the caller's sessions root" || return 1
+    assert_eq "$TEST_TMPDIR/bin/claude" "$(log_value bin)" "the window runs the claude the caller checked" || return 1
+    [ ! -e "$other_root/demo" ] || { echo "  FAIL: the window created demo under the tmux server's root"; return 1; }
+}
+
 test_remote_in_its_window_serves_there_instead_of_opening_another() {
     CS_REMOTE_WINDOW=1 TMUX="/tmp/fake,1,0" run_cs_ok demo --remote || return 1
     assert_eq "[remote-control][--name][demo][--permission-mode][default]" "$(log_value argv)" "the server runs in the window" || return 1
@@ -617,6 +636,7 @@ run_test test_remote_stops_cleanly_on_ctrl_c_typed_at_its_terminal
 run_test test_remote_refuses_force_finish_and_a_mode_without_remote
 run_test test_remote_inside_tmux_opens_its_own_window_in_the_cs_session
 run_test test_remote_in_its_window_serves_there_instead_of_opening_another
+run_test test_remote_window_serves_the_callers_root_with_the_callers_claude
 run_test test_remote_failure_in_its_window_waits_for_enter
 run_test test_remote_window_close_reaches_the_server
 run_test test_live_shows_a_served_session_as_remote_with_the_server_pid
