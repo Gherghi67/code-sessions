@@ -43,6 +43,9 @@ vault is locked: tell the user to mount it and stop.
    that is writing this handoff — step 7 supersedes by matching it against
    the session log.
 2. Pick a short kebab-case slug from the purpose (e.g. `continue-f5-plan`).
+   The slug is ASCII: lowercase letters, digits and hyphens only, at most 60
+   characters. cs offers and loads only a handoff whose file name is plain and
+   passes over any other.
 3. Write `.cs/handoffs/YYYY-MM-DD-<slug>.md` (today's date; create the
    directory if missing) with EXACTLY this frontmatter, then the body:
 
