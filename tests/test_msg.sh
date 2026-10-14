@@ -2313,4 +2313,19 @@ test_task_mailed_to_an_encrypted_session_is_drained_once_accepted() {
 
 run_test test_task_mailed_to_an_encrypted_session_is_drained_once_accepted
 
+# A claude still running after `cs -rm <name> --force` can still mail a live
+# session: the message is delivered, and the copy the sender keeps of what it
+# sent has nowhere to go, so none is filed and the removed session is not
+# built again to hold it.
+test_mail_from_a_removed_session_files_no_copy_there() {
+    local out rc=0
+    rm -rf "$CS_SESSIONS_ROOT/sender"
+    out=$("$CS_BIN" -msg receiver "hello" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the send succeeds: $out" || return 1
+    assert_eq "1" "$(NEW_COUNT)" "the receiver has the message" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/sender" "the removed sender is not built again" || return 1
+}
+
+run_test test_mail_from_a_removed_session_files_no_copy_there
+
 report_results

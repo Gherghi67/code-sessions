@@ -1288,4 +1288,24 @@ test_queue_in_a_locked_session_is_refused() {
 run_test test_queue_in_an_encrypted_session_lives_in_its_vault
 run_test test_queue_in_a_locked_session_is_refused
 
+# A claude still running after `cs -rm <name> --force` keeps its session's
+# environment, and `/queue <task>` runs cs -queue add in it. Queueing and
+# starting the queue then refuse the way cs refuses a session that does not
+# exist, and build nothing where the session was.
+test_queue_refuses_a_removed_session() {
+    local out rc=0
+    rm -rf "$CLAUDE_SESSION_DIR"
+    out=$("$CS_BIN" -queue add "a task" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "queueing refuses" || return 1
+    assert_eq "Error: No such session: test-session" "$out" "the refusal names the session" || return 1
+    assert_not_exists "$CLAUDE_SESSION_DIR" "queueing does not build the session again" || return 1
+    rc=0
+    out=$("$CS_BIN" -queue start 2>&1) || rc=$?
+    assert_eq "1" "$rc" "starting refuses" || return 1
+    assert_eq "Error: No such session: test-session" "$out" "the refusal names the session" || return 1
+    assert_not_exists "$CLAUDE_SESSION_DIR" "starting does not build the session again" || return 1
+}
+
+run_test test_queue_refuses_a_removed_session
+
 report_results

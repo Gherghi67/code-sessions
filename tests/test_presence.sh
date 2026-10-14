@@ -176,4 +176,18 @@ run_test test_status_render_strips_control_bytes_from_the_presence_file
 run_test test_status_render_strips_control_bytes_from_the_objective_fallback
 run_test test_status_set_and_clear_refuse_while_git_tracks_the_presence
 
+# A claude still running after `cs -rm <name> --force` keeps its session's
+# environment. Setting its status then refuses the way cs refuses a session
+# that does not exist, and builds nothing where the session was.
+test_status_refuses_a_removed_session() {
+    local out rc=0
+    rm -rf "$CLAUDE_SESSION_DIR"
+    out=$("$CS_BIN" -status "still working" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the status refuses" || return 1
+    assert_eq "Error: No such session: test-session" "$out" "the refusal names the session" || return 1
+    assert_not_exists "$CLAUDE_SESSION_DIR" "the removed session is not built again" || return 1
+}
+
+run_test test_status_refuses_a_removed_session
+
 report_results
