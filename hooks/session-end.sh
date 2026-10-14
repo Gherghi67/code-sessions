@@ -155,15 +155,17 @@ if [ "${CS_RESOLVED_FROM:-env}" = "env" ] \
     esac
 fi
 if [ "$_cs_lock_clear" = 1 ] && command -v _cs_lock >/dev/null 2>&1 \
+    && command -v live_lock_pid >/dev/null 2>&1 \
     && _cs_lock "$META_DIR/session.mutex.lock"; then
     # Under the openers' mutex: a read of a dead pid followed by a remove would
     # otherwise delete the lock an opener took in between. A hook that cannot
-    # take the mutex leaves the lock; the next open reclaims a dead one itself.
-    _cs_lock_pid=$(cat "$META_DIR/session.lock" 2>/dev/null | tr -d '[:space:]') || true
-    case "${_cs_lock_pid:-}" in
-        ''|*[!0-9]*) rm -f "$META_DIR/session.lock" 2>/dev/null || true ;;
+    # take the mutex, or whose cs-shared.sh lacks live_lock_pid, leaves the
+    # lock; the next open reclaims a dead one itself. live_lock_pid prints
+    # nothing for a lock that names no running process by the one lock rule.
+    _cs_lock_pid=$(live_lock_pid "$META_DIR")
+    case "$_cs_lock_pid" in
+        '') rm -f "$META_DIR/session.lock" 2>/dev/null || true ;;
         "$_cs_lock_owner") rm -f "$META_DIR/session.lock" 2>/dev/null || true ;;
-        *) kill -0 "$_cs_lock_pid" 2>/dev/null || rm -f "$META_DIR/session.lock" 2>/dev/null || true ;;
     esac
     _cs_unlock "$META_DIR/session.mutex.lock"
 fi
