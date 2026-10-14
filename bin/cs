@@ -1392,8 +1392,7 @@ cs_untrack_notice() {  # tracked, top, sub
 # through; asked from the repository's top with a case-insensitive pattern, so
 # a case variant of the name (.cs/LOCAL, which a case-insensitive volume puts
 # in .cs/local) is seen too. A directory in no repository, a vault mounted from
-# elsewhere, has nothing tracked, nor has one inside a git directory, which no
-# checkout writes into. A directory that is gone can still hold files
+# elsewhere, has nothing tracked. A directory that is gone can still hold files
 # the index lists (the next checkout brings them back), so it is asked of the
 # nearest directory that exists, with the missing part added to the pattern; a
 # link that leads nowhere (a locked vault) holds nothing git lists.
@@ -1417,10 +1416,6 @@ cs_tracked_files_notice() {  # dir, session_dir
     if ! top=$(_cs_git_at "$real" rev-parse --show-toplevel --show-prefix 2>/dev/null && printf x); then
         why=$(_cs_git_error_at "$real" rev-parse --show-toplevel --show-prefix)
         ! _cs_git_not_a_repo "$why" || return 1
-        # Inside a git directory (a bare repository, a checkout's .git) there
-        # is no working tree, and so nothing git tracks. Only that literal
-        # answer counts: a git that fails prints none.
-        [ "$(_cs_git_at "$real" rev-parse --is-inside-git-dir 2>/dev/null)" != true ] || return 1
         _cs_git_cannot_answer "$1" "$why"
         return 0
     fi

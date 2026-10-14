@@ -140,9 +140,9 @@ since a literal pathspec would match no file and read as nothing tracked, and so
 configuration settings passed through the environment (`GIT_CONFIG_COUNT`,
 `GIT_CONFIG_PARAMETERS`). Git that fails to answer for any reason other than "not a git
 repository" (a broken `~/.gitconfig`, a bad repository config, an unreadable index, a
-`safe.directory` refusal, no git on `PATH`) counts as tracked: the hooks stand down the same way, `cs` refuses
+`safe.directory` refusal, no git on `PATH`, a session inside a bare repository or a checkout's `.git`) counts as tracked: the hooks stand down the same way, `cs` refuses
 to open the session, a named verb (`cs <name> -queue` and the rest) refuses, and the message
-carries git's first `fatal:` or `error:` line, or says git is not installed or not on `PATH`. A session inside a git directory (a bare repository, or a checkout's `.git`) has no working tree for a pull to write into, so it counts as untracked. Lines that `GIT_TRACE` or a trace2 setting
+carries git's first `fatal:` or `error:` line, or says git is not installed or not on `PATH`. Lines that `GIT_TRACE` or a trace2 setting
 print ahead of it are not a failure. A file git tracks there still counts after you delete
 its directory. One write stays: the prompt hook's launch
 mark in `scope-prompt.trace`, made before anything that can stall, including git. `cs -queue` and `cs -msg` run inside the session
