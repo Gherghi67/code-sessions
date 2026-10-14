@@ -1696,6 +1696,76 @@ test_uninstall_strips_cs_beside_entries_that_are_not_objects() {
         "uninstall leaves only the two entries" || { cat "$TEST_TMPDIR/strip-beside.un"; return 1; }
 }
 
+# The value of an event is the user's when it is not a list. Install adds its
+# own hook to ten events and cannot add it to a value like that, so it stops
+# before it deploys anything, naming the event, whichever of its events holds
+# the value and whatever the value is.
+test_install_refuses_an_event_cs_registers_that_is_not_a_list() {
+    local home s out rc before pair event value
+    for pair in 'SessionStart={"custom":{"hooks":[{"type":"command","command":"user-start"}]}}' \
+        'Stop=false' 'FileChanged="notify"' 'CwdChanged=7'; do
+        event="${pair%%=*}" value="${pair#*=}"
+        home="$TEST_TMPDIR/event-$event-home" s="$TEST_TMPDIR/event-$event-home/.claude/settings.json"
+        mkdir -p "$home/.claude"
+        jq -n --arg event "$event" --argjson value "$value" '{hooks: {($event): $value}}' > "$s"
+        before=$(_tree_listing "$home")
+        rc=0
+        out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || rc=$?
+        assert_eq "1" "$rc" "install exit status for $event" || { echo "$out"; return 1; }
+        assert_output_contains "$out" \
+            "Error: $(_bre_literal "$s") holds a hooks\.$event that is not a list, so cs's hook cannot be added to it; nothing was installed$" \
+            "install names $event" || return 1
+        _assert_tree_unchanged "$before" "$home" "install changes nothing for $event" || return 1
+    done
+}
+
+# Events cs registers nothing under pass through install and uninstall as they
+# are, whatever their value: an object, false, a string, a number or null.
+test_install_and_uninstall_keep_events_that_are_not_lists() {
+    local home="$TEST_TMPDIR/event-values-home" s rc=0 hooks
+    hooks='{"PreCompact":{"custom":{"hooks":[{"type":"command","command":"user-pc"}]}},"Notification":false,"PreToolUse":"notify","SubagentStop":7,"PostCompact":null}'
+    s="$home/.claude/settings.json"
+    mkdir -p "$home/.claude"
+    jq -n --argjson hooks "$hooks" '{hooks: $hooks}' > "$s"
+    cp "$s" "$TEST_TMPDIR/event-values.before"
+    HOME="$home" bash "$INSTALL_SH" > "$TEST_TMPDIR/event-values.out" 2>&1 < /dev/null || rc=$?
+    assert_eq "0" "$rc" "install exit status" || { cat "$TEST_TMPDIR/event-values.out"; return 1; }
+    assert_eq "$hooks" "$(jq -c '.hooks | with_entries(select(.key | IN("PreCompact", "Notification", "PreToolUse", "SubagentStop", "PostCompact")))' "$s")" \
+        "install keeps the five events as they are" || return 1
+    assert_eq "$SESSION_START_REGISTRATION" "$(jq -c '.hooks.SessionStart[]' "$s")" "install registers cs's hooks beside them" || return 1
+    printf 'y\n' | HOME="$home" "$CS_BIN" -uninstall > "$TEST_TMPDIR/event-values.un" 2>&1 || rc=$?
+    assert_eq "0" "$rc" "uninstall exit status" || { cat "$TEST_TMPDIR/event-values.un"; return 1; }
+    assert_eq "$(cat "$TEST_TMPDIR/event-values.before")" "$(cat "$s")" "uninstall leaves settings.json as it was before install" || return 1
+    cmp -s "$TEST_TMPDIR/event-values.before" "$s" || { echo "  FAIL: settings.json after uninstall differs from the file before install"; return 1; }
+}
+
+# An event cs registered under, turned into an object after the install, is
+# the user's from then on: uninstall leaves it as it is, cs's registration
+# inside it included, and still strips the events that are lists.
+test_uninstall_leaves_an_event_that_is_not_a_list() {
+    local home="$TEST_TMPDIR/event-object-home" s rc=0
+    s="$home/.claude/settings.json"
+    HOME="$home" bash "$INSTALL_SH" > "$TEST_TMPDIR/event-object.out" 2>&1 < /dev/null || rc=$?
+    assert_eq "0" "$rc" "install exit status" || { cat "$TEST_TMPDIR/event-object.out"; return 1; }
+    jq '.hooks.Stop = {custom: .hooks.Stop[0]}' "$s" > "$s.new" || return 1
+    mv "$s.new" "$s"
+    printf 'y\n' | HOME="$home" "$CS_BIN" -uninstall > "$TEST_TMPDIR/event-object.un" 2>&1 || rc=$?
+    assert_eq "0" "$rc" "uninstall exit status" || { cat "$TEST_TMPDIR/event-object.un"; return 1; }
+    assert_eq "{\"hooks\":{\"Stop\":{\"custom\":$STOP_REGISTRATION}}}" "$(jq -c . "$s")" \
+        "uninstall leaves the object event and strips the rest" || { cat "$TEST_TMPDIR/event-object.un"; return 1; }
+}
+
+# install.sh reads CS_HOOK_EVENTS before it deploys anything, to refuse an
+# event that is not a list; the events it then registers under are the rows of
+# _register_cs_hooks. The two are written apart, so they are compared here.
+test_hook_events_list_matches_the_registration_table() {
+    local listed registered
+    listed=$(bash -c '. "$1" && printf "%s\n" "${CS_HOOK_EVENTS[@]}"' _ "$SCRIPT_DIR/../lib/01-manifests.sh" 2>/dev/null | sort)
+    registered=$(awk '$1 == "_merge_cs_hook" && $2 ~ /^[A-Z]/ { print $2 }' "$SCRIPT_DIR/../install.sh.in" | sort -u)
+    [ -n "$registered" ] || { echo "  FAIL: no _merge_cs_hook row found in install.sh.in"; return 1; }
+    assert_eq "$registered" "$listed" "CS_HOOK_EVENTS names the events _register_cs_hooks registers under" || return 1
+}
+
 # ============================================================================
 # Cycle: cs-statusline deployment + statusLine registration
 # ============================================================================
@@ -2713,6 +2783,10 @@ run_test test_install_and_uninstall_keep_hooks_list_elements_that_are_not_object
 run_test test_install_and_uninstall_keep_event_entries_that_are_not_objects
 run_test test_install_takes_its_registration_out_of_a_hooks_list_holding_a_string
 run_test test_uninstall_strips_cs_beside_entries_that_are_not_objects
+run_test test_install_refuses_an_event_cs_registers_that_is_not_a_list
+run_test test_install_and_uninstall_keep_events_that_are_not_lists
+run_test test_uninstall_leaves_an_event_that_is_not_a_list
+run_test test_hook_events_list_matches_the_registration_table
 run_test test_install_deploys_statusline_binary
 run_test test_install_deploys_subagent_statusline_binary
 run_test test_install_skips_statusline_noninteractive
