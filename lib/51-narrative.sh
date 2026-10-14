@@ -76,6 +76,7 @@ rotate_narrative() {
     # session does not own (audit M8); refuse before the first write.
     local out
     if out=$(_cs_write_leaves_session "$session_dir" "$live"); then
+        case "$out" in "cs could not ask git"*) error "$out" ;; esac
         error "${live#"$session_dir"/} leads to $out, outside the session; cs will not rotate through it."
     fi
     # Work from a snapshot: the cut is computed on bytes that cannot change under
@@ -114,6 +115,7 @@ rotate_narrative() {
     # Nor may the archive chunk land outside the session.
     if out=$(_cs_write_leaves_session "$session_dir" "$arch_dir"); then
         rm -f "$snap"
+        case "$out" in "cs could not ask git"*) error "$out" ;; esac
         error "${arch_dir#"$session_dir"/} leads to $out, outside the session; cs will not rotate through it."
     fi
     mkdir -p "$arch_dir"

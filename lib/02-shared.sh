@@ -569,14 +569,19 @@ _cs_nested_cs() {  # root
 # .cs/local/pre-open the open would run. A clone can commit one or link one
 # in, so it counts only as a real file under a real .cs/local, untracked (the
 # same rules cs_assert_local_untracked enforces at open; a standalone command
-# like cs <name> -queue never ran that check).
+# like cs <name> -queue never ran that check). Fails with status 2, printing
+# git's error ("cs could not ask git ..."), when git cannot answer whether it
+# tracks the pre-open: that is no vault either, so no link out of the session
+# is let through, and a caller can say why.
 _cs_hand_made_vault() {  # root
-    local pre="$1/.cs/local/pre-open"
+    local pre="$1/.cs/local/pre-open" notice
     [ -f "$pre" ] && [ ! -L "$pre" ] && [ ! -L "$1/.cs" ] && [ ! -L "$1/.cs/local" ] || return 1
     ! _cs_nested_cs "$1" || return 1
-    # A git that cannot answer has not said "untracked": no vault, and so no
-    # link out of the session is let through.
-    ! cs_tracked_files_notice "$1/.cs/local" "$1" >/dev/null
+    notice=$(cs_tracked_files_notice "$1/.cs/local" "$1") || return 0
+    case "$notice" in
+        "cs could not ask git"*) printf '%s\n' "$notice"; return 2 ;;
+    esac
+    return 1
 }
 
 # True when a path lies in the session at <root> by its spelling (as typed,
@@ -588,19 +593,25 @@ _cs_hand_made_vault() {  # root
 # session, whose .cs/claude-config links settings, skills and the rest to the
 # shell's own config: cs -encrypt writes the pre-open. A clone cannot ship a
 # pre-open (cs_assert_local_untracked refuses one tracked or linked in), but
-# it can commit the vault's layout, so the layout alone earns nothing.
+# it can commit the vault's layout, so the layout alone earns nothing. When
+# git cannot answer whether the vault is hand made, a write through one of
+# those links that lands outside prints git's error ("cs could not ask git
+# ...") in place of where it lands: still a write that leaves the session.
 _cs_write_leaves_session() {  # root, path
-    local root="$1" root_p real sub
+    local root="$1" root_p real sub vault=0 why="" via=""
     root_p=$(cd "$root" 2>/dev/null && pwd -P) || return 1
     case "$2" in
         "$root"/*|"$root_p"/*) ;;
         *) return 1 ;;
     esac
-    if _cs_hand_made_vault "$root"; then
+    why=$(_cs_hand_made_vault "$root") || vault=$?
+    if [ "$vault" != 1 ]; then
         for sub in $CS_VAULT_LINKS narrative-archive; do
             [ -L "$root/.cs/$sub" ] || continue
             case "$2" in
-                "$root/.cs/$sub"|"$root/.cs/$sub"/*|"$root_p/.cs/$sub"|"$root_p/.cs/$sub"/*) return 1 ;;
+                "$root/.cs/$sub"|"$root/.cs/$sub"/*|"$root_p/.cs/$sub"|"$root_p/.cs/$sub"/*)
+                    [ "$vault" != 0 ] || return 1
+                    via=1 ;;
             esac
         done
     fi
@@ -615,7 +626,11 @@ _cs_write_leaves_session() {  # root, path
     case "$real/" in
         "$root_p"/*) return 1 ;;
     esac
-    printf '%s\n' "$real"
+    if [ -n "$via" ]; then
+        printf '%s\n' "$why"
+    else
+        printf '%s\n' "$real"
+    fi
 }
 
 # The session a path lies in, by its spelling: the nearest directory above it
@@ -667,7 +682,10 @@ _cs_refuses_write() {  # writer, path, [probe]
     case "$e" in /*) ;; *) e="$PWD/$e" ;; esac
     root=$(_cs_session_root_of "$p") || return 1
     out=$(_cs_write_leaves_session "$root" "$e") || return 1
-    echo "$1: $p leads to $out${p#"$e"}, outside the session $root" >&2
+    case "$out" in
+        "cs could not ask git"*) echo "$1: $p not written: $out" >&2 ;;
+        *) echo "$1: $p leads to $out${p#"$e"}, outside the session $root" >&2 ;;
+    esac
 }
 
 # Append a command's output to a file, unless a link takes the file out of the

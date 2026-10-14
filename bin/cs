@@ -1765,14 +1765,19 @@ _cs_nested_cs() {  # root
 # .cs/local/pre-open the open would run. A clone can commit one or link one
 # in, so it counts only as a real file under a real .cs/local, untracked (the
 # same rules cs_assert_local_untracked enforces at open; a standalone command
-# like cs <name> -queue never ran that check).
+# like cs <name> -queue never ran that check). Fails with status 2, printing
+# git's error ("cs could not ask git ..."), when git cannot answer whether it
+# tracks the pre-open: that is no vault either, so no link out of the session
+# is let through, and a caller can say why.
 _cs_hand_made_vault() {  # root
-    local pre="$1/.cs/local/pre-open"
+    local pre="$1/.cs/local/pre-open" notice
     [ -f "$pre" ] && [ ! -L "$pre" ] && [ ! -L "$1/.cs" ] && [ ! -L "$1/.cs/local" ] || return 1
     ! _cs_nested_cs "$1" || return 1
-    # A git that cannot answer has not said "untracked": no vault, and so no
-    # link out of the session is let through.
-    ! cs_tracked_files_notice "$1/.cs/local" "$1" >/dev/null
+    notice=$(cs_tracked_files_notice "$1/.cs/local" "$1") || return 0
+    case "$notice" in
+        "cs could not ask git"*) printf '%s\n' "$notice"; return 2 ;;
+    esac
+    return 1
 }
 
 # True when a path lies in the session at <root> by its spelling (as typed,
@@ -1784,19 +1789,25 @@ _cs_hand_made_vault() {  # root
 # session, whose .cs/claude-config links settings, skills and the rest to the
 # shell's own config: cs -encrypt writes the pre-open. A clone cannot ship a
 # pre-open (cs_assert_local_untracked refuses one tracked or linked in), but
-# it can commit the vault's layout, so the layout alone earns nothing.
+# it can commit the vault's layout, so the layout alone earns nothing. When
+# git cannot answer whether the vault is hand made, a write through one of
+# those links that lands outside prints git's error ("cs could not ask git
+# ...") in place of where it lands: still a write that leaves the session.
 _cs_write_leaves_session() {  # root, path
-    local root="$1" root_p real sub
+    local root="$1" root_p real sub vault=0 why="" via=""
     root_p=$(cd "$root" 2>/dev/null && pwd -P) || return 1
     case "$2" in
         "$root"/*|"$root_p"/*) ;;
         *) return 1 ;;
     esac
-    if _cs_hand_made_vault "$root"; then
+    why=$(_cs_hand_made_vault "$root") || vault=$?
+    if [ "$vault" != 1 ]; then
         for sub in $CS_VAULT_LINKS narrative-archive; do
             [ -L "$root/.cs/$sub" ] || continue
             case "$2" in
-                "$root/.cs/$sub"|"$root/.cs/$sub"/*|"$root_p/.cs/$sub"|"$root_p/.cs/$sub"/*) return 1 ;;
+                "$root/.cs/$sub"|"$root/.cs/$sub"/*|"$root_p/.cs/$sub"|"$root_p/.cs/$sub"/*)
+                    [ "$vault" != 0 ] || return 1
+                    via=1 ;;
             esac
         done
     fi
@@ -1811,7 +1822,11 @@ _cs_write_leaves_session() {  # root, path
     case "$real/" in
         "$root_p"/*) return 1 ;;
     esac
-    printf '%s\n' "$real"
+    if [ -n "$via" ]; then
+        printf '%s\n' "$why"
+    else
+        printf '%s\n' "$real"
+    fi
 }
 
 # The session a path lies in, by its spelling: the nearest directory above it
@@ -1863,7 +1878,10 @@ _cs_refuses_write() {  # writer, path, [probe]
     case "$e" in /*) ;; *) e="$PWD/$e" ;; esac
     root=$(_cs_session_root_of "$p") || return 1
     out=$(_cs_write_leaves_session "$root" "$e") || return 1
-    echo "$1: $p leads to $out${p#"$e"}, outside the session $root" >&2
+    case "$out" in
+        "cs could not ask git"*) echo "$1: $p not written: $out" >&2 ;;
+        *) echo "$1: $p leads to $out${p#"$e"}, outside the session $root" >&2 ;;
+    esac
 }
 
 # Append a command's output to a file, unless a link takes the file out of the
@@ -6200,13 +6218,13 @@ setup_merge_attributes() {
 # links cs's write targets. A hand-made vault's mount is the user's and is not
 # walked; cs_write_atomic still refuses a write leading out of it.
 _refuse_links_out_of_session() {  # dir
-    local dir="$1" dir_p p link real cur todo seen="" prune="" cfg=""
+    local dir="$1" dir_p p link real cur todo out seen="" prune="" cfg=""
     dir_p=$(cd -P "$dir" 2>/dev/null && pwd -P) || return 0
     # cs links the shell's settings, skills and the rest into an encrypted
     # session's config dir by design; that dir is skipped only while
     # .cs/claude-config is cs's own link into a vault set up by hand. A clone
     # can commit the layout but not the pre-open that makes it a vault.
-    if _cs_hand_made_vault "$dir"; then
+    if _cs_hand_made_vault "$dir" >/dev/null; then
         prune="$dir_p/.cs/vault-mnt"
         if [ -L "$dir_p/.cs/claude-config" ] && [ "$dir_p/.cs/claude-config" -ef "$dir_p/.cs/vault-mnt/claude-config" ]; then
             cfg=$(cd -P "$dir_p/.cs/vault-mnt/claude-config" 2>/dev/null && pwd -P)
@@ -6220,7 +6238,8 @@ _refuse_links_out_of_session() {  # dir
     fi
     for p in $roots; do
         [ -L "$dir_p/$p" ] || continue
-        _cs_write_leaves_session "$dir" "$dir_p/$p" >/dev/null || continue
+        out=$(_cs_write_leaves_session "$dir" "$dir_p/$p") || continue
+        case "$out" in "cs could not ask git"*) error "$out" ;; esac
         error "$p is a symlink to $(readlink "$dir_p/$p"), outside the session, and cs writes through it. Replace it with a real file or directory, or cs -rm the session."
     done
     todo="$dir_p/.cs"
@@ -6244,7 +6263,8 @@ _refuse_links_out_of_session() {  # dir
                     error "${link#"$dir_p"/} leads to a directory with a newline in its name, which cs cannot check for links out of the session. Rename it, or cs -rm the session." ;;
                 esac
             fi
-            if _cs_write_leaves_session "$dir" "$p" >/dev/null; then
+            if out=$(_cs_write_leaves_session "$dir" "$p"); then
+                case "$out" in "cs could not ask git"*) error "$out" ;; esac
                 error "${p#"$dir_p"/} is a symlink to $(readlink "$p"), outside the session, and cs writes through it. Replace it with a real file or directory, or cs -rm the session."
             fi
             [ -n "$real" ] || continue
@@ -7586,6 +7606,7 @@ rotate_narrative() {
     # session does not own (audit M8); refuse before the first write.
     local out
     if out=$(_cs_write_leaves_session "$session_dir" "$live"); then
+        case "$out" in "cs could not ask git"*) error "$out" ;; esac
         error "${live#"$session_dir"/} leads to $out, outside the session; cs will not rotate through it."
     fi
     # Work from a snapshot: the cut is computed on bytes that cannot change under
@@ -7624,6 +7645,7 @@ rotate_narrative() {
     # Nor may the archive chunk land outside the session.
     if out=$(_cs_write_leaves_session "$session_dir" "$arch_dir"); then
         rm -f "$snap"
+        case "$out" in "cs could not ask git"*) error "$out" ;; esac
         error "${arch_dir#"$session_dir"/} leads to $out, outside the session; cs will not rotate through it."
     fi
     mkdir -p "$arch_dir"

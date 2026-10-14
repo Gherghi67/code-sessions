@@ -25,13 +25,13 @@ setup_merge_attributes() {
 # links cs's write targets. A hand-made vault's mount is the user's and is not
 # walked; cs_write_atomic still refuses a write leading out of it.
 _refuse_links_out_of_session() {  # dir
-    local dir="$1" dir_p p link real cur todo seen="" prune="" cfg=""
+    local dir="$1" dir_p p link real cur todo out seen="" prune="" cfg=""
     dir_p=$(cd -P "$dir" 2>/dev/null && pwd -P) || return 0
     # cs links the shell's settings, skills and the rest into an encrypted
     # session's config dir by design; that dir is skipped only while
     # .cs/claude-config is cs's own link into a vault set up by hand. A clone
     # can commit the layout but not the pre-open that makes it a vault.
-    if _cs_hand_made_vault "$dir"; then
+    if _cs_hand_made_vault "$dir" >/dev/null; then
         prune="$dir_p/.cs/vault-mnt"
         if [ -L "$dir_p/.cs/claude-config" ] && [ "$dir_p/.cs/claude-config" -ef "$dir_p/.cs/vault-mnt/claude-config" ]; then
             cfg=$(cd -P "$dir_p/.cs/vault-mnt/claude-config" 2>/dev/null && pwd -P)
@@ -45,7 +45,8 @@ _refuse_links_out_of_session() {  # dir
     fi
     for p in $roots; do
         [ -L "$dir_p/$p" ] || continue
-        _cs_write_leaves_session "$dir" "$dir_p/$p" >/dev/null || continue
+        out=$(_cs_write_leaves_session "$dir" "$dir_p/$p") || continue
+        case "$out" in "cs could not ask git"*) error "$out" ;; esac
         error "$p is a symlink to $(readlink "$dir_p/$p"), outside the session, and cs writes through it. Replace it with a real file or directory, or cs -rm the session."
     done
     todo="$dir_p/.cs"
@@ -69,7 +70,8 @@ _refuse_links_out_of_session() {  # dir
                     error "${link#"$dir_p"/} leads to a directory with a newline in its name, which cs cannot check for links out of the session. Rename it, or cs -rm the session." ;;
                 esac
             fi
-            if _cs_write_leaves_session "$dir" "$p" >/dev/null; then
+            if out=$(_cs_write_leaves_session "$dir" "$p"); then
+                case "$out" in "cs could not ask git"*) error "$out" ;; esac
                 error "${p#"$dir_p"/} is a symlink to $(readlink "$p"), outside the session, and cs writes through it. Replace it with a real file or directory, or cs -rm the session."
             fi
             [ -n "$real" ] || continue
