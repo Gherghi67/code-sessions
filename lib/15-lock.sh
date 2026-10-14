@@ -346,14 +346,15 @@ _refuse_live_other_session() {  # name meta_dir verb
 }
 
 # Refuses <verb> (remove, archive) on base session <name> while one of its
-# features (<name>@<task>) is live, when cs runs inside a session whose base
-# is not <name>, --force or not: a feature's worktree points into its base's
-# repository. A terminal outside every session and the base's own sessions
-# (the base and its features) are not refused. Called directly, never in
-# $(...), so the error ends cs.
-_refuse_live_feature_of_other_base() {  # name verb
+# features (<name>@<task>) is live, when cs runs inside any session but <name>
+# itself, --force or not: a feature's worktree points into its base's
+# repository. Only a terminal outside every session and the base itself are
+# not refused; a sibling feature is, and so is the live feature itself, whose
+# own worktree the base holds. Called directly, never in $(...), so the error
+# ends cs.
+_refuse_base_with_live_feature() {  # name verb
     [ -n "${CLAUDE_SESSION_NAME:-}" ] || return 0
-    [ "${CLAUDE_SESSION_NAME%%@*}" != "$1" ] || return 0
+    [ "$CLAUDE_SESSION_NAME" != "$1" ] || return 0
     case "$1" in *@*) return 0 ;; esac
     local feature pid
     for feature in "$SESSIONS_ROOT/$1"@*; do

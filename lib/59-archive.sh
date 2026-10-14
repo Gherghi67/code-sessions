@@ -36,12 +36,13 @@ run_archive() {
     done
     [ "${#names[@]}" -ge 1 ] || error "Usage: cs -archive <name>... [--force]"
     # Before any marker is written: a live session of another conversation's
-    # user, or a live feature of a base it does not own, stops the whole run.
+    # user, or a base with a live feature when the caller is not that base,
+    # stops the whole run.
     # One already archived is left alone below.
     for name in "${names[@]}"; do
         [ -f "$SESSIONS_ROOT/$name/.cs/archived" ] && continue
         _refuse_live_other_session "$name" "$SESSIONS_ROOT/$name/.cs" archive
-        _refuse_live_feature_of_other_base "$name" archive
+        _refuse_base_with_live_feature "$name" archive
     done
     for name in "${names[@]}"; do
         _archive_resolve "$name"
