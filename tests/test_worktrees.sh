@@ -2713,6 +2713,31 @@ test_retire_creates_the_base_settings_with_the_feature_grants_alone() {
 
 run_test test_retire_creates_the_base_settings_with_the_feature_grants_alone
 
+# The base's own claude can make .claude between the retire's look for it and
+# its mkdir. A DEBUG trap stands in for that claude: it makes the directory
+# just before the retire's mkdir runs. The directory is there, which is all
+# the carry needs.
+test_base_claude_dir_counts_one_another_writer_made_first() {
+    local base="$TEST_TMPDIR/claude-race/proj" out rc=0
+    mkdir -p "$base/.cs"
+    out=$(CS_TEST_PEER_RAN="$TEST_TMPDIR/peer-ran" CS_TEST_PEER_DIR="$base/.claude" "$BASH" -c '
+        . "$1/02-shared.sh"; . "$1/30-worktree.sh"
+        set -o functrace
+        _peer() {
+            case "$BASH_COMMAND" in mkdir\ *) ;; *) return 0 ;; esac
+            [ ! -e "$CS_TEST_PEER_RAN" ] || return 0
+            : > "$CS_TEST_PEER_RAN"
+            command mkdir "$CS_TEST_PEER_DIR"
+        }
+        trap _peer DEBUG
+        _make_base_claude_dir "$2"' _ "$SCRIPT_DIR/../lib" "$base" 2>&1) || rc=$?
+    assert_exists "$TEST_TMPDIR/peer-ran" "the second writer ran before the retire's mkdir" || return 1
+    assert_eq "0" "$rc" "the base's .claude counts as made: $out" || return 1
+    assert_eq "" "$out" "and nothing is said about it" || return 1
+}
+
+run_test test_base_claude_dir_counts_one_another_writer_made_first
+
 # A settings file the union cannot read, the feature's or the base's, refuses
 # the retire before anything is removed and names the file.
 test_retire_refuses_a_settings_file_it_cannot_read() {

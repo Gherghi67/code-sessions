@@ -456,6 +456,29 @@ test_state_write_makes_local_only_inside_an_existing_cs() {
     assert_not_exists "$root/gone" "the removed session is not made again" || return 1
 }
 
+# A status line render, a hook or a second cs can make .cs/local between the
+# state write's look for it and its mkdir. A DEBUG trap stands in for that
+# writer: it makes the directory just before the state write's mkdir runs. The
+# directory is there, which is all the write needs: it records the key.
+test_state_write_counts_a_local_dir_another_writer_made_first() {
+    local root="$TEST_TMPDIR/root" out rc=0
+    mkdir -p "$root/live/.cs"
+    out=$(CS_TEST_PEER_RAN="$TEST_TMPDIR/peer-ran" CS_TEST_PEER_DIR="$root/live/.cs/local" "$BASH" -c '
+        . "$1/02-shared.sh"; . "$1/05-term.sh"; . "$1/40-state.sh"
+        set -o functrace
+        _peer() {
+            case "$BASH_COMMAND" in mkdir\ *) ;; *) return 0 ;; esac
+            [ ! -e "$CS_TEST_PEER_RAN" ] || return 0
+            : > "$CS_TEST_PEER_RAN"
+            command mkdir "$CS_TEST_PEER_DIR"
+        }
+        trap _peer DEBUG
+        _set_local_state "$2" cs_mode tracked' _ "$SCRIPT_DIR/../lib" "$root/live/.cs/local/state" 2>&1) || rc=$?
+    assert_exists "$TEST_TMPDIR/peer-ran" "the second writer ran before the state write's mkdir" || return 1
+    assert_eq "0" "$rc" "the state write succeeds: $out" || return 1
+    assert_eq "cs_mode: tracked" "$(cat "$root/live/.cs/local/state" 2>/dev/null)" "the key is recorded" || return 1
+}
+
 # ============================================================================
 # Cycle 2b: state and .gitattributes rewrites use a unique temp name, keep the
 # destination's mode, and serialise on a lock
@@ -1579,6 +1602,7 @@ run_test test_clone_with_a_readme_color_that_is_not_a_color_gets_a_fresh_one
 run_test test_launch_ignores_a_recorded_color_that_is_not_a_color
 run_test test_launch_stops_loudly_when_state_cannot_be_written
 run_test test_state_write_makes_local_only_inside_an_existing_cs
+run_test test_state_write_counts_a_local_dir_another_writer_made_first
 run_test test_state_and_gitattributes_rewrites_leave_tmp_siblings_alone_and_keep_modes
 run_test test_lock_refuses_a_path_that_is_not_a_regular_file
 run_test test_lock_takers_never_hold_it_at_once
