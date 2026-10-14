@@ -560,6 +560,77 @@ Add --delete-files to remove it with --force" "$out" "the listing counts the use
     assert_not_exists "$wt" "the worktree is removed" || return 1
 }
 
+# cs writes the root CLAUDE.local.md with its protocol sentinel, and cs's
+# exclude ignores that name. One without the sentinel is the user's own, as
+# retire treats it: it is listed, and --force refuses over it.
+test_remove_worktree_lists_a_user_authored_claude_local_md() {
+    local wt out rc=0
+    wt=$(_worktree_with_user_files wf10)
+    rm "$wt/notes.txt" "$wt/journal.img"
+    echo 'CLAUDE.local.md' >> "$(git -C "$wt" rev-parse --git-common-dir)/info/exclude"
+    echo "my own notes for this checkout" > "$wt/CLAUDE.local.md"
+    out=$("$CS_BIN" -rm wf10@t --force </dev/null 2>&1) || rc=$?
+    assert_eq "1" "$rc" "--force refuses over the user's CLAUDE.local.md: $out" || return 1
+    assert_eq "Error: Worktree session 'wf10@t' holds 1 file git does not track:
+    CLAUDE.local.md
+Add --delete-files to remove it with --force" "$out" "the refusal names the file" || return 1
+    printf '<!-- cs:session-protocol -->\n# Session protocol\n' > "$wt/CLAUDE.local.md"
+    rc=0
+    out=$("$CS_BIN" -rm wf10@t --force </dev/null 2>&1) || rc=$?
+    assert_eq "0" "$rc" "cs's own protocol file goes with --force: $out" || return 1
+    assert_not_exists "$wt" "the worktree is removed" || return 1
+}
+
+# An initialised submodule is a checkout of its own: git ls-files in the
+# worktree does not list the files inside it, and removal destroys them.
+# They are listed, as retire lists them, each as an entry of its own.
+test_remove_worktree_lists_files_inside_an_initialised_submodule() {
+    local wt out rc=0 lib="$TEST_TMPDIR/sublib"
+    wt=$(_worktree_with_user_files wf11)
+    rm "$wt/notes.txt" "$wt/journal.img"
+    mkdir -p "$lib"
+    (cd "$lib" && git init -q && echo lib > lib.txt && printf '*.env\n' > .gitignore && git add -A \
+        && git -c user.email=t@example.com -c user.name=t commit -q -m lib) || { echo "  FAIL: submodule fixture"; return 1; }
+    (cd "$wt" && git -c protocol.file.allow=always submodule add -q "$lib" sub \
+        && git -c user.email=t@example.com -c user.name=t commit -q -m "add submodule") \
+        || { echo "  FAIL: submodule fixture"; return 1; }
+    echo "secret" > "$wt/sub/secret.env"
+    echo "notes" > "$wt/sub/notes.txt"
+    out=$("$CS_BIN" -rm wf11@t --force </dev/null 2>&1) || rc=$?
+    assert_eq "1" "$rc" "--force refuses over files inside the submodule: $out" || return 1
+    assert_eq "Error: Worktree session 'wf11@t' holds 2 files git does not track:
+    sub/notes.txt
+    sub/secret.env
+Add --delete-files to remove them with --force" "$out" "the refusal names both files inside the submodule" || return 1
+    assert_eq "secret" "$(cat "$wt/sub/secret.env")" "the ignored file survives the refusal" || return 1
+}
+
+# A repo that tracks .cs carries it through git (tracked mode), so an
+# untracked file under .cs is the user's work like one anywhere else, as
+# retire treats it. In ignored mode the whole .cs is cs's.
+test_remove_tracked_mode_worktree_lists_untracked_session_records() {
+    local wt out rc=0
+    wt=$(_worktree_with_user_files wf12)
+    rm "$wt/notes.txt" "$wt/journal.img"
+    echo "# records" > "$wt/.cs/README.md"
+    git -C "$wt" add .cs/README.md
+    git -C "$wt" -c user.email=t@example.com -c user.name=t commit -qm "session records"
+    printf 'cs_mode: tracked\n' > "$wt/.cs/local/state"
+    mkdir -p "$wt/.cs/memory"
+    echo "topic" > "$wt/.cs/memory/new-topic.md"
+    : > "$wt/.cs/session.lock"
+    out=$("$CS_BIN" -rm wf12@t --force </dev/null 2>&1) || rc=$?
+    assert_eq "1" "$rc" "--force refuses over an untracked record in tracked mode: $out" || return 1
+    assert_eq "Error: Worktree session 'wf12@t' holds 1 file git does not track:
+    .cs/memory/  (1 file)
+Add --delete-files to remove it with --force" "$out" "the refusal names the record and not cs's lock or state" || return 1
+    printf 'cs_mode: ignored\n' > "$wt/.cs/local/state"
+    rc=0
+    out=$("$CS_BIN" -rm wf12@t --force </dev/null 2>&1) || rc=$?
+    assert_eq "0" "$rc" "in ignored mode .cs is cs's and goes with --force: $out" || return 1
+    assert_not_exists "$wt" "the worktree is removed" || return 1
+}
+
 # The pins and recipient digests `cs -secrets age add` keeps for a session
 # live under ~/.cs-secrets/sessions/<name>/, outside the session directory.
 # Removing a base session drops them and says so on one line naming the path.
@@ -824,6 +895,9 @@ run_test test_remove_worktree_confirm_counts_the_files_in_a_nested_repository
 run_test test_remove_force_refusal_names_one_file_as_it
 run_test test_remove_worktree_lists_the_users_files_under_dot_claude
 run_test test_remove_worktree_leaves_out_ds_store_at_any_depth
+run_test test_remove_worktree_lists_a_user_authored_claude_local_md
+run_test test_remove_worktree_lists_files_inside_an_initialised_submodule
+run_test test_remove_tracked_mode_worktree_lists_untracked_session_records
 run_test test_remove_force_on_adopted_removes_only_the_link
 run_test test_remove_refuses_while_the_vault_is_mounted_inside
 run_test test_remove_goes_ahead_once_the_vault_is_unmounted

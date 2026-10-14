@@ -1761,6 +1761,91 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// A worktree session `proj@task` under `root`, beside its base, whose
+    /// repo tracks `tracked.txt` and ignores `.cs/local/` and what cs's
+    /// exclude names, with an empty `.cs/local/`.
+    fn worktree_beside_base(root: &Path) -> PathBuf {
+        let base = root.join("proj");
+        fs::create_dir_all(&base).unwrap();
+        fs::write(base.join("tracked.txt"), "x").unwrap();
+        fs::write(base.join(".gitignore"), ".cs/local/\n").unwrap();
+        git_in(&base, &["init", "-q"]);
+        git_in(&base, &["add", "tracked.txt", ".gitignore"]);
+        git_in(&base, &["commit", "-qm", "seed"]);
+        fs::write(base.join(".git/info/exclude"), "CLAUDE.local.md\n.claude/settings.local.json\n").unwrap();
+        let wt = root.join("proj@task");
+        git_in(&base, &["worktree", "add", "-q", wt.to_str().unwrap(), "-b", "cs/task"]);
+        fs::create_dir_all(wt.join(".cs/local")).unwrap();
+        wt
+    }
+
+    // cs writes the root CLAUDE.local.md with its protocol sentinel; one
+    // without it is the user's own, which retire refuses over and `cs -rm`
+    // lists.
+    #[test]
+    fn unowned_entries_lists_a_user_authored_claude_local_md_in_a_worktree() {
+        let root = std::env::temp_dir().join(format!("cs-unowned-local-md-{}", std::process::id()));
+        let wt = worktree_beside_base(&root);
+        fs::write(wt.join("CLAUDE.local.md"), "my own notes for this checkout\n").unwrap();
+
+        let got = unowned_entries("proj@task", &wt).unwrap();
+
+        assert_eq!(got, UnownedEntries::NotTrackedByGit(vec![untracked::Entry { path: "CLAUDE.local.md".into(), files: 1 }]));
+        fs::write(wt.join("CLAUDE.local.md"), "<!-- cs:session-protocol -->\n# Session protocol\n").unwrap();
+        assert_eq!(unowned_entries("proj@task", &wt).unwrap(), UnownedEntries::NotTrackedByGit(Vec::new()));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // An initialised submodule is a checkout of its own: git ls-files in the
+    // worktree does not list the files inside it, and removal destroys them.
+    // Each is an entry of its own, as `cs -rm` lists it.
+    #[test]
+    fn unowned_entries_lists_files_inside_an_initialised_submodule() {
+        let root = std::env::temp_dir().join(format!("cs-unowned-submodule-{}", std::process::id()));
+        let wt = worktree_beside_base(&root);
+        let lib = root.join("sublib");
+        fs::create_dir_all(&lib).unwrap();
+        fs::write(lib.join("lib.txt"), "lib").unwrap();
+        fs::write(lib.join(".gitignore"), "*.env\n").unwrap();
+        git_in(&lib, &["init", "-q"]);
+        git_in(&lib, &["add", "-A"]);
+        git_in(&lib, &["commit", "-qm", "lib"]);
+        git_in(&wt, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", lib.to_str().unwrap(), "sub"]);
+        git_in(&wt, &["commit", "-qm", "add submodule"]);
+        fs::write(wt.join("sub/secret.env"), "secret").unwrap();
+        fs::write(wt.join("sub/notes.txt"), "notes").unwrap();
+
+        let got = unowned_entries("proj@task", &wt).unwrap();
+
+        let file = |path: &str| untracked::Entry { path: path.into(), files: 1 };
+        assert_eq!(got, UnownedEntries::NotTrackedByGit(vec![file("sub/notes.txt"), file("sub/secret.env")]));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // A repo that tracks .cs carries it through git (tracked mode), so an
+    // untracked file under .cs is the user's work like one anywhere else;
+    // only cs's machine-local files are left out. In ignored mode the whole
+    // .cs is cs's.
+    #[test]
+    fn unowned_entries_lists_untracked_session_records_in_a_tracked_mode_worktree() {
+        let root = std::env::temp_dir().join(format!("cs-unowned-tracked-cs-{}", std::process::id()));
+        let wt = worktree_beside_base(&root);
+        fs::write(wt.join(".cs/README.md"), "# records").unwrap();
+        git_in(&wt, &["add", ".cs/README.md"]);
+        git_in(&wt, &["commit", "-qm", "session records"]);
+        fs::write(wt.join(".cs/local/state"), "cs_mode: tracked\n").unwrap();
+        fs::create_dir_all(wt.join(".cs/memory")).unwrap();
+        fs::write(wt.join(".cs/memory/new-topic.md"), "topic").unwrap();
+        fs::write(wt.join(".cs/session.lock"), "").unwrap();
+
+        let got = unowned_entries("proj@task", &wt).unwrap();
+
+        assert_eq!(got, UnownedEntries::NotTrackedByGit(vec![untracked::Entry { path: ".cs/memory/".into(), files: 1 }]));
+        fs::write(wt.join(".cs/local/state"), "cs_mode: ignored\n").unwrap();
+        assert_eq!(unowned_entries("proj@task", &wt).unwrap(), UnownedEntries::NotTrackedByGit(Vec::new()));
+        let _ = fs::remove_dir_all(&root);
+    }
+
     fn setup_session(root: &Path, name: &str) -> PathBuf {
         let dir = root.join(name);
         fs::create_dir_all(dir.join(".cs/local")).unwrap();
