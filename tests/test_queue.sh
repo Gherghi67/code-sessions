@@ -638,6 +638,102 @@ test_vet_session_refuses_a_tracked_marker_whose_directory_is_gone() {
         "$out" "the refusal names the tracked marker" || return 1
 }
 
+# A clone can commit, with git add -f, a directory under .cs laid out like a
+# git repository (HEAD, objects/, refs/, a config naming a worktree). git,
+# asked about that directory or one below it, takes it for the repository and
+# runs the commands its config names: core.fsmonitor runs on every ls-files.
+_commit_git_dir_layout() {  # directory under the session
+    local s="$CLAUDE_SESSION_DIR" g="$CLAUDE_SESSION_DIR/$1"
+    mkdir -p "$g/objects" "$g/refs" "$CLAUDE_SESSION_META_DIR/local"
+    : > "$g/objects/.keep"
+    : > "$g/refs/.keep"
+    printf 'ref: refs/heads/main\n' > "$g/HEAD"
+    printf '[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tworktree = .\n\tfsmonitor = touch %s; false\n' \
+        "$TEST_TMPDIR/fsmonitor-ran" > "$g/config"
+    printf '.cs/local/\n' > "$s/.gitignore"
+    git -C "$s" init -q
+    git -C "$s" add -f .gitignore "$1"
+    git -C "$s" -c user.email=jane.roe@example.com -c user.name="Jane Roe" commit -q -m "ship a repository layout"
+}
+
+# The refusal for a repository layout at <dir>, a path under the session.
+_git_dir_layout_refusal() {  # dir
+    printf '%s holds HEAD, so git takes it for a repository and would run commands its config names (cs state must be a plain directory inside the session). Delete %s/HEAD, or cs -rm the session.' "$1" "$1"
+}
+
+# A named verb vets the session before it reads it: the layout is refused by
+# name, and git never runs the command its config names.
+test_a_named_verb_refuses_a_git_repository_layout_at_cs_local() {
+    local out rc=0
+    _commit_git_dir_layout .cs/local
+    out=$(env -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_NAME -u CLAUDE_SESSION_META_DIR \
+        "$CS_BIN" test-session -queue list 2>&1) || rc=$?
+    assert_file_not_exists "$TEST_TMPDIR/fsmonitor-ran" "git must not run the layout's core.fsmonitor" || return 1
+    assert_eq "1" "$rc" "cs refuses: $out" || return 1
+    assert_eq "Error: $(_git_dir_layout_refusal .cs/local)" "$out" "the refusal names the layout" || return 1
+}
+
+# The same with a committed link out of the session elsewhere under .cs: the
+# layout is still refused before git is asked anything.
+test_a_named_verb_refuses_a_git_repository_layout_beside_a_link_out() {
+    local out rc=0
+    printf 'USER\n' > "$TEST_TMPDIR/outside"
+    ln -s "$TEST_TMPDIR/outside" "$CLAUDE_SESSION_META_DIR/evil-link"
+    _commit_git_dir_layout .cs/local
+    git -C "$CLAUDE_SESSION_DIR" add -f .cs/evil-link
+    git -C "$CLAUDE_SESSION_DIR" -c user.email=jane.roe@example.com -c user.name="Jane Roe" commit -q -m "ship a link out"
+    out=$(env -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_NAME -u CLAUDE_SESSION_META_DIR \
+        "$CS_BIN" test-session -queue list 2>&1) || rc=$?
+    assert_file_not_exists "$TEST_TMPDIR/fsmonitor-ran" "git must not run the layout's core.fsmonitor" || return 1
+    assert_eq "1" "$rc" "cs refuses: $out" || return 1
+    assert_eq "Error: $(_git_dir_layout_refusal .cs/local)" "$out" "the refusal names the layout" || return 1
+}
+
+# git walks up from .cs/local, so the layout at .cs itself is the repository
+# git finds there too.
+test_vet_session_refuses_a_git_repository_layout_at_cs() {
+    local s="$CLAUDE_SESSION_DIR" out rc=0
+    _commit_git_dir_layout .cs
+    out=$(env -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR "$CS_BIN" -vet-session "$s" 2>&1) || rc=$?
+    assert_file_not_exists "$TEST_TMPDIR/fsmonitor-ran" "git must not run the layout's core.fsmonitor" || return 1
+    assert_eq "1" "$rc" "cs -vet-session refuses: $out" || return 1
+    assert_eq "Error: $(_git_dir_layout_refusal .cs)" "$out" "the refusal names the layout" || return 1
+}
+
+# .cs/private takes .cs/local's place once it exists, and is asked first.
+test_vet_session_refuses_a_git_repository_layout_at_cs_private() {
+    local s="$CLAUDE_SESSION_DIR" out rc=0
+    _commit_git_dir_layout .cs/private
+    out=$(env -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR "$CS_BIN" -vet-session "$s" 2>&1) || rc=$?
+    assert_file_not_exists "$TEST_TMPDIR/fsmonitor-ran" "git must not run the layout's core.fsmonitor" || return 1
+    assert_eq "1" "$rc" "cs -vet-session refuses: $out" || return 1
+    assert_eq "Error: $(_git_dir_layout_refusal .cs/private)" "$out" "the refusal names the layout" || return 1
+}
+
+# cs -queue inside the session asks the same question of .cs/local.
+test_queue_verbs_refuse_a_git_repository_layout_at_cs_local() {
+    local out rc=0
+    _commit_git_dir_layout .cs/local
+    out=$("$CS_BIN" -queue list 2>&1) || rc=$?
+    assert_file_not_exists "$TEST_TMPDIR/fsmonitor-ran" "git must not run the layout's core.fsmonitor" || return 1
+    assert_eq "1" "$rc" "cs -queue list refuses: $out" || return 1
+    assert_eq "Error: $(_git_dir_layout_refusal .cs/local)" "$out" "the refusal names the layout" || return 1
+}
+
+# Every hook asks it as it resolves its session: the Stop hook hands nothing
+# out of an armed queue in the layout, and says why.
+test_drain_hands_out_nothing_from_a_git_repository_layout_at_cs_local() {
+    local out
+    _commit_git_dir_layout .cs/local
+    qseed "task one"
+    printf 'armed\n' > "$(QDIR)/queue.state"
+    out=$(drain)
+    assert_file_not_exists "$TEST_TMPDIR/fsmonitor-ran" "git must not run the layout's core.fsmonitor" || return 1
+    assert_eq "$(jq -nc --arg m "cs reads no queue, mail or rotation in this session: $(_git_dir_layout_refusal .cs/local)" '{decision:"approve", systemMessage:$m}')" \
+        "$out" "the Stop names the layout and hands out nothing" || return 1
+    assert_eq "armed" "$(cat "$(QDIR)/queue.state")" "the state is left as it was" || return 1
+}
+
 # Git's trace output shares stderr with its answer, from the environment or
 # from configuration; a session in no repository is still in no repository.
 test_vet_session_passes_a_session_in_no_repository_while_git_traces() {
@@ -1132,6 +1228,12 @@ run_test test_vet_session_refuses_when_git_cannot_read_the_index
 run_test test_a_named_verb_refuses_when_git_cannot_answer
 run_test test_a_named_verb_refuses_when_git_cannot_read_the_index
 run_test test_vet_session_refuses_a_tracked_marker_whose_directory_is_gone
+run_test test_a_named_verb_refuses_a_git_repository_layout_at_cs_local
+run_test test_a_named_verb_refuses_a_git_repository_layout_beside_a_link_out
+run_test test_vet_session_refuses_a_git_repository_layout_at_cs
+run_test test_vet_session_refuses_a_git_repository_layout_at_cs_private
+run_test test_queue_verbs_refuse_a_git_repository_layout_at_cs_local
+run_test test_drain_hands_out_nothing_from_a_git_repository_layout_at_cs_local
 run_test test_vet_session_passes_a_session_in_no_repository_while_git_traces
 run_test test_vet_session_passes_a_session_whose_control_files_git_ignores
 run_test test_vet_session_judges_the_directory_it_is_given

@@ -998,6 +998,31 @@ test_a_cs_gitlink_is_refused_whatever_repository_the_shell_names() {
     _assert_refused_under_any_git_environment ".cs is a submodule or nested repository" || return 1
 }
 
+# A clone can commit .cs/local laid out like a git repository (git add -f),
+# with a config whose core.fsmonitor runs on every ls-files. git asked about
+# .cs/local would take it for the repository and run that command; the open
+# refuses it by name instead, and git runs nothing from it.
+test_a_git_repository_layout_at_cs_local_is_refused_whatever_repository_the_shell_names() {
+    "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+    local root="$CS_SESSIONS_ROOT/vt" g="$CS_SESSIONS_ROOT/vt/.cs/local"
+    mkdir -p "$g/objects" "$g/refs"
+    : > "$g/objects/.keep"
+    : > "$g/refs/.keep"
+    printf 'ref: refs/heads/main\n' > "$g/HEAD"
+    printf '[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tworktree = .\n\tfsmonitor = touch %s; false\n' \
+        "$TEST_TMPDIR/fsmonitor-ran" > "$g/config"
+    git -C "$root" add -f .cs/local/HEAD .cs/local/config .cs/local/objects .cs/local/refs
+    git -C "$root" commit -q -m "ship a repository layout"
+    local out rc=0
+    out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
+    assert_file_not_exists "$TEST_TMPDIR/fsmonitor-ran" "git must not run the layout's core.fsmonitor" || return 1
+    assert_eq "1" "$rc" "cs should refuse the open: $out" || return 1
+    assert_eq "Error: .cs/local holds HEAD, so git takes it for a repository and would run commands its config names (cs state must be a plain directory inside the session). Delete .cs/local/HEAD, or cs -rm the session." \
+        "$out" "the refusal names the layout" || return 1
+    _assert_refused_under_any_git_environment ".cs/local holds HEAD" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/fsmonitor-ran" "git must not run the layout's core.fsmonitor under any git variable" || return 1
+}
+
 # A checkout cs hides itself in through info/exclude must track none of the
 # files cs rewrites at every open.
 test_an_exclude_session_conflict_is_refused_whatever_repository_the_shell_names() {
@@ -1900,6 +1925,7 @@ run_test test_an_inherited_tracked_files_answer_does_not_stop_the_open
 run_test test_a_tracked_pre_open_is_refused_whatever_repository_the_shell_names
 run_test test_tracked_cs_private_is_refused_whatever_repository_the_shell_names
 run_test test_a_cs_gitlink_is_refused_whatever_repository_the_shell_names
+run_test test_a_git_repository_layout_at_cs_local_is_refused_whatever_repository_the_shell_names
 run_test test_an_exclude_session_conflict_is_refused_whatever_repository_the_shell_names
 run_test test_a_tracked_pre_open_makes_no_hand_made_vault_whatever_repository_the_shell_names
 run_test test_pre_open_through_symlinked_cs_is_refused
