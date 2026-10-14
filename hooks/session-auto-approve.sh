@@ -208,11 +208,11 @@ case "$(_cs_lower "$_cs_spelled")/" in
     */.git/*) exit 0 ;;
 esac
 # The name is not what makes a git directory: a bare clone is one under any
-# name, and so is the target of a linked .git. Every directory from the
-# write's real parent up to the metadata root it sits in, that root
-# included, is asked what it is by the rule cs refuses a session's state by
-# (_cs_head_below_session, cs-shared.sh): one that holds HEAD, a link that
-# leads nowhere included, is a git directory. The library is loaded here,
+# name, and so is the target of a linked .git. The write's real parent and
+# every directory above it, up to the first that holds .git as git's own
+# search goes, are asked what they are by the rule cs refuses a session's
+# state by (_cs_head_on_git_walk, cs-shared.sh): one that holds HEAD, a link
+# that leads nowhere included, is a git directory. The library is loaded here,
 # after cs_resolve_session: loaded before it, the resolve would ask git about
 # the session's files on every request. Without the rule nothing is
 # approved. Sourced as cs-resolve.sh is above, parse-checked, with errexit
@@ -222,15 +222,11 @@ set +e
 # shellcheck source=cs-shared.sh
 [ -r "$_cs_shared" ] && "${BASH:-/bin/bash}" -n "$_cs_shared" 2>/dev/null && . "$_cs_shared"
 set -e
-if ! command -v _cs_head_below_session >/dev/null 2>&1; then
+if ! command -v _cs_head_on_git_walk >/dev/null 2>&1; then
     printf 'cs auto-approve: not approving, %s is missing or outdated\n' "$_cs_shared" >&2
     exit 0
 fi
-case "$REAL_PARENT/" in
-    "${REAL_META:-/cs-no-meta}"/*) _cs_meta_root="$REAL_META" ;;
-    *) _cs_meta_root="$REAL_CS" ;;
-esac
-if _cs_head_below_session "$REAL_PARENT" "$_cs_meta_root/.." >/dev/null; then
+if _cs_head_on_git_walk "$REAL_PARENT" "$SESSION_DIR" >/dev/null; then
     exit 0
 fi
 

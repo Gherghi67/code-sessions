@@ -445,16 +445,17 @@ adopt_worktrees() {  # [--dry-run]
         # checkout of this repo: its own worktree root, on this repo's common
         # git dir. A symlink to another project, or a plain folder, is neither.
         # git asked about it takes the nearest directory at or above it that
-        # holds HEAD for the repository and reads that directory's config, and
-        # a clone can commit such a layout here (git add -f), so one between
-        # the entry and the repo is named before git is asked anything.
+        # holds HEAD for the repository, unless a .git comes first, and reads
+        # that directory's config, and a clone can commit such a layout here
+        # (git add -f), so one git's search from the entry would find is
+        # named before git is asked anything.
         # The x keeps a trailing newline in a name that $( ) drops.
         if ! wt_real=$(cd -P "$wt_dir" 2>/dev/null && pwd -P && printf x); then
             echo -e "${DIM}skip $wt_name: not a worktree of $repo${NC}"
             continue
         fi
         wt_real=${wt_real%$'\n'x}
-        if layout=$(_cs_head_below_session "$wt_real" "$repo"); then
+        if layout=$(_cs_head_on_git_walk "$wt_real" "$repo"); then
             layout=$(printf '%s' "$layout" | env LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_' | cut -c1-160)
             echo -e "${DIM}skip $wt_name: $layout holds HEAD, so git takes it for a repository and would run commands its config names${NC}"
             continue
