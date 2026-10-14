@@ -262,15 +262,19 @@ vault is locked: tell the user to mount it and stop.
    deletions with step 8's commit.
 8. Archive completed task rows, then make the rotation's one commit. Run
    `cs -archive-tasks plan` once; its `answer:` line is the session's
-   standing answer, given once and kept in `.cs/local/task-archive`:
+   standing answer, given once and kept in `.cs/local/task-archive`, and
+   its `forced:` line says whether the `cs` mod ran this `/rotate` on its
+   own (cs reads `.cs/local/cs.forced`, which the mod writes with this
+   conversation's id before it forces a rotation):
 
-   - `answer: unasked`, with an `archive:` line naming rows: ask once with
-     AskUserQuestion whether this session moves completed task rows out of
-     the live list at each `/rotate` and `/wrap` (they land in
-     `.cs/task-archive/<date>/` with a readable `tasks.md`), record the
-     reply with `cs -archive-tasks answer yes` or `cs -archive-tasks answer
-     no`, and on yes run as below. When `$CS_ROTATE_FORCE_CTX` is set the
-     rotation is driving itself: do not ask, skip the archive this time.
+   - `answer: unasked`, with an `archive:` line naming rows:
+     With `forced: yes`, do not ask: skip the archive this time.
+     With `forced: no`, ask once with AskUserQuestion whether this session
+     moves completed task rows out of the live list at each `/rotate` and
+     `/wrap` (they land in `.cs/task-archive/<date>/<actor>/` with a
+     readable `tasks.md`), record the reply with
+     `cs -archive-tasks answer yes` or `cs -archive-tasks answer no`, and on
+     yes run as below.
    - `answer: yes`, with rows to archive: run `cs -archive-tasks run` and
      keep its one line for your reply.
    - `answer: no`, or `archive: nothing`: skip it.
