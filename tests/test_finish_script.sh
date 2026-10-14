@@ -481,6 +481,51 @@ test_report_content_landed_waits_for_commits_after_the_capture() {
     assert_output_not_contains "$out" "content-landed" "content-landed is not claimed" || return 1
 }
 
+# The base records submodule `mod` at one commit, with .gitmodules giving it
+# <ignore> (none when empty). The branch bumps the pointer and adds feat.txt;
+# only feat.txt lands on the base, so the branch is the one ref holding the
+# bump. No cs launch: the report reads only the two git trees. Prints the
+# captured sha.
+gitlink_bump_fixture() {  # ignore
+    local base="$CS_SESSIONS_ROOT/myproj" wt="$CS_SESSIONS_ROOT/myproj@fix-auth" sub="$TEST_TMPDIR/sub" c1 c2
+    create_test_session_with_git myproj > /dev/null
+    git init -q "$sub"
+    (cd "$sub" && echo 1 > f && git add f && git commit -q -m one)
+    c1=$(git -C "$sub" rev-parse HEAD)
+    (cd "$sub" && echo 2 > f && git commit -q -am two)
+    c2=$(git -C "$sub" rev-parse HEAD)
+    printf '[submodule "mod"]\n\tpath = mod\n\turl = %s\n' "$sub" > "$base/.gitmodules"
+    [ -z "$1" ] || printf '\tignore = %s\n' "$1" >> "$base/.gitmodules"
+    (cd "$base" && git add .gitmodules && git update-index --add --cacheinfo "160000,$c1,mod" && git commit -q -m "submodule")
+    git -C "$base" worktree add -q -b cs/fix-auth "$wt"
+    (cd "$wt" && git update-index --cacheinfo "160000,$c2,mod" && echo feat > feat.txt && git add feat.txt \
+        && git commit -q -m "bump mod")
+    (cd "$base" && echo feat > feat.txt && git add feat.txt && git commit -q -m "feat only")
+    git -C "$wt" rev-parse HEAD
+}
+
+# A submodule the project tells diff to ignore still has a pointer: a bump
+# the base never got is content the retire would lose.
+test_report_refuses_a_submodule_bump_gitmodules_ignores() {
+    local sha out
+    sha=$(gitlink_bump_fixture all)
+    out=$(report_for myproj fix-auth "$sha")
+    assert_eq "not-landed" "$(key "$out" retire)" "the bump is not on the base" || return 1
+    assert_eq "1 of 2" "$(key "$out" retire_paths_differing)" "feat.txt landed, mod did not" || return 1
+    assert_eq "mod" "$(key "$out" retire_differs)" "and the submodule is named" || return 1
+}
+
+# The same through the user's git config instead of .gitmodules.
+test_report_refuses_a_submodule_bump_diff_config_ignores() {
+    local sha out
+    sha=$(gitlink_bump_fixture "")
+    git -C "$CS_SESSIONS_ROOT/myproj" config diff.ignoreSubmodules all
+    out=$(report_for myproj fix-auth "$sha")
+    assert_eq "not-landed" "$(key "$out" retire)" "the bump is not on the base" || return 1
+    assert_eq "1 of 2" "$(key "$out" retire_paths_differing)" "feat.txt landed, mod did not" || return 1
+    assert_eq "mod" "$(key "$out" retire_differs)" "and the submodule is named" || return 1
+}
+
 run_test test_prepare_in_feature_session_hands_off
 run_test test_prepare_in_base_captures_sha_branch_and_dirt
 run_test test_prepare_in_a_plain_checkout_says_so
@@ -593,5 +638,7 @@ run_test test_report_content_landed_counts_a_deleted_and_a_renamed_path
 run_test test_report_refuses_a_mode_change_the_base_lacks
 run_test test_report_names_at_most_ten_differing_paths
 run_test test_report_content_landed_waits_for_commits_after_the_capture
+run_test test_report_refuses_a_submodule_bump_gitmodules_ignores
+run_test test_report_refuses_a_submodule_bump_diff_config_ignores
 
 report_results
