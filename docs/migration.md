@@ -341,15 +341,16 @@ still renaming (a record in the profile's `.rename-profile-session/` that is
 not finished, or that cannot be read or understood: until then the old
 session's transcripts, prompt history, settings and secrets may still be under
 that name, a copy would merge into them, and the rename could no longer
-finish). Each of these, and anything
-kept on both sides, is a problem and makes the run exit 1. A session whose
-folder is gone (nothing is at its link's target any more) is left too, but as
-a note: the original cs cannot open it either. So is each of its features
-whose folder is gone too (an adopted worktree's link, once the base is
-deleted); a feature folder still there is a problem, to copy by hand or
-remove, then rerun. Its Claude conversations, their side files and its prompt
-history are brought over as history, under the folder names and paths they had
-(`--no-history` leaves them out). Its summary line reads `not copied: its folder is gone (...)`, ending in one of:
+finish). Each of these, and anything kept on both sides, is a problem and
+makes the run exit 1. A session whose folder is gone (nothing is at its
+link's target any more) is left too, but as a note: the original cs cannot
+open it either. So is each of its features whose folder is gone too (an
+adopted worktree's link, once the base is deleted); a feature folder still
+there is a problem, to copy by hand or remove, then rerun. The gone
+session's Claude conversations, their side files and its prompt history are
+brought over as history, under the folder names and paths they had
+(`--no-history` leaves them out). Its summary line reads
+`not copied: its folder is gone (...)`, ending in one of:
 
 - `history carried`: what it left is in the profile, brought by this run or
   an earlier one;
