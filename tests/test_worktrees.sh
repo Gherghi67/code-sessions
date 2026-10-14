@@ -2428,7 +2428,7 @@ run_test test_retire_ignored_mode_refuses_when_the_inherited_directory_cannot_be
 # that cannot decode a name, a failed conversion must never read as "nothing
 # to lose": the retire would force-remove the worktree and the user's
 # ignored file with it instead of moving it to the trash.
-test_retire_keeps_untracked_work_when_a_name_does_not_decode_in_the_locale() {
+test_retire_trashes_ignored_work_when_a_name_does_not_decode_in_the_locale() {
     # A multibyte locale that is not UTF-8 and in which bash still parses cs.
     local loc
     loc=$(locale -a 2>/dev/null | grep -m1 -x -e 'zh_CN\.GBK' -e 'ja_JP\.SJIS' -e 'zh_TW\.Big5') || true
@@ -2466,7 +2466,7 @@ feature note $(printf '\342\200\224') done" "$(cat "$base_dir/.cs/memory/narrati
         "the feature's narrative note is appended to the base's" || return 1
 }
 
-run_test test_retire_keeps_untracked_work_when_a_name_does_not_decode_in_the_locale
+run_test test_retire_trashes_ignored_work_when_a_name_does_not_decode_in_the_locale
 
 test_retire_fuse_survives_a_torn_timeline_tail() {
     # A crash mid-append leaves a last line with no newline. Appending onto it
