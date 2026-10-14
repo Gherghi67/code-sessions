@@ -252,9 +252,10 @@ vault is locked: tell the user to mount it and stop.
 8. Archive completed task rows. Run
    `cs -archive-tasks plan` once; its `answer:` line is the session's
    standing answer, given once and kept in `.cs/local/task-archive`, and
-   its `forced:` line says whether the `cs` mod ran this `/rotate` on its
-   own (cs reads `.cs/local/cs.forced`, which the mod writes with this
-   conversation's id before it forces a rotation):
+   its `forced:` line says whether the `cs` mod ran this `/rotate` for the
+   user, on its own or from its one-key rotate button (cs reads
+   `.cs/local/cs.forced` and `.cs/local/cs.pressed`, which the mod writes
+   with this conversation's id before it runs either):
 
    - `answer: unasked`, with an `archive:` line naming rows:
      With `forced: yes`, do not ask: skip the archive this time.
