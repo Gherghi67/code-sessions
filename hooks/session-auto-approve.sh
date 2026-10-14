@@ -352,7 +352,8 @@ _cs_scan_links() {
         if [ "${2:-}" = config ] && _cs_shared_config_link "$1" "$_cs_link"; then
             continue
         fi
-        _cs_decline "symlink under a control directory: $_cs_link"
+        # A clone chooses the link's name: it is printed as a plain path.
+        _cs_decline "symlink under a control directory: $(_cs_plain_name "$_cs_link" 160)"
     done < "$_cs_links"
 }
 _cs_scan_root() {
