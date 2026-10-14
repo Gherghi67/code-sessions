@@ -252,12 +252,31 @@ read_lock_pid() {  # meta_dir
     cat "$f" 2>/dev/null || true
 }
 
-# True (exit 0) when a session's process is currently alive on this machine.
-# Arg: meta_dir (the session's .cs dir).
+# Print the pid a session's lock names when that process is running on this
+# machine; print nothing otherwise. The rule: the lock's text, surrounding
+# whitespace removed, is a decimal number from 1 to 2147483647 (a pid_t;
+# leading zeros allowed) and kill -0 reaches it. "0" and "-1" name process
+# groups, not a process, and a larger number wraps on Linux. Twin of
+# refuse_live_other_base in bin/cs-secrets, which cannot source this file;
+# the two keep this rule together. Arg: meta_dir.
+live_lock_pid() {  # meta_dir
+    local text pid
+    text="$(read_lock_pid "$1")"
+    text="${text#"${text%%[![:space:]]*}"}"
+    text="${text%"${text##*[![:space:]]}"}"
+    case "$text" in
+        ''|*[!0-9]*) return 0 ;;
+    esac
+    pid="${text#"${text%%[!0]*}"}"
+    [ -n "$pid" ] && [ "${#pid}" -le 10 ] && [ "$pid" -le 2147483647 ] || return 0
+    kill -0 "$pid" 2>/dev/null || return 0
+    echo "$pid"
+}
+
+# True (exit 0) when a session's process is currently alive on this machine,
+# by live_lock_pid's rule. Arg: meta_dir (the session's .cs dir).
 session_is_live() {  # meta_dir
-    local pid
-    pid="$(read_lock_pid "$1")"
-    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+    [ -n "$(live_lock_pid "$1")" ]
 }
 
 # True when target_pid is this cs process or one of its live ancestors. A cs
@@ -320,8 +339,10 @@ _refuse_live_other_session() {  # name meta_dir verb
         *@*) ;;
         *) case "$1" in "$CLAUDE_SESSION_NAME"@*) return 0 ;; esac ;;
     esac
-    session_is_live "$2" || return 0
-    error "session $CLAUDE_SESSION_NAME cannot $3 session $1 while it is live (pid $(read_lock_pid "$2")); --force does not override that from another session. Close $1 first."
+    local pid
+    pid="$(live_lock_pid "$2")"
+    [ -n "$pid" ] || return 0
+    error "session $CLAUDE_SESSION_NAME cannot $3 session $1 while it is live (pid $pid); --force does not override that from another session. Close $1 first."
 }
 
 # Epoch mtime of a file, 0 on error. Arg: path. GNU stat is asked first, as
