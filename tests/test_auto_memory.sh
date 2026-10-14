@@ -2004,6 +2004,14 @@ test_a_write_through_a_hand_made_vault_link_names_gits_error_when_git_cannot_ans
         "$out" "and names git's error" || return 1
     assert_eq "USER-OWNED" "$(cat "$outside")" "the file outside is untouched" || return 1
     rc=0
+    ln -s "$outside" "$meta/vault-mnt/claude-config/n"$'\e[1mb\a'".json"
+    out=$(cd "$root" && GIT_CONFIG_GLOBAL="$cfg" bash -c 'source "$1"; cs_write_atomic "$2" printf "{}\n"' \
+        _ "$SCRIPT_DIR/../hooks/cs-shared.sh" "$meta/claude-config/n"$'\e[1mb\a'".json" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a write to a name a clone could choose refuses the same way" || return 1
+    assert_eq "cs_write_atomic: $meta/claude-config/n__1mb_.json not written: cs could not ask git whether it tracks a file in .cs/local: fatal: bad config line 1 in file $cfg" \
+        "$out" "and prints the name below the session as a plain name" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal" || return 1
+    rc=0
     out=$(cd "$root" && bash -c 'source "$1"; cs_write_atomic "$2" printf "{}\n"' \
         _ "$SCRIPT_DIR/../hooks/cs-shared.sh" "$meta/claude-config/settings.json" 2>&1) || rc=$?
     assert_eq "0" "$rc" "once git answers, the vault's write goes through: $out" || return 1
