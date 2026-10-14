@@ -211,9 +211,10 @@ test_rotate_skill_prunes_only_tracked_handoffs() {
 # re-reads (443 of 454 rows in one session). The rotation moves them out
 # through cs -archive-tasks: plan first (the standing answer and the rows),
 # one question while the answer is unasked, recorded with answer yes|no, then
-# run. A rotation the cs mod forced drives itself and must not stop to ask:
-# the skill reads that from plan's forced: line (cs compares .cs/local/cs.forced
-# with the conversation's id; test_task_archive.sh pins that), never from
+# run. A rotation the cs mod forced, or ran from its one-key rotate button,
+# drives itself and must not stop to ask: the skill reads that from plan's
+# forced: line (cs compares .cs/local/cs.forced and .cs/local/cs.pressed with
+# the conversation's id; test_task_archive.sh pins that), never from
 # CS_ROTATE_FORCE_CTX, a threshold that is unset by default while forcing is on
 # and that a person who rotates by hand may have set. All of it happens before
 # step 9 arms the handoff, which stays the last step.
@@ -227,6 +228,8 @@ test_rotate_skill_archives_completed_task_rows_before_arming() {
     assert_output_contains "$step8" 'cs -archive-tasks answer' "the answer is recorded through cs" || return 1
     assert_output_contains "$step8" 'cs -archive-tasks run' "and the run moves the rows" || return 1
     assert_output_contains "$step8" '`forced: yes`' "a forced rotation is read from plan's forced: line" || return 1
+    assert_output_contains "$step8" 'on its own or from its one-key rotate button' \
+        "and so is a press of the button" || return 1
     assert_output_contains "$step8" 'With `forced: yes`, do not ask: skip the archive this time.' \
         "and does not stop to ask" || return 1
     assert_output_contains "$step8" 'With `forced: no`, ask' "any other /rotate asks" || return 1
