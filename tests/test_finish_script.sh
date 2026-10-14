@@ -604,11 +604,12 @@ test_report_checks_more_path_bytes_than_a_command_line_holds() {
 }
 
 # A name that is not UTF-8, printed raw (core.quotePath false) under a UTF-8
-# locale, is reported like any other name. It goes in through the index, as
-# some filesystems refuse it on disk, so the worktree shows it deleted. The
-# output holds those bytes, so it is read in the C locale here too.
+# locale, is reported like any other name. It has no ASCII byte at all, which
+# is what a UTF-8 grep or sed trips on. It goes in through the index, as some
+# filesystems refuse it on disk, so the worktree shows it deleted. The output
+# holds those bytes, so it is read in the C locale here too.
 test_report_names_a_non_utf8_path_under_a_utf8_locale() {
-    local sha out blob name=$'\xff\xfe.bin' base="$CS_SESSIONS_ROOT/myproj" wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    local sha out blob name=$'\xff\xfe' base="$CS_SESSIONS_ROOT/myproj" wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
     plain_fixture
     git -C "$base" config core.quotePath false
     (cd "$wt" && echo ok > good.txt && git add good.txt)
