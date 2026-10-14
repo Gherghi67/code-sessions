@@ -217,19 +217,29 @@ _cs_pid_descends_from() {  # pid ancestor
 # lead started before the lead's own SessionStart ran (another plugin's
 # SessionStart hook running `claude -p`) got there first and gives way. The
 # launch pid is above every claude under the launch, so a holder carrying it
-# is never displaced.
+# is never displaced. The read of the holder and the write are one step under
+# the lock beside the file (lead-pid.mutex.lock): two claudes starting at once
+# take turns, so the lead and a claude it started cannot both pass the read
+# and the lead holds the claim whichever came first. Past the lock's wait the
+# step runs without it, as the state file's does: a hook must not stall.
 cs_lead_claim() {  # local_dir session_id
     [ "${CS_LEAD_CLAIM:-}" = 1 ] || return 1
     [ -n "$1" ] && [ -n "${CS_LEAD_PID:-}" ] && [ -n "${CLAUDE_PID:-}" ] || return 1
     if [ "$CLAUDE_PID" != "$CS_LEAD_PID" ]; then
         _cs_pid_descends_from "$CLAUDE_PID" "$CS_LEAD_PID" || return 1
-        if _cs_lead_claim_read && [ "$_CS_CLAIM_PID" != "$CLAUDE_PID" ] \
-            && kill -0 "$_CS_CLAIM_PID" 2>/dev/null; then
-            _cs_pid_descends_from "$_CS_CLAIM_PID" "$CLAUDE_PID" || return 1
-        fi
     fi
-    cs_write_atomic "$1/lead-pid" printf '%s %s %s\n' "$CS_LEAD_PID" "$CLAUDE_PID" "$2" || return 1
+    _cs_with_state_lock "$1/lead-pid" _cs_lead_claim_write "$1" "$2" || return 1
     _CS_IS_LEAD=""
+}
+
+# cs_lead_claim's step under the lock: gives way to a live holder that is not
+# this claude's descendant, else writes the claim.
+_cs_lead_claim_write() {  # local_dir session_id
+    if [ "$CLAUDE_PID" != "$CS_LEAD_PID" ] && _cs_lead_claim_read \
+        && [ "$_CS_CLAIM_PID" != "$CLAUDE_PID" ] && kill -0 "$_CS_CLAIM_PID" 2>/dev/null; then
+        _cs_pid_descends_from "$_CS_CLAIM_PID" "$CLAUDE_PID" || return 1
+    fi
+    cs_write_atomic "$1/lead-pid" printf '%s %s %s\n' "$CS_LEAD_PID" "$CLAUDE_PID" "$2"
 }
 
 # Removes the claim when it names this claude, so an ending claude never takes
