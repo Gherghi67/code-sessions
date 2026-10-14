@@ -3587,6 +3587,39 @@ test_keychain_set_never_sends_a_line_whose_failure_security_would_hide() {
     done
 }
 
+# The limit counts the bytes of the line, not its characters. The account
+# here is six characters and eight bytes (two two-byte letters), so the fixed
+# part for secret X is 37 + 10 + 19 = 66 bytes and the limit 2014; counted in
+# characters it would be 64 and 2015, and a 2015-byte value would go out on a
+# 4096-byte line. cs runs under a UTF-8 locale, where a shell counts
+# characters; the test is skipped where the machine has none.
+test_keychain_limit_counts_bytes_for_a_non_ascii_account() {
+    local bindir; bindir=$(_make_fake_security)
+    local account=$'t\xc3\xabst\xc3\xa9r' utf8 kcstore="$TEST_TMPDIR/kc-store" out rc=0
+    utf8=$(locale -a 2>/dev/null | grep -i -E '^(en_US|C)\.utf-?8$' | head -1)
+    [ -n "$utf8" ] || { echo "    SKIP (no UTF-8 locale on this machine)"; return 77; }
+    head -c 2015 /dev/zero | tr '\0' 'v' > "$TEST_TMPDIR/over"
+    head -c 2014 /dev/zero | tr '\0' 'v' > "$TEST_TMPDIR/at"
+
+    out=$(PATH="$bindir:$PATH" LC_ALL="$utf8" USER="$account" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        FAKE_SECURITY_ARGVLOG="$TEST_TMPDIR/argv" "$CS_SECRETS_BIN" set X < "$TEST_TMPDIR/over" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a value one byte over the byte limit is refused: $out" || return 1
+    assert_eq "Error: refusing to store X in the Keychain: its value is 2015 bytes, over the 2014 bytes a Keychain value can hold under this session and name. Store larger values with the encrypted backend (CS_SECRETS_BACKEND=encrypted)." \
+        "$out" "the limit is the one the line's bytes give" || return 1
+    assert_not_exists "$TEST_TMPDIR/argv" "security is never called for a value over the limit" || return 1
+
+    rc=0
+    out=$(PATH="$bindir:$PATH" LC_ALL="$utf8" USER="$account" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        FAKE_SECURITY_LINELOG="$TEST_TMPDIR/lines" "$CS_SECRETS_BIN" set X < "$TEST_TMPDIR/at" 2>&1) || rc=$?
+    assert_eq "0 Stored secret: X" "$rc $out" "a value at the limit is stored" || return 1
+    assert_eq "4094" "$(cat "$TEST_TMPDIR/lines")" "its line is 4094 bytes" || return 1
+    PATH="$bindir:$PATH" LC_ALL="$utf8" USER="$account" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        "$CS_SECRETS_BIN" get X > "$TEST_TMPDIR/got" 2>/dev/null \
+        || { echo "  FAIL: keychain get exited nonzero"; return 1; }
+    _get_matches "$TEST_TMPDIR/got" "$TEST_TMPDIR/at" \
+        || { echo "  FAIL: the value at the limit did not read back byte-exact"; return 1; }
+}
+
 # migrate-backend names each secret that did not reach the target, and shows
 # what the store said about it: for a value too long for the Keychain, the
 # limit and the backend that holds larger values.
@@ -4507,6 +4540,7 @@ run_test test_keychain_set_keeps_the_value_off_argv
 run_test test_keychain_set_round_trips_a_multiline_quoted_value
 run_test test_keychain_set_refuses_a_value_too_long_for_one_security_line
 run_test test_keychain_set_never_sends_a_line_whose_failure_security_would_hide
+run_test test_keychain_limit_counts_bytes_for_a_non_ascii_account
 run_test test_migrate_backend_shows_why_the_keychain_refused_a_value
 run_test test_a_rename_undo_shows_why_the_keychain_refused_a_value
 run_test test_encrypted_set_keeps_value_and_password_off_argv
