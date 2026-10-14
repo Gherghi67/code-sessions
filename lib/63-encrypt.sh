@@ -170,8 +170,8 @@ _detach_opened_vault() {
     local meta="$CS_OPENED_VAULT_META" mnt lock
     [ -n "$meta" ] || return 0
     _vault_live_holder_besides "$meta" "$$" && return 0
-    lock=$(read_lock_pid "$meta")
-    [ -n "$lock" ] && [ "$lock" != "$$" ] && kill -0 "$lock" 2>/dev/null && return 0
+    lock=$(live_lock_pid "$meta")
+    [ -n "$lock" ] && [ "$lock" != "$$" ] && return 0
     mnt=$(_vault_mountpoint_if_mounted "$meta") || return 0
     hdiutil detach "$mnt" >/dev/null 2>&1 && return 0
     _vault_mountpoint_if_mounted "$meta" >/dev/null || return 0
