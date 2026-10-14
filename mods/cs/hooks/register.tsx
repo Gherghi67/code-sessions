@@ -693,7 +693,9 @@ async function armedHandoff($: EngineInterface): Promise<string | undefined> {
   for (const [marker, store] of [[PRIVATE_MARKER, PRIVATE_HANDOFFS], [MARKER, HANDOFFS]]) {
     let name: string
     try {
-      name = (await $.fs.read(`${cwd}/${marker}`)).trim()
+      // The hook reads the marker with tr -d '[:space:]', which drops ASCII
+      // whitespace anywhere in it and keeps every other character.
+      name = (await $.fs.read(`${cwd}/${marker}`)).replace(/[\t\n\v\f\r ]/g, '')
     } catch {
       continue
     }
