@@ -671,6 +671,25 @@ test_readopt_keeps_a_recorded_cs_mode() {
         "the recorded mode is kept" || return 1
 }
 
+# Re-adopting records the user has already committed leaves git nothing to
+# show, so adopt prints no line about what it left.
+test_readopt_with_everything_committed_names_nothing_left() {
+    local project_dir="$TEST_TMPDIR/my-project" out
+    mkdir -p "$project_dir"
+    printf 'build/\n' > "$project_dir/.gitignore"
+    (cd "$project_dir" && git init -q && git config user.email tester@example.com && git config user.name Tester && git add .gitignore && git commit -q -m "initial")
+    (cd "$project_dir" && "$CS_BIN" -adopt my-session >/dev/null 2>&1) || { echo "  FAIL: adopt fixture"; return 1; }
+    (cd "$project_dir" && git add .cs .gitignore .gitattributes && git commit -q -m "cs records") \
+        || { echo "  FAIL: commit fixture"; return 1; }
+    rm "$CS_SESSIONS_ROOT/my-session"
+
+    out=$(cd "$project_dir" && "$CS_BIN" -adopt my-session --yes 2>&1)
+
+    assert_dir "$CS_SESSIONS_ROOT/my-session" "the records are re-adopted" || return 1
+    assert_eq "" "$(git -C "$project_dir" status --porcelain)" "git shows nothing left to commit" || return 1
+    assert_output_not_contains "$out" "cs committed nothing" "no line names what adopt left" || return 1
+}
+
 # Work the user had staged before adopting stays staged, alone, and is not
 # committed: adopt never touches the index.
 test_adopt_leaves_the_users_staged_work_alone() {
@@ -1420,6 +1439,7 @@ run_test test_adopt_inits_git_when_none_exists
 run_test test_adopt_into_git_repo_leaves_its_files_untracked
 run_test test_adopt_leaves_the_users_staged_work_alone
 run_test test_readopt_keeps_a_recorded_cs_mode
+run_test test_readopt_with_everything_committed_names_nothing_left
 run_test test_adopt_into_a_repo_that_ignores_cs_records_ignored
 run_test test_adopt_into_a_repo_that_ignores_markdown_records_tracked
 
