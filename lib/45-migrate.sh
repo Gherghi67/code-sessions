@@ -774,10 +774,12 @@ EOF
 # Phase 16's rewrite of CLAUDE.local.md $2. With "check" it exits 0 when the
 # file holds something to rewrite and 1 when not; with "print" it prints the
 # rewritten file. Only text cs wrote is replaced: a cue block equal, line for
-# line, to one of the two four-option blocks above, and in a line opening
+# line, to one of the two four-option blocks above; in a line opening
 # "When the session is complete, use the `/wrap` command" the exact sentence
-# offering /summary and /sweep alone. A block or line the user edited does
-# not match and is printed as it was.
+# offering /summary and /sweep alone; and a line equal to one of the two
+# protocol lines pointing at /summary (cs wrote them from 2025-11-24 to
+# 2026-06-11), which becomes the /wrap sentence. A block or line the user
+# edited does not match and is printed as it was.
 _wrap_only_rewrite() {  # check|print, file
     OLD_TRIGGERS="$(_emit_four_option_cue_with_triggers)" \
     OLD_SIGNALS="$(_emit_four_option_cue_with_signals)" \
@@ -794,6 +796,9 @@ _wrap_only_rewrite() {  # check|print, file
             ns = split(ENVIRON["OLD_SIGNALS"], sig, "\n")
             wrap_line = "When the session is complete, use the `/wrap` command"
             sentence = " Use `/summary` for the narrative alone, or `/sweep` for the memory pass alone."
+            wrap_sentence = wrap_line " to distill durable memory entries and generate an intelligent summary of the entire session (.cs/summary.md)."
+            summary_line["When the session is complete, use the `/summary` command to generate an intelligent summary of the entire session. This will create a .cs/summary.md file synthesizing all documentation."] = 1
+            summary_line["When the session is complete, use the `/summary` command to generate an intelligent summary of the entire session. This will create a summary.md file synthesizing all documentation."] = 1
         }
         { line[NR] = $0 }
         END {
@@ -812,6 +817,10 @@ _wrap_only_rewrite() {  # check|print, file
                     }
                 }
                 out = line[i]
+                if (out in summary_line) {
+                    out = wrap_sentence
+                    changed = 1
+                }
                 if (index(out, wrap_line) == 1 && (p = index(out, sentence)) > 0) {
                     out = substr(out, 1, p - 1) substr(out, p + length(sentence))
                     changed = 1
@@ -896,8 +905,9 @@ _ensure_claude_local_sections() {  # session_dir
 
     # Phase 16: /wrap is the one command that runs the memory and summary
     # passes, so a four-option cue block cs wrote (either wording) becomes the
-    # block _emit_wrap_cues_block writes, and the protocol's /wrap line loses
-    # the sentence offering /summary and /sweep on their own.
+    # block _emit_wrap_cues_block writes, the protocol's /wrap line loses
+    # the sentence offering /summary and /sweep on their own, and a protocol
+    # line pointing at /summary becomes the /wrap sentence.
     if [ -f "$claude_md_p9" ] && _wrap_only_rewrite check "$claude_md_p9"; then
         cs_write_atomic "$claude_md_p9" _wrap_only_rewrite print "$claude_md_p9" \
             || error "could not rewrite $claude_md_p9"
