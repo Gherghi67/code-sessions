@@ -50,11 +50,11 @@ Commands:
   -live               List sessions running right now on this machine
   -usage              Per-session token usage over the 5h/weekly rate-limit windows
   -tag add|rm <tag>   Tag the current session (frontmatter); -tag list [<name>] to view
-  -archive <name>... [--force]  Archive sessions (hidden until reopened; --force if live)
+  -archive <name>... [--force]  Archive sessions (hidden until reopened; --force if live, but not for another session's live one from inside a session)
   -unarchive <name>...  Restore archived sessions to the listings
   -encrypt <name>     Move a closed session's private files into an encrypted vault (macOS; asks for a password at every open)
   -status "<text>"    Set this session's advertised status (also: -status, -status --clear/-c)
-  -remove, -rm <name>... [--force [--delete-files]]  Remove sessions (each asks its own confirm and names files cs did not create; --force if live; --delete-files lets --force remove those files; a base session's age pins in ~/.cs-secrets go too)
+  -remove, -rm <name>... [--force [--delete-files]]  Remove sessions (each asks its own confirm and names files cs did not create; --force if live, but not for another session's live one from inside a session; --delete-files lets --force remove those files; a base session's age pins in ~/.cs-secrets go too)
   -secrets <cmd>      Manage current session secrets (requires CLAUDE_SESSION_NAME)
   -update             Update cs to latest version
     --check, -c       Check for updates without installing
