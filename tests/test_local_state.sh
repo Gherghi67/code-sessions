@@ -1253,6 +1253,12 @@ test_mkdir_inside_never_rebuilds_a_session_removed_under_it() {
     assert_eq "" "$out" "and the writer says nothing about it" || return 1
     [ -d "$root/live/.cs/local/x" ] || { echo "  FAIL: the levels below it are made"; return 1; }
     rc=0
+    rm -rf "$root/live/.cs/local"
+    out=$(_mkdir_inside_with_a_peer 'command mkdir "${CS_TEST_DIR%/*}"' "$root/live/.cs/local/x" 1) || rc=$?
+    assert_exists "$t/peer-ran" "the second writer ran before the quiet writer's mkdir" || return 1
+    assert_eq "0" "$rc" "a quiet writer counts a level another writer made first as made" || return 1
+    [ -d "$root/live/.cs/local/x" ] || { echo "  FAIL: the quiet writer makes the levels below it"; return 1; }
+    rc=0
     : > "$root/live/.cs/taken"
     out=$(CS_SESSIONS_ROOT="$root" "$BASH" -c 'source "$1"; cs_mkdir_inside "$2"' _ "$lib" "$root/live/.cs/taken" 2>&1) || rc=$?
     assert_eq "1" "$rc" "a file where the directory goes is refused" || return 1
