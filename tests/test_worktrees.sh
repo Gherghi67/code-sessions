@@ -2402,8 +2402,8 @@ test_retire_ignored_mode_refuses_a_topic_both_sides_edited() {
     assert_eq "untracked" "$(_feat_field "$line" 10)" "state: $line" || return 1
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
     assert_eq "1" "$status" "the retire refuses: $output" || return 1
-    assert_output_contains "$output" "The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:
-.cs/memory/kept.md" "the refusal names the topic" || return 1
+    assert_eq "Error: The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:
+.cs/memory/kept.md" "$output" "the refusal names the topic and nothing else" || return 1
     assert_eq "kept topic, feature edit" "$(cat "$wt/.cs/memory/kept.md")" "the feature's edit is still there" || return 1
     assert_eq "kept topic, base edit" "$(cat "$base_dir/.cs/memory/kept.md")" "the base's edit is untouched" || return 1
     assert_file_not_exists "$base_dir/.cs/memory/new.md" "nothing was fused" || return 1
@@ -2780,8 +2780,8 @@ test_retire_ignored_mode_refuses_a_log_directory_that_is_a_link() {
         status=0
         output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
         assert_eq "1" "$status" "the retire refuses a .cs/$dir link: $output" || return 1
-        assert_output_contains "$output" "Error: The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:
-.cs/$dir" "the refusal says why for .cs/$dir" || return 1
+        assert_eq "Error: The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:
+.cs/$dir" "$output" "the refusal says why for .cs/$dir" || return 1
         assert_eq ".cs/$dir" "$(printf '%s\n' "$output" | awk 'listed; /again:$/ { listed = 1 }')" \
             "the refusal names only the linked .cs/$dir" || return 1
         assert_eq "1" "$(_feat_field "$line" 7)" "the features screen counts the .cs/$dir link: $line" || return 1
@@ -2870,12 +2870,12 @@ test_retire_ignored_mode_refuses_records_it_cannot_carry() {
     assert_eq "5" "$(_feat_field "$line" 7)" "five files at risk: $line" || return 1
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
     assert_eq "1" "$status" "the retire refuses: $output" || return 1
-    assert_output_contains "$output" "Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:
+    assert_eq "Error: The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:
 .cs/README.md
 .cs/brief.md
 .cs/plans/base-plan.md
 .cs/plans/link.md
-.cs/scratch-repo/" "the refusal names all five" || return 1
+.cs/scratch-repo/" "$output" "the refusal names all five and nothing else" || return 1
     assert_eq "kept" "$(git -C "$wt/.cs/scratch-repo" show HEAD:kept.txt 2>/dev/null)" "the nested repository keeps its history" || return 1
     assert_eq "base plan, base edit" "$(cat "$base_dir/.cs/plans/base-plan.md")" "the base's plan is untouched" || return 1
     assert_file_not_exists "$base_dir/.cs/plans/new.md" "nothing was fused" || return 1
@@ -2896,8 +2896,8 @@ test_retire_ignored_mode_refuses_a_cs_that_is_itself_a_repository() {
     sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
     assert_eq "1" "$status" "the retire refuses: $output" || return 1
-    assert_output_contains "$output" "then run /finish t1 again:
-.cs/" "the refusal names .cs itself" || return 1
+    assert_eq "Error: The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:
+.cs/" "$output" "the refusal names .cs itself and nothing else" || return 1
     assert_eq "notes history" "$(git -C "$wt/.cs" log -1 --format=%s 2>/dev/null)" ".cs keeps its history" || return 1
     assert_not_exists "$base_dir/.cs/.git" "the base's .cs gets no .git" || return 1
 }
