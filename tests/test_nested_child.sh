@@ -639,6 +639,102 @@ test_a_launch_that_takes_no_claim_has_only_the_launch_pid_for_its_lead() {
     assert_eq "none" "$lead_claim" "nothing under the launch writes a claim" || return 1
 }
 
+# Under a launch that takes no claim, no claim can show a guest, so every
+# claude under it whose pid is not the launch pid is shown one. On the exec
+# arm the launch pid is the lead's own: a `claude -p` the lead's Bash tool
+# runs (the launch's grandchild) is not handed the armed rotation or the queue
+# digest, and its Stop leaves the attention flag down. The lead's /clear and
+# Stop are the positive control, and so is the Stop of a front end that walked
+# in: it carries no launch pid, so it is no claude under the launch.
+test_a_claude_p_under_a_launch_that_takes_no_claim_is_a_guest() {
+    _nested_setup
+    unset CS_LEAD_CLAIM
+    local meta="$CLAUDE_SESSION_META_DIR" handoff out launch direct wrapper grand
+    handoff=$(_arm_rotation)
+    printf '{"ts":1,"event":"task_done","task":"t"}\n{"ts":2,"event":"drain_finished"}\n' \
+        > "$meta/local/notifications.jsonl"
+    _launch_tree || return 1
+    read -r launch direct wrapper grand < "$TEST_TMPDIR/tree"
+
+    out=$(_start_hook "$launch" "$grand" startup 22222222-2222-4222-8222-222222222222)
+    local child_rotations child_digests child_marker child_handoff child_seen child_flag
+    child_rotations=$(grep -c 'Conversation Rotation' <<< "$out")
+    child_digests=$(grep -c 'cs queue while you were away' <<< "$out")
+    child_marker=$(cat "$meta/local/pending-handoff" 2>/dev/null || echo none)
+    child_handoff=$(sed -n 2p "$handoff")
+    child_seen=$(cat "$meta/local/notifications.seen" 2>/dev/null || echo none)
+    _stop_hook "$launch" "$grand" > /dev/null
+    child_flag=absent
+    [ -e "$meta/local/attention" ] && child_flag=raised
+    rm -f "$meta/local/attention"
+
+    _stop_hook "" "$$" > /dev/null
+    local walkin_flag=absent
+    [ -e "$meta/local/attention" ] && walkin_flag=raised
+    rm -f "$meta/local/attention"
+
+    out=$(_start_hook "$launch" "$launch" clear 33333333-3333-4333-8333-333333333333)
+    local lead_rotations lead_digests
+    lead_rotations=$(grep -c 'Conversation Rotation' <<< "$out")
+    lead_digests=$(grep -c 'cs queue while you were away' <<< "$out")
+    _stop_hook "$launch" "$launch" > /dev/null
+    local lead_flag=absent
+    [ -e "$meta/local/attention" ] && lead_flag=raised
+    _kill_launch_tree
+
+    assert_eq "0" "$child_rotations" "the claude -p is not told to continue the rotation" || return 1
+    assert_eq "2026-01-01-topic.md" "$child_marker" "the marker stays armed after the claude -p starts" || return 1
+    assert_eq "status: unconsumed" "$child_handoff" "the handoff stays unconsumed after the claude -p starts" || return 1
+    assert_eq "0" "$child_digests" "the claude -p is not shown the queue digest" || return 1
+    assert_eq "none" "$child_seen" "the claude -p does not move the digest cursor" || return 1
+    assert_eq "absent" "$child_flag" "the claude -p's Stop leaves the attention flag down" || return 1
+    assert_eq "raised" "$walkin_flag" "a front end's Stop raises the attention flag" || return 1
+    assert_eq "1" "$lead_rotations" "the lead's /clear loads the rotation" || return 1
+    assert_eq "consumed_by: 33333333-3333-4333-8333-333333333333" "$(sed -n 3p "$handoff")" \
+        "the lead's conversation is recorded as the consumer" || return 1
+    assert_eq "1" "$lead_digests" "the lead is shown the queue digest" || return 1
+    assert_eq "raised" "$lead_flag" "the lead's Stop raises the attention flag" || return 1
+}
+
+# The resume arm runs claude as cs's child, so under a launch that takes no
+# claim the lead does not carry the launch pid, and the hooks get from it the
+# same inputs as from the claude -p in the test above: it is shown a guest. Its
+# /clear loads no rotation and consumes nothing: the marker stays armed, the
+# handoff unconsumed, the digest unread. The next open is a launch that takes
+# the claim; there the same claude claims at its start and loads the rotation,
+# so the rotation was deferred, not lost.
+test_the_lead_cs_runs_as_its_child_under_a_launch_that_takes_no_claim_defers_the_rotation() {
+    _nested_setup
+    unset CS_LEAD_CLAIM
+    local meta="$CLAUDE_SESSION_META_DIR" handoff out launch direct wrapper grand
+    handoff=$(_arm_rotation)
+    printf '{"ts":1,"event":"task_done","task":"t"}\n' > "$meta/local/notifications.jsonl"
+    _launch_tree || return 1
+    read -r launch direct wrapper grand < "$TEST_TMPDIR/tree"
+
+    out=$(_start_hook "$launch" "$direct" clear 66666666-6666-4666-8666-666666666666)
+    local deferred_rotations deferred_digests deferred_marker deferred_handoff deferred_seen
+    deferred_rotations=$(grep -c 'Conversation Rotation' <<< "$out")
+    deferred_digests=$(grep -c 'cs queue while you were away' <<< "$out")
+    deferred_marker=$(cat "$meta/local/pending-handoff" 2>/dev/null || echo none)
+    deferred_handoff=$(sed -n 2p "$handoff")
+    deferred_seen=$(cat "$meta/local/notifications.seen" 2>/dev/null || echo none)
+
+    out=$(CS_LEAD_CLAIM=1 _start_hook "$launch" "$direct" startup 77777777-7777-4777-8777-777777777777)
+    local reopened_rotations
+    reopened_rotations=$(grep -c 'Conversation Rotation' <<< "$out")
+    _kill_launch_tree
+
+    assert_eq "0" "$deferred_rotations" "the lead is not told to continue the rotation" || return 1
+    assert_eq "2026-01-01-topic.md" "$deferred_marker" "the marker stays armed after the lead's /clear" || return 1
+    assert_eq "status: unconsumed" "$deferred_handoff" "the handoff stays unconsumed after the lead's /clear" || return 1
+    assert_eq "0" "$deferred_digests" "the lead is not shown the queue digest" || return 1
+    assert_eq "none" "$deferred_seen" "the lead's /clear does not move the digest cursor" || return 1
+    assert_eq "1" "$reopened_rotations" "the next open loads the rotation" || return 1
+    assert_eq "consumed_by: 77777777-7777-4777-8777-777777777777" "$(sed -n 3p "$handoff")" \
+        "the next open's conversation is recorded as the consumer" || return 1
+}
+
 # cs passes a launch prompt to claude as an argument, so the lead's own
 # command line can hold the three teammate flags as words of a prompt. A
 # claude shown to be the lead is the lead whatever its arguments say.
@@ -701,6 +797,8 @@ run_test test_a_claim_for_another_launch_or_none_names_no_lead
 run_test test_the_lead_end_leaves_a_claim_naming_another_claude
 run_test test_a_claim_whose_claude_died_shows_no_one_a_guest
 run_test test_a_launch_that_takes_no_claim_has_only_the_launch_pid_for_its_lead
+run_test test_a_claude_p_under_a_launch_that_takes_no_claim_is_a_guest
+run_test test_the_lead_cs_runs_as_its_child_under_a_launch_that_takes_no_claim_defers_the_rotation
 run_test test_the_lead_keeps_its_rotation_when_its_prompt_names_the_teammate_flags
 run_test test_a_claude_whose_ancestry_cannot_be_read_is_not_taken_for_a_guest
 
