@@ -7842,10 +7842,11 @@ _cs_tmux_managed() {
 
 # Pre-window checks that must pass BEFORE the seed is written, so a refused
 # spawn never leaves a pending seed behind.
-# The window to open is named <window>, the session name unless given.
-_spawn_precheck() {  # name, [window]
-    local name="$1" window="${2:-$1}"
-    command -v "${CS_TMUX_BIN:-tmux}" >/dev/null 2>&1 || error "cs -spawn needs tmux"
+# The window to open is named <window>, the session name unless given, and
+# <asker> names the cs command that wants it (cs -spawn unless given).
+_spawn_precheck() {  # name, [window], [asker]
+    local name="$1" window="${2:-$1}" asker="${3:-cs -spawn}"
+    command -v "${CS_TMUX_BIN:-tmux}" >/dev/null 2>&1 || error "$asker needs tmux"
     if session_is_live "$SESSIONS_ROOT/$name/.cs"; then
         error "Session $name is already live"
     fi
@@ -13224,7 +13225,7 @@ _remote_open_window() {  # session_name, permission_mode
     if session_is_live "$meta"; then
         _remote_refuse_live "$name" "$meta" "$(read_lock_pid "$meta")" remote
     fi
-    _spawn_precheck "$name" "remote:$name"
+    _spawn_precheck "$name" "remote:$name" "cs --remote"
     _cs_tmux_window "remote:$name" \
         "sh -c $(_sq '"$@" || { s=$?; printf "\nclaude remote-control exited with status %s. Press Enter to close this window.\n" "$s"; read -r _; exit "$s"; }') cs-remote env CS_REMOTE_WINDOW=1 $(_sq "CS_SESSIONS_ROOT=$SESSIONS_ROOT") $(_sq "CLAUDE_CODE_BIN=$_CS_REMOTE_BIN") $(_sq "$(_cs_self)") $(_sq "$name") --remote --permission-mode $(_sq "$mode")"
     info "remote:$name runs in tmux session cs (window $_CS_TMUX_WID). Attach: $(_spawn_attach_hint)"

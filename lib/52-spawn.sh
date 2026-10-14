@@ -98,10 +98,11 @@ _cs_tmux_managed() {
 
 # Pre-window checks that must pass BEFORE the seed is written, so a refused
 # spawn never leaves a pending seed behind.
-# The window to open is named <window>, the session name unless given.
-_spawn_precheck() {  # name, [window]
-    local name="$1" window="${2:-$1}"
-    command -v "${CS_TMUX_BIN:-tmux}" >/dev/null 2>&1 || error "cs -spawn needs tmux"
+# The window to open is named <window>, the session name unless given, and
+# <asker> names the cs command that wants it (cs -spawn unless given).
+_spawn_precheck() {  # name, [window], [asker]
+    local name="$1" window="${2:-$1}" asker="${3:-cs -spawn}"
+    command -v "${CS_TMUX_BIN:-tmux}" >/dev/null 2>&1 || error "$asker needs tmux"
     if session_is_live "$SESSIONS_ROOT/$name/.cs"; then
         error "Session $name is already live"
     fi
