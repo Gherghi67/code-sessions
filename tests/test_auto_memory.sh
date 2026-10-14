@@ -699,8 +699,9 @@ test_pre_open_tracked_by_git_is_refused() {
 
 # A clone can commit the three files that make a directory a bare git
 # directory (HEAD, objects/, refs/) into .cs/local or .cs beside a pre-open.
-# git then answers from that directory as from inside a repository's git
-# directory and lists nothing, though the clone's own index lists the pre-open.
+# git asked there would answer from that directory as from inside a
+# repository's git directory and run the commands its config names, so cs
+# refuses on the HEAD before it asks git anything.
 test_pre_open_tracked_beside_planted_git_directory_files_is_refused() {
     local root="$CS_SESSIONS_ROOT/vt" at out rc
     "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
@@ -716,8 +717,8 @@ test_pre_open_tracked_beside_planted_git_directory_files_is_refused() {
         rc=0
         out=$("$CS_BIN" vt <<< "" 2>&1) || rc=$?
         assert_eq "1" "$rc" "cs should exit 1 with the files in $at" || return 1
-        assert_eq "Error: cs could not ask git whether it tracks a file in .cs/local: fatal: this operation must be run in a work tree" \
-            "$out" "cs should refuse, naming git's error, with the files in $at" || return 1
+        assert_eq "Error: $at holds HEAD, so git takes it for a repository and would run commands its config names (cs state must be a plain directory inside the session). Delete $at/HEAD, or cs -rm the session." \
+            "$out" "cs should refuse before asking git, naming the HEAD, with the files in $at" || return 1
         assert_file_not_exists "$TEST_TMPDIR/pre-open-ran" "the committed pre-open must not run with the files in $at" || return 1
         assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch with the files in $at" || return 1
         git -C "$root" rm -q -r --cached "$at/HEAD" "$at/objects" "$at/refs"
@@ -902,7 +903,7 @@ test_a_failed_answer_in_the_newline_fallback_names_that_calls_error() {
     git -C "$s" init -q
     printf 'armed\n' > "$s/.cs/local/queue.state"
     git -C "$s" add .cs/local/queue.state
-    printf '#!/bin/bash\nif [ "$#" = 4 ] && [ "$3" = rev-parse ] && [ "$4" = --show-prefix ]; then\n    printf "asked\\n" >> %q\n    printf "fatal: the stand-in refuses --show-prefix\\n" >&2\n    exit 128\nfi\nexec %q "$@"\n' \
+    printf '#!/bin/bash\nif [ "$#" = 6 ] && [ "$5" = rev-parse ] && [ "$6" = --show-prefix ]; then\n    printf "asked\\n" >> %q\n    printf "fatal: the stand-in refuses --show-prefix\\n" >&2\n    exit 128\nfi\nexec %q "$@"\n' \
         "$TEST_TMPDIR/stand-in-asked" "$real_git" > "$bin/git"
     chmod +x "$bin/git"
     out=$(PATH="$bin:$PATH" bash -c 'source "$1"; cs_tracked_files_notice "$2" "$3"' _ "$SCRIPT_DIR/../hooks/cs-shared.sh" "$s/.cs/local" "$s") || rc=$?
