@@ -702,6 +702,24 @@ test_auto_approve_prompts_inside_any_directory_that_holds_head() {
         "a narrative under a .cs/ that holds HEAD" || return 1
 }
 
+# A write can make a git directory, too: a clone delivers objects/, refs/ and
+# a config under .cs/memory with no HEAD (nothing there is a git directory
+# yet), and a file named HEAD completes the layout. A commondir names the
+# store a HEAD beside it uses. A write of either name prompts, in any case
+# (the volume may fold it), and a note beside them is still approved.
+test_auto_approve_prompts_for_a_file_that_makes_its_directory_a_git_directory() {
+    local meta="$CLAUDE_SESSION_META_DIR" name
+    mkdir -p "$meta/memory/objects" "$meta/memory/refs"
+    : > "$meta/memory/objects/.keep"
+    : > "$meta/memory/refs/.keep"
+    printf '[core]\n\tbare = false\n\tworktree = ..\n' > "$meta/memory/config"
+    for name in HEAD head Head commondir COMMONDIR; do
+        _assert_falls_through Write "$meta/memory/$name" "a write of $name beside objects/ and refs/" || return 1
+        _assert_falls_through Edit "$meta/memory/$name" "an Edit of $name beside objects/ and refs/" || return 1
+    done
+    _assert_allowed Write "$meta/memory/notes.md" "a note beside objects/ and refs/" || return 1
+}
+
 # That rule lives in the shared library (cs-shared.sh). A partial deployment
 # without it cannot tell a git directory from content, so every write
 # prompts, and stderr says what is missing.
@@ -3367,6 +3385,7 @@ run_test test_auto_approve_prompts_for_a_folded_control_name
 run_test test_auto_approve_prompts_inside_a_git_directory_below_cs
 run_test test_auto_approve_prompts_inside_a_git_directory_reached_by_another_name
 run_test test_auto_approve_prompts_inside_any_directory_that_holds_head
+run_test test_auto_approve_prompts_for_a_file_that_makes_its_directory_a_git_directory
 run_test test_auto_approve_declines_without_the_shared_library
 run_test test_auto_approve_allows_ascii_content_under_a_non_ascii_session_path
 run_test test_auto_approve_allows_content_in_a_session_below_a_git_named_directory
