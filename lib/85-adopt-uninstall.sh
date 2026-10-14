@@ -140,6 +140,47 @@ _explain_gitignore_additions() {  # dir
     info "cs added $_CS_GITIGNORE_ADDED to the tracked .gitignore so cs's machine-local files are never staged; commit it with your next change"
 }
 
+# One line saying cs committed nothing, naming each of <path>... that git
+# shows as changed or untracked in <dir>, in the order given, a directory with
+# a trailing slash: what adopt and the flat-layout migration leave for the user
+# to commit. No line when git shows none of them or cannot say.
+_explain_nothing_committed() {  # dir, path...
+    local dir="$1" entry path shown=$'\n' p left="" count=0
+    shift
+    # -z: a name git would quote on a plain line keeps its leading component
+    # readable. A staged rename's second field reads as a name matching none
+    # of <path>, so it is skipped like any other.
+    while IFS= read -r -d '' entry; do
+        path="${entry:3}"
+        case "$path" in
+            */*) shown="$shown${path%%/*}/"$'\n' ;;
+            *) shown="$shown$path"$'\n' ;;
+        esac
+    done < <(_cs_git_at "$dir" --no-optional-locks status --porcelain -z --untracked-files=normal -- "$@" 2>/dev/null)
+    for p in "$@"; do
+        case "$shown" in
+            *$'\n'"$p/"$'\n'*) p="$p/" ;;
+            *$'\n'"$p"$'\n'*) ;;
+            *) continue ;;
+        esac
+        count=$((count + 1))
+        left="$left${left:+$'\n'}$p"
+    done
+    [ "$count" -gt 0 ] || return 0
+    local joined="" i=0
+    while IFS= read -r p; do
+        i=$((i + 1))
+        if [ "$i" -eq 1 ]; then
+            joined="$p"
+        elif [ "$i" -eq "$count" ]; then
+            joined="$joined and $p"
+        else
+            joined="$joined, $p"
+        fi
+    done <<< "$left"
+    info "cs committed nothing; it left $joined for you to commit"
+}
+
 # Adopt an existing project directory as a cs session. --yes (-y) answers the
 # one question adopt asks, whether to re-adopt orphaned records, so it runs
 # without a terminal.

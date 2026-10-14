@@ -7,8 +7,8 @@ source "$SCRIPT_DIR/test_lib.sh"
 
 # A flat-layout session cs created long ago (its logs/session.log opens with
 # cs's header), in a git repo whose .gitignore hides a key file. The structural
-# migration commits with add -A, so the user's rule must still be there when
-# it does.
+# migration merges cs's rules into that file, so the user's rule must still be
+# there for their next `git add`.
 test_flat_layout_migration_keeps_the_sessions_gitignore() {
     local dir="$CS_SESSIONS_ROOT/flat-session"
     mkdir -p "$dir/logs"

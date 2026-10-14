@@ -983,8 +983,8 @@ migrate_session() {
         migrate_if_exists "$session_dir/secrets.enc" "$session_dir/.cs/secrets.enc"
         migrate_if_exists "$session_dir/secrets.age" "$session_dir/.cs/secrets.age"
 
-        # Merged, not written: the session's own rules must keep hiding
-        # their files from the add -A below.
+        # Merged, not written: the session's own rules keep hiding their
+        # files from the user's next `git add`.
         ensure_cs_gitignore_entries "$session_dir"
 
         echo ""
@@ -992,15 +992,10 @@ migrate_session() {
         echo -e "${DIM}Session metadata moved to .cs/ - your workspace root is now clean for project files.${NC}"
         echo ""
 
-        # Commit the migration if git is initialized
+        # The moves stay in the working tree for the user to commit.
         if [ -d "$session_dir/.git" ]; then
-            (
-                cd "$session_dir" || exit 0
-                git add -A 2>/dev/null || true
-                if ! git diff --cached --quiet 2>/dev/null; then
-                    git commit -q -m "Migrate session structure to .cs/ metadata directory" 2>/dev/null || true
-                fi
-            )
+            _explain_nothing_committed "$session_dir" .cs logs archives age-recipients \
+                README.md discoveries.md summary.md secrets.enc secrets.age .gitignore .gitattributes
         fi
     fi
 
