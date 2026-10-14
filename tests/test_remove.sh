@@ -56,6 +56,19 @@ test_remove_empty_name_rejected_before_any_deletion() {
     ! "$CS_BIN" -rm "" >/dev/null 2>&1 || return 1
 }
 
+# The live refusal names the pid live_lock_pid reads: whitespace and leading
+# zeros around a running pid are not part of it.
+test_remove_live_refusal_names_the_pid_the_lock_rule_reads() {
+    create_test_session live1 >/dev/null
+    printf '  00%s\n\n' "$$" > "$CS_SESSIONS_ROOT/live1/.cs/session.lock"
+    local out rc=0
+    out=$(printf 'y\n' | CS_ASSUME_TTY=1 "$CS_BIN" -rm live1 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the removal exits 1" || return 1
+    assert_eq "Error: Session 'live1' is live (pid $$); use --force to remove anyway" "$out" \
+        "the refusal names the pid alone" || return 1
+    assert_dir "$CS_SESSIONS_ROOT/live1" "the session stays" || return 1
+}
+
 test_remove_refuses_live_session_without_force() {
     create_test_session live1 >/dev/null
     sleep 300 &
@@ -799,6 +812,7 @@ run_test test_remove_age_state_refuses_a_linked_secrets_parent
 run_test test_remove_age_state_unsearchable_parent_is_a_failure
 run_test test_remove_age_state_unsearchable_linked_parent_is_a_failure
 run_test test_remove_refuses_live_session_without_force
+run_test test_remove_live_refusal_names_the_pid_the_lock_rule_reads
 run_test test_remove_allows_heartbeat_only_session_without_force
 run_test test_remove_discards_pending_spawn_seeds
 run_test test_remove_discards_spawn_staging_under_a_root_with_a_space

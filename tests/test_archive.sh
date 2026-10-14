@@ -113,6 +113,19 @@ test_archive_no_name_errors_with_usage() {
     assert_output_contains "$output" "Usage" "bare form shows usage" || return 1
 }
 
+# The live refusal names the pid live_lock_pid reads: whitespace and leading
+# zeros around a running pid are not part of it.
+test_archive_live_refusal_names_the_pid_the_lock_rule_reads() {
+    _archive_session "livesess"
+    printf '  00%s\n\n' "$$" > "$CS_SESSIONS_ROOT/livesess/.cs/session.lock"
+    local out rc=0
+    out=$("$CS_BIN" -archive livesess 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the archive exits 1" || return 1
+    assert_eq "Error: Session 'livesess' is live (pid $$); use --force to archive anyway" "$out" \
+        "the refusal names the pid alone" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/livesess/.cs/archived" "no marker written" || return 1
+}
+
 test_archive_refuses_live_session_without_force() {
     _archive_session "livesess"
     sleep 300 &
@@ -212,6 +225,7 @@ run_test test_archive_is_idempotent
 run_test test_archive_unknown_session_errors
 run_test test_archive_no_name_errors_with_usage
 run_test test_archive_refuses_live_session_without_force
+run_test test_archive_live_refusal_names_the_pid_the_lock_rule_reads
 run_test test_list_hides_archived_and_prints_trailer
 run_test test_list_archived_shows_only_archived
 run_test test_list_archived_composes_with_tag
