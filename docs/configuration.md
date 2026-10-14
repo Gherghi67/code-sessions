@@ -251,7 +251,10 @@ export CS_TMUX_BIN="/opt/homebrew/bin/tmux"
 # Not a setting. cs <name> --remote run inside tmux opens a window
 # remote:<name> in the cs tmux session that runs cs <name> --remote again
 # with this set, so that run serves in its window instead of opening
-# another. cs drops it before the server starts.
+# another. cs drops it before the server starts. The window's command also
+# sets CS_SESSIONS_ROOT and CLAUDE_CODE_BIN to the caller's sessions root and
+# the absolute claude the caller checked, since tmux starts a window with the
+# tmux server's environment.
 # export CS_REMOTE_WINDOW
 
 # Force the detected platform instead of probing for it; any other
