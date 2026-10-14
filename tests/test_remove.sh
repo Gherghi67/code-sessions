@@ -188,16 +188,19 @@ test_remove_force_skips_the_prompt() {
     [ ! -d "$CS_SESSIONS_ROOT/n2" ] || { echo "  FAIL: --force did not remove the session"; return 1; }
 }
 
+# The refusal names every file cs did not create on its one line: a
+# backslash in a name prints as itself, a control character as "?".
 test_remove_force_refuses_when_session_holds_files_cs_did_not_create() {
     local dir
     dir=$(create_test_session f1)
     mkdir "$dir/journal.sparsebundle"
     echo keep > "$dir/start"
+    touch "$dir/a\\b" "$dir/esc"$'\033'".txt" "$dir/nl"$'\n'"break.txt"
     local out rc=0
     out=$("$CS_BIN" -rm f1 --force </dev/null 2>&1) || rc=$?
     [ "$rc" -ne 0 ] || { echo "  FAIL: --force removed a session holding foreign files"; return 1; }
-    assert_output_contains "$out" "journal.sparsebundle, start" "refusal names the foreign entries" || return 1
-    assert_output_contains "$out" "--delete-files" "refusal names the override" || return 1
+    assert_eq "Error: Session 'f1' holds files cs did not create: a\\b, esc?.txt, journal.sparsebundle, nl?break.txt, start. Add --delete-files to remove them with --force" \
+        "$out" "refusal names each foreign entry on one line" || return 1
     assert_dir "$dir/journal.sparsebundle" "foreign entry must survive the refusal" || return 1
 }
 
