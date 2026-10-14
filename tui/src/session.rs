@@ -2390,6 +2390,24 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    // The lock rule cs and cs-secrets read by: the text, surrounding whitespace
+    // removed, is decimal digits naming a running process; a sign is not part
+    // of a pid, so "+<pid>" names none even when <pid> is running.
+    #[test]
+    fn read_lock_pid_reads_the_lock_by_the_one_lock_rule() {
+        let dir = std::env::temp_dir().join(format!("cs-test-lockrule-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let own_pid = std::process::id();
+
+        fs::write(dir.join("session.lock"), format!("+{own_pid}")).unwrap();
+        assert_eq!(read_lock_pid(&dir), None, "a signed pid is not a pid");
+
+        fs::write(dir.join("session.lock"), format!(" \t00{own_pid}\n\n")).unwrap();
+        assert_eq!(read_lock_pid(&dir), Some(own_pid), "whitespace and leading zeros are read past");
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn scan_sessions_discovers_directories() {
         let root = std::env::temp_dir().join(format!("cs-test-scan-{}", std::process::id()));
