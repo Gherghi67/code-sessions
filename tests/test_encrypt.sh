@@ -813,6 +813,24 @@ test_session_end_waiter_spares_a_reopened_session() {
     assert_eq "" "$(cat "$FAKE_HDIUTIL_LOG")" "the new conversation keeps its mount" || return 1
 }
 
+# The waiter reads the lock by live_lock_pid's rule: a lock of "-1", "0" or
+# "+<pid>" written after SessionEnd names no reopened conversation, so the
+# waiter detaches the vault once the lead claude exits.
+test_session_end_waiter_reads_the_lock_by_the_one_lock_rule() {
+    _encrypted_session enc || return 1
+    local text claude
+    for text in "-1" "0" "+$$"; do
+        : > "$FAKE_HDIUTIL_LOG"
+        sleep 300 &
+        claude=$!
+        _end_conversation enc prompt_input_exit "$claude" "$claude"
+        printf '%s\n' "$text" > "$CS_SESSIONS_ROOT/enc/.cs/session.lock"
+        kill "$claude" 2>/dev/null; wait "$claude" 2>/dev/null
+        _waiter_gone enc || { echo "  FAIL: waiter still running over a lock of '$text'"; return 1; }
+        assert_eq "detach $FAKE_MNT" "$(cat "$FAKE_HDIUTIL_LOG")" "a lock of '$text' does not keep the vault mounted" || return 1
+    done
+}
+
 test_session_end_waiter_spares_a_vault_a_holder_keeps() {
     _encrypted_session enc || return 1
     sleep 300 &
@@ -880,6 +898,7 @@ run_test test_session_end_leaves_the_vault_for_clear_resume_and_non_leads
 run_test test_session_end_ignores_a_session_cs_did_not_encrypt
 run_test test_session_end_waiter_records_nothing_while_git_tracks_the_control_files
 run_test test_session_end_waiter_spares_a_reopened_session
+run_test test_session_end_waiter_reads_the_lock_by_the_one_lock_rule
 run_test test_session_end_waiter_spares_a_vault_a_holder_keeps
 run_test test_session_end_waiter_leaves_a_busy_vault_mounted
 report_results
