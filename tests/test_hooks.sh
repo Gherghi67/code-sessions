@@ -2439,6 +2439,32 @@ test_resume_digest_passes_over_a_narrative_whose_name_is_not_plain() {
     assert_output_not_contains "$context" "pwned" "the digest never names the narrative whose name is not plain" || return 1
 }
 
+# A clone can commit a link named like a narrative. Claude would read its
+# target, a file outside the session the clone chose, so the digest names only
+# a narrative that is a regular file.
+test_resume_digest_passes_over_a_narrative_that_is_a_link() {
+    session_start_setup
+    mkdir -p "$CLAUDE_SESSION_META_DIR/local"
+    local bob="$CLAUDE_SESSION_DIR/.cs/memory/narrative.bob.md"
+    local eve="$CLAUDE_SESSION_DIR/.cs/memory/narrative.eve.md"
+    printf -- '# Session narrative (bob)\n\n## 2026-01-01 first\nold finding\n' > "$bob"
+    printf -- '## 2026-01-01 first\n' > "$TEST_TMPDIR/outside1.txt"
+    printf -- '## 2026-01-01 first\n\n## 2026-01-02 second\n' > "$TEST_TMPDIR/outside2.txt"
+    ln -s "$TEST_TMPDIR/outside1.txt" "$eve"
+    ( cd "$CLAUDE_SESSION_DIR" && git add -A && git commit -q -m "narratives" --author="Bob <bob@example.com>" )
+    git -C "$CLAUDE_SESSION_DIR" rev-parse HEAD > "$CLAUDE_SESSION_META_DIR/local/watermark"
+    printf -- '\n## 2026-01-02 second\nnew finding\n' >> "$bob"
+    ln -sfn "$TEST_TMPDIR/outside2.txt" "$eve"
+    ( cd "$CLAUDE_SESSION_DIR" && git add -A && git commit -q -m "append" --author="Bob <bob@example.com>" )
+
+    local context
+    context=$(echo '{"session_id":"s","source":"resume","cwd":"'"$CLAUDE_SESSION_DIR"'","hook_event_name":"SessionStart"}' \
+        | bash "$HOOKS_DIR/session-start.sh" 2>/dev/null | jq -r '.hookSpecificOutput.additionalContext') || return 1
+    assert_output_contains "$context" "teammate narratives grew: \.cs/memory/narrative\.bob\.md: 1 new section(s) from line 5\. Read your own" \
+        "the digest names only the teammate narrative that is a file" || return 1
+    assert_output_not_contains "$context" "narrative\.eve" "the digest never names a narrative that is a link" || return 1
+}
+
 # The same holds for the files the recent commits touched: the hook names
 # each one Claude might open, so only a plain name is listed.
 test_session_start_lists_only_recent_files_with_plain_names() {
@@ -3654,6 +3680,7 @@ run_test test_resume_digest_names_an_author_as_a_plain_name
 run_test test_resume_digest_silent_without_watermark
 run_test test_resume_digest_names_where_a_teammates_narrative_grew
 run_test test_resume_digest_passes_over_a_narrative_whose_name_is_not_plain
+run_test test_resume_digest_passes_over_a_narrative_that_is_a_link
 run_test test_session_start_lists_only_recent_files_with_plain_names
 run_test test_session_start_checks_at_most_five_recent_files
 run_test test_resume_digest_delta_survives_a_rotated_teammate_narrative
