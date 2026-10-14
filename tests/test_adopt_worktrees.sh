@@ -452,6 +452,30 @@ test_a_committed_git_repository_layout_above_an_entry_is_skipped_by_name() {
     assert_not_exists "$repo/.claude/worktrees/plain/.cs" "the entry gets no .cs/" || return 1
 }
 
+# A clone chooses the names under .claude/worktrees, and a name can carry a
+# terminal escape: raw (ESC [2J clears the screen) or as backslash text that
+# echo -e would turn into one (\033]0;...\007 retitles the window). Every
+# line that names an entry prints it with each character a plain path does
+# not have replaced by _, so no escape reaches the terminal.
+test_a_worktree_name_is_printed_as_a_plain_path() {
+    local repo="$TEST_TMPDIR/repo" raw text output rc=0 real
+    _make_repo "$repo"
+    text='a\033]0;TITLE\007b'
+    raw=$(printf 'c\033[2Jd')
+    mkdir -p "$repo/.claude/worktrees/$text" "$repo/.claude/worktrees/$raw"
+    : > "$repo/.claude/worktrees/$text/f"
+    : > "$repo/.claude/worktrees/$raw/f"
+    git -C "$repo" add -f .claude/worktrees
+    git -C "$repo" commit -q -m "ship two folders"
+    real=$(cd -P "$repo" && pwd -P)
+    output=$(cd "$repo" && "$CS_BIN" -adopt --worktrees 2>&1) || rc=$?
+    assert_eq "0" "$rc" "adopt --worktrees goes on past both: $output" || return 1
+    assert_eq "0" "$(printf '%s' "$output" | LC_ALL=C tr -dc '\033\007' | wc -c | tr -d ' ')" \
+        "no ESC or BEL byte reaches the terminal" || return 1
+    assert_eq "$(printf 'skip a_033_0_TITLE_007b: not a worktree of %s\nskip c__2Jd: not a worktree of %s\n0 adopted; open one with: cs repo.<worktree>' "$real" "$real")" \
+        "$output" "each name is printed as a plain path" || return 1
+}
+
 test_open_leaves_a_tracked_claude_md_with_cs_markers_alone() {
     local repo="$TEST_TMPDIR/repo"
     _make_repo "$repo" marked
@@ -707,6 +731,7 @@ run_test test_open_keeps_a_relocated_conversation_whose_prompt_names_the_teammat
 run_test test_a_symlink_to_another_project_is_not_adopted
 run_test test_a_committed_git_repository_layout_is_skipped_by_name
 run_test test_a_committed_git_repository_layout_above_an_entry_is_skipped_by_name
+run_test test_a_worktree_name_is_printed_as_a_plain_path
 run_test test_open_leaves_a_tracked_claude_md_with_cs_markers_alone
 run_test test_an_exclude_file_without_a_final_newline_keeps_its_last_rule
 run_test test_rerun_finishes_an_adoption_that_lost_its_link
