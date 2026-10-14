@@ -1,5 +1,5 @@
 # ABOUTME: cs -archive-tasks: moves completed native task rows out of Claude Code's task
-# ABOUTME: store into the session's .cs/task-archive/<date>/; plumbing /rotate and /wrap drive.
+# ABOUTME: store into the session's .cs/task-archive/<date>/<actor>/; plumbing /rotate and /wrap drive.
 
 # The session's answer to "archive completed task rows?", recorded once in
 # .cs/local and read by every later /rotate and /wrap: yes, no or unasked.
@@ -178,7 +178,7 @@ archive_tasks_plan() {
 }
 
 # Moves the completed rows _task_archive_select picked into
-# .cs/task-archive/<date>/json/, after appending a readable snapshot of the
+# .cs/task-archive/<date>/<actor>/json/, after appending a readable snapshot of the
 # whole list to tasks.md there. An archived row is never overwritten: a row
 # already archived under the same number with other bytes refuses the run
 # before anything is written, and one with the same bytes (a run that stopped
@@ -197,7 +197,9 @@ archive_tasks_run() {
     fi
     local store="$TASK_ARCHIVE_STORE" root day_dir id dst
     root=$(_task_archive_root "$session_dir" "$meta_dir")
-    day_dir="$root/$(date +%Y-%m-%d)"
+    # Per actor: every machine numbers its copy of the list from 1, so two
+    # actors' rows share numbers, and one directory each keeps their paths apart.
+    day_dir="$root/$(date +%Y-%m-%d)/$(cs_actor_slug "$session_dir")"
     for id in $TASK_ARCHIVE_MOVING; do
         dst="$day_dir/json/$id.json"
         if [ -e "$dst" ] || [ -L "$dst" ]; then
