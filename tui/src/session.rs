@@ -1317,7 +1317,7 @@ fn remove_worktree_session(root: &Path, name: &str, path: &Path) -> std::io::Res
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(&base_dir)
-        .args(["worktree", "remove", "--force"])
+        .args(["worktree", "remove", "--force", "--"])
         .arg(path)
         .output()?;
     if !out.status.success() {
