@@ -2516,6 +2516,54 @@ test_retire_ignored_mode_carries_every_record_the_base_lacks() {
 
 run_test test_retire_ignored_mode_carries_every_record_the_base_lacks
 
+# Archives completed row #1 of a task list, kept back behind an open #2, from
+# the session at <dir> as the actor alice. Claude Code keeps the list's rows
+# under ~/.claude/tasks/<list id>, every character of the id outside
+# [a-zA-Z0-9_-] read as '-'. Keeps a copy of the row at $TEST_TMPDIR/<subject>.row.
+_archive_first_row_from() {  # dir list_id subject
+    local store="$HOME/.claude/tasks/$(printf '%s' "$2" | LC_ALL=C tr -c 'a-zA-Z0-9_-' '-')"
+    mkdir -p "$store"
+    : > "$store/.lock"
+    jq -n --arg subject "$3" '{id: "1", subject: $subject, description: "done", status: "completed", blocks: [], blockedBy: []}' \
+        > "$store/1.json"
+    jq -n '{id: "2", subject: "next", description: "open", status: "pending", blocks: [], blockedBy: []}' \
+        > "$store/2.json"
+    cp "$store/1.json" "$TEST_TMPDIR/$3.row"
+    printf 'yes\n' > "$1/.cs/local/task-archive"
+    CLAUDE_SESSION_DIR="$1" CLAUDE_SESSION_META_DIR="$1/.cs" CLAUDE_CODE_TASK_LIST_ID="$2" CS_ACTOR=alice \
+        "$CS_BIN" -archive-tasks run
+}
+
+# A feature's native task list is its own (base@task) and numbers from 1, as
+# the base's does, so on one machine the base and its feature both archive a
+# row #1 under one actor the same day. Each list keeps its own directory under
+# the actor's, so the fuse carries the feature's archive into the base beside
+# the base's own rather than refusing it.
+test_retire_ignored_mode_carries_a_feature_task_archive_beside_the_base_one() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0 day
+    day=$(date +%Y-%m-%d)
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    output=$(_archive_first_row_from "$base_dir" proj base-row 2>&1) || { echo "  FAIL: the base's archive run: $output"; return 1; }
+    output=$(_archive_first_row_from "$wt" "proj@t1" feature-row 2>&1) || { echo "  FAIL: the feature's archive run: $output"; return 1; }
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire carries the feature's archive: $output" || return 1
+    cmp -s "$TEST_TMPDIR/base-row.row" "$base_dir/.cs/task-archive/$day/alice/proj/json/1.json" \
+        || { echo "  FAIL: the base's row #1 is not where its list keeps it, as it was"; return 1; }
+    cmp -s "$TEST_TMPDIR/feature-row.row" "$base_dir/.cs/task-archive/$day/alice/proj-t1/json/1.json" \
+        || { echo "  FAIL: the feature's row #1 is not in the base beside it, as it was"; return 1; }
+    assert_eq "1" "$(grep -c '^## #1 \[completed\] feature-row$' "$base_dir/.cs/task-archive/$day/alice/proj-t1/tasks.md")" \
+        "the feature's snapshot lands with it" || return 1
+    assert_eq "0" "$(grep -c 'feature-row' "$base_dir/.cs/task-archive/$day/alice/proj/tasks.md")" \
+        "the base's snapshot holds only its own list" || return 1
+    assert_not_exists "$wt" "the worktree is retired" || return 1
+}
+
+run_test test_retire_ignored_mode_carries_a_feature_task_archive_beside_the_base_one
+
 # What the fuse cannot carry without overwriting the base, it refuses to
 # destroy: a plan both sides edited, a brief each side wrote, the feature's
 # README once edited, a repository nested under .cs with its history, and a
