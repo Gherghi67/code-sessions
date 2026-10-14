@@ -99,6 +99,8 @@ RELEASES_URL="https://github.com/hex/claude-sessions/releases/download"
 # and on uninstall, wherever an older cs left them.
 # install.sh and run_uninstall both clean these up.
 # When retiring a hook in a release, add its filename here.
+# The three retired lists only ever grow and none may be emptied: bash 3.2
+# under set -u fails on an empty array expansion, and their loops expand them bare.
 RETIRED_HOOKS=(
     narrative-precompact.sh   # retired: PreCompact cannot inject context (no hookSpecificOutput/additionalContext); Stop reminder covers capture
     discovery-commits.sh      # renamed to autosave-commits.sh (general all-file crash recovery, not discoveries-specific)
@@ -153,6 +155,18 @@ CS_COMMANDS=(
     wrap.md
 )
 
+# Slash commands past versions deployed to ~/.claude/commands/ and this one
+# does not. A command file left behind keeps answering its name, so install.sh
+# and run_uninstall both remove each one cs wrote; a user's own file of the
+# same name is kept. When retiring a command, add its filename here.
+# shellcheck disable=SC2034  # read by install.sh and run_uninstall
+RETIRED_COMMANDS=(
+    compact-discoveries.md  # retired with the discoveries machinery; the session narrative replaced it
+    skillify.md             # retired with CLI command capture (command-tracker.sh), whose log it promoted to skills
+    learn.md                # wrapped cs -learn, removed with the learnings log; deployed only by an install from a checkout
+    store-secret.md         # moved to skills/store-secret; deployed only by an install from a checkout
+)
+
 # Skills cs ships; each deploys as ~/.claude/skills/<name>/SKILL.md.
 CS_SKILLS=(
     store-secret
@@ -180,6 +194,29 @@ RETIRED_SKILLS=(
     cs-hint # a mod (deployed under skills/ like every mod): the hint line under the prompt, retired
     cs-rotate # a mod: renamed to cs, cs's in-session mod (the rotate band, forced rotation, the wrap key)
 )
+
+# install.sh and run_uninstall join each entry of the three retired lists
+# onto one directory (a hook or command file name, a skill directory name),
+# so an entry holding a path component would reach outside it, and '..' as a
+# skill would name all of ~/.claude. Both call this before they change
+# anything: it stops with an error naming the list and the first such entry.
+_check_retired_names() {
+    _check_retired_entries RETIRED_HOOKS file "${RETIRED_HOOKS[@]}"
+    _check_retired_entries RETIRED_COMMANDS file "${RETIRED_COMMANDS[@]}"
+    _check_retired_entries RETIRED_SKILLS directory "${RETIRED_SKILLS[@]}"
+}
+
+# Stop with an error naming list $1 and the first of its entries ($3...) that
+# is not a plain $2 name: empty, '.', '..', or holding a '/'.
+_check_retired_entries() {  # list name, kind (file or directory), entries...
+    local list="$1" kind="$2" entry
+    shift 2
+    for entry in "$@"; do
+        case "$entry" in
+            ''|.|..|*/*) error "$list entry '$entry' is not a $kind name" ;;
+        esac
+    done
+}
 
 # Support files skills ship beyond SKILL.md, as skills/<skill>/<path> entries.
 CS_SKILL_FILES=(
@@ -219,17 +256,44 @@ CS_COMPLETION_FILES=(
     completions/_cs
 )
 
+# The events install.sh registers a cs hook under: the first column of
+# _register_cs_hooks, which a test compares with this list. install.sh reads
+# it before it deploys anything, to refuse a settings.json that holds one of
+# them as something other than a list.
+# shellcheck disable=SC2034  # read by install.sh
+CS_HOOK_EVENTS=(
+    SessionStart
+    PostToolUse
+    Stop
+    SessionEnd
+    SubagentStart
+    PostToolUseFailure
+    PermissionRequest
+    UserPromptSubmit
+    FileChanged
+    CwdChanged
+)
+
 # Remove a hook registration from any event in a settings JSON string,
-# matching either path spelling; drops wrappers that empty out. Prints the
-# updated JSON.
+# matching either path spelling; drops wrappers that empty out. An entry with
+# no .hooks array (its command at the top level, or not an object at all)
+# passes through untouched, and so does an element of a .hooks array that is
+# not an object: neither can be cs's registration. An event whose value is
+# not a list is the user's and stays as it is.
+# A wrapper whose .hooks array is empty goes whether the strip emptied it or
+# the user wrote it that way; the filter cannot tell the two apart and an
+# empty one does nothing in Claude Code. Deliberate: not a defect to fix.
+# Prints the updated JSON.
 _strip_hook_registration() {
     local settings="$1" p="$2" t="$3"
     echo "$settings" | jq --arg p "$p" --arg t "$t" '
         if .hooks then
             .hooks |= with_entries(
                 .value |= (
-                    map(.hooks |= map(select(.command != $p and .command != $t)))
-                    | map(select(.hooks | length > 0))
+                    if type == "array" then
+                        map(if type == "object" and (.hooks | type) == "array" then .hooks |= map(select(type != "object" or (.command != $p and .command != $t))) else . end)
+                        | map(select(type != "object" or (.hooks | type) != "array" or (.hooks | length > 0)))
+                    else . end
                 )
             )
         else . end
@@ -1205,12 +1269,12 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "d5bc5775e6146f2112e0cea3f748482284b284bc03195fdcbb773db15a26bea2  bin/cs"
-    "53865bc18046bdb236b3bc644d3b197e5e2198890be4d22b449fea81c9ab41db  bin/cs-secrets"
+    "7d504cbcc798e4811bcdef5ed0205f24cc7f45edf28293897f1aacfa0d29d9d2  bin/cs"
+    "d54f9dd8797c86d7815f4c1f300a56cf1d4bb344cbcd645ec8f71659d6a70ff6  bin/cs-secrets"
     "a6d008e8bcba4e3d4c1599c76aaddc4ea1c4eb61e3ba861c60d9e4b91f706e78  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
     "8eb754cc99aa9a3b1478fefc31b6cb1486044022150334ec289ed727b3a98272  hooks/cs-resolve.sh"
-    "4520572fd6320e6372ff0c7f0d811cd9d03e4784bc2af43fc84d4a99c0b26aaa  hooks/cs-shared.sh"
+    "03cd1ff302c231284b5c782cbd41289fbf716e9a1e7331cb4580ed8e8db10dc9  hooks/cs-shared.sh"
     "50d63ce0995e68fddd8503700c15f9585d11938c9cd3872a883146de7707c765  hooks/cs-iterm-tab.py"
     "5ad0e64e99ddbccdb2bc437f8ad0b7865689d9bf1170e95a70756a07a998dfc6  hooks/memory-index-guard.sh"
     "d7eff4467d4ffaf9c9a617cfdf2dd6b3249b3f797f9a2f2583c2658906946a3f  hooks/prompt-rewriter.sh"
@@ -1252,11 +1316,38 @@ CS_PAYLOAD_SHA256=(
 # the library they source.
 CS_HOOK_FILES=("${CS_HOOK_LIBS[@]}" "${CS_HOOKS[@]}")
 
+_check_retired_names
+
+# Stop, before anything is deployed, on a settings.json that holds one of the
+# events cs registers a hook under (CS_HOOK_EVENTS) as something other than a
+# list: that value is the user's and stays as it is, so cs's hook cannot be
+# added to it. A missing or null event is one cs creates. Without jq no hook
+# is registered at all, and a file jq cannot parse stops the install at the
+# settings step, further down.
+_refuse_a_hook_event_that_is_not_a_list() {
+    local event
+    command -v jq >/dev/null 2>&1 || return 0
+    [ -s "$CLAUDE_SETTINGS" ] || return 0
+    event=$(jq -r --arg events "${CS_HOOK_EVENTS[*]}" '
+        (if type == "object" then .hooks else null end) as $hooks
+        | if ($hooks | type) == "object" then
+            first(($events | split(" "))[] | select($hooks[.] != null and ($hooks[.] | type) != "array"))
+        else empty end
+    ' "$CLAUDE_SETTINGS" 2>/dev/null) || return 0
+    [ -z "$event" ] || error "$CLAUDE_SETTINGS holds a hooks.$event that is not a list, so cs's hook cannot be added to it; nothing was installed"
+}
+_refuse_a_hook_event_that_is_not_a_list
+
 # Minisign public key for verifying signed releases
 CS_SIGN_PUBKEY="RWQvs3IVdvrS8PJs0V0gwdJGPw/x5waQ6z6iqPQm90JfpxfcsSy9b9Vo"
 
-# Detect if running from cloned repo or web install
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
+# Detect if running from cloned repo or web install. An installer read from a
+# pipe (curl ... | bash) has no BASH_SOURCE: it is the web install, whatever
+# directory it was started in, and never takes that directory as a checkout.
+SCRIPT_DIR=""
+if [ -n "${BASH_SOURCE[0]:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+fi
 if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/bin/cs" ]; then
     # Running from cloned repo
     INSTALL_METHOD="local"
@@ -1650,6 +1741,16 @@ for cmd in "${CS_COMMANDS[@]}"; do
     _deploy "commands/$cmd" "$COMMANDS_DIR/$cmd"
 done
 
+# Drop commands earlier cs versions installed but no longer ship; only a file
+# cs wrote goes, and a user's own file of that name is kept. A linked
+# ~/.claude/commands is worked through by design, as the loop above deploys
+# into it: only content cs wrote is removed, so the link is no boundary here.
+for retired in "${RETIRED_COMMANDS[@]}"; do
+    if [ -f "$COMMANDS_DIR/$retired" ] && _remove_retired "$COMMANDS_DIR/$retired"; then
+        info "Removed retired command: $COMMANDS_DIR/$retired"
+    fi
+done
+
 # Install skills
 SKILLS_DIR="$HOME/.claude/skills"
 installed "skills" "$SKILLS_DIR/"
@@ -1676,9 +1777,22 @@ _mod_link_holds_cs_files() {  # path under SKILLS_DIR
     done
 }
 
-# The symlinked mod directories this install kept, one per line, so each is
-# named once however many mod files sit under it.
-_mod_links_kept=$'\n'
+# The symlinked directories under SKILLS_DIR this install kept, one per line,
+# so each is named once however many files sit under it.
+_dir_links_kept=$'\n'
+
+# Keeps the symlinked directory $SKILLS_DIR/$1: names it in warning $2 the
+# first time, and lists it with the kept files.
+_keep_dir_link() {  # path under SKILLS_DIR, warning
+    case "$_dir_links_kept" in
+        *$'\n'"$SKILLS_DIR/$1"$'\n'*) ;;
+        *)
+            warn "$2"
+            CS_KEPT_PATHS+=("$SKILLS_DIR/$1")
+            _dir_links_kept="$_dir_links_kept$SKILLS_DIR/$1"$'\n'
+            ;;
+    esac
+}
 
 # Whether mod file $1 can be deployed without writing through a symlinked
 # directory: copying through the link would write into its target instead of
@@ -1697,23 +1811,35 @@ _mod_path_real() {
             info "Replaced symlink $SKILLS_DIR/$p with a deployed copy"
             continue
         fi
-        case "$_mod_links_kept" in
-            *$'\n'"$SKILLS_DIR/$p"$'\n'*) ;;
-            *)
-                warn "Kept $SKILLS_DIR/$p: a symlink to files cs did not write, so the mod files under it were not deployed"
-                CS_KEPT_PATHS+=("$SKILLS_DIR/$p")
-                _mod_links_kept="$_mod_links_kept$SKILLS_DIR/$p"$'\n'
-                ;;
-        esac
+        _keep_dir_link "$p" "Kept $SKILLS_DIR/$p: a symlink to files cs did not write, so the mod files under it were not deployed"
+        return 1
+    done
+}
+
+# Whether skill file $1 (its path under SKILLS_DIR) can be deployed without
+# writing through a symlinked directory. A link on the path (the skill
+# directory or the file's directory) is the user's wherever it points, as cs
+# never makes one: it is kept, named once and listed with the kept files, and
+# returns 1 so nothing is placed under it. A link at the file itself is
+# _deploy's to judge.
+_skill_path_real() {
+    local rel="$1" p
+    for p in "${rel%%/*}" "$(dirname "$rel")"; do
+        [ -L "$SKILLS_DIR/$p" ] || continue
+        _keep_dir_link "$p" "Kept $SKILLS_DIR/$p: a symlink, so cs wrote nothing through it and the skill files under it were not deployed"
         return 1
     done
 }
 
 for skill in "${CS_SKILLS[@]}"; do
-    _deploy "skills/$skill/SKILL.md" "$SKILLS_DIR/$skill/SKILL.md"
+    if _skill_path_real "$skill/SKILL.md"; then
+        _deploy "skills/$skill/SKILL.md" "$SKILLS_DIR/$skill/SKILL.md"
+    fi
 done
 for skill_file in "${CS_SKILL_FILES[@]}"; do
-    _deploy "skills/$skill_file" "$SKILLS_DIR/$skill_file"
+    if _skill_path_real "$skill_file"; then
+        _deploy "skills/$skill_file" "$SKILLS_DIR/$skill_file"
+    fi
 done
 for mod_file in "${CS_MOD_FILES[@]}"; do
     if _mod_path_real "$mod_file"; then
@@ -1796,10 +1922,13 @@ else
             _strip_flat_hook "$hook"
         done
 
-        # Drop events that emptied out entirely after the strips
+        # Drop events that emptied out entirely after the strips. An event
+        # whose list is empty goes whether the strips emptied it or the user
+        # wrote it that way (deliberate, see _strip_hook_registration); an
+        # event that is not a list stays.
         SETTINGS=$(echo "$SETTINGS" | jq '
             if .hooks then
-                .hooks |= with_entries(select(.value | length > 0))
+                .hooks |= with_entries(select((.value | type) != "array" or (.value | length > 0)))
                 | if .hooks == {} then del(.hooks) else . end
             else . end
         ')
@@ -1812,10 +1941,19 @@ else
     # session-end.sh) — the prior shape dropped the entire wrapper whenever
     # it contained cs's command, taking sibling user hooks with it.
     #
-    # Flat-shape entries (no `.hooks` field, command at top level) pass
-    # through untouched because the `if .hooks then ... else . end` branch
-    # skips them. The spec tests in tests/test_hooks.sh embed this same
-    # filter shape via _install_merge_filter — keep them aligned.
+    # An entry whose `.hooks` is not an array (flat shape with the command at
+    # the top level, a `.hooks` of any other type, or an entry that is not an
+    # object) passes through untouched, and so does an element of a `.hooks`
+    # array that is not an object: only an object in an array `.hooks` can be
+    # cs's registration, as in _strip_hook_registration. A wrapper whose
+    # `.hooks` array is empty is dropped whether the strip emptied it or the
+    # user wrote it that way (deliberate, see _strip_hook_registration). An
+    # event that is not a list (and not null) is the user's and is never
+    # rewritten: _refuse_a_hook_event_that_is_not_a_list stops the install on
+    # one before anything is deployed, and the filter fails on one that
+    # appears afterwards, which leaves settings.json as it was. The
+    # spec tests in tests/test_hooks.sh run a copy of this filter,
+    # _install_merge_filter, and one of them compares the two texts.
     _merge_cs_hook() {
         local event="$1" file="$2" timeout="$3" matcher="${4:-}" async="${5:-}" rewake="${6:-}"
         local path="$HOOKS_DIR/$file" tilde="$HOOKS_TILDE_DIR/$file"
@@ -1850,14 +1988,18 @@ else
             --arg path "$path" \
             --arg tilde "$tilde" \
             --argjson append "$append" '
-            .hooks[$event] = (
-                ((.hooks[$event] // []) | map(
-                    if .hooks then
-                        .hooks |= map(select(.command != $path and .command != $tilde))
-                    else . end
-                ) | map(select(.hooks == null or (.hooks | length > 0))))
-                + [$append]
-            )
+            if .hooks[$event] != null and (.hooks[$event] | type) != "array" then
+                error("hooks.\($event) is not a list")
+            else
+                .hooks[$event] = (
+                    ((.hooks[$event] // []) | map(
+                        if type == "object" and (.hooks | type) == "array" then
+                            .hooks |= map(select(type != "object" or (.command != $path and .command != $tilde)))
+                        else . end
+                    ) | map(select(type != "object" or (.hooks | type) != "array" or (.hooks | length > 0))))
+                    + [$append]
+                )
+            end
         ')
     }
 

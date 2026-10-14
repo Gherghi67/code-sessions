@@ -519,6 +519,73 @@ test_lock_refuses_a_path_that_is_not_a_regular_file() {
     assert_eq "" "$err" "and taking it prints nothing" || return 1
 }
 
+# Write a stand-in perl into <bin dir> that, on its first call only, changes
+# <lock file> and then runs the real perl, by absolute path: called by
+# _cs_lock, that lands after bash has opened fd 9 on the file and before the
+# lock helper looks at the path. <change> is remove (cs -uninstall removing the
+# settings lock), link (a symlink to <dir>/target) or dir (a directory).
+_perl_changing_the_lock_path() {  # bin dir, lock file, change
+    local real
+    real=$(command -v perl)
+    mkdir -p "$1"
+    {
+        printf '#!/bin/bash\n'
+        printf 'if [ ! -e %q ]; then\n    : > %q\n    rm -f %q\n' "$1/changed" "$1/changed" "$2"
+        case "$3" in
+            link) printf '    ln -s %q %q\n' "$(dirname "$2")/target" "$2" ;;
+            dir) printf '    mkdir %q\n' "$2" ;;
+        esac
+        printf 'fi\nexec %q "$@"\n' "$real"
+    } > "$1/perl"
+    chmod +x "$1/perl"
+}
+
+# cs -uninstall removes the settings lock while it holds it. A taker that has
+# already opened the file then finds the path gone; it opens the path again
+# and holds the lock on the file the path names, so its settings write goes
+# through.
+test_lock_retakes_a_path_removed_while_it_was_being_taken() {
+    local f="$TEST_TMPDIR/settings.json" bin="$TEST_TMPDIR/removing-perl" rc=0 out
+    printf '{"a": 1}\n' > "$f"
+    : > "$f.mutex.lock"
+    _perl_changing_the_lock_path "$bin" "$f.mutex.lock" remove
+    out=$(PROBE='use Fcntl qw(:flock); open(my $f, "<", $ARGV[0]) or exit 2; exit(flock($f, LOCK_EX | LOCK_NB) ? 0 : 1)' \
+        bash -c 'source "$1"; PATH="$3:$PATH"
+        _cs_lock "$2" || exit 1
+        if perl -e "$PROBE" "$2"; then echo "path: free"; else echo "path: held"; fi' _ "$LOCK_LIB" "$f.mutex.lock" "$bin" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the lock is taken" || return 1
+    assert_eq "path: held" "$out" "on the file the path names, and nothing is printed" || return 1
+    assert_exists "$bin/changed" "the stand-in removed the path while the lock was being taken" || return 1
+    [ -f "$f.mutex.lock" ] && [ ! -L "$f.mutex.lock" ] || { echo "  FAIL: the lock path is not a regular file afterwards"; return 1; }
+
+    rm "$bin/changed"
+    rc=0
+    out=$(bash -c 'source "$1"; PATH="$3:$PATH"; cs_settings_update "$2" jq -c ".b = 2" || { echo "$CS_SETTINGS_ERROR"; exit 1; }' \
+        _ "$LOCK_LIB" "$f" "$bin" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the settings write goes through" || return 1
+    assert_eq "" "$out" "and prints nothing" || return 1
+    assert_eq '{"a":1,"b":2}' "$(cat "$f")" "the file holds the change" || return 1
+    assert_exists "$bin/changed" "the stand-in removed the path during the write's lock" || return 1
+}
+
+# Only a path that is gone is opened again. A symlink or a directory swapped in
+# after bash opened fd 9 is refused, as one there before the open is.
+test_lock_refuses_a_link_or_directory_swapped_in_while_it_was_being_taken() {
+    local d="$TEST_TMPDIR/swapped" change rc err
+    for change in link dir; do
+        mkdir -p "$d/$change"
+        printf 'keep\n' > "$d/$change/target"
+        : > "$d/$change/x.lock"
+        _perl_changing_the_lock_path "$d/$change/bin" "$d/$change/x.lock" "$change"
+        rc=0
+        err=$(bash -c 'source "$1"; PATH="$3:$PATH"; _cs_lock "$2"' _ "$LOCK_LIB" "$d/$change/x.lock" "$d/$change/bin" 2>&1) || rc=$?
+        assert_exists "$d/$change/bin/changed" "the stand-in swapped in a $change" || return 1
+        assert_eq "1" "$rc" "a $change swapped in is refused" || return 1
+        assert_eq "cs: cannot lock $d/$change/x.lock: not a regular file" "$err" "the refusal says why" || return 1
+        assert_eq "keep" "$(cat "$d/$change/target")" "the $change's neighbour is untouched" || return 1
+    done
+}
+
 # Takers never hold the lock at once: four of them each add one to a counter
 # 25 times, reading it, pausing, then writing it back, under the lock. Any
 # two inside together lose an increment, so the count falls short of 100.
@@ -1459,6 +1526,8 @@ run_test test_launch_ignores_a_recorded_color_that_is_not_a_color
 run_test test_launch_stops_loudly_when_state_cannot_be_written
 run_test test_state_and_gitattributes_rewrites_leave_tmp_siblings_alone_and_keep_modes
 run_test test_lock_refuses_a_path_that_is_not_a_regular_file
+run_test test_lock_retakes_a_path_removed_while_it_was_being_taken
+run_test test_lock_refuses_a_link_or_directory_swapped_in_while_it_was_being_taken
 run_test test_lock_takers_never_hold_it_at_once
 run_test test_lock_of_a_killed_holder_is_free_at_once
 run_test test_lock_belongs_to_the_shell_that_took_it

@@ -3513,24 +3513,21 @@ run_test test_session_end_leaves_legacy_updated_line_alone
 # Retired-hooks cleanup (install.sh + run_uninstall)
 # ============================================================================
 
+# The two tests below run cs's own code, sourced from lib/: the uninstaller's
+# pass over every hook name (_strip_cs_hook_registrations), which strips each
+# one whose file is gone and then drops the events left with nothing, and the
+# strip filter that pass and install.sh share (_strip_hook_registration).
 test_retired_hooks_strip_settings_json() {
-    # Settings.json with one retired hook (PreCompact only) and one current hook (PostToolUse)
+    # Settings.json with one retired hook whose file is gone (PreCompact only)
+    # and one hook whose file is still in the flat hooks directory, so its
+    # registration stays (PostToolUse)
     local settings='{"hooks":{"PreCompact":[{"matcher":"","hooks":[{"type":"command","command":"~/.claude/hooks/discoveries-archiver.sh","timeout":10}]}],"PostToolUse":[{"matcher":"","hooks":[{"type":"command","command":"~/.claude/hooks/discovery-commits.sh","timeout":10}]}]}}'
-    local p="$HOME/.claude/hooks/discoveries-archiver.sh"
-    local t="~/.claude/hooks/discoveries-archiver.sh"
+    local parent="$TEST_TMPDIR/hooks"
+    mkdir -p "$parent/cs"
+    : > "$parent/discovery-commits.sh"
     local stripped
-    stripped=$(echo "$settings" | jq --arg p "$p" --arg t "$t" '
-        if .hooks then
-            .hooks |= with_entries(
-                .value |= (
-                    map(.hooks |= map(select(.command != $p and .command != $t)))
-                    | map(select(.hooks | length > 0))
-                )
-            )
-            | .hooks |= with_entries(select(.value | length > 0))
-            | if .hooks == {} then del(.hooks) else . end
-        else . end
-    ')
+    stripped=$(. "$SCRIPT_DIR/../lib/01-manifests.sh" && . "$SCRIPT_DIR/../lib/85-adopt-uninstall.sh" \
+        && echo "$settings" | _strip_cs_hook_registrations "$parent/cs" "$parent")
     if echo "$stripped" | jq -e '.hooks.PreCompact' >/dev/null 2>&1; then
         echo "  FAIL: PreCompact event should be empty/gone after stripping its only (retired) hook"
         echo "  got: $stripped"
@@ -3548,16 +3545,7 @@ test_retired_hooks_strip_preserves_coexisting_hook() {
     local p="$HOME/.claude/hooks/discoveries-archiver.sh"
     local t="~/.claude/hooks/discoveries-archiver.sh"
     local stripped
-    stripped=$(echo "$settings" | jq --arg p "$p" --arg t "$t" '
-        if .hooks then
-            .hooks |= with_entries(
-                .value |= (
-                    map(.hooks |= map(select(.command != $p and .command != $t)))
-                    | map(select(.hooks | length > 0))
-                )
-            )
-        else . end
-    ')
+    stripped=$(. "$SCRIPT_DIR/../lib/01-manifests.sh" && _strip_hook_registration "$settings" "$p" "$t")
     local remaining_count
     remaining_count=$(echo "$stripped" | jq '.hooks.PostToolUse[0].hooks | length')
     if [ "$remaining_count" != "1" ]; then
@@ -3586,15 +3574,65 @@ run_test test_retired_hooks_strip_preserves_coexisting_hook
 # leave flat or unrelated wrappers untouched, then append the cs entry.
 _install_merge_filter() {
     cat << 'JQ'
-.hooks[$event] = (
-    ((.hooks[$event] // []) | map(
-        if .hooks then
-            .hooks |= map(select(.command != $path and .command != $tilde))
-        else . end
-    ) | map(select(.hooks == null or (.hooks | length > 0))))
-    + [{ "hooks": [{ "type": "command", "command": $tilde, "timeout": $timeout }] }]
-)
+if .hooks[$event] != null and (.hooks[$event] | type) != "array" then
+    error("hooks.\($event) is not a list")
+else
+    .hooks[$event] = (
+        ((.hooks[$event] // []) | map(
+            if type == "object" and (.hooks | type) == "array" then
+                .hooks |= map(select(type != "object" or (.command != $path and .command != $tilde)))
+            else . end
+        ) | map(select(type != "object" or (.hooks | type) != "array" or (.hooks | length > 0))))
+        + [{ "hooks": [{ "type": "command", "command": $tilde, "timeout": $timeout }] }]
+    )
+end
 JQ
+}
+
+# A jq filter text on stdin without its indentation, blank lines or the line
+# that appends cs's entry (install.sh.in appends $append, the copy above a
+# fixed wrapper), on stdout.
+_merge_filter_strip_and_drop_lines() {
+    sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | grep -v -e '^$' -e '^+ \['
+}
+
+# The spec tests below run the copy above, never install.sh.in, so they say
+# something about the installer only while the two texts are the same: the
+# lines of _merge_cs_hook's filter that strip and drop are compared with the
+# copy's.
+test_install_merge_filter_copy_matches_install_sh_in() {
+    local theirs ours
+    theirs=$(awk '
+        /^[ \t]*_merge_cs_hook\(\) \{/ { infn=1 }
+        infn && /--argjson append "\$append" '\''$/ { grab=1; next }
+        grab {
+            if ($0 ~ /^[ \t]*'\''\)/) exit
+            print
+        }
+    ' "$SCRIPT_DIR/../install.sh.in" | _merge_filter_strip_and_drop_lines)
+    ours=$(_install_merge_filter | _merge_filter_strip_and_drop_lines)
+    assert_eq "$theirs" "$ours" "the copy of the merge filter matches install.sh.in" || return 1
+}
+
+# An event whose value is not a list is the user's: the merge stops, naming
+# the event, rather than rewrite it. A null event is one the merge creates.
+test_install_merge_stops_on_an_event_that_is_not_a_list() {
+    # shellcheck disable=SC2088  # the spelling settings.json holds, never expanded
+    local tilde="~/.claude/hooks/session-start.sh" value out rc
+    for value in '{"custom":{"hooks":[]}}' 'false' '"notify"' '7'; do
+        rc=0
+        out=$(jq -n --argjson value "$value" '{hooks: {SessionStart: $value}}' | jq -c \
+            --arg event "SessionStart" --arg path "$HOME/.claude/hooks/session-start.sh" \
+            --arg tilde "$tilde" --argjson timeout 30 "$(_install_merge_filter)" 2>&1) || rc=$?
+        assert_eq "5" "$rc" "jq exit status for the value $value" || { echo "$out"; return 1; }
+        assert_output_contains "$out" "^jq: error (at <stdin>:[0-9]*): hooks\.SessionStart is not a list$" \
+            "the error names the event for the value $value" || return 1
+    done
+    out=$(echo '{"hooks":{"SessionStart":null}}' | jq -c \
+        --arg event "SessionStart" --arg path "$HOME/.claude/hooks/session-start.sh" \
+        --arg tilde "$tilde" --argjson timeout 30 "$(_install_merge_filter)" 2>&1)
+    assert_eq '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"~/.claude/hooks/session-start.sh","timeout":30}]}]}}' "$out" \
+        "a null event becomes the list holding cs's entry" || return 1
 }
 
 test_install_preserves_coshipped_hook_in_wrapper() {
@@ -3683,6 +3721,8 @@ test_install_leaves_flat_entries_alone() {
     fi
 }
 
+run_test test_install_merge_filter_copy_matches_install_sh_in
+run_test test_install_merge_stops_on_an_event_that_is_not_a_list
 run_test test_install_preserves_coshipped_hook_in_wrapper
 run_test test_install_drops_emptied_wrapper_when_only_cs_hook_present
 run_test test_install_leaves_flat_entries_alone

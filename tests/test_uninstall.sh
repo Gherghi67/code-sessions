@@ -117,6 +117,31 @@ test_uninstall_rechecks_mounts_after_the_data_question() {
     assert_file_exists "$root/vaulted/.cs/vault-mnt/notes.md" "the volume's data survives" || return 1
 }
 
+# An uninstall that keeps the secrets keeps the age state cs-secrets holds for
+# each session beside them (~/.cs-secrets/sessions/<session>/), even when it
+# deletes the session data. The settings.json lock is cs's alone and has no
+# user left once cs is gone, so it goes; settings.json itself stays. The
+# answers are: go ahead, keep the keychain secrets, delete the data.
+test_uninstall_keeping_secrets_keeps_age_state_and_removes_the_settings_lock() {
+    local home="$TEST_TMPDIR/s2-home" root="$TEST_TMPDIR/s2-sessions" stub="$TEST_TMPDIR/mount-stub-s2" rc=0 out
+    _stage_install "$home"
+    mkdir -p "$root/proj/.cs" "$home/.cs-secrets/sessions/proj"
+    printf 'age1pinned example.com\n' > "$home/.cs-secrets/sessions/proj/age-trusted"
+    printf '{"permissions":{"allow":["Bash(ls:*)"]}}\n' > "$home/.claude/settings.json"
+    _stub_mount_table "$stub" "/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled)" || return 1
+    printf 'yny' | HOME="$home" CS_SESSIONS_ROOT="$root" PATH="$stub:$PATH" "$CS_BIN" -uninstall \
+        > "$TEST_TMPDIR/s2.out" 2>&1 || rc=$?
+    out=$(cat "$TEST_TMPDIR/s2.out")
+    assert_eq 0 "$rc" "uninstall exit status: $out" || return 1
+    assert_output_contains "$out" "Kept secrets in keychain" "the secrets were kept" || return 1
+    assert_not_exists "$root" "the session data is deleted" || return 1
+    assert_eq "age1pinned example.com" "$(cat "$home/.cs-secrets/sessions/proj/age-trusted")" \
+        "the session's age state stays with its kept secrets" || return 1
+    assert_not_exists "$home/.claude/settings.json.mutex.lock" "the settings lock is removed" || return 1
+    assert_eq '{"permissions":{"allow":["Bash(ls:*)"]}}' "$(jq -c . "$home/.claude/settings.json")" \
+        "settings.json stays with the user's own settings" || return 1
+}
+
 echo ""
 echo "cs -uninstall ordering"
 echo "======================"
@@ -126,5 +151,6 @@ run_test test_uninstall_with_a_live_session_removes_nothing
 run_test test_uninstall_rechecks_live_sessions_after_the_confirmation
 run_test test_uninstall_rechecks_live_sessions_after_the_data_question
 run_test test_uninstall_rechecks_mounts_after_the_data_question
+run_test test_uninstall_keeping_secrets_keeps_age_state_and_removes_the_settings_lock
 
 report_results

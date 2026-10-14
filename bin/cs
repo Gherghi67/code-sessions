@@ -35,6 +35,8 @@ HOOKS_DEPLOY_DIR="${CS_HOOKS_DIR:-$HOME/.claude/hooks/cs}"
 # and on uninstall, wherever an older cs left them.
 # install.sh and run_uninstall both clean these up.
 # When retiring a hook in a release, add its filename here.
+# The three retired lists only ever grow and none may be emptied: bash 3.2
+# under set -u fails on an empty array expansion, and their loops expand them bare.
 RETIRED_HOOKS=(
     narrative-precompact.sh   # retired: PreCompact cannot inject context (no hookSpecificOutput/additionalContext); Stop reminder covers capture
     discovery-commits.sh      # renamed to autosave-commits.sh (general all-file crash recovery, not discoveries-specific)
@@ -89,6 +91,18 @@ CS_COMMANDS=(
     wrap.md
 )
 
+# Slash commands past versions deployed to ~/.claude/commands/ and this one
+# does not. A command file left behind keeps answering its name, so install.sh
+# and run_uninstall both remove each one cs wrote; a user's own file of the
+# same name is kept. When retiring a command, add its filename here.
+# shellcheck disable=SC2034  # read by install.sh and run_uninstall
+RETIRED_COMMANDS=(
+    compact-discoveries.md  # retired with the discoveries machinery; the session narrative replaced it
+    skillify.md             # retired with CLI command capture (command-tracker.sh), whose log it promoted to skills
+    learn.md                # wrapped cs -learn, removed with the learnings log; deployed only by an install from a checkout
+    store-secret.md         # moved to skills/store-secret; deployed only by an install from a checkout
+)
+
 # Skills cs ships; each deploys as ~/.claude/skills/<name>/SKILL.md.
 CS_SKILLS=(
     store-secret
@@ -116,6 +130,29 @@ RETIRED_SKILLS=(
     cs-hint # a mod (deployed under skills/ like every mod): the hint line under the prompt, retired
     cs-rotate # a mod: renamed to cs, cs's in-session mod (the rotate band, forced rotation, the wrap key)
 )
+
+# install.sh and run_uninstall join each entry of the three retired lists
+# onto one directory (a hook or command file name, a skill directory name),
+# so an entry holding a path component would reach outside it, and '..' as a
+# skill would name all of ~/.claude. Both call this before they change
+# anything: it stops with an error naming the list and the first such entry.
+_check_retired_names() {
+    _check_retired_entries RETIRED_HOOKS file "${RETIRED_HOOKS[@]}"
+    _check_retired_entries RETIRED_COMMANDS file "${RETIRED_COMMANDS[@]}"
+    _check_retired_entries RETIRED_SKILLS directory "${RETIRED_SKILLS[@]}"
+}
+
+# Stop with an error naming list $1 and the first of its entries ($3...) that
+# is not a plain $2 name: empty, '.', '..', or holding a '/'.
+_check_retired_entries() {  # list name, kind (file or directory), entries...
+    local list="$1" kind="$2" entry
+    shift 2
+    for entry in "$@"; do
+        case "$entry" in
+            ''|.|..|*/*) error "$list entry '$entry' is not a $kind name" ;;
+        esac
+    done
+}
 
 # Support files skills ship beyond SKILL.md, as skills/<skill>/<path> entries.
 CS_SKILL_FILES=(
@@ -155,17 +192,44 @@ CS_COMPLETION_FILES=(
     completions/_cs
 )
 
+# The events install.sh registers a cs hook under: the first column of
+# _register_cs_hooks, which a test compares with this list. install.sh reads
+# it before it deploys anything, to refuse a settings.json that holds one of
+# them as something other than a list.
+# shellcheck disable=SC2034  # read by install.sh
+CS_HOOK_EVENTS=(
+    SessionStart
+    PostToolUse
+    Stop
+    SessionEnd
+    SubagentStart
+    PostToolUseFailure
+    PermissionRequest
+    UserPromptSubmit
+    FileChanged
+    CwdChanged
+)
+
 # Remove a hook registration from any event in a settings JSON string,
-# matching either path spelling; drops wrappers that empty out. Prints the
-# updated JSON.
+# matching either path spelling; drops wrappers that empty out. An entry with
+# no .hooks array (its command at the top level, or not an object at all)
+# passes through untouched, and so does an element of a .hooks array that is
+# not an object: neither can be cs's registration. An event whose value is
+# not a list is the user's and stays as it is.
+# A wrapper whose .hooks array is empty goes whether the strip emptied it or
+# the user wrote it that way; the filter cannot tell the two apart and an
+# empty one does nothing in Claude Code. Deliberate: not a defect to fix.
+# Prints the updated JSON.
 _strip_hook_registration() {
     local settings="$1" p="$2" t="$3"
     echo "$settings" | jq --arg p "$p" --arg t "$t" '
         if .hooks then
             .hooks |= with_entries(
                 .value |= (
-                    map(.hooks |= map(select(.command != $p and .command != $t)))
-                    | map(select(.hooks | length > 0))
+                    if type == "array" then
+                        map(if type == "object" and (.hooks | type) == "array" then .hooks |= map(select(type != "object" or (.command != $p and .command != $t))) else . end)
+                        | map(select(type != "object" or (.hooks | type) != "array" or (.hooks | length > 0)))
+                    else . end
                 )
             )
         else . end
@@ -1507,10 +1571,12 @@ _cs_tmux_title_lock_path() {  # pane
 #   regular file fd 9 has open. Only a link swapped in between those two
 #   steps, by a live process of the same user, is followed, and the lock is
 #   then refused.
-# - The file is never removed: a removed lock file lets the next taker lock a
-#   fresh file while a waiter locks the removed one. A waiter that finds the
-#   path naming another file once it holds the lock lets it go and takes the
-#   lock on the file the path names.
+# - The file is never removed, but by cs -uninstall, which removes
+#   ~/.claude/settings.json.mutex.lock while it holds it: a removed lock file
+#   lets the next taker lock a fresh file while a waiter locks the removed one.
+#   A taker that finds the path gone after it opened the file, or naming
+#   another file once it holds the lock, lets it go and takes the lock on the
+#   file the path names, trying three times in all.
 # - A directory that is missing, or cannot take a new file, refuses at once.
 # - A live holder is waited for, but for no more than five seconds: past that
 #   the caller goes ahead without the lock or gives up, as it chooses, since a
@@ -1559,7 +1625,8 @@ _cs_lock() {  # lock file
 # _cs_lock's perl, run on the lock file with bash's fd 9 open on it. Exits 0
 # holding the lock; 1 after five seconds of a live holder; 2 when the path is
 # not the regular file fd 9 has open (a link, or another type); 3 when the
-# path names another regular file than fd 9 has, so the caller opens that one.
+# path names another regular file than fd 9 has, or nothing at all, so the
+# caller opens the path again.
 _CS_LOCK_PERL='
 use Fcntl qw(:flock);
 open(my $fd, "+<&=", 9) or exit 1;
@@ -1570,6 +1637,7 @@ sub path_names_held {
     return @path && -f _ && $path[0] == $held[0] && $path[1] == $held[1];
 }
 my @path = lstat($ARGV[0]);
+exit 3 if !@path && $!{ENOENT};
 exit 2 unless @path && -f _;
 exit 3 unless path_names_held();
 for my $poll (0 .. 100) {
@@ -13442,10 +13510,36 @@ Thumbs.db
 GITIGNORE
 }
 
+# True when a negation further down <dir>'s own .gitignore un-ignores <path>,
+# so a rule for it written above that line has no effect: git, asked by the
+# rules alone (--no-index, so a tracked file is judged as an untracked one
+# is), names a "!" line of that very file as the line that decides. The source
+# git names is relative to the repository's top, hence the prefix. A negation
+# in a deeper .gitignore (which outranks this file whatever its order), no
+# repository, or a git that cannot answer, is false.
+_cs_gitignore_negated_here() {  # dir, path
+    local prefix out
+    prefix=$(_cs_git_at "$1" rev-parse --show-prefix 2>/dev/null) || return 1
+    out=$(_cs_git_at "$1" check-ignore -v --no-index -- "$2" 2>/dev/null) || return 1
+    case "$out" in
+        "${prefix}.gitignore:"*) ;;
+        *) return 1 ;;
+    esac
+    out="${out#"${prefix}.gitignore:"}"
+    out="${out#*:}"
+    case "$out" in
+        "!"*) return 0 ;;
+    esac
+    return 1
+}
+
 # Append cs's .gitignore entries to a session's .gitignore if absent
 # (idempotent; never clobbers a project's existing .gitignore). Writes a fresh
 # cs .gitignore when none exists. Used by adopt and by migrate_session so older
 # sessions gain the .cs/local/ rule (per-actor state must never be committed).
+# The two session lock rules are appended again when a negation further down
+# the file (a project's !*.lock) overrides them, so the line at the end wins;
+# existing lines are never removed or reordered.
 ensure_cs_gitignore_entries() {
     local target_dir="$1"
     local gitignore="$target_dir/.gitignore"
@@ -13460,19 +13554,33 @@ ensure_cs_gitignore_entries() {
 .cs/archives/
 .cs/vault-mnt/
 .cs/.narrative-reminder-cooldown
+.cs/session.lock
+.cs/session.mutex.lock
 .claude/settings.local.json
 CLAUDE.local.md
 .obsidian/
 .cs-tmp.*
 ENTRIES
     )
-    local line
+    local line append
     while IFS= read -r line; do
         [ -z "$line" ] && continue
         [[ "$line" == \#* ]] && continue
         # Whole lines only: a commented `# .cs/local/` or a negated
         # `!.cs/local/` mentions the entry without ignoring the path.
+        append=""
         if ! grep -qxF -- "$line" "$gitignore" 2>/dev/null; then
+            append=yes
+        else
+            case "$line" in
+                .cs/session.lock|.cs/session.mutex.lock)
+                    if _cs_gitignore_negated_here "$target_dir" "$line"; then
+                        append=yes
+                    fi
+                    ;;
+            esac
+        fi
+        if [ -n "$append" ]; then
             # A last line with no newline would swallow the entry appended to it.
             if [ -s "$gitignore" ] && [ -n "$(tail -c 1 "$gitignore")" ]; then
                 printf '\n' >> "$gitignore"
@@ -13928,9 +14036,10 @@ _uninstall_rotate_wrap_keys() {
 }
 
 # Settings JSON on stdin without any cs hook, current or retired, on stdout:
-# stripped from any event, event-agnostic, matching both path spellings ($HOME
-# and ~) in both deployment layouts (subdirectory and flat). Drops wrappers
-# that empty out; sibling user hooks co-shipped in a wrapper survive. A hook
+# stripped from any event that is a list, event-agnostic, matching both path
+# spellings ($HOME and ~) in both deployment layouts (subdirectory and flat).
+# Drops wrappers that empty out; sibling user hooks co-shipped in a wrapper
+# survive, and an event that is not a list stays as it is. A hook
 # file still present in either layout was kept as the user's (uninstall
 # removes only the files cs wrote), so its registration is the user's too
 # and stays.
@@ -13946,10 +14055,13 @@ _strip_cs_hook_registrations() {  # hooks_dir, hooks_parent_dir
         fi
     done
 
-    # Clean up empty hook arrays
+    # Clean up empty hook arrays. An event whose list is empty goes whether
+    # the strips emptied it or the user wrote it that way: the filter cannot
+    # tell the two apart and an empty list does nothing in Claude Code
+    # (deliberate: not a defect to fix). An event that is not a list stays.
     echo "$settings" | jq '
         if .hooks then
-            .hooks |= with_entries(select(.value | length > 0))
+            .hooks |= with_entries(select((.value | type) != "array" or (.value | length > 0)))
             | if .hooks == {} then del(.hooks) else . end
         else . end
     '
@@ -13997,6 +14109,8 @@ run_uninstall() {
     # check_update_notify stamps update-check and update-notes-* here; they
     # outlived a full uninstall and made the next install look up to date.
     local update_cache_dir="$HOME/.cache/cs"
+
+    _check_retired_names
 
     # Before anything is removed: refusing after the tool is gone would leave
     # the data with no cs to open it.
@@ -14090,8 +14204,10 @@ run_uninstall() {
         done
     done
 
-    # Remove commands
-    for cmd in "${CS_COMMANDS[@]}"; do
+    # Remove commands, current and retired. A linked commands directory is
+    # worked through by design, as install deploys into it: only content cs
+    # wrote is removed, so the link is no boundary here.
+    for cmd in "${CS_COMMANDS[@]}" "${RETIRED_COMMANDS[@]}"; do
         if [ -f "$commands_dir/$cmd" ] && _cs_remove_if_owned "$commands_dir/$cmd"; then
             info "Removed $commands_dir/$cmd"
         fi
@@ -14157,6 +14273,17 @@ run_uninstall() {
     elif [ -f "$settings_file" ]; then
         warn "jq not found - cannot clean up $settings_file automatically"
         warn "Manually remove cs hook entries from $settings_file"
+    fi
+
+    local settings_lock="$settings_file.mutex.lock"
+    if [ -f "$settings_lock" ]; then
+        # The one lock file cs removes (_cs_lock in lib/02-shared.sh): uninstall is its last user. It goes while held, so a writer still waiting on it, or still opening it, locks a fresh file.
+        if _cs_lock "$settings_lock"; then
+            rm -f "$settings_lock"
+            _cs_unlock "$settings_lock"
+        else
+            warn "Kept $settings_lock: cs could not take the lock to remove it"
+        fi
     fi
 
     _uninstall_rotate_wrap_keys
