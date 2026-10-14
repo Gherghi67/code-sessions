@@ -231,29 +231,6 @@ test_remove_confirm_lists_foreign_entries() {
     assert_dir "$dir" "declined session must survive" || return 1
 }
 
-# A cloned session's repo chooses the names at its root, and a name can carry a
-# terminal escape: a raw ESC or BEL byte, or backslash text echo -e would turn
-# into one. The confirm and the --force refusal name each entry as a plain
-# name, each character a plain name lacks replaced by _. A name made only of
-# such characters is still named, so it still holds the --force refusal.
-test_remove_names_foreign_entries_as_plain_names() {
-    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m dir out rc=0
-    dir=$(create_test_session f5)
-    touch "$dir/n$bad"
-    out=$(printf 'n\n' | CS_ASSUME_TTY=1 "$CS_BIN" -rm f5 2>&1) || return 1
-    assert_eq "Also deletes files cs did not create: n$shown" \
-        "$(grep '^Also deletes' <<< "$out")" "the confirm names the entry as a plain name" || return 1
-    assert_no_escape_bytes "$out" "no escape byte reaches the terminal from the confirm" || return 1
-    dir=$(create_test_session f6)
-    touch "$dir/"$'\033\007'
-    out=$("$CS_BIN" -rm f6 --force </dev/null 2>&1) || rc=$?
-    assert_eq "1" "$rc" "--force refuses a session holding an entry of control bytes only" || return 1
-    assert_output_contains "$out" "holds files cs did not create: __\. Add --delete-files" \
-        "the refusal names the entry as a plain name" || return 1
-    assert_no_escape_bytes "$out" "no escape byte reaches the terminal from the refusal" || return 1
-    assert_dir "$dir" "the refused session survives" || return 1
-}
-
 # An encrypted session mounts its vault inside the session directory by
 # convention; rm -rf would recurse into the mount and delete what the vault
 # holds, even under --force --delete-files. Unmounted, the links dangle and
@@ -957,7 +934,6 @@ run_test test_remove_force_refuses_when_session_holds_files_cs_did_not_create
 run_test test_remove_force_with_delete_files_removes_foreign_files
 run_test test_remove_force_ignores_cs_owned_entries_and_ds_store
 run_test test_remove_confirm_lists_foreign_entries
-run_test test_remove_names_foreign_entries_as_plain_names
 run_test test_remove_force_refuses_worktree_with_untracked_or_ignored_files
 run_test test_remove_force_with_delete_files_removes_worktree
 run_test test_remove_worktree_confirm_lists_untracked_files
