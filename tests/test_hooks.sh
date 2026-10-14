@@ -2454,6 +2454,29 @@ test_session_start_lists_only_recent_files_with_plain_names() {
     assert_output_not_contains "$context" "pwned" "the recent commits never name a file whose name is not plain" || return 1
 }
 
+# Checking a name forks (_cs_plain_name's cut, which a stand-in on PATH
+# counts), so the list checks at most the first five files the commits touched,
+# however many there are. Ten names that are not plain are never written to the
+# list, so nothing ends the checks early.
+test_session_start_checks_at_most_five_recent_files() {
+    session_start_setup
+    local shim="$TEST_TMPDIR/shim" calls="$TEST_TMPDIR/cut.calls" i
+    mkdir -p "$shim"
+    printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nexec /usr/bin/cut "$@"\n' "$calls" > "$shim/cut"
+    chmod +x "$shim/cut"
+    ( cd "$CLAUDE_SESSION_DIR" && GIT_COMMITTER_DATE="2020-01-01T00:00:00Z" git commit -q --amend --no-edit --date="2020-01-01T00:00:00Z" \
+        && for i in 0 1 2 3 4 5 6 7 8 9; do echo odd > "x y$i.md"; done && git add -- "x y"*.md && git commit -q -m "recent" )
+
+    local context checks
+    context=$(echo '{"session_id":"s","source":"resume","cwd":"'"$CLAUDE_SESSION_DIR"'","hook_event_name":"SessionStart"}' \
+        | PATH="$shim:$PATH" bash "$HOOKS_DIR/session-start.sh" 2>/dev/null | jq -r '.hookSpecificOutput.additionalContext') || return 1
+    assert_output_contains "$context" "^Recent commits: 1 in last 7 days$" \
+        "the recent commits name no file whose name is not plain" || return 1
+    checks=$(grep -c '^-c1-160$' "$calls" 2>/dev/null || true)
+    [ "${checks:-0}" -ge 1 ] || { echo "  FAIL: the cut stand-in counted no name check (got '${checks}')"; return 1; }
+    [ "$checks" -le 5 ] || { echo "  FAIL: the recent files list checked $checks names, more than five"; return 1; }
+}
+
 # Rotation head-truncates a narrative (oldest sections move to the archive), so
 # the file can shrink at the top while it grows at the tail. The start line is
 # still (lines now - lines added + 1), and the count is of added sections only.
@@ -3632,6 +3655,7 @@ run_test test_resume_digest_silent_without_watermark
 run_test test_resume_digest_names_where_a_teammates_narrative_grew
 run_test test_resume_digest_passes_over_a_narrative_whose_name_is_not_plain
 run_test test_session_start_lists_only_recent_files_with_plain_names
+run_test test_session_start_checks_at_most_five_recent_files
 run_test test_resume_digest_delta_survives_a_rotated_teammate_narrative
 run_test test_resume_digest_counts_two_commits_and_an_uncommitted_tail
 run_test test_hooks_parse_under_bin_bash
