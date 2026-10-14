@@ -212,7 +212,7 @@ adopt_session() {  # name, [--yes|-y], in any order
         local sub
         for sub in $CS_VAULT_LINKS; do
             if [ -L "$target_dir/.cs/$sub" ] && [ ! -e "$target_dir/.cs/$sub" ]; then
-                error "Cannot re-adopt as '$session_name': .cs/$sub points at $(readlink "$target_dir/.cs/$sub"), which is missing (encrypted storage not mounted?). Mount it and run cs -adopt again; nothing was changed."
+                error "Cannot re-adopt as '$session_name': .cs/$sub points at $(_cs_plain_name "$(readlink "$target_dir/.cs/$sub")" 160), which is missing (encrypted storage not mounted?). Mount it and run cs -adopt again; nothing was changed."
             fi
         done
 

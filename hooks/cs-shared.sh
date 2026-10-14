@@ -341,10 +341,11 @@ cs_files_tracked_notice() {  # meta_dir, session_dir
 }
 
 # Says what an unusable .cs/private is, for an error message: the vault it
-# points at, or that it is not a directory at all.
+# points at, as a plain name (a clone can commit the link), or that it is not
+# a directory at all.
 cs_private_state() {  # meta_dir
     if [ -L "$1/private" ]; then
-        printf 'points at %s\n' "$(readlink "$1/private")"
+        printf 'points at %s\n' "$(_cs_plain_name "$(readlink "$1/private")" 160)"
     else
         printf 'is not a directory\n'
     fi
