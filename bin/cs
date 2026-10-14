@@ -8545,8 +8545,11 @@ _queue_convert_legacy() {  # qdir
     # session unopenable. Clear a non-directory at either path first.
     [ -d "$qdir/queue" ]     || rm -f "$qdir/queue"
     [ -d "$qdir/queue.tmp" ] || rm -f "$qdir/queue.tmp"
-    cs_mkdir_inside "$qdir/queue"
-    cs_mkdir_inside "$qdir/queue.tmp"
+    # A directory that cannot be made stops here, the legacy file kept, with
+    # cs_mkdir_inside's message the only one: under errexit the 1 ends cs as
+    # the failed call itself would, and where errexit is off the writes below
+    # would each print a raw redirection error instead.
+    cs_mkdir_inside "$qdir/queue" && cs_mkdir_inside "$qdir/queue.tmp" || return 1
     local line seq=0 fname failed=0
     while IFS= read -r line || [ -n "$line" ]; do
         case "$line" in *[![:space:]]*) : ;; *) continue ;; esac
@@ -8610,8 +8613,9 @@ _queue_write_task() {  # qdir, text
     # Senders write into other sessions' queues (task-kind mail), so a
     # recipient that has not reopened since the upgrade converts here.
     _queue_convert_legacy "$qdir"
-    cs_mkdir_inside "$qdir/queue"
-    cs_mkdir_inside "$qdir/queue.tmp"
+    # errexit is off here (callers test the status), so a directory that
+    # cannot be made has to stop the write itself.
+    cs_mkdir_inside "$qdir/queue" && cs_mkdir_inside "$qdir/queue.tmp" || return 1
     # The zero-padded per-process sequence keeps several adds from one process
     # inside one second (a spawn seed's task list) in submission order; guard
     # against an inherited same-named env var poisoning the counter. The random
@@ -8672,8 +8676,7 @@ _queue_accept() {  # qdir, message id
     [ -n "$body" ] || error "message $id carries an empty task"
     _queue_require_single_line "$body"
     _queue_convert_legacy "$qdir"
-    cs_mkdir_inside "$qdir/queue"
-    cs_mkdir_inside "$qdir/queue.tmp"
+    cs_mkdir_inside "$qdir/queue" && cs_mkdir_inside "$qdir/queue.tmp" || return 1
     local lock="$qdir/queue.accept.mutex.lock" fname
     _cs_lock "$lock" || error "another cs -queue accept holds $lock; retry in a moment"
     if [ -f "$qdir/queue.accepted" ] && grep -qxF -- "$id" "$qdir/queue.accepted"; then
