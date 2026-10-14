@@ -282,7 +282,8 @@ cs_untrack_notice() {  # tracked, top, sub
 # git is asked anything. One inside the session is named relative to it, with
 # the HEAD to delete; one outside it is named by its whole path with no delete
 # advice, since it can be the user's own repository (a session inside a bare
-# repository or a checkout's .git).
+# repository or a checkout's .git, or a bare repository that is the session
+# directory itself, which counts as outside).
 cs_tracked_files_notice() {  # dir, session_dir
     local real top prefix tracked status why failed meta sub rest n layout here="$1" missing=""
     while [ ! -e "$here" ] && [ ! -L "$here" ]; do
@@ -296,13 +297,15 @@ cs_tracked_files_notice() {  # dir, session_dir
     real=$(cd -P -- "$here" 2>/dev/null && pwd -P && printf x) || return 1
     real=${real%$'\n'x}
     if layout=$(_cs_head_on_git_walk "$real" "$2"); then
-        layout=$(_cs_plain_name "$layout" 160) || return 1
+        # A whole path is printed uncut, so it still names the directory.
         case "$layout" in
             /*)
-                printf '%s holds HEAD, so git takes it for a repository and would run commands its config names. cs -rm the session.\n' \
+                layout=$(_cs_plain_name "$layout") || return 1
+                printf '%s holds HEAD, so git takes it for a repository and would run commands its config names. Run cs -rm to remove the session.\n' \
                     "$layout"
                 ;;
             *)
+                layout=$(_cs_plain_name "$layout" 160) || return 1
                 printf '%s holds HEAD, so git takes it for a repository and would run commands its config names (cs state must be a plain directory inside the session). Delete %s/HEAD, or cs -rm the session.\n' \
                     "$layout" "$layout"
                 ;;
