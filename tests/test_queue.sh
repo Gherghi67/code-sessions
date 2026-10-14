@@ -1317,6 +1317,9 @@ test_queue_refuses_a_session_removed_after_its_check() {
     out=$(BASH_ENV="$seam" "$CS_BIN" -queue add "a task" 2>&1) || rc=$?
     assert_exists "$seam.removed" "the session was removed after the check: $out" || return 1
     assert_eq "1" "$rc" "queueing fails: $out" || return 1
+    assert_eq "cs_mkdir_inside: $CLAUDE_SESSION_META_DIR/local/queue is not inside an existing .cs
+Error: could not write the task into $CLAUDE_SESSION_META_DIR/local/queue; it is not queued" "$out" \
+        "queueing stops at the first directory it would not make, and says the task is not queued" || return 1
     assert_not_exists "$CLAUDE_SESSION_DIR" "queueing does not build the session again" || return 1
     rm -f "$seam.armed" "$seam.removed"
     mkdir -p "$CLAUDE_SESSION_META_DIR/local"
