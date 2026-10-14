@@ -10707,15 +10707,24 @@ _task_store_ids() {  # store
 }
 
 # A row's status when the row matches the schema Claude Code reads a task
-# with (id equal to the file's number, subject, description, a known status,
-# blocks and blockedBy arrays); errors naming the file otherwise.
+# with; errors naming the file otherwise. The schema is the zod object its
+# task reader parses every row with (Claude Code 2.1.299, `Oe`): id, subject
+# and description strings; activeForm and owner optional strings; status one
+# of pending, in_progress, completed; blocks and blockedBy arrays of strings;
+# metadata an optional record of string keys. Optional means absent, never
+# null. Keys it does not name are dropped, not refused. cs adds one rule: the
+# id is the file's number.
 _task_row_status() {  # store, id
     local status
     status=$(jq -r --arg id "$2" '
+        def optional_string(k): (has(k) | not) or (.[k] | type) == "string";
+        def ids(k): (.[k] | type) == "array" and all(.[k][]; type == "string");
         if type == "object" and .id == $id
             and (.subject | type) == "string" and (.description | type) == "string"
+            and optional_string("activeForm") and optional_string("owner")
             and (.status == "pending" or .status == "in_progress" or .status == "completed")
-            and (.blocks | type) == "array" and (.blockedBy | type) == "array"
+            and ids("blocks") and ids("blockedBy")
+            and ((has("metadata") | not) or (.metadata | type) == "object")
         then .status else "unrecognised" end' "$1/$2.json" 2>/dev/null) || status="unrecognised"
     # One known word or nothing: a file holding two JSON values prints two.
     case "$status" in
