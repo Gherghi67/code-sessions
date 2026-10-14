@@ -32,8 +32,9 @@ teardown_failed() {  # what
     FAILURES+=("$SUITE_PHASE")
 }
 
-# The fake claude. --version prints FAKE_CLAUDE_VERSION and exits
-# FAKE_CLAUDE_VERSION_EXIT (0 by default). Any other call appends
+# The fake claude. --version prints "FAKE_CLAUDE_VERSION (Claude Code)", as
+# Claude Code does, or FAKE_CLAUDE_VERSION_LINE as it is when that is set, and
+# exits FAKE_CLAUDE_VERSION_EXIT (0 by default). Any other call appends
 # what it was given to $FAKE_CLAUDE_LOG: argv, which cs variables are set (the
 # names only, never a value), its cwd, its pid and parent, and what the session
 # lock and .cs/local/remote.pid held when it started. FAKE_CLAUDE_MODE then
@@ -48,7 +49,7 @@ write_fake_claude() {
     cat > "$TEST_TMPDIR/bin/claude" << 'FAKE'
 #!/bin/bash
 if [ "${1:-}" = "--version" ]; then
-    printf '%s (Claude Code)\n' "${FAKE_CLAUDE_VERSION:-2.1.299}"
+    printf '%s\n' "${FAKE_CLAUDE_VERSION_LINE:-${FAKE_CLAUDE_VERSION:-2.1.299} (Claude Code)}"
     exit "${FAKE_CLAUDE_VERSION_EXIT:-0}"
 fi
 log="$FAKE_CLAUDE_LOG"
@@ -512,27 +513,35 @@ Error: cs --remote needs Claude Code 2.1.299 or later for claude remote-control;
     [ ! -e "$CS_SESSIONS_ROOT/demo" ] || { echo "  FAIL: a refused --remote created the session"; return 1; }
 }
 
-# A wrapper whose --version prints a number at or past the floor, as
-# 1Password's op does (2.30.0), passes the check, and cs runs remote-control
-# through it: the wrapper's own error and status are the run's.
-test_remote_with_a_wrapper_whose_version_passes_runs_the_wrapper() {
+# A wrapper whose --version passes, as 1Password's op does (2.30.0, past the
+# floor by number), is refused by name when something was dropped: its
+# output carries no "(Claude Code)", so the word is not claude, and nothing
+# is opened.
+test_remote_refuses_a_wrapper_whose_version_is_not_claude_codes() {
     cat > "$TEST_TMPDIR/bin/op" << 'EOF'
 #!/bin/sh
 [ "$1" = --version ] && { echo "2.30.0"; exit 0; }
 printf '[%s]' "$@" >> "$FAKE_WRAPPER_LOG"
-echo "[ERROR] unknown command \"$1\" for \"op\"" >&2
-exit 1
+exit 0
 EOF
     chmod +x "$TEST_TMPDIR/bin/op"
-    local err="$TEST_TMPDIR/err"
-    CLAUDE_CODE_BIN="op run -- claude" RUN_CS_STDERR="$err" run_cs demo --remote || return 1
-    assert_eq "1" "$CS_RC" "cs exits with the wrapper's status" || { cat "$TEST_TMPDIR/out" "$err"; return 1; }
-    assert_eq "cs --remote runs op remote-control without the rest of CLAUDE_CODE_BIN; --remote's own --permission-mode sets the permission mode of the sessions it starts. Dropped: run -- claude" \
-        "$(strip_ansi < "$err" | grep -F 'Dropped:')" "the line names the wrapper and what was dropped" || { cat "$err"; return 1; }
-    assert_eq "[ERROR] unknown command \"remote-control\" for \"op\"" "$(grep -F '[ERROR]' "$err")" "the wrapper's own error is shown" || return 1
-    assert_eq "[remote-control][--name][demo][--permission-mode][default][--spawn=same-dir]" "$(cat "$TEST_TMPDIR/wrapper.log")" \
-        "remote-control's arguments go to the wrapper" || return 1
+    local rc=0 out
+    out=$(CLAUDE_CODE_BIN="op run -- claude" "$CS_BIN" demo --remote 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the wrapper is refused" || { printf '%s\n' "$out"; return 1; }
+    assert_eq "cs --remote runs op remote-control without the rest of CLAUDE_CODE_BIN; --remote's own --permission-mode sets the permission mode of the sessions it starts. Dropped: run -- claude
+Error: cs --remote runs op remote-control, and op is not Claude Code: op --version printed \"2.30.0\". Set CLAUDE_CODE_BIN to claude itself for --remote." \
+        "$(printf '%s' "$out" | strip_ansi)" "the line names the wrapper and what was dropped, the refusal what its --version printed" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/wrapper.log" "the wrapper never ran remote-control" || return 1
     assert_file_not_exists "$FAKE_CLAUDE_LOG" "claude never ran" || return 1
+    [ ! -e "$CS_SESSIONS_ROOT/demo" ] || { echo "  FAIL: a refused --remote created the session"; return 1; }
+}
+
+# With nothing dropped, the command word is not checked for Claude Code's
+# mark: a claude whose --version prints the number alone still serves.
+test_remote_runs_a_plain_claude_whose_version_has_no_mark() {
+    FAKE_CLAUDE_VERSION_LINE=2.1.299 run_cs_ok demo --remote || return 1
+    assert_eq "[remote-control][--name][demo][--permission-mode][default][--spawn=same-dir]" "$(log_value argv)" \
+        "the server ran" || return 1
 }
 
 test_remote_refuses_a_session_open_locally() {
@@ -817,7 +826,8 @@ run_test test_remote_drops_options_carried_in_claude_code_bin_and_says_so
 run_test test_remote_names_dropped_options_exactly_as_written
 run_test test_remote_window_gets_the_command_alone_and_the_line_shows_once
 run_test test_remote_with_a_wrapper_whose_version_check_fails_is_refused
-run_test test_remote_with_a_wrapper_whose_version_passes_runs_the_wrapper
+run_test test_remote_refuses_a_wrapper_whose_version_is_not_claude_codes
+run_test test_remote_runs_a_plain_claude_whose_version_has_no_mark
 run_test test_remote_refuses_a_session_open_locally
 run_test test_local_open_is_refused_while_the_session_is_served
 run_test test_remote_stops_cleanly_when_its_window_hangs_up
