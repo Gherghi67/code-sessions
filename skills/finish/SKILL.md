@@ -141,7 +141,10 @@ what creates them and fold it into the gate: `-- sh -c 'npm ci && npm test'`.
    - `retire: not-landed` — the branch is not an ancestor of base (a squash
      or rebase landing) and base HEAD holds some path it changed
      differently: the `retire_differs:` lines name up to ten, and
-     `retire_differs_more:` counts the rest. When `pr_state` is `MERGED`
+     `retire_differs_more:` counts the rest. A captured commit that shares
+     no history with base (no merge base) is `not-landed` too, with no
+     path lines, since there is no change of its own to compare; what
+     follows applies to it with no paths to print. When `pr_state` is `MERGED`
      AND `pr_head_oid` equals the captured `sha`, that is the PR's evidence
      the work is in:
      run `cs <base> -retire-feature <task> <sha> --force`. A `pr_head_oid`
