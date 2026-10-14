@@ -185,16 +185,15 @@ test_rotate_skill_has_a_home_for_conversation_only_facts() {
 }
 
 # A successor appends its report to the handoff it consumed, and nothing
-# committed it: step 7's prune deletes spent handoffs on the premise that git
+# commits it: step 7's prune deletes spent handoffs on the premise that git
 # history keeps them, which is false for an uncommitted report (Codex and
-# Fable, 2026-09-24). The prune must skip a handoff with uncommitted changes,
-# and step 8 must stage the report.
+# Fable, 2026-09-24). The prune must skip a handoff with uncommitted changes.
 test_rotate_skill_keeps_successor_reports() {
     local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md"
     assert_file_contains "$skill" "it has no uncommitted changes" \
         "the prune must not delete an uncommitted successor report" || return 1
     assert_file_contains "$skill" "Successor report" \
-        "step 8 must stage consumed handoffs carrying a report" || return 1
+        "the prune names the successor report it keeps" || return 1
 }
 
 # .cs/ is gitignored in some checkouts, and `git status --porcelain` prints
@@ -278,18 +277,12 @@ test_rotate_skill_puts_the_next_step_first() {
         "the second pass must append, since a Write replaces the whole file" || return 1
     # Pass one is durable once the Write returns: it is on disk, and the
     # autosave hook snapshots every Write into the conversation's shadow ref
-    # wherever git does not ignore .cs/. A commit between the passes added
-    # nothing but a model-written commit to the project's history, two per
-    # rotation, and models copied its invented subject. One commit, after
-    # pass two, under a subject the skill names.
-    assert_file_contains "$skill" "the rotation's one commit" \
-        "the rotation commits once, after the second pass" || return 1
-    assert_file_contains "$skill" "Pass one needs no commit of its own" \
-        "and says why the first pass is safe uncommitted" || return 1
+    # wherever git does not ignore .cs/. Nothing in the rotation commits
+    # (Alex, 2026-10-14: "No commits at all").
+    assert_file_contains "$skill" "Pass one is durable once the Write returns" \
+        "the skill says why the first pass is safe uncommitted" || return 1
     assert_file_contains "$skill" "autosave-commits\.sh" \
         "naming the hook that keeps it" || return 1
-    assert_file_contains "$skill" '`session: handoff <basename>`' \
-        "the commit subject is named, so a model does not invent one" || return 1
     assert_file_not_contains "$skill" "second commit" \
         "there is no second commit" || return 1
     assert_file_not_contains "$skill" "Commit the first pass" \
@@ -300,49 +293,45 @@ test_rotate_skill_puts_the_next_step_first() {
 }
 
 # Arming is the last step. An armed marker is disarmed by the launch prompt on
-# Y, n or Enter and nothing re-arms it, while an unarmed committed handoff is
+# Y, n or Enter and nothing re-arms it, while an unarmed handoff on disk is
 # still offered by that prompt's scan — so arming before the ritual can finish
 # turns an interruption into a bare /clear. Pinned by ORDER in the file: the arm
-# step must come after the one commit and after the retire step, and the
-# commit after the retire step whose supersedings it carries.
+# step must come after the retire step and the task archive, and no numbered
+# step commits.
 test_rotate_skill_arms_last() {
     local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md"
-    local arm commit retire tell steps
+    local arm archive retire tell steps
     arm=$(grep -n '^[0-9]*\. Arm it' "$skill" | head -1 | cut -d: -f1)
-    commit=$(grep -n "^[0-9]*\. .*the rotation's one commit" "$skill" | head -1 | cut -d: -f1)
+    archive=$(grep -n '^[0-9]*\. Archive completed task rows' "$skill" | head -1 | cut -d: -f1)
     retire=$(grep -n '^[0-9]*\. Retire this machine' "$skill" | head -1 | cut -d: -f1)
     tell=$(grep -n '^[0-9]*\. Tell the user' "$skill" | head -1 | cut -d: -f1)
-    [ -n "$arm" ] && [ -n "$commit" ] && [ -n "$retire" ] && [ -n "$tell" ] \
-        || { echo "  FAIL: could not locate the arm, commit, retire and tell steps"; return 1; }
-    [ "$commit" -gt "$retire" ] \
-        || { echo "  FAIL: the commit must follow the retire step (commit at $commit, retire at $retire)"; return 1; }
-    [ "$arm" -gt "$commit" ] && [ "$arm" -gt "$retire" ] \
-        || { echo "  FAIL: arming must follow the commit and the retire step (arm at $arm)"; return 1; }
+    [ -n "$arm" ] && [ -n "$archive" ] && [ -n "$retire" ] && [ -n "$tell" ] \
+        || { echo "  FAIL: could not locate the arm, archive, retire and tell steps"; return 1; }
+    [ "$archive" -gt "$retire" ] \
+        || { echo "  FAIL: the archive must follow the retire step (archive at $archive, retire at $retire)"; return 1; }
+    [ "$arm" -gt "$archive" ] && [ "$arm" -gt "$retire" ] \
+        || { echo "  FAIL: arming must follow the archive and the retire step (arm at $arm)"; return 1; }
     [ "$arm" -lt "$tell" ] \
         || { echo "  FAIL: arming must precede telling the user to /clear"; return 1; }
-    # Exactly one numbered step commits.
     steps=$(grep -E '^[0-9]+\. ' "$skill" | grep -ci 'commit')
-    assert_eq "1" "$steps" "one numbered step commits" || return 1
+    assert_eq "0" "$steps" "no numbered step commits" || return 1
 }
 
-# The rotation commits inside the user's own checkout, and an adopted session
-# IS their project repo: a bare `git commit` takes whatever they had staged
-# into the handoff commit. Naming the paths makes a partial commit of only
-# those, as cs -narrative rotate does. Every session-file commit has a
-# session: subject, so the skill names all three and says no cs: one exists.
-test_rotate_skill_commits_only_the_paths_it_names() {
+# A rotation makes no commit (Alex, 2026-10-14: "No commits at all"): the
+# handoff, the supersedings, the prunes and the task archive stay on disk, and
+# files under .cs/ are committed only when the user asks. The skill says so in
+# step 8 and gives no git add or git commit to run, so a model has no commit
+# to make and no subject to invent.
+test_rotate_skill_makes_no_commit() {
     local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md" step8
     step8=$(awk '/^8\. /{p=1} /^9\. /{p=0} p' "$skill")
-    assert_output_contains "$step8" "git commit -m 'session: handoff <basename>' -- <paths>" \
-        "the commit names the paths it stages" || return 1
-    assert_output_contains "$step8" "work the user had already staged stays staged and out of it" \
-        "and says why" || return 1
-    assert_output_contains "$step8" '`session: rotate narrative.<actor> (<N> sections -> narrative-archive)`' \
-        "the skill names cs's own narrative-rotation subject" || return 1
-    assert_output_contains "$step8" '`session: wrap <YYYY-MM-DD>`' "and the wrap's" || return 1
-    assert_output_contains "$step8" 'no `cs:` subject exists' "and says no cs: subject exists" || return 1
-    assert_file_not_contains "$skill" 'is one cs writes itself' \
-        "cs writes no cs: subject" || return 1
+    assert_output_contains "$step8" "The rotation makes no commit." "step 8 says no commit is made" || return 1
+    assert_output_contains "$step8" "stay on disk, uncommitted" "and that the files stay on disk" || return 1
+    assert_output_contains "$step8" "commit them only when the user asks." \
+        "and that only the user's ask commits them" || return 1
+    assert_file_not_contains "$skill" "git commit" "the skill runs no git commit" || return 1
+    assert_file_not_contains "$skill" "git add" "and stages nothing" || return 1
+    assert_file_not_contains "$skill" "session: handoff" "and names no commit subject" || return 1
 }
 
 test_rotate_skill_pins_a_model_that_cannot_refuse() {
@@ -509,16 +498,6 @@ test_rotate_skill_governs_what_goes_into_the_handoff() {
         "a blocker must lead Next Step, ahead of the steps it gates" || return 1
 }
 
-test_rotate_skill_never_force_adds_an_ignored_handoff() {
-    local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md"
-    # A plain `git add` of a handoff under an ignored .cs/ exits 1, and
-    # rotations answered that with `git add -f`, publishing every handoff in
-    # a public repo that meant to keep .cs/ private.
-    assert_file_contains "$skill" "check-ignore -q --no-index" \
-        "the skill must test whether a path is ignored before staging it" || return 1
-    assert_file_contains "$skill" "Never \`git add -f\`" \
-        "the skill must forbid force-adding an ignored path" || return 1
-}
 
 test_rotate_skill_reads_parent_from_state_not_the_launch_env() {
     # CS_CLAUDE_SESSION_ID is the LAUNCH uuid: exported once per cs process
@@ -544,7 +523,6 @@ test_rotate_skill_reads_parent_from_state_not_the_launch_env() {
 }
 
 run_test test_rotate_skill_exists_with_frontmatter
-run_test test_rotate_skill_never_force_adds_an_ignored_handoff
 run_test test_rotate_skill_has_a_home_for_rejected_alternatives
 run_test test_rotate_skill_has_a_home_for_conversation_only_facts
 run_test test_rotate_skill_keeps_successor_reports
@@ -553,7 +531,7 @@ run_test test_rotate_skill_requires_provenance_on_claims
 run_test test_rotate_skill_archives_completed_task_rows_before_arming
 run_test test_rotate_skill_puts_the_next_step_first
 run_test test_rotate_skill_arms_last
-run_test test_rotate_skill_commits_only_the_paths_it_names
+run_test test_rotate_skill_makes_no_commit
 run_test test_rotate_skill_pins_a_model_that_cannot_refuse
 run_test test_rotate_skill_keeps_the_users_words_close
 run_test test_rotate_skill_spends_length_asymmetrically
