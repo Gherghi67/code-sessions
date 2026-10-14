@@ -459,15 +459,85 @@ test_remote_drops_options_carried_in_claude_code_bin_and_says_so() {
 
 # CLAUDE_CODE_BIN splits on blanks wherever cs runs it, so a quote in it is a
 # character of an option, not quoting: the line shows the text after the
-# command as written, blanks inside it kept, blanks around it trimmed.
+# command as written, blanks inside it kept, blanks around it trimmed. A
+# quoted mode is one word that is no mode, and the words after it are words
+# of their own, the command word among them, so the refusal names them all,
+# one blank apart.
 test_remote_names_dropped_options_exactly_as_written() {
-    local err="$TEST_TMPDIR/err"
-    CLAUDE_CODE_BIN=" claude  --append-system-prompt \"be brief\"  --add-dir '/tmp/a b' " \
+    local err="$TEST_TMPDIR/err" rc=0 out
+    CLAUDE_CODE_BIN=" claude  --permission-mode  plan   --dangerously-skip-permissions " \
         RUN_CS_STDERR="$err" run_cs_ok demo --remote || { cat "$err"; return 1; }
-    assert_eq "cs --remote runs claude remote-control without the rest of CLAUDE_CODE_BIN; --remote's own --permission-mode sets the permission mode of the sessions it starts. Dropped: --append-system-prompt \"be brief\"  --add-dir '/tmp/a b'" \
+    assert_eq "cs --remote runs claude remote-control without the rest of CLAUDE_CODE_BIN; --remote's own --permission-mode sets the permission mode of the sessions it starts. Dropped: --permission-mode  plan   --dangerously-skip-permissions" \
         "$(strip_ansi < "$err" | grep -F 'Dropped:')" "the dropped text is named exactly" || { cat "$err"; return 1; }
     assert_eq "[remote-control][--name][demo][--permission-mode][default][--spawn=same-dir]" "$(log_value argv)" \
         "remote-control gets none of it" || return 1
+    rm -rf "${CS_SESSIONS_ROOT:?}/demo" "$FAKE_CLAUDE_LOG"
+    out=$(CLAUDE_CODE_BIN="claude --permission-mode 'ask claude first'" "$CS_BIN" demo --remote 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a quoted mode is refused" || { printf '%s\n' "$out"; return 1; }
+    assert_eq "Error: CLAUDE_CODE_BIN carries --permission-mode 'ask claude first', which cs --remote cannot pass to claude remote-control: it drops only the options that set the permission mode, which --remote's --permission-mode replaces. Set CLAUDE_CODE_BIN to the command alone, or with only permission options, for --remote." \
+        "$(printf '%s' "$out" | strip_ansi)" "the refusal names every word after the command, the command word inside them too" || return 1
+    assert_file_not_exists "$FAKE_CLAUDE_LOG" "claude never ran" || return 1
+}
+
+# The options that set or loosen the permission mode in Claude Code 2.1.299's
+# parser are dropped: a mode option takes the next word or a value after "=",
+# and a mode option with nothing after it has no value to take.
+test_remote_drops_each_permission_option() {
+    local bin err="$TEST_TMPDIR/err"
+    for bin in "claude --dangerously-skip-permissions" \
+        "claude --allow-dangerously-skip-permissions" \
+        "claude --enable-auto-mode" \
+        "claude --permission-mode=acceptEdits" \
+        "claude --permission-mode manual" \
+        "claude --inherit-permission-mode dontAsk" \
+        "claude --inherit-permission-mode=auto" \
+        "claude --permission-mode default --permission-mode"; do
+        rm -rf "${CS_SESSIONS_ROOT:?}/demo" "$FAKE_CLAUDE_LOG"
+        CLAUDE_CODE_BIN="$bin" RUN_CS_STDERR="$err" run_cs_ok demo --remote || { echo "  with CLAUDE_CODE_BIN=$bin"; cat "$err"; return 1; }
+        assert_eq "cs --remote runs claude remote-control without the rest of CLAUDE_CODE_BIN; --remote's own --permission-mode sets the permission mode of the sessions it starts. Dropped: ${bin#claude }" \
+            "$(strip_ansi < "$err" | grep -F 'Dropped:')" "the line names what $bin dropped" || { cat "$err"; return 1; }
+        assert_eq "[remote-control][--name][demo][--permission-mode][default][--spawn=same-dir]" "$(log_value argv)" \
+            "remote-control gets none of $bin's options" || return 1
+    done
+}
+
+# Any other option, a restrictive one too, would be lost on the sessions
+# remote-control starts, so it is refused by name before anything is opened.
+# A mode option's value is checked against claude's modes, so an option in
+# its place is not dropped with it.
+test_remote_refuses_options_it_cannot_drop_before_opening_anything() {
+    local rest named rc out
+    for rest in "--disallowedTools Bash" "--settings /x.json" "--sandbox" "--foo" \
+        "--permission-mode plan --disallowedTools Bash" "--permission-mode --sandbox" \
+        "--plan-mode-required" "--dangerously-skip-permissions=1"; do
+        rc=0
+        out=$(CLAUDE_CODE_BIN="claude $rest" "$CS_BIN" demo --remote 2>&1) || rc=$?
+        assert_eq "1" "$rc" "claude $rest is refused" || { printf '%s\n' "$out"; return 1; }
+        named="$rest"
+        [ "$rest" != "--permission-mode plan --disallowedTools Bash" ] || named="--disallowedTools Bash"
+        assert_eq "Error: CLAUDE_CODE_BIN carries $named, which cs --remote cannot pass to claude remote-control: it drops only the options that set the permission mode, which --remote's --permission-mode replaces. Set CLAUDE_CODE_BIN to the command alone, or with only permission options, for --remote." \
+            "$(printf '%s' "$out" | strip_ansi)" "the refusal names what claude $rest carries that cs cannot drop" || return 1
+        assert_file_not_exists "$FAKE_CLAUDE_LOG" "claude never ran for claude $rest" || return 1
+        [ ! -e "$CS_SESSIONS_ROOT/demo" ] || { echo "  FAIL: claude $rest created the session"; return 1; }
+    done
+}
+
+# Inside tmux, on a session that exists, the refusal comes before the window,
+# the lock and remote.pid, and leaves the session dir as it was.
+test_remote_inside_tmux_refuses_an_option_it_cannot_drop_before_any_window() {
+    "$CS_BIN" demo > /dev/null 2>&1 <<< "" || return 1
+    rm -f "$FAKE_CLAUDE_LOG"
+    local sdir="$CS_SESSIONS_ROOT/demo" before rc=0 out
+    before=$(cd "$sdir" && find . -print | sort)
+    out=$(CLAUDE_CODE_BIN="claude --sandbox" TMUX="/tmp/fake,1,0" "$CS_BIN" demo --remote 2>&1) || rc=$?
+    assert_eq "1" "$rc" "claude --sandbox is refused inside tmux" || { printf '%s\n' "$out"; return 1; }
+    assert_eq "Error: CLAUDE_CODE_BIN carries --sandbox, which cs --remote cannot pass to claude remote-control: it drops only the options that set the permission mode, which --remote's --permission-mode replaces. Set CLAUDE_CODE_BIN to the command alone, or with only permission options, for --remote." \
+        "$(printf '%s' "$out" | strip_ansi)" "the refusal is on the caller's terminal" || return 1
+    assert_eq "" "$(grep -e '^new-session' -e '^new-window' "$FAKE_TMUX_LOG" 2>/dev/null || true)" "no window is opened" || return 1
+    assert_file_not_exists "$sdir/.cs/session.lock" "no lock is taken" || return 1
+    assert_file_not_exists "$sdir/.cs/local/remote.pid" "no remote.pid is written" || return 1
+    assert_eq "$before" "$(cd "$sdir" && find . -print | sort)" "the session dir is as it was" || return 1
+    assert_file_not_exists "$FAKE_CLAUDE_LOG" "claude never ran" || return 1
 }
 
 # The window is handed the claude checked here, an absolute path with no
@@ -492,8 +562,10 @@ test_remote_window_gets_the_command_alone_and_the_line_shows_once() {
 }
 
 # CLAUDE_CODE_BIN's command word is what runs remote-control, so a wrapper in
-# front of claude is that word. One whose --version fails, as BSD env's does,
-# is refused by the version check, after the line naming what was dropped.
+# front of claude is that word. Its own words are no permission options and
+# refuse it by name; one carrying only permission options whose --version
+# fails, as BSD env's does, is refused by the version check, after the line
+# naming what was dropped.
 test_remote_with_a_wrapper_whose_version_check_fails_is_refused() {
     cat > "$TEST_TMPDIR/bin/with-env" << 'EOF'
 #!/bin/sh
@@ -504,8 +576,13 @@ EOF
     chmod +x "$TEST_TMPDIR/bin/with-env"
     local rc=0 out
     out=$(CLAUDE_CODE_BIN="with-env FOO=1 claude" "$CS_BIN" demo --remote 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the wrapper's own words refuse it" || { printf '%s\n' "$out"; return 1; }
+    assert_eq "Error: CLAUDE_CODE_BIN carries FOO=1 claude, which cs --remote cannot pass to with-env remote-control: it drops only the options that set the permission mode, which --remote's --permission-mode replaces. Set CLAUDE_CODE_BIN to the command alone, or with only permission options, for --remote." \
+        "$(printf '%s' "$out" | strip_ansi)" "the refusal names the wrapper's words" || return 1
+    rc=0
+    out=$(CLAUDE_CODE_BIN="with-env --dangerously-skip-permissions" "$CS_BIN" demo --remote 2>&1) || rc=$?
     assert_eq "1" "$rc" "the wrapper is refused" || { printf '%s\n' "$out"; return 1; }
-    assert_eq "cs --remote runs with-env remote-control without the rest of CLAUDE_CODE_BIN; --remote's own --permission-mode sets the permission mode of the sessions it starts. Dropped: FOO=1 claude
+    assert_eq "cs --remote runs with-env remote-control without the rest of CLAUDE_CODE_BIN; --remote's own --permission-mode sets the permission mode of the sessions it starts. Dropped: --dangerously-skip-permissions
 Error: cs --remote needs Claude Code 2.1.299 or later for claude remote-control; $TEST_TMPDIR/bin/with-env --version exited with status 1." \
         "$(printf '%s' "$out" | strip_ansi)" "the line names the wrapper and what was dropped, the refusal its version check" || return 1
     assert_file_not_exists "$TEST_TMPDIR/wrapper.log" "the wrapper never ran remote-control" || return 1
@@ -514,9 +591,10 @@ Error: cs --remote needs Claude Code 2.1.299 or later for claude remote-control;
 }
 
 # A wrapper whose --version passes, as 1Password's op does (2.30.0, past the
-# floor by number), is refused by name when something was dropped: its
-# output carries no "(Claude Code)", so the word is not claude, and nothing
-# is opened.
+# floor by number), is refused by name: `op run -- claude` by its own words,
+# before op runs at all, and op carrying only permission options when they
+# are dropped, since its output carries no "(Claude Code)", so the word is
+# not claude. Nothing is opened.
 test_remote_refuses_a_wrapper_whose_version_is_not_claude_codes() {
     cat > "$TEST_TMPDIR/bin/op" << 'EOF'
 #!/bin/sh
@@ -527,8 +605,13 @@ EOF
     chmod +x "$TEST_TMPDIR/bin/op"
     local rc=0 out
     out=$(CLAUDE_CODE_BIN="op run -- claude" "$CS_BIN" demo --remote 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the wrapper's own words refuse it" || { printf '%s\n' "$out"; return 1; }
+    assert_eq "Error: CLAUDE_CODE_BIN carries run -- claude, which cs --remote cannot pass to op remote-control: it drops only the options that set the permission mode, which --remote's --permission-mode replaces. Set CLAUDE_CODE_BIN to the command alone, or with only permission options, for --remote." \
+        "$(printf '%s' "$out" | strip_ansi)" "the refusal names the wrapper's words" || return 1
+    rc=0
+    out=$(CLAUDE_CODE_BIN="op --permission-mode plan" "$CS_BIN" demo --remote 2>&1) || rc=$?
     assert_eq "1" "$rc" "the wrapper is refused" || { printf '%s\n' "$out"; return 1; }
-    assert_eq "cs --remote runs op remote-control without the rest of CLAUDE_CODE_BIN; --remote's own --permission-mode sets the permission mode of the sessions it starts. Dropped: run -- claude
+    assert_eq "cs --remote runs op remote-control without the rest of CLAUDE_CODE_BIN; --remote's own --permission-mode sets the permission mode of the sessions it starts. Dropped: --permission-mode plan
 Error: cs --remote runs op remote-control, and op is not Claude Code: op --version printed \"2.30.0\". Set CLAUDE_CODE_BIN to claude itself for --remote." \
         "$(printf '%s' "$out" | strip_ansi)" "the line names the wrapper and what was dropped, the refusal what its --version printed" || return 1
     assert_file_not_exists "$TEST_TMPDIR/wrapper.log" "the wrapper never ran remote-control" || return 1
@@ -824,6 +907,9 @@ run_test test_remote_refuses_a_claude_that_names_no_version
 run_test test_remote_refuses_a_claude_whose_version_check_fails
 run_test test_remote_drops_options_carried_in_claude_code_bin_and_says_so
 run_test test_remote_names_dropped_options_exactly_as_written
+run_test test_remote_drops_each_permission_option
+run_test test_remote_refuses_options_it_cannot_drop_before_opening_anything
+run_test test_remote_inside_tmux_refuses_an_option_it_cannot_drop_before_any_window
 run_test test_remote_window_gets_the_command_alone_and_the_line_shows_once
 run_test test_remote_with_a_wrapper_whose_version_check_fails_is_refused
 run_test test_remote_refuses_a_wrapper_whose_version_is_not_claude_codes
