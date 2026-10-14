@@ -640,7 +640,8 @@ _cs_hand_made_vault() {  # root
 # True when a path lies in the session at <root> by its spelling (as typed,
 # or under the root's physical path, the spelling an adopted session is
 # written by) but a write to it lands outside the root; prints where it lands,
-# as a plain name cut at 160 characters.
+# as a plain name cut at 160 characters, or one of two phrases when that
+# cannot be named.
 # A vault set up by hand mounts anywhere, from .cs/local/pre-open, so while
 # one exists the four vault links, and a .cs/narrative-archive link (which
 # cs -narrative rotate uses as it is), may lead out. That covers an encrypted
