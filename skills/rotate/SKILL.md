@@ -25,7 +25,7 @@ one-key rotation it exists for.
 handoffs in its vault: every `.cs/handoffs/` below means
 `.cs/private/handoffs/`, step 9 arms `.cs/private/pending-handoff`, and the
 session log is `.cs/private/session.log`. Commit nothing from the vault:
-skip steps 4, 6 and 8 for handoffs (the prune's "git tracks it" rule then
+step 8's commit stages no handoff (the prune's "git tracks it" rule then
 keeps every one). If `.cs/private` is a link to a missing directory, the
 vault is locked: tell the user to mount it and stop.
 
@@ -150,7 +150,7 @@ vault is locked: tell the user to mount it and stop.
    `assumed`. When you cannot recall which label fits, `assumed` is the
    honest answer and costs nothing. Write `none` for an empty category.
 
-   Four rules govern the body, all following from where it goes: step 4
+   Four rules govern the body, all following from where it goes: step 8
    commits it, and the next conversation reads it as its opening prompt.
 
    - **Redact.** API keys, tokens, passwords, personally identifying
@@ -167,7 +167,7 @@ vault is locked: tell the user to mount it and stop.
      `.cs/handoffs/` is tracked, so writing one here publishes it;
      credentials live in `cs -secrets`. Name the secret's purpose instead:
      "the deploy token, in `cs -secrets get DEPLOY_TOKEN`".
-     Re-read the finished body before step 4 commits it, for secrets and
+     Re-read the finished body before step 8 commits it, for secrets and
      for the detail this rule names: an exact reading is where a secret
      hides, and a verbatim quote is where personal detail does.
    - **Reference committed work; restate what a successor cannot recover.**
@@ -187,30 +187,34 @@ vault is locked: tell the user to mount it and stop.
    runs when context is already hot, and a compaction can land before you
    finish. The first Write carries the frontmatter, Next Step, Settled and
    rejected, and Conversation-only facts: the ledger, which dies with the
-   conversation. Commit that (step 4) before continuing. The second pass
-   then APPENDS sections 4-9 (step 5), recoverable from the repo if this
-   rotation never finishes, and lands as a second commit. Append, never a
-   second Write: a Write replaces the whole file and re-emits pass one from
-   whatever context you have by then. Never rewrite the first commit
-   either; it is the only faithful copy of pass one.
-4. Commit the first pass. Stage the handoff by name. Re-read the body for
-   secrets first (the Redact rule above) — the same re-read runs again before
-   step 6, because pass two quotes files and code, and a secret can sit in
-   either.
+   conversation. The second pass then APPENDS sections 4-9 (step 5),
+   recoverable from the repo if this rotation never finishes. Append, never
+   a second Write: a Write replaces the whole file and re-emits pass one
+   from whatever context you have by then, and the file pass one wrote is
+   the only faithful copy of it.
 
-   Before staging any path in steps 4, 6 or 8, run
+   Pass one needs no commit of its own. It is on disk once the Write
+   returns, and the autosave hook (`autosave-commits.sh`, which runs
+   `git add -A` into this conversation's shadow ref on every Write and
+   Edit) keeps a copy wherever git does not ignore `.cs/`; where `.cs/` is
+   ignored, no step commits the handoff at all. So the rotation commits once,
+   in step 8, after pass two and the retire step.
+4. Check whether the repo ignores the handoff, and re-read pass one. Re-read
+   the body for secrets first (the Redact rule above): the same re-read runs
+   again in step 6, because pass two quotes files and code, and a secret can
+   sit in either.
+
+   Before staging any path in step 8, run
    `git check-ignore -q --no-index -- <path>`, one path per call (`-q` takes
-   only one). Exit 0 means the repo ignores it; a repo that ignores `.cs/`
-   does so to keep session notes out of a public repo. Never `git add -f`
-   an ignored path, even when a plain `git add` fails on it: skip that commit,
-   leave the file on disk, and say so in your reply. The handoff still works
-   uncommitted; step 9 arms it by basename.
+   only one), starting with the handoff now. Exit 0 means the repo ignores
+   it; a repo that ignores `.cs/` does so to keep session notes out of a
+   public repo. Never `git add -f` an ignored path, even when a plain
+   `git add` fails on it: leave it out of the commit, leave the file on
+   disk, and say so in your reply. The handoff still works uncommitted;
+   step 9 arms it by basename.
 5. Append the second pass with Edit or `cat >>`, never Write.
-6. Second commit for the appended body, unless step 4 found the handoff
-   ignored. Re-read it for secrets and the detail the Redact rule names first.
-
-   Once both commits land, the handoff's CONTENT is safe: nothing left to
-   lose. It is not yet armed — that is deliberate, see step 9.
+6. Re-read the appended body for secrets and the detail the Redact rule
+   names.
 7. Retire this machine's leftovers: for every OTHER file in `.cs/handoffs/`
    whose frontmatter still says `status: unconsumed`, flip that one
    frontmatter line to `status: superseded` — but only when its `parent:`
@@ -256,7 +260,7 @@ vault is locked: tell the user to mount it and stop.
    time: mtime would read as "all new" on a fresh machine and prune nothing,
    while saying nothing about when the handoff was written. Stage the
    deletions with step 8's commit.
-8. Archive the native task list's completed rows, then commit. Run
+8. Archive completed task rows, then make the rotation's one commit. Run
    `cs -archive-tasks plan` once; its `answer:` line is the session's
    standing answer, given once and kept in `.cs/local/task-archive`:
 
@@ -276,12 +280,21 @@ vault is locked: tell the user to mount it and stop.
    rotation. The highest-numbered row always stays in the live list, so
    Claude Code never hands an archived number to a new task.
 
-   Then commit the supersedings, every consumed handoff whose uncommitted
-   change is a `## Successor report` appended by the conversation that took
-   it over, the archive directory `cs -archive-tasks run` named (unless it
+   Then make the rotation's one commit. Stage by name, skipping every
+   ignored path (the step 4 check): this handoff, the supersedings, every
+   consumed handoff whose uncommitted change is a `## Successor report`
+   appended by the conversation that took it over, step 7's prune
+   deletions, the archive directory `cs -archive-tasks run` named (unless it
    sits in the vault, under `.cs/private/`), and any tracked session state,
-   like narratives. Stage those paths by name, skipping every ignored one
-   (the step 4 check).
+   like narratives. Commit them as one new commit, never an amend, with the
+   subject `session: handoff <basename>`: the handoff's basename without
+   `.md`, as in `session: handoff 2026-10-14-continue-f5-plan`. Use that
+   subject as written and invent no other; a `cs:` subject is one cs writes
+   itself. When every path is ignored there is nothing to commit; say so in
+   your reply.
+
+   Once the commit lands, the handoff's CONTENT is safe: nothing left to
+   lose. It is not yet armed — that is deliberate, see step 9.
 9. Arm it, LAST: write its basename (no path) to `.cs/local/pending-handoff`
    (`.cs/private/pending-handoff` in an encrypted session).
    Machine-local state — never commit it. Run this once from the session
