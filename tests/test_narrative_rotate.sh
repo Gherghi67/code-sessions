@@ -803,6 +803,52 @@ test_named_rotate_under_budget_is_a_noop() {
     assert_output_contains "$output" "nothing to rotate:.*(budget" "must name the budget it is under" || return 1
 }
 
+# Rotating cuts the narrative a running conversation appends to: from inside
+# another session that waits for the target to close. A plain terminal and a
+# base rotating its own feature are the user, as before.
+test_named_rotate_from_another_session_refuses_a_live_target() {
+    _make_narrative "$LIVE" 10 500
+    local before; before=$(_bytes "$LIVE")
+    sleep 300 &
+    local live_pid=$!
+    echo "$live_pid" > "$SESSION_DIR/.cs/session.lock"
+    local output rc=0
+    output=$(CLAUDE_SESSION_NAME=other "$CS_BIN" test-session -narrative rotate 2>&1) || rc=$?
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    assert_eq "1" "$rc" "the rotate exits 1" || return 1
+    assert_eq "Error: session other cannot rotate the narrative of session test-session while it is live (pid $live_pid); --force does not override that from another session. Close test-session first." \
+        "$output" "the refusal names both sessions" || return 1
+    assert_eq "$before" "$(_bytes "$LIVE")" "the narrative is untouched" || return 1
+    assert_not_exists "$ARCHIVE_DIR" "nothing is archived" || return 1
+}
+
+test_named_rotate_from_a_plain_shell_rotates_a_live_session() {
+    _make_narrative "$LIVE" 10 500
+    sleep 300 &
+    local live_pid=$!
+    echo "$live_pid" > "$SESSION_DIR/.cs/session.lock"
+    _leave_session
+    local output rc=0
+    output=$("$CS_BIN" test-session -narrative rotate 2>&1) || rc=$?
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    assert_eq "0" "$rc" "a plain terminal rotates it (output: $output)" || return 1
+    assert_file_not_contains "$LIVE" "section 1$" "the oldest section is archived" || return 1
+}
+
+test_named_rotate_from_a_base_rotates_its_live_feature() {
+    local wt="$CS_SESSIONS_ROOT/test-session@feat"
+    mkdir -p "$wt/.cs/local" "$wt/.cs/memory"
+    _make_narrative "$wt/.cs/memory/narrative.alice.md" 10 500
+    sleep 300 &
+    local live_pid=$!
+    echo "$live_pid" > "$wt/.cs/session.lock"
+    local output rc=0
+    output=$(CLAUDE_SESSION_NAME=test-session "$CS_BIN" test-session@feat -narrative rotate 2>&1) || rc=$?
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    assert_eq "0" "$rc" "the base rotates its own feature (output: $output)" || return 1
+    assert_file_not_contains "$wt/.cs/memory/narrative.alice.md" "section 1$" "the feature's oldest section is archived" || return 1
+}
+
 test_named_rotate_refuses_an_unknown_session() {
     _leave_session
     local output
@@ -1078,6 +1124,9 @@ run_test test_named_rotate_targets_the_named_session_not_the_ambient_one
 run_test test_named_rotate_on_a_worktree_uses_its_own_narrative
 run_test test_named_rotate_honours_the_caller_actor_over_the_session_identity
 run_test test_named_rotate_under_budget_is_a_noop
+run_test test_named_rotate_from_another_session_refuses_a_live_target
+run_test test_named_rotate_from_a_plain_shell_rotates_a_live_session
+run_test test_named_rotate_from_a_base_rotates_its_live_feature
 run_test test_named_rotate_refuses_an_unknown_session
 run_test test_named_rotate_refuses_a_timeline_linked_out_of_the_session
 run_test test_rotate_snapshot_name_is_not_predictable
