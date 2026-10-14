@@ -447,6 +447,10 @@ class Importer:
                              else "%s has no .cs folder" % tilde(base.source))
                 self.plan_orphans(base)
                 return base
+            if not self.all:
+                base.skip = "%s is a folder, not a session (no .cs); --all copies such folders, file by file" % tilde(base.source)
+                self.plan_orphans(base)
+                return base
             return self.plan_folder(base)
         if os.path.lexists(os.path.join(base.meta, "local", "pre-open")) or any(
                 os.path.islink(os.path.join(base.meta, sub)) for sub in VAULT_LINKS):

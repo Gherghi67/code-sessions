@@ -1281,6 +1281,22 @@ test_a_session_whose_folder_is_gone_brings_only_its_history() {
     assert_output_not_contains "$OUT" 'prompt history'
 }
 
+# A folder with no .cs is no session: --session NAME does not take it, as it
+# does not take a link to one; --all does.
+test_a_folder_that_is_no_session_is_copied_only_with_all() {
+    make_fixture
+    local status=0
+    mkdir -p "$CSROOT/plain/sub"
+    printf 'report\n' > "$CSROOT/plain/sub/report.json"
+    run_move --session plain --apply || status=$?
+    assert_eq 1 "$status" "a folder that is no session was taken by --session" || { echo "$OUT"; return 1; }
+    assert_output_contains "$OUT" '^  ! .*plain is a folder, not a session' || { echo "$OUT"; return 1; }
+    assert_not_exists "$PROFILE/sessions/plain" || return 1
+    run_move --all --apply || { echo "$OUT"; return 1; }
+    assert_output_contains "$OUT" '^plain (a folder, not a session)$' || return 1
+    assert_file_contains "$PROFILE/sessions/plain/sub/report.json" 'report'
+}
+
 # --all brings the folders beside the sessions too: one that is no session,
 # and the root's .voice, file by file, keeping what code-sessions changed;
 # .usage, .spawn and index.md stay, named once.
@@ -2608,6 +2624,7 @@ run_test test_a_session_cs_created_in_its_own_folder_is_copied_with_its_feature
 run_test test_a_session_without_a_repository_is_copied
 run_test test_a_session_inside_another_is_copied_once_and_linked
 run_test test_a_session_whose_folder_is_gone_brings_only_its_history
+run_test test_a_folder_that_is_no_session_is_copied_only_with_all
 run_test test_folders_beside_the_sessions_come_file_by_file
 run_test test_all_copies_every_session_and_ends_with_a_summary
 run_test test_all_still_refuses_a_name_code_sessions_uses_for_another_session
