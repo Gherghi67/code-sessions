@@ -212,10 +212,13 @@ _fresh_session() {  # name
 
 # Open session $1 with every one-time migration phase due: without the stamp
 # an open runs them all, as the first open under a new cs version does. What
-# the open prints goes to $TEST_TMPDIR/$1.out.
+# the open prints goes to $TEST_TMPDIR/$1.out, and its exit status to
+# $TEST_TMPDIR/$1.rc.
 _reopen_with_migration() {  # name
+    local rc=0
     rm -f "$CS_SESSIONS_ROOT/$1/.cs/local/migrated"
-    "$CS_BIN" "$1" <<< "" > "$TEST_TMPDIR/$1.out" 2>&1 || true
+    "$CS_BIN" "$1" <<< "" > "$TEST_TMPDIR/$1.out" 2>&1 || rc=$?
+    echo "$rc" > "$TEST_TMPDIR/$1.rc"
 }
 
 # Whether what the last open of session $1 printed has the whole line $2.
@@ -258,6 +261,9 @@ _with_wrap_text() {  # file
 DROPPED_OFFERS='Dropped the /sweep and /summary offers cs wrote into CLAUDE.local.md; it offers /wrap alone'
 POINTED_LOCAL='Pointed the session protocol cs wrote into CLAUDE.local.md at /wrap'
 POINTED_ROOT='Pointed the session protocol cs wrote into CLAUDE.md at /wrap'
+
+# What the open prints when it cannot read or rewrite CLAUDE.md.
+UNREWRITTEN_ROOT='could not rewrite CLAUDE.md; any /summary line cs wrote there still points at a command that is gone'
 
 # The cue block cs wrote from 2026-05-12, offering four options.
 _cue_block_with_triggers() {
@@ -635,6 +641,79 @@ test_open_leaves_claude_md_alone_where_cs_keeps_out_of_git() {
         || { echo "  FAIL: an open changed the excluded checkout's CLAUDE.md"; diff "$FIXTURES/session-claude-md-71c37d13.md" "$dir/CLAUDE.md" | head -20; return 1; }
 }
 
+# A CLAUDE.md whose first line that is not empty is not cs's "# Session
+# Documentation Protocol" heading is the user's, even when it holds a
+# /summary heading, protocol line or bullet exactly as cs wrote them: an open
+# leaves it byte for byte, in an adopted project where it is committed and in
+# a plain session.
+test_open_leaves_a_claude_md_cs_did_not_write_alone() {
+    local project="$TEST_TMPDIR/widget" dir
+    mkdir -p "$project"
+    printf '%s\n' '# Widget service' '' 'Build with make.' '' '## Summary Command' '' "$SUMMARY_LINE_CS_DIR" '' \
+        '## Habits' '' "$SUMMARY_BULLET" > "$project/CLAUDE.md"
+    (cd "$project" && git init -q && git add CLAUDE.md && git commit -qm init) \
+        || { echo "  FAIL: could not commit the project's CLAUDE.md"; return 1; }
+    cp "$project/CLAUDE.md" "$TEST_TMPDIR/widget.seeded"
+    (cd "$project" && "$CS_BIN" -adopt widget --yes) >/dev/null 2>&1 \
+        || { echo "  FAIL: could not adopt the project"; return 1; }
+    _reopen_with_migration widget
+    assert_eq 0 "$(cat "$TEST_TMPDIR/widget.rc")" "the adopted project opens" || { cat "$TEST_TMPDIR/widget.out"; return 1; }
+    cmp -s "$TEST_TMPDIR/widget.seeded" "$project/CLAUDE.md" \
+        || { echo "  FAIL: an open changed the adopted project's CLAUDE.md"; diff "$TEST_TMPDIR/widget.seeded" "$project/CLAUDE.md" | head -20; return 1; }
+    assert_eq "" "$(git -C "$project" status --porcelain -- CLAUDE.md)" "the project's CLAUDE.md stays as committed" || return 1
+    ! _open_printed widget "$POINTED_ROOT" \
+        || { echo "  FAIL: the open names a CLAUDE.md protocol cs did not write"; return 1; }
+
+    dir=$(_fresh_session own-rules)
+    printf '%s\n' '# Project rules' '' "$SUMMARY_BULLET" > "$dir/CLAUDE.md"
+    cp "$dir/CLAUDE.md" "$TEST_TMPDIR/own-rules.seeded"
+    _reopen_with_migration own-rules
+    cmp -s "$TEST_TMPDIR/own-rules.seeded" "$dir/CLAUDE.md" \
+        || { echo "  FAIL: an open changed the session's own CLAUDE.md"; diff "$TEST_TMPDIR/own-rules.seeded" "$dir/CLAUDE.md" | head -20; return 1; }
+    ! _open_printed own-rules "$POINTED_ROOT" \
+        || { echo "  FAIL: the open names a CLAUDE.md protocol cs did not write"; return 1; }
+}
+
+# A CLAUDE.md cs cannot read is named in one warning and left as it is; the
+# open goes on and writes no migration stamp, so the next open tries again.
+test_open_warns_and_goes_on_when_it_cannot_read_claude_md() {
+    local dir
+    dir=$(_session_from_template unreadable session-claude-md-71c37d13.md commit)
+    chmod 000 "$dir/CLAUDE.md"
+    if [ -r "$dir/CLAUDE.md" ]; then
+        chmod 644 "$dir/CLAUDE.md"
+        echo "  FAIL: precondition: CLAUDE.md is unreadable (this test cannot run as root)"
+        return 1
+    fi
+    _reopen_with_migration unreadable
+    chmod 644 "$dir/CLAUDE.md"
+    assert_eq 0 "$(cat "$TEST_TMPDIR/unreadable.rc")" "the open goes on" || { cat "$TEST_TMPDIR/unreadable.out"; return 1; }
+    assert_eq 1 "$(grep -Fxc -- "$UNREWRITTEN_ROOT" "$TEST_TMPDIR/unreadable.out")" \
+        "the open names CLAUDE.md once" || { cat "$TEST_TMPDIR/unreadable.out"; return 1; }
+    cmp -s "$FIXTURES/session-claude-md-71c37d13.md" "$dir/CLAUDE.md" \
+        || { echo "  FAIL: an open changed the unreadable CLAUDE.md"; return 1; }
+    assert_file_not_exists "$dir/.cs/local/migrated" "the next open tries again" || return 1
+}
+
+# A CLAUDE.md that is a link to a file outside the session is named in one
+# warning, and the file it leads to is left as it is; the open goes on and
+# writes no migration stamp, so the next open tries again.
+test_open_warns_and_goes_on_when_claude_md_links_out_of_the_session() {
+    local dir shared="$TEST_TMPDIR/shared"
+    dir=$(_session_from_template linked-out session-claude-md-71c37d13.md untracked)
+    mkdir -p "$shared"
+    mv "$dir/CLAUDE.md" "$shared/CLAUDE.md"
+    ln -s "$shared/CLAUDE.md" "$dir/CLAUDE.md"
+    _reopen_with_migration linked-out
+    assert_eq 0 "$(cat "$TEST_TMPDIR/linked-out.rc")" "the open goes on" || { cat "$TEST_TMPDIR/linked-out.out"; return 1; }
+    assert_eq 1 "$(grep -Fxc -- "$UNREWRITTEN_ROOT" "$TEST_TMPDIR/linked-out.out")" \
+        "the open names CLAUDE.md once" || { cat "$TEST_TMPDIR/linked-out.out"; return 1; }
+    cmp -s "$FIXTURES/session-claude-md-71c37d13.md" "$shared/CLAUDE.md" \
+        || { echo "  FAIL: an open changed the file outside the session"; return 1; }
+    assert_symlink "$dir/CLAUDE.md" "CLAUDE.md stays a link" || return 1
+    assert_file_not_exists "$dir/.cs/local/migrated" "the next open tries again" || return 1
+}
+
 echo "Running test_wrap_cues.sh"
 echo ""
 run_test test_new_session_has_wrap_cues_block
@@ -654,4 +733,7 @@ run_test test_open_rewrites_the_summary_text_in_a_claude_md_cs_wrote_without_sen
 run_test test_open_rewrites_the_summary_text_in_both_files_of_a_split_claude_md
 run_test test_open_rewrites_the_summary_text_of_a_claude_md_moved_whole
 run_test test_open_leaves_claude_md_alone_where_cs_keeps_out_of_git
+run_test test_open_leaves_a_claude_md_cs_did_not_write_alone
+run_test test_open_warns_and_goes_on_when_it_cannot_read_claude_md
+run_test test_open_warns_and_goes_on_when_claude_md_links_out_of_the_session
 report_results
