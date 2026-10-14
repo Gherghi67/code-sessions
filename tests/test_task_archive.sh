@@ -21,6 +21,9 @@ setup() {
     export CLAUDE_SESSION_DIR="$SESSION_DIR"
     export CLAUDE_SESSION_META_DIR="$SESSION_DIR/.cs"
     export CLAUDE_CODE_TASK_LIST_ID="demo"
+    # The archive is kept per actor; pinned so the fixture never reads the
+    # machine's git identity.
+    export CS_ACTOR="alice"
     STORE="$HOME/.claude/tasks/demo"
     mkdir -p "$STORE"
     : > "$STORE/.lock"
@@ -31,7 +34,7 @@ teardown() {
         rm -rf "$TEST_TMPDIR"
     fi
     unset CS_SESSIONS_ROOT CLAUDE_CODE_BIN CS_NO_UPDATE_CHECK CS_NO_ITERM2 2>/dev/null || true
-    unset CLAUDE_SESSION_NAME CLAUDE_SESSION_DIR CLAUDE_SESSION_META_DIR CLAUDE_CODE_TASK_LIST_ID 2>/dev/null || true
+    unset CLAUDE_SESSION_NAME CLAUDE_SESSION_DIR CLAUDE_SESSION_META_DIR CLAUDE_CODE_TASK_LIST_ID CS_ACTOR 2>/dev/null || true
 }
 
 # A task row as Claude Code writes it: JSON.stringify(task, null, 2), no
@@ -53,10 +56,10 @@ _live_ids() {
     printf '%s\n' $ids | sort -n | tr '\n' ' ' | sed 's/ $//'
 }
 
-# The ids in the archive's json/ directory, ascending, space-separated.
+# The ids in the actor's json/ directories, ascending, space-separated.
 _archived_ids() {
     local f ids=""
-    for f in "$SESSION_DIR"/.cs/task-archive/*/json/*.json; do
+    for f in "$SESSION_DIR"/.cs/task-archive/*/"${1:-alice}"/json/*.json; do
         [ -f "$f" ] || continue
         ids="$ids $(basename "$f" .json)"
     done
@@ -88,10 +91,10 @@ test_completed_rows_move_and_the_highest_stays_live() {
     assert_eq "4 9 12" "$(_live_ids)" "open rows and the highest row stay in the store" || return 1
     assert_eq "3 7" "$(_archived_ids)" "the other completed rows are archived" || return 1
     local day
-    day=$(basename "$(dirname "$(dirname "$(ls "$SESSION_DIR"/.cs/task-archive/*/json/3.json)")")")
-    cmp -s "$TEST_TMPDIR/3.orig" "$SESSION_DIR/.cs/task-archive/$day/json/3.json" \
+    day=$(ls "$SESSION_DIR/.cs/task-archive")
+    cmp -s "$TEST_TMPDIR/3.orig" "$SESSION_DIR/.cs/task-archive/$day/alice/json/3.json" \
         || { echo "  FAIL: the archived row is not byte-identical to the store's"; return 1; }
-    assert_eq "Archived 2 completed task rows to .cs/task-archive/$day (#12 stays live: it is the highest id, and Claude Code numbers new tasks after it)" \
+    assert_eq "Archived 2 completed task rows to .cs/task-archive/$day/alice (#12 stays live: it is the highest id, and Claude Code numbers new tasks after it)" \
         "$out" "run reports what it moved and what it kept" || return 1
 }
 
@@ -108,7 +111,7 @@ test_every_completed_row_moves_when_the_highest_is_open() {
     assert_eq "1 2" "$(_archived_ids)" "both completed rows are archived" || return 1
     local day
     day=$(ls "$SESSION_DIR/.cs/task-archive")
-    assert_eq "Archived 2 completed task rows to .cs/task-archive/$day" "$out" "no row is kept back" || return 1
+    assert_eq "Archived 2 completed task rows to .cs/task-archive/$day/alice" "$out" "no row is kept back" || return 1
 }
 
 # The property the rule exists for: after a run, the highest id in the store is
@@ -297,8 +300,8 @@ test_an_encrypted_session_archives_into_its_vault() {
     local out day
     out=$("$CS_BIN" -archive-tasks run 2>&1) || { echo "  FAIL: run failed: $out"; return 1; }
     day=$(ls "$SESSION_DIR/.cs/vault-mnt/private/task-archive")
-    assert_eq "Archived 1 completed task row to .cs/private/task-archive/$day" "$out" "the vault path is reported" || return 1
-    assert_exists "$SESSION_DIR/.cs/vault-mnt/private/task-archive/$day/json/1.json" "the row is in the vault" || return 1
+    assert_eq "Archived 1 completed task row to .cs/private/task-archive/$day/alice" "$out" "the vault path is reported" || return 1
+    assert_exists "$SESSION_DIR/.cs/vault-mnt/private/task-archive/$day/alice/json/1.json" "the row is in the vault" || return 1
     assert_not_exists "$SESSION_DIR/.cs/task-archive" "nothing is written in plaintext" || return 1
 }
 
@@ -390,7 +393,7 @@ Second paragraph."
     _agree || return 1
     "$CS_BIN" -archive-tasks run > /dev/null 2>&1 || { echo "  FAIL: run failed"; return 1; }
     local md
-    md=$(ls "$SESSION_DIR"/.cs/task-archive/*/tasks.md)
+    md=$(ls "$SESSION_DIR"/.cs/task-archive/*/alice/tasks.md)
     case "$(head -n 1 "$md")" in
         "# Task list as of "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]" "[0-9][0-9]:[0-9][0-9]" (before archiving completed rows)") ;;
         *) echo "  FAIL: unexpected header: $(head -n 1 "$md")"; return 1 ;;
@@ -426,7 +429,7 @@ test_a_second_run_the_same_day_adds_to_the_archive() {
     "$CS_BIN" -archive-tasks run > /dev/null 2>&1 || { echo "  FAIL: second run failed"; return 1; }
     assert_eq "1 2 4" "$(_archived_ids)" "both runs' rows are archived" || return 1
     assert_eq "3 5" "$(_live_ids)" "the open rows stay" || return 1
-    assert_eq "2" "$(grep -c '^# Task list as of ' "$SESSION_DIR"/.cs/task-archive/*/tasks.md)" \
+    assert_eq "2" "$(grep -c '^# Task list as of ' "$SESSION_DIR"/.cs/task-archive/*/alice/tasks.md)" \
         "tasks.md holds both snapshots" || return 1
 }
 
@@ -441,22 +444,54 @@ test_an_archived_row_is_never_overwritten() {
     "$CS_BIN" -archive-tasks run > /dev/null 2>&1 || { echo "  FAIL: first run failed"; return 1; }
     local day archived
     day=$(ls "$SESSION_DIR/.cs/task-archive")
-    archived="$SESSION_DIR/.cs/task-archive/$day/json/1.json"
+    archived="$SESSION_DIR/.cs/task-archive/$day/alice/json/1.json"
     cp "$archived" "$TEST_TMPDIR/1.archived"
     _row 1 completed "Another one"
     local out rc=0
     out=$("$CS_BIN" -archive-tasks run 2>&1) || rc=$?
     assert_eq "1" "$rc" "a different row under an archived number refuses" || return 1
-    assert_eq "Error: refusing to archive: .cs/task-archive/$day/json/1.json already holds a different row #1; nothing archived" \
+    assert_eq "Error: refusing to archive: .cs/task-archive/$day/alice/json/1.json already holds a different row #1; nothing archived" \
         "$out" "the clash is named" || return 1
     cmp -s "$TEST_TMPDIR/1.archived" "$archived" || { echo "  FAIL: the archived row was overwritten"; return 1; }
     assert_eq "1 2" "$(_live_ids)" "the live row stays" || return 1
-    assert_eq "1" "$(grep -c '^# Task list as of ' "$SESSION_DIR/.cs/task-archive/$day/tasks.md")" \
+    assert_eq "1" "$(grep -c '^# Task list as of ' "$SESSION_DIR/.cs/task-archive/$day/alice/tasks.md")" \
         "a refused run adds no snapshot" || return 1
     cp "$archived" "$STORE/1.json"
     out=$("$CS_BIN" -archive-tasks run 2>&1) || { echo "  FAIL: run over an identical copy failed: $out"; return 1; }
     assert_eq "2" "$(_live_ids)" "an identical row finishes moving" || return 1
     cmp -s "$TEST_TMPDIR/1.archived" "$archived" || { echo "  FAIL: the archived row changed"; return 1; }
+}
+
+# Every machine numbers its own copy of a list from 1, so two actors archiving
+# the same day write different rows under the same numbers. Each actor's rows
+# and snapshot go under .cs/task-archive/<date>/<actor>/ (the actor slug
+# narratives use), so neither run touches the other's paths and a pull of the
+# other's archive adds files instead of meeting them.
+test_each_actor_archives_into_its_own_directory() {
+    _row 1 completed "Alice's first"
+    _row 2 pending "Alice's second"
+    _agree || return 1
+    "$CS_BIN" -archive-tasks run > /dev/null 2>&1 || { echo "  FAIL: alice's run failed"; return 1; }
+    cp "$SESSION_DIR"/.cs/task-archive/*/alice/json/1.json "$TEST_TMPDIR/1.alice"
+    rm -rf "$STORE"
+    mkdir -p "$STORE"
+    _row 1 completed "Bob's first"
+    _row 2 pending "Bob's second"
+    cp "$STORE/1.json" "$TEST_TMPDIR/1.bob"
+    local out day
+    out=$(CS_ACTOR="Bob Example" "$CS_BIN" -archive-tasks run 2>&1) || { echo "  FAIL: bob's run failed: $out"; return 1; }
+    day=$(ls "$SESSION_DIR/.cs/task-archive")
+    assert_eq "Archived 1 completed task row to .cs/task-archive/$day/bob-example" "$out" "bob's run names his directory" || return 1
+    assert_eq "alice bob-example" "$(ls "$SESSION_DIR/.cs/task-archive/$day" | tr '\n' ' ' | sed 's/ $//')" \
+        "one directory per actor under the day" || return 1
+    cmp -s "$TEST_TMPDIR/1.alice" "$SESSION_DIR/.cs/task-archive/$day/alice/json/1.json" \
+        || { echo "  FAIL: alice's row #1 changed"; return 1; }
+    cmp -s "$TEST_TMPDIR/1.bob" "$SESSION_DIR/.cs/task-archive/$day/bob-example/json/1.json" \
+        || { echo "  FAIL: bob's row #1 is not his store's bytes"; return 1; }
+    assert_eq "1" "$(grep -c '^# Task list as of ' "$SESSION_DIR/.cs/task-archive/$day/alice/tasks.md")" \
+        "alice's snapshot is hers alone" || return 1
+    assert_eq "1" "$(grep -c '^## #1 \[completed\] Bob' "$SESSION_DIR/.cs/task-archive/$day/bob-example/tasks.md")" \
+        "bob's snapshot holds his rows" || return 1
 }
 
 echo "Running test_task_archive.sh"
@@ -484,5 +519,6 @@ run_test test_plan_refuses_a_store_it_does_not_recognise
 run_test test_tasks_md_is_a_readable_snapshot_of_the_whole_list
 run_test test_a_second_run_the_same_day_adds_to_the_archive
 run_test test_an_archived_row_is_never_overwritten
+run_test test_each_actor_archives_into_its_own_directory
 
 report_results
