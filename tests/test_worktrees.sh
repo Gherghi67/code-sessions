@@ -1135,20 +1135,22 @@ test_integrate_refuses_foreign_live_base_lock() {
 }
 
 # Integrate reads the base's lock by live_lock_pid's rule: a lock of "-1",
-# "0" or "+<pid>" names no running conversation, so the next check speaks.
+# "0" or "+<pid>" names no running conversation, so integrate goes on: the
+# base's own HEAD, which the feature branch grew from, is already landed.
 test_integrate_reads_the_base_lock_by_the_one_lock_rule() {
     local base_dir
     integrate_fixture myproj fix-auth > /dev/null
     base_dir="$CS_SESSIONS_ROOT/myproj"
-    local missing="0000000000000000000000000000000000000000"
+    local landed
+    landed=$(git -C "$base_dir" rev-parse HEAD)
     local text output status
     for text in "-1" "0" "+$$"; do
         printf '%s\n' "$text" > "$base_dir/.cs/session.lock"
         status=0
         output=$(CLAUDE_SESSION_NAME="other" \
-            "$CS_BIN" myproj -integrate-feature fix-auth "$missing" -- true 2>&1) || status=$?
-        assert_eq "1" "$status" "integrate over a base lock of '$text' exits 1: $output" || return 1
-        assert_eq "Error: Commit not found in myproj: $missing" "$output" \
+            "$CS_BIN" myproj -integrate-feature fix-auth "$landed" -- true 2>&1) || status=$?
+        assert_eq "0" "$status" "integrate over a base lock of '$text' exits 0: $output" || return 1
+        assert_eq "already-integrated fix-auth $landed" "$output" \
             "a base lock of '$text' is not a live conversation" || return 1
     done
 }
