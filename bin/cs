@@ -14636,7 +14636,9 @@ main() {
                 shift
                 ;;
             --permission-mode)
-                [ $# -ge 2 ] || error "--permission-mode needs a mode: cs $session_name --remote --permission-mode <mode>"
+                case "${2:-}" in
+                    ''|-*) error "--permission-mode needs a mode: cs $session_name --remote --permission-mode <mode>" ;;
+                esac
                 remote_mode="$2"
                 shift 2
                 ;;
