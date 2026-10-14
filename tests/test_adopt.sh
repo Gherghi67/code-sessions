@@ -810,8 +810,8 @@ test_adopt_gitignores_atomic_write_temps() {
 
 # Every open writes .cs/session.lock and .cs/session.mutex.lock. In a project
 # with its own .gitignore, adopt appends rules that hide the two, so git status
-# stays clean and a re-adopt commits neither, while the project's own lock
-# files (Cargo.lock) stay visible to git.
+# never lists them and the user's `git add -A` stages neither, while the
+# project's own lock files (Cargo.lock) stay visible to git.
 test_adopt_gitignores_the_session_locks() {
     local dir="$TEST_TMPDIR/owned-locks" f status
     mkdir -p "$dir"
@@ -827,11 +827,12 @@ test_adopt_gitignores_the_session_locks() {
     if git -C "$dir" check-ignore -q Cargo.lock; then
         echo "  FAIL: the project's own Cargo.lock is ignored"; return 1
     fi
-    status=$(git -C "$dir" status --porcelain)
-    assert_eq "?? Cargo.lock" "$status" "git status shows only the project's own file" || return 1
+    status=$(git -C "$dir" status --porcelain --untracked-files=all -- .cs/session.lock .cs/session.mutex.lock Cargo.lock)
+    assert_eq "?? Cargo.lock" "$status" "git status shows only the project's own lock file" || return 1
     rm "$CS_SESSIONS_ROOT/locks-session"
     (cd "$dir" && "$CS_BIN" -adopt locks-session --yes </dev/null >/dev/null 2>&1) || { echo "  FAIL: re-adopt failed"; return 1; }
-    assert_eq "" "$(git -C "$dir" log --format= --name-only | grep 'session\.' || true)" "no commit carries a session lock" || return 1
+    assert_eq "add 'Cargo.lock'" "$(git -C "$dir" add -A -n | grep -e 'session\.' -e 'Cargo\.lock')" \
+        "the user's git add -A stages the project's lock file and no session lock" || return 1
 }
 
 # A git checkout at <dir> whose .gitignore holds <content> exactly, with both
@@ -1019,15 +1020,17 @@ test_open_explains_the_rules_it_adds_to_a_tracked_gitignore() {
 }
 
 # A .gitignore git does not track is no one else's file: cs appends its rules
-# and says nothing. Adopt commits the rules it adds, so it says nothing either.
+# and says nothing. Adopt names the tracked one in its own line instead.
 test_open_adds_rules_to_an_untracked_gitignore_quietly() {
     local dir="$TEST_TMPDIR/own-project" out
     mkdir -p "$dir"
     (cd "$dir" && git init -q && printf 'node_modules/\n' > .gitignore && git add .gitignore && git commit -q -m team) \
         || { echo "  FAIL: fixture"; return 1; }
     out=$(cd "$dir" && "$CS_BIN" -adopt own-session 2>&1) || { echo "  FAIL: adopt failed: $out"; return 1; }
-    assert_output_not_contains "$out" "cs added" "adopt commits what it adds" || return 1
-    assert_eq "" "$(git -C "$dir" status --porcelain -- .gitignore)" "and leaves .gitignore committed" || return 1
+    assert_output_not_contains "$out" "cs added" "adopt prints no open's line about the rules" || return 1
+    assert_output_contains "$out" "cs committed nothing; it left .cs/, .gitignore and .gitattributes for you to commit" \
+        "but names .gitignore in its own" || return 1
+    assert_eq " M .gitignore" "$(git -C "$dir" status --porcelain -- .gitignore)" "and leaves the rules uncommitted" || return 1
     git -C "$dir" rm -q --cached .gitignore && git -C "$dir" commit -q -m untrack || { echo "  FAIL: untrack"; return 1; }
     grep -vxF '.cs/vault-mnt/' "$dir/.gitignore" > "$dir/.gitignore.own" && mv "$dir/.gitignore.own" "$dir/.gitignore"
     rm -f "$dir/.cs/local/migrated"
