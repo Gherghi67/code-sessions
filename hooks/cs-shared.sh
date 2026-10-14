@@ -281,7 +281,10 @@ cs_untrack_notice() {  # tracked, top, sub
 # untrack the project, whatever case the link spells the session's name in. A
 # directory laid out like a repository where git's own search from the one
 # asked about would find it, inside the session or out of it, is named before
-# git is asked anything.
+# git is asked anything. One inside the session is named relative to it, with
+# the HEAD to delete; one outside it is named by its whole path with no delete
+# advice, since it can be the user's own repository (a session inside a bare
+# repository or a checkout's .git).
 cs_tracked_files_notice() {  # dir, session_dir
     local real top prefix tracked status why failed meta sub rest n layout here="$1" missing=""
     while [ ! -e "$here" ] && [ ! -L "$here" ]; do
@@ -296,8 +299,16 @@ cs_tracked_files_notice() {  # dir, session_dir
     real=${real%$'\n'x}
     if layout=$(_cs_head_on_git_walk "$real" "$2"); then
         layout=$(_cs_plain_name "$layout" 160) || return 1
-        printf '%s holds HEAD, so git takes it for a repository and would run commands its config names (cs state must be a plain directory inside the session). Delete %s/HEAD, or cs -rm the session.\n' \
-            "$layout" "$layout"
+        case "$layout" in
+            /*)
+                printf '%s holds HEAD, so git takes it for a repository and would run commands its config names. cs -rm the session.\n' \
+                    "$layout"
+                ;;
+            *)
+                printf '%s holds HEAD, so git takes it for a repository and would run commands its config names (cs state must be a plain directory inside the session). Delete %s/HEAD, or cs -rm the session.\n' \
+                    "$layout" "$layout"
+                ;;
+        esac
         return 0
     fi
     # The repository's top and the directory's place in it, one line each from
