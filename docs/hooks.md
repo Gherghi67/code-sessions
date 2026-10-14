@@ -113,28 +113,54 @@ run, a `claude -p` from the Bash tool) sits below the launch pid as well and inh
 every export, so neither the environment nor the process tree tells the lead from
 its children.
 
-Instead, the lead claims its launch. On every `SessionStart` source, session-start.sh
+Instead, the lead claims its launch. Every launch exports `CS_LEAD_CLAIM=1` beside
+`CS_LEAD_PID`, and under it, on every `SessionStart` source, session-start.sh
 writes `.cs/local/lead-pid` as `<CS_LEAD_PID> <CLAUDE_PID> <session_id>`
 (`cs_lead_claim`). The claude carrying the launch pid always claims. Any other claude
 claims only when `ps` shows the launch pid among its ancestors, and only while no
-live claude holds the claim or the holder is one it started. The lead's
+live claude holds the claim or the holder is one it started. Reading the holder and
+writing the claim are one step under `.cs/local/lead-pid.mutex.lock`, so two claudes
+that start at once take turns. The lead's
 `SessionStart` runs before the lead can start anything, so the first claude under
 the launch to claim is the lead and keeps the claim while it lives; a claude the
 lead started before its own `SessionStart` ran (another plugin's `SessionStart` hook
-running `claude -p`) claims first and gives way when the lead's turn comes. A hook
+running `claude -p`) claims first and gives way when the lead's turn comes, and gives
+way too when the two claim at the same moment. A hook
 takes a claude as the lead (`cs_is_lead`) when `CLAUDE_PID` equals `CS_LEAD_PID` or
 the claim for this launch names `CLAUDE_PID`. A claim keyed by another launch pid
 counts for nothing, and every launch removes the file once it holds the session lock,
 before claude starts, so a claim cannot speak for a later launch that drew the same
-pid. The lead's `SessionEnd` removes the claim with the lock. A context-limit fork,
+pid. A claim whose claude pid is not a positive number (`0`, `00`, `-1`) or names no
+live claude holds nothing, so the lead claims over it. Only a regular file is a claim:
+a hook never follows a link in its place and writes neither through a link nor over
+a directory there, silently. A launch removes a link there; it refuses to open while
+a directory sits there, and names it, since cs does not remove a directory it did not
+make. The lead's `SessionEnd` removes the claim with the lock. A context-limit fork,
 an in-process `/clear` and a compaction keep the process, and the next start renews
 the claim under the conversation now running.
+
+The hooks take the first claude under the launch to claim for the lead, and that sets
+the contract for a `CLAUDE_CODE_BIN` wrapper: it must `exec` claude, or start exactly
+one claude. A claude session the wrapper runs before it `exec`s or starts the real one
+(a `claude -p` that tests a login, say) reaches its `SessionStart` while no claim stands
+and takes it. While that claude lives the launch has two leads: it rebinds
+`claude_session_id` to its own conversation, loads an armed rotation and raises the
+attention flag, and its end removes the session lock, so the real claude runs with no
+lock and the next `cs <name>` opens a duplicate without the collision menu. No hook can
+tell that claude from the real one.
+
+A session opened by a `cs` from before the claim carries no `CS_LEAD_CLAIM`, and an
+update can install these hooks while the session runs. Its hooks write and read no
+claim, so the claude carrying the launch pid is its only lead until the next
+`cs <name>`: on the resume arm, or behind a `CLAUDE_CODE_BIN` that forks claude, no
+claude rebinds the recorded conversation or removes the lock at its end, and a
+`claude -p` the lead runs cannot take either.
 
 A claude under the launch that the claim does not name is a guest. A hook *shows*
 it to be one (`cs_is_shown_nested_child`) when the claim names another claude that
 is still alive. Where no claim stands, because the lead's `SessionStart` could not write
-one (git tracks a file under `.cs/local`) or `ps` could not show the lead was under
-the launch, no claude shows as a guest: what a guest must not take from the lead (the armed
+one (git tracks a file under `.cs/local`), `ps` could not show the lead was under
+the launch, or the launch takes no claim, no claude shows as a guest: what a guest must not take from the lead (the armed
 rotation, the once-only queue digest, the attention flag) stays with whichever
 claude asks, and what a guest must not remove (the lock) stays where it is.
 
@@ -176,7 +202,7 @@ no session and do not ask.
 Runs when Claude Code starts a session:
 - Logs session start (including source: `startup`, `resume`, `clear`, `compact`) to `.cs/local/session.log` (`.cs/private/session.log` in an [encrypted session](session-layout.md#encrypted-sessions), and nowhere while its vault is locked) and appends a `started` event to `.cs/timeline.jsonl`
 - On all sources: clears the statusline's attention marker (`.cs/local/attention`) — a fresh session is attended by definition — and, inside iTerm2 with shell integration installed, cancels any dock bounce the previous conversation left running (`CS_NO_ITERM2=1` disables)
-- On all sources, for a claude `cs` launched: claims the launch in `.cs/local/lead-pid` (`cs_lead_claim`, see [How a hook finds its session](#how-a-hook-finds-its-session-cs-resolvesh)) before anything else asks which claude is the lead. It writes nothing while git tracks a file under `.cs/local`
+- On all sources, for a claude `cs` launched under `CS_LEAD_CLAIM`: claims the launch in `.cs/local/lead-pid` (`cs_lead_claim`, see [How a hook finds its session](#how-a-hook-finds-its-session-cs-resolvesh)) before anything else asks which claude is the lead. It writes nothing while git tracks a file under `.cs/local`
 - On all sources, **for the launched conversation only** (`cs_is_lead`, after this start's claim): rebinds `claude_session_id` in the machine-local `.cs/local/state` to the live conversation UUID from the hook input. Claude Code forks a new UUID when a conversation is continued past the context limit (the old transcript stays on disk), so the recorded binding can silently go stale and `cs` would resume the pre-fork conversation. Non-UUID session ids are ignored; each rebind is logged to `session.log`. Any other claude resolving the same session — teammate, `claude -p` child, desktop, walked-in — leaves the slot alone, so `cs <name>` always resumes the conversation that was opened and the `rotated` timeline lineage stays true
 - On `startup`/`resume` only: configures `transfer.hideRefs`, and recovers autosaved changes from a crash of **this conversation only** — it reads just the current conversation's own ref (`refs/worktree/cs/session/<conversation-uuid>`), so a live sibling session's in-flight ref is never misread as a crash. It also renames its ref across a context-fork UUID rebind (a clean continuation), claims any pre-upgrade shared ref once via a compare-and-swap delete, and garbage-collects other conversations' refs older than 14 days. The whole-tree restore (`checkout <shadow ref> -- .`) is offered only when the snapshot's recorded base HEAD still matches the current HEAD; if HEAD has moved since the snapshot (a commit or rebase) or the snapshot predates base recording, it instead warns and points at per-file inspection — a blanket restore over diverged history would overwrite committed work
 - On `resume` only: injects dynamic context (last activity, recent commits, objective, up to 5 most recently active sibling sessions with their objectives, followed by the full `cs -msg <session> "<body>"` send form and its `--kind` values, which appear only when a sibling exists to send to; scope-prompt.sh's digest already carries inbound mail, so this block is the only place cs states the outbound form. The block asks Claude to raise an AskUserQuestion before starting work that belongs to a sibling's stated goal rather than merely sharing its vocabulary, and to offer both paths rather than push one; the bar sits high on purpose, since a routing prompt that fires on every overlap becomes a block nobody reads), and a per-actor digest of shared memory/narrative activity since this actor's `.cs/local/watermark` (grouped by git author; and, for each teammate narrative that grew since that watermark, committed or not, the added-section count and the line the new content starts on, taken from the first added hunk of a diff against the working tree, so the actor reads its own file in full and only those lines of the others; a narrative nobody has committed goes unmentioned, since nothing exists to measure it against, and the hook names uncommitted growth again on every resume until a commit carries it), then advances the watermark and stamps the day's date into `last_resumed`
