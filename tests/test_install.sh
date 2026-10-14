@@ -1382,64 +1382,113 @@ test_install_and_uninstall_remove_retired_commands_cs_wrote() {
     assert_output_contains "$out" "Kept $(_bre_literal "$d/skillify.md"): cs did not write it" "uninstall names the kept command" || return 1
 }
 
-# RETIRED_COMMANDS names files inside ~/.claude/commands, and both removal
-# loops join each entry onto that directory. An entry with a path component
-# would reach outside it, so install and uninstall refuse the list, naming
-# the entry, before they change anything; a file cs wrote beside the commands
-# directory stays. The list is cs's own, so a scratch build carries the bad
-# entry.
-test_install_and_uninstall_refuse_a_retired_command_with_a_path() {
-    local repo="$TEST_TMPDIR/retired-path-repo" home="$TEST_TMPDIR/retired-path-home" out rc=0 f
-    _copy_build_inputs "$repo"
-    printf '%s\n' "RETIRED_COMMANDS+=('../x')" >> "$repo/lib/01-manifests.sh"
-    (cd "$repo" && bash build.sh > /dev/null) || { echo "  FAIL: build.sh failed"; return 1; }
-    for f in install.sh bin/cs; do
-        assert_eq "1" "$(grep -c "^RETIRED_COMMANDS+=('\.\./x')$" "$repo/$f")" "the scratch $f carries the entry" || return 1
-    done
-    mkdir -p "$home/.claude/commands"
-    _cs_shipped_content > "$home/.claude/x"
-    out=$(HOME="$home" bash "$repo/install.sh" 2>&1 < /dev/null) || rc=$?
-    assert_eq "1" "$rc" "install exit status" || { echo "$out"; return 1; }
-    assert_output_contains "$out" "Error: RETIRED_COMMANDS entry '\.\./x' is not a file name" "install names the entry" || return 1
-    assert_eq "$(_cs_shipped_content)" "$(cat "$home/.claude/x" 2>/dev/null)" "install keeps the file outside the commands directory" || return 1
-    assert_not_exists "$home/.local" "install deploys nothing" || return 1
-    assert_eq "" "$(ls -A "$home/.claude/commands")" "install leaves the commands directory empty" || return 1
-    mkdir -p "$home/.claude/hooks/cs"
-    _cs_shipped_content > "$home/.claude/hooks/cs/session-start.sh"
-    rc=0
-    out=$(printf 'y\n' | HOME="$home" "$repo/bin/cs" -uninstall 2>&1) || rc=$?
-    assert_eq "1" "$rc" "uninstall exit status" || { echo "$out"; return 1; }
-    assert_output_contains "$out" "Error: RETIRED_COMMANDS entry '\.\./x' is not a file name" "uninstall names the entry" || return 1
-    assert_eq "$(_cs_shipped_content)" "$(cat "$home/.claude/x" 2>/dev/null)" "uninstall keeps the file outside the commands directory" || return 1
-    assert_eq "$(_cs_shipped_content)" "$(cat "$home/.claude/hooks/cs/session-start.sh" 2>/dev/null)" "uninstall removes nothing" || return 1
+# Every path under directory $1, and each file's checksum, on stdout: two
+# listings are the same only when nothing there was added, removed or
+# rewritten.
+_tree_listing() {  # dir
+    (cd "$1" && find . -print | sort && find . -type f -exec cksum {} + | sort)
 }
 
-# An entry that is empty, '.' or '..' names the commands directory or its
-# parent, not a file in it. Install and uninstall refuse each one as they
-# refuse an entry with a path component: naming it, with nothing deployed and
-# nothing removed.
-test_install_and_uninstall_refuse_a_retired_command_that_names_no_file() {
-    local entry repo home out rc
-    for entry in '' '.' '..'; do
-        repo="$TEST_TMPDIR/retired-nofile-${#entry}-repo" home="$TEST_TMPDIR/retired-nofile-${#entry}-home"
-        _copy_build_inputs "$repo"
-        printf '%s\n' "RETIRED_COMMANDS+=('$entry')" >> "$repo/lib/01-manifests.sh"
-        (cd "$repo" && bash build.sh > /dev/null) || { echo "  FAIL: build.sh failed"; return 1; }
-        mkdir -p "$home/.claude/commands"
-        rc=0
-        out=$(HOME="$home" bash "$repo/install.sh" 2>&1 < /dev/null) || rc=$?
-        assert_eq "1" "$rc" "install exit status for '$entry'" || { echo "$out"; return 1; }
-        assert_output_contains "$out" "Error: RETIRED_COMMANDS entry '$(_bre_literal "$entry")' is not a file name" "install names the entry '$entry'" || return 1
-        assert_not_exists "$home/.local" "install deploys nothing for '$entry'" || return 1
-        assert_eq "" "$(ls -A "$home/.claude/commands")" "install leaves the commands directory empty for '$entry'" || return 1
-        mkdir -p "$home/.claude/hooks/cs"
-        _cs_shipped_content > "$home/.claude/hooks/cs/session-start.sh"
-        rc=0
-        out=$(printf 'y\n' | HOME="$home" "$repo/bin/cs" -uninstall 2>&1) || rc=$?
-        assert_eq "1" "$rc" "uninstall exit status for '$entry'" || { echo "$out"; return 1; }
-        assert_output_contains "$out" "Error: RETIRED_COMMANDS entry '$(_bre_literal "$entry")' is not a file name" "uninstall names the entry '$entry'" || return 1
-        assert_eq "$(_cs_shipped_content)" "$(cat "$home/.claude/hooks/cs/session-start.sh" 2>/dev/null)" "uninstall removes nothing for '$entry'" || return 1
+# Passes when the listing $1 (_tree_listing, taken earlier) still describes
+# directory $2; otherwise prints what differs.
+_assert_tree_unchanged() {  # listing, dir, message
+    local now
+    now=$(_tree_listing "$2")
+    if [ "$1" != "$now" ]; then
+        echo "  FAIL: $3"
+        diff <(printf '%s\n' "$1") <(printf '%s\n' "$now") | head -20
+        return 1
+    fi
+}
+
+# The retired lists (RETIRED_HOOKS, RETIRED_COMMANDS, RETIRED_SKILLS) name
+# files or directories inside one directory each, and install and uninstall
+# join every entry onto that directory. An entry that is not a plain name
+# would reach outside it, so both refuse the list, naming it and the entry,
+# before they change anything. The lists are cs's own, so a scratch build
+# carries the entry: $2 appended to list $1, refused as "not a $3 name".
+#
+# Install runs over a HOME holding what the entry could reach: the three
+# directories, a user's skill, an empty directory and a file cs wrote beside
+# them, and file $4 (a path under ~/.claude) with content cs wrote, when
+# given. Uninstall runs over the same HOME with the binaries, a hook cs wrote
+# and the status-line registration added: the first things it removes. Each
+# must leave the HOME exactly as it was.
+_install_and_uninstall_refuse_a_retired_entry() {  # list, entry, kind, [file under ~/.claude]
+    local list="$1" entry="$2" kind="$3" outside="${4:-}"
+    local repo="$TEST_TMPDIR/refused-${#entry}-repo" home="$TEST_TMPDIR/refused-${#entry}-home"
+    local refusal out rc f before
+    refusal="Error: $list entry '$(_bre_literal "$entry")' is not a $kind name"
+    _copy_build_inputs "$repo"
+    printf '%s\n' "$list+=('$entry')" >> "$repo/lib/01-manifests.sh"
+    (cd "$repo" && bash build.sh > /dev/null) || { echo "  FAIL: build.sh failed"; return 1; }
+    for f in install.sh bin/cs; do
+        assert_eq "1" "$(grep -c "^$list+=('$(_bre_literal "$entry")')$" "$repo/$f")" "the scratch $f carries the entry '$entry'" || return 1
     done
+
+    mkdir -p "$home/.claude/commands" "$home/.claude/hooks/cs" "$home/.claude/skills/mine" "$home/.claude/agents"
+    echo "my skill" > "$home/.claude/skills/mine/SKILL.md"
+    _cs_shipped_content > "$home/.claude/plugin-copy.json"
+    if [ -n "$outside" ]; then
+        mkdir -p "$(dirname "$home/.claude/$outside")"
+        _cs_shipped_content > "$home/.claude/$outside"
+    fi
+    before=$(_tree_listing "$home")
+    rc=0
+    out=$(HOME="$home" bash "$repo/install.sh" 2>&1 < /dev/null) || rc=$?
+    assert_eq "1" "$rc" "install exit status for '$entry'" || { echo "$out"; return 1; }
+    assert_output_contains "$out" "$refusal" "install names the list and the entry '$entry'" || return 1
+    _assert_tree_unchanged "$before" "$home" "install changes nothing for '$entry'" || return 1
+
+    mkdir -p "$home/.local/bin"
+    for f in cs cs-secrets cs-statusline cs-subagent-statusline cs-tui; do
+        echo "#!/bin/sh" > "$home/.local/bin/$f"
+    done
+    _cs_shipped_content > "$home/.claude/hooks/cs/session-start.sh"
+    jq -n --arg bin "$home/.local/bin" '{
+        statusLine: {type: "command", command: "\($bin)/cs-statusline", refreshInterval: 60},
+        subagentStatusLine: {type: "command", command: "\($bin)/cs-subagent-statusline"}
+    }' > "$home/.claude/settings.json"
+    before=$(_tree_listing "$home")
+    rc=0
+    out=$(printf 'y\n' | HOME="$home" "$repo/bin/cs" -uninstall 2>&1) || rc=$?
+    assert_eq "1" "$rc" "uninstall exit status for '$entry'" || { echo "$out"; return 1; }
+    assert_output_contains "$out" "$refusal" "uninstall names the list and the entry '$entry'" || return 1
+    _assert_tree_unchanged "$before" "$home" "uninstall changes nothing for '$entry'" || return 1
+}
+
+# Runs _install_and_uninstall_refuse_a_retired_entry for each entry that
+# names no file or directory in the list's directory: the empty one, '.' and
+# '..', which name that directory or its parent.
+_install_and_uninstall_refuse_retired_entries_that_name_nothing() {  # list, kind
+    local entry
+    for entry in '' '.' '..'; do
+        _install_and_uninstall_refuse_a_retired_entry "$1" "$entry" "$2" || return 1
+    done
+}
+
+test_install_and_uninstall_refuse_a_retired_command_with_a_path() {
+    _install_and_uninstall_refuse_a_retired_entry RETIRED_COMMANDS '../x' file x
+}
+
+test_install_and_uninstall_refuse_a_retired_command_that_names_no_file() {
+    _install_and_uninstall_refuse_retired_entries_that_name_nothing RETIRED_COMMANDS file
+}
+
+test_install_and_uninstall_refuse_a_retired_hook_with_a_path() {
+    _install_and_uninstall_refuse_a_retired_entry RETIRED_HOOKS '../../y' file y
+}
+
+test_install_and_uninstall_refuse_a_retired_hook_that_names_no_file() {
+    _install_and_uninstall_refuse_retired_entries_that_name_nothing RETIRED_HOOKS file
+}
+
+test_install_and_uninstall_refuse_a_retired_skill_with_a_path() {
+    _install_and_uninstall_refuse_a_retired_entry RETIRED_SKILLS '../x' directory x/SKILL.md
+}
+
+test_install_and_uninstall_refuse_a_retired_skill_that_names_no_directory() {
+    _install_and_uninstall_refuse_retired_entries_that_name_nothing RETIRED_SKILLS directory
 }
 
 # The cs mod shipped as cs-rotate before it took the name cs; a copy left
@@ -3095,6 +3144,10 @@ run_test test_install_removes_the_mod_under_its_old_name
 run_test test_install_and_uninstall_remove_retired_commands_cs_wrote
 run_test test_install_and_uninstall_refuse_a_retired_command_with_a_path
 run_test test_install_and_uninstall_refuse_a_retired_command_that_names_no_file
+run_test test_install_and_uninstall_refuse_a_retired_hook_with_a_path
+run_test test_install_and_uninstall_refuse_a_retired_hook_that_names_no_file
+run_test test_install_and_uninstall_refuse_a_retired_skill_with_a_path
+run_test test_install_and_uninstall_refuse_a_retired_skill_that_names_no_directory
 run_test test_rotate_wrap_keys_yes_creates_the_file_with_only_cs_block
 run_test test_rotate_wrap_keys_merge_into_the_existing_global_block
 run_test test_rotate_wrap_keys_never_overwrite_a_user_binding
