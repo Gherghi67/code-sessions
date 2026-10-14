@@ -3655,6 +3655,60 @@ test_worktree_create_dirty_base_consent_no() {
     assert_not_exists "$CS_SESSIONS_ROOT/myproj@t1" "no worktree without consent" || return 1
 }
 
+# A base whose index tracks .cs gives its features tracked mode, which expects
+# the checkout to carry .cs. Two checkouts do not: a cs/<feature> branch made
+# before the base tracked .cs, and a new branch cut from a HEAD that does not
+# hold the .cs the user has staged, after "y" at the dirty-base prompt.
+# Creating the feature is creating a session, so cs makes its .cs and the
+# feature opens, then opens again, like any other.
+_base_tracking_cs_since_its_second_commit() {  # base_dir, [branch made at the first commit]
+    mkdir -p "$1"
+    echo "# P" > "$1/README.md"
+    (cd "$1" && git init -q && git add -A && git commit -q -m init) || return 1
+    [ -z "${2:-}" ] || git -C "$1" branch "$2" || return 1
+    mkdir -p "$1/.cs/memory"
+    printf '# Session: proj\n' > "$1/.cs/README.md"
+    printf '.cs/local/\n.claude/settings.local.json\nCLAUDE.local.md\n' > "$1/.gitignore"
+    git -C "$1" add -A
+}
+
+test_tracked_feature_opens_on_a_branch_older_than_the_base_cs() {
+    local base="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" out rc=0
+    _base_tracking_cs_since_its_second_commit "$base" cs/t1 || { echo "  FAIL: fixture"; return 1; }
+    git -C "$base" commit -q -m "track .cs"
+    out=$("$CS_BIN" "proj@t1" < /dev/null 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the feature opens: $out" || return 1
+    assert_eq "cs/t1 tracked proj" \
+        "$(_read_state_keys "$wt/.cs/local/state" task_branch cs_mode cs_base)" "its state names the branch, the mode and the base" || return 1
+    rc=0
+    out=$("$CS_BIN" "proj@t1" < /dev/null 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the feature opens again: $out" || return 1
+}
+
+test_tracked_feature_opens_from_a_head_without_the_staged_cs() {
+    local base="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" out rc=0
+    _base_tracking_cs_since_its_second_commit "$base" || { echo "  FAIL: fixture"; return 1; }
+    out=$(printf 'y\n' | CS_ASSUME_TTY=1 "$CS_BIN" "proj@t1" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the feature opens after the consent: $out" || return 1
+    assert_eq "cs/t1 tracked proj" \
+        "$(_read_state_keys "$wt/.cs/local/state" task_branch cs_mode cs_base)" "its state names the branch, the mode and the base" || return 1
+    rc=0
+    out=$("$CS_BIN" "proj@t1" < /dev/null 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the feature opens again: $out" || return 1
+}
+
+# The values of <keys> in a state file, space-joined in the order asked.
+_read_state_keys() {  # state, key...
+    local state="$1" key out=""
+    shift
+    for key in "$@"; do
+        out="$out $(sed -n "s/^$key: //p" "$state" 2>/dev/null)"
+    done
+    printf '%s\n' "${out# }"
+}
+
+run_test test_tracked_feature_opens_on_a_branch_older_than_the_base_cs
+run_test test_tracked_feature_opens_from_a_head_without_the_staged_cs
 run_test test_worktree_create_dirty_base_consent_yes
 run_test test_worktree_create_dirty_base_consent_no
 run_test test_session_repo_pins_autocrlf_off
