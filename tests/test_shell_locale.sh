@@ -146,8 +146,8 @@ test_regenerable_filter_reads_paths_as_bytes() {
 
 # A trash call's budget counts bytes: under a 14-byte budget, the entry
 # café (5 bytes, 9 with the directory and its end) goes alone, and the next
-# two (6 and 5 bytes) share a call. Counted in characters, café would take
-# 8 and share the first call instead.
+# two (6 and 5 bytes) share a call. An awk that counted characters (gawk in
+# a UTF-8 locale) would give café 8 and put it in a call with ab.
 test_retire_trash_call_sizes_count_bytes() {
     local b out
     for b in $(every_bash); do
