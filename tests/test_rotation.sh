@@ -956,6 +956,23 @@ test_offer_reads_provenance_from_the_private_log() {
         "a handoff this checkout wrote carries no foreign label" || return 1
 }
 
+# An encrypted session keeps its handoffs in the vault, so the line about a
+# skipped handoff names that directory.
+test_skipped_handoff_line_names_the_vaults_handoff_store() {
+    _rot_session "rot-private-skip"
+    local dir="$CS_SESSIONS_ROOT/rot-private-skip" output
+    _seed_handoff "$dir" $'2026-07-16-e\033[1mb.md' "unconsumed"
+    mkdir -p "$TEST_TMPDIR/vault/private"
+    mv "$dir/.cs/local/session.log" "$TEST_TMPDIR/vault/private/session.log"
+    mv "$dir/.cs/handoffs" "$TEST_TMPDIR/vault/private/handoffs"
+    ln -s "$TEST_TMPDIR/vault/private" "$dir/.cs/private"
+    _mark_hand_made_vault "$dir"
+    output=$("$CS_BIN" rot-private-skip <<< "n" 2>&1) || true
+    assert_eq "Skipped a rotation handoff in .cs/private/handoffs/ whose file name is not plain (only letters, digits and ._@-, at most 160 characters); check who wrote it before renaming it." \
+        "$(grep '^Skipped a rotation handoff' <<< "$output")" \
+        "the line names the vault's handoff directory" || return 1
+}
+
 # A session with no recorded conversation (the first open after cs -adopt, a
 # clone whose .cs/local did not travel) has nothing to resume, so it starts a
 # new conversation without asking. A pending handoff is still a choice the user
@@ -1193,6 +1210,7 @@ run_test test_newest_of_multiple_handoffs_wins
 run_test test_offer_labels_a_handoff_from_another_checkout
 run_test test_offer_leaves_a_local_handoff_unlabelled
 run_test test_offer_reads_provenance_from_the_private_log
+run_test test_skipped_handoff_line_names_the_vaults_handoff_store
 run_test test_a_logged_command_naming_a_uuid_is_not_provenance
 run_test test_a_trailing_carriage_return_still_reads_as_local
 run_test test_armed_marker_outranks_a_later_sorting_orphan
