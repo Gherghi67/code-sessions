@@ -13234,7 +13234,7 @@ _remote_open_window() {  # session_name, permission_mode
 # A server that fails in its tmux window would take its error with the
 # window, so there it waits for a key first.
 _serve_remote() {  # session_name, session_dir, permission_mode, in_window
-    local name="$1" dir="$2" mode="$3" in_window="$4" rc=0 key=""
+    local name="$1" dir="$2" mode="$3" in_window="$4" rc=0
     _CS_REMOTE_PID_FILE="$dir/.cs/local/remote.pid"
     trap '[ -n "${TMUX:-}" ] || reset_tab_title; rm -f "$_CS_REMOTE_PID_FILE"; release_session_lock "$_CS_LOCK_META_DIR"; _detach_opened_vault' EXIT
     trap ':' HUP INT TERM
@@ -13243,14 +13243,14 @@ _serve_remote() {  # session_name, session_dir, permission_mode, in_window
     # Inside tmux the window keeps its remote:<name> name, which
     # _spawn_precheck reads to refuse a second window.
     [ -n "${TMUX:-}" ] || set_tab_title "cs: $name (remote)" "auto:$name"
-    cd "$dir"
+    cd "$dir" || error "could not enter $dir"
     info "Serving $name through claude remote-control (permission mode $mode). Ctrl-C or closing the window stops it."
     sh -c 'printf "%s\n" "$$" > "$1" || exit 1; shift; exec "$@"' cs-remote \
         "$_CS_REMOTE_PID_FILE" "$_CS_REMOTE_BIN" remote-control --name "$name" --permission-mode "$mode" \
         || rc=$?
     if [ "$rc" -ne 0 ] && [ -n "$in_window" ] && cs_interactive; then
         printf '%s\n' "claude remote-control exited with status $rc. Press a key to close this window."
-        IFS= read -rsn1 key || true
+        IFS= read -rsn1 _ || true
     fi
     exit "$rc"
 }
