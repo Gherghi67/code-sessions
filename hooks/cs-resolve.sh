@@ -172,21 +172,30 @@ _cs_find_session_root() {  # start_dir
 # before claude starts (lib/75-launch.sh) and a claim keyed by another launch
 # pid is ignored, so a claim cannot speak for a later launch.
 #
-# The lead's SessionEnd leaves the claim where it is. Claude Code runs
-# SessionEnd hooks while the ending claude still lives, and a hook may start
-# a claude of its own (another plugin's `claude -p` summarising the
-# conversation). That claude descends from the launch as the lead does: with
-# no claim it would claim the launch, rebind the recorded conversation and
-# take an armed rotation. With the claim in place it meets a live holder it
-# did not start, gives way and is shown a guest. Once the lead has exited the
-# claim names no live claude and holds nothing, and a claude the lead's hooks
-# left running cannot claim it: its parent chain ran through the lead, and an
-# orphan is handed to init (on Linux, to the nearest subreaper above it), so
-# the walk up from it no longer meets the launch pid. A CLAUDE_CODE_BIN that
-# makes itself a subreaper would keep such an orphan under the launch. The
-# one claude that still starts under the launch is the fresh conversation the
-# resume arm execs after a quick failure, and it carries the launch pid, so
-# it claims over the file.
+# The lead's terminal SessionEnd (not a /clear or a /resume) marks the claim
+# ended, "<CS_LEAD_PID> <CLAUDE_PID> <session_id> ended" (cs_lead_claim_end),
+# and leaves it. Claude Code runs SessionEnd hooks while the ending claude
+# still lives, and a hook may start a claude of its own (another plugin's
+# `claude -p` summarising the conversation). That claude descends from the
+# launch as the lead does: with no claim it would claim the launch, rebind
+# the recorded conversation and take an armed rotation. With the claim in
+# place it meets a live holder it did not start and gives way. Claude Code
+# aborts a SessionEnd hook that runs past its timeout and leaves what the
+# hook started running, so that claude may start or stop after the lead has
+# exited, when the claim names no live claude. The end mark keeps it a
+# guest all the same: every claude under an ended claim that is not the
+# lead is shown a guest, whether the claude the claim names lives or not.
+# It cannot claim the launch either: its parent chain ran through the lead,
+# and an orphan is handed to init (on Linux, to the nearest subreaper above
+# it), so the walk up from it no longer meets the launch pid. A
+# CLAUDE_CODE_BIN that makes itself a subreaper would keep such an orphan
+# under the launch, and it would claim over the ended claim of a lead that
+# has exited. The one claude that still starts under the launch is the fresh
+# conversation the resume arm execs after a quick failure. It carries the
+# launch pid and claims over the file; behind a wrapper that forks claude it
+# is the launch pid's child, and claims over the ended claim of a lead that
+# has exited. A lead that dies without its SessionEnd leaves a claim with no
+# end mark naming no live claude, which shows no one a guest.
 #
 # The claim counts only under a launch that clears the file and expects it:
 # such a launch exports CS_LEAD_CLAIM=1. A session a cs from before the claim
@@ -197,23 +206,31 @@ _cs_find_session_root() {  # start_dir
 # (cs_is_shown_nested_child). Every claude under the launch inherits the
 # marker: it says the launch takes claims, never which claude is the lead.
 
-# The claim for this launch: sets _CS_CLAIM_PID and returns 0, or returns 1
-# when there is none. Only a regular file is read: a link is never followed
-# (it could name a file outside the session), and a fifo would hang the read.
-# A pid that is not a positive number written plainly is no claim: kill -0
-# reads 0 as the caller's own process group and -1 as every process the user
-# owns, so either would pass for a live holder.
+# The claim for this launch: sets _CS_CLAIM_PID, _CS_CLAIM_SID and
+# _CS_CLAIM_ENDED (1 for an ended claim, else empty) and returns 0, or
+# returns 1 when there is none. Only a regular file is read: a link is never
+# followed (it could name a file outside the session), and a fifo would hang
+# the read. A pid that is not a positive number written plainly is no claim:
+# kill -0 reads 0 as the caller's own process group and -1 as every process
+# the user owns, so either would pass for a live holder. A fourth field other
+# than "ended", or a fifth field, is no claim either.
 _cs_lead_claim_read() {
-    local launch="" pid="" file
-    _CS_CLAIM_PID=""
+    local launch="" pid="" sid="" state="" extra="" file
+    _CS_CLAIM_PID="" _CS_CLAIM_SID="" _CS_CLAIM_ENDED=""
     [ "${CS_LEAD_CLAIM:-}" = 1 ] || return 1
     [ -n "${CLAUDE_SESSION_META_DIR:-}" ] && [ -n "${CS_LEAD_PID:-}" ] || return 1
     file="$CLAUDE_SESSION_META_DIR/local/lead-pid"
     [ ! -L "$file" ] && [ -f "$file" ] || return 1
-    { read -r launch pid _ < "$file"; } 2>/dev/null || return 1
+    { read -r launch pid sid state extra < "$file"; } 2>/dev/null || return 1
     [ "$launch" = "$CS_LEAD_PID" ] || return 1
     case "$pid" in ''|0*|*[!0-9]*) return 1 ;; esac
-    _CS_CLAIM_PID="$pid"
+    [ -z "$extra" ] || return 1
+    case "$state" in
+        '') ;;
+        ended) _CS_CLAIM_ENDED=1 ;;
+        *) return 1 ;;
+    esac
+    _CS_CLAIM_PID="$pid" _CS_CLAIM_SID="$sid"
 }
 
 # True when <ancestor> is <pid> or above it, by a walk up the parent pids ps
@@ -278,13 +295,32 @@ _cs_lead_claim_write() {  # local_dir session_id
     cs_write_atomic "$1/lead-pid" printf '%s %s %s\n' "$CS_LEAD_PID" "$CLAUDE_PID" "$2"
 }
 
+# Called by session-end.sh at the lead's terminal end (never a /clear or a
+# /resume), with the directory the claim is in: marks the claim ended when it
+# names this claude, under the same lock as the claim, and leaves any other
+# claim as it is. The claim keeps the lead's conversation id. It leaves the
+# cs_is_lead memo alone: an ended claim still names its lead.
+cs_lead_claim_end() {  # local_dir
+    [ "${CS_LEAD_CLAIM:-}" = 1 ] || return 1
+    [ -n "$1" ] && [ -n "${CS_LEAD_PID:-}" ] && [ -n "${CLAUDE_PID:-}" ] || return 1
+    _cs_with_state_lock "$1/lead-pid" _cs_lead_claim_end_write "$1"
+}
+
+# cs_lead_claim_end's step under the lock.
+_cs_lead_claim_end_write() {  # local_dir
+    [ ! -L "$1/lead-pid" ] && [ -f "$1/lead-pid" ] || return 1
+    _cs_lead_claim_read && [ "$_CS_CLAIM_PID" = "$CLAUDE_PID" ] && [ -z "$_CS_CLAIM_ENDED" ] || return 1
+    cs_write_atomic "$1/lead-pid" printf '%s %s %s ended\n' "$CS_LEAD_PID" "$CLAUDE_PID" "$_CS_CLAIM_SID"
+}
+
 # True when the claude a hook fires for is the lead: it carries the launch pid,
-# or the claim for this launch names it. Anything else is not the lead: a tmux
-# teammate (tmux starts it, and CS_LEAD_PID is absent from its environment), a
-# `claude -p` run from inside the session, a front end that walked in from the
-# directory. Both variables must be non-empty, not merely equal: unset on both
-# sides compares equal. Memoized, so a hook that asks more than once gets one
-# answer; cs_lead_claim drops the memo when it writes.
+# or the claim for this launch names it (an ended claim too, so the rest of
+# the lead's own SessionEnd still knows it). Anything else is not the lead: a
+# tmux teammate (tmux starts it, and CS_LEAD_PID is absent from its
+# environment), a `claude -p` run from inside the session, a front end that
+# walked in from the directory. Both variables must be non-empty, not merely
+# equal: unset on both sides compares equal. Memoized, so a hook that asks
+# more than once gets one answer; cs_lead_claim drops the memo when it writes.
 _CS_IS_LEAD=""
 cs_is_lead() {
     if [ -z "$_CS_IS_LEAD" ]; then
@@ -311,9 +347,13 @@ cs_is_nested_child() {
     ! cs_is_lead
 }
 
-# True when a live claude other than this one holds the claim, or the launch
-# takes no claim and this claude is not the lead by pid: the claude is shown
-# to be a guest, where cs_is_nested_child only fails to show it is the lead.
+# True when a live claude other than this one holds the claim, or the claim
+# is ended, or the launch takes no claim and this claude is not the lead by
+# pid: the claude is shown to be a guest, where cs_is_nested_child only fails
+# to show it is the lead. An ended claim shows every claude under the launch
+# that is not the lead a guest whether its claude lives or not: only the
+# lead's terminal end writes one, so such a claude is one the lead's
+# conversation left behind.
 # The two differ where no claim stands under a launch that takes claims
 # (the lead's SessionStart could not write one, or ps could not show it was
 # under the launch), and each caller takes the side that loses nothing. What a
@@ -328,7 +368,7 @@ cs_is_nested_child() {
 cs_is_shown_nested_child() {
     cs_is_nested_child || return 1
     [ "${CS_LEAD_CLAIM:-}" = 1 ] || return 0
-    _cs_lead_claim_read && kill -0 "$_CS_CLAIM_PID" 2>/dev/null
+    _cs_lead_claim_read && { [ -n "$_CS_CLAIM_ENDED" ] || kill -0 "$_CS_CLAIM_PID" 2>/dev/null; }
 }
 
 # Claude Code launches an agent-team teammate with --agent-id, --agent-name and
