@@ -1956,10 +1956,24 @@ mod tests {
         dir
     }
 
+    /// A process whose argv carries `remote-control --name <name>`, as the
+    /// server of session <name> does.
+    fn fake_server_process(name: &str) -> std::process::Child {
+        std::process::Command::new("perl")
+            .args(["-e", "sleep 30", "remote-control", "--name", name, "--permission-mode", "default"])
+            .spawn()
+            .unwrap()
+    }
+
+    fn dir_name(dir: &Path) -> String {
+        dir.file_name().unwrap().to_string_lossy().to_string()
+    }
+
     #[test]
     fn a_session_with_a_running_server_reads_as_served_with_both_pids() {
-        let mut server = std::process::Command::new("sleep").arg("30").spawn().unwrap();
-        let dir = served_session("live", &format!("{}\n", server.id()));
+        let dir = served_session("live", "");
+        let mut server = fake_server_process(&dir_name(&dir));
+        fs::write(dir.join(".cs/local/remote.pid"), format!("{}\n", server.id())).unwrap();
 
         let session = read_session(&dir, &HashMap::new());
 
@@ -1969,6 +1983,21 @@ mod tests {
             session.liveness,
             Liveness::Served { lock: std::process::id(), server: server.id() }
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A server whose release never ran leaves remote.pid naming its pid; once
+    /// another program has that pid, the session is not served.
+    #[test]
+    fn a_session_whose_server_pid_runs_another_program_reads_as_locked() {
+        let mut other = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let dir = served_session("reused", &format!("{}\n", other.id()));
+
+        let session = read_session(&dir, &HashMap::new());
+
+        let _ = other.kill();
+        let _ = other.wait();
+        assert_eq!(session.liveness, Liveness::Locked(std::process::id()));
         let _ = fs::remove_dir_all(&dir);
     }
 

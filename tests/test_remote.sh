@@ -309,6 +309,15 @@ make_open_session() {  # name
     printf '%s\n' "$!" > "$sdir/.cs/session.lock"
 }
 
+# A process standing in for the server of session <name>: its argv carries
+# `remote-control --name <name>`, as the server's does. Its pid is left in
+# FAKE_SERVER_PID. Called directly, for the reason make_open_session is.
+start_fake_server_process() {  # name
+    perl -e 'sleep 60' remote-control --name "$1" --permission-mode default > /dev/null 2>&1 &
+    FAKE_SERVER_PID=$!
+    STARTED_PIDS="$STARTED_PIDS $!"
+}
+
 # A running process the test started, as a stand-in for some other program.
 # Its pid is left in OTHER_PID. Called directly, for the reason
 # make_open_session is.
@@ -532,9 +541,8 @@ test_remote_window_close_reaches_the_server() {
 
 test_live_shows_a_served_session_as_remote_with_the_server_pid() {
     make_open_session demo
-    sleep 60 > /dev/null 2>&1 &
-    local spid=$!
-    STARTED_PIDS="$STARTED_PIDS $spid"
+    start_fake_server_process demo
+    local spid="$FAKE_SERVER_PID"
     printf '%s\n' "$spid" > "$CS_SESSIONS_ROOT/demo/.cs/local/remote.pid"
     local out
     out=$("$CS_BIN" -live 2>&1 | strip_ansi | grep ' demo ') || { echo "  FAIL: demo is not listed live"; return 1; }
@@ -543,9 +551,8 @@ test_live_shows_a_served_session_as_remote_with_the_server_pid() {
 
 test_doctor_reports_a_live_server_and_removes_a_stale_pid_file() {
     make_open_session live
-    sleep 60 > /dev/null 2>&1 &
-    local spid=$! dpid out
-    STARTED_PIDS="$STARTED_PIDS $spid"
+    start_fake_server_process live
+    local spid="$FAKE_SERVER_PID" dpid out
     printf '%s\n' "$spid" > "$CS_SESSIONS_ROOT/live/.cs/local/remote.pid"
     mkdir -p "$CS_SESSIONS_ROOT/gone/.cs/local"
     sleep 60 > /dev/null 2>&1 &
@@ -555,10 +562,35 @@ test_doctor_reports_a_live_server_and_removes_a_stale_pid_file() {
     out=$("$CS_BIN" -doctor 2>&1 | strip_ansi) || true
     assert_eq "  [ OK ] Remote: live is served by claude remote-control (PID $spid)" \
         "$(grep -F 'Remote: live' <<< "$out")" "a live server is reported" || return 1
-    assert_eq "  [WARN] Remote: gone's .cs/local/remote.pid named PID $dpid, which is not running, and nothing removed it when that server ended; removed it now." \
+    assert_eq "  [WARN] Remote: gone's .cs/local/remote.pid named PID $dpid, which is no longer gone's claude remote-control server, and nothing removed it when that server ended; removed it now." \
         "$(grep -F 'Remote: gone' <<< "$out")" "a stale pid file is reported" || return 1
     assert_file_not_exists "$CS_SESSIONS_ROOT/gone/.cs/local/remote.pid" "the stale pid file is removed" || return 1
     assert_file_exists "$CS_SESSIONS_ROOT/live/.cs/local/remote.pid" "a live server's pid file is kept" || return 1
+}
+
+# A server whose release never ran (its process group killed with SIGKILL, a
+# crash, a restart) leaves session.lock and remote.pid naming its pid. Once
+# that pid belongs to another program, the session is not served: -live does
+# not show it as remote, --force opens it as it opens any session whose lock
+# names a live process, and -doctor removes the file.
+test_a_remote_pid_another_process_took_over_serves_nothing() {
+    run_cs_ok demo || return 1
+    rm -f "$FAKE_CLAUDE_LOG"
+    start_unrelated_process
+    printf '%s\n' "$OTHER_PID" > "$CS_SESSIONS_ROOT/demo/.cs/session.lock"
+    printf '%s\n' "$OTHER_PID" > "$CS_SESSIONS_ROOT/demo/.cs/local/remote.pid"
+    local out
+    out=$("$CS_BIN" -live 2>&1 | strip_ansi | grep ' demo ') || { echo "  FAIL: demo is not listed live"; return 1; }
+    assert_output_not_contains "$out" "remote" "-live does not show the other process as demo's server: $out" || return 1
+    run_cs_ok demo --force || return 1
+    assert_eq "Overriding active session lock (PID $OTHER_PID)" \
+        "$(strip_ansi < "$TEST_TMPDIR/out" | grep -F 'Overriding active session lock')" "--force overrides the lock" || { cat "$TEST_TMPDIR/out"; return 1; }
+    assert_eq "1" "$(grep -c '^argv=' "$FAKE_CLAUDE_LOG")" "claude opened the session" || return 1
+    out=$("$CS_BIN" -doctor 2>&1 | strip_ansi) || true
+    assert_eq "  [WARN] Remote: demo's .cs/local/remote.pid named PID $OTHER_PID, which is no longer demo's claude remote-control server, and nothing removed it when that server ended; removed it now." \
+        "$(grep -F 'Remote: demo' <<< "$out")" "the doctor reports the file" || return 1
+    assert_file_not_exists "$CS_SESSIONS_ROOT/demo/.cs/local/remote.pid" "the doctor removes the file" || return 1
+    kill -0 "$OTHER_PID" 2>/dev/null || { echo "  FAIL: the other process was stopped"; return 1; }
 }
 
 run_test test_remote_runs_remote_control_by_absolute_path_with_the_default_mode
@@ -583,5 +615,6 @@ run_test test_remote_failure_in_its_window_waits_for_enter
 run_test test_remote_window_close_reaches_the_server
 run_test test_live_shows_a_served_session_as_remote_with_the_server_pid
 run_test test_doctor_reports_a_live_server_and_removes_a_stale_pid_file
+run_test test_a_remote_pid_another_process_took_over_serves_nothing
 
 report_results
