@@ -910,7 +910,9 @@ async function pressRotate($: EngineInterface) {
 }
 
 // Empties PRESSED while it names this conversation. A marker git tracks stays
-// as git has it, like every control file then.
+// as git has it, like every control file then. One that cannot be emptied
+// would make a later typed /rotate read as pressed, so that is said, and the
+// caller goes on.
 async function clearPressed($: EngineInterface) {
   const cwd = await $.session.cwd()
   let marker: string
@@ -922,6 +924,7 @@ async function clearPressed($: EngineInterface) {
   if (marker === '' || marker !== (await $.session.id())) return
   if (!(await sessionVetted($, cwd))) return
   await $.fs.write(`${cwd}/${PRESSED}`, '')
+    .catch(err => $.ui.toast(`cs: could not empty ${PRESSED}: ${String(err)}`))
 }
 
 // /wrap's last pass writes WRAPPED naming the conversation it ran in
