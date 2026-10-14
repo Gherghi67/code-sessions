@@ -75,12 +75,46 @@ test_adapters_translate_native_edits_to_common_events() {
     assert_eq "$CS_SESSION_DIR" "$(printf '%s' "$event" | jq -r .cwd)"
 }
 
+_assert_native_patch_snapshot() {  # original successful patch input
+    local event response='Success. Updated the following files:
+M login.ts
+M users.ts'
+    printf 'changed\n' > "$CS_SESSION_DIR/login.ts"
+    printf 'changed\n' > "$CS_SESSION_DIR/users.ts"
+    event=$(_codex_payload "$1" "$response" | cs_engine_call codex files_changed)
+    assert_eq '["login.ts","users.ts"]' "$(printf '%s' "$event" | jq -c .files)" || return 1
+    _codex_payload "$1" "$response" | "$CS_BIN" -codex-hook files-changed || return 1
+    assert_eq changed "$(git -C "$CS_SESSION_DIR" show "$REF:login.ts")" || return 1
+    assert_eq changed "$(git -C "$CS_SESSION_DIR" show "$REF:users.ts")" || return 1
+}
+
+test_native_patch_with_leading_whitespace_is_saved() {
+    _assert_native_patch_snapshot $' \t\n'"$_patch"
+}
+
+test_native_patch_with_extra_trailing_newlines_is_saved() {
+    _assert_native_patch_snapshot "$_patch"$'\n\n'
+}
+
+test_native_crlf_patch_is_saved_without_carriage_returns_in_paths() {
+    _assert_native_patch_snapshot "${_patch//$'\n'/$'\r\n'}"
+}
+
+test_native_patch_heredoc_wrappers_are_saved() {
+    local opener
+    for opener in '<<EOF' "<<'EOF'" '<<"EOF"'; do
+        _assert_native_patch_snapshot "$opener"$'\n'"$_patch"$'\nEOF\n' || return 1
+    done
+}
+
 test_failed_unrelated_and_pre_tool_events_emit_nothing() {
     local payload event
     payload=$(_codex_payload "$_patch")
     for event in '.hook_event_name = "PreToolUse"' '.tool_name = "exec_command"' \
         '.tool_response = "Failed to apply patch"' '.error = "denied"' \
-        '.tool_input.command = "*** Begin Patch\n*** End Patch"'; do
+        '.tool_input.command = "*** Begin Patch\n*** End Patch"' \
+        '.tool_input.command += "\nunexpected"' \
+        '.tool_input.command = "unexpected\n" + .tool_input.command'; do
         assert_eq '' "$(printf '%s' "$payload" | jq "$event" | cs_engine_call codex files_changed)" || return 1
     done
     payload=$(_claude_payload login.ts)
@@ -178,6 +212,10 @@ test_recovery_copy_supports_a_repository_without_an_index() {
 }
 
 run_test test_adapters_translate_native_edits_to_common_events
+run_test test_native_patch_with_leading_whitespace_is_saved
+run_test test_native_patch_with_extra_trailing_newlines_is_saved
+run_test test_native_crlf_patch_is_saved_without_carriage_returns_in_paths
+run_test test_native_patch_heredoc_wrappers_are_saved
 run_test test_failed_unrelated_and_pre_tool_events_emit_nothing
 run_test test_codex_batch_snapshots_both_files_and_preserves_index_and_head
 run_test test_claude_separate_edits_snapshot_the_same_final_tree

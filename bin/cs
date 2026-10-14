@@ -2544,15 +2544,19 @@ _cs_codex_adapter_files_changed() {
     # PostToolUse is only emitted after completion. Verify its success response
     # too: input alone also appears in pre-tool/permission hooks and failed calls.
     jq -c '
+        def trim_edges: gsub("^\\s+|\\s+$"; "");
         select(type == "object")
         | select(.hook_event_name == "PostToolUse" and .tool_name == "apply_patch")
         | select(.error == null and .is_error != true)
         | select(.tool_response | type == "string" and startswith("Success. Updated the following files:\n"))
         | select(.tool_input.command | type == "string")
         | . as $input
-        | (.tool_input.command | split("\n")) as $lines
-        | select($lines[0] == "*** Begin Patch" and $lines[-1] == "*** End Patch" or
-            $lines[0] == "*** Begin Patch" and $lines[-2] == "*** End Patch" and $lines[-1] == "")
+        | (.tool_input.command | gsub("\r\n"; "\n") | trim_edges | split("\n")
+            | if length >= 4 and
+                (.[0] == "<<EOF" or .[0] == "<<\u0027EOF\u0027" or .[0] == "<<\"EOF\"") and
+                (.[-1] | endswith("EOF")) then .[1:-1] else . end) as $lines
+        | select(($lines[0] | trim_edges) == "*** Begin Patch" and
+            ($lines[-1] | trim_edges) == "*** End Patch")
         | [$lines[] | select(test("^\\*\\*\\* (Add File|Delete File|Update File|Move to): .+"))
             | sub("^\\*\\*\\* (Add File|Delete File|Update File|Move to): "; "")]
           | unique as $files
