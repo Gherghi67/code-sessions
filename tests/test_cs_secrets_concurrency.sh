@@ -1300,6 +1300,19 @@ Error: Refusing to change the secrets of session 'test-session': could not acqui
     done
 }
 
+# A timeout with a leading zero is read in base 10: 08 is eight seconds, not
+# an octal number that does not exist. PID 1 holds the write lock.
+test_a_lock_timeout_with_a_leading_zero_is_read_in_base_ten() {
+    local lock="$CS_SESSIONS_ROOT/.secrets-lock.test-session" out rc=0
+    printf '1\n' > "$lock"
+    printf 'value-one' > "$TEST_TMPDIR/v1"
+    out=$(CS_SECRETS_LOCK_TIMEOUT=08 "$CS_SECRETS_BIN" set K1 < "$TEST_TMPDIR/v1" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "set exits 1 once it times out" || return 1
+    assert_eq "Error: timed out after 8s acquiring the secrets write lock for session 'test-session' (held by PID 1). If no such process is running, remove: $lock
+Error: Refusing to change the secrets of session 'test-session': could not acquire the secrets write lock" \
+        "$out" "CS_SECRETS_LOCK_TIMEOUT=08 waits eight seconds" || return 1
+}
+
 run_test test_encrypted_salt_write_is_atomic_under_concurrency
 run_test test_encrypted_signal_terminates_writer_mid_critical_section
 run_test test_encrypted_purge_serialized_with_concurrent_store
@@ -1321,5 +1334,6 @@ run_test test_a_rename_between_making_the_age_directory_and_setting_its_mode_is_
 run_test test_an_age_directory_that_cannot_be_made_or_secured_fails_the_age_lock_at_once
 run_test test_age_add_and_remove_wait_while_an_export_holds_the_age_lock
 run_test test_a_lock_timeout_that_is_not_a_positive_whole_number_is_the_default
+run_test test_a_lock_timeout_with_a_leading_zero_is_read_in_base_ten
 
 report_results
