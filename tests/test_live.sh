@@ -196,6 +196,27 @@ test_live_uptime_from_lock_mtime() {
     assert_output_contains "$out" "2h" "uptime reflects the lock mtime (~2h)" || return 1
 }
 
+# Homebrew's gnubin puts GNU stat first on a Mac's PATH. The uptime still
+# comes from the lock's mtime, and a lockless session's liveness from its
+# heartbeat's, read in whichever dialect the stat on PATH speaks, not the one
+# OSTYPE names.
+test_live_uptime_with_gnu_stat_first_on_a_mac() {
+    local gnubin
+    gnubin=$(_gnu_stat_first_dir) || { echo "    SKIP: no GNU stat on this machine"; return 77; }
+    make_heartbeat_session breathing
+    make_live_session up-one
+    local lock="$CS_SESSIONS_ROOT/up-one/.cs/session.lock"
+    if ! touch -A -020000 "$lock" 2>/dev/null; then
+        touch -d "2 hours ago" "$lock" 2>/dev/null || true
+    fi
+    local out rc=0
+    out="$(PATH="$gnubin:$PATH" OSTYPE=darwin "$CS_BIN" -live 2>&1)" || rc=$?
+    assert_eq "0" "$rc" "cs -live exits 0 with GNU stat first; output: $out" || return 1
+    assert_output_contains "$out" "breathing" "the heartbeat-live session is listed" || return 1
+    assert_output_contains "$out" "up-one" "the live session is listed" || return 1
+    assert_output_contains "$out" "2h" "uptime reflects the lock mtime (~2h)" || return 1
+}
+
 test_live_empty_root_message_and_exit0() {
     rm -rf "$CS_SESSIONS_ROOT"   # exercise the [ ! -d "$SESSIONS_ROOT" ] branch
     local out rc
@@ -404,7 +425,94 @@ test_live_ignores_record_whose_start_time_differs() {
         "record left by an exited session whose pid was reused is ignored" || return 1
 }
 
+# --- _scrub_controls: exact bytes out, under every bash and locale it meets ---
+
+# One line per input, "<case>=<hex of what _scrub_controls printed>", from a
+# fresh $1 with nothing in its environment but PATH, HOME and the locale
+# assignment in $2 (empty for no locale at all). Inputs are printf octal, so
+# the bytes do not depend on this file's own encoding.
+_scrub_grid() {  # bash, locale assignment or ""
+    local script='
+        source "$1"
+        hex() { od -An -tx1 | tr -d " \n"; }
+        row() { printf "%s=%s\n" "$1" "$(printf "$2" | _scrub_controls | hex)"; }
+        row multibyte  "h\303\251llo \342\234\223 \346\227\245\346\234\254"
+        row invalid_ff "a\377b"
+        row lone_lead  "a\303"
+        row del        "a\177b"
+        row c1_raw     "a\233b\200\237"
+        row c1_utf8    "a\302\233b"
+        row esc_seq    "\033[31mred\033[0m\033]0;t\007"
+        row empty      ""
+        row kept_ws    "a\tb\nc\n"
+        row c0_all     "\000\001\010\013\014\015\016\037x"
+        row no_newline "x"
+    '
+    if [ -n "$2" ]; then
+        env -i PATH="$PATH" HOME="$HOME" "$2" "$1" -c "$script" x "$SCRIPT_DIR/../lib/05-term.sh"
+    else
+        env -i PATH="$PATH" HOME="$HOME" "$1" -c "$script" x "$SCRIPT_DIR/../lib/05-term.sh"
+    fi
+}
+
+# What the grid must print: C0 but tab and newline gone, DEL gone, and every
+# byte from 0x80 up kept, whether it is valid UTF-8, a lone lead byte, 0xFF or
+# a raw C1 byte.
+SCRUB_GRID="multibyte=68c3a96c6c6f20e29c9320e697a5e69cac
+invalid_ff=61ff62
+lone_lead=61c3
+del=6162
+c1_raw=619b62809f
+c1_utf8=61c29b62
+esc_seq=5b33316d7265645b306d5d303b74
+empty=
+kept_ws=6109620a630a
+c0_all=78
+no_newline=78"
+
+test_scrub_controls_bytes_under_a_utf8_locale() {
+    local b utf8; utf8="$(utf8_locale)"
+    [ -n "$utf8" ] || return 77
+    for b in $(every_bash); do
+        assert_eq "$SCRUB_GRID" "$(_scrub_grid "$b" "LC_ALL=$utf8" 2>&1)" \
+            "$b under LC_ALL=$utf8" || return 1
+    done
+}
+
+test_scrub_controls_bytes_under_the_c_locale() {
+    local b
+    for b in $(every_bash); do
+        assert_eq "$SCRUB_GRID" "$(_scrub_grid "$b" "LC_ALL=C" 2>&1)" \
+            "$b under LC_ALL=C" || return 1
+    done
+}
+
+test_scrub_controls_bytes_with_no_locale_set() {
+    local b
+    for b in $(every_bash); do
+        assert_eq "$SCRUB_GRID" "$(_scrub_grid "$b" "" 2>&1)" \
+            "$b with no locale variable set" || return 1
+    done
+}
+
+# A caller pipes into _scrub_controls, so it runs in a forked copy of the
+# shell, and a bash linked against libintl can die when it changes its own
+# locale there. The trace shows every assignment the shell itself made while
+# the function ran; a locale handed to tr as an argument of env is none.
+test_scrub_controls_leaves_the_shells_own_locale_alone() {
+    local b out own
+    for b in $(every_bash); do
+        out="$(printf 'a\001b' | env -i PATH="$PATH" HOME="$HOME" "$b" -c '
+            source "$1"; set -x; _scrub_controls' x "$SCRIPT_DIR/../lib/05-term.sh" \
+            2>"$TEST_TMPDIR/trace")"
+        assert_eq "ab" "$out" "$b scrubs while traced" || return 1
+        own="$(shell_locale_assignments "$TEST_TMPDIR/trace")"
+        assert_eq "" "$own" "$b must not assign its own locale inside _scrub_controls" || return 1
+    done
+}
+
 run_test test_live_includes_heartbeat_session
+run_test test_live_uptime_with_gnu_stat_first_on_a_mac
 run_test test_live_excludes_cold_heartbeat_session
 run_test test_live_includes_live_excludes_dead
 run_test test_live_shows_presence_status
@@ -429,5 +537,9 @@ run_test test_live_actor_is_sessions_own_not_invoker
 run_test test_live_uptime_from_lock_mtime
 run_test test_live_empty_root_message_and_exit0
 run_test test_live_none_message_when_no_live
+run_test test_scrub_controls_bytes_under_a_utf8_locale
+run_test test_scrub_controls_bytes_under_the_c_locale
+run_test test_scrub_controls_bytes_with_no_locale_set
+run_test test_scrub_controls_leaves_the_shells_own_locale_alone
 
 report_results

@@ -301,14 +301,6 @@ test_threshold_env_overrides() {
     assert_output_contains "$out" "circuit breaker" "garbage override falls back to default 5" || return 1
 }
 
-test_defer_records_gate_declined() {
-    _qs_session "gd"
-    "$CS_BIN" -queue defer >/dev/null 2>&1 || { echo "  FAIL: defer exited non-zero"; return 1; }
-    assert_output_contains "$(_inbox)" '"event":"gate_declined"' "defer writes the event" || return 1
-    [ -f "$CLAUDE_SESSION_META_DIR/local/queue.declined" ] \
-        || { echo "  FAIL: existing declined stamp must still be written"; return 1; }
-}
-
 # Lay down an inbox whose last line lost its newline to an interrupted write,
 # and prove the fixture is genuinely torn before anything appends to it.
 _torn_inbox() {
@@ -325,24 +317,13 @@ _torn_inbox() {
 # A killed writer leaves the last line unterminated, so the next bare `>>`
 # lands on it and the tolerant `fromjson? // empty` reader drops the joined
 # line whole — losing the torn record AND the intact one written after it.
-# timeline.jsonl's writers were taught to repair the tail first; these two
-# append to notifications.jsonl and were not.
+# timeline.jsonl's writers repair the tail first, and so must the drain, which
+# appends to notifications.jsonl.
 # Read the inbox the way _queue_log and the digest do: raw lines through
 # `fromjson? // empty`, which drops a line holding two spliced records. A plain
 # `jq .` would hide the defect — jq parses concatenated objects as a stream and
 # reports both events from the very line the real readers throw away.
 _inbox_events() { _inbox | jq -rR 'fromjson? // empty | .event' 2>/dev/null; }
-
-test_defer_does_not_splice_onto_a_torn_inbox() {
-    _qs_session "tornd"
-    _torn_inbox || return 1
-    "$CS_BIN" -queue defer >/dev/null 2>&1 || { echo "  FAIL: defer exited non-zero"; return 1; }
-    local seen; seen=$(_inbox_events)
-    assert_output_contains "$seen" "gate_declined" \
-        "the record defer just wrote must survive the torn tail" || return 1
-    assert_output_contains "$seen" "breaker_tripped" \
-        "the intact record before the torn one must still parse" || return 1
-}
 
 test_drain_does_not_splice_onto_a_torn_inbox() {
     _qs_session "torna"
@@ -410,9 +391,11 @@ test_digest_includes_breaker_reason() {
     assert_output_contains "$out" "breaker tripped: failures" "digest names the trip" || return 1
 }
 
+# A gate_declined record is one an inbox can still hold from before the queue's
+# start moved to the cs mod's band; the digest does not report it.
 test_declined_only_inbox_stays_silent_but_cursor_advances() {
     _qs_session "dgs"
-    "$CS_BIN" -queue defer >/dev/null 2>&1 || return 1
+    printf '{"ts":1750000000,"event":"gate_declined"}\n' > "$CLAUDE_SESSION_META_DIR/local/notifications.jsonl"
     local out
     out=$(_prompt_turn "hello") || return 1
     assert_output_not_contains "$out" "while you were away" "decline alone is not digest-worthy" || return 1
@@ -570,8 +553,6 @@ run_test test_marker_inside_a_line_is_not_a_report
 run_test test_context_breaker_parks_and_missing_ctx_never_trips
 run_test test_five_hour_breaker_fresh_trips_stale_skips
 run_test test_threshold_env_overrides
-run_test test_defer_records_gate_declined
-run_test test_defer_does_not_splice_onto_a_torn_inbox
 run_test test_drain_does_not_splice_onto_a_torn_inbox
 run_test test_queue_log_prints_events_oldest_first
 run_test test_queue_log_empty_message

@@ -779,7 +779,7 @@ NUMSTAT
         CONTEXT="${CONTEXT}
 
 --- Session State ---
-$(printf '%s' "$DYNAMIC" | LC_ALL=C tr -d '\000-\010\013-\037\177')"
+$(printf '%s' "$DYNAMIC" | env LC_ALL=C tr -d '\000-\010\013-\037\177')"
     fi
 fi
 

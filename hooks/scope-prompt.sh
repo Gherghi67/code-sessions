@@ -5,6 +5,26 @@
 # No `set -e`: this hook must NEVER block the prompt. Every error path exits 0.
 set -uo pipefail
 
+# Whether $EPOCHREALTIME is a clock this hook can read. Bash 5 keeps its own
+# and ignores the environment; bash 3.2 has none and takes whatever the
+# environment holds. Its parts reach shell arithmetic, which runs a command
+# substitution held in an operand, so only seconds and a fraction that are
+# both digits count. Anything else reads as a shell without the variable.
+_EPOCH_CLOCK=""
+case "${EPOCHREALTIME:-}" in
+    *[.,]*)
+        case "${EPOCHREALTIME%%[.,]*}" in
+            ''|*[!0-9]*) ;;
+            *)
+                case "${EPOCHREALTIME#*[.,]}" in
+                    ''|*[!0-9]*) ;;
+                    *) _EPOCH_CLOCK=1 ;;
+                esac
+                ;;
+        esac
+        ;;
+esac
+
 # Launch mark, written before anything that can stall. The library parse-check,
 # its source and the session resolve below all run before the stage trace opens,
 # and a run the UserPromptSubmit cap kills in there would otherwise leave no line
@@ -27,10 +47,12 @@ fi
 if [ "${CS_SCOPE_TRACE_DISABLE:-}" != "1" ] && [ -n "${CLAUDE_SESSION_DIR:-}" ] \
     && [ -d "$_launch_local" ] && [ -d "$_launch_trace_dir" ] && [ ! -f "$_launch_local/disabled" ]; then
     _launch_ms=""
-    case "${EPOCHREALTIME:-}" in
+    _launch_t=""
+    [ -z "$_EPOCH_CLOCK" ] || _launch_t="$EPOCHREALTIME"
+    case "$_launch_t" in
         *[.,]*)
-            _launch_s="${EPOCHREALTIME%%[.,]*}"
-            _launch_f="${EPOCHREALTIME#*[.,]}"
+            _launch_s="${_launch_t%%[.,]*}"
+            _launch_f="${_launch_t#*[.,]}"
             _launch_ms=$(( 10#$_launch_s * 1000 + 10#${_launch_f:0:3} ))
             ;;
         *)
@@ -134,7 +156,8 @@ _MS=0
 # its own overhead in a hook under suspicion for being slow. Sets _MS rather
 # than printing, because capturing a print costs the subshell this avoids.
 _now_ms() {
-    local t="${EPOCHREALTIME:-}" s f
+    local t="" s f
+    [ -z "$_EPOCH_CLOCK" ] || t="$EPOCHREALTIME"
     case "$t" in
         *[.,]*)
             s="${t%%[.,]*}"
@@ -392,7 +415,9 @@ _build_mail_digest() {  # cs files dir: .cs/local, or .cs/private in an encrypte
     # tostr coerces any non-string field (a forged/hand-written document could
     # carry a number or object) to a string so a single bad document can't error
     # the whole jq program and suppress every valid message beside it.
-    MAIL_DIGEST=$(cat "${files[@]:0:5}" 2>/dev/null | jq -rRs --argjson total "$total" --arg ids "$ids" '
+    # Read whole with --rawfile: jq 1.7.1's -R splits a multibyte character at
+    # its 4096-byte read buffer and shows a replacement character in its place.
+    MAIL_DIGEST=$(cat "${files[@]:0:5}" 2>/dev/null | jq -rn --rawfile docs /dev/stdin --argjson total "$total" --arg ids "$ids" '
         def tostr: if type == "string" then . else tostring end;
         # Sender and message id come from a document any same-user process
         # can write; a quote or ">" must not break out of the tag attribute.
@@ -402,7 +427,7 @@ _build_mail_digest() {  # cs files dir: .cs/local, or .cs/private in an encrypte
         # and rendering all of them would inject unbounded context every
         # prompt (this digest is prepended after the scope cap, so nothing
         # downstream would trim it).
-        [split("\n")[] | select(length > 0) | (fromjson? // empty)][0:5] as $m |
+        [$docs | split("\n")[] | select(length > 0) | (fromjson? // empty)][0:5] as $m |
         # The header shows even when nothing in the window parsed: staying
         # silent while the badge counts N unread is the one outcome this
         # persistent digest exists to prevent.
@@ -413,6 +438,13 @@ _build_mail_digest() {  # cs files dir: .cs/local, or .cs/private in an encrypte
               ((((if (.from // "") == "" then .actor else .from end) // "") | tostr)[0:40] | attr) as $who |
               $ids[($i * 6):($i * 6 + 6)] as $rid |
               (((.id // "") | tostr)[0:40] | attr) as $mid |
+              # Whether $mid is the id of the document unchanged: 1 to 40 of
+              # A-Z a-z 0-9 . _ -, the shape cs -queue accept takes. A cut or
+              # replaced id can name another mail, so only this one is
+              # offered. Judged by what is left once those characters are
+              # deleted, since a regex "$" also matches before a final newline.
+              ((.id | type) == "string" and (.id | length) >= 1 and (.id | length) <= 40
+                and (.id | gsub("[A-Za-z0-9._-]"; "")) == "") as $acceptable |
               (((.kind // "text") | tostr)[0:16] | attr) as $kind |
               (((.body // "") | tostr) | gsub("[\n\r]"; " ")) as $body |
               # A cut preview says so, and a cut task withholds its accept
@@ -423,6 +455,7 @@ _build_mail_digest() {  # cs files dir: .cs/local, or .cs/private in an encrypte
                 "\($body[0:160])" + (if $cut > 0 then " [cut: \($cut) more characters]" else "" end) + "\n" +
                 "</cs_mail id=\"\($rid)\">" +
                 (if $kind != "task" then ""
+                 elif ($acceptable | not) then "\n  a task proposed by \($who), not queued: its message id is not one cs -queue accept takes, so it cannot be accepted"
                  elif $cut > 0 then "\n  a task proposed by \($who), shown cut: read the whole message with cs -msg before the user decides; its accept command is on that line"
                  else "\n  a task proposed by \($who), not queued: it enters the queue only when the user accepts it, via cs -queue accept \($mid)" end) ]
           # Count the overflow against what was actually RENDERED, not against
@@ -436,7 +469,7 @@ _build_mail_digest() {  # cs files dir: .cs/local, or .cs/private in an encrypte
         "Unread mail (\($total)) - still unread, run cs -msg to clear:\n" + $note + ($lines | join("\n"))
         end
     ' 2>/dev/null) || MAIL_DIGEST=""
-    MAIL_DIGEST=$(printf '%s' "$MAIL_DIGEST" | LC_ALL=C tr -d '\000-\010\013-\037\177')
+    MAIL_DIGEST=$(printf '%s' "$MAIL_DIGEST" | env LC_ALL=C tr -d '\000-\010\013-\037\177')
 }
 
 DIGEST=""
@@ -600,7 +633,7 @@ case "$_BUDGET_MS" in ''|*[!0-9]*|????????*) _BUDGET_MS=1500 ;; *) _BUDGET_MS=$(
 # that boundary alone, 1000 included. Only the default sits above one tick, so
 # a positive budget of a tick or less takes it. Zero is left alone: it is the
 # always-skip stub, not a duration.
-if [ -z "${EPOCHREALTIME:-}" ] && [ "$_BUDGET_MS" -gt 0 ] && [ "$_BUDGET_MS" -le 1000 ]; then
+if [ -z "$_EPOCH_CLOCK" ] && [ "$_BUDGET_MS" -gt 0 ] && [ "$_BUDGET_MS" -le 1000 ]; then
     _BUDGET_MS=1500
 fi
 _trace "budget=$_BUDGET_MS"

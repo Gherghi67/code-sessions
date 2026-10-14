@@ -163,6 +163,9 @@ _is_bystander_transcript() {  # transcript_file
     local first
     first=$(grep -m1 '"type":"user"' "$1" 2>/dev/null) || return 1
     case "$first" in
+        # Any first prompt holding the text counts, so discovery and adopt
+        # skip a person's relocated conversation whose prompt quotes it.
+        # Decided; do not re-fix.
         *teammate-message*) return 0 ;;
         *'"entrypoint":"sdk-'*)
             # Any entrypoint value that does not begin `sdk-`.
@@ -240,11 +243,11 @@ _worktree_json_path() {  # wt_dir
     printf '%s' "$wt_real" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
-# Whether a transcript in the parent's project dir is the worktree's own
-# conversation, by the checks _discover_worktree_uuid_in describes: the
-# worktree record, a first prompt stamped with the worktree as cwd, and no
-# bystander.
-_is_worktree_own_transcript() {  # transcript_file, wt_json_path
+# Whether a transcript in the parent's project dir is a conversation that
+# began in the worktree: it carries the worktree's record, and its first
+# prompt is stamped with the worktree as cwd. This is the identity a bound
+# conversation is kept by (_relocated_worktree_transcript).
+_is_worktree_started_transcript() {  # transcript_file, wt_json_path
     local first
     # The closing quote pins the whole path: a worktree named `wt` must not
     # claim `wt2`'s conversation.
@@ -254,7 +257,13 @@ _is_worktree_own_transcript() {  # transcript_file, wt_json_path
         *"\"cwd\":\"$2\""*) ;;
         *) return 1 ;;
     esac
-    ! _is_bystander_transcript "$1"
+}
+
+# Whether a transcript in the parent's project dir is the worktree's own
+# conversation, by the checks _discover_worktree_uuid_in describes: it began
+# in the worktree, and it is no bystander.
+_is_worktree_own_transcript() {  # transcript_file, wt_json_path
+    _is_worktree_started_transcript "$1" "$2" && ! _is_bystander_transcript "$1"
 }
 
 # The first prompt somebody typed into a conversation, as an Objective line:
@@ -270,15 +279,23 @@ _transcript_first_prompt() {  # transcript_file
     local file="$1"
     [ -f "$file" ] || return 0
     command -v jq >/dev/null 2>&1 || return 0
+    # Read whole with --rawfile, not line by line with -R: jq 1.7.1's -R
+    # splits a multibyte character 4095 bytes into a line, and a prompt sent
+    # with an image starts past the image's base64 in its line. The read stops
+    # at 16 MiB, which holds two images at the API's 5 MB limit (about 6.7 MB
+    # each as base64) and the records before them, and keeps jq near 66 MiB
+    # (measured: about four times the bytes read). A line the cap cuts no
+    # longer parses and is skipped like any torn line.
     local candidates
-    candidates=$(jq -r -R '
-        fromjson? | select(.type == "user" and ((.isMeta // false) | not))
+    candidates=$(head -c 16777216 "$file" | jq -rn --rawfile t /dev/stdin '
+        $t | split("\n")[]
+        | fromjson? | select(.type == "user" and ((.isMeta // false) | not))
         | .message.content
         | if type == "string" then .
           elif type == "array" then ([.[] | select(.type == "text") | .text] | join(" "))
           else empty end
         | gsub("[\\n\\r\\t]+"; " ") | gsub(" +"; " ")
-        | select(length > 0)' "$file" 2>/dev/null) || return 0
+        | select(length > 0)' 2>/dev/null) || return 0
     local line
     while IFS= read -r line; do
         line="${line# }"; line="${line% }"

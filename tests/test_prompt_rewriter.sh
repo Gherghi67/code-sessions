@@ -379,6 +379,30 @@ SLOWEOF
     fi
 }
 
+# The agy arm passes a prompt line longer than 4 KB to the CLI byte for byte,
+# and writes back a rewrite that long the same way: jq 1.7.1's -R splits a
+# multibyte character 4095 bytes into a line. Both texts put U+00E9 across that
+# point at the two possible offsets. The fake agy records what it was handed
+# and answers with a rewrite read from a file.
+test_the_agy_rewriter_carries_long_multibyte_lines_whole() {
+    unset CS_REWRITE_CMD
+    local bin="$TEST_TMPDIR/bin" lead prompt answer f
+    mkdir -p "$bin"
+    printf '#!/bin/bash\ncat > "%s/agy.stdin"\ncat "%s/agy.answer"\n' "$TEST_TMPDIR" "$TEST_TMPDIR" > "$bin/agy"
+    chmod +x "$bin/agy"
+    for lead in "" "a"; do
+        prompt="$lead$(python3 -c "print('\u00e9' * 3000, end='')")"
+        answer="${lead}b$(python3 -c "print('\u00e9' * 3000, end='')")"
+        jq -nc --arg r "$answer" '{event:"result", result:{status:"SUCCESS", response:$r}}' > "$TEST_TMPDIR/agy.answer"
+        f=$(composer_file "$prompt")
+        PATH="$bin:$PATH" XDG_CACHE_HOME="$TEST_TMPDIR/cache" CS_REWRITE_PROVIDER=gemini \
+            "$SHIM" "$f" >/dev/null 2>&1
+        assert_eq "$prompt" "$(jq -r '.message.content | split("\n\n") | last' "$TEST_TMPDIR/agy.stdin")" \
+            "the prompt reaches agy as typed (lead '$lead')" || return 1
+        assert_eq "$answer" "$(cat "$f")" "the rewrite lands as agy wrote it (lead '$lead')" || return 1
+    done
+}
+
 # The provider knob picks which shipped rewriter runs. A fake agy on PATH stands
 # in for the vendor CLI so the assertion is about the shim's routing and never
 # makes a live call.
@@ -544,6 +568,63 @@ test_the_countdown_is_only_shown_when_something_enforces_it() {
     fi
 }
 
+# The budget reaches shell arithmetic, which runs a command substitution held in
+# an operand, and the bar divides by it. Anything but a positive plain number
+# takes the default, 25 seconds, and the countdown and the rewriter's own bound
+# both get that one number: a zero would otherwise be no bound at all to
+# timeout(1) and to perl's alarm. The file named by PWNED_FILE is what a
+# substitution in the value would create. The stand-in timeout and perl record
+# the bound each rewriter was handed and then run the command as the real ones
+# would; the stand-in agy answers in the stream-json shape the vendor rewriter
+# reads, so the rewrite lands on both arms.
+test_the_budget_is_read_as_data_and_bounds_the_rewriter() {
+    unset CS_REWRITE_CMD
+    local bin="$TEST_TMPDIR/bin" pwned="$TEST_TMPDIR/pwned" bound="$TEST_TMPDIR/bound"
+    local real_perl real_timeout provider pair value want f out
+    real_perl=$(command -v perl) || { echo "  SKIP: no perl"; return 77; }
+    mkdir -p "$bin"
+    cat > "$bin/agy" <<'EOF'
+#!/bin/bash
+sleep 0.9
+printf '%s\n' '{"event":"result","result":{"status":"SUCCESS","response":"REWRITTEN"}}'
+EOF
+    printf '#!/bin/bash\nsleep 0.9\nprintf "REWRITTEN"\n' > "$bin/claude"
+    cat > "$bin/perl" <<EOF
+#!/bin/bash
+[ "\$2" = 'alarm shift; exec @ARGV' ] && printf '%s\n' "\$3" >> "$bound"
+exec "$real_perl" "\$@"
+EOF
+    # Anything but the rewriter's call goes to the real timeout where one
+    # exists, so the pty harness keeps its own bound on Linux.
+    real_timeout=$(command -v timeout 2>/dev/null || true)
+    cat > "$bin/timeout" <<EOF
+#!/bin/bash
+if [ "\$2" = claude ]; then
+    printf '%s\n' "\$1" >> "$bound"
+elif [ -n "$real_timeout" ]; then
+    exec "$real_timeout" "\$@"
+fi
+shift
+exec "\$@"
+EOF
+    chmod +x "$bin/agy" "$bin/claude" "$bin/perl" "$bin/timeout"
+    for provider in gemini ''; do
+        for pair in 'PATH[$(:>"$PWNED_FILE")]=25' 'soon=25' '0=25' '7=7'; do
+            value="${pair%=*}" want="${pair##*=}"
+            rm -f "$pwned" "$bound"
+            f=$(composer_file "make the login thing better")
+            out="$TEST_TMPDIR/pty-budget"
+            PATH="$bin:$PATH" XDG_CACHE_HOME="$TEST_TMPDIR/cache" PWNED_FILE="$pwned" \
+                CS_REWRITE_PROVIDER="$provider" CS_REWRITE_TIMEOUT="$value" \
+                _pty_run "$SHIM" "$f" > "$out" 2>&1
+            assert_file_not_exists "$pwned" "the budget's content never runs (${provider:-model} $value)" || return 1
+            assert_file_contains "$out" "${want}s left" "the countdown starts from ${want}s (${provider:-model} $value)" || return 1
+            assert_eq "$want" "$(cat "$bound" 2>/dev/null)" "the rewriter is bounded at ${want}s (${provider:-model} $value)" || return 1
+            assert_eq "REWRITTEN" "$(cat "$f")" "the rewrite still lands (${provider:-model} $value)" || return 1
+        done
+    done
+}
+
 # The margin rule carries the liveness, so the spinner beside it is redundant —
 # two things animating for one fact.
 test_screen_mode_has_no_spinner() {
@@ -600,6 +681,7 @@ run_test test_the_trace_goes_behind_private
 run_test test_screen_mode_frames_the_prompt_in_a_margin
 run_test test_screen_mode_counts_down_not_up
 run_test test_the_countdown_is_only_shown_when_something_enforces_it
+run_test test_the_budget_is_read_as_data_and_bounds_the_rewriter
 run_test test_screen_mode_has_no_spinner
 run_test test_the_header_names_the_resolved_engine_and_model
 run_test test_progress_hides_the_cursor_and_restores_it
@@ -623,6 +705,7 @@ run_test test_clarify_disable_does_not_suppress_the_rewriter
 run_test test_prompt_text_is_data_not_code
 run_test test_shim_never_leaves_a_temp_file_behind
 run_test test_the_provider_knob_selects_the_vendor_rewriter
+run_test test_the_agy_rewriter_carries_long_multibyte_lines_whole
 run_test test_an_explicit_rewrite_cmd_outranks_the_provider_knob
 run_test test_an_unknown_provider_falls_back_to_the_default_rewriter
 run_test test_claude_api_routes_to_the_vendor_rewriter

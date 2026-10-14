@@ -1072,6 +1072,36 @@ test_adopt_seeds_the_objective_from_the_newest_conversations_first_prompt() {
         "the first substantive prompt becomes the Objective" || return 1
 }
 
+# A first prompt sent with an image puts its text past the image's base64 in
+# the same transcript line. jq 1.7.1's -R splits a multibyte character 4095
+# bytes into a line, so the text is placed to start just before that point, at
+# two offsets, and the seeded Objective must be the text as typed.
+test_adopt_seeds_a_multibyte_first_prompt_that_follows_an_image() {
+    local lead project_dir proj text
+    for lead in "" "a"; do
+        project_dir="$TEST_TMPDIR/img-project$lead"
+        mkdir -p "$project_dir"
+        proj="$CS_TRANSCRIPTS_DIR/$(_encode_cwd_for_claude_test "$project_dir")"
+        mkdir -p "$proj"
+        text=$(python3 - "$proj/$UUID_PRIOR.jsonl" "$lead" <<'PY2'
+import sys
+path, lead = sys.argv[1], sys.argv[2]
+text = lead + "\u00e9" * 60 + " fix the build"
+head = '{"type":"user","message":{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"'
+mid = '"}},{"type":"text","text":"'
+data = "A" * (4080 - len(head) - len(mid))
+with open(path, "w", encoding="utf-8") as f:
+    f.write(head + data + mid + text + '"}]}}\n')
+print(text)
+PY2
+)
+        (cd "$project_dir" && "$CS_BIN" -adopt "imgprobe$lead" >/dev/null 2>&1) \
+            || { echo "  FAIL: adopt should succeed (lead '$lead')"; return 1; }
+        assert_eq "$text" "$(_adopt_readme_objective "$project_dir")" \
+            "the Objective is the prompt as typed (lead '$lead')" || return 1
+    done
+}
+
 # Seeding the Objective rewrites the README adopt has just created. One adopt
 # creates and seeds it under one umask, so the mode it was created with is the
 # umask's (644 here); the check catches a seed that narrows it to a temp file's
@@ -1292,6 +1322,7 @@ run_test test_first_launch_after_adopt_starts_fresh_without_asking
 run_test test_first_launch_after_adopt_offers_the_projects_newest_conversation
 run_test test_second_launch_after_adopt_asks_and_resumes
 run_test test_adopt_seeds_the_objective_from_the_newest_conversations_first_prompt
+run_test test_adopt_seeds_a_multibyte_first_prompt_that_follows_an_image
 run_test test_adopt_objective_seed_keeps_the_readmes_mode
 run_test test_adopt_keeps_the_placeholder_objective_without_a_conversation
 run_test test_adopt_clips_a_long_first_prompt

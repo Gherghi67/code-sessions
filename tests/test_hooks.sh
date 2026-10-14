@@ -79,6 +79,37 @@ test_narrative_reminder_tracks_per_actor() {
     assert_output_contains "$output" "narrative.alex.md" "Reminder should point at the per-actor narrative" || return 1
 }
 
+# Homebrew's coreutils can put GNU stat ahead of the system's on a Mac, and GNU
+# `stat -f` reports the file system rather than the file's mtime. The hook reads
+# the mtime by what the stat on PATH answers, so a fresh narrative is left alone
+# and a stale one is found. Both are asserted: an mtime misread as 0 makes every
+# narrative stale, which the stale arm alone would pass. bash takes OSTYPE from
+# the environment, so a Mac's value here puts the same question to the hook on a
+# Linux runner.
+test_narrative_reminder_reads_mtimes_with_gnu_stat_on_a_mac() {
+    local gnu shim="$TEST_TMPDIR/gnubin" output
+    if gstat --version 2>/dev/null | grep -q GNU; then
+        gnu=$(command -v gstat)
+    elif stat --version 2>/dev/null | grep -q GNU; then
+        gnu=$(command -v stat)
+    else
+        echo "  SKIP: no GNU stat on this machine"
+        return 77
+    fi
+    mkdir -p "$shim"
+    printf '#!/bin/sh\nexec "%s" "$@"\n' "$gnu" > "$shim/stat"
+    chmod +x "$shim/stat"
+    echo "# Session narrative" > "$CLAUDE_SESSION_META_DIR/memory/narrative.md"
+    rm -f "$CLAUDE_SESSION_META_DIR/.narrative-reminder-cooldown"
+    output=$(echo '{}' | PATH="$shim:$PATH" OSTYPE=darwin24 bash "$HOOKS_DIR/narrative-reminder.sh")
+    assert_eq '{"decision": "approve"}' "$output" "a fresh narrative is left alone with GNU stat first on a Mac" || return 1
+    _backdate "$CLAUDE_SESSION_META_DIR/memory/narrative.md"
+    rm -f "$CLAUDE_SESSION_META_DIR/.narrative-reminder-cooldown"
+    output=$(echo '{}' | PATH="$shim:$PATH" OSTYPE=darwin24 bash "$HOOKS_DIR/narrative-reminder.sh")
+    assert_output_contains "$output" '"decision":"block"' "a stale narrative is found with GNU stat first on a Mac" || return 1
+    assert_output_contains "$output" "narrative.md" "the reminder points at the narrative" || return 1
+}
+
 test_narrative_reminder_asks_for_appended_corrections_not_rewrites() {
     echo "# Session narrative (alice)" > "$CLAUDE_SESSION_META_DIR/memory/narrative.alice.md"
     _backdate "$CLAUDE_SESSION_META_DIR/memory/narrative.alice.md"
@@ -740,7 +771,9 @@ test_auto_approve_rejects_link_inside_linked_control_dir() {
 }
 
 # A link name ending in a newline: $(readlink) strips it, so a hop-by-hop
-# resolver checks a name that does not exist and loses the chain.
+# resolver would check a name that does not exist and lose the chain. The
+# control directory scan follows no link, so the planted settings link
+# declines the write whatever its chain spells; the scan is what this pins.
 test_auto_approve_rejects_newline_link_chain() {
     local meta="$CLAUDE_SESSION_META_DIR"
     mkdir -p "$meta/claude-config"
@@ -825,17 +858,22 @@ test_auto_approve_rejects_case_sibling_session() {
         "a setting in a case-sibling session" || return 1
 }
 
-# A control directory that resolves to a name ending in a newline: every
-# $(pwd -P) strips it, so the resolved control root never matches the real
-# parent of a write beneath it, and a decoy at the stripped name scans clean.
-test_auto_approve_rejects_newline_control_root() {
+# A write whose real parent ends in a newline: $(pwd -P) strips it, so the
+# hook would judge the plain directory at the stripped name while the write
+# lands in the newline-named one. A real path holding a newline falls
+# through. The link that reaches it sits in content, which the control
+# directory scan does not walk, and the spelled path holds no newline, so the
+# exact real path is all that decides.
+test_auto_approve_rejects_newline_real_parent() {
     local meta="$CLAUDE_SESSION_META_DIR"
     mkdir -p "$meta/memory/store" "$meta/memory/store
-/queue"
-    ln -s "memory/store
-" "$meta/private"
-    _assert_falls_through Write "$meta/memory/store
-/queue/0001" "a queue entry behind a newline-named private link" || return 1
+"
+    ln -s "store
+" "$meta/memory/notes"
+    _assert_allowed Write "$meta/memory/store/0001" \
+        "a write in the plain directory at the stripped name" || return 1
+    _assert_falls_through Write "$meta/memory/notes/0001" \
+        "a write whose real parent is the newline-named directory" || return 1
 }
 
 # CLAUDE_SESSION_META_DIR may sit outside CLAUDE_SESSION_DIR; the metadata
@@ -860,18 +898,20 @@ test_auto_approve_rejects_new_file_under_linked_claude_dir() {
 }
 
 # A requested path that ends in a newline: $(jq -r) strips it, so the hook
-# judges the stripped name while the Edit lands on the newline-named file a
-# project settings link points at.
+# would judge the plain file at the stripped name while the Edit lands on
+# the newline-named file beside it. A requested path holding a newline falls
+# through. No link is planted, so neither the control directory scan nor a
+# link check carries the verdict: the exact read and the newline check do.
 test_auto_approve_rejects_newline_file_path() {
-    local root="$CLAUDE_SESSION_DIR" meta="$CLAUDE_SESSION_META_DIR"
+    local meta="$CLAUDE_SESSION_META_DIR"
     local target="$meta/memory/config.json
 "
-    mkdir -p "$root/.claude"
     printf '{}\n' > "$target"
     printf '{}\n' > "$meta/memory/config.json"
-    ln -s "$target" "$root/.claude/settings.json"
+    _assert_allowed Edit "$meta/memory/config.json" \
+        "an Edit of the plain file at the stripped name" || return 1
     _assert_falls_through Edit "$target" \
-        "a newline-named file a settings link points at" || return 1
+        "an Edit of the newline-named file beside it" || return 1
 }
 
 # cs keeps a CLAUDE_CONFIG_DIR the shell set when the session has no vault
@@ -3204,6 +3244,7 @@ run_test test_narrative_reminder_approves_outside_session
 run_test test_narrative_reminder_approves_when_recently_modified
 run_test test_narrative_reminder_blocks_when_stale
 run_test test_narrative_reminder_tracks_per_actor
+run_test test_narrative_reminder_reads_mtimes_with_gnu_stat_on_a_mac
 run_test test_narrative_reminder_asks_for_appended_corrections_not_rewrites
 # Without the shared library the budget is unknown, and a warning built on a
 # guessed budget is worse than none: the reminder runs and says nothing about
@@ -3295,7 +3336,7 @@ run_test test_auto_approve_rejects_case_sibling_session
 run_test test_auto_approve_rejects_project_claude_link_into_content
 run_test test_auto_approve_rejects_project_hook_link_behind_dir_link
 run_test test_auto_approve_rejects_mcp_link_to_new_content
-run_test test_auto_approve_rejects_newline_control_root
+run_test test_auto_approve_rejects_newline_real_parent
 run_test test_auto_approve_rejects_queue_link_under_separate_meta_dir
 run_test test_auto_approve_rejects_new_file_under_linked_claude_dir
 run_test test_auto_approve_rejects_newline_file_path
@@ -4088,6 +4129,29 @@ test_session_state_scrubs_a_real_control_byte_in_content() {
     session_start_teardown
 }
 
+# The Session State scrub hands tr the C locale through env: the shell never
+# changes its own locale for it, which can crash a bash linked against
+# libintl in the forked copy the scrub runs in. The control bytes go and a
+# multibyte character stays whole.
+test_session_state_scrubs_without_the_shell_assigning_its_own_locale() {
+    session_start_setup
+    printf '# test-session\n\n## Objective\n\nship \033[31mred\033[0m \342\200\224 thing\001\n' \
+        > "$CLAUDE_SESSION_META_DIR/README.md"
+    local b utf8 output line own
+    utf8="$(utf8_locale)"
+    for b in $(every_bash); do
+        output=$(echo '{"session_id":"test","source":"resume","cwd":"'"$CLAUDE_SESSION_DIR"'","hook_event_name":"SessionStart"}' \
+            | env ${utf8:+"LC_ALL=$utf8"} "$b" -x "$HOOKS_DIR/session-start.sh" 2>"$TEST_TMPDIR/trace")
+        line=$(echo "$output" | jq -r '.hookSpecificOutput.additionalContext' | grep '^Objective: ')
+        assert_eq "$(printf 'Objective: ship [31mred[0m \342\200\224 thing')" "$line" \
+            "$b: the objective, scrubbed byte for byte" || { session_start_teardown; return 1; }
+        own="$(shell_locale_assignments "$TEST_TMPDIR/trace")"
+        assert_eq "" "$own" "$b must not assign its own locale in the SessionStart hook" \
+            || { session_start_teardown; return 1; }
+    done
+    session_start_teardown
+}
+
 test_session_state_still_renders_its_own_line_breaks() {
     # The fix removes %b, so cs's OWN newlines must survive the change — the
     # block is multi-line and a regression would fuse it into one line.
@@ -4110,6 +4174,7 @@ test_session_state_still_renders_its_own_line_breaks() {
 
 run_test test_session_state_does_not_interpret_backslash_escapes_in_content
 run_test test_session_state_scrubs_a_real_control_byte_in_content
+run_test test_session_state_scrubs_without_the_shell_assigning_its_own_locale
 run_test test_session_state_still_renders_its_own_line_breaks
 
 # ============================================================================

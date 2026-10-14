@@ -308,6 +308,29 @@ main() {
             -queue)
                 shift
                 _vet_named_session "$SESSIONS_ROOT/$session_name"
+                # Another session's word never puts work in front of this
+                # session's drain: its add travels as task mail for this
+                # session's user to accept, and arming or accepting stays with
+                # that user. A terminal outside any session is the user.
+                local caller="${CLAUDE_SESSION_NAME:-}"
+                if [ -n "$caller" ] && [ "$caller" != "$session_name" ]; then
+                    case "${1:-}" in
+                        add)
+                            shift
+                            _mail_send "$session_name" --kind task "$*"
+                            return 0
+                            ;;
+                        start)
+                            error "session $caller cannot start $session_name's queue; $session_name's user starts it (cs -queue start inside $session_name)"
+                            ;;
+                        accept)
+                            error "session $caller cannot accept mail into $session_name's queue; $session_name's user accepts it (cs -queue accept ${2:-<id>} inside $session_name)"
+                            ;;
+                        rm|clear)
+                            error "session $caller cannot change $session_name's queue; $session_name's user does that inside $session_name (cs -queue $1)"
+                            ;;
+                    esac
+                fi
                 export CLAUDE_SESSION_NAME="$session_name"
                 export CLAUDE_SESSION_DIR="$SESSIONS_ROOT/$session_name"
                 export CLAUDE_SESSION_META_DIR="$SESSIONS_ROOT/$session_name/.cs"

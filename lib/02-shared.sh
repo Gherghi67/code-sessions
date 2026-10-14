@@ -145,7 +145,7 @@ _cs_git_complaint() {  # git's error output
     while IFS= read -r line; do
         case "$line" in "fatal: "* | "error: "*) why=$line; break ;; esac
     done <<<"$1"
-    why=$(printf '%s' "$why" | LC_ALL=C tr -c '[:print:]' '?' | cut -c1-200) || why=""
+    why=$(printf '%s' "$why" | env LC_ALL=C tr -c '[:print:]' '?' | cut -c1-200) || why=""
     printf '%s\n' "${why:-git failed}"
 }
 
@@ -166,8 +166,8 @@ _cs_git_cannot_answer() {  # dir, git's error output
 # Claude, in the Stop hook's message.
 cs_untrack_notice() {  # tracked, top, sub
     local shown said sub="$3"
-    shown=$(printf '%s' "$1" | LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_' | cut -c1-160) || return 1
-    said=$(printf '%s' "$sub" | LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_') || return 1
+    shown=$(printf '%s' "$1" | env LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_' | cut -c1-160) || return 1
+    said=$(printf '%s' "$sub" | env LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_') || return 1
     case "$sub" in '~'*) sub="./$sub" ;; esac
     printf "%s is tracked in git (per-actor state must stay local). Fix with: git -C %q --literal-pathspecs rm -r --cached -- %q && git -C %q commit -m 'stop tracking %s'\n" \
         "$shown" "$2" "$sub" "$2" "$said"
@@ -235,7 +235,7 @@ cs_tracked_files_notice() {  # dir, session_dir
     case "$meta/" in
         "$real"/*)
             printf "%s leads to a directory that holds this session's own files, where git tracks %s (per-actor state must stay local). Make %s a directory of its own.\n" \
-                ".cs/${1##*/}" "$(printf '%s' "$tracked" | LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_' | cut -c1-160)" ".cs/${1##*/}"
+                ".cs/${1##*/}" "$(printf '%s' "$tracked" | env LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_' | cut -c1-160)" ".cs/${1##*/}"
             return 0
             ;;
     esac
