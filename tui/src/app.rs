@@ -4016,6 +4016,9 @@ mod tests {
     fn delete_confirm_stays_closed_when_the_file_list_cannot_be_read() {
         use crate::session::test_root;
         let root = std::env::temp_dir().join(format!("cs-test-del-broken-{}", std::process::id()));
+        // The base is there, so the worktree is listed through git, which
+        // cannot read the gitdir its .git file names.
+        std::fs::create_dir_all(root.join("proj")).unwrap();
         std::fs::create_dir_all(root.join("proj@t/.cs/local")).unwrap();
         std::fs::write(root.join("proj@t/.git"), "gitdir: /nonexistent/worktree\n").unwrap();
         let _guard = test_root::scoped(root.clone());
