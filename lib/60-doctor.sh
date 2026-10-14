@@ -62,7 +62,7 @@ _doctor_check_hooks_registered() {
         return
     fi
     local names registered missing=()
-    names=$(cd "$hooks_dir" && ls *.sh 2>/dev/null || true)
+    names=$(cd -- "$hooks_dir" && ls *.sh 2>/dev/null || true)
     [ -z "$names" ] && { _doctor_warn "Hooks: no .sh files in $hooks_dir"; return; }
     if ! command -v jq >/dev/null 2>&1; then
         _doctor_warn "Hooks: jq not installed; registration in $settings could not be checked"
@@ -387,7 +387,7 @@ _doctor_check_worktrees() {
         # same binary; a shell's own spelling of the directory need not match
         # git's.
         d_real=$(git -C "$d" rev-parse --show-toplevel 2>/dev/null) \
-            || d_real=$(cd "$d" 2>/dev/null && pwd -P || echo "$d")
+            || d_real=$(cd -- "$d" 2>/dev/null && pwd -P || echo "$d")
         if ! git -C "$base_dir" worktree list --porcelain 2>/dev/null \
             | grep -qx "worktree $d_real"; then
             _doctor_warn "Worktrees: $name is not a registered worktree of $base_name (pruned or created by hand?)"

@@ -3555,7 +3555,7 @@ _copy_base_context() {  # base_meta wt_meta
         mkdir -p "$dst/plans" || warn "could not create plans/ in the feature"
         # find -P (the default) never descends a linked dir, and -type f
         # leaves out links and specials.
-        (cd "$src/plans" && find . -type f -print0) | while IFS= read -r -d '' rel; do
+        (cd -- "$src/plans" && find . -type f -print0) | while IFS= read -r -d '' rel; do
             rel="${rel#./}"
             # Parameter expansion, not dirname: a "-sub" component reads as an
             # option to it, and $( ) drops a trailing newline from a name.
@@ -3810,7 +3810,7 @@ _worktree_features() {  # base_name
         task="${name#*@}"
         [ -n "$task" ] || continue
         d_real=$(git -C "$d" rev-parse --show-toplevel 2>/dev/null) \
-            || d_real=$(cd "$d" 2>/dev/null && pwd -P || echo "$d")
+            || d_real=$(cd -- "$d" 2>/dev/null && pwd -P || echo "$d")
         case "
 $registered
 " in
@@ -3929,7 +3929,7 @@ _feature_readiness() {  # base_name task
 # -f only in macOS 12.3; cd+pwd -P follows the link on every platform, and the
 # fallback keeps the original path rather than aborting under set -e.
 _resolve_symlink_dir() {
-    (cd "$1" 2>/dev/null && pwd -P) || printf '%s\n' "$1"
+    (cd -- "$1" 2>/dev/null && pwd -P) || printf '%s\n' "$1"
 }
 
 # Resolve a session name to its real directory (adopted sessions are
@@ -4027,7 +4027,7 @@ create_worktree_session() {
     # tracked, never dirties the task branch; shared with the base checkout
     # through the common git dir).
     local exclude
-    exclude=$( (cd "$wt_dir" && git rev-parse --git-path info/exclude) 2>/dev/null || echo "" )
+    exclude=$( (cd -- "$wt_dir" && git rev-parse --git-path info/exclude) 2>/dev/null || echo "" )
     # A worktree's git-path resolves to the common git dir, which git reports
     # as an absolute path. Reading that as relative would prepend $wt_dir,
     # writing the exclude entry to a nonsense path and leaving the protocol file
@@ -4457,7 +4457,7 @@ _permission_rules_carried() {  # wt_dir base_dir
     ! _settings_tracked "$2" || return 1
     [ ! -L "$1/.claude/settings.local.json" ] || return 3
     if [ -L "$1/.claude" ]; then
-        dir=$(_cs_write_target "$1/.claude") && root=$(cd -P "$1" 2>/dev/null && pwd -P) || return 3
+        dir=$(_cs_write_target "$1/.claude") && root=$(cd -P -- "$1" 2>/dev/null && pwd -P) || return 3
         case "$dir/" in "$root"/*) ;; *) return 3 ;; esac
         dir="${dir#"$root"}"
         ! _settings_tracked "$1" "${dir#/}" || return 1
@@ -4801,7 +4801,7 @@ Move or delete these untracked files in $base_dir, then re-run /finish $task"
         _INTEGRATE_GATE_LOG=$(mktemp "${TMPDIR:-/tmp}/cs-gate.XXXXXX")
         # </dev/null: a gate that reads stdin would otherwise consume whatever
         # cs was given and block a non-interactive run forever.
-        if ! (cd "$tmp" && "$@") > "$_INTEGRATE_GATE_LOG" 2>&1 < /dev/null; then
+        if ! (cd -- "$tmp" && "$@") > "$_INTEGRATE_GATE_LOG" 2>&1 < /dev/null; then
             cat "$_INTEGRATE_GATE_LOG" >&2
             rm -f "$_INTEGRATE_GATE_LOG"
             _INTEGRATE_GATE_LOG=""
@@ -5096,7 +5096,7 @@ _fuse_plan() {  # feature_meta base_meta out
     fi
     list=$(mktemp "${TMPDIR:-/tmp}/cs-fuse-list.XXXXXX") || return 1
     # local/ is machine-local (_fuse_walk_skips) and never walked.
-    if ! (cd "$1" && find . -mindepth 1 \( -path ./local -prune \) \
+    if ! (cd -- "$1" && find . -mindepth 1 \( -path ./local -prune \) \
             -o \( -type d -exec test -e '{}/.git' \; -prune -print0 \) \
             -o \( ! -type d -print0 \)) > "$list"; then
         rm -f "$list"
@@ -5318,7 +5318,7 @@ SETTINGS
 
     # Migrate existing auto memory from the default location
     local real_path
-    real_path="$(cd "$session_dir" 2>/dev/null && pwd -P)"
+    real_path="$(cd -- "$session_dir" 2>/dev/null && pwd -P)"
     local encoded_path
     encoded_path=$(_claude_encode_path "$real_path")
     local old_memory_dir="$HOME/.claude/projects/${encoded_path}/memory"
@@ -5841,7 +5841,7 @@ _unset_local_state() {
 _claude_project_dir() {
     local cwd="$1"
     local resolved base="${CS_TRANSCRIPTS_DIR:-$HOME/.claude/projects}"
-    resolved=$( (cd "$cwd" 2>/dev/null && pwd -P) || printf '%s' "$cwd" )
+    resolved=$( (cd -- "$cwd" 2>/dev/null && pwd -P) || printf '%s' "$cwd" )
     if [ -e "$cwd/.cs/claude-config" ] || [ -L "$cwd/.cs/claude-config" ]; then
         base="$cwd/.cs/claude-config/projects"
     fi
@@ -5972,7 +5972,7 @@ _discover_worktree_uuid_in() {  # parent_project_dir, wt_dir
 # cwd under /private/tmp, so pwd -P is the matching side (#814).
 _worktree_json_path() {  # wt_dir
     local wt_real
-    wt_real=$( (cd "$1" 2>/dev/null && pwd -P) || printf '%s' "$1" )
+    wt_real=$( (cd -- "$1" 2>/dev/null && pwd -P) || printf '%s' "$1" )
     printf '%s' "$wt_real" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
@@ -6235,7 +6235,7 @@ setup_merge_attributes() {
 # walked; cs_write_atomic still refuses a write leading out of it.
 _refuse_links_out_of_session() {  # dir
     local dir="$1" dir_p p link real cur todo out seen="" prune="" cfg=""
-    dir_p=$(cd -P "$dir" 2>/dev/null && pwd -P) || return 0
+    dir_p=$(cd -P -- "$dir" 2>/dev/null && pwd -P) || return 0
     # cs links the shell's settings, skills and the rest into an encrypted
     # session's config dir by design; that dir is skipped only while
     # .cs/claude-config is cs's own link into a vault set up by hand. A clone
@@ -6243,7 +6243,7 @@ _refuse_links_out_of_session() {  # dir
     if _cs_hand_made_vault "$dir" >/dev/null; then
         prune="$dir_p/.cs/vault-mnt"
         if [ -L "$dir_p/.cs/claude-config" ] && [ "$dir_p/.cs/claude-config" -ef "$dir_p/.cs/vault-mnt/claude-config" ]; then
-            cfg=$(cd -P "$dir_p/.cs/vault-mnt/claude-config" 2>/dev/null && pwd -P)
+            cfg=$(cd -P -- "$dir_p/.cs/vault-mnt/claude-config" 2>/dev/null && pwd -P)
         fi
     fi
     # A flat-layout session (Codex r2 #1) has Phase 1 move these root entries
@@ -6270,7 +6270,7 @@ _refuse_links_out_of_session() {  # dir
             link=$p real=""
             if [ -d "$p" ]; then
                 # The x keeps a trailing newline that $(...) would strip (Codex r3 #1).
-                real=$(cd -P "$p" 2>/dev/null && pwd -P && printf x) && real=${real%$'\n'x}
+                real=$(cd -P -- "$p" 2>/dev/null && pwd -P && printf x) && real=${real%$'\n'x}
                 # The walk list is newline-separated, so such a name would split
                 # into two entries and neither would be scanned (Codex r2 #2).
                 # Named before the link check, which refuses the same link as
@@ -6353,12 +6353,12 @@ _exclude_session_tracked_conflict() {  # dir
 # on exactly the machines it was written on.
 _session_root_is_cs_owned() {  # session_dir
     local dir root e
-    dir=$(cd "$1" 2>/dev/null && pwd -P) || return 1
-    root=$(cd "${SESSIONS_ROOT:-}" 2>/dev/null && pwd -P) || return 1
+    dir=$(cd -- "$1" 2>/dev/null && pwd -P) || return 1
+    root=$(cd -- "${SESSIONS_ROOT:-}" 2>/dev/null && pwd -P) || return 1
     case "$dir" in "$root"/*) ;; *) return 1 ;; esac
     for e in "${SESSIONS_ROOT:-}"/*; do
         [ -L "$e" ] || continue
-        [ "$(cd "$e" 2>/dev/null && pwd -P)" = "$dir" ] && return 1
+        [ "$(cd -- "$e" 2>/dev/null && pwd -P)" = "$dir" ] && return 1
     done
     return 0
 }
@@ -6393,7 +6393,7 @@ _run_pre_open() {  # session_name, session_dir
     # running anything a clone could have delivered.
     cs_assert_local_untracked "$2"
     [ -x "$hook" ] || error "$1: .cs/local/pre-open is not executable; chmod +x it, or remove it."
-    (cd "$2" && "$hook") || rc=$?
+    (cd -- "$2" && "$hook") || rc=$?
     [ "$rc" -eq 0 ] || error "$1: .cs/local/pre-open exited $rc; not opening the session."
     _arm_vault_detach "$2"
 }
@@ -7203,7 +7203,7 @@ migrate_session() {
         # Commit the migration if git is initialized
         if [ -d "$session_dir/.git" ]; then
             (
-                cd "$session_dir" || exit 0
+                cd -- "$session_dir" || exit 0
                 git add -A 2>/dev/null || true
                 if ! git diff --cached --quiet 2>/dev/null; then
                     git commit -q -m "Migrate session structure to .cs/ metadata directory" 2>/dev/null || true
@@ -7811,7 +7811,7 @@ _sq() {  # text
 # ~/.local/bin, so the window command must not rely on lookup).
 _cs_self() {
     case "$0" in
-        */*) printf '%s/%s' "$(cd "$(dirname "$0")" && pwd)" "$(basename "$0")";;
+        */*) printf '%s/%s' "$(cd -- "$(dirname "$0")" && pwd)" "$(basename "$0")";;
         *)   command -v -- "$0" 2>/dev/null || printf '%s' "$0";;
     esac
 }
@@ -9793,7 +9793,7 @@ _doctor_check_hooks_registered() {
         return
     fi
     local names registered missing=()
-    names=$(cd "$hooks_dir" && ls *.sh 2>/dev/null || true)
+    names=$(cd -- "$hooks_dir" && ls *.sh 2>/dev/null || true)
     [ -z "$names" ] && { _doctor_warn "Hooks: no .sh files in $hooks_dir"; return; }
     if ! command -v jq >/dev/null 2>&1; then
         _doctor_warn "Hooks: jq not installed; registration in $settings could not be checked"
@@ -10118,7 +10118,7 @@ _doctor_check_worktrees() {
         # same binary; a shell's own spelling of the directory need not match
         # git's.
         d_real=$(git -C "$d" rev-parse --show-toplevel 2>/dev/null) \
-            || d_real=$(cd "$d" 2>/dev/null && pwd -P || echo "$d")
+            || d_real=$(cd -- "$d" 2>/dev/null && pwd -P || echo "$d")
         if ! git -C "$base_dir" worktree list --porcelain 2>/dev/null \
             | grep -qx "worktree $d_real"; then
             _doctor_warn "Worktrees: $name is not a registered worktree of $base_name (pruned or created by hand?)"
@@ -10812,7 +10812,7 @@ _vault_live_holder_besides() {  # meta_dir, pid -> true if another listed holder
 
 _vault_mountpoint_if_mounted() {  # meta_dir -> prints the mountpoint, or fails
     local mnt
-    mnt=$(cd "$1/vault-mnt" 2>/dev/null && pwd -P) || return 1
+    mnt=$(cd -- "$1/vault-mnt" 2>/dev/null && pwd -P) || return 1
     mount | grep -F " on $mnt (" >/dev/null || return 1
     printf '%s\n' "$mnt"
 }
@@ -10957,7 +10957,7 @@ search_sessions() {
 
         # Resolve symlinks for adopted sessions
         local real_dir
-        real_dir=$(cd "$session_dir" 2>/dev/null && pwd -P) || continue
+        real_dir=$(cd -- "$session_dir" 2>/dev/null && pwd -P) || continue
 
         # Search fixed files
         for relpath in $search_files; do
@@ -11019,8 +11019,8 @@ is_session_dir() {
 _session_name_for_dir() {  # dir
     local dir root rest
     [ -d "$1/.cs" ] || return 1
-    dir=$(cd "$1" 2>/dev/null && pwd -P) || return 1
-    root=$(cd "${SESSIONS_ROOT:-}" 2>/dev/null && pwd -P) || return 1
+    dir=$(cd -- "$1" 2>/dev/null && pwd -P) || return 1
+    root=$(cd -- "${SESSIONS_ROOT:-}" 2>/dev/null && pwd -P) || return 1
 
     # Both sides resolved before comparing: a sessions root reached through a
     # symlinked parent (macOS /var -> /private/var) never prefix-matches a
@@ -11041,7 +11041,7 @@ _session_name_for_dir() {  # dir
     local link
     for link in "${SESSIONS_ROOT:-}"/*; do
         [ -L "$link" ] || continue
-        [ "$(cd "$link" 2>/dev/null && pwd -P)" = "$dir" ] || continue
+        [ "$(cd -- "$link" 2>/dev/null && pwd -P)" = "$dir" ] || continue
         printf '%s\n' "${link##*/}"
         return 0
     done
@@ -11396,11 +11396,11 @@ _remove_one_session() {
     # session loses only its link below, so it is exempt.
     if [ ! -L "$session_dir" ]; then
         local sub link real_dir real_target
-        real_dir=$(cd "$session_dir" && pwd -P)
+        real_dir=$(cd -- "$session_dir" && pwd -P)
         for sub in $CS_VAULT_LINKS; do
             link="$session_dir/.cs/$sub"
             [ -L "$link" ] || continue
-            real_target=$(cd "$link" 2>/dev/null && pwd -P) || continue
+            real_target=$(cd -- "$link" 2>/dev/null && pwd -P) || continue
             case "$real_target" in
                 "$real_dir"/*)
                     error "Session '$session_name' has encrypted storage mounted inside it: .cs/$sub points at $(readlink "$link"). Removing the session would delete what the vault holds; unmount it, then retry." ;;
@@ -12396,7 +12396,7 @@ launch_claude_code() {
     # claude process's PATH is not this shell's. Set on every launch, so a
     # value inherited from a parent launch is always replaced by this one's.
     local self_bin
-    self_bin="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
+    self_bin="$(cd -- "$(dirname "$0")" && pwd -P)/$(basename "$0")"
     export CS_BIN="$self_bin"
 
     # The cs-update mod draws the pending release's notes and runs the update
@@ -12749,7 +12749,7 @@ EOF
     _tab_color=$(_session_color_rgb "$claude_session_color")
     set_tab_title "cs: $session_name" "${_tab_color:-auto:$session_name}" "$session_name"
 
-    cd "$session_dir"
+    cd -- "$session_dir"
 
     # For existing sessions, ask if user wants to continue previous conversation.
     # The answer sets the id to resume; it goes to claude as one quoted argument.
@@ -13014,7 +13014,7 @@ _relocated_worktree_transcript() {  # session_dir, conversation id
     git_dir=$(_git_path_abs "$1" --git-dir) || return 1
     common=$(_git_path_abs "$1" --git-common-dir) || return 1
     [ "$git_dir" -ef "$common" ] && return 1
-    parent=$(cd "$common/.." 2>/dev/null && pwd -P) || return 1
+    parent=$(cd -- "$common/.." 2>/dev/null && pwd -P) || return 1
     proj="$(dirname "$(_claude_project_dir "$1")")/$(_claude_encode_path "$parent")"
     [ -f "$proj/$2.jsonl" ] || return 1
     _is_worktree_started_transcript "$proj/$2.jsonl" "$(_worktree_json_path "$1")" || return 1
@@ -13307,7 +13307,7 @@ adopt_session() {  # name, [--yes|-y], in any order
     # in every session, and the session link would land inside the project.
     # Walked up on the physical path, each step compared by -ef.
     local root ancestor
-    root=$(cd "$SESSIONS_ROOT" 2>/dev/null && pwd -P) || root="$SESSIONS_ROOT"
+    root=$(cd -- "$SESSIONS_ROOT" 2>/dev/null && pwd -P) || root="$SESSIONS_ROOT"
     ancestor="$root"
     while [ -n "$ancestor" ] && [ "$ancestor" != / ] && [ "$ancestor" != . ]; do
         if [ "$target_dir" -ef "$ancestor" ]; then
@@ -13444,7 +13444,7 @@ adopt_session() {  # name, [--yes|-y], in any order
     # Initialize git if not already a repo
     if [ ! -d "$target_dir/.git" ]; then
         (
-            cd "$target_dir" || exit 0
+            cd -- "$target_dir" || exit 0
             # Merged, not written: the project's own rules (an .env, a key
             # file) must keep hiding those files from the add -A below.
             ensure_cs_gitignore_entries "$target_dir"
@@ -13463,7 +13463,7 @@ adopt_session() {  # name, [--yes|-y], in any order
 
         # Commit the adoption
         (
-            cd "$target_dir" || exit 0
+            cd -- "$target_dir" || exit 0
             setup_merge_attributes "$target_dir"
             git add .cs/ .gitignore .gitattributes 2>/dev/null || true
             # The commit names its own paths: this runs inside the user's
@@ -13557,7 +13557,7 @@ adopt_worktrees() {  # [--dry-run]
     local repo
     repo=$(git rev-parse --show-toplevel 2>/dev/null) \
         || error "cs -adopt --worktrees reads <repo>/.claude/worktrees, and $(pwd) is not inside a git repository"
-    repo=$(cd "$repo" && pwd -P)
+    repo=$(cd -- "$repo" && pwd -P)
     local wt_root="$repo/.claude/worktrees"
     [ -d "$wt_root" ] || error "No Claude Code worktrees to adopt: $wt_root does not exist"
     local repo_name common
@@ -13591,7 +13591,7 @@ adopt_worktrees() {  # [--dry-run]
         # checkout of this repo: its own worktree root, on this repo's common
         # git dir. A symlink to another project, or a plain folder, is neither.
         wt_top=$(git -C "$wt_dir" rev-parse --show-toplevel 2>/dev/null) || wt_top=""
-        wt_common=$(cd "$wt_dir" && cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P) || wt_common=""
+        wt_common=$(cd -- "$wt_dir" && cd -- "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P) || wt_common=""
         if [ -L "$wt_dir" ] || [ -z "$wt_top" ] || ! [ "$wt_top" -ef "$wt_dir" ] || ! [ "$wt_common" -ef "$common" ]; then
             echo -e "${DIM}skip $wt_name: not a worktree of $repo${NC}"
             continue
@@ -14575,7 +14575,7 @@ main() {
 
         # Initialize local git repo by default
         (
-            cd "$session_dir" || exit 0
+            cd -- "$session_dir" || exit 0
             create_session_gitignore "$session_dir"
             git init -q 2>/dev/null || true
             # cs writes its bookkeeping files with LF. A global core.autocrlf

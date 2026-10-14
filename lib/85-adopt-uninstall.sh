@@ -161,7 +161,7 @@ adopt_session() {  # name, [--yes|-y], in any order
     # in every session, and the session link would land inside the project.
     # Walked up on the physical path, each step compared by -ef.
     local root ancestor
-    root=$(cd "$SESSIONS_ROOT" 2>/dev/null && pwd -P) || root="$SESSIONS_ROOT"
+    root=$(cd -- "$SESSIONS_ROOT" 2>/dev/null && pwd -P) || root="$SESSIONS_ROOT"
     ancestor="$root"
     while [ -n "$ancestor" ] && [ "$ancestor" != / ] && [ "$ancestor" != . ]; do
         if [ "$target_dir" -ef "$ancestor" ]; then
@@ -298,7 +298,7 @@ adopt_session() {  # name, [--yes|-y], in any order
     # Initialize git if not already a repo
     if [ ! -d "$target_dir/.git" ]; then
         (
-            cd "$target_dir" || exit 0
+            cd -- "$target_dir" || exit 0
             # Merged, not written: the project's own rules (an .env, a key
             # file) must keep hiding those files from the add -A below.
             ensure_cs_gitignore_entries "$target_dir"
@@ -317,7 +317,7 @@ adopt_session() {  # name, [--yes|-y], in any order
 
         # Commit the adoption
         (
-            cd "$target_dir" || exit 0
+            cd -- "$target_dir" || exit 0
             setup_merge_attributes "$target_dir"
             git add .cs/ .gitignore .gitattributes 2>/dev/null || true
             # The commit names its own paths: this runs inside the user's
@@ -411,7 +411,7 @@ adopt_worktrees() {  # [--dry-run]
     local repo
     repo=$(git rev-parse --show-toplevel 2>/dev/null) \
         || error "cs -adopt --worktrees reads <repo>/.claude/worktrees, and $(pwd) is not inside a git repository"
-    repo=$(cd "$repo" && pwd -P)
+    repo=$(cd -- "$repo" && pwd -P)
     local wt_root="$repo/.claude/worktrees"
     [ -d "$wt_root" ] || error "No Claude Code worktrees to adopt: $wt_root does not exist"
     local repo_name common
@@ -445,7 +445,7 @@ adopt_worktrees() {  # [--dry-run]
         # checkout of this repo: its own worktree root, on this repo's common
         # git dir. A symlink to another project, or a plain folder, is neither.
         wt_top=$(git -C "$wt_dir" rev-parse --show-toplevel 2>/dev/null) || wt_top=""
-        wt_common=$(cd "$wt_dir" && cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P) || wt_common=""
+        wt_common=$(cd -- "$wt_dir" && cd -- "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P) || wt_common=""
         if [ -L "$wt_dir" ] || [ -z "$wt_top" ] || ! [ "$wt_top" -ef "$wt_dir" ] || ! [ "$wt_common" -ef "$common" ]; then
             echo -e "${DIM}skip $wt_name: not a worktree of $repo${NC}"
             continue

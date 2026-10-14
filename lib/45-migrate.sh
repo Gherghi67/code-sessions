@@ -26,7 +26,7 @@ setup_merge_attributes() {
 # walked; cs_write_atomic still refuses a write leading out of it.
 _refuse_links_out_of_session() {  # dir
     local dir="$1" dir_p p link real cur todo out seen="" prune="" cfg=""
-    dir_p=$(cd -P "$dir" 2>/dev/null && pwd -P) || return 0
+    dir_p=$(cd -P -- "$dir" 2>/dev/null && pwd -P) || return 0
     # cs links the shell's settings, skills and the rest into an encrypted
     # session's config dir by design; that dir is skipped only while
     # .cs/claude-config is cs's own link into a vault set up by hand. A clone
@@ -34,7 +34,7 @@ _refuse_links_out_of_session() {  # dir
     if _cs_hand_made_vault "$dir" >/dev/null; then
         prune="$dir_p/.cs/vault-mnt"
         if [ -L "$dir_p/.cs/claude-config" ] && [ "$dir_p/.cs/claude-config" -ef "$dir_p/.cs/vault-mnt/claude-config" ]; then
-            cfg=$(cd -P "$dir_p/.cs/vault-mnt/claude-config" 2>/dev/null && pwd -P)
+            cfg=$(cd -P -- "$dir_p/.cs/vault-mnt/claude-config" 2>/dev/null && pwd -P)
         fi
     fi
     # A flat-layout session (Codex r2 #1) has Phase 1 move these root entries
@@ -61,7 +61,7 @@ _refuse_links_out_of_session() {  # dir
             link=$p real=""
             if [ -d "$p" ]; then
                 # The x keeps a trailing newline that $(...) would strip (Codex r3 #1).
-                real=$(cd -P "$p" 2>/dev/null && pwd -P && printf x) && real=${real%$'\n'x}
+                real=$(cd -P -- "$p" 2>/dev/null && pwd -P && printf x) && real=${real%$'\n'x}
                 # The walk list is newline-separated, so such a name would split
                 # into two entries and neither would be scanned (Codex r2 #2).
                 # Named before the link check, which refuses the same link as
@@ -144,12 +144,12 @@ _exclude_session_tracked_conflict() {  # dir
 # on exactly the machines it was written on.
 _session_root_is_cs_owned() {  # session_dir
     local dir root e
-    dir=$(cd "$1" 2>/dev/null && pwd -P) || return 1
-    root=$(cd "${SESSIONS_ROOT:-}" 2>/dev/null && pwd -P) || return 1
+    dir=$(cd -- "$1" 2>/dev/null && pwd -P) || return 1
+    root=$(cd -- "${SESSIONS_ROOT:-}" 2>/dev/null && pwd -P) || return 1
     case "$dir" in "$root"/*) ;; *) return 1 ;; esac
     for e in "${SESSIONS_ROOT:-}"/*; do
         [ -L "$e" ] || continue
-        [ "$(cd "$e" 2>/dev/null && pwd -P)" = "$dir" ] && return 1
+        [ "$(cd -- "$e" 2>/dev/null && pwd -P)" = "$dir" ] && return 1
     done
     return 0
 }
@@ -184,7 +184,7 @@ _run_pre_open() {  # session_name, session_dir
     # running anything a clone could have delivered.
     cs_assert_local_untracked "$2"
     [ -x "$hook" ] || error "$1: .cs/local/pre-open is not executable; chmod +x it, or remove it."
-    (cd "$2" && "$hook") || rc=$?
+    (cd -- "$2" && "$hook") || rc=$?
     [ "$rc" -eq 0 ] || error "$1: .cs/local/pre-open exited $rc; not opening the session."
     _arm_vault_detach "$2"
 }
@@ -994,7 +994,7 @@ migrate_session() {
         # Commit the migration if git is initialized
         if [ -d "$session_dir/.git" ]; then
             (
-                cd "$session_dir" || exit 0
+                cd -- "$session_dir" || exit 0
                 git add -A 2>/dev/null || true
                 if ! git diff --cached --quiet 2>/dev/null; then
                     git commit -q -m "Migrate session structure to .cs/ metadata directory" 2>/dev/null || true

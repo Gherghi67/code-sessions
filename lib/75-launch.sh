@@ -434,7 +434,7 @@ launch_claude_code() {
     # claude process's PATH is not this shell's. Set on every launch, so a
     # value inherited from a parent launch is always replaced by this one's.
     local self_bin
-    self_bin="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
+    self_bin="$(cd -- "$(dirname "$0")" && pwd -P)/$(basename "$0")"
     export CS_BIN="$self_bin"
 
     # The cs-update mod draws the pending release's notes and runs the update
@@ -787,7 +787,7 @@ EOF
     _tab_color=$(_session_color_rgb "$claude_session_color")
     set_tab_title "cs: $session_name" "${_tab_color:-auto:$session_name}" "$session_name"
 
-    cd "$session_dir"
+    cd -- "$session_dir"
 
     # For existing sessions, ask if user wants to continue previous conversation.
     # The answer sets the id to resume; it goes to claude as one quoted argument.
@@ -1052,7 +1052,7 @@ _relocated_worktree_transcript() {  # session_dir, conversation id
     git_dir=$(_git_path_abs "$1" --git-dir) || return 1
     common=$(_git_path_abs "$1" --git-common-dir) || return 1
     [ "$git_dir" -ef "$common" ] && return 1
-    parent=$(cd "$common/.." 2>/dev/null && pwd -P) || return 1
+    parent=$(cd -- "$common/.." 2>/dev/null && pwd -P) || return 1
     proj="$(dirname "$(_claude_project_dir "$1")")/$(_claude_encode_path "$parent")"
     [ -f "$proj/$2.jsonl" ] || return 1
     _is_worktree_started_transcript "$proj/$2.jsonl" "$(_worktree_json_path "$1")" || return 1

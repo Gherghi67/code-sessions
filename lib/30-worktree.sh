@@ -78,7 +78,7 @@ _copy_base_context() {  # base_meta wt_meta
         mkdir -p "$dst/plans" || warn "could not create plans/ in the feature"
         # find -P (the default) never descends a linked dir, and -type f
         # leaves out links and specials.
-        (cd "$src/plans" && find . -type f -print0) | while IFS= read -r -d '' rel; do
+        (cd -- "$src/plans" && find . -type f -print0) | while IFS= read -r -d '' rel; do
             rel="${rel#./}"
             # Parameter expansion, not dirname: a "-sub" component reads as an
             # option to it, and $( ) drops a trailing newline from a name.
@@ -333,7 +333,7 @@ _worktree_features() {  # base_name
         task="${name#*@}"
         [ -n "$task" ] || continue
         d_real=$(git -C "$d" rev-parse --show-toplevel 2>/dev/null) \
-            || d_real=$(cd "$d" 2>/dev/null && pwd -P || echo "$d")
+            || d_real=$(cd -- "$d" 2>/dev/null && pwd -P || echo "$d")
         case "
 $registered
 " in
@@ -452,7 +452,7 @@ _feature_readiness() {  # base_name task
 # -f only in macOS 12.3; cd+pwd -P follows the link on every platform, and the
 # fallback keeps the original path rather than aborting under set -e.
 _resolve_symlink_dir() {
-    (cd "$1" 2>/dev/null && pwd -P) || printf '%s\n' "$1"
+    (cd -- "$1" 2>/dev/null && pwd -P) || printf '%s\n' "$1"
 }
 
 # Resolve a session name to its real directory (adopted sessions are
@@ -550,7 +550,7 @@ create_worktree_session() {
     # tracked, never dirties the task branch; shared with the base checkout
     # through the common git dir).
     local exclude
-    exclude=$( (cd "$wt_dir" && git rev-parse --git-path info/exclude) 2>/dev/null || echo "" )
+    exclude=$( (cd -- "$wt_dir" && git rev-parse --git-path info/exclude) 2>/dev/null || echo "" )
     # A worktree's git-path resolves to the common git dir, which git reports
     # as an absolute path. Reading that as relative would prepend $wt_dir,
     # writing the exclude entry to a nonsense path and leaving the protocol file
@@ -980,7 +980,7 @@ _permission_rules_carried() {  # wt_dir base_dir
     ! _settings_tracked "$2" || return 1
     [ ! -L "$1/.claude/settings.local.json" ] || return 3
     if [ -L "$1/.claude" ]; then
-        dir=$(_cs_write_target "$1/.claude") && root=$(cd -P "$1" 2>/dev/null && pwd -P) || return 3
+        dir=$(_cs_write_target "$1/.claude") && root=$(cd -P -- "$1" 2>/dev/null && pwd -P) || return 3
         case "$dir/" in "$root"/*) ;; *) return 3 ;; esac
         dir="${dir#"$root"}"
         ! _settings_tracked "$1" "${dir#/}" || return 1
@@ -1324,7 +1324,7 @@ Move or delete these untracked files in $base_dir, then re-run /finish $task"
         _INTEGRATE_GATE_LOG=$(mktemp "${TMPDIR:-/tmp}/cs-gate.XXXXXX")
         # </dev/null: a gate that reads stdin would otherwise consume whatever
         # cs was given and block a non-interactive run forever.
-        if ! (cd "$tmp" && "$@") > "$_INTEGRATE_GATE_LOG" 2>&1 < /dev/null; then
+        if ! (cd -- "$tmp" && "$@") > "$_INTEGRATE_GATE_LOG" 2>&1 < /dev/null; then
             cat "$_INTEGRATE_GATE_LOG" >&2
             rm -f "$_INTEGRATE_GATE_LOG"
             _INTEGRATE_GATE_LOG=""
@@ -1619,7 +1619,7 @@ _fuse_plan() {  # feature_meta base_meta out
     fi
     list=$(mktemp "${TMPDIR:-/tmp}/cs-fuse-list.XXXXXX") || return 1
     # local/ is machine-local (_fuse_walk_skips) and never walked.
-    if ! (cd "$1" && find . -mindepth 1 \( -path ./local -prune \) \
+    if ! (cd -- "$1" && find . -mindepth 1 \( -path ./local -prune \) \
             -o \( -type d -exec test -e '{}/.git' \; -prune -print0 \) \
             -o \( ! -type d -print0 \)) > "$list"; then
         rm -f "$list"

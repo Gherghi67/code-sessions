@@ -15,7 +15,7 @@ _sq() {  # text
 # ~/.local/bin, so the window command must not rely on lookup).
 _cs_self() {
     case "$0" in
-        */*) printf '%s/%s' "$(cd "$(dirname "$0")" && pwd)" "$(basename "$0")";;
+        */*) printf '%s/%s' "$(cd -- "$(dirname "$0")" && pwd)" "$(basename "$0")";;
         *)   command -v -- "$0" 2>/dev/null || printf '%s' "$0";;
     esac
 }

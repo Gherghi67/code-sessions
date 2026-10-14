@@ -48,7 +48,7 @@ search_sessions() {
 
         # Resolve symlinks for adopted sessions
         local real_dir
-        real_dir=$(cd "$session_dir" 2>/dev/null && pwd -P) || continue
+        real_dir=$(cd -- "$session_dir" 2>/dev/null && pwd -P) || continue
 
         # Search fixed files
         for relpath in $search_files; do
@@ -110,8 +110,8 @@ is_session_dir() {
 _session_name_for_dir() {  # dir
     local dir root rest
     [ -d "$1/.cs" ] || return 1
-    dir=$(cd "$1" 2>/dev/null && pwd -P) || return 1
-    root=$(cd "${SESSIONS_ROOT:-}" 2>/dev/null && pwd -P) || return 1
+    dir=$(cd -- "$1" 2>/dev/null && pwd -P) || return 1
+    root=$(cd -- "${SESSIONS_ROOT:-}" 2>/dev/null && pwd -P) || return 1
 
     # Both sides resolved before comparing: a sessions root reached through a
     # symlinked parent (macOS /var -> /private/var) never prefix-matches a
@@ -132,7 +132,7 @@ _session_name_for_dir() {  # dir
     local link
     for link in "${SESSIONS_ROOT:-}"/*; do
         [ -L "$link" ] || continue
-        [ "$(cd "$link" 2>/dev/null && pwd -P)" = "$dir" ] || continue
+        [ "$(cd -- "$link" 2>/dev/null && pwd -P)" = "$dir" ] || continue
         printf '%s\n' "${link##*/}"
         return 0
     done
@@ -487,11 +487,11 @@ _remove_one_session() {
     # session loses only its link below, so it is exempt.
     if [ ! -L "$session_dir" ]; then
         local sub link real_dir real_target
-        real_dir=$(cd "$session_dir" && pwd -P)
+        real_dir=$(cd -- "$session_dir" && pwd -P)
         for sub in $CS_VAULT_LINKS; do
             link="$session_dir/.cs/$sub"
             [ -L "$link" ] || continue
-            real_target=$(cd "$link" 2>/dev/null && pwd -P) || continue
+            real_target=$(cd -- "$link" 2>/dev/null && pwd -P) || continue
             case "$real_target" in
                 "$real_dir"/*)
                     error "Session '$session_name' has encrypted storage mounted inside it: .cs/$sub points at $(readlink "$link"). Removing the session would delete what the vault holds; unmount it, then retry." ;;

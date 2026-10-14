@@ -524,7 +524,7 @@ main() {
 
         # Initialize local git repo by default
         (
-            cd "$session_dir" || exit 0
+            cd -- "$session_dir" || exit 0
             create_session_gitignore "$session_dir"
             git init -q 2>/dev/null || true
             # cs writes its bookkeeping files with LF. A global core.autocrlf
