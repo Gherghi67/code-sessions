@@ -526,7 +526,7 @@ test_remote_refuses_options_it_cannot_drop_before_opening_anything() {
     for rest in "--disallowedTools Bash" "--settings /x.json" "--sandbox" "--foo" \
         "--permission-mode plan --disallowedTools Bash" "--permission-mode --sandbox" \
         "--plan-mode-required" "--dangerously-skip-permissions=1" "--enable-auto-mode" \
-        "--inherit-permission-mode dontAsk" "--permission-mode"; do
+        "--inherit-permission-mode dontAsk" "--permission-mode" "--permission-mode=plann"; do
         rc=0
         out=$(CLAUDE_CODE_BIN="claude $rest" "$CS_BIN" demo --remote 2>&1) || rc=$?
         assert_eq "1" "$rc" "claude $rest is refused" || { printf '%s\n' "$out"; return 1; }
