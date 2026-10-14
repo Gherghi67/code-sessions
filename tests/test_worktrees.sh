@@ -730,6 +730,19 @@ test_retire_reads_the_feature_lock_by_the_one_lock_rule() {
     done
 }
 
+# A sha the base does not have is refused by name, the sha as given.
+test_retire_names_a_commit_the_base_lacks() {
+    create_test_session_with_git "myproj" > /dev/null
+    cs_launch "myproj@fix-auth"
+    local wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    land_feature myproj fix-auth > /dev/null || { echo "  FAIL: integrate fixture"; return 1; }
+    local missing="0123456789abcdef0123456789abcdef01234567" output status=0
+    output=$("$CS_BIN" "myproj" -retire-feature "fix-auth" "$missing" 2>&1) || status=$?
+    assert_eq "1" "$status" "a commit the base lacks is refused: $output" || return 1
+    assert_eq "Error: Commit not found in myproj: $missing" "$output" "the refusal names the sha given" || return 1
+    assert_dir "$wt" "worktree preserved" || return 1
+}
+
 test_retire_refuses_an_unintegrated_feature() {
     # Retirement never merges: a commit the base lacks is a refusal that
     # names /finish, whatever the old merge verb would have done with it.
@@ -1046,6 +1059,7 @@ run_test test_retire_from_inside_the_feature_session_refuses
 run_test test_retire_foreign_live_base_lock_still_refuses
 run_test test_retire_reused_live_pid_is_not_treated_as_own_lock
 run_test test_retire_reads_the_feature_lock_by_the_one_lock_rule
+run_test test_retire_names_a_commit_the_base_lacks
 run_test test_retire_refuses_an_unintegrated_feature
 run_test test_retire_refuses_commits_after_the_captured_one
 run_test test_retire_force_takes_a_squash_landed_branch
@@ -1104,6 +1118,19 @@ test_integrate_reports_already_integrated_and_does_nothing() {
     assert_eq "0" "$status" "already integrated exits 0: $output" || return 1
     assert_output_contains "$output" "already-integrated fix-auth $sha" "machine line printed" || return 1
     assert_eq "$head" "$(git -C "$base_dir" rev-parse HEAD)" "no commit is made" || return 1
+}
+
+# A sha the base does not have is refused by name, the sha as given.
+test_integrate_names_a_commit_the_base_lacks() {
+    local base_dir head
+    integrate_fixture myproj fix-auth > /dev/null
+    base_dir="$CS_SESSIONS_ROOT/myproj"
+    head=$(git -C "$base_dir" rev-parse HEAD)
+    local missing="0123456789abcdef0123456789abcdef01234567" output status=0
+    output=$("$CS_BIN" myproj -integrate-feature fix-auth "$missing" -- true 2>&1) || status=$?
+    assert_eq "1" "$status" "a commit the base lacks is refused: $output" || return 1
+    assert_eq "Error: Commit not found in myproj: $missing" "$output" "the refusal names the sha given" || return 1
+    assert_eq "$head" "$(git -C "$base_dir" rev-parse HEAD)" "base HEAD unchanged" || return 1
 }
 
 test_integrate_refuses_dirty_base() {
@@ -1274,6 +1301,7 @@ test_integrate_and_autosave_spell_one_mutex_path() {
 run_test test_integrate_refuses_unknown_worktree
 run_test test_integrate_refuses_sha_not_on_feature_branch
 run_test test_integrate_reports_already_integrated_and_does_nothing
+run_test test_integrate_names_a_commit_the_base_lacks
 run_test test_integrate_refuses_dirty_base
 run_test test_integrate_refuses_foreign_live_base_lock
 run_test test_integrate_reads_the_base_lock_by_the_one_lock_rule
