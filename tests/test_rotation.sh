@@ -731,7 +731,8 @@ test_handoff_prompt_lists_one_answer_per_row() {
 # (_cs_plain_name leaves it as it is), so the name it prints, and the one r
 # hands Claude, is the file itself. The scan passes over the others, an armed
 # marker naming one is dropped, and one line says a handoff was skipped
-# without naming it. A plain handoff beside them is still offered.
+# without naming it: it says where, and that a clone may have written it. A
+# plain handoff beside them is still offered.
 test_handoff_whose_name_is_not_plain_is_not_offered() {
     _rot_session "rot-plain-name"
     local dir="$CS_SESSIONS_ROOT/rot-plain-name" output named
@@ -741,7 +742,7 @@ test_handoff_whose_name_is_not_plain_is_not_offered() {
     _seed_handoff "$dir" "$armed" "unconsumed"
     printf '%s\n' "$armed" > "$dir/.cs/local/pending-handoff"
     output=$("$CS_BIN" rot-plain-name <<< "d" 2>&1) || true
-    assert_eq "Skipped a rotation handoff whose file name is not plain (only letters, digits and ._@-, at most 160 characters); rename it to have it offered." \
+    assert_eq "Skipped a rotation handoff in .cs/handoffs/ whose file name is not plain (only letters, digits and ._@-, at most 160 characters); check who wrote it before renaming it." \
         "$(grep '^Skipped a rotation handoff' <<< "$output")" \
         "one line says a handoff was skipped" || return 1
     assert_eq "Rotation handoff pending: 2026-07-15-plain.md (from another checkout)" \
