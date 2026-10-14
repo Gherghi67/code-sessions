@@ -108,8 +108,10 @@ test_worktree_untracked_at_risk_lists_names_as_bytes() {
 # C-locale byte order: uppercase before "_" before lowercase.
 test_worktree_untracked_entries_sorts_in_byte_order() {
     local d="$TEST_TMPDIR/d" b out
-    mkdir -p "$d/.cs"
+    mkdir -p "$d/.cs/local"
     git -C "$d" init -q
+    # An ignored-mode worktree: every file under .cs/ is cs's own.
+    printf 'cs_mode: ignored\n' > "$d/.cs/local/state"
     : > "$d/.cs/y"
     : > "$d/B"
     : > "$d/_x"

@@ -1044,13 +1044,16 @@ const SESSION_ROOT_OWNED: &[&str] = &[
     "notes.md", "changes.md", "discoveries.md", "logs", "artifacts",
 ];
 
-/// Top-level names in a worktree that are cs's, not the user's. Finder's
-/// .DS_Store is no one's at any depth (`worktree_untracked`).
-const WORKTREE_OWNED: &[&str] = &[".cs", "CLAUDE.local.md"];
-
 /// The one path under a worktree's `.claude/` that is cs's: the settings
 /// file it writes. Anything else there is the user's.
 const WORKTREE_OWNED_SETTINGS: &str = ".claude/settings.local.json";
+
+/// The paths under a tracked-mode worktree's `.cs/` that are cs's own
+/// machine-local files; git carries the rest of `.cs/` there.
+const TRACKED_MODE_CS_OWNED: [&str; 3] = [".cs/session.lock", ".cs/session.mutex.lock", ".cs/.narrative-reminder-cooldown"];
+
+/// The line cs writes into the root CLAUDE.local.md it owns.
+const SESSION_PROTOCOL_SENTINEL: &[u8] = b"<!-- cs:session-protocol -->";
 
 /// What removing the session at `path` would delete that cs did not put
 /// there. An adopted session (a symlink) loses only its link, so nothing.
@@ -1113,20 +1116,80 @@ fn files_under(dir: &Path) -> Result<u64, String> {
     Ok(files)
 }
 
+/// The `cs_mode` a worktree's `.cs/local/state` names, read as
+/// `_read_local_state` reads it; `None` when the file or the key is absent.
+fn worktree_cs_mode(path: &Path) -> Option<String> {
+    let state = fs::read_to_string(path.join(".cs/local/state")).ok()?;
+    state.lines().find_map(|line| line.strip_prefix("cs_mode:")).map(|value| value.trim_start().replace('"', ""))
+}
+
+/// Whether a path in the worktree at `path` is cs's own bookkeeping, as
+/// lib/30-worktree.sh `_without_cs_bookkeeping` draws the line: all of `.cs/`
+/// in ignored mode, only its machine-local files otherwise (git carries the
+/// rest); the root CLAUDE.local.md only while it carries cs's sentinel; the
+/// settings file; and Finder's .DS_Store at any depth.
+fn is_cs_bookkeeping(path: &Path) -> impl Fn(&str) -> bool {
+    let ignored_mode = worktree_cs_mode(path).as_deref() == Some("ignored");
+    let protocol_file_is_cs = fs::read(path.join("CLAUDE.local.md"))
+        .map(|text| text.windows(SESSION_PROTOCOL_SENTINEL.len()).any(|w| w == SESSION_PROTOCOL_SENTINEL))
+        .unwrap_or(false);
+    move |p: &str| {
+        let cs_own = if ignored_mode {
+            p.starts_with(".cs/")
+        } else {
+            p.starts_with(".cs/local/") || TRACKED_MODE_CS_OWNED.contains(&p)
+        };
+        cs_own
+            || (protocol_file_is_cs && p == "CLAUDE.local.md")
+            || p == WORKTREE_OWNED_SETTINGS
+            || p.rsplit('/').next() == Some(".DS_Store")
+    }
+}
+
+/// The gitlink paths in the index of the checkout at `dir`.
+fn gitlinks(dir: &Path) -> Result<Vec<String>, String> {
+    // Each entry reads "<mode> <oid> <stage>\t<path>".
+    Ok(git_ls_files(dir, &["-s"])?
+        .into_iter()
+        .filter(|entry| entry.starts_with("160000 "))
+        .filter_map(|entry| entry.split_once('\t').map(|(_, path)| path.to_string()))
+        .collect())
+}
+
+/// The untracked and ignored files inside every initialised submodule of the
+/// checkout at `dir`, at any depth, each path prefixed with `prefix` and its
+/// submodule's path (lib/30-worktree.sh `_submodule_others`): git ls-files
+/// never lists inside a submodule, and removing the worktree removes them.
+fn submodule_others(dir: &Path, prefix: &str) -> Result<Vec<String>, String> {
+    let mut others = Vec::new();
+    for sub in gitlinks(dir)? {
+        let checkout = dir.join(&sub);
+        if !checkout.join(".git").exists() {
+            continue;
+        }
+        let inner = format!("{prefix}{sub}/");
+        let mut listed = git_ls_files(&checkout, &["--others", "--exclude-standard"])?;
+        listed.extend(git_ls_files(&checkout, &["--others", "--ignored", "--exclude-standard"])?);
+        others.extend(listed.into_iter().map(|p| format!("{inner}{p}")));
+        others.extend(submodule_others(&checkout, &inner)?);
+    }
+    Ok(others)
+}
+
 /// The entries of what git does not track in the worktree at `path`, as
-/// `cs -rm` lists them (lib/65-sessions.sh `_worktree_untracked_paths`).
+/// `cs -rm` lists them (lib/65-sessions.sh `_worktree_untracked_paths`): the
+/// worktree's own untracked and ignored files and every file inside a
+/// submodule, without cs's own bookkeeping.
 fn worktree_untracked(path: &Path) -> Result<Vec<untracked::Entry>, String> {
     let mut at_risk = git_ls_files(path, &["--others", "--exclude-standard"])?;
     at_risk.extend(git_ls_files(path, &["--others", "--ignored", "--exclude-standard"])?);
-    at_risk.retain(|p| {
-        let top = p.split('/').next().unwrap_or(p);
-        let name = p.rsplit('/').next().unwrap_or(p);
-        !WORKTREE_OWNED.contains(&top) && p != WORKTREE_OWNED_SETTINGS && name != ".DS_Store"
-    });
+    at_risk.extend(submodule_others(path, "")?);
+    let cs_own = is_cs_bookkeeping(path);
+    at_risk.retain(|p| !cs_own(p));
     if at_risk.is_empty() {
         return Ok(Vec::new());
     }
-    let tracked = git_ls_files(path, &[])?;
+    let tracked = git_ls_files(path, &["--recurse-submodules"])?;
     let mut inside = HashMap::new();
     for repo in at_risk.iter().filter(|p| p.ends_with('/')) {
         inside.insert(repo.clone(), files_under(&path.join(repo))?);
