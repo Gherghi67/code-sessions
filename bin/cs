@@ -10726,9 +10726,11 @@ _task_row_status() {  # store, id
 
 # Where the session keeps its task archive: in the vault behind .cs/private
 # for an encrypted session, else .cs/task-archive. Errors when the vault is
-# locked or the path leads out of the session.
+# locked, or when the archive or any link anywhere under it leads out of the
+# session (a clone can commit such a link, and a pull can bring one in while
+# the session is open). The writes check their own paths again as they write.
 _task_archive_root() {  # session_dir, meta_dir
-    local root="$2/task-archive" out
+    local root="$2/task-archive" out link
     if [ -L "$2/private" ] || [ -e "$2/private" ]; then
         [ -d "$2/private" ] \
             || error "the session's vault is locked (.cs/private leads to a missing directory); mount it, then archive again. Nothing archived"
@@ -10737,12 +10739,31 @@ _task_archive_root() {  # session_dir, meta_dir
     if out=$(_cs_write_leaves_session "$1" "$root"); then
         error ".cs/${root#"$2"/} leads to $out, outside the session; nothing archived"
     fi
+    if [ -d "$root" ]; then
+        while IFS= read -r -d '' link; do
+            if out=$(_cs_write_leaves_session "$1" "$link"); then
+                error ".cs/${link#"$2"/} leads to $out, outside the session; nothing archived"
+            fi
+        done < <(find -H "$root" -type l -print0)
+    fi
     printf '%s\n' "$root"
 }
 
 # One row of the readable copy: its heading, then its description.
 _task_row_markdown() {  # row file
     jq -r '"## #\(.id) [\(.status)] \(.subject)\n\n\(.description)\n"' "$1"
+}
+
+# The readable snapshot of the whole list a run appends to tasks.md: a dated
+# header, then every row in id order (TASK_ARCHIVE_IDS).
+_task_archive_snapshot() {  # store
+    local id
+    printf '# Task list as of %s (before archiving completed rows)\n\n' "$(date '+%Y-%m-%d %H:%M')"
+    while read -r id; do
+        _task_row_markdown "$1/$id.json"
+    done <<IDS
+$TASK_ARCHIVE_IDS
+IDS
 }
 
 # Reads the session's task list and decides what a run moves. Sets
@@ -10798,13 +10819,13 @@ archive_tasks_plan() {
     local session_dir="${CLAUDE_SESSION_DIR:-$(dirname "$meta_dir")}" answer root
     answer=$(_task_archive_answer "$meta_dir")
     _task_archive_select
+    [ -n "$TASK_ARCHIVE_NOTHING" ] || root=$(_task_archive_root "$session_dir" "$meta_dir")
     echo "answer: $answer"
     echo "store: $TASK_ARCHIVE_STORE"
     if [ -n "$TASK_ARCHIVE_NOTHING" ]; then
         echo "archive: nothing: $TASK_ARCHIVE_NOTHING"
         return 0
     fi
-    root=$(_task_archive_root "$session_dir" "$meta_dir")
     local id count=0 list="" noun="rows"
     for id in $TASK_ARCHIVE_MOVING; do
         count=$((count + 1))
@@ -10849,20 +10870,18 @@ archive_tasks_run() {
         fi
     done
 
-    mkdir -p "$day_dir/json"
-    {
-        printf '# Task list as of %s (before archiving completed rows)\n\n' "$(date '+%Y-%m-%d %H:%M')"
-        while read -r id; do
-            _task_row_markdown "$store/$id.json"
-        done <<IDS
-$TASK_ARCHIVE_IDS
-IDS
-    } >> "$day_dir/tasks.md"
+    cs_mkdir_inside "$day_dir/json" \
+        || error "could not make .cs/${day_dir#"$meta_dir"/}/json; nothing archived"
+    cs_append_inside "$day_dir/tasks.md" _task_archive_snapshot "$store" \
+        || error "could not add the snapshot to .cs/${day_dir#"$meta_dir"/}/tasks.md; nothing archived"
 
-    local tmp moved=0
+    local tmp out moved=0
     for id in $TASK_ARCHIVE_MOVING; do
         dst="$day_dir/json/$id.json"
         if [ ! -e "$dst" ]; then
+            if out=$(_cs_write_leaves_session "$session_dir" "$dst"); then
+                error ".cs/${dst#"$meta_dir"/} leads to $out, outside the session; rows from #$id on stay live"
+            fi
             tmp=$(mktemp "$day_dir/json/.row.XXXXXX")
             cp "$store/$id.json" "$tmp"
             mv "$tmp" "$dst"
