@@ -2027,10 +2027,7 @@ impl App {
     fn locked_selection_refusal(&self) -> Option<String> {
         let session = self.selected_session()?;
         let pid = session.liveness.lock_pid().filter(|&pid| session::is_pid_alive(pid))?;
-        Some(format!(
-            "{} is live (pid {}) — close it first",
-            session.name, pid
-        ))
+        Some(session::live_refusal(&session.name, pid))
     }
 
     /// The confirm lines for `names` and the escalations they need: a line
@@ -2185,8 +2182,14 @@ impl App {
         }
         // Same liveness guard as Delete and Rotate: a live claude keeps
         // writing under the old path, and the move takes its lock and
-        // transcripts from under it.
-        if let Some(refusal) = self.locked_selection_refusal() {
+        // transcripts from under it. The lock is read again now, as delete's
+        // removal reads it: rescans wait while the modal is open, so the
+        // session may have opened since its row was scanned.
+        let live_now = self.selected_session().and_then(|s| {
+            session::read_lock_pid(&self.sessions_root.join(&s.name).join(".cs"))
+                .map(|pid| session::live_refusal(&s.name, pid))
+        });
+        if let Some(refusal) = self.locked_selection_refusal().or(live_now) {
             self.set_status(refusal, StatusLevel::Error);
             self.mode = Mode::Normal;
             return;

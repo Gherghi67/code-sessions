@@ -1346,7 +1346,7 @@ pub fn remove_session_path(root: &Path, name: &str, path: &Path, grants: RemoveG
     // was scanned earlier and the session may have opened since.
     if !grants.past_live_lock {
         if let Some(pid) = read_lock_pid(&path.join(".cs")) {
-            return Err(std::io::Error::other(format!("{name} is live (pid {pid}) — close it first")));
+            return Err(std::io::Error::other(live_refusal(name, pid)));
         }
     }
     let is_link = path.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false);
@@ -1523,11 +1523,18 @@ fn unread_mail_count(meta_dir: &Path) -> u32 {
         .unwrap_or(0)
 }
 
-fn read_lock_pid(meta_dir: &Path) -> Option<u32> {
+/// The pid in `meta_dir`'s session.lock when that process is alive, read at
+/// the moment of asking.
+pub fn read_lock_pid(meta_dir: &Path) -> Option<u32> {
     let lock_file = meta_dir.join("session.lock");
     let content = fs::read_to_string(&lock_file).ok()?;
     let pid = content.trim().parse::<u32>().ok()?;
     if is_pid_alive(pid) { Some(pid) } else { None }
+}
+
+/// Why a picker action refuses session `name`, whose claude runs as `pid`.
+pub fn live_refusal(name: &str, pid: u32) -> String {
+    format!("{name} is live (pid {pid}) — close it first")
 }
 
 /// True when a process with `pid` is alive on this machine, via `kill -0`.
