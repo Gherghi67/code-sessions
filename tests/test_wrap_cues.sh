@@ -624,8 +624,13 @@ test_open_rewrites_the_summary_text_of_a_claude_md_moved_whole() {
 test_open_leaves_claude_md_alone_where_cs_keeps_out_of_git() {
     local dir
     dir=$(_session_from_template excluded session-claude-md-71c37d13.md commit)
+    # An excluded checkout tracks none of cs's files, or the open refuses it.
+    git -C "$dir" rm -r -q --cached --ignore-unmatch .cs .claude/settings.local.json CLAUDE.local.md \
+        && git -C "$dir" commit -q -m "untrack cs files" \
+        || { echo "  FAIL: could not untrack cs's files"; return 1; }
     printf 'git_bookkeeping: exclude\n' >> "$dir/.cs/local/state"
     _reopen_with_migration excluded
+    assert_file_exists "$dir/.cs/local/migrated" "the open ran the migration" || { cat "$TEST_TMPDIR/excluded.out"; return 1; }
     cmp -s "$FIXTURES/session-claude-md-71c37d13.md" "$dir/CLAUDE.md" \
         || { echo "  FAIL: an open changed the excluded checkout's CLAUDE.md"; diff "$FIXTURES/session-claude-md-71c37d13.md" "$dir/CLAUDE.md" | head -20; return 1; }
 }
