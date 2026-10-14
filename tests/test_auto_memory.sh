@@ -849,6 +849,21 @@ test_tracked_files_in_a_directory_named_with_a_trailing_newline_are_seen() {
         "$out" "the notice names the file and quotes the directory" || return 1
 }
 
+# git answers the repository's top and the directory's place in it one line
+# each; a repository whose own name ends in a newline still has its tracked
+# file found and named.
+test_tracked_files_in_a_repository_named_with_a_trailing_newline_are_seen() {
+    local s="$TEST_TMPDIR/s"$'\n' out rc=0
+    mkdir -p "$s/.cs/local"
+    git -C "$s" init -q
+    printf 'armed\n' > "$s/.cs/local/queue.state"
+    git -C "$s" add .cs/local/queue.state
+    out=$(bash -c 'source "$1"; cs_tracked_files_notice "$2" "$3"' _ "$SCRIPT_DIR/../hooks/cs-shared.sh" "$s/.cs/local" "$s") || rc=$?
+    assert_eq "0" "$rc" "the tracked file is found" || return 1
+    assert_eq ".cs/local/queue.state is tracked in git (per-actor state must stay local). Fix with: git -C $(printf '%q' "$s") --literal-pathspecs rm -r --cached -- .cs/local && git -C $(printf '%q' "$s") commit -m 'stop tracking .cs/local'" \
+        "$out" "the notice names the file and quotes the repository" || return 1
+}
+
 # A .cs/private that leads to the session itself would have cs keep its queue
 # among the project's files, and the command that untracks a directory would
 # untrack the project. The open names the link instead and prints no command.
@@ -1908,6 +1923,7 @@ run_test test_cs_files_tracked_behind_a_cs_private_link_are_refused
 run_test test_the_untrack_command_quotes_a_directory_name_the_repository_chose
 run_test test_the_untrack_command_untracks_only_the_directory_it_names
 run_test test_tracked_files_in_a_directory_named_with_a_trailing_newline_are_seen
+run_test test_tracked_files_in_a_repository_named_with_a_trailing_newline_are_seen
 run_test test_a_cs_private_link_to_the_session_itself_is_refused_without_an_untrack_command
 run_test test_the_untrack_command_names_a_directory_called_tilde_as_a_path
 run_test test_the_untrack_command_names_a_directory_called_equals_as_a_path
