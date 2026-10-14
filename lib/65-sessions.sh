@@ -483,8 +483,10 @@ _remove_one_session() {
         error "Session not found: $session_name"
     fi
 
-    if [ -z "$force" ] && session_is_live "$session_dir/.cs"; then
-        error "Session '$session_name' is live (pid $(read_lock_pid "$session_dir/.cs")); use --force to remove anyway"
+    if [ -z "$force" ]; then
+        local live_pid
+        live_pid=$(live_lock_pid "$session_dir/.cs")
+        [ -z "$live_pid" ] || error "Session '$session_name' is live (pid $live_pid); use --force to remove anyway"
     fi
 
     # An encrypted session mounts its vault inside the session directory by

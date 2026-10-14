@@ -9683,7 +9683,7 @@ _session_is_archived() {  # session_dir
 }
 
 run_archive() {
-    local force="" arg name
+    local force="" arg name live_pid
     local names
     names=()
     for arg in "$@"; do
@@ -9711,8 +9711,9 @@ run_archive() {
             info "Already archived: $name"
             continue
         fi
-        if [ -z "$force" ] && session_is_live "$ARCHIVE_DIR/.cs"; then
-            error "Session '$name' is live (pid $(read_lock_pid "$ARCHIVE_DIR/.cs")); use --force to archive anyway"
+        if [ -z "$force" ]; then
+            live_pid=$(live_lock_pid "$ARCHIVE_DIR/.cs")
+            [ -z "$live_pid" ] || error "Session '$name' is live (pid $live_pid); use --force to archive anyway"
         fi
         printf 'archived: %s by %s\n' "$(date +%Y-%m-%d)" "$(cs_actor_slug)" > "$ARCHIVE_MARKER"
         info "Archived: $name (opening it restores it; or run 'cs -unarchive $name')"
@@ -11408,8 +11409,10 @@ _remove_one_session() {
         error "Session not found: $session_name"
     fi
 
-    if [ -z "$force" ] && session_is_live "$session_dir/.cs"; then
-        error "Session '$session_name' is live (pid $(read_lock_pid "$session_dir/.cs")); use --force to remove anyway"
+    if [ -z "$force" ]; then
+        local live_pid
+        live_pid=$(live_lock_pid "$session_dir/.cs")
+        [ -z "$live_pid" ] || error "Session '$session_name' is live (pid $live_pid); use --force to remove anyway"
     fi
 
     # An encrypted session mounts its vault inside the session directory by
