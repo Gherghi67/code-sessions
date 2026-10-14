@@ -125,7 +125,7 @@ _exclude_session_tracked_conflict() {  # dir
         fi
     done
     if ! list=$(_cs_git_at "$dir" ls-files -- .cs .claude/settings.local.json CLAUDE.local.md 2>/dev/null); then
-        why=$(_cs_git_at "$dir" ls-files -- .cs .claude/settings.local.json CLAUDE.local.md 2>&1 >/dev/null) || true
+        why=$(_cs_git_error_at "$dir" ls-files -- .cs .claude/settings.local.json CLAUDE.local.md)
         ! _cs_git_not_a_repo "$why" || return 0
         printf 'cs could not ask git whether the branch tracks a file cs rewrites at open: %s' "$(_cs_git_complaint "$why")"
         return 0

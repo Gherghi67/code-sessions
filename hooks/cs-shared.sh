@@ -127,6 +127,19 @@ _cs_git_at() {  # dir, git arguments...
         -u LANGUAGE LC_ALL=C git -C "$dir" "$@"
 }
 
+# What git said on stderr when the same call through _cs_git_at failed, its
+# answer discarded. A git that could not be run at all (exit 127, from env or
+# the shell) is named as missing, in place of their wording of it.
+_cs_git_error_at() {  # dir, git arguments...
+    local why rc=0
+    why=$(_cs_git_at "$@" 2>&1 >/dev/null) || rc=$?
+    if [ "$rc" = 127 ]; then
+        printf 'git is not installed or not on PATH\n'
+    else
+        printf '%s\n' "$why"
+    fi
+}
+
 # True when git's error output says it found no repository at all, the one
 # failure that answers "nothing tracked". The line is looked for anywhere in
 # the output: GIT_TRACE and trace2 settings, from the environment or from
@@ -208,7 +221,7 @@ cs_tracked_files_notice() {  # dir, session_dir
     # one git: two newlines in all, unless a name holds one, and then each is
     # asked on its own.
     if ! top=$(_cs_git_at "$real" rev-parse --show-toplevel --show-prefix 2>/dev/null && printf x); then
-        why=$(_cs_git_at "$real" rev-parse --show-toplevel --show-prefix 2>&1 >/dev/null) || true
+        why=$(_cs_git_error_at "$real" rev-parse --show-toplevel --show-prefix)
         ! _cs_git_not_a_repo "$why" || return 1
         # Inside a git directory (a bare repository, a checkout's .git) there
         # is no working tree, and so nothing git tracks. Only that literal
@@ -221,7 +234,7 @@ cs_tracked_files_notice() {  # dir, session_dir
         *$'\n'*$'\n'*$'\n'*)
             if ! top=$(_cs_git_at "$real" rev-parse --show-toplevel 2>/dev/null && printf x) \
                 || ! prefix=$(_cs_git_at "$real" rev-parse --show-prefix 2>/dev/null && printf x); then
-                why=$(_cs_git_at "$real" rev-parse --show-toplevel --show-prefix 2>&1 >/dev/null) || true
+                why=$(_cs_git_error_at "$real" rev-parse --show-toplevel --show-prefix)
                 _cs_git_cannot_answer "$1" "$why"
                 return 0
             fi
@@ -249,7 +262,7 @@ cs_tracked_files_notice() {  # dir, session_dir
     tracked=${tracked%x}
     if [ -z "$tracked" ]; then
         [ "$status" != 0 ] || return 1
-        why=$(_cs_git_at "$top" ls-files -z -- ":(icase,literal)${prefix:-.}" 2>&1 >/dev/null) || true
+        why=$(_cs_git_error_at "$top" ls-files -z -- ":(icase,literal)${prefix:-.}")
         _cs_git_cannot_answer "$1" "$why"
         return 0
     fi

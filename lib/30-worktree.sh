@@ -949,7 +949,7 @@ _settings_tracked() {  # dir [claude_dir]
         [ -n "$listed" ]
         return
     fi
-    why=$(_cs_git_at "$1" ls-files -- "$spec" 2>&1 >/dev/null) || true
+    why=$(_cs_git_error_at "$1" ls-files -- "$spec")
     error "cs could not ask git whether it tracks $1/.claude/settings.local.json: $(_cs_git_complaint "$why"). Nothing was removed."
 }
 
