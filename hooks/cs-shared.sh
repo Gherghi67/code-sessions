@@ -227,11 +227,13 @@ _cs_plain_name() {  # name, [longest]
     fi
 }
 
-# True when <name> is not empty and _cs_plain_name, cut at 160, leaves it as
-# it is. A name cs offers the user to act on, or hands Claude to read, must be
-# one, so the name printed is the file itself.
+# True when <name> is not empty, holds no "/", and _cs_plain_name, cut at
+# 160, leaves it as it is. A name cs offers the user to act on, or hands
+# Claude to read, must be one, so the name printed is the file itself, and it
+# is one file name: it cannot reach outside the directory it is looked up in.
 _cs_is_plain_name() {  # name
-    [ -n "$1" ] && [ "$(_cs_plain_name "$1" 160)" = "$1" ]
+    case "$1" in ''|*/*) return 1 ;; esac
+    [ "$(_cs_plain_name "$1" 160)" = "$1" ]
 }
 
 # Strip C0 control characters (keeping tab and newline) and DEL from stdin, so
