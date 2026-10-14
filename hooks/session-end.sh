@@ -112,7 +112,7 @@ _cs_end_make_local_dir() {
     if command -v _cs_refuses_write >/dev/null 2>&1; then
         ! _cs_refuses_write cs_mkdir_inside "$LOCAL_DIR" "$META_DIR" || return 1
     fi
-    mkdir "$LOCAL_DIR" 2>/dev/null
+    mkdir "$LOCAL_DIR" 2>/dev/null || [ -d "$LOCAL_DIR" ]
 }
 LOCAL_DIR=$(cs_local_dir "$META_DIR") || LOCAL_DIR=""
 _cs_end_make_local_dir || true

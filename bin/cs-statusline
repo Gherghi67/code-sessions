@@ -665,10 +665,11 @@ _parse_stdin() {
         #
         # Only the last level, .cs/local, is made, inside a .cs that is there:
         # a claude still running after `cs -rm <name> --force` keeps rendering,
-        # and making the whole path would build the removed session again.
+        # and making the whole path would build the removed session again. A
+        # .cs/local a hook made in between is the directory the stamp wanted.
         if [ -n "${CLAUDE_SESSION_NAME:-}" ] && [ -n "${SL_CTX:-}" ] && ! _session_files_tracked; then
             _pctdir="$SESSIONS_ROOT/$CLAUDE_SESSION_NAME/.cs/local"
-            if [ -d "$_pctdir" ] || mkdir "$_pctdir" 2>/dev/null; then
+            if [ -d "$_pctdir" ] || mkdir "$_pctdir" 2>/dev/null || [ -d "$_pctdir" ]; then
                 _read_state_key "$_pctdir/state" claude_session_id
                 if [ -z "$_STATE_VALUE" ] || [ "$_STATE_VALUE" = "${SL_SESSION_ID:-}" ]; then
                     _stamp_due "$_pctdir/context-pct" "${SL_CTX%%.*}"
@@ -703,7 +704,7 @@ EOF
     # rules as context-pct: machine-local, atomic, best-effort.
     if [ -n "${CLAUDE_SESSION_NAME:-}" ] && { [ -n "${SL_5H:-}" ] || [ -n "${SL_WK:-}" ]; } && ! _session_files_tracked; then
         _limdir="$SESSIONS_ROOT/$CLAUDE_SESSION_NAME/.cs/local"
-        if [ -d "$_limdir" ] || mkdir "$_limdir" 2>/dev/null; then
+        if [ -d "$_limdir" ] || mkdir "$_limdir" 2>/dev/null || [ -d "$_limdir" ]; then
             _sl_now
             _stamp_due "$_limdir/limits" "${SL_5H%%.*} ${SL_5H_RESET:-} ${SL_WK%%.*} ${SL_WK_RESET:-}"
             if [ -n "$_STAMP_DUE" ]; then

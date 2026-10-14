@@ -1018,15 +1018,16 @@ _carry_permission_rules() {  # wt_dir base_dir
 # directories only inside a .cs, and .claude sits beside it, one level under
 # a base checkout that exists. So a .claude that is missing gets the same link
 # check and then that one level, never the checkout above it; one that is
-# there goes to cs_mkdir_inside for the link check alone.
+# there goes to cs_mkdir_inside for the link check alone, and one the base's
+# own claude made in between counts as made.
 _make_base_claude_dir() {  # base_dir
-    local dir="$1/.claude"
+    local dir="$1/.claude" err
     if [ -e "$dir" ] || [ -L "$dir" ]; then
         cs_mkdir_inside "$dir"
         return
     fi
     _cs_refuses_write cs_mkdir_inside "$dir" "$1" && return 1
-    mkdir "$dir"
+    err=$(mkdir "$dir" 2>&1) || [ -d "$dir" ] || { printf '%s\n' "$err" >&2; return 1; }
 }
 
 # Remove the temp worktree and release the mutex on every exit path of

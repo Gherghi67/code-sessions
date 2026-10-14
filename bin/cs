@@ -4407,15 +4407,16 @@ _carry_permission_rules() {  # wt_dir base_dir
 # directories only inside a .cs, and .claude sits beside it, one level under
 # a base checkout that exists. So a .claude that is missing gets the same link
 # check and then that one level, never the checkout above it; one that is
-# there goes to cs_mkdir_inside for the link check alone.
+# there goes to cs_mkdir_inside for the link check alone, and one the base's
+# own claude made in between counts as made.
 _make_base_claude_dir() {  # base_dir
-    local dir="$1/.claude"
+    local dir="$1/.claude" err
     if [ -e "$dir" ] || [ -L "$dir" ]; then
         cs_mkdir_inside "$dir"
         return
     fi
     _cs_refuses_write cs_mkdir_inside "$dir" "$1" && return 1
-    mkdir "$dir"
+    err=$(mkdir "$dir" 2>&1) || [ -d "$dir" ] || { printf '%s\n' "$err" >&2; return 1; }
 }
 
 # Remove the temp worktree and release the mutex on every exit path of
@@ -5745,11 +5746,12 @@ _read_local_state() {
 # start, and a silent miss leaves the next open resuming nothing. Only the
 # last level is made: every session cs writes state for already has its .cs,
 # and one removed under a running cs ends it here rather than being built
-# again from its path.
+# again from its path. A .cs/local another writer made in between is the
+# directory this write wanted.
 _set_local_state() {
     local state="$1" key="$2" value="$3" dir
     dir=$(dirname "$state")
-    [ -d "$dir" ] || mkdir "$dir" 2>/dev/null || error "could not create $dir"
+    [ -d "$dir" ] || mkdir "$dir" 2>/dev/null || [ -d "$dir" ] || error "could not create $dir"
     cs_local_state_set "$state" "$key" "$value" 2>/dev/null || error "could not write $state"
 }
 
