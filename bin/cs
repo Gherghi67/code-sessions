@@ -2460,12 +2460,12 @@ Commands:
   -live               List sessions running right now on this machine
   -usage              Per-session token usage over the 5h/weekly rate-limit windows
   -tag add|rm <tag>   Tag the current session (frontmatter); -tag list [<name>] to view
-  -archive <name>... [--force]  Archive sessions (hidden until reopened; --force if live, but not for another session's live one from inside a session)
+  -archive <name>... [--force]  Archive sessions (hidden until reopened; --force if live, but not for another session's live one, or a base with a live feature, from inside a session)
   -unarchive <name>...  Restore archived sessions to the listings
   -encrypt <name>     Move a closed session's private files into an encrypted vault (macOS; asks for a password at every open)
   -status "<text>"    Set this session's advertised status (also: -status, -status --clear/-c)
-  -remove, -rm <name>... [--force [--delete-files]]  Remove sessions (each asks its own confirm and names files cs did not create; --force if live, but not for another session's live one from inside a session; --delete-files lets --force remove those files; a base session's age pins in ~/.cs-secrets go too)
-  -secrets <cmd>      Manage current session secrets (requires CLAUDE_SESSION_NAME; from inside a session, a write to another session's secrets is refused while that session is live)
+  -remove, -rm <name>... [--force [--delete-files]]  Remove sessions (each asks its own confirm and names files cs did not create; --force if live, but not for another session's live one, or a base with a live feature, from inside a session; --delete-files lets --force remove those files; a base session's age pins in ~/.cs-secrets go too)
+  -secrets <cmd>      Manage current session secrets (requires CLAUDE_SESSION_NAME; from inside a session, a write to another session's secrets is refused while that session or one of its features is live)
   -update             Update cs to latest version
     --check, -c       Check for updates without installing
     --force, -f       Force reinstall even if up to date
@@ -2816,8 +2816,8 @@ read_lock_pid() {  # meta_dir
 # whitespace removed, is a decimal number from 1 to 2147483647 (a pid_t;
 # leading zeros allowed) and kill -0 reaches it. "0" and "-1" name process
 # groups, not a process, and a larger number wraps on Linux. Twin of
-# refuse_live_other_base in bin/cs-secrets, which cannot source this file;
-# the two keep this rule together. Arg: meta_dir.
+# live_lock_pid in bin/cs-secrets, which cannot source this file; the two
+# keep this rule together. Arg: meta_dir.
 live_lock_pid() {  # meta_dir
     local text pid
     text="$(read_lock_pid "$1")"
@@ -2902,6 +2902,25 @@ _refuse_live_other_session() {  # name meta_dir verb
     pid="$(live_lock_pid "$2")"
     [ -n "$pid" ] || return 0
     error "session $CLAUDE_SESSION_NAME cannot $3 session $1 while it is live (pid $pid); --force does not override that from another session. Close $1 first."
+}
+
+# Refuses <verb> (remove, archive) on base session <name> while one of its
+# features (<name>@<task>) is live, when cs runs inside a session whose base
+# is not <name>, --force or not: a feature's worktree points into its base's
+# repository. A terminal outside every session and the base's own sessions
+# (the base and its features) are not refused. Called directly, never in
+# $(...), so the error ends cs.
+_refuse_live_feature_of_other_base() {  # name verb
+    [ -n "${CLAUDE_SESSION_NAME:-}" ] || return 0
+    [ "${CLAUDE_SESSION_NAME%%@*}" != "$1" ] || return 0
+    case "$1" in *@*) return 0 ;; esac
+    local feature pid
+    for feature in "$SESSIONS_ROOT/$1"@*; do
+        [ -d "$feature/.cs" ] || continue
+        pid="$(live_lock_pid "$feature/.cs")"
+        [ -n "$pid" ] || continue
+        error "session $CLAUDE_SESSION_NAME cannot $2 session $1 while its feature ${feature##*/} is live (pid $pid); --force does not override that from another session. Close ${feature##*/} first."
+    done
 }
 
 # Epoch mtime of a file, 0 on error. Arg: path. GNU stat is asked first, as
@@ -9675,10 +9694,12 @@ run_archive() {
     done
     [ "${#names[@]}" -ge 1 ] || error "Usage: cs -archive <name>... [--force]"
     # Before any marker is written: a live session of another conversation's
-    # user stops the whole run. One already archived is left alone below.
+    # user, or a live feature of a base it does not own, stops the whole run.
+    # One already archived is left alone below.
     for name in "${names[@]}"; do
-        [ -f "$SESSIONS_ROOT/$name/.cs/archived" ] \
-            || _refuse_live_other_session "$name" "$SESSIONS_ROOT/$name/.cs" archive
+        [ -f "$SESSIONS_ROOT/$name/.cs/archived" ] && continue
+        _refuse_live_other_session "$name" "$SESSIONS_ROOT/$name/.cs" archive
+        _refuse_live_feature_of_other_base "$name" archive
     done
     for name in "${names[@]}"; do
         _archive_resolve "$name"
@@ -11264,10 +11285,12 @@ remove_session() {
     # Set by _remove_one_session when a session went but its age state did
     # not: the other names still go, and the run ends non-zero.
     local age_state_left=""
-    # Before any name goes: a live session of another conversation's user
-    # stops the whole run, so none of the names before it is removed either.
+    # Before any name goes: a live session of another conversation's user,
+    # or a live feature of a base it does not own, stops the whole run, so
+    # none of the names before it is removed either.
     for _name in "${names[@]}"; do
         _refuse_live_other_session "$_name" "$SESSIONS_ROOT/$_name/.cs" remove
+        _refuse_live_feature_of_other_base "$_name" remove
     done
     for _name in "${names[@]}"; do
         _remove_one_session "$_name" "$force" "$delete_files"

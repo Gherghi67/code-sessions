@@ -257,8 +257,8 @@ read_lock_pid() {  # meta_dir
 # whitespace removed, is a decimal number from 1 to 2147483647 (a pid_t;
 # leading zeros allowed) and kill -0 reaches it. "0" and "-1" name process
 # groups, not a process, and a larger number wraps on Linux. Twin of
-# refuse_live_other_base in bin/cs-secrets, which cannot source this file;
-# the two keep this rule together. Arg: meta_dir.
+# live_lock_pid in bin/cs-secrets, which cannot source this file; the two
+# keep this rule together. Arg: meta_dir.
 live_lock_pid() {  # meta_dir
     local text pid
     text="$(read_lock_pid "$1")"
@@ -343,6 +343,25 @@ _refuse_live_other_session() {  # name meta_dir verb
     pid="$(live_lock_pid "$2")"
     [ -n "$pid" ] || return 0
     error "session $CLAUDE_SESSION_NAME cannot $3 session $1 while it is live (pid $pid); --force does not override that from another session. Close $1 first."
+}
+
+# Refuses <verb> (remove, archive) on base session <name> while one of its
+# features (<name>@<task>) is live, when cs runs inside a session whose base
+# is not <name>, --force or not: a feature's worktree points into its base's
+# repository. A terminal outside every session and the base's own sessions
+# (the base and its features) are not refused. Called directly, never in
+# $(...), so the error ends cs.
+_refuse_live_feature_of_other_base() {  # name verb
+    [ -n "${CLAUDE_SESSION_NAME:-}" ] || return 0
+    [ "${CLAUDE_SESSION_NAME%%@*}" != "$1" ] || return 0
+    case "$1" in *@*) return 0 ;; esac
+    local feature pid
+    for feature in "$SESSIONS_ROOT/$1"@*; do
+        [ -d "$feature/.cs" ] || continue
+        pid="$(live_lock_pid "$feature/.cs")"
+        [ -n "$pid" ] || continue
+        error "session $CLAUDE_SESSION_NAME cannot $2 session $1 while its feature ${feature##*/} is live (pid $pid); --force does not override that from another session. Close ${feature##*/} first."
+    done
 }
 
 # Epoch mtime of a file, 0 on error. Arg: path. GNU stat is asked first, as
