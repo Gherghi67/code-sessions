@@ -221,13 +221,37 @@ test_remove_force_ignores_cs_owned_entries_and_ds_store() {
     assert_not_exists "$dir" "a session holding only cs-owned entries should still go under --force" || return 1
 }
 
+# The confirm lists a session root's files cs did not create one name per
+# row, as the worktree confirm lists what git does not track, a control
+# character in a name shown as "?".
 test_remove_confirm_lists_foreign_entries() {
     local dir
     dir=$(create_test_session f4)
-    touch "$dir/notes.txt"
+    touch "$dir/notes.txt" "$dir/line"$'\n'"break.txt"
     local out
     out=$(printf 'n\n' | CS_ASSUME_TTY=1 "$CS_BIN" -rm f4 2>&1) || return 1
-    assert_output_contains "$out" "Also deletes files cs did not create: notes.txt" "confirm lists the foreign entry" || return 1
+    assert_eq "Also deletes files cs did not create:
+    line?break.txt
+    notes.txt
+Cancelled" "$out" "confirm lists each foreign entry on a row of its own" || return 1
+    assert_dir "$dir" "declined session must survive" || return 1
+}
+
+# Past twenty names the confirm counts the rest, as the worktree confirm does.
+test_remove_confirm_caps_foreign_entries_at_twenty() {
+    local dir i=1 expected="Also deletes files cs did not create:"
+    dir=$(create_test_session f5)
+    while [ "$i" -le 22 ]; do
+        touch "$dir/$(printf 'draft-%02d.md' "$i")"
+        [ "$i" -gt 20 ] || expected="$expected
+    $(printf 'draft-%02d.md' "$i")"
+        i=$((i + 1))
+    done
+    local out
+    out=$(printf 'n\n' | CS_ASSUME_TTY=1 "$CS_BIN" -rm f5 2>&1) || return 1
+    assert_eq "$expected
+    ... and 2 more
+Cancelled" "$out" "confirm lists twenty foreign entries and counts the rest" || return 1
     assert_dir "$dir" "declined session must survive" || return 1
 }
 
@@ -916,6 +940,7 @@ run_test test_remove_force_refuses_when_session_holds_files_cs_did_not_create
 run_test test_remove_force_with_delete_files_removes_foreign_files
 run_test test_remove_force_ignores_cs_owned_entries_and_ds_store
 run_test test_remove_confirm_lists_foreign_entries
+run_test test_remove_confirm_caps_foreign_entries_at_twenty
 run_test test_remove_force_refuses_worktree_with_untracked_or_ignored_files
 run_test test_remove_force_with_delete_files_removes_worktree
 run_test test_remove_worktree_confirm_lists_untracked_files
