@@ -4828,6 +4828,58 @@ export CS_SECRET_OWN_KEY=v5
 export CS_SECRET_PLAIN_KEY=v6" "$(CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" export 2>&1)" "only the refused writes are missing" || return 1
 }
 
+# A volume that ignores letter case keeps receiver's store under RECEIVER too,
+# so a write to RECEIVER waits for receiver's live feature on every route.
+test_secrets_writes_to_a_base_named_in_another_case_wait_for_its_live_feature() {
+    _live_receiver || return 1
+    _stop_receiver
+    [ -d "$CS_SESSIONS_ROOT/RECEIVER" ] || { echo "    SKIP: the sessions root tells letter case apart"; return 77; }
+    mkdir -p "$CS_SESSIONS_ROOT/receiver@x/.cs"
+    sleep 300 &
+    local pid=$! route out rc outs="" rcs=""
+    echo "$pid" > "$CS_SESSIONS_ROOT/receiver@x/.cs/session.lock"
+    for route in named session-flag direct; do
+        rc=0
+        case "$route" in
+            named) out=$(printf 'v2' | CLAUDE_SESSION_NAME=sender "$CS_BIN" RECEIVER -secrets set NAMED_KEY 2>&1) || rc=$? ;;
+            session-flag) out=$(printf 'v3' | CLAUDE_SESSION_NAME=sender "$CS_BIN" -secrets --session RECEIVER set FLAG_KEY 2>&1) || rc=$? ;;
+            direct) out=$(printf 'v4' | CLAUDE_SESSION_NAME=sender "$CS_SECRETS_BIN" -s RECEIVER set DIRECT_KEY 2>&1) || rc=$? ;;
+        esac
+        rcs="$rcs $route=$rc"
+        outs="$outs$route: $out
+"
+    done
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    local refusal="Error: session sender cannot change the secrets of session RECEIVER while its feature receiver@x is live (pid $pid); --force does not override that from another session. Close receiver@x first."
+    assert_eq " named=1 session-flag=1 direct=1" "$rcs" "every route exits 1" || return 1
+    assert_eq "named: $refusal
+session-flag: $refusal
+direct: $refusal
+" "$outs" "every route's refusal names the live feature" || return 1
+    assert_eq "export CS_SECRET_API_KEY=v1" "$(CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" export 2>&1)" "receiver's store is as it was" || return 1
+}
+
+# The same holds for the new name of a rename: alpha left secrets when its
+# directory went, and bravo, spelled BRAVO, is idle while bravo@x is live.
+test_secrets_rename_into_a_base_named_in_another_case_waits_for_its_live_feature() {
+    _RN_BIN=$(_make_fake_security)
+    mkdir -p "$CS_SESSIONS_ROOT/alpha/.cs" "$CS_SESSIONS_ROOT/bravo/.cs" "$CS_SESSIONS_ROOT/bravo@x/.cs"
+    [ -d "$CS_SESSIONS_ROOT/BRAVO" ] || { echo "    SKIP: the sessions root tells letter case apart"; return 77; }
+    printf 'value-one' > "$TEST_TMPDIR/v1"
+    CLAUDE_SESSION_NAME=alpha _kc_secrets set K1 < "$TEST_TMPDIR/v1" >/dev/null 2>&1 \
+        || { echo "  FAIL: fixture: could not seed alpha's secret"; return 1; }
+    rm -rf "$CS_SESSIONS_ROOT/alpha"
+    sleep 300 &
+    local pid=$! out rc=0
+    echo "$pid" > "$CS_SESSIONS_ROOT/bravo@x/.cs/session.lock"
+    out=$(CLAUDE_SESSION_NAME=sender _kc_secrets -s alpha rename BRAVO 2>&1) || rc=$?
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    assert_eq "1" "$rc" "the rename exits 1" || return 1
+    assert_eq "Error: session sender cannot change the secrets of session BRAVO while its feature bravo@x is live (pid $pid); --force does not override that from another session. Close bravo@x first." \
+        "$out" "the refusal names the live feature" || return 1
+    assert_eq "cs:alpha:K1" "$(_kc_services)" "alpha's secret stays under alpha" || return 1
+}
+
 # cs and cs-secrets read a session lock by one rule: the text, surrounding
 # whitespace removed, is a decimal pid from 1 to 2147483647 that kill -0
 # reaches. Each content below is fed to both, through the refusals of
@@ -4868,5 +4920,7 @@ run_test test_secrets_a_feature_and_its_base_write_the_live_base_secrets
 run_test test_secrets_delete_from_a_plain_shell_takes_a_live_session
 run_test test_cs_and_cs_secrets_read_a_session_lock_by_one_rule
 run_test test_secrets_writes_to_a_base_wait_for_its_live_feature
+run_test test_secrets_writes_to_a_base_named_in_another_case_wait_for_its_live_feature
+run_test test_secrets_rename_into_a_base_named_in_another_case_waits_for_its_live_feature
 
 report_results

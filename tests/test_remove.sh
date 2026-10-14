@@ -774,6 +774,66 @@ test_remove_base_with_a_live_feature_from_itself_and_a_plain_shell() {
     return 0
 }
 
+# A volume that ignores letter case finds receiver under RECEIVER, so the base
+# named in another case is the same base and is refused the same way, from
+# another base and from a sibling feature.
+test_remove_base_named_in_another_case_refused_while_its_feature_is_live() {
+    create_test_session receiver >/dev/null
+    create_test_session receiver@x >/dev/null
+    [ -d "$CS_SESSIONS_ROOT/RECEIVER" ] || { echo "    SKIP: the sessions root tells letter case apart"; return 77; }
+    sleep 300 &
+    local live_pid=$! caller out rc
+    echo "$live_pid" > "$CS_SESSIONS_ROOT/receiver@x/.cs/session.lock"
+    for caller in sender receiver@y; do
+        create_test_session receiver >/dev/null
+        rc=0
+        out=$(CLAUDE_SESSION_NAME="$caller" "$CS_BIN" -rm RECEIVER --force </dev/null 2>&1) || rc=$?
+        assert_eq "1" "$rc" "removing RECEIVER from $caller exits 1" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
+        assert_eq "Error: session $caller cannot remove session RECEIVER while its feature receiver@x is live (pid $live_pid); --force does not override that from another session. Close receiver@x first." \
+            "$out" "the refusal from $caller names the live feature" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
+        assert_dir "$CS_SESSIONS_ROOT/receiver" "receiver survives" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
+    done
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    return 0
+}
+
+# The same holds when the feature's directory spells its base in another case
+# than the base's own directory does.
+test_remove_base_refused_while_a_feature_spelled_in_another_case_is_live() {
+    create_test_session receiver >/dev/null
+    [ -d "$CS_SESSIONS_ROOT/RECEIVER" ] || { echo "    SKIP: the sessions root tells letter case apart"; return 77; }
+    create_test_session Receiver@feat >/dev/null
+    sleep 300 &
+    local live_pid=$! out rc=0
+    echo "$live_pid" > "$CS_SESSIONS_ROOT/Receiver@feat/.cs/session.lock"
+    out=$(CLAUDE_SESSION_NAME=sender "$CS_BIN" -rm receiver --force </dev/null 2>&1) || rc=$?
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    assert_eq "1" "$rc" "removing receiver exits 1" || return 1
+    assert_eq "Error: session sender cannot remove session receiver while its feature Receiver@feat is live (pid $live_pid); --force does not override that from another session. Close Receiver@feat first." \
+        "$out" "the refusal names the live feature as its directory spells it" || return 1
+    assert_dir "$CS_SESSIONS_ROOT/receiver" "receiver survives" || return 1
+}
+
+# A volume that ignores Unicode normalization finds a base made in NFC under
+# its NFD spelling, so that spelling is refused the same way.
+test_remove_base_named_in_another_normalization_refused_while_its_feature_is_live() {
+    local nfc nfd
+    nfc=$(printf 'caf\303\251')
+    nfd=$(printf 'cafe\314\201')
+    create_test_session "$nfc" >/dev/null
+    create_test_session "$nfc@x" >/dev/null
+    [ -d "$CS_SESSIONS_ROOT/$nfd" ] || { echo "    SKIP: the sessions root tells Unicode normalization forms apart"; return 77; }
+    sleep 300 &
+    local live_pid=$! out rc=0
+    echo "$live_pid" > "$CS_SESSIONS_ROOT/$nfc@x/.cs/session.lock"
+    out=$(CLAUDE_SESSION_NAME=sender "$CS_BIN" -rm "$nfd" --force </dev/null 2>&1) || rc=$?
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    assert_eq "1" "$rc" "removing the NFD spelling exits 1" || return 1
+    assert_eq "Error: session sender cannot remove session $nfd while its feature $nfc@x is live (pid $live_pid); --force does not override that from another session. Close $nfc@x first." \
+        "$out" "the refusal names the live feature" || return 1
+    assert_dir "$CS_SESSIONS_ROOT/$nfc" "the base survives" || return 1
+}
+
 # Every name is checked before any goes: an idle session listed first is not
 # removed when a later name is another session that is live.
 test_remove_from_inside_a_session_checks_every_name_first() {
@@ -798,6 +858,9 @@ run_test test_remove_live_own_feature_from_its_base_with_force
 run_test test_remove_from_a_feature_refuses_its_live_base_and_a_live_sibling
 run_test test_remove_base_refused_while_its_feature_is_live
 run_test test_remove_base_with_a_live_feature_from_itself_and_a_plain_shell
+run_test test_remove_base_named_in_another_case_refused_while_its_feature_is_live
+run_test test_remove_base_refused_while_a_feature_spelled_in_another_case_is_live
+run_test test_remove_base_named_in_another_normalization_refused_while_its_feature_is_live
 run_test test_remove_from_inside_a_session_checks_every_name_first
 run_test test_remove_empty_name_rejected_before_any_deletion
 run_test test_remove_base_session_drops_its_age_state

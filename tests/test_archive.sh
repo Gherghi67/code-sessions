@@ -372,6 +372,29 @@ test_archive_base_with_a_live_feature_from_itself_and_a_plain_shell() {
     return 0
 }
 
+# A volume that ignores letter case finds receiver under RECEIVER, so the base
+# named in another case is the same base and is refused the same way, from
+# another base and from a sibling feature.
+test_archive_base_named_in_another_case_refused_while_its_feature_is_live() {
+    _archive_session "receiver"
+    _archive_session "receiver@x"
+    [ -d "$CS_SESSIONS_ROOT/RECEIVER" ] || { echo "    SKIP: the sessions root tells letter case apart"; return 77; }
+    sleep 300 &
+    local live_pid=$! caller out rc
+    echo "$live_pid" > "$CS_SESSIONS_ROOT/receiver@x/.cs/session.lock"
+    for caller in sender receiver@y; do
+        rm -f "$CS_SESSIONS_ROOT/receiver/.cs/archived"
+        rc=0
+        out=$(CLAUDE_SESSION_NAME="$caller" "$CS_BIN" -archive RECEIVER --force 2>&1) || rc=$?
+        assert_eq "1" "$rc" "archiving RECEIVER from $caller exits 1" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
+        assert_eq "Error: session $caller cannot archive session RECEIVER while its feature receiver@x is live (pid $live_pid); --force does not override that from another session. Close receiver@x first." \
+            "$out" "the refusal from $caller names the live feature" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
+        assert_not_exists "$CS_SESSIONS_ROOT/receiver/.cs/archived" "no marker written" || { kill "$live_pid"; wait "$live_pid" 2>/dev/null; return 1; }
+    done
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    return 0
+}
+
 test_archive_idle_other_session_from_inside_a_session() {
     _archive_session "receiver"
     CLAUDE_SESSION_NAME=sender "$CS_BIN" -archive receiver >/dev/null 2>&1 || return 1
@@ -441,6 +464,7 @@ run_test test_archive_live_own_feature_from_its_base_with_force
 run_test test_archive_from_a_feature_refuses_its_live_base
 run_test test_archive_base_refused_while_its_feature_is_live
 run_test test_archive_base_with_a_live_feature_from_itself_and_a_plain_shell
+run_test test_archive_base_named_in_another_case_refused_while_its_feature_is_live
 run_test test_archive_rejects_empty_name_before_acting
 run_test test_archive_multiple_names
 run_test test_unarchive_multiple_names
