@@ -3660,7 +3660,7 @@ test_worktree_create_dirty_base_consent_no() {
 # before the base tracked .cs, and a new branch cut from a HEAD that does not
 # hold the .cs the user has staged, after "y" at the dirty-base prompt.
 # Creating the feature is creating a session, so cs makes its .cs and the
-# feature opens, then opens again, like any other.
+# feature opens, then opens again resuming its conversation, like any other.
 _base_tracking_cs_since_its_second_commit() {  # base_dir, [branch made at the first commit]
     mkdir -p "$1"
     echo "# P" > "$1/README.md"
@@ -3681,8 +3681,8 @@ test_tracked_feature_opens_on_a_branch_older_than_the_base_cs() {
     assert_eq "cs/t1 tracked proj" \
         "$(_read_state_keys "$wt/.cs/local/state" task_branch cs_mode cs_base)" "its state names the branch, the mode and the base" || return 1
     rc=0
-    out=$("$CS_BIN" "proj@t1" < /dev/null 2>&1) || rc=$?
-    assert_eq "0" "$rc" "the feature opens again: $out" || return 1
+    out=$("$CS_BIN" "proj@t1" <<< "" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the feature opens again, resuming: $out" || return 1
 }
 
 test_tracked_feature_opens_from_a_head_without_the_staged_cs() {
@@ -3693,8 +3693,8 @@ test_tracked_feature_opens_from_a_head_without_the_staged_cs() {
     assert_eq "cs/t1 tracked proj" \
         "$(_read_state_keys "$wt/.cs/local/state" task_branch cs_mode cs_base)" "its state names the branch, the mode and the base" || return 1
     rc=0
-    out=$("$CS_BIN" "proj@t1" < /dev/null 2>&1) || rc=$?
-    assert_eq "0" "$rc" "the feature opens again: $out" || return 1
+    out=$("$CS_BIN" "proj@t1" <<< "" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the feature opens again, resuming: $out" || return 1
 }
 
 # The values of <keys> in a state file, space-joined in the order asked.
