@@ -638,7 +638,7 @@ test_screen_mode_has_no_spinner() {
 # "not a composer file", "disabled", "slash command" and "rewriter declined" all
 # leave the buffer identical. The trace is the only way to tell them apart.
 test_the_trace_records_which_path_was_taken() {
-    local dir="$TEST_TMPDIR/meta"
+    local dir="$TEST_TMPDIR/session/.cs"
     mkdir -p "$dir"
     local f
     f=$(composer_file "/release")
@@ -662,10 +662,13 @@ run_test test_a_fast_rewrite_still_paints
 run_test test_the_trace_records_which_path_was_taken
 
 # The trace is a cs file: an encrypted session keeps it behind .cs/private, and
-# a locked vault gets no trace rather than a plaintext one.
+# a locked vault gets no trace rather than a plaintext one. The session is
+# staged as cs makes it, with the .cs/local/pre-open that marks a vault set up
+# by hand, so .cs/local is there for a plaintext trace to land in.
 test_the_trace_goes_behind_private() {
-    local dir="$TEST_TMPDIR/meta" f
+    local session="$TEST_TMPDIR/session" dir="$TEST_TMPDIR/session/.cs" f
     mkdir -p "$dir" "$TEST_TMPDIR/vault/private"
+    _mark_hand_made_vault "$session"
     ln -s "$TEST_TMPDIR/vault/private" "$dir/private"
     f=$(composer_file "/release")
     CLAUDE_SESSION_META_DIR="$dir" "$SHIM" "$f"

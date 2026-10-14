@@ -58,7 +58,6 @@ fi
 CS_WRITE_QUIET=1
 if ! command -v cs_append_inside >/dev/null 2>&1; then
     cs_append_inside() { local f="$1"; shift; { "$@" >> "$f"; } 2>/dev/null; }
-    cs_mkdir_inside() { mkdir -p "$1" 2>/dev/null; }
 fi
 if ! command -v cs_write_atomic >/dev/null 2>&1; then
     cs_write_atomic() { return 1; }
@@ -103,8 +102,20 @@ fi
 # An encrypted session logs into its vault; while the vault is locked the log
 # goes nowhere, never into .cs/local.
 # A .cs/local git tracks is left as git has it (cs_local_dir).
+# The directory is made as the last level of a .cs that is there, never with
+# -p: `cs -rm <name> --force` can remove the session while its claude is still
+# ending, after the check above, and mkdir -p would build the removed session
+# again from its path. Every other write below is a file in a directory that
+# already exists, so with the session gone each one fails and writes nothing.
+_cs_end_make_local_dir() {
+    [ -n "$LOCAL_DIR" ] && [ ! -d "$LOCAL_DIR" ] || return 0
+    if command -v _cs_refuses_write >/dev/null 2>&1; then
+        ! _cs_refuses_write cs_mkdir_inside "$LOCAL_DIR" "$META_DIR" || return 1
+    fi
+    mkdir "$LOCAL_DIR" 2>/dev/null || [ -d "$LOCAL_DIR" ]
+}
 LOCAL_DIR=$(cs_local_dir "$META_DIR") || LOCAL_DIR=""
-[ -z "$LOCAL_DIR" ] || cs_mkdir_inside "$LOCAL_DIR" || true
+_cs_end_make_local_dir || true
 if _log_dir=$(cs_private_dir "$META_DIR"); then SESSION_LOG="$_log_dir/session.log"; else SESSION_LOG=/dev/null; fi
 cs_append_inside "$SESSION_LOG" printf '%s\n' "" "$(date '+%Y-%m-%d %H:%M:%S') - Session ended (source: $END_REASON, ID: $SESSION_ID)" || true
 

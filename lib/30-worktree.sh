@@ -838,6 +838,11 @@ create_worktree_session() {
         fi
     fi
 
+    # Creating the feature is creating a session, so this makes its .cs: a
+    # tracked-mode checkout can lack one, when the branch is older than the
+    # base's .cs or HEAD does not hold a .cs the user has only staged. The
+    # state writes below make only the last level.
+    mkdir -p "$wt_dir/.cs/local" || error "could not create $wt_dir/.cs/local"
     local state="$wt_dir/.cs/local/state"
     _set_local_state "$state" claude_session_id "$(_alloc_uuid)"
     _set_local_state "$state" claude_session_color "$(_alloc_random_color)"
@@ -1132,7 +1137,7 @@ ${wt_listing#*"$nl"}"
         conflicts=$(_fuse_conflicts "$wt_dir/.cs" "$base_dir/.cs") \
             || error "Could not classify the session records in $wt_dir/.cs; nothing was removed"
         [ -z "$conflicts" ] \
-            || error "The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt_dir/.cs, then run /finish $task again:
+            || error "The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the path needs a new directory named .cs, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt_dir/.cs, then run /finish $task again:
 $conflicts"
     fi
     # The base's own .cs/ bookkeeping is exempt: in tracked mode the integrate
@@ -1378,7 +1383,23 @@ _carry_permission_rules() {  # wt_dir base_dir
     was=$(_settings_json_or_empty "$base" | _settings_rules_count) || return 1
     now=$(_settings_rules_union "$base" "$feat" | _settings_rules_count) || return 1
     [ "$now" != "$was" ] || return 0
-    cs_mkdir_inside "$2/.claude" && cs_write_atomic "$base" _settings_rules_union "$base" "$feat"
+    _make_base_claude_dir "$2" && cs_write_atomic "$base" _settings_rules_union "$base" "$feat"
+}
+
+# Make the base's .claude for its settings file. cs_mkdir_inside makes
+# directories only inside a .cs, and .claude sits beside it, one level under
+# a base checkout that exists. So a .claude that is missing gets the same link
+# check and then that one level, never the checkout above it; one that is
+# there goes to cs_mkdir_inside for the link check alone, and one the base's
+# own claude made in between counts as made.
+_make_base_claude_dir() {  # base_dir
+    local dir="$1/.claude" err
+    if [ -e "$dir" ] || [ -L "$dir" ]; then
+        cs_mkdir_inside "$dir"
+        return
+    fi
+    _cs_refuses_write cs_mkdir_inside "$dir" "$1" && return 1
+    err=$(mkdir "$dir" 2>&1) || [ -d "$dir" ] || { printf '%s\n' "$err" >&2; return 1; }
 }
 
 # Remove the temp worktree and release the mutex on every exit path of
@@ -1894,11 +1915,12 @@ _fuse_verdict() {  # feature_meta base_meta rel
 
 # Whether the fuse cannot make the directories on the way to <rel> in the
 # base's .cs. It makes them with cs_mkdir_inside, which cannot make one where
-# the base holds a file or a dangling link, and refuses one a link takes out
-# of the session. A link that stays inside (an encrypted session's
-# .cs/memory, say) is a directory like any other.
+# the base holds a file or a dangling link, refuses to make a new directory
+# named .cs (_cs_mkdir_spelling_refused), and refuses one a link takes out of
+# the session. A link that stays inside (an encrypted session's .cs/memory,
+# say) is a directory like any other.
 _fuse_path_blocked() {  # base_meta rel
-    local dir="$1" rest="$2" near="$1" linked=""
+    local dir="$1" rest="$2" near="$1" linked="" missing=""
     while case "$rest" in */*) true ;; *) false ;; esac; do
         dir="$dir/${rest%%/*}"
         rest="${rest#*/}"
@@ -1909,9 +1931,13 @@ _fuse_path_blocked() {  # base_meta rel
         elif [ -L "$dir" ]; then
             return 0
         else
+            missing=1
             break
         fi
     done
+    if [ -n "$missing" ] && _cs_mkdir_spelling_refused "$1/${2%/*}" "$near"; then
+        return 0
+    fi
     [ -n "$linked" ] && _cs_refuses_write cs_mkdir_inside "$1/$2" "$near" 2>/dev/null
 }
 

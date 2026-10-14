@@ -2073,6 +2073,56 @@ test_shared_clock_normalizes_leading_zero_pin() {
     assert_file_contains "$lim" "stamped_at: 8$" "leading-zero pin normalized to base-10" || return 1
 }
 
+# The bar repaints on every Claude Code event and once a minute when idle, so
+# a claude still running after `cs -rm <name> --force` renders for a session
+# that is gone. The render stamps context-pct and limits only in a .cs that
+# is there, making the missing .cs/local in it; a removed session stays
+# removed. Rendered under the bash running this suite.
+test_render_never_recreates_a_removed_session() {
+    local fixture='{"session_name":"s","workspace":{"current_dir":"/tmp"},"context_window":{"used_percentage":42},"rate_limits":{"five_hour":{"used_percentage":10},"seven_day":{"used_percentage":20}}}'
+    mkdir -p "$CS_SESSIONS_ROOT/live/.cs"
+    printf '%s' "$fixture" | CLAUDE_SESSION_NAME=live "$BASH" "$SL" > /dev/null \
+        || { echo "  FAIL: the render for a live session failed"; return 1; }
+    assert_eq "42" "$(cat "$CS_SESSIONS_ROOT/live/.cs/local/context-pct" 2>/dev/null)" "a live session gets its context-pct" || return 1
+    assert_file_contains "$CS_SESSIONS_ROOT/live/.cs/local/limits" "^five_hour_used_pct: 10$" "a live session gets its limits" || return 1
+    printf '%s' "$fixture" | CLAUDE_SESSION_NAME=gone "$BASH" "$SL" > /dev/null \
+        || { echo "  FAIL: the render for a removed session failed"; return 1; }
+    assert_not_exists "$CS_SESSIONS_ROOT/gone" "the render does not make a removed session again" || return 1
+}
+
+# A hook or a second render can make .cs/local between a render's look for it
+# and its mkdir. A DEBUG trap loaded through BASH_ENV stands in for that
+# writer: before each mkdir of the render it makes the directory. The
+# directory is there, which is all the stamp needs: the render still writes
+# its reading, the context one and, in a render that carries only limits, the
+# limits one.
+test_render_counts_a_local_dir_another_writer_made_first() {
+    local seam="$TEST_TMPDIR/peer-seam.sh"
+    cat > "$seam" << 'SEAM'
+set -o functrace
+_cs_test_peer() {
+    case "$BASH_COMMAND" in mkdir\ *) ;; *) return 0 ;; esac
+    command mkdir "$CS_TEST_PEER_DIR" 2>/dev/null
+    : > "$CS_TEST_PEER_RAN"
+    return 0
+}
+trap _cs_test_peer DEBUG
+SEAM
+    mkdir -p "$CS_SESSIONS_ROOT/ctx/.cs" "$CS_SESSIONS_ROOT/lim/.cs"
+    printf '%s' '{"session_name":"s","workspace":{"current_dir":"/tmp"},"context_window":{"used_percentage":42}}' \
+        | CLAUDE_SESSION_NAME=ctx BASH_ENV="$seam" CS_TEST_PEER_RAN="$TEST_TMPDIR/peer-ran-ctx" \
+            CS_TEST_PEER_DIR="$CS_SESSIONS_ROOT/ctx/.cs/local" "$BASH" "$SL" > /dev/null \
+        || { echo "  FAIL: the context render failed"; return 1; }
+    assert_exists "$TEST_TMPDIR/peer-ran-ctx" "the second writer ran before the context render's mkdir" || return 1
+    assert_eq "42" "$(cat "$CS_SESSIONS_ROOT/ctx/.cs/local/context-pct" 2>/dev/null)" "the context reading is stamped" || return 1
+    printf '%s' '{"session_name":"s","workspace":{"current_dir":"/tmp"},"rate_limits":{"five_hour":{"used_percentage":10}}}' \
+        | CLAUDE_SESSION_NAME=lim BASH_ENV="$seam" CS_TEST_PEER_RAN="$TEST_TMPDIR/peer-ran-lim" \
+            CS_TEST_PEER_DIR="$CS_SESSIONS_ROOT/lim/.cs/local" "$BASH" "$SL" > /dev/null \
+        || { echo "  FAIL: the limits render failed"; return 1; }
+    assert_exists "$TEST_TMPDIR/peer-ran-lim" "the second writer ran before the limits render's mkdir" || return 1
+    assert_file_contains "$CS_SESSIONS_ROOT/lim/.cs/local/limits" "^five_hour_used_pct: 10$" "the limits reading is stamped" || return 1
+}
+
 # ============================================================================
 # Theme resolution: CS_TERM_THEME pin wins; else follow the terminal live
 # (macOS OS appearance, tty-safe) so a mid-session dark-mode switch is tracked;
@@ -2257,6 +2307,8 @@ run_test test_shared_clock_ignores_inherited_now
 run_test test_shared_clock_replaces_inherited_garbage
 run_test test_shared_clock_ignores_inherited_ready_flag
 run_test test_shared_clock_normalizes_leading_zero_pin
+run_test test_render_never_recreates_a_removed_session
+run_test test_render_counts_a_local_dir_another_writer_made_first
 run_test test_sl_theme_user_pin_overrides
 run_test test_sl_theme_non_macos_uses_frozen_launch_value
 run_test test_sl_theme_non_macos_defaults_dark

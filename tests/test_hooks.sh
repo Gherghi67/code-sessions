@@ -4027,6 +4027,164 @@ test_session_end_clears_a_stale_lock() {
 run_test test_session_end_spares_a_live_sessions_lock
 run_test test_session_end_clears_a_stale_lock
 
+# `cs -rm <name> --force` can land while the claude it removes is still ending:
+# its SessionEnd has already found the session directory and goes on writing.
+# Nothing it writes may bring the directory back, or the picker shows an empty
+# shell holding the end's log line, timeline event and lock files. A DEBUG trap
+# loaded through BASH_ENV removes the directory before the hook's Nth command,
+# for every N the hook runs, so wherever the removal lands is covered without
+# naming a line or a command of the hook. The hook runs under the bash running
+# this suite; run the suite under /bin/bash too for cs's 3.2 floor.
+test_session_end_never_recreates_a_removed_session() {
+    local seam="$TEST_TMPDIR/remove-at-step.sh" root="$TEST_TMPDIR/rm-sessions"
+    local dir="$root/ending" steps_file="$TEST_TMPDIR/steps" sh="$BASH" steps n rc
+    cat > "$seam" << 'SEAM'
+_cs_test_step=0
+_cs_test_remove_at_step() {
+    case "$1" in */session-end.sh) ;; *) return 0 ;; esac
+    _cs_test_step=$((_cs_test_step + 1))
+    if [ "$_cs_test_step" = "${CS_TEST_REMOVE_AT:-}" ]; then
+        rm -rf "$CS_TEST_REMOVE_DIR"
+        : > "$CS_TEST_REMOVED_MARK"
+    fi
+    printf '%s\n' "$_cs_test_step" > "$CS_TEST_STEPS_FILE"
+    return 0
+}
+trap '_cs_test_remove_at_step "${BASH_SOURCE[0]:-}"' DEBUG
+SEAM
+    _stage_ending_session() {
+        rm -rf "$dir"
+        mkdir -p "$dir/.cs/local"
+        printf '# Session: ending\n' > "$dir/.cs/README.md"
+        : > "$dir/.cs/local/session.log"
+        printf '%s\n' "$$" > "$dir/.cs/session.lock"
+    }
+    _run_ending_hook() {  # bash, step to remove at ("" for none)
+        env -i HOME="$TEST_TMPDIR" PATH="$PATH" CS_SESSIONS_ROOT="$root" \
+            CLAUDE_SESSION_NAME=ending CLAUDE_SESSION_DIR="$dir" \
+            CS_RESOLVED_FROM=env CS_LEAD_PID=$$ CLAUDE_PID=$$ \
+            BASH_ENV="$seam" CS_TEST_REMOVE_AT="$2" CS_TEST_REMOVE_DIR="$dir" \
+            CS_TEST_REMOVED_MARK="$TEST_TMPDIR/removed" CS_TEST_STEPS_FILE="$steps_file" \
+            "$1" "$HOOKS_DIR/session-end.sh" \
+            <<< '{"session_id":"11111111-2222-4333-8444-555555555555","reason":"other"}' \
+            >/dev/null 2>&1
+    }
+    mkdir -p "$root"
+    # Positive control: untouched, the hook writes its end into the session.
+    _stage_ending_session
+    _run_ending_hook "$sh" "" || { echo "  FAIL: $sh: session-end failed with no removal"; return 1; }
+    assert_file_contains "$dir/.cs/timeline.jsonl" '"event":"ended"' \
+        "$sh: the hook records the end when the session stays" || return 1
+    steps=$(cat "$steps_file")
+    [ "$steps" -ge 20 ] || { echo "  FAIL: $sh: the seam counted only $steps hook commands"; return 1; }
+    n=1
+    while [ "$n" -le "$steps" ]; do
+        _stage_ending_session
+        rm -f "$TEST_TMPDIR/removed"
+        rc=0
+        _run_ending_hook "$sh" "$n" || rc=$?
+        assert_exists "$TEST_TMPDIR/removed" "$sh: the session was removed before hook command $n" || return 1
+        assert_eq "0" "$rc" "$sh: session-end exits 0 when the session goes before command $n" || return 1
+        if [ -e "$dir" ]; then
+            echo "  FAIL: $sh: removed before hook command $n of $steps, the session came back holding: $(cd "$root" && find ending | tr '\n' ' ')"
+            return 1
+        fi
+        n=$((n + 1))
+    done
+}
+
+run_test test_session_end_never_recreates_a_removed_session
+
+# The Stop hook runs at every turn end and raises .cs/local/attention after it
+# has found the session, so a `cs -rm <name> --force` landing while a turn ends
+# meets the same window as SessionEnd. A DEBUG trap loaded through BASH_ENV
+# removes the session before the hook's Nth command, for every N. functrace
+# carries the trap into functions, sourced files and command substitutions, so
+# N also lands inside the library's writers, between their checks and their
+# mkdir; the control run proves the trap fired inside cs_mkdir_inside. Each
+# command appends one byte to a file every process of the run shares, and the
+# file's size is the count, so a command substitution and a pipeline count on
+# from their parent. Wherever the removal lands, the hook exits 0 with its
+# approval and the session stays removed. Untouched, the hook makes the missing
+# .cs/local and raises the marker in it. Eight runs at a time, each in its own
+# directory; the hook runs under the bash running this suite.
+test_stop_never_recreates_a_removed_session() {
+    local seam="$TEST_TMPDIR/remove-at-step.sh" work="$TEST_TMPDIR/rm-steps" sh="$BASH"
+    local steps n first w pids ran
+    cat > "$seam" << 'SEAM'
+set -o functrace
+_cs_test_remove_at_step() {
+    local seen=""
+    [ -n "${CS_TEST_STEPS_FILE:-}" ] || return 0
+    printf x >> "$CS_TEST_STEPS_FILE"
+    [ "${FUNCNAME[1]:-}" != cs_mkdir_inside ] || : > "$CS_TEST_STEPS_FILE.in-writer"
+    [ -n "${CS_TEST_REMOVE_AT:-}" ] || return 0
+    [ ! -e "$CS_TEST_STEPS_FILE.removed" ] || return 0
+    IFS= read -r -d '' seen < "$CS_TEST_STEPS_FILE" || true
+    if [ "${#seen}" -ge "$CS_TEST_REMOVE_AT" ]; then
+        rm -rf "$CS_TEST_REMOVE_DIR"
+        : > "$CS_TEST_STEPS_FILE.removed"
+    fi
+    return 0
+}
+trap _cs_test_remove_at_step DEBUG
+SEAM
+    _run_stop_hook_removing_at() {  # step ("" for none): leaves <work>/<step or control>/{out,rc,steps*,root}
+        local w="$work/${1:-control}"
+        mkdir -p "$w/root/ending/.cs/memory" "$w/home"
+        printf '# Session: ending\n' > "$w/root/ending/.cs/README.md"
+        env -i HOME="$w/home" PATH="$PATH" CS_SESSIONS_ROOT="$w/root" \
+            CLAUDE_SESSION_NAME=ending CLAUDE_SESSION_DIR="$w/root/ending" \
+            CLAUDE_SESSION_META_DIR="$w/root/ending/.cs" \
+            CS_RESOLVED_FROM=env CS_LEAD_PID=$$ CLAUDE_PID=$$ \
+            BASH_ENV="$seam" CS_TEST_REMOVE_AT="$1" CS_TEST_REMOVE_DIR="$w/root/ending" \
+            CS_TEST_STEPS_FILE="$w/steps" \
+            "$sh" "$HOOKS_DIR/narrative-reminder.sh" \
+            <<< '{"hook_event_name":"Stop","session_id":"11111111-2222-4333-8444-555555555555"}' \
+            > "$w/out" 2>/dev/null
+        echo $? > "$w/rc"
+    }
+    # Positive control: untouched, the hook makes .cs/local and raises the marker.
+    _run_stop_hook_removing_at ""
+    w="$work/control"
+    assert_eq "0" "$(cat "$w/rc")" "$sh: the Stop hook exits 0 with no removal" || return 1
+    assert_eq '{"decision": "approve"}' "$(cat "$w/out")" "$sh: the hook approves the stop" || return 1
+    assert_file_exists "$w/root/ending/.cs/local/attention" "$sh: the hook raises the attention marker when the session stays" || return 1
+    assert_exists "$w/steps.in-writer" "$sh: the seam steps inside cs_mkdir_inside" || return 1
+    steps=$(wc -c < "$w/steps" | tr -d ' ')
+    n=1
+    while [ "$n" -le "$steps" ]; do
+        first=$n pids=""
+        while [ "$n" -le "$steps" ] && [ $((n - first)) -lt 8 ]; do
+            _run_stop_hook_removing_at "$n" &
+            pids="$pids $!"
+            n=$((n + 1))
+        done
+        # shellcheck disable=SC2086  # a list of pids
+        wait $pids
+        while [ "$first" -lt "$n" ]; do
+            w="$work/$first"
+            if [ ! -e "$w/steps.removed" ]; then
+                # A run can end in fewer commands than the control did; then it had nothing to remove before.
+                ran=$(wc -c < "$w/steps" | tr -d ' ')
+                [ "$ran" -lt "$first" ] \
+                    || { echo "  FAIL: $sh: the seam removed nothing before hook command $first, in a run of $ran"; return 1; }
+            else
+                assert_eq "0" "$(cat "$w/rc")" "$sh: the Stop hook exits 0 when the session goes before command $first" || return 1
+                assert_eq '{"decision": "approve"}' "$(cat "$w/out")" "$sh: the hook approves the stop when the session goes before command $first" || return 1
+                if [ -e "$w/root/ending" ]; then
+                    echo "  FAIL: $sh: removed before hook command $first of $steps, the session came back holding: $(cd "$w/root" && find ending | LC_ALL=C sort | tr '\n' ' ')"
+                    return 1
+                fi
+            fi
+            rm -rf "$w"
+            first=$((first + 1))
+        done
+    done
+}
+
+run_test test_stop_never_recreates_a_removed_session
+
 
 # --- A torn JSONL tail must not take the next record down with it ---
 # A process killed mid-append leaves a last line with no newline. The next `>>`

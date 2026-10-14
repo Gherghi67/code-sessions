@@ -58,7 +58,7 @@ setup() {
     # and a loaded runner must not turn a scan test into a skip. The deadline
     # tests set their own budget.
     export CS_SCOPE_BUDGET_MS="600000"
-    mkdir -p "$CLAUDE_SESSION_DIR"
+    mkdir -p "$CLAUDE_SESSION_META_DIR"
     git -C "$CLAUDE_SESSION_DIR" init -q
     git -C "$CLAUDE_SESSION_DIR" config user.email "test@cs.local"
     git -C "$CLAUDE_SESSION_DIR" config user.name "cs test"

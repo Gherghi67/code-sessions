@@ -9,9 +9,12 @@ MAIL_BODY_MAX=65536
 # The mailbox is a maildir: a message is written whole to tmp/, then renamed
 # into new/ (unread) — the rename is same-filesystem, so a message is either
 # entirely present or entirely absent. 'cs -msg' moves what it prints into
-# cur/ (read). Unread is simply the count of new/*.json.
+# cur/ (read). Unread is simply the count of new/*.json. The directories are
+# made only inside a .cs that is there (cs_mkdir_inside), so mail sent from a
+# session removed under its claude files no copy where the session was.
 _mail_ensure_maildir() {  # maildir
-    mkdir -p "$1/tmp" "$1/new" "$1/cur" "$1/out"
+    cs_mkdir_inside "$1/tmp" && cs_mkdir_inside "$1/new" \
+        && cs_mkdir_inside "$1/cur" && cs_mkdir_inside "$1/out"
 }
 
 # A session's mailbox sits with its other cs files: in its vault when

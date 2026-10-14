@@ -662,24 +662,69 @@ cs_append_inside() {  # file, command [args...]
     fi
 }
 
-# mkdir -p, unless a link takes the directory out of the session it lies in.
-# The levels mkdir -p would make do not exist yet, so the nearest one that does
-# is what gets resolved: a link there carries every level made below it.
+# Whether cs_mkdir_inside refuses to make <dir> from <nearest>, the nearest
+# level of it that exists, by spelling alone: <nearest> must be a .cs or lie
+# inside one, and the levels to make must not hold a .cs. A writer that plans
+# its directories before it makes them (the retire's record fuse) asks the
+# same question.
+_cs_mkdir_spelling_refused() {  # dir, nearest existing level
+    case "$2/" in
+        */.cs/*) ;;
+        *) return 0 ;;
+    esac
+    case "${1#"$2"}/" in
+        */.cs/*) return 0 ;;
+    esac
+    return 1
+}
+
+# Make a directory and its missing levels inside a .cs that exists, unless a
+# link takes it out of the session it lies in. cs makes a session's .cs when it
+# creates, adopts or migrates the session; a writer that finds it gone is
+# running for a session removed under it, so the levels to make must lie below
+# an existing .cs and must not themselves hold a .cs, judged by spelling as the
+# session is; a directory that already exists makes nothing and gets only the
+# link check. The levels to make do not exist yet, so the nearest one that does
+# is what gets resolved: a link there carries every level made below it. Each
+# level is then made on its own, never with mkdir -p: a session removed after
+# the checks leaves the next level without its parent, so the mkdir fails and
+# nothing is built again from the path. A level another writer made first
+# counts as made.
 cs_mkdir_inside() {  # dir
-    local dir="$1" e
+    local dir="$1" e rest part err
     case "$dir" in /*) ;; *) dir="$PWD/$dir" ;; esac
     e="$dir"
     while [ -n "$e" ] && [ ! -e "$e" ] && [ ! -L "$e" ]; do
         e="${e%/*}"
     done
-    if [ -n "$e" ] && _cs_refuses_write cs_mkdir_inside "$dir" "$e"; then
+    if [ "$e" != "$dir" ] && _cs_mkdir_spelling_refused "$dir" "$e"; then
+        e=""
+    fi
+    if [ -z "$e" ]; then
+        [ -n "${CS_WRITE_QUIET:-}" ] || echo "cs_mkdir_inside: $dir is not inside an existing .cs" >&2
         return 1
     fi
-    if [ -n "${CS_WRITE_QUIET:-}" ]; then
-        mkdir -p "$dir" 2>/dev/null
-    else
-        mkdir -p "$dir"
+    if _cs_refuses_write cs_mkdir_inside "$dir" "$e"; then
+        return 1
     fi
+    if [ "$e" = "$dir" ]; then
+        [ ! -d "$dir" ] || return 0
+        [ -n "${CS_WRITE_QUIET:-}" ] || echo "cs_mkdir_inside: $dir is not a directory" >&2
+        return 1
+    fi
+    rest="${dir#"$e"}"
+    while [ -n "$rest" ]; do
+        rest="${rest#/}"
+        part="${rest%%/*}"
+        rest="${rest#"$part"}"
+        [ -n "$part" ] || continue
+        e="$e/$part"
+        if [ -n "${CS_WRITE_QUIET:-}" ]; then
+            mkdir "$e" 2>/dev/null || [ -d "$e" ] || return 1
+        else
+            err=$(mkdir "$e" 2>&1) || [ -d "$e" ] || { printf '%s\n' "$err" >&2; return 1; }
+        fi
+    done
 }
 
 cs_write_atomic() {  # dest, command [args...]

@@ -432,6 +432,53 @@ test_launch_stops_loudly_when_state_cannot_be_written() {
     [ ! -f "$TEST_TMPDIR/claude-args" ] || { echo "  FAIL: claude must not launch unrecorded"; return 1; }
 }
 
+# cs writes state for a session whose .cs it has made: it makes the missing
+# .cs/local there, and leaves one that exists as it is. A session removed
+# under a running cs has no .cs, and the write then fails naming the directory
+# instead of building the session again from its path.
+test_state_write_makes_local_only_inside_an_existing_cs() {
+    local root="$TEST_TMPDIR/root" out rc=0
+    mkdir -p "$root/live/.cs"
+    _state_write() {  # state, key, value
+        "$BASH" -c '. "$1/02-shared.sh"; . "$1/05-term.sh"; . "$1/40-state.sh"; _set_local_state "$2" "$3" "$4"' _ \
+            "$SCRIPT_DIR/../lib" "$@" 2>&1
+    }
+    out=$(_state_write "$root/live/.cs/local/state" cs_mode tracked) || rc=$?
+    assert_eq "0" "$rc" "the first write makes .cs/local" || return 1
+    rc=0
+    out=$(_state_write "$root/live/.cs/local/state" cs_base live) || rc=$?
+    assert_eq "0" "$rc" "a write into an existing .cs/local succeeds" || return 1
+    assert_eq "cs_mode: tracked"$'\n'"cs_base: live" "$(cat "$root/live/.cs/local/state")" "both keys are recorded" || return 1
+    rc=0
+    out=$(_state_write "$root/gone/.cs/local/state" cs_mode tracked) || rc=$?
+    assert_eq "1" "$rc" "a write for a removed session fails" || return 1
+    assert_eq "Error: could not create $root/gone/.cs/local" "$out" "the failure names the directory" || return 1
+    assert_not_exists "$root/gone" "the removed session is not made again" || return 1
+}
+
+# A status line render, a hook or a second cs can make .cs/local between the
+# state write's look for it and its mkdir. A DEBUG trap stands in for that
+# writer: it makes the directory just before the state write's mkdir runs. The
+# directory is there, which is all the write needs: it records the key.
+test_state_write_counts_a_local_dir_another_writer_made_first() {
+    local root="$TEST_TMPDIR/root" out rc=0
+    mkdir -p "$root/live/.cs"
+    out=$(CS_TEST_PEER_RAN="$TEST_TMPDIR/peer-ran" CS_TEST_PEER_DIR="$root/live/.cs/local" "$BASH" -c '
+        . "$1/02-shared.sh"; . "$1/05-term.sh"; . "$1/40-state.sh"
+        set -o functrace
+        _peer() {
+            case "$BASH_COMMAND" in mkdir\ *) ;; *) return 0 ;; esac
+            [ ! -e "$CS_TEST_PEER_RAN" ] || return 0
+            : > "$CS_TEST_PEER_RAN"
+            command mkdir "$CS_TEST_PEER_DIR"
+        }
+        trap _peer DEBUG
+        _set_local_state "$2" cs_mode tracked' _ "$SCRIPT_DIR/../lib" "$root/live/.cs/local/state" 2>&1) || rc=$?
+    assert_exists "$TEST_TMPDIR/peer-ran" "the second writer ran before the state write's mkdir" || return 1
+    assert_eq "0" "$rc" "the state write succeeds: $out" || return 1
+    assert_eq "cs_mode: tracked" "$(cat "$root/live/.cs/local/state" 2>/dev/null)" "the key is recorded" || return 1
+}
+
 # ============================================================================
 # Cycle 2b: state and .gitattributes rewrites use a unique temp name, keep the
 # destination's mode, and serialise on a lock
@@ -1182,6 +1229,109 @@ test_mkdir_inside_refuses_new_levels_under_a_link_out() {
     assert_eq "" "$(ls -A "$o")" "nothing is made outside the session" || return 1
 }
 
+# A session's .cs is made by cs when it creates, adopts or migrates the
+# session, never by a writer: a writer finding the .cs gone is running for a
+# session that was removed under it, and making the path would bring the
+# session back. So cs_mkdir_inside makes levels only inside a .cs that exists,
+# as many as the path needs, and refuses one that would make the .cs or
+# anything above it, quietly when the caller asks.
+test_mkdir_inside_makes_levels_only_inside_an_existing_cs() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local root="$t/root" out rc=0
+    local lib="$SCRIPT_DIR/../hooks/cs-shared.sh"
+    mkdir -p "$root/live/.cs" "$root/bare"
+    out=$(CS_SESSIONS_ROOT="$root" "$BASH" -c 'source "$1"; cs_mkdir_inside "$2"' _ "$lib" "$root/live/.cs/local/context-date" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "levels inside an existing .cs are made" || return 1
+    assert_eq "" "$out" "making them says nothing" || return 1
+    [ -d "$root/live/.cs/local/context-date" ] || { echo "  FAIL: both missing levels are made"; return 1; }
+    rc=0
+    out=$(CS_SESSIONS_ROOT="$root" "$BASH" -c 'source "$1"; cs_mkdir_inside "$2"' _ "$lib" "$root/live/.cs" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "an existing .cs is left as it is" || return 1
+    mkdir "$root/live/notes-kept"
+    out=$(CS_SESSIONS_ROOT="$root" "$BASH" -c 'source "$1"; cs_mkdir_inside "$2"' _ "$lib" "$root/live/notes-kept" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "an existing directory beside the .cs is left as it is: nothing is made" || return 1
+    assert_eq "" "$out" "leaving it says nothing" || return 1
+    rc=0
+    out=$(CS_SESSIONS_ROOT="$root" "$BASH" -c 'source "$1"; cs_mkdir_inside "$2"' _ "$lib" "$root/gone/.cs/local" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a removed session's .cs/local is refused" || return 1
+    assert_eq "cs_mkdir_inside: $root/gone/.cs/local is not inside an existing .cs" "$out" "the refusal names the path" || return 1
+    assert_not_exists "$root/gone" "the removed session is not made again" || return 1
+    rc=0
+    out=$(CS_SESSIONS_ROOT="$root" CS_WRITE_QUIET=1 "$BASH" -c 'source "$1"; cs_mkdir_inside "$2"' _ "$lib" "$root/gone/.cs/local" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the quiet refusal fails too" || return 1
+    assert_eq "" "$out" "a quiet caller hears nothing" || return 1
+    assert_not_exists "$root/gone" "nor does a quiet caller make it" || return 1
+    rc=0
+    out=$(CS_SESSIONS_ROOT="$root" "$BASH" -c 'source "$1"; cs_mkdir_inside "$2"' _ "$lib" "$root/bare/.cs/local" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a session directory without its .cs gets none" || return 1
+    assert_not_exists "$root/bare/.cs" "the .cs is not made" || return 1
+    rc=0
+    out=$(CS_SESSIONS_ROOT="$root" "$BASH" -c 'source "$1"; cs_mkdir_inside "$2"' _ "$lib" "$root/live/notes" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a directory beside the .cs is refused" || return 1
+    assert_not_exists "$root/live/notes" "nothing is made beside the .cs" || return 1
+    rc=0
+    out=$(CS_SESSIONS_ROOT="$root" "$BASH" -c 'source "$1"; cs_mkdir_inside "$2"' _ "$lib" "$root/live/.cs/sub/.cs/local" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a .cs among the levels to make is refused" || return 1
+    assert_not_exists "$root/live/.cs/sub" "no level of it is made" || return 1
+}
+
+# The session can be removed after cs_mkdir_inside has checked the path and
+# before it makes anything. A DEBUG trap stands in for that `cs -rm`: it
+# removes the session just before the writer's first mkdir runs. The writer
+# then fails and nothing is made: no level that vanished is built again. The
+# same trap making the directory instead stands in for a second writer that
+# got there first, which is success.
+test_mkdir_inside_never_rebuilds_a_session_removed_under_it() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local root="$t/root" out rc=0
+    local lib="$SCRIPT_DIR/../hooks/cs-shared.sh"
+    _mkdir_inside_with_a_peer() {  # what the peer does before the first mkdir, dir, [quiet]
+        rm -f "$t/peer-ran"
+        CS_SESSIONS_ROOT="$root" CS_WRITE_QUIET="${3:-}" \
+            CS_TEST_PEER_RAN="$t/peer-ran" CS_TEST_PEER_DOES="$1" CS_TEST_DIR="$2" "$BASH" -c '
+            source "$1"
+            set -o functrace
+            _peer() {
+                case "$BASH_COMMAND" in mkdir\ *) ;; *) return 0 ;; esac
+                [ ! -e "$CS_TEST_PEER_RAN" ] || return 0
+                : > "$CS_TEST_PEER_RAN"
+                eval "$CS_TEST_PEER_DOES"
+            }
+            trap _peer DEBUG
+            cs_mkdir_inside "$CS_TEST_DIR"' _ "$lib" 2>&1
+    }
+    mkdir -p "$root/ending/.cs"
+    out=$(_mkdir_inside_with_a_peer 'rm -rf "${CS_TEST_DIR%/.cs/*}"' "$root/ending/.cs/local/mail/new") || rc=$?
+    assert_exists "$t/peer-ran" "the stand-in removal ran before the writer's mkdir" || return 1
+    assert_eq "1" "$rc" "the writer fails when the session goes before its mkdir" || return 1
+    assert_not_exists "$root/ending" "the removed session is not built again" || return 1
+    rc=0
+    mkdir -p "$root/ending/.cs"
+    out=$(_mkdir_inside_with_a_peer 'rm -rf "${CS_TEST_DIR%/.cs/*}"' "$root/ending/.cs/local/mail/new" 1) || rc=$?
+    assert_exists "$t/peer-ran" "the stand-in removal ran before the quiet writer's mkdir" || return 1
+    assert_eq "1" "$rc" "the quiet writer fails too" || return 1
+    assert_eq "" "$out" "and says nothing" || return 1
+    assert_not_exists "$root/ending" "nor does the quiet writer build it again" || return 1
+    rc=0
+    mkdir -p "$root/live/.cs"
+    out=$(_mkdir_inside_with_a_peer 'command mkdir "${CS_TEST_DIR%/*}"' "$root/live/.cs/local/x") || rc=$?
+    assert_exists "$t/peer-ran" "the second writer ran before the first one's mkdir" || return 1
+    assert_eq "0" "$rc" "a level another writer made first counts as made" || return 1
+    assert_eq "" "$out" "and the writer says nothing about it" || return 1
+    [ -d "$root/live/.cs/local/x" ] || { echo "  FAIL: the levels below it are made"; return 1; }
+    rc=0
+    rm -rf "$root/live/.cs/local"
+    out=$(_mkdir_inside_with_a_peer 'command mkdir "${CS_TEST_DIR%/*}"' "$root/live/.cs/local/x" 1) || rc=$?
+    assert_exists "$t/peer-ran" "the second writer ran before the quiet writer's mkdir" || return 1
+    assert_eq "0" "$rc" "a quiet writer counts a level another writer made first as made" || return 1
+    [ -d "$root/live/.cs/local/x" ] || { echo "  FAIL: the quiet writer makes the levels below it"; return 1; }
+    rc=0
+    : > "$root/live/.cs/taken"
+    out=$(CS_SESSIONS_ROOT="$root" "$BASH" -c 'source "$1"; cs_mkdir_inside "$2"' _ "$lib" "$root/live/.cs/taken" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a file where the directory goes is refused" || return 1
+    assert_eq "cs_mkdir_inside: $root/live/.cs/taken is not a directory" "$out" "the refusal names the file" || return 1
+}
+
 # The writers take a relative destination from the caller's directory, and
 # check it as that absolute path.
 test_atomic_write_checks_a_relative_destination() {
@@ -1524,6 +1674,8 @@ run_test test_migration_moves_session_log_into_private
 run_test test_clone_with_a_readme_color_that_is_not_a_color_gets_a_fresh_one
 run_test test_launch_ignores_a_recorded_color_that_is_not_a_color
 run_test test_launch_stops_loudly_when_state_cannot_be_written
+run_test test_state_write_makes_local_only_inside_an_existing_cs
+run_test test_state_write_counts_a_local_dir_another_writer_made_first
 run_test test_state_and_gitattributes_rewrites_leave_tmp_siblings_alone_and_keep_modes
 run_test test_lock_refuses_a_path_that_is_not_a_regular_file
 run_test test_lock_retakes_a_path_removed_while_it_was_being_taken
@@ -1549,6 +1701,8 @@ run_test test_atomic_write_refuses_a_directory_link_out_of_the_session
 run_test test_atomic_write_refuses_a_dangling_link_out_of_the_session
 run_test test_atomic_write_checks_the_session_the_destination_is_in
 run_test test_mkdir_inside_refuses_new_levels_under_a_link_out
+run_test test_mkdir_inside_makes_levels_only_inside_an_existing_cs
+run_test test_mkdir_inside_never_rebuilds_a_session_removed_under_it
 run_test test_atomic_write_checks_a_relative_destination
 run_test test_append_inside_checks_a_relative_destination
 run_test test_append_inside_refuses_a_chain_longer_than_it_follows

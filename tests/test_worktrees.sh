@@ -2467,7 +2467,7 @@ test_retire_ignored_mode_refuses_a_topic_both_sides_edited() {
     assert_eq "untracked" "$(_feat_field "$line" 10)" "state: $line" || return 1
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
     assert_eq "1" "$status" "the retire refuses: $output" || return 1
-    assert_eq "Error: The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:
+    assert_eq "Error: The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the path needs a new directory named .cs, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:
 .cs/memory/kept.md" "$output" "the refusal names the topic and nothing else" || return 1
     assert_eq "kept topic, feature edit" "$(cat "$wt/.cs/memory/kept.md")" "the feature's edit is still there" || return 1
     assert_eq "kept topic, base edit" "$(cat "$base_dir/.cs/memory/kept.md")" "the base's edit is untouched" || return 1
@@ -2507,7 +2507,7 @@ test_retire_ignored_mode_refuses_a_record_whose_directory_is_a_file_in_the_base(
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
     assert_eq "1" "$status" "the retire refuses: $output" || return 1
     assert_dir "$wt/.cs/memory" "the worktree is still there: $output" || return 1
-    assert_output_contains "$output" "The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:" \
+    assert_output_contains "$output" "The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the path needs a new directory named .cs, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:" \
         "the refusal says why" || return 1
     assert_eq ".cs/artifacts/report.txt
 .cs/handoffs/h.md" "$(printf '%s\n' "$output" | awk 'listed; /again:$/ { listed = 1 }')" \
@@ -2525,6 +2525,38 @@ test_retire_ignored_mode_refuses_a_record_whose_directory_is_a_file_in_the_base(
 }
 
 run_test test_retire_ignored_mode_refuses_a_record_whose_directory_is_a_file_in_the_base
+
+# A record in a directory named .cs inside the feature's .cs (a session tree
+# copied into plans/, say) needs that directory made in the base, and cs makes
+# a directory named .cs only as a session's own. The retire refuses before it
+# removes anything, naming the record; once the record is out of the way the
+# retire goes through.
+test_retire_ignored_mode_refuses_a_record_under_a_directory_named_cs() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    mkdir -p "$wt/.cs/plans/.cs"
+    echo "a note" > "$wt/.cs/plans/.cs/note.md"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_dir "$wt/.cs/memory" "the worktree is still there: $output" || return 1
+    assert_output_contains "$output" "Nothing was removed." "the refusal comes before the removal" || return 1
+    assert_eq ".cs/plans/.cs/note.md" "$(printf '%s\n' "$output" | awk 'listed; /again:$/ { listed = 1 }')" \
+        "the refusal names the record" || return 1
+    assert_not_exists "$base_dir/.cs/plans/.cs" "nothing is made in the base" || return 1
+    assert_eq "" "$(cd "$CS_SESSIONS_ROOT" && ls -d .retire-* 2>/dev/null)" "no records are set aside" || return 1
+    # Positive control: without the record the retire goes through.
+    rm -r "$wt/.cs/plans/.cs"
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire goes through: $output" || return 1
+    assert_not_exists "$wt" "the worktree is removed" || return 1
+}
+
+run_test test_retire_ignored_mode_refuses_a_record_under_a_directory_named_cs
 
 # The narratives merge by a rule of their own, but only a regular file can be
 # merged. A narrative that is a link into the feature's own .cs/local reads as
@@ -2845,7 +2877,7 @@ test_retire_ignored_mode_refuses_a_log_directory_that_is_a_link() {
         status=0
         output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
         assert_eq "1" "$status" "the retire refuses a .cs/$dir link: $output" || return 1
-        assert_eq "Error: The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:
+        assert_eq "Error: The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the path needs a new directory named .cs, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:
 .cs/$dir" "$output" "the refusal says why for .cs/$dir" || return 1
         assert_eq ".cs/$dir" "$(printf '%s\n' "$output" | awk 'listed; /again:$/ { listed = 1 }')" \
             "the refusal names only the linked .cs/$dir" || return 1
@@ -3106,6 +3138,31 @@ test_retire_creates_the_base_settings_with_the_feature_grants_alone() {
 }
 
 run_test test_retire_creates_the_base_settings_with_the_feature_grants_alone
+
+# The base's own claude can make .claude between the retire's look for it and
+# its mkdir. A DEBUG trap stands in for that claude: it makes the directory
+# just before the retire's mkdir runs. The directory is there, which is all
+# the carry needs.
+test_base_claude_dir_counts_one_another_writer_made_first() {
+    local base="$TEST_TMPDIR/claude-race/proj" out rc=0
+    mkdir -p "$base/.cs"
+    out=$(CS_TEST_PEER_RAN="$TEST_TMPDIR/peer-ran" CS_TEST_PEER_DIR="$base/.claude" "$BASH" -c '
+        . "$1/02-shared.sh"; . "$1/30-worktree.sh"
+        set -o functrace
+        _peer() {
+            case "$BASH_COMMAND" in mkdir\ *) ;; *) return 0 ;; esac
+            [ ! -e "$CS_TEST_PEER_RAN" ] || return 0
+            : > "$CS_TEST_PEER_RAN"
+            command mkdir "$CS_TEST_PEER_DIR"
+        }
+        trap _peer DEBUG
+        _make_base_claude_dir "$2"' _ "$SCRIPT_DIR/../lib" "$base" 2>&1) || rc=$?
+    assert_exists "$TEST_TMPDIR/peer-ran" "the second writer ran before the retire's mkdir" || return 1
+    assert_eq "0" "$rc" "the base's .claude counts as made: $out" || return 1
+    assert_eq "" "$out" "and nothing is said about it" || return 1
+}
+
+run_test test_base_claude_dir_counts_one_another_writer_made_first
 
 # A settings file the union cannot read, the feature's or the base's, refuses
 # the retire before anything is removed and names the file.
@@ -4114,6 +4171,60 @@ test_worktree_create_dirty_base_consent_no() {
     assert_not_exists "$CS_SESSIONS_ROOT/myproj@t1" "no worktree without consent" || return 1
 }
 
+# A base whose index tracks .cs gives its features tracked mode, which expects
+# the checkout to carry .cs. Two checkouts do not: a cs/<feature> branch made
+# before the base tracked .cs, and a new branch cut from a HEAD that does not
+# hold the .cs the user has staged, after "y" at the dirty-base prompt.
+# Creating the feature is creating a session, so cs makes its .cs and the
+# feature opens, then opens again resuming its conversation, like any other.
+_base_tracking_cs_since_its_second_commit() {  # base_dir, [branch made at the first commit]
+    mkdir -p "$1"
+    echo "# P" > "$1/README.md"
+    (cd "$1" && git init -q && git add -A && git commit -q -m init) || return 1
+    [ -z "${2:-}" ] || git -C "$1" branch "$2" || return 1
+    mkdir -p "$1/.cs/memory"
+    printf '# Session: proj\n' > "$1/.cs/README.md"
+    printf '.cs/local/\n.claude/settings.local.json\nCLAUDE.local.md\n' > "$1/.gitignore"
+    git -C "$1" add -A
+}
+
+test_tracked_feature_opens_on_a_branch_older_than_the_base_cs() {
+    local base="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" out rc=0
+    _base_tracking_cs_since_its_second_commit "$base" cs/t1 || { echo "  FAIL: fixture"; return 1; }
+    git -C "$base" commit -q -m "track .cs"
+    out=$("$CS_BIN" "proj@t1" < /dev/null 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the feature opens: $out" || return 1
+    assert_eq "cs/t1 tracked proj" \
+        "$(_read_state_keys "$wt/.cs/local/state" task_branch cs_mode cs_base)" "its state names the branch, the mode and the base" || return 1
+    rc=0
+    out=$("$CS_BIN" "proj@t1" <<< "" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the feature opens again, resuming: $out" || return 1
+}
+
+test_tracked_feature_opens_from_a_head_without_the_staged_cs() {
+    local base="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" out rc=0
+    _base_tracking_cs_since_its_second_commit "$base" || { echo "  FAIL: fixture"; return 1; }
+    out=$(printf 'y\n' | CS_ASSUME_TTY=1 "$CS_BIN" "proj@t1" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the feature opens after the consent: $out" || return 1
+    assert_eq "cs/t1 tracked proj" \
+        "$(_read_state_keys "$wt/.cs/local/state" task_branch cs_mode cs_base)" "its state names the branch, the mode and the base" || return 1
+    rc=0
+    out=$("$CS_BIN" "proj@t1" <<< "" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the feature opens again, resuming: $out" || return 1
+}
+
+# The values of <keys> in a state file, space-joined in the order asked.
+_read_state_keys() {  # state, key...
+    local state="$1" key out=""
+    shift
+    for key in "$@"; do
+        out="$out $(sed -n "s/^$key: //p" "$state" 2>/dev/null)"
+    done
+    printf '%s\n' "${out# }"
+}
+
+run_test test_tracked_feature_opens_on_a_branch_older_than_the_base_cs
+run_test test_tracked_feature_opens_from_a_head_without_the_staged_cs
 run_test test_worktree_create_dirty_base_consent_yes
 run_test test_worktree_create_dirty_base_consent_no
 run_test test_session_repo_pins_autocrlf_off

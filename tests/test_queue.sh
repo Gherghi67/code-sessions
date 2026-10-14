@@ -1293,4 +1293,50 @@ test_queue_in_a_locked_session_is_refused() {
 run_test test_queue_in_an_encrypted_session_lives_in_its_vault
 run_test test_queue_in_a_locked_session_is_refused
 
+# A claude still running after `cs -rm <name> --force` keeps its session's
+# environment, and `/queue <task>` runs cs -queue add in it. Queueing and
+# starting the queue then refuse the way cs refuses a session that does not
+# exist, and build nothing where the session was.
+test_queue_refuses_a_removed_session() {
+    local out rc=0
+    rm -rf "$CLAUDE_SESSION_DIR"
+    out=$("$CS_BIN" -queue add "a task" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "queueing refuses" || return 1
+    assert_eq "Error: No such session: test-session" "$out" "the refusal names the session" || return 1
+    assert_not_exists "$CLAUDE_SESSION_DIR" "queueing does not build the session again" || return 1
+    rc=0
+    out=$("$CS_BIN" -queue start 2>&1) || rc=$?
+    assert_eq "1" "$rc" "starting refuses" || return 1
+    assert_eq "Error: No such session: test-session" "$out" "the refusal names the session" || return 1
+    assert_not_exists "$CLAUDE_SESSION_DIR" "starting does not build the session again" || return 1
+}
+
+run_test test_queue_refuses_a_removed_session
+
+# A removal landing after that check, while a task is queued or the queue
+# started, meets the writers instead: they make nothing outside a .cs that is
+# there, so the verb fails and the session is not built again.
+test_queue_refuses_a_session_removed_after_its_check() {
+    local out rc=0 seam
+    seam=$(_seam_remove_after_the_meta_check "$CLAUDE_SESSION_DIR")
+    out=$(BASH_ENV="$seam" "$CS_BIN" -queue add "a task" 2>&1) || rc=$?
+    assert_exists "$seam.removed" "the session was removed after the check: $out" || return 1
+    assert_eq "1" "$rc" "queueing fails: $out" || return 1
+    assert_eq "cs_mkdir_inside: $CLAUDE_SESSION_META_DIR/local/queue is not inside an existing .cs
+Error: could not write the task into $CLAUDE_SESSION_META_DIR/local/queue; it is not queued" "$out" \
+        "queueing stops at the first directory it would not make, and says the task is not queued" || return 1
+    assert_not_exists "$CLAUDE_SESSION_DIR" "queueing does not build the session again" || return 1
+    rm -f "$seam.armed" "$seam.removed"
+    mkdir -p "$CLAUDE_SESSION_META_DIR/local"
+    rc=0
+    out=$(BASH_ENV="$seam" "$CS_BIN" -queue start 2>&1) || rc=$?
+    assert_exists "$seam.removed" "the session was removed after the check: $out" || return 1
+    assert_eq "1" "$rc" "starting fails: $out" || return 1
+    assert_eq "cs_mkdir_inside: $CLAUDE_SESSION_META_DIR/local is not inside an existing .cs" "$out" \
+        "the writer names the directory it would not make" || return 1
+    assert_not_exists "$CLAUDE_SESSION_DIR" "starting does not build the session again" || return 1
+}
+
+run_test test_queue_refuses_a_session_removed_after_its_check
+
 report_results

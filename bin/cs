@@ -1867,24 +1867,69 @@ cs_append_inside() {  # file, command [args...]
     fi
 }
 
-# mkdir -p, unless a link takes the directory out of the session it lies in.
-# The levels mkdir -p would make do not exist yet, so the nearest one that does
-# is what gets resolved: a link there carries every level made below it.
+# Whether cs_mkdir_inside refuses to make <dir> from <nearest>, the nearest
+# level of it that exists, by spelling alone: <nearest> must be a .cs or lie
+# inside one, and the levels to make must not hold a .cs. A writer that plans
+# its directories before it makes them (the retire's record fuse) asks the
+# same question.
+_cs_mkdir_spelling_refused() {  # dir, nearest existing level
+    case "$2/" in
+        */.cs/*) ;;
+        *) return 0 ;;
+    esac
+    case "${1#"$2"}/" in
+        */.cs/*) return 0 ;;
+    esac
+    return 1
+}
+
+# Make a directory and its missing levels inside a .cs that exists, unless a
+# link takes it out of the session it lies in. cs makes a session's .cs when it
+# creates, adopts or migrates the session; a writer that finds it gone is
+# running for a session removed under it, so the levels to make must lie below
+# an existing .cs and must not themselves hold a .cs, judged by spelling as the
+# session is; a directory that already exists makes nothing and gets only the
+# link check. The levels to make do not exist yet, so the nearest one that does
+# is what gets resolved: a link there carries every level made below it. Each
+# level is then made on its own, never with mkdir -p: a session removed after
+# the checks leaves the next level without its parent, so the mkdir fails and
+# nothing is built again from the path. A level another writer made first
+# counts as made.
 cs_mkdir_inside() {  # dir
-    local dir="$1" e
+    local dir="$1" e rest part err
     case "$dir" in /*) ;; *) dir="$PWD/$dir" ;; esac
     e="$dir"
     while [ -n "$e" ] && [ ! -e "$e" ] && [ ! -L "$e" ]; do
         e="${e%/*}"
     done
-    if [ -n "$e" ] && _cs_refuses_write cs_mkdir_inside "$dir" "$e"; then
+    if [ "$e" != "$dir" ] && _cs_mkdir_spelling_refused "$dir" "$e"; then
+        e=""
+    fi
+    if [ -z "$e" ]; then
+        [ -n "${CS_WRITE_QUIET:-}" ] || echo "cs_mkdir_inside: $dir is not inside an existing .cs" >&2
         return 1
     fi
-    if [ -n "${CS_WRITE_QUIET:-}" ]; then
-        mkdir -p "$dir" 2>/dev/null
-    else
-        mkdir -p "$dir"
+    if _cs_refuses_write cs_mkdir_inside "$dir" "$e"; then
+        return 1
     fi
+    if [ "$e" = "$dir" ]; then
+        [ ! -d "$dir" ] || return 0
+        [ -n "${CS_WRITE_QUIET:-}" ] || echo "cs_mkdir_inside: $dir is not a directory" >&2
+        return 1
+    fi
+    rest="${dir#"$e"}"
+    while [ -n "$rest" ]; do
+        rest="${rest#/}"
+        part="${rest%%/*}"
+        rest="${rest#"$part"}"
+        [ -n "$part" ] || continue
+        e="$e/$part"
+        if [ -n "${CS_WRITE_QUIET:-}" ]; then
+            mkdir "$e" 2>/dev/null || [ -d "$e" ] || return 1
+        else
+            err=$(mkdir "$e" 2>&1) || [ -d "$e" ] || { printf '%s\n' "$err" >&2; return 1; }
+        fi
+    done
 }
 
 cs_write_atomic() {  # dest, command [args...]
@@ -4269,6 +4314,11 @@ create_worktree_session() {
         fi
     fi
 
+    # Creating the feature is creating a session, so this makes its .cs: a
+    # tracked-mode checkout can lack one, when the branch is older than the
+    # base's .cs or HEAD does not hold a .cs the user has only staged. The
+    # state writes below make only the last level.
+    mkdir -p "$wt_dir/.cs/local" || error "could not create $wt_dir/.cs/local"
     local state="$wt_dir/.cs/local/state"
     _set_local_state "$state" claude_session_id "$(_alloc_uuid)"
     _set_local_state "$state" claude_session_color "$(_alloc_random_color)"
@@ -4563,7 +4613,7 @@ ${wt_listing#*"$nl"}"
         conflicts=$(_fuse_conflicts "$wt_dir/.cs" "$base_dir/.cs") \
             || error "Could not classify the session records in $wt_dir/.cs; nothing was removed"
         [ -z "$conflicts" ] \
-            || error "The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt_dir/.cs, then run /finish $task again:
+            || error "The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the path needs a new directory named .cs, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt_dir/.cs, then run /finish $task again:
 $conflicts"
     fi
     # The base's own .cs/ bookkeeping is exempt: in tracked mode the integrate
@@ -4809,7 +4859,23 @@ _carry_permission_rules() {  # wt_dir base_dir
     was=$(_settings_json_or_empty "$base" | _settings_rules_count) || return 1
     now=$(_settings_rules_union "$base" "$feat" | _settings_rules_count) || return 1
     [ "$now" != "$was" ] || return 0
-    cs_mkdir_inside "$2/.claude" && cs_write_atomic "$base" _settings_rules_union "$base" "$feat"
+    _make_base_claude_dir "$2" && cs_write_atomic "$base" _settings_rules_union "$base" "$feat"
+}
+
+# Make the base's .claude for its settings file. cs_mkdir_inside makes
+# directories only inside a .cs, and .claude sits beside it, one level under
+# a base checkout that exists. So a .claude that is missing gets the same link
+# check and then that one level, never the checkout above it; one that is
+# there goes to cs_mkdir_inside for the link check alone, and one the base's
+# own claude made in between counts as made.
+_make_base_claude_dir() {  # base_dir
+    local dir="$1/.claude" err
+    if [ -e "$dir" ] || [ -L "$dir" ]; then
+        cs_mkdir_inside "$dir"
+        return
+    fi
+    _cs_refuses_write cs_mkdir_inside "$dir" "$1" && return 1
+    err=$(mkdir "$dir" 2>&1) || [ -d "$dir" ] || { printf '%s\n' "$err" >&2; return 1; }
 }
 
 # Remove the temp worktree and release the mutex on every exit path of
@@ -5325,11 +5391,12 @@ _fuse_verdict() {  # feature_meta base_meta rel
 
 # Whether the fuse cannot make the directories on the way to <rel> in the
 # base's .cs. It makes them with cs_mkdir_inside, which cannot make one where
-# the base holds a file or a dangling link, and refuses one a link takes out
-# of the session. A link that stays inside (an encrypted session's
-# .cs/memory, say) is a directory like any other.
+# the base holds a file or a dangling link, refuses to make a new directory
+# named .cs (_cs_mkdir_spelling_refused), and refuses one a link takes out of
+# the session. A link that stays inside (an encrypted session's .cs/memory,
+# say) is a directory like any other.
 _fuse_path_blocked() {  # base_meta rel
-    local dir="$1" rest="$2" near="$1" linked=""
+    local dir="$1" rest="$2" near="$1" linked="" missing=""
     while case "$rest" in */*) true ;; *) false ;; esac; do
         dir="$dir/${rest%%/*}"
         rest="${rest#*/}"
@@ -5340,9 +5407,13 @@ _fuse_path_blocked() {  # base_meta rel
         elif [ -L "$dir" ]; then
             return 0
         else
+            missing=1
             break
         fi
     done
+    if [ -n "$missing" ] && _cs_mkdir_spelling_refused "$1/${2%/*}" "$near"; then
+        return 0
+    fi
     [ -n "$linked" ] && _cs_refuses_write cs_mkdir_inside "$1/$2" "$near" 2>/dev/null
 }
 
@@ -6140,10 +6211,15 @@ _read_local_state() {
 # and serialised against the SessionStart hook's writer (cs_local_state_set),
 # idempotent. A write that fails (permissions, a full disk) ends cs with the
 # file named: the launch has already told the user what it was about to
-# start, and a silent miss leaves the next open resuming nothing.
+# start, and a silent miss leaves the next open resuming nothing. Only the
+# last level is made: every session cs writes state for already has its .cs,
+# and one removed under a running cs ends it here rather than being built
+# again from its path. A .cs/local another writer made in between is the
+# directory this write wanted.
 _set_local_state() {
-    local state="$1" key="$2" value="$3"
-    mkdir -p "$(dirname "$state")" 2>/dev/null || error "could not create $(dirname "$state")"
+    local state="$1" key="$2" value="$3" dir
+    dir=$(dirname "$state")
+    [ -d "$dir" ] || mkdir "$dir" 2>/dev/null || [ -d "$dir" ] || error "could not create $dir"
     cs_local_state_set "$state" "$key" "$value" 2>/dev/null || error "could not write $state"
 }
 
@@ -8376,9 +8452,12 @@ MAIL_BODY_MAX=65536
 # The mailbox is a maildir: a message is written whole to tmp/, then renamed
 # into new/ (unread) — the rename is same-filesystem, so a message is either
 # entirely present or entirely absent. 'cs -msg' moves what it prints into
-# cur/ (read). Unread is simply the count of new/*.json.
+# cur/ (read). Unread is simply the count of new/*.json. The directories are
+# made only inside a .cs that is there (cs_mkdir_inside), so mail sent from a
+# session removed under its claude files no copy where the session was.
 _mail_ensure_maildir() {  # maildir
-    mkdir -p "$1/tmp" "$1/new" "$1/cur" "$1/out"
+    cs_mkdir_inside "$1/tmp" && cs_mkdir_inside "$1/new" \
+        && cs_mkdir_inside "$1/cur" && cs_mkdir_inside "$1/out"
 }
 
 # A session's mailbox sits with its other cs files: in its vault when
@@ -8877,7 +8956,7 @@ run_conversations() {
 }
 _queue_set_state() {  # atomic single-word write; "" removes the file
     local qdir="$1" val="$2"
-    mkdir -p "$qdir"
+    cs_mkdir_inside "$qdir"
     if [ -z "$val" ]; then rm -f "$qdir/queue.state"; return 0; fi
     cs_write_atomic "$qdir/queue.state" printf '%s\n' "$val"
 }
@@ -8909,12 +8988,16 @@ _queue_convert_legacy() {  # qdir
     [ -f "$legacy" ] || return 0
     # The pre-directory layout used queue.tmp as an awk TEMP FILE, so a killed
     # old-cs rm or drain pop leaves a regular file exactly where the staging
-    # directory now goes. mkdir -p fails over it, which under errexit aborts
+    # directory now goes. Making the directory fails over it, which under errexit aborts
     # every entry point that converts — including session open, leaving the
     # session unopenable. Clear a non-directory at either path first.
     [ -d "$qdir/queue" ]     || rm -f "$qdir/queue"
     [ -d "$qdir/queue.tmp" ] || rm -f "$qdir/queue.tmp"
-    mkdir -p "$qdir/queue" "$qdir/queue.tmp"
+    # A directory that cannot be made stops here, the legacy file kept, with
+    # cs_mkdir_inside's message the only one: under errexit the 1 ends cs as
+    # the failed call itself would, and where errexit is off the writes below
+    # would each print a raw redirection error instead.
+    cs_mkdir_inside "$qdir/queue" && cs_mkdir_inside "$qdir/queue.tmp" || return 1
     local line seq=0 fname failed=0
     while IFS= read -r line || [ -n "$line" ]; do
         case "$line" in *[![:space:]]*) : ;; *) continue ;; esac
@@ -8978,7 +9061,9 @@ _queue_write_task() {  # qdir, text
     # Senders write into other sessions' queues (task-kind mail), so a
     # recipient that has not reopened since the upgrade converts here.
     _queue_convert_legacy "$qdir"
-    mkdir -p "$qdir/queue" "$qdir/queue.tmp"
+    # errexit is off here (callers test the status), so a directory that
+    # cannot be made has to stop the write itself.
+    cs_mkdir_inside "$qdir/queue" && cs_mkdir_inside "$qdir/queue.tmp" || return 1
     # The zero-padded per-process sequence keeps several adds from one process
     # inside one second (a spawn seed's task list) in submission order; guard
     # against an inherited same-named env var poisoning the counter. The random
@@ -9039,7 +9124,7 @@ _queue_accept() {  # qdir, message id
     [ -n "$body" ] || error "message $id carries an empty task"
     _queue_require_single_line "$body"
     _queue_convert_legacy "$qdir"
-    mkdir -p "$qdir/queue" "$qdir/queue.tmp"
+    cs_mkdir_inside "$qdir/queue" && cs_mkdir_inside "$qdir/queue.tmp" || return 1
     local lock="$qdir/queue.accept.mutex.lock" fname
     _cs_lock "$lock" || error "another cs -queue accept holds $lock; retry in a moment"
     if [ -f "$qdir/queue.accepted" ] && grep -qxF -- "$id" "$qdir/queue.accepted"; then
@@ -9142,8 +9227,8 @@ _queue_clear() {  # qdir
 _queue_start() {  # qdir, [mode]
     local qdir="$1" mode="${2:-}"
     case "$mode" in
-        '') mkdir -p "$qdir"; rm -f "$qdir/queue.mode" ;;
-        subagents|workflow) mkdir -p "$qdir"; cs_write_atomic "$qdir/queue.mode" printf '%s\n' "$mode" ;;
+        '') cs_mkdir_inside "$qdir"; rm -f "$qdir/queue.mode" ;;
+        subagents|workflow) cs_mkdir_inside "$qdir"; cs_write_atomic "$qdir/queue.mode" printf '%s\n' "$mode" ;;
         *) error "cs -queue start takes subagents or workflow, not '$mode'" ;;
     esac
     _queue_set_state "$qdir" armed
@@ -9173,6 +9258,9 @@ run_queue() {
     if [ -z "${CLAUDE_SESSION_META_DIR:-}" ]; then
         error "cs -queue must be run inside a cs session, or as: cs <session> -queue ..."
     fi
+    # A claude still running after its session was removed keeps the
+    # session's environment; its queue is gone with it.
+    [ -d "$CLAUDE_SESSION_META_DIR" ] || error "No such session: ${CLAUDE_SESSION_NAME:-${CLAUDE_SESSION_META_DIR%/.cs}}"
     # The queue sits with the session's other cs files: behind .cs/private in
     # an encrypted session, where a locked vault refuses rather than queue a
     # task beside it in plaintext.
@@ -9208,7 +9296,7 @@ _presence_file() {  # meta_dir
 _write_presence() {  # meta_dir, text
     local meta_dir="$1" text="$2" file
     file="$(_presence_file "$meta_dir")"
-    mkdir -p "$(dirname "$file")"
+    cs_mkdir_inside "$(dirname "$file")"
     text="$(printf '%s' "$text" | tr '\n\r' '  ')"
     cs_write_atomic "$file" printf '%s\n' "$text"
 }
@@ -9360,6 +9448,9 @@ run_status() {
     if [ -z "${CLAUDE_SESSION_META_DIR:-}" ]; then
         error "cs -status must be run inside a cs session"
     fi
+    # A claude still running after its session was removed keeps the
+    # session's environment; its status is gone with it.
+    [ -d "$CLAUDE_SESSION_META_DIR" ] || error "No such session: ${CLAUDE_SESSION_NAME:-${CLAUDE_SESSION_META_DIR%/.cs}}"
     local meta_dir="$CLAUDE_SESSION_META_DIR"
     if [ $# -eq 0 ]; then
         local session_dir status
@@ -13272,6 +13363,12 @@ EOF
         local rc=0
         # shellcheck disable=SC2086
         CS_LEAD_IS_PARENT=1 $CLAUDE_CODE_BIN --name "$session_name" --resume "$resume_id" ${launch_prompt:+"$launch_prompt"} || rc=$?
+        # A claude can end because its session was removed under it
+        # (cs -rm --force while it ran). The fresh start below would write
+        # .cs/local/state again with mkdir -p and launch a claude in a
+        # directory that is gone, so cs leaves with claude's status. This
+        # open made .cs moments ago; with it gone there is no session here.
+        [ -d "$session_dir/.cs" ] || exit $rc
         if [ $rc -ne 0 ] && [ $SECONDS -lt 3 ]; then
             # Quick failure suggests no conversation to continue. Rebind so
             # the fresh transcript claude is about to create is tracked by
