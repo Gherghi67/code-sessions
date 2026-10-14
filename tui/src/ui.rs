@@ -5273,6 +5273,7 @@ mod tests {
             ]
         );
         assert!(rows[10].starts_with("[y] Confirm"), "the key hint stays on screen at 80x24: {rows:?}");
+        assert!(rows[11].starts_with('\u{2500}'), "the popup's border follows the key hint: {rows:?}");
 
         let rows = delete_confirm_rows_of(&root, &[&name], 120, 40, "Delete session");
         assert_eq!(
