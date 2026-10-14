@@ -91,8 +91,11 @@ session's own `.gitignore` hides both lock files, and `cs -adopt` adds
 `.gitignore`. An open appends any of cs's rules a session's existing
 `.gitignore` lacks; when git tracks that file (an adopted project's own
 `.gitignore`, or one a cs session committed), the open prints one line naming the rules it added, which
-are then an uncommitted change to commit with the next one. Adopt commits
-the rules it adds itself. `.cs/.narrative-reminder-cooldown` is a
+are then an uncommitted change to commit with the next one. `cs -adopt` and
+the migration of a flat-layout session commit nothing either: each prints one
+line naming what it left for you to commit (of `.cs/`, `.gitignore` and
+`.gitattributes`, and the root files the migration moved into `.cs/`, those
+git shows as changed or untracked). `.cs/.narrative-reminder-cooldown` is a
 similar gitignored transient at the `.cs/` root — the narrative reminder's
 5-minute cooldown stamp.
 
@@ -119,7 +122,7 @@ removes anything, except the prompt hook's launch mark in `scope-prompt.trace`.
 | File | Purpose |
 |------|---------|
 | `session.log` | Human-readable audit trail — session lifecycle, tool failures, autosave notes, UUID rebinds. Per-checkout by nature; the shared structured record is `timeline.jsonl`. |
-| `state` | Session state bound to this checkout: `claude_session_id` (the conversation UUID to resume), `claude_session_color` (the `/color` palette entry), `last_resumed` (last resume date), `session_name` for adopted sessions only (their name lives in the sessions-root symlink, which a hook resolving the directory has no way to read; an ordinary session takes its name from its directory), and, for feature worktrees, `task_branch`, `cs_base` and `cs_mode` (`tracked` when the base repo tracks `.cs/`, `ignored` when it does not; it decides how the worktree's records reach the base when the feature is integrated and retired). Each machine binds its own conversation, so this must not sync. Writers take turns on a `state.lock` directory beside it. `claude_session_id` is one slot, written only by the conversation `cs` launched — see [hooks.md](hooks.md) for how a teammate or walked-in claude is kept out of it. |
+| `state` | Session state bound to this checkout: `claude_session_id` (the conversation UUID to resume), `claude_session_color` (the `/color` palette entry), `last_resumed` (last resume date), `session_name` for adopted sessions only (their name lives in the sessions-root symlink, which a hook resolving the directory has no way to read; an ordinary session takes its name from its directory), and, for feature worktrees, `task_branch`, `cs_base` and `cs_mode` (`tracked` when the base repo tracks `.cs/`, `ignored` when it does not; it decides how the worktree's records reach the base when the feature is integrated and retired). An adopted session records `cs_mode` too, the mode its features take: `cs -adopt` writes `tracked` (it commits nothing, and you may commit `.cs/` later), so cs refuses a feature while git tracks nothing under the base's `.cs/`, until you commit it or change the line to `cs_mode: ignored`, which keeps `.cs/` out of git and has each feature hide it through `.git/info/exclude`. Once git tracks `.cs/` a feature is `tracked` whatever the line says, and a base with no `cs_mode` (one cs created, or one adopted before adopt wrote it) has the mode inferred from whether git tracks `.cs/`. Each machine binds its own conversation, so this must not sync. Writers take turns on a `state.lock` directory beside it. `claude_session_id` is one slot, written only by the conversation `cs` launched — see [hooks.md](hooks.md) for how a teammate or walked-in claude is kept out of it. |
 | `identity` | Overrides the actor name for shared memory/narrative attribution (precedence: `$CS_ACTOR` > `local/identity` > git `user.email` > git `user.name`). |
 | `migrated` | The migration stamp, written when every write an open's migration made succeeded. Line 1: the cs version, the actor and `1` or `0` for an encrypted session, tab separated. Line 2: the files it checked that existed then. See [Migration](#migration). |
 | `attention` | Status-line attention marker — raised by the `Stop` hook when Claude finishes, cleared on the next prompt. |
@@ -336,7 +339,8 @@ the next open skips the one-time phases while that stamp still holds: same cs
 version, same actor, same encrypted state, every file it listed still there,
 and none of `.gitignore`, `.gitattributes`, `CLAUDE.local.md`, `CLAUDE.md` or
 `.cs/README.md` modified after it, and `merge.ours.driver` still set in a
-checkout cs commits into (cs reads the value: git rewrites `.git/config` on
+checkout cs keeps merge attributes in, every one but an adopted Claude Code
+worktree (cs reads the value: git rewrites `.git/config` on
 every `git config` write). When only `.cs/memory/MEMORY.md` changed,
 the open re-checks the narrative pointer and nothing else. The refusals (a
 tracked `.cs/local/`, an unmounted vault), the transcript binding and the checks
