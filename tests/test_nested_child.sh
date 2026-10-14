@@ -487,24 +487,26 @@ test_a_claim_that_is_a_link_or_a_directory_names_no_lead() {
     printf 'claude_session_id: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\n' > "$meta/local/state"
     printf '%s %s 77777777-7777-4777-8777-777777777777\n' "$launch" "$grand" > "$outside"
     ln -s "$outside" "$meta/local/lead-pid"
-    _hooks_of() {  # claude_pid session_id -> stderr of its SessionStart, Stop and SessionEnd
+    _hooks_of() {  # claude_pid session_id stderr_file: its SessionStart, Stop and SessionEnd
         printf '{"session_id":"%s","source":"startup","cwd":"%s","hook_event_name":"SessionStart"}\n' "$2" "$CLAUDE_SESSION_DIR" \
             | CS_RESOLVED_FROM=env CS_LEAD_PID="$launch" CLAUDE_PID="$1" CS_NO_ROTATION_WAKE=1 CS_NO_ITERM2=1 \
-                bash "$HOOKS_DIR/session-start.sh" 2>&1 >/dev/null
+                bash "$HOOKS_DIR/session-start.sh" >/dev/null 2>>"$3"
         printf '{"session_id":"%s","hook_event_name":"Stop","stop_hook_active":false}' "$2" \
-            | CS_RESOLVED_FROM=env CS_LEAD_PID="$launch" CLAUDE_PID="$1" bash "$HOOKS_DIR/narrative-reminder.sh" 2>&1 >/dev/null
+            | CS_RESOLVED_FROM=env CS_LEAD_PID="$launch" CLAUDE_PID="$1" bash "$HOOKS_DIR/narrative-reminder.sh" >/dev/null 2>>"$3"
         printf '{"session_id":"%s","reason":"other"}\n' "$2" \
-            | CS_RESOLVED_FROM=env CS_LEAD_PID="$launch" CLAUDE_PID="$1" bash "$HOOKS_DIR/session-end.sh" 2>&1 >/dev/null
+            | CS_RESOLVED_FROM=env CS_LEAD_PID="$launch" CLAUDE_PID="$1" bash "$HOOKS_DIR/session-end.sh" >/dev/null 2>>"$3"
     }
     local link_err link_recorded link_lock link_outside
-    link_err=$(_hooks_of "$grand" 77777777-7777-4777-8777-777777777777)
+    _hooks_of "$grand" 77777777-7777-4777-8777-777777777777 "$TEST_TMPDIR/link.err"
+    link_err=$(cat "$TEST_TMPDIR/link.err")
     link_recorded=$(_recorded_conversation)
     link_lock=$(cat "$meta/session.lock" 2>/dev/null || echo none)
     link_outside=$(cat "$outside")
     rm -f "$meta/local/lead-pid"
     mkdir "$meta/local/lead-pid"
     local dir_err
-    dir_err=$(_hooks_of "$wrapper" 66666666-6666-4666-8666-666666666666)
+    _hooks_of "$wrapper" 66666666-6666-4666-8666-666666666666 "$TEST_TMPDIR/dir.err"
+    dir_err=$(cat "$TEST_TMPDIR/dir.err")
     _kill_launch_tree
 
     assert_eq "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" "$link_recorded" \
@@ -538,7 +540,7 @@ test_a_claim_for_another_launch_or_none_names_no_lead() {
     foreign_lock=$(cat "$meta/session.lock" 2>/dev/null || echo none)
     foreign_claim=$(cat "$meta/local/lead-pid" 2>/dev/null || echo none)
     printf '%s %s 77777777-7777-4777-8777-777777777777\n' "$launch" "$grand" > "$meta/local/lead-pid"
-    CS_LEAD_CLAIM= _end_of "$grand"
+    CS_LEAD_CLAIM='' _end_of "$grand"
     local unmarked_lock unmarked_claim
     unmarked_lock=$(cat "$meta/session.lock" 2>/dev/null || echo none)
     unmarked_claim=$(cat "$meta/local/lead-pid" 2>/dev/null || echo none)
