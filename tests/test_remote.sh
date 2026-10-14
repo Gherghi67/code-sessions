@@ -307,6 +307,10 @@ test_remote_refuses_force_finish_and_a_mode_without_remote() {
     assert_eq "1" "$rc" "--permission-mode with no mode is refused" || return 1
     assert_eq "Error: --permission-mode needs a mode: cs demo --remote --permission-mode <mode>" \
         "$(printf '%s' "$out" | strip_ansi)" "missing mode refusal" || return 1
+    rc=0; out=$("$CS_BIN" demo --permission-mode --remote 2>&1) || rc=$?
+    assert_eq "1" "$rc" "an option in the mode's place is refused" || return 1
+    assert_eq "Error: --permission-mode needs a mode: cs demo --remote --permission-mode <mode>" \
+        "$(printf '%s' "$out" | strip_ansi)" "an option is not taken as the mode" || return 1
     assert_file_not_exists "$FAKE_CLAUDE_LOG" "remote-control never ran" || return 1
     [ ! -e "$CS_SESSIONS_ROOT/demo" ] || { echo "  FAIL: a refused --remote created the session"; return 1; }
 }
