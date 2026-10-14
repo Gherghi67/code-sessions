@@ -258,7 +258,12 @@ CS_COMPLETION_FILES=(
 
 # Remove a hook registration from any event in a settings JSON string,
 # matching either path spelling; drops wrappers that empty out. An entry with
-# no .hooks array (its command at the top level) passes through untouched.
+# no .hooks array (its command at the top level, or not an object at all)
+# passes through untouched, and so does an element of a .hooks array that is
+# not an object: neither can be cs's registration.
+# A wrapper whose .hooks array is empty goes whether the strip emptied it or
+# the user wrote it that way; the filter cannot tell the two apart and an
+# empty one does nothing in Claude Code. Deliberate: not a defect to fix.
 # Prints the updated JSON.
 _strip_hook_registration() {
     local settings="$1" p="$2" t="$3"
@@ -266,8 +271,8 @@ _strip_hook_registration() {
         if .hooks then
             .hooks |= with_entries(
                 .value |= (
-                    map(if (.hooks | type) == "array" then .hooks |= map(select(.command != $p and .command != $t)) else . end)
-                    | map(select((.hooks | type) != "array" or (.hooks | length > 0)))
+                    map(if type == "object" and (.hooks | type) == "array" then .hooks |= map(select(type != "object" or (.command != $p and .command != $t))) else . end)
+                    | map(select(type != "object" or (.hooks | type) != "array" or (.hooks | length > 0)))
                 )
             )
         else . end
@@ -1243,7 +1248,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "b1db02f9958d220ddb9fd9f0a678133a2fb7ea35e092d945d6a26481d8f4354a  bin/cs"
+    "0cb31a7d8986c28b193c4b643925b2f9d501d4ac1dbff85476d871b138d97c07  bin/cs"
     "53865bc18046bdb236b3bc644d3b197e5e2198890be4d22b449fea81c9ab41db  bin/cs-secrets"
     "a6d008e8bcba4e3d4c1599c76aaddc4ea1c4eb61e3ba861c60d9e4b91f706e78  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -1893,10 +1898,14 @@ else
     # it contained cs's command, taking sibling user hooks with it.
     #
     # An entry whose `.hooks` is not an array (flat shape with the command at
-    # the top level, or a `.hooks` of any other type) passes through
-    # untouched: only an array `.hooks` is stripped or dropped, as in
-    # _strip_hook_registration. The spec tests in tests/test_hooks.sh embed
-    # this same filter shape via _install_merge_filter — keep them aligned.
+    # the top level, a `.hooks` of any other type, or an entry that is not an
+    # object) passes through untouched, and so does an element of a `.hooks`
+    # array that is not an object: only an object in an array `.hooks` can be
+    # cs's registration, as in _strip_hook_registration. A wrapper whose
+    # `.hooks` array is empty is dropped whether the strip emptied it or the
+    # user wrote it that way (deliberate, see _strip_hook_registration). The
+    # spec tests in tests/test_hooks.sh run a copy of this filter,
+    # _install_merge_filter, and one of them compares the two texts.
     _merge_cs_hook() {
         local event="$1" file="$2" timeout="$3" matcher="${4:-}" async="${5:-}" rewake="${6:-}"
         local path="$HOOKS_DIR/$file" tilde="$HOOKS_TILDE_DIR/$file"
@@ -1933,10 +1942,10 @@ else
             --argjson append "$append" '
             .hooks[$event] = (
                 ((.hooks[$event] // []) | map(
-                    if (.hooks | type) == "array" then
-                        .hooks |= map(select(.command != $path and .command != $tilde))
+                    if type == "object" and (.hooks | type) == "array" then
+                        .hooks |= map(select(type != "object" or (.command != $path and .command != $tilde)))
                     else . end
-                ) | map(select((.hooks | type) != "array" or (.hooks | length > 0))))
+                ) | map(select(type != "object" or (.hooks | type) != "array" or (.hooks | length > 0))))
                 + [$append]
             )
         ')

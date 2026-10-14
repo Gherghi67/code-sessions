@@ -166,7 +166,12 @@ CS_COMPLETION_FILES=(
 
 # Remove a hook registration from any event in a settings JSON string,
 # matching either path spelling; drops wrappers that empty out. An entry with
-# no .hooks array (its command at the top level) passes through untouched.
+# no .hooks array (its command at the top level, or not an object at all)
+# passes through untouched, and so does an element of a .hooks array that is
+# not an object: neither can be cs's registration.
+# A wrapper whose .hooks array is empty goes whether the strip emptied it or
+# the user wrote it that way; the filter cannot tell the two apart and an
+# empty one does nothing in Claude Code. Deliberate: not a defect to fix.
 # Prints the updated JSON.
 _strip_hook_registration() {
     local settings="$1" p="$2" t="$3"
@@ -174,8 +179,8 @@ _strip_hook_registration() {
         if .hooks then
             .hooks |= with_entries(
                 .value |= (
-                    map(if (.hooks | type) == "array" then .hooks |= map(select(.command != $p and .command != $t)) else . end)
-                    | map(select((.hooks | type) != "array" or (.hooks | length > 0)))
+                    map(if type == "object" and (.hooks | type) == "array" then .hooks |= map(select(type != "object" or (.command != $p and .command != $t))) else . end)
+                    | map(select(type != "object" or (.hooks | type) != "array" or (.hooks | length > 0)))
                 )
             )
         else . end
