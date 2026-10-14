@@ -3513,24 +3513,21 @@ run_test test_session_end_leaves_legacy_updated_line_alone
 # Retired-hooks cleanup (install.sh + run_uninstall)
 # ============================================================================
 
+# The two tests below run cs's own code, sourced from lib/: the uninstaller's
+# pass over every hook name (_strip_cs_hook_registrations), which strips each
+# one whose file is gone and then drops the events left with nothing, and the
+# strip filter that pass and install.sh share (_strip_hook_registration).
 test_retired_hooks_strip_settings_json() {
-    # Settings.json with one retired hook (PreCompact only) and one current hook (PostToolUse)
+    # Settings.json with one retired hook whose file is gone (PreCompact only)
+    # and one hook whose file is still in the flat hooks directory, so its
+    # registration stays (PostToolUse)
     local settings='{"hooks":{"PreCompact":[{"matcher":"","hooks":[{"type":"command","command":"~/.claude/hooks/discoveries-archiver.sh","timeout":10}]}],"PostToolUse":[{"matcher":"","hooks":[{"type":"command","command":"~/.claude/hooks/discovery-commits.sh","timeout":10}]}]}}'
-    local p="$HOME/.claude/hooks/discoveries-archiver.sh"
-    local t="~/.claude/hooks/discoveries-archiver.sh"
+    local parent="$TEST_TMPDIR/hooks"
+    mkdir -p "$parent/cs"
+    : > "$parent/discovery-commits.sh"
     local stripped
-    stripped=$(echo "$settings" | jq --arg p "$p" --arg t "$t" '
-        if .hooks then
-            .hooks |= with_entries(
-                .value |= (
-                    map(.hooks |= map(select(.command != $p and .command != $t)))
-                    | map(select(.hooks | length > 0))
-                )
-            )
-            | .hooks |= with_entries(select(.value | length > 0))
-            | if .hooks == {} then del(.hooks) else . end
-        else . end
-    ')
+    stripped=$(. "$SCRIPT_DIR/../lib/01-manifests.sh" && . "$SCRIPT_DIR/../lib/85-adopt-uninstall.sh" \
+        && echo "$settings" | _strip_cs_hook_registrations "$parent/cs" "$parent")
     if echo "$stripped" | jq -e '.hooks.PreCompact' >/dev/null 2>&1; then
         echo "  FAIL: PreCompact event should be empty/gone after stripping its only (retired) hook"
         echo "  got: $stripped"
@@ -3548,16 +3545,7 @@ test_retired_hooks_strip_preserves_coexisting_hook() {
     local p="$HOME/.claude/hooks/discoveries-archiver.sh"
     local t="~/.claude/hooks/discoveries-archiver.sh"
     local stripped
-    stripped=$(echo "$settings" | jq --arg p "$p" --arg t "$t" '
-        if .hooks then
-            .hooks |= with_entries(
-                .value |= (
-                    map(.hooks |= map(select(.command != $p and .command != $t)))
-                    | map(select(.hooks | length > 0))
-                )
-            )
-        else . end
-    ')
+    stripped=$(. "$SCRIPT_DIR/../lib/01-manifests.sh" && _strip_hook_registration "$settings" "$p" "$t")
     local remaining_count
     remaining_count=$(echo "$stripped" | jq '.hooks.PostToolUse[0].hooks | length')
     if [ "$remaining_count" != "1" ]; then
