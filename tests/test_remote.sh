@@ -32,8 +32,9 @@ teardown_failed() {  # what
     FAILURES+=("$SUITE_PHASE")
 }
 
-# The fake claude. --version prints FAKE_CLAUDE_VERSION and exits
-# FAKE_CLAUDE_VERSION_EXIT (0 by default). Any other call appends
+# The fake claude. --version prints "FAKE_CLAUDE_VERSION (Claude Code)", as
+# Claude Code does, or FAKE_CLAUDE_VERSION_LINE as it is when that is set, and
+# exits FAKE_CLAUDE_VERSION_EXIT (0 by default). Any other call appends
 # what it was given to $FAKE_CLAUDE_LOG: argv, which cs variables are set (the
 # names only, never a value), its cwd, its pid and parent, and what the session
 # lock and .cs/local/remote.pid held when it started. FAKE_CLAUDE_MODE then
@@ -48,7 +49,7 @@ write_fake_claude() {
     cat > "$TEST_TMPDIR/bin/claude" << 'FAKE'
 #!/bin/bash
 if [ "${1:-}" = "--version" ]; then
-    printf '%s (Claude Code)\n' "${FAKE_CLAUDE_VERSION:-2.1.299}"
+    printf '%s\n' "${FAKE_CLAUDE_VERSION_LINE:-${FAKE_CLAUDE_VERSION:-2.1.299} (Claude Code)}"
     exit "${FAKE_CLAUDE_VERSION_EXIT:-0}"
 fi
 log="$FAKE_CLAUDE_LOG"
@@ -126,6 +127,7 @@ setup() {
     export CS_NO_UPDATE_CHECK=1 CS_NO_ITERM2=1
     export FAKE_CLAUDE_LOG="$TEST_TMPDIR/claude.log"
     export FAKE_TMUX_LOG="$TEST_TMPDIR/tmux.log"
+    export FAKE_WRAPPER_LOG="$TEST_TMPDIR/wrapper.log"
     export FAKE_READY_FIFO="$TEST_TMPDIR/ready"
     write_fake_claude
     write_fake_tmux
@@ -174,12 +176,18 @@ group_gone_within_10s() {  # pgid
 
 # Run a command to its end in a process group of its own, as a terminal runs
 # it, with its input from RUN_CS_STDIN (/dev/null when unset), its output in
-# $TEST_TMPDIR/out and its status in CS_RC. The release cs leaves beside the
-# server runs in that group too, so the run is over only once the group is
-# empty; the wait keeps the next step from racing it.
+# $TEST_TMPDIR/out and its status in CS_RC. Its stderr goes to the file
+# RUN_CS_STDERR names when that is set, and into out with stdout otherwise.
+# The release cs leaves beside the server runs in that group too, so the run
+# is over only once the group is empty; the wait keeps the next step from
+# racing it.
 run_in_its_own_group() {  # command...
     CS_RC=0
-    perl -e 'setpgrp(0,0); exec @ARGV' "$@" > "$TEST_TMPDIR/out" 2>&1 < "${RUN_CS_STDIN:-/dev/null}" &
+    if [ -n "${RUN_CS_STDERR:-}" ]; then
+        perl -e 'setpgrp(0,0); exec @ARGV' "$@" > "$TEST_TMPDIR/out" 2> "$RUN_CS_STDERR" < "${RUN_CS_STDIN:-/dev/null}" &
+    else
+        perl -e 'setpgrp(0,0); exec @ARGV' "$@" > "$TEST_TMPDIR/out" 2>&1 < "${RUN_CS_STDIN:-/dev/null}" &
+    fi
     local leader=$!
     wait "$leader" || CS_RC=$?
     group_gone_within_10s "$leader" \
@@ -347,17 +355,20 @@ strip_ansi() {
 
 # ---------------------------------------------------------------------------
 
+# remote-control's first run in a git directory asks for a spawn mode at its
+# terminal, which nobody sees in a tmux window, unless --spawn names one; cs
+# names same-dir, so the sessions it starts run in the session dir.
 test_remote_runs_remote_control_by_absolute_path_with_the_default_mode() {
     run_cs_ok demo --remote || return 1
     assert_eq "$TEST_TMPDIR/bin/claude" "$(log_value bin)" "claude runs by its absolute path" || return 1
-    assert_eq "[remote-control][--name][demo][--permission-mode][default]" "$(log_value argv)" \
-        "remote-control gets the session name and the default permission mode, after the verb" || return 1
+    assert_eq "[remote-control][--name][demo][--permission-mode][default][--spawn=same-dir]" "$(log_value argv)" \
+        "remote-control gets the session name, the default permission mode and same-dir spawn mode, after the verb" || return 1
     assert_eq "$(cd "$CS_SESSIONS_ROOT/demo" && pwd -P)" "$(log_value pwd)" "the server runs in the session dir" || return 1
 }
 
 test_remote_passes_the_permission_mode_it_was_given() {
     run_cs_ok demo --remote --permission-mode plan || return 1
-    assert_eq "[remote-control][--name][demo][--permission-mode][plan]" "$(log_value argv)" \
+    assert_eq "[remote-control][--name][demo][--permission-mode][plan][--spawn=same-dir]" "$(log_value argv)" \
         "the mode given to --permission-mode reaches remote-control" || return 1
 }
 
@@ -390,7 +401,7 @@ test_remote_says_a_staged_spawn_seed_stays_staged() {
     assert_eq "token-0
 spawner
 first task" "$(cat "$CS_SESSIONS_ROOT/.spawn/demo.seed")" "the seed is left as it was" || return 1
-    assert_eq "[remote-control][--name][demo][--permission-mode][default]" "$(log_value argv)" "the server ran" || return 1
+    assert_eq "[remote-control][--name][demo][--permission-mode][default][--spawn=same-dir]" "$(log_value argv)" "the server ran" || return 1
 }
 
 test_remote_shows_the_servers_error_and_exits_with_its_status() {
@@ -412,7 +423,7 @@ test_remote_refuses_a_claude_older_than_the_measured_version() {
 
 test_remote_accepts_a_newer_claude_by_number_not_by_text() {
     FAKE_CLAUDE_VERSION=2.1.1000 run_cs_ok demo --remote || return 1
-    assert_eq "[remote-control][--name][demo][--permission-mode][default]" "$(log_value argv)" \
+    assert_eq "[remote-control][--name][demo][--permission-mode][default][--spawn=same-dir]" "$(log_value argv)" \
         "2.1.1000 is newer than 2.1.299" || return 1
 }
 
@@ -433,13 +444,205 @@ test_remote_refuses_a_claude_whose_version_check_fails() {
     assert_file_not_exists "$FAKE_CLAUDE_LOG" "remote-control never ran" || return 1
 }
 
-test_remote_refuses_options_carried_in_claude_code_bin() {
+# The notice cs prints on stderr when CLAUDE_CODE_BIN carries permission
+# options, and the refusal for any other option it carries.
+NOTE_DROP="drops --allow-dangerously-skip-permissions from CLAUDE_CODE_BIN: remote-control takes no such option and needs none for bypassPermissions."
+refusal_of() {  # what CLAUDE_CODE_BIN carries, [command word]
+    printf '%s' "Error: CLAUDE_CODE_BIN carries $1, which cs --remote cannot pass to ${2:-claude} remote-control: it carries over only --permission-mode <mode> and --dangerously-skip-permissions, as remote-control's own --permission-mode, and drops --allow-dangerously-skip-permissions. Set CLAUDE_CODE_BIN to the command alone, or with only those options, for --remote."
+}
+
+test_remote_carries_the_permission_mode_in_claude_code_bin_and_says_so() {
+    local err="$TEST_TMPDIR/err"
+    CLAUDE_CODE_BIN="claude --permission-mode bypassPermissions --allow-dangerously-skip-permissions" \
+        RUN_CS_STDERR="$err" run_cs_ok demo --remote || { cat "$err"; return 1; }
+    assert_eq "cs --remote carries permission mode bypassPermissions from CLAUDE_CODE_BIN's --permission-mode bypassPermissions to claude remote-control. It $NOTE_DROP" \
+        "$(strip_ansi < "$err" | grep -F 'CLAUDE_CODE_BIN')" "one line on stderr names the mode carried and what was dropped" || { cat "$err"; return 1; }
+    assert_eq "1" "$(grep -c 'CLAUDE_CODE_BIN' "$err")" "the line is printed once" || return 1
+    assert_eq "" "$(grep -F 'CLAUDE_CODE_BIN' "$TEST_TMPDIR/out" || true)" "the line is not on stdout" || return 1
+    assert_eq "$TEST_TMPDIR/bin/claude" "$(log_value bin)" "claude runs by its absolute path" || return 1
+    assert_eq "[remote-control][--name][demo][--permission-mode][bypassPermissions][--spawn=same-dir]" "$(log_value argv)" \
+        "remote-control gets the mode CLAUDE_CODE_BIN carries, and no other option of it" || return 1
+}
+
+# The mode given to cs --remote --permission-mode wins over the one
+# CLAUDE_CODE_BIN carries, and the line says so.
+test_remote_permission_mode_given_wins_over_the_one_carried() {
+    local err="$TEST_TMPDIR/err"
+    CLAUDE_CODE_BIN="claude --dangerously-skip-permissions --allow-dangerously-skip-permissions" \
+        RUN_CS_STDERR="$err" run_cs_ok demo --remote --permission-mode plan || { cat "$err"; return 1; }
+    assert_eq "cs --remote runs claude remote-control in permission mode plan from its own --permission-mode, over bypassPermissions from CLAUDE_CODE_BIN's --dangerously-skip-permissions. It $NOTE_DROP" \
+        "$(strip_ansi < "$err" | grep -F 'CLAUDE_CODE_BIN')" "the line names both modes" || { cat "$err"; return 1; }
+    assert_eq "[remote-control][--name][demo][--permission-mode][plan][--spawn=same-dir]" "$(log_value argv)" \
+        "remote-control gets the mode --remote was given" || return 1
+}
+
+# CLAUDE_CODE_BIN splits on blanks wherever cs runs it, so a quote in it is a
+# character of an option, not quoting, and blanks between options are
+# separators. A quoted mode is one word that is no mode, and the words after
+# it are words of their own, the command word among them, so the refusal
+# names them all, one blank apart.
+test_remote_names_carried_and_refused_options_as_written() {
+    local err="$TEST_TMPDIR/err" rc=0 out
+    CLAUDE_CODE_BIN=" claude  --permission-mode=plan   --allow-dangerously-skip-permissions " \
+        RUN_CS_STDERR="$err" run_cs_ok demo --remote || { cat "$err"; return 1; }
+    assert_eq "cs --remote carries permission mode plan from CLAUDE_CODE_BIN's --permission-mode=plan to claude remote-control. It $NOTE_DROP" \
+        "$(strip_ansi < "$err" | grep -F 'CLAUDE_CODE_BIN')" "the option carried is named as written" || { cat "$err"; return 1; }
+    assert_eq "[remote-control][--name][demo][--permission-mode][plan][--spawn=same-dir]" "$(log_value argv)" \
+        "remote-control gets the mode alone" || return 1
+    rm -rf "${CS_SESSIONS_ROOT:?}/demo" "$FAKE_CLAUDE_LOG"
+    out=$(CLAUDE_CODE_BIN="claude --permission-mode 'ask claude first'" "$CS_BIN" demo --remote 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a quoted mode is refused" || { printf '%s\n' "$out"; return 1; }
+    assert_eq "$(refusal_of "--permission-mode 'ask claude first'")" \
+        "$(printf '%s' "$out" | strip_ansi)" "the refusal names every word after the command, the command word inside them too" || return 1
+    assert_file_not_exists "$FAKE_CLAUDE_LOG" "claude never ran" || return 1
+}
+
+# Each permission option, read as Claude Code 2.1.299 reads it: a mode option
+# takes the next word or the value after "=", the last one wins, and
+# --dangerously-skip-permissions wins over any of them.
+test_remote_carries_each_permission_option() {
+    local row bin mode note err="$TEST_TMPDIR/err"
+    for row in "claude --dangerously-skip-permissions|bypassPermissions|cs --remote carries permission mode bypassPermissions from CLAUDE_CODE_BIN's --dangerously-skip-permissions to claude remote-control." \
+        "claude --permission-mode=acceptEdits|acceptEdits|cs --remote carries permission mode acceptEdits from CLAUDE_CODE_BIN's --permission-mode=acceptEdits to claude remote-control." \
+        "claude --permission-mode manual|manual|cs --remote carries permission mode manual from CLAUDE_CODE_BIN's --permission-mode manual to claude remote-control." \
+        "claude --permission-mode plan --permission-mode dontAsk|dontAsk|cs --remote carries permission mode dontAsk from CLAUDE_CODE_BIN's --permission-mode dontAsk to claude remote-control." \
+        "claude --permission-mode plan --dangerously-skip-permissions|bypassPermissions|cs --remote carries permission mode bypassPermissions from CLAUDE_CODE_BIN's --dangerously-skip-permissions to claude remote-control." \
+        "claude --allow-dangerously-skip-permissions|default|cs --remote $NOTE_DROP"; do
+        bin="${row%%|*}"; mode="${row#*|}"; note="${mode#*|}"; mode="${mode%%|*}"
+        rm -rf "${CS_SESSIONS_ROOT:?}/demo" "$FAKE_CLAUDE_LOG"
+        CLAUDE_CODE_BIN="$bin" RUN_CS_STDERR="$err" run_cs_ok demo --remote || { echo "  with CLAUDE_CODE_BIN=$bin"; cat "$err"; return 1; }
+        assert_eq "$note" "$(strip_ansi < "$err" | grep -F 'CLAUDE_CODE_BIN')" "the line for $bin" || { cat "$err"; return 1; }
+        assert_eq "[remote-control][--name][demo][--permission-mode][$mode][--spawn=same-dir]" "$(log_value argv)" \
+            "remote-control runs in $mode for $bin" || return 1
+    done
+}
+
+# Any other option, a restrictive one too, would be lost on the sessions
+# remote-control starts, so it is refused by name before anything is opened.
+# A mode option's value is checked against claude's modes, so an option in
+# its place is not carried with it, and a mode option needs a value.
+test_remote_refuses_options_it_cannot_drop_before_opening_anything() {
+    local rest named rc out
+    for rest in "--disallowedTools Bash" "--settings /x.json" "--sandbox" "--foo" \
+        "--permission-mode plan --disallowedTools Bash" "--permission-mode --sandbox" \
+        "--plan-mode-required" "--dangerously-skip-permissions=1" "--enable-auto-mode" \
+        "--inherit-permission-mode dontAsk" "--permission-mode" "--permission-mode=plann"; do
+        rc=0
+        out=$(CLAUDE_CODE_BIN="claude $rest" "$CS_BIN" demo --remote 2>&1) || rc=$?
+        assert_eq "1" "$rc" "claude $rest is refused" || { printf '%s\n' "$out"; return 1; }
+        named="$rest"
+        [ "$rest" != "--permission-mode plan --disallowedTools Bash" ] || named="--disallowedTools Bash"
+        assert_eq "$(refusal_of "$named")" \
+            "$(printf '%s' "$out" | strip_ansi)" "the refusal names what claude $rest carries that cs cannot drop" || return 1
+        assert_file_not_exists "$FAKE_CLAUDE_LOG" "claude never ran for claude $rest" || return 1
+        [ ! -e "$CS_SESSIONS_ROOT/demo" ] || { echo "  FAIL: claude $rest created the session"; return 1; }
+    done
+}
+
+# Inside tmux, on a session that exists, the refusal comes before the window,
+# the lock and remote.pid, and leaves the session dir as it was.
+test_remote_inside_tmux_refuses_an_option_it_cannot_drop_before_any_window() {
+    "$CS_BIN" demo > /dev/null 2>&1 <<< "" || return 1
+    local sdir="$CS_SESSIONS_ROOT/demo" before rc=0 out
+    # The fake claude runs no SessionEnd hook, so the open's lock stays.
+    rm -f "$FAKE_CLAUDE_LOG" "$sdir/.cs/session.lock"
+    before=$(cd "$sdir" && find . -print | sort)
+    out=$(CLAUDE_CODE_BIN="claude --sandbox" TMUX="/tmp/fake,1,0" "$CS_BIN" demo --remote 2>&1) || rc=$?
+    assert_eq "1" "$rc" "claude --sandbox is refused inside tmux" || { printf '%s\n' "$out"; return 1; }
+    assert_eq "$(refusal_of --sandbox)" \
+        "$(printf '%s' "$out" | strip_ansi)" "the refusal is on the caller's terminal" || return 1
+    assert_eq "" "$(grep -e '^new-session' -e '^new-window' "$FAKE_TMUX_LOG" 2>/dev/null || true)" "no window is opened" || return 1
+    assert_file_not_exists "$sdir/.cs/session.lock" "no lock is taken" || return 1
+    assert_file_not_exists "$sdir/.cs/local/remote.pid" "no remote.pid is written" || return 1
+    assert_eq "$before" "$(cd "$sdir" && find . -print | sort)" "the session dir is as it was" || return 1
+    assert_file_not_exists "$FAKE_CLAUDE_LOG" "claude never ran" || return 1
+}
+
+# The window is handed the claude checked here, an absolute path with no
+# options, and the mode carried, so the line is printed once, on the
+# caller's terminal, and the window's own run has nothing to carry, whatever
+# CLAUDE_CODE_BIN says in the environment it starts from.
+test_remote_window_gets_the_command_alone_and_the_line_shows_once() {
+    local err="$TEST_TMPDIR/err" werr="$TEST_TMPDIR/window-err" cmd
+    CLAUDE_CODE_BIN="claude --permission-mode plan" TMUX="/tmp/fake,1,0" \
+        RUN_CS_STDERR="$err" run_cs_ok demo --remote || { cat "$err"; return 1; }
+    assert_eq "cs --remote carries permission mode plan from CLAUDE_CODE_BIN's --permission-mode plan to claude remote-control." \
+        "$(strip_ansi < "$err" | grep -F 'CLAUDE_CODE_BIN')" "the caller is told what was carried" || { cat "$err"; return 1; }
+    assert_eq "new-session -d -s cs -n remote:demo -P -F #{window_id} $(window_command)" \
+        "$(grep '^new-session' "$FAKE_TMUX_LOG")" "the window gets the absolute claude with no options, and the mode carried" || return 1
+    cmd=$(sed -n 's/^new-session -d -s cs -n remote:demo -P -F #{window_id} //p' "$FAKE_TMUX_LOG")
+    CLAUDE_CODE_BIN="claude --permission-mode bypassPermissions" TMUX="/tmp/fake,1,0" \
+        RUN_CS_STDERR="$werr" run_in_its_own_group sh -c "$cmd" || return 1
+    assert_eq "0" "$CS_RC" "the window's server ran" || { cat "$TEST_TMPDIR/out" "$werr"; return 1; }
+    assert_eq "0" "$(grep -c 'CLAUDE_CODE_BIN' "$werr")" "the window prints no second line" || { cat "$werr"; return 1; }
+    assert_eq "[remote-control][--name][demo][--permission-mode][plan][--spawn=same-dir]" "$(log_value argv)" \
+        "the window's remote-control runs in the mode carried" || return 1
+}
+
+# CLAUDE_CODE_BIN's command word is what runs remote-control, so a wrapper in
+# front of claude is that word. Its own words are no permission options and
+# refuse it by name; one carrying only permission options whose --version
+# fails, as BSD env's does, is refused by the version check, after the line
+# naming the mode carried.
+test_remote_with_a_wrapper_whose_version_check_fails_is_refused() {
+    cat > "$TEST_TMPDIR/bin/with-env" << 'EOF'
+#!/bin/sh
+[ "$1" = --version ] && { echo "with-env: illegal option -- -" >&2; exit 1; }
+printf '[%s]' "$@" >> "$FAKE_WRAPPER_LOG"
+exit 0
+EOF
+    chmod +x "$TEST_TMPDIR/bin/with-env"
     local rc=0 out
-    out=$(CLAUDE_CODE_BIN="claude --permission-mode bypassPermissions" "$CS_BIN" demo --remote 2>&1) || rc=$?
-    assert_eq "1" "$rc" "options before the verb are refused" || return 1
-    assert_eq 'Error: cs --remote runs claude remote-control, which refuses options before its verb; CLAUDE_CODE_BIN carries "--permission-mode bypassPermissions" after the command. Set CLAUDE_CODE_BIN to the command alone for --remote.' \
-        "$(printf '%s' "$out" | strip_ansi)" "the refusal names the options" || return 1
-    assert_file_not_exists "$FAKE_CLAUDE_LOG" "remote-control never ran" || return 1
+    out=$(CLAUDE_CODE_BIN="with-env FOO=1 claude" "$CS_BIN" demo --remote 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the wrapper's own words refuse it" || { printf '%s\n' "$out"; return 1; }
+    assert_eq "$(refusal_of "FOO=1 claude" with-env)" \
+        "$(printf '%s' "$out" | strip_ansi)" "the refusal names the wrapper's words" || return 1
+    rc=0
+    out=$(CLAUDE_CODE_BIN="with-env --dangerously-skip-permissions" "$CS_BIN" demo --remote 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the wrapper is refused" || { printf '%s\n' "$out"; return 1; }
+    assert_eq "cs --remote carries permission mode bypassPermissions from CLAUDE_CODE_BIN's --dangerously-skip-permissions to with-env remote-control.
+Error: cs --remote needs Claude Code 2.1.299 or later for claude remote-control; $TEST_TMPDIR/bin/with-env --version exited with status 1." \
+        "$(printf '%s' "$out" | strip_ansi)" "the line names the wrapper and what was dropped, the refusal its version check" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/wrapper.log" "the wrapper never ran remote-control" || return 1
+    assert_file_not_exists "$FAKE_CLAUDE_LOG" "claude never ran" || return 1
+    [ ! -e "$CS_SESSIONS_ROOT/demo" ] || { echo "  FAIL: a refused --remote created the session"; return 1; }
+}
+
+# A wrapper whose --version passes, as 1Password's op does (2.30.0, past the
+# floor by number), is refused by name: `op run -- claude` by its own words,
+# before op runs at all, and op carrying only permission options, since its
+# output carries no "(Claude Code)", so the word is not claude. Nothing is
+# opened.
+test_remote_refuses_a_wrapper_whose_version_is_not_claude_codes() {
+    cat > "$TEST_TMPDIR/bin/op" << 'EOF'
+#!/bin/sh
+[ "$1" = --version ] && { echo "2.30.0"; exit 0; }
+printf '[%s]' "$@" >> "$FAKE_WRAPPER_LOG"
+exit 0
+EOF
+    chmod +x "$TEST_TMPDIR/bin/op"
+    local rc=0 out
+    out=$(CLAUDE_CODE_BIN="op run -- claude" "$CS_BIN" demo --remote 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the wrapper's own words refuse it" || { printf '%s\n' "$out"; return 1; }
+    assert_eq "$(refusal_of "run -- claude" op)" \
+        "$(printf '%s' "$out" | strip_ansi)" "the refusal names the wrapper's words" || return 1
+    rc=0
+    out=$(CLAUDE_CODE_BIN="op --permission-mode plan" "$CS_BIN" demo --remote 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the wrapper is refused" || { printf '%s\n' "$out"; return 1; }
+    assert_eq "cs --remote carries permission mode plan from CLAUDE_CODE_BIN's --permission-mode plan to op remote-control.
+Error: cs --remote runs op remote-control, and op is not Claude Code: op --version printed \"2.30.0\". Set CLAUDE_CODE_BIN to claude itself for --remote." \
+        "$(printf '%s' "$out" | strip_ansi)" "the line names the wrapper and what was dropped, the refusal what its --version printed" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/wrapper.log" "the wrapper never ran remote-control" || return 1
+    assert_file_not_exists "$FAKE_CLAUDE_LOG" "claude never ran" || return 1
+    [ ! -e "$CS_SESSIONS_ROOT/demo" ] || { echo "  FAIL: a refused --remote created the session"; return 1; }
+}
+
+# With nothing carried, the command word is not checked for Claude Code's
+# mark: a claude whose --version prints the number alone still serves.
+test_remote_runs_a_plain_claude_whose_version_has_no_mark() {
+    FAKE_CLAUDE_VERSION_LINE=2.1.299 run_cs_ok demo --remote || return 1
+    assert_eq "[remote-control][--name][demo][--permission-mode][default][--spawn=same-dir]" "$(log_value argv)" \
+        "the server ran" || return 1
 }
 
 test_remote_refuses_a_session_open_locally() {
@@ -633,7 +836,7 @@ test_remote_inside_tmux_refuses_an_open_or_served_session_on_the_callers_termina
 
 test_remote_in_its_window_serves_there_instead_of_opening_another() {
     CS_REMOTE_WINDOW=1 TMUX="/tmp/fake,1,0" run_cs_ok demo --remote || return 1
-    assert_eq "[remote-control][--name][demo][--permission-mode][default]" "$(log_value argv)" "the server runs in the window" || return 1
+    assert_eq "[remote-control][--name][demo][--permission-mode][default][--spawn=same-dir]" "$(log_value argv)" "the server runs in the window" || return 1
     assert_eq "" "$(grep -E '^new-(session|window)' "$FAKE_TMUX_LOG" 2>/dev/null || true)" "no further window opens" || return 1
     assert_eq "" "$(log_value CS_REMOTE_WINDOW)" "the window marker never reaches the server" || return 1
 }
@@ -720,7 +923,16 @@ run_test test_remote_refuses_a_claude_older_than_the_measured_version
 run_test test_remote_accepts_a_newer_claude_by_number_not_by_text
 run_test test_remote_refuses_a_claude_that_names_no_version
 run_test test_remote_refuses_a_claude_whose_version_check_fails
-run_test test_remote_refuses_options_carried_in_claude_code_bin
+run_test test_remote_carries_the_permission_mode_in_claude_code_bin_and_says_so
+run_test test_remote_permission_mode_given_wins_over_the_one_carried
+run_test test_remote_names_carried_and_refused_options_as_written
+run_test test_remote_carries_each_permission_option
+run_test test_remote_refuses_options_it_cannot_drop_before_opening_anything
+run_test test_remote_inside_tmux_refuses_an_option_it_cannot_drop_before_any_window
+run_test test_remote_window_gets_the_command_alone_and_the_line_shows_once
+run_test test_remote_with_a_wrapper_whose_version_check_fails_is_refused
+run_test test_remote_refuses_a_wrapper_whose_version_is_not_claude_codes
+run_test test_remote_runs_a_plain_claude_whose_version_has_no_mark
 run_test test_remote_refuses_a_session_open_locally
 run_test test_local_open_is_refused_while_the_session_is_served
 run_test test_remote_stops_cleanly_when_its_window_hangs_up
