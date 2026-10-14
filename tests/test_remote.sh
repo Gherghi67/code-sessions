@@ -526,8 +526,9 @@ test_remote_refuses_options_it_cannot_drop_before_opening_anything() {
 # the lock and remote.pid, and leaves the session dir as it was.
 test_remote_inside_tmux_refuses_an_option_it_cannot_drop_before_any_window() {
     "$CS_BIN" demo > /dev/null 2>&1 <<< "" || return 1
-    rm -f "$FAKE_CLAUDE_LOG"
     local sdir="$CS_SESSIONS_ROOT/demo" before rc=0 out
+    # The fake claude runs no SessionEnd hook, so the open's lock stays.
+    rm -f "$FAKE_CLAUDE_LOG" "$sdir/.cs/session.lock"
     before=$(cd "$sdir" && find . -print | sort)
     out=$(CLAUDE_CODE_BIN="claude --sandbox" TMUX="/tmp/fake,1,0" "$CS_BIN" demo --remote 2>&1) || rc=$?
     assert_eq "1" "$rc" "claude --sandbox is refused inside tmux" || { printf '%s\n' "$out"; return 1; }
