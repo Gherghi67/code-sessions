@@ -1123,12 +1123,13 @@ fn worktree_cs_mode(path: &Path) -> Option<String> {
     state.lines().find_map(|line| line.strip_prefix("cs_mode:")).map(|value| value.trim_start().replace('"', ""))
 }
 
-/// Whether a path in the worktree at `path` is cs's own bookkeeping, as
-/// lib/30-worktree.sh `_without_cs_bookkeeping` draws the line: all of `.cs/`
+/// The test of whether a path in the worktree at `path` is cs's own
+/// bookkeeping, as lib/30-worktree.sh `_without_cs_bookkeeping` draws the
+/// line, the mode and the protocol file read once: all of `.cs/`
 /// in ignored mode, only its machine-local files otherwise (git carries the
 /// rest); the root CLAUDE.local.md only while it carries cs's sentinel; the
 /// settings file; and Finder's .DS_Store at any depth.
-fn is_cs_bookkeeping(path: &Path) -> impl Fn(&str) -> bool {
+fn cs_bookkeeping_in(path: &Path) -> impl Fn(&str) -> bool {
     let ignored_mode = worktree_cs_mode(path).as_deref() == Some("ignored");
     let protocol_file_is_cs = fs::read(path.join("CLAUDE.local.md"))
         .map(|text| text.windows(SESSION_PROTOCOL_SENTINEL.len()).any(|w| w == SESSION_PROTOCOL_SENTINEL))
@@ -1224,8 +1225,8 @@ fn worktree_untracked(path: &Path) -> Result<Vec<untracked::Entry>, String> {
     let mut at_risk = git_ls_files(path, &["--others", "--exclude-standard"])?;
     at_risk.extend(git_ls_files(path, &["--others", "--ignored", "--exclude-standard"])?);
     at_risk.extend(submodule_others(path, "")?);
-    let cs_own = is_cs_bookkeeping(path);
-    at_risk.retain(|p| !cs_own(p));
+    let is_cs_own = cs_bookkeeping_in(path);
+    at_risk.retain(|p| !is_cs_own(p));
     if at_risk.is_empty() {
         return Ok(Vec::new());
     }
