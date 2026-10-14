@@ -1318,6 +1318,19 @@ Public key: $key" "$out" "age add names the recipient as a plain name" || return
 Public key: $key" "$out" "age add of the raw key names the file that holds it as a plain name" || return 1
 }
 
+# A clone chooses what a recipient file holds. age list shows the first 20
+# characters of it with its control bytes deleted, as cs -search shows a
+# matched line, so an escape in the file never reaches the terminal.
+test_age_list_preview_drops_control_bytes() {
+    local dir="$CS_SESSIONS_ROOT/test-session/.cs/age-recipients" out
+    mkdir -p "$dir"
+    printf '\033[31mage1\007abcdefghijklmnopqrstuvwxyz\n' > "$dir/peer.pub"
+    out=$("$CS_SECRETS_BIN" age list 2>&1) || return 1
+    assert_eq "Recipients for session: test-session
+  - peer: [31mage1abcdefghij..." "$out" "age list shows the preview without its control bytes" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal" || return 1
+}
+
 test_export_encrypts_to_a_recipient_pinned_by_age_add() {
     _use_real_age || return $?
     local meta="$CS_SESSIONS_ROOT/test-session/.cs"
@@ -4678,6 +4691,7 @@ run_test test_age_add_reencrypts_an_unchanged_store
 run_test test_age_remove_reencrypts_an_unchanged_store
 run_test test_export_refuses_an_unpinned_pushed_recipient
 run_test test_recipient_names_a_clone_chose_print_as_plain_names
+run_test test_age_list_preview_drops_control_bytes
 run_test test_export_encrypts_to_a_recipient_pinned_by_age_add
 run_test test_export_never_pins_from_a_forged_sync_file
 run_test test_export_ignores_a_pin_list_planted_in_the_checkout
