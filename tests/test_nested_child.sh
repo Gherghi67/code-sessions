@@ -516,6 +516,90 @@ test_a_claim_that_is_a_link_or_a_directory_names_no_lead() {
     assert_eq "" "$dir_err" "no hook says a word about a directory in place of the claim" || return 1
 }
 
+# A claim speaks only for the launch that wrote it, and only under a launch
+# that takes claims. One keyed by another launch pid (a forced second open
+# wrote it, or this launch drew a pid an earlier one had) names no lead here,
+# though it names this claude; and under a launch that takes no claim, a claim
+# file is not read at all. Either way the claude it names is no lead: its end
+# leaves the lead's lock and the claim.
+test_a_claim_for_another_launch_or_none_names_no_lead() {
+    _nested_setup
+    local meta="$CLAUDE_SESSION_META_DIR" launch direct wrapper grand
+    _launch_tree || return 1
+    read -r launch direct wrapper grand < "$TEST_TMPDIR/tree"
+    _end_of() {  # claude_pid
+        printf '{"session_id":"77777777-7777-4777-8777-777777777777","reason":"other"}\n' \
+            | CS_RESOLVED_FROM=env CS_LEAD_PID="$launch" CLAUDE_PID="$1" bash "$HOOKS_DIR/session-end.sh" >/dev/null 2>&1
+    }
+    echo "$launch" > "$meta/session.lock"
+    printf '%s %s 77777777-7777-4777-8777-777777777777\n' "$$" "$grand" > "$meta/local/lead-pid"
+    _end_of "$grand"
+    local foreign_lock foreign_claim
+    foreign_lock=$(cat "$meta/session.lock" 2>/dev/null || echo none)
+    foreign_claim=$(cat "$meta/local/lead-pid" 2>/dev/null || echo none)
+    printf '%s %s 77777777-7777-4777-8777-777777777777\n' "$launch" "$grand" > "$meta/local/lead-pid"
+    CS_LEAD_CLAIM= _end_of "$grand"
+    local unmarked_lock unmarked_claim
+    unmarked_lock=$(cat "$meta/session.lock" 2>/dev/null || echo none)
+    unmarked_claim=$(cat "$meta/local/lead-pid" 2>/dev/null || echo none)
+    _kill_launch_tree
+
+    assert_eq "$launch" "$foreign_lock" "a claim keyed by another launch makes no lead: the lock stays" || return 1
+    assert_eq "$$ $grand 77777777-7777-4777-8777-777777777777" "$foreign_claim" \
+        "a claim keyed by another launch is left as it was" || return 1
+    assert_eq "$launch" "$unmarked_lock" "under a launch that takes no claim the claim makes no lead: the lock stays" || return 1
+    assert_eq "$launch $grand 77777777-7777-4777-8777-777777777777" "$unmarked_claim" \
+        "under a launch that takes no claim the claim is left as it was" || return 1
+}
+
+# An ending claude removes only a claim that names it. The claude carrying the
+# launch pid is the lead whatever the claim says; when its end comes while the
+# claim names another live claude of the launch, it removes its lock and
+# leaves that claim to the claude it names.
+test_the_lead_end_leaves_a_claim_naming_another_claude() {
+    _nested_setup
+    local meta="$CLAUDE_SESSION_META_DIR" launch direct wrapper grand lock claim
+    _launch_tree || return 1
+    read -r launch direct wrapper grand < "$TEST_TMPDIR/tree"
+    echo "$launch" > "$meta/session.lock"
+    printf '%s %s 77777777-7777-4777-8777-777777777777\n' "$launch" "$direct" > "$meta/local/lead-pid"
+    printf '{"session_id":"66666666-6666-4666-8666-666666666666","reason":"other"}\n' \
+        | CS_RESOLVED_FROM=env CS_LEAD_PID="$launch" CLAUDE_PID="$launch" bash "$HOOKS_DIR/session-end.sh" >/dev/null 2>&1
+    lock=$(cat "$meta/session.lock" 2>/dev/null || echo none)
+    claim=$(cat "$meta/local/lead-pid" 2>/dev/null || echo none)
+    _kill_launch_tree
+
+    assert_eq "none" "$lock" "the lead's end removes its launch's lock" || return 1
+    assert_eq "$launch $direct 77777777-7777-4777-8777-777777777777" "$claim" \
+        "the lead's end leaves the claim naming another claude" || return 1
+}
+
+# A claim whose claude died without its SessionEnd shows no one to be a guest:
+# a claude under the launch that has not claimed (a Stop never claims) still
+# raises the attention flag, as it would with no claim at all. A claim naming
+# a live claude is the positive control: there the same Stop is a guest's.
+test_a_claim_whose_claude_died_shows_no_one_a_guest() {
+    _nested_setup
+    local meta="$CLAUDE_SESSION_META_DIR" launch direct wrapper grand dead dead_flag live_flag
+    bash -c 'exit 0' & dead=$!
+    wait "$dead"
+    _launch_tree || return 1
+    read -r launch direct wrapper grand < "$TEST_TMPDIR/tree"
+    printf '%s %s 77777777-7777-4777-8777-777777777777\n' "$launch" "$dead" > "$meta/local/lead-pid"
+    _stop_hook "$launch" "$grand" > /dev/null
+    dead_flag=absent
+    [ -e "$meta/local/attention" ] && dead_flag=raised
+    rm -f "$meta/local/attention"
+    printf '%s %s 77777777-7777-4777-8777-777777777777\n' "$launch" "$wrapper" > "$meta/local/lead-pid"
+    _stop_hook "$launch" "$grand" > /dev/null
+    live_flag=absent
+    [ -e "$meta/local/attention" ] && live_flag=raised
+    _kill_launch_tree
+
+    assert_eq "raised" "$dead_flag" "a claim naming a dead claude leaves the attention flag to whoever stops" || return 1
+    assert_eq "absent" "$live_flag" "a claim naming a live claude makes this Stop a guest's" || return 1
+}
+
 # A session opened by a cs that predates the claim carries no CS_LEAD_CLAIM,
 # and stays open while the hooks are updated. Nothing under that launch
 # claims it, so the claude carrying the launch pid is its only lead. A
@@ -611,6 +695,9 @@ run_test test_the_lead_takes_the_claim_from_a_claude_it_started
 run_test test_the_lead_holds_the_claim_when_a_claude_it_started_claims_at_once
 run_test test_a_claim_naming_no_live_claude_leaves_the_launch_to_the_lead
 run_test test_a_claim_that_is_a_link_or_a_directory_names_no_lead
+run_test test_a_claim_for_another_launch_or_none_names_no_lead
+run_test test_the_lead_end_leaves_a_claim_naming_another_claude
+run_test test_a_claim_whose_claude_died_shows_no_one_a_guest
 run_test test_a_launch_that_takes_no_claim_has_only_the_launch_pid_for_its_lead
 run_test test_the_lead_keeps_its_rotation_when_its_prompt_names_the_teammate_flags
 run_test test_a_claude_whose_ancestry_cannot_be_read_is_not_taken_for_a_guest
