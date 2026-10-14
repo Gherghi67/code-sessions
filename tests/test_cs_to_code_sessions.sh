@@ -2080,6 +2080,31 @@ test_pasted_contents_of_the_prompt_history_come_along() {
     assert_file_exists "$PROFILE/.claude/paste-cache/aaaa1111bbbb2222.txt"
 }
 
+# A paste-cache that is not there is quiet (cs prunes it); one that is there
+# and cannot be read is a problem, or the files the history names would be
+# left behind without a word.
+test_an_unreadable_paste_cache_is_a_problem_not_silence() {
+    make_fixture
+    local status=0
+    mkdir -p "$CLAUDE/paste-cache"
+    printf 'pasted in wap\n' > "$CLAUDE/paste-cache/aaaa1111bbbb2222.txt"
+    printf '{"display":"[Pasted text #1]","pastedContents":{"1":{"id":1,"type":"text","contentHash":"aaaa1111bbbb2222"}},"timestamp":7,"project":"%s"}\n' \
+        "$(physical "$PROJECT")" >> "$CLAUDE/history.jsonl"
+    chmod 000 "$CLAUDE/paste-cache"
+    run_move --session wap || status=$?
+    chmod 755 "$CLAUDE/paste-cache"
+    assert_eq 1 "$status" "a paste-cache that cannot be read did not fail the run" || { echo "$OUT"; return 1; }
+    assert_output_contains "$OUT" '^  ! pasted contents: ~/\.claude/paste-cache cannot be read, .*Permission denied; make it readable, then rerun$' \
+        || { echo "$OUT"; return 1; }
+    assert_output_not_contains "$OUT" 'pasted contents: 1 file' || return 1
+    run_move --session wap --apply || { echo "$OUT"; return 1; }
+    assert_output_contains "$OUT" 'pasted contents: 1 file(s) of ~/.claude/paste-cache copied' || { echo "$OUT"; return 1; }
+    assert_file_exists "$PROFILE/.claude/paste-cache/aaaa1111bbbb2222.txt" || return 1
+    rm -rf "$CLAUDE/paste-cache" "$PROFILE/.claude/paste-cache"
+    run_move --session wap --apply || { echo "$OUT"; return 1; }
+    assert_output_not_contains "$OUT" 'pasted contents'
+}
+
 # Each Python virtual environment whose text files the copy rewrites is named
 # once, with how many: in a dry run, when copying, and when a rerun brings a
 # file cs changed there. One that names no cs session's folder is not named.
@@ -2591,6 +2616,7 @@ run_test test_a_session_cs_named_codex_for_opens_claude_in_code_sessions
 run_test test_the_codex_thread_a_session_binds_comes_with_it
 run_test test_the_resume_line_names_the_conversation_after_the_run
 run_test test_pasted_contents_of_the_prompt_history_come_along
+run_test test_an_unreadable_paste_cache_is_a_problem_not_silence
 run_test test_each_python_environment_the_copy_rewrites_is_named_once
 run_test test_a_linked_folder_in_a_python_environment_is_not_counted
 run_test test_a_rerun_adds_the_tags_cs_has_and_keeps_one_code_sessions_moved

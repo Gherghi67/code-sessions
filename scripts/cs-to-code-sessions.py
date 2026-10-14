@@ -827,8 +827,12 @@ class Importer:
         if self._paste_names is None:
             try:
                 self._paste_names = sorted(os.listdir(src))
-            except OSError:
+            except (FileNotFoundError, NotADirectoryError):
                 self._paste_names = []
+            except OSError as error:
+                self._paste_names = []
+                self.problem("pasted contents: %s cannot be read, so the files its history names were not copied: %s; "
+                             "make it readable, then rerun" % (tilde(src), error.strerror or error))
         names = [n for n in self._paste_names if os.path.splitext(n)[0] in wanted]
         tally = merge_files(src, os.path.join(self.ccs_claude, "paste-cache"), names, self.apply, TMP_SUFFIX,
                             new_only=True)

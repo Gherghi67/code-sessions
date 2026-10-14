@@ -190,7 +190,9 @@ It and `scripts/code-sessions-to-cs.py` need git 2.31 or later.
   workflows, tool results. Their `file-history`, `session-env` and task list
   come too, and the session's lines of `history.jsonl` (the prompt history),
   pointed at the copy, with the files of `~/.claude/paste-cache` those lines
-  name by `contentHash` (new files only, counted in the output).
+  name by `contentHash` (new files only, counted in the output). A
+  `paste-cache` that is there but cannot be read is a problem; a rerun brings
+  the files once it can be read.
 - Each Codex thread a session binds (`.cs/local/codex-thread-id`) comes too:
   its rollout from `~/.codex/sessions` into the profile's Codex home at the
   same place under `sessions/`, which is all Codex needs to resume the thread
