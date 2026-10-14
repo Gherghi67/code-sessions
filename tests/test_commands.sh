@@ -278,7 +278,7 @@ test_switch_reads_its_arguments_from_the_message() {
 test_switch_says_the_new_conversation_starts_itself() {
     assert_file_contains "$SKILLS_DIR/switch/SKILL.md" 'to type, not even `go`' \
         "switch must say nothing needs typing after the relaunch" || return 1
-    grep -qF 'resume "$thread_id" -C "$session_dir" ${kick:+"$kick"}' "$SCRIPT_DIR/../lib/76-codex.sh" \
+    grep -qF -- '--approve-for-me ${kick:+"$kick"}' "$SCRIPT_DIR/../lib/76-codex.sh" \
         || { echo "  FAIL: the Codex launch no longer passes the handoff kick as its starting prompt"; return 1; }
     grep -qF 'handoff_arg="Continue from the pending rotation handoff: read .cs/handoffs/$handoff first."' "$SCRIPT_DIR/../lib/42-claude-state.sh" \
         || { echo "  FAIL: the Claude fresh launch no longer passes the handoff as its launch prompt"; return 1; }

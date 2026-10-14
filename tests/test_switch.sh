@@ -117,7 +117,7 @@ STUB_PPID=$PPID "$CS_STUB_DIR/record" codex "$@"
 if [ -f "$CS_STUB_DIR/codex.fail-early" ]; then
     rc=$(cat "$CS_STUB_DIR/codex.fail-early"); rm -f "$CS_STUB_DIR/codex.fail-early"; exit "$rc"
 fi
-# cs runs: codex --no-daemon resume <thread> -C <dir> [prompt]
+# cs runs: codex --no-daemon resume <thread> -C <dir> --approve-for-me [prompt]
 export CS_STUB_THREAD="${3:-}"
 exit "$("$CS_STUB_DIR/plan" codex)"
 CODEX
@@ -462,6 +462,7 @@ resume
 $new
 -C
 $dir
+--approve-for-me
 Continue from the pending rotation handoff: read .cs/handoffs/$HANDOFF first." "$(_args codex 2)" "codex starts on the r path" || return 1
     _has "$dir/.cs/local/codex-instructions.md" "--- Conversation Rotation ---" "the rotation preamble is in the context" || return 1
     _has "$dir/.cs/handoffs/$HANDOFF" "consumed_by: $new" || return 1
@@ -536,6 +537,7 @@ resume
 $thread
 -C
 $dir
+--approve-for-me
 Continue from the pending rotation handoff: read .cs/handoffs/$HANDOFF first." "$(_args codex 1)" "codex starts on the r path" || return 1
     assert_eq 1 "$(_count "$dir/.cs/handoffs/$HANDOFF" 'consumed_by:')" "consumed once" || return 1
     _has "$dir/.cs/handoffs/$HANDOFF" "consumed_by: $thread" || return 1
@@ -674,6 +676,7 @@ resume
 $thread
 -C
 $dir
+--approve-for-me
 This conversation resumes after the session ran under claude. Read .cs/handoffs/$HANDOFF first: it carries the work done since you last ran here. Then continue from its next step." "$(_args codex 2)" "the handoff is the resume's first message" || return 1
     _has "$dir/.cs/handoffs/$HANDOFF" "consumed_by: $thread" "the resumed thread consumes it" || return 1
     assert_eq 1 "$(_count "$dir/.cs/handoffs/$HANDOFF" 'consumed_by:')" || return 1

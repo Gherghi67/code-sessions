@@ -108,6 +108,7 @@ test_new_thread_binding_and_context() {
     assert_eq "$CS_THREAD_ID" "$(sed -n '3p' "$CS_CODEX_LOG")" "CLI thread ID" || return 1
     assert_eq "-C" "$(sed -n '4p' "$CS_CODEX_LOG")" "CLI cwd switch" || return 1
     assert_eq "$CS_TEST_SESSION_DIR" "$(sed -n '5p' "$CS_CODEX_LOG")" "CLI cwd with spaces" || return 1
+    assert_eq "--approve-for-me" "$(sed -n '6p' "$CS_CODEX_LOG")" "new thread uses automatic approval review" || return 1
     assert_eq 6 "$(wc -l < "$CS_HELPER_ARGS" | tr -d ' ')" "helper takes three named arguments" || return 1
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/local/codex-instructions.md" 'This context does not request work' || return 1
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/local/codex-instructions.md" 'narrative.test-actor.md' || return 1
@@ -127,6 +128,7 @@ test_resume_refreshes_exact_thread() {
     assert_eq "--thread-id" "$(sed -n '7p' "$CS_HELPER_ARGS")" "refresh parameter" || return 1
     assert_eq "$CS_THREAD_ID" "$(sed -n '8p' "$CS_HELPER_ARGS")" "refresh exact ID" || return 1
     assert_eq "$CS_THREAD_ID" "$(cat "$binding")" "binding retained" || return 1
+    assert_eq "--approve-for-me" "$(sed -n '6p' "$CS_CODEX_LOG")" "resumed thread uses automatic approval review" || return 1
     assert_not_exists "$CS_TEST_SESSION_DIR/.cs/session.lock" || return 1
 }
 
@@ -231,8 +233,8 @@ test_finish_starts_the_thread_on_the_finish_skill() {
     assert_eq 0 "$status" "launch failed: $output" || return 1
     assert_eq "resume" "$(sed -n '2p' "$CS_CODEX_LOG")" "CLI resumes exact thread" || return 1
     assert_eq "$CS_TEST_SESSION_DIR" "$(sed -n '5p' "$CS_CODEX_LOG")" "CLI cwd" || return 1
-    assert_eq '$finish feature' "$(sed -n '6p' "$CS_CODEX_LOG")" "the first prompt names the skill" || return 1
-    assert_eq 6 "$(wc -l < "$CS_CODEX_LOG" | tr -d ' ')" "nothing after the prompt" || return 1
+    assert_eq '$finish feature' "$(sed -n '7p' "$CS_CODEX_LOG")" "the first prompt names the skill" || return 1
+    assert_eq 7 "$(wc -l < "$CS_CODEX_LOG" | tr -d ' ')" "nothing after the prompt" || return 1
 }
 
 test_live_lock_blocks_launch() {
@@ -394,7 +396,7 @@ test_r_starts_a_thread_from_the_rotation_handoff() {
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/local/codex-instructions.md" "Read .cs/handoffs/$ROTATION_HANDOFF FIRST" \
         "the new thread's context names the handoff" || return 1
     assert_eq "Continue from the pending rotation handoff: read .cs/handoffs/$ROTATION_HANDOFF first." \
-        "$(sed -n '6p' "$CS_CODEX_LOG")" "codex resume gets the kick as its starting prompt" || return 1
+        "$(sed -n '7p' "$CS_CODEX_LOG")" "codex resume gets the kick as its starting prompt" || return 1
     assert_file_contains "$h" "^status: consumed$" || return 1
     assert_file_contains "$h" "^consumed_by: $CS_THREAD_ID$" || return 1
     assert_not_exists "$CS_TEST_SESSION_DIR/.cs/local/pending-handoff" || return 1
@@ -415,7 +417,7 @@ test_n_starts_fresh_and_leaves_the_handoff_pending() {
     assert_not_exists "$CS_TEST_SESSION_DIR/.cs/local/pending-handoff" "n disarms" || return 1
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/handoffs/$ROTATION_HANDOFF" "^status: unconsumed$" || return 1
     assert_file_not_contains "$CS_TEST_SESSION_DIR/.cs/local/codex-instructions.md" "Conversation Rotation" || return 1
-    assert_eq 5 "$(wc -l < "$CS_CODEX_LOG" | tr -d ' ')" "no kick" || return 1
+    assert_eq 6 "$(wc -l < "$CS_CODEX_LOG" | tr -d ' ')" "no kick" || return 1
 }
 
 test_d_discards_the_handoff_then_resumes() {
@@ -427,7 +429,7 @@ test_d_discards_the_handoff_then_resumes() {
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/handoffs/$ROTATION_HANDOFF" "^status: discarded$" || return 1
     assert_not_exists "$CS_TEST_SESSION_DIR/.cs/local/pending-handoff" || return 1
     assert_eq "$ROTATION_OLD_THREAD" "$(sed -n '3p' "$CS_CODEX_LOG")" "resumes the bound thread" || return 1
-    assert_eq 5 "$(wc -l < "$CS_CODEX_LOG" | tr -d ' ')" "no kick" || return 1
+    assert_eq 6 "$(wc -l < "$CS_CODEX_LOG" | tr -d ' ')" "no kick" || return 1
 }
 
 # Claude's fresh launch consumes an armed marker at SessionStart; an explicit
@@ -438,7 +440,7 @@ test_explicit_fresh_continues_an_armed_rotation() {
     output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false "" fresh 2>&1) || status=$?
     assert_eq 0 "$status" "fresh launch failed: $output" || return 1
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/handoffs/$ROTATION_HANDOFF" "^consumed_by: $CS_THREAD_ID$" || return 1
-    assert_output_contains "$(sed -n '6p' "$CS_CODEX_LOG")" "$ROTATION_HANDOFF" "kicked from the handoff" || return 1
+    assert_output_contains "$(sed -n '7p' "$CS_CODEX_LOG")" "$ROTATION_HANDOFF" "kicked from the handoff" || return 1
 }
 
 test_failed_direct_rotation_launches_restore_the_handoff_for_retry() {
@@ -555,7 +557,7 @@ test_resume_disarms_an_armed_rotation() {
     assert_eq 0 "$status" "resume failed: $output" || return 1
     assert_not_exists "$CS_TEST_SESSION_DIR/.cs/local/pending-handoff" || return 1
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/handoffs/$ROTATION_HANDOFF" "^status: unconsumed$" || return 1
-    assert_eq 5 "$(wc -l < "$CS_CODEX_LOG" | tr -d ' ')" "no kick" || return 1
+    assert_eq 6 "$(wc -l < "$CS_CODEX_LOG" | tr -d ' ')" "no kick" || return 1
 }
 
 echo 'Codex launch tests'

@@ -436,7 +436,8 @@ _launch_codex_bound() {
     # A dedicated native writer lives for this supervised CLI lifetime.
     # Signals and lock cleanup belong to the shared controller.
     local status=0
-    cs_run_child "$codex_bin" --no-daemon resume "$thread_id" -C "$session_dir" ${kick:+"$kick"} || status=$?
+    cs_run_child "$codex_bin" --no-daemon resume "$thread_id" -C "$session_dir" \
+        --approve-for-me ${kick:+"$kick"} || status=$?
     if [ "$status" -ne 0 ] && [ -n "$spent" ]; then
         # A switch relaunch's settle reads it too (lib/78-switch.sh).
         _cs_switch_ran=""
