@@ -177,9 +177,10 @@ _cs_find_session_root() {  # start_dir
 # such a launch exports CS_LEAD_CLAIM=1. A session a cs from before the claim
 # opened carries no marker and, open across an update of the hooks, no claim
 # either, so the first `claude -p` its lead ran would claim it. Without the
-# marker nothing is claimed or read, and the claude carrying the launch pid is
-# the only lead. Every claude under the launch inherits the marker: it says
-# the launch takes claims, never which claude is the lead.
+# marker nothing is claimed or read, the claude carrying the launch pid is
+# the only lead, and every other claude under the launch is shown a guest
+# (cs_is_shown_nested_child). Every claude under the launch inherits the
+# marker: it says the launch takes claims, never which claude is the lead.
 
 # The claim for this launch: sets _CS_CLAIM_PID and returns 0, or returns 1
 # when there is none. Only a regular file is read: a link is never followed
@@ -294,15 +295,20 @@ cs_is_nested_child() {
 
 # True when a live claude other than this one holds the claim: the claude is
 # shown to be a guest, where cs_is_nested_child only fails to show it is the
-# lead. The two differ where no claim stands (the lead's SessionStart could not
-# write one, ps could not show it was under the launch, or the launch takes no
-# claim, so no claude under it is shown a guest), and each caller
-# takes the side that loses nothing. What a guest must not take from the lead
-# (the armed rotation, the once-only digest, the attention flag) asks this
-# one, so a lead with no claim keeps them. What a guest must not remove (the
-# lock) asks cs_is_nested_child, so the same doubt leaves a live holder's lock.
+# lead. The two differ where no claim stands under a launch that takes claims
+# (the lead's SessionStart could not write one, or ps could not show it was
+# under the launch), and each caller takes the side that loses nothing. What a
+# guest must not take from the lead (the armed rotation, the once-only digest,
+# the attention flag) asks this one, so a lead with no claim keeps them. What
+# a guest must not remove (the lock) asks cs_is_nested_child, so the same
+# doubt leaves a live holder's lock. Under a launch that takes no claim, no
+# claim can show anything, and every claude there that is not the lead by pid
+# is shown a guest: on the exec arm that is every `claude -p` the lead runs,
+# and on the resume arm or behind a wrapper that forks claude it is the lead
+# too, whose armed rotation then waits for the next open.
 cs_is_shown_nested_child() {
     cs_is_nested_child || return 1
+    [ "${CS_LEAD_CLAIM:-}" = 1 ] || return 0
     _cs_lead_claim_read && kill -0 "$_CS_CLAIM_PID" 2>/dev/null
 }
 
