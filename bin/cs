@@ -12334,9 +12334,15 @@ launch_claude_code() {
     # pid, which this one may have drawn again, so it goes before claude starts.
     # After the lock: a launch that met a live session and stopped at the
     # collision menu never gets here, so it leaves the live lead's claim.
+    # A link there is removed, not followed. A directory may hold what
+    # someone put there, so it is not removed: the open stops and names it.
     # CS_LEAD_CLAIM tells the hooks this launch clears the file and takes the
     # claim; under a launch without it they know the lead by the pid alone.
-    rm -f "$session_dir/.cs/local/lead-pid"
+    local claim_file="$session_dir/.cs/local/lead-pid"
+    if [ -d "$claim_file" ] && [ ! -L "$claim_file" ]; then
+        error "$claim_file is a directory, where cs keeps the lead's claim on its launch; remove it and open the session again"
+    fi
+    rm -f "$claim_file"
     export CS_LEAD_CLAIM=1
 
     # Where this cs is, for the mods: `$.process.run` takes no shell and the

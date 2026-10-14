@@ -182,16 +182,21 @@ _cs_find_session_root() {  # start_dir
 # the launch takes claims, never which claude is the lead.
 
 # The claim for this launch: sets _CS_CLAIM_PID and returns 0, or returns 1
-# when there is none. A pid that is not a plain number is no claim: kill -0
-# reads -1 as every process the user owns.
+# when there is none. Only a regular file is read: a link is never followed
+# (it could name a file outside the session), and a fifo would hang the read.
+# A pid that is not a positive number written plainly is no claim: kill -0
+# reads 0 as the caller's own process group and -1 as every process the user
+# owns, so either would pass for a live holder.
 _cs_lead_claim_read() {
-    local launch="" pid=""
+    local launch="" pid="" file
     _CS_CLAIM_PID=""
     [ "${CS_LEAD_CLAIM:-}" = 1 ] || return 1
     [ -n "${CLAUDE_SESSION_META_DIR:-}" ] && [ -n "${CS_LEAD_PID:-}" ] || return 1
-    { read -r launch pid _ < "$CLAUDE_SESSION_META_DIR/local/lead-pid"; } 2>/dev/null || return 1
+    file="$CLAUDE_SESSION_META_DIR/local/lead-pid"
+    [ ! -L "$file" ] && [ -f "$file" ] || return 1
+    { read -r launch pid _ < "$file"; } 2>/dev/null || return 1
     [ "$launch" = "$CS_LEAD_PID" ] || return 1
-    case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+    case "$pid" in ''|0*|*[!0-9]*) return 1 ;; esac
     _CS_CLAIM_PID="$pid"
 }
 
@@ -233,8 +238,12 @@ cs_lead_claim() {  # local_dir session_id
 }
 
 # cs_lead_claim's step under the lock: gives way to a live holder that is not
-# this claude's descendant, else writes the claim.
+# this claude's descendant, else writes the claim. A link or anything but a
+# regular file in the claim's place is left alone without a word: the claim
+# is not written through it, and the next launch removes a link and refuses a
+# directory by name (lib/75-launch.sh).
 _cs_lead_claim_write() {  # local_dir session_id
+    [ ! -L "$1/lead-pid" ] && { [ -f "$1/lead-pid" ] || [ ! -e "$1/lead-pid" ]; } || return 1
     if [ "$CLAUDE_PID" != "$CS_LEAD_PID" ] && _cs_lead_claim_read \
         && [ "$_CS_CLAIM_PID" != "$CLAUDE_PID" ] && kill -0 "$_CS_CLAIM_PID" 2>/dev/null; then
         _cs_pid_descends_from "$_CS_CLAIM_PID" "$CLAUDE_PID" || return 1
