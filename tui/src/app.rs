@@ -4219,6 +4219,42 @@ mod tests {
         std::fs::remove_dir_all(&tmp).ok();
     }
 
+    // A session that opens while the rename modal is up is refused too, as
+    // delete refuses it: the picker holds its rescans while a modal is open,
+    // so the row still reads dormant and only the lock file says otherwise.
+    #[cfg(unix)]
+    #[test]
+    fn rename_refuses_a_session_that_went_live_after_the_scan() {
+        use crate::session::test_root;
+        let _env = CS_BIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (tmp, root, home) = rename_fixture("live-later", false);
+        let _guard = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        std::env::set_var("CS_BIN", tmp.join("cs-stub"));
+        let mut app = app_on(&root, "proj");
+        app.handle_key(KeyEvent::from(KeyCode::Char('r')));
+        let pid = std::process::id();
+        std::fs::write(root.join("proj/.cs/session.lock"), format!("{pid}\n")).unwrap();
+        app.rename_input.set("calm");
+
+        app.handle_key(KeyEvent::from(KeyCode::Enter));
+        std::env::remove_var("CS_BIN");
+
+        assert_eq!(
+            app.status_message.as_ref().map(|m| (m.text.clone(), m.level)),
+            Some((format!("proj is live (pid {pid}) — close it first"), StatusLevel::Error))
+        );
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(
+            std::fs::read_to_string(root.join("proj/.cs/session.lock")).unwrap_or_default(),
+            format!("{pid}\n"),
+            "the session and its lock stay where its claude has them"
+        );
+        assert!(!root.join("calm").exists(), "nothing is moved to the new name");
+        assert!(!tmp.join("argv").exists(), "cs-secrets is never asked to move anything");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
     // A rename to a name cs refuses, one with a leading dot or hyphen, is
     // refused by the rule's name: a session renamed to `.work` drops out of
     // every listing, and one named `-rm` reads as a cs verb.
