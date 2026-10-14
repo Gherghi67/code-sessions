@@ -7415,8 +7415,9 @@ migrate_narrative_resume_wording() {  # session_dir, [actor_slug]
     fi
 }
 
-# Phases 5, 6 and 12: the cs-managed text in CLAUDE.md, CLAUDE.local.md and
-# .cs/README.md. Each phase is a no-op once its file is current.
+# Phases 5, 6, 12 and Phase 16 on CLAUDE.md: the cs-managed text in
+# CLAUDE.md, CLAUDE.local.md and .cs/README.md. Each phase is a no-op once its
+# file is current.
 _migrate_session_documents() {  # session_dir, tracked_tree_is_ours
     local session_dir="$1" tracked_tree_is_ours="$2"
 
@@ -7439,6 +7440,17 @@ _migrate_session_documents() {  # session_dir, tracked_tree_is_ours
     if ! { [ -f "$claude_local" ] && grep -q '<!-- cs:' "$claude_local"; } \
         && ! { [ -f "$claude_md" ] && grep -q '\.cs/' "$claude_md"; }; then
         ensure_session_claude_md "$session_dir"
+    fi
+
+    # Phase 16 on CLAUDE.md: a session cs wrote before v2026.5.5 keeps the
+    # /summary heading, protocol line and bullet cs wrote there (the whole
+    # protocol, when it predates sentinels; the head above them, when the
+    # first one is cs:memory-rules), and /summary is no longer a command.
+    # The exact lines cs wrote get their /wrap wording, as in CLAUDE.local.md
+    # (_ensure_claude_local_sections). It runs after the .cs/ test above,
+    # which the /wrap sentence's ".cs/summary.md" would otherwise change.
+    if [ "$tracked_tree_is_ours" = 1 ]; then
+        _wrap_only_migrate "$claude_md"
     fi
 
     # Phase 6: Add YAML frontmatter to README.md if missing
@@ -7606,16 +7618,22 @@ To opt out, delete the prose above but keep the `cs:wrap-cues` HTML comment as a
 EOF
 }
 
-# Phase 16's rewrite of CLAUDE.local.md $2. With "check" it exits 0 when the
-# file holds something to rewrite and 1 when not; with "print" it prints the
-# rewritten file. Only text cs wrote is replaced: a cue block equal, line for
-# line, to one of the two four-option blocks above; in a line opening
-# "When the session is complete, use the `/wrap` command" the exact sentence
-# offering /summary and /sweep alone; and a line equal to one cs wrote from
-# 2025-11-24 to 2026-06-11 that points at /summary or heads it: either
-# protocol line becomes the /wrap sentence, the Best Practices bullet becomes
-# the /wrap bullet cs wrote after it, and "## Summary Command" becomes
-# "## Wrap-up Command". A block or line the user edited does not match and is
+# Phase 16's rewrite of file $2. With "check" it prints "cue" when the file
+# holds a cue block to rewrite and "line" when it holds a protocol line to
+# rewrite, one word per line, and nothing when neither; with "print" it prints
+# the rewritten file. Only text cs wrote is replaced, whole lines compared byte
+# for byte:
+#   - a cue block equal, line for line, to one of the two four-option blocks
+#     above becomes the block _emit_wrap_cues_block writes;
+#   - each /wrap line cs wrote from 2026-06-12 loses the sentence offering
+#     /summary and /sweep alone;
+#   - either protocol line cs wrote from 2025-11-24 to 2026-06-11 pointing at
+#     /summary becomes the /wrap sentence, and the Best Practices bullet of
+#     those years becomes the /wrap bullet cs wrote after it;
+#   - "## Summary Command" becomes "## Wrap-up Command" where the next line
+#     that is not empty or white space is one of those /summary protocol lines,
+#     as cs wrote it.
+# A block or line the user edited, or a CRLF copy, does not match and is
 # printed as it was.
 _wrap_only_rewrite() {  # check|print, file
     OLD_TRIGGERS="$(_emit_four_option_cue_with_triggers)" \
@@ -7628,20 +7646,34 @@ _wrap_only_rewrite() {  # check|print, file
             for (k = 1; k <= n; k++) if (line[i + k - 1] != old[k]) return 0
             return 1
         }
+        # Whether the first line after line i that is not empty or white
+        # space is a /summary protocol line cs wrote.
+        function summary_line_follows(i,    j) {
+            for (j = i + 1; j <= NR; j++) {
+                if (line[j] ~ /^[ \t]*$/) continue
+                return line[j] in summary_line
+            }
+            return 0
+        }
         BEGIN {
             nt = split(ENVIRON["OLD_TRIGGERS"], trig, "\n")
             ns = split(ENVIRON["OLD_SIGNALS"], sig, "\n")
-            wrap_line = "When the session is complete, use the `/wrap` command"
-            sentence = " Use `/summary` for the narrative alone, or `/sweep` for the memory pass alone."
-            wrap_sentence = wrap_line " to distill durable memory entries and generate an intelligent summary of the entire session (.cs/summary.md)."
-            reworded["When the session is complete, use the `/summary` command to generate an intelligent summary of the entire session. This will create a .cs/summary.md file synthesizing all documentation."] = wrap_sentence
-            reworded["When the session is complete, use the `/summary` command to generate an intelligent summary of the entire session. This will create a summary.md file synthesizing all documentation."] = wrap_sentence
+            wrap_sentence = "When the session is complete, use the `/wrap` command to distill durable memory entries and generate an intelligent summary of the entire session (.cs/summary.md)."
+            offers = " Use `/summary` for the narrative alone, or `/sweep` for the memory pass alone."
+            checkpoint_moments = " Mid-session, use `/checkpoint <label>` to snapshot git state and the narrative at meaningful moments (saved under .cs/checkpoints/)."
+            checkpoint_milestones = " Mid-session, use `/checkpoint <label>` to snapshot git state and the narrative — e.g. before a risky refactor or destructive operation, and after reaching a green milestone (tests passing, a feature working) — saved under .cs/checkpoints/."
+            reworded[wrap_sentence offers] = wrap_sentence
+            reworded[wrap_sentence offers checkpoint_moments] = wrap_sentence checkpoint_moments
+            reworded[wrap_sentence offers checkpoint_milestones] = wrap_sentence checkpoint_milestones
+            summary_line["When the session is complete, use the `/summary` command to generate an intelligent summary of the entire session. This will create a .cs/summary.md file synthesizing all documentation."] = 1
+            summary_line["When the session is complete, use the `/summary` command to generate an intelligent summary of the entire session. This will create a summary.md file synthesizing all documentation."] = 1
+            for (s in summary_line) reworded[s] = wrap_sentence
             reworded["- Run `/summary` at the end to create a cohesive record"] = "- Run `/wrap` at the end to distill memory and create a cohesive record"
-            reworded["## Summary Command"] = "## Wrap-up Command"
         }
         { line[NR] = $0 }
         END {
-            changed = 0
+            cue = 0
+            reworded_lines = 0
             i = 1
             while (i <= NR) {
                 if (line[i] == "<!-- cs:wrap-cues -->") {
@@ -7649,7 +7681,7 @@ _wrap_only_rewrite() {  # check|print, file
                     if (block_at(i, trig, nt)) n = nt
                     else if (block_at(i, sig, ns)) n = ns
                     if (n) {
-                        changed = 1
+                        cue = 1
                         if (ENVIRON["MODE"] == "print") print ENVIRON["NEW_BLOCK"]
                         i += n
                         continue
@@ -7658,18 +7690,36 @@ _wrap_only_rewrite() {  # check|print, file
                 out = line[i]
                 if (out in reworded) {
                     out = reworded[out]
-                    changed = 1
-                }
-                if (index(out, wrap_line) == 1 && (p = index(out, sentence)) > 0) {
-                    out = substr(out, 1, p - 1) substr(out, p + length(sentence))
-                    changed = 1
+                    reworded_lines = 1
+                } else if (out == "## Summary Command" && summary_line_follows(i)) {
+                    out = "## Wrap-up Command"
+                    reworded_lines = 1
                 }
                 if (ENVIRON["MODE"] == "print") print out
                 i++
             }
-            if (ENVIRON["MODE"] == "check") exit changed ? 0 : 1
+            if (ENVIRON["MODE"] == "check") {
+                if (cue) print "cue"
+                if (reworded_lines) print "line"
+            }
         }
     ' "$2"
+}
+
+# Phase 16 on file $1, a CLAUDE.local.md or a CLAUDE.md cs may write: rewrite
+# what _wrap_only_rewrite matches and name what changed.
+_wrap_only_migrate() {  # file
+    local f="$1" changes
+    [ -f "$f" ] || return 0
+    changes=$(_wrap_only_rewrite check "$f") || error "could not read $f"
+    [ -n "$changes" ] || return 0
+    cs_write_atomic "$f" _wrap_only_rewrite print "$f" || error "could not rewrite $f"
+    case "$changes" in
+        *cue*) warn "Dropped the /sweep and /summary offers cs wrote into ${f##*/}; it offers /wrap alone" ;;
+    esac
+    case "$changes" in
+        *line*) warn "Pointed the session protocol cs wrote into ${f##*/} at /wrap" ;;
+    esac
 }
 
 # Phases 9, 10, 14, 15 and 16: the cs sections of CLAUDE.local.md.
@@ -7699,9 +7749,10 @@ _ensure_claude_local_sections() {  # session_dir
     # migrated sessions; legacy sessions skip these phases.
     # Phases 9 and 10 manage sections in CLAUDE.local.md ONLY. Sessions
     # still on a legacy CLAUDE.md (pre-sentinel era, or a user file that
-    # merely mentions .cs/) are left entirely alone — cs never writes to
-    # CLAUDE.md again. Both phases' existing [ -f ] guards make them
-    # no-ops when the local file is absent.
+    # merely mentions .cs/) get no cs section there; the one write cs makes
+    # to such a CLAUDE.md is Phase 16's rewrite of the exact /summary lines
+    # it wrote (_migrate_session_documents). Both phases' existing [ -f ]
+    # guards make them no-ops when the local file is absent.
     local claude_md_p9="$session_dir/CLAUDE.local.md"
     if [ -f "$claude_md_p9" ]; then
         if grep -q '<!-- cs:memory-note -->' "$claude_md_p9"; then
@@ -7744,15 +7795,11 @@ _ensure_claude_local_sections() {  # session_dir
 
     # Phase 16: /wrap is the one command that runs the memory and summary
     # passes, so a four-option cue block cs wrote (either wording) becomes the
-    # block _emit_wrap_cues_block writes, the protocol's /wrap line loses
-    # the sentence offering /summary and /sweep on their own, and the protocol
+    # block _emit_wrap_cues_block writes, each /wrap line cs wrote loses the
+    # sentence offering /summary and /sweep on their own, and the protocol
     # line, Best Practices bullet and heading cs wrote for /summary take their
-    # /wrap wording.
-    if [ -f "$claude_md_p9" ] && _wrap_only_rewrite check "$claude_md_p9"; then
-        cs_write_atomic "$claude_md_p9" _wrap_only_rewrite print "$claude_md_p9" \
-            || error "could not rewrite $claude_md_p9"
-        warn "Dropped the /sweep and /summary offers cs wrote into CLAUDE.local.md; it offers /wrap alone"
-    fi
+    # /wrap wording. _migrate_session_documents does the same to CLAUDE.md.
+    _wrap_only_migrate "$claude_md_p9"
 
     # Phase 14: an encrypted session (.cs/private present; a locked one was
     # refused before migrate) gains the encrypted protocol. The sentinel is a
