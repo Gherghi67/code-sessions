@@ -4213,6 +4213,41 @@ mod tests {
         std::fs::remove_dir_all(&tmp).ok();
     }
 
+    // A rename to a name cs refuses, one with a leading dot or hyphen, is
+    // refused by the rule's name: a session renamed to `.work` drops out of
+    // every listing, and one named `-rm` reads as a cs verb.
+    #[cfg(unix)]
+    #[test]
+    fn rename_refuses_a_leading_dot_or_hyphen() {
+        use crate::session::test_root;
+        let _env = CS_BIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (tmp, root, home) = rename_fixture("lead", true);
+        let _guard = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        std::env::set_var("CS_BIN", tmp.join("cs-stub"));
+        for (name, refusal) in [
+            (".work", "Invalid name: a session name cannot start with a dot"),
+            ("-rm", "Invalid name: a session name cannot start with a hyphen"),
+        ] {
+            let mut app = app_on(&root, "proj");
+            app.handle_key(KeyEvent::from(KeyCode::Char('r')));
+            app.rename_input.set(name);
+
+            app.handle_key(KeyEvent::from(KeyCode::Enter));
+
+            assert_eq!(
+                app.status_message.as_ref().map(|m| (m.text.as_str(), m.level)),
+                Some((refusal, StatusLevel::Error)),
+                "{name}"
+            );
+            assert!(root.join("proj/.cs").is_dir(), "{name}: the session keeps its name");
+            assert!(!root.join(name).exists(), "{name}: nothing is moved to the refused name");
+        }
+        std::env::remove_var("CS_BIN");
+        assert!(!tmp.join("argv").exists(), "cs-secrets is never asked to move anything");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
     // A spawn file the undo cannot move back is named in the status: the
     // refused rename otherwise reads as undone whole while the seed sits
     // under the new name. Here a seed staged under the old name while the
@@ -4902,6 +4937,34 @@ mod tests {
         app.create_input.set("brand-new-session");
         let action = app.handle_key(KeyEvent::from(KeyCode::Enter));
         assert!(matches!(action, Action::Open(name) if name == "brand-new-session"));
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // cs refuses a name with a leading dot (its own staging dirs, .spawn and
+    // .usage, sit at the sessions root under dot names) or a leading hyphen
+    // (`cs -uninstall` runs a verb), so the picker creates neither, and says
+    // which rule the name breaks.
+    #[test]
+    fn create_session_refuses_a_leading_dot_or_hyphen() {
+        let tmp = std::env::temp_dir().join(format!("cs-tui-create-lead-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).ok();
+        let _root = session::test_root::scoped(tmp.clone());
+        for (name, refusal) in [
+            ("-uninstall", "Invalid name: a session name cannot start with a hyphen"),
+            (".spawn", "Invalid name: a session name cannot start with a dot"),
+        ] {
+            let mut app = App::new(sample_sessions());
+            app.mode = Mode::CreateSession;
+            app.create_input.set(name);
+            let action = app.handle_key(KeyEvent::from(KeyCode::Enter));
+            assert!(matches!(action, Action::None), "{name}: nothing is opened, got {action:?}");
+            assert_eq!(app.mode, Mode::Normal);
+            assert_eq!(
+                app.status_message.as_ref().map(|m| (m.text.as_str(), m.level)),
+                Some((refusal, StatusLevel::Error)),
+                "{name}"
+            );
+        }
         std::fs::remove_dir_all(&tmp).ok();
     }
 
