@@ -127,7 +127,7 @@ pub fn entry_lines_within(entries: &[Entry], shown: usize, columns: usize) -> Ve
 
 /// `text`, or when it takes more than `room` columns, its start and its end
 /// around a '…': as much of each as fits, the start getting the odd column.
-fn shortened(text: &str, room: usize) -> String {
+pub fn shortened(text: &str, room: usize) -> String {
     if text.width() <= room {
         return text.to_string();
     }

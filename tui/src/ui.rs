@@ -1107,13 +1107,10 @@ fn render_confirm_delete(app: &App, frame: &mut Frame) {
 
     let remaining = app.delete_countdown_remaining();
 
-    let action_msg = if session.is_adopted {
-        format!(
-            "Remove adopted session '{}'?\n(removes symlink only, project preserved)",
-            session.name
-        )
+    let (question, note) = if session.is_adopted {
+        (format!("Remove adopted session '{}'?", session.name), "(removes symlink only, project preserved)")
     } else {
-        format!("Delete session '{}'?\nThis cannot be undone.", session.name)
+        (format!("Delete session '{}'?", session.name), "This cannot be undone.")
     };
 
     let hint = if remaining > 0 {
@@ -1123,8 +1120,8 @@ fn render_confirm_delete(app: &App, frame: &mut Frame) {
     };
     let hint_color = if remaining > 0 { p.comment } else { p.fg };
 
-    let warnings =
-        warning_lines(&app.delete_warnings, frame.area().height, 7 + grant_rows(app), popup_columns(50, frame.area()), p.red);
+    let columns = popup_columns(50, frame.area());
+    let warnings = warning_lines(&app.delete_warnings, frame.area().height, 7 + grant_rows(app), columns, p.red);
     let popup_area = centered_rect(50, 7 + warnings.len() as u16 + grant_rows(app), frame.area());
     frame.render_widget(Clear, popup_area);
     let block = Block::default()
@@ -1133,11 +1130,11 @@ fn render_confirm_delete(app: &App, frame: &mut Frame) {
         .title(" Confirm Delete ")
         .title_style(Style::default().fg(p.red).add_modifier(Modifier::BOLD));
 
-    let mut lines = vec![Line::from(Span::styled(action_msg, Style::default().fg(p.fg)))];
+    let mut lines = vec![one_row(&question, columns, p.fg), one_row(note, columns, p.fg)];
     lines.extend(warnings);
-    push_grant_lines(&mut lines, app);
+    push_grant_lines(&mut lines, app, columns);
     lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(hint, Style::default().fg(hint_color))));
+    lines.push(one_row(&hint, columns, hint_color));
     let text = Paragraph::new(lines)
         .block(block)
         .wrap(Wrap { trim: false });
@@ -1165,8 +1162,8 @@ fn render_confirm_batch_delete(app: &App, frame: &mut Frame) {
     };
     let hint_color = if remaining > 0 { p.comment } else { p.fg };
 
-    let warnings =
-        warning_lines(&app.delete_warnings, frame.area().height, 7 + grant_rows(app), popup_columns(55, frame.area()), p.red);
+    let columns = popup_columns(55, frame.area());
+    let warnings = warning_lines(&app.delete_warnings, frame.area().height, 7 + grant_rows(app), columns, p.red);
     let popup_area = centered_rect(55, 7 + warnings.len() as u16 + grant_rows(app), frame.area());
     frame.render_widget(Clear, popup_area);
     let block = Block::default()
@@ -1175,18 +1172,12 @@ fn render_confirm_batch_delete(app: &App, frame: &mut Frame) {
         .title(format!(" Delete {} sessions ", count))
         .title_style(Style::default().fg(p.red).add_modifier(Modifier::BOLD));
 
-    let mut lines = vec![
-        Line::from(Span::styled(
-            format!("Delete {} sessions?", count),
-            Style::default().fg(p.fg),
-        )),
-        Line::from(Span::styled(list, Style::default().fg(p.comment))),
-    ];
+    let mut lines = vec![one_row(&format!("Delete {} sessions?", count), columns, p.fg), one_row(&list, columns, p.comment)];
     lines.extend(warnings);
-    push_grant_lines(&mut lines, app);
+    push_grant_lines(&mut lines, app, columns);
     lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled("This cannot be undone.", Style::default().fg(p.red))));
-    lines.push(Line::from(Span::styled(hint, Style::default().fg(hint_color))));
+    lines.push(one_row("This cannot be undone.", columns, p.red));
+    lines.push(one_row(&hint, columns, hint_color));
     let text = Paragraph::new(lines)
         .block(block)
         .wrap(Wrap { trim: false });
@@ -1214,24 +1205,31 @@ fn grant_rows(app: &App) -> u16 {
     if n == 0 { 0 } else { 1 + n }
 }
 
-fn push_grant_lines(lines: &mut Vec<Line<'static>>, app: &App) {
+fn push_grant_lines(lines: &mut Vec<Line<'static>>, app: &App, columns: u16) {
     let grants = grant_lines(app);
     if grants.is_empty() {
         return;
     }
     lines.push(Line::from(""));
     for text in grants {
-        lines.push(Line::from(Span::styled(text, Style::default().fg(app.theme.fg))));
+        lines.push(one_row(&text, columns, app.theme.fg));
     }
+}
+
+/// A delete popup line that takes one row of the popup's `columns`: text
+/// wider than that is shortened in the middle, as listing entries are, so
+/// the rows the popup counts are the rows it draws.
+fn one_row(text: &str, columns: u16, color: Color) -> Line<'static> {
+    Line::from(Span::styled(untracked::shortened(text, columns as usize), Style::default().fg(color)))
 }
 
 /// The delete warnings as confirm popup lines: a blank separator, then each
 /// warning, a listing of files git does not track one entry per row (as
 /// `cs -rm` prints it) under its own. A popup whose other lines take `other`
 /// rows of a `height`-row screen lists fewer than the usual twenty entries
-/// when they would not fit, so its key hint stays on screen. An entry is one
-/// row of the popup's `columns`: a path too wide for it is shortened in the
-/// middle.
+/// when they would not fit, so its key hint stays on screen. A warning and
+/// an entry are each one row of the popup's `columns`: one too wide for it
+/// is shortened in the middle.
 fn warning_lines(warnings: &[DeleteWarning], height: u16, other: u16, columns: u16, color: Color) -> Vec<Line<'static>> {
     if warnings.is_empty() {
         return Vec::new();
@@ -1240,7 +1238,7 @@ fn warning_lines(warnings: &[DeleteWarning], height: u16, other: u16, columns: u
     let mut rows_left = (height as usize).saturating_sub(other as usize + 1 + warnings.len());
     let mut lines = vec![Line::from("")];
     for warning in warnings {
-        lines.push(Line::from(Span::styled(warning.text.clone(), style)));
+        lines.push(one_row(&warning.text, columns, color));
         let entries = &warning.entries;
         let shown = if entries.len() <= rows_left.min(untracked::SHOWN_ENTRIES) {
             entries.len()
