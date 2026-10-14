@@ -494,6 +494,102 @@ test_each_actor_archives_into_its_own_directory() {
         "bob's snapshot holds his rows" || return 1
 }
 
+# The archive is written only inside the session. A link anywhere under
+# .cs/task-archive that leads out of it (a clone can commit one, and a pull can
+# bring one in while the session is open) refuses plan and run before anything
+# is written or moved: the archive itself, a day, the actor's directory, its
+# json/, its tasks.md, or a day this run does not write to.
+test_a_link_out_of_the_session_under_the_archive_refuses_the_run() {
+    local day out_dir out_p shape link target expect out rc
+    day=$(date +%Y-%m-%d)
+    out_dir="$TEST_TMPDIR/outside"
+    for shape in "task-archive" "task-archive/$day" "task-archive/$day/alice" \
+        "task-archive/$day/alice/json" "task-archive/$day/alice/tasks.md" "task-archive/2026-01-01"; do
+        rm -rf "$SESSION_DIR/.cs/task-archive" "$out_dir" "$STORE"
+        mkdir -p "$out_dir" "$STORE"
+        printf 'ORIGINAL\n' > "$out_dir/victim.rc"
+        _row 1 completed "One"
+        _row 2 pending "Two"
+        link="$SESSION_DIR/.cs/$shape"
+        mkdir -p "$(dirname "$link")"
+        out_p=$(cd -P "$out_dir" && pwd -P)
+        target="$out_dir" expect="$out_p"
+        case "$shape" in
+            *tasks.md) target="$out_dir/victim.rc" expect="$out_p/victim.rc" ;;
+        esac
+        ln -s "$target" "$link"
+        _agree || return 1
+        rc=0
+        out=$("$CS_BIN" -archive-tasks plan 2>&1) || rc=$?
+        assert_eq "1" "$rc" "plan fails with .cs/$shape linked out" || return 1
+        assert_eq "Error: .cs/$shape leads to $expect, outside the session; nothing archived" "$out" \
+            "plan names the link" || return 1
+        rc=0
+        out=$("$CS_BIN" -archive-tasks run 2>&1) || rc=$?
+        assert_eq "1" "$rc" "run fails with .cs/$shape linked out" || return 1
+        assert_eq "Error: .cs/$shape leads to $expect, outside the session; nothing archived" "$out" \
+            "run names the link" || return 1
+        assert_eq "1 2" "$(_live_ids)" "every row stays in the store" || return 1
+        assert_eq "victim.rc" "$(ls -A "$out_dir")" "nothing is written outside the session" || return 1
+        assert_eq "ORIGINAL" "$(cat "$out_dir/victim.rc")" "the link's target is untouched" || return 1
+    done
+}
+
+# A link that appears after that check (a pull landing mid-run) meets the
+# writes themselves: the archive's directories and the snapshot go through
+# cs's in-session writers. A stand-in date makes the link at the moment the
+# run reads the date, after the check; with nothing to make, the same
+# stand-in lets the run through.
+test_a_link_that_appears_mid_run_is_refused_at_the_write() {
+    local day out_dir out_p root_md link target out rc
+    day=$(date +%Y-%m-%d)
+    out_dir="$TEST_TMPDIR/outside"
+    mkdir -p "$TEST_TMPDIR/bin"
+    cat > "$TEST_TMPDIR/bin/date" <<'SH'
+#!/bin/sh
+if [ -n "${FAKE_DATE_LINK:-}" ] && [ ! -e "$FAKE_DATE_SENTINEL" ]; then
+    : > "$FAKE_DATE_SENTINEL"
+    mkdir -p "$(dirname "$FAKE_DATE_LINK")"
+    ln -s "$FAKE_DATE_TARGET" "$FAKE_DATE_LINK"
+fi
+exec /bin/date "$@"
+SH
+    chmod +x "$TEST_TMPDIR/bin/date"
+    for link in "$SESSION_DIR/.cs/task-archive/$day" "$SESSION_DIR/.cs/task-archive/$day/alice/tasks.md"; do
+        rm -rf "$SESSION_DIR/.cs/task-archive" "$out_dir" "$STORE" "$TEST_TMPDIR/date.done"
+        mkdir -p "$out_dir" "$STORE" "$SESSION_DIR/.cs/task-archive"
+        printf 'ORIGINAL\n' > "$out_dir/victim.rc"
+        out_p=$(cd -P "$out_dir" && pwd -P)
+        _row 1 completed "One"
+        _row 2 pending "Two"
+        _agree || return 1
+        target="$out_dir"
+        case "$link" in *tasks.md) target="$out_dir/victim.rc" ;; esac
+        rc=0
+        out=$(PATH="$TEST_TMPDIR/bin:$PATH" FAKE_DATE_LINK="$link" FAKE_DATE_TARGET="$target" \
+            FAKE_DATE_SENTINEL="$TEST_TMPDIR/date.done" "$CS_BIN" -archive-tasks run 2>&1) || rc=$?
+        assert_exists "$TEST_TMPDIR/date.done" "the stand-in date made the link" || return 1
+        assert_eq "1" "$rc" "the run fails" || return 1
+        case "$link" in
+            *tasks.md)
+                assert_eq "cs_append_inside: $link leads to $out_p/victim.rc, outside the session $SESSION_DIR
+Error: could not add the snapshot to .cs/task-archive/$day/alice/tasks.md; nothing archived" "$out" \
+                    "the snapshot's append refuses" || return 1 ;;
+            *)
+                assert_eq "cs_mkdir_inside: $link/alice/json leads to $out_p/alice/json, outside the session $SESSION_DIR
+Error: could not make .cs/task-archive/$day/alice/json; nothing archived" "$out" \
+                    "the directory's mkdir refuses" || return 1 ;;
+        esac
+        assert_eq "1 2" "$(_live_ids)" "every row stays in the store" || return 1
+        assert_eq "victim.rc" "$(ls -A "$out_dir")" "nothing is written outside the session" || return 1
+        assert_eq "ORIGINAL" "$(cat "$out_dir/victim.rc")" "the link's target is untouched" || return 1
+    done
+    rm -rf "$SESSION_DIR/.cs/task-archive" "$TEST_TMPDIR/date.done"
+    out=$(PATH="$TEST_TMPDIR/bin:$PATH" FAKE_DATE_SENTINEL="$TEST_TMPDIR/date.done" "$CS_BIN" -archive-tasks run 2>&1) \
+        || { echo "  FAIL: the stand-in date alone breaks the run: $out"; return 1; }
+    assert_eq "Archived 1 completed task row to .cs/task-archive/$day/alice" "$out" "with no link made, the run archives" || return 1
+}
+
 echo "Running test_task_archive.sh"
 echo ""
 
@@ -520,5 +616,7 @@ run_test test_tasks_md_is_a_readable_snapshot_of_the_whole_list
 run_test test_a_second_run_the_same_day_adds_to_the_archive
 run_test test_an_archived_row_is_never_overwritten
 run_test test_each_actor_archives_into_its_own_directory
+run_test test_a_link_out_of_the_session_under_the_archive_refuses_the_run
+run_test test_a_link_that_appears_mid_run_is_refused_at_the_write
 
 report_results
