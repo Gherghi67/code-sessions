@@ -177,6 +177,12 @@ main() {
             run_narrative "$@"
             return 0
             ;;
+        -archive-tasks) # hidden: driven by the rotate skill and /wrap, not typed by a user
+            shift
+            _vet_current_session
+            run_archive_tasks "$@"
+            return 0
+            ;;
         -queue)
             shift
             _vet_current_session
