@@ -410,8 +410,8 @@ _codex_hooks_unregister() {  # codex_dir
 # only this exact line. A change to the list must still recognise this one.
 CS_CODEX_STATUS_LINE='status_line = ["project-name", "git-branch", "model-with-reasoning", "task-progress", "context-used", "five-hour-limit", "weekly-limit"]'
 
-# config.toml read line by line the way a TOML parser places each line: a
-# header opens a table unless it sits inside a multi-line string or array.
+# A conservative line editor for config.toml. Headers inside multi-line
+# strings or arrays are skipped; the real parser below validates every edit.
 # The first pass finds [tui] and the status line; MODE then decides:
 #   state  print none (no status line), cs (cs's line), own (the user's), or
 #          by-hand (tui as an inline table or dotted keys, which a [tui]
@@ -426,16 +426,25 @@ CS_CODEX_STATUS_LINE='status_line = ["project-name", "git-branch", "model-with-r
 _codex_status_line_awk='
 function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
 # Count brackets outside strings and comments, and notice a multi-line string.
-function scan(s,    i, j, c, q) {
+function scan(s,    i, c, q) {
     q = ""
     for (i = 1; i <= length(s); i++) {
         c = substr(s, i, 1)
-        if (q == "" && (substr(s, i, 3) == "\"\"\"" || substr(s, i, 3) == "\047\047\047")) {
-            j = index(substr(s, i + 3), substr(s, i, 3))
-            if (j == 0) { ml = substr(s, i, 3); return }
-            i += j + 4; continue
+        if (ml != "") {
+            if (ml == "\"\"\"" && c == "\\") { i++; continue }
+            if (substr(s, i, 3) == ml) {
+                # TOML permits up to two quotes before the closing delimiter.
+                i += 2
+                if (substr(s, i + 1, 1) == c) i++
+                if (substr(s, i + 1, 1) == c) i++
+                ml = ""
+            }
+            continue
         }
         if (q != "") { if (c == "\\" && q == "\"") { i++; continue } if (c == q) q = ""; continue }
+        if (substr(s, i, 3) == "\"\"\"" || substr(s, i, 3) == "\047\047\047") {
+            ml = substr(s, i, 3); i += 2; continue
+        }
         if (c == "\"" || c == "\047") { q = c; continue }
         if (c == "#") return
         if (c == "[") depth++
@@ -445,7 +454,7 @@ function scan(s,    i, j, c, q) {
 FNR == 1 { pass++ }
 pass == 1 {
     lines = FNR
-    if (ml != "") { if (index($0, ml)) ml = ""; next }
+    if (ml != "") { scan($0); next }
     if (depth == 0 && $0 ~ /^[ \t]*\[/) {
         table = $0; sub(/^[ \t]*\[\[?/, "", table); sub(/\]\]?[ \t]*(#.*)?$/, "", table); table = trim(table)
         if (table == "tui" && !tui) tui = FNR
@@ -503,29 +512,45 @@ _codex_status_line_python() {
     return 1
 }
 
-# An edit must leave TOML that Codex reads with cs's list as [tui]
-# status_line (set) or none there (unset).
-_codex_status_line_check() {  # set|unset, file
+# Compare both parsed documents: only tui.status_line and an empty tui table
+# may change. A scanner mistake must never rewrite another config value.
+_codex_status_line_check() {  # set|unset, after, before
     local py
     py=$(_codex_status_line_python) || return 1
     "$py" -I -c '
 import sys, tomllib
-mode, path, line = sys.argv[1:]
+mode, after_path, before_path, line = sys.argv[1:]
 try:
-    with open(path, "rb") as f:
-        tui = tomllib.load(f).get("tui", {})
+    with open(before_path, "rb") as f:
+        before = tomllib.load(f)
+    with open(after_path, "rb") as f:
+        after = tomllib.load(f)
     want = tomllib.loads(line)["status_line"]
+    old_tui, new_tui = before.get("tui", {}), after.get("tui", {})
+    if mode == "set":
+        if "status_line" in old_tui or new_tui.get("status_line") != want:
+            sys.exit(1)
+    elif mode == "unset":
+        if old_tui.get("status_line") != want or "status_line" in new_tui:
+            sys.exit(1)
+    else:
+        sys.exit(1)
+    for doc in (before, after):
+        if "tui" in doc:
+            doc["tui"].pop("status_line", None)
+            if not doc["tui"]:
+                del doc["tui"]
 except Exception:
     sys.exit(1)
-sys.exit(0 if (tui.get("status_line") == want if mode == "set" else "status_line" not in tui) else 1)
-' "$1" "$2" "$CS_CODEX_STATUS_LINE"
+sys.exit(0 if before == after else 1)
+' "$1" "$2" "$3" "$CS_CODEX_STATUS_LINE"
 }
 
 _codex_status_line_edit() {  # set|unset, config
     local tmp
     tmp=$(mktemp "$2.cs.XXXXXX") || return 2
     awk -v MODE="$1" -v OURS="$CS_CODEX_STATUS_LINE" "$_codex_status_line_awk" "$2" "$2" > "$tmp" \
-        && _codex_status_line_check "$1" "$tmp" && mv "$tmp" "$2" || { rm -f "$tmp"; return 2; }
+        && _codex_status_line_check "$1" "$tmp" "$2" && mv "$tmp" "$2" || { rm -f "$tmp"; return 2; }
 }
 
 # Add cs's status line to <codex_dir>/config.toml where it has none.

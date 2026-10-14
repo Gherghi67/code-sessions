@@ -978,6 +978,51 @@ test_codex_status_line_reads_toml_shapes() {
     )
 }
 
+test_codex_status_line_preserves_escaped_instruction_strings() {
+    _need_tomllib || return
+    (
+        source "$SCRIPT_DIR/../lib/01-manifests.sh"
+        local dir="$TEST_TMPDIR/escaped-instructions" rc
+        mkdir -p "$dir"
+        cat > "$dir/config.toml" <<'TOML'
+developer_instructions = """
+An escaped delimiter: \"""
+[tui]
+status_line = ["project-name", "git-branch", "model-with-reasoning", "task-progress", "context-used", "five-hour-limit", "weekly-limit"]
+Keep this example in the instructions.
+"""
+TOML
+        cp "$dir/config.toml" "$dir/orig"
+        rc=0; _codex_status_line_remove "$dir" > /dev/null || rc=$?
+        assert_eq 1 "$rc" "the example is not a real status line" || return 1
+        cmp -s "$dir/orig" "$dir/config.toml" || return 1
+        _codex_status_line_add "$dir" > /dev/null || return 1
+        assert_eq weekly-limit "$(_codex_status_items "$dir/config.toml" | tail -1)" || return 1
+        _codex_status_line_remove "$dir" > /dev/null || return 1
+        cmp -s "$dir/orig" "$dir/config.toml" \
+            || { echo "  FAIL: add/remove changed the instruction string"; return 1; }
+    )
+}
+
+test_codex_status_line_validation_preserves_the_whole_document() {
+    _need_tomllib || return
+    (
+        source "$SCRIPT_DIR/../lib/01-manifests.sh"
+        local before="$TEST_TMPDIR/before.toml" after="$TEST_TMPDIR/after.toml" rc
+        printf 'model = "mine"\n[tui]\ntheme = "light"\n' > "$before"
+        printf 'model = "changed"\n[tui]\ntheme = "light"\n%s\n' "$CS_CODEX_STATUS_LINE" > "$after"
+        rc=0; _codex_status_line_check set "$after" "$before" || rc=$?
+        assert_eq 1 "$rc" "set must reject changes to other values" || return 1
+        printf 'model = "mine"\n[tui]\ntheme = "light"\n%s\n' "$CS_CODEX_STATUS_LINE" > "$before"
+        printf 'model = "mine"\n[tui]\n' > "$after"
+        rc=0; _codex_status_line_check unset "$after" "$before" || rc=$?
+        assert_eq 1 "$rc" "unset must reject loss of another tui key" || return 1
+        printf 'model = "mine"\n[tui]\ntheme = "light"\n' > "$after"
+        _codex_status_line_check unset "$after" "$before" || return 1
+        _codex_status_line_check set "$before" "$after" || return 1
+    )
+}
+
 # A status line declined for Claude (the marker the question and cs
 # -statusline disable write) declines Codex's too.
 test_install_skips_the_codex_status_line_when_declined() {
@@ -1944,6 +1989,8 @@ run_test test_codex_status_line_refuses_edits_without_tomllib
 run_test test_install_puts_the_codex_status_line_into_an_existing_tui
 run_test test_codex_status_line_keeps_the_users_own
 run_test test_codex_status_line_reads_toml_shapes
+run_test test_codex_status_line_preserves_escaped_instruction_strings
+run_test test_codex_status_line_validation_preserves_the_whole_document
 run_test test_install_skips_the_codex_status_line_when_declined
 run_test test_install_first_decline_also_skips_codex_status_line
 run_test test_statusline_enable_and_disable_cover_codex
