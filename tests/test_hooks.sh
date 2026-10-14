@@ -132,6 +132,34 @@ test_narrative_reminder_flags_a_narrative_over_budget() {
     assert_output_contains "$output" "cs -narrative rotate" "points at the rotation" || return 1
 }
 
+# .cs/memory is tracked, so a clone chooses a narrative's file name, and the
+# name can carry a terminal escape: a raw ESC or BEL byte, or backslash text
+# echo -e would turn into one. The Stop hook's reason names the newest
+# narrative and the one over budget as plain names, each character a plain
+# name lacks replaced by _. Without the shared library it names neither.
+test_narrative_reminder_names_a_narrative_as_a_plain_name() {
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m
+    local nf="$CLAUDE_SESSION_META_DIR/memory/narrative.a$bad.md" partial="$TEST_TMPDIR/partial-hooks"
+    { echo "# Session narrative"; head -c 3000 /dev/zero | tr '\0' 'x'; echo; } > "$nf"
+    _backdate "$nf"
+    rm -f "$CLAUDE_SESSION_META_DIR/.narrative-reminder-cooldown"
+    local reason newest
+    reason=$(echo '{}' | CS_NARRATIVE_MAX_BYTES=2048 bash "$HOOKS_DIR/narrative-reminder.sh" | jq -r '.reason')
+    newest=$(sed -n 's/.*Newest on disk is \([^ ]*\) .*/\1/p' <<< "$reason")
+    assert_eq "narrative.a$shown.md." "${newest##*/}" "the reason names the newest narrative as a plain name" || return 1
+    assert_output_contains "$reason" " narrative\.a$shown\.md is 2 KB, over the 2 KB budget" \
+        "the reason names the narrative over budget as a plain name" || return 1
+    assert_no_escape_bytes "$reason" "no escape byte reaches Claude" || return 1
+    mkdir -p "$partial"
+    cp "$HOOKS_DIR"/*.sh "$partial/"
+    rm "$partial/cs-shared.sh"
+    rm -f "$CLAUDE_SESSION_META_DIR/.narrative-reminder-cooldown"
+    reason=$(echo '{}' | bash "$partial/narrative-reminder.sh" | jq -r '.reason')
+    newest=$(sed -n 's/.*Newest on disk is \([^ ]*\) .*/\1/p' <<< "$reason")
+    assert_eq "?." "${newest##*/}" "without the library the reason withholds the name" || return 1
+    assert_no_escape_bytes "$reason" "no escape byte reaches Claude without the library" || return 1
+}
+
 # The same octal trap as SessionStart's: `08` passes _num_or and aborts the
 # KB arithmetic, and a Stop hook that dies emits no decision at all.
 test_narrative_reminder_reads_a_leading_zero_budget_as_decimal() {
@@ -2128,6 +2156,21 @@ test_session_start_names_a_teammate_narrative_over_budget_as_theirs() {
         "the rotate instruction is for the actor's own file only" || return 1
 }
 
+# A clone chooses a narrative's file name; the over-budget notice names it as a
+# plain name, each character a plain name lacks replaced by _.
+test_session_start_names_a_narrative_over_budget_as_a_plain_name() {
+    session_start_setup
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m context
+    { echo "# Session narrative"; head -c 3000 /dev/zero | tr '\0' 'x'; echo; } \
+        > "$CLAUDE_SESSION_META_DIR/memory/narrative.b$bad.md"
+    context=$(echo '{"session_id":"s","source":"startup","cwd":"'"$CLAUDE_SESSION_DIR"'","hook_event_name":"SessionStart"}' \
+        | CS_NARRATIVE_MAX_BYTES=2048 CS_ACTOR=alice bash "$HOOKS_DIR/session-start.sh" 2>/dev/null \
+        | jq -r '.hookSpecificOutput.additionalContext') || return 1
+    assert_eq "- narrative.b$shown.md is 2 KB, over the 2 KB budget; not yours: read it only from the line the digest names, never whole" \
+        "$(grep '^- narrative\.b' <<< "$context")" "the notice names the narrative as a plain name" || return 1
+    assert_no_escape_bytes "$context" "no escape byte reaches Claude" || return 1
+}
+
 # Within budget, nothing is added: the warning would otherwise ride every
 # conversation start as noise and stop reading as a warning.
 test_session_start_is_silent_when_narratives_fit() {
@@ -2363,6 +2406,23 @@ test_resume_digest_reports_memory_activity() {
     assert_eq "$head" "$wm" "watermark should advance to HEAD after resume" || return 1
 }
 
+# A clone's history chooses its commit author names, and git keeps an ESC or
+# BEL byte in one. The digest names each author as a plain name, each
+# character a plain name lacks replaced by _.
+test_resume_digest_names_an_author_as_a_plain_name() {
+    session_start_setup
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m context
+    mkdir -p "$CLAUDE_SESSION_META_DIR/local"
+    git -C "$CLAUDE_SESSION_DIR" rev-parse HEAD > "$CLAUDE_SESSION_META_DIR/local/watermark"
+    ( cd "$CLAUDE_SESSION_DIR" && mkdir -p .cs/memory && echo "fact" > .cs/memory/new-fact.md \
+        && git add -A && GIT_AUTHOR_NAME="Jane $bad" GIT_AUTHOR_EMAIL=jane.roe@example.com git commit -q -m "add memory" )
+    context=$(echo '{"session_id":"s","source":"resume","cwd":"'"$CLAUDE_SESSION_DIR"'","hook_event_name":"SessionStart"}' \
+        | bash "$HOOKS_DIR/session-start.sh" 2>/dev/null | jq -r '.hookSpecificOutput.additionalContext') || return 1
+    assert_output_contains "$context" "(author: commits): Jane_$shown (1);" \
+        "the digest names the author as a plain name" || return 1
+    assert_no_escape_bytes "$context" "no escape byte reaches Claude" || return 1
+}
+
 # Nobody can read a teammate's whole narrative on resume (one dormant file
 # measured 801 KB). Narratives are append-only, so everything committed since
 # this actor's watermark is a tail: the digest names each teammate file that
@@ -2394,6 +2454,101 @@ test_resume_digest_names_where_a_teammates_narrative_grew() {
         "the actor's own narrative is never listed as a teammate delta" || return 1
     assert_output_not_contains "$context" "Skim their narrative" \
         "the whole-file skim instruction is gone" || return 1
+}
+
+# A clone chooses a teammate narrative's file name, and the digest hands Claude
+# the path to read with sed. git quotes a control byte in a path, but not a
+# shell metacharacter, so a name a plain name lacks is passed over, as a
+# rotation handoff's is: the path Claude is told is always the file itself.
+# A narrative is one file directly below .cs/memory, so one in a directory
+# whose name holds the metacharacters is passed over too.
+test_resume_digest_passes_over_a_narrative_whose_name_is_not_plain() {
+    session_start_setup
+    mkdir -p "$CLAUDE_SESSION_META_DIR/local"
+    local bob="$CLAUDE_SESSION_DIR/.cs/memory/narrative.bob.md"
+    local odd="$CLAUDE_SESSION_DIR/.cs/memory/narrative.x;echo pwned;.md"
+    local below="$CLAUDE_SESSION_DIR/.cs/memory/narrative.x;echo pwned;/y.md"
+    mkdir -p "${below%/*}"
+    printf -- '# Session narrative (bob)\n\n## 2026-01-01 first\nold finding\n' > "$bob"
+    printf -- '# Session narrative\n\n## 2026-01-01 first\nold finding\n' > "$odd"
+    printf -- '# Session narrative\n\n## 2026-01-01 first\nold finding\n' > "$below"
+    ( cd "$CLAUDE_SESSION_DIR" && git add -A && git commit -q -m "narratives" --author="Bob <bob@example.com>" )
+    git -C "$CLAUDE_SESSION_DIR" rev-parse HEAD > "$CLAUDE_SESSION_META_DIR/local/watermark"
+    printf -- '\n## 2026-01-02 second\nnew finding\n' >> "$bob"
+    printf -- '\n## 2026-01-02 second\nnew finding\n' >> "$odd"
+    printf -- '\n## 2026-01-02 second\nnew finding\n' >> "$below"
+    ( cd "$CLAUDE_SESSION_DIR" && git add -A && git commit -q -m "append" --author="Bob <bob@example.com>" )
+
+    local context
+    context=$(echo '{"session_id":"s","source":"resume","cwd":"'"$CLAUDE_SESSION_DIR"'","hook_event_name":"SessionStart"}' \
+        | bash "$HOOKS_DIR/session-start.sh" 2>/dev/null | jq -r '.hookSpecificOutput.additionalContext') || return 1
+    assert_output_contains "$context" "teammate narratives grew: \.cs/memory/narrative\.bob\.md: 1 new section(s) from line 5\. Read your own" \
+        "the digest names only the plain teammate narrative" || return 1
+    assert_output_not_contains "$context" "pwned" "the digest never names the narrative whose name is not plain" || return 1
+}
+
+# A clone can commit a link named like a narrative. Claude would read its
+# target, a file outside the session the clone chose, so the digest names only
+# a narrative that is a regular file.
+test_resume_digest_passes_over_a_narrative_that_is_a_link() {
+    session_start_setup
+    mkdir -p "$CLAUDE_SESSION_META_DIR/local"
+    local bob="$CLAUDE_SESSION_DIR/.cs/memory/narrative.bob.md"
+    local eve="$CLAUDE_SESSION_DIR/.cs/memory/narrative.eve.md"
+    printf -- '# Session narrative (bob)\n\n## 2026-01-01 first\nold finding\n' > "$bob"
+    printf -- '## 2026-01-01 first\n' > "$TEST_TMPDIR/outside1.txt"
+    printf -- '## 2026-01-01 first\n\n## 2026-01-02 second\n' > "$TEST_TMPDIR/outside2.txt"
+    ln -s "$TEST_TMPDIR/outside1.txt" "$eve"
+    ( cd "$CLAUDE_SESSION_DIR" && git add -A && git commit -q -m "narratives" --author="Bob <bob@example.com>" )
+    git -C "$CLAUDE_SESSION_DIR" rev-parse HEAD > "$CLAUDE_SESSION_META_DIR/local/watermark"
+    printf -- '\n## 2026-01-02 second\nnew finding\n' >> "$bob"
+    ln -sfn "$TEST_TMPDIR/outside2.txt" "$eve"
+    ( cd "$CLAUDE_SESSION_DIR" && git add -A && git commit -q -m "append" --author="Bob <bob@example.com>" )
+
+    local context
+    context=$(echo '{"session_id":"s","source":"resume","cwd":"'"$CLAUDE_SESSION_DIR"'","hook_event_name":"SessionStart"}' \
+        | bash "$HOOKS_DIR/session-start.sh" 2>/dev/null | jq -r '.hookSpecificOutput.additionalContext') || return 1
+    assert_output_contains "$context" "teammate narratives grew: \.cs/memory/narrative\.bob\.md: 1 new section(s) from line 5\. Read your own" \
+        "the digest names only the teammate narrative that is a file" || return 1
+    assert_output_not_contains "$context" "narrative\.eve" "the digest never names a narrative that is a link" || return 1
+}
+
+# The same holds for the files the recent commits touched: the hook names
+# each one Claude might open, so only a plain name is listed.
+test_session_start_lists_only_recent_files_with_plain_names() {
+    session_start_setup
+    ( cd "$CLAUDE_SESSION_DIR" && GIT_COMMITTER_DATE="2020-01-01T00:00:00Z" git commit -q --amend --no-edit --date="2020-01-01T00:00:00Z" \
+        && echo plan > plan.md && echo odd > "a;echo pwned;.md" && git add plan.md "a;echo pwned;.md" && git commit -q -m "recent" )
+
+    local context
+    context=$(echo '{"session_id":"s","source":"resume","cwd":"'"$CLAUDE_SESSION_DIR"'","hook_event_name":"SessionStart"}' \
+        | bash "$HOOKS_DIR/session-start.sh" 2>/dev/null | jq -r '.hookSpecificOutput.additionalContext') || return 1
+    assert_output_contains "$context" "^Recent commits: 1 in last 7 days (plan\.md)$" \
+        "the recent commits name only the file whose name is plain" || return 1
+    assert_output_not_contains "$context" "pwned" "the recent commits never name a file whose name is not plain" || return 1
+}
+
+# Checking a name forks (_cs_plain_name's cut, which a stand-in on PATH
+# counts), so the list checks at most the first five files the commits touched,
+# however many there are. Ten names that are not plain are never written to the
+# list, so nothing ends the checks early.
+test_session_start_checks_at_most_five_recent_files() {
+    session_start_setup
+    local shim="$TEST_TMPDIR/shim" calls="$TEST_TMPDIR/cut.calls" i
+    mkdir -p "$shim"
+    printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nexec /usr/bin/cut "$@"\n' "$calls" > "$shim/cut"
+    chmod +x "$shim/cut"
+    ( cd "$CLAUDE_SESSION_DIR" && GIT_COMMITTER_DATE="2020-01-01T00:00:00Z" git commit -q --amend --no-edit --date="2020-01-01T00:00:00Z" \
+        && for i in 0 1 2 3 4 5 6 7 8 9; do echo odd > "x y$i.md"; done && git add -- "x y"*.md && git commit -q -m "recent" )
+
+    local context checks
+    context=$(echo '{"session_id":"s","source":"resume","cwd":"'"$CLAUDE_SESSION_DIR"'","hook_event_name":"SessionStart"}' \
+        | PATH="$shim:$PATH" bash "$HOOKS_DIR/session-start.sh" 2>/dev/null | jq -r '.hookSpecificOutput.additionalContext') || return 1
+    assert_output_contains "$context" "^Recent commits: 1 in last 7 days$" \
+        "the recent commits name no file whose name is not plain" || return 1
+    checks=$(grep -c '^-c1-160$' "$calls" 2>/dev/null || true)
+    [ "${checks:-0}" -ge 1 ] || { echo "  FAIL: the cut stand-in counted no name check (got '${checks}')"; return 1; }
+    [ "$checks" -le 5 ] || { echo "  FAIL: the recent files list checked $checks names, more than five"; return 1; }
 }
 
 # Rotation head-truncates a narrative (oldest sections move to the archive), so
@@ -3442,6 +3597,7 @@ test_stop_ignores_an_inherited_tracked_files_notice_without_the_shared_library()
 }
 
 run_test test_narrative_reminder_flags_a_narrative_over_budget
+run_test test_narrative_reminder_names_a_narrative_as_a_plain_name
 run_test test_stop_ignores_an_inherited_tracked_files_notice_without_the_shared_library
 # A zero budget in any spelling is the default, not "warn on everything": the
 # validator runs its zero check on the normalised number, and the hook reads
@@ -3575,6 +3731,7 @@ run_test test_session_start_reasserts_tab_title_on_the_terminal_device
 run_test test_session_start_tab_title_skips_silently_without_a_terminal
 run_test test_session_start_warns_about_an_over_budget_narrative
 run_test test_session_start_names_a_teammate_narrative_over_budget_as_theirs
+run_test test_session_start_names_a_narrative_over_budget_as_a_plain_name
 run_test test_session_start_is_silent_when_narratives_fit
 run_test test_session_start_survives_a_leading_zero_budget_override
 run_test test_session_start_emits_session_state_on_resume
@@ -3590,8 +3747,13 @@ run_test test_subagent_context_deliverable_is_final_message
 run_test test_session_start_narrative_is_per_actor
 run_test test_session_start_secrets_guidance_is_stdin_and_backend_neutral
 run_test test_resume_digest_reports_memory_activity
+run_test test_resume_digest_names_an_author_as_a_plain_name
 run_test test_resume_digest_silent_without_watermark
 run_test test_resume_digest_names_where_a_teammates_narrative_grew
+run_test test_resume_digest_passes_over_a_narrative_whose_name_is_not_plain
+run_test test_resume_digest_passes_over_a_narrative_that_is_a_link
+run_test test_session_start_lists_only_recent_files_with_plain_names
+run_test test_session_start_checks_at_most_five_recent_files
 run_test test_resume_digest_delta_survives_a_rotated_teammate_narrative
 run_test test_resume_digest_counts_two_commits_and_an_uncommitted_tail
 run_test test_hooks_parse_under_bin_bash

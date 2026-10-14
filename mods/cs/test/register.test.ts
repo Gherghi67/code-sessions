@@ -540,6 +540,34 @@ test('a marker naming a handoff that is gone, consumed, or outside the store doe
   expect(findButton(await band()).props.label).toBe('rotate this conversation')
 })
 
+// cs loads only a handoff whose file name is plain (letters, digits and ._@-,
+// at most 160 characters), so a marker naming any other, even an unconsumed
+// handoff that exists, arms nothing: the /clear would load nothing.
+test('a marker naming a handoff whose name is not plain does not arm', async () => {
+  percent = 39
+  for (const name of ['2026-09-15-e\x1b[1mb\x07.md', '2026-09-15 next.md', 'a'.repeat(158) + '.md']) {
+    files = { ...files, [`/work/.cs/handoffs/${name}`]: UNCONSUMED, [MARKER]: `${name}\n` }
+    expect(await band()).toBe(DRAWN)
+  }
+  const longest = 'a'.repeat(157) + '.md'
+  files = { ...files, [`/work/.cs/handoffs/${longest}`]: UNCONSUMED, [MARKER]: `${longest}\n` }
+  expect(findButton(await band()).props.label).toBe('/clear and continue from the handoff')
+})
+
+// The marker is read as the SessionStart hook reads it (tr -d '[:space:]' in
+// the C locale): ASCII whitespace is dropped and nothing else, so a marker
+// whose name starts with U+FEFF, U+00A0 or U+2028 names a file the hook will
+// not load, and arms nothing.
+test('a marker is read as the hook reads it: only ASCII whitespace is dropped', async () => {
+  percent = 39
+  for (const lead of ['﻿', ' ', ' ']) {
+    arm(); files[MARKER] = `${lead}2026-09-15-next-step.md\n`
+    expect(await band()).toBe(DRAWN)
+  }
+  arm(); files[MARKER] = '\t 2026-09-15-next-step.md\r\n'
+  expect(findButton(await band()).props.label).toBe('/clear and continue from the handoff')
+})
+
 // An encrypted session keeps the marker and its handoffs behind .cs/private.
 const PRIVATE_MARKER = '/work/.cs/private/pending-handoff'
 const PRIVATE_HANDOFF = '/work/.cs/private/handoffs/2026-09-15-next-step.md'

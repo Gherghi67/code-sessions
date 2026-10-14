@@ -103,6 +103,11 @@ if ! command -v _cs_terminate_jsonl >/dev/null 2>&1; then
         cs_append_inside "$1" printf '\n' || true
     }
 fi
+# A name a clone chose is printed through the library's _cs_plain_name;
+# without it the hook prints no such name, only "?".
+if ! command -v _cs_plain_name >/dev/null 2>&1; then
+    _cs_plain_name() { printf '?'; }
+fi
 # Only run in cs sessions
 if ! cs_resolve_session ""; then
     echo '{"decision": "approve"}'
@@ -941,7 +946,7 @@ for _nf in "$META_DIR"/memory/narrative*.md; do
     _sz=$(wc -c < "$_nf" 2>/dev/null | tr -d ' ' || echo 0)
     case "$_sz" in ''|*[!0-9]*) _sz=0 ;; esac
     if [ -n "$NARRATIVE_MAX" ] && [ "$_sz" -gt "$NARRATIVE_MAX" ]; then
-        NARRATIVE_OVER="${NARRATIVE_OVER} $(basename "$_nf") is $((_sz / 1024)) KB, over the $((NARRATIVE_MAX / 1024)) KB budget — if it is yours, run \`cs -narrative rotate\` before appending."
+        NARRATIVE_OVER="${NARRATIVE_OVER} $(_cs_plain_name "$(basename "$_nf")" 160) is $((_sz / 1024)) KB, over the $((NARRATIVE_MAX / 1024)) KB budget — if it is yours, run \`cs -narrative rotate\` before appending."
     fi
 done
 
@@ -1048,7 +1053,10 @@ cs_write_atomic "$COOLDOWN_FILE" echo "$CURRENT_TIME" || true
 # condition the model must evaluate is one it will not.
 COMMIT_CADENCE=" Never commit narrative appends or anything else under .cs/ on your own, not even beside a project change: cs and its skills commit none of them, and they are committed only when the user asks. Never push a commit that holds narrative appends unless the user asks. Uncommitted appends are safe — autosave snapshots every edit to a shadow ref."
 
-REASON="Narrative check. Update only your own narrative (run \`cs -whoami\` if unsure which actor you are; never edit a teammate's narrative). Newest on disk is $NARRATIVE_FILE. (1) If recent work disproved or superseded one of your entries, append a dated correction that names it — never rewrite or delete earlier sections. (2) Append any new findings as plain dated notes. If nothing needs changing, say so in one line and stop.${COMMIT_CADENCE}${NARRATIVE_OVER}${ADVISOR_NUDGE}"
+# .cs/memory is tracked, so a clone chooses the narrative's file name: it is
+# printed as a plain name.
+NARRATIVE_SHOWN="$META_DIR/memory/$(_cs_plain_name "${NARRATIVE_FILE##*/}" 160)"
+REASON="Narrative check. Update only your own narrative (run \`cs -whoami\` if unsure which actor you are; never edit a teammate's narrative). Newest on disk is $NARRATIVE_SHOWN. (1) If recent work disproved or superseded one of your entries, append a dated correction that names it — never rewrite or delete earlier sections. (2) Append any new findings as plain dated notes. If nothing needs changing, say so in one line and stop.${COMMIT_CADENCE}${NARRATIVE_OVER}${ADVISOR_NUDGE}"
 
 jq -nc --arg r "$REASON" '{decision: "block", reason: $r}'
 

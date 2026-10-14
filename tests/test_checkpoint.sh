@@ -171,6 +171,25 @@ test_checkpoint_list_shows_all() {
     assert_output_contains "$output" "second label" "Should list second" || return 1
 }
 
+# .cs/checkpoints is tracked in a plaintext session, so a clone chooses a
+# checkpoint's file name and its label. The name can carry a terminal escape:
+# a raw ESC or BEL byte, or backslash text echo -e would turn into one. The
+# list names the file as a plain name, each character a plain name lacks
+# replaced by _, and prints the label with its control bytes deleted and its
+# other text as written.
+test_checkpoint_list_names_a_checkpoint_as_a_plain_name() {
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m output
+    mkdir -p "$CLAUDE_SESSION_META_DIR/checkpoints"
+    printf '# Checkpoint: l%s\n' "$bad" > "$CLAUDE_SESSION_META_DIR/checkpoints/cp$bad.md"
+    output=$("$CS_BIN" -checkpoint list 2>&1) || return 1
+    assert_eq "Checkpoints for session: test-session
+
+  cp$shown
+    le[1mb\\e[0m" "$output" \
+        "the list names the checkpoint as a plain name and prints its label without control bytes" || return 1
+    assert_no_escape_bytes "$output" "no escape byte reaches the terminal" || return 1
+}
+
 # ============================================================================
 # -checkpoint show
 # ============================================================================
@@ -186,6 +205,19 @@ test_checkpoint_show_prints_content() {
     output=$("$CS_BIN" -checkpoint show "$name" 2>&1)
     assert_output_contains "$output" "auth done" "Should show label" || return 1
     assert_output_contains "$output" "Auth refactor complete" "Should show narrative snapshot" || return 1
+}
+
+# A clone chooses what a checkpoint file says too. show prints it with its
+# control bytes deleted, keeping its lines and its other text as written.
+test_checkpoint_show_drops_control_bytes() {
+    local output
+    mkdir -p "$CLAUDE_SESSION_META_DIR/checkpoints"
+    printf '# Checkpoint: x\n\n\033]0;T\007body \033[2J\\e[0m tail\n' > "$CLAUDE_SESSION_META_DIR/checkpoints/cp-show.md"
+    output=$("$CS_BIN" -checkpoint show cp-show 2>&1) || return 1
+    assert_eq '# Checkpoint: x
+
+]0;Tbody [2J\e[0m tail' "$output" "show prints the checkpoint without its control bytes" || return 1
+    assert_no_escape_bytes "$output" "no escape byte reaches the terminal" || return 1
 }
 
 # ============================================================================
@@ -220,7 +252,9 @@ run_test test_checkpoint_appends_to_timeline
 run_test test_multiple_checkpoints
 run_test test_checkpoint_list_empty
 run_test test_checkpoint_list_shows_all
+run_test test_checkpoint_list_names_a_checkpoint_as_a_plain_name
 run_test test_checkpoint_show_prints_content
+run_test test_checkpoint_show_drops_control_bytes
 run_test test_help_shows_checkpoint
 
 

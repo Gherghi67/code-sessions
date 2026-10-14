@@ -93,20 +93,6 @@ _trim() {  # text
     printf '%s' "$s"
 }
 
-# Strip C0 control characters (keeping tab and newline) and DEL from stdin, so
-# text another session wrote cannot smuggle an escape sequence into this
-# session's terminal. cs is multi-session by design — presence, queued tasks and
-# mail all cross a session boundary — and the reader does not trust the writer.
-# C0 and DEL only: 8-bit C1 (0x80-0x9F, where 0x9B is CSI) is deliberately out
-# of scope, because a UTF-8 terminal does not decode raw C1 bytes as controls.
-# The C locale reaches tr as an argument of env, never as an assignment the
-# shell makes for itself: every caller pipes into this function, so it runs in
-# a forked copy of the shell, and a bash linked against libintl (Homebrew's)
-# can crash when it changes its own locale there.
-_scrub_controls() {
-    env LC_ALL=C tr -d '\000-\010\013-\037\177'
-}
-
 # Detect the outer terminal, even when running inside tmux.
 # tmux overrides TERM_PROGRAM, so we check LC_TERMINAL and ITERM_SESSION_ID as fallbacks.
 _detect_terminal() {

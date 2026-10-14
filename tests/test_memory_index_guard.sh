@@ -182,6 +182,28 @@ test_check_fails_on_an_unindexed_bucket_entry() {
         "a file outside the four buckets is not an entry" || return 1
 }
 
+# .cs/memory is tracked, so a clone chooses the entry file names and the
+# pointers MEMORY.md holds, and a name can carry a terminal escape: a raw ESC
+# or BEL byte, or backslash text echo -e would turn into one. check names a
+# removed pointer and an unindexed entry as plain names, each character a
+# plain name lacks replaced by _.
+test_check_names_a_pointer_and_an_entry_as_plain_names() {
+    _guard_session
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m out rc=0
+    printf '%s\n' "- [Odd](feedback_o$bad.md): odd" >> "$INDEX"
+    _guard snapshot > /dev/null || return 1
+    printf '%s\n' '- [Alpha rule](feedback_alpha.md): never do alpha twice' \
+        '- [Beta fact](project_beta.md): beta only runs on Tuesdays' > "$INDEX"
+    : > "$SESSION/.cs/memory/project_p$bad.md"
+    out=$(_guard check 2>&1) || rc=$?
+    assert_eq 1 "$rc" "check fails" || return 1
+    assert_eq "removed: feedback_o$shown.md" "$(grep '^removed:' <<< "$out")" \
+        "check names the removed pointer as a plain name" || return 1
+    assert_eq "unindexed: project_p$shown.md" "$(grep '^unindexed:' <<< "$out")" \
+        "check names the unindexed entry as a plain name" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches Claude" || return 1
+}
+
 # A fresh session has no MEMORY.md until Claude Code writes the first entry,
 # so the first sweep snapshots nothing and must still reach a passing check.
 test_first_sweep_snapshots_an_absent_index_as_empty() {
@@ -326,6 +348,7 @@ run_test test_unknown_subcommand_prints_usage
 run_test test_check_passes_when_a_supporting_link_is_dropped
 run_test test_check_fails_when_two_pointers_are_merged
 run_test test_check_fails_on_an_unindexed_bucket_entry
+run_test test_check_names_a_pointer_and_an_entry_as_plain_names
 run_test test_first_sweep_snapshots_an_absent_index_as_empty
 run_test test_snapshot_outside_a_session_root_is_an_error
 run_test test_check_with_an_unreadable_snapshot_is_an_error

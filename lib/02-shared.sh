@@ -239,6 +239,31 @@ _cs_plain_name() {  # name, [longest]
     fi
 }
 
+# True when <name> is not empty, holds no "/", and _cs_plain_name, cut at
+# 160, leaves it as it is. A name cs offers the user to act on, or hands
+# Claude to read, must be one, so the name printed is the file itself, and it
+# is one file name: it cannot reach outside the directory it is looked up in.
+_cs_is_plain_name() {  # name
+    case "$1" in ''|*/*) return 1 ;; esac
+    [ "$(_cs_plain_name "$1" 160)" = "$1" ]
+}
+
+# Strip C0 control characters (keeping tab and newline) and DEL from stdin, so
+# text another session wrote cannot smuggle an escape sequence into this
+# session's terminal. cs is multi-session by design — presence, queued tasks and
+# mail all cross a session boundary — and the reader does not trust the writer.
+# Text a cloned session's repo carries (a file cs -search matches, a recipient
+# file age list previews) is cleaned the same way.
+# C0 and DEL only: 8-bit C1 (0x80-0x9F, where 0x9B is CSI) is deliberately out
+# of scope, because a UTF-8 terminal does not decode raw C1 bytes as controls.
+# The C locale reaches tr as an argument of env, never as an assignment the
+# shell makes for itself: every caller pipes into this function, so it runs in
+# a forked copy of the shell, and a bash linked against libintl (Homebrew's)
+# can crash when it changes its own locale there.
+_scrub_controls() {
+    env LC_ALL=C tr -d '\000-\010\013-\037\177'
+}
+
 # Prints the line that says git tracks <tracked> and how to stop: untrack
 # <sub>, a path relative to <top>, and commit, both in <top>. The repository
 # chose both names and the user is asked to paste the command, so each path is
@@ -828,9 +853,12 @@ _cs_refuses_write() {  # writer, path, [probe]
     case "$e" in /*) ;; *) e="$PWD/$e" ;; esac
     root=$(_cs_session_root_of "$p") || return 1
     out=$(_cs_write_leaves_session "$root" "$e") || return 1
+    # Below the session, the path can hold names a clone chose, so that part,
+    # and the part of it that does not exist yet, print as plain names; the
+    # session's own path prints as it is spelled.
     case "$out" in
-        "cs could not ask git"*) echo "$1: $p not written: $out" >&2 ;;
-        *) echo "$1: $p leads to $out${p#"$e"}, outside the session $root" >&2 ;;
+        "cs could not ask git"*) echo "$1: $root/$(_cs_plain_name "${p#"$root"/}" 160) not written: $out" >&2 ;;
+        *) echo "$1: $root/$(_cs_plain_name "${p#"$root"/}" 160) leads to $out$(_cs_plain_name "${p#"$e"}" 160), outside the session $root" >&2 ;;
     esac
 }
 

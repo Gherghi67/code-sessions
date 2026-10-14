@@ -1455,6 +1455,31 @@ _cs_plain_name() {  # name, [longest]
     fi
 }
 
+# True when <name> is not empty, holds no "/", and _cs_plain_name, cut at
+# 160, leaves it as it is. A name cs offers the user to act on, or hands
+# Claude to read, must be one, so the name printed is the file itself, and it
+# is one file name: it cannot reach outside the directory it is looked up in.
+_cs_is_plain_name() {  # name
+    case "$1" in ''|*/*) return 1 ;; esac
+    [ "$(_cs_plain_name "$1" 160)" = "$1" ]
+}
+
+# Strip C0 control characters (keeping tab and newline) and DEL from stdin, so
+# text another session wrote cannot smuggle an escape sequence into this
+# session's terminal. cs is multi-session by design — presence, queued tasks and
+# mail all cross a session boundary — and the reader does not trust the writer.
+# Text a cloned session's repo carries (a file cs -search matches, a recipient
+# file age list previews) is cleaned the same way.
+# C0 and DEL only: 8-bit C1 (0x80-0x9F, where 0x9B is CSI) is deliberately out
+# of scope, because a UTF-8 terminal does not decode raw C1 bytes as controls.
+# The C locale reaches tr as an argument of env, never as an assignment the
+# shell makes for itself: every caller pipes into this function, so it runs in
+# a forked copy of the shell, and a bash linked against libintl (Homebrew's)
+# can crash when it changes its own locale there.
+_scrub_controls() {
+    env LC_ALL=C tr -d '\000-\010\013-\037\177'
+}
+
 # Prints the line that says git tracks <tracked> and how to stop: untrack
 # <sub>, a path relative to <top>, and commit, both in <top>. The repository
 # chose both names and the user is asked to paste the command, so each path is
@@ -2044,9 +2069,12 @@ _cs_refuses_write() {  # writer, path, [probe]
     case "$e" in /*) ;; *) e="$PWD/$e" ;; esac
     root=$(_cs_session_root_of "$p") || return 1
     out=$(_cs_write_leaves_session "$root" "$e") || return 1
+    # Below the session, the path can hold names a clone chose, so that part,
+    # and the part of it that does not exist yet, print as plain names; the
+    # session's own path prints as it is spelled.
     case "$out" in
-        "cs could not ask git"*) echo "$1: $p not written: $out" >&2 ;;
-        *) echo "$1: $p leads to $out${p#"$e"}, outside the session $root" >&2 ;;
+        "cs could not ask git"*) echo "$1: $root/$(_cs_plain_name "${p#"$root"/}" 160) not written: $out" >&2 ;;
+        *) echo "$1: $root/$(_cs_plain_name "${p#"$root"/}" 160) leads to $out$(_cs_plain_name "${p#"$e"}" 160), outside the session $root" >&2 ;;
     esac
 }
 
@@ -2448,20 +2476,6 @@ _trim() {  # text
     s="${s#"${s%%[![:space:]]*}"}"
     s="${s%"${s##*[![:space:]]}"}"
     printf '%s' "$s"
-}
-
-# Strip C0 control characters (keeping tab and newline) and DEL from stdin, so
-# text another session wrote cannot smuggle an escape sequence into this
-# session's terminal. cs is multi-session by design — presence, queued tasks and
-# mail all cross a session boundary — and the reader does not trust the writer.
-# C0 and DEL only: 8-bit C1 (0x80-0x9F, where 0x9B is CSI) is deliberately out
-# of scope, because a UTF-8 terminal does not decode raw C1 bytes as controls.
-# The C locale reaches tr as an argument of env, never as an assignment the
-# shell makes for itself: every caller pipes into this function, so it runs in
-# a forked copy of the shell, and a bash linked against libintl (Homebrew's)
-# can crash when it changes its own locale there.
-_scrub_controls() {
-    env LC_ALL=C tr -d '\000-\010\013-\037\177'
 }
 
 # Detect the outer terminal, even when running inside tmux.
@@ -8217,11 +8231,14 @@ list_checkpoints() {
     fi
     echo "Checkpoints for session: $CLAUDE_SESSION_NAME"
     echo ""
+    # .cs/checkpoints is tracked in a plaintext session, so a clone chooses
+    # the file names and the labels: a name prints plain, a label without its
+    # control bytes.
     local f name label
     while IFS= read -r f; do
         [ -n "$f" ] || continue
-        name=$(basename "$f" .md)
-        label=$(grep -m1 '^# Checkpoint:' "$f" 2>/dev/null | sed 's/^# Checkpoint: //' || echo "-")
+        name=$(_cs_plain_name "$(basename "$f" .md)" 160)
+        label=$(grep -m1 '^# Checkpoint:' "$f" 2>/dev/null | sed 's/^# Checkpoint: //' | _scrub_controls || echo "-")
         printf "  %s\n    %s\n" "$name" "$label"
     done < <(ls -t "$checkpoints_dir"/*.md 2>/dev/null)
 }
@@ -8242,7 +8259,8 @@ show_checkpoint() {
     if [ ! -f "$path" ]; then
         error "Checkpoint not found: $name"
     fi
-    cat "$path"
+    # A clone chooses what the file says too.
+    _scrub_controls < "$path"
 }
 
 # Dispatcher for cs -checkpoint subcommand
@@ -10359,11 +10377,20 @@ $lower
         || error "Cannot edit $readme: its YAML frontmatter offers nowhere to write the tags line (no 'status:' line and no closing '---' fence); the file is unchanged"
 }
 
+# Each tag on stdin, one per line, as a plain name: .cs/README.md is tracked,
+# so a clone chooses its tags, and a tag is checked only when cs writes it.
+_tags_shown() {
+    local tag
+    while IFS= read -r tag; do
+        printf '%s\n' "$(_cs_plain_name "$tag" 160)"
+    done
+}
+
 _tag_list_session() {
     local name="$1"
     local dir="$SESSIONS_ROOT/$name"
     [ -d "$dir" ] || [ -L "$dir" ] || error "No such session: $name"
-    _tags_read "$dir/.cs/README.md"
+    _tags_read "$dir/.cs/README.md" | _tags_shown
 }
 
 run_tag() {
@@ -10390,7 +10417,7 @@ _tag_list_all() {
         is_session_dir "$dir" || continue
         _tags_read "$dir/.cs/README.md"
     done < <(find "$SESSIONS_ROOT" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) -print0 2>/dev/null) \
-        | sort | uniq -c | sort -rn | awk '{printf "%s (%s)\n", $2, $1}'
+        | _tags_shown | sort | uniq -c | sort -rn | awk '{printf "%s (%s)\n", $2, $1}'
 }
 # Resolve a session name for the archive verbs. Sets ARCHIVE_DIR (real path,
 # adopted-session symlinks followed) and ARCHIVE_MARKER; errors on an unknown
@@ -11199,7 +11226,8 @@ _doctor_check_narrative_size() {
         [ -f "$f" ] || continue
         sz=$(wc -c < "$f" 2>/dev/null | tr -d ' ' || echo 0)
         if [ "$sz" -gt "$max" ]; then
-            _doctor_warn "Narrative: $(basename "$f") is $((sz / 1024)) KB (budget $((max / 1024)) KB) — run cs -narrative rotate"
+            # .cs/memory is tracked, so a clone chooses the file name.
+            _doctor_warn "Narrative: $(_cs_plain_name "$(basename "$f")" 160) is $((sz / 1024)) KB (budget $((max / 1024)) KB) — run cs -narrative rotate"
             over=$((over + 1))
         fi
     done
@@ -12138,8 +12166,9 @@ search_sessions() {
             while IFS= read -r line; do
                 # %s for the matched line: `echo -e` ate escapes in file content,
                 # so a line containing \c truncated the result there and dropped
-                # everything after it.
-                printf "${GOLD}%s${NC}: ${DIM}%s${NC}: %s\n" "$session_name" "$relpath" "$line"
+                # everything after it. The line is what the session's repo
+                # says, so its control bytes are deleted.
+                printf "${GOLD}%s${NC}: ${DIM}%s${NC}: %s\n" "$session_name" "$relpath" "$(printf '%s' "$line" | _scrub_controls)"
                 found=$((found + 1))
             done <<< "$matches"
         done
@@ -12154,14 +12183,18 @@ search_sessions() {
         for glob in "${search_globs[@]}"; do
             for filepath in "$real_dir"/$glob; do
                 [ -f "$filepath" ] || continue
-                local relpath="${filepath#"$real_dir"/}"
+                # .cs/memory and the narrative archive are tracked, so a clone
+                # chooses the file name: it is printed as a plain name.
+                local relpath
+                relpath=$(_cs_plain_name "${filepath#"$real_dir"/}" 160)
                 local matches
                 matches=$(grep -in -- "$query" "$filepath" 2>/dev/null) || continue
                 while IFS= read -r line; do
                     # %s for the matched line: `echo -e` ate escapes in file content,
                     # so a line containing \c truncated the result there and dropped
-                    # everything after it.
-                    printf "${GOLD}%s${NC}: ${DIM}%s${NC}: %s\n" "$session_name" "$relpath" "$line"
+                    # everything after it. The line is what the session's repo
+                    # says, so its control bytes are deleted.
+                    printf "${GOLD}%s${NC}: ${DIM}%s${NC}: %s\n" "$session_name" "$relpath" "$(printf '%s' "$line" | _scrub_controls)"
                     found=$((found + 1))
                 done <<< "$matches"
             done
@@ -14054,11 +14087,21 @@ EOF
             || error "$session_name: .cs/private dangles after the open checked it (vault unmounted mid-launch?). Mount it, then reopen."
         _marker_dir=$(cs_private_dir "$session_dir/.cs") \
             || error "$session_name: .cs/private dangles after the open checked it (vault unmounted mid-launch?). Mount it, then reopen."
+        # .cs/handoffs/ is tracked, so a clone chooses the file names. Only a
+        # plain one is offered: the name printed, armed and handed to Claude
+        # is then the file itself. Any other is passed over, and one line says
+        # so without naming it: it says which directory, and that the file may
+        # be a clone's, so renaming it is not adopting it blind.
+        local _skipped=""
         for _hf in "$_handoff_dir"/*.md; do
             [ -f "$_hf" ] || continue
             _handoff_is_unconsumed "$_hf" || continue
+            _cs_is_plain_name "${_hf##*/}" || { _skipped=1; continue; }
             pending_handoff="$_hf"
         done
+        [ -z "$_skipped" ] \
+            || printf "${DIM}Skipped a rotation handoff in %s/ whose file name is not plain (only letters, digits and ._@-, at most 160 characters); check who wrote it before renaming it.${NC}\n" \
+                "${_handoff_dir#"$session_dir/"}"
         # .cs/handoffs/ is shared and nothing ever deletes a handoff, so a file
         # belonging to another checkout keeps status: unconsumed indefinitely —
         # the rotate skill will not supersede one whose parent is absent from
@@ -14067,11 +14110,13 @@ EOF
         # else's plan. An armed marker is an explicit choice, so it outranks the
         # scan; a marker naming a spent or absent file is stale and the scan
         # still answers. The marker names a basename, never a path: a separator
-        # would resolve outside the handoff store.
+        # would resolve outside the handoff store. It names a plain one, as
+        # the scan offers, or nothing.
         local _marker="$_marker_dir/pending-handoff" _armed
         if [ -f "$_marker" ]; then
             _armed=$(cat "$_marker" 2>/dev/null | tr -d '[:space:]' || true)
             case "$_armed" in */*|*\\*) _armed="" ;; esac
+            _cs_is_plain_name "$_armed" || _armed=""
             if [ -n "$_armed" ] && [ -f "$_handoff_dir/$_armed" ] \
                 && _handoff_is_unconsumed "$_handoff_dir/$_armed"; then
                 pending_handoff="$_handoff_dir/$_armed"
@@ -14094,7 +14139,9 @@ EOF
                 local _origin=""
                 _handoff_is_local "$pending_handoff" "$session_dir" \
                     || _origin=" ${DIM}(from another checkout)${NC}"
-                printf "${DIM}Rotation handoff pending:${NC} %s%b\n" "$(basename "$pending_handoff")" "$_origin"
+                # .cs/handoffs/ is tracked, so a clone chooses the file name:
+                # it is printed as a plain name.
+                printf "${DIM}Rotation handoff pending:${NC} %s%b\n" "$(_cs_plain_name "$(basename "$pending_handoff")" 160)" "$_origin"
                 # One answer per row, key first, laid out like the already-open
                 # menu; the keys stay the letters the one-line ask used.
                 echo
@@ -14158,7 +14205,7 @@ EOF
                         }
                         { print }
                     ' "$pending_handoff" 2>/dev/null || true
-                    printf "${DIM}Handoff discarded:${NC} %s\n" "$(basename "$pending_handoff")"
+                    printf "${DIM}Handoff discarded:${NC} %s\n" "$(_cs_plain_name "$(basename "$pending_handoff")" 160)"
                 fi
                 # d without a pending handoff was never offered: treat as the
                 # default resume answer.

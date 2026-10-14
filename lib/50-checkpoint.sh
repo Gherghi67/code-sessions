@@ -136,11 +136,14 @@ list_checkpoints() {
     fi
     echo "Checkpoints for session: $CLAUDE_SESSION_NAME"
     echo ""
+    # .cs/checkpoints is tracked in a plaintext session, so a clone chooses
+    # the file names and the labels: a name prints plain, a label without its
+    # control bytes.
     local f name label
     while IFS= read -r f; do
         [ -n "$f" ] || continue
-        name=$(basename "$f" .md)
-        label=$(grep -m1 '^# Checkpoint:' "$f" 2>/dev/null | sed 's/^# Checkpoint: //' || echo "-")
+        name=$(_cs_plain_name "$(basename "$f" .md)" 160)
+        label=$(grep -m1 '^# Checkpoint:' "$f" 2>/dev/null | sed 's/^# Checkpoint: //' | _scrub_controls || echo "-")
         printf "  %s\n    %s\n" "$name" "$label"
     done < <(ls -t "$checkpoints_dir"/*.md 2>/dev/null)
 }
@@ -161,7 +164,8 @@ show_checkpoint() {
     if [ ! -f "$path" ]; then
         error "Checkpoint not found: $name"
     fi
-    cat "$path"
+    # A clone chooses what the file says too.
+    _scrub_controls < "$path"
 }
 
 # Dispatcher for cs -checkpoint subcommand

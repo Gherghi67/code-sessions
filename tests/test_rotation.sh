@@ -152,6 +152,14 @@ test_rotate_skill_exists_with_frontmatter() {
     assert_file_contains "$skill" ".cs/handoffs/" "skill targets the tracked handoff store" || return 1
 }
 
+# cs offers and loads only a handoff whose file name is plain, so the skill
+# that names the file keeps the slug inside that rule by construction.
+test_rotate_skill_slug_is_a_plain_name() {
+    local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md"
+    assert_file_contains "$skill" "slug is ASCII: lowercase letters, digits and hyphens only, at most 60" \
+        "the skill limits the slug to characters cs offers" || return 1
+}
+
 # Nothing else in cs deletes a handoff, so without a prune rule .cs/handoffs/
 # grows without bound in a tracked, shared directory. The rule has to be
 # spelled out precisely: which statuses are droppable, the age source, and the
@@ -550,6 +558,7 @@ test_rotate_skill_reads_parent_from_state_not_the_launch_env() {
 }
 
 run_test test_rotate_skill_exists_with_frontmatter
+run_test test_rotate_skill_slug_is_a_plain_name
 run_test test_rotate_skill_has_a_home_for_rejected_alternatives
 run_test test_rotate_skill_has_a_home_for_conversation_only_facts
 run_test test_rotate_skill_keeps_successor_reports
@@ -791,6 +800,42 @@ test_handoff_prompt_lists_one_answer_per_row() {
     fi
 }
 
+# .cs/handoffs/ is tracked, so a clone chooses a handoff's file name, and the
+# name can carry a terminal escape: a raw ESC or BEL byte, or backslash text
+# echo -e would turn into one. cs offers only a handoff whose name is plain
+# (_cs_plain_name leaves it as it is), so the name it prints, and the one r
+# hands Claude, is the file itself. The scan passes over the others, an armed
+# marker naming one is dropped, and one line says a handoff was skipped
+# without naming it: it says where, and that a clone may have written it. A
+# plain handoff beside them is still offered.
+test_handoff_whose_name_is_not_plain_is_not_offered() {
+    _rot_session "rot-plain-name"
+    local dir="$CS_SESSIONS_ROOT/rot-plain-name" output named
+    local bad=$'2026-07-16-e\033[1mb\007\\e[0m.md' armed=$'2026-07-17-e\033[1mb\007x.md'
+    _seed_handoff "$dir" "2026-07-15-plain.md" "unconsumed"
+    _seed_handoff "$dir" "$bad" "unconsumed"
+    _seed_handoff "$dir" "$armed" "unconsumed"
+    printf '%s\n' "$armed" > "$dir/.cs/local/pending-handoff"
+    output=$("$CS_BIN" rot-plain-name <<< "d" 2>&1) || true
+    assert_eq "Skipped a rotation handoff in .cs/handoffs/ whose file name is not plain (only letters, digits and ._@-, at most 160 characters); check who wrote it before renaming it." \
+        "$(grep '^Skipped a rotation handoff' <<< "$output")" \
+        "one line says a handoff was skipped" || return 1
+    assert_eq "Rotation handoff pending: 2026-07-15-plain.md (from another checkout)" \
+        "$(grep '^Rotation handoff pending:' <<< "$output")" \
+        "the plain handoff is offered, not the armed one" || return 1
+    assert_eq "Handoff discarded: 2026-07-15-plain.md" \
+        "$(grep '^Handoff discarded:' <<< "$output")" \
+        "d discards the plain handoff it offered" || return 1
+    assert_not_exists "$dir/.cs/local/pending-handoff" "the marker naming the skipped handoff is dropped" || return 1
+    assert_file_contains "$dir/.cs/handoffs/$bad" "^status: unconsumed$" "the skipped handoff is left as it was" || return 1
+    assert_file_contains "$dir/.cs/handoffs/$armed" "^status: unconsumed$" "the armed handoff is left as it was" || return 1
+    named=$(grep -a '2026-07-1[67]' <<< "$output" || true)
+    assert_eq "" "$named" "no line names a skipped handoff" || return 1
+    # The banner carries cs's own colours; the lines about handoffs carry none.
+    named=$(grep -ai 'handoff' <<< "$output")
+    assert_no_escape_bytes "$named" "no escape byte reaches the terminal" || return 1
+}
+
 # The r launch auto-starts the handoff: its positional prompt is the handoff
 # continuation (displacing the /color re-apply for this one launch), so the fresh
 # conversation reads the handoff and continues without the user typing first.
@@ -984,6 +1029,23 @@ test_offer_reads_provenance_from_the_private_log() {
         "the offer is still made for a local handoff" || return 1
     assert_output_not_contains "$output" "another checkout" \
         "a handoff this checkout wrote carries no foreign label" || return 1
+}
+
+# An encrypted session keeps its handoffs in the vault, so the line about a
+# skipped handoff names that directory.
+test_skipped_handoff_line_names_the_vaults_handoff_store() {
+    _rot_session "rot-private-skip"
+    local dir="$CS_SESSIONS_ROOT/rot-private-skip" output
+    _seed_handoff "$dir" $'2026-07-16-e\033[1mb.md' "unconsumed"
+    mkdir -p "$TEST_TMPDIR/vault/private"
+    mv "$dir/.cs/local/session.log" "$TEST_TMPDIR/vault/private/session.log"
+    mv "$dir/.cs/handoffs" "$TEST_TMPDIR/vault/private/handoffs"
+    ln -s "$TEST_TMPDIR/vault/private" "$dir/.cs/private"
+    _mark_hand_made_vault "$dir"
+    output=$("$CS_BIN" rot-private-skip <<< "n" 2>&1) || true
+    assert_eq "Skipped a rotation handoff in .cs/private/handoffs/ whose file name is not plain (only letters, digits and ._@-, at most 160 characters); check who wrote it before renaming it." \
+        "$(grep '^Skipped a rotation handoff' <<< "$output")" \
+        "the line names the vault's handoff directory" || return 1
 }
 
 # A session with no recorded conversation (the first open after cs -adopt, a
@@ -1215,6 +1277,7 @@ test_orphaned_marker_disarm_does_not_offer_a_spent_handoff() {
 run_test test_orphaned_marker_disarm_does_not_offer_a_spent_handoff
 run_test test_rotate_answer_consumes_pending_handoff
 run_test test_handoff_prompt_lists_one_answer_per_row
+run_test test_handoff_whose_name_is_not_plain_is_not_offered
 run_test test_rotate_answer_auto_starts_handoff
 run_test test_continue_and_no_leave_handoff_unconsumed
 run_test test_consumed_handoffs_do_not_trigger_prompt
@@ -1222,6 +1285,7 @@ run_test test_newest_of_multiple_handoffs_wins
 run_test test_offer_labels_a_handoff_from_another_checkout
 run_test test_offer_leaves_a_local_handoff_unlabelled
 run_test test_offer_reads_provenance_from_the_private_log
+run_test test_skipped_handoff_line_names_the_vaults_handoff_store
 run_test test_a_logged_command_naming_a_uuid_is_not_provenance
 run_test test_a_trailing_carriage_return_still_reads_as_local
 run_test test_armed_marker_outranks_a_later_sorting_orphan
@@ -1378,6 +1442,32 @@ test_rotation_tells_the_user_one_message_starts_it() {
         *2026-07-16-test.md*) ;;
         *) echo "  FAIL: the notice must name the handoff: $msg"; return 1 ;;
     esac
+}
+
+# A clone chooses a handoff's file name. The hook loads only a handoff whose
+# name is plain (_cs_plain_name leaves it as it is), so the file the preamble
+# tells Claude to read is the file itself. A marker naming any other is
+# dropped: no rotation, nothing said, the handoff left unconsumed. The name
+# carries ESC and BEL but no backslash, so the marker's separator check does
+# not refuse it first.
+test_rotation_does_not_load_a_handoff_whose_name_is_not_plain() {
+    _rot_hook_session "rot-plain-hook"
+    local bad=$'2026-07-16-e\033[1mb\007x.md'
+    _seed_handoff "$CLAUDE_SESSION_DIR" "$bad" "unconsumed"
+    printf '%s\n' "$bad" > "$CLAUDE_SESSION_META_DIR/local/pending-handoff"
+    printf 'claude_session_id: %s\n' "$UUID_A" > "$CLAUDE_SESSION_META_DIR/local/state"
+    local out context msg
+    out=$(_start_hook "$UUID_B" clear) || return 1
+    context=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext')
+    msg=$(printf '%s' "$out" | jq -r '.systemMessage // ""')
+    assert_output_contains "$context" "managed Claude Code session" "the hook ran and produced its context" || return 1
+    assert_output_not_contains "$context" "Conversation Rotation" "no rotation is loaded" || return 1
+    assert_output_not_contains "$context" "2026-07-16" "Claude is told no handoff name" || return 1
+    assert_eq "" "$msg" "the user is told nothing loaded" || return 1
+    assert_no_escape_bytes "$context$msg" "no escape byte reaches Claude or the user" || return 1
+    assert_file_contains "$CLAUDE_SESSION_META_DIR/handoffs/$bad" "^status: unconsumed$" \
+        "the handoff is left unconsumed" || return 1
+    assert_not_exists "$CLAUDE_SESSION_META_DIR/local/pending-handoff" "the marker is dropped" || return 1
 }
 
 # Scoped to a rotation: a plain /clear is a blank slate and has nothing to say.
@@ -1906,6 +1996,7 @@ test_fork_with_armed_marker_records_rebind() {
 
 run_test test_clear_source_consumes_pending_handoff
 run_test test_rotation_tells_the_user_one_message_starts_it
+run_test test_rotation_does_not_load_a_handoff_whose_name_is_not_plain
 run_test test_plain_clear_says_nothing_to_the_user
 run_test test_startup_rotation_does_not_tell_the_user_to_send_a_message
 run_test test_rotation_preamble_makes_the_first_message_mean_begin

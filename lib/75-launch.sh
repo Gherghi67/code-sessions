@@ -870,11 +870,21 @@ EOF
             || error "$session_name: .cs/private dangles after the open checked it (vault unmounted mid-launch?). Mount it, then reopen."
         _marker_dir=$(cs_private_dir "$session_dir/.cs") \
             || error "$session_name: .cs/private dangles after the open checked it (vault unmounted mid-launch?). Mount it, then reopen."
+        # .cs/handoffs/ is tracked, so a clone chooses the file names. Only a
+        # plain one is offered: the name printed, armed and handed to Claude
+        # is then the file itself. Any other is passed over, and one line says
+        # so without naming it: it says which directory, and that the file may
+        # be a clone's, so renaming it is not adopting it blind.
+        local _skipped=""
         for _hf in "$_handoff_dir"/*.md; do
             [ -f "$_hf" ] || continue
             _handoff_is_unconsumed "$_hf" || continue
+            _cs_is_plain_name "${_hf##*/}" || { _skipped=1; continue; }
             pending_handoff="$_hf"
         done
+        [ -z "$_skipped" ] \
+            || printf "${DIM}Skipped a rotation handoff in %s/ whose file name is not plain (only letters, digits and ._@-, at most 160 characters); check who wrote it before renaming it.${NC}\n" \
+                "${_handoff_dir#"$session_dir/"}"
         # .cs/handoffs/ is shared and nothing ever deletes a handoff, so a file
         # belonging to another checkout keeps status: unconsumed indefinitely —
         # the rotate skill will not supersede one whose parent is absent from
@@ -883,11 +893,13 @@ EOF
         # else's plan. An armed marker is an explicit choice, so it outranks the
         # scan; a marker naming a spent or absent file is stale and the scan
         # still answers. The marker names a basename, never a path: a separator
-        # would resolve outside the handoff store.
+        # would resolve outside the handoff store. It names a plain one, as
+        # the scan offers, or nothing.
         local _marker="$_marker_dir/pending-handoff" _armed
         if [ -f "$_marker" ]; then
             _armed=$(cat "$_marker" 2>/dev/null | tr -d '[:space:]' || true)
             case "$_armed" in */*|*\\*) _armed="" ;; esac
+            _cs_is_plain_name "$_armed" || _armed=""
             if [ -n "$_armed" ] && [ -f "$_handoff_dir/$_armed" ] \
                 && _handoff_is_unconsumed "$_handoff_dir/$_armed"; then
                 pending_handoff="$_handoff_dir/$_armed"
@@ -910,7 +922,9 @@ EOF
                 local _origin=""
                 _handoff_is_local "$pending_handoff" "$session_dir" \
                     || _origin=" ${DIM}(from another checkout)${NC}"
-                printf "${DIM}Rotation handoff pending:${NC} %s%b\n" "$(basename "$pending_handoff")" "$_origin"
+                # .cs/handoffs/ is tracked, so a clone chooses the file name:
+                # it is printed as a plain name.
+                printf "${DIM}Rotation handoff pending:${NC} %s%b\n" "$(_cs_plain_name "$(basename "$pending_handoff")" 160)" "$_origin"
                 # One answer per row, key first, laid out like the already-open
                 # menu; the keys stay the letters the one-line ask used.
                 echo
@@ -974,7 +988,7 @@ EOF
                         }
                         { print }
                     ' "$pending_handoff" 2>/dev/null || true
-                    printf "${DIM}Handoff discarded:${NC} %s\n" "$(basename "$pending_handoff")"
+                    printf "${DIM}Handoff discarded:${NC} %s\n" "$(_cs_plain_name "$(basename "$pending_handoff")" 160)"
                 fi
                 # d without a pending handoff was never offered: treat as the
                 # default resume answer.

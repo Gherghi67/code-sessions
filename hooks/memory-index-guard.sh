@@ -47,6 +47,15 @@ _pointers() {  # file
     printf '%s\n' "$lines" | sed -E 's/^- \[[^]]*\]\(([^)]+)\).*/\1/' | env LC_ALL=C sort -u
 }
 
+# Each line on stdin, after <label>, as a plain name: .cs/memory is tracked, so
+# a clone chooses the entry file names and the pointers MEMORY.md holds.
+_print_names() {  # label
+    local name
+    while IFS= read -r name; do
+        printf '%s %s\n' "$1" "$(_cs_plain_name "$name" 160)"
+    done
+}
+
 _need_index() {
     [ -f "$INDEX" ] || _die "no $INDEX here; run from the session root"
 }
@@ -79,7 +88,7 @@ case "${1:-}" in
         after=$(_pointers "$INDEX")
         removed=$(env LC_ALL=C comm -23 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | sed '/^$/d')
         if [ -n "$removed" ]; then
-            printf '%s\n' "$removed" | sed 's/^/removed: /'
+            printf '%s\n' "$removed" | _print_names 'removed:'
             status=1
         fi
         # An entry this sweep wrote after the snapshot is in no snapshot, so
@@ -90,7 +99,7 @@ case "${1:-}" in
         done | env LC_ALL=C sort)
         unindexed=$(env LC_ALL=C comm -23 <(printf '%s\n' "$entries") <(printf '%s\n' "$after") | sed '/^$/d')
         if [ -n "$unindexed" ]; then
-            printf '%s\n' "$unindexed" | sed 's/^/unindexed: /'
+            printf '%s\n' "$unindexed" | _print_names 'unindexed:'
             status=1
         fi
         size=$(wc -c < "$INDEX" | tr -d ' ')
