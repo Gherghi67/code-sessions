@@ -547,7 +547,7 @@ test_wrap_archives_completed_task_rows() {
     assert_eq "Pass 1,Pass 2,Pass 3,Pass 4,Pass 5," "$passes" "wrap runs five passes" || return 1
     assert_file_contains "$COMMANDS_DIR/wrap.md" "^## Pass 4 — Task archive" "the fourth pass archives task rows" || return 1
     assert_file_contains "$COMMANDS_DIR/wrap.md" "^## Pass 5 — Mark the wrap finished" "marking the wrap stays last" || return 1
-    assert_file_contains "$COMMANDS_DIR/wrap.md" '~/.claude/skills/rotate/SKILL.md` step 8' \
+    assert_file_contains "$COMMANDS_DIR/wrap.md" '/\.claude/skills/rotate/SKILL\.md` step 8' \
         "the pass follows the rotate skill's step rather than restating it" || return 1
     assert_file_contains "$COMMANDS_DIR/wrap.md" '4\. \*\*Tasks:\*\*' "the report gains a fourth item" || return 1
 }
