@@ -1574,6 +1574,15 @@ test_age_add_refusal_suggests_age_remove_only_for_a_plain_name() {
         "$out" "the refusal suggests no age remove for a name that is not plain" || return 1
     assert_no_escape_bytes "$out" "no escape byte reaches the terminal" || return 1
     assert_eq "$k1" "$(cat "$dir/i$bad.pub")" "the recipient file still holds the first key" || return 1
+    # The clone chooses what the file holds too: the refusal shows it without
+    # its control bytes.
+    printf 'age1\033]0;T\007\033[2J\\e[0m\n' > "$dir/i$bad.pub"
+    rc=0
+    out=$("$CS_SECRETS_BIN" age add "$TEST_TMPDIR/second/i$bad.pub" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a key under a name whose file holds escape text is refused" || return 1
+    assert_eq "Error: refusing to replace recipient i$shown: $dir/i$shown.pub holds age1]0;T[2J\\e[0m, not the key given, $k2. Give the key file another name." \
+        "$out" "the refusal shows what the file holds without its control bytes" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal from what the file holds" || return 1
 }
 
 # An age1... key age cannot encrypt to is refused at `age add`, before it is
