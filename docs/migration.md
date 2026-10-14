@@ -184,7 +184,9 @@ It and `scripts/code-sessions-to-cs.py` need git 2.31 or later.
   by trials of this fork) is copied with `engine: claude`, so `ccs <name>`
   opens the same Claude conversation as `cs <name>`. The run says so, and that
   `ccs <name> --engine codex` opens the session's Codex thread instead (and
-  makes Codex its engine). From then on the engine is code-sessions's own.
+  makes Codex its engine). From then on the engine is code-sessions's own:
+  it is set only when the copy is first made, and a rerun never changes the
+  copy's engine, so a Codex session you opened with ccs stays Codex.
 - Each session's Claude conversations are copied from `~/.claude/projects` into
   the profile's, under the folder name of the copy's path, whole: subagents,
   workflows, tool results. Their `file-history`, `session-env` and task list
