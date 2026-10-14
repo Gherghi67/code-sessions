@@ -466,7 +466,7 @@ test_doctor_reports_a_live_server_and_removes_a_stale_pid_file() {
     out=$("$CS_BIN" -doctor 2>&1 | strip_ansi) || true
     assert_eq "  [ OK ] Remote: live is served by claude remote-control (PID $spid)" \
         "$(grep -F 'Remote: live' <<< "$out")" "a live server is reported" || return 1
-    assert_eq "  [WARN] Remote: gone's .cs/local/remote.pid named PID $dpid, which is not running; removed it. A server killed with SIGKILL leaves its spawned session running: look for it with ps." \
+    assert_eq "  [WARN] Remote: gone's .cs/local/remote.pid named PID $dpid, which is not running, and nothing removed it when that server ended; removed it now." \
         "$(grep -F 'Remote: gone' <<< "$out")" "a stale pid file is reported" || return 1
     assert_file_not_exists "$CS_SESSIONS_ROOT/gone/.cs/local/remote.pid" "the stale pid file is removed" || return 1
     assert_file_exists "$CS_SESSIONS_ROOT/live/.cs/local/remote.pid" "a live server's pid file is kept" || return 1
