@@ -1123,8 +1123,10 @@ fn render_confirm_delete(app: &App, frame: &mut Frame) {
     // Borders, question, note, the blank above the hint and the hint.
     let fixed_rows = 6;
     let columns = popup_columns(50, frame.area());
-    let warnings = warning_lines(&app.delete_warnings, frame.area().height, fixed_rows + grant_rows(app), columns, p.red);
-    let popup_area = centered_rect(50, fixed_rows + warnings.len() as u16 + grant_rows(app), frame.area());
+    let separator = grant_separator(app, frame.area().height, fixed_rows);
+    let grants = grant_rows(app, separator);
+    let warnings = warning_lines(&app.delete_warnings, frame.area().height, fixed_rows + grants, columns, p.red);
+    let popup_area = centered_rect(50, fixed_rows + warnings.len() as u16 + grants, frame.area());
     frame.render_widget(Clear, popup_area);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -1134,7 +1136,7 @@ fn render_confirm_delete(app: &App, frame: &mut Frame) {
 
     let mut lines = vec![one_row(&question, columns, p.fg), one_row(note, columns, p.fg)];
     lines.extend(warnings);
-    push_grant_lines(&mut lines, app, columns);
+    push_grant_lines(&mut lines, app, columns, separator);
     lines.push(Line::from(""));
     lines.push(one_row(&hint, columns, hint_color));
     let text = Paragraph::new(lines)
@@ -1164,9 +1166,13 @@ fn render_confirm_batch_delete(app: &App, frame: &mut Frame) {
     };
     let hint_color = if remaining > 0 { p.comment } else { p.fg };
 
+    // Borders, question, names, the blank above the note, the note and the hint.
+    let fixed_rows = 7;
     let columns = popup_columns(55, frame.area());
-    let warnings = warning_lines(&app.delete_warnings, frame.area().height, 7 + grant_rows(app), columns, p.red);
-    let popup_area = centered_rect(55, 7 + warnings.len() as u16 + grant_rows(app), frame.area());
+    let separator = grant_separator(app, frame.area().height, fixed_rows);
+    let grants = grant_rows(app, separator);
+    let warnings = warning_lines(&app.delete_warnings, frame.area().height, fixed_rows + grants, columns, p.red);
+    let popup_area = centered_rect(55, fixed_rows + warnings.len() as u16 + grants, frame.area());
     frame.render_widget(Clear, popup_area);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -1176,7 +1182,7 @@ fn render_confirm_batch_delete(app: &App, frame: &mut Frame) {
 
     let mut lines = vec![one_row(&format!("Delete {} sessions?", count), columns, p.fg), one_row(&list, columns, p.comment)];
     lines.extend(warnings);
-    push_grant_lines(&mut lines, app, columns);
+    push_grant_lines(&mut lines, app, columns, separator);
     lines.push(Line::from(""));
     lines.push(one_row("This cannot be undone.", columns, p.red));
     lines.push(one_row(&hint, columns, hint_color));
@@ -1201,18 +1207,30 @@ fn grant_lines(app: &App) -> Vec<String> {
     lines
 }
 
-/// Rows the grant lines take: a blank separator, then one row each.
-fn grant_rows(app: &App) -> u16 {
-    let n = grant_lines(app).len() as u16;
-    if n == 0 { 0 } else { 1 + n }
+/// Whether the grant lines get a blank separator above them: they do,
+/// unless warnings exist and the `height`-row screen would leave them no row
+/// with it but one without it. That row then holds the warning or their
+/// count, directly over the grant it explains. `fixed_rows` are the popup's
+/// rows besides its warnings and grants.
+fn grant_separator(app: &App, height: u16, fixed_rows: u16) -> bool {
+    app.delete_warnings.is_empty() || height != fixed_rows + grant_rows(app, true)
 }
 
-fn push_grant_lines(lines: &mut Vec<Line<'static>>, app: &App, columns: u16) {
+/// Rows the grant lines take: the blank separator when `separator`, then
+/// one row each.
+fn grant_rows(app: &App, separator: bool) -> u16 {
+    let n = grant_lines(app).len() as u16;
+    if n == 0 { 0 } else { separator as u16 + n }
+}
+
+fn push_grant_lines(lines: &mut Vec<Line<'static>>, app: &App, columns: u16, separator: bool) {
     let grants = grant_lines(app);
     if grants.is_empty() {
         return;
     }
-    lines.push(Line::from(""));
+    if separator {
+        lines.push(Line::from(""));
+    }
     for text in grants {
         lines.push(one_row(&text, columns, app.theme.fg));
     }
