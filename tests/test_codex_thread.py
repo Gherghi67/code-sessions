@@ -61,12 +61,20 @@ for line in sys.stdin:
         reply({'error':{'code':-32600,'message':'no rollout found'}});continue
     if mode == 'invalid_result':
         reply({'result':[]});continue
+    if method == 'thread/turns/list':
+        reply({'result':{'data':json.loads(os.environ.get('FAKE_TURNS', '[]')),'nextCursor':None}});continue
     if method in ('thread/start','thread/resume'):
         tid = '01900000-0000-7000-8000-000000000001'
         if mode == 'mismatch' and method == 'thread/resume':
             tid = '01900000-0000-7000-8000-000000000002'
         if mode == 'bad_id': tid = 'malicious\n--last'
-        reply({'result':{'thread':{'id':tid,'ephemeral':mode == 'ephemeral'}}})
+        thread = {'id':tid,'ephemeral':mode == 'ephemeral'}
+        if mode == 'large_history' and method == 'thread/resume':
+            # Real resume responses include history unless explicitly excluded.
+            thread['turns'] = [] if request['params'].get('excludeTurns') is True else [
+                {'id':'large-turn','status':'completed','items':[
+                    {'type':'agentMessage','id':'large-message','text':'x' * (5 * 1024 * 1024)}]}]
+        reply({'result':{'thread':thread}})
         if mode == 'write_timeout': time.sleep(60)
     else: reply({'result':{}})
 if mode == 'cleanup':
@@ -154,6 +162,16 @@ class BootstrapTests(unittest.TestCase):
         result = self.run_helper('noise')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, THREAD_ID + '\n')
+
+    def test_large_history_resumes_and_verifies_without_fetching_turns(self):
+        result = self.run_helper('large_history', '--thread-id', THREAD_ID)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, THREAD_ID + '\n')
+        requests = self.requests()
+        resumes = [r for r in requests if r['request']['method'] == 'thread/resume']
+        self.assertEqual([r['process'] for r in resumes], [1, 2])
+        self.assertEqual(sum(r['request']['method'] == 'thread/inject_items' for r in requests), 1)
+        self.assertNotIn('thread/start', [r['request']['method'] for r in requests])
 
     def test_large_private_stderr_does_not_block_or_leak(self):
         result = self.run_helper('stderr')
@@ -244,6 +262,43 @@ class BootstrapTests(unittest.TestCase):
                 process.kill()
                 process.wait()
 
+    def latest_turn(self, turns=(), mode='', *extra):
+        command = [sys.executable, str(HELPER), '--codex-bin', str(self.fake), '--cwd', str(self.cwd),
+                   '--timeout', '5', '--latest-turn', *(extra or ('--thread-id', THREAD_ID))]
+        result = subprocess.run(command, env=dict(self.env, FAKE_MODE=mode, FAKE_TURNS=json.dumps(list(turns))),
+                                capture_output=True, text=True, timeout=10)
+        self.assert_cleaned_up()
+        return result
+
+    def test_latest_turn_reads_the_history_and_changes_nothing(self):
+        result = self.latest_turn()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, '\n', 'a thread no turn started in prints an empty line')
+        result = self.latest_turn([{'id': '01a139d6-0c65-7111-a45d-c97f4d0488eb', 'status': 'interrupted'}])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, '01a139d6-0c65-7111-a45d-c97f4d0488eb\n')
+        requests = self.requests()
+        self.assertEqual([r['request']['method'] for r in requests],
+                         ['initialize', 'initialized', 'thread/turns/list'] * 2)
+        self.assertEqual(requests[2]['request']['params'], {
+            'threadId': THREAD_ID, 'limit': 1, 'sortDirection': 'desc', 'itemsView': 'notLoaded'})
+
+    def test_latest_turn_rejects_what_is_not_a_turn(self):
+        for turns in ([{'id': 'turn\n--last'}], [{'status': 'completed'}], ['turn-1']):
+            result = self.latest_turn(turns)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, '')
+            self.assertIn('exact turn ID', result.stderr)
+        result = self.latest_turn((), 'invalid_result')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, '')
+
+    def test_latest_turn_needs_a_thread_and_no_instructions(self):
+        result = self.latest_turn((), '', '--instructions-file', str(self.instructions))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('--latest-turn needs --thread-id', result.stderr)
+        self.assertFalse((self.root / 'pids').exists())
+
     def test_bad_arguments_and_empty_inputs_do_not_launch_server(self):
         for extra in [('--thread-id', '--last'), ('--timeout', 'nan'), ('--timeout', '0')]:
             result = self.run_helper('', *extra)
@@ -283,6 +338,10 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(refresh.returncode, 0, refresh.stderr)
         self.assertEqual(refresh.stdout, thread_id + '\n')
         self.assertIn('CS refreshed context marker', rollouts[0].read_text())
+        turns = subprocess.run(command[:6] + ['--thread-id', thread_id, '--latest-turn'], env=env,
+                               capture_output=True, text=True, timeout=40)
+        self.assertEqual(turns.returncode, 0, turns.stderr)
+        self.assertEqual(turns.stdout, '\n', 'context alone starts no turn')
 
 
 if __name__ == '__main__':

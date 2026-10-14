@@ -158,10 +158,11 @@ _codex_hook_command() {  # cs_path
 # sha256 of the handler group's definition, as compact sorted-key JSON with
 # Codex's defaults filled in. cs writes that hash in the same step that
 # registers its hook, so the hook runs without a review prompt.
-_codex_hook_trust_hash() {  # command
+_codex_hook_trust_hash() {  # command, [matcher as JSON]
     local json
-    json=$(jq -ncS --arg c "$1" \
-        '{event_name: "session_start", hooks: [{async: false, command: $c, timeout: 600, type: "command"}]}' \
+    json=$(jq -ncS --arg c "$1" --argjson matcher "${2:-null}" \
+        '{event_name: "session_start", hooks: [{async: false, command: $c, timeout: 600, type: "command"}]}
+         + (if $matcher == null then {} else {matcher: $matcher} end)' \
         | tr -d '\n') || return 1
     if command -v sha256sum >/dev/null 2>&1; then
         printf '%s' "$json" | sha256sum | cut -c1-64
@@ -171,8 +172,8 @@ _codex_hook_trust_hash() {  # command
 }
 
 # A config.toml rewrite: drop the trust table for each listed key, then rename
-# trust tables for SessionStart groups past a removed one down by one index
-# (shift_from, empty for none), keeping every other line as it was.
+# trust tables past a removed group or handler down by one index. shift_from
+# is a group index, group:handler for a handler removal, or empty for none.
 _codex_trust_tables_edit() {  # config, hooks_file, shift_from, keys...
     local config="$1" file="$2" shift_from="$3" tmp
     shift 3
@@ -180,6 +181,7 @@ _codex_trust_tables_edit() {  # config, hooks_file, shift_from, keys...
     tmp=$(mktemp "$config.cs.XXXXXX") || return 1
     awk -v prefix="[hooks.state.\"$file:session_start:" -v shift_from="$shift_from" -v drops="$(printf '%s\n' "$@")" '
         BEGIN {
+            shift_parts = split(shift_from, removed, ":")
             n = split(drops, list, "\n")
             for (i = 1; i <= n; i++) if (list[i] != "") drop["[hooks.state.\"" list[i] "\"]"] = 1
         }
@@ -193,7 +195,12 @@ _codex_trust_tables_edit() {  # config, hooks_file, shift_from, keys...
         shift_from != "" && index($0, prefix) == 1 {
             rest = substr($0, length(prefix) + 1)
             split(rest, parts, ":")
-            if (parts[1] ~ /^[0-9]+$/ && parts[1] + 0 > shift_from + 0) {
+            handler = parts[2]; sub(/"\].*$/, "", handler)
+            if (shift_parts == 2 && parts[1] == removed[1] && handler ~ /^[0-9]+$/ && handler + 0 > removed[2] + 0) {
+                print prefix parts[1] ":" (handler - 1) substr(parts[2], length(handler) + 1)
+                next
+            }
+            if (shift_parts == 1 && parts[1] ~ /^[0-9]+$/ && parts[1] + 0 > shift_from + 0) {
                 print prefix (parts[1] - 1) substr(rest, length(parts[1]) + 1)
                 next
             }
@@ -212,13 +219,21 @@ _codex_hook_group_index() {  # hooks.json content
          | .key] | first // empty'
 }
 
+# Index of cs's handler inside its SessionStart group.
+_codex_hook_handler_index() {  # hooks.json content, group index
+    printf '%s' "$1" | jq -r --argjson i "$2" '
+        [.hooks.SessionStart[$i].hooks | to_entries[]
+         | select((.value.command // "") | endswith(" -codex-hook session-start"))
+         | .key] | first // empty'
+}
+
 # Register cs's SessionStart hook in <codex_dir>/hooks.json and trust it in
-# <codex_dir>/config.toml. A reinstall replaces the group in place and a first
-# install appends it, so the user's own groups keep their indices, and with
-# them their trust. A hooks.json that is not valid JSON is left alone.
+# <codex_dir>/config.toml. A reinstall replaces only cs's handler in place;
+# a first install appends a group. User handlers and group matchers keep their
+# positions and trust. A hooks.json that is not valid JSON is left alone.
 _codex_hooks_register() {  # codex_dir, command
     local dir="$1" cmd="$2" file="$1/hooks.json" config="$1/config.toml"
-    local doc index tmp hash key
+    local doc index handler=0 matcher tmp hash key
     case "$file" in *'"'*|*\\*) return 1 ;; esac
     if [ -f "$file" ]; then
         doc=$(cat "$file") || return 1
@@ -227,35 +242,43 @@ _codex_hooks_register() {  # codex_dir, command
         doc='{}'
     fi
     index=$(_codex_hook_group_index "$doc")
-    doc=$(printf '%s' "$doc" | jq --arg c "$cmd" --arg i "$index" '
-        {hooks: [{type: "command", command: $c}]} as $ours
+    if [ -n "$index" ]; then
+        handler=$(_codex_hook_handler_index "$doc" "$index") || return 1
+    fi
+    doc=$(printf '%s' "$doc" | jq --arg c "$cmd" --arg i "$index" --argjson h "$handler" '
+        {type: "command", command: $c} as $ours
         | .hooks = (.hooks // {})
         | .hooks.SessionStart = (.hooks.SessionStart // [])
-        | if $i == "" then .hooks.SessionStart += [$ours]
-          else .hooks.SessionStart[($i | tonumber)] = $ours end') || return 1
+        | if $i == "" then .hooks.SessionStart += [{hooks: [$ours]}]
+          else .hooks.SessionStart[($i | tonumber)].hooks[$h] = $ours end') || return 1
     [ -n "$index" ] || index=$(printf '%s' "$doc" | jq '.hooks.SessionStart | length - 1')
+    matcher=$(printf '%s' "$doc" | jq -c --argjson i "$index" '.hooks.SessionStart[$i].matcher // null') || return 1
     mkdir -p "$dir" || return 1
     tmp=$(mktemp "$file.cs.XXXXXX") || return 1
     printf '%s\n' "$doc" > "$tmp" && chmod 600 "$tmp" && mv "$tmp" "$file" || { rm -f "$tmp"; return 1; }
-    hash=$(_codex_hook_trust_hash "$cmd") || return 1
-    key="$file:session_start:$index:0"
+    hash=$(_codex_hook_trust_hash "$cmd" "$matcher") || return 1
+    key="$file:session_start:$index:$handler"
     _codex_trust_tables_edit "$config" "$file" "" "$key" || return 1
     [ -f "$config" ] || { : > "$config" && chmod 600 "$config"; } || return 1
     if [ -s "$config" ]; then printf '\n' >> "$config" || return 1; fi
     printf '[hooks.state."%s"]\ntrusted_hash = "sha256:%s"\n' "$key" "$hash" >> "$config"
 }
 
-# Remove cs's SessionStart group and its trust table. Groups after it move up
-# one index, so their trust tables are renamed to match. A hooks.json left with
-# nothing in it is removed.
+# Remove only cs's handler, and its group if empty. Trust follows the remaining
+# handlers or groups as their indices move. Remove an empty hooks.json.
 _codex_hooks_unregister() {  # codex_dir
-    local dir="$1" file="$1/hooks.json" config="$1/config.toml" doc index tmp
+    local dir="$1" file="$1/hooks.json" config="$1/config.toml" doc index handler shift_from count tmp
     [ -f "$file" ] || return 0
     doc=$(cat "$file") || return 1
     index=$(_codex_hook_group_index "$doc" 2>/dev/null) || return 1
     [ -n "$index" ] || return 0
-    doc=$(printf '%s' "$doc" | jq --argjson i "$index" '
-        .hooks.SessionStart |= (to_entries | map(select(.key != $i)) | map(.value))
+    handler=$(_codex_hook_handler_index "$doc" "$index") || return 1
+    count=$(printf '%s' "$doc" | jq --argjson i "$index" '.hooks.SessionStart[$i].hooks | length') || return 1
+    shift_from="$index:$handler"
+    [ "$count" != 1 ] || shift_from="$index"
+    doc=$(printf '%s' "$doc" | jq --argjson i "$index" --argjson h "$handler" '
+        del(.hooks.SessionStart[$i].hooks[$h])
+        | if .hooks.SessionStart[$i].hooks == [] then del(.hooks.SessionStart[$i]) else . end
         | if .hooks.SessionStart == [] then del(.hooks.SessionStart) else . end
         | if .hooks == {} then del(.hooks) else . end') || return 1
     if [ "$doc" = '{}' ]; then
@@ -264,7 +287,7 @@ _codex_hooks_unregister() {  # codex_dir
         tmp=$(mktemp "$file.cs.XXXXXX") || return 1
         printf '%s\n' "$doc" > "$tmp" && chmod 600 "$tmp" && mv "$tmp" "$file" || { rm -f "$tmp"; return 1; }
     fi
-    _codex_trust_tables_edit "$config" "$file" "$index" "$file:session_start:$index:0"
+    _codex_trust_tables_edit "$config" "$file" "$shift_from" "$file:session_start:$index:$handler"
 }
 
 # The Claude Code keybindings cs offers to add. Ctrl+X R and Ctrl+X W are

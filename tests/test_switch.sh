@@ -98,16 +98,35 @@ if [ -n "$uuid" ]; then
 fi
 exit "$("$CS_STUB_DIR/plan" claude)"
 CLAUDE
+    cat > "$CS_STUB_DIR/codex-turn" <<'TURN'
+#!/usr/bin/env bash
+# codex-turn: a turn as Codex runs one, for a plan's PLAN_CMD: into the
+# thread's history, then the SessionStart handlers of each group whose
+# matcher takes the launch's `resume` source.
+printf 'turn-%s-%s\n' "$$" "$RANDOM" >> "$CS_STUB_DIR/codex.turns"
+jq -r '.hooks.SessionStart[]?
+    | select((.matcher // "") as $m | $m == "" or $m == "*" or ("resume" | test("^(?:" + $m + ")$")))
+    | .hooks[].command' "${CODEX_HOME:-$HOME/.codex}/hooks.json" 2>/dev/null \
+    | while IFS= read -r command; do
+        jq -nc --arg id "$CS_STUB_THREAD" '{session_id:$id,source:"resume"}' | bash -c "$command" >/dev/null 2>&1
+    done
+TURN
     cat > "$stub/codex" <<'CODEX'
 #!/usr/bin/env bash
 STUB_PPID=$PPID "$CS_STUB_DIR/record" codex "$@"
 if [ -f "$CS_STUB_DIR/codex.fail-early" ]; then
     rc=$(cat "$CS_STUB_DIR/codex.fail-early"); rm -f "$CS_STUB_DIR/codex.fail-early"; exit "$rc"
 fi
+# cs runs: codex --no-daemon resume <thread> -C <dir> [prompt]
+export CS_STUB_THREAD="${3:-}"
 exit "$("$CS_STUB_DIR/plan" codex)"
 CODEX
     cat > "$stub/cs-codex-thread" <<'HELPER'
 #!/usr/bin/env bash
+# The newest turn of the thread's history, one line per turn in codex.turns.
+case " $* " in
+    *' --latest-turn '*) tail -n 1 "$CS_STUB_DIR/codex.turns" 2>/dev/null; exit 0 ;;
+esac
 n=$(( $(cat "$CS_STUB_DIR/helper.calls" 2>/dev/null || echo 0) + 1 ))
 printf '%s\n' "$n" > "$CS_STUB_DIR/helper.calls"
 printf '%s\n' "$@" > "$CS_STUB_DIR/helper.args.$n"
@@ -923,6 +942,74 @@ test_relaunched_conversation_that_ran_then_failed_keeps_the_handoff_spent() {
     assert_not_exists "$dir/.cs/local/pending-handoff" "nothing is re-armed" || return 1
 }
 
+# A reinstall keeps the user's matcher on the group cs's hook sits in. With
+# `clear` there, the hook never sees a launch's `resume` start.
+_clear_only_codex_hook() {
+    mkdir -p "$HOME/.codex"
+    jq -n --arg cs "'$CS_BIN' -codex-hook session-start" '{hooks: {SessionStart: [{matcher: "clear", hooks: [
+        {type: "command", command: "/user/on-clear"}, {type: "command", command: $cs}]}]}}' \
+        > "$HOME/.codex/hooks.json"
+}
+
+# The relaunched Codex ran a turn the log never heard of, then exited with an
+# error: its thread's history shows the turn, so the handoff stays spent.
+test_relaunched_codex_that_ran_behind_a_clear_only_hook_keeps_the_handoff_spent() {
+    local out status=0 dir thread
+    _new_claude_session rcl
+    dir=$(_dir rcl)
+    _clear_only_codex_hook
+    _plan claude "PLAN_HANDOFF=$HANDOFF" "PLAN_SWITCH=codex"
+    _plan codex "PLAN_EXIT=1" "PLAN_CMD='\"\$CS_STUB_DIR/codex-turn\"'"
+    out=$("$CS_BIN" rcl </dev/null 2>&1) || status=$?
+    assert_eq 1 "$status" "cs ends with codex's status: $out" || return 1
+    thread=$(cat "$dir/.cs/local/codex-thread-id")
+    assert_exists "$CS_STUB_DIR/codex.turns" "(fixture) the turn ran" || return 1
+    _lacks "$dir/.cs/local/session.log" "ID: $thread" "(fixture) the matcher keeps the start out of the log" || return 1
+    assert_output_not_contains "$out" 'did not start' "codex did start" || return 1
+    _has "$dir/.cs/handoffs/$HANDOFF" "consumed_by: $thread" || return 1
+    assert_not_exists "$dir/.cs/local/pending-handoff" "nothing is re-armed" || return 1
+}
+
+# The same through a resume: the thread had turns before, and one more ran.
+test_resumed_codex_that_ran_behind_a_clear_only_hook_keeps_the_handoff_spent() {
+    local out status=0 dir thread
+    _new_codex_session rcr
+    dir=$(_dir rcr)
+    thread=$(cat "$dir/.cs/local/codex-thread-id")
+    printf 'turn-earlier\n' > "$CS_STUB_DIR/codex.turns"
+    "$CS_BIN" rcr --engine claude </dev/null >/dev/null 2>&1 || { echo "  FAIL: claude open failed"; return 1; }
+    _clear_only_codex_hook
+    _plan claude "PLAN_HANDOFF=$HANDOFF" "PLAN_SWITCH='codex --resume'"
+    _plan codex "PLAN_EXIT=1" "PLAN_CMD='\"\$CS_STUB_DIR/codex-turn\"'"
+    out=$("$CS_BIN" rcr </dev/null 2>&1) || status=$?
+    assert_eq 1 "$status" "cs ends with codex's status: $out" || return 1
+    assert_eq 2 "$(_calls codex)" "(fixture) codex is relaunched once" || return 1
+    assert_eq 2 "$(wc -l < "$CS_STUB_DIR/codex.turns" | tr -d ' ')" "(fixture) the turn ran" || return 1
+    _lacks "$dir/.cs/local/session.log" "ID: $thread" "(fixture) the matcher keeps the start out of the log" || return 1
+    assert_output_not_contains "$out" 'did not start' "codex did start" || return 1
+    _has "$dir/.cs/handoffs/$HANDOFF" "consumed_by: $thread" || return 1
+    assert_not_exists "$dir/.cs/local/pending-handoff" "nothing is re-armed" || return 1
+}
+
+# A resumed thread's earlier turns are no sign the relaunch ran: a Codex that
+# never starts adds none, and the handoff goes back.
+test_resume_relaunch_codex_cannot_start_puts_the_handoff_back() {
+    local out status=0 dir
+    _new_codex_session rcn
+    dir=$(_dir rcn)
+    printf 'turn-earlier\n' > "$CS_STUB_DIR/codex.turns"
+    "$CS_BIN" rcn --engine claude </dev/null >/dev/null 2>&1 || { echo "  FAIL: claude open failed"; return 1; }
+    _plan claude "PLAN_HANDOFF=$HANDOFF" "PLAN_SWITCH='codex --resume'"
+    echo 1 > "$CS_STUB_DIR/codex.fail-early"
+    out=$("$CS_BIN" rcn </dev/null 2>&1) || status=$?
+    assert_eq 1 "$status" "cs ends with the relaunch's status: $out" || return 1
+    assert_eq 2 "$(_calls codex)" "(fixture) codex was asked to resume" || return 1
+    assert_output_contains "$out" "The switch to codex did not start; the handoff $HANDOFF stays armed" || return 1
+    _has "$dir/.cs/handoffs/$HANDOFF" "status: unconsumed" "the spend is undone" || return 1
+    _lacks "$dir/.cs/handoffs/$HANDOFF" "consumed_by:" || return 1
+    assert_eq "$HANDOFF" "$(cat "$dir/.cs/local/pending-handoff" 2>/dev/null)" "the handoff is armed again" || return 1
+}
+
 # The target CLI vanished between cs -switch and the exit: the settle says
 # so itself, leaves the handoff armed, and the run ends with the CLI's status.
 test_settle_keeps_the_handoff_when_the_target_cli_went_missing() {
@@ -1016,6 +1103,9 @@ run_test test_resume_relaunch_claude_refuses_puts_the_handoff_back
 run_test test_fresh_relaunch_codex_cannot_start_puts_the_handoff_back
 run_test test_relaunched_conversation_that_rotated_then_failed_keeps_its_rotation
 run_test test_relaunched_conversation_that_ran_then_failed_keeps_the_handoff_spent
+run_test test_relaunched_codex_that_ran_behind_a_clear_only_hook_keeps_the_handoff_spent
+run_test test_resumed_codex_that_ran_behind_a_clear_only_hook_keeps_the_handoff_spent
+run_test test_resume_relaunch_codex_cannot_start_puts_the_handoff_back
 run_test test_settle_keeps_the_handoff_when_the_target_cli_went_missing
 run_test test_settle_refuses_a_switch_that_names_no_other_engine
 run_test test_verb_refuses_an_encrypted_session_that_would_not_reopen

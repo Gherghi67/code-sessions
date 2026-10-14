@@ -373,42 +373,56 @@ _switch_failed_notice() {  # session_name, target, previous_engine, handoff
 # carry (taken as the run started) is still unconsumed when the CLI never
 # reached it: Claude's fresh path leaves it to SessionStart. The resume path
 # and Codex's r path spend it before the CLI starts, so it is put back while
-# nothing shows the conversation ran: no session start logged since, and no
-# newer handoff armed by a rotation inside it. A conversation that ran keeps
-# what it took, and this says nothing.
+# nothing shows the conversation ran: no session start logged since, no turn
+# in a Codex thread's history since, and no newer handoff armed by a rotation
+# inside it. A conversation that ran keeps what it took, and this says nothing.
 _switch_relaunch_failed() {  # session_name, session_dir, engine
-    local name="$1" dir="$2" engine="$3" handoff handoffs private armed
+    local name="$1" dir="$2" engine="$3" handoff consumer=""
     # Unset when the run ended before its launch, which then spent nothing.
     handoff=${_cs_switch_carry-$(_rotation_armed_handoff "$dir")}
-    [ -n "$handoff" ] || return 0
-    handoffs=$(cs_handoff_dir "$dir/.cs") || return 0
-    private=$(cs_private_dir "$dir/.cs") || return 0
+    [ "${_cs_switch_spent:-}" != "$handoff" ] || consumer="${_cs_switch_spent_by:-}"
+    cs_run_with_lease "$dir/.cs" _restore_launch_handoff "$dir" "$handoff" \
+        "$consumer" "${_cs_switch_starts:-}" "${_cs_switch_ran:-}" || return 0
+    _switch_failed_notice "$name" "$engine" "$_cs_switched_from" "$handoff"
+}
+
+# Shared by engine switches and direct Codex rotation launches. Return success
+# only when the handoff is ready to retry. The caller holds the run lease.
+# ran: set when the consumer's own history shows it ran (Codex's thread).
+_restore_launch_handoff() {  # session_dir, handoff, consumer_id, starts_before_launch, [ran]
+    local dir="$1" handoff="$2" consumer="$3" starts="$4" ran="${5:-}" handoffs private armed
+    [ -n "$handoff" ] || return 1
+    handoffs=$(cs_handoff_dir "$dir/.cs") || return 1
+    private=$(cs_private_dir "$dir/.cs") || return 1
     armed=$(_rotation_marker_basename "$dir")
-    [ -z "$armed" ] || [ "$armed" = "$handoff" ] || return 0
+    [ -z "$armed" ] || [ "$armed" = "$handoff" ] || return 1
     if ! _handoff_is_unconsumed "$handoffs/$handoff"; then
-        [ "${_cs_switch_spent:-}" = "$handoff" ] || return 0
-        [ "$(_switch_logged_starts "$dir")" = "${_cs_switch_starts:-}" ] || return 0
-        _switch_unspend_handoff "$handoffs/$handoff" "${_cs_switch_spent_by:-}" || return 0
+        [ -z "$ran" ] || return 1
+        [ "$(_switch_logged_starts "$dir")" = "$starts" ] || return 1
+        _switch_unspend_handoff "$handoffs/$handoff" "$consumer" || return 1
     fi
     if [ "$armed" != "$handoff" ]; then
-        cs_write_atomic "$private/pending-handoff" printf '%s\n' "$handoff" || true
+        cs_write_atomic "$private/pending-handoff" printf '%s\n' "$handoff" || return 1
     fi
-    _switch_failed_notice "$name" "$engine" "$_cs_switched_from" "$handoff"
+    return 0
 }
 
 # Where a launch spends the handoff before its CLI starts (the resume path
 # below, Codex's r path): what a switch relaunch's settle needs to put it back
-# if the CLI never takes it up.
+# if the CLI never takes it up. A failed Codex launch then sets _cs_switch_ran
+# from its thread's history.
 _switch_note_spent() {  # session_dir, handoff, consumer_id
     _cs_switch_spent="$2"
     _cs_switch_spent_by="$3"
     _cs_switch_starts=$(_switch_logged_starts "$1")
+    _cs_switch_ran=""
 }
 
 # How many conversation starts this checkout's session logs hold: both
 # engines' start hooks log to the private dir, and .cs/local still counts for a
 # log an older Codex run left there. A count that grew while the CLI ran means
-# it reached its conversation.
+# it reached its conversation; one that did not proves nothing alone, since a
+# hook can be filtered by a matcher or left untrusted.
 _switch_logged_starts() {  # session_dir
     local private total more
     total=$(grep -c 'Session started' "$1/.cs/local/session.log" 2>/dev/null) || total=0
