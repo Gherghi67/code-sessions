@@ -4617,9 +4617,13 @@ $missing"
     fi
 
     local aside=""
-    if [ "$mode" = "ignored" ]; then
-        cs_private_dir "$base_dir/.cs" >/dev/null \
-            || error "cannot fuse the worktree's records: $base_dir/.cs/private is locked. Mount it, then retry."
+    if [ "$mode" = "ignored" ] && ! cs_private_dir "$base_dir/.cs" >/dev/null; then
+        # A link here is a vault locked since the vault-link check above;
+        # anything else is a .cs/private that is no directory at all, which
+        # no mount fixes.
+        [ -L "$base_dir/.cs/private" ] \
+            || error "cannot fuse the worktree's records: $base_dir/.cs/private is not a directory. Nothing was removed. Move it out of $base_dir/.cs, then run /finish $task again."
+        error "cannot fuse the worktree's records: $base_dir/.cs/private is locked. Mount it, then retry."
     fi
     _retire_trash_ignored_work "$wt_dir" "$task"
     local trashed nl=$'\n'
