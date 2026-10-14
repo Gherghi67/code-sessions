@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/test_lib.sh"
 
 SENTINEL='<!-- cs:session-commits -->'
-RULE='Files under `.cs/` (narratives, handoffs, `.cs/README.md`, `.cs/summary.md`, memory entries) never get a commit of their own. They go in with the next handoff commit (the `rotate` skill) or the `/wrap` commit, or with the project change they describe. Uncommitted, they are safe: autosave snapshots every Write and Edit to a shadow ref.'
+RULE='cs, its skills and its commands never commit files under `.cs/` (narratives, handoffs, `.cs/README.md`, `.cs/summary.md`, memory entries, the task archive), and neither do you on your own: commit them only when the user asks. Uncommitted, they are safe: autosave snapshots every Write and Edit to a shadow ref.'
 
 # Open a session, answering the resume prompt. Prints cs's output.
 _open() {  # name

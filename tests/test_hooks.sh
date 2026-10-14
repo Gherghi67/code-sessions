@@ -4529,17 +4529,17 @@ test_reminder_carries_the_commit_cadence() {
 
     # Sessions that track .cs/ were committing once per append (328 such
     # commits in one repo, 74 in a day). The reminder is the only surface that
-    # fires AT the append, so the cadence rides with it rather than in the
+    # fires AT the append, so the rule rides with it as well as in the
     # session protocol, which is read once at startup and stale by then.
     local output
     output=$(echo '{}' | bash "$HOOKS_DIR/narrative-reminder.sh" 2>/dev/null)
-    assert_output_contains "$output" "never one commit per append" \
-        "Reminder should carry the commit cadence" || return 1
-    # The session protocol's cs:session-commits rule says the same: session
-    # files never get a commit of their own, and ride in the handoff or /wrap
-    # commit or the project change they describe.
-    assert_output_contains "$output" "Narrative appends never get a commit of their own: commit them with the next handoff (/rotate) or /wrap commit, or with the project change they describe" \
-        "Cadence should name the commits appends ride in, as the protocol does" || return 1
+    # The session protocol's cs:session-commits rule says the same: nothing
+    # commits files under .cs/ unless the user asks (Alex, 2026-10-14: "No
+    # commits at all").
+    assert_output_contains "$output" "Never commit narrative appends or anything else under .cs/ on your own, not even beside a project change: cs and its skills commit none of them, and they are committed only when the user asks." \
+        "Reminder should say appends are committed only when the user asks, as the protocol does" || return 1
+    assert_output_not_contains "$output" "commit them with the next handoff" \
+        "no commit is named for appends to ride in" || return 1
     # Naming the safe alternative matters: without it the instruction reads as
     # a reason to delay appends, which loses work the autosave ref already holds.
     assert_output_contains "$output" "autosave" \
@@ -4547,7 +4547,7 @@ test_reminder_carries_the_commit_cadence() {
     # A session whose own notes say to push after each commit pushed every
     # narrative commit to a deploy branch, one redeploy each. The reminder
     # fires at the append, so it is where the push rule has to be.
-    assert_output_contains "$output" "Never push a commit that holds only narrative appends; push them with real changes or when the user asks." \
+    assert_output_contains "$output" "Never push a commit that holds narrative appends unless the user asks." \
         "Cadence should say a narrative-only commit is never pushed" || return 1
 }
 
