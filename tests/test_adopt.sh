@@ -578,13 +578,29 @@ test_adopt_preserves_existing_git_repo() {
     fi
 }
 
+# A folder with no repo gets one, set up as a session's is, and no commit:
+# the user's files and cs's are all left for the user to commit.
 test_adopt_inits_git_when_none_exists() {
-    local project_dir="$TEST_TMPDIR/my-project"
+    local project_dir="$TEST_TMPDIR/my-project" out
     mkdir -p "$project_dir"
+    printf 'notes\n' > "$project_dir/notes.txt"
 
-    (cd "$project_dir" && "$CS_BIN" -adopt my-session)
+    out=$(cd "$project_dir" && "$CS_BIN" -adopt my-session 2>&1)
 
     assert_dir "$project_dir/.git" "Git repo should be initialized" || return 1
+    if git -C "$project_dir" rev-parse -q --verify HEAD >/dev/null; then
+        echo "  FAIL: adopt made a commit: $(git -C "$project_dir" log --oneline -1)"
+        return 1
+    fi
+    assert_eq "refs/heads/main" "$(git -C "$project_dir" symbolic-ref HEAD)" "the unborn branch is main" || return 1
+    assert_eq "" "$(git -C "$project_dir" ls-files)" "nothing is staged" || return 1
+    assert_eq "false" "$(git -C "$project_dir" config --get core.autocrlf)" "autocrlf is pinned off" || return 1
+    assert_file_contains "$project_dir/.gitattributes" '^\.cs/memory/MEMORY\.md merge=ours$' || return 1
+    assert_file_contains "$project_dir/.gitattributes" '^\.cs/timeline\.jsonl merge=union$' || return 1
+    assert_file_contains "$project_dir/.gitattributes" '^\.cs/memory/narrative\.\*\.md merge=union$' || return 1
+    assert_file_contains "$project_dir/.gitignore" '^\.cs/local/$' "cs's rules are in the .gitignore" || return 1
+    assert_output_contains "$out" "cs committed nothing; it left .cs/, .gitignore and .gitattributes for you to commit" \
+        "one line names what adopt left" || return 1
 }
 
 test_adopt_into_git_repo_without_claude_md_stages_bookkeeping() {
