@@ -52,15 +52,17 @@ case "$mode" in
         exit "$n"
         ;;
     serve)
-        sleeper=""
-        on_signal() { echo "signal $1" >> "$log"; [ -z "$sleeper" ] || kill "$sleeper" 2>/dev/null; exit 0; }
+        # Waits in the read builtin on a fifo nobody writes, not on a child:
+        # a child in the same process group takes the signal too, and its
+        # death could end the wait before the trap ran.
+        on_signal() { echo "signal $1" >> "$log"; exit 0; }
         trap 'on_signal HUP' HUP
         trap 'on_signal INT' INT
         trap 'on_signal TERM' TERM
+        mkfifo "$FAKE_READY_FIFO.hold"
+        exec 4<>"$FAKE_READY_FIFO.hold"
         printf 'ready\n' > "$FAKE_READY_FIFO"
-        sleep 120 > /dev/null 2>&1 &
-        sleeper=$!
-        wait "$sleeper"
+        read -t 120 -u 4 _ || true
         echo "no signal" >> "$log"
         exit 9
         ;;
