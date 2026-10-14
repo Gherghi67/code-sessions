@@ -731,7 +731,9 @@ if [ "$SOURCE" = "resume" ] && git -C "$SESSION_DIR" rev-parse --git-dir >/dev/n
             # whole path below .cs/memory is checked: a narrative is one file
             # there, never one in a subdirectory.
             _cs_is_plain_name "${_path#.cs/memory/}" || continue
-            [ -f "$SESSION_DIR/$_path" ] || continue
+            # A link named like a narrative leads where the clone chose, so
+            # only a regular file is named for Claude to read.
+            [ -f "$SESSION_DIR/$_path" ] && [ ! -L "$SESSION_DIR/$_path" ] || continue
             case "$_added" in ''|-|0) continue ;; esac
             # One pass for both numbers: the diff of a rotated narrative is
             # the size of the file, and piping it twice costs two copies of it.
