@@ -918,6 +918,29 @@ test('the end of a turn leaves a press marker naming another conversation, and o
   expect(written).toEqual({})
 })
 
+// A marker that cannot be emptied would make a later typed /rotate read as
+// pressed, so the failure is said; the turn's end goes on to what follows it.
+test('a press marker the turn end cannot empty is said, and the turn end goes on', async () => {
+  envVars.CS_ROTATE_FORCE_CTX = '70'
+  percent = 80
+  files[PRESSED] = 'uuid-lead\n'
+  const write = $.fs.write
+  $.fs.write = async (path: string, text: string) => {
+    if (path === PRESSED) throw new Error('EACCES')
+    return write(path, text)
+  }
+  let result: any
+  try {
+    result = await turnComplete()
+  } finally {
+    $.fs.write = write
+  }
+  expect(toasts).toEqual(['cs: could not empty .cs/local/cs.pressed: Error: EACCES'])
+  expect(files[PRESSED]).toBe('uuid-lead\n')
+  expect(result).toEqual({ text: 'ok' })
+  expect(timers.map(t => t.kind)).toEqual(['after'])
+})
+
 test('a turn ending past the force threshold with a handoff already armed runs no second /rotate', async () => {
   envVars.CS_ROTATE_FORCE_CTX = '70'
   percent = 90
