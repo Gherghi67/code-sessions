@@ -443,7 +443,7 @@ adopt_worktrees() {  # [--dry-run]
         # a plain path does not have replaced, and never through echo -e: a
         # raw escape, or backslash text echo -e decodes into one, would reach
         # the terminal.
-        wt_shown=$(printf '%s' "$wt_name" | env LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_')
+        wt_shown=$(_cs_plain_name "$wt_name")
         session_name="$repo_name.$wt_name"
         link="$SESSIONS_ROOT/$session_name"
         # Everything below writes into this directory, so it has to be a
@@ -461,7 +461,7 @@ adopt_worktrees() {  # [--dry-run]
         fi
         wt_real=${wt_real%$'\n'x}
         if layout=$(_cs_head_on_git_walk "$wt_real" "$repo"); then
-            layout=$(printf '%s' "$layout" | env LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_' | cut -c1-160)
+            layout=$(_cs_plain_name "$layout" 160)
             printf '%b%s%b\n' "$DIM" "skip $wt_shown: $layout holds HEAD, so git takes it for a repository and would run commands its config names" "$NC"
             continue
         fi

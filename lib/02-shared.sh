@@ -140,7 +140,9 @@ _cs_git_at() {  # dir, git arguments...
 # filesystem and never by how its path is spelled, whether it holds .git (the
 # search ends there, finding nothing) or HEAD (found). Any HEAD counts, a dangling
 # link too: git accepts a link into refs/ whether or not it leads anywhere. A
-# session root without .git is asked like any other directory.
+# session root without .git is asked like any other directory. A link out of
+# the session, a vault mounted elsewhere among them, is walked from where it
+# leads up to its first .git or / like any other directory.
 # The directory found is printed relative to <session_dir> when it lies below
 # it, the session matched by identity (-ef), so a link that spells the
 # session's name in another case (pwd -P keeps the case a link spells) still
@@ -207,6 +209,20 @@ _cs_git_cannot_answer() {  # dir, git's error output
     printf 'cs could not ask git whether it tracks a file in .cs/%s: %s\n' "${1##*/}" "$(_cs_git_complaint "$2")"
 }
 
+# <name> with every byte but A-Z, a-z, 0-9, ".", "_", "/", "@" and "-"
+# replaced by "_", cut to its first <longest> characters when that is given.
+# A name a repository chose (a file it tracks, a directory it commits) is
+# printed through here, so it never reaches the terminal, or Claude, raw: no
+# escape, control byte or newline survives. tr works on bytes in the C locale,
+# so each byte of a multibyte character is replaced on its own.
+_cs_plain_name() {  # name, [longest]
+    if [ -n "${2:-}" ]; then
+        printf '%s' "$1" | env LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_' | cut -c1-"$2"
+    else
+        printf '%s' "$1" | env LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_'
+    fi
+}
+
 # Prints the line that says git tracks <tracked> and how to stop: untrack
 # <sub>, a path relative to <top>, and commit, both in <top>. The repository
 # chose both names and the user is asked to paste the command, so each path is
@@ -218,8 +234,8 @@ _cs_git_cannot_answer() {  # dir, git's error output
 # Claude, in the Stop hook's message.
 cs_untrack_notice() {  # tracked, top, sub
     local shown said sub="$3"
-    shown=$(printf '%s' "$1" | env LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_' | cut -c1-160) || return 1
-    said=$(printf '%s' "$sub" | env LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_') || return 1
+    shown=$(_cs_plain_name "$1" 160) || return 1
+    said=$(_cs_plain_name "$sub") || return 1
     case "$sub" in '~'*) sub="./$sub" ;; esac
     printf "%s is tracked in git (per-actor state must stay local). Fix with: git -C %q --literal-pathspecs rm -r --cached -- %q && git -C %q commit -m 'stop tracking %s'\n" \
         "$shown" "$2" "$sub" "$2" "$said"
@@ -255,7 +271,7 @@ cs_tracked_files_notice() {  # dir, session_dir
     real=$(cd -P "$here" 2>/dev/null && pwd -P && printf x) || return 1
     real=${real%$'\n'x}
     if layout=$(_cs_head_on_git_walk "$real" "$2"); then
-        layout=$(printf '%s' "$layout" | env LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_' | cut -c1-160) || return 1
+        layout=$(_cs_plain_name "$layout" 160) || return 1
         printf '%s holds HEAD, so git takes it for a repository and would run commands its config names (cs state must be a plain directory inside the session). Delete %s/HEAD, or cs -rm the session.\n' \
             "$layout" "$layout"
         return 0
@@ -295,7 +311,7 @@ cs_tracked_files_notice() {  # dir, session_dir
     meta=$(cd -P "$2/.cs" 2>/dev/null && pwd -P && printf x) && meta=${meta%$'\n'x}
     if _cs_spelling_of_ancestor "$meta" "$real" >/dev/null; then
         printf "%s leads to a directory that holds this session's own files, where git tracks %s (per-actor state must stay local). Make %s a directory of its own.\n" \
-            ".cs/${1##*/}" "$(printf '%s' "$tracked" | env LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_' | cut -c1-160)" ".cs/${1##*/}"
+            ".cs/${1##*/}" "$(_cs_plain_name "$tracked" 160)" ".cs/${1##*/}"
         return 0
     fi
     # The path to untrack, spelled as the index has it: a case variant is
