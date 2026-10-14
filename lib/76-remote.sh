@@ -36,7 +36,7 @@ _remote_claude_bin() {
     found=$(command -v -- "$word") || error "cs --remote cannot find $word on PATH"
     case "$found" in
         /*) ;;
-        *) found="$(cd "$(dirname "$found")" && pwd)/$(basename "$found")" ;;
+        *) found="$(cd -- "$(dirname -- "$found")" && pwd)/$(basename -- "$found")" ;;
     esac
     output=$("$found" --version 2>/dev/null) || rc=$?
     [ "$rc" -eq 0 ] \
@@ -148,7 +148,7 @@ _serve_remote() {  # session_name, session_dir, permission_mode
     # Inside tmux the window keeps its remote:<name> name, which
     # _spawn_precheck reads to refuse a second window.
     [ -n "${TMUX:-}" ] || set_tab_title "cs: $name (remote)" "auto:$name"
-    cd "$dir" || error "could not enter $dir"
+    cd -- "$dir" || error "could not enter $dir"
     printf '%s\n' "$$" > "$meta/local/remote.pid" || error "could not write $meta/local/remote.pid"
     _remote_release_after "$$" "$meta" < /dev/null > /dev/null 2>&1 &
     info "Serving $name through claude remote-control (permission mode $mode). Ctrl-C or closing the window stops it."

@@ -262,7 +262,7 @@ _submodule_others() {  # checkout_dir prefix
         if [ ! -e "$1/$sub/.git" ]; then
             [ -d "$1/$sub" ] && [ ! -L "$1/$sub" ] || continue
             at=$(printf '%s\0' "$sub" | _names_as_lines) || return 1
-            listing=$( (cd "$1/$sub" && find . ! -type d -print0) | _names_as_lines) || return 1
+            listing=$( (cd -- "$1/$sub" && find . ! -type d -print0) | _names_as_lines) || return 1
             if [ -n "$listing" ]; then
                 while IFS= read -r line; do
                     printf '%s%s/%s\n' "$2" "$at" "${line#./}"
