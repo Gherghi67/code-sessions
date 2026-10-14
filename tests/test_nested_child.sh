@@ -689,8 +689,8 @@ _a_claude_starts_after_the_lead_exits() {  # depth
 }
 
 # A claude a SessionEnd hook of the lead started may outlive the lead: Claude
-# Code aborts a SessionEnd hook that runs past its timeout, and the claude
-# that hook started lives on and starts after the lead has exited. The
+# Code cancels a SessionEnd hook that runs past its timeout, and the claude
+# that hook started may live on and start after the lead has exited. The
 # lead's terminal end marked its claim ended, so that claude is a guest
 # though the claude the claim names is gone: the recorded conversation stays
 # the lead's, the armed rotation stays armed for the next open, the queue

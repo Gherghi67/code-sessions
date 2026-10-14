@@ -144,9 +144,9 @@ claim ended, `<CS_LEAD_PID> <CLAUDE_PID> <session_id> ended`, under the same loc
 (`cs_lead_claim_end`), and leaves it in place. Claude Code runs `SessionEnd` hooks
 while the lead still lives, and a claude another `SessionEnd` hook starts then (a
 `claude -p` that summarises the session) finds the claim naming a live claude it did
-not start and gives way. Claude Code aborts a `SessionEnd` hook that runs past its
-timeout and leaves what it started running, so that claude may start, or stop, after
-the lead has exited. Under an ended claim every claude that is not the lead shows as
+not start and gives way. Claude Code cancels a `SessionEnd` hook that runs past its
+timeout, and a claude that hook started may outlive it, so that claude may start, or
+stop, after the lead has exited. Under an ended claim every claude that is not the lead shows as
 a guest whether the lead still lives or not, so it neither rebinds the recorded
 conversation nor takes an armed rotation, the queue digest or the attention flag.
 Once the lead has exited, a claude its hooks left running is no longer under the

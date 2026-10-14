@@ -180,9 +180,9 @@ _cs_find_session_root() {  # start_dir
 # launch as the lead does: with no claim it would claim the launch, rebind
 # the recorded conversation and take an armed rotation. With the claim in
 # place it meets a live holder it did not start and gives way. Claude Code
-# aborts a SessionEnd hook that runs past its timeout and leaves what the
-# hook started running, so that claude may start or stop after the lead has
-# exited, when the claim names no live claude. The end mark keeps it a
+# cancels a SessionEnd hook that runs past its timeout, and a claude that
+# hook started may outlive it, so that claude may start or stop after the
+# lead has exited, when the claim names no live claude. The end mark keeps it a
 # guest all the same: every claude under an ended claim that is not the
 # lead is shown a guest, whether the claude the claim names lives or not.
 # It cannot claim the launch either: its parent chain ran through the lead,
