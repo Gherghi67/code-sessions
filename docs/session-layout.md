@@ -90,7 +90,7 @@ session's own `.gitignore` hides both lock files, and `cs -adopt` adds
 `.cs/session.lock` and `.cs/session.mutex.lock` by name to a project's
 `.gitignore`. An open appends any of cs's rules a session's existing
 `.gitignore` lacks; when git tracks that file (an adopted project's own
-`.gitignore`), the open prints one line naming the rules it added, which
+`.gitignore`, or one a cs session committed), the open prints one line naming the rules it added, which
 are then an uncommitted change to commit with the next one. Adopt commits
 the rules it adds itself. `.cs/.narrative-reminder-cooldown` is a
 similar gitignored transient at the `.cs/` root — the narrative reminder's
