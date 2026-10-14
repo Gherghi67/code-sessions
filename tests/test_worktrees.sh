@@ -1407,6 +1407,54 @@ test_feature_refuses_a_recorded_mode_it_does_not_know() {
     assert_not_exists "$CS_SESSIONS_ROOT/proj@t1" "no worktree is created" || return 1
 }
 
+# A folder adopted with no repo gets git init and no commit, so its HEAD names
+# no commit: a feature has nothing to branch from. Refused by cs, whatever
+# mode the base records, before git would make an orphan branch of it.
+test_feature_of_a_base_with_no_commit_is_refused() {
+    local dir out rc mode
+    dir="$TEST_TMPDIR/proj"
+    mkdir -p "$dir"
+    printf '# P\n' > "$dir/README.md"
+    (cd "$dir" && "$CS_BIN" -adopt proj < /dev/null > /dev/null 2>&1) || { echo "  FAIL: adopt fixture"; return 1; }
+    dir=$(cd "$dir" && pwd -P)
+    for mode in tracked ignored; do
+        awk '!/^cs_mode:/' "$dir/.cs/local/state" > "$dir/.cs/local/state.tmp" && mv "$dir/.cs/local/state.tmp" "$dir/.cs/local/state"
+        printf 'cs_mode: %s\n' "$mode" >> "$dir/.cs/local/state"
+        rc=0
+        out=$("$CS_BIN" proj@t1 < /dev/null 2>&1) || rc=$?
+        assert_eq 1 "$rc" "the feature is refused (cs_mode $mode)" || return 1
+        assert_eq "Error: Session 'proj' has no commit yet, so a feature has nothing to branch from or land on. Make a first commit in $dir (cs commits nothing for you), then try again." \
+            "$out" "the refusal says the base has no commit (cs_mode $mode)" || return 1
+        assert_not_exists "$CS_SESSIONS_ROOT/proj@t1" "no worktree is created (cs_mode $mode)" || return 1
+        assert_eq "" "$(git -C "$dir" branch --list cs/t1)" "no branch is created (cs_mode $mode)" || return 1
+    done
+}
+
+# A feature whose base has lost its commit (HEAD names a branch with none)
+# cannot be landed or retired: both say so before git is asked about HEAD.
+test_integrate_and_retire_refuse_a_base_with_no_commit() {
+    local base_dir wt sha out rc
+    base_dir=$(create_test_session_with_git "myproj")
+    cs_launch "myproj@t1"
+    wt="$CS_SESSIONS_ROOT/myproj@t1"
+    printf 'work\n' > "$wt/work.txt"
+    (cd "$wt" && git add work.txt && git commit -q -m work)
+    sha=$(git -C "$wt" rev-parse HEAD)
+    git -C "$base_dir" symbolic-ref HEAD refs/heads/unborn
+
+    rc=0
+    out=$("$CS_BIN" myproj -integrate-feature t1 "$sha" -- true < /dev/null 2>&1) || rc=$?
+    assert_eq 1 "$rc" "integrate is refused" || return 1
+    assert_eq "Error: Session 'myproj' has no commit yet, so a feature has nothing to branch from or land on. Make a first commit in $base_dir (cs commits nothing for you), then try again." \
+        "$out" "integrate says the base has no commit" || return 1
+    rc=0
+    out=$("$CS_BIN" myproj -retire-feature t1 "$sha" < /dev/null 2>&1) || rc=$?
+    assert_eq 1 "$rc" "retire is refused" || return 1
+    assert_eq "Error: Session 'myproj' has no commit yet, so a feature has nothing to branch from or land on. Make a first commit in $base_dir (cs commits nothing for you), then try again." \
+        "$out" "retire says the base has no commit" || return 1
+    assert_dir "$wt" "the worktree is kept" || return 1
+}
+
 run_test test_worktree_name_rejected_without_base
 run_test test_worktree_name_rejects_bad_task_half
 run_test test_worktree_name_rejects_a_leading_dot_in_either_half
@@ -1427,6 +1475,8 @@ run_test test_feature_of_an_adopted_base_is_tracked_once_cs_is_committed
 run_test test_feature_of_an_adopted_base_recorded_ignored_keeps_cs_out_of_git
 run_test test_feature_of_a_base_with_no_recorded_mode_infers_it
 run_test test_feature_refuses_a_recorded_mode_it_does_not_know
+run_test test_feature_of_a_base_with_no_commit_is_refused
+run_test test_integrate_and_retire_refuse_a_base_with_no_commit
 run_test test_retire_tolerates_a_worktree_predating_the_cs_exclude
 run_test test_retire_still_refuses_real_untracked_work
 run_test test_retire_moves_ignored_work_to_the_system_trash
