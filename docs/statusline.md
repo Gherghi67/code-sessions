@@ -290,6 +290,21 @@ export NO_COLOR=1
 
 `CS_SESSIONS_ROOT` is honored the same way the rest of cs honors it.
 
+## Codex
+
+Codex runs no status line command. It draws the bar under its prompt from the `status_line` list in `[tui]` of its `config.toml`, and its default bar leaves out the context and the rate limits. When Codex is an installed engine, cs sets this list in `$CODEX_HOME/config.toml` (`~/.codex` when `CODEX_HOME` is unset; code-sessions points it at its profile):
+
+```toml
+[tui]
+status_line = ["project-name", "git-branch", "model-with-reasoning", "task-progress", "context-used", "five-hour-limit", "weekly-limit"]
+```
+
+That covers the session's folder, the branch, the model and its reasoning effort, the context used and the 5-hour and weekly limits. Codex renders and colours them itself, so none of the capsule styling, thresholds or segment settings above apply. Codex reads the list at startup.
+
+The installer adds the line only where `config.toml` has no status line, under an existing `[tui]` or in a `[tui]` of its own before the first table. A status line you set is yours, written by hand or with Codex's `/statusline`, and cs leaves it alone. A `tui` written as an inline table or as dotted keys gets a warning with the line to add by hand. A declined status line (the marker below) declines this one too. `cs -statusline enable` adds the line the same way, `cs -statusline disable` takes it back, and so does `cs -uninstall`. Both remove only this exact line, plus a `[tui]` header that has nothing else in it.
+
+Changing the Codex list requires Python 3.11 or newer with `tomllib`. If neither `python3` on PATH nor `/usr/bin/python3` has it, cs leaves the config alone and reports that it could not change the status line.
+
 ## Install, uninstall, doctor
 
 `install.sh` deploys the `cs-statusline` and `cs-subagent-statusline` binaries to `~/.local/bin` unconditionally, but the status bar itself is claimed only with consent: with a terminal attached the installer renders a sample of the bar (a fixed payload, pinned to the segments that need no live session, in the terminal's theme where it publishes one) and then asks before registering (default yes; it also asks before replacing an existing status line), and a non-interactive install registers nothing and prints how to enable later. Consent registers both keys — the bar and the [subagent rows](#subagent-rows) — exactly as `cs -statusline enable` does.
@@ -297,8 +312,8 @@ export NO_COLOR=1
 A "no" is remembered in `~/.config/cs/statusline-declined` (under `$XDG_CONFIG_HOME` when set), so `cs -update` — which re-runs the installer — stops asking on every release and prints one line saying how to enable instead. `cs -statusline disable` writes the same marker; `cs -statusline enable` clears it, and `cs -uninstall` removes it. Turn both on or off any time:
 
 ```bash
-cs -statusline enable    # register bar + subagent rows (overwrites the current status line; the command is your consent)
-cs -statusline disable   # remove both registrations, each only if it points at the cs binary
+cs -statusline enable    # register bar + subagent rows (overwrites the current status line; the command is your consent), and Codex's list where it has none
+cs -statusline disable   # remove both registrations, each only if it points at the cs binary, and cs's Codex list
 ```
 
 Claude Code reads both registrations at startup, so `enable` takes effect after the next restart — the command says so when it runs.

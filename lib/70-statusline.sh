@@ -58,6 +58,37 @@ _statusline_caps_ask() {
     done
 }
 
+# The Codex side: [tui] status_line in Codex's config.toml (see
+# CS_CODEX_STATUS_LINE), wherever Codex has a home. A status line the user
+# wrote is theirs: enable never replaces it, disable never removes it.
+_statusline_codex() {  # enable|disable
+    local dir="${CODEX_HOME:-$HOME/.codex}" rc=0 state
+    [ -d "$dir" ] || return 0
+    case "$1" in
+        enable)
+            state=$(_codex_status_line_add "$dir") || rc=$?
+            case "$rc:$state" in
+                0:*) info "Set Codex's status line in $dir/config.toml (context, 5-hour and weekly limits)"
+                     info "Codex reads it at startup: restart it to see the bar." ;;
+                1:cs) info "Codex's status line is already cs's ($dir/config.toml)" ;;
+                1:own) info "Codex has a status line of your own in $dir/config.toml; left as it is." ;;
+                1:by-hand) warn "Codex's status line not set: $dir/config.toml writes tui as an inline table or dotted keys."
+                           warn "  Add it there by hand: $CS_CODEX_STATUS_LINE" ;;
+                *) warn "Could not set Codex's status line in $dir/config.toml" ;;
+            esac
+            ;;
+        disable)
+            state=$(_codex_status_line_remove "$dir") || rc=$?
+            case "$rc:$state" in
+                0:*) info "Removed cs's status line from $dir/config.toml" ;;
+                1:none) ;;
+                1:*) info "Codex's status line is not cs's; leaving it untouched." ;;
+                *) warn "Could not remove cs's status line from $dir/config.toml" ;;
+            esac
+            ;;
+    esac
+}
+
 # disable strips only an cs-statusline registration, never a foreign one.
 run_statusline_cmd() {
     local action="${1:-}"
@@ -88,25 +119,28 @@ run_statusline_cmd() {
             else
                 error "Could not update $settings"
             fi
+            _statusline_codex enable
             ;;
         disable)
-            [ -f "$settings" ] || { info "No settings.json; nothing to disable."; return 0; }
             # Capture each stripper's exit code with `|| rc=$?`: a bare call
             # returning non-zero (foreign or absent registration) would trip
             # `set -e` before the following case ran, aborting the second strip.
             local slrc=0 subrc=0
-            _strip_statusline_registration "$settings" || slrc=$?
-            case $slrc in
-                0) info "Removed the cs-statusline registration" ;;
-                1) info "Status line is not cs-statusline; leaving it untouched." ;;
-                *) error "Could not update $settings" ;;
-            esac
-            _strip_subagent_statusline_registration "$settings" || subrc=$?
-            case $subrc in
-                0) info "Removed the cs-subagent-statusline registration" ;;
-                1) : ;;
-                *) error "Could not update $settings" ;;
-            esac
+            if [ -f "$settings" ]; then
+                _strip_statusline_registration "$settings" || slrc=$?
+                case $slrc in
+                    0) info "Removed the cs-statusline registration" ;;
+                    1) info "Status line is not cs-statusline; leaving it untouched." ;;
+                    *) error "Could not update $settings" ;;
+                esac
+                _strip_subagent_statusline_registration "$settings" || subrc=$?
+                case $subrc in
+                    0) info "Removed the cs-subagent-statusline registration" ;;
+                    1) : ;;
+                    *) error "Could not update $settings" ;;
+                esac
+            fi
+            _statusline_codex disable
             # Guarded for the reason install.sh documents: this runs under
             # errexit, so an unwritable config dir would abort after the
             # registration was already stripped, leaving the command half done

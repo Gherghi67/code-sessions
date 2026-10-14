@@ -246,7 +246,13 @@ unset XDG_DATA_HOME
 # The same goes for the config and cache roots and for the directory overrides
 # the profile launcher exports: tests assert the default placement under their
 # private HOME, so none of these may leak in from the shell that started the run.
-unset XDG_CONFIG_HOME XDG_CACHE_HOME CS_INSTALL_DIR CS_CONFIG_DIR CS_CACHE_DIR CS_DATA_DIR CS_SECRETS_DIR CS_HOOK_PATHS
+unset XDG_CONFIG_HOME XDG_CACHE_HOME CS_INSTALL_DIR CS_CONFIG_DIR CS_CACHE_DIR CS_DATA_DIR CS_SECRETS_DIR CS_HOOK_PATHS CS_CLAUDE_DIR
+unset CS_HOOKS_DIR CS_COMMANDS_DIR CS_SKILLS_DIR
+# The live launcher's update guard must not apply to fixture installs.
+unset CODE_SESSIONS_HOME
+# A fixture has its own run lease and secret namespace, independent of the
+# conversation that launched the gate.
+unset CS_RUN_ID CS_RUN_OWNER_PID CS_RUN_ENGINE CS_LEAD_PID CS_SECRETS_SESSION CS_SECRETS_KEYCHAIN_PREFIX
 # Nor may the launcher's -spawn tmux server and session: the suites pin the
 # default server and 'cs'.
 unset CS_TMUX_SOCKET CS_TMUX_SESSION

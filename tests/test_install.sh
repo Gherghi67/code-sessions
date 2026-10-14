@@ -60,6 +60,9 @@ EXPECT
     assert_eq "/opt/other/bar" "$sl" "a foreign status line must be kept" || return 1
     jq -e '.hooks.SessionStart' "$fake_home/.claude/settings.json" >/dev/null 2>&1 \
         || { echo "  FAIL: hooks were not registered; the install aborted before finishing"; return 1; }
+    if grep -q '^status_line' "$fake_home/.codex/config.toml" 2>/dev/null; then
+        echo "  FAIL: Codex must honor the decline even if the memo cannot be written"; return 1
+    fi
 }
 
 # Declining is permanent, and that has to read as its own statement rather than
@@ -827,6 +830,269 @@ test_codex_hook_keeps_the_users_hooks_and_trust() {
         || { echo "  FAIL: cs -uninstall exited non-zero"; return 1; }
     assert_eq "$(jq -S . "$TEST_TMPDIR/hooks.orig")" "$(jq -S . "$codex/hooks.json")" "uninstall restores hooks.json" || return 1
     assert_eq "$(cat "$TEST_TMPDIR/config.orig")" "$(cat "$codex/config.toml")" "and config.toml" || return 1
+}
+
+# The [tui] status_line of a config.toml as Codex's TOML parser reads it, one
+# item per line, or "none". Needs a Python with tomllib (3.11+).
+_codex_status_items() {  # config
+    python3 -c '
+import sys, tomllib
+items = tomllib.load(open(sys.argv[1], "rb")).get("tui", {}).get("status_line")
+print("none" if items is None else "\n".join(items))' "$1"
+}
+
+_need_tomllib() {
+    python3 -c 'import tomllib' 2>/dev/null || { echo "    SKIP (no python3 with tomllib)"; return 77; }
+}
+
+test_codex_status_line_never_imports_project_python() {
+    _need_tomllib || return
+    local fake_home="$TEST_TMPDIR/codex-sl-import" project="$TEST_TMPDIR/project"
+    mkdir -p "$fake_home/.codex" "$project"
+    printf 'model = "mine"\n' > "$fake_home/.codex/config.toml"
+    cat > "$project/tomllib.py" <<'PY'
+from pathlib import Path
+Path("project-python-ran").touch()
+raise ImportError("project module must not run")
+PY
+    (
+        cd "$project" || exit 1
+        HOME="$fake_home" "$CS_BIN" -statusline enable > /dev/null 2>&1 || exit 1
+        HOME="$fake_home" "$CS_BIN" -statusline disable > /dev/null 2>&1 || exit 1
+    ) || return 1
+    assert_not_exists "$project/project-python-ran" "validation must not import from the caller's project" || return 1
+    assert_eq 'model = "mine"' "$(cat "$fake_home/.codex/config.toml")" || return 1
+}
+
+test_codex_status_line_refuses_edits_without_tomllib() {
+    (
+        source "$SCRIPT_DIR/../lib/01-manifests.sh"
+        # Model either candidate lacking tomllib, including on Python 3.11+ CI.
+        python3() { return 1; }
+        /usr/bin/python3() { return 1; }
+        local dir="$TEST_TMPDIR/no-tomllib" shape rc
+        mkdir -p "$dir"
+        for shape in quoted-table quoted-key crlf owned; do
+            case "$shape" in
+                quoted-table) printf '["tui"]\nstatus_line = ["model-name"]\n' ;;
+                quoted-key) printf '[tui]\n"status_line" = ["model-name"]\n' ;;
+                crlf) printf '[tui]\r\nstatus_line = ["model-name"]\r\n' ;;
+                owned) printf '[tui]\n%s\n' "$CS_CODEX_STATUS_LINE" ;;
+            esac > "$dir/config.toml"
+            cp "$dir/config.toml" "$dir/orig"
+            rc=0
+            if [ "$shape" = owned ]; then
+                _codex_status_line_remove "$dir" > /dev/null || rc=$?
+            else
+                _codex_status_line_add "$dir" > /dev/null || rc=$?
+            fi
+            assert_eq 2 "$rc" "$shape must refuse an unchecked edit" || return 1
+            cmp -s "$dir/orig" "$dir/config.toml" \
+                || { echo "  FAIL: $shape changed without a TOML parser"; return 1; }
+        done
+        rm "$dir/config.toml"
+        rc=0; _codex_status_line_add "$dir" > /dev/null || rc=$?
+        assert_eq 2 "$rc" "a new config also requires a parser" || return 1
+        assert_not_exists "$dir/config.toml" "refusal must not create a config" || return 1
+    )
+}
+
+# Codex's default bar leaves out the context and the rate limits, so a Codex
+# install gives its config.toml cs's status line, once.
+test_install_sets_the_codex_status_line() {
+    _need_tomllib || return
+    local fake_home="$TEST_TMPDIR/codex-sl" out
+    mkdir -p "$fake_home"
+    out=$(HOME="$fake_home" CS_INSTALL_ENGINES=codex bash "$INSTALL_SH" 2>&1 < /dev/null) \
+        || { echo "  FAIL: install.sh exited non-zero"; return 1; }
+    assert_output_contains "$out" "Codex status line" "the install names what it set" || return 1
+    assert_eq "project-name git-branch model-with-reasoning task-progress context-used five-hour-limit weekly-limit" \
+        "$(_codex_status_items "$fake_home/.codex/config.toml" | tr '\n' ' ' | sed 's/ $//')" || return 1
+    HOME="$fake_home" CS_INSTALL_ENGINES=codex bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || return 1
+    assert_eq 1 "$(grep -c '^status_line = ' "$fake_home/.codex/config.toml")" "a reinstall adds no second line" || return 1
+    assert_eq 1 "$(grep -c '^\[tui\]$' "$fake_home/.codex/config.toml")" "nor a second [tui]" || return 1
+}
+
+# A [tui] table the config already has takes the line; its keys and the
+# tables after it stay as they were.
+test_install_puts_the_codex_status_line_into_an_existing_tui() {
+    _need_tomllib || return
+    local fake_home="$TEST_TMPDIR/codex-sl-tui" codex
+    codex="$fake_home/.codex"
+    mkdir -p "$codex"
+    printf 'model = "mine"\n[tui]\nscreen_reader_detection_done = true\n\n[tui.model_availability_nux]\nx = 4\n\n[projects."/a"]\ntrust_level = "trusted"\n' \
+        > "$codex/config.toml"
+    HOME="$fake_home" CS_INSTALL_ENGINES=codex bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || return 1
+    assert_eq 1 "$(grep -c '^\[tui\]$' "$codex/config.toml")" "no second [tui]" || return 1
+    assert_eq "weekly-limit" "$(_codex_status_items "$codex/config.toml" | tail -1)" || return 1
+    assert_eq "true 4 trusted" "$(python3 -c '
+import sys, tomllib
+c = tomllib.load(open(sys.argv[1], "rb"))
+print(str(c["tui"]["screen_reader_detection_done"]).lower(), c["tui"]["model_availability_nux"]["x"], c["projects"]["/a"]["trust_level"])' \
+        "$codex/config.toml")" "the user's keys survive" || return 1
+}
+
+# A status line the user set is theirs: install, enable and disable leave it.
+test_codex_status_line_keeps_the_users_own() {
+    local fake_home="$TEST_TMPDIR/codex-sl-own" codex out
+    codex="$fake_home/.codex"
+    mkdir -p "$codex"
+    printf '[tui]\nstatus_line = ["model-name", "current-dir"]\n' > "$codex/config.toml"
+    cp "$codex/config.toml" "$TEST_TMPDIR/own.orig"
+    out=$(HOME="$fake_home" CS_INSTALL_ENGINES=codex bash "$INSTALL_SH" 2>&1 < /dev/null) || return 1
+    assert_output_contains "$out" "keeping the one in" "the install says it kept the user's" || return 1
+    assert_file_contains "$codex/config.toml" '^status_line = \["model-name", "current-dir"\]$' || return 1
+    assert_eq 1 "$(grep -c '^status_line' "$codex/config.toml")" || return 1
+    HOME="$fake_home" "$fake_home/.local/bin/cs" -statusline enable > /dev/null 2>&1 || true
+    HOME="$fake_home" "$fake_home/.local/bin/cs" -statusline disable > /dev/null 2>&1 || true
+    assert_file_contains "$codex/config.toml" '^status_line = \["model-name", "current-dir"\]$' "enable and disable leave it" || return 1
+    assert_eq 1 "$(grep -c '^status_line' "$codex/config.toml")" || return 1
+}
+
+# TOML shapes a line edit must not misread: tui as an inline table or as
+# dotted keys (a [tui] header after them would define the table twice), and
+# a [tui] line inside a multi-line string, which is no header.
+test_codex_status_line_reads_toml_shapes() {
+    (
+        source "$SCRIPT_DIR/../lib/01-manifests.sh"
+        local dir="$TEST_TMPDIR/shapes" rc
+        mkdir -p "$dir"
+        printf 'tui = { theme = "x" }\n' > "$dir/config.toml"
+        assert_eq by-hand "$(_codex_status_line_state "$dir/config.toml")" "inline table" || return 1
+        printf 'tui.theme = "x"\n' > "$dir/config.toml"
+        assert_eq by-hand "$(_codex_status_line_state "$dir/config.toml")" "dotted keys" || return 1
+        printf 'tui.status_line = ["model-name"]\n' > "$dir/config.toml"
+        assert_eq own "$(_codex_status_line_state "$dir/config.toml")" "a dotted status line is the user's" || return 1
+        printf 'tui = { theme = "x" }\n' > "$dir/config.toml"
+        rc=0; _codex_status_line_add "$dir" > /dev/null || rc=$?
+        assert_eq 1 "$rc" "an inline tui is left for the user" || return 1
+        assert_eq 'tui = { theme = "x" }' "$(cat "$dir/config.toml")" || return 1
+        printf 'note = """\n[tui]\nstatus_line = 1\n"""\n' > "$dir/config.toml"
+        cp "$dir/config.toml" "$dir/orig"
+        assert_eq none "$(_codex_status_line_state "$dir/config.toml")" "a [tui] inside a string is no header" || return 1
+        _codex_status_line_add "$dir" > /dev/null || return 1
+        assert_eq cs "$(_codex_status_line_state "$dir/config.toml")" || return 1
+        assert_eq 2 "$(grep -c '^\[tui\]$' "$dir/config.toml")" "the string's line and a real table after it" || return 1
+        _codex_status_line_remove "$dir" > /dev/null || return 1
+        assert_eq "$(cat "$dir/orig")" "$(cat "$dir/config.toml")" "removal gives the file back" || return 1
+    )
+}
+
+test_codex_status_line_preserves_escaped_instruction_strings() {
+    _need_tomllib || return
+    (
+        source "$SCRIPT_DIR/../lib/01-manifests.sh"
+        local dir="$TEST_TMPDIR/escaped-instructions" rc
+        mkdir -p "$dir"
+        cat > "$dir/config.toml" <<'TOML'
+developer_instructions = """
+An escaped delimiter: \"""
+[tui]
+status_line = ["project-name", "git-branch", "model-with-reasoning", "task-progress", "context-used", "five-hour-limit", "weekly-limit"]
+Keep this example in the instructions.
+"""
+TOML
+        cp "$dir/config.toml" "$dir/orig"
+        rc=0; _codex_status_line_remove "$dir" > /dev/null || rc=$?
+        assert_eq 1 "$rc" "the example is not a real status line" || return 1
+        cmp -s "$dir/orig" "$dir/config.toml" || return 1
+        _codex_status_line_add "$dir" > /dev/null || return 1
+        assert_eq weekly-limit "$(_codex_status_items "$dir/config.toml" | tail -1)" || return 1
+        _codex_status_line_remove "$dir" > /dev/null || return 1
+        cmp -s "$dir/orig" "$dir/config.toml" \
+            || { echo "  FAIL: add/remove changed the instruction string"; return 1; }
+    )
+}
+
+test_codex_status_line_validation_preserves_the_whole_document() {
+    _need_tomllib || return
+    (
+        source "$SCRIPT_DIR/../lib/01-manifests.sh"
+        local before="$TEST_TMPDIR/before.toml" after="$TEST_TMPDIR/after.toml" rc
+        printf 'model = "mine"\n[tui]\ntheme = "light"\n' > "$before"
+        printf 'model = "changed"\n[tui]\ntheme = "light"\n%s\n' "$CS_CODEX_STATUS_LINE" > "$after"
+        rc=0; _codex_status_line_check set "$after" "$before" || rc=$?
+        assert_eq 1 "$rc" "set must reject changes to other values" || return 1
+        printf 'model = "mine"\n[tui]\ntheme = "light"\n%s\n' "$CS_CODEX_STATUS_LINE" > "$before"
+        printf 'model = "mine"\n[tui]\n' > "$after"
+        rc=0; _codex_status_line_check unset "$after" "$before" || rc=$?
+        assert_eq 1 "$rc" "unset must reject loss of another tui key" || return 1
+        printf 'model = "mine"\n[tui]\ntheme = "light"\n' > "$after"
+        _codex_status_line_check unset "$after" "$before" || return 1
+        _codex_status_line_check set "$before" "$after" || return 1
+    )
+}
+
+# A status line declined for Claude (the marker the question and cs
+# -statusline disable write) declines Codex's too.
+test_install_skips_the_codex_status_line_when_declined() {
+    local fake_home="$TEST_TMPDIR/codex-sl-declined" out
+    mkdir -p "$fake_home/.config/cs"
+    touch "$fake_home/.config/cs/statusline-declined"
+    out=$(HOME="$fake_home" CS_INSTALL_ENGINES=codex bash "$INSTALL_SH" 2>&1 < /dev/null) || return 1
+    assert_output_contains "$out" "Codex status line not set (declined earlier)" || return 1
+    if grep -q '^status_line' "$fake_home/.codex/config.toml" 2>/dev/null; then
+        echo "  FAIL: a declined status line was set for Codex"; return 1
+    fi
+}
+
+test_install_first_decline_also_skips_codex_status_line() {
+    _need_tomllib || return
+    command -v expect >/dev/null 2>&1 \
+        || { echo "    SKIP (expect not installed; the decline needs a tty)"; return 77; }
+    local fake_home="$TEST_TMPDIR/codex-sl-first-decline" exp="$TEST_TMPDIR/first-decline.exp"
+    mkdir -p "$fake_home"
+    cat > "$exp" <<EXPECT
+set timeout 120
+spawn env HOME=$fake_home CS_INSTALL_ENGINES=claude,codex bash $INSTALL_SH
+expect {
+    -re {status line.*\[Y/n\]} { send "n"; exp_continue }
+    -re {$_ROTATE_WRAP_ASK_RE} { send "n"; exp_continue }
+    eof
+}
+catch wait result
+exit [lindex \$result 3]
+EXPECT
+    expect -f "$exp" > /dev/null 2>&1 || return 1
+    assert_exists "$fake_home/.config/cs/statusline-declined" "the first answer is recorded" || return 1
+    assert_eq none "$(_codex_status_items "$fake_home/.codex/config.toml")" "this install must honor its own decline" || return 1
+    HOME="$fake_home" CS_INSTALL_ENGINES=claude,codex bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || return 1
+    assert_eq none "$(_codex_status_items "$fake_home/.codex/config.toml")" "reinstall keeps Codex declined" || return 1
+}
+
+# enable sets Codex's line where it has a home, disable takes back only cs's.
+test_statusline_enable_and_disable_cover_codex() {
+    local fake_home="$TEST_TMPDIR/codex-sl-cmd" codex
+    codex="$fake_home/.codex"
+    mkdir -p "$codex" "$fake_home/.claude"
+    printf 'model = "mine"\n' > "$codex/config.toml"
+    HOME="$fake_home" "$CS_BIN" -statusline enable > /dev/null 2>&1 \
+        || { echo "  FAIL: cs -statusline enable exited non-zero"; return 1; }
+    assert_file_contains "$codex/config.toml" '^status_line = \["project-name", .*"weekly-limit"\]$' || return 1
+    HOME="$fake_home" "$CS_BIN" -statusline disable > /dev/null 2>&1 \
+        || { echo "  FAIL: cs -statusline disable exited non-zero"; return 1; }
+    assert_eq 'model = "mine"' "$(cat "$codex/config.toml")" "disable gives config.toml back" || return 1
+    # CODEX_HOME is where Codex looks, as under code-sessions' launcher.
+    local elsewhere="$TEST_TMPDIR/codex-sl-elsewhere"
+    mkdir -p "$elsewhere"
+    HOME="$fake_home" CODEX_HOME="$elsewhere" "$CS_BIN" -statusline enable > /dev/null 2>&1 || return 1
+    assert_file_contains "$elsewhere/config.toml" '^status_line = ' "enable follows CODEX_HOME" || return 1
+    assert_eq 'model = "mine"' "$(cat "$codex/config.toml")" "and leaves ~/.codex alone" || return 1
+}
+
+test_codex_only_install_can_disable_its_status_line() {
+    _need_tomllib || return
+    local fake_home="$TEST_TMPDIR/codex-sl-disable"
+    mkdir -p "$fake_home"
+    HOME="$fake_home" CS_INSTALL_ENGINES=codex bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || return 1
+    assert_not_exists "$fake_home/.claude" "a Codex-only install has no Claude settings" || return 1
+    assert_eq weekly-limit "$(_codex_status_items "$fake_home/.codex/config.toml" | tail -1)" || return 1
+    HOME="$fake_home" "$fake_home/.local/bin/cs" -statusline disable > /dev/null 2>&1 || return 1
+    assert_eq none "$(_codex_status_items "$fake_home/.codex/config.toml")" "disable removes Codex's line directly after install" || return 1
+    assert_exists "$fake_home/.config/cs/statusline-declined" "disable records the preference" || return 1
+    assert_not_exists "$fake_home/.claude" "disable needs no Claude directory" || return 1
+    HOME="$fake_home" CS_INSTALL_ENGINES=codex bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || return 1
+    assert_eq none "$(_codex_status_items "$fake_home/.codex/config.toml")" "reinstall respects disable" || return 1
 }
 
 # A group the user added after cs's moves up when cs's goes, and its trust
@@ -1717,6 +1983,18 @@ run_test test_claude_only_install_leaves_codex_absent
 run_test test_codex_hook_trust_hash_matches_codex
 run_test test_install_registers_a_trusted_codex_hook
 run_test test_codex_hook_keeps_the_users_hooks_and_trust
+run_test test_install_sets_the_codex_status_line
+run_test test_codex_status_line_never_imports_project_python
+run_test test_codex_status_line_refuses_edits_without_tomllib
+run_test test_install_puts_the_codex_status_line_into_an_existing_tui
+run_test test_codex_status_line_keeps_the_users_own
+run_test test_codex_status_line_reads_toml_shapes
+run_test test_codex_status_line_preserves_escaped_instruction_strings
+run_test test_codex_status_line_validation_preserves_the_whole_document
+run_test test_install_skips_the_codex_status_line_when_declined
+run_test test_install_first_decline_also_skips_codex_status_line
+run_test test_statusline_enable_and_disable_cover_codex
+run_test test_codex_only_install_can_disable_its_status_line
 run_test test_uninstall_renumbers_trust_for_later_codex_hooks
 run_test test_install_leaves_an_unreadable_codex_hooks_file_alone
 run_test test_uninstall_removes_only_cs_skills_from_codex
