@@ -5306,4 +5306,76 @@ mod tests {
         assert!(rows[11].starts_with("[y] Confirm"), "the key hint stays on screen at 120x40: {rows:?}");
         std::fs::remove_dir_all(&root).ok();
     }
+
+    /// Worktree sessions `proj@t01`..`proj@t<count>` of the `worktree_session`
+    /// base under `root`, each holding one file git does not track, `a.txt`.
+    fn warned_worktrees(root: &std::path::Path, count: usize) -> Vec<String> {
+        worktree_session(root);
+        (1..=count)
+            .map(|i| {
+                let task = format!("t{i:02}");
+                std::fs::write(feature_worktree(root, &task).join("a.txt"), "").unwrap();
+                format!("proj@{task}")
+            })
+            .collect()
+    }
+
+    // However many marked sessions carry a warning, the batch confirm keeps
+    // its grant and its key hint on screen: the warnings share the rows the
+    // screen has left, and those past them are counted on one row.
+    #[test]
+    fn batch_delete_confirm_keeps_its_keys_on_screen_for_any_number_of_warned_sessions() {
+        let root = std::env::temp_dir().join(format!("cs-ui-batch-many-{}", std::process::id()));
+        let names = warned_worktrees(&root, 18);
+        // At 80x24, 8 warned sessions overrun the rows left and 16 overrun
+        // them with headers alone; at 120x40, 17 overrun them.
+        for (width, height, n) in [(80, 24, 7), (80, 24, 8), (80, 24, 10), (80, 24, 16), (120, 40, 17), (120, 40, 18)] {
+            let marked: Vec<&str> = names[..n].iter().map(String::as_str).collect();
+            let rows = delete_confirm_rows_of(&root, &marked, width, height, &format!("Delete {n} sessions?"));
+            let hint = rows
+                .iter()
+                .position(|r| r.starts_with("[y] Confirm"))
+                .unwrap_or_else(|| panic!("{n} warned at {width}x{height}: no key hint on screen:\n{}", rows.join("\n")));
+            assert_eq!(
+                rows[hint - 4..hint],
+                ["", "[D] Delete those files too: no", "", "This cannot be undone."],
+                "{n} warned at {width}x{height}: the grant stays on screen above the hint:\n{}",
+                rows.join("\n")
+            );
+        }
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    // The warnings fill the rows the screen has left in order: each gets its
+    // header row, the first ones their entries until the rows run out, and
+    // when even the headers do not fit, the last row counts the rest. At
+    // 120x40 the batch confirm with the [D] grant leaves 30 rows for them.
+    #[test]
+    fn batch_delete_confirm_fills_the_rows_left_with_warnings_in_order() {
+        let root = std::env::temp_dir().join(format!("cs-ui-batch-fill-{}", std::process::id()));
+        let names = warned_worktrees(&root, 32);
+        let header = |name: &str| format!("{name}: Also deletes 1 file git does not track:");
+
+        let marked: Vec<&str> = names[..17].iter().map(String::as_str).collect();
+        let rows = delete_confirm_rows_of(&root, &marked, 120, 40, "Delete 17 sessions?");
+        let mut expected = vec![String::new()];
+        for (i, name) in marked.iter().enumerate() {
+            expected.push(header(name));
+            if i < 13 {
+                expected.push("    a.txt".to_string());
+            }
+        }
+        expected.extend(["", "[D] Delete those files too: no", "", "This cannot be undone."].map(String::from));
+        assert_eq!(rows[2..2 + expected.len()], expected[..], "17 warned:\n{}", rows.join("\n"));
+        assert!(rows[2 + expected.len()].starts_with("[y] Confirm"), "17 warned: {rows:?}");
+
+        let marked: Vec<&str> = names.iter().map(String::as_str).collect();
+        let rows = delete_confirm_rows_of(&root, &marked, 120, 40, "Delete 32 sessions?");
+        let mut expected = vec![String::new()];
+        expected.extend(marked[..29].iter().map(|name| header(name)));
+        expected.extend(["... and 3 more warnings", "", "[D] Delete those files too: no", "", "This cannot be undone."].map(String::from));
+        assert_eq!(rows[2..2 + expected.len()], expected[..], "32 warned:\n{}", rows.join("\n"));
+        assert!(rows[2 + expected.len()].starts_with("[y] Confirm"), "32 warned: {rows:?}");
+        std::fs::remove_dir_all(&root).ok();
+    }
 }
