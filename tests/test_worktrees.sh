@@ -54,6 +54,11 @@ land_feature() {  # base task
     printf '%s\n' "$sha"
 }
 
+# Field positions in a -features --porcelain record.
+_feat_field() {  # line field_number
+    printf '%s\n' "$1" | awk -F'\t' -v n="$2" '{print $n}'
+}
+
 # Build a ps seam for the ownership walk. Process inspection may be restricted
 # in a test sandbox; production uses BSD ps, while these integration tests
 # inject the one parent edge relevant to the scenario.
@@ -1705,8 +1710,8 @@ test_integrate_never_appends_memory_pointers_through_a_committed_index_link() {
 run_test test_integrate_never_appends_memory_pointers_through_a_committed_index_link
 
 # Ignored mode: git overwrites the base's ignored timeline with a link the
-# feature force-added, and retire then fuses the worktree's own records into
-# the base.
+# feature force-added, and retire then has the worktree's own timeline to
+# fuse into the base. It refuses before removing anything, naming the record.
 test_retire_never_fuses_records_through_a_landed_timeline_link() {
     local base_dir="$CS_SESSIONS_ROOT/proj" wt sha output status=0 outside
     mkdir -p "$base_dir/.cs"/{memory,local}
@@ -1726,9 +1731,11 @@ test_retire_never_fuses_records_through_a_landed_timeline_link() {
     assert_symlink "$base_dir/.cs/timeline.jsonl" "the feature's link landed over the base's ignored timeline" || return 1
     output=$("$CS_BIN" proj -retire-feature t1 "$sha" 2>&1) || status=$?
     assert_eq "outside" "$(cat "$outside")" "the fuse wrote nothing outside the session" || return 1
-    assert_eq "1" "$status" "the retire says the records were not fused: $output" || return 1
-    assert_output_contains "$output" "timeline.jsonl leads to $outside" "the refusal names the link" || return 1
-    assert_output_contains "$output" "could not be fused into" "the staged records are kept and named" || return 1
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_dir "$wt/.cs" "nothing was removed: $output" || return 1
+    assert_eq ".cs/timeline.jsonl" "$(printf '%s\n' "$output" | awk 'listed; /again:$/ { listed = 1 }')" \
+        "the refusal names the timeline" || return 1
+    assert_file_contains "$wt/.cs/timeline.jsonl" "feature-side" "the worktree keeps its timeline" || return 1
 }
 
 run_test test_retire_never_fuses_records_through_a_landed_timeline_link
@@ -1853,11 +1860,12 @@ test_retire_ignored_mode_fuses_records() {
     merge_status=$?
     assert_eq "0" "$merge_status" "retire exits 0" \
         || { echo "  retire output: $output"; return 1; }
-    assert_output_contains "$output" "memory/note-base.md already exists in the base; skipped" \
-        "memory collision warned" || return 1
+    assert_output_contains "$output" "memory/note-base.md was edited in the feature and not in the base; the feature's version is now in the base" \
+        "an inherited topic the feature edited is named" || return 1
     assert_output_not_contains "$output" "note-shared.md" \
         "a topic byte-identical to the base's is skipped silently" || return 1
-    assert_eq "base note" "$(cat "$base_dir/.cs/memory/note-base.md")" "memory collision keeps base copy" || return 1
+    assert_eq "task version" "$(cat "$base_dir/.cs/memory/note-base.md")" \
+        "the feature's edit replaces the copy the base left unchanged" || return 1
     assert_file_contains "$base_dir/.cs/timeline.jsonl" "from-task" "timeline appended" || return 1
     assert_file_exists "$base_dir/.cs/memory/note-task.md" "memory file copied" || return 1
     assert_file_exists "$base_dir/.cs/memory/note-base.md" "base memory untouched" || return 1
@@ -2050,6 +2058,1153 @@ test_retire_ignored_mode_brings_back_a_deleted_topic_the_feature_edited() {
 
 run_test test_retire_ignored_mode_brings_back_a_deleted_topic_the_feature_edited
 
+# A topic both sides edited cannot go back without overwriting one edit: the
+# retire refuses before it removes anything, naming the topic, and the features
+# screen counts it as a file the removal would destroy.
+test_retire_ignored_mode_refuses_a_topic_both_sides_edited() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output line status=0
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    echo "kept topic, feature edit" > "$wt/.cs/memory/kept.md"
+    echo "kept topic, base edit" > "$base_dir/.cs/memory/kept.md"
+    echo "feature topic" > "$wt/.cs/memory/new.md"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    line=$("$CS_BIN" proj -features --porcelain 2>&1)
+    assert_eq "1" "$(_feat_field "$line" 7)" "one file at risk: $line" || return 1
+    assert_eq "untracked" "$(_feat_field "$line" 10)" "state: $line" || return 1
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_output_contains "$output" "The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:
+.cs/memory/kept.md" "the refusal names the topic" || return 1
+    assert_eq "kept topic, feature edit" "$(cat "$wt/.cs/memory/kept.md")" "the feature's edit is still there" || return 1
+    assert_eq "kept topic, base edit" "$(cat "$base_dir/.cs/memory/kept.md")" "the base's edit is untouched" || return 1
+    assert_file_not_exists "$base_dir/.cs/memory/new.md" "nothing was fused" || return 1
+    # Positive control: once the user settles the topic, the same worktree retires.
+    cp "$wt/.cs/memory/kept.md" "$base_dir/.cs/memory/kept.md"
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire proceeds: $output" || return 1
+    assert_eq "feature topic" "$(cat "$base_dir/.cs/memory/new.md")" "the feature's topic lands" || return 1
+}
+
+run_test test_retire_ignored_mode_refuses_a_topic_both_sides_edited
+
+# A record whose directory is a file in the base, or a link out of the
+# session, cannot be carried: the retire refuses before it removes anything,
+# naming the record, and the features screen counts it as a file the removal
+# would destroy. A link that stays in the session, as an encrypted session's
+# vault links do, is a directory like any other.
+test_retire_ignored_mode_refuses_a_record_whose_directory_is_a_file_in_the_base() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output line status=0
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    mkdir -p "$wt/.cs/artifacts"
+    echo "feature report" > "$wt/.cs/artifacts/report.txt"
+    echo "base notes" > "$base_dir/.cs/artifacts"
+    mkdir -p "$wt/.cs/handoffs" "$TEST_TMPDIR/outside" "$wt/.cs/briefs" "$base_dir/.cs/vault-mnt/briefs"
+    echo "feature handoff" > "$wt/.cs/handoffs/h.md"
+    ln -s "$TEST_TMPDIR/outside" "$base_dir/.cs/handoffs"
+    echo "feature brief" > "$wt/.cs/briefs/b.md"
+    ln -s vault-mnt/briefs "$base_dir/.cs/briefs"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    line=$("$CS_BIN" proj -features --porcelain 2>&1)
+    assert_eq "2" "$(_feat_field "$line" 7)" "two files at risk: $line" || return 1
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_dir "$wt/.cs/memory" "the worktree is still there: $output" || return 1
+    assert_output_contains "$output" "The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:" \
+        "the refusal says why" || return 1
+    assert_eq ".cs/artifacts/report.txt
+.cs/handoffs/h.md" "$(printf '%s\n' "$output" | awk 'listed; /again:$/ { listed = 1 }')" \
+        "the refusal names both records" || return 1
+    assert_eq "base notes" "$(cat "$base_dir/.cs/artifacts")" "the base's file is untouched" || return 1
+    assert_eq "" "$(ls -A "$TEST_TMPDIR/outside")" "nothing was written out of the session" || return 1
+    # Positive control: once the file and the link are out of the way, the
+    # records land, the brief through the link that stays in the session.
+    rm "$base_dir/.cs/artifacts" "$base_dir/.cs/handoffs"
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire proceeds: $output" || return 1
+    assert_eq "feature report" "$(cat "$base_dir/.cs/artifacts/report.txt")" "the feature's record lands" || return 1
+    assert_eq "feature brief" "$(cat "$base_dir/.cs/vault-mnt/briefs/b.md")" "the brief lands through the link" || return 1
+}
+
+run_test test_retire_ignored_mode_refuses_a_record_whose_directory_is_a_file_in_the_base
+
+# The narratives merge by a rule of their own, but only a regular file can be
+# merged. A narrative that is a link into the feature's own .cs/local reads as
+# missing once .cs is set aside, and deleting the staging directory would then
+# delete the only copy of the notes.
+test_retire_ignored_mode_refuses_a_narrative_that_is_a_link() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output line status=0
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    printf '## Only copy of the task notes\n' > "$wt/.cs/local/notes"
+    ln -s "$wt/.cs/local/notes" "$wt/.cs/memory/narrative.example.md"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    line=$("$CS_BIN" proj -features --porcelain 2>&1)
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_dir "$wt/.cs/memory" "nothing was removed: $output" || return 1
+    assert_eq "## Only copy of the task notes" "$(cat "$wt/.cs/local/notes" 2>/dev/null)" "the notes are still there" || return 1
+    assert_eq ".cs/memory/narrative.example.md" "$(printf '%s\n' "$output" | awk 'listed; /again:$/ { listed = 1 }')" \
+        "the refusal names the narrative" || return 1
+    assert_eq "1" "$(_feat_field "$line" 7)" "the features screen counts it: $line" || return 1
+    # Positive control: the same notes as a regular file merge into the base.
+    rm "$wt/.cs/memory/narrative.example.md"
+    mv "$wt/.cs/local/notes" "$wt/.cs/memory/narrative.example.md"
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire proceeds: $output" || return 1
+    assert_eq "## Only copy of the task notes" "$(cat "$base_dir/.cs/memory/narrative.example.md" 2>/dev/null)" \
+        "the notes land in the base" || return 1
+}
+
+run_test test_retire_ignored_mode_refuses_a_narrative_that_is_a_link
+
+# A record merged by a rule of its own still needs its directory in the base.
+# A file where the base's .cs/memory should be is found before anything is
+# removed, not by the merge once the worktree is gone.
+test_retire_ignored_mode_refuses_a_narrative_whose_directory_is_a_file_in_the_base() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output line status=0
+    mkdir -p "$base_dir/.cs"/{memory,local}
+    echo "# P" > "$base_dir/README.md"
+    printf '.cs/\n.claude/settings.local.json\n' > "$base_dir/.gitignore"
+    (cd "$base_dir" && git init -q && git config core.autocrlf false && git config user.email tester@example.com \
+        && git add -A && git commit -q -m init)
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    printf '## Task finding\n' > "$wt/.cs/memory/narrative.example.md"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    rm -r "$base_dir/.cs/memory"
+    echo "base notes" > "$base_dir/.cs/memory"
+    line=$("$CS_BIN" proj -features --porcelain 2>&1)
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_dir "$wt/.cs/memory" "nothing was removed: $output" || return 1
+    # The index and the narrative cs wrote at the launch need the directory too.
+    assert_eq ".cs/memory/MEMORY.md
+.cs/memory/narrative.example.md
+.cs/memory/narrative.tester-example-com.md" "$(printf '%s\n' "$output" | awk 'listed; /again:$/ { listed = 1 }')" \
+        "the refusal names the merged records" || return 1
+    assert_eq "3" "$(_feat_field "$line" 7)" "the features screen counts them: $line" || return 1
+    assert_eq "base notes" "$(cat "$base_dir/.cs/memory")" "the base's file is untouched" || return 1
+    assert_eq "" "$(find "$CS_SESSIONS_ROOT" -maxdepth 1 -name '.retire-*')" "nothing is left staged" || return 1
+    # Positive control: with the file out of the way, the narrative lands.
+    rm "$base_dir/.cs/memory"
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire proceeds: $output" || return 1
+    assert_eq "## Task finding" "$(cat "$base_dir/.cs/memory/narrative.example.md" 2>/dev/null)" "the narrative lands" || return 1
+}
+
+run_test test_retire_ignored_mode_refuses_a_narrative_whose_directory_is_a_file_in_the_base
+
+# The refusal says to delete what it lists. Once the feature holds nothing
+# the fuse has to put under .cs/memory (the copy it was handed of a topic is
+# left as it was), a file there in the base stands in no record's way: the
+# features screen reads merged, and the retire goes through.
+test_retire_ignored_mode_retires_over_a_memory_file_once_nothing_goes_there() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output line listed rel status=0
+    mkdir -p "$base_dir/.cs"/{memory,local}
+    printf '%s\n' '- [Kept](kept.md): a topic' > "$base_dir/.cs/memory/MEMORY.md"
+    echo "kept topic" > "$base_dir/.cs/memory/kept.md"
+    echo "# P" > "$base_dir/README.md"
+    printf '.cs/\n.claude/settings.local.json\n' > "$base_dir/.gitignore"
+    (cd "$base_dir" && git init -q && git config core.autocrlf false && git config user.email tester@example.com \
+        && git add -A && git commit -q -m init)
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    mkdir -p "$wt/.cs/plans"
+    echo "feature plan" > "$wt/.cs/plans/p.md"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    rm -r "$base_dir/.cs/memory"
+    echo "base notes" > "$base_dir/.cs/memory"
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    listed=$(printf '%s\n' "$output" | awk 'listed; /again:$/ { listed = 1 }')
+    assert_eq ".cs/memory/MEMORY.md
+.cs/memory/narrative.tester-example-com.md" "$listed" "the refusal lists the index and the narrative" || return 1
+    while IFS= read -r rel; do
+        rm "$wt/$rel" || return 1
+    done <<< "$listed"
+    assert_eq "kept.md" "$(ls -A "$wt/.cs/memory")" "the copy of the topic is all that is left there" || return 1
+    line=$("$CS_BIN" proj -features --porcelain 2>&1)
+    assert_eq "0" "$(_feat_field "$line" 7)" "no file at risk: $line" || return 1
+    assert_eq "merged" "$(_feat_field "$line" 10)" "the features screen reads merged: $line" || return 1
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire goes through: $output" || return 1
+    assert_not_exists "$wt" "the worktree is retired" || return 1
+    assert_eq "base notes" "$(cat "$base_dir/.cs/memory")" "the base's file is untouched" || return 1
+    assert_eq "feature plan" "$(cat "$base_dir/.cs/plans/p.md" 2>/dev/null)" "the plan lands" || return 1
+    assert_eq "" "$(find "$CS_SESSIONS_ROOT" -maxdepth 1 -name '.retire-*')" "nothing is left staged" || return 1
+}
+
+run_test test_retire_ignored_mode_retires_over_a_memory_file_once_nothing_goes_there
+
+# A base encrypted after the feature was made keeps .cs/memory, plans,
+# claude-config and private as links into its vault, and a locked vault
+# leaves them all dangling. The retire says to mount it, before and instead
+# of listing the records that cannot go through the dangling links: deleting
+# them, as that list says, would delete the feature's only narrative. The
+# features screen reads vault-locked, with nothing at risk, in the retire's
+# order: untracked work in the worktree comes first.
+test_retire_and_features_name_a_locked_base_vault_before_any_record() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output line status=0 sub
+    local mnt="$CS_SESSIONS_ROOT/proj/.cs/vault-mnt"
+    mkdir -p "$base_dir/.cs"/{memory,local}
+    printf '%s\n' '- [Kept](kept.md): a topic' > "$base_dir/.cs/memory/MEMORY.md"
+    echo "kept topic" > "$base_dir/.cs/memory/kept.md"
+    echo "# P" > "$base_dir/README.md"
+    printf '.cs/\n.claude/settings.local.json\n' > "$base_dir/.gitignore"
+    (cd "$base_dir" && git init -q && git config core.autocrlf false && git config user.email tester@example.com \
+        && git add -A && git commit -q -m init)
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    printf '## Task finding\n' >> "$wt/.cs/memory/narrative.tester-example-com.md"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    for sub in memory plans claude-config private; do
+        mkdir -p "$mnt/$sub"
+        if [ -d "$base_dir/.cs/$sub" ]; then
+            cp -R "$base_dir/.cs/$sub/." "$mnt/$sub/" && rm -r "$base_dir/.cs/$sub" || return 1
+        fi
+        ln -s "vault-mnt/$sub" "$base_dir/.cs/$sub"
+    done
+    _mark_hand_made_vault "$base_dir"
+    mv "$mnt" "$TEST_TMPDIR/vault-unmounted"
+    line=$("$CS_BIN" proj -features --porcelain 2>&1)
+    assert_eq "vault-locked" "$(_feat_field "$line" 10)" "the features screen reads vault-locked: $line" || return 1
+    assert_eq "0" "$(_feat_field "$line" 7)" "with nothing at risk: $line" || return 1
+    echo "scratch" > "$wt/scratch.txt"
+    line=$("$CS_BIN" proj -features --porcelain 2>&1)
+    assert_eq "untracked" "$(_feat_field "$line" 10)" "untracked work comes first, as in the retire: $line" || return 1
+    assert_eq "1" "$(_feat_field "$line" 7)" "counting only that file: $line" || return 1
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_output_contains "$output" "Worktree has untracked files that removal would destroy" "the retire agrees: $output" || return 1
+    rm "$wt/scratch.txt"
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_output_contains "$output" "Error: cannot fuse the worktree's records: $base_dir/.cs/private is locked. Mount it, then retry." \
+        "the refusal says to mount the vault" || return 1
+    assert_output_not_contains "$output" "by hand" "and lists no records to merge or delete" || return 1
+    assert_file_contains "$wt/.cs/memory/narrative.tester-example-com.md" "^## Task finding$" "nothing was removed" || return 1
+    # Any one link dangling is the same refusal, naming that link.
+    mv "$TEST_TMPDIR/vault-unmounted" "$mnt"
+    mv "$mnt/memory" "$TEST_TMPDIR/memory-away"
+    line=$("$CS_BIN" proj -features --porcelain 2>&1)
+    assert_eq "vault-locked" "$(_feat_field "$line" 10)" "one dangling link reads vault-locked too: $line" || return 1
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_output_contains "$output" "Error: cannot fuse the worktree's records: $base_dir/.cs/memory is locked. Mount it, then retry." \
+        "the refusal names the dangling link" || return 1
+    assert_output_not_contains "$output" "by hand" "and lists no records to merge or delete" || return 1
+    # Positive control: mounted whole, the screen reads merged and the
+    # narrative lands in the vault.
+    mv "$TEST_TMPDIR/memory-away" "$mnt/memory"
+    line=$("$CS_BIN" proj -features --porcelain 2>&1)
+    assert_eq "merged" "$(_feat_field "$line" 10)" "the features screen reads merged: $line" || return 1
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire goes through: $output" || return 1
+    assert_file_contains "$mnt/memory/narrative.tester-example-com.md" "^## Task finding$" "the narrative lands in the vault" || return 1
+}
+
+run_test test_retire_and_features_name_a_locked_base_vault_before_any_record
+
+# The feature's log is appended to the base's machine-local log, so that is
+# the destination checked before anything is removed.
+test_retire_ignored_mode_refuses_a_log_the_base_cannot_take() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    printf 'feature command\n' > "$wt/.cs/local/session.log"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    mkdir "$base_dir/.cs/local/session.log"
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_dir "$wt/.cs/memory" "nothing was removed: $output" || return 1
+    assert_eq ".cs/local/session.log" "$(printf '%s\n' "$output" | awk 'listed; /again:$/ { listed = 1 }')" \
+        "the refusal names the log" || return 1
+    # Positive control: with the directory out of the way, the log lands.
+    rmdir "$base_dir/.cs/local/session.log"
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire proceeds: $output" || return 1
+    assert_file_contains "$base_dir/.cs/local/session.log" "^feature command$" "the log lands" || return 1
+}
+
+run_test test_retire_ignored_mode_refuses_a_log_the_base_cannot_take
+
+# A worktree made while cs kept the log at .cs/logs/session.log and used
+# since holds two logs, and both go to the base's. The one at .cs/logs/ goes
+# first: cs stopped writing there when the log moved to .cs/local/, so its
+# lines are the earlier ones and the base's log stays in the order they ran.
+test_retire_ignored_mode_fuses_both_of_a_feature_logs() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    mkdir -p "$wt/.cs/logs"
+    printf 'earlier command one\nearlier command two\n' > "$wt/.cs/logs/session.log"
+    printf 'later command\n' > "$wt/.cs/local/session.log"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    printf 'base command\n' > "$base_dir/.cs/local/session.log"
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire succeeds: $output" || return 1
+    assert_eq "base command
+
+earlier command one
+earlier command two
+
+later command" "$(cat "$base_dir/.cs/local/session.log")" "the base's log holds its own lines, then each log's, earlier first" || return 1
+    assert_not_exists "$base_dir/.cs/logs" "nothing lands at the path the log moved from" || return 1
+}
+
+run_test test_retire_ignored_mode_fuses_both_of_a_feature_logs
+
+# Each of the two logs is read, so each has to be a regular file: a link at
+# either is refused by name before anything is removed.
+test_retire_ignored_mode_refuses_either_log_that_is_a_link() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output line status=0
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    mkdir -p "$wt/.cs/logs"
+    printf 'earlier command\n' > "$wt/.cs/local/earlier.log"
+    ln -s "$wt/.cs/local/earlier.log" "$wt/.cs/logs/session.log"
+    printf 'later command\n' > "$wt/.cs/local/session.log"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    line=$("$CS_BIN" proj -features --porcelain 2>&1)
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_eq "earlier command" "$(cat "$wt/.cs/local/earlier.log" 2>/dev/null)" "nothing was removed: $output" || return 1
+    assert_eq ".cs/logs/session.log" "$(printf '%s\n' "$output" | awk 'listed; /again:$/ { listed = 1 }')" \
+        "the refusal names the linked log" || return 1
+    assert_eq "1" "$(_feat_field "$line" 7)" "the features screen counts it: $line" || return 1
+    assert_file_not_exists "$base_dir/.cs/local/session.log" "nothing was fused" || return 1
+    # The log in .cs/local is held to the same rule.
+    rm "$wt/.cs/logs/session.log"
+    mv "$wt/.cs/local/earlier.log" "$wt/.cs/logs/session.log"
+    mv "$wt/.cs/local/session.log" "$wt/.cs/local/later.log"
+    ln -s "$wt/.cs/local/later.log" "$wt/.cs/local/session.log"
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_eq ".cs/local/session.log" "$(printf '%s\n' "$output" | awk 'listed; /again:$/ { listed = 1 }')" \
+        "the refusal names the linked log" || return 1
+    assert_eq "later command" "$(cat "$wt/.cs/local/later.log" 2>/dev/null)" "nothing was removed: $output" || return 1
+    # Positive control: as regular files, both land.
+    rm "$wt/.cs/local/session.log"
+    mv "$wt/.cs/local/later.log" "$wt/.cs/local/session.log"
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire proceeds: $output" || return 1
+    assert_eq "
+earlier command
+
+later command" "$(cat "$base_dir/.cs/local/session.log")" "both logs land" || return 1
+}
+
+run_test test_retire_ignored_mode_refuses_either_log_that_is_a_link
+
+# The directory a log sits in is held to the same rule: a feature .cs/local or
+# .cs/logs that is a link would have the fuse read a log from wherever it
+# leads. Each is refused by name before anything is removed, and the features
+# screen counts it.
+test_retire_ignored_mode_refuses_a_log_directory_that_is_a_link() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output line status=0
+    local out="$TEST_TMPDIR/outside-local" logs="$TEST_TMPDIR/outside-logs" kept="$TEST_TMPDIR/local-kept" dir
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    printf 'base command\n' > "$base_dir/.cs/local/session.log"
+    cp -R "$wt/.cs/local" "$kept"
+    cp -R "$wt/.cs/local" "$out"
+    printf 'outside local line\n' >> "$out/session.log"
+    rm -rf "$wt/.cs/local"
+    ln -s "$out" "$wt/.cs/local"
+    mkdir -p "$logs"
+    printf 'outside logs line\n' > "$logs/session.log"
+    for dir in local logs; do
+        if [ "$dir" = logs ]; then
+            rm "$wt/.cs/local"
+            cp -R "$kept" "$wt/.cs/local"
+            ln -s "$logs" "$wt/.cs/logs"
+        fi
+        line=$("$CS_BIN" proj -features --porcelain 2>&1)
+        status=0
+        output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+        assert_eq "1" "$status" "the retire refuses a .cs/$dir link: $output" || return 1
+        assert_output_contains "$output" "Error: The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:
+.cs/$dir" "the refusal says why for .cs/$dir" || return 1
+        assert_eq ".cs/$dir" "$(printf '%s\n' "$output" | awk 'listed; /again:$/ { listed = 1 }')" \
+            "the refusal names only the linked .cs/$dir" || return 1
+        assert_eq "1" "$(_feat_field "$line" 7)" "the features screen counts the .cs/$dir link: $line" || return 1
+        assert_dir "$wt/.cs/memory" "nothing was removed for .cs/$dir: $output" || return 1
+        assert_eq "base command" "$(cat "$base_dir/.cs/local/session.log")" "the base's log is as it was for .cs/$dir" || return 1
+    done
+    # Positive control: with the link gone, the retire goes through, and no
+    # line from outside reaches the base's log.
+    rm "$wt/.cs/logs"
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire proceeds: $output" || return 1
+    assert_eq "0" "$(grep -c '^outside' "$base_dir/.cs/local/session.log")" "nothing from outside lands in the base's log" || return 1
+}
+
+run_test test_retire_ignored_mode_refuses_a_log_directory_that_is_a_link
+
+# Every record under .cs that the base lacks goes back to it, at any depth,
+# not just topics and narratives: plans, a summary, handoffs, a brief,
+# artifacts, archived narrative sections, a nested topic, a non-.md note. A
+# plan or summary the create copied in and only the feature edited replaces
+# the base's unchanged copy, named. The README cs wrote for the feature, left
+# as written, is the feature's own bookkeeping and goes with it.
+test_retire_ignored_mode_carries_every_record_the_base_lacks() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0 rel
+    _ignored_base_with_two_topics
+    mkdir -p "$base_dir/.cs/plans"
+    echo "base plan" > "$base_dir/.cs/plans/base-plan.md"
+    echo "base summary" > "$base_dir/.cs/summary.md"
+    echo "# Session: proj" > "$base_dir/.cs/README.md"
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    mkdir -p "$wt/.cs/plans/sub" "$wt/.cs/handoffs" "$wt/.cs/artifacts" \
+        "$wt/.cs/narrative-archive/someone" "$wt/.cs/memory/sub"
+    for rel in plans/feat-plan.md plans/sub/deep-plan.md handoffs/2026-01-01-h.md brief.md \
+            artifacts/report.html narrative-archive/someone/old.md memory/sub/deep.md memory/notes.txt; do
+        echo "feature $rel" > "$wt/.cs/$rel"
+    done
+    echo "base plan, feature edit" > "$wt/.cs/plans/base-plan.md"
+    echo "base summary, feature edit" > "$wt/.cs/summary.md"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "retire exits 0: $output" || return 1
+    for rel in plans/feat-plan.md plans/sub/deep-plan.md handoffs/2026-01-01-h.md brief.md \
+            artifacts/report.html narrative-archive/someone/old.md memory/sub/deep.md memory/notes.txt; do
+        assert_eq "feature $rel" "$(cat "$base_dir/.cs/$rel" 2>/dev/null)" "$rel lands in the base" || return 1
+    done
+    assert_eq "base plan, feature edit" "$(cat "$base_dir/.cs/plans/base-plan.md")" "the edited plan lands" || return 1
+    assert_eq "base summary, feature edit" "$(cat "$base_dir/.cs/summary.md")" "the edited summary lands" || return 1
+    assert_output_contains "$output" "plans/base-plan.md was edited in the feature and not in the base; the feature's version is now in the base" \
+        "the plan's replacement is named" || return 1
+    assert_output_contains "$output" "summary.md was edited in the feature and not in the base; the feature's version is now in the base" \
+        "the summary's replacement is named" || return 1
+    assert_eq "# Session: proj" "$(cat "$base_dir/.cs/README.md")" "the base README is untouched" || return 1
+    assert_output_not_contains "$output" "README" "the feature's own README is not mentioned" || return 1
+    assert_not_exists "$wt" "the worktree is retired" || return 1
+}
+
+run_test test_retire_ignored_mode_carries_every_record_the_base_lacks
+
+# What the fuse cannot carry without overwriting the base, it refuses to
+# destroy: a plan both sides edited, a brief each side wrote, the feature's
+# README once edited, a repository nested under .cs with its history, and a
+# link. The refusal lists them all and nothing moves, not even what could go.
+test_retire_ignored_mode_refuses_records_it_cannot_carry() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output line status=0
+    _ignored_base_with_two_topics
+    mkdir -p "$base_dir/.cs/plans"
+    echo "base plan" > "$base_dir/.cs/plans/base-plan.md"
+    echo "# Session: proj" > "$base_dir/.cs/README.md"
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    echo "base plan, feature edit" > "$wt/.cs/plans/base-plan.md"
+    echo "base plan, base edit" > "$base_dir/.cs/plans/base-plan.md"
+    echo "feature brief" > "$wt/.cs/brief.md"
+    echo "base brief" > "$base_dir/.cs/brief.md"
+    echo "## Outcome" >> "$wt/.cs/README.md"
+    mkdir -p "$wt/.cs/scratch-repo"
+    (cd "$wt/.cs/scratch-repo" && git init -q && echo kept > kept.txt && git add kept.txt && git commit -q -m kept)
+    ln -s "$base_dir/README.md" "$wt/.cs/plans/link.md"
+    echo "could land" > "$wt/.cs/plans/new.md"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    line=$("$CS_BIN" proj -features --porcelain 2>&1)
+    assert_eq "5" "$(_feat_field "$line" 7)" "five files at risk: $line" || return 1
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_output_contains "$output" "Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:
+.cs/README.md
+.cs/brief.md
+.cs/plans/base-plan.md
+.cs/plans/link.md
+.cs/scratch-repo/" "the refusal names all five" || return 1
+    assert_eq "kept" "$(git -C "$wt/.cs/scratch-repo" show HEAD:kept.txt 2>/dev/null)" "the nested repository keeps its history" || return 1
+    assert_eq "base plan, base edit" "$(cat "$base_dir/.cs/plans/base-plan.md")" "the base's plan is untouched" || return 1
+    assert_file_not_exists "$base_dir/.cs/plans/new.md" "nothing was fused" || return 1
+    assert_file_exists "$wt/.cs/plans/new.md" "and nothing was removed" || return 1
+}
+
+run_test test_retire_ignored_mode_refuses_records_it_cannot_carry
+
+# .cs itself made a repository is refused whole: walked into, its .git would
+# be copied into the base's .cs as files.
+test_retire_ignored_mode_refuses_a_cs_that_is_itself_a_repository() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    (cd "$wt/.cs" && git init -q && git add memory/kept.md && git commit -q -m "notes history")
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_output_contains "$output" "then run /finish t1 again:
+.cs/" "the refusal names .cs itself" || return 1
+    assert_eq "notes history" "$(git -C "$wt/.cs" log -1 --format=%s 2>/dev/null)" ".cs keeps its history" || return 1
+    assert_not_exists "$base_dir/.cs/.git" "the base's .cs gets no .git" || return 1
+}
+
+run_test test_retire_ignored_mode_refuses_a_cs_that_is_itself_a_repository
+
+# A repo that tracks .cs carries it through git, so an untracked file under
+# .cs is no more carried than one anywhere else: the retire refuses and names
+# it. Only cs's own machine-local files (.cs/local, the locks) go with the
+# worktree unasked.
+test_retire_tracked_mode_refuses_untracked_session_records() {
+    local base_dir wt sha output line status=0 rel
+    base_dir=$(create_test_session_with_git "myproj")
+    cs_launch "myproj@t1"
+    wt="$CS_SESSIONS_ROOT/myproj@t1"
+    assert_file_contains "$wt/.cs/local/state" "cs_mode: tracked" || return 1
+    echo "feature work" > "$wt/feature.txt"
+    (cd "$wt" && git add feature.txt && git commit -q -m "feature work")
+    mkdir -p "$wt/.cs/plans" "$wt/.cs/handoffs"
+    for rel in plans/feat-plan.md memory/new-topic.md memory/narrative.someone.md handoffs/h.md summary.md; do
+        echo "feature $rel" > "$wt/.cs/$rel"
+    done
+    : > "$wt/.cs/session.lock"
+    sha=$(land_feature myproj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    line=$("$CS_BIN" myproj -features --porcelain 2>&1)
+    assert_eq "5" "$(_feat_field "$line" 7)" "five files at risk: $line" || return 1
+    output=$("$CS_BIN" myproj -retire-feature t1 "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_output_contains "$output" "Worktree has untracked files that removal would destroy; commit or remove them first:
+.cs/handoffs/h.md
+.cs/memory/narrative.someone.md
+.cs/memory/new-topic.md
+.cs/plans/feat-plan.md
+.cs/summary.md" "the refusal names all five" || return 1
+    assert_eq "feature plans/feat-plan.md" "$(cat "$wt/.cs/plans/feat-plan.md")" "the plan is still there" || return 1
+    # Positive control: committed, they land with the feature and the worktree retires.
+    (cd "$wt" && git add .cs && git commit -q -m "session records")
+    sha=$(land_feature myproj t1) || { echo "  FAIL: second integrate"; return 1; }
+    status=0
+    output=$("$CS_BIN" myproj -retire-feature t1 "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire proceeds: $output" || return 1
+    assert_eq "feature plans/feat-plan.md" "$(cat "$base_dir/.cs/plans/feat-plan.md")" "the plan landed" || return 1
+}
+
+run_test test_retire_tracked_mode_refuses_untracked_session_records
+
+# cs writes the root CLAUDE.local.md with its protocol sentinel, and that copy
+# goes with the worktree. One without the sentinel is the user's own: git
+# keeps no copy of it, so the retire refuses and names it.
+test_retire_refuses_a_user_authored_claude_local_md() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    assert_file_contains "$wt/CLAUDE.local.md" "cs:session-protocol" "cs wrote the protocol file" || return 1
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    echo "my own notes for this checkout" > "$wt/CLAUDE.local.md"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_output_contains "$output" "Worktree has untracked files that removal would destroy; commit or remove them first:
+CLAUDE.local.md" "the refusal names the file" || return 1
+    assert_eq "my own notes for this checkout" "$(cat "$wt/CLAUDE.local.md")" "the notes are still there" || return 1
+}
+
+run_test test_retire_refuses_a_user_authored_claude_local_md
+
+# Claude Code writes the permission grants made in a feature to its
+# .claude/settings.local.json, which git does not carry. The retire adds each
+# allow entry the base lacks to the base's file, after the base's own, and
+# leaves every other key of both files where it is. Besides permissions.allow,
+# the feature's file holds cs's autoMemoryDirectory (the worktree's own
+# .cs/memory) and plansDirectory, and here a deny entry.
+test_retire_carries_the_feature_permission_grants_into_the_base() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    _ignored_base_with_two_topics
+    mkdir -p "$base_dir/.claude"
+    printf '%s\n' '{"env": {"A": "1"}, "permissions": {"allow": ["Bash(ls:*)", "Read"]}}' \
+        > "$base_dir/.claude/settings.local.json"
+    cs_launch "proj@t1"
+    assert_eq "$wt/.cs/memory" "$(jq -r .autoMemoryDirectory "$wt/.claude/settings.local.json")" \
+        "cs pointed the feature's memory at its own .cs" || return 1
+    jq '.permissions = {allow: ["Bash(make:*)", "Read", "Bash(make:*)"], deny: ["Bash(rm:*)"]}' \
+        "$wt/.claude/settings.local.json" > "$wt/.claude/s.json" && mv "$wt/.claude/s.json" "$wt/.claude/settings.local.json"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire succeeds: $output" || return 1
+    assert_eq '["Bash(ls:*)","Read","Bash(make:*)"]' "$(jq -c .permissions.allow "$base_dir/.claude/settings.local.json")" \
+        "the grant survives after the base's own, once" || return 1
+    assert_eq '{"A":"1"}' "$(jq -c .env "$base_dir/.claude/settings.local.json")" "the base's other keys stay" || return 1
+    assert_eq '["env","permissions"]' "$(jq -c 'keys_unsorted' "$base_dir/.claude/settings.local.json")" \
+        "no autoMemoryDirectory or plansDirectory from the feature" || return 1
+    assert_eq '["Bash(rm:*)"]' "$(jq -c .permissions.deny "$base_dir/.claude/settings.local.json")" \
+        "the feature's deny rule comes too" || return 1
+}
+
+run_test test_retire_carries_the_feature_permission_grants_into_the_base
+
+# A feature's deny and ask rules go to the base with its grants, by the same
+# union: a feature that allows Bash(git:*) but denies Bash(git push:*) must
+# not leave the base allowing the push.
+test_retire_carries_the_feature_deny_and_ask_rules_into_the_base() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    _ignored_base_with_two_topics
+    mkdir -p "$base_dir/.claude"
+    printf '%s\n' '{"permissions": {"allow": ["Read"], "deny": ["Bash(rm:*)"]}}' > "$base_dir/.claude/settings.local.json"
+    cs_launch "proj@t1"
+    jq '.permissions = {allow: ["Bash(git:*)"], deny: ["Bash(git push:*)", "Bash(rm:*)"], ask: ["Bash(git commit:*)"]}' \
+        "$wt/.claude/settings.local.json" > "$wt/.claude/s.json" && mv "$wt/.claude/s.json" "$wt/.claude/settings.local.json"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire succeeds: $output" || return 1
+    assert_eq '{"allow":["Read","Bash(git:*)"],"deny":["Bash(rm:*)","Bash(git push:*)"],"ask":["Bash(git commit:*)"]}' \
+        "$(jq -c .permissions "$base_dir/.claude/settings.local.json")" \
+        "the base allows git and still denies the push, after its own rules, once" || return 1
+}
+
+run_test test_retire_carries_the_feature_deny_and_ask_rules_into_the_base
+
+# A base with no settings file gets one holding the feature's allow list only.
+test_retire_creates_the_base_settings_with_the_feature_grants_alone() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    rm -rf "$base_dir/.claude"
+    jq '.permissions.allow = ["Bash(make:*)"]' "$wt/.claude/settings.local.json" > "$wt/.claude/s.json" \
+        && mv "$wt/.claude/s.json" "$wt/.claude/settings.local.json"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire succeeds: $output" || return 1
+    assert_eq '{"permissions":{"allow":["Bash(make:*)"]}}' "$(jq -c . "$base_dir/.claude/settings.local.json" 2>&1)" \
+        "the base's file holds the grant and nothing else" || return 1
+}
+
+run_test test_retire_creates_the_base_settings_with_the_feature_grants_alone
+
+# A settings file the union cannot read, the feature's or the base's, refuses
+# the retire before anything is removed and names the file.
+test_retire_refuses_a_settings_file_it_cannot_read() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0 before
+    _ignored_base_with_two_topics
+    mkdir -p "$base_dir/.claude"
+    printf '%s\n' '{"permissions": {"allow": ["Read"]}}' > "$base_dir/.claude/settings.local.json"
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    printf '{' > "$wt/.claude/settings.local.json"
+    before=$(cat "$base_dir/.claude/settings.local.json")
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_output_contains "$output" "Error: $wt/.claude/settings.local.json is not one JSON object, or its permissions is not an object, or its permissions.allow, deny or ask is not a list, so cs cannot add the feature's permission rules to $base_dir/.claude/settings.local.json. Nothing was removed. Fix it, then run /finish t1 again." \
+        "the refusal names the feature's file" || return 1
+    assert_dir "$wt/.cs/memory" "the worktree is still there" || return 1
+    assert_eq "$before" "$(cat "$base_dir/.claude/settings.local.json")" "the base's file is as it was" || return 1
+
+    printf '%s\n' '{"permissions": {"allow": ["Bash(make:*)"]}}' > "$wt/.claude/settings.local.json"
+    printf '%s\n' '{"permissions": {"allow": "Read"}}' > "$base_dir/.claude/settings.local.json"
+    before=$(cat "$base_dir/.claude/settings.local.json")
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_output_contains "$output" "Error: $base_dir/.claude/settings.local.json is not one JSON object, or its permissions is not an object, or its permissions.allow, deny or ask is not a list, so cs cannot add the feature's permission rules to $base_dir/.claude/settings.local.json. Nothing was removed. Fix it, then run /finish t1 again." \
+        "the refusal names the base's file" || return 1
+    assert_dir "$wt/.cs/memory" "the worktree is still there" || return 1
+    assert_eq "$before" "$(cat "$base_dir/.claude/settings.local.json")" "the base's file is as it was" || return 1
+
+    # Valid JSON is not enough: one object, with a permissions object and an
+    # allow list where they are present. A second document's grants would be
+    # dropped, and a null would read as absent.
+    local bad i
+    bad=("$wt/.claude/settings.local.json" '{"permissions": {"deny": "Bash(git push:*)"}}'
+         "$wt/.claude/settings.local.json" '{"permissions": null}'
+         "$base_dir/.claude/settings.local.json" '{"permissions": {"allow": null}}'
+         "$wt/.claude/settings.local.json" '{"permissions": {"allow": false}}'
+         "$wt/.claude/settings.local.json" $'{"permissions": {"allow": ["Read"]}}\n{"permissions": {"allow": ["Bash(make:*)"]}}')
+    for i in 0 2 4 6 8; do
+        printf '%s\n' '{"permissions": {"allow": ["Bash(make:*)"]}}' > "$wt/.claude/settings.local.json"
+        printf '%s\n' '{"permissions": {"allow": ["Bash(ls:*)"]}}' > "$base_dir/.claude/settings.local.json"
+        printf '%s\n' "${bad[$((i + 1))]}" > "${bad[$i]}"
+        before=$(cat "$base_dir/.claude/settings.local.json")
+        status=0
+        output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+        assert_eq "1" "$status" "the retire refuses ${bad[$((i + 1))]}: $output" || return 1
+        assert_output_contains "$output" "Error: ${bad[$i]} is not one JSON object, or its permissions is not an object, or its permissions.allow, deny or ask is not a list, so cs cannot add the feature's permission rules to $base_dir/.claude/settings.local.json. Nothing was removed. Fix it, then run /finish t1 again." \
+            "the refusal names ${bad[$i]}" || return 1
+        assert_dir "$wt/.cs/memory" "the worktree is still there" || return 1
+        assert_eq "$before" "$(cat "$base_dir/.claude/settings.local.json")" "the base's file is as it was" || return 1
+    done
+}
+
+run_test test_retire_refuses_a_settings_file_it_cannot_read
+
+# A settings file the repository tracks is carried by git like any other
+# file: the retire leaves the base's as the integrate and the base's own
+# commits made it, and does not bring back a grant the base dropped since.
+test_retire_leaves_a_tracked_settings_file_to_git() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0 before
+    _ignored_base_with_two_topics
+    mkdir -p "$base_dir/.claude"
+    printf '%s\n' '{"permissions": {"allow": ["Read", "Bash(old:*)"]}}' > "$base_dir/.claude/settings.local.json"
+    (cd "$base_dir" && git add -f .claude/settings.local.json && git commit -q -m "share settings")
+    cs_launch "proj@t1"
+    jq '.permissions.allow += ["Bash(make:*)"]' "$wt/.claude/settings.local.json" > "$wt/.claude/s.json" \
+        && mv "$wt/.claude/s.json" "$wt/.claude/settings.local.json"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt .claude/settings.local.json && git commit -q -m "task")
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    jq '.permissions.allow -= ["Bash(old:*)"]' "$base_dir/.claude/settings.local.json" > "$base_dir/.claude/s.json" \
+        && mv "$base_dir/.claude/s.json" "$base_dir/.claude/settings.local.json"
+    (cd "$base_dir" && git commit -q -m "drop a grant" -- .claude/settings.local.json)
+    before=$(cat "$base_dir/.claude/settings.local.json")
+    assert_eq '["Read","Bash(make:*)"]' "$(jq -c .permissions.allow "$base_dir/.claude/settings.local.json")" \
+        "the integrate landed the feature's grant" || return 1
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire succeeds: $output" || return 1
+    assert_eq "$before" "$(cat "$base_dir/.claude/settings.local.json")" "the base's file is as git left it" || return 1
+    assert_eq "" "$(git -C "$base_dir" status --porcelain -- .claude)" "and the base's checkout is clean" || return 1
+}
+
+run_test test_retire_leaves_a_tracked_settings_file_to_git
+
+# The base can start tracking the file after the feature was made from it:
+# the feature's checkout does not track it, the base's does, and git owns the
+# base's copy all the same. A grant the base chose not to commit stays out.
+test_retire_leaves_a_settings_file_the_base_tracks_since_to_git() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0 before
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    jq '.permissions.allow = ["Read", "Bash(*)"]' "$wt/.claude/settings.local.json" > "$wt/.claude/s.json" \
+        && mv "$wt/.claude/s.json" "$wt/.claude/settings.local.json"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    mkdir -p "$base_dir/.claude"
+    printf '%s\n' '{"permissions": {"allow": ["Read"]}}' > "$base_dir/.claude/settings.local.json"
+    (cd "$base_dir" && git add -f .claude/settings.local.json && git commit -q -m "share settings")
+    assert_eq "" "$(git -C "$wt" ls-files -- .claude/settings.local.json)" "the feature's checkout does not track it" || return 1
+    before=$(cat "$base_dir/.claude/settings.local.json")
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire succeeds: $output" || return 1
+    assert_eq "$before" "$(cat "$base_dir/.claude/settings.local.json")" "the base's file is as git left it" || return 1
+    assert_eq "" "$(git -C "$base_dir" status --porcelain -- .claude)" "and the base's checkout is clean" || return 1
+}
+
+run_test test_retire_leaves_a_settings_file_the_base_tracks_since_to_git
+
+# The base's settings.local.json can be a link the base keeps ignored, to a
+# file it shares through git. cs writes nothing through a link at that path,
+# wherever it points: the file is left as it is, and the retire lists on
+# stdout each rule the union would have added, for the user to add by hand.
+# It reads the feature's file to list them, so a feature file it cannot read
+# is refused by name before anything is removed.
+test_retire_writes_no_permission_rules_through_a_settings_link() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0 before rules
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    mkdir -p "$base_dir/.claude"
+    printf '%s\n' '{"permissions": {"allow": ["Read"], "deny": ["Bash(rm:*)"]}}' > "$base_dir/team-settings.json"
+    ln -s ../team-settings.json "$base_dir/.claude/settings.local.json"
+    (cd "$base_dir" && git add team-settings.json && git commit -q -m "share settings")
+    before=$(cat "$base_dir/team-settings.json")
+    rules=$(cat "$wt/.claude/settings.local.json")
+    printf '{' > "$wt/.claude/settings.local.json"
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses a feature file it cannot read: $output" || return 1
+    assert_output_contains "$output" "Error: $wt/.claude/settings.local.json is not one JSON object, or its permissions is not an object, or its permissions.allow, deny or ask is not a list, so cs cannot list the feature's permission rules that $base_dir/.claude/settings.local.json, a link, does not take. Nothing was removed. Fix it, then run /finish t1 again." \
+        "the refusal names the feature's file" || return 1
+    assert_dir "$wt/.cs/memory" "nothing was removed" || return 1
+    printf '%s\n' "$rules" | jq '.permissions = {allow: ["Read", "Bash(make:*)", "Bash(make:*)"], deny: ["Bash(rm:*)"], ask: ["Bash(git push:*)"]}' \
+        > "$wt/.claude/settings.local.json"
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>"$TEST_TMPDIR/stderr") || status=$?
+    assert_eq "0" "$status" "the retire succeeds: $output $(cat "$TEST_TMPDIR/stderr")" || return 1
+    assert_eq "$before" "$(cat "$base_dir/team-settings.json")" "the shared file is as git left it" || return 1
+    assert_eq "" "$(git -C "$base_dir" status --porcelain)" "and the base's checkout is clean" || return 1
+    assert_symlink "$base_dir/.claude/settings.local.json" "the link stays" || return 1
+    assert_eq "$base_dir/.claude/settings.local.json is a link, and cs writes nothing through it. Add by hand the feature's permission rules it lacks that the base needs:
+  allow: \"Bash(make:*)\"
+  ask: \"Bash(git push:*)\"" "$(printf '%s\n' "$output" | awk '/ is a link, and cs writes nothing through it/ { on = 1 } on && !/^(  |\/)/ { on = 0 } on')" \
+        "stdout lists each rule the union would have added, once: $output" || return 1
+}
+
+run_test test_retire_writes_no_permission_rules_through_a_settings_link
+
+# On a volume that folds case, a base that tracks .claude/Settings.local.json
+# has git's file at the path cs reads, and git owns it all the same.
+test_retire_leaves_a_settings_file_tracked_in_another_case_to_git() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0 before
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    jq '.permissions.allow = ["Read", "Bash(make:*)"]' "$wt/.claude/settings.local.json" > "$wt/.claude/s.json" \
+        && mv "$wt/.claude/s.json" "$wt/.claude/settings.local.json"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    mkdir -p "$base_dir/.claude"
+    printf '%s\n' '{"permissions": {"allow": ["Read"]}}' > "$base_dir/.claude/Settings.local.json"
+    [ -e "$base_dir/.claude/settings.local.json" ] || { echo "    SKIP (this volume does not fold case)"; return 77; }
+    (cd "$base_dir" && git add -f .claude/Settings.local.json && git commit -q -m "share settings")
+    before=$(cat "$base_dir/.claude/Settings.local.json")
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire succeeds: $output" || return 1
+    assert_eq "$before" "$(cat "$base_dir/.claude/Settings.local.json")" "the base's file is as git left it" || return 1
+    assert_eq "" "$(git -C "$base_dir" status --porcelain -- .claude)" "and the base's checkout is clean" || return 1
+}
+
+run_test test_retire_leaves_a_settings_file_tracked_in_another_case_to_git
+
+# A git that cannot say whether a checkout tracks settings.local.json has not
+# said it does not: the retire refuses with git's own error, naming the file,
+# before anything is removed. The stand-in git fails only that question, for
+# one checkout, and hands every other call to the real git.
+test_retire_refuses_when_git_cannot_say_whether_it_tracks_the_settings() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0 real side
+    local bindir="$TEST_TMPDIR/git-bin"
+    real=$(command -v git) || return 1
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    jq '.permissions.allow = ["Read", "Bash(make:*)"]' "$wt/.claude/settings.local.json" > "$wt/.claude/s.json" \
+        && mv "$wt/.claude/s.json" "$wt/.claude/settings.local.json"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    mkdir -p "$bindir"
+    for side in "$wt" "$base_dir"; do
+        cat > "$bindir/git" <<EOF
+#!/bin/bash
+case " \$* " in *" -C $side ls-files "*settings.local.json*)
+    echo "fatal: index file corrupt" >&2
+    exit 128 ;;
+esac
+exec "$real" "\$@"
+EOF
+        chmod +x "$bindir/git"
+        status=0
+        output=$(PATH="$bindir:$PATH" "$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+        assert_eq "1" "$status" "the retire refuses for $side: $output" || return 1
+        assert_output_contains "$output" "Error: cs could not ask git whether it tracks $side/.claude/settings.local.json: fatal: index file corrupt. Nothing was removed." \
+            "the refusal gives git's own error for $side" || return 1
+        assert_dir "$wt/.cs/memory" "nothing was removed" || return 1
+        assert_file_not_exists "$base_dir/.claude/settings.local.json" "nothing was carried" || return 1
+    done
+    # Positive control: with the real git, the rules are carried.
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire succeeds: $output" || return 1
+    assert_eq '["Read","Bash(make:*)"]' "$(jq -c .permissions.allow "$base_dir/.claude/settings.local.json")" "the rules are carried" || return 1
+}
+
+run_test test_retire_refuses_when_git_cannot_say_whether_it_tracks_the_settings
+
+# The retire reads the feature's permission rules only from a file of the
+# feature's own. A link at that path, leading anywhere or nowhere, is refused
+# by name before anything is removed, whatever the base's file is.
+test_retire_refuses_a_feature_settings_file_that_is_a_link() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0 target
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    printf '%s\n' '{"permissions": {"allow": ["Bash(make:*)"]}}' > "$TEST_TMPDIR/elsewhere.json"
+    rm "$wt/.claude/settings.local.json"
+    for target in "$TEST_TMPDIR/elsewhere.json" "$TEST_TMPDIR/nowhere.json"; do
+        ln -sf "$target" "$wt/.claude/settings.local.json"
+        status=0
+        output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+        assert_eq "1" "$status" "the retire refuses a link to $target: $output" || return 1
+        assert_output_contains "$output" "Error: $wt/.claude/settings.local.json is a link, and cs reads the feature's permission rules only from a file of its own. Nothing was removed. Put the rules in a file there, or delete the link, then run /finish t1 again." \
+            "the refusal names the link to $target" || return 1
+        assert_dir "$wt/.cs/memory" "nothing was removed" || return 1
+    done
+    # A link at the base's path too: the feature's link is still refused.
+    mkdir -p "$base_dir/.claude"
+    ln -s ../team-settings.json "$base_dir/.claude/settings.local.json"
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses with both linked: $output" || return 1
+    assert_output_contains "$output" "Error: $wt/.claude/settings.local.json is a link, and cs reads the feature's permission rules only from a file of its own." \
+        "the refusal names the feature's link" || return 1
+    rm "$base_dir/.claude/settings.local.json"
+    # Positive control: the same rules in a file of the feature's own go.
+    rm "$wt/.claude/settings.local.json"
+    cp "$TEST_TMPDIR/elsewhere.json" "$wt/.claude/settings.local.json"
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire succeeds: $output" || return 1
+    assert_eq '["Bash(make:*)"]' "$(jq -c .permissions.allow "$base_dir/.claude/settings.local.json")" "the rules are carried" || return 1
+}
+
+run_test test_retire_refuses_a_feature_settings_file_that_is_a_link
+
+# The retire reads the settings files only to add the feature's rules to the
+# base's. One it leaves alone, tracked or behind a link, is never read, so
+# what it holds is no reason to refuse.
+test_retire_reads_no_settings_file_it_leaves_alone() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0 before
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    jq '.permissions.allow = ["Read", "Bash(make:*)"]' "$wt/.claude/settings.local.json" > "$wt/.claude/s.json" \
+        && mv "$wt/.claude/s.json" "$wt/.claude/settings.local.json"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    mkdir -p "$base_dir/.claude"
+    printf '%s\n' '{"permissions": {"allow": "Read"}}' > "$base_dir/team-settings.json"
+    ln -s ../team-settings.json "$base_dir/.claude/settings.local.json"
+    (cd "$base_dir" && git add team-settings.json && git commit -q -m "share settings")
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire goes through a link to a file it cannot read: $output" || return 1
+    assert_eq '{"permissions": {"allow": "Read"}}' "$(cat "$base_dir/team-settings.json")" "the file is untouched" || return 1
+    # With the base's rules unreadable, every rule of the feature's is listed.
+    assert_eq "$base_dir/.claude/settings.local.json is a link, and cs writes nothing through it. Add by hand the feature's permission rules it lacks that the base needs:
+  allow: \"Read\"
+  allow: \"Bash(make:*)\"" "$(printf '%s\n' "$output" | awk '/ is a link, and cs writes nothing through it/ { on = 1 } on && !/^(  |\/)/ { on = 0 } on')" \
+        "stdout lists every rule of the feature's: $output" || return 1
+    # The same file tracked at the base's own path.
+    cs_launch "proj@t2"
+    echo "done" > "$CS_SESSIONS_ROOT/proj@t2/result2.txt"
+    (cd "$CS_SESSIONS_ROOT/proj@t2" && git add result2.txt && git commit -q -m "task two")
+    sha=$(land_feature proj t2) || { echo "  FAIL: integrate fixture"; return 1; }
+    rm "$base_dir/.claude/settings.local.json"
+    printf '%s\n' '{"permissions": {"allow": "Read"}}' > "$base_dir/.claude/settings.local.json"
+    (cd "$base_dir" && git add -f .claude/settings.local.json && git commit -q -m "track settings")
+    before=$(cat "$base_dir/.claude/settings.local.json")
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t2" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire goes through a tracked file it cannot read: $output" || return 1
+    assert_eq "$before" "$(cat "$base_dir/.claude/settings.local.json")" "the base's file is as git left it" || return 1
+    assert_eq "" "$(git -C "$base_dir" status --porcelain)" "and the base's checkout is clean" || return 1
+}
+
+run_test test_retire_reads_no_settings_file_it_leaves_alone
+
+# The base's .claude can itself be a link inside the session, to a directory
+# whose settings.local.json the base tracks, and git sees no file at
+# .claude/settings.local.json behind it, ignored or tracked. cs writes nothing
+# through that link either: the file is left as git left it, and the retire
+# lists on stdout each rule the union would have added, naming the link. A
+# .claude that leads out of the session is still refused by the write.
+test_retire_writes_no_permission_rules_through_a_linked_claude_dir() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" sha1 sha2 sha3 output status=0 before git_before task out
+    _ignored_base_with_two_topics
+    for task in t1 t2 t3; do
+        cs_launch "proj@$task"
+        printf '%s\n' '{"permissions": {"allow": ["Read", "Bash(make:*)"]}}' \
+            > "$CS_SESSIONS_ROOT/proj@$task/.claude/settings.local.json"
+        echo "done" > "$CS_SESSIONS_ROOT/proj@$task/result-$task.txt"
+        (cd "$CS_SESSIONS_ROOT/proj@$task" && git add "result-$task.txt" && git commit -q -m "task $task")
+    done
+    sha1=$(land_feature proj t1) || { echo "  FAIL: integrate fixture t1"; return 1; }
+    sha2=$(land_feature proj t2) || { echo "  FAIL: integrate fixture t2"; return 1; }
+    sha3=$(land_feature proj t3) || { echo "  FAIL: integrate fixture t3"; return 1; }
+    mkdir -p "$base_dir/team-claude"
+    printf '%s\n' '{"permissions": {"allow": ["Read"]}}' > "$base_dir/team-claude/settings.local.json"
+    (cd "$base_dir" && git add -f team-claude/settings.local.json && git commit -q -m "share settings")
+    rm -rf "$base_dir/.claude"
+    ln -s team-claude "$base_dir/.claude"
+    before=$(cat "$base_dir/team-claude/settings.local.json")
+    git_before=$(git -C "$base_dir" status --porcelain)
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha1" 2>"$TEST_TMPDIR/stderr") || status=$?
+    assert_eq "0" "$status" "the retire succeeds: $output $(cat "$TEST_TMPDIR/stderr")" || return 1
+    assert_eq "$before" "$(cat "$base_dir/team-claude/settings.local.json")" "the tracked file is as git left it" || return 1
+    assert_eq "$git_before" "$(git -C "$base_dir" status --porcelain)" "and the base's git status is as it was" || return 1
+    assert_symlink "$base_dir/.claude" "the link stays" || return 1
+    assert_eq "$base_dir/.claude is a link, and cs writes nothing through it. Add by hand the feature's permission rules it lacks that the base needs:
+  allow: \"Bash(make:*)\"" "$(printf '%s\n' "$output" | awk '/ is a link, and cs writes nothing through it/ { on = 1 } on && !/^(  |\/)/ { on = 0 } on')" \
+        "stdout names the link and lists each rule the union would have added: $output" || return 1
+    # A .claude leading out of the session: the write refuses it, as before.
+    out="$TEST_TMPDIR/outside-claude"
+    mkdir -p "$out"
+    printf '%s\n' '{"permissions": {"allow": ["Read"]}}' > "$out/settings.local.json"
+    rm "$base_dir/.claude"
+    ln -s "$out" "$base_dir/.claude"
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t3" "$sha3" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses a .claude out of the session: $output" || return 1
+    assert_output_contains "$output" "cs_mkdir_inside: $base_dir/.claude leads to $(cd "$out" && pwd -P), outside the session $base_dir" \
+        "the refusal names where the link leads" || return 1
+    assert_output_contains "$output" "Error: Could not add the feature's permission rules to $base_dir/.claude/settings.local.json; nothing was removed" \
+        "the refusal names the file" || return 1
+    assert_dir "$CS_SESSIONS_ROOT/proj@t3/.cs/memory" "nothing was removed" || return 1
+    assert_eq '{"permissions": {"allow": ["Read"]}}' "$(cat "$out/settings.local.json")" "the outside file is untouched" || return 1
+    # The base tracks the link itself.
+    rm "$base_dir/.claude"
+    ln -s team-claude "$base_dir/.claude"
+    (cd "$base_dir" && git add .claude && git commit -q -m "share .claude")
+    assert_eq "" "$(git -C "$base_dir" ls-files -- .claude/settings.local.json)" "git sees no file behind the tracked link" || return 1
+    git_before=$(git -C "$base_dir" status --porcelain)
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t2" "$sha2" 2>"$TEST_TMPDIR/stderr") || status=$?
+    assert_eq "0" "$status" "the retire succeeds past a tracked link: $output $(cat "$TEST_TMPDIR/stderr")" || return 1
+    assert_eq "$before" "$(cat "$base_dir/team-claude/settings.local.json")" "the tracked file is as git left it, past a tracked link" || return 1
+    assert_eq "$git_before" "$(git -C "$base_dir" status --porcelain)" "and the base's git status is as it was, past a tracked link" || return 1
+    assert_eq "$base_dir/.claude is a link, and cs writes nothing through it. Add by hand the feature's permission rules it lacks that the base needs:
+  allow: \"Bash(make:*)\"" "$(printf '%s\n' "$output" | awk '/ is a link, and cs writes nothing through it/ { on = 1 } on && !/^(  |\/)/ { on = 0 } on')" \
+        "stdout names the tracked link and lists the rules: $output" || return 1
+}
+
+run_test test_retire_writes_no_permission_rules_through_a_linked_claude_dir
+
+# A feature can commit its .claude as a link, and git sees no file behind a
+# linked directory on that side either. One cs cannot follow to a directory
+# inside the worktree, because it leads out or through more links than cs
+# follows, is refused by name before anything is removed, whether the feature
+# landed through the integrate or is retired with --force: cs reads the
+# feature's rules only from a file inside the worktree.
+test_retire_refuses_a_feature_claude_dir_that_links_out_of_the_worktree() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" sha1 sha2 output status=0 task wt hop
+    local out="$TEST_TMPDIR/outside-claude"
+    _ignored_base_with_two_topics
+    mkdir -p "$out"
+    printf '%s\n' '{"permissions": {"allow": ["Bash(elsewhere:*)"]}}' > "$out/settings.local.json"
+    for task in t1 t2; do
+        wt="$CS_SESSIONS_ROOT/proj@$task"
+        cs_launch "proj@$task"
+        rm -rf "$wt/.claude"
+        ln -s "$out" "$wt/.claude"
+        echo "done" > "$wt/result-$task.txt"
+        (cd "$wt" && git add "result-$task.txt" .claude && git commit -q -m "task $task")
+    done
+    sha1=$(git -C "$CS_SESSIONS_ROOT/proj@t1" rev-parse HEAD)
+    # Landed, then the base puts a directory of its own in the link's place.
+    sha2=$(land_feature proj t2) || { echo "  FAIL: integrate fixture t2"; return 1; }
+    (cd "$base_dir" && git rm -q .claude && mkdir .claude && echo x > .claude/keep \
+        && git add .claude/keep && git commit -q -m "a .claude of the base's own")
+    printf '%s\n' '{"permissions": {"allow": ["Read"]}}' > "$base_dir/.claude/settings.local.json"
+    output=$("$CS_BIN" "proj" -retire-feature "t2" "$sha2" 2>&1) || status=$?
+    wt="$CS_SESSIONS_ROOT/proj@t2"
+    assert_eq "1" "$status" "the retire refuses a landed feature: $output" || return 1
+    assert_output_contains "$output" "Error: $wt/.claude is a link cs cannot follow to a directory inside $wt, and cs reads the feature's permission rules only from a file inside it. Nothing was removed. Replace the link with a directory of the feature's own, or remove it, and commit that, then run /finish t2 again." \
+        "the refusal names the landed feature's link" || return 1
+    assert_dir "$wt/.cs/memory" "the landed feature's worktree is still there" || return 1
+    assert_eq '{"permissions": {"allow": ["Read"]}}' "$(cat "$base_dir/.claude/settings.local.json")" "the base's file is as it was" || return 1
+    # Not landed, retired with --force.
+    wt="$CS_SESSIONS_ROOT/proj@t1"
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha1" --force 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses with --force: $output" || return 1
+    assert_output_contains "$output" "Error: $wt/.claude is a link cs cannot follow to a directory inside $wt, and cs reads the feature's permission rules only from a file inside it. Nothing was removed. Replace the link with a directory of the feature's own, or remove it, and commit that, then run /finish t1 again." \
+        "the refusal names the link with --force" || return 1
+    assert_dir "$wt/.cs/memory" "the worktree is still there with --force" || return 1
+    assert_eq '{"permissions": {"allow": ["Read"]}}' "$(cat "$base_dir/.claude/settings.local.json")" "the base's file is as it was with --force" || return 1
+    assert_eq '{"permissions": {"allow": ["Bash(elsewhere:*)"]}}' "$(cat "$out/settings.local.json")" "the outside file is untouched" || return 1
+    # A chain of 18 links that ends inside the worktree: the kernel follows
+    # it, and cs follows 16.
+    mkdir "$wt/.cs/local/claude"
+    cp "$out/settings.local.json" "$wt/.cs/local/claude/settings.local.json"
+    ln -s claude "$wt/.cs/local/hop17"
+    for hop in 16 15 14 13 12 11 10 9 8 7 6 5 4 3 2 1; do
+        ln -s "hop$((hop + 1))" "$wt/.cs/local/hop$hop"
+    done
+    rm "$wt/.claude"
+    ln -s .cs/local/hop1 "$wt/.claude"
+    (cd "$wt" && git add .claude && git commit -q -m "a long chain")
+    sha1=$(git -C "$wt" rev-parse HEAD)
+    assert_eq '{"permissions": {"allow": ["Bash(elsewhere:*)"]}}' "$(cat "$wt/.claude/settings.local.json")" "the kernel follows the chain" || return 1
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha1" --force 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses a chain it cannot follow: $output" || return 1
+    assert_output_contains "$output" "Error: $wt/.claude is a link cs cannot follow to a directory inside $wt, and cs reads the feature's permission rules only from a file inside it. Nothing was removed." \
+        "the refusal names the link at the head of the chain" || return 1
+    assert_dir "$wt/.cs/memory" "the worktree is still there past the chain" || return 1
+    assert_eq '{"permissions": {"allow": ["Read"]}}' "$(cat "$base_dir/.claude/settings.local.json")" "the base's file is as it was past the chain" || return 1
+    # Positive control: the same rules in a directory of the feature's own go.
+    rm "$wt/.claude"
+    mkdir "$wt/.claude"
+    cp "$out/settings.local.json" "$wt/.claude/settings.local.json"
+    (cd "$wt" && git add -A .claude && git commit -q -m "a .claude of the feature's own")
+    sha1=$(git -C "$wt" rev-parse HEAD)
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha1" --force 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire succeeds: $output" || return 1
+    assert_eq '["Read","Bash(elsewhere:*)"]' "$(jq -c .permissions.allow "$base_dir/.claude/settings.local.json")" "the rules are carried" || return 1
+}
+
+run_test test_retire_refuses_a_feature_claude_dir_that_links_out_of_the_worktree
+
+# A feature .claude that links to a directory inside the worktree is read
+# where it leads. A settings file git tracks there is git's to carry, like one
+# tracked at .claude/settings.local.json: nothing is added to the base's. One
+# git does not track there is the feature's own file, and its rules go. Only
+# cs's own directories under .cs can hold such a file without the retire
+# refusing it as untracked work.
+test_retire_asks_git_about_the_file_a_feature_claude_link_leads_to() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    cs_launch "proj@t2"
+    rm -rf "$wt/.claude"
+    mkdir "$wt/team-claude"
+    printf '%s\n' '{"permissions": {"allow": ["Read", "Bash(make:*)"]}}' > "$wt/team-claude/settings.local.json"
+    ln -s team-claude "$wt/.claude"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt .claude team-claude/settings.local.json && git commit -q -m "task")
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    (cd "$base_dir" && git rm -q .claude && mkdir .claude && echo x > .claude/keep \
+        && git add .claude/keep && git commit -q -m "a .claude of the base's own")
+    printf '%s\n' '{"permissions": {"allow": ["Read"]}}' > "$base_dir/.claude/settings.local.json"
+    assert_eq "team-claude/settings.local.json" "$(git -C "$wt" ls-files -- team-claude .claude/settings.local.json)" \
+        "the feature tracks the file where the link leads, and git sees none behind the link" || return 1
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire succeeds: $output" || return 1
+    assert_eq '{"permissions": {"allow": ["Read"]}}' "$(cat "$base_dir/.claude/settings.local.json")" \
+        "nothing is added from a file git tracks where the link leads" || return 1
+    assert_output_not_contains "$output" "is a link" "and nothing is said about a link" || return 1
+    # A link into .cs/local, to a file git does not track.
+    wt="$CS_SESSIONS_ROOT/proj@t2"
+    rm -rf "$wt/.claude"
+    mkdir "$wt/.cs/local/claude"
+    printf '%s\n' '{"permissions": {"allow": ["Read", "Bash(lint:*)"]}}' > "$wt/.cs/local/claude/settings.local.json"
+    ln -s .cs/local/claude "$wt/.claude"
+    echo "done" > "$wt/result2.txt"
+    (cd "$wt" && git add result2.txt .claude && git commit -q -m "task two")
+    sha=$(git -C "$wt" rev-parse HEAD)
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t2" "$sha" --force 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire succeeds for a file git does not track: $output" || return 1
+    assert_eq '["Read","Bash(lint:*)"]' "$(jq -c .permissions.allow "$base_dir/.claude/settings.local.json")" \
+        "the rules of a file git does not track are carried" || return 1
+}
+
+run_test test_retire_asks_git_about_the_file_a_feature_claude_link_leads_to
+
 # The record of what the feature inherited is what tells a deleted topic from
 # a new one. A record that is there and cannot be read must stop the fuse:
 # guessing "new" would bring the deleted topic back and report success.
@@ -2069,7 +3224,9 @@ test_retire_ignored_mode_refuses_when_the_inherited_record_cannot_be_read() {
     assert_file_not_exists "$base_dir/.cs/memory/gone.md" "the deleted topic did not come back" || return 1
     assert_output_contains "$output" "could not read what the feature inherited for memory/gone.md" \
         "the error names the topic" || return 1
-    assert_output_contains "$output" "could not be fused into" "the staged records are kept and named" || return 1
+    assert_output_contains "$output" "Could not classify the session records in $wt/.cs; nothing was removed" \
+        "the retire refuses before it removes anything" || return 1
+    assert_dir "$wt/.cs/memory" "the worktree and its records are still there" || return 1
 }
 
 run_test test_retire_ignored_mode_refuses_when_the_inherited_record_cannot_be_read
@@ -2094,6 +3251,7 @@ test_retire_ignored_mode_refuses_when_the_inherited_directory_cannot_be_searched
     assert_file_not_exists "$base_dir/.cs/memory/gone.md" "the deleted topic did not come back" || return 1
     assert_output_contains "$output" "could not read what the feature inherited for memory/gone.md" \
         "the error names the topic" || return 1
+    assert_dir "$wt/.cs/memory" "the worktree and its records are still there" || return 1
 }
 
 run_test test_retire_ignored_mode_refuses_when_the_inherited_directory_cannot_be_searched
@@ -2167,6 +3325,167 @@ test_retire_fuse_survives_a_torn_timeline_tail() {
 }
 
 run_test test_retire_fuse_survives_a_torn_timeline_tail
+
+# Whether the retire fuses .cs or leaves it to git depends on the mode the
+# create recorded. A state file without one says neither, so nothing under
+# .cs is known to be carried: the retire refuses and the worktree stays.
+test_retire_refuses_a_worktree_whose_state_names_no_mode() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    _ignored_base_with_two_topics
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    echo "feature topic" > "$wt/.cs/memory/new.md"
+    grep -v '^cs_mode:' "$wt/.cs/local/state" > "$wt/.cs/local/state.tmp"
+    mv "$wt/.cs/local/state.tmp" "$wt/.cs/local/state"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_output_contains "$output" "$wt/.cs/local/state names no cs_mode, so cs cannot tell whether git or the record fuse carries $wt/.cs; nothing was removed" \
+        "the refusal names the state file" || return 1
+    assert_eq "feature topic" "$(cat "$wt/.cs/memory/new.md" 2>/dev/null)" "the feature's topic is still there" || return 1
+    assert_file_not_exists "$base_dir/.cs/memory/new.md" "and nothing was fused" || return 1
+}
+
+run_test test_retire_refuses_a_worktree_whose_state_names_no_mode
+
+# A tracked file marked skip-worktree (or assume-unchanged) hides its edit
+# from git diff, and git keeps no copy of the edit: removal would destroy it.
+test_retire_refuses_an_edit_git_diff_does_not_show() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    mkdir -p "$base_dir/.cs"/{memory,local}
+    echo "# P" > "$base_dir/README.md"
+    echo "default: 1" > "$base_dir/config.yml"
+    echo "default: 2" > "$base_dir/other.yml"
+    ln -s defaults-a "$base_dir/profile"
+    printf 'defaults-a' > "$base_dir/alias"
+    printf '.cs/\n' > "$base_dir/.gitignore"
+    (cd "$base_dir" && git init -q && git config core.autocrlf false && git add -A && git commit -q -m init)
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    git -C "$wt" update-index --skip-worktree config.yml
+    echo "local: tuned" >> "$wt/config.yml"
+    git -C "$wt" update-index --assume-unchanged other.yml
+    echo "local: tuned too" >> "$wt/other.yml"
+    git -C "$wt" update-index --assume-unchanged profile
+    ln -sfn defaults-b "$wt/profile"
+    # A link whose target spells the file's old bytes: same blob, other type.
+    git -C "$wt" update-index --assume-unchanged alias
+    rm "$wt/alias" && ln -s defaults-a "$wt/alias"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_output_contains "$output" "Worktree has edits git diff does not show (skip-worktree or assume-unchanged), which removal would destroy; commit them, or undo them and clear the flag (git update-index --no-skip-worktree / --no-assume-unchanged), first:" \
+        "the refusal says why" || return 1
+    assert_eq "alias
+config.yml
+other.yml
+profile" "$(printf '%s\n' "$output" | awk 'listed; /first:$/ { listed = 1 }')" "the refusal names the two files, the retargeted link and the file now a link" || return 1
+    assert_eq "default: 1
+local: tuned" "$(cat "$wt/config.yml")" "the edit is still there" || return 1
+    assert_eq "defaults-b" "$(readlink "$wt/profile")" "the link still has its new target" || return 1
+    # Positive control: an unedited flagged file or link is no reason to refuse.
+    git -C "$wt" update-index --no-assume-unchanged other.yml
+    git -C "$wt" checkout -q -- other.yml
+    git -C "$wt" show HEAD:config.yml > "$wt/config.yml"
+    ln -sfn defaults-a "$wt/profile"
+    rm "$wt/alias" && printf 'defaults-a' > "$wt/alias"
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "an unedited flagged file retires: $output" || return 1
+    assert_not_exists "$wt" "the worktree is retired" || return 1
+}
+
+run_test test_retire_refuses_an_edit_git_diff_does_not_show
+
+# An initialised submodule is a checkout of its own: git ls-files in the
+# worktree does not list the files inside it, and removal destroys them.
+test_retire_refuses_untracked_and_ignored_work_inside_a_submodule() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" lib="$TEST_TMPDIR/sublib"
+    local sha output status=0
+    mkdir -p "$lib"
+    (cd "$lib" && git init -q && git config core.autocrlf false && echo lib > lib.txt \
+        && printf '*.env\n' > .gitignore && git add -A && git commit -q -m lib)
+    mkdir -p "$base_dir/.cs"/{memory,local}
+    echo "# P" > "$base_dir/README.md"
+    printf '.cs/\n' > "$base_dir/.gitignore"
+    (cd "$base_dir" && git init -q && git config core.autocrlf false && git add -A && git commit -q -m init \
+        && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always \
+            git submodule add -q "$lib" sub && git commit -q -m "add submodule") \
+        || { echo "  FAIL: submodule fixture"; return 1; }
+    cs_launch "proj@t1"
+    (cd "$wt" && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always \
+        git submodule update --init -q) \
+        || { echo "  FAIL: submodule fixture"; return 1; }
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    echo "secret" > "$wt/sub/secret.env"
+    echo "notes" > "$wt/sub/notes.txt"
+    # The integrate updates submodules in its temporary worktree.
+    sha=$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always \
+        land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_output_contains "$output" "Worktree has untracked files that removal would destroy; commit or remove them first:
+sub/notes.txt
+sub/secret.env" "the refusal names both files inside the submodule" || return 1
+    assert_eq "secret" "$(cat "$wt/sub/secret.env" 2>/dev/null)" "the ignored file is still there" || return 1
+    # Positive control: an initialised submodule holding nothing extra retires.
+    rm "$wt/sub/secret.env" "$wt/sub/notes.txt"
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "a clean submodule retires: $output" || return 1
+    assert_not_exists "$wt" "the worktree is retired" || return 1
+}
+
+run_test test_retire_refuses_untracked_and_ignored_work_inside_a_submodule
+
+# A submodule keeps its own index, so a flagged file inside it hides its edit
+# from the submodule's git diff and from the worktree's: removal destroys it.
+test_retire_refuses_an_edit_git_diff_does_not_show_inside_a_submodule() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" lib="$TEST_TMPDIR/sublib"
+    local sha output line status=0
+    mkdir -p "$lib"
+    (cd "$lib" && git init -q && git config core.autocrlf false && echo lib > lib.txt \
+        && git add -A && git commit -q -m lib)
+    mkdir -p "$base_dir/.cs"/{memory,local}
+    echo "# P" > "$base_dir/README.md"
+    printf '.cs/\n' > "$base_dir/.gitignore"
+    (cd "$base_dir" && git init -q && git config core.autocrlf false && git add -A && git commit -q -m init \
+        && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always \
+            git submodule add -q "$lib" sub && git commit -q -m "add submodule") \
+        || { echo "  FAIL: submodule fixture"; return 1; }
+    cs_launch "proj@t1"
+    (cd "$wt" && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always \
+        git submodule update --init -q) \
+        || { echo "  FAIL: submodule fixture"; return 1; }
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    git -C "$wt/sub" update-index --assume-unchanged lib.txt
+    echo "local: tuned" >> "$wt/sub/lib.txt"
+    # The integrate updates submodules in its temporary worktree.
+    sha=$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always \
+        land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    line=$("$CS_BIN" proj -features --porcelain 2>&1)
+    assert_eq "1" "$(_feat_field "$line" 6)" "wt_dirty: $line" || return 1
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_output_contains "$output" "Worktree has edits git diff does not show (skip-worktree or assume-unchanged), which removal would destroy; commit them, or undo them and clear the flag (git update-index --no-skip-worktree / --no-assume-unchanged), first:" \
+        "the refusal says why" || return 1
+    assert_eq "sub/lib.txt" "$(printf '%s\n' "$output" | awk 'listed; /first:$/ { listed = 1 }')" \
+        "the refusal names the file inside the submodule" || return 1
+    assert_eq "lib
+local: tuned" "$(cat "$wt/sub/lib.txt")" "the edit is still there" || return 1
+    # Positive control: the flagged file left as committed retires.
+    echo lib > "$wt/sub/lib.txt"
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "an unedited flagged file in a submodule retires: $output" || return 1
+    assert_not_exists "$wt" "the worktree is retired" || return 1
+}
+
+run_test test_retire_refuses_an_edit_git_diff_does_not_show_inside_a_submodule
 
 test_rm_worktree_unregisters_and_prompts_branch() {
     local base_dir
@@ -2355,11 +3674,6 @@ test_features_excludes_a_lookalike_whose_name_prefixes_a_real_one() {
 
 run_test test_features_excludes_a_lookalike_whose_name_prefixes_a_real_one
 
-# Field positions in a -features --porcelain record.
-_feat_field() {  # line field_number
-    printf '%s\n' "$1" | awk -F'\t' -v n="$2" '{print $n}'
-}
-
 test_features_untracked_is_not_reported_as_dirty() {
     # _tree_is_dirty deliberately excludes untracked files: a worktree holding
     # only untracked files is NOT dirty, but is still refused, by a different
@@ -2376,6 +3690,24 @@ test_features_untracked_is_not_reported_as_dirty() {
 }
 
 run_test test_features_untracked_is_not_reported_as_dirty
+
+# The features screen reads the same fact the retire refuses on.
+test_features_reports_an_edit_git_diff_does_not_show_as_dirty() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" line
+    mkdir -p "$base_dir/.cs"/{memory,local}
+    echo "# P" > "$base_dir/README.md"
+    echo "default: 1" > "$base_dir/config.yml"
+    printf '.cs/\n' > "$base_dir/.gitignore"
+    (cd "$base_dir" && git init -q && git config core.autocrlf false && git add -A && git commit -q -m init)
+    cs_launch "proj@t1"
+    git -C "$wt" update-index --skip-worktree config.yml
+    echo "local: tuned" >> "$wt/config.yml"
+    line=$("$CS_BIN" proj -features --porcelain 2>&1)
+    assert_eq "1" "$(_feat_field "$line" 6)" "wt_dirty: $line" || return 1
+    assert_eq "dirty" "$(_feat_field "$line" 10)" "state: $line" || return 1
+}
+
+run_test test_features_reports_an_edit_git_diff_does_not_show_as_dirty
 
 test_features_does_not_count_the_bookkeeping_the_merge_gate_skips() {
     # A worktree created before cs excluded its own bookkeeping still has .cs/

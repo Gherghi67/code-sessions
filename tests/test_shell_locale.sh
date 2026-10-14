@@ -25,7 +25,8 @@ _traced() {  # bash, shell code, args...
     utf8="$(utf8_locale)"
     env -i PATH="$PATH" HOME="$TEST_TMPDIR" ${utf8:+"LC_ALL=$utf8"} "$b" -c '
         lib="$1"; shift
-        source "$lib/02-shared.sh"; source "$lib/30-worktree.sh"; source "$lib/65-sessions.sh"
+        source "$lib/02-shared.sh"; source "$lib/30-worktree.sh"; source "$lib/40-state.sh"
+        source "$lib/65-sessions.sh"
         set -x
         '"$code" x "$LIB" "$@" 2>"$TEST_TMPDIR/trace"
 }
@@ -82,8 +83,10 @@ test_tracked_files_notice_names_a_link_to_the_session_in_plain_bytes() {
 # through whole.
 test_worktree_untracked_at_risk_lists_names_as_bytes() {
     local w="$TEST_TMPDIR/w" b out
-    mkdir -p "$w/.cs"
+    mkdir -p "$w/.cs/local"
     git -C "$w" init -q
+    # An ignored-mode worktree: every untracked file under .cs/ is cs's own.
+    printf 'cs_mode: ignored\n' > "$w/.cs/local/state"
     printf '*.log\n' > "$w/.gitignore"
     : > "$w/.cs/x"
     : > "$w/a.log"
