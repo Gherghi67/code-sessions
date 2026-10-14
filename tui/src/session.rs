@@ -1989,6 +1989,30 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    // A worktree session whose base is gone has no repository for git to ask,
+    // so it is listed and removed as a plain directory, as `cs -rm` does:
+    // every top-level entry cs did not create, tracked or not, then the
+    // directory itself once those are granted.
+    #[test]
+    fn a_worktree_whose_base_is_gone_is_listed_and_removed_as_a_plain_directory() {
+        let root = std::env::temp_dir().join(format!("cs-unowned-orphan-wt-{}", std::process::id()));
+        let wt = worktree_beside_base(&root);
+        fs::write(wt.join("notes.txt"), "draft").unwrap();
+        fs::remove_dir_all(root.join("proj")).unwrap();
+        assert!(wt.join(".git").is_file(), "fixture: the worktree still has its .git file");
+
+        let got = unowned_entries("proj@task", &wt);
+
+        assert_eq!(got, Ok(UnownedEntries::NotCreatedByCs(vec!["notes.txt".into(), "tracked.txt".into()])));
+        let refused = remove_session_path(&root, "proj@task", &wt, RemoveGrants::default()).map_err(|e| e.to_string());
+        assert_eq!(refused, Err("proj@task holds files cs did not create: notes.txt, tracked.txt".to_string()));
+        assert!(wt.join("notes.txt").exists(), "a refused removal keeps the files");
+        let granted = RemoveGrants { unowned_files: true, ..RemoveGrants::default() };
+        assert_eq!(remove_session_path(&root, "proj@task", &wt, granted).map_err(|e| e.to_string()), Ok(()));
+        assert!(!wt.exists(), "the worktree directory is removed");
+        let _ = fs::remove_dir_all(&root);
+    }
+
     fn setup_session(root: &Path, name: &str) -> PathBuf {
         let dir = root.join(name);
         fs::create_dir_all(dir.join(".cs/local")).unwrap();
