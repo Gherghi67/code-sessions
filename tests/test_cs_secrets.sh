@@ -123,6 +123,19 @@ sess="${FAKE_SECURITY_SESSION:-test-session}"
 # and \" escapes) and carry on as if it had been argv.
 if [ "$sub" = "-i" ]; then
     IFS= read -r line || true
+    # The real tool takes at most 4095 bytes of a line as one command and
+    # reads what is left, the newline included, as the next one; an empty
+    # command returns 0 and the exit status is the last command's. So a line
+    # of exactly 4095 bytes runs whole and exits 0 whatever its command did,
+    # and a longer line is cut. FAKE_SECURITY_LINELOG records each line's
+    # length in bytes.
+    line_bytes=$(printf '%s' "$line" | wc -c | tr -d ' ')
+    [ -n "${FAKE_SECURITY_LINELOG:-}" ] && printf '%s\n' "$line_bytes" >> "$FAKE_SECURITY_LINELOG"
+    if [ "$line_bytes" -gt 4095 ]; then
+        echo "security: a command line over 4095 bytes is cut" >&2
+        exit 1
+    fi
+    [ "$line_bytes" -eq 4095 ] && trap 'exit 0' EXIT
     eval "set -- $line"
     sub="${1:-}"
 fi
@@ -3457,6 +3470,47 @@ test_keychain_set_refuses_a_value_too_long_for_one_security_line() {
         || { echo "  FAIL: the value at the limit did not read back byte-exact"; return 1; }
 }
 
+# A line of exactly 4095 bytes runs whole, but `security -i` then reads its
+# newline as an empty command and exits 0: an add that failed is reported as
+# stored. So the longest line cs sends is 4094 bytes, and the boundary sits
+# on both kinds of name. Account "tester" and session test-session give a
+# fixed part of 67 bytes for BIGH and 66 for BIG:
+#   BIGH: 67 + 2 * 2013 = 4093 is sent, 67 + 2 * 2014 = 4095 is refused
+#   BIG:  66 + 2 * 2014 = 4094 is sent, 66 + 2 * 2015 = 4096 is refused
+# Every add fails here, so a line sent at 4095 bytes shows as a false
+# "Stored secret".
+test_keychain_set_never_sends_a_line_whose_failure_security_would_hide() {
+    local bindir; bindir=$(_make_fake_security)
+    local name at over fixed out rc
+    for name in BIGH BIG; do
+        case "$name" in
+            BIGH) at=2013; fixed=67 ;;
+            BIG)  at=2014; fixed=66 ;;
+        esac
+        over=$((at + 1))
+        head -c "$over" /dev/zero | tr '\0' 'v' > "$TEST_TMPDIR/over"
+        head -c "$at" /dev/zero | tr '\0' 'v' > "$TEST_TMPDIR/at"
+        rm -f "$TEST_TMPDIR/argv" "$TEST_TMPDIR/lines"
+
+        rc=0
+        out=$(PATH="$bindir:$PATH" USER=tester CS_SECRETS_BACKEND=keychain FAKE_SECURITY_MODE=storefail \
+            FAKE_SECURITY_ARGVLOG="$TEST_TMPDIR/argv" FAKE_SECURITY_LINELOG="$TEST_TMPDIR/lines" \
+            "$CS_SECRETS_BIN" set "$name" < "$TEST_TMPDIR/over" 2>&1) || rc=$?
+        assert_eq "1" "$rc" "$name: a value of $over bytes is refused: $out" || return 1
+        assert_eq "Error: refusing to store $name in the Keychain: its value is $over bytes, over the $at bytes a Keychain value can hold under this session and name. Store larger values with the encrypted backend (CS_SECRETS_BACKEND=encrypted)." \
+            "$out" "$name: the refusal names the limit" || return 1
+        assert_not_exists "$TEST_TMPDIR/argv" "$name: security is never called for a value over the limit" || return 1
+
+        rc=0
+        out=$(PATH="$bindir:$PATH" USER=tester CS_SECRETS_BACKEND=keychain FAKE_SECURITY_MODE=storefail \
+            FAKE_SECURITY_ARGVLOG="$TEST_TMPDIR/argv" FAKE_SECURITY_LINELOG="$TEST_TMPDIR/lines" \
+            "$CS_SECRETS_BIN" set "$name" < "$TEST_TMPDIR/at" 2>&1) || rc=$?
+        assert_eq "$((fixed + 2 * at))" "$(cat "$TEST_TMPDIR/lines" 2>/dev/null)" "$name: a value of $at bytes is sent as one line of that length" || return 1
+        assert_eq "1" "$rc" "$name: the failed add of a value at the limit is reported as failed: $out" || return 1
+        assert_eq "Error: failed to store secret in Keychain: $name" "$out" "$name: the failure names the secret" || return 1
+    done
+}
+
 test_encrypted_set_keeps_value_and_password_off_argv() {
     local bindir="$TEST_TMPDIR/argv-bin"
     local olog="$TEST_TMPDIR/openssl-argv" jlog="$TEST_TMPDIR/jq-argv"
@@ -4314,6 +4368,7 @@ run_test test_keychain_export_does_not_require_cs_secrets_dir
 run_test test_keychain_set_keeps_the_value_off_argv
 run_test test_keychain_set_round_trips_a_multiline_quoted_value
 run_test test_keychain_set_refuses_a_value_too_long_for_one_security_line
+run_test test_keychain_set_never_sends_a_line_whose_failure_security_would_hide
 run_test test_encrypted_set_keeps_value_and_password_off_argv
 run_test test_encrypted_derived_key_stays_off_argv
 run_test test_sync_export_import_keep_values_off_argv
