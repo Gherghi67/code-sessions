@@ -123,6 +123,12 @@ export const PRIVATE_HANDOFFS = '.cs/private/handoffs'
 // (measured; a timer started before one kept firing after it) and is lost
 // on a reload of the mod.
 export const FORCED = '.cs/local/cs.forced'
+// The conversation whose rotate button was pressed, by id, from just before
+// the press runs /rotate until the end of the next main-loop turn: cs
+// -archive-tasks plan reads it, as it reads FORCED, so the one-key rotation
+// does not stop to ask. Emptied at that turn's end, so a /rotate typed later
+// in the conversation asks as a manual one does.
+export const PRESSED = '.cs/local/cs.pressed'
 
 // Once the forced rotation has armed its handoff, how long the band counts
 // down before the mod runs the /clear itself. Pressing the button or sending a
@@ -303,9 +309,14 @@ export function register(on: On) {
 
   // The end of a turn is the one moment a rotation can be started for the
   // person: the answer is in, nothing runs. An aborted or errored turn is no
-  // place to start one, and a subagent's turn ends in the same event.
+  // place to start one, and a subagent's turn ends in the same event. A
+  // press's /rotate runs in the main loop's next turn, so that turn's end,
+  // whatever ended it, is where the press is over.
   on('turn.complete', async ($, e, next) => {
-    if (e.agentId === undefined) finishTurnOver = true
+    if (e.agentId === undefined) {
+      finishTurnOver = true
+      await clearPressed($)
+    }
     if (e.reason === 'answer' && e.agentId === undefined) await forceRotation($)
     return next(e)
   })
@@ -883,9 +894,34 @@ async function rotate($: EngineInterface) {
 }
 
 // The rotate button's press. The skill ends by arming a marker in .cs/local,
-// so the press asks cs first, as the forced /rotate does before it runs.
+// so the press asks cs first, as the forced /rotate does before it runs. It
+// then names the conversation in PRESSED for the rotation to read; a run the
+// engine refuses runs no turn, so the press empties it again itself.
 async function pressRotate($: EngineInterface) {
-  if (await sessionVetted($, await $.session.cwd())) await rotate($)
+  const cwd = await $.session.cwd()
+  if (!(await sessionVetted($, cwd))) return
+  await $.fs.write(`${cwd}/${PRESSED}`, `${await $.session.id()}\n`)
+  try {
+    await rotate($)
+  } catch (err) {
+    await clearPressed($)
+    throw err
+  }
+}
+
+// Empties PRESSED while it names this conversation. A marker git tracks stays
+// as git has it, like every control file then.
+async function clearPressed($: EngineInterface) {
+  const cwd = await $.session.cwd()
+  let marker: string
+  try {
+    marker = (await $.fs.read(`${cwd}/${PRESSED}`)).trim()
+  } catch {
+    return // no press has been made here
+  }
+  if (marker === '' || marker !== (await $.session.id())) return
+  if (!(await sessionVetted($, cwd))) return
+  await $.fs.write(`${cwd}/${PRESSED}`, '')
 }
 
 // /wrap's last pass writes WRAPPED naming the conversation it ran in
