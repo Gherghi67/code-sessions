@@ -5451,4 +5451,47 @@ mod tests {
         assert!(rows[7].starts_with("[y] Confirm"), "the key hint stays on screen: {rows:?}");
         std::fs::remove_dir_all(&root).ok();
     }
+
+    // When the screen leaves the warnings no row at all, the confirm gives
+    // them the blank row above its grant, so the count sits directly over
+    // [D] Delete those files too. At 80x9 the batch confirm's other lines
+    // fill the screen, as the single confirm's do at 80x8.
+    #[test]
+    fn delete_confirms_count_their_warnings_over_the_grant_when_no_row_is_left() {
+        let root = std::env::temp_dir().join(format!("cs-ui-batch-no-row-{}", std::process::id()));
+        let names = warned_worktrees(&root, 2);
+        let marked: Vec<&str> = names.iter().map(String::as_str).collect();
+
+        let rows = delete_confirm_rows_of(&root, &marked, 80, 9, "Delete 2 sessions?");
+        assert_eq!(
+            rows[..6],
+            [
+                "Delete 2 sessions?",
+                "proj@t01, proj@t02",
+                "... and 2 more warnings",
+                "[D] Delete those files too: no",
+                "",
+                "This cannot be undone.",
+            ],
+            "batch at 80x9:\n{}",
+            rows.join("\n")
+        );
+        assert!(rows[6].starts_with("[y] Confirm"), "the key hint stays on screen at 80x9: {rows:?}");
+
+        let rows = delete_confirm_rows_of(&root, &["proj@t01"], 80, 8, "Delete session");
+        assert_eq!(
+            rows[..5],
+            [
+                "Delete session 'proj@t01'?",
+                "This cannot be undone.",
+                "Also deletes 1 file…it does not track:",
+                "[D] Delete those files too: no",
+                "",
+            ],
+            "single at 80x8:\n{}",
+            rows.join("\n")
+        );
+        assert!(rows[5].starts_with("[y] Confirm"), "the key hint stays on screen at 80x8: {rows:?}");
+        std::fs::remove_dir_all(&root).ok();
+    }
 }
