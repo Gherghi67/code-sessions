@@ -188,13 +188,22 @@ test_a_linked_row_refuses_the_run() {
     assert_eq "{}" "$(cat "$TEST_TMPDIR/elsewhere.json")" "the link's target is untouched" || return 1
 }
 
-# Every row is checked against the schema Claude Code's own reader enforces:
-# id (matching the file name), subject, description, a known status, and the
-# two dependency arrays. A row that fails any of them means a format cs was not
-# written for.
+# Every row is checked against the schema Claude Code's own reader enforces
+# (2.1.299): id (matching the file name), subject and description strings, a
+# known status, blocks and blockedBy arrays of ids, and, when present, an
+# activeForm and owner string and a metadata object. A row that fails any of
+# them is one Claude Code itself would not load, so a format cs was not
+# written for. An optional field that is absent is fine; null is not.
 test_a_row_outside_the_task_schema_refuses_the_run() {
     local bad
     for bad in 'not json' \
+        '{"id":"3","subject":"s","description":"d","status":"completed","blocks":[1],"blockedBy":[]}' \
+        '{"id":"3","subject":"s","description":"d","status":"completed","blocks":[],"blockedBy":[null]}' \
+        '{"id":"3","subject":"s","description":"d","status":"completed","blocks":[],"blockedBy":[],"owner":7}' \
+        '{"id":"3","subject":"s","description":"d","status":"completed","blocks":[],"blockedBy":[],"owner":null}' \
+        '{"id":"3","subject":"s","description":"d","status":"completed","blocks":[],"blockedBy":[],"activeForm":["a"]}' \
+        '{"id":"3","subject":"s","description":"d","status":"completed","blocks":[],"blockedBy":[],"metadata":[]}' \
+        '{"id":"3","subject":"s","description":"d","status":"completed","blocks":[],"blockedBy":[],"metadata":"m"}' \
         '{"id":"3","subject":"s","description":"d","status":"done","blocks":[],"blockedBy":[]}' \
         '{"id":"4","subject":"s","description":"d","status":"completed","blocks":[],"blockedBy":[]}' \
         '{"id":"3","subject":"s","status":"completed","blocks":[],"blockedBy":[]}' \
@@ -213,6 +222,19 @@ test_a_row_outside_the_task_schema_refuses_the_run() {
         _assert_refused "Error: refusing to archive: $STORE/3.json is not a task row in the format cs knows; nothing archived" \
             "$out" "1 2 3" || return 1
     done
+}
+
+# The positive side of the schema: every optional field Claude Code writes,
+# well formed, and a key it does not know, which its reader drops, archive.
+test_a_row_with_every_optional_field_archives() {
+    printf '%s' '{"id":"1","subject":"s","description":"d","activeForm":"Doing s","owner":"agent-1","status":"completed","blocks":["2"],"blockedBy":[],"metadata":{"k":1},"extra":true}' > "$STORE/1.json"
+    _row 2 pending "Two"
+    _agree || return 1
+    local out day
+    out=$("$CS_BIN" -archive-tasks run 2>&1) || { echo "  FAIL: run failed: $out"; return 1; }
+    day=$(ls "$SESSION_DIR/.cs/task-archive")
+    assert_eq "Archived 1 completed task row to .cs/task-archive/$day/alice" "$out" "the full row archives" || return 1
+    assert_eq "1" "$(_archived_ids)" "row #1 is in the archive" || return 1
 }
 
 # Claude Code holds a list lock (.lock.lock) or a row lock (<id>.json.lock)
@@ -601,6 +623,7 @@ run_test test_an_unknown_file_in_the_store_refuses_the_run
 run_test test_a_directory_in_the_store_refuses_the_run
 run_test test_a_linked_row_refuses_the_run
 run_test test_a_row_outside_the_task_schema_refuses_the_run
+run_test test_a_row_with_every_optional_field_archives
 run_test test_a_held_lock_refuses_the_run
 run_test test_an_unset_task_list_id_refuses_the_run
 run_test test_a_missing_store_is_nothing_to_archive
