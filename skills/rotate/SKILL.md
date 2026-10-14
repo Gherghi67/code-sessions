@@ -261,8 +261,8 @@ vault is locked: tell the user to mount it and stop.
      With `forced: yes`, do not ask: skip the archive this time.
      With `forced: no`, ask once with AskUserQuestion whether this session
      moves completed task rows out of the live list at each `/rotate` and
-     `/wrap` (they land in `.cs/task-archive/<date>/<actor>/` with a
-     readable `tasks.md`), record the reply with
+     `/wrap` (they land in `.cs/task-archive/<date>/<actor>/<list>/` with
+     a readable `tasks.md`), record the reply with
      `cs -archive-tasks answer yes` or `cs -archive-tasks answer no`, and on
      yes run as below.
    - `answer: yes`, with rows to archive: run `cs -archive-tasks run` and
