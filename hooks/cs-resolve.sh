@@ -170,8 +170,23 @@ _cs_find_session_root() {  # start_dir
 # anything, so the first claude under the launch to claim is the lead, and
 # the claim holds while that claude lives. Every launch clears the file
 # before claude starts (lib/75-launch.sh) and a claim keyed by another launch
-# pid is ignored, so a claim cannot speak for a later launch. The lead's
-# SessionEnd removes it with the lock (cs_lead_release).
+# pid is ignored, so a claim cannot speak for a later launch.
+#
+# The lead's SessionEnd leaves the claim where it is. Claude Code runs
+# SessionEnd hooks while the ending claude still lives, and a hook may start
+# a claude of its own (another plugin's `claude -p` summarising the
+# conversation). That claude descends from the launch as the lead does: with
+# no claim it would claim the launch, rebind the recorded conversation and
+# take an armed rotation. With the claim in place it meets a live holder it
+# did not start, gives way and is shown a guest. Once the lead has exited the
+# claim names no live claude and holds nothing, and a claude the lead's hooks
+# left running cannot claim it: its parent chain ran through the lead, and an
+# orphan is handed to init (on Linux, to the nearest subreaper above it), so
+# the walk up from it no longer meets the launch pid. A CLAUDE_CODE_BIN that
+# makes itself a subreaper would keep such an orphan under the launch. The
+# one claude that still starts under the launch is the fresh conversation the
+# resume arm execs after a quick failure, and it carries the launch pid, so
+# it claims over the file.
 #
 # The claim counts only under a launch that clears the file and expects it:
 # such a launch exports CS_LEAD_CLAIM=1. A session a cs from before the claim
@@ -250,14 +265,6 @@ _cs_lead_claim_write() {  # local_dir session_id
         _cs_pid_descends_from "$_CS_CLAIM_PID" "$CLAUDE_PID" || return 1
     fi
     cs_write_atomic "$1/lead-pid" printf '%s %s %s\n' "$CS_LEAD_PID" "$CLAUDE_PID" "$2"
-}
-
-# Removes the claim when it names this claude, so an ending claude never takes
-# another's. session-end.sh calls it where it removes the launch's lock.
-cs_lead_release() {  # local_dir
-    [ -n "$1" ] || return 1
-    _cs_lead_claim_read && [ "$_CS_CLAIM_PID" = "${CLAUDE_PID:-}" ] || return 1
-    rm -f "$1/lead-pid"
 }
 
 # True when the claude a hook fires for is the lead: it carries the launch pid,

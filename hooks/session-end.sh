@@ -168,13 +168,11 @@ if [ "$_cs_lock_clear" = 1 ] && command -v _cs_lock >/dev/null 2>&1 \
     esac
     _cs_unlock "$META_DIR/session.mutex.lock"
 fi
-# The lead's claim on its launch (cs_lead_claim, cs-resolve.sh) goes with the
-# lock, on the same terms: a lead whose claude ends, never a /clear or /resume
-# and never another claude. cs_lead_release removes only a claim naming this
-# claude.
-if [ -n "$_cs_lock_owner" ] && [ -n "$LOCAL_DIR" ] && command -v cs_lead_release >/dev/null 2>&1; then
-    cs_lead_release "$LOCAL_DIR" || true
-fi
+# The lead's claim on its launch (.cs/local/lead-pid, cs_lead_claim) stays.
+# This hook runs while the lead still lives, and a claude another SessionEnd
+# hook starts now would claim a launch with no claim and take the recorded
+# conversation and an armed rotation; the claim keeps it a guest. The next
+# launch clears the file (cs-resolve.sh says why nothing claims it before).
 
 # A session cs -encrypt built detaches its vault when the lead conversation
 # ends, so the next open asks for the password again. Claude Code still holds

@@ -554,10 +554,9 @@ test_a_claim_for_another_launch_or_none_names_no_lead() {
         "under a launch that takes no claim the claim is left as it was" || return 1
 }
 
-# An ending claude removes only a claim that names it. The claude carrying the
-# launch pid is the lead whatever the claim says; when its end comes while the
-# claim names another live claude of the launch, it removes its lock and
-# leaves that claim to the claude it names.
+# The claude carrying the launch pid is the lead whatever the claim says; when
+# its end comes while the claim names another live claude of the launch, it
+# removes its lock and leaves that claim to the claude it names.
 test_the_lead_end_leaves_a_claim_naming_another_claude() {
     _nested_setup
     local meta="$CLAUDE_SESSION_META_DIR" launch direct wrapper grand lock claim
