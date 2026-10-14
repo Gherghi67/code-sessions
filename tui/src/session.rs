@@ -1156,24 +1156,64 @@ fn gitlinks(dir: &Path) -> Result<Vec<String>, String> {
         .collect())
 }
 
+/// The files and links under `dir`, not following links, each as its path
+/// from `dir`.
+fn paths_under(dir: &Path) -> Result<Vec<String>, String> {
+    let mut paths = Vec::new();
+    for entry in fs::read_dir(dir).map_err(|e| format!("cannot list {}: {e}", dir.display()))? {
+        let entry = entry.map_err(|e| format!("cannot list {}: {e}", dir.display()))?;
+        let kind = entry.file_type().map_err(|e| format!("cannot read {}: {e}", entry.path().display()))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if kind.is_dir() {
+            paths.extend(paths_under(&entry.path())?.into_iter().map(|p| format!("{name}/{p}")));
+        } else {
+            paths.push(name);
+        }
+    }
+    Ok(paths)
+}
+
 /// The untracked and ignored files inside every initialised submodule of the
 /// checkout at `dir`, at any depth, each path prefixed with `prefix` and its
 /// submodule's path (lib/30-worktree.sh `_submodule_others`): git ls-files
-/// never lists inside a submodule, and removing the worktree removes them.
+/// never lists inside a submodule, and removing the worktree removes them. A
+/// submodule the checkout never populated is an empty directory to git,
+/// which lists nothing inside it either, so every file there is listed.
 fn submodule_others(dir: &Path, prefix: &str) -> Result<Vec<String>, String> {
     let mut others = Vec::new();
     for sub in gitlinks(dir)? {
         let checkout = dir.join(&sub);
+        let inner = format!("{prefix}{sub}/");
         if !checkout.join(".git").exists() {
+            if checkout.symlink_metadata().map(|m| m.is_dir()).unwrap_or(false) {
+                others.extend(paths_under(&checkout)?.into_iter().map(|p| format!("{inner}{p}")));
+            }
             continue;
         }
-        let inner = format!("{prefix}{sub}/");
         let mut listed = git_ls_files(&checkout, &["--others", "--exclude-standard"])?;
         listed.extend(git_ls_files(&checkout, &["--others", "--ignored", "--exclude-standard"])?);
         others.extend(listed.into_iter().map(|p| format!("{inner}{p}")));
         others.extend(submodule_others(&checkout, &inner)?);
     }
     Ok(others)
+}
+
+/// The path of every submodule of the checkout at `dir`, at any depth,
+/// populated or not, with '/' after it and `prefix` before it
+/// (lib/30-worktree.sh `_submodule_dirs`): `git ls-files
+/// --recurse-submodules` leaves out one that holds no file, and a listing
+/// must never collapse it or a directory above it.
+fn submodule_dirs(dir: &Path, prefix: &str) -> Result<Vec<String>, String> {
+    let mut dirs = Vec::new();
+    for sub in gitlinks(dir)? {
+        let inner = format!("{prefix}{sub}/");
+        dirs.push(inner.clone());
+        let checkout = dir.join(&sub);
+        if checkout.join(".git").exists() {
+            dirs.extend(submodule_dirs(&checkout, &inner)?);
+        }
+    }
+    Ok(dirs)
 }
 
 /// The entries of what git does not track in the worktree at `path`, as
@@ -1189,7 +1229,8 @@ fn worktree_untracked(path: &Path) -> Result<Vec<untracked::Entry>, String> {
     if at_risk.is_empty() {
         return Ok(Vec::new());
     }
-    let tracked = git_ls_files(path, &["--recurse-submodules"])?;
+    let mut tracked = git_ls_files(path, &["--recurse-submodules"])?;
+    tracked.extend(submodule_dirs(path, "")?);
     let mut inside = HashMap::new();
     for repo in at_risk.iter().filter(|p| p.ends_with('/')) {
         inside.insert(repo.clone(), files_under(&path.join(repo))?);

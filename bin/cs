@@ -3594,7 +3594,9 @@ _worktree_others() {  # wt_dir [--ignored]
 # checkout, at any depth, one per line (_names_as_lines), each path prefixed
 # with <prefix> and its submodule's path. git ls-files never lists the files
 # inside a submodule: it is a checkout of its own, and removing the worktree
-# removes it with them. Fails when any listing fails.
+# removes it with them. A submodule the checkout never populated is an empty
+# directory to git, which lists nothing inside it either, so every file
+# there is listed. Fails when any listing fails.
 _submodule_others() {  # checkout_dir prefix
     local entry sub at listing line
     git -C "$1" ls-files -s -z > /dev/null 2>&1 || return 1
@@ -3603,7 +3605,17 @@ _submodule_others() {  # checkout_dir prefix
     while IFS= read -r -d '' entry; do
         case "$entry" in 160000\ *) ;; *) continue ;; esac
         sub="${entry#*$'\t'}"
-        [ -e "$1/$sub/.git" ] || continue
+        if [ ! -e "$1/$sub/.git" ]; then
+            [ -d "$1/$sub" ] && [ ! -L "$1/$sub" ] || continue
+            at=$(printf '%s\0' "$sub" | _names_as_lines) || return 1
+            listing=$( (cd "$1/$sub" && find . ! -type d -print0) | _names_as_lines) || return 1
+            if [ -n "$listing" ]; then
+                while IFS= read -r line; do
+                    printf '%s%s/%s\n' "$2" "$at" "${line#./}"
+                done <<< "$listing"
+            fi
+            continue
+        fi
         at=$(printf '%s\0' "$sub" | _names_as_lines) || return 1
         listing=$({ git -C "$1/$sub" ls-files -z --others --exclude-standard \
                     && git -C "$1/$sub" ls-files -z --others --ignored --exclude-standard; } 2>/dev/null \
@@ -3618,10 +3630,30 @@ _submodule_others() {  # checkout_dir prefix
     return 0
 }
 
+# The path of every submodule of a checkout, at any depth, populated or not,
+# one per line (_names_as_lines) with "/" after it and <prefix> before it:
+# git ls-files --recurse-submodules leaves out one that holds no file, and a
+# listing must never collapse it or a directory above it. Fails when git
+# cannot list an index.
+_submodule_dirs() {  # checkout_dir prefix
+    local entry sub at
+    git -C "$1" ls-files -s -z > /dev/null 2>&1 || return 1
+    while IFS= read -r -d '' entry; do
+        case "$entry" in 160000\ *) ;; *) continue ;; esac
+        sub="${entry#*$'\t'}"
+        at=$(printf '%s\0' "$sub" | _names_as_lines) || return 1
+        printf '%s%s/\n' "$2" "$at"
+        [ -e "$1/$sub/.git" ] || continue
+        _submodule_dirs "$1/$sub" "$2$at/" || return 1
+    done < <(git -C "$1" ls-files -s -z 2>/dev/null)
+    return 0
+}
+
 # Files in a worktree that removal would destroy and the retire refuses over,
 # one per line (_names_as_lines), without cs's own bookkeeping: the untracked
 # files git does not ignore, work the user has not committed, and every
-# untracked or ignored file inside an initialised submodule. The ignored
+# untracked or ignored file inside an initialised submodule, and every file
+# inside a submodule directory the worktree never populated. The ignored
 # files of the worktree's own checkout are not among them: the retire trashes
 # those or deletes them with the worktree (_retire_trash_ignored_work). The
 # one exception is a root CLAUDE.local.md of the user's own: cs's exclude is
@@ -3797,13 +3829,16 @@ _untracked_listing_render() {
 # checkout given one per line, and paths that stay beside the tracked ones
 # (deleted anyway, so never inside a collapsed entry). git lists a nested
 # repository as one path ending in "/", so the files under each are counted
-# here. The tracked paths include those of every initialised submodule, so a
-# path at risk inside one (_submodule_others) is an entry of its own. Fails
-# when git cannot list the tracked paths or a nested repository cannot be
-# read.
+# here. The tracked paths include those of every initialised submodule, and
+# every submodule's own path (_submodule_dirs), so a path at risk inside one
+# (_submodule_others) is never collapsed into the submodule or a directory
+# above it. Fails when git cannot list the tracked paths or a nested
+# repository cannot be read.
 _untracked_listing_input() {  # checkout_dir paths [staying_paths]
-    local dir="$1" paths="$2" staying="${3:-}" tracked nested="" repo name files
+    local dir="$1" paths="$2" staying="${3:-}" tracked submodules nested="" repo name files
     tracked=$(git -C "$dir" ls-files -z --recurse-submodules | _names_as_lines) || return 1
+    submodules=$(_submodule_dirs "$dir" "") || return 1
+    [ -z "$submodules" ] || tracked="${tracked:+$tracked$'\n'}$submodules"
     while IFS= read -r repo; do
         [ -n "$repo" ] || continue
         printf -v name '%b' "$repo"
