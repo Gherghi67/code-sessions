@@ -1347,10 +1347,18 @@ fn unread_mail_count(meta_dir: &Path) -> u32 {
         .unwrap_or(0)
 }
 
+/// The pid a session's lock names when that process is running, by the rule
+/// cs and cs-secrets read a lock with (live_lock_pid): the text, surrounding
+/// whitespace removed, is decimal digits only (no sign), and is_pid_alive
+/// holds for it, which rules out 0 and anything past 2147483647.
 fn read_lock_pid(meta_dir: &Path) -> Option<u32> {
     let lock_file = meta_dir.join("session.lock");
     let content = fs::read_to_string(&lock_file).ok()?;
-    let pid = content.trim().parse::<u32>().ok()?;
+    let text = content.trim();
+    if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let pid = text.parse::<u32>().ok()?;
     if is_pid_alive(pid) { Some(pid) } else { None }
 }
 
