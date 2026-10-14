@@ -4245,6 +4245,23 @@ create_worktree_session() {
     if [ -f "$base_dir/.git" ]; then
         error "Session '$base_name' is itself a worktree; create features from the main checkout"
     fi
+    # Who carries .cs from the feature back to the base: git (tracked) or the
+    # record fuse (ignored). Git's answer wins once it tracks .cs. Otherwise a
+    # mode the base records decides (adopt records tracked, since it commits
+    # nothing and the user may commit .cs later), and only a base with no
+    # record is inferred ignored. Decided before the worktree exists, so a
+    # refusal leaves nothing behind.
+    local mode state_file="$base_dir/.cs/local/state" recorded
+    if [ -n "$(git -C "$base_dir" ls-files -- .cs 2>/dev/null)" ]; then
+        mode="tracked"
+    else
+        recorded=$(_read_local_state "$state_file" cs_mode)
+        case "$recorded" in
+            ""|ignored) mode="ignored" ;;
+            tracked) error "Session '$base_name' expects git to carry .cs (cs_mode: tracked in $state_file), but git tracks nothing under .cs there. Commit it first (git add .cs .gitignore .gitattributes, then git commit, in $base_dir), or set that line to 'cs_mode: ignored' to keep .cs out of git, which features then hide through .git/info/exclude." ;;
+            *) error "Session '$base_name' names cs_mode '$recorded' in $state_file; cs knows tracked and ignored. Fix that line, then create the feature again." ;;
+        esac
+    fi
     # Dirty-state gating happens in the caller (confirm_clean_worktree_base):
     # this function runs command-substituted, where an exit cannot stop cs.
     local untracked
@@ -4265,9 +4282,7 @@ create_worktree_session() {
     # base's history; refuse before the state writes below go through it.
     cs_assert_local_untracked "$wt_dir"
 
-    local mode="tracked"
-    if [ -z "$(git -C "$base_dir" ls-files -- .cs 2>/dev/null)" ]; then
-        mode="ignored"
+    if [ "$mode" = "ignored" ]; then
         bootstrap_worktree_meta "$wt_dir" "$base_name" "$task" "$base_dir"
     fi
 
