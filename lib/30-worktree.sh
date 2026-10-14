@@ -776,7 +776,7 @@ $wt_untracked"
         conflicts=$(_fuse_conflicts "$wt_dir/.cs" "$base_dir/.cs") \
             || error "Could not classify the session records in $wt_dir/.cs; nothing was removed"
         [ -z "$conflicts" ] \
-            || error "The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt_dir/.cs, then run /finish $task again:
+            || error "The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the path needs a new directory named .cs, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt_dir/.cs, then run /finish $task again:
 $conflicts"
     fi
     # The base's own .cs/ bookkeeping is exempt: in tracked mode the integrate
@@ -1546,11 +1546,12 @@ _fuse_verdict() {  # feature_meta base_meta rel
 
 # Whether the fuse cannot make the directories on the way to <rel> in the
 # base's .cs. It makes them with cs_mkdir_inside, which cannot make one where
-# the base holds a file or a dangling link, and refuses one a link takes out
-# of the session. A link that stays inside (an encrypted session's
-# .cs/memory, say) is a directory like any other.
+# the base holds a file or a dangling link, refuses to make a new directory
+# named .cs (_cs_mkdir_spelling_refused), and refuses one a link takes out of
+# the session. A link that stays inside (an encrypted session's .cs/memory,
+# say) is a directory like any other.
 _fuse_path_blocked() {  # base_meta rel
-    local dir="$1" rest="$2" near="$1" linked=""
+    local dir="$1" rest="$2" near="$1" linked="" missing=""
     while case "$rest" in */*) true ;; *) false ;; esac; do
         dir="$dir/${rest%%/*}"
         rest="${rest#*/}"
@@ -1561,9 +1562,13 @@ _fuse_path_blocked() {  # base_meta rel
         elif [ -L "$dir" ]; then
             return 0
         else
+            missing=1
             break
         fi
     done
+    if [ -n "$missing" ] && _cs_mkdir_spelling_refused "$1/${2%/*}" "$near"; then
+        return 0
+    fi
     [ -n "$linked" ] && _cs_refuses_write cs_mkdir_inside "$1/$2" "$near" 2>/dev/null
 }
 

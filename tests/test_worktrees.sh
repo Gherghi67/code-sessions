@@ -2076,7 +2076,7 @@ test_retire_ignored_mode_refuses_a_topic_both_sides_edited() {
     assert_eq "untracked" "$(_feat_field "$line" 10)" "state: $line" || return 1
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
     assert_eq "1" "$status" "the retire refuses: $output" || return 1
-    assert_output_contains "$output" "The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:
+    assert_output_contains "$output" "The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the path needs a new directory named .cs, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:
 .cs/memory/kept.md" "the refusal names the topic" || return 1
     assert_eq "kept topic, feature edit" "$(cat "$wt/.cs/memory/kept.md")" "the feature's edit is still there" || return 1
     assert_eq "kept topic, base edit" "$(cat "$base_dir/.cs/memory/kept.md")" "the base's edit is untouched" || return 1
@@ -2116,7 +2116,7 @@ test_retire_ignored_mode_refuses_a_record_whose_directory_is_a_file_in_the_base(
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
     assert_eq "1" "$status" "the retire refuses: $output" || return 1
     assert_dir "$wt/.cs/memory" "the worktree is still there: $output" || return 1
-    assert_output_contains "$output" "The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:" \
+    assert_output_contains "$output" "The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the path needs a new directory named .cs, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:" \
         "the refusal says why" || return 1
     assert_eq ".cs/artifacts/report.txt
 .cs/handoffs/h.md" "$(printf '%s\n' "$output" | awk 'listed; /again:$/ { listed = 1 }')" \
@@ -2485,7 +2485,7 @@ test_retire_ignored_mode_refuses_a_log_directory_that_is_a_link() {
         status=0
         output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
         assert_eq "1" "$status" "the retire refuses a .cs/$dir link: $output" || return 1
-        assert_output_contains "$output" "Error: The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:
+        assert_output_contains "$output" "Error: The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the path needs a new directory named .cs, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:
 .cs/$dir" "the refusal says why for .cs/$dir" || return 1
         assert_eq ".cs/$dir" "$(printf '%s\n' "$output" | awk 'listed; /again:$/ { listed = 1 }')" \
             "the refusal names only the linked .cs/$dir" || return 1

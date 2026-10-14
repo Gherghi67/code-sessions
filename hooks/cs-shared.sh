@@ -660,6 +660,22 @@ cs_append_inside() {  # file, command [args...]
     fi
 }
 
+# Whether cs_mkdir_inside refuses to make <dir> from <nearest>, the nearest
+# level of it that exists, by spelling alone: <nearest> must be a .cs or lie
+# inside one, and the levels to make must not hold a .cs. A writer that plans
+# its directories before it makes them (the retire's record fuse) asks the
+# same question.
+_cs_mkdir_spelling_refused() {  # dir, nearest existing level
+    case "$2/" in
+        */.cs/*) ;;
+        *) return 0 ;;
+    esac
+    case "${1#"$2"}/" in
+        */.cs/*) return 0 ;;
+    esac
+    return 1
+}
+
 # Make a directory and its missing levels inside a .cs that exists, unless a
 # link takes it out of the session it lies in. cs makes a session's .cs when it
 # creates, adopts or migrates the session; a writer that finds it gone is
@@ -679,14 +695,8 @@ cs_mkdir_inside() {  # dir
     while [ -n "$e" ] && [ ! -e "$e" ] && [ ! -L "$e" ]; do
         e="${e%/*}"
     done
-    if [ "$e" != "$dir" ]; then
-        case "$e/" in
-            */.cs/*) ;;
-            *) e="" ;;
-        esac
-        case "${dir#"$e"}/" in
-            */.cs/*) e="" ;;
-        esac
+    if [ "$e" != "$dir" ] && _cs_mkdir_spelling_refused "$dir" "$e"; then
+        e=""
     fi
     if [ -z "$e" ]; then
         [ -n "${CS_WRITE_QUIET:-}" ] || echo "cs_mkdir_inside: $dir is not inside an existing .cs" >&2
