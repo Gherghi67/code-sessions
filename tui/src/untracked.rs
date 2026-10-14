@@ -1,7 +1,10 @@
 // ABOUTME: The listing of files a removal would destroy that git keeps no copy of
 // ABOUTME: Collapses each directory holding no tracked file to one counted entry, as cs's _untracked_listing_render does
 
+use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
+
+use unicode_width::UnicodeWidthStr;
 
 /// One entry of the listing: a directory holding no tracked file (its path
 /// ends in '/') with the number of files at risk under it, or a single path.
@@ -18,7 +21,8 @@ pub const SHOWN_ENTRIES: usize = 20;
 /// `tracked`: each path falls under its topmost ancestor directory that holds
 /// no tracked file, or stands alone when its parent holds one. git lists a
 /// nested repository as one path ending in '/'; `inside` holds the number of
-/// files under each. Entries holding the most files come first, then by path.
+/// files under each. Entries holding the most files come first, then by path
+/// in the order cs lists them (`line_form`).
 pub fn entries(tracked: &[String], inside: &HashMap<String, u64>, at_risk: &[String]) -> Result<Vec<Entry>, String> {
     let mut holds_tracked: HashSet<&str> = HashSet::new();
     for path in tracked {
@@ -42,8 +46,20 @@ pub fn entries(tracked: &[String], inside: &HashMap<String, u64>, at_risk: &[Str
     }
     let mut entries: Vec<Entry> =
         files_under.into_iter().map(|(path, files)| Entry { path: path.to_string(), files }).collect();
-    entries.sort_by(|a, b| b.files.cmp(&a.files).then_with(|| a.path.cmp(&b.path)));
+    entries.sort_by_cached_key(|e| (Reverse(e.files), line_form(&e.path)));
     Ok(entries)
+}
+
+/// A path as cs writes it on one line of a list: a backslash in a name as
+/// `\\`, a newline as `\n`. cs orders its entries by the bytes of this form.
+fn line_form(path: &str) -> String {
+    path.replace('\\', "\\\\").replace('\n', "\\n")
+}
+
+/// A path as the listing prints it: a newline in a name as '?', so every
+/// entry is one line.
+fn printed(path: &str) -> String {
+    path.replace('\n', "?")
 }
 
 /// `n` with a comma between each group of three digits.
@@ -71,17 +87,20 @@ pub fn count_phrase(entries: &[Entry]) -> String {
 
 /// The listing's lines under its header: the first `shown` entries, indented
 /// four spaces, a directory with its file count in a column past the longest
-/// directory shown; then how many entries are left out, when any are.
+/// directory shown, measured in the columns each takes on screen; then how
+/// many entries are left out, when any are.
 pub fn entry_lines(entries: &[Entry], shown: usize) -> Vec<String> {
     let listed = &entries[..entries.len().min(shown)];
-    let width = listed.iter().filter(|e| e.path.ends_with('/')).map(|e| e.path.chars().count()).max().unwrap_or(0);
+    let paths: Vec<String> = listed.iter().map(|e| printed(&e.path)).collect();
+    let width = paths.iter().filter(|p| p.ends_with('/')).map(|p| p.width()).max().unwrap_or(0);
     let mut lines: Vec<String> = listed
         .iter()
-        .map(|e| {
-            if e.path.ends_with('/') {
-                format!("    {:<width$}  ({})", e.path, files_phrase(e.files))
+        .zip(&paths)
+        .map(|(e, path)| {
+            if path.ends_with('/') {
+                format!("    {path}{}  ({})", " ".repeat(width - path.width()), files_phrase(e.files))
             } else {
-                format!("    {}", e.path)
+                format!("    {path}")
             }
         })
         .collect();

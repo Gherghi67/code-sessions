@@ -3613,6 +3613,13 @@ _untracked_listing_format() {  # shown|all [directory]
             }
             return name line
         }
+        # The characters in a name, each taken as one column: names are bytes
+        # here, and a UTF-8 character is every byte but those that continue
+        # one (\200 to \277).
+        function columns(name) {
+            gsub(/[\200-\277]/, "", name)
+            return length(name)
+        }
         BEGIN { if (shown == "all") shown = -1 }
         {
             cut = index($0, "\t")
@@ -3620,12 +3627,14 @@ _untracked_listing_format() {  # shown|all [directory]
             if (shown >= 0 && NR > shown) next
             held[NR] = substr($0, 1, cut - 1)
             path[NR] = ENVIRON["CS_LISTING_DIRECTORY"] printed(substr($0, cut + 1))
-            if (path[NR] ~ /\/$/ && length(path[NR]) > width) width = length(path[NR])
+            if (path[NR] ~ /\/$/ && columns(path[NR]) > width) width = columns(path[NR])
         }
         END {
             print files(total)
             for (i = 1; i <= NR && (shown < 0 || i <= shown); i++) {
-                if (path[i] ~ /\/$/) printf "    %-" width "s  (%s)\n", path[i], files(held[i])
+                # printf pads by bytes, so the column is widened by the bytes
+                # that are no character of their own.
+                if (path[i] ~ /\/$/) printf "    %-" (width + length(path[i]) - columns(path[i])) "s  (%s)\n", path[i], files(held[i])
                 else printf "    %s\n", path[i]
             }
             if (shown >= 0 && NR > shown) printf "    ... and %s more\n", grouped(NR - shown)
