@@ -94,6 +94,58 @@ test_native_legacy_config_wins_for_source_and_destination() {
     assert_eq '{"sentinel":true}' "$(cat "$config/.claude.json")" || return 1
 }
 
+test_empty_legacy_configs_keep_valid_modern_login_and_preferences() {
+    local shell="$TEST_TMPDIR/shell" config="$TEST_TMPDIR/config" source
+    mkdir -p "$shell/.claude"
+    : > "$shell/.claude/.config.json"
+    : > "$config/.config.json"
+    printf '%s\n' '{"oauthAccount":{"accountUuid":"selected"}}' > "$shell/.claude.json"
+    printf '%s\n' '{"oauthAccount":{"accountUuid":"old"},"projects":{"own":2},"theme":"session"}' > "$config/.claude.json"
+    source=$(_cs_claude_json_path "$shell/.claude" "$shell/.claude.json")
+    assert_eq "$shell/.claude.json" "$source" || return 1
+    _seed_session_claude_json "$config" "$source" || return 1
+    assert_eq selected "$(jq -r .oauthAccount.accountUuid "$config/.claude.json")" || return 1
+    assert_eq session "$(jq -r .theme "$config/.claude.json")" || return 1
+    assert_eq '{"own":2}' "$(jq -c .projects "$config/.claude.json")" || return 1
+    [ ! -s "$config/.config.json" ] || return 1
+}
+
+test_non_file_legacy_paths_keep_modern_config_selected() {
+    local shell="$TEST_TMPDIR/shell" config="$TEST_TMPDIR/config" source
+    mkdir -p "$shell/.claude/.config.json" "$config/.config.json"
+    printf '%s\n' '{"oauthAccount":{"accountUuid":"selected"}}' > "$shell/.claude.json"
+    printf '%s\n' '{"oauthAccount":{"accountUuid":"old"},"theme":"session"}' > "$config/.claude.json"
+    source=$(_cs_claude_json_path "$shell/.claude" "$shell/.claude.json")
+    assert_eq "$shell/.claude.json" "$source" || return 1
+    _seed_session_claude_json "$config" "$source" || return 1
+    assert_eq selected "$(jq -r .oauthAccount.accountUuid "$config/.claude.json")" || return 1
+    assert_eq session "$(jq -r .theme "$config/.claude.json")" || return 1
+    assert_dir "$config/.config.json" || return 1
+}
+
+test_empty_legacy_selection_uses_native_write_permission_bits() {
+    local config="$TEST_TMPDIR/config"
+    : > "$config/.config.json"
+    chmod 600 "$config/.config.json"
+    assert_eq "$config/.config.json" "$(_cs_claude_json_path "$config" "$config/.claude.json")" || return 1
+    chmod 400 "$config/.config.json"
+    assert_eq "$config/.claude.json" "$(_cs_claude_json_path "$config" "$config/.claude.json")" || return 1
+    chmod 600 "$config/.config.json"
+    printf '%s\n' '{}' > "$config/.config.json"
+    chmod 400 "$config/.config.json"
+    assert_eq "$config/.config.json" "$(_cs_claude_json_path "$config" "$config/.claude.json")" || return 1
+}
+
+test_legacy_symlink_selection_uses_its_target_type_and_size() {
+    local config="$TEST_TMPDIR/config" target="$TEST_TMPDIR/account.json"
+    printf '%s\n' '{}' > "$target"
+    printf '%s\n' '{}' > "$config/.claude.json"
+    ln -s "$target" "$config/.config.json"
+    assert_eq "$config/.config.json" "$(_cs_claude_json_path "$config" "$config/.claude.json")" || return 1
+    : > "$target"
+    assert_eq "$config/.claude.json" "$(_cs_claude_json_path "$config" "$config/.claude.json")" || return 1
+}
+
 test_symlink_target_lock_blocks_login_refresh() {
     local target="$TEST_TMPDIR/account.json" output status=0
     printf '%s\n' '{"oauthAccount":{"accountUuid":"old"}}' > "$target"
@@ -203,6 +255,10 @@ run_test test_corrupt_login_json_preserves_existing_config
 run_test test_picker_preserves_each_argument_line
 run_test test_login_refresh_keeps_a_config_symlink
 run_test test_native_legacy_config_wins_for_source_and_destination
+run_test test_empty_legacy_configs_keep_valid_modern_login_and_preferences
+run_test test_non_file_legacy_paths_keep_modern_config_selected
+run_test test_empty_legacy_selection_uses_native_write_permission_bits
+run_test test_legacy_symlink_selection_uses_its_target_type_and_size
 run_test test_symlink_target_lock_blocks_login_refresh
 run_test test_abandoned_stale_native_lock_can_be_reclaimed
 run_test test_signal_releases_only_our_config_lock_and_preserves_outer_trap

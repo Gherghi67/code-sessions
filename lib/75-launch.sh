@@ -242,10 +242,17 @@ _link_shared_claude_config() {  # session_config_dir, shell_config_dir
     done
 }
 
-# Claude reads a legacy global config inside its config directory first.
+# Claude selects a regular, nonempty legacy config first. An empty one wins
+# only with native write permission bits and no modern config alongside it.
 _cs_claude_json_path() {  # config_dir, fallback_json
-    if [ -e "$1/.config.json" ]; then
-        printf '%s/.config.json\n' "$1"
+    local legacy="$1/.config.json" mode
+    if [ -f "$legacy" ] && {
+        [ -s "$legacy" ] || {
+            [ ! -e "$2" ] && mode=$(_cs_file_mode "$legacy") &&
+                [ $((0$mode & 0222)) -ne 0 ]
+        }
+    }; then
+        printf '%s\n' "$legacy"
     else
         printf '%s\n' "$2"
     fi
