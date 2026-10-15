@@ -546,3 +546,20 @@ test('a failed write to the DONE marker toasts and the pane still shows done', a
   const words = texts(await draw()).join('\n')
   expect(words).toContain('Update finished. Takes effect on your next launch.')
 })
+
+// A pane redrawn after a reload asks the lead gate before it restores the
+// marker, so a directory the sessions root does not name gets no pane back.
+test('in a directory the sessions root does not name, a pane redrawn after a reload is not restored from a fresh DONE marker', async () => {
+  realPaths = { '/work': '/work' }
+  files['/work/' + DONE] = '2026.99.3\nUpdate finished. Takes effect on your next launch.\n'
+  await draw()
+  expect(opens()).toHaveLength(0)
+  expect(written).toEqual({})
+})
+
+test('in a directory the sessions root does not name, session start never spawns cs -vet-session', async () => {
+  existing = new Set(['/clone/.cs/local'])
+  realPaths = { '/clone': '/clone' }
+  await hooks['session.start']($, { cwd: '/clone' }, async () => 'started')
+  expect(runs).toHaveLength(0)
+})
