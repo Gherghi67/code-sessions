@@ -43,7 +43,9 @@ teardown_failed() {  # what
 #   serve     say "ready" on $FAKE_READY_FIFO, then wait for a signal; HUP,
 #             INT and TERM are logged and end it with 0, as the real server
 #             does; with no signal in 120 s it exits 9, so a run that
-#             loses its server never hangs the suite.
+#             loses its server never hangs the suite. When FAKE_CLOUD_SESSION
+#             names a script, the server first runs it to its end as a child,
+#             as a conversation it starts, with the server's environment.
 write_fake_claude() {
     mkdir -p "$TEST_TMPDIR/bin"
     cat > "$TEST_TMPDIR/bin/claude" << 'FAKE'
@@ -86,6 +88,7 @@ case "$mode" in
         trap 'on_signal HUP' HUP
         trap 'on_signal INT' INT
         trap 'on_signal TERM' TERM
+        [ -z "${FAKE_CLOUD_SESSION:-}" ] || bash "$FAKE_CLOUD_SESSION"
         mkfifo "$FAKE_READY_FIFO.hold"
         exec 4<>"$FAKE_READY_FIFO.hold"
         printf 'ready\n' > "$FAKE_READY_FIFO"
@@ -133,7 +136,7 @@ setup() {
     write_fake_tmux
     export PATH="$TEST_TMPDIR/bin:$PATH"
     export CLAUDE_CODE_BIN="claude"
-    unset FAKE_CLAUDE_MODE FAKE_CLAUDE_VERSION ANTHROPIC_API_KEY CS_REMOTE_WINDOW TMUX 2>/dev/null || true
+    unset FAKE_CLAUDE_MODE FAKE_CLAUDE_VERSION FAKE_CLOUD_SESSION ANTHROPIC_API_KEY CS_REMOTE_WINDOW TMUX 2>/dev/null || true
     unset CLAUDE_SESSION_NAME CLAUDE_SESSION_DIR CLAUDE_SESSION_META_DIR CS_TERM_THEME CS_TERM_BG_RGB 2>/dev/null || true
     SERVE_PID=""
     STARTED_PIDS=""
@@ -675,6 +678,69 @@ test_local_open_is_refused_while_the_session_is_served() {
     assert_eq "0" "$SERVE_RC" "the server stopped cleanly" || return 1
 }
 
+# A conversation the server starts, for FAKE_CLOUD_SESSION: a child of the
+# server carrying the server's environment, whose pid Claude Code stamps as
+# CLAUDE_PID. It runs cs's real SessionStart hook, records the claim on the
+# launch and whether the hooks take it for the lead or show it a guest, then
+# runs cs's real SessionEnd hook with a reason other than /clear or /resume
+# and records the lock, remote.pid and the claim. One key=value per line in
+# $TEST_TMPDIR/cloud.log.
+write_cloud_session() {
+    local hooks
+    hooks="$(cd "$SCRIPT_DIR/../hooks" && pwd)"
+    cat > "$TEST_TMPDIR/cloud-session" << CLOUD
+#!/usr/bin/env bash
+hooks='$hooks' log='$TEST_TMPDIR/cloud.log'
+CLOUD
+    cat >> "$TEST_TMPDIR/cloud-session" << 'CLOUD'
+export CLAUDE_PID=$$
+meta="$CLAUDE_SESSION_META_DIR"
+printf '{"session_id":"cloud-1","source":"startup","hook_event_name":"SessionStart"}' \
+    | bash "$hooks/session-start.sh" > /dev/null 2>&1
+. "$hooks/cs-resolve.sh"
+{
+    printf 'claim_after_start=%s\n' "$(cat "$meta/local/lead-pid" 2>/dev/null)"
+    if cs_is_lead; then echo "lead=1"; else echo "lead=0"; fi
+    if cs_is_shown_nested_child; then echo "guest=1"; else echo "guest=0"; fi
+} >> "$log"
+printf '{"session_id":"cloud-1","reason":"other","hook_event_name":"SessionEnd"}' \
+    | bash "$hooks/session-end.sh" > /dev/null 2>&1
+{
+    printf 'lock_after_end=%s\n' "$(cat "$meta/session.lock" 2>/dev/null)"
+    printf 'remote_pid_after_end=%s\n' "$(cat "$meta/local/remote.pid" 2>/dev/null)"
+    printf 'claim_after_end=%s\n' "$(cat "$meta/local/lead-pid" 2>/dev/null)"
+} >> "$log"
+CLOUD
+    export FAKE_CLOUD_SESSION="$TEST_TMPDIR/cloud-session"
+}
+
+cloud_value() {  # key
+    sed -n "s/^$1=//p" "$TEST_TMPDIR/cloud.log" | head -1
+}
+
+# Conversations started from the phone stay guests of the session the server
+# holds: the first one takes no claim on the launch, so the hooks never take
+# it for the lead, and its end leaves the server's lock and remote.pid. The
+# session stays refused to a local open while the server runs.
+test_remote_conversation_the_server_starts_stays_a_guest_and_keeps_the_lock() {
+    write_cloud_session
+    start_serving demo --remote || return 1
+    local spid rc=0 out
+    spid="$(log_value pid)"
+    assert_eq "" "$(cloud_value claim_after_start)" "the conversation takes no claim on the launch" || return 1
+    assert_eq "0" "$(cloud_value lead)" "the hooks do not take the conversation for the lead" || return 1
+    assert_eq "1" "$(cloud_value guest)" "the hooks show the conversation a guest" || return 1
+    assert_eq "$spid" "$(cloud_value lock_after_end)" "the conversation's end leaves the server's lock" || return 1
+    assert_eq "$spid" "$(cloud_value remote_pid_after_end)" "the conversation's end leaves remote.pid" || return 1
+    assert_eq "" "$(cloud_value claim_after_end)" "no claim is left after the conversation's end" || return 1
+    out=$("$CS_BIN" demo 2>&1 < /dev/null) || rc=$?
+    assert_eq "1" "$rc" "cs demo is refused after the conversation ended" || { printf '%s\n' "$out"; return 1; }
+    assert_eq "Error: Session demo is served by cs demo --remote (remote-control PID $spid); stop it first with Ctrl-C in its window, or close the window." \
+        "$(printf '%s' "$out" | strip_ansi | tail -1)" "the refusal names the server" || return 1
+    stop_serving TERM || return 1
+    assert_eq "0" "$SERVE_RC" "the server stopped cleanly" || return 1
+}
+
 test_remote_stops_cleanly_when_its_window_hangs_up() {
     start_serving demo --remote || return 1
     assert_file_exists "$CS_SESSIONS_ROOT/demo/.cs/local/remote.pid" "remote.pid is written while serving" || return 1
@@ -935,6 +1001,7 @@ run_test test_remote_refuses_a_wrapper_whose_version_is_not_claude_codes
 run_test test_remote_runs_a_plain_claude_whose_version_has_no_mark
 run_test test_remote_refuses_a_session_open_locally
 run_test test_local_open_is_refused_while_the_session_is_served
+run_test test_remote_conversation_the_server_starts_stays_a_guest_and_keeps_the_lock
 run_test test_remote_stops_cleanly_when_its_window_hangs_up
 run_test test_remote_stops_cleanly_on_ctrl_c
 run_test test_remote_stops_cleanly_when_its_terminal_closes
