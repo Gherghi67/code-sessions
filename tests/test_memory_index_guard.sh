@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ABOUTME: Tests for hooks/memory-index-guard.sh, the guard on /wrap's memory-pass MEMORY.md rewrites
-# ABOUTME: Covers removed links, the byte budget, a missing snapshot, and restore
+# ABOUTME: Covers removed and dangling pointers, the memory archive, the byte and line budgets, a missing snapshot, and restore
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=tests/test_lib.sh
