@@ -660,6 +660,30 @@ test_cleanup_ends_a_helper_that_ignores_term() {
 # The typist reads the CLI's pid from the run directory, where the launch wrote
 # it, and checks it before every key: once Codex is gone, the rest of the keys
 # would land in the shell, so it stops with status 3.
+# The typist looks for the marker before every key and before Enter, not just
+# as it starts: a prompt sent mid-word takes the marker away, and the rest of
+# /clear and its Enter must not follow that prompt in.
+test_typing_stops_once_the_marker_goes_mid_word() {
+    local cli typist status=0 i=0
+    export CS_CODEX_TYPE_SINK="$TEST_TMPDIR/sink"
+    : > "$TEST_TMPDIR/marker"
+    sleep 30 & cli=$!
+    printf '%s\n' "$cli" > "$RUN_DIR/native.pid"
+    _real_type_keys /clear "$TEST_TMPDIR/marker" "$RUN_DIR/native.pid" & typist=$!
+    while [ "$(_sink_size)" -lt 1 ]; do
+        i=$((i + 1)); [ "$i" -lt 50 ] || { echo "  FAIL: the typist never typed its first key"; kill "$cli" "$typist" 2>/dev/null; return 1; }
+        sleep 0.05
+    done
+    rm -f "$TEST_TMPDIR/marker"
+    wait "$typist" || status=$?
+    kill "$cli" 2>/dev/null; wait "$cli" 2>/dev/null
+    assert_eq 4 "$status" "a marker gone mid-word has its own code" || return 1
+    [ "$(_sink_size)" -lt 6 ] || { echo "  FAIL: the typist went on after the marker went: $(cat "$TEST_TMPDIR/sink")"; return 1; }
+    if grep -q $'\r' "$TEST_TMPDIR/sink"; then
+        echo "  FAIL: an Enter followed the prompt"; return 1
+    fi
+}
+
 test_typing_stops_when_the_cli_is_gone() {
     local cli typist status=0
     export CS_CODEX_TYPE_SINK="$TEST_TMPDIR/sink"
@@ -807,6 +831,7 @@ run_test test_a_gone_cli_is_not_logged_as_a_refusal
 run_test test_a_prompt_sent_while_typing_stops_go
 run_test test_a_passed_deadline_types_clear_then_go
 run_test test_the_typist_stops_once_the_marker_is_gone
+run_test test_typing_stops_once_the_marker_goes_mid_word
 run_test test_the_typist_names_why_it_failed
 run_test test_a_stamp_in_the_workspace_types_nothing
 run_test test_a_symlinked_stamp_types_nothing
