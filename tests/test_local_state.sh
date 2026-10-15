@@ -1119,6 +1119,46 @@ test_union_merge_attributes_written() {
         "the memory archive should merge with the union driver" || return 1
 }
 
+# A .gitattributes whose last line has no newline (an editor that writes none)
+# gets each merge line cs appends on a line of its own, so git reads it.
+test_merge_attributes_start_a_line_after_a_file_with_no_final_newline() {
+    local sdir="$CS_SESSIONS_ROOT/attrs-nl"
+    "$CS_BIN" attrs-nl < /dev/null > /dev/null 2>&1 || true
+    printf '%s\n%s\n%s' '.cs/memory/MEMORY.md merge=ours' '.cs/timeline.jsonl merge=union' \
+        '.cs/memory/narrative.*.md merge=union' > "$sdir/.gitattributes"
+    rm -f "$sdir/.cs/local/migrated"
+    "$CS_BIN" attrs-nl < /dev/null > /dev/null 2>&1 || true
+    assert_eq ".cs/memory/MEMORY.md merge=ours
+.cs/timeline.jsonl merge=union
+.cs/memory/narrative.*.md merge=union
+.cs/memory/reference_memory_archive.md merge=union" "$(cat "$sdir/.gitattributes")" \
+        "the archive line is appended on a line of its own" || return 1
+    assert_eq ".cs/memory/reference_memory_archive.md: merge: union" \
+        "$(git -C "$sdir" check-attr merge -- .cs/memory/reference_memory_archive.md)" \
+        "git reads the archive's union attribute" || return 1
+}
+
+# A .gitattributes where an earlier append glued the archive line onto the
+# one before holds no line naming the archive's attribute; the next open
+# appends it on a line of its own.
+test_merge_attributes_add_the_archive_line_beside_a_glued_one() {
+    local sdir="$CS_SESSIONS_ROOT/attrs-glued" glued
+    glued='.cs/memory/narrative.*.md merge=union.cs/memory/reference_memory_archive.md merge=union'
+    "$CS_BIN" attrs-glued < /dev/null > /dev/null 2>&1 || true
+    printf '%s\n' '.cs/memory/MEMORY.md merge=ours' '.cs/timeline.jsonl merge=union' "$glued" \
+        > "$sdir/.gitattributes"
+    rm -f "$sdir/.cs/local/migrated"
+    "$CS_BIN" attrs-glued < /dev/null > /dev/null 2>&1 || true
+    assert_eq ".cs/memory/MEMORY.md merge=ours
+.cs/timeline.jsonl merge=union
+$glued
+.cs/memory/reference_memory_archive.md merge=union" "$(cat "$sdir/.gitattributes")" \
+        "the archive line is appended on a line of its own" || return 1
+    assert_eq ".cs/memory/reference_memory_archive.md: merge: union" \
+        "$(git -C "$sdir" check-attr merge -- .cs/memory/reference_memory_archive.md)" \
+        "git reads the archive's union attribute" || return 1
+}
+
 test_frontmatter_backfill_created_uses_git_date() {
     # A legacy README without frontmatter and without a Started: line must
     # get its created: date from shared git history, not from local mtime
@@ -1763,6 +1803,8 @@ run_test test_session_start_stamps_the_context_date_for_this_conversation
 run_test test_session_start_writes_last_resumed_to_local_state
 run_test test_session_end_leaves_readme_untouched
 run_test test_union_merge_attributes_written
+run_test test_merge_attributes_start_a_line_after_a_file_with_no_final_newline
+run_test test_merge_attributes_add_the_archive_line_beside_a_glued_one
 run_test test_divergent_appends_merge_clean
 run_test test_frontmatter_backfill_created_uses_git_date
 run_test test_migration_moves_session_log_into_private

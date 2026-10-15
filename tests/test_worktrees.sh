@@ -2593,6 +2593,37 @@ test_integrate_tracked_mode_union_merges_the_memory_archive() {
 
 run_test test_integrate_tracked_mode_union_merges_the_memory_archive
 
+# The clone-local attributes file can end with no newline (a hand edit); the
+# line cs appends to it still starts a line of its own, so the archive
+# union-merges.
+test_integrate_tracked_mode_union_merges_the_archive_after_attributes_with_no_final_newline() {
+    local sha base_dir wt output status=0
+    base_dir=$(create_test_session_with_git "myproj")
+    printf '%s\n' '- [Memory archive](reference_memory_archive.md): moved pointers' \
+        '- [P](p.md): p' '- [Q](q.md): q' > "$base_dir/.cs/memory/MEMORY.md"
+    echo "p topic" > "$base_dir/.cs/memory/p.md"
+    echo "q topic" > "$base_dir/.cs/memory/q.md"
+    _write_memory_archive "$base_dir/.cs/memory"
+    (cd "$base_dir" && git add .cs/memory && git commit -q -m "base index")
+    mkdir -p "$base_dir/.git/info"
+    printf '%s\n%s\n%s' '.cs/memory/MEMORY.md merge=ours' '.cs/timeline.jsonl merge=union' \
+        '.cs/memory/narrative.*.md merge=union' > "$base_dir/.git/info/attributes"
+    cs_launch "myproj@fix-auth"
+    wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    echo '- [Q](q.md): q' >> "$wt/.cs/memory/reference_memory_archive.md"
+    (cd "$wt" && git add .cs/memory && git commit -q -m "feature archives Q")
+    sha=$(git -C "$wt" rev-parse HEAD)
+    echo '- [P](p.md): p' >> "$base_dir/.cs/memory/reference_memory_archive.md"
+    (cd "$base_dir" && git add .cs/memory && git commit -q -m "base archives P")
+    output=$("$CS_BIN" myproj -integrate-feature fix-auth "$sha" -- true 2>&1) || status=$?
+    assert_eq "0" "$status" "both archive appends merge: $output" || return 1
+    assert_eq "- [P](p.md): p
+- [Q](q.md): q" "$(grep '^- ' "$base_dir/.cs/memory/reference_memory_archive.md")" \
+        "the archive keeps the base's and the feature's pointers" || return 1
+}
+
+run_test test_integrate_tracked_mode_union_merges_the_archive_after_attributes_with_no_final_newline
+
 test_retire_ignored_mode_fuses_records() {
     local base_dir="$CS_SESSIONS_ROOT/proj" esc="esc"$'\033'"[31m.md"
     mkdir -p "$base_dir/.cs"/{memory,local}
