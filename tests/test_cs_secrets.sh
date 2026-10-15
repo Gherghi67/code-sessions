@@ -602,7 +602,7 @@ another-pin"
         assert_eq "Error: refusing to remove recipient peer: $link is a link; cs removes a recipient file only from the session's own .cs/age-recipients directory, never through a link. Nothing was removed." \
             "$out" "the refusal names the $session link" || return 1
         assert_eq "$pins" "$(cat "$HOME/.cs-secrets/sessions/$session/age-trusted")" "the $session pin list is as it was" || return 1
-        assert_file_exists "$link" "the $session link is kept" || return 1
+        [ -L "$link" ] || { echo "  FAIL: the $session link is gone: $link"; return 1; }
     done
     assert_eq "$key" "$(cat "$outside/peer.pub")" "the file outside the session is kept" || return 1
     assert_eq "$key" "$(cat "$outside/.cs/age-recipients/peer.pub")" "the recipient file under the linked .cs is kept" || return 1
