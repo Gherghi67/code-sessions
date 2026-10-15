@@ -2069,6 +2069,13 @@ _fuse_plan() {  # feature_meta base_meta out
             if _fuse_merge_blocked "$1" "$2" "$rel" "$rel"; then
                 printf 'conflict %s\0' "$rel" >> "$3"
             fi
+            # The fuse reads the archive's record after the removal, to tell
+            # whether the feature changed it; one it cannot read fails here.
+            if [ "$rel" = memory/reference_memory_archive.md ] && ! _inherited_sum "$1" "$rel" > /dev/null; then
+                warn "could not read what the feature inherited for $rel, so cs cannot tell whether the base deleted or changed it" >&2
+                rm -f "$list"
+                return 1
+            fi
             continue
         fi
         if ! verdict=$(_fuse_verdict "$1" "$2" "$rel"); then
