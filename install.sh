@@ -498,12 +498,13 @@ _cs_remove_if_owned() {  # file, [payload-sha256]
 # Removes the files under directory $1 that cs wrote, then every directory
 # that leaves empty; keeps the rest as _cs_remove_if_owned does, or as
 # function $2 does when given one (it takes a file and removes it or keeps
-# it). Returns 0 when the directory is gone.
+# it). Returns 0 when the directory is gone. Names come from find
+# NUL-separated, so a name holding a newline is judged whole.
 _cs_remove_tree_if_owned() {  # dir, [remove-function]
     local f remove="${2:-_cs_remove_if_owned}"
-    while IFS= read -r f; do
+    while IFS= read -r -d '' f; do
         "$remove" "$f" || true
-    done < <(find "$1" ! -type d)
+    done < <(find "$1" ! -type d -print0)
     find "$1" -depth -type d -exec rmdir {} \; 2>/dev/null || true
     [ ! -e "$1" ]
 }
@@ -1285,7 +1286,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "b5d0733c6631c957d5e9dd481abe327ac0b44734c56ec56592a276ed8e5082ff  bin/cs"
+    "52741dd6eeec83b95ec973ca1caa2ad18397c0b9b3036f40e80f709d2b9dff9a  bin/cs"
     "42d2f9ecbc9a89f3b119958360fb753962c89df18b51ef7b85db109b2644e7de  bin/cs-secrets"
     "24117fba0eadfb19732feeb82ff9c4ee1772f9bd0297adf19478dd861c3d3735  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
