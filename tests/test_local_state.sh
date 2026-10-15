@@ -1159,6 +1159,32 @@ $glued
         "git reads the archive's union attribute" || return 1
 }
 
+# A .gitattributes where earlier appends glued every merge line onto one line
+# (a hand-written line with no final newline before them) gives git no merge
+# attribute for any of them; the next open appends each on a line of its own.
+test_merge_attributes_add_each_line_beside_a_glued_one() {
+    local sdir="$CS_SESSIONS_ROOT/attrs-all-glued" glued
+    glued='*.png binary.cs/memory/MEMORY.md merge=ours.cs/timeline.jsonl merge=union'
+    glued="$glued.cs/memory/narrative.*.md merge=union.cs/memory/reference_memory_archive.md merge=union"
+    "$CS_BIN" attrs-all-glued < /dev/null > /dev/null 2>&1 || true
+    printf '%s\n' "$glued" > "$sdir/.gitattributes"
+    rm -f "$sdir/.cs/local/migrated"
+    "$CS_BIN" attrs-all-glued < /dev/null > /dev/null 2>&1 || true
+    assert_eq "$glued
+.cs/memory/MEMORY.md merge=ours
+.cs/timeline.jsonl merge=union
+.cs/memory/narrative.*.md merge=union
+.cs/memory/reference_memory_archive.md merge=union" "$(cat "$sdir/.gitattributes")" \
+        "each merge line is appended on a line of its own" || return 1
+    assert_eq ".cs/memory/MEMORY.md: merge: ours
+.cs/timeline.jsonl: merge: union
+.cs/memory/narrative.alice.md: merge: union
+.cs/memory/reference_memory_archive.md: merge: union" \
+        "$(git -C "$sdir" check-attr merge -- .cs/memory/MEMORY.md .cs/timeline.jsonl \
+            .cs/memory/narrative.alice.md .cs/memory/reference_memory_archive.md 2>/dev/null)" \
+        "git reads each merge attribute" || return 1
+}
+
 test_frontmatter_backfill_created_uses_git_date() {
     # A legacy README without frontmatter and without a Started: line must
     # get its created: date from shared git history, not from local mtime
@@ -1805,6 +1831,7 @@ run_test test_session_end_leaves_readme_untouched
 run_test test_union_merge_attributes_written
 run_test test_merge_attributes_start_a_line_after_a_file_with_no_final_newline
 run_test test_merge_attributes_add_the_archive_line_beside_a_glued_one
+run_test test_merge_attributes_add_each_line_beside_a_glued_one
 run_test test_divergent_appends_merge_clean
 run_test test_frontmatter_backfill_created_uses_git_date
 run_test test_migration_moves_session_log_into_private
