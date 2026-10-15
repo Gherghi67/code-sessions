@@ -32,6 +32,10 @@ setup() {
         > "$SESSION/.cs/handoffs/$HANDOFF"
     printf '%s\n' "$HANDOFF" > "$SESSION/.cs/local/pending-handoff"
     export CS_CACHE_DIR="$TEST_TMPDIR/cache" CS_RUN_ID=$RUN CS_RUN_ENGINE=codex CS_RUN_OWNER_PID=$$
+    # Codex's config, whose writable roots the launch reads: the user's own
+    # stays out of the tests.
+    export CODEX_HOME="$TEST_TMPDIR/codex-home"
+    mkdir -p "$CODEX_HOME"
     # The run lease a supervised launch holds: this run owns the session.
     _lease "$RUN"
     _codex_run_dir_in_sandbox_root() { return 1; }
@@ -53,6 +57,7 @@ teardown() {
     rm -rf "$TEST_TMPDIR"
     PATH=$SUITE_PATH; hash -r
     unset CS_CACHE_DIR CS_RUN_ID CS_RUN_ENGINE CS_RUN_OWNER_PID CS_ROTATE_FORCE_CTX CS_CODEX_CLEAR_GRACE CS_RUN_APPROVAL CS_CODEX_TYPE_SINK
+    unset CODEX_HOME
 }
 
 # The session's lease and lock, as the launch of the named run writes them.
@@ -242,6 +247,50 @@ test_a_run_dir_the_sandbox_can_write_is_refused() {
     _watch
     _watcher_ends "the watcher kept a run directory under a sandbox root" || return 1
     assert_not_exists "$KEYS" || return 1
+}
+
+# Codex's own config can give the workspace sandbox more roots to write
+# (sandbox_workspace_write.writable_roots); one that covers cs's cache would
+# let the agent forge the deadline, so the launch makes no run directory
+# there. Every table counts, a profile's included, and so does a
+# .codex/config.toml above the session. TMPDIR points away from the test's
+# own directory, which the check would refuse anyway.
+test_a_run_dir_under_a_codex_writable_root_is_refused() {
+    local roots="$TEST_TMPDIR/roots" spot
+    mkdir -p "$roots/a" "$roots/b" "$roots/c" "$roots/d" "$roots/free"
+    printf 'model = "x"\n[sandbox_workspace_write]\nwritable_roots = [\n  "/nonexistent-cs-root",\n  "%s",\n]\n' \
+        "$roots/a" > "$CODEX_HOME/config.toml"
+    printf '[profiles.work.sandbox_workspace_write]\nwritable_roots = [\x27%s\x27]\n' "$roots/b" >> "$CODEX_HOME/config.toml"
+    mkdir -p "$TEST_TMPDIR/.codex"
+    printf 'sandbox_workspace_write.writable_roots = ["%s"]\n' "$roots/c" > "$TEST_TMPDIR/.codex/config.toml"
+    for spot in a b c; do
+        if TMPDIR=/nonexistent-cs-tmp CS_CACHE_DIR="$roots/$spot/cache" CS_RUN_ID=$OTHER_RUN \
+            _codex_run_dir_prepare "$SESSION" >/dev/null; then
+            echo "  FAIL: a run directory under writable root $spot was accepted"; return 1
+        fi
+        assert_not_exists "$roots/$spot/cache/codex-runs/$OTHER_RUN" "a refused directory is taken back" || return 1
+    done
+    # ~ is the home directory, as Codex reads it.
+    printf '[sandbox_workspace_write]\nwritable_roots = ["~/d"]\n' > "$CODEX_HOME/config.toml"
+    if HOME="$roots" TMPDIR=/nonexistent-cs-tmp CS_CACHE_DIR="$roots/d/cache" CS_RUN_ID=$OTHER_RUN \
+        _codex_run_dir_prepare "$SESSION" >/dev/null; then
+        echo "  FAIL: a run directory under a ~ writable root was accepted"; return 1
+    fi
+    rm -rf "$TEST_TMPDIR/.codex"
+    TMPDIR=/nonexistent-cs-tmp CS_CACHE_DIR="$roots/free/cache" CS_RUN_ID=$OTHER_RUN \
+        _codex_run_dir_prepare "$SESSION" >/dev/null || { echo "  FAIL: a run directory under no root was refused"; return 1; }
+}
+
+# macOS's file system ignores case, so a run directory spelled .../SESSION is
+# inside the session .../session: roots are compared by device and inode.
+test_a_run_dir_spelled_in_another_case_is_inside() {
+    local upper="$TEST_TMPDIR/SESSION"
+    [ "$upper" -ef "$SESSION" ] || { echo "  (case-sensitive file system: nothing to check)"; return 0; }
+    eval "_codex_run_dir_in_sandbox_root() $(declare -f _real_run_dir_in_sandbox_root | tail -n +2)"
+    mkdir -p "$SESSION/cache/run"
+    if ! TMPDIR=/nonexistent-cs-tmp _codex_run_dir_in_sandbox_root "$upper/cache/run" "$SESSION"; then
+        echo "  FAIL: $upper/cache/run was taken to lie outside $SESSION"; return 1
+    fi
 }
 
 test_a_run_dir_already_there_is_not_this_runs() {
@@ -767,6 +816,8 @@ run_test test_a_symlinked_run_dir_ends_the_watch
 run_test test_a_removed_run_dir_ends_the_watch
 run_test test_a_run_dir_the_sandbox_can_write_is_refused
 run_test test_a_run_dir_already_there_is_not_this_runs
+run_test test_a_run_dir_under_a_codex_writable_root_is_refused
+run_test test_a_run_dir_spelled_in_another_case_is_inside
 run_test test_a_pending_switch_types_quit
 run_test test_a_switch_cancelled_during_the_count_clears_instead
 run_test test_a_switch_armed_during_the_count_quits

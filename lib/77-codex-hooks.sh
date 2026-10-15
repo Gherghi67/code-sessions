@@ -144,18 +144,87 @@ _codex_run_dir() {
     printf '%s/codex-runs/%s\n' "${CS_CACHE_DIR:-$HOME/.cache/cs}" "$CS_RUN_ID"
 }
 
-# Whether a directory lies, once symlinks are resolved, under a root the
-# sandbox may write: the session, $TMPDIR or /tmp (macOS's /tmp is
-# /private/tmp). A directory it cannot resolve counts as inside.
-_codex_run_dir_in_sandbox_root() {  # dir, session_dir
-    local dir root resolved
+# Whether a directory lies, once symlinks are resolved, under any of the
+# roots: it or one of its parents is that root. They are compared by device
+# and inode (test -ef), not by spelling: macOS's file system ignores case, so
+# a directory spelled .../SESS lies in the session .../Sess, and a root given
+# through a symlink (macOS's /tmp is /private/tmp) is the directory it names.
+# A directory it cannot resolve counts as inside.
+_codex_dir_under() {  # dir, root...
+    local dir root
     dir=$(cd "$1" 2>/dev/null && pwd -P) || return 0
-    for root in "$2" "${TMPDIR:-}" /tmp /private/tmp; do
-        [ -n "$root" ] || continue
-        resolved=$(cd "$root" 2>/dev/null && pwd -P) || continue
-        case "$dir/" in "${resolved%/}/"*) return 0 ;; esac
+    shift
+    while :; do
+        for root in "$@"; do
+            [ -n "$root" ] || continue
+            [ ! "$dir" -ef "$root" ] || return 0
+        done
+        [ -n "$dir" ] && [ "$dir" != / ] || return 1
+        dir=${dir%/*}
+        [ -n "$dir" ] || dir=/
     done
-    return 1
+}
+
+# Whether a directory lies under a root the workspace sandbox may always
+# write: the session, $TMPDIR or /tmp.
+_codex_run_dir_in_sandbox_root() {  # dir, session_dir
+    _codex_dir_under "$1" "$2" "${TMPDIR:-}" /tmp
+}
+
+# The further roots Codex's own config lets the workspace sandbox write
+# (sandbox_workspace_write.writable_roots), one a line, from every layer cs
+# can read: the system's, $CODEX_HOME's, and a .codex/config.toml in the
+# session or any directory above it. Any table counts, a profile's included,
+# whichever the launch ends up using: a root named anywhere is a root. ~ is
+# the home directory, and a relative root is read against both the session
+# and the file's own directory. Roots a managed device profile adds are not in
+# any file cs can read. Fails when a config there cannot be read.
+_codex_config_writable_roots() {  # session_dir
+    local dir
+    local -a files
+    files=(/etc/codex/config.toml /etc/codex/managed_config.toml "${CODEX_HOME:-$HOME/.codex}/config.toml")
+    dir=$(cd "$1" 2>/dev/null && pwd -P) || return 1
+    while :; do
+        files+=("$dir/.codex/config.toml")
+        [ -n "$dir" ] && [ "$dir" != / ] || break
+        dir=${dir%/*}
+    done
+    python3 -I -c '
+import os, re, sys
+session = sys.argv[1]
+array = re.compile(r"writable_roots\s*=\s*\[(.*?)\]", re.S)
+item = re.compile(r"\"((?:[^\"\\]|\\.)*)\"|\x27([^\x27]*)\x27")
+for name in sys.argv[2:]:
+    try:
+        with open(name, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except (FileNotFoundError, NotADirectoryError):
+        continue
+    except OSError:
+        sys.exit(1)
+    for found in array.finditer(text):
+        for basic, literal in item.findall(found.group(1)):
+            root = re.sub(r"\\(.)", r"\1", basic) if basic else literal
+            root = os.path.expanduser(root)
+            if os.path.isabs(root):
+                print(root)
+            elif root:
+                print(os.path.join(session, root))
+                print(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(name))), root))
+' "$1" "${files[@]}"
+}
+
+# Whether a directory lies under a writable root Codex's config adds.
+_codex_run_dir_in_config_root() {  # dir, session_dir
+    local roots root
+    roots=$(_codex_config_writable_roots "$2") || return 0
+    [ -n "$roots" ] || return 1
+    printf '%s\n' "$roots" | {
+        while IFS= read -r root; do
+            [ -z "$root" ] || ! _codex_dir_under "$1" "$root" || exit 0
+        done
+        exit 1
+    }
 }
 
 # The run directory as the launch made it: a real directory, the user's, mode
@@ -174,11 +243,13 @@ _codex_stamp_ok() {  # file
 
 # Makes this run's directory, before Codex starts, and prints it. A directory
 # already there is not this run's, and one the checks refuse is taken back.
+# Codex reads its config as it starts, so the roots that config adds are
+# asked about here, once, and stay as they are for the run.
 _codex_run_dir_prepare() {  # session_dir
     local dir
     dir=$(_codex_run_dir) || return 1
     ( umask 077 && mkdir -p "${dir%/*}" && mkdir -m 700 "$dir" ) 2>/dev/null || return 1
-    if ! _codex_run_dir_ok "$dir" "$1"; then
+    if ! _codex_run_dir_ok "$dir" "$1" || _codex_run_dir_in_config_root "$dir" "$1"; then
         rmdir "$dir" 2>/dev/null || true
         return 1
     fi

@@ -231,9 +231,14 @@ a directory private to the run, `codex-runs/<run id>` under cs's cache (`CS_CACH
 `~/.cache/cs`), made mode 700 before Codex starts and removed when the run ends.
 It is kept out of the session because Codex's workspace sandbox can write
 anywhere there, and in `/tmp` and `$TMPDIR`: a deadline the agent could write
-would let it have the watcher type into an approval prompt. When the cache lies
-under one of those, or the directory cannot be made, the launch says the
-automatic `/clear` is off for that run and the `/clear` stays yours. A probe
+would let it have the watcher type into an approval prompt. The same goes for
+any root your Codex config adds (`sandbox_workspace_write.writable_roots`):
+the launch reads it from `/etc/codex`, `$CODEX_HOME/config.toml` and every
+`.codex/config.toml` from the session upward, in any table, profiles included.
+Roots a managed device profile adds are not in a file cs can read, so keep
+`CS_CACHE_DIR` out of those yourself. When the cache lies under any of these
+roots, or the directory cannot be made, the launch says the automatic `/clear`
+is off for that run and the `/clear` stays yours. A probe
 that declines is logged in `session.log` with its cause, and so are keys the
 terminal refuses later all the same, with the error it gave; the `/clear` then
 stays yours.
