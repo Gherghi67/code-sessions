@@ -2,13 +2,13 @@
 # ABOUTME: One launcher owns a token-qualified lease through prepare, run, and cleanup.
 
 # Stop a helper an adapter runs beside the native CLI (Codex's automatic
-# /clear watcher), its children first: keys a child types after the CLI is
-# gone would land in the shell. A helper waits for the launcher to end, so the
-# launcher must end it before any wait of its own can block on it. The private
-# directory the helper worked from goes once it has stopped.
+# /clear watcher). The helper ends its own children on TERM: keys a child
+# types after the CLI is gone would land in the shell. A helper waits for the
+# launcher to end, so the launcher must end it before any wait of its own can
+# block on it. The private directory the helper worked from goes once it has
+# stopped.
 _cs_run_stop_helper() {
     if [ -n "${_cs_run_helper_pid:-}" ]; then
-        pkill -TERM -P "$_cs_run_helper_pid" 2>/dev/null || true
         kill -TERM "$_cs_run_helper_pid" 2>/dev/null || true
         wait "$_cs_run_helper_pid" 2>/dev/null || true
         _cs_run_helper_pid=""

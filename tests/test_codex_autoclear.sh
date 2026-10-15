@@ -15,6 +15,7 @@ source "$SCRIPT_DIR/../lib/78-switch.sh"
 HANDOFF=2026-10-15-continue.md
 RUN=33333333-3333-4333-8333-333333333333
 OTHER_RUN=44444444-4444-4444-8444-444444444444
+SUITE_PATH=$PATH
 
 # The real check, kept for the tests that exercise it: every other test runs
 # under TMPDIR, which the check rightly refuses, so setup stands it down.
@@ -50,7 +51,8 @@ setup() {
 teardown() {
     [ -z "$WATCHER" ] || { kill "$WATCHER" 2>/dev/null; wait "$WATCHER" 2>/dev/null || true; }
     rm -rf "$TEST_TMPDIR"
-    unset CS_CACHE_DIR CS_RUN_ID CS_RUN_ENGINE CS_RUN_OWNER_PID CS_ROTATE_FORCE_CTX CS_CODEX_CLEAR_GRACE CS_RUN_APPROVAL
+    PATH=$SUITE_PATH; hash -r
+    unset CS_CACHE_DIR CS_RUN_ID CS_RUN_ENGINE CS_RUN_OWNER_PID CS_ROTATE_FORCE_CTX CS_CODEX_CLEAR_GRACE CS_RUN_APPROVAL CS_CODEX_TYPE_SINK
 }
 
 # The session's lease and lock, as the launch of the named run writes them.
@@ -112,17 +114,32 @@ _watcher_ends() {  # reason
     WATCHER=""
 }
 
-# Waits up to 2 s for a process to go. A zombie counts as gone: kill -0
-# still succeeds on one until its parent reaps it, and a process orphaned by
-# a kill is reaped by init in its own time.
-_process_gone() {  # pid
+# Waits up to 2 s, or the given tenths, for a process to go. A zombie counts
+# as gone: kill -0 still succeeds on one until its parent reaps it, and a
+# process orphaned by a kill is reaped by init in its own time.
+_process_gone() {  # pid, [tenths]
     local i=0 state
     while :; do
         state=$(ps -o stat= -p "$1" 2>/dev/null | tr -d ' ')
         case "$state" in '' | Z*) return 0 ;; esac
-        i=$((i + 1)); [ "$i" -lt 20 ] || return 1
+        i=$((i + 1)); [ "$i" -lt "${2:-20}" ] || return 1
         sleep 0.1
     done
+}
+
+# A pkill that does nothing, as on a system without one: the helper's stop
+# must not need it.
+_no_pkill() {
+    mkdir -p "$TEST_TMPDIR/bin"
+    printf '#!/bin/sh\nexit 0\n' > "$TEST_TMPDIR/bin/pkill"
+    chmod +x "$TEST_TMPDIR/bin/pkill"
+    PATH="$TEST_TMPDIR/bin:$PATH"
+    hash -r
+}
+
+# The bytes the real typist has written to its stand-in terminal so far.
+_sink_size() {
+    if [ -f "$TEST_TMPDIR/sink" ]; then wc -c < "$TEST_TMPDIR/sink" | tr -d ' '; else echo 0; fi
 }
 
 # Waits up to the given seconds for the keys file to hold n lines.
@@ -478,18 +495,46 @@ test_the_watcher_ends_with_its_terminal() {
     WATCHER=""
 }
 
-# The launcher's cleanup ends the helper before it reaps the CLI, and a
-# helper's own children go first.
+# The launcher's cleanup ends the helper before it reaps the CLI, and the
+# helper ends the child it is waiting on as it goes, a poll's sleep here:
+# nothing of it outlives the stop, with no pkill to reach it.
 test_cleanup_stops_the_helper_and_its_children() {
     source "$SCRIPT_DIR/../lib/16-lifecycle.sh"
+    _no_pkill
     local _cs_run_helper_pid child
-    ( sleep 30 & wait ) & _cs_run_helper_pid=$!
-    sleep 0.3
-    child=$(pgrep -P "$_cs_run_helper_pid" | head -1)
-    [ -n "$child" ] || { echo "  FAIL: the stand-in helper has no child"; return 1; }
+    _watch
+    # A fresh poll has just begun its sleep, so it has most of a second left.
+    _polls 1 || return 1
+    child=$(pgrep -P "$WATCHER" -x sleep | head -1)
+    [ -n "$child" ] || { echo "  FAIL: the watcher has no sleep to wait on"; return 1; }
+    _cs_run_helper_pid=$WATCHER
     _cs_run_stop_helper
+    WATCHER=""
     assert_eq "" "$_cs_run_helper_pid" || return 1
-    _process_gone "$child" || { echo "  FAIL: the helper's child survived"; return 1; }
+    _process_gone "$child" 3 || { kill "$child" 2>/dev/null; echo "  FAIL: the watcher's sleep outlived it"; return 1; }
+}
+
+# The real typist, writing to a stand-in terminal (CS_CODEX_TYPE_SINK): a stop
+# mid-word ends it with its watcher, so not one key more goes in.
+test_the_watcher_ends_its_typing_child_on_term() {
+    source "$SCRIPT_DIR/../lib/16-lifecycle.sh"
+    _no_pkill
+    eval "_codex_type_keys() $(declare -f _real_type_keys | tail -n +2)"
+    export CS_CODEX_TYPE_SINK="$TEST_TMPDIR/sink"
+    local _cs_run_helper_pid i=0 stopped_at
+    _stamp "$(date +%s)"
+    _watch
+    until [ "$(_sink_size)" -ge 1 ]; do
+        i=$((i + 1)); [ "$i" -lt 60 ] || { echo "  FAIL: the typist never wrote a key"; return 1; }
+        sleep 0.05
+    done
+    _cs_run_helper_pid=$WATCHER
+    _cs_run_stop_helper
+    WATCHER=""
+    stopped_at=$(_sink_size)
+    sleep 0.5
+    assert_eq "$stopped_at" "$(_sink_size)" "keys went in after the watcher stopped: $(cat "$TEST_TMPDIR/sink")" || return 1
+    [ "$stopped_at" -lt 7 ] || { echo "  FAIL: the whole /clear went in before the stop"; return 1; }
 }
 
 # A signal ends the launch through _cs_run_cleanup, which must end the helper:
@@ -571,6 +616,7 @@ run_test test_an_unreadable_deadline_is_dropped
 run_test test_the_watcher_ends_with_the_runs_owner
 run_test test_the_watcher_ends_with_its_terminal
 run_test test_cleanup_stops_the_helper_and_its_children
+run_test test_the_watcher_ends_its_typing_child_on_term
 run_test test_run_cleanup_stops_the_helper
 run_test test_stopping_the_helper_removes_its_run_dir
 run_test test_the_grace_follows_the_force_setting

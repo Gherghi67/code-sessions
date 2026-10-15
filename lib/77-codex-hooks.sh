@@ -330,23 +330,32 @@ _codex_hook_permission_request() {
 # Before each key and before Enter it looks for the typing marker; once a
 # prompt the user sent has taken it away, it stops with status 4 and sends no
 # Enter, so nothing more of cs's goes in after that prompt.
+# It replaces the shell it runs in with python, so the watcher, which starts
+# it in the background, holds python's own pid and can end it at once.
+# CS_CODEX_TYPE_SINK names a file the keys are appended to instead, for tests.
 _codex_type_keys() {  # text, typing_marker
-    python3 -I -c '
+    exec python3 -I -c '
 import fcntl, os, sys, termios, time
 marker = sys.argv[2]
 if not os.path.exists(marker):
     sys.exit(4)
-fd = os.open("/dev/tty", os.O_RDWR)
+sink = os.environ.get("CS_CODEX_TYPE_SINK", "")
+if sink:
+    fd = os.open(sink, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    put = lambda key: os.write(fd, key)
+else:
+    fd = os.open("/dev/tty", os.O_RDWR)
+    put = lambda key: fcntl.ioctl(fd, termios.TIOCSTI, key)
 try:
     for ch in sys.argv[1].encode():
         if not os.path.exists(marker):
             sys.exit(4)
-        fcntl.ioctl(fd, termios.TIOCSTI, bytes([ch]))
+        put(bytes([ch]))
         time.sleep(0.1)
     time.sleep(0.5)
     if not os.path.exists(marker):
         sys.exit(4)
-    fcntl.ioctl(fd, termios.TIOCSTI, b"\r")
+    put(b"\r")
 finally:
     os.close(fd)
 ' "$1" "$2" 2>/dev/null
@@ -374,12 +383,18 @@ _codex_autoclear_terminal() {
 # The watcher cannot see the screen. Text left unsent in the composer is sent
 # with the keys added to it, which the Stop hook's line warns of; a prompt the
 # user sends while cs types takes the typing marker away, and cs stops there.
+#
+# Everything it waits on, a sleep or the typist, runs as its child and is
+# waited for, so a TERM, from the launcher's stop or anyone's, ends that child
+# first and the watcher straight after: keys typed after the CLI is gone would
+# land in the shell, and nothing outside the watcher has to find its children.
 _codex_autoclear_watch() {  # session_dir, run_dir
-    local session_dir="$1" run_dir="$2" stamp typing deadline handoff action run status
+    local session_dir="$1" run_dir="$2" stamp typing deadline handoff action run status child=""
+    trap '[ -z "$child" ] || kill -TERM "$child" 2>/dev/null; exit 0' TERM
     stamp=$(_codex_autoclear_file "$run_dir")
     typing=$(_codex_typing_file "$run_dir")
     while kill -0 "${CS_RUN_OWNER_PID:-$$}" 2>/dev/null && _codex_autoclear_terminal; do
-        sleep 1
+        _codex_autoclear_child sleep 1
         if ! _codex_run_dir_ok "$run_dir" "$session_dir"; then
             _codex_autoclear_log "$session_dir" "Automatic /clear: this run's directory is gone or no longer private; the /clear is yours"
             return 0
@@ -419,13 +434,13 @@ _codex_autoclear_watch() {  # session_dir, run_dir
             continue
         fi
         if [ "${action%% *}" = quit ]; then
-            _codex_type_keys /quit "$typing"; status=$?
+            _codex_autoclear_child _codex_type_keys /quit "$typing"; status=$?
         else
-            _codex_type_keys /clear "$typing"; status=$?
+            _codex_autoclear_child _codex_type_keys /clear "$typing"; status=$?
             if [ "$status" = 0 ]; then
-                sleep 2
+                _codex_autoclear_child sleep 2
                 if [ -e "$typing" ]; then
-                    _codex_type_keys go "$typing"; status=$?
+                    _codex_autoclear_child _codex_type_keys go "$typing"; status=$?
                 else
                     status=4
                 fi
@@ -445,6 +460,16 @@ _codex_autoclear_watch() {  # session_dir, run_dir
             *) _codex_autoclear_log "$session_dir" "Automatic /clear: the terminal refused simulated input; run /clear and send go" ;;
         esac
     done
+}
+
+# Runs a command as the watcher's child and waits for it, with its status. The
+# watcher's TERM trap reads `child`, which is the watcher's own local.
+_codex_autoclear_child() {  # command, arguments...
+    local status=0
+    "$@" & child=$!
+    wait "$child" || status=$?
+    child=""
+    return "$status"
 }
 
 _codex_autoclear_log() {  # session_dir, line
