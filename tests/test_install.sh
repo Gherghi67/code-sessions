@@ -2625,7 +2625,8 @@ test_install_keeps_user_files_that_share_a_cs_name() {
 # A symlink where cs deploys a file is the user's unless what it points at is
 # content cs wrote: a dangling link holds nothing cs wrote, so it is kept and
 # named like any other file of the user's; a link to cs's own content is
-# replaced by the file this install ships.
+# replaced by the file this install ships, and one line names the link and
+# where it pointed, so a link kept for live rebuilds can be made again.
 test_install_keeps_a_symlink_that_holds_no_cs_content() {
     local home="$TEST_TMPDIR/link-home" rc=0 out
     mkdir -p "$home/.claude/commands"
@@ -2641,18 +2642,29 @@ test_install_keeps_a_symlink_that_holds_no_cs_content() {
     cmp -s "$SCRIPT_DIR/../commands/checkpoint.md" "$home/.claude/commands/checkpoint.md" \
         || { echo "  FAIL: checkpoint.md was not deployed"; return 1; }
     assert_eq '{"modules":["./register.tsx"]}' "$(cat "$TEST_TMPDIR/old-checkpoint.md")" "the link's target is untouched" || return 1
+    assert_eq "1" "$(printf '%s\n' "$out" | grep -c "Replaced symlink $(_bre_literal "$home/.claude/commands/checkpoint.md") (to $(_bre_literal "$TEST_TMPDIR/old-checkpoint.md")) with a deployed copy$")" \
+        "one line names the replaced link and its target" || { echo "$out"; return 1; }
+    assert_output_not_contains "$out" "Replaced symlink $(_bre_literal "$home/.claude/commands/wrap.md")" \
+        "the kept link is not called replaced" || return 1
     # The binaries go through the same gate: a link to the user's own script
-    # where cs-statusline goes is kept, the script untouched.
+    # where cs-statusline goes is kept, the script untouched; a link to a copy
+    # of cs's own bin/cs (a checkout's build, say) is replaced and named.
     local bin_home="$TEST_TMPDIR/link-bin-home"
     mkdir -p "$bin_home/.local/bin"
     printf '#!/bin/sh\necho my bar\n' > "$TEST_TMPDIR/my-bar.sh"
     ln -s "$TEST_TMPDIR/my-bar.sh" "$bin_home/.local/bin/cs-statusline"
+    cp "$SCRIPT_DIR/../bin/cs" "$TEST_TMPDIR/build-cs"
+    ln -s "$TEST_TMPDIR/build-cs" "$bin_home/.local/bin/cs"
     rc=0
     out=$(HOME="$bin_home" bash "$INSTALL_SH" 2>&1 < /dev/null) || rc=$?
     assert_eq "0" "$rc" "install exit status (binary link)" || { echo "$out"; return 1; }
     assert_eq "$TEST_TMPDIR/my-bar.sh" "$(readlink "$bin_home/.local/bin/cs-statusline")" "the link where a binary goes is kept" || return 1
     assert_eq "$(printf '#!/bin/sh\necho my bar')" "$(cat "$TEST_TMPDIR/my-bar.sh")" "the user's script is untouched" || return 1
     assert_output_contains "$out" "Kept $(_bre_literal "$bin_home/.local/bin/cs-statusline")" "the kept binary link is named" || return 1
+    [ ! -L "$bin_home/.local/bin/cs" ] || { echo "  FAIL: the link to cs's own bin/cs was not replaced"; return 1; }
+    cmp -s "$SCRIPT_DIR/../bin/cs" "$bin_home/.local/bin/cs" || { echo "  FAIL: bin/cs was not deployed"; return 1; }
+    assert_eq "1" "$(printf '%s\n' "$out" | grep -c "Replaced symlink $(_bre_literal "$bin_home/.local/bin/cs") (to $(_bre_literal "$TEST_TMPDIR/build-cs")) with a deployed copy$")" \
+        "one line names the replaced binary link and its target" || { echo "$out"; return 1; }
 }
 
 # A user's file under a name cs retired is not in the way of anything cs
