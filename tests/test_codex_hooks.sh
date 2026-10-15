@@ -215,7 +215,7 @@ test_a_turn_ending_with_a_handoff_armed_starts_the_count() {
     out=$(CS_CODEX_CLEAR_GRACE=20 _turn_hook stop "$OLD_THREAD") || { echo "  FAIL: a hook must never fail a turn"; return 1; }
     assert_file_exists "$STAMP" || return 1
     assert_eq "$HANDOFF" "$(_stamp_field handoff)" || return 1
-    assert_eq clear "$(_stamp_field action)" || return 1
+    assert_eq "" "$(_stamp_field action)" "the watcher decides at the deadline, not the turn's end" || return 1
     assert_eq "$RUN" "$(_stamp_field run)" || return 1
     deadline=$(_stamp_field deadline)
     [ "$deadline" -ge $((now + 20)) ] && [ "$deadline" -le $((now + 22)) ] \
@@ -316,13 +316,14 @@ test_a_pending_switch_counts_down_to_quit() {
     local out
     printf 'engine=claude\nmode=fresh\nhandoff=%s\nrun=%s\n' "$HANDOFF" "$RUN" > "$SESSION/.cs/local/pending-switch"
     out=$(CS_CODEX_CLEAR_GRACE=20 _turn_hook stop "$OLD_THREAD") || return 1
-    assert_eq quit "$(_stamp_field action)" || return 1
+    assert_file_exists "$STAMP" || return 1
     assert_eq "cs: /quit in 20 s, and cs reopens this session under claude from $HANDOFF. Send a message first to stay." \
         "$(printf '%s' "$out" | jq -r .systemMessage)" || return 1
     # Another run's switch is not this run's to take.
     printf 'engine=claude\nmode=fresh\nhandoff=%s\nrun=%s\n' "$HANDOFF" "$OTHER_RUN" > "$SESSION/.cs/local/pending-switch"
-    _turn_hook stop "$OLD_THREAD" >/dev/null || return 1
-    assert_eq clear "$(_stamp_field action)" || return 1
+    out=$(CS_CODEX_CLEAR_GRACE=20 _turn_hook stop "$OLD_THREAD") || return 1
+    assert_eq "cs: /clear and go in 20 s, to continue from $HANDOFF. Send a message first to keep this conversation." \
+        "$(printf '%s' "$out" | jq -r .systemMessage)" || return 1
 }
 
 test_a_message_sent_during_the_count_stops_it() {

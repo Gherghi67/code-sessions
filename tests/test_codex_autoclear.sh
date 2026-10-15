@@ -50,12 +50,28 @@ teardown() {
 }
 
 # A deadline as the Stop hook writes it, into the run directory unless a test
-# names another file.
+# names another file. An action is what earlier builds froze into it at the
+# turn's end; the watcher decides at the deadline instead, so a test names one
+# only to show it goes unread.
 _stamp() {  # deadline, [action], [run], [handoff], [file]
     local file="${5:-$STAMP}"
-    printf 'deadline=%s\nhandoff=%s\naction=%s\nrun=%s\n' \
-        "$1" "${4:-$HANDOFF}" "${2:-clear}" "${3:-$RUN}" > "$file"
+    printf 'deadline=%s\nhandoff=%s\nrun=%s\n' "$1" "${4:-$HANDOFF}" "${3:-$RUN}" > "$file"
+    [ -z "${2:-}" ] || printf 'action=%s\n' "$2" >> "$file"
     chmod 600 "$file"
+}
+
+# A switch as `cs -switch` records it, for this run unless a test names another.
+_switch() {  # [run]
+    printf 'engine=claude\nmode=fresh\nhandoff=%s\nrun=%s\nmodel=\neffort=\napproval=\n' \
+        "$HANDOFF" "${1:-$RUN}" > "$SESSION/.cs/local/pending-switch"
+}
+
+# Waits for the keys and one poll more, so nothing typed after them is missed.
+_keys_settle() {  # lines
+    _keys_after 6 "$1" || { echo "  FAIL: expected $1 line(s), got: $(cat "$KEYS" 2>/dev/null)"; return 1; }
+    local seen
+    seen=$(wc -l < "$TEST_TMPDIR/polls" | tr -d ' ')
+    _polls $(( seen + 1 ))
 }
 
 _watch() { _codex_autoclear_watch "$SESSION" "$RUN_DIR" & WATCHER=$!; }
@@ -210,13 +226,36 @@ test_a_run_dir_already_there_is_not_this_runs() {
 }
 
 test_a_pending_switch_types_quit() {
+    _switch
+    _stamp "$(date +%s)"
+    _watch
+    _keys_settle 1 || return 1
+    assert_eq /quit "$(cat "$KEYS")" || return 1
+}
+
+# The switch is read at the deadline, as the cs mod reads it at zero: one
+# cancelled during the count leaves the handoff armed here, so the count clears.
+test_a_switch_cancelled_during_the_count_clears_instead() {
     _stamp "$(date +%s)" quit
     _watch
-    _keys_after 4 1 || { echo "  FAIL: nothing typed"; return 1; }
-    local seen
-    seen=$(wc -l < "$TEST_TMPDIR/polls" | tr -d ' ')
-    _polls $(( seen + 1 )) || return 1
-    assert_eq /quit "$(cat "$KEYS")" || return 1
+    _keys_settle 2 || return 1
+    assert_eq $'/clear\ngo' "$(cat "$KEYS")" "a cancelled switch quits nothing" || return 1
+}
+
+test_a_switch_armed_during_the_count_quits() {
+    _stamp "$(date +%s)" clear
+    _switch
+    _watch
+    _keys_settle 1 || return 1
+    assert_eq /quit "$(cat "$KEYS")" "a /clear would spend the handoff the switch carries" || return 1
+}
+
+test_another_runs_switch_does_not_quit() {
+    _switch "$OTHER_RUN"
+    _stamp "$(date +%s)"
+    _watch
+    _keys_settle 2 || return 1
+    assert_eq $'/clear\ngo' "$(cat "$KEYS")" "another run's switch is not this run's to take" || return 1
 }
 
 test_a_deadline_still_ahead_types_nothing() {
@@ -374,6 +413,9 @@ run_test test_a_removed_run_dir_ends_the_watch
 run_test test_a_run_dir_the_sandbox_can_write_is_refused
 run_test test_a_run_dir_already_there_is_not_this_runs
 run_test test_a_pending_switch_types_quit
+run_test test_a_switch_cancelled_during_the_count_clears_instead
+run_test test_a_switch_armed_during_the_count_quits
+run_test test_another_runs_switch_does_not_quit
 run_test test_a_deadline_still_ahead_types_nothing
 run_test test_a_handoff_no_longer_armed_types_nothing
 run_test test_another_handoff_armed_types_nothing

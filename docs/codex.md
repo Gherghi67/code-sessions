@@ -199,7 +199,9 @@ hook (`cs -codex-hook stop`) shows a line saying what happens in 20 seconds, and
 a watcher cs runs beside the Codex CLI then types `/clear` and `go` into the
 terminal, at typing speed, since Codex takes a faster burst for a paste. With a
 switch pending it types `/quit`, and cs reopens the session under the other
-engine. A message you send first stops the count (the UserPromptSubmit hook,
+engine. The watcher looks for the switch when the count ends, as the mod does
+at zero, so a switch recorded or cancelled (`cs -switch cancel`) during the
+count is the one that counts. A message you send first stops the count (the UserPromptSubmit hook,
 `cs -codex-hook user-prompt-submit`) and keeps the conversation; the count starts
 again when that turn ends. Only the conversation the launch bound counts down.
 `CS_ROTATE_FORCE_CTX=off` (or `0`) at launch turns it off, as under Claude, and

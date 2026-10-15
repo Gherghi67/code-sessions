@@ -11922,9 +11922,10 @@ _codex_hook_rebind() {  # session_dir, thread_id, handoff
 # conversation; the count starts again when that turn ends. A watcher the Codex
 # launch runs beside the CLI (lib/76-codex.sh) types /clear, then go, into the
 # terminal once the deadline has passed and the same handoff is still armed;
-# with a switch pending it types /quit, and cs reopens the session under the
-# other engine. CS_ROTATE_FORCE_CTX set to off (or 0) leaves the keys to the
-# user, as it does under Claude, and so does CS_CODEX_CLEAR_GRACE=0.
+# with a switch pending at the deadline it types /quit, and cs reopens the
+# session under the other engine. CS_ROTATE_FORCE_CTX set to off (or 0) leaves
+# the keys to the user, as it does under Claude, and so does
+# CS_CODEX_CLEAR_GRACE=0.
 #
 # The deadline is the watcher's licence to type, so it lives where the agent
 # cannot write: Codex's workspace sandbox writes anywhere in the session, /tmp
@@ -11983,6 +11984,24 @@ _codex_autoclear_file() {  # run_dir
     printf '%s/autoclear\n' "$1"
 }
 
+# What the count does at its end: `clear`, or `quit <engine>` when a switch
+# this run recorded is pending, since /clear cannot change engines and would
+# spend the handoff the switch carries. The watcher asks at the deadline, as
+# the cs mod reads the switch at zero, so a switch armed or cancelled during
+# the count is the one that counts; the Stop hook asks only for its wording.
+_codex_autoclear_action() {  # session_dir
+    local switch_file target
+    if switch_file=$(_switch_file "$1") && [ -f "$switch_file" ] \
+        && [ "$(_switch_field "$switch_file" run)" = "${CS_RUN_ID:-}" ]; then
+        target=$(_switch_field "$switch_file" engine)
+        if [ -n "$target" ]; then
+            printf 'quit %s\n' "$target"
+            return 0
+        fi
+    fi
+    printf 'clear\n'
+}
+
 # The seconds the count runs (CS_CODEX_CLEAR_GRACE, default 20, the mod's
 # grace), or failure when the automatic /clear is off. A CS_ROTATE_FORCE_CTX
 # nobody can read is not off, as in the mod. The grace is read as decimal, so
@@ -12003,8 +12022,7 @@ _codex_autoclear_grace() {
 # down; a turn in any other thread, or a teammate's, never clears it. The hook
 # must never fail a turn, so every path returns 0.
 _codex_hook_stop() {
-    local input session_id session_dir meta run_dir stamp grace bound handoff tmp deadline
-    local action=clear target="" switch_file sysmsg
+    local input session_id session_dir meta run_dir stamp grace bound handoff tmp deadline action sysmsg
     input=$(cat) || input=""
     [ "${CS_RUN_ENGINE:-}" = codex ] && [ -n "${CS_SESSION_DIR:-}" ] || return 0
     session_dir="$CS_SESSION_DIR"
@@ -12022,25 +12040,21 @@ _codex_hook_stop() {
     [ "$bound" = "$session_id" ] || return 0
     handoff=$(_rotation_armed_handoff "$session_dir")
     [ -n "$handoff" ] || { rm -f "$stamp" 2>/dev/null; return 0; }
-    # A switch this run recorded leaves Codex instead: /quit, and cs relaunches.
-    if switch_file=$(_switch_file "$session_dir") && [ -f "$switch_file" ] \
-        && [ "$(_switch_field "$switch_file" run)" = "${CS_RUN_ID:-}" ]; then
-        target=$(_switch_field "$switch_file" engine)
-        [ -z "$target" ] || action=quit
-    fi
+    # Only the wording: the watcher decides again at the deadline.
+    action=$(_codex_autoclear_action "$session_dir")
     # The deadline is worked out before the temp file exists, so nothing that
     # fails here can leave one behind.
     deadline=$(( $(date +%s) + grace ))
     # mktemp makes the file 0600, the mode the watcher requires.
     tmp=$(mktemp "$stamp.XXXXXX" 2>/dev/null) || return 0
-    if ! { printf 'deadline=%s\nhandoff=%s\naction=%s\nrun=%s\n' \
-        "$deadline" "$handoff" "$action" "${CS_RUN_ID:-}" > "$tmp" \
+    if ! { printf 'deadline=%s\nhandoff=%s\nrun=%s\n' \
+        "$deadline" "$handoff" "${CS_RUN_ID:-}" > "$tmp" \
         && mv "$tmp" "$stamp"; } 2>/dev/null; then
         rm -f "$tmp" 2>/dev/null
         return 0
     fi
-    if [ "$action" = quit ]; then
-        sysmsg="cs: /quit in $grace s, and cs reopens this session under $target from $handoff. Send a message first to stay."
+    if [ "${action%% *}" = quit ]; then
+        sysmsg="cs: /quit in $grace s, and cs reopens this session under ${action#quit } from $handoff. Send a message first to stay."
     else
         sysmsg="cs: /clear and go in $grace s, to continue from $handoff. Send a message first to keep this conversation."
     fi
@@ -12093,7 +12107,8 @@ _codex_autoclear_terminal() {
 # hook wrote into the run's directory, and only from there: a directory that
 # stops being private ends the watch, and a deadline file that is not what the
 # hook writes is dropped unread. Past the deadline, with the same handoff still
-# armed by this run, it consumes the deadline and types the keys. The armed
+# armed by this run, it consumes the deadline and types the keys: /quit when a
+# switch this run recorded is pending then, /clear otherwise. The armed
 # handoff is a liveness check, not the licence: the agent may arm one itself.
 # /clear and go are two prompts: Codex starts no turn after /clear, and cs's
 # SessionStart hook hands the new thread the handoff with its first message.
@@ -12119,10 +12134,10 @@ _codex_autoclear_watch() {  # session_dir, run_dir
         fi
         [ "$(date +%s)" -ge "$deadline" ] || continue
         handoff=$(_switch_field "$stamp" handoff)
-        action=$(_switch_field "$stamp" action)
         rm -f "$stamp" 2>/dev/null || true
         [ -n "$handoff" ] && [ "$(_rotation_armed_handoff "$session_dir")" = "$handoff" ] || continue
-        if [ "$action" = quit ]; then
+        action=$(_codex_autoclear_action "$session_dir")
+        if [ "${action%% *}" = quit ]; then
             _codex_type_keys /quit && continue
         else
             _codex_type_keys /clear && sleep 2 && _codex_type_keys go && continue
