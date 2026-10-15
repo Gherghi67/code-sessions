@@ -2829,6 +2829,12 @@ test_session_start_sibling_line_carries_the_send_syntax() {
         session_start_teardown
         return 1
     fi
+    # A task is mail like any other kind: it reaches the recipient's queue only
+    # when that session's user runs its accept command (lib/53-mail.sh,
+    # lib/55-queue.sh), so the line must not promise an unattended run.
+    assert_eq 'Add --kind notify|task|text|result (default text; a task waits in that session'"'"'s mailbox until its user accepts it with cs -queue accept <id>).' \
+        "$(grep -F 'Add --kind' <<< "$context")" \
+        "the --kind line says where a task waits and what queues it" || { session_start_teardown; return 1; }
 
     session_start_teardown
 }
