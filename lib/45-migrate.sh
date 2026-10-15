@@ -5,16 +5,40 @@ setup_merge_attributes() {
     local dir="$1"
     git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || return 0
     git -C "$dir" config merge.ours.driver true 2>/dev/null || _CS_MIGRATE_CLEAN=0
-    local ga="$dir/.gitattributes"
-    if ! grep -q 'MEMORY\.md merge=ours' "$ga" 2>/dev/null; then
-        printf '.cs/memory/MEMORY.md merge=ours\n' >> "$ga"
+    _append_merge_attribute_lines "$dir/.gitattributes"
+}
+
+# Append to an attributes file each of cs's merge lines it lacks. A line
+# counts as present only as a whole line, the way git reads one (blanks and a
+# CR around it ignored), so one an earlier append glued onto the line before
+# is added again.
+_append_merge_attribute_lines() {  # file
+    local attrs="$1" line
+    for line in '.cs/memory/MEMORY.md merge=ours' '.cs/timeline.jsonl merge=union' \
+            '.cs/memory/narrative.*.md merge=union' '.cs/memory/reference_memory_archive.md merge=union'; do
+        _attribute_line_present "$attrs" "$line" || _append_attribute_line "$attrs" "$line"
+    done
+}
+
+# Whether an attributes file holds <line> as a whole line: compared as text
+# once each run of blanks (a CR too) is one space and none leads or trails.
+# Bytes, not characters: awk stops on a line a multibyte locale cannot decode,
+# and every open would then append the lines again.
+_attribute_line_present() {  # file line
+    env LC_ALL=C awk -v want="$2" '
+        { gsub(/[[:space:]]+/, " "); sub(/^ /, ""); sub(/ $/, "") }
+        $0 == want { found = 1; exit }
+        END { exit !found }
+    ' "$1" 2>/dev/null
+}
+
+# Append one line to an attributes file on a line of its own: a file whose
+# last line has no newline gets one first, or git would read the two as one.
+_append_attribute_line() {  # file line
+    if [ -s "$1" ] && [ -n "$(tail -c 1 "$1")" ]; then
+        printf '\n' >> "$1"
     fi
-    if ! grep -q 'timeline\.jsonl merge=union' "$ga" 2>/dev/null; then
-        printf '.cs/timeline.jsonl merge=union\n' >> "$ga"
-    fi
-    if ! grep -q 'narrative\.\*\.md merge=union' "$ga" 2>/dev/null; then
-        printf '.cs/memory/narrative.*.md merge=union\n' >> "$ga"
-    fi
+    printf '%s\n' "$2" >> "$1"
 }
 
 # A clone delivers symlinks like any other file, and cs writes through them

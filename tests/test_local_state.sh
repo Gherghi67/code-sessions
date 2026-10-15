@@ -1115,6 +1115,92 @@ test_union_merge_attributes_written() {
         "timeline.jsonl should merge with the union driver" || return 1
     assert_file_contains "$ga" 'narrative\.\*\.md merge=union' \
         "per-actor narratives should merge with the union driver" || return 1
+    assert_file_contains "$ga" '^\.cs/memory/reference_memory_archive\.md merge=union$' \
+        "the memory archive should merge with the union driver" || return 1
+}
+
+# A .gitattributes whose last line has no newline (an editor that writes none)
+# gets each merge line cs appends on a line of its own, so git reads it.
+test_merge_attributes_start_a_line_after_a_file_with_no_final_newline() {
+    local sdir="$CS_SESSIONS_ROOT/attrs-nl"
+    "$CS_BIN" attrs-nl < /dev/null > /dev/null 2>&1 || true
+    printf '%s\n%s\n%s' '.cs/memory/MEMORY.md merge=ours' '.cs/timeline.jsonl merge=union' \
+        '.cs/memory/narrative.*.md merge=union' > "$sdir/.gitattributes"
+    rm -f "$sdir/.cs/local/migrated"
+    "$CS_BIN" attrs-nl < /dev/null > /dev/null 2>&1 || true
+    assert_eq ".cs/memory/MEMORY.md merge=ours
+.cs/timeline.jsonl merge=union
+.cs/memory/narrative.*.md merge=union
+.cs/memory/reference_memory_archive.md merge=union" "$(cat "$sdir/.gitattributes")" \
+        "the archive line is appended on a line of its own" || return 1
+    assert_eq ".cs/memory/reference_memory_archive.md: merge: union" \
+        "$(git -C "$sdir" check-attr merge -- .cs/memory/reference_memory_archive.md)" \
+        "git reads the archive's union attribute" || return 1
+}
+
+# A .gitattributes where an earlier append glued the archive line onto the
+# narrative line holds neither as a whole line; the next open appends each on
+# a line of its own.
+test_merge_attributes_add_the_archive_line_beside_a_glued_one() {
+    local sdir="$CS_SESSIONS_ROOT/attrs-glued" glued
+    glued='.cs/memory/narrative.*.md merge=union.cs/memory/reference_memory_archive.md merge=union'
+    "$CS_BIN" attrs-glued < /dev/null > /dev/null 2>&1 || true
+    printf '%s\n' '.cs/memory/MEMORY.md merge=ours' '.cs/timeline.jsonl merge=union' "$glued" \
+        > "$sdir/.gitattributes"
+    rm -f "$sdir/.cs/local/migrated"
+    "$CS_BIN" attrs-glued < /dev/null > /dev/null 2>&1 || true
+    assert_eq ".cs/memory/MEMORY.md merge=ours
+.cs/timeline.jsonl merge=union
+$glued
+.cs/memory/narrative.*.md merge=union
+.cs/memory/reference_memory_archive.md merge=union" "$(cat "$sdir/.gitattributes")" \
+        "the narrative and archive lines are appended on lines of their own" || return 1
+    assert_eq ".cs/memory/reference_memory_archive.md: merge: union" \
+        "$(git -C "$sdir" check-attr merge -- .cs/memory/reference_memory_archive.md)" \
+        "git reads the archive's union attribute" || return 1
+}
+
+# A .gitattributes where earlier appends glued every merge line onto one line
+# (a hand-written line with no final newline before them) gives git no merge
+# attribute for any of them; the next open appends each on a line of its own.
+test_merge_attributes_add_each_line_beside_a_glued_one() {
+    local sdir="$CS_SESSIONS_ROOT/attrs-all-glued" glued
+    glued='*.png binary.cs/memory/MEMORY.md merge=ours.cs/timeline.jsonl merge=union'
+    glued="$glued.cs/memory/narrative.*.md merge=union.cs/memory/reference_memory_archive.md merge=union"
+    "$CS_BIN" attrs-all-glued < /dev/null > /dev/null 2>&1 || true
+    printf '%s\n' "$glued" > "$sdir/.gitattributes"
+    rm -f "$sdir/.cs/local/migrated"
+    "$CS_BIN" attrs-all-glued < /dev/null > /dev/null 2>&1 || true
+    assert_eq "$glued
+.cs/memory/MEMORY.md merge=ours
+.cs/timeline.jsonl merge=union
+.cs/memory/narrative.*.md merge=union
+.cs/memory/reference_memory_archive.md merge=union" "$(cat "$sdir/.gitattributes")" \
+        "each merge line is appended on a line of its own" || return 1
+    assert_eq ".cs/memory/MEMORY.md: merge: ours
+.cs/timeline.jsonl: merge: union
+.cs/memory/narrative.alice.md: merge: union
+.cs/memory/reference_memory_archive.md: merge: union" \
+        "$(git -C "$sdir" check-attr merge -- .cs/memory/MEMORY.md .cs/timeline.jsonl \
+            .cs/memory/narrative.alice.md .cs/memory/reference_memory_archive.md 2>/dev/null)" \
+        "git reads each merge attribute" || return 1
+}
+
+# A .gitattributes holding bytes that are not UTF-8 and every merge line, read
+# in a UTF-8 locale, already has each line: an open appends nothing.
+test_merge_attributes_read_a_file_that_is_not_utf8() {
+    local sdir="$CS_SESSIONS_ROOT/attrs-bytes" lines
+    lines='.cs/memory/MEMORY.md merge=ours
+.cs/timeline.jsonl merge=union
+.cs/memory/narrative.*.md merge=union
+.cs/memory/reference_memory_archive.md merge=union'
+    "$CS_BIN" attrs-bytes < /dev/null > /dev/null 2>&1 || true
+    printf '*.dat binary # \377\376\n%s\n' "$lines" > "$sdir/.gitattributes"
+    cp "$sdir/.gitattributes" "$TEST_TMPDIR/attrs-bytes.before"
+    rm -f "$sdir/.cs/local/migrated"
+    LC_ALL=en_US.UTF-8 "$CS_BIN" attrs-bytes < /dev/null > /dev/null 2>&1 || true
+    cmp -s "$TEST_TMPDIR/attrs-bytes.before" "$sdir/.gitattributes" \
+        || { echo "  FAIL: an open appends nothing to a file that holds every line: $(tail -n +2 "$sdir/.gitattributes")"; return 1; }
 }
 
 test_frontmatter_backfill_created_uses_git_date() {
@@ -1761,6 +1847,10 @@ run_test test_session_start_stamps_the_context_date_for_this_conversation
 run_test test_session_start_writes_last_resumed_to_local_state
 run_test test_session_end_leaves_readme_untouched
 run_test test_union_merge_attributes_written
+run_test test_merge_attributes_start_a_line_after_a_file_with_no_final_newline
+run_test test_merge_attributes_add_the_archive_line_beside_a_glued_one
+run_test test_merge_attributes_add_each_line_beside_a_glued_one
+run_test test_merge_attributes_read_a_file_that_is_not_utf8
 run_test test_divergent_appends_merge_clean
 run_test test_frontmatter_backfill_created_uses_git_date
 run_test test_migration_moves_session_log_into_private

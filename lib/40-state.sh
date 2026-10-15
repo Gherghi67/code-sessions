@@ -480,5 +480,6 @@ cmd_who() {
 # machines write independently. The Claude-Code-maintained memory index gets
 # merge=ours (it is hand-maintained; two branches editing it would conflict,
 # and the local copy re-accumulates entries through normal use). The
-# append-only log, timeline, and per-actor narratives get merge=union (git's
-# built-in driver, no per-clone config) so divergent appends keep both sides.
+# append-only log, timeline, per-actor narratives and the memory archive (the
+# pointers /wrap moves out of the index) get merge=union (git's built-in
+# driver, no per-clone config) so divergent appends keep both sides.

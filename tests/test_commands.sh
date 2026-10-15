@@ -260,6 +260,48 @@ test_sweep_states_memory_pointer_format() {
         "the sweep pass must state the MEMORY.md pointer format" || return 1
 }
 
+test_sweep_demotes_pointers_to_the_archive_before_rewording() {
+    # Step 5's first remedy for an index over budget is moving a pointer line,
+    # unchanged, into the archive the guard reads as a second pointer source;
+    # rewording comes after, and a rule that must fire before a proposal stays.
+    assert_file_contains "$SWEEP_PASS" '\.cs/memory/reference_memory_archive\.md' \
+        "the sweep pass must name the archive file" || return 1
+    assert_file_contains "$SWEEP_PASS" 'demote first' \
+        "demotion must come before rewording" || return 1
+    assert_file_contains "$SWEEP_PASS" 'a subject that no longer exists' \
+        "the sweep pass must state the finished-subject criterion" || return 1
+    assert_file_contains "$SWEEP_PASS" 'a test, hook or CI lane now enforces' \
+        "the sweep pass must state the enforced-rule criterion" || return 1
+    assert_file_contains "$SWEEP_PASS" 'has to fire before a proposal stays in `MEMORY\.md`' \
+        "a rule that fires before a proposal must stay in the index" || return 1
+    assert_file_contains "$SWEEP_PASS" 'byte for byte' \
+        "a demoted pointer moves verbatim" || return 1
+    assert_file_contains "$SWEEP_PASS" 'A `narrative\.\*\.md` pointer is never demoted' \
+        "a narrative pointer stays in the index" || return 1
+    # Two clones that each make a first demotion write the same header, so a
+    # merge keeps one; nothing edits it after.
+    assert_eq '---
+name: memory-archive
+description: "Pointers moved out of MEMORY.md; each entry still applies when its subject comes up"
+metadata:
+  type: reference
+---' "$(awk '/^ *```markdown$/{on=1; next} on && /^ *```$/{exit} on' "$SWEEP_PASS" | sed 's/^   //')" \
+        "the sweep pass gives the archive's exact frontmatter" || return 1
+    assert_file_contains "$SWEEP_PASS" "Never edit the archive's frontmatter" \
+        "the archive's frontmatter is written once" || return 1
+    assert_file_contains "$SWEEP_PASS" "delete the archive's copy" \
+        "a wrongly demoted rule goes back to the index on duplicate:" || return 1
+    assert_file_contains "$SWEEP_PASS" 'keep the other copy as it stands' \
+        "duplicate: deletes one copy and rewords neither" || return 1
+    assert_file_contains "$SWEEP_PASS" 'a bare file name ending in `\.md`, with no `/` and no `:`' \
+        "the sweep pass states which pointers dangling: checks" || return 1
+    local label
+    for label in 'demoted:' 'duplicate:' 'dangling:'; do
+        assert_file_contains "$SWEEP_PASS" "\`$label\`" \
+            "the sweep pass must say what check's $label means" || return 1
+    done
+}
+
 test_sweep_resolves_actor_before_narrative_append() {
     # cs -whoami resolution must be repeated at the narrative step, not left only in the
     # framing parenthetical, so a multi-actor session appends to the right file.
@@ -461,6 +503,7 @@ run_test test_sweep_supersedes_stale_entries
 run_test test_sweep_states_filename_convention
 run_test test_sweep_scopes_when_not_to_write
 run_test test_sweep_states_memory_pointer_format
+run_test test_sweep_demotes_pointers_to_the_archive_before_rewording
 run_test test_sweep_resolves_actor_before_narrative_append
 run_test test_sweep_adds_check_tasks_and_keeps_the_entry
 run_test test_store_secret_opener_softened_and_stops_on_nothing

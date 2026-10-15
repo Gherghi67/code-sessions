@@ -5,6 +5,10 @@
 set -euo pipefail
 
 INDEX=".cs/memory/MEMORY.md"
+# The archive index: a reference entry listing, in MEMORY.md's own pointer
+# shape, the pointers /wrap's memory pass moved out of MEMORY.md. Claude Code
+# reads it only through its pointer in MEMORY.md.
+ARCHIVE=".cs/memory/reference_memory_archive.md"
 # The snapshot copies MEMORY.md, so it sits where the session keeps its cs
 # files: .cs/private for an encrypted session, whose index lives in the vault,
 # .cs/local for any other. cs-shared.sh (build.sh's copy of lib/02-shared.sh)
@@ -26,9 +30,16 @@ if _tracked=$(cs_files_tracked_notice .cs "$PWD"); then
     exit 2
 fi
 SNAPSHOT="$_snapshot_dir/memory-index.snapshot"
-# Claude Code loads MEMORY.md at every session start and cuts it past a limit;
-# pointers beyond the cut are never read again. Bytes, not characters.
+ARCHIVE_SNAPSHOT="$_snapshot_dir/memory-archive.snapshot"
+# Claude Code loads MEMORY.md at every session start and cuts it past 25,000
+# bytes or 200 lines, whichever comes first; pointers beyond the cut are never
+# read again. Each budget keeps room under its limit for the pointers written
+# between two sweeps (by Claude Code mid-conversation, or by another actor):
+# 600 bytes is three or four of today's 150-180 byte pointers, and four lines
+# is the same four pointers. Bytes, not characters; every line, blank and
+# heading lines too.
 BUDGET=24400
+LINE_BUDGET=196
 
 _die() {  # message
     printf 'memory-index-guard: %s\n' "$1" >&2
@@ -56,6 +67,23 @@ _print_names() {  # label
     done
 }
 
+# Each pointer target on stdin that names an entry file with no file of that
+# name in .cs/memory. A target names an entry file only when it is a bare file
+# name ending in .md, with no / and no : in it; any other target (a URL, a
+# path, a link with an #anchor) names none and is not checked. MEMORY.md and
+# the archive share this rule.
+_missing_entries() {
+    local target
+    while IFS= read -r target; do
+        case "$target" in
+            ''|*/*|*:*) continue ;;
+            *.md) ;;
+            *) continue ;;
+        esac
+        [ -f ".cs/memory/$target" ] || printf '%s\n' "$target"
+    done
+}
+
 _need_index() {
     [ -f "$INDEX" ] || _die "no $INDEX here; run from the session root"
 }
@@ -78,26 +106,61 @@ case "${1:-}" in
         else
             cs_write_atomic "$SNAPSHOT" : || _die "cannot write $SNAPSHOT"
         fi
+        # The archive too, so check sees a pointer lost from it; a session
+        # with no archive yet snapshots it as empty.
+        if [ -f "$ARCHIVE" ]; then
+            cs_write_atomic "$ARCHIVE_SNAPSHOT" cat "$ARCHIVE" || _die "cannot write $ARCHIVE_SNAPSHOT"
+        else
+            cs_write_atomic "$ARCHIVE_SNAPSHOT" : || _die "cannot write $ARCHIVE_SNAPSHOT"
+        fi
         printf 'snapshot: %s\n' "$SNAPSHOT"
         ;;
     check)
         _need_index
         _need_snapshot
+        [ -f "$ARCHIVE_SNAPSHOT" ] || _die "no snapshot at $ARCHIVE_SNAPSHOT; run snapshot before editing MEMORY.md"
+        [ -r "$ARCHIVE_SNAPSHOT" ] || _die "cannot read $ARCHIVE_SNAPSHOT"
         status=0
         before=$(_pointers "$SNAPSHOT")
         after=$(_pointers "$INDEX")
-        removed=$(env LC_ALL=C comm -23 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | sed '/^$/d')
+        # The archive's pointer to itself is no pointer: Claude Code reads the
+        # archive only through its pointer in MEMORY.md.
+        archived=""
+        [ ! -f "$ARCHIVE" ] || archived=$(_pointers "$ARCHIVE" | sed '/^reference_memory_archive\.md$/d')
+        archived_before=$(_pointers "$ARCHIVE_SNAPSHOT" | sed '/^reference_memory_archive\.md$/d')
+        # A pointer gone from MEMORY.md is lost unless the archive holds it:
+        # there it was moved, and check passes it. A pointer gone from the
+        # archive is lost unless MEMORY.md holds it.
+        gone=$(env LC_ALL=C comm -23 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | sed '/^$/d')
+        indexed=$(printf '%s\n%s\n' "$after" "$archived" | sed '/^$/d' | env LC_ALL=C sort -u)
+        removed=$(printf '%s\n%s\n' "$before" "$archived_before" | sed '/^$/d' | env LC_ALL=C sort -u \
+            | env LC_ALL=C comm -23 - <(printf '%s\n' "$indexed") | sed '/^$/d')
         if [ -n "$removed" ]; then
             printf '%s\n' "$removed" | _print_names 'removed:'
             status=1
         fi
+        demoted=$(env LC_ALL=C comm -12 <(printf '%s\n' "$gone") <(printf '%s\n' "$archived") | sed '/^$/d')
+        if [ -n "$demoted" ]; then
+            printf '%s\n' "$demoted" | _print_names 'demoted:'
+        fi
+        duplicate=$(env LC_ALL=C comm -12 <(printf '%s\n' "$after") <(printf '%s\n' "$archived") | sed '/^$/d')
+        if [ -n "$duplicate" ]; then
+            printf '%s\n' "$duplicate" | _print_names 'duplicate:'
+            status=1
+        fi
+        dangling=$(printf '%s\n%s\n' "$after" "$archived" | env LC_ALL=C sort -u | _missing_entries)
+        if [ -n "$dangling" ]; then
+            printf '%s\n' "$dangling" | _print_names 'dangling:'
+            status=1
+        fi
         # An entry this sweep wrote after the snapshot is in no snapshot, so
-        # the entries on disk are checked too: each needs a pointer.
+        # the entries on disk are checked too: each needs a pointer, in
+        # MEMORY.md or the archive.
         entries=$(cd .cs/memory && for f in user_*.md feedback_*.md project_*.md reference_*.md; do
             [ -f "$f" ] || continue
             printf '%s\n' "$f"
         done | env LC_ALL=C sort)
-        unindexed=$(env LC_ALL=C comm -23 <(printf '%s\n' "$entries") <(printf '%s\n' "$after") | sed '/^$/d')
+        unindexed=$(env LC_ALL=C comm -23 <(printf '%s\n' "$entries") <(printf '%s\n' "$indexed") | sed '/^$/d')
         if [ -n "$unindexed" ]; then
             printf '%s\n' "$unindexed" | _print_names 'unindexed:'
             status=1
@@ -107,7 +170,28 @@ case "${1:-}" in
             printf 'over budget: %s bytes > %s\n' "$size" "$BUDGET"
             status=1
         fi
+        # Claude Code counts lines after turning a CRLF, a lone CR, U+2028
+        # and U+2029 each into one newline, so each is one line break here
+        # too: a CR ending a line is the CRLF's. awk counts a last line with
+        # no newline, which wc -l does not.
+        lines=$(env LC_ALL=C awk -v cr=$'\r' -v ls=$'\342\200\250' -v ps=$'\342\200\251' '
+            function count(s, sep,   n, i) {
+                n = 0
+                while ((i = index(s, sep)) > 0) { n++; s = substr(s, i + length(sep)) }
+                return n
+            }
+            {
+                s = $0
+                if (substr(s, length(s)) == cr) s = substr(s, 1, length(s) - 1)
+                breaks += count(s, cr) + count(s, ls) + count(s, ps)
+            }
+            END { print NR + breaks }' "$INDEX")
+        if [ "$lines" -gt "$LINE_BUDGET" ]; then
+            printf 'over budget: %s lines > %s\n' "$lines" "$LINE_BUDGET"
+            status=1
+        fi
         printf 'MEMORY.md: %s/%s bytes\n' "$size" "$BUDGET"
+        printf 'MEMORY.md: %s/%s lines\n' "$lines" "$LINE_BUDGET"
         exit "$status"
         ;;
     restore)
