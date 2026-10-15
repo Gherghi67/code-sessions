@@ -4293,11 +4293,11 @@ _git_path_abs() {  # checkout_dir rev-parse-flag
 
 # The same merge policy setup_merge_attributes (lib/45-migrate.sh:4) gives a
 # checkout, written clone-local: merge.ours.driver into the shared config and
-# the three attribute lines into <common>/info/attributes, which every
+# the four attribute lines into <common>/info/attributes, which every
 # worktree of the repo reads and which dirties no tree. The temp worktree
 # checks out whatever .gitattributes the base has committed, which may lack
-# these lines; without them tracked-mode timeline and narrative appends on
-# both sides conflict instead of union-merging.
+# these lines; without them tracked-mode timeline, narrative and memory
+# archive appends on both sides conflict instead of union-merging.
 _setup_merge_attributes_clone_local() {  # base_dir common_dir
     git -C "$1" config merge.ours.driver true 2>/dev/null || true
     local attrs="$2/info/attributes"
@@ -4310,6 +4310,9 @@ _setup_merge_attributes_clone_local() {  # base_dir common_dir
     fi
     if ! grep -q 'narrative\.\*\.md merge=union' "$attrs" 2>/dev/null; then
         printf '.cs/memory/narrative.*.md merge=union\n' >> "$attrs"
+    fi
+    if ! grep -q 'reference_memory_archive\.md merge=union' "$attrs" 2>/dev/null; then
+        printf '.cs/memory/reference_memory_archive.md merge=union\n' >> "$attrs"
     fi
 }
 
@@ -6951,8 +6954,9 @@ cmd_who() {
 # machines write independently. The Claude-Code-maintained memory index gets
 # merge=ours (it is hand-maintained; two branches editing it would conflict,
 # and the local copy re-accumulates entries through normal use). The
-# append-only log, timeline, and per-actor narratives get merge=union (git's
-# built-in driver, no per-clone config) so divergent appends keep both sides.
+# append-only log, timeline, per-actor narratives and the memory archive (the
+# pointers /wrap moves out of the index) get merge=union (git's built-in
+# driver, no per-clone config) so divergent appends keep both sides.
 setup_merge_attributes() {
     local dir="$1"
     git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || return 0
@@ -6966,6 +6970,9 @@ setup_merge_attributes() {
     fi
     if ! grep -q 'narrative\.\*\.md merge=union' "$ga" 2>/dev/null; then
         printf '.cs/memory/narrative.*.md merge=union\n' >> "$ga"
+    fi
+    if ! grep -q 'reference_memory_archive\.md merge=union' "$ga" 2>/dev/null; then
+        printf '.cs/memory/reference_memory_archive.md merge=union\n' >> "$ga"
     fi
 }
 

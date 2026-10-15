@@ -15,6 +15,9 @@ setup_merge_attributes() {
     if ! grep -q 'narrative\.\*\.md merge=union' "$ga" 2>/dev/null; then
         printf '.cs/memory/narrative.*.md merge=union\n' >> "$ga"
     fi
+    if ! grep -q 'reference_memory_archive\.md merge=union' "$ga" 2>/dev/null; then
+        printf '.cs/memory/reference_memory_archive.md merge=union\n' >> "$ga"
+    fi
 }
 
 # A clone delivers symlinks like any other file, and cs writes through them
