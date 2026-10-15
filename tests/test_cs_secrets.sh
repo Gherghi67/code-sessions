@@ -570,6 +570,45 @@ test_age_remove_refuses_a_session_the_root_does_not_have() {
     _assert_no_trace_of_session ghost || return 1
 }
 
+# age remove reads a recipient file, drops its key's pin and deletes it. A
+# clone can commit a link on the way there, the session's .cs, its
+# age-recipients directory or the file itself, leading anywhere, so a link
+# at any of the three is refused, named, before anything is read or removed.
+test_age_remove_refuses_a_link_on_the_way_to_the_recipient() {
+    local key=age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq0000000
+    local outside="$TEST_TMPDIR/outside" fp pins session link out rc
+    mkdir -p "$outside/.cs/age-recipients"
+    printf '%s\n' "$key" > "$outside/peer.pub"
+    printf '%s\n' "$key" > "$outside/.cs/age-recipients/peer.pub"
+    printf 'keep\n' > "$outside/other.txt"
+    fp=$(printf '%s' "$key" | shasum -a 256 | cut -d' ' -f1)
+    pins="$fp
+another-pin"
+    mkdir -p "$CS_SESSIONS_ROOT/dir-link/.cs" "$CS_SESSIONS_ROOT/file-link/.cs/age-recipients" "$CS_SESSIONS_ROOT/cs-link"
+    ln -s "$outside" "$CS_SESSIONS_ROOT/dir-link/.cs/age-recipients"
+    ln -s "$outside/peer.pub" "$CS_SESSIONS_ROOT/file-link/.cs/age-recipients/peer.pub"
+    ln -s "$outside/.cs" "$CS_SESSIONS_ROOT/cs-link/.cs"
+    for session in dir-link file-link cs-link; do
+        mkdir -p "$HOME/.cs-secrets/sessions/$session"
+        printf '%s\n' "$pins" > "$HOME/.cs-secrets/sessions/$session/age-trusted"
+        case "$session" in
+            dir-link) link="$CS_SESSIONS_ROOT/$session/.cs/age-recipients" ;;
+            file-link) link="$CS_SESSIONS_ROOT/$session/.cs/age-recipients/peer.pub" ;;
+            cs-link) link="$CS_SESSIONS_ROOT/$session/.cs" ;;
+        esac
+        rc=0
+        out=$("$CS_SECRETS_BIN" --session "$session" age remove peer 2>&1) || rc=$?
+        assert_eq "1" "$rc" "age remove exits 1 through the $session link: $out" || return 1
+        assert_eq "Error: refusing to remove recipient peer: $link is a link; cs removes a recipient file only from the session's own .cs/age-recipients directory, never through a link. Nothing was removed." \
+            "$out" "the refusal names the $session link" || return 1
+        assert_eq "$pins" "$(cat "$HOME/.cs-secrets/sessions/$session/age-trusted")" "the $session pin list is as it was" || return 1
+        assert_file_exists "$link" "the $session link is kept" || return 1
+    done
+    assert_eq "$key" "$(cat "$outside/peer.pub")" "the file outside the session is kept" || return 1
+    assert_eq "$key" "$(cat "$outside/.cs/age-recipients/peer.pub")" "the recipient file under the linked .cs is kept" || return 1
+    assert_eq "keep" "$(cat "$outside/other.txt")" "the file beside it is kept" || return 1
+}
+
 # Stored secrets outlive `cs -rm`, so an export under a removed session's name
 # has something to write.
 test_export_file_refuses_a_session_the_root_does_not_have() {
@@ -4679,6 +4718,7 @@ run_test test_age_add_refuses_a_directory_that_is_not_a_session
 run_test test_age_add_refuses_a_name_that_is_a_path
 run_test test_session_verbs_refuse_a_name_that_is_a_path
 run_test test_age_remove_refuses_a_session_the_root_does_not_have
+run_test test_age_remove_refuses_a_link_on_the_way_to_the_recipient
 run_test test_export_file_refuses_a_session_the_root_does_not_have
 run_test test_import_file_refuses_a_session_the_root_does_not_have
 run_test test_purge_empty_session
