@@ -719,6 +719,24 @@ test_queue_accept_serialises_concurrent_accepts() {
     assert_eq "1" "$(RQUEUE_LEN)" "the task is queued once" || return 1
 }
 
+# The receipt file linked out of the session takes nothing: the accept names
+# the link, refuses, queues nothing, and leaves the message unread.
+test_queue_accept_refuses_a_receipt_file_linked_out_of_the_session() {
+    _forge_mail 0000000001-task '{"id":"t1","ts":1,"from":"peer","kind":"task","body":"review the tui diff"}'
+    local t o out rc=0
+    t=$(cd "$TEST_TMPDIR" && pwd -P); o="$t/outside"
+    printf 'USER-OWNED\n' > "$o"
+    ln -s "$o" "$(RCV_META)/local/queue.accepted"
+    out=$(rcv -queue accept t1 2>&1) || rc=$?
+    assert_eq "USER-OWNED" "$(cat "$o")" "nothing is appended outside the session" || return 1
+    assert_eq "1" "$rc" "accept exits 1" || return 1
+    assert_eq "cs_append_inside: $(RCV_META)/local/queue.accepted leads to $o, outside the session $CS_SESSIONS_ROOT/receiver
+Error: could not record the accept in $(RCV_META)/local/queue.accepted" \
+        "$out" "the refusal names the link" || return 1
+    assert_eq "0" "$(RQUEUE_LEN)" "nothing queued" || return 1
+    assert_eq "1" "$(NEW_COUNT)" "the message stays unread" || return 1
+}
+
 # The read listing is where an agent learns the id it needs to accept with.
 test_read_shows_how_to_accept_a_task() {
     "$CS_BIN" -msg receiver -k task "review the tui diff" >/dev/null 2>&1 || return 1
@@ -1015,6 +1033,7 @@ run_test test_queue_accept_refuses_when_its_queue_file_already_exists
 run_test test_queue_accept_refuses_on_a_receipt_without_a_queued_copy
 run_test test_queue_accept_writes_the_receipt_before_the_queued_copy
 run_test test_queue_accept_serialises_concurrent_accepts
+run_test test_queue_accept_refuses_a_receipt_file_linked_out_of_the_session
 run_test test_read_shows_how_to_accept_a_task
 run_test test_read_offers_no_accept_for_an_id_accept_cannot_take
 run_test test_task_kind_rejects_multiline_body
@@ -1441,6 +1460,23 @@ test_mail_digest_reports_when_nothing_parses() {
     assert_output_contains "$out" "cs -msg" "and the way to clear it" || return 1
 }
 
+# A document that parses as JSON but is not an object (an array, a number, a
+# string, true) is skipped like one that does not parse: the messages beside
+# it still show, and it is counted only in the total and the overflow line.
+test_mail_digest_skips_a_document_that_is_not_an_object() {
+    _forge_mail 0000000001-array '[1]'
+    _forge_mail 0000000002-good '{"id":"g1","ts":1,"from":"peer","kind":"text","body":"first good body"}'
+    _forge_mail 0000000003-number '5'
+    _forge_mail 0000000004-good '{"id":"g2","ts":2,"from":"peer","kind":"text","body":"second good body"}'
+    local out; out=$(_prompt_as_receiver "hello" | jq -r '.hookSpecificOutput.additionalContext') || return 1
+    assert_eq "1" "$(grep -cxF -- "first good body" <<< "$out")" "the first good body is shown" || return 1
+    assert_eq "1" "$(grep -cxF -- "second good body" <<< "$out")" "the second good body is shown" || return 1
+    assert_eq "Unread mail (4) - still unread, run cs -msg to clear:" "$(head -1 <<< "$out")" \
+        "the header counts every document" || return 1
+    assert_eq "1" "$(grep -cxF -- "  ... and 2 more (cs -msg to read)" <<< "$out")" \
+        "the skipped documents are counted in the overflow line" || return 1
+}
+
 # Long bodies are truncated (codepoint-safe, inside jq) so context stays bounded.
 test_mail_body_truncated() {
     local long; long=$(printf 'A%.0s' $(seq 1 300))
@@ -1581,6 +1617,7 @@ run_test test_digest_shows_a_multibyte_body_whole
 run_test test_mail_bounded_at_five
 run_test test_mail_digest_bounds_messages_not_files
 run_test test_mail_digest_reports_when_nothing_parses
+run_test test_mail_digest_skips_a_document_that_is_not_an_object
 run_test test_mail_body_truncated
 run_test test_forged_long_sender_truncated
 run_test test_mail_nonstring_body_does_not_wipe_digest
