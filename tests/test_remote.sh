@@ -699,6 +699,7 @@ printf '{"session_id":"cloud-1","source":"startup","hook_event_name":"SessionSta
     | bash "$hooks/session-start.sh" > /dev/null 2>&1
 . "$hooks/cs-resolve.sh"
 {
+    printf 'cloud_pid=%s\n' "$$"
     printf 'claim_after_start=%s\n' "$(cat "$meta/local/lead-pid" 2>/dev/null)"
     if cs_is_lead; then echo "lead=1"; else echo "lead=0"; fi
     if cs_is_shown_nested_child; then echo "guest=1"; else echo "guest=0"; fi
@@ -718,21 +719,22 @@ cloud_value() {  # key
     sed -n "s/^$1=//p" "$TEST_TMPDIR/cloud.log" | head -1
 }
 
-# Conversations started from the phone stay guests of the session the server
-# holds: the first one takes no claim on the launch, so the hooks never take
-# it for the lead, and its end leaves the server's lock and remote.pid. The
-# session stays refused to a local open while the server runs.
-test_remote_conversation_the_server_starts_stays_a_guest_and_keeps_the_lock() {
+# A conversation started from the phone is the lead of the session the server
+# holds: it claims the server's launch, so the hooks take it for the lead, and
+# its end marks the claim ended but leaves the server's lock and remote.pid
+# while the server runs. The session stays refused to a local open.
+test_remote_conversation_the_server_starts_is_the_lead_and_keeps_the_lock() {
     write_cloud_session
     start_serving demo --remote || return 1
-    local spid rc=0 out
+    local spid cpid rc=0 out
     spid="$(log_value pid)"
-    assert_eq "" "$(cloud_value claim_after_start)" "the conversation takes no claim on the launch" || return 1
-    assert_eq "0" "$(cloud_value lead)" "the hooks do not take the conversation for the lead" || return 1
-    assert_eq "1" "$(cloud_value guest)" "the hooks show the conversation a guest" || return 1
+    cpid="$(cloud_value cloud_pid)"
+    assert_eq "$spid $cpid cloud-1" "$(cloud_value claim_after_start)" "the conversation claims the server's launch" || return 1
+    assert_eq "1" "$(cloud_value lead)" "the hooks take the conversation for the lead" || return 1
+    assert_eq "0" "$(cloud_value guest)" "the hooks do not show the conversation a guest" || return 1
     assert_eq "$spid" "$(cloud_value lock_after_end)" "the conversation's end leaves the server's lock" || return 1
     assert_eq "$spid" "$(cloud_value remote_pid_after_end)" "the conversation's end leaves remote.pid" || return 1
-    assert_eq "" "$(cloud_value claim_after_end)" "no claim is left after the conversation's end" || return 1
+    assert_eq "$spid $cpid cloud-1 ended" "$(cloud_value claim_after_end)" "the conversation's end marks its claim ended" || return 1
     out=$("$CS_BIN" demo 2>&1 < /dev/null) || rc=$?
     assert_eq "1" "$rc" "cs demo is refused after the conversation ended" || { printf '%s\n' "$out"; return 1; }
     assert_eq "Error: Session demo is served by cs demo --remote (remote-control PID $spid); stop it first with Ctrl-C in its window, or close the window." \
@@ -1001,7 +1003,7 @@ run_test test_remote_refuses_a_wrapper_whose_version_is_not_claude_codes
 run_test test_remote_runs_a_plain_claude_whose_version_has_no_mark
 run_test test_remote_refuses_a_session_open_locally
 run_test test_local_open_is_refused_while_the_session_is_served
-run_test test_remote_conversation_the_server_starts_stays_a_guest_and_keeps_the_lock
+run_test test_remote_conversation_the_server_starts_is_the_lead_and_keeps_the_lock
 run_test test_remote_stops_cleanly_when_its_window_hangs_up
 run_test test_remote_stops_cleanly_on_ctrl_c
 run_test test_remote_stops_cleanly_when_its_terminal_closes
