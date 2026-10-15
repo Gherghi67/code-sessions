@@ -193,8 +193,11 @@ mod tests {
     // back). The fixture holds a name with a newline and one with an escape
     // and a tab, each control character printing as '?', a name with a
     // direction-flipping and a zero-width character beside an accent and a
-    // space, each of those two characters printing as one '?', and a
-    // directory named in two-byte characters, which pads by columns.
+    // space, each of those two characters printing as one '?', a name
+    // holding every direction-flipping and zero-width character, each
+    // printing as one '?', beside a hyphen and a narrow space next to them in
+    // Unicode, which print as themselves, and a directory named in two-byte
+    // characters, which pads by columns.
     #[test]
     fn listing_renders_the_shared_fixture() {
         let input = include_str!("../../tests/fixtures/untracked-listing/input.txt");
