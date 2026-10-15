@@ -242,12 +242,16 @@ test('in a directory the sessions root does not name, a stale DONE marker is lef
   realPaths = { '/work': '/work' }
   files['/work/' + DONE] = '2026.99.1\nUpdate finished. Takes effect on your next launch.\n'
   await start()
+  await draw()
   expect(written).toEqual({})
 })
 
-test('in a directory the sessions root does not name, a finished update writes no DONE marker', async () => {
-  realPaths = { '/work': '/work' }
+// The gate is asked again at the write, so a root entry gone while the pane
+// is open (the session removed or its link moved) takes no DONE marker.
+test('in a directory the sessions root no longer names, a finished update writes no DONE marker', async () => {
   await start()
+  realPaths = { '/work': '/work' }
+  written = {}
   await buttons(await draw())[0].props.onPress()
   expect(texts(await draw()).join('\n')).toContain('Update finished. Takes effect on your next launch.')
   expect(written).toEqual({})
@@ -453,6 +457,15 @@ test('/cs-update in a teammate opens nothing', async () => {
   await start()
   expect(await runCommand()).toEqual({ text: 'The release-notes pane belongs to the conversation cs launched.' })
   expect(opens()).toHaveLength(0)
+})
+
+test('a directory with .cs/local that the sessions root does not name shows no pane and /cs-update does nothing there', async () => {
+  realPaths = { '/work': '/work' }
+  await start()
+  expect(opens()).toHaveLength(0)
+  expect(await runCommand()).toEqual({ text: 'The release-notes pane belongs to the conversation cs launched.' })
+  expect(opens()).toHaveLength(0)
+  expect(written).toEqual({})
 })
 
 test('/cs-update after a reload, with no session.start or render between, restores the finished pane instead of offering the update again', async () => {
