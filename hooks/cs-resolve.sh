@@ -111,7 +111,8 @@ cs_resolve_session() {  # [hook_input_json]
 # Keyed by name because the status line knows a session only by name (it
 # writes to $SESSIONS_ROOT/<name>/.cs/local); names are unique within one
 # sessions root, so only two roots under one HOME holding the same name share
-# a mark.
+# a mark. The status line reads the mark under the same rule: KEEP IN SYNC
+# with the case and the HOME test in _session_files_tracked (bin/cs-statusline).
 _cs_note_tracked_files() {
     command -v cs_files_tracked_notice >/dev/null 2>&1 || return 0
     local mark=""
