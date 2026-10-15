@@ -3008,6 +3008,29 @@ test_install_never_writes_a_path_holding_a_newline_into_the_record() {
         "the planted file is named on every install" || return 1
 }
 
+# A link at ~/.local/bin/cs to content cs did not write is kept, and the
+# version install reports and stamps is the one it installs, read from its
+# own payload: reading it through the kept link, here to a FIFO, waits for a
+# writer that never comes.
+test_install_reads_its_version_from_the_payload_not_a_kept_link() {
+    local home="$TEST_TMPDIR/version-link-home" out rc=0 version
+    version=$(grep -m1 '^VERSION=' "$SCRIPT_DIR/../bin/cs" | cut -d'"' -f2)
+    [ -n "$version" ] || { echo "  FAIL: bin/cs holds no VERSION line"; return 1; }
+    mkdir -p "$home/.local/bin" "$home/fifos"
+    mkfifo "$home/fifos/pipe"
+    ln -s "$home/fifos/pipe" "$home/.local/bin/cs"
+    _run_bounded 60 env HOME="$home" bash "$INSTALL_SH" < /dev/null > "$TEST_TMPDIR/version-link.out" 2>&1 || rc=$?
+    out=$(cat "$TEST_TMPDIR/version-link.out")
+    assert_eq "0" "$rc" "install exit status (142: still running after 60 s)" || { echo "$out"; return 1; }
+    [ -L "$home/.local/bin/cs" ] && [ -p "$home/fifos/pipe" ] \
+        || { echo "  FAIL: the link and the fifo are not left as they were"; return 1; }
+    assert_output_contains "$out" "Kept $(_bre_literal "$home/.local/bin/cs"): a symlink to content cs did not write, so it was not replaced" \
+        "the kept link is named" || return 1
+    assert_output_contains "$out" "Installation complete ($(_bre_literal "$version"))$" \
+        "the completion line names the version installed" || return 1
+    assert_eq "$version" "$(cat "$home/.claude/hooks/cs/.version")" "the hooks are stamped with the version installed" || return 1
+}
+
 test_uninstall_removes_leftover_cs_tui_exe() {
     local fake_home="$TEST_TMPDIR/uninstall-tui-exe"
     mkdir -p "$fake_home/.local/bin" "$fake_home/.claude"
@@ -3208,6 +3231,7 @@ run_test test_install_keeps_a_fifo_at_a_deploy_path_unread
 run_test test_uninstall_keeps_a_fifo_in_a_skill_directory_unread
 run_test test_uninstall_judges_names_holding_a_newline_whole
 run_test test_install_never_writes_a_path_holding_a_newline_into_the_record
+run_test test_install_reads_its_version_from_the_payload_not_a_kept_link
 run_test test_uninstall_removes_subagent_statusline
 test_hook_registration_doc_matches_install() {
     # docs/hooks.md restates install.sh's _merge_cs_hook registrations as a
