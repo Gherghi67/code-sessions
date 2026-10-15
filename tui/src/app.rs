@@ -4791,6 +4791,43 @@ mod tests {
         std::fs::remove_dir_all(&tmp).ok();
     }
 
+    // An adopted session whose disk is not mounted is a link at the sessions
+    // root that leads nowhere. Its name is taken all the same: renaming
+    // another adopted session (a link too, which rename(2) would move over
+    // it) refuses rather than replace the link, and changes nothing.
+    #[cfg(unix)]
+    #[test]
+    fn a_rename_refuses_a_new_name_held_by_a_dangling_link() {
+        use crate::session::test_root;
+        let _env = CS_BIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (tmp, root, home) = rename_fixture("dangling", false);
+        let adopted = tmp.join("code/proj");
+        std::fs::create_dir_all(tmp.join("code")).unwrap();
+        std::fs::rename(root.join("proj"), &adopted).unwrap();
+        std::os::unix::fs::symlink(&adopted, root.join("proj")).unwrap();
+        let unmounted = tmp.join("unmounted/proj-old");
+        std::os::unix::fs::symlink(&unmounted, root.join("proj-old")).unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let _home = test_home::scoped(home.clone());
+        std::env::set_var("CS_BIN", tmp.join("cs-stub"));
+        let mut app = app_on(&root, "proj");
+        app.mode = Mode::Rename;
+        app.rename_input.set("proj-old");
+
+        app.execute_rename();
+        std::env::remove_var("CS_BIN");
+
+        assert_eq!(
+            app.status_message.as_ref().map(|m| (m.text.as_str(), m.level)),
+            Some(("Name already taken", StatusLevel::Error))
+        );
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(std::fs::read_link(root.join("proj")).unwrap(), adopted, "the session keeps its name");
+        assert_eq!(std::fs::read_link(root.join("proj-old")).unwrap(), unmounted, "the link stays as it was");
+        assert!(!tmp.join("argv").exists(), "cs-secrets is never asked to move anything");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
     #[test]
     fn a_rescan_finishing_under_a_modal_waits_for_normal_mode() {
         use crate::session::test_root;
@@ -5014,6 +5051,34 @@ mod tests {
         app.create_input.set("brand-new-session");
         let action = app.handle_key(KeyEvent::from(KeyCode::Enter));
         assert!(matches!(action, Action::Open(name) if name == "brand-new-session"));
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // A link at the sessions root that leads nowhere (an adopted session on
+    // a disk that is not mounted) holds its name: the picker opens nothing
+    // under it and leaves the link as it was.
+    #[cfg(unix)]
+    #[test]
+    fn create_session_refuses_a_name_held_by_a_dangling_link() {
+        let tmp = std::env::temp_dir().join(format!("cs-tui-create-dangling-{}", std::process::id()));
+        std::fs::remove_dir_all(&tmp).ok();
+        std::fs::create_dir_all(&tmp).unwrap();
+        let unmounted = tmp.join("unmounted/held");
+        std::os::unix::fs::symlink(&unmounted, tmp.join("held")).unwrap();
+        let _root = session::test_root::scoped(tmp.clone());
+        let mut app = App::new(sample_sessions());
+        app.mode = Mode::CreateSession;
+        app.create_input.set("held");
+
+        let action = app.handle_key(KeyEvent::from(KeyCode::Enter));
+
+        assert!(matches!(action, Action::None), "nothing is opened, got {action:?}");
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(
+            app.status_message.as_ref().map(|m| (m.text.as_str(), m.level)),
+            Some(("Session already exists", StatusLevel::Error))
+        );
+        assert_eq!(std::fs::read_link(tmp.join("held")).unwrap(), unmounted, "the link stays as it was");
         std::fs::remove_dir_all(&tmp).ok();
     }
 
