@@ -4931,12 +4931,29 @@ ${wt_listing#*"$nl"}"
         locked=$(_locked_vault_link "$base_dir/.cs")
         [ -z "$locked" ] \
             || error "cannot fuse the worktree's records: $base_dir/.cs/$locked is locked. Mount it, then retry."
-        local conflicts
+        local conflicts entry merge="" blocked="" refusal="" removed="Nothing was removed. "
         conflicts=$(_fuse_conflicts "$wt_dir/.cs" "$base_dir/.cs" "$task") \
             || error "Could not classify the session records in $wt_dir/.cs; nothing was removed"
-        [ -z "$conflicts" ] \
-            || error "The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the path needs a new directory named .cs, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt_dir/.cs, then run /finish $task again:
-$conflicts"
+        while IFS= read -r entry; do
+            case "$entry" in
+                "conflict "*) merge="$merge${merge:+$'\n'}${entry#conflict }" ;;
+                "blocked "*) blocked="$blocked${blocked:+$'\n'}${entry#blocked }" ;;
+            esac
+        done <<< "$conflicts"
+        if [ -n "$merge" ]; then
+            refusal="The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the path needs a new directory named .cs, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt_dir/.cs, then run /finish $task again:
+$merge"
+            removed=""
+        fi
+        # The feature's own README and summary go under .cs/features/<task>/,
+        # never into the base's .cs itself, so they are named under that path.
+        # The dispatch refuses a task name cs does not accept before the
+        # retire, so here the path is what blocks them.
+        if [ -n "$blocked" ]; then
+            refusal="$refusal${refusal:+$'\n'}The feature's own README and summary go to $base_dir/.cs/features/$task/, and cs cannot make that directory: the base holds a file, a dangling link or a link out of the session on the way to it. ${removed}Move that aside, or delete each from $wt_dir/.cs, then run /finish $task again:
+$blocked"
+        fi
+        [ -z "$refusal" ] || error "$refusal"
     fi
     # The base's own .cs/ bookkeeping is exempt: in tracked mode the integrate
     # that just landed this feature wrote a timeline event there, and removing
@@ -5830,9 +5847,9 @@ _fuse_feature_dest() {  # feature_meta base_meta rel task
 #            as it was, or the base holds the same bytes under the feature's
 #            path already
 #   feature  it goes to the base under the feature's path (_fuse_feature_dest)
-#   conflict it is a link or not a regular file, <task> is no feature name cs
-#            accepts, or the base cannot take the directories on the way to
-#            features/<task>/ (_fuse_path_blocked)
+#   conflict it is a link or not a regular file
+#   blocked  <task> is no feature name cs accepts, or the base cannot take the
+#            directories on the way to features/<task>/ (_fuse_path_blocked)
 # Fails when the record of the copy, or the file, cannot be read.
 _fuse_feature_verdict() {  # feature_meta base_meta rel task
     local src="$1/$3" was now
@@ -5843,7 +5860,7 @@ _fuse_feature_verdict() {  # feature_meta base_meta rel task
         if [ "$now" = "$was" ]; then echo skip; return 0; fi
     fi
     if ! _feature_name_ok "$4" || _fuse_path_blocked "$2" "features/$4/$3"; then
-        echo conflict
+        echo blocked
         return 0
     fi
     _fuse_feature_dest "$1" "$2" "$3" "$4"
@@ -5924,8 +5941,10 @@ _fuse_plan() {  # feature_meta base_meta out task
 }
 
 # The files of a feature's .cs the record fuse cannot carry into the base,
-# one per line as ".cs/<rel>", sorted, each name as a message prints it
-# (_printable_name).
+# one per line as "<verdict> .cs/<rel>", sorted, each name as a message prints
+# it (_printable_name): "conflict" for one to merge by hand, "blocked" for the
+# feature's own prose whose path under .cs/features/<task>/ the base blocks
+# (_fuse_feature_verdict).
 # Retire refuses on any; the features screen counts them. Fails when the
 # classification fails.
 _fuse_conflicts() {  # feature_meta base_meta task
@@ -5937,9 +5956,8 @@ _fuse_conflicts() {  # feature_meta base_meta task
     fi
     while IFS= read -r -d '' entry; do
         case "$entry" in
-            "conflict "*)
-                entry="${entry#conflict }"
-                out="$out.cs/$(_printable_name "$entry")"$'\n' ;;
+            "conflict "*|"blocked "*)
+                out="$out${entry%% *} .cs/$(_printable_name "${entry#* }")"$'\n' ;;
         esac
     done < "$plan"
     rm -f "$plan"
