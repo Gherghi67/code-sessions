@@ -12816,10 +12816,13 @@ remove_session() {
     local age_state_left=""
     # Before any name goes: a live session of another conversation's user,
     # or a base with a live feature when the caller is not that base, stops
-    # the whole run, so none of the names before it is removed either.
+    # the whole run, so none of the names before it is removed either. So
+    # does a session a `cs <name> --remote` server serves, --force or not, as
+    # it refuses an open: the server and the sessions it starts run in it.
     for _name in "${names[@]}"; do
         _refuse_live_other_session "$_name" "$SESSIONS_ROOT/$_name/.cs" remove
         _refuse_base_with_live_feature "$_name" remove
+        _remote_refuse_live "$_name" "$SESSIONS_ROOT/$_name/.cs" ""
     done
     for _name in "${names[@]}"; do
         _remove_one_session "$_name" "$force" "$delete_files"
