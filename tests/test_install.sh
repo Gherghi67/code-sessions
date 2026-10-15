@@ -1017,7 +1017,7 @@ test_uninstall_refuses_to_delete_session_data_while_a_session_is_live() {
     assert_file_exists "$root/live-lock/.cs/session.lock" "the live session's data survives" || return 1
     assert_file_exists "$root/dead-lock/.cs/session.lock" "nothing under the root is deleted" || return 1
     # Exact list: both live sessions, and not the one whose lock names a dead pid.
-    assert_output_contains "$out" "Kept $root: these sessions are live: live-beat live-lock\. Close them" \
+    assert_output_contains "$out" "^Error: Nothing was uninstalled: these sessions are live: live-beat live-lock\. Close them and run cs -uninstall again\.$" \
         "the refusal names exactly the live sessions" || return 1
 }
 
@@ -1037,7 +1037,7 @@ test_uninstall_refuses_to_delete_session_data_while_a_dotted_session_is_live() {
     out=$(cat "$TEST_TMPDIR/dot.out")
     [ "$rc" -ne 0 ] || { echo "  FAIL: uninstall must exit non-zero while a dot-prefixed session is live"; return 1; }
     assert_file_exists "$root/.work/.cs/session.lock" "the live dotted session's data survives" || return 1
-    assert_output_contains "$out" "Kept $root: these sessions are live: \.work\. Close them" \
+    assert_output_contains "$out" "^Error: Nothing was uninstalled: these sessions are live: \.work\. Close them and run cs -uninstall again\.$" \
         "the refusal names the dotted session" || return 1
 }
 
@@ -1054,7 +1054,7 @@ test_uninstall_refuses_a_live_session_even_with_a_volume_mounted_inside() {
     out=$(cat "$TEST_TMPDIR/livemnt.out")
     [ "$rc" -ne 0 ] || { echo "  FAIL: uninstall must exit non-zero while a session is live"; return 1; }
     assert_file_exists "$root/live-vault/.cs/session.lock" "the live session's data survives" || return 1
-    assert_output_contains "$out" "Kept $root: these sessions are live: live-vault\. Close them" \
+    assert_output_contains "$out" "^Error: Nothing was uninstalled: these sessions are live: live-vault\. Close them and run cs -uninstall again\.$" \
         "the live refusal wins over the mount warning" || return 1
 }
 
