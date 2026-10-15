@@ -229,18 +229,26 @@ _doctor_check_tui_build() {
     [ -f "$installed" ] || return 0
     [ ! -L "$installed" ] || return 0
 
-    local origin="" checkout
+    local origin="" checkout shown
     [ -f "$origin_file" ] && { origin=$(cat "$origin_file" 2>/dev/null) || origin=""; }
+    # install.sh writes one line; a record of more is not one it wrote, so no
+    # line of it is taken for the checkout.
     case "$origin" in
         release) return 0 ;;
+        *$'\n'*) checkout="" ;;
         "checkout /"*) checkout="${origin#checkout }" ;;
-        *)
-            printf '  %s\n' "cs-tui: not checked: nothing in $origin_file says where $installed came from; the next ./install.sh from your checkout records it, and cs -update records it where a release picker exists for this platform (and replaces a checkout-built picker with the release one)"
-            return 0
-            ;;
+        *) checkout="" ;;
     esac
+    if [ -z "$checkout" ]; then
+        printf '  %s\n' "cs-tui: not checked: nothing in $origin_file says where $installed came from; the next ./install.sh from your checkout records it, and cs -update records it where a release picker exists for this platform (and replaces a checkout-built picker with the release one)"
+        return 0
+    fi
+    # The checkout path as cs prints any name (_printable_name), so a control
+    # character in it cannot drive the terminal; the advice commands quote it
+    # with %q instead, so they paste back as the same path.
+    shown=$(_printable_name "$checkout")
     if [ ! -f "$checkout/tui/Cargo.toml" ]; then
-        printf '  %s\n' "cs-tui: not checked: $installed came from $checkout, which holds no tui/Cargo.toml now; run ./install.sh from your checkout, or cs -update"
+        printf '  %s\n' "cs-tui: not checked: $installed came from $shown, which holds no tui/Cargo.toml now; run ./install.sh from your checkout, or cs -update"
         return 0
     fi
 
@@ -265,15 +273,15 @@ _doctor_check_tui_build() {
         done
         find "${inputs[@]}" -type f \( ! -path 'tui/src/*' -o -name '*.rs' \) -newer "$build" 2>/dev/null
     ); then
-        _doctor_warn "cs-tui: could not read the TUI source under $checkout/tui to compare it with the build $checkout/$build"
+        _doctor_warn "cs-tui: could not read the TUI source under $shown/tui to compare it with the build $shown/$build"
         return 0
     fi
     if [ -n "$newer" ]; then
-        _doctor_warn "cs-tui: the TUI source under $checkout/tui changed after the build $checkout/$build, so the installed picker may be stale (run cargo build --release --manifest-path $quoted/tui/Cargo.toml, then $quoted/install.sh)"
+        _doctor_warn "cs-tui: the TUI source under $shown/tui changed after the build $shown/$build, so the installed picker may be stale (run cargo build --release --manifest-path $quoted/tui/Cargo.toml, then $quoted/install.sh)"
     elif ! cmp -s "$checkout/$build" "$installed"; then
-        _doctor_warn "cs-tui: the installed $installed differs from the build $checkout/$build (run $quoted/install.sh)"
+        _doctor_warn "cs-tui: the installed $installed differs from the build $shown/$build (run $quoted/install.sh)"
     else
-        _doctor_ok "cs-tui: the installed picker matches the build $checkout/$build"
+        _doctor_ok "cs-tui: the installed picker matches the build $shown/$build"
     fi
 }
 
