@@ -526,6 +526,59 @@ test_doctor_tui_reads_a_recorded_checkout_whose_path_holds_spaces() {
         "$(tui_row "$output")" "a recorded path with a space is read whole and quoted in the advice" || return 1
 }
 
+# A checkout path with a control character in it (here an escape, which a
+# terminal obeys) prints in every row as cs prints any name (_printable_name):
+# the character as one "?". The advice commands keep the %q form, which
+# pastes back as the same path.
+test_doctor_tui_prints_a_control_character_in_the_recorded_path_as_a_question_mark() {
+    local checkout="$TEST_TMPDIR/co"$'\e'"[31mRED" output
+    local shown="$TEST_TMPDIR/co?[31mRED" quoted="\$'$TEST_TMPDIR/co\\E[31mRED'"
+    local installed="$TEST_TMPDIR/home/.local/bin/cs-tui"
+    make_tui_checkout "$checkout" 202601010000
+    echo 'old build' > "$checkout/tui/target/release/cs-tui"
+    touch -t 202601020000 "$checkout/tui/target/release/cs-tui"
+    touch -t 202601030000 "$checkout/tui/src/main.rs"
+    cp "$checkout/tui/target/release/cs-tui" "$installed"
+    record_tui_origin "checkout $checkout"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "WARN cs-tui: the TUI source under $shown/tui changed after the build $shown/tui/target/release/cs-tui, so the installed picker may be stale (run cargo build --release --manifest-path $quoted/tui/Cargo.toml, then $quoted/install.sh)" \
+        "$(tui_row "$output")" "a source change: the path's escape prints as ?" || return 1
+    touch -t 202601040000 "$checkout/tui/target/release/cs-tui"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "OK cs-tui: the installed picker matches the build $shown/tui/target/release/cs-tui" \
+        "$(tui_row "$output")" "a fresh build: the path's escape prints as ?" || return 1
+    echo 'other build' > "$installed"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "WARN cs-tui: the installed $installed differs from the build $shown/tui/target/release/cs-tui (run $quoted/install.sh)" \
+        "$(tui_row "$output")" "a differing picker: the path's escape prints as ?" || return 1
+    mkdir -p "$checkout/tui/src/locked"
+    chmod 000 "$checkout/tui/src/locked"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    chmod 755 "$checkout/tui/src/locked"
+    assert_eq "WARN cs-tui: could not read the TUI source under $shown/tui to compare it with the build $shown/tui/target/release/cs-tui" \
+        "$(tui_row "$output")" "an unreadable source: the path's escape prints as ?" || return 1
+    rm "$checkout/tui/Cargo.toml"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "NOTE cs-tui: not checked: $installed came from $shown, which holds no tui/Cargo.toml now; run ./install.sh from your checkout, or cs -update" \
+        "$(tui_row "$output")" "a checkout without its TUI: the path's escape prints as ?" || return 1
+}
+
+# install.sh writes the record as one line. A record of more lines is not
+# one install.sh wrote, so doctor takes no line of it for the checkout, even
+# a first line that names a checkout whose build is installed.
+test_doctor_tui_names_an_origin_record_of_more_than_one_line() {
+    local checkout="$TEST_TMPDIR/tuico" output
+    make_tui_checkout "$checkout" 202601020000
+    echo 'build' > "$checkout/tui/target/release/cs-tui"
+    touch -t 202601030000 "$checkout/tui/target/release/cs-tui"
+    cp "$checkout/tui/target/release/cs-tui" "$TEST_TMPDIR/home/.local/bin/cs-tui"
+    record_tui_origin "checkout $checkout"$'\n'"release"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "NOTE cs-tui: not checked: nothing in $TEST_TMPDIR/tui-deployed/.tui-origin says where $TEST_TMPDIR/home/.local/bin/cs-tui came from; the next ./install.sh from your checkout records it, and cs -update records it where a release picker exists for this platform (and replaces a checkout-built picker with the release one)" \
+        "$(tui_row "$output")" "a record of two lines: the not-understood line" || return 1
+    assert_eq "1" "$(grep -c 'cs-tui' <<< "$output")" "the line is one line" || return 1
+}
+
 # A worktree or another clone at the same version has its own build. Doctor
 # run from there holds the picker to the checkout the install recorded, not
 # to the tree it stands in.
@@ -1359,6 +1412,8 @@ run_test test_doctor_tui_ok_when_the_installed_picker_is_the_fresh_build
 run_test test_doctor_tui_holds_the_picker_to_the_build_install_sh_ships
 run_test test_doctor_tui_names_a_source_tree_it_cannot_read
 run_test test_doctor_tui_reads_a_recorded_checkout_whose_path_holds_spaces
+run_test test_doctor_tui_prints_a_control_character_in_the_recorded_path_as_a_question_mark
+run_test test_doctor_tui_names_an_origin_record_of_more_than_one_line
 run_test test_doctor_tui_judges_the_recorded_checkout_not_the_one_it_runs_in
 run_test test_doctor_tui_silent_for_a_release_picker
 run_test test_doctor_tui_names_a_missing_origin_record
