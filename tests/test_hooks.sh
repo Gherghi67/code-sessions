@@ -353,24 +353,37 @@ test_auto_approve_rejects_leaf_symlink() {
 # A hard link has no link to see: a content file under .cs/ that shares its
 # inode with a file elsewhere (a project setting, say) passes every path and
 # symlink check, and an in-place Edit then changes that other file. An
-# existing target with more than one link falls through to the prompt; once
-# the second name is gone, the same write is approved again.
+# existing target with more than one link falls through to the prompt, and
+# stderr says how many names it has, the name printed plain as the symlink
+# decline prints one; once the second name is gone, the same write is
+# approved again and stderr is empty.
 test_auto_approve_rejects_a_hard_linked_target() {
     local outside="$TEST_TMPDIR/project-settings.json"
     mkdir -p "$CLAUDE_SESSION_META_DIR/memory"
     echo '{"hooks":{}}' > "$outside"
     ln "$outside" "$CLAUDE_SESSION_META_DIR/memory/config.md" || { echo "  FAIL: hard link fixture"; return 1; }
 
+    _assert_falls_through Edit "$CLAUDE_SESSION_META_DIR/memory/config.md" \
+        "a hard-linked target" \
+        "cs auto-approve: not approving, $CLAUDE_SESSION_META_DIR/memory/config.md has 2 names" || return 1
+
     local input output
     input=$(jq -n --arg path "$CLAUDE_SESSION_META_DIR/memory/config.md" \
         '{tool_name: "Edit", tool_input: {file_path: $path}}')
-    output=$(echo "$input" | bash "$HOOKS_DIR/session-auto-approve.sh" 2>/dev/null)
-    assert_eq "" "$output" "a hard-linked target falls through to the prompt" || return 1
-
     rm -f "$outside"
-    output=$(echo "$input" | bash "$HOOKS_DIR/session-auto-approve.sh" 2>/dev/null)
+    output=$(echo "$input" | bash "$HOOKS_DIR/session-auto-approve.sh" 2>"$TEST_TMPDIR/auto-approve.err")
     assert_eq "allow" "$(echo "$output" | jq -r '.hookSpecificOutput.decision.behavior')" \
         "the same file with one name is approved" || return 1
+    assert_eq "" "$(cat "$TEST_TMPDIR/auto-approve.err")" \
+        "an approval says nothing on stderr" || return 1
+
+    # A name the session's writer chose is printed through the plain-name rule.
+    ln "$CLAUDE_SESSION_META_DIR/memory/config.md" "$TEST_TMPDIR/second-name" \
+        || { echo "  FAIL: hard link fixture"; return 1; }
+    mv "$CLAUDE_SESSION_META_DIR/memory/config.md" "$CLAUDE_SESSION_META_DIR/memory/two words.md"
+    _assert_falls_through Edit "$CLAUDE_SESSION_META_DIR/memory/two words.md" \
+        "a hard-linked target with a space in its name" \
+        "cs auto-approve: not approving, $CLAUDE_SESSION_META_DIR/memory/two_words.md has 2 names" || return 1
 }
 
 # Audit C2: approval covered every file under .cs/, including the ones cs
