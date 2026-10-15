@@ -26,6 +26,10 @@ let runs: { argv: string[]; init: any }[]
 let runResult: { exitCode: number; stdout: string; stderr: string } | Error
 let commands: any[]
 let sessionId: string
+// Directories that exist with no file of their own, and where each path lands
+// once its links are followed (as `$.fs.stat(path, { resolve: true })` answers).
+let existing: Set<string>
+let realPaths: Record<string, string>
 
 // The default runner: records the call and answers with `runResult`. A test
 // that swaps it in (for a run held in flight) gets it back in beforeEach.
@@ -44,8 +48,12 @@ const $ = {
   session: { id: async () => sessionId, cwd: async () => '/work' },
   fs: {
     read: async (path: string) => { if (path in files) return files[path]; throw new Error(`ENOENT ${path}`) },
-    exists: async (path: string) => path in files || path === '/work/.cs/local',
+    exists: async (path: string) => path in files || existing.has(path),
     write: (path: string, text: string) => defaultWrite(path, text),
+    stat: async (path: string, options?: { resolve?: boolean }) => {
+      if (!(path in realPaths)) throw new Error(`ENOENT ${path}`)
+      return { kind: 'directory', size: 0, mtimeMs: 0, isLink: false, ...(options?.resolve ? { realPath: realPaths[path] } : {}) }
+    },
   },
   ui: {
     resolve: async () => ({ Box: 'Box', Text: 'Text', Button: 'Button' }),
@@ -112,6 +120,9 @@ beforeEach(() => {
     '/home/u/.cache/cs/update-notes-full-2026.99.3': SPAN,
   }
   written = {}; panes = []; toasts = []; invalidated = []; runs = []; commands = []
+  // /work sits under the default sessions root by its own name.
+  existing = new Set(['/work/.cs/local'])
+  realPaths = { '/work': '/work', '/home/u/.claude-sessions/work': '/work' }
   runResult = { exitCode: 0, stdout: 'ok', stderr: '' }
   ;($ as any).process.run = defaultRun
   ;($ as any).env.get = async (name: string) => envVars[name]
@@ -190,6 +201,56 @@ test('while git tracks the control files, a finished update writes no DONE marke
   await buttons(await draw())[0].props.onPress()
   expect(texts(await draw()).join('\n')).toContain('Update finished. Takes effect on your next launch.')
   expect(written['/work/' + DONE]).toBeUndefined()
+})
+
+// The sessions root names a session; nothing inside a directory can, since a
+// cloned repository may carry any file under .cs/, .cs/local included, and
+// still pass cs -vet-session. A directory the root does not name gets no
+// write from this mod: no heartbeat, no DONE marker, no tombstone.
+test('a directory with .cs/local that the sessions root does not name gets no heartbeat', async () => {
+  existing = new Set(['/clone/.cs/local'])
+  realPaths = { '/clone': '/clone' }
+  await hooks['session.start']($, { cwd: '/clone' }, async () => 'started')
+  expect(written).toEqual({})
+})
+
+test('a root entry of the same name that is another directory does not make the cwd a session', async () => {
+  realPaths = { '/work': '/work', '/home/u/.claude-sessions/work': '/elsewhere' }
+  await start()
+  expect(written['/work/' + HEARTBEAT]).toBeUndefined()
+})
+
+test('CS_SESSIONS_ROOT names the sessions root', async () => {
+  envVars.CS_SESSIONS_ROOT = '/roots'
+  realPaths = { '/work': '/work', '/roots/work': '/work' }
+  await start()
+  expect(written['/work/' + HEARTBEAT]).toMatch(/^\d{4}-/)
+  realPaths = { '/work': '/work', '/home/u/.claude-sessions/work': '/work' }
+  written = {}
+  await start()
+  expect(written['/work/' + HEARTBEAT]).toBeUndefined()
+})
+
+test('an adopted session is named by the session_name its state records', async () => {
+  files['/work/.cs/local/state'] = 'session_name: alias\nclaude_session_id: uuid-lead\n'
+  realPaths = { '/work': '/work', '/home/u/.claude-sessions/alias': '/work' }
+  await start()
+  expect(written['/work/' + HEARTBEAT]).toMatch(/^\d{4}-/)
+})
+
+test('in a directory the sessions root does not name, a stale DONE marker is left as it is', async () => {
+  realPaths = { '/work': '/work' }
+  files['/work/' + DONE] = '2026.99.1\nUpdate finished. Takes effect on your next launch.\n'
+  await start()
+  expect(written).toEqual({})
+})
+
+test('in a directory the sessions root does not name, a finished update writes no DONE marker', async () => {
+  realPaths = { '/work': '/work' }
+  await start()
+  await buttons(await draw())[0].props.onPress()
+  expect(texts(await draw()).join('\n')).toContain('Update finished. Takes effect on your next launch.')
+  expect(written).toEqual({})
 })
 
 test('no pending version, no pane, no toast', async () => {
