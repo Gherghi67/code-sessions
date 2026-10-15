@@ -3617,9 +3617,13 @@ test_retire_ignored_mode_keeps_the_feature_readme_and_summary_under_its_path() {
     assert_eq "merged" "$(_feat_field "$line" 10)" "the feature reads as merged: $line" || return 1
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
     assert_eq "0" "$status" "the retire goes through: $output" || return 1
-    assert_eq "The feature's README.md is kept at $base_dir/.cs/features/t1/README.md
+    # The walk's order is the file system's, so the lines are compared sorted.
+    # The pointer is the one the launch put in the feature's index for its
+    # narrative.
+    assert_eq "MEMORY.md: appended 1 pointer(s) from the feature (base lines kept)
+The feature's README.md is kept at $base_dir/.cs/features/t1/README.md
 The feature's summary.md is kept at $base_dir/.cs/features/t1/summary.md
-retired t1 $sha" "$output" "the retire names where each went, and nothing else" || return 1
+retired t1 $sha" "$(printf '%s\n' "$output" | LC_ALL=C sort)" "the retire names where each went, and nothing else" || return 1
     cmp -s "$TEST_TMPDIR/feature-readme" "$base_dir/.cs/features/t1/README.md" \
         || { echo "  FAIL: the feature's README, objective and all, is not under its path"; return 1; }
     assert_eq "# Session Summary: proj@t1
@@ -3653,7 +3657,7 @@ test_retire_ignored_mode_keeps_a_second_feature_of_the_same_name_beside_the_firs
     done
     assert_eq "The feature's README.md is kept at $base_dir/.cs/features/t1/README.2.md
 The feature's summary.md is kept at $base_dir/.cs/features/t1/summary.2.md
-retired t1 $sha" "$output" "the second retire names the free names" || return 1
+retired t1 $sha" "$(printf '%s\n' "$output" | LC_ALL=C sort)" "the second retire names the free names" || return 1
     assert_eq "1" "$(grep -c '^The first objective\.$' "$base_dir/.cs/features/t1/README.md")" "the first README is as it was" || return 1
     assert_eq "0" "$(grep -c 'second' "$base_dir/.cs/features/t1/README.md")" "and holds nothing of the second" || return 1
     assert_eq "1" "$(grep -c '^The second objective\.$' "$base_dir/.cs/features/t1/README.2.md")" "the second README is beside it" || return 1
