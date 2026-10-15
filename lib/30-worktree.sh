@@ -13,15 +13,23 @@ cs_split_worktree_name() {
         error "Session name cannot be empty before '@' (expected <base>@<feature>)"
     fi
     validate_session_name "$CS_WT_BASE"
-    # The feature half names the branch cs/<feature>, and git refuses a ref
-    # component that starts with a dot.
     case "$CS_WT_TASK" in
         .*) error "Worktree feature name cannot start with a dot" ;;
     esac
-    if [ -z "$CS_WT_TASK" ] || ! [[ "$CS_WT_TASK" =~ ^[a-zA-Z0-9._-]+$ ]]; then
-        error "Worktree feature name must contain only alphanumeric characters, hyphens, underscores, and dots"
-    fi
+    _feature_name_ok "$CS_WT_TASK" \
+        || error "Worktree feature name must contain only alphanumeric characters, hyphens, underscores, and dots"
     return 0
+}
+
+# Whether <task> is a feature name cs accepts: alphanumerics, hyphens,
+# underscores and dots, never a leading dot. The feature half names the branch
+# cs/<feature>, and git refuses a ref component that starts with a dot; the
+# record fuse names a directory in the base's .cs after it.
+_feature_name_ok() {  # task
+    case "$1" in
+        .*|'') return 1 ;;
+    esac
+    [[ "$1" =~ ^[a-zA-Z0-9._-]+$ ]]
 }
 
 # Create the .cs/ skeleton inside a worktree whose repo does not track .cs/
@@ -680,7 +688,7 @@ _feature_readiness() {  # base_name task
     if [ "$(_read_local_state "$wt_dir/.cs/local/state" cs_mode)" = "ignored" ]; then
         vault_locked=$(_locked_vault_link "$base_dir/.cs")
         if [ -z "$vault_locked" ]; then
-            conflicts=$(_fuse_conflicts "$wt_dir/.cs" "$base_dir/.cs") \
+            conflicts=$(_fuse_conflicts "$wt_dir/.cs" "$base_dir/.cs" "$task") \
                 || error "Could not classify the session records in $wt_dir/.cs"
         fi
     fi
@@ -1178,7 +1186,7 @@ ${wt_listing#*"$nl"}"
         [ -z "$locked" ] \
             || error "cannot fuse the worktree's records: $base_dir/.cs/$locked is locked. Mount it, then retry."
         local conflicts
-        conflicts=$(_fuse_conflicts "$wt_dir/.cs" "$base_dir/.cs") \
+        conflicts=$(_fuse_conflicts "$wt_dir/.cs" "$base_dir/.cs" "$task") \
             || error "Could not classify the session records in $wt_dir/.cs; nothing was removed"
         [ -z "$conflicts" ] \
             || error "The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the path needs a new directory named .cs, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt_dir/.cs, then run /finish $task again:
@@ -1265,7 +1273,7 @@ $remove_err${trashed:+$nl$trashed}"
 $remove_err${trashed:+$nl$trashed}"
     fi
     if [ -n "$aside" ]; then
-        ( fuse_session_records "$aside/cs" "$base_dir/.cs" ) \
+        ( fuse_session_records "$aside/cs" "$base_dir/.cs" "$task" ) \
             || error "The worktree $wt_dir is removed, but its session records could not be fused into $base_dir/.cs: they are at $aside/cs. Fuse what is missing by hand, then delete that directory.${trashed:+$nl$trashed}"
         rm -rf "$aside"
     fi
@@ -2039,14 +2047,72 @@ _fuse_merged_record() {  # rel
     return 1
 }
 
+# The files of a feature's .cs that are the feature's own prose rather than
+# records it shares with the base: the README cs wrote for it, whose objective
+# the feature fills in, and summary.md, which its /wrap rewrites. One the
+# feature changed goes to the base under the feature's path,
+# .cs/features/<task>/ (_fuse_feature_verdict), never over the base's own.
+_fuse_feature_prose() {  # rel
+    case "$1" in
+        README.md|summary.md) return 0 ;;
+    esac
+    return 1
+}
+
+# Where the feature's <rel>, a _fuse_feature_prose file, goes in the base,
+# relative to its .cs: the first of features/<task>/<rel>, then <stem>.2.md,
+# <stem>.3.md and on, that holds nothing, so an earlier feature of the same
+# name keeps what it left there. Sets _CS_FEATURE_DEST to that name, or to
+# nothing when one of the names before it is a file of the base's own (not a
+# link) with the same bytes: the feature's copy is there already.
+_fuse_feature_dest() {  # feature_meta base_meta rel task
+    local dir="features/$4" stem="${3%.md}" name="$3" n=1
+    while [ -e "$2/$dir/$name" ] || [ -L "$2/$dir/$name" ]; do
+        if [ ! -L "$2/$dir/$name" ] && [ -f "$2/$dir/$name" ] && cmp -s "$1/$3" "$2/$dir/$name"; then
+            _CS_FEATURE_DEST=""
+            return 0
+        fi
+        n=$((n + 1))
+        name="$stem.$n.md"
+    done
+    _CS_FEATURE_DEST="$dir/$name"
+}
+
+# What the record fuse does with a _fuse_feature_prose file of a feature's
+# .cs, given relative to it, against the base's .cs:
+#   skip     the feature left the copy the create handed it (or wrote for it)
+#            as it was, or the base holds the same bytes under the feature's
+#            path already
+#   feature  it goes to the base under the feature's path (_fuse_feature_dest)
+#   conflict it is a link or not a regular file, <task> is no feature name cs
+#            accepts, or the base cannot take the directories on the way to
+#            features/<task>/ (_fuse_path_blocked)
+# Fails when the record of the copy, or the file, cannot be read.
+_fuse_feature_verdict() {  # feature_meta base_meta rel task
+    local src="$1/$3" was now
+    if [ -L "$src" ] || [ ! -f "$src" ]; then echo conflict; return 0; fi
+    was=$(_inherited_sum "$1" "$3") || return 1
+    if [ -n "$was" ]; then
+        now=$(cksum < "$src") || return 1
+        if [ "$now" = "$was" ]; then echo skip; return 0; fi
+    fi
+    if ! _feature_name_ok "$4" || _fuse_path_blocked "$2" "features/$4/$3"; then
+        echo conflict
+        return 0
+    fi
+    _fuse_feature_dest "$1" "$2" "$3" "$4"
+    if [ -n "$_CS_FEATURE_DEST" ]; then echo feature; else echo skip; fi
+}
+
 # Write to <out> one NUL-terminated "<verdict> <rel>" for every file of a
-# feature's .cs the fuse copies (_fuse_verdict), and "conflict <rel>" for one
-# it merges that it cannot (_fuse_merge_blocked). A directory holding a .git
+# feature's .cs the fuse copies (_fuse_verdict, and _fuse_feature_verdict for
+# the feature's own prose, which goes under the feature's path for <task>), and
+# "conflict <rel>" for one it merges that it cannot (_fuse_merge_blocked). A directory holding a .git
 # is a repository nested under .cs: written once as "conflict <rel>/" and
 # never walked, and .cs itself holding one is written as "conflict " with an
 # empty path. Links are listed, never followed. Fails, naming the file, when
 # one cannot be classified, and when the walk fails.
-_fuse_plan() {  # feature_meta base_meta out
+_fuse_plan() {  # feature_meta base_meta out task
     local list rel verdict logdir
     : > "$3" || return 1
     [ -d "$1" ] && [ ! -L "$1" ] || return 0
@@ -2097,11 +2163,15 @@ _fuse_plan() {  # feature_meta base_meta out
             fi
             continue
         fi
-        if ! verdict=$(_fuse_verdict "$1" "$2" "$rel"); then
+        if _fuse_feature_prose "$rel"; then
+            verdict=$(_fuse_feature_verdict "$1" "$2" "$rel" "$4")
+        else
+            verdict=$(_fuse_verdict "$1" "$2" "$rel")
+        fi || {
             warn "could not read what the feature inherited for $(_printable_name "$rel"), so cs cannot tell whether the base deleted or changed it" >&2
             rm -f "$list"
             return 1
-        fi
+        }
         printf '%s %s\0' "$verdict" "$rel" >> "$3"
     done < "$list"
     rm -f "$list"
@@ -2112,10 +2182,10 @@ _fuse_plan() {  # feature_meta base_meta out
 # (_printable_name).
 # Retire refuses on any; the features screen counts them. Fails when the
 # classification fails.
-_fuse_conflicts() {  # feature_meta base_meta
+_fuse_conflicts() {  # feature_meta base_meta task
     local plan entry out=""
     plan=$(mktemp "${TMPDIR:-/tmp}/cs-fuse-plan.XXXXXX") || return 1
-    if ! _fuse_plan "$1" "$2" "$plan"; then
+    if ! _fuse_plan "$1" "$2" "$plan" "$3"; then
         rm -f "$plan"
         return 1
     fi
@@ -2136,7 +2206,10 @@ _fuse_conflicts() {  # feature_meta base_meta
 # timeline/log/narratives, base-wins for MEMORY.md and the memory archive plus
 # the feature's pointers to targets each lacks. Every other file goes back by _fuse_verdict: one the
 # base lacks is copied in, a copy only the feature edited replaces the base's,
-# and none ever overwrites a base file that changed. Every write returns 1 on failure: the caller runs
+# and none ever overwrites a base file that changed. The feature's own README
+# and summary, once it changed them, go to .cs/features/<task>/ instead
+# (_fuse_feature_verdict), beside any an earlier feature of that name left.
+# Every write returns 1 on failure: the caller runs
 # this in a subshell on the left of ||, where errexit is off, and deletes the
 # staged records only on success. Every write also goes through the link
 # check: the landing put the feature's tree in the base, and nothing has
@@ -2145,8 +2218,8 @@ _fuse_conflicts() {  # feature_meta base_meta
 # caller's error says to fuse what is missing. No pass checks every
 # destination before the first write: a full disk leaves the same state, and
 # that pass would have to list the destinations a second time.
-fuse_session_records() {
-    local src="$1" dst="$2"
+fuse_session_records() {  # feature_meta base_meta task
+    local src="$1" dst="$2" task="$3"
     local f base
 
     # Worktrees never run migrate_session, so a task branch created before the
@@ -2199,7 +2272,7 @@ fuse_session_records() {
     # staged records stay for the caller's error to name.
     local plan entry verdict rel parent
     plan=$(mktemp "${TMPDIR:-/tmp}/cs-fuse-plan.XXXXXX") || return 1
-    if ! _fuse_plan "$src" "$dst" "$plan"; then
+    if ! _fuse_plan "$src" "$dst" "$plan" "$task"; then
         rm -f "$plan"
         return 1
     fi
@@ -2209,6 +2282,18 @@ fuse_session_records() {
         case "$verdict" in
             skip) continue ;;
             carry|restore|replace) ;;
+            feature)
+                # Named afresh: the base may hold more under the feature's
+                # path than when the plan was made.
+                _fuse_feature_dest "$src" "$dst" "$rel" "$task"
+                [ -n "$_CS_FEATURE_DEST" ] || continue
+                if ! { cs_mkdir_inside "$dst/features/$task" \
+                        && cs_write_atomic "$dst/$_CS_FEATURE_DEST" cat "$src/$rel"; }; then
+                    rm -f "$plan"
+                    return 1
+                fi
+                info "The feature's $rel is kept at $dst/$_CS_FEATURE_DEST"
+                continue ;;
             *)
                 warn "$rel cannot be carried into the base without overwriting what is there"
                 rm -f "$plan"
