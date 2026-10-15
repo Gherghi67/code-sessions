@@ -509,11 +509,18 @@ _CS_KEYBINDING_DEFS='
 # session that dir is the session's .cs/claude-config, which no other session
 # reads; it links the shell's keybindings.json instead, so cs's keys belong in
 # the shell's config dir, which launch records in
-# CLAUDE_SECURESTORAGE_CONFIG_DIR (empty for ~/.claude).
+# CLAUDE_SECURESTORAGE_CONFIG_DIR (empty for ~/.claude). code-sessions keeps
+# that variable empty for its shared login; its shell config is the profile's.
 _cs_keybindings_file() {
     local dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
     case "$dir" in
-        */.cs/claude-config) dir="${CLAUDE_SECURESTORAGE_CONFIG_DIR:-$HOME/.claude}" ;;
+        */.cs/claude-config)
+            if [ -n "${CODE_SESSIONS_HOME:-}" ]; then
+                dir="$CODE_SESSIONS_HOME/.claude"
+            else
+                dir="${CLAUDE_SECURESTORAGE_CONFIG_DIR:-$HOME/.claude}"
+            fi
+            ;;
     esac
     printf '%s\n' "$dir/keybindings.json"
 }
