@@ -448,11 +448,13 @@ esac
 # share its inode with a file anywhere on the volume (a project setting, a
 # hook), and an in-place Edit writes that file too. GNU stat takes -c, BSD
 # stat -f; whichever answers first gives the link count, and a count that
-# cannot be read falls through to the prompt as well. Asked last, of a write
-# every check above would approve, so the decline it prints is the one reason
-# the write prompts; the name is printed plain, as the symlink decline's is.
+# cannot be read falls through to the prompt as well, with its own decline.
+# Asked last, of a write every check above would approve, so the decline it
+# prints is the one reason the write prompts; the name is printed plain, as
+# the symlink decline's is.
 if [ -f "$FILE_PATH" ]; then
-    _cs_nlink=$(stat -c %h "$FILE_PATH" 2>/dev/null || stat -f %l "$FILE_PATH" 2>/dev/null) || exit 0
+    _cs_nlink=$(stat -c %h "$FILE_PATH" 2>/dev/null || stat -f %l "$FILE_PATH" 2>/dev/null) \
+        || _cs_decline "could not read the link count of $(_cs_plain_name "$FILE_PATH" 160)"
     [ "$_cs_nlink" = 1 ] || _cs_decline "$(_cs_plain_name "$FILE_PATH" 160) has $_cs_nlink names"
 fi
 
