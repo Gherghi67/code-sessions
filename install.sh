@@ -1308,7 +1308,7 @@ CS_PAYLOAD_SHA256=(
     "2520a6d54d75e3e9f1768160826a8b9f21e38e2234538cc62e3ec6337008fc28  skills/store-secret/SKILL.md"
     "eaf2ade4ce76f74b8d6ab979f536007606e77308a0c33dfedf28d31befd1eaec  skills/prose-hygiene/SKILL.md"
     "88df8470aaec5d50d53000249b541ff7f33abbd6956b9be8f3e736a808bfb5ef  skills/rotate/SKILL.md"
-    "af130ee52736381050b2bdbb0078f24dbbade29c5ce8a3e11f1d942b737d87ff  skills/finish/SKILL.md"
+    "bd99e120c472dbbed0028da0a5cd2dda62073459ad9e4c74fecf41e1187d5dc2  skills/finish/SKILL.md"
     "7915ca859bf53215b4f5c41833dca3a0c661921523eb5424d1f146befefae922  skills/feature/SKILL.md"
     "343016f4d62029a85cfae3c0911b8a7a2bff99a31bd868e04ca83ec4002d6f48  skills/write-as-me/SKILL.md"
     "9d42a50e396f05c53d62f13f4a6e21ba20ee04abf7b532023e0d8e5be988e2d3  skills/write-as-me/scripts/build-corpus.sh"

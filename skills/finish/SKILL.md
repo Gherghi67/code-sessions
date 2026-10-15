@@ -158,8 +158,12 @@ what creates them and fold it into the gate: `-- sh -c 'npm ci && npm test'`.
      `/finish <task>` captures them.
 
    The entry answers `retired <task> <sha>` or refuses. Before `retired` it
-   may print `Moved N ignored files to the system trash:` with one path per
-   line: relay that block whole, since the user's ignored files went there.
+   may print `Moved N ignored files to the system trash:` with one line per
+   file it moved, and one per directory it moved whole (its path and the
+   number of files inside): relay that block whole, since the user's ignored
+   files went there. In ignored mode it may also print `The feature's
+   <file> is kept at <path>` for the feature's README.md or summary.md:
+   relay each such line, since that is where the feature's copy now lives.
    A refusal can carry the same block (`... before this failed:`); print it
    with the refusal. Print a refusal
    verbatim: it is written for the user, and the one that matters most says
