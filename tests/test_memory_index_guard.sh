@@ -54,6 +54,27 @@ test_check_fails_over_the_byte_budget() {
         "check must print the size against the budget" || return 1
 }
 
+# Claude Code also stops loading MEMORY.md at a line limit, and every line
+# counts toward it: blank lines, headings, and a last line with no newline,
+# which wc -l would not count.
+test_check_fails_over_the_line_budget() {
+    _guard_session
+    _guard snapshot > /dev/null || return 1
+    local i out rc=0
+    for i in $(seq 1 97); do printf '\n## Heading %s\n' "$i"; done >> "$INDEX"
+    assert_eq 196 "$(wc -l < "$INDEX" | tr -d ' ')" "fixture must be 196 lines" || return 1
+    out=$(_guard check 2>&1) || rc=$?
+    assert_eq 0 "$rc" "check must pass at the line budget: $out" || return 1
+    assert_output_contains "$out" "MEMORY.md: 196/196 lines" \
+        "a pass must print the line count against the budget" || return 1
+    printf '%s' '## Tail with no newline' >> "$INDEX"
+    rc=0
+    out=$(_guard check 2>&1) || rc=$?
+    assert_eq 1 "$rc" "check must fail one line past the budget" || return 1
+    assert_output_contains "$out" "over budget: 197 lines > 196" \
+        "check must count the last line with no newline" || return 1
+}
+
 # step 5 runs check once per sweep even when nothing was written; with no
 # snapshot there is nothing to compare, and that must never read as a pass.
 test_check_without_a_snapshot_is_an_error() {
@@ -341,6 +362,7 @@ run_test test_check_counts_bytes_not_characters
 run_test test_check_without_a_snapshot_is_an_error
 run_test test_check_without_the_index_is_an_error
 run_test test_check_fails_over_the_byte_budget
+run_test test_check_fails_over_the_line_budget
 run_test test_restore_puts_back_the_snapshot_byte_for_byte
 run_test test_restore_without_a_snapshot_leaves_the_index_alone
 run_test test_unknown_subcommand_prints_usage
