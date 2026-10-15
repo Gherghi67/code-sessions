@@ -248,12 +248,12 @@ test_check_fails_on_a_pointer_to_a_missing_entry() {
 
 # A pointer names an entry file only when its target is a bare file name
 # ending in .md, with no / and no :. A URL names none, in MEMORY.md or in the
-# archive, and check passes it.
+# archive, whatever it ends in, and check passes it.
 test_check_passes_a_pointer_to_a_url() {
     _guard_session
     _guard_archive
     printf '%s\n' '- [Docs](https://example.com/docs): vendor docs' >> "$INDEX"
-    printf '%s\n' '- [Board](https://example.com/board): the old board' >> "$ARCHIVE"
+    printf '%s\n' '- [Board](https://example.com/board.md): the old board' >> "$ARCHIVE"
     _guard snapshot > /dev/null || return 1
     local out rc=0
     out=$(_guard check 2>&1) || rc=$?
