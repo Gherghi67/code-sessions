@@ -87,7 +87,7 @@ export function register(on: On, options: PluginOptions) {
       registered = true
       await $.command.register({ name: 'cs-update', description: 'Release notes for the pending cs update, with 1 to install it.' })
     }
-    if ((await $.fs.exists(`${e.cwd}/.cs/local`)) && (await sessionVetted($, e.cwd))) {
+    if ((await $.fs.exists(`${e.cwd}/.cs/local`)) && (await mayWriteControlFiles($, e.cwd))) {
       await $.fs.write(`${e.cwd}/${HEARTBEAT}`, `${new Date().toISOString()}\n`)
     }
     if (!shown && await isLead($, e.cwd)) {
@@ -218,12 +218,61 @@ async function restoreDone($: EngineInterface, cwd: string): Promise<boolean> {
   if (!doneVersion || line === undefined) return false
   const pending = await $.env.get('CS_UPDATE_AVAILABLE')
   if (pending !== doneVersion) {
-    if (await sessionVetted($, cwd)) await $.fs.write(`${cwd}/${DONE}`, '')
+    if (await mayWriteControlFiles($, cwd)) await $.fs.write(`${cwd}/${DONE}`, '')
     return false
   }
   shown = true; phase = 'done'; outcome = line
   await openPane($, cwd, doneVersion)
   return true
+}
+
+// Every write this mod makes into .cs/local asks this first: the sessions root
+// names the directory, and cs trusts its control files.
+async function mayWriteControlFiles($: EngineInterface, cwd: string): Promise<boolean> {
+  return (await isCsSession($, cwd)) && (await sessionVetted($, cwd))
+}
+
+// KEEP IN SYNC with isCsSession and resolvedPath in mods/cs (the two mods
+// deploy as separate plugins and share no module).
+// Whether directory `cwd` is a cs session. Nothing inside a directory can
+// prove it: a cloned repository may carry any file under .cs/, .cs/local
+// included. The sessions root ($CS_SESSIONS_ROOT, else ~/.claude-sessions) is
+// what a clone cannot carry: the directory is a session when the root's entry
+// under its own name, or under the session_name an adopted session's state
+// records, lands on the directory itself. The recorded name is only a
+// candidate, so it may not reach outside the root. Identity is by resolved
+// path, as the hooks compare by inode: a link at the root and a home reached
+// through a symlink each spell the same directory another way.
+async function isCsSession($: EngineInterface, cwd: string): Promise<boolean> {
+  const home = await $.env.get('HOME')
+  const root = (await $.env.get('CS_SESSIONS_ROOT')) || (home ? `${home}/.claude-sessions` : undefined)
+  if (root === undefined) return false
+  const here = await resolvedPath($, cwd)
+  if (here === undefined) return false
+  const dir = cwd.replace(/\/+$/, '')
+  const names = [dir.slice(dir.lastIndexOf('/') + 1)]
+  let state = ''
+  try {
+    state = await $.fs.read(`${cwd}/.cs/local/state`)
+  } catch {
+    // no state: only the directory's own name is a candidate
+  }
+  const recorded = state.match(/^session_name: *"?([^"\s/]+)"?[ \t]*$/m)?.[1]
+  if (recorded !== undefined && recorded !== '.' && recorded !== '..') names.push(recorded)
+  for (const name of names) {
+    if ((await resolvedPath($, `${root}/${name}`)) === here) return true
+  }
+  return false
+}
+
+// Where `path` lands once every link is followed; undefined when it leads
+// nowhere or cannot be read, which proves nothing about a session.
+async function resolvedPath($: EngineInterface, path: string): Promise<string | undefined> {
+  try {
+    return (await $.fs.stat(path, { resolve: true })).realPath
+  } catch {
+    return undefined
+  }
 }
 
 // Whether cs trusts this session's control files, by the rule the cs mod and
@@ -268,7 +317,7 @@ async function runUpdate($: EngineInterface) {
       phase = 'done'; outcome = 'Update finished. Takes effect on your next launch.'
       try {
         const cwd = await $.session.cwd()
-        if (await sessionVetted($, cwd)) await $.fs.write(`${cwd}/${DONE}`, `${version}\n${outcome}\n`)
+        if (await mayWriteControlFiles($, cwd)) await $.fs.write(`${cwd}/${DONE}`, `${version}\n${outcome}\n`)
       } catch (err) {
         $.ui.toast(`cs-update: could not record the finished update: ${String(err instanceof Error ? err.message : err)}`)
       }

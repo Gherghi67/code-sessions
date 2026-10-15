@@ -837,6 +837,8 @@ async function readState($: EngineInterface): Promise<string | undefined> {
   }
 }
 
+// KEEP IN SYNC with isCsSession and resolvedPath in mods/cs-update (the two
+// mods deploy as separate plugins and share no module).
 // Whether directory `cwd` is a cs session. Nothing inside a directory can
 // prove it: a cloned repository may carry any file under .cs/, .cs/local
 // included. The sessions root ($CS_SESSIONS_ROOT, else ~/.claude-sessions) is

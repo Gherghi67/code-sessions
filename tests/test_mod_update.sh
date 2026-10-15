@@ -65,7 +65,7 @@ test_mod_validate_inventories_the_hooks_and_calls() {
         echo "    SKIP: this claude ($(claude --version 2>/dev/null | head -1)) does not inventory function hooks"
         return 77
     fi
-    assert_output_contains "$out" 'env reads: CS_BIN, CS_UPDATE_AVAILABLE, HOME' "the mod reads the launch verdict and nothing else" || return 1
+    assert_output_contains "$out" 'env reads: CS_BIN, CS_SESSIONS_ROOT, CS_UPDATE_AVAILABLE, HOME' "the mod reads the launch verdict and the sessions root, nothing else" || return 1
     assert_output_contains "$out" '$.process.run (via runUpdate, sessionVetted)' "the update runs in one place, and the heartbeat and DONE writes ask cs -vet-session first" || return 1
     assert_output_contains "$out" 'command.run{command=cs-update}' "the reopen command is hooked" || return 1
     assert_output_not_contains "$out" '$.http.fetch' "no network in the mod" || return 1
