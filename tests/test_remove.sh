@@ -217,6 +217,28 @@ test_remove_force_refuses_when_session_holds_files_cs_did_not_create() {
     assert_dir "$dir/journal.sparsebundle" "foreign entry must survive the refusal" || return 1
 }
 
+# A root can hold thousands of files cs did not create. The refusal names
+# every one on its one line however long that line gets: here 4,500 names of
+# 240 bytes, over a megabyte, more than one exec's arguments and environment
+# may carry on macOS or Linux.
+test_remove_force_refusal_names_every_foreign_entry_of_a_large_root() {
+    local dir pad i=1 name names=() expected out rc=0
+    dir=$(create_test_session f9)
+    pad=$(printf '%0229d' 0)
+    while [ "$i" -le 4500 ]; do
+        printf -v name 'entry-%04d-%s' "$i" "$pad"
+        : > "$dir/$name"
+        names+=("$name")
+        i=$((i + 1))
+    done
+    expected=$(printf '%s, ' "${names[@]}")
+    expected="${expected%, }"
+    out=$("$CS_BIN" -rm f9 --force </dev/null 2>&1) || rc=$?
+    assert_eq "1" "$rc" "--force refuses the session" || return 1
+    assert_eq "Error: Session 'f9' holds files cs did not create: $expected. Add --delete-files to remove them with --force" \
+        "$out" "the refusal names all 4,500 entries" || return 1
+}
+
 test_remove_force_with_delete_files_removes_foreign_files() {
     local dir
     dir=$(create_test_session f2)
@@ -1223,6 +1245,7 @@ run_test test_remove_unknown_name_fails_fast
 run_test test_remove_noninteractive_without_force_errors_loudly
 run_test test_remove_force_skips_the_prompt
 run_test test_remove_force_refuses_when_session_holds_files_cs_did_not_create
+run_test test_remove_force_refusal_names_every_foreign_entry_of_a_large_root
 run_test test_remove_force_with_delete_files_removes_foreign_files
 run_test test_remove_force_ignores_cs_owned_entries_and_ds_store
 run_test test_remove_confirm_lists_foreign_entries
