@@ -404,6 +404,27 @@ test_auto_approve_declines_a_target_whose_link_count_cannot_be_read() {
         "cs auto-approve: not approving, could not read the link count of $CLAUDE_SESSION_META_DIR/memory/two_words.md" || return 1
 }
 
+# The link count is asked last, so a write that also meets an earlier decline
+# prints that one: a hard-linked target beside a link under .cs/local names
+# the link. With the link gone, the same target declines for its two names,
+# so the hard link alone is enough and the first line is the order's.
+test_auto_approve_names_a_control_link_before_a_hard_linked_target() {
+    local meta="$CLAUDE_SESSION_META_DIR" outside="$TEST_TMPDIR/project-settings.json" real
+    mkdir -p "$meta/memory"
+    echo '{"hooks":{}}' > "$outside"
+    ln "$outside" "$meta/memory/config.md" || { echo "  FAIL: hard link fixture"; return 1; }
+    ln -s "$TEST_TMPDIR" "$meta/local/planted"
+    real="$(cd "$meta/local" && pwd -P)"
+
+    _assert_falls_through Edit "$meta/memory/config.md" \
+        "a hard-linked target beside a link in local/" \
+        "$(_link_reason "$real/planted")" || return 1
+    rm "$meta/local/planted"
+    _assert_falls_through Edit "$meta/memory/config.md" \
+        "the same hard-linked target with the link gone" \
+        "cs auto-approve: not approving, $meta/memory/config.md has 2 names" || return 1
+}
+
 # Audit C2: approval covered every file under .cs/, including the ones cs
 # itself acts on: `.cs/local/pre-open` runs at the next open (Edit keeps the
 # exec bit), `.cs/claude-config/` is Claude Code's own config in an encrypted
@@ -3669,6 +3690,7 @@ run_test test_auto_approve_rejects_traversal
 run_test test_auto_approve_rejects_leaf_symlink
 run_test test_auto_approve_rejects_a_hard_linked_target
 run_test test_auto_approve_declines_a_target_whose_link_count_cannot_be_read
+run_test test_auto_approve_names_a_control_link_before_a_hard_linked_target
 run_test test_auto_approve_skips_outside_session
 run_test test_auto_approve_rejects_pre_open
 run_test test_auto_approve_rejects_local_state_files
