@@ -2205,9 +2205,17 @@ fuse_session_records() {
     # the merged archive: a base with no archive takes the feature's whole,
     # frontmatter and all; one with an archive keeps it and gains each
     # feature pointer whose target it does not name, as a tracked session's
-    # union merge gives it.
-    local added archive="memory/reference_memory_archive.md"
+    # union merge gives it. An archive the feature left as it was handed
+    # over brings nothing: the base's stays as it is, deletions and all, as
+    # _fuse_verdict leaves every other file the feature left.
+    local added archive="memory/reference_memory_archive.md" was="" now=""
     if [ -f "$src/$archive" ]; then
+        was=$(_inherited_sum "$src" "$archive") || return 1
+        if [ -n "$was" ]; then
+            now=$(cksum < "$src/$archive") || return 1
+        fi
+    fi
+    if [ -f "$src/$archive" ] && { [ -z "$was" ] || [ "$now" != "$was" ]; }; then
         if [ -f "$dst/$archive" ]; then
             added=$(_append_missing_memory_pointers "$src/$archive" "$dst/$archive") || return 1
             [ "$added" = 0 ] || info "reference_memory_archive.md: appended $added pointer(s) from the feature (base lines kept)"

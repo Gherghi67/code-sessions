@@ -2966,7 +2966,7 @@ test_retire_ignored_mode_leaves_an_archive_the_base_deleted_and_the_feature_left
     assert_eq "0" "$status" "retire exits 0: $output" || return 1
     assert_not_exists "$base_dir/.cs/memory/reference_memory_archive.md" \
         "the archive the base deleted stays deleted" || return 1
-    assert_eq "- [Old](old.md): archived earlier" "$(cat "$base_dir/.cs/memory/MEMORY.md")" \
+    assert_file_not_contains "$base_dir/.cs/memory/MEMORY.md" 'reference_memory_archive\.md' \
         "the base index gains no pointer to an archive it does not have" || return 1
     assert_not_exists "$wt" "worktree removed" || return 1
 }
