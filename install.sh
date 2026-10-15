@@ -2465,9 +2465,12 @@ fi
 CS_VERSION=$(grep -m1 "^VERSION=" "$PAYLOAD_DIR/bin/cs" 2>/dev/null | cut -d'"' -f2 || echo "unknown")
 
 # Stamp the deployed-hooks version so cs -doctor can flag installs whose
-# deployed artifacts lag behind the running cs binary.
+# deployed artifacts lag behind the running cs binary. Written as .tui-origin
+# is, through _place_file: the rename replaces a FIFO at the stamp's path
+# rather than opening it, and a link there is kept and named.
 if [ "$CS_VERSION" != "unknown" ]; then
-    echo "$CS_VERSION" > "$HOOKS_DIR/.version"
+    printf '%s\n' "$CS_VERSION" > "$STAGE_DIR/version" || error "Could not write $STAGE_DIR/version"
+    _place_file "$STAGE_DIR/version" "$HOOKS_DIR/.version" 644
 fi
 
 echo ""
