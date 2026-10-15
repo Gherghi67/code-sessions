@@ -743,6 +743,63 @@ test_remote_conversation_the_server_starts_is_the_lead_and_keeps_the_lock() {
     assert_eq "0" "$SERVE_RC" "the server stopped cleanly" || return 1
 }
 
+# Session demo as `cs demo --remote` leaves it while it serves, with a process
+# standing in for its server: the stand-in's argv carries
+# `remote-control --name <shown name>`, the session lock and
+# .cs/local/remote.pid name it, and its child stands for a conversation it
+# started from the phone. Leaves the pids in STAND_IN_PID and STAND_IN_CHILD.
+# Called directly, for the reason make_open_session is.
+start_stand_in_server() {  # shown name
+    "$CS_BIN" demo > /dev/null 2>&1 <<< "" || return 1
+    mkfifo "$TEST_TMPDIR/stand-in"
+    exec 3<>"$TEST_TMPDIR/stand-in"
+    perl -e 'my $c = fork(); if ($c == 0) { sleep 60; exit 0 } open(my $f, ">", shift) or exit 1; print $f "$c\n"; close $f; waitpid($c, 0)' \
+        "$TEST_TMPDIR/stand-in" remote-control --name "$1" --permission-mode default > /dev/null 2>&1 &
+    STAND_IN_PID=$!
+    STARTED_PIDS="$STARTED_PIDS $STAND_IN_PID"
+    STAND_IN_CHILD=""
+    read -t 10 -u 3 STAND_IN_CHILD || true
+    [ -n "$STAND_IN_CHILD" ] || { echo "  FAIL: the stand-in server never named its child"; return 1; }
+    STARTED_PIDS="$STARTED_PIDS $STAND_IN_CHILD"
+    printf '%s\n' "$STAND_IN_PID" > "$CS_SESSIONS_ROOT/demo/.cs/session.lock"
+    printf '%s\n' "$STAND_IN_PID" > "$CS_SESSIONS_ROOT/demo/.cs/local/remote.pid"
+}
+
+# Run cs's real <hook> for the stand-in's child with <payload>, in the
+# environment a conversation the server starts inherits from it.
+phone_conversation_hook() {  # hook, payload
+    local sdir="$CS_SESSIONS_ROOT/demo"
+    printf '%s' "$2" | CLAUDE_SESSION_NAME=demo CLAUDE_SESSION_DIR="$sdir" CLAUDE_SESSION_META_DIR="$sdir/.cs" \
+        CS_LEAD_PID="$STAND_IN_PID" CS_LEAD_CLAIM=1 CLAUDE_PID="$STAND_IN_CHILD" \
+        bash "$SCRIPT_DIR/../hooks/$1" > /dev/null 2>&1
+}
+
+# Once the server is gone, the phone lead's end removes the lock it left, as
+# the end of any lead removes a lock naming a process that no longer runs.
+test_phone_lead_end_removes_the_lock_once_its_server_is_gone() {
+    start_stand_in_server demo || return 1
+    local meta="$CS_SESSIONS_ROOT/demo/.cs"
+    phone_conversation_hook session-start.sh '{"session_id":"phone-1","source":"startup","hook_event_name":"SessionStart"}' || return 1
+    assert_eq "$STAND_IN_PID $STAND_IN_CHILD phone-1" "$(cat "$meta/local/lead-pid")" "the conversation claims the server's launch" || return 1
+    kill "$STAND_IN_PID"
+    wait "$STAND_IN_PID" 2>/dev/null || true
+    phone_conversation_hook session-end.sh '{"session_id":"phone-1","reason":"other","hook_event_name":"SessionEnd"}' || return 1
+    assert_file_not_exists "$meta/session.lock" "the end removes the lock of the server that is gone" || return 1
+    assert_eq "$STAND_IN_PID $STAND_IN_CHILD phone-1 ended" "$(cat "$meta/local/lead-pid")" "the end marks the claim ended" || return 1
+}
+
+# A remote.pid whose pid runs remote-control for another session is no server
+# of this one: the lead's end removes the lock that names its own launch.
+test_phone_lead_end_removes_the_lock_when_remote_pid_serves_another_session() {
+    start_stand_in_server demo-2 || return 1
+    local meta="$CS_SESSIONS_ROOT/demo/.cs"
+    phone_conversation_hook session-start.sh '{"session_id":"phone-1","source":"startup","hook_event_name":"SessionStart"}' || return 1
+    assert_eq "$STAND_IN_PID $STAND_IN_CHILD phone-1" "$(cat "$meta/local/lead-pid")" "the conversation claims the launch" || return 1
+    phone_conversation_hook session-end.sh '{"session_id":"phone-1","reason":"other","hook_event_name":"SessionEnd"}' || return 1
+    kill -0 "$STAND_IN_PID" 2>/dev/null || { echo "  FAIL: the process remote.pid names stopped before the end"; return 1; }
+    assert_file_not_exists "$meta/session.lock" "the end removes the lock naming its own launch" || return 1
+}
+
 test_remote_stops_cleanly_when_its_window_hangs_up() {
     start_serving demo --remote || return 1
     assert_file_exists "$CS_SESSIONS_ROOT/demo/.cs/local/remote.pid" "remote.pid is written while serving" || return 1
@@ -1004,6 +1061,8 @@ run_test test_remote_runs_a_plain_claude_whose_version_has_no_mark
 run_test test_remote_refuses_a_session_open_locally
 run_test test_local_open_is_refused_while_the_session_is_served
 run_test test_remote_conversation_the_server_starts_is_the_lead_and_keeps_the_lock
+run_test test_phone_lead_end_removes_the_lock_once_its_server_is_gone
+run_test test_phone_lead_end_removes_the_lock_when_remote_pid_serves_another_session
 run_test test_remote_stops_cleanly_when_its_window_hangs_up
 run_test test_remote_stops_cleanly_on_ctrl_c
 run_test test_remote_stops_cleanly_when_its_terminal_closes
