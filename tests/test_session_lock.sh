@@ -264,6 +264,45 @@ PS
     assert_eq "$(cat "$TEST_TMPDIR/held.copy")" "$(cat "$meta/held")" "the file the link names is unchanged" || return 1
 }
 
+# The collision menu waits on a person, and a link can take the lock's place
+# while it does: choosing force then refuses the link, naming it, rather than
+# writing through it. The open's output comes through a fifo, so the link goes
+# in once the menu's last row is printed (the first check is long past) and
+# the keypress is written only after that.
+test_force_from_the_menu_refuses_a_link_put_in_the_locks_place_meanwhile() {
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs" line rest rc=0 cs_pid
+    create_lock_test_session "test-session"
+    sleep 300 &
+    local live_pid=$!
+    printf '%s\n' "$live_pid" > "$meta/session.lock"
+    printf '%s\n' "$live_pid" > "$meta/brief.md"
+    mkfifo "$TEST_TMPDIR/keys" "$TEST_TMPDIR/menu"
+    exec 4<>"$TEST_TMPDIR/keys"
+    PATH="$(_path_without_picker)" CS_ASSUME_TTY=1 "$CS_BIN" test-session < "$TEST_TMPDIR/keys" > "$TEST_TMPDIR/menu" 2>&1 &
+    cs_pid=$!
+    exec 5<"$TEST_TMPDIR/menu"
+    while IFS= read -r -t 30 -u 5 line; do
+        case "$line" in *cancel*) break ;; esac
+    done
+    case "$line" in
+        *cancel*) ;;
+        *) exec 4>&- 5<&-; kill "$live_pid" "$cs_pid" 2>/dev/null; echo "  FAIL: the collision menu never showed"; return 1 ;;
+    esac
+    rm -f "$meta/session.lock"
+    ln -s brief.md "$meta/session.lock"
+    printf '1' >&4
+    exec 4>&-
+    rest=$(cat <&5)
+    exec 5<&-
+    wait "$cs_pid" || rc=$?
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    assert_eq "1" "$rc" "force over a link put in the lock's place exits 1 (output: $rest)" || return 1
+    assert_eq "Error: $meta/session.lock is a link, $LOCK_REFUSAL_TAIL" "$(tail -1 <<< "$rest")" \
+        "the refusal names the link" || return 1
+    assert_eq "$live_pid" "$(cat "$meta/brief.md")" "the file the link names is unchanged" || return 1
+    assert_eq "brief.md" "$(readlink "$meta/session.lock")" "the link is left as it was" || return 1
+}
+
 test_lock_cleaned_on_session_end() {
     create_lock_test_session "test-session"
 
@@ -1261,6 +1300,7 @@ run_test test_open_refuses_a_dangling_link_in_the_locks_place
 run_test test_forced_open_refuses_a_link_to_a_session_file_in_the_locks_place
 run_test test_open_refuses_a_directory_in_the_locks_place
 run_test test_release_leaves_a_link_in_the_locks_place
+run_test test_force_from_the_menu_refuses_a_link_put_in_the_locks_place_meanwhile
 run_test test_lock_cleaned_on_session_end
 run_test test_session_end_keeps_the_lock_for_a_child_that_inherited_the_contract
 run_test test_session_end_removes_the_lock_and_marks_the_lead_claim_ended
