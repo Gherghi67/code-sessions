@@ -3772,7 +3772,8 @@ run_test test_retire_ignored_mode_carries_a_feature_task_archive_beside_the_base
 # README once edited where the base holds a file at .cs/features (the path the
 # README goes to), a repository nested under .cs with its history, and a
 # link. The refusal lists them all, each control character in a name as "?",
-# and nothing moves, not even what could go.
+# the README apart, under the path it goes to and with no word of merging it
+# into the base's .cs, and nothing moves, not even what could go.
 test_retire_ignored_mode_refuses_records_it_cannot_carry() {
     local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output line status=0
     _ignored_base_with_two_topics
@@ -3799,12 +3800,13 @@ test_retire_ignored_mode_refuses_records_it_cannot_carry() {
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
     assert_eq "1" "$status" "the retire refuses: $output" || return 1
     assert_eq "Error: The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the path needs a new directory named .cs, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:
-.cs/README.md
 .cs/brief.md
 .cs/plans/base-plan.md
 .cs/plans/esc?[31m?line.md
 .cs/plans/link.md
-.cs/scratch-repo/" "$output" "the refusal names all six, each control character as ?, and nothing else" || return 1
+.cs/scratch-repo/
+The feature's own README and summary go to $base_dir/.cs/features/t1/, and cs cannot make that directory: the base holds a file, a dangling link or a link out of the session on the way to it. Move that aside, or delete each from $wt/.cs, then run /finish t1 again:
+.cs/README.md" "$output" "the refusal names all six, each control character as ?, the README under the path it goes to, and nothing else" || return 1
     assert_eq "kept" "$(git -C "$wt/.cs/scratch-repo" show HEAD:kept.txt 2>/dev/null)" "the nested repository keeps its history" || return 1
     assert_eq "base plan, base edit" "$(cat "$base_dir/.cs/plans/base-plan.md")" "the base's plan is untouched" || return 1
     assert_eq "not a directory" "$(cat "$base_dir/.cs/features")" "the base's file at .cs/features is untouched" || return 1
@@ -3813,6 +3815,37 @@ test_retire_ignored_mode_refuses_records_it_cannot_carry() {
 }
 
 run_test test_retire_ignored_mode_refuses_records_it_cannot_carry
+
+# A base whose .cs/features/<task> links out of the session cannot take the
+# feature's README and summary. Alone in the refusal, they are named under the
+# path they go to, the refusal says nothing was removed, and nothing reaches
+# the link's target.
+test_retire_ignored_mode_refuses_the_feature_readme_and_summary_through_a_features_link_out() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output line status=0
+    local out="$TEST_TMPDIR/outside"
+    _ignored_base_with_two_topics
+    echo "# Session: proj" > "$base_dir/.cs/README.md"
+    mkdir -p "$out" "$base_dir/.cs/features"
+    ln -s "$out" "$base_dir/.cs/features/t1"
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    printf '\nThe t1 objective.\n' >> "$wt/.cs/README.md"
+    printf 'The t1 summary.\n' > "$wt/.cs/summary.md"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    line=$("$CS_BIN" proj -features --porcelain 2>&1)
+    assert_eq "2" "$(_feat_field "$line" 7)" "the features screen counts the README and summary: $line" || return 1
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_eq "Error: The feature's own README and summary go to $base_dir/.cs/features/t1/, and cs cannot make that directory: the base holds a file, a dangling link or a link out of the session on the way to it. Nothing was removed. Move that aside, or delete each from $wt/.cs, then run /finish t1 again:
+.cs/README.md
+.cs/summary.md" "$output" "the refusal names the path the README and summary go to" || return 1
+    assert_eq "" "$(ls -A "$out")" "nothing reaches the link's target" || return 1
+    assert_dir "$wt/.cs/memory" "nothing was removed" || return 1
+    assert_eq "# Session: proj" "$(cat "$base_dir/.cs/README.md")" "the base README is untouched" || return 1
+}
+
+run_test test_retire_ignored_mode_refuses_the_feature_readme_and_summary_through_a_features_link_out
 
 # .cs itself made a repository is refused whole: walked into, its .git would
 # be copied into the base's .cs as files.
