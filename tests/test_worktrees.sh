@@ -3669,6 +3669,55 @@ retired t1 $sha" "$(printf '%s\n' "$output" | LC_ALL=C sort)" "the second retire
 
 run_test test_retire_ignored_mode_keeps_a_second_feature_of_the_same_name_beside_the_first
 
+# The first free name under the feature's path passes over a dangling link
+# there (one out of the session, here): the README and summary take the next
+# name, the retire goes through, and nothing is left set aside. A later
+# feature of the same name whose README and summary hold the same bytes as
+# copies already there writes nothing: the base keeps one copy of each.
+test_retire_ignored_mode_passes_over_a_dangling_link_and_keeps_one_copy_under_the_feature_path() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    local out="$TEST_TMPDIR/outside"
+    _ignored_base_with_two_topics
+    echo "# Session: proj" > "$base_dir/.cs/README.md"
+    mkdir -p "$out" "$base_dir/.cs/features/t1"
+    ln -s "$out/README.md" "$base_dir/.cs/features/t1/README.md"
+    ln -s "$out/summary.md" "$base_dir/.cs/features/t1/summary.md"
+    cs_launch "proj@t1"
+    echo "first" > "$wt/first.txt"
+    (cd "$wt" && git add first.txt && git commit -q -m first)
+    printf '\nThe t1 objective.\n' >> "$wt/.cs/README.md"
+    printf 'The t1 summary.\n' > "$wt/.cs/summary.md"
+    cp "$wt/.cs/README.md" "$TEST_TMPDIR/feature-readme"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture, first"; return 1; }
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire goes through past the dangling links: $output" || return 1
+    assert_eq "MEMORY.md: appended 1 pointer(s) from the feature (base lines kept)
+The feature's README.md is kept at $base_dir/.cs/features/t1/README.2.md
+The feature's summary.md is kept at $base_dir/.cs/features/t1/summary.2.md
+retired t1 $sha" "$(printf '%s\n' "$output" | LC_ALL=C sort)" "the retire names the names past the links" || return 1
+    cmp -s "$TEST_TMPDIR/feature-readme" "$base_dir/.cs/features/t1/README.2.md" \
+        || { echo "  FAIL: the feature's README is not at README.2.md"; return 1; }
+    assert_eq "The t1 summary." "$(cat "$base_dir/.cs/features/t1/summary.2.md")" "the feature's summary is at summary.2.md" || return 1
+    assert_eq "" "$(ls -A "$out")" "nothing is written through the links" || return 1
+    assert_not_exists "$wt" "the worktree is retired" || return 1
+    assert_eq "" "$(find "$CS_SESSIONS_ROOT" -maxdepth 1 -name '.retire-*')" "nothing is left set aside" || return 1
+    cs_launch "proj@t1"
+    echo "second" > "$wt/second.txt"
+    (cd "$wt" && git add second.txt && git commit -q -m second)
+    cp "$TEST_TMPDIR/feature-readme" "$wt/.cs/README.md"
+    printf 'The t1 summary.\n' > "$wt/.cs/summary.md"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture, second"; return 1; }
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the second retire goes through: $output" || return 1
+    assert_eq "retired t1 $sha" "$output" "the second retire carries nothing the base holds already" || return 1
+    assert_eq "README.2.md README.md summary.2.md summary.md" \
+        "$(cd "$base_dir/.cs/features/t1" && ls -A | LC_ALL=C sort | paste -sd' ' -)" \
+        "the base keeps one copy of each" || return 1
+}
+
+run_test test_retire_ignored_mode_passes_over_a_dangling_link_and_keeps_one_copy_under_the_feature_path
+
 # Archives completed row #1 of a task list, kept back behind an open #2, from
 # the session at <dir> as the actor alice. Claude Code keeps the list's rows
 # under ~/.claude/tasks/<list id>, every character of the id outside
