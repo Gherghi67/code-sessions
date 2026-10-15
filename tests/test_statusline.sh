@@ -4527,7 +4527,7 @@ test_tracked_mark_is_read_only_for_a_name_the_hooks_mark() {
       assert_eq "1" "$rc" "a name holding / reads as not tracked" || return 1
       rc=0; CLAUDE_SESSION_NAME=../tracked/sess _session_files_tracked || rc=$?
       assert_eq "1" "$rc" "a name climbing out of the mark directory reads as not tracked" || return 1
-      rc=0; CLAUDE_SESSION_NAME= _session_files_tracked || rc=$?
+      rc=0; CLAUDE_SESSION_NAME='' _session_files_tracked || rc=$?
       assert_eq "1" "$rc" "an empty name reads as not tracked" || return 1 )
 }
 
