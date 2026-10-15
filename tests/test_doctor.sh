@@ -560,13 +560,14 @@ test_doctor_tui_silent_for_a_release_picker() {
 
 # An install that predates the record, or one that placed no picker over an
 # earlier one, leaves nothing saying where the picker came from: one line
-# says it was not checked and what writes the record.
+# says it was not checked and which install writes the record: ./install.sh
+# from a checkout, or cs -update where a release picker exists.
 test_doctor_tui_names_a_missing_origin_record() {
     local output
     mkdir -p "$TEST_TMPDIR/home/.local/bin" "$TEST_TMPDIR/tui-deployed"
     echo 'picker' > "$TEST_TMPDIR/home/.local/bin/cs-tui"
     output=$(doctor_from "$TEST_TMPDIR/elsewhere")
-    assert_eq "NOTE cs-tui: not checked: nothing in $TEST_TMPDIR/tui-deployed/.tui-origin says where $TEST_TMPDIR/home/.local/bin/cs-tui came from; the next install (cs -update, or ./install.sh from your checkout) records it" \
+    assert_eq "NOTE cs-tui: not checked: nothing in $TEST_TMPDIR/tui-deployed/.tui-origin says where $TEST_TMPDIR/home/.local/bin/cs-tui came from; the next ./install.sh from your checkout records it, and cs -update records it where a release picker exists for this platform (and replaces a checkout-built picker with the release one)" \
         "$(tui_row "$output")" "no record: one neutral line naming the fix" || return 1
 }
 
@@ -576,13 +577,13 @@ test_doctor_tui_names_an_origin_record_it_does_not_understand() {
     echo 'picker' > "$TEST_TMPDIR/home/.local/bin/cs-tui"
     record_tui_origin "checkout relative/path"
     output=$(doctor_from "$TEST_TMPDIR/elsewhere")
-    assert_eq "NOTE cs-tui: not checked: nothing in $TEST_TMPDIR/tui-deployed/.tui-origin says where $TEST_TMPDIR/home/.local/bin/cs-tui came from; the next install (cs -update, or ./install.sh from your checkout) records it" \
+    assert_eq "NOTE cs-tui: not checked: nothing in $TEST_TMPDIR/tui-deployed/.tui-origin says where $TEST_TMPDIR/home/.local/bin/cs-tui came from; the next ./install.sh from your checkout records it, and cs -update records it where a release picker exists for this platform (and replaces a checkout-built picker with the release one)" \
         "$(tui_row "$output")" "a record that names no absolute checkout or release: the same line" || return 1
 }
 
 # The checkout the picker came from was deleted, or no longer holds the TUI:
 # there is no build to hold the picker to, and the fix is an install from the
-# checkout in use now.
+# checkout in use now, or cs -update.
 test_doctor_tui_names_a_recorded_checkout_without_its_tui() {
     local checkout="$TEST_TMPDIR/tuico" output
     make_tui_checkout "$checkout" 202601020000
@@ -592,11 +593,11 @@ test_doctor_tui_names_a_recorded_checkout_without_its_tui() {
     record_tui_origin "checkout $checkout"
     rm "$checkout/tui/Cargo.toml"
     output=$(doctor_from "$TEST_TMPDIR/elsewhere")
-    assert_eq "NOTE cs-tui: not checked: $TEST_TMPDIR/home/.local/bin/cs-tui came from $checkout, which holds no tui/Cargo.toml now; run ./install.sh from your checkout" \
+    assert_eq "NOTE cs-tui: not checked: $TEST_TMPDIR/home/.local/bin/cs-tui came from $checkout, which holds no tui/Cargo.toml now; run ./install.sh from your checkout, or cs -update" \
         "$(tui_row "$output")" "a recorded checkout without its TUI: one neutral line" || return 1
     rm -rf "$checkout"
     output=$(doctor_from "$TEST_TMPDIR/elsewhere")
-    assert_eq "NOTE cs-tui: not checked: $TEST_TMPDIR/home/.local/bin/cs-tui came from $checkout, which holds no tui/Cargo.toml now; run ./install.sh from your checkout" \
+    assert_eq "NOTE cs-tui: not checked: $TEST_TMPDIR/home/.local/bin/cs-tui came from $checkout, which holds no tui/Cargo.toml now; run ./install.sh from your checkout, or cs -update" \
         "$(tui_row "$output")" "a recorded checkout that is gone: the same line" || return 1
 }
 
