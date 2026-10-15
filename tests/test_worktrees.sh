@@ -3549,9 +3549,11 @@ run_test test_retire_ignored_mode_refuses_a_log_directory_that_is_a_link
 # Every record under .cs that the base lacks goes back to it, at any depth,
 # not just topics and narratives: plans, a summary, handoffs, a brief,
 # artifacts, archived narrative sections, a nested topic, a non-.md note. A
-# plan or summary the create copied in and only the feature edited replaces
-# the base's unchanged copy, named. The README cs wrote for the feature, left
-# as written, is the feature's own bookkeeping and goes with it.
+# plan the create copied in and only the feature edited replaces the base's
+# unchanged copy, named. A summary the feature edited is its own prose and goes
+# under the feature's path, .cs/features/<task>/, leaving the base's alone.
+# The README cs wrote for the feature, left as written, is the feature's own
+# bookkeeping and goes with it.
 test_retire_ignored_mode_carries_every_record_the_base_lacks() {
     local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0 rel
     _ignored_base_with_two_topics
@@ -3578,17 +3580,143 @@ test_retire_ignored_mode_carries_every_record_the_base_lacks() {
         assert_eq "feature $rel" "$(cat "$base_dir/.cs/$rel" 2>/dev/null)" "$rel lands in the base" || return 1
     done
     assert_eq "base plan, feature edit" "$(cat "$base_dir/.cs/plans/base-plan.md")" "the edited plan lands" || return 1
-    assert_eq "base summary, feature edit" "$(cat "$base_dir/.cs/summary.md")" "the edited summary lands" || return 1
+    assert_eq "base summary" "$(cat "$base_dir/.cs/summary.md")" "the base summary is untouched" || return 1
+    assert_eq "base summary, feature edit" "$(cat "$base_dir/.cs/features/t1/summary.md" 2>/dev/null)" "the edited summary lands under the feature's path" || return 1
     assert_output_contains "$output" "plans/base-plan.md was edited in the feature and not in the base; the feature's version is now in the base" \
         "the plan's replacement is named" || return 1
-    assert_output_contains "$output" "summary.md was edited in the feature and not in the base; the feature's version is now in the base" \
-        "the summary's replacement is named" || return 1
+    assert_output_contains "$output" "The feature's summary.md is kept at $base_dir/.cs/features/t1/summary.md" \
+        "where the summary went is named" || return 1
+    assert_output_not_contains "$output" "summary.md was edited" "the summary replaces nothing" || return 1
     assert_eq "# Session: proj" "$(cat "$base_dir/.cs/README.md")" "the base README is untouched" || return 1
+    assert_not_exists "$base_dir/.cs/features/t1/README.md" "the README left as written goes with the worktree" || return 1
     assert_output_not_contains "$output" "README" "the feature's own README is not mentioned" || return 1
     assert_not_exists "$wt" "the worktree is retired" || return 1
 }
 
 run_test test_retire_ignored_mode_carries_every_record_the_base_lacks
+
+# The README cs writes for a feature asks for its objective, and the feature's
+# /wrap rewrites the summary it inherited. Both are the feature's own prose:
+# once edited they go to .cs/features/<task>/ in the base, the base's own README
+# and summary stay as they are, and nothing about them holds up the retire or
+# reads as at risk on the features screen.
+test_retire_ignored_mode_keeps_the_feature_readme_and_summary_under_its_path() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output line status=0
+    _ignored_base_with_two_topics
+    echo "# Session: proj" > "$base_dir/.cs/README.md"
+    echo "base summary" > "$base_dir/.cs/summary.md"
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    printf '\nShip the t1 feature.\n' >> "$wt/.cs/README.md"
+    printf '# Session Summary: proj@t1\n\nThe feature wrap summary.\n' > "$wt/.cs/summary.md"
+    cp "$wt/.cs/README.md" "$TEST_TMPDIR/feature-readme"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    line=$("$CS_BIN" proj -features --porcelain 2>&1)
+    assert_eq "0" "$(_feat_field "$line" 7)" "nothing is at risk: $line" || return 1
+    assert_eq "merged" "$(_feat_field "$line" 10)" "the feature reads as merged: $line" || return 1
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire goes through: $output" || return 1
+    # The walk's order is the file system's, so the lines are compared sorted.
+    # The pointer is the one the launch put in the feature's index for its
+    # narrative.
+    assert_eq "MEMORY.md: appended 1 pointer(s) from the feature (base lines kept)
+The feature's README.md is kept at $base_dir/.cs/features/t1/README.md
+The feature's summary.md is kept at $base_dir/.cs/features/t1/summary.md
+retired t1 $sha" "$(printf '%s\n' "$output" | LC_ALL=C sort)" "the retire names where each went, and nothing else" || return 1
+    cmp -s "$TEST_TMPDIR/feature-readme" "$base_dir/.cs/features/t1/README.md" \
+        || { echo "  FAIL: the feature's README, objective and all, is not under its path"; return 1; }
+    assert_eq "# Session Summary: proj@t1
+
+The feature wrap summary." "$(cat "$base_dir/.cs/features/t1/summary.md")" "the feature's summary is under its path" || return 1
+    assert_eq "# Session: proj" "$(cat "$base_dir/.cs/README.md")" "the base README is untouched" || return 1
+    assert_eq "base summary" "$(cat "$base_dir/.cs/summary.md")" "the base summary is untouched" || return 1
+    assert_not_exists "$wt" "the worktree is retired" || return 1
+}
+
+run_test test_retire_ignored_mode_keeps_the_feature_readme_and_summary_under_its_path
+
+# A feature name can come back once its first worktree is retired. The second
+# feature's README and summary never overwrite the first's: each goes to the
+# first free name beside it (README.2.md, summary.2.md). A base with no summary
+# of its own gets the feature's under the feature's path too.
+test_retire_ignored_mode_keeps_a_second_feature_of_the_same_name_beside_the_first() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0 round
+    _ignored_base_with_two_topics
+    echo "# Session: proj" > "$base_dir/.cs/README.md"
+    for round in first second; do
+        cs_launch "proj@t1"
+        echo "$round" > "$wt/$round.txt"
+        (cd "$wt" && git add "$round.txt" && git commit -q -m "$round")
+        printf '\nThe %s objective.\n' "$round" >> "$wt/.cs/README.md"
+        printf 'The %s summary.\n' "$round" > "$wt/.cs/summary.md"
+        sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture, $round"; return 1; }
+        status=0
+        output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+        assert_eq "0" "$status" "the $round retire goes through: $output" || return 1
+    done
+    assert_eq "The feature's README.md is kept at $base_dir/.cs/features/t1/README.2.md
+The feature's summary.md is kept at $base_dir/.cs/features/t1/summary.2.md
+retired t1 $sha" "$(printf '%s\n' "$output" | LC_ALL=C sort)" "the second retire names the free names" || return 1
+    assert_eq "1" "$(grep -c '^The first objective\.$' "$base_dir/.cs/features/t1/README.md")" "the first README is as it was" || return 1
+    assert_eq "0" "$(grep -c 'second' "$base_dir/.cs/features/t1/README.md")" "and holds nothing of the second" || return 1
+    assert_eq "1" "$(grep -c '^The second objective\.$' "$base_dir/.cs/features/t1/README.2.md")" "the second README is beside it" || return 1
+    assert_eq "The first summary." "$(cat "$base_dir/.cs/features/t1/summary.md")" "the first summary is as it was" || return 1
+    assert_eq "The second summary." "$(cat "$base_dir/.cs/features/t1/summary.2.md")" "the second summary is beside it" || return 1
+    assert_not_exists "$base_dir/.cs/summary.md" "the base, which had no summary, still has none" || return 1
+    assert_eq "# Session: proj" "$(cat "$base_dir/.cs/README.md")" "the base README is untouched" || return 1
+}
+
+run_test test_retire_ignored_mode_keeps_a_second_feature_of_the_same_name_beside_the_first
+
+# The first free name under the feature's path passes over a dangling link
+# there (one out of the session, here): the README and summary take the next
+# name, the retire goes through, and nothing is left set aside. A later
+# feature of the same name whose README and summary hold the same bytes as
+# copies already there writes nothing: the base keeps one copy of each.
+test_retire_ignored_mode_passes_over_a_dangling_link_and_keeps_one_copy_under_the_feature_path() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    local out="$TEST_TMPDIR/outside"
+    _ignored_base_with_two_topics
+    echo "# Session: proj" > "$base_dir/.cs/README.md"
+    mkdir -p "$out" "$base_dir/.cs/features/t1"
+    ln -s "$out/README.md" "$base_dir/.cs/features/t1/README.md"
+    ln -s "$out/summary.md" "$base_dir/.cs/features/t1/summary.md"
+    cs_launch "proj@t1"
+    echo "first" > "$wt/first.txt"
+    (cd "$wt" && git add first.txt && git commit -q -m first)
+    printf '\nThe t1 objective.\n' >> "$wt/.cs/README.md"
+    printf 'The t1 summary.\n' > "$wt/.cs/summary.md"
+    cp "$wt/.cs/README.md" "$TEST_TMPDIR/feature-readme"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture, first"; return 1; }
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the retire goes through past the dangling links: $output" || return 1
+    assert_eq "MEMORY.md: appended 1 pointer(s) from the feature (base lines kept)
+The feature's README.md is kept at $base_dir/.cs/features/t1/README.2.md
+The feature's summary.md is kept at $base_dir/.cs/features/t1/summary.2.md
+retired t1 $sha" "$(printf '%s\n' "$output" | LC_ALL=C sort)" "the retire names the names past the links" || return 1
+    cmp -s "$TEST_TMPDIR/feature-readme" "$base_dir/.cs/features/t1/README.2.md" \
+        || { echo "  FAIL: the feature's README is not at README.2.md"; return 1; }
+    assert_eq "The t1 summary." "$(cat "$base_dir/.cs/features/t1/summary.2.md")" "the feature's summary is at summary.2.md" || return 1
+    assert_eq "" "$(ls -A "$out")" "nothing is written through the links" || return 1
+    assert_not_exists "$wt" "the worktree is retired" || return 1
+    assert_eq "" "$(find "$CS_SESSIONS_ROOT" -maxdepth 1 -name '.retire-*')" "nothing is left set aside" || return 1
+    cs_launch "proj@t1"
+    echo "second" > "$wt/second.txt"
+    (cd "$wt" && git add second.txt && git commit -q -m second)
+    cp "$TEST_TMPDIR/feature-readme" "$wt/.cs/README.md"
+    printf 'The t1 summary.\n' > "$wt/.cs/summary.md"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture, second"; return 1; }
+    status=0
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "the second retire goes through: $output" || return 1
+    assert_eq "retired t1 $sha" "$output" "the second retire carries nothing the base holds already" || return 1
+    assert_eq "README.2.md README.md summary.2.md summary.md" \
+        "$(cd "$base_dir/.cs/features/t1" && ls -A | LC_ALL=C sort | paste -sd' ' -)" \
+        "the base keeps one copy of each" || return 1
+}
+
+run_test test_retire_ignored_mode_passes_over_a_dangling_link_and_keeps_one_copy_under_the_feature_path
 
 # Archives completed row #1 of a task list, kept back behind an open #2, from
 # the session at <dir> as the actor alice. Claude Code keeps the list's rows
@@ -3641,15 +3769,18 @@ run_test test_retire_ignored_mode_carries_a_feature_task_archive_beside_the_base
 
 # What the fuse cannot carry without overwriting the base, it refuses to
 # destroy: a plan both sides edited, a brief each side wrote, the feature's
-# README once edited, a repository nested under .cs with its history, and a
+# README once edited where the base holds a file at .cs/features (the path the
+# README goes to), a repository nested under .cs with its history, and a
 # link. The refusal lists them all, each control character in a name as "?",
-# and nothing moves, not even what could go.
+# the README apart, under the path it goes to and with no word of merging it
+# into the base's .cs, and nothing moves, not even what could go.
 test_retire_ignored_mode_refuses_records_it_cannot_carry() {
     local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output line status=0
     _ignored_base_with_two_topics
     mkdir -p "$base_dir/.cs/plans"
     echo "base plan" > "$base_dir/.cs/plans/base-plan.md"
     echo "# Session: proj" > "$base_dir/.cs/README.md"
+    echo "not a directory" > "$base_dir/.cs/features"
     cs_launch "proj@t1"
     echo "done" > "$wt/result.txt"
     (cd "$wt" && git add result.txt && git commit -q -m "task")
@@ -3669,19 +3800,52 @@ test_retire_ignored_mode_refuses_records_it_cannot_carry() {
     output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
     assert_eq "1" "$status" "the retire refuses: $output" || return 1
     assert_eq "Error: The feature's session records hold files the record fuse cannot carry into $base_dir/.cs: the base holds a different file at the same path, or a file or a link out of the session where the path needs a directory, or the path needs a new directory named .cs, or the file is a link or a repository. Nothing was removed. Merge each into $base_dir/.cs by hand, or delete it from $wt/.cs, then run /finish t1 again:
-.cs/README.md
 .cs/brief.md
 .cs/plans/base-plan.md
 .cs/plans/esc?[31m?line.md
 .cs/plans/link.md
-.cs/scratch-repo/" "$output" "the refusal names all six, each control character as ?, and nothing else" || return 1
+.cs/scratch-repo/
+The feature's own README and summary go to $base_dir/.cs/features/t1/, and cs cannot make that directory: the base holds a file, a dangling link or a link out of the session on the way to it. Move that aside, or delete each from $wt/.cs, then run /finish t1 again:
+.cs/README.md" "$output" "the refusal names all six, each control character as ?, the README under the path it goes to, and nothing else" || return 1
     assert_eq "kept" "$(git -C "$wt/.cs/scratch-repo" show HEAD:kept.txt 2>/dev/null)" "the nested repository keeps its history" || return 1
     assert_eq "base plan, base edit" "$(cat "$base_dir/.cs/plans/base-plan.md")" "the base's plan is untouched" || return 1
+    assert_eq "not a directory" "$(cat "$base_dir/.cs/features")" "the base's file at .cs/features is untouched" || return 1
     assert_file_not_exists "$base_dir/.cs/plans/new.md" "nothing was fused" || return 1
     assert_file_exists "$wt/.cs/plans/new.md" "and nothing was removed" || return 1
 }
 
 run_test test_retire_ignored_mode_refuses_records_it_cannot_carry
+
+# A base whose .cs/features/<task> links out of the session cannot take the
+# feature's README and summary. Alone in the refusal, they are named under the
+# path they go to, the refusal says nothing was removed, and nothing reaches
+# the link's target.
+test_retire_ignored_mode_refuses_the_feature_readme_and_summary_through_a_features_link_out() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output line status=0
+    local out="$TEST_TMPDIR/outside"
+    _ignored_base_with_two_topics
+    echo "# Session: proj" > "$base_dir/.cs/README.md"
+    mkdir -p "$out" "$base_dir/.cs/features"
+    ln -s "$out" "$base_dir/.cs/features/t1"
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    printf '\nThe t1 objective.\n' >> "$wt/.cs/README.md"
+    printf 'The t1 summary.\n' > "$wt/.cs/summary.md"
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    line=$("$CS_BIN" proj -features --porcelain 2>&1)
+    assert_eq "2" "$(_feat_field "$line" 7)" "the features screen counts the README and summary: $line" || return 1
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the retire refuses: $output" || return 1
+    assert_eq "Error: The feature's own README and summary go to $base_dir/.cs/features/t1/, and cs cannot make that directory: the base holds a file, a dangling link or a link out of the session on the way to it. Nothing was removed. Move that aside, or delete each from $wt/.cs, then run /finish t1 again:
+.cs/README.md
+.cs/summary.md" "$output" "the refusal names the path the README and summary go to" || return 1
+    assert_eq "" "$(ls -A "$out")" "nothing reaches the link's target" || return 1
+    assert_dir "$wt/.cs/memory" "nothing was removed" || return 1
+    assert_eq "# Session: proj" "$(cat "$base_dir/.cs/README.md")" "the base README is untouched" || return 1
+}
+
+run_test test_retire_ignored_mode_refuses_the_feature_readme_and_summary_through_a_features_link_out
 
 # .cs itself made a repository is refused whole: walked into, its .git would
 # be copied into the base's .cs as files.

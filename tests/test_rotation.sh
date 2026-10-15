@@ -2288,20 +2288,28 @@ EOF
 
 # A recorded field is data: control characters are stripped before it reaches
 # the terminal, so an OSC 52 sequence in a handoff name cannot write the
-# clipboard. The printable rest of the field survives.
+# clipboard. The C1 controls (U+0080-U+009F) go too: U+009B is CSI and U+009D
+# OSC on a terminal that reads 8-bit controls. A tab stays. The printable rest
+# of each field survives.
 test_conversations_strips_control_characters() {
     _rot_hook_session "rot-view-esc"
     : > "$CLAUDE_SESSION_META_DIR/local/state"
     cat > "$CLAUDE_SESSION_META_DIR/timeline.jsonl" << EOF
-{"ts":"2026-07-16T10:00:00Z","event":"rotated","from":"$UUID_A","to":"$UUID_B","reason":"handoff","handoff":"a\\u001b]52;c;Zm9v\\u0007b"}
+{"ts":"2026-07-16T09:00:00Z","event":"started","source":"x\\u001b[31mred\\u0085y\\tz\\u009dw","session_id":"$UUID_A","branch":"main"}
+{"ts":"2026-07-16T10:00:00Z","event":"rotated","from":"$UUID_A","to":"$UUID_B","reason":"r\\u009bq\\u0080","handoff":"a\\u001b]52;c;Zm9v\\u0007b\\u009f"}
 EOF
     local out
-    out=$("$CS_BIN" -conversations 2>&1) || return 1
+    out=$(TZ=UTC "$CS_BIN" -conversations 2>&1) || return 1
     if printf '%s' "$out" | LC_ALL=C grep -q "$(printf '[\001-\010\033\177]')"; then
         echo "  FAIL: a control character reached the terminal"
         return 1
     fi
-    assert_output_contains "$out" "rotated (handoff: a\]52;c;Zm9vb)" "the printable rest survives" || return 1
+    if printf '%s' "$out" | LC_ALL=C grep -q "$(printf '\302[\200-\237]')"; then
+        echo "  FAIL: a C1 control character reached the terminal"
+        return 1
+    fi
+    assert_eq "2026-07-16 09:00  11111111  started (x[31mredy	zw)
+2026-07-16 10:00  11111111 > 22222222  rotated (rq: a]52;c;Zm9vb)" "$out" "the printable rest of each field survives, the tab with it" || return 1
 }
 
 # A timestamp that is a string but not a date, or missing altogether, is
