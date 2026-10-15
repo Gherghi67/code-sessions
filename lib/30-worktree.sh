@@ -1868,24 +1868,29 @@ _blank_line_then_cat() {  # file
 # and print how many were appended. The base's own lines stay as they are (a
 # pointer both sides reworded keeps the base wording); only a pointer to a
 # topic the base has never indexed is added, so it is not lost at /finish.
+# A pointer the base's memory archive (reference_memory_archive.md beside the
+# index) names is indexed there: /wrap's memory pass moved it out of
+# MEMORY.md, and it stays out.
 # A pointer whose topic file is not beside the base index is left out: the
 # base deleted that topic after the feature branched, and the deletion stands.
 # Fails, appending nothing, when a link takes the base index out of its
 # session: a feature can commit MEMORY.md as a link, and a merge installs it.
 _append_missing_memory_pointers() {  # feature_index base_index
-    local src="$1" dst="$2" have="$2" missing
+    local src="$1" dst="$2" have="$2" archive="${2%/*}/reference_memory_archive.md" missing
     [ -f "$src" ] || { printf '0'; return 0; }
     [ -f "$dst" ] || have=/dev/null
+    [ -f "$archive" ] || archive=/dev/null
     # Bytes, not characters: the index is UTF-8 in any locale, and awk stops
-    # on a line a multibyte locale cannot decode.
+    # on a line a multibyte locale cannot decode. Every file but the last
+    # (the feature's index) names targets the base already indexes.
     missing=$(env LC_ALL=C awk '
         function target(s) {
             if (s !~ /^- \[/ || !match(s, /]\([^)]*\)/)) return ""
             return substr(s, RSTART + 2, RLENGTH - 3)
         }
-        FILENAME == ARGV[1] { t = target($0); if (t != "") seen[t] = 1; next }
+        FILENAME != ARGV[ARGC - 1] { t = target($0); if (t != "") seen[t] = 1; next }
         { t = target($0); if (t == "" || (t in seen)) next; seen[t] = 1; print t "\t" $0 }
-    ' "$have" "$src") || return 1
+    ' "$have" "$archive" "$src") || return 1
     local entry kept="" tab="	"
     while IFS= read -r entry; do
         [ -n "$entry" ] || continue
