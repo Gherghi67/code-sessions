@@ -317,24 +317,27 @@ _settings_backups() {  # settings file
 
 # A settings.json jq cannot parse holds the user's permissions, env, MCP
 # servers and other tools' hooks; replacing it with {} loses them all. The
-# install stops with one error naming the file and jq's reason, and leaves
-# the file byte for byte as it was, with no backup written. jq's reason is
-# matched up to its "parse error" prefix: the words after it differ between
-# jq releases.
+# install stops before it places anything, with one error naming the file
+# and jq's reason, and leaves the file byte for byte as it was, with no
+# backup written and nothing else under HOME changed. jq's reason is matched
+# up to its "parse error" prefix: the words after it differ between jq
+# releases.
 test_install_refuses_invalid_settings_json() {
-    local fake_home="$TEST_TMPDIR/home-badjson" f rc=0 out
+    local fake_home="$TEST_TMPDIR/home-badjson" f rc=0 out before
     f="$fake_home/.claude/settings.json"
     mkdir -p "$fake_home/.claude"
     printf '{"permissions":\n' > "$f"
     cp "$f" "$TEST_TMPDIR/badjson.orig"
+    before=$(_tree_listing "$fake_home")
     HOME="$fake_home" bash "$INSTALL_SH" > "$TEST_TMPDIR/badjson.out" 2>&1 < /dev/null || rc=$?
     out=$(cat "$TEST_TMPDIR/badjson.out")
     assert_eq "1" "$rc" "install must stop on an unparseable settings.json" || return 1
-    assert_output_contains "$out" "^Error: $(_bre_literal "$f") is not valid JSON; left it unchanged and wrote no $(_bre_literal "$f")\.cs-bak\.<stamp> backup: parse error" \
-        "the error names the file and jq's reason" || return 1
+    assert_output_contains "$out" "^Error: $(_bre_literal "$f") is not valid JSON; left it unchanged and wrote no $(_bre_literal "$f")\.cs-bak\.<stamp> backup: parse error.*; nothing was installed$" \
+        "the error names the file and jq's reason, and says nothing was installed" || { echo "$out"; return 1; }
     cmp -s "$TEST_TMPDIR/badjson.orig" "$f" \
         || { echo "  FAIL: settings.json changed although it was refused"; return 1; }
     assert_eq "" "$(_settings_backups "$f")" "a refused file gets no backup" || return 1
+    _assert_tree_unchanged "$before" "$fake_home" "install places nothing before it refuses" || return 1
 }
 
 # A zero-byte settings.json holds nothing to lose: it is created as cs's
@@ -1017,7 +1020,7 @@ test_uninstall_refuses_to_delete_session_data_while_a_session_is_live() {
     assert_file_exists "$root/live-lock/.cs/session.lock" "the live session's data survives" || return 1
     assert_file_exists "$root/dead-lock/.cs/session.lock" "nothing under the root is deleted" || return 1
     # Exact list: both live sessions, and not the one whose lock names a dead pid.
-    assert_output_contains "$out" "Kept $root: these sessions are live: live-beat live-lock\. Close them" \
+    assert_output_contains "$out" "^Error: Nothing was uninstalled: these sessions are live: live-beat live-lock\. Close them and run cs -uninstall again\.$" \
         "the refusal names exactly the live sessions" || return 1
 }
 
@@ -1037,7 +1040,7 @@ test_uninstall_refuses_to_delete_session_data_while_a_dotted_session_is_live() {
     out=$(cat "$TEST_TMPDIR/dot.out")
     [ "$rc" -ne 0 ] || { echo "  FAIL: uninstall must exit non-zero while a dot-prefixed session is live"; return 1; }
     assert_file_exists "$root/.work/.cs/session.lock" "the live dotted session's data survives" || return 1
-    assert_output_contains "$out" "Kept $root: these sessions are live: \.work\. Close them" \
+    assert_output_contains "$out" "^Error: Nothing was uninstalled: these sessions are live: \.work\. Close them and run cs -uninstall again\.$" \
         "the refusal names the dotted session" || return 1
 }
 
@@ -1054,7 +1057,7 @@ test_uninstall_refuses_a_live_session_even_with_a_volume_mounted_inside() {
     out=$(cat "$TEST_TMPDIR/livemnt.out")
     [ "$rc" -ne 0 ] || { echo "  FAIL: uninstall must exit non-zero while a session is live"; return 1; }
     assert_file_exists "$root/live-vault/.cs/session.lock" "the live session's data survives" || return 1
-    assert_output_contains "$out" "Kept $root: these sessions are live: live-vault\. Close them" \
+    assert_output_contains "$out" "^Error: Nothing was uninstalled: these sessions are live: live-vault\. Close them and run cs -uninstall again\.$" \
         "the live refusal wins over the mount warning" || return 1
 }
 
@@ -2625,7 +2628,8 @@ test_install_keeps_user_files_that_share_a_cs_name() {
 # A symlink where cs deploys a file is the user's unless what it points at is
 # content cs wrote: a dangling link holds nothing cs wrote, so it is kept and
 # named like any other file of the user's; a link to cs's own content is
-# replaced by the file this install ships.
+# replaced by the file this install ships, and one line names the link and
+# where it pointed, so a link kept for live rebuilds can be made again.
 test_install_keeps_a_symlink_that_holds_no_cs_content() {
     local home="$TEST_TMPDIR/link-home" rc=0 out
     mkdir -p "$home/.claude/commands"
@@ -2641,18 +2645,31 @@ test_install_keeps_a_symlink_that_holds_no_cs_content() {
     cmp -s "$SCRIPT_DIR/../commands/checkpoint.md" "$home/.claude/commands/checkpoint.md" \
         || { echo "  FAIL: checkpoint.md was not deployed"; return 1; }
     assert_eq '{"modules":["./register.tsx"]}' "$(cat "$TEST_TMPDIR/old-checkpoint.md")" "the link's target is untouched" || return 1
+    assert_eq "1" "$(printf '%s\n' "$out" | grep -c "Replaced symlink $(_bre_literal "$home/.claude/commands/checkpoint.md") (to $(_bre_literal "$TEST_TMPDIR/old-checkpoint.md")) with a deployed copy$")" \
+        "one line names the replaced link and its target" || { echo "$out"; return 1; }
+    assert_output_not_contains "$out" "Replaced symlink $(_bre_literal "$home/.claude/commands/wrap.md")" \
+        "the kept link is not called replaced" || return 1
     # The binaries go through the same gate: a link to the user's own script
-    # where cs-statusline goes is kept, the script untouched.
+    # where cs-statusline goes is kept, the script untouched; a link to a copy
+    # of cs's own bin/cs (a checkout's build, say) is replaced and named.
     local bin_home="$TEST_TMPDIR/link-bin-home"
     mkdir -p "$bin_home/.local/bin"
     printf '#!/bin/sh\necho my bar\n' > "$TEST_TMPDIR/my-bar.sh"
     ln -s "$TEST_TMPDIR/my-bar.sh" "$bin_home/.local/bin/cs-statusline"
+    cp "$SCRIPT_DIR/../bin/cs" "$TEST_TMPDIR/build-cs"
+    ln -s "$TEST_TMPDIR/build-cs" "$bin_home/.local/bin/cs"
     rc=0
     out=$(HOME="$bin_home" bash "$INSTALL_SH" 2>&1 < /dev/null) || rc=$?
     assert_eq "0" "$rc" "install exit status (binary link)" || { echo "$out"; return 1; }
     assert_eq "$TEST_TMPDIR/my-bar.sh" "$(readlink "$bin_home/.local/bin/cs-statusline")" "the link where a binary goes is kept" || return 1
     assert_eq "$(printf '#!/bin/sh\necho my bar')" "$(cat "$TEST_TMPDIR/my-bar.sh")" "the user's script is untouched" || return 1
     assert_output_contains "$out" "Kept $(_bre_literal "$bin_home/.local/bin/cs-statusline")" "the kept binary link is named" || return 1
+    assert_output_not_contains "$out" "Replaced symlink $(_bre_literal "$bin_home/.local/bin/cs-statusline")" \
+        "the kept binary link is not called replaced" || return 1
+    [ ! -L "$bin_home/.local/bin/cs" ] || { echo "  FAIL: the link to cs's own bin/cs was not replaced"; return 1; }
+    cmp -s "$SCRIPT_DIR/../bin/cs" "$bin_home/.local/bin/cs" || { echo "  FAIL: bin/cs was not deployed"; return 1; }
+    assert_eq "1" "$(printf '%s\n' "$out" | grep -c "Replaced symlink $(_bre_literal "$bin_home/.local/bin/cs") (to $(_bre_literal "$TEST_TMPDIR/build-cs")) with a deployed copy$")" \
+        "one line names the replaced binary link and its target" || { echo "$out"; return 1; }
 }
 
 # A user's file under a name cs retired is not in the way of anything cs

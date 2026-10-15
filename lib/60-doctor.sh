@@ -20,6 +20,13 @@ _doctor_settings_parse_ok() {  # settings
     jq -e . "$1" >/dev/null 2>&1
 }
 
+# A jq definition of every hook in settings.json: .hooks is event -> [{matcher,
+# hooks: [{type, command, ...}]}]. Install and uninstall keep whatever else the
+# user wrote there (an event that is not a list, an entry or a hook that is
+# not an object), and Claude Code runs none of it as a hook, so only the
+# objects in the lists are walked; anything else would stop jq mid-stream.
+_DOCTOR_JQ_HOOKS='def cs_hooks: objects | .hooks | objects | .[] | arrays | .[] | objects | .hooks | arrays | .[] | objects;'
+
 _doctor_check_settings_valid() {
     local settings="${CS_CLAUDE_DIR:-$HOME/.claude}/settings.json"
     # A missing file is the hooks check's story to tell, with its own advice.
@@ -76,7 +83,10 @@ _doctor_check_hooks_registered() {
     # file as text passed a broken install whenever a hook path lingered in an
     # unrelated permission rule or env value: the hook never fires, and doctor
     # called the install healthy.
-    registered=$(jq -r '.hooks // {} | to_entries[].value[].hooks[]?.command // empty' "$settings" 2>/dev/null || true)
+    if ! registered=$(jq -r "$_DOCTOR_JQ_HOOKS"' cs_hooks | .command | strings' "$settings" 2>/dev/null); then
+        _doctor_fail "Hooks: cannot read the hook events in $settings; registration unknown"
+        return
+    fi
     local name lib is_lib
     while IFS= read -r name; do
         [ -z "$name" ] && continue
@@ -165,11 +175,14 @@ _doctor_check_hook_drift() {
 
     # area label, deploy root, source paths — reported per artifact kind.
     # Skills deploy as <name>/SKILL.md; everything else deploys flat, keyed
-    # on the source path shape so the label stays purely cosmetic.
+    # on the source path shape so the label stays purely cosmetic. A deployed
+    # copy cs did not write (_cs_owns_file, as install.sh decides) is one
+    # ./install.sh keeps as the user's, so it is named apart, with advice
+    # that can clear it.
     _drift_scan() {
         local label="$1" deploy_root="$2"
         shift 2
-        local drifted=() missing=() src name deployed
+        local drifted=() users_copies=() missing=() src name deployed
         for src in "$@"; do
             [ -e "$src" ] || continue
             if [[ "$src" == */SKILL.md ]]; then
@@ -188,11 +201,19 @@ _doctor_check_hook_drift() {
             if [ ! -f "$deployed" ]; then
                 missing+=("$name")
             elif ! cmp -s "$src" "$deployed"; then
-                drifted+=("$name")
+                if _cs_owns_file "$deployed"; then
+                    drifted+=("$name")
+                else
+                    users_copies+=("$name")
+                fi
             fi
         done
         if [ ${#drifted[@]} -gt 0 ]; then
             _doctor_warn "$label drift: deployed copy differs from source: ${drifted[*]} (run ./install.sh)"
+            clean=0
+        fi
+        if [ ${#users_copies[@]} -gt 0 ]; then
+            _doctor_warn "$label drift: deployed copy differs from source: ${users_copies[*]} (kept as yours, so ./install.sh does not replace it; move it aside, then run ./install.sh to get cs's copy)"
             clean=0
         fi
         if [ ${#missing[@]} -gt 0 ]; then
@@ -452,7 +473,10 @@ _doctor_check_settings_hooks_resolve() {
         return
     fi
     local commands
-    commands=$(jq -r '.hooks // {} | to_entries[].value[].hooks[]?.command // empty' "$settings" 2>/dev/null)
+    if ! commands=$(jq -r "$_DOCTOR_JQ_HOOKS"' cs_hooks | .command | strings' "$settings" 2>/dev/null); then
+        _doctor_fail "Hook paths: cannot read the hook events in $settings"
+        return
+    fi
     if [ -z "$commands" ]; then
         _doctor_ok "Hook paths: no hooks registered in settings.json"
         return
@@ -566,15 +590,19 @@ _doctor_check_shadow_ref() {
             # way. The matcher is a regex, as Claude Code reads it; an empty or
             # "*" matcher covers every tool. An invalid regex counts as no
             # match for its own entry only, since a registration under it
-            # cannot fire; the entries after it are still read.
-            commands=$(jq -r '
-                .hooks.PostToolUse // [] | .[]
+            # cannot fire; the entries after it are still read. As for every
+            # hook doctor reads, only the objects in the lists are walked.
+            if ! commands=$(jq -r '
+                objects | .hooks | objects | .PostToolUse | arrays | .[] | objects
                 | select((.matcher // "") as $m
                     | $m == "" or $m == "*"
                       or (try (("Write" | test("^(" + $m + ")$")) and ("Edit" | test("^(" + $m + ")$"))) catch false))
-                | .hooks[]?.command // empty
+                | .hooks | arrays | .[] | objects | .command | strings
                 | select(test("(^|[ /])autosave-commits\\.sh$"))
-            ' "$settings" 2>/dev/null || true)
+            ' "$settings" 2>/dev/null); then
+                _doctor_warn "Shadow ref: cannot read the PostToolUse hooks in $settings; autosave's registration unknown"
+                return
+            fi
             if [ -z "$commands" ]; then
                 _doctor_warn "Shadow ref: autosave-commits.sh is not registered for PostToolUse on Write and Edit in $settings; edits are not snapshotted"
                 return
@@ -599,14 +627,17 @@ _doctor_check_claude_audit() {
         _doctor_fail "Audit: cannot read $settings (invalid JSON)"
         return
     fi
-    # .hooks is event -> [{matcher, hooks: [{type, command, ...}]}]; flatten 3 levels for command count.
+    # Hooks are counted as cs_hooks walks them, one per hook object.
     local counts hooks_count mcps_count perms_count env_count
-    counts=$(jq -r '
-        "\([.hooks // {} | to_entries[].value[].hooks[]?] | length) " +
+    if ! counts=$(jq -r "$_DOCTOR_JQ_HOOKS"'
+        "\([cs_hooks] | length) " +
         "\(.mcpServers // {} | length) " +
         "\(((.permissions.allow // []) + (.permissions.deny // [])) | length) " +
         "\(.env // {} | length)"
-    ' "$settings" 2>/dev/null || echo "0 0 0 0")
+    ' "$settings" 2>/dev/null); then
+        _doctor_warn "Audit: cannot count the hooks, MCPs, permission rules and env vars in $settings"
+        return
+    fi
     read -r hooks_count mcps_count perms_count env_count <<< "$counts"
     _doctor_ok "Audit: ${hooks_count} hooks, ${mcps_count} MCPs, ${perms_count} perm rules, ${env_count} env vars in settings.json"
 }

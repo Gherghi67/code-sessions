@@ -17,7 +17,8 @@ _stage_install() {  # home
 }
 
 # Refused before the first removal: every binary is still installed, the
-# refusal is the data step's own text, and the exit is non-zero.
+# refusal says nothing was uninstalled and to run cs -uninstall again once
+# the sessions are closed, and the exit is non-zero.
 test_uninstall_with_a_live_session_removes_nothing() {
     local home="$TEST_TMPDIR/live-home" root="$TEST_TMPDIR/live-sessions" stub="$TEST_TMPDIR/mount-stub"
     _stage_install "$home"
@@ -30,7 +31,7 @@ test_uninstall_with_a_live_session_removes_nothing() {
         > "$TEST_TMPDIR/live.out" 2>&1 || rc=$?
     out=$(cat "$TEST_TMPDIR/live.out")
     assert_eq 1 "$rc" "uninstall exits 1 while a session is live" || return 1
-    assert_output_contains "$out" "Error: Kept $root: these sessions are live: live-lock. Close them, then delete $root." \
+    assert_output_contains "$out" "Error: Nothing was uninstalled: these sessions are live: live-lock. Close them and run cs -uninstall again." \
         "the refusal names the live session" || return 1
     for f in cs cs-secrets cs-statusline cs-subagent-statusline; do
         assert_file_exists "$home/.local/bin/$f" "$f is still installed after the refusal" || return 1
@@ -63,7 +64,7 @@ test_uninstall_rechecks_live_sessions_after_the_confirmation() {
         > "$TEST_TMPDIR/late.out" 2>&1 || rc=$?
     out=$(cat "$TEST_TMPDIR/late.out")
     assert_eq 1 "$rc" "uninstall exits 1 when a session opened during the prompt" || return 1
-    assert_output_contains "$out" "Error: Kept $root: these sessions are live: late-open. Close them, then delete $root." \
+    assert_output_contains "$out" "Error: Nothing was uninstalled: these sessions are live: late-open. Close them and run cs -uninstall again." \
         "the refusal names the session that opened" || return 1
     for f in cs cs-secrets cs-statusline cs-subagent-statusline; do
         assert_file_exists "$home/.local/bin/$f" "$f is still installed after the late refusal" || return 1

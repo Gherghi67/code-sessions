@@ -1282,7 +1282,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "25480ef7ca797a91a8e7b969b9634dad5a07d9bda12637f891938b095e613c4b  bin/cs"
+    "d43debfce43c02ff8e952785cfde2f29b39f97de0e701df62112729cf84ef306  bin/cs"
     "42d2f9ecbc9a89f3b119958360fb753962c89df18b51ef7b85db109b2644e7de  bin/cs-secrets"
     "24117fba0eadfb19732feeb82ff9c4ee1772f9bd0297adf19478dd861c3d3735  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -1335,8 +1335,9 @@ _check_retired_names
 # events cs registers a hook under (CS_HOOK_EVENTS) as something other than a
 # list: that value is the user's and stays as it is, so cs's hook cannot be
 # added to it. A missing or null event is one cs creates. Without jq no hook
-# is registered at all, and a file jq cannot parse stops the install at the
-# settings step, further down.
+# is registered at all, and a file jq cannot parse is refused further down,
+# once the payload's cs_settings_check is at hand, still before anything is
+# placed.
 _refuse_a_hook_event_that_is_not_a_list() {
     local event
     command -v jq >/dev/null 2>&1 || return 0
@@ -1408,10 +1409,11 @@ _payload_mode() {  # repo-path
 # A symlink at $2 (a dotfiles manager's, or one pointing at a checkout) is
 # the user's and is kept, named in a warning and listed at the end, unless
 # what it points at is content cs wrote (_cs_owns_file): only then is the
-# link replaced by the file. The rename replaces the link itself, never
-# writing through it, so its target is left as it was either way.
+# link replaced by the file, in a line naming the link and where it pointed.
+# The rename replaces the link itself, never writing through it, so its
+# target is left as it was either way.
 _place_file() {  # src, dest, mode
-    local dest="$2" dir tmp digest
+    local dest="$2" dir tmp digest link_target=""
     if [ -L "$dest" ]; then
         digest=$(_cs_sha256_file "$1") || error "Could not compute the sha256 of $1 (needs sha256sum or shasum)"
         if ! _cs_owns_file "$dest" "$digest"; then
@@ -1419,6 +1421,7 @@ _place_file() {  # src, dest, mode
             CS_KEPT_PATHS+=("$dest")
             return 0
         fi
+        link_target=$(readlink "$dest") || error "Could not read the symlink $dest"
     fi
     dir=$(dirname "$dest")
     mkdir -p "$dir" || error "Could not create $dir"
@@ -1426,6 +1429,9 @@ _place_file() {  # src, dest, mode
     if ! { cp "$1" "$tmp" && chmod "$3" "$tmp" && mv -f "$tmp" "$dest"; }; then
         rm -f "$tmp"
         error "Failed to install $dest"
+    fi
+    if [ -n "$link_target" ]; then
+        info "Replaced symlink $dest (to $link_target) with a deployed copy"
     fi
 }
 
@@ -1489,9 +1495,6 @@ fi
 # Show banner
 show_banner
 
-# Create install directory if needed
-mkdir -p "$INSTALL_DIR"
-
 # Whether downloaded file $STAGE_DIR/$1 has the sha256 CS_PAYLOAD_SHA256
 # carries for repo path $1. A path with no entry, or a digest that cannot be
 # computed, does not match.
@@ -1533,6 +1536,20 @@ if [ "$INSTALL_METHOD" = "web" ]; then
         fi
     done
 fi
+
+# Stop, before anything is placed, on a settings.json jq cannot parse, which
+# the settings step below would refuse only after every file was deployed.
+# The check is cs_settings_check from the payload's shared library (the
+# checkout, or the verified downloads), as the settings step runs it; without
+# jq no hook is registered at all, so the file is not read.
+# shellcheck source=hooks/cs-shared.sh
+. "$PAYLOAD_DIR/hooks/cs-shared.sh" || error "could not load $PAYLOAD_DIR/hooks/cs-shared.sh; nothing was installed"
+if command -v jq >/dev/null 2>&1; then
+    cs_settings_check "$CLAUDE_SETTINGS" || error "$CS_SETTINGS_ERROR; nothing was installed"
+fi
+
+# Create install directory if needed
+mkdir -p "$INSTALL_DIR"
 
 # Install cs script
 installed "cs" "$INSTALL_DIR/cs"
@@ -1912,12 +1929,12 @@ if ! command -v jq >/dev/null 2>&1; then
 else
     # settings.json is read and rewritten once, by cs_settings_update from
     # the hooks' shared library in the payload (the checkout, or the verified
-    # downloads), never the deployed copy: a deployed cs-shared.sh that cs
-    # did not write is kept, and must not run here. Under its lock and after
-    # every question below; a file jq cannot parse stops the install here,
-    # before any question, and is left as it is.
-    # shellcheck source=hooks/cs-shared.sh
-    . "$PAYLOAD_DIR/hooks/cs-shared.sh" || error "could not load $PAYLOAD_DIR/hooks/cs-shared.sh; $CLAUDE_SETTINGS left unchanged"
+    # downloads), sourced before anything was placed, never the deployed
+    # copy: a deployed cs-shared.sh that cs did not write is kept, and must
+    # not run here. Under its lock and after every question below. A file jq
+    # cannot parse was refused before anything was placed; one that has
+    # become so since stops the install here, before any question, and is
+    # left as it is.
     cs_settings_check "$CLAUDE_SETTINGS" || error "$CS_SETTINGS_ERROR"
 
     # Tilde spelling of HOOKS_DIR (settings.json entries use ~ instead of $HOME)
