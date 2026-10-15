@@ -67,11 +67,19 @@ _print_names() {  # label
     done
 }
 
-# Each pointer target on stdin with no file of that name in .cs/memory.
+# Each pointer target on stdin that names an entry file with no file of that
+# name in .cs/memory. A target names an entry file only when it is a bare file
+# name ending in .md, with no / and no : in it; any other target (a URL, a
+# path, a link with an #anchor) names none and is not checked. MEMORY.md and
+# the archive share this rule.
 _missing_entries() {
     local target
     while IFS= read -r target; do
-        [ -n "$target" ] || continue
+        case "$target" in
+            ''|*/*|*:*) continue ;;
+            *.md) ;;
+            *) continue ;;
+        esac
         [ -f ".cs/memory/$target" ] || printf '%s\n' "$target"
     done
 }
