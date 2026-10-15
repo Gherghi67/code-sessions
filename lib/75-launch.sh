@@ -637,6 +637,15 @@ _launch_claude_bound() {
     local memory_path="$session_dir/.cs/memory"
     export CLAUDE_CODE_AUTO_MEMORY_PATH="$memory_path"
     export CLAUDE_COWORK_MEMORY_PATH_OVERRIDE="$memory_path"
+    # code-sessions shares the default Claude login, the one the Agents sidebar
+    # switches, and its launcher says so with an empty value. A launch that
+    # skipped that launcher, such as a feature or tmux window opened from a
+    # session an older launcher started, would otherwise file its login under
+    # the profile's own keychain entry, which no switch reaches. A value
+    # chosen on purpose stays.
+    if [ -n "${CODE_SESSIONS_HOME:-}" ] && [ -z "${CLAUDE_SECURESTORAGE_CONFIG_DIR+set}" ]; then
+        export CLAUDE_SECURESTORAGE_CONFIG_DIR=''
+    fi
     if [ -n "${CODE_SESSIONS_HOME:-}" ] && [ "${CLAUDE_SECURESTORAGE_CONFIG_DIR-unset}" = "" ]; then
         _seed_session_claude_json "$CODE_SESSIONS_HOME/.claude" "$(_cs_claude_json_path "$HOME/.claude" "$HOME/.claude.json")" || return $?
     fi

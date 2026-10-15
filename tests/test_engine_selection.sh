@@ -27,7 +27,7 @@ setup() {
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$CS_CLAUDE_LOG"
 printf '%s\n' "$@" > "$CS_CLAUDE_ARGV"
-env | grep -E '^(CS_SESSION_|CLAUDE_SESSION_)' > "$CS_CLAUDE_ENV"
+env | grep -E '^(CS_SESSION_|CLAUDE_SESSION_|CLAUDE_SECURESTORAGE_CONFIG_DIR=)' > "$CS_CLAUDE_ENV"
 uuid=""
 while [ "$#" -gt 0 ]; do
     case "$1" in --session-id|--resume) uuid="$2"; shift 2 ;; *) shift ;; esac
@@ -383,6 +383,40 @@ test_profile_reopen_refreshes_login_without_overwriting_preferences() {
     assert_eq '{"own":2}' "$(jq -c .projects "$profile/.claude/.claude.json")" || return 1
 }
 
+# A code-sessions launch that did not come through the current launcher (a
+# feature or tmux window opened from a session an older launcher started)
+# arrives without CLAUDE_SECURESTORAGE_CONFIG_DIR. Claude would then file its
+# login under the profile's own keychain entry, which the Agents sidebar's
+# switch never writes, so the session would stay on the old account.
+test_profile_launch_without_the_variable_shares_the_default_login() {
+    local profile="$TEST_TMPDIR/profile" output
+    mkdir -p "$profile/.claude"
+    printf '%s\n' '{"oauthAccount":{"accountUuid":"switched"}}' > "$HOME/.claude.json"
+    printf '%s\n' '{"oauthAccount":{"accountUuid":"stale"},"theme":"profile"}' > "$profile/.claude/.claude.json"
+    output=$(env -u CLAUDE_SECURESTORAGE_CONFIG_DIR CODE_SESSIONS_HOME="$profile" CLAUDE_CONFIG_DIR="$profile/.claude" \
+        "$CS_BIN" profile-unset --engine claude 2>&1) || { echo "$output"; return 1; }
+    assert_file_contains "$CS_CLAUDE_ENV" '^CLAUDE_SECURESTORAGE_CONFIG_DIR=$' \
+        "Claude gets the default credential entry" || return 1
+    assert_eq switched "$(jq -r .oauthAccount.accountUuid "$profile/.claude/.claude.json")" || return 1
+    assert_eq profile "$(jq -r .theme "$profile/.claude/.claude.json")" || return 1
+}
+
+test_profile_launch_keeps_a_chosen_credential_dir() {
+    local profile="$TEST_TMPDIR/profile" output
+    mkdir -p "$profile/.claude"
+    output=$(CODE_SESSIONS_HOME="$profile" CLAUDE_CONFIG_DIR="$profile/.claude" \
+        CLAUDE_SECURESTORAGE_CONFIG_DIR="$TEST_TMPDIR/own-login" \
+        "$CS_BIN" profile-chosen --engine claude 2>&1) || { echo "$output"; return 1; }
+    assert_file_contains "$CS_CLAUDE_ENV" "^CLAUDE_SECURESTORAGE_CONFIG_DIR=$TEST_TMPDIR/own-login\$" || return 1
+}
+
+test_original_launch_leaves_the_credential_dir_alone() {
+    local output
+    output=$(env -u CLAUDE_SECURESTORAGE_CONFIG_DIR -u CODE_SESSIONS_HOME -u CLAUDE_CONFIG_DIR \
+        "$CS_BIN" original-unset --engine claude 2>&1) || { echo "$output"; return 1; }
+    assert_file_not_contains "$CS_CLAUDE_ENV" '^CLAUDE_SECURESTORAGE_CONFIG_DIR=' || return 1
+}
+
 echo 'Engine selection tests'
 run_test test_engine_roundtrip_resumes_each_acknowledged_binding
 run_test test_launch_intent_flags_validate_before_creation
@@ -405,4 +439,7 @@ run_test test_claude_adoption_preserves_user_local_instructions
 run_test test_launch_options_survive_fresh_and_resumed_engines
 run_test test_invalid_launch_options_do_not_create_workspace
 run_test test_profile_reopen_refreshes_login_without_overwriting_preferences
+run_test test_profile_launch_without_the_variable_shares_the_default_login
+run_test test_profile_launch_keeps_a_chosen_credential_dir
+run_test test_original_launch_leaves_the_credential_dir_alone
 report_results
