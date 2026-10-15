@@ -242,6 +242,32 @@ test_doctor_warns_on_wrap_pass_drift() {
         "doctor should warn when a deployed wrap pass differs from checkout source" || return 1
 }
 
+# ./install.sh replaces a deployed copy cs wrote and keeps one it did not (the
+# user's edit), so the drift row's advice follows what the install will do:
+# run it for cs's own copy; for a copy kept as the user's, move it aside first.
+# The record names session-start.sh as cs's; narrative-reminder.sh is not in
+# it and is no content cs ever shipped.
+test_doctor_drift_advice_follows_whose_the_deployed_copy_is() {
+    local home="$TEST_TMPDIR/drift-home" checkout="$TEST_TMPDIR/keptco" deployed digest output
+    deployed="$home/.claude/hooks/cs"
+    make_fake_checkout "$checkout" "$deployed"
+    echo 'echo source' > "$checkout/hooks/session-start.sh"
+    echo 'echo source' > "$checkout/hooks/narrative-reminder.sh"
+    echo 'echo an-older-cs-build' > "$deployed/session-start.sh"
+    echo 'echo the-users-edit' > "$deployed/narrative-reminder.sh"
+    chmod +x "$deployed/session-start.sh" "$deployed/narrative-reminder.sh"
+    digest=$(shasum -a 256 "$deployed/session-start.sh" | cut -d' ' -f1)
+    printf '%s  .claude/hooks/cs/session-start.sh\n' "$digest" > "$deployed/.installed"
+
+    output=$(cd "$checkout" && HOME="$home" CS_HOOKS_DIR="$deployed" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" "Hook drift: deployed copy differs from source: session-start.sh (run ./install.sh)$" \
+        "cs's own copy: run the installer" || { echo "$output"; return 1; }
+    assert_output_contains "$output" "Hook drift: deployed copy differs from source: narrative-reminder.sh (kept as yours, so ./install.sh does not replace it; move it aside, then run ./install.sh to get cs's copy)$" \
+        "the user's copy: move it aside first" || { echo "$output"; return 1; }
+    assert_output_not_contains "$output" "narrative-reminder.sh.*(run ./install.sh)$" \
+        "the user's copy is not offered the plain advice" || { echo "$output"; return 1; }
+}
+
 test_doctor_warns_on_undeployed_hook() {
     local checkout="$TEST_TMPDIR/checkout" deployed="$TEST_TMPDIR/deployed"
     make_fake_checkout "$checkout" "$deployed"
@@ -993,6 +1019,80 @@ test_doctor_skips_inline_shell_hook_commands() {
         "inline shell-snippet hook commands must not be flagged as missing files" || return 1
 }
 
+# Install and uninstall keep a hook event whose value is not a list, and an
+# entry or a hook in an event's list that is not an object: they are the
+# user's. Every row that reads the hook events reads past them to cs's own
+# registrations, wherever they sit, and the run reaches its summary. Cases:
+# a string event before cs's events, the same after them, and cs's events
+# holding entries and hooks that are not objects.
+test_doctor_reads_past_hook_events_and_entries_that_are_not_objects() {
+    local fake_claude="$TEST_TMPDIR/claude-nonlist" fake_hooks="$TEST_TMPDIR/hooks-nonlist"
+    local id="11111111-2222-3333-4444-555555555555" case_name output rc
+    mkdir -p "$fake_claude" "$fake_hooks"
+    : > "$fake_hooks/session-start.sh"
+    : > "$fake_hooks/autosave-commits.sh"
+    chmod +x "$fake_hooks/session-start.sh" "$fake_hooks/autosave-commits.sh"
+    for case_name in string-event-first string-event-last entries-not-objects; do
+        jq -n --arg case "$case_name" --arg start "$fake_hooks/session-start.sh" \
+            --arg autosave "$fake_hooks/autosave-commits.sh" '
+            {SessionStart: [{hooks: [{type: "command", command: $start}]}],
+             PostToolUse: [{matcher: "Write|Edit", hooks: [{type: "command", command: $autosave}]}]} as $cs
+            | {hooks: (
+                if $case == "string-event-first" then {Notification: "not-a-list"} + $cs
+                elif $case == "string-event-last" then $cs + {Notification: "not-a-list"}
+                else {SessionStart: [{hooks: ["bare", {type: "command", command: $start}]}],
+                      PostToolUse: ["user-entry", {matcher: "Write|Edit", hooks: [{type: "command", command: $autosave}]}]}
+                end)}' > "$fake_claude/settings.json"
+        rc=0
+        output=$(CLAUDE_CODE_SESSION_ID="$id" CS_CLAUDE_DIR="$fake_claude" CS_HOOKS_DIR="$fake_hooks" \
+            "$CS_BIN" -doctor 2>&1) || rc=$?
+        assert_output_contains "$output" "Hooks: all registered in settings.json" \
+            "$case_name: cs's hooks are found registered" || { echo "$output"; return 1; }
+        assert_output_contains "$output" "Hook paths: all registered hooks resolve to existing files" \
+            "$case_name: the hook paths row reads every registration" || { echo "$output"; return 1; }
+        assert_output_contains "$output" "Audit: 2 hooks, 0 MCPs, 0 perm rules, 0 env vars in settings.json" \
+            "$case_name: the audit counts the two hooks" || { echo "$output"; return 1; }
+        assert_output_contains "$output" "Shadow ref: no snapshot for this conversation yet (autosave runs on Edit/Write)" \
+            "$case_name: autosave's registration is found" || { echo "$output"; return 1; }
+        # No statusLine in the fixture is always a WARN, so the summary is
+        # the warnings line.
+        assert_eq "0" "$rc" "$case_name: doctor's exit status" || { echo "$output"; return 1; }
+        assert_output_contains "$(tail -n 1 <<< "$output")" "^Complete with [0-9]* warning(s)\.$" \
+            "$case_name: doctor runs to its summary" || { echo "$output"; return 1; }
+    done
+}
+
+# A jq run that fails on a settings file that parses is reported on the row
+# that ran it, and doctor goes on to its summary. The fake jq fails every
+# filter that reads the hook events and runs the real jq for the rest.
+test_doctor_reports_a_failed_read_of_the_hook_events() {
+    local fake_claude="$TEST_TMPDIR/claude-jqfail" fake_hooks="$TEST_TMPDIR/hooks-jqfail"
+    local fake_bin="$TEST_TMPDIR/jqfail-bin" real_jq id="11111111-2222-3333-4444-555555555555" output
+    real_jq=$(command -v jq)
+    mkdir -p "$fake_claude" "$fake_hooks" "$fake_bin"
+    : > "$fake_hooks/session-start.sh"
+    chmod +x "$fake_hooks/session-start.sh"
+    jq -n --arg start "$fake_hooks/session-start.sh" \
+        '{hooks: {SessionStart: [{hooks: [{type: "command", command: $start}]}]}}' > "$fake_claude/settings.json"
+    printf '#!/bin/sh\ncase "$*" in *.hooks*) echo "jq: error: injected" >&2; exit 5 ;; esac\nexec "%s" "$@"\n' \
+        "$real_jq" > "$fake_bin/jq"
+    chmod +x "$fake_bin/jq"
+    output=$(PATH="$fake_bin:$PATH" CLAUDE_CODE_SESSION_ID="$id" CS_CLAUDE_DIR="$fake_claude" \
+        CS_HOOKS_DIR="$fake_hooks" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" "Settings: $fake_claude/settings.json is valid JSON" \
+        "positive control: the parse check runs the real jq" || { echo "$output"; return 1; }
+    assert_output_contains "$output" "Hooks: cannot read the hook events in $fake_claude/settings.json; registration unknown" \
+        "the registration row names the failed read" || { echo "$output"; return 1; }
+    assert_output_contains "$output" "Hook paths: cannot read the hook events in $fake_claude/settings.json" \
+        "the hook paths row names the failed read" || { echo "$output"; return 1; }
+    assert_output_contains "$output" "Audit: cannot count the hooks, MCPs, permission rules and env vars in $fake_claude/settings.json" \
+        "the audit row names the failed read" || { echo "$output"; return 1; }
+    assert_output_contains "$output" "Shadow ref: cannot read the PostToolUse hooks in $fake_claude/settings.json; autosave's registration unknown" \
+        "the shadow ref row names the failed read" || { echo "$output"; return 1; }
+    assert_output_contains "$(tail -n 1 <<< "$output")" "^Failed: [0-9]*  Warnings: [0-9]*$" \
+        "doctor runs to its summary" || { echo "$output"; return 1; }
+}
+
 test_doctor_statusline_ok_when_registered_and_executable() {
     local fake_claude="$TEST_TMPDIR/sl-claude"
     local fake_bin="$TEST_TMPDIR/sl-bin"
@@ -1410,6 +1510,7 @@ run_test test_doctor_completes_when_the_deploy_stamp_is_absent
 run_test test_doctor_drift_ignores_a_checkout_that_did_not_produce_the_install
 run_test test_doctor_warns_on_hook_drift
 run_test test_doctor_warns_on_wrap_pass_drift
+run_test test_doctor_drift_advice_follows_whose_the_deployed_copy_is
 run_test test_doctor_warns_on_undeployed_hook
 run_test test_doctor_drift_silent_when_in_sync
 run_test test_doctor_warns_on_mod_drift
@@ -1451,6 +1552,8 @@ run_test test_doctor_passes_when_all_settings_hooks_resolve
 run_test test_doctor_settings_hooks_resolve_handles_no_hooks_section
 run_test test_doctor_settings_hooks_resolve_expands_tilde
 run_test test_doctor_skips_inline_shell_hook_commands
+run_test test_doctor_reads_past_hook_events_and_entries_that_are_not_objects
+run_test test_doctor_reports_a_failed_read_of_the_hook_events
 run_test test_doctor_statusline_ok_when_registered_and_executable
 run_test test_doctor_statusline_fails_when_binary_missing
 run_test test_doctor_statusline_caps_row_names_the_answer_or_the_ask
