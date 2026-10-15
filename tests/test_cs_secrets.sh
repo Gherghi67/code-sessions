@@ -637,6 +637,29 @@ test_age_remove_refuses_a_name_that_is_not_a_recipient_name() {
     assert_not_exists "$HOME/.cs-secrets/sessions/test-session" "no age state is made" || return 1
 }
 
+# A feature (<base>@<task>) uses its base's age recipients and pins: its
+# launch exports the base as CS_SECRETS_SESSION, and cs <base>@<task>
+# -secrets names the base. Age state made under the feature's own name is
+# removed by nothing, so age add and age remove addressed to a feature are
+# refused, naming the base, before anything is made or removed.
+test_age_writes_refuse_a_feature_session() {
+    local key=age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq0000000
+    local meta="$CS_SESSIONS_ROOT/test-session@task/.cs" cmd out rc
+    mkdir -p "$meta/age-recipients"
+    printf '%s\n' "$key" > "$meta/age-recipients/peer.pub"
+    for cmd in "add $key" "remove peer" "rm peer"; do
+        rc=0
+        # shellcheck disable=SC2086 # each entry carries its own arguments
+        out=$("$CS_SECRETS_BIN" --session test-session@task age $cmd 2>&1) || rc=$?
+        assert_eq "1" "$rc" "age $cmd exits 1: $out" || return 1
+        assert_eq "Error: test-session@task is a feature of session test-session, and a feature uses its base's age recipients. Run it with --session test-session." \
+            "$out" "age $cmd names the base" || return 1
+    done
+    assert_eq "$key" "$(cat "$meta/age-recipients/peer.pub")" "the feature's recipient file is kept" || return 1
+    assert_eq "peer.pub" "$(ls -A "$meta/age-recipients")" "nothing is added beside it" || return 1
+    assert_not_exists "$HOME/.cs-secrets/sessions/test-session@task" "no age state is made for the feature" || return 1
+}
+
 # Stored secrets outlive `cs -rm`, so an export under a removed session's name
 # has something to write.
 test_export_file_refuses_a_session_the_root_does_not_have() {
@@ -4748,6 +4771,7 @@ run_test test_session_verbs_refuse_a_name_that_is_a_path
 run_test test_age_remove_refuses_a_session_the_root_does_not_have
 run_test test_age_remove_refuses_a_link_on_the_way_to_the_recipient
 run_test test_age_remove_refuses_a_name_that_is_not_a_recipient_name
+run_test test_age_writes_refuse_a_feature_session
 run_test test_export_file_refuses_a_session_the_root_does_not_have
 run_test test_import_file_refuses_a_session_the_root_does_not_have
 run_test test_purge_empty_session
