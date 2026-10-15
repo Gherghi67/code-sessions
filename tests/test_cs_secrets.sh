@@ -3430,6 +3430,58 @@ test_migrate_partial_write_fails_loud() {
     assert_output_contains "$out" "incomplete" "must report the migration as incomplete" || return 1
 }
 
+# --- migrate --redact: each value is replaced as text, never through argv ---
+
+# A value holds whatever bytes the file gave it. Regex characters in it, an
+# unbalanced "(" or a balanced "(a)", are text to find, and every other byte
+# of the file, its other lines included, stays as it was.
+test_migrate_redact_replaces_each_value_as_text() {
+    local art="$CS_SESSIONS_ROOT/test-session/.cs/artifacts" out rc=0 want
+    mkdir -p "$art"
+    printf '%s\n' '# service credentials' 'api_key=sk(live*[1]^$.?+{2}|\1&/x' \
+        'endpoint=https://api.example.com/v1' 'db_password: p(a)ss w0rd' '' 'note=plain text after' > "$art/config.env"
+    out=$("$CS_SECRETS_BIN" migrate --redact 2>&1) || rc=$?
+    assert_eq "0" "$rc" "migrate --redact exits 0: $out" || return 1
+    assert_eq "Scanning artifacts for plaintext secrets...
+
+  Migrated: api_key (from config.env)
+  Migrated: db_password (from config.env)
+
+Migrated 2 secret(s) to secure storage.
+Updated 1 file(s) with redacted values." "$out" "migrate reports both secrets and the one file" || return 1
+    want=$(printf '%s\n' '# service credentials' 'api_key=[REDACTED: stored in keychain as api_key]' \
+        'endpoint=https://api.example.com/v1' 'db_password: [REDACTED: stored in keychain as db_password]' '' 'note=plain text after'; printf x)
+    assert_eq "$want" "$(cat "$art/config.env"; printf x)" "each value, and nothing else, is replaced" || return 1
+    assert_eq 'sk(live*[1]^$.?+{2}|\1&/x' "$("$CS_SECRETS_BIN" get api_key 2>&1)" "api_key is stored as it was" || return 1
+    assert_eq 'p(a)ss w0rd' "$("$CS_SECRETS_BIN" get db_password 2>&1)" "db_password is stored as it was" || return 1
+}
+
+# `ps` shows every process's arguments to every local user, so a migrated
+# value must never be one. Each tool cs-secrets could run from PATH goes
+# through a recorder that logs the arguments it was started with.
+test_migrate_redact_keeps_each_value_off_argv() {
+    local art="$CS_SESSIONS_ROOT/test-session/.cs/artifacts" rec="$TEST_TMPDIR/argv-rec" log="$TEST_TMPDIR/argv.log" tool real
+    mkdir -p "$art" "$rec"
+    for tool in sed awk grep tr cat od jq openssl find basename dirname mktemp mv chmod rm cut head tail wc perl shasum; do
+        real=$(command -v "$tool") || continue
+        cat > "$rec/$tool" <<EOF
+#!/bin/sh
+printf '%s\n' "$tool \$*" >> '$log'
+exec '$real' "\$@"
+EOF
+        chmod +x "$rec/$tool"
+    done
+    printf '%s\n' 'api_key=sk_live_4f9c2e7a1b' > "$art/config.env"
+    PATH="$rec:$PATH" "$CS_SECRETS_BIN" migrate --redact >/dev/null 2>&1 \
+        || { echo "  FAIL: migrate --redact failed"; return 1; }
+    assert_eq "api_key=[REDACTED: stored in keychain as api_key]" "$(cat "$art/config.env")" "the value is redacted" || return 1
+    assert_file_contains "$log" "^find .*/artifacts -type f -print0$" "the recorder saw the tools cs-secrets ran" || return 1
+    if grep -F 'sk_live_4f9c2e7a1b' "$log"; then
+        echo "  FAIL: the value reached a process's argv (lines above)"
+        return 1
+    fi
+}
+
 # ============================================================================
 # Concurrency & durability (encrypted backend)
 # ============================================================================
@@ -4713,6 +4765,8 @@ run_test test_keychain_purge_loud_on_enumeration_failure
 run_test test_keychain_export_loud_on_enumeration_failure
 run_test test_keychain_export_loud_on_read_failure
 run_test test_migrate_partial_write_fails_loud
+run_test test_migrate_redact_replaces_each_value_as_text
+run_test test_migrate_redact_keeps_each_value_off_argv
 
 # Concurrency & durability
 run_test test_encrypted_concurrent_stores_no_lost_update
