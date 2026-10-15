@@ -440,10 +440,13 @@ _cs_install_record() {
     printf '%s\n' "$HOME/.claude/hooks/cs/.installed"
 }
 
-# Prints the sha256 of file $1. Fails when the file cannot be read or there
-# is no sha256sum or shasum to compute it.
+# Prints the sha256 of file $1. Fails when $1 is not a regular file or a
+# link to one, without reading it: a FIFO or a device can keep a read
+# waiting forever. Fails too when the file cannot be read or there is no
+# sha256sum or shasum to compute it.
 _cs_sha256_file() {  # file
     local out
+    [ -f "$1" ] || return 1
     if command -v sha256sum >/dev/null 2>&1; then
         out=$(sha256sum < "$1") || return 1
     elif command -v shasum >/dev/null 2>&1; then
@@ -1282,7 +1285,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "44a0de040e1c0f26a7642acba56c4c28fbe6f941cd2ed95d90c4d22ef3ff0208  bin/cs"
+    "b5d0733c6631c957d5e9dd481abe327ac0b44734c56ec56592a276ed8e5082ff  bin/cs"
     "42d2f9ecbc9a89f3b119958360fb753962c89df18b51ef7b85db109b2644e7de  bin/cs-secrets"
     "24117fba0eadfb19732feeb82ff9c4ee1772f9bd0297adf19478dd861c3d3735  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"

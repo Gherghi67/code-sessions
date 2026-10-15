@@ -348,10 +348,13 @@ _cs_install_record() {
     printf '%s\n' "$HOME/.claude/hooks/cs/.installed"
 }
 
-# Prints the sha256 of file $1. Fails when the file cannot be read or there
-# is no sha256sum or shasum to compute it.
+# Prints the sha256 of file $1. Fails when $1 is not a regular file or a
+# link to one, without reading it: a FIFO or a device can keep a read
+# waiting forever. Fails too when the file cannot be read or there is no
+# sha256sum or shasum to compute it.
 _cs_sha256_file() {  # file
     local out
+    [ -f "$1" ] || return 1
     if command -v sha256sum >/dev/null 2>&1; then
         out=$(sha256sum < "$1") || return 1
     elif command -v shasum >/dev/null 2>&1; then
