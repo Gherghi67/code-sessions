@@ -173,10 +173,12 @@ export function register(on: On, options: PluginOptions) {
 
 // The conversation cs launched is the one whose id cs recorded before the
 // launch; a teammate in the same directory reads the same file and does not
-// match. A directory without the file is not a cs session: no pane. The id
-// may be quoted (KEEP IN SYNC with ownsRotation in mods/cs).
+// match. A directory the sessions root does not name, or one without the
+// file, is not a cs session: no pane. The id may be quoted (KEEP IN SYNC with
+// ownsRotation in mods/cs).
 async function isLead($: EngineInterface, cwd: string): Promise<boolean> {
   if (await $.fs.exists(`${cwd}/.cs/local/disabled`)) return false
+  if (!(await isCsSession($, cwd))) return false
   let state: string
   try { state = await $.fs.read(`${cwd}/${STATE}`) } catch { return false }
   const lead = state.match(/^claude_session_id: *"?([^"\s]+)"?[ \t]*$/m)?.[1]
