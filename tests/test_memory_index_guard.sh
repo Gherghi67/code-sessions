@@ -247,17 +247,19 @@ test_check_fails_on_a_pointer_to_a_missing_entry() {
 }
 
 # A pointer names an entry file only when its target is a bare file name
-# ending in .md, with no / and no :. A URL names none, in MEMORY.md or in the
-# archive, whatever it ends in, and check passes it.
-test_check_passes_a_pointer_to_a_url() {
+# ending in .md, with no / and no :. A URL names none, whatever it ends in,
+# and neither does a link to a section of a file; in MEMORY.md or in the
+# archive, check passes them.
+test_check_passes_a_pointer_that_names_no_entry_file() {
     _guard_session
     _guard_archive
-    printf '%s\n' '- [Docs](https://example.com/docs): vendor docs' >> "$INDEX"
+    printf '%s\n' '- [Docs](https://example.com/docs): vendor docs' \
+        '- [Usage](project_tool.md#usage): the usage section' >> "$INDEX"
     printf '%s\n' '- [Board](https://example.com/board.md): the old board' >> "$ARCHIVE"
     _guard snapshot > /dev/null || return 1
     local out rc=0
     out=$(_guard check 2>&1) || rc=$?
-    assert_eq 0 "$rc" "a pointer to a URL must pass: $out" || return 1
+    assert_eq 0 "$rc" "a pointer that names no entry file must pass: $out" || return 1
     assert_eq "" "$(grep -v '^MEMORY.md: ' <<< "$out")" "check names nothing" || return 1
 }
 
@@ -568,7 +570,7 @@ run_test test_check_fails_on_an_archive_pointer_to_a_missing_entry
 run_test test_restore_after_a_move_leaves_the_pointer_in_both_files
 run_test test_check_fails_on_a_pointer_dropped_from_the_archive
 run_test test_check_fails_on_an_archived_pointer_dropped_with_its_entry
-run_test test_check_passes_a_pointer_to_a_url
+run_test test_check_passes_a_pointer_that_names_no_entry_file
 run_test test_check_counts_the_line_breaks_claude_code_counts
 run_test test_check_names_a_pointer_and_an_entry_as_plain_names
 run_test test_first_sweep_snapshots_an_absent_index_as_empty
