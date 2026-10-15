@@ -10974,7 +10974,7 @@ _doctor_check_tui_build() {
     local inputs=() input newer quoted
     printf -v quoted '%q' "$checkout"
     if ! newer=$(
-        cd "$checkout" || exit 1
+        cd -- "$checkout" || exit 1
         for input in tui/src tui/Cargo.toml tui/Cargo.lock tui/build.rs tui/.cargo/config.toml; do
             [ -e "$input" ] && inputs+=("$input")
         done
