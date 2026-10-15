@@ -204,7 +204,14 @@ engine. A message you send first stops the count (the UserPromptSubmit hook,
 again when that turn ends. Only the conversation the launch bound counts down.
 `CS_ROTATE_FORCE_CTX=off` (or `0`) at launch turns it off, as under Claude, and
 `CS_CODEX_CLEAR_GRACE` sets the seconds (default 20). The watcher runs only when
-cs has a terminal. It types through the terminal's simulated-input call
+cs has a terminal. The deadline it acts on lives in a directory private to the
+run, `codex-runs/<run id>` under cs's cache (`CS_CACHE_DIR`, by default
+`~/.cache/cs`), made mode 700 before Codex starts and removed when the run ends.
+It is kept out of the session because Codex's workspace sandbox can write
+anywhere there, and in `/tmp` and `$TMPDIR`: a deadline the agent could write
+would let it have the watcher type into an approval prompt. When the cache lies
+under one of those, or the directory cannot be made, the launch says the
+automatic `/clear` is off for that run and the `/clear` stays yours. It types through the terminal's simulated-input call
 (TIOCSTI); where the terminal refuses it, as Linux does with
 `dev.tty.legacy_tiocsti=0`, `session.log` says so and the `/clear` stays yours.
 Text you have typed into the composer and not sent when the count ends gets the

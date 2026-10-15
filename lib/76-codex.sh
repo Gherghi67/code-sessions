@@ -449,19 +449,26 @@ _launch_codex_bound() {
     local -a CS_NATIVE_LAUNCH_ARGS
     _cs_native_launch_options codex || return 1
     # The automatic /clear after a rotation (lib/77-codex-hooks.sh) types into
-    # this terminal, so its watcher runs only where one is attached. A deadline
-    # an earlier run left behind is never this run's. The run's cleanup stops
-    # the watcher too, when a signal ends the launch (lib/16-lifecycle.sh).
-    local autoclear_file
-    autoclear_file=$(_codex_autoclear_file "$session_dir")
-    rm -f "$autoclear_file" 2>/dev/null || true
+    # this terminal, so its watcher runs only where one is attached, and only
+    # with a private directory for its deadline, made before Codex starts. The
+    # run's cleanup stops the watcher and removes the directory, after the CLI
+    # or when a signal ends the launch (lib/16-lifecycle.sh). Earlier builds
+    # kept the deadline in the session, where the agent could forge it; one
+    # left there is removed and never read.
+    local autoclear_dir
+    rm -f "$session_dir/.cs/local/codex-autoclear" 2>/dev/null || true
     if [ -t 0 ] && [ -t 1 ] && _codex_autoclear_grace >/dev/null; then
-        _codex_autoclear_watch "$session_dir" </dev/null >/dev/null 2>&1 &
-        _cs_run_helper_pid=$!
+        if autoclear_dir=$(_codex_run_dir_prepare "$session_dir"); then
+            _cs_run_helper_dir=$autoclear_dir
+            _codex_autoclear_watch "$session_dir" "$autoclear_dir" </dev/null >/dev/null 2>&1 &
+            _cs_run_helper_pid=$!
+        else
+            printf "${DIM}The automatic /clear after a rotation is off for this run: cs could not make a private directory under %s.${NC}\n" \
+                "${CS_CACHE_DIR:-$HOME/.cache/cs}/codex-runs"
+        fi
     fi
     cs_run_child "$codex_bin" --no-daemon resume "$thread_id" -C "$session_dir" ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} ${kick:+"$kick"} || status=$?
     _cs_run_stop_helper
-    rm -f "$autoclear_file" 2>/dev/null || true
     if [ "$status" -ne 0 ] && [ -n "$spent" ]; then
         # A switch relaunch's settle reads it too (lib/78-switch.sh).
         _cs_switch_ran=""

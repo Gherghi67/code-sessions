@@ -119,15 +119,70 @@ _codex_hook_rebind() {  # session_dir, thread_id, handoff
 # The automatic /clear after a rotation: Codex's counterpart of the cs mod's
 # countdown under Claude. No Codex plugin can run a command, so three pieces
 # share the job. The Stop hook, at the end of a turn that leaves a handoff
-# armed, writes a deadline into codex-autoclear. The UserPromptSubmit hook drops
-# it, so a message sent first keeps the conversation; the count starts again
-# when that turn ends. A watcher the Codex launch runs beside the CLI
-# (lib/76-codex.sh) types /clear, then go, into the terminal once the deadline
-# has passed and the same handoff is still armed; with a switch pending it types
-# /quit, and cs reopens the session under the other engine. CS_ROTATE_FORCE_CTX
-# set to off (or 0) leaves the keys to the user, as it does under Claude.
-_codex_autoclear_file() {  # session_dir
-    printf '%s/.cs/local/codex-autoclear\n' "$1"
+# armed, writes a deadline into this run's private directory. The
+# UserPromptSubmit hook drops it, so a message sent first keeps the
+# conversation; the count starts again when that turn ends. A watcher the Codex
+# launch runs beside the CLI (lib/76-codex.sh) types /clear, then go, into the
+# terminal once the deadline has passed and the same handoff is still armed;
+# with a switch pending it types /quit, and cs reopens the session under the
+# other engine. CS_ROTATE_FORCE_CTX set to off (or 0) leaves the keys to the
+# user, as it does under Claude.
+#
+# The deadline is the watcher's licence to type, so it lives where the agent
+# cannot write: Codex's workspace sandbox writes anywhere in the session, /tmp
+# and $TMPDIR, and a deadline forged there would have the watcher type /clear
+# and Enter into whatever the terminal shows, an approval prompt included. The
+# hooks and the watcher each find the directory from their own environment:
+# cs's cache, then codex-runs/<run id>, made 0700 by the launch before Codex
+# starts and removed when the run ends.
+_codex_run_dir() {
+    _is_uuid "${CS_RUN_ID:-}" || return 1
+    printf '%s/codex-runs/%s\n' "${CS_CACHE_DIR:-$HOME/.cache/cs}" "$CS_RUN_ID"
+}
+
+# Whether a directory lies, once symlinks are resolved, under a root the
+# sandbox may write: the session, $TMPDIR or /tmp (macOS's /tmp is
+# /private/tmp). A directory it cannot resolve counts as inside.
+_codex_run_dir_in_sandbox_root() {  # dir, session_dir
+    local dir root resolved
+    dir=$(cd "$1" 2>/dev/null && pwd -P) || return 0
+    for root in "$2" "${TMPDIR:-}" /tmp /private/tmp; do
+        [ -n "$root" ] || continue
+        resolved=$(cd "$root" 2>/dev/null && pwd -P) || continue
+        case "$dir/" in "${resolved%/}/"*) return 0 ;; esac
+    done
+    return 1
+}
+
+# The run directory as the launch made it: a real directory, the user's, mode
+# 700, and outside every root the sandbox may write.
+_codex_run_dir_ok() {  # run_dir, session_dir
+    [ -d "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] || return 1
+    [ "$(_cs_file_mode "$1" 2>/dev/null)" = 700 ] || return 1
+    ! _codex_run_dir_in_sandbox_root "$1" "$2"
+}
+
+# The deadline as the Stop hook writes it: a regular file, the user's, mode 600.
+_codex_stamp_ok() {  # file
+    [ -f "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] || return 1
+    [ "$(_cs_file_mode "$1" 2>/dev/null)" = 600 ]
+}
+
+# Makes this run's directory, before Codex starts, and prints it. A directory
+# already there is not this run's, and one the checks refuse is taken back.
+_codex_run_dir_prepare() {  # session_dir
+    local dir
+    dir=$(_codex_run_dir) || return 1
+    ( umask 077 && mkdir -p "${dir%/*}" && mkdir -m 700 "$dir" ) 2>/dev/null || return 1
+    if ! _codex_run_dir_ok "$dir" "$1"; then
+        rmdir "$dir" 2>/dev/null || true
+        return 1
+    fi
+    printf '%s\n' "$dir"
+}
+
+_codex_autoclear_file() {  # run_dir
+    printf '%s/autoclear\n' "$1"
 }
 
 # The seconds the count runs (CS_CODEX_CLEAR_GRACE, default 20, the mod's
@@ -146,7 +201,7 @@ _codex_autoclear_grace() {
 # down; a turn in any other thread, or a teammate's, never clears it. The hook
 # must never fail a turn, so every path returns 0.
 _codex_hook_stop() {
-    local input session_id session_dir meta stamp grace bound handoff tmp
+    local input session_id session_dir meta run_dir stamp grace bound handoff tmp
     local action=clear target="" switch_file sysmsg
     input=$(cat) || input=""
     [ "${CS_RUN_ENGINE:-}" = codex ] && [ -n "${CS_SESSION_DIR:-}" ] || return 0
@@ -155,7 +210,10 @@ _codex_hook_stop() {
     [ -d "$meta/local" ] || return 0
     session_id=$(printf '%s' "$input" | jq -r '.session_id // ""' 2>/dev/null) || session_id=""
     _codex_thread_id_valid "$session_id" || return 0
-    stamp=$(_codex_autoclear_file "$session_dir")
+    # No private directory, no watcher: nothing would type the keys, so the
+    # turn ends without a count or a line promising one.
+    run_dir=$(_codex_run_dir) && _codex_run_dir_ok "$run_dir" "$session_dir" || return 0
+    stamp=$(_codex_autoclear_file "$run_dir")
     grace=$(_codex_autoclear_grace) || { rm -f "$stamp" 2>/dev/null; return 0; }
     cs_run_lease_owned "$meta" || return 0
     bound=$(cs_binding_read "$session_dir" codex 2>/dev/null) || return 0
@@ -168,6 +226,7 @@ _codex_hook_stop() {
         target=$(_switch_field "$switch_file" engine)
         [ -z "$target" ] || action=quit
     fi
+    # mktemp makes the file 0600, the mode the watcher requires.
     tmp=$(mktemp "$stamp.XXXXXX" 2>/dev/null) || return 0
     if ! { printf 'deadline=%s\nhandoff=%s\nthread=%s\naction=%s\nrun=%s\n' \
         "$(( $(date +%s) + grace ))" "$handoff" "$session_id" "$action" "${CS_RUN_ID:-}" > "$tmp" \
@@ -187,10 +246,12 @@ _codex_hook_stop() {
 # A message sent while the count runs stops it. Any message does: the hook
 # only removes, so a prompt in another thread costs at most one count.
 _codex_hook_user_prompt_submit() {
+    local run_dir
     cat >/dev/null 2>&1 || true
     [ "${CS_RUN_ENGINE:-}" = codex ] && [ -n "${CS_SESSION_DIR:-}" ] || return 0
     [ -d "$CS_SESSION_DIR/.cs/local" ] || return 0
-    rm -f "$(_codex_autoclear_file "$CS_SESSION_DIR")" 2>/dev/null || true
+    run_dir=$(_codex_run_dir) && _codex_run_dir_ok "$run_dir" "$CS_SESSION_DIR" || return 0
+    rm -f "$(_codex_autoclear_file "$run_dir")" 2>/dev/null || true
     return 0
 }
 
@@ -223,28 +284,38 @@ _codex_autoclear_terminal() {
 
 # Runs beside the Codex CLI for its lifetime (lib/76-codex.sh) and ends with
 # the run's owner or its terminal; the launcher also stops it once the CLI
-# exits (_cs_run_stop_helper). Once a second it reads the deadline the Stop hook wrote.
-# Past it, and with the same handoff still armed by this run, it consumes the
-# deadline and types the keys. /clear and go are two prompts: Codex starts no
-# turn after /clear, and cs's SessionStart hook hands the new thread the
-# handoff with its first message.
-_codex_autoclear_watch() {  # session_dir
-    local session_dir="$1" stamp deadline handoff action run log_dir
-    stamp=$(_codex_autoclear_file "$session_dir")
+# exits (_cs_run_stop_helper). Once a second it reads the deadline the Stop
+# hook wrote into the run's directory, and only from there: a directory that
+# stops being private ends the watch, and a deadline file that is not what the
+# hook writes is dropped unread. Past the deadline, with the same handoff still
+# armed by this run, it consumes the deadline and types the keys. The armed
+# handoff is a liveness check, not the licence: the agent may arm one itself.
+# /clear and go are two prompts: Codex starts no turn after /clear, and cs's
+# SessionStart hook hands the new thread the handoff with its first message.
+_codex_autoclear_watch() {  # session_dir, run_dir
+    local session_dir="$1" run_dir="$2" stamp deadline handoff action run
+    stamp=$(_codex_autoclear_file "$run_dir")
     while kill -0 "${CS_RUN_OWNER_PID:-$$}" 2>/dev/null && _codex_autoclear_terminal; do
         sleep 1
-        [ -f "$stamp" ] || continue
+        if ! _codex_run_dir_ok "$run_dir" "$session_dir"; then
+            _codex_autoclear_log "$session_dir" "Automatic /clear: this run's directory is gone or no longer private; the /clear is yours"
+            return 0
+        fi
+        [ -e "$stamp" ] || [ -L "$stamp" ] || continue
+        if ! _codex_stamp_ok "$stamp"; then
+            rm -f "$stamp" 2>/dev/null || true
+            continue
+        fi
+        run=$(_switch_field "$stamp" run)
         deadline=$(_switch_field "$stamp" deadline)
-        if ! [[ "$deadline" =~ ^[0-9]+$ ]]; then
+        if [ "$run" != "${CS_RUN_ID:-}" ] || ! [[ "$deadline" =~ ^[0-9]+$ ]]; then
             rm -f "$stamp" 2>/dev/null || true
             continue
         fi
         [ "$(date +%s)" -ge "$deadline" ] || continue
         handoff=$(_switch_field "$stamp" handoff)
         action=$(_switch_field "$stamp" action)
-        run=$(_switch_field "$stamp" run)
         rm -f "$stamp" 2>/dev/null || true
-        [ "$run" = "${CS_RUN_ID:-}" ] || continue
         [ -n "$handoff" ] && [ "$(_rotation_armed_handoff "$session_dir")" = "$handoff" ] || continue
         if [ "$action" = quit ]; then
             _codex_type_keys /quit && continue
@@ -252,9 +323,13 @@ _codex_autoclear_watch() {  # session_dir
             _codex_type_keys /clear && sleep 2 && _codex_type_keys go && continue
         fi
         # The keys did not land: the person still has /clear, as before.
-        if log_dir=$(cs_private_dir "$session_dir/.cs"); then
-            { printf '%s - Automatic /clear: the terminal refused simulated input; run /clear and send go\n' \
-                "$(date '+%Y-%m-%d %H:%M:%S')" >> "$log_dir/session.log"; } 2>/dev/null || true
-        fi
+        _codex_autoclear_log "$session_dir" "Automatic /clear: the terminal refused simulated input; run /clear and send go"
     done
+}
+
+_codex_autoclear_log() {  # session_dir, line
+    local log_dir
+    if log_dir=$(cs_private_dir "$1/.cs"); then
+        { printf '%s - %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$2" >> "$log_dir/session.log"; } 2>/dev/null || true
+    fi
 }

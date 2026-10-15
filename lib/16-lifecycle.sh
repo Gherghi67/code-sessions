@@ -4,13 +4,19 @@
 # Stop a helper an adapter runs beside the native CLI (Codex's automatic
 # /clear watcher), its children first: keys a child types after the CLI is
 # gone would land in the shell. A helper waits for the launcher to end, so the
-# launcher must end it before any wait of its own can block on it.
+# launcher must end it before any wait of its own can block on it. The private
+# directory the helper worked from goes once it has stopped.
 _cs_run_stop_helper() {
-    [ -n "${_cs_run_helper_pid:-}" ] || return 0
-    pkill -TERM -P "$_cs_run_helper_pid" 2>/dev/null || true
-    kill -TERM "$_cs_run_helper_pid" 2>/dev/null || true
-    wait "$_cs_run_helper_pid" 2>/dev/null || true
-    _cs_run_helper_pid=""
+    if [ -n "${_cs_run_helper_pid:-}" ]; then
+        pkill -TERM -P "$_cs_run_helper_pid" 2>/dev/null || true
+        kill -TERM "$_cs_run_helper_pid" 2>/dev/null || true
+        wait "$_cs_run_helper_pid" 2>/dev/null || true
+        _cs_run_helper_pid=""
+    fi
+    if [ -n "${_cs_run_helper_dir:-}" ]; then
+        rm -rf "$_cs_run_helper_dir" 2>/dev/null || true
+        _cs_run_helper_dir=""
+    fi
 }
 
 _cs_run_cleanup() {
@@ -107,6 +113,7 @@ cs_launch_session() {  # engine, name, directory, is_new, force, merge, intent
     local engine="$1" name="$2" directory="$3" is_new="$4" force="${5:-}"
     local merge="${6:-}" intent="${7:-auto}" status=0
     local _cs_run_meta="$directory/.cs" _cs_run_active=0 _cs_run_child_pid="" _cs_run_gate="" _cs_run_helper_pid=""
+    local _cs_run_helper_dir=""
     local saved_exit saved_int saved_term
     local CS_RUN_ID CS_RUN_ENGINE="$engine" CS_RUN_OWNER_PID="$$" CS_LEAD_PID="$$"
     CS_RUN_ID=$(_alloc_uuid) || return 1
