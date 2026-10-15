@@ -452,20 +452,48 @@ test_the_typist_stops_once_the_marker_is_gone() {
 
 # Runs the real typist in a session of its own, with no controlling terminal,
 # so whatever it does can reach no one's keyboard.
-_detached() {  # marker
+_detached() {  # marker, [native_pid_file]
     python3 -I -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
-        bash -c "$(declare -f _real_type_keys); _real_type_keys /clear \"\$1\"" typist "$1"
+        bash -c "$(declare -f _real_type_keys); _real_type_keys /clear \"\$1\" \"\$2\"" typist "$1" "${2:-}"
 }
 
+# A typist that cannot type says why, as an errno name and its text on its
+# last line of stderr, for session.log: here, with no terminal to open.
+test_the_typist_names_why_it_failed() {
+    local err status=0
+    : > "$TEST_TMPDIR/marker"
+    printf '%s\n' "$$" > "$TEST_TMPDIR/native"
+    err=$(_detached "$TEST_TMPDIR/marker" "$TEST_TMPDIR/native" 2>&1 >/dev/null) || status=$?
+    [ "$status" != 0 ] || { echo "  FAIL: the typist typed with no terminal"; return 1; }
+    [[ "$(printf '%s\n' "$err" | tail -n 1)" =~ ^E[A-Z]+:\ .+ ]] \
+        || { echo "  FAIL: no errno and cause on the last line: '$err'"; return 1; }
+}
+
+# The cause reaches session.log, rather than one line for every failure.
 test_keys_the_terminal_refuses_are_logged() {
-    _codex_type_keys() { return 1; }
+    _codex_type_keys() { printf 'EIO: Input/output error\n' >&2; return 1; }
     _stamp "$(date +%s)"
     _watch
     local i=0
-    until grep -q "Automatic /clear: the terminal refused simulated input" "$SESSION/.cs/local/session.log" 2>/dev/null; do
-        i=$((i + 1)); [ "$i" -lt 40 ] || { echo "  FAIL: no session.log line"; return 1; }
+    until grep -q "Automatic /clear did not run: EIO: Input/output error" "$SESSION/.cs/local/session.log" 2>/dev/null; do
+        i=$((i + 1)); [ "$i" -lt 40 ] || { echo "  FAIL: no session.log line: $(cat "$SESSION/.cs/local/session.log" 2>/dev/null)"; return 1; }
         sleep 0.1
     done
+}
+
+# A typist that stopped because Codex had exited (status 3) refused nothing.
+test_a_gone_cli_is_not_logged_as_a_refusal() {
+    _codex_type_keys() { return 3; }
+    _stamp "$(date +%s)"
+    _watch
+    local i=0
+    until grep -q "Automatic /clear: Codex had already exited" "$SESSION/.cs/local/session.log" 2>/dev/null; do
+        i=$((i + 1)); [ "$i" -lt 40 ] || { echo "  FAIL: no session.log line: $(cat "$SESSION/.cs/local/session.log" 2>/dev/null)"; return 1; }
+        sleep 0.1
+    done
+    if grep -q "refused\|did not run" "$SESSION/.cs/local/session.log"; then
+        echo "  FAIL: a gone CLI was logged as a failure: $(cat "$SESSION/.cs/local/session.log")"; return 1
+    fi
 }
 
 test_the_watcher_ends_with_the_runs_owner() {
@@ -656,6 +684,19 @@ test_a_refused_probe_starts_no_watcher_and_says_why() {
         _codex_autoclear_probe) || { echo "  FAIL: the probe refused macOS: $out"; return 1; }
 }
 
+# Each refusal names its own cause.
+test_the_probe_names_the_cause() {
+    local out
+    if out=$(CS_CODEX_TTY="$TEST_TMPDIR/no-such-tty" _codex_autoclear_probe); then
+        echo "  FAIL: a terminal that does not open passed"; return 1
+    fi
+    assert_output_contains "$out" "No such file or directory" || return 1
+    if out=$(PATH="$TEST_TMPDIR/empty" CS_CODEX_TTY=/dev/null _codex_autoclear_probe); then
+        echo "  FAIL: the probe passed with no python3"; return 1
+    fi
+    assert_output_contains "$out" "python3" || return 1
+}
+
 # The Stop hook promises a count only while the watcher lives, so the watcher
 # says it is there: its pid and its run, in the run's directory, gone with it.
 test_the_watcher_publishes_its_pid() {
@@ -692,9 +733,11 @@ test_the_grace_follows_the_force_setting() {
 
 # A test that redefines a stand-in runs first, so a leak would show.
 run_test test_keys_the_terminal_refuses_are_logged
+run_test test_a_gone_cli_is_not_logged_as_a_refusal
 run_test test_a_prompt_sent_while_typing_stops_go
 run_test test_a_passed_deadline_types_clear_then_go
 run_test test_the_typist_stops_once_the_marker_is_gone
+run_test test_the_typist_names_why_it_failed
 run_test test_a_stamp_in_the_workspace_types_nothing
 run_test test_a_symlinked_stamp_types_nothing
 run_test test_a_stamp_others_can_write_types_nothing
@@ -728,6 +771,7 @@ run_test test_run_cleanup_stops_the_helper
 run_test test_stopping_the_helper_removes_its_run_dir
 run_test test_the_grace_follows_the_force_setting
 run_test test_a_refused_probe_starts_no_watcher_and_says_why
+run_test test_the_probe_names_the_cause
 run_test test_the_watcher_publishes_its_pid
 
 report_results

@@ -556,6 +556,17 @@ test_a_refused_probe_starts_no_watcher_and_says_why() {
         "cs: no automatic /clear after a rotation: legacy_tiocsti is 0" || return 1
 }
 
+# The refusal is kept in session.log too, where the rest of the automatic
+# /clear's story is.
+test_a_failed_probe_is_logged() {
+    local launcher_script="$TEST_TMPDIR/launch.sh"
+    _autoclear_launch_fixture
+    CS_TEST_PROBE_REFUSES="legacy_tiocsti is 0" _pty_run /bin/bash "$launcher_script" > "$TEST_TMPDIR/launcher-output" 2>&1
+    assert_file_exists "$CS_TEST_PROBE/codex-ran" "Codex ran: $(cat "$TEST_TMPDIR/launcher-output")" || return 1
+    assert_file_contains "$CS_TEST_SESSION_DIR/.cs/local/session.log" \
+        "Automatic /clear is off for this run: legacy_tiocsti is 0" || return 1
+}
+
 # Without a terminal there is nothing to type into, so no watcher starts.
 test_no_autoclear_watcher_without_a_terminal() {
     local launcher_script="$TEST_TMPDIR/launch.sh"
@@ -833,4 +844,5 @@ run_test test_autoclear_watcher_lives_exactly_as_long_as_codex
 run_test test_no_autoclear_watcher_without_a_terminal
 run_test test_the_launch_flushes_input_only_after_typing
 run_test test_a_refused_probe_starts_no_watcher_and_says_why
+run_test test_a_failed_probe_is_logged
 report_results

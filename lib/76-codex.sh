@@ -467,6 +467,7 @@ _launch_codex_bound() {
     if [ -t 0 ] && [ -t 1 ] && _codex_autoclear_grace >/dev/null; then
         if ! refusal=$(_codex_autoclear_probe); then
             printf "${DIM:-}cs: no automatic /clear after a rotation: %s${NC:-}\n" "$refusal"
+            _codex_autoclear_log "$session_dir" "Automatic /clear is off for this run: $refusal"
         elif autoclear_dir=$(_codex_run_dir_prepare "$session_dir"); then
             _cs_run_helper_dir=$autoclear_dir
             _codex_autoclear_watch "$session_dir" "$autoclear_dir" </dev/null >/dev/null 2>&1 &

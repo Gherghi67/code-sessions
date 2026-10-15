@@ -382,12 +382,14 @@ _codex_hook_permission_request() {
 # that Codex, by the pid the launch wrote into the run directory, still runs,
 # and that the watcher that started it is still its parent: with either gone
 # the keys would land in the shell, so it stops with status 3.
+# Any other failure ends it with status 1 and, on the last line of stderr,
+# the errno's name and text, which the watcher logs as the cause.
 # It replaces the shell it runs in with python, so the watcher, which starts
 # it in the background, holds python's own pid and can end it at once.
 # CS_CODEX_TYPE_SINK names a file the keys are appended to instead, for tests.
 _codex_type_keys() {  # text, typing_marker, native_pid_file
     exec python3 -I -c '
-import fcntl, os, sys, termios, time
+import errno, fcntl, os, sys, termios, time
 marker = sys.argv[2]
 if not os.path.exists(marker):
     sys.exit(4)
@@ -406,24 +408,30 @@ def check():
         os.kill(native, 0)
     except OSError:
         sys.exit(3)
-sink = os.environ.get("CS_CODEX_TYPE_SINK", "")
-if sink:
-    fd = os.open(sink, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
-    put = lambda key: os.write(fd, key)
-else:
-    fd = os.open("/dev/tty", os.O_RDWR)
-    put = lambda key: fcntl.ioctl(fd, termios.TIOCSTI, key)
-try:
-    for ch in sys.argv[1].encode():
+def type_keys():
+    sink = os.environ.get("CS_CODEX_TYPE_SINK", "")
+    if sink:
+        fd = os.open(sink, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        put = lambda key: os.write(fd, key)
+    else:
+        fd = os.open("/dev/tty", os.O_RDWR)
+        put = lambda key: fcntl.ioctl(fd, termios.TIOCSTI, key)
+    try:
+        for ch in sys.argv[1].encode():
+            check()
+            put(bytes([ch]))
+            time.sleep(0.1)
+        time.sleep(0.5)
         check()
-        put(bytes([ch]))
-        time.sleep(0.1)
-    time.sleep(0.5)
-    check()
-    put(b"\r")
-finally:
-    os.close(fd)
-' "$1" "$2" "${3:-}" 2>/dev/null
+        put(b"\r")
+    finally:
+        os.close(fd)
+try:
+    type_keys()
+except OSError as e:
+    sys.stderr.write("%s: %s\n" % (errno.errorcode.get(e.errno, "OSError"), e.strerror or e))
+    sys.exit(1)
+' "$1" "$2" "${3:-}"
 }
 
 # The CLI's pid, as the launch wrote it (lib/16-lifecycle.sh).
@@ -476,7 +484,7 @@ _codex_autoclear_terminal() {
 # land in the shell, and nothing outside the watcher has to find its children.
 _codex_autoclear_watch() {  # session_dir, run_dir
     local session_dir="$1" run_dir="$2" stamp typing keys_sent native deadline handoff action run status child=""
-    local pid_file
+    local pid_file errors cause keys
     trap '[ -z "$child" ] || kill -TERM "$child" 2>/dev/null; exit 0' TERM
     # The watcher says it is there, for the Stop hook, and takes that back as
     # it ends, a TERM included.
@@ -488,6 +496,7 @@ _codex_autoclear_watch() {  # session_dir, run_dir
     typing=$(_codex_typing_file "$run_dir")
     keys_sent=$(_codex_keys_sent_file "$run_dir")
     native=$(_codex_native_pid_file "$run_dir")
+    errors="$run_dir/keys.err"
     while kill -0 "${CS_RUN_OWNER_PID:-$$}" 2>/dev/null && _codex_autoclear_terminal; do
         _codex_autoclear_child sleep 1
         if ! _codex_run_dir_ok "$run_dir" "$session_dir"; then
@@ -528,15 +537,16 @@ _codex_autoclear_watch() {  # session_dir, run_dir
             _codex_autoclear_log "$session_dir" "Automatic /clear: cs could not mark its typing in this run's directory; run /clear and send go"
             continue
         fi
-        { ( umask 077 && : > "$keys_sent" ); } 2>/dev/null || true
+        { ( umask 077 && : > "$keys_sent" && : > "$errors" ); } 2>/dev/null || true
+        # The typist's stderr is kept for the cause of a failure.
         if [ "${action%% *}" = quit ]; then
-            _codex_autoclear_child _codex_type_keys /quit "$typing" "$native"; status=$?
+            _codex_autoclear_child _codex_type_keys /quit "$typing" "$native" 2>>"$errors"; status=$?
         else
-            _codex_autoclear_child _codex_type_keys /clear "$typing" "$native"; status=$?
+            _codex_autoclear_child _codex_type_keys /clear "$typing" "$native" 2>>"$errors"; status=$?
             if [ "$status" = 0 ]; then
                 _codex_autoclear_child sleep 2
                 if [ -e "$typing" ]; then
-                    _codex_autoclear_child _codex_type_keys go "$typing" "$native"; status=$?
+                    _codex_autoclear_child _codex_type_keys go "$typing" "$native" 2>>"$errors"; status=$?
                 else
                     status=4
                 fi
@@ -545,17 +555,29 @@ _codex_autoclear_watch() {  # session_dir, run_dir
         rm -f "$typing" 2>/dev/null || true
         _codex_autoclear_child sleep 0.5
         rm -f "$keys_sent" 2>/dev/null || true
+        keys=/clear
+        [ "${action%% *}" != quit ] || keys=/quit
         case "$status" in
             0) ;;
             4)
-                if [ "${action%% *}" = quit ]; then
+                if [ "$keys" = /quit ]; then
                     _codex_autoclear_log "$session_dir" "Automatic /quit: a prompt went in while cs was typing; Enter not sent"
                 else
                     _codex_autoclear_log "$session_dir" "Automatic /clear: a prompt went in while cs was typing; go not sent"
                 fi
                 ;;
-            # The keys did not land: the person still has /clear, as before.
-            *) _codex_autoclear_log "$session_dir" "Automatic /clear: the terminal refused simulated input; run /clear and send go" ;;
+            # Codex was gone, or the watcher was: nothing refused the keys,
+            # and there is nothing left to type them into.
+            3) _codex_autoclear_log "$session_dir" "Automatic $keys: Codex had already exited; nothing more typed" ;;
+            # The keys did not land: the person still has them, as before.
+            *)
+                cause=$(tail -n 1 "$errors" 2>/dev/null) || cause=""
+                if [ "$keys" = /quit ]; then
+                    _codex_autoclear_log "$session_dir" "Automatic /quit did not run: ${cause:-the typist failed with status $status}; run /quit"
+                else
+                    _codex_autoclear_log "$session_dir" "Automatic /clear did not run: ${cause:-the typist failed with status $status}; run /clear and send go"
+                fi
+                ;;
         esac
     done
 }

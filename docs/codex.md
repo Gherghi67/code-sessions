@@ -231,9 +231,10 @@ It is kept out of the session because Codex's workspace sandbox can write
 anywhere there, and in `/tmp` and `$TMPDIR`: a deadline the agent could write
 would let it have the watcher type into an approval prompt. When the cache lies
 under one of those, or the directory cannot be made, the launch says the
-automatic `/clear` is off for that run and the `/clear` stays yours. Keys the
-terminal refuses later all the same are logged in `session.log`, and the
-`/clear` stays yours.
+automatic `/clear` is off for that run and the `/clear` stays yours. A probe
+that declines is logged in `session.log` with its cause, and so are keys the
+terminal refuses later all the same, with the error it gave; the `/clear` then
+stays yours.
 The watcher cannot see the screen: text you have typed into the composer and
 not sent when the count ends is sent, with `/clear` appended, to the
 conversation you are in, so send or clear a draft first; the line at the end of
