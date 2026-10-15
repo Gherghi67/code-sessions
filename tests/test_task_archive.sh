@@ -412,6 +412,34 @@ test_run_refuses_until_the_session_has_agreed() {
         "$out" "1 2" || return 1
 }
 
+# The answer is the one file cs -archive-tasks writes into .cs/local. While git
+# tracks a file there (a pull brought one in), it refuses, names the file and
+# how to untrack it, and writes nothing, as every other writer there does.
+test_answer_is_refused_while_git_tracks_a_file_in_local() {
+    printf 'claude_session_id: the-repository-wrote-this\n' > "$SESSION_DIR/.cs/local/state"
+    git -C "$SESSION_DIR" init -q
+    git -C "$SESSION_DIR" add -f .cs/local/state
+    git -C "$SESSION_DIR" -c user.email=jane.roe@example.com -c user.name="Jane Roe" commit -q -m "ship a state file"
+    local out rc=0
+    out=$("$CS_BIN" -archive-tasks answer yes 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the answer is refused" || return 1
+    assert_eq "Error: .cs/local/state is tracked in git (per-actor state must stay local). Fix with: git -C $SESSION_DIR --literal-pathspecs rm -r --cached -- .cs/local && git -C $SESSION_DIR commit -m 'stop tracking .cs/local'" \
+        "$out" "the refusal names the tracked file and how to untrack it" || return 1
+    assert_not_exists "$SESSION_DIR/.cs/local/task-archive" "nothing is recorded" || return 1
+}
+
+# A .cs/local that is a link out of the session takes no answer: the write
+# would land wherever it leads.
+test_answer_is_refused_through_a_local_that_links_out() {
+    local o="$TEST_TMPDIR/outside" out rc=0
+    mkdir -p "$o"
+    rm -rf "$SESSION_DIR/.cs/local"
+    ln -s "$o" "$SESSION_DIR/.cs/local"
+    out=$("$CS_BIN" -archive-tasks answer yes 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the answer is refused: $out" || return 1
+    assert_not_exists "$o/task-archive" "nothing is written outside the session" || return 1
+}
+
 test_answer_takes_only_yes_or_no() {
     local out rc=0
     out=$("$CS_BIN" -archive-tasks answer maybe 2>&1) || rc=$?
@@ -872,6 +900,8 @@ run_test test_claude_config_dir_moves_the_store
 run_test test_an_encrypted_session_archives_into_its_vault
 run_test test_a_locked_vault_refuses_the_run
 run_test test_run_refuses_until_the_session_has_agreed
+run_test test_answer_is_refused_while_git_tracks_a_file_in_local
+run_test test_answer_is_refused_through_a_local_that_links_out
 run_test test_answer_takes_only_yes_or_no
 run_test test_plan_names_the_answer_and_the_rows_and_moves_nothing
 run_test test_plan_refuses_a_store_it_does_not_recognise
