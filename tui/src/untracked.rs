@@ -194,10 +194,13 @@ mod tests {
     // and a tab, each control character printing as '?', a name with a
     // direction-flipping and a zero-width character beside an accent and a
     // space, each of those two characters printing as one '?', a name
-    // holding every direction-flipping and zero-width character, each
-    // printing as one '?', beside a hyphen and a narrow space next to them in
-    // Unicode, which print as themselves, and a directory named in two-byte
-    // characters, which pads by columns.
+    // holding every direction-flipping and zero-width character and C1
+    // controls (U+0080, U+0085, U+009B, U+009F), each printing as one '?',
+    // beside the characters just outside each range of them in Unicode
+    // (U+2010, U+202F, U+200A, U+2029, U+205F, U+2061, U+2065, U+206A,
+    // U+061B, U+061D, U+FEFE, U+FF00, U+00A0) and U+00A1, which print as
+    // themselves, and a directory named in two-byte characters, which pads by
+    // columns.
     #[test]
     fn listing_renders_the_shared_fixture() {
         let input = include_str!("../../tests/fixtures/untracked-listing/input.txt");

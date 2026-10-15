@@ -1640,10 +1640,12 @@ run_test test_retire_refusal_collapses_untracked_trees
 # an escape and a tab, each control character printing as "?", a name with
 # a direction-flipping and a zero-width character beside an accent and a
 # space, each of those two characters printing as one "?", a name holding
-# every direction-flipping and zero-width character, each printing as one
-# "?", beside a hyphen and a narrow space next to them in Unicode, which
-# print as themselves, and a directory named in two-byte characters, which
-# pads by characters.
+# every direction-flipping and zero-width character and C1 controls
+# (U+0080, U+0085, U+009B, U+009F), each printing as one "?", beside the
+# characters just outside each range of them in Unicode (U+2010, U+202F,
+# U+200A, U+2029, U+205F, U+2061, U+2065, U+206A, U+061B, U+061D, U+FEFE,
+# U+FF00, U+00A0) and U+00A1, which print as themselves, and a directory
+# named in two-byte characters, which pads by characters.
 test_untracked_listing_renders_the_shared_fixture() {
     local fixture="$SCRIPT_DIR/fixtures/untracked-listing" out status=0
     out=$( source "$SCRIPT_DIR/../lib/30-worktree.sh"
@@ -1652,7 +1654,19 @@ test_untracked_listing_renders_the_shared_fixture() {
     assert_eq "$(cat "$fixture/expected.txt")" "$out" "the listing matches the shared fixture" || return 1
 }
 
+# Names are bytes to cs, and a name need not be valid UTF-8 (the shared
+# fixture must be, since the TUI reads it as text). A C1 control (U+009B,
+# bytes \302\233) prints as one "?"; a \302 that starts no C1 control, before
+# an ASCII letter or at the end of the name, prints as itself.
+test_printable_name_keeps_a_lead_byte_that_starts_no_c1_control() {
+    local out
+    out=$( source "$SCRIPT_DIR/../lib/30-worktree.sh"
+           _printable_name $'a\302b\302\233c\302' )
+    assert_eq $'a\302b?c\302' "$out" "the C1 control is one ?, each stray \\302 as itself" || return 1
+}
+
 run_test test_untracked_listing_renders_the_shared_fixture
+run_test test_printable_name_keeps_a_lead_byte_that_starts_no_c1_control
 run_test test_worktree_of_worktree_refused
 run_test test_worktree_create_succeeds_with_untracked_base
 run_test test_worktree_reopen_preserves_project_claude_md
