@@ -349,10 +349,10 @@ test_doctor_warns_on_skill_drift() {
         "doctor should warn when a deployed skill differs from checkout source" || return 1
 }
 
-# Helper: the checkout that produced the install, with a TUI source tree
-# whose files carry mtime $2 (touch -t form), and an empty install dir under a
-# HOME of the test's own. install.sh copies a picker it never builds, so the
-# freshness of cs-tui is read from these mtimes and bytes.
+# Helper: a cs checkout with a TUI source tree whose files carry mtime $2
+# (touch -t form), and an empty install dir under a HOME of the test's own.
+# install.sh copies a picker it never builds, so the freshness of cs-tui is
+# read from these mtimes and bytes.
 make_tui_checkout() {  # dir, source_stamp
     local dir="$1"
     make_fake_checkout "$dir" "$TEST_TMPDIR/tui-deployed"
@@ -363,17 +363,27 @@ make_tui_checkout() {  # dir, source_stamp
     touch -t "$2" "$dir/tui/Cargo.toml" "$dir/tui/Cargo.lock" "$dir/tui/src/main.rs"
 }
 
-# Doctor run from checkout $1 under the test's HOME; prints its output.
-doctor_in_tui_checkout() {  # dir
+# Helper: the line install.sh writes to say where the installed picker came
+# from ("checkout <path>" or "release").
+record_tui_origin() {  # line
+    mkdir -p "$TEST_TMPDIR/tui-deployed"
+    printf '%s\n' "$1" > "$TEST_TMPDIR/tui-deployed/.tui-origin"
+}
+
+# Doctor run from directory $1 under the test's HOME; prints its output.
+doctor_from() {  # dir
+    mkdir -p "$1"
     (cd "$1" && HOME="$TEST_TMPDIR/home" CS_HOOKS_DIR="$TEST_TMPDIR/tui-deployed" "$CS_BIN" -doctor 2>&1) || true
 }
 
 # The cs-tui row of doctor output $1 with its colour tag stripped, and the
-# tag's name in front: "WARN cs-tui: ..." or "OK cs-tui: ...".
+# tag's name in front: "WARN cs-tui: ...", "OK cs-tui: ...", or "NOTE
+# cs-tui: ..." for the untagged line doctor prints when it cannot judge.
 tui_row() {  # output
     local line
     line=$(grep 'cs-tui: ' <<< "$1") || return 0
     case "$line" in
+        "  cs-tui: "*) printf 'NOTE cs-tui: %s\n' "${line#*cs-tui: }" ;;
         *"[WARN]"*) printf 'WARN cs-tui: %s\n' "${line#*cs-tui: }" ;;
         *"[ OK ]"*) printf 'OK cs-tui: %s\n' "${line#*cs-tui: }" ;;
         *) printf 'UNTAGGED %s\n' "$line" ;;
@@ -382,27 +392,75 @@ tui_row() {  # output
 
 # A merge rewrites tui/src while the build under tui/target stays where cargo
 # left it, and install.sh ships that build as it is: the picker goes stale
-# with nothing to say so.
-test_doctor_warns_when_the_tui_build_is_older_than_its_source() {
+# with nothing to say so. Doctor reads the checkout from the install's record,
+# so it says so from any folder.
+test_doctor_tui_warns_when_a_rust_source_changed_after_the_build() {
     local checkout="$TEST_TMPDIR/tuico" output
-    make_tui_checkout "$checkout" 202601020000
+    make_tui_checkout "$checkout" 202601010000
     echo 'old build' > "$checkout/tui/target/release/cs-tui"
-    touch -t 202601010000 "$checkout/tui/target/release/cs-tui"
+    touch -t 202601020000 "$checkout/tui/target/release/cs-tui"
+    touch -t 202601030000 "$checkout/tui/src/main.rs"
     cp "$checkout/tui/target/release/cs-tui" "$TEST_TMPDIR/home/.local/bin/cs-tui"
-    output=$(doctor_in_tui_checkout "$checkout")
-    assert_eq "WARN cs-tui: the build tui/target/release/cs-tui is older than the TUI source, so the installed picker is stale (run cargo build --release --manifest-path $checkout/tui/Cargo.toml, then ./install.sh)" \
-        "$(tui_row "$output")" "a build older than its source is named with the rebuild" || return 1
+    record_tui_origin "checkout $checkout"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "WARN cs-tui: the TUI source under $checkout/tui changed after the build $checkout/tui/target/release/cs-tui, so the installed picker may be stale (run cargo build --release --manifest-path $checkout/tui/Cargo.toml, then $checkout/install.sh)" \
+        "$(tui_row "$output")" "a .rs file newer than the build is named with the rebuild" || return 1
 }
 
-# A rebuild that never reached ./install.sh leaves the old picker in place.
+test_doctor_tui_warns_when_cargo_toml_changed_after_the_build() {
+    local checkout="$TEST_TMPDIR/tuico" output
+    make_tui_checkout "$checkout" 202601010000
+    echo 'old build' > "$checkout/tui/target/release/cs-tui"
+    touch -t 202601020000 "$checkout/tui/target/release/cs-tui"
+    touch -t 202601030000 "$checkout/tui/Cargo.toml"
+    cp "$checkout/tui/target/release/cs-tui" "$TEST_TMPDIR/home/.local/bin/cs-tui"
+    record_tui_origin "checkout $checkout"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "WARN cs-tui: the TUI source under $checkout/tui changed after the build $checkout/tui/target/release/cs-tui, so the installed picker may be stale (run cargo build --release --manifest-path $checkout/tui/Cargo.toml, then $checkout/install.sh)" \
+        "$(tui_row "$output")" "a Cargo.toml newer than the build is named with the rebuild" || return 1
+}
+
+test_doctor_tui_warns_when_cargo_lock_changed_after_the_build() {
+    local checkout="$TEST_TMPDIR/tuico" output
+    make_tui_checkout "$checkout" 202601010000
+    echo 'old build' > "$checkout/tui/target/release/cs-tui"
+    touch -t 202601020000 "$checkout/tui/target/release/cs-tui"
+    touch -t 202601030000 "$checkout/tui/Cargo.lock"
+    cp "$checkout/tui/target/release/cs-tui" "$TEST_TMPDIR/home/.local/bin/cs-tui"
+    record_tui_origin "checkout $checkout"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "WARN cs-tui: the TUI source under $checkout/tui changed after the build $checkout/tui/target/release/cs-tui, so the installed picker may be stale (run cargo build --release --manifest-path $checkout/tui/Cargo.toml, then $checkout/install.sh)" \
+        "$(tui_row "$output")" "a Cargo.lock newer than the build is named with the rebuild" || return 1
+}
+
+# Cargo rebuilds only from the files rustc reads, so a Finder .DS_Store or a
+# merge's .orig under tui/src newer than the build is no reason to rebuild,
+# and a rebuild would not clear a row that counted it.
+test_doctor_tui_ok_with_a_stray_file_under_src_newer_than_the_build() {
+    local checkout="$TEST_TMPDIR/tuico" output
+    make_tui_checkout "$checkout" 202601010000
+    echo 'build' > "$checkout/tui/target/release/cs-tui"
+    touch -t 202601020000 "$checkout/tui/target/release/cs-tui"
+    echo 'finder' > "$checkout/tui/src/.DS_Store"
+    echo 'merge leftover' > "$checkout/tui/src/main.rs.orig"
+    touch -t 202601030000 "$checkout/tui/src/.DS_Store" "$checkout/tui/src/main.rs.orig"
+    cp "$checkout/tui/target/release/cs-tui" "$TEST_TMPDIR/home/.local/bin/cs-tui"
+    record_tui_origin "checkout $checkout"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "OK cs-tui: the installed picker matches the build $checkout/tui/target/release/cs-tui" \
+        "$(tui_row "$output")" "files cargo does not read leave the picker OK" || return 1
+}
+
+# A rebuild that never reached install.sh leaves the old picker in place.
 test_doctor_warns_when_the_installed_tui_differs_from_the_build() {
     local checkout="$TEST_TMPDIR/tuico" output
     make_tui_checkout "$checkout" 202601020000
     echo 'new build' > "$checkout/tui/target/release/cs-tui"
     touch -t 202601030000 "$checkout/tui/target/release/cs-tui"
     echo 'old build' > "$TEST_TMPDIR/home/.local/bin/cs-tui"
-    output=$(doctor_in_tui_checkout "$checkout")
-    assert_eq "WARN cs-tui: the installed $TEST_TMPDIR/home/.local/bin/cs-tui differs from this checkout's build tui/target/release/cs-tui (run ./install.sh)" \
+    record_tui_origin "checkout $checkout"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "WARN cs-tui: the installed $TEST_TMPDIR/home/.local/bin/cs-tui differs from the build $checkout/tui/target/release/cs-tui (run $checkout/install.sh)" \
         "$(tui_row "$output")" "an uninstalled rebuild is named with the install" || return 1
 }
 
@@ -412,14 +470,15 @@ test_doctor_tui_ok_when_the_installed_picker_is_the_fresh_build() {
     echo 'new build' > "$checkout/tui/target/release/cs-tui"
     touch -t 202601030000 "$checkout/tui/target/release/cs-tui"
     cp "$checkout/tui/target/release/cs-tui" "$TEST_TMPDIR/home/.local/bin/cs-tui"
-    output=$(doctor_in_tui_checkout "$checkout")
-    assert_eq "OK cs-tui: the installed picker matches this checkout's build tui/target/release/cs-tui" \
+    record_tui_origin "checkout $checkout"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "OK cs-tui: the installed picker matches the build $checkout/tui/target/release/cs-tui" \
         "$(tui_row "$output")" "a fresh build, installed, is OK" || return 1
 }
 
 # install.sh ships bin/cs-tui when it is newer than the cargo build, so that
-# is the build the installed picker is held to: ./install.sh, the advice
-# the warning gives, must be able to clear it.
+# is the build the installed picker is held to: install.sh, the advice the
+# warning gives, must be able to clear it.
 test_doctor_tui_holds_the_picker_to_the_build_install_sh_ships() {
     local checkout="$TEST_TMPDIR/tuico" output
     make_tui_checkout "$checkout" 202601020000
@@ -428,8 +487,9 @@ test_doctor_tui_holds_the_picker_to_the_build_install_sh_ships() {
     echo 'copied build' > "$checkout/bin/cs-tui"
     touch -t 202601040000 "$checkout/bin/cs-tui"
     cp "$checkout/bin/cs-tui" "$TEST_TMPDIR/home/.local/bin/cs-tui"
-    output=$(doctor_in_tui_checkout "$checkout")
-    assert_eq "OK cs-tui: the installed picker matches this checkout's build bin/cs-tui" \
+    record_tui_origin "checkout $checkout"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "OK cs-tui: the installed picker matches the build $checkout/bin/cs-tui" \
         "$(tui_row "$output")" "the newer bin/cs-tui is the build install.sh ships" || return 1
 }
 
@@ -442,24 +502,128 @@ test_doctor_tui_names_a_source_tree_it_cannot_read() {
     echo 'build' > "$checkout/tui/target/release/cs-tui"
     touch -t 202601030000 "$checkout/tui/target/release/cs-tui"
     cp "$checkout/tui/target/release/cs-tui" "$TEST_TMPDIR/home/.local/bin/cs-tui"
+    record_tui_origin "checkout $checkout"
     chmod 000 "$checkout/tui/src/locked"
-    output=$(doctor_in_tui_checkout "$checkout")
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
     chmod 755 "$checkout/tui/src/locked"
-    assert_eq "WARN cs-tui: could not read the TUI source under $checkout/tui to compare it with the build tui/target/release/cs-tui" \
+    assert_eq "WARN cs-tui: could not read the TUI source under $checkout/tui to compare it with the build $checkout/tui/target/release/cs-tui" \
         "$(tui_row "$output")" "an unreadable source tree is named, not passed" || return 1
     assert_output_contains "$output" "Complete with [1-9][0-9]* warning(s)\." "doctor ran to its summary" || return 1
 }
 
-# A fresh clone has no tui/target, and a release-asset install has nothing in
-# the checkout to compare against: doctor cannot tell, so it says nothing.
+# The record holds the checkout path whole, spaces and all, and the commands
+# the row gives are quoted so they paste.
+test_doctor_tui_reads_a_recorded_checkout_whose_path_holds_spaces() {
+    local checkout="$TEST_TMPDIR/tui co" output
+    make_tui_checkout "$checkout" 202601010000
+    echo 'old build' > "$checkout/tui/target/release/cs-tui"
+    touch -t 202601020000 "$checkout/tui/target/release/cs-tui"
+    touch -t 202601030000 "$checkout/tui/src/main.rs"
+    cp "$checkout/tui/target/release/cs-tui" "$TEST_TMPDIR/home/.local/bin/cs-tui"
+    record_tui_origin "checkout $checkout"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "WARN cs-tui: the TUI source under $checkout/tui changed after the build $checkout/tui/target/release/cs-tui, so the installed picker may be stale (run cargo build --release --manifest-path $TEST_TMPDIR/tui\\ co/tui/Cargo.toml, then $TEST_TMPDIR/tui\\ co/install.sh)" \
+        "$(tui_row "$output")" "a recorded path with a space is read whole and quoted in the advice" || return 1
+}
+
+# A worktree or another clone at the same version has its own build. Doctor
+# run from there holds the picker to the checkout the install recorded, not
+# to the tree it stands in.
+test_doctor_tui_judges_the_recorded_checkout_not_the_one_it_runs_in() {
+    local checkout="$TEST_TMPDIR/tuico" other="$TEST_TMPDIR/worktree" output
+    make_tui_checkout "$checkout" 202601020000
+    echo 'installed build' > "$checkout/tui/target/release/cs-tui"
+    touch -t 202601030000 "$checkout/tui/target/release/cs-tui"
+    cp "$checkout/tui/target/release/cs-tui" "$TEST_TMPDIR/home/.local/bin/cs-tui"
+    make_tui_checkout "$other" 202601020000
+    echo 'feature build' > "$other/tui/target/release/cs-tui"
+    touch -t 202601030000 "$other/tui/target/release/cs-tui"
+    record_tui_origin "checkout $checkout"
+    output=$(doctor_from "$other")
+    assert_eq "OK cs-tui: the installed picker matches the build $checkout/tui/target/release/cs-tui" \
+        "$(tui_row "$output")" "a same-version tree's own build is not the installed picker's" || return 1
+}
+
+# A release-asset install has no checkout to hold the picker to, even when
+# doctor runs in a same-version clone with a build of its own.
+test_doctor_tui_silent_for_a_release_picker() {
+    local checkout="$TEST_TMPDIR/tuico" output
+    make_tui_checkout "$checkout" 202601020000
+    echo 'local build' > "$checkout/tui/target/release/cs-tui"
+    touch -t 202601010000 "$checkout/tui/target/release/cs-tui"
+    echo 'release asset' > "$TEST_TMPDIR/home/.local/bin/cs-tui"
+    record_tui_origin "release"
+    output=$(doctor_from "$checkout")
+    assert_eq "" "$(tui_row "$output")" "a release picker: no cs-tui row" || return 1
+    assert_output_contains "$output" "Deploy drift" "doctor ran in the same-version clone" || return 1
+}
+
+# An install that predates the record, or one that placed no picker over an
+# earlier one, leaves nothing saying where the picker came from: one line
+# says it was not checked and what writes the record.
+test_doctor_tui_names_a_missing_origin_record() {
+    local output
+    mkdir -p "$TEST_TMPDIR/home/.local/bin" "$TEST_TMPDIR/tui-deployed"
+    echo 'picker' > "$TEST_TMPDIR/home/.local/bin/cs-tui"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "NOTE cs-tui: not checked: no record in $TEST_TMPDIR/tui-deployed/.tui-origin of where $TEST_TMPDIR/home/.local/bin/cs-tui came from; the next install (cs -update, or ./install.sh from your checkout) writes one" \
+        "$(tui_row "$output")" "no record: one neutral line naming the fix" || return 1
+}
+
+test_doctor_tui_names_an_origin_record_it_does_not_understand() {
+    local output
+    mkdir -p "$TEST_TMPDIR/home/.local/bin"
+    echo 'picker' > "$TEST_TMPDIR/home/.local/bin/cs-tui"
+    record_tui_origin "checkout relative/path"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "NOTE cs-tui: not checked: no record in $TEST_TMPDIR/tui-deployed/.tui-origin of where $TEST_TMPDIR/home/.local/bin/cs-tui came from; the next install (cs -update, or ./install.sh from your checkout) writes one" \
+        "$(tui_row "$output")" "a record that names no absolute checkout or release: the same line" || return 1
+}
+
+# The checkout the picker came from was deleted, or no longer holds the TUI:
+# there is no build to hold the picker to, and the fix is an install from the
+# checkout in use now.
+test_doctor_tui_names_a_recorded_checkout_without_its_tui() {
+    local checkout="$TEST_TMPDIR/tuico" output
+    make_tui_checkout "$checkout" 202601020000
+    echo 'build' > "$checkout/tui/target/release/cs-tui"
+    touch -t 202601030000 "$checkout/tui/target/release/cs-tui"
+    cp "$checkout/tui/target/release/cs-tui" "$TEST_TMPDIR/home/.local/bin/cs-tui"
+    record_tui_origin "checkout $checkout"
+    rm "$checkout/tui/Cargo.toml"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "NOTE cs-tui: not checked: $TEST_TMPDIR/home/.local/bin/cs-tui came from $checkout, which holds no tui/Cargo.toml now; run ./install.sh from your checkout" \
+        "$(tui_row "$output")" "a recorded checkout without its TUI: one neutral line" || return 1
+    rm -rf "$checkout"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "NOTE cs-tui: not checked: $TEST_TMPDIR/home/.local/bin/cs-tui came from $checkout, which holds no tui/Cargo.toml now; run ./install.sh from your checkout" \
+        "$(tui_row "$output")" "a recorded checkout that is gone: the same line" || return 1
+}
+
+# install.sh keeps a symlink at ~/.local/bin/cs-tui that points at content it
+# did not write, so whatever the record says, the picker is the user's own.
+test_doctor_tui_silent_for_a_picker_that_is_a_symlink() {
+    local checkout="$TEST_TMPDIR/tuico" output
+    make_tui_checkout "$checkout" 202601020000
+    echo 'build' > "$checkout/tui/target/release/cs-tui"
+    touch -t 202601030000 "$checkout/tui/target/release/cs-tui"
+    echo 'own picker' > "$TEST_TMPDIR/own-picker"
+    ln -s "$TEST_TMPDIR/own-picker" "$TEST_TMPDIR/home/.local/bin/cs-tui"
+    record_tui_origin "checkout $checkout"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "" "$(tui_row "$output")" "the user's own linked picker: no cs-tui row" || return 1
+}
+
+# A recorded checkout with no build (cargo clean, or bin/cs-tui deleted) has
+# nothing to hold the picker to: doctor cannot tell, so it says nothing.
 test_doctor_tui_silent_without_a_build_in_the_checkout() {
     local checkout="$TEST_TMPDIR/tuico" output
     make_tui_checkout "$checkout" 202601020000
-    echo 'release asset' > "$TEST_TMPDIR/home/.local/bin/cs-tui"
+    echo 'some picker' > "$TEST_TMPDIR/home/.local/bin/cs-tui"
     touch -t 202601010000 "$TEST_TMPDIR/home/.local/bin/cs-tui"
-    output=$(doctor_in_tui_checkout "$checkout")
+    record_tui_origin "checkout $checkout"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
     assert_eq "" "$(tui_row "$output")" "no build: no cs-tui row" || return 1
-    assert_output_contains "$output" "Deploy drift" "the checkout was recognised" || return 1
 }
 
 test_doctor_tui_silent_when_no_picker_is_installed() {
@@ -467,22 +631,8 @@ test_doctor_tui_silent_when_no_picker_is_installed() {
     make_tui_checkout "$checkout" 202601020000
     echo 'old build' > "$checkout/tui/target/release/cs-tui"
     touch -t 202601010000 "$checkout/tui/target/release/cs-tui"
-    output=$(doctor_in_tui_checkout "$checkout")
-    assert_eq "" "$(tui_row "$output")" "nothing installed: no cs-tui row" || return 1
-    assert_output_contains "$output" "Deploy drift" "the checkout was recognised" || return 1
-}
-
-# A checkout whose version is not the one deployed did not produce the
-# install, so its build says nothing about the installed picker.
-test_doctor_tui_silent_in_a_checkout_that_did_not_produce_the_install() {
-    local checkout="$TEST_TMPDIR/tuico" output
-    make_tui_checkout "$checkout" 202601020000
-    printf '1111.1.1\n' > "$TEST_TMPDIR/tui-deployed/.version"
-    echo 'old build' > "$checkout/tui/target/release/cs-tui"
-    touch -t 202601010000 "$checkout/tui/target/release/cs-tui"
-    echo 'other build' > "$TEST_TMPDIR/home/.local/bin/cs-tui"
-    output=$(doctor_in_tui_checkout "$checkout")
-    assert_eq "" "$(tui_row "$output")" "another tree's install: no cs-tui row" || return 1
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "" "$(tui_row "$output")" "nothing installed and no record: no cs-tui row" || return 1
 }
 
 test_doctor_warns_on_version_mismatch() {
@@ -1199,14 +1349,23 @@ run_test test_doctor_drift_skipped_outside_checkout
 run_test test_doctor_warns_on_command_drift
 run_test test_doctor_warns_on_skill_script_drift
 run_test test_doctor_warns_on_skill_drift
-run_test test_doctor_warns_when_the_tui_build_is_older_than_its_source
+run_test test_doctor_tui_warns_when_a_rust_source_changed_after_the_build
+run_test test_doctor_tui_warns_when_cargo_toml_changed_after_the_build
+run_test test_doctor_tui_warns_when_cargo_lock_changed_after_the_build
+run_test test_doctor_tui_ok_with_a_stray_file_under_src_newer_than_the_build
 run_test test_doctor_warns_when_the_installed_tui_differs_from_the_build
 run_test test_doctor_tui_ok_when_the_installed_picker_is_the_fresh_build
 run_test test_doctor_tui_holds_the_picker_to_the_build_install_sh_ships
 run_test test_doctor_tui_names_a_source_tree_it_cannot_read
+run_test test_doctor_tui_reads_a_recorded_checkout_whose_path_holds_spaces
+run_test test_doctor_tui_judges_the_recorded_checkout_not_the_one_it_runs_in
+run_test test_doctor_tui_silent_for_a_release_picker
+run_test test_doctor_tui_names_a_missing_origin_record
+run_test test_doctor_tui_names_an_origin_record_it_does_not_understand
+run_test test_doctor_tui_names_a_recorded_checkout_without_its_tui
+run_test test_doctor_tui_silent_for_a_picker_that_is_a_symlink
 run_test test_doctor_tui_silent_without_a_build_in_the_checkout
 run_test test_doctor_tui_silent_when_no_picker_is_installed
-run_test test_doctor_tui_silent_in_a_checkout_that_did_not_produce_the_install
 run_test test_doctor_warns_on_version_mismatch
 run_test test_doctor_version_silent_without_stamp
 run_test test_doctor_runs_without_session
