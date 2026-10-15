@@ -637,6 +637,33 @@ test_age_remove_refuses_a_name_that_is_not_a_recipient_name() {
     assert_not_exists "$HOME/.cs-secrets/sessions/test-session" "no age state is made" || return 1
 }
 
+# age add names a recipient after its key file, without .pub, so the file's
+# name must be a recipient name too. A key file named .hidden.pub would make
+# a recipient no listing, export or age remove sees, its key pinned until a
+# purge. It is refused, named as age remove names it, before anything is
+# made or pinned.
+test_age_add_refuses_a_key_file_whose_name_is_not_a_recipient_name() {
+    local key=age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq0000000
+    local keys="$TEST_TMPDIR/keys" file shown out rc before
+    mkdir -p "$keys/sub"
+    for file in "$keys/.hidden.pub" "$keys/sub/..pub" "$keys/"$'peer\e[31m.pub'; do
+        printf '%s\n' "$key" > "$file"
+        case "$file" in
+            */.hidden.pub) shown=.hidden ;;
+            */..pub) shown=. ;;
+            *) shown=peer__31m ;;
+        esac
+        before=$(_tree_state)
+        rc=0
+        out=$("$CS_SECRETS_BIN" age add "$file" 2>&1) || rc=$?
+        assert_eq "1" "$rc" "age add exits 1 for '$shown': $out" || return 1
+        assert_eq "Error: not a recipient name: $shown. A recipient's name is its file's name in .cs/age-recipients without .pub, with no '/', no control character and no leading '.'." \
+            "$out" "the refusal names '$shown' plainly" || return 1
+        assert_eq "$before" "$(_tree_state)" "age add of '$shown' makes and pins nothing" || return 1
+    done
+    assert_not_exists "$CS_SESSIONS_ROOT/test-session/.cs/age-recipients" "no recipients folder is made" || return 1
+}
+
 # Every path and every file's checksum under HOME and the sessions root.
 _tree_state() {
     find "$HOME" "$CS_SESSIONS_ROOT" -print | LC_ALL=C sort
@@ -4929,6 +4956,7 @@ run_test test_session_verbs_refuse_a_name_that_is_a_path
 run_test test_age_remove_refuses_a_session_the_root_does_not_have
 run_test test_age_remove_refuses_a_link_on_the_way_to_the_recipient
 run_test test_age_remove_refuses_a_name_that_is_not_a_recipient_name
+run_test test_age_add_refuses_a_key_file_whose_name_is_not_a_recipient_name
 run_test test_every_write_but_purge_refuses_a_feature_session
 run_test test_purge_of_a_feature_session_removes_what_its_name_holds
 run_test test_an_unknown_option_is_refused_before_any_command_runs
