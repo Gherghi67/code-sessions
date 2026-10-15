@@ -202,12 +202,14 @@ switch pending it types `/quit`, and cs reopens the session under the other
 engine. The watcher looks for the switch when the count ends, as the mod does
 at zero, so a switch recorded or cancelled (`cs -switch cancel`) during the
 count is the one that counts. The line names what the switch would start: the
-engine, the model, the effort when one was asked for, and the approval. A
-switch that would move a run launched with `--native-approval` to automatic
-approval (`cs -switch --approve-for-me`, or a switch into Codex that names no
-approval) gets no count: nobody is at the keys when the count ends, and the
-agent can arm such a switch itself, so the line says the exit is yours and cs
-types nothing. A message you send first stops the count (the UserPromptSubmit hook,
+engine, the model, the effort when one was asked for, and the approval. In a
+run launched with `--native-approval` a switch gets no count, whatever approval
+it names: nobody is at the keys when the count ends, and the agent can arm a
+switch itself (one that loosens approval, with `cs -switch --approve-for-me`,
+among them), rewrite it after the watcher has read it, or write the target's
+settings into the session (a `.claude/settings.local.json` the relaunch would
+load). So the line names the switch, says the exit is yours, and cs types
+nothing; only `/clear`, which keeps this Codex, is typed for you there. A message you send first stops the count (the UserPromptSubmit hook,
 `cs -codex-hook user-prompt-submit`) and keeps the conversation; the count starts
 again when that turn ends. An approval Codex asks for stops it too (the
 PermissionRequest hook, `cs -codex-hook permission-request`), so the keys never

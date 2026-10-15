@@ -449,7 +449,7 @@ _launch_codex_bound() {
     local -a CS_NATIVE_LAUNCH_ARGS
     _cs_native_launch_options codex || return 1
     # The run's approval, for its hooks and the automatic /clear's watcher: a
-    # switch the count would carry out unattended must not loosen it.
+    # run with native approval never quits for a switch unattended.
     local CS_RUN_APPROVAL=auto
     [ "${CS_LAUNCH_APPROVAL:-auto}" != native ] || CS_RUN_APPROVAL=native
     export CS_RUN_APPROVAL

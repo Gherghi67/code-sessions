@@ -11793,7 +11793,7 @@ _launch_codex_bound() {
     local -a CS_NATIVE_LAUNCH_ARGS
     _cs_native_launch_options codex || return 1
     # The run's approval, for its hooks and the automatic /clear's watcher: a
-    # switch the count would carry out unattended must not loosen it.
+    # run with native approval never quits for a switch unattended.
     local CS_RUN_APPROVAL=auto
     [ "${CS_LAUNCH_APPROVAL:-auto}" != native ] || CS_RUN_APPROVAL=native
     export CS_RUN_APPROVAL
@@ -12052,11 +12052,15 @@ _codex_typing_file() {  # run_dir
 # switch armed or cancelled during the count is the one that counts; the Stop
 # hook asks only for its wording.
 #
-# Nobody is at the keys when the count ends, so it never takes a switch that
-# would move this run from native approval to automatic review: the agent can
-# arm one itself (`cs -switch --approve-for-me`). That is `hold <target>`, and
-# the exit stays the user's. A run that does not say which it has counts as
-# native, the stricter reading.
+# Nobody is at the keys when the count ends, so a run with native approval
+# never quits on its own: that is `hold <target>`, and the exit stays the
+# user's. The agent can arm a switch itself, one that loosens approval
+# (`cs -switch --approve-for-me`) among them; it can rewrite pending-switch
+# after the watcher read it, since cs settles the switch from that file once
+# Codex exits; and it can write the target's settings into the session (a
+# .claude/settings.local.json the relaunch would load). Only /clear, which
+# keeps this Codex and its sandbox, is typed unattended there. A run that does
+# not say which approval it has counts as native, the stricter reading.
 _codex_autoclear_action() {  # session_dir
     local switch_file target summary
     if switch_file=$(_switch_file "$1") && [ -f "$switch_file" ] \
@@ -12064,8 +12068,7 @@ _codex_autoclear_action() {  # session_dir
         target=$(_switch_field "$switch_file" engine)
         if [ -n "$target" ]; then
             summary=$(_switch_target_summary "$switch_file")
-            if [ "${CS_RUN_APPROVAL:-native}" != auto ] \
-                && [ "$(_switch_target_approval "$target" "$(_switch_field "$switch_file" approval)")" = auto ]; then
+            if [ "${CS_RUN_APPROVAL:-native}" != auto ]; then
                 printf 'hold %s\n' "$summary"
             else
                 printf 'quit %s\n' "$summary"
@@ -12167,7 +12170,7 @@ _codex_hook_stop() {
     action=$(_codex_autoclear_action "$session_dir")
     if [ "${action%% *}" = hold ]; then
         rm -f "$stamp" 2>/dev/null
-        sysmsg="cs: a switch to ${action#hold } is pending. It would move this run from native to automatic approval, so cs does not quit for you: /quit to take it, or cs -switch cancel to stay."
+        sysmsg="cs: a switch to ${action#hold } is pending. This run has native approval, so cs does not quit for you: /quit to take it, or cs -switch cancel to stay."
         jq -n --arg m "$sysmsg" '{systemMessage: $m}' 2>/dev/null || true
         return 0
     fi
@@ -12317,8 +12320,7 @@ _codex_autoclear_terminal() {
 # hook writes is dropped unread. Past the deadline, while this run still holds
 # the session's lease and the same handoff is still armed, it consumes the
 # deadline and types the keys: /quit when a switch this run recorded is
-# pending then (nothing, when that switch would loosen approval), /clear
-# otherwise. The armed handoff is a liveness check, not the licence: the agent
+# pending then (nothing, in a run with native approval), /clear otherwise. The armed handoff is a liveness check, not the licence: the agent
 # may arm one itself.
 # /clear and go are two prompts: Codex starts no turn after /clear, and cs's
 # SessionStart hook hands the new thread the handoff with its first message.
@@ -12375,7 +12377,7 @@ _codex_autoclear_watch() {  # session_dir, run_dir
         [ -n "$handoff" ] && [ "$(_rotation_armed_handoff "$session_dir")" = "$handoff" ] || continue
         action=$(_codex_autoclear_action "$session_dir")
         if [ "${action%% *}" = hold ]; then
-            _codex_autoclear_log "$session_dir" "Automatic /quit: the pending switch to ${action#hold } would move this run from native to automatic approval; the exit is yours"
+            _codex_autoclear_log "$session_dir" "Automatic /quit: this run has native approval, so the exit to ${action#hold } is yours"
             continue
         fi
         # The marker goes in before the first key, and the typist checks it

@@ -156,10 +156,11 @@ vault is committed. `cs -switch` keeps its record there too,
      in the composer when the count ends is sent, with `/quit` appended, so
      they should send or clear a draft first. Launched with
      `CS_ROTATE_FORCE_CTX=off` (or `0`), or where cs cannot type into the
-     terminal (the launch says so as Codex starts), there is no count. A switch that
-     would move a run launched with `--native-approval` to automatic approval
-     gets no count either: cs never loosens approval unattended, so the line
-     says the exit is theirs. A `/clear` cannot change engines.
+     terminal (the launch says so as Codex starts), there is no count. A run
+     launched with `--native-approval` gets no count toward a switch either,
+     whatever approval the switch names: cs never carries out a switch
+     unattended there, so the line says the exit is theirs. A `/clear` cannot
+     change engines.
    - The old conversation stays on disk, untouched:
      `cs <session-name> --engine <current engine>` opens it again later.
    - To call the switch off before exiting: `cs -switch cancel`. The
@@ -185,5 +186,5 @@ vault is committed. `cs -switch` keeps its record there too,
    `cs` mod's key and countdown can under Claude, and they run `/exit`
    rather than `/clear` because the pending switch is recorded. Codex has no
    key; cs types its `/quit` after twenty seconds unless the count is off or
-   the switch would loosen a native-approval run to automatic approval.
+   the run was launched with `--native-approval`.
    The line must not end up buried under a summary of what you just wrote.

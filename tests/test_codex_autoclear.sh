@@ -253,7 +253,10 @@ test_a_run_dir_already_there_is_not_this_runs() {
     fi
 }
 
+# Only a run with automatic approval quits on its own (see
+# test_a_native_run_never_quits_unattended).
 test_a_pending_switch_types_quit() {
+    export CS_RUN_APPROVAL=auto
     _switch
     _stamp "$(date +%s)"
     _watch
@@ -271,6 +274,7 @@ test_a_switch_cancelled_during_the_count_clears_instead() {
 }
 
 test_a_switch_armed_during_the_count_quits() {
+    export CS_RUN_APPROVAL=auto
     _stamp "$(date +%s)" clear
     _switch
     _watch
@@ -280,7 +284,7 @@ test_a_switch_armed_during_the_count_quits() {
 
 # Nobody is at the keys when the count ends, so it never carries out a switch
 # that would move this run from native approval to automatic review: the exit
-# is the user's. A switch that keeps or tightens approval still quits.
+# is the user's.
 test_a_switch_that_loosens_approval_types_nothing() {
     export CS_RUN_APPROVAL=native
     _switch "$RUN" auto
@@ -290,7 +294,24 @@ test_a_switch_that_loosens_approval_types_nothing() {
     assert_not_exists "$KEYS" "keys typed: $(tr '\n' ' ' < "$KEYS" 2>/dev/null)" || return 1
     assert_not_exists "$STAMP" "the deadline is spent all the same" || return 1
     assert_file_exists "$SESSION/.cs/local/pending-switch" "the switch stays for the user's exit" || return 1
-    grep -Fq "Automatic /quit: the pending switch to claude (its default model, automatic approval) would move this run from native to automatic approval; the exit is yours" \
+    grep -Fq "Automatic /quit: this run has native approval, so the exit to claude (its default model, automatic approval) is yours" \
+        "$SESSION/.cs/local/session.log" || { echo "  FAIL: no session.log line"; return 1; }
+}
+
+# In a native-approval run the count types no /quit at all, whatever approval
+# the switch names: cs settles the switch from a file the agent can still
+# rewrite after the watcher has read it, and the relaunch can start under
+# settings the agent wrote into the session. Only /clear, which keeps this
+# Codex, is typed with nobody at the keys.
+test_a_native_run_never_quits_unattended() {
+    export CS_RUN_APPROVAL=native
+    _switch "$RUN" native
+    _stamp "$(date +%s)"
+    _watch
+    _polls 3 || return 1
+    assert_not_exists "$KEYS" "keys typed: $(tr '\n' ' ' < "$KEYS" 2>/dev/null)" || return 1
+    assert_file_exists "$SESSION/.cs/local/pending-switch" "the switch stays for the user's exit" || return 1
+    grep -Fq "Automatic /quit: this run has native approval, so the exit to claude (its default model, native approval) is yours" \
         "$SESSION/.cs/local/session.log" || { echo "  FAIL: no session.log line"; return 1; }
 }
 
@@ -299,9 +320,9 @@ test_the_count_never_loosens_approval() {
     for run in native auto ''; do
         for approval in auto native ''; do
             _switch "$RUN" "$approval" opus
-            case "$run/$approval" in
-                native/auto | /auto) want=hold ;;
-                *) want=quit ;;
+            case "$run" in
+                auto) want=quit ;;
+                *) want=hold ;;
             esac
             local got
             got=$(CS_RUN_APPROVAL=$run _codex_autoclear_action "$SESSION")
@@ -315,7 +336,7 @@ test_the_count_never_loosens_approval() {
         "$(CS_RUN_APPROVAL=native _codex_autoclear_action "$SESSION")" "Codex reviews automatically unless told not to" || return 1
     _switch "$RUN" '' ''
     assert_eq "quit claude (its default model, native approval)" \
-        "$(CS_RUN_APPROVAL=native _codex_autoclear_action "$SESSION")" || return 1
+        "$(CS_RUN_APPROVAL=auto _codex_autoclear_action "$SESSION")" || return 1
 }
 
 test_another_runs_switch_does_not_quit() {
@@ -752,6 +773,7 @@ run_test test_a_switch_armed_during_the_count_quits
 run_test test_another_runs_switch_does_not_quit
 run_test test_a_switch_that_loosens_approval_types_nothing
 run_test test_the_count_never_loosens_approval
+run_test test_a_native_run_never_quits_unattended
 run_test test_a_run_that_lost_the_lease_types_nothing
 run_test test_two_runs_each_type_for_their_own_deadline
 run_test test_a_deadline_still_ahead_types_nothing
