@@ -757,6 +757,26 @@ test_queue_accept_refuses_a_read_box_linked_out_of_the_session() {
     assert_eq "1" "$(NEW_COUNT)" "the message stays unread" || return 1
 }
 
+# The accepted message is moved out of mail/new/; a new/ linked out of the
+# session gives up nothing: the accept names the link and refuses before it
+# records or queues anything, and the document outside stays where it is.
+test_queue_accept_refuses_an_unread_box_linked_out_of_the_session() {
+    local t o out rc=0
+    t=$(cd "$TEST_TMPDIR" && pwd -P); o="$t/outside"
+    mkdir -p "$o/new"
+    printf '%s\n' '{"id":"t1","ts":1,"from":"peer","kind":"task","body":"review the tui diff"}' \
+        > "$o/new/0000000001-task.json"
+    mkdir -p "$(MAILDIR)/cur" "$(MAILDIR)/tmp" || return 1
+    ln -s "$o/new" "$(MAILDIR)/new" || return 1
+    out=$(rcv -queue accept t1 2>&1) || rc=$?
+    assert_exists "$o/new/0000000001-task.json" "the document outside is not moved" || return 1
+    assert_eq "1" "$rc" "accept exits 1" || return 1
+    assert_eq "cs_mkdir_inside: $(MAILDIR)/new leads to $o/new, outside the session $CS_SESSIONS_ROOT/receiver" \
+        "$out" "the refusal names the link" || return 1
+    assert_not_exists "$(RCV_META)/local/queue.accepted" "no accept is recorded" || return 1
+    assert_eq "0" "$(RQUEUE_LEN)" "nothing queued" || return 1
+}
+
 # The read listing is where an agent learns the id it needs to accept with.
 test_read_shows_how_to_accept_a_task() {
     "$CS_BIN" -msg receiver -k task "review the tui diff" >/dev/null 2>&1 || return 1
@@ -1055,6 +1075,7 @@ run_test test_queue_accept_writes_the_receipt_before_the_queued_copy
 run_test test_queue_accept_serialises_concurrent_accepts
 run_test test_queue_accept_refuses_a_receipt_file_linked_out_of_the_session
 run_test test_queue_accept_refuses_a_read_box_linked_out_of_the_session
+run_test test_queue_accept_refuses_an_unread_box_linked_out_of_the_session
 run_test test_read_shows_how_to_accept_a_task
 run_test test_read_offers_no_accept_for_an_id_accept_cannot_take
 run_test test_task_kind_rejects_multiline_body
