@@ -1566,7 +1566,8 @@ impl App {
             MenuAction::Delete => {
                 // A live session opens the confirm too: it says so, and
                 // offers removing it anyway as `cs -rm --force` does, unless
-                // the picker runs inside another session, where cs -rm
+                // the picker runs inside another session or a
+                // `cs <name> --remote` server serves it, where cs -rm
                 // refuses it outright and so does the confirm.
                 if let Some(name) = self.selected_session().map(|s| s.name.clone()) {
                     self.open_delete_confirm(std::slice::from_ref(&name), Mode::ConfirmDelete);
@@ -1702,8 +1703,9 @@ impl App {
     /// off: its lines name each live session and each one holding files
     /// beyond cs's own, and it offers the escalation each needs. Stays
     /// closed, with the reason in the status line, when `cs -rm` run inside
-    /// the picker's session would refuse any of `names` from there, and
-    /// when a file listing fails.
+    /// the picker's session would refuse any of `names` from there, when a
+    /// `cs <name> --remote` server serves any of them, and when a file
+    /// listing fails.
     fn open_delete_confirm(&mut self, names: &[String], mode: Mode) {
         match self.delete_confirm_lines(names) {
             Ok((warnings, offers)) => {
@@ -2048,15 +2050,19 @@ impl App {
     /// holding files beyond cs's own (offering the files grant), the latter
     /// prefixed with the session name when more than one is being deleted.
     /// Errors with `cs -rm`'s sentence when, inside a session, it would
-    /// refuse any of `names` from there whatever it is granted, so the
-    /// confirm never offers a removal it will refuse; errors too when a
-    /// listing fails, so the confirm never opens on a list it could not read.
+    /// refuse any of `names` from there whatever it is granted, and when a
+    /// `cs <name> --remote` server serves any of them, so the confirm never
+    /// offers a removal it will refuse; errors too when a listing fails, so
+    /// the confirm never opens on a list it could not read.
     fn delete_confirm_lines(&self, names: &[String]) -> Result<(Vec<session::DeleteWarning>, session::RemoveGrants), String> {
         let mut lines = Vec::new();
         let mut offers = session::RemoveGrants::default();
         for name in names {
             let path = self.sessions_root.join(name);
             if let Some(refusal) = session::caller_refusal(&self.sessions_root, name, &path).map_err(|e| e.to_string())? {
+                return Err(refusal);
+            }
+            if let Some(refusal) = session::served_refusal(name, &path) {
                 return Err(refusal);
             }
             let live_pid = self

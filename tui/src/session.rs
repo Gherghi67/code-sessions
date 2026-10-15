@@ -1479,11 +1479,16 @@ fn live_feature_of(root: &Path, name: &str) -> std::io::Result<Option<(String, u
 /// Remove a session at `path` by whatever means its kind requires: symlinks
 /// are unlinked, worktree sessions are unregistered through git, and plain
 /// directories are removed outright. Inside a session, what `cs -rm` refuses
-/// from there is refused whatever `grants` allows ([`caller_refusal`]).
-/// A live session and one holding files beyond cs's own are refused unless
-/// `grants` allows them; a mounted vault or volume is refused always.
+/// from there is refused whatever `grants` allows ([`caller_refusal`]), and
+/// so, anywhere, is a session a `cs <name> --remote` server serves
+/// ([`served_refusal`]). A live session and one holding files beyond cs's
+/// own are refused unless `grants` allows them; a mounted vault or volume is
+/// refused always.
 pub fn remove_session_path(root: &Path, name: &str, path: &Path, grants: RemoveGrants) -> std::io::Result<()> {
     if let Some(refusal) = caller_refusal(root, name, path)? {
+        return Err(std::io::Error::other(refusal));
+    }
+    if let Some(refusal) = served_refusal(name, path) {
         return Err(std::io::Error::other(refusal));
     }
     // Read the lock now, as `cs -rm`'s session_is_live does: the picker's row
@@ -1705,6 +1710,18 @@ fn read_remote_pid(meta_dir: &Path, name: &str) -> Option<u32> {
     // Padded on both sides, so demo does not match demo-2.
     let args = format!(" {} ", String::from_utf8_lossy(&o.stdout).trim_end());
     args.contains(&format!(" remote-control --name {name} ")).then_some(pid)
+}
+
+/// Why `cs -rm` refuses to remove session `name` at `path`, with or without
+/// --force and from any caller, while a `cs <name> --remote` server serves it
+/// ([`read_remote_pid`], read now); `None` when none does. Twin of
+/// `_remote_refuse_live` in lib/76-remote.sh; the message is its.
+pub fn served_refusal(name: &str, path: &Path) -> Option<String> {
+    read_remote_pid(&path.join(".cs"), name).map(|pid| {
+        format!(
+            "Session {name} is served by cs {name} --remote (remote-control PID {pid}); stop it first with Ctrl-C in its window, or close the window."
+        )
+    })
 }
 
 /// Why a picker action refuses session `name`, whose claude runs as `pid`.
