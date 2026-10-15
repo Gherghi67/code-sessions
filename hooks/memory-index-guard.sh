@@ -62,6 +62,15 @@ _print_names() {  # label
     done
 }
 
+# Each pointer target on stdin with no file of that name in .cs/memory.
+_missing_entries() {
+    local target
+    while IFS= read -r target; do
+        [ -n "$target" ] || continue
+        [ -f ".cs/memory/$target" ] || printf '%s\n' "$target"
+    done
+}
+
 _need_index() {
     [ -f "$INDEX" ] || _die "no $INDEX here; run from the session root"
 }
@@ -95,6 +104,11 @@ case "${1:-}" in
         removed=$(env LC_ALL=C comm -23 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | sed '/^$/d')
         if [ -n "$removed" ]; then
             printf '%s\n' "$removed" | _print_names 'removed:'
+            status=1
+        fi
+        dangling=$(printf '%s\n' "$after" | _missing_entries)
+        if [ -n "$dangling" ]; then
+            printf '%s\n' "$dangling" | _print_names 'dangling:'
             status=1
         fi
         # An entry this sweep wrote after the snapshot is in no snapshot, so
