@@ -386,6 +386,24 @@ test_auto_approve_rejects_a_hard_linked_target() {
         "cs auto-approve: not approving, $CLAUDE_SESSION_META_DIR/memory/two_words.md has 2 names" || return 1
 }
 
+# A link count that neither stat form can read is no evidence of one name:
+# the write falls through to the prompt, and stderr says the count could not
+# be read, the name printed plain. The stand-in stat fails both forms; the
+# same write with the system stat is approved, so the stand-in is the one
+# reason it prompts.
+test_auto_approve_declines_a_target_whose_link_count_cannot_be_read() {
+    local shim="$TEST_TMPDIR/failing-stat" target="$CLAUDE_SESSION_META_DIR/memory/two words.md"
+    mkdir -p "$shim" "$CLAUDE_SESSION_META_DIR/memory"
+    printf '#!/bin/sh\nexit 1\n' > "$shim/stat"
+    chmod +x "$shim/stat"
+    echo "# notes" > "$target"
+
+    _assert_allowed Edit "$target" "a one-name target with the system stat" || return 1
+    PATH="$shim:$PATH" _assert_falls_through Edit "$target" \
+        "a target whose link count cannot be read" \
+        "cs auto-approve: not approving, could not read the link count of $CLAUDE_SESSION_META_DIR/memory/two_words.md" || return 1
+}
+
 # Audit C2: approval covered every file under .cs/, including the ones cs
 # itself acts on: `.cs/local/pre-open` runs at the next open (Edit keeps the
 # exec bit), `.cs/claude-config/` is Claude Code's own config in an encrypted
@@ -3650,6 +3668,7 @@ run_test test_auto_approve_ignores_non_write_tools
 run_test test_auto_approve_rejects_traversal
 run_test test_auto_approve_rejects_leaf_symlink
 run_test test_auto_approve_rejects_a_hard_linked_target
+run_test test_auto_approve_declines_a_target_whose_link_count_cannot_be_read
 run_test test_auto_approve_skips_outside_session
 run_test test_auto_approve_rejects_pre_open
 run_test test_auto_approve_rejects_local_state_files
