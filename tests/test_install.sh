@@ -3031,6 +3031,48 @@ test_install_reads_its_version_from_the_payload_not_a_kept_link() {
     assert_eq "$version" "$(cat "$home/.claude/hooks/cs/.version")" "the hooks are stamped with the version installed" || return 1
 }
 
+# The hooks' version stamp is cs's, written as .tui-origin and the install
+# record are: a temp file renamed into place, which replaces a FIFO there
+# without opening it. A link there is kept and named, as _place_file keeps
+# any link to content cs did not write, and so is a directory, which a rename
+# would drop the stamp into.
+test_install_writes_the_version_stamp_without_opening_what_is_there() {
+    local home out rc version stamp
+    version=$(grep -m1 '^VERSION=' "$SCRIPT_DIR/../bin/cs" | cut -d'"' -f2)
+    [ -n "$version" ] || { echo "  FAIL: bin/cs holds no VERSION line"; return 1; }
+
+    home="$TEST_TMPDIR/stamp-fifo-home"; stamp="$home/.claude/hooks/cs/.version"; rc=0
+    mkdir -p "$home/.claude/hooks/cs"
+    mkfifo "$stamp"
+    _run_bounded 60 env HOME="$home" bash "$INSTALL_SH" < /dev/null > "$TEST_TMPDIR/stamp-fifo.out" 2>&1 || rc=$?
+    out=$(cat "$TEST_TMPDIR/stamp-fifo.out")
+    assert_eq "0" "$rc" "install over a fifo stamp: exit status (142: still running after 60 s)" || { echo "$out"; return 1; }
+    [ -f "$stamp" ] && [ ! -L "$stamp" ] || { echo "  FAIL: the fifo stamp is not replaced by a file"; return 1; }
+    assert_eq "$version" "$(cat "$stamp")" "the fifo is replaced by the stamp" || return 1
+
+    home="$TEST_TMPDIR/stamp-link-home"; stamp="$home/.claude/hooks/cs/.version"; rc=0
+    mkdir -p "$home/.claude/hooks/cs" "$home/fifos"
+    mkfifo "$home/fifos/pipe"
+    ln -s "$home/fifos/pipe" "$stamp"
+    _run_bounded 60 env HOME="$home" bash "$INSTALL_SH" < /dev/null > "$TEST_TMPDIR/stamp-link.out" 2>&1 || rc=$?
+    out=$(cat "$TEST_TMPDIR/stamp-link.out")
+    assert_eq "0" "$rc" "install over a link to a fifo: exit status (142: still running after 60 s)" || { echo "$out"; return 1; }
+    [ -L "$stamp" ] && [ -p "$home/fifos/pipe" ] || { echo "  FAIL: the link and the fifo are not left as they were"; return 1; }
+    assert_output_contains "$out" "Kept $(_bre_literal "$stamp"): a symlink to content cs did not write, so it was not replaced" \
+        "the kept link is named" || return 1
+
+    home="$TEST_TMPDIR/stamp-dir-home"; stamp="$home/.claude/hooks/cs/.version"; rc=0
+    mkdir -p "$stamp"
+    _run_bounded 60 env HOME="$home" bash "$INSTALL_SH" < /dev/null > "$TEST_TMPDIR/stamp-dir.out" 2>&1 || rc=$?
+    out=$(cat "$TEST_TMPDIR/stamp-dir.out")
+    assert_eq "0" "$rc" "install over a directory stamp: exit status" || { echo "$out"; return 1; }
+    assert_eq "" "$(ls -A "$stamp")" "nothing is put inside the directory" || return 1
+    assert_output_contains "$out" "Kept $(_bre_literal "$stamp"): a directory, so it was not replaced" \
+        "the kept directory is named" || return 1
+    printf '%s\n' "$out" | sed -n '/Installation complete/,$p' | grep -q "^ *$(_bre_literal "$stamp")$" \
+        || { echo "  FAIL: the kept directory is not listed at the end"; return 1; }
+}
+
 test_uninstall_removes_leftover_cs_tui_exe() {
     local fake_home="$TEST_TMPDIR/uninstall-tui-exe"
     mkdir -p "$fake_home/.local/bin" "$fake_home/.claude"
@@ -3232,6 +3274,7 @@ run_test test_uninstall_keeps_a_fifo_in_a_skill_directory_unread
 run_test test_uninstall_judges_names_holding_a_newline_whole
 run_test test_install_never_writes_a_path_holding_a_newline_into_the_record
 run_test test_install_reads_its_version_from_the_payload_not_a_kept_link
+run_test test_install_writes_the_version_stamp_without_opening_what_is_there
 run_test test_uninstall_removes_subagent_statusline
 test_hook_registration_doc_matches_install() {
     # docs/hooks.md restates install.sh's _merge_cs_hook registrations as a
