@@ -628,13 +628,19 @@ run_uninstall() {
         fi
     done
     if command -v jq >/dev/null 2>&1 \
-        && grep -q -- '-codex-hook session-start' "${codex_skills_dir%/skills}/hooks.json" 2>/dev/null; then
-        if _codex_hooks_unregister "${codex_skills_dir%/skills}"; then
+        && grep -q -- '-codex-hook ' "${codex_skills_dir%/skills}/hooks.json" 2>/dev/null; then
+        if _codex_hooks_unregister "${codex_skills_dir%/skills}" \
+            && _codex_hooks_unregister "${codex_skills_dir%/skills}" PostToolUse post_tool_use files-changed; then
             info "Removed the cs hook from ${codex_skills_dir%/skills}/hooks.json"
         else
             warn "Could not remove the cs hook from ${codex_skills_dir%/skills}/hooks.json; remove its SessionStart entry by hand"
         fi
     fi
+    local recovery_file
+    for recovery_file in autosave-commits.sh cs-resolve.sh cs-shared.sh cs-engine-events.sh; do
+        rm -f "${codex_skills_dir%/skills}/hooks/cs/$recovery_file"
+    done
+    rmdir "${codex_skills_dir%/skills}/hooks/cs" 2>/dev/null || true
     local codex_sl_rc=0
     _codex_status_line_remove "${codex_skills_dir%/skills}" > /dev/null || codex_sl_rc=$?
     case $codex_sl_rc in

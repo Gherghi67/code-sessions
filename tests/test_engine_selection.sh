@@ -15,6 +15,7 @@ setup() {
     export CLAUDE_CODE_BIN="$TEST_TMPDIR/bin/claude"
     export CODEX_BIN="$TEST_TMPDIR/bin/codex"
     export CS_CODEX_THREAD_BIN="$TEST_TMPDIR/bin/cs-codex-thread"
+    export CS_CLAUDE_ARGV="$TEST_TMPDIR/claude-argv" CS_CODEX_ARGV="$TEST_TMPDIR/codex-argv"
     export CS_CLAUDE_LOG="$TEST_TMPDIR/claude.log"
     export CS_CLAUDE_ENV="$TEST_TMPDIR/claude.env"
     export CS_CODEX_LOG="$TEST_TMPDIR/codex.log"
@@ -25,6 +26,7 @@ setup() {
     cat > "$CLAUDE_CODE_BIN" <<'CLAUDE'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$CS_CLAUDE_LOG"
+printf '%s\n' "$@" > "$CS_CLAUDE_ARGV"
 env | grep -E '^(CS_SESSION_|CLAUDE_SESSION_)' > "$CS_CLAUDE_ENV"
 uuid=""
 while [ "$#" -gt 0 ]; do
@@ -44,6 +46,7 @@ if [ "${1:-}" = --help ]; then
     exit 0
 fi
 printf '%s\n' "$*" >> "$CS_CODEX_LOG"
+printf '%s\n' "$@" > "$CS_CODEX_ARGV"
 exit 0
 CODEX
     cat > "$CS_CODEX_THREAD_BIN" <<'HELPER'
@@ -333,6 +336,53 @@ test_resume_missing_binding_does_not_migrate_or_allocate() {
     assert_not_exists "$session_dir/CLAUDE.local.md" "no native preparation" || return 1
 }
 
+test_launch_options_survive_fresh_and_resumed_engines() {
+    local model='provider/model with spaces $(literal)' output dir
+    output=$("$CS_BIN" choices --engine claude --model "$model" --effort high --approve-for-me 2>&1) || {
+        echo "  FAIL: Claude options launch: $output"; return 1;
+    }
+    assert_eq "$model" "$(sed -n '2p' "$CS_CLAUDE_ARGV")" "model is one literal argument" || return 1
+    assert_file_contains "$CS_CLAUDE_ARGV" '^--effort$' || return 1
+    assert_file_contains "$CS_CLAUDE_ARGV" '^auto$' || return 1
+    output=$("$CS_BIN" choices --resume --model "$model" --effort medium 2>&1) || return 1
+    assert_file_contains "$CS_CLAUDE_ARGV" '^--resume$' || return 1
+    assert_file_contains "$CS_CLAUDE_ARGV" '^medium$' || return 1
+    assert_file_not_contains "$CS_CLAUDE_ARGV" '^--permission-mode$' || return 1
+    output=$("$CS_BIN" choices --fresh --model "$model" --effort low 2>&1) || return 1
+    assert_eq "$model" "$(sed -n '2p' "$CS_CLAUDE_ARGV")" "fresh rebind takes selected model" || return 1
+    output=$("$CS_BIN" choices --engine codex --model "$model" --effort xhigh 2>&1) || return 1
+    assert_file_contains "$CS_CODEX_ARGV" '^--approve-for-me$' || return 1
+    assert_file_contains "$CS_CODEX_ARGV" '^model_reasoning_effort="xhigh"$' || return 1
+    assert_eq "$model" "$(sed -n '7p' "$CS_CODEX_ARGV")" "Codex model is one literal argument" || return 1
+    output=$("$CS_BIN" choices --engine codex --resume --native-approval 2>&1) || return 1
+    assert_file_not_contains "$CS_CODEX_ARGV" '^--approve-for-me$' || return 1
+}
+
+test_invalid_launch_options_do_not_create_workspace() {
+    local output status=0
+    output=$("$CS_BIN" invalid-model --model '' 2>&1) || status=$?
+    [ "$status" -ne 0 ] || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/invalid-model" || return 1
+    status=0
+    output=$("$CS_BIN" invalid-model --model $'some\nmodel' 2>&1) || status=$?
+    [ "$status" -ne 0 ] || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/invalid-model" || return 1
+}
+
+test_profile_reopen_refreshes_login_without_overwriting_preferences() {
+    local profile="$TEST_TMPDIR/profile" output
+    mkdir -p "$profile/.claude"
+    mkdir -p "$HOME/.claude"
+    printf '%s\n' '{"oauthAccount":{"accountUuid":"selected"},"projects":{"default":1}}' > "$HOME/.claude/.config.json"
+    printf '%s\n' '{"oauthAccount":{"accountUuid":"stale-default"}}' > "$HOME/.claude.json"
+    printf '%s\n' '{"oauthAccount":{"accountUuid":"stale"},"theme":"profile","projects":{"own":2}}' > "$profile/.claude/.claude.json"
+    output=$(CODE_SESSIONS_HOME="$profile" CLAUDE_CONFIG_DIR="$profile/.claude" CLAUDE_SECURESTORAGE_CONFIG_DIR='' \
+        "$CS_BIN" profile-login --engine claude 2>&1) || { echo "$output"; return 1; }
+    assert_eq selected "$(jq -r .oauthAccount.accountUuid "$profile/.claude/.claude.json")" || return 1
+    assert_eq profile "$(jq -r .theme "$profile/.claude/.claude.json")" || return 1
+    assert_eq '{"own":2}' "$(jq -c .projects "$profile/.claude/.claude.json")" || return 1
+}
+
 echo 'Engine selection tests'
 run_test test_engine_roundtrip_resumes_each_acknowledged_binding
 run_test test_launch_intent_flags_validate_before_creation
@@ -352,4 +402,7 @@ run_test test_sole_installed_codex_adapter_is_default
 run_test test_sole_installed_codex_adapter_is_read_from_the_install_dir
 run_test test_codex_doctor_reports_capability_gaps_without_claude_checks
 run_test test_claude_adoption_preserves_user_local_instructions
+run_test test_launch_options_survive_fresh_and_resumed_engines
+run_test test_invalid_launch_options_do_not_create_workspace
+run_test test_profile_reopen_refreshes_login_without_overwriting_preferences
 report_results

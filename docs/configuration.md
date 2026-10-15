@@ -399,6 +399,15 @@ would run the stable install's hooks.
 
 ## Your own setup in the code-sessions profile
 
+Claude subscription authentication uses your usual Keychain credential entry.
+The launcher sets `CLAUDE_SECURESTORAGE_CONFIG_DIR` to an empty value while
+keeping transcripts, settings and sessions in the code-sessions profile. The
+Agents sidebar updates that profile's account metadata during manual and
+automatic subscription switches, including mounted encrypted session configs.
+Each Claude reopen refreshes only account metadata, preserving local projects
+and preferences. Reopen older running Claude sessions after updating so they
+use this shared login. Codex retains its separate profile authentication.
+
 setup.sh ends by running `scripts/carry-over.sh`, which brings your own
 Claude and Codex setup from `~/.claude`, `~/.claude.json` and `~/.codex` into
 the profile at `~/.local/share/code-sessions/home`. It reads those and writes
@@ -452,8 +461,8 @@ only inside the profile. Every path comes from `HOME`: inside a code-sessions se
   `statusline-bridge.sh`, the profile's status line moves inside the bridge
   too, and the profile's own line (`cs-statusline`) is kept in
   `agents-sidebar-status/original-statusline` inside the profile's `.claude`.
-  The bridge draws that line when `CLAUDE_CONFIG_DIR`, or in an encrypted
-  session `CLAUDE_SECURESTORAGE_CONFIG_DIR`, names the profile; a bridge
+  A profile-aware bridge draws that line when `CLAUDE_CONFIG_DIR` or
+  `CODE_SESSIONS_HOME` names the profile; a bridge
   without that check draws the line `~/.claude` displaced instead. The wrap
   happens once: a status line you give the profile later stays (answer `y`
   when setup offers cs-statusline, or run `cs -statusline enable`); delete

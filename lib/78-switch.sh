@@ -82,7 +82,7 @@ _switch_engine_reads_vault() {  # engine
 }
 
 _switch_usage() {
-    error "Usage: cs -switch [--check] [claude|codex] [--resume], or cs -switch cancel"
+    error "Usage: cs -switch [--check] [claude|codex] [--resume] [--model MODEL] [--effort LEVEL] [--approve-for-me|--native-approval], or cs -switch cancel"
 }
 
 # cs -switch [--check] [claude|codex] [--resume] | cancel
@@ -90,22 +90,36 @@ _switch_usage() {
 # Every refusal is one line naming the fix. --check runs all of them except the
 # armed-handoff one and writes nothing: the skill asks before writing a handoff.
 cmd_switch() {
-    local target="" mode=fresh check="" arg
+    local target="" mode=fresh check="" arg model="" effort="" approval=""
     if [ "${1:-}" = cancel ]; then
         [ $# -eq 1 ] || _switch_usage
         _switch_cancel
         return $?
     fi
-    for arg in "$@"; do
+    while [ $# -gt 0 ]; do
+        arg="$1"
         case "$arg" in
             --check) check=1 ;;
             --resume) mode=resume ;;
+            --model|--effort)
+                [ $# -ge 2 ] || _switch_usage
+                _cs_launch_option_value "$arg" "$2"
+                if [ "$arg" = --model ]; then model="$2"; else effort="$2"; fi
+                shift
+                ;;
+            --model=*|--effort=*)
+                _cs_launch_option_value "${arg%%=*}" "${arg#*=}"
+                if [ "${arg%%=*}" = --model ]; then model="${arg#*=}"; else effort="${arg#*=}"; fi
+                ;;
+            --approve-for-me) approval=auto ;;
+            --native-approval) approval=native ;;
             -*) _switch_usage ;;
             *)
                 [ -z "$target" ] || _switch_usage
                 target="$arg"
                 ;;
         esac
+        shift
     done
 
     local session_dir="${CS_SESSION_DIR:-}" name="${CS_SESSION_NAME:-}"
@@ -164,8 +178,8 @@ cmd_switch() {
     handoff=$(_rotation_armed_handoff "$session_dir")
     [ -n "$handoff" ] \
         || error "No rotation handoff is armed; write and arm one first (rotate's steps 1-9), then run cs -switch again"
-    cs_write_atomic "$file" printf 'engine=%s\nmode=%s\nhandoff=%s\nrun=%s\n' \
-        "$target" "$mode" "$handoff" "$CS_RUN_ID" \
+    cs_write_atomic "$file" printf 'engine=%s\nmode=%s\nhandoff=%s\nrun=%s\nmodel=%s\neffort=%s\napproval=%s\n' \
+        "$target" "$mode" "$handoff" "$CS_RUN_ID" "$model" "$effort" "$approval" \
         || error "Could not write $file"
     local how="a fresh $target conversation"
     [ "$mode" = fresh ] || how="$target's last conversation"
@@ -212,7 +226,7 @@ _switch_run_start() {  # session_dir
 # main, which execs it once cs_launch_session has returned.
 _switch_settle() {  # session_name, session_dir, engine, run_status
     local name="$1" dir="$2" engine="$3" status="$4"
-    local file target mode handoff run handoffs missing binding refusal
+    local file target mode handoff run handoffs missing binding refusal model effort approval
 
     # A switch relaunch whose CLI failed: its handoff goes back to armed unless
     # the conversation evidently ran. Either way this run has spoken for the
@@ -230,6 +244,9 @@ _switch_settle() {  # session_name, session_dir, engine, run_status
     target=$(_switch_field "$file" engine)
     mode=$(_switch_field "$file" mode)
     handoff=$(_switch_field "$file" handoff)
+    model=$(_switch_field "$file" model)
+    effort=$(_switch_field "$file" effort)
+    approval=$(_switch_field "$file" approval)
     # Consumed once, whatever happens next.
     rm -f "$file" 2>/dev/null || true
 
@@ -276,6 +293,9 @@ _switch_settle() {  # session_name, session_dir, engine, run_status
     else
         mode=fresh
     fi
+    _cs_switch_next_model="$model"
+    _cs_switch_next_effort="$effort"
+    _cs_switch_next_approval="$approval"
     _cs_switch_next="$target"
     _cs_switch_next_mode="$mode"
     _cs_switch_prev="$engine"
@@ -332,6 +352,12 @@ _switch_relaunch() {  # session_name
             _cs_sw_argv+=(--from-handoff --switched-from "$_cs_sw_from")
             printf "${DIM:-}Switching %s to %s: a fresh conversation from %s.${NC:-}\n" "$_cs_sw_name" "$_cs_sw_target" "${_cs_switch_handoff:-the handoff}"
         fi
+        [ -z "${_cs_switch_next_model:-}" ] || _cs_sw_argv+=(--model "$_cs_switch_next_model")
+        [ -z "${_cs_switch_next_effort:-}" ] || _cs_sw_argv+=(--effort "$_cs_switch_next_effort")
+        case "${_cs_switch_next_approval:-}" in
+            auto) _cs_sw_argv+=(--approve-for-me) ;;
+            native) _cs_sw_argv+=(--native-approval) ;;
+        esac
         for _cs_sw_var in $(compgen -e); do
             case "${_cs_switch_env_names:-}" in
                 *$'\n'"$_cs_sw_var"$'\n'*) ;;

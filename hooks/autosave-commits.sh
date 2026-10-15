@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ABOUTME: PostToolUse hook that autosaves to a shadow git ref on every Write/Edit
+# ABOUTME: Shared files_changed consumer; Claude PostToolUse enters via its adapter.
 # ABOUTME: Crash recovery for all session files via refs/worktree/cs/session/<uuid>, logs narrative edits
 
 set -euo pipefail
@@ -41,11 +41,17 @@ if ! command -v cs_resolve_session >/dev/null 2>&1; then
 fi
 # The snapshot still skips vault link targets without the library.
 CS_VAULT_LINKS="${CS_VAULT_LINKS:-memory plans claude-config private}"
+# The resolver still supports older hook consumers through Claude aliases.
+# This shared consumer accepts the neutral session contract on its own too.
+if [ -n "${CS_SESSION_NAME:-}" ] && [ -n "${CS_SESSION_DIR:-}" ]; then
+    export CLAUDE_SESSION_NAME="$CS_SESSION_NAME" CLAUDE_SESSION_DIR="$CS_SESSION_DIR"
+    export CLAUDE_SESSION_META_DIR="${CS_SESSION_META_DIR:-$CS_SESSION_DIR/.cs}"
+fi
 # Only run in cs sessions
 cs_resolve_session "" || exit 0
 
-SESSION_DIR="${CLAUDE_SESSION_DIR:-}"
-META_DIR="${CLAUDE_SESSION_META_DIR:-$SESSION_DIR/.cs}"
+SESSION_DIR="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}"
+META_DIR="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-$SESSION_DIR/.cs}}"
 if [ -z "$SESSION_DIR" ] || [ ! -d "$SESSION_DIR" ]; then
     exit 0
 fi
@@ -59,13 +65,33 @@ GIT_DIR=$(git -C "$SESSION_DIR" rev-parse --git-dir 2>/dev/null) || exit 0
 # Read hook input
 INPUT=$(cat)
 
-TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name')
-FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
-
-# Only trigger on Edit/Write
-if [[ "$TOOL_NAME" != "Edit" && "$TOOL_NAME" != "Write" ]]; then
-    exit 0
+if [ "${1:-}" != --event ]; then
+    # Claude's existing native hook entry point. All engine-specific decoding
+    # lives in adapter handlers; Codex passes the same event through --event.
+    _cs_events="$(dirname "$0")/cs-engine-events.sh"
+    [ -r "$_cs_events" ] && "${BASH:-/bin/bash}" -n "$_cs_events" 2>/dev/null || exit 0
+    # shellcheck source=cs-engine-events.sh
+    . "$_cs_events"
+    INPUT=$(printf '%s' "$INPUT" | cs_engine_call claude files_changed) || exit 0
 fi
+printf '%s' "$INPUT" | jq -e '
+    .type == "files_changed" and (.engine == "claude" or .engine == "codex")
+    and (.files | type == "array" and length > 0 and all(.[]; type == "string" and length > 0))
+    and (.session_id | type == "string") and (.cwd | type == "string")
+' >/dev/null 2>&1 || exit 0
+
+# Ignore events entirely outside this checkout. Resolve existing parents to
+# handle native relative paths and symlinks without requiring another runtime.
+_cs_in_checkout=0
+_cs_top=$(cd "$SESSION_DIR" && pwd -P) || exit 0
+_cs_cwd=$(printf '%s' "$INPUT" | jq -r '.cwd // empty')
+[ -n "$_cs_cwd" ] || _cs_cwd="$_cs_top"
+while IFS= read -r FILE_PATH; do
+    case "$FILE_PATH" in /*) ;; *) FILE_PATH="$_cs_cwd/$FILE_PATH" ;; esac
+    _cs_parent=$(cd "$(dirname "$FILE_PATH")" 2>/dev/null && pwd -P) || continue
+    case "$_cs_parent/" in "$_cs_top/"*) _cs_in_checkout=1 ;; esac
+done < <(printf '%s' "$INPUT" | jq -r '.files[]')
+[ "$_cs_in_checkout" = 1 ] || exit 0
 
 # Each conversation autosaves to its own per-worktree ref, keyed on the live
 # conversation UUID, so concurrent sessions on one checkout never share or
@@ -77,6 +103,8 @@ SESSION_REF="refs/worktree/cs/session/$SESSION_UUID"
 
 # Extract a log entry if this is a narrative file edit
 LATEST_ENTRY=""
+while IFS= read -r FILE_PATH; do
+case "$FILE_PATH" in /*) ;; *) FILE_PATH="$_cs_cwd/$FILE_PATH" ;; esac
 case "$FILE_PATH" in
     "$META_DIR"/memory/narrative*.md)
         # Try to find last heading (## Something)
@@ -96,6 +124,7 @@ case "$FILE_PATH" in
         fi
         ;;
 esac
+done < <(printf '%s' "$INPUT" | jq -r '.files[]')
 
 # Autosave to shadow ref using git plumbing (does not touch HEAD or main branch)
 # Fires on ALL Write/Edit — protects all files, not just the narrative
@@ -132,7 +161,15 @@ autosave_to_shadow_ref() {
 
         # Create temporary index from current index
         TEMP_INDEX=$(mktemp "${TMPDIR:-/tmp}/cs-autosave.XXXXXX")
-        cp "$GIT_DIR/index" "$TEMP_INDEX"
+        if [ -f "$GIT_DIR/index" ]; then
+            # Preserve Git's racy-index timestamp. A newly timestamped copy can
+            # incorrectly trust old file stats after rapid same-size edits.
+            cp -p "$GIT_DIR/index" "$TEMP_INDEX"
+        else
+            # git init has no index until its first add; mktemp's empty file
+            # is not an index. An absent temporary index lets git create it.
+            rm -f "$TEMP_INDEX"
+        fi
 
         # Stage all current files in the temporary index, except an encrypted
         # session's mounted volume: its blobs would land in plaintext
@@ -162,6 +199,11 @@ cs-base: $base"
 
         # Chain onto this conversation's previous autosave if it exists
         parent=$(git rev-parse -q --verify "$SESSION_REF" 2>/dev/null || true)
+        if [ -n "$parent" ] \
+            && [ "$(git rev-parse "$parent^{tree}" 2>/dev/null)" = "$tree" ] \
+            && [ "$(git show -s --format=%B "$parent" | sed -n 's/^cs-base: //p')" = "$base" ]; then
+            exit 0
+        fi
         if [ -n "$parent" ]; then
             commit=$(printf '%s\n' "$msg" | git commit-tree "$tree" -p "$parent" 2>/dev/null) || exit 0
         else

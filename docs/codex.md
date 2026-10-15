@@ -33,13 +33,16 @@ experimental protocol capabilities being present. CS checks at startup and
 reports an error when they are unavailable. It does not upgrade Codex
 automatically.
 
-CS selects **Approve for me** on every Codex launch, including new threads,
+CS selects **Approve for me** by default on Codex launches, including new threads,
 exact resumes, and engine switches, by passing `--approve-for-me`. This requires
 a Codex build that supports the flag; it is verified with
 `0.162.0-alpha.17.2`. Before preparing a thread or consuming a handoff, CS
-requires a successful `codex --help` that lists the option. Unsupported builds
-are refused; upgrade Codex or point `CODEX_BIN` at a supporting build.
-The mode uses a `workspace-write` sandbox with
+requires a successful `codex --help` that lists the option when automatic
+approval is selected. Unsupported builds are refused in automatic mode;
+upgrade Codex or point `CODEX_BIN` at a supporting build. Pass
+`--native-approval` to use Codex's configured approval policy instead; this
+mode does not require or pass `--approve-for-me`.
+Automatic approval uses a `workspace-write` sandbox with
 `on-request` approvals and an `auto_review` reviewer. Routine workspace
 operations run directly; eligible approval requests go through automatic review,
 which can reject an action. You can change the active mode with `/permissions`.
@@ -182,15 +185,19 @@ Codex for now.
 
 `$rotate` works. It writes and arms a handoff, then tells you to run `/clear`
 and send any message: Codex starts no turn by itself, and the handoff loads with
-that first message through the one hook cs registers for Codex
+that first message through the SessionStart hook cs registers for Codex
 (`cs -codex-hook session-start` in `$CODEX_HOME/hooks.json`, trusted in
 `config.toml` by the installer). The same hook rebinds the session after every
 `/clear`, so the next `cs <name>` resumes the conversation you were in.
 Exiting instead and answering `r` at the next launch starts a fresh thread from
 the handoff and runs its first turn on its own. `$switch` does the same across
 engines (see [Switching engines](#switching-engines)). The Claude hooks and
-function-hook mods do not run in Codex. Codex does
-not yet participate in CS autosave and crash recovery, queue delivery, usage
+function-hook mods do not run in Codex. Successful Codex patches automatically
+save a recovery copy through the same shadow-ref consumer as Claude edits.
+The installer registers `cs -codex-hook files-changed` for PostToolUse and
+deploys its recovery files to `$CODEX_HOME/hooks/cs/`; see
+[Completed file changes and recovery copies](engine-adapters.md#completed-file-changes-and-recovery-copies).
+Codex does not yet participate in Claude's automatic recovery prompt, queue delivery, usage
 reporting (`cs -usage`), encrypted sessions, observed runtime status, or native
 terminal controls. CS session-management commands continue to manage the shared
 workspace, including manual `cs -status` updates through `CS_SESSION_*`; native runtime observations remain Claude-specific for now.
@@ -203,3 +210,11 @@ enable|disable` adds or removes it. A status line you set yourself stays. See
 
 The shared internal dispatch, binding, and context interfaces are described in
 [Engine adapters](engine-adapters.md).
+
+Before opening a conversation, press `e` in the session picker to choose
+engine, model, effort and approval policy. The same launch choices are accepted
+as `cs <name> --engine codex --model <model> --effort <level>` and by
+`cs -switch codex --model <model> --effort <level>`. Blank picker fields keep
+native defaults. Model names and effort levels are validated by the native CLI.
+Codex launches use `--approve-for-me` in a workspace-write sandbox by default;
+`--native-approval` leaves approval policy to Codex configuration.

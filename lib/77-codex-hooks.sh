@@ -32,11 +32,22 @@ _fresh_notice_codex() {  # actor_slug
 cmd_codex_hook() {  # event
     case "${1:-}" in
         session-start) _codex_hook_session_start ;;
+        files-changed) _codex_hook_files_changed ;;
         *)
-            printf 'Usage: cs -codex-hook session-start\n' >&2
+            printf 'Usage: cs -codex-hook session-start|files-changed\n' >&2
             return 2
             ;;
     esac
+}
+
+_codex_hook_files_changed() {
+    local event hook
+    [ "${CS_RUN_ENGINE:-}" = codex ] && [ -n "${CS_SESSION_DIR:-}" ] || return 0
+    event=$(cs_engine_call codex files_changed) || return 0
+    [ -n "$event" ] || return 0
+    hook="${CODEX_HOME:-$HOME/.codex}/hooks/cs/autosave-commits.sh"
+    [ -r "$hook" ] || return 0
+    printf '%s' "$event" | bash "$hook" --event || true
 }
 
 # Codex fires SessionStart on the first turn of a thread, before the model

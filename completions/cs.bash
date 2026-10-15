@@ -30,7 +30,7 @@ _cs_completions() {
     local update_cmds="--check -c --force -f"
 
     # Session-level options
-    local session_opts="-secrets -queue -msg -narrative -conversations -usage -tag -features -finish --engine --fresh --resume --from-handoff --force"
+    local session_opts="-secrets -queue -msg -narrative -conversations -usage -tag -features -finish --engine --model --effort --approve-for-me --native-approval --fresh --resume --from-handoff --force"
     local engine_values="claude codex"
 
     # Get list of session names. cs owns the definition of a session, including

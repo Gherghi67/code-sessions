@@ -419,6 +419,12 @@ test_build_generates_the_shared_hook_fragment() {
         head -20 "$TEST_TMPDIR/shared.diff"
         return 1
     fi
+    assert_file_exists "$repo/hooks/cs-engine-events.sh" "build.sh writes the engine event hook library" || return 1
+    if ! diff -u "$real/hooks/cs-engine-events.sh" "$repo/hooks/cs-engine-events.sh" > "$TEST_TMPDIR/events.diff" 2>&1; then
+        echo "  FAIL: engine event hook library differs from the adapter sources (run ./build.sh)"
+        head -20 "$TEST_TMPDIR/events.diff"
+        return 1
+    fi
 }
 
 # install.sh is a build artifact too: build.sh splices lib/01-manifests.sh (the
@@ -489,7 +495,7 @@ test_build_outputs_are_world_readable() {
     cp "$real/build.sh" "$real/install.sh.in" "$repo/"
     (cd "$repo" && bash build.sh > /dev/null) || { echo "  FAIL: build.sh failed"; return 1; }
     local f mode
-    for f in bin/cs bin/cs hooks/cs-shared.sh install.sh; do
+    for f in bin/cs bin/cs hooks/cs-shared.sh hooks/cs-engine-events.sh install.sh; do
         # GNU stat first: its -c is invalid on BSD stat (no output, exit 1), while
         # BSD's -f means "filesystem" to GNU stat and prints a block before failing.
         mode=$(stat -c '%a' "$repo/$f" 2>/dev/null || stat -f '%Lp' "$repo/$f")

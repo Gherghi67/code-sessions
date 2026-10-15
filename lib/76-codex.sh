@@ -18,7 +18,7 @@ _cs_codex_adapter_capabilities() {
     # the armed handoff; the launch prompt's r starts a thread from it.
     # feature_finish: -finish starts the thread on `$finish <task>`, as
     # Claude's starts on /finish <task>.
-    printf '%s\n' launch exact_resume startup_context feature_finish rotation
+    printf '%s\n' launch exact_resume startup_context feature_finish rotation recovery_autosave
 }
 
 _cs_codex_adapter_prepare_workspace() {  # session_dir, mode
@@ -219,12 +219,15 @@ _launch_codex_bound() {
         /*) ;;
         *) codex_bin="$(cd "$(dirname "$codex_bin")" && pwd -P)/$(basename "$codex_bin")" || return 1 ;;
     esac
-    # Refuse before native preparation can bind a thread or spend its handoff.
-    local codex_help
-    if ! codex_help=$(cs_run_child "$codex_bin" --help 2>/dev/null) \
-        || ! printf '%s\n' "$codex_help" | grep -E '^[[:space:]]*--approve-for-me([[:space:]]|$)' >/dev/null; then
-        _codex_launch_error "Codex at $codex_bin must support --approve-for-me. Upgrade Codex or set CODEX_BIN to a build whose --help lists --approve-for-me."
-        return 1
+    # Automatic approval must refuse before preparation binds or spends context.
+    # Native approval leaves policy to Codex and needs no automatic-review flag.
+    if [ "${CS_LAUNCH_APPROVAL:-auto}" != native ]; then
+        local codex_help
+        if ! codex_help=$(cs_run_child "$codex_bin" --help 2>/dev/null) \
+            || ! printf '%s\n' "$codex_help" | grep -E '^[[:space:]]*--approve-for-me([[:space:]]|$)' >/dev/null; then
+            _codex_launch_error "Codex at $codex_bin must support --approve-for-me for automatic approval. Upgrade Codex, set CODEX_BIN to a supporting build, or use --native-approval to keep Codex's configured policy."
+            return 1
+        fi
     fi
     helper=$(_codex_thread_helper) || {
         _codex_launch_error "Cannot locate cs-codex-thread beside the cs executable."
@@ -439,12 +442,13 @@ _launch_codex_bound() {
         turn_before=$(_codex_turn_mark "$helper" "$codex_bin" "$session_dir" "$thread_id") || turn_before=""
     fi
 
-    printf '%s\n' 'Codex via cs: session context, exact resume and rotation are enabled; Claude hooks, autosave, and task queue integration are unavailable.'
+    printf '%s\n' 'Codex via cs: session context, exact resume and rotation are enabled; automatic recovery is enabled; Claude task queue integration is unavailable.'
     # A dedicated native writer lives for this supervised CLI lifetime.
     # Signals and lock cleanup belong to the shared controller.
     local status=0
-    cs_run_child "$codex_bin" --no-daemon resume "$thread_id" -C "$session_dir" \
-        --approve-for-me ${kick:+"$kick"} || status=$?
+    local -a CS_NATIVE_LAUNCH_ARGS
+    _cs_native_launch_options codex || return 1
+    cs_run_child "$codex_bin" --no-daemon resume "$thread_id" -C "$session_dir" ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} ${kick:+"$kick"} || status=$?
     if [ "$status" -ne 0 ] && [ -n "$spent" ]; then
         # A switch relaunch's settle reads it too (lib/78-switch.sh).
         _cs_switch_ran=""

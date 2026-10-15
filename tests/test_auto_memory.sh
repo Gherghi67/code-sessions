@@ -915,7 +915,8 @@ test_claude_config_refuses_an_unreadable_claude_json() {
     _make_vaulted_session vt
     _make_vaulted_config vt
     _make_launch_sentinel
-    local content out rc
+    local content out rc config_file
+    config_file="$(cd "$CS_SESSIONS_ROOT/vt/.cs/claude-config" && pwd -P)/.claude.json"
     for content in '{"projects": {,}' ''; do
         printf '%s' "$content" > "$HOME/.claude.json"
 
@@ -925,7 +926,7 @@ test_claude_config_refuses_an_unreadable_claude_json() {
         assert_eq "1" "$rc" "cs should exit 1 for '$content'" || return 1
         # The line before it is the stale-lock notice the fixture's own
         # creating launch leaves behind.
-        assert_eq "Error: $HOME/.claude.json is not a JSON object cs can copy into $CS_SESSIONS_ROOT/vt/.cs/claude-config; fix it, then reopen." \
+        assert_eq "Error: could not refresh $config_file from $HOME/.claude.json; fix its JSON, then reopen." \
             "$(tail -n 1 <<< "$out")" "cs should name the source it cannot copy" || return 1
         assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
         assert_eq "" "$(ls -A "$CS_SESSIONS_ROOT/vt/.cs/claude-config")" \

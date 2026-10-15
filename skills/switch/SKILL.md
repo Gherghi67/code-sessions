@@ -26,6 +26,12 @@ step 1 reads the `conversation:` line of the same output.
 
 Take the target and the option from the user's message, the one that invoked
 this skill: an engine name, `claude` or `codex`, and optionally `--resume`.
+Also carry any requested `--model MODEL`, `--effort LEVEL`,
+`--approve-for-me` or `--native-approval` options through both the check and
+the final `cs -switch` call, quoting each value as a separate argument.
+Codex defaults to automatic approval review in a workspace-write sandbox;
+`--native-approval` uses its configured policy. Explicit `--approve-for-me`
+selects Claude's `auto` permission mode when Claude is the target.
 Codex hands a skill no arguments (it never substitutes the arguments
 placeholder), so under both engines read them from the user's message; do
 not wait for them to arrive any other way. No engine named means the other
@@ -68,10 +74,8 @@ non-zero, print the line it printed (it names the fix) and stop: no handoff,
 no commit, no marker. A handoff written for a switch that cannot happen is
 armed for a `/clear` the user never asked for.
 
-Under Codex the launch's sandbox is read-only, so Codex may ask the user to
-approve the `cs -switch` calls (the one in step 3 writes into `.cs/`), as it
-does the handoff's own writes. Say so before the first one, so the approval
-is expected.
+Use the current run's approval policy for the `cs -switch` calls and the
+handoff writes. A default Codex launch reviews escalations automatically.
 
 **Encrypted session.** Rotate's own section applies: the handoffs, the
 marker and the session log live under `.cs/private/`, and nothing from the

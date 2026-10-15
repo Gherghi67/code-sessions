@@ -77,6 +77,7 @@ CS_HOOKS=(
 CS_HOOK_LIBS=(
     cs-resolve.sh
     cs-shared.sh
+    cs-engine-events.sh
     cs-iterm-tab.py
     prompt-rewriter.sh
     prompt-rewriter-model.sh
@@ -176,11 +177,11 @@ _strip_hook_registration() {
 
 # The SessionStart hook cs registers for Codex: Codex runs the command through
 # a shell, so a path outside the plain-word alphabet is single-quoted.
-_codex_hook_command() {  # cs_path
+_codex_hook_command() {  # cs_path, [verb]
     case "$1" in
         *[!A-Za-z0-9_./+-]*)
-            printf "'%s' -codex-hook session-start" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")" ;;
-        *) printf '%s -codex-hook session-start' "$1" ;;
+            printf "'%s' -codex-hook %s" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")" "${2:-session-start}" ;;
+        *) printf '%s -codex-hook %s' "$1" "${2:-session-start}" ;;
     esac
 }
 
@@ -189,10 +190,10 @@ _codex_hook_command() {  # cs_path
 # sha256 of the handler group's definition, as compact sorted-key JSON with
 # Codex's defaults filled in. cs writes that hash in the same step that
 # registers its hook, so the hook runs without a review prompt.
-_codex_hook_trust_hash() {  # command, [matcher as JSON]
+_codex_hook_trust_hash() {  # command, [matcher as JSON], [event key]
     local json
-    json=$(jq -ncS --arg c "$1" --argjson matcher "${2:-null}" \
-        '{event_name: "session_start", hooks: [{async: false, command: $c, timeout: 600, type: "command"}]}
+    json=$(jq -ncS --arg c "$1" --argjson matcher "${2:-null}" --arg event "${3:-session_start}" \
+        '{event_name: $event, hooks: [{async: false, command: $c, timeout: 600, type: "command"}]}
          + (if $matcher == null then {} else {matcher: $matcher} end)' \
         | tr -d '\n') || return 1
     if command -v sha256sum >/dev/null 2>&1; then
@@ -205,12 +206,12 @@ _codex_hook_trust_hash() {  # command, [matcher as JSON]
 # A config.toml rewrite: drop the trust table for each listed key, then rename
 # trust tables past a removed group or handler down by one index. shift_from
 # is a group index, group:handler for a handler removal, or empty for none.
-_codex_trust_tables_edit() {  # config, hooks_file, shift_from, keys...
-    local config="$1" file="$2" shift_from="$3" tmp
-    shift 3
+_codex_trust_tables_edit() {  # config, hooks_file, shift_from, event key, keys...
+    local config="$1" file="$2" shift_from="$3" event_key="$4" tmp
+    shift 4
     [ -f "$config" ] || return 0
     tmp=$(mktemp "$config.cs.XXXXXX") || return 1
-    awk -v prefix="[hooks.state.\"$file:session_start:" -v shift_from="$shift_from" -v drops="$(printf '%s\n' "$@")" '
+    awk -v prefix="[hooks.state.\"$file:$event_key:" -v shift_from="$shift_from" -v drops="$(printf '%s\n' "$@")" '
         BEGIN {
             shift_parts = split(shift_from, removed, ":")
             n = split(drops, list, "\n")
@@ -242,19 +243,19 @@ _codex_trust_tables_edit() {  # config, hooks_file, shift_from, keys...
 }
 
 # Index of cs's own SessionStart group in a hooks.json document, or nothing.
-_codex_hook_group_index() {  # hooks.json content
-    printf '%s' "$1" | jq -r '
-        [(.hooks.SessionStart // [])
+_codex_hook_group_index() {  # hooks.json content, [event], [verb]
+    printf '%s' "$1" | jq -r --arg event "${2:-SessionStart}" --arg verb "${3:-session-start}" '
+        [(.hooks[$event] // [])
          | to_entries[]
-         | select(any(.value.hooks[]?; (.command // "") | endswith(" -codex-hook session-start")))
+         | select(any(.value.hooks[]?; (.command // "") | endswith(" -codex-hook " + $verb)))
          | .key] | first // empty'
 }
 
 # Index of cs's handler inside its SessionStart group.
 _codex_hook_handler_index() {  # hooks.json content, group index
-    printf '%s' "$1" | jq -r --argjson i "$2" '
-        [.hooks.SessionStart[$i].hooks | to_entries[]
-         | select((.value.command // "") | endswith(" -codex-hook session-start"))
+    printf '%s' "$1" | jq -r --argjson i "$2" --arg event "${3:-SessionStart}" --arg verb "${4:-session-start}" '
+        [.hooks[$event][$i].hooks | to_entries[]
+         | select((.value.command // "") | endswith(" -codex-hook " + $verb))
          | .key] | first // empty'
 }
 
@@ -264,7 +265,7 @@ _codex_hook_handler_index() {  # hooks.json content, group index
 # positions and trust. A hooks.json that is not valid JSON is left alone.
 _codex_hooks_register() {  # codex_dir, command
     local dir="$1" cmd="$2" file="$1/hooks.json" config="$1/config.toml"
-    local doc index handler=0 matcher tmp hash key
+    local doc index handler=0 matcher tmp hash key event="${3:-SessionStart}" event_key="${4:-session_start}" verb="${5:-session-start}"
     case "$file" in *'"'*|*\\*) return 1 ;; esac
     if [ -f "$file" ]; then
         doc=$(cat "$file") || return 1
@@ -272,24 +273,24 @@ _codex_hooks_register() {  # codex_dir, command
     else
         doc='{}'
     fi
-    index=$(_codex_hook_group_index "$doc")
+    index=$(_codex_hook_group_index "$doc" "$event" "$verb")
     if [ -n "$index" ]; then
-        handler=$(_codex_hook_handler_index "$doc" "$index") || return 1
+        handler=$(_codex_hook_handler_index "$doc" "$index" "$event" "$verb") || return 1
     fi
-    doc=$(printf '%s' "$doc" | jq --arg c "$cmd" --arg i "$index" --argjson h "$handler" '
+    doc=$(printf '%s' "$doc" | jq --arg c "$cmd" --arg i "$index" --argjson h "$handler" --arg event "$event" '
         {type: "command", command: $c} as $ours
         | .hooks = (.hooks // {})
-        | .hooks.SessionStart = (.hooks.SessionStart // [])
-        | if $i == "" then .hooks.SessionStart += [{hooks: [$ours]}]
-          else .hooks.SessionStart[($i | tonumber)].hooks[$h] = $ours end') || return 1
-    [ -n "$index" ] || index=$(printf '%s' "$doc" | jq '.hooks.SessionStart | length - 1')
-    matcher=$(printf '%s' "$doc" | jq -c --argjson i "$index" '.hooks.SessionStart[$i].matcher // null') || return 1
+        | .hooks[$event] = (.hooks[$event] // [])
+        | if $i == "" then .hooks[$event] += [{hooks: [$ours]}]
+          else .hooks[$event][($i | tonumber)].hooks[$h] = $ours end') || return 1
+    [ -n "$index" ] || index=$(printf '%s' "$doc" | jq --arg event "$event" '.hooks[$event] | length - 1')
+    matcher=$(printf '%s' "$doc" | jq -c --argjson i "$index" --arg event "$event" '.hooks[$event][$i].matcher // null') || return 1
     mkdir -p "$dir" || return 1
     tmp=$(mktemp "$file.cs.XXXXXX") || return 1
     printf '%s\n' "$doc" > "$tmp" && chmod 600 "$tmp" && mv "$tmp" "$file" || { rm -f "$tmp"; return 1; }
-    hash=$(_codex_hook_trust_hash "$cmd" "$matcher") || return 1
-    key="$file:session_start:$index:$handler"
-    _codex_trust_tables_edit "$config" "$file" "" "$key" || return 1
+    hash=$(_codex_hook_trust_hash "$cmd" "$matcher" "$event_key") || return 1
+    key="$file:$event_key:$index:$handler"
+    _codex_trust_tables_edit "$config" "$file" "" "$event_key" "$key" || return 1
     [ -f "$config" ] || { : > "$config" && chmod 600 "$config"; } || return 1
     if [ -s "$config" ]; then printf '\n' >> "$config" || return 1; fi
     printf '[hooks.state."%s"]\ntrusted_hash = "sha256:%s"\n' "$key" "$hash" >> "$config"
@@ -299,18 +300,19 @@ _codex_hooks_register() {  # codex_dir, command
 # handlers or groups as their indices move. Remove an empty hooks.json.
 _codex_hooks_unregister() {  # codex_dir
     local dir="$1" file="$1/hooks.json" config="$1/config.toml" doc index handler shift_from count tmp
+    local event="${2:-SessionStart}" event_key="${3:-session_start}" verb="${4:-session-start}"
     [ -f "$file" ] || return 0
     doc=$(cat "$file") || return 1
-    index=$(_codex_hook_group_index "$doc" 2>/dev/null) || return 1
+    index=$(_codex_hook_group_index "$doc" "$event" "$verb" 2>/dev/null) || return 1
     [ -n "$index" ] || return 0
-    handler=$(_codex_hook_handler_index "$doc" "$index") || return 1
-    count=$(printf '%s' "$doc" | jq --argjson i "$index" '.hooks.SessionStart[$i].hooks | length') || return 1
+    handler=$(_codex_hook_handler_index "$doc" "$index" "$event" "$verb") || return 1
+    count=$(printf '%s' "$doc" | jq --argjson i "$index" --arg event "$event" '.hooks[$event][$i].hooks | length') || return 1
     shift_from="$index:$handler"
     [ "$count" != 1 ] || shift_from="$index"
-    doc=$(printf '%s' "$doc" | jq --argjson i "$index" --argjson h "$handler" '
-        del(.hooks.SessionStart[$i].hooks[$h])
-        | if .hooks.SessionStart[$i].hooks == [] then del(.hooks.SessionStart[$i]) else . end
-        | if .hooks.SessionStart == [] then del(.hooks.SessionStart) else . end
+    doc=$(printf '%s' "$doc" | jq --argjson i "$index" --argjson h "$handler" --arg event "$event" '
+        del(.hooks[$event][$i].hooks[$h])
+        | if .hooks[$event][$i].hooks == [] then del(.hooks[$event][$i]) else . end
+        | if .hooks[$event] == [] then del(.hooks[$event]) else . end
         | if .hooks == {} then del(.hooks) else . end') || return 1
     if [ "$doc" = '{}' ]; then
         rm -f "$file" || return 1
@@ -318,7 +320,7 @@ _codex_hooks_unregister() {  # codex_dir
         tmp=$(mktemp "$file.cs.XXXXXX") || return 1
         printf '%s\n' "$doc" > "$tmp" && chmod 600 "$tmp" && mv "$tmp" "$file" || { rm -f "$tmp"; return 1; }
     fi
-    _codex_trust_tables_edit "$config" "$file" "$shift_from" "$file:session_start:$index:$handler"
+    _codex_trust_tables_edit "$config" "$file" "$shift_from" "$event_key" "$file:$event_key:$index:$handler"
 }
 
 # Codex draws the bar under its prompt from [tui] status_line in config.toml,
@@ -1356,6 +1358,9 @@ Commands:
   <name> --from-handoff  Start a fresh conversation from the pending rotation handoff without prompting
   <name> --force      Override active session lock
   <name> --engine <claude|codex>  Select and remember this session's runtime
+  <name> --model MODEL --effort LEVEL  Choose native model and reasoning effort
+  <name> --approve-for-me  Use the engine's automatic approval review
+  <name> --native-approval  Use native approval defaults (Codex otherwise reviews automatically)
   <base>@<feature>    Open a parallel feature worktree of session <base>
   <base> -features          List a base's feature worktrees and their merge readiness
   <base> -finish <feature>  Open <base> and run /finish for <feature> (integrate, then retire the worktree)
@@ -2372,7 +2377,7 @@ cs_engine_call() {  # engine operation [arguments...]
         return 2
     fi
     case "$operation" in
-        dependencies|capabilities|prepare_workspace|launch) ;;
+        dependencies|capabilities|prepare_workspace|launch|files_changed) ;;
         *) printf 'Error: Unknown adapter operation: %s\n' "$operation" >&2; return 2 ;;
     esac
     handler="_cs_${engine}_adapter_${operation}"
@@ -2517,6 +2522,49 @@ validate_session_ref() {  # name
 # Returns 1 for plain names (no @). Errors out when either half is invalid.
 # @ is safe as a separator: validate_session_name has never admitted it, so
 # no existing session name can contain one.
+# Each adapter reads native PostToolUse JSON on stdin. No applicable successful
+# edit emits nothing and returns success; malformed input also fails open. Paths
+# remain native paths, resolved against cwd by the shared recovery consumer.
+_cs_claude_adapter_files_changed() {
+    jq -c '
+        select(type == "object")
+        | select((.hook_event_name // "PostToolUse") == "PostToolUse")
+        | select(.tool_name == "Write" or .tool_name == "Edit")
+        | select(.error == null and .is_error != true)
+        | select((.tool_response | type) != "object" or
+            (.tool_response.is_error != true and .tool_response.success != false))
+        | select(.tool_input.file_path | type == "string" and length > 0)
+        | {type: "files_changed", engine: "claude", session_id: .session_id,
+           cwd: (.cwd // ""), files: [.tool_input.file_path]}
+    ' 2>/dev/null || true
+}
+
+_cs_codex_adapter_files_changed() {
+    # Codex uses a command-shaped raw patch and a successful string response.
+    # PostToolUse is only emitted after completion. Verify its success response
+    # too: input alone also appears in pre-tool/permission hooks and failed calls.
+    jq -c '
+        def trim_edges: gsub("^\\s+|\\s+$"; "");
+        select(type == "object")
+        | select(.hook_event_name == "PostToolUse" and .tool_name == "apply_patch")
+        | select(.error == null and .is_error != true)
+        | select(.tool_response | type == "string" and startswith("Success. Updated the following files:\n"))
+        | select(.tool_input.command | type == "string")
+        | . as $input
+        | (.tool_input.command | gsub("\r\n"; "\n") | trim_edges | split("\n")
+            | if length >= 4 and
+                (.[0] == "<<EOF" or .[0] == "<<\u0027EOF\u0027" or .[0] == "<<\"EOF\"") and
+                (.[-1] | endswith("EOF")) then .[1:-1] else . end) as $lines
+        | select(($lines[0] | trim_edges) == "*** Begin Patch" and
+            ($lines[-1] | trim_edges) == "*** End Patch")
+        | [$lines[] | select(test("^\\*\\*\\* (Add File|Delete File|Update File|Move to): .+"))
+            | sub("^\\*\\*\\* (Add File|Delete File|Update File|Move to): "; "")]
+          | unique as $files
+        | select($files | length > 0)
+        | {type: "files_changed", engine: "codex", session_id: $input.session_id,
+           cwd: ($input.cwd // ""), files: $files}
+    ' 2>/dev/null || true
+}
 cs_split_worktree_name() {
     local name="$1"
     case "$name" in
@@ -4569,7 +4617,10 @@ _exec_fresh_rebind() {
     export CS_CLAUDE_SESSION_ID="$new_uuid"
     [ -z "$old_uuid" ] || export CS_FRESH_REBIND=1
     # shellcheck disable=SC2086
-    cs_run_child $CLAUDE_CODE_BIN --name "$session_name" --session-id "$new_uuid" ${launch_prompt:+"$launch_prompt"}
+    local -a CS_NATIVE_LAUNCH_ARGS
+    _cs_native_launch_options claude || return 1
+    # shellcheck disable=SC2086
+    cs_run_child $CLAUDE_CODE_BIN ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} --name "$session_name" --session-id "$new_uuid" ${launch_prompt:+"$launch_prompt"}
 }
 
 setup_merge_attributes() {
@@ -8742,7 +8793,7 @@ run_doctor() {
         fi
         capabilities=$(cs_engine_call "$engine" capabilities) || return $?
         _doctor_ok "Codex integration capabilities: ${capabilities//$'\n'/, }"
-        echo "  Codex hooks, automatic queue delivery, and usage observations are unavailable."
+        echo "  Claude hooks, automatic queue delivery, and usage observations are unavailable."
         if [ -d "$session_dir/.cs" ]; then
             if binding=$(cs_binding_read "$session_dir" codex); then
                 if [ -z "$binding" ]; then
@@ -9200,8 +9251,12 @@ run_tui() {
     if [ -n "$tui_output" ]; then
         local selected="${tui_output%%$'\n'*}"
         if [ "$tui_output" != "$selected" ]; then
-            local tui_flags="${tui_output#*$'\n'}"
-            exec "$0" "$selected" $tui_flags
+            local tui_flags="${tui_output#*$'\n'}" word
+            local -a tui_args=()
+            while IFS= read -r word; do
+                tui_args+=("$word")
+            done < <(printf '%s\n' "$tui_flags")
+            exec "$0" "$selected" "${tui_args[@]}"
         else
             exec "$0" "$selected"
         fi
@@ -10247,7 +10302,7 @@ _export_session_claude_config() {  # session_dir
     _link_shared_claude_config "$config" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
     # Claude Code keeps .claude.json beside the config dir by default, inside it
     # when CLAUDE_CONFIG_DIR is set.
-    _seed_session_claude_json "$config" "${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json"
+    _seed_session_claude_json "$config" "$(_cs_claude_json_path "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" "${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json")" || return $?
     export CLAUDE_SECURESTORAGE_CONFIG_DIR="${CLAUDE_SECURESTORAGE_CONFIG_DIR-${CLAUDE_CONFIG_DIR-}}"
     export CLAUDE_CONFIG_DIR="$config"
 }
@@ -10268,21 +10323,161 @@ _link_shared_claude_config() {  # session_config_dir, shell_config_dir
     done
 }
 
-# The session's .claude.json starts once as a copy of the shell's, so the
-# login's onboarding and preferences carry over, with every project's record
-# dropped: each keeps that project's last prompt in plaintext. From then on it
-# is the session's own. jq exits 0 on an empty file and prints nothing, so -e
-# is what turns an empty or unreadable source into a refusal.
-_seed_session_claude_json() {  # session_config_dir, shell_claude_json
-    local dest="$1/.claude.json" tmp
-    [ -e "$dest" ] || [ -L "$dest" ] && return 0
-    [ -e "$2" ] || return 0
-    tmp=$(mktemp "$1/.claude.json.XXXXXX") || error "could not create a temporary file in $1."
-    if ! jq -e '.projects = {}' "$2" > "$tmp" 2>/dev/null; then
-        rm -f "$tmp"
-        error "$2 is not a JSON object cs can copy into $1; fix it, then reopen."
+# Claude selects a regular, nonempty legacy config first. An empty one wins
+# only with native write permission bits and no modern config alongside it.
+_cs_claude_json_path() {  # config_dir, fallback_json
+    local legacy="$1/.config.json" mode
+    if [ -f "$legacy" ] && {
+        [ -s "$legacy" ] || {
+            [ ! -e "$2" ] && mode=$(_cs_file_mode "$legacy") &&
+                [ $((0$mode & 0222)) -ne 0 ]
+        }
+    }; then
+        printf '%s\n' "$legacy"
+    else
+        printf '%s\n' "$2"
     fi
-    mv "$tmp" "$dest" || { rm -f "$tmp"; error "could not write $dest."; }
+}
+
+# Native locks must stay empty. Keep their inode identity outside the directory
+# so a stale-lock takeover cannot turn our cleanup into the successor's unlock.
+_cs_claude_lock_identity() {  # lock directory
+    if stat --version >/dev/null 2>&1; then
+        stat -L -c '%d:%i' "$1"
+    else
+        stat -L -f '%d:%i' "$1"
+    fi
+}
+
+_cs_claude_lock_heartbeat() {  # lock directory, identity, readiness file
+    local started ready="$3"
+    # Only the parent retains the FIFO's writer. EOF stops us even if SIGKILL
+    # prevents its EXIT trap from running. Bash 3.2 returns 1 for both EOF and
+    # a timed read, so distinguish them by the time spent waiting.
+    exec 8>&-
+    while [ ! -L "$1" ] && [ "$(_cs_claude_lock_identity "$1" 2>/dev/null)" = "$2" ]; do
+        # Descriptor 9 retains the acquired inode across a stale-lock takeover.
+        touch /dev/fd/9 || return 1
+        if [ -n "$ready" ]; then : > "$ready"; ready=""; fi
+        started=$SECONDS
+        IFS= read -r -t 2 <&7 || true
+        [ $((SECONDS - started)) -ge 1 ] || return 0
+    done
+    return 1
+}
+
+# Carry shell preferences on first creation, then refresh only the selected
+# login. Claude and the sidebar use proper-lockfile directories without pid
+# files: never reclaim their lock with cs's pid-based lock helper.
+_seed_session_claude_json() (  # session_config_dir, shell_claude_json
+    local dest tmp="" lock="" rc=0 link hops=0 parent
+    [ -e "$2" ] || return 0
+    dest=$(_cs_claude_json_path "$1" "$1/.claude.json")
+    # proper-lockfile locks the canonical config target. A symlink alias must
+    # therefore share its target's lock, as well as its atomic write.
+    while [ -L "$dest" ]; do
+        [ "$hops" -lt 16 ] || error "too many config symlinks: $dest"
+        link=$(readlink "$dest") || return 1
+        case "$link" in
+            /*) dest="$link" ;;
+            *) dest="$(dirname "$dest")/$link" ;;
+        esac
+        hops=$((hops + 1))
+    done
+    parent=$(cd "$(dirname "$dest")" && pwd -P) || return 1
+    dest="$parent/$(basename "$dest")"
+    lock="$dest.lock"
+    # Bash 3.2 unwinds function locals before an EXIT trap after error().
+    # These cleanup names live only in this subshell and survive that unwind.
+    _cs_seed_temp_file="" _cs_seed_ready_file="" _cs_seed_watch_fifo="" _cs_seed_heartbeat=""
+    _cs_seed_lock="$lock" _cs_seed_lock_identity=""
+    trap '
+        [ -z "$_cs_seed_temp_file" ] || rm -f "$_cs_seed_temp_file"
+        [ -z "$_cs_seed_ready_file" ] || rm -f "$_cs_seed_ready_file"
+        [ -z "$_cs_seed_watch_fifo" ] || rm -f "$_cs_seed_watch_fifo"
+        if [ -n "$_cs_seed_lock_identity" ] &&
+            [ ! -L "$_cs_seed_lock" ] &&
+            [ "$(_cs_claude_lock_identity "$_cs_seed_lock")" = "$_cs_seed_lock_identity" ]; then
+            rmdir "$_cs_seed_lock" 2>/dev/null || true
+        fi
+        if [ -n "$_cs_seed_heartbeat" ]; then
+            kill "$_cs_seed_heartbeat" 2>/dev/null || true
+            wait "$_cs_seed_heartbeat" 2>/dev/null || true
+        fi
+    ' EXIT
+    trap 'exit 143' TERM
+    trap 'exit 130' INT
+    if ! mkdir "$lock" 2>/dev/null; then
+        # Native locks heartbeat and become stale after ten seconds. Wait a
+        # conservative minute before reclaiming an empty abandoned directory,
+        # including one a SIGKILL left. Never use cs's two-second pid protocol.
+        if [ -d "$lock" ] && [ ! -L "$lock" ] && [ -n "$(find "$lock" -prune -mmin +1 2>/dev/null)" ]; then
+            rmdir "$lock" 2>/dev/null && mkdir "$lock" 2>/dev/null \
+                || error "Claude config is busy: $dest; retry after its writer finishes."
+        else
+            error "Claude config is busy: $dest; retry after its writer finishes."
+        fi
+    fi
+    _cs_seed_lock_identity=$(_cs_claude_lock_identity "$lock") || error "could not identify Claude config lock: $lock"
+    exec 9<"$lock" || error "could not open Claude config lock: $lock"
+    [ ! -L "$lock" ] && [ "$(_cs_claude_lock_identity "$lock")" = "$_cs_seed_lock_identity" ] \
+        || error "lost Claude config lock: $lock"
+    tmp=$(mktemp "$parent/.claude.json.XXXXXX") || error "could not create a temporary file in $parent."
+    _cs_seed_temp_file="$tmp"
+    _cs_seed_ready_file="$tmp.ready"
+    _cs_seed_watch_fifo="$tmp.watch"
+    mkfifo "$_cs_seed_watch_fifo" || error "could not create Claude config lock heartbeat pipe."
+    exec 8<>"$_cs_seed_watch_fifo" 7<"$_cs_seed_watch_fifo"
+    _cs_claude_lock_heartbeat "$lock" "$_cs_seed_lock_identity" "$_cs_seed_ready_file" &
+    _cs_seed_heartbeat=$!
+    exec 7<&-
+    while [ ! -f "$_cs_seed_ready_file" ]; do
+        kill -0 "$_cs_seed_heartbeat" 2>/dev/null || error "could not heartbeat Claude config lock: $lock"
+        sleep 0.05
+    done
+    if [ -e "$dest" ]; then
+        jq -es 'if length != 2 or any(.[]; type != "object") then error("expected objects")
+            else .[0] as $shell | .[1] |
+                if ($shell | has("oauthAccount")) then .oauthAccount = $shell.oauthAccount
+                else del(.oauthAccount) end end' "$2" "$dest" > "$tmp" 2>/dev/null 8>&- || rc=1
+    else
+        jq -e 'if type == "object" then .projects = {} else error("expected object") end' \
+            "$2" > "$tmp" 2>/dev/null 8>&- || rc=1
+    fi
+    if [ "$rc" = 0 ]; then
+        kill -0 "$_cs_seed_heartbeat" 2>/dev/null &&
+            [ ! -L "$lock" ] &&
+            [ "$(_cs_claude_lock_identity "$lock")" = "$_cs_seed_lock_identity" ] \
+            || error "lost Claude config lock: $lock; retry after its writer finishes."
+        cs_write_atomic "$dest" cat "$tmp" 8>&- && chmod 600 "$dest" || rc=1
+    fi
+    [ "$rc" = 0 ] || error "could not refresh $dest from $2; fix its JSON, then reopen."
+)
+
+# Values travel through argv and the switch marker, never shell evaluation.
+_cs_launch_option_value() {  # option, value
+    case "${2:-}" in
+        ''|*$'\n'*|*$'\r'*) error "$1 needs a nonempty single-line value" ;;
+    esac
+}
+
+_cs_native_launch_options() {  # engine; sets CS_NATIVE_LAUNCH_ARGS
+    CS_NATIVE_LAUNCH_ARGS=()
+    [ -z "${CS_LAUNCH_MODEL:-}" ] || CS_NATIVE_LAUNCH_ARGS+=(--model "$CS_LAUNCH_MODEL")
+    case "$1" in
+        claude)
+            [ -z "${CS_LAUNCH_EFFORT:-}" ] || CS_NATIVE_LAUNCH_ARGS+=(--effort "$CS_LAUNCH_EFFORT")
+            [ "${CS_LAUNCH_APPROVAL:-}" != auto ] || CS_NATIVE_LAUNCH_ARGS+=(--permission-mode auto)
+            ;;
+        codex)
+            if [ -n "${CS_LAUNCH_EFFORT:-}" ]; then
+                local quoted_effort
+                quoted_effort=$(printf '%s' "$CS_LAUNCH_EFFORT" | jq -Rs .) || return 1
+                CS_NATIVE_LAUNCH_ARGS+=(-c "model_reasoning_effort=$quoted_effort")
+            fi
+            [ "${CS_LAUNCH_APPROVAL:-auto}" = native ] || CS_NATIVE_LAUNCH_ARGS+=(--approve-for-me)
+            ;;
+    esac
 }
 
 # One row of the pending-handoff answers: the key, a padded label, and a dim
@@ -10310,7 +10505,7 @@ _cs_claude_adapter_capabilities() {
     # memory_index: .cs/memory/MEMORY.md loads at every session start.
     # mail_delivery: hooks surface `cs -msg` mail inside the conversation.
     printf '%s\n' launch exact_resume startup_context feature_finish \
-        rotation spawn_brief memory_index mail_delivery
+        rotation spawn_brief memory_index mail_delivery recovery_autosave
 }
 
 _claude_native_id_valid() {  # native conversation ID
@@ -10326,6 +10521,8 @@ launch_claude_code() {
 }
 
 _launch_claude_bound() {
+    local -a CS_NATIVE_LAUNCH_ARGS
+    _cs_native_launch_options claude || return 1
     # Claude Code downgrades its branding (logo, "thinking" animation) and statusline
     # truecolor to a muted palette when it detects tmux, regardless of actual color
     # support (anthropics/claude-code#35148). cs owns the environment before it execs
@@ -10521,7 +10718,10 @@ _launch_claude_bound() {
     local memory_path="$session_dir/.cs/memory"
     export CLAUDE_CODE_AUTO_MEMORY_PATH="$memory_path"
     export CLAUDE_COWORK_MEMORY_PATH_OVERRIDE="$memory_path"
-    _export_session_claude_config "$session_dir"
+    if [ -n "${CODE_SESSIONS_HOME:-}" ] && [ "${CLAUDE_SECURESTORAGE_CONFIG_DIR-unset}" = "" ]; then
+        _seed_session_claude_json "$CODE_SESSIONS_HOME/.claude" "$(_cs_claude_json_path "$HOME/.claude" "$HOME/.claude.json")" || return $?
+    fi
+    _export_session_claude_config "$session_dir" || return $?
     # Expose the recorded session UUID to hooks. Hooks can use this to
     # reverse-look-up which cs session they're firing inside without having
     # to depend on $CLAUDE_CODE_SESSION_ID (set by Claude Code itself, but
@@ -10944,7 +11144,7 @@ EOF
         # an explicit --fresh choice, independent of how quickly native exit occurs.
         local rc=0
         # shellcheck disable=SC2086
-        cs_run_child $CLAUDE_CODE_BIN --name "$session_name" --resume "$resume_id" ${launch_prompt:+"$launch_prompt"} || rc=$?
+        cs_run_child $CLAUDE_CODE_BIN ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} --name "$session_name" --resume "$resume_id" ${launch_prompt:+"$launch_prompt"} || rc=$?
         if [ "$rc" -ne 0 ]; then
             printf 'Could not resume the recorded Claude conversation; binding preserved. Retry or run: cs %s --engine claude --fresh\n' "$session_name" >&2
         fi
@@ -10960,7 +11160,7 @@ EOF
         #     always writes one; handled defensively): naked exec.
         if [ "$is_new" = "true" ] && [ -n "$claude_session_id" ]; then
             # shellcheck disable=SC2086
-            cs_run_child $CLAUDE_CODE_BIN --name "$session_name" --session-id "$claude_session_id" ${launch_prompt:+"$launch_prompt"}
+            cs_run_child $CLAUDE_CODE_BIN ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} --name "$session_name" --session-id "$claude_session_id" ${launch_prompt:+"$launch_prompt"}
         elif [ "$is_new" = "false" ]; then
             _disarm_rotation_marker "$session_dir"
             # An explicit --fresh never asked anything, so it is not a decline.
@@ -10970,7 +11170,7 @@ EOF
             _exec_fresh_rebind "$session_dir" "$_rebind_reason" "" "$spawn_kick" "$merge_kick"
         else
             # shellcheck disable=SC2086
-            cs_run_child $CLAUDE_CODE_BIN --name "$session_name" ${launch_prompt:+"$launch_prompt"}
+            cs_run_child $CLAUDE_CODE_BIN ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} --name "$session_name" ${launch_prompt:+"$launch_prompt"}
         fi
     fi
 }
@@ -11109,7 +11309,7 @@ _cs_codex_adapter_capabilities() {
     # the armed handoff; the launch prompt's r starts a thread from it.
     # feature_finish: -finish starts the thread on `$finish <task>`, as
     # Claude's starts on /finish <task>.
-    printf '%s\n' launch exact_resume startup_context feature_finish rotation
+    printf '%s\n' launch exact_resume startup_context feature_finish rotation recovery_autosave
 }
 
 _cs_codex_adapter_prepare_workspace() {  # session_dir, mode
@@ -11310,12 +11510,15 @@ _launch_codex_bound() {
         /*) ;;
         *) codex_bin="$(cd "$(dirname "$codex_bin")" && pwd -P)/$(basename "$codex_bin")" || return 1 ;;
     esac
-    # Refuse before native preparation can bind a thread or spend its handoff.
-    local codex_help
-    if ! codex_help=$(cs_run_child "$codex_bin" --help 2>/dev/null) \
-        || ! printf '%s\n' "$codex_help" | grep -E '^[[:space:]]*--approve-for-me([[:space:]]|$)' >/dev/null; then
-        _codex_launch_error "Codex at $codex_bin must support --approve-for-me. Upgrade Codex or set CODEX_BIN to a build whose --help lists --approve-for-me."
-        return 1
+    # Automatic approval must refuse before preparation binds or spends context.
+    # Native approval leaves policy to Codex and needs no automatic-review flag.
+    if [ "${CS_LAUNCH_APPROVAL:-auto}" != native ]; then
+        local codex_help
+        if ! codex_help=$(cs_run_child "$codex_bin" --help 2>/dev/null) \
+            || ! printf '%s\n' "$codex_help" | grep -E '^[[:space:]]*--approve-for-me([[:space:]]|$)' >/dev/null; then
+            _codex_launch_error "Codex at $codex_bin must support --approve-for-me for automatic approval. Upgrade Codex, set CODEX_BIN to a supporting build, or use --native-approval to keep Codex's configured policy."
+            return 1
+        fi
     fi
     helper=$(_codex_thread_helper) || {
         _codex_launch_error "Cannot locate cs-codex-thread beside the cs executable."
@@ -11530,12 +11733,13 @@ _launch_codex_bound() {
         turn_before=$(_codex_turn_mark "$helper" "$codex_bin" "$session_dir" "$thread_id") || turn_before=""
     fi
 
-    printf '%s\n' 'Codex via cs: session context, exact resume and rotation are enabled; Claude hooks, autosave, and task queue integration are unavailable.'
+    printf '%s\n' 'Codex via cs: session context, exact resume and rotation are enabled; automatic recovery is enabled; Claude task queue integration is unavailable.'
     # A dedicated native writer lives for this supervised CLI lifetime.
     # Signals and lock cleanup belong to the shared controller.
     local status=0
-    cs_run_child "$codex_bin" --no-daemon resume "$thread_id" -C "$session_dir" \
-        --approve-for-me ${kick:+"$kick"} || status=$?
+    local -a CS_NATIVE_LAUNCH_ARGS
+    _cs_native_launch_options codex || return 1
+    cs_run_child "$codex_bin" --no-daemon resume "$thread_id" -C "$session_dir" ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} ${kick:+"$kick"} || status=$?
     if [ "$status" -ne 0 ] && [ -n "$spent" ]; then
         # A switch relaunch's settle reads it too (lib/78-switch.sh).
         _cs_switch_ran=""
@@ -11586,11 +11790,22 @@ _fresh_notice_codex() {  # actor_slug
 cmd_codex_hook() {  # event
     case "${1:-}" in
         session-start) _codex_hook_session_start ;;
+        files-changed) _codex_hook_files_changed ;;
         *)
-            printf 'Usage: cs -codex-hook session-start\n' >&2
+            printf 'Usage: cs -codex-hook session-start|files-changed\n' >&2
             return 2
             ;;
     esac
+}
+
+_codex_hook_files_changed() {
+    local event hook
+    [ "${CS_RUN_ENGINE:-}" = codex ] && [ -n "${CS_SESSION_DIR:-}" ] || return 0
+    event=$(cs_engine_call codex files_changed) || return 0
+    [ -n "$event" ] || return 0
+    hook="${CODEX_HOME:-$HOME/.codex}/hooks/cs/autosave-commits.sh"
+    [ -r "$hook" ] || return 0
+    printf '%s' "$event" | bash "$hook" --event || true
 }
 
 # Codex fires SessionStart on the first turn of a thread, before the model
@@ -11737,7 +11952,7 @@ _switch_engine_reads_vault() {  # engine
 }
 
 _switch_usage() {
-    error "Usage: cs -switch [--check] [claude|codex] [--resume], or cs -switch cancel"
+    error "Usage: cs -switch [--check] [claude|codex] [--resume] [--model MODEL] [--effort LEVEL] [--approve-for-me|--native-approval], or cs -switch cancel"
 }
 
 # cs -switch [--check] [claude|codex] [--resume] | cancel
@@ -11745,22 +11960,36 @@ _switch_usage() {
 # Every refusal is one line naming the fix. --check runs all of them except the
 # armed-handoff one and writes nothing: the skill asks before writing a handoff.
 cmd_switch() {
-    local target="" mode=fresh check="" arg
+    local target="" mode=fresh check="" arg model="" effort="" approval=""
     if [ "${1:-}" = cancel ]; then
         [ $# -eq 1 ] || _switch_usage
         _switch_cancel
         return $?
     fi
-    for arg in "$@"; do
+    while [ $# -gt 0 ]; do
+        arg="$1"
         case "$arg" in
             --check) check=1 ;;
             --resume) mode=resume ;;
+            --model|--effort)
+                [ $# -ge 2 ] || _switch_usage
+                _cs_launch_option_value "$arg" "$2"
+                if [ "$arg" = --model ]; then model="$2"; else effort="$2"; fi
+                shift
+                ;;
+            --model=*|--effort=*)
+                _cs_launch_option_value "${arg%%=*}" "${arg#*=}"
+                if [ "${arg%%=*}" = --model ]; then model="${arg#*=}"; else effort="${arg#*=}"; fi
+                ;;
+            --approve-for-me) approval=auto ;;
+            --native-approval) approval=native ;;
             -*) _switch_usage ;;
             *)
                 [ -z "$target" ] || _switch_usage
                 target="$arg"
                 ;;
         esac
+        shift
     done
 
     local session_dir="${CS_SESSION_DIR:-}" name="${CS_SESSION_NAME:-}"
@@ -11819,8 +12048,8 @@ cmd_switch() {
     handoff=$(_rotation_armed_handoff "$session_dir")
     [ -n "$handoff" ] \
         || error "No rotation handoff is armed; write and arm one first (rotate's steps 1-9), then run cs -switch again"
-    cs_write_atomic "$file" printf 'engine=%s\nmode=%s\nhandoff=%s\nrun=%s\n' \
-        "$target" "$mode" "$handoff" "$CS_RUN_ID" \
+    cs_write_atomic "$file" printf 'engine=%s\nmode=%s\nhandoff=%s\nrun=%s\nmodel=%s\neffort=%s\napproval=%s\n' \
+        "$target" "$mode" "$handoff" "$CS_RUN_ID" "$model" "$effort" "$approval" \
         || error "Could not write $file"
     local how="a fresh $target conversation"
     [ "$mode" = fresh ] || how="$target's last conversation"
@@ -11867,7 +12096,7 @@ _switch_run_start() {  # session_dir
 # main, which execs it once cs_launch_session has returned.
 _switch_settle() {  # session_name, session_dir, engine, run_status
     local name="$1" dir="$2" engine="$3" status="$4"
-    local file target mode handoff run handoffs missing binding refusal
+    local file target mode handoff run handoffs missing binding refusal model effort approval
 
     # A switch relaunch whose CLI failed: its handoff goes back to armed unless
     # the conversation evidently ran. Either way this run has spoken for the
@@ -11885,6 +12114,9 @@ _switch_settle() {  # session_name, session_dir, engine, run_status
     target=$(_switch_field "$file" engine)
     mode=$(_switch_field "$file" mode)
     handoff=$(_switch_field "$file" handoff)
+    model=$(_switch_field "$file" model)
+    effort=$(_switch_field "$file" effort)
+    approval=$(_switch_field "$file" approval)
     # Consumed once, whatever happens next.
     rm -f "$file" 2>/dev/null || true
 
@@ -11931,6 +12163,9 @@ _switch_settle() {  # session_name, session_dir, engine, run_status
     else
         mode=fresh
     fi
+    _cs_switch_next_model="$model"
+    _cs_switch_next_effort="$effort"
+    _cs_switch_next_approval="$approval"
     _cs_switch_next="$target"
     _cs_switch_next_mode="$mode"
     _cs_switch_prev="$engine"
@@ -11987,6 +12222,12 @@ _switch_relaunch() {  # session_name
             _cs_sw_argv+=(--from-handoff --switched-from "$_cs_sw_from")
             printf "${DIM:-}Switching %s to %s: a fresh conversation from %s.${NC:-}\n" "$_cs_sw_name" "$_cs_sw_target" "${_cs_switch_handoff:-the handoff}"
         fi
+        [ -z "${_cs_switch_next_model:-}" ] || _cs_sw_argv+=(--model "$_cs_switch_next_model")
+        [ -z "${_cs_switch_next_effort:-}" ] || _cs_sw_argv+=(--effort "$_cs_switch_next_effort")
+        case "${_cs_switch_next_approval:-}" in
+            auto) _cs_sw_argv+=(--approve-for-me) ;;
+            native) _cs_sw_argv+=(--native-approval) ;;
+        esac
         for _cs_sw_var in $(compgen -e); do
             case "${_cs_switch_env_names:-}" in
                 *$'\n'"$_cs_sw_var"$'\n'*) ;;
@@ -12827,13 +13068,19 @@ run_uninstall() {
         fi
     done
     if command -v jq >/dev/null 2>&1 \
-        && grep -q -- '-codex-hook session-start' "${codex_skills_dir%/skills}/hooks.json" 2>/dev/null; then
-        if _codex_hooks_unregister "${codex_skills_dir%/skills}"; then
+        && grep -q -- '-codex-hook ' "${codex_skills_dir%/skills}/hooks.json" 2>/dev/null; then
+        if _codex_hooks_unregister "${codex_skills_dir%/skills}" \
+            && _codex_hooks_unregister "${codex_skills_dir%/skills}" PostToolUse post_tool_use files-changed; then
             info "Removed the cs hook from ${codex_skills_dir%/skills}/hooks.json"
         else
             warn "Could not remove the cs hook from ${codex_skills_dir%/skills}/hooks.json; remove its SessionStart entry by hand"
         fi
     fi
+    local recovery_file
+    for recovery_file in autosave-commits.sh cs-resolve.sh cs-shared.sh cs-engine-events.sh; do
+        rm -f "${codex_skills_dir%/skills}/hooks/cs/$recovery_file"
+    done
+    rmdir "${codex_skills_dir%/skills}/hooks/cs" 2>/dev/null || true
     local codex_sl_rc=0
     _codex_status_line_remove "${codex_skills_dir%/skills}" > /dev/null || codex_sl_rc=$?
     case $codex_sl_rc in
@@ -13210,6 +13457,8 @@ main() {
     local force_flag=""
     local merge_feature=""
     local explicit_engine=""
+    local CS_LAUNCH_MODEL="" CS_LAUNCH_EFFORT="" CS_LAUNCH_APPROVAL=""
+    local _cs_switch_next_model="" _cs_switch_next_effort="" _cs_switch_next_approval=""
     local launch_intent=auto
     # cs -switch (lib/78-switch.sh): set by its relaunch's hidden flag, and by
     # _switch_settle when the run that ends here armed a switch.
@@ -13241,6 +13490,26 @@ main() {
     esac
     while [ $# -gt 0 ]; do
         case "$1" in
+            --model|--effort)
+                [ $# -ge 2 ] || error "$1 needs a value"
+                _cs_launch_option_value "$1" "$2"
+                if [ "$1" = --model ]; then CS_LAUNCH_MODEL="$2"; else CS_LAUNCH_EFFORT="$2"; fi
+                shift 2
+                ;;
+            --model=*|--effort=*)
+                _cs_launch_option_value "${1%%=*}" "${1#*=}"
+                # Adapter launch helpers read these dynamically scoped values.
+                # shellcheck disable=SC2034
+                if [ "${1%%=*}" = --model ]; then CS_LAUNCH_MODEL="${1#*=}"; else CS_LAUNCH_EFFORT="${1#*=}"; fi
+                shift
+                ;;
+            --approve-for-me) CS_LAUNCH_APPROVAL=auto; shift ;;
+            --native-approval)
+                # Read by the selected adapter's launch helper.
+                # shellcheck disable=SC2034
+                CS_LAUNCH_APPROVAL=native
+                shift
+                ;;
             --engine)
                 [ $# -ge 2 ] && [ -n "$2" ] || error "--engine needs claude or codex"
                 cs_engine_known "$2" || error "Unknown engine: $2. Choose claude or codex."
@@ -13401,7 +13670,7 @@ main() {
                 shift
                 ;;
             *)
-                error "Unknown session command: $1. Use -secrets, -queue, -msg, -narrative, -conversations, -usage, -tag, -features, -finish, --engine, --fresh, --resume, --from-handoff, or --force."
+                error "Unknown session command: $1. Use -secrets, -queue, -msg, -narrative, -conversations, -usage, -tag, -features, -finish, --engine, --model, --effort, --approve-for-me, --native-approval, --fresh, --resume, --from-handoff, or --force."
                 ;;
         esac
     done

@@ -158,6 +158,7 @@ CS_HOOKS=(
 CS_HOOK_LIBS=(
     cs-resolve.sh
     cs-shared.sh
+    cs-engine-events.sh
     cs-iterm-tab.py
     prompt-rewriter.sh
     prompt-rewriter-model.sh
@@ -257,11 +258,11 @@ _strip_hook_registration() {
 
 # The SessionStart hook cs registers for Codex: Codex runs the command through
 # a shell, so a path outside the plain-word alphabet is single-quoted.
-_codex_hook_command() {  # cs_path
+_codex_hook_command() {  # cs_path, [verb]
     case "$1" in
         *[!A-Za-z0-9_./+-]*)
-            printf "'%s' -codex-hook session-start" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")" ;;
-        *) printf '%s -codex-hook session-start' "$1" ;;
+            printf "'%s' -codex-hook %s" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")" "${2:-session-start}" ;;
+        *) printf '%s -codex-hook %s' "$1" "${2:-session-start}" ;;
     esac
 }
 
@@ -270,10 +271,10 @@ _codex_hook_command() {  # cs_path
 # sha256 of the handler group's definition, as compact sorted-key JSON with
 # Codex's defaults filled in. cs writes that hash in the same step that
 # registers its hook, so the hook runs without a review prompt.
-_codex_hook_trust_hash() {  # command, [matcher as JSON]
+_codex_hook_trust_hash() {  # command, [matcher as JSON], [event key]
     local json
-    json=$(jq -ncS --arg c "$1" --argjson matcher "${2:-null}" \
-        '{event_name: "session_start", hooks: [{async: false, command: $c, timeout: 600, type: "command"}]}
+    json=$(jq -ncS --arg c "$1" --argjson matcher "${2:-null}" --arg event "${3:-session_start}" \
+        '{event_name: $event, hooks: [{async: false, command: $c, timeout: 600, type: "command"}]}
          + (if $matcher == null then {} else {matcher: $matcher} end)' \
         | tr -d '\n') || return 1
     if command -v sha256sum >/dev/null 2>&1; then
@@ -286,12 +287,12 @@ _codex_hook_trust_hash() {  # command, [matcher as JSON]
 # A config.toml rewrite: drop the trust table for each listed key, then rename
 # trust tables past a removed group or handler down by one index. shift_from
 # is a group index, group:handler for a handler removal, or empty for none.
-_codex_trust_tables_edit() {  # config, hooks_file, shift_from, keys...
-    local config="$1" file="$2" shift_from="$3" tmp
-    shift 3
+_codex_trust_tables_edit() {  # config, hooks_file, shift_from, event key, keys...
+    local config="$1" file="$2" shift_from="$3" event_key="$4" tmp
+    shift 4
     [ -f "$config" ] || return 0
     tmp=$(mktemp "$config.cs.XXXXXX") || return 1
-    awk -v prefix="[hooks.state.\"$file:session_start:" -v shift_from="$shift_from" -v drops="$(printf '%s\n' "$@")" '
+    awk -v prefix="[hooks.state.\"$file:$event_key:" -v shift_from="$shift_from" -v drops="$(printf '%s\n' "$@")" '
         BEGIN {
             shift_parts = split(shift_from, removed, ":")
             n = split(drops, list, "\n")
@@ -323,19 +324,19 @@ _codex_trust_tables_edit() {  # config, hooks_file, shift_from, keys...
 }
 
 # Index of cs's own SessionStart group in a hooks.json document, or nothing.
-_codex_hook_group_index() {  # hooks.json content
-    printf '%s' "$1" | jq -r '
-        [(.hooks.SessionStart // [])
+_codex_hook_group_index() {  # hooks.json content, [event], [verb]
+    printf '%s' "$1" | jq -r --arg event "${2:-SessionStart}" --arg verb "${3:-session-start}" '
+        [(.hooks[$event] // [])
          | to_entries[]
-         | select(any(.value.hooks[]?; (.command // "") | endswith(" -codex-hook session-start")))
+         | select(any(.value.hooks[]?; (.command // "") | endswith(" -codex-hook " + $verb)))
          | .key] | first // empty'
 }
 
 # Index of cs's handler inside its SessionStart group.
 _codex_hook_handler_index() {  # hooks.json content, group index
-    printf '%s' "$1" | jq -r --argjson i "$2" '
-        [.hooks.SessionStart[$i].hooks | to_entries[]
-         | select((.value.command // "") | endswith(" -codex-hook session-start"))
+    printf '%s' "$1" | jq -r --argjson i "$2" --arg event "${3:-SessionStart}" --arg verb "${4:-session-start}" '
+        [.hooks[$event][$i].hooks | to_entries[]
+         | select((.value.command // "") | endswith(" -codex-hook " + $verb))
          | .key] | first // empty'
 }
 
@@ -345,7 +346,7 @@ _codex_hook_handler_index() {  # hooks.json content, group index
 # positions and trust. A hooks.json that is not valid JSON is left alone.
 _codex_hooks_register() {  # codex_dir, command
     local dir="$1" cmd="$2" file="$1/hooks.json" config="$1/config.toml"
-    local doc index handler=0 matcher tmp hash key
+    local doc index handler=0 matcher tmp hash key event="${3:-SessionStart}" event_key="${4:-session_start}" verb="${5:-session-start}"
     case "$file" in *'"'*|*\\*) return 1 ;; esac
     if [ -f "$file" ]; then
         doc=$(cat "$file") || return 1
@@ -353,24 +354,24 @@ _codex_hooks_register() {  # codex_dir, command
     else
         doc='{}'
     fi
-    index=$(_codex_hook_group_index "$doc")
+    index=$(_codex_hook_group_index "$doc" "$event" "$verb")
     if [ -n "$index" ]; then
-        handler=$(_codex_hook_handler_index "$doc" "$index") || return 1
+        handler=$(_codex_hook_handler_index "$doc" "$index" "$event" "$verb") || return 1
     fi
-    doc=$(printf '%s' "$doc" | jq --arg c "$cmd" --arg i "$index" --argjson h "$handler" '
+    doc=$(printf '%s' "$doc" | jq --arg c "$cmd" --arg i "$index" --argjson h "$handler" --arg event "$event" '
         {type: "command", command: $c} as $ours
         | .hooks = (.hooks // {})
-        | .hooks.SessionStart = (.hooks.SessionStart // [])
-        | if $i == "" then .hooks.SessionStart += [{hooks: [$ours]}]
-          else .hooks.SessionStart[($i | tonumber)].hooks[$h] = $ours end') || return 1
-    [ -n "$index" ] || index=$(printf '%s' "$doc" | jq '.hooks.SessionStart | length - 1')
-    matcher=$(printf '%s' "$doc" | jq -c --argjson i "$index" '.hooks.SessionStart[$i].matcher // null') || return 1
+        | .hooks[$event] = (.hooks[$event] // [])
+        | if $i == "" then .hooks[$event] += [{hooks: [$ours]}]
+          else .hooks[$event][($i | tonumber)].hooks[$h] = $ours end') || return 1
+    [ -n "$index" ] || index=$(printf '%s' "$doc" | jq --arg event "$event" '.hooks[$event] | length - 1')
+    matcher=$(printf '%s' "$doc" | jq -c --argjson i "$index" --arg event "$event" '.hooks[$event][$i].matcher // null') || return 1
     mkdir -p "$dir" || return 1
     tmp=$(mktemp "$file.cs.XXXXXX") || return 1
     printf '%s\n' "$doc" > "$tmp" && chmod 600 "$tmp" && mv "$tmp" "$file" || { rm -f "$tmp"; return 1; }
-    hash=$(_codex_hook_trust_hash "$cmd" "$matcher") || return 1
-    key="$file:session_start:$index:$handler"
-    _codex_trust_tables_edit "$config" "$file" "" "$key" || return 1
+    hash=$(_codex_hook_trust_hash "$cmd" "$matcher" "$event_key") || return 1
+    key="$file:$event_key:$index:$handler"
+    _codex_trust_tables_edit "$config" "$file" "" "$event_key" "$key" || return 1
     [ -f "$config" ] || { : > "$config" && chmod 600 "$config"; } || return 1
     if [ -s "$config" ]; then printf '\n' >> "$config" || return 1; fi
     printf '[hooks.state."%s"]\ntrusted_hash = "sha256:%s"\n' "$key" "$hash" >> "$config"
@@ -380,18 +381,19 @@ _codex_hooks_register() {  # codex_dir, command
 # handlers or groups as their indices move. Remove an empty hooks.json.
 _codex_hooks_unregister() {  # codex_dir
     local dir="$1" file="$1/hooks.json" config="$1/config.toml" doc index handler shift_from count tmp
+    local event="${2:-SessionStart}" event_key="${3:-session_start}" verb="${4:-session-start}"
     [ -f "$file" ] || return 0
     doc=$(cat "$file") || return 1
-    index=$(_codex_hook_group_index "$doc" 2>/dev/null) || return 1
+    index=$(_codex_hook_group_index "$doc" "$event" "$verb" 2>/dev/null) || return 1
     [ -n "$index" ] || return 0
-    handler=$(_codex_hook_handler_index "$doc" "$index") || return 1
-    count=$(printf '%s' "$doc" | jq --argjson i "$index" '.hooks.SessionStart[$i].hooks | length') || return 1
+    handler=$(_codex_hook_handler_index "$doc" "$index" "$event" "$verb") || return 1
+    count=$(printf '%s' "$doc" | jq --argjson i "$index" --arg event "$event" '.hooks[$event][$i].hooks | length') || return 1
     shift_from="$index:$handler"
     [ "$count" != 1 ] || shift_from="$index"
-    doc=$(printf '%s' "$doc" | jq --argjson i "$index" --argjson h "$handler" '
-        del(.hooks.SessionStart[$i].hooks[$h])
-        | if .hooks.SessionStart[$i].hooks == [] then del(.hooks.SessionStart[$i]) else . end
-        | if .hooks.SessionStart == [] then del(.hooks.SessionStart) else . end
+    doc=$(printf '%s' "$doc" | jq --argjson i "$index" --argjson h "$handler" --arg event "$event" '
+        del(.hooks[$event][$i].hooks[$h])
+        | if .hooks[$event][$i].hooks == [] then del(.hooks[$event][$i]) else . end
+        | if .hooks[$event] == [] then del(.hooks[$event]) else . end
         | if .hooks == {} then del(.hooks) else . end') || return 1
     if [ "$doc" = '{}' ]; then
         rm -f "$file" || return 1
@@ -399,7 +401,7 @@ _codex_hooks_unregister() {  # codex_dir
         tmp=$(mktemp "$file.cs.XXXXXX") || return 1
         printf '%s\n' "$doc" > "$tmp" && chmod 600 "$tmp" && mv "$tmp" "$file" || { rm -f "$tmp"; return 1; }
     fi
-    _codex_trust_tables_edit "$config" "$file" "$shift_from" "$file:session_start:$index:$handler"
+    _codex_trust_tables_edit "$config" "$file" "$shift_from" "$event_key" "$file:$event_key:$index:$handler"
 }
 
 # Codex draws the bar under its prompt from [tui] status_line in config.toml,
@@ -1062,6 +1064,21 @@ installed "Codex skills" "$CODEX_SKILLS_DIR/"
 [ -d "$CODEX_DIR" ] || { mkdir -p "$CODEX_DIR" && chmod 700 "$CODEX_DIR"; }
 _deploy_skills "$CODEX_SKILLS_DIR"
 
+# Both native engines call the same recovery consumer with a normalized event.
+# A Codex-only install carries these files in its own runtime home.
+CODEX_RECOVERY_DIR="$CODEX_DIR/hooks/cs"
+mkdir -p "$CODEX_RECOVERY_DIR"
+for hook in autosave-commits.sh cs-resolve.sh cs-shared.sh cs-engine-events.sh; do
+    if [ "$INSTALL_METHOD" = local ]; then
+        cp "$HOOKS_SOURCE/$hook" "$CODEX_RECOVERY_DIR/"
+    elif command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$REPO_URL/hooks/$hook" -o "$CODEX_RECOVERY_DIR/$hook" || error "Failed to download $hook"
+    else
+        wget -q "$REPO_URL/hooks/$hook" -O "$CODEX_RECOVERY_DIR/$hook" || error "Failed to download $hook"
+    fi
+    chmod 755 "$CODEX_RECOVERY_DIR/$hook"
+done
+
 # One SessionStart hook: after /clear it rebinds the session to the new
 # thread and loads an armed rotation handoff. Codex skips a hook nobody has
 # trusted, so the registration writes its trust hash too.
@@ -1069,6 +1086,9 @@ if command -v jq >/dev/null 2>&1; then
     installed "Codex hook" "$CODEX_DIR/hooks.json"
     _codex_hooks_register "$CODEX_DIR" "$(_codex_hook_command "$INSTALL_DIR/cs")" \
         || warn "Could not register the Codex hook in $CODEX_DIR/hooks.json; rotation after /clear needs it"
+    _codex_hooks_register "$CODEX_DIR" "$(_codex_hook_command "$INSTALL_DIR/cs" files-changed)" \
+        PostToolUse post_tool_use files-changed \
+        || warn "Could not register Codex automatic recovery in $CODEX_DIR/hooks.json"
 else
     warn "jq not found - the Codex hook (rotation after /clear) was not registered."
 fi

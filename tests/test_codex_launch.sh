@@ -39,6 +39,7 @@ setup() {
     export CS_THREAD_ID=12345678-1234-1234-1234-123456789abc
     export CS_HELPER_EXIT=0 CS_CODEX_EXIT=0
     export CS_CODEX_HELP='--approve-for-me' CS_CODEX_HELP_EXIT=0
+    unset CS_LAUNCH_APPROVAL CS_LAUNCH_MODEL CS_LAUNCH_EFFORT
     export CS_CODEX_START=0 CS_CODEX_NEW_HANDOFF=""
     export CS_CODEX_TURN=0 CS_CODEX_TURNS="$TEST_TMPDIR/codex-turns"
     export CS_HELPER_TURN_CALLS="$TEST_TMPDIR/helper-turn-calls" CS_HELPER_TURN_FAIL_FROM=0
@@ -99,6 +100,7 @@ teardown() {
     unset CODEX_BIN CS_CODEX_THREAD_BIN CS_TEST_SESSION_DIR CS_CODEX_LOG
     unset CS_CODEX_ENV CS_HELPER_ARGS CS_HELPER_COUNT CS_THREAD_ID
     unset CS_HELPER_EXIT CS_CODEX_EXIT CS_CODEX_HELP CS_CODEX_HELP_EXIT
+    unset CS_LAUNCH_APPROVAL CS_LAUNCH_MODEL CS_LAUNCH_EFFORT
     unset CS_CODEX_START CS_CODEX_NEW_HANDOFF
     unset CS_CODEX_TURN CS_CODEX_TURNS CS_HELPER_TURN_CALLS CS_HELPER_TURN_FAIL_FROM CODEX_HOME
 }
@@ -164,6 +166,25 @@ test_codex_help_prose_is_not_an_approval_option() {
     assert_not_exists "$CS_CODEX_LOG" "no interactive launch" || return 1
 }
 
+test_native_approval_launches_without_automatic_approval_support() {
+    export CS_CODEX_HELP='--sandbox' CS_LAUNCH_APPROVAL=native
+    export CS_LAUNCH_MODEL='native-model' CS_LAUNCH_EFFORT='high'
+    local output status=0 binding="$CS_TEST_SESSION_DIR/.cs/local/codex-thread-id"
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" true false 2>&1) || status=$?
+    assert_eq 0 "$status" "native approval launch failed: $output" || return 1
+    assert_eq "$CS_THREAD_ID" "$(cat "$binding")" "native approval creates its thread" || return 1
+    assert_exists "$CS_HELPER_COUNT" "native approval prepares the thread" || return 1
+    assert_eq '--model' "$(sed -n '6p' "$CS_CODEX_LOG")" "model option retained" || return 1
+    assert_eq 'native-model' "$(sed -n '7p' "$CS_CODEX_LOG")" "model value retained" || return 1
+    assert_eq '-c' "$(sed -n '8p' "$CS_CODEX_LOG")" "effort config option retained" || return 1
+    assert_eq 'model_reasoning_effort="high"' "$(sed -n '9p' "$CS_CODEX_LOG")" "effort value retained" || return 1
+    if grep -Fx -- '--approve-for-me' "$CS_CODEX_LOG" >/dev/null; then
+        echo '  FAIL: native approval passed the automatic approval option'
+        return 1
+    fi
+    assert_not_exists "$CS_TEST_SESSION_DIR/.cs/session.lock" "native launch releases its lock" || return 1
+}
+
 test_new_thread_binding_and_context() {
     local output status=0 binding="$CS_TEST_SESSION_DIR/.cs/local/codex-thread-id"
     output=$(launch_codex demo "$CS_TEST_SESSION_DIR" true false 2>&1) || status=$?
@@ -179,7 +200,7 @@ test_new_thread_binding_and_context() {
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/local/codex-instructions.md" 'This context does not request work' || return 1
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/local/codex-instructions.md" 'narrative.test-actor.md' || return 1
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/local/codex-instructions.md" 'Agent-sessions executable:' || return 1
-    assert_output_contains "$output" 'autosave, and task queue integration are unavailable' "feature scope notice" || return 1
+    assert_output_contains "$output" 'automatic recovery is enabled' "feature scope notice" || return 1
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/local/state" 'engine: codex' || return 1
     assert_not_exists "$CS_TEST_SESSION_DIR/.cs/session.lock" "lock released after CLI exit" || return 1
     assert_output_contains "$(cat "$CS_CODEX_ENV")" 'CS_SESSION_NAME=demo' "neutral identity exported" || return 1
@@ -365,7 +386,9 @@ source "$CS_TEST_LIB_DIR/../lib/24-engine-adapters.sh"
 source "$CS_TEST_LIB_DIR/../lib/36-context.sh"
 source "$CS_TEST_LIB_DIR/../lib/40-state.sh"
 source "$CS_TEST_LIB_DIR/../lib/41-bindings.sh"
+source "$CS_TEST_LIB_DIR/../lib/75-launch.sh"
 source "$CS_TEST_LIB_DIR/../lib/76-codex.sh"
+source "$CS_TEST_LIB_DIR/../lib/78-switch.sh"
 _set_local_state() { printf '%s: %s\n' "$2" "$3" >> "$1"; }
 cs_actor_slug() { printf 'test-actor\n'; }
 cs_interactive() { return 1; }
@@ -635,6 +658,7 @@ run_test test_unsupported_codex_first_open_does_not_prepare_a_thread
 run_test test_unsupported_codex_preserves_bound_launches_and_handoffs
 run_test test_failed_codex_help_cannot_advertise_compatibility
 run_test test_codex_help_prose_is_not_an_approval_option
+run_test test_native_approval_launches_without_automatic_approval_support
 run_test test_explicit_fresh_replaces_only_codex_binding
 run_test test_failed_fresh_preserves_codex_binding
 run_test test_resume_without_binding_does_not_create

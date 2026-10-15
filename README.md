@@ -47,7 +47,7 @@ No git repo required. No project structure needed. Just a name for what you're w
 - **Automatic git version control** - Every session gets a local git repo; in-session edits are autosaved to a shadow ref for crash recovery
 - **Session locking** - PID-based lock prevents the same session from being opened in two terminals simultaneously; use `--force` to override. cs also treats a session as live when its statusline heartbeat is fresh — in the TUI (`■ live · unlocked`), `cs -live`, and the `cs -usage` marker — so a conversation opened outside a cs launch still registers as live. The destructive guards (`cs -rm`/`-archive`/`-spawn`) stay on the strict PID lock, so a session whose process is gone is still removable without `--force`
 - **Deterministic Claude-session resume** - Each session pre-allocates a conversation UUID in the gitignored `.cs/local/state`, so `cs <name>` resumes the *exact* conversation via `claude --resume <uuid>`, not the most-recent one `--continue` might pick from a sibling. A `ps`-based guard refuses to launch a second claude for the same conversation (it counts a process only when the UUID follows `--session-id`, `--resume`/`-r` or `--parent-session-id`, so a leftover Bash-tool child carrying the id does not block a relaunch; `--force` overrides), and every launch passes `--name` plus a per-session `/color` so parallel sessions stay visually distinct.
-- **Codex CLI launch and resume** - `cs <name> --engine codex` creates or resumes a Codex thread in the same session workspace. Engine choice follows the explicit option, the session's saved preference, `CS_DEFAULT_ENGINE`, then the sole installed Codex adapter or Claude. Codex shares session files and startup context with Claude, while retaining its own native thread ID. This launch-focused integration does not yet provide Claude's hooks, autosave, queue delivery, usage reporting, handoffs, or terminal UI; see [docs/codex.md](docs/codex.md).
+- **Codex CLI launch and resume** - `cs <name> --engine codex` creates or resumes a Codex thread in the same session workspace. Engine choice follows the explicit option, the session's saved preference, `CS_DEFAULT_ENGINE`, then the sole installed Codex adapter or Claude. Codex shares session files and startup context with Claude, while retaining its own native thread ID. Both engines provide automatic recovery after file changes, exact resume and handoff rotation. The session picker can choose an engine, model, effort and approval policy before launch. Queue delivery and Claude usage reporting remain engine-specific; see [docs/codex.md](docs/codex.md).
 - **Per-session memory path redirect** - cs points Claude Code's built-in auto-memory writer at `<session>/.cs/memory/` (via `CLAUDE_COWORK_MEMORY_PATH_OVERRIDE`) so durable facts land in the session instead of the global project store. The harness owns how memory files are written (naming, frontmatter, `MEMORY.md` index); cs owns only the storage path.
 - **Conversation rotation** - a heavy conversation can hand off to a fresh one without losing context: the `rotate` skill (self-invoked, or nudged once per conversation at 65% context) writes a lineage-stamped handoff to `.cs/handoffs/` and arms it, then `/clear` continues from it without leaving Claude Code — and continues on its own, since the session wakes itself a moment later and starts the handoff's next step with nothing typed (`CS_NO_ROTATION_WAKE=1` to wait for a word instead). Exiting and answering `r` at the next `cs <name>` launch does the same; `d` discards the handoff. `cs -conversations` shows the resulting chain. The `cs` mod, a Claude Code function-hooks plugin the installer deploys and every cs launch enables, puts a `1: rotate this conversation` button above the prompt once context reaches 40% (`CS_ROTATE_BUTTON_CTX` moves it), beside `2: wrap up this session`, which asks first, since a wrap runs two Opus passes and replaces the summary: `2` opens the engine's own dialog — `Run /wrap for this session?`, with `Yes, wrap up` and `Not now` — and only the yes runs it (once a wrap finishes, its last pass writes `.cs/local/wrapped` and the key hides until the next turn that starts from a prompt, so a finished wrap is not offered again); the rotate press runs `/rotate`, and once the handoff is armed the band draws `1: /clear and continue from the handoff` alone and runs the `/clear` itself. The mod presses the button for you once a turn ends past **80% context**: it runs `/rotate`, and once the handoff is armed the capsule counts down 20 seconds to the `/clear` (press `1` to go now, send a prompt to stop it). `CS_ROTATE_FORCE_CTX=<percent>` moves that threshold and `CS_ROTATE_FORCE_CTX=off` turns it off; the first launch on a machine says so once. `CS_NO_FUNCTION_HOOKS=1` withholds the mod; see [docs/hooks.md](docs/hooks.md).
 - **Rotate and wrap keys** - the installer asks once per machine whether to bind Ctrl+X R to `/rotate`, Ctrl+X W to `/wrap`, and Ctrl+X 1 / Ctrl+X 2 to the `cs` band's keys in Claude Code's `keybindings.json`. Ctrl+X R and W work anywhere in Claude Code, band or no band, and all four keep what you are typing. It never replaces a key you already bind, refuses a file it cannot parse, and swaps out the Option+1 / Option+2 keys an earlier cs bound unless Ctrl+X R or Ctrl+X W is already yours. `cs -uninstall` takes back only its own keys, and `cs -doctor` shows the state. See [docs/configuration.md](docs/configuration.md#rotate-and-wrap-keys).
@@ -141,8 +141,9 @@ saves `~/.local/bin` in your shell startup file. Open a new terminal afterwards.
 Requires Bash, Git, jq, and Python 3 for Codex. Install and authenticate Claude
 Code and Codex CLI separately. Use `--skip-tui-build` to skip compiling the picker.
 Setup puts only the `code-sessions` and `ccs` launchers in your normal command
-directory. Its integrations and sessions live in a separate profile, which needs
-its own CLI login. Setup links or merges your own `~/.claude` and `~/.codex`
+directory. Its integrations and sessions live in a separate profile. Claude
+shares your usual subscription login, so the Agents sidebar switches it too;
+Codex keeps its own profile login. Setup links or merges your own `~/.claude` and `~/.codex`
 setup into it (`--no-carry-over` skips that). Keep using `cs` for existing
 workspaces; see the getting-started guide.
 
@@ -168,7 +169,7 @@ Within the code-sessions profile, the installer:
 - Installs the cs [hooks](docs/hooks.md) to `~/.claude/hooks/cs/` for session tracking (including the `scope-prompt` auto-grounding hook on UserPromptSubmit)
 - Adds the `summary`, `checkpoint`, `sweep`, `wrap`, `store-secret`, `prose-hygiene`, `rotate`, `switch`, `finish`, `feature`, and `write-as-me` skills (each answers `/<name>`), and the `cs` and `cs-update` mods to `~/.claude/`; slash-command files an earlier install left under `~/.claude/commands/` for the first four are removed
 - Adds the same skills to Codex, under the profile's `.codex/skills/` (Codex's `CODEX_HOME`); `finish` and `switch` stay out of Codex's automatic skill choice and run only when asked
-- Registers one Codex SessionStart hook in the profile's `.codex/hooks.json` and trusts it in `.codex/config.toml`, so a `/clear` in Codex rebinds the session and picks up an armed rotation
+- Registers Codex SessionStart and PostToolUse hooks in the profile's `.codex/hooks.json` and trusts them in `.codex/config.toml`, so `/clear` rebinds the session and successful patches save recovery copies
 - Installs shell completions for bash and zsh
 - Configures hook entries in `~/.claude/settings.json`
 - Asks once whether to bind Ctrl+X R to `/rotate`, Ctrl+X W to `/wrap` and Ctrl+X 1 / Ctrl+X 2 to the `cs` band in `~/.claude/keybindings.json` (asks nothing without a terminal)
@@ -196,9 +197,12 @@ cs -tui                     # Interactive session manager, from anywhere
 cs -- <session-name>        # '--' ends the options, for launchers that insert one
 cs <session-name>           # Create or resume a session
 cs <session-name> --engine codex  # Create or resume with Codex CLI
+cs <session-name> --model MODEL --effort LEVEL  # Choose native model and reasoning effort
+cs <session-name> --approve-for-me  # Automatic permission review
+cs <session-name> --native-approval # Native approval defaults
 cs <session-name> --force   # Override active session lock
 cs <session-name> --from-handoff  # Fresh conversation from the pending rotation handoff, without the resume prompt
-cs -switch [claude|codex] [--resume]  # Inside a conversation with a handoff armed: on exit, reopen under the other engine (the switch skill runs it; -switch cancel drops it)
+cs -switch [claude|codex] [--resume] [--model MODEL] [--effort LEVEL]  # Inside a conversation with a handoff armed: on exit, reopen under the other engine (the switch skill runs it; -switch cancel drops it)
 cs <base>@<feature>         # Create/resume a parallel feature worktree off <base>
 cs <base> -features         # List a base's feature worktrees and their merge readiness
 cs <base> -finish <feature> # Open <base> and run /finish for <feature> (integrate, then retire the worktree)
@@ -236,6 +240,15 @@ cs -help, -h                 # Show help message
 cs -version, -v             # Show version
 ```
 
+In the picker, press `e` or choose **Engine / model / effort** before opening a
+session. Enter a native model name and effort, or leave either blank for the
+engine's defaults. Changing the engine clears those selections. Enter saves the
+choices for that session in the picker; Open uses them. Codex launches with
+`--approve-for-me` by default. `--native-approval` keeps its native policy, while
+Claude uses its native policy unless automatic review is selected. These choices
+also work with `-switch` for the next engine.
+
+
 ### Interactive Session Manager
 
 Running `cs` with no arguments launches an interactive TUI for browsing and managing sessions, wherever you run it. To open the session you are standing in, run `cs .` from its root: an adopted project opens under the name it was adopted as, and a directory that is not a session is refused with a pointer to `cs -adopt`.
@@ -259,6 +272,7 @@ For `cs .`, the current directory decides, not any history: it opens a session o
 - **Delete** with `d` (confirmation required)
 - **Batch operations** — mark sessions with `Space`, then `D` to batch delete
 - **Rename** with `r`
+- **Engine, model and effort** with `e` — choose launch settings before opening a conversation. Blank model and effort fields use native defaults; changing engine clears those fields. Codex uses automatic approval review by default, with a choice to use its native configured policy
 - **Archive / unarchive** with `a` — toggles the selected session's `.cs/archived` marker by running `cs -archive` / `cs -unarchive`, so the picker never writes the marker itself and inherits the verb's refusal to archive a live session. Archived rows are hidden until `A` shows them, which is also how you reach one to unarchive
 - **Manage secrets** with `s` (view values with `v`, auto-redacts after 5 seconds)
 - **Rotate narrative** with `R` (confirmation required) — runs `cs <name> -narrative rotate` on the highlighted session and shows what it printed; a narrative under its byte budget rotates nothing and says so
