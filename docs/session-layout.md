@@ -59,7 +59,8 @@ The one distinction that governs everything below is **shared vs machine-local**
 | Path | Purpose | Merge |
 |------|---------|-------|
 | `.cs/README.md` | Session objective (captured from the first prompt) and outcome. Human-edited. An [encrypted session](#encrypted-sessions) keeps only the frontmatter here. | default |
-| `.cs/summary.md` | Distilled session summary, written by `/wrap` and `/summary`. | default |
+| `.cs/summary.md` | Distilled session summary, written by `/wrap`. | default |
+| `.cs/features/<task>/` | A retired feature's own `README.md` and `summary.md`, carried from its worktree by `/finish` in a session whose `.gitignore` lists `.cs`, when the feature changed them. A later feature of the same name keeps what an earlier one left and takes the next free name (`README.2.md`, `summary.2.md`). | default |
 | `.cs/timeline.jsonl` | Structured event log — `started`, `ended`, `checkpoint`, `rotated`, and `narrative_rotated` events as newline-delimited JSON. A base session also records `worktree-retired` (with the feature's `task`) when a feature worktree is retired, and `feature-integrated` (with `task`, the integrated `sha` and a `result`) when `/finish` integrates one. | `union` |
 | `.cs/memory/MEMORY.md` | Index of Claude Code's native auto-memory (one line per fact). | `ours` |
 | `.cs/memory/reference_memory_archive.md` | Pointer lines `/wrap`'s memory pass moved out of `MEMORY.md`, in its shape, under a fixed frontmatter; a `reference_` entry `MEMORY.md` points to. The entries stay in `.cs/memory/`. | `union` |
@@ -82,7 +83,9 @@ recipients. See [secrets.md](secrets.md) for the sync model.
 
 `.cs/session.lock` is a PID-based lock written at the session root (not under
 `local/`). It is ephemeral and machine-specific; it exists only while a session
-is open and is cleaned up on exit. Opens take turns on `.cs/session.mutex.lock`,
+is open and is cleaned up on exit. cs keeps it a regular file: an open refuses a
+link, a directory or anything else in its place, naming it, and the exit never
+follows or removes a link there. Opens take turns on `.cs/session.mutex.lock`,
 an empty file, while they check and write that lock. They hold it through
 flock(2), so the kernel releases it when its holder dies. The file stays on
 disk, like the other `*.mutex.lock` files beside the files cs rewrites
@@ -135,7 +138,7 @@ removes anything, except the prompt hook's launch mark in `scope-prompt.trace`.
 | `identity` | Overrides the actor name for shared memory/narrative attribution (precedence: `$CS_ACTOR` > `local/identity` > git `user.email` > git `user.name`). |
 | `migrated` | The migration stamp, written when every write an open's migration made succeeded. Line 1: the cs version, the actor and `1` or `0` for an encrypted session, tab separated. Line 2: the files it checked that existed then. See [Migration](#migration). |
 | `attention` | Status-line attention marker — raised by the `Stop` hook when Claude finishes, cleared on the next prompt. |
-| `remote.pid` | The pid of the `claude remote-control` server `cs <name> --remote` runs for this session. `cs` writes its own pid here and then becomes the server, so the session lock names the same pid; a background process `cs` starts first removes this file and releases the lock once the server exits. `cs -live`, `cs -doctor` and the session manager count the session as served only while this pid runs `remote-control --name <name>`. `cs -doctor` removes with a warning a file whose pid no longer does: one that background process never got to, as after a restart, where the pid may belong to another program by now. While the server runs, `cs` refuses every other open of the session. Stop the server with Ctrl-C or by closing its window, never with SIGKILL: the session it started keeps running then. |
+| `remote.pid` | The pid of the `claude remote-control` server `cs <name> --remote` runs for this session. `cs` writes its own pid here and then becomes the server, so the session lock names the same pid; a background process `cs` starts first removes this file and releases the lock once the server exits. `cs -live`, `cs -doctor`, `cs -rm`, the session manager and the hooks count the session as served only while this pid runs `remote-control --name <name>`. While it does, `cs -rm` and the picker's delete refuse the session even with `--force` or `[F]`, the end of the lead conversation the server started leaves `.cs/session.lock` to the server, and that lead sets no tmux or tab title. `cs -doctor` removes with a warning a file whose pid no longer does: one that background process never got to, as after a restart, where the pid may belong to another program by now. While the server runs, `cs` refuses every other open of the session. Stop the server with Ctrl-C or by closing its window, never with SIGKILL: the session it started keeps running then. |
 | `lead-pid` | The lead's claim on its launch: `<launch pid> <claude pid> <conversation id>`, written by the SessionStart hook of the claude `cs` launched, on every source. The hooks read it to tell that claude from a `claude -p` or a mod process it started when the two pids differ (the resume arm, a `CLAUDE_CODE_BIN` that forks claude). Every launch removes it before claude starts. The lead's SessionEnd, other than at a `/clear` or `/resume`, marks it ended (`<launch pid> <claude pid> <conversation id> ended`) and leaves it, so a claude that another SessionEnd hook starts stays a guest, while the lead still runs and after it exits. Claimers take turns on `lead-pid.mutex.lock` beside it. See [hooks.md](hooks.md#how-a-hook-finds-its-session-cs-resolvesh). |
 | `presence` | This session's advertised status (`cs -status`): a single line read by `cs -live`. Falls back to the README objective when unset. |
 | `pending-handoff` | Basename of the `.cs/handoffs/` file to rotate into — armed by the `rotate` skill (for `/clear`) or by the `r` answer at the resume prompt. Consumed and cleared by the next SessionStart whose source is `startup` or `clear`; left armed on any other source; disarmed by any other resume-prompt answer. |
@@ -353,7 +356,10 @@ no archive takes the feature's whole. A feature that never changed the
 archive it inherited brings nothing back, so the base's deletions stand.
 
 Human-authored prose (`README.md`, `summary.md`) uses the default merge — a
-genuine divergence there is a real conflict a person should reconcile.
+genuine divergence there is a real conflict a person should reconcile. In a
+session whose `.gitignore` lists `.cs`, the record fuse never merges them:
+once a feature changed its README or summary, `/finish` puts the feature's
+copy in `.cs/features/<task>/` and leaves the base's own untouched.
 
 ## Migration
 
