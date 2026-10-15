@@ -146,16 +146,32 @@ _names_as_lines() {
                  chomp; s/\\/\\\\/g; s/\n/\\n/g; print "$_\n"'
 }
 
-# A name as a message prints it: each control character in it (a newline,
-# an escape, a carriage return) as "?", so no name can break a line or drive
-# the terminal. Names are bytes, whatever the locale.
+# The awk function printable(name): the name as a message prints it, each
+# control character in it (a newline, an escape, a carriage return) as "?",
+# so no name can break a line or drive the terminal, and each character that
+# flips the direction of the text after it (U+202A to U+202E, U+2066 to
+# U+2069, U+200E, U+200F, U+061C) or takes no room (U+200B to U+200D,
+# U+2060, U+FEFF) as one "?", so no name can read as another file's. Every
+# other character, an accent or a space, prints as itself. Run under
+# LC_ALL=C: names are bytes whatever the locale, and each of those
+# characters is matched by its whole UTF-8 sequence. _printable_name and
+# _untracked_listing_format both print names with it.
+_CS_PRINTABLE_AWK='
+function printable(name) {
+    gsub(/[[:cntrl:]]/, "?", name)
+    gsub(/\342\200[\213-\217\252-\256]|\342\201[\240\246-\251]|\330\234|\357\273\277/, "?", name)
+    return name
+}'
+
+# A name as a message prints it (printable in _CS_PRINTABLE_AWK).
 _printable_name() {  # name
-    printf '%s' "$1" | env LC_ALL=C tr '[:cntrl:]' '[?*]'
+    env LC_ALL=C CS_PRINTABLE_NAME="$1" awk "$_CS_PRINTABLE_AWK"'
+        BEGIN { printf "%s", printable(ENVIRON["CS_PRINTABLE_NAME"]) }'
 }
 
 # Tracked files marked skip-worktree or assume-unchanged whose working copy
-# differs from the index, one per line, each control character in a path
-# shown as "?" (_printable_name): git diff hides these edits and git
+# differs from the index, one per line, each path as a message prints it
+# (_printable_name): git diff hides these edits and git
 # keeps no copy of them, so removing a worktree destroys them. Checked on a
 # worktree about to be removed only; in a base the flags usually mark local
 # config the user means to keep uncommitted. A link counts by its target, as
@@ -426,29 +442,27 @@ _untracked_entries() {
 # ("1 file", "60,882 files"), then one line per entry indented four spaces, a
 # directory with its file count in a column past the longest directory
 # shown. With a number, at most that many entries, then how many are not
-# shown; with "all", every entry. An entry prints as its name with each
-# control character in it shown as "?", after the directory given as $2, if
-# any.
+# shown; with "all", every entry. An entry prints as its name as a message
+# prints it (printable in _CS_PRINTABLE_AWK), after the directory given as
+# $2, if any.
 _untracked_listing_format() {  # shown|all [directory]
-    env LC_ALL=C CS_LISTING_DIRECTORY="${2:-}" awk -v shown="$1" '
+    env LC_ALL=C CS_LISTING_DIRECTORY="${2:-}" awk -v shown="$1" "$_CS_PRINTABLE_AWK"'
         function grouped(n,    s) {
             s = sprintf("%d", n)
             while (s ~ /[0-9][0-9][0-9][0-9]/) sub(/[0-9][0-9][0-9]($|,)/, ",&", s)
             return s
         }
         function files(n) { return grouped(n) (n == 1 ? " file" : " files") }
-        # The name a line stands for (_names_as_lines), each control
-        # character in it (a newline, an escape, a carriage return) as "?",
-        # so no name can break a line or drive the terminal.
+        # The name a line stands for (_names_as_lines) as a message prints
+        # it: its newline, written "\n" on the line, as "?" like each other
+        # control character (printable).
         function printed(line,    name, at) {
             name = ""
             while ((at = index(line, "\\")) > 0) {
                 name = name substr(line, 1, at - 1) (substr(line, at + 1, 1) == "n" ? "?" : "\\")
                 line = substr(line, at + 2)
             }
-            name = name line
-            gsub(/[[:cntrl:]]/, "?", name)
-            return name
+            return printable(name line)
         }
         # The characters in a name, each taken as one column: names are bytes
         # here, and a UTF-8 character is every byte but those that continue
@@ -2084,8 +2098,8 @@ _fuse_plan() {  # feature_meta base_meta out
 }
 
 # The files of a feature's .cs the record fuse cannot carry into the base,
-# one per line as ".cs/<rel>", sorted, each control character in a name
-# shown as "?" (_printable_name).
+# one per line as ".cs/<rel>", sorted, each name as a message prints it
+# (_printable_name).
 # Retire refuses on any; the features screen counts them. Fails when the
 # classification fails.
 _fuse_conflicts() {  # feature_meta base_meta

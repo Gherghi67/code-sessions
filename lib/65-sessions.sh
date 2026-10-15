@@ -403,7 +403,7 @@ _session_foreign_entries() {  # session_dir
 }
 
 # The names _session_foreign_entries prints, as one comma-separated line,
-# each control character in them as "?" (_printable_name).
+# each as a message prints it (_printable_name).
 _session_foreign_line() {  # foreign_entries
     local line name out=""
     while IFS= read -r line; do
