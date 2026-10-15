@@ -594,6 +594,37 @@ test_code_sessions_claude_config_link_shares_the_default_login() {
         "$(cat "$TEST_TMPDIR/launched")" "the vault session keeps the shared login" || return 1
 }
 
+# Under code-sessions the shell's config is the profile's. A cs launched from
+# inside an encrypted session (typed there, or a spawn on a tmux server that
+# session started) drops the parent's vault for the profile, not for ~/.claude,
+# and stays on the shared login: also when the parent's value is the profile
+# dir an older launch recorded, which names the profile's own keychain entry.
+test_code_sessions_launch_from_a_vault_opens_on_the_profile() {
+    local profile="$TEST_TMPDIR/profile" other="$TEST_TMPDIR/other/.cs/claude-config"
+    mkdir -p "$profile/.claude" "$other" "$HOME/.claude"
+    printf '{"model":"home"}\n' > "$HOME/.claude/settings.json"
+    printf '{"model":"profile"}\n' > "$profile/.claude/settings.json"
+    "$CS_BIN" plain <<< "" >/dev/null 2>&1 || true
+    _make_vaulted_session vt
+    _make_vaulted_config vt
+    _make_config_sentinel
+
+    CODE_SESSIONS_HOME="$profile" CLAUDE_CONFIG_DIR="$other" CLAUDE_SECURESTORAGE_CONFIG_DIR="" \
+        "$CS_BIN" plain <<< "" >/dev/null 2>&1 || true
+    CODE_SESSIONS_HOME="$profile" CLAUDE_CONFIG_DIR="$other" CLAUDE_SECURESTORAGE_CONFIG_DIR="$profile/.claude" \
+        "$CS_BIN" plain <<< "" >/dev/null 2>&1 || true
+    CODE_SESSIONS_HOME="$profile" CLAUDE_CONFIG_DIR="$other" CLAUDE_SECURESTORAGE_CONFIG_DIR="" \
+        "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+
+    local config="$CS_SESSIONS_ROOT/vt/.cs/claude-config"
+    assert_eq "config=$profile/.claude secure=
+config=$profile/.claude secure=
+config=$config secure=" "$(cat "$TEST_TMPDIR/launched")" \
+        "each launch opens on the profile, or this vault, and the shared login" || return 1
+    assert_eq "$profile/.claude/settings.json" "$(readlink "$config/settings.json")" \
+        "settings.json should link to the profile's config, not ~/.claude" || return 1
+}
+
 test_unmounted_claude_config_refuses_open() {
     _make_vaulted_session vt
     _make_vaulted_config vt
@@ -1015,6 +1046,7 @@ run_test test_unmounted_claude_config_refuses_open
 run_test test_session_without_claude_config_drops_an_inherited_vault_config
 run_test test_claude_config_link_keeps_the_shell_profile_login
 run_test test_code_sessions_claude_config_link_shares_the_default_login
+run_test test_code_sessions_launch_from_a_vault_opens_on_the_profile
 run_test test_claude_config_links_the_shared_config
 run_test test_claude_config_links_the_shell_profile_config
 run_test test_claude_config_skips_what_the_shell_config_lacks

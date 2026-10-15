@@ -209,12 +209,16 @@ _disarm_rotation_marker() {  # session_dir [surviving_handoff]
 # keychain entry independently of the config dir, and empty selects the
 # default entry. A value inherited from a parent launch into such a session is
 # recognisable by its path and dropped, so a session without the link opens
-# on the shell's own config.
+# on the shell's own config. Under code-sessions that is the profile's, on the
+# shared login: ~/.claude belongs to the original cs.
 _export_session_claude_config() {  # session_dir
     local config="$1/.cs/claude-config"
     case "${CLAUDE_CONFIG_DIR:-}" in
         */.cs/claude-config)
             unset CLAUDE_CONFIG_DIR CLAUDE_SECURESTORAGE_CONFIG_DIR
+            if [ -n "${CODE_SESSIONS_HOME:-}" ]; then
+                export CLAUDE_CONFIG_DIR="$CODE_SESSIONS_HOME/.claude" CLAUDE_SECURESTORAGE_CONFIG_DIR=''
+            fi
             ;;
     esac
     [ -e "$config" ] || return 0
