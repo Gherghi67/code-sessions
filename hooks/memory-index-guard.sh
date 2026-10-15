@@ -5,6 +5,10 @@
 set -euo pipefail
 
 INDEX=".cs/memory/MEMORY.md"
+# The archive index: a reference entry listing, in MEMORY.md's own pointer
+# shape, the pointers /wrap's memory pass moved out of MEMORY.md. Claude Code
+# reads it only through its pointer in MEMORY.md.
+ARCHIVE=".cs/memory/reference_memory_archive.md"
 # The snapshot copies MEMORY.md, so it sits where the session keeps its cs
 # files: .cs/private for an encrypted session, whose index lives in the vault,
 # .cs/local for any other. cs-shared.sh (build.sh's copy of lib/02-shared.sh)
@@ -101,23 +105,41 @@ case "${1:-}" in
         status=0
         before=$(_pointers "$SNAPSHOT")
         after=$(_pointers "$INDEX")
-        removed=$(env LC_ALL=C comm -23 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | sed '/^$/d')
+        # The archive's pointer to itself is no pointer: Claude Code reads the
+        # archive only through its pointer in MEMORY.md.
+        archived=""
+        [ ! -f "$ARCHIVE" ] || archived=$(_pointers "$ARCHIVE" | sed '/^reference_memory_archive\.md$/d')
+        # A pointer gone from MEMORY.md is lost unless the archive holds it:
+        # there it was moved, and check passes it.
+        gone=$(env LC_ALL=C comm -23 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | sed '/^$/d')
+        removed=$(env LC_ALL=C comm -23 <(printf '%s\n' "$gone") <(printf '%s\n' "$archived") | sed '/^$/d')
         if [ -n "$removed" ]; then
             printf '%s\n' "$removed" | _print_names 'removed:'
             status=1
         fi
-        dangling=$(printf '%s\n' "$after" | _missing_entries)
+        demoted=$(env LC_ALL=C comm -12 <(printf '%s\n' "$gone") <(printf '%s\n' "$archived") | sed '/^$/d')
+        if [ -n "$demoted" ]; then
+            printf '%s\n' "$demoted" | _print_names 'demoted:'
+        fi
+        duplicate=$(env LC_ALL=C comm -12 <(printf '%s\n' "$after") <(printf '%s\n' "$archived") | sed '/^$/d')
+        if [ -n "$duplicate" ]; then
+            printf '%s\n' "$duplicate" | _print_names 'duplicate:'
+            status=1
+        fi
+        dangling=$(printf '%s\n%s\n' "$after" "$archived" | env LC_ALL=C sort -u | _missing_entries)
         if [ -n "$dangling" ]; then
             printf '%s\n' "$dangling" | _print_names 'dangling:'
             status=1
         fi
         # An entry this sweep wrote after the snapshot is in no snapshot, so
-        # the entries on disk are checked too: each needs a pointer.
+        # the entries on disk are checked too: each needs a pointer, in
+        # MEMORY.md or the archive.
         entries=$(cd .cs/memory && for f in user_*.md feedback_*.md project_*.md reference_*.md; do
             [ -f "$f" ] || continue
             printf '%s\n' "$f"
         done | env LC_ALL=C sort)
-        unindexed=$(env LC_ALL=C comm -23 <(printf '%s\n' "$entries") <(printf '%s\n' "$after") | sed '/^$/d')
+        indexed=$(printf '%s\n%s\n' "$after" "$archived" | sed '/^$/d' | env LC_ALL=C sort -u)
+        unindexed=$(env LC_ALL=C comm -23 <(printf '%s\n' "$entries") <(printf '%s\n' "$indexed") | sed '/^$/d')
         if [ -n "$unindexed" ]; then
             printf '%s\n' "$unindexed" | _print_names 'unindexed:'
             status=1
