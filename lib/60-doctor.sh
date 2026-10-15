@@ -243,6 +243,8 @@ _doctor_check_tui_build() {
         printf '  %s\n' "cs-tui: not checked: nothing in $origin_file says where $installed came from; the next ./install.sh from your checkout records it, and cs -update records it where a release picker exists for this platform (and replaces a checkout-built picker with the release one)"
         return 0
     fi
+    # One trailing slash is dropped, so the rows join the path to tui/ with one.
+    [ "$checkout" = / ] || checkout="${checkout%/}"
     # The checkout path as cs prints any name (_printable_name), so a control
     # character in it cannot drive the terminal; the advice commands quote it
     # with %q instead, so they paste back as the same path.
