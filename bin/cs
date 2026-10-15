@@ -15051,12 +15051,6 @@ _serve_remote() {  # session_name, session_dir, permission_mode
     local name="$1" dir="$2" mode="$3" meta="$2/.cs"
     # remote-control refuses to start while an API key is set.
     unset ANTHROPIC_API_KEY
-    # The sessions the server starts are its children and guests of this
-    # launch: none of them is the lead. CS_LEAD_PID stays the server's pid, so
-    # the hooks show each one a nested child; without CS_LEAD_CLAIM none of
-    # them claims the launch in .cs/local/lead-pid, which would make the first
-    # one the lead and let its SessionEnd remove the lock the server holds.
-    unset CS_LEAD_CLAIM
     # Inside tmux the window keeps its remote:<name> name, which
     # _spawn_precheck reads to refuse a second window.
     [ -n "${TMUX:-}" ] || set_tab_title "cs: $name (remote)" "auto:$name"
