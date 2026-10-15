@@ -170,8 +170,22 @@ case "${1:-}" in
             printf 'over budget: %s bytes > %s\n' "$size" "$BUDGET"
             status=1
         fi
-        # awk counts a last line with no newline, which wc -l does not.
-        lines=$(env LC_ALL=C awk 'END { print NR }' "$INDEX")
+        # Claude Code counts lines after turning a CRLF, a lone CR, U+2028
+        # and U+2029 each into one newline, so each is one line break here
+        # too: a CR ending a line is the CRLF's. awk counts a last line with
+        # no newline, which wc -l does not.
+        lines=$(env LC_ALL=C awk -v cr=$'\r' -v ls=$'\342\200\250' -v ps=$'\342\200\251' '
+            function count(s, sep,   n, i) {
+                n = 0
+                while ((i = index(s, sep)) > 0) { n++; s = substr(s, i + length(sep)) }
+                return n
+            }
+            {
+                s = $0
+                if (substr(s, length(s)) == cr) s = substr(s, 1, length(s) - 1)
+                breaks += count(s, cr) + count(s, ls) + count(s, ps)
+            }
+            END { print NR + breaks }' "$INDEX")
         if [ "$lines" -gt "$LINE_BUDGET" ]; then
             printf 'over budget: %s lines > %s\n' "$lines" "$LINE_BUDGET"
             status=1
