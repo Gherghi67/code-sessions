@@ -10827,16 +10827,12 @@ _doctor_check_hook_files_executable() {
     fi
 }
 
-# Compares deployable artifacts in the current directory's cs source checkout
-# (hooks/*.sh, hooks/*.md, commands/*.md, skills/*/SKILL.md) against their deployed
-# copies. A source edit only takes effect once install.sh deploys it, so
-# silent drift between the two means the running install doesn't match what
-# the source says it does. Silent outside a checkout.
-_doctor_check_hook_drift() {
+# True when the current directory is the cs source checkout that produced the
+# install: it holds hooks/, install.sh and bin/cs, and its bin/cs carries the
+# version install.sh stamped into the deploy directory.
+_doctor_in_installed_checkout() {
     local hooks_dir="$HOOKS_DEPLOY_DIR"
-    local commands_dir="${CS_COMMANDS_DIR:-$HOME/.claude/commands}"
-    local skills_dir="${CS_SKILLS_DIR:-$HOME/.claude/skills}"
-    [ -d "hooks" ] && [ -f "install.sh" ] && [ -f "bin/cs" ] || return 0
+    [ -d "hooks" ] && [ -f "install.sh" ] && [ -f "bin/cs" ] || return 1
 
     # Those three names are not proof this checkout produced the install. Any
     # directory holding them passes, and a scratch copy of the repo is an
@@ -10855,7 +10851,20 @@ _doctor_check_hook_drift() {
         src_version=$(sed -n 's/^VERSION="\([^"]*\)".*/\1/p' bin/cs 2>/dev/null | head -1)
     [ -f "$hooks_dir/.version" ] &&
         deployed_version=$(tr -d '[:space:]' < "$hooks_dir/.version" 2>/dev/null)
-    [ -n "$src_version" ] && [ "$src_version" = "$deployed_version" ] || return 0
+    [ -n "$src_version" ] && [ "$src_version" = "$deployed_version" ]
+}
+
+# Compares deployable artifacts in the current directory's cs source checkout
+# (hooks/*.sh, hooks/*.md, commands/*.md, skills/*/SKILL.md) against their deployed
+# copies. A source edit only takes effect once install.sh deploys it, so
+# silent drift between the two means the running install doesn't match what
+# the source says it does. Silent outside the checkout that produced the
+# install.
+_doctor_check_hook_drift() {
+    local hooks_dir="$HOOKS_DEPLOY_DIR"
+    local commands_dir="${CS_COMMANDS_DIR:-$HOME/.claude/commands}"
+    local skills_dir="${CS_SKILLS_DIR:-$HOME/.claude/skills}"
+    _doctor_in_installed_checkout || return 0
 
     local clean=1
 
@@ -10904,6 +10913,46 @@ _doctor_check_hook_drift() {
 
     if [ "$clean" = "1" ]; then
         _doctor_ok "Deploy drift: hooks, commands, skills, and mods match checkout source"
+    fi
+}
+
+# Holds the installed picker to the current directory's checkout. install.sh
+# copies a cs-tui it never builds, so a merge that rewrites tui/src leaves
+# both the cargo build and the installed copy where they were, and the picker
+# runs stale with nothing to say so. Two facts are read: the build is older
+# than a file cargo would rebuild it from (cargo's own test is an mtime test
+# too), and the installed bytes are not the build's. Silent with no installed
+# picker, outside the checkout that produced the install, and with no build
+# in it: a fresh clone has no tui/target and its source is newer than any
+# install, and a release-asset install has nothing here to compare against.
+_doctor_check_tui_build() {
+    local installed="$HOME/.local/bin/cs-tui"
+    [ -f "$installed" ] || return 0
+    _doctor_in_installed_checkout || return 0
+    [ -f "tui/Cargo.toml" ] || return 0
+
+    # The build install.sh ships: tui/target/release/cs-tui, unless bin/cs-tui
+    # is newer. ./install.sh, the advice below, must be able to clear the row.
+    local build="bin/cs-tui"
+    if [ -f "tui/target/release/cs-tui" ] && { [ ! -f "$build" ] || [ "tui/target/release/cs-tui" -nt "$build" ]; }; then
+        build="tui/target/release/cs-tui"
+    fi
+    [ -f "$build" ] || return 0
+
+    local inputs=() input newer
+    for input in tui/src tui/Cargo.toml tui/Cargo.lock tui/build.rs tui/.cargo/config.toml; do
+        [ -e "$input" ] && inputs+=("$input")
+    done
+    if ! newer=$(find "${inputs[@]}" -type f -newer "$build" 2>/dev/null); then
+        _doctor_warn "cs-tui: could not read the TUI source under $PWD/tui to compare it with the build $build"
+        return 0
+    fi
+    if [ -n "$newer" ]; then
+        _doctor_warn "cs-tui: the build $build is older than the TUI source, so the installed picker is stale (run cargo build --release --manifest-path $PWD/tui/Cargo.toml, then ./install.sh)"
+    elif ! cmp -s "$build" "$installed"; then
+        _doctor_warn "cs-tui: the installed $installed differs from this checkout's build $build (run ./install.sh)"
+    else
+        _doctor_ok "cs-tui: the installed picker matches this checkout's build $build"
     fi
 }
 
@@ -11635,6 +11684,7 @@ run_doctor() {
     _doctor_check_hooks_registered
     _doctor_check_hook_files_executable
     _doctor_check_hook_drift
+    _doctor_check_tui_build
     _doctor_check_deployed_version
     _doctor_check_settings_hooks_resolve
     _doctor_check_claude_audit
