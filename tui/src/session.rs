@@ -1380,12 +1380,103 @@ pub struct RemoveGrants {
     pub unowned_files: bool,
 }
 
+/// The session the picker runs inside, as cs reads it: `CLAUDE_SESSION_NAME`,
+/// where unset or empty is a terminal outside every session. Under test it is
+/// only ever the [`test_caller`] override.
+fn caller_session_name() -> Option<String> {
+    #[cfg(test)]
+    return test_caller::current();
+    #[cfg(not(test))]
+    std::env::var_os("CLAUDE_SESSION_NAME")
+        .filter(|name| !name.is_empty())
+        .map(|name| name.to_string_lossy().into_owned())
+}
+
+/// Why `cs -rm`, run inside session `caller`, refuses to remove session
+/// `name` at `path` whatever it is granted, when it does; read now. First
+/// `_refuse_live_other_session`: a live session that is not the caller's
+/// own. A session owns itself, matched byte for byte as cs compares names,
+/// and a base (a caller with no '@') owns each `<caller>@<task>`. Then
+/// `_refuse_base_with_live_feature`: from any session but the base itself, a
+/// base (a name with no '@') while one of its features is live. Twin of
+/// those two guards in lib/15-lock.sh; the messages are theirs. Errors when
+/// the sessions root cannot be listed, so a feature it holds is never missed.
+fn cross_session_refusal(root: &Path, name: &str, path: &Path, caller: &str) -> std::io::Result<Option<String>> {
+    if caller == name {
+        return Ok(None);
+    }
+    let owned_feature = !caller.contains('@') && name.strip_prefix(caller).is_some_and(|rest| rest.starts_with('@'));
+    if !owned_feature {
+        if let Some(pid) = read_lock_pid(&path.join(".cs")) {
+            return Ok(Some(format!(
+                "session {caller} cannot remove session {name} while it is live (pid {pid}); --force does not override that from another session. Close {name} first."
+            )));
+        }
+    }
+    if name.contains('@') {
+        return Ok(None);
+    }
+    Ok(live_feature_of(root, name)?.map(|(feature, pid)| {
+        format!(
+            "session {caller} cannot remove session {name} while its feature {feature} is live (pid {pid}); --force does not override that from another session. Close {feature} first."
+        )
+    }))
+}
+
+/// The first live feature of base `name` in `root`, by entry name, with its
+/// lock's pid. As cs's `"$SESSIONS_ROOT"/*@*` glob reads them, an entry is a
+/// candidate when its name holds an '@' and does not start with '.'; it is
+/// `name`'s when `<root>/<name>@<its task>` is the same file (device and
+/// inode, through links, as `-ef` compares), not when the names match as
+/// strings, since a volume that ignores letter case finds one directory
+/// under several spellings. Its `.cs` must be a directory and its lock live.
+fn live_feature_of(root: &Path, name: &str) -> std::io::Result<Option<(String, u32)>> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
+    let mut entries: Vec<std::ffi::OsString> = fs::read_dir(root)
+        .and_then(|listing| listing.map(|entry| entry.map(|e| e.file_name())).collect())
+        .map_err(|e| {
+            std::io::Error::other(format!(
+                "could not list {} ({e}), so cannot tell whether a feature of {name} is live; refusing to remove it",
+                root.display()
+            ))
+        })?;
+    entries.sort();
+    let same_file = |a: &Path, b: &Path| match (fs::metadata(a), fs::metadata(b)) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+        _ => false,
+    };
+    for entry in entries {
+        let bytes = entry.as_bytes();
+        if bytes.starts_with(b".") {
+            continue;
+        }
+        let Some(at) = bytes.iter().position(|&b| b == b'@') else { continue };
+        let mut own = std::ffi::OsString::from(format!("{name}@"));
+        own.push(std::ffi::OsStr::from_bytes(&bytes[at + 1..]));
+        let feature = root.join(&entry);
+        if !same_file(&root.join(own), &feature) || !feature.join(".cs").is_dir() {
+            continue;
+        }
+        if let Some(pid) = read_lock_pid(&feature.join(".cs")) {
+            return Ok(Some((entry.to_string_lossy().into_owned(), pid)));
+        }
+    }
+    Ok(None)
+}
+
 /// Remove a session at `path` by whatever means its kind requires: symlinks
 /// are unlinked, worktree sessions are unregistered through git, and plain
-/// directories are removed outright. A live session and one holding files
-/// beyond cs's own are refused unless `grants` allows them; a mounted vault
-/// or volume is refused always.
+/// directories are removed outright. Inside a session, what `cs -rm` refuses
+/// from there is refused whatever `grants` allows ([`cross_session_refusal`]).
+/// A live session and one holding files beyond cs's own are refused unless
+/// `grants` allows them; a mounted vault or volume is refused always.
 pub fn remove_session_path(root: &Path, name: &str, path: &Path, grants: RemoveGrants) -> std::io::Result<()> {
+    if let Some(caller) = caller_session_name() {
+        if let Some(refusal) = cross_session_refusal(root, name, path, &caller)? {
+            return Err(std::io::Error::other(refusal));
+        }
+    }
     // Read the lock now, as `cs -rm`'s session_is_live does: the picker's row
     // was scanned earlier and the session may have opened since.
     if !grants.past_live_lock {
