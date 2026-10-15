@@ -15777,10 +15777,17 @@ _strip_cs_hook_registrations() {  # hooks_dir, hooks_parent_dir
 
 # Refuse the uninstall while a session under the sessions root is live (a
 # running lock pid, or a fresh statusline heartbeat for one opened outside
-# cs): the data step would delete its files from under it.
-_uninstall_refuse_live_sessions() {
+# cs): the data step would delete its files from under it. The refusal says
+# what happens next by stage: before (nothing is removed yet, so close the
+# sessions and run cs -uninstall again) or data (cs is removed and the data
+# is kept, so close them and delete the root by hand).
+_uninstall_refuse_live_sessions() {  # stage: before | data
+    local stage="$1" live_sessions="" entry now
+    case "$stage" in
+        before | data) ;;
+        *) error "_uninstall_refuse_live_sessions: unknown stage '$stage'" ;;
+    esac
     [ -d "$SESSIONS_ROOT" ] || return 0
-    local live_sessions="" entry now
     now=$(date +%s)
     # Hidden entries too: a session named before leading dots were
     # refused (.work) can still be live, and `*` alone would skip it.
@@ -15790,9 +15797,11 @@ _uninstall_refuse_live_sessions() {
             live_sessions="$live_sessions ${entry##*/}"
         fi
     done
-    if [ -n "$live_sessions" ]; then
-        error "Kept $SESSIONS_ROOT: these sessions are live:$live_sessions. Close them, then delete $SESSIONS_ROOT."
+    [ -n "$live_sessions" ] || return 0
+    if [ "$stage" = before ]; then
+        error "Nothing was uninstalled: these sessions are live:$live_sessions. Close them and run cs -uninstall again."
     fi
+    error "Kept $SESSIONS_ROOT: these sessions are live:$live_sessions. Close them, then delete $SESSIONS_ROOT."
 }
 
 # Uninstall cs and all components
@@ -15822,7 +15831,7 @@ run_uninstall() {
 
     # Before anything is removed: refusing after the tool is gone would leave
     # the data with no cs to open it.
-    _uninstall_refuse_live_sessions
+    _uninstall_refuse_live_sessions before
 
     warn "This will uninstall cs and all its components:"
     echo "  - $install_dir/cs, $install_dir/cs-secrets, $install_dir/cs-statusline, $install_dir/cs-subagent-statusline, $install_dir/cs-tui(.exe)"
@@ -15842,7 +15851,7 @@ run_uninstall() {
     fi
     # The answer can take any time to arrive, and a session opened meanwhile
     # is as live as one found before the prompt.
-    _uninstall_refuse_live_sessions
+    _uninstall_refuse_live_sessions before
 
     echo ""
     info "Uninstalling cs..."
@@ -16060,7 +16069,7 @@ run_uninstall() {
     # while the questions above waited.
     if [ -d "$SESSIONS_ROOT" ]; then
         echo ""
-        _uninstall_refuse_live_sessions
+        _uninstall_refuse_live_sessions data
         local mounted
         if ! mounted=$(_volume_mounted_under "$SESSIONS_ROOT"); then
             warn "Kept $SESSIONS_ROOT: cs could not read the mount table, so it cannot tell whether a volume is mounted inside it."
@@ -16073,7 +16082,7 @@ run_uninstall() {
             if [[ $REPLY =~ ^[Yy]$ ]]; then
                 # The answer can take any time: a session opened or a vault
                 # mounted meanwhile keeps the data, as it would have above.
-                _uninstall_refuse_live_sessions
+                _uninstall_refuse_live_sessions data
                 if ! mounted=$(_volume_mounted_under "$SESSIONS_ROOT"); then
                     error "Kept $SESSIONS_ROOT: cs could not read the mount table, so it cannot tell whether a volume is mounted inside it."
                 elif [ -n "$mounted" ]; then
