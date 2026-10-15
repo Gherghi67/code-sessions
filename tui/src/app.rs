@@ -1830,7 +1830,8 @@ impl App {
             return Action::None;
         }
         let root = self.sessions_root.clone();
-        if root.join(&name).exists() {
+        // Any entry holds the name, a link that leads nowhere included.
+        if std::fs::symlink_metadata(root.join(&name)).is_ok() {
             self.set_status("Session already exists", StatusLevel::Error);
             self.mode = Mode::Normal;
             return Action::None;
@@ -2240,7 +2241,9 @@ impl App {
             let root = self.sessions_root.clone();
             let old = root.join(&old_name);
             let new = root.join(&new_name);
-            if new.exists() {
+            // Any entry holds the name: rename(2) would replace a link that
+            // leads nowhere (an adopted session on a disk not mounted).
+            if std::fs::symlink_metadata(&new).is_ok() {
                 self.set_status("Name already taken", StatusLevel::Error);
             } else if let Some(taken) = session::staged_spawn_files(&root, &new_name).first() {
                 self.set_status(
