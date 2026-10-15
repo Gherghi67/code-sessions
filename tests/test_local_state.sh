@@ -1186,6 +1186,23 @@ test_merge_attributes_add_each_line_beside_a_glued_one() {
         "git reads each merge attribute" || return 1
 }
 
+# A .gitattributes holding bytes that are not UTF-8 and every merge line, read
+# in a UTF-8 locale, already has each line: an open appends nothing.
+test_merge_attributes_read_a_file_that_is_not_utf8() {
+    local sdir="$CS_SESSIONS_ROOT/attrs-bytes" lines
+    lines='.cs/memory/MEMORY.md merge=ours
+.cs/timeline.jsonl merge=union
+.cs/memory/narrative.*.md merge=union
+.cs/memory/reference_memory_archive.md merge=union'
+    "$CS_BIN" attrs-bytes < /dev/null > /dev/null 2>&1 || true
+    printf '*.dat binary # \377\376\n%s\n' "$lines" > "$sdir/.gitattributes"
+    cp "$sdir/.gitattributes" "$TEST_TMPDIR/attrs-bytes.before"
+    rm -f "$sdir/.cs/local/migrated"
+    LC_ALL=en_US.UTF-8 "$CS_BIN" attrs-bytes < /dev/null > /dev/null 2>&1 || true
+    cmp -s "$TEST_TMPDIR/attrs-bytes.before" "$sdir/.gitattributes" \
+        || { echo "  FAIL: an open appends nothing to a file that holds every line: $(tail -n +2 "$sdir/.gitattributes")"; return 1; }
+}
+
 test_frontmatter_backfill_created_uses_git_date() {
     # A legacy README without frontmatter and without a Started: line must
     # get its created: date from shared git history, not from local mtime
@@ -1833,6 +1850,7 @@ run_test test_union_merge_attributes_written
 run_test test_merge_attributes_start_a_line_after_a_file_with_no_final_newline
 run_test test_merge_attributes_add_the_archive_line_beside_a_glued_one
 run_test test_merge_attributes_add_each_line_beside_a_glued_one
+run_test test_merge_attributes_read_a_file_that_is_not_utf8
 run_test test_divergent_appends_merge_clean
 run_test test_frontmatter_backfill_created_uses_git_date
 run_test test_migration_moves_session_log_into_private
