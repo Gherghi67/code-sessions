@@ -136,8 +136,8 @@ bash ~/.claude/hooks/cs/memory-index-guard.sh snapshot
    Put a removed pointer back by rewriting it. `duplicate:` is a move stopped half done, by `restore`
    or by a merge that brought another actor's demotion in beside your index; keep one copy. When
    the entry is a rule that has to fire before a proposal, its demotion broke the rule
-   above: delete the archive's copy. Otherwise delete the `MEMORY.md` copy. If the two lines differ, the line you keep
-   carries the newer wording. On `dangling:`, stop and ask: entries are
+   above: delete the archive's copy. Otherwise delete the `MEMORY.md` copy. If the two lines differ, first give the line you
+   keep the newer wording. On `dangling:`, stop and ask: entries are
    never deleted, so a pointer whose file is gone means a rename or a lost file only the user can
    account for. If the index is past repair, run
    `bash ~/.claude/hooks/cs/memory-index-guard.sh restore` to return it to the snapshot, then redo this
