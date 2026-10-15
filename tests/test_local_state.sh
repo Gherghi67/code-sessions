@@ -1139,8 +1139,8 @@ test_merge_attributes_start_a_line_after_a_file_with_no_final_newline() {
 }
 
 # A .gitattributes where an earlier append glued the archive line onto the
-# one before holds no line naming the archive's attribute; the next open
-# appends it on a line of its own.
+# narrative line holds neither as a whole line; the next open appends each on
+# a line of its own.
 test_merge_attributes_add_the_archive_line_beside_a_glued_one() {
     local sdir="$CS_SESSIONS_ROOT/attrs-glued" glued
     glued='.cs/memory/narrative.*.md merge=union.cs/memory/reference_memory_archive.md merge=union'
@@ -1152,8 +1152,9 @@ test_merge_attributes_add_the_archive_line_beside_a_glued_one() {
     assert_eq ".cs/memory/MEMORY.md merge=ours
 .cs/timeline.jsonl merge=union
 $glued
+.cs/memory/narrative.*.md merge=union
 .cs/memory/reference_memory_archive.md merge=union" "$(cat "$sdir/.gitattributes")" \
-        "the archive line is appended on a line of its own" || return 1
+        "the narrative and archive lines are appended on lines of their own" || return 1
     assert_eq ".cs/memory/reference_memory_archive.md: merge: union" \
         "$(git -C "$sdir" check-attr merge -- .cs/memory/reference_memory_archive.md)" \
         "git reads the archive's union attribute" || return 1

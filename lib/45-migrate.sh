@@ -8,24 +8,28 @@ setup_merge_attributes() {
     _append_merge_attribute_lines "$dir/.gitattributes"
 }
 
-# Append to an attributes file each of cs's merge lines it lacks. The
-# archive's line counts as present only as a whole line, the way git reads
-# one (blanks and a CR around it ignored), so one an earlier append glued
-# onto the line before is added again; the others match anywhere on a line.
+# Append to an attributes file each of cs's merge lines it lacks. A line
+# counts as present only as a whole line, the way git reads one (blanks and a
+# CR around it ignored), so one an earlier append glued onto the line before
+# is added again.
 _append_merge_attribute_lines() {  # file
-    local attrs="$1"
-    if ! grep -q 'MEMORY\.md merge=ours' "$attrs" 2>/dev/null; then
-        _append_attribute_line "$attrs" '.cs/memory/MEMORY.md merge=ours'
-    fi
-    if ! grep -q 'timeline\.jsonl merge=union' "$attrs" 2>/dev/null; then
-        _append_attribute_line "$attrs" '.cs/timeline.jsonl merge=union'
-    fi
-    if ! grep -q 'narrative\.\*\.md merge=union' "$attrs" 2>/dev/null; then
-        _append_attribute_line "$attrs" '.cs/memory/narrative.*.md merge=union'
-    fi
-    if ! grep -qE '^[[:space:]]*\.cs/memory/reference_memory_archive\.md[[:space:]]+merge=union[[:space:]]*$' "$attrs" 2>/dev/null; then
-        _append_attribute_line "$attrs" '.cs/memory/reference_memory_archive.md merge=union'
-    fi
+    local attrs="$1" line
+    for line in '.cs/memory/MEMORY.md merge=ours' '.cs/timeline.jsonl merge=union' \
+            '.cs/memory/narrative.*.md merge=union' '.cs/memory/reference_memory_archive.md merge=union'; do
+        _attribute_line_present "$attrs" "$line" || _append_attribute_line "$attrs" "$line"
+    done
+}
+
+# Whether an attributes file holds <line> as a whole line: compared as text
+# once each run of blanks (a CR too) is one space and none leads or trails.
+# Bytes, not characters: awk stops on a line a multibyte locale cannot decode,
+# and every open would then append the lines again.
+_attribute_line_present() {  # file line
+    env LC_ALL=C awk -v want="$2" '
+        { gsub(/[[:space:]]+/, " "); sub(/^ /, ""); sub(/ $/, "") }
+        $0 == want { found = 1; exit }
+        END { exit !found }
+    ' "$1" 2>/dev/null
 }
 
 # Append one line to an attributes file on a line of its own: a file whose
