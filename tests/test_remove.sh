@@ -1041,7 +1041,7 @@ test_remove_refuses_a_served_session_with_and_without_force() {
     for flag in "" --force; do
         rc=0
         out=$("$CS_BIN" -rm served $flag </dev/null 2>&1) || rc=$?
-        seen="$seen[cs -rm served${flag:+ $flag}] rc=$rc kept=$([ -d "$dir" ] && echo yes || echo no) $out
+        seen="${seen}[cs -rm served${flag:+ $flag}] rc=$rc kept=$([ -d "$dir" ] && echo yes || echo no) $out
 "
     done
     { kill "$spid"; wait "$spid"; } 2>/dev/null
