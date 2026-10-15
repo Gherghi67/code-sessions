@@ -26,9 +26,15 @@ if _tracked=$(cs_files_tracked_notice .cs "$PWD"); then
     exit 2
 fi
 SNAPSHOT="$_snapshot_dir/memory-index.snapshot"
-# Claude Code loads MEMORY.md at every session start and cuts it past a limit;
-# pointers beyond the cut are never read again. Bytes, not characters.
+# Claude Code loads MEMORY.md at every session start and cuts it past 25,000
+# bytes or 200 lines, whichever comes first; pointers beyond the cut are never
+# read again. Each budget keeps room under its limit for the pointers written
+# between two sweeps (by Claude Code mid-conversation, or by another actor):
+# 600 bytes is three or four of today's 150-180 byte pointers, and four lines
+# is the same four pointers. Bytes, not characters; every line, blank and
+# heading lines too.
 BUDGET=24400
+LINE_BUDGET=196
 
 _die() {  # message
     printf 'memory-index-guard: %s\n' "$1" >&2
@@ -107,7 +113,14 @@ case "${1:-}" in
             printf 'over budget: %s bytes > %s\n' "$size" "$BUDGET"
             status=1
         fi
+        # awk counts a last line with no newline, which wc -l does not.
+        lines=$(env LC_ALL=C awk 'END { print NR }' "$INDEX")
+        if [ "$lines" -gt "$LINE_BUDGET" ]; then
+            printf 'over budget: %s lines > %s\n' "$lines" "$LINE_BUDGET"
+            status=1
+        fi
         printf 'MEMORY.md: %s/%s bytes\n' "$size" "$BUDGET"
+        printf 'MEMORY.md: %s/%s lines\n' "$lines" "$LINE_BUDGET"
         exit "$status"
         ;;
     restore)

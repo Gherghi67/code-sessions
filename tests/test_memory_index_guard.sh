@@ -350,7 +350,8 @@ removed: project__c.md
 removed: project_a.md
 unindexed: project_Zed.md
 unindexed: project_yak.md
-MEMORY.md: 33/24400 bytes" "$out" "$b: the report, in byte order" || return 1
+MEMORY.md: 33/24400 bytes
+MEMORY.md: 1/196 lines" "$out" "$b: the report, in byte order" || return 1
         own="$(shell_locale_assignments "$TEST_TMPDIR/trace")"
         assert_eq "" "$own" "$b must not assign its own locale during check" || return 1
     done
