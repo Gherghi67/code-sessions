@@ -98,7 +98,8 @@ bash ~/.claude/hooks/cs/memory-index-guard.sh snapshot
    `check` names each pointer this sweep moved as `demoted:` and passes it.
 
    Rewording shortens a line's bytes, never the number of lines: over the line budget, demotion is the
-   only remedy. If no pointer meets either criterion, say so and ask.
+   only remedy, and when no pointer meets either criterion, say so and ask. Over the byte budget alone,
+   go on to rewrite.
 
    If still over the byte budget, **rewrite** the longest pointers shorter. A pointer is a recall HOOK, not a summary:
    it needs the distinctive noun that makes a future session open the file, plus any negation that
