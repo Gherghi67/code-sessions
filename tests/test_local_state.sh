@@ -1115,6 +1115,8 @@ test_union_merge_attributes_written() {
         "timeline.jsonl should merge with the union driver" || return 1
     assert_file_contains "$ga" 'narrative\.\*\.md merge=union' \
         "per-actor narratives should merge with the union driver" || return 1
+    assert_file_contains "$ga" '^\.cs/memory/reference_memory_archive\.md merge=union$' \
+        "the memory archive should merge with the union driver" || return 1
 }
 
 test_frontmatter_backfill_created_uses_git_date() {

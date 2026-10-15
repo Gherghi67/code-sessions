@@ -639,6 +639,7 @@ test_adopt_inits_git_when_none_exists() {
     assert_file_contains "$project_dir/.gitattributes" '^\.cs/memory/MEMORY\.md merge=ours$' || return 1
     assert_file_contains "$project_dir/.gitattributes" '^\.cs/timeline\.jsonl merge=union$' || return 1
     assert_file_contains "$project_dir/.gitattributes" '^\.cs/memory/narrative\.\*\.md merge=union$' || return 1
+    assert_file_contains "$project_dir/.gitattributes" '^\.cs/memory/reference_memory_archive\.md merge=union$' || return 1
     assert_file_contains "$project_dir/.gitignore" '^\.cs/local/$' "cs's rules are in the .gitignore" || return 1
     assert_output_contains "$out" "cs committed nothing; it left .cs/, .gitignore and .gitattributes for you to commit" \
         "one line names what adopt left" || return 1
