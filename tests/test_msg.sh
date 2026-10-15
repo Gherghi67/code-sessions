@@ -1270,6 +1270,29 @@ test_read_survives_corrupt_document_and_big_mailbox() {
     assert_output_contains "$out" "filler message 399" "last message present" || return 1
 }
 
+# A document that is valid JSON but not an object is skipped like one that
+# does not parse: the messages beside it show, the read moves the whole batch
+# to cur/ so the mailbox clears, and the log shows the same messages.
+test_read_skips_a_document_that_is_not_an_object() {
+    _forge_mail 0000000001-good '{"id":"g1","ts":1,"from":"peer","kind":"text","body":"first good body"}'
+    _forge_mail 0000000002-array '[1]'
+    _forge_mail 0000000003-good '{"id":"g2","ts":3,"from":"peer","kind":"text","body":"second good body"}'
+    local out rc=0
+    out=$(_as_receiver -msg 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the read exits 0" || return 1
+    assert_eq "1" "$(grep -c 'first good body' <<< "$out")" "the first good body is shown" || return 1
+    assert_eq "1" "$(grep -c 'second good body' <<< "$out")" "the second good body is shown" || return 1
+    assert_eq "3" "$(printf '%s\n' "$out" | wc -l | tr -d '[:space:]')" \
+        "the note and the two messages, nothing for the array" || return 1
+    assert_eq "0" "$(NEW_COUNT)" "new/ is empty after the read" || return 1
+    assert_eq "3" "$(ls "$(MAILDIR)/cur" | grep -c '\.json$')" "all three documents are in cur/" || return 1
+    rc=0
+    out=$(_as_receiver -msg log 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the log exits 0" || return 1
+    assert_eq "1" "$(grep -c 'first good body' <<< "$out")" "the log shows the first good body" || return 1
+    assert_eq "1" "$(grep -c 'second good body' <<< "$out")" "the log shows the second good body" || return 1
+}
+
 run_test test_read_prints_unread_then_moves_to_cur
 run_test test_log_reprints_read_mail
 run_test test_read_outside_session_errors
@@ -1278,6 +1301,7 @@ run_test test_read_shows_a_multibyte_body_whole
 run_test test_read_skips_non_json_entries
 run_test test_read_renders_null_ts_and_flattens_multiline_body
 run_test test_read_survives_corrupt_document_and_big_mailbox
+run_test test_read_skips_a_document_that_is_not_an_object
 
 _prompt_as_receiver() {  # prompt-text
     printf '{"prompt": "%s"}' "$1" | _receiver_env bash "$HOOKS_DIR/scope-prompt.sh"
