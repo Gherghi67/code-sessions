@@ -2348,7 +2348,7 @@ test_rotate_wrap_keys_skip_an_encrypted_sessions_config_dir() {
         || { echo "  FAIL: install.sh exited non-zero"; return 1; }
     assert_eq "{\"bindings\":[$_OK_CS_BLOCK]}" "$(jq -c . "$profile/.claude/keybindings.json" 2>&1)" \
         "under code-sessions the profile takes the keys" || return 1
-    assert_file_not_exists "$home/.claude/keybindings.json" "~/.claude is the original cs's" || return 1
+    assert_file_not_exists "$home/.claude/keybindings.json" "the original cs's config dir stays as it was" || return 1
     assert_file_not_exists "$sess/keybindings.json" "nor the session's config dir" || return 1
 }
 
