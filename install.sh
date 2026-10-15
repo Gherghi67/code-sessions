@@ -1282,7 +1282,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "1bebbaec7da168db4219c10f055436adaf1720f0056aa3f948bd9c2f57a635b6  bin/cs"
+    "0e993bf9f4cd733d71756b700a9b65e498233a74587223bda8c31c4cd7cd51a3  bin/cs"
     "42d2f9ecbc9a89f3b119958360fb753962c89df18b51ef7b85db109b2644e7de  bin/cs-secrets"
     "2c7073689cf05dc5b3395765c67b80dd60bde74021845efda79a3f2100556f4f  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -1295,14 +1295,14 @@ CS_PAYLOAD_SHA256=(
     "5f34183b1082edef2ebd27176f1474cac88647b5d8578fccbb548fc262c0694f  hooks/prompt-rewriter-vendor.sh"
     "7f317dc632bd12ded4ea5e13dd5adfdd65b0614a2a7514cbdbeffc325e4c1da0  hooks/wrap-sweep.md"
     "0d304935cf53b79ffa4fe35b1dc2eb7d64952f40f4bb632f642c494760e7ab9c  hooks/wrap-summary.md"
-    "7ba59fc546c45b46ffdd315eeb81af6def23a33a896a8c2175f0bc93d72d5dc2  hooks/session-start.sh"
+    "e72bd0eb10c455664d7da8cc9501295d16029f9ded31ade89781606b7e77b346  hooks/session-start.sh"
     "cae9775702513f11b1abff031928047766ab69714e3a9b1db82ff080e186f20b  hooks/autosave-commits.sh"
     "349c3e78626fdc783f3a40e257405b44dc50669bc27f7c2ed21be20f85b74ac7  hooks/narrative-reminder.sh"
     "6ee7903b4c99d6e01888693635f430b40f42a82d7008fd285feee6f810585c9b  hooks/session-end.sh"
     "81a13835a65f4b4b35bb87493da0df9848de68375ca7ab1525d2d5079cf52bf1  hooks/subagent-context.sh"
     "53b16016dd6d087c3cc3db7e4acf8de6629e149e3b7f326f0731b36809574156  hooks/tool-failure-logger.sh"
     "a9ae37cf52a7dbbd04ffb4940aeab110d1ce3421b01318c4ff9023d52cd29a0d  hooks/session-auto-approve.sh"
-    "4d9cc740dd81c397d8ec6a391e9a7ca522f20f077ed1deea796010a15f038904  hooks/scope-prompt.sh"
+    "e3a3063740a947db9a681ef0e5c0f90c3965dbc02345eb10312bb69273a1e54a  hooks/scope-prompt.sh"
     "9e06eaa16960dff49881234c8a479c2f8d2dd8d672283056e1591c4528e755ab  commands/checkpoint.md"
     "0d3d60f2f308f236b2561f56ca0f1de1ac872b950a3c81de7ceec9080ccd68b3  commands/wrap.md"
     "2520a6d54d75e3e9f1768160826a8b9f21e38e2234538cc62e3ec6337008fc28  skills/store-secret/SKILL.md"

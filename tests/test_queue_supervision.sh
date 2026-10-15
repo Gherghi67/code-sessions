@@ -402,6 +402,37 @@ test_declined_only_inbox_stays_silent_but_cursor_advances() {
     assert_eq "1" "$(cat "$CLAUDE_SESSION_META_DIR/local/notifications.seen")" "cursor still advanced" || return 1
 }
 
+# An inbox line that is valid JSON but not an object is skipped like one that
+# does not parse: the notifications beside it are still shown, and the cursor
+# is spent only on a digest that was shown.
+_inbox_with_non_objects() {
+    printf '%s\n' '{"ts":1,"event":"task_done","task":"a"}' '[1]' '7' '{"ts":2,"event":"drain_finished"}' \
+        > "$CLAUDE_SESSION_META_DIR/local/notifications.jsonl"
+}
+
+test_digest_at_prompt_skips_a_line_that_is_not_an_object() {
+    _qs_session "dgn"
+    _inbox_with_non_objects
+    local out
+    out=$(_prompt_turn "hello" | jq -r '.hookSpecificOutput.additionalContext') || return 1
+    assert_eq "1" "$(grep -cxF 'cs queue while you were away: 1 task(s) done; drain finished. Run cs -queue log for detail.' <<< "$out")" \
+        "the notifications beside the bad lines are shown" || return 1
+    assert_eq "4" "$(cat "$CLAUDE_SESSION_META_DIR/local/notifications.seen")" \
+        "the cursor moves past the lines the shown digest covered" || return 1
+}
+
+test_digest_at_session_start_skips_a_line_that_is_not_an_object() {
+    _qs_session "dgrn"
+    _inbox_with_non_objects
+    local out
+    out=$(printf '{"source":"resume","session_id":"s1","cwd":"%s"}' "$CLAUDE_SESSION_DIR" \
+        | bash "$HOOKS_DIR/session-start.sh" | jq -r '.hookSpecificOutput.additionalContext') || return 1
+    assert_eq "1" "$(grep -cxF -- '--- cs queue while you were away: 1 task(s) done; drain finished. Run cs -queue log for detail.' <<< "$out")" \
+        "the notifications beside the bad lines are shown" || return 1
+    assert_eq "4" "$(cat "$CLAUDE_SESSION_META_DIR/local/notifications.seen")" \
+        "the cursor moves past the lines the shown digest covered" || return 1
+}
+
 test_digest_on_code_prompt_splices_with_scope_block() {
     _qs_session "dgc"
     # A real git repo with a token-matching file so scope grounding has
@@ -559,6 +590,8 @@ run_test test_queue_log_empty_message
 run_test test_digest_surfaces_once_at_prompt
 run_test test_digest_includes_breaker_reason
 run_test test_declined_only_inbox_stays_silent_but_cursor_advances
+run_test test_digest_at_prompt_skips_a_line_that_is_not_an_object
+run_test test_digest_at_session_start_skips_a_line_that_is_not_an_object
 run_test test_digest_on_code_prompt_splices_with_scope_block
 run_test test_killed_prompt_hook_does_not_swallow_the_digest
 run_test test_digest_at_session_start

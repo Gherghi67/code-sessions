@@ -171,7 +171,13 @@ _queue_accept() {  # qdir, message id
     [ -n "$body" ] || error "message $id carries an empty task"
     _queue_require_single_line "$body"
     _queue_convert_legacy "$qdir"
-    cs_mkdir_inside "$qdir/queue" && cs_mkdir_inside "$qdir/queue.tmp" || return 1
+    # The accepted message moves from mail/new to mail/cur at the end, so a
+    # link either way out of the session is refused here, before the receipt
+    # or the task is written: refused at the move, the accept would be
+    # recorded and a retry once the link is fixed would be told it was
+    # already accepted.
+    cs_mkdir_inside "$qdir/queue" && cs_mkdir_inside "$qdir/queue.tmp" \
+        && cs_mkdir_inside "$qdir/mail/new" && cs_mkdir_inside "$qdir/mail/cur" || return 1
     local lock="$qdir/queue.accept.mutex.lock" fname
     _cs_lock "$lock" || error "another cs -queue accept holds $lock; retry in a moment"
     if [ -f "$qdir/queue.accepted" ] && grep -qxF -- "$id" "$qdir/queue.accepted"; then
@@ -184,7 +190,7 @@ _queue_accept() {  # qdir, message id
         error "message $id is already in the queue"
     done
     fname="$(printf '%010d' "$(date +%s)")-accept-$id"
-    if ! printf '%s\n' "$id" >> "$qdir/queue.accepted"; then
+    if ! cs_append_inside "$qdir/queue.accepted" printf '%s\n' "$id"; then
         _cs_unlock "$lock"
         error "could not record the accept in $qdir/queue.accepted"
     fi

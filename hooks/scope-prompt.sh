@@ -347,8 +347,11 @@ _build_digest() {  # meta_local_dir
     seen=$(cat "$qdir/notifications.seen" 2>/dev/null | tr -d '[:space:]') || true
     case "$seen" in ''|*[!0-9]*) seen=0;; esac
     [ "$total" -gt "$seen" ] || return 0
+    # A line that does not parse, or parses to something other than an object,
+    # is skipped: reading .event from one would fail the whole jq program, and
+    # the cursor would then be spent on notifications nobody was shown.
     DIGEST=$(awk -v a=$((seen + 1)) -v b="$total" 'NR>=a && NR<=b' "$inbox" 2>/dev/null | jq -rRs '
-        [split("\n")[] | select(length > 0) | (fromjson? // empty)] as $e |
+        [split("\n")[] | select(length > 0) | (fromjson? // empty) | select(type == "object")] as $e |
         ($e | map(select(.event == "task_done")) | length) as $done |
         ($e | map(select(.event == "breaker_tripped")) | .[-1]) as $trip |
         ($e | map(select(.event == "drain_finished")) | length) as $fin |
@@ -413,9 +416,11 @@ _build_mail_digest() {  # cs files dir: .cs/local, or .cs/private in an encrypte
             ids="$ids$(printf '%03x%03x' $((RANDOM % 4096)) $((RANDOM % 4096)))"
         done
     fi
+    # A single bad document must not error the whole jq program and suppress
+    # every valid message beside it: one that is not a JSON object (an array,
+    # a number, a string, true) is skipped like one that does not parse, and
     # tostr coerces any non-string field (a forged/hand-written document could
-    # carry a number or object) to a string so a single bad document can't error
-    # the whole jq program and suppress every valid message beside it.
+    # carry a number or object) to a string.
     # Read whole with --rawfile: jq 1.7.1's -R splits a multibyte character at
     # its 4096-byte read buffer and shows a replacement character in its place.
     MAIL_DIGEST=$(cat "${files[@]:0:5}" 2>/dev/null | jq -rn --rawfile docs /dev/stdin --argjson total "$total" --arg ids "$ids" '
@@ -428,7 +433,7 @@ _build_mail_digest() {  # cs files dir: .cs/local, or .cs/private in an encrypte
         # and rendering all of them would inject unbounded context every
         # prompt (this digest is prepended after the scope cap, so nothing
         # downstream would trim it).
-        [$docs | split("\n")[] | select(length > 0) | (fromjson? // empty)][0:5] as $m |
+        [$docs | split("\n")[] | select(length > 0) | (fromjson? // empty) | select(type == "object")][0:5] as $m |
         # The header shows even when nothing in the window parsed: staying
         # silent while the badge counts N unread is the one outcome this
         # persistent digest exists to prevent.

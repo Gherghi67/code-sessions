@@ -249,13 +249,17 @@ _mail_send() {  # target, [--kind|-k KIND] [--reply THREAD] body
 # every document — and with no early-exit consumer, no SIGPIPE risk on big mail.
 # The documents are read whole with --rawfile and split into lines inside jq:
 # jq 1.7.1's -R splits a multibyte character at its 4096-byte read buffer and
-# shows a replacement character in its place.
+# shows a replacement character in its place. A line that does not parse, or
+# parses to something other than an object (an array, a number, a string), is
+# skipped: one such document would otherwise end the whole pass with a jq
+# error, hiding every message after it and failing the read before its move
+# to cur/, so the mailbox could never clear.
 # The thread id is rendered because an agent cannot reply into a thread whose id
 # it was never shown; a received task carries its accept command for the same
 # reason.
 _mail_print_files() {  # file...
     cat "$@" | jq -rn --rawfile docs /dev/stdin --arg me "${CLAUDE_SESSION_NAME:-}" '
-        $docs | split("\n")[] | fromjson? // empty |
+        $docs | split("\n")[] | fromjson? // empty | select(type == "object") |
         (if $me != "" and (.from // "") == $me then "->" else "<-" end) as $dir |
         # The peer is whatever the sending process said it was: flattened and
         # cut inside jq so a forged name cannot start a line of its own.

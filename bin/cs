@@ -9431,13 +9431,17 @@ _mail_send() {  # target, [--kind|-k KIND] [--reply THREAD] body
 # every document — and with no early-exit consumer, no SIGPIPE risk on big mail.
 # The documents are read whole with --rawfile and split into lines inside jq:
 # jq 1.7.1's -R splits a multibyte character at its 4096-byte read buffer and
-# shows a replacement character in its place.
+# shows a replacement character in its place. A line that does not parse, or
+# parses to something other than an object (an array, a number, a string), is
+# skipped: one such document would otherwise end the whole pass with a jq
+# error, hiding every message after it and failing the read before its move
+# to cur/, so the mailbox could never clear.
 # The thread id is rendered because an agent cannot reply into a thread whose id
 # it was never shown; a received task carries its accept command for the same
 # reason.
 _mail_print_files() {  # file...
     cat "$@" | jq -rn --rawfile docs /dev/stdin --arg me "${CLAUDE_SESSION_NAME:-}" '
-        $docs | split("\n")[] | fromjson? // empty |
+        $docs | split("\n")[] | fromjson? // empty | select(type == "object") |
         (if $me != "" and (.from // "") == $me then "->" else "<-" end) as $dir |
         # The peer is whatever the sending process said it was: flattened and
         # cut inside jq so a forged name cannot start a line of its own.
@@ -9867,7 +9871,13 @@ _queue_accept() {  # qdir, message id
     [ -n "$body" ] || error "message $id carries an empty task"
     _queue_require_single_line "$body"
     _queue_convert_legacy "$qdir"
-    cs_mkdir_inside "$qdir/queue" && cs_mkdir_inside "$qdir/queue.tmp" || return 1
+    # The accepted message moves from mail/new to mail/cur at the end, so a
+    # link either way out of the session is refused here, before the receipt
+    # or the task is written: refused at the move, the accept would be
+    # recorded and a retry once the link is fixed would be told it was
+    # already accepted.
+    cs_mkdir_inside "$qdir/queue" && cs_mkdir_inside "$qdir/queue.tmp" \
+        && cs_mkdir_inside "$qdir/mail/new" && cs_mkdir_inside "$qdir/mail/cur" || return 1
     local lock="$qdir/queue.accept.mutex.lock" fname
     _cs_lock "$lock" || error "another cs -queue accept holds $lock; retry in a moment"
     if [ -f "$qdir/queue.accepted" ] && grep -qxF -- "$id" "$qdir/queue.accepted"; then
@@ -9880,7 +9890,7 @@ _queue_accept() {  # qdir, message id
         error "message $id is already in the queue"
     done
     fname="$(printf '%010d' "$(date +%s)")-accept-$id"
-    if ! printf '%s\n' "$id" >> "$qdir/queue.accepted"; then
+    if ! cs_append_inside "$qdir/queue.accepted" printf '%s\n' "$id"; then
         _cs_unlock "$lock"
         error "could not record the accept in $qdir/queue.accepted"
     fi
