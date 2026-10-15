@@ -291,8 +291,8 @@ metadata:
         "the archive's frontmatter is written once" || return 1
     assert_file_contains "$SWEEP_PASS" "delete the archive's copy" \
         "a wrongly demoted rule goes back to the index on duplicate:" || return 1
-    assert_file_contains "$SWEEP_PASS" 'the newer wording' \
-        "the copy kept on duplicate: carries the newer wording" || return 1
+    assert_file_contains "$SWEEP_PASS" 'keep the other copy as it stands' \
+        "duplicate: deletes one copy and rewords neither" || return 1
     assert_file_contains "$SWEEP_PASS" 'a bare file name ending in `\.md`, with no `/` and no `:`' \
         "the sweep pass states which pointers dangling: checks" || return 1
     local label
