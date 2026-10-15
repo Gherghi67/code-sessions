@@ -29,7 +29,7 @@ No git repo required. No project structure needed. Just a name for what you're w
 
 - **Isolated session workspaces** - Each session has its own directory with structured documentation
 - **Documentation templates** - Pre-configured markdown files for the session narrative and outcome
-- **Automatic git version control** - Every session gets a local git repo; in-session edits are autosaved to a shadow ref for crash recovery
+- **Automatic git version control** - Every session gets a local git repo, which a new session starts with one commit of its initial files; in-session edits are autosaved to a shadow ref for crash recovery
 - **Session locking** - PID-based lock prevents the same session from being opened in two terminals simultaneously; use `--force` to override, except while `cs <name> --remote` serves the session, which only stopping that server frees. cs also treats a session as live when its statusline heartbeat is fresh — in the TUI (`■ live · unlocked`), `cs -live`, and the `cs -usage` marker — so a conversation opened outside cs still registers as live. The destructive guards (`cs -rm`/`-archive`/`-spawn`) stay on the strict PID lock, so a session whose process is gone is still removable without `--force`. From inside a cs session, `--force` never removes or archives another session that is live (a base's own features excepted), nor a base whose feature is live unless run from that base
 - **Deterministic Claude-session resume** - Each session pre-allocates a conversation UUID in the gitignored `.cs/local/state`, so `cs <name>` resumes the *exact* conversation via `claude --resume <uuid>`, not the most-recent one `--continue` might pick from a sibling. A `ps`-based guard refuses to launch a second claude for the same conversation (it counts a process only when the UUID follows `--session-id`, `--resume`/`-r` or `--parent-session-id`, so a leftover Bash-tool child carrying the id does not block a relaunch; `--force` overrides), and every launch passes `--name` plus a per-session `/color` so parallel sessions stay visually distinct.
 - **Per-session memory path redirect** - cs points Claude Code's built-in auto-memory writer at `<session>/.cs/memory/` (via `CLAUDE_COWORK_MEMORY_PATH_OVERRIDE`) so durable facts land in the session instead of the global project store. The harness owns how memory files are written (naming, frontmatter, `MEMORY.md` index); cs owns only the storage path.
@@ -115,7 +115,7 @@ The installer:
 - Installs shell completions for bash and zsh
 - Configures hook entries in `~/.claude/settings.json`. Before any write that changes that file (the installer's, `cs -statusline`'s or `cs -uninstall`'s), cs copies the current file to `settings.json.cs-bak.<UTC stamp>` beside it, mode kept, adding `.1`, `.2` and so on when a backup with that stamp exists; a write that changes nothing makes no backup, and cs keeps the five newest backups and removes older ones
 - Records where it got `cs-tui` in `~/.claude/hooks/cs/.tui-origin`, beside the `.version` stamp and outside the install record below: `checkout <path>` for a copy from your checkout, `release` for the release download. `cs -doctor` reads it to hold the picker to that checkout's build. An install that places no picker, or keeps your own link at `~/.local/bin/cs-tui`, leaves it unchanged, and `cs -uninstall` removes it
-- Writes an install record, `~/.claude/hooks/cs/.installed`, with the sha256 of every file it placed; a later install, update or uninstall replaces or removes a file only when its content is one cs wrote, and keeps and lists your own file of the same name. Content that a cs release shipped counts as cs's even without the record, so deleting `~/.claude/hooks/cs` by hand does not make the next install keep the old files. Each kept file gets a `Kept <path>` warning and a line in the list at the end of the install; an install names a file of yours under a name cs no longer ships only the first time it finds that content, since the record remembers it. The installer also keeps a skill directory under `~/.claude/skills` that is a symlink and writes nothing through it. It removes a command cs no longer ships only when cs wrote the file
+- Writes an install record, `~/.claude/hooks/cs/.installed`, with the sha256 of every file it placed; a later install, update or uninstall replaces or removes a file only when its content is one cs wrote, and keeps and lists your own file of the same name. Content that a cs release shipped counts as cs's even without the record, so deleting `~/.claude/hooks/cs` by hand does not make the next install keep the old files. Each kept file gets a `Kept <path>` warning and a line in the list at the end of the install; an install names a file of yours under a name cs no longer ships only the first time it finds that content, since the record remembers it (cs never writes a path holding a newline into the record, so it names one every time). cs keeps a fifo, a device or a link to one without reading it. cs checks a file's content first and replaces or removes it in a second step, so if you rewrite a file between the two while an install or uninstall runs, cs replaces or removes it on what it checked. The installer also keeps a skill directory under `~/.claude/skills` that is a symlink and writes nothing through it. It removes a command cs no longer ships only when cs wrote the file
 - Asks once whether to bind Ctrl+X R to `/rotate`, Ctrl+X W to `/wrap` and Ctrl+X 1 / Ctrl+X 2 to the `cs` band in `~/.claude/keybindings.json` (asks nothing without a terminal)
 
 ### Windows
@@ -154,13 +154,15 @@ cs -search <query>          # Search across all sessions
 cs -checkpoint "<label>"    # Snapshot git state + narrative (also: list, show <name>)
 cs -narrative rotate        # Archive the oldest narrative sections once the file passes its budget (/wrap runs this)
 cs <name> -narrative rotate # Same, for a session you are not in (the session manager's Rotate narrative entry runs this)
-cs -queue add "<task>"      # Walk-away task queue (also: accept <id>, list, rm <n>, clear, log; /queue <task> in a conversation)
+cs -queue add "<task>"      # Walk-away task queue (also: accept <id>, list, start, rm <n>, clear, log; /queue <task> in a conversation)
 cs -msg <session> "note"    # Send mail to another session (--kind notify|task|text|result; '-' body reads stdin); bare cs -msg reads
 cs -msg --reply <thread> "note"  # Reply into a thread; the target comes from the thread
 cs -msg thread <id>         # Show one thread as a conversation, oldest first
 cs -msg log                 # This session's full mail history, sent and received
 cs -vet-session <dir>       # Exit 0 when git tracks no file in <dir>'s .cs/local or .cs/private, else name the file and how to untrack it (the cs mod, /rotate and /wrap ask before they write there)
 cs -spawn <name> [--brief <file>] [--task ..]  # Open a session in a cs-owned tmux window; --brief hands it a brief, --task arms its queue
+cs -conversations           # Show this session's conversation chain (also: cs <name> -conversations)
+cs -encrypt <name>          # Move a closed session's private files into an encrypted vault (macOS; asks for a password at every open)
 cs -doctor, -diag           # Run health checks (Keychain, hooks, memory, audit, tokens)
 cs -usage [--all] [<name>]  # Per-session token usage over the 5h/weekly rate-limit windows
 cs -tag add|rm <tag>        # Tag the current session (also: cs <name> -tag ..., -tag list)
@@ -168,7 +170,7 @@ cs -list --tag <tag>        # List only sessions carrying a tag
 cs -archive <name>...       # Archive sessions (hidden from listings; --force if live, but from inside a session not another session's live one, nor a base whose feature is live unless run from that base)
 cs -unarchive <name>...     # Restore archived sessions
 cs -list --archived         # List only archived sessions
-cs -statusline enable|disable  # Enable or remove the cs status line + agent-panel rows
+cs -statusline enable|disable  # Enable or remove the cs status line + agent-panel rows (also: caps on|off|ask)
 cs -detect-theme            # Show the detected terminal light/dark theme
 cs -list, -ls               # List all sessions
 cs -live                    # List sessions running right now on this machine, with what each is doing
@@ -202,7 +204,7 @@ For `cs .`, the current directory decides, not any history: it opens a session o
 - **Create session** with `n` — opens inline dialog to create a new session
 - **Delete** with `d` (confirmation required). Like `cs -rm`, deleting a base session also removes its age pins under `~/.cs-secrets/sessions/<name>/` and the status line names the path; a worktree row or an adopted link keeps them. Run inside a session, the picker refuses what `cs -rm` refuses from there before the confirm opens, whatever `[F]` would grant: another session while its claude runs, and a base while one of its features is live unless you are in that base. Inside a session or outside, it refuses a session `cs <name> --remote` serves, with or without `[F]`; stop the server first
 - **Batch operations** — mark sessions with `Space`, then `D` to batch delete
-- **Rename** with `r`
+- **Rename** with `r`, refused while the session's claude runs; the session's secrets and age state move to the new name with it (`cs -secrets --session <old> rename <new>`)
 - **Archive / unarchive** with `a` — toggles the selected session's `.cs/archived` marker by running `cs -archive` / `cs -unarchive`, so the picker never writes the marker itself and inherits the verb's refusal to archive a live session. Archived rows are hidden until `A` shows them, which is also how you reach one to unarchive
 - **Manage secrets** with `s` (view values with `v`, auto-redacts after 5 seconds)
 - **Rotate narrative** with `R` (confirmation required) — runs `cs <name> -narrative rotate` on the highlighted session and shows what it printed; a narrative under its byte budget rotates nothing and says so
@@ -220,7 +222,7 @@ cs <session> -narrative rotate  # Rotate that session's narrative without launch
 cs <session> --force          # Override active session lock
 ```
 
-From inside a running session, `cs -secrets <cmd>` acts on the current session directly (it reads `CLAUDE_SESSION_NAME`), so you can drop the session name. From an interactive terminal outside any session, it lists your sessions and asks which one to use.
+From inside a running session, `cs -secrets <cmd>` acts on the current session directly (it reads `CLAUDE_SESSION_NAME`), so you can drop the session name. From an interactive terminal outside any session, it lists your sessions and asks which one to use. From inside a session, cs refuses a write to another session's secrets (`set`, `rm`, `purge`, `rename`, `import-file` and the other writes) while that session or one of its features is live. cs also refuses a feature's write to its base's secrets while a sibling feature is live. It refuses `cs <name> -narrative rotate` while `<name>` is live, a base's own features excepted. `--force` overrides neither.
 
 `cs <name> --remote` opens the session as `cs <name>` does, then runs `claude remote-control --name <name>` in its directory instead of claude. Sessions you start from the Claude app or claude.ai/code then run in that directory with cs's hooks, memory, task list and secrets. It needs Claude Code 2.1.299 or later and a full login: cs unsets `ANTHROPIC_API_KEY` for the server. It runs remote-control with the first word of `CLAUDE_CODE_BIN` alone. `--permission-mode <mode>` sets the mode of the sessions it starts. Without it, cs carries the mode `CLAUDE_CODE_BIN` sets: its `--permission-mode <mode>`, or `bypassPermissions` for `--dangerously-skip-permissions`; otherwise the mode is `default`. cs drops `--allow-dangerously-skip-permissions`, which remote-control does not take, and one line says what it carried or dropped. With either, the first word's `--version` must say Claude Code. It refuses any other option by name, such as `--disallowedTools` or `--settings`, since the sessions it starts would run without it, and a wrapper such as `op run -- claude` too. Set `CLAUDE_CODE_BIN` to the command alone, or with only those options, for `--remote`. Inside tmux it runs in a window `remote:<name>` of the cs tmux session, with the sessions root and the claude of the shell you started it from. Elsewhere it runs in the current terminal. Either way, the first run may ask on that terminal whether to enable Remote Control and whether to trust the folder. cs answers remote-control's first-run spawn-mode question itself with same-dir (`--spawn=same-dir`), so the sessions it starts run in the session directory and never in worktrees of their own. A session made with `cs -encrypt` keeps its own Claude Code config, so its folder is not trusted yet and needs that terminal. While it serves, the session counts as open: `cs <name>` refuses it even with `--force`, `cs -rm` and the picker's delete refuse it even with `--force` or `[F]`, `cs -live` lists it as `remote` with the server's pid, and `cs -doctor` reports it. The first conversation you start through the server is the session's lead, as a `cs <name>` conversation is. One you start while the lead's claude runs is a guest for its whole life; the next one started after the lead's claude exits is the lead. The conversations it starts leave the `remote:<name>` window's name, or outside tmux the tab's `cs: <name> (remote)` title, unchanged. A seed `cs -spawn` staged for the session stays staged for the next `cs <name>`. Stop the server with Ctrl-C or by closing its window. Never stop it with `kill -9`: that leaves the session it started running, and leaves `.cs/local/remote.pid` behind. `cs -doctor` removes that file once its pid no longer runs the server. Starting it again in the same session reattaches the previous cloud session, which keeps its old title rather than `--name`.
 
@@ -348,8 +350,8 @@ without asking; it carries the seed's token in `CS_SPAWN_TOKEN`.
 Each worktree is a full cs session (own conversation, color, crash
 recovery, task list) that shares the base session's secrets.
 
-cs never commits for you: retirement refuses dirty checkouts and untracked
-files and tells you what to commit. Git-ignored files do not block it. Those
+Retirement never commits your work for you: it refuses dirty checkouts and
+untracked files and tells you what to commit. Git-ignored files do not block it. Those
 under a directory a build or install recreates (node_modules, target, .venv
 and the like) go with the worktree. Retirement moves every other ignored file,
 a `.env` or a local database, to the system trash first and lists each file
@@ -360,7 +362,7 @@ before branching from the last commit (interactive sessions) or refuses
 (scripts). Abandon a feature with `cs -rm myproj@fix-auth`. Repos that
 gitignore `.cs/` get a per-worktree `.cs/` whose records are fused into the
 base at retirement; a README or summary the feature changed lands in
-`.cs/features/<task>/`, beside the base's own. Requires git >= 2.20.
+`.cs/features/<task>/`, beside the base's own. Requires git >= 2.22.
 
 ### Task queue
 

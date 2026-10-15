@@ -37,7 +37,7 @@ capture it:
 - "Use this token: ghp_xxxx"
 
 Claude picks an appropriate key name, writes the value to a scratch file and
-pipes it into `cs -secrets set <name>` on stdin (never on argv), then removes the
+redirects that file into `cs -secrets set <name>` on stdin (never on argv), then removes the
 scratch file and confirms what was stored.
 
 ## Using cs -secrets
@@ -77,9 +77,13 @@ cs -secrets --session my-session list
 
 `set` refuses a value that is a placeholder rather than a secret: anything starting with `[REDACTED:`, a run of asterisks, `<redacted>`, or `YOUR_API_KEY`. Storing one would replace a working secret with junk that breaks whatever reads it later.
 
-`set`, `rm`, `import-file` and `migrate-backend` refuse a session name the sessions root does not have (`No session named '<name>' in <root>`), on both backends: a value stored under a removed session's name, or under the old name of a renamed one, is a value no session reads. `purge` takes such a name: purging is how you remove the secrets a removed session left.
+`set`, `rm`, `import-file` and `migrate-backend` refuse a session name the sessions root does not have (`No session named '<name>' in <root>`), on both backends: a value stored under a removed session's name, or under the old name of a renamed one, is a value no session reads. `purge` takes such a name: purging is how you remove the secrets a removed session left. Every command that takes a session, `purge` included, refuses a name that is a path (`.`, `..`, or a name holding `/` or `\`) with the same message.
 
 From inside a cs session, a command that writes another session's secrets (`set`, `rm`, `purge`, `rename`, `import-file`, `migrate`, `migrate-backend`, `export-file`, `age add` and `age remove`) stops with an error while that session's claude is running: `session <caller> cannot change the secrets of session <target> while it is live (pid <pid>); --force does not override that from another session. Close <target> first.` `rename` writes both names' secrets, so it stops when either the old or the new name is live. This holds for `cs <target> -secrets`, `cs -secrets --session <target>` and `cs-secrets -s <target>` alike. The same holds while one of the target's features (`<target>@<task>`) is running, since a base's secrets are its features' too: `session <caller> cannot change the secrets of session <target> while its feature <target>@<task> is live (pid <pid>); ...`. Liveness is the pid in a session's `.cs/session.lock`: its text, surrounding whitespace removed, is a decimal number from 1 to 2147483647 that names a running process. A feature session writes its base's secrets, since they are its own, while the base or the feature itself is running, but not while a sibling feature (`<target>@<other-task>`) is. Only the base writes them whatever its features are doing. Reads (`get`, `list`, `export`), an idle or closed session, and a terminal outside every session are not affected.
+
+cs-secrets refuses a write addressed to a feature session itself (`--session <base>@<task>` or `-s <base>@<task>`) before it writes, locks or creates anything, with `<base>@<task> is a feature of session <base>, and a feature uses its base's secrets and age recipients. Run it with --session <base>.` The one exception is `purge`. It only removes, so it clears a store, Keychain entries or a pin list kept under the feature's own name, and it creates nothing. `cs <base>@<task> -secrets` names the base, so its writes are not affected. Reads addressed to a feature (`get`, `list`, `export`, `age list`) change nothing and find only what the stores hold under the feature's own name.
+
+cs-secrets refuses a word starting with `--` that is none of its options, such as `--session=other`, before any command runs: `unknown option: <word>`, with the word printed plain (`--session_other`). Give an option's value after a space (`--session other`). It takes the value after `-s`, `--session` or `--from`, and `rename`'s new name, as written. A secret value given on the command line cannot start with `--`; give it on stdin.
 
 `set`, `rm`, `purge` and the stores `import-file`, `migrate` and `migrate-backend` make hold one lock per session while they write, `<sessions root>/.secrets-lock.<session>`. It lives in the sessions root so that a Keychain write never creates `~/.cs-secrets`. A write that cannot take it within `CS_SECRETS_LOCK_TIMEOUT` seconds fails and names the file. On Ctrl-C or `kill`, the command lets the `security` or `openssl` call in flight finish before it releases the lock and exits, so the Keychain may already hold the value when the command exits with an error.
 
@@ -94,7 +98,7 @@ cs -secrets --session old-name rename new-name
 
 `rename` reads the new name, its last argument, literally, so a session named `purge` or `--redact` is a name here, not a command or an option. Options such as `--session` go before `rename`; `rename` refuses a word after the new name (`rename takes one session name; unexpected: <words>`).
 
-`rename` refuses while the sessions root still has the old name, when it does not have the new one, and when the new name already has Keychain secrets, an encrypted store or age state. It never merges or overwrites. It takes the same per-session locks as `set`, `rm`, `purge`, `export-file`, `age add` and `age remove`, for both names, so a write that lands during a rename moves with the session or waits for the move. An `age add`, `age remove` or `export-file` for the old name that waited then refuses it, since that session no longer exists. On a Mac it reads and moves Keychain entries on either backend, since the Keychain keeps what a session stored there after you switch to the encrypted backend, and it refuses when it cannot read the Keychain. Elsewhere it reads the Keychain only on the Keychain backend.
+`rename` refuses while the sessions root still has the old name, when it does not have the new one, when either name is a feature session (`<base>@<task>`), which keeps its base's secrets, and when the new name already has Keychain secrets, an encrypted store or age state. It never merges or overwrites. It takes the same per-session locks as `set`, `rm`, `purge`, `export-file`, `age add` and `age remove`, for both names, so a write that lands during a rename moves with the session or waits for the move. An `age add`, `age remove` or `export-file` for the old name that waited then refuses it, since that session no longer exists. On a Mac it reads and moves Keychain entries on either backend, since the Keychain keeps what a session stored there after you switch to the encrypted backend, and it refuses when it cannot read the Keychain. Elsewhere it reads the Keychain only on the Keychain backend.
 
 A move that fails, or gets a Ctrl-C or `kill`, puts back what it moved and exits with an error. Once every value is under the new name, neither Ctrl-C, `kill` nor a lock file it cannot remove stops it: it finishes and exits 0, names any such lock file on stderr for you to remove, and the picker never moves the directory back away from its secrets. A move that `kill -9` ends, or that cannot put a value back, still loses no secret. `rename` stores every Keychain entry under the new name and reads it back before it deletes any old entry, and links each file under the new name before it unlinks the old one. `~/.cs-secrets/.rename.<old>` records the move until it finishes, so running the same command again completes it. While that file exists, `rename` refuses to move the old name to any other name and prints the command that finishes the first move. `rename` reads the file only once it holds both names' write locks, so a second `rename` that waited on the first finds it.
 
@@ -184,7 +188,12 @@ cs -secrets export-file
   `cs -secrets age init`. It asks age whether it can encrypt to the key before it writes or
   pins it, and refuses a key file whose name already belongs to a recipient with a different
   key. A raw key gets the name `recipient-<seconds>`, with `-2`, `-3` added while another
-  recipient has that name; a raw key some recipient file already holds is that recipient
+  recipient has that name; a raw key some recipient file already holds is that recipient.
+  It refuses a key file whose name without `.pub` starts with a `.`, a recipient that
+  `age list`, every export and `age remove` would skip
+- `age remove` refuses a recipient name with a `/`, a control character or a leading
+  `.`, and refuses a link at `.cs`, `.cs/age-recipients` or the recipient file, naming
+  it; either way it removes nothing
 - `age add`, `age remove`, `export-file` and `import-file` refuse a session name the sessions
   root does not have (`No session named '<name>' in <root>`), so a removed or
   mistyped name never gets a directory or a pin list. A command already past
@@ -322,6 +331,19 @@ files; local secrets are preserved unless you pass `--replace`.
 Passing an explicit path (`cs -secrets import-file <file>`) imports just that
 one file.
 
+`import-file` reads no sync file through a symbolic link: it skips a sync file
+that is a link, whatever its format, and refuses one you name. It refuses a
+session whose `.cs` leads outside the session, a file you name whose path
+passes through a session when its directory leads out of that session, and a
+file whose directory is the local store, `~/.cs-secrets`.
+
+The names of sync files and recipient files come from the session's
+repository, so cs-secrets prints each one with every character other than
+letters, digits and `._/@-` replaced by `_`, cut at 160 characters: in the
+import's skip lines, the export's list of unpinned keys, `age list` and
+`age add`. The key preview `age list` shows, and the key `age add` reports
+when it refuses to replace a recipient, have their control characters removed.
+
 An import checks every name before it stores any. It stores nothing and
 exits 1 when a name is not a valid secret name (a carriage return or another
 control character in it counts), or when two names would become one variable
@@ -344,6 +366,8 @@ cs -secrets migrate-backend encrypted --from keychain
 cs -secrets migrate-backend encrypted --from keychain --delete-source
 ```
 
+A secret that does not reach the target prints the store's reason, such as the Keychain value limit, then `Failed: <name>`. `--delete-source` deletes from the source only when every secret migrated.
+
 ## Migrating Existing Secrets
 
 Sessions created before the secrets feature may hold plaintext secrets in the retired `.cs/artifacts/` directory (cs no longer creates it, but old sessions still have it). Use the migrate command to move them to secure storage:
@@ -361,6 +385,8 @@ The migrate command:
 2. Detects KEY=value patterns with sensitive key names
 3. Stores values in the active backend
 4. Optionally replaces plaintext with `[REDACTED: stored in keychain as KEY]`
+
+`--redact` replaces each value as text, in the shell, so no value reaches another process's command line. It replaces the longest value first and puts the markers in only after it has replaced every value, so a value that holds a shorter one leaves no tail and no value can match inside a marker. The replacement reaches every place the file holds a value, a short one included: it replaces a value `as` inside `password` and in prose on other lines too. To mark each value's place while it works, `--redact` uses two control bytes the file does not hold; a file that holds every control byte from `\002` to `\037` but tab, line feed, vertical tab, form feed and carriage return stops the migration before it stores anything from that file.
 
 ## Age Commands Reference
 
@@ -385,8 +411,8 @@ cs -secrets age remove <name>
 ## Environment Variables
 
 - `CLAUDE_SESSION_NAME` - Current session (set automatically by `cs`)
-- `CS_SECRETS_SESSION` - Overrides the session namespace; worktree feature sessions export it so their secrets land in the base session's store, and `cs <name> -secrets` sets it so an explicit target outranks ambient env
-- `CS_SECRETS_CALLER` - The session the `cs -secrets` arms ran in, empty outside every session; set by `cs` because `cs <name> -secrets` puts the target in `CLAUDE_SESSION_NAME`. cs-secrets reads it to refuse writes to another live session's secrets, and falls back to `CLAUDE_SESSION_NAME` when cs did not set it
+- `CS_SECRETS_SESSION` - Overrides the session namespace; worktree feature sessions export it so their secrets land in the base session's store, and `cs <name> -secrets` sets it so an explicit target outranks ambient env. A base session's launch unsets it, so its claude never inherits another session's target from the shell that ran `cs`
+- `CS_SECRETS_CALLER` - The session the `cs -secrets` arms ran in, empty outside every session; set by `cs` because `cs <name> -secrets` puts the target in `CLAUDE_SESSION_NAME`. cs-secrets reads it to refuse writes to another live session's secrets, and falls back to `CLAUDE_SESSION_NAME` when cs did not set it. Every launch unsets it
 - `CS_SECRETS_BACKEND` - Force a specific backend (`keychain` or `encrypted`)
 - `CS_SECRETS_PASSWORD` - Master password for legacy sync (only needed if not using age)
 - `CS_SECRETS_LOCK_TIMEOUT` - Seconds to wait for a secrets lock (the write lock, the encrypted store's lock, the age lock) before giving up (default 10; a value that is not a positive whole number uses the default)

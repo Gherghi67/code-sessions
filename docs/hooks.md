@@ -6,7 +6,9 @@ The installer configures Claude Code hooks that enable session management featur
 
 Every hook opens by sourcing `cs-resolve.sh`, a library shipped alongside them and
 never registered against an event, and calling `cs_resolve_session`. The library
-also carries `_cs_terminate_jsonl`, which repairs a JSONL tail left unterminated by
+also carries the lead claim and the tests built on it (`cs_lead_claim`,
+`cs_lead_claim_end`, `cs_is_lead`, `cs_is_shown_nested_child`, described below), and
+`_cs_terminate_jsonl`, which repairs a JSONL tail left unterminated by
 an interrupted write so the next append cannot splice two records onto one line —
 hooks cannot source `bin/cs`, so the shape is shared rather than the code. Each hook
 that appends to a JSONL journal — the shared `timeline.jsonl` or the machine-local
@@ -31,7 +33,14 @@ since `$(...)` drops that newline and would check a different path; hooks set `C
 failure stays silent), and the
 machine-local state writers (`cs_local_state_set`, `cs_local_state_unset`), which take a
 lock beside `.cs/local/state` so cs and session-start.sh take turns, the vault holder list's add and drop (`cs_vault_holder_add`, `cs_vault_holder_drop`), and the lock they and the window title share (`_cs_lock`,
-`_cs_unlock`): flock(2) on a `<file>.mutex.lock` file, taken through perl on fd 9, which the kernel releases when its holder exits or dies. A writer that has waited 5 seconds on a live holder writes anyway. Edit the `lib/` file and rebuild; CI's
+`_cs_unlock`): flock(2) on a `<file>.mutex.lock` file, taken through perl on fd 9, which the kernel releases when its holder exits or dies. A writer that has waited 5 seconds on a live holder writes anyway. The hooks also read a session through it the way cs does: where the content files live
+(`cs_local_dir` and `cs_private_dir`, which answer nothing while git tracks a file there, and
+`cs_handoff_dir`), whether git tracks one (`cs_files_tracked_notice`, and `_cs_head_on_git_walk`
+for a directory git would take for a repository), the pid in `.cs/session.lock` when that
+process runs (`live_lock_pid`), the `cs <name> --remote` server's pid (`_remote_server_pid`),
+the tmux window title (`cs_tmux_title_window`), and the rule that prints a name a clone
+supplies as plain text (`_cs_plain_name`). The library holds more than the functions named
+here. Edit the `lib/` file and rebuild; CI's
 build-sync job fails on a `hooks/cs-shared.sh` that differs from the build. A hook sources
 it under the same guard as `cs-resolve.sh`, and carries no copy of its own: without it,
 session-start.sh names the actor `unknown` and says the library is missing and that
@@ -214,13 +223,13 @@ open. A repository wrote a tracked file, not this session, so while git tracks o
 hooks read no queue, mail or rotation marker from that directory and write nothing there:
 the Stop hook hands out no task, the prompt hook shows no mail, stamps no date and leaves
 the attention flag, a `/clear` loads no handoff, SessionStart records no conversation id,
-SessionEnd's vault waiter records no pid (it still detaches the vault), and the command log
-stops. The status line, both mods (`cs` and `cs-update`) and `/wrap`'s last pass stand down
-too. The status line
+SessionEnd's vault waiter records no pid (it still detaches the vault), and the session log
+(`session.log`) stops. The status line, both mods (`cs` and `cs-update`), the `rotate` skill's
+arming of its marker and `/wrap`'s last pass stand down too. The status line
 cannot ask git on every render, so each hook run leaves its answer in
 `~/.cache/cs/tracked/<session name>`, and a pull goes unseen there until the next hook
 runs. The status line reads the mark only for a name the hooks would write one for, never
-an empty name or one holding `/`. The mods and `/wrap` ask `cs -vet-session`. Git's pathspec settings in the
+an empty name or one holding `/`. The mods, the `rotate` skill and `/wrap` ask `cs -vet-session`. Git's pathspec settings in the
 environment (`GIT_LITERAL_PATHSPECS` and its three siblings) are cleared for the question,
 since a literal pathspec would match no file and read as nothing tracked, and so are
 configuration settings passed through the environment (`GIT_CONFIG_COUNT`,
@@ -332,7 +341,8 @@ Runs when Claude Code session ends:
 
 Runs when Claude Code spawns a subagent (via the Agent tool):
 - Injects session context into subagents so they know about the cs session
-- Provides the session directory and key rules (secrets handling, documentation protocol)
+- Provides the session directory and two key rules: secrets go to the session secret store through `cs -secrets set` on stdin from a file, and the subagent returns its findings in its final message, never in the session narrative unless asked
+- In a feature worktree (when `task_branch` is in machine-local state), adds that integration and retirement go only through `/finish` in the base session and that the subagent never merges or deletes the branch or the worktree
 - Uses `additionalContext` in the same format as SessionStart
 
 ## tool-failure-logger.sh (PostToolUseFailure)
@@ -594,7 +604,7 @@ that (measured at 1). The mod refuses that loop: a conversation born of a
 `/clear` it saw run (its own at zero, or one typed) is judged by the context its
 first turn ended with, and one that already sat past the threshold is never
 forced; a toast says so once
-(`CS_ROTATE_FORCE_CTX=5 is below this conversation's starting context (8%)`),
+(`cs: CS_ROTATE_FORCE_CTX=5 is below this conversation's starting context (8%); not forcing a rotation`),
 and the button stays. The conversation the mod meets at launch, after a reload,
 or through a `/resume` is not judged: a session resumed at 72% with the knob at
 70 is exactly the one the person asked to have rotated. A handoff the person
@@ -604,10 +614,14 @@ mod writes the handoff while the conversation is still whole.
 
 The button is for the lead conversation of a cs session only: past the threshold
 the mod also checks that the cwd has `.cs/local`, that `.cs/local/disabled` is
-absent, and that its own conversation id is the `claude_session_id` in
+absent, that the sessions root (`CS_SESSIONS_ROOT`, else `~/.claude-sessions`) has an
+entry, under the directory's own name or the `session_name` its state records, that
+resolves to the cwd, and that its own conversation id is the `claude_session_id` in
 `.cs/local/state`. A teammate claude in the same directory, or a plain Claude
 conversation, gets no button, because the handoff the skill writes carries that
-id and arms the marker cs launched the lead with. The plugin's own id follows
+id and arms the marker cs launched the lead with. A cloned repository that carries
+a `.cs/local` of its own gets none either, since nothing inside a directory can
+prove the directory a session. The plugin's own id follows
 `/clear` (measured: after a `/clear` the band returned only once
 `.cs/local/state` named the new transcript), and cs's SessionStart hook rebinds
 `state` on every fresh conversation, so the lead keeps its button across
@@ -632,7 +646,8 @@ even when the shell carried one. cs writes no settings file.
 
 When Claude Code loads the plugin, at process start or on a plugin reload but
 not on `/clear`, the mod writes `.cs/local/cs.heartbeat` (one UTC
-timestamp) when the cwd has `.cs/local`, and `cs -doctor` reports the mod by
+timestamp) when the cwd has `.cs/local`, the sessions root has an entry for it (as
+for the button), and `cs -vet-session` passes, and `cs -doctor` reports the mod by
 that file inside a session: `last ran <stamp> in this session` as OK, or a WARN
 when the directory is there and no heartbeat is, naming the ways that happens
 (no cs launch since the install, function hooks withheld by
@@ -721,7 +736,8 @@ the same way as the `cs` mod: `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`, which every
 `cs <name>` launch exports and `CS_NO_FUNCTION_HOOKS=1` withholds even when the
 launching shell already carries it.
 
-The mod reads two variables the launch exports and nothing else:
+The mod reads two variables the launch exports, and `HOME` and `CS_SESSIONS_ROOT` to find
+the notes cache and the sessions root:
 `CS_UPDATE_AVAILABLE`, the pending version, exported only when a launch finds
 a newer cs, and `CS_BIN`, the path of the running cs, exported on every
 launch. Without `CS_UPDATE_AVAILABLE` there is nothing to show and the mod does
@@ -733,18 +749,22 @@ bash's `_md_strip_inline` does, and opens one pane titled `cs <version> is
 available`. A version that cached no span, or a span the cache lost, still
 opens the pane with a one-line fallback instead of a blank body.
 
-The pane is for the lead conversation of a cs session only: the mod checks
-`.cs/local/state`'s `claude_session_id` against its own conversation id, as
-the `cs` mod's button does, and a `.cs/local/disabled` directory refuses it
-outright. A teammate claude in the same directory reads the same state file
-and does not match, so it gets no pane of its own.
+The pane is for the lead conversation of a cs session only. The sessions root
+must name the directory, by its own name or by the `session_name` its state
+records, as the `cs` mod asks. The mod then checks `.cs/local/state`'s
+`claude_session_id` against its own conversation id, as the `cs` mod's button
+does. A `.cs/local/disabled` directory refuses the pane outright. A teammate
+claude in the same directory reads the same state file and does not match, so
+it gets no pane of its own. A cloned repository that carries `.cs/local` gets
+none either.
 
 The launch pane opens once per load of the mod (a launch, or a plugin
 reload), never again for the same conversation, whether or not the update key
 was pressed. `/cs-update`, which the mod registers at every load, opens the
 same pane on demand: after a dismiss, with the `/config` row off, or with
-nothing else having shown it. Run from a teammate it says the pane belongs to
-the conversation cs launched; run with nothing pending it says so instead of
+nothing else having shown it. Run from a teammate, or in a directory the
+sessions root does not name, it says the pane belongs to the conversation cs
+launched; run with nothing pending it says so instead of
 opening an empty pane.
 
 Pressing `1` runs `cs -update` through the engine's own process runner
@@ -766,14 +786,16 @@ blank a pane still showing "Update finished". A clean exit also writes
 re-renders the open pane the instant it reloads the module, before
 `session.start` (which does not fire on a reload, only at load) gets a
 chance, so the reloaded module reads the marker back and redraws the finished
-pane from its own next render. A pane dismissed before the install landed
+pane from its own next render. That redraw asks the lead check first,
+so a directory the sessions root does not name gets no pane back. A pane dismissed before the install landed
 leaves nothing open to redraw, so `/cs-update` after the reload reads the
 marker too and shows the finished pane instead of offering the install a
 second time. The mod clears the marker (writes it empty) the next launch,
 render, or `/cs-update` that finds nothing pending for that version, since
-`$.fs` offers no delete. While `cs -vet-session` refuses the session (git tracks
-its control files), the mod writes neither the marker nor its heartbeat and
-leaves a stale marker as git has it.
+`$.fs` offers no delete. In a directory the sessions root does not name, or
+while `cs -vet-session` refuses the session (git tracks its control files), the
+mod writes neither the marker nor its heartbeat and
+leaves a stale marker in place.
 
 The `/config` row `cs-update.showReleaseNotes` (on by default) turns off only
 the launch pane; `/cs-update` still opens it with the option off.
@@ -782,7 +804,8 @@ the launch pane; `/cs-update` still opens it with the option off.
 `hooks/hooks.json`, `hooks/register.tsx`) under `~/.claude/skills/cs-update/`,
 the same layout as the `cs` mod, and `cs -uninstall` removes the directory. When
 Claude Code loads the plugin, the mod writes `.cs/local/cs-update.heartbeat`
-(one UTC timestamp) when the cwd has `.cs/local` and `cs -vet-session` passes, and `cs -doctor` reports the
+(one UTC timestamp) when the cwd has `.cs/local`, the sessions root names the directory (as
+for the pane) and `cs -vet-session` passes, and `cs -doctor` reports the
 mod from that file through the same `_doctor_check_mod` check it runs for
 the `cs` mod: OK naming when it last ran in this session, or a WARN naming the
 ways it has not (no cs launch since the install, function hooks withheld by
