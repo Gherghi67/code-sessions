@@ -36,9 +36,19 @@ cmd_codex_hook() {  # event
         stop) _codex_hook_stop ;;
         user-prompt-submit) _codex_hook_user_prompt_submit ;;
         permission-request) _codex_hook_permission_request ;;
+        # A verb this cs does not know, from a hooks.json an older or newer
+        # cs registered. Codex reads exit 2 with text on stderr as a denial
+        # from a PermissionRequest hook and as a block from others, so a hook
+        # call (stdin not a terminal) answers `{}`, which decides nothing,
+        # and exits 0. Only a person typing it gets the usage line.
         *)
-            printf 'Usage: cs -codex-hook session-start|files-changed|stop|user-prompt-submit|permission-request\n' >&2
-            return 2
+            if [ -t 0 ]; then
+                printf 'Usage: cs -codex-hook session-start|files-changed|stop|user-prompt-submit|permission-request\n' >&2
+                return 2
+            fi
+            cat >/dev/null 2>&1 || true
+            [ -t 1 ] || printf '{}\n'
+            return 0
             ;;
     esac
 }

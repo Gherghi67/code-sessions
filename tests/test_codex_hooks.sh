@@ -182,10 +182,20 @@ test_a_locked_vault_drops_the_log_line() {
     assert_not_exists "$TEST_TMPDIR/not-mounted" "nothing is created behind the dangling link" || return 1
 }
 
+# Codex reads a PermissionRequest hook's exit 2, with text on stderr, as a
+# denial, and an older or newer cs may be asked for a verb it does not know.
+# So a verb it does not know, run as a hook (stdin not a terminal), answers
+# `{}` and exits 0; only a person typing it gets the usage line and 2.
 test_unknown_hook_event_is_a_usage_error() {
-    local status=0 out
-    out=$("$CS_BIN" -codex-hook no-such-event </dev/null 2>&1) || status=$?
-    assert_eq 2 "$status" || return 1
+    local status=0 out err="$TEST_TMPDIR/hook.err"
+    out=$(printf '{"hook_event_name":"SomeFutureEvent"}' | "$CS_BIN" -codex-hook no-such-event 2>"$err") || status=$?
+    assert_eq 0 "$status" "a hook must never deny an approval or fail a turn" || return 1
+    assert_eq '{}' "$out" || return 1
+    assert_eq "" "$(cat "$err")" "nothing on stderr for Codex to read as a reason" || return 1
+    status=0
+    out=$(python3 -I -c 'import os, pty, sys; sys.exit(os.waitstatus_to_exitcode(pty.spawn(sys.argv[1:])))' \
+        "$CS_BIN" -codex-hook no-such-event </dev/null 2>&1) || status=$?
+    assert_eq 2 "$status" "typed at a terminal, it is a usage error" || return 1
     assert_output_contains "$out" "Usage: cs -codex-hook session-start|files-changed|stop|user-prompt-submit|permission-request" || return 1
 }
 
