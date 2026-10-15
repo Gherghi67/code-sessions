@@ -260,6 +260,29 @@ test_sweep_states_memory_pointer_format() {
         "the sweep pass must state the MEMORY.md pointer format" || return 1
 }
 
+test_sweep_demotes_pointers_to_the_archive_before_rewording() {
+    # Step 5's first remedy for an index over budget is moving a pointer line,
+    # unchanged, into the archive the guard reads as a second pointer source;
+    # rewording comes after, and a rule that must fire before a proposal stays.
+    assert_file_contains "$SWEEP_PASS" '\.cs/memory/reference_memory_archive\.md' \
+        "the sweep pass must name the archive file" || return 1
+    assert_file_contains "$SWEEP_PASS" 'demote first' \
+        "demotion must come before rewording" || return 1
+    assert_file_contains "$SWEEP_PASS" 'a subject that no longer exists' \
+        "the sweep pass must state the finished-subject criterion" || return 1
+    assert_file_contains "$SWEEP_PASS" 'a test, hook or CI lane now enforces' \
+        "the sweep pass must state the enforced-rule criterion" || return 1
+    assert_file_contains "$SWEEP_PASS" 'has to fire before a proposal stays in `MEMORY\.md`' \
+        "a rule that fires before a proposal must stay in the index" || return 1
+    assert_file_contains "$SWEEP_PASS" 'byte for byte' \
+        "a demoted pointer moves verbatim" || return 1
+    local label
+    for label in 'demoted:' 'duplicate:' 'dangling:'; do
+        assert_file_contains "$SWEEP_PASS" "\`$label\`" \
+            "the sweep pass must say what check's $label means" || return 1
+    done
+}
+
 test_sweep_resolves_actor_before_narrative_append() {
     # cs -whoami resolution must be repeated at the narrative step, not left only in the
     # framing parenthetical, so a multi-actor session appends to the right file.
@@ -461,6 +484,7 @@ run_test test_sweep_supersedes_stale_entries
 run_test test_sweep_states_filename_convention
 run_test test_sweep_scopes_when_not_to_write
 run_test test_sweep_states_memory_pointer_format
+run_test test_sweep_demotes_pointers_to_the_archive_before_rewording
 run_test test_sweep_resolves_actor_before_narrative_append
 run_test test_sweep_adds_check_tasks_and_keeps_the_entry
 run_test test_store_secret_opener_softened_and_stops_on_nothing
