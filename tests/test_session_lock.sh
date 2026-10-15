@@ -177,7 +177,8 @@ test_open_reads_the_lock_by_the_one_lock_rule() {
 
 # The stale-lock line prints what the lock holds as a plain name: a lock is a
 # file in the session, which a clone or a link can fill with anything, and
-# none of its newlines or escape bytes reach the terminal.
+# none of its newlines or escape bytes reach the terminal. (The launch banner
+# that follows is cs's own colour, so the check is for the lock's sequence.)
 test_stale_lock_line_prints_the_lock_as_a_plain_name() {
     create_lock_test_session "test-session"
     printf '123\n\033[31mred' > "$CS_SESSIONS_ROOT/test-session/.cs/session.lock"
@@ -186,7 +187,7 @@ test_stale_lock_line_prints_the_lock_as_a_plain_name() {
     assert_eq "0" "$rc" "the open over the multi-line lock exits 0 (output: $out)" || return 1
     assert_eq "Removing stale session lock (PID 123___31mred)" "$(grep -F 'session lock' <<< "$out")" \
         "the line names the lock's text as one plain name" || return 1
-    assert_no_escape_bytes "$out" "the open's output" || return 1
+    assert_eq "" "$(grep -F "$(printf '\033[31m')" <<< "$out")" "the lock's escape sequence reaches no line of the output" || return 1
 }
 
 # .cs/session.lock is a file cs creates and removes. A link there is never
