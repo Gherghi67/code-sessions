@@ -39,7 +39,7 @@ setup() {
     _codex_type_keys() { printf '%s\n' "$1" >> "$KEYS"; }
     _codex_autoclear_terminal() { printf 'poll\n' >> "$TEST_TMPDIR/polls"; [ ! -e "$TEST_TMPDIR/tty-closed" ]; }
     RUN_DIR=$(_codex_run_dir_prepare "$SESSION") || { echo "  FAIL: setup could not make the run directory"; return 1; }
-    STAMP="$RUN_DIR/autoclear"
+    STAMP=$(_codex_autoclear_file "$RUN_DIR")
     WATCHER=""
 }
 
@@ -60,7 +60,10 @@ _stamp() {  # deadline, [action], [run], [handoff], [file]
 
 _watch() { _codex_autoclear_watch "$SESSION" "$RUN_DIR" & WATCHER=$!; }
 
-# Waits until the watcher has looked more than n times, so n polls are done.
+# Waits until the watcher has looked more than n times, so n polls are done:
+# it looks at the top of each poll, so the look after the nth one means that
+# poll, typing and all, is over. A test that waits for polls, not seconds,
+# cannot pass before the watcher has read anything, however slow the machine.
 _polls() {  # n
     local i=0 n
     while :; do
@@ -210,14 +213,16 @@ test_a_pending_switch_types_quit() {
     _stamp "$(date +%s)" quit
     _watch
     _keys_after 4 1 || { echo "  FAIL: nothing typed"; return 1; }
-    sleep 1.5
+    local seen
+    seen=$(wc -l < "$TEST_TMPDIR/polls" | tr -d ' ')
+    _polls $(( seen + 1 )) || return 1
     assert_eq /quit "$(cat "$KEYS")" || return 1
 }
 
 test_a_deadline_still_ahead_types_nothing() {
     _stamp $(( $(date +%s) + 60 ))
     _watch
-    sleep 2.5
+    _polls 2 || return 1
     assert_not_exists "$KEYS" || return 1
     assert_file_exists "$STAMP" "the count is still running" || return 1
 }
@@ -226,7 +231,7 @@ test_a_handoff_no_longer_armed_types_nothing() {
     _stamp "$(date +%s)"
     rm -f "$SESSION/.cs/local/pending-handoff"
     _watch
-    sleep 2.5
+    _polls 2 || return 1
     assert_not_exists "$KEYS" "a /clear already taken by hand is not repeated" || return 1
     assert_not_exists "$STAMP" || return 1
 }
@@ -234,14 +239,15 @@ test_a_handoff_no_longer_armed_types_nothing() {
 test_another_handoff_armed_types_nothing() {
     _stamp "$(date +%s)" clear "$RUN" 2026-10-14-older.md
     _watch
-    sleep 2.5
+    _polls 2 || return 1
     assert_not_exists "$KEYS" "a deadline for a different handoff is stale" || return 1
+    assert_not_exists "$STAMP" "a stale deadline is dropped" || return 1
 }
 
 test_another_runs_deadline_types_nothing() {
     _stamp "$(date +%s)" clear "$OTHER_RUN"
     _watch
-    sleep 2.5
+    _polls 2 || return 1
     assert_not_exists "$KEYS" || return 1
     assert_not_exists "$STAMP" "a stale deadline is dropped" || return 1
 }
@@ -249,7 +255,7 @@ test_another_runs_deadline_types_nothing() {
 test_an_unreadable_deadline_is_dropped() {
     _stamp soon
     _watch
-    sleep 2.5
+    _polls 2 || return 1
     assert_not_exists "$KEYS" || return 1
     assert_not_exists "$STAMP" || return 1
 }
@@ -281,7 +287,7 @@ test_the_watcher_ends_with_the_runs_owner() {
 # lives, so nothing waits on it.
 test_the_watcher_ends_with_its_terminal() {
     _watch
-    sleep 1.5
+    _polls 1 || return 1
     kill -0 "$WATCHER" 2>/dev/null || { echo "  FAIL: the watcher ended with its terminal still there"; return 1; }
     touch "$TEST_TMPDIR/tty-closed"
     local i=0
