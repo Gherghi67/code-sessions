@@ -1423,6 +1423,17 @@ fn cross_session_refusal(root: &Path, name: &str, path: &Path, caller: &str) -> 
     }))
 }
 
+/// Why `cs -rm`, run inside the session the picker runs in, refuses to
+/// remove session `name` at `path` whatever it is granted
+/// ([`cross_session_refusal`]); `None` outside every session. The delete
+/// confirm asks this before it opens, and the removal asks it again.
+pub fn caller_refusal(root: &Path, name: &str, path: &Path) -> std::io::Result<Option<String>> {
+    match caller_session_name() {
+        Some(caller) => cross_session_refusal(root, name, path, &caller),
+        None => Ok(None),
+    }
+}
+
 /// The first live feature of base `name` in `root`, by entry name, with its
 /// lock's pid. As cs's `"$SESSIONS_ROOT"/*@*` glob reads them, an entry is a
 /// candidate when its name holds an '@' and does not start with '.'; it is
@@ -1468,14 +1479,12 @@ fn live_feature_of(root: &Path, name: &str) -> std::io::Result<Option<(String, u
 /// Remove a session at `path` by whatever means its kind requires: symlinks
 /// are unlinked, worktree sessions are unregistered through git, and plain
 /// directories are removed outright. Inside a session, what `cs -rm` refuses
-/// from there is refused whatever `grants` allows ([`cross_session_refusal`]).
+/// from there is refused whatever `grants` allows ([`caller_refusal`]).
 /// A live session and one holding files beyond cs's own are refused unless
 /// `grants` allows them; a mounted vault or volume is refused always.
 pub fn remove_session_path(root: &Path, name: &str, path: &Path, grants: RemoveGrants) -> std::io::Result<()> {
-    if let Some(caller) = caller_session_name() {
-        if let Some(refusal) = cross_session_refusal(root, name, path, &caller)? {
-            return Err(std::io::Error::other(refusal));
-        }
+    if let Some(refusal) = caller_refusal(root, name, path)? {
+        return Err(std::io::Error::other(refusal));
     }
     // Read the lock now, as `cs -rm`'s session_is_live does: the picker's row
     // was scanned earlier and the session may have opened since.
