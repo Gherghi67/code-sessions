@@ -167,8 +167,10 @@ _take_session_lock() {  # meta_dir
             error "Could not take the session lock $lock_file after $attempt attempts (another cs keeps writing it?)"
         fi
         if [ -e "$lock_file" ]; then
-            # PID is dead — stale lock
-            warn "Removing stale session lock (PID ${lock_pid:-unknown})"
+            # PID is dead — stale lock. Its text is whatever the file holds,
+            # which a clone or a link put there can choose, so it is printed
+            # as a plain name.
+            warn "Removing stale session lock (PID $(_cs_plain_name "${lock_pid:-unknown}" 40))"
             rm -f "$lock_file"
         fi
         # The file vanished between the failed create and the look at it, or
