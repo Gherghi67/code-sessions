@@ -2890,6 +2890,89 @@ test_uninstall_removes_only_files_cs_wrote() {
     assert_output_contains "$out" "$home/\.claude/skills/cs/notes\.md" "the kept mod file is named" || return 1
 }
 
+# Runs a command in its own process group and kills the whole group once $1
+# seconds pass: install.sh and cs set an EXIT trap, and a shell holding one
+# puts off a signal until the command substitution it waits on returns, so
+# signalling the shell alone never stops one blocked inside a substitution.
+# Exits with the command's status, or 142 when the time ran out.
+_run_bounded() {  # seconds, command...
+    perl -e '
+        my $secs = shift;
+        my $pid = fork;
+        defined $pid or die "fork: $!\n";
+        if ($pid == 0) { setpgrp(0, 0); exec { $ARGV[0] } @ARGV or die "exec $ARGV[0]: $!\n" }
+        my $late = 0;
+        $SIG{ALRM} = sub { $late = 1; kill "KILL", -$pid };
+        alarm $secs;
+        1 while waitpid($pid, 0) == -1 && $!{EINTR};
+        exit 142 if $late;
+        exit($? & 127 ? 128 + ($? & 127) : $? >> 8);
+    ' "$@"
+}
+
+# A FIFO where cs deploys a file is never read: reading one waits for a
+# writer that never comes. Install keeps it, names it, and finishes. Output
+# goes to a file and the run is bounded (_run_bounded), so a hang fails the
+# test (142) rather than holding the suite.
+test_install_keeps_a_fifo_at_a_deploy_path_unread() {
+    local home="$TEST_TMPDIR/fifo-install-home" out rc=0
+    mkdir -p "$home/.claude/commands"
+    mkfifo "$home/.claude/commands/wrap.md"
+    _run_bounded 60 env HOME="$home" bash "$INSTALL_SH" < /dev/null > "$TEST_TMPDIR/fifo-install.out" 2>&1 || rc=$?
+    out=$(cat "$TEST_TMPDIR/fifo-install.out")
+    assert_eq "0" "$rc" "install exit status (142: still running after 60 s)" || { echo "$out"; return 1; }
+    [ -p "$home/.claude/commands/wrap.md" ] || { echo "  FAIL: the fifo is not left as it was"; return 1; }
+    assert_output_contains "$out" "Kept $(_bre_literal "$home/.claude/commands/wrap.md"): cs did not write it, so it was not replaced" \
+        "the kept fifo is named" || return 1
+    cmp -s "$SCRIPT_DIR/../commands/checkpoint.md" "$home/.claude/commands/checkpoint.md" \
+        || { echo "  FAIL: the commands beside the fifo were not installed"; return 1; }
+}
+
+# A FIFO inside a skill directory cs removes at uninstall is kept unread and
+# named, and the uninstall finishes; the skill directory stays around it.
+test_uninstall_keeps_a_fifo_in_a_skill_directory_unread() {
+    local home="$TEST_TMPDIR/fifo-uninstall-home" out rc=0
+    mkdir -p "$home"
+    HOME="$home" bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || { echo "  FAIL: install failed"; return 1; }
+    mkfifo "$home/.claude/skills/rotate/pipe"
+    printf 'y\n' | _run_bounded 60 env HOME="$home" "$CS_BIN" -uninstall > "$TEST_TMPDIR/fifo-uninstall.out" 2>&1 || rc=$?
+    out=$(cat "$TEST_TMPDIR/fifo-uninstall.out")
+    assert_eq "0" "$rc" "uninstall exit status (142: still running after 60 s)" || { echo "$out"; return 1; }
+    [ -p "$home/.claude/skills/rotate/pipe" ] || { echo "  FAIL: the fifo is not left as it was"; return 1; }
+    assert_output_contains "$out" "Kept $(_bre_literal "$home/.claude/skills/rotate/pipe"): cs did not write it" \
+        "the kept fifo is named" || return 1
+    assert_file_not_exists "$home/.claude/skills/rotate/SKILL.md" "cs's file beside the fifo removed" || return 1
+    assert_output_not_contains "$out" "Removed $(_bre_literal "$home/.claude/skills/rotate/")" \
+        "the skill directory holding the fifo is not called removed" || return 1
+}
+
+# Uninstall judges each file under a skill directory by its whole name, a
+# newline in it included. A directory named "x<newline>" holding a path that
+# mirrors an absolute one outside ~/.claude must not make that outside file
+# a candidate, even one holding content cs shipped; a cs-written file whose
+# name holds a newline goes, and a user's file of that shape stays.
+test_uninstall_judges_names_holding_a_newline_whole() {
+    local home="$TEST_TMPDIR/newline-home" out rc=0 skill victim nl_dir
+    mkdir -p "$home"
+    HOME="$home" bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || { echo "  FAIL: install failed"; return 1; }
+    skill="$home/.claude/skills/feature"
+    victim="$TEST_TMPDIR/checkout/hooks/session-start.sh"
+    mkdir -p "$(dirname "$victim")"
+    _cs_shipped_content > "$victim"
+    nl_dir="$skill/x"$'\n'
+    mkdir -p "$nl_dir$(dirname "$victim")"
+    printf 'my mirrored file\n' > "$nl_dir$victim"
+    printf 'my notes\n' > "$skill/my"$'\n'"notes.md"
+    _cs_shipped_content > "$skill/old"$'\n'"name.md"
+    out=$(printf 'y\n' | HOME="$home" "$CS_BIN" -uninstall 2>&1) || rc=$?
+    assert_eq "0" "$rc" "uninstall exit status" || { echo "$out"; return 1; }
+    assert_eq '{"modules":["./register.tsx"]}' "$(cat "$victim" 2>/dev/null)" "the file outside ~/.claude is untouched" || return 1
+    assert_eq "my mirrored file" "$(cat "$nl_dir$victim")" "the user's file under the newline-named directory is kept" || return 1
+    assert_eq "my notes" "$(cat "$skill/my"$'\n'"notes.md")" "the user's newline-named file is kept" || return 1
+    assert_file_not_exists "$skill/old"$'\n'"name.md" "cs's newline-named file removed" || return 1
+    assert_file_not_exists "$skill/SKILL.md" "cs's skill file removed" || return 1
+}
+
 test_uninstall_removes_leftover_cs_tui_exe() {
     local fake_home="$TEST_TMPDIR/uninstall-tui-exe"
     mkdir -p "$fake_home/.local/bin" "$fake_home/.claude"
@@ -3086,6 +3169,9 @@ run_test test_install_record_holds_what_a_partial_install_placed
 run_test test_install_replaces_a_releases_files_after_its_record_is_deleted
 run_test test_install_replaces_a_releases_files_after_only_its_record_is_deleted
 run_test test_uninstall_removes_only_files_cs_wrote
+run_test test_install_keeps_a_fifo_at_a_deploy_path_unread
+run_test test_uninstall_keeps_a_fifo_in_a_skill_directory_unread
+run_test test_uninstall_judges_names_holding_a_newline_whole
 run_test test_uninstall_removes_subagent_statusline
 test_hook_registration_doc_matches_install() {
     # docs/hooks.md restates install.sh's _merge_cs_hook registrations as a
