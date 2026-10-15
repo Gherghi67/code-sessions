@@ -80,6 +80,28 @@ test_check_fails_over_the_line_budget() {
         "check must count the last line with no newline" || return 1
 }
 
+# Claude Code counts lines after turning a CRLF, a lone CR, U+2028 and U+2029
+# each into one line break, so check counts each of them as one too.
+test_check_counts_the_line_breaks_claude_code_counts() {
+    _guard_session
+    _guard snapshot > /dev/null || return 1
+    local i seps="" out rc=0
+    for i in $(seq 3 190); do printf '## Heading %s\n' "$i"; done >> "$INDEX"
+    for i in $(seq 1 12); do seps="${seps}x"$'\342\200\250'"y"$'\r'; done
+    printf '%s\n' "$seps" >> "$INDEX"
+    assert_eq 191 "$(wc -l < "$INDEX" | tr -d ' ')" "fixture must be 191 newline-ended lines" || return 1
+    out=$(_guard check 2>&1) || rc=$?
+    assert_eq 1 "$rc" "check must fail past the budget Claude Code counts" || return 1
+    assert_eq "over budget: 214 lines > 196" "$(grep '^over budget' <<< "$out")" \
+        "a lone CR and U+2028 each count as a line break, a CRLF as one" || return 1
+    printf '%s\n' "a"$'\342\200\251'"b" >> "$INDEX"
+    rc=0
+    out=$(_guard check 2>&1) || rc=$?
+    assert_eq 1 "$rc" "check still fails" || return 1
+    assert_eq "MEMORY.md: 216/196 lines" "$(grep '^MEMORY.md: .* lines$' <<< "$out")" \
+        "U+2029 counts as a line break" || return 1
+}
+
 # step 5 runs check once per sweep even when nothing was written; with no
 # snapshot there is nothing to compare, and that must never read as a pass.
 test_check_without_a_snapshot_is_an_error() {
@@ -224,6 +246,21 @@ test_check_fails_on_a_pointer_to_a_missing_entry() {
         "check must name the pointer with no entry, and nothing else" || return 1
 }
 
+# A pointer names an entry file only when its target is a bare file name
+# ending in .md, with no / and no :. A URL names none, in MEMORY.md or in the
+# archive, and check passes it.
+test_check_passes_a_pointer_to_a_url() {
+    _guard_session
+    _guard_archive
+    printf '%s\n' '- [Docs](https://example.com/docs): vendor docs' >> "$INDEX"
+    printf '%s\n' '- [Board](https://example.com/board): the old board' >> "$ARCHIVE"
+    _guard snapshot > /dev/null || return 1
+    local out rc=0
+    out=$(_guard check 2>&1) || rc=$?
+    assert_eq 0 "$rc" "a pointer to a URL must pass: $out" || return 1
+    assert_eq "" "$(grep -v '^MEMORY.md: ' <<< "$out")" "check names nothing" || return 1
+}
+
 # The archive index: an ordinary reference entry whose body lists pointers in
 # MEMORY.md's own shape, one of them to an entry archived by an earlier sweep,
 # with a pointer to it in MEMORY.md.
@@ -300,6 +337,36 @@ test_check_fails_on_an_archive_pointer_to_a_missing_entry() {
     assert_eq 1 "$rc" "an archive pointer to a missing entry must fail" || return 1
     assert_eq "dangling: project_lost.md" "$(grep -v '^MEMORY.md: ' <<< "$out")" \
         "check names the archive pointer with no entry, and nothing else" || return 1
+}
+
+# snapshot keeps the archive too: a pointer that was in the archive and is now
+# in neither file is lost, as one lost from MEMORY.md is, whether or not its
+# entry is a bucket file and whether or not the file is still there.
+test_check_fails_on_a_pointer_dropped_from_the_archive() {
+    _guard_session
+    _guard_archive
+    printf '%s\n' "- [Narrative; bob](narrative.bob.md): bob's notebook" >> "$ARCHIVE"
+    : > "$SESSION/.cs/memory/narrative.bob.md"
+    _guard snapshot > /dev/null || return 1
+    grep -v 'narrative\.bob\.md' "$ARCHIVE" > "$TEST_TMPDIR/archive" && cp "$TEST_TMPDIR/archive" "$ARCHIVE"
+    local out rc=0
+    out=$(_guard check 2>&1) || rc=$?
+    assert_eq 1 "$rc" "a pointer dropped from the archive must fail" || return 1
+    assert_eq "removed: narrative.bob.md" "$(grep -v '^MEMORY.md: ' <<< "$out")" \
+        "check names the pointer dropped from the archive, and nothing else" || return 1
+}
+
+test_check_fails_on_an_archived_pointer_dropped_with_its_entry() {
+    _guard_session
+    _guard_archive
+    _guard snapshot > /dev/null || return 1
+    grep -v 'project_old\.md' "$ARCHIVE" > "$TEST_TMPDIR/archive" && cp "$TEST_TMPDIR/archive" "$ARCHIVE"
+    rm "$SESSION/.cs/memory/project_old.md"
+    local out rc=0
+    out=$(_guard check 2>&1) || rc=$?
+    assert_eq 1 "$rc" "an archived pointer dropped with its entry must fail" || return 1
+    assert_eq "removed: project_old.md" "$(grep -v '^MEMORY.md: ' <<< "$out")" \
+        "check names the pointer dropped from the archive, and nothing else" || return 1
 }
 
 # restore puts back MEMORY.md alone; a pointer this sweep moved to the archive
@@ -499,6 +566,10 @@ run_test test_check_fails_on_a_pointer_in_the_index_and_the_archive
 run_test test_check_fails_when_the_index_has_no_pointer_to_the_archive
 run_test test_check_fails_on_an_archive_pointer_to_a_missing_entry
 run_test test_restore_after_a_move_leaves_the_pointer_in_both_files
+run_test test_check_fails_on_a_pointer_dropped_from_the_archive
+run_test test_check_fails_on_an_archived_pointer_dropped_with_its_entry
+run_test test_check_passes_a_pointer_to_a_url
+run_test test_check_counts_the_line_breaks_claude_code_counts
 run_test test_check_names_a_pointer_and_an_entry_as_plain_names
 run_test test_first_sweep_snapshots_an_absent_index_as_empty
 run_test test_snapshot_outside_a_session_root_is_an_error
