@@ -235,7 +235,7 @@ _doctor_check_tui_build() {
         release) return 0 ;;
         "checkout /"*) checkout="${origin#checkout }" ;;
         *)
-            printf '  %s\n' "cs-tui: not checked: no record in $origin_file of where $installed came from; the next install (cs -update, or ./install.sh from your checkout) writes one"
+            printf '  %s\n' "cs-tui: not checked: nothing in $origin_file says where $installed came from; the next install (cs -update, or ./install.sh from your checkout) records it"
             return 0
             ;;
     esac
