@@ -147,19 +147,21 @@ _names_as_lines() {
 }
 
 # The awk function printable(name): the name as a message prints it, each
-# control character in it (a newline, an escape, a carriage return) as "?",
-# so no name can break a line or drive the terminal, and each character that
-# flips the direction of the text after it (U+202A to U+202E, U+2066 to
+# control character in it (a newline, an escape, a carriage return, or a C1
+# control, U+0080 to U+009F, which a terminal may obey as an escape) as one
+# "?", so no name can break a line or drive the terminal, and each character
+# that flips the direction of the text after it (U+202A to U+202E, U+2066 to
 # U+2069, U+200E, U+200F, U+061C) or takes no room (U+200B to U+200D,
 # U+2060, U+FEFF) as one "?", so no name can read as another file's. Every
-# other character, an accent or a space, prints as itself. Run under
-# LC_ALL=C: names are bytes whatever the locale, and each of those
-# characters is matched by its whole UTF-8 sequence. _printable_name and
-# _untracked_listing_format both print names with it.
+# other character, an accent or a space, prints as itself, as does a byte
+# that starts none of those. Run under LC_ALL=C: names are bytes whatever
+# the locale, and each character past ASCII is matched by its whole UTF-8
+# sequence. _printable_name and _untracked_listing_format both print names
+# with it.
 _CS_PRINTABLE_AWK='
 function printable(name) {
     gsub(/[[:cntrl:]]/, "?", name)
-    gsub(/\342\200[\213-\217\252-\256]|\342\201[\240\246-\251]|\330\234|\357\273\277/, "?", name)
+    gsub(/\302[\200-\237]|\342\200[\213-\217\252-\256]|\342\201[\240\246-\251]|\330\234|\357\273\277/, "?", name)
     return name
 }'
 

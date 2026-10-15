@@ -57,9 +57,10 @@ fn line_form(path: &str) -> String {
 }
 
 /// A path as the listing prints it: each control character in a name (a
-/// newline, an escape, a tab) as '?', so no name can break a line or drive
-/// the terminal, and each character that flips the direction of the text
-/// after it or takes no room as one '?', so no name can read as another
+/// newline, an escape, a tab, or a C1 control, U+0080 to U+009F, which a
+/// terminal may obey as an escape) as '?', so no name can break a line or
+/// drive the terminal, and each character that flips the direction of the
+/// text after it or takes no room as one '?', so no name can read as another
 /// file's. Every other character, an accent or a space, prints as itself.
 /// The same characters as cs's awk `printable` (lib/30-worktree.sh).
 pub fn printed(path: &str) -> String {
@@ -67,6 +68,7 @@ pub fn printed(path: &str) -> String {
         .map(|c| match c {
             '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200E}' | '\u{200F}' | '\u{061C}' => '?',
             '\u{200B}'..='\u{200D}' | '\u{2060}' | '\u{FEFF}' => '?',
+            '\u{80}'..='\u{9F}' => '?',
             c if c.is_ascii_control() => '?',
             c => c,
         })
