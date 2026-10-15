@@ -225,6 +225,23 @@ test_a_turn_ending_with_a_handoff_armed_starts_the_count() {
         "$(printf '%s' "$out" | jq -r .systemMessage)" "the TUI says what will happen" || return 1
 }
 
+# A grace with a leading zero is decimal: 08 is eight seconds, not an
+# arithmetic error that fails the turn and strands the temp file.
+test_a_grace_with_a_leading_zero_is_decimal() {
+    _handoff unconsumed; _arm
+    local out now deadline
+    now=$(date +%s)
+    out=$(CS_CODEX_CLEAR_GRACE=08 _turn_hook stop "$OLD_THREAD") || { echo "  FAIL: a hook must never fail a turn"; return 1; }
+    deadline=$(_stamp_field deadline)
+    [ -n "$deadline" ] && [ "$deadline" -ge $((now + 8)) ] && [ "$deadline" -le $((now + 10)) ] \
+        || { echo "  FAIL: deadline '$deadline' is not about 8 s after $now"; return 1; }
+    assert_output_contains "$(printf '%s' "$out" | jq -r .systemMessage)" "in 8 s" || return 1
+    local temp
+    for temp in "$RUN_DIR"/autoclear.*; do
+        assert_not_exists "$temp" "no temp file left behind" || return 1
+    done
+}
+
 # The agent's sandbox writes anywhere in the session, so the deadline never
 # goes there: only into the run's private directory, as a 0600 file.
 test_a_turn_end_never_writes_into_the_workspace() {
@@ -340,6 +357,7 @@ run_test test_a_clear_in_an_encrypted_session_logs_the_rebind_behind_private
 run_test test_a_locked_vault_drops_the_log_line
 run_test test_unknown_hook_event_is_a_usage_error
 run_test test_a_turn_ending_with_a_handoff_armed_starts_the_count
+run_test test_a_grace_with_a_leading_zero_is_decimal
 run_test test_a_turn_end_never_writes_into_the_workspace
 run_test test_no_run_dir_means_no_count_and_no_message
 run_test test_a_run_dir_the_sandbox_can_write_gets_no_count

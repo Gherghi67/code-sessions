@@ -11985,13 +11985,14 @@ _codex_autoclear_file() {  # run_dir
 
 # The seconds the count runs (CS_CODEX_CLEAR_GRACE, default 20, the mod's
 # grace), or failure when the automatic /clear is off. A CS_ROTATE_FORCE_CTX
-# nobody can read is not off, as in the mod.
+# nobody can read is not off, as in the mod. The grace is read as decimal, so
+# 08 is eight seconds rather than an octal error that would fail the turn.
 _codex_autoclear_grace() {
     local force grace="${CS_CODEX_CLEAR_GRACE:-20}"
     force=$(printf '%s' "${CS_ROTATE_FORCE_CTX:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
     [ "$force" != off ] || return 1
     ! [[ "$force" =~ ^0+$ ]] || return 1
-    [[ "$grace" =~ ^[0-9]+$ ]] || grace=20
+    if [[ "$grace" =~ ^[0-9]+$ ]]; then grace=$((10#$grace)); else grace=20; fi
     printf '%s\n' "$grace"
 }
 
@@ -11999,7 +12000,7 @@ _codex_autoclear_grace() {
 # down; a turn in any other thread, or a teammate's, never clears it. The hook
 # must never fail a turn, so every path returns 0.
 _codex_hook_stop() {
-    local input session_id session_dir meta run_dir stamp grace bound handoff tmp
+    local input session_id session_dir meta run_dir stamp grace bound handoff tmp deadline
     local action=clear target="" switch_file sysmsg
     input=$(cat) || input=""
     [ "${CS_RUN_ENGINE:-}" = codex ] && [ -n "${CS_SESSION_DIR:-}" ] || return 0
@@ -12024,10 +12025,13 @@ _codex_hook_stop() {
         target=$(_switch_field "$switch_file" engine)
         [ -z "$target" ] || action=quit
     fi
+    # The deadline is worked out before the temp file exists, so nothing that
+    # fails here can leave one behind.
+    deadline=$(( $(date +%s) + grace ))
     # mktemp makes the file 0600, the mode the watcher requires.
     tmp=$(mktemp "$stamp.XXXXXX" 2>/dev/null) || return 0
     if ! { printf 'deadline=%s\nhandoff=%s\nthread=%s\naction=%s\nrun=%s\n' \
-        "$(( $(date +%s) + grace ))" "$handoff" "$session_id" "$action" "${CS_RUN_ID:-}" > "$tmp" \
+        "$deadline" "$handoff" "$session_id" "$action" "${CS_RUN_ID:-}" > "$tmp" \
         && mv "$tmp" "$stamp"; } 2>/dev/null; then
         rm -f "$tmp" 2>/dev/null
         return 0

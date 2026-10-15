@@ -326,6 +326,8 @@ test_the_grace_follows_the_force_setting() {
     assert_eq 20 "$(CS_ROTATE_FORCE_CTX=80 _codex_autoclear_grace)" || return 1
     assert_eq 7 "$(CS_CODEX_CLEAR_GRACE=7 _codex_autoclear_grace)" || return 1
     assert_eq 20 "$(CS_CODEX_CLEAR_GRACE=soon _codex_autoclear_grace)" "an unreadable grace is the default" || return 1
+    assert_eq 8 "$(CS_CODEX_CLEAR_GRACE=08 _codex_autoclear_grace)" "a leading zero is decimal, not octal" || return 1
+    assert_eq 10 "$(CS_CODEX_CLEAR_GRACE=010 _codex_autoclear_grace)" "a leading zero is decimal, not octal" || return 1
     local value
     for value in off Off ' off ' 0 000; do
         if CS_ROTATE_FORCE_CTX="$value" _codex_autoclear_grace >/dev/null; then
