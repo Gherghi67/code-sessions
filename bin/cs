@@ -14112,16 +14112,6 @@ launch_claude_code() {
                 _tasks+=("$_line")
                 _n=$((_n + 1))
             done < "$_claim"
-            # The spawner becomes the worker's report-back address, in
-            # spawned-by and in the kick's `cs -msg <spawner>`, so it is held
-            # to the session-name rules cs -spawn holds it to, in a subshell
-            # since both rules exit on a bad name. A seed that breaks them is
-            # refused before it is shown or anything is written, and the
-            # trap puts it back.
-            if [ -n "$_spawner" ] \
-                && ! ( cs_split_worktree_name "$_spawner" || validate_session_name "$_spawner" ) >/dev/null 2>&1; then
-                error "Spawn seed $_seed names a spawner that is not a session name: $(_cs_plain_name "$_spawner" 80) (seed kept; remove it or re-run cs -spawn, then re-open the session)"
-            fi
             # Never empty-equals-empty: a seed with no token line (older cs,
             # or hand-written) is foreign to every open.
             local _consume=1
@@ -14186,6 +14176,17 @@ launch_claude_code() {
         fi
         if [ "${_consume:-0}" = 1 ]; then
             local _has_brief=0 _qdir
+            # The spawner becomes the worker's report-back address, in
+            # spawned-by and in the kick's `cs -msg <spawner>`, so a seed
+            # being taken has it held to the session-name rules cs -spawn
+            # holds it to, in a subshell since both rules exit on a bad name.
+            # A seed that breaks them is refused before anything is written
+            # or queued, and the trap puts it back. A seed left staged or
+            # declined above is not taken, so nothing is asked of it.
+            if [ -n "$_spawner" ] \
+                && ! ( cs_split_worktree_name "$_spawner" || validate_session_name "$_spawner" ) >/dev/null 2>&1; then
+                error "Spawn seed $_seed names a spawner that is not a session name: $(_cs_plain_name "$_spawner" 80) (seed kept; remove it or re-run cs -spawn, then re-open the session)"
+            fi
             # The brief is written in before any task is queued, and a write
             # that fails stops the launch with the seed still staged, so the
             # next open retries. Consuming the seed regardless would start the
