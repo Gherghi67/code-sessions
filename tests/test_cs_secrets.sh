@@ -570,6 +570,232 @@ test_age_remove_refuses_a_session_the_root_does_not_have() {
     _assert_no_trace_of_session ghost || return 1
 }
 
+# age remove reads a recipient file, drops its key's pin and deletes it. A
+# clone can commit a link on the way there, the session's .cs, its
+# age-recipients directory or the file itself, leading anywhere, so a link
+# at any of the three is refused, named, before anything is read or removed.
+test_age_remove_refuses_a_link_on_the_way_to_the_recipient() {
+    local key=age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq0000000
+    local outside="$TEST_TMPDIR/outside" fp pins session link out rc
+    mkdir -p "$outside/.cs/age-recipients"
+    printf '%s\n' "$key" > "$outside/peer.pub"
+    printf '%s\n' "$key" > "$outside/.cs/age-recipients/peer.pub"
+    printf 'keep\n' > "$outside/other.txt"
+    fp=$(printf '%s' "$key" | shasum -a 256 | cut -d' ' -f1)
+    pins="$fp
+another-pin"
+    mkdir -p "$CS_SESSIONS_ROOT/dir-link/.cs" "$CS_SESSIONS_ROOT/file-link/.cs/age-recipients" "$CS_SESSIONS_ROOT/cs-link"
+    ln -s "$outside" "$CS_SESSIONS_ROOT/dir-link/.cs/age-recipients"
+    ln -s "$outside/peer.pub" "$CS_SESSIONS_ROOT/file-link/.cs/age-recipients/peer.pub"
+    ln -s "$outside/.cs" "$CS_SESSIONS_ROOT/cs-link/.cs"
+    for session in dir-link file-link cs-link; do
+        mkdir -p "$HOME/.cs-secrets/sessions/$session"
+        printf '%s\n' "$pins" > "$HOME/.cs-secrets/sessions/$session/age-trusted"
+        case "$session" in
+            dir-link) link="$CS_SESSIONS_ROOT/$session/.cs/age-recipients" ;;
+            file-link) link="$CS_SESSIONS_ROOT/$session/.cs/age-recipients/peer.pub" ;;
+            cs-link) link="$CS_SESSIONS_ROOT/$session/.cs" ;;
+        esac
+        rc=0
+        out=$("$CS_SECRETS_BIN" --session "$session" age remove peer 2>&1) || rc=$?
+        assert_eq "1" "$rc" "age remove exits 1 through the $session link: $out" || return 1
+        assert_eq "Error: refusing to remove recipient peer: $link is a link; cs removes a recipient file only from the session's own .cs/age-recipients directory, never through a link. Nothing was removed." \
+            "$out" "the refusal names the $session link" || return 1
+        assert_eq "$pins" "$(cat "$HOME/.cs-secrets/sessions/$session/age-trusted")" "the $session pin list is as it was" || return 1
+        [ -L "$link" ] || { echo "  FAIL: the $session link is gone: $link"; return 1; }
+    done
+    assert_eq "$key" "$(cat "$outside/peer.pub")" "the file outside the session is kept" || return 1
+    assert_eq "$key" "$(cat "$outside/.cs/age-recipients/peer.pub")" "the recipient file under the linked .cs is kept" || return 1
+    assert_eq "keep" "$(cat "$outside/other.txt")" "the file beside it is kept" || return 1
+}
+
+# A recipient is named by its file in .cs/age-recipients, so its name is one
+# file name. A name that could lead elsewhere (a "/", a leading "." as in
+# "..") or carries a control byte is refused before anything is looked up:
+# a path as the name reached another session's recipient file.
+test_age_remove_refuses_a_name_that_is_not_a_recipient_name() {
+    local key=age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq0000000
+    local other="$CS_SESSIONS_ROOT/other/.cs/age-recipients" name shown out rc
+    mkdir -p "$other" "$CS_SESSIONS_ROOT/test-session/.cs/age-recipients"
+    printf '%s\n' "$key" > "$other/peer.pub"
+    printf '%s\n' "$key" > "$CS_SESSIONS_ROOT/test-session/.cs/age-recipients/.hidden.pub"
+    for name in ../../../other/.cs/age-recipients/peer sub/peer .. . .hidden $'peer\nx' $'peer\e[31m' $'peer\x7f'; do
+        case "$name" in
+            $'peer\nx') shown=peer_x ;;
+            $'peer\e[31m') shown=peer__31m ;;
+            $'peer\x7f') shown=peer_ ;;
+            *) shown=$name ;;
+        esac
+        rc=0
+        out=$("$CS_SECRETS_BIN" age remove "$name" 2>&1) || rc=$?
+        assert_eq "1" "$rc" "age remove exits 1 for '$shown': $out" || return 1
+        assert_eq "Error: not a recipient name: $shown. A recipient's name is its file's name in .cs/age-recipients without .pub, with no '/', no control character and no leading '.'." \
+            "$out" "the refusal names '$shown' plainly" || return 1
+    done
+    assert_eq "$key" "$(cat "$other/peer.pub")" "the other session's recipient file is kept" || return 1
+    assert_eq "$key" "$(cat "$CS_SESSIONS_ROOT/test-session/.cs/age-recipients/.hidden.pub")" "the hidden file is kept" || return 1
+    assert_not_exists "$HOME/.cs-secrets/sessions/test-session" "no age state is made" || return 1
+}
+
+# age add names a recipient after its key file, without .pub. A key file
+# whose name starts with a '.' would make a recipient that no listing, export
+# or age remove sees (their *.pub globs skip it), its key pinned until a
+# purge, so it is refused, named plainly, before anything is made or pinned.
+# Any other name is taken, a control byte included: the export refusal tells
+# the user to pin such a file with age add.
+test_age_add_refuses_a_key_file_whose_name_is_not_a_recipient_name() {
+    local key=age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq0000000
+    local keys="$TEST_TMPDIR/keys" file shown out rc before
+    mkdir -p "$keys/sub"
+    for file in "$keys/.hidden.pub" "$keys/sub/..pub"; do
+        printf '%s\n' "$key" > "$file"
+        case "$file" in
+            */.hidden.pub) shown=.hidden ;;
+            */..pub) shown=. ;;
+        esac
+        before=$(_tree_state)
+        rc=0
+        out=$("$CS_SECRETS_BIN" age add "$file" 2>&1) || rc=$?
+        assert_eq "1" "$rc" "age add exits 1 for '$shown': $out" || return 1
+        assert_eq "Error: not a recipient name: $shown. A key file's name without .pub must not start with '.': age list, every export and age remove skip such a recipient." \
+            "$out" "the refusal names '$shown' plainly" || return 1
+        assert_eq "$before" "$(_tree_state)" "age add of '$shown' makes and pins nothing" || return 1
+    done
+    assert_not_exists "$CS_SESSIONS_ROOT/test-session/.cs/age-recipients" "no recipients folder is made" || return 1
+}
+
+# Every path and every file's checksum under HOME and the sessions root.
+_tree_state() {
+    find "$HOME" "$CS_SESSIONS_ROOT" -print | LC_ALL=C sort
+    find "$HOME" "$CS_SESSIONS_ROOT" -type f -exec cksum {} + | LC_ALL=C sort
+}
+
+# A feature (<base>@<task>) uses its base's secrets, age recipients and pins:
+# its launch exports the base as CS_SECRETS_SESSION, and cs <base>@<task>
+# -secrets names the base. A store, a lock, a sync file or age state made
+# under the feature's own name is read and removed by nothing, so every write
+# addressed to a feature but purge is refused, naming the base, before
+# anything is written, locked or created, under either backend.
+test_every_write_but_purge_refuses_a_feature_session() {
+    local key=age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq0000000
+    local meta="$CS_SESSIONS_ROOT/test-session@task/.cs" bindir backend cmd out rc before path
+    bindir=$(_make_fake_security)
+    printf 'v1' | "$CS_SECRETS_BIN" set API_KEY >/dev/null 2>&1 || { echo "  FAIL: fixture: could not seed the base's secret"; return 1; }
+    mkdir -p "$meta/age-recipients" "$meta/artifacts"
+    printf '%s\n' "$key" > "$meta/age-recipients/peer.pub"
+    printf 'api_key=sk_live_feature1\n' > "$meta/artifacts/notes.txt"
+    local cmds=("set NEW_KEY" "store NEW_KEY" "delete API_KEY" "rm API_KEY" "rename moved" \
+        "import-file" "import-file --replace" "migrate" "migrate --redact" \
+        "migrate-backend keychain" "migrate-backend encrypted --delete-source" "export-file" \
+        "age add $key" "age remove peer" "age rm peer")
+    for backend in encrypted keychain; do
+        for cmd in "${cmds[@]}"; do
+            before=$(_tree_state)
+            rm -f "$TEST_TMPDIR/security.argv"
+            rc=0
+            # shellcheck disable=SC2086 # each entry carries its own arguments
+            out=$(printf 'v2' | PATH="$bindir:$PATH" CS_SECRETS_BACKEND=$backend FAKE_SECURITY_ARGVLOG="$TEST_TMPDIR/security.argv" \
+                "$CS_SECRETS_BIN" --session test-session@task $cmd 2>&1) || rc=$?
+            assert_eq "1" "$rc" "$backend $cmd exits 1: $out" || return 1
+            assert_eq "Error: test-session@task is a feature of session test-session, and a feature uses its base's secrets and age recipients. Run it with --session test-session." \
+                "$out" "$backend $cmd names the base" || return 1
+            assert_eq "$before" "$(_tree_state)" "$backend $cmd leaves every file as it was" || return 1
+            assert_not_exists "$TEST_TMPDIR/security.argv" "$backend $cmd calls no security command" || return 1
+        done
+    done
+    for path in "$HOME/.cs-secrets/test-session@task.enc" "$HOME/.cs-secrets/.lock.test-session@task" \
+        "$HOME/.cs-secrets/sessions/test-session@task" "$CS_SESSIONS_ROOT/.secrets-lock.test-session@task" \
+        "$meta/secrets.$(_machine_id).age" "$meta/secrets.$(_machine_id).enc"; do
+        assert_not_exists "$path" "nothing is made at $path" || return 1
+    done
+    assert_eq "v1" "$("$CS_SECRETS_BIN" get API_KEY 2>&1)" "the base's secret is kept" || return 1
+    # cs <base>@<task> -secrets names the base, and its write lands there.
+    rc=0
+    out=$(printf 'v3' | "$CS_BIN" test-session@task -secrets set ROUTED_KEY 2>&1) || rc=$?
+    assert_eq "0" "$rc" "cs test-session@task -secrets set exits 0: $out" || return 1
+    assert_eq "v3" "$("$CS_SECRETS_BIN" get ROUTED_KEY 2>&1)" "the routed write lands in the base's store" || return 1
+    assert_not_exists "$HOME/.cs-secrets/test-session@task.enc" "the routed write makes no store for the feature" || return 1
+}
+
+# purge only removes, so it is the one write a feature session takes: it
+# clears what an earlier cs stored under the feature's own name (a store, a
+# Keychain entry, a pin list) and makes nothing named for the feature. The
+# base's secrets and pin list are kept.
+test_purge_of_a_feature_session_removes_what_its_name_holds() {
+    local bindir kcstore="$TEST_TMPDIR/kc-store" backend before kc_before out rc
+    local fstate="$HOME/.cs-secrets/sessions/test-session@task"
+    bindir=$(_make_fake_security)
+    mkdir -p "$CS_SESSIONS_ROOT/test-session@task/.cs"
+    printf 'v1' | "$CS_SECRETS_BIN" set API_KEY >/dev/null 2>&1 || { echo "  FAIL: fixture: could not seed the base's encrypted secret"; return 1; }
+    printf 'kv1' | PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        "$CS_SECRETS_BIN" set API_KEY >/dev/null 2>&1 || { echo "  FAIL: fixture: could not seed the base's Keychain secret"; return 1; }
+    mkdir -p "$HOME/.cs-secrets/sessions/test-session"
+    printf 'base-pin\n' > "$HOME/.cs-secrets/sessions/test-session/age-trusted"
+    for backend in encrypted keychain; do
+        before=$(_tree_state)
+        kc_before=$(find "$kcstore" -type f -exec cksum {} + | LC_ALL=C sort)
+        case "$backend" in
+            encrypted) _seed_enc_sync_file "$HOME/.cs-secrets/test-session@task.enc" '{"OLD_KEY":"old"}' || return 1 ;;
+            keychain) FAKE_SECURITY_STORE="$kcstore" \
+                "$bindir/security" add-generic-password -a "${USER:-unknown}" -s "cs:test-session@task:OLD_KEY" -w old ;;
+        esac
+        mkdir -p "$fstate"
+        printf 'pin\n' > "$fstate/age-trusted"
+        assert_eq "old" "$(PATH="$bindir:$PATH" CS_SECRETS_BACKEND=$backend FAKE_SECURITY_STORE="$kcstore" \
+            "$CS_SECRETS_BIN" --session test-session@task get OLD_KEY 2>&1)" "fixture: $backend holds a secret under the feature's name" || return 1
+        rc=0
+        out=$(PATH="$bindir:$PATH" CS_SECRETS_BACKEND=$backend FAKE_SECURITY_STORE="$kcstore" \
+            "$CS_SECRETS_BIN" --session test-session@task purge 2>&1) || rc=$?
+        assert_eq "0" "$rc" "$backend purge exits 0: $out" || return 1
+        assert_eq "Purged 1 secret(s) for session: test-session@task" "$out" "$backend purge counts the feature's secret" || return 1
+        assert_eq "$before" "$(_tree_state)" "$backend purge removes the feature's leftovers and makes nothing" || return 1
+        assert_eq "$kc_before" "$(find "$kcstore" -type f -exec cksum {} + | LC_ALL=C sort)" "$backend purge leaves only the base's Keychain entry" || return 1
+    done
+    assert_eq "v1" "$("$CS_SECRETS_BIN" get API_KEY 2>&1)" "the base's encrypted secret is kept" || return 1
+    assert_eq "kv1" "$(PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        "$CS_SECRETS_BIN" get API_KEY 2>&1)" "the base's Keychain secret is kept" || return 1
+}
+
+# An option cs-secrets does not take (--session=other: the session goes after
+# --session with a space) is refused, named, before any command runs. Read
+# as a word, it left the session cs-secrets runs in to be acted on: purge
+# purged it. Every command, with the option before it or after it.
+test_an_unknown_option_is_refused_before_any_command_runs() {
+    local key=age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq0000000
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs" bindir backend cmd out rc before
+    bindir=$(_make_fake_security)
+    mkdir -p "$CS_SESSIONS_ROOT/other/.cs" "$meta/age-recipients" "$meta/artifacts"
+    printf 'v1' | "$CS_SECRETS_BIN" set API_KEY >/dev/null 2>&1 || { echo "  FAIL: fixture: could not seed the session's secret"; return 1; }
+    printf 'o1' | "$CS_SECRETS_BIN" --session other set OTHER_KEY >/dev/null 2>&1 || { echo "  FAIL: fixture: could not seed other's secret"; return 1; }
+    printf '%s\n' "$key" > "$meta/age-recipients/peer.pub"
+    printf 'api_key=sk_live_ambient1\n' > "$meta/artifacts/notes.txt"
+    local cmds=("--session=other set NEW_KEY" "--session=other store NEW_KEY" "--session=other get API_KEY" \
+        "--session=other list" "--session=other ls" "--session=other delete API_KEY" "--session=other rm API_KEY" \
+        "--session=other purge" "--session=other rename moved" "--session=other export" "--session=other export-file" \
+        "--session=other import-file" "--session=other migrate" "--session=other migrate --redact" \
+        "--session=other migrate-backend keychain" "--session=other backend" "--session=other age init" \
+        "--session=other age pubkey" "--session=other age add $key" "--session=other age list" "--session=other age ls" \
+        "--session=other age remove peer" "--session=other age rm peer" \
+        "purge --session=other" "age list --session=other")
+    for backend in encrypted keychain; do
+        for cmd in "${cmds[@]}"; do
+            before=$(_tree_state)
+            rm -f "$TEST_TMPDIR/security.argv"
+            rc=0
+            # shellcheck disable=SC2086 # each entry carries its own arguments
+            out=$(printf 'v2' | PATH="$bindir:$PATH" CS_SECRETS_BACKEND=$backend FAKE_SECURITY_ARGVLOG="$TEST_TMPDIR/security.argv" \
+                "$CS_SECRETS_BIN" $cmd 2>&1) || rc=$?
+            assert_eq "1" "$rc" "$backend $cmd exits 1: $out" || return 1
+            assert_eq "Error: unknown option: --session_other. Usage: cs-secrets <command> [options]; run cs-secrets --help for the commands and options." \
+                "$out" "$backend $cmd names the option" || return 1
+            assert_eq "$before" "$(_tree_state)" "$backend $cmd leaves every file as it was" || return 1
+            assert_not_exists "$TEST_TMPDIR/security.argv" "$backend $cmd calls no security command" || return 1
+        done
+    done
+    assert_eq "v1" "$("$CS_SECRETS_BIN" get API_KEY 2>&1)" "the session's secret is kept" || return 1
+    assert_eq "o1" "$("$CS_SECRETS_BIN" --session other get OTHER_KEY 2>&1)" "other's secret is kept" || return 1
+}
+
 # Stored secrets outlive `cs -rm`, so an export under a removed session's name
 # has something to write.
 test_export_file_refuses_a_session_the_root_does_not_have() {
@@ -3430,6 +3656,107 @@ test_migrate_partial_write_fails_loud() {
     assert_output_contains "$out" "incomplete" "must report the migration as incomplete" || return 1
 }
 
+# --- migrate --redact: each value is replaced as text, never through argv ---
+
+# A value holds whatever bytes the file gave it. Regex characters in it, an
+# unbalanced "(" or a balanced "(a)", are text to find, and every other byte
+# of the file, its other lines included, stays as it was.
+test_migrate_redact_replaces_each_value_as_text() {
+    local art="$CS_SESSIONS_ROOT/test-session/.cs/artifacts" out rc=0 want
+    mkdir -p "$art"
+    printf '%s\n' '# service credentials' 'api_key=sk(live*[1]^$.?+{2}|\1&/x' \
+        'endpoint=https://api.example.com/v1' 'db_password: p(a)ss w0rd' '' 'note=plain text after' > "$art/config.env"
+    out=$("$CS_SECRETS_BIN" migrate --redact 2>&1) || rc=$?
+    assert_eq "0" "$rc" "migrate --redact exits 0: $out" || return 1
+    assert_eq "Scanning artifacts for plaintext secrets...
+
+  Migrated: api_key (from config.env)
+  Migrated: db_password (from config.env)
+
+Migrated 2 secret(s) to secure storage.
+Updated 1 file(s) with redacted values." "$out" "migrate reports both secrets and the one file" || return 1
+    want=$(printf '%s\n' '# service credentials' 'api_key=[REDACTED: stored in keychain as api_key]' \
+        'endpoint=https://api.example.com/v1' 'db_password: [REDACTED: stored in keychain as db_password]' '' 'note=plain text after'; printf x)
+    assert_eq "$want" "$(cat "$art/config.env"; printf x)" "each value, and nothing else, is replaced" || return 1
+    assert_eq 'sk(live*[1]^$.?+{2}|\1&/x' "$("$CS_SECRETS_BIN" get api_key 2>&1)" "api_key is stored as it was" || return 1
+    assert_eq 'p(a)ss w0rd' "$("$CS_SECRETS_BIN" get db_password 2>&1)" "db_password is stored as it was" || return 1
+}
+
+# `ps` shows every process's arguments to every local user, so a migrated
+# value must never be one. Each tool cs-secrets could run from PATH goes
+# through a recorder that logs the arguments it was started with.
+test_migrate_redact_keeps_each_value_off_argv() {
+    local art="$CS_SESSIONS_ROOT/test-session/.cs/artifacts" rec="$TEST_TMPDIR/argv-rec" log="$TEST_TMPDIR/argv.log" tool real
+    mkdir -p "$art" "$rec"
+    for tool in sed awk grep tr cat od jq openssl find basename dirname mktemp mv chmod rm cut head tail wc perl shasum; do
+        real=$(command -v "$tool") || continue
+        cat > "$rec/$tool" <<EOF
+#!/bin/sh
+printf '%s\n' "$tool \$*" >> '$log'
+exec '$real' "\$@"
+EOF
+        chmod +x "$rec/$tool"
+    done
+    printf '%s\n' 'api_key=sk_live_4f9c2e7a1b' > "$art/config.env"
+    PATH="$rec:$PATH" "$CS_SECRETS_BIN" migrate --redact >/dev/null 2>&1 \
+        || { echo "  FAIL: migrate --redact failed"; return 1; }
+    assert_eq "api_key=[REDACTED: stored in keychain as api_key]" "$(cat "$art/config.env")" "the value is redacted" || return 1
+    assert_file_contains "$log" "^find .*/artifacts -type f -print0$" "the recorder saw the tools cs-secrets ran" || return 1
+    if grep -F 'sk_live_4f9c2e7a1b' "$log"; then
+        echo "  FAIL: the value reached a process's argv (lines above)"
+        return 1
+    fi
+}
+
+# One value can hold another (hunter2 inside hunter22). The longer one is
+# replaced first, so no tail of it is left and each marker names its own key.
+# A value is still replaced wherever the file holds it, a line that is no
+# secret included.
+test_migrate_redact_replaces_the_longest_value_first() {
+    local art="$CS_SESSIONS_ROOT/test-session/.cs/artifacts" out rc=0 want
+    mkdir -p "$art"
+    printf '%s\n' '# database' 'password=hunter2' 'db_password=hunter22' \
+        'url=postgres://app:hunter2@db.example.com/main' > "$art/db.env"
+    out=$("$CS_SECRETS_BIN" migrate --redact 2>&1) || rc=$?
+    assert_eq "0" "$rc" "migrate --redact exits 0: $out" || return 1
+    assert_eq "Scanning artifacts for plaintext secrets...
+
+  Migrated: password (from db.env)
+  Migrated: db_password (from db.env)
+
+Migrated 2 secret(s) to secure storage.
+Updated 1 file(s) with redacted values." "$out" "migrate reports both secrets and the one file" || return 1
+    want=$(printf '%s\n' '# database' 'password=[REDACTED: stored in keychain as password]' \
+        'db_password=[REDACTED: stored in keychain as db_password]' \
+        'url=postgres://app:[REDACTED: stored in keychain as password]@db.example.com/main'; printf x)
+    assert_eq "$want" "$(cat "$art/db.env"; printf x)" "no tail of a longer value is left, and each marker names its key" || return 1
+    assert_eq "hunter2" "$("$CS_SECRETS_BIN" get password 2>&1)" "password is stored as it was" || return 1
+    assert_eq "hunter22" "$("$CS_SECRETS_BIN" get db_password 2>&1)" "db_password is stored as it was" || return 1
+}
+
+# A value can be text the marker itself holds ("as"). Every value is replaced
+# before any marker is put in, so no marker is rewritten by a later value.
+test_migrate_redact_keeps_every_marker_whole() {
+    local art="$CS_SESSIONS_ROOT/test-session/.cs/artifacts" out rc=0 want
+    mkdir -p "$art"
+    printf '%s\n' 'api_key=realvalue1' 'secret_key=as' 'note=as agreed' > "$art/keys.env"
+    out=$("$CS_SECRETS_BIN" migrate --redact 2>&1) || rc=$?
+    assert_eq "0" "$rc" "migrate --redact exits 0: $out" || return 1
+    assert_eq "Scanning artifacts for plaintext secrets...
+
+  Migrated: api_key (from keys.env)
+  Migrated: secret_key (from keys.env)
+
+Migrated 2 secret(s) to secure storage.
+Updated 1 file(s) with redacted values." "$out" "migrate reports both secrets and the one file" || return 1
+    want=$(printf '%s\n' 'api_key=[REDACTED: stored in keychain as api_key]' \
+        'secret_key=[REDACTED: stored in keychain as secret_key]' \
+        'note=[REDACTED: stored in keychain as secret_key] agreed'; printf x)
+    assert_eq "$want" "$(cat "$art/keys.env"; printf x)" "every marker is whole, and the short value is replaced where it occurs" || return 1
+    assert_eq "realvalue1" "$("$CS_SECRETS_BIN" get api_key 2>&1)" "api_key is stored as it was" || return 1
+    assert_eq "as" "$("$CS_SECRETS_BIN" get secret_key 2>&1)" "secret_key is stored as it was" || return 1
+}
+
 # ============================================================================
 # Concurrency & durability (encrypted backend)
 # ============================================================================
@@ -4627,6 +4954,12 @@ run_test test_age_add_refuses_a_directory_that_is_not_a_session
 run_test test_age_add_refuses_a_name_that_is_a_path
 run_test test_session_verbs_refuse_a_name_that_is_a_path
 run_test test_age_remove_refuses_a_session_the_root_does_not_have
+run_test test_age_remove_refuses_a_link_on_the_way_to_the_recipient
+run_test test_age_remove_refuses_a_name_that_is_not_a_recipient_name
+run_test test_age_add_refuses_a_key_file_whose_name_is_not_a_recipient_name
+run_test test_every_write_but_purge_refuses_a_feature_session
+run_test test_purge_of_a_feature_session_removes_what_its_name_holds
+run_test test_an_unknown_option_is_refused_before_any_command_runs
 run_test test_export_file_refuses_a_session_the_root_does_not_have
 run_test test_import_file_refuses_a_session_the_root_does_not_have
 run_test test_purge_empty_session
@@ -4713,6 +5046,10 @@ run_test test_keychain_purge_loud_on_enumeration_failure
 run_test test_keychain_export_loud_on_enumeration_failure
 run_test test_keychain_export_loud_on_read_failure
 run_test test_migrate_partial_write_fails_loud
+run_test test_migrate_redact_replaces_each_value_as_text
+run_test test_migrate_redact_keeps_each_value_off_argv
+run_test test_migrate_redact_replaces_the_longest_value_first
+run_test test_migrate_redact_keeps_every_marker_whole
 
 # Concurrency & durability
 run_test test_encrypted_concurrent_stores_no_lost_update

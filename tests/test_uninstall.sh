@@ -146,13 +146,14 @@ test_uninstall_keeping_secrets_keeps_age_state_and_removes_the_settings_lock() {
 # "Delete secrets from keychain?" waits on a person too. A session that opens
 # while it is pending is live when cs-secrets purges, and from inside another
 # session cs-secrets refuses that purge. The uninstall says whose secrets it
-# kept and why, and purges the rest. The answers are: go ahead, (the session
-# opens) delete the secrets, then keep the data.
+# kept and why, and purges the rest, a feature's (<base>@<task>) included:
+# a store under a feature's own name is purged like any other. The answers
+# are: go ahead, (the session opens) delete the secrets, then keep the data.
 test_uninstall_names_each_session_whose_secrets_it_kept() {
     local home="$TEST_TMPDIR/sk-home" root="$TEST_TMPDIR/sk-sessions" stub="$TEST_TMPDIR/mount-stub-sk"
     _stage_install "$home"
     cp "$SCRIPT_DIR/../bin/cs-secrets" "$home/.local/bin/cs-secrets"
-    mkdir -p "$root/opens-late/.cs" "$root/closed/.cs"
+    mkdir -p "$root/opens-late/.cs" "$root/closed/.cs" "$root/closed@task/.cs"
     _stub_mount_table "$stub" "/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled)" || return 1
     local s
     for s in opens-late closed; do
@@ -161,6 +162,11 @@ test_uninstall_names_each_session_whose_secrets_it_kept() {
             "$home/.local/bin/cs-secrets" set API_KEY >/dev/null 2>&1 \
             || { echo "  FAIL: fixture: could not seed $s's secret"; return 1; }
     done
+    printf '{"OLD_KEY":"old"}\n' | openssl enc -aes-256-cbc -e -pbkdf2 -iter 100000 \
+        -out "$home/.cs-secrets/closed@task.enc" -pass pass:test-password-for-ci \
+        || { echo "  FAIL: fixture: could not seed the feature's store"; return 1; }
+    assert_eq "old" "$(HOME="$home" CS_SESSIONS_ROOT="$root" CS_SECRETS_BACKEND=encrypted CS_SECRETS_PASSWORD=test-password-for-ci \
+        "$home/.local/bin/cs-secrets" --session closed@task get OLD_KEY 2>&1)" "fixture: a store is kept under the feature's name" || return 1
     sleep 300 &
     local pid=$! rc=0 out kept left
     { printf 'y'; sleep 2; echo "$pid" > "$root/opens-late/.cs/session.lock"; printf 'yn'; } \
@@ -176,6 +182,8 @@ test_uninstall_names_each_session_whose_secrets_it_kept() {
     assert_eq "Kept the secrets of session opens-late: session sender cannot change the secrets of session opens-late while it is live (pid $pid); --force does not override that from another session. Close opens-late first." \
         "$kept" "the uninstall names the session whose secrets it kept, and why" || return 1
     assert_output_contains "$out" "^Purged 1 secret(s) for session: closed$" "the closed session's secrets are purged" || return 1
+    assert_output_contains "$out" "^Purged 1 secret(s) for session: closed@task$" "the feature's store is purged" || return 1
+    assert_not_exists "$home/.cs-secrets/closed@task.enc" "the feature's store is gone" || return 1
     assert_eq "export CS_SECRET_API_KEY=v1" "$left" "the live session's secret stays" || return 1
 }
 
