@@ -855,7 +855,7 @@ run_uninstall() {
         fi
     done
 
-    rm -f "$hooks_dir/.version" "$(_cs_install_record)"
+    rm -f "$hooks_dir/.version" "$hooks_dir/.tui-origin" "$(_cs_install_record)"
     rmdir "$hooks_dir" 2>/dev/null || true
 
     # Remove shell completions

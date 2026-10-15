@@ -1282,7 +1282,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "80434357abf45625fd18000127e8efbbd4e748515a87425398554f3f0d4a667b  bin/cs"
+    "3c2168c0ec0329895ace133636cf0896511274f487b527e561f815c836e746d9  bin/cs"
     "42d2f9ecbc9a89f3b119958360fb753962c89df18b51ef7b85db109b2644e7de  bin/cs-secrets"
     "105416b75a58aa582dfd6a8d22a9b165ec896e1e366070c3cc97ee7d78a4cb1d  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -1551,6 +1551,22 @@ _place bin/cs-statusline "$INSTALL_DIR/cs-statusline"
 installed "cs-subagent-statusline" "$INSTALL_DIR/cs-subagent-statusline"
 _place bin/cs-subagent-statusline "$INSTALL_DIR/cs-subagent-statusline"
 
+# Records where the cs-tui just put in $INSTALL_DIR came from, in
+# HOOKS_DIR/.tui-origin beside the .version stamp: "checkout <path>" for a
+# copy from this checkout, "release" for the verified release asset. cs -doctor
+# reads it from any folder to hold the picker to that checkout's build. It is
+# written as soon as the picker is in place, and an install that places no
+# picker leaves it as it was, since the picker it describes is still the one
+# installed. A link _place_file kept (one to content cs did not write) is the
+# user's own picker, not one this install placed, so it leaves the record too:
+# a link it replaced is a file once placed, so -L is true only of a kept one.
+_record_tui_origin() {  # origin
+    [ ! -L "$INSTALL_DIR/cs-tui" ] || return 0
+    local tmp="$STAGE_DIR/tui-origin"
+    printf '%s\n' "$1" > "$tmp" || error "Could not write $tmp"
+    _place_file "$tmp" "$HOOKS_DIR/.tui-origin" 644
+}
+
 # Install cs-tui (interactive session manager).
 #
 # bin/cs-tui is a gitignored build artifact and nothing regenerates it: build.sh
@@ -1568,6 +1584,7 @@ fi
 if [ "$INSTALL_METHOD" = "local" ] && [ -f "$_cs_tui_src" ]; then
     installed "cs-tui" "$INSTALL_DIR/cs-tui"
     _place_file "$_cs_tui_src" "$INSTALL_DIR/cs-tui" 755
+    _record_tui_origin "checkout $SCRIPT_DIR"
 elif [ "$INSTALL_METHOD" = "web" ]; then
     _cs_version=$(grep -m1 "^VERSION=" "$INSTALL_DIR/cs" 2>/dev/null | cut -d'"' -f2 || echo "")
     _os=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -1642,6 +1659,7 @@ elif [ "$INSTALL_METHOD" = "web" ]; then
         fi
         if [ -f "$_tui_dst" ]; then
             _place_file "$_tui_dst" "$INSTALL_DIR/cs-tui" 755
+            _record_tui_origin release
         fi
     else
         info "cs-tui not available for ${_os}-${_arch} — run 'cs' for help, or build from source: cd tui && cargo build --release"
