@@ -2524,6 +2524,75 @@ test_integrate_tracked_mode_skips_pointers_to_base_deleted_topics() {
 
 run_test test_integrate_tracked_mode_skips_pointers_to_base_deleted_topics
 
+# Writes the memory archive at <memory_dir>: a reference entry whose body is
+# the given pointer lines.
+_write_memory_archive() {  # memory_dir pointer-line...
+    local dir="$1"
+    shift
+    { printf -- '---\nname: memory-archive\ndescription: "Pointers moved out of MEMORY.md"\nmetadata:\n  type: reference\n---\n\n'
+      printf '%s\n' "$@"; } > "$dir/reference_memory_archive.md"
+}
+
+# A pointer the base moved from MEMORY.md into its archive after the feature
+# branched is still in the feature's index; it is indexed in the base, and
+# the merge does not bring it back into MEMORY.md.
+test_integrate_tracked_mode_keeps_a_pointer_the_base_archived_out_of_the_index() {
+    local sha base_dir wt output status=0
+    base_dir=$(create_test_session_with_git "myproj")
+    printf '%s\n' '- [A](a.md): base' '- [P](p.md): a closed study' > "$base_dir/.cs/memory/MEMORY.md"
+    echo "p topic" > "$base_dir/.cs/memory/p.md"
+    (cd "$base_dir" && git add .cs/memory && git commit -q -m "base index")
+    cs_launch "myproj@fix-auth"
+    wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    echo '- [X](x.md): feature-side' >> "$wt/.cs/memory/MEMORY.md"
+    echo "x topic" > "$wt/.cs/memory/x.md"
+    (cd "$wt" && git add .cs/memory && git commit -q -m "feature topic")
+    sha=$(git -C "$wt" rev-parse HEAD)
+    printf '%s\n' '- [A](a.md): base' '- [Memory archive](reference_memory_archive.md): moved pointers' \
+        > "$base_dir/.cs/memory/MEMORY.md"
+    _write_memory_archive "$base_dir/.cs/memory" '- [P](p.md): a closed study'
+    (cd "$base_dir" && git add .cs/memory && git commit -q -m "archive P")
+    output=$("$CS_BIN" myproj -integrate-feature fix-auth "$sha" -- true 2>&1) || status=$?
+    assert_eq "0" "$status" "integrate succeeds: $output" || return 1
+    assert_eq "- [A](a.md): base
+- [Memory archive](reference_memory_archive.md): moved pointers
+- [X](x.md): feature-side" "$(cat "$base_dir/.cs/memory/MEMORY.md")" \
+        "the archived pointer stays out of MEMORY.md; the feature's new one is appended" || return 1
+}
+
+run_test test_integrate_tracked_mode_keeps_a_pointer_the_base_archived_out_of_the_index
+
+# Base and feature each move a different pointer into the archive: both
+# appends land, as they do for the timeline and the narratives, and no tree
+# is dirtied to get that.
+test_integrate_tracked_mode_union_merges_the_memory_archive() {
+    local sha base_dir wt output status=0
+    base_dir=$(create_test_session_with_git "myproj")
+    printf '%s\n' '- [Memory archive](reference_memory_archive.md): moved pointers' \
+        '- [P](p.md): p' '- [Q](q.md): q' > "$base_dir/.cs/memory/MEMORY.md"
+    echo "p topic" > "$base_dir/.cs/memory/p.md"
+    echo "q topic" > "$base_dir/.cs/memory/q.md"
+    _write_memory_archive "$base_dir/.cs/memory" '- [Old](old.md): archived earlier'
+    echo "old topic" > "$base_dir/.cs/memory/old.md"
+    (cd "$base_dir" && git add .cs/memory && git commit -q -m "base index")
+    cs_launch "myproj@fix-auth"
+    wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    echo '- [Q](q.md): q' >> "$wt/.cs/memory/reference_memory_archive.md"
+    (cd "$wt" && git add .cs/memory && git commit -q -m "feature archives Q")
+    sha=$(git -C "$wt" rev-parse HEAD)
+    echo '- [P](p.md): p' >> "$base_dir/.cs/memory/reference_memory_archive.md"
+    (cd "$base_dir" && git add .cs/memory && git commit -q -m "base archives P")
+    output=$("$CS_BIN" myproj -integrate-feature fix-auth "$sha" -- true 2>&1) || status=$?
+    assert_eq "0" "$status" "both archive appends merge: $output" || return 1
+    assert_eq "- [Old](old.md): archived earlier
+- [P](p.md): p
+- [Q](q.md): q" "$(grep '^- ' "$base_dir/.cs/memory/reference_memory_archive.md")" \
+        "the archive keeps the base's and the feature's pointers" || return 1
+    assert_eq "" "$(git -C "$base_dir" status --porcelain -- .gitattributes)" "no tree is dirtied to get the policy" || return 1
+}
+
+run_test test_integrate_tracked_mode_union_merges_the_memory_archive
+
 test_retire_ignored_mode_fuses_records() {
     local base_dir="$CS_SESSIONS_ROOT/proj" esc="esc"$'\033'"[31m.md"
     mkdir -p "$base_dir/.cs"/{memory,local}
@@ -2691,6 +2760,38 @@ test_retire_ignored_mode_appends_feature_memory_pointers() {
 }
 
 run_test test_retire_ignored_mode_appends_feature_memory_pointers
+
+# Ignored mode reads the base's archive too: a pointer the base moved there
+# while the feature was open does not come back into MEMORY.md.
+test_retire_ignored_mode_keeps_a_pointer_the_base_archived_out_of_the_index() {
+    local base_dir="$CS_SESSIONS_ROOT/proj"
+    mkdir -p "$base_dir/.cs"/{memory,local}
+    printf '%s\n' '- [A](a.md): base' '- [P](p.md): a closed study' > "$base_dir/.cs/memory/MEMORY.md"
+    echo "p topic" > "$base_dir/.cs/memory/p.md"
+    echo "# P" > "$base_dir/README.md"
+    printf '.cs/\n.claude/settings.local.json\n' > "$base_dir/.gitignore"
+    (cd "$base_dir" && git init -q && git config core.autocrlf false && git add -A && git commit -q -m init)
+    cs_launch "proj@t1"
+    local wt="$CS_SESSIONS_ROOT/proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    printf '%s\n' '- [A](a.md): base' '- [P](p.md): a closed study' '- [X](x.md): feature-side' \
+        > "$wt/.cs/memory/MEMORY.md"
+    echo "x topic" > "$wt/.cs/memory/x.md"
+    printf '%s\n' '- [A](a.md): base' '- [Memory archive](reference_memory_archive.md): moved pointers' \
+        > "$base_dir/.cs/memory/MEMORY.md"
+    _write_memory_archive "$base_dir/.cs/memory" '- [P](p.md): a closed study'
+    local sha output status=0
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "retire exits 0: $output" || return 1
+    assert_eq "- [A](a.md): base
+- [Memory archive](reference_memory_archive.md): moved pointers
+- [X](x.md): feature-side" "$(cat "$base_dir/.cs/memory/MEMORY.md")" \
+        "the archived pointer stays out of MEMORY.md; the feature's new one is appended" || return 1
+}
+
+run_test test_retire_ignored_mode_keeps_a_pointer_the_base_archived_out_of_the_index
 
 # An ignored-mode feature starts with a copy of the base's topics. One the
 # base deleted while the feature was open, and the feature never touched, is
