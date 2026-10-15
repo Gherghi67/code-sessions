@@ -1335,8 +1335,9 @@ _check_retired_names
 # events cs registers a hook under (CS_HOOK_EVENTS) as something other than a
 # list: that value is the user's and stays as it is, so cs's hook cannot be
 # added to it. A missing or null event is one cs creates. Without jq no hook
-# is registered at all, and a file jq cannot parse stops the install at the
-# settings step, further down.
+# is registered at all, and a file jq cannot parse is refused further down,
+# once the payload's cs_settings_check is at hand, still before anything is
+# placed.
 _refuse_a_hook_event_that_is_not_a_list() {
     local event
     command -v jq >/dev/null 2>&1 || return 0
@@ -1494,9 +1495,6 @@ fi
 # Show banner
 show_banner
 
-# Create install directory if needed
-mkdir -p "$INSTALL_DIR"
-
 # Whether downloaded file $STAGE_DIR/$1 has the sha256 CS_PAYLOAD_SHA256
 # carries for repo path $1. A path with no entry, or a digest that cannot be
 # computed, does not match.
@@ -1538,6 +1536,20 @@ if [ "$INSTALL_METHOD" = "web" ]; then
         fi
     done
 fi
+
+# Stop, before anything is placed, on a settings.json jq cannot parse, which
+# the settings step below would refuse only after every file was deployed.
+# The check is cs_settings_check from the payload's shared library (the
+# checkout, or the verified downloads), as the settings step runs it; without
+# jq no hook is registered at all, so the file is not read.
+# shellcheck source=hooks/cs-shared.sh
+. "$PAYLOAD_DIR/hooks/cs-shared.sh" || error "could not load $PAYLOAD_DIR/hooks/cs-shared.sh; nothing was installed"
+if command -v jq >/dev/null 2>&1; then
+    cs_settings_check "$CLAUDE_SETTINGS" || error "$CS_SETTINGS_ERROR; nothing was installed"
+fi
+
+# Create install directory if needed
+mkdir -p "$INSTALL_DIR"
 
 # Install cs script
 installed "cs" "$INSTALL_DIR/cs"
@@ -1917,12 +1929,12 @@ if ! command -v jq >/dev/null 2>&1; then
 else
     # settings.json is read and rewritten once, by cs_settings_update from
     # the hooks' shared library in the payload (the checkout, or the verified
-    # downloads), never the deployed copy: a deployed cs-shared.sh that cs
-    # did not write is kept, and must not run here. Under its lock and after
-    # every question below; a file jq cannot parse stops the install here,
-    # before any question, and is left as it is.
-    # shellcheck source=hooks/cs-shared.sh
-    . "$PAYLOAD_DIR/hooks/cs-shared.sh" || error "could not load $PAYLOAD_DIR/hooks/cs-shared.sh; $CLAUDE_SETTINGS left unchanged"
+    # downloads), sourced before anything was placed, never the deployed
+    # copy: a deployed cs-shared.sh that cs did not write is kept, and must
+    # not run here. Under its lock and after every question below. A file jq
+    # cannot parse was refused before anything was placed; one that has
+    # become so since stops the install here, before any question, and is
+    # left as it is.
     cs_settings_check "$CLAUDE_SETTINGS" || error "$CS_SETTINGS_ERROR"
 
     # Tilde spelling of HOOKS_DIR (settings.json entries use ~ instead of $HOME)
