@@ -104,8 +104,13 @@ export function register(on: On, options: PluginOptions) {
     // The engine re-renders the open pane the instant it reloads this
     // module, before session.start (which does not fire on a reload) gets a
     // chance to restore it, so a pane asked to draw with no module state
-    // tries the marker itself before giving up to the ordinary gate.
-    if (version === undefined && !(await restoreDone($, await $.session.cwd()))) return next(e)
+    // tries the marker itself before giving up to the ordinary gate. It asks
+    // the lead gate first, as session.start does, so a directory the
+    // sessions root does not name gets no pane back.
+    if (version === undefined) {
+      const cwd = await $.session.cwd()
+      if (!(await isLead($, cwd)) || !(await restoreDone($, cwd))) return next(e)
+    }
     const { Box, Text, Button } = await $.ui.resolve(e)
     // A lone pane draws no title of its own (the tab shows only with two or
     // more), so the body opens with it. The pane does not scroll (measured
