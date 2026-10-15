@@ -1032,11 +1032,13 @@ impl UnownedEntries {
 
     /// Why a removal not granted these files refuses session `name`, as
     /// `cs -rm --force` refuses without --delete-files, on one line for the
-    /// status bar; None when there are none.
+    /// status bar, each name as the listing prints it (`untracked::printed`);
+    /// None when there are none.
     pub fn refusal(&self, name: &str) -> Option<String> {
         match self {
             UnownedEntries::NotCreatedByCs(p) if !p.is_empty() => {
-                Some(format!("{name} holds files cs did not create: {}", p.join(", ")))
+                let listed: Vec<String> = p.iter().map(|entry| untracked::printed(entry)).collect();
+                Some(format!("{name} holds files cs did not create: {}", listed.join(", ")))
             }
             UnownedEntries::NotTrackedByGit(e) if !e.is_empty() => {
                 let lines = untracked::entry_lines(e, untracked::SHOWN_ENTRIES);
@@ -2753,7 +2755,10 @@ mod tests {
 
     // A session root is also the user's workspace. As `cs -rm --force` does
     // without --delete-files, the removal refuses one that holds files cs did
-    // not create, naming them, and deletes nothing.
+    // not create, naming them, and deletes nothing. It names them as the
+    // listing prints them: each control character, and each character that
+    // flips the direction of the text after it or takes no room, as one '?',
+    // an accent and a space as written.
     #[test]
     fn remove_session_path_refuses_a_root_holding_files_cs_did_not_create() {
         let root = std::env::temp_dir().join(format!("cs-rm-foreign-{}", std::process::id()));
@@ -2761,10 +2766,15 @@ mod tests {
         fs::create_dir_all(dir.join(".cs/local")).unwrap();
         fs::create_dir_all(dir.join("journal.sparsebundle")).unwrap();
         fs::write(dir.join("start"), "x").unwrap();
+        fs::write(dir.join("caf\u{e9} \u{202e}txt.exe\u{200b}.md"), "x").unwrap();
+        fs::write(dir.join("esc\u{1b}[1m.txt"), "x").unwrap();
 
         let err = remove_session_path(&root, "rel", &dir, RemoveGrants::default()).unwrap_err();
 
-        assert_eq!(err.to_string(), "rel holds files cs did not create: journal.sparsebundle, start");
+        assert_eq!(
+            err.to_string(),
+            "rel holds files cs did not create: caf\u{e9} ?txt.exe?.md, esc?[1m.txt, journal.sparsebundle, start"
+        );
         assert!(dir.join("start").exists(), "the user's files survive");
 
         let grants = RemoveGrants { unowned_files: true, ..RemoveGrants::default() };

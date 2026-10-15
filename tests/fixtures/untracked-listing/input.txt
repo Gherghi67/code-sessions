@@ -42,3 +42,5 @@ café/prices.txt
 backup\nold.txt
 backup.txt
 a[31mred	x.txt
+café ‮txt.exe​.md
+bidi-‪-‫-‬-‭-‮-⁦-⁧-⁨-⁩-‎-‏-؜-​-‌-‍-⁠-﻿-----‐ - - - -⁡-⁥-⁪-؛-؝-﻾-＀- -¡.txt

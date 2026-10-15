@@ -57,10 +57,22 @@ fn line_form(path: &str) -> String {
 }
 
 /// A path as the listing prints it: each control character in a name (a
-/// newline, an escape, a tab) as '?', so no name can break a line or drive
-/// the terminal. The same characters as cs's `printed` in the C locale.
-fn printed(path: &str) -> String {
-    path.chars().map(|c| if c.is_ascii_control() { '?' } else { c }).collect()
+/// newline, an escape, a tab, or a C1 control, U+0080 to U+009F, which a
+/// terminal may obey as an escape) as '?', so no name can break a line or
+/// drive the terminal, and each character that flips the direction of the
+/// text after it or takes no room as one '?', so no name can read as another
+/// file's. Every other character, an accent or a space, prints as itself.
+/// The same characters as cs's awk `printable` (lib/30-worktree.sh).
+pub fn printed(path: &str) -> String {
+    path.chars()
+        .map(|c| match c {
+            '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200E}' | '\u{200F}' | '\u{061C}' => '?',
+            '\u{200B}'..='\u{200D}' | '\u{2060}' | '\u{FEFF}' => '?',
+            '\u{80}'..='\u{9F}' => '?',
+            c if c.is_ascii_control() => '?',
+            c => c,
+        })
+        .collect()
 }
 
 /// `n` with a comma between each group of three digits.
@@ -181,8 +193,16 @@ mod tests {
     // empty lines; expected.txt holds the count phrase, then the entry lines.
     // A path is written as cs lists it, one per line (`name_of` reads it
     // back). The fixture holds a name with a newline and one with an escape
-    // and a tab, each control character printing as '?', and a directory
-    // named in two-byte characters, which pads by columns.
+    // and a tab, each control character printing as '?', a name with a
+    // direction-flipping and a zero-width character beside an accent and a
+    // space, each of those two characters printing as one '?', a name
+    // holding every direction-flipping and zero-width character and C1
+    // controls (U+0080, U+0085, U+009B, U+009F), each printing as one '?',
+    // beside the characters just outside each range of them in Unicode
+    // (U+2010, U+202F, U+200A, U+2029, U+205F, U+2061, U+2065, U+206A,
+    // U+061B, U+061D, U+FEFE, U+FF00, U+00A0) and U+00A1, which print as
+    // themselves, and a directory named in two-byte characters, which pads by
+    // columns.
     #[test]
     fn listing_renders_the_shared_fixture() {
         let input = include_str!("../../tests/fixtures/untracked-listing/input.txt");
