@@ -317,13 +317,31 @@ test_a_pending_switch_counts_down_to_quit() {
     printf 'engine=claude\nmode=fresh\nhandoff=%s\nrun=%s\n' "$HANDOFF" "$RUN" > "$SESSION/.cs/local/pending-switch"
     out=$(CS_CODEX_CLEAR_GRACE=20 _turn_hook stop "$OLD_THREAD") || return 1
     assert_file_exists "$STAMP" || return 1
-    assert_eq "cs: /quit in 20 s, and cs reopens this session under claude from $HANDOFF. Send a message first to stay." \
+    assert_eq "cs: /quit in 20 s, and cs reopens this session under claude (its default model, native approval) from $HANDOFF. Send a message first to stay." \
         "$(printf '%s' "$out" | jq -r .systemMessage)" || return 1
     # Another run's switch is not this run's to take.
     printf 'engine=claude\nmode=fresh\nhandoff=%s\nrun=%s\n' "$HANDOFF" "$OTHER_RUN" > "$SESSION/.cs/local/pending-switch"
     out=$(CS_CODEX_CLEAR_GRACE=20 _turn_hook stop "$OLD_THREAD") || return 1
     assert_eq "cs: /clear and go in 20 s, to continue from $HANDOFF. Send a message first to keep this conversation." \
         "$(printf '%s' "$out" | jq -r .systemMessage)" || return 1
+}
+
+# A switch that would move a native-approval run to automatic review gets no
+# count: the line names what the switch would start and leaves the exit to the
+# user.
+test_a_switch_that_loosens_approval_starts_no_count() {
+    _handoff unconsumed; _arm
+    _stale_stamp
+    local out
+    printf 'engine=claude\nmode=fresh\nhandoff=%s\nrun=%s\nmodel=opus\neffort=\napproval=auto\n' \
+        "$HANDOFF" "$RUN" > "$SESSION/.cs/local/pending-switch"
+    out=$(CS_RUN_APPROVAL=native _turn_hook stop "$OLD_THREAD") || { echo "  FAIL: a hook must never fail a turn"; return 1; }
+    assert_not_exists "$STAMP" "no count toward an exit cs will not make" || return 1
+    assert_eq "cs: a switch to claude (model opus, automatic approval) is pending. It would move this run from native to automatic approval, so cs does not quit for you: /quit to take it, or cs -switch cancel to stay." \
+        "$(printf '%s' "$out" | jq -r .systemMessage)" || return 1
+    out=$(CS_RUN_APPROVAL=auto CS_CODEX_CLEAR_GRACE=20 _turn_hook stop "$OLD_THREAD") || return 1
+    assert_file_exists "$STAMP" "automatic approval kept is not loosened" || return 1
+    assert_output_contains "$(printf '%s' "$out" | jq -r .systemMessage)" "/quit in 20 s" || return 1
 }
 
 test_a_message_sent_during_the_count_stops_it() {
@@ -366,6 +384,7 @@ run_test test_a_turn_in_another_thread_starts_no_count
 run_test test_a_turn_of_another_run_starts_no_count
 run_test test_force_off_leaves_the_clear_to_the_user
 run_test test_a_pending_switch_counts_down_to_quit
+run_test test_a_switch_that_loosens_approval_starts_no_count
 run_test test_a_message_sent_during_the_count_stops_it
 run_test test_outside_a_cs_codex_run_the_turn_hooks_are_inert
 

@@ -448,6 +448,11 @@ _launch_codex_bound() {
     local status=0
     local -a CS_NATIVE_LAUNCH_ARGS
     _cs_native_launch_options codex || return 1
+    # The run's approval, for its hooks and the automatic /clear's watcher: a
+    # switch the count would carry out unattended must not loosen it.
+    local CS_RUN_APPROVAL=auto
+    [ "${CS_LAUNCH_APPROVAL:-auto}" != native ] || CS_RUN_APPROVAL=native
+    export CS_RUN_APPROVAL
     # The automatic /clear after a rotation (lib/77-codex-hooks.sh) types into
     # this terminal, so its watcher runs only where one is attached, and only
     # with a private directory for its deadline, made before Codex starts. The

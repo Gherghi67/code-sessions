@@ -46,7 +46,7 @@ setup() {
 teardown() {
     [ -z "$WATCHER" ] || { kill "$WATCHER" 2>/dev/null; wait "$WATCHER" 2>/dev/null || true; }
     rm -rf "$TEST_TMPDIR"
-    unset CS_CACHE_DIR CS_RUN_ID CS_RUN_OWNER_PID CS_ROTATE_FORCE_CTX CS_CODEX_CLEAR_GRACE
+    unset CS_CACHE_DIR CS_RUN_ID CS_RUN_OWNER_PID CS_ROTATE_FORCE_CTX CS_CODEX_CLEAR_GRACE CS_RUN_APPROVAL
 }
 
 # A deadline as the Stop hook writes it, into the run directory unless a test
@@ -61,9 +61,9 @@ _stamp() {  # deadline, [action], [run], [handoff], [file]
 }
 
 # A switch as `cs -switch` records it, for this run unless a test names another.
-_switch() {  # [run]
-    printf 'engine=claude\nmode=fresh\nhandoff=%s\nrun=%s\nmodel=\neffort=\napproval=\n' \
-        "$HANDOFF" "${1:-$RUN}" > "$SESSION/.cs/local/pending-switch"
+_switch() {  # [run], [approval], [model]
+    printf 'engine=claude\nmode=fresh\nhandoff=%s\nrun=%s\nmodel=%s\neffort=\napproval=%s\n' \
+        "$HANDOFF" "${1:-$RUN}" "${3:-}" "${2:-}" > "$SESSION/.cs/local/pending-switch"
 }
 
 # Waits for the keys and one poll more, so nothing typed after them is missed.
@@ -250,6 +250,46 @@ test_a_switch_armed_during_the_count_quits() {
     assert_eq /quit "$(cat "$KEYS")" "a /clear would spend the handoff the switch carries" || return 1
 }
 
+# Nobody is at the keys when the count ends, so it never carries out a switch
+# that would move this run from native approval to automatic review: the exit
+# is the user's. A switch that keeps or tightens approval still quits.
+test_a_switch_that_loosens_approval_types_nothing() {
+    export CS_RUN_APPROVAL=native
+    _switch "$RUN" auto
+    _stamp "$(date +%s)"
+    _watch
+    _polls 3 || return 1
+    assert_not_exists "$KEYS" "keys typed: $(tr '\n' ' ' < "$KEYS" 2>/dev/null)" || return 1
+    assert_not_exists "$STAMP" "the deadline is spent all the same" || return 1
+    assert_file_exists "$SESSION/.cs/local/pending-switch" "the switch stays for the user's exit" || return 1
+    grep -Fq "Automatic /quit: the pending switch to claude (its default model, automatic approval) would move this run from native to automatic approval; the exit is yours" \
+        "$SESSION/.cs/local/session.log" || { echo "  FAIL: no session.log line"; return 1; }
+}
+
+test_the_count_never_loosens_approval() {
+    local run approval want
+    for run in native auto ''; do
+        for approval in auto native ''; do
+            _switch "$RUN" "$approval" opus
+            case "$run/$approval" in
+                native/auto | /auto) want=hold ;;
+                *) want=quit ;;
+            esac
+            local got
+            got=$(CS_RUN_APPROVAL=$run _codex_autoclear_action "$SESSION")
+            assert_eq "$want" "${got%% *}" "run approval '$run', switch approval '$approval'" || return 1
+        done
+    done
+    assert_eq "hold claude (model opus, automatic approval)" \
+        "$(_switch "$RUN" auto opus; CS_RUN_APPROVAL=native _codex_autoclear_action "$SESSION")" || return 1
+    printf 'engine=codex\nrun=%s\nmodel=\neffort=high\napproval=\n' "$RUN" > "$SESSION/.cs/local/pending-switch"
+    assert_eq "hold codex (its default model, effort high, automatic approval)" \
+        "$(CS_RUN_APPROVAL=native _codex_autoclear_action "$SESSION")" "Codex reviews automatically unless told not to" || return 1
+    _switch "$RUN" '' ''
+    assert_eq "quit claude (its default model, native approval)" \
+        "$(CS_RUN_APPROVAL=native _codex_autoclear_action "$SESSION")" || return 1
+}
+
 test_another_runs_switch_does_not_quit() {
     _switch "$OTHER_RUN"
     _stamp "$(date +%s)"
@@ -416,6 +456,8 @@ run_test test_a_pending_switch_types_quit
 run_test test_a_switch_cancelled_during_the_count_clears_instead
 run_test test_a_switch_armed_during_the_count_quits
 run_test test_another_runs_switch_does_not_quit
+run_test test_a_switch_that_loosens_approval_types_nothing
+run_test test_the_count_never_loosens_approval
 run_test test_a_deadline_still_ahead_types_nothing
 run_test test_a_handoff_no_longer_armed_types_nothing
 run_test test_another_handoff_armed_types_nothing

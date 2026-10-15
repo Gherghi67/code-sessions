@@ -186,18 +186,31 @@ _codex_autoclear_file() {  # run_dir
     printf '%s/autoclear\n' "$1"
 }
 
-# What the count does at its end: `clear`, or `quit <engine>` when a switch
+# What the count does at its end: `clear`, or `quit <target>` when a switch
 # this run recorded is pending, since /clear cannot change engines and would
-# spend the handoff the switch carries. The watcher asks at the deadline, as
-# the cs mod reads the switch at zero, so a switch armed or cancelled during
-# the count is the one that counts; the Stop hook asks only for its wording.
+# spend the handoff the switch carries; <target> is the relaunch in words. The
+# watcher asks at the deadline, as the cs mod reads the switch at zero, so a
+# switch armed or cancelled during the count is the one that counts; the Stop
+# hook asks only for its wording.
+#
+# Nobody is at the keys when the count ends, so it never takes a switch that
+# would move this run from native approval to automatic review: the agent can
+# arm one itself (`cs -switch --approve-for-me`). That is `hold <target>`, and
+# the exit stays the user's. A run that does not say which it has counts as
+# native, the stricter reading.
 _codex_autoclear_action() {  # session_dir
-    local switch_file target
+    local switch_file target summary
     if switch_file=$(_switch_file "$1") && [ -f "$switch_file" ] \
         && [ "$(_switch_field "$switch_file" run)" = "${CS_RUN_ID:-}" ]; then
         target=$(_switch_field "$switch_file" engine)
         if [ -n "$target" ]; then
-            printf 'quit %s\n' "$target"
+            summary=$(_switch_target_summary "$switch_file")
+            if [ "${CS_RUN_APPROVAL:-native}" != auto ] \
+                && [ "$(_switch_target_approval "$target" "$(_switch_field "$switch_file" approval)")" = auto ]; then
+                printf 'hold %s\n' "$summary"
+            else
+                printf 'quit %s\n' "$summary"
+            fi
             return 0
         fi
     fi
@@ -244,6 +257,12 @@ _codex_hook_stop() {
     [ -n "$handoff" ] || { rm -f "$stamp" 2>/dev/null; return 0; }
     # Only the wording: the watcher decides again at the deadline.
     action=$(_codex_autoclear_action "$session_dir")
+    if [ "${action%% *}" = hold ]; then
+        rm -f "$stamp" 2>/dev/null
+        sysmsg="cs: a switch to ${action#hold } is pending. It would move this run from native to automatic approval, so cs does not quit for you: /quit to take it, or cs -switch cancel to stay."
+        jq -n --arg m "$sysmsg" '{systemMessage: $m}' 2>/dev/null || true
+        return 0
+    fi
     # The deadline is worked out before the temp file exists, so nothing that
     # fails here can leave one behind.
     deadline=$(( $(date +%s) + grace ))
@@ -310,7 +329,8 @@ _codex_autoclear_terminal() {
 # stops being private ends the watch, and a deadline file that is not what the
 # hook writes is dropped unread. Past the deadline, with the same handoff still
 # armed by this run, it consumes the deadline and types the keys: /quit when a
-# switch this run recorded is pending then, /clear otherwise. The armed
+# switch this run recorded is pending then (nothing, when that switch would
+# loosen approval), /clear otherwise. The armed
 # handoff is a liveness check, not the licence: the agent may arm one itself.
 # /clear and go are two prompts: Codex starts no turn after /clear, and cs's
 # SessionStart hook hands the new thread the handoff with its first message.
@@ -339,7 +359,10 @@ _codex_autoclear_watch() {  # session_dir, run_dir
         rm -f "$stamp" 2>/dev/null || true
         [ -n "$handoff" ] && [ "$(_rotation_armed_handoff "$session_dir")" = "$handoff" ] || continue
         action=$(_codex_autoclear_action "$session_dir")
-        if [ "${action%% *}" = quit ]; then
+        if [ "${action%% *}" = hold ]; then
+            _codex_autoclear_log "$session_dir" "Automatic /quit: the pending switch to ${action#hold } would move this run from native to automatic approval; the exit is yours"
+            continue
+        elif [ "${action%% *}" = quit ]; then
             _codex_type_keys /quit && continue
         else
             _codex_type_keys /clear && sleep 2 && _codex_type_keys go && continue

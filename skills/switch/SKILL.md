@@ -150,10 +150,13 @@ vault is committed. `cs -switch` keeps its record there too,
      (`CS_NO_FUNCTION_HOOKS=1`) there is no mod at all, so they type `/exit`.
    - Under Codex (`engine: codex`), cs types `/quit` into the Codex terminal
      itself twenty seconds after this turn ends, and Codex shows a line saying
-     so; they can quit sooner with `/quit`. A prompt they send first stops the
-     count (it starts again when that turn ends) and keeps this conversation.
-     Launched with `CS_ROTATE_FORCE_CTX=off` (or `0`), there is no count. A
-     `/clear` cannot change engines.
+     so and naming the target's engine, model and approval; they can quit
+     sooner with `/quit`. A prompt they send first stops the count (it starts
+     again when that turn ends) and keeps this conversation. Launched with
+     `CS_ROTATE_FORCE_CTX=off` (or `0`), there is no count. A switch that
+     would move a run launched with `--native-approval` to automatic approval
+     gets no count either: cs never loosens approval unattended, so the line
+     says the exit is theirs. A `/clear` cannot change engines.
    - The old conversation stays on disk, untouched:
      `cs <session-name> --engine <current engine>` opens it again later.
    - To call the switch off before exiting: `cs -switch cancel`. The
@@ -178,5 +181,6 @@ vault is committed. `cs -switch` keeps its record there too,
    after the CLI it waits on has exited. A hook cannot exit for them; the
    `cs` mod's key and countdown can under Claude, and they run `/exit`
    rather than `/clear` because the pending switch is recorded. Codex has no
-   key; cs types its `/quit` after twenty seconds unless the count is off.
+   key; cs types its `/quit` after twenty seconds unless the count is off or
+   the switch would loosen a native-approval run to automatic approval.
    The line must not end up buried under a summary of what you just wrote.

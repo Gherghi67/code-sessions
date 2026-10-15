@@ -53,7 +53,7 @@ if [ "${1:-}" = --help ]; then
     exit "$CS_CODEX_HELP_EXIT"
 fi
 printf '%s\n' "$@" > "$CS_CODEX_LOG"
-env | grep -E '^(CS_SESSION_|CS_ACTOR=|CLAUDE_SESSION_|CLAUDE_CODE_SESSION_ID=|CS_CLAUDE_SESSION_ID=|CS_LEAD_PID=|CLAUDE_PID=)' > "$CS_CODEX_ENV" || true
+env | grep -E '^(CS_SESSION_|CS_RUN_APPROVAL=|CS_ACTOR=|CLAUDE_SESSION_|CLAUDE_CODE_SESSION_ID=|CS_CLAUDE_SESSION_ID=|CS_LEAD_PID=|CLAUDE_PID=)' > "$CS_CODEX_ENV" || true
 if [ "$CS_CODEX_START" = 1 ]; then
     printf '{"session_id":"%s","source":"resume"}' "$CS_THREAD_ID" | "$CS_BIN" -codex-hook session-start
 fi
@@ -183,6 +183,8 @@ test_native_approval_launches_without_automatic_approval_support() {
         echo '  FAIL: native approval passed the automatic approval option'
         return 1
     fi
+    grep -Fqx CS_RUN_APPROVAL=native "$CS_CODEX_ENV" \
+        || { echo "  FAIL: the run's hooks are not told its approval is native"; return 1; }
     assert_not_exists "$CS_TEST_SESSION_DIR/.cs/session.lock" "native launch releases its lock" || return 1
 }
 
@@ -197,6 +199,8 @@ test_new_thread_binding_and_context() {
     assert_eq "-C" "$(sed -n '4p' "$CS_CODEX_LOG")" "CLI cwd switch" || return 1
     assert_eq "$CS_TEST_SESSION_DIR" "$(sed -n '5p' "$CS_CODEX_LOG")" "CLI cwd with spaces" || return 1
     assert_eq "--approve-for-me" "$(sed -n '6p' "$CS_CODEX_LOG")" "new thread uses automatic approval review" || return 1
+    grep -Fqx CS_RUN_APPROVAL=auto "$CS_CODEX_ENV" \
+        || { echo "  FAIL: the run's hooks are not told its approval is automatic"; return 1; }
     assert_eq 6 "$(wc -l < "$CS_HELPER_ARGS" | tr -d ' ')" "helper takes three named arguments" || return 1
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/local/codex-instructions.md" 'This context does not request work' || return 1
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/local/codex-instructions.md" 'narrative.test-actor.md' || return 1

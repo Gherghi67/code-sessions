@@ -33,7 +33,7 @@ unset CS_SESSION_NAME CS_SESSION_DIR CS_SESSION_META_DIR 2>/dev/null || true
 unset CLAUDE_SESSION_NAME CLAUDE_SESSION_DIR CLAUDE_SESSION_META_DIR 2>/dev/null || true
 # A suite launched inside code-sessions must own its fake login, secrets and
 # run identity. These ambient selectors outrank the fixture's HOME/session.
-unset CS_RUN_ID CS_RUN_ENGINE CS_RUN_OWNER_PID CS_LEAD_PID CS_PROFILE CODE_SESSIONS_HOME \
+unset CS_RUN_ID CS_RUN_ENGINE CS_RUN_APPROVAL CS_RUN_OWNER_PID CS_LEAD_PID CS_PROFILE CODE_SESSIONS_HOME \
     CS_SECRETS_SESSION CS_SECRETS_KEYCHAIN_PREFIX CLAUDE_SECURESTORAGE_CONFIG_DIR 2>/dev/null || true
 
 # --- State ---

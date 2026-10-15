@@ -52,6 +52,33 @@ _switch_quit_command() {  # engine
     esac
 }
 
+# The approval a switch's relaunch starts with: the one it recorded, or the
+# target's own default when it recorded none, as _cs_native_launch_options
+# applies them: Codex reviews automatically, Claude keeps its own settings.
+_switch_target_approval() {  # target, recorded
+    case "$2" in
+        auto|native) printf '%s\n' "$2" ;;
+        *) if [ "$1" = codex ]; then printf 'auto\n'; else printf 'native\n'; fi ;;
+    esac
+}
+
+# The relaunch a switch would start, in words: engine, model, effort when one
+# was asked for, and approval. Codex's count names it before it acts.
+_switch_target_summary() {  # file
+    local target model effort words
+    target=$(_switch_field "$1" engine)
+    model=$(_switch_field "$1" model)
+    effort=$(_switch_field "$1" effort)
+    if [ -n "$model" ]; then words="model $model"; else words="its default model"; fi
+    [ -z "$effort" ] || words="$words, effort $effort"
+    if [ "$(_switch_target_approval "$target" "$(_switch_field "$1" approval)")" = auto ]; then
+        words="$words, automatic approval"
+    else
+        words="$words, native approval"
+    fi
+    printf '%s (%s)\n' "$target" "$words"
+}
+
 # The installer records which engines it set up (skills, hooks). No record is
 # an install from before the choice existed, which set up both.
 _switch_engine_installed() {  # engine
@@ -370,7 +397,8 @@ _switch_relaunch() {  # session_name
         done
         # Even when the shell that started this launch carried them (cs run
         # from inside another session), they name a run that is not this one.
-        unset CS_RUN_ID CS_RUN_ENGINE CS_RUN_OWNER_PID CS_LEAD_PID CS_FRESH_REBIND CS_CLAUDE_SESSION_ID 2>/dev/null || true
+        unset CS_RUN_ID CS_RUN_ENGINE CS_RUN_APPROVAL CS_RUN_OWNER_PID CS_LEAD_PID CS_FRESH_REBIND \
+            CS_CLAUDE_SESSION_ID 2>/dev/null || true
         umask "$_cs_sw_umask" 2>/dev/null || true
         cd "$_cs_sw_pwd" 2>/dev/null || cd / 2>/dev/null || true
         shopt -s execfail
