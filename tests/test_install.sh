@@ -317,24 +317,27 @@ _settings_backups() {  # settings file
 
 # A settings.json jq cannot parse holds the user's permissions, env, MCP
 # servers and other tools' hooks; replacing it with {} loses them all. The
-# install stops with one error naming the file and jq's reason, and leaves
-# the file byte for byte as it was, with no backup written. jq's reason is
-# matched up to its "parse error" prefix: the words after it differ between
-# jq releases.
+# install stops before it places anything, with one error naming the file
+# and jq's reason, and leaves the file byte for byte as it was, with no
+# backup written and nothing else under HOME changed. jq's reason is matched
+# up to its "parse error" prefix: the words after it differ between jq
+# releases.
 test_install_refuses_invalid_settings_json() {
-    local fake_home="$TEST_TMPDIR/home-badjson" f rc=0 out
+    local fake_home="$TEST_TMPDIR/home-badjson" f rc=0 out before
     f="$fake_home/.claude/settings.json"
     mkdir -p "$fake_home/.claude"
     printf '{"permissions":\n' > "$f"
     cp "$f" "$TEST_TMPDIR/badjson.orig"
+    before=$(_tree_listing "$fake_home")
     HOME="$fake_home" bash "$INSTALL_SH" > "$TEST_TMPDIR/badjson.out" 2>&1 < /dev/null || rc=$?
     out=$(cat "$TEST_TMPDIR/badjson.out")
     assert_eq "1" "$rc" "install must stop on an unparseable settings.json" || return 1
-    assert_output_contains "$out" "^Error: $(_bre_literal "$f") is not valid JSON; left it unchanged and wrote no $(_bre_literal "$f")\.cs-bak\.<stamp> backup: parse error" \
-        "the error names the file and jq's reason" || return 1
+    assert_output_contains "$out" "^Error: $(_bre_literal "$f") is not valid JSON; left it unchanged and wrote no $(_bre_literal "$f")\.cs-bak\.<stamp> backup: parse error.*; nothing was installed$" \
+        "the error names the file and jq's reason, and says nothing was installed" || { echo "$out"; return 1; }
     cmp -s "$TEST_TMPDIR/badjson.orig" "$f" \
         || { echo "  FAIL: settings.json changed although it was refused"; return 1; }
     assert_eq "" "$(_settings_backups "$f")" "a refused file gets no backup" || return 1
+    _assert_tree_unchanged "$before" "$fake_home" "install places nothing before it refuses" || return 1
 }
 
 # A zero-byte settings.json holds nothing to lose: it is created as cs's
