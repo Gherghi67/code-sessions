@@ -109,8 +109,8 @@ bash ~/.claude/hooks/cs/memory-index-guard.sh snapshot
 
    It also appends the archive's own pointer to `MEMORY.md`, for example
    `- [Memory archive](reference_memory_archive.md): pointers moved out of this index; open it when a subject is not listed here`.
-   Never edit the archive's frontmatter after that: a pass only appends pointer lines to the
-   archive, or deletes one on `duplicate:`. `check` names each pointer this sweep moved as
+   Never edit the archive's frontmatter after that: a pass changes the archive only by appending
+   a pointer line, updating one in step 3, or deleting one on `duplicate:`. `check` names each pointer this sweep moved as
    `demoted:` and passes it.
 
    Rewording shortens a line's bytes, never the number of lines: over the line budget, demotion is the
@@ -136,8 +136,9 @@ bash ~/.claude/hooks/cs/memory-index-guard.sh snapshot
    Put a removed pointer back by rewriting it. `duplicate:` is a move stopped half done, by `restore`
    or by a merge that brought another actor's demotion in beside your index; keep one copy. When
    the entry is a rule that has to fire before a proposal, its demotion broke the rule
-   above: delete the archive's copy. Otherwise delete the `MEMORY.md` copy. If the two lines differ, first give the line you
-   keep the newer wording. On `dangling:`, stop and ask: entries are
+   above: delete the archive's copy. Otherwise delete the `MEMORY.md` copy. Delete that one line and
+   keep the other copy as it stands, even when the two differ: an entry whose meaning changed gets its
+   pointer updated in step 3, never here. On `dangling:`, stop and ask: entries are
    never deleted, so a pointer whose file is gone means a rename or a lost file only the user can
    account for. If the index is past repair, run
    `bash ~/.claude/hooks/cs/memory-index-guard.sh restore` to return it to the snapshot, then redo this
