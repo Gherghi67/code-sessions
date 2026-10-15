@@ -184,7 +184,7 @@ _queue_accept() {  # qdir, message id
         error "message $id is already in the queue"
     done
     fname="$(printf '%010d' "$(date +%s)")-accept-$id"
-    if ! printf '%s\n' "$id" >> "$qdir/queue.accepted"; then
+    if ! cs_append_inside "$qdir/queue.accepted" printf '%s\n' "$id"; then
         _cs_unlock "$lock"
         error "could not record the accept in $qdir/queue.accepted"
     fi
