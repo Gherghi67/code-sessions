@@ -73,15 +73,6 @@ esac
 if [ -L "$FILE_PATH" ] || [ -x "$FILE_PATH" ]; then
     exit 0
 fi
-# A hard link has no link to see: an existing target with a second name may
-# share its inode with a file anywhere on the volume (a project setting, a
-# hook), and an in-place Edit writes that file too. GNU stat takes -c, BSD
-# stat -f; whichever answers first gives the link count, and a count that
-# cannot be read falls through to the prompt as well.
-if [ -f "$FILE_PATH" ]; then
-    _cs_nlink=$(stat -c %h "$FILE_PATH" 2>/dev/null || stat -f %l "$FILE_PATH" 2>/dev/null) || exit 0
-    [ "$_cs_nlink" = 1 ] || exit 0
-fi
 
 # cs refuses to open a session whose .cs or .cs/local is a symlink (a clone
 # can commit one), but a claude started in the directory by hand still runs
@@ -452,6 +443,18 @@ case "$REAL_PARENT_LC" in
             *) exit 0 ;;
         esac ;;
 esac
+
+# A hard link has no link to see: an existing target with a second name may
+# share its inode with a file anywhere on the volume (a project setting, a
+# hook), and an in-place Edit writes that file too. GNU stat takes -c, BSD
+# stat -f; whichever answers first gives the link count, and a count that
+# cannot be read falls through to the prompt as well. Asked last, of a write
+# every check above would approve, so the decline it prints is the one reason
+# the write prompts; the name is printed plain, as the symlink decline's is.
+if [ -f "$FILE_PATH" ]; then
+    _cs_nlink=$(stat -c %h "$FILE_PATH" 2>/dev/null || stat -f %l "$FILE_PATH" 2>/dev/null) || exit 0
+    [ "$_cs_nlink" = 1 ] || _cs_decline "$(_cs_plain_name "$FILE_PATH" 160) has $_cs_nlink names"
+fi
 
 jq -n '{
     hookSpecificOutput: {
