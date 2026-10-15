@@ -513,6 +513,36 @@ pub mod test_root {
     }
 }
 
+/// Test-only stand-in for `CLAUDE_SESSION_NAME`, the session the picker runs
+/// inside. A test build never reads the variable (the suite may itself run
+/// inside a session), and setting it would race the parallel tests, so each
+/// test thread scopes its own: none scoped is a picker outside every session.
+#[cfg(test)]
+pub mod test_caller {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static CALLER: RefCell<Option<String>> = const { RefCell::new(None) };
+    }
+
+    pub(super) fn current() -> Option<String> {
+        CALLER.with(|c| c.borrow().clone())
+    }
+
+    #[must_use]
+    pub fn scoped(name: &str) -> Guard {
+        CALLER.with(|c| *c.borrow_mut() = Some(name.to_string()));
+        Guard
+    }
+
+    pub struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            CALLER.with(|c| *c.borrow_mut() = None);
+        }
+    }
+}
+
 /// Directory holding a session's cs content files (queue, mailbox): `.cs/private`
 /// in an encrypted session, a link into its vault that reads as empty while it
 /// dangles (the vault locked), else `.cs/local`. cs_private_dir's rule.
@@ -2750,6 +2780,173 @@ mod tests {
         let grants = RemoveGrants { past_live_lock: true, ..RemoveGrants::default() };
         remove_session_path(&root, "busy", &dir, grants).unwrap();
         assert!(!dir.exists(), "granted the live lock, the removal goes ahead");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A fresh sessions root under the temp dir holding `live` as sessions
+    /// whose lock this test process holds and `dormant` as sessions with no
+    /// lock, each with only cs's own files.
+    fn caller_fixture(tag: &str, live: &[&str], dormant: &[&str]) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("cs-rm-caller-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        for name in live.iter().chain(dormant) {
+            fs::create_dir_all(root.join(name).join(".cs/local")).unwrap();
+        }
+        for name in live {
+            fs::write(root.join(name).join(".cs/session.lock"), format!("{}\n", std::process::id())).unwrap();
+        }
+        root
+    }
+
+    // From inside another session, `cs -rm` refuses a live session before its
+    // own lock check (_refuse_live_other_session, lib/15-lock.sh), in its own
+    // words, so the picker's removal does too.
+    #[test]
+    fn remove_session_path_refuses_another_sessions_live_session() {
+        let root = caller_fixture("other", &["busy"], &["caller"]);
+        let _caller = test_caller::scoped("caller");
+        let pid = std::process::id();
+
+        let err = remove_session_path(&root, "busy", &root.join("busy"), RemoveGrants::default()).unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            format!("session caller cannot remove session busy while it is live (pid {pid}); --force does not override that from another session. Close busy first.")
+        );
+        assert!(root.join("busy/.cs/session.lock").exists(), "a refused session is left whole");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // `cs -rm --force` does not override that refusal from another session,
+    // and neither does the picker's [F] grant.
+    #[test]
+    fn remove_session_path_refuses_another_sessions_live_session_past_the_live_grant() {
+        let root = caller_fixture("other-forced", &["busy"], &["caller"]);
+        let _caller = test_caller::scoped("caller");
+        let pid = std::process::id();
+        let grants = RemoveGrants { past_live_lock: true, unowned_files: true };
+
+        let err = remove_session_path(&root, "busy", &root.join("busy"), grants).unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            format!("session caller cannot remove session busy while it is live (pid {pid}); --force does not override that from another session. Close busy first.")
+        );
+        assert!(root.join("busy/.cs/session.lock").exists(), "a refused session is left whole");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // A session deleting itself is not another session: the plain live check
+    // refuses it and the [F] grant takes it past, as `cs -rm --force` does.
+    // The name is matched byte for byte, as cs compares it: `Busy` is
+    // another session.
+    #[test]
+    fn remove_session_path_leaves_the_callers_own_session_to_the_live_check() {
+        let root = caller_fixture("own", &["busy"], &[]);
+        let pid = std::process::id();
+        {
+            let _caller = test_caller::scoped("Busy");
+            let err = remove_session_path(&root, "busy", &root.join("busy"), RemoveGrants::default()).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!("session Busy cannot remove session busy while it is live (pid {pid}); --force does not override that from another session. Close busy first.")
+            );
+        }
+        let _caller = test_caller::scoped("busy");
+
+        let err = remove_session_path(&root, "busy", &root.join("busy"), RemoveGrants::default()).unwrap_err();
+
+        assert_eq!(err.to_string(), format!("busy is live (pid {pid}) — close it first"));
+        let grants = RemoveGrants { past_live_lock: true, ..RemoveGrants::default() };
+        remove_session_path(&root, "busy", &root.join("busy"), grants).unwrap();
+        assert!(!root.join("busy").exists(), "the caller's own session goes past the live grant");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // A base owns its features (<base>@<task>): from the base, a live feature
+    // is left to the plain live check, as `cs -rm` exempts it. A feature owns
+    // no sibling: from proj@other, proj@task is another session.
+    #[test]
+    fn remove_session_path_leaves_a_bases_own_feature_to_the_live_check() {
+        let root = caller_fixture("own-feature", &["proj@task"], &["proj", "proj@other"]);
+        let pid = std::process::id();
+        let wt = root.join("proj@task");
+        {
+            let _caller = test_caller::scoped("proj@other");
+            let err = remove_session_path(&root, "proj@task", &wt, RemoveGrants::default()).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!("session proj@other cannot remove session proj@task while it is live (pid {pid}); --force does not override that from another session. Close proj@task first.")
+            );
+        }
+        let _caller = test_caller::scoped("proj");
+
+        let err = remove_session_path(&root, "proj@task", &wt, RemoveGrants::default()).unwrap_err();
+
+        assert_eq!(err.to_string(), format!("proj@task is live (pid {pid}) — close it first"));
+        let grants = RemoveGrants { past_live_lock: true, ..RemoveGrants::default() };
+        remove_session_path(&root, "proj@task", &wt, grants).unwrap();
+        assert!(!wt.exists(), "the base removes its own feature past the live grant");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // A feature's worktree points into its base's repository, so from any
+    // session but the base, `cs -rm` refuses a base while one of its features
+    // is live (_refuse_base_with_live_feature, lib/15-lock.sh), --force or
+    // not, the live feature itself included. A feature of another base whose
+    // name starts with this one's is not this base's.
+    #[test]
+    fn remove_session_path_refuses_a_base_with_a_live_feature_from_another_session() {
+        let root = caller_fixture("base", &["proj@task", "projx@task"], &["proj", "other"]);
+        let pid = std::process::id();
+        let all = RemoveGrants { past_live_lock: true, unowned_files: true };
+        for caller in ["other", "proj@task"] {
+            let _caller = test_caller::scoped(caller);
+            for grants in [RemoveGrants::default(), all] {
+                let err = remove_session_path(&root, "proj", &root.join("proj"), grants).unwrap_err();
+                assert_eq!(
+                    err.to_string(),
+                    format!("session {caller} cannot remove session proj while its feature proj@task is live (pid {pid}); --force does not override that from another session. Close proj@task first."),
+                    "caller {caller}, grants {grants:?}"
+                );
+            }
+        }
+        assert!(root.join("proj/.cs").is_dir(), "a refused base is left whole");
+
+        fs::write(root.join("proj@task/.cs/session.lock"), "99999999\n").unwrap();
+        let _caller = test_caller::scoped("other");
+        remove_session_path(&root, "proj", &root.join("proj"), RemoveGrants::default()).unwrap();
+        assert!(!root.join("proj").exists(), "with only another base's feature live, the base goes");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // The base itself may remove itself while its feature runs, as `cs -rm`
+    // lets it.
+    #[test]
+    fn remove_session_path_lets_a_base_remove_itself_with_a_live_feature() {
+        let root = caller_fixture("base-self", &["proj@task"], &["proj"]);
+        let _caller = test_caller::scoped("proj");
+
+        remove_session_path(&root, "proj", &root.join("proj"), RemoveGrants::default()).unwrap();
+
+        assert!(!root.join("proj").exists(), "the base removes itself");
+        assert!(root.join("proj@task/.cs/session.lock").exists(), "its feature is left alone");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // Outside every session nothing is another session's: a live session goes
+    // past the [F] grant, and a base goes while its feature runs, as `cs -rm`
+    // from a plain terminal does.
+    #[test]
+    fn remove_session_path_outside_every_session_refuses_neither() {
+        let root = caller_fixture("no-caller", &["busy", "proj@task"], &["proj"]);
+        let grants = RemoveGrants { past_live_lock: true, ..RemoveGrants::default() };
+
+        remove_session_path(&root, "busy", &root.join("busy"), grants).unwrap();
+        remove_session_path(&root, "proj", &root.join("proj"), RemoveGrants::default()).unwrap();
+
+        assert!(!root.join("busy").exists(), "a live session goes past the live grant");
+        assert!(!root.join("proj").exists(), "a base goes while its feature runs");
         let _ = fs::remove_dir_all(&root);
     }
 

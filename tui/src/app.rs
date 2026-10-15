@@ -5203,6 +5203,64 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// From inside another session, F then y still refuses a live session,
+    /// as `cs -rm --force` refuses it from there, in cs's words.
+    #[test]
+    fn confirm_delete_f_then_y_refuses_a_live_session_from_another_session() {
+        use crate::session::{test_caller, test_root};
+        let root = std::env::temp_dir().join(format!("cs-test-del-force-other-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("busy/.cs/local")).unwrap();
+        let pid = std::process::id();
+        std::fs::write(root.join("busy/.cs/session.lock"), format!("{pid}\n")).unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let _caller = test_caller::scoped("caller");
+        let mut app = app_on(&root, "busy");
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+        app.handle_key(KeyEvent::from(KeyCode::Char('F')));
+        app.delete_countdown_start = Some(std::time::Instant::now() - std::time::Duration::from_secs(60));
+        app.handle_key(KeyEvent::from(KeyCode::Char('y')));
+
+        let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+        assert_eq!(
+            status,
+            format!("Delete failed: session caller cannot remove session busy while it is live (pid {pid}); --force does not override that from another session. Close busy first.")
+        );
+        assert!(root.join("busy/.cs/session.lock").exists(), "the live session survives");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A batch granted F from inside another session refuses the live
+    /// session in cs's words and still deletes the dormant one beside it.
+    #[test]
+    fn batch_delete_past_the_live_grant_refuses_a_live_session_from_another_session() {
+        use crate::session::{test_caller, test_root};
+        let root = std::env::temp_dir().join(format!("cs-test-batch-force-other-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("busy/.cs/local")).unwrap();
+        std::fs::create_dir_all(root.join("idle/.cs/local")).unwrap();
+        let pid = std::process::id();
+        std::fs::write(root.join("busy/.cs/session.lock"), format!("{pid}\n")).unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let _caller = test_caller::scoped("caller");
+        let mut app = app_on(&root, "busy");
+        for name in ["busy", "idle"] {
+            app.marked_sessions.insert(name.to_string());
+        }
+        app.delete_grants.past_live_lock = true;
+
+        app.execute_batch_delete();
+
+        let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+        assert_eq!(
+            status,
+            format!("Deleted 1, 1 failed — session caller cannot remove session busy while it is live (pid {pid}); --force does not override that from another session. Close busy first.")
+        );
+        assert!(root.join("busy/.cs/session.lock").exists(), "the live session survives");
+        assert!(!root.join("idle").exists(), "the dormant session goes");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     /// D grants the files cs did not create (`cs -rm --delete-files`): the
     /// confirm then removes the session with them. Pressed twice it is off
     /// again, and y refuses.
