@@ -800,6 +800,85 @@ test_phone_lead_end_removes_the_lock_when_remote_pid_serves_another_session() {
     assert_file_not_exists "$meta/session.lock" "the end removes the lock naming its own launch" || return 1
 }
 
+# A tmux on PATH for the hooks, which run `tmux` itself: one line of argv per
+# call in $TEST_TMPDIR/title-tmux.log, and the pane's @cs_session kept as tmux
+# keeps it, so list-panes answers with the name a set-option gave.
+write_title_tmux() {
+    cat > "$TEST_TMPDIR/bin/tmux" << TMUX
+#!/bin/bash
+log='$TEST_TMPDIR/title-tmux.log' pane='$TEST_TMPDIR/title-tmux.pane'
+TMUX
+    cat >> "$TEST_TMPDIR/bin/tmux" << 'TMUX'
+printf '%s\n' "$*" >> "$log"
+case "$1" in
+    set-option) case " $* " in *" -u "*) rm -f "$pane" ;; *) printf '%s\n' "${!#}" > "$pane" ;; esac ;;
+    list-panes) cat "$pane" 2>/dev/null ;;
+esac
+exit 0
+TMUX
+    chmod +x "$TEST_TMPDIR/bin/tmux"
+}
+
+# Run cs's real <hook> for the stand-in's child inside tmux pane %9.
+phone_conversation_hook_in_tmux() {  # hook, payload
+    TMUX=/tmp/cs-test-tmux,1,0 TMUX_PANE=%9 phone_conversation_hook "$@"
+}
+
+# While the server serves the session, its tmux window keeps the
+# remote:<name> name `cs <name> --remote` gave it: the phone lead's start and
+# end run no tmux title step, so tmux is never called.
+test_phone_lead_leaves_the_servers_tmux_window_name() {
+    start_stand_in_server demo || return 1
+    write_title_tmux
+    local meta="$CS_SESSIONS_ROOT/demo/.cs"
+    phone_conversation_hook_in_tmux session-start.sh '{"session_id":"phone-1","source":"startup","hook_event_name":"SessionStart"}' || return 1
+    assert_eq "$STAND_IN_PID $STAND_IN_CHILD phone-1" "$(cat "$meta/local/lead-pid")" "the conversation is the lead" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/title-tmux.log" "the lead's start calls no tmux" || return 1
+    phone_conversation_hook_in_tmux session-end.sh '{"session_id":"phone-1","reason":"other","hook_event_name":"SessionEnd"}' || return 1
+    assert_file_not_exists "$TEST_TMPDIR/title-tmux.log" "the lead's end calls no tmux" || return 1
+    assert_eq "$STAND_IN_PID" "$(cat "$meta/session.lock")" "the end leaves the server's lock" || return 1
+}
+
+# The lead's start names pane %9's window after the session and its end
+# releases the pane, with exactly the tmux calls the hooks make.
+assert_lead_titles_the_window() {
+    local meta="$CS_SESSIONS_ROOT/demo/.cs" log="$TEST_TMPDIR/title-tmux.log"
+    phone_conversation_hook_in_tmux session-start.sh '{"session_id":"phone-1","source":"startup","hook_event_name":"SessionStart"}' || return 1
+    assert_eq "$STAND_IN_PID $STAND_IN_CHILD phone-1" "$(cat "$meta/local/lead-pid")" "the conversation is the lead" || return 1
+    assert_eq "select-pane -t %9 -T cs: demo
+display-message -p -t %9 #{socket_path}#{window_id}
+set-option -p -t %9 @cs_session demo
+list-panes -t %9 -F #{@cs_session}
+rename-window -t %9 cs: demo
+set-window-option -t %9 allow-rename off
+set-window-option -t %9 allow-set-title off" "$(cat "$log" 2>/dev/null)" "the lead's start titles the pane and names the window" || return 1
+    rm -f "$log"
+    phone_conversation_hook_in_tmux session-end.sh '{"session_id":"phone-1","reason":"other","hook_event_name":"SessionEnd"}' || return 1
+    assert_eq "display-message -p -t %9 #{socket_path}#{window_id}
+set-option -p -u -t %9 @cs_session
+list-panes -t %9 -F #{@cs_session}
+set-window-option -t %9 automatic-rename on
+set-window-option -t %9 allow-rename on
+set-window-option -t %9 allow-set-title on" "$(cat "$log" 2>/dev/null)" "the lead's end releases the pane and the window names itself" || return 1
+}
+
+# With no remote.pid no server serves the session, and the lead titles the
+# window as every lead does.
+test_lead_titles_the_tmux_window_without_a_remote_pid() {
+    start_stand_in_server demo || return 1
+    rm -f "$CS_SESSIONS_ROOT/demo/.cs/local/remote.pid"
+    write_title_tmux
+    assert_lead_titles_the_window || return 1
+}
+
+# A remote.pid whose pid serves another session is no server of this one.
+test_phone_lead_titles_the_tmux_window_when_remote_pid_serves_another_session() {
+    start_stand_in_server demo-2 || return 1
+    write_title_tmux
+    assert_lead_titles_the_window || return 1
+    kill -0 "$STAND_IN_PID" 2>/dev/null || { echo "  FAIL: the process remote.pid names stopped before the end"; return 1; }
+}
+
 test_remote_stops_cleanly_when_its_window_hangs_up() {
     start_serving demo --remote || return 1
     assert_file_exists "$CS_SESSIONS_ROOT/demo/.cs/local/remote.pid" "remote.pid is written while serving" || return 1
@@ -1063,6 +1142,9 @@ run_test test_local_open_is_refused_while_the_session_is_served
 run_test test_remote_conversation_the_server_starts_is_the_lead_and_keeps_the_lock
 run_test test_phone_lead_end_removes_the_lock_once_its_server_is_gone
 run_test test_phone_lead_end_removes_the_lock_when_remote_pid_serves_another_session
+run_test test_phone_lead_leaves_the_servers_tmux_window_name
+run_test test_lead_titles_the_tmux_window_without_a_remote_pid
+run_test test_phone_lead_titles_the_tmux_window_when_remote_pid_serves_another_session
 run_test test_remote_stops_cleanly_when_its_window_hangs_up
 run_test test_remote_stops_cleanly_on_ctrl_c
 run_test test_remote_stops_cleanly_when_its_terminal_closes
