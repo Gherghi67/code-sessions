@@ -276,6 +276,25 @@ test_sweep_demotes_pointers_to_the_archive_before_rewording() {
         "a rule that fires before a proposal must stay in the index" || return 1
     assert_file_contains "$SWEEP_PASS" 'byte for byte' \
         "a demoted pointer moves verbatim" || return 1
+    assert_file_contains "$SWEEP_PASS" 'A `narrative\.\*\.md` pointer is never demoted' \
+        "a narrative pointer stays in the index" || return 1
+    # Two clones that each make a first demotion write the same header, so a
+    # merge keeps one; nothing edits it after.
+    assert_eq '---
+name: memory-archive
+description: "Pointers moved out of MEMORY.md; each entry still applies when its subject comes up"
+metadata:
+  type: reference
+---' "$(awk '/^ *```markdown$/{on=1; next} on && /^ *```$/{exit} on' "$SWEEP_PASS" | sed 's/^   //')" \
+        "the sweep pass gives the archive's exact frontmatter" || return 1
+    assert_file_contains "$SWEEP_PASS" "Never edit the archive's frontmatter" \
+        "the archive's frontmatter is written once" || return 1
+    assert_file_contains "$SWEEP_PASS" "delete the archive's copy" \
+        "a wrongly demoted rule goes back to the index on duplicate:" || return 1
+    assert_file_contains "$SWEEP_PASS" 'the newer wording' \
+        "the copy kept on duplicate: carries the newer wording" || return 1
+    assert_file_contains "$SWEEP_PASS" 'a bare file name ending in `\.md`, with no `/` and no `:`' \
+        "the sweep pass states which pointers dangling: checks" || return 1
     local label
     for label in 'demoted:' 'duplicate:' 'dangling:'; do
         assert_file_contains "$SWEEP_PASS" "\`$label\`" \
