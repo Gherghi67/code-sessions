@@ -1417,9 +1417,15 @@ _payload_mode() {  # repo-path
 # what it points at is content cs wrote (_cs_owns_file): only then is the
 # link replaced by the file, in a line naming the link and where it pointed.
 # The rename replaces the link itself, never writing through it, so its
-# target is left as it was either way.
+# target is left as it was either way. A directory at $2 is kept and named
+# the same way: a rename onto it would drop the file inside it.
 _place_file() {  # src, dest, mode
     local dest="$2" dir tmp digest link_target=""
+    if [ -d "$dest" ] && [ ! -L "$dest" ]; then
+        warn "Kept $dest: a directory, so it was not replaced"
+        CS_KEPT_PATHS+=("$dest")
+        return 0
+    fi
     if [ -L "$dest" ]; then
         digest=$(_cs_sha256_file "$1") || error "Could not compute the sha256 of $1 (needs sha256sum or shasum)"
         if ! _cs_owns_file "$dest" "$digest"; then
