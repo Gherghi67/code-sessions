@@ -58,9 +58,19 @@ fn line_form(path: &str) -> String {
 
 /// A path as the listing prints it: each control character in a name (a
 /// newline, an escape, a tab) as '?', so no name can break a line or drive
-/// the terminal. The same characters as cs's `printed` in the C locale.
-fn printed(path: &str) -> String {
-    path.chars().map(|c| if c.is_ascii_control() { '?' } else { c }).collect()
+/// the terminal, and each character that flips the direction of the text
+/// after it or takes no room as one '?', so no name can read as another
+/// file's. Every other character, an accent or a space, prints as itself.
+/// The same characters as cs's awk `printable` (lib/30-worktree.sh).
+pub fn printed(path: &str) -> String {
+    path.chars()
+        .map(|c| match c {
+            '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200E}' | '\u{200F}' | '\u{061C}' => '?',
+            '\u{200B}'..='\u{200D}' | '\u{2060}' | '\u{FEFF}' => '?',
+            c if c.is_ascii_control() => '?',
+            c => c,
+        })
+        .collect()
 }
 
 /// `n` with a comma between each group of three digits.

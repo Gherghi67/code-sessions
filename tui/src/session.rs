@@ -1032,11 +1032,13 @@ impl UnownedEntries {
 
     /// Why a removal not granted these files refuses session `name`, as
     /// `cs -rm --force` refuses without --delete-files, on one line for the
-    /// status bar; None when there are none.
+    /// status bar, each name as the listing prints it (`untracked::printed`);
+    /// None when there are none.
     pub fn refusal(&self, name: &str) -> Option<String> {
         match self {
             UnownedEntries::NotCreatedByCs(p) if !p.is_empty() => {
-                Some(format!("{name} holds files cs did not create: {}", p.join(", ")))
+                let listed: Vec<String> = p.iter().map(|entry| untracked::printed(entry)).collect();
+                Some(format!("{name} holds files cs did not create: {}", listed.join(", ")))
             }
             UnownedEntries::NotTrackedByGit(e) if !e.is_empty() => {
                 let lines = untracked::entry_lines(e, untracked::SHOWN_ENTRIES);
