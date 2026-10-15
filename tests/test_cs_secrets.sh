@@ -647,8 +647,8 @@ _tree_state() {
 # its launch exports the base as CS_SECRETS_SESSION, and cs <base>@<task>
 # -secrets names the base. A store, a lock, a sync file or age state made
 # under the feature's own name is read and removed by nothing, so every write
-# addressed to a feature is refused, naming the base, before anything is
-# written, locked or created, under either backend.
+# addressed to a feature but purge is refused, naming the base, before
+# anything is written, locked or created, under either backend.
 test_every_write_refuses_a_feature_session() {
     local key=age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq0000000
     local meta="$CS_SESSIONS_ROOT/test-session@task/.cs" bindir backend cmd out rc before path
@@ -657,7 +657,7 @@ test_every_write_refuses_a_feature_session() {
     mkdir -p "$meta/age-recipients" "$meta/artifacts"
     printf '%s\n' "$key" > "$meta/age-recipients/peer.pub"
     printf 'api_key=sk_live_feature1\n' > "$meta/artifacts/notes.txt"
-    local cmds=("set NEW_KEY" "store NEW_KEY" "delete API_KEY" "rm API_KEY" "purge" "rename moved" \
+    local cmds=("set NEW_KEY" "store NEW_KEY" "delete API_KEY" "rm API_KEY" "rename moved" \
         "import-file" "import-file --replace" "migrate" "migrate --redact" \
         "migrate-backend keychain" "migrate-backend encrypted --delete-source" "export-file" \
         "age add $key" "age remove peer" "age rm peer")
@@ -688,6 +688,43 @@ test_every_write_refuses_a_feature_session() {
     assert_eq "0" "$rc" "cs test-session@task -secrets set exits 0: $out" || return 1
     assert_eq "v3" "$("$CS_SECRETS_BIN" get ROUTED_KEY 2>&1)" "the routed write lands in the base's store" || return 1
     assert_not_exists "$HOME/.cs-secrets/test-session@task.enc" "the routed write makes no store for the feature" || return 1
+}
+
+# purge only removes, so it is the one write a feature session takes: it
+# clears what an earlier cs stored under the feature's own name (a store, a
+# Keychain entry, a pin list) and makes nothing named for the feature. The
+# base's secrets are kept.
+test_purge_of_a_feature_session_removes_what_its_name_holds() {
+    local bindir kcstore="$TEST_TMPDIR/kc-store" backend before kc_before out rc
+    local fstate="$HOME/.cs-secrets/sessions/test-session@task"
+    bindir=$(_make_fake_security)
+    mkdir -p "$CS_SESSIONS_ROOT/test-session@task/.cs"
+    printf 'v1' | "$CS_SECRETS_BIN" set API_KEY >/dev/null 2>&1 || { echo "  FAIL: fixture: could not seed the base's encrypted secret"; return 1; }
+    printf 'kv1' | PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        "$CS_SECRETS_BIN" set API_KEY >/dev/null 2>&1 || { echo "  FAIL: fixture: could not seed the base's Keychain secret"; return 1; }
+    for backend in encrypted keychain; do
+        before=$(_tree_state)
+        kc_before=$(find "$kcstore" -type f -exec cksum {} + | LC_ALL=C sort)
+        case "$backend" in
+            encrypted) _seed_enc_sync_file "$HOME/.cs-secrets/test-session@task.enc" '{"OLD_KEY":"old"}' || return 1 ;;
+            keychain) FAKE_SECURITY_STORE="$kcstore" \
+                "$bindir/security" add-generic-password -a "${USER:-unknown}" -s "cs:test-session@task:OLD_KEY" -w old ;;
+        esac
+        mkdir -p "$fstate"
+        printf 'pin\n' > "$fstate/age-trusted"
+        assert_eq "old" "$(PATH="$bindir:$PATH" CS_SECRETS_BACKEND=$backend FAKE_SECURITY_STORE="$kcstore" \
+            "$CS_SECRETS_BIN" --session test-session@task get OLD_KEY 2>&1)" "fixture: $backend holds a secret under the feature's name" || return 1
+        rc=0
+        out=$(PATH="$bindir:$PATH" CS_SECRETS_BACKEND=$backend FAKE_SECURITY_STORE="$kcstore" \
+            "$CS_SECRETS_BIN" --session test-session@task purge 2>&1) || rc=$?
+        assert_eq "0" "$rc" "$backend purge exits 0: $out" || return 1
+        assert_eq "Purged 1 secret(s) for session: test-session@task" "$out" "$backend purge counts the feature's secret" || return 1
+        assert_eq "$before" "$(_tree_state)" "$backend purge removes the feature's leftovers and makes nothing" || return 1
+        assert_eq "$kc_before" "$(find "$kcstore" -type f -exec cksum {} + | LC_ALL=C sort)" "$backend purge leaves only the base's Keychain entry" || return 1
+    done
+    assert_eq "v1" "$("$CS_SECRETS_BIN" get API_KEY 2>&1)" "the base's encrypted secret is kept" || return 1
+    assert_eq "kv1" "$(PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        "$CS_SECRETS_BIN" get API_KEY 2>&1)" "the base's Keychain secret is kept" || return 1
 }
 
 # Stored secrets outlive `cs -rm`, so an export under a removed session's name
@@ -4802,6 +4839,7 @@ run_test test_age_remove_refuses_a_session_the_root_does_not_have
 run_test test_age_remove_refuses_a_link_on_the_way_to_the_recipient
 run_test test_age_remove_refuses_a_name_that_is_not_a_recipient_name
 run_test test_every_write_refuses_a_feature_session
+run_test test_purge_of_a_feature_session_removes_what_its_name_holds
 run_test test_export_file_refuses_a_session_the_root_does_not_have
 run_test test_import_file_refuses_a_session_the_root_does_not_have
 run_test test_purge_empty_session
