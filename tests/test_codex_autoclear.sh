@@ -16,12 +16,6 @@ HANDOFF=2026-10-15-continue.md
 RUN=33333333-3333-4333-8333-333333333333
 OTHER_RUN=44444444-4444-4444-8444-444444444444
 
-# What the watcher types, one line per call, instead of the terminal, which a
-# test run has none of: the stand-in terminal stays until a test closes it.
-# Each look at it marks a poll, so a test can wait for polls, not seconds.
-_codex_type_keys() { printf '%s\n' "$1" >> "$KEYS"; }
-_codex_autoclear_terminal() { printf 'poll\n' >> "$TEST_TMPDIR/polls"; [ ! -e "$TEST_TMPDIR/tty-closed" ]; }
-
 # The real check, kept for the tests that exercise it: every other test runs
 # under TMPDIR, which the check rightly refuses, so setup stands it down.
 eval "_real_run_dir_in_sandbox_root() $(declare -f _codex_run_dir_in_sandbox_root | tail -n +2)"
@@ -36,6 +30,14 @@ setup() {
     printf '%s\n' "$HANDOFF" > "$SESSION/.cs/local/pending-handoff"
     export CS_CACHE_DIR="$TEST_TMPDIR/cache" CS_RUN_ID=$RUN CS_RUN_OWNER_PID=$$
     _codex_run_dir_in_sandbox_root() { return 1; }
+    # What the watcher types, one line per call, instead of the terminal, which
+    # a test run has none of: the stand-in terminal stays until a test closes
+    # it. Each look at it marks a poll, so a test can wait for polls, not
+    # seconds. They are defined here, not once for the file, because a test
+    # body runs in the suite's shell: a test that redefines one would
+    # otherwise leave its version to every test after it.
+    _codex_type_keys() { printf '%s\n' "$1" >> "$KEYS"; }
+    _codex_autoclear_terminal() { printf 'poll\n' >> "$TEST_TMPDIR/polls"; [ ! -e "$TEST_TMPDIR/tty-closed" ]; }
     RUN_DIR=$(_codex_run_dir_prepare "$SESSION") || { echo "  FAIL: setup could not make the run directory"; return 1; }
     STAMP="$RUN_DIR/autoclear"
     WATCHER=""
@@ -341,6 +343,8 @@ test_the_grace_follows_the_force_setting() {
     done
 }
 
+# A test that redefines a stand-in runs first, so a leak would show.
+run_test test_keys_the_terminal_refuses_are_logged
 run_test test_a_passed_deadline_types_clear_then_go
 run_test test_a_stamp_in_the_workspace_types_nothing
 run_test test_a_symlinked_stamp_types_nothing
@@ -356,7 +360,6 @@ run_test test_a_handoff_no_longer_armed_types_nothing
 run_test test_another_handoff_armed_types_nothing
 run_test test_another_runs_deadline_types_nothing
 run_test test_an_unreadable_deadline_is_dropped
-run_test test_keys_the_terminal_refuses_are_logged
 run_test test_the_watcher_ends_with_the_runs_owner
 run_test test_the_watcher_ends_with_its_terminal
 run_test test_cleanup_stops_the_helper_and_its_children
