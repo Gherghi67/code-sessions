@@ -2307,6 +2307,10 @@ test_tui_removed_when_checksum_cannot_be_fetched() {
             return 1
         fi
     done
+    # The picker the gate removed was never placed, so the record still
+    # describes the one an earlier install put there.
+    assert_eq "checkout /work/cs" "$(cat "$TEST_TMPDIR/tui-verify-fetch/home/.claude/hooks/cs/.tui-origin")" \
+        "a picker the gate removed leaves the record as it was" || return 1
 }
 
 # Same gate, other way to be unable to verify: the digest tool is there but
