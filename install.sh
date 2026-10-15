@@ -1302,7 +1302,7 @@ CS_PAYLOAD_SHA256=(
     "81a13835a65f4b4b35bb87493da0df9848de68375ca7ab1525d2d5079cf52bf1  hooks/subagent-context.sh"
     "53b16016dd6d087c3cc3db7e4acf8de6629e149e3b7f326f0731b36809574156  hooks/tool-failure-logger.sh"
     "a9ae37cf52a7dbbd04ffb4940aeab110d1ce3421b01318c4ff9023d52cd29a0d  hooks/session-auto-approve.sh"
-    "4d9cc740dd81c397d8ec6a391e9a7ca522f20f077ed1deea796010a15f038904  hooks/scope-prompt.sh"
+    "91c19c420ec07f112fdc8f3faa0fa934c785c03c6899760ad4c339aa923dfb9b  hooks/scope-prompt.sh"
     "9e06eaa16960dff49881234c8a479c2f8d2dd8d672283056e1591c4528e755ab  commands/checkpoint.md"
     "a96f895b90053e26e5cb983392a808d2d31c0597d181288c66aaa8efd88d69b0  commands/wrap.md"
     "2520a6d54d75e3e9f1768160826a8b9f21e38e2234538cc62e3ec6337008fc28  skills/store-secret/SKILL.md"
