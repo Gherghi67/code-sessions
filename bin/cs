@@ -10932,11 +10932,14 @@ _doctor_check_hook_drift() {
 
     # area label, deploy root, source paths — reported per artifact kind.
     # Skills deploy as <name>/SKILL.md; everything else deploys flat, keyed
-    # on the source path shape so the label stays purely cosmetic.
+    # on the source path shape so the label stays purely cosmetic. A deployed
+    # copy cs did not write (_cs_owns_file, as install.sh decides) is one
+    # ./install.sh keeps as the user's, so it is named apart, with advice
+    # that can clear it.
     _drift_scan() {
         local label="$1" deploy_root="$2"
         shift 2
-        local drifted=() missing=() src name deployed
+        local drifted=() users_copies=() missing=() src name deployed
         for src in "$@"; do
             [ -e "$src" ] || continue
             if [[ "$src" == */SKILL.md ]]; then
@@ -10955,11 +10958,19 @@ _doctor_check_hook_drift() {
             if [ ! -f "$deployed" ]; then
                 missing+=("$name")
             elif ! cmp -s "$src" "$deployed"; then
-                drifted+=("$name")
+                if _cs_owns_file "$deployed"; then
+                    drifted+=("$name")
+                else
+                    users_copies+=("$name")
+                fi
             fi
         done
         if [ ${#drifted[@]} -gt 0 ]; then
             _doctor_warn "$label drift: deployed copy differs from source: ${drifted[*]} (run ./install.sh)"
+            clean=0
+        fi
+        if [ ${#users_copies[@]} -gt 0 ]; then
+            _doctor_warn "$label drift: deployed copy differs from source: ${users_copies[*]} (kept as yours, so ./install.sh does not replace it; move it aside, then run ./install.sh to get cs's copy)"
             clean=0
         fi
         if [ ${#missing[@]} -gt 0 ]; then
