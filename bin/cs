@@ -1867,6 +1867,28 @@ live_lock_pid() {  # meta_dir
     echo "$pid"
 }
 
+# The pid of the remote-control server serving session <name>, from its
+# .cs/local/remote.pid, when that pid runs `remote-control --name <name>`.
+# Fails otherwise. A server whose release never ran (its process group
+# killed with SIGKILL, a crash, a restart) leaves the file behind, and its pid
+# can later belong to any program, so a running pid alone proves nothing; the
+# argv is matched as the live-duplicate guard in launch_claude_code matches
+# --name, padded so demo does not match demo-2. ps is called directly, not
+# through CS_PS_BIN: that seam blanks the machine-wide scan in tests, and this
+# asks about one pid. cs's opens, cs -rm, cs -live, cs -doctor and the
+# SessionEnd hook all decide "served" here.
+_remote_server_pid() {  # meta_dir, session_name
+    local f="$1/local/remote.pid" pid="" args
+    [ -f "$f" ] || return 1
+    IFS= read -r pid < "$f" 2>/dev/null || true
+    case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+    args=$(ps -ww -o args= -p "$pid" 2>/dev/null) || return 1
+    case " $args " in
+        *" remote-control --name $2 "*) printf '%s' "$pid" ;;
+        *) return 1 ;;
+    esac
+}
+
 # Octal permission bits of a file, as chmod takes them (644), read through a
 # symlink so a linked destination reports its target's mode, not the link's
 # 755. GNU stat is tried first: BSD stat rejects -c with no output, while GNU
@@ -2928,6 +2950,18 @@ _lock_collision_menu() {
     esac
 }
 
+# Stops cs, naming <lock file>, when it is anything but a regular file or
+# absent. cs creates and removes the session lock as a regular file: a write
+# or a read would go through a link to whatever it names, a directory would
+# pass for a stale lock that rm cannot remove, and a write to a fifo blocks
+# with no reader while the openers' mutex is held. Called before anything is
+# written.
+_refuse_session_lock_not_a_file() {  # lock_file
+    [ ! -L "$1" ] || error "$1 is a link, where cs keeps the session lock; remove it and open the session again"
+    [ ! -d "$1" ] || error "$1 is a directory, where cs keeps the session lock; remove it and open the session again"
+    [ ! -e "$1" ] || [ -f "$1" ] || error "$1 is not a regular file, where cs keeps the session lock; remove it and open the session again"
+}
+
 # Take the PID-based session lock of <meta_dir> to prevent concurrent access.
 # The lock is taken by creating the file, which the filesystem does for
 # exactly one process (noclobber: the open fails when the file exists), never
@@ -2963,6 +2997,7 @@ _take_session_lock() {  # meta_dir
         echo -e "${RED}Error: cs needs perl to lock this session ($meta_dir); install perl and retry${NC}" >&2
         exit 1
     fi
+    _refuse_session_lock_not_a_file "$lock_file"
     _cs_lock "$mutex" || return 2
     while :; do
         if ( set -C; echo "$$" > "$lock_file" ) 2>/dev/null; then
@@ -2989,8 +3024,10 @@ _take_session_lock() {  # meta_dir
             error "Could not take the session lock $lock_file after $attempt attempts (another cs keeps writing it?)"
         fi
         if [ -e "$lock_file" ]; then
-            # PID is dead — stale lock
-            warn "Removing stale session lock (PID ${lock_pid:-unknown})"
+            # PID is dead — stale lock. Its text is whatever the file holds,
+            # which a clone or a link put there can choose, so it is printed
+            # as a plain name.
+            warn "Removing stale session lock (PID $(_cs_plain_name "${lock_pid:-unknown}" 40))"
             rm -f "$lock_file"
         fi
         # The file vanished between the failed create and the look at it, or
@@ -3052,7 +3089,10 @@ acquire_session_lock() {
     fi
     # The lock records one pid. When this forced open ends first, its
     # exit removes the lock and the other holder runs unprotected;
-    # that is decided, and locks do not record every holder.
+    # that is decided, and locks do not record every holder. A link or a
+    # directory put in the lock's place since it was read is refused, not
+    # written through.
+    _refuse_session_lock_not_a_file "$lock_file"
     echo "$$" > "$lock_file"
     _cs_unlock "$mutex"
     return 0
@@ -3067,13 +3107,14 @@ acquire_session_lock() {
 # wait) the lock is left as it is, nothing is printed and the status is 0; the
 # lock left behind names a dead pid, and the next open reclaims it. The exit
 # can therefore wait up to five seconds while another cs holds the mutex. Both
-# are decided; do not re-fix.
+# are decided; do not re-fix. A link in the lock's place is never followed
+# and is left where it is, as a directory is.
 release_session_lock() {
     local meta_dir="$1"
     local lock_file="$meta_dir/session.lock"
     local mutex="$meta_dir/session.mutex.lock"
 
-    if [ -f "$lock_file" ]; then
+    if [ ! -L "$lock_file" ] && [ -f "$lock_file" ]; then
         _cs_lock "$mutex" 2>/dev/null || return 0
         local lock_pid
         lock_pid=$(cat "$lock_file" 2>/dev/null || echo "")
@@ -12959,10 +13000,13 @@ remove_session() {
     local age_state_left=""
     # Before any name goes: a live session of another conversation's user,
     # or a base with a live feature when the caller is not that base, stops
-    # the whole run, so none of the names before it is removed either.
+    # the whole run, so none of the names before it is removed either. So
+    # does a session a `cs <name> --remote` server serves, --force or not, as
+    # it refuses an open: the server and the sessions it starts run in it.
     for _name in "${names[@]}"; do
         _refuse_live_other_session "$_name" "$SESSIONS_ROOT/$_name/.cs" remove
         _refuse_base_with_live_feature "$_name" remove
+        _remote_refuse_live "$_name" "$SESSIONS_ROOT/$_name/.cs" ""
     done
     for _name in "${names[@]}"; do
         _remove_one_session "$_name" "$force" "$delete_files"
@@ -14300,6 +14344,17 @@ launch_claude_code() {
         fi
         if [ "${_consume:-0}" = 1 ]; then
             local _has_brief=0 _qdir
+            # The spawner becomes the worker's report-back address, in
+            # spawned-by and in the kick's `cs -msg <spawner>`, so a seed
+            # being taken has it held to the session-name rules cs -spawn
+            # holds it to, in a subshell since both rules exit on a bad name.
+            # A seed that breaks them is refused before anything is written
+            # or queued, and the trap puts it back. A seed left staged or
+            # declined above is not taken, so nothing is asked of it.
+            if [ -n "$_spawner" ] \
+                && ! ( cs_split_worktree_name "$_spawner" || validate_session_name "$_spawner" ) >/dev/null 2>&1; then
+                error "Spawn seed $_seed names a spawner that is not a session name: $(_cs_plain_name "$_spawner" 80) (seed kept; remove it or re-run cs -spawn, then re-open the session)"
+            fi
             # The brief is written in before any task is queued, and a write
             # that fails stops the launch with the seed still staged, so the
             # next open retries. Consuming the seed regardless would start the
@@ -15059,27 +15114,6 @@ _remote_claude_bin() {  # [mode]
     _version_at_least "$version" "$_REMOTE_MIN_CLAUDE_VERSION" \
         || error "cs --remote needs Claude Code $_REMOTE_MIN_CLAUDE_VERSION or later for claude remote-control; $found is $version. Update Claude Code, then retry."
     _CS_REMOTE_BIN="$found"
-}
-
-# The pid of the remote-control server serving session <name>, from its
-# .cs/local/remote.pid, when that pid runs `remote-control --name <name>`.
-# Fails otherwise. A server whose release never ran (its process group
-# killed with SIGKILL, a crash, a restart) leaves the file behind, and its pid
-# can later belong to any program, so a running pid alone proves nothing; the
-# argv is matched as the live-duplicate guard in launch_claude_code matches
-# --name, padded so demo does not match demo-2. ps is called directly, not
-# through CS_PS_BIN: that seam blanks the machine-wide scan in tests, and this
-# asks about one pid.
-_remote_server_pid() {  # meta_dir, session_name
-    local f="$1/local/remote.pid" pid="" args
-    [ -f "$f" ] || return 1
-    IFS= read -r pid < "$f" 2>/dev/null || true
-    case "$pid" in ''|*[!0-9]*) return 1 ;; esac
-    args=$(ps -ww -o args= -p "$pid" 2>/dev/null) || return 1
-    case " $args " in
-        *" remote-control --name $2 "*) printf '%s' "$pid" ;;
-        *) return 1 ;;
-    esac
 }
 
 # The refusals an open meets when the session's lock is held by a live

@@ -153,27 +153,6 @@ _remote_claude_bin() {  # [mode]
     _CS_REMOTE_BIN="$found"
 }
 
-# The pid of the remote-control server serving session <name>, from its
-# .cs/local/remote.pid, when that pid runs `remote-control --name <name>`.
-# Fails otherwise. A server whose release never ran (its process group
-# killed with SIGKILL, a crash, a restart) leaves the file behind, and its pid
-# can later belong to any program, so a running pid alone proves nothing; the
-# argv is matched as the live-duplicate guard in launch_claude_code matches
-# --name, padded so demo does not match demo-2. ps is called directly, not
-# through CS_PS_BIN: that seam blanks the machine-wide scan in tests, and this
-# asks about one pid.
-_remote_server_pid() {  # meta_dir, session_name
-    local f="$1/local/remote.pid" pid="" args
-    [ -f "$f" ] || return 1
-    IFS= read -r pid < "$f" 2>/dev/null || true
-    case "$pid" in ''|*[!0-9]*) return 1 ;; esac
-    args=$(ps -ww -o args= -p "$pid" 2>/dev/null) || return 1
-    case " $args " in
-        *" remote-control --name $2 "*) printf '%s' "$pid" ;;
-        *) return 1 ;;
-    esac
-}
-
 # The refusals an open meets when the session's lock is held by a live
 # process: a session a remote-control server serves takes no other open, not
 # even a forced one (one claude family per session directory), and

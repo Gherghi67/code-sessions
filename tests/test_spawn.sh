@@ -808,6 +808,31 @@ test_launch_keeps_the_seed_when_its_tasks_cannot_be_queued() {
 # An open that cannot record the spawner stops before it queues anything, so
 # the seed it keeps is the only copy of its tasks: the queue is neither filled
 # nor armed, and the retry that follows queues each task once.
+# The spawner line becomes the worker's report-back address, in
+# .cs/local/spawned-by and in the kick prompt's `cs -msg <spawner>`, so the open
+# holds it to cs's session-name rules, as cs -spawn holds the name it writes
+# there. A seed whose spawner breaks them is refused before anything is
+# written or queued, and stays staged as it was; the refusal names the seed
+# and prints the line as a plain name.
+test_launch_refuses_a_seed_whose_spawner_is_not_a_session_name() {
+    _stage_seed 'boss; cs -rm boss' "job A"
+    local staged rc=0 out
+    staged=$(cat "$(SEED)")
+    out=$(_launch_worker) || rc=$?
+    assert_eq "1" "$rc" "the open stops" || return 1
+    assert_eq "Error: Spawn seed $(SEED) names a spawner that is not a session name: boss__cs_-rm_boss (seed kept; remove it or re-run cs -spawn, then re-open the session)" \
+        "$(tail -1 <<< "$out")" "the refusal names the seed and the spawner line" || return 1
+    assert_eq "$staged" "$(cat "$(SEED)")" "the seed is staged again as it was" || return 1
+    assert_file_not_exists "$(WQ)/spawned-by" "no spawner is recorded" || return 1
+    assert_eq "0" "$(WQ_COUNT)" "nothing is queued" || return 1
+    assert_output_not_contains "$out" "Spawned by" "no kick is handed to claude" || return 1
+    # A feature session's name, <base>@<task>, is a spawner the rules admit.
+    _stage_seed 'boss@review' "job B"
+    out=$(_launch_worker) || { echo "  the open over a feature spawner failed: $out"; return 1; }
+    assert_eq "boss@review" "$(cat "$(WQ)/spawned-by")" "a feature spawner is recorded" || return 1
+    assert_output_contains "$out" "cs -msg boss@review -k result" "a feature spawner gets the reply wiring" || return 1
+}
+
 test_launch_that_cannot_record_the_spawner_queues_nothing() {
     _launch_worker >/dev/null || return 1
     mkdir "$(WQ)/spawned-by"
@@ -1048,6 +1073,7 @@ run_test test_launch_terminated_after_a_newer_seed_sets_the_claimed_one_aside
 run_test test_launch_failing_after_the_read_leaves_no_copy_of_the_seed
 run_test test_launch_keeps_the_seed_when_its_tasks_cannot_be_queued
 run_test test_launch_that_cannot_record_the_spawner_queues_nothing
+run_test test_launch_refuses_a_seed_whose_spawner_is_not_a_session_name
 run_test test_launch_takes_back_the_tasks_it_queued_when_a_later_one_fails
 run_test test_launch_names_the_tasks_it_could_not_take_back
 run_test test_launch_foreign_seed_y_consumes

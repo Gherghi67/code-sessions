@@ -1026,6 +1026,31 @@ test_remove_live_other_session_refused_even_with_force() {
     assert_file_exists "$dir/.cs/local/queue/0001" "the receiver and its queue survive" || return 1
 }
 
+# A session `cs <name> --remote` serves is refused as the open refuses it, with
+# --force too, naming the server: removing it would delete the directory the
+# server and the conversations it starts run in. The stand-in server is a
+# process whose argv carries `remote-control --name <name>`, as the real
+# server's does, holding the lock and .cs/local/remote.pid.
+test_remove_refuses_a_served_session_with_and_without_force() {
+    local dir out rc spid flag seen=""
+    dir=$(create_test_session served)
+    perl -e 'sleep 60' remote-control --name served --permission-mode default > /dev/null 2>&1 &
+    spid=$!
+    printf '%s\n' "$spid" > "$dir/.cs/session.lock"
+    printf '%s\n' "$spid" > "$dir/.cs/local/remote.pid"
+    for flag in "" --force; do
+        rc=0
+        out=$("$CS_BIN" -rm served $flag </dev/null 2>&1) || rc=$?
+        seen="${seen}[cs -rm served${flag:+ $flag}] rc=$rc kept=$([ -d "$dir" ] && echo yes || echo no) $out
+"
+    done
+    { kill "$spid"; wait "$spid"; } 2>/dev/null
+    local refusal="Error: Session served is served by cs served --remote (remote-control PID $spid); stop it first with Ctrl-C in its window, or close the window."
+    assert_eq "[cs -rm served] rc=1 kept=yes $refusal
+[cs -rm served --force] rc=1 kept=yes $refusal" "${seen%
+}" "cs -rm refuses the served session with and without --force, naming the server" || return 1
+}
+
 # An idle session goes from inside another one exactly as it does today.
 test_remove_idle_other_session_from_inside_a_session() {
     local dir
@@ -1208,6 +1233,7 @@ test_remove_from_inside_a_session_checks_every_name_first() {
 }
 
 run_test test_remove_live_other_session_refused_even_with_force
+run_test test_remove_refuses_a_served_session_with_and_without_force
 run_test test_remove_idle_other_session_from_inside_a_session
 run_test test_remove_live_own_feature_from_its_base_with_force
 run_test test_remove_from_a_feature_refuses_its_live_base_and_a_live_sibling

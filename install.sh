@@ -1282,12 +1282,12 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "d43debfce43c02ff8e952785cfde2f29b39f97de0e701df62112729cf84ef306  bin/cs"
+    "44a0de040e1c0f26a7642acba56c4c28fbe6f941cd2ed95d90c4d22ef3ff0208  bin/cs"
     "42d2f9ecbc9a89f3b119958360fb753962c89df18b51ef7b85db109b2644e7de  bin/cs-secrets"
     "24117fba0eadfb19732feeb82ff9c4ee1772f9bd0297adf19478dd861c3d3735  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
     "12d9604997a1b72088df338d259fbb475c13c3bedb0b611d91d50ebbab2914c5  hooks/cs-resolve.sh"
-    "fe548d449c42f2d93e6497bf34ea0335b1cd40c49d5252a64e0b695293f5d9a6  hooks/cs-shared.sh"
+    "e97751f325caa5a8932bc00bebf15eff9e09172b3b943c47cfb8e5c4d05b8859  hooks/cs-shared.sh"
     "50d63ce0995e68fddd8503700c15f9585d11938c9cd3872a883146de7707c765  hooks/cs-iterm-tab.py"
     "cd7bdb7640403cfa9a9b1c600d1626ba943a609e7ef7ebf3feb6f0ab7af03112  hooks/memory-index-guard.sh"
     "6c9a9db966b02d1d99c24a4358abdcf005a0e56e1c7c2defc7c75d9fde516612  hooks/prompt-rewriter.sh"
@@ -1295,10 +1295,10 @@ CS_PAYLOAD_SHA256=(
     "5f34183b1082edef2ebd27176f1474cac88647b5d8578fccbb548fc262c0694f  hooks/prompt-rewriter-vendor.sh"
     "7f317dc632bd12ded4ea5e13dd5adfdd65b0614a2a7514cbdbeffc325e4c1da0  hooks/wrap-sweep.md"
     "0d304935cf53b79ffa4fe35b1dc2eb7d64952f40f4bb632f642c494760e7ab9c  hooks/wrap-summary.md"
-    "5683a607208877d7d00d62bebd47b1e9d5a402d53115f2a9a7e913fcaf04fc61  hooks/session-start.sh"
+    "7ba59fc546c45b46ffdd315eeb81af6def23a33a896a8c2175f0bc93d72d5dc2  hooks/session-start.sh"
     "cae9775702513f11b1abff031928047766ab69714e3a9b1db82ff080e186f20b  hooks/autosave-commits.sh"
     "349c3e78626fdc783f3a40e257405b44dc50669bc27f7c2ed21be20f85b74ac7  hooks/narrative-reminder.sh"
-    "e6a8487edd40c3afc5c068613bc4f13794925685400748f144e9ae7969c7a83a  hooks/session-end.sh"
+    "6ee7903b4c99d6e01888693635f430b40f42a82d7008fd285feee6f810585c9b  hooks/session-end.sh"
     "81a13835a65f4b4b35bb87493da0df9848de68375ca7ab1525d2d5079cf52bf1  hooks/subagent-context.sh"
     "53b16016dd6d087c3cc3db7e4acf8de6629e149e3b7f326f0731b36809574156  hooks/tool-failure-logger.sh"
     "a9ae37cf52a7dbbd04ffb4940aeab110d1ce3421b01318c4ff9023d52cd29a0d  hooks/session-auto-approve.sh"

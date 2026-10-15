@@ -96,6 +96,18 @@ _lock_collision_menu() {
     esac
 }
 
+# Stops cs, naming <lock file>, when it is anything but a regular file or
+# absent. cs creates and removes the session lock as a regular file: a write
+# or a read would go through a link to whatever it names, a directory would
+# pass for a stale lock that rm cannot remove, and a write to a fifo blocks
+# with no reader while the openers' mutex is held. Called before anything is
+# written.
+_refuse_session_lock_not_a_file() {  # lock_file
+    [ ! -L "$1" ] || error "$1 is a link, where cs keeps the session lock; remove it and open the session again"
+    [ ! -d "$1" ] || error "$1 is a directory, where cs keeps the session lock; remove it and open the session again"
+    [ ! -e "$1" ] || [ -f "$1" ] || error "$1 is not a regular file, where cs keeps the session lock; remove it and open the session again"
+}
+
 # Take the PID-based session lock of <meta_dir> to prevent concurrent access.
 # The lock is taken by creating the file, which the filesystem does for
 # exactly one process (noclobber: the open fails when the file exists), never
@@ -131,6 +143,7 @@ _take_session_lock() {  # meta_dir
         echo -e "${RED}Error: cs needs perl to lock this session ($meta_dir); install perl and retry${NC}" >&2
         exit 1
     fi
+    _refuse_session_lock_not_a_file "$lock_file"
     _cs_lock "$mutex" || return 2
     while :; do
         if ( set -C; echo "$$" > "$lock_file" ) 2>/dev/null; then
@@ -157,8 +170,10 @@ _take_session_lock() {  # meta_dir
             error "Could not take the session lock $lock_file after $attempt attempts (another cs keeps writing it?)"
         fi
         if [ -e "$lock_file" ]; then
-            # PID is dead — stale lock
-            warn "Removing stale session lock (PID ${lock_pid:-unknown})"
+            # PID is dead — stale lock. Its text is whatever the file holds,
+            # which a clone or a link put there can choose, so it is printed
+            # as a plain name.
+            warn "Removing stale session lock (PID $(_cs_plain_name "${lock_pid:-unknown}" 40))"
             rm -f "$lock_file"
         fi
         # The file vanished between the failed create and the look at it, or
@@ -220,7 +235,10 @@ acquire_session_lock() {
     fi
     # The lock records one pid. When this forced open ends first, its
     # exit removes the lock and the other holder runs unprotected;
-    # that is decided, and locks do not record every holder.
+    # that is decided, and locks do not record every holder. A link or a
+    # directory put in the lock's place since it was read is refused, not
+    # written through.
+    _refuse_session_lock_not_a_file "$lock_file"
     echo "$$" > "$lock_file"
     _cs_unlock "$mutex"
     return 0
@@ -235,13 +253,14 @@ acquire_session_lock() {
 # wait) the lock is left as it is, nothing is printed and the status is 0; the
 # lock left behind names a dead pid, and the next open reclaims it. The exit
 # can therefore wait up to five seconds while another cs holds the mutex. Both
-# are decided; do not re-fix.
+# are decided; do not re-fix. A link in the lock's place is never followed
+# and is left where it is, as a directory is.
 release_session_lock() {
     local meta_dir="$1"
     local lock_file="$meta_dir/session.lock"
     local mutex="$meta_dir/session.mutex.lock"
 
-    if [ -f "$lock_file" ]; then
+    if [ ! -L "$lock_file" ] && [ -f "$lock_file" ]; then
         _cs_lock "$mutex" 2>/dev/null || return 0
         local lock_pid
         lock_pid=$(cat "$lock_file" 2>/dev/null || echo "")

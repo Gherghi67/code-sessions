@@ -175,6 +175,152 @@ test_open_reads_the_lock_by_the_one_lock_rule() {
         "the refusal names the pid alone" || return 1
 }
 
+# The stale-lock line prints what the lock holds as a plain name: a lock is a
+# file in the session, which a clone or a link can fill with anything, and
+# none of its newlines or escape bytes reach the terminal. (The launch banner
+# that follows is cs's own colour, so the check is for the lock's sequence.)
+test_stale_lock_line_prints_the_lock_as_a_plain_name() {
+    create_lock_test_session "test-session"
+    printf '123\n\033[31mred' > "$CS_SESSIONS_ROOT/test-session/.cs/session.lock"
+    local out rc=0
+    out=$("$CS_BIN" test-session </dev/null 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the open over the multi-line lock exits 0 (output: $out)" || return 1
+    assert_eq "Removing stale session lock (PID 123___31mred)" "$(grep -F 'session lock' <<< "$out")" \
+        "the line names the lock's text as one plain name" || return 1
+    assert_eq "" "$(grep -F "$(printf '\033[31m')" <<< "$out")" "the lock's escape sequence reaches no line of the output" || return 1
+}
+
+# .cs/session.lock is a file cs creates and removes. A link there is never
+# written through or followed, and a directory is never taken for a stale
+# lock: the open stops before any write, names what it found and leaves it as
+# it was. LOCK_REFUSAL_TAIL is the end of each refusal.
+LOCK_REFUSAL_TAIL="where cs keeps the session lock; remove it and open the session again"
+
+test_open_refuses_a_dangling_link_in_the_locks_place() {
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs" out rc=0
+    create_lock_test_session "test-session"
+    ln -s nonexistent "$meta/session.lock"
+    out=$("$CS_BIN" test-session </dev/null 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the open over a dangling link exits 1" || return 1
+    assert_eq "Error: $meta/session.lock is a link, $LOCK_REFUSAL_TAIL" "$(tail -1 <<< "$out")" \
+        "the refusal names the link" || return 1
+    assert_eq "nonexistent" "$(readlink "$meta/session.lock")" "the dangling link is left as it was" || return 1
+    assert_not_exists "$meta/nonexistent" "nothing is created where the link points" || return 1
+}
+
+# A link to a file in the session that holds a live pid, with --force, which
+# writes the lock over a live holder: the file keeps its content.
+test_forced_open_refuses_a_link_to_a_session_file_in_the_locks_place() {
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs" out rc=0
+    create_lock_test_session "test-session"
+    sleep 300 &
+    local live_pid=$!
+    printf '%s\n' "$live_pid" > "$meta/brief.md"
+    ln -s brief.md "$meta/session.lock"
+    out=$("$CS_BIN" test-session --force </dev/null 2>&1) || rc=$?
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    assert_eq "1" "$rc" "the forced open over a link to a session file exits 1" || return 1
+    assert_eq "Error: $meta/session.lock is a link, $LOCK_REFUSAL_TAIL" "$(tail -1 <<< "$out")" \
+        "the refusal names the link" || return 1
+    assert_eq "$live_pid" "$(cat "$meta/brief.md")" "the file the link names is unchanged" || return 1
+    assert_eq "brief.md" "$(readlink "$meta/session.lock")" "the link is left as it was" || return 1
+}
+
+test_open_refuses_a_directory_in_the_locks_place() {
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs" out rc=0
+    create_lock_test_session "test-session"
+    mkdir "$meta/session.lock"
+    out=$("$CS_BIN" test-session </dev/null 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the open over a directory exits 1" || return 1
+    assert_eq "Error: $meta/session.lock is a directory, $LOCK_REFUSAL_TAIL" "$(tail -1 <<< "$out")" \
+        "the refusal names the directory" || return 1
+    assert_dir "$meta/session.lock" "the directory is left as it was" || return 1
+}
+
+# A fifo in the lock's place is refused before the open writes to it: a write
+# would block with no reader, holding the openers' mutex. perl's alarm ends a
+# blocked open, so the test fails instead of hanging; the output goes to a
+# file, since a writer left blocked on the fifo would hold a $( ) open, and a
+# non-blocking read of the fifo then lets any such writer finish.
+test_open_refuses_a_fifo_in_the_locks_place() {
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs" out rc=0
+    create_lock_test_session "test-session"
+    mkfifo "$meta/session.lock"
+    perl -e 'alarm 20; exec @ARGV or die' "$CS_BIN" test-session </dev/null > "$TEST_TMPDIR/fifo-open.out" 2>&1 || rc=$?
+    perl -MFcntl -e 'sysopen(my $f, $ARGV[0], O_RDONLY | O_NONBLOCK) or exit; select(undef, undef, undef, 0.5); sysread($f, my $b, 64)' "$meta/session.lock"
+    out=$(cat "$TEST_TMPDIR/fifo-open.out")
+    assert_eq "1" "$rc" "the open over a fifo exits 1" || return 1
+    assert_eq "Error: $meta/session.lock is not a regular file, $LOCK_REFUSAL_TAIL" "$(tail -1 <<< "$out")" \
+        "the refusal names the fifo" || return 1
+    [ -p "$meta/session.lock" ] || { echo "  FAIL: the fifo is left as it was"; return 1; }
+}
+
+# The release at an open's exit never follows a link in the lock's place, even
+# one naming a file that holds this open's pid. The link is put there after the
+# open took the lock, by the ps the live-duplicate guard runs (CS_PS_BIN): it
+# moves the open's pid into a session file, puts a link to that file in the
+# lock's place, and reports a claude already running under the session's name,
+# so the open stops and its exit trap releases the lock.
+test_release_leaves_a_link_in_the_locks_place() {
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs" out rc=0
+    create_lock_test_session "test-session"
+    cat > "$TEST_TMPDIR/ps" << PS
+#!/bin/bash
+meta='$meta' copy='$TEST_TMPDIR/held.copy'
+PS
+    cat >> "$TEST_TMPDIR/ps" << 'PS'
+cat "$meta/session.lock" > "$meta/held"
+cp "$meta/held" "$copy"
+rm -f "$meta/session.lock"
+ln -s held "$meta/session.lock"
+echo "claude --name test-session "
+PS
+    chmod +x "$TEST_TMPDIR/ps"
+    out=$(CS_PS_BIN="$TEST_TMPDIR/ps" "$CS_BIN" test-session </dev/null 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the open stops at the live-duplicate guard (output: $out)" || return 1
+    assert_eq "held" "$(readlink "$meta/session.lock")" "the release leaves the link in the lock's place" || return 1
+    assert_eq "$(cat "$TEST_TMPDIR/held.copy")" "$(cat "$meta/held")" "the file the link names is unchanged" || return 1
+}
+
+# The collision menu waits on a person, and a link can take the lock's place
+# while it does: choosing force then refuses the link, naming it, rather than
+# writing through it. The open's output comes through a fifo, so the link goes
+# in once the menu's last row is printed (the first check is long past) and
+# the keypress is written only after that.
+test_force_from_the_menu_refuses_a_link_put_in_the_locks_place_meanwhile() {
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs" line rest rc=0 cs_pid
+    create_lock_test_session "test-session"
+    sleep 300 &
+    local live_pid=$!
+    printf '%s\n' "$live_pid" > "$meta/session.lock"
+    printf '%s\n' "$live_pid" > "$meta/brief.md"
+    mkfifo "$TEST_TMPDIR/keys" "$TEST_TMPDIR/menu"
+    exec 4<>"$TEST_TMPDIR/keys"
+    PATH="$(_path_without_picker)" CS_ASSUME_TTY=1 "$CS_BIN" test-session < "$TEST_TMPDIR/keys" > "$TEST_TMPDIR/menu" 2>&1 &
+    cs_pid=$!
+    exec 5<"$TEST_TMPDIR/menu"
+    while IFS= read -r -t 30 -u 5 line; do
+        case "$line" in *cancel*) break ;; esac
+    done
+    case "$line" in
+        *cancel*) ;;
+        *) exec 4>&- 5<&-; kill "$live_pid" "$cs_pid" 2>/dev/null; echo "  FAIL: the collision menu never showed"; return 1 ;;
+    esac
+    rm -f "$meta/session.lock"
+    ln -s brief.md "$meta/session.lock"
+    printf '1' >&4
+    exec 4>&-
+    rest=$(cat <&5)
+    exec 5<&-
+    wait "$cs_pid" || rc=$?
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    assert_eq "1" "$rc" "force over a link put in the lock's place exits 1 (output: $rest)" || return 1
+    assert_eq "Error: $meta/session.lock is a link, $LOCK_REFUSAL_TAIL" "$(tail -1 <<< "$rest")" \
+        "the refusal names the link" || return 1
+    assert_eq "$live_pid" "$(cat "$meta/brief.md")" "the file the link names is unchanged" || return 1
+    assert_eq "brief.md" "$(readlink "$meta/session.lock")" "the link is left as it was" || return 1
+}
+
 test_lock_cleaned_on_session_end() {
     create_lock_test_session "test-session"
 
@@ -1167,6 +1313,13 @@ run_test test_lock_prevents_duplicate_session
 run_test test_stale_lock_is_reclaimed
 run_test test_force_overrides_live_lock
 run_test test_open_reads_the_lock_by_the_one_lock_rule
+run_test test_stale_lock_line_prints_the_lock_as_a_plain_name
+run_test test_open_refuses_a_dangling_link_in_the_locks_place
+run_test test_forced_open_refuses_a_link_to_a_session_file_in_the_locks_place
+run_test test_open_refuses_a_directory_in_the_locks_place
+run_test test_open_refuses_a_fifo_in_the_locks_place
+run_test test_release_leaves_a_link_in_the_locks_place
+run_test test_force_from_the_menu_refuses_a_link_put_in_the_locks_place_meanwhile
 run_test test_lock_cleaned_on_session_end
 run_test test_session_end_keeps_the_lock_for_a_child_that_inherited_the_contract
 run_test test_session_end_removes_the_lock_and_marks_the_lead_claim_ended

@@ -1,5 +1,5 @@
 # ABOUTME: Actor identity, narrative budget, private-dir, tmux window-title, atomic file rewrite, state-file
-# ABOUTME: lock, session-lock reading and settings.json rewrite code that cs AND its hooks run. build.sh folds this into bin/cs and copies it to hooks/cs-shared.sh.
+# ABOUTME: lock, session-lock reading, remote-control server check and settings.json rewrite code that cs AND its hooks run. build.sh folds this into bin/cs and copies it to hooks/cs-shared.sh.
 
 # Normalize an arbitrary identity string to a filesystem-safe slug.
 _slugify() {
@@ -645,6 +645,28 @@ live_lock_pid() {  # meta_dir
     [ -n "$pid" ] && [ "${#pid}" -le 10 ] && [ "$pid" -le 2147483647 ] || return 0
     kill -0 "$pid" 2>/dev/null || return 0
     echo "$pid"
+}
+
+# The pid of the remote-control server serving session <name>, from its
+# .cs/local/remote.pid, when that pid runs `remote-control --name <name>`.
+# Fails otherwise. A server whose release never ran (its process group
+# killed with SIGKILL, a crash, a restart) leaves the file behind, and its pid
+# can later belong to any program, so a running pid alone proves nothing; the
+# argv is matched as the live-duplicate guard in launch_claude_code matches
+# --name, padded so demo does not match demo-2. ps is called directly, not
+# through CS_PS_BIN: that seam blanks the machine-wide scan in tests, and this
+# asks about one pid. cs's opens, cs -rm, cs -live, cs -doctor and the
+# SessionEnd hook all decide "served" here.
+_remote_server_pid() {  # meta_dir, session_name
+    local f="$1/local/remote.pid" pid="" args
+    [ -f "$f" ] || return 1
+    IFS= read -r pid < "$f" 2>/dev/null || true
+    case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+    args=$(ps -ww -o args= -p "$pid" 2>/dev/null) || return 1
+    case " $args " in
+        *" remote-control --name $2 "*) printf '%s' "$pid" ;;
+        *) return 1 ;;
+    esac
 }
 
 # Octal permission bits of a file, as chmod takes them (644), read through a

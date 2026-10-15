@@ -43,7 +43,9 @@ teardown_failed() {  # what
 #   serve     say "ready" on $FAKE_READY_FIFO, then wait for a signal; HUP,
 #             INT and TERM are logged and end it with 0, as the real server
 #             does; with no signal in 120 s it exits 9, so a run that
-#             loses its server never hangs the suite.
+#             loses its server never hangs the suite. When FAKE_CLOUD_SESSION
+#             names a script, the server first runs it to its end as a child,
+#             as a conversation it starts, with the server's environment.
 write_fake_claude() {
     mkdir -p "$TEST_TMPDIR/bin"
     cat > "$TEST_TMPDIR/bin/claude" << 'FAKE'
@@ -86,6 +88,7 @@ case "$mode" in
         trap 'on_signal HUP' HUP
         trap 'on_signal INT' INT
         trap 'on_signal TERM' TERM
+        [ -z "${FAKE_CLOUD_SESSION:-}" ] || bash "$FAKE_CLOUD_SESSION"
         mkfifo "$FAKE_READY_FIFO.hold"
         exec 4<>"$FAKE_READY_FIFO.hold"
         printf 'ready\n' > "$FAKE_READY_FIFO"
@@ -133,7 +136,7 @@ setup() {
     write_fake_tmux
     export PATH="$TEST_TMPDIR/bin:$PATH"
     export CLAUDE_CODE_BIN="claude"
-    unset FAKE_CLAUDE_MODE FAKE_CLAUDE_VERSION ANTHROPIC_API_KEY CS_REMOTE_WINDOW TMUX 2>/dev/null || true
+    unset FAKE_CLAUDE_MODE FAKE_CLAUDE_VERSION FAKE_CLOUD_SESSION ANTHROPIC_API_KEY CS_REMOTE_WINDOW TMUX 2>/dev/null || true
     unset CLAUDE_SESSION_NAME CLAUDE_SESSION_DIR CLAUDE_SESSION_META_DIR CS_TERM_THEME CS_TERM_BG_RGB 2>/dev/null || true
     SERVE_PID=""
     STARTED_PIDS=""
@@ -675,6 +678,230 @@ test_local_open_is_refused_while_the_session_is_served() {
     assert_eq "0" "$SERVE_RC" "the server stopped cleanly" || return 1
 }
 
+# A conversation the server starts, for FAKE_CLOUD_SESSION: a child of the
+# server carrying the server's environment, whose pid Claude Code stamps as
+# CLAUDE_PID. It runs cs's real SessionStart hook, records the claim on the
+# launch and whether the hooks take it for the lead or show it a guest, then
+# runs cs's real SessionEnd hook with a reason other than /clear or /resume
+# and records the lock, remote.pid and the claim. One key=value per line in
+# $TEST_TMPDIR/cloud.log.
+write_cloud_session() {
+    local hooks
+    hooks="$(cd "$SCRIPT_DIR/../hooks" && pwd)"
+    cat > "$TEST_TMPDIR/cloud-session" << CLOUD
+#!/usr/bin/env bash
+hooks='$hooks' log='$TEST_TMPDIR/cloud.log'
+CLOUD
+    cat >> "$TEST_TMPDIR/cloud-session" << 'CLOUD'
+export CLAUDE_PID=$$
+meta="$CLAUDE_SESSION_META_DIR"
+printf '{"session_id":"cloud-1","source":"startup","hook_event_name":"SessionStart"}' \
+    | bash "$hooks/session-start.sh" > /dev/null 2>&1
+. "$hooks/cs-resolve.sh"
+{
+    printf 'cloud_pid=%s\n' "$$"
+    printf 'claim_after_start=%s\n' "$(cat "$meta/local/lead-pid" 2>/dev/null)"
+    if cs_is_lead; then echo "lead=1"; else echo "lead=0"; fi
+    if cs_is_shown_nested_child; then echo "guest=1"; else echo "guest=0"; fi
+} >> "$log"
+printf '{"session_id":"cloud-1","reason":"other","hook_event_name":"SessionEnd"}' \
+    | bash "$hooks/session-end.sh" > /dev/null 2>&1
+{
+    printf 'lock_after_end=%s\n' "$(cat "$meta/session.lock" 2>/dev/null)"
+    printf 'remote_pid_after_end=%s\n' "$(cat "$meta/local/remote.pid" 2>/dev/null)"
+    printf 'claim_after_end=%s\n' "$(cat "$meta/local/lead-pid" 2>/dev/null)"
+} >> "$log"
+CLOUD
+    export FAKE_CLOUD_SESSION="$TEST_TMPDIR/cloud-session"
+}
+
+cloud_value() {  # key
+    sed -n "s/^$1=//p" "$TEST_TMPDIR/cloud.log" | head -1
+}
+
+# A conversation started from the phone is the lead of the session the server
+# holds: it claims the server's launch, so the hooks take it for the lead, and
+# its end marks the claim ended but leaves the server's lock and remote.pid
+# while the server runs. The session stays refused to a local open.
+test_remote_conversation_the_server_starts_is_the_lead_and_keeps_the_lock() {
+    write_cloud_session
+    start_serving demo --remote || return 1
+    local spid cpid rc=0 out
+    spid="$(log_value pid)"
+    cpid="$(cloud_value cloud_pid)"
+    assert_eq "$spid $cpid cloud-1" "$(cloud_value claim_after_start)" "the conversation claims the server's launch" || return 1
+    assert_eq "1" "$(cloud_value lead)" "the hooks take the conversation for the lead" || return 1
+    assert_eq "0" "$(cloud_value guest)" "the hooks do not show the conversation a guest" || return 1
+    assert_eq "$spid" "$(cloud_value lock_after_end)" "the conversation's end leaves the server's lock" || return 1
+    assert_eq "$spid" "$(cloud_value remote_pid_after_end)" "the conversation's end leaves remote.pid" || return 1
+    assert_eq "$spid $cpid cloud-1 ended" "$(cloud_value claim_after_end)" "the conversation's end marks its claim ended" || return 1
+    out=$("$CS_BIN" demo 2>&1 < /dev/null) || rc=$?
+    assert_eq "1" "$rc" "cs demo is refused after the conversation ended" || { printf '%s\n' "$out"; return 1; }
+    assert_eq "Error: Session demo is served by cs demo --remote (remote-control PID $spid); stop it first with Ctrl-C in its window, or close the window." \
+        "$(printf '%s' "$out" | strip_ansi | tail -1)" "the refusal names the server" || return 1
+    stop_serving TERM || return 1
+    assert_eq "0" "$SERVE_RC" "the server stopped cleanly" || return 1
+}
+
+# Session demo as `cs demo --remote` leaves it while it serves, with a process
+# standing in for its server: the stand-in's argv carries
+# `remote-control --name <shown name>`, the session lock and
+# .cs/local/remote.pid name it, and its child stands for a conversation it
+# started from the phone. Leaves the pids in STAND_IN_PID and STAND_IN_CHILD.
+# Called directly, for the reason make_open_session is.
+start_stand_in_server() {  # shown name
+    "$CS_BIN" demo > /dev/null 2>&1 <<< "" || return 1
+    mkfifo "$TEST_TMPDIR/stand-in"
+    exec 3<>"$TEST_TMPDIR/stand-in"
+    perl -e 'my $c = fork(); if ($c == 0) { sleep 60; exit 0 } open(my $f, ">", shift) or exit 1; print $f "$c\n"; close $f; waitpid($c, 0)' \
+        "$TEST_TMPDIR/stand-in" remote-control --name "$1" --permission-mode default > /dev/null 2>&1 &
+    STAND_IN_PID=$!
+    STARTED_PIDS="$STARTED_PIDS $STAND_IN_PID"
+    STAND_IN_CHILD=""
+    read -t 10 -u 3 STAND_IN_CHILD || true
+    [ -n "$STAND_IN_CHILD" ] || { echo "  FAIL: the stand-in server never named its child"; return 1; }
+    STARTED_PIDS="$STARTED_PIDS $STAND_IN_CHILD"
+    printf '%s\n' "$STAND_IN_PID" > "$CS_SESSIONS_ROOT/demo/.cs/session.lock"
+    printf '%s\n' "$STAND_IN_PID" > "$CS_SESSIONS_ROOT/demo/.cs/local/remote.pid"
+}
+
+# Run cs's real <hook> for the stand-in's child with <payload>, in the
+# environment a conversation the server starts inherits from it.
+phone_conversation_hook() {  # hook, payload
+    local sdir="$CS_SESSIONS_ROOT/demo"
+    printf '%s' "$2" | CLAUDE_SESSION_NAME=demo CLAUDE_SESSION_DIR="$sdir" CLAUDE_SESSION_META_DIR="$sdir/.cs" \
+        CS_LEAD_PID="$STAND_IN_PID" CS_LEAD_CLAIM=1 CLAUDE_PID="$STAND_IN_CHILD" \
+        bash "$SCRIPT_DIR/../hooks/$1" > /dev/null 2>&1
+}
+
+# Once the server is gone, the phone lead's end removes the lock it left, as
+# the end of any lead removes a lock naming a process that no longer runs.
+test_phone_lead_end_removes_the_lock_once_its_server_is_gone() {
+    start_stand_in_server demo || return 1
+    local meta="$CS_SESSIONS_ROOT/demo/.cs"
+    phone_conversation_hook session-start.sh '{"session_id":"phone-1","source":"startup","hook_event_name":"SessionStart"}' || return 1
+    assert_eq "$STAND_IN_PID $STAND_IN_CHILD phone-1" "$(cat "$meta/local/lead-pid")" "the conversation claims the server's launch" || return 1
+    kill "$STAND_IN_PID"
+    wait "$STAND_IN_PID" 2>/dev/null || true
+    phone_conversation_hook session-end.sh '{"session_id":"phone-1","reason":"other","hook_event_name":"SessionEnd"}' || return 1
+    assert_file_not_exists "$meta/session.lock" "the end removes the lock of the server that is gone" || return 1
+    assert_eq "$STAND_IN_PID $STAND_IN_CHILD phone-1 ended" "$(cat "$meta/local/lead-pid")" "the end marks the claim ended" || return 1
+}
+
+# A remote.pid whose pid runs remote-control for another session is no server
+# of this one: the lead's end removes the lock that names its own launch.
+test_phone_lead_end_removes_the_lock_when_remote_pid_serves_another_session() {
+    start_stand_in_server demo-2 || return 1
+    local meta="$CS_SESSIONS_ROOT/demo/.cs"
+    phone_conversation_hook session-start.sh '{"session_id":"phone-1","source":"startup","hook_event_name":"SessionStart"}' || return 1
+    assert_eq "$STAND_IN_PID $STAND_IN_CHILD phone-1" "$(cat "$meta/local/lead-pid")" "the conversation claims the launch" || return 1
+    phone_conversation_hook session-end.sh '{"session_id":"phone-1","reason":"other","hook_event_name":"SessionEnd"}' || return 1
+    kill -0 "$STAND_IN_PID" 2>/dev/null || { echo "  FAIL: the process remote.pid names stopped before the end"; return 1; }
+    assert_file_not_exists "$meta/session.lock" "the end removes the lock naming its own launch" || return 1
+}
+
+# A tmux on PATH for the hooks, which run `tmux` itself: one line of argv per
+# call in $TEST_TMPDIR/title-tmux.log, and the pane's @cs_session kept as tmux
+# keeps it, so list-panes answers with the name a set-option gave.
+write_title_tmux() {
+    cat > "$TEST_TMPDIR/bin/tmux" << TMUX
+#!/bin/bash
+log='$TEST_TMPDIR/title-tmux.log' pane='$TEST_TMPDIR/title-tmux.pane'
+TMUX
+    cat >> "$TEST_TMPDIR/bin/tmux" << 'TMUX'
+printf '%s\n' "$*" >> "$log"
+case "$1" in
+    set-option) case " $* " in *" -u "*) rm -f "$pane" ;; *) printf '%s\n' "${!#}" > "$pane" ;; esac ;;
+    list-panes) cat "$pane" 2>/dev/null ;;
+esac
+exit 0
+TMUX
+    chmod +x "$TEST_TMPDIR/bin/tmux"
+}
+
+# Run cs's real <hook> for the stand-in's child inside tmux pane %9.
+phone_conversation_hook_in_tmux() {  # hook, payload
+    TMUX=/tmp/cs-test-tmux,1,0 TMUX_PANE=%9 phone_conversation_hook "$@"
+}
+
+# While the server serves the session, its tmux window keeps the
+# remote:<name> name `cs <name> --remote` gave it: the phone lead's start and
+# end run no tmux title step, so tmux is never called.
+test_phone_lead_leaves_the_servers_tmux_window_name() {
+    start_stand_in_server demo || return 1
+    write_title_tmux
+    local meta="$CS_SESSIONS_ROOT/demo/.cs"
+    phone_conversation_hook_in_tmux session-start.sh '{"session_id":"phone-1","source":"startup","hook_event_name":"SessionStart"}' || return 1
+    assert_eq "$STAND_IN_PID $STAND_IN_CHILD phone-1" "$(cat "$meta/local/lead-pid")" "the conversation is the lead" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/title-tmux.log" "the lead's start calls no tmux" || return 1
+    phone_conversation_hook_in_tmux session-end.sh '{"session_id":"phone-1","reason":"other","hook_event_name":"SessionEnd"}' || return 1
+    assert_file_not_exists "$TEST_TMPDIR/title-tmux.log" "the lead's end calls no tmux" || return 1
+    assert_eq "$STAND_IN_PID" "$(cat "$meta/session.lock")" "the end leaves the server's lock" || return 1
+}
+
+# The lead's start names pane %9's window after the session and its end
+# releases the pane, with exactly the tmux calls the hooks make.
+assert_lead_titles_the_window() {
+    local meta="$CS_SESSIONS_ROOT/demo/.cs" log="$TEST_TMPDIR/title-tmux.log"
+    phone_conversation_hook_in_tmux session-start.sh '{"session_id":"phone-1","source":"startup","hook_event_name":"SessionStart"}' || return 1
+    assert_eq "$STAND_IN_PID $STAND_IN_CHILD phone-1" "$(cat "$meta/local/lead-pid")" "the conversation is the lead" || return 1
+    assert_eq "select-pane -t %9 -T cs: demo
+display-message -p -t %9 #{socket_path}#{window_id}
+set-option -p -t %9 @cs_session demo
+list-panes -t %9 -F #{@cs_session}
+rename-window -t %9 cs: demo
+set-window-option -t %9 allow-rename off
+set-window-option -t %9 allow-set-title off" "$(cat "$log" 2>/dev/null)" "the lead's start titles the pane and names the window" || return 1
+    rm -f "$log"
+    phone_conversation_hook_in_tmux session-end.sh '{"session_id":"phone-1","reason":"other","hook_event_name":"SessionEnd"}' || return 1
+    assert_eq "display-message -p -t %9 #{socket_path}#{window_id}
+set-option -p -u -t %9 @cs_session
+list-panes -t %9 -F #{@cs_session}
+set-window-option -t %9 automatic-rename on
+set-window-option -t %9 allow-rename on
+set-window-option -t %9 allow-set-title on" "$(cat "$log" 2>/dev/null)" "the lead's end releases the pane and the window names itself" || return 1
+}
+
+# With no remote.pid no server serves the session, and the lead titles the
+# window as every lead does.
+test_lead_titles_the_tmux_window_without_a_remote_pid() {
+    start_stand_in_server demo || return 1
+    rm -f "$CS_SESSIONS_ROOT/demo/.cs/local/remote.pid"
+    write_title_tmux
+    assert_lead_titles_the_window || return 1
+}
+
+# A remote.pid whose pid serves another session is no server of this one.
+test_phone_lead_titles_the_tmux_window_when_remote_pid_serves_another_session() {
+    start_stand_in_server demo-2 || return 1
+    write_title_tmux
+    assert_lead_titles_the_window || return 1
+    kill -0 "$STAND_IN_PID" 2>/dev/null || { echo "  FAIL: the process remote.pid names stopped before the end"; return 1; }
+}
+
+# Outside tmux the tab is titled `cs: <name> (remote)` by the server's launch:
+# while the server serves the session, the phone lead's start writes no tab
+# title to the terminal.
+test_phone_lead_writes_no_tab_title_outside_tmux() {
+    start_stand_in_server demo || return 1
+    local meta="$CS_SESSIONS_ROOT/demo/.cs" tty="$TEST_TMPDIR/title-tty"
+    rm -f "$tty"
+    CS_TITLE_TTY="$tty" phone_conversation_hook session-start.sh '{"session_id":"phone-1","source":"startup","hook_event_name":"SessionStart"}' || return 1
+    assert_eq "$STAND_IN_PID $STAND_IN_CHILD phone-1" "$(cat "$meta/local/lead-pid")" "the conversation is the lead" || return 1
+    assert_file_not_exists "$tty" "the lead's start writes no tab title" || return 1
+}
+
+# With no remote.pid no server serves the session, and the lead's start
+# writes the tab title every lead writes outside tmux.
+test_lead_writes_the_tab_title_outside_tmux_without_a_remote_pid() {
+    start_stand_in_server demo || return 1
+    rm -f "$CS_SESSIONS_ROOT/demo/.cs/local/remote.pid"
+    local tty="$TEST_TMPDIR/title-tty"
+    rm -f "$tty"
+    CS_TITLE_TTY="$tty" phone_conversation_hook session-start.sh '{"session_id":"phone-1","source":"startup","hook_event_name":"SessionStart"}' || return 1
+    assert_eq "$(printf '\033]0;cs: demo\007')" "$(cat "$tty" 2>/dev/null)" "the lead's start writes the tab title" || return 1
+}
+
 test_remote_stops_cleanly_when_its_window_hangs_up() {
     start_serving demo --remote || return 1
     assert_file_exists "$CS_SESSIONS_ROOT/demo/.cs/local/remote.pid" "remote.pid is written while serving" || return 1
@@ -935,6 +1162,14 @@ run_test test_remote_refuses_a_wrapper_whose_version_is_not_claude_codes
 run_test test_remote_runs_a_plain_claude_whose_version_has_no_mark
 run_test test_remote_refuses_a_session_open_locally
 run_test test_local_open_is_refused_while_the_session_is_served
+run_test test_remote_conversation_the_server_starts_is_the_lead_and_keeps_the_lock
+run_test test_phone_lead_end_removes_the_lock_once_its_server_is_gone
+run_test test_phone_lead_end_removes_the_lock_when_remote_pid_serves_another_session
+run_test test_phone_lead_leaves_the_servers_tmux_window_name
+run_test test_lead_titles_the_tmux_window_without_a_remote_pid
+run_test test_phone_lead_writes_no_tab_title_outside_tmux
+run_test test_lead_writes_the_tab_title_outside_tmux_without_a_remote_pid
+run_test test_phone_lead_titles_the_tmux_window_when_remote_pid_serves_another_session
 run_test test_remote_stops_cleanly_when_its_window_hangs_up
 run_test test_remote_stops_cleanly_on_ctrl_c
 run_test test_remote_stops_cleanly_when_its_terminal_closes
