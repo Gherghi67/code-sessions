@@ -737,6 +737,26 @@ Error: could not record the accept in $(RCV_META)/local/queue.accepted" \
     assert_eq "1" "$(NEW_COUNT)" "the message stays unread" || return 1
 }
 
+# The accepted message moves into mail/cur/; a cur/ linked out of the session
+# takes nothing: the accept names the link and refuses before it records or
+# queues anything, and the message stays unread.
+test_queue_accept_refuses_a_read_box_linked_out_of_the_session() {
+    _forge_mail 0000000001-task '{"id":"t1","ts":1,"from":"peer","kind":"task","body":"review the tui diff"}'
+    local t o out rc=0
+    t=$(cd "$TEST_TMPDIR" && pwd -P); o="$t/outside"
+    mkdir "$o"
+    rmdir "$(MAILDIR)/cur"
+    ln -s "$o" "$(MAILDIR)/cur"
+    out=$(rcv -queue accept t1 2>&1) || rc=$?
+    assert_eq "" "$(ls -A "$o")" "nothing is moved outside the session" || return 1
+    assert_eq "1" "$rc" "accept exits 1" || return 1
+    assert_eq "cs_mkdir_inside: $(MAILDIR)/cur leads to $o, outside the session $CS_SESSIONS_ROOT/receiver" \
+        "$out" "the refusal names the link" || return 1
+    assert_not_exists "$(RCV_META)/local/queue.accepted" "no accept is recorded" || return 1
+    assert_eq "0" "$(RQUEUE_LEN)" "nothing queued" || return 1
+    assert_eq "1" "$(NEW_COUNT)" "the message stays unread" || return 1
+}
+
 # The read listing is where an agent learns the id it needs to accept with.
 test_read_shows_how_to_accept_a_task() {
     "$CS_BIN" -msg receiver -k task "review the tui diff" >/dev/null 2>&1 || return 1
@@ -1034,6 +1054,7 @@ run_test test_queue_accept_refuses_on_a_receipt_without_a_queued_copy
 run_test test_queue_accept_writes_the_receipt_before_the_queued_copy
 run_test test_queue_accept_serialises_concurrent_accepts
 run_test test_queue_accept_refuses_a_receipt_file_linked_out_of_the_session
+run_test test_queue_accept_refuses_a_read_box_linked_out_of_the_session
 run_test test_read_shows_how_to_accept_a_task
 run_test test_read_offers_no_accept_for_an_id_accept_cannot_take
 run_test test_task_kind_rejects_multiline_body
