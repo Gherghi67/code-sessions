@@ -649,7 +649,7 @@ _tree_state() {
 # under the feature's own name is read and removed by nothing, so every write
 # addressed to a feature but purge is refused, naming the base, before
 # anything is written, locked or created, under either backend.
-test_every_write_refuses_a_feature_session() {
+test_every_write_but_purge_refuses_a_feature_session() {
     local key=age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq0000000
     local meta="$CS_SESSIONS_ROOT/test-session@task/.cs" bindir backend cmd out rc before path
     bindir=$(_make_fake_security)
@@ -4840,7 +4840,7 @@ run_test test_session_verbs_refuse_a_name_that_is_a_path
 run_test test_age_remove_refuses_a_session_the_root_does_not_have
 run_test test_age_remove_refuses_a_link_on_the_way_to_the_recipient
 run_test test_age_remove_refuses_a_name_that_is_not_a_recipient_name
-run_test test_every_write_refuses_a_feature_session
+run_test test_every_write_but_purge_refuses_a_feature_session
 run_test test_purge_of_a_feature_session_removes_what_its_name_holds
 run_test test_export_file_refuses_a_session_the_root_does_not_have
 run_test test_import_file_refuses_a_session_the_root_does_not_have
