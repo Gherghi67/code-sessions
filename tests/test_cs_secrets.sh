@@ -3641,6 +3641,55 @@ EOF
     fi
 }
 
+# One value can hold another (hunter2 inside hunter22). The longer one is
+# replaced first, so no tail of it is left and each marker names its own key.
+# A value is still replaced wherever the file holds it, a line that is no
+# secret included.
+test_migrate_redact_replaces_the_longest_value_first() {
+    local art="$CS_SESSIONS_ROOT/test-session/.cs/artifacts" out rc=0 want
+    mkdir -p "$art"
+    printf '%s\n' '# database' 'password=hunter2' 'db_password=hunter22' \
+        'url=postgres://app:hunter2@db.example.com/main' > "$art/db.env"
+    out=$("$CS_SECRETS_BIN" migrate --redact 2>&1) || rc=$?
+    assert_eq "0" "$rc" "migrate --redact exits 0: $out" || return 1
+    assert_eq "Scanning artifacts for plaintext secrets...
+
+  Migrated: password (from db.env)
+  Migrated: db_password (from db.env)
+
+Migrated 2 secret(s) to secure storage.
+Updated 1 file(s) with redacted values." "$out" "migrate reports both secrets and the one file" || return 1
+    want=$(printf '%s\n' '# database' 'password=[REDACTED: stored in keychain as password]' \
+        'db_password=[REDACTED: stored in keychain as db_password]' \
+        'url=postgres://app:[REDACTED: stored in keychain as password]@db.example.com/main'; printf x)
+    assert_eq "$want" "$(cat "$art/db.env"; printf x)" "no tail of a longer value is left, and each marker names its key" || return 1
+    assert_eq "hunter2" "$("$CS_SECRETS_BIN" get password 2>&1)" "password is stored as it was" || return 1
+    assert_eq "hunter22" "$("$CS_SECRETS_BIN" get db_password 2>&1)" "db_password is stored as it was" || return 1
+}
+
+# A value can be text the marker itself holds ("as"). Every value is replaced
+# before any marker is put in, so no marker is rewritten by a later value.
+test_migrate_redact_keeps_every_marker_whole() {
+    local art="$CS_SESSIONS_ROOT/test-session/.cs/artifacts" out rc=0 want
+    mkdir -p "$art"
+    printf '%s\n' 'api_key=realvalue1' 'secret_key=as' 'note=as agreed' > "$art/keys.env"
+    out=$("$CS_SECRETS_BIN" migrate --redact 2>&1) || rc=$?
+    assert_eq "0" "$rc" "migrate --redact exits 0: $out" || return 1
+    assert_eq "Scanning artifacts for plaintext secrets...
+
+  Migrated: api_key (from keys.env)
+  Migrated: secret_key (from keys.env)
+
+Migrated 2 secret(s) to secure storage.
+Updated 1 file(s) with redacted values." "$out" "migrate reports both secrets and the one file" || return 1
+    want=$(printf '%s\n' 'api_key=[REDACTED: stored in keychain as api_key]' \
+        'secret_key=[REDACTED: stored in keychain as secret_key]' \
+        'note=[REDACTED: stored in keychain as secret_key] agreed'; printf x)
+    assert_eq "$want" "$(cat "$art/keys.env"; printf x)" "every marker is whole, and the short value is replaced where it occurs" || return 1
+    assert_eq "realvalue1" "$("$CS_SECRETS_BIN" get api_key 2>&1)" "api_key is stored as it was" || return 1
+    assert_eq "as" "$("$CS_SECRETS_BIN" get secret_key 2>&1)" "secret_key is stored as it was" || return 1
+}
+
 # ============================================================================
 # Concurrency & durability (encrypted backend)
 # ============================================================================
@@ -4930,6 +4979,8 @@ run_test test_keychain_export_loud_on_read_failure
 run_test test_migrate_partial_write_fails_loud
 run_test test_migrate_redact_replaces_each_value_as_text
 run_test test_migrate_redact_keeps_each_value_off_argv
+run_test test_migrate_redact_replaces_the_longest_value_first
+run_test test_migrate_redact_keeps_every_marker_whole
 
 # Concurrency & durability
 run_test test_encrypted_concurrent_stores_no_lost_update
