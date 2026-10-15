@@ -2973,6 +2973,38 @@ test_retire_ignored_mode_leaves_an_archive_the_base_deleted_and_the_feature_left
 
 run_test test_retire_ignored_mode_leaves_an_archive_the_base_deleted_and_the_feature_left_deleted
 
+# The fuse reads the record of the archive the feature was handed to tell
+# whether the feature changed it. A record that cannot be read refuses the
+# retire before the worktree is removed, as for any other inherited file.
+test_retire_ignored_mode_refuses_when_the_archive_record_cannot_be_read() {
+    local base_dir="$CS_SESSIONS_ROOT/proj" wt="$CS_SESSIONS_ROOT/proj@t1" sha output status=0
+    local record="$wt/.cs/local/inherited-topics/reference_memory_archive.md"
+    mkdir -p "$base_dir/.cs"/{memory,local}
+    printf '%s\n' '- [Memory archive](reference_memory_archive.md): moved pointers' \
+        > "$base_dir/.cs/memory/MEMORY.md"
+    echo "old topic" > "$base_dir/.cs/memory/old.md"
+    _write_memory_archive "$base_dir/.cs/memory" '- [Old](old.md): archived earlier'
+    echo "# P" > "$base_dir/README.md"
+    printf '.cs/\n.claude/settings.local.json\n' > "$base_dir/.gitignore"
+    (cd "$base_dir" && git init -q && git config core.autocrlf false && git add -A && git commit -q -m init)
+    cs_launch "proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    chmod 000 "$record"
+    [ ! -r "$record" ] || return 77
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    find "$CS_SESSIONS_ROOT" -path '*/local/inherited-topics/*' -type f -exec chmod 600 {} + 2>/dev/null
+    assert_eq "1" "$status" "the retire fails: $output" || return 1
+    assert_output_contains "$output" "could not read what the feature inherited for memory/reference_memory_archive.md" \
+        "the error names the archive" || return 1
+    assert_output_contains "$output" "Could not classify the session records in $wt/.cs; nothing was removed" \
+        "the retire refuses before it removes anything" || return 1
+    assert_dir "$wt/.cs/memory" "the worktree and its records are still there" || return 1
+}
+
+run_test test_retire_ignored_mode_refuses_when_the_archive_record_cannot_be_read
+
 # An ignored-mode feature starts with a copy of the base's topics. One the
 # base deleted while the feature was open, and the feature never touched, is
 # not a topic the feature wrote: the fuse leaves it deleted, pointer and all.
