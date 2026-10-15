@@ -729,6 +729,46 @@ test_purge_of_a_feature_session_removes_what_its_name_holds() {
         "$CS_SECRETS_BIN" get API_KEY 2>&1)" "the base's Keychain secret is kept" || return 1
 }
 
+# An option cs-secrets does not take (--session=other: the session goes after
+# --session with a space) is refused, named, before any command runs. Read
+# as a word, it left the session cs-secrets runs in to be acted on: purge
+# purged it. Every command, with the option before it or after it.
+test_an_unknown_option_is_refused_before_any_command_runs() {
+    local key=age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq0000000
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs" bindir backend cmd out rc before
+    bindir=$(_make_fake_security)
+    mkdir -p "$CS_SESSIONS_ROOT/other/.cs" "$meta/age-recipients" "$meta/artifacts"
+    printf 'v1' | "$CS_SECRETS_BIN" set API_KEY >/dev/null 2>&1 || { echo "  FAIL: fixture: could not seed the session's secret"; return 1; }
+    printf 'o1' | "$CS_SECRETS_BIN" --session other set OTHER_KEY >/dev/null 2>&1 || { echo "  FAIL: fixture: could not seed other's secret"; return 1; }
+    printf '%s\n' "$key" > "$meta/age-recipients/peer.pub"
+    printf 'api_key=sk_live_ambient1\n' > "$meta/artifacts/notes.txt"
+    local cmds=("--session=other set NEW_KEY" "--session=other store NEW_KEY" "--session=other get API_KEY" \
+        "--session=other list" "--session=other ls" "--session=other delete API_KEY" "--session=other rm API_KEY" \
+        "--session=other purge" "--session=other rename moved" "--session=other export" "--session=other export-file" \
+        "--session=other import-file" "--session=other migrate" "--session=other migrate --redact" \
+        "--session=other migrate-backend keychain" "--session=other backend" "--session=other age init" \
+        "--session=other age pubkey" "--session=other age add $key" "--session=other age list" "--session=other age ls" \
+        "--session=other age remove peer" "--session=other age rm peer" \
+        "purge --session=other" "age list --session=other")
+    for backend in encrypted keychain; do
+        for cmd in "${cmds[@]}"; do
+            before=$(_tree_state)
+            rm -f "$TEST_TMPDIR/security.argv"
+            rc=0
+            # shellcheck disable=SC2086 # each entry carries its own arguments
+            out=$(printf 'v2' | PATH="$bindir:$PATH" CS_SECRETS_BACKEND=$backend FAKE_SECURITY_ARGVLOG="$TEST_TMPDIR/security.argv" \
+                "$CS_SECRETS_BIN" $cmd 2>&1) || rc=$?
+            assert_eq "1" "$rc" "$backend $cmd exits 1: $out" || return 1
+            assert_eq "Error: unknown option: --session_other. Usage: cs-secrets <command> [options]; run cs-secrets --help for the commands and options." \
+                "$out" "$backend $cmd names the option" || return 1
+            assert_eq "$before" "$(_tree_state)" "$backend $cmd leaves every file as it was" || return 1
+            assert_not_exists "$TEST_TMPDIR/security.argv" "$backend $cmd calls no security command" || return 1
+        done
+    done
+    assert_eq "v1" "$("$CS_SECRETS_BIN" get API_KEY 2>&1)" "the session's secret is kept" || return 1
+    assert_eq "o1" "$("$CS_SECRETS_BIN" --session other get OTHER_KEY 2>&1)" "other's secret is kept" || return 1
+}
+
 # Stored secrets outlive `cs -rm`, so an export under a removed session's name
 # has something to write.
 test_export_file_refuses_a_session_the_root_does_not_have() {
@@ -4891,6 +4931,7 @@ run_test test_age_remove_refuses_a_link_on_the_way_to_the_recipient
 run_test test_age_remove_refuses_a_name_that_is_not_a_recipient_name
 run_test test_every_write_but_purge_refuses_a_feature_session
 run_test test_purge_of_a_feature_session_removes_what_its_name_holds
+run_test test_an_unknown_option_is_refused_before_any_command_runs
 run_test test_export_file_refuses_a_session_the_root_does_not_have
 run_test test_import_file_refuses_a_session_the_root_does_not_have
 run_test test_purge_empty_session
