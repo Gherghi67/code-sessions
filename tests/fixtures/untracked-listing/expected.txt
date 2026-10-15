@@ -1,4 +1,4 @@
-1,234,640 files
+1,234,641 files
     vendor/                                     (1,234,567 files)
     apps/web/node_modules/                      (42 files)
     café/                                       (2 files)
@@ -11,6 +11,7 @@
     backup.txt
     backup?old.txt
     build/                                      (1 file)
+    café ?txt.exe?.md
     docs/draft-01.md
     docs/draft-02.md
     docs/draft-03.md
@@ -18,5 +19,4 @@
     docs/draft-05.md
     docs/draft-06.md
     docs/draft-07.md
-    docs/draft-08.md
-    ... and 11 more
+    ... and 12 more

@@ -181,8 +181,10 @@ mod tests {
     // empty lines; expected.txt holds the count phrase, then the entry lines.
     // A path is written as cs lists it, one per line (`name_of` reads it
     // back). The fixture holds a name with a newline and one with an escape
-    // and a tab, each control character printing as '?', and a directory
-    // named in two-byte characters, which pads by columns.
+    // and a tab, each control character printing as '?', a name with a
+    // direction-flipping and a zero-width character beside an accent and a
+    // space, each of those two characters printing as one '?', and a
+    // directory named in two-byte characters, which pads by columns.
     #[test]
     fn listing_renders_the_shared_fixture() {
         let input = include_str!("../../tests/fixtures/untracked-listing/input.txt");
