@@ -13,8 +13,8 @@ Both are written in parallel from the conversation — narrative is not the upst
 
 ## Steps
 
-Before anything else, from the session root, snapshot the index so step 5 can check this sweep's
-rewrites against it:
+Before anything else, from the session root, snapshot the index and the archive (step 5) so step 5
+can check this sweep's rewrites against them:
 
 ```sh
 bash ~/.claude/hooks/cs/memory-index-guard.sh snapshot
@@ -63,11 +63,13 @@ bash ~/.claude/hooks/cs/memory-index-guard.sh snapshot
      | sort -rn | awk -F'\t' '$1>200' | cut -c1-120                # every over-long pointer, with its text
    ```
 
-   `check` exits 1 when the file is over either budget, when a pointer that was in the snapshot is
-   gone, when a pointer names an entry file that is not in `.cs/memory/`, when a pointer is in both
-   `MEMORY.md` and the archive, or when a bucket entry has no pointer in either file, and names each
-   one. Both budgets live in the script, and every line counts toward the line budget, blank and
-   heading lines too.
+   `check` exits 1 when the file is over either budget, when a pointer that was in `MEMORY.md` or
+   the archive at the snapshot is in neither now, when a pointer names an entry file that is not in
+   `.cs/memory/`, when a pointer is in both `MEMORY.md` and the archive, or when a bucket entry has
+   no pointer in either file, and names each one. A pointer names an entry file when its target is
+   a bare file name ending in `.md`, with no `/` and no `:`; a URL or a `file.md#section` link names
+   none and is not checked, in `MEMORY.md` and the archive alike. Both budgets live in the script,
+   and every line counts toward the line budget, blank and heading lines too.
 
    The FILE size and line count are the hard constraints — they are what truncates. The 200 figure
    above is only a heuristic for finding long pointers: a longer pointer is fine if it carries a rule
@@ -88,14 +90,28 @@ bash ~/.claude/hooks/cs/memory-index-guard.sh snapshot
    A rule that has to fire before a proposal stays in `MEMORY.md`, whatever else is true of its entry:
    "never re-add X", "declined, never re-propose", "rejected". A future session needs it before it
    suggests the thing, and it has no reason to open the archive first.
+   A `narrative.*.md` pointer is never demoted either: cs adds the opening actor's narrative pointer
+   back to `MEMORY.md` whenever `MEMORY.md` lacks it, and the pointer would then be in both files.
 
    Move the line byte for byte: delete it from `MEMORY.md` and append the identical line to the
    archive. Never reword a pointer on its way into the archive. The first demotion creates the
-   archive: copy the frontmatter shape of an existing `reference_` entry, with a `description:` saying
-   it lists pointers moved out of `MEMORY.md` whose entries still apply when their subject comes up,
-   and append its own pointer to `MEMORY.md`, for example
+   archive with exactly these lines, byte for byte, followed by one blank line, so that two clones
+   that each make a first demotion write the same header and their merge keeps one copy of it:
+
+   ```markdown
+   ---
+   name: memory-archive
+   description: "Pointers moved out of MEMORY.md; each entry still applies when its subject comes up"
+   metadata:
+     type: reference
+   ---
+   ```
+
+   It also appends the archive's own pointer to `MEMORY.md`, for example
    `- [Memory archive](reference_memory_archive.md): pointers moved out of this index; open it when a subject is not listed here`.
-   `check` names each pointer this sweep moved as `demoted:` and passes it.
+   Never edit the archive's frontmatter after that: a pass only appends pointer lines to the
+   archive, or deletes one on `duplicate:`. `check` names each pointer this sweep moved as
+   `demoted:` and passes it.
 
    Rewording shortens a line's bytes, never the number of lines: over the line budget, demotion is the
    only remedy, and when no pointer meets either criterion, say so and ask. Over the byte budget alone,
@@ -117,14 +133,16 @@ bash ~/.claude/hooks/cs/memory-index-guard.sh snapshot
    dropped from both files is. If demotion and compression together cannot fit the budget, say so and
    ask; do not resolve it by dropping entries.
 
-   Put a removed pointer back by rewriting it. On `duplicate:`, delete that pointer's line from
-   `MEMORY.md` and keep the archive's: a move stopped half done, by `restore` or by a merge that
-   brought another actor's demotion in beside your index. On `dangling:`, stop and ask: entries are
+   Put a removed pointer back by rewriting it. `duplicate:` is a move stopped half done, by `restore`
+   or by a merge that brought another actor's demotion in beside your index; keep one copy. When
+   the entry is a rule that has to fire before a proposal, its demotion broke the rule
+   above: delete the archive's copy. Otherwise delete the `MEMORY.md` copy. If the two lines differ, the line you keep
+   carries the newer wording. On `dangling:`, stop and ask: entries are
    never deleted, so a pointer whose file is gone means a rename or a lost file only the user can
    account for. If the index is past repair, run
    `bash ~/.claude/hooks/cs/memory-index-guard.sh restore` to return it to the snapshot, then redo this
    sweep's pointer edits. `restore` puts back `MEMORY.md` alone, so redo a demotion by deleting the
-   line `check` then names `duplicate:`. Never finish a sweep with `check` failing.
+   `MEMORY.md` line `check` then names `duplicate:`. Never finish a sweep with `check` failing.
 
    **After rewriting, verify twice.** Re-run `check` to confirm the file still fits and every link survived, and re-read each
    rewritten pointer against its topic file. Syntactic health is not semantic health: a shortened line
