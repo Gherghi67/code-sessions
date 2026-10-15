@@ -5203,21 +5203,23 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// From inside another session, F then y still refuses a live session,
-    /// as `cs -rm --force` refuses it from there, in cs's words.
+    /// From inside another session, a session that opens after its delete
+    /// confirm did is refused at y, in cs's words: the removal reads the
+    /// lock again whatever the confirm saw.
     #[test]
-    fn confirm_delete_f_then_y_refuses_a_live_session_from_another_session() {
+    fn confirm_delete_y_refuses_a_session_that_went_live_from_another_session() {
         use crate::session::{test_caller, test_root};
         let root = std::env::temp_dir().join(format!("cs-test-del-force-other-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("busy/.cs/local")).unwrap();
         let pid = std::process::id();
-        std::fs::write(root.join("busy/.cs/session.lock"), format!("{pid}\n")).unwrap();
         let _guard = test_root::scoped(root.clone());
         let _caller = test_caller::scoped("caller");
         let mut app = app_on(&root, "busy");
 
         app.handle_key(KeyEvent::from(KeyCode::Char('d')));
-        app.handle_key(KeyEvent::from(KeyCode::Char('F')));
+        assert_eq!(app.mode, Mode::ConfirmDelete, "a dormant session opens the confirm");
+        std::fs::write(root.join("busy/.cs/session.lock"), format!("{pid}\n")).unwrap();
         app.delete_countdown_start = Some(std::time::Instant::now() - std::time::Duration::from_secs(60));
         app.handle_key(KeyEvent::from(KeyCode::Char('y')));
 
@@ -5227,6 +5229,125 @@ mod tests {
             format!("Delete failed: session caller cannot remove session busy while it is live (pid {pid}); --force does not override that from another session. Close busy first.")
         );
         assert!(root.join("busy/.cs/session.lock").exists(), "the live session survives");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// From inside another session, d on a live session refuses at once in
+    /// `cs -rm`'s words: no confirm opens, so no [F] is offered that the
+    /// removal would refuse.
+    #[test]
+    fn delete_from_another_session_refuses_a_live_session_before_the_confirm() {
+        use crate::session::{test_caller, test_root};
+        let root = std::env::temp_dir().join(format!("cs-test-del-open-other-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("busy/.cs/local")).unwrap();
+        let pid = std::process::id();
+        std::fs::write(root.join("busy/.cs/session.lock"), format!("{pid}\n")).unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let _caller = test_caller::scoped("caller");
+        let mut app = app_on(&root, "busy");
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+
+        assert_eq!(app.mode, Mode::Normal, "the confirm stays closed");
+        assert_eq!(app.delete_offers, session::RemoveGrants::default(), "nothing is offered");
+        let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+        assert_eq!(
+            status,
+            format!("session caller cannot remove session busy while it is live (pid {pid}); --force does not override that from another session. Close busy first.")
+        );
+        assert!(root.join("busy/.cs/session.lock").exists(), "the live session survives");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// From inside another session, d on a base while one of its features
+    /// is live refuses at once, naming the feature in `cs -rm`'s words.
+    #[test]
+    fn delete_from_another_session_refuses_a_base_with_a_live_feature_before_the_confirm() {
+        use crate::session::{test_caller, test_root};
+        let root = std::env::temp_dir().join(format!("cs-test-del-open-base-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for name in ["proj", "proj@task"] {
+            std::fs::create_dir_all(root.join(name).join(".cs/local")).unwrap();
+        }
+        let pid = std::process::id();
+        std::fs::write(root.join("proj@task/.cs/session.lock"), format!("{pid}\n")).unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let _caller = test_caller::scoped("other");
+        let mut app = app_on(&root, "proj");
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+
+        assert_eq!(app.mode, Mode::Normal, "the confirm stays closed");
+        let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+        assert_eq!(
+            status,
+            format!("session other cannot remove session proj while its feature proj@task is live (pid {pid}); --force does not override that from another session. Close proj@task first.")
+        );
+        assert!(root.join("proj/.cs").is_dir(), "the base is left whole");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// From inside another session, D refuses the whole batch at once when
+    /// any marked session is one `cs -rm` would refuse from there, whichever
+    /// place it holds in the batch; the marks stay for the user to change.
+    #[test]
+    fn batch_delete_from_another_session_refuses_before_the_confirm() {
+        use crate::session::{test_caller, test_root};
+        let root = std::env::temp_dir().join(format!("cs-test-batch-open-other-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for name in ["a-idle", "busy"] {
+            std::fs::create_dir_all(root.join(name).join(".cs/local")).unwrap();
+        }
+        let pid = std::process::id();
+        std::fs::write(root.join("busy/.cs/session.lock"), format!("{pid}\n")).unwrap();
+        let _guard = test_root::scoped(root.clone());
+        let _caller = test_caller::scoped("caller");
+        let mut app = app_on(&root, "busy");
+        for name in ["a-idle", "busy"] {
+            app.marked_sessions.insert(name.to_string());
+        }
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('D')));
+
+        assert_eq!(app.mode, Mode::Normal, "the confirm stays closed");
+        let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+        assert_eq!(
+            status,
+            format!("session caller cannot remove session busy while it is live (pid {pid}); --force does not override that from another session. Close busy first.")
+        );
+        assert_eq!(app.marked_sessions.len(), 2, "the marks stay");
+        assert!(root.join("a-idle/.cs").is_dir(), "nothing in the batch is removed");
+        assert!(root.join("busy/.cs/session.lock").exists(), "the live session survives");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Where `cs -rm` would not refuse, d opens the confirm as before and
+    /// offers [F] on a live row: the caller's own session, a base with a
+    /// live feature from inside that base, and any session from a picker
+    /// outside every session.
+    #[test]
+    fn delete_confirm_opens_where_cs_rm_would_not_refuse_from_the_caller() {
+        use crate::session::{test_caller, test_root};
+        let root = std::env::temp_dir().join(format!("cs-test-del-open-own-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for name in ["busy", "proj", "proj@task"] {
+            std::fs::create_dir_all(root.join(name).join(".cs/local")).unwrap();
+        }
+        let pid = std::process::id();
+        for name in ["busy", "proj@task"] {
+            std::fs::write(root.join(name).join(".cs/session.lock"), format!("{pid}\n")).unwrap();
+        }
+        let _guard = test_root::scoped(root.clone());
+        for (caller, target, offers_f) in [(Some("busy"), "busy", true), (Some("proj"), "proj", false), (None, "busy", true), (None, "proj", false)] {
+            let _caller = caller.map(test_caller::scoped);
+            let mut app = app_on(&root, target);
+
+            app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+
+            assert_eq!(app.mode, Mode::ConfirmDelete, "caller {caller:?}, target {target}");
+            assert_eq!(app.delete_offers.past_live_lock, offers_f, "caller {caller:?}, target {target}");
+        }
         std::fs::remove_dir_all(&root).ok();
     }
 
