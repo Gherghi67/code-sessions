@@ -340,6 +340,25 @@ test_install_refuses_invalid_settings_json() {
     _assert_tree_unchanged "$before" "$fake_home" "install places nothing before it refuses" || return 1
 }
 
+# A settings.json that is not a regular file, here a FIFO, is never read:
+# reading one waits for a writer that never comes. The install refuses it as
+# it refuses one jq cannot parse, before it places anything, and leaves it as
+# it was.
+test_install_refuses_a_settings_json_that_is_not_a_regular_file() {
+    local fake_home="$TEST_TMPDIR/home-fifo-settings" f rc=0 out before
+    f="$fake_home/.claude/settings.json"
+    mkdir -p "$fake_home/.claude"
+    mkfifo "$f"
+    before=$(_tree_listing "$fake_home")
+    _run_bounded 60 env HOME="$fake_home" bash "$INSTALL_SH" < /dev/null > "$TEST_TMPDIR/fifo-settings.out" 2>&1 || rc=$?
+    out=$(cat "$TEST_TMPDIR/fifo-settings.out")
+    assert_eq "1" "$rc" "install exit status (142: still running after 60 s)" || { echo "$out"; return 1; }
+    assert_output_contains "$out" "^Error: $(_bre_literal "$f") is not a regular file, so cs did not read it; left it unchanged; nothing was installed$" \
+        "the error names the file and says nothing was installed" || { echo "$out"; return 1; }
+    [ -p "$f" ] || { echo "  FAIL: the fifo is not left as it was"; return 1; }
+    _assert_tree_unchanged "$before" "$fake_home" "install places nothing before it refuses" || return 1
+}
+
 # A zero-byte settings.json holds nothing to lose: it is created as cs's
 # hooks, like a missing one.
 test_install_fills_an_empty_settings_json() {
@@ -452,6 +471,28 @@ EOF
     jq -e '.env.ALICE == "1" and (.hooks.SessionStart | length > 0)' "$f" >/dev/null 2>&1 \
         || { echo "  FAIL: the installer's change or the user's key was lost"; return 1; }
     assert_not_exists "$f.lock" "the settings lock is released" || return 1
+}
+
+# cs -uninstall reads neither settings.json nor keybindings.json when it is
+# not a regular file (here a FIFO, and a link to one): it names each, leaves
+# it as it was, and finishes, as it does for a file jq cannot parse.
+test_uninstall_leaves_settings_and_keybindings_that_are_not_regular_files_unread() {
+    local fake_home="$TEST_TMPDIR/home-fifo-un" f kb rc=0 out
+    f="$fake_home/.claude/settings.json"
+    kb="$fake_home/.claude/keybindings.json"
+    mkdir -p "$fake_home/.claude" "$fake_home/fifos"
+    mkfifo "$f" "$fake_home/fifos/keys"
+    ln -s "$fake_home/fifos/keys" "$kb"
+    printf 'y\n' | _run_bounded 60 env -u CLAUDE_CONFIG_DIR -u XDG_CONFIG_HOME HOME="$fake_home" "$CS_BIN" -uninstall \
+        > "$TEST_TMPDIR/fifo-un.out" 2>&1 || rc=$?
+    out=$(cat "$TEST_TMPDIR/fifo-un.out")
+    assert_eq "0" "$rc" "uninstall exit status (142: still running after 60 s)" || { echo "$out"; return 1; }
+    assert_output_contains "$out" "^$(_bre_literal "$f") is not a regular file, so cs did not read it; left it unchanged$" \
+        "the settings.json fifo is named" || { echo "$out"; return 1; }
+    assert_output_contains "$out" "^Left $(_bre_literal "$kb") as it is: not JSON with a \"bindings\" array$" \
+        "the keybindings.json link is named" || { echo "$out"; return 1; }
+    [ -p "$f" ] || { echo "  FAIL: the settings.json fifo is not left as it was"; return 1; }
+    [ -L "$kb" ] && [ -p "$fake_home/fifos/keys" ] || { echo "  FAIL: the keybindings.json link and its fifo are not left as they were"; return 1; }
 }
 
 # cs -uninstall has already removed the binaries when it reaches the settings
@@ -2890,26 +2931,6 @@ test_uninstall_removes_only_files_cs_wrote() {
     assert_output_contains "$out" "$home/\.claude/skills/cs/notes\.md" "the kept mod file is named" || return 1
 }
 
-# Runs a command in its own process group and kills the whole group once $1
-# seconds pass: install.sh and cs set an EXIT trap, and a shell holding one
-# puts off a signal until the command substitution it waits on returns, so
-# signalling the shell alone never stops one blocked inside a substitution.
-# Exits with the command's status, or 142 when the time ran out.
-_run_bounded() {  # seconds, command...
-    perl -e '
-        my $secs = shift;
-        my $pid = fork;
-        defined $pid or die "fork: $!\n";
-        if ($pid == 0) { setpgrp(0, 0); exec { $ARGV[0] } @ARGV or die "exec $ARGV[0]: $!\n" }
-        my $late = 0;
-        $SIG{ALRM} = sub { $late = 1; kill "KILL", -$pid };
-        alarm $secs;
-        1 while waitpid($pid, 0) == -1 && $!{EINTR};
-        exit 142 if $late;
-        exit($? & 127 ? 128 + ($? & 127) : $? >> 8);
-    ' "$@"
-}
-
 # A FIFO where cs deploys a file is never read: reading one waits for a
 # writer that never comes. Install keeps it, names it, and finishes. Output
 # goes to a file and the run is bounded (_run_bounded), so a hang fails the
@@ -3507,6 +3528,25 @@ test_rotate_wrap_keys_reinstall_after_yes_is_idempotent() {
         "$(jq -c . "$kb" 2>&1)" "one Global block, each key once" || return 1
 }
 
+# A keybindings.json that is not a regular file, here a link to a FIFO, is
+# never read on a recorded yes: install names it as it names one of a shape
+# cs cannot read, leaves it as it was, and finishes.
+test_rotate_wrap_keys_leave_a_keybindings_json_that_is_not_a_regular_file_unread() {
+    local home="$TEST_TMPDIR/home-fifo-keys" kb rc=0 out
+    kb="$home/.claude/keybindings.json"
+    mkdir -p "$home/.claude" "$home/.config/cs" "$home/fifos"
+    printf 'yes\n' > "$home/.config/cs/option-keys"
+    mkfifo "$home/fifos/keys"
+    ln -s "$home/fifos/keys" "$kb"
+    _run_bounded 60 env -u CLAUDE_CONFIG_DIR -u XDG_CONFIG_HOME HOME="$home" bash "$INSTALL_SH" < /dev/null \
+        > "$TEST_TMPDIR/fifo-keys.out" 2>&1 || rc=$?
+    out=$(cat "$TEST_TMPDIR/fifo-keys.out")
+    assert_eq "0" "$rc" "install exit status (142: still running after 60 s)" || { echo "$out"; return 1; }
+    assert_output_contains "$out" "Rotate/wrap keys: $(_bre_literal "$kb") is not JSON with a \"bindings\" array; left as it is\. Fix it, then run cs -update\.$" \
+        "the keybindings.json link is named" || { echo "$out"; return 1; }
+    [ -L "$kb" ] && [ -p "$home/fifos/keys" ] || { echo "  FAIL: the link and its fifo are not left as they were"; return 1; }
+}
+
 # 8. Uninstall takes back only keys that still hold cs's values, the chords and
 # an older cs's Option+1 / Option+2 alike, keeps every user binding (an
 # unbinding null included), and deletes a file it leaves holding nothing.
@@ -3718,11 +3758,13 @@ run_test test_uninstall_removes_zsh_completion_from_detected_dir
 run_test test_uninstall_removes_zsh_completion_from_default_dir
 run_test test_uninstall_removes_update_cache
 run_test test_install_refuses_invalid_settings_json
+run_test test_install_refuses_a_settings_json_that_is_not_a_regular_file
 run_test test_install_fills_an_empty_settings_json
 run_test test_install_backs_up_settings_json_before_changing_it
 run_test test_install_keeps_the_five_newest_settings_backups
 run_test test_install_keeps_a_concurrent_settings_change
 run_test test_uninstall_leaves_invalid_settings_json_untouched
+run_test test_uninstall_leaves_settings_and_keybindings_that_are_not_regular_files_unread
 run_test test_local_install_prefers_a_freshly_built_picker
 run_test test_local_install_uses_bin_picker_when_nothing_was_built
 run_test test_local_install_keeps_the_origin_record_of_a_linked_picker
@@ -3767,6 +3809,7 @@ run_test test_rotate_wrap_keys_refuse_an_unparseable_file
 run_test test_rotate_wrap_keys_decline_is_remembered
 run_test test_rotate_wrap_keys_non_interactive_writes_nothing_and_says_how
 run_test test_rotate_wrap_keys_reinstall_after_yes_is_idempotent
+run_test test_rotate_wrap_keys_leave_a_keybindings_json_that_is_not_a_regular_file_unread
 run_test test_rotate_wrap_keys_uninstall_removes_only_cs_values
 run_test test_rotate_wrap_keys_follow_claude_config_dir
 run_test test_rotate_wrap_keys_write_through_a_symlink

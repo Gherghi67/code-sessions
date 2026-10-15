@@ -583,6 +583,26 @@ _pty_run() {  # command, args...
     fi
 }
 
+# Runs a command in its own process group and kills the whole group once $1
+# seconds pass: install.sh and cs set an EXIT trap, and a shell holding one
+# puts off a signal until the command substitution it waits on returns, so
+# signalling the shell alone never stops one blocked inside a substitution.
+# Exits with the command's status, or 142 when the time ran out.
+_run_bounded() {  # seconds, command...
+    perl -e '
+        my $secs = shift;
+        my $pid = fork;
+        defined $pid or die "fork: $!\n";
+        if ($pid == 0) { setpgrp(0, 0); exec { $ARGV[0] } @ARGV or die "exec $ARGV[0]: $!\n" }
+        my $late = 0;
+        $SIG{ALRM} = sub { $late = 1; kill "KILL", -$pid };
+        alarm $secs;
+        1 while waitpid($pid, 0) == -1 && $!{EINTR};
+        exit 142 if $late;
+        exit($? & 127 ? 128 + ($? & 127) : $? >> 8);
+    ' "$@"
+}
+
 # --- Launch Helpers ---
 
 # Create an executable stub that prints its environment, so a test can assert
