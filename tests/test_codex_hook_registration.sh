@@ -125,6 +125,37 @@ test_installer_and_uninstaller_preserve_a_mixed_group() {
     assert_file_not_exists "$CODEX_DIR/hooks/cs/autosave-commits.sh" || return 1
 }
 
+# One hook the uninstaller cannot remove leaves the others to go on their own,
+# and the warning names the event that stayed, not one that was removed.
+test_uninstall_removes_the_other_hooks_when_one_fails() {
+    CODEX_DIR="$TEST_TMPDIR/codex-one-fails"
+    mkdir -p "$CODEX_DIR"
+    local fake_home="$TEST_TMPDIR/one-fails-home" event verb tmp
+    mkdir -p "$fake_home"
+    HOME="$fake_home" CODEX_HOME="$CODEX_DIR" CS_INSTALL_ENGINES=codex \
+        bash "$SCRIPT_DIR/../install.sh" </dev/null > "$TEST_TMPDIR/install.log" 2>&1 \
+        || { cat "$TEST_TMPDIR/install.log"; return 1; }
+    # A Stop entry edited into an object, not a list of groups: removing cs's
+    # handler from it fails, as it would for any hooks.json cs cannot read.
+    tmp="$CODEX_DIR/hooks.json.edit"
+    jq --arg stop "$fake_home/.local/bin/cs -codex-hook stop" \
+        '.hooks.Stop = {x: {hooks: [{type: "command", command: $stop}]}}' \
+        "$CODEX_DIR/hooks.json" > "$tmp" && mv "$tmp" "$CODEX_DIR/hooks.json" || return 1
+    printf 'y\nn\nn\n' | HOME="$fake_home" CODEX_HOME="$CODEX_DIR" \
+        env -u CODE_SESSIONS_HOME -u CS_INSTALL_DIR -u CS_CONFIG_DIR -u CS_CACHE_DIR \
+        -u CS_HOOKS_DIR -u CS_CLAUDE_DIR -u CS_SKILLS_DIR -u CS_COMMANDS_DIR \
+        "$fake_home/.local/bin/cs" -uninstall \
+        > "$TEST_TMPDIR/uninstall.log" 2>&1 || { cat "$TEST_TMPDIR/uninstall.log"; return 1; }
+    for event in SessionStart:session-start PostToolUse:files-changed UserPromptSubmit:user-prompt-submit; do
+        verb=${event#*:}; event=${event%%:*}
+        assert_eq 0 "$(jq --arg e "$event" --arg v " -codex-hook $verb" \
+            '[.hooks[$e][]?.hooks[]? | select(.command | endswith($v))] | length' "$CODEX_DIR/hooks.json")" \
+            "cs's $event hook outlived a failed Stop removal" || return 1
+    done
+    assert_file_contains "$TEST_TMPDIR/uninstall.log" "Could not remove the cs hooks for Stop from" || return 1
+    assert_file_not_contains "$TEST_TMPDIR/uninstall.log" "SessionStart entry" || return 1
+}
+
 test_recovery_registration_preserves_mixed_handlers_and_trust() {
     _mixed_group 1
     jq '.hooks.PostToolUse = .hooks.SessionStart | del(.hooks.SessionStart)
@@ -149,5 +180,6 @@ test_recovery_registration_preserves_mixed_handlers_and_trust() {
 run_test test_reinstall_preserves_mixed_group_and_trust
 run_test test_uninstall_preserves_mixed_group_and_moves_only_its_handler_trust
 run_test test_installer_and_uninstaller_preserve_a_mixed_group
+run_test test_uninstall_removes_the_other_hooks_when_one_fails
 run_test test_recovery_registration_preserves_mixed_handlers_and_trust
 report_results
