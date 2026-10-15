@@ -566,7 +566,7 @@ test_doctor_tui_names_a_missing_origin_record() {
     mkdir -p "$TEST_TMPDIR/home/.local/bin" "$TEST_TMPDIR/tui-deployed"
     echo 'picker' > "$TEST_TMPDIR/home/.local/bin/cs-tui"
     output=$(doctor_from "$TEST_TMPDIR/elsewhere")
-    assert_eq "NOTE cs-tui: not checked: no record in $TEST_TMPDIR/tui-deployed/.tui-origin of where $TEST_TMPDIR/home/.local/bin/cs-tui came from; the next install (cs -update, or ./install.sh from your checkout) writes one" \
+    assert_eq "NOTE cs-tui: not checked: nothing in $TEST_TMPDIR/tui-deployed/.tui-origin says where $TEST_TMPDIR/home/.local/bin/cs-tui came from; the next install (cs -update, or ./install.sh from your checkout) records it" \
         "$(tui_row "$output")" "no record: one neutral line naming the fix" || return 1
 }
 
@@ -576,7 +576,7 @@ test_doctor_tui_names_an_origin_record_it_does_not_understand() {
     echo 'picker' > "$TEST_TMPDIR/home/.local/bin/cs-tui"
     record_tui_origin "checkout relative/path"
     output=$(doctor_from "$TEST_TMPDIR/elsewhere")
-    assert_eq "NOTE cs-tui: not checked: no record in $TEST_TMPDIR/tui-deployed/.tui-origin of where $TEST_TMPDIR/home/.local/bin/cs-tui came from; the next install (cs -update, or ./install.sh from your checkout) writes one" \
+    assert_eq "NOTE cs-tui: not checked: nothing in $TEST_TMPDIR/tui-deployed/.tui-origin says where $TEST_TMPDIR/home/.local/bin/cs-tui came from; the next install (cs -update, or ./install.sh from your checkout) records it" \
         "$(tui_row "$output")" "a record that names no absolute checkout or release: the same line" || return 1
 }
 
