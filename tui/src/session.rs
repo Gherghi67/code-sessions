@@ -513,6 +513,36 @@ pub mod test_root {
     }
 }
 
+/// Test-only stand-in for `CLAUDE_SESSION_NAME`, the session the picker runs
+/// inside. A test build never reads the variable (the suite may itself run
+/// inside a session), and setting it would race the parallel tests, so each
+/// test thread scopes its own: none scoped is a picker outside every session.
+#[cfg(test)]
+pub mod test_caller {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static CALLER: RefCell<Option<String>> = const { RefCell::new(None) };
+    }
+
+    pub(super) fn current() -> Option<String> {
+        CALLER.with(|c| c.borrow().clone())
+    }
+
+    #[must_use]
+    pub fn scoped(name: &str) -> Guard {
+        CALLER.with(|c| *c.borrow_mut() = Some(name.to_string()));
+        Guard
+    }
+
+    pub struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            CALLER.with(|c| *c.borrow_mut() = None);
+        }
+    }
+}
+
 /// Directory holding a session's cs content files (queue, mailbox): `.cs/private`
 /// in an encrypted session, a link into its vault that reads as empty while it
 /// dangles (the vault locked), else `.cs/local`. cs_private_dir's rule.
@@ -1350,12 +1380,112 @@ pub struct RemoveGrants {
     pub unowned_files: bool,
 }
 
+/// The session the picker runs inside, as cs reads it: `CLAUDE_SESSION_NAME`,
+/// where unset or empty is a terminal outside every session. Under test it is
+/// only ever the [`test_caller`] override.
+fn caller_session_name() -> Option<String> {
+    #[cfg(test)]
+    return test_caller::current();
+    #[cfg(not(test))]
+    std::env::var_os("CLAUDE_SESSION_NAME")
+        .filter(|name| !name.is_empty())
+        .map(|name| name.to_string_lossy().into_owned())
+}
+
+/// Why `cs -rm`, run inside session `caller`, refuses to remove session
+/// `name` at `path` whatever it is granted, when it does; read now. First
+/// `_refuse_live_other_session`: a live session that is not the caller's
+/// own. A session owns itself, matched byte for byte as cs compares names,
+/// and a base (a caller with no '@') owns each `<caller>@<task>`. Then
+/// `_refuse_base_with_live_feature`: from any session but the base itself, a
+/// base (a name with no '@') while one of its features is live. Twin of
+/// those two guards in lib/15-lock.sh; the messages are theirs. Errors when
+/// the sessions root cannot be listed, so a feature it holds is never missed.
+fn cross_session_refusal(root: &Path, name: &str, path: &Path, caller: &str) -> std::io::Result<Option<String>> {
+    if caller == name {
+        return Ok(None);
+    }
+    let owned_feature = !caller.contains('@') && name.strip_prefix(caller).is_some_and(|rest| rest.starts_with('@'));
+    if !owned_feature {
+        if let Some(pid) = read_lock_pid(&path.join(".cs")) {
+            return Ok(Some(format!(
+                "session {caller} cannot remove session {name} while it is live (pid {pid}); --force does not override that from another session. Close {name} first."
+            )));
+        }
+    }
+    if name.contains('@') {
+        return Ok(None);
+    }
+    Ok(live_feature_of(root, name)?.map(|(feature, pid)| {
+        format!(
+            "session {caller} cannot remove session {name} while its feature {feature} is live (pid {pid}); --force does not override that from another session. Close {feature} first."
+        )
+    }))
+}
+
+/// Why `cs -rm`, run inside the session the picker runs in, refuses to
+/// remove session `name` at `path` whatever it is granted
+/// ([`cross_session_refusal`]); `None` outside every session. The delete
+/// confirm asks this before it opens, and the removal asks it again.
+pub fn caller_refusal(root: &Path, name: &str, path: &Path) -> std::io::Result<Option<String>> {
+    match caller_session_name() {
+        Some(caller) => cross_session_refusal(root, name, path, &caller),
+        None => Ok(None),
+    }
+}
+
+/// The first live feature of base `name` in `root`, by entry name, with its
+/// lock's pid. As cs's `"$SESSIONS_ROOT"/*@*` glob reads them, an entry is a
+/// candidate when its name holds an '@' and does not start with '.'; it is
+/// `name`'s when `<root>/<name>@<its task>` is the same file (device and
+/// inode, through links, as `-ef` compares), not when the names match as
+/// strings, since a volume that ignores letter case finds one directory
+/// under several spellings. Its `.cs` must be a directory and its lock live.
+fn live_feature_of(root: &Path, name: &str) -> std::io::Result<Option<(String, u32)>> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
+    let mut entries: Vec<std::ffi::OsString> = fs::read_dir(root)
+        .and_then(|listing| listing.map(|entry| entry.map(|e| e.file_name())).collect())
+        .map_err(|e| {
+            std::io::Error::other(format!(
+                "could not list {} ({e}), so cannot tell whether a feature of {name} is live; refusing to remove it",
+                root.display()
+            ))
+        })?;
+    entries.sort();
+    let same_file = |a: &Path, b: &Path| match (fs::metadata(a), fs::metadata(b)) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+        _ => false,
+    };
+    for entry in entries {
+        let bytes = entry.as_bytes();
+        if bytes.starts_with(b".") {
+            continue;
+        }
+        let Some(at) = bytes.iter().position(|&b| b == b'@') else { continue };
+        let mut own = std::ffi::OsString::from(format!("{name}@"));
+        own.push(std::ffi::OsStr::from_bytes(&bytes[at + 1..]));
+        let feature = root.join(&entry);
+        if !same_file(&root.join(own), &feature) || !feature.join(".cs").is_dir() {
+            continue;
+        }
+        if let Some(pid) = read_lock_pid(&feature.join(".cs")) {
+            return Ok(Some((entry.to_string_lossy().into_owned(), pid)));
+        }
+    }
+    Ok(None)
+}
+
 /// Remove a session at `path` by whatever means its kind requires: symlinks
 /// are unlinked, worktree sessions are unregistered through git, and plain
-/// directories are removed outright. A live session and one holding files
-/// beyond cs's own are refused unless `grants` allows them; a mounted vault
-/// or volume is refused always.
+/// directories are removed outright. Inside a session, what `cs -rm` refuses
+/// from there is refused whatever `grants` allows ([`caller_refusal`]).
+/// A live session and one holding files beyond cs's own are refused unless
+/// `grants` allows them; a mounted vault or volume is refused always.
 pub fn remove_session_path(root: &Path, name: &str, path: &Path, grants: RemoveGrants) -> std::io::Result<()> {
+    if let Some(refusal) = caller_refusal(root, name, path)? {
+        return Err(std::io::Error::other(refusal));
+    }
     // Read the lock now, as `cs -rm`'s session_is_live does: the picker's row
     // was scanned earlier and the session may have opened since.
     if !grants.past_live_lock {
@@ -2750,6 +2880,238 @@ mod tests {
         let grants = RemoveGrants { past_live_lock: true, ..RemoveGrants::default() };
         remove_session_path(&root, "busy", &dir, grants).unwrap();
         assert!(!dir.exists(), "granted the live lock, the removal goes ahead");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A fresh sessions root under the temp dir holding `live` as sessions
+    /// whose lock this test process holds and `dormant` as sessions with no
+    /// lock, each with only cs's own files.
+    fn caller_fixture(tag: &str, live: &[&str], dormant: &[&str]) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("cs-rm-caller-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        for name in live.iter().chain(dormant) {
+            fs::create_dir_all(root.join(name).join(".cs/local")).unwrap();
+        }
+        for name in live {
+            fs::write(root.join(name).join(".cs/session.lock"), format!("{}\n", std::process::id())).unwrap();
+        }
+        root
+    }
+
+    // From inside another session, `cs -rm` refuses a live session before its
+    // own lock check (_refuse_live_other_session, lib/15-lock.sh), in its own
+    // words, so the picker's removal does too.
+    #[test]
+    fn remove_session_path_refuses_another_sessions_live_session() {
+        let root = caller_fixture("other", &["busy"], &["caller"]);
+        let _caller = test_caller::scoped("caller");
+        let pid = std::process::id();
+
+        let err = remove_session_path(&root, "busy", &root.join("busy"), RemoveGrants::default()).unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            format!("session caller cannot remove session busy while it is live (pid {pid}); --force does not override that from another session. Close busy first.")
+        );
+        assert!(root.join("busy/.cs/session.lock").exists(), "a refused session is left whole");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // `cs -rm --force` does not override that refusal from another session,
+    // and neither does the picker's [F] grant.
+    #[test]
+    fn remove_session_path_refuses_another_sessions_live_session_past_the_live_grant() {
+        let root = caller_fixture("other-forced", &["busy"], &["caller"]);
+        let _caller = test_caller::scoped("caller");
+        let pid = std::process::id();
+        let grants = RemoveGrants { past_live_lock: true, unowned_files: true };
+
+        let err = remove_session_path(&root, "busy", &root.join("busy"), grants).unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            format!("session caller cannot remove session busy while it is live (pid {pid}); --force does not override that from another session. Close busy first.")
+        );
+        assert!(root.join("busy/.cs/session.lock").exists(), "a refused session is left whole");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // A session deleting itself is not another session: the plain live check
+    // refuses it and the [F] grant takes it past, as `cs -rm --force` does.
+    // The name is matched byte for byte, as cs compares it: `Busy` is
+    // another session.
+    #[test]
+    fn remove_session_path_leaves_the_callers_own_session_to_the_live_check() {
+        let root = caller_fixture("own", &["busy"], &[]);
+        let pid = std::process::id();
+        {
+            let _caller = test_caller::scoped("Busy");
+            let err = remove_session_path(&root, "busy", &root.join("busy"), RemoveGrants::default()).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!("session Busy cannot remove session busy while it is live (pid {pid}); --force does not override that from another session. Close busy first.")
+            );
+        }
+        let _caller = test_caller::scoped("busy");
+
+        let err = remove_session_path(&root, "busy", &root.join("busy"), RemoveGrants::default()).unwrap_err();
+
+        assert_eq!(err.to_string(), format!("busy is live (pid {pid}) — close it first"));
+        let grants = RemoveGrants { past_live_lock: true, ..RemoveGrants::default() };
+        remove_session_path(&root, "busy", &root.join("busy"), grants).unwrap();
+        assert!(!root.join("busy").exists(), "the caller's own session goes past the live grant");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // A base owns its features (<base>@<task>): from the base, a live feature
+    // is left to the plain live check, as `cs -rm` exempts it. A feature owns
+    // no sibling: from proj@other, proj@task is another session.
+    #[test]
+    fn remove_session_path_leaves_a_bases_own_feature_to_the_live_check() {
+        let root = caller_fixture("own-feature", &["proj@task"], &["proj", "proj@other"]);
+        let pid = std::process::id();
+        let wt = root.join("proj@task");
+        {
+            let _caller = test_caller::scoped("proj@other");
+            let err = remove_session_path(&root, "proj@task", &wt, RemoveGrants::default()).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!("session proj@other cannot remove session proj@task while it is live (pid {pid}); --force does not override that from another session. Close proj@task first.")
+            );
+        }
+        let _caller = test_caller::scoped("proj");
+
+        let err = remove_session_path(&root, "proj@task", &wt, RemoveGrants::default()).unwrap_err();
+
+        assert_eq!(err.to_string(), format!("proj@task is live (pid {pid}) — close it first"));
+        let grants = RemoveGrants { past_live_lock: true, ..RemoveGrants::default() };
+        remove_session_path(&root, "proj@task", &wt, grants).unwrap();
+        assert!(!wt.exists(), "the base removes its own feature past the live grant");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // A feature's worktree points into its base's repository, so from any
+    // session but the base, `cs -rm` refuses a base while one of its features
+    // is live (_refuse_base_with_live_feature, lib/15-lock.sh), --force or
+    // not, the live feature itself included. A feature of another base whose
+    // name starts with this one's is not this base's.
+    #[test]
+    fn remove_session_path_refuses_a_base_with_a_live_feature_from_another_session() {
+        let root = caller_fixture("base", &["proj@task", "projx@task"], &["proj", "other"]);
+        let pid = std::process::id();
+        let all = RemoveGrants { past_live_lock: true, unowned_files: true };
+        for caller in ["other", "proj@task"] {
+            let _caller = test_caller::scoped(caller);
+            for grants in [RemoveGrants::default(), all] {
+                let err = remove_session_path(&root, "proj", &root.join("proj"), grants).unwrap_err();
+                assert_eq!(
+                    err.to_string(),
+                    format!("session {caller} cannot remove session proj while its feature proj@task is live (pid {pid}); --force does not override that from another session. Close proj@task first."),
+                    "caller {caller}, grants {grants:?}"
+                );
+            }
+        }
+        assert!(root.join("proj/.cs").is_dir(), "a refused base is left whole");
+
+        fs::write(root.join("proj@task/.cs/session.lock"), "99999999\n").unwrap();
+        let _caller = test_caller::scoped("other");
+        remove_session_path(&root, "proj", &root.join("proj"), RemoveGrants::default()).unwrap();
+        assert!(!root.join("proj").exists(), "with only another base's feature live, the base goes");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // A feature is the base's when `<base>@<its task>` is the same directory
+    // (`-ef` in _refuse_base_with_live_feature), not when the names match:
+    // an entry that links to proj@task is proj's feature too, and as the
+    // first in sorted order it is the one the refusal names, as cs's glob
+    // names it.
+    #[test]
+    fn remove_session_path_names_a_bases_live_feature_reached_through_a_link() {
+        let root = caller_fixture("base-link", &["proj@task"], &["proj", "other"]);
+        std::os::unix::fs::symlink(root.join("proj@task"), root.join("alias@task")).unwrap();
+        let _caller = test_caller::scoped("other");
+        let pid = std::process::id();
+
+        let err = remove_session_path(&root, "proj", &root.join("proj"), RemoveGrants::default()).unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            format!("session other cannot remove session proj while its feature alias@task is live (pid {pid}); --force does not override that from another session. Close alias@task first.")
+        );
+        assert!(root.join("proj/.cs").is_dir(), "a refused base is left whole");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // cs's `"$SESSIONS_ROOT"/*@*` glob never reads a dot entry, so a
+    // `.proj@task` that is the same directory as proj@task is not the
+    // feature the refusal names.
+    #[test]
+    fn remove_session_path_never_names_a_dot_entry_as_a_bases_live_feature() {
+        let root = caller_fixture("base-dot", &["proj@task"], &["proj", "other"]);
+        std::os::unix::fs::symlink(root.join("proj@task"), root.join(".proj@task")).unwrap();
+        let _caller = test_caller::scoped("other");
+        let pid = std::process::id();
+
+        let err = remove_session_path(&root, "proj", &root.join("proj"), RemoveGrants::default()).unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            format!("session other cannot remove session proj while its feature proj@task is live (pid {pid}); --force does not override that from another session. Close proj@task first.")
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // A base owns only `<base>@<task>`: from proj, projx is another session
+    // whose name merely starts with proj's, and so is projx@task, so a live
+    // one is refused in _refuse_live_other_session's words, past the [F]
+    // grant too.
+    #[test]
+    fn remove_session_path_refuses_a_live_session_whose_name_only_starts_with_the_callers() {
+        let root = caller_fixture("prefix", &["projx", "projx@task"], &["proj"]);
+        let _caller = test_caller::scoped("proj");
+        let pid = std::process::id();
+        let all = RemoveGrants { past_live_lock: true, unowned_files: true };
+        for name in ["projx", "projx@task"] {
+            for grants in [RemoveGrants::default(), all] {
+                let err = remove_session_path(&root, name, &root.join(name), grants).unwrap_err();
+                assert_eq!(
+                    err.to_string(),
+                    format!("session proj cannot remove session {name} while it is live (pid {pid}); --force does not override that from another session. Close {name} first."),
+                    "grants {grants:?}"
+                );
+            }
+            assert!(root.join(name).join(".cs/session.lock").exists(), "a refused {name} is left whole");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // The base itself may remove itself while its feature runs, as `cs -rm`
+    // lets it.
+    #[test]
+    fn remove_session_path_lets_a_base_remove_itself_with_a_live_feature() {
+        let root = caller_fixture("base-self", &["proj@task"], &["proj"]);
+        let _caller = test_caller::scoped("proj");
+
+        remove_session_path(&root, "proj", &root.join("proj"), RemoveGrants::default()).unwrap();
+
+        assert!(!root.join("proj").exists(), "the base removes itself");
+        assert!(root.join("proj@task/.cs/session.lock").exists(), "its feature is left alone");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // Outside every session nothing is another session's: a live session goes
+    // past the [F] grant, and a base goes while its feature runs, as `cs -rm`
+    // from a plain terminal does.
+    #[test]
+    fn remove_session_path_outside_every_session_refuses_neither() {
+        let root = caller_fixture("no-caller", &["busy", "proj@task"], &["proj"]);
+        let grants = RemoveGrants { past_live_lock: true, ..RemoveGrants::default() };
+
+        remove_session_path(&root, "busy", &root.join("busy"), grants).unwrap();
+        remove_session_path(&root, "proj", &root.join("proj"), RemoveGrants::default()).unwrap();
+
+        assert!(!root.join("busy").exists(), "a live session goes past the live grant");
+        assert!(!root.join("proj").exists(), "a base goes while its feature runs");
         let _ = fs::remove_dir_all(&root);
     }
 
