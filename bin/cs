@@ -9501,7 +9501,9 @@ run_conversations() {
     # on stderr by its line number ("W:<n>"), so one bad record never empties
     # the listing. Every rendered line ("O:<text>") has its control characters
     # stripped (tab kept): the fields are recorded data, and an escape sequence
-    # in one must not reach the terminal.
+    # in one must not reach the terminal. The strip compares code points, C0,
+    # DEL and C1 (U+0080-U+009F), rather than a regex class: Oniguruma reads
+    # \x80-\x9f in a class as bytes, which no UTF-8 character matches.
     local line
     jq -rRs --arg current "$current" '
         def str_or_null: type == "string" or . == null;
@@ -9541,7 +9543,9 @@ run_conversations() {
                         + ")")}]
             end)).out[] |
         "O:" + (((.ts as $ts | try ($ts | fromdateiso8601 | strflocaltime("%Y-%m-%d %H:%M")) catch ($ts // "?"))
-            + "  " + .txt) | gsub("[\\x00-\\x08\\x0a-\\x1f\\x7f-\\x9f]"; "")))
+            + "  " + .txt) | explode
+                | map(select(. == 9 or (. >= 32 and . != 127 and (. < 128 or . > 159))))
+                | implode))
     ' "$timeline" | while IFS= read -r line; do
         case "$line" in
             W:*) warn "Skipped $timeline line ${line#W:}: a started or rotated record with a field of the wrong type" >&2 ;;
