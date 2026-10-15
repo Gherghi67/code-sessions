@@ -547,27 +547,16 @@ _git_path_abs() {  # checkout_dir rev-parse-flag
 
 # The same merge policy setup_merge_attributes (lib/45-migrate.sh:4) gives a
 # checkout, written clone-local: merge.ours.driver into the shared config and
-# the four attribute lines into <common>/info/attributes, which every
-# worktree of the repo reads and which dirties no tree. The temp worktree
-# checks out whatever .gitattributes the base has committed, which may lack
-# these lines; without them tracked-mode timeline, narrative and memory
-# archive appends on both sides conflict instead of union-merging.
+# the four attribute lines (_append_merge_attribute_lines) into
+# <common>/info/attributes, which every worktree of the repo reads and which
+# dirties no tree. The temp worktree checks out whatever .gitattributes the
+# base has committed, which may lack these lines; without them tracked-mode
+# timeline, narrative and memory archive appends on both sides conflict
+# instead of union-merging.
 _setup_merge_attributes_clone_local() {  # base_dir common_dir
     git -C "$1" config merge.ours.driver true 2>/dev/null || true
-    local attrs="$2/info/attributes"
     mkdir -p "$2/info"
-    if ! grep -q 'MEMORY\.md merge=ours' "$attrs" 2>/dev/null; then
-        printf '.cs/memory/MEMORY.md merge=ours\n' >> "$attrs"
-    fi
-    if ! grep -q 'timeline\.jsonl merge=union' "$attrs" 2>/dev/null; then
-        printf '.cs/timeline.jsonl merge=union\n' >> "$attrs"
-    fi
-    if ! grep -q 'narrative\.\*\.md merge=union' "$attrs" 2>/dev/null; then
-        printf '.cs/memory/narrative.*.md merge=union\n' >> "$attrs"
-    fi
-    if ! grep -q 'reference_memory_archive\.md merge=union' "$attrs" 2>/dev/null; then
-        printf '.cs/memory/reference_memory_archive.md merge=union\n' >> "$attrs"
-    fi
+    _append_merge_attribute_lines "$2/info/attributes"
 }
 
 # Tracked-.cs mode: MEMORY.md merges with merge=ours, so an edit to it on the

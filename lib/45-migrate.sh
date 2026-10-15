@@ -5,19 +5,36 @@ setup_merge_attributes() {
     local dir="$1"
     git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || return 0
     git -C "$dir" config merge.ours.driver true 2>/dev/null || _CS_MIGRATE_CLEAN=0
-    local ga="$dir/.gitattributes"
-    if ! grep -q 'MEMORY\.md merge=ours' "$ga" 2>/dev/null; then
-        printf '.cs/memory/MEMORY.md merge=ours\n' >> "$ga"
+    _append_merge_attribute_lines "$dir/.gitattributes"
+}
+
+# Append to an attributes file each of cs's merge lines it lacks. The
+# archive's line counts as present only as a whole line, the way git reads
+# one (blanks and a CR around it ignored), so one an earlier append glued
+# onto the line before is added again; the others match anywhere on a line.
+_append_merge_attribute_lines() {  # file
+    local attrs="$1"
+    if ! grep -q 'MEMORY\.md merge=ours' "$attrs" 2>/dev/null; then
+        _append_attribute_line "$attrs" '.cs/memory/MEMORY.md merge=ours'
     fi
-    if ! grep -q 'timeline\.jsonl merge=union' "$ga" 2>/dev/null; then
-        printf '.cs/timeline.jsonl merge=union\n' >> "$ga"
+    if ! grep -q 'timeline\.jsonl merge=union' "$attrs" 2>/dev/null; then
+        _append_attribute_line "$attrs" '.cs/timeline.jsonl merge=union'
     fi
-    if ! grep -q 'narrative\.\*\.md merge=union' "$ga" 2>/dev/null; then
-        printf '.cs/memory/narrative.*.md merge=union\n' >> "$ga"
+    if ! grep -q 'narrative\.\*\.md merge=union' "$attrs" 2>/dev/null; then
+        _append_attribute_line "$attrs" '.cs/memory/narrative.*.md merge=union'
     fi
-    if ! grep -q 'reference_memory_archive\.md merge=union' "$ga" 2>/dev/null; then
-        printf '.cs/memory/reference_memory_archive.md merge=union\n' >> "$ga"
+    if ! grep -qE '^[[:space:]]*\.cs/memory/reference_memory_archive\.md[[:space:]]+merge=union[[:space:]]*$' "$attrs" 2>/dev/null; then
+        _append_attribute_line "$attrs" '.cs/memory/reference_memory_archive.md merge=union'
     fi
+}
+
+# Append one line to an attributes file on a line of its own: a file whose
+# last line has no newline gets one first, or git would read the two as one.
+_append_attribute_line() {  # file line
+    if [ -s "$1" ] && [ -n "$(tail -c 1 "$1")" ]; then
+        printf '\n' >> "$1"
+    fi
+    printf '%s\n' "$2" >> "$1"
 }
 
 # A clone delivers symlinks like any other file, and cs writes through them
