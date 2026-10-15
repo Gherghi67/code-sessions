@@ -110,8 +110,8 @@ No git repo required. No project structure needed. Just a name for what you're w
 | Workspaces, adoption, worktrees, notes, memory, checkpoints, tags, archive, search | Yes | Uses core | Uses core |
 | Workspace preparation | Dispatches selected adapter | Native instructions and memory redirect | Startup context; preserves `AGENTS.md` and Claude configuration |
 | Exact native conversation binding | Separate binding per engine | Claude UUID | Codex thread ID |
-| Conversation rotation (`/rotate`, then `/clear` or `r` at launch) | Handoff store and marker | SessionStart hook, auto-start, forced rotation | SessionStart hook; `/clear` then a message |
-| Engine switch (`/switch`, then exit; cs reopens under the other engine) | `cs -switch`, `pending-switch`, relaunch | Leave with `/exit` (the mod's countdown runs it); arrive from the handoff | Leave with `/quit`; arrive from the handoff (not in an encrypted session) |
+| Conversation rotation (`/rotate`, then `/clear` or `r` at launch) | Handoff store and marker | SessionStart hook, auto-start, forced rotation | SessionStart hook; `/clear` then a message, which cs types itself 20 s after the turn (Stop hook and a watcher) |
+| Engine switch (`/switch`, then exit; cs reopens under the other engine) | `cs -switch`, `pending-switch`, relaunch | Leave with `/exit` (the mod's countdown runs it); arrive from the handoff | Leave with `/quit` (cs types it 20 s after the turn); arrive from the handoff (not in an encrypted session) |
 | Automatic recovery, queue/mail delivery, usage, native status UI | Shared storage; transport depends on adapter | Available | Unavailable |
 
 The feature descriptions above include Claude's native integrations. Codex

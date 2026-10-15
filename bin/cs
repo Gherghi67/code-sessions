@@ -1776,8 +1776,21 @@ session_uptime_secs() {  # meta_dir, now_epoch
     [ "$started" -gt 0 ] || { echo 0; return 0; }
     echo $(( now - started ))
 }
+# Stop a helper an adapter runs beside the native CLI (Codex's automatic
+# /clear watcher), its children first: keys a child types after the CLI is
+# gone would land in the shell. A helper waits for the launcher to end, so the
+# launcher must end it before any wait of its own can block on it.
+_cs_run_stop_helper() {
+    [ -n "${_cs_run_helper_pid:-}" ] || return 0
+    pkill -TERM -P "$_cs_run_helper_pid" 2>/dev/null || true
+    kill -TERM "$_cs_run_helper_pid" 2>/dev/null || true
+    wait "$_cs_run_helper_pid" 2>/dev/null || true
+    _cs_run_helper_pid=""
+}
+
 _cs_run_cleanup() {
     [ "${_cs_run_active:-0}" = 1 ] || return 0
+    _cs_run_stop_helper
     # A signal can arrive while a child runs. Reap it before releasing the lease.
     if [ -n "${_cs_run_child_pid:-}" ]; then
         kill -TERM "$_cs_run_child_pid" 2>/dev/null || true
@@ -1868,7 +1881,7 @@ cs_run_native() { cs_run_child "$@"; }
 cs_launch_session() {  # engine, name, directory, is_new, force, merge, intent
     local engine="$1" name="$2" directory="$3" is_new="$4" force="${5:-}"
     local merge="${6:-}" intent="${7:-auto}" status=0
-    local _cs_run_meta="$directory/.cs" _cs_run_active=0 _cs_run_child_pid="" _cs_run_gate=""
+    local _cs_run_meta="$directory/.cs" _cs_run_active=0 _cs_run_child_pid="" _cs_run_gate="" _cs_run_helper_pid=""
     local saved_exit saved_int saved_term
     local CS_RUN_ID CS_RUN_ENGINE="$engine" CS_RUN_OWNER_PID="$$" CS_LEAD_PID="$$"
     CS_RUN_ID=$(_alloc_uuid) || return 1
@@ -11739,7 +11752,20 @@ _launch_codex_bound() {
     local status=0
     local -a CS_NATIVE_LAUNCH_ARGS
     _cs_native_launch_options codex || return 1
+    # The automatic /clear after a rotation (lib/77-codex-hooks.sh) types into
+    # this terminal, so its watcher runs only where one is attached. A deadline
+    # an earlier run left behind is never this run's. The run's cleanup stops
+    # the watcher too, when a signal ends the launch (lib/16-lifecycle.sh).
+    local autoclear_file
+    autoclear_file=$(_codex_autoclear_file "$session_dir")
+    rm -f "$autoclear_file" 2>/dev/null || true
+    if [ -t 0 ] && [ -t 1 ] && _codex_autoclear_grace >/dev/null; then
+        _codex_autoclear_watch "$session_dir" </dev/null >/dev/null 2>&1 &
+        _cs_run_helper_pid=$!
+    fi
     cs_run_child "$codex_bin" --no-daemon resume "$thread_id" -C "$session_dir" ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} ${kick:+"$kick"} || status=$?
+    _cs_run_stop_helper
+    rm -f "$autoclear_file" 2>/dev/null || true
     if [ "$status" -ne 0 ] && [ -n "$spent" ]; then
         # A switch relaunch's settle reads it too (lib/78-switch.sh).
         _cs_switch_ran=""
@@ -11791,8 +11817,10 @@ cmd_codex_hook() {  # event
     case "${1:-}" in
         session-start) _codex_hook_session_start ;;
         files-changed) _codex_hook_files_changed ;;
+        stop) _codex_hook_stop ;;
+        user-prompt-submit) _codex_hook_user_prompt_submit ;;
         *)
-            printf 'Usage: cs -codex-hook session-start|files-changed\n' >&2
+            printf 'Usage: cs -codex-hook session-start|files-changed|stop|user-prompt-submit\n' >&2
             return 2
             ;;
     esac
@@ -11870,6 +11898,149 @@ _codex_hook_rebind() {  # session_dir, thread_id, handoff
         _timeline_rotated "$session_dir" "$previous" "$thread_id" "$reason" "$handoff" codex || true
     fi
     _timeline_started "$session_dir" codex "$thread_id" clear || true
+}
+
+# The automatic /clear after a rotation: Codex's counterpart of the cs mod's
+# countdown under Claude. No Codex plugin can run a command, so three pieces
+# share the job. The Stop hook, at the end of a turn that leaves a handoff
+# armed, writes a deadline into codex-autoclear. The UserPromptSubmit hook drops
+# it, so a message sent first keeps the conversation; the count starts again
+# when that turn ends. A watcher the Codex launch runs beside the CLI
+# (lib/76-codex.sh) types /clear, then go, into the terminal once the deadline
+# has passed and the same handoff is still armed; with a switch pending it types
+# /quit, and cs reopens the session under the other engine. CS_ROTATE_FORCE_CTX
+# set to off (or 0) leaves the keys to the user, as it does under Claude.
+_codex_autoclear_file() {  # session_dir
+    printf '%s/.cs/local/codex-autoclear\n' "$1"
+}
+
+# The seconds the count runs (CS_CODEX_CLEAR_GRACE, default 20, the mod's
+# grace), or failure when the automatic /clear is off. A CS_ROTATE_FORCE_CTX
+# nobody can read is not off, as in the mod.
+_codex_autoclear_grace() {
+    local force grace="${CS_CODEX_CLEAR_GRACE:-20}"
+    force=$(printf '%s' "${CS_ROTATE_FORCE_CTX:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+    [ "$force" != off ] || return 1
+    ! [[ "$force" =~ ^0+$ ]] || return 1
+    [[ "$grace" =~ ^[0-9]+$ ]] || grace=20
+    printf '%s\n' "$grace"
+}
+
+# Only the conversation this run launched and the session is bound to counts
+# down; a turn in any other thread, or a teammate's, never clears it. The hook
+# must never fail a turn, so every path returns 0.
+_codex_hook_stop() {
+    local input session_id session_dir meta stamp grace bound handoff tmp
+    local action=clear target="" switch_file sysmsg
+    input=$(cat) || input=""
+    [ "${CS_RUN_ENGINE:-}" = codex ] && [ -n "${CS_SESSION_DIR:-}" ] || return 0
+    session_dir="$CS_SESSION_DIR"
+    meta="$session_dir/.cs"
+    [ -d "$meta/local" ] || return 0
+    session_id=$(printf '%s' "$input" | jq -r '.session_id // ""' 2>/dev/null) || session_id=""
+    _codex_thread_id_valid "$session_id" || return 0
+    stamp=$(_codex_autoclear_file "$session_dir")
+    grace=$(_codex_autoclear_grace) || { rm -f "$stamp" 2>/dev/null; return 0; }
+    cs_run_lease_owned "$meta" || return 0
+    bound=$(cs_binding_read "$session_dir" codex 2>/dev/null) || return 0
+    [ "$bound" = "$session_id" ] || return 0
+    handoff=$(_rotation_armed_handoff "$session_dir")
+    [ -n "$handoff" ] || { rm -f "$stamp" 2>/dev/null; return 0; }
+    # A switch this run recorded leaves Codex instead: /quit, and cs relaunches.
+    if switch_file=$(_switch_file "$session_dir") && [ -f "$switch_file" ] \
+        && [ "$(_switch_field "$switch_file" run)" = "${CS_RUN_ID:-}" ]; then
+        target=$(_switch_field "$switch_file" engine)
+        [ -z "$target" ] || action=quit
+    fi
+    tmp=$(mktemp "$stamp.XXXXXX" 2>/dev/null) || return 0
+    if ! { printf 'deadline=%s\nhandoff=%s\nthread=%s\naction=%s\nrun=%s\n' \
+        "$(( $(date +%s) + grace ))" "$handoff" "$session_id" "$action" "${CS_RUN_ID:-}" > "$tmp" \
+        && mv "$tmp" "$stamp"; } 2>/dev/null; then
+        rm -f "$tmp" 2>/dev/null
+        return 0
+    fi
+    if [ "$action" = quit ]; then
+        sysmsg="cs: /quit in $grace s, and cs reopens this session under $target from $handoff. Send a message first to stay."
+    else
+        sysmsg="cs: /clear and go in $grace s, to continue from $handoff. Send a message first to keep this conversation."
+    fi
+    jq -n --arg m "$sysmsg" '{systemMessage: $m}' 2>/dev/null || true
+    return 0
+}
+
+# A message sent while the count runs stops it. Any message does: the hook
+# only removes, so a prompt in another thread costs at most one count.
+_codex_hook_user_prompt_submit() {
+    cat >/dev/null 2>&1 || true
+    [ "${CS_RUN_ENGINE:-}" = codex ] && [ -n "${CS_SESSION_DIR:-}" ] || return 0
+    [ -d "$CS_SESSION_DIR/.cs/local" ] || return 0
+    rm -f "$(_codex_autoclear_file "$CS_SESSION_DIR")" 2>/dev/null || true
+    return 0
+}
+
+# Types text and Enter into the controlling terminal as if typed (TIOCSTI):
+# a character every 100 ms and a pause before Enter, because Codex reads a
+# burst as a paste and its Enter as a newline. Measured on 0.162: "/clear" sent
+# at once stayed in the composer unsent, and a 19-character line at 50 ms a key
+# got a newline where 8 characters at that pace submitted. Fails where the
+# terminal refuses simulated input, as Linux does with dev.tty.legacy_tiocsti=0.
+_codex_type_keys() {  # text
+    python3 -I -c '
+import fcntl, os, sys, termios, time
+fd = os.open("/dev/tty", os.O_RDWR)
+try:
+    for ch in sys.argv[1].encode():
+        fcntl.ioctl(fd, termios.TIOCSTI, bytes([ch]))
+        time.sleep(0.1)
+    time.sleep(0.5)
+    fcntl.ioctl(fd, termios.TIOCSTI, b"\r")
+finally:
+    os.close(fd)
+' "$1" 2>/dev/null
+}
+
+# Whether the terminal the keys would go to is still there. A closed tab hangs
+# it up; the watcher then has nothing to type into and ends.
+_codex_autoclear_terminal() {
+    { : </dev/tty; } 2>/dev/null
+}
+
+# Runs beside the Codex CLI for its lifetime (lib/76-codex.sh) and ends with
+# the run's owner or its terminal; the launcher also stops it once the CLI
+# exits (_cs_run_stop_helper). Once a second it reads the deadline the Stop hook wrote.
+# Past it, and with the same handoff still armed by this run, it consumes the
+# deadline and types the keys. /clear and go are two prompts: Codex starts no
+# turn after /clear, and cs's SessionStart hook hands the new thread the
+# handoff with its first message.
+_codex_autoclear_watch() {  # session_dir
+    local session_dir="$1" stamp deadline handoff action run log_dir
+    stamp=$(_codex_autoclear_file "$session_dir")
+    while kill -0 "${CS_RUN_OWNER_PID:-$$}" 2>/dev/null && _codex_autoclear_terminal; do
+        sleep 1
+        [ -f "$stamp" ] || continue
+        deadline=$(_switch_field "$stamp" deadline)
+        if ! [[ "$deadline" =~ ^[0-9]+$ ]]; then
+            rm -f "$stamp" 2>/dev/null || true
+            continue
+        fi
+        [ "$(date +%s)" -ge "$deadline" ] || continue
+        handoff=$(_switch_field "$stamp" handoff)
+        action=$(_switch_field "$stamp" action)
+        run=$(_switch_field "$stamp" run)
+        rm -f "$stamp" 2>/dev/null || true
+        [ "$run" = "${CS_RUN_ID:-}" ] || continue
+        [ -n "$handoff" ] && [ "$(_rotation_armed_handoff "$session_dir")" = "$handoff" ] || continue
+        if [ "$action" = quit ]; then
+            _codex_type_keys /quit && continue
+        else
+            _codex_type_keys /clear && sleep 2 && _codex_type_keys go && continue
+        fi
+        # The keys did not land: the person still has /clear, as before.
+        if log_dir=$(cs_private_dir "$session_dir/.cs"); then
+            { printf '%s - Automatic /clear: the terminal refused simulated input; run /clear and send go\n' \
+                "$(date '+%Y-%m-%d %H:%M:%S')" >> "$log_dir/session.log"; } 2>/dev/null || true
+        fi
+    done
 }
 # The flow. The switch skill runs rotate's steps (a handoff written and armed
 # in pending-handoff), then `cs -switch [engine] [--resume]` checks the target
@@ -13070,7 +13241,9 @@ run_uninstall() {
     if command -v jq >/dev/null 2>&1 \
         && grep -q -- '-codex-hook ' "${codex_skills_dir%/skills}/hooks.json" 2>/dev/null; then
         if _codex_hooks_unregister "${codex_skills_dir%/skills}" \
-            && _codex_hooks_unregister "${codex_skills_dir%/skills}" PostToolUse post_tool_use files-changed; then
+            && _codex_hooks_unregister "${codex_skills_dir%/skills}" PostToolUse post_tool_use files-changed \
+            && _codex_hooks_unregister "${codex_skills_dir%/skills}" Stop stop stop \
+            && _codex_hooks_unregister "${codex_skills_dir%/skills}" UserPromptSubmit user_prompt_submit user-prompt-submit; then
             info "Removed the cs hook from ${codex_skills_dir%/skills}/hooks.json"
         else
             warn "Could not remove the cs hook from ${codex_skills_dir%/skills}/hooks.json; remove its SessionStart entry by hand"

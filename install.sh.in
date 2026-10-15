@@ -497,9 +497,11 @@ for hook in autosave-commits.sh cs-resolve.sh cs-shared.sh cs-engine-events.sh; 
     chmod 755 "$CODEX_RECOVERY_DIR/$hook"
 done
 
-# One SessionStart hook: after /clear it rebinds the session to the new
-# thread and loads an armed rotation handoff. Codex skips a hook nobody has
-# trusted, so the registration writes its trust hash too.
+# The SessionStart hook: after /clear it rebinds the session to the new
+# thread and loads an armed rotation handoff. Stop and UserPromptSubmit run
+# the automatic /clear's count after a rotation (lib/77-codex-hooks.sh).
+# Codex skips a hook nobody has trusted, so each registration writes its trust
+# hash too.
 if command -v jq >/dev/null 2>&1; then
     installed "Codex hook" "$CODEX_DIR/hooks.json"
     _codex_hooks_register "$CODEX_DIR" "$(_codex_hook_command "$INSTALL_DIR/cs")" \
@@ -507,6 +509,11 @@ if command -v jq >/dev/null 2>&1; then
     _codex_hooks_register "$CODEX_DIR" "$(_codex_hook_command "$INSTALL_DIR/cs" files-changed)" \
         PostToolUse post_tool_use files-changed \
         || warn "Could not register Codex automatic recovery in $CODEX_DIR/hooks.json"
+    _codex_hooks_register "$CODEX_DIR" "$(_codex_hook_command "$INSTALL_DIR/cs" stop)" \
+        Stop stop stop \
+        && _codex_hooks_register "$CODEX_DIR" "$(_codex_hook_command "$INSTALL_DIR/cs" user-prompt-submit)" \
+            UserPromptSubmit user_prompt_submit user-prompt-submit \
+        || warn "Could not register the Codex Stop and UserPromptSubmit hooks in $CODEX_DIR/hooks.json; the automatic /clear after a rotation needs them"
 else
     warn "jq not found - the Codex hook (rotation after /clear) was not registered."
 fi

@@ -1,8 +1,21 @@
 # ABOUTME: Shared run orchestration and native-child supervision for every adapter.
 # ABOUTME: One launcher owns a token-qualified lease through prepare, run, and cleanup.
 
+# Stop a helper an adapter runs beside the native CLI (Codex's automatic
+# /clear watcher), its children first: keys a child types after the CLI is
+# gone would land in the shell. A helper waits for the launcher to end, so the
+# launcher must end it before any wait of its own can block on it.
+_cs_run_stop_helper() {
+    [ -n "${_cs_run_helper_pid:-}" ] || return 0
+    pkill -TERM -P "$_cs_run_helper_pid" 2>/dev/null || true
+    kill -TERM "$_cs_run_helper_pid" 2>/dev/null || true
+    wait "$_cs_run_helper_pid" 2>/dev/null || true
+    _cs_run_helper_pid=""
+}
+
 _cs_run_cleanup() {
     [ "${_cs_run_active:-0}" = 1 ] || return 0
+    _cs_run_stop_helper
     # A signal can arrive while a child runs. Reap it before releasing the lease.
     if [ -n "${_cs_run_child_pid:-}" ]; then
         kill -TERM "$_cs_run_child_pid" 2>/dev/null || true
@@ -93,7 +106,7 @@ cs_run_native() { cs_run_child "$@"; }
 cs_launch_session() {  # engine, name, directory, is_new, force, merge, intent
     local engine="$1" name="$2" directory="$3" is_new="$4" force="${5:-}"
     local merge="${6:-}" intent="${7:-auto}" status=0
-    local _cs_run_meta="$directory/.cs" _cs_run_active=0 _cs_run_child_pid="" _cs_run_gate=""
+    local _cs_run_meta="$directory/.cs" _cs_run_active=0 _cs_run_child_pid="" _cs_run_gate="" _cs_run_helper_pid=""
     local saved_exit saved_int saved_term
     local CS_RUN_ID CS_RUN_ENGINE="$engine" CS_RUN_OWNER_PID="$$" CS_LEAD_PID="$$"
     CS_RUN_ID=$(_alloc_uuid) || return 1

@@ -86,8 +86,12 @@ test_installer_and_uninstaller_preserve_a_mixed_group() {
     mkdir -p "$fake_home"
     expected=$(jq -S --arg cmd "$fake_home/.local/bin/cs -codex-hook session-start" \
         --arg recovery "$fake_home/.local/bin/cs -codex-hook files-changed" \
+        --arg stop "$fake_home/.local/bin/cs -codex-hook stop" \
+        --arg prompt "$fake_home/.local/bin/cs -codex-hook user-prompt-submit" \
         '.hooks.SessionStart[1].hooks[1].command = $cmd
-         | .hooks.PostToolUse = [{hooks: [{type: "command", command: $recovery}]}]' "$CODEX_DIR/hooks.json")
+         | .hooks.PostToolUse = [{hooks: [{type: "command", command: $recovery}]}]
+         | .hooks.Stop = [{hooks: [{type: "command", command: $stop}]}]
+         | .hooks.UserPromptSubmit = [{hooks: [{type: "command", command: $prompt}]}]' "$CODEX_DIR/hooks.json")
     after_remove=$(jq -S 'del(.hooks.SessionStart[1].hooks[1])' "$CODEX_DIR/hooks.json")
     for pass in 1 2; do
         HOME="$fake_home" CODEX_HOME="$CODEX_DIR" CS_INSTALL_ENGINES=codex \
@@ -101,6 +105,11 @@ test_installer_and_uninstaller_preserve_a_mixed_group() {
         local hash
         hash=$(_codex_hook_trust_hash "$fake_home/.local/bin/cs -codex-hook files-changed" null post_tool_use)
         assert_eq "trusted_hash = \"sha256:$hash\"" "$(_trust_at 0 0 post_tool_use)" || return 1
+        # The automatic /clear after a rotation: its two hooks, trusted.
+        hash=$(_codex_hook_trust_hash "$fake_home/.local/bin/cs -codex-hook stop" null stop)
+        assert_eq "trusted_hash = \"sha256:$hash\"" "$(_trust_at 0 0 stop)" || return 1
+        hash=$(_codex_hook_trust_hash "$fake_home/.local/bin/cs -codex-hook user-prompt-submit" null user_prompt_submit)
+        assert_eq "trusted_hash = \"sha256:$hash\"" "$(_trust_at 0 0 user_prompt_submit)" || return 1
     done
     printf 'y\nn\nn\n' | HOME="$fake_home" CODEX_HOME="$CODEX_DIR" \
         env -u CODE_SESSIONS_HOME -u CS_INSTALL_DIR -u CS_CONFIG_DIR -u CS_CACHE_DIR \
@@ -111,6 +120,8 @@ test_installer_and_uninstaller_preserve_a_mixed_group() {
     assert_eq 'trusted_hash = "trusted-user"' "$(_trust_at 1 0)" || return 1
     assert_eq '' "$(_trust_at 1 1)" || return 1
     assert_eq '' "$(_trust_at 0 0 post_tool_use)" || return 1
+    assert_eq '' "$(_trust_at 0 0 stop)" || return 1
+    assert_eq '' "$(_trust_at 0 0 user_prompt_submit)" || return 1
     assert_file_not_exists "$CODEX_DIR/hooks/cs/autosave-commits.sh" || return 1
 }
 

@@ -630,7 +630,9 @@ run_uninstall() {
     if command -v jq >/dev/null 2>&1 \
         && grep -q -- '-codex-hook ' "${codex_skills_dir%/skills}/hooks.json" 2>/dev/null; then
         if _codex_hooks_unregister "${codex_skills_dir%/skills}" \
-            && _codex_hooks_unregister "${codex_skills_dir%/skills}" PostToolUse post_tool_use files-changed; then
+            && _codex_hooks_unregister "${codex_skills_dir%/skills}" PostToolUse post_tool_use files-changed \
+            && _codex_hooks_unregister "${codex_skills_dir%/skills}" Stop stop stop \
+            && _codex_hooks_unregister "${codex_skills_dir%/skills}" UserPromptSubmit user_prompt_submit user-prompt-submit; then
             info "Removed the cs hook from ${codex_skills_dir%/skills}/hooks.json"
         else
             warn "Could not remove the cs hook from ${codex_skills_dir%/skills}/hooks.json; remove its SessionStart entry by hand"

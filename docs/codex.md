@@ -191,7 +191,26 @@ that first message through the SessionStart hook cs registers for Codex
 `/clear`, so the next `cs <name>` resumes the conversation you were in.
 Exiting instead and answering `r` at the next launch starts a fresh thread from
 the handoff and runs its first turn on its own. `$switch` does the same across
-engines (see [Switching engines](#switching-engines)). The Claude hooks and
+engines (see [Switching engines](#switching-engines)).
+
+You need not type the `/clear` either. As the `cs` mod counts down under
+Claude, cs does it under Codex: when a turn ends with a handoff armed, the Stop
+hook (`cs -codex-hook stop`) shows a line saying what happens in 20 seconds, and
+a watcher cs runs beside the Codex CLI then types `/clear` and `go` into the
+terminal, at typing speed, since Codex takes a faster burst for a paste. With a
+switch pending it types `/quit`, and cs reopens the session under the other
+engine. A message you send first stops the count (the UserPromptSubmit hook,
+`cs -codex-hook user-prompt-submit`) and keeps the conversation; the count starts
+again when that turn ends. Only the conversation the launch bound counts down.
+`CS_ROTATE_FORCE_CTX=off` (or `0`) at launch turns it off, as under Claude, and
+`CS_CODEX_CLEAR_GRACE` sets the seconds (default 20). The watcher runs only when
+cs has a terminal. It types through the terminal's simulated-input call
+(TIOCSTI); where the terminal refuses it, as Linux does with
+`dev.tty.legacy_tiocsti=0`, `session.log` says so and the `/clear` stays yours.
+Text you have typed into the composer and not sent when the count ends gets the
+keys added to it, so send or clear a draft first.
+
+The Claude hooks and
 function-hook mods do not run in Codex. Successful Codex patches automatically
 save a recovery copy through the same shadow-ref consumer as Claude edits.
 The installer registers `cs -codex-hook files-changed` for PostToolUse and

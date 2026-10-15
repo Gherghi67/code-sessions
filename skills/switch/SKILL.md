@@ -148,8 +148,12 @@ vault is committed. `cs -switch` keeps its record there too,
      `CS_ROTATE_FORCE_CTX=off` (or `0`), there is no countdown: the key or a
      typed `/exit` is theirs. With function hooks withheld
      (`CS_NO_FUNCTION_HOOKS=1`) there is no mod at all, so they type `/exit`.
-   - Under Codex (`engine: codex`) there is no countdown: they quit Codex
-     themselves with `/quit`. A `/clear` cannot change engines.
+   - Under Codex (`engine: codex`), cs types `/quit` into the Codex terminal
+     itself twenty seconds after this turn ends, and Codex shows a line saying
+     so; they can quit sooner with `/quit`. A prompt they send first stops the
+     count (it starts again when that turn ends) and keeps this conversation.
+     Launched with `CS_ROTATE_FORCE_CTX=off` (or `0`), there is no count. A
+     `/clear` cannot change engines.
    - The old conversation stays on disk, untouched:
      `cs <session-name> --engine <current engine>` opens it again later.
    - To call the switch off before exiting: `cs -switch cancel`. The
@@ -174,5 +178,5 @@ vault is committed. `cs -switch` keeps its record there too,
    after the CLI it waits on has exited. A hook cannot exit for them; the
    `cs` mod's key and countdown can under Claude, and they run `/exit`
    rather than `/clear` because the pending switch is recorded. Codex has no
-   key and no countdown: the quit is theirs. The line must not end up buried
-   under a summary of what you just wrote.
+   key; cs types its `/quit` after twenty seconds unless the count is off.
+   The line must not end up buried under a summary of what you just wrote.

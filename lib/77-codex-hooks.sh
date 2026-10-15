@@ -1,5 +1,5 @@
-# ABOUTME: Codex hook entry points. The installer registers `cs -codex-hook session-start`
-# ABOUTME: in $CODEX_HOME/hooks.json; it rebinds after /clear and carries an armed rotation.
+# ABOUTME: Codex hook entry points the installer registers in $CODEX_HOME/hooks.json (`cs -codex-hook <verb>`):
+# ABOUTME: rebind after /clear with an armed rotation, recovery, and the automatic /clear after a rotation.
 
 # What a fresh Codex conversation is told when it continues a rotation, both
 # after /clear (this hook) and after `r` at launch (the launch context). The
@@ -33,8 +33,10 @@ cmd_codex_hook() {  # event
     case "${1:-}" in
         session-start) _codex_hook_session_start ;;
         files-changed) _codex_hook_files_changed ;;
+        stop) _codex_hook_stop ;;
+        user-prompt-submit) _codex_hook_user_prompt_submit ;;
         *)
-            printf 'Usage: cs -codex-hook session-start|files-changed\n' >&2
+            printf 'Usage: cs -codex-hook session-start|files-changed|stop|user-prompt-submit\n' >&2
             return 2
             ;;
     esac
@@ -112,4 +114,147 @@ _codex_hook_rebind() {  # session_dir, thread_id, handoff
         _timeline_rotated "$session_dir" "$previous" "$thread_id" "$reason" "$handoff" codex || true
     fi
     _timeline_started "$session_dir" codex "$thread_id" clear || true
+}
+
+# The automatic /clear after a rotation: Codex's counterpart of the cs mod's
+# countdown under Claude. No Codex plugin can run a command, so three pieces
+# share the job. The Stop hook, at the end of a turn that leaves a handoff
+# armed, writes a deadline into codex-autoclear. The UserPromptSubmit hook drops
+# it, so a message sent first keeps the conversation; the count starts again
+# when that turn ends. A watcher the Codex launch runs beside the CLI
+# (lib/76-codex.sh) types /clear, then go, into the terminal once the deadline
+# has passed and the same handoff is still armed; with a switch pending it types
+# /quit, and cs reopens the session under the other engine. CS_ROTATE_FORCE_CTX
+# set to off (or 0) leaves the keys to the user, as it does under Claude.
+_codex_autoclear_file() {  # session_dir
+    printf '%s/.cs/local/codex-autoclear\n' "$1"
+}
+
+# The seconds the count runs (CS_CODEX_CLEAR_GRACE, default 20, the mod's
+# grace), or failure when the automatic /clear is off. A CS_ROTATE_FORCE_CTX
+# nobody can read is not off, as in the mod.
+_codex_autoclear_grace() {
+    local force grace="${CS_CODEX_CLEAR_GRACE:-20}"
+    force=$(printf '%s' "${CS_ROTATE_FORCE_CTX:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+    [ "$force" != off ] || return 1
+    ! [[ "$force" =~ ^0+$ ]] || return 1
+    [[ "$grace" =~ ^[0-9]+$ ]] || grace=20
+    printf '%s\n' "$grace"
+}
+
+# Only the conversation this run launched and the session is bound to counts
+# down; a turn in any other thread, or a teammate's, never clears it. The hook
+# must never fail a turn, so every path returns 0.
+_codex_hook_stop() {
+    local input session_id session_dir meta stamp grace bound handoff tmp
+    local action=clear target="" switch_file sysmsg
+    input=$(cat) || input=""
+    [ "${CS_RUN_ENGINE:-}" = codex ] && [ -n "${CS_SESSION_DIR:-}" ] || return 0
+    session_dir="$CS_SESSION_DIR"
+    meta="$session_dir/.cs"
+    [ -d "$meta/local" ] || return 0
+    session_id=$(printf '%s' "$input" | jq -r '.session_id // ""' 2>/dev/null) || session_id=""
+    _codex_thread_id_valid "$session_id" || return 0
+    stamp=$(_codex_autoclear_file "$session_dir")
+    grace=$(_codex_autoclear_grace) || { rm -f "$stamp" 2>/dev/null; return 0; }
+    cs_run_lease_owned "$meta" || return 0
+    bound=$(cs_binding_read "$session_dir" codex 2>/dev/null) || return 0
+    [ "$bound" = "$session_id" ] || return 0
+    handoff=$(_rotation_armed_handoff "$session_dir")
+    [ -n "$handoff" ] || { rm -f "$stamp" 2>/dev/null; return 0; }
+    # A switch this run recorded leaves Codex instead: /quit, and cs relaunches.
+    if switch_file=$(_switch_file "$session_dir") && [ -f "$switch_file" ] \
+        && [ "$(_switch_field "$switch_file" run)" = "${CS_RUN_ID:-}" ]; then
+        target=$(_switch_field "$switch_file" engine)
+        [ -z "$target" ] || action=quit
+    fi
+    tmp=$(mktemp "$stamp.XXXXXX" 2>/dev/null) || return 0
+    if ! { printf 'deadline=%s\nhandoff=%s\nthread=%s\naction=%s\nrun=%s\n' \
+        "$(( $(date +%s) + grace ))" "$handoff" "$session_id" "$action" "${CS_RUN_ID:-}" > "$tmp" \
+        && mv "$tmp" "$stamp"; } 2>/dev/null; then
+        rm -f "$tmp" 2>/dev/null
+        return 0
+    fi
+    if [ "$action" = quit ]; then
+        sysmsg="cs: /quit in $grace s, and cs reopens this session under $target from $handoff. Send a message first to stay."
+    else
+        sysmsg="cs: /clear and go in $grace s, to continue from $handoff. Send a message first to keep this conversation."
+    fi
+    jq -n --arg m "$sysmsg" '{systemMessage: $m}' 2>/dev/null || true
+    return 0
+}
+
+# A message sent while the count runs stops it. Any message does: the hook
+# only removes, so a prompt in another thread costs at most one count.
+_codex_hook_user_prompt_submit() {
+    cat >/dev/null 2>&1 || true
+    [ "${CS_RUN_ENGINE:-}" = codex ] && [ -n "${CS_SESSION_DIR:-}" ] || return 0
+    [ -d "$CS_SESSION_DIR/.cs/local" ] || return 0
+    rm -f "$(_codex_autoclear_file "$CS_SESSION_DIR")" 2>/dev/null || true
+    return 0
+}
+
+# Types text and Enter into the controlling terminal as if typed (TIOCSTI):
+# a character every 100 ms and a pause before Enter, because Codex reads a
+# burst as a paste and its Enter as a newline. Measured on 0.162: "/clear" sent
+# at once stayed in the composer unsent, and a 19-character line at 50 ms a key
+# got a newline where 8 characters at that pace submitted. Fails where the
+# terminal refuses simulated input, as Linux does with dev.tty.legacy_tiocsti=0.
+_codex_type_keys() {  # text
+    python3 -I -c '
+import fcntl, os, sys, termios, time
+fd = os.open("/dev/tty", os.O_RDWR)
+try:
+    for ch in sys.argv[1].encode():
+        fcntl.ioctl(fd, termios.TIOCSTI, bytes([ch]))
+        time.sleep(0.1)
+    time.sleep(0.5)
+    fcntl.ioctl(fd, termios.TIOCSTI, b"\r")
+finally:
+    os.close(fd)
+' "$1" 2>/dev/null
+}
+
+# Whether the terminal the keys would go to is still there. A closed tab hangs
+# it up; the watcher then has nothing to type into and ends.
+_codex_autoclear_terminal() {
+    { : </dev/tty; } 2>/dev/null
+}
+
+# Runs beside the Codex CLI for its lifetime (lib/76-codex.sh) and ends with
+# the run's owner or its terminal; the launcher also stops it once the CLI
+# exits (_cs_run_stop_helper). Once a second it reads the deadline the Stop hook wrote.
+# Past it, and with the same handoff still armed by this run, it consumes the
+# deadline and types the keys. /clear and go are two prompts: Codex starts no
+# turn after /clear, and cs's SessionStart hook hands the new thread the
+# handoff with its first message.
+_codex_autoclear_watch() {  # session_dir
+    local session_dir="$1" stamp deadline handoff action run log_dir
+    stamp=$(_codex_autoclear_file "$session_dir")
+    while kill -0 "${CS_RUN_OWNER_PID:-$$}" 2>/dev/null && _codex_autoclear_terminal; do
+        sleep 1
+        [ -f "$stamp" ] || continue
+        deadline=$(_switch_field "$stamp" deadline)
+        if ! [[ "$deadline" =~ ^[0-9]+$ ]]; then
+            rm -f "$stamp" 2>/dev/null || true
+            continue
+        fi
+        [ "$(date +%s)" -ge "$deadline" ] || continue
+        handoff=$(_switch_field "$stamp" handoff)
+        action=$(_switch_field "$stamp" action)
+        run=$(_switch_field "$stamp" run)
+        rm -f "$stamp" 2>/dev/null || true
+        [ "$run" = "${CS_RUN_ID:-}" ] || continue
+        [ -n "$handoff" ] && [ "$(_rotation_armed_handoff "$session_dir")" = "$handoff" ] || continue
+        if [ "$action" = quit ]; then
+            _codex_type_keys /quit && continue
+        else
+            _codex_type_keys /clear && sleep 2 && _codex_type_keys go && continue
+        fi
+        # The keys did not land: the person still has /clear, as before.
+        if log_dir=$(cs_private_dir "$session_dir/.cs"); then
+            { printf '%s - Automatic /clear: the terminal refused simulated input; run /clear and send go\n' \
+                "$(date '+%Y-%m-%d %H:%M:%S')" >> "$log_dir/session.log"; } 2>/dev/null || true
+        fi
+    done
 }

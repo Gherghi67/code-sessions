@@ -174,9 +174,107 @@ test_a_locked_vault_drops_the_log_line() {
 
 test_unknown_hook_event_is_a_usage_error() {
     local status=0 out
-    out=$("$CS_BIN" -codex-hook stop </dev/null 2>&1) || status=$?
+    out=$("$CS_BIN" -codex-hook no-such-event </dev/null 2>&1) || status=$?
     assert_eq 2 "$status" || return 1
-    assert_output_contains "$out" "Usage: cs -codex-hook session-start" || return 1
+    assert_output_contains "$out" "Usage: cs -codex-hook session-start|files-changed|stop|user-prompt-submit" || return 1
+}
+
+# --- the automatic /clear after a rotation: Stop and UserPromptSubmit ---
+
+STAMP_REL=.cs/local/codex-autoclear
+
+# Runs a turn-end or prompt hook the way Codex does, for a thread.
+_turn_hook() {  # verb, thread, [run_id]
+    printf '{"session_id":"%s","turn_id":"turn-1","cwd":"%s","hook_event_name":"x"}' "$2" "$SESSION" \
+        | env CS_RUN_ENGINE=codex CS_RUN_ID="${3:-run-1}" CS_RUN_OWNER_PID="$$" \
+            CS_SESSION_DIR="$SESSION" CS_SESSION_NAME=demo "$CS_BIN" -codex-hook "$1"
+}
+
+_stamp_field() { awk -v k="$1" 'index($0, k "=") == 1 { print substr($0, length(k) + 2) }' "$SESSION/$STAMP_REL"; }
+
+test_a_turn_ending_with_a_handoff_armed_starts_the_count() {
+    _handoff unconsumed; _arm
+    local out now deadline
+    now=$(date +%s)
+    out=$(CS_CODEX_CLEAR_GRACE=20 _turn_hook stop "$OLD_THREAD") || { echo "  FAIL: a hook must never fail a turn"; return 1; }
+    assert_file_exists "$SESSION/$STAMP_REL" || return 1
+    assert_eq "$HANDOFF" "$(_stamp_field handoff)" || return 1
+    assert_eq clear "$(_stamp_field action)" || return 1
+    assert_eq run-1 "$(_stamp_field run)" || return 1
+    assert_eq "$OLD_THREAD" "$(_stamp_field thread)" || return 1
+    deadline=$(_stamp_field deadline)
+    [ "$deadline" -ge $((now + 20)) ] && [ "$deadline" -le $((now + 22)) ] \
+        || { echo "  FAIL: deadline $deadline is not about 20 s after $now"; return 1; }
+    assert_eq "cs: /clear and go in 20 s, to continue from $HANDOFF. Send a message first to keep this conversation." \
+        "$(printf '%s' "$out" | jq -r .systemMessage)" "the TUI says what will happen" || return 1
+}
+
+test_a_turn_ending_with_nothing_armed_drops_a_count() {
+    printf 'deadline=1\nhandoff=x.md\naction=clear\nrun=run-1\n' > "$SESSION/$STAMP_REL"
+    local out
+    out=$(_turn_hook stop "$OLD_THREAD") || return 1
+    assert_not_exists "$SESSION/$STAMP_REL" || return 1
+    assert_eq "" "$out" "no message when nothing is armed" || return 1
+}
+
+test_a_turn_in_another_thread_starts_no_count() {
+    _handoff unconsumed; _arm
+    _turn_hook stop "$NEW_THREAD" >/dev/null || return 1
+    assert_not_exists "$SESSION/$STAMP_REL" "only the bound conversation counts down" || return 1
+}
+
+test_a_turn_of_another_run_starts_no_count() {
+    _handoff unconsumed; _arm
+    _turn_hook stop "$OLD_THREAD" run-2 >/dev/null || return 1
+    assert_not_exists "$SESSION/$STAMP_REL" "a run without the lease never counts down" || return 1
+}
+
+test_force_off_leaves_the_clear_to_the_user() {
+    _handoff unconsumed; _arm
+    local value
+    for value in off OFF " off " 0 00; do
+        printf 'deadline=1\nhandoff=x.md\naction=clear\nrun=run-1\n' > "$SESSION/$STAMP_REL"
+        CS_ROTATE_FORCE_CTX="$value" _turn_hook stop "$OLD_THREAD" >/dev/null || return 1
+        assert_not_exists "$SESSION/$STAMP_REL" "CS_ROTATE_FORCE_CTX=$value turns the count off" || return 1
+    done
+    for value in 80 bogus ""; do
+        CS_ROTATE_FORCE_CTX="$value" _turn_hook stop "$OLD_THREAD" >/dev/null || return 1
+        assert_file_exists "$SESSION/$STAMP_REL" "CS_ROTATE_FORCE_CTX=$value leaves it on" || return 1
+        rm -f "$SESSION/$STAMP_REL"
+    done
+}
+
+test_a_pending_switch_counts_down_to_quit() {
+    _handoff unconsumed; _arm
+    local out
+    printf 'engine=claude\nmode=fresh\nhandoff=%s\nrun=run-1\n' "$HANDOFF" > "$SESSION/.cs/local/pending-switch"
+    out=$(CS_CODEX_CLEAR_GRACE=20 _turn_hook stop "$OLD_THREAD") || return 1
+    assert_eq quit "$(_stamp_field action)" || return 1
+    assert_eq "cs: /quit in 20 s, and cs reopens this session under claude from $HANDOFF. Send a message first to stay." \
+        "$(printf '%s' "$out" | jq -r .systemMessage)" || return 1
+    # Another run's switch is not this run's to take.
+    printf 'engine=claude\nmode=fresh\nhandoff=%s\nrun=run-0\n' "$HANDOFF" > "$SESSION/.cs/local/pending-switch"
+    _turn_hook stop "$OLD_THREAD" >/dev/null || return 1
+    assert_eq clear "$(_stamp_field action)" || return 1
+}
+
+test_a_message_sent_during_the_count_stops_it() {
+    printf 'deadline=1\nhandoff=x.md\naction=clear\nrun=run-1\n' > "$SESSION/$STAMP_REL"
+    local out
+    out=$(_turn_hook user-prompt-submit "$NEW_THREAD") || { echo "  FAIL: a hook must never fail a turn"; return 1; }
+    assert_not_exists "$SESSION/$STAMP_REL" || return 1
+    assert_eq "" "$out" || return 1
+}
+
+test_outside_a_cs_codex_run_the_turn_hooks_are_inert() {
+    _handoff unconsumed; _arm
+    printf 'deadline=1\nhandoff=x.md\naction=clear\nrun=run-1\n' > "$SESSION/$STAMP_REL"
+    local verb
+    for verb in stop user-prompt-submit; do
+        printf '{"session_id":"%s"}' "$OLD_THREAD" | "$CS_BIN" -codex-hook "$verb" >/dev/null \
+            || { echo "  FAIL: $verb failed outside a run"; return 1; }
+    done
+    assert_file_exists "$SESSION/$STAMP_REL" "nothing outside a cs Codex run touches the count" || return 1
 }
 
 run_test test_clear_with_an_armed_handoff_rebinds_and_loads_it
@@ -190,5 +288,13 @@ run_test test_an_encrypted_session_logs_the_start_behind_private
 run_test test_a_clear_in_an_encrypted_session_logs_the_rebind_behind_private
 run_test test_a_locked_vault_drops_the_log_line
 run_test test_unknown_hook_event_is_a_usage_error
+run_test test_a_turn_ending_with_a_handoff_armed_starts_the_count
+run_test test_a_turn_ending_with_nothing_armed_drops_a_count
+run_test test_a_turn_in_another_thread_starts_no_count
+run_test test_a_turn_of_another_run_starts_no_count
+run_test test_force_off_leaves_the_clear_to_the_user
+run_test test_a_pending_switch_counts_down_to_quit
+run_test test_a_message_sent_during_the_count_stops_it
+run_test test_outside_a_cs_codex_run_the_turn_hooks_are_inert
 
 report_results
