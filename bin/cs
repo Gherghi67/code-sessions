@@ -12186,13 +12186,18 @@ archive_tasks_run() {
     fi
 }
 
+# Keeps the session's answer in .cs/local/task-archive. The dispatch has
+# refused a session where git tracks a file in .cs/local (_vet_current_session);
+# the write goes through cs's writers, so a .cs/local that links out of the
+# session takes nothing.
 archive_tasks_record_answer() {  # yes|no
     case "${1:-}" in
         yes|no) ;;
         *) error "Usage: cs -archive-tasks answer yes|no" ;;
     esac
-    mkdir -p "$CLAUDE_SESSION_META_DIR/local"
-    printf '%s\n' "$1" > "$CLAUDE_SESSION_META_DIR/local/task-archive"
+    cs_mkdir_inside "$CLAUDE_SESSION_META_DIR/local" \
+        && cs_write_atomic "$CLAUDE_SESSION_META_DIR/local/task-archive" printf '%s\n' "$1" \
+        || error "could not record the answer in .cs/local/task-archive"
 }
 
 run_archive_tasks() {
