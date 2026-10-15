@@ -1306,7 +1306,12 @@ test_read_skips_a_document_that_is_not_an_object() {
     assert_eq "3" "$(printf '%s\n' "$out" | wc -l | tr -d '[:space:]')" \
         "the note and the two messages, nothing for the array" || return 1
     assert_eq "0" "$(NEW_COUNT)" "new/ is empty after the read" || return 1
-    assert_eq "3" "$(ls "$(MAILDIR)/cur" | grep -c '\.json$')" "all three documents are in cur/" || return 1
+    local f n=0
+    for f in "$(MAILDIR)"/cur/*.json; do
+        [ -f "$f" ] || continue
+        n=$((n + 1))
+    done
+    assert_eq "3" "$n" "all three documents are in cur/" || return 1
     rc=0
     out=$(_as_receiver -msg log 2>&1) || rc=$?
     assert_eq "0" "$rc" "the log exits 0" || return 1
