@@ -693,7 +693,7 @@ test_every_write_refuses_a_feature_session() {
 # purge only removes, so it is the one write a feature session takes: it
 # clears what an earlier cs stored under the feature's own name (a store, a
 # Keychain entry, a pin list) and makes nothing named for the feature. The
-# base's secrets are kept.
+# base's secrets and pin list are kept.
 test_purge_of_a_feature_session_removes_what_its_name_holds() {
     local bindir kcstore="$TEST_TMPDIR/kc-store" backend before kc_before out rc
     local fstate="$HOME/.cs-secrets/sessions/test-session@task"
@@ -702,6 +702,8 @@ test_purge_of_a_feature_session_removes_what_its_name_holds() {
     printf 'v1' | "$CS_SECRETS_BIN" set API_KEY >/dev/null 2>&1 || { echo "  FAIL: fixture: could not seed the base's encrypted secret"; return 1; }
     printf 'kv1' | PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
         "$CS_SECRETS_BIN" set API_KEY >/dev/null 2>&1 || { echo "  FAIL: fixture: could not seed the base's Keychain secret"; return 1; }
+    mkdir -p "$HOME/.cs-secrets/sessions/test-session"
+    printf 'base-pin\n' > "$HOME/.cs-secrets/sessions/test-session/age-trusted"
     for backend in encrypted keychain; do
         before=$(_tree_state)
         kc_before=$(find "$kcstore" -type f -exec cksum {} + | LC_ALL=C sort)
