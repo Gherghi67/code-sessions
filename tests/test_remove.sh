@@ -273,11 +273,15 @@ Cancelled" "$out" "confirm lists twenty foreign entries and counts the rest" || 
 
 # A cloned session's repo chooses the names at its root, and a name can carry a
 # terminal escape: a raw ESC or BEL byte, or backslash text echo -e would turn
-# into one. The confirm and the --force refusal print each control byte in a
-# name as "?" and its other text as written. A name made only of control
-# bytes is still named, so it still holds the --force refusal.
-test_remove_names_foreign_entries_without_control_bytes() {
+# into one. It can also carry a character that flips the direction of the
+# text after it (U+202E) or one that takes no room (U+200B), so the name
+# reads as another file's. The confirm and the --force refusal print each
+# control byte, and each such character, in a name as one "?" and its other
+# text, an accent and a space among it, as written. A name made only of
+# control bytes is still named, so it still holds the --force refusal.
+test_remove_names_foreign_entries_without_control_direction_or_zero_width_characters() {
     local bad=$'e\033[1mb\007\\e[0m' dir out rc=0
+    local turned=$'caf\xc3\xa9 \xe2\x80\xaetxt.exe\xe2\x80\x8b.md' shown=$'caf\xc3\xa9 ?txt.exe?.md'
     dir=$(create_test_session f5)
     touch "$dir/n$bad"
     out=$(printf 'n\n' | CS_ASSUME_TTY=1 "$CS_BIN" -rm f5 2>&1) || return 1
@@ -293,6 +297,18 @@ Cancelled" "$out" "the confirm prints the entry without its control bytes" || re
         "the refusal prints the entry without its control bytes" || return 1
     assert_no_escape_bytes "$out" "no escape byte reaches the terminal from the refusal" || return 1
     assert_dir "$dir" "the refused session survives" || return 1
+    dir=$(create_test_session f7)
+    touch "$dir/$turned"
+    out=$(printf 'n\n' | CS_ASSUME_TTY=1 "$CS_BIN" -rm f7 2>&1) || return 1
+    assert_eq "Also deletes files cs did not create:
+    $shown
+Cancelled" "$out" "the confirm prints each direction or zero-width character as one ?" || return 1
+    rc=0
+    out=$("$CS_BIN" -rm f7 --force </dev/null 2>&1) || rc=$?
+    assert_eq "1" "$rc" "--force refuses a session holding the entry" || return 1
+    assert_eq "Error: Session 'f7' holds files cs did not create: $shown. Add --delete-files to remove them with --force" \
+        "$out" "the refusal prints each direction or zero-width character as one ?" || return 1
+    assert_file_exists "$dir/$turned" "the refused entry survives" || return 1
 }
 
 # An encrypted session mounts its vault inside the session directory by
@@ -1211,7 +1227,7 @@ run_test test_remove_force_with_delete_files_removes_foreign_files
 run_test test_remove_force_ignores_cs_owned_entries_and_ds_store
 run_test test_remove_confirm_lists_foreign_entries
 run_test test_remove_confirm_caps_foreign_entries_at_twenty
-run_test test_remove_names_foreign_entries_without_control_bytes
+run_test test_remove_names_foreign_entries_without_control_direction_or_zero_width_characters
 run_test test_remove_force_refuses_worktree_with_untracked_or_ignored_files
 run_test test_remove_force_with_delete_files_removes_worktree
 run_test test_remove_worktree_confirm_lists_untracked_files
