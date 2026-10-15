@@ -155,7 +155,8 @@ vault is committed. `cs -switch` keeps its record there too,
      again when that turn ends) and keeps this conversation. Text left unsent
      in the composer when the count ends is sent, with `/quit` appended, so
      they should send or clear a draft first. Launched with
-     `CS_ROTATE_FORCE_CTX=off` (or `0`), there is no count. A switch that
+     `CS_ROTATE_FORCE_CTX=off` (or `0`), or where cs cannot type into the
+     terminal (the launch says so as Codex starts), there is no count. A switch that
      would move a run launched with `--native-approval` to automatic approval
      gets no count either: cs never loosens approval unattended, so the line
      says the exit is theirs. A `/clear` cannot change engines.

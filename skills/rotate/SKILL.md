@@ -298,8 +298,10 @@ vault is locked: tell the user to mount it and stop.
    count and keeps this conversation; it starts again when that turn ends.
    Text left unsent in the composer when the count ends is sent, with
    `/clear` appended, so they should send or clear a draft first.
-   Launched with `CS_ROTATE_FORCE_CTX=off` (or `0`), or with no terminal,
-   there is no count.
+   Launched with `CS_ROTATE_FORCE_CTX=off` (or `0`), or where cs cannot
+   type into the terminal (none attached, or one that refuses simulated
+   input, which the launch names as Codex starts), there is no count and no
+   line promising one.
 
    If they would rather stop for the day, exiting and answering `r` at the
    next `cs <session-name>` launch does the same thing. Answering `Y` or `n`

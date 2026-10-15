@@ -637,6 +637,39 @@ test_stopping_the_helper_removes_its_run_dir() {
     assert_not_exists "$RUN_DIR" "a signal's cleanup left the run directory" || return 1
 }
 
+# The launch asks once whether the terminal will take simulated input, and a
+# refusal says why: here a Linux whose legacy_tiocsti is 0, for a user who is
+# not root.
+test_a_refused_probe_starts_no_watcher_and_says_why() {
+    local out
+    printf '0\n' > "$TEST_TMPDIR/legacy_tiocsti"
+    if out=$(CS_CODEX_TTY=/dev/null CS_CODEX_PROBE_OS=Linux CS_TIOCSTI_SYSCTL="$TEST_TMPDIR/legacy_tiocsti" \
+        _codex_autoclear_probe); then
+        [ "$(id -u)" = 0 ] || { echo "  FAIL: the probe passed with legacy_tiocsti at 0"; return 1; }
+    else
+        assert_output_contains "$out" "legacy_tiocsti" || return 1
+    fi
+    printf '1\n' > "$TEST_TMPDIR/legacy_tiocsti"
+    out=$(CS_CODEX_TTY=/dev/null CS_CODEX_PROBE_OS=Linux CS_TIOCSTI_SYSCTL="$TEST_TMPDIR/legacy_tiocsti" \
+        _codex_autoclear_probe) || { echo "  FAIL: the probe refused a terminal that takes input: $out"; return 1; }
+    out=$(CS_CODEX_TTY=/dev/null CS_CODEX_PROBE_OS=Darwin CS_TIOCSTI_SYSCTL="$TEST_TMPDIR/no-such-file" \
+        _codex_autoclear_probe) || { echo "  FAIL: the probe refused macOS: $out"; return 1; }
+}
+
+# The Stop hook promises a count only while the watcher lives, so the watcher
+# says it is there: its pid and its run, in the run's directory, gone with it.
+test_the_watcher_publishes_its_pid() {
+    _watch
+    local i=0
+    until [ -s "$RUN_DIR/watcher.pid" ]; do
+        i=$((i + 1)); [ "$i" -lt 30 ] || { echo "  FAIL: no watcher.pid"; return 1; }
+        sleep 0.1
+    done
+    assert_eq "$WATCHER $RUN" "$(cat "$RUN_DIR/watcher.pid")" || return 1
+    kill -TERM "$WATCHER"; wait "$WATCHER" 2>/dev/null; WATCHER=""
+    assert_not_exists "$RUN_DIR/watcher.pid" "a stopped watcher still claims to type" || return 1
+}
+
 test_the_grace_follows_the_force_setting() {
     assert_eq 20 "$(CS_ROTATE_FORCE_CTX='' _codex_autoclear_grace)" || return 1
     assert_eq 20 "$(CS_ROTATE_FORCE_CTX=80 _codex_autoclear_grace)" || return 1
@@ -694,5 +727,7 @@ run_test test_typing_leaves_the_keys_sent_mark_until_it_settles
 run_test test_run_cleanup_stops_the_helper
 run_test test_stopping_the_helper_removes_its_run_dir
 run_test test_the_grace_follows_the_force_setting
+run_test test_a_refused_probe_starts_no_watcher_and_says_why
+run_test test_the_watcher_publishes_its_pid
 
 report_results

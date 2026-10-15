@@ -477,6 +477,13 @@ warn() { printf 'Warning: %s\n' "$1" >&2; }
 export CS_CACHE_DIR="$CS_TEST_PROBE/cache"
 _codex_run_dir_in_sandbox_root() { return 1; }
 _codex_flush_input() { touch "$CS_TEST_PROBE/flushed"; }
+# The terminal the pty gives the launch takes simulated input unless a test
+# says it refuses.
+_codex_autoclear_probe() {
+    [ -n "${CS_TEST_PROBE_REFUSES:-}" ] || return 0
+    printf '%s\n' "$CS_TEST_PROBE_REFUSES"
+    return 1
+}
 eval "_real_switch_settle() $(declare -f _switch_settle | tail -n +2)"
 _switch_settle() { touch "$CS_TEST_PROBE/settled"; _real_switch_settle "$@"; }
 _codex_autoclear_watch() {  # session_dir, run_dir
@@ -535,6 +542,18 @@ test_the_launch_flushes_input_only_after_typing() {
     CS_TEST_KEYS_SENT=1 _pty_run /bin/bash "$launcher_script" > "$TEST_TMPDIR/launcher-output" 2>&1
     assert_file_exists "$CS_TEST_PROBE/codex-ran" "Codex ran: $(cat "$TEST_TMPDIR/launcher-output")" || return 1
     assert_file_exists "$CS_TEST_PROBE/flushed" "keys cs sent were left in the terminal's input" || return 1
+}
+
+# A terminal that will not take simulated input gets no watcher, and the
+# launch says why before Codex starts, rather than the turn promising a count.
+test_a_refused_probe_starts_no_watcher_and_says_why() {
+    local launcher_script="$TEST_TMPDIR/launch.sh"
+    _autoclear_launch_fixture
+    CS_TEST_PROBE_REFUSES="legacy_tiocsti is 0" _pty_run /bin/bash "$launcher_script" > "$TEST_TMPDIR/launcher-output" 2>&1
+    assert_file_exists "$CS_TEST_PROBE/codex-ran" "Codex ran: $(cat "$TEST_TMPDIR/launcher-output")" || return 1
+    assert_not_exists "$CS_TEST_PROBE/watch-pid" "a watcher started where it cannot type" || return 1
+    assert_output_contains "$(cat "$TEST_TMPDIR/launcher-output")" \
+        "cs: no automatic /clear after a rotation: legacy_tiocsti is 0" || return 1
 }
 
 # Without a terminal there is nothing to type into, so no watcher starts.
@@ -813,4 +832,5 @@ run_test test_termination_releases_lock_and_stops_codex
 run_test test_autoclear_watcher_lives_exactly_as_long_as_codex
 run_test test_no_autoclear_watcher_without_a_terminal
 run_test test_the_launch_flushes_input_only_after_typing
+run_test test_a_refused_probe_starts_no_watcher_and_says_why
 report_results

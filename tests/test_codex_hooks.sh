@@ -29,6 +29,8 @@ setup() {
     mkdir -p "$CS_CACHE_DIR/codex-runs"
     mkdir -m 700 "$RUN_DIR"
     STAMP="$RUN_DIR/autoclear"
+    # The watcher that run starts publishes itself there; this shell stands in.
+    printf '%s %s\n' "$$" "$RUN" > "$RUN_DIR/watcher.pid"
     export CS_ACTOR=tester
 }
 
@@ -255,12 +257,32 @@ test_a_turn_end_never_writes_into_the_workspace() {
 # promising one.
 test_no_run_dir_means_no_count_and_no_message() {
     _handoff unconsumed; _arm
-    rmdir "$RUN_DIR"
+    rm -rf "$RUN_DIR"
     local out
     out=$(_turn_hook stop "$OLD_THREAD") || { echo "  FAIL: a hook must never fail a turn"; return 1; }
     assert_eq "" "$out" "no message without a watcher" || return 1
     assert_not_exists "$RUN_DIR" || return 1
     assert_not_exists "$SESSION/.cs/local/codex-autoclear" || return 1
+}
+
+# No live watcher of this run's means nothing would type the keys: a launch
+# whose terminal refuses simulated input starts none, and a watcher can end
+# early. The turn ends with no count and no line promising one.
+test_a_turn_with_no_watcher_promises_nothing() {
+    _handoff unconsumed; _arm
+    local out dead case
+    ( exit 0 ) & dead=$!; wait "$dead"
+    for case in none dead other-run; do
+        case "$case" in
+            none) rm -f "$RUN_DIR/watcher.pid" ;;
+            dead) printf '%s %s\n' "$dead" "$RUN" > "$RUN_DIR/watcher.pid" ;;
+            other-run) printf '%s %s\n' "$$" "$OTHER_RUN" > "$RUN_DIR/watcher.pid" ;;
+        esac
+        _stale_stamp
+        out=$(_turn_hook stop "$OLD_THREAD") || { echo "  FAIL: a hook must never fail a turn"; return 1; }
+        assert_eq "" "$out" "$case: a count promised with no watcher to type it" || return 1
+        assert_not_exists "$STAMP" "$case: a deadline with no watcher to act on it" || return 1
+    done
 }
 
 # The real cs, with no check stood down: the test's cache lies under TMPDIR
@@ -371,7 +393,7 @@ test_an_approval_request_stops_the_count_and_rules_on_nothing() {
     # With nothing to stop, and with no run directory, the answer is the same.
     out=$(_turn_hook permission-request "$OLD_THREAD") || return 1
     assert_eq '{}' "$out" || return 1
-    rmdir "$RUN_DIR"
+    rm -rf "$RUN_DIR"
     out=$(_turn_hook permission-request "$OLD_THREAD") || return 1
     assert_eq '{}' "$out" || return 1
 }
@@ -405,6 +427,7 @@ run_test test_a_turn_ending_with_a_handoff_armed_starts_the_count
 run_test test_a_grace_with_a_leading_zero_is_decimal
 run_test test_a_turn_end_never_writes_into_the_workspace
 run_test test_no_run_dir_means_no_count_and_no_message
+run_test test_a_turn_with_no_watcher_promises_nothing
 run_test test_a_run_dir_the_sandbox_can_write_gets_no_count
 run_test test_a_turn_ending_with_nothing_armed_drops_a_count
 run_test test_a_turn_in_another_thread_starts_no_count

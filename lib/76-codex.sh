@@ -454,16 +454,20 @@ _launch_codex_bound() {
     [ "${CS_LAUNCH_APPROVAL:-auto}" != native ] || CS_RUN_APPROVAL=native
     export CS_RUN_APPROVAL
     # The automatic /clear after a rotation (lib/77-codex-hooks.sh) types into
-    # this terminal, so its watcher runs only where one is attached, and only
-    # with a private directory for its deadline, made before Codex starts. The
+    # this terminal, so its watcher runs only where one is attached and will
+    # take simulated input, which is asked once here, and only with a private
+    # directory for its deadline, made before Codex starts. Where it cannot
+    # type, the launch says why, and no turn promises a count. The
     # run's cleanup stops the watcher and removes the directory, after the CLI
     # or when a signal ends the launch (lib/16-lifecycle.sh). Earlier builds
     # kept the deadline in the session, where the agent could forge it; one
     # left there is removed and never read.
-    local autoclear_dir
+    local autoclear_dir refusal
     rm -f "$session_dir/.cs/local/codex-autoclear" 2>/dev/null || true
     if [ -t 0 ] && [ -t 1 ] && _codex_autoclear_grace >/dev/null; then
-        if autoclear_dir=$(_codex_run_dir_prepare "$session_dir"); then
+        if ! refusal=$(_codex_autoclear_probe); then
+            printf "${DIM:-}cs: no automatic /clear after a rotation: %s${NC:-}\n" "$refusal"
+        elif autoclear_dir=$(_codex_run_dir_prepare "$session_dir"); then
             _cs_run_helper_dir=$autoclear_dir
             _codex_autoclear_watch "$session_dir" "$autoclear_dir" </dev/null >/dev/null 2>&1 &
             _cs_run_helper_pid=$!

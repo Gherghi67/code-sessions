@@ -218,16 +218,22 @@ and only while its run still holds the session: after a forced second launch
 (`--force`) takes it over, the first run's count types nothing.
 `CS_ROTATE_FORCE_CTX=off` (or `0`) at launch turns it off, as under Claude, and
 `CS_CODEX_CLEAR_GRACE` sets the seconds (default 20; `0` turns it off too).
-The watcher runs only when cs has a terminal. The deadline it acts on lives in
+The watcher runs only when cs has a terminal that takes simulated input: it
+types through the terminal's simulated-input call (TIOCSTI), and the launch
+asks once, before Codex starts, whether that call will work. Where it will not
+(no `python3`, or Linux with `dev.tty.legacy_tiocsti=0` for a user who is not
+root), the launch prints one line saying why, no watcher runs, and no turn
+shows a count: the line at the end of a turn appears only while this run's
+watcher is alive to type. The deadline it acts on lives in
 a directory private to the run, `codex-runs/<run id>` under cs's cache (`CS_CACHE_DIR`, by default
 `~/.cache/cs`), made mode 700 before Codex starts and removed when the run ends.
 It is kept out of the session because Codex's workspace sandbox can write
 anywhere there, and in `/tmp` and `$TMPDIR`: a deadline the agent could write
 would let it have the watcher type into an approval prompt. When the cache lies
 under one of those, or the directory cannot be made, the launch says the
-automatic `/clear` is off for that run and the `/clear` stays yours. It types through the terminal's simulated-input call
-(TIOCSTI); where the terminal refuses it, as Linux does with
-`dev.tty.legacy_tiocsti=0`, `session.log` says so and the `/clear` stays yours.
+automatic `/clear` is off for that run and the `/clear` stays yours. Keys the
+terminal refuses later all the same are logged in `session.log`, and the
+`/clear` stays yours.
 The watcher cannot see the screen: text you have typed into the composer and
 not sent when the count ends is sent, with `/clear` appended, to the
 conversation you are in, so send or clear a draft first; the line at the end of
