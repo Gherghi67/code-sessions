@@ -1,18 +1,36 @@
 # ABOUTME: Shared run orchestration and native-child supervision for every adapter.
 # ABOUTME: One launcher owns a token-qualified lease through prepare, run, and cleanup.
 
-# Stop a helper an adapter runs beside the native CLI (Codex's automatic
-# /clear watcher). The helper ends its own children on TERM: keys a child
-# types after the CLI is gone would land in the shell. A helper waits for the
-# launcher to end, so the launcher must end it before any wait of its own can
-# block on it. The private directory the helper worked from goes once it has
-# stopped.
+# Whether a process is running: a zombie, which kill -0 still finds until its
+# parent reaps it, is not. Without ps it counts as gone.
+_cs_run_pid_running() {  # pid
+    local state
+    state=$(ps -o stat= -p "$1" 2>/dev/null | tr -d ' ') || return 1
+    case "$state" in '' | Z*) return 1 ;; esac
+}
+
+# End a helper an adapter runs beside the native CLI (Codex's automatic /clear
+# watcher), and leave its private directory for the adapter to read. The
+# helper ends its own children on TERM: keys a child types after the CLI is
+# gone would land in the shell. A helper waits for the launcher to end, so the
+# launcher must end it before any wait of its own can block on it, and a
+# helper that cannot take TERM (cs started with TERM ignored, which no trap
+# can undo) gets KILL after 2 s, as the child reap below does.
+_cs_run_end_helper() {
+    [ -n "${_cs_run_helper_pid:-}" ] || return 0
+    kill -TERM "$_cs_run_helper_pid" 2>/dev/null || true
+    local deadline=$((SECONDS + 2))
+    while _cs_run_pid_running "$_cs_run_helper_pid" && [ "$SECONDS" -lt "$deadline" ]; do
+        sleep 0.1
+    done
+    kill -KILL "$_cs_run_helper_pid" 2>/dev/null || true
+    wait "$_cs_run_helper_pid" 2>/dev/null || true
+    _cs_run_helper_pid=""
+}
+
+# Stop the helper, then remove the private directory it worked from.
 _cs_run_stop_helper() {
-    if [ -n "${_cs_run_helper_pid:-}" ]; then
-        kill -TERM "$_cs_run_helper_pid" 2>/dev/null || true
-        wait "$_cs_run_helper_pid" 2>/dev/null || true
-        _cs_run_helper_pid=""
-    fi
+    _cs_run_end_helper
     if [ -n "${_cs_run_helper_dir:-}" ]; then
         rm -rf "$_cs_run_helper_dir" 2>/dev/null || true
         _cs_run_helper_dir=""
@@ -64,6 +82,15 @@ _cs_run_record_child() {  # meta_dir, pid
     mv "$tmp" "$meta/local/run-lease.json" || { rm -f "$tmp"; return 1; }
 }
 
+_cs_run_publish_child() {  # helper_dir, pid
+    local tmp
+    tmp=$(mktemp "$1/.native.XXXXXX" 2>/dev/null) || return 1
+    if ! { printf '%s\n' "$2" > "$tmp" && mv "$tmp" "$1/native.pid"; } 2>/dev/null; then
+        rm -f "$tmp" 2>/dev/null
+        return 1
+    fi
+}
+
 cs_run_child() {  # executable, arguments...
     local status=0
     _cs_run_gate=$(mktemp "$_cs_run_meta/local/.run-start.XXXXXX") || return 1
@@ -90,6 +117,12 @@ cs_run_child() {  # executable, arguments...
         rm -f "$_cs_run_gate"
         _cs_run_gate=""
         return 1
+    fi
+    # The helper's directory, when an adapter runs one, learns the CLI's pid
+    # here: the helper must stop once the CLI is gone, and run-lease.json,
+    # which records it too, lies in the session, where the agent can write.
+    if [ -n "${_cs_run_helper_dir:-}" ]; then
+        _cs_run_publish_child "$_cs_run_helper_dir" "$_cs_run_child_pid" || true
     fi
     printf 'run\n' > "$_cs_run_gate"
     wait "$_cs_run_child_pid" || status=$?

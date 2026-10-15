@@ -433,9 +433,9 @@ LAUNCHER
 # its pid and run directory and, when stopped, whether the run had already
 # settled (the first thing the run does after the engine call). The fake Codex
 # records whether a deadline an earlier build left in the session was still
-# there, writes this run's own deadline into the run directory, and exits a
-# second later. Everything lands in $CS_TEST_PROBE; the launcher is
-# $TEST_TMPDIR/launch.sh.
+# there, writes this run's own deadline into the run directory, copies the CLI
+# pid the launch wrote there beside its own, and exits a second later.
+# Everything lands in $CS_TEST_PROBE; the launcher is $TEST_TMPDIR/launch.sh.
 _autoclear_launch_fixture() {
     local launcher_script="$TEST_TMPDIR/launch.sh"
     export CS_TEST_LIB_DIR="$SCRIPT_DIR" CS_TEST_PROBE="$TEST_TMPDIR/probe"
@@ -457,6 +457,8 @@ printf '%s\n' "$run_dir" > "$CS_TEST_PROBE/run-dir"
 if [ -d "$run_dir" ]; then
     printf 'deadline=1\nrun=%s\n' "$CS_RUN_ID" > "$(_codex_autoclear_file "$run_dir")"
     touch "$CS_TEST_PROBE/wrote-deadline"
+    cp "$run_dir/native.pid" "$CS_TEST_PROBE/native-pid" 2>/dev/null
+    echo $$ > "$CS_TEST_PROBE/codex-pid"
 fi
 sleep 1
 FAKE_CODEX
@@ -474,11 +476,13 @@ warn() { printf 'Warning: %s\n' "$1" >&2; }
 # The fixture's cache lies under TMPDIR, which the real check rightly refuses.
 export CS_CACHE_DIR="$CS_TEST_PROBE/cache"
 _codex_run_dir_in_sandbox_root() { return 1; }
+_codex_flush_input() { touch "$CS_TEST_PROBE/flushed"; }
 eval "_real_switch_settle() $(declare -f _switch_settle | tail -n +2)"
 _switch_settle() { touch "$CS_TEST_PROBE/settled"; _real_switch_settle "$@"; }
 _codex_autoclear_watch() {  # session_dir, run_dir
     trap 'if [ -e "$CS_TEST_PROBE/settled" ]; then echo after; else echo before; fi > "$CS_TEST_PROBE/stopped"; exit 0' TERM
     printf '%s\n' "$2" > "$CS_TEST_PROBE/watch-dir"
+    [ -z "${CS_TEST_KEYS_SENT:-}" ] || : > "$2/keys-sent"
     # bash 3.2 has no BASHPID: a child's parent is this subshell.
     sh -c 'echo $PPID' > "$CS_TEST_PROBE/watch-pid"
     while :; do sleep 0.1; done
@@ -512,7 +516,25 @@ test_autoclear_watcher_lives_exactly_as_long_as_codex() {
     assert_file_exists "$CS_TEST_PROBE/wrote-deadline" "Codex found this run's directory to write its deadline in" || return 1
     run_dir=$(cat "$CS_TEST_PROBE/run-dir")
     assert_eq "$run_dir" "$(cat "$CS_TEST_PROBE/watch-dir")" "the watcher reads this run's directory" || return 1
+    assert_eq "$(cat "$CS_TEST_PROBE/codex-pid")" "$(cat "$CS_TEST_PROBE/native-pid" 2>/dev/null)" \
+        "the run directory names the CLI the typist must check" || return 1
     assert_not_exists "$run_dir" "this run's directory and deadline are gone once launch_codex returns" || return 1
+}
+
+# Keys the watcher typed can still be queued when Codex exits, and would run in
+# the shell: the launch flushes the terminal's input then, and only then, so
+# ordinary type-ahead survives every other exit.
+test_the_launch_flushes_input_only_after_typing() {
+    local launcher_script="$TEST_TMPDIR/launch.sh"
+    _autoclear_launch_fixture
+    _pty_run /bin/bash "$launcher_script" > "$TEST_TMPDIR/launcher-output" 2>&1
+    assert_file_exists "$CS_TEST_PROBE/codex-ran" "Codex ran: $(cat "$TEST_TMPDIR/launcher-output")" || return 1
+    assert_not_exists "$CS_TEST_PROBE/flushed" "input flushed with no keys of cs's sent" || return 1
+    rm -rf "$CS_TEST_PROBE"
+    _autoclear_launch_fixture
+    CS_TEST_KEYS_SENT=1 _pty_run /bin/bash "$launcher_script" > "$TEST_TMPDIR/launcher-output" 2>&1
+    assert_file_exists "$CS_TEST_PROBE/codex-ran" "Codex ran: $(cat "$TEST_TMPDIR/launcher-output")" || return 1
+    assert_file_exists "$CS_TEST_PROBE/flushed" "keys cs sent were left in the terminal's input" || return 1
 }
 
 # Without a terminal there is nothing to type into, so no watcher starts.
@@ -790,4 +812,5 @@ run_test test_unarchive_and_actor_override
 run_test test_termination_releases_lock_and_stops_codex
 run_test test_autoclear_watcher_lives_exactly_as_long_as_codex
 run_test test_no_autoclear_watcher_without_a_terminal
+run_test test_the_launch_flushes_input_only_after_typing
 report_results

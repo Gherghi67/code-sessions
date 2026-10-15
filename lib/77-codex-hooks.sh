@@ -329,16 +329,34 @@ _codex_hook_permission_request() {
 # terminal refuses simulated input, as Linux does with dev.tty.legacy_tiocsti=0.
 # Before each key and before Enter it looks for the typing marker; once a
 # prompt the user sent has taken it away, it stops with status 4 and sends no
-# Enter, so nothing more of cs's goes in after that prompt.
+# Enter, so nothing more of cs's goes in after that prompt. It also checks
+# that Codex, by the pid the launch wrote into the run directory, still runs,
+# and that the watcher that started it is still its parent: with either gone
+# the keys would land in the shell, so it stops with status 3.
 # It replaces the shell it runs in with python, so the watcher, which starts
 # it in the background, holds python's own pid and can end it at once.
 # CS_CODEX_TYPE_SINK names a file the keys are appended to instead, for tests.
-_codex_type_keys() {  # text, typing_marker
+_codex_type_keys() {  # text, typing_marker, native_pid_file
     exec python3 -I -c '
 import fcntl, os, sys, termios, time
 marker = sys.argv[2]
 if not os.path.exists(marker):
     sys.exit(4)
+parent = os.getppid()
+try:
+    with open(sys.argv[3]) as f:
+        native = int(f.read().split()[0])
+except (IndexError, OSError, ValueError):
+    sys.exit(3)
+def check():
+    if not os.path.exists(marker):
+        sys.exit(4)
+    if os.getppid() != parent:
+        sys.exit(3)
+    try:
+        os.kill(native, 0)
+    except OSError:
+        sys.exit(3)
 sink = os.environ.get("CS_CODEX_TYPE_SINK", "")
 if sink:
     fd = os.open(sink, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
@@ -348,17 +366,36 @@ else:
     put = lambda key: fcntl.ioctl(fd, termios.TIOCSTI, key)
 try:
     for ch in sys.argv[1].encode():
-        if not os.path.exists(marker):
-            sys.exit(4)
+        check()
         put(bytes([ch]))
         time.sleep(0.1)
     time.sleep(0.5)
-    if not os.path.exists(marker):
-        sys.exit(4)
+    check()
     put(b"\r")
 finally:
     os.close(fd)
-' "$1" "$2" 2>/dev/null
+' "$1" "$2" "${3:-}" 2>/dev/null
+}
+
+# The CLI's pid, as the launch wrote it (lib/16-lifecycle.sh).
+_codex_native_pid_file() {  # run_dir
+    printf '%s/native.pid\n' "$1"
+}
+
+# Stands from before cs's first key until half a second after its last Enter,
+# while keys of cs's can still wait unread in the terminal. The launch flushes
+# the terminal's input after Codex exits only when it is there (lib/76-codex.sh).
+# It is not the typing marker: a prompt the user sends takes that one away,
+# and the keys typed before it can still be queued.
+_codex_keys_sent_file() {  # run_dir
+    printf '%s/keys-sent\n' "$1"
+}
+
+# Drops what waits unread in this terminal's input, where keys cs typed for a
+# Codex that has since exited would otherwise run in the shell.
+_codex_flush_input() {
+    [ -t 0 ] || return 0
+    python3 -I -c 'import termios; termios.tcflush(0, termios.TCIFLUSH)' 2>/dev/null || true
 }
 
 # Whether the terminal the keys would go to is still there. A closed tab hangs
@@ -389,10 +426,12 @@ _codex_autoclear_terminal() {
 # first and the watcher straight after: keys typed after the CLI is gone would
 # land in the shell, and nothing outside the watcher has to find its children.
 _codex_autoclear_watch() {  # session_dir, run_dir
-    local session_dir="$1" run_dir="$2" stamp typing deadline handoff action run status child=""
+    local session_dir="$1" run_dir="$2" stamp typing keys_sent native deadline handoff action run status child=""
     trap '[ -z "$child" ] || kill -TERM "$child" 2>/dev/null; exit 0' TERM
     stamp=$(_codex_autoclear_file "$run_dir")
     typing=$(_codex_typing_file "$run_dir")
+    keys_sent=$(_codex_keys_sent_file "$run_dir")
+    native=$(_codex_native_pid_file "$run_dir")
     while kill -0 "${CS_RUN_OWNER_PID:-$$}" 2>/dev/null && _codex_autoclear_terminal; do
         _codex_autoclear_child sleep 1
         if ! _codex_run_dir_ok "$run_dir" "$session_dir"; then
@@ -433,20 +472,23 @@ _codex_autoclear_watch() {  # session_dir, run_dir
             _codex_autoclear_log "$session_dir" "Automatic /clear: cs could not mark its typing in this run's directory; run /clear and send go"
             continue
         fi
+        { ( umask 077 && : > "$keys_sent" ); } 2>/dev/null || true
         if [ "${action%% *}" = quit ]; then
-            _codex_autoclear_child _codex_type_keys /quit "$typing"; status=$?
+            _codex_autoclear_child _codex_type_keys /quit "$typing" "$native"; status=$?
         else
-            _codex_autoclear_child _codex_type_keys /clear "$typing"; status=$?
+            _codex_autoclear_child _codex_type_keys /clear "$typing" "$native"; status=$?
             if [ "$status" = 0 ]; then
                 _codex_autoclear_child sleep 2
                 if [ -e "$typing" ]; then
-                    _codex_autoclear_child _codex_type_keys go "$typing"; status=$?
+                    _codex_autoclear_child _codex_type_keys go "$typing" "$native"; status=$?
                 else
                     status=4
                 fi
             fi
         fi
         rm -f "$typing" 2>/dev/null || true
+        _codex_autoclear_child sleep 0.5
+        rm -f "$keys_sent" 2>/dev/null || true
         case "$status" in
             0) ;;
             4)

@@ -1776,18 +1776,36 @@ session_uptime_secs() {  # meta_dir, now_epoch
     [ "$started" -gt 0 ] || { echo 0; return 0; }
     echo $(( now - started ))
 }
-# Stop a helper an adapter runs beside the native CLI (Codex's automatic
-# /clear watcher). The helper ends its own children on TERM: keys a child
-# types after the CLI is gone would land in the shell. A helper waits for the
-# launcher to end, so the launcher must end it before any wait of its own can
-# block on it. The private directory the helper worked from goes once it has
-# stopped.
+# Whether a process is running: a zombie, which kill -0 still finds until its
+# parent reaps it, is not. Without ps it counts as gone.
+_cs_run_pid_running() {  # pid
+    local state
+    state=$(ps -o stat= -p "$1" 2>/dev/null | tr -d ' ') || return 1
+    case "$state" in '' | Z*) return 1 ;; esac
+}
+
+# End a helper an adapter runs beside the native CLI (Codex's automatic /clear
+# watcher), and leave its private directory for the adapter to read. The
+# helper ends its own children on TERM: keys a child types after the CLI is
+# gone would land in the shell. A helper waits for the launcher to end, so the
+# launcher must end it before any wait of its own can block on it, and a
+# helper that cannot take TERM (cs started with TERM ignored, which no trap
+# can undo) gets KILL after 2 s, as the child reap below does.
+_cs_run_end_helper() {
+    [ -n "${_cs_run_helper_pid:-}" ] || return 0
+    kill -TERM "$_cs_run_helper_pid" 2>/dev/null || true
+    local deadline=$((SECONDS + 2))
+    while _cs_run_pid_running "$_cs_run_helper_pid" && [ "$SECONDS" -lt "$deadline" ]; do
+        sleep 0.1
+    done
+    kill -KILL "$_cs_run_helper_pid" 2>/dev/null || true
+    wait "$_cs_run_helper_pid" 2>/dev/null || true
+    _cs_run_helper_pid=""
+}
+
+# Stop the helper, then remove the private directory it worked from.
 _cs_run_stop_helper() {
-    if [ -n "${_cs_run_helper_pid:-}" ]; then
-        kill -TERM "$_cs_run_helper_pid" 2>/dev/null || true
-        wait "$_cs_run_helper_pid" 2>/dev/null || true
-        _cs_run_helper_pid=""
-    fi
+    _cs_run_end_helper
     if [ -n "${_cs_run_helper_dir:-}" ]; then
         rm -rf "$_cs_run_helper_dir" 2>/dev/null || true
         _cs_run_helper_dir=""
@@ -1839,6 +1857,15 @@ _cs_run_record_child() {  # meta_dir, pid
     mv "$tmp" "$meta/local/run-lease.json" || { rm -f "$tmp"; return 1; }
 }
 
+_cs_run_publish_child() {  # helper_dir, pid
+    local tmp
+    tmp=$(mktemp "$1/.native.XXXXXX" 2>/dev/null) || return 1
+    if ! { printf '%s\n' "$2" > "$tmp" && mv "$tmp" "$1/native.pid"; } 2>/dev/null; then
+        rm -f "$tmp" 2>/dev/null
+        return 1
+    fi
+}
+
 cs_run_child() {  # executable, arguments...
     local status=0
     _cs_run_gate=$(mktemp "$_cs_run_meta/local/.run-start.XXXXXX") || return 1
@@ -1865,6 +1892,12 @@ cs_run_child() {  # executable, arguments...
         rm -f "$_cs_run_gate"
         _cs_run_gate=""
         return 1
+    fi
+    # The helper's directory, when an adapter runs one, learns the CLI's pid
+    # here: the helper must stop once the CLI is gone, and run-lease.json,
+    # which records it too, lies in the session, where the agent can write.
+    if [ -n "${_cs_run_helper_dir:-}" ]; then
+        _cs_run_publish_child "$_cs_run_helper_dir" "$_cs_run_child_pid" || true
     fi
     printf 'run\n' > "$_cs_run_gate"
     wait "$_cs_run_child_pid" || status=$?
@@ -11784,6 +11817,13 @@ _launch_codex_bound() {
         fi
     fi
     cs_run_child "$codex_bin" --no-daemon resume "$thread_id" -C "$session_dir" ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} ${kick:+"$kick"} || status=$?
+    # Keys the watcher typed just before Codex exited can wait unread in the
+    # terminal and would run in the shell, so its input is flushed, but only
+    # when the watcher was typing: the flush would eat ordinary type-ahead.
+    _cs_run_end_helper
+    if [ -n "$_cs_run_helper_dir" ] && [ -e "$(_codex_keys_sent_file "$_cs_run_helper_dir")" ]; then
+        _codex_flush_input
+    fi
     _cs_run_stop_helper
     if [ "$status" -ne 0 ] && [ -n "$spent" ]; then
         # A switch relaunch's settle reads it too (lib/78-switch.sh).
@@ -12132,16 +12172,34 @@ _codex_hook_permission_request() {
 # terminal refuses simulated input, as Linux does with dev.tty.legacy_tiocsti=0.
 # Before each key and before Enter it looks for the typing marker; once a
 # prompt the user sent has taken it away, it stops with status 4 and sends no
-# Enter, so nothing more of cs's goes in after that prompt.
+# Enter, so nothing more of cs's goes in after that prompt. It also checks
+# that Codex, by the pid the launch wrote into the run directory, still runs,
+# and that the watcher that started it is still its parent: with either gone
+# the keys would land in the shell, so it stops with status 3.
 # It replaces the shell it runs in with python, so the watcher, which starts
 # it in the background, holds python's own pid and can end it at once.
 # CS_CODEX_TYPE_SINK names a file the keys are appended to instead, for tests.
-_codex_type_keys() {  # text, typing_marker
+_codex_type_keys() {  # text, typing_marker, native_pid_file
     exec python3 -I -c '
 import fcntl, os, sys, termios, time
 marker = sys.argv[2]
 if not os.path.exists(marker):
     sys.exit(4)
+parent = os.getppid()
+try:
+    with open(sys.argv[3]) as f:
+        native = int(f.read().split()[0])
+except (IndexError, OSError, ValueError):
+    sys.exit(3)
+def check():
+    if not os.path.exists(marker):
+        sys.exit(4)
+    if os.getppid() != parent:
+        sys.exit(3)
+    try:
+        os.kill(native, 0)
+    except OSError:
+        sys.exit(3)
 sink = os.environ.get("CS_CODEX_TYPE_SINK", "")
 if sink:
     fd = os.open(sink, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
@@ -12151,17 +12209,36 @@ else:
     put = lambda key: fcntl.ioctl(fd, termios.TIOCSTI, key)
 try:
     for ch in sys.argv[1].encode():
-        if not os.path.exists(marker):
-            sys.exit(4)
+        check()
         put(bytes([ch]))
         time.sleep(0.1)
     time.sleep(0.5)
-    if not os.path.exists(marker):
-        sys.exit(4)
+    check()
     put(b"\r")
 finally:
     os.close(fd)
-' "$1" "$2" 2>/dev/null
+' "$1" "$2" "${3:-}" 2>/dev/null
+}
+
+# The CLI's pid, as the launch wrote it (lib/16-lifecycle.sh).
+_codex_native_pid_file() {  # run_dir
+    printf '%s/native.pid\n' "$1"
+}
+
+# Stands from before cs's first key until half a second after its last Enter,
+# while keys of cs's can still wait unread in the terminal. The launch flushes
+# the terminal's input after Codex exits only when it is there (lib/76-codex.sh).
+# It is not the typing marker: a prompt the user sends takes that one away,
+# and the keys typed before it can still be queued.
+_codex_keys_sent_file() {  # run_dir
+    printf '%s/keys-sent\n' "$1"
+}
+
+# Drops what waits unread in this terminal's input, where keys cs typed for a
+# Codex that has since exited would otherwise run in the shell.
+_codex_flush_input() {
+    [ -t 0 ] || return 0
+    python3 -I -c 'import termios; termios.tcflush(0, termios.TCIFLUSH)' 2>/dev/null || true
 }
 
 # Whether the terminal the keys would go to is still there. A closed tab hangs
@@ -12192,10 +12269,12 @@ _codex_autoclear_terminal() {
 # first and the watcher straight after: keys typed after the CLI is gone would
 # land in the shell, and nothing outside the watcher has to find its children.
 _codex_autoclear_watch() {  # session_dir, run_dir
-    local session_dir="$1" run_dir="$2" stamp typing deadline handoff action run status child=""
+    local session_dir="$1" run_dir="$2" stamp typing keys_sent native deadline handoff action run status child=""
     trap '[ -z "$child" ] || kill -TERM "$child" 2>/dev/null; exit 0' TERM
     stamp=$(_codex_autoclear_file "$run_dir")
     typing=$(_codex_typing_file "$run_dir")
+    keys_sent=$(_codex_keys_sent_file "$run_dir")
+    native=$(_codex_native_pid_file "$run_dir")
     while kill -0 "${CS_RUN_OWNER_PID:-$$}" 2>/dev/null && _codex_autoclear_terminal; do
         _codex_autoclear_child sleep 1
         if ! _codex_run_dir_ok "$run_dir" "$session_dir"; then
@@ -12236,20 +12315,23 @@ _codex_autoclear_watch() {  # session_dir, run_dir
             _codex_autoclear_log "$session_dir" "Automatic /clear: cs could not mark its typing in this run's directory; run /clear and send go"
             continue
         fi
+        { ( umask 077 && : > "$keys_sent" ); } 2>/dev/null || true
         if [ "${action%% *}" = quit ]; then
-            _codex_autoclear_child _codex_type_keys /quit "$typing"; status=$?
+            _codex_autoclear_child _codex_type_keys /quit "$typing" "$native"; status=$?
         else
-            _codex_autoclear_child _codex_type_keys /clear "$typing"; status=$?
+            _codex_autoclear_child _codex_type_keys /clear "$typing" "$native"; status=$?
             if [ "$status" = 0 ]; then
                 _codex_autoclear_child sleep 2
                 if [ -e "$typing" ]; then
-                    _codex_autoclear_child _codex_type_keys go "$typing"; status=$?
+                    _codex_autoclear_child _codex_type_keys go "$typing" "$native"; status=$?
                 else
                     status=4
                 fi
             fi
         fi
         rm -f "$typing" 2>/dev/null || true
+        _codex_autoclear_child sleep 0.5
+        rm -f "$keys_sent" 2>/dev/null || true
         case "$status" in
             0) ;;
             4)

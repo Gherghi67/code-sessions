@@ -522,6 +522,8 @@ test_the_watcher_ends_its_typing_child_on_term() {
     eval "_codex_type_keys() $(declare -f _real_type_keys | tail -n +2)"
     export CS_CODEX_TYPE_SINK="$TEST_TMPDIR/sink"
     local _cs_run_helper_pid i=0 stopped_at
+    # The launch's record of the CLI: this shell stands in for it, alive.
+    printf '%s\n' "$$" > "$RUN_DIR/native.pid"
     _stamp "$(date +%s)"
     _watch
     until [ "$(_sink_size)" -ge 1 ]; do
@@ -535,6 +537,74 @@ test_the_watcher_ends_its_typing_child_on_term() {
     sleep 0.5
     assert_eq "$stopped_at" "$(_sink_size)" "keys went in after the watcher stopped: $(cat "$TEST_TMPDIR/sink")" || return 1
     [ "$stopped_at" -lt 7 ] || { echo "  FAIL: the whole /clear went in before the stop"; return 1; }
+}
+
+# A helper that cannot be ended by TERM, as when cs itself started with TERM
+# ignored, which no trap can undo: the stop still returns, by KILL, so the
+# launcher never hangs on it. It runs in this shell, since a wait in a
+# subshell returns at once for a process that is not its child.
+test_cleanup_ends_a_helper_that_ignores_term() {
+    source "$SCRIPT_DIR/../lib/16-lifecycle.sh"
+    local _cs_run_helper_pid helper watchdog started took
+    ( trap '' TERM; while :; do sleep 0.2; done ) & _cs_run_helper_pid=$!
+    helper=$_cs_run_helper_pid
+    ( sleep 8; kill -KILL "$helper" 2>/dev/null && touch "$TEST_TMPDIR/watchdog" ) & watchdog=$!
+    sleep 0.2
+    started=$SECONDS
+    _cs_run_stop_helper
+    took=$((SECONDS - started))
+    kill "$watchdog" 2>/dev/null; wait "$watchdog" 2>/dev/null
+    assert_not_exists "$TEST_TMPDIR/watchdog" "the stop waited until the watchdog killed the helper" || return 1
+    [ "$took" -le 4 ] || { echo "  FAIL: the stop took ${took}s"; return 1; }
+    _process_gone "$helper" || { kill -KILL "$helper" 2>/dev/null; echo "  FAIL: the helper survived its stop"; return 1; }
+}
+
+# The typist reads the CLI's pid from the run directory, where the launch wrote
+# it, and checks it before every key: once Codex is gone, the rest of the keys
+# would land in the shell, so it stops with status 3.
+test_typing_stops_when_the_cli_is_gone() {
+    local cli typist status=0
+    export CS_CODEX_TYPE_SINK="$TEST_TMPDIR/sink"
+    : > "$TEST_TMPDIR/marker"
+    sleep 30 & cli=$!
+    printf '%s\n' "$cli" > "$RUN_DIR/native.pid"
+    _real_type_keys /clear "$TEST_TMPDIR/marker" "$RUN_DIR/native.pid" & typist=$!
+    sleep 0.25
+    kill "$cli" 2>/dev/null; wait "$cli" 2>/dev/null
+    wait "$typist" || status=$?
+    assert_eq 3 "$status" "a gone CLI has its own code" || return 1
+    [ "$(_sink_size)" -lt 6 ] || { echo "  FAIL: the typist went on after Codex exited: $(cat "$TEST_TMPDIR/sink")"; return 1; }
+}
+
+# A watcher ended by KILL cannot end its typist; the typist sees it has lost
+# its parent and stops by itself.
+test_typing_stops_once_its_watcher_is_gone() {
+    local cli size
+    export CS_CODEX_TYPE_SINK="$TEST_TMPDIR/sink"
+    : > "$TEST_TMPDIR/marker"
+    sleep 30 & cli=$!
+    printf '%s\n' "$cli" > "$RUN_DIR/native.pid"
+    ( _real_type_keys /clear "$TEST_TMPDIR/marker" "$RUN_DIR/native.pid" & sleep 0.25 )
+    sleep 0.3
+    size=$(_sink_size)
+    sleep 0.5
+    kill "$cli" 2>/dev/null; wait "$cli" 2>/dev/null
+    assert_eq "$size" "$(_sink_size)" "the orphaned typist went on: $(cat "$TEST_TMPDIR/sink")" || return 1
+    [ "$size" -lt 6 ] || { echo "  FAIL: the orphaned typist typed it all: $(cat "$TEST_TMPDIR/sink")"; return 1; }
+}
+
+# The watcher marks that keys went in, and keeps the mark a moment past the
+# last Enter: keys still queued when Codex exits are the launch's to flush.
+test_typing_leaves_the_keys_sent_mark_until_it_settles() {
+    _stamp "$(date +%s)"
+    _watch
+    _keys_after 6 2 || { echo "  FAIL: expected two prompts, got: $(cat "$KEYS" 2>/dev/null)"; return 1; }
+    assert_file_exists "$RUN_DIR/keys-sent" "no mark while the keys may still be queued" || return 1
+    local i=0
+    while [ -e "$RUN_DIR/keys-sent" ]; do
+        i=$((i + 1)); [ "$i" -lt 30 ] || { echo "  FAIL: the mark outlived the typing"; return 1; }
+        sleep 0.1
+    done
 }
 
 # A signal ends the launch through _cs_run_cleanup, which must end the helper:
@@ -617,6 +687,10 @@ run_test test_the_watcher_ends_with_the_runs_owner
 run_test test_the_watcher_ends_with_its_terminal
 run_test test_cleanup_stops_the_helper_and_its_children
 run_test test_the_watcher_ends_its_typing_child_on_term
+run_test test_cleanup_ends_a_helper_that_ignores_term
+run_test test_typing_stops_when_the_cli_is_gone
+run_test test_typing_stops_once_its_watcher_is_gone
+run_test test_typing_leaves_the_keys_sent_mark_until_it_settles
 run_test test_run_cleanup_stops_the_helper
 run_test test_stopping_the_helper_removes_its_run_dir
 run_test test_the_grace_follows_the_force_setting

@@ -473,6 +473,13 @@ _launch_codex_bound() {
         fi
     fi
     cs_run_child "$codex_bin" --no-daemon resume "$thread_id" -C "$session_dir" ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} ${kick:+"$kick"} || status=$?
+    # Keys the watcher typed just before Codex exited can wait unread in the
+    # terminal and would run in the shell, so its input is flushed, but only
+    # when the watcher was typing: the flush would eat ordinary type-ahead.
+    _cs_run_end_helper
+    if [ -n "$_cs_run_helper_dir" ] && [ -e "$(_codex_keys_sent_file "$_cs_run_helper_dir")" ]; then
+        _codex_flush_input
+    fi
     _cs_run_stop_helper
     if [ "$status" -ne 0 ] && [ -n "$spent" ]; then
         # A switch relaunch's settle reads it too (lib/78-switch.sh).

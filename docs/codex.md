@@ -237,6 +237,13 @@ hook removes it, and cs checks it before each key, before Enter and before
 `go`, so `go` never lands in the turn your prompt started; an approval prompt
 removes it the same way. `session.log` then says a prompt went in while cs was
 typing.
+cs also stops typing once Codex has exited: the launch records the CLI's pid
+in the run's directory, and the typist checks it before each key. When Codex
+exits while cs's keys may still wait unread in the terminal (from cs's first
+key until half a second after its last Enter), the launch flushes the
+terminal's input as it ends, so those keys do not run in your shell. That
+flush also drops anything you typed in that sub-second window; at any other
+exit, input you typed ahead is left alone.
 
 The Claude hooks and
 function-hook mods do not run in Codex. Successful Codex patches automatically
