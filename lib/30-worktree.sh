@@ -1873,7 +1873,8 @@ _blank_line_then_cat() {  # file
 # topic the base has never indexed is added, so it is not lost at /finish.
 # A pointer the base's memory archive (reference_memory_archive.md beside the
 # index) names is indexed there: /wrap's memory pass moved it out of
-# MEMORY.md, and it stays out.
+# MEMORY.md, and it stays out. Given the two archives, it folds the archive
+# the same way: the base archive is then both files it reads.
 # A pointer whose topic file is not beside the base index is left out: the
 # base deleted that topic after the feature branched, and the deletion stands.
 # Fails, appending nothing, when a link takes the base index out of its
@@ -2018,11 +2019,11 @@ _fuse_walk_skips() {  # rel
 }
 
 # The files of a feature's .cs that fuse_session_records merges into the
-# same path of the base's by a rule of its own: the timeline, the narratives
-# and the memory index.
+# same path of the base's by a rule of its own: the timeline, the narratives,
+# the memory index and the memory archive.
 _fuse_merged_record() {  # rel
     case "$1" in
-        timeline.jsonl|memory/MEMORY.md) return 0 ;;
+        timeline.jsonl|memory/MEMORY.md|memory/reference_memory_archive.md) return 0 ;;
         memory/narrative.*.md)
             case "${1#memory/}" in */*) return 1 ;; esac
             return 0 ;;
@@ -2117,8 +2118,8 @@ _fuse_conflicts() {  # feature_meta base_meta
 # Fuse session records from a worktree .cs into the base .cs (ignored mode:
 # the repo does not track .cs/, so git merge cannot carry these). Applies the
 # same semantics the merge drivers give tracked repos: union append for
-# timeline/log/narratives, base-wins for MEMORY.md plus the feature's pointers
-# to targets it lacks. Every other file goes back by _fuse_verdict: one the
+# timeline/log/narratives, base-wins for MEMORY.md and the memory archive plus
+# the feature's pointers to targets each lacks. Every other file goes back by _fuse_verdict: one the
 # base lacks is copied in, a copy only the feature edited replaces the base's,
 # and none ever overwrites a base file that changed. Every write returns 1 on failure: the caller runs
 # this in a subshell on the left of ||, where errexit is off, and deletes the
@@ -2211,7 +2212,21 @@ fuse_session_records() {
     done < "$plan"
     rm -f "$plan"
 
-    local added
+    # The memory archive merges before the index, so the index append reads
+    # the merged archive: a base with no archive takes the feature's whole,
+    # frontmatter and all; one with an archive keeps it and gains each
+    # feature pointer whose target it does not name, as a tracked session's
+    # union merge gives it.
+    local added archive="memory/reference_memory_archive.md"
+    if [ -f "$src/$archive" ]; then
+        if [ -f "$dst/$archive" ]; then
+            added=$(_append_missing_memory_pointers "$src/$archive" "$dst/$archive") || return 1
+            [ "$added" = 0 ] || info "reference_memory_archive.md: appended $added pointer(s) from the feature (base lines kept)"
+        else
+            { cs_mkdir_inside "$dst/memory" && cs_write_atomic "$dst/$archive" cat "$src/$archive"; } || return 1
+        fi
+    fi
+
     added=$(_append_missing_memory_pointers "$src/memory/MEMORY.md" "$dst/memory/MEMORY.md") || return 1
     [ "$added" = 0 ] || info "MEMORY.md: appended $added pointer(s) from the feature (base lines kept)"
 }
