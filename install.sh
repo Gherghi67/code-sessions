@@ -1282,9 +1282,9 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "44a0de040e1c0f26a7642acba56c4c28fbe6f941cd2ed95d90c4d22ef3ff0208  bin/cs"
+    "1bebbaec7da168db4219c10f055436adaf1720f0056aa3f948bd9c2f57a635b6  bin/cs"
     "42d2f9ecbc9a89f3b119958360fb753962c89df18b51ef7b85db109b2644e7de  bin/cs-secrets"
-    "24117fba0eadfb19732feeb82ff9c4ee1772f9bd0297adf19478dd861c3d3735  bin/cs-statusline"
+    "2c7073689cf05dc5b3395765c67b80dd60bde74021845efda79a3f2100556f4f  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
     "12d9604997a1b72088df338d259fbb475c13c3bedb0b611d91d50ebbab2914c5  hooks/cs-resolve.sh"
     "e97751f325caa5a8932bc00bebf15eff9e09172b3b943c47cfb8e5c4d05b8859  hooks/cs-shared.sh"
@@ -1304,10 +1304,10 @@ CS_PAYLOAD_SHA256=(
     "a9ae37cf52a7dbbd04ffb4940aeab110d1ce3421b01318c4ff9023d52cd29a0d  hooks/session-auto-approve.sh"
     "4d9cc740dd81c397d8ec6a391e9a7ca522f20f077ed1deea796010a15f038904  hooks/scope-prompt.sh"
     "9e06eaa16960dff49881234c8a479c2f8d2dd8d672283056e1591c4528e755ab  commands/checkpoint.md"
-    "a96f895b90053e26e5cb983392a808d2d31c0597d181288c66aaa8efd88d69b0  commands/wrap.md"
+    "0d3d60f2f308f236b2561f56ca0f1de1ac872b950a3c81de7ceec9080ccd68b3  commands/wrap.md"
     "2520a6d54d75e3e9f1768160826a8b9f21e38e2234538cc62e3ec6337008fc28  skills/store-secret/SKILL.md"
     "eaf2ade4ce76f74b8d6ab979f536007606e77308a0c33dfedf28d31befd1eaec  skills/prose-hygiene/SKILL.md"
-    "88df8470aaec5d50d53000249b541ff7f33abbd6956b9be8f3e736a808bfb5ef  skills/rotate/SKILL.md"
+    "26dfae3e877df1d2832253f7d062619adf5ee3891b7ba150b01bce479265cc71  skills/rotate/SKILL.md"
     "bd99e120c472dbbed0028da0a5cd2dda62073459ad9e4c74fecf41e1187d5dc2  skills/finish/SKILL.md"
     "7915ca859bf53215b4f5c41833dca3a0c661921523eb5424d1f146befefae922  skills/feature/SKILL.md"
     "343016f4d62029a85cfae3c0911b8a7a2bff99a31bd868e04ca83ec4002d6f48  skills/write-as-me/SKILL.md"

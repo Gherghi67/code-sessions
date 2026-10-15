@@ -970,9 +970,9 @@ _sgr() {
                 # stray grey. Safe only because every ink this file paints is
                 # one of the named cases above: an unlisted foreground token
                 # would land on the same code as its own fill and paint
-                # invisible. _seg_session's colour-name allow-list is what
-                # keeps a bogus claude_session_color from ever reaching here
-                # as a foreground name.
+                # invisible. _seg_session paints primary ink, so a bogus
+                # claude_session_color never reaches here as a foreground
+                # name.
                 *)
                     [ "$SL_THEME" = "dark" ] && idx=237 || idx=254 ;;
             esac
@@ -1723,12 +1723,7 @@ _seg_logo() {
     _add "${ICON_LOGO}" identity "$ink" bold
 }
 
-# The session name, bold, in its own claude_session_color when the session has
-# one (the same palette Claude Code's own tab and /color share), else primary
-# ink. A colour outside that palette (state hand-edited or from a future
-# claude release) falls back to ink rather than reaching _sgr with a name it
-# does not resolve. KEEP IN SYNC with the eight names in _sgr and
-# _session_color_rgb in bin/cs.
+# The session name, bold, in primary ink.
 _seg_session() {
     local name="$SL_SESSION"
     [ -n "$name" ] || name="${CLAUDE_SESSION_NAME:-}"
@@ -1843,9 +1838,10 @@ _seg_pane() {
     _add "${ICON_PANE}${TMUX_PANE#%}" identity ink2 "" pad
 }
 
-# The ctx icon is a pie that fills as context does. Its quarter and
+# The ctx icon is a pie that fills as context does. Its half and
 # three-quarter steps sit at the warn and crit thresholds so the shape changes
-# exactly where the ink does; the empty and full ends sit at fixed 13 and 88.
+# exactly where the ink does; the empty, quarter and full steps sit at fixed 0,
+# 13 and 88.
 _ctx_pie() {  # pct warn crit -> _PIE
     local v="$1" warn="$2" crit="$3"
     if [ "$v" -ge 88 ]; then _PIE="$ICON_CTX_FULL"
