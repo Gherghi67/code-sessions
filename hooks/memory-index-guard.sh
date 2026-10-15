@@ -30,6 +30,7 @@ if _tracked=$(cs_files_tracked_notice .cs "$PWD"); then
     exit 2
 fi
 SNAPSHOT="$_snapshot_dir/memory-index.snapshot"
+ARCHIVE_SNAPSHOT="$_snapshot_dir/memory-archive.snapshot"
 # Claude Code loads MEMORY.md at every session start and cuts it past 25,000
 # bytes or 200 lines, whichever comes first; pointers beyond the cut are never
 # read again. Each budget keeps room under its limit for the pointers written
@@ -97,11 +98,20 @@ case "${1:-}" in
         else
             cs_write_atomic "$SNAPSHOT" : || _die "cannot write $SNAPSHOT"
         fi
+        # The archive too, so check sees a pointer lost from it; a session
+        # with no archive yet snapshots it as empty.
+        if [ -f "$ARCHIVE" ]; then
+            cs_write_atomic "$ARCHIVE_SNAPSHOT" cat "$ARCHIVE" || _die "cannot write $ARCHIVE_SNAPSHOT"
+        else
+            cs_write_atomic "$ARCHIVE_SNAPSHOT" : || _die "cannot write $ARCHIVE_SNAPSHOT"
+        fi
         printf 'snapshot: %s\n' "$SNAPSHOT"
         ;;
     check)
         _need_index
         _need_snapshot
+        [ -f "$ARCHIVE_SNAPSHOT" ] || _die "no snapshot at $ARCHIVE_SNAPSHOT; run snapshot before editing MEMORY.md"
+        [ -r "$ARCHIVE_SNAPSHOT" ] || _die "cannot read $ARCHIVE_SNAPSHOT"
         status=0
         before=$(_pointers "$SNAPSHOT")
         after=$(_pointers "$INDEX")
@@ -109,10 +119,14 @@ case "${1:-}" in
         # archive only through its pointer in MEMORY.md.
         archived=""
         [ ! -f "$ARCHIVE" ] || archived=$(_pointers "$ARCHIVE" | sed '/^reference_memory_archive\.md$/d')
+        archived_before=$(_pointers "$ARCHIVE_SNAPSHOT" | sed '/^reference_memory_archive\.md$/d')
         # A pointer gone from MEMORY.md is lost unless the archive holds it:
-        # there it was moved, and check passes it.
+        # there it was moved, and check passes it. A pointer gone from the
+        # archive is lost unless MEMORY.md holds it.
         gone=$(env LC_ALL=C comm -23 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | sed '/^$/d')
-        removed=$(env LC_ALL=C comm -23 <(printf '%s\n' "$gone") <(printf '%s\n' "$archived") | sed '/^$/d')
+        indexed=$(printf '%s\n%s\n' "$after" "$archived" | sed '/^$/d' | env LC_ALL=C sort -u)
+        removed=$(printf '%s\n%s\n' "$before" "$archived_before" | sed '/^$/d' | env LC_ALL=C sort -u \
+            | env LC_ALL=C comm -23 - <(printf '%s\n' "$indexed") | sed '/^$/d')
         if [ -n "$removed" ]; then
             printf '%s\n' "$removed" | _print_names 'removed:'
             status=1
@@ -138,7 +152,6 @@ case "${1:-}" in
             [ -f "$f" ] || continue
             printf '%s\n' "$f"
         done | env LC_ALL=C sort)
-        indexed=$(printf '%s\n%s\n' "$after" "$archived" | sed '/^$/d' | env LC_ALL=C sort -u)
         unindexed=$(env LC_ALL=C comm -23 <(printf '%s\n' "$entries") <(printf '%s\n' "$indexed") | sed '/^$/d')
         if [ -n "$unindexed" ]; then
             printf '%s\n' "$unindexed" | _print_names 'unindexed:'
