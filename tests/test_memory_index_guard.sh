@@ -8,7 +8,8 @@ source "$SCRIPT_DIR/test_lib.sh"
 
 GUARD="$SCRIPT_DIR/../hooks/memory-index-guard.sh"
 
-# A session root holding a MEMORY.md with two pointers; the guard runs from it.
+# A session root holding a MEMORY.md with two pointers and the two entries
+# they name; the guard runs from it.
 _guard_session() {
     SESSION="$TEST_TMPDIR/session"
     mkdir -p "$SESSION/.cs/memory" "$SESSION/.cs/local"
@@ -17,6 +18,8 @@ _guard_session() {
 - [Alpha rule](feedback_alpha.md): never do alpha twice
 - [Beta fact](project_beta.md): beta only runs on Tuesdays
 EOF
+    : > "$SESSION/.cs/memory/feedback_alpha.md"
+    : > "$SESSION/.cs/memory/project_beta.md"
 }
 
 _guard() {  # subcommand...
@@ -34,9 +37,11 @@ test_check_fails_when_a_link_is_removed() {
         "check must name the link that was removed" || return 1
 }
 
-# Appends one pointer line padded so MEMORY.md ends at exactly $1 bytes.
+# Appends one pointer line padded so MEMORY.md ends at exactly $1 bytes, and
+# the entry it names.
 _pad_index_to() {  # bytes
     local head='- [Pad](project_pad.md): ' size fill
+    : > "$SESSION/.cs/memory/project_pad.md"
     size=$(wc -c < "$INDEX")
     fill=$(( $1 - size - ${#head} - 1 ))
     { printf '%s' "$head"; head -c "$fill" /dev/zero | tr '\0' x; printf '\n'; } >> "$INDEX"
@@ -106,6 +111,7 @@ test_check_passes_a_rewrite_that_keeps_every_link_at_the_budget() {
 - [Beta fact](project_beta.md): beta only on Tuesdays
 - [Gamma](reference_gamma.md): the gamma board
 EOF
+    : > "$SESSION/.cs/memory/reference_gamma.md"
     _pad_index_to 24400 || return 1
     local out rc=0
     out=$(_guard check 2>&1) || rc=$?
@@ -120,6 +126,7 @@ test_check_counts_bytes_not_characters() {
     _guard_session
     _guard snapshot > /dev/null || return 1
     printf '%s\n' '- [Delta](project_delta.md): delta — then epsilon' >> "$INDEX"
+    : > "$SESSION/.cs/memory/project_delta.md"
     _pad_index_to 24401 || return 1
     local chars
     chars=$(LC_ALL=en_US.UTF-8 wc -m < "$INDEX" | tr -d ' ')
@@ -166,6 +173,7 @@ test_unknown_subcommand_prints_usage() {
 test_check_passes_when_a_supporting_link_is_dropped() {
     _guard_session
     printf '%s\n' '- [Gamma](project_gamma.md): see [vendor docs](https://example.com/docs)' >> "$INDEX"
+    : > "$SESSION/.cs/memory/project_gamma.md"
     _guard snapshot > /dev/null || return 1
     sed -i.bak 's|: see \[vendor docs\](https://example.com/docs)|: vendor configuration|' "$INDEX"
     grep -q 'vendor configuration' "$INDEX" || { echo "  FAIL: fixture edit did not land"; return 1; }
@@ -203,11 +211,24 @@ test_check_fails_on_an_unindexed_bucket_entry() {
         "a file outside the four buckets is not an entry" || return 1
 }
 
+# A pointer whose entry file is not in .cs/memory leads nowhere: Claude Code
+# loads the pointer, and the file it names cannot be read.
+test_check_fails_on_a_pointer_to_a_missing_entry() {
+    _guard_session
+    _guard snapshot > /dev/null || return 1
+    printf '%s\n' '- [Gone](project_gone.md): an entry that is not there' >> "$INDEX"
+    local out rc=0
+    out=$(_guard check 2>&1) || rc=$?
+    assert_eq 1 "$rc" "a pointer to a missing entry must fail" || return 1
+    assert_eq "dangling: project_gone.md" "$(grep -v '^MEMORY.md: ' <<< "$out")" \
+        "check must name the pointer with no entry, and nothing else" || return 1
+}
+
 # .cs/memory is tracked, so a clone chooses the entry file names and the
 # pointers MEMORY.md holds, and a name can carry a terminal escape: a raw ESC
 # or BEL byte, or backslash text echo -e would turn into one. check names a
-# removed pointer and an unindexed entry as plain names, each character a
-# plain name lacks replaced by _.
+# removed pointer, a pointer with no entry and an unindexed entry as plain
+# names, each character a plain name lacks replaced by _.
 test_check_names_a_pointer_and_an_entry_as_plain_names() {
     _guard_session
     local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m out rc=0
@@ -216,8 +237,11 @@ test_check_names_a_pointer_and_an_entry_as_plain_names() {
     printf '%s\n' '- [Alpha rule](feedback_alpha.md): never do alpha twice' \
         '- [Beta fact](project_beta.md): beta only runs on Tuesdays' > "$INDEX"
     : > "$SESSION/.cs/memory/project_p$bad.md"
+    printf '%s\n' "- [Dangling](project_d$bad.md): no entry" >> "$INDEX"
     out=$(_guard check 2>&1) || rc=$?
     assert_eq 1 "$rc" "check fails" || return 1
+    assert_eq "dangling: project_d$shown.md" "$(grep '^dangling:' <<< "$out")" \
+        "check names the pointer with no entry as a plain name" || return 1
     assert_eq "removed: feedback_o$shown.md" "$(grep '^removed:' <<< "$out")" \
         "check names the removed pointer as a plain name" || return 1
     assert_eq "unindexed: project_p$shown.md" "$(grep '^unindexed:' <<< "$out")" \
@@ -229,7 +253,7 @@ test_check_names_a_pointer_and_an_entry_as_plain_names() {
 # so the first sweep snapshots nothing and must still reach a passing check.
 test_first_sweep_snapshots_an_absent_index_as_empty() {
     _guard_session
-    rm "$INDEX"
+    rm "$INDEX" "$SESSION/.cs/memory/feedback_alpha.md" "$SESSION/.cs/memory/project_beta.md"
     local out rc=0
     out=$(_guard snapshot 2>&1) || rc=$?
     assert_eq 0 "$rc" "snapshot with no MEMORY.md yet must succeed: $out" || return 1
@@ -334,6 +358,7 @@ test_check_lists_in_byte_order_without_the_shell_assigning_its_own_locale() {
     local b utf8 out rc own
     utf8="$(utf8_locale)"
     _guard_session
+    rm "$SESSION/.cs/memory/feedback_alpha.md" "$SESSION/.cs/memory/project_beta.md"
     printf '%s\n' '- [A](project_a.md): a' '- [B](project_B.md): b' '- [C](project__c.md): c' \
         '- [Keep](feedback_keep.md): kept' > "$INDEX"
     _guard snapshot > /dev/null || return 1
@@ -371,6 +396,7 @@ run_test test_unknown_subcommand_prints_usage
 run_test test_check_passes_when_a_supporting_link_is_dropped
 run_test test_check_fails_when_two_pointers_are_merged
 run_test test_check_fails_on_an_unindexed_bucket_entry
+run_test test_check_fails_on_a_pointer_to_a_missing_entry
 run_test test_check_names_a_pointer_and_an_entry_as_plain_names
 run_test test_first_sweep_snapshots_an_absent_index_as_empty
 run_test test_snapshot_outside_a_session_root_is_an_error
