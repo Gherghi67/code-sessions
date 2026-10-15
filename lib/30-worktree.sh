@@ -163,10 +163,13 @@ function printable(name) {
     return name
 }'
 
-# A name as a message prints it (printable in _CS_PRINTABLE_AWK).
+# A name as a message prints it (printable in _CS_PRINTABLE_AWK). The name
+# goes to awk on stdin, so its length has no limit; awk reads it as lines,
+# and each newline between them prints as "?", as printable prints it.
 _printable_name() {  # name
-    env LC_ALL=C CS_PRINTABLE_NAME="$1" awk "$_CS_PRINTABLE_AWK"'
-        BEGIN { printf "%s", printable(ENVIRON["CS_PRINTABLE_NAME"]) }'
+    printf '%s\n' "$1" | env LC_ALL=C awk "$_CS_PRINTABLE_AWK"'
+        { out = out (NR > 1 ? "?" : "") printable($0) }
+        END { printf "%s", out }'
 }
 
 # Tracked files marked skip-worktree or assume-unchanged whose working copy
