@@ -2903,6 +2903,76 @@ test_retire_ignored_mode_carries_a_memory_archive_the_base_lacks() {
 
 run_test test_retire_ignored_mode_carries_a_memory_archive_the_base_lacks
 
+# The base resolves a duplicate: by deleting the archive's copy while the
+# feature leaves the archive it was handed as it was: the retire leaves the
+# base's archive as it is, so the deleted line stays deleted.
+test_retire_ignored_mode_keeps_a_line_the_base_deleted_from_an_archive_the_feature_left() {
+    local base_dir="$CS_SESSIONS_ROOT/proj"
+    mkdir -p "$base_dir/.cs"/{memory,local}
+    printf '%s\n' '- [Memory archive](reference_memory_archive.md): moved pointers' \
+        '- [P](p.md): p' > "$base_dir/.cs/memory/MEMORY.md"
+    echo "p topic" > "$base_dir/.cs/memory/p.md"
+    echo "old topic" > "$base_dir/.cs/memory/old.md"
+    _write_memory_archive "$base_dir/.cs/memory" '- [Old](old.md): archived earlier' '- [P](p.md): p'
+    echo "# P" > "$base_dir/README.md"
+    printf '.cs/\n.claude/settings.local.json\n' > "$base_dir/.gitignore"
+    (cd "$base_dir" && git init -q && git config core.autocrlf false && git add -A && git commit -q -m init)
+    cs_launch "proj@t1"
+    local wt="$CS_SESSIONS_ROOT/proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    _write_memory_archive "$base_dir/.cs/memory" '- [Old](old.md): archived earlier'
+    local sha output status=0
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "retire exits 0: $output" || return 1
+    assert_eq '---
+name: memory-archive
+description: "Pointers moved out of MEMORY.md"
+metadata:
+  type: reference
+---
+
+- [Old](old.md): archived earlier' "$(cat "$base_dir/.cs/memory/reference_memory_archive.md")" \
+        "the base's archive keeps the line it deleted out" || return 1
+    assert_output_not_contains "$output" "reference_memory_archive.md: appended" \
+        "the retire appends nothing to the archive" || return 1
+    assert_not_exists "$wt" "worktree removed" || return 1
+}
+
+run_test test_retire_ignored_mode_keeps_a_line_the_base_deleted_from_an_archive_the_feature_left
+
+# A base that deleted its archive while the feature left the copy it was
+# handed as it was stays without one, as for any other file the feature left.
+test_retire_ignored_mode_leaves_an_archive_the_base_deleted_and_the_feature_left_deleted() {
+    local base_dir="$CS_SESSIONS_ROOT/proj"
+    mkdir -p "$base_dir/.cs"/{memory,local}
+    printf '%s\n' '- [Memory archive](reference_memory_archive.md): moved pointers' \
+        > "$base_dir/.cs/memory/MEMORY.md"
+    echo "old topic" > "$base_dir/.cs/memory/old.md"
+    _write_memory_archive "$base_dir/.cs/memory" '- [Old](old.md): archived earlier'
+    echo "# P" > "$base_dir/README.md"
+    printf '.cs/\n.claude/settings.local.json\n' > "$base_dir/.gitignore"
+    (cd "$base_dir" && git init -q && git config core.autocrlf false && git add -A && git commit -q -m init)
+    cs_launch "proj@t1"
+    local wt="$CS_SESSIONS_ROOT/proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    rm "$base_dir/.cs/memory/reference_memory_archive.md"
+    printf '%s\n' '- [Old](old.md): archived earlier' > "$base_dir/.cs/memory/MEMORY.md"
+    local sha output status=0
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "retire exits 0: $output" || return 1
+    assert_not_exists "$base_dir/.cs/memory/reference_memory_archive.md" \
+        "the archive the base deleted stays deleted" || return 1
+    assert_eq "- [Old](old.md): archived earlier" "$(cat "$base_dir/.cs/memory/MEMORY.md")" \
+        "the base index gains no pointer to an archive it does not have" || return 1
+    assert_not_exists "$wt" "worktree removed" || return 1
+}
+
+run_test test_retire_ignored_mode_leaves_an_archive_the_base_deleted_and_the_feature_left_deleted
+
 # An ignored-mode feature starts with a copy of the base's topics. One the
 # base deleted while the feature was open, and the feature never touched, is
 # not a topic the feature wrote: the fuse leaves it deleted, pointer and all.
