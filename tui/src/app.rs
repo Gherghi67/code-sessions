@@ -1566,7 +1566,8 @@ impl App {
             MenuAction::Delete => {
                 // A live session opens the confirm too: it says so, and
                 // offers removing it anyway as `cs -rm --force` does, unless
-                // the picker runs inside another session, where cs -rm
+                // the picker runs inside another session or a
+                // `cs <name> --remote` server serves it, where cs -rm
                 // refuses it outright and so does the confirm.
                 if let Some(name) = self.selected_session().map(|s| s.name.clone()) {
                     self.open_delete_confirm(std::slice::from_ref(&name), Mode::ConfirmDelete);
@@ -1702,8 +1703,9 @@ impl App {
     /// off: its lines name each live session and each one holding files
     /// beyond cs's own, and it offers the escalation each needs. Stays
     /// closed, with the reason in the status line, when `cs -rm` run inside
-    /// the picker's session would refuse any of `names` from there, and
-    /// when a file listing fails.
+    /// the picker's session would refuse any of `names` from there, when a
+    /// `cs <name> --remote` server serves any of them, and when a file
+    /// listing fails.
     fn open_delete_confirm(&mut self, names: &[String], mode: Mode) {
         match self.delete_confirm_lines(names) {
             Ok((warnings, offers)) => {
@@ -2048,15 +2050,19 @@ impl App {
     /// holding files beyond cs's own (offering the files grant), the latter
     /// prefixed with the session name when more than one is being deleted.
     /// Errors with `cs -rm`'s sentence when, inside a session, it would
-    /// refuse any of `names` from there whatever it is granted, so the
-    /// confirm never offers a removal it will refuse; errors too when a
-    /// listing fails, so the confirm never opens on a list it could not read.
+    /// refuse any of `names` from there whatever it is granted, and when a
+    /// `cs <name> --remote` server serves any of them, so the confirm never
+    /// offers a removal it will refuse; errors too when a listing fails, so
+    /// the confirm never opens on a list it could not read.
     fn delete_confirm_lines(&self, names: &[String]) -> Result<(Vec<session::DeleteWarning>, session::RemoveGrants), String> {
         let mut lines = Vec::new();
         let mut offers = session::RemoveGrants::default();
         for name in names {
             let path = self.sessions_root.join(name);
             if let Some(refusal) = session::caller_refusal(&self.sessions_root, name, &path).map_err(|e| e.to_string())? {
+                return Err(refusal);
+            }
+            if let Some(refusal) = session::served_refusal(name, &path) {
                 return Err(refusal);
             }
             let live_pid = self
@@ -5389,6 +5395,222 @@ mod tests {
         assert!(root.join("busy/.cs/session.lock").exists(), "the live session survives");
         assert!(!root.join("idle").exists(), "the dormant session goes");
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A process whose argv carries `remote-control --name <name>`, as the
+    /// `claude remote-control` server `cs <name> --remote` runs does.
+    fn fake_remote_server(name: &str) -> std::process::Child {
+        std::process::Command::new("perl")
+            .args(["-e", "sleep 30", "remote-control", "--name", name, "--permission-mode", "default"])
+            .spawn()
+            .unwrap()
+    }
+
+    /// Serve session `name` under `root` as `cs <name> --remote` does: the
+    /// session lock and `.cs/local/remote.pid` name `server`.
+    fn serve(root: &std::path::Path, name: &str, server: &std::process::Child) {
+        let meta = root.join(name).join(".cs");
+        std::fs::write(meta.join("session.lock"), format!("{}\n", server.id())).unwrap();
+        std::fs::write(meta.join("local/remote.pid"), format!("{}\n", server.id())).unwrap();
+    }
+
+    fn stop(mut child: std::process::Child) {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    /// d on a session a `cs <name> --remote` server serves refuses at once
+    /// in `cs -rm`'s words, inside its own session or outside every
+    /// session: no confirm opens, so no [F] is offered past it.
+    #[test]
+    fn delete_refuses_a_served_session_before_the_confirm() {
+        use crate::session::{test_caller, test_root};
+        let root = std::env::temp_dir().join(format!("cs-test-del-served-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("busy/.cs/local")).unwrap();
+        let server = fake_remote_server("busy");
+        let spid = server.id();
+        serve(&root, "busy", &server);
+        let _guard = test_root::scoped(root.clone());
+        let mut seen = Vec::new();
+        for caller in [None, Some("busy")] {
+            let _caller = caller.map(test_caller::scoped);
+            let mut app = app_on(&root, "busy");
+
+            app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+
+            let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+            seen.push((caller, app.mode == Mode::Normal, app.delete_offers, status));
+        }
+        stop(server);
+        for (caller, closed, offers, status) in seen {
+            assert!(closed, "caller {caller:?}: the confirm stays closed");
+            assert_eq!(offers, session::RemoveGrants::default(), "caller {caller:?}: nothing is offered");
+            assert_eq!(
+                status,
+                format!("Session busy is served by cs busy --remote (remote-control PID {spid}); stop it first with Ctrl-C in its window, or close the window."),
+                "caller {caller:?}"
+            );
+        }
+        assert!(root.join("busy/.cs/local/remote.pid").exists(), "the served session survives");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A server that starts after the delete confirm opened is refused at y
+    /// in `cs -rm`'s words, with [F] granted or not: the removal reads
+    /// remote.pid again whatever the confirm saw. Without [F] the row was
+    /// dormant when the confirm opened; with it the row was live, so [F]
+    /// was offered.
+    #[test]
+    fn confirm_delete_y_refuses_a_session_served_after_the_confirm_opened() {
+        use crate::session::test_root;
+        for force in [false, true] {
+            let root = std::env::temp_dir().join(format!("cs-test-del-served-late-{force}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(root.join("busy/.cs/local")).unwrap();
+            if force {
+                std::fs::write(root.join("busy/.cs/session.lock"), format!("{}\n", std::process::id())).unwrap();
+            }
+            let _guard = test_root::scoped(root.clone());
+            let mut app = app_on(&root, "busy");
+
+            app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+            assert_eq!(app.mode, Mode::ConfirmDelete, "force {force}: an unserved session opens the confirm");
+            if force {
+                app.handle_key(KeyEvent::from(KeyCode::Char('F')));
+                assert!(app.delete_grants.past_live_lock, "a live session is granted F");
+            }
+            let server = fake_remote_server("busy");
+            let spid = server.id();
+            serve(&root, "busy", &server);
+            app.delete_countdown_start = Some(std::time::Instant::now() - std::time::Duration::from_secs(60));
+            app.handle_key(KeyEvent::from(KeyCode::Char('y')));
+            stop(server);
+
+            let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+            assert_eq!(
+                status,
+                format!("Delete failed: Session busy is served by cs busy --remote (remote-control PID {spid}); stop it first with Ctrl-C in its window, or close the window."),
+                "force {force}"
+            );
+            assert!(root.join("busy/.cs/local/remote.pid").exists(), "force {force}: the served session survives");
+            std::fs::remove_dir_all(&root).ok();
+        }
+    }
+
+    /// D refuses the whole batch at once when any marked session is served,
+    /// whichever place it holds in the batch; the marks stay.
+    #[test]
+    fn batch_delete_refuses_before_the_confirm_when_a_marked_session_is_served() {
+        use crate::session::test_root;
+        let root = std::env::temp_dir().join(format!("cs-test-batch-served-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for name in ["a-idle", "busy"] {
+            std::fs::create_dir_all(root.join(name).join(".cs/local")).unwrap();
+        }
+        let server = fake_remote_server("busy");
+        let spid = server.id();
+        serve(&root, "busy", &server);
+        let _guard = test_root::scoped(root.clone());
+        let mut app = app_on(&root, "busy");
+        for name in ["a-idle", "busy"] {
+            app.marked_sessions.insert(name.to_string());
+        }
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('D')));
+        stop(server);
+
+        assert_eq!(app.mode, Mode::Normal, "the confirm stays closed");
+        let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+        assert_eq!(
+            status,
+            format!("Session busy is served by cs busy --remote (remote-control PID {spid}); stop it first with Ctrl-C in its window, or close the window.")
+        );
+        assert_eq!(app.marked_sessions.len(), 2, "the marks stay");
+        assert!(root.join("a-idle/.cs").is_dir(), "nothing in the batch is removed");
+        assert!(root.join("busy/.cs/local/remote.pid").exists(), "the served session survives");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A batch granted F whose session became served after the confirm
+    /// opened refuses that session in cs's words and still deletes the
+    /// dormant one beside it.
+    #[test]
+    fn batch_delete_past_the_live_grant_refuses_a_session_served_after_the_confirm_opened() {
+        use crate::session::test_root;
+        let root = std::env::temp_dir().join(format!("cs-test-batch-served-late-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for name in ["busy", "idle"] {
+            std::fs::create_dir_all(root.join(name).join(".cs/local")).unwrap();
+        }
+        let _guard = test_root::scoped(root.clone());
+        let mut app = app_on(&root, "busy");
+        for name in ["busy", "idle"] {
+            app.marked_sessions.insert(name.to_string());
+        }
+        app.delete_grants.past_live_lock = true;
+        let server = fake_remote_server("busy");
+        let spid = server.id();
+        serve(&root, "busy", &server);
+
+        app.execute_batch_delete();
+        stop(server);
+
+        let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+        assert_eq!(
+            status,
+            format!("Deleted 1, 1 failed — Session busy is served by cs busy --remote (remote-control PID {spid}); stop it first with Ctrl-C in its window, or close the window.")
+        );
+        assert!(root.join("busy/.cs/local/remote.pid").exists(), "the served session survives");
+        assert!(!root.join("idle").exists(), "the dormant session goes");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A remote.pid that serves nothing leaves a live session to the plain
+    /// live check, as `cs -rm` leaves it: its pid not running, running
+    /// another program, or running the server of another session. d opens
+    /// the confirm with [F] offered, and F then y removes the session.
+    #[test]
+    fn delete_confirm_offers_f_on_a_live_session_whose_remote_pid_serves_nothing() {
+        use crate::session::test_root;
+        for (tag, holder) in [("dead", None), ("program", Some(false)), ("other", Some(true))] {
+            let root = std::env::temp_dir().join(format!("cs-test-del-unserved-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(root.join("busy/.cs/local")).unwrap();
+            std::fs::write(root.join("busy/.cs/session.lock"), format!("{}\n", std::process::id())).unwrap();
+            let process = holder.map(|server| {
+                if server {
+                    fake_remote_server("other")
+                } else {
+                    std::process::Command::new("sleep").arg("30").spawn().unwrap()
+                }
+            });
+            let remote_pid = process.as_ref().map_or("99999999".to_string(), |p| p.id().to_string());
+            std::fs::write(root.join("busy/.cs/local/remote.pid"), format!("{remote_pid}\n")).unwrap();
+            let _guard = test_root::scoped(root.clone());
+            let mut app = app_on(&root, "busy");
+
+            app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+            let opened = app.mode == Mode::ConfirmDelete;
+            let offers = app.delete_offers;
+            app.handle_key(KeyEvent::from(KeyCode::Char('F')));
+            app.delete_countdown_start = Some(std::time::Instant::now() - std::time::Duration::from_secs(60));
+            app.handle_key(KeyEvent::from(KeyCode::Char('y')));
+            if let Some(p) = process {
+                stop(p);
+            }
+
+            let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+            assert!(opened, "{tag}: the confirm opens; status: {status}");
+            assert_eq!(
+                offers,
+                session::RemoveGrants { past_live_lock: true, unowned_files: false },
+                "{tag}: F is offered"
+            );
+            assert_eq!(status, "Deleted: busy", "{tag}");
+            assert!(!root.join("busy").exists(), "{tag}: the session goes");
+            std::fs::remove_dir_all(&root).ok();
+        }
     }
 
     /// D grants the files cs did not create (`cs -rm --delete-files`): the
