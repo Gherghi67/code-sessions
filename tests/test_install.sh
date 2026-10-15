@@ -2950,9 +2950,10 @@ test_uninstall_keeps_a_fifo_in_a_skill_directory_unread() {
 # newline in it included. A directory named "x<newline>" holding a path that
 # mirrors an absolute one outside ~/.claude must not make that outside file
 # a candidate, even one holding content cs shipped; a cs-written file whose
-# name holds a newline goes, and a user's file of that shape stays.
+# name holds a newline goes, and a user's file of that shape stays, even one
+# whose path's second line is a line of the install record.
 test_uninstall_judges_names_holding_a_newline_whole() {
-    local home="$TEST_TMPDIR/newline-home" out rc=0 skill victim nl_dir
+    local home="$TEST_TMPDIR/newline-home" out rc=0 skill victim nl_dir record_line record_shaped
     mkdir -p "$home"
     HOME="$home" bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || { echo "  FAIL: install failed"; return 1; }
     skill="$home/.claude/skills/feature"
@@ -2964,13 +2965,47 @@ test_uninstall_judges_names_holding_a_newline_whole() {
     printf 'my mirrored file\n' > "$nl_dir$victim"
     printf 'my notes\n' > "$skill/my"$'\n'"notes.md"
     _cs_shipped_content > "$skill/old"$'\n'"name.md"
+    record_line=$(grep '  \.claude/commands/wrap\.md$' "$home/.claude/hooks/cs/.installed")
+    [ -n "$record_line" ] || { echo "  FAIL: the install record names no commands/wrap.md"; return 1; }
+    record_shaped="$skill/y"$'\n'"$record_line"
+    mkdir -p "$(dirname "$record_shaped")"
+    printf 'my record-shaped file\n' > "$record_shaped"
     out=$(printf 'y\n' | HOME="$home" "$CS_BIN" -uninstall 2>&1) || rc=$?
     assert_eq "0" "$rc" "uninstall exit status" || { echo "$out"; return 1; }
     assert_eq '{"modules":["./register.tsx"]}' "$(cat "$victim" 2>/dev/null)" "the file outside ~/.claude is untouched" || return 1
     assert_eq "my mirrored file" "$(cat "$nl_dir$victim")" "the user's file under the newline-named directory is kept" || return 1
     assert_eq "my notes" "$(cat "$skill/my"$'\n'"notes.md")" "the user's newline-named file is kept" || return 1
+    assert_eq "my record-shaped file" "$(cat "$record_shaped" 2>/dev/null)" "the user's file whose path ends in a record line is kept" || return 1
     assert_file_not_exists "$skill/old"$'\n'"name.md" "cs's newline-named file removed" || return 1
     assert_file_not_exists "$skill/SKILL.md" "cs's skill file removed" || return 1
+}
+
+# A path holding a newline cannot sit on one line of the install record, so a
+# user's file of that shape under a retired skill directory is named on every
+# install and never remembered there. Remembering it would put the path's
+# second line in the record as a line of its own, and a path whose second
+# line reads "<sha256>  <path>" (a directory named "notes<newline><sha256>  .claude"
+# holding commands/wrap.md) would claim the file at that path for cs.
+test_install_never_writes_a_path_holding_a_newline_into_the_record() {
+    local home="$TEST_TMPDIR/newline-record-home" out rc=0 digest planted
+    mkdir -p "$home"
+    HOME="$home" bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || { echo "  FAIL: install failed"; return 1; }
+    printf 'my wrap command\n' > "$home/.claude/commands/wrap.md"
+    digest=$(shasum -a 256 < "$home/.claude/commands/wrap.md")
+    digest="${digest%% *}"
+    mkdir -p "$home/.claude/skills/merge"
+    planted="$home/.claude/skills/merge/notes"$'\n'"$digest  .claude/commands/wrap.md"
+    mkdir -p "$(dirname "$planted")"
+    printf 'my notes\n' > "$planted"
+    HOME="$home" bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || { echo "  FAIL: second install failed"; return 1; }
+    out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || rc=$?
+    assert_eq "0" "$rc" "third install exit status" || { echo "$out"; return 1; }
+    assert_eq "0" "$(grep -cxF "$digest  .claude/commands/wrap.md" "$home/.claude/hooks/cs/.installed")" \
+        "the record holds no line taken from the planted name" || return 1
+    assert_eq "my wrap command" "$(cat "$home/.claude/commands/wrap.md")" "the user's command is kept" || return 1
+    assert_eq "my notes" "$(cat "$planted")" "the planted file is kept" || return 1
+    assert_output_contains "$out" "Kept $(_bre_literal "$home/.claude/skills/merge/notes")$" \
+        "the planted file is named on every install" || return 1
 }
 
 test_uninstall_removes_leftover_cs_tui_exe() {
@@ -3172,6 +3207,7 @@ run_test test_uninstall_removes_only_files_cs_wrote
 run_test test_install_keeps_a_fifo_at_a_deploy_path_unread
 run_test test_uninstall_keeps_a_fifo_in_a_skill_directory_unread
 run_test test_uninstall_judges_names_holding_a_newline_whole
+run_test test_install_never_writes_a_path_holding_a_newline_into_the_record
 run_test test_uninstall_removes_subagent_statusline
 test_hook_registration_doc_matches_install() {
     # docs/hooks.md restates install.sh's _merge_cs_hook registrations as a
