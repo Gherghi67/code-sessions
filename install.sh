@@ -1609,7 +1609,10 @@ if [ "$INSTALL_METHOD" = "local" ] && [ -f "$_cs_tui_src" ]; then
     _place_file "$_cs_tui_src" "$INSTALL_DIR/cs-tui" 755
     _record_tui_origin "checkout $SCRIPT_DIR"
 elif [ "$INSTALL_METHOD" = "web" ]; then
-    _cs_version=$(grep -m1 "^VERSION=" "$INSTALL_DIR/cs" 2>/dev/null | cut -d'"' -f2 || echo "")
+    # The release this install downloaded, read from its verified bin/cs:
+    # $INSTALL_DIR/cs may be a link _place_file kept, which is not this
+    # release and may point at anything, a FIFO included.
+    _cs_version=$(grep -m1 "^VERSION=" "$PAYLOAD_DIR/bin/cs" 2>/dev/null | cut -d'"' -f2 || echo "")
     _os=$(uname -s | tr '[:upper:]' '[:lower:]')
     _arch=$(uname -m)
     [ "$_arch" = "x86_64" ] && _arch="amd64"
@@ -2455,8 +2458,11 @@ if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
     echo ""
 fi
 
-# Get version for completion message
-CS_VERSION=$(grep -m1 "^VERSION=" "$INSTALL_DIR/cs" 2>/dev/null | cut -d'"' -f2 || echo "unknown")
+# The version this install placed, for the completion message and the hooks'
+# stamp, read from the payload's bin/cs: $INSTALL_DIR/cs may be a link
+# _place_file kept, which holds content cs did not write and may point at
+# anything, a FIFO included.
+CS_VERSION=$(grep -m1 "^VERSION=" "$PAYLOAD_DIR/bin/cs" 2>/dev/null | cut -d'"' -f2 || echo "unknown")
 
 # Stamp the deployed-hooks version so cs -doctor can flag installs whose
 # deployed artifacts lag behind the running cs binary.
