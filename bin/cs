@@ -321,8 +321,12 @@ _cs_rotate_wrap_keys_answer_file() {
 # object whose "bindings" is an array of context blocks, each an object whose
 # own "bindings", when present, is an object. Slurped, so a file holding two
 # documents is refused rather than read as two; -e turns invalid JSON, an
-# empty file and a false answer alike into a non-zero exit.
+# empty file and a false answer alike into a non-zero exit. Only a regular
+# file (or a link to one) is read: a FIFO waits for a writer that never comes
+# and a device may never end, so one of those, a directory or a link to any of
+# them fails the check unread, and every caller asks this before it reads.
 _cs_keybindings_shape_ok() {  # file
+    [ -f "$1" ] || return 1
     jq -se 'length == 1 and (.[0] | type == "object" and (.bindings | type == "array")
         and all(.bindings[]; type == "object" and ((.bindings // {}) | type == "object")))' \
         "$1" > /dev/null 2>&1
@@ -387,10 +391,13 @@ _cs_install_record() {
     printf '%s\n' "$HOME/.claude/hooks/cs/.installed"
 }
 
-# Prints the sha256 of file $1. Fails when the file cannot be read or there
-# is no sha256sum or shasum to compute it.
+# Prints the sha256 of file $1. Fails when $1 is not a regular file or a
+# link to one, without reading it: a FIFO or a device can keep a read
+# waiting forever. Fails too when the file cannot be read or there is no
+# sha256sum or shasum to compute it.
 _cs_sha256_file() {  # file
     local out
+    [ -f "$1" ] || return 1
     if command -v sha256sum >/dev/null 2>&1; then
         out=$(sha256sum < "$1") || return 1
     elif command -v shasum >/dev/null 2>&1; then
@@ -406,7 +413,9 @@ _cs_sha256_file() {  # file
 # Whether file $1 holds content cs wrote: the sha256 the install record
 # holds for its path, $2 (the sha256 of the payload the caller deploys at
 # that path, so a file already equal to it is cs's), or one in
-# CS_KNOWN_SHA256. A file whose sha256 cannot be computed is not cs's.
+# CS_KNOWN_SHA256. A file whose sha256 cannot be computed is not cs's. The
+# record holds one path per line, so a path holding a newline is never
+# looked up there: it is judged by its content alone.
 _cs_owns_file() {  # file, [payload-sha256]
     local digest record
     digest=$(_cs_sha256_file "$1") || return 1
@@ -414,7 +423,7 @@ _cs_owns_file() {  # file, [payload-sha256]
         return 0
     fi
     record=$(_cs_install_record)
-    if [ -f "$record" ] && grep -qxF "$digest  ${1#"$HOME"/}" "$record"; then
+    if [ -f "$record" ] && [[ "$1" != *$'\n'* ]] && grep -qxF "$digest  ${1#"$HOME"/}" "$record"; then
         return 0
     fi
     case " ${CS_KNOWN_SHA256[*]} " in
@@ -442,12 +451,13 @@ _cs_remove_if_owned() {  # file, [payload-sha256]
 # Removes the files under directory $1 that cs wrote, then every directory
 # that leaves empty; keeps the rest as _cs_remove_if_owned does, or as
 # function $2 does when given one (it takes a file and removes it or keeps
-# it). Returns 0 when the directory is gone.
+# it). Returns 0 when the directory is gone. Names come from find
+# NUL-separated, so a name holding a newline is judged whole.
 _cs_remove_tree_if_owned() {  # dir, [remove-function]
     local f remove="${2:-_cs_remove_if_owned}"
-    while IFS= read -r f; do
+    while IFS= read -r -d '' f; do
         "$remove" "$f" || true
-    done < <(find "$1" ! -type d)
+    done < <(find "$1" ! -type d -print0)
     find "$1" -depth -type d -exec rmdir {} \; 2>/dev/null || true
     [ ! -e "$1" ]
 }
@@ -2284,11 +2294,20 @@ cs_vault_holder_drop() {  # holders, pid
 # can (cs creates it), anything else jq cannot parse cannot, and is never
 # replaced. Returns 1 with "<file> is not valid JSON; left it unchanged and
 # wrote no <file>.cs-bak.<stamp> backup: <jq's reason>" in CS_SETTINGS_ERROR
-# when it cannot.
+# when it cannot. Something there that is not a regular file (a FIFO, a
+# device, a directory, or a link to one) is never opened, since reading a
+# FIFO waits for a writer and a device may never end, and returns 1 with
+# "<file> is not a regular file, so cs did not read it; left it unchanged".
+# That test comes first: -s is false for a FIFO or a device, as for a
+# missing file, so the size alone would pass one as a file cs creates.
 # shellcheck disable=SC2034  # CS_SETTINGS_ERROR is read by the callers in cs and install.sh
 cs_settings_check() {  # file
     local reason
     CS_SETTINGS_ERROR=""
+    if [ -e "$1" ] && [ ! -f "$1" ]; then
+        CS_SETTINGS_ERROR="$1 is not a regular file, so cs did not read it; left it unchanged"
+        return 1
+    fi
     [ -s "$1" ] || return 0
     reason=$(jq -e . 2>&1 >/dev/null < "$1") && return 0
     reason="${reason%%$'\n'*}"
@@ -10944,6 +10963,13 @@ _DOCTOR_JQ_HOOKS='def cs_hooks: objects | .hooks | objects | .[] | arrays | .[] 
 
 _doctor_check_settings_valid() {
     local settings="${CS_CLAUDE_DIR:-$HOME/.claude}/settings.json"
+    # Something there that is not a regular file (a FIFO, a device, a
+    # directory) is never opened: reading a FIFO waits for a writer. Every
+    # settings check below tests -f before it reads.
+    if [ -e "$settings" ] && [ ! -f "$settings" ]; then
+        _doctor_fail "Settings: $settings is not a regular file, so cs did not read it"
+        return 0
+    fi
     # A missing file is the hooks check's story to tell, with its own advice.
     [ -f "$settings" ] || return 0
     if ! command -v jq >/dev/null 2>&1; then
@@ -16135,9 +16161,10 @@ run_uninstall() {
     fi
 
     # Clean up settings.json (remove cs hooks, preserve others). A file jq
-    # cannot parse is left as it is with a warning: the binaries are already
+    # cannot parse, or one that is not a regular file (cs_settings_check never
+    # opens it), is left as it is with a warning: the binaries are already
     # gone, so the rest of the uninstall still runs.
-    if [ -f "$settings_file" ] && command -v jq >/dev/null 2>&1; then
+    if [ -e "$settings_file" ] && command -v jq >/dev/null 2>&1; then
         if cs_settings_update "$settings_file" _strip_cs_hook_registrations "$hooks_dir" "$hooks_parent_dir"; then
             info "Cleaned up $settings_file"
         else

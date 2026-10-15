@@ -282,8 +282,12 @@ _cs_rotate_wrap_keys_answer_file() {
 # object whose "bindings" is an array of context blocks, each an object whose
 # own "bindings", when present, is an object. Slurped, so a file holding two
 # documents is refused rather than read as two; -e turns invalid JSON, an
-# empty file and a false answer alike into a non-zero exit.
+# empty file and a false answer alike into a non-zero exit. Only a regular
+# file (or a link to one) is read: a FIFO waits for a writer that never comes
+# and a device may never end, so one of those, a directory or a link to any of
+# them fails the check unread, and every caller asks this before it reads.
 _cs_keybindings_shape_ok() {  # file
+    [ -f "$1" ] || return 1
     jq -se 'length == 1 and (.[0] | type == "object" and (.bindings | type == "array")
         and all(.bindings[]; type == "object" and ((.bindings // {}) | type == "object")))' \
         "$1" > /dev/null 2>&1
@@ -348,10 +352,13 @@ _cs_install_record() {
     printf '%s\n' "$HOME/.claude/hooks/cs/.installed"
 }
 
-# Prints the sha256 of file $1. Fails when the file cannot be read or there
-# is no sha256sum or shasum to compute it.
+# Prints the sha256 of file $1. Fails when $1 is not a regular file or a
+# link to one, without reading it: a FIFO or a device can keep a read
+# waiting forever. Fails too when the file cannot be read or there is no
+# sha256sum or shasum to compute it.
 _cs_sha256_file() {  # file
     local out
+    [ -f "$1" ] || return 1
     if command -v sha256sum >/dev/null 2>&1; then
         out=$(sha256sum < "$1") || return 1
     elif command -v shasum >/dev/null 2>&1; then
@@ -367,7 +374,9 @@ _cs_sha256_file() {  # file
 # Whether file $1 holds content cs wrote: the sha256 the install record
 # holds for its path, $2 (the sha256 of the payload the caller deploys at
 # that path, so a file already equal to it is cs's), or one in
-# CS_KNOWN_SHA256. A file whose sha256 cannot be computed is not cs's.
+# CS_KNOWN_SHA256. A file whose sha256 cannot be computed is not cs's. The
+# record holds one path per line, so a path holding a newline is never
+# looked up there: it is judged by its content alone.
 _cs_owns_file() {  # file, [payload-sha256]
     local digest record
     digest=$(_cs_sha256_file "$1") || return 1
@@ -375,7 +384,7 @@ _cs_owns_file() {  # file, [payload-sha256]
         return 0
     fi
     record=$(_cs_install_record)
-    if [ -f "$record" ] && grep -qxF "$digest  ${1#"$HOME"/}" "$record"; then
+    if [ -f "$record" ] && [[ "$1" != *$'\n'* ]] && grep -qxF "$digest  ${1#"$HOME"/}" "$record"; then
         return 0
     fi
     case " ${CS_KNOWN_SHA256[*]} " in
@@ -403,12 +412,13 @@ _cs_remove_if_owned() {  # file, [payload-sha256]
 # Removes the files under directory $1 that cs wrote, then every directory
 # that leaves empty; keeps the rest as _cs_remove_if_owned does, or as
 # function $2 does when given one (it takes a file and removes it or keeps
-# it). Returns 0 when the directory is gone.
+# it). Returns 0 when the directory is gone. Names come from find
+# NUL-separated, so a name holding a newline is judged whole.
 _cs_remove_tree_if_owned() {  # dir, [remove-function]
     local f remove="${2:-_cs_remove_if_owned}"
-    while IFS= read -r f; do
+    while IFS= read -r -d '' f; do
         "$remove" "$f" || true
-    done < <(find "$1" ! -type d)
+    done < <(find "$1" ! -type d -print0)
     find "$1" -depth -type d -exec rmdir {} \; 2>/dev/null || true
     [ ! -e "$1" ]
 }

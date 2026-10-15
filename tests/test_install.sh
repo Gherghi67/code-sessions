@@ -340,6 +340,25 @@ test_install_refuses_invalid_settings_json() {
     _assert_tree_unchanged "$before" "$fake_home" "install places nothing before it refuses" || return 1
 }
 
+# A settings.json that is not a regular file, here a FIFO, is never read:
+# reading one waits for a writer that never comes. The install refuses it as
+# it refuses one jq cannot parse, before it places anything, and leaves it as
+# it was.
+test_install_refuses_a_settings_json_that_is_not_a_regular_file() {
+    local fake_home="$TEST_TMPDIR/home-fifo-settings" f rc=0 out before
+    f="$fake_home/.claude/settings.json"
+    mkdir -p "$fake_home/.claude"
+    mkfifo "$f"
+    before=$(_tree_listing "$fake_home")
+    _run_bounded 60 env HOME="$fake_home" bash "$INSTALL_SH" < /dev/null > "$TEST_TMPDIR/fifo-settings.out" 2>&1 || rc=$?
+    out=$(cat "$TEST_TMPDIR/fifo-settings.out")
+    assert_eq "1" "$rc" "install exit status (142: still running after 60 s)" || { echo "$out"; return 1; }
+    assert_output_contains "$out" "^Error: $(_bre_literal "$f") is not a regular file, so cs did not read it; left it unchanged; nothing was installed$" \
+        "the error names the file and says nothing was installed" || { echo "$out"; return 1; }
+    [ -p "$f" ] || { echo "  FAIL: the fifo is not left as it was"; return 1; }
+    _assert_tree_unchanged "$before" "$fake_home" "install places nothing before it refuses" || return 1
+}
+
 # A zero-byte settings.json holds nothing to lose: it is created as cs's
 # hooks, like a missing one.
 test_install_fills_an_empty_settings_json() {
@@ -452,6 +471,28 @@ EOF
     jq -e '.env.ALICE == "1" and (.hooks.SessionStart | length > 0)' "$f" >/dev/null 2>&1 \
         || { echo "  FAIL: the installer's change or the user's key was lost"; return 1; }
     assert_not_exists "$f.lock" "the settings lock is released" || return 1
+}
+
+# cs -uninstall reads neither settings.json nor keybindings.json when it is
+# not a regular file (here a FIFO, and a link to one): it names each, leaves
+# it as it was, and finishes, as it does for a file jq cannot parse.
+test_uninstall_leaves_settings_and_keybindings_that_are_not_regular_files_unread() {
+    local fake_home="$TEST_TMPDIR/home-fifo-un" f kb rc=0 out
+    f="$fake_home/.claude/settings.json"
+    kb="$fake_home/.claude/keybindings.json"
+    mkdir -p "$fake_home/.claude" "$fake_home/fifos"
+    mkfifo "$f" "$fake_home/fifos/keys"
+    ln -s "$fake_home/fifos/keys" "$kb"
+    printf 'y\n' | _run_bounded 60 env -u CLAUDE_CONFIG_DIR -u XDG_CONFIG_HOME HOME="$fake_home" "$CS_BIN" -uninstall \
+        > "$TEST_TMPDIR/fifo-un.out" 2>&1 || rc=$?
+    out=$(cat "$TEST_TMPDIR/fifo-un.out")
+    assert_eq "0" "$rc" "uninstall exit status (142: still running after 60 s)" || { echo "$out"; return 1; }
+    assert_output_contains "$out" "^$(_bre_literal "$f") is not a regular file, so cs did not read it; left it unchanged$" \
+        "the settings.json fifo is named" || { echo "$out"; return 1; }
+    assert_output_contains "$out" "^Left $(_bre_literal "$kb") as it is: not JSON with a \"bindings\" array$" \
+        "the keybindings.json link is named" || { echo "$out"; return 1; }
+    [ -p "$f" ] || { echo "  FAIL: the settings.json fifo is not left as it was"; return 1; }
+    [ -L "$kb" ] && [ -p "$fake_home/fifos/keys" ] || { echo "  FAIL: the keybindings.json link and its fifo are not left as they were"; return 1; }
 }
 
 # cs -uninstall has already removed the binaries when it reaches the settings
@@ -2890,6 +2931,169 @@ test_uninstall_removes_only_files_cs_wrote() {
     assert_output_contains "$out" "$home/\.claude/skills/cs/notes\.md" "the kept mod file is named" || return 1
 }
 
+# A FIFO where cs deploys a file is never read: reading one waits for a
+# writer that never comes. Install keeps it, names it, and finishes. Output
+# goes to a file and the run is bounded (_run_bounded), so a hang fails the
+# test (142) rather than holding the suite.
+test_install_keeps_a_fifo_at_a_deploy_path_unread() {
+    local home="$TEST_TMPDIR/fifo-install-home" out rc=0
+    mkdir -p "$home/.claude/commands"
+    mkfifo "$home/.claude/commands/wrap.md"
+    _run_bounded 60 env HOME="$home" bash "$INSTALL_SH" < /dev/null > "$TEST_TMPDIR/fifo-install.out" 2>&1 || rc=$?
+    out=$(cat "$TEST_TMPDIR/fifo-install.out")
+    assert_eq "0" "$rc" "install exit status (142: still running after 60 s)" || { echo "$out"; return 1; }
+    [ -p "$home/.claude/commands/wrap.md" ] || { echo "  FAIL: the fifo is not left as it was"; return 1; }
+    assert_output_contains "$out" "Kept $(_bre_literal "$home/.claude/commands/wrap.md"): cs did not write it, so it was not replaced" \
+        "the kept fifo is named" || return 1
+    cmp -s "$SCRIPT_DIR/../commands/checkpoint.md" "$home/.claude/commands/checkpoint.md" \
+        || { echo "  FAIL: the commands beside the fifo were not installed"; return 1; }
+}
+
+# A FIFO inside a skill directory cs removes at uninstall is kept unread and
+# named, and the uninstall finishes; the skill directory stays around it.
+test_uninstall_keeps_a_fifo_in_a_skill_directory_unread() {
+    local home="$TEST_TMPDIR/fifo-uninstall-home" out rc=0
+    mkdir -p "$home"
+    HOME="$home" bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || { echo "  FAIL: install failed"; return 1; }
+    mkfifo "$home/.claude/skills/rotate/pipe"
+    printf 'y\n' | _run_bounded 60 env HOME="$home" "$CS_BIN" -uninstall > "$TEST_TMPDIR/fifo-uninstall.out" 2>&1 || rc=$?
+    out=$(cat "$TEST_TMPDIR/fifo-uninstall.out")
+    assert_eq "0" "$rc" "uninstall exit status (142: still running after 60 s)" || { echo "$out"; return 1; }
+    [ -p "$home/.claude/skills/rotate/pipe" ] || { echo "  FAIL: the fifo is not left as it was"; return 1; }
+    assert_output_contains "$out" "Kept $(_bre_literal "$home/.claude/skills/rotate/pipe"): cs did not write it" \
+        "the kept fifo is named" || return 1
+    assert_file_not_exists "$home/.claude/skills/rotate/SKILL.md" "cs's file beside the fifo removed" || return 1
+    assert_output_not_contains "$out" "Removed $(_bre_literal "$home/.claude/skills/rotate/")" \
+        "the skill directory holding the fifo is not called removed" || return 1
+}
+
+# Uninstall judges each file under a skill directory by its whole name, a
+# newline in it included. A directory named "x<newline>" holding a path that
+# mirrors an absolute one outside ~/.claude must not make that outside file
+# a candidate, even one holding content cs shipped; a cs-written file whose
+# name holds a newline goes, and a user's file of that shape stays, even one
+# whose path's second line is a line of the install record.
+test_uninstall_judges_names_holding_a_newline_whole() {
+    local home="$TEST_TMPDIR/newline-home" out rc=0 skill victim nl_dir record_line record_shaped
+    mkdir -p "$home"
+    HOME="$home" bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || { echo "  FAIL: install failed"; return 1; }
+    skill="$home/.claude/skills/feature"
+    victim="$TEST_TMPDIR/checkout/hooks/session-start.sh"
+    mkdir -p "$(dirname "$victim")"
+    _cs_shipped_content > "$victim"
+    nl_dir="$skill/x"$'\n'
+    mkdir -p "$nl_dir$(dirname "$victim")"
+    printf 'my mirrored file\n' > "$nl_dir$victim"
+    printf 'my notes\n' > "$skill/my"$'\n'"notes.md"
+    _cs_shipped_content > "$skill/old"$'\n'"name.md"
+    record_line=$(grep '  \.claude/commands/wrap\.md$' "$home/.claude/hooks/cs/.installed")
+    [ -n "$record_line" ] || { echo "  FAIL: the install record names no commands/wrap.md"; return 1; }
+    record_shaped="$skill/y"$'\n'"$record_line"
+    mkdir -p "$(dirname "$record_shaped")"
+    printf 'my record-shaped file\n' > "$record_shaped"
+    out=$(printf 'y\n' | HOME="$home" "$CS_BIN" -uninstall 2>&1) || rc=$?
+    assert_eq "0" "$rc" "uninstall exit status" || { echo "$out"; return 1; }
+    assert_eq '{"modules":["./register.tsx"]}' "$(cat "$victim" 2>/dev/null)" "the file outside ~/.claude is untouched" || return 1
+    assert_eq "my mirrored file" "$(cat "$nl_dir$victim")" "the user's file under the newline-named directory is kept" || return 1
+    assert_eq "my notes" "$(cat "$skill/my"$'\n'"notes.md")" "the user's newline-named file is kept" || return 1
+    assert_eq "my record-shaped file" "$(cat "$record_shaped" 2>/dev/null)" "the user's file whose path ends in a record line is kept" || return 1
+    assert_file_not_exists "$skill/old"$'\n'"name.md" "cs's newline-named file removed" || return 1
+    assert_file_not_exists "$skill/SKILL.md" "cs's skill file removed" || return 1
+}
+
+# A path holding a newline cannot sit on one line of the install record, so a
+# user's file of that shape under a retired skill directory is named on every
+# install and never remembered there. Remembering it would put the path's
+# second line in the record as a line of its own, and a path whose second
+# line reads "<sha256>  <path>" (a directory named "notes<newline><sha256>  .claude"
+# holding commands/wrap.md) would claim the file at that path for cs.
+test_install_never_writes_a_path_holding_a_newline_into_the_record() {
+    local home="$TEST_TMPDIR/newline-record-home" out rc=0 digest planted
+    mkdir -p "$home"
+    HOME="$home" bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || { echo "  FAIL: install failed"; return 1; }
+    printf 'my wrap command\n' > "$home/.claude/commands/wrap.md"
+    digest=$(shasum -a 256 < "$home/.claude/commands/wrap.md")
+    digest="${digest%% *}"
+    mkdir -p "$home/.claude/skills/merge"
+    planted="$home/.claude/skills/merge/notes"$'\n'"$digest  .claude/commands/wrap.md"
+    mkdir -p "$(dirname "$planted")"
+    printf 'my notes\n' > "$planted"
+    HOME="$home" bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null || { echo "  FAIL: second install failed"; return 1; }
+    out=$(HOME="$home" bash "$INSTALL_SH" 2>&1 < /dev/null) || rc=$?
+    assert_eq "0" "$rc" "third install exit status" || { echo "$out"; return 1; }
+    assert_eq "0" "$(grep -cxF "$digest  .claude/commands/wrap.md" "$home/.claude/hooks/cs/.installed")" \
+        "the record holds no line taken from the planted name" || return 1
+    assert_eq "my wrap command" "$(cat "$home/.claude/commands/wrap.md")" "the user's command is kept" || return 1
+    assert_eq "my notes" "$(cat "$planted")" "the planted file is kept" || return 1
+    assert_output_contains "$out" "Kept $(_bre_literal "$home/.claude/skills/merge/notes")$" \
+        "the planted file is named on every install" || return 1
+}
+
+# A link at ~/.local/bin/cs to content cs did not write is kept, and the
+# version install reports and stamps is the one it installs, read from its
+# own payload: reading it through the kept link, here to a FIFO, waits for a
+# writer that never comes.
+test_install_reads_its_version_from_the_payload_not_a_kept_link() {
+    local home="$TEST_TMPDIR/version-link-home" out rc=0 version
+    version=$(grep -m1 '^VERSION=' "$SCRIPT_DIR/../bin/cs" | cut -d'"' -f2)
+    [ -n "$version" ] || { echo "  FAIL: bin/cs holds no VERSION line"; return 1; }
+    mkdir -p "$home/.local/bin" "$home/fifos"
+    mkfifo "$home/fifos/pipe"
+    ln -s "$home/fifos/pipe" "$home/.local/bin/cs"
+    _run_bounded 60 env HOME="$home" bash "$INSTALL_SH" < /dev/null > "$TEST_TMPDIR/version-link.out" 2>&1 || rc=$?
+    out=$(cat "$TEST_TMPDIR/version-link.out")
+    assert_eq "0" "$rc" "install exit status (142: still running after 60 s)" || { echo "$out"; return 1; }
+    [ -L "$home/.local/bin/cs" ] && [ -p "$home/fifos/pipe" ] \
+        || { echo "  FAIL: the link and the fifo are not left as they were"; return 1; }
+    assert_output_contains "$out" "Kept $(_bre_literal "$home/.local/bin/cs"): a symlink to content cs did not write, so it was not replaced" \
+        "the kept link is named" || return 1
+    assert_output_contains "$out" "Installation complete ($(_bre_literal "$version"))$" \
+        "the completion line names the version installed" || return 1
+    assert_eq "$version" "$(cat "$home/.claude/hooks/cs/.version")" "the hooks are stamped with the version installed" || return 1
+}
+
+# The hooks' version stamp is cs's, written as .tui-origin and the install
+# record are: a temp file renamed into place, which replaces a FIFO there
+# without opening it. A link there is kept and named, as _place_file keeps
+# any link to content cs did not write, and so is a directory, which a rename
+# would drop the stamp into.
+test_install_writes_the_version_stamp_without_opening_what_is_there() {
+    local home out rc version stamp
+    version=$(grep -m1 '^VERSION=' "$SCRIPT_DIR/../bin/cs" | cut -d'"' -f2)
+    [ -n "$version" ] || { echo "  FAIL: bin/cs holds no VERSION line"; return 1; }
+
+    home="$TEST_TMPDIR/stamp-fifo-home"; stamp="$home/.claude/hooks/cs/.version"; rc=0
+    mkdir -p "$home/.claude/hooks/cs"
+    mkfifo "$stamp"
+    _run_bounded 60 env HOME="$home" bash "$INSTALL_SH" < /dev/null > "$TEST_TMPDIR/stamp-fifo.out" 2>&1 || rc=$?
+    out=$(cat "$TEST_TMPDIR/stamp-fifo.out")
+    assert_eq "0" "$rc" "install over a fifo stamp: exit status (142: still running after 60 s)" || { echo "$out"; return 1; }
+    [ -f "$stamp" ] && [ ! -L "$stamp" ] || { echo "  FAIL: the fifo stamp is not replaced by a file"; return 1; }
+    assert_eq "$version" "$(cat "$stamp")" "the fifo is replaced by the stamp" || return 1
+
+    home="$TEST_TMPDIR/stamp-link-home"; stamp="$home/.claude/hooks/cs/.version"; rc=0
+    mkdir -p "$home/.claude/hooks/cs" "$home/fifos"
+    mkfifo "$home/fifos/pipe"
+    ln -s "$home/fifos/pipe" "$stamp"
+    _run_bounded 60 env HOME="$home" bash "$INSTALL_SH" < /dev/null > "$TEST_TMPDIR/stamp-link.out" 2>&1 || rc=$?
+    out=$(cat "$TEST_TMPDIR/stamp-link.out")
+    assert_eq "0" "$rc" "install over a link to a fifo: exit status (142: still running after 60 s)" || { echo "$out"; return 1; }
+    [ -L "$stamp" ] && [ -p "$home/fifos/pipe" ] || { echo "  FAIL: the link and the fifo are not left as they were"; return 1; }
+    assert_output_contains "$out" "Kept $(_bre_literal "$stamp"): a symlink to content cs did not write, so it was not replaced" \
+        "the kept link is named" || return 1
+
+    home="$TEST_TMPDIR/stamp-dir-home"; stamp="$home/.claude/hooks/cs/.version"; rc=0
+    mkdir -p "$stamp"
+    _run_bounded 60 env HOME="$home" bash "$INSTALL_SH" < /dev/null > "$TEST_TMPDIR/stamp-dir.out" 2>&1 || rc=$?
+    out=$(cat "$TEST_TMPDIR/stamp-dir.out")
+    assert_eq "0" "$rc" "install over a directory stamp: exit status" || { echo "$out"; return 1; }
+    assert_eq "" "$(ls -A "$stamp")" "nothing is put inside the directory" || return 1
+    assert_output_contains "$out" "Kept $(_bre_literal "$stamp"): a directory, so it was not replaced" \
+        "the kept directory is named" || return 1
+    printf '%s\n' "$out" | sed -n '/Installation complete/,$p' | grep -q "^ *$(_bre_literal "$stamp")$" \
+        || { echo "  FAIL: the kept directory is not listed at the end"; return 1; }
+}
+
 test_uninstall_removes_leftover_cs_tui_exe() {
     local fake_home="$TEST_TMPDIR/uninstall-tui-exe"
     mkdir -p "$fake_home/.local/bin" "$fake_home/.claude"
@@ -3086,6 +3290,12 @@ run_test test_install_record_holds_what_a_partial_install_placed
 run_test test_install_replaces_a_releases_files_after_its_record_is_deleted
 run_test test_install_replaces_a_releases_files_after_only_its_record_is_deleted
 run_test test_uninstall_removes_only_files_cs_wrote
+run_test test_install_keeps_a_fifo_at_a_deploy_path_unread
+run_test test_uninstall_keeps_a_fifo_in_a_skill_directory_unread
+run_test test_uninstall_judges_names_holding_a_newline_whole
+run_test test_install_never_writes_a_path_holding_a_newline_into_the_record
+run_test test_install_reads_its_version_from_the_payload_not_a_kept_link
+run_test test_install_writes_the_version_stamp_without_opening_what_is_there
 run_test test_uninstall_removes_subagent_statusline
 test_hook_registration_doc_matches_install() {
     # docs/hooks.md restates install.sh's _merge_cs_hook registrations as a
@@ -3318,6 +3528,25 @@ test_rotate_wrap_keys_reinstall_after_yes_is_idempotent() {
         "$(jq -c . "$kb" 2>&1)" "one Global block, each key once" || return 1
 }
 
+# A keybindings.json that is not a regular file, here a link to a FIFO, is
+# never read on a recorded yes: install names it as it names one of a shape
+# cs cannot read, leaves it as it was, and finishes.
+test_rotate_wrap_keys_leave_a_keybindings_json_that_is_not_a_regular_file_unread() {
+    local home="$TEST_TMPDIR/home-fifo-keys" kb rc=0 out
+    kb="$home/.claude/keybindings.json"
+    mkdir -p "$home/.claude" "$home/.config/cs" "$home/fifos"
+    printf 'yes\n' > "$home/.config/cs/option-keys"
+    mkfifo "$home/fifos/keys"
+    ln -s "$home/fifos/keys" "$kb"
+    _run_bounded 60 env -u CLAUDE_CONFIG_DIR -u XDG_CONFIG_HOME HOME="$home" bash "$INSTALL_SH" < /dev/null \
+        > "$TEST_TMPDIR/fifo-keys.out" 2>&1 || rc=$?
+    out=$(cat "$TEST_TMPDIR/fifo-keys.out")
+    assert_eq "0" "$rc" "install exit status (142: still running after 60 s)" || { echo "$out"; return 1; }
+    assert_output_contains "$out" "Rotate/wrap keys: $(_bre_literal "$kb") is not JSON with a \"bindings\" array; left as it is\. Fix it, then run cs -update\.$" \
+        "the keybindings.json link is named" || { echo "$out"; return 1; }
+    [ -L "$kb" ] && [ -p "$home/fifos/keys" ] || { echo "  FAIL: the link and its fifo are not left as they were"; return 1; }
+}
+
 # 8. Uninstall takes back only keys that still hold cs's values, the chords and
 # an older cs's Option+1 / Option+2 alike, keeps every user binding (an
 # unbinding null included), and deletes a file it leaves holding nothing.
@@ -3529,11 +3758,13 @@ run_test test_uninstall_removes_zsh_completion_from_detected_dir
 run_test test_uninstall_removes_zsh_completion_from_default_dir
 run_test test_uninstall_removes_update_cache
 run_test test_install_refuses_invalid_settings_json
+run_test test_install_refuses_a_settings_json_that_is_not_a_regular_file
 run_test test_install_fills_an_empty_settings_json
 run_test test_install_backs_up_settings_json_before_changing_it
 run_test test_install_keeps_the_five_newest_settings_backups
 run_test test_install_keeps_a_concurrent_settings_change
 run_test test_uninstall_leaves_invalid_settings_json_untouched
+run_test test_uninstall_leaves_settings_and_keybindings_that_are_not_regular_files_unread
 run_test test_local_install_prefers_a_freshly_built_picker
 run_test test_local_install_uses_bin_picker_when_nothing_was_built
 run_test test_local_install_keeps_the_origin_record_of_a_linked_picker
@@ -3578,6 +3809,7 @@ run_test test_rotate_wrap_keys_refuse_an_unparseable_file
 run_test test_rotate_wrap_keys_decline_is_remembered
 run_test test_rotate_wrap_keys_non_interactive_writes_nothing_and_says_how
 run_test test_rotate_wrap_keys_reinstall_after_yes_is_idempotent
+run_test test_rotate_wrap_keys_leave_a_keybindings_json_that_is_not_a_regular_file_unread
 run_test test_rotate_wrap_keys_uninstall_removes_only_cs_values
 run_test test_rotate_wrap_keys_follow_claude_config_dir
 run_test test_rotate_wrap_keys_write_through_a_symlink

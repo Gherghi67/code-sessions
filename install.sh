@@ -374,8 +374,12 @@ _cs_rotate_wrap_keys_answer_file() {
 # object whose "bindings" is an array of context blocks, each an object whose
 # own "bindings", when present, is an object. Slurped, so a file holding two
 # documents is refused rather than read as two; -e turns invalid JSON, an
-# empty file and a false answer alike into a non-zero exit.
+# empty file and a false answer alike into a non-zero exit. Only a regular
+# file (or a link to one) is read: a FIFO waits for a writer that never comes
+# and a device may never end, so one of those, a directory or a link to any of
+# them fails the check unread, and every caller asks this before it reads.
 _cs_keybindings_shape_ok() {  # file
+    [ -f "$1" ] || return 1
     jq -se 'length == 1 and (.[0] | type == "object" and (.bindings | type == "array")
         and all(.bindings[]; type == "object" and ((.bindings // {}) | type == "object")))' \
         "$1" > /dev/null 2>&1
@@ -440,10 +444,13 @@ _cs_install_record() {
     printf '%s\n' "$HOME/.claude/hooks/cs/.installed"
 }
 
-# Prints the sha256 of file $1. Fails when the file cannot be read or there
-# is no sha256sum or shasum to compute it.
+# Prints the sha256 of file $1. Fails when $1 is not a regular file or a
+# link to one, without reading it: a FIFO or a device can keep a read
+# waiting forever. Fails too when the file cannot be read or there is no
+# sha256sum or shasum to compute it.
 _cs_sha256_file() {  # file
     local out
+    [ -f "$1" ] || return 1
     if command -v sha256sum >/dev/null 2>&1; then
         out=$(sha256sum < "$1") || return 1
     elif command -v shasum >/dev/null 2>&1; then
@@ -459,7 +466,9 @@ _cs_sha256_file() {  # file
 # Whether file $1 holds content cs wrote: the sha256 the install record
 # holds for its path, $2 (the sha256 of the payload the caller deploys at
 # that path, so a file already equal to it is cs's), or one in
-# CS_KNOWN_SHA256. A file whose sha256 cannot be computed is not cs's.
+# CS_KNOWN_SHA256. A file whose sha256 cannot be computed is not cs's. The
+# record holds one path per line, so a path holding a newline is never
+# looked up there: it is judged by its content alone.
 _cs_owns_file() {  # file, [payload-sha256]
     local digest record
     digest=$(_cs_sha256_file "$1") || return 1
@@ -467,7 +476,7 @@ _cs_owns_file() {  # file, [payload-sha256]
         return 0
     fi
     record=$(_cs_install_record)
-    if [ -f "$record" ] && grep -qxF "$digest  ${1#"$HOME"/}" "$record"; then
+    if [ -f "$record" ] && [[ "$1" != *$'\n'* ]] && grep -qxF "$digest  ${1#"$HOME"/}" "$record"; then
         return 0
     fi
     case " ${CS_KNOWN_SHA256[*]} " in
@@ -495,12 +504,13 @@ _cs_remove_if_owned() {  # file, [payload-sha256]
 # Removes the files under directory $1 that cs wrote, then every directory
 # that leaves empty; keeps the rest as _cs_remove_if_owned does, or as
 # function $2 does when given one (it takes a file and removes it or keeps
-# it). Returns 0 when the directory is gone.
+# it). Returns 0 when the directory is gone. Names come from find
+# NUL-separated, so a name holding a newline is judged whole.
 _cs_remove_tree_if_owned() {  # dir, [remove-function]
     local f remove="${2:-_cs_remove_if_owned}"
-    while IFS= read -r f; do
+    while IFS= read -r -d '' f; do
         "$remove" "$f" || true
-    done < <(find "$1" ! -type d)
+    done < <(find "$1" ! -type d -print0)
     find "$1" -depth -type d -exec rmdir {} \; 2>/dev/null || true
     [ ! -e "$1" ]
 }
@@ -1282,12 +1292,12 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "0e993bf9f4cd733d71756b700a9b65e498233a74587223bda8c31c4cd7cd51a3  bin/cs"
+    "521e60eb7126232869a65f9856284b00f8893ec0623e0be3767e96a96e58f863  bin/cs"
     "42d2f9ecbc9a89f3b119958360fb753962c89df18b51ef7b85db109b2644e7de  bin/cs-secrets"
     "2c7073689cf05dc5b3395765c67b80dd60bde74021845efda79a3f2100556f4f  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
     "12d9604997a1b72088df338d259fbb475c13c3bedb0b611d91d50ebbab2914c5  hooks/cs-resolve.sh"
-    "e97751f325caa5a8932bc00bebf15eff9e09172b3b943c47cfb8e5c4d05b8859  hooks/cs-shared.sh"
+    "5fab1abd55dae5dd70f4d9a3ed7752b419aba60d57c2512d35cf666204238c63  hooks/cs-shared.sh"
     "50d63ce0995e68fddd8503700c15f9585d11938c9cd3872a883146de7707c765  hooks/cs-iterm-tab.py"
     "cd7bdb7640403cfa9a9b1c600d1626ba943a609e7ef7ebf3feb6f0ab7af03112  hooks/memory-index-guard.sh"
     "6c9a9db966b02d1d99c24a4358abdcf005a0e56e1c7c2defc7c75d9fde516612  hooks/prompt-rewriter.sh"
@@ -1335,13 +1345,13 @@ _check_retired_names
 # events cs registers a hook under (CS_HOOK_EVENTS) as something other than a
 # list: that value is the user's and stays as it is, so cs's hook cannot be
 # added to it. A missing or null event is one cs creates. Without jq no hook
-# is registered at all, and a file jq cannot parse is refused further down,
-# once the payload's cs_settings_check is at hand, still before anything is
-# placed.
+# is registered at all, and a file jq cannot parse, or one that is not a
+# regular file (never opened here), is refused further down, once the
+# payload's cs_settings_check is at hand, still before anything is placed.
 _refuse_a_hook_event_that_is_not_a_list() {
     local event
     command -v jq >/dev/null 2>&1 || return 0
-    [ -s "$CLAUDE_SETTINGS" ] || return 0
+    [ -f "$CLAUDE_SETTINGS" ] && [ -s "$CLAUDE_SETTINGS" ] || return 0
     event=$(jq -r --arg events "${CS_HOOK_EVENTS[*]}" '
         (if type == "object" then .hooks else null end) as $hooks
         | if ($hooks | type) == "object" then
@@ -1411,9 +1421,15 @@ _payload_mode() {  # repo-path
 # what it points at is content cs wrote (_cs_owns_file): only then is the
 # link replaced by the file, in a line naming the link and where it pointed.
 # The rename replaces the link itself, never writing through it, so its
-# target is left as it was either way.
+# target is left as it was either way. A directory at $2 is kept and named
+# the same way: a rename onto it would drop the file inside it.
 _place_file() {  # src, dest, mode
     local dest="$2" dir tmp digest link_target=""
+    if [ -d "$dest" ] && [ ! -L "$dest" ]; then
+        warn "Kept $dest: a directory, so it was not replaced"
+        CS_KEPT_PATHS+=("$dest")
+        return 0
+    fi
     if [ -L "$dest" ]; then
         digest=$(_cs_sha256_file "$1") || error "Could not compute the sha256 of $1 (needs sha256sum or shasum)"
         if ! _cs_owns_file "$dest" "$digest"; then
@@ -1537,8 +1553,9 @@ if [ "$INSTALL_METHOD" = "web" ]; then
     done
 fi
 
-# Stop, before anything is placed, on a settings.json jq cannot parse, which
-# the settings step below would refuse only after every file was deployed.
+# Stop, before anything is placed, on a settings.json jq cannot parse or that
+# is not a regular file, which the settings step below would refuse only
+# after every file was deployed.
 # The check is cs_settings_check from the payload's shared library (the
 # checkout, or the verified downloads), as the settings step runs it; without
 # jq no hook is registered at all, so the file is not read.
@@ -1603,7 +1620,10 @@ if [ "$INSTALL_METHOD" = "local" ] && [ -f "$_cs_tui_src" ]; then
     _place_file "$_cs_tui_src" "$INSTALL_DIR/cs-tui" 755
     _record_tui_origin "checkout $SCRIPT_DIR"
 elif [ "$INSTALL_METHOD" = "web" ]; then
-    _cs_version=$(grep -m1 "^VERSION=" "$INSTALL_DIR/cs" 2>/dev/null | cut -d'"' -f2 || echo "")
+    # The release this install downloaded, read from its verified bin/cs:
+    # $INSTALL_DIR/cs may be a link _place_file kept, which is not this
+    # release and may point at anything, a FIFO included.
+    _cs_version=$(grep -m1 "^VERSION=" "$PAYLOAD_DIR/bin/cs" 2>/dev/null | cut -d'"' -f2 || echo "")
     _os=$(uname -s | tr '[:upper:]' '[:lower:]')
     _arch=$(uname -m)
     [ "$_arch" = "x86_64" ] && _arch="amd64"
@@ -1699,7 +1719,8 @@ mkdir -p "$HOOKS_DIR"
 # install sees that content: the install record remembers it as a
 # "kept <sha256>  <path under $HOME>" line, which never matches the
 # "<sha256>  <path>" lines _cs_owns_file reads. Content whose sha256 cannot
-# be computed is named every time.
+# be computed, and a path holding a newline (the record holds one path per
+# line), are named every time.
 _remove_retired() {  # file
     _retired_is_ours "$1" || return 1
     rm -f "$1"
@@ -1713,7 +1734,7 @@ _retired_is_ours() {  # file
         return 0
     fi
     record=$(_cs_install_record)
-    if digest=$(_cs_sha256_file "$1"); then
+    if [[ "$1" != *$'\n'* ]] && digest=$(_cs_sha256_file "$1"); then
         line="kept $digest  ${1#"$HOME"/}"
         CS_RECORD_LINES+=("$line")
         if [ -f "$record" ] && grep -qxF "$line" "$record"; then
@@ -2448,13 +2469,19 @@ if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
     echo ""
 fi
 
-# Get version for completion message
-CS_VERSION=$(grep -m1 "^VERSION=" "$INSTALL_DIR/cs" 2>/dev/null | cut -d'"' -f2 || echo "unknown")
+# The version this install placed, for the completion message and the hooks'
+# stamp, read from the payload's bin/cs: $INSTALL_DIR/cs may be a link
+# _place_file kept, which holds content cs did not write and may point at
+# anything, a FIFO included.
+CS_VERSION=$(grep -m1 "^VERSION=" "$PAYLOAD_DIR/bin/cs" 2>/dev/null | cut -d'"' -f2 || echo "unknown")
 
 # Stamp the deployed-hooks version so cs -doctor can flag installs whose
-# deployed artifacts lag behind the running cs binary.
+# deployed artifacts lag behind the running cs binary. Written as .tui-origin
+# is, through _place_file: the rename replaces a FIFO at the stamp's path
+# rather than opening it, and a link there is kept and named.
 if [ "$CS_VERSION" != "unknown" ]; then
-    echo "$CS_VERSION" > "$HOOKS_DIR/.version"
+    printf '%s\n' "$CS_VERSION" > "$STAGE_DIR/version" || error "Could not write $STAGE_DIR/version"
+    _place_file "$STAGE_DIR/version" "$HOOKS_DIR/.version" 644
 fi
 
 echo ""

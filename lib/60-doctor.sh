@@ -29,6 +29,13 @@ _DOCTOR_JQ_HOOKS='def cs_hooks: objects | .hooks | objects | .[] | arrays | .[] 
 
 _doctor_check_settings_valid() {
     local settings="${CS_CLAUDE_DIR:-$HOME/.claude}/settings.json"
+    # Something there that is not a regular file (a FIFO, a device, a
+    # directory) is never opened: reading a FIFO waits for a writer. Every
+    # settings check below tests -f before it reads.
+    if [ -e "$settings" ] && [ ! -f "$settings" ]; then
+        _doctor_fail "Settings: $settings is not a regular file, so cs did not read it"
+        return 0
+    fi
     # A missing file is the hooks check's story to tell, with its own advice.
     [ -f "$settings" ] || return 0
     if ! command -v jq >/dev/null 2>&1; then

@@ -1609,6 +1609,25 @@ test_doctor_fails_on_unparseable_settings() {
         "counts from a failed parse must not be reported as an audit result" || return 1
 }
 
+# Doctor reads neither settings.json nor keybindings.json when it is not a
+# regular file (here a FIFO each): reading one waits for a writer that never
+# comes. Each gets a row, as a file it cannot parse does, and doctor finishes.
+test_doctor_names_settings_and_keybindings_that_are_not_regular_files() {
+    local cfg="$TEST_TMPDIR/claude-fifo" xdg="$TEST_TMPDIR/xdg-fifo" output rc=0
+    mkdir -p "$cfg" "$xdg"
+    mkfifo "$cfg/settings.json" "$cfg/keybindings.json"
+    _run_bounded 60 env CS_CLAUDE_DIR="$cfg" CLAUDE_CONFIG_DIR="$cfg" XDG_CONFIG_HOME="$xdg" "$CS_BIN" -doctor \
+        > "$TEST_TMPDIR/doctor-fifo.out" 2>&1 || rc=$?
+    output=$(cat "$TEST_TMPDIR/doctor-fifo.out")
+    assert_eq "1" "$rc" "doctor exit status (142: still running after 60 s)" || { echo "$output"; return 1; }
+    assert_output_contains "$output" "FAIL.*Settings: $cfg/settings\.json is not a regular file, so cs did not read it$" \
+        "the settings.json fifo gets a row" || { echo "$output"; return 1; }
+    assert_output_contains "$output" "WARN.*Rotate/wrap keys: $cfg/keybindings\.json is unparseable (not JSON with a \"bindings\" array)$" \
+        "the keybindings.json fifo gets a row" || { echo "$output"; return 1; }
+    [ -p "$cfg/settings.json" ] && [ -p "$cfg/keybindings.json" ] \
+        || { echo "  FAIL: the fifos are not left as they were"; return 1; }
+}
+
 test_doctor_does_not_accept_a_hook_named_only_in_a_permission_rule() {
     # The registration check substring-matched the WHOLE settings file, so a
     # hook path lingering anywhere — a permissions rule, a comment-like string,
@@ -1769,6 +1788,7 @@ EOF
         "a registration after an invalid matcher must still be read" || return 1
 }
 run_test test_doctor_fails_on_unparseable_settings
+run_test test_doctor_names_settings_and_keybindings_that_are_not_regular_files
 run_test test_doctor_does_not_accept_a_hook_named_only_in_a_permission_rule
 run_test test_doctor_checks_the_callers_shadow_ref_not_the_recorded_lead
 run_test test_doctor_falls_back_to_the_recorded_id_not_the_launch_id

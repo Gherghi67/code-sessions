@@ -113,13 +113,13 @@ _check_retired_names
 # events cs registers a hook under (CS_HOOK_EVENTS) as something other than a
 # list: that value is the user's and stays as it is, so cs's hook cannot be
 # added to it. A missing or null event is one cs creates. Without jq no hook
-# is registered at all, and a file jq cannot parse is refused further down,
-# once the payload's cs_settings_check is at hand, still before anything is
-# placed.
+# is registered at all, and a file jq cannot parse, or one that is not a
+# regular file (never opened here), is refused further down, once the
+# payload's cs_settings_check is at hand, still before anything is placed.
 _refuse_a_hook_event_that_is_not_a_list() {
     local event
     command -v jq >/dev/null 2>&1 || return 0
-    [ -s "$CLAUDE_SETTINGS" ] || return 0
+    [ -f "$CLAUDE_SETTINGS" ] && [ -s "$CLAUDE_SETTINGS" ] || return 0
     event=$(jq -r --arg events "${CS_HOOK_EVENTS[*]}" '
         (if type == "object" then .hooks else null end) as $hooks
         | if ($hooks | type) == "object" then
@@ -189,9 +189,15 @@ _payload_mode() {  # repo-path
 # what it points at is content cs wrote (_cs_owns_file): only then is the
 # link replaced by the file, in a line naming the link and where it pointed.
 # The rename replaces the link itself, never writing through it, so its
-# target is left as it was either way.
+# target is left as it was either way. A directory at $2 is kept and named
+# the same way: a rename onto it would drop the file inside it.
 _place_file() {  # src, dest, mode
     local dest="$2" dir tmp digest link_target=""
+    if [ -d "$dest" ] && [ ! -L "$dest" ]; then
+        warn "Kept $dest: a directory, so it was not replaced"
+        CS_KEPT_PATHS+=("$dest")
+        return 0
+    fi
     if [ -L "$dest" ]; then
         digest=$(_cs_sha256_file "$1") || error "Could not compute the sha256 of $1 (needs sha256sum or shasum)"
         if ! _cs_owns_file "$dest" "$digest"; then
@@ -315,8 +321,9 @@ if [ "$INSTALL_METHOD" = "web" ]; then
     done
 fi
 
-# Stop, before anything is placed, on a settings.json jq cannot parse, which
-# the settings step below would refuse only after every file was deployed.
+# Stop, before anything is placed, on a settings.json jq cannot parse or that
+# is not a regular file, which the settings step below would refuse only
+# after every file was deployed.
 # The check is cs_settings_check from the payload's shared library (the
 # checkout, or the verified downloads), as the settings step runs it; without
 # jq no hook is registered at all, so the file is not read.
@@ -381,7 +388,10 @@ if [ "$INSTALL_METHOD" = "local" ] && [ -f "$_cs_tui_src" ]; then
     _place_file "$_cs_tui_src" "$INSTALL_DIR/cs-tui" 755
     _record_tui_origin "checkout $SCRIPT_DIR"
 elif [ "$INSTALL_METHOD" = "web" ]; then
-    _cs_version=$(grep -m1 "^VERSION=" "$INSTALL_DIR/cs" 2>/dev/null | cut -d'"' -f2 || echo "")
+    # The release this install downloaded, read from its verified bin/cs:
+    # $INSTALL_DIR/cs may be a link _place_file kept, which is not this
+    # release and may point at anything, a FIFO included.
+    _cs_version=$(grep -m1 "^VERSION=" "$PAYLOAD_DIR/bin/cs" 2>/dev/null | cut -d'"' -f2 || echo "")
     _os=$(uname -s | tr '[:upper:]' '[:lower:]')
     _arch=$(uname -m)
     [ "$_arch" = "x86_64" ] && _arch="amd64"
@@ -477,7 +487,8 @@ mkdir -p "$HOOKS_DIR"
 # install sees that content: the install record remembers it as a
 # "kept <sha256>  <path under $HOME>" line, which never matches the
 # "<sha256>  <path>" lines _cs_owns_file reads. Content whose sha256 cannot
-# be computed is named every time.
+# be computed, and a path holding a newline (the record holds one path per
+# line), are named every time.
 _remove_retired() {  # file
     _retired_is_ours "$1" || return 1
     rm -f "$1"
@@ -491,7 +502,7 @@ _retired_is_ours() {  # file
         return 0
     fi
     record=$(_cs_install_record)
-    if digest=$(_cs_sha256_file "$1"); then
+    if [[ "$1" != *$'\n'* ]] && digest=$(_cs_sha256_file "$1"); then
         line="kept $digest  ${1#"$HOME"/}"
         CS_RECORD_LINES+=("$line")
         if [ -f "$record" ] && grep -qxF "$line" "$record"; then
@@ -1226,13 +1237,19 @@ if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
     echo ""
 fi
 
-# Get version for completion message
-CS_VERSION=$(grep -m1 "^VERSION=" "$INSTALL_DIR/cs" 2>/dev/null | cut -d'"' -f2 || echo "unknown")
+# The version this install placed, for the completion message and the hooks'
+# stamp, read from the payload's bin/cs: $INSTALL_DIR/cs may be a link
+# _place_file kept, which holds content cs did not write and may point at
+# anything, a FIFO included.
+CS_VERSION=$(grep -m1 "^VERSION=" "$PAYLOAD_DIR/bin/cs" 2>/dev/null | cut -d'"' -f2 || echo "unknown")
 
 # Stamp the deployed-hooks version so cs -doctor can flag installs whose
-# deployed artifacts lag behind the running cs binary.
+# deployed artifacts lag behind the running cs binary. Written as .tui-origin
+# is, through _place_file: the rename replaces a FIFO at the stamp's path
+# rather than opening it, and a link there is kept and named.
 if [ "$CS_VERSION" != "unknown" ]; then
-    echo "$CS_VERSION" > "$HOOKS_DIR/.version"
+    printf '%s\n' "$CS_VERSION" > "$STAGE_DIR/version" || error "Could not write $STAGE_DIR/version"
+    _place_file "$STAGE_DIR/version" "$HOOKS_DIR/.version" 644
 fi
 
 echo ""
