@@ -6452,7 +6452,7 @@ _emit_session_commits_block() {
 <!-- cs:session-commits -->
 ## Committing session files
 
-cs, its skills and its commands never commit files under `.cs/` (narratives, handoffs, `.cs/README.md`, `.cs/summary.md`, memory entries, the task archive), and neither do you on your own: commit them only when the user asks. Uncommitted, they are safe: autosave snapshots every Write and Edit to a shadow ref.
+Apart from the one commit that creates a new session, cs, its skills and its commands never commit files under `.cs/` (narratives, handoffs, `.cs/README.md`, `.cs/summary.md`, memory entries, the task archive), and neither do you on your own: commit them only when the user asks. Uncommitted, they are safe: autosave snapshots every Write and Edit to a shadow ref.
 
 To opt out, delete the prose above but keep the `cs:session-commits` HTML comment as a tombstone — cs treats the sentinel's presence as "managed, do not re-add."
 EOF
