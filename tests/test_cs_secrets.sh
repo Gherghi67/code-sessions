@@ -637,27 +637,27 @@ test_age_remove_refuses_a_name_that_is_not_a_recipient_name() {
     assert_not_exists "$HOME/.cs-secrets/sessions/test-session" "no age state is made" || return 1
 }
 
-# age add names a recipient after its key file, without .pub, so the file's
-# name must be a recipient name too. A key file named .hidden.pub would make
-# a recipient no listing, export or age remove sees, its key pinned until a
-# purge. It is refused, named as age remove names it, before anything is
-# made or pinned.
+# age add names a recipient after its key file, without .pub. A key file
+# whose name starts with a '.' would make a recipient that no listing, export
+# or age remove sees (their *.pub globs skip it), its key pinned until a
+# purge, so it is refused, named plainly, before anything is made or pinned.
+# Any other name is taken, a control byte included: the export refusal tells
+# the user to pin such a file with age add.
 test_age_add_refuses_a_key_file_whose_name_is_not_a_recipient_name() {
     local key=age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq0000000
     local keys="$TEST_TMPDIR/keys" file shown out rc before
     mkdir -p "$keys/sub"
-    for file in "$keys/.hidden.pub" "$keys/sub/..pub" "$keys/"$'peer\e[31m.pub'; do
+    for file in "$keys/.hidden.pub" "$keys/sub/..pub"; do
         printf '%s\n' "$key" > "$file"
         case "$file" in
             */.hidden.pub) shown=.hidden ;;
             */..pub) shown=. ;;
-            *) shown=peer__31m ;;
         esac
         before=$(_tree_state)
         rc=0
         out=$("$CS_SECRETS_BIN" age add "$file" 2>&1) || rc=$?
         assert_eq "1" "$rc" "age add exits 1 for '$shown': $out" || return 1
-        assert_eq "Error: not a recipient name: $shown. A recipient's name is its file's name in .cs/age-recipients without .pub, with no '/', no control character and no leading '.'." \
+        assert_eq "Error: not a recipient name: $shown. A key file's name without .pub must not start with '.': age list, every export and age remove skip such a recipient." \
             "$out" "the refusal names '$shown' plainly" || return 1
         assert_eq "$before" "$(_tree_state)" "age add of '$shown' makes and pins nothing" || return 1
     done
