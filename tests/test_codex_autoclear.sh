@@ -51,7 +51,7 @@ teardown() {
 # names another file.
 _stamp() {  # deadline, [action], [run], [handoff], [file]
     local file="${5:-$STAMP}"
-    printf 'deadline=%s\nhandoff=%s\nthread=t\naction=%s\nrun=%s\n' \
+    printf 'deadline=%s\nhandoff=%s\naction=%s\nrun=%s\n' \
         "$1" "${4:-$HANDOFF}" "${2:-clear}" "${3:-$RUN}" > "$file"
     chmod 600 "$file"
 }

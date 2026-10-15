@@ -235,8 +235,8 @@ _codex_hook_stop() {
     deadline=$(( $(date +%s) + grace ))
     # mktemp makes the file 0600, the mode the watcher requires.
     tmp=$(mktemp "$stamp.XXXXXX" 2>/dev/null) || return 0
-    if ! { printf 'deadline=%s\nhandoff=%s\nthread=%s\naction=%s\nrun=%s\n' \
-        "$deadline" "$handoff" "$session_id" "$action" "${CS_RUN_ID:-}" > "$tmp" \
+    if ! { printf 'deadline=%s\nhandoff=%s\naction=%s\nrun=%s\n' \
+        "$deadline" "$handoff" "$action" "${CS_RUN_ID:-}" > "$tmp" \
         && mv "$tmp" "$stamp"; } 2>/dev/null; then
         rm -f "$tmp" 2>/dev/null
         return 0

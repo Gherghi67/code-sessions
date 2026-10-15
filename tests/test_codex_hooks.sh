@@ -217,7 +217,6 @@ test_a_turn_ending_with_a_handoff_armed_starts_the_count() {
     assert_eq "$HANDOFF" "$(_stamp_field handoff)" || return 1
     assert_eq clear "$(_stamp_field action)" || return 1
     assert_eq "$RUN" "$(_stamp_field run)" || return 1
-    assert_eq "$OLD_THREAD" "$(_stamp_field thread)" || return 1
     deadline=$(_stamp_field deadline)
     [ "$deadline" -ge $((now + 20)) ] && [ "$deadline" -le $((now + 22)) ] \
         || { echo "  FAIL: deadline $deadline is not about 20 s after $now"; return 1; }
