@@ -158,6 +158,11 @@ fi
 # (CS_LEAD_PID, the pid cs wrote): a forced open from another terminal
 # replaces the lock with its own pid while this conversation runs on, and that
 # second launch still holds the session when this one ends.
+# Under `cs <name> --remote` the launch is the remote-control server, and the
+# lead is a conversation it started from the phone: the server holds the lock
+# after that conversation ends, so the lock stays while .cs/local/remote.pid
+# names a server still running remote-control for this session
+# (_remote_server_pid, cs-shared.sh). The server's own exit releases it.
 _cs_lock_owner="" _cs_lock_clear=1
 if [ "${CS_RESOLVED_FROM:-env}" = "env" ] \
     && { ! command -v cs_is_nested_child >/dev/null 2>&1 || ! cs_is_nested_child; }; then
@@ -177,7 +182,12 @@ if [ "$_cs_lock_clear" = 1 ] && command -v _cs_lock >/dev/null 2>&1 \
     _cs_lock_pid=$(live_lock_pid "$META_DIR")
     case "$_cs_lock_pid" in
         '') rm -f "$META_DIR/session.lock" 2>/dev/null || true ;;
-        "$_cs_lock_owner") rm -f "$META_DIR/session.lock" 2>/dev/null || true ;;
+        "$_cs_lock_owner")
+            if ! command -v _remote_server_pid >/dev/null 2>&1 \
+                || ! _remote_server_pid "$META_DIR" "${CLAUDE_SESSION_NAME:-}" >/dev/null; then
+                rm -f "$META_DIR/session.lock" 2>/dev/null || true
+            fi
+            ;;
     esac
     _cs_unlock "$META_DIR/session.mutex.lock"
 fi

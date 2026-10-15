@@ -1557,7 +1557,7 @@ pub fn read_lock_pid(meta_dir: &Path) -> Option<u32> {
 /// the `claude remote-control` server it runs, while that pid runs
 /// `remote-control --name <name>`. A file a server's release never removed
 /// can name a pid another program has taken since, so a live pid alone is not
-/// enough. The twin of `_remote_server_pid` in lib/76-remote.sh.
+/// enough. The twin of `_remote_server_pid` in lib/02-shared.sh.
 fn read_remote_pid(meta_dir: &Path, name: &str) -> Option<u32> {
     let content = fs::read_to_string(meta_dir.join("local/remote.pid")).ok()?;
     let pid = content.trim().parse::<u32>().ok()?;
