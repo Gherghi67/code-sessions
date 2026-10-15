@@ -278,9 +278,10 @@ vault is locked: tell the user to mount it and stop.
    Claude Code never hands an archived number to a new task.
 
    The rotation makes no commit. The handoff, the supersedings, step 7's
-   prune deletions and the task archive stay on disk, uncommitted: cs, its
-   skills and its commands never commit files under `.cs/`, and you
-   commit them only when the user asks.
+   prune deletions and the task archive stay on disk, uncommitted: cs
+   commits files under `.cs/` only in the commit that creates a session
+   and the merge `/finish` makes, and you commit them only when the user
+   asks.
 
    With pass two appended and re-read, the handoff's CONTENT is complete:
    nothing left to lose. It is not yet armed — that is deliberate, see

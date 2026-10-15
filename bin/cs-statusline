@@ -970,9 +970,9 @@ _sgr() {
                 # stray grey. Safe only because every ink this file paints is
                 # one of the named cases above: an unlisted foreground token
                 # would land on the same code as its own fill and paint
-                # invisible. _seg_session's colour-name allow-list is what
-                # keeps a bogus claude_session_color from ever reaching here
-                # as a foreground name.
+                # invisible. _seg_session paints primary ink, so a bogus
+                # claude_session_color never reaches here as a foreground
+                # name.
                 *)
                     [ "$SL_THEME" = "dark" ] && idx=237 || idx=254 ;;
             esac
