@@ -477,7 +477,8 @@ mkdir -p "$HOOKS_DIR"
 # install sees that content: the install record remembers it as a
 # "kept <sha256>  <path under $HOME>" line, which never matches the
 # "<sha256>  <path>" lines _cs_owns_file reads. Content whose sha256 cannot
-# be computed is named every time.
+# be computed, and a path holding a newline (the record holds one path per
+# line), are named every time.
 _remove_retired() {  # file
     _retired_is_ours "$1" || return 1
     rm -f "$1"
@@ -491,7 +492,7 @@ _retired_is_ours() {  # file
         return 0
     fi
     record=$(_cs_install_record)
-    if digest=$(_cs_sha256_file "$1"); then
+    if [[ "$1" != *$'\n'* ]] && digest=$(_cs_sha256_file "$1"); then
         line="kept $digest  ${1#"$HOME"/}"
         CS_RECORD_LINES+=("$line")
         if [ -f "$record" ] && grep -qxF "$line" "$record"; then

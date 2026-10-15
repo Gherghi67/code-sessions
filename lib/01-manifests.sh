@@ -370,7 +370,9 @@ _cs_sha256_file() {  # file
 # Whether file $1 holds content cs wrote: the sha256 the install record
 # holds for its path, $2 (the sha256 of the payload the caller deploys at
 # that path, so a file already equal to it is cs's), or one in
-# CS_KNOWN_SHA256. A file whose sha256 cannot be computed is not cs's.
+# CS_KNOWN_SHA256. A file whose sha256 cannot be computed is not cs's. The
+# record holds one path per line, so a path holding a newline is never
+# looked up there: it is judged by its content alone.
 _cs_owns_file() {  # file, [payload-sha256]
     local digest record
     digest=$(_cs_sha256_file "$1") || return 1
@@ -378,7 +380,7 @@ _cs_owns_file() {  # file, [payload-sha256]
         return 0
     fi
     record=$(_cs_install_record)
-    if [ -f "$record" ] && grep -qxF "$digest  ${1#"$HOME"/}" "$record"; then
+    if [ -f "$record" ] && [[ "$1" != *$'\n'* ]] && grep -qxF "$digest  ${1#"$HOME"/}" "$record"; then
         return 0
     fi
     case " ${CS_KNOWN_SHA256[*]} " in

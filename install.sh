@@ -462,7 +462,9 @@ _cs_sha256_file() {  # file
 # Whether file $1 holds content cs wrote: the sha256 the install record
 # holds for its path, $2 (the sha256 of the payload the caller deploys at
 # that path, so a file already equal to it is cs's), or one in
-# CS_KNOWN_SHA256. A file whose sha256 cannot be computed is not cs's.
+# CS_KNOWN_SHA256. A file whose sha256 cannot be computed is not cs's. The
+# record holds one path per line, so a path holding a newline is never
+# looked up there: it is judged by its content alone.
 _cs_owns_file() {  # file, [payload-sha256]
     local digest record
     digest=$(_cs_sha256_file "$1") || return 1
@@ -470,7 +472,7 @@ _cs_owns_file() {  # file, [payload-sha256]
         return 0
     fi
     record=$(_cs_install_record)
-    if [ -f "$record" ] && grep -qxF "$digest  ${1#"$HOME"/}" "$record"; then
+    if [ -f "$record" ] && [[ "$1" != *$'\n'* ]] && grep -qxF "$digest  ${1#"$HOME"/}" "$record"; then
         return 0
     fi
     case " ${CS_KNOWN_SHA256[*]} " in
@@ -1286,7 +1288,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "52741dd6eeec83b95ec973ca1caa2ad18397c0b9b3036f40e80f709d2b9dff9a  bin/cs"
+    "18464202ce9f61aa6a82b8a0514a027100face9059a10670b170b5062fccd5d8  bin/cs"
     "42d2f9ecbc9a89f3b119958360fb753962c89df18b51ef7b85db109b2644e7de  bin/cs-secrets"
     "24117fba0eadfb19732feeb82ff9c4ee1772f9bd0297adf19478dd861c3d3735  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -1703,7 +1705,8 @@ mkdir -p "$HOOKS_DIR"
 # install sees that content: the install record remembers it as a
 # "kept <sha256>  <path under $HOME>" line, which never matches the
 # "<sha256>  <path>" lines _cs_owns_file reads. Content whose sha256 cannot
-# be computed is named every time.
+# be computed, and a path holding a newline (the record holds one path per
+# line), are named every time.
 _remove_retired() {  # file
     _retired_is_ours "$1" || return 1
     rm -f "$1"
@@ -1717,7 +1720,7 @@ _retired_is_ours() {  # file
         return 0
     fi
     record=$(_cs_install_record)
-    if digest=$(_cs_sha256_file "$1"); then
+    if [[ "$1" != *$'\n'* ]] && digest=$(_cs_sha256_file "$1"); then
         line="kept $digest  ${1#"$HOME"/}"
         CS_RECORD_LINES+=("$line")
         if [ -f "$record" ] && grep -qxF "$line" "$record"; then
