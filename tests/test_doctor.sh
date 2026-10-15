@@ -433,6 +433,23 @@ test_doctor_tui_holds_the_picker_to_the_build_install_sh_ships() {
         "$(tui_row "$output")" "the newer bin/cs-tui is the build install.sh ships" || return 1
 }
 
+# A source directory doctor cannot read is said so, and the run goes on to
+# its summary.
+test_doctor_tui_names_a_source_tree_it_cannot_read() {
+    local checkout="$TEST_TMPDIR/tuico" output
+    make_tui_checkout "$checkout" 202601020000
+    mkdir -p "$checkout/tui/src/locked"
+    echo 'build' > "$checkout/tui/target/release/cs-tui"
+    touch -t 202601030000 "$checkout/tui/target/release/cs-tui"
+    cp "$checkout/tui/target/release/cs-tui" "$TEST_TMPDIR/home/.local/bin/cs-tui"
+    chmod 000 "$checkout/tui/src/locked"
+    output=$(doctor_in_tui_checkout "$checkout")
+    chmod 755 "$checkout/tui/src/locked"
+    assert_eq "WARN cs-tui: could not read the TUI source under $checkout/tui to compare it with the build tui/target/release/cs-tui" \
+        "$(tui_row "$output")" "an unreadable source tree is named, not passed" || return 1
+    assert_output_contains "$output" "Complete with [1-9][0-9]* warning(s)\." "doctor ran to its summary" || return 1
+}
+
 # A fresh clone has no tui/target, and a release-asset install has nothing in
 # the checkout to compare against: doctor cannot tell, so it says nothing.
 test_doctor_tui_silent_without_a_build_in_the_checkout() {
@@ -1186,6 +1203,7 @@ run_test test_doctor_warns_when_the_tui_build_is_older_than_its_source
 run_test test_doctor_warns_when_the_installed_tui_differs_from_the_build
 run_test test_doctor_tui_ok_when_the_installed_picker_is_the_fresh_build
 run_test test_doctor_tui_holds_the_picker_to_the_build_install_sh_ships
+run_test test_doctor_tui_names_a_source_tree_it_cannot_read
 run_test test_doctor_tui_silent_without_a_build_in_the_checkout
 run_test test_doctor_tui_silent_when_no_picker_is_installed
 run_test test_doctor_tui_silent_in_a_checkout_that_did_not_produce_the_install
