@@ -374,8 +374,12 @@ _cs_rotate_wrap_keys_answer_file() {
 # object whose "bindings" is an array of context blocks, each an object whose
 # own "bindings", when present, is an object. Slurped, so a file holding two
 # documents is refused rather than read as two; -e turns invalid JSON, an
-# empty file and a false answer alike into a non-zero exit.
+# empty file and a false answer alike into a non-zero exit. Only a regular
+# file (or a link to one) is read: a FIFO waits for a writer that never comes
+# and a device may never end, so one of those, a directory or a link to any of
+# them fails the check unread, and every caller asks this before it reads.
 _cs_keybindings_shape_ok() {  # file
+    [ -f "$1" ] || return 1
     jq -se 'length == 1 and (.[0] | type == "object" and (.bindings | type == "array")
         and all(.bindings[]; type == "object" and ((.bindings // {}) | type == "object")))' \
         "$1" > /dev/null 2>&1
@@ -1288,12 +1292,12 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "18464202ce9f61aa6a82b8a0514a027100face9059a10670b170b5062fccd5d8  bin/cs"
+    "5653d63ea331aa64cc99a008cbe82395dc16b8ddf60315833ec48767052c7a20  bin/cs"
     "42d2f9ecbc9a89f3b119958360fb753962c89df18b51ef7b85db109b2644e7de  bin/cs-secrets"
     "24117fba0eadfb19732feeb82ff9c4ee1772f9bd0297adf19478dd861c3d3735  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
     "12d9604997a1b72088df338d259fbb475c13c3bedb0b611d91d50ebbab2914c5  hooks/cs-resolve.sh"
-    "e97751f325caa5a8932bc00bebf15eff9e09172b3b943c47cfb8e5c4d05b8859  hooks/cs-shared.sh"
+    "5fab1abd55dae5dd70f4d9a3ed7752b419aba60d57c2512d35cf666204238c63  hooks/cs-shared.sh"
     "50d63ce0995e68fddd8503700c15f9585d11938c9cd3872a883146de7707c765  hooks/cs-iterm-tab.py"
     "cd7bdb7640403cfa9a9b1c600d1626ba943a609e7ef7ebf3feb6f0ab7af03112  hooks/memory-index-guard.sh"
     "6c9a9db966b02d1d99c24a4358abdcf005a0e56e1c7c2defc7c75d9fde516612  hooks/prompt-rewriter.sh"
@@ -1341,13 +1345,13 @@ _check_retired_names
 # events cs registers a hook under (CS_HOOK_EVENTS) as something other than a
 # list: that value is the user's and stays as it is, so cs's hook cannot be
 # added to it. A missing or null event is one cs creates. Without jq no hook
-# is registered at all, and a file jq cannot parse is refused further down,
-# once the payload's cs_settings_check is at hand, still before anything is
-# placed.
+# is registered at all, and a file jq cannot parse, or one that is not a
+# regular file (never opened here), is refused further down, once the
+# payload's cs_settings_check is at hand, still before anything is placed.
 _refuse_a_hook_event_that_is_not_a_list() {
     local event
     command -v jq >/dev/null 2>&1 || return 0
-    [ -s "$CLAUDE_SETTINGS" ] || return 0
+    [ -f "$CLAUDE_SETTINGS" ] && [ -s "$CLAUDE_SETTINGS" ] || return 0
     event=$(jq -r --arg events "${CS_HOOK_EVENTS[*]}" '
         (if type == "object" then .hooks else null end) as $hooks
         | if ($hooks | type) == "object" then
@@ -1549,8 +1553,9 @@ if [ "$INSTALL_METHOD" = "web" ]; then
     done
 fi
 
-# Stop, before anything is placed, on a settings.json jq cannot parse, which
-# the settings step below would refuse only after every file was deployed.
+# Stop, before anything is placed, on a settings.json jq cannot parse or that
+# is not a regular file, which the settings step below would refuse only
+# after every file was deployed.
 # The check is cs_settings_check from the payload's shared library (the
 # checkout, or the verified downloads), as the settings step runs it; without
 # jq no hook is registered at all, so the file is not read.

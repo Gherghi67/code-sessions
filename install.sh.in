@@ -113,13 +113,13 @@ _check_retired_names
 # events cs registers a hook under (CS_HOOK_EVENTS) as something other than a
 # list: that value is the user's and stays as it is, so cs's hook cannot be
 # added to it. A missing or null event is one cs creates. Without jq no hook
-# is registered at all, and a file jq cannot parse is refused further down,
-# once the payload's cs_settings_check is at hand, still before anything is
-# placed.
+# is registered at all, and a file jq cannot parse, or one that is not a
+# regular file (never opened here), is refused further down, once the
+# payload's cs_settings_check is at hand, still before anything is placed.
 _refuse_a_hook_event_that_is_not_a_list() {
     local event
     command -v jq >/dev/null 2>&1 || return 0
-    [ -s "$CLAUDE_SETTINGS" ] || return 0
+    [ -f "$CLAUDE_SETTINGS" ] && [ -s "$CLAUDE_SETTINGS" ] || return 0
     event=$(jq -r --arg events "${CS_HOOK_EVENTS[*]}" '
         (if type == "object" then .hooks else null end) as $hooks
         | if ($hooks | type) == "object" then
@@ -321,8 +321,9 @@ if [ "$INSTALL_METHOD" = "web" ]; then
     done
 fi
 
-# Stop, before anything is placed, on a settings.json jq cannot parse, which
-# the settings step below would refuse only after every file was deployed.
+# Stop, before anything is placed, on a settings.json jq cannot parse or that
+# is not a regular file, which the settings step below would refuse only
+# after every file was deployed.
 # The check is cs_settings_check from the payload's shared library (the
 # checkout, or the verified downloads), as the settings step runs it; without
 # jq no hook is registered at all, so the file is not read.

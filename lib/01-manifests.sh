@@ -282,8 +282,12 @@ _cs_rotate_wrap_keys_answer_file() {
 # object whose "bindings" is an array of context blocks, each an object whose
 # own "bindings", when present, is an object. Slurped, so a file holding two
 # documents is refused rather than read as two; -e turns invalid JSON, an
-# empty file and a false answer alike into a non-zero exit.
+# empty file and a false answer alike into a non-zero exit. Only a regular
+# file (or a link to one) is read: a FIFO waits for a writer that never comes
+# and a device may never end, so one of those, a directory or a link to any of
+# them fails the check unread, and every caller asks this before it reads.
 _cs_keybindings_shape_ok() {  # file
+    [ -f "$1" ] || return 1
     jq -se 'length == 1 and (.[0] | type == "object" and (.bindings | type == "array")
         and all(.bindings[]; type == "object" and ((.bindings // {}) | type == "object")))' \
         "$1" > /dev/null 2>&1

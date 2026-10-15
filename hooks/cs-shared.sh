@@ -1066,11 +1066,20 @@ cs_vault_holder_drop() {  # holders, pid
 # can (cs creates it), anything else jq cannot parse cannot, and is never
 # replaced. Returns 1 with "<file> is not valid JSON; left it unchanged and
 # wrote no <file>.cs-bak.<stamp> backup: <jq's reason>" in CS_SETTINGS_ERROR
-# when it cannot.
+# when it cannot. Something there that is not a regular file (a FIFO, a
+# device, a directory, or a link to one) is never opened, since reading a
+# FIFO waits for a writer and a device may never end, and returns 1 with
+# "<file> is not a regular file, so cs did not read it; left it unchanged".
+# That test comes first: -s is false for a FIFO or a device, as for a
+# missing file, so the size alone would pass one as a file cs creates.
 # shellcheck disable=SC2034  # CS_SETTINGS_ERROR is read by the callers in cs and install.sh
 cs_settings_check() {  # file
     local reason
     CS_SETTINGS_ERROR=""
+    if [ -e "$1" ] && [ ! -f "$1" ]; then
+        CS_SETTINGS_ERROR="$1 is not a regular file, so cs did not read it; left it unchanged"
+        return 1
+    fi
     [ -s "$1" ] || return 0
     reason=$(jq -e . 2>&1 >/dev/null < "$1") && return 0
     reason="${reason%%$'\n'*}"
