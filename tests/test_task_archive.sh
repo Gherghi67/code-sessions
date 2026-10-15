@@ -431,12 +431,15 @@ test_answer_is_refused_while_git_tracks_a_file_in_local() {
 # A .cs/local that is a link out of the session takes no answer: the write
 # would land wherever it leads.
 test_answer_is_refused_through_a_local_that_links_out() {
-    local o="$TEST_TMPDIR/outside" out rc=0
+    local o="$TEST_TMPDIR/outside" out rc=0 o_real
     mkdir -p "$o"
+    o_real=$(cd -P -- "$o" && pwd)
     rm -rf "$SESSION_DIR/.cs/local"
     ln -s "$o" "$SESSION_DIR/.cs/local"
     out=$("$CS_BIN" -archive-tasks answer yes 2>&1) || rc=$?
     assert_eq "1" "$rc" "the answer is refused: $out" || return 1
+    assert_eq "cs_mkdir_inside: $SESSION_DIR/.cs/local leads to $o_real, outside the session $SESSION_DIR
+Error: could not record the answer in .cs/local/task-archive" "$out" "the refusal names the link and where it leads" || return 1
     assert_not_exists "$o/task-archive" "nothing is written outside the session" || return 1
 }
 
