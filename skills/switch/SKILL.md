@@ -152,7 +152,9 @@ vault is committed. `cs -switch` keeps its record there too,
      itself twenty seconds after this turn ends, and Codex shows a line saying
      so and naming the target's engine, model and approval; they can quit
      sooner with `/quit`. A prompt they send first stops the count (it starts
-     again when that turn ends) and keeps this conversation. Launched with
+     again when that turn ends) and keeps this conversation. Text left unsent
+     in the composer when the count ends is sent, with `/quit` appended, so
+     they should send or clear a draft first. Launched with
      `CS_ROTATE_FORCE_CTX=off` (or `0`), there is no count. A switch that
      would move a run launched with `--native-approval` to automatic approval
      gets no count either: cs never loosens approval unattended, so the line

@@ -296,6 +296,8 @@ vault is locked: tell the user to mount it and stop.
    `/clear` and then `go` into the Codex terminal itself, and Codex shows a
    line saying so when the turn ends. A message they send first stops the
    count and keeps this conversation; it starts again when that turn ends.
+   Text left unsent in the composer when the count ends is sent, with
+   `/clear` appended, so they should send or clear a draft first.
    Launched with `CS_ROTATE_FORCE_CTX=off` (or `0`), or with no terminal,
    there is no count.
 

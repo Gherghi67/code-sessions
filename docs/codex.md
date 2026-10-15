@@ -224,8 +224,14 @@ under one of those, or the directory cannot be made, the launch says the
 automatic `/clear` is off for that run and the `/clear` stays yours. It types through the terminal's simulated-input call
 (TIOCSTI); where the terminal refuses it, as Linux does with
 `dev.tty.legacy_tiocsti=0`, `session.log` says so and the `/clear` stays yours.
-Text you have typed into the composer and not sent when the count ends gets the
-keys added to it, so send or clear a draft first.
+The watcher cannot see the screen: text you have typed into the composer and
+not sent when the count ends is sent, with `/clear` appended, to the
+conversation you are in, so send or clear a draft first; the line at the end of
+the turn says so. A prompt you send while cs types stops the rest of its keys:
+cs keeps a marker in the run's directory while it types, the UserPromptSubmit
+hook removes it, and cs checks it before each key, before Enter and before
+`go`, so `go` never lands in the turn your prompt started. `session.log` then
+says a prompt went in while cs was typing.
 
 The Claude hooks and
 function-hook mods do not run in Codex. Successful Codex patches automatically

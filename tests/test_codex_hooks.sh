@@ -220,7 +220,7 @@ test_a_turn_ending_with_a_handoff_armed_starts_the_count() {
     deadline=$(_stamp_field deadline)
     [ "$deadline" -ge $((now + 20)) ] && [ "$deadline" -le $((now + 22)) ] \
         || { echo "  FAIL: deadline $deadline is not about 20 s after $now"; return 1; }
-    assert_eq "cs: /clear and go in 20 s, to continue from $HANDOFF. Send a message first to keep this conversation." \
+    assert_eq "cs: /clear and go in 20 s, to continue from $HANDOFF. Send a message first to keep this conversation; unsent text in the composer would be sent." \
         "$(printf '%s' "$out" | jq -r .systemMessage)" "the TUI says what will happen" || return 1
 }
 
@@ -317,12 +317,12 @@ test_a_pending_switch_counts_down_to_quit() {
     printf 'engine=claude\nmode=fresh\nhandoff=%s\nrun=%s\n' "$HANDOFF" "$RUN" > "$SESSION/.cs/local/pending-switch"
     out=$(CS_CODEX_CLEAR_GRACE=20 _turn_hook stop "$OLD_THREAD") || return 1
     assert_file_exists "$STAMP" || return 1
-    assert_eq "cs: /quit in 20 s, and cs reopens this session under claude (its default model, native approval) from $HANDOFF. Send a message first to stay." \
+    assert_eq "cs: /quit in 20 s, and cs reopens this session under claude (its default model, native approval) from $HANDOFF. Send a message first to stay; unsent text in the composer would be sent." \
         "$(printf '%s' "$out" | jq -r .systemMessage)" || return 1
     # Another run's switch is not this run's to take.
     printf 'engine=claude\nmode=fresh\nhandoff=%s\nrun=%s\n' "$HANDOFF" "$OTHER_RUN" > "$SESSION/.cs/local/pending-switch"
     out=$(CS_CODEX_CLEAR_GRACE=20 _turn_hook stop "$OLD_THREAD") || return 1
-    assert_eq "cs: /clear and go in 20 s, to continue from $HANDOFF. Send a message first to keep this conversation." \
+    assert_eq "cs: /clear and go in 20 s, to continue from $HANDOFF. Send a message first to keep this conversation; unsent text in the composer would be sent." \
         "$(printf '%s' "$out" | jq -r .systemMessage)" || return 1
 }
 
@@ -346,9 +346,11 @@ test_a_switch_that_loosens_approval_starts_no_count() {
 
 test_a_message_sent_during_the_count_stops_it() {
     _stale_stamp
+    : > "$RUN_DIR/typing"
     local out
     out=$(_turn_hook user-prompt-submit "$NEW_THREAD") || { echo "  FAIL: a hook must never fail a turn"; return 1; }
     assert_not_exists "$STAMP" || return 1
+    assert_not_exists "$RUN_DIR/typing" "a prompt sent while cs types stops the rest of its keys" || return 1
     assert_eq "" "$out" || return 1
 }
 

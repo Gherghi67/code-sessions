@@ -19,6 +19,8 @@ OTHER_RUN=44444444-4444-4444-8444-444444444444
 # The real check, kept for the tests that exercise it: every other test runs
 # under TMPDIR, which the check rightly refuses, so setup stands it down.
 eval "_real_run_dir_in_sandbox_root() $(declare -f _codex_run_dir_in_sandbox_root | tail -n +2)"
+# The real typist too, run only detached from every terminal (_detached).
+eval "_real_type_keys() $(declare -f _codex_type_keys | tail -n +2)"
 
 setup() {
     TEST_TMPDIR="$(mktemp -d)"
@@ -395,6 +397,49 @@ test_an_unreadable_deadline_is_dropped() {
     assert_not_exists "$STAMP" || return 1
 }
 
+# A prompt the user sends while cs types runs the UserPromptSubmit hook, which
+# takes cs's typing marker away: what cs had left to type, go here, stays
+# unsent, so it does not land in the turn that prompt started.
+test_a_prompt_sent_while_typing_stops_go() {
+    _codex_type_keys() {
+        printf '%s\n' "$1" >> "$KEYS"
+        [ "$1" != /clear ] || ( CS_SESSION_DIR="$SESSION" _codex_hook_user_prompt_submit </dev/null )
+    }
+    _stamp "$(date +%s)"
+    _watch
+    _keys_after 6 1 || { echo "  FAIL: /clear was never typed"; return 1; }
+    local i=0
+    until grep -Fq "Automatic /clear: a prompt went in while cs was typing; go not sent" "$SESSION/.cs/local/session.log" 2>/dev/null; do
+        i=$((i + 1)); [ "$i" -lt 60 ] || { echo "  FAIL: no session.log line; keys: $(tr '\n' ' ' < "$KEYS")"; return 1; }
+        sleep 0.1
+    done
+    _polls $(( $(wc -l < "$TEST_TMPDIR/polls" | tr -d ' ') + 1 )) || return 1
+    assert_eq /clear "$(cat "$KEYS")" "go followed a prompt the user sent" || return 1
+    assert_not_exists "$RUN_DIR/typing" || return 1
+    if grep -q "terminal refused" "$SESSION/.cs/local/session.log"; then
+        echo "  FAIL: a prompt the user sent was logged as a refusal"; return 1
+    fi
+}
+
+# The marker is the typist's licence key by key, so a typist that finds it
+# gone types nothing, not even into a terminal, and says so with its own code.
+test_the_typist_stops_once_the_marker_is_gone() {
+    local status
+    _detached "$TEST_TMPDIR/no-such-marker"; status=$?
+    assert_eq 4 "$status" "a gone marker has its own code" || return 1
+    : > "$TEST_TMPDIR/marker"
+    _detached "$TEST_TMPDIR/marker"; status=$?
+    [ "$status" != 0 ] && [ "$status" != 4 ] \
+        || { echo "  FAIL: with the marker there and no terminal, the typist returned $status"; return 1; }
+}
+
+# Runs the real typist in a session of its own, with no controlling terminal,
+# so whatever it does can reach no one's keyboard.
+_detached() {  # marker
+    python3 -I -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
+        bash -c "$(declare -f _real_type_keys); _real_type_keys /clear \"\$1\"" typist "$1"
+}
+
 test_keys_the_terminal_refuses_are_logged() {
     _codex_type_keys() { return 1; }
     _stamp "$(date +%s)"
@@ -499,7 +544,9 @@ test_the_grace_follows_the_force_setting() {
 
 # A test that redefines a stand-in runs first, so a leak would show.
 run_test test_keys_the_terminal_refuses_are_logged
+run_test test_a_prompt_sent_while_typing_stops_go
 run_test test_a_passed_deadline_types_clear_then_go
+run_test test_the_typist_stops_once_the_marker_is_gone
 run_test test_a_stamp_in_the_workspace_types_nothing
 run_test test_a_symlinked_stamp_types_nothing
 run_test test_a_stamp_others_can_write_types_nothing

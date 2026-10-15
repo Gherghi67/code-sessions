@@ -11989,6 +11989,14 @@ _codex_autoclear_file() {  # run_dir
     printf '%s/autoclear\n' "$1"
 }
 
+# Stands while the watcher types, from before its first key until it is done.
+# The UserPromptSubmit hook takes it away, so a prompt the user sends while cs
+# types stops whatever cs has left to type: a key, the Enter, or the go after
+# /clear.
+_codex_typing_file() {  # run_dir
+    printf '%s/typing\n' "$1"
+}
+
 # What the count does at its end: `clear`, or `quit <target>` when a switch
 # this run recorded is pending, since /clear cannot change engines and would
 # spend the handoff the switch carries; <target> is the relaunch in words. The
@@ -12078,23 +12086,24 @@ _codex_hook_stop() {
         return 0
     fi
     if [ "${action%% *}" = quit ]; then
-        sysmsg="cs: /quit in $grace s, and cs reopens this session under ${action#quit } from $handoff. Send a message first to stay."
+        sysmsg="cs: /quit in $grace s, and cs reopens this session under ${action#quit } from $handoff. Send a message first to stay; unsent text in the composer would be sent."
     else
-        sysmsg="cs: /clear and go in $grace s, to continue from $handoff. Send a message first to keep this conversation."
+        sysmsg="cs: /clear and go in $grace s, to continue from $handoff. Send a message first to keep this conversation; unsent text in the composer would be sent."
     fi
     jq -n --arg m "$sysmsg" '{systemMessage: $m}' 2>/dev/null || true
     return 0
 }
 
-# A message sent while the count runs stops it. Any message does: the hook
-# only removes, so a prompt in another thread costs at most one count.
+# A message sent while the count runs stops it, and one sent while cs types
+# stops the rest of the keys. Any message does: the hook only removes, so a
+# prompt in another thread costs at most one count.
 _codex_hook_user_prompt_submit() {
     local run_dir
     cat >/dev/null 2>&1 || true
     [ "${CS_RUN_ENGINE:-}" = codex ] && [ -n "${CS_SESSION_DIR:-}" ] || return 0
     [ -d "$CS_SESSION_DIR/.cs/local" ] || return 0
     run_dir=$(_codex_run_dir) && _codex_run_dir_ok "$run_dir" "$CS_SESSION_DIR" || return 0
-    rm -f "$(_codex_autoclear_file "$run_dir")" 2>/dev/null || true
+    rm -f "$(_codex_autoclear_file "$run_dir")" "$(_codex_typing_file "$run_dir")" 2>/dev/null || true
     return 0
 }
 
@@ -12104,19 +12113,29 @@ _codex_hook_user_prompt_submit() {
 # at once stayed in the composer unsent, and a 19-character line at 50 ms a key
 # got a newline where 8 characters at that pace submitted. Fails where the
 # terminal refuses simulated input, as Linux does with dev.tty.legacy_tiocsti=0.
-_codex_type_keys() {  # text
+# Before each key and before Enter it looks for the typing marker; once a
+# prompt the user sent has taken it away, it stops with status 4 and sends no
+# Enter, so nothing more of cs's goes in after that prompt.
+_codex_type_keys() {  # text, typing_marker
     python3 -I -c '
 import fcntl, os, sys, termios, time
+marker = sys.argv[2]
+if not os.path.exists(marker):
+    sys.exit(4)
 fd = os.open("/dev/tty", os.O_RDWR)
 try:
     for ch in sys.argv[1].encode():
+        if not os.path.exists(marker):
+            sys.exit(4)
         fcntl.ioctl(fd, termios.TIOCSTI, bytes([ch]))
         time.sleep(0.1)
     time.sleep(0.5)
+    if not os.path.exists(marker):
+        sys.exit(4)
     fcntl.ioctl(fd, termios.TIOCSTI, b"\r")
 finally:
     os.close(fd)
-' "$1" 2>/dev/null
+' "$1" "$2" 2>/dev/null
 }
 
 # Whether the terminal the keys would go to is still there. A closed tab hangs
@@ -12138,9 +12157,13 @@ _codex_autoclear_terminal() {
 # may arm one itself.
 # /clear and go are two prompts: Codex starts no turn after /clear, and cs's
 # SessionStart hook hands the new thread the handoff with its first message.
+# The watcher cannot see the screen. Text left unsent in the composer is sent
+# with the keys added to it, which the Stop hook's line warns of; a prompt the
+# user sends while cs types takes the typing marker away, and cs stops there.
 _codex_autoclear_watch() {  # session_dir, run_dir
-    local session_dir="$1" run_dir="$2" stamp deadline handoff action run
+    local session_dir="$1" run_dir="$2" stamp typing deadline handoff action run status
     stamp=$(_codex_autoclear_file "$run_dir")
+    typing=$(_codex_typing_file "$run_dir")
     while kill -0 "${CS_RUN_OWNER_PID:-$$}" 2>/dev/null && _codex_autoclear_terminal; do
         sleep 1
         if ! _codex_run_dir_ok "$run_dir" "$session_dir"; then
@@ -12173,13 +12196,40 @@ _codex_autoclear_watch() {  # session_dir, run_dir
         if [ "${action%% *}" = hold ]; then
             _codex_autoclear_log "$session_dir" "Automatic /quit: the pending switch to ${action#hold } would move this run from native to automatic approval; the exit is yours"
             continue
-        elif [ "${action%% *}" = quit ]; then
-            _codex_type_keys /quit && continue
-        else
-            _codex_type_keys /clear && sleep 2 && _codex_type_keys go && continue
         fi
-        # The keys did not land: the person still has /clear, as before.
-        _codex_autoclear_log "$session_dir" "Automatic /clear: the terminal refused simulated input; run /clear and send go"
+        # The marker goes in before the first key, and the typist checks it
+        # before every key and Enter; go waits on it too, since the prompt that
+        # removed it may have landed during the pause after /clear.
+        if ! { ( umask 077 && : > "$typing" ); } 2>/dev/null; then
+            _codex_autoclear_log "$session_dir" "Automatic /clear: cs could not mark its typing in this run's directory; run /clear and send go"
+            continue
+        fi
+        if [ "${action%% *}" = quit ]; then
+            _codex_type_keys /quit "$typing"; status=$?
+        else
+            _codex_type_keys /clear "$typing"; status=$?
+            if [ "$status" = 0 ]; then
+                sleep 2
+                if [ -e "$typing" ]; then
+                    _codex_type_keys go "$typing"; status=$?
+                else
+                    status=4
+                fi
+            fi
+        fi
+        rm -f "$typing" 2>/dev/null || true
+        case "$status" in
+            0) ;;
+            4)
+                if [ "${action%% *}" = quit ]; then
+                    _codex_autoclear_log "$session_dir" "Automatic /quit: a prompt went in while cs was typing; Enter not sent"
+                else
+                    _codex_autoclear_log "$session_dir" "Automatic /clear: a prompt went in while cs was typing; go not sent"
+                fi
+                ;;
+            # The keys did not land: the person still has /clear, as before.
+            *) _codex_autoclear_log "$session_dir" "Automatic /clear: the terminal refused simulated input; run /clear and send go" ;;
+        esac
     done
 }
 
