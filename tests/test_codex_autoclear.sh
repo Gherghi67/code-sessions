@@ -171,7 +171,7 @@ test_a_stamp_in_the_workspace_types_nothing() {
     _stamp "$(date +%s)" clear "$RUN" "$HANDOFF" "$SESSION/.cs/local/codex-autoclear"
     _watch
     _polls 2 || return 1
-    assert_not_exists "$KEYS" "keys typed: $(tr '\n' ' ' < "$KEYS" 2>/dev/null)" || return 1
+    assert_not_exists "$KEYS" "keys typed: $(tr '\n' ' ' 2>/dev/null < "$KEYS")" || return 1
 }
 
 test_a_symlinked_stamp_types_nothing() {
@@ -340,7 +340,7 @@ test_a_switch_that_loosens_approval_types_nothing() {
     _stamp "$(date +%s)"
     _watch
     _polls 3 || return 1
-    assert_not_exists "$KEYS" "keys typed: $(tr '\n' ' ' < "$KEYS" 2>/dev/null)" || return 1
+    assert_not_exists "$KEYS" "keys typed: $(tr '\n' ' ' 2>/dev/null < "$KEYS")" || return 1
     assert_not_exists "$STAMP" "the deadline is spent all the same" || return 1
     assert_file_exists "$SESSION/.cs/local/pending-switch" "the switch stays for the user's exit" || return 1
     grep -Fq "Automatic /quit: this run has native approval, so the exit to claude (its default model, automatic approval) is yours" \
@@ -358,7 +358,7 @@ test_a_native_run_never_quits_unattended() {
     _stamp "$(date +%s)"
     _watch
     _polls 3 || return 1
-    assert_not_exists "$KEYS" "keys typed: $(tr '\n' ' ' < "$KEYS" 2>/dev/null)" || return 1
+    assert_not_exists "$KEYS" "keys typed: $(tr '\n' ' ' 2>/dev/null < "$KEYS")" || return 1
     assert_file_exists "$SESSION/.cs/local/pending-switch" "the switch stays for the user's exit" || return 1
     grep -Fq "Automatic /quit: this run has native approval, so the exit to claude (its default model, native approval) is yours" \
         "$SESSION/.cs/local/session.log" || { echo "  FAIL: no session.log line"; return 1; }
@@ -409,7 +409,7 @@ test_a_run_that_lost_the_lease_types_nothing() {
     local polled=$?
     kill "$other" 2>/dev/null; wait "$other" 2>/dev/null
     [ "$polled" = 0 ] || return 1
-    assert_not_exists "$KEYS" "keys typed: $(tr '\n' ' ' < "$KEYS" 2>/dev/null)" || return 1
+    assert_not_exists "$KEYS" "keys typed: $(tr '\n' ' ' 2>/dev/null < "$KEYS")" || return 1
     assert_not_exists "$STAMP" "the deadline is spent all the same" || return 1
     grep -Fq "Automatic /clear: another cs run owns this session now; nothing typed" "$SESSION/.cs/local/session.log" \
         || { echo "  FAIL: no session.log line"; return 1; }
@@ -506,6 +506,27 @@ test_a_prompt_sent_while_typing_stops_go() {
     if grep -q "terminal refused" "$SESSION/.cs/local/session.log"; then
         echo "  FAIL: a prompt the user sent was logged as a refusal"; return 1
     fi
+}
+
+# A prompt can go in after the watcher has read a passed deadline but before
+# its typing marker is down. The hook then finds the deadline and no marker:
+# the watcher must still see that prompt, or /clear and go land in its turn.
+# The lease check, which runs in that gap, stands in for the moment it lands.
+# The stand-in is defined inside the watcher's subshell, so no later test
+# inherits it.
+test_a_prompt_before_the_typing_mark_types_nothing() {
+    eval "_real_lease_owned() $(declare -f cs_run_lease_owned | tail -n +2)"
+    _stamp "$(date +%s)"
+    (
+        cs_run_lease_owned() {
+            ( CS_SESSION_DIR="$SESSION" _codex_hook_user_prompt_submit </dev/null )
+            _real_lease_owned "$@"
+        }
+        _codex_autoclear_watch "$SESSION" "$RUN_DIR"
+    ) & WATCHER=$!
+    _polls 3 || return 1
+    assert_not_exists "$KEYS" "keys typed: $(tr '\n' ' ' 2>/dev/null < "$KEYS")" || return 1
+    assert_not_exists "$RUN_DIR/typing" "the typing marker outlived a deadline nobody typed for" || return 1
 }
 
 # The marker is the typist's licence key by key, so a typist that finds it
@@ -829,6 +850,7 @@ test_the_grace_follows_the_force_setting() {
 run_test test_keys_the_terminal_refuses_are_logged
 run_test test_a_gone_cli_is_not_logged_as_a_refusal
 run_test test_a_prompt_sent_while_typing_stops_go
+run_test test_a_prompt_before_the_typing_mark_types_nothing
 run_test test_a_passed_deadline_types_clear_then_go
 run_test test_the_typist_stops_once_the_marker_is_gone
 run_test test_typing_stops_once_the_marker_goes_mid_word

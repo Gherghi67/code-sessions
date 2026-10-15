@@ -599,27 +599,42 @@ _codex_autoclear_watch() {  # session_dir, run_dir
         fi
         [ "$(date +%s)" -ge "$deadline" ] || continue
         handoff=$(_switch_field "$stamp" handoff)
+        # The marker goes down before the deadline is spent, and the typist
+        # checks it before every key and Enter; go waits on it too, since the
+        # prompt that removed it may have landed during the pause after /clear.
+        # A prompt removes both, so one that lands before the marker leaves no
+        # deadline, and one after it leaves no marker: either way no key follows.
+        if ! { ( umask 077 && : > "$typing" ); } 2>/dev/null; then
+            rm -f "$stamp" 2>/dev/null || true
+            _codex_autoclear_log "$session_dir" "Automatic /clear: cs could not mark its typing in this run's directory; run /clear and send go"
+            continue
+        fi
+        if [ ! -e "$stamp" ]; then
+            rm -f "$typing" 2>/dev/null || true
+            continue
+        fi
         rm -f "$stamp" 2>/dev/null || true
         # A forced launch can take the session over while this CLI stays
         # open: its deadline, set before the takeover, is no longer this
         # run's to act on, as the cs mod checks it still owns the rotation.
         if ! cs_run_lease_owned "$session_dir/.cs"; then
+            rm -f "$typing" 2>/dev/null || true
             _codex_autoclear_log "$session_dir" "Automatic /clear: another cs run owns this session now; nothing typed"
             continue
         fi
-        [ -n "$handoff" ] && [ "$(_rotation_armed_handoff "$session_dir")" = "$handoff" ] || continue
+        if ! { [ -n "$handoff" ] && [ "$(_rotation_armed_handoff "$session_dir")" = "$handoff" ]; }; then
+            rm -f "$typing" 2>/dev/null || true
+            continue
+        fi
         action=$(_codex_autoclear_action "$session_dir")
         if [ "${action%% *}" = hold ]; then
+            rm -f "$typing" 2>/dev/null || true
             _codex_autoclear_log "$session_dir" "Automatic /quit: this run has native approval, so the exit to ${action#hold } is yours"
             continue
         fi
-        # The marker goes in before the first key, and the typist checks it
-        # before every key and Enter; go waits on it too, since the prompt that
-        # removed it may have landed during the pause after /clear.
-        if ! { ( umask 077 && : > "$typing" ); } 2>/dev/null; then
-            _codex_autoclear_log "$session_dir" "Automatic /clear: cs could not mark its typing in this run's directory; run /clear and send go"
-            continue
-        fi
+        # A prompt that went in during these checks took the marker: its turn
+        # keeps the conversation, as one sent before the deadline does.
+        [ -e "$typing" ] || continue
         { ( umask 077 && : > "$keys_sent" && : > "$errors" ); } 2>/dev/null || true
         # The typist's stderr is kept for the cause of a failure.
         if [ "${action%% *}" = quit ]; then
