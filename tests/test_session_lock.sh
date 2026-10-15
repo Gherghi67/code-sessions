@@ -237,6 +237,24 @@ test_open_refuses_a_directory_in_the_locks_place() {
     assert_dir "$meta/session.lock" "the directory is left as it was" || return 1
 }
 
+# A fifo in the lock's place is refused before the open writes to it: a write
+# would block with no reader, holding the openers' mutex. perl's alarm ends a
+# blocked open, so the test fails instead of hanging; the output goes to a
+# file, since a writer left blocked on the fifo would hold a $( ) open, and a
+# non-blocking read of the fifo then lets any such writer finish.
+test_open_refuses_a_fifo_in_the_locks_place() {
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs" out rc=0
+    create_lock_test_session "test-session"
+    mkfifo "$meta/session.lock"
+    perl -e 'alarm 20; exec @ARGV or die' "$CS_BIN" test-session </dev/null > "$TEST_TMPDIR/fifo-open.out" 2>&1 || rc=$?
+    perl -MFcntl -e 'sysopen(my $f, $ARGV[0], O_RDONLY | O_NONBLOCK) or exit; select(undef, undef, undef, 0.5); sysread($f, my $b, 64)' "$meta/session.lock"
+    out=$(cat "$TEST_TMPDIR/fifo-open.out")
+    assert_eq "1" "$rc" "the open over a fifo exits 1" || return 1
+    assert_eq "Error: $meta/session.lock is not a regular file, $LOCK_REFUSAL_TAIL" "$(tail -1 <<< "$out")" \
+        "the refusal names the fifo" || return 1
+    [ -p "$meta/session.lock" ] || { echo "  FAIL: the fifo is left as it was"; return 1; }
+}
+
 # The release at an open's exit never follows a link in the lock's place, even
 # one naming a file that holds this open's pid. The link is put there after the
 # open took the lock, by the ps the live-duplicate guard runs (CS_PS_BIN): it
@@ -1299,6 +1317,7 @@ run_test test_stale_lock_line_prints_the_lock_as_a_plain_name
 run_test test_open_refuses_a_dangling_link_in_the_locks_place
 run_test test_forced_open_refuses_a_link_to_a_session_file_in_the_locks_place
 run_test test_open_refuses_a_directory_in_the_locks_place
+run_test test_open_refuses_a_fifo_in_the_locks_place
 run_test test_release_leaves_a_link_in_the_locks_place
 run_test test_force_from_the_menu_refuses_a_link_put_in_the_locks_place_meanwhile
 run_test test_lock_cleaned_on_session_end
