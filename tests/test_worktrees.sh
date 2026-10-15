@@ -2793,6 +2793,85 @@ test_retire_ignored_mode_keeps_a_pointer_the_base_archived_out_of_the_index() {
 
 run_test test_retire_ignored_mode_keeps_a_pointer_the_base_archived_out_of_the_index
 
+# Base and feature each move a different pointer into the archive they both
+# started from: the retire keeps the base's archive and appends the feature's
+# pointer, so each lands once, as the union merge gives a tracked session.
+test_retire_ignored_mode_merges_the_memory_archive() {
+    local base_dir="$CS_SESSIONS_ROOT/proj"
+    mkdir -p "$base_dir/.cs"/{memory,local}
+    printf '%s\n' '- [Memory archive](reference_memory_archive.md): moved pointers' \
+        '- [P](p.md): p' '- [Q](q.md): q' > "$base_dir/.cs/memory/MEMORY.md"
+    echo "p topic" > "$base_dir/.cs/memory/p.md"
+    echo "q topic" > "$base_dir/.cs/memory/q.md"
+    echo "old topic" > "$base_dir/.cs/memory/old.md"
+    _write_memory_archive "$base_dir/.cs/memory" '- [Old](old.md): archived earlier'
+    echo "# P" > "$base_dir/README.md"
+    printf '.cs/\n.claude/settings.local.json\n' > "$base_dir/.gitignore"
+    (cd "$base_dir" && git init -q && git config core.autocrlf false && git add -A && git commit -q -m init)
+    cs_launch "proj@t1"
+    local wt="$CS_SESSIONS_ROOT/proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    printf '%s\n' '- [Memory archive](reference_memory_archive.md): moved pointers' '- [P](p.md): p' \
+        > "$wt/.cs/memory/MEMORY.md"
+    echo '- [Q](q.md): q' >> "$wt/.cs/memory/reference_memory_archive.md"
+    printf '%s\n' '- [Memory archive](reference_memory_archive.md): moved pointers' '- [Q](q.md): q' \
+        > "$base_dir/.cs/memory/MEMORY.md"
+    echo '- [P](p.md): p' >> "$base_dir/.cs/memory/reference_memory_archive.md"
+    local sha output status=0
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "retire exits 0: $output" || return 1
+    assert_eq '---
+name: memory-archive
+description: "Pointers moved out of MEMORY.md"
+metadata:
+  type: reference
+---
+
+- [Old](old.md): archived earlier
+- [P](p.md): p
+- [Q](q.md): q' "$(cat "$base_dir/.cs/memory/reference_memory_archive.md")" \
+        "the base's archive, frontmatter and lines, gains the feature's pointer once" || return 1
+    assert_output_contains "$output" "reference_memory_archive.md: appended 1 pointer(s) from the feature (base lines kept)" \
+        "the retire says what it appended" || return 1
+    assert_eq "- [Memory archive](reference_memory_archive.md): moved pointers
+- [Q](q.md): q" "$(cat "$base_dir/.cs/memory/MEMORY.md")" \
+        "the base index is kept; the pointer the base archived stays out" || return 1
+    assert_not_exists "$wt" "worktree removed" || return 1
+}
+
+run_test test_retire_ignored_mode_merges_the_memory_archive
+
+# A base with no archive takes the feature's whole, frontmatter and all.
+test_retire_ignored_mode_carries_a_memory_archive_the_base_lacks() {
+    local base_dir="$CS_SESSIONS_ROOT/proj"
+    mkdir -p "$base_dir/.cs"/{memory,local}
+    printf '%s\n' '- [A](a.md): a' '- [P](p.md): p' > "$base_dir/.cs/memory/MEMORY.md"
+    echo "a topic" > "$base_dir/.cs/memory/a.md"
+    echo "p topic" > "$base_dir/.cs/memory/p.md"
+    echo "# P" > "$base_dir/README.md"
+    printf '.cs/\n.claude/settings.local.json\n' > "$base_dir/.gitignore"
+    (cd "$base_dir" && git init -q && git config core.autocrlf false && git add -A && git commit -q -m init)
+    cs_launch "proj@t1"
+    local wt="$CS_SESSIONS_ROOT/proj@t1"
+    echo "done" > "$wt/result.txt"
+    (cd "$wt" && git add result.txt && git commit -q -m "task")
+    printf '%s\n' '- [A](a.md): a' '- [Memory archive](reference_memory_archive.md): moved pointers' \
+        > "$wt/.cs/memory/MEMORY.md"
+    _write_memory_archive "$wt/.cs/memory" '- [P](p.md): p'
+    cp "$wt/.cs/memory/reference_memory_archive.md" "$TEST_TMPDIR/feature-archive"
+    local sha output status=0
+    sha=$(land_feature proj t1) || { echo "  FAIL: integrate fixture"; return 1; }
+    output=$("$CS_BIN" "proj" -retire-feature "t1" "$sha" 2>&1) || status=$?
+    assert_eq "0" "$status" "retire exits 0: $output" || return 1
+    cmp -s "$TEST_TMPDIR/feature-archive" "$base_dir/.cs/memory/reference_memory_archive.md" \
+        || { echo "  FAIL: the base gets the feature's archive byte for byte"; return 1; }
+    assert_not_exists "$wt" "worktree removed" || return 1
+}
+
+run_test test_retire_ignored_mode_carries_a_memory_archive_the_base_lacks
+
 # An ignored-mode feature starts with a copy of the base's topics. One the
 # base deleted while the feature was open, and the feature never touched, is
 # not a topic the feature wrote: the fuse leaves it deleted, pointer and all.
