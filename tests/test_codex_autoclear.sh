@@ -82,6 +82,19 @@ _watcher_ends() {  # reason
     WATCHER=""
 }
 
+# Waits up to 2 s for a process to go. A zombie counts as gone: kill -0
+# still succeeds on one until its parent reaps it, and a process orphaned by
+# a kill is reaped by init in its own time.
+_process_gone() {  # pid
+    local i=0 state
+    while :; do
+        state=$(ps -o stat= -p "$1" 2>/dev/null | tr -d ' ')
+        case "$state" in '' | Z*) return 0 ;; esac
+        i=$((i + 1)); [ "$i" -lt 20 ] || return 1
+        sleep 0.1
+    done
+}
+
 # Waits up to the given seconds for the keys file to hold n lines.
 _keys_after() {  # seconds, lines
     local i=0
@@ -290,7 +303,7 @@ test_cleanup_stops_the_helper_and_its_children() {
     [ -n "$child" ] || { echo "  FAIL: the stand-in helper has no child"; return 1; }
     _cs_run_stop_helper
     assert_eq "" "$_cs_run_helper_pid" || return 1
-    if kill -0 "$child" 2>/dev/null; then echo "  FAIL: the helper's child survived"; return 1; fi
+    _process_gone "$child" || { echo "  FAIL: the helper's child survived"; return 1; }
 }
 
 # A signal ends the launch through _cs_run_cleanup, which must end the helper:
@@ -302,7 +315,7 @@ test_run_cleanup_stops_the_helper() {
     ( while :; do sleep 0.2; done ) & _cs_run_helper_pid=$!
     helper=$_cs_run_helper_pid
     _cs_run_cleanup
-    if kill -0 "$helper" 2>/dev/null; then
+    if ! _process_gone "$helper"; then
         kill "$helper" 2>/dev/null; echo "  FAIL: the run's cleanup left its helper running"; return 1
     fi
 }
