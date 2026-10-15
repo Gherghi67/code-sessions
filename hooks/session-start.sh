@@ -599,9 +599,16 @@ fi
 # written to the terminal device; a front end without one (the desktop app)
 # skips it. Same value the launch set, so no new consent is asked. Lead only:
 # Claude Code titles a teammate's pane with the agent's name, and the tab this
-# repairs is the launched conversation's.
+# repairs is the launched conversation's. Under `cs <name> --remote` the lead
+# is a conversation the server started from the phone, and the window is the
+# server's, named remote:<name> by its launch: while .cs/local/remote.pid
+# names a server running remote-control for this session
+# (_remote_server_pid, cs-shared.sh) no tmux title is set, so that name stays.
 _title="cs: $CLAUDE_SESSION_NAME"
 if [ "$IS_LEAD" != 1 ]; then
+    :
+elif [ -n "${TMUX:-}" ] && command -v _remote_server_pid >/dev/null 2>&1 \
+    && _remote_server_pid "$META_DIR" "$CLAUDE_SESSION_NAME" >/dev/null; then
     :
 elif [ -n "${TMUX:-}" ]; then
     # An empty array is unbound under bash 3.2's set -u, hence the expansion.
