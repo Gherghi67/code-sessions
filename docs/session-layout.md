@@ -62,6 +62,7 @@ The one distinction that governs everything below is **shared vs machine-local**
 | `.cs/summary.md` | Distilled session summary, written by `/wrap` and `/summary`. | default |
 | `.cs/timeline.jsonl` | Structured event log — `started`, `ended`, `checkpoint`, `rotated`, and `narrative_rotated` events as newline-delimited JSON. A base session also records `worktree-retired` (with the feature's `task`) when a feature worktree is retired, and `feature-integrated` (with `task`, the integrated `sha` and a `result`) when `/finish` integrates one. | `union` |
 | `.cs/memory/MEMORY.md` | Index of Claude Code's native auto-memory (one line per fact). | `ours` |
+| `.cs/memory/reference_memory_archive.md` | Pointer lines `/wrap`'s memory pass moved out of `MEMORY.md`, in its shape, under a fixed frontmatter; a `reference_` entry `MEMORY.md` points to. The entries stay in `.cs/memory/`. | `union` |
 | `.cs/memory/<bucket>_*.md` | Native auto-memory fact files (user, feedback, project, reference). Written by the harness. Shared by every actor on the session, unlike the narratives below, so a `user`/`feedback` entry may describe someone other than the person present — write facts about a person keyed to that person, never as a claim about whoever is here. | default |
 | `.cs/memory/narrative.<actor>.md` | Per-actor lab notebook. Each co-developer writes their own file, reads it in full on resume, and reads a teammate's file only from the line the resume digest names; append-only. | `union` |
 | `.cs/narrative-archive/<actor>/<through-date>-<blob8>.md` | Sections `cs -narrative rotate` moved out of the live narrative, verbatim. Immutable once written; the name is derived from the content, so two machines archiving the same sections produce the same file. | default |
@@ -164,6 +165,7 @@ removes anything, except the prompt hook's launch mark in `scope-prompt.trace`.
 | `finish-progress.json` | The progress of the last `/finish` run, one JSON object that `cs <base> -integrate-feature` and `-retire-feature` replace whole at each step: `id` (one per run), `pid` (the cs process), `task`, `sha` (the captured commit), `step` and `ts` (epoch seconds of the write). `step` runs `started`, `merging`, `gate` (only for a real gate, not `-- true` or a `--ci-green` skip; it adds `gate_started`, kept on later steps), `fast-forward`, then ends at an outcome: `landed` (with `result`, the commit the base landed on), `refused` (with `reason`, the first line of the error) or `retired`. The cs mod reads it to toast `/finish`'s start and outcome and to draw the gate band. A step whose `pid` no longer runs belongs to a run a signal ended, and the mod treats it as over. Advisory: a write that fails costs one warning on stderr and nothing else. |
 | `.advisor-nudge-cooldown` | The narrative reminder's cooldown stamp for its council-advisor nudge: at most one nudge per 30 minutes. |
 | `memory-index.snapshot` | Copy of `.cs/memory/MEMORY.md` that `/wrap`'s memory pass takes before it edits the index; `memory-index-guard.sh check` compares against it and `restore` copies it back. Overwritten by the next sweep. |
+| `memory-archive.snapshot` | Copy of `.cs/memory/reference_memory_archive.md` taken beside `memory-index.snapshot` (empty when there is no archive yet); `check` compares against it, so it names a pointer dropped from both files. `restore` leaves the archive alone. Overwritten by the next sweep. |
 | `ctx-warned` | Conversation UUID already given the one-time 40% context warning (the tier below the rotation nudge). |
 | `context-date/` | One file per conversation, named by its id, holding the `YYYY-MM-DD` that conversation was last told; written at session start and advanced by `scope-prompt` when it emits the date note. Per conversation because a lead and a tmux teammate share this directory and each hears the date on its own. |
 | `scope-prompt.trace` | One line per stage of each `scope-prompt` run, appended as that stage finishes — so a run its timeout killed still names the stage it hung on, a `launch` line written before the hook loads its library (a run killed that early leaves only this line), plus a `budget=<N>` line naming the budget the run settled on. A run that passed `CS_SCOPE_BUDGET_MS` before its scan records a `skip` stage and still exits normally. Opt out with `CS_SCOPE_TRACE_DISABLE=1`. |
@@ -190,7 +192,7 @@ there.
 | `.cs/memory` | Auto-memory and the narratives. |
 | `.cs/plans` | Plans and specs. |
 | `.cs/claude-config` | Claude Code's config dir for this session. cs launches Claude Code with `CLAUDE_CONFIG_DIR` pointing here, so transcripts, prompt history, `.claude.json` and its backups never reach `~/.claude`. `CLAUDE_SECURESTORAGE_CONFIG_DIR` keeps the shell's login (empty selects the default keychain entry). On every launch cs links the shell's `settings.json`, `settings.local.json`, `CLAUDE.md`, `AGENTS.md`, `rules/`, `skills/`, `commands/`, `agents/`, `hooks/`, `plugins/`, `output-styles/`, `keybindings.json` and `vale/` into it, skipping any name the session already has. A setting you change inside the session (`/model`, `/config`) writes through the link into the shell's `settings.json`. The first launch seeds `.claude.json` from the shell's copy with `projects` emptied, since each project entry keeps that project's last prompt. cs reads the session's transcripts from `projects/` here, and the picker does not rename such a session, because its links and transcripts name its path. |
-| `.cs/private` | cs's own content files, which a plain session keeps in `.cs/local/`: `session.log`, `scope-prompt.trace`, `memory-index.snapshot`, `mail/`, the queue files (`queue/`, `queue.tmp/`, `queue.state`, `queue.mode`, `queue.done`, `queue.current`, `queue.accepted`, `queue.failed`, `queue.migrating`), `notifications.jsonl`, `notifications.seen`, `failures`, `rewrite.trace`, `finish-progress.json`, the rotation handoffs (`handoffs/`), `pending-handoff`, checkpoints (`checkpoints/`), the task archive (`task-archive/`) and, when `.cs/memory` is a link, the rotated narrative sections (`narrative-archive/`). Numbers the status line writes (`context-pct`, `limits`) and ids (`state`, `spawned-by`, `rotate-nudged`, `ctx-warned`) stay in `.cs/local/`. |
+| `.cs/private` | cs's own content files, which a plain session keeps in `.cs/local/`: `session.log`, `scope-prompt.trace`, `memory-index.snapshot`, `memory-archive.snapshot`, `mail/`, the queue files (`queue/`, `queue.tmp/`, `queue.state`, `queue.mode`, `queue.done`, `queue.current`, `queue.accepted`, `queue.failed`, `queue.migrating`), `notifications.jsonl`, `notifications.seen`, `failures`, `rewrite.trace`, `finish-progress.json`, the rotation handoffs (`handoffs/`), `pending-handoff`, checkpoints (`checkpoints/`), the task archive (`task-archive/`) and, when `.cs/memory` is a link, the rotated narrative sections (`narrative-archive/`). Numbers the status line writes (`context-pct`, `limits`) and ids (`state`, `spawned-by`, `rotate-nudged`, `ctx-warned`) stay in `.cs/local/`. |
 
 ### Encrypting a session with `cs -encrypt`
 
@@ -332,11 +334,23 @@ delivers (`.cs/brief.md`, staged in the sessions root's `.spawn/`).
 The session repo ships a `.gitattributes` that keeps append-heavy shared files
 conflict-free:
 
-- `merge=union` — `timeline.jsonl`, `narrative.*.md`: concurrent additions from
-  different writers are both kept.
+- `merge=union` — `timeline.jsonl`, `narrative.*.md`,
+  `reference_memory_archive.md`: concurrent additions from different writers
+  are both kept.
 - `merge=ours` — `MEMORY.md`: the index is regenerated, so a machine keeps its
   own version rather than conflicting. `/finish` then appends each feature
-  pointer whose target the base index does not name, once per target.
+  pointer whose target neither the base index nor its memory archive names,
+  once per target.
+
+cs counts each of these lines as present only as a whole line, so where an
+earlier append glued one onto the line before, cs appends it again on a line
+of its own.
+
+In a session whose `.gitignore` lists `.cs`, git merges none of these, and
+`/finish` fuses them the same way: the memory archive keeps the base's lines
+and gains each feature pointer whose target it does not name, and a base with
+no archive takes the feature's whole. A feature that never changed the
+archive it inherited brings nothing back, so the base's deletions stand.
 
 Human-authored prose (`README.md`, `summary.md`) uses the default merge — a
 genuine divergence there is a real conflict a person should reconcile.
