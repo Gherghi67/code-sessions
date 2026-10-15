@@ -235,12 +235,12 @@ _doctor_check_tui_build() {
         release) return 0 ;;
         "checkout /"*) checkout="${origin#checkout }" ;;
         *)
-            printf '  %s\n' "cs-tui: not checked: nothing in $origin_file says where $installed came from; the next install (cs -update, or ./install.sh from your checkout) records it"
+            printf '  %s\n' "cs-tui: not checked: nothing in $origin_file says where $installed came from; the next ./install.sh from your checkout records it, and cs -update records it where a release picker exists for this platform (and replaces a checkout-built picker with the release one)"
             return 0
             ;;
     esac
     if [ ! -f "$checkout/tui/Cargo.toml" ]; then
-        printf '  %s\n' "cs-tui: not checked: $installed came from $checkout, which holds no tui/Cargo.toml now; run ./install.sh from your checkout"
+        printf '  %s\n' "cs-tui: not checked: $installed came from $checkout, which holds no tui/Cargo.toml now; run ./install.sh from your checkout, or cs -update"
         return 0
     fi
 
