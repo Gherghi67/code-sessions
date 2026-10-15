@@ -3020,6 +3020,71 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    // A feature is the base's when `<base>@<its task>` is the same directory
+    // (`-ef` in _refuse_base_with_live_feature), not when the names match:
+    // an entry that links to proj@task is proj's feature too, and as the
+    // first in sorted order it is the one the refusal names, as cs's glob
+    // names it.
+    #[test]
+    fn remove_session_path_names_a_bases_live_feature_reached_through_a_link() {
+        let root = caller_fixture("base-link", &["proj@task"], &["proj", "other"]);
+        std::os::unix::fs::symlink(root.join("proj@task"), root.join("alias@task")).unwrap();
+        let _caller = test_caller::scoped("other");
+        let pid = std::process::id();
+
+        let err = remove_session_path(&root, "proj", &root.join("proj"), RemoveGrants::default()).unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            format!("session other cannot remove session proj while its feature alias@task is live (pid {pid}); --force does not override that from another session. Close alias@task first.")
+        );
+        assert!(root.join("proj/.cs").is_dir(), "a refused base is left whole");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // cs's `"$SESSIONS_ROOT"/*@*` glob never reads a dot entry, so a
+    // `.proj@task` that is the same directory as proj@task is not the
+    // feature the refusal names.
+    #[test]
+    fn remove_session_path_never_names_a_dot_entry_as_a_bases_live_feature() {
+        let root = caller_fixture("base-dot", &["proj@task"], &["proj", "other"]);
+        std::os::unix::fs::symlink(root.join("proj@task"), root.join(".proj@task")).unwrap();
+        let _caller = test_caller::scoped("other");
+        let pid = std::process::id();
+
+        let err = remove_session_path(&root, "proj", &root.join("proj"), RemoveGrants::default()).unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            format!("session other cannot remove session proj while its feature proj@task is live (pid {pid}); --force does not override that from another session. Close proj@task first.")
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // A base owns only `<base>@<task>`: from proj, projx is another session
+    // whose name merely starts with proj's, and so is projx@task, so a live
+    // one is refused in _refuse_live_other_session's words, past the [F]
+    // grant too.
+    #[test]
+    fn remove_session_path_refuses_a_live_session_whose_name_only_starts_with_the_callers() {
+        let root = caller_fixture("prefix", &["projx", "projx@task"], &["proj"]);
+        let _caller = test_caller::scoped("proj");
+        let pid = std::process::id();
+        let all = RemoveGrants { past_live_lock: true, unowned_files: true };
+        for name in ["projx", "projx@task"] {
+            for grants in [RemoveGrants::default(), all] {
+                let err = remove_session_path(&root, name, &root.join(name), grants).unwrap_err();
+                assert_eq!(
+                    err.to_string(),
+                    format!("session proj cannot remove session {name} while it is live (pid {pid}); --force does not override that from another session. Close {name} first."),
+                    "grants {grants:?}"
+                );
+            }
+            assert!(root.join(name).join(".cs/session.lock").exists(), "a refused {name} is left whole");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
     // The base itself may remove itself while its feature runs, as `cs -rm`
     // lets it.
     #[test]
