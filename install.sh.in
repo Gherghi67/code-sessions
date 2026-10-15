@@ -186,10 +186,11 @@ _payload_mode() {  # repo-path
 # A symlink at $2 (a dotfiles manager's, or one pointing at a checkout) is
 # the user's and is kept, named in a warning and listed at the end, unless
 # what it points at is content cs wrote (_cs_owns_file): only then is the
-# link replaced by the file. The rename replaces the link itself, never
-# writing through it, so its target is left as it was either way.
+# link replaced by the file, in a line naming the link and where it pointed.
+# The rename replaces the link itself, never writing through it, so its
+# target is left as it was either way.
 _place_file() {  # src, dest, mode
-    local dest="$2" dir tmp digest
+    local dest="$2" dir tmp digest link_target=""
     if [ -L "$dest" ]; then
         digest=$(_cs_sha256_file "$1") || error "Could not compute the sha256 of $1 (needs sha256sum or shasum)"
         if ! _cs_owns_file "$dest" "$digest"; then
@@ -197,6 +198,7 @@ _place_file() {  # src, dest, mode
             CS_KEPT_PATHS+=("$dest")
             return 0
         fi
+        link_target=$(readlink "$dest") || error "Could not read the symlink $dest"
     fi
     dir=$(dirname "$dest")
     mkdir -p "$dir" || error "Could not create $dir"
@@ -204,6 +206,9 @@ _place_file() {  # src, dest, mode
     if ! { cp "$1" "$tmp" && chmod "$3" "$tmp" && mv -f "$tmp" "$dest"; }; then
         rm -f "$tmp"
         error "Failed to install $dest"
+    fi
+    if [ -n "$link_target" ]; then
+        info "Replaced symlink $dest (to $link_target) with a deployed copy"
     fi
 }
 
