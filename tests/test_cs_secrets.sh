@@ -637,27 +637,57 @@ test_age_remove_refuses_a_name_that_is_not_a_recipient_name() {
     assert_not_exists "$HOME/.cs-secrets/sessions/test-session" "no age state is made" || return 1
 }
 
-# A feature (<base>@<task>) uses its base's age recipients and pins: its
-# launch exports the base as CS_SECRETS_SESSION, and cs <base>@<task>
-# -secrets names the base. Age state made under the feature's own name is
-# removed by nothing, so age add and age remove addressed to a feature are
-# refused, naming the base, before anything is made or removed.
-test_age_writes_refuse_a_feature_session() {
+# Every path and every file's checksum under HOME and the sessions root.
+_tree_state() {
+    find "$HOME" "$CS_SESSIONS_ROOT" -print | LC_ALL=C sort
+    find "$HOME" "$CS_SESSIONS_ROOT" -type f -exec cksum {} + | LC_ALL=C sort
+}
+
+# A feature (<base>@<task>) uses its base's secrets, age recipients and pins:
+# its launch exports the base as CS_SECRETS_SESSION, and cs <base>@<task>
+# -secrets names the base. A store, a lock, a sync file or age state made
+# under the feature's own name is read and removed by nothing, so every write
+# addressed to a feature is refused, naming the base, before anything is
+# written, locked or created, under either backend.
+test_every_write_refuses_a_feature_session() {
     local key=age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq0000000
-    local meta="$CS_SESSIONS_ROOT/test-session@task/.cs" cmd out rc
-    mkdir -p "$meta/age-recipients"
+    local meta="$CS_SESSIONS_ROOT/test-session@task/.cs" bindir backend cmd out rc before path
+    bindir=$(_make_fake_security)
+    printf 'v1' | "$CS_SECRETS_BIN" set API_KEY >/dev/null 2>&1 || { echo "  FAIL: fixture: could not seed the base's secret"; return 1; }
+    mkdir -p "$meta/age-recipients" "$meta/artifacts"
     printf '%s\n' "$key" > "$meta/age-recipients/peer.pub"
-    for cmd in "add $key" "remove peer" "rm peer"; do
-        rc=0
-        # shellcheck disable=SC2086 # each entry carries its own arguments
-        out=$("$CS_SECRETS_BIN" --session test-session@task age $cmd 2>&1) || rc=$?
-        assert_eq "1" "$rc" "age $cmd exits 1: $out" || return 1
-        assert_eq "Error: test-session@task is a feature of session test-session, and a feature uses its base's age recipients. Run it with --session test-session." \
-            "$out" "age $cmd names the base" || return 1
+    printf 'api_key=sk_live_feature1\n' > "$meta/artifacts/notes.txt"
+    local cmds=("set NEW_KEY" "store NEW_KEY" "delete API_KEY" "rm API_KEY" "purge" "rename moved" \
+        "import-file" "import-file --replace" "migrate" "migrate --redact" \
+        "migrate-backend keychain" "migrate-backend encrypted --delete-source" "export-file" \
+        "age add $key" "age remove peer" "age rm peer")
+    for backend in encrypted keychain; do
+        for cmd in "${cmds[@]}"; do
+            before=$(_tree_state)
+            rm -f "$TEST_TMPDIR/security.argv"
+            rc=0
+            # shellcheck disable=SC2086 # each entry carries its own arguments
+            out=$(printf 'v2' | PATH="$bindir:$PATH" CS_SECRETS_BACKEND=$backend FAKE_SECURITY_ARGVLOG="$TEST_TMPDIR/security.argv" \
+                "$CS_SECRETS_BIN" --session test-session@task $cmd 2>&1) || rc=$?
+            assert_eq "1" "$rc" "$backend $cmd exits 1: $out" || return 1
+            assert_eq "Error: test-session@task is a feature of session test-session, and a feature uses its base's secrets and age recipients. Run it with --session test-session." \
+                "$out" "$backend $cmd names the base" || return 1
+            assert_eq "$before" "$(_tree_state)" "$backend $cmd leaves every file as it was" || return 1
+            assert_not_exists "$TEST_TMPDIR/security.argv" "$backend $cmd calls no security command" || return 1
+        done
     done
-    assert_eq "$key" "$(cat "$meta/age-recipients/peer.pub")" "the feature's recipient file is kept" || return 1
-    assert_eq "peer.pub" "$(ls -A "$meta/age-recipients")" "nothing is added beside it" || return 1
-    assert_not_exists "$HOME/.cs-secrets/sessions/test-session@task" "no age state is made for the feature" || return 1
+    for path in "$HOME/.cs-secrets/test-session@task.enc" "$HOME/.cs-secrets/.lock.test-session@task" \
+        "$HOME/.cs-secrets/sessions/test-session@task" "$CS_SESSIONS_ROOT/.secrets-lock.test-session@task" \
+        "$meta/secrets.$(_machine_id).age" "$meta/secrets.$(_machine_id).enc"; do
+        assert_not_exists "$path" "nothing is made at $path" || return 1
+    done
+    assert_eq "v1" "$("$CS_SECRETS_BIN" get API_KEY 2>&1)" "the base's secret is kept" || return 1
+    # cs <base>@<task> -secrets names the base, and its write lands there.
+    rc=0
+    out=$(printf 'v3' | "$CS_BIN" test-session@task -secrets set ROUTED_KEY 2>&1) || rc=$?
+    assert_eq "0" "$rc" "cs test-session@task -secrets set exits 0: $out" || return 1
+    assert_eq "v3" "$("$CS_SECRETS_BIN" get ROUTED_KEY 2>&1)" "the routed write lands in the base's store" || return 1
+    assert_not_exists "$HOME/.cs-secrets/test-session@task.enc" "the routed write makes no store for the feature" || return 1
 }
 
 # Stored secrets outlive `cs -rm`, so an export under a removed session's name
@@ -4771,7 +4801,7 @@ run_test test_session_verbs_refuse_a_name_that_is_a_path
 run_test test_age_remove_refuses_a_session_the_root_does_not_have
 run_test test_age_remove_refuses_a_link_on_the_way_to_the_recipient
 run_test test_age_remove_refuses_a_name_that_is_not_a_recipient_name
-run_test test_age_writes_refuse_a_feature_session
+run_test test_every_write_refuses_a_feature_session
 run_test test_export_file_refuses_a_session_the_root_does_not_have
 run_test test_import_file_refuses_a_session_the_root_does_not_have
 run_test test_purge_empty_session
