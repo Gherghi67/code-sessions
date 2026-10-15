@@ -879,6 +879,29 @@ test_phone_lead_titles_the_tmux_window_when_remote_pid_serves_another_session() 
     kill -0 "$STAND_IN_PID" 2>/dev/null || { echo "  FAIL: the process remote.pid names stopped before the end"; return 1; }
 }
 
+# Outside tmux the tab is titled `cs: <name> (remote)` by the server's launch:
+# while the server serves the session, the phone lead's start writes no tab
+# title to the terminal.
+test_phone_lead_writes_no_tab_title_outside_tmux() {
+    start_stand_in_server demo || return 1
+    local meta="$CS_SESSIONS_ROOT/demo/.cs" tty="$TEST_TMPDIR/title-tty"
+    rm -f "$tty"
+    CS_TITLE_TTY="$tty" phone_conversation_hook session-start.sh '{"session_id":"phone-1","source":"startup","hook_event_name":"SessionStart"}' || return 1
+    assert_eq "$STAND_IN_PID $STAND_IN_CHILD phone-1" "$(cat "$meta/local/lead-pid")" "the conversation is the lead" || return 1
+    assert_file_not_exists "$tty" "the lead's start writes no tab title" || return 1
+}
+
+# With no remote.pid no server serves the session, and the lead's start
+# writes the tab title every lead writes outside tmux.
+test_lead_writes_the_tab_title_outside_tmux_without_a_remote_pid() {
+    start_stand_in_server demo || return 1
+    rm -f "$CS_SESSIONS_ROOT/demo/.cs/local/remote.pid"
+    local tty="$TEST_TMPDIR/title-tty"
+    rm -f "$tty"
+    CS_TITLE_TTY="$tty" phone_conversation_hook session-start.sh '{"session_id":"phone-1","source":"startup","hook_event_name":"SessionStart"}' || return 1
+    assert_eq "$(printf '\033]0;cs: demo\007')" "$(cat "$tty" 2>/dev/null)" "the lead's start writes the tab title" || return 1
+}
+
 test_remote_stops_cleanly_when_its_window_hangs_up() {
     start_serving demo --remote || return 1
     assert_file_exists "$CS_SESSIONS_ROOT/demo/.cs/local/remote.pid" "remote.pid is written while serving" || return 1
@@ -1144,6 +1167,8 @@ run_test test_phone_lead_end_removes_the_lock_once_its_server_is_gone
 run_test test_phone_lead_end_removes_the_lock_when_remote_pid_serves_another_session
 run_test test_phone_lead_leaves_the_servers_tmux_window_name
 run_test test_lead_titles_the_tmux_window_without_a_remote_pid
+run_test test_phone_lead_writes_no_tab_title_outside_tmux
+run_test test_lead_writes_the_tab_title_outside_tmux_without_a_remote_pid
 run_test test_phone_lead_titles_the_tmux_window_when_remote_pid_serves_another_session
 run_test test_remote_stops_cleanly_when_its_window_hangs_up
 run_test test_remote_stops_cleanly_on_ctrl_c
