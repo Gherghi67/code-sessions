@@ -826,6 +826,11 @@ test_launch_refuses_a_seed_whose_spawner_is_not_a_session_name() {
     assert_file_not_exists "$(WQ)/spawned-by" "no spawner is recorded" || return 1
     assert_eq "0" "$(WQ_COUNT)" "nothing is queued" || return 1
     assert_output_not_contains "$out" "Spawned by" "no kick is handed to claude" || return 1
+    # A feature session's name, <base>@<task>, is a spawner the rules admit.
+    _stage_seed 'boss@review' "job B"
+    out=$(_launch_worker) || { echo "  the open over a feature spawner failed: $out"; return 1; }
+    assert_eq "boss@review" "$(cat "$(WQ)/spawned-by")" "a feature spawner is recorded" || return 1
+    assert_output_contains "$out" "cs -msg boss@review -k result" "a feature spawner gets the reply wiring" || return 1
 }
 
 test_launch_that_cannot_record_the_spawner_queues_nothing() {
