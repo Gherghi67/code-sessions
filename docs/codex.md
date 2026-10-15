@@ -209,7 +209,9 @@ approval) gets no count: nobody is at the keys when the count ends, and the
 agent can arm such a switch itself, so the line says the exit is yours and cs
 types nothing. A message you send first stops the count (the UserPromptSubmit hook,
 `cs -codex-hook user-prompt-submit`) and keeps the conversation; the count starts
-again when that turn ends. Only the conversation the launch bound counts down.
+again when that turn ends. Only the conversation the launch bound counts down,
+and only while its run still holds the session: after a forced second launch
+(`--force`) takes it over, the first run's count types nothing.
 `CS_ROTATE_FORCE_CTX=off` (or `0`) at launch turns it off, as under Claude, and
 `CS_CODEX_CLEAR_GRACE` sets the seconds (default 20; `0` turns it off too).
 The watcher runs only when cs has a terminal. The deadline it acts on lives in

@@ -28,7 +28,9 @@ setup() {
     printf -- '---\nparent: x\ncreated: 2026-10-15T07:00:00Z\npurpose: p\nstatus: unconsumed\n---\n' \
         > "$SESSION/.cs/handoffs/$HANDOFF"
     printf '%s\n' "$HANDOFF" > "$SESSION/.cs/local/pending-handoff"
-    export CS_CACHE_DIR="$TEST_TMPDIR/cache" CS_RUN_ID=$RUN CS_RUN_OWNER_PID=$$
+    export CS_CACHE_DIR="$TEST_TMPDIR/cache" CS_RUN_ID=$RUN CS_RUN_ENGINE=codex CS_RUN_OWNER_PID=$$
+    # The run lease a supervised launch holds: this run owns the session.
+    _lease "$RUN"
     _codex_run_dir_in_sandbox_root() { return 1; }
     # What the watcher types, one line per call, instead of the terminal, which
     # a test run has none of: the stand-in terminal stays until a test closes
@@ -46,7 +48,14 @@ setup() {
 teardown() {
     [ -z "$WATCHER" ] || { kill "$WATCHER" 2>/dev/null; wait "$WATCHER" 2>/dev/null || true; }
     rm -rf "$TEST_TMPDIR"
-    unset CS_CACHE_DIR CS_RUN_ID CS_RUN_OWNER_PID CS_ROTATE_FORCE_CTX CS_CODEX_CLEAR_GRACE CS_RUN_APPROVAL
+    unset CS_CACHE_DIR CS_RUN_ID CS_RUN_ENGINE CS_RUN_OWNER_PID CS_ROTATE_FORCE_CTX CS_CODEX_CLEAR_GRACE CS_RUN_APPROVAL
+}
+
+# The session's lease and lock, as the launch of the named run writes them.
+_lease() {  # run_id, [owner_pid]
+    printf '%s\n' "${2:-$$}" > "$SESSION/.cs/session.lock"
+    jq -n --arg run "$1" --arg owner "${2:-$$}" '{run_id: $run, engine: "codex", owner_pid: ($owner | tonumber)}' \
+        > "$SESSION/.cs/local/run-lease.json"
 }
 
 # A deadline as the Stop hook writes it, into the run directory unless a test
@@ -298,6 +307,53 @@ test_another_runs_switch_does_not_quit() {
     assert_eq $'/clear\ngo' "$(cat "$KEYS")" "another run's switch is not this run's to take" || return 1
 }
 
+# A forced second launch takes the session over while this run's CLI is still
+# open: this run's count, started before the takeover, no longer clears
+# anything, as the cs mod checks it still owns the rotation at zero.
+test_a_run_that_lost_the_lease_types_nothing() {
+    local other
+    sleep 30 & other=$!
+    _lease "$OTHER_RUN" "$other"
+    _stamp "$(date +%s)"
+    _watch
+    _polls 3
+    local polled=$?
+    kill "$other" 2>/dev/null; wait "$other" 2>/dev/null
+    [ "$polled" = 0 ] || return 1
+    assert_not_exists "$KEYS" "keys typed: $(tr '\n' ' ' < "$KEYS" 2>/dev/null)" || return 1
+    assert_not_exists "$STAMP" "the deadline is spent all the same" || return 1
+    grep -Fq "Automatic /clear: another cs run owns this session now; nothing typed" "$SESSION/.cs/local/session.log" \
+        || { echo "  FAIL: no session.log line"; return 1; }
+}
+
+# Two runs on one session (the second forced): each watcher reads only its own
+# run's directory, so neither eats the other's deadline. The second run holds
+# the lease, and its count types; the first, with nothing in its directory,
+# types nothing. Three rounds, since a race would not show every time.
+test_two_runs_each_type_for_their_own_deadline() {
+    local round dir1 w1 i
+    dir1=$RUN_DIR
+    RUN_DIR=$(CS_RUN_ID=$OTHER_RUN _codex_run_dir_prepare "$SESSION") || return 1
+    _lease "$OTHER_RUN"
+    for round in 1 2 3; do
+        rm -f "$TEST_TMPDIR"/keys-*
+        printf '%s\n' "$HANDOFF" > "$SESSION/.cs/local/pending-handoff"
+        _stamp "$(date +%s)" '' "$OTHER_RUN" "$HANDOFF" "$RUN_DIR/autoclear"
+        KEYS="$TEST_TMPDIR/keys-1" _codex_autoclear_watch "$SESSION" "$dir1" & w1=$!
+        KEYS="$TEST_TMPDIR/keys-2" CS_RUN_ID=$OTHER_RUN _codex_autoclear_watch "$SESSION" "$RUN_DIR" & WATCHER=$!
+        i=0
+        until [ -f "$TEST_TMPDIR/keys-2" ] && [ "$(wc -l < "$TEST_TMPDIR/keys-2" | tr -d ' ')" = 2 ]; do
+            i=$((i + 1))
+            [ "$i" -lt 60 ] || { kill "$w1" 2>/dev/null; echo "  FAIL: round $round: run 2 typed $(cat "$TEST_TMPDIR/keys-2" 2>/dev/null)"; return 1; }
+            sleep 0.1
+        done
+        _polls $(( $(wc -l < "$TEST_TMPDIR/polls" | tr -d ' ') + 2 )) || { kill "$w1" 2>/dev/null; return 1; }
+        kill "$w1" "$WATCHER" 2>/dev/null; wait "$w1" "$WATCHER" 2>/dev/null; WATCHER=""
+        assert_eq $'/clear\ngo' "$(cat "$TEST_TMPDIR/keys-2")" "round $round: run 2's count" || return 1
+        assert_not_exists "$TEST_TMPDIR/keys-1" "round $round: run 1 typed for run 2" || return 1
+    done
+}
+
 test_a_deadline_still_ahead_types_nothing() {
     _stamp $(( $(date +%s) + 60 ))
     _watch
@@ -458,6 +514,8 @@ run_test test_a_switch_armed_during_the_count_quits
 run_test test_another_runs_switch_does_not_quit
 run_test test_a_switch_that_loosens_approval_types_nothing
 run_test test_the_count_never_loosens_approval
+run_test test_a_run_that_lost_the_lease_types_nothing
+run_test test_two_runs_each_type_for_their_own_deadline
 run_test test_a_deadline_still_ahead_types_nothing
 run_test test_a_handoff_no_longer_armed_types_nothing
 run_test test_another_handoff_armed_types_nothing

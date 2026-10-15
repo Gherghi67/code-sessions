@@ -12130,11 +12130,12 @@ _codex_autoclear_terminal() {
 # exits (_cs_run_stop_helper). Once a second it reads the deadline the Stop
 # hook wrote into the run's directory, and only from there: a directory that
 # stops being private ends the watch, and a deadline file that is not what the
-# hook writes is dropped unread. Past the deadline, with the same handoff still
-# armed by this run, it consumes the deadline and types the keys: /quit when a
-# switch this run recorded is pending then (nothing, when that switch would
-# loosen approval), /clear otherwise. The armed
-# handoff is a liveness check, not the licence: the agent may arm one itself.
+# hook writes is dropped unread. Past the deadline, while this run still holds
+# the session's lease and the same handoff is still armed, it consumes the
+# deadline and types the keys: /quit when a switch this run recorded is
+# pending then (nothing, when that switch would loosen approval), /clear
+# otherwise. The armed handoff is a liveness check, not the licence: the agent
+# may arm one itself.
 # /clear and go are two prompts: Codex starts no turn after /clear, and cs's
 # SessionStart hook hands the new thread the handoff with its first message.
 _codex_autoclear_watch() {  # session_dir, run_dir
@@ -12160,6 +12161,13 @@ _codex_autoclear_watch() {  # session_dir, run_dir
         [ "$(date +%s)" -ge "$deadline" ] || continue
         handoff=$(_switch_field "$stamp" handoff)
         rm -f "$stamp" 2>/dev/null || true
+        # A forced launch can take the session over while this CLI stays
+        # open: its deadline, set before the takeover, is no longer this
+        # run's to act on, as the cs mod checks it still owns the rotation.
+        if ! cs_run_lease_owned "$session_dir/.cs"; then
+            _codex_autoclear_log "$session_dir" "Automatic /clear: another cs run owns this session now; nothing typed"
+            continue
+        fi
         [ -n "$handoff" ] && [ "$(_rotation_armed_handoff "$session_dir")" = "$handoff" ] || continue
         action=$(_codex_autoclear_action "$session_dir")
         if [ "${action%% *}" = hold ]; then
