@@ -536,12 +536,15 @@ test_local_install_prefers_a_freshly_built_picker() {
     assert_file_exists "$installed" "a picker should have been installed" || return 1
     assert_eq "FRESH PICKER" "$(cat "$installed")" \
         "the newer cargo build must win over a stale bin/cs-tui" || return 1
+    # cs -doctor holds the picker to the checkout named here, from any folder.
+    assert_eq "checkout $(cd "$repo" && pwd)" "$(cat "$fake_home/.claude/hooks/cs/.tui-origin" 2>/dev/null)" \
+        "the install records the checkout the picker came from" || return 1
 }
 
 # The reverse: nothing built, so bin/cs-tui is all there is. A release tarball
 # ships that and no tui/target at all.
 test_local_install_uses_bin_picker_when_nothing_was_built() {
-    local fake_home="$TEST_TMPDIR/home2" repo="$TEST_TMPDIR/repo2"
+    local fake_home="$TEST_TMPDIR/home2" repo="$TEST_TMPDIR/my repo2"
     mkdir -p "$fake_home" "$repo/bin"
     local real="$SCRIPT_DIR/.."
     local e
@@ -558,6 +561,8 @@ test_local_install_uses_bin_picker_when_nothing_was_built() {
 
     assert_eq "ONLY PICKER" "$(cat "$fake_home/.local/bin/cs-tui" 2>/dev/null)" \
         "with no build present the shipped picker must still install" || return 1
+    assert_eq "checkout $(cd "$repo" && pwd)" "$(cat "$fake_home/.claude/hooks/cs/.tui-origin" 2>/dev/null)" \
+        "the record holds a checkout path with a space whole" || return 1
 }
 
 # hooks/cs-shared.sh is a build artifact: build.sh writes it from lib/02-shared.sh
@@ -1651,6 +1656,7 @@ test_uninstall_strips_hook_registrations() {
     mkdir -p "$fake_home/.claude/hooks/cs"
     _cs_shipped_content > "$fake_home/.claude/hooks/cs/session-start.sh"
     echo "0.0.0" > "$fake_home/.claude/hooks/cs/.version"
+    echo "release" > "$fake_home/.claude/hooks/cs/.tui-origin"
     # Tilde-form registrations in both layouts, plus a non-cs hook that must survive
     cat > "$fake_home/.claude/settings.json" << 'EOF'
 {"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"~/.claude/hooks/cs/session-start.sh","timeout":30}]}],"Stop":[{"hooks":[{"type":"command","command":"~/.claude/hooks/prose-lint.sh","timeout":15}]},{"hooks":[{"type":"command","command":"~/bin/my-own-hook.sh","timeout":5}]}]}}
@@ -2304,6 +2310,30 @@ test_tui_signature_not_blamed_for_a_checksum_gate_removal() {
         "the checksum gate must still say why it removed the binary" || return 1
     assert_output_not_contains "$out" "signature verification failed" \
         "must not report a signature failure for a binary already removed" || return 1
+}
+
+# A verified release asset is recorded as a release picker, which cs -doctor
+# has no checkout to hold to.
+test_web_install_records_a_release_picker() {
+    local bin
+    bin=$(_install_tui_with_broken_verification release)
+    assert_eq "stub-binary" "$(cat "$bin/cs-tui" 2>/dev/null)" "the verified release asset is installed" \
+        || { cat "$TEST_TMPDIR/tui-verify-release/install.out"; return 1; }
+    assert_eq "release" "$(cat "$TEST_TMPDIR/tui-verify-release/home/.claude/hooks/cs/.tui-origin" 2>/dev/null)" \
+        "the install records a release picker" || return 1
+}
+
+# An install that places no picker leaves the one in place, so the record of
+# where that one came from stays as it was.
+test_web_install_that_places_no_picker_keeps_its_origin_record() {
+    local home sandbox="$TEST_TMPDIR/web-nopicker"
+    mkdir -p "$sandbox/home/.local/bin" "$sandbox/home/.claude/hooks/cs"
+    printf 'picker from a checkout\n' > "$sandbox/home/.local/bin/cs-tui"
+    printf 'checkout /work/cs\n' > "$sandbox/home/.claude/hooks/cs/.tui-origin"
+    home=$(_web_install web-nopicker)
+    assert_eq "0" "$(cat "$sandbox/install.rc")" "install exit status" || { cat "$sandbox/install.out"; return 1; }
+    assert_eq "picker from a checkout" "$(cat "$home/.local/bin/cs-tui")" "no release asset: the picker stays" || return 1
+    assert_eq "checkout /work/cs" "$(cat "$home/.claude/hooks/cs/.tui-origin")" "the record of that picker stays" || return 1
 }
 
 # Run install.sh's WEB path (a copy outside the checkout) under sandbox $1,
@@ -2968,6 +2998,8 @@ run_test test_install_removes_stale_opposite_platform_tui
 run_test test_tui_removed_when_checksum_cannot_be_fetched
 run_test test_tui_removed_when_digest_cannot_be_computed
 run_test test_tui_signature_not_blamed_for_a_checksum_gate_removal
+run_test test_web_install_records_a_release_picker
+run_test test_web_install_that_places_no_picker_keeps_its_origin_record
 run_test test_uninstall_removes_leftover_cs_tui_exe
 run_test test_web_install_keeps_the_installed_cs_when_its_download_breaks
 run_test test_web_install_places_nothing_when_a_later_download_breaks
