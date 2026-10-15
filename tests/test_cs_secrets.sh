@@ -609,6 +609,34 @@ another-pin"
     assert_eq "keep" "$(cat "$outside/other.txt")" "the file beside it is kept" || return 1
 }
 
+# A recipient is named by its file in .cs/age-recipients, so its name is one
+# file name. A name that could lead elsewhere (a "/", a leading "." as in
+# "..") or carries a control byte is refused before anything is looked up:
+# a path as the name reached another session's recipient file.
+test_age_remove_refuses_a_name_that_is_not_a_recipient_name() {
+    local key=age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq0000000
+    local other="$CS_SESSIONS_ROOT/other/.cs/age-recipients" name shown out rc
+    mkdir -p "$other" "$CS_SESSIONS_ROOT/test-session/.cs/age-recipients"
+    printf '%s\n' "$key" > "$other/peer.pub"
+    printf '%s\n' "$key" > "$CS_SESSIONS_ROOT/test-session/.cs/age-recipients/.hidden.pub"
+    for name in ../../../other/.cs/age-recipients/peer sub/peer .. . .hidden $'peer\nx' $'peer\e[31m' $'peer\x7f'; do
+        case "$name" in
+            $'peer\nx') shown=peer_x ;;
+            $'peer\e[31m') shown=peer__31m ;;
+            $'peer\x7f') shown=peer_ ;;
+            *) shown=$name ;;
+        esac
+        rc=0
+        out=$("$CS_SECRETS_BIN" age remove "$name" 2>&1) || rc=$?
+        assert_eq "1" "$rc" "age remove exits 1 for '$shown': $out" || return 1
+        assert_eq "Error: not a recipient name: $shown. A recipient's name is its file's name in .cs/age-recipients without .pub, with no '/', no control character and no leading '.'." \
+            "$out" "the refusal names '$shown' plainly" || return 1
+    done
+    assert_eq "$key" "$(cat "$other/peer.pub")" "the other session's recipient file is kept" || return 1
+    assert_eq "$key" "$(cat "$CS_SESSIONS_ROOT/test-session/.cs/age-recipients/.hidden.pub")" "the hidden file is kept" || return 1
+    assert_not_exists "$HOME/.cs-secrets/sessions/test-session" "no age state is made" || return 1
+}
+
 # Stored secrets outlive `cs -rm`, so an export under a removed session's name
 # has something to write.
 test_export_file_refuses_a_session_the_root_does_not_have() {
@@ -4719,6 +4747,7 @@ run_test test_age_add_refuses_a_name_that_is_a_path
 run_test test_session_verbs_refuse_a_name_that_is_a_path
 run_test test_age_remove_refuses_a_session_the_root_does_not_have
 run_test test_age_remove_refuses_a_link_on_the_way_to_the_recipient
+run_test test_age_remove_refuses_a_name_that_is_not_a_recipient_name
 run_test test_export_file_refuses_a_session_the_root_does_not_have
 run_test test_import_file_refuses_a_session_the_root_does_not_have
 run_test test_purge_empty_session
