@@ -2316,7 +2316,8 @@ test_rotate_wrap_keys_write_through_a_symlink() {
 # 11. Inside an encrypted session CLAUDE_CONFIG_DIR is the session's
 # .cs/claude-config, which every other session cannot see. The keys go to the
 # shell's config dir that cs recorded in CLAUDE_SECURESTORAGE_CONFIG_DIR:
-# empty selects ~/.claude, a path selects that dir.
+# empty selects ~/.claude, a path selects that dir. Under code-sessions it is
+# the profile's.
 test_rotate_wrap_keys_skip_an_encrypted_sessions_config_dir() {
     _need_expect || return 77
     local home="$TEST_TMPDIR/home-ok-enc" sess="$TEST_TMPDIR/enc-sess/.cs/claude-config"
@@ -2336,6 +2337,19 @@ test_rotate_wrap_keys_skip_an_encrypted_sessions_config_dir() {
     assert_eq "{\"bindings\":[$_OK_CS_BLOCK]}" "$(jq -c . "$cfg/keybindings.json" 2>&1)" \
         "a recorded dir takes the keys" || return 1
     assert_file_not_exists "$sess/keybindings.json" "still nothing in the session's config dir" || return 1
+
+    # code-sessions keeps the variable empty for its shared login; its shell
+    # config dir is the profile's, not ~/.claude.
+    local profile="$TEST_TMPDIR/profile-enc"
+    mkdir -p "$profile/.claude"
+    rm -f "$home/.config/cs/option-keys" "$home/.claude/keybindings.json"
+    _install_answering_rotate_wrap_keys ok-enc3 "$home" y \
+        "CODE_SESSIONS_HOME=$profile" "CLAUDE_CONFIG_DIR=$sess" "CLAUDE_SECURESTORAGE_CONFIG_DIR=" \
+        || { echo "  FAIL: install.sh exited non-zero"; return 1; }
+    assert_eq "{\"bindings\":[$_OK_CS_BLOCK]}" "$(jq -c . "$profile/.claude/keybindings.json" 2>&1)" \
+        "under code-sessions the profile takes the keys" || return 1
+    assert_file_not_exists "$home/.claude/keybindings.json" "the original cs's config dir stays as it was" || return 1
+    assert_file_not_exists "$sess/keybindings.json" "nor the session's config dir" || return 1
 }
 
 # Runs the installer with a recorded yes and no terminal over a given

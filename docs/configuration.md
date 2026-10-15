@@ -401,12 +401,27 @@ would run the stable install's hooks.
 
 Claude subscription authentication uses your usual Keychain credential entry.
 The launcher sets `CLAUDE_SECURESTORAGE_CONFIG_DIR` to an empty value while
-keeping transcripts, settings and sessions in the code-sessions profile. The
+keeping transcripts, settings and sessions in the code-sessions profile. cs
+sets the same empty value when a launch reaches it without one, such as a
+feature or tmux window opened from a session an older launcher started. A
+value you set yourself stays. The
 Agents sidebar updates that profile's account metadata during manual and
 automatic subscription switches, including mounted encrypted session configs.
 Each Claude reopen refreshes only account metadata, preserving local projects
-and preferences. Reopen older running Claude sessions after updating so they
-use this shared login. Codex retains its separate profile authentication.
+and preferences. Codex retains its separate profile authentication.
+
+A Claude session started without that value keeps its login in the profile's
+own Keychain entry, which a switch never writes. It stays on the old account,
+and keeps hitting that account's limits, until you reopen it. Reopen older
+running Claude sessions after updating so they use this shared login. On
+macOS, where the sidebar runs, this lists the process ids of code-sessions
+Claude sessions started without the variable:
+
+```bash
+for p in $(pgrep -x claude); do e=$(ps eww -o command= -p "$p")
+  case "$e" in *CODE_SESSIONS_HOME=*) case "$e" in
+    *" CLAUDE_SECURESTORAGE_CONFIG_DIR="*) ;; *) echo "$p" ;; esac ;; esac; done
+```
 
 setup.sh ends by running `scripts/carry-over.sh`, which brings your own
 Claude and Codex setup from `~/.claude`, `~/.claude.json` and `~/.codex` into
