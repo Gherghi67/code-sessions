@@ -634,7 +634,8 @@ run_uninstall() {
         local codex_hook codex_hook_rest codex_hooks_failed=""
         for codex_hook in SessionStart:session_start:session-start \
             PostToolUse:post_tool_use:files-changed Stop:stop:stop \
-            UserPromptSubmit:user_prompt_submit:user-prompt-submit; do
+            UserPromptSubmit:user_prompt_submit:user-prompt-submit \
+            PermissionRequest:permission_request:permission-request; do
             codex_hook_rest=${codex_hook#*:}
             _codex_hooks_unregister "${codex_skills_dir%/skills}" "${codex_hook%%:*}" \
                 "${codex_hook_rest%%:*}" "${codex_hook_rest#*:}" \

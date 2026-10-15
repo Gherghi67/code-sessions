@@ -88,10 +88,12 @@ test_installer_and_uninstaller_preserve_a_mixed_group() {
         --arg recovery "$fake_home/.local/bin/cs -codex-hook files-changed" \
         --arg stop "$fake_home/.local/bin/cs -codex-hook stop" \
         --arg prompt "$fake_home/.local/bin/cs -codex-hook user-prompt-submit" \
+        --arg approval "$fake_home/.local/bin/cs -codex-hook permission-request" \
         '.hooks.SessionStart[1].hooks[1].command = $cmd
          | .hooks.PostToolUse = [{hooks: [{type: "command", command: $recovery}]}]
          | .hooks.Stop = [{hooks: [{type: "command", command: $stop}]}]
-         | .hooks.UserPromptSubmit = [{hooks: [{type: "command", command: $prompt}]}]' "$CODEX_DIR/hooks.json")
+         | .hooks.UserPromptSubmit = [{hooks: [{type: "command", command: $prompt}]}]
+         | .hooks.PermissionRequest = [{hooks: [{type: "command", command: $approval}]}]' "$CODEX_DIR/hooks.json")
     after_remove=$(jq -S 'del(.hooks.SessionStart[1].hooks[1])' "$CODEX_DIR/hooks.json")
     for pass in 1 2; do
         HOME="$fake_home" CODEX_HOME="$CODEX_DIR" CS_INSTALL_ENGINES=codex \
@@ -105,11 +107,13 @@ test_installer_and_uninstaller_preserve_a_mixed_group() {
         local hash
         hash=$(_codex_hook_trust_hash "$fake_home/.local/bin/cs -codex-hook files-changed" null post_tool_use)
         assert_eq "trusted_hash = \"sha256:$hash\"" "$(_trust_at 0 0 post_tool_use)" || return 1
-        # The automatic /clear after a rotation: its two hooks, trusted.
+        # The automatic /clear after a rotation: its three hooks, trusted.
         hash=$(_codex_hook_trust_hash "$fake_home/.local/bin/cs -codex-hook stop" null stop)
         assert_eq "trusted_hash = \"sha256:$hash\"" "$(_trust_at 0 0 stop)" || return 1
         hash=$(_codex_hook_trust_hash "$fake_home/.local/bin/cs -codex-hook user-prompt-submit" null user_prompt_submit)
         assert_eq "trusted_hash = \"sha256:$hash\"" "$(_trust_at 0 0 user_prompt_submit)" || return 1
+        hash=$(_codex_hook_trust_hash "$fake_home/.local/bin/cs -codex-hook permission-request" null permission_request)
+        assert_eq "trusted_hash = \"sha256:$hash\"" "$(_trust_at 0 0 permission_request)" || return 1
     done
     printf 'y\nn\nn\n' | HOME="$fake_home" CODEX_HOME="$CODEX_DIR" \
         env -u CODE_SESSIONS_HOME -u CS_INSTALL_DIR -u CS_CONFIG_DIR -u CS_CACHE_DIR \
@@ -122,6 +126,7 @@ test_installer_and_uninstaller_preserve_a_mixed_group() {
     assert_eq '' "$(_trust_at 0 0 post_tool_use)" || return 1
     assert_eq '' "$(_trust_at 0 0 stop)" || return 1
     assert_eq '' "$(_trust_at 0 0 user_prompt_submit)" || return 1
+    assert_eq '' "$(_trust_at 0 0 permission_request)" || return 1
     assert_file_not_exists "$CODEX_DIR/hooks/cs/autosave-commits.sh" || return 1
 }
 
@@ -146,7 +151,8 @@ test_uninstall_removes_the_other_hooks_when_one_fails() {
         -u CS_HOOKS_DIR -u CS_CLAUDE_DIR -u CS_SKILLS_DIR -u CS_COMMANDS_DIR \
         "$fake_home/.local/bin/cs" -uninstall \
         > "$TEST_TMPDIR/uninstall.log" 2>&1 || { cat "$TEST_TMPDIR/uninstall.log"; return 1; }
-    for event in SessionStart:session-start PostToolUse:files-changed UserPromptSubmit:user-prompt-submit; do
+    for event in SessionStart:session-start PostToolUse:files-changed UserPromptSubmit:user-prompt-submit \
+        PermissionRequest:permission-request; do
         verb=${event#*:}; event=${event%%:*}
         assert_eq 0 "$(jq --arg e "$event" --arg v " -codex-hook $verb" \
             '[.hooks[$e][]?.hooks[]? | select(.command | endswith($v))] | length' "$CODEX_DIR/hooks.json")" \

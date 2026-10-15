@@ -209,7 +209,11 @@ approval) gets no count: nobody is at the keys when the count ends, and the
 agent can arm such a switch itself, so the line says the exit is yours and cs
 types nothing. A message you send first stops the count (the UserPromptSubmit hook,
 `cs -codex-hook user-prompt-submit`) and keeps the conversation; the count starts
-again when that turn ends. Only the conversation the launch bound counts down,
+again when that turn ends. An approval Codex asks for stops it too (the
+PermissionRequest hook, `cs -codex-hook permission-request`), so the keys never
+land in an approval prompt: a turn can go on past its Stop hook when another
+tool's Stop hook asks Codex to continue. That hook makes no approval decision;
+it answers `{}`, which Codex reads as none, and the prompt is yours as before. Only the conversation the launch bound counts down,
 and only while its run still holds the session: after a forced second launch
 (`--force`) takes it over, the first run's count types nothing.
 `CS_ROTATE_FORCE_CTX=off` (or `0`) at launch turns it off, as under Claude, and
@@ -230,8 +234,9 @@ conversation you are in, so send or clear a draft first; the line at the end of
 the turn says so. A prompt you send while cs types stops the rest of its keys:
 cs keeps a marker in the run's directory while it types, the UserPromptSubmit
 hook removes it, and cs checks it before each key, before Enter and before
-`go`, so `go` never lands in the turn your prompt started. `session.log` then
-says a prompt went in while cs was typing.
+`go`, so `go` never lands in the turn your prompt started; an approval prompt
+removes it the same way. `session.log` then says a prompt went in while cs was
+typing.
 
 The Claude hooks and
 function-hook mods do not run in Codex. Successful Codex patches automatically

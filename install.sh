@@ -1080,8 +1080,10 @@ for hook in autosave-commits.sh cs-resolve.sh cs-shared.sh cs-engine-events.sh; 
 done
 
 # The SessionStart hook: after /clear it rebinds the session to the new
-# thread and loads an armed rotation handoff. Stop and UserPromptSubmit run
-# the automatic /clear's count after a rotation (lib/77-codex-hooks.sh).
+# thread and loads an armed rotation handoff. Stop, UserPromptSubmit and
+# PermissionRequest run the automatic /clear's count after a rotation
+# (lib/77-codex-hooks.sh); the PermissionRequest hook only stops the count and
+# makes no approval decision.
 # Codex skips a hook nobody has trusted, so each registration writes its trust
 # hash too.
 if command -v jq >/dev/null 2>&1; then
@@ -1095,7 +1097,9 @@ if command -v jq >/dev/null 2>&1; then
         Stop stop stop \
         && _codex_hooks_register "$CODEX_DIR" "$(_codex_hook_command "$INSTALL_DIR/cs" user-prompt-submit)" \
             UserPromptSubmit user_prompt_submit user-prompt-submit \
-        || warn "Could not register the Codex Stop and UserPromptSubmit hooks in $CODEX_DIR/hooks.json; the automatic /clear after a rotation needs them"
+        && _codex_hooks_register "$CODEX_DIR" "$(_codex_hook_command "$INSTALL_DIR/cs" permission-request)" \
+            PermissionRequest permission_request permission-request \
+        || warn "Could not register the Codex Stop, UserPromptSubmit and PermissionRequest hooks in $CODEX_DIR/hooks.json; the automatic /clear after a rotation needs them"
 else
     warn "jq not found - the Codex hook (rotation after /clear) was not registered."
 fi

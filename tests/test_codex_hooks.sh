@@ -184,7 +184,7 @@ test_unknown_hook_event_is_a_usage_error() {
     local status=0 out
     out=$("$CS_BIN" -codex-hook no-such-event </dev/null 2>&1) || status=$?
     assert_eq 2 "$status" || return 1
-    assert_output_contains "$out" "Usage: cs -codex-hook session-start|files-changed|stop|user-prompt-submit" || return 1
+    assert_output_contains "$out" "Usage: cs -codex-hook session-start|files-changed|stop|user-prompt-submit|permission-request" || return 1
 }
 
 # --- the automatic /clear after a rotation: Stop and UserPromptSubmit ---
@@ -354,11 +354,36 @@ test_a_message_sent_during_the_count_stops_it() {
     assert_eq "" "$out" || return 1
 }
 
+# An approval Codex asks for while the count runs, or while cs types, stops
+# both: the keys would otherwise go into the approval prompt. The hook rules
+# on nothing: `{}` is Codex 0.162's PermissionRequest output with no decision
+# in it, since its schema carries one only under hookSpecificOutput.
+test_an_approval_request_stops_the_count_and_rules_on_nothing() {
+    _handoff unconsumed; _arm
+    _stale_stamp
+    : > "$RUN_DIR/typing"
+    local out status=0
+    out=$(_turn_hook permission-request "$NEW_THREAD") || status=$?
+    assert_eq 0 "$status" "a hook must never fail a turn" || return 1
+    assert_not_exists "$STAMP" "an approval prompt stops the count" || return 1
+    assert_not_exists "$RUN_DIR/typing" "an approval prompt stops cs's typing" || return 1
+    assert_eq '{}' "$out" "the hook makes no approval decision" || return 1
+    # With nothing to stop, and with no run directory, the answer is the same.
+    out=$(_turn_hook permission-request "$OLD_THREAD") || return 1
+    assert_eq '{}' "$out" || return 1
+    rmdir "$RUN_DIR"
+    out=$(_turn_hook permission-request "$OLD_THREAD") || return 1
+    assert_eq '{}' "$out" || return 1
+}
+
 test_outside_a_cs_codex_run_the_turn_hooks_are_inert() {
     _handoff unconsumed; _arm
     _stale_stamp
-    local verb
-    for verb in stop user-prompt-submit; do
+    local verb out
+    out=$(printf '{"session_id":"%s"}' "$OLD_THREAD" | "$CS_BIN" -codex-hook permission-request) \
+        || { echo "  FAIL: permission-request failed outside a run"; return 1; }
+    assert_eq '{}' "$out" "outside a run the hook still makes no decision" || return 1
+    for verb in stop user-prompt-submit permission-request; do
         printf '{"session_id":"%s"}' "$OLD_THREAD" | "$CS_BIN" -codex-hook "$verb" >/dev/null \
             || { echo "  FAIL: $verb failed outside a run"; return 1; }
     done
@@ -388,6 +413,7 @@ run_test test_force_off_leaves_the_clear_to_the_user
 run_test test_a_pending_switch_counts_down_to_quit
 run_test test_a_switch_that_loosens_approval_starts_no_count
 run_test test_a_message_sent_during_the_count_stops_it
+run_test test_an_approval_request_stops_the_count_and_rules_on_nothing
 run_test test_outside_a_cs_codex_run_the_turn_hooks_are_inert
 
 report_results

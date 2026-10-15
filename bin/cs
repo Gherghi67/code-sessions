@@ -11838,8 +11838,9 @@ cmd_codex_hook() {  # event
         files-changed) _codex_hook_files_changed ;;
         stop) _codex_hook_stop ;;
         user-prompt-submit) _codex_hook_user_prompt_submit ;;
+        permission-request) _codex_hook_permission_request ;;
         *)
-            printf 'Usage: cs -codex-hook session-start|files-changed|stop|user-prompt-submit\n' >&2
+            printf 'Usage: cs -codex-hook session-start|files-changed|stop|user-prompt-submit|permission-request\n' >&2
             return 2
             ;;
     esac
@@ -11924,7 +11925,9 @@ _codex_hook_rebind() {  # session_dir, thread_id, handoff
 # share the job. The Stop hook, at the end of a turn that leaves a handoff
 # armed, writes a deadline into this run's private directory. The
 # UserPromptSubmit hook drops it, so a message sent first keeps the
-# conversation; the count starts again when that turn ends. A watcher the Codex
+# conversation; the count starts again when that turn ends. The
+# PermissionRequest hook drops it too, so an approval prompt never takes the
+# keys. A watcher the Codex
 # launch runs beside the CLI (lib/76-codex.sh) types /clear, then go, into the
 # terminal once the deadline has passed and the same handoff is still armed;
 # with a switch pending at the deadline it types /quit, and cs reopens the
@@ -12104,6 +12107,20 @@ _codex_hook_user_prompt_submit() {
     [ -d "$CS_SESSION_DIR/.cs/local" ] || return 0
     run_dir=$(_codex_run_dir) && _codex_run_dir_ok "$run_dir" "$CS_SESSION_DIR" || return 0
     rm -f "$(_codex_autoclear_file "$run_dir")" "$(_codex_typing_file "$run_dir")" 2>/dev/null || true
+    return 0
+}
+
+# An approval Codex asks for stops the count and cs's typing, as a prompt
+# does: the turn is not over while the approval waits, and /clear, go or the
+# Enter after them would land in the approval prompt. The turn can go on after
+# its Stop hook, when another tool's Stop hook asks Codex to continue, so a
+# count can be running when the prompt comes up. The hook rules on nothing: it
+# prints `{}`, which Codex 0.162 reads as no decision (its PermissionRequest
+# output carries a decision only under hookSpecificOutput), on every path, and
+# exits 0, never 2, which Codex reads as a denial.
+_codex_hook_permission_request() {
+    _codex_hook_user_prompt_submit
+    printf '{}\n'
     return 0
 }
 
@@ -13470,7 +13487,8 @@ run_uninstall() {
         local codex_hook codex_hook_rest codex_hooks_failed=""
         for codex_hook in SessionStart:session_start:session-start \
             PostToolUse:post_tool_use:files-changed Stop:stop:stop \
-            UserPromptSubmit:user_prompt_submit:user-prompt-submit; do
+            UserPromptSubmit:user_prompt_submit:user-prompt-submit \
+            PermissionRequest:permission_request:permission-request; do
             codex_hook_rest=${codex_hook#*:}
             _codex_hooks_unregister "${codex_skills_dir%/skills}" "${codex_hook%%:*}" \
                 "${codex_hook_rest%%:*}" "${codex_hook_rest#*:}" \
