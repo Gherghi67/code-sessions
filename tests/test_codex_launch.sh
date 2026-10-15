@@ -38,6 +38,7 @@ setup() {
     export CS_HELPER_COUNT="$TEST_TMPDIR/helper-count"
     export CS_THREAD_ID=12345678-1234-1234-1234-123456789abc
     export CS_HELPER_EXIT=0 CS_CODEX_EXIT=0
+    export CS_CODEX_HELP='--approve-for-me' CS_CODEX_HELP_EXIT=0
     export CS_CODEX_START=0 CS_CODEX_NEW_HANDOFF=""
     export CS_CODEX_TURN=0 CS_CODEX_TURNS="$TEST_TMPDIR/codex-turns"
     export CS_HELPER_TURN_CALLS="$TEST_TMPDIR/helper-turn-calls" CS_HELPER_TURN_FAIL_FROM=0
@@ -46,6 +47,10 @@ setup() {
     export CS_BIN="$SCRIPT_DIR/../bin/cs"
     cat > "$CODEX_BIN" <<'CODEX'
 #!/usr/bin/env bash
+if [ "${1:-}" = --help ]; then
+    printf '      %s\n' "$CS_CODEX_HELP"
+    exit "$CS_CODEX_HELP_EXIT"
+fi
 printf '%s\n' "$@" > "$CS_CODEX_LOG"
 env | grep -E '^(CS_SESSION_|CS_ACTOR=|CLAUDE_SESSION_|CLAUDE_CODE_SESSION_ID=|CS_CLAUDE_SESSION_ID=|CS_LEAD_PID=|CLAUDE_PID=)' > "$CS_CODEX_ENV" || true
 if [ "$CS_CODEX_START" = 1 ]; then
@@ -93,9 +98,70 @@ teardown() {
     rm -rf "$TEST_TMPDIR"
     unset CODEX_BIN CS_CODEX_THREAD_BIN CS_TEST_SESSION_DIR CS_CODEX_LOG
     unset CS_CODEX_ENV CS_HELPER_ARGS CS_HELPER_COUNT CS_THREAD_ID
-    unset CS_HELPER_EXIT CS_CODEX_EXIT
+    unset CS_HELPER_EXIT CS_CODEX_EXIT CS_CODEX_HELP CS_CODEX_HELP_EXIT
     unset CS_CODEX_START CS_CODEX_NEW_HANDOFF
     unset CS_CODEX_TURN CS_CODEX_TURNS CS_HELPER_TURN_CALLS CS_HELPER_TURN_FAIL_FROM CODEX_HOME
+}
+
+# Unsupported builds must be rejected before native preparation changes the
+# session, even when a saved conversation or an armed handoff already exists.
+test_unsupported_codex_first_open_does_not_prepare_a_thread() {
+    export CS_CODEX_HELP='--sandbox'
+    local output status=0
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" true false 2>&1) || status=$?
+    assert_eq 1 "$status" "unsupported Codex must refuse" || return 1
+    assert_output_contains "$output" 'Upgrade Codex' "says how to repair the installation" || return 1
+    assert_output_contains "$output" 'CODEX_BIN' "names the executable override" || return 1
+    assert_output_contains "$output" '--approve-for-me' "names the required capability" || return 1
+    assert_not_exists "$CS_HELPER_COUNT" "no native preparation" || return 1
+    assert_not_exists "$CS_CODEX_LOG" "no interactive launch" || return 1
+    assert_not_exists "$CS_TEST_SESSION_DIR/.cs/local/codex-thread-id" "no binding" || return 1
+    assert_not_exists "$CS_TEST_SESSION_DIR/.cs/local/codex-instructions.md" "no context" || return 1
+    assert_not_exists "$CS_TEST_SESSION_DIR/.cs/local/pending-binding-codex.json" "no staged binding" || return 1
+}
+
+test_unsupported_codex_preserves_bound_launches_and_handoffs() {
+    export CS_CODEX_HELP='--sandbox'
+    _rotation_fixture unconsumed
+    local local_dir="$CS_TEST_SESSION_DIR/.cs/local" intent output status
+    printf 'existing context\n' > "$local_dir/codex-instructions.md"
+    printf '{"marker":"untouched"}\n' > "$local_dir/pending-binding-codex.json"
+    printf 'engine: claude\n' > "$local_dir/state"
+    cp "$CS_TEST_SESSION_DIR/.cs/handoffs/$ROTATION_HANDOFF" "$TEST_TMPDIR/handoff-before"
+    for intent in resume fresh handoff; do
+        status=0
+        output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false "" "$intent" 2>&1) || status=$?
+        assert_eq 1 "$status" "$intent must refuse unsupported Codex" || return 1
+        assert_output_contains "$output" 'Upgrade Codex' "$intent compatibility diagnostic" || return 1
+        assert_not_exists "$CS_HELPER_COUNT" "$intent must not call the helper" || return 1
+        assert_not_exists "$CS_CODEX_LOG" "$intent must not launch interactively" || return 1
+        assert_eq "$ROTATION_OLD_THREAD" "$(cat "$local_dir/codex-thread-id")" "$intent keeps its binding" || return 1
+        assert_eq 'existing context' "$(cat "$local_dir/codex-instructions.md")" "$intent keeps its context" || return 1
+        assert_eq '{"marker":"untouched"}' "$(cat "$local_dir/pending-binding-codex.json")" "$intent keeps its pending binding" || return 1
+        assert_eq 'engine: claude' "$(cat "$local_dir/state")" "$intent keeps its engine preference" || return 1
+        assert_eq "$ROTATION_HANDOFF" "$(cat "$local_dir/pending-handoff")" "$intent keeps its armed handoff" || return 1
+        cmp -s "$TEST_TMPDIR/handoff-before" "$CS_TEST_SESSION_DIR/.cs/handoffs/$ROTATION_HANDOFF" \
+            || { echo "  FAIL: $intent changed the handoff"; return 1; }
+    done
+}
+
+test_failed_codex_help_cannot_advertise_compatibility() {
+    export CS_CODEX_HELP_EXIT=23
+    local output status=0
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" true false 2>&1) || status=$?
+    assert_eq 1 "$status" "a failed help probe must refuse even when it prints the option" || return 1
+    assert_output_contains "$output" 'Upgrade Codex' "actionable refusal" || return 1
+    assert_not_exists "$CS_HELPER_COUNT" "no native preparation" || return 1
+    assert_not_exists "$CS_CODEX_LOG" "no interactive launch" || return 1
+}
+
+test_codex_help_prose_is_not_an_approval_option() {
+    export CS_CODEX_HELP='Upgrade for --approve-for-me support'
+    local output status=0
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" true false 2>&1) || status=$?
+    assert_eq 1 "$status" "mentioning a flag in prose does not declare support" || return 1
+    assert_not_exists "$CS_HELPER_COUNT" "no native preparation" || return 1
+    assert_not_exists "$CS_CODEX_LOG" "no interactive launch" || return 1
 }
 
 test_new_thread_binding_and_context() {
@@ -108,6 +174,7 @@ test_new_thread_binding_and_context() {
     assert_eq "$CS_THREAD_ID" "$(sed -n '3p' "$CS_CODEX_LOG")" "CLI thread ID" || return 1
     assert_eq "-C" "$(sed -n '4p' "$CS_CODEX_LOG")" "CLI cwd switch" || return 1
     assert_eq "$CS_TEST_SESSION_DIR" "$(sed -n '5p' "$CS_CODEX_LOG")" "CLI cwd with spaces" || return 1
+    assert_eq "--approve-for-me" "$(sed -n '6p' "$CS_CODEX_LOG")" "new thread uses automatic approval review" || return 1
     assert_eq 6 "$(wc -l < "$CS_HELPER_ARGS" | tr -d ' ')" "helper takes three named arguments" || return 1
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/local/codex-instructions.md" 'This context does not request work' || return 1
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/local/codex-instructions.md" 'narrative.test-actor.md' || return 1
@@ -127,6 +194,7 @@ test_resume_refreshes_exact_thread() {
     assert_eq "--thread-id" "$(sed -n '7p' "$CS_HELPER_ARGS")" "refresh parameter" || return 1
     assert_eq "$CS_THREAD_ID" "$(sed -n '8p' "$CS_HELPER_ARGS")" "refresh exact ID" || return 1
     assert_eq "$CS_THREAD_ID" "$(cat "$binding")" "binding retained" || return 1
+    assert_eq "--approve-for-me" "$(sed -n '6p' "$CS_CODEX_LOG")" "resumed thread uses automatic approval review" || return 1
     assert_not_exists "$CS_TEST_SESSION_DIR/.cs/session.lock" || return 1
 }
 
@@ -231,8 +299,8 @@ test_finish_starts_the_thread_on_the_finish_skill() {
     assert_eq 0 "$status" "launch failed: $output" || return 1
     assert_eq "resume" "$(sed -n '2p' "$CS_CODEX_LOG")" "CLI resumes exact thread" || return 1
     assert_eq "$CS_TEST_SESSION_DIR" "$(sed -n '5p' "$CS_CODEX_LOG")" "CLI cwd" || return 1
-    assert_eq '$finish feature' "$(sed -n '6p' "$CS_CODEX_LOG")" "the first prompt names the skill" || return 1
-    assert_eq 6 "$(wc -l < "$CS_CODEX_LOG" | tr -d ' ')" "nothing after the prompt" || return 1
+    assert_eq '$finish feature' "$(sed -n '7p' "$CS_CODEX_LOG")" "the first prompt names the skill" || return 1
+    assert_eq 7 "$(wc -l < "$CS_CODEX_LOG" | tr -d ' ')" "nothing after the prompt" || return 1
 }
 
 test_live_lock_blocks_launch() {
@@ -279,6 +347,10 @@ test_termination_releases_lock_and_stops_codex() {
     export CS_TEST_LIB_DIR="$SCRIPT_DIR" CS_CODEX_CHILD_PID="$child_file"
     cat > "$CODEX_BIN" <<'SLEEP_CODEX'
 #!/usr/bin/env bash
+if [ "${1:-}" = --help ]; then
+    printf '      --approve-for-me\n'
+    exit 0
+fi
 printf '%s\n' "$$" > "$CS_CODEX_CHILD_PID"
 exec sleep 30
 SLEEP_CODEX
@@ -394,7 +466,7 @@ test_r_starts_a_thread_from_the_rotation_handoff() {
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/local/codex-instructions.md" "Read .cs/handoffs/$ROTATION_HANDOFF FIRST" \
         "the new thread's context names the handoff" || return 1
     assert_eq "Continue from the pending rotation handoff: read .cs/handoffs/$ROTATION_HANDOFF first." \
-        "$(sed -n '6p' "$CS_CODEX_LOG")" "codex resume gets the kick as its starting prompt" || return 1
+        "$(sed -n '7p' "$CS_CODEX_LOG")" "codex resume gets the kick as its starting prompt" || return 1
     assert_file_contains "$h" "^status: consumed$" || return 1
     assert_file_contains "$h" "^consumed_by: $CS_THREAD_ID$" || return 1
     assert_not_exists "$CS_TEST_SESSION_DIR/.cs/local/pending-handoff" || return 1
@@ -415,7 +487,7 @@ test_n_starts_fresh_and_leaves_the_handoff_pending() {
     assert_not_exists "$CS_TEST_SESSION_DIR/.cs/local/pending-handoff" "n disarms" || return 1
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/handoffs/$ROTATION_HANDOFF" "^status: unconsumed$" || return 1
     assert_file_not_contains "$CS_TEST_SESSION_DIR/.cs/local/codex-instructions.md" "Conversation Rotation" || return 1
-    assert_eq 5 "$(wc -l < "$CS_CODEX_LOG" | tr -d ' ')" "no kick" || return 1
+    assert_eq 6 "$(wc -l < "$CS_CODEX_LOG" | tr -d ' ')" "no kick" || return 1
 }
 
 test_d_discards_the_handoff_then_resumes() {
@@ -427,7 +499,7 @@ test_d_discards_the_handoff_then_resumes() {
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/handoffs/$ROTATION_HANDOFF" "^status: discarded$" || return 1
     assert_not_exists "$CS_TEST_SESSION_DIR/.cs/local/pending-handoff" || return 1
     assert_eq "$ROTATION_OLD_THREAD" "$(sed -n '3p' "$CS_CODEX_LOG")" "resumes the bound thread" || return 1
-    assert_eq 5 "$(wc -l < "$CS_CODEX_LOG" | tr -d ' ')" "no kick" || return 1
+    assert_eq 6 "$(wc -l < "$CS_CODEX_LOG" | tr -d ' ')" "no kick" || return 1
 }
 
 # Claude's fresh launch consumes an armed marker at SessionStart; an explicit
@@ -438,7 +510,7 @@ test_explicit_fresh_continues_an_armed_rotation() {
     output=$(launch_codex demo "$CS_TEST_SESSION_DIR" false false "" fresh 2>&1) || status=$?
     assert_eq 0 "$status" "fresh launch failed: $output" || return 1
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/handoffs/$ROTATION_HANDOFF" "^consumed_by: $CS_THREAD_ID$" || return 1
-    assert_output_contains "$(sed -n '6p' "$CS_CODEX_LOG")" "$ROTATION_HANDOFF" "kicked from the handoff" || return 1
+    assert_output_contains "$(sed -n '7p' "$CS_CODEX_LOG")" "$ROTATION_HANDOFF" "kicked from the handoff" || return 1
 }
 
 test_failed_direct_rotation_launches_restore_the_handoff_for_retry() {
@@ -555,10 +627,14 @@ test_resume_disarms_an_armed_rotation() {
     assert_eq 0 "$status" "resume failed: $output" || return 1
     assert_not_exists "$CS_TEST_SESSION_DIR/.cs/local/pending-handoff" || return 1
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/handoffs/$ROTATION_HANDOFF" "^status: unconsumed$" || return 1
-    assert_eq 5 "$(wc -l < "$CS_CODEX_LOG" | tr -d ' ')" "no kick" || return 1
+    assert_eq 6 "$(wc -l < "$CS_CODEX_LOG" | tr -d ' ')" "no kick" || return 1
 }
 
 echo 'Codex launch tests'
+run_test test_unsupported_codex_first_open_does_not_prepare_a_thread
+run_test test_unsupported_codex_preserves_bound_launches_and_handoffs
+run_test test_failed_codex_help_cannot_advertise_compatibility
+run_test test_codex_help_prose_is_not_an_approval_option
 run_test test_explicit_fresh_replaces_only_codex_binding
 run_test test_failed_fresh_preserves_codex_binding
 run_test test_resume_without_binding_does_not_create

@@ -39,6 +39,10 @@ exit 0
 CLAUDE
     cat > "$CODEX_BIN" <<'CODEX'
 #!/usr/bin/env bash
+if [ "${1:-}" = --help ]; then
+    printf '      --approve-for-me\n'
+    exit 0
+fi
 printf '%s\n' "$*" >> "$CS_CODEX_LOG"
 exit 0
 CODEX
@@ -163,7 +167,7 @@ test_codex_finish_starts_the_thread_on_the_finish_skill() {
     [ -d "$(_engine_session_dir base@feature)" ] || { echo '  FAIL: feature fixture'; return 1; }
     output=$("$CS_BIN" base --engine codex -finish feature < /dev/null 2>&1) || status=$?
     assert_eq 0 "$status" "Codex -finish launches: $output" || return 1
-    assert_file_contains "$CS_CODEX_LOG" 'resume 12345678-1234-1234-1234-123456789abc -C .* \$finish feature$' \
+    assert_file_contains "$CS_CODEX_LOG" 'resume 12345678-1234-1234-1234-123456789abc -C .* --approve-for-me \$finish feature$' \
         "the thread starts on \$finish feature" || return 1
 }
 

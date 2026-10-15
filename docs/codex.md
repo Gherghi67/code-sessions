@@ -33,6 +33,18 @@ experimental protocol capabilities being present. CS checks at startup and
 reports an error when they are unavailable. It does not upgrade Codex
 automatically.
 
+CS selects **Approve for me** on every Codex launch, including new threads,
+exact resumes, and engine switches, by passing `--approve-for-me`. This requires
+a Codex build that supports the flag; it is verified with
+`0.162.0-alpha.17.2`. Before preparing a thread or consuming a handoff, CS
+requires a successful `codex --help` that lists the option. Unsupported builds
+are refused; upgrade Codex or point `CODEX_BIN` at a supporting build.
+The mode uses a `workspace-write` sandbox with
+`on-request` approvals and an `auto_review` reviewer. Routine workspace
+operations run directly; eligible approval requests go through automatic review,
+which can reject an action. You can change the active mode with `/permissions`.
+CS applies this launch option without changing your global Codex configuration.
+
 CS keeps the Codex thread ID in the machine-local
 `.cs/local/codex-thread-id` file and resumes that exact thread on later Codex
 launches. This binding is separate from Claude's conversation UUID. The engine
@@ -87,8 +99,8 @@ A plain `--engine` reopens the other engine's own conversation, which has not
 seen the work done since it last ran. To carry the work across, ask for
 `$switch` in Codex (or `/switch` in Claude), optionally naming the engine and
 `--resume`. The skill writes and arms a handoff by the `rotate` skill's steps,
-then runs `cs -switch`; Codex may ask you to approve that call, since it writes
-into `.cs/` from the launch's read-only sandbox. Quit Codex with `/quit`, and
+then runs `cs -switch`, which writes into `.cs/` within the workspace sandbox.
+Quit Codex with `/quit`, and
 the `cs` that launched it reopens the session in the same terminal under
 Claude, in a fresh conversation that starts from the handoff. From Claude the
 `cs` mod runs `/exit` for you after a countdown, and Codex opens a fresh thread
@@ -161,7 +173,8 @@ example `$checkpoint`); `finish` runs only when asked that way. `cs <base>
 Claude's opens on `/finish <feature>`. The skill's steps outside the session
 folder (`finish.sh` asking GitHub for the PR state, `cs -integrate-feature`
 writing the base's `.git`, `cs -retire-feature` removing the worktree beside
-it) are ones Codex's sandbox refuses, so it asks you to approve each. Its
+it) cross Codex's workspace sandbox boundary and can require automatic approval
+review. Its
 refusals name Codex's commands (`/quit`, `$finish`) for a session that last
 ran under Codex. A skill that
 needs an adapter feature Codex lacks says so and stops: `feature` refuses under
