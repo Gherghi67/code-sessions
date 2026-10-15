@@ -4511,6 +4511,28 @@ test_render_writes_nothing_into_a_tracked_control_directory() {
 
 run_test test_render_writes_nothing_into_a_tracked_control_directory
 
+# The mark is read under the rule hooks/cs-resolve.sh writes it by: a session
+# name that is empty or holds "/" is never marked, so it never reads as
+# tracked, whatever a path built from it happens to reach under
+# ~/.cache/cs/tracked. A plain name with its mark present is the control.
+test_tracked_mark_is_read_only_for_a_name_the_hooks_mark() {
+    ( _load_sl_functions
+      mkdir -p "$HOME/.cache/cs/tracked/grp"
+      : > "$HOME/.cache/cs/tracked/sess"
+      : > "$HOME/.cache/cs/tracked/grp/sess"
+      local rc
+      rc=0; CLAUDE_SESSION_NAME=sess _session_files_tracked || rc=$?
+      assert_eq "0" "$rc" "a plain name with its mark reads as tracked" || return 1
+      rc=0; CLAUDE_SESSION_NAME=grp/sess _session_files_tracked || rc=$?
+      assert_eq "1" "$rc" "a name holding / reads as not tracked" || return 1
+      rc=0; CLAUDE_SESSION_NAME=../tracked/sess _session_files_tracked || rc=$?
+      assert_eq "1" "$rc" "a name climbing out of the mark directory reads as not tracked" || return 1
+      rc=0; CLAUDE_SESSION_NAME='' _session_files_tracked || rc=$?
+      assert_eq "1" "$rc" "an empty name reads as not tracked" || return 1 )
+}
+
+run_test test_tracked_mark_is_read_only_for_a_name_the_hooks_mark
+
 
 # A config that yields no account (caught mid-rewrite, or malformed) leaves no
 # cache entry behind: the next render parses it again rather than showing no

@@ -728,7 +728,14 @@ EOF
 # (_cs_note_tracked_files in hooks/cs-resolve.sh), and the stamps above then
 # add, change and remove nothing in .cs/local. A render cannot afford to ask
 # git, so a pull lands unseen until the next hook runs. Builtins only.
+# The mark is read for the names the hooks write one for, so a name the
+# writer never marks reads as untracked: KEEP IN SYNC with the case and the
+# HOME test in _cs_note_tracked_files.
 _session_files_tracked() {
+    case "${CLAUDE_SESSION_NAME:-}" in
+        ''|*/*) return 1 ;;
+    esac
+    [ -n "${HOME:-}" ] || return 1
     [ -e "$HOME/.cache/cs/tracked/$CLAUDE_SESSION_NAME" ]
 }
 

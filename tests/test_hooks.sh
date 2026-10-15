@@ -353,24 +353,76 @@ test_auto_approve_rejects_leaf_symlink() {
 # A hard link has no link to see: a content file under .cs/ that shares its
 # inode with a file elsewhere (a project setting, say) passes every path and
 # symlink check, and an in-place Edit then changes that other file. An
-# existing target with more than one link falls through to the prompt; once
-# the second name is gone, the same write is approved again.
+# existing target with more than one link falls through to the prompt, and
+# stderr says how many names it has, the name printed plain as the symlink
+# decline prints one; once the second name is gone, the same write is
+# approved again and stderr is empty.
 test_auto_approve_rejects_a_hard_linked_target() {
     local outside="$TEST_TMPDIR/project-settings.json"
     mkdir -p "$CLAUDE_SESSION_META_DIR/memory"
     echo '{"hooks":{}}' > "$outside"
     ln "$outside" "$CLAUDE_SESSION_META_DIR/memory/config.md" || { echo "  FAIL: hard link fixture"; return 1; }
 
+    _assert_falls_through Edit "$CLAUDE_SESSION_META_DIR/memory/config.md" \
+        "a hard-linked target" \
+        "cs auto-approve: not approving, $CLAUDE_SESSION_META_DIR/memory/config.md has 2 names" || return 1
+
     local input output
     input=$(jq -n --arg path "$CLAUDE_SESSION_META_DIR/memory/config.md" \
         '{tool_name: "Edit", tool_input: {file_path: $path}}')
-    output=$(echo "$input" | bash "$HOOKS_DIR/session-auto-approve.sh" 2>/dev/null)
-    assert_eq "" "$output" "a hard-linked target falls through to the prompt" || return 1
-
     rm -f "$outside"
-    output=$(echo "$input" | bash "$HOOKS_DIR/session-auto-approve.sh" 2>/dev/null)
+    output=$(echo "$input" | bash "$HOOKS_DIR/session-auto-approve.sh" 2>"$TEST_TMPDIR/auto-approve.err")
     assert_eq "allow" "$(echo "$output" | jq -r '.hookSpecificOutput.decision.behavior')" \
         "the same file with one name is approved" || return 1
+    assert_eq "" "$(cat "$TEST_TMPDIR/auto-approve.err")" \
+        "an approval says nothing on stderr" || return 1
+
+    # A name the session's writer chose is printed through the plain-name rule.
+    ln "$CLAUDE_SESSION_META_DIR/memory/config.md" "$TEST_TMPDIR/second-name" \
+        || { echo "  FAIL: hard link fixture"; return 1; }
+    mv "$CLAUDE_SESSION_META_DIR/memory/config.md" "$CLAUDE_SESSION_META_DIR/memory/two words.md"
+    _assert_falls_through Edit "$CLAUDE_SESSION_META_DIR/memory/two words.md" \
+        "a hard-linked target with a space in its name" \
+        "cs auto-approve: not approving, $CLAUDE_SESSION_META_DIR/memory/two_words.md has 2 names" || return 1
+}
+
+# A link count that neither stat form can read is no evidence of one name:
+# the write falls through to the prompt, and stderr says the count could not
+# be read, the name printed plain. The stand-in stat fails both forms; the
+# same write with the system stat is approved, so the stand-in is the one
+# reason it prompts.
+test_auto_approve_declines_a_target_whose_link_count_cannot_be_read() {
+    local shim="$TEST_TMPDIR/failing-stat" target="$CLAUDE_SESSION_META_DIR/memory/two words.md"
+    mkdir -p "$shim" "$CLAUDE_SESSION_META_DIR/memory"
+    printf '#!/bin/sh\nexit 1\n' > "$shim/stat"
+    chmod +x "$shim/stat"
+    echo "# notes" > "$target"
+
+    _assert_allowed Edit "$target" "a one-name target with the system stat" || return 1
+    PATH="$shim:$PATH" _assert_falls_through Edit "$target" \
+        "a target whose link count cannot be read" \
+        "cs auto-approve: not approving, could not read the link count of $CLAUDE_SESSION_META_DIR/memory/two_words.md" || return 1
+}
+
+# The link count is asked last, so a write that also meets an earlier decline
+# prints that one: a hard-linked target beside a link under .cs/local names
+# the link. With the link gone, the same target declines for its two names,
+# so the hard link alone is enough and the first line is the order's.
+test_auto_approve_names_a_control_link_before_a_hard_linked_target() {
+    local meta="$CLAUDE_SESSION_META_DIR" outside="$TEST_TMPDIR/project-settings.json" real
+    mkdir -p "$meta/memory"
+    echo '{"hooks":{}}' > "$outside"
+    ln "$outside" "$meta/memory/config.md" || { echo "  FAIL: hard link fixture"; return 1; }
+    ln -s "$TEST_TMPDIR" "$meta/local/planted"
+    real="$(cd "$meta/local" && pwd -P)"
+
+    _assert_falls_through Edit "$meta/memory/config.md" \
+        "a hard-linked target beside a link in local/" \
+        "$(_link_reason "$real/planted")" || return 1
+    rm "$meta/local/planted"
+    _assert_falls_through Edit "$meta/memory/config.md" \
+        "the same hard-linked target with the link gone" \
+        "cs auto-approve: not approving, $meta/memory/config.md has 2 names" || return 1
 }
 
 # Audit C2: approval covered every file under .cs/, including the ones cs
@@ -2829,6 +2881,12 @@ test_session_start_sibling_line_carries_the_send_syntax() {
         session_start_teardown
         return 1
     fi
+    # A task is mail like any other kind: it reaches the recipient's queue only
+    # when that session's user runs its accept command (lib/53-mail.sh,
+    # lib/55-queue.sh), so the line must not promise an unattended run.
+    assert_eq 'Add --kind notify|task|text|result (default text; a task waits in that session'"'"'s mailbox until its user accepts it with cs -queue accept <id>).' \
+        "$(grep -F 'Add --kind' <<< "$context")" \
+        "the --kind line says where a task waits and what queues it" || { session_start_teardown; return 1; }
 
     session_start_teardown
 }
@@ -3631,6 +3689,8 @@ run_test test_auto_approve_ignores_non_write_tools
 run_test test_auto_approve_rejects_traversal
 run_test test_auto_approve_rejects_leaf_symlink
 run_test test_auto_approve_rejects_a_hard_linked_target
+run_test test_auto_approve_declines_a_target_whose_link_count_cannot_be_read
+run_test test_auto_approve_names_a_control_link_before_a_hard_linked_target
 run_test test_auto_approve_skips_outside_session
 run_test test_auto_approve_rejects_pre_open
 run_test test_auto_approve_rejects_local_state_files
