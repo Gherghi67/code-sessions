@@ -203,9 +203,9 @@ engine. A message you send first stops the count (the UserPromptSubmit hook,
 `cs -codex-hook user-prompt-submit`) and keeps the conversation; the count starts
 again when that turn ends. Only the conversation the launch bound counts down.
 `CS_ROTATE_FORCE_CTX=off` (or `0`) at launch turns it off, as under Claude, and
-`CS_CODEX_CLEAR_GRACE` sets the seconds (default 20). The watcher runs only when
-cs has a terminal. The deadline it acts on lives in a directory private to the
-run, `codex-runs/<run id>` under cs's cache (`CS_CACHE_DIR`, by default
+`CS_CODEX_CLEAR_GRACE` sets the seconds (default 20; `0` turns it off too).
+The watcher runs only when cs has a terminal. The deadline it acts on lives in
+a directory private to the run, `codex-runs/<run id>` under cs's cache (`CS_CACHE_DIR`, by default
 `~/.cache/cs`), made mode 700 before Codex starts and removed when the run ends.
 It is kept out of the session because Codex's workspace sandbox can write
 anywhere there, and in `/tmp` and `$TMPDIR`: a deadline the agent could write

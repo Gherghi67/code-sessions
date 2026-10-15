@@ -334,6 +334,11 @@ test_the_grace_follows_the_force_setting() {
             echo "  FAIL: CS_ROTATE_FORCE_CTX='$value' should turn the automatic /clear off"; return 1
         fi
     done
+    for value in 0 00; do
+        if CS_CODEX_CLEAR_GRACE="$value" _codex_autoclear_grace >/dev/null; then
+            echo "  FAIL: CS_CODEX_CLEAR_GRACE='$value' should turn the automatic /clear off"; return 1
+        fi
+    done
 }
 
 run_test test_a_passed_deadline_types_clear_then_go

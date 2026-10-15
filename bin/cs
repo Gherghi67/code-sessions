@@ -11924,7 +11924,7 @@ _codex_hook_rebind() {  # session_dir, thread_id, handoff
 # terminal once the deadline has passed and the same handoff is still armed;
 # with a switch pending it types /quit, and cs reopens the session under the
 # other engine. CS_ROTATE_FORCE_CTX set to off (or 0) leaves the keys to the
-# user, as it does under Claude.
+# user, as it does under Claude, and so does CS_CODEX_CLEAR_GRACE=0.
 #
 # The deadline is the watcher's licence to type, so it lives where the agent
 # cannot write: Codex's workspace sandbox writes anywhere in the session, /tmp
@@ -11986,13 +11986,16 @@ _codex_autoclear_file() {  # run_dir
 # The seconds the count runs (CS_CODEX_CLEAR_GRACE, default 20, the mod's
 # grace), or failure when the automatic /clear is off. A CS_ROTATE_FORCE_CTX
 # nobody can read is not off, as in the mod. The grace is read as decimal, so
-# 08 is eight seconds rather than an octal error that would fail the turn.
+# 08 is eight seconds rather than an octal error that would fail the turn. A
+# grace of 0 turns the count off, as CS_ROTATE_FORCE_CTX=0 does, rather than
+# typing at the next poll, while the turn that armed it may still be closing.
 _codex_autoclear_grace() {
     local force grace="${CS_CODEX_CLEAR_GRACE:-20}"
     force=$(printf '%s' "${CS_ROTATE_FORCE_CTX:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
     [ "$force" != off ] || return 1
     ! [[ "$force" =~ ^0+$ ]] || return 1
     if [[ "$grace" =~ ^[0-9]+$ ]]; then grace=$((10#$grace)); else grace=20; fi
+    [ "$grace" -ne 0 ] || return 1
     printf '%s\n' "$grace"
 }
 
