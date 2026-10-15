@@ -2664,6 +2664,8 @@ test_install_keeps_a_symlink_that_holds_no_cs_content() {
     assert_eq "$TEST_TMPDIR/my-bar.sh" "$(readlink "$bin_home/.local/bin/cs-statusline")" "the link where a binary goes is kept" || return 1
     assert_eq "$(printf '#!/bin/sh\necho my bar')" "$(cat "$TEST_TMPDIR/my-bar.sh")" "the user's script is untouched" || return 1
     assert_output_contains "$out" "Kept $(_bre_literal "$bin_home/.local/bin/cs-statusline")" "the kept binary link is named" || return 1
+    assert_output_not_contains "$out" "Replaced symlink $(_bre_literal "$bin_home/.local/bin/cs-statusline")" \
+        "the kept binary link is not called replaced" || return 1
     [ ! -L "$bin_home/.local/bin/cs" ] || { echo "  FAIL: the link to cs's own bin/cs was not replaced"; return 1; }
     cmp -s "$SCRIPT_DIR/../bin/cs" "$bin_home/.local/bin/cs" || { echo "  FAIL: bin/cs was not deployed"; return 1; }
     assert_eq "1" "$(printf '%s\n' "$out" | grep -c "Replaced symlink $(_bre_literal "$bin_home/.local/bin/cs") (to $(_bre_literal "$TEST_TMPDIR/build-cs")) with a deployed copy$")" \
