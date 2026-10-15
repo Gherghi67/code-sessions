@@ -224,6 +224,103 @@ test_check_fails_on_a_pointer_to_a_missing_entry() {
         "check must name the pointer with no entry, and nothing else" || return 1
 }
 
+# The archive index: an ordinary reference entry whose body lists pointers in
+# MEMORY.md's own shape, one of them to an entry archived by an earlier sweep,
+# with a pointer to it in MEMORY.md.
+_guard_archive() {
+    ARCHIVE="$SESSION/.cs/memory/reference_memory_archive.md"
+    cat > "$ARCHIVE" << 'EOF'
+---
+name: memory-archive
+description: "Pointers moved out of MEMORY.md; each entry still applies when its subject comes up"
+metadata:
+  type: reference
+---
+
+- [Old study](project_old.md): a study that closed
+EOF
+    : > "$SESSION/.cs/memory/project_old.md"
+    printf '%s\n' '- [Memory archive](reference_memory_archive.md): pointers moved out of this index' >> "$INDEX"
+}
+
+# The /wrap pass may move a pointer line verbatim from MEMORY.md into the
+# archive: a move, not a loss. check names it and passes, and an entry whose
+# only pointer is in the archive is indexed.
+test_check_passes_a_pointer_moved_to_the_archive() {
+    _guard_session
+    _guard_archive
+    _guard snapshot > /dev/null || return 1
+    printf '%s\n' '- [Beta fact](project_beta.md): beta only runs on Tuesdays' >> "$ARCHIVE"
+    printf '%s\n' '- [Alpha rule](feedback_alpha.md): never do alpha twice' \
+        '- [Memory archive](reference_memory_archive.md): pointers moved out of this index' > "$INDEX"
+    local out rc=0
+    out=$(_guard check 2>&1) || rc=$?
+    assert_eq 0 "$rc" "a pointer moved to the archive must pass: $out" || return 1
+    assert_eq "demoted: project_beta.md" "$(grep -v '^MEMORY.md: ' <<< "$out")" \
+        "check names the moved pointer, and nothing else" || return 1
+}
+
+# A pointer in both files is a move left half done.
+test_check_fails_on_a_pointer_in_the_index_and_the_archive() {
+    _guard_session
+    _guard_archive
+    _guard snapshot > /dev/null || return 1
+    printf '%s\n' '- [Beta fact](project_beta.md): beta only runs on Tuesdays' >> "$ARCHIVE"
+    local out rc=0
+    out=$(_guard check 2>&1) || rc=$?
+    assert_eq 1 "$rc" "a pointer in both files must fail" || return 1
+    assert_eq "duplicate: project_beta.md" "$(grep -v '^MEMORY.md: ' <<< "$out")" \
+        "check names the pointer in both files, and nothing else" || return 1
+}
+
+# The archive is read only through its pointer in MEMORY.md; one inside the
+# archive itself does not count.
+test_check_fails_when_the_index_has_no_pointer_to_the_archive() {
+    _guard_session
+    _guard_archive
+    _guard snapshot > /dev/null || return 1
+    printf '%s\n' '- [Alpha rule](feedback_alpha.md): never do alpha twice' \
+        '- [Beta fact](project_beta.md): beta only runs on Tuesdays' > "$INDEX"
+    printf '%s\n' '- [Memory archive](reference_memory_archive.md): pointers moved out of this index' >> "$ARCHIVE"
+    local out rc=0
+    out=$(_guard check 2>&1) || rc=$?
+    assert_eq 1 "$rc" "an archive with no pointer in MEMORY.md must fail" || return 1
+    assert_eq "removed: reference_memory_archive.md
+unindexed: reference_memory_archive.md" "$(grep -v '^MEMORY.md: ' <<< "$out")" \
+        "check names the archive as removed and unindexed, and nothing else" || return 1
+}
+
+test_check_fails_on_an_archive_pointer_to_a_missing_entry() {
+    _guard_session
+    _guard_archive
+    _guard snapshot > /dev/null || return 1
+    printf '%s\n' '- [Lost](project_lost.md): not there' >> "$ARCHIVE"
+    local out rc=0
+    out=$(_guard check 2>&1) || rc=$?
+    assert_eq 1 "$rc" "an archive pointer to a missing entry must fail" || return 1
+    assert_eq "dangling: project_lost.md" "$(grep -v '^MEMORY.md: ' <<< "$out")" \
+        "check names the archive pointer with no entry, and nothing else" || return 1
+}
+
+# restore puts back MEMORY.md alone; a pointer this sweep moved to the archive
+# is then in both files, and check says so.
+test_restore_after_a_move_leaves_the_pointer_in_both_files() {
+    _guard_session
+    _guard_archive
+    _guard snapshot > /dev/null || return 1
+    printf '%s\n' '- [Beta fact](project_beta.md): beta only runs on Tuesdays' >> "$ARCHIVE"
+    printf '%s\n' '- [Alpha rule](feedback_alpha.md): never do alpha twice' \
+        '- [Memory archive](reference_memory_archive.md): pointers moved out of this index' > "$INDEX"
+    cp "$ARCHIVE" "$TEST_TMPDIR/archive"
+    _guard restore > /dev/null || return 1
+    cmp -s "$TEST_TMPDIR/archive" "$ARCHIVE" || { echo "  FAIL: restore must leave the archive as it was"; return 1; }
+    local out rc=0
+    out=$(_guard check 2>&1) || rc=$?
+    assert_eq 1 "$rc" "the pointer is in both files after restore" || return 1
+    assert_eq "duplicate: project_beta.md" "$(grep -v '^MEMORY.md: ' <<< "$out")" \
+        "check names the pointer the restore put back" || return 1
+}
+
 # .cs/memory is tracked, so a clone chooses the entry file names and the
 # pointers MEMORY.md holds, and a name can carry a terminal escape: a raw ESC
 # or BEL byte, or backslash text echo -e would turn into one. check names a
@@ -397,6 +494,11 @@ run_test test_check_passes_when_a_supporting_link_is_dropped
 run_test test_check_fails_when_two_pointers_are_merged
 run_test test_check_fails_on_an_unindexed_bucket_entry
 run_test test_check_fails_on_a_pointer_to_a_missing_entry
+run_test test_check_passes_a_pointer_moved_to_the_archive
+run_test test_check_fails_on_a_pointer_in_the_index_and_the_archive
+run_test test_check_fails_when_the_index_has_no_pointer_to_the_archive
+run_test test_check_fails_on_an_archive_pointer_to_a_missing_entry
+run_test test_restore_after_a_move_leaves_the_pointer_in_both_files
 run_test test_check_names_a_pointer_and_an_entry_as_plain_names
 run_test test_first_sweep_snapshots_an_absent_index_as_empty
 run_test test_snapshot_outside_a_session_root_is_an_error
