@@ -1051,7 +1051,7 @@ cs_write_atomic "$COOLDOWN_FILE" echo "$CURRENT_TIME" || true
 # unconditional on purpose: testing whether .cs/ is tracked would be cheap here,
 # but the advice is inert rather than wrong where it is gitignored, and a
 # condition the model must evaluate is one it will not.
-COMMIT_CADENCE=" Never commit narrative appends or anything else under .cs/ on your own, not even beside a project change: cs and its skills commit none of them, and they are committed only when the user asks. Never push a commit that holds narrative appends unless the user asks. Uncommitted appends are safe — autosave snapshots every edit to a shadow ref."
+COMMIT_CADENCE=" Never commit narrative appends or anything else under .cs/ on your own, not even beside a project change: cs commits files under .cs/ only in the commit that creates a session and the merge /finish makes, and you commit them only when the user asks. Never push a commit that holds narrative appends unless the user asks. Uncommitted appends are safe — autosave snapshots every edit to a shadow ref."
 
 # .cs/memory is tracked, so a clone chooses the narrative's file name: it is
 # printed as a plain name.
