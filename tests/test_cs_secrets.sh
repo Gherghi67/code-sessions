@@ -3912,13 +3912,17 @@ Updated 1 file(s) with redacted values." "$out" "a number under a password or to
   - token" "$("$CS_SECRETS_BIN" list 2>&1)" "no plain-key name with a flag or number value is stored" || return 1
 }
 
-# A value that is only whitespace is never stored or redacted, whatever the
-# name: the line stays and nothing else in the file is touched (a stored
-# space would be replaced wherever the file holds one).
+# A value that is only whitespace, or only whitespace inside one pair of
+# matching quotes, is never stored or redacted, whatever the name: the line
+# stays and nothing else in the file is touched (a stored space or " "
+# would be replaced wherever the file holds one). An empty pair is blank
+# once unquoted and is skipped too.
 test_migrate_redact_leaves_a_blank_value_under_any_name() {
     local art="$CS_SESSIONS_ROOT/test-session/.cs/artifacts" out rc=0 want
     mkdir -p "$art"
-    printf '%s\n' 'S_KEY=   ' 'PASSWORD= ' "DB_PASS=\"$(printf '\t')\"" 'note: a space seen here' > "$art/app.env"
+    printf '%s\n' 'S_KEY=   ' 'PASSWORD= ' "DB_PASS=\"$(printf '\t')\"" 'KEY: " "' "PASSWORD: ' '" \
+        "S_KEY: \"$(printf '\t')\"" "API_KEY: '  '" 'SECRETKEY: ""' "token: ''" \
+        'note: a space seen here, a " " pair, and an empty "" pair' > "$art/app.env"
     want=$(cat "$art/app.env"; printf x)
     out=$("$CS_SECRETS_BIN" migrate --redact 2>&1) || rc=$?
     assert_eq "0" "$rc" "migrate --redact exits 0: $out" || return 1
