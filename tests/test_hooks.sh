@@ -523,13 +523,23 @@ test_auto_approve_private_allows_content_not_queue() {
 test_auto_approve_classifies_through_vault_links() {
     local meta="$CLAUDE_SESSION_META_DIR"
     rm -r "$meta/memory"
-    mkdir -p "$meta/vault-mnt/memory" "$meta/vault-mnt/claude-config"
+    mkdir -p "$meta/vault-mnt/memory" "$meta/vault-mnt/claude-config" "$meta/vault-mnt/private"
     ln -s vault-mnt/memory "$meta/memory"
     ln -s vault-mnt/claude-config "$meta/claude-config"
+    ln -s vault-mnt/private "$meta/private"
     _assert_allowed Write "$meta/memory/narrative.md" \
         "a narrative behind the vault link" || return 1
     _assert_falls_through Write "$meta/claude-config/settings.json" \
         "a setting behind the vault link" || return 1
+    # A control name that resolves into the vault is still a name: on a
+    # case-sensitive filesystem PRIVATE/ and CLAUDE-CONFIG/ beside the links
+    # are plain directories, and a write there prompts as the spelled name
+    # does. On APFS they are the links themselves.
+    mkdir -p "$meta/PRIVATE" "$meta/CLAUDE-CONFIG"
+    _assert_falls_through Write "$meta/PRIVATE/x.md" \
+        ".cs/PRIVATE beside a vault-linked private" || return 1
+    _assert_falls_through Write "$meta/CLAUDE-CONFIG/settings.json" \
+        ".cs/CLAUDE-CONFIG beside a vault-linked claude-config" || return 1
 }
 
 # A shared directory under .cs/ can carry a committed symlink into local/;
