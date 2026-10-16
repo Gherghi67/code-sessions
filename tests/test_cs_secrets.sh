@@ -3854,7 +3854,7 @@ No plaintext secrets found to migrate." "$out" "migrate finds no secret" || retu
 # elsewhere in the file except inside a longer stored value, so each
 # replacement touches one line.
 test_migrate_redact_skips_a_flag_or_number_only_under_a_key_name() {
-    local art="$CS_SESSIONS_ROOT/test-session/.cs/artifacts" out rc=0
+    local art="$CS_SESSIONS_ROOT/test-session/.cs/artifacts" out rc=0 want
     mkdir -p "$art"
     printf '%s\n' 'PASSWORD=123456' 'PIN_TOKEN=4821' 'secret: 0042' '_fileKey=example-file-key-value' \
         'SECRETKEY=234567' 'ACCESSKEY=7391' 'AWSSECRETKEY=7' 'PRIVATEKEY=NULL' 'TS_AUTHKEY=false' 'token: "8"' \
@@ -3879,29 +3879,16 @@ test_migrate_redact_skips_a_flag_or_number_only_under_a_key_name() {
 
 Migrated 11 secret(s) to secure storage.
 Updated 1 file(s) with redacted values." "$out" "a number under a password or token name is migrated, a flag or number under a key name is not" || return 1
-    assert_eq "PASSWORD=[REDACTED: stored in keychain as PASSWORD]
-PIN_TOKEN=[REDACTED: stored in keychain as PIN_TOKEN]
-secret: [REDACTED: stored in keychain as secret]
-_fileKey=[REDACTED: stored in keychain as _fileKey]
-SECRETKEY=[REDACTED: stored in keychain as SECRETKEY]
-ACCESSKEY=[REDACTED: stored in keychain as ACCESSKEY]
-AWSSECRETKEY=[REDACTED: stored in keychain as AWSSECRETKEY]
-PRIVATEKEY=[REDACTED: stored in keychain as PRIVATEKEY]
-TS_AUTHKEY=[REDACTED: stored in keychain as TS_AUTHKEY]
-token: [REDACTED: stored in keychain as token]
-isKey=true
-enabledKey=FALSE
-FILE_KEY=9001
-API_KEY=null
-KEY=0
-hotkey=1
-APP_KEY2=42
-rowKey=true 
-sortKey: '1'
-cacheKey: \"TRUE\"
-mixedKey: [REDACTED: stored in keychain as mixedKey]
-partitionKey=9001"$'\r'"
-x" "$(cat "$art/app.env"; printf x)" "only the migrated values are replaced" || return 1
+    want=$(printf '%s\n' 'PASSWORD=[REDACTED: stored in keychain as PASSWORD]' \
+        'PIN_TOKEN=[REDACTED: stored in keychain as PIN_TOKEN]' 'secret: [REDACTED: stored in keychain as secret]' \
+        '_fileKey=[REDACTED: stored in keychain as _fileKey]' 'SECRETKEY=[REDACTED: stored in keychain as SECRETKEY]' \
+        'ACCESSKEY=[REDACTED: stored in keychain as ACCESSKEY]' 'AWSSECRETKEY=[REDACTED: stored in keychain as AWSSECRETKEY]' \
+        'PRIVATEKEY=[REDACTED: stored in keychain as PRIVATEKEY]' 'TS_AUTHKEY=[REDACTED: stored in keychain as TS_AUTHKEY]' \
+        'token: [REDACTED: stored in keychain as token]' \
+        'isKey=true' 'enabledKey=FALSE' 'FILE_KEY=9001' 'API_KEY=null' 'KEY=0' 'hotkey=1' 'APP_KEY2=42' \
+        'rowKey=true ' "sortKey: '1'" 'cacheKey: "TRUE"' 'mixedKey: [REDACTED: stored in keychain as mixedKey]' \
+        $'partitionKey=9001\r'; printf x)
+    assert_eq "$want" "$(cat "$art/app.env"; printf x)" "only the migrated values are replaced" || return 1
     assert_eq "123456" "$("$CS_SECRETS_BIN" get PASSWORD 2>&1)" "PASSWORD is stored as it was" || return 1
     assert_eq "0042" "$("$CS_SECRETS_BIN" get secret 2>&1)" "secret keeps its leading zeros" || return 1
     assert_eq "\"8\"" "$("$CS_SECRETS_BIN" get token 2>&1)" "a quoted colon-form value is stored with its quotes" || return 1
