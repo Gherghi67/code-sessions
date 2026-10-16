@@ -583,9 +583,15 @@ _cs_lock() {  # lock file
 # holding the lock; 1 after five seconds of a live holder; 2 when the path is
 # not the regular file fd 9 has open (a link, or another type); 3 when the
 # path names another regular file than fd 9 has, or nothing at all, so the
-# caller opens the path again.
+# caller opens the path again. The five seconds are read from the clock, not
+# counted in polls: a starved CPU wakes each 50 ms poll late, and a hundred
+# late polls would wait twice as long as promised. The clock is the
+# monotonic one, so a wall-clock step during the wait (NTP, a manual date
+# change) neither ends it early nor stretches it.
 _CS_LOCK_PERL='
 use Fcntl qw(:flock);
+use Time::HiRes qw(clock_gettime CLOCK_MONOTONIC);
+sub now { return clock_gettime(CLOCK_MONOTONIC); }
 open(my $fd, "+<&=", 9) or exit 1;
 my @held = stat($fd);
 exit 2 unless @held && -f _;
@@ -597,15 +603,17 @@ my @path = lstat($ARGV[0]);
 exit 3 if !@path && $!{ENOENT};
 exit 2 unless @path && -f _;
 exit 3 unless path_names_held();
-for my $poll (0 .. 100) {
+my $deadline = now() + 5;
+while (1) {
     if (flock($fd, LOCK_EX | LOCK_NB)) {
         exit 0 if path_names_held();
         flock($fd, LOCK_UN);
         exit 3;
     }
-    select(undef, undef, undef, 0.05) if $poll < 100;
+    my $left = $deadline - now();
+    exit 1 if $left <= 0;
+    select(undef, undef, undef, $left < 0.05 ? $left : 0.05);
 }
-exit 1;
 '
 
 # Release the lock this process holds on <lock file>. Any other path, an
@@ -625,6 +633,17 @@ read_lock_pid() {  # meta_dir
     cat "$f" 2>/dev/null || true
 }
 
+# Whether $1, a string of decimal digits with no leading zero, is a pid this
+# machine can have: 1 to 2147483647, a pid_t. A larger number is not one kill
+# can ask about: bash's builtin and macOS's /bin/kill refuse it, and procps
+# kill on Linux truncates it to a pid_t and answers for whatever process that
+# is. live_lock_pid and doctor's integrate-lock check decide the range here;
+# live_lock_pid in bin/cs-secrets, which cannot source this file, keeps the
+# same two clauses.
+_cs_pid_in_range() {  # digits
+    [ -n "$1" ] && [ "${#1}" -le 10 ] && [ "$1" -le 2147483647 ]
+}
+
 # Print the pid a session's lock names when that process is running on this
 # machine; print nothing otherwise. The rule: the lock's text, surrounding
 # whitespace removed, is a decimal number from 1 to 2147483647 (a pid_t;
@@ -642,7 +661,7 @@ live_lock_pid() {  # meta_dir
         ''|*[!0-9]*) return 0 ;;
     esac
     pid="${text#"${text%%[!0]*}"}"
-    [ -n "$pid" ] && [ "${#pid}" -le 10 ] && [ "$pid" -le 2147483647 ] || return 0
+    _cs_pid_in_range "$pid" || return 0
     kill -0 "$pid" 2>/dev/null || return 0
     echo "$pid"
 }
