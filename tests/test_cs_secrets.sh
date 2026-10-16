@@ -3848,13 +3848,14 @@ No plaintext secrets found to migrate." "$out" "migrate finds no secret" || retu
 # nothing is stored and the line stays. A key that names a secret by any
 # other word, or whose last segment ends in secretkey, accesskey,
 # privatekey or authkey, keeps such a value (PASSWORD=123456,
-# SECRETKEY=123456), stored as written. No stored value here is part of
-# another line, so each replacement touches one line.
+# SECRETKEY=123456), stored as written. No stored value here occurs
+# elsewhere in the file except inside a longer stored value, so each
+# replacement touches one line.
 test_migrate_redact_skips_a_flag_or_number_only_under_a_key_name() {
     local art="$CS_SESSIONS_ROOT/test-session/.cs/artifacts" out rc=0
     mkdir -p "$art"
     printf '%s\n' 'PASSWORD=123456' 'PIN_TOKEN=4821' 'secret: 0042' '_fileKey=example-file-key-value' \
-        'SECRETKEY=234567' 'ACCESSKEY=4821' 'AWSSECRETKEY=7' 'PRIVATEKEY=null' 'TS_AUTHKEY=true' 'token: "8"' \
+        'SECRETKEY=234567' 'ACCESSKEY=7391' 'AWSSECRETKEY=7' 'PRIVATEKEY=NULL' 'TS_AUTHKEY=false' 'token: "8"' \
         'isKey=true' 'enabledKey=FALSE' 'FILE_KEY=9001' 'API_KEY=null' 'KEY=0' 'hotkey=1' 'APP_KEY2=42' \
         'rowKey=true ' "sortKey: '1'" 'cacheKey: "TRUE"' > "$art/app.env"
     printf 'partitionKey=9001\r\n' >> "$art/app.env"
