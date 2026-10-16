@@ -3761,10 +3761,12 @@ Updated 1 file(s) with redacted values." "$out" "migrate reports both secrets an
 # lower-to-upper case change, before the last capital of an upper-case run
 # that a lower-case letter follows, and where a letter and a digit meet in
 # either direction) is a secret word or ends in one (PGPASSWORD,
-# NGROK_AUTHTOKEN, S3SECRET), is pass, pwd, pat, cred or creds whole, when
-# its last segment is auth, when api, access or private comes right before
-# key, or when its last segment is key or ends in key (APP_KEY, TS_AUTHKEY).
-# Each key here is migrated and its value, and nothing else, is replaced.
+# NGROK_AUTHTOKEN, S3SECRET), is pat, cred or creds whole, when its last
+# segment is auth, pass or pwd, when api, access or private comes right
+# before key, or when its last segment is key or ends in key (APP_KEY,
+# TS_AUTHKEY). Trailing all-digit and v<digits> segments do not count when
+# finding the last segment (APP_KEY2, MASTER_KEY_V2, BASIC_AUTH_2). Each key
+# here is migrated and its value, and nothing else, is replaced.
 test_migrate_redact_stores_each_key_a_segment_names_a_secret() {
     local art="$CS_SESSIONS_ROOT/test-session/.cs/artifacts" out rc=0 want name n=0 value
     local names="api_key API_KEY apiKey APIKEY OPENAI_ADMIN_API_KEY DB_PASSWORD dbPassword passwd password2
@@ -3774,7 +3776,8 @@ test_migrate_redact_stores_each_key_a_segment_names_a_secret() {
         PGPASSWORD ACCESSTOKEN APISECRET NGROK_AUTHTOKEN DBPASSWORD S3SECRET OAUTH2TOKEN DB2PASS V2AUTH
         APP_KEY RAILS_MASTER_KEY SSH_KEY SIGNING_KEY authKey encryptionKey SECRETKEY ACCESSKEY TS_AUTHKEY
         PRIVATE_KEY_PEM PASSPHRASE GPG_PASSPHRASE Authorization Proxy_Authorization
-        DB_PASS MYSQL_PWD GITHUB_PAT AWS_CREDS DB_CRED pixelsThisPass PWD"
+        DB_PASS MYSQL_PWD GITHUB_PAT AWS_CREDS DB_CRED pixelsThisPass SMTP_PASS FIRST_PASS DB_PASS_2
+        APP_KEY2 APP_KEY_2 SSH_KEY_1 KEY2 MASTER_KEY_V2 JWT_KEY_V2 BASIC_AUTH_2 TS_AUTHKEY_2 APIkey"
     local lines=() want_lines=() want_out="Scanning artifacts for plaintext secrets...
 "
     mkdir -p "$art"
@@ -3807,6 +3810,9 @@ Updated 1 file(s) with redacted values." "$out" "migrate names every key a segme
 # DEFAULT_MAX_TOKENS, CS_SECRETS_BACKEND), key or auth before another segment
 # (KEY_NUM, key_index, auth_dependency, SSH_AUTH_SOCK), auth glued at a
 # segment's end (OAUTH, NOAUTH), a qualifier and key apart (API_FILE_KEY_ID),
+# pass or pwd before another segment (PASS_RATE, passThrough, PASS_COUNT),
+# the whole name PWD, key or auth before a segment that is not a trailing
+# number (KEY_FILE, SSH_KEY_PATH, AUTH_HEADER), a trailing number alone (V2),
 # and session, cookie or private alone mark no secret. Nothing is stored,
 # and the file, a value that recurs in its prose included, stays byte for
 # byte as it was.
@@ -3815,7 +3821,8 @@ test_migrate_redact_leaves_each_key_no_segment_names_a_secret() {
     local names="Author tokenizers KEYTIMEOUT keys EDGE_KEYS other_keys DEFAULT_MAX_TOKENS MAX_THINKING_TOKENS
         CS_SECRETS_BACKEND OWNED_KEY_BIT KEY_NUM key_index API_FILE_KEY_ID AWSACCESSKEYID
         auth_dependency SSH_AUTH_SOCK OAUTH NOAUTH CLAUDE_SESSION_ID cookie EXTRACT_PRIVATE legacy_api
-        bypass compass pattern passwordless secretsManager monkeyPatch"
+        bypass compass pattern passwordless secretsManager monkeyPatch
+        PASS_RATE passThrough PASS_COUNT PWD OLDPWD KEY_FILE SSH_KEY_PATH AUTH_HEADER V2 KEY_2_FILE"
     local lines=('author: alice')
     mkdir -p "$art"
     for name in $names; do
@@ -3834,16 +3841,23 @@ No plaintext secrets found to migrate." "$out" "migrate finds no secret" || retu
     assert_eq "No secrets stored for session: test-session" "$("$CS_SECRETS_BIN" list 2>&1)" "nothing is stored" || return 1
 }
 
-# A key that names a secret only through key (isKey, FILE_KEY, API_KEY, KEY)
-# holds a lookup key, not a credential, when its value is true, false, null
-# or digits alone: nothing is stored and the line stays. A key that names a
-# secret by any other word keeps such a value (PASSWORD=123456). No stored
-# value here is part of another line, so each replacement touches one line.
+# A key that names a secret only through plain key (isKey, FILE_KEY, API_KEY,
+# KEY, hotkey, APP_KEY2) holds a lookup key, not a credential, when its
+# value, after surrounding whitespace, a trailing CR and one pair of
+# matching quotes are stripped, is true, false, null or digits alone:
+# nothing is stored and the line stays. A key that names a secret by any
+# other word, or whose last segment ends in secretkey, accesskey,
+# privatekey or authkey, keeps such a value (PASSWORD=123456,
+# SECRETKEY=123456), stored as written. No stored value here is part of
+# another line, so each replacement touches one line.
 test_migrate_redact_skips_a_flag_or_number_only_under_a_key_name() {
     local art="$CS_SESSIONS_ROOT/test-session/.cs/artifacts" out rc=0
     mkdir -p "$art"
     printf '%s\n' 'PASSWORD=123456' 'PIN_TOKEN=4821' 'secret: 0042' '_fileKey=example-file-key-value' \
-        'isKey=true' 'enabledKey=FALSE' 'FILE_KEY=9001' 'API_KEY=null' 'KEY=0' > "$art/app.env"
+        'SECRETKEY=234567' 'ACCESSKEY=4821' 'AWSSECRETKEY=7' 'PRIVATEKEY=null' 'TS_AUTHKEY=true' 'token: "8"' \
+        'isKey=true' 'enabledKey=FALSE' 'FILE_KEY=9001' 'API_KEY=null' 'KEY=0' 'hotkey=1' 'APP_KEY2=42' \
+        'rowKey=true ' "sortKey: '1'" 'cacheKey: "TRUE"' > "$art/app.env"
+    printf 'partitionKey=9001\r\n' >> "$art/app.env"
     out=$("$CS_SECRETS_BIN" migrate --redact 2>&1) || rc=$?
     assert_eq "0" "$rc" "migrate --redact exits 0: $out" || return 1
     assert_eq "Scanning artifacts for plaintext secrets...
@@ -3852,26 +3866,69 @@ test_migrate_redact_skips_a_flag_or_number_only_under_a_key_name() {
   Migrated: PIN_TOKEN (from app.env)
   Migrated: secret (from app.env)
   Migrated: _fileKey (from app.env)
+  Migrated: SECRETKEY (from app.env)
+  Migrated: ACCESSKEY (from app.env)
+  Migrated: AWSSECRETKEY (from app.env)
+  Migrated: PRIVATEKEY (from app.env)
+  Migrated: TS_AUTHKEY (from app.env)
+  Migrated: token (from app.env)
 
-Migrated 4 secret(s) to secure storage.
+Migrated 10 secret(s) to secure storage.
 Updated 1 file(s) with redacted values." "$out" "a number under a password or token name is migrated, a flag or number under a key name is not" || return 1
     assert_eq "PASSWORD=[REDACTED: stored in keychain as PASSWORD]
 PIN_TOKEN=[REDACTED: stored in keychain as PIN_TOKEN]
 secret: [REDACTED: stored in keychain as secret]
 _fileKey=[REDACTED: stored in keychain as _fileKey]
+SECRETKEY=[REDACTED: stored in keychain as SECRETKEY]
+ACCESSKEY=[REDACTED: stored in keychain as ACCESSKEY]
+AWSSECRETKEY=[REDACTED: stored in keychain as AWSSECRETKEY]
+PRIVATEKEY=[REDACTED: stored in keychain as PRIVATEKEY]
+TS_AUTHKEY=[REDACTED: stored in keychain as TS_AUTHKEY]
+token: [REDACTED: stored in keychain as token]
 isKey=true
 enabledKey=FALSE
 FILE_KEY=9001
 API_KEY=null
 KEY=0
+hotkey=1
+APP_KEY2=42
+rowKey=true 
+sortKey: '1'
+cacheKey: \"TRUE\"
+partitionKey=9001"$'\r'"
 x" "$(cat "$art/app.env"; printf x)" "only the migrated values are replaced" || return 1
     assert_eq "123456" "$("$CS_SECRETS_BIN" get PASSWORD 2>&1)" "PASSWORD is stored as it was" || return 1
     assert_eq "0042" "$("$CS_SECRETS_BIN" get secret 2>&1)" "secret keeps its leading zeros" || return 1
+    assert_eq "\"8\"" "$("$CS_SECRETS_BIN" get token 2>&1)" "a quoted colon-form value is stored with its quotes" || return 1
     assert_eq "Secrets for session: test-session
+  - ACCESSKEY
+  - AWSSECRETKEY
   - PASSWORD
   - PIN_TOKEN
+  - PRIVATEKEY
+  - SECRETKEY
+  - TS_AUTHKEY
   - _fileKey
-  - secret" "$("$CS_SECRETS_BIN" list 2>&1)" "no key-only name with a flag or number value is stored" || return 1
+  - secret
+  - token" "$("$CS_SECRETS_BIN" list 2>&1)" "no plain-key name with a flag or number value is stored" || return 1
+}
+
+# A value that is only whitespace is never stored or redacted, whatever the
+# name: the line stays and nothing else in the file is touched (a stored
+# space would be replaced wherever the file holds one).
+test_migrate_redact_leaves_a_blank_value_under_any_name() {
+    local art="$CS_SESSIONS_ROOT/test-session/.cs/artifacts" out rc=0 want
+    mkdir -p "$art"
+    printf '%s\n' 'S_KEY=   ' 'PASSWORD= ' "DB_PASS=\"$(printf '\t')\"" 'note: a space seen here' > "$art/app.env"
+    want=$(cat "$art/app.env"; printf x)
+    out=$("$CS_SECRETS_BIN" migrate --redact 2>&1) || rc=$?
+    assert_eq "0" "$rc" "migrate --redact exits 0: $out" || return 1
+    assert_eq "Scanning artifacts for plaintext secrets...
+
+
+No plaintext secrets found to migrate." "$out" "migrate finds no secret" || return 1
+    assert_eq "$want" "$(cat "$art/app.env"; printf x)" "the file stays byte for byte as it was" || return 1
+    assert_eq "No secrets stored for session: test-session" "$("$CS_SECRETS_BIN" list 2>&1)" "nothing is stored" || return 1
 }
 
 # ============================================================================
@@ -5170,6 +5227,7 @@ run_test test_migrate_redact_keeps_every_marker_whole
 run_test test_migrate_redact_stores_each_key_a_segment_names_a_secret
 run_test test_migrate_redact_leaves_each_key_no_segment_names_a_secret
 run_test test_migrate_redact_skips_a_flag_or_number_only_under_a_key_name
+run_test test_migrate_redact_leaves_a_blank_value_under_any_name
 
 # Concurrency & durability
 run_test test_encrypted_concurrent_stores_no_lost_update
