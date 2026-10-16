@@ -3758,7 +3758,8 @@ Updated 1 file(s) with redacted values." "$out" "migrate reports both secrets an
 }
 
 # A key names a secret when one of its name segments (split on _ and -, at
-# each lower-to-upper case change and at each letter-digit change) is a
+# each lower-to-upper case change, before the last capital of an upper-case
+# run that a lower-case letter follows, and at each letter-digit change) is a
 # secret word, when it ends in auth, when api, access or private comes right
 # before key, or when the whole name is key. Each key here is migrated and
 # its value, and nothing else, is replaced.
@@ -3766,7 +3767,8 @@ test_migrate_redact_stores_each_key_a_segment_names_a_secret() {
     local art="$CS_SESSIONS_ROOT/test-session/.cs/artifacts" out rc=0 want name n=0 value
     local names="api_key API_KEY apiKey APIKEY OPENAI_ADMIN_API_KEY DB_PASSWORD dbPassword passwd password2
         ACCESS_TOKEN GITHUB_TOKEN githubToken FIRST_TOKEN CS_SECRETS_PASSWORD AWS_SECRET_ACCESS_KEY
-        AWS_ACCESS_KEY_ID PRIVATE_KEY API_KEY2 client_credential DB_CREDENTIALS BASIC_AUTH key KEY key_ token password"
+        AWS_ACCESS_KEY_ID PRIVATE_KEY API_KEY2 client_credential DB_CREDENTIALS BASIC_AUTH key KEY key_ token password
+        AWSSecretKey HTTPToken DBPassword myAPIKey"
     local lines=() want_lines=() want_out="Scanning artifacts for plaintext secrets...
 "
     mkdir -p "$art"
