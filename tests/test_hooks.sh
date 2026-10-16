@@ -5137,10 +5137,11 @@ test_reminder_carries_the_commit_cadence() {
     # session protocol, which is read once at startup and stale by then.
     local output
     output=$(echo '{}' | bash "$HOOKS_DIR/narrative-reminder.sh" 2>/dev/null)
-    # The session protocol's cs:session-commits rule says the same: nothing
-    # commits files under .cs/ unless the user asks (Alex, 2026-10-14: "No
-    # commits at all").
-    assert_output_contains "$output" "Never commit narrative appends or anything else under .cs/ on your own, not even beside a project change: cs and its skills commit none of them, and they are committed only when the user asks." \
+    # The session protocol's cs:session-commits rule says the same: cs commits
+    # files under .cs/ only in the create commit and /finish's integrate merge,
+    # and the model commits them only when the user asks (Alex, 2026-10-14:
+    # "No commits at all"; 2026-10-15: keep the create commit, fix the text).
+    assert_output_contains "$output" "Never commit narrative appends or anything else under .cs/ on your own, not even beside a project change: cs commits files under .cs/ only in the commit that creates a session and the merge /finish makes, and you commit them only when the user asks." \
         "Reminder should say appends are committed only when the user asks, as the protocol does" || return 1
     assert_output_not_contains "$output" "commit them with the next handoff" \
         "no commit is named for appends to ride in" || return 1
