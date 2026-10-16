@@ -962,8 +962,9 @@ _doctor_check_integrate_lock() {
     local pid
     pid=$(cat "$lock/pid" 2>/dev/null || true)
     case "$pid" in
-        0|*[!0-9]*|"") pid="" ;;
+        *[!0-9]*) pid="" ;;
     esac
+    pid="${pid#"${pid%%[!0]*}"}"
     # kill -0, not ps: kill(2) sees a process that a restricted /proc hides
     # from ps, and its errno tells a holder owned by another user (EPERM) from
     # a pid that is gone (ESRCH). Only ESRCH is evidence of absence; anything
@@ -974,23 +975,29 @@ _doctor_check_integrate_lock() {
     # own locale in this forked copy, which can crash a bash linked against
     # libintl. That kill prints "kill: <pid>: No such process" or "kill:
     # <pid>: Operation not permitted" and exits 1, and refuses a pid it cannot
-    # parse with "kill: illegal process id: <pid>", which is unknown.
-    local verdict="unrecorded" err=""
+    # parse with "kill: illegal process id: <pid>", which is unknown. A number
+    # past the pid range never reaches kill: procps kill on Linux would
+    # truncate it to a pid_t and answer for another process (ESRCH for most
+    # values, and 4294967297 is pid 1, which is held), so the range is
+    # screened by cs's own rule first and the number is unknown.
+    local verdict="unrecorded" why=""
     if [ -n "$pid" ]; then
-        if err=$(env LC_ALL=C kill -0 "$pid" 2>&1); then
+        if ! _cs_pid_in_range "$pid"; then
+            verdict="unknown" why="no process can have that pid"
+        elif why=$(env LC_ALL=C kill -0 "$pid" 2>&1); then
             verdict="held"
         else
-            case "$err" in
+            case "$why" in
                 *"No such process"*)        verdict="stale" ;;
                 *"Operation not permitted"*) verdict="eperm" ;;
-                *)                           verdict="unknown" ;;
+                *)                           verdict="unknown" why="${why#kill: }" ;;
             esac
         fi
     fi
     case "$verdict" in
         held)    _doctor_ok "Integrate lock: $lock held by a running integrate (pid $pid)" ;;
         eperm)   _doctor_ok "Integrate lock: $lock held by a running integrate (pid $pid; signalling it is not permitted here, which is a process that exists)" ;;
-        unknown) _doctor_warn "Integrate lock: $lock records pid $pid and cs cannot tell whether it is running (${err#kill: })" ;;
+        unknown) _doctor_warn "Integrate lock: $lock records pid $pid and cs cannot tell whether it is running ($why)" ;;
         # ESRCH is absence only in this process's pid namespace, and pids are
         # recycled, so the removal stays conditional on what the person can see.
         stale)   _doctor_warn "Integrate lock: $lock records pid $pid, which this process cannot see; the lock is probably stale. Autosave skips while it exists. Once nothing is using this checkout, clear it with: rm -r \"$lock\"" ;;

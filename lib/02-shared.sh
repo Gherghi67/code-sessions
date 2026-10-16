@@ -625,6 +625,17 @@ read_lock_pid() {  # meta_dir
     cat "$f" 2>/dev/null || true
 }
 
+# Whether $1, a string of decimal digits with no leading zero, is a pid this
+# machine can have: 1 to 2147483647, a pid_t. A larger number is not one kill
+# can ask about: bash's builtin and macOS's /bin/kill refuse it, and procps
+# kill on Linux truncates it to a pid_t and answers for whatever process that
+# is. live_lock_pid and doctor's integrate-lock check decide the range here;
+# live_lock_pid in bin/cs-secrets, which cannot source this file, keeps the
+# same two clauses.
+_cs_pid_in_range() {  # digits
+    [ -n "$1" ] && [ "${#1}" -le 10 ] && [ "$1" -le 2147483647 ]
+}
+
 # Print the pid a session's lock names when that process is running on this
 # machine; print nothing otherwise. The rule: the lock's text, surrounding
 # whitespace removed, is a decimal number from 1 to 2147483647 (a pid_t;
@@ -642,7 +653,7 @@ live_lock_pid() {  # meta_dir
         ''|*[!0-9]*) return 0 ;;
     esac
     pid="${text#"${text%%[!0]*}"}"
-    [ -n "$pid" ] && [ "${#pid}" -le 10 ] && [ "$pid" -le 2147483647 ] || return 0
+    _cs_pid_in_range "$pid" || return 0
     kill -0 "$pid" 2>/dev/null || return 0
     echo "$pid"
 }

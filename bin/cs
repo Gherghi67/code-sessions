@@ -1855,6 +1855,17 @@ read_lock_pid() {  # meta_dir
     cat "$f" 2>/dev/null || true
 }
 
+# Whether $1, a string of decimal digits with no leading zero, is a pid this
+# machine can have: 1 to 2147483647, a pid_t. A larger number is not one kill
+# can ask about: bash's builtin and macOS's /bin/kill refuse it, and procps
+# kill on Linux truncates it to a pid_t and answers for whatever process that
+# is. live_lock_pid and doctor's integrate-lock check decide the range here;
+# live_lock_pid in bin/cs-secrets, which cannot source this file, keeps the
+# same two clauses.
+_cs_pid_in_range() {  # digits
+    [ -n "$1" ] && [ "${#1}" -le 10 ] && [ "$1" -le 2147483647 ]
+}
+
 # Print the pid a session's lock names when that process is running on this
 # machine; print nothing otherwise. The rule: the lock's text, surrounding
 # whitespace removed, is a decimal number from 1 to 2147483647 (a pid_t;
@@ -1872,7 +1883,7 @@ live_lock_pid() {  # meta_dir
         ''|*[!0-9]*) return 0 ;;
     esac
     pid="${text#"${text%%[!0]*}"}"
-    [ -n "$pid" ] && [ "${#pid}" -le 10 ] && [ "$pid" -le 2147483647 ] || return 0
+    _cs_pid_in_range "$pid" || return 0
     kill -0 "$pid" 2>/dev/null || return 0
     echo "$pid"
 }
@@ -11896,8 +11907,9 @@ _doctor_check_integrate_lock() {
     local pid
     pid=$(cat "$lock/pid" 2>/dev/null || true)
     case "$pid" in
-        0|*[!0-9]*|"") pid="" ;;
+        *[!0-9]*) pid="" ;;
     esac
+    pid="${pid#"${pid%%[!0]*}"}"
     # kill -0, not ps: kill(2) sees a process that a restricted /proc hides
     # from ps, and its errno tells a holder owned by another user (EPERM) from
     # a pid that is gone (ESRCH). Only ESRCH is evidence of absence; anything
@@ -11908,23 +11920,29 @@ _doctor_check_integrate_lock() {
     # own locale in this forked copy, which can crash a bash linked against
     # libintl. That kill prints "kill: <pid>: No such process" or "kill:
     # <pid>: Operation not permitted" and exits 1, and refuses a pid it cannot
-    # parse with "kill: illegal process id: <pid>", which is unknown.
-    local verdict="unrecorded" err=""
+    # parse with "kill: illegal process id: <pid>", which is unknown. A number
+    # past the pid range never reaches kill: procps kill on Linux would
+    # truncate it to a pid_t and answer for another process (ESRCH for most
+    # values, and 4294967297 is pid 1, which is held), so the range is
+    # screened by cs's own rule first and the number is unknown.
+    local verdict="unrecorded" why=""
     if [ -n "$pid" ]; then
-        if err=$(env LC_ALL=C kill -0 "$pid" 2>&1); then
+        if ! _cs_pid_in_range "$pid"; then
+            verdict="unknown" why="no process can have that pid"
+        elif why=$(env LC_ALL=C kill -0 "$pid" 2>&1); then
             verdict="held"
         else
-            case "$err" in
+            case "$why" in
                 *"No such process"*)        verdict="stale" ;;
                 *"Operation not permitted"*) verdict="eperm" ;;
-                *)                           verdict="unknown" ;;
+                *)                           verdict="unknown" why="${why#kill: }" ;;
             esac
         fi
     fi
     case "$verdict" in
         held)    _doctor_ok "Integrate lock: $lock held by a running integrate (pid $pid)" ;;
         eperm)   _doctor_ok "Integrate lock: $lock held by a running integrate (pid $pid; signalling it is not permitted here, which is a process that exists)" ;;
-        unknown) _doctor_warn "Integrate lock: $lock records pid $pid and cs cannot tell whether it is running (${err#kill: })" ;;
+        unknown) _doctor_warn "Integrate lock: $lock records pid $pid and cs cannot tell whether it is running ($why)" ;;
         # ESRCH is absence only in this process's pid namespace, and pids are
         # recycled, so the removal stays conditional on what the person can see.
         stale)   _doctor_warn "Integrate lock: $lock records pid $pid, which this process cannot see; the lock is probably stale. Autosave skips while it exists. Once nothing is using this checkout, clear it with: rm -r \"$lock\"" ;;
