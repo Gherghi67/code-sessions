@@ -3757,18 +3757,24 @@ Updated 1 file(s) with redacted values." "$out" "migrate reports both secrets an
     assert_eq "as" "$("$CS_SECRETS_BIN" get secret_key 2>&1)" "secret_key is stored as it was" || return 1
 }
 
-# A key names a secret when one of its name segments (split on _ and -, at
-# each lower-to-upper case change, before the last capital of an upper-case
-# run that a lower-case letter follows, and at each letter-digit change) is a
-# secret word, when it ends in auth, when api, access or private comes right
-# before key, or when the whole name is key. Each key here is migrated and
-# its value, and nothing else, is replaced.
+# A key names a secret when one of its name segments (split on _, at each
+# lower-to-upper case change, before the last capital of an upper-case run
+# that a lower-case letter follows, and where a letter and a digit meet in
+# either direction) is a secret word or ends in one (PGPASSWORD,
+# NGROK_AUTHTOKEN, S3SECRET), is pass, pwd, pat, cred or creds whole, when
+# its last segment is auth, when api, access or private comes right before
+# key, or when its last segment is key or ends in key (APP_KEY, TS_AUTHKEY).
+# Each key here is migrated and its value, and nothing else, is replaced.
 test_migrate_redact_stores_each_key_a_segment_names_a_secret() {
     local art="$CS_SESSIONS_ROOT/test-session/.cs/artifacts" out rc=0 want name n=0 value
     local names="api_key API_KEY apiKey APIKEY OPENAI_ADMIN_API_KEY DB_PASSWORD dbPassword passwd password2
         ACCESS_TOKEN GITHUB_TOKEN githubToken FIRST_TOKEN CS_SECRETS_PASSWORD AWS_SECRET_ACCESS_KEY
         AWS_ACCESS_KEY_ID PRIVATE_KEY API_KEY2 client_credential DB_CREDENTIALS BASIC_AUTH key KEY key_ token password
-        AWSSecretKey HTTPToken DBPassword myAPIKey OAuth"
+        AWSSecretKey HTTPToken DBPassword myAPIKey OAuth
+        PGPASSWORD ACCESSTOKEN APISECRET NGROK_AUTHTOKEN DBPASSWORD S3SECRET OAUTH2TOKEN
+        APP_KEY RAILS_MASTER_KEY SSH_KEY SIGNING_KEY authKey encryptionKey SECRETKEY ACCESSKEY TS_AUTHKEY
+        PRIVATE_KEY_PEM PASSPHRASE GPG_PASSPHRASE Authorization Proxy_Authorization
+        DB_PASS MYSQL_PWD GITHUB_PAT AWS_CREDS DB_CRED pixelsThisPass PWD"
     local lines=() want_lines=() want_out="Scanning artifacts for plaintext secrets...
 "
     mkdir -p "$art"
@@ -3796,17 +3802,20 @@ Updated 1 file(s) with redacted values." "$out" "migrate names every key a segme
     done
 }
 
-# A secret word inside a longer word (author, tokenizers, KEYTIMEOUT), a
-# plural (keys, DEFAULT_MAX_TOKENS), key after any other segment (isKey,
-# _fileKey, FILE_KEY), key or auth before another segment (KEY_NUM,
-# key_index, auth_dependency, SSH_AUTH_SOCK), and pass, pwd, session, cookie
-# or private alone mark no secret. Nothing is stored, and the file, a value
-# that recurs in its prose included, stays byte for byte as it was.
+# A secret word at the start or inside of a longer segment (author,
+# passwordless, tokenizers, KEYTIMEOUT, bypass, pattern), a plural (keys,
+# DEFAULT_MAX_TOKENS, CS_SECRETS_BACKEND), key or auth before another segment
+# (KEY_NUM, key_index, auth_dependency, SSH_AUTH_SOCK), auth glued at a
+# segment's end (OAUTH, NOAUTH), a qualifier and key apart (API_FILE_KEY_ID),
+# and session, cookie or private alone mark no secret. Nothing is stored,
+# and the file, a value that recurs in its prose included, stays byte for
+# byte as it was.
 test_migrate_redact_leaves_each_key_no_segment_names_a_secret() {
     local art="$CS_SESSIONS_ROOT/test-session/.cs/artifacts" out rc=0 want name
     local names="Author tokenizers KEYTIMEOUT keys EDGE_KEYS other_keys DEFAULT_MAX_TOKENS MAX_THINKING_TOKENS
-        isKey _fileKey FILE_KEY FileKey ConfigKey previewKey new_key OWNED_KEY_BIT KEY_NUM key_index
-        auth_dependency SSH_AUTH_SOCK pixelsThisPass PWD CLAUDE_SESSION_ID cookie EXTRACT_PRIVATE legacy_api"
+        CS_SECRETS_BACKEND OWNED_KEY_BIT KEY_NUM key_index API_FILE_KEY_ID AWSACCESSKEYID
+        auth_dependency SSH_AUTH_SOCK OAUTH NOAUTH CLAUDE_SESSION_ID cookie EXTRACT_PRIVATE legacy_api
+        bypass compass pattern passwordless secretsManager monkeyPatch"
     local lines=('author: alice')
     mkdir -p "$art"
     for name in $names; do
@@ -3823,6 +3832,46 @@ test_migrate_redact_leaves_each_key_no_segment_names_a_secret() {
 No plaintext secrets found to migrate." "$out" "migrate finds no secret" || return 1
     assert_eq "$want" "$(cat "$art/app.env"; printf x)" "the file stays byte for byte as it was" || return 1
     assert_eq "No secrets stored for session: test-session" "$("$CS_SECRETS_BIN" list 2>&1)" "nothing is stored" || return 1
+}
+
+# A key that names a secret only through key (isKey, FILE_KEY, API_KEY, KEY)
+# holds a lookup key, not a credential, when its value is true, false, null
+# or digits alone: nothing is stored and the line stays. A key that names a
+# secret by any other word keeps such a value (PASSWORD=123456). No stored
+# value here is part of another line, so each replacement touches one line.
+test_migrate_redact_skips_a_flag_or_number_only_under_a_key_name() {
+    local art="$CS_SESSIONS_ROOT/test-session/.cs/artifacts" out rc=0
+    mkdir -p "$art"
+    printf '%s\n' 'PASSWORD=123456' 'PIN_TOKEN=4821' 'secret: 0042' '_fileKey=example-file-key-value' \
+        'isKey=true' 'enabledKey=FALSE' 'FILE_KEY=9001' 'API_KEY=null' 'KEY=0' > "$art/app.env"
+    out=$("$CS_SECRETS_BIN" migrate --redact 2>&1) || rc=$?
+    assert_eq "0" "$rc" "migrate --redact exits 0: $out" || return 1
+    assert_eq "Scanning artifacts for plaintext secrets...
+
+  Migrated: PASSWORD (from app.env)
+  Migrated: PIN_TOKEN (from app.env)
+  Migrated: secret (from app.env)
+  Migrated: _fileKey (from app.env)
+
+Migrated 4 secret(s) to secure storage.
+Updated 1 file(s) with redacted values." "$out" "a number under a password or token name is migrated, a flag or number under a key name is not" || return 1
+    assert_eq "PASSWORD=[REDACTED: stored in keychain as PASSWORD]
+PIN_TOKEN=[REDACTED: stored in keychain as PIN_TOKEN]
+secret: [REDACTED: stored in keychain as secret]
+_fileKey=[REDACTED: stored in keychain as _fileKey]
+isKey=true
+enabledKey=FALSE
+FILE_KEY=9001
+API_KEY=null
+KEY=0
+x" "$(cat "$art/app.env"; printf x)" "only the migrated values are replaced" || return 1
+    assert_eq "123456" "$("$CS_SECRETS_BIN" get PASSWORD 2>&1)" "PASSWORD is stored as it was" || return 1
+    assert_eq "0042" "$("$CS_SECRETS_BIN" get secret 2>&1)" "secret keeps its leading zeros" || return 1
+    assert_eq "Secrets for session: test-session
+  - PASSWORD
+  - PIN_TOKEN
+  - _fileKey
+  - secret" "$("$CS_SECRETS_BIN" list 2>&1)" "no key-only name with a flag or number value is stored" || return 1
 }
 
 # ============================================================================
@@ -5120,6 +5169,7 @@ run_test test_migrate_redact_replaces_the_longest_value_first
 run_test test_migrate_redact_keeps_every_marker_whole
 run_test test_migrate_redact_stores_each_key_a_segment_names_a_secret
 run_test test_migrate_redact_leaves_each_key_no_segment_names_a_secret
+run_test test_migrate_redact_skips_a_flag_or_number_only_under_a_key_name
 
 # Concurrency & durability
 run_test test_encrypted_concurrent_stores_no_lost_update
