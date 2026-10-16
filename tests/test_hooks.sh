@@ -567,13 +567,19 @@ test_auto_approve_rejects_linked_cs_dir() {
 
 # APFS keeps the case a caller typed, so pwd -P returns LOCAL/ for local/.
 # On a case-sensitive filesystem LOCAL is another directory, and the parent
-# is created so the test does not pass on a missing parent there.
+# is created so the test does not pass on a missing parent there. The
+# fixture holds a local/ that the lowercased LOCAL matches, and no
+# age-recipients/ or private/: a case variant prompts whether or not the
+# control directory it spells exists.
 test_auto_approve_rejects_case_variants() {
-    mkdir -p "$CLAUDE_SESSION_META_DIR/LOCAL" "$CLAUDE_SESSION_META_DIR/AGE-RECIPIENTS"
+    mkdir -p "$CLAUDE_SESSION_META_DIR/LOCAL" "$CLAUDE_SESSION_META_DIR/AGE-RECIPIENTS" \
+        "$CLAUDE_SESSION_META_DIR/PRIVATE"
     _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/LOCAL/state" \
         ".cs/LOCAL/state" || return 1
     _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/AGE-RECIPIENTS/x.pub" \
         ".cs/AGE-RECIPIENTS/x.pub" || return 1
+    _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/PRIVATE/x.md" \
+        ".cs/PRIVATE/x.md" || return 1
     _assert_falls_through Write "$CLAUDE_SESSION_META_DIR/SESSION.LOCK" \
         ".cs/SESSION.LOCK" || return 1
 }
