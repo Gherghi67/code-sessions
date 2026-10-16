@@ -2047,22 +2047,27 @@ test_doctor_reports_a_lock_held_by_another_users_process_as_held() {
     assert_output_not_contains "$output" "rm -r" "no removal advice for a held lock" || return 1
 }
 
-# A pid the kernel refuses to answer about at all (here: one past the pid
-# range, which bash's kill rejects before the syscall) is neither held nor
-# gone; doctor must say so and must not tell the user to remove the lock.
+# A pid past the pid range is one the kernel can never answer about, so the
+# lock is neither held nor gone; doctor must say so and must not tell the
+# user to remove the lock. macOS's /bin/kill rejects such a number before the
+# syscall; procps kill on Linux truncates it to a pid_t and asks the kernel
+# about another process: 999999999999 answers for a pid that is gone, and
+# 4294967297 for pid 1, which is held.
 test_doctor_does_not_call_a_lock_stale_when_the_pid_cannot_be_checked() {
-    local sess="$TEST_TMPDIR/sess-nocheck"
-    mkdir -p "$sess/.cs/memory"
-    git -C "$sess" init -q
-    mkdir -p "$sess/.git/cs/integrate.lock"
-    echo 999999999999 > "$sess/.git/cs/integrate.lock/pid"
-    local output
-    output=$(CLAUDE_SESSION_DIR="$sess" CLAUDE_SESSION_META_DIR="$sess/.cs" \
-        CS_CLAUDE_DIR="$TEST_TMPDIR/claude-nc" "$CS_BIN" -doctor 2>&1) || true
-    assert_output_contains "$output" "cannot tell whether it is running" \
-        "a check with no answer is reported as unknown" || return 1
-    assert_output_not_contains "$output" "rm -r" "no removal advice on an unknown" || return 1
-    assert_output_not_contains "$output" "held by a running integrate" "and not held either" || return 1
+    local pid sess output
+    for pid in 999999999999 4294967297; do
+        sess="$TEST_TMPDIR/sess-nocheck-$pid"
+        mkdir -p "$sess/.cs/memory"
+        git -C "$sess" init -q
+        mkdir -p "$sess/.git/cs/integrate.lock"
+        echo "$pid" > "$sess/.git/cs/integrate.lock/pid"
+        output=$(CLAUDE_SESSION_DIR="$sess" CLAUDE_SESSION_META_DIR="$sess/.cs" \
+            CS_CLAUDE_DIR="$TEST_TMPDIR/claude-nc" "$CS_BIN" -doctor 2>&1) || true
+        assert_output_contains "$output" "cannot tell whether it is running" \
+            "a check with no answer is reported as unknown (pid $pid)" || return 1
+        assert_output_not_contains "$output" "rm -r" "no removal advice on an unknown (pid $pid)" || return 1
+        assert_output_not_contains "$output" "held by a running integrate" "and not held either (pid $pid)" || return 1
+    done
 }
 
 test_doctor_names_a_lock_whose_pid_is_dead_as_stale() {
