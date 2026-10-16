@@ -3849,15 +3849,16 @@ No plaintext secrets found to migrate." "$out" "migrate finds no secret" || retu
 # null or digits alone:
 # nothing is stored and the line stays. A key that names a secret by any
 # other word, or whose last segment ends in secretkey, accesskey,
-# privatekey or authkey, keeps such a value (PASSWORD=123456,
-# SECRETKEY=123456), stored as written. No stored value here occurs
+# privatekey or authkey, a trailing number segment aside (SECRETKEY_2,
+# TS_AUTHKEY_2), keeps such a value (PASSWORD=123456, SECRETKEY=123456),
+# stored as written. No stored value here occurs
 # elsewhere in the file except inside a longer stored value, so each
 # replacement touches one line.
 test_migrate_redact_skips_a_flag_or_number_only_under_a_key_name() {
     local art="$CS_SESSIONS_ROOT/test-session/.cs/artifacts" out rc=0 want
     mkdir -p "$art"
     printf '%s\n' 'PASSWORD=123456' 'PIN_TOKEN=4821' 'secret: 0042' '_fileKey=example-file-key-value' \
-        'SECRETKEY=234567' 'ACCESSKEY=7391' 'AWSSECRETKEY=7' 'PRIVATEKEY=NULL' 'TS_AUTHKEY=false' 'token: "8"' \
+        'SECRETKEY=234567' 'ACCESSKEY=7391' 'AWSSECRETKEY=7' 'PRIVATEKEY=NULL' 'TS_AUTHKEY=false' 'token: "8"' 'SECRETKEY_2=53' 'TS_AUTHKEY_2=False' \
         'isKey=true' 'enabledKey=FALSE' 'FILE_KEY=9001' 'API_KEY=null' 'KEY=0' 'hotkey=1' 'APP_KEY2=42' \
         'rowKey=true ' "sortKey: '1'" 'cacheKey: "TRUE"' "mixedKey: \"1'" > "$art/app.env"
     printf 'partitionKey=9001\r\n' >> "$art/app.env"
@@ -3875,16 +3876,19 @@ test_migrate_redact_skips_a_flag_or_number_only_under_a_key_name() {
   Migrated: PRIVATEKEY (from app.env)
   Migrated: TS_AUTHKEY (from app.env)
   Migrated: token (from app.env)
+  Migrated: SECRETKEY_2 (from app.env)
+  Migrated: TS_AUTHKEY_2 (from app.env)
   Migrated: mixedKey (from app.env)
 
-Migrated 11 secret(s) to secure storage.
+Migrated 13 secret(s) to secure storage.
 Updated 1 file(s) with redacted values." "$out" "a number under a password or token name is migrated, a flag or number under a key name is not" || return 1
     want=$(printf '%s\n' 'PASSWORD=[REDACTED: stored in keychain as PASSWORD]' \
         'PIN_TOKEN=[REDACTED: stored in keychain as PIN_TOKEN]' 'secret: [REDACTED: stored in keychain as secret]' \
         '_fileKey=[REDACTED: stored in keychain as _fileKey]' 'SECRETKEY=[REDACTED: stored in keychain as SECRETKEY]' \
         'ACCESSKEY=[REDACTED: stored in keychain as ACCESSKEY]' 'AWSSECRETKEY=[REDACTED: stored in keychain as AWSSECRETKEY]' \
         'PRIVATEKEY=[REDACTED: stored in keychain as PRIVATEKEY]' 'TS_AUTHKEY=[REDACTED: stored in keychain as TS_AUTHKEY]' \
-        'token: [REDACTED: stored in keychain as token]' \
+        'token: [REDACTED: stored in keychain as token]' 'SECRETKEY_2=[REDACTED: stored in keychain as SECRETKEY_2]' \
+        'TS_AUTHKEY_2=[REDACTED: stored in keychain as TS_AUTHKEY_2]' \
         'isKey=true' 'enabledKey=FALSE' 'FILE_KEY=9001' 'API_KEY=null' 'KEY=0' 'hotkey=1' 'APP_KEY2=42' \
         'rowKey=true ' "sortKey: '1'" 'cacheKey: "TRUE"' 'mixedKey: [REDACTED: stored in keychain as mixedKey]' \
         $'partitionKey=9001\r'; printf x)
@@ -3899,7 +3903,9 @@ Updated 1 file(s) with redacted values." "$out" "a number under a password or to
   - PIN_TOKEN
   - PRIVATEKEY
   - SECRETKEY
+  - SECRETKEY_2
   - TS_AUTHKEY
+  - TS_AUTHKEY_2
   - _fileKey
   - mixedKey
   - secret
