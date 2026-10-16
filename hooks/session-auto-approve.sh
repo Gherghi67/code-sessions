@@ -252,16 +252,22 @@ _cs_real_lc() {
     real="$(_cs_realdir "$1")" || return 1
     _cs_lower "$real"
 }
+# A control directory that does not resolve (not made yet, a file, a dangling
+# link) is still a name: on a case-sensitive filesystem a directory spelled
+# in another case sits beside where it would be, and a write there compares
+# against the name under the resolved root, so the spelling prompts whether
+# or not the directory exists.
 for _cs_root in "$META_DIR" "$SESSION_DIR/.cs"; do
+    _cs_root_lc="$(_cs_real_lc "$_cs_root")" || continue
     for _cs_name in local claude-config age-recipients .git; do
-        _cs_ctl="$(_cs_real_lc "$_cs_root/$_cs_name")" || continue
+        _cs_ctl="$(_cs_real_lc "$_cs_root/$_cs_name")" || _cs_ctl="$_cs_root_lc/$_cs_name"
         case "$REAL_PARENT_LC/" in
             "$_cs_ctl"/)
                 [ "$_cs_name" = local ] && [ "$BASENAME_LC" = pending-handoff ] || exit 0 ;;
             "$_cs_ctl"/*) exit 0 ;;
         esac
     done
-    _cs_ctl="$(_cs_real_lc "$_cs_root/private")" || continue
+    _cs_ctl="$(_cs_real_lc "$_cs_root/private")" || _cs_ctl="$_cs_root_lc/private"
     case "$REAL_PARENT_LC/" in
         "$_cs_ctl"/)
             [ "$BASENAME_LC" = pending-handoff ] || exit 0 ;;
