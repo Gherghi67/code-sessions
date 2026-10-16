@@ -3757,6 +3757,72 @@ Updated 1 file(s) with redacted values." "$out" "migrate reports both secrets an
     assert_eq "as" "$("$CS_SECRETS_BIN" get secret_key 2>&1)" "secret_key is stored as it was" || return 1
 }
 
+# A key names a secret when one of its name segments (split on _ and -, at
+# each lower-to-upper case change and at each letter-digit change) is a
+# secret word, when it ends in auth, when api, access or private comes right
+# before key, or when the whole name is key. Each key here is migrated and
+# its value, and nothing else, is replaced.
+test_migrate_redact_stores_each_key_a_segment_names_a_secret() {
+    local art="$CS_SESSIONS_ROOT/test-session/.cs/artifacts" out rc=0 want name n=0 value
+    local names="api_key API_KEY apiKey APIKEY OPENAI_ADMIN_API_KEY DB_PASSWORD dbPassword passwd password2
+        ACCESS_TOKEN GITHUB_TOKEN githubToken FIRST_TOKEN CS_SECRETS_PASSWORD AWS_SECRET_ACCESS_KEY
+        AWS_ACCESS_KEY_ID PRIVATE_KEY API_KEY2 client_credential DB_CREDENTIALS BASIC_AUTH key KEY key_ token password"
+    local lines=() want_lines=() want_out="Scanning artifacts for plaintext secrets...
+"
+    mkdir -p "$art"
+    for name in $names; do
+        n=$((n + 1))
+        value="example-value-$(printf '%02d' "$n")"
+        lines+=("$name=$value")
+        want_lines+=("$name=[REDACTED: stored in keychain as $name]")
+        want_out+="
+  Migrated: $name (from app.env)"
+    done
+    printf '%s\n' "${lines[@]}" > "$art/app.env"
+    out=$("$CS_SECRETS_BIN" migrate --redact 2>&1) || rc=$?
+    assert_eq "0" "$rc" "migrate --redact exits 0: $out" || return 1
+    assert_eq "$want_out
+
+Migrated $n secret(s) to secure storage.
+Updated 1 file(s) with redacted values." "$out" "migrate names every key a segment marks as a secret" || return 1
+    want=$(printf '%s\n' "${want_lines[@]}"; printf x)
+    assert_eq "$want" "$(cat "$art/app.env"; printf x)" "each value, and nothing else, is replaced" || return 1
+    n=0
+    for name in $names; do
+        n=$((n + 1))
+        assert_eq "example-value-$(printf '%02d' "$n")" "$("$CS_SECRETS_BIN" get "$name" 2>&1)" "$name is stored as it was" || return 1
+    done
+}
+
+# A secret word inside a longer word (author, tokenizers, KEYTIMEOUT), a
+# plural (keys, DEFAULT_MAX_TOKENS), key after any other segment (isKey,
+# _fileKey, FILE_KEY), key or auth before another segment (KEY_NUM,
+# key_index, auth_dependency, SSH_AUTH_SOCK), and pass, pwd, session, cookie
+# or private alone mark no secret. Nothing is stored, and the file, a value
+# that recurs in its prose included, stays byte for byte as it was.
+test_migrate_redact_leaves_each_key_no_segment_names_a_secret() {
+    local art="$CS_SESSIONS_ROOT/test-session/.cs/artifacts" out rc=0 want name
+    local names="Author tokenizers KEYTIMEOUT keys EDGE_KEYS other_keys DEFAULT_MAX_TOKENS MAX_THINKING_TOKENS
+        isKey _fileKey FILE_KEY FileKey ConfigKey previewKey new_key OWNED_KEY_BIT KEY_NUM key_index
+        auth_dependency SSH_AUTH_SOCK pixelsThisPass PWD CLAUDE_SESSION_ID cookie EXTRACT_PRIVATE legacy_api"
+    local lines=('author: alice')
+    mkdir -p "$art"
+    for name in $names; do
+        lines+=("$name=example-$name")
+    done
+    lines+=('note: alice reviewed this file')
+    printf '%s\n' "${lines[@]}" > "$art/app.env"
+    want=$(cat "$art/app.env"; printf x)
+    out=$("$CS_SECRETS_BIN" migrate --redact 2>&1) || rc=$?
+    assert_eq "0" "$rc" "migrate --redact exits 0: $out" || return 1
+    assert_eq "Scanning artifacts for plaintext secrets...
+
+
+No plaintext secrets found to migrate." "$out" "migrate finds no secret" || return 1
+    assert_eq "$want" "$(cat "$art/app.env"; printf x)" "the file stays byte for byte as it was" || return 1
+    assert_eq "No secrets stored for session: test-session" "$("$CS_SECRETS_BIN" list 2>&1)" "nothing is stored" || return 1
+}
+
 # ============================================================================
 # Concurrency & durability (encrypted backend)
 # ============================================================================
@@ -5050,6 +5116,8 @@ run_test test_migrate_redact_replaces_each_value_as_text
 run_test test_migrate_redact_keeps_each_value_off_argv
 run_test test_migrate_redact_replaces_the_longest_value_first
 run_test test_migrate_redact_keeps_every_marker_whole
+run_test test_migrate_redact_stores_each_key_a_segment_names_a_secret
+run_test test_migrate_redact_leaves_each_key_no_segment_names_a_secret
 
 # Concurrency & durability
 run_test test_encrypted_concurrent_stores_no_lost_update
