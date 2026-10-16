@@ -252,28 +252,36 @@ _cs_real_lc() {
     real="$(_cs_realdir "$1")" || return 1
     _cs_lower "$real"
 }
-# A control directory that does not resolve (not made yet, a file, a dangling
-# link) is still a name: on a case-sensitive filesystem a directory spelled
-# in another case sits beside where it would be, and a write there compares
-# against the name under the resolved root, so the spelling prompts whether
-# or not the directory exists.
+_cs_prompt_in_control() {
+    # Exits (falls through to the prompt) when the write's parent is control
+    # directory $1, at lowercased real path $2, or below it. Only
+    # pending-handoff directly in local/ or private/, and the content
+    # directories under private/, go on to the checks below.
+    case "$REAL_PARENT_LC/" in
+        "$2"/)
+            case "$1" in
+                local|private) [ "$BASENAME_LC" = pending-handoff ] || exit 0 ;;
+                *) exit 0 ;;
+            esac ;;
+        "$2"/handoffs/*|"$2"/checkpoints/*|"$2"/narrative-archive/*)
+            [ "$1" = private ] || exit 0 ;;
+        "$2"/*) exit 0 ;;
+    esac
+}
+# A control directory is compared both where it resolves and as its name
+# under the resolved root. The name matters on a case-sensitive filesystem:
+# a directory spelled in another case sits beside the control directory, or
+# where it would be when it does not resolve (not made yet, a file, a
+# dangling link), or beside the vault link it resolves through, and a write
+# there prompts as the spelled name does.
 for _cs_root in "$META_DIR" "$SESSION_DIR/.cs"; do
     _cs_root_lc="$(_cs_real_lc "$_cs_root")" || continue
-    for _cs_name in local claude-config age-recipients .git; do
-        _cs_ctl="$(_cs_real_lc "$_cs_root/$_cs_name")" || _cs_ctl="$_cs_root_lc/$_cs_name"
-        case "$REAL_PARENT_LC/" in
-            "$_cs_ctl"/)
-                [ "$_cs_name" = local ] && [ "$BASENAME_LC" = pending-handoff ] || exit 0 ;;
-            "$_cs_ctl"/*) exit 0 ;;
-        esac
+    for _cs_name in local claude-config age-recipients .git private; do
+        if _cs_ctl="$(_cs_real_lc "$_cs_root/$_cs_name")"; then
+            _cs_prompt_in_control "$_cs_name" "$_cs_ctl"
+        fi
+        _cs_prompt_in_control "$_cs_name" "$_cs_root_lc/$_cs_name"
     done
-    _cs_ctl="$(_cs_real_lc "$_cs_root/private")" || _cs_ctl="$_cs_root_lc/private"
-    case "$REAL_PARENT_LC/" in
-        "$_cs_ctl"/)
-            [ "$BASENAME_LC" = pending-handoff ] || exit 0 ;;
-        "$_cs_ctl"/handoffs/*|"$_cs_ctl"/checkpoints/*|"$_cs_ctl"/narrative-archive/*) ;;
-        "$_cs_ctl"/*) exit 0 ;;
-    esac
 done
 # No link under a control directory is followed (audit C2, #886). The cost
 # is known and accepted: one link there makes every write in the session
