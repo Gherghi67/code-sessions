@@ -3768,7 +3768,7 @@ test_migrate_redact_stores_each_key_a_segment_names_a_secret() {
     local names="api_key API_KEY apiKey APIKEY OPENAI_ADMIN_API_KEY DB_PASSWORD dbPassword passwd password2
         ACCESS_TOKEN GITHUB_TOKEN githubToken FIRST_TOKEN CS_SECRETS_PASSWORD AWS_SECRET_ACCESS_KEY
         AWS_ACCESS_KEY_ID PRIVATE_KEY API_KEY2 client_credential DB_CREDENTIALS BASIC_AUTH key KEY key_ token password
-        AWSSecretKey HTTPToken DBPassword myAPIKey"
+        AWSSecretKey HTTPToken DBPassword myAPIKey OAuth"
     local lines=() want_lines=() want_out="Scanning artifacts for plaintext secrets...
 "
     mkdir -p "$art"
