@@ -1292,12 +1292,12 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "9aba1a3ec7a2142f974347b189db4f94c829d952415e2a96fbbaa3b1fb3c744a  bin/cs"
+    "1e0cb3f9c51f3885e29a210bf980c49b5b0b74b9e88c56a79fbc173358be6ea4  bin/cs"
     "6d29d5cc98000f0e42d414968256a594386fbc0a887baee313e698e0cf7ca88e  bin/cs-secrets"
     "2c7073689cf05dc5b3395765c67b80dd60bde74021845efda79a3f2100556f4f  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
     "12d9604997a1b72088df338d259fbb475c13c3bedb0b611d91d50ebbab2914c5  hooks/cs-resolve.sh"
-    "639d9b4ce1eca5915b78818870bccf373c49903daa30befc774f63cff5adb251  hooks/cs-shared.sh"
+    "8b0c7af2d3cb686ea2f23cc1631abe9de878bea219e065c60306eb582bc44a16  hooks/cs-shared.sh"
     "50d63ce0995e68fddd8503700c15f9585d11938c9cd3872a883146de7707c765  hooks/cs-iterm-tab.py"
     "cd7bdb7640403cfa9a9b1c600d1626ba943a609e7ef7ebf3feb6f0ab7af03112  hooks/memory-index-guard.sh"
     "6c9a9db966b02d1d99c24a4358abdcf005a0e56e1c7c2defc7c75d9fde516612  hooks/prompt-rewriter.sh"

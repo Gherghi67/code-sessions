@@ -583,9 +583,12 @@ _cs_lock() {  # lock file
 # holding the lock; 1 after five seconds of a live holder; 2 when the path is
 # not the regular file fd 9 has open (a link, or another type); 3 when the
 # path names another regular file than fd 9 has, or nothing at all, so the
-# caller opens the path again.
+# caller opens the path again. The five seconds are read from the clock, not
+# counted in polls: a starved CPU wakes each 50 ms poll late, and a hundred
+# late polls would wait twice as long as promised.
 _CS_LOCK_PERL='
 use Fcntl qw(:flock);
+use Time::HiRes qw(time);
 open(my $fd, "+<&=", 9) or exit 1;
 my @held = stat($fd);
 exit 2 unless @held && -f _;
@@ -597,15 +600,17 @@ my @path = lstat($ARGV[0]);
 exit 3 if !@path && $!{ENOENT};
 exit 2 unless @path && -f _;
 exit 3 unless path_names_held();
-for my $poll (0 .. 100) {
+my $deadline = time + 5;
+while (1) {
     if (flock($fd, LOCK_EX | LOCK_NB)) {
         exit 0 if path_names_held();
         flock($fd, LOCK_UN);
         exit 3;
     }
-    select(undef, undef, undef, 0.05) if $poll < 100;
+    my $left = $deadline - time;
+    exit 1 if $left <= 0;
+    select(undef, undef, undef, $left < 0.05 ? $left : 0.05);
 }
-exit 1;
 '
 
 # Release the lock this process holds on <lock file>. Any other path, an
