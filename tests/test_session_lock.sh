@@ -1209,23 +1209,28 @@ _hold_session_mutex() {  # lock file
 # holds it) must not touch session.lock. Going ahead without it after the
 # wait reopens the stale-reclaim race the mutex closes: the holder may be
 # paused between reading a dead pid and removing the file. The opener
-# refuses, after the five-second wait.
+# refuses, after the five-second wait. The wait is timed around the
+# acquire_session_lock call alone, by the shell that makes it and with no
+# process of its own: starting that shell and sourcing the libraries take
+# as long as the machine's load makes them, and that is not the wait.
 test_open_refuses_when_the_lock_mutex_stays_held() {
     create_lock_test_session "lockheld"
-    local meta_dir="$CS_SESSIONS_ROOT/lockheld/.cs" dead rc=0 out start took
+    local meta_dir="$CS_SESSIONS_ROOT/lockheld/.cs" dead rc=0 out took
     bash -c 'exit 0' & dead=$!; wait "$dead"
     echo "$dead" > "$meta_dir/session.lock"
     _hold_session_mutex "$meta_dir/session.mutex.lock" || return 1
-    start=$SECONDS
-    out=$(LOCK_LIB="$SCRIPT_DIR/../lib" LOCK_META="$meta_dir" bash -c '
+    out=$(LOCK_LIB="$SCRIPT_DIR/../lib" LOCK_META="$meta_dir" TOOK="$TEST_TMPDIR/lockheld.took" bash -c '
         . "$LOCK_LIB/05-term.sh"
         . "$LOCK_LIB/02-shared.sh"
         . "$LOCK_LIB/15-lock.sh"
         cs_interactive() { return 1; }
         warn() { :; }
+        s=$SECONDS
+        record_took() { echo $((SECONDS - s)) > "$TOOK"; }
+        trap record_took EXIT
         acquire_session_lock "$LOCK_META" "" lockheld
     ' 2>&1) || rc=$?
-    took=$((SECONDS - start))
+    took=$(cat "$TEST_TMPDIR/lockheld.took")
     kill "$MUTEX_HOLDER" 2>/dev/null; wait "$MUTEX_HOLDER" 2>/dev/null
     assert_eq "1" "$rc" "the open refuses while another cs holds the lock mutex" || return 1
     assert_output_contains "$out" "Another cs is opening this session ($meta_dir/session.mutex.lock is held)" "the refusal names the mutex" || return 1

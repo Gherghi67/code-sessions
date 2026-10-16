@@ -732,13 +732,19 @@ test_lock_release_frees_it_from_a_child_still_running() {
 
 # A live holder is waited for five seconds; then the taker gives up holding
 # nothing, quietly (its caller says what that means), and the holder keeps
-# its lock.
+# its lock. The wait is timed around the _cs_lock call alone, by the shell
+# that makes it and with no process of its own: starting that shell and
+# sourcing the library take as long as the machine's load makes them, and
+# that is not the wait.
 test_lock_waits_five_seconds_for_a_live_holder() {
-    local lock="$TEST_TMPDIR/busy.lock" rc=0 err start took held=yes
+    local lock="$TEST_TMPDIR/busy.lock" rc=0 err took held=yes
     _start_lock_holder "$lock" "$TEST_TMPDIR/busy.ready" || return 1
-    start=$SECONDS
-    err=$(bash -c 'source "$1"; _cs_lock "$2"' _ "$LOCK_LIB" "$lock" 2>&1) || rc=$?
-    took=$((SECONDS - start))
+    err=$(bash -c 'source "$1"
+        s=$SECONDS
+        _cs_lock "$2"; rc=$?
+        echo $((SECONDS - s)) > "$3"
+        exit $rc' _ "$LOCK_LIB" "$lock" "$TEST_TMPDIR/busy.took" 2>&1) || rc=$?
+    took=$(cat "$TEST_TMPDIR/busy.took")
     _lock_is_free "$lock" && held=no
     kill "$LOCK_HOLDER"
     assert_eq "1" "$rc" "the taker gives up" || return 1
