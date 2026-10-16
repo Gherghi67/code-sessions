@@ -1815,10 +1815,13 @@ _cs_lock() {  # lock file
 # path names another regular file than fd 9 has, or nothing at all, so the
 # caller opens the path again. The five seconds are read from the clock, not
 # counted in polls: a starved CPU wakes each 50 ms poll late, and a hundred
-# late polls would wait twice as long as promised.
+# late polls would wait twice as long as promised. The clock is the
+# monotonic one, so a wall-clock step during the wait (NTP, a manual date
+# change) neither ends it early nor stretches it.
 _CS_LOCK_PERL='
 use Fcntl qw(:flock);
-use Time::HiRes qw(time);
+use Time::HiRes qw(clock_gettime CLOCK_MONOTONIC);
+sub now { return clock_gettime(CLOCK_MONOTONIC); }
 open(my $fd, "+<&=", 9) or exit 1;
 my @held = stat($fd);
 exit 2 unless @held && -f _;
@@ -1830,14 +1833,14 @@ my @path = lstat($ARGV[0]);
 exit 3 if !@path && $!{ENOENT};
 exit 2 unless @path && -f _;
 exit 3 unless path_names_held();
-my $deadline = time + 5;
+my $deadline = now() + 5;
 while (1) {
     if (flock($fd, LOCK_EX | LOCK_NB)) {
         exit 0 if path_names_held();
         flock($fd, LOCK_UN);
         exit 3;
     }
-    my $left = $deadline - time;
+    my $left = $deadline - now();
     exit 1 if $left <= 0;
     select(undef, undef, undef, $left < 0.05 ? $left : 0.05);
 }
