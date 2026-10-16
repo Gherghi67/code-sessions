@@ -9,6 +9,8 @@ source "$SCRIPT_DIR/test_lib.sh"
 OLD_THREAD=11111111-1111-4111-8111-111111111111
 NEW_THREAD=22222222-2222-4222-8222-222222222222
 HANDOFF=2026-10-05-continue-the-plan.md
+RUN=33333333-3333-4333-8333-333333333333
+OTHER_RUN=44444444-4444-4444-8444-444444444444
 
 setup() {
     TEST_TMPDIR="$(mktemp -d)"
@@ -19,14 +21,22 @@ setup() {
     # The run lease a supervised cs launch holds: the hook may rebind only
     # for the run that owns the session.
     printf '%s\n' "$$" > "$SESSION/.cs/session.lock"
-    jq -n --arg owner "$$" '{run_id: "run-1", engine: "codex", owner_pid: ($owner | tonumber)}' \
+    jq -n --arg owner "$$" --arg run "$RUN" '{run_id: $run, engine: "codex", owner_pid: ($owner | tonumber)}' \
         > "$SESSION/.cs/local/run-lease.json"
+    # The private directory the launch makes for the automatic /clear.
+    export CS_CACHE_DIR="$TEST_TMPDIR/cache"
+    RUN_DIR="$CS_CACHE_DIR/codex-runs/$RUN"
+    mkdir -p "$CS_CACHE_DIR/codex-runs"
+    mkdir -m 700 "$RUN_DIR"
+    STAMP="$RUN_DIR/autoclear"
+    # The watcher that run starts publishes itself there; this shell stands in.
+    printf '%s %s\n' "$$" "$RUN" > "$RUN_DIR/watcher.pid"
     export CS_ACTOR=tester
 }
 
 teardown() {
     rm -rf "$TEST_TMPDIR"
-    unset CS_ACTOR
+    unset CS_ACTOR CS_CACHE_DIR
 }
 
 _handoff() {  # status
@@ -40,7 +50,7 @@ _arm() { printf '%s\n' "$HANDOFF" > "$SESSION/.cs/local/pending-handoff"; }
 _hook() {  # source, [run_id]
     printf '{"session_id":"%s","source":"%s","cwd":"%s","hook_event_name":"SessionStart"}' \
         "$NEW_THREAD" "$1" "$SESSION" \
-        | env CS_RUN_ENGINE=codex CS_RUN_ID="${2:-run-1}" CS_RUN_OWNER_PID="$$" \
+        | env CS_RUN_ENGINE=codex CS_RUN_ID="${2:-$RUN}" CS_RUN_OWNER_PID="$$" \
             CS_SESSION_DIR="$SESSION" CS_SESSION_NAME=demo "$CS_BIN" -codex-hook session-start
 }
 
@@ -63,9 +73,9 @@ test_clear_with_an_armed_handoff_rebinds_and_loads_it() {
     assert_file_contains "$SESSION/.cs/handoffs/$HANDOFF" "^status: unconsumed is quoted here" \
         "only the frontmatter's status line flips" || return 1
     assert_not_exists "$SESSION/.cs/local/pending-handoff" "the marker is spent" || return 1
-    jq -e --arg from "$OLD_THREAD" --arg to "$NEW_THREAD" --arg h "$HANDOFF" \
+    jq -e --arg from "$OLD_THREAD" --arg to "$NEW_THREAD" --arg h "$HANDOFF" --arg run "$RUN" \
         'select(.event == "rotated") | .engine == "codex" and .from == $from and .to == $to
-         and .reason == "handoff" and .handoff == $h and .run_id == "run-1"' \
+         and .reason == "handoff" and .handoff == $h and .run_id == $run' \
         "$SESSION/.cs/timeline.jsonl" >/dev/null || { echo "  FAIL: no rotated event with the lineage"; return 1; }
     jq -e --arg id "$NEW_THREAD" 'select(.event == "started") | .engine == "codex" and .session_id == $id and .source == "clear"' \
         "$SESSION/.cs/timeline.jsonl" >/dev/null || { echo "  FAIL: no started event"; return 1; }
@@ -172,11 +182,258 @@ test_a_locked_vault_drops_the_log_line() {
     assert_not_exists "$TEST_TMPDIR/not-mounted" "nothing is created behind the dangling link" || return 1
 }
 
+# Codex reads a PermissionRequest hook's exit 2, with text on stderr, as a
+# denial, and an older or newer cs may be asked for a verb it does not know.
+# So a verb it does not know, run as a hook (stdin not a terminal), answers
+# `{}` and exits 0; only a person typing it gets the usage line and 2.
 test_unknown_hook_event_is_a_usage_error() {
-    local status=0 out
-    out=$("$CS_BIN" -codex-hook stop </dev/null 2>&1) || status=$?
-    assert_eq 2 "$status" || return 1
-    assert_output_contains "$out" "Usage: cs -codex-hook session-start" || return 1
+    local status=0 out err="$TEST_TMPDIR/hook.err"
+    out=$(printf '{"hook_event_name":"SomeFutureEvent"}' | "$CS_BIN" -codex-hook no-such-event 2>"$err") || status=$?
+    assert_eq 0 "$status" "a hook must never deny an approval or fail a turn" || return 1
+    assert_eq '{}' "$out" || return 1
+    assert_eq "" "$(cat "$err")" "nothing on stderr for Codex to read as a reason" || return 1
+    status=0
+    out=$(python3 -I -c 'import os, pty, sys; sys.exit(os.waitstatus_to_exitcode(pty.spawn(sys.argv[1:])))' \
+        "$CS_BIN" -codex-hook no-such-event </dev/null 2>&1) || status=$?
+    assert_eq 2 "$status" "typed at a terminal, it is a usage error" || return 1
+    assert_output_contains "$out" "Usage: cs -codex-hook session-start|files-changed|stop|user-prompt-submit|permission-request" || return 1
+}
+
+# --- the automatic /clear after a rotation: Stop and UserPromptSubmit ---
+
+# Runs a turn-end or prompt hook the way Codex does, for a thread. The test's
+# cache lies under TMPDIR, which the hooks rightly refuse for the run
+# directory, so this runs cs with that one check stood down: bin/cs without
+# its closing `main "$@"`, the stub, then main. tests/test_codex_autoclear.sh
+# exercises the real check.
+_turn_hook() {  # verb, thread, [run_id]
+    printf '{"session_id":"%s","turn_id":"turn-1","cwd":"%s","hook_event_name":"x"}' "$2" "$SESSION" \
+        | env CS_RUN_ENGINE=codex CS_RUN_ID="${3:-$RUN}" CS_RUN_OWNER_PID="$$" \
+            CS_SESSION_DIR="$SESSION" CS_SESSION_NAME=demo bash -c '
+                eval "$(sed "\$d" "$1")"
+                _codex_run_dir_in_sandbox_root() { return 1; }
+                shift
+                main "$@"' cs "$CS_BIN" -codex-hook "$1"
+}
+
+_stamp_field() { awk -v k="$1" 'index($0, k "=") == 1 { print substr($0, length(k) + 2) }' "$STAMP"; }
+
+_stale_stamp() { printf 'deadline=1\nhandoff=x.md\naction=clear\nrun=%s\n' "$RUN" > "$STAMP"; }
+
+test_a_turn_ending_with_a_handoff_armed_starts_the_count() {
+    _handoff unconsumed; _arm
+    local out now deadline
+    now=$(date +%s)
+    out=$(CS_CODEX_CLEAR_GRACE=20 _turn_hook stop "$OLD_THREAD") || { echo "  FAIL: a hook must never fail a turn"; return 1; }
+    assert_file_exists "$STAMP" || return 1
+    assert_eq "$HANDOFF" "$(_stamp_field handoff)" || return 1
+    assert_eq "" "$(_stamp_field action)" "the watcher decides at the deadline, not the turn's end" || return 1
+    assert_eq "$RUN" "$(_stamp_field run)" || return 1
+    deadline=$(_stamp_field deadline)
+    [ "$deadline" -ge $((now + 20)) ] && [ "$deadline" -le $((now + 22)) ] \
+        || { echo "  FAIL: deadline $deadline is not about 20 s after $now"; return 1; }
+    assert_eq "cs: /clear and go in 20 s, to continue from $HANDOFF. Send a message first to keep this conversation; unsent text in the composer would be sent." \
+        "$(printf '%s' "$out" | jq -r .systemMessage)" "the TUI says what will happen" || return 1
+}
+
+# A grace with a leading zero is decimal: 08 is eight seconds, not an
+# arithmetic error that fails the turn and strands the temp file.
+test_a_grace_with_a_leading_zero_is_decimal() {
+    _handoff unconsumed; _arm
+    local out now deadline
+    now=$(date +%s)
+    out=$(CS_CODEX_CLEAR_GRACE=08 _turn_hook stop "$OLD_THREAD") || { echo "  FAIL: a hook must never fail a turn"; return 1; }
+    deadline=$(_stamp_field deadline)
+    [ -n "$deadline" ] && [ "$deadline" -ge $((now + 8)) ] && [ "$deadline" -le $((now + 10)) ] \
+        || { echo "  FAIL: deadline '$deadline' is not about 8 s after $now"; return 1; }
+    assert_output_contains "$(printf '%s' "$out" | jq -r .systemMessage)" "in 8 s" || return 1
+    local temp
+    for temp in "$RUN_DIR"/autoclear.*; do
+        assert_not_exists "$temp" "no temp file left behind" || return 1
+    done
+}
+
+# The agent's sandbox writes anywhere in the session, so the deadline never
+# goes there: only into the run's private directory, as a 0600 file.
+test_a_turn_end_never_writes_into_the_workspace() {
+    _handoff unconsumed; _arm
+    _turn_hook stop "$OLD_THREAD" >/dev/null || return 1
+    assert_not_exists "$SESSION/.cs/local/codex-autoclear" "the agent's sandbox can write the workspace" || return 1
+    assert_file_exists "$STAMP" || return 1
+    assert_eq 600 "$(_file_mode "$STAMP")" "the deadline is the user's alone" || return 1
+}
+
+# No run directory means the launch runs no watcher: no count, and no line
+# promising one.
+test_no_run_dir_means_no_count_and_no_message() {
+    _handoff unconsumed; _arm
+    rm -rf "$RUN_DIR"
+    local out
+    out=$(_turn_hook stop "$OLD_THREAD") || { echo "  FAIL: a hook must never fail a turn"; return 1; }
+    assert_eq "" "$out" "no message without a watcher" || return 1
+    assert_not_exists "$RUN_DIR" || return 1
+    assert_not_exists "$SESSION/.cs/local/codex-autoclear" || return 1
+}
+
+# No live watcher of this run's means nothing would type the keys: a launch
+# whose terminal refuses simulated input starts none, and a watcher can end
+# early. The turn ends with no count and no line promising one.
+test_a_turn_with_no_watcher_promises_nothing() {
+    _handoff unconsumed; _arm
+    local out dead case
+    ( exit 0 ) & dead=$!; wait "$dead"
+    for case in none dead other-run; do
+        case "$case" in
+            none) rm -f "$RUN_DIR/watcher.pid" ;;
+            dead) printf '%s %s\n' "$dead" "$RUN" > "$RUN_DIR/watcher.pid" ;;
+            other-run) printf '%s %s\n' "$$" "$OTHER_RUN" > "$RUN_DIR/watcher.pid" ;;
+        esac
+        _stale_stamp
+        out=$(_turn_hook stop "$OLD_THREAD") || { echo "  FAIL: a hook must never fail a turn"; return 1; }
+        assert_eq "" "$out" "$case: a count promised with no watcher to type it" || return 1
+        assert_not_exists "$STAMP" "$case: a deadline with no watcher to act on it" || return 1
+    done
+}
+
+# The real cs, with no check stood down: the test's cache lies under TMPDIR
+# (or /tmp), where the sandbox writes, so the hook starts no count there.
+test_a_run_dir_the_sandbox_can_write_gets_no_count() {
+    _handoff unconsumed; _arm
+    local out
+    out=$(printf '{"session_id":"%s"}' "$OLD_THREAD" \
+        | env CS_RUN_ENGINE=codex CS_RUN_ID="$RUN" CS_RUN_OWNER_PID="$$" \
+            CS_SESSION_DIR="$SESSION" CS_SESSION_NAME=demo "$CS_BIN" -codex-hook stop) \
+        || { echo "  FAIL: a hook must never fail a turn"; return 1; }
+    assert_eq "" "$out" || return 1
+    assert_not_exists "$STAMP" "a run directory the sandbox can write holds no deadline" || return 1
+}
+
+test_a_turn_ending_with_nothing_armed_drops_a_count() {
+    _stale_stamp
+    local out
+    out=$(_turn_hook stop "$OLD_THREAD") || return 1
+    assert_not_exists "$STAMP" || return 1
+    assert_eq "" "$out" "no message when nothing is armed" || return 1
+}
+
+test_a_turn_in_another_thread_starts_no_count() {
+    _handoff unconsumed; _arm
+    _turn_hook stop "$NEW_THREAD" >/dev/null || return 1
+    assert_not_exists "$STAMP" "only the bound conversation counts down" || return 1
+}
+
+test_a_turn_of_another_run_starts_no_count() {
+    _handoff unconsumed; _arm
+    _turn_hook stop "$OLD_THREAD" "$OTHER_RUN" >/dev/null || return 1
+    assert_not_exists "$STAMP" "a run without the lease never counts down" || return 1
+}
+
+test_force_off_leaves_the_clear_to_the_user() {
+    _handoff unconsumed; _arm
+    local value
+    for value in off OFF " off " 0 00; do
+        _stale_stamp
+        CS_ROTATE_FORCE_CTX="$value" _turn_hook stop "$OLD_THREAD" >/dev/null || return 1
+        assert_not_exists "$STAMP" "CS_ROTATE_FORCE_CTX=$value turns the count off" || return 1
+    done
+    for value in 80 bogus ""; do
+        CS_ROTATE_FORCE_CTX="$value" _turn_hook stop "$OLD_THREAD" >/dev/null || return 1
+        assert_file_exists "$STAMP" "CS_ROTATE_FORCE_CTX=$value leaves it on" || return 1
+        rm -f "$STAMP"
+    done
+}
+
+test_a_pending_switch_counts_down_to_quit() {
+    _handoff unconsumed; _arm
+    local out
+    printf 'engine=claude\nmode=fresh\nhandoff=%s\nrun=%s\n' "$HANDOFF" "$RUN" > "$SESSION/.cs/local/pending-switch"
+    out=$(CS_RUN_APPROVAL=auto CS_CODEX_CLEAR_GRACE=20 _turn_hook stop "$OLD_THREAD") || return 1
+    assert_file_exists "$STAMP" || return 1
+    assert_eq "cs: /quit in 20 s, and cs reopens this session under claude (its default model, native approval) from $HANDOFF. Send a message first to stay; unsent text in the composer would be sent." \
+        "$(printf '%s' "$out" | jq -r .systemMessage)" || return 1
+    # Another run's switch is not this run's to take.
+    printf 'engine=claude\nmode=fresh\nhandoff=%s\nrun=%s\n' "$HANDOFF" "$OTHER_RUN" > "$SESSION/.cs/local/pending-switch"
+    out=$(CS_CODEX_CLEAR_GRACE=20 _turn_hook stop "$OLD_THREAD") || return 1
+    assert_eq "cs: /clear and go in 20 s, to continue from $HANDOFF. Send a message first to keep this conversation; unsent text in the composer would be sent." \
+        "$(printf '%s' "$out" | jq -r .systemMessage)" || return 1
+}
+
+# A switch that would move a native-approval run to automatic review gets no
+# count: the line names what the switch would start and leaves the exit to the
+# user.
+test_a_switch_that_loosens_approval_starts_no_count() {
+    _handoff unconsumed; _arm
+    _stale_stamp
+    local out
+    printf 'engine=claude\nmode=fresh\nhandoff=%s\nrun=%s\nmodel=opus\neffort=\napproval=auto\n' \
+        "$HANDOFF" "$RUN" > "$SESSION/.cs/local/pending-switch"
+    out=$(CS_RUN_APPROVAL=native _turn_hook stop "$OLD_THREAD") || { echo "  FAIL: a hook must never fail a turn"; return 1; }
+    assert_not_exists "$STAMP" "no count toward an exit cs will not make" || return 1
+    assert_eq "cs: a switch to claude (model opus, automatic approval) is pending. This run has native approval, so cs does not quit for you: /quit to take it, or cs -switch cancel to stay." \
+        "$(printf '%s' "$out" | jq -r .systemMessage)" || return 1
+    out=$(CS_RUN_APPROVAL=auto CS_CODEX_CLEAR_GRACE=20 _turn_hook stop "$OLD_THREAD") || return 1
+    assert_file_exists "$STAMP" "automatic approval kept is not loosened" || return 1
+    assert_output_contains "$(printf '%s' "$out" | jq -r .systemMessage)" "/quit in 20 s" || return 1
+}
+
+# A native-approval run starts no count toward any switch: nobody at the keys
+# may carry one out there, so the line leaves the exit to the user.
+test_a_native_run_starts_no_count_toward_a_switch() {
+    _handoff unconsumed; _arm
+    _stale_stamp
+    local out
+    printf 'engine=claude\nmode=fresh\nhandoff=%s\nrun=%s\nmodel=\neffort=\napproval=native\n' \
+        "$HANDOFF" "$RUN" > "$SESSION/.cs/local/pending-switch"
+    out=$(CS_RUN_APPROVAL=native _turn_hook stop "$OLD_THREAD") || { echo "  FAIL: a hook must never fail a turn"; return 1; }
+    assert_not_exists "$STAMP" "no count toward an exit cs will not make" || return 1
+    assert_eq "cs: a switch to claude (its default model, native approval) is pending. This run has native approval, so cs does not quit for you: /quit to take it, or cs -switch cancel to stay." \
+        "$(printf '%s' "$out" | jq -r .systemMessage)" || return 1
+}
+
+test_a_message_sent_during_the_count_stops_it() {
+    _stale_stamp
+    : > "$RUN_DIR/typing"
+    local out
+    out=$(_turn_hook user-prompt-submit "$NEW_THREAD") || { echo "  FAIL: a hook must never fail a turn"; return 1; }
+    assert_not_exists "$STAMP" || return 1
+    assert_not_exists "$RUN_DIR/typing" "a prompt sent while cs types stops the rest of its keys" || return 1
+    assert_eq "" "$out" || return 1
+}
+
+# An approval Codex asks for while the count runs, or while cs types, stops
+# both: the keys would otherwise go into the approval prompt. The hook rules
+# on nothing: `{}` is Codex 0.162's PermissionRequest output with no decision
+# in it, since its schema carries one only under hookSpecificOutput.
+test_an_approval_request_stops_the_count_and_rules_on_nothing() {
+    _handoff unconsumed; _arm
+    _stale_stamp
+    : > "$RUN_DIR/typing"
+    local out status=0
+    out=$(_turn_hook permission-request "$NEW_THREAD") || status=$?
+    assert_eq 0 "$status" "a hook must never fail a turn" || return 1
+    assert_not_exists "$STAMP" "an approval prompt stops the count" || return 1
+    assert_not_exists "$RUN_DIR/typing" "an approval prompt stops cs's typing" || return 1
+    assert_eq '{}' "$out" "the hook makes no approval decision" || return 1
+    # With nothing to stop, and with no run directory, the answer is the same.
+    out=$(_turn_hook permission-request "$OLD_THREAD") || return 1
+    assert_eq '{}' "$out" || return 1
+    rm -rf "$RUN_DIR"
+    out=$(_turn_hook permission-request "$OLD_THREAD") || return 1
+    assert_eq '{}' "$out" || return 1
+}
+
+test_outside_a_cs_codex_run_the_turn_hooks_are_inert() {
+    _handoff unconsumed; _arm
+    _stale_stamp
+    local verb out
+    out=$(printf '{"session_id":"%s"}' "$OLD_THREAD" | "$CS_BIN" -codex-hook permission-request) \
+        || { echo "  FAIL: permission-request failed outside a run"; return 1; }
+    assert_eq '{}' "$out" "outside a run the hook still makes no decision" || return 1
+    for verb in stop user-prompt-submit permission-request; do
+        printf '{"session_id":"%s"}' "$OLD_THREAD" | "$CS_BIN" -codex-hook "$verb" >/dev/null \
+            || { echo "  FAIL: $verb failed outside a run"; return 1; }
+    done
+    assert_file_exists "$STAMP" "nothing outside a cs Codex run touches the count" || return 1
 }
 
 run_test test_clear_with_an_armed_handoff_rebinds_and_loads_it
@@ -190,5 +447,21 @@ run_test test_an_encrypted_session_logs_the_start_behind_private
 run_test test_a_clear_in_an_encrypted_session_logs_the_rebind_behind_private
 run_test test_a_locked_vault_drops_the_log_line
 run_test test_unknown_hook_event_is_a_usage_error
+run_test test_a_turn_ending_with_a_handoff_armed_starts_the_count
+run_test test_a_grace_with_a_leading_zero_is_decimal
+run_test test_a_turn_end_never_writes_into_the_workspace
+run_test test_no_run_dir_means_no_count_and_no_message
+run_test test_a_turn_with_no_watcher_promises_nothing
+run_test test_a_run_dir_the_sandbox_can_write_gets_no_count
+run_test test_a_turn_ending_with_nothing_armed_drops_a_count
+run_test test_a_turn_in_another_thread_starts_no_count
+run_test test_a_turn_of_another_run_starts_no_count
+run_test test_force_off_leaves_the_clear_to_the_user
+run_test test_a_pending_switch_counts_down_to_quit
+run_test test_a_switch_that_loosens_approval_starts_no_count
+run_test test_a_native_run_starts_no_count_toward_a_switch
+run_test test_a_message_sent_during_the_count_stops_it
+run_test test_an_approval_request_stops_the_count_and_rules_on_nothing
+run_test test_outside_a_cs_codex_run_the_turn_hooks_are_inert
 
 report_results

@@ -205,14 +205,16 @@ test_public_launchers_keep_the_users_home_and_point_tools_at_the_profile() {
 printf '%s\n' "$HOME" "$CLAUDE_CONFIG_DIR" "$CODEX_HOME" "$CS_SESSIONS_ROOT" "$CS_INSTALL_DIR" \
     "$CS_CONFIG_DIR" "$CS_CACHE_DIR" "$CS_DATA_DIR" "$CS_SECRETS_DIR" "${XDG_CONFIG_HOME:-unset}" \
     "${CS_TMUX_SOCKET:-unset}" "${CS_TMUX_SESSION:-unset}" "${CS_SECRETS_BACKEND:-unset}" \
-    "${CS_SECRETS_KEYCHAIN_PREFIX:-unset}" "${CODE_SESSIONS_HOME:-unset}" "$CS_BIN" "$(command -v cs)"
+    "${CS_SECRETS_KEYCHAIN_PREFIX:-unset}" "${CODE_SESSIONS_HOME:-unset}" "$CS_BIN" "$(command -v cs)" \
+    "${CLAUDE_SECURESTORAGE_CONFIG_DIR-unset}"
 mkdir -p "$CS_CACHE_DIR"
 printf 'experimental cache\n' > "$CS_CACHE_DIR/update-check"
 EOF
     chmod +x "$PROFILE/.local/bin/cs"
     local output
     output=$(CS_SESSIONS_ROOT="$HOME/.claude-sessions" CLAUDE_CONFIG_DIR="$HOME/.claude" \
-        CODEX_HOME="$HOME/.codex" CS_SECRETS_BACKEND=encrypted PATH="$HOME/.local/bin:$PATH" \
+        CODEX_HOME="$HOME/.codex" CLAUDE_SECURESTORAGE_CONFIG_DIR="$HOME/stale-login" \
+        CS_SECRETS_BACKEND=encrypted PATH="$HOME/.local/bin:$PATH" \
         "$HOME/.local/bin/ccs" -version)
     # HOME stays the user's: macOS finds the login keychain through it, and ~/.ssh
     # and the rest of the user's credentials stay visible to the session. Every
@@ -223,6 +225,8 @@ EOF
     # code-sessions:<session>, apart from the original's cs:<session>. Inside, cs
     # is code-sessions: CODE_SESSIONS_HOME says so, and the profile's bin comes
     # first on PATH.
+    # Command substitution strips trailing newlines, including the empty
+    # secure-storage selector: the absence of an extra line proves it is empty.
     assert_eq "$HOME"$'\n'"$PROFILE/.claude"$'\n'"$PROFILE/.codex"$'\n'"$PROFILE/sessions"$'\n'"$PROFILE/.local/bin"$'\n'"$PROFILE/.config/cs"$'\n'"$PROFILE/.cache/cs"$'\n'"$PROFILE/.local/share/cs"$'\n'"$PROFILE/.cs-secrets"$'\n'unset$'\n'code-sessions$'\n'code-sessions$'\n'unset$'\n'code-sessions$'\n'"$PROFILE"$'\n'"$PROFILE/.local/bin/cs"$'\n'"$PROFILE/.local/bin/cs" "$output" || return 1
     assert_eq 'stable cache' "$(cat "$HOME/.cache/cs/update-check")" || return 1
     assert_eq 'experimental cache' "$(cat "$PROFILE/.cache/cs/update-check")" || return 1

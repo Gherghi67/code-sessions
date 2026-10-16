@@ -18,7 +18,7 @@ _cs_codex_adapter_capabilities() {
     # the armed handoff; the launch prompt's r starts a thread from it.
     # feature_finish: -finish starts the thread on `$finish <task>`, as
     # Claude's starts on /finish <task>.
-    printf '%s\n' launch exact_resume startup_context feature_finish rotation
+    printf '%s\n' launch exact_resume startup_context feature_finish rotation recovery_autosave
 }
 
 _cs_codex_adapter_prepare_workspace() {  # session_dir, mode
@@ -219,12 +219,15 @@ _launch_codex_bound() {
         /*) ;;
         *) codex_bin="$(cd "$(dirname "$codex_bin")" && pwd -P)/$(basename "$codex_bin")" || return 1 ;;
     esac
-    # Refuse before native preparation can bind a thread or spend its handoff.
-    local codex_help
-    if ! codex_help=$(cs_run_child "$codex_bin" --help 2>/dev/null) \
-        || ! printf '%s\n' "$codex_help" | grep -E '^[[:space:]]*--approve-for-me([[:space:]]|$)' >/dev/null; then
-        _codex_launch_error "Codex at $codex_bin must support --approve-for-me. Upgrade Codex or set CODEX_BIN to a build whose --help lists --approve-for-me."
-        return 1
+    # Automatic approval must refuse before preparation binds or spends context.
+    # Native approval leaves policy to Codex and needs no automatic-review flag.
+    if [ "${CS_LAUNCH_APPROVAL:-auto}" != native ]; then
+        local codex_help
+        if ! codex_help=$(cs_run_child "$codex_bin" --help 2>/dev/null) \
+            || ! printf '%s\n' "$codex_help" | grep -E '^[[:space:]]*--approve-for-me([[:space:]]|$)' >/dev/null; then
+            _codex_launch_error "Codex at $codex_bin must support --approve-for-me for automatic approval. Upgrade Codex, set CODEX_BIN to a supporting build, or use --native-approval to keep Codex's configured policy."
+            return 1
+        fi
     fi
     helper=$(_codex_thread_helper) || {
         _codex_launch_error "Cannot locate cs-codex-thread beside the cs executable."
@@ -439,12 +442,50 @@ _launch_codex_bound() {
         turn_before=$(_codex_turn_mark "$helper" "$codex_bin" "$session_dir" "$thread_id") || turn_before=""
     fi
 
-    printf '%s\n' 'Codex via cs: session context, exact resume and rotation are enabled; Claude hooks, autosave, and task queue integration are unavailable.'
+    printf '%s\n' 'Codex via cs: session context, exact resume and rotation are enabled; automatic recovery is enabled; Claude task queue integration is unavailable.'
     # A dedicated native writer lives for this supervised CLI lifetime.
     # Signals and lock cleanup belong to the shared controller.
     local status=0
-    cs_run_child "$codex_bin" --no-daemon resume "$thread_id" -C "$session_dir" \
-        --approve-for-me ${kick:+"$kick"} || status=$?
+    local -a CS_NATIVE_LAUNCH_ARGS
+    _cs_native_launch_options codex || return 1
+    # The run's approval, for its hooks and the automatic /clear's watcher: a
+    # run with native approval never quits for a switch unattended.
+    local CS_RUN_APPROVAL=auto
+    [ "${CS_LAUNCH_APPROVAL:-auto}" != native ] || CS_RUN_APPROVAL=native
+    export CS_RUN_APPROVAL
+    # The automatic /clear after a rotation (lib/77-codex-hooks.sh) types into
+    # this terminal, so its watcher runs only where one is attached and will
+    # take simulated input, which is asked once here, and only with a private
+    # directory for its deadline, made before Codex starts. Where it cannot
+    # type, the launch says why, and no turn promises a count. The
+    # run's cleanup stops the watcher and removes the directory, after the CLI
+    # or when a signal ends the launch (lib/16-lifecycle.sh). Earlier builds
+    # kept the deadline in the session, where the agent could forge it; one
+    # left there is removed and never read.
+    local autoclear_dir refusal
+    rm -f "$session_dir/.cs/local/codex-autoclear" 2>/dev/null || true
+    if [ -t 0 ] && [ -t 1 ] && _codex_autoclear_grace >/dev/null; then
+        if ! refusal=$(_codex_autoclear_probe); then
+            printf "${DIM:-}cs: no automatic /clear after a rotation: %s${NC:-}\n" "$refusal"
+            _codex_autoclear_log "$session_dir" "Automatic /clear is off for this run: $refusal"
+        elif autoclear_dir=$(_codex_run_dir_prepare "$session_dir"); then
+            _cs_run_helper_dir=$autoclear_dir
+            _codex_autoclear_watch "$session_dir" "$autoclear_dir" </dev/null >/dev/null 2>&1 &
+            _cs_run_helper_pid=$!
+        else
+            printf "${DIM}The automatic /clear after a rotation is off for this run: cs could not make a private directory under %s.${NC}\n" \
+                "${CS_CACHE_DIR:-$HOME/.cache/cs}/codex-runs"
+        fi
+    fi
+    cs_run_child "$codex_bin" --no-daemon resume "$thread_id" -C "$session_dir" ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} ${kick:+"$kick"} || status=$?
+    # Keys the watcher typed just before Codex exited can wait unread in the
+    # terminal and would run in the shell, so its input is flushed, but only
+    # when the watcher was typing: the flush would eat ordinary type-ahead.
+    _cs_run_end_helper
+    if [ -n "$_cs_run_helper_dir" ] && [ -e "$(_codex_keys_sent_file "$_cs_run_helper_dir")" ]; then
+        _codex_flush_input
+    fi
+    _cs_run_stop_helper
     if [ "$status" -ne 0 ] && [ -n "$spent" ]; then
         # A switch relaunch's settle reads it too (lib/78-switch.sh).
         _cs_switch_ran=""

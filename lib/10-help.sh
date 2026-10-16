@@ -19,6 +19,9 @@ Commands:
   <name> --from-handoff  Start a fresh conversation from the pending rotation handoff without prompting
   <name> --force      Override active session lock
   <name> --engine <claude|codex>  Select and remember this session's runtime
+  <name> --model MODEL --effort LEVEL  Choose native model and reasoning effort
+  <name> --approve-for-me  Use the engine's automatic approval review
+  <name> --native-approval  Use native approval defaults (Codex otherwise reviews automatically)
   <base>@<feature>    Open a parallel feature worktree of session <base>
   <base> -features          List a base's feature worktrees and their merge readiness
   <base> -finish <feature>  Open <base> and run /finish for <feature> (integrate, then retire the worktree)

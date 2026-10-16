@@ -33,13 +33,16 @@ experimental protocol capabilities being present. CS checks at startup and
 reports an error when they are unavailable. It does not upgrade Codex
 automatically.
 
-CS selects **Approve for me** on every Codex launch, including new threads,
+CS selects **Approve for me** by default on Codex launches, including new threads,
 exact resumes, and engine switches, by passing `--approve-for-me`. This requires
 a Codex build that supports the flag; it is verified with
 `0.162.0-alpha.17.2`. Before preparing a thread or consuming a handoff, CS
-requires a successful `codex --help` that lists the option. Unsupported builds
-are refused; upgrade Codex or point `CODEX_BIN` at a supporting build.
-The mode uses a `workspace-write` sandbox with
+requires a successful `codex --help` that lists the option when automatic
+approval is selected. Unsupported builds are refused in automatic mode;
+upgrade Codex or point `CODEX_BIN` at a supporting build. Pass
+`--native-approval` to use Codex's configured approval policy instead; this
+mode does not require or pass `--approve-for-me`.
+Automatic approval uses a `workspace-write` sandbox with
 `on-request` approvals and an `auto_review` reviewer. Routine workspace
 operations run directly; eligible approval requests go through automatic review,
 which can reject an action. You can change the active mode with `/permissions`.
@@ -182,15 +185,87 @@ Codex for now.
 
 `$rotate` works. It writes and arms a handoff, then tells you to run `/clear`
 and send any message: Codex starts no turn by itself, and the handoff loads with
-that first message through the one hook cs registers for Codex
+that first message through the SessionStart hook cs registers for Codex
 (`cs -codex-hook session-start` in `$CODEX_HOME/hooks.json`, trusted in
 `config.toml` by the installer). The same hook rebinds the session after every
 `/clear`, so the next `cs <name>` resumes the conversation you were in.
 Exiting instead and answering `r` at the next launch starts a fresh thread from
 the handoff and runs its first turn on its own. `$switch` does the same across
-engines (see [Switching engines](#switching-engines)). The Claude hooks and
-function-hook mods do not run in Codex. Codex does
-not yet participate in CS autosave and crash recovery, queue delivery, usage
+engines (see [Switching engines](#switching-engines)).
+
+You need not type the `/clear` either. As the `cs` mod counts down under
+Claude, cs does it under Codex: when a turn ends with a handoff armed, the Stop
+hook (`cs -codex-hook stop`) shows a line saying what happens in 20 seconds, and
+a watcher cs runs beside the Codex CLI then types `/clear` and `go` into the
+terminal, at typing speed, since Codex takes a faster burst for a paste. With a
+switch pending it types `/quit`, and cs reopens the session under the other
+engine. The watcher looks for the switch when the count ends, as the mod does
+at zero, so a switch recorded or cancelled (`cs -switch cancel`) during the
+count is the one that counts. The line names what the switch would start: the
+engine, the model, the effort when one was asked for, and the approval. In a
+run launched with `--native-approval` a switch gets no count, whatever approval
+it names: nobody is at the keys when the count ends, and the agent can arm a
+switch itself (one that loosens approval, with `cs -switch --approve-for-me`,
+among them), rewrite it after the watcher has read it, or write the target's
+settings into the session (a `.claude/settings.local.json` the relaunch would
+load). So the line names the switch, says the exit is yours, and cs types
+nothing; only `/clear`, which keeps this Codex, is typed for you there. A message you send first stops the count (the UserPromptSubmit hook,
+`cs -codex-hook user-prompt-submit`) and keeps the conversation; the count starts
+again when that turn ends. An approval Codex asks for stops it too (the
+PermissionRequest hook, `cs -codex-hook permission-request`), so the keys never
+land in an approval prompt: a turn can go on past its Stop hook when another
+tool's Stop hook asks Codex to continue. That hook makes no approval decision;
+it answers `{}`, which Codex reads as none, and the prompt is yours as before. Only the conversation the launch bound counts down,
+and only while its run still holds the session: after a forced second launch
+(`--force`) takes it over, the first run's count types nothing.
+`CS_ROTATE_FORCE_CTX=off` (or `0`) at launch turns it off, as under Claude, and
+`CS_CODEX_CLEAR_GRACE` sets the seconds (default 20; `0` turns it off too).
+The watcher runs only when cs has a terminal that takes simulated input: it
+types through the terminal's simulated-input call (TIOCSTI), and the launch
+asks once, before Codex starts, whether that call will work. Where it will not
+(no `python3`, or Linux with `dev.tty.legacy_tiocsti=0` for a user who is not
+root), the launch prints one line saying why, no watcher runs, and no turn
+shows a count: the line at the end of a turn appears only while this run's
+watcher is alive to type. The deadline it acts on lives in
+a directory private to the run, `codex-runs/<run id>` under cs's cache (`CS_CACHE_DIR`, by default
+`~/.cache/cs`), made mode 700 before Codex starts and removed when the run ends.
+It is kept out of the session because Codex's workspace sandbox can write
+anywhere there, and in `/tmp` and `$TMPDIR`: a deadline the agent could write
+would let it have the watcher type into an approval prompt. The same goes for
+any root your Codex config adds (`sandbox_workspace_write.writable_roots`):
+the launch reads it from `/etc/codex`, `$CODEX_HOME/config.toml` and every
+`.codex/config.toml` from the session upward, in any table, profiles included.
+Roots a managed device profile adds are not in a file cs can read, so keep
+`CS_CACHE_DIR` out of those yourself. When the cache lies under any of these
+roots, or the directory cannot be made, the launch says the automatic `/clear`
+is off for that run and the `/clear` stays yours. A probe
+that declines is logged in `session.log` with its cause, and so are keys the
+terminal refuses later all the same, with the error it gave; the `/clear` then
+stays yours.
+The watcher cannot see the screen: text you have typed into the composer and
+not sent when the count ends is sent, with `/clear` appended, to the
+conversation you are in, so send or clear a draft first; the line at the end of
+the turn says so. A prompt you send while cs types stops the rest of its keys:
+cs keeps a marker in the run's directory while it types, the UserPromptSubmit
+hook removes it, and cs checks it before each key, before Enter and before
+`go`, so `go` never lands in the turn your prompt started; an approval prompt
+removes it the same way. `session.log` then says a prompt went in while cs was
+typing.
+cs also stops typing once Codex has exited: the launch records the CLI's pid
+in the run's directory, and the typist checks it before each key. When Codex
+exits while cs's keys may still wait unread in the terminal (from cs's first
+key until half a second after its last Enter), the launch flushes the
+terminal's input as it ends, so those keys do not run in your shell. That
+flush also drops anything you typed in that sub-second window; at any other
+exit, input you typed ahead is left alone.
+
+The Claude hooks and
+function-hook mods do not run in Codex. Successful Codex patches automatically
+save a recovery copy through the same shadow-ref consumer as Claude edits.
+The installer registers `cs -codex-hook files-changed` for PostToolUse and
+deploys its recovery files to `$CODEX_HOME/hooks/cs/`; see
+[Completed file changes and recovery copies](engine-adapters.md#completed-file-changes-and-recovery-copies).
+Codex does not yet participate in Claude's automatic recovery prompt, queue delivery, usage
 reporting (`cs -usage`), encrypted sessions, observed runtime status, or native
 terminal controls. CS session-management commands continue to manage the shared
 workspace, including manual `cs -status` updates through `CS_SESSION_*`; native runtime observations remain Claude-specific for now.
@@ -203,3 +278,11 @@ enable|disable` adds or removes it. A status line you set yourself stays. See
 
 The shared internal dispatch, binding, and context interfaces are described in
 [Engine adapters](engine-adapters.md).
+
+Before opening a conversation, press `e` in the session picker to choose
+engine, model, effort and approval policy. The same launch choices are accepted
+as `cs <name> --engine codex --model <model> --effort <level>` and by
+`cs -switch codex --model <model> --effort <level>`. Blank picker fields keep
+native defaults. Model names and effort levels are validated by the native CLI.
+Codex launches use `--approve-for-me` in a workspace-write sandbox by default;
+`--native-approval` leaves approval policy to Codex configuration.
