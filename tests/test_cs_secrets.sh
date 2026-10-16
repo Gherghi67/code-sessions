@@ -3812,7 +3812,8 @@ Updated 1 file(s) with redacted values." "$out" "migrate names every key a segme
 # segment's end (OAUTH, NOAUTH), a qualifier and key apart (API_FILE_KEY_ID),
 # pass or pwd before another segment (PASS_RATE, passThrough, PASS_COUNT),
 # the whole name PWD, key or auth before a segment that is not a trailing
-# number (KEY_FILE, SSH_KEY_PATH, AUTH_HEADER), a trailing number alone (V2),
+# number (KEY_FILE, SSH_KEY_PATH, AUTH_HEADER, KEY_V), a trailing number
+# alone (V2),
 # and session, cookie or private alone mark no secret. Nothing is stored,
 # and the file, a value that recurs in its prose included, stays byte for
 # byte as it was.
@@ -3822,7 +3823,7 @@ test_migrate_redact_leaves_each_key_no_segment_names_a_secret() {
         CS_SECRETS_BACKEND OWNED_KEY_BIT KEY_NUM key_index API_FILE_KEY_ID AWSACCESSKEYID
         auth_dependency SSH_AUTH_SOCK OAUTH NOAUTH CLAUDE_SESSION_ID cookie EXTRACT_PRIVATE legacy_api
         bypass compass pattern passwordless secretsManager monkeyPatch
-        PASS_RATE passThrough PASS_COUNT PWD OLDPWD KEY_FILE SSH_KEY_PATH AUTH_HEADER V2 KEY_2_FILE"
+        PASS_RATE passThrough PASS_COUNT PWD OLDPWD KEY_FILE SSH_KEY_PATH AUTH_HEADER V2 KEY_2_FILE KEY_V"
     local lines=('author: alice')
     mkdir -p "$art"
     for name in $names; do
@@ -3844,7 +3845,8 @@ No plaintext secrets found to migrate." "$out" "migrate finds no secret" || retu
 # A key that names a secret only through plain key (isKey, FILE_KEY, API_KEY,
 # KEY, hotkey, APP_KEY2) holds a lookup key, not a credential, when its
 # value, after surrounding whitespace, a trailing CR and one pair of
-# matching quotes are stripped, is true, false, null or digits alone:
+# matching quotes (not a mismatched pair) are stripped, is true, false,
+# null or digits alone:
 # nothing is stored and the line stays. A key that names a secret by any
 # other word, or whose last segment ends in secretkey, accesskey,
 # privatekey or authkey, keeps such a value (PASSWORD=123456,
@@ -3857,7 +3859,7 @@ test_migrate_redact_skips_a_flag_or_number_only_under_a_key_name() {
     printf '%s\n' 'PASSWORD=123456' 'PIN_TOKEN=4821' 'secret: 0042' '_fileKey=example-file-key-value' \
         'SECRETKEY=234567' 'ACCESSKEY=7391' 'AWSSECRETKEY=7' 'PRIVATEKEY=NULL' 'TS_AUTHKEY=false' 'token: "8"' \
         'isKey=true' 'enabledKey=FALSE' 'FILE_KEY=9001' 'API_KEY=null' 'KEY=0' 'hotkey=1' 'APP_KEY2=42' \
-        'rowKey=true ' "sortKey: '1'" 'cacheKey: "TRUE"' > "$art/app.env"
+        'rowKey=true ' "sortKey: '1'" 'cacheKey: "TRUE"' "mixedKey: \"1'" > "$art/app.env"
     printf 'partitionKey=9001\r\n' >> "$art/app.env"
     out=$("$CS_SECRETS_BIN" migrate --redact 2>&1) || rc=$?
     assert_eq "0" "$rc" "migrate --redact exits 0: $out" || return 1
@@ -3873,8 +3875,9 @@ test_migrate_redact_skips_a_flag_or_number_only_under_a_key_name() {
   Migrated: PRIVATEKEY (from app.env)
   Migrated: TS_AUTHKEY (from app.env)
   Migrated: token (from app.env)
+  Migrated: mixedKey (from app.env)
 
-Migrated 10 secret(s) to secure storage.
+Migrated 11 secret(s) to secure storage.
 Updated 1 file(s) with redacted values." "$out" "a number under a password or token name is migrated, a flag or number under a key name is not" || return 1
     assert_eq "PASSWORD=[REDACTED: stored in keychain as PASSWORD]
 PIN_TOKEN=[REDACTED: stored in keychain as PIN_TOKEN]
@@ -3896,6 +3899,7 @@ APP_KEY2=42
 rowKey=true 
 sortKey: '1'
 cacheKey: \"TRUE\"
+mixedKey: [REDACTED: stored in keychain as mixedKey]
 partitionKey=9001"$'\r'"
 x" "$(cat "$art/app.env"; printf x)" "only the migrated values are replaced" || return 1
     assert_eq "123456" "$("$CS_SECRETS_BIN" get PASSWORD 2>&1)" "PASSWORD is stored as it was" || return 1
@@ -3910,6 +3914,7 @@ x" "$(cat "$art/app.env"; printf x)" "only the migrated values are replaced" || 
   - SECRETKEY
   - TS_AUTHKEY
   - _fileKey
+  - mixedKey
   - secret
   - token" "$("$CS_SECRETS_BIN" list 2>&1)" "no plain-key name with a flag or number value is stored" || return 1
 }
