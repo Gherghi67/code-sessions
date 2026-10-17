@@ -4179,22 +4179,22 @@ test_a_stalled_walk_is_not_respawned_every_render() {
 
 run_test test_a_stalled_walk_is_not_respawned_every_render
 
-# A `sleep` for the render's PATH that logs each call to $DEADLOG, then sleeps
-# what it was asked plus $2 seconds, if any. The walker's one sleep is its
-# deadline, and it kills ps only once that sleep ends, so a logged line comes
-# before the kill and before the mark is cleared: the log counts walkers
-# without racing them, as a stalled ps logging itself would. This pins that the
-# deadline is a single `sleep` from PATH, which is what the wall-time test
-# below is about; a walker that times out some other way has to change these
-# tests too.
+# A `sleep` for the render's PATH that logs each call to $DEADLOG as
+# "<parent pid> <own pid> <seconds asked>", then sleeps what it was asked plus
+# $2 seconds, if any. With no extra it execs the real sleep, so the own pid is
+# the sleep's. A walker kills ps only once its deadline sleep ends, so a logged
+# line comes before the kill and before the mark is cleared: the distinct
+# parents count walkers without racing them, as a stalled ps logging itself
+# would, whatever number of sleeps a walker's deadline takes. The deadline
+# being a single sleep is pinned by the wall-time test alone.
 _make_deadline_sleep() {  # dir extra-seconds
     local real
     real=$(command -v sleep)
     mkdir -p "$1"
     if [ "$2" = 0 ]; then
-        printf '#!/bin/sh\necho "$1" >> "$DEADLOG"\nexec %s "$@"\n' "$real" > "$1/sleep"
+        printf '#!/bin/sh\necho "$PPID $$ $1" >> "$DEADLOG"\nexec %s "$@"\n' "$real" > "$1/sleep"
     else
-        printf '#!/bin/sh\necho "$1" >> "$DEADLOG"\n%s "$@"\nexec %s %s\n' "$real" "$real" "$2" > "$1/sleep"
+        printf '#!/bin/sh\necho "$PPID $$ $1" >> "$DEADLOG"\n%s "$@"\nexec %s %s\n' "$real" "$real" "$2" > "$1/sleep"
     fi
     chmod +x "$1/sleep"
 }
@@ -4234,7 +4234,7 @@ test_a_stalled_walker_is_killed_before_its_mark_expires() {
         [ ! -e "$mark" ] \
             || { echo "  FAIL: the walker spawned at $now never killed its stalled ps"; return 1; }
     done
-    assert_eq "3" "$(wc -l < "$DEADLOG" | tr -d ' ')" "each mark window spawns one walker" || return 1
+    assert_eq "3" "$(cut -d' ' -f1 "$DEADLOG" | sort -u | wc -l | tr -d ' ')" "each mark window spawns one walker" || return 1
     # Every walker has cleared its mark, which it does only after killing and
     # reaping its ps, so no recorded ps may still be alive.
     alive=0
@@ -4278,7 +4278,7 @@ test_the_walk_deadline_holds_in_wall_time_when_sleeps_run_long() {
     while [ -e "$mark" ] && [ $((SECONDS - start)) -lt 10 ]; do sleep 0.1; done
     [ ! -e "$mark" ] \
         || { echo "  FAIL: the walker still held its stalled ps when its mark expired"; return 1; }
-    assert_eq "1" "$(cat "$DEADLOG")" "the walker sleeps once, for its 1 s deadline" || return 1
+    assert_eq "1" "$(cut -d' ' -f3 "$DEADLOG")" "the walker sleeps once, for its 1 s deadline" || return 1
     while read -r p; do kill -0 "$p" 2>/dev/null && alive=$((alive + 1)); done < "$STALLLOG"
     assert_eq "0" "$alive" "the walker's ps is dead once its mark is cleared" || return 1
 }
