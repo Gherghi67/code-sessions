@@ -321,13 +321,18 @@ if [ -n "$parallel" ]; then
     # replays them in the same order a serial run would print them -- the
     # concurrency is invisible in the output. Failures are recorded as marker
     # files because a background subshell cannot append to the parent's array.
+    # The lanes share one queue: each walks the whole list and runs a suite
+    # only when its mkdir of that position's claim succeeds, which is atomic,
+    # so every suite runs exactly once and a lane that finishes takes the next
+    # unclaimed suite. A fixed share per lane left one CI lane working for 1491
+    # seconds after another had gone idle at 709.
     j=0
     while [ "$j" -lt "$jobs_n" ]; do
         (
-            k=$j
+            k=0
             while [ "$k" -lt "$total" ]; do
-                run_suite "$k"
-                k=$((k + jobs_n))
+                mkdir "$logdir/$k.claim" 2>/dev/null && run_suite "$k"
+                k=$((k + 1))
             done
         ) &
         lanes+=("$!")
