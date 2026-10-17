@@ -4221,6 +4221,43 @@ test_a_stalled_walker_is_killed_before_its_mark_expires() {
 
 run_test test_a_stalled_walker_is_killed_before_its_mark_expires
 
+# The deadline is wall time. On a loaded machine every `sleep` costs its fork
+# on top of what it was asked for, so a deadline counted in sleeps runs long
+# by that cost once per sleep and can outlast the mark, letting the next render
+# start a second walker beside the first. Here each sleep the walker runs takes
+# 0.3 s longer than asked: a deadline of 3 s counted as 30 sleeps of 0.1 s
+# would take 12 s, past TMUX_WALK_MARK_TTL (10 s).
+test_the_walk_deadline_holds_in_wall_time_when_sleeps_run_long() {
+    export CS_TERM_THEME=light FORCE_COLOR=0
+    export CS_STATUSLINE_SEGMENTS=pane
+    export TMUX="/tmp/fake,2216,0" TMUX_PANE="%7"
+    export CS_STATUSLINE_PARENT=4242 CS_STATUSLINE_WALK_DEADLINE=3
+    local real_sleep slowbin="$TEST_TMPDIR/slowbin"
+    real_sleep=$(command -v sleep)
+    mkdir -p "$TEST_TMPDIR/fakebin" "$slowbin"
+    export STALLLOG="$TEST_TMPDIR/stalled"
+    : > "$STALLLOG"
+    printf '#!/bin/sh\necho "$$" >> "$STALLLOG"\nexec %s 300\n' "$real_sleep" > "$TEST_TMPDIR/fakebin/ps"
+    printf '#!/bin/sh\n%s "$@"\nexec %s 0.3\n' "$real_sleep" "$real_sleep" > "$slowbin/sleep"
+    chmod +x "$TEST_TMPDIR/fakebin/ps" "$slowbin/sleep"
+    export PATH="$TEST_TMPDIR/fakebin:$PATH"
+    local json='{"session_id":"sid-1"}' alive=0 p start
+    local mark="$HOME/.cache/cs/tmux-walking/4242,-tmp-fake,2216,0"
+    start=$SECONDS
+    # Only the render, and the walker it leaves behind, see the slow sleep.
+    PATH="$slowbin:$PATH" CS_STATUSLINE_NOW=1001 run_sl "$json" >/dev/null
+    # Wall time, because that is how the mark ages. SECONDS counts whole
+    # seconds, so this gives up between 9 and 10 s after the render started.
+    while [ -e "$mark" ] && [ $((SECONDS - start)) -lt 10 ]; do sleep 0.1; done
+    [ ! -e "$mark" ] \
+        || { echo "  FAIL: the walker still held its stalled ps when its mark expired"; return 1; }
+    assert_eq "1" "$(wc -l < "$STALLLOG" | tr -d ' ')" "the render spawns one walker" || return 1
+    while read -r p; do kill -0 "$p" 2>/dev/null && alive=$((alive + 1)); done < "$STALLLOG"
+    assert_eq "0" "$alive" "the walker's ps is dead once its mark is cleared" || return 1
+}
+
+run_test test_the_walk_deadline_holds_in_wall_time_when_sleeps_run_long
+
 # The usage refresher paints no bar, so it has no use for the terminal's theme
 # or the ancestry verdict behind it. It must not run the walk at all: a ps that
 # stalls would hold every refresher short of its lock, and the renders that
