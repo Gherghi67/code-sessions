@@ -16,6 +16,17 @@ _stage_install() {  # home
     done
 }
 
+# Wait for cs to print a line to its output file, polled every 0.1 s for up
+# to 60 s. cs prints the line just before it waits on its next answer, so
+# what the test changes next lands while cs waits, however loaded the machine.
+# A line that never comes falls through, and the assertion on it fails.
+_wait_for_output() {  # file, line
+    local i=0
+    while ! grep -qF -- "$2" "$1" 2>/dev/null && [ "$i" -lt 600 ]; do
+        sleep 0.1; i=$((i + 1))
+    done
+}
+
 # Refused before the first removal: every binary is still installed, the
 # refusal says nothing was uninstalled and to run cs -uninstall again once
 # the sessions are closed, and the exit is non-zero.
@@ -52,17 +63,21 @@ test_uninstall_with_a_live_session_removes_nothing() {
 # The confirmation waits on a person, so a session can open after the first
 # check. The check runs again once the answer is in, before the first
 # removal: a session that went live during the prompt still refuses the
-# whole uninstall with every binary in place.
+# whole uninstall with every binary in place. The session opens once the
+# confirmation is printed, after the first check, so only the second check
+# can refuse it.
 test_uninstall_rechecks_live_sessions_after_the_confirmation() {
     local home="$TEST_TMPDIR/late-home" root="$TEST_TMPDIR/late-sessions" stub="$TEST_TMPDIR/mount-stub-late"
     _stage_install "$home"
     mkdir -p "$root/late-open/.cs"
     _stub_mount_table "$stub" "/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled)" || return 1
     local rc=0 out f
-    { sleep 1; echo "$$" > "$root/late-open/.cs/session.lock"; printf 'yny'; } \
+    { _wait_for_output "$TEST_TMPDIR/late.out" "This will uninstall cs and all its components:"
+      echo "$$" > "$root/late-open/.cs/session.lock"; printf 'yny'; } \
         | HOME="$home" CS_SESSIONS_ROOT="$root" PATH="$stub:$PATH" "$CS_BIN" -uninstall \
         > "$TEST_TMPDIR/late.out" 2>&1 || rc=$?
     out=$(cat "$TEST_TMPDIR/late.out")
+    assert_output_contains "$out" "This will uninstall cs and all its components:" "the confirmation was reached before the session opened" || return 1
     assert_eq 1 "$rc" "uninstall exits 1 when a session opened during the prompt" || return 1
     assert_output_contains "$out" "Error: Nothing was uninstalled: these sessions are live: late-open. Close them and run cs -uninstall again." \
         "the refusal names the session that opened" || return 1
@@ -97,21 +112,17 @@ test_uninstall_rechecks_live_sessions_after_the_data_question() {
 # data?" is pending, as an encrypted session opening attaches its vault.
 # The mount table is read again once the answer is in, before rm -rf, which
 # would recurse into the volume: the data stays and the refusal names it.
-# The volume mounts once "Session data exists" is printed: cs prints it after
-# its first mount check and just before it waits on the answer. Up to 60 s of
-# polling, so a loaded machine's slow cs still reaches the question first; a
-# cs that never asks fails the first assertion once the wait runs out.
+# The volume mounts once "Session data exists" is printed, after the first
+# mount check, so only the second can find it.
 test_uninstall_rechecks_mounts_after_the_data_question() {
     local home="$TEST_TMPDIR/mnt-home" root="$TEST_TMPDIR/mnt-sessions" stub="$TEST_TMPDIR/mount-stub-mnt"
     _stage_install "$home"
     mkdir -p "$root/vaulted/.cs/vault-mnt"
     echo "notes" > "$root/vaulted/.cs/vault-mnt/notes.md"
     _stub_mount_table "$stub" "/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled)" || return 1
-    local rc=0 out i=0
+    local rc=0 out
     { printf 'yn'
-      while ! grep -qF -- "Session data exists at $root" "$TEST_TMPDIR/mnt.out" 2>/dev/null && [ "$i" -lt 600 ]; do
-          sleep 0.1; i=$((i + 1))
-      done
+      _wait_for_output "$TEST_TMPDIR/mnt.out" "Session data exists at $root"
       printf '%s\n' "/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled)" \
           "/dev/disk9s1 on $root/vaulted/.cs/vault-mnt (apfs, local, nodev, nosuid, journaled, noowners, mounted by tester)" > "$stub/table"
       printf 'y'; } \
