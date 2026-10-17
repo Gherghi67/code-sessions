@@ -7,7 +7,9 @@ All notable changes to cs are documented here. Release notes are also available 
 ## Unreleased
 
 ### Changed
-- `tests/run_all.sh` hands suites to its lanes from one queue, longest file first, so a lane that finishes takes the next suite. `CS_TEST_SHARD=N/M` balances its shards by line count, and CI runs the bash suites as two shards per OS. A suite file the gate cannot read stops it with `cannot read <path>`.
+- `tests/run_all.sh` hands suites to its lanes from one queue, longest file first, so a lane that finishes takes the next suite. `CS_TEST_SHARD=N/M` balances its shards by line count, and CI runs the bash suites as two shards per OS. A suite that runs long for its length carries `# run_all-weight: N` and counts as N times its lines; `test_install.sh` does, with 2, so it no longer shares a macOS shard with `test_worktrees.sh`. A suite file the gate cannot read stops it with `cannot read <path>`.
+- `tests/lint_shell.sh` runs one shellcheck pass, one file per run across every processor, instead of two passes over every file in one process: about 3 minutes to under 20 seconds on a 14-core Mac. A file shellcheck cannot run on stops it with exit 2 and the file's name, where it used to read as `found errors`.
+- CI cancels a pull request's older test run when a newer push lands (never on `main`), and skips the tests for a push that touches only `docs/superpowers/` or `docs/upstream/`, which no suite reads.
 - Five tests that went red under load wait on the event they check: the status line's walker tests, uninstall's mount and live-session rechecks, the concurrent `cs -queue accept` race (a loser may print either honest refusal), the nested-child lead claim, and the rewriter's withheld elapsed time. `tests/test_lib.sh` gains `wait_for_file_or_exit`.
 
 ### Fixes

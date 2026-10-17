@@ -2,6 +2,11 @@
 # ABOUTME: Tests for install.sh end-to-end behavior
 # ABOUTME: Isolates HOME to a tmpdir so install side-effects don't leak
 
+# Each test runs a whole install, so this suite takes about twice the time its
+# length suggests (562 s for 3,824 lines on the macOS runner); run_all.sh
+# weighs it accordingly when it splits shards and orders its queue.
+# run_all-weight: 2
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=tests/test_lib.sh
 source "$SCRIPT_DIR/test_lib.sh"
