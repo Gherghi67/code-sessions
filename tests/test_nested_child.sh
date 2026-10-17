@@ -242,20 +242,31 @@ test_a_teammate_does_not_raise_the_attention_flag() {
 # "launch direct wrapper grandchild": the launch pid cs hands on, a direct
 # child of it, and a wrapper with a child of its own (claude run by a wrapper
 # that forks it, as `op run --` or a script without exec does). Every one of
-# them is alive until _kill_launch_tree.
+# them is alive until _kill_launch_tree. Each wait ends on the file it waits
+# for or on the process that would write it exiting; the deadline only stops
+# a hang.
 _launch_tree() {
-    local i=0
+    local tree="$TEST_TMPDIR/tree" t deadline rc
     printf '%s\n' '#!/usr/bin/env bash' \
         'sleep 300 & direct=$!' \
         'bash -c '"'"'sleep 300 & echo "$!" > "$1.g"; wait'"'"' _ "$1" & wrapper=$!' \
-        'while [ ! -s "$1.g" ]; do sleep 0.05; done' \
+        'while [ ! -s "$1.g" ] && kill -0 "$wrapper" 2>/dev/null; do sleep 0.05; done' \
+        '[ -s "$1.g" ] || { kill "$direct"; exit 3; }' \
         'echo "$$ $direct $wrapper $(cat "$1.g")" > "$1.tmp" && mv "$1.tmp" "$1"' \
         'wait' > "$TEST_TMPDIR/tree.sh"
-    bash "$TEST_TMPDIR/tree.sh" "$TEST_TMPDIR/tree" >/dev/null 2>&1 &
-    while [ "$i" -lt 100 ] && [ ! -s "$TEST_TMPDIR/tree" ]; do
-        i=$((i + 1)); sleep 0.1
-    done
-    [ -s "$TEST_TMPDIR/tree" ] || { echo "  FAIL: the stand-in launch did not start"; return 1; }
+    bash "$TEST_TMPDIR/tree.sh" "$tree" >/dev/null 2>&1 &
+    t=$!
+    deadline=$((SECONDS + 300))
+    while [ ! -s "$tree" ] && kill -0 "$t" 2>/dev/null && [ "$SECONDS" -lt "$deadline" ]; do sleep 0.1; done
+    [ -s "$tree" ] && return 0
+    if kill -0 "$t" 2>/dev/null; then
+        kill "$t" 2>/dev/null
+        echo "  FAIL: the stand-in launch did not start: not up after 300 s"
+    else
+        rc=0; wait "$t" || rc=$?
+        echo "  FAIL: the stand-in launch did not start: it exited first, status $rc"
+    fi
+    return 1
 }
 
 _kill_launch_tree() {
