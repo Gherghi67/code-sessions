@@ -4199,9 +4199,8 @@ test_a_stalled_walker_is_killed_before_its_mark_expires() {
         # The walker clears the mark as its last act, after it has killed and
         # reaped its ps, so a cleared mark means this window's ps is dead and
         # its record, if it made one, is in. The next window starts only then.
-        # The poll ticks the way the walker's deadline does, a forked sleep
-        # 0.1 at a time, and allows 100 ticks to the walker's 30, so load
-        # stretches both alike.
+        # The poll allows 100 sleeps of 0.1 s, at least 10 s of wall time and
+        # more under load, against the walker's 3 s wall-time deadline.
         n=0
         while [ -e "$mark" ] && [ "$n" -lt 100 ]; do n=$((n + 1)); sleep 0.1; done
         [ ! -e "$mark" ] \
