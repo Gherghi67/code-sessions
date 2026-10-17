@@ -97,14 +97,21 @@ test_uninstall_rechecks_live_sessions_after_the_data_question() {
 # data?" is pending, as an encrypted session opening attaches its vault.
 # The mount table is read again once the answer is in, before rm -rf, which
 # would recurse into the volume: the data stays and the refusal names it.
+# The volume mounts once "Session data exists" is printed: cs prints it after
+# its first mount check and just before it waits on the answer. Up to 60 s of
+# polling, so a loaded machine's slow cs still reaches the question first; a
+# cs that never asks fails the first assertion once the wait runs out.
 test_uninstall_rechecks_mounts_after_the_data_question() {
     local home="$TEST_TMPDIR/mnt-home" root="$TEST_TMPDIR/mnt-sessions" stub="$TEST_TMPDIR/mount-stub-mnt"
     _stage_install "$home"
     mkdir -p "$root/vaulted/.cs/vault-mnt"
     echo "notes" > "$root/vaulted/.cs/vault-mnt/notes.md"
     _stub_mount_table "$stub" "/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled)" || return 1
-    local rc=0 out
-    { printf 'yn'; sleep 2
+    local rc=0 out i=0
+    { printf 'yn'
+      while ! grep -qF -- "Session data exists at $root" "$TEST_TMPDIR/mnt.out" 2>/dev/null && [ "$i" -lt 600 ]; do
+          sleep 0.1; i=$((i + 1))
+      done
       printf '%s\n' "/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled)" \
           "/dev/disk9s1 on $root/vaulted/.cs/vault-mnt (apfs, local, nodev, nosuid, journaled, noowners, mounted by tester)" > "$stub/table"
       printf 'y'; } \
