@@ -198,6 +198,37 @@ test_run_all_starts_the_longest_suites_first() {
     [ "$(ran_count)" -eq 4 ] || { echo "expected 4 suites to run, got $(ran_count)"; return 1; }
 }
 
+# Shards are balanced by line count, longest suite first, so two long suites
+# land on different shards and a CI job's wall time is not two slow suites
+# back to back. The long ones are first and third in name order, which a
+# round-robin over that order puts on the same shard. Each suite appends a
+# line every time it runs, so a suite two shards both claimed shows as two.
+test_run_all_shards_split_the_long_suites() {
+    make_suite_dir 4
+    local n i
+    for n in 1 2 3 4; do
+        {
+            printf '#!/usr/bin/env bash\n'
+            printf 'echo ran >> "%s/test_fake%s.sh"\n' "$RAN_DIR" "$n"
+            if [ "$n" = 1 ] || [ "$n" = 3 ]; then
+                for i in 1 2 3 4 5 6 7 8 9 10; do printf '# long\n'; done
+            fi
+        } > "$SUITE_DIR/test_fake$n.sh"
+    done
+    local out
+    out=$(CS_TEST_SHARD=1/2 CS_TEST_SUITE_DIR="$SUITE_DIR" bash "$RUN_ALL" 2>&1) || {
+        echo "shard 1/2 failed"; printf '%s\n' "$out"; return 1; }
+    if [ -e "$RAN_DIR/test_fake1.sh" ] && [ -e "$RAN_DIR/test_fake3.sh" ]; then
+        echo "both long suites ran in shard 1/2"; return 1
+    fi
+    out=$(CS_TEST_SHARD=2/2 CS_TEST_SUITE_DIR="$SUITE_DIR" bash "$RUN_ALL" 2>&1) || {
+        echo "shard 2/2 failed"; printf '%s\n' "$out"; return 1; }
+    for n in 1 2 3 4; do
+        [ "$(grep -c . "$RAN_DIR/test_fake$n.sh" 2>/dev/null)" = 1 ] \
+            || { echo "test_fake$n.sh ran $(grep -c . "$RAN_DIR/test_fake$n.sh" 2>/dev/null || echo 0) times over the two shards"; return 1; }
+    done
+}
+
 # A gate that cannot create its scratch dir must fail, not pass. Every suite is
 # launched with its output redirected into that dir, so an empty path makes the
 # redirection fail, which makes bash abandon the command -- the suite never runs
@@ -603,6 +634,7 @@ run_test test_run_all_keeps_each_suites_own_output
 run_test test_run_all_shards_partition_the_suite_list
 run_test test_run_all_a_free_lane_takes_the_next_suite
 run_test test_run_all_starts_the_longest_suites_first
+run_test test_run_all_shards_split_the_long_suites
 run_test test_run_all_fails_loudly_when_the_log_dir_cannot_be_made
 run_test test_run_all_rejects_a_malformed_shard
 run_test test_run_all_rejects_a_malformed_job_count
