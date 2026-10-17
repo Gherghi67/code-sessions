@@ -146,6 +146,29 @@ test_run_all_shards_partition_the_suite_list() {
     [ "$(ran_count)" -eq 7 ] || { echo "3 shards covered $(ran_count)/7 suites"; return 1; }
 }
 
+# A lane that finishes takes the next waiting suite, so no lane sits idle while
+# another works through a fixed share. Pinned with a suite that cannot finish
+# until every other suite has run: with two lanes it holds one lane, and only a
+# shared queue lets the other lane reach the remaining four. A fixed split puts
+# two of them behind it on its own lane, and it gives up after ten seconds.
+test_run_all_a_free_lane_takes_the_next_suite() {
+    make_suite_dir 5
+    cat > "$SUITE_DIR/test_fake1.sh" <<EOF
+#!/usr/bin/env bash
+i=0
+while [ "\$(ls -1 "$RAN_DIR" | grep -c .)" -lt 4 ]; do
+    i=\$((i + 1))
+    [ "\$i" -le 100 ] || { echo "the other four suites never ran"; exit 1; }
+    sleep 0.1
+done
+: >> "$RAN_DIR/test_fake1.sh"
+EOF
+    local out rc=0
+    out=$(CS_TEST_JOBS=2 CS_TEST_SUITE_DIR="$SUITE_DIR" bash "$RUN_ALL" 2>&1) || rc=$?
+    [ "$rc" -eq 0 ] || { echo "expected exit 0, got $rc"; printf '%s\n' "$out"; return 1; }
+    [ "$(ran_count)" -eq 5 ] || { echo "expected 5 suites to run, got $(ran_count)"; return 1; }
+}
+
 # A gate that cannot create its scratch dir must fail, not pass. Every suite is
 # launched with its output redirected into that dir, so an empty path makes the
 # redirection fail, which makes bash abandon the command -- the suite never runs
@@ -549,6 +572,7 @@ run_test test_run_all_serial_mode_runs_every_suite
 run_test test_run_all_reports_the_failing_suite_by_name
 run_test test_run_all_keeps_each_suites_own_output
 run_test test_run_all_shards_partition_the_suite_list
+run_test test_run_all_a_free_lane_takes_the_next_suite
 run_test test_run_all_fails_loudly_when_the_log_dir_cannot_be_made
 run_test test_run_all_rejects_a_malformed_shard
 run_test test_run_all_rejects_a_malformed_job_count
