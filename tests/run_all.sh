@@ -28,11 +28,12 @@ for arg in "$@"; do
     esac
 done
 
-# Optional sharding for CI parallelism: CS_TEST_SHARD="N/M" runs shard N of M
-# (round-robin over the suite list, so slow suites spread across shards). Unset
-# runs every suite. The round-robin index counts only real suites (test_lib.sh
-# is skipped first), so every shard on an identical runner image computes the
-# same assignment and the shards together cover each suite exactly once.
+# Optional sharding for CI parallelism: CS_TEST_SHARD="N/M" runs shard N of M,
+# balanced by line count (see the selection below), so the long suites spread
+# across shards. Unset runs every suite. The assignment reads only the suites'
+# names and line counts (test_lib.sh is skipped first), so every shard of one
+# checkout computes the same assignment and the shards together cover each
+# suite exactly once.
 shard_n=1; shard_m=1
 if [ -n "${CS_TEST_SHARD:-}" ]; then
     shard_n=${CS_TEST_SHARD%%/*}
@@ -89,20 +90,60 @@ suite_timeout="${CS_TEST_SUITE_TIMEOUT:-1200}"
 case "$suite_timeout" in ''|*[!0-9]*) echo "invalid CS_TEST_SUITE_TIMEOUT='$suite_timeout' (want a positive number of seconds)" >&2; exit 2 ;; esac
 [ "$suite_timeout" -ge 1 ] || { echo "invalid CS_TEST_SUITE_TIMEOUT='$suite_timeout' (want a positive number of seconds)" >&2; exit 2; }
 
-# Select this shard's suites, in glob order.
-selected=()
-idx=-1
+# Print "lines position" for each file given, longest first, ties in the order
+# given. Line count stands in for a suite's run time: over the 81 suites' CI
+# times in October 2026 the two correlate at 0.79. Both the shard split and
+# the lanes' queue order by it.
+_longest_first() {  # file...
+    local k=0 f
+    for f in "$@"; do
+        printf '%s %s\n' "$(wc -l < "$f")" "$k"
+        k=$((k + 1))
+    done | sort -k1,1nr -k2,2n
+}
+
+# Every suite, in glob order.
+all=()
 for suite in "$SUITE_DIR"/test_*.sh; do
     [ -e "$suite" ] || continue
     # test_lib.sh is the shared harness, not a suite -- it exits non-zero by
     # design when sourced standalone (SCRIPT_DIR guard).
     [ "$(basename "$suite")" = "test_lib.sh" ] && continue
-    idx=$((idx + 1))
-    if [ "$shard_m" -gt 1 ] && [ "$(( idx % shard_m ))" -ne "$(( shard_n - 1 ))" ]; then
-        continue
-    fi
-    selected+=("$suite")
+    all+=("$suite")
 done
+
+# Select this shard's suites, in glob order. Longest first, each suite goes to
+# the shard holding the fewest lines so far (the lowest-numbered on a tie), so
+# two long suites never share a shard while another has room. Over October
+# 2026's CI times this split two macOS shards at 656 s and 457 s of suite
+# time per lane, where a round-robin over names would put test_install and
+# test_cs_secrets back to back.
+selected=()
+if [ "$shard_m" -gt 1 ] && [ "${#all[@]}" -gt 0 ]; then
+    load=()
+    s=0
+    while [ "$s" -lt "$shard_m" ]; do load[s]=0; s=$((s + 1)); done
+    mine=" "
+    while read -r lines k; do
+        best=0
+        s=1
+        while [ "$s" -lt "$shard_m" ]; do
+            [ "${load[s]}" -lt "${load[best]}" ] && best=$s
+            s=$((s + 1))
+        done
+        load[best]=$((load[best] + lines))
+        [ "$best" -eq $((shard_n - 1)) ] && mine="$mine$k "
+    done <<EOF_SHARDS
+$(_longest_first "${all[@]}")
+EOF_SHARDS
+    k=0
+    while [ "$k" -lt "${#all[@]}" ]; do
+        case "$mine" in *" $k "*) selected+=("${all[$k]}") ;; esac
+        k=$((k + 1))
+    done
+elif [ "${#all[@]}" -gt 0 ]; then
+    selected=("${all[@]}")
+fi
 
 if [ -n "$changed_mode" ]; then
     if [ -n "${CS_TEST_CHANGED+set}" ]; then
@@ -326,16 +367,15 @@ if [ -n "$parallel" ]; then
     # so every suite runs exactly once and a lane that finishes takes the next
     # unclaimed suite. A fixed share per lane left one CI lane working for 1491
     # seconds after another had gone idle at 709. The queue holds positions in
-    # selected[], longest suite first, so the slowest suites start at once
-    # rather than last behind a lane's worth of short ones. Line count stands
-    # in for run time: over the 81 suites' CI times in October 2026 the two
-    # correlate at 0.79, and a queue in that order came within a few seconds of
-    # the ideal split. Ties keep name order.
+    # selected[], longest suite first (_longest_first), so the slowest suites
+    # start at once rather than last behind a lane's worth of short ones. Over
+    # October 2026's CI times a queue in that order came within a few seconds
+    # of the ideal split.
     queue=()
     while read -r _ k; do
         queue+=("$k")
     done <<EOF_QUEUE
-$(k=0; while [ "$k" -lt "$total" ]; do printf '%s %s\n' "$(wc -l < "${selected[$k]}")" "$k"; k=$((k + 1)); done | sort -k1,1nr -k2,2n)
+$(_longest_first "${selected[@]}")
 EOF_QUEUE
     j=0
     while [ "$j" -lt "$jobs_n" ]; do
