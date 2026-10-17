@@ -4,6 +4,15 @@ All notable changes to cs are documented here. Release notes are also available 
 
 <!-- New entries group changes under Keep-a-Changelog headings (Added / Changed / Removed / Fixes / Docs), or Features / Performance where those fit the release. -->
 
+## Unreleased
+
+### Changed
+- `tests/run_all.sh` hands suites to its lanes from one queue, longest file first, so a lane that finishes takes the next suite. `CS_TEST_SHARD=N/M` balances its shards by line count, and CI runs the bash suites as two shards per OS. A suite file the gate cannot read stops it with `cannot read <path>`.
+- Five tests that went red under load wait on the event they check: the status line's walker tests, uninstall's mount and live-session rechecks, the concurrent `cs -queue accept` race (a loser may print either honest refusal), the nested-child lead claim, and the rewriter's withheld elapsed time. `tests/test_lib.sh` gains `wait_for_file_or_exit`.
+
+### Fixes
+- The status line's background tmux walker kills a `ps` that has not answered after five seconds of wall time. It counted fifty short sleeps before, each of which ran long by its fork on a loaded machine, so the wait could outlast the ten-second walk mark and the next render started a second walker beside the first.
+
 ## 2026.10.8
 
 ### Added

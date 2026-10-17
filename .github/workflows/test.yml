@@ -9,11 +9,15 @@ on:
   pull_request:
 
 jobs:
+  # Two jobs per OS, each running half the suites (run_all.sh balances the
+  # halves by line count). One macOS job ran all of them for 25 minutes.
   bash:
+    name: bash (${{ matrix.os }}, ${{ matrix.shard }}/2)
     strategy:
       fail-fast: false
       matrix:
         os: [macos-latest, ubuntu-latest]
+        shard: [1, 2]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -35,6 +39,8 @@ jobs:
         run: brew install age
 
       - name: Run bash test suites
+        env:
+          CS_TEST_SHARD: ${{ matrix.shard }}/2
         run: bash tests/run_all.sh
 
   build-sync:

@@ -242,20 +242,19 @@ test_a_teammate_does_not_raise_the_attention_flag() {
 # "launch direct wrapper grandchild": the launch pid cs hands on, a direct
 # child of it, and a wrapper with a child of its own (claude run by a wrapper
 # that forks it, as `op run --` or a script without exec does). Every one of
-# them is alive until _kill_launch_tree.
+# them is alive until _kill_launch_tree. Each wait ends on the file it waits
+# for or on the process that would write it exiting.
 _launch_tree() {
-    local i=0
+    local tree="$TEST_TMPDIR/tree"
     printf '%s\n' '#!/usr/bin/env bash' \
         'sleep 300 & direct=$!' \
         'bash -c '"'"'sleep 300 & echo "$!" > "$1.g"; wait'"'"' _ "$1" & wrapper=$!' \
-        'while [ ! -s "$1.g" ]; do sleep 0.05; done' \
+        'while [ ! -s "$1.g" ] && kill -0 "$wrapper" 2>/dev/null; do sleep 0.05; done' \
+        '[ -s "$1.g" ] || { kill "$direct"; exit 3; }' \
         'echo "$$ $direct $wrapper $(cat "$1.g")" > "$1.tmp" && mv "$1.tmp" "$1"' \
         'wait' > "$TEST_TMPDIR/tree.sh"
-    bash "$TEST_TMPDIR/tree.sh" "$TEST_TMPDIR/tree" >/dev/null 2>&1 &
-    while [ "$i" -lt 100 ] && [ ! -s "$TEST_TMPDIR/tree" ]; do
-        i=$((i + 1)); sleep 0.1
-    done
-    [ -s "$TEST_TMPDIR/tree" ] || { echo "  FAIL: the stand-in launch did not start"; return 1; }
+    bash "$TEST_TMPDIR/tree.sh" "$tree" >/dev/null 2>&1 &
+    wait_for_file_or_exit "$tree" "$!" "the stand-in launch did not start"
 }
 
 _kill_launch_tree() {
@@ -399,37 +398,54 @@ test_the_lead_takes_the_claim_from_a_claude_it_started() {
 # Each reads the claim and writes its own as one step, taken in turns, so the
 # lead holds the claim whichever comes first. The test fixes the order that
 # would let both pass the read: the other claude is held between its read and
-# its write (its mktemp, which the write makes only after the read passed,
-# waits on a fifo), the lead's claim starts, and the fifo opens once the lead
-# has either written its claim or is waiting for its turn (it ran perl on the
-# lock file). Nothing depends on how long a step takes.
+# its write (its mv, which publishes the claim the write made only after the
+# read passed, waits on a fifo), the lead's claim starts, and the fifo opens
+# once the lead has either written its claim or is waiting for its turn (it
+# ran perl on the lock file). Each wait ends on the step it waits for, or on
+# the process that would take it ending; the deadlines only stop a hang. One
+# duration is the lock's own: a turn is waited for five seconds, then the
+# lead goes ahead unlocked, so the held mv must land within five seconds of
+# the lead's wait starting. Holding at the mv leaves it that one step.
 test_the_lead_holds_the_claim_when_a_claude_it_started_claims_at_once() {
     _nested_setup
     local meta="$CLAUDE_SESSION_META_DIR" shim="$TEST_TMPDIR/shim" launch direct wrapper grand
     local hold="$TEST_TMPDIR/hold" w_waits="$TEST_TMPDIR/lead-waits" w_done="$TEST_TMPDIR/lead-done"
-    local i=0 g w
+    local err="$TEST_TMPDIR/claim.err" deadline g w
     _launch_tree || return 1
     read -r launch direct wrapper grand < "$TEST_TMPDIR/tree"
     mkdir -p "$shim"
     mkfifo "$hold"
     printf '#!/bin/sh\nif [ -n "${CS_TEST_HOLD:-}" ]; then : > "$CS_TEST_HOLD.held"; read _ < "$CS_TEST_HOLD"; fi\nexec %s "$@"\n' \
-        "$(command -v mktemp)" > "$shim/mktemp"
+        "$(command -v mv)" > "$shim/mv"
     printf '#!/bin/sh\nfor a in "$@"; do last=$a; done\ncase "${CS_TEST_TURN:-}:${last:-}" in ?*:*.mutex.lock) : > "$CS_TEST_TURN" ;; esac\nexec %s "$@"\n' \
         "$(command -v perl)" > "$shim/perl"
-    chmod +x "$shim/mktemp" "$shim/perl"
+    chmod +x "$shim/mv" "$shim/perl"
     _claim_as() {  # claude_pid session_id
         PATH="$shim:$PATH" CS_LEAD_PID="$launch" CLAUDE_PID="$1" bash -c \
-            '. "$1/cs-shared.sh"; . "$1/cs-resolve.sh"; cs_lead_claim "$2" "$3"' _ "$HOOKS_DIR" "$meta/local" "$2" 2>/dev/null
+            '. "$1/cs-shared.sh"; . "$1/cs-resolve.sh"; cs_lead_claim "$2" "$3"' _ "$HOOKS_DIR" "$meta/local" "$2" 2>>"$err"
     }
 
     CS_TEST_HOLD="$hold" _claim_as "$grand" 77777777-7777-4777-8777-777777777777 &
     g=$!
-    while [ "$i" -lt 100 ] && [ ! -e "$hold.held" ]; do i=$((i + 1)); sleep 0.1; done
-    [ -e "$hold.held" ] || { kill "$g" 2>/dev/null; _kill_launch_tree; echo "  FAIL: the other claude never reached its write"; return 1; }
+    if ! wait_for_file_or_exit "$hold.held" "$g" "the other claude never reached its write"; then
+        # With the fifo gone, a held step reached late reads nothing and goes on.
+        rm -f "$hold"
+        echo "    its claim's stderr: $(cat "$err" 2>/dev/null)"
+        _kill_launch_tree
+        return 1
+    fi
     { CS_TEST_TURN="$w_waits" _claim_as "$wrapper" 66666666-6666-4666-8666-666666666666; : > "$w_done"; } &
     w=$!
-    i=0
-    while [ "$i" -lt 100 ] && [ ! -e "$w_waits" ] && [ ! -e "$w_done" ]; do i=$((i + 1)); sleep 0.1; done
+    deadline=$((SECONDS + 300))
+    while [ ! -e "$w_waits" ] && [ ! -e "$w_done" ] && [ "$SECONDS" -lt "$deadline" ]; do sleep 0.1; done
+    if [ ! -e "$w_waits" ] && [ ! -e "$w_done" ]; then
+        echo go > "$hold"
+        kill "$w" 2>/dev/null
+        wait "$g" "$w"
+        _kill_launch_tree
+        echo "  FAIL: the lead's claim neither reached the lock nor ended in 300 s"
+        return 1
+    fi
     echo go > "$hold"
     wait "$g" "$w"
     local claim

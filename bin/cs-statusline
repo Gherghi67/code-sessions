@@ -249,9 +249,10 @@ TMUX_REAL_CACHE_TTL=300
 # nothing.
 TMUX_WALK_MARK_TTL=10
 
-# How long the detached walker waits on its ps before killing it. Shorter than
-# the mark, so a stalled walker is gone before the render that replaces it can
-# be spawned: at most one is ever alive.
+# How long the detached walker waits on its ps before killing it, in wall time
+# (see _sl_ps_table_by_deadline). Shorter than the mark, so a stalled walker is
+# gone before the render that replaces it can be spawned: at most one is ever
+# alive.
 TMUX_WALK_DEADLINE=5
 
 _sl_tmux_is_real() {
@@ -334,22 +335,36 @@ _sl_tmux_walk() {  # start-pid server-pid
 
 # The ps table in _PS_TABLE, empty when ps has not answered within $1 seconds.
 # A ps that stalls is killed by the pid recorded at its start, so the walker
-# that ran it ends too: nothing outlives the deadline. It polls with sleep, a
-# fork a tick, which is why only the detached walker takes this path.
+# that ran it ends too: nothing outlives the deadline.
+#
+# The deadline is one sleep of $1 seconds in a watchdog, never a count of short
+# sleeps. On a loaded machine each sleep costs its fork on top of what it asks
+# for, so fifty sleeps of 0.1 s ran long by fifty forks and could outlast the
+# mark; one sleep runs long by one. The watchdog kills ps when its sleep ends,
+# however that sleep ends, so a sleep that cannot run fails closed. A ps that
+# answers first ends the wait at once, and the watchdog and its sleep are
+# stopped. Three forks a walk (ps, the watchdog, its sleep), which is why only
+# the detached walker takes this path.
 _sl_ps_table_by_deadline() {
     _PS_TABLE=""
-    local out="$HOME/.cache/cs/tmux-walking/.ps.$$.$RANDOM" pid ticks=$(( $1 * 10 ))
+    local out="$HOME/.cache/cs/tmux-walking/.ps.$$.$RANDOM" pid dog
     ps -ax -o pid=,ppid= > "$out" 2>/dev/null &
     pid=$!
-    while [ "$ticks" -gt 0 ] && kill -0 "$pid" 2>/dev/null; do
-        sleep 0.1; ticks=$((ticks - 1))
-    done
-    if kill -0 "$pid" 2>/dev/null; then
-        kill -9 "$pid" 2>/dev/null
-        wait "$pid" 2>/dev/null
-    elif wait "$pid" 2>/dev/null; then
+    # The sleep runs in the background and the watchdog waits on it, because
+    # a trap waits for a foreground child to finish before it runs. A TERM
+    # this process inherited as ignored (SIG_IGN across an exec) cannot be
+    # trapped, and then an answered walk waits out the deadline; cs's launch
+    # path does not ignore TERM.
+    ( trap 'kill "${s:-}" 2>/dev/null; exit 0' TERM
+      sleep "$1" & s=$!
+      wait "$s"
+      kill -9 "$pid" 2>/dev/null ) >/dev/null 2>&1 &
+    dog=$!
+    if wait "$pid" 2>/dev/null; then
         _PS_TABLE=$(< "$out")
     fi
+    kill "$dog" 2>/dev/null
+    wait "$dog" 2>/dev/null
     rm -f "$out" 2>/dev/null || true
 }
 

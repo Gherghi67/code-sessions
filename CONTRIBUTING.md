@@ -57,6 +57,11 @@ leaves the machine usable while it runs. One gate per checkout: a second
 `run_all.sh` started while one is running refuses with the holder's pid and
 exits 3 (`tests/.run_all.lock`; a lock whose pid is dead is taken over).
 
+The lanes take suites from one queue, longest file first, so a lane that
+finishes picks up the next suite rather than waiting on a fixed share.
+`CS_TEST_SHARD=N/M` runs shard N of M, balanced by line count; CI runs the bash
+suites as two shards per OS.
+
 The gate stops a suite that runs past 1200 seconds, along with its child
 processes, counts it as failed and names it in a `timed out after 1200s` line;
 the other suites still run. The slowest suite, `test_install.sh`, takes about 600 seconds on a loaded machine.
