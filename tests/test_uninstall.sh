@@ -89,7 +89,9 @@ test_uninstall_rechecks_live_sessions_after_the_confirmation() {
 # The data question waits on a person too. A session that opens while
 # "Delete session data?" is pending is found once the answer is in, before
 # rm -rf, and the data stays. The answers are: go ahead, keep the keychain
-# secrets, then (once the session is open) delete the data.
+# secrets, then (once the session is open) delete the data. The session opens
+# once "Session data exists" is printed, after the first check of the data
+# step, so only the check after the answer can find it.
 test_uninstall_rechecks_live_sessions_after_the_data_question() {
     local home="$TEST_TMPDIR/data-home" root="$TEST_TMPDIR/data-sessions" stub="$TEST_TMPDIR/mount-stub-data"
     _stage_install "$home"
@@ -97,7 +99,9 @@ test_uninstall_rechecks_live_sessions_after_the_data_question() {
     echo "notes" > "$root/late-data/.cs/notes.md"
     _stub_mount_table "$stub" "/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled)" || return 1
     local rc=0 out
-    { printf 'yn'; sleep 2; echo "$$" > "$root/late-data/.cs/session.lock"; printf 'y'; } \
+    { printf 'yn'
+      _wait_for_output "$TEST_TMPDIR/data.out" "Session data exists at $root"
+      echo "$$" > "$root/late-data/.cs/session.lock"; printf 'y'; } \
         | HOME="$home" CS_SESSIONS_ROOT="$root" PATH="$stub:$PATH" "$CS_BIN" -uninstall \
         > "$TEST_TMPDIR/data.out" 2>&1 || rc=$?
     out=$(cat "$TEST_TMPDIR/data.out")
