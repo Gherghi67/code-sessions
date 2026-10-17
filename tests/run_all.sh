@@ -90,14 +90,17 @@ suite_timeout="${CS_TEST_SUITE_TIMEOUT:-1200}"
 case "$suite_timeout" in ''|*[!0-9]*) echo "invalid CS_TEST_SUITE_TIMEOUT='$suite_timeout' (want a positive number of seconds)" >&2; exit 2 ;; esac
 [ "$suite_timeout" -ge 1 ] || { echo "invalid CS_TEST_SUITE_TIMEOUT='$suite_timeout' (want a positive number of seconds)" >&2; exit 2; }
 
-# Print "lines position" for each file given, longest first, ties in the order
-# given. Line count stands in for a suite's run time: over the 81 suites' CI
-# times in October 2026 the two correlate at 0.79. Both the shard split and
-# the lanes' queue order by it.
+# Print "weight position" for each file given, heaviest first, ties in the
+# order given. A suite's weight is its line count, which stands in for its run
+# time: over the 81 suites' CI times in October 2026 the two correlate at 0.79.
+# A suite that runs long for its length carries a `# run_all-weight: N` line
+# and weighs N times its lines; test_install, whose 3,824 lines took 562 s on
+# the macOS runner, would otherwise share a shard with test_worktrees (593 s).
+# Both the shard split and the lanes' queue order by it.
 _longest_first() {  # file...
     local k=0 f
     for f in "$@"; do
-        printf '%s %s\n' "$(wc -l < "$f")" "$k"
+        printf '%s %s\n' "$(awk '/^# run_all-weight: [1-9][0-9]*$/ { w = $3 } END { print NR * (w ? w : 1) }' "$f")" "$k"
         k=$((k + 1))
     done | sort -k1,1nr -k2,2n
 }
