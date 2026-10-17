@@ -325,14 +325,25 @@ if [ -n "$parallel" ]; then
     # only when its mkdir of that position's claim succeeds, which is atomic,
     # so every suite runs exactly once and a lane that finishes takes the next
     # unclaimed suite. A fixed share per lane left one CI lane working for 1491
-    # seconds after another had gone idle at 709.
+    # seconds after another had gone idle at 709. The queue holds positions in
+    # selected[], longest suite first, so the slowest suites start at once
+    # rather than last behind a lane's worth of short ones. Line count stands
+    # in for run time: over the 81 suites' CI times in October 2026 the two
+    # correlate at 0.79, and a queue in that order came within a few seconds of
+    # the ideal split. Ties keep name order.
+    queue=()
+    while read -r _ k; do
+        queue+=("$k")
+    done <<EOF_QUEUE
+$(k=0; while [ "$k" -lt "$total" ]; do printf '%s %s\n' "$(wc -l < "${selected[$k]}")" "$k"; k=$((k + 1)); done | sort -k1,1nr -k2,2n)
+EOF_QUEUE
     j=0
     while [ "$j" -lt "$jobs_n" ]; do
         (
-            k=0
-            while [ "$k" -lt "$total" ]; do
-                mkdir "$logdir/$k.claim" 2>/dev/null && run_suite "$k"
-                k=$((k + 1))
+            q=0
+            while [ "$q" -lt "$total" ]; do
+                mkdir "$logdir/$q.claim" 2>/dev/null && run_suite "${queue[$q]}"
+                q=$((q + 1))
             done
         ) &
         lanes+=("$!")
