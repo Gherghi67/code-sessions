@@ -4141,24 +4141,31 @@ test_a_stalled_walk_is_not_respawned_every_render() {
     export CS_TERM_THEME=light FORCE_COLOR=0
     export CS_STATUSLINE_SEGMENTS=pane
     export TMUX="/tmp/fake,2216,0" TMUX_PANE="%7"
-    export CS_STATUSLINE_PARENT=4242
+    # The longest deadline the render accepts, so the first walker still holds
+    # its mark while the four renders run.
+    export CS_STATUSLINE_PARENT=4242 CS_STATUSLINE_WALK_DEADLINE=9
     # A ps that never returns within the run: each invocation records itself,
     # so the count of records is the count of walkers spawned.
     mkdir -p "$TEST_TMPDIR/fakebin"
     export STALLLOG="$TEST_TMPDIR/stalled"
     : > "$STALLLOG"
-    printf '#!/bin/sh\necho x >> "$STALLLOG"\nsleep 30\n' > "$TEST_TMPDIR/fakebin/ps"
+    printf '#!/bin/sh\necho x >> "$STALLLOG"\nexec sleep 300\n' > "$TEST_TMPDIR/fakebin/ps"
     chmod +x "$TEST_TMPDIR/fakebin/ps"
     export PATH="$TEST_TMPDIR/fakebin:$PATH"
-    local json='{"session_id":"sid-1"}' i=0 spawned
+    local json='{"session_id":"sid-1"}' i=0 spawned stamp
+    local mark="$HOME/.cache/cs/tmux-walking/4242,-tmp-fake,2216,0"
     while [ "$i" -lt 4 ]; do
         i=$((i + 1))
         CS_STATUSLINE_NOW=$((1000 + i)) run_sl "$json" >/dev/null
     done
-    # Give the children time to reach their ps before counting.
+    # A render that spawns a walker stamps the mark with its own clock first,
+    # in the render itself, so the stamp names the last render that spawned
+    # one however late that walker's ps would start.
+    stamp=""
+    [ -f "$mark" ] && IFS=$'\t' read -r stamp _ < "$mark"
+    assert_eq "1001" "$stamp" "only the first of four renders inside the TTL spawns a walker" || return 1
     local n=0
     while [ ! -s "$STALLLOG" ] && [ "$n" -lt 100 ]; do n=$((n + 1)); sleep 0.05; done
-    sleep 0.3
     spawned=$(wc -l < "$STALLLOG" | tr -d ' ')
     assert_eq "1" "$spawned" "four renders inside the TTL must spawn one walker" || return 1
     # Past the mark's TTL a render tries again, so a dead child cannot wedge
