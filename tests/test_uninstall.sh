@@ -171,6 +171,8 @@ test_uninstall_keeping_secrets_keeps_age_state_and_removes_the_settings_lock() {
 # kept and why, and purges the rest, a feature's (<base>@<task>) included:
 # a store under a feature's own name is purged like any other. The answers
 # are: go ahead, (the session opens) delete the secrets, then keep the data.
+# The session opens once the secrets question is printed, after the recheck
+# that follows the confirmation, so it is live for the purge alone.
 test_uninstall_names_each_session_whose_secrets_it_kept() {
     local home="$TEST_TMPDIR/sk-home" root="$TEST_TMPDIR/sk-sessions" stub="$TEST_TMPDIR/mount-stub-sk"
     _stage_install "$home"
@@ -191,7 +193,9 @@ test_uninstall_names_each_session_whose_secrets_it_kept() {
         "$home/.local/bin/cs-secrets" --session closed@task get OLD_KEY 2>&1)" "fixture: a store is kept under the feature's name" || return 1
     sleep 300 &
     local pid=$! rc=0 out kept left
-    { printf 'y'; sleep 2; echo "$pid" > "$root/opens-late/.cs/session.lock"; printf 'yn'; } \
+    { printf 'y'
+      _wait_for_output "$TEST_TMPDIR/sk.out" "Secrets may exist in OS keychain for these sessions:"
+      echo "$pid" > "$root/opens-late/.cs/session.lock"; printf 'yn'; } \
         | HOME="$home" CS_SESSIONS_ROOT="$root" PATH="$stub:$PATH" CS_SECRETS_BACKEND=encrypted \
             CS_SECRETS_PASSWORD=test-password-for-ci CLAUDE_SESSION_NAME=sender "$CS_BIN" -uninstall \
         > "$TEST_TMPDIR/sk.out" 2>&1 || rc=$?
