@@ -109,6 +109,9 @@ for suite in "$SUITE_DIR"/test_*.sh; do
     # test_lib.sh is the shared harness, not a suite -- it exits non-zero by
     # design when sourced standalone (SCRIPT_DIR guard).
     [ "$(basename "$suite")" = "test_lib.sh" ] && continue
+    # An unreadable suite has no line count to place it by; left in, it would
+    # drop out of every shard and the gate would pass without running it.
+    [ -r "$suite" ] || { echo "cannot read $suite" >&2; exit 2; }
     all+=("$suite")
 done
 
