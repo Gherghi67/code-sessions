@@ -4285,6 +4285,59 @@ test_the_walk_deadline_holds_in_wall_time_when_sleeps_run_long() {
 
 run_test test_the_walk_deadline_holds_in_wall_time_when_sleeps_run_long
 
+# A ps that answers ends the walk at once: the walker stops its watchdog and
+# the watchdog's sleep instead of waiting out the deadline, and leaves neither
+# behind. With a 9 s deadline, a walker that waited on its watchdog would land
+# its verdict and clear its mark 9 s late, and a sleep left running would
+# still be alive after the mark is gone.
+test_a_walk_whose_ps_answers_stops_its_deadline() {
+    export CS_TERM_THEME=light FORCE_COLOR=0
+    export CS_STATUSLINE_SEGMENTS=pane
+    export TMUX="/tmp/fake,2216,0" TMUX_PANE="%7"
+    export CS_STATUSLINE_PARENT=4242 CS_STATUSLINE_WALK_DEADLINE=9
+    local deadbin="$TEST_TMPDIR/deadbin" real_sleep
+    real_sleep=$(command -v sleep)
+    export DEADLOG="$TEST_TMPDIR/deadlines"
+    : > "$DEADLOG"
+    _make_deadline_sleep "$deadbin" 0
+    # The ps answers (the parent under the server) as soon as the watchdog's
+    # sleep has started, so there is a sleep to stop; a ps that won outright
+    # would leave nothing to check. Its own pauses use the real sleep.
+    mkdir -p "$TEST_TMPDIR/fakebin"
+    printf '#!/bin/sh\ni=0\nwhile [ ! -s "$DEADLOG" ] && [ "$i" -lt 100 ]; do i=$((i + 1)); %s 0.05; done\necho "4242 2216"\necho "2216 1"\n' \
+        "$real_sleep" > "$TEST_TMPDIR/fakebin/ps"
+    chmod +x "$TEST_TMPDIR/fakebin/ps"
+    export PATH="$TEST_TMPDIR/fakebin:$PATH"
+    local json='{"session_id":"sid-1"}' start elapsed p alive
+    local key="4242,-tmp-fake,2216,0"
+    local mark="$HOME/.cache/cs/tmux-walking/$key"
+    start=$SECONDS
+    PATH="$deadbin:$PATH" CS_STATUSLINE_NOW=1001 run_sl "$json" >/dev/null
+    # Bounded past the deadline, so a walker that waits it out is measured,
+    # not cut off.
+    while [ -e "$mark" ] && [ $((SECONDS - start)) -lt 15 ]; do sleep 0.1; done
+    elapsed=$((SECONDS - start))
+    [ ! -e "$mark" ] || { echo "  FAIL: the walker never cleared its mark"; return 1; }
+    assert_eq "real" "$(tail -1 "$HOME/.cache/cs/tmux-real/$key" 2>/dev/null)" \
+        "the walk caches the answered verdict" || return 1
+    # SECONDS counts whole seconds, so 5 is under 6 s of wall time: far past a
+    # walk on a loaded machine, far short of the 9 s deadline.
+    [ "$elapsed" -le 5 ] \
+        || { echo "  FAIL: the verdict took ${elapsed}s, waiting on the 9 s deadline"; return 1; }
+    assert_eq "1" "$(wc -l < "$DEADLOG" | tr -d ' ')" "the walker arms one deadline" || return 1
+    # The watchdog signals its sleep on its way out; give the signal a moment.
+    start=$SECONDS
+    while :; do
+        alive=0
+        while read -r _ p _; do kill -0 "$p" 2>/dev/null && alive=$((alive + 1)); done < "$DEADLOG"
+        [ "$alive" -eq 0 ] || [ $((SECONDS - start)) -ge 2 ] && break
+        sleep 0.1
+    done
+    assert_eq "0" "$alive" "no deadline sleep outlives an answered walk" || return 1
+}
+
+run_test test_a_walk_whose_ps_answers_stops_its_deadline
+
 # The usage refresher paints no bar, so it has no use for the terminal's theme
 # or the ancestry verdict behind it. It must not run the walk at all: a ps that
 # stalls would hold every refresher short of its lock, and the renders that
