@@ -603,6 +603,29 @@ _run_bounded() {  # seconds, command...
     ' "$@"
 }
 
+# Waits until <file> exists or <pid>, a child of this shell, has exited, so a
+# test waits on the step it means and not on a count of polls that load
+# stretches or shrinks. The 300 s guard only stops a hang. Returns 0, printing
+# nothing, once the file is there. Otherwise prints "  FAIL: <what>: " and why,
+# and returns 1: the exit status when the pid exited first (it is reaped here),
+# or "not there after 300 s", the pid then killed. The file's existence is the
+# event, so its writer makes it whole in one step (a touch, or a write and a mv).
+wait_for_file_or_exit() {  # file, pid, what
+    local deadline=$((SECONDS + 300)) rc=0
+    while [ ! -e "$1" ] && kill -0 "$2" 2>/dev/null && [ "$SECONDS" -lt "$deadline" ]; do
+        sleep 0.05
+    done
+    [ -e "$1" ] && return 0
+    if kill -0 "$2" 2>/dev/null; then
+        kill -KILL "$2" 2>/dev/null
+        echo "  FAIL: $3: not there after 300 s"
+    else
+        wait "$2" || rc=$?
+        echo "  FAIL: $3: it exited first, status $rc"
+    fi
+    return 1
+}
+
 # --- Launch Helpers ---
 
 # Create an executable stub that prints its environment, so a test can assert
