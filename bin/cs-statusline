@@ -351,7 +351,10 @@ _sl_ps_table_by_deadline() {
     ps -ax -o pid=,ppid= > "$out" 2>/dev/null &
     pid=$!
     # The sleep runs in the background and the watchdog waits on it, because
-    # a trap waits for a foreground child to finish before it runs.
+    # a trap waits for a foreground child to finish before it runs. A TERM
+    # this process inherited as ignored (SIG_IGN across an exec) cannot be
+    # trapped, and then an answered walk waits out the deadline; cs's launch
+    # path does not ignore TERM.
     ( trap 'kill "${s:-}" 2>/dev/null; exit 0' TERM
       sleep "$1" & s=$!
       wait "$s"
