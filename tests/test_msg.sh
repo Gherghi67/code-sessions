@@ -691,27 +691,49 @@ test_queue_accept_writes_the_receipt_before_the_queued_copy() {
 }
 
 # Racing accepts of one id take turns between the receipt check and the receipt
-# write. The check is held open for a second (a grep stand-in that waits when
-# asked about the receipt file, then runs the real grep by its full path), so
-# every racer is inside it before any of them writes: without the lock each
-# would find no receipt, record one, and report the task queued. A receipt for
-# another id is there beforehand because the check reads an existing file only.
-# The queued file is no witness on its own: racers in one second write the
-# same name, and the rename hides the duplicates.
+# write. Every racer waits at a barrier until all three have arrived, at the
+# lock or at the check, whichever it reaches first (perl and grep stand-ins
+# that wait when asked about the lock or the receipt file, then run the real
+# command by its full path). Without the lock each would then find no receipt,
+# record one, and report the task queued. With it, all three contend for the
+# lock at once, so the last one waits out two turns, not three racers'
+# startup, inside the lock's five-second wait. A turn holds as little of the
+# test's own time as it can: the stand-ins are bash, which starts several
+# times faster than a macOS /bin/sh, source the barrier rather than start
+# another shell, and run once before the race, since macOS takes up to a
+# second and a half over a new script's first run. A receipt for another id
+# is there beforehand because the check reads an existing file only. The
+# queued file is no witness on its own: racers in one second write the same
+# name, and the rename hides the duplicates.
 test_queue_accept_serialises_concurrent_accepts() {
     "$CS_BIN" -msg receiver -k task "review the tui diff" >/dev/null 2>&1 || return 1
     local id; id=$(jq -r .id "$(FIRST_MSG)")
     local receipts; receipts="$(RCV_META)/local/queue.accepted"
     printf 'some-earlier-id\n' > "$receipts"
     local real_grep; real_grep=$(command -v grep) || return 1
-    mkdir -p "$TEST_TMPDIR/bin"
-    printf '#!/bin/sh\ncase "$*" in *queue.accepted*) sleep 1 ;; esac\nexec "%s" "$@"\n' "$real_grep" > "$TEST_TMPDIR/bin/grep"
-    chmod +x "$TEST_TMPDIR/bin/grep"
+    local real_perl; real_perl=$(command -v perl) || return 1
+    local b="$TEST_TMPDIR/barrier"
+    mkdir -p "$TEST_TMPDIR/bin" "$b"
+    cat > "$b/arrive" <<'EOF'
+: > "$B/arrived.$ACCEPT_RACER"
+n=0
+while [ ! -e "$B/arrived.1" ] || [ ! -e "$B/arrived.2" ] || [ ! -e "$B/arrived.3" ]; do
+    n=$((n + 1))
+    [ "$n" -le 1200 ] || { : > "$B/timed-out"; break; }
+    sleep 0.05
+done
+EOF
+    printf '#!/bin/bash\ncase "$*" in *queue.accepted*) B="%s"; . "$B/arrive" ;; esac\nexec "%s" "$@"\n' "$b" "$real_grep" > "$TEST_TMPDIR/bin/grep"
+    printf '#!/bin/bash\ncase "$*" in *queue.accept.mutex.lock*) B="%s"; . "$B/arrive" ;; esac\nexec "%s" "$@"\n' "$b" "$real_perl" > "$TEST_TMPDIR/bin/perl"
+    chmod +x "$TEST_TMPDIR/bin/grep" "$TEST_TMPDIR/bin/perl"
+    printf 'x\n' | "$TEST_TMPDIR/bin/grep" -q x || return 1
+    "$TEST_TMPDIR/bin/perl" -e 1 || return 1
     local i
     for i in 1 2 3; do
-        ( PATH="$TEST_TMPDIR/bin:$PATH" rcv -queue accept "$id" > "$TEST_TMPDIR/accept.$i" 2>&1 ) &
+        ( export ACCEPT_RACER=$i; PATH="$TEST_TMPDIR/bin:$PATH" rcv -queue accept "$id" > "$TEST_TMPDIR/accept.$i" 2>&1 ) &
     done
     wait
+    assert_not_exists "$b/timed-out" "all three racers reach the barrier" || return 1
     local refusal="Error: message $id was already accepted into the queue (if no copy is queued or done, an earlier accept was interrupted: cs -queue add it by hand)"
     assert_eq "$(printf '%s\n%s\n%s' "$refusal" "$refusal" "queued: review the tui diff")" \
         "$(cat "$TEST_TMPDIR"/accept.[123] | sort)" "one racer queues the task and the other two are refused" || return 1
