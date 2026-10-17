@@ -224,11 +224,19 @@ test_line_and_static_modes_do_not_echo_the_prompt() {
 # The native mode follows that. Under five seconds it must show the label with
 # no clock at all — a counter ticking 1s, 2s on a rewrite that always takes
 # about ten is noise Claude Code deliberately leaves out.
+#
+# Only readings under five are forbidden, not every clock. The shim's own clock
+# decides, and on a loaded machine the 1s stub can outlive five of its seconds,
+# when `(5s)` is exactly what the contract asks for (see the test below). A
+# clock painted too early still shows: native repaints on every change, so it
+# would leave a `(0s)` or `(1s)` behind.
 test_animated_modes_withhold_the_elapsed_under_five_seconds() {
     local mode out
     for mode in native screen; do
         out=$(render_in_mode "$mode" '' 1)
-        assert_file_not_contains "$out" '([0-9]*s)' \
+        # Guard the guard: if nothing painted, absence of a clock proves nothing.
+        assert_file_contains "$out" 'ewriting' "mode '$mode' painted" || return 1
+        assert_file_not_contains "$out" '([0-4]s)' \
             "mode '$mode' shows no elapsed before five seconds" || return 1
     done
 }
