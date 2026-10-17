@@ -173,6 +173,29 @@ test_run_all_shards_balance_by_line_count() {
     [ "$got" = "test_fake1.sh test_fake4.sh " ] || { echo "shard 1/2 ran: $got"; return 1; }
 }
 
+# A suite that runs long for its length says so with a `# run_all-weight: N`
+# line, and counts as N times its lines. Suites of 10, 6, 4 and 1 lines, the
+# 4-line one weighted 3 (12): 12 goes to shard 1, 10 to shard 2, 6 to shard 2
+# (10 < 12), 1 to shard 1 (12 < 16). Unweighted, shard 1 runs 10 and 1.
+test_run_all_shards_count_a_declared_weight() {
+    make_suite_dir 4
+    local n i lines
+    for n in 1 2 3 4; do
+        case "$n" in 1) lines=10 ;; 2) lines=6 ;; 3) lines=4 ;; 4) lines=1 ;; esac
+        {
+            printf 'echo ran >> "%s/test_fake%s.sh"\n' "$RAN_DIR" "$n"
+            i=1
+            if [ "$n" = 3 ]; then printf '# run_all-weight: 3\n'; i=2; fi
+            while [ "$i" -lt "$lines" ]; do printf '# pad\n'; i=$((i + 1)); done
+        } > "$SUITE_DIR/test_fake$n.sh"
+    done
+    local out got
+    out=$(CS_TEST_SHARD=1/2 CS_TEST_SUITE_DIR="$SUITE_DIR" bash "$RUN_ALL" 2>&1) || {
+        echo "shard 1/2 failed"; printf '%s\n' "$out"; return 1; }
+    got=$(ls -1 "$RAN_DIR" | tr '\n' ' ')
+    [ "$got" = "test_fake3.sh test_fake4.sh " ] || { echo "shard 1/2 ran: $got"; return 1; }
+}
+
 # A suite file the gate cannot read is an error, not a suite to leave out: it
 # has no line count to place it by, and quietly dropping it from every shard
 # would report a green gate that never ran it.
@@ -676,6 +699,7 @@ run_test test_run_all_a_free_lane_takes_the_next_suite
 run_test test_run_all_starts_the_longest_suites_first
 run_test test_run_all_shards_split_the_long_suites
 run_test test_run_all_shards_balance_by_line_count
+run_test test_run_all_shards_count_a_declared_weight
 run_test test_run_all_refuses_an_unreadable_suite
 run_test test_run_all_fails_loudly_when_the_log_dir_cannot_be_made
 run_test test_run_all_rejects_a_malformed_shard
