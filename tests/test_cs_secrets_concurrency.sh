@@ -623,20 +623,9 @@ test_keychain_set_during_a_rename_is_moved_with_the_session() {
     _kcs --session alpha set K2 < "$TEST_TMPDIR/v2" >/dev/null 2>&1 || { echo "  FAIL: fixture: set K2 failed"; return 1; }
 
     FAKE_SECURITY_HOLD_STORE="$hold" _kcs --session alpha set K2 < "$TEST_TMPDIR/v2c" > "$TEST_TMPDIR/set.out" 2>&1 &
-    # The wait ends on the held write or on the set exiting; the deadline only
-    # stops a hang.
-    local spid=$! deadline=$((SECONDS + 300)) rc=0
-    while [ ! -f "$hold.began" ] && kill -0 "$spid" 2>/dev/null && [ "$SECONDS" -lt "$deadline" ]; do sleep 0.05; done
-    if [ ! -f "$hold.began" ]; then
-        if kill -0 "$spid" 2>/dev/null; then
-            kill -KILL "$spid" 2>/dev/null
-            echo "  FAIL: fixture: the held set never reached its write: not there after 300 s"
-        else
-            wait "$spid" || rc=$?
-            echo "  FAIL: fixture: the held set never reached its write: it exited first, status $rc: $(cat "$TEST_TMPDIR/set.out")"
-        fi
-        return 1
-    fi
+    local spid=$!
+    wait_for_file_or_exit "$hold.began" "$spid" "fixture: the held set never reached its write" \
+        || { echo "    the set said: $(cat "$TEST_TMPDIR/set.out")"; return 1; }
 
     # The picker moves the directory, then runs rename.
     mv "$CS_SESSIONS_ROOT/alpha" "$CS_SESSIONS_ROOT/bravo"
@@ -719,20 +708,9 @@ test_a_term_keeps_the_write_lock_until_the_keychain_write_finishes() {
     # a subshell running the function.
     PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kc" FAKE_SECURITY_HOLD_STORE="$hold" \
         "$CS_SECRETS_BIN" --session alpha set K1 < "$TEST_TMPDIR/v1" > "$TEST_TMPDIR/set.out" 2>&1 &
-    # The wait ends on the held write or on the set exiting; the deadline only
-    # stops a hang.
-    local spid=$! deadline=$((SECONDS + 300)) waited=0 rc=0 written_first=0
-    while [ ! -f "$hold.began" ] && kill -0 "$spid" 2>/dev/null && [ "$SECONDS" -lt "$deadline" ]; do sleep 0.05; done
-    if [ ! -f "$hold.began" ]; then
-        if kill -0 "$spid" 2>/dev/null; then
-            kill -KILL "$spid" 2>/dev/null
-            echo "  FAIL: fixture: the set never reached its write: not there after 300 s"
-        else
-            wait "$spid" || rc=$?
-            echo "  FAIL: fixture: the set never reached its write: it exited first, status $rc: $(cat "$TEST_TMPDIR/set.out")"
-        fi
-        return 1
-    fi
+    local spid=$! waited=0 rc=0 written_first=0
+    wait_for_file_or_exit "$hold.began" "$spid" "fixture: the set never reached its write" \
+        || { echo "    the set said: $(cat "$TEST_TMPDIR/set.out")"; return 1; }
     kill -TERM "$spid"
     wait "$spid" || rc=$?
     [ -f "$slot" ] && written_first=1

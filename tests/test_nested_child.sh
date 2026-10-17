@@ -243,10 +243,9 @@ test_a_teammate_does_not_raise_the_attention_flag() {
 # child of it, and a wrapper with a child of its own (claude run by a wrapper
 # that forks it, as `op run --` or a script without exec does). Every one of
 # them is alive until _kill_launch_tree. Each wait ends on the file it waits
-# for or on the process that would write it exiting; the deadline only stops
-# a hang.
+# for or on the process that would write it exiting.
 _launch_tree() {
-    local tree="$TEST_TMPDIR/tree" t deadline rc
+    local tree="$TEST_TMPDIR/tree"
     printf '%s\n' '#!/usr/bin/env bash' \
         'sleep 300 & direct=$!' \
         'bash -c '"'"'sleep 300 & echo "$!" > "$1.g"; wait'"'"' _ "$1" & wrapper=$!' \
@@ -255,18 +254,7 @@ _launch_tree() {
         'echo "$$ $direct $wrapper $(cat "$1.g")" > "$1.tmp" && mv "$1.tmp" "$1"' \
         'wait' > "$TEST_TMPDIR/tree.sh"
     bash "$TEST_TMPDIR/tree.sh" "$tree" >/dev/null 2>&1 &
-    t=$!
-    deadline=$((SECONDS + 300))
-    while [ ! -s "$tree" ] && kill -0 "$t" 2>/dev/null && [ "$SECONDS" -lt "$deadline" ]; do sleep 0.1; done
-    [ -s "$tree" ] && return 0
-    if kill -0 "$t" 2>/dev/null; then
-        kill "$t" 2>/dev/null
-        echo "  FAIL: the stand-in launch did not start: not up after 300 s"
-    else
-        rc=0; wait "$t" || rc=$?
-        echo "  FAIL: the stand-in launch did not start: it exited first, status $rc"
-    fi
-    return 1
+    wait_for_file_or_exit "$tree" "$!" "the stand-in launch did not start"
 }
 
 _kill_launch_tree() {
@@ -422,7 +410,7 @@ test_the_lead_holds_the_claim_when_a_claude_it_started_claims_at_once() {
     _nested_setup
     local meta="$CLAUDE_SESSION_META_DIR" shim="$TEST_TMPDIR/shim" launch direct wrapper grand
     local hold="$TEST_TMPDIR/hold" w_waits="$TEST_TMPDIR/lead-waits" w_done="$TEST_TMPDIR/lead-done"
-    local err="$TEST_TMPDIR/claim.err" deadline g w rc
+    local err="$TEST_TMPDIR/claim.err" deadline g w
     _launch_tree || return 1
     read -r launch direct wrapper grand < "$TEST_TMPDIR/tree"
     mkdir -p "$shim"
@@ -439,18 +427,10 @@ test_the_lead_holds_the_claim_when_a_claude_it_started_claims_at_once() {
 
     CS_TEST_HOLD="$hold" _claim_as "$grand" 77777777-7777-4777-8777-777777777777 &
     g=$!
-    deadline=$((SECONDS + 300))
-    while [ ! -e "$hold.held" ] && kill -0 "$g" 2>/dev/null && [ "$SECONDS" -lt "$deadline" ]; do sleep 0.1; done
-    if [ ! -e "$hold.held" ]; then
+    if ! wait_for_file_or_exit "$hold.held" "$g" "the other claude never reached its write"; then
         # With the fifo gone, a held step reached late reads nothing and goes on.
         rm -f "$hold"
-        if kill -0 "$g" 2>/dev/null; then
-            kill "$g" 2>/dev/null
-            echo "  FAIL: the other claude never reached its write: not there after 300 s"
-        else
-            rc=0; wait "$g" || rc=$?
-            echo "  FAIL: the other claude never reached its write: its claim ended first, status $rc, stderr: $(cat "$err" 2>/dev/null)"
-        fi
+        echo "    its claim's stderr: $(cat "$err" 2>/dev/null)"
         _kill_launch_tree
         return 1
     fi
