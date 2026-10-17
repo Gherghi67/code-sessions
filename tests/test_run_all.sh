@@ -16,11 +16,12 @@ RUN_ALL="$SCRIPT_DIR/run_all.sh"
 unset CS_TEST_SHARD CS_TEST_JOBS 2>/dev/null || true
 
 # Build a directory of fake suites for run_all.sh to drive. Each records the
-# fact that it ran by creating a file named after itself, so coverage is counted
-# from the filesystem rather than from parsing the runner's own output. Suites
-# write distinct files, never a shared one, so concurrent shards cannot lose a
-# record to an interleaved append. Arg: how many suites; a name passed after it
-# is made to fail.
+# fact that it ran by appending a line to a file named after itself, so coverage
+# is counted from the filesystem rather than from parsing the runner's own
+# output, and a suite that ran twice shows two lines. Suites write distinct
+# files, never a shared one, so concurrent shards cannot lose a record to an
+# interleaved append. Arg: how many suites; a name passed after it is made to
+# fail.
 make_suite_dir() {  # count, [failing_name]
     local count="$1" failing="${2:-}" i name
     SUITE_DIR="$TEST_TMPDIR/suites"
@@ -32,7 +33,7 @@ make_suite_dir() {  # count, [failing_name]
         {
             printf '#!/usr/bin/env bash\n'
             printf 'printf "marker-from-%s\\n"\n' "$name"
-            printf ': > "%s/%s"\n' "$RAN_DIR" "$name"
+            printf 'echo ran >> "%s/%s"\n' "$RAN_DIR" "$name"
             if [ "$name" = "$failing" ]; then
                 printf 'exit 1\n'
             fi
@@ -144,6 +145,45 @@ test_run_all_shards_partition_the_suite_list() {
             echo "shard $n/3 failed"; printf '%s\n' "$out"; return 1; }
     done
     [ "$(ran_count)" -eq 7 ] || { echo "3 shards covered $(ran_count)/7 suites"; return 1; }
+    local f
+    for f in "$RAN_DIR"/*; do
+        [ "$(grep -c . "$f")" = 1 ] || { echo "${f##*/} ran $(grep -c . "$f") times over the 3 shards"; return 1; }
+    done
+}
+
+# The split itself, on suites of 10, 6, 5 and 1 lines: longest first, each to
+# the shard with fewer lines so far, the lower shard on a tie. 10 goes to shard
+# 1, 6 to shard 2, 5 to shard 2 (6 < 10), 1 to shard 1 (10 < 11). Balancing by
+# count, or breaking the first tie toward shard 2, picks other sets.
+test_run_all_shards_balance_by_line_count() {
+    make_suite_dir 4
+    local n i lines
+    for n in 1 2 3 4; do
+        case "$n" in 1) lines=10 ;; 2) lines=6 ;; 3) lines=5 ;; 4) lines=1 ;; esac
+        {
+            printf 'echo ran >> "%s/test_fake%s.sh"\n' "$RAN_DIR" "$n"
+            i=1
+            while [ "$i" -lt "$lines" ]; do printf '# pad\n'; i=$((i + 1)); done
+        } > "$SUITE_DIR/test_fake$n.sh"
+    done
+    local out got
+    out=$(CS_TEST_SHARD=1/2 CS_TEST_SUITE_DIR="$SUITE_DIR" bash "$RUN_ALL" 2>&1) || {
+        echo "shard 1/2 failed"; printf '%s\n' "$out"; return 1; }
+    got=$(ls -1 "$RAN_DIR" | tr '\n' ' ')
+    [ "$got" = "test_fake1.sh test_fake4.sh " ] || { echo "shard 1/2 ran: $got"; return 1; }
+}
+
+# A suite file the gate cannot read is an error, not a suite to leave out: it
+# has no line count to place it by, and quietly dropping it from every shard
+# would report a green gate that never ran it.
+test_run_all_refuses_an_unreadable_suite() {
+    make_suite_dir 3
+    chmod 000 "$SUITE_DIR/test_fake2.sh"
+    local out rc=0
+    out=$(CS_TEST_SHARD=1/2 CS_TEST_SUITE_DIR="$SUITE_DIR" bash "$RUN_ALL" 2>&1) || rc=$?
+    chmod 644 "$SUITE_DIR/test_fake2.sh"
+    [ "$rc" -eq 2 ] || { echo "expected exit 2, got $rc"; printf '%s\n' "$out"; return 1; }
+    [ "$out" = "cannot read $SUITE_DIR/test_fake2.sh" ] || { echo "unexpected output:"; printf '%s\n' "$out"; return 1; }
 }
 
 # A lane that finishes takes the next waiting suite, so no lane sits idle while
@@ -635,6 +675,8 @@ run_test test_run_all_shards_partition_the_suite_list
 run_test test_run_all_a_free_lane_takes_the_next_suite
 run_test test_run_all_starts_the_longest_suites_first
 run_test test_run_all_shards_split_the_long_suites
+run_test test_run_all_shards_balance_by_line_count
+run_test test_run_all_refuses_an_unreadable_suite
 run_test test_run_all_fails_loudly_when_the_log_dir_cannot_be_made
 run_test test_run_all_rejects_a_malformed_shard
 run_test test_run_all_rejects_a_malformed_job_count
