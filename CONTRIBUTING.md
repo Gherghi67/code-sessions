@@ -60,7 +60,9 @@ exits 3 (`tests/.run_all.lock`; a lock whose pid is dead is taken over).
 The lanes take suites from one queue, longest file first, so a lane that
 finishes picks up the next suite rather than waiting on a fixed share.
 `CS_TEST_SHARD=N/M` runs shard N of M, balanced by line count; CI runs the bash
-suites as two shards per OS.
+suites as two shards per OS. A suite that runs long for its length carries a
+`# run_all-weight: N` line and counts as N times its lines, as `test_install.sh`
+does with 2.
 
 The gate stops a suite that runs past 1200 seconds, along with its child
 processes, counts it as failed and names it in a `timed out after 1200s` line;
@@ -79,7 +81,8 @@ The full gate takes minutes. Most of the time you do not want it.
 | About to push a shell change | `bash tests/lint_shell.sh` (the shellcheck lane CI runs; the suites never run it) |
 
 `tests/lint_shell.sh` fails on any shellcheck error, and on a warning count that differs from
-`.shellcheck-warnings`. The count is measured with the shellcheck version CI pins in
+`.shellcheck-warnings`. It runs shellcheck once per file, as many at once as the machine has
+processors, and stops with exit 2 naming any file shellcheck could not run on. The count is measured with the shellcheck version CI pins in
 `.github/workflows/test.yml` (v0.11.0); another version can count differently. When you fix
 warnings, lower that number in the same commit.
 
