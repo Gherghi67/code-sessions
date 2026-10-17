@@ -4179,34 +4179,39 @@ test_a_stalled_walker_is_killed_before_its_mark_expires() {
     export CS_TERM_THEME=light FORCE_COLOR=0
     export CS_STATUSLINE_SEGMENTS=pane
     export TMUX="/tmp/fake,2216,0" TMUX_PANE="%7"
-    export CS_STATUSLINE_PARENT=4242 CS_STATUSLINE_WALK_DEADLINE=1
+    # The fake ps below records itself in its first line, racing the walker's
+    # kill: a one-second deadline lost that race under load (a loaded Mac took
+    # up to 1.4 s from the fork to that line). Three seconds leaves the record
+    # room and stays inside TMUX_WALK_MARK_TTL.
+    export CS_STATUSLINE_PARENT=4242 CS_STATUSLINE_WALK_DEADLINE=3
     mkdir -p "$TEST_TMPDIR/fakebin"
     export STALLLOG="$TEST_TMPDIR/stalled"
     : > "$STALLLOG"
-    printf '#!/bin/sh\necho "$$" >> "$STALLLOG"\nexec sleep 30\n' > "$TEST_TMPDIR/fakebin/ps"
+    # It stalls far longer than the poll below can stretch under load, so only
+    # the walker's kill can end it while the test watches.
+    printf '#!/bin/sh\necho "$$" >> "$STALLLOG"\nexec sleep 300\n' > "$TEST_TMPDIR/fakebin/ps"
     chmod +x "$TEST_TMPDIR/fakebin/ps"
     export PATH="$TEST_TMPDIR/fakebin:$PATH"
     local json='{"session_id":"sid-1"}' now p alive n
+    local mark="$HOME/.cache/cs/tmux-walking/4242,-tmp-fake,2216,0"
     for now in 1001 1012 1023; do
         CS_STATUSLINE_NOW=$now run_sl "$json" >/dev/null
+        # The walker clears the mark as its last act, after it has killed and
+        # reaped its ps, so a cleared mark means this window's ps is dead and
+        # its record, if it made one, is in. The next window starts only then.
+        # The poll ticks the way the walker's deadline does, a forked sleep
+        # 0.1 at a time, and allows 100 ticks to the walker's 30, so load
+        # stretches both alike.
         n=0
-        while [ "$(wc -l < "$STALLLOG" | tr -d ' ')" -lt $(( (now - 990) / 11 )) ] && [ "$n" -lt 100 ]; do
-            n=$((n + 1)); sleep 0.05
-        done
-        sleep 1.6   # past the one-second deadline
+        while [ -e "$mark" ] && [ "$n" -lt 100 ]; do n=$((n + 1)); sleep 0.1; done
+        [ ! -e "$mark" ] \
+            || { echo "  FAIL: the walker spawned at $now never killed its stalled ps"; return 1; }
     done
     assert_eq "3" "$(wc -l < "$STALLLOG" | tr -d ' ')" "each mark window spawns one walker" || return 1
-    # The walker polls its ps with a sleep and a fork per tick, so on a slow
-    # runner the one-second deadline lands well after one second. The claim
-    # is that the kill comes before the mark expires (TMUX_WALK_MARK_TTL, 10 s),
-    # so wait for it up to eight seconds rather than a fixed pause.
-    n=0
-    while [ "$n" -lt 80 ]; do
-        alive=0
-        while read -r p; do kill -0 "$p" 2>/dev/null && alive=$((alive + 1)); done < "$STALLLOG"
-        [ "$alive" -eq 0 ] && break
-        n=$((n + 1)); sleep 0.1
-    done
+    # Every walker has cleared its mark, which it does only after killing and
+    # reaping its ps, so no recorded ps may still be alive.
+    alive=0
+    while read -r p; do kill -0 "$p" 2>/dev/null && alive=$((alive + 1)); done < "$STALLLOG"
     assert_eq "0" "$alive" "no stalled ps outlives its deadline" || return 1
     # The killed walk is a ps that could not answer: no verdict, and the pane
     # still draws as real.
