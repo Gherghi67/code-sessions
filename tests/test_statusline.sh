@@ -4179,6 +4179,26 @@ test_a_stalled_walk_is_not_respawned_every_render() {
 
 run_test test_a_stalled_walk_is_not_respawned_every_render
 
+# A `sleep` for the render's PATH that logs each call to $DEADLOG, then sleeps
+# what it was asked plus $2 seconds, if any. The walker's one sleep is its
+# deadline, and it kills ps only once that sleep ends, so a logged line comes
+# before the kill and before the mark is cleared: the log counts walkers
+# without racing them, as a stalled ps logging itself would. This pins that the
+# deadline is a single `sleep` from PATH, which is what the wall-time test
+# below is about; a walker that times out some other way has to change these
+# tests too.
+_make_deadline_sleep() {  # dir extra-seconds
+    local real
+    real=$(command -v sleep)
+    mkdir -p "$1"
+    if [ "$2" = 0 ]; then
+        printf '#!/bin/sh\necho "$1" >> "$DEADLOG"\nexec %s "$@"\n' "$real" > "$1/sleep"
+    else
+        printf '#!/bin/sh\necho "$1" >> "$DEADLOG"\n%s "$@"\nexec %s %s\n' "$real" "$real" "$2" > "$1/sleep"
+    fi
+    chmod +x "$1/sleep"
+}
+
 # The mark only spaces walkers out; what keeps them from piling up is that a
 # walker gives its ps a deadline shorter than the mark and kills it by the pid
 # it recorded. Across mark windows a ps that never answers leaves nothing alive.
@@ -4186,34 +4206,35 @@ test_a_stalled_walker_is_killed_before_its_mark_expires() {
     export CS_TERM_THEME=light FORCE_COLOR=0
     export CS_STATUSLINE_SEGMENTS=pane
     export TMUX="/tmp/fake,2216,0" TMUX_PANE="%7"
-    # The fake ps below records itself in its first line, racing the walker's
-    # kill: a one-second deadline lost that race under load (a loaded Mac took
-    # up to 1.4 s from the fork to that line). Three seconds leaves the record
-    # room and stays inside TMUX_WALK_MARK_TTL.
-    export CS_STATUSLINE_PARENT=4242 CS_STATUSLINE_WALK_DEADLINE=3
+    export CS_STATUSLINE_PARENT=4242 CS_STATUSLINE_WALK_DEADLINE=1
+    local real_sleep deadbin="$TEST_TMPDIR/deadbin"
+    real_sleep=$(command -v sleep)
     mkdir -p "$TEST_TMPDIR/fakebin"
-    export STALLLOG="$TEST_TMPDIR/stalled"
-    : > "$STALLLOG"
-    # It stalls far longer than the poll below can stretch under load, so only
+    export STALLLOG="$TEST_TMPDIR/stalled" DEADLOG="$TEST_TMPDIR/deadlines"
+    : > "$STALLLOG"; : > "$DEADLOG"
+    # The ps logs its pid for the alive check below; it may be killed before
+    # it gets that far, so walkers are counted by their deadlines instead. It
+    # stalls far longer than the poll below can stretch under load, so only
     # the walker's kill can end it while the test watches.
-    printf '#!/bin/sh\necho "$$" >> "$STALLLOG"\nexec sleep 300\n' > "$TEST_TMPDIR/fakebin/ps"
+    printf '#!/bin/sh\necho "$$" >> "$STALLLOG"\nexec %s 300\n' "$real_sleep" > "$TEST_TMPDIR/fakebin/ps"
     chmod +x "$TEST_TMPDIR/fakebin/ps"
+    _make_deadline_sleep "$deadbin" 0
     export PATH="$TEST_TMPDIR/fakebin:$PATH"
     local json='{"session_id":"sid-1"}' now p alive n
     local mark="$HOME/.cache/cs/tmux-walking/4242,-tmp-fake,2216,0"
     for now in 1001 1012 1023; do
-        CS_STATUSLINE_NOW=$now run_sl "$json" >/dev/null
+        PATH="$deadbin:$PATH" CS_STATUSLINE_NOW=$now run_sl "$json" >/dev/null
         # The walker clears the mark as its last act, after it has killed and
-        # reaped its ps, so a cleared mark means this window's ps is dead and
-        # its record, if it made one, is in. The next window starts only then.
-        # The poll allows 100 sleeps of 0.1 s, at least 10 s of wall time and
-        # more under load, against the walker's 3 s wall-time deadline.
+        # reaped its ps, so a cleared mark means this window's walker is done.
+        # The next window starts only then. The poll allows 100 sleeps of
+        # 0.1 s, at least 10 s of wall time and more under load, against the
+        # walker's 1 s wall-time deadline.
         n=0
         while [ -e "$mark" ] && [ "$n" -lt 100 ]; do n=$((n + 1)); sleep 0.1; done
         [ ! -e "$mark" ] \
             || { echo "  FAIL: the walker spawned at $now never killed its stalled ps"; return 1; }
     done
-    assert_eq "3" "$(wc -l < "$STALLLOG" | tr -d ' ')" "each mark window spawns one walker" || return 1
+    assert_eq "3" "$(wc -l < "$DEADLOG" | tr -d ' ')" "each mark window spawns one walker" || return 1
     # Every walker has cleared its mark, which it does only after killing and
     # reaping its ps, so no recorded ps may still be alive.
     alive=0
@@ -4231,21 +4252,21 @@ run_test test_a_stalled_walker_is_killed_before_its_mark_expires
 # on top of what it was asked for, so a deadline counted in sleeps runs long
 # by that cost once per sleep and can outlast the mark, letting the next render
 # start a second walker beside the first. Here each sleep the walker runs takes
-# 0.3 s longer than asked: a deadline of 3 s counted as 30 sleeps of 0.1 s
-# would take 12 s, past TMUX_WALK_MARK_TTL (10 s).
+# 1 s longer than asked: a deadline of 1 s counted as 10 sleeps of 0.1 s
+# would take 11 s, past TMUX_WALK_MARK_TTL (10 s); one sleep takes 2 s.
 test_the_walk_deadline_holds_in_wall_time_when_sleeps_run_long() {
     export CS_TERM_THEME=light FORCE_COLOR=0
     export CS_STATUSLINE_SEGMENTS=pane
     export TMUX="/tmp/fake,2216,0" TMUX_PANE="%7"
-    export CS_STATUSLINE_PARENT=4242 CS_STATUSLINE_WALK_DEADLINE=3
+    export CS_STATUSLINE_PARENT=4242 CS_STATUSLINE_WALK_DEADLINE=1
     local real_sleep slowbin="$TEST_TMPDIR/slowbin"
     real_sleep=$(command -v sleep)
-    mkdir -p "$TEST_TMPDIR/fakebin" "$slowbin"
-    export STALLLOG="$TEST_TMPDIR/stalled"
-    : > "$STALLLOG"
+    mkdir -p "$TEST_TMPDIR/fakebin"
+    export STALLLOG="$TEST_TMPDIR/stalled" DEADLOG="$TEST_TMPDIR/deadlines"
+    : > "$STALLLOG"; : > "$DEADLOG"
     printf '#!/bin/sh\necho "$$" >> "$STALLLOG"\nexec %s 300\n' "$real_sleep" > "$TEST_TMPDIR/fakebin/ps"
-    printf '#!/bin/sh\n%s "$@"\nexec %s 0.3\n' "$real_sleep" "$real_sleep" > "$slowbin/sleep"
-    chmod +x "$TEST_TMPDIR/fakebin/ps" "$slowbin/sleep"
+    chmod +x "$TEST_TMPDIR/fakebin/ps"
+    _make_deadline_sleep "$slowbin" 1
     export PATH="$TEST_TMPDIR/fakebin:$PATH"
     local json='{"session_id":"sid-1"}' alive=0 p start
     local mark="$HOME/.cache/cs/tmux-walking/4242,-tmp-fake,2216,0"
@@ -4257,7 +4278,7 @@ test_the_walk_deadline_holds_in_wall_time_when_sleeps_run_long() {
     while [ -e "$mark" ] && [ $((SECONDS - start)) -lt 10 ]; do sleep 0.1; done
     [ ! -e "$mark" ] \
         || { echo "  FAIL: the walker still held its stalled ps when its mark expired"; return 1; }
-    assert_eq "1" "$(wc -l < "$STALLLOG" | tr -d ' ')" "the render spawns one walker" || return 1
+    assert_eq "1" "$(cat "$DEADLOG")" "the walker sleeps once, for its 1 s deadline" || return 1
     while read -r p; do kill -0 "$p" 2>/dev/null && alive=$((alive + 1)); done < "$STALLLOG"
     assert_eq "0" "$alive" "the walker's ps is dead once its mark is cleared" || return 1
 }
