@@ -28,18 +28,35 @@ while IFS= read -r -d '' f; do
     files+=("$f")
 done < <(git ls-files -z '*.sh')
 
-if ! shellcheck -S error "${files[@]}"; then
+# One shellcheck pass at warning severity, which reports errors too, one file
+# per run and as many runs at once as there are processors: run serially over
+# every script, twice, the lint took about three minutes. Each run writes its
+# own file, so findings from runs at once never share a write. shellcheck exits
+# 1 when it has findings and 2 or more when it could not run (a missing file,
+# an unreadable one), so only the latter is a broken lint; a run that hits it
+# records the file and its exit for the check below.
+out=$(mktemp -d "${TMPDIR:-/tmp}/lint_shell.XXXXXX")
+trap 'rm -rf "$out"' EXIT
+jobs=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)
+case "$jobs" in '' | *[!0-9]* | 0) jobs=2 ;; esac
+printf '%s\0' "${files[@]}" | xargs -0 -n 1 -P "$jobs" sh -c '
+    o=$(mktemp "$1/run.XXXXXX") || exit 255
+    rc=0
+    shellcheck -S warning -f gcc "$2" > "$o" || rc=$?
+    [ "$rc" -le 1 ] || printf "%s (exit %s)\n" "$2" "$rc" > "$o.broken"
+' sh "$out" || _die "the parallel shellcheck runs did not finish (xargs exit $?)"
+for broken in "$out"/*.broken; do
+    [ -e "$broken" ] || continue
+    _die "shellcheck could not run on $(cat "$broken")"
+done
+findings="$out/findings"
+cat "$out"/run.* > "$findings"
+
+if grep -q ': error: ' "$findings"; then
+    grep ': error: ' "$findings"
     echo "lint_shell: shellcheck found errors (above)" >&2
     exit 1
 fi
-
-# The linter exits 1 when it has findings and 2 or more when it could not run
-# (a missing file, a parse failure), so only the latter is a broken lint.
-findings=$(mktemp "${TMPDIR:-/tmp}/lint_shell.XXXXXX")
-trap 'rm -f "$findings"' EXIT
-rc=0
-shellcheck -S warning -f gcc "${files[@]}" > "$findings" || rc=$?
-[ "$rc" -le 1 ] || _die "shellcheck -S warning exited $rc"
 count=$(wc -l < "$findings" | tr -d ' ')
 
 if [ "$count" -gt "$baseline" ]; then
