@@ -61,7 +61,7 @@ test_mod_validate_inventories_the_hooks_and_calls() {
         return 77
     fi
     assert_output_contains "$out" 'hooks: prompt.compose, ui.render{component=AssistantMessage}' "the prompt section and the reply drawing, nothing else" || return 1
-    assert_output_contains "$out" 'calls: $.config.list, $.ui.resolve' "the mod reads the theme row and draws; no files, processes or network" || return 1
+    assert_output_contains "$out" 'calls: $.config.list, $.fs.exists, $.session.cwd, $.ui.resolve' "the mod reads the theme row, checks .cs/local/disabled and draws; no writes, processes or network" || return 1
 }
 
 run_test test_mod_manifest_names_the_plugin_its_module_and_the_config_field

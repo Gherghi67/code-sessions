@@ -1856,6 +1856,7 @@ test_doctor_lists_every_context_injecting_hook_with_its_switch() {
     assert_output_contains "$output" "CS_CLARIFY_DISABLE" "Should name the clarify off-switch" || return 1
     assert_output_contains "$output" "CS_DATE_REMINDER_DISABLE" "Should name the date reminder off-switch" || return 1
     assert_output_contains "$output" "CS_REWRITE_DISABLE" "Should name the rewriter off-switch" || return 1
+    assert_output_contains "$output" "cs-mermaid.drawDiagrams" "Should name the diagrams section's off-switch" || return 1
     assert_output_contains "$output" ".cs/local/disabled" "Should name the universal off-switch" || return 1
 }
 

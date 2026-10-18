@@ -20,6 +20,9 @@ export const PROMPT_SECTION = {
   scope: 'session',
 } as const
 
+// cs's per-session opt-out of everything it injects (`cs -doctor`'s authority rows).
+export const DISABLED = '.cs/local/disabled'
+
 const FENCE = /```mermaid[ \t]*\n([\s\S]*?)\n[ \t]*```/g
 
 export function fencesOf(text: string): string[] {
@@ -116,9 +119,11 @@ export const register: Register = (on, options) => {
   if (options[OPTION] === false) return
 
   // Only a prompt for a session that draws in a terminal says fences draw; `--bare` keeps its one section.
+  // A session's .cs/local/disabled turns off every cs injection into the model's context, this one too.
   on('prompt.compose', async ($, e, next) => {
     const composed = await next(e)
     if (!e.surfaces.includes('terminal') || e.traits.includes('bare')) return composed
+    if (await $.fs.exists(`${await $.session.cwd()}/${DISABLED}`)) return composed
     return { sections: [...composed.sections, PROMPT_SECTION] }
   })
 
