@@ -32,6 +32,8 @@ The installer puts the commands in `~/.local/bin/`, registers hooks, and install
 3. Exit Claude Code. Run `cs debug-api` again and accept the prompt to resume the recorded conversation.
 4. Run `cs` to open the session picker. Choose a session to reopen it, or use `cs .` from a known session root.
 
+![Session creation banner, picker with demo focused, and picker with demo marked](https://raw.githubusercontent.com/hex/claude-sessions/main/assets/first-run.svg)
+
 ![cs statusline cycling through quiet, context warning, critical context, queued tasks and unread mail, and quota reset countdowns](https://raw.githubusercontent.com/hex/claude-sessions/main/assets/statusline.svg)
 
 The [statusline guide](docs/statusline.md) covers the capsules, colors, thresholds, font setup, and agent rows.
