@@ -109,6 +109,10 @@ main() {
             return 0
             ;;
         -adopt)
+            # Adopt writes the session's files and names them in notice rows,
+            # so the palette follows the terminal as an open's does.
+            _export_term_theme
+            setup_palette
             if [ "${2:-}" = "--worktrees" ]; then
                 shift 2
                 adopt_worktrees "$@"
