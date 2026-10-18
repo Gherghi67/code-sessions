@@ -24,12 +24,42 @@ export const PROMPT_SECTION = {
 // cs's per-session opt-out of everything it injects (`cs -doctor`'s authority rows).
 export const DISABLED = '.cs/local/disabled'
 
-// A fence opens and closes on its own line with exactly three backticks, so a
-// four-backtick block that quotes one is left alone.
-const FENCE = /(?:^|\n)```mermaid[ \t]*\n([\s\S]*?)\n[ \t]*```(?=[ \t]*(?:\n|$))/g
+// A mermaid fence opens and closes on its own line with exactly three backticks. A line of four
+// or more backticks, or of three tildes, opens an outer block that quotes what it holds, closed by
+// a line of the same mark at least as long; a fence inside one is quoted source, not a chart.
+type Fence = { start: number; end: number; body: string }
+export function scanFences(text: string): Fence[] {
+  const fences: Fence[] = []
+  let outer: { mark: string; length: number } | undefined
+  let open: { start: number; bodyStart: number } | undefined
+  let at = 0
+  for (const line of text.split('\n')) {
+    const next = at + line.length + 1
+    const trimmed = line.trim()
+    const run = /^(`{3,}|~{3,})/.exec(trimmed)
+    if (run) {
+      const mark = run[1]!
+      if (outer) {
+        if (mark[0] === outer.mark && mark.length >= outer.length && trimmed === mark) outer = undefined
+      } else if (open) {
+        if (trimmed === '```') {
+          fences.push({ start: open.start, end: at + line.length, body: text.slice(open.bodyStart, Math.max(open.bodyStart, at - 1)) })
+          open = undefined
+        }
+      } else if (mark === '```' && trimmed.slice(3).trim() === 'mermaid') {
+        // The newline before the fence belongs to it, not to the prose above.
+        open = { start: Math.max(0, at - 1), bodyStart: next }
+      } else if (mark.length > 3 || mark[0] === '~') {
+        outer = { mark: mark[0]!, length: mark.length }
+      }
+    }
+    at = next
+  }
+  return fences
+}
 
 export function fencesOf(text: string): string[] {
-  return [...text.matchAll(FENCE)].map(match => (match[1] ?? '').trim()).filter(Boolean)
+  return scanFences(text).map(fence => fence.body.trim()).filter(Boolean)
 }
 
 export type Fitted = { drawn: Layout; graph: Graph; turned: boolean } | { error: string }
@@ -67,9 +97,10 @@ export type Role = 'step' | 'decision' | 'start' | 'end'
 // A node's role, by its shape first and else by its place in the flow. A lone node is a step.
 export function roleOf(node: GraphNode, graph: Graph): Role {
   if (node.shape === 'diamond' || node.shape === 'hexagon') return 'decision'
-  if (node.shape === 'circle' || node.shape === 'doublecircle') return 'start'
   const outgoing = graph.edges.filter(edge => edge.from === node.id).length
   const incoming = graph.edges.filter(edge => edge.to === node.id).length
+  // A circle is a terminal: the end when the flow only arrives at it, else the start.
+  if (node.shape === 'circle' || node.shape === 'doublecircle') return outgoing === 0 && incoming > 0 ? 'end' : 'start'
   if (outgoing >= 2) return 'decision'
   if (outgoing === 0 && incoming > 0) return 'end'
   if (incoming === 0 && outgoing > 0) return 'start'
@@ -132,11 +163,11 @@ function Drawing({ drawn, graph, palette, elements }: { drawn: Layout; graph: Gr
 export function splitReply(text: string): { kind: 'text' | 'mermaid'; body: string }[] {
   const parts: { kind: 'text' | 'mermaid'; body: string }[] = []
   let last = 0
-  for (const match of text.matchAll(FENCE)) {
-    const before = text.slice(last, match.index)
+  for (const fence of scanFences(text)) {
+    const before = text.slice(last, fence.start)
     if (before.trim()) parts.push({ kind: 'text', body: before })
-    parts.push({ kind: 'mermaid', body: (match[1] ?? '').trim() })
-    last = (match.index ?? 0) + match[0].length
+    parts.push({ kind: 'mermaid', body: fence.body.trim() })
+    last = fence.end
   }
   const after = text.slice(last)
   if (after.trim()) parts.push({ kind: 'text', body: after })

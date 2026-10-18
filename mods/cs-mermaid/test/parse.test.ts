@@ -55,6 +55,12 @@ test('arrows written without spaces end the node id before them', () => {
   ])
 })
 
+test('a target id may begin with o or x once the head is read', () => {
+  const graph = parse('graph TD\n  A-->ok\n  B-->x1\n  C-- go -->output')
+  if ('error' in graph) throw new Error(graph.error)
+  expect(graph.edges.map(e => [e.from, e.to, e.label])).toEqual([['A', 'ok', undefined], ['B', 'x1', undefined], ['C', 'output', 'go']])
+})
+
 test('quoted edge labels lose their quotes in both spellings', () => {
   const graph = parse('graph TD\n  A -->|"a | b"| B\n  C -- "go -> on" --> D')
   if ('error' in graph) throw new Error(graph.error)

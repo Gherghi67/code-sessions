@@ -13,6 +13,11 @@ test('fencesOf finds mermaid fences and ignores other fences', () => {
   expect(fencesOf('```ts\nconst a = 1\n```')).toEqual([])
   // A four-backtick block quoting mermaid source is not a fence of its own.
   expect(fencesOf('x\n````mermaid\ngraph TD\nA-->B\n````\n')).toEqual([])
+  // Nor is a mermaid fence quoted inside a four-backtick or a tilde block.
+  expect(fencesOf('Write it like this:\n````markdown\n```mermaid\ngraph TD\nA --> B\n```\n````\nthen run it.')).toEqual([])
+  expect(fencesOf('~~~\n```mermaid\ngraph TD\nA --> B\n```\n~~~')).toEqual([])
+  // A fence after a closed outer block is drawn.
+  expect(fencesOf('````\nquoted\n````\n```mermaid\ngraph TD\nA --> B\n```')).toEqual(['graph TD\nA --> B'])
 })
 
 test('a reply without mermaid is left to the engine', async ($, on) => {
@@ -142,13 +147,14 @@ test('fit turns a wide LR chart, keeps one that fits, and reports one that canno
 })
 
 test('a node takes its role from its shape, else from its place in the flow; a style fill wins', () => {
-  const graph = parse(['graph TD', '  S((go)) --> A[one] --> B[two] --> C[three]', '  B --> D[four]', '  E{ask} --> F[alone]', '  G[lone]', '  style B fill:#abc'].join('\n'))
+  const graph = parse(['graph TD', '  S((go)) --> A[one] --> B[two] --> C[three]', '  B --> D[four]', '  E{ask} --> F[alone]', '  G[lone]', '  C --> Z((done))', '  style B fill:#abc'].join('\n'))
   if ('error' in graph) throw new Error(graph.error)
   const role = (id: string) => roleOf(graph.nodes.find(n => n.id === id)!, graph)
   expect(role('S')).toBe('start')
+  expect(role('Z')).toBe('end')
   expect(role('A')).toBe('step')
   expect(role('B')).toBe('decision')
-  expect(role('C')).toBe('end')
+  expect(role('C')).toBe('step')
   expect(role('D')).toBe('end')
   expect(role('E')).toBe('decision')
   expect(role('F')).toBe('end')

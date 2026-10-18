@@ -96,7 +96,7 @@ export function layout(graph: Graph): Layout | LayoutError {
     const chain: Segment[] = []
     let previous = tail
     for (let layer = tail.layer + 1; layer < head.layer; layer++) {
-      const dummy: Item = { key: `#${edge.id}@${layer}`, layer, order: 0, along: flip ? 1 : 1, cross: 1, a0: 0, c0: 0 }
+      const dummy: Item = { key: `#${edge.id}@${layer}`, layer, order: 0, along: 1, cross: 1, a0: 0, c0: 0 }
       items.set(dummy.key, dummy)
       chain.push({ edge, from: previous, to: dummy, exit: 0, entry: 0, first: false, last: false })
       previous = dummy
@@ -339,8 +339,16 @@ function orderLayers(layers: Item[][], segments: Segment[]): void {
   })
 }
 
+// Crossing counts are the cost of ordering: each is a pass over every pair of segments in a
+// gap, and the transposes and permutations below ask for thousands. Past this many pairs the
+// order stands as it is, so a chart at the parser's limits draws in a second or two
+// instead of holding the render hook for tens of seconds; a small chart never reaches it.
+const ORDERING_BUDGET = 4_000_000
+
 function refineOrder(layers: Item[][], segments: Segment[]): number {
   layers.forEach(layer => layer.forEach((item, i) => (item.order = i)))
+  let work = 0
+  const exhausted = () => work > ORDERING_BUDGET
   const up = new Map<Item, Item[]>()
   const down = new Map<Item, Item[]>()
   for (const s of segments) {
@@ -360,6 +368,7 @@ function refineOrder(layers: Item[][], segments: Segment[]): number {
     let count = 0
     for (let i = 1; i < layers.length; i++) {
       const between = segments.filter(s => s.to.layer === i)
+      work += (between.length * (between.length - 1)) / 2
       for (let p = 0; p < between.length; p++) for (let q = p + 1; q < between.length; q++) {
         const a = between[p]!, b = between[q]!
         if ((a.from.order - b.from.order) * (a.to.order - b.to.order) < 0) count++
@@ -369,7 +378,7 @@ function refineOrder(layers: Item[][], segments: Segment[]): number {
   }
   let best = crossings()
   let bestOrder = layers.map(layer => [...layer])
-  for (let pass = 0; pass < 4 && best > 0; pass++) {
+  for (let pass = 0; pass < 4 && best > 0 && !exhausted(); pass++) {
     if (pass % 2 === 0) for (let i = 1; i < layers.length; i++) sweep(layers[i]!, up)
     else for (let i = layers.length - 2; i >= 0; i--) sweep(layers[i]!, down)
     const now = crossings()
@@ -383,10 +392,10 @@ function refineOrder(layers: Item[][], segments: Segment[]): number {
     layer.forEach((item, j) => (item.order = j))
   })
   // Transpose: swap neighbours while that removes crossings.
-  for (let round = 0; round < 10 && best > 0; round++) {
+  for (let round = 0; round < 10 && best > 0 && !exhausted(); round++) {
     let improved = false
     for (const layer of layers) {
-      for (let i = 0; i + 1 < layer.length; i++) {
+      for (let i = 0; i + 1 < layer.length && !exhausted(); i++) {
         const p = layer[i]!, q = layer[i + 1]!
         ;[layer[i], layer[i + 1]] = [q, p]
         p.order = i + 1
@@ -407,7 +416,7 @@ function refineOrder(layers: Item[][], segments: Segment[]): number {
   // A small chart: every combination of layer orders, since one layer at a time can stall.
   const factorial = (n: number): number => (n <= 1 ? 1 : n * factorial(n - 1))
   const combinations = layers.reduce((product, layer) => product * factorial(layer.length), 1)
-  if (best > 0 && combinations <= 5000) {
+  if (best > 0 && combinations <= 5000 && !exhausted()) {
     const search = (index: number) => {
       if (index === layers.length) {
         const now = crossings()
@@ -434,10 +443,10 @@ function refineOrder(layers: Item[][], segments: Segment[]): number {
     return best
   }
   // Small layers: try every order of one layer with the others fixed, until nothing improves.
-  for (let round = 0; round < 6 && best > 0; round++) {
+  for (let round = 0; round < 6 && best > 0 && !exhausted(); round++) {
     let improved = false
     for (const layer of layers) {
-      if (layer.length < 2 || layer.length > 6) continue
+      if (layer.length < 2 || layer.length > 6 || exhausted()) continue
       const current = [...layer]
       let bestPerm = current
       for (const perm of permutations(current)) {

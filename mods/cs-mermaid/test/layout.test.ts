@@ -194,3 +194,17 @@ test('a chart within the parser limits but past the cell budget is refused with 
   if ('error' in graph) throw new Error(graph.error)
   expect(layout(graph)).toEqual({ error: 'diagram would be 1339x210 cells' })
 })
+
+test('a chart at the parser limits with crossings to minimise lays out in bounded time', () => {
+  let src = 'graph TD\n'
+  for (let i = 0; i < 400; i++) {
+    const a = i % 200, b = (a + 1 + (i * 7) % 199) % 200
+    if (a !== b) src += `n${a} --> n${b}\n`
+  }
+  const graph = parse(src)
+  if ('error' in graph) throw new Error(graph.error)
+  const started = Date.now()
+  const drawn = layout(graph)
+  expect(Date.now() - started).toBeLessThan(6000)
+  expect('error' in drawn ? drawn.error : 'drawn').toMatch(/^diagram would be \d+x\d+ cells$/)
+})

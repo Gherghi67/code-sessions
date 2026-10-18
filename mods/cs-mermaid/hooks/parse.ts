@@ -39,7 +39,9 @@ const ID_SOURCE = '[A-Za-z0-9_]+(?:[.-][A-Za-z0-9_]+)*'
 const ID = new RegExp(`^${ID_SOURCE}`)
 const IDS_SOURCE = `${ID_SOURCE}(?:,${ID_SOURCE})*`
 // An arrow: optional head at the source, the shaft, optional head at the target.
-const ARROW = /^(<)?(-{2,}|={2,}|-\.+-)(>|o|x)?(?![-=.>ox])/
+// With no head, the shaft must not run on into one (`--o`, `-->`); after a head the target may
+// begin with anything, `o` and `x` included.
+const ARROW = /^(<)?(-{2,}|={2,}|-\.+-)(?:(>|o|x)|(?![-=.>ox]))/
 
 export function parse(source: string): Graph | ParseError {
   const statements = splitStatements(source)
@@ -154,7 +156,7 @@ function readChain(statement: string, nodes: Map<string, GraphNode>, edges: Grap
 
 function readArrow(text: string): { arrow: Arrow; rest: string } | ParseError {
   // `-- text -->`, `== text ==>`, `-. text .->`
-  const inline = /^(<)?(--|==|-\.)\s+([^-=.|][^|]*?)\s+(--|==|\.-)(>|o|x)?(?![-=.>ox])/.exec(text)
+  const inline = /^(<)?(--|==|-\.)\s+([^-=.|][^|]*?)\s+(--|==|\.-)(?:(>|o|x)|(?![-=.>ox]))/.exec(text)
   let head: RegExpExecArray | null = null
   let label: string | undefined
   let rest: string
