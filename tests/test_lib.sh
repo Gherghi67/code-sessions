@@ -617,6 +617,14 @@ wait_until() {  # command...
     done
 }
 
+# Exits 0 when ps shows <pattern> in the command line of <pid>, printing
+# nothing. A script started in the background shows the shell that forked it
+# until it has exec'd, so a test that hands its pid on for its argv to be read
+# waits on this first: wait_until pid_args_match "$pid" fake-claude.
+pid_args_match() {  # pid, pattern
+    ps -o args= -p "$1" 2>/dev/null | grep -q -- "$2"
+}
+
 # Waits until <file> exists or <pid>, a child of this shell, has exited, so a
 # test waits on the step it means and not on a count of polls that load
 # stretches or shrinks. The 300 s guard only stops a hang. Returns 0, printing

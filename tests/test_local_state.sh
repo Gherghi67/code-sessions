@@ -533,11 +533,10 @@ _lock_is_free() {  # lock file
 # and blocks in bash's own read on a fifo, so the process holding the lock is
 # the one LOCK_HOLDER names and nothing else shares its descriptor.
 _start_lock_holder() {  # lock file, ready file
-    local i=0
     mkfifo "$2.fifo"
     bash -c 'source "$1"; _cs_lock "$2" || exit 1; : > "$3"; read -r _ <> "$4"' _ "$LOCK_LIB" "$1" "$2" "$2.fifo" &
     LOCK_HOLDER=$!
-    until [ -e "$2" ] || [ "$i" -ge 100 ]; do sleep 0.05; i=$((i + 1)); done
+    wait_until test -e "$2"
     [ -e "$2" ] || { echo "  FAIL: the holder never took $1"; return 1; }
 }
 
@@ -883,7 +882,7 @@ test_two_state_writers_lose_no_update() {
 # it. The two take turns, so the opener's line is never lost.
 test_vault_holder_drop_keeps_a_concurrent_add() {
     local holders="$TEST_TMPDIR/vault-holders" lib="$SCRIPT_DIR/../hooks/cs-shared.sh"
-    local shim="$TEST_TMPDIR/slow-mv" added="$TEST_TMPDIR/added" real_mv i=0
+    local shim="$TEST_TMPDIR/slow-mv" added="$TEST_TMPDIR/added" real_mv
     real_mv=$(command -v mv)
     mkdir -p "$shim"
     printf '111\n222\n' > "$holders"
@@ -897,7 +896,9 @@ EOF
     chmod +x "$shim/mv"
     PATH="$shim:$PATH" bash -c 'source "$1"; cs_vault_holder_drop "$2" 111' _ "$lib" "$holders" \
         || { echo "  FAIL: the drop failed"; return 1; }
-    while [ ! -e "$added" ] && [ "$i" -lt 80 ]; do sleep 0.1; i=$((i + 1)); done
+    # The opener's add runs in the background of the drop's mv and can finish
+    # after the drop returns.
+    wait_until test -e "$added"
     [ -e "$added" ] || { echo "  FAIL: the opener's add never finished"; return 1; }
     assert_eq "222
 333" "$(cat "$holders")" "the drop removed 111 and the opener's 333 survived" || return 1

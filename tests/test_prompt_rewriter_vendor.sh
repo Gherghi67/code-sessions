@@ -234,6 +234,11 @@ printf "ok"'
     assert_file_not_contains "$ARGV_DUMP" "PWD=$PWD" "never the project directory"
 }
 
+# Exits 0 once process group <pgid> runs the stand-in curl's sleep.
+_group_runs_curl() {  # pgid
+    [ -n "$(pgrep -g "$1" -f 'sleep 30' 2>/dev/null)" ]
+}
+
 # The shim's cancel handler signals the rewriter's whole process group, so this
 # script is killed mid-call as a matter of routine, not as an edge case. Cleaning
 # up only on the way out of the normal path leaves the mode-600 config file
@@ -262,13 +267,9 @@ test_a_killed_rewrite_leaves_no_credential_on_disk() {
     set -m
     ( printf 'fix the login thing' | CS_REWRITE_PROVIDER=gemini \
         GEMINI_API_KEY="$fake_key" "$VENDOR" >/dev/null 2>&1 ) &
-    local pid=$! waited=0
+    local pid=$!
     set +m
-    while [ "$waited" -lt 50 ] && [ -z "$(pgrep -g "$pid" -f 'sleep 30' 2>/dev/null)" ]; do
-        sleep 0.1
-        waited=$((waited + 1))
-    done
-    [ -n "$(pgrep -g "$pid" -f 'sleep 30' 2>/dev/null)" ] || { echo "the API arm never reached curl"; return 1; }
+    wait_until _group_runs_curl "$pid" || { echo "the API arm never reached curl"; return 1; }
 
     # The whole group, exactly as the shim's cancel handler does. Signalling the
     # script alone would leave it blocked in curl with the cleanup unreached,

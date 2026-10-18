@@ -2079,8 +2079,8 @@ test_a_launch_cleanup_releases_its_pane_and_keeps_the_others_title() {
     local lib="$SCRIPT_DIR/../lib"
     _tt respawn-pane -k -t "$TT_PANE_B" "bash -c '. \"$lib/02-shared.sh\"; . \"$lib/05-term.sh\"; set_tab_title \"cs: fignity\" \"\" fignity; reset_tab_title; touch \"$TEST_TMPDIR/cleaned\"; sleep 600'" \
         || { _tt kill-server; return 1; }
-    local i=0
-    while [ ! -e "$TEST_TMPDIR/cleaned" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+    # The pane's shell starts later on a loaded machine; wait for its mark.
+    wait_until test -e "$TEST_TMPDIR/cleaned"
     assert_eq "cs: current-session" "$(_tt_window_name)" \
         "the cleaned-up launch leaves the window to the session still running" || { _tt kill-server; return 1; }
     assert_eq "" "$(_tt show-options -p -v -t "$TT_PANE_B" @cs_session 2>/dev/null)" \
@@ -2138,8 +2138,8 @@ test_a_launch_in_a_second_pane_joins_the_window_name() {
     local lib="$SCRIPT_DIR/../lib"
     _tt respawn-pane -k -t "$TT_PANE_B" "bash -c '. \"$lib/02-shared.sh\"; . \"$lib/05-term.sh\"; set_tab_title \"cs: fignity\" \"\" fignity; touch \"$TEST_TMPDIR/launched\"; sleep 600'" \
         || { _tt kill-server; return 1; }
-    local i=0
-    while [ ! -e "$TEST_TMPDIR/launched" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+    # The pane's shell starts later on a loaded machine; wait for its mark.
+    wait_until test -e "$TEST_TMPDIR/launched"
     assert_eq "cs: current-session | fignity" "$(_tt_window_name)" \
         "a cs launched in the other pane joins the window name" || { _tt kill-server; return 1; }
     assert_eq "cs: fignity" "$(_tt display-message -p -t "$TT_PANE_B" '#{pane_title}')" \
@@ -4918,11 +4918,9 @@ test_session_start_publishes_the_contract_to_a_teammate() {
     : > "$envfile"
     printf '#!/usr/bin/env bash\nsleep 30\n' > "$script"; chmod +x "$script"
     "$script" --agent-id a1 --agent-name mate --team-name t >/dev/null 2>&1 &
-    local pid=$! i=0
-    while [ "$i" -lt 50 ]; do
-        ps -o args= -p "$pid" 2>/dev/null | grep -q fake-claude && break
-        i=$((i + 1)); sleep 0.1
-    done
+    local pid=$!
+    wait_until pid_args_match "$pid" fake-claude \
+        || { kill "$pid" 2>/dev/null; echo "  FAIL: fixture: ps never showed the stand-in teammate"; session_start_teardown; return 1; }
 
     env -u CLAUDE_SESSION_NAME -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR \
         CLAUDE_CODE_ENTRYPOINT="cli" CLAUDE_PID="$pid" CLAUDE_PROJECT_DIR="$dir" \

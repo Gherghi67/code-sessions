@@ -1742,12 +1742,10 @@ test_the_detached_child_actually_writes_the_kick() {
     printf 'claude_session_id: %s\n' "$UUID_A" > "$CLAUDE_SESSION_META_DIR/local/state"
     CS_ROTATION_KICK_DELAY=0 _start_hook "$UUID_B" clear >/dev/null || return 1
     # The child outlives the hook, so the file need not exist the instant the
-    # hook returns even at delay 0. Poll rather than sleep a fixed time.
-    local kick="$CLAUDE_SESSION_META_DIR/local/rotation-kick/rotation.kick" i=0
-    while [ ! -f "$kick" ] && [ "$i" -lt 50 ]; do
-        i=$((i + 1))
-        sleep 0.1
-    done
+    # hook returns even at delay 0, and a loaded machine starts it seconds
+    # late. Wait for the file itself rather than a fixed time or poll count.
+    local kick="$CLAUDE_SESSION_META_DIR/local/rotation-kick/rotation.kick"
+    wait_until test -f "$kick"
     [ -f "$kick" ] \
         || { echo "  FAIL: the detached child never wrote the kick; the wake can never fire"; return 1; }
     [ -s "$kick" ] || { echo "  FAIL: the kick is empty; the child died mid-write"; return 1; }
@@ -1765,13 +1763,11 @@ test_the_kick_is_rewritten_until_delivered() {
     printf '%s\n' "2026-07-16-test.md" > "$CLAUDE_SESSION_META_DIR/local/pending-handoff"
     printf 'claude_session_id: %s\n' "$UUID_A" > "$CLAUDE_SESSION_META_DIR/local/state"
     CS_ROTATION_KICK_DELAY=1 _start_hook "$UUID_B" clear >/dev/null || return 1
-    local d="$CLAUDE_SESSION_META_DIR/local/rotation-kick" n i
+    local d="$CLAUDE_SESSION_META_DIR/local/rotation-kick" n
     for n in 1 2 3; do
-        i=0
-        while [ ! -f "$d/rotation.kick" ] && [ "$i" -lt 30 ]; do
-            i=$((i + 1))
-            sleep 0.1
-        done
+        # Each rewrite comes a delay after the last one was consumed, later on
+        # a loaded machine; wait for the file, not for a count of polls.
+        wait_until test -f "$d/rotation.kick"
         [ -f "$d/rotation.kick" ] \
             || { echo "  FAIL: write $n never came; a kick the watcher missed is never retried"; : > "$d/delivered"; return 1; }
         rm -f "$d/rotation.kick"
