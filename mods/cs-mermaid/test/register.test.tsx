@@ -3,7 +3,7 @@
 import { test, expect } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { DISABLED, OPTION, PROMPT_SECTION, blockRows, fencesOf, fillFor, fit, paletteFor, roleOf, splitReply } from '../hooks/register'
+import { DISABLED, OPTION, PROMPT_SECTION, blockRows, fencesOf, fillFor, fit, labelColor, paletteFor, roleOf, splitReply } from '../hooks/register'
 import { parse } from '../hooks/parse'
 
 const TEXT = ['Flow:', '', '```mermaid', 'graph TD', '  A[prompt] --> B{cached?}', '  B -->|no| C[render]', '```'].join('\n')
@@ -50,6 +50,8 @@ test('a reply with a fence hands its prose to the engine and draws the chart as 
   expect((await reply.find({ type: 'Text', text: 'prompt' }))?.props.backgroundColor).toBe('#D3F9D8')
   expect((await reply.find({ type: 'Text', text: 'cached?' }))?.props.backgroundColor).toBe('#FFF3BF')
   expect((await reply.find({ type: 'Text', text: 'render' }))?.props.backgroundColor).toBe('#E9ECEF')
+  // The `no` label answers the decision: drawn in the answer's colour, not the line's.
+  expect((await reply.find({ type: 'Text', text: 'no' }))?.props.color).toBe('#C92A2A')
   await reply.unmount()
 })
 
@@ -156,6 +158,14 @@ test('a node takes its role from its shape, else from its place in the flow; a s
   expect(fillFor('decision', paletteFor('light'))).toBe('#FFF3BF')
   expect(fillFor('step', paletteFor('light'))).toBe('#ECECFF')
   expect(graph.nodes.find(n => n.id === 'B')!.style).toEqual({ fill: '#abc' })
+})
+
+test('a decision answer colours its label; other labels take the line colour', () => {
+  expect(labelColor('yes', paletteFor('light'))).toBe('#2B8A3E')
+  expect(labelColor('Fail', paletteFor('light'))).toBe('#C92A2A')
+  expect(labelColor('degraded', paletteFor('dark'))).toBe('#FF8787')
+  expect(labelColor('retry later', paletteFor('light'))).toBe('#333333')
+  expect(labelColor('nothing', paletteFor('light'))).toBe('#333333')
 })
 
 test('the palette follows the theme row', () => {

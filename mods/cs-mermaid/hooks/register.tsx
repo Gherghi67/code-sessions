@@ -54,9 +54,9 @@ export function fit(graph: Graph, columns: number): Fitted {
 // hue, so a chart of plain `[ ]` boxes still reads as a flow: a decision (diamond or hexagon,
 // or any node that branches) amber, a start (a circle, or a node nothing leads to) green, an
 // end (a node that leads nowhere) grey. A `style` or `classDef` fill wins over all of it.
-type Palette = { fill: string; decision: string; start: string; end: string; text: string; line: string }
-const LIGHT: Palette = { fill: '#ECECFF', decision: '#FFF3BF', start: '#D3F9D8', end: '#E9ECEF', text: '#1F1F1F', line: '#333333' }
-const DARK: Palette = { fill: '#3B3F6B', decision: '#6B5A1E', start: '#1F4D2B', end: '#3A3D42', text: '#F2F2F2', line: '#D3D3D3' }
+type Palette = { fill: string; decision: string; start: string; end: string; text: string; line: string; good: string; bad: string }
+const LIGHT: Palette = { fill: '#ECECFF', decision: '#FFF3BF', start: '#D3F9D8', end: '#E9ECEF', text: '#1F1F1F', line: '#333333', good: '#2B8A3E', bad: '#C92A2A' }
+const DARK: Palette = { fill: '#3B3F6B', decision: '#6B5A1E', start: '#1F4D2B', end: '#3A3D42', text: '#F2F2F2', line: '#D3D3D3', good: '#69DB7C', bad: '#FF8787' }
 
 export function paletteFor(theme: unknown): Palette {
   return typeof theme === 'string' && theme.startsWith('dark') ? DARK : LIGHT
@@ -78,6 +78,16 @@ export function roleOf(node: GraphNode, graph: Graph): Role {
 
 export function fillFor(role: Role, palette: Palette): string {
   return role === 'step' ? palette.fill : palette[role]
+}
+
+// An edge label that answers a decision takes the answer's colour; any other label the line's.
+const GOOD = new Set(['yes', 'y', 'ok', 'pass', 'passed', 'true', 'healthy', 'success', 'done', 'valid'])
+const BAD = new Set(['no', 'n', 'fail', 'failed', 'false', 'error', 'degraded', 'invalid', 'timeout', 'reject', 'rejected'])
+export function labelColor(text: string, palette: Palette): string {
+  const word = text.trim().toLowerCase()
+  if (GOOD.has(word)) return palette.good
+  if (BAD.has(word)) return palette.bad
+  return palette.line
 }
 
 // The rows of a block `width` cells wide and `height` tall, the label centred on the middle row.
@@ -112,7 +122,7 @@ function Drawing({ drawn, graph, palette, elements }: { drawn: Layout; graph: Gr
         )
       })}
       {drawn.labels.map(label => (
-        <Box position="absolute" top={label.y} left={label.x}><Text italic color={palette.line}>{label.text}</Text></Box>
+        <Box position="absolute" top={label.y} left={label.x}><Text italic color={labelColor(label.text, palette)}>{label.text}</Text></Box>
       ))}
     </Box>
   )

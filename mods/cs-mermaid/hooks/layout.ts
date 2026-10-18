@@ -502,9 +502,10 @@ function placeLabel(grid: Grid, blocked: Occupancy, labels: Label[], flip: boole
           { a: start, c: s.exit - 1 - len },
         ]
       : [
-          { a: row, c: Math.min(s.exit, s.entry) + 2 },
+          // Beside the exit's own vertical run first: the corner and the head stay drawn.
           { a: start, c: s.exit + 2 },
           { a: start, c: s.exit - 1 - len },
+          { a: row, c: Math.min(s.exit, s.entry) + 2 },
         ]
   for (const at of candidates) {
     if (flip) {

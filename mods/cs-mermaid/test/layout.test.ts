@@ -89,8 +89,8 @@ test('parallel edges keep separate lines, heads and labels', () => {
  ██████████████████
  ████████A█████████
  ██████████████████
-  │       │ second
-  └─first │
+  │ first │ second
+  └─────┐ │
         ▼ ▼
        █████
        ██B██
