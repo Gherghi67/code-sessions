@@ -5,7 +5,7 @@ import type { EngineInterface, Register } from 'claude-code'
 import { layout } from './layout'
 import type { Layout } from './layout'
 import { parse } from './parse'
-import type { Graph, ParseError, Shape } from './parse'
+import type { Graph, GraphNode, ParseError } from './parse'
 import { cellWidth, padToWidth, truncateToWidth } from './text'
 
 // The /config row (`cs-mermaid.drawDiagrams`): off, fences stay source and the
@@ -17,7 +17,7 @@ export const OPTION = 'drawDiagrams'
 // 2.1.300 or later; an older one refuses this whole module.
 export const PROMPT_SECTION = {
   id: 'cs-mermaid:diagrams',
-  text: 'Mermaid flowchart fences (```mermaid with graph TD or graph LR) are drawn as diagrams in this terminal. Add one beside the prose only when an answer describes a flow that branches, loops or has four or more stages; never for a task list or numbered steps. One fence, short labels, no subgraphs; other diagram types show as source.',
+  text: 'Mermaid flowchart fences (```mermaid with graph TD or graph LR) are drawn as diagrams in this terminal. Add one beside the prose only when an answer describes a flow that branches, loops or has four or more stages; never for a task list or numbered steps. One fence, short labels, no subgraphs; `{ }` for a decision, `(( ))` for a start or end, `[ ]` for a step; other diagram types show as source.',
   scope: 'session',
 } as const
 
@@ -32,38 +32,62 @@ export function fencesOf(text: string): string[] {
   return [...text.matchAll(FENCE)].map(match => (match[1] ?? '').trim()).filter(Boolean)
 }
 
-export type Fitted = { drawn: Layout; turned: boolean } | { error: string }
+export type Fitted = { drawn: Layout; graph: Graph; turned: boolean } | { error: string }
 
 // A left-to-right chart wider than the transcript is turned top-down; a chart still too wide, or one
 // the engine refuses, is reported so the reply shows the source instead of a clipped drawing.
 export function fit(graph: Graph, columns: number): Fitted {
   const first = layout(graph)
   if ('error' in first) return first
-  if (first.width <= columns) return { drawn: first, turned: false }
+  if (first.width <= columns) return { drawn: first, graph, turned: false }
   if (graph.dir === 'LR' || graph.dir === 'RL') {
     const turned = layout({ ...graph, dir: graph.dir === 'LR' ? 'TD' : 'BT' })
     if ('error' in turned) return turned
-    if (turned.width <= columns) return { drawn: turned, turned: true }
+    if (turned.width <= columns) return { drawn: turned, graph, turned: true }
     return { error: `diagram is ${turned.width} columns wide, the transcript ${columns}` }
   }
   return { error: `diagram is ${first.width} columns wide, the transcript ${columns}` }
 }
 
 // Nodes are solid blocks: three rows of background colour with the label on the middle row.
-// Mermaid's default theme fills nodes #ECECFF; the decision node and the circle get their own hue.
-type Palette = { fill: string; decision: string; circle: string; text: string; line: string }
-const LIGHT: Palette = { fill: '#ECECFF', decision: '#FFF3BF', circle: '#F3D9FA', text: '#1F1F1F', line: '#333333' }
-const DARK: Palette = { fill: '#3B3F6B', decision: '#6B5A1E', circle: '#5A2E66', text: '#F2F2F2', line: '#D3D3D3' }
+// Mermaid's default theme fills every node #ECECFF; here a node's role in the flow gives it a
+// hue, so a chart of plain `[ ]` boxes still reads as a flow: a decision (diamond or hexagon,
+// or any node that branches) amber, a start (a circle, or a node nothing leads to) green, an
+// end (a node that leads nowhere) grey. A `style` or `classDef` fill wins over all of it.
+type Palette = { fill: string; decision: string; start: string; end: string; text: string; line: string; good: string; bad: string }
+const LIGHT: Palette = { fill: '#ECECFF', decision: '#FFF3BF', start: '#D3F9D8', end: '#E9ECEF', text: '#1F1F1F', line: '#333333', good: '#2B8A3E', bad: '#C92A2A' }
+const DARK: Palette = { fill: '#3B3F6B', decision: '#6B5A1E', start: '#1F4D2B', end: '#3A3D42', text: '#F2F2F2', line: '#D3D3D3', good: '#69DB7C', bad: '#FF8787' }
 
 export function paletteFor(theme: unknown): Palette {
   return typeof theme === 'string' && theme.startsWith('dark') ? DARK : LIGHT
 }
 
-// Decisions (diamond, hexagon) and circles get their own hue; every other shape is a plain block.
-export function fillFor(shape: Shape, palette: Palette): string {
-  if (shape === 'diamond' || shape === 'hexagon') return palette.decision
-  if (shape === 'circle' || shape === 'doublecircle') return palette.circle
-  return palette.fill
+export type Role = 'step' | 'decision' | 'start' | 'end'
+
+// A node's role, by its shape first and else by its place in the flow. A lone node is a step.
+export function roleOf(node: GraphNode, graph: Graph): Role {
+  if (node.shape === 'diamond' || node.shape === 'hexagon') return 'decision'
+  if (node.shape === 'circle' || node.shape === 'doublecircle') return 'start'
+  const outgoing = graph.edges.filter(edge => edge.from === node.id).length
+  const incoming = graph.edges.filter(edge => edge.to === node.id).length
+  if (outgoing >= 2) return 'decision'
+  if (outgoing === 0 && incoming > 0) return 'end'
+  if (incoming === 0 && outgoing > 0) return 'start'
+  return 'step'
+}
+
+export function fillFor(role: Role, palette: Palette): string {
+  return role === 'step' ? palette.fill : palette[role]
+}
+
+// An edge label that answers a decision takes the answer's colour; any other label the line's.
+const GOOD = new Set(['yes', 'y', 'ok', 'pass', 'passed', 'true', 'healthy', 'success', 'done', 'valid'])
+const BAD = new Set(['no', 'n', 'fail', 'failed', 'false', 'error', 'degraded', 'invalid', 'timeout', 'reject', 'rejected'])
+export function labelColor(text: string, palette: Palette): string {
+  const word = text.trim().toLowerCase()
+  if (GOOD.has(word)) return palette.good
+  if (BAD.has(word)) return palette.bad
+  return palette.line
 }
 
 // The rows of a block `width` cells wide and `height` tall, the label centred on the middle row.
@@ -78,7 +102,7 @@ export function blockRows(label: string, width: number, height: number): string[
 type Elements = ReturnType<EngineInterface['ui']['resolve']>
 
 // The diagram as coloured blocks and line glyphs.
-function Drawing({ drawn, palette, elements }: { drawn: Layout; palette: Palette; elements: Elements }) {
+function Drawing({ drawn, graph, palette, elements }: { drawn: Layout; graph: Graph; palette: Palette; elements: Elements }) {
   const { Box, Text } = elements
   return (
     <Box width={drawn.width} height={drawn.height} position="relative">
@@ -86,18 +110,19 @@ function Drawing({ drawn, palette, elements }: { drawn: Layout; palette: Palette
         <Box position="absolute" top={run.y} left={run.x}><Text color={palette.line}>{run.text}</Text></Box>
       ))}
       {drawn.boxes.map(box => {
-        const fill = box.node.style?.fill ?? fillFor(box.node.shape, palette)
+        const role = roleOf(box.node, graph)
+        const fill = box.node.style?.fill ?? fillFor(role, palette)
         const text = box.node.style?.color ?? palette.text
         return (
           <Box position="absolute" top={box.y} left={box.x} width={box.width} height={box.height} flexDirection="column">
             {blockRows(box.node.label, box.width, box.height).map(row => (
-              <Text color={text} backgroundColor={fill} bold={box.node.shape === 'diamond' || box.node.shape === 'hexagon'}>{row}</Text>
+              <Text color={text} backgroundColor={fill} bold={role === 'decision'}>{row}</Text>
             ))}
           </Box>
         )
       })}
       {drawn.labels.map(label => (
-        <Box position="absolute" top={label.y} left={label.x}><Text italic color={palette.line}>{label.text}</Text></Box>
+        <Box position="absolute" top={label.y} left={label.x}><Text italic color={labelColor(label.text, palette)}>{label.text}</Text></Box>
       ))}
     </Box>
   )
@@ -174,7 +199,7 @@ export const register: Register = (on, options) => {
               </Box>
             )
           }
-          return <Box marginY={1}><Drawing drawn={fitted.drawn} palette={palette} elements={elements} /></Box>
+          return <Box marginY={1}><Drawing drawn={fitted.drawn} graph={fitted.graph} palette={palette} elements={elements} /></Box>
         })}
       </Box>
     )

@@ -86,25 +86,25 @@ test('an unrelated edge crossing another is drawn as a crossing, never a junctio
 
 test('parallel edges keep separate lines, heads and labels', () => {
   expect(picture('graph TD\n  A -->|first| B\n  A -->|second| B')).toBe(`
- ██████████████████
- ████████A█████████
- ██████████████████
-  │       │ second
-  └─first │
-        ▼ ▼
-       █████
-       ██B██
-       █████
+ ████████████████████
+ █████████A██████████
+ ████████████████████
+  │ first  │ second
+  └──────┐ │
+         ▼ ▼
+        █████
+        ██B██
+        █████
 `)
 })
 
 test('a label never erases another edge or covers a node', () => {
   expect(picture('graph TD\n  A -->|left| B\n  A --> C')).toBe(`
-  ██████████
-  ████A█████
-  ██████████
-   │ left │
-   ▼      ▼
+  ███████████
+  █████A█████
+  ███████████
+   │ left  │
+   ▼       ▼
  █████   █████
  ██B██   ██C██
  █████   █████

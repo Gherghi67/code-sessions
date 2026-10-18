@@ -837,12 +837,18 @@ It hooks two events:
   bullet, on its first part only), and fences, each parsed (`hooks/parse.ts`) and
   laid out (`hooks/layout.ts`) in character cells; the last 32 layouts are
   kept, since a streaming reply re-renders on every flush. Nodes are solid
-  blocks, three rows tall, taller or wider where more than one edge meets them:
-  lavender, amber for `{}` and `{{}}`, mauve for `(( ))`, in a light or dark
-  palette from the `theme` row of `/config`. `style`, `classDef`, `class`
-  and `:::` set a node's fill and text colour. Edges are box-drawing glyphs
+  blocks, three rows tall, taller or wider where more than one edge meets them,
+  coloured by their role in the flow, in a light or dark palette from the
+  `theme` row of `/config`: a decision (`{ }`, `{{ }}`, or any node with two
+  or more outgoing edges) amber, a start (`(( ))`, or a node nothing leads to)
+  green, an end (a node that leads nowhere) grey, every other step lavender.
+  Mermaid itself fills every node the same; the roles are the terminal's
+  reading of the chart, and `style`, `classDef`, `class` and `:::` fills win
+  over them, as does a shape over the edge count. Edges are box-drawing glyphs
   with `▼▲►◄` heads, a shared cell is always a crossing (`┼`), and each label
-  sits in a gap in its own line. The mod turns a left-to-right chart wider
+  sits beside its edge's first vertical run, so the corner and the head stay; a
+  label that answers a decision (`yes`, `pass`, `healthy`; `no`, `fail`,
+  `degraded`) is drawn in green or red, any other in the line colour. The mod turns a left-to-right chart wider
   than the terminal top-down. It measures the terminal: beside a docked pane
   the transcript is narrower, and a chart sized to the terminal can wrap
   there. A fence the parser refuses (any statement outside the supported
@@ -855,7 +861,8 @@ It hooks two events:
   no `.cs/local/disabled`, the mod appends one `session`-scope section,
   `cs-mermaid:diagrams` (about 80 tokens): flowchart fences draw here; add one
   only for a flow that branches, loops or has four or more stages, never for a
-  task list or numbered steps; one fence, short labels, no subgraphs. It is
+  task list or numbered steps; one fence, short labels, no subgraphs, `{ }`
+  for a decision, `(( ))` for a start or end, `[ ]` for a step. It is
   part of every request's system prompt, on the session side of the prompt
   cache's boundary. Claude Code runs `prompt.compose` hooks only from plugins an
   organization lists in managed settings when it manages Claude Code; there
