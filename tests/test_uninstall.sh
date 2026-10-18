@@ -16,15 +16,12 @@ _stage_install() {  # home
     done
 }
 
-# Wait for cs to print a line to its output file, polled every 0.1 s for up
-# to 60 s. cs prints the line just before it waits on its next answer, so
-# what the test changes next lands while cs waits, however loaded the machine.
-# A line that never comes falls through, and the assertion on it fails.
+# Wait for cs to print a line to its output file. cs prints the line just
+# before it waits on its next answer, so what the test changes next lands
+# while cs waits, however loaded the machine. A line that never comes falls
+# through at wait_until's guard, and the assertion on it fails.
 _wait_for_output() {  # file, line
-    local i=0
-    while ! grep -qF -- "$2" "$1" 2>/dev/null && [ "$i" -lt 600 ]; do
-        sleep 0.1; i=$((i + 1))
-    done
+    wait_until grep -qsF -- "$2" "$1"
 }
 
 # Refused before the first removal: every binary is still installed, the

@@ -600,8 +600,10 @@ STUB
 
     printf '{"prompt": "implement a retry wrapper in src/api.ts"}' \
         | STUB_MARKER="$marker" STUB_REAL_GIT="$real_git" PATH="$stub:$PATH" bash "$HOOK" >/dev/null 2>&1 &
-    local pid=$! i=0
-    while [ ! -f "$marker" ] && [ "$i" -lt 100 ]; do i=$((i + 1)); sleep 0.05; done
+    local pid=$!
+    # The hook reaches the stub later on a loaded machine; wait for the stub's
+    # marker, then kill the hook while the stub holds it there.
+    wait_until test -f "$marker"
     kill -9 "$pid" 2>/dev/null
     wait "$pid" 2>/dev/null
     pkill -f "$stub/git" 2>/dev/null
@@ -633,8 +635,10 @@ STUB
 
     printf '{"prompt": "implement a retry wrapper in src/api.ts"}' \
         | STUB_MARKER="$marker" PATH="$stub:$PATH" bash "$HOOK" >/dev/null 2>&1 &
-    local pid=$! i=0
-    while [ ! -f "$marker" ] && [ "$i" -lt 100 ]; do i=$((i + 1)); sleep 0.05; done
+    local pid=$!
+    # The hook reaches the stub later on a loaded machine; wait for the stub's
+    # marker, then kill the hook while the stub holds it there.
+    wait_until test -f "$marker"
     kill -9 "$pid" 2>/dev/null
     wait "$pid" 2>/dev/null
     pkill -f "$stub/dirname" 2>/dev/null

@@ -219,8 +219,10 @@ test_the_session_context_is_scrubbed() {
 }
 
 # A user whose only credential is a Console API key has no login for the scrub
-# to fall back to, so the first attempt fails in about a second. Rather than
-# leave the feature dead for them, retry once with the key in place.
+# to fall back to, so the first attempt answers "Not logged in". Rather than
+# leave the feature dead for them, retry once with the key in place. That
+# answer never spent the timeout, so it is retried however long a loaded
+# machine took to give it: here, longer than the gate on other failures.
 test_a_key_only_user_gets_a_retry_with_the_key() {
     cat > "$FAKE_BIN/claude" <<'FAKEEOF'
 #!/usr/bin/env bash
@@ -228,6 +230,7 @@ test_a_key_only_user_gets_a_retry_with_the_key() {
 if printenv ANTHROPIC_API_KEY >/dev/null 2>&1; then
     printf 'REWRITTEN VIA KEY'
 else
+    sleep 6
     printf 'Not logged in · Please run /login'
     exit 1
 fi

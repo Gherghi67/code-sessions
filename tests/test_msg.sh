@@ -617,12 +617,12 @@ test_queue_accept_refuses_a_second_accept() {
 test_queue_accept_refuses_while_another_holds_its_lock() {
     "$CS_BIN" -msg receiver -k task "review the tui diff" >/dev/null 2>&1 || return 1
     local id; id=$(jq -r .id "$(FIRST_MSG)")
-    local lock fifo="$TEST_TMPDIR/accept.fifo" ready="$TEST_TMPDIR/accept.ready" holder out rc=0 i=0
+    local lock fifo="$TEST_TMPDIR/accept.fifo" ready="$TEST_TMPDIR/accept.ready" holder out rc=0
     lock="$(RCV_META)/local/queue.accept.mutex.lock"
     mkfifo "$fifo"
     bash -c 'source "$1"; _cs_lock "$2" || exit 1; : > "$3"; read -r _ <> "$4"' _ "$SCRIPT_DIR/../hooks/cs-shared.sh" "$lock" "$ready" "$fifo" &
     holder=$!
-    until [ -e "$ready" ] || [ "$i" -ge 100 ]; do sleep 0.05; i=$((i + 1)); done
+    wait_until test -e "$ready" || { kill "$holder"; echo "  FAIL: fixture: the holder never took $lock"; return 1; }
     out=$(rcv -queue accept "$id" 2>&1) || rc=$?
     kill "$holder"
     assert_eq "1" "$rc" "accept exits 1" || return 1
@@ -724,11 +724,10 @@ test_queue_accept_serialises_concurrent_accepts() {
     mkdir -p "$TEST_TMPDIR/bin" "$b"
     cat > "$b/arrive" <<'EOF'
 : > "$B/$1.$ACCEPT_RACER"
-n=0
+deadline=$((SECONDS + 120))
 for r in 1 2 3; do
     while [ ! -e "$B/lock.$r" ] && [ ! -e "$B/check.$r" ]; do
-        n=$((n + 1))
-        [ "$n" -le 1200 ] || { : > "$B/timed-out"; break 2; }
+        [ "$SECONDS" -lt "$deadline" ] || { : > "$B/timed-out"; break 2; }
         sleep 0.05
     done
 done

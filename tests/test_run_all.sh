@@ -213,15 +213,15 @@ test_run_all_refuses_an_unreadable_suite() {
 # another works through a fixed share. Pinned with a suite that cannot finish
 # until every other suite has run: with two lanes it holds one lane, and only a
 # shared queue lets the other lane reach the remaining four. A fixed split puts
-# two of them behind it on its own lane, and it gives up after ten seconds.
+# two of them behind it on its own lane, and it gives up after 120 s of wall
+# time, which a loaded machine starting the other four late stays well inside.
 test_run_all_a_free_lane_takes_the_next_suite() {
     make_suite_dir 5
     cat > "$SUITE_DIR/test_fake1.sh" <<EOF
 #!/usr/bin/env bash
-i=0
+deadline=\$((SECONDS + 120))
 while [ "\$(ls -1 "$RAN_DIR" | grep -c .)" -lt 4 ]; do
-    i=\$((i + 1))
-    [ "\$i" -le 100 ] || { echo "the other four suites never ran"; exit 1; }
+    [ "\$SECONDS" -lt "\$deadline" ] || { echo "the other four suites never ran"; exit 1; }
     sleep 0.1
 done
 : >> "$RAN_DIR/test_fake1.sh"
@@ -237,6 +237,7 @@ EOF
 # lanes the two longest suites must both start before any short one has run;
 # they meet before either finishes, so neither lane comes free early. Both are
 # last in name order, where list order or a fixed split would start them late.
+# Each waits for the other for 120 s of wall time at most.
 test_run_all_starts_the_longest_suites_first() {
     make_suite_dir 4
     local n other
@@ -247,9 +248,9 @@ test_run_all_starts_the_longest_suites_first() {
             printf '[ -e "%s/test_fake1.sh" ] && { echo "a short suite ran first"; exit 1; }\n' "$RAN_DIR"
             printf '[ -e "%s/test_fake2.sh" ] && { echo "a short suite ran first"; exit 1; }\n' "$RAN_DIR"
             printf ': > "%s/started%s"\n' "$TEST_TMPDIR" "$n"
-            printf 'i=0\n'
+            printf 'deadline=$((SECONDS + 120))\n'
             printf 'until [ -e "%s/started%s" ]; do\n' "$TEST_TMPDIR" "$other"
-            printf '    i=$((i + 1)); [ "$i" -le 100 ] || { echo "the other long suite never started"; exit 1; }\n'
+            printf '    [ "$SECONDS" -lt "$deadline" ] || { echo "the other long suite never started"; exit 1; }\n'
             printf '    sleep 0.1\n'
             printf 'done\n'
             printf ': >> "%s/test_fake%s.sh"\n' "$RAN_DIR" "$n"
@@ -650,15 +651,17 @@ test_run_all_leaves_no_watchdog_behind() {
         return 1
     fi
     wait "$gate" || { echo "the gate failed"; cat "$TEST_TMPDIR/gate.out"; return 1; }
-    # A watchdog leaves within a tick of its suite; poll for up to 10 s.
-    local left waited=0
+    # A watchdog leaves within a tick of its suite, later on a loaded machine;
+    # one never stopped sleeps out its 7771 s cap, far past this wait.
+    local left
+    wait_until _nothing_runs "$runner"
     left=$(pgrep -f "$runner" || true)
-    while [ -n "$left" ] && [ "$waited" -lt 10 ]; do
-        sleep 1
-        waited=$((waited + 1))
-        left=$(pgrep -f "$runner" || true)
-    done
-    [ -z "$left" ] || { echo "watchdogs outlived the gate by 10s: $left"; pkill -f "$runner"; return 1; }
+    [ -z "$left" ] || { echo "watchdogs outlived the gate: $left"; pkill -f "$runner"; return 1; }
+}
+
+# Exits 0 when no process has <pattern> in its command line.
+_nothing_runs() {  # pattern
+    ! pgrep -f "$1" >/dev/null
 }
 
 # TERM is a request; a suite that ignores it is still stopped once the grace

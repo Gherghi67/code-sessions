@@ -603,6 +603,28 @@ _run_bounded() {  # seconds, command...
     ' "$@"
 }
 
+# Runs <command> until it succeeds, so a test waits on the event it means and
+# not on a count of polls: a loaded machine starts a detached writer seconds
+# late, and the count runs out first. The 120 s guard only stops a hang.
+# Returns 0 once the command succeeds, else 1 at the guard. Prints nothing; the
+# test's own assertion after the wait says what was missing. A condition that
+# needs more than one command goes in a small function passed by name.
+wait_until() {  # command...
+    local deadline=$((SECONDS + 120))
+    until "$@"; do
+        [ "$SECONDS" -lt "$deadline" ] || return 1
+        sleep 0.05
+    done
+}
+
+# Exits 0 when ps shows <pattern> in the command line of <pid>, printing
+# nothing. A script started in the background shows the shell that forked it
+# until it has exec'd, so a test that hands its pid on for its argv to be read
+# waits on this first: wait_until pid_args_match "$pid" fake-claude.
+pid_args_match() {  # pid, pattern
+    ps -o args= -p "$1" 2>/dev/null | grep -q -- "$2"
+}
+
 # Waits until <file> exists or <pid>, a child of this shell, has exited, so a
 # test waits on the step it means and not on a count of polls that load
 # stretches or shrinks. The 300 s guard only stops a hang. Returns 0, printing

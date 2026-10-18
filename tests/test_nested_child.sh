@@ -180,16 +180,14 @@ test_a_nested_child_leaves_the_queue_digest_to_the_lead() {
 # rotation, which is the positive control.
 test_a_teammate_leaves_the_armed_rotation_and_the_digest_to_the_lead() {
     _nested_setup
-    local meta="$CLAUDE_SESSION_META_DIR" handoff out mate i=0
+    local meta="$CLAUDE_SESSION_META_DIR" handoff out mate
     handoff=$(_arm_rotation)
     printf '{"ts":1,"event":"task_done","task":"t"}\n' > "$meta/local/notifications.jsonl"
     _fake_claude_script
     "$TEST_TMPDIR/fake-claude.sh" --agent-id a1 --agent-name mate --team-name t >/dev/null 2>&1 &
     mate=$!
-    while [ "$i" -lt 50 ]; do
-        ps -o args= -p "$mate" 2>/dev/null | grep -q fake-claude && break
-        i=$((i + 1)); sleep 0.1
-    done
+    wait_until pid_args_match "$mate" fake-claude \
+        || { kill "$mate" 2>/dev/null; echo "  FAIL: fixture: ps never showed the stand-in teammate"; return 1; }
     out=$(_start_hook "" "$mate" startup 22222222-2222-4222-8222-222222222222)
     kill "$mate" 2>/dev/null
     assert_eq "0" "$(grep -c 'Conversation Rotation' <<< "$out")" \
@@ -214,7 +212,7 @@ test_a_teammate_leaves_the_armed_rotation_and_the_digest_to_the_lead() {
 # which is the positive control.
 test_a_teammate_does_not_raise_the_attention_flag() {
     _nested_setup
-    local meta="$CLAUDE_SESSION_META_DIR" mate i=0
+    local meta="$CLAUDE_SESSION_META_DIR" mate
     local it2_dir="$TEST_TMPDIR/it2" it2_log="$TEST_TMPDIR/it2.log"
     mkdir -p "$it2_dir"
     printf '#!/bin/sh\necho "$@" >> "%s"\n' "$it2_log" > "$it2_dir/it2attention"
@@ -222,10 +220,8 @@ test_a_teammate_does_not_raise_the_attention_flag() {
     _fake_claude_script
     "$TEST_TMPDIR/fake-claude.sh" --agent-id a1 --agent-name mate --team-name t >/dev/null 2>&1 &
     mate=$!
-    while [ "$i" -lt 50 ]; do
-        ps -o args= -p "$mate" 2>/dev/null | grep -q fake-claude && break
-        i=$((i + 1)); sleep 0.1
-    done
+    wait_until pid_args_match "$mate" fake-claude \
+        || { kill "$mate" 2>/dev/null; echo "  FAIL: fixture: ps never showed the stand-in teammate"; return 1; }
     CS_NO_ITERM2='' TERM_PROGRAM=iTerm.app CS_IT2_DIR="$it2_dir" CS_IT2_TTY="$TEST_TMPDIR/tty" _stop_hook "" "$mate" > /dev/null
     kill "$mate" 2>/dev/null
     assert_not_exists "$meta/local/attention" \
@@ -336,12 +332,11 @@ test_a_claude_an_exec_launch_forked_is_the_lead_once_it_claims() {
 # lead's lock and claim.
 test_a_direct_child_of_the_lead_claude_is_not_the_lead() {
     _nested_setup
-    local meta="$CLAUDE_SESSION_META_DIR" handoff out lead child i=0
+    local meta="$CLAUDE_SESSION_META_DIR" handoff out lead child
     printf '#!/usr/bin/env bash\nsleep 300 &\necho "$$ $!" > "$1"\ntrap "kill $!" TERM\nwait\n' > "$TEST_TMPDIR/lead.sh"
     bash "$TEST_TMPDIR/lead.sh" "$TEST_TMPDIR/pids" &
-    while [ "$i" -lt 50 ] && [ ! -s "$TEST_TMPDIR/pids" ]; do
-        i=$((i + 1)); sleep 0.1
-    done
+    wait_until test -s "$TEST_TMPDIR/pids" \
+        || { echo "  FAIL: fixture: the stand-in lead never wrote its pids"; return 1; }
     read -r lead child < "$TEST_TMPDIR/pids"
     assert_eq "$lead" "$(ps -o ppid= -p "$child" | tr -d '[:space:]')" \
         "the stand-in child's parent is the stand-in lead" || { kill "$lead" 2>/dev/null; return 1; }
@@ -643,7 +638,6 @@ test_a_claude_started_at_the_lead_end_is_a_guest() {
 # kill of one in the middle hands what is below it to init and leaves what
 # is above it running, as when a lead claude exits under a cs that lives on.
 _chain() {  # levels
-    local i=0
     rm -f "$TEST_TMPDIR/chain"
     printf '%s\n' '#!/usr/bin/env bash' \
         'echo "$$" >> "$1"' \
@@ -652,11 +646,19 @@ _chain() {  # levels
         'wait' \
         'exec sleep 300' > "$TEST_TMPDIR/chain.sh"
     bash "$TEST_TMPDIR/chain.sh" "$TEST_TMPDIR/chain" "$1" >/dev/null 2>&1 &
-    while [ "$i" -lt 100 ] && [ "$(wc -l < "$TEST_TMPDIR/chain" 2>/dev/null | tr -d ' ')" != "$(($1 + 1))" ]; do
-        i=$((i + 1)); sleep 0.1
-    done
-    [ "$(wc -l < "$TEST_TMPDIR/chain" 2>/dev/null | tr -d ' ')" = "$(($1 + 1))" ] \
+    wait_until _chain_started "$(($1 + 1))" \
         || { echo "  FAIL: the stand-in chain did not start"; return 1; }
+}
+
+# Exits 0 once all <count> processes of the chain have written their pids.
+_chain_started() {  # count
+    [ "$(wc -l < "$TEST_TMPDIR/chain" 2>/dev/null | tr -d ' ')" = "$1" ]
+}
+
+# Exits 0 once <lead> has exited and <shell>, its child, no longer names it as
+# parent: the kernel hands an orphan to init a moment after its parent dies.
+_lead_gone() {  # lead, shell
+    ! kill -0 "$1" 2>/dev/null && [ "$(ps -o ppid= -p "$2" 2>/dev/null | tr -d '[:space:]')" != "$1" ]
 }
 
 # The lead starts and claims, a rotation is armed and the queue holds news,
@@ -669,7 +671,7 @@ _chain() {  # levels
 # arm. Prints "<rotations> <digests> <cursor> <recorded> <marker> <handoff
 # status> <flag> [<claim>]", the claim with "launch" and "lead" for the pids.
 _a_claude_starts_after_the_lead_exits() {  # depth
-    local meta="$CLAUDE_SESSION_META_DIR" handoff out flag=absent launch lead shell claude i=0
+    local meta="$CLAUDE_SESSION_META_DIR" handoff out flag=absent launch lead shell claude
     rm -f "$meta/local/lead-pid" "$meta/local/attention" "$meta/local/state" \
         "$meta/local/notifications.jsonl" "$meta/local/notifications.seen"
     _chain "$(($1 + 2))" || return 1
@@ -686,10 +688,7 @@ _a_claude_starts_after_the_lead_exits() {  # depth
         | CS_RESOLVED_FROM=env CS_LEAD_PID="$launch" CLAUDE_PID="$lead" bash "$HOOKS_DIR/session-end.sh" >/dev/null 2>&1
     kill "$lead" 2>/dev/null
     [ "$1" -gt 0 ] || wait "$lead" 2>/dev/null
-    while [ "$i" -lt 100 ] && { kill -0 "$lead" 2>/dev/null \
-        || [ "$(ps -o ppid= -p "$shell" 2>/dev/null | tr -d '[:space:]')" = "$lead" ]; }; do
-        i=$((i + 1)); sleep 0.1
-    done
+    wait_until _lead_gone "$lead" "$shell"
     kill -0 "$lead" 2>/dev/null && { echo "  FAIL: the stand-in lead did not exit"; return 1; }
     out=$(_start_hook "$launch" "$claude" startup bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb)
     _stop_hook "$launch" "$claude" > /dev/null
@@ -963,15 +962,13 @@ test_the_lead_cs_runs_as_its_child_under_a_launch_that_takes_no_claim_defers_the
 # claude shown to be the lead is the lead whatever its arguments say.
 test_the_lead_keeps_its_rotation_when_its_prompt_names_the_teammate_flags() {
     _nested_setup
-    local meta="$CLAUDE_SESSION_META_DIR" handoff out lead i=0
+    local meta="$CLAUDE_SESSION_META_DIR" handoff out lead
     handoff=$(_arm_rotation)
     _fake_claude_script
     "$TEST_TMPDIR/fake-claude.sh" explain --agent-id --agent-name --team-name options >/dev/null 2>&1 &
     lead=$!
-    while [ "$i" -lt 50 ]; do
-        ps -o args= -p "$lead" 2>/dev/null | grep -q fake-claude && break
-        i=$((i + 1)); sleep 0.1
-    done
+    wait_until pid_args_match "$lead" fake-claude \
+        || { kill "$lead" 2>/dev/null; echo "  FAIL: fixture: ps never showed the stand-in lead"; return 1; }
     out=$(_start_hook "$lead" "$lead" clear 33333333-3333-4333-8333-333333333333)
     kill "$lead" 2>/dev/null
     assert_eq "1" "$(grep -c 'Conversation Rotation' <<< "$out")" \

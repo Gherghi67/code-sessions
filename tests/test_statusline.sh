@@ -1441,12 +1441,9 @@ _make_ps_table() {
 # verdict for parent $1 and the TMUX claim $2, so the next render reads a
 # settled answer rather than racing one. Non-zero if it never arrives.
 settle_tmux_verdict() {
-    local key="$1,$2" n=0
+    local key="$1,$2"
     key=${key//\//-}; key=${key//[^A-Za-z0-9._,-]/_}   # as _cache_key sanitises
-    while [ ! -s "$HOME/.cache/cs/tmux-real/$key" ] && [ "$n" -lt 200 ]; do
-        n=$((n + 1)); sleep 0.05
-    done
-    [ -s "$HOME/.cache/cs/tmux-real/$key" ]
+    wait_until test -s "$HOME/.cache/cs/tmux-real/$key"
 }
 
 # The pane id is a claim about where this conversation lives, and TMUX_PANE is
@@ -2823,6 +2820,11 @@ test_fable_segment_costs_nothing_off_fable() {
     assert_not_exists "$CS_USAGE_DIR" "a non-fable model must not create the usage cache dir" || return 1
 }
 
+# Exits 0 when the cached fable reading for org-abc is <pct>.
+_usage_pct_is() {  # pct
+    [ "$(jq -r '.pct' "$CS_USAGE_DIR/fable.org-abc.json" 2>/dev/null)" = "$1" ]
+}
+
 # The refresh must actually fire when the cache is due — a render that never
 # kicks one would leave the chip frozen at its first reading forever.
 test_fable_segment_kicks_a_refresh_when_due() {
@@ -2831,11 +2833,9 @@ test_fable_segment_kicks_a_refresh_when_due() {
     seed_usage_cache org-abc 42 "2026-08-29T03:59:59Z" 1787816000 1787816300
     local json='{"session_name":"s","model":{"id":"claude-fable-5","display_name":"Fable"},"workspace":{"current_dir":"/none"}}'
     PATH="$USAGE_BINDIR:$PATH" CS_STATUSLINE_NOW=1787816400 run_sl "$json" >/dev/null
-    # The refresher is detached, so wait for the write rather than racing it.
-    local i=0
-    while [ "$i" -lt 50 ] && [ "$(jq -r '.pct' "$CS_USAGE_DIR/fable.org-abc.json")" = "42" ]; do
-        i=$(( i + 1 )); command sleep 0.1
-    done
+    # The refresher is detached and starts later on a loaded machine, so wait
+    # for its write rather than racing it.
+    wait_until _usage_pct_is 86
     assert_eq "86" "$(jq -r '.pct' "$CS_USAGE_DIR/fable.org-abc.json")" \
         "a due cache must trigger a detached refresh that rewrites the reading" || return 1
 }
@@ -2976,15 +2976,11 @@ test_fable_segment_does_spawn_when_curl_is_present() {
     # ms after the spawn, so a loop waiting for it to vanish can fall through
     # before it ever exists and leave teardown racing a live refresher. The
     # seeded pct differs from the shim body's 86 so the write is observable.
-    local i=0
-    while [ "$i" -lt 50 ] && [ "$(jq -r '.pct' "$CS_USAGE_DIR/fable.org-abc.json" 2>/dev/null)" != "86" ]; do
-        i=$(( i + 1 )); command sleep 0.1
-    done
+    wait_until _usage_pct_is 86
     assert_eq "86" "$(jq -r '.pct' "$CS_USAGE_DIR/fable.org-abc.json")" "the kicked refresher must complete its write" || return 1
-    i=0
-    while [ "$i" -lt 50 ] && [ -d "$CS_USAGE_DIR/.lock" ]; do
-        i=$(( i + 1 )); command sleep 0.1
-    done
+    # The refresher drops its lock after the write; teardown waits for that.
+    wait_until test ! -d "$CS_USAGE_DIR/.lock" \
+        || { echo "  FAIL: the kicked refresher never dropped its lock"; return 1; }
 }
 
 run_test test_fable_segment_does_not_spawn_a_refresher_without_curl
@@ -4133,6 +4129,11 @@ test_the_deferred_walk_starts_from_the_parent_and_caches_real() {
 
 run_test test_the_deferred_walk_starts_from_the_parent_and_caches_real
 
+# Exits 0 once the stalled ps stand-in has logged at least <count> calls.
+_stalled_walkers_reach() {  # count
+    [ "$(wc -l < "$STALLLOG" | tr -d ' ')" -ge "$1" ]
+}
+
 # A `ps` that never answers must not mint a walker every render. The render that
 # spawns one marks the walk in flight, and every render inside
 # TMUX_WALK_MARK_TTL renders without spawning another; past the TTL one render
@@ -4164,15 +4165,14 @@ test_a_stalled_walk_is_not_respawned_every_render() {
     stamp=""
     [ -f "$mark" ] && IFS=$'\t' read -r stamp _ < "$mark"
     assert_eq "1001" "$stamp" "only the first of four renders inside the TTL spawns a walker" || return 1
-    local n=0
-    while [ ! -s "$STALLLOG" ] && [ "$n" -lt 100 ]; do n=$((n + 1)); sleep 0.05; done
+    # The walker is detached and its ps starts later on a loaded machine.
+    wait_until test -s "$STALLLOG"
     spawned=$(wc -l < "$STALLLOG" | tr -d ' ')
     assert_eq "1" "$spawned" "four renders inside the TTL must spawn one walker" || return 1
     # Past the mark's TTL a render tries again, so a dead child cannot wedge
     # the verdict for the rest of the conversation.
     CS_STATUSLINE_NOW=1012 run_sl "$json" >/dev/null   # past TMUX_WALK_MARK_TTL (10)
-    n=0
-    while [ "$(wc -l < "$STALLLOG" | tr -d ' ')" -lt 2 ] && [ "$n" -lt 100 ]; do n=$((n + 1)); sleep 0.05; done
+    wait_until _stalled_walkers_reach 2
     spawned=$(wc -l < "$STALLLOG" | tr -d ' ')
     assert_eq "2" "$spawned" "past the TTL one render walks again" || return 1
 }
@@ -4220,17 +4220,16 @@ test_a_stalled_walker_is_killed_before_its_mark_expires() {
     chmod +x "$TEST_TMPDIR/fakebin/ps"
     _make_deadline_sleep "$deadbin" 0
     export PATH="$TEST_TMPDIR/fakebin:$PATH"
-    local json='{"session_id":"sid-1"}' now p alive n
+    local json='{"session_id":"sid-1"}' now p alive
     local mark="$HOME/.cache/cs/tmux-walking/4242,-tmp-fake,2216,0"
     for now in 1001 1012 1023; do
         PATH="$deadbin:$PATH" CS_STATUSLINE_NOW=$now run_sl "$json" >/dev/null
         # The walker clears the mark as its last act, after it has killed and
         # reaped its ps, so a cleared mark means this window's walker is done.
-        # The next window starts only then. The poll allows 100 sleeps of
-        # 0.1 s, at least 10 s of wall time and more under load, against the
-        # walker's 1 s wall-time deadline.
-        n=0
-        while [ -e "$mark" ] && [ "$n" -lt 100 ]; do n=$((n + 1)); sleep 0.1; done
+        # The next window starts only then. The wait outlasts the walker's 1 s
+        # deadline however loaded the machine, and a walker that never kills
+        # leaves its ps, and so its mark, up for 300 s, past the wait.
+        wait_until test ! -e "$mark"
         [ ! -e "$mark" ] \
             || { echo "  FAIL: the walker spawned at $now never killed its stalled ps"; return 1; }
     done
