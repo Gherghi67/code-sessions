@@ -3,7 +3,7 @@
 import { test, expect } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { DISABLED, OPTION, PROMPT_SECTION, blockRows, fencesOf, fit, paletteFor, splitReply } from '../hooks/register'
+import { DISABLED, OPTION, PROMPT_SECTION, blockRows, fencesOf, fillFor, fit, paletteFor, roleOf, splitReply } from '../hooks/register'
 import { parse } from '../hooks/parse'
 
 const TEXT = ['Flow:', '', '```mermaid', 'graph TD', '  A[prompt] --> B{cached?}', '  B -->|no| C[render]', '```'].join('\n')
@@ -46,6 +46,10 @@ test('a reply with a fence hands its prose to the engine and draws the chart as 
   expect(await reply.find({ type: 'Text', text: 'render' })).toBeDefined()
   expect(await reply.find({ type: 'Text', text: 'no' })).toBeDefined()
   expect(await reply.findAll({ type: 'Code' })).toEqual([])
+  // Role hues: prompt leads, cached? branches, render ends.
+  expect((await reply.find({ type: 'Text', text: 'prompt' }))?.props.backgroundColor).toBe('#D3F9D8')
+  expect((await reply.find({ type: 'Text', text: 'cached?' }))?.props.backgroundColor).toBe('#FFF3BF')
+  expect((await reply.find({ type: 'Text', text: 'render' }))?.props.backgroundColor).toBe('#E9ECEF')
   await reply.unmount()
 })
 
@@ -133,6 +137,25 @@ test('fit turns a wide LR chart, keeps one that fits, and reports one that canno
   if ('error' in fan) throw new Error(fan.error)
   // five 5-wide blocks, four 3-cell gaps, a margin each side
   expect(fit(fan, 20)).toEqual({ error: 'diagram is 39 columns wide, the transcript 20' })
+})
+
+test('a node takes its role from its shape, else from its place in the flow; a style fill wins', () => {
+  const graph = parse(['graph TD', '  S((go)) --> A[one] --> B[two] --> C[three]', '  B --> D[four]', '  E{ask} --> F[alone]', '  G[lone]', '  style B fill:#abc'].join('\n'))
+  if ('error' in graph) throw new Error(graph.error)
+  const role = (id: string) => roleOf(graph.nodes.find(n => n.id === id)!, graph)
+  expect(role('S')).toBe('start')
+  expect(role('A')).toBe('step')
+  expect(role('B')).toBe('decision')
+  expect(role('C')).toBe('end')
+  expect(role('D')).toBe('end')
+  expect(role('E')).toBe('decision')
+  expect(role('F')).toBe('end')
+  expect(role('G')).toBe('step')
+  expect(fillFor('start', paletteFor('light'))).toBe('#D3F9D8')
+  expect(fillFor('end', paletteFor('dark'))).toBe('#3A3D42')
+  expect(fillFor('decision', paletteFor('light'))).toBe('#FFF3BF')
+  expect(fillFor('step', paletteFor('light'))).toBe('#ECECFF')
+  expect(graph.nodes.find(n => n.id === 'B')!.style).toEqual({ fill: '#abc' })
 })
 
 test('the palette follows the theme row', () => {
