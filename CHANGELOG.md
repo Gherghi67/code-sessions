@@ -4,7 +4,7 @@ All notable changes to cs are documented here. Release notes are also available 
 
 <!-- New entries group changes under Keep-a-Changelog headings (Added / Changed / Removed / Fixes / Docs), or Features / Performance where those fit the release. -->
 
-## Unreleased
+## 2026.10.9
 
 ### Added
 - The `cs-mermaid` mod draws mermaid flowcharts in replies inline in the transcript: nodes as blocks coloured by their role in the flow (a decision amber, a start green, an end grey, a step lavender; a `style` fill wins), edges as lines with arrowheads and labels beside them (a `yes`/`pass` label green, a `no`/`fail` one red), in the light or dark palette of your `theme`. A chart it cannot draw (a subgraph, another diagram type, or one too wide for the terminal) stays a code block with the reason under it. The mod also tells the model, in a short system prompt section, that flowcharts draw here and to add one only for a flow that branches, loops or has four or more stages. `/config` → `cs-mermaid.drawDiagrams` turns both off; `cs -doctor` lists the section among its authority rows. Needs Claude Code 2.1.300 or later.
@@ -22,6 +22,10 @@ All notable changes to cs are documented here. Release notes are also available 
 - cs reads the terminal's theme before it migrates a session, so what the migration prints uses the light palette on a light terminal. It read the theme only at launch, after the migration had printed in the dark palette.
 - The `.gitignore` cs writes for a new session names `.cs/session.lock` and `.cs/session.mutex.lock`, so a session created from this version gets no `.gitignore` row on a later migration. A session created before still gets the two lines, and the row asking you to commit them, once.
 - The status line's background tmux walker kills a `ps` that has not answered after five seconds of wall time. It counted fifty short sleeps before, each of which ran long by its fork on a loaded machine, so the wait could outlast the ten-second walk mark and the next render started a second walker beside the first.
+
+### Docs
+- The README reads in one screen: install first, a 60-second first run, the status line, a feature table that links each feature to the guide with its detail, uninstall, and the documentation index. The command reference and the operational detail (sessions and locks, adoption, worktrees, the queue and mail, rotation, remote control, completion) moved to `docs/commands.md`; installer and settings detail to `docs/configuration.md`. Every claim was checked against `cs -h`, the source, the guides or a test; thirteen that nothing confirmed were dropped, and the Windows section with them (native Windows left in 2026.8.10).
+- Six animated SVGs, each traced from a capture of the real program: the status line in five states, a first run (the launch and the picker), a reply gaining an inline Mermaid chart, the `cs updated these files` rows, and the queue count reaching the status line. They replace the status line screenshot.
 
 ## 2026.10.8
 
