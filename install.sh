@@ -1323,7 +1323,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "4ae1aad80df3c4e93485be95a9171f4ce5a505235d84606244ed74baf851d8ea  bin/cs"
+    "82c5e094eb30a9b3aa2d212d86186935d28aa455d24721696764a4defbd6af9c  bin/cs"
     "98e006132ae799f88400cd94ddb2e09aa7605a159f95665b35ed22025eb53b04  bin/cs-secrets"
     "201b1615c286fa60cc004d1d7799211f4f1b545843573b4f36c7b707829710de  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -1363,8 +1363,8 @@ CS_PAYLOAD_SHA256=(
     "83a89eb2a476d67c4282c867f740ff62d04aa81f0045fb39ba970ed76d85a085  mods/cs-mermaid/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-mermaid/hooks/hooks.json"
     "411bec6d4486ef24faca8b6c921d73ebacfd1f579d341118836015eec0252d74  mods/cs-mermaid/hooks/layout.ts"
-    "1ba32856e0e26079a5ff978954d3aef840da2e78fc622b7b95ae1f02cceed223  mods/cs-mermaid/hooks/parse.ts"
-    "7c949067109027fc266fba3d4e77700ff72073bee6cb6f3f402ce9b292841284  mods/cs-mermaid/hooks/register.tsx"
+    "bf635156dc296d2198ef3af0e1df0112d03b67677d51c27226fd0c82fb16f179  mods/cs-mermaid/hooks/parse.ts"
+    "600b3540259537b31cd6e9004c8c8ec248340fa7db6c419946b952cd8ea3b843  mods/cs-mermaid/hooks/register.tsx"
     "c9c48de571777b2e2e948770b4e43fce1f4f84f86547496772a5021fc3380757  mods/cs-mermaid/hooks/text.ts"
     "d9adfb82412597f096190d1dfcd36d9ae67adbc5a230c9baa5d8485b010f8e78  completions/cs.bash"
     "fa1619b5039452a62dafd4e373546dd2606db4e61a76f6c13af8272ec5be7d5e  completions/_cs"

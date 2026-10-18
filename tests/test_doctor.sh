@@ -1849,7 +1849,7 @@ run_test test_doctor_does_not_call_a_valid_settings_file_invalid_without_jq
 # every such injection visible with the switch that turns it off.
 test_doctor_lists_every_context_injecting_hook_with_its_switch() {
     local output
-    output=$(CS_CLAUDE_DIR="$TEST_TMPDIR/claude-auth" "$CS_BIN" -doctor 2>&1) || true
+    output=$(env -u CS_NO_FUNCTION_HOOKS CS_CLAUDE_DIR="$TEST_TMPDIR/claude-auth" "$CS_BIN" -doctor 2>&1) || true
     assert_output_contains "$output" "Authority" "Doctor should have an authority section" || return 1
     assert_output_contains "$output" "scope-prompt" "Should list the grounding hook" || return 1
     assert_output_contains "$output" "CS_SCOPE_DISABLE" "Should name the grounding off-switch" || return 1
@@ -1857,6 +1857,9 @@ test_doctor_lists_every_context_injecting_hook_with_its_switch() {
     assert_output_contains "$output" "CS_DATE_REMINDER_DISABLE" "Should name the date reminder off-switch" || return 1
     assert_output_contains "$output" "CS_REWRITE_DISABLE" "Should name the rewriter off-switch" || return 1
     assert_output_contains "$output" "cs-mermaid.drawDiagrams" "Should name the diagrams section's off-switch" || return 1
+    assert_output_contains "$output" "on   diagrams" "The diagrams section reads on while function hooks are not withheld" || return 1
+    output=$(CS_NO_FUNCTION_HOOKS=1 CS_CLAUDE_DIR="$TEST_TMPDIR/claude-auth" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" "off  diagrams" "CS_NO_FUNCTION_HOOKS withholds the mod, so the section reads off" || return 1
     assert_output_contains "$output" ".cs/local/disabled" "Should name the universal off-switch" || return 1
 }
 

@@ -890,7 +890,8 @@ _doctor_check_hook_authority() {
     _doctor_authority_row "rotate nudge"  "narrative-reminder" 'CS_ROTATE_NUDGE_CTX=101'        ""
     _doctor_authority_row "subagent ctx"  "subagent-context"   '.cs/local/disabled'             ""
     _doctor_authority_row "session ctx"   "session-start"      '.cs/local/disabled'             ""
-    _doctor_authority_row "diagrams"      "cs-mermaid mod"     '/config cs-mermaid.drawDiagrams' ""
+    # CS_NO_FUNCTION_HOOKS withholds the mod at launch; the /config row is Claude Code's, not read here.
+    _doctor_authority_row "diagrams"      "cs-mermaid mod"     '/config cs-mermaid.drawDiagrams' "${CS_NO_FUNCTION_HOOKS:+1}"
     echo "    .cs/local/disabled turns every row off for that session."
 }
 
@@ -1026,7 +1027,7 @@ _doctor_check_session_id_match() {
     fi
 }
 
-# A mod (cs, cs-update) is a Claude Code function-hooks plugin the
+# A mod (cs, cs-update; cs-mermaid writes no heartbeat) is a Claude Code function-hooks plugin the
 # installer deploys under ~/.claude/skills. Absent, it is not news. Present, the
 # row reads the heartbeat the mod writes when Claude Code loads it, never the
 # directory: the loader sits behind CLAUDE_CODE_ENABLE_FUNCTION_HOOKS, which a

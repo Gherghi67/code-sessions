@@ -25,15 +25,25 @@ test_mod_is_deployed_by_the_installer() {
     assert_file_contains "$SCRIPT_DIR/../install.sh" "cs-mermaid/hooks/register.tsx" "install.sh lists the module" || return 1
 }
 
+# The mod hooks prompt.compose, which a Claude Code before 2.1.300 does not
+# know; that build refuses the whole module, so both claude tests skip there.
+_claude_knows_prompt_compose() {
+    ! env -u ANTHROPIC_API_KEY claude plugin validate "$MOD" 2>&1 | grep -q '"prompt.compose" is not an event'
+}
+
 # The tests import claude-code/testing, the engine's own kit, so they run under
-# `claude plugin test`, not bare bun.
+# `claude plugin test`, not bare bun; the kit runs only with function hooks on.
 test_mod_unit_tests_pass_under_the_engine_test_kit() {
     if ! command -v claude >/dev/null 2>&1; then
         echo "    SKIP: claude not on PATH"
         return 77
     fi
+    if ! _claude_knows_prompt_compose; then
+        echo "    SKIP: this claude ($(claude --version 2>/dev/null | head -1)) predates prompt.compose"
+        return 77
+    fi
     local out raw="${TMPDIR:-/tmp}/cs-mod-mermaid-test.$$"
-    env -u ANTHROPIC_API_KEY claude plugin test "$MOD" > "$raw" 2>&1
+    env -u ANTHROPIC_API_KEY CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude plugin test "$MOD" > "$raw" 2>&1
     local status=$?
     out="$(sed 's/\x1b\[[0-9;]*m//g' "$raw")"; rm -f "$raw"
     if grep -q 'unknown command' <<< "$out"; then
@@ -48,6 +58,10 @@ test_mod_unit_tests_pass_under_the_engine_test_kit() {
 test_mod_validate_inventories_the_hooks_and_calls() {
     if ! command -v claude >/dev/null 2>&1; then
         echo "    SKIP: claude not on PATH"
+        return 77
+    fi
+    if ! _claude_knows_prompt_compose; then
+        echo "    SKIP: this claude ($(claude --version 2>/dev/null | head -1)) predates prompt.compose"
         return 77
     fi
     local out raw="${TMPDIR:-/tmp}/cs-mod-mermaid-validate.$$"

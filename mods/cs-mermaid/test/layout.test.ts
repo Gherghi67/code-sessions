@@ -178,11 +178,19 @@ test('no box overlaps another and no line crosses a box', () => {
   }
 })
 
-test('a large chain lays out in bounded time and a huge one is refused', () => {
+test('a 200-node chain lays out in bounded time', () => {
   let src = 'graph TD\n'
   for (let i = 0; i < 199; i++) src += `N${i} --> N${i + 1}\n`
   const started = Date.now()
   const drawn = draw(src)
   expect(Date.now() - started).toBeLessThan(2000)
   expect(drawn.boxes.length).toBe(200)
+})
+
+test('a chart within the parser limits but past the cell budget is refused with its size', () => {
+  const label = 'x'.repeat(60)
+  const side = (prefix: string) => Array.from({ length: 20 }, (_, i) => `${prefix}${i}[${label}]`).join(' & ')
+  const graph = parse(`graph TD\n  ${side('a')} --> ${side('b')}`)
+  if ('error' in graph) throw new Error(graph.error)
+  expect(layout(graph)).toEqual({ error: 'diagram would be 1339x210 cells' })
 })
