@@ -117,7 +117,8 @@ export function layout(graph: Graph): Layout | LayoutError {
   // beside a straight exit; layers are centred on the widest.
   const crossGap = flip ? 1 : 3
   const labelOf = (s: Segment) => (s.first && s.edge.label ? cellWidth(s.edge.label) : 0)
-  const exitSpan = (s: Segment) => (!flip && labelOf(s) > 0 ? labelOf(s) + 3 : 2)
+  // A labelled exit: the port, a gap, the label, and a cell of air before the next port's line.
+  const exitSpan = (s: Segment) => (!flip && labelOf(s) > 0 ? labelOf(s) + 4 : 2)
   for (const item of items.values()) {
     if (!item.node) continue
     const exits = segments.filter(s => s.from === item)
