@@ -27,8 +27,13 @@ test_mod_is_deployed_by_the_installer() {
 
 # The mod hooks prompt.compose, which a Claude Code before 2.1.300 does not
 # know; that build refuses the whole module, so both claude tests skip there.
+# Validate exits 1 on that build, so its output is read whole, never through a
+# pipe pipefail would judge by validate's status.
 _claude_knows_prompt_compose() {
-    ! env -u ANTHROPIC_API_KEY claude plugin validate "$MOD" 2>&1 | grep -q '"prompt.compose" is not an event'
+    local out
+    out=$(env -u ANTHROPIC_API_KEY claude plugin validate "$MOD" 2>&1)
+    case "$out" in *'"prompt.compose" is not an event'*) return 1 ;; esac
+    return 0
 }
 
 # The tests import claude-code/testing, the engine's own kit, so they run under
