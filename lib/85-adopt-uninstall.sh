@@ -145,10 +145,11 @@ _explain_gitignore_additions() {  # dir
     notice .gitignore "ignores $_CS_GITIGNORE_ADDED" "tracked file: commit it with your next change"
 }
 
-# One line saying cs committed nothing, naming each of <path>... that git
-# shows as changed or untracked in <dir>, in the order given, a directory with
-# a trailing slash: what adopt and the flat-layout migration leave for the user
-# to commit. No line when git shows none of them or cannot say.
+# A notice row saying cs committed nothing, its action line naming each of
+# <path>... that git shows as changed or untracked in <dir>, in the order
+# given, a directory with a trailing slash: what adopt and the flat-layout
+# migration leave for the user to commit. No row when git shows none of them
+# or cannot say.
 _explain_nothing_committed() {  # dir, path...
     local dir="$1" entry path shown=$'\n' p left="" count=0
     shift
@@ -183,7 +184,7 @@ _explain_nothing_committed() {  # dir, path...
             joined="$joined, $p"
         fi
     done <<< "$left"
-    info "cs committed nothing; it left $joined for you to commit"
+    notice "working tree" "cs committed nothing" "commit $joined with your next change"
 }
 
 # Record in <dir>/.cs/local/state the mode the session's features take, for

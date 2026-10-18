@@ -1173,7 +1173,7 @@ migrate_session() {
         setup_merge_attributes "$session_dir"
         ensure_cs_gitignore_entries "$session_dir"
         # Names the rules just appended to a tracked .gitignore. Adopt merges
-        # the same rules and names .gitignore in its own line of what it left
+        # the same rules and names .gitignore in its own row of what it left
         # (_explain_nothing_committed) instead.
         _explain_gitignore_additions "$session_dir"
     fi

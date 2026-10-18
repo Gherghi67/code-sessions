@@ -728,6 +728,12 @@ GITIGNORE
     echo "$session_dir"
 }
 
+# The line of <output> that is exactly <row>, then the line under it: a
+# notice row and the action line cs prints beneath it.
+row_and_action() {  # output, row
+    printf '%s\n' "$1" | grep -F -x -A1 -- "$2"
+}
+
 # Parse a JSONL file the way cs reads it — one record per line, malformed lines
 # dropped (lib/54-conversations.sh's `fromjson? // empty`) — and print each
 # surviving record's .event, comma-joined. A line holding two records spliced

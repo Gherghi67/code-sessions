@@ -49,8 +49,10 @@ test_flat_layout_migration_commits_nothing() {
     assert_file_not_exists "$dir/README.md" "and left the root" || return 1
     assert_eq "README.md" "$(git -C "$dir" ls-files README.md)" "git still tracks the README at the root" || return 1
     assert_eq "" "$(git -C "$dir" ls-files .cs)" "and nothing under .cs/" || return 1
-    assert_output_contains "$out" "cs committed nothing; it left .cs/, logs/, README.md, .gitignore and .gitattributes for you to commit" \
-        "one line names what the migration left" || return 1
+    assert_eq "$(printf '%s\n' '  working tree     cs committed nothing' \
+            '                   → commit .cs/, logs/, README.md, .gitignore and .gitattributes with your next change')" \
+        "$(row_and_action "$out" '  working tree     cs committed nothing')" \
+        "one row names what the migration left" || return 1
     assert_eq "tracked" "$(awk -F': ' '/^cs_mode:/{print $2}' "$dir/.cs/local/state")" \
         "the session records that git is to carry .cs" || return 1
 }

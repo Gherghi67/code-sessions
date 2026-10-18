@@ -236,7 +236,7 @@ launch_claude_code() {
     # left uncommitted, like every cs edit to session content.
     if [ -f "$session_dir/.cs/archived" ]; then
         rm -f "$session_dir/.cs/archived"
-        info "Unarchived: $session_name"
+        notice .cs/archived "removed, so the session is active again"
     fi
 
     # Read the session's recorded UUID (allocated by create_session_structure

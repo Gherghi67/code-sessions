@@ -641,8 +641,10 @@ test_adopt_inits_git_when_none_exists() {
     assert_file_contains "$project_dir/.gitattributes" '^\.cs/memory/narrative\.\*\.md merge=union$' || return 1
     assert_file_contains "$project_dir/.gitattributes" '^\.cs/memory/reference_memory_archive\.md merge=union$' || return 1
     assert_file_contains "$project_dir/.gitignore" '^\.cs/local/$' "cs's rules are in the .gitignore" || return 1
-    assert_output_contains "$out" "cs committed nothing; it left .cs/, .gitignore and .gitattributes for you to commit" \
-        "one line names what adopt left" || return 1
+    assert_eq "$(printf '%s\n' '  working tree     cs committed nothing' \
+            '                   → commit .cs/, .gitignore and .gitattributes with your next change')" \
+        "$(row_and_action "$out" '  working tree     cs committed nothing')" \
+        "one row names what adopt left" || return 1
     assert_eq "tracked" "$(awk -F': ' '/^cs_mode:/{print $2}' "$project_dir/.cs/local/state")" \
         "the session records that git is to carry .cs" || return 1
 }
@@ -663,8 +665,10 @@ test_adopt_into_git_repo_leaves_its_files_untracked() {
     assert_eq "?? .cs/
 ?? .gitattributes
 ?? .gitignore" "$(git -C "$project_dir" status --porcelain)" "cs's files are untracked" || return 1
-    assert_output_contains "$out" "cs committed nothing; it left .cs/, .gitignore and .gitattributes for you to commit" \
-        "one line names what adopt left" || return 1
+    assert_eq "$(printf '%s\n' '  working tree     cs committed nothing' \
+            '                   → commit .cs/, .gitignore and .gitattributes with your next change')" \
+        "$(row_and_action "$out" '  working tree     cs committed nothing')" \
+        "one row names what adopt left" || return 1
     assert_eq "tracked" "$(awk -F': ' '/^cs_mode:/{print $2}' "$project_dir/.cs/local/state")" \
         "the session records that git is to carry .cs" || return 1
 }
@@ -729,7 +733,7 @@ test_readopt_with_everything_committed_names_nothing_left() {
 
     assert_dir "$CS_SESSIONS_ROOT/my-session" "the records are re-adopted" || return 1
     assert_eq "" "$(git -C "$project_dir" status --porcelain)" "git shows nothing left to commit" || return 1
-    assert_output_not_contains "$out" "cs committed nothing" "no line names what adopt left" || return 1
+    assert_output_not_contains "$out" "cs committed nothing" "no row names what adopt left" || return 1
 }
 
 # Work the user had staged before adopting stays staged, alone, and is not
@@ -1108,7 +1112,9 @@ test_open_adds_rules_to_an_untracked_gitignore_quietly() {
         || { echo "  FAIL: fixture"; return 1; }
     out=$(cd "$dir" && "$CS_BIN" -adopt own-session 2>&1) || { echo "  FAIL: adopt failed: $out"; return 1; }
     assert_output_not_contains "$out" "$GITIGNORE_ROW" "adopt prints no open's line about the rules" || return 1
-    assert_output_contains "$out" "cs committed nothing; it left .cs/, .gitignore and .gitattributes for you to commit" \
+    assert_eq "$(printf '%s\n' '  working tree     cs committed nothing' \
+            '                   → commit .cs/, .gitignore and .gitattributes with your next change')" \
+        "$(row_and_action "$out" '  working tree     cs committed nothing')" \
         "but names .gitignore in its own" || return 1
     assert_eq " M .gitignore" "$(git -C "$dir" status --porcelain -- .gitignore)" "and leaves the rules uncommitted" || return 1
     git -C "$dir" rm -q --cached .gitignore && git -C "$dir" commit -q -m untrack || { echo "  FAIL: untrack"; return 1; }

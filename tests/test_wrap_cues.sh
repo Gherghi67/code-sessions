@@ -448,8 +448,7 @@ test_open_heads_the_rows_after_a_warning_again() {
     awk 'index($0, "claude_session_color:") != 1' "$dir/.cs/local/state" > "$dir/.cs/local/state.new" \
         && mv "$dir/.cs/local/state.new" "$dir/.cs/local/state"
     _reopen_with_migration "notice-split"
-    out=$(grep -vE '^(Unarchived|$)' "$TEST_TMPDIR/notice-split.out" \
-        | awk -v h="$NOTICE_HEADER" '$0 == h || /^  / || /^ignoring / { print }' \
+    out=$(awk -v h="$NOTICE_HEADER" '$0 == h || /^  / || /^ignoring / { print }' "$TEST_TMPDIR/notice-split.out" \
         | sed -E 's/^(  \.cs\/local\/state  backfilled claude_session_color) \([a-z]+\)$/\1 (COLOUR)/')
     assert_eq "$(printf '%s\n' "$NOTICE_HEADER" \
             '  .gitignore       ignores .cs/session.mutex.lock' \
