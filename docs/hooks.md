@@ -823,22 +823,31 @@ checks the manifest and its `/config` field, the cache-name pin against
 `mods/cs-mermaid/` is a Claude Code function-hooks plugin, deployed and gated
 the same way as the `cs` mod: `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`, which every
 `cs <name>` launch exports and `CS_NO_FUNCTION_HOOKS=1` withholds. It reads no
-environment, writes no file and runs no process.
+environment, writes no file and runs no process. Unlike the `cs` mod it needs no
+cs session: with function hooks on it draws, and adds its prompt section, in any
+directory and for every prompt the engine composes, a subagent's included. It
+needs Claude Code 2.1.300 or later: an older build does not know `prompt.compose`
+and refuses the whole module, so nothing draws there.
 
 It hooks two events:
 
 - `ui.render` on `AssistantMessage` (terminal surface only). A reply with no
   ` ```mermaid ` fence goes to the engine untouched. A reply with one is split
-  into prose, drawn as Markdown, and fences, each parsed (`hooks/parse.ts`) and
-  laid out (`hooks/layout.ts`) in character cells. Nodes are three-row solid
-  blocks: lavender, amber for `{}` and `{{}}`, mauve for `(( ))`, in a light or
-  dark palette from the `theme` row of `/config`. `style`, `classDef`, `class`
+  into prose, which goes back to the engine (so the reply keeps its opening
+  bullet, on its first part only), and fences, each parsed (`hooks/parse.ts`) and
+  laid out (`hooks/layout.ts`) in character cells; the last 32 layouts are
+  kept, since a streaming reply re-renders on every flush. Nodes are solid
+  blocks, three rows tall, taller or wider where more than one edge meets them:
+  lavender, amber for `{}` and `{{}}`, mauve for `(( ))`, in a light or dark
+  palette from the `theme` row of `/config`. `style`, `classDef`, `class`
   and `:::` set a node's fill and text colour. Edges are box-drawing glyphs
   with `▼▲►◄` heads, a shared cell is always a crossing (`┼`), and each label
   sits in a gap in its own line. The mod turns a left-to-right chart wider
-  than the transcript top-down. A fence the parser refuses (any statement
-  outside the supported subset refuses the whole chart: subgraphs,
-  non-flowchart diagram types, more than 200 nodes, 400 edges or 60-cell
+  than the terminal top-down. It measures the terminal: beside a docked pane
+  the transcript is narrower, and a chart sized to the terminal can wrap
+  there. A fence the parser refuses (any statement outside the supported
+  subset refuses the whole chart: subgraphs, self-loops, non-flowchart
+  diagram types, more than 200 nodes, 400 edges or 60-cell
   labels) or one still too wide stays a code block with `mermaid: <reason>`
   under it.
 - `prompt.compose`. When the prompt is for a session that draws in a terminal
@@ -846,12 +855,13 @@ It hooks two events:
   no `.cs/local/disabled`, the mod appends one `session`-scope section,
   `cs-mermaid:diagrams` (about 80 tokens): flowchart fences draw here; add one
   only for a flow that branches, loops or has four or more stages, never for a
-  task list or numbered steps; one fence, short labels, no subgraphs. A
-  `session` section sits after the prompt cache's boundary, so every request
-  carries it. Claude Code runs `prompt.compose` hooks only from plugins an
+  task list or numbered steps; one fence, short labels, no subgraphs. It is
+  part of every request's system prompt, on the session side of the prompt
+  cache's boundary. Claude Code runs `prompt.compose` hooks only from plugins an
   organization lists in managed settings when it manages Claude Code; there
   the drawing still works and the section is not sent. `cs -doctor` lists the
-  section among the authority rows.
+  section among the authority rows, `off` when `CS_NO_FUNCTION_HOOKS` withholds
+  the mod (it cannot read the `/config` row).
 
 The `/config` row `cs-mermaid.drawDiagrams` (on by default) turns off both:
 fences show as source and the model is not told they draw.
@@ -866,8 +876,9 @@ Tests: `tests/test_mod_mermaid.sh` runs the tests under `mods/cs-mermaid/test/`
 with `claude plugin test` (they use the engine's own `claude-code/testing` kit:
 the parser, exact picture fixtures for the layout, the inline drawing, the
 fallback to source, the option and each prompt-section gate) and
-`claude plugin validate` when `claude` is on PATH, and always checks the
-manifest, its `/config` field and that the installer names the mod.
+`claude plugin validate` when `claude` is on PATH and knows `prompt.compose`
+(both skip on an older build), and always checks the manifest, its `/config`
+field and that the installer names the mod.
 
 ## Hook Configuration
 
