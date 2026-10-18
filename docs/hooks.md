@@ -838,6 +838,8 @@ directory and for every prompt the engine composes, a subagent's included. It
 needs Claude Code 2.1.300 or later: an older build does not know `prompt.compose`
 and refuses the whole module, so nothing draws there.
 
+![Reply prose, then the same prose with a drawn Mermaid chart](https://raw.githubusercontent.com/hex/claude-sessions/main/assets/mermaid.svg)
+
 It hooks two events:
 
 - `ui.render` on `AssistantMessage` (terminal surface only). A reply with no
