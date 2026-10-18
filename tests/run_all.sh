@@ -371,10 +371,10 @@ if [ -n "$parallel" ]; then
     # The lanes share one queue: each walks the whole list and runs a suite
     # only when its mkdir of that position's claim succeeds, which is atomic,
     # so every suite runs exactly once and a lane that finishes takes the next
-    # unclaimed suite. A fixed share per lane left one CI lane working for 1491
-    # seconds after another had gone idle at 709. The queue holds positions in
-    # selected[], longest suite first (_longest_first), so the slowest suites
-    # start at once rather than last behind a lane's worth of short ones. Over
+    # unclaimed suite, so no lane idles while another still has a share. The
+    # queue holds positions in selected[], longest suite first
+    # (_longest_first), so the slowest suites start at once rather than last
+    # behind a lane's worth of short ones. Over
     # October 2026's CI times a queue in that order came within a few seconds
     # of the ideal split.
     queue=()

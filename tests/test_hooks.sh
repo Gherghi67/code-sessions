@@ -1802,10 +1802,9 @@ _tt_tab_hook() {  # hook, pane, session name, LC_TERMINAL, CS_NO_ITERM2; prints 
           TMUX="$TT_SOCK,1,0" TMUX_PANE="$2" CLAUDE_SESSION_NAME="$3" LC_TERMINAL="$4" \
           bash "$HOOKS_DIR/$1" 2>&1
 }
-# Waits until <file> holds the stand-in's record. The helper starts in the
-# background, and a loaded machine can start it seconds after the hook returns,
-# so the wait is on the record; the 120 s guard only stops a hang.
-_wait_for_file() { local deadline=$((SECONDS + 120)); while [ ! -s "$1" ] && [ "$SECONDS" -lt "$deadline" ]; do sleep 0.1; done; }
+# The tab helper starts in the background, and a loaded machine can start it
+# seconds after the hook returns, so each test waits on its record through
+# wait_until (test_lib), whose 120 s guard only stops a hang.
 
 test_a_claim_in_iterm_hands_the_window_to_the_tab_helper() {
     session_start_setup
@@ -1817,7 +1816,7 @@ test_a_claim_in_iterm_hands_the_window_to_the_tab_helper() {
     assert_eq "0" "$rc" "the hook succeeds while the helper fails" || { _tt kill-server; return 1; }
     assert_eq "still running" "$([ -e "$FAKE_PY_DONE" ] && echo finished || echo "still running")" \
         "the hook returns while the helper it started still runs" || { _tt kill-server; return 1; }
-    _wait_for_file "$FAKE_PY_CALLS"
+    wait_until test -s "$FAKE_PY_CALLS"
     : > "$FAKE_PY_RELEASE"
     assert_eq "[$HOOKS_DIR/cs-iterm-tab.py][$window][$TT_SOCK,1,0]" "$(cat "$FAKE_PY_CALLS" 2>/dev/null)" \
         "a claim runs the tab helper once on its window, on the same tmux server" || { _tt kill-server; return 1; }
@@ -1825,7 +1824,7 @@ test_a_claim_in_iterm_hands_the_window_to_the_tab_helper() {
         "the helper's output never reaches the hook's" || { _tt kill-server; return 1; }
     : > "$FAKE_PY_CALLS"
     _tt_tab_hook session-end.sh "$TT_PANE_A" current-session iTerm2 "" >/dev/null
-    _wait_for_file "$FAKE_PY_CALLS"
+    wait_until test -s "$FAKE_PY_CALLS"
     assert_eq "[$HOOKS_DIR/cs-iterm-tab.py][$window][$TT_SOCK,1,0]" "$(cat "$FAKE_PY_CALLS" 2>/dev/null)" \
         "a release runs it too, so the tab drops the session that left" || { _tt kill-server; return 1; }
     _tt kill-server
@@ -1990,7 +1989,7 @@ test_a_claim_outside_iterm_runs_no_tab_helper() {
     _tt_tab_hook session-start.sh "$TT_PANE_B" fignity iTerm2 1 >/dev/null
     # Positive control on the same server: an iTerm2 claim does run it.
     _tt_tab_hook session-start.sh "$TT_PANE_A" current-session iTerm2 "" >/dev/null
-    _wait_for_file "$FAKE_PY_CALLS"
+    wait_until test -s "$FAKE_PY_CALLS"
     assert_eq "1" "$(cat "$FAKE_PY_CALLS" 2>/dev/null | wc -l | tr -d ' ')" \
         "neither a terminal other than iTerm2 nor CS_NO_ITERM2 runs the helper; the control does" || { _tt kill-server; return 1; }
     _tt kill-server

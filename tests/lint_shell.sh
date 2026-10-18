@@ -29,8 +29,7 @@ while IFS= read -r -d '' f; do
 done < <(git ls-files -z '*.sh')
 
 # One shellcheck pass at warning severity, which reports errors too, one file
-# per run and as many runs at once as there are processors: run serially over
-# every script, twice, the lint took about three minutes. Each run writes its
+# per run and as many runs at once as there are processors. Each run writes its
 # own file, so findings from runs at once never share a write. shellcheck exits
 # 1 when it has findings and 2 or more when it could not run (a missing file,
 # an unreadable one), so only the latter is a broken lint; a run that hits it

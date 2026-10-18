@@ -338,12 +338,12 @@ _sl_tmux_walk() {  # start-pid server-pid
 # that ran it ends too: nothing outlives the deadline.
 #
 # The deadline is one sleep of $1 seconds in a watchdog, never a count of short
-# sleeps. On a loaded machine each sleep costs its fork on top of what it asks
-# for, so fifty sleeps of 0.1 s ran long by fifty forks and could outlast the
-# mark; one sleep runs long by one. The watchdog kills ps when its sleep ends,
-# however that sleep ends, so a sleep that cannot run fails closed. A ps that
-# answers first ends the wait at once, and the watchdog and its sleep are
-# stopped. Three forks a walk (ps, the watchdog, its sleep), which is why only
+# sleeps: on a loaded machine each sleep costs its fork on top of what it asks
+# for, and one sleep runs long by one fork. The watchdog kills ps when its
+# sleep ends, however that sleep ends, so a sleep that cannot run fails
+# closed; it kills only a ps still alive, since the parent may have reaped it
+# in the moment before the watchdog's own TERM lands. A ps that answers first
+# ends the wait at once, and the watchdog and its sleep are stopped. Three forks a walk (ps, the watchdog, its sleep), which is why only
 # the detached walker takes this path.
 _sl_ps_table_by_deadline() {
     _PS_TABLE=""
@@ -358,7 +358,7 @@ _sl_ps_table_by_deadline() {
     ( trap 'kill "${s:-}" 2>/dev/null; exit 0' TERM
       sleep "$1" & s=$!
       wait "$s"
-      kill -9 "$pid" 2>/dev/null ) >/dev/null 2>&1 &
+      kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null ) >/dev/null 2>&1 &
     dog=$!
     if wait "$pid" 2>/dev/null; then
         _PS_TABLE=$(< "$out")
