@@ -33,12 +33,32 @@ test('comments and an init preamble before the header are dropped', () => {
   expect(graph.nodes.map(n => n.id)).toEqual(['A', 'B'])
 })
 
-test('every direction is kept as written', () => {
-  for (const [written, dir] of [['TD', 'TD'], ['TB', 'TD'], ['BT', 'BT'], ['LR', 'LR'], ['RL', 'RL']] as const) {
-    const graph = parse(`graph ${written}\n  A --> B`)
+test('every direction is kept as written, and a header without one is top-down', () => {
+  for (const [header, dir] of [['graph TD', 'TD'], ['graph TB', 'TD'], ['graph BT', 'BT'], ['graph LR', 'LR'], ['graph RL', 'RL'], ['graph', 'TD'], ['flowchart', 'TD']] as const) {
+    const graph = parse(`${header}\n  A --> B`)
     if ('error' in graph) throw new Error(graph.error)
     expect(graph.dir).toBe(dir)
   }
+})
+
+test('arrows written without spaces end the node id before them', () => {
+  const graph = parse(['graph LR', 'A-->B', 'C---D', 'E-.->F', 'G==>H', 'I<-->J', 'K-->|go|L', 'my-node-->v1.2'].join('\n'))
+  if ('error' in graph) throw new Error(graph.error)
+  expect(graph.edges.map(e => [e.from, e.to, e.headAtFrom, e.headAtTo, e.style, e.label])).toEqual([
+    ['A', 'B', false, true, 'solid', undefined],
+    ['C', 'D', false, false, 'solid', undefined],
+    ['E', 'F', false, true, 'dotted', undefined],
+    ['G', 'H', false, true, 'thick', undefined],
+    ['I', 'J', true, true, 'solid', undefined],
+    ['K', 'L', false, true, 'solid', 'go'],
+    ['my-node', 'v1.2', false, true, 'solid', undefined],
+  ])
+})
+
+test('quoted edge labels lose their quotes in both spellings', () => {
+  const graph = parse('graph TD\n  A -->|"a | b"| B\n  C -- "go -> on" --> D')
+  if ('error' in graph) throw new Error(graph.error)
+  expect(graph.edges.map(e => e.label)).toEqual(['a | b', 'go -> on'])
 })
 
 test('arrowheads at either end, shafts, and labels in both spellings', () => {
@@ -89,6 +109,16 @@ test('style, classDef, class, ::: and the default class; stroke is accepted and 
   ])
 })
 
+test('styles reach ids with dashes and dots, and a colour with commas stays whole', () => {
+  const graph = parse(['graph TD', '  my-node --> v1.2 --> c:::warm-ish', '  style my-node fill:rgb(1,2,3),color:#fff', '  classDef warm-ish fill:#fdd', '  class v1.2 warm-ish'].join('\n'))
+  if ('error' in graph) throw new Error(graph.error)
+  expect(graph.nodes.map(n => [n.id, n.style])).toEqual([
+    ['my-node', { fill: 'rgb(1,2,3)', color: '#fff' }],
+    ['v1.2', { fill: '#fdd' }],
+    ['c', { fill: '#fdd' }],
+  ])
+})
+
 test('unsupported or malformed input is refused whole, never drawn partially', () => {
   expect(parse('sequenceDiagram\n  A->>B: hi')).toEqual({ error: 'not a flowchart: "sequenceDiagram"' })
   expect(parse('graph TD\n  subgraph S\n  A --> B\n  end')).toEqual({ error: 'subgraphs are not supported' })
@@ -98,6 +128,7 @@ test('unsupported or malformed input is refused whole, never drawn partially', (
   expect(parse('graph TD\n  A[unclosed --> B')).toEqual({ error: 'unclosed "[" in "[unclosed --> B"' })
   expect(parse('graph TD\n  A --> B ??')).toEqual({ error: 'expected an arrow at "??"' })
   expect(parse('graph TD')).toEqual({ error: 'no nodes' })
+  expect(parse('graph TD\n  A --> A\n  A --> B')).toEqual({ error: 'self-loops are not supported ("A")' })
 })
 
 test('size limits refuse oversized input with the limit named', () => {
@@ -105,4 +136,7 @@ test('size limits refuse oversized input with the limit named', () => {
   for (let i = 0; i < 201; i++) big += `N${i} --> N${i + 1}\n`
   expect(parse(big)).toEqual({ error: 'more than 200 nodes' })
   expect(parse(`graph TD\n  A[${'x'.repeat(61)}] --> B`)).toEqual({ error: 'node label longer than 60 cells' })
+  expect(parse(`graph TD\n  A -->|${'x'.repeat(61)}| B`)).toEqual({ error: 'edge label longer than 60 cells' })
+  // 21 x 20 = 420 edges among 41 nodes.
+  expect(parse(`graph TD\n  ${Array.from({ length: 21 }, (_, i) => `a${i}`).join(' & ')} --> ${Array.from({ length: 20 }, (_, i) => `b${i}`).join(' & ')}`)).toEqual({ error: 'more than 400 edges' })
 })

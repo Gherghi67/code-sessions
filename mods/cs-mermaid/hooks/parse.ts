@@ -34,7 +34,10 @@ const SHAPES: { open: string; close: string; shape: Shape }[] = ([
   { open: '>', close: ']', shape: 'flag' },
 ] as { open: string; close: string; shape: Shape }[]).sort((p, q) => q.open.length - p.open.length)
 
-const ID = /^[A-Za-z0-9_.-]+/
+// A node id; `-` and `.` join two word runs (`my-node`, `v1.2`) but never start an arrow (`A-->B`, `A-.->B`).
+const ID_SOURCE = '[A-Za-z0-9_]+(?:[.-][A-Za-z0-9_]+)*'
+const ID = new RegExp(`^${ID_SOURCE}`)
+const IDS_SOURCE = `${ID_SOURCE}(?:,${ID_SOURCE})*`
 // An arrow: optional head at the source, the shaft, optional head at the target.
 const ARROW = /^(<)?(-{2,}|={2,}|-\.+-)(>|o|x)?(?![-=.>ox])/
 
@@ -42,9 +45,10 @@ export function parse(source: string): Graph | ParseError {
   const statements = splitStatements(source)
   const first = statements.shift()
   if (first === undefined) return { error: 'empty diagram' }
-  const header = /^(?:graph|flowchart)\s+(TD|TB|BT|LR|RL)$/.exec(first)
+  // No direction is mermaid's default, top-down.
+  const header = /^(?:graph|flowchart)(?:\s+(TD|TB|BT|LR|RL))?$/.exec(first)
   if (!header) return { error: `not a flowchart: "${first.slice(0, 40)}"` }
-  const dir: Dir = header[1] === 'TB' ? 'TD' : (header[1] as Dir)
+  const dir: Dir = header[1] === undefined || header[1] === 'TB' ? 'TD' : (header[1] as Dir)
 
   const nodes = new Map<string, GraphNode>()
   const edges: GraphEdge[] = []
@@ -56,15 +60,15 @@ export function parse(source: string): Graph | ParseError {
     let match: RegExpExecArray | null
     if (/^(subgraph\b|end$)/.test(statement)) return { error: 'subgraphs are not supported' }
     if (/^(linkStyle|click|direction)\b/.test(statement)) continue
-    if ((match = /^classDef\s+([\w,]+)\s+(.+)$/.exec(statement))) {
+    if ((match = new RegExp(`^classDef\\s+(${IDS_SOURCE})\\s+(.+)$`).exec(statement))) {
       for (const name of (match[1] ?? '').split(',')) classes.set(name, readStyle(match[2] ?? ''))
       continue
     }
-    if ((match = /^class\s+([\w,]+)\s+(\w+)$/.exec(statement))) {
+    if ((match = new RegExp(`^class\\s+(${IDS_SOURCE})\\s+(${ID_SOURCE})$`).exec(statement))) {
       for (const id of (match[1] ?? '').split(',')) classOf.set(id, match[2] ?? '')
       continue
     }
-    if ((match = /^style\s+(\w+)\s+(.+)$/.exec(statement))) {
+    if ((match = new RegExp(`^style\\s+(${ID_SOURCE})\\s+(.+)$`).exec(statement))) {
       styled.set(match[1] ?? '', readStyle(match[2] ?? ''))
       continue
     }
@@ -131,7 +135,12 @@ function readChain(statement: string, nodes: Map<string, GraphNode>, edges: Grap
       rest = rest.slice(1).trimStart()
     }
     if (previous && arrow) {
-      for (const from of previous) for (const to of group) edges.push({ id: edges.length, from, to, ...arrow })
+      for (const from of previous) {
+        for (const to of group) {
+          if (from === to) return `self-loops are not supported ("${from}")`
+          edges.push({ id: edges.length, from, to, ...arrow })
+        }
+      }
     }
     previous = group
     if (rest === '') return undefined
@@ -151,7 +160,7 @@ function readArrow(text: string): { arrow: Arrow; rest: string } | ParseError {
   let rest: string
   let shaft: string
   if (inline) {
-    label = inline[3]?.trim()
+    label = unquote(inline[3] ?? '')
     shaft = inline[2] ?? '--'
     head = inline
     rest = text.slice(inline[0].length)
@@ -161,9 +170,9 @@ function readArrow(text: string): { arrow: Arrow; rest: string } | ParseError {
     shaft = plain[2] ?? '--'
     head = plain
     rest = text.slice(plain[0].length)
-    const piped = /^\s*\|([^|]*)\|/.exec(rest)
+    const piped = /^\s*\|("[^"]*"|[^|]*)\|/.exec(rest)
     if (piped) {
-      label = piped[1]?.trim()
+      label = unquote(piped[1] ?? '')
       rest = rest.slice(piped[0].length)
     }
   }
@@ -190,7 +199,7 @@ function readNode(text: string, nodes: Map<string, GraphNode>, classOf: Map<stri
     shape = candidates.find(one => one.close === body.close)?.shape ?? opener.shape
     rest = body.rest
   }
-  const inlineClass = /^:::(\w+)/.exec(rest)
+  const inlineClass = new RegExp(`^:::(${ID_SOURCE})`).exec(rest)
   if (inlineClass) {
     classOf.set(id, inlineClass[1] ?? '')
     rest = rest.slice(inlineClass[0].length)
@@ -223,9 +232,15 @@ function readDelimited(text: string, open: string, closers: string[]): { text: s
   return { error: `unclosed "${open}" in "${text.slice(0, 20)}"` }
 }
 
+// An edge label without the quotes that let it hold arrows or pipes.
+function unquote(label: string): string {
+  return label.trim().replace(/^"(.*)"$/s, '$1').trim()
+}
+
+// `fill:#f9f,color:rgb(1,2,3)`: pairs split on commas outside parentheses.
 function readStyle(text: string): NodeStyle {
   const style: NodeStyle = {}
-  for (const part of text.split(',')) {
+  for (const part of text.split(/,(?![^()]*\))/)) {
     const [key, value] = part.split(':').map(piece => piece.trim())
     if (!value) continue
     if (key === 'fill') style.fill = value
