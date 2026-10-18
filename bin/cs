@@ -15335,6 +15335,11 @@ create_session_gitignore() {
 # Per-actor local state (never shared)
 .cs/local/
 
+# The session's locks, by name as well as by *.lock: the rules
+# ensure_cs_gitignore_entries looks for
+.cs/session.lock
+.cs/session.mutex.lock
+
 # A session's cs files when a .cs/private directory holds them (the link an
 # encrypted session keeps there is committed; a directory is not)
 .cs/private/
