@@ -709,6 +709,8 @@ The child inherits the claude process's environment, so the
 refused task (empty, or more than one line) prints cs's exit code and the end
 of its stderr as cs wrote them.
 
+![Statusline without queued tasks, two pending tasks, then statusline with two queued tasks](https://raw.githubusercontent.com/hex/claude-sessions/main/assets/queue.svg)
+
 `/finish` gets a toast at each end. While `cs <base> -integrate-feature` and
 `-retire-feature` run, cs replaces a progress record at each step
 (`finish-progress.json`, see [session layout](session-layout.md#machine-local-files-cslocal-gitignored)).
