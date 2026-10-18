@@ -1,659 +1,228 @@
 <img src="https://raw.githubusercontent.com/hex/claude-sessions/main/assets/banner.svg" width="100%" alt="cs: a session manager for Claude Code">
 
+cs creates persistent workspaces for [Claude Code](https://github.com/anthropics/claude-code), with session notes, conversation resume, and local git history.
+
 [![Test](https://github.com/hex/claude-sessions/actions/workflows/test.yml/badge.svg)](https://github.com/hex/claude-sessions/actions/workflows/test.yml)
 
-A session manager for [Claude Code](https://github.com/anthropics/claude-code) that creates isolated workspaces with automatic documentation.
+## Install
 
-## Why cs?
-
-Claude Code doesn't require a project. You can spin up an instance to debug an API, troubleshoot home automation, research a hardware problem, or explore any idea that comes to mind.
-
-But conversations get lost. You discover key insights, create useful scripts, figure out a tricky configuration - then the session ends and it's gone.
-
-**cs gives every task a home:**
-
-```bash
-cs debug-api          # Investigate that flaky endpoint
-cs homeassistant      # Fix your smart home setup
-cs router-config      # Document your network settings
-cs research-llms      # Explore a topic, keep your notes
-```
-
-Each session is a persistent workspace - documentation and secrets that survive across conversations.
-
-No git repo required. No project structure needed. Just a name for what you're working on.
-
-## Features
-
-### Session workspaces
-
-- **Isolated session workspaces** - Each session has its own directory with structured documentation
-- **Documentation templates** - Pre-configured markdown files for the session narrative and outcome
-- **Automatic git version control** - Every session gets a local git repo, which a new session starts with one commit of its initial files; in-session edits are autosaved to a shadow ref for crash recovery
-- **Session locking** - PID-based lock prevents the same session from being opened in two terminals simultaneously; use `--force` to override, except while `cs <name> --remote` serves the session, which only stopping that server frees. cs also treats a session as live when its statusline heartbeat is fresh — in the TUI (`■ live · unlocked`), `cs -live`, and the `cs -usage` marker — so a conversation opened outside cs still registers as live. The destructive guards (`cs -rm`/`-archive`/`-spawn`) stay on the strict PID lock, so a session whose process is gone is still removable without `--force`. From inside a cs session, `--force` never removes or archives another session that is live (a base's own features excepted), nor a base whose feature is live unless run from that base
-- **Deterministic Claude-session resume** - Each session pre-allocates a conversation UUID in the gitignored `.cs/local/state`, so `cs <name>` resumes the *exact* conversation via `claude --resume <uuid>`, not the most-recent one `--continue` might pick from a sibling. A `ps`-based guard refuses to launch a second claude for the same conversation (it counts a process only when the UUID follows `--session-id`, `--resume`/`-r` or `--parent-session-id`, so a leftover Bash-tool child carrying the id does not block a relaunch; `--force` overrides), and every launch passes `--name` plus a per-session `/color` so parallel sessions stay visually distinct.
-- **Per-session memory path redirect** - cs points Claude Code's built-in auto-memory writer at `<session>/.cs/memory/` (via `CLAUDE_COWORK_MEMORY_PATH_OVERRIDE`) so durable facts land in the session instead of the global project store. The harness owns how memory files are written (naming, frontmatter, `MEMORY.md` index); cs owns only the storage path.
-- **Conversation rotation** - a heavy conversation can hand off to a fresh one without losing context: the `rotate` skill (self-invoked, or nudged once per conversation at 65% context) writes a lineage-stamped handoff to `.cs/handoffs/` and arms it, then `/clear` continues from it without leaving Claude Code — and continues on its own, since the session wakes itself a moment later and starts the handoff's next step with nothing typed (`CS_NO_ROTATION_WAKE=1` to wait for a word instead). Exiting and answering `r` at the next `cs <name>` launch does the same; `d` discards the handoff. `cs -conversations` shows the resulting chain. The `cs` mod, a Claude Code function-hooks plugin the installer deploys and every cs launch enables, puts a `rotate this conversation` button above the prompt once context reaches 40% (`CS_ROTATE_BUTTON_CTX` moves it), in a capsule styled like the status bar and led by a `cs` chip in the session's colour, beside `wrap up this session`, which asks first, since a wrap runs two Opus passes and replaces the summary. Ctrl+X 1 and Ctrl+X 2 press them, never a bare digit, so a number typed to answer a question stays in the prompt. Ctrl+X 2 opens the engine's own dialog — `Run /wrap for this session?`, with `Yes, wrap up` and `Not now` — and only the yes runs it (once a wrap finishes, its last pass writes `.cs/local/wrapped` and the key hides until the next turn that starts from a prompt, so a finished wrap is not offered again); the rotate press runs `/rotate`, and once the handoff is armed the band draws `/clear and continue from the handoff` alone and runs the `/clear` itself. The mod presses the button for you once a turn ends past **80% context**: it runs `/rotate`, and once the handoff is armed the capsule counts down 20 seconds to the `/clear` (Ctrl+X 1 to go now, send a prompt to stop it). `CS_ROTATE_FORCE_CTX=<percent>` moves that threshold and `CS_ROTATE_FORCE_CTX=off` turns it off; the first launch on a machine says so once. `CS_NO_FUNCTION_HOOKS=1` withholds the mod; see [docs/hooks.md](docs/hooks.md).
-- **Rotate and wrap keys** - the installer asks once per machine whether to bind Ctrl+X R to `/rotate`, Ctrl+X W to `/wrap`, and Ctrl+X 1 / Ctrl+X 2 to the `cs` band's keys in Claude Code's `keybindings.json`. Ctrl+X R and W work anywhere in Claude Code, band or no band, and all four keep what you are typing. It never replaces a key you already bind, refuses a file it cannot parse, and swaps out the Option+1 / Option+2 keys an earlier cs bound unless Ctrl+X R or Ctrl+X W is already yours. `cs -uninstall` takes back only its own keys, and `cs -doctor` shows the state. See [docs/configuration.md](docs/configuration.md#rotate-and-wrap-keys).
-- **Release notes in the session** - when a launch finds a newer cs, the `cs-update` mod (a function-hooks plugin the installer deploys beside the `cs` mod) opens one pane with the full changelog for every version above the installed one, once per load of the mod (a launch, or a plugin reload), in the conversation cs launched: `1` runs `cs -update` in place (the new files take effect on the next launch; the pane keeps the outcome until you close it), `Esc` closes it, and `/cs-update` brings it back. `/config` → `cs-update.showReleaseNotes` turns the launch pane off; `/cs-update` still works. `CS_NO_FUNCTION_HOOKS=1` withholds all three mods.
-- **Mermaid diagrams in replies** - the `cs-mermaid` mod draws each ` ```mermaid ` flowchart fence in a reply inline, in the transcript: nodes as coloured blocks (decisions and circles in their own hue, light or dark from the `theme` row, `style` and `classDef` fills applied), edges as box-drawing lines with arrowheads and their labels. `graph` and `flowchart` charts in any direction are drawn; a chart the mod cannot draw (a subgraph, a self-loop, a sequence or class diagram, anything outside the supported subset, or one wider than the terminal even after a left-to-right chart is turned top-down) stays a code block with the reason under it. The mod also adds a short section to the system prompt telling the model that flowcharts draw here and when one helps (a flow that branches, loops or has four or more stages, never a task list). `/config` → `cs-mermaid.drawDiagrams` turns both off; `.cs/local/disabled` turns off the prompt section for that session. On a machine where an organization manages Claude Code, the prompt section runs only if managed settings list the plugin. Needs Claude Code 2.1.300 or later.
-- **Works outside the `cs` launcher** - a session is any directory containing `.cs/`, so the hooks find it whether `cs <name>` started the conversation or you opened the folder in a front end that cannot export environment into it — Claude Code desktop, an IDE, a plugin. A terminal is the exception, because there a session is entered by running `cs`: `claude` typed in a session directory stays cs-blind. `cs` still owns creating sessions and the launch experience (resume prompt, rotation menu, statusline, tmux spawner); what carries over is the documentation, narrative, timeline, autosave, and scope grounding. The session's recorded conversation stays with the `cs` launch, so a conversation opened another way — or a teammate claude working in the same folder — contributes to the session without becoming the one `cs <name>` resumes. When one of those is newer than the recorded conversation, the next launch says so and names it, rather than resuming the older one in silence:
-
-  ```
-  A newer conversation was opened here outside cs: 11111111-2222-4333-8444-555555555555
-  Resuming the recorded one instead. To continue the newer: claude --resume 11111111-2222-4333-8444-555555555555
-  ```
-
-  Drop `.cs/local/disabled` into a session to opt it out.
-
-### Prompt and writing aids
-
-- **Prose hygiene** - the `prose-hygiene` skill carries the full AI-slop taxonomy (phrases, structures, voice rules) that no regex can catch, with a scoring rubric; invoke it to judge a draft. See [skills/prose-hygiene/SKILL.md](skills/prose-hygiene/SKILL.md)
-- **Auto-grounded scope** - On each code-work prompt, the `scope-prompt` hook injects a bounded context block — matching tracked files, recent commits, and a working-tree diff — grounding Claude in the current codebase before it acts. Capped at 8000 bytes; opt out per-session with `CS_SCOPE_DISABLE=1`. Each run also appends a stage trace to the machine-local `.cs/local/scope-prompt.trace`, so a run the hook's timeout kills leaves a trail naming the stage it hung on; on a slow machine the hook skips the scan once `CS_SCOPE_BUDGET_MS` (1500 ms) has passed and still delivers the digests and notes; opt out with `CS_SCOPE_TRACE_DISABLE=1`. The same hook asks Claude to question an ambiguous request rather than guess at it; skip one turn with a leading `~`, or the session with `CS_CLARIFY_DISABLE=1`. It also names the day when it changes: a conversation that lives across midnight gets one line saying what today is and what date it last heard, and nothing on any other prompt; opt out with `CS_DATE_REMINDER_DISABLE=1`. See [docs/hooks.md](docs/hooks.md)
-- **Prompt rewriting** - Type a rough prompt, press `ctrl+g`, and the composer holds a precise engineering request you can review, edit and send. cs points `$EDITOR` at a rewrite shim, so Claude Code's own external-editor round-trip does the substitution; nothing is sent on your behalf, and every failure leaves your text exactly as typed. Claude Code blanks the interface for the round-trip, so the shim fills that screen: your prompt held in a margin rule that breathes while the rewrite runs, the engine and model answering it, and the time left against the timeout — shown only where something actually enforces one. `CS_REWRITE_PROGRESS` picks the style — `screen`, a `native` line in Claude Code's own idiom, a bare centred `line`, or a `static` one-liner. Nothing interrupts a rewrite from the keyboard — the terminal sends `ctrl+c` to Claude Code too, ending the session — so the timeout is the only bound. `CS_REWRITE_PROVIDER=openai` or `=gemini` rewrites with that vendor instead: each prefers its CLI when the binary is on PATH (`codex`, `agy`, on your subscription) and falls back to the vendor's API when it is not. Append `-api` (`gemini-api`, `openai-api`) to reach the API past an installed CLI, which is roughly eight times faster and the only way to Gemini's lite tier; `claude-api` calls Anthropic's Messages endpoint rather than driving Claude Code. `CS_REWRITE_PROVIDER=grok` reaches xAI's OpenAI-compatible endpoint on `XAI_API_KEY` or `GROK_API_KEY` — API-only, since xAI ships no rewriter CLI to prefer — defaulting to `grok-4.3`, the fastest xAI model measured that never resolved an unspecified thing by fiat. `CS_REWRITE_MODEL` sets the model on every arm. Opt out with `CS_REWRITE_DISABLE=1`. See [docs/hooks.md](docs/hooks.md)
-- **Second opinion at a decision point** - When [claude-council](https://github.com/hex/claude-council) or the codex plugin is present, the Stop hook appends a standing note naming what each one offers: `/claude-council:advise`, which puts the conversation itself to external models instead of a question you retype, and `/codex:review` before you call built work done. Claude judges whether a moment qualifies. It checks with you before running the council, because the digest goes to third-party providers, and it only offers `/codex:review`, which is yours to type. One note whatever you have installed, at most once every 30 minutes, and silent when you have neither. See [docs/hooks.md](docs/hooks.md)
-- **Voice drafting** - `/write-as-me` drafts messages, replies, PR text, or docs in your own writing voice. On first use it distills your typed messages from Claude Code transcripts into an editable profile at `~/.claude-sessions/.voice/profile.md`; drafting loads the profile and writes as you. Writing that lives outside the transcripts (an exported chat, sent mail) goes in `~/.claude-sessions/.voice/sources/*.md` and every build appends it to the corpus.
-
-### Managing many sessions
-
-- **Agent state** - `cs -live` and the TUI's `state` row show what Claude Code says each session is doing right now — `busy`, `waiting`, `idle` — read from the per-session records Claude Code publishes under `~/.claude/sessions/`. A record outlives a crash, so cs believes one only while its pid is alive and still reports the process start time the record holds; otherwise a recycled pid would keep a dead session looking busy. Hosts that publish no records (Claude Code before 2.1.224, or without `jq` for the shell reader) simply show no state
-- **Cross-session search** - `cs -search <query>` greps across all sessions' narrative, memory, and README
-- **Health checks** - `cs -doctor` reports status of Keychain backend, hook registration, shadow-ref freshness, auto-memory writability, status line registration, Claude Code settings audit (hooks/MCPs/permissions/env vars counts), cumulative token usage for the current project, whether the cs and cs-update mods ran, whether the session's migration stamp still lets opens skip the one-time migration checks, whether the installed `cs-tui` is the current build of the checkout it came from (a `.rs` file, `Cargo.toml` or other cargo input changed after the build, or the installed copy is not the build; checked from any folder, and not for a picker from a release download), and an authority section listing every hook that injects into the model's context together with the switch that turns each one off
-- **Usage attribution** - `cs -usage` shows which sessions are consuming the 5-hour and weekly rate-limit windows: per-session input/output token sums (deduplicated by API request, cache-read excluded), anchored at the true reset boundaries when the cs status line is active. `cs -usage <name>` breaks one session down per conversation with a lifetime column. Both views fold in every subagent and workflow-agent transcript beneath a conversation, however deep Claude Code nests them, while the model column stays the conversation's own. A `READS>350L` column counts Read tool results over 350 lines as `untargeted/all ~tokens`: a read is targeted when the model's own Read call carried an offset or a limit, so a bare read the harness capped at its line limit still counts as untargeted, and the token figure is the untargeted characters at four per token, the share a size gate could have intercepted. Subagent transcripts keep the file text in the tool result itself rather than in a file record; the column counts both shapes. Reads made through Bash (`cat`, `head`) carry no file shape in the transcript and are not counted.
-- **Session tags** - `cs -tag add api` tags the current session in its README frontmatter (`tags: [api]` — the same field Obsidian indexes); `cs -list --tag api` filters the listing, and the picker filters live with `#api` in the search query (combining with fuzzy name search). Tags show in the preview card. The `encrypted` tag marks a session that keeps its notes in an encrypted volume (`.cs/memory` linked into the mount): the picker draws a lock beside its name and a `vault` line in the preview reading `locked` or `unlocked`, from whether `.cs/memory` resolves, and the status line draws the same lock after the session name. The lock is a Nerd Font glyph, drawn once this machine has confirmed its font (the status line's `cs -statusline caps` answer); until then both show `enc`.
-- **Encrypted sessions** - A session can keep its notes, Claude Code's config and cs's own files on an encrypted volume by linking four names under `.cs/` into its mountpoint: `memory`, `plans`, `claude-config` (Claude Code's config dir for the session, so transcripts and prompt history never reach `~/.claude`) and `private` (cs's own log, mail, queue, traces, rotation handoffs and checkpoints). While the volume is not mounted, cs refuses to open the session and writes nothing in plaintext in its place. With the volume mounted inside the session, `cs -rm` refuses to remove the session, and neither `/finish` nor `cs -uninstall` deletes through it. On macOS, `cs -encrypt <name>` sets this up for an existing session. Every open then asks for the password, and the volume unmounts when the session's Claude Code exits. Some files stay outside the vault; the docs list them. See [docs/session-layout.md](docs/session-layout.md#encrypted-sessions).
-- **Session archive** - `cs -archive <name>` drops a tracked `.cs/archived` marker that hides a finished session from the picker, `cs -list`, and `cs -search` (the marker syncs with the session, so archiving on one machine archives everywhere). `cs -list --archived` lists only archived sessions, `cs -search <q> --include-archived` searches them, and the picker toggles visibility with `A` (archived rows render dimmed) and archives or unarchives the selected session with `a`. Opening an archived session unarchives it.
-
-### Unattended and multi-agent work
-
-- **Walk-away supervision** - a draining queue is watched by circuit breakers: too many tool failures in one task (default 5, `CS_QUEUE_MAX_FAILURES`), context past 85% (`CS_QUEUE_MAX_CTX`), or the 5-hour rate-limit window past 85% (`CS_QUEUE_MAX_5H`) parks the queue with a debrief instead of feeding the next task — nothing is lost, `cs -queue start` re-arms. Everything that happened while you were away (tasks done, breaker trips) lands in a per-machine journal: a one-line digest surfaces once on your return, and `cs -queue log` shows the full history.
-- **Cross-session mail** - `cs -msg <session> "note"` drops a message in another session's machine-local mailbox (`--kind notify|task|text|result`; a `task` goes to its walk-away queue only when that session's user accepts it with `cs -queue accept <id>`). Delivery is atomic — each message is its own file, written whole and renamed into place, so concurrent senders can never interleave. Bodies may be up to 64KB, and a lone `-` body reads from stdin (`cs -msg <session> -`). The recipient sees the unread bodies inlined into its context on every prompt until it reads them with `cs -msg` (bounded to 5, truncated; a `task` shows the same way, with its accept command under it). Same-machine only; attribution is unauthenticated by design.
-- **Threads** - every message carries a thread id, and the sender keeps its own copy, so an exchange can be re-read from either end — including after a rotation, when an agent otherwise has no way to find out what it already said. `cs -msg --reply <thread> "body"` answers without naming the peer (it comes from the thread; naming a different one is an error, not an override), and `cs -msg thread <id>` prints the conversation ordered by what answers what — not by time, since a question and its reply usually land in the same whole second.
-- **Mail wakes** - unread mail takes a turn instead of waiting for a keystroke, so agent-to-agent work advances unattended. A session that just finished a turn is woken at that boundary; a session already parked at the prompt is woken by Claude Code's file watcher noticing the delivery, which arrives as a system-reminder rather than as synthesised typing. Either way the wake names who the new mail is from, so the woken session knows its correspondent before it opens the mailbox. Fires once per arrival, never while a walk-away drain is running, and only in the launched conversation — not in teammates sharing the mailbox. Bounded by `CS_MAIL_WAKE_MAX` (default 5) wakes between prompts so two sessions cannot volley forever; `CS_NO_MAIL_WAKE=1` silences it without swallowing the message.
-- **tmux spawner** - `cs -spawn <name>` opens a session in a cs-owned tmux session (`tmux attach -t cs`); `--brief <file>` hands it a brief it reads at its first turn (landing as the session's `.cs/brief.md`), `--task "..."` seeds and arms its walk-away queue so it starts working unattended, and the spawner hears back over cross-session mail when the queue drains. Only the window `cs -spawn` opens takes the seed without asking; any other open of that name within the hour shows the seed and asks first. Same-machine only.
-- **Features from inside a session** - the `feature` skill (`/feature fix-auth`) writes a brief from the conversation and spawns `<base>@fix-auth` as a parallel worktree session with it, so a session can hand off a feature and keep working. The spawn keeps its permission prompt; `/finish fix-auth` lands the result.
-
-### Terminal experience
-
-- **Status line** - `cs-statusline` renders Claude Code's status bar as one line of rounded capsules on the terminal's own background: an identity capsule (the Claude mark, a darker coral (red in a 16-colour terminal) from the end of a turn until your next prompt; the session name; a queued-task count and an unread cross-session mail count when there are any, both read from `.cs/local/`; the git branch with ahead/behind and dirty counts; the model and its effort level in Claude Code's own `/effort` colours), a context capsule whose pie icon fills with the band, and a quota capsule: the 5-hour window always, the weekly window beside it from 50%, and on a Fable session its model window in a capsule of its own from 50% (each gaining a reset countdown as it fills) — branch, model, context and limits all from the status-line JSON plus one bounded git call every five seconds, with no transcript parsing; a warm render forks nothing but the interpreter and one `jq`, so it survives a loaded machine. Colour is state: amber ink past a warn threshold, a red capsule at crit. The rounded capsule ends are the one glyph that needs a patched font, so the installer shows a sample once and asks whether they render; until a machine has answered, the capsules have square ends (`cs -statusline caps on|off|ask` revisits it). On a Fable session it folds Fable's own weekly window, which is model-scoped and so appears in none of the rate limits Claude Code puts on stdin, into the same rule; that one figure is fetched out of band into a machine-global cache, never from the render, and only while Fable is the active model — using Claude Code's own credential, which cs reads and never writes. It writes two machine-local files as it renders — `.cs/local/context-pct` and `.cs/local/limits` — which is what makes the liveness heartbeat and `cs -usage`'s reset anchoring work. Session cost is available as an opt-in segment. Enable or remove it any time with `cs -statusline enable|disable`; choose and order segments with `CS_STATUSLINE_SEGMENTS`. cs auto-detects the terminal's light/dark theme (override with `CS_TERM_THEME`; `cs -detect-theme` shows the result). A companion `cs-subagent-statusline` styles the agent-panel rows so each running subagent shows the model driving it, its own context %, and elapsed time; `cs -statusline enable` registers both (Claude Code reads the registration at startup, so restart it to see them). See [docs/statusline.md](docs/statusline.md)
-
-  ![cs statusline cycling through quiet, context warning, critical context, queued tasks and unread mail, and quota reset countdowns](https://raw.githubusercontent.com/hex/claude-sessions/main/assets/statusline.svg)
-- **iTerm2 awareness** - inside iTerm2 the session color tints the tab (native escapes, reset on exit), and with iTerm2 shell integration installed a finished turn bounces the dock until your next prompt. Under tmux, the tab also shows Claude Code's progress line while a turn runs and the Claude icon next to the title. `CS_NO_ITERM2=1` disables the bounce, the progress line and the icon; `cs -doctor` reports the integration surface.
-
-### Security and trust
-
-- **Secure secrets handling** - Store sensitive data in the OS keychain (value read from stdin, never written to a file); exportable as [age](https://github.com/FiloSottile/age)-encrypted files for backup
-- **Update notifications** - Checks for updates and notifies when new versions are available. When an update is pending, cs shows the release notes for every version above the installed one: the `cs-update` mod's pane inside the session (see Release notes in the session above), a compact summary card in the launch banner only when `CS_NO_FUNCTION_HOOKS=1` withholds that mod, and the full notes under `cs -update --check`.
-- **Verified updates** - Updates are downloaded from GitHub Releases and verified with SHA-256 checksums; additionally verified with [minisign](https://jedisct1.github.io/minisign/) signatures when available
-
-
-## Requirements
-
-- [Claude Code](https://github.com/anthropics/claude-code)
-- Bash 3.2+ (macOS system bash supported)
-- A UTF-8 locale. Under `ja_JP.eucJP`, `ko_KR.eucKR` or `zh_CN.eucCN`, bash stops with a syntax error in `cs` and two of its hooks.
-- `jq` for hook configuration
-- `perl`, which cs takes its file locks through and lists a worktree's untracked files with (macOS and most Linux distributions ship it)
-- `git` for local session history and crash recovery
-- Windows: WSL2 (see [Installation → Windows](#windows)); native Windows and Git Bash are not supported
-
-## Installation
-
-### Bash (macOS/Linux)
+Requires macOS or Linux, Bash 3.2+, git, jq, perl, Claude Code, and a UTF-8 locale.
+Non-UTF-8 locales such as `ja_JP.eucJP`, `ko_KR.eucKR`, and `zh_CN.eucCN` cause syntax errors in cs and two of its hooks.
 
 ```bash
 curl -fsSL https://github.com/hex/claude-sessions/releases/latest/download/install.sh | bash
 ```
 
-Or clone and run `./install.sh`. The piped form always installs the release, even when you run it inside a checkout.
-
-> :warning: Always review [install.sh](install.sh) before running scripts from the internet.
-
-The installer:
-- Adds `cs`, `cs-secrets`, `cs-statusline`, `cs-subagent-statusline`, and `cs-tui` to `~/.local/bin/`
-- Installs the cs [hooks](docs/hooks.md) to `~/.claude/hooks/cs/` for session tracking (including the `scope-prompt` auto-grounding hook on UserPromptSubmit)
-- Adds the `/checkpoint` and `/wrap` commands (and, beside the hooks, the memory and summary passes `/wrap` reads), the `store-secret`, `prose-hygiene`, `rotate`, `finish`, `feature`, and `write-as-me` skills, and the `cs`, `cs-update` and `cs-mermaid` mods to `~/.claude/`
-- Installs shell completions for bash and zsh
-- Configures hook entries in `~/.claude/settings.json`. Before any write that changes that file (the installer's, `cs -statusline`'s or `cs -uninstall`'s), cs copies the current file to `settings.json.cs-bak.<UTC stamp>` beside it, mode kept, adding `.1`, `.2` and so on when a backup with that stamp exists; a write that changes nothing makes no backup, and cs keeps the five newest backups and removes older ones
-- Records where it got `cs-tui` in `~/.claude/hooks/cs/.tui-origin`, beside the `.version` stamp and outside the install record below: `checkout <path>` for a copy from your checkout, `release` for the release download. `cs -doctor` reads it to hold the picker to that checkout's build. An install that places no picker, or keeps your own link at `~/.local/bin/cs-tui`, leaves it unchanged, and `cs -uninstall` removes it
-- Writes an install record, `~/.claude/hooks/cs/.installed`, with the sha256 of every file it placed; a later install, update or uninstall replaces or removes a file only when its content is one cs wrote, and keeps and lists your own file of the same name. Content that a cs release shipped counts as cs's even without the record, so deleting `~/.claude/hooks/cs` by hand does not make the next install keep the old files. Each kept file gets a `Kept <path>` warning and a line in the list at the end of the install; an install names a file of yours under a name cs no longer ships only the first time it finds that content, since the record remembers it (cs never writes a path holding a newline into the record, so it names one every time). cs keeps a fifo, a device or a link to one without reading it. cs checks a file's content first and replaces or removes it in a second step, so if you rewrite a file between the two while an install or uninstall runs, cs replaces or removes it on what it checked. The installer also keeps a skill directory under `~/.claude/skills` that is a symlink and writes nothing through it. It removes a command cs no longer ships only when cs wrote the file
-- Asks once whether to bind Ctrl+X R to `/rotate`, Ctrl+X W to `/wrap` and Ctrl+X 1 / Ctrl+X 2 to the `cs` band in `~/.claude/keybindings.json` (asks nothing without a terminal)
-
-### Windows
-
-Install inside a WSL2 distro exactly as on Linux (the command above). cs targets macOS and Linux; native Windows and Git Bash are not supported.
-
-The platform is detected automatically. It decides one thing — whether secrets go to the macOS keychain or to an encrypted file — and `CS_PLATFORM_OVERRIDE=macos|wsl|linux` forces that choice for testing. Any other value is refused rather than treated as "not macOS".
-
-## Concepts
-
-- **Sessions** — Isolated workspaces, each with their own git repo and documentation. `cs debug-api` creates one; running it again resumes it. `/rotate`, `/wrap` and `cs -narrative rotate` commit nothing under `.cs/`; what they write stays on disk until you commit it.
-- **Narrative** (`.cs/memory/narrative.<actor>.md`) — A per-actor lab notebook for findings, observations, and ideas during a session. Each co-developer writes their own file (so shared sessions never conflict) and reads it in full on resume. A teammate's file you only read from the line the resume digest names, never the whole thing. The notebook is append-only — a disproven entry gets a dated correction, never an edit — and `cs -narrative rotate` (run by `/wrap`, by the session manager's **Rotate narrative** entry, flagged at conversation start, by the Stop hook and by `cs -doctor`; `cs <name> -narrative rotate` reaches a session you are not in) moves the oldest sections verbatim into `.cs/narrative-archive/<actor>/` once a file passes `CS_NARRATIVE_MAX_BYTES` (128 KiB), keeping a `CS_NARRATIVE_KEEP_BYTES` (64 KiB) tail, so resuming reads about 96 KiB of narrative on average. Stored as native Claude Code memory files; see [docs/session-layout.md](docs/session-layout.md) for how that works.
-- **Checkpoints** (`.cs/checkpoints/`) — Labelled narrative snapshots you can save mid-session with `/checkpoint`, capturing the narrative, changes, and the current git HEAD.
-- **Task archive** (`.cs/task-archive/<date>/<actor>/<list>/`) — `/rotate` and `/wrap` move the completed rows of the session's native task list out of Claude Code's task store, once the session has agreed: each row byte for byte under `json/`, plus a readable `tasks.md`. The highest-numbered row stays live, so Claude Code never reuses an archived number. A feature's list gets its own directory, so `/finish` carries its archive into the base. An encrypted session keeps the archive in its vault.
-- **Timeline** (`.cs/timeline.jsonl`) — A structured event log recording session starts, ends, and checkpoints as newline-delimited JSON.
-- **Auto-memory** (`.cs/memory/`) — Claude Code's persistent operational notes, redirected into the session and cleaned up with `cs -rm`.
-
-## Usage
+From a checkout:
 
 ```bash
-cs                          # Open the session manager (TUI)
-cs .                        # Open the session you are standing in
-cs -tui                     # Interactive session manager, from anywhere
-cs -- <session-name>        # '--' ends the options, for launchers that insert one
-cs <session-name>           # Create or resume a session
-cs <session-name> --force   # Override active session lock
-cs <session-name> --remote [--permission-mode <mode>]  # Serve the session through claude remote-control (its own window in the cs tmux session when run inside tmux)
-cs <base>@<feature>         # Create/resume a parallel feature worktree off <base>
-cs <base> -features         # List a base's feature worktrees and their merge readiness
-cs <base> -finish <feature> # Open <base> and run /finish for <feature> (integrate, then retire the worktree)
-cs -adopt <name>            # Adopt current directory as a session
-cs -adopt <name> --yes      # Re-adopt orphaned .cs/ records without asking (scripts, no terminal)
-cs -whoami                  # Show the current actor (for shared, multi-person sessions)
-cs -who                     # Show who contributed to shared memory/narrative (git history)
-cs -search <query>          # Search across all sessions
-cs -checkpoint "<label>"    # Snapshot git state + narrative (also: list, show <name>)
-cs -narrative rotate        # Archive the oldest narrative sections once the file passes its budget (/wrap runs this)
-cs <name> -narrative rotate # Same, for a session you are not in (the session manager's Rotate narrative entry runs this)
-cs -queue add "<task>"      # Walk-away task queue (also: accept <id>, list, start, rm <n>, clear, log; /queue <task> in a conversation)
-cs -msg <session> "note"    # Send mail to another session (--kind notify|task|text|result; '-' body reads stdin); bare cs -msg reads
-cs -msg --reply <thread> "note"  # Reply into a thread; the target comes from the thread
-cs -msg thread <id>         # Show one thread as a conversation, oldest first
-cs -msg log                 # This session's full mail history, sent and received
-cs -vet-session <dir>       # Exit 0 when git tracks no file in <dir>'s .cs/local or .cs/private, else name the file and how to untrack it (the cs mod, /rotate and /wrap ask before they write there)
-cs -spawn <name> [--brief <file>] [--task ..]  # Open a session in a cs-owned tmux window; --brief hands it a brief, --task arms its queue
-cs -conversations           # Show this session's conversation chain (also: cs <name> -conversations)
-cs -encrypt <name>          # Move a closed session's private files into an encrypted vault (macOS; asks for a password at every open)
-cs -doctor, -diag           # Run health checks (Keychain, hooks, memory, audit, tokens)
-cs -usage [--all] [<name>]  # Per-session token usage over the 5h/weekly rate-limit windows
-cs -tag add|rm <tag>        # Tag the current session (also: cs <name> -tag ..., -tag list)
-cs -list --tag <tag>        # List only sessions carrying a tag
-cs -archive <name>...       # Archive sessions (hidden from listings; --force if live, but from inside a session not another session's live one, nor a base whose feature is live unless run from that base)
-cs -unarchive <name>...     # Restore archived sessions
-cs -list --archived         # List only archived sessions
-cs -statusline enable|disable  # Enable or remove the cs status line + agent-panel rows (also: caps on|off|ask)
-cs -detect-theme            # Show the detected terminal light/dark theme
-cs -list, -ls               # List all sessions
-cs -live                    # List sessions running right now on this machine, with what each is doing
-cs -status "<text>"         # Set this session's status (also: cs -status, cs -status --clear)
-cs -remove, -rm <name>...   # Remove sessions (each asks its own confirm, naming files cs did not create and, for a worktree, the files git does not track, your own under `.claude/` included; --force skips the confirm and the live lock, but from inside a session not for another session's live one, nor for a base whose feature is live unless run from that base, and nowhere for a session `cs <name> --remote` serves; --force refuses a session holding such files unless --delete-files is added; a base session's age pins under ~/.cs-secrets/sessions/<name>/ go with it)
-cs -update [--check|--force]   # Update to latest (--check: check only; --force: reinstall)
-cs -uninstall               # Uninstall cs
-cs -help, -h                # Show help message
-cs -version, -v             # Show version
+git clone https://github.com/hex/claude-sessions.git
+cd claude-sessions
+./install.sh
 ```
 
-### Interactive Session Manager
+Review [install.sh](install.sh) before running it. The piped command always installs the release, even inside a checkout.
+The installer puts the commands in `~/.local/bin/`, registers hooks, and installs skills, mods, and Bash and Zsh completions.
 
-Running `cs` with no arguments launches an interactive TUI for browsing and managing sessions, wherever you run it. To open the session you are standing in, run `cs .` from its root: an adopted project opens under the name it was adopted as, and a directory that is not a session is refused with a pointer to `cs -adopt`.
+## First run in 60 seconds
 
-For `cs .`, the current directory decides, not any history: it opens a session only when that directory *is* one cs knows by name (a session root, a `<base>@<feature>` worktree, or a project adopted with `cs -adopt`). A subdirectory of a session and any unrelated directory are refused. Once resolved, `cs .` is `cs <name>`, so a session already open elsewhere meets the same collision menu.
+1. Run `cs debug-api`. cs creates a workspace and opens Claude Code without needing an existing project or git repository.
+2. Describe your task. cs records the first substantive prompt in the session's `Objective` section and keeps notes under `.cs/`.
+3. Exit Claude Code. Run `cs debug-api` again and accept the prompt to resume the recorded conversation.
+4. Run `cs` to open the session picker. Choose a session to reopen it, or use `cs .` from a known session root.
 
-- **Navigate** with `j`/`k` or arrow keys; `g`/`G` for first/last; mouse scroll and click supported
-- **Sort** by column with `1`-`6` (toggles ascending/descending); opens sorted by recency — most-recently-modified first
-- **Recency at a glance** — a heat dot beside each session (green under an hour, cooling through gold and orange to grey once dormant) and a relative `Age` column (`2h`, `3d`, `1mo`) so active work stands out; the exact timestamp stays in the preview pane
-- **Liveness** — sessions with an open conversation carry a breathing teal `■` in place of the heat dot and count into the masthead's live tally. Detection is the cs lock plus a statusline heartbeat, so conversations opened outside cs register too; the preview state reads `■ live · locked <pid>` or `■ live · unlocked`, with the agent state appended when Claude Code publishes one (`■ live · locked 4242 · waiting`)
-- **Unread mail** — a session with unread cross-session mail (`cs -msg`) shows an amber `✉` and the count in its row; it clears as the recipient reads with `cs -msg`
-- **Worktree nesting** — `base@feature` sessions attach under their base with tree connectors as indented `@feature` rows, inherit the base's time section, and the preview names the lineage both ways (`worktree @feature · off base` on the feature, a `features` list on the base). Deleting a worktree row unregisters it from the base repo, like `cs -rm`
-- **Merge readiness** with `m` — replaces the panes with a base's feature worktrees and why each can or cannot merge (commits ahead, dirty tree, untracked files, a live lock, already merged). The detail pane names what finishing will do, down to the merge commit it will land. Enter leaves the picker and runs `cs <base> -finish <feature>`, which opens the base with `/finish <feature>` armed: it integrates the feature and then retires the worktree once its conversation is closed. The picker never merges or removes anything itself
-- **Symbol legend** — `● activity  ■ live  * marked  archived` sits in the table header's free width on wide terminals
-- **Fuzzy search** with `/` — matches characters in order with highlighting; Enter commits the filter. A session whose name misses stays in the list when the `## Objective` line of its README matches, after the name matches and without highlighting, so an adopted project named by its folder turns up when you search for the work. Add `#tag` anywhere in the query to AND-filter by tag (e.g. `#api backend`); combine multiple `#tag`s or mix with a fuzzy name remainder
-- **Time-based sections** — sessions grouped under Today, Yesterday, This Week, This Month, Older when sorted by date (the default view)
-- **Action menu** with `Enter` — a popup over the list, one action per row with its shortcut key; `j`/`k` move, `Enter` runs the highlighted action, `Esc` closes. Each letter shortcut (`d`, `r`, `s`, `a`, `R`) also works straight from the list, without opening the menu
-- **Preview & To-Do panes** — appear beside the list on wide landscape terminals (≥120 cols), or stacked below it (list, then details, then notes) on any window at least 40 cols by 26 rows; toggle with `p`
-- **Expand row** with `p` — shows session objective (auto-captured from your first prompt) and narrative inline
-- **Create session** with `n` — opens inline dialog to create a new session
-- **Delete** with `d` (confirmation required). Like `cs -rm`, deleting a base session also removes its age pins under `~/.cs-secrets/sessions/<name>/` and the status line names the path; a worktree row or an adopted link keeps them. Run inside a session, the picker refuses what `cs -rm` refuses from there before the confirm opens, whatever `[F]` would grant: another session while its claude runs, and a base while one of its features is live unless you are in that base. Inside a session or outside, it refuses a session `cs <name> --remote` serves, with or without `[F]`; stop the server first
-- **Batch operations** — mark sessions with `Space`, then `D` to batch delete
-- **Rename** with `r`, refused while the session's claude runs; the session's secrets and age state move to the new name with it (`cs -secrets --session <old> rename <new>`)
-- **Archive / unarchive** with `a` — toggles the selected session's `.cs/archived` marker by running `cs -archive` / `cs -unarchive`, so the picker never writes the marker itself and inherits the verb's refusal to archive a live session. Archived rows are hidden until `A` shows them, which is also how you reach one to unarchive
-- **Manage secrets** with `s` (view values with `v`, auto-redacts after 5 seconds)
-- **Rotate narrative** with `R` (confirmation required) — runs `cs <name> -narrative rotate` on the highlighted session and shows what it printed; a narrative under its byte budget rotates nothing and says so
-- **Queue a task** — focus the To-Do input with `Tab`, type a prompt, and press `Enter` to add it to the highlighted session's queue for a walk-away run; a `▰▱` meter with the count appears in the Queue column while that session's queue is non-empty
-- **Quit** with `q` or `Esc`
-- **Light/dark palette** — the warm palette adapts to the terminal background detected at launch (`CS_TERM_THEME`); set the env var to force `light` or `dark`
+![cs statusline cycling through quiet, context warning, critical context, queued tasks and unread mail, and quota reset countdowns](https://raw.githubusercontent.com/hex/claude-sessions/main/assets/statusline.svg)
 
-The TUI requires `cs-tui` (a small standalone Rust binary). Build from source: `cd tui && cargo build --release`. `./install.sh` picks up that build automatically — it installs whichever of `tui/target/release/cs-tui` and `bin/cs-tui` is newer, so a rebuild does not need copying into place first. `cs -doctor` warns when the source under `tui/` changed after that build, or when the installed picker is not the build, so a skipped rebuild or install does not leave a stale picker running unnoticed.
+The [statusline guide](docs/statusline.md) covers the capsules, colors, thresholds, font setup, and agent rows.
 
-### Session Commands
+## Features
 
-```bash
-cs <session> -secrets <cmd>   # Manage secrets for a session by name
-cs <session> -narrative rotate  # Rotate that session's narrative without launching it
-cs <session> --force          # Override active session lock
-```
+| Feature | What it does | Details |
+|---|---|---|
+| Session records | Keeps objectives, per-actor narratives, memory, plans, checkpoints, and a timeline in `.cs/`. | [Session layout](docs/session-layout.md) |
+| Crash recovery | Saves edits to shadow git refs without adding normal branch commits. | [Autosave hook](docs/hooks.md#autosave-commitssh-posttooluse-on-writeedit) |
+| Conversation rotation | Hands work to a fresh conversation through `/rotate` and `/clear`. | [Rotation and queue hooks](docs/hooks.md#narrative-remindersh-stop-filechanged-cwdchanged) |
+| Parallel worktrees | Gives each feature its own checkout and session records. | [Worktree records](docs/session-layout.md) |
+| Task queue | Runs confirmed tasks at turn boundaries, with failure, context, and quota breakers. | [Queue behavior](docs/hooks.md#narrative-remindersh-stop-filechanged-cwdchanged) |
+| Cross-session mail | Delivers local messages and wakes idle sessions for unread arrivals. | [Mail wakes](docs/hooks.md#narrative-remindersh-stop-filechanged-cwdchanged) |
+| Secrets | Uses the macOS keychain or encrypted files, with signed age exports for sync. | [Secrets guide](docs/secrets.md) |
+| Encrypted sessions | Keeps notes, transcripts, plans, and private state in a vault on macOS. | [Encrypted sessions](docs/session-layout.md#encrypted-sessions) |
+| Statusline | Shows session, git, model, context, queue, mail, and rate limits. | [Statusline guide](docs/statusline.md) |
+| Prompt grounding | Adds matching files, recent commits, changes, and clarification guidance to code-work prompts. | [Scope hook](docs/hooks.md#scope-promptsh-userpromptsubmit) |
+| Prompt rewriting | Ctrl+G rewrites a draft in the composer for you to review before sending. | [Prompt rewriter](docs/hooks.md#prompt-rewritersh-not-a-hook--an-editor-shim) |
+| Session wrap | `/wrap` saves memory, summarizes the narrative, and archives completed tasks without committing. | [Memory checks](docs/hooks.md#memory-index-guardsh-not-a-hook--run-by-wraps-memory-pass) |
+| Inline Mermaid | Draws supported flowcharts in replies. Requires Claude Code 2.1.300+. | [Mermaid mod](docs/hooks.md#cs-mermaid-not-a-hook-script--a-claude-code-mod) |
+| Release notes | Shows pending release notes in-session through `/cs-update`. | [Update mod](docs/hooks.md#cs-update-not-a-hook-script--a-claude-code-mod) |
+| Other front ends | Session hooks also work in desktop and IDE conversations opened in a `.cs/` workspace. | [Session resolution](docs/hooks.md#how-a-hook-finds-its-session-cs-resolvesh) |
 
-From inside a running session, `cs -secrets <cmd>` acts on the current session directly (it reads `CLAUDE_SESSION_NAME`), so you can drop the session name. From an interactive terminal outside any session, it lists your sessions and asks which one to use. From inside a session, cs refuses a write to another session's secrets (`set`, `rm`, `purge`, `rename`, `import-file` and the other writes) while that session or one of its features is live. cs also refuses a feature's write to its base's secrets while a sibling feature is live. It refuses `cs <name> -narrative rotate` while `<name>` is live, a base's own features excepted. `--force` overrides neither.
+## More
 
-`cs <name> --remote` opens the session as `cs <name>` does, then runs `claude remote-control --name <name>` in its directory instead of claude. Sessions you start from the Claude app or claude.ai/code then run in that directory with cs's hooks, memory, task list and secrets. It needs Claude Code 2.1.299 or later and a full login: cs unsets `ANTHROPIC_API_KEY` for the server. It runs remote-control with the first word of `CLAUDE_CODE_BIN` alone. `--permission-mode <mode>` sets the mode of the sessions it starts. Without it, cs carries the mode `CLAUDE_CODE_BIN` sets: its `--permission-mode <mode>`, or `bypassPermissions` for `--dangerously-skip-permissions`; otherwise the mode is `default`. cs drops `--allow-dangerously-skip-permissions`, which remote-control does not take, and one line says what it carried or dropped. With either, the first word's `--version` must say Claude Code. It refuses any other option by name, such as `--disallowedTools` or `--settings`, since the sessions it starts would run without it, and a wrapper such as `op run -- claude` too. Set `CLAUDE_CODE_BIN` to the command alone, or with only those options, for `--remote`. Inside tmux it runs in a window `remote:<name>` of the cs tmux session, with the sessions root and the claude of the shell you started it from. Elsewhere it runs in the current terminal. Either way, the first run may ask on that terminal whether to enable Remote Control and whether to trust the folder. cs answers remote-control's first-run spawn-mode question itself with same-dir (`--spawn=same-dir`), so the sessions it starts run in the session directory and never in worktrees of their own. A session made with `cs -encrypt` keeps its own Claude Code config, so its folder is not trusted yet and needs that terminal. While it serves, the session counts as open: `cs <name>` refuses it even with `--force`, `cs -rm` and the picker's delete refuse it even with `--force` or `[F]`, `cs -live` lists it as `remote` with the server's pid, and `cs -doctor` reports it. The first conversation you start through the server is the session's lead, as a `cs <name>` conversation is. One you start while the lead's claude runs is a guest for its whole life; the next one started after the lead's claude exits is the lead. The conversations it starts leave the `remote:<name>` window's name, or outside tmux the tab's `cs: <name> (remote)` title, unchanged. A seed `cs -spawn` staged for the session stays staged for the next `cs <name>`. Stop the server with Ctrl-C or by closing its window. Never stop it with `kill -9`: that leaves the session it started running, and leaves `.cs/local/remote.pid` behind. `cs -doctor` removes that file once its pid no longer runs the server. Starting it again in the same session reattaches the previous cloud session, which keeps its old title rather than `--name`.
+<details>
+<summary>Command reference and setup details</summary>
 
-### Examples
+### Commands
 
-```bash
-cs debug-api                # Create/resume 'debug-api' session
-cs my-project -secrets list # List secrets for session
-```
+Run `cs -h` for help and `cs -v` for the version. Aliases include `-help`, `-version`, `-ls`, `-diag`, and `-remove`.
 
-### Adopting Existing Projects
+| Command | Purpose |
+|---|---|
+| `cs -- <name>` | Ends option parsing before creating or resuming a session. |
+| `cs -tui` | Opens the picker from any directory. |
+| `cs -list [--tag <tag>] [--archived]` | Lists sessions, filters a tag, or lists only archived sessions. |
+| `cs -search <query> [--include-archived]` | Searches session narratives, memory, and README files. |
+| `cs -whoami`, `cs -who` | Shows your actor name or contributors from git history. |
+| `cs -checkpoint "<label>"` | Saves narrative, changes, and the current git revision. Use `list` or `show <name>` to inspect snapshots. |
+| `cs -narrative rotate` | Archives the oldest narrative sections past the size budget. `cs <name> -narrative rotate` targets a named session. |
+| `cs -queue add "<task>"` | Adds a task. Other actions are `accept <id>`, `list`, `start [subagents\|workflow]`, `rm <n>`, `clear`, and `log`. |
+| `cs -msg <session> "note"` | Sends mail. Bare `cs -msg` reads unread mail. Use `log`, `thread <id>`, or `--reply <thread> "note"` for history and replies. |
+| `cs -spawn <name> [--brief <file>] [--task "..."]` | Opens a cs tmux window with a first-turn brief or an armed task queue. Attach with `tmux attach -t cs`. |
+| `cs -conversations` | Shows the conversation chain. `cs <name> -conversations` targets another session. |
+| `cs -tag add\|rm <tag>` | Edits README frontmatter tags. Use `-tag list` or `cs <name> -tag ...` to inspect or target another session. |
+| `cs -archive <name>...`, `cs -unarchive <name>...` | Hides or restores sessions. Opening an archived session restores it. |
+| `cs -live` | Lists local live sessions with actor, uptime, agent state, and status. |
+| `cs -status "<text>"` | Sets advertised status. Bare `-status` reads it. `--clear` restores the `Objective` fallback. |
+| `cs -usage [--all] [<name>]` | Reports session token usage over the 5-hour and weekly windows. |
+| `cs -doctor` | Checks installation, session state, recovery, settings, and model-context permissions. |
+| `cs -vet-session <dir>` | Exits 0 if git tracks no `.cs/local` or `.cs/private` files. Otherwise names the files and how to untrack them. |
+| `cs -encrypt <name>` | Moves a closed session's private files into a vault on macOS. Asks for a password at each open. |
+| `cs -statusline enable\|disable` | Registers or removes the statusline and agent rows. Restart Claude Code after enabling. |
+| `cs -statusline caps on\|off\|ask` | Records whether your font displays rounded capsule ends. |
+| `cs -detect-theme` | Reports terminal theme detection. |
+| `cs -rm <name>...` | Confirms each removal and names user files, including untracked worktree files. |
+| `cs -update [--check\|--force]` | Checks for an update without installing, or reinstalls the latest release. |
 
-Already working in a project directory with Claude Code? Use `-adopt` to add cs session management without moving anything:
+### Sessions, locks, and safety
 
-```bash
-cd ~/my-project
-cs -adopt my-project
-```
+A new session starts with one commit of its initial files. Later edits autosave to shadow refs for crash recovery.
+Other task names work the same way, such as `cs homeassistant`, `cs router-config`, and `cs research-llms` for home automation, network setup, and research.
+`cs .` requires the exact root of a known session, adopted project, or feature worktree. It refuses subdirectories and unrelated directories with adoption guidance.
+cs stores a conversation identifier in gitignored `.cs/local/state` and resumes that exact conversation with `claude --resume`, rather than `--continue`. Launches pass `--name` and a per-session `/color`.
+The duplicate-conversation guard recognizes identifiers after `--session-id`, `--resume`, `-r`, and `--parent-session-id`, so a leftover shell child carrying the identifier does not block a launch. `--force` overrides that guard and the ordinary process lock.
+A running lock process or a statusline heartbeat under 900 seconds old makes a session live. This is local presence, including conversations opened outside cs, with no network presence service.
+The destructive guards use the process lock, so a heartbeat alone does not block removal. A remote-control server blocks opening, removal, and forced removal until it stops.
+From inside a session, `--force` cannot remove or archive another live session, except the base's own features, or a base with a live feature unless run from that base. Force with user files also requires `--delete-files`.
+Removing a base also removes its age pins in `~/.cs-secrets/sessions/<name>/`; removing a feature or adopted link keeps them. A mounted vault inside a session blocks removal, and finish and uninstall never delete through it.
+Archive state lives in tracked `.cs/archived`, so it syncs through git and hides sessions from normal listing and search. See [shared and machine-local records](docs/session-layout.md).
+Outside the launcher, desktop and IDE hooks keep notes, timeline, recovery, and scope context without replacing the recorded conversation. Plain `claude` in a terminal remains cs-blind. A newer outside conversation triggers a launch warning with its identifier and `claude --resume <identifier>`.
 
-This converts the current directory into a cs session in place:
-- Creates the `.cs/` metadata structure in the current directory
-- Symlinks `~/.claude-sessions/<name>` to the current directory
-- Writes the session protocol to `CLAUDE.local.md` (machine-local, gitignored, regenerated per machine); a project's existing `CLAUDE.md` is never touched
-- Commits nothing. In a folder with no repo it runs `git init` (branch `main`) and leaves every file for your first commit. In an existing repo it leaves the index alone, so work you had staged stays staged. One line names what it left for you to commit (`.cs/`, `.gitignore`, `.gitattributes`)
-- Records in `.cs/local/state` how the session's features carry `.cs/`: `cs_mode: tracked` (commit `.cs/` before the first `cs <name>@<feature>`), or `cs_mode: ignored` when the project's own ignore rules already cover the `.cs/` directory, so each feature hides it through `.git/info/exclude`. Edit the line to switch
-- Refuses, before it writes anything, a project it could not open afterwards: one where `.gitignore`, `.gitattributes` or `CLAUDE.local.md` is a symlink to a file outside the project (adopt appends to all three), or where git tracks a file under `.cs/local` or `.cs/private`
-- When a directory's `.cs/` records outlived their session link, adopt asks before re-adopting it and keeps the records; `--yes` (`-y`) answers that question, so a script or an agent with no terminal can re-adopt, and with no terminal and no `--yes` adopt refuses
-- Since the working directory doesn't change, the first `cs <name>` finds Claude Code's own transcripts for the folder and offers to resume the newest one; a project with none starts a new conversation without asking
-- Seeds the session Objective from the newest conversation's first prompt, with the rules the prompt hook applies to a live session (no slash commands, nothing under 8 characters, clipped at 100), so the picker shows what the project is about from the first open; a project with no conversation keeps the placeholder for the first prompt you type
+### Usage and health
 
-Working in worktrees Claude Code made with `claude --worktree`? Run `cs -adopt --worktrees` inside the repo and each `.claude/worktrees/<name>/` that has a conversation, running or finished, becomes a session named `<repo>.<name>`, bound to that conversation and with its first prompt as the Objective. The checkout is a live branch, so cs hides its files through the repo's `.git/info/exclude` and commits nothing and leaves the tracked `CLAUDE.md` alone. cs skips a worktree with no conversation, one whose branch tracks `CLAUDE.local.md` or `.claude/settings.local.json`, an entry git would take for a repository of its own because it, or a directory above it before the first that holds `.git`, holds `HEAD` (named before cs asks git anything about it), and anything there that is not a worktree of this repo. A re-run adopts only what is new, finishes an adoption that stopped part-way, and prunes the links of worktrees Claude Code has since deleted, and `--dry-run` prints the plan and writes nothing.
+`cs -usage` sums input and output tokens, deduplicates requests, excludes cache reads, and includes nested subagent and workflow transcripts. The model column describes the parent conversation. A named session adds per-conversation and lifetime totals.
+`READS>350L` reports untargeted/all Read results over 350 lines and estimates untargeted tokens as characters divided by four. Only an explicit offset or limit makes a read targeted. Harness truncation does not, and shell `cat` or `head` reads do not count. Both file records and inline subagent results count.
+The [statusline's reset stamps](docs/statusline.md) anchor usage windows. Agent states `busy`, `waiting`, and `idle` come from `~/.claude/sessions/` only while the process identifier and start time still match. Older hosts before Claude Code 2.1.224, or the shell reader without jq, show no state.
+Doctor checks the secrets backend, hooks, shadow refs, memory writability, statusline registration, settings counts, project tokens, cs and cs-update runtime markers, and the migration stamp. Its Authority section lists context-injecting hooks and their opt-outs.
+For a picker installed from a checkout, doctor checks Rust and Cargo input timestamps and compares the installed binary with that checkout's build, from any directory. Release downloads skip this build check. Build with `cd tui && cargo build --release`; installation takes the newer of `tui/target/release/cs-tui` and `bin/cs-tui`.
 
-## Session Structure
+### Adopt an existing project
 
-```
-~/.claude-sessions/<session-name>/
-├── .cs/                    # Session metadata
-│   ├── README.md           # Objective, environment, outcome
-│   ├── memory/             # Claude Code auto memory + per-actor narrative.<actor>.md lab notebooks
-│   ├── narrative-archive/  # Rotated narrative sections, one immutable chunk per rotation per actor
-│   ├── plans/              # Claude Code plans
-│   ├── timeline.jsonl      # Session event log (starts, ends, checkpoints)
-│   ├── checkpoints/        # Labelled narrative snapshots (/checkpoint)
-│   ├── handoffs/           # Conversation rotation handoffs (rotate skill); .cs/private/handoffs in an encrypted session
-│   ├── brief.md            # Brief from cs -spawn --brief / the feature skill, when spawned with one
-│   └── local/              # Machine-local state + session.log (gitignored)
-├── .claude/
-│   └── settings.local.json # Redirects auto memory into .cs/memory
-├── CLAUDE.local.md         # Session protocol for Claude (machine-local, gitignored)
-└── [your project files]    # Clean workspace
-```
+Run `cs -adopt my-project` inside the project. cs adds `.cs/`, a sessions-root symlink, and gitignored `CLAUDE.local.md` without moving the project or changing your `CLAUDE.md`.
+Adoption commits nothing and preserves an existing index. Without git, it initializes branch `main`. It lists pending `.cs/`, `.gitignore`, and `.gitattributes` changes.
+Recorded `cs_mode: tracked` requires `.cs/` committed before creating features. Existing `.cs/` ignore rules select `ignored` mode instead, with feature exclusions in `.git/info/exclude`. You can edit the mode in `.cs/local/state`.
+Before writing, adoption refuses outward symlinks at `.gitignore`, `.gitattributes`, or `CLAUDE.local.md`, and tracked files under `.cs/local` or `.cs/private`. Existing orphaned `.cs/` records need confirmation. `--yes` or `-y` skips that question; unattended adoption without it refuses.
+Adoption offers the newest native conversation in the unchanged directory, or starts fresh when none exists. It seeds `Objective` from the first eligible prompt, skips slash commands and prompts under eight characters, and clips at 100 characters. Without a conversation it leaves the placeholder.
+`cs -adopt --worktrees` registers this repository's `.claude/worktrees/*` with conversations as `<repo>.<worktree>`, retaining their conversation and `Objective`. It hides cs files through local exclusions, commits nothing, and leaves tracked `CLAUDE.md` alone.
+It skips missing conversations, tracked `CLAUDE.local.md` or `.claude/settings.local.json`, non-worktrees, and repository layouts with `HEAD` before `.git`. Reruns finish partial adoptions, add new worktrees, and prune deleted links. `--dry-run` writes nothing.
 
-`CLAUDE.local.md` carries the cs session protocol: it is machine-local and gitignored, cs regenerates it on each machine, and a user-owned `CLAUDE.md` is never touched.
+### Parallel worktrees
 
-Claude Code's [auto memory](https://code.claude.com/docs/en/memory) is redirected into `.cs/memory/` via the `CLAUDE_COWORK_MEMORY_PATH_OVERRIDE` env var (set at launch). This means auto memory is cleaned up with `cs -rm`.
+`cs myproj@fix-auth` creates branch `cs/fix-auth`; `cs myproj@perf` opens another independent feature. An already-open base offers existing features, a new feature, a forced launch, the picker, or cancellation.
+Each feature has its own conversation, color, task list, and recovery refs, and shares the base's secrets. The base needs a commit and, in tracked mode, committed `.cs/` records. A dirty base asks before branching from its last commit, or refuses without a terminal.
+When git ignores `.cs/`, the feature inherits memory topics, `MEMORY.md`, plans, and summary, but not narratives, local state, or timeline. [Session layout](docs/session-layout.md#merge-policy) explains record fusion and keeping the base's memory index.
+[`/feature <name>`](skills/feature/SKILL.md) writes a brief and runs `cs -spawn <base>@<name> --brief <file>`. The feature reads `.cs/brief.md` first, the base keeps working, and the result returns by mail. The model may invoke it; the spawn permission prompt remains.
+Use `cs <base> -features` for readiness and `cs <base> -finish <feature>` to open the base with [`/finish <feature>`](skills/finish/SKILL.md). Only the user invokes finish.
+Finish captures the feature commit, merges in a detached temporary worktree, fast-forwards the base, reports any GitHub pull request, and fuses session records. Ordinary feature branches use a merge with `--no-ff`.
+Finish runs no gate unless requested with `--gate`. It reports `gate skipped` only for an already-merged pull request with passing recorded merge checks and no extra base commits. A clean gate checkout lacks ignored dependencies, environment files, and build output; a gate needing them must install them, for example `-- sh -c 'npm ci && npm test'`.
+Finish can land work while the feature conversation runs, but retirement waits for it to close. Close it and rerun finish. No keystroke or signal closes the other session.
+Retirement commits nothing and refuses dirty or untracked work. Recreated build directories such as `node_modules`, `target`, and `.venv` go with the checkout. Other ignored files go to system trash, with each file or whole-directory count listed. It refuses if neither `trash` on macOS nor `gio trash` on Linux can preserve those files. Special files can also block retirement.
+Abandon with `cs -rm myproj@fix-auth`. See [feature records](docs/session-layout.md) for inherited copies and `.cs/features/<task>/` outcomes.
 
-## Advanced
+### Task queue and mail
 
-### Sharing a session between machines
+Bare `cs -queue` lists pending and completed tasks. `rm <n>` removes a pending task; `clear` empties it and stops draining. Outside a session, `cs <session> -queue add "..."` targets it; from another session, that becomes task mail requiring acceptance.
+`/queue <task>` adds even mid-turn. Bare `/queue` lists tasks and offers Start, Not yet, or Compact when idle. Start chooses this conversation, subagents, or workflows, with the workflow choice authorizing that tool. Without the cs mod, run `cs -queue start [subagents|workflow]` yourself.
+The drain takes tasks in listed order at turn boundaries, mirrors native tasks, and checks delegated results. Breakers park it at five failures, 85% context, or 85% 5-hour usage by default. `start` rearms it; `log` shows the journal. [Queue hooks](docs/hooks.md#narrative-remindersh-stop-filechanged-cwdchanged) document the scope rules, return digest, and configurable limits.
+Mail uses `--kind notify|task|text|result`. Task mail enters the queue only after `cs -queue accept <id>`. Bodies are at most 65,536 bytes; a lone `-` reads stdin. Unread bodies repeat in prompt context until read, at most five and truncated. This is same-machine mail without authenticated sender attribution.
+Each message has a thread and a sender copy. Replies infer the peer and reject a conflicting named target; thread views order by reply relationships rather than timestamps. [Session layout](docs/session-layout.md) describes atomic message files.
+A spawned session's completed queue drain mails the spawner. Only the spawned window takes a staged brief and tasks without asking; other opens within an hour show the seed and ask. See [spawn staging](docs/session-layout.md) and [mail wake limits](docs/configuration.md).
 
-Sessions are designed to be shared through git (push/pull the whole session directory). Everything cs writes automatically is partitioned so independent work on two clones merges cleanly:
+### Conversation rotation and wrap
 
-- **Machine-local state never syncs.** The Claude conversation UUID, session color, and resume timestamps (in `.cs/local/state`) and `session.log` live under gitignored `.cs/local/` — each machine binds its own conversation and keeps its own log. A launch guard refuses to run if `.cs/local/` ever becomes tracked.
-- **Append-only files union-merge.** `timeline.jsonl`, the per-actor `narrative.*.md` notebooks and the memory archive (`.cs/memory/reference_memory_archive.md`, the pointers `/wrap` moved out of `MEMORY.md`) carry `merge=union` in the session `.gitattributes`, so divergent appends interleave instead of conflicting.
-- **`MEMORY.md` resolves to the local copy** (`merge=ours`); each actor's pointer line is re-added idempotently on the next launch.
-- **Narrative rotation stays merge-safe.** `cs -narrative rotate` removes one interior run of sections and leaves the tail byte-identical, which is the only rewrite `merge=union` merges cleanly against a peer's append (renaming the file or truncating to EOF both resurrect the whole body — measured). Archive chunks are immutable and content-addressed, so two machines archiving the same sections produce the same file.
-- **Secrets sync per machine.** `cs -secrets export-file` writes `.cs/secrets.<machine-id>.age/.enc` — distinct files per machine instead of one shared encrypted blob whose bytes change every export — and `import-file` merges every sync file it trusts and can decrypt. Each machine signs its age file with its own ssh-ed25519 key, and an import takes an age file only when a key you pinned with `age add` signed it. See [docs/secrets.md](docs/secrets.md).
-- **What can still conflict is real content**: the README objective/outcome, memory entries, and your project files — places where two humans genuinely disagree and should reconcile by hand.
+Invoke `/rotate`, then `/clear` to continue from its handoff. The [hooks guide](docs/hooks.md) covers the automatic wake, context thresholds, Ctrl+X actions, wrap confirmation, and forced rotation countdown.
+At the next launch, `y` or Enter resumes, `r` starts from the handoff, `n` starts fresh, and `d` discards then resumes. Resume and fresh disarm the marker with a notice but leave the handoff pending. The launch card and plain resume prompt show the recorded context when the statusline supplies it.
+Cross-checkout handoffs carry a label and remain usable. Choosing one consumes it under the successor's identifier. Names must contain only letters, digits, `._@-`, and at most 160 characters. cs skips invalid names with a notice. A valid armed marker wins; otherwise the last unconsumed basename in lexical order wins.
+Compaction and context-limit forks preserve the marker. [Session layout](docs/session-layout.md) documents lineage-stamped handoffs, their marker, and encrypted storage.
+The rotate skill supersedes its earlier pending handoffs and prunes clean, tracked consumed, discarded, or superseded handoffs older than 30 days by `created:`, keeping the newest ten. No cs command prunes them. Git history retains removed files.
+Handoffs redact credentials, identifying data, and sensitive personal detail, put blockers first, reference committed work by path, and keep the user's words while condensing agent reasoning.
+`cs -conversations` folds starts with resume counts and marks the current conversation. Rotation events name the old and new identifiers and a reason, `handoff`, `declined-resume`, `resume-failed`, or `rebind`.
+`/wrap` saves durable memory, sweeps findings into the narrative, writes `.cs/summary.md`, rotates the narrative, and archives completed tasks with consent. It checks memory pointers and budgets, moves finished or enforced-rule pointers to the memory archive before rewording, and keeps entries while adding tasks for checks that could enforce them. It commits nothing. `/checkpoint <label>` saves a snapshot mid-session.
+See [memory checks](docs/hooks.md#memory-index-guardsh-not-a-hook--run-by-wraps-memory-pass), [task archives](docs/session-layout.md), and [narrative budgets](docs/configuration.md).
 
-One caveat: the custom `merge=ours` driver is per-clone git config, installed by every `cs <name>` launch and never written anywhere wider. If you pull on a brand-new clone *before* ever launching the session through cs, `MEMORY.md` falls back to an ordinary text merge. `cs -doctor` warns when the clone it runs in lacks the driver.
+### Remote control
 
-### Parallel feature worktrees
+`cs <name> --remote [--permission-mode <mode>]` serves the session through `claude remote-control --name <name>` for the Claude app or claude.ai/code. Requires Claude Code 2.1.299+ and a full login; cs clears `ANTHROPIC_API_KEY`.
+Its app and web children use the session's hooks, memory, tasks, and secrets. Live listings show `remote` and the server process identifier, and doctor reports the server.
+cs checks that the first word of `CLAUDE_CODE_BIN` identifies Claude Code. Explicit permission mode wins; otherwise it carries the configured mode, maps `--dangerously-skip-permissions` to `bypassPermissions`, or uses `default`. It drops `--allow-dangerously-skip-permissions` with a notice. cs refuses other options and wrappers such as `op run -- claude` by name.
+Inside tmux, the server gets `remote:<name>` in the cs tmux session and preserves the invoking root and Claude command. Otherwise it uses the current terminal. First-run trust questions require a terminal. `--spawn=same-dir` keeps child sessions in this directory; an encrypted session has its own config trust prompt.
+The first child leads, simultaneous children remain guests, and a later child becomes lead after the lead exits. Children keep the remote window or `cs: <name> (remote)` tab title. A staged spawn seed waits for the next ordinary open.
+Stop with Ctrl+C or close the window. A forced kill can leave a child and stale marker; doctor clears a marker whose process no longer serves. Restart can reattach the old cloud session with its old title. See [remote state](docs/session-layout.md).
 
-Work two features on one session at the same time, each in its own Claude
-conversation:
+### Shell completion
 
-    cs myproj@fix-auth     # creates a git worktree of myproj on branch cs/fix-auth
-    cs myproj@perf         # a second, independent working copy
+For Bash, add this to `~/.bashrc`:
 
-You don't have to remember the syntax: typing `cs myproj` while that session
-is already open offers to open one of its existing features, start a new
-parallel feature, force a second launch, open the session manager to pick a
-different session, or cancel. A worktree session also
-knows what it is: Claude is told at launch that it runs in a feature worktree,
-that `/finish <feature>` in the base session integrates the work and then
-retires this worktree once its conversation is closed, so it won't merge or
-delete the branch by hand. When the repo does not track `.cs/`, git cannot
-carry the base's session context, so cs copies the base's memory topics,
-`MEMORY.md`, `.cs/plans/` and `.cs/summary.md` into the new worktree; never
-its narratives, `.cs/local/` or the timeline. A base needs at least one
-commit, and one whose `.cs/local/state` says `cs_mode: tracked` (adopt and
-the flat-layout migration write it) also needs its `.cs/` committed. cs
-refuses a feature otherwise and says which.
-
-The `finish` skill (`/finish <feature>` in the base session) lands a feature
-and retires its worktree: it captures the feature commit, merges base and
-feature in a temporary detached worktree, runs no tests there unless you ask with `/finish <feature> --gate` (then it runs the repo's gates, skipped and reported as `gate skipped` when the PR is already merged, the checks origin recorded on its merge commit passed, and the base carries no commits of its own on top of it; the gate runs in a clean checkout without gitignored dependencies, `.env` or build output, so one that needs them installs them first, for example `-- sh -c 'npm ci && npm test'`),
-fast-forwards the base onto the result, reports whether a GitHub PR exists
-for the branch, then fuses the worktree's session records into the base and
-removes the worktree and branch. The base keeps its own `MEMORY.md` and gains
-each feature pointer whose target topic it does not index yet, in `MEMORY.md`
-or in its memory archive, so a pointer the base moved into the archive stays
-out of its `MEMORY.md`. That last step needs the feature
-conversation closed, because a directory cannot be removed from under a
-running Claude: while it is open, `/finish` lands the work, says so in plain
-words, and you close that session and run `/finish <feature>` again. Nothing
-is ever removed by a keystroke or signal into the other session. Ordinary
-feature branches get the older `--no-ff` ritual from the same skill, gated the same way. It
-is user-invoked only (`disable-model-invocation: true`). With the cs mod
-loaded, `/finish` toasts when it starts and when it lands, retires or refuses,
-and while the gate runs (with `--gate`) the band above the prompt shows the
-task and how long the gate has run.
-
-The `feature` skill (`/feature <name>` in any cs session) is the other end:
-it writes a brief from the conversation (goal, done-when, constraints, how to
-report back) and runs `cs -spawn <base>@<name> --brief <file>`, so the
-feature opens as a parallel worktree session in the cs tmux session and reads
-its brief at `.cs/brief.md` before its first turn. The base session keeps
-working; the result arrives as `cs -msg` mail, and `/finish <name>` lands it.
-The model may invoke it, and the permission prompt on `cs -spawn` is the
-user's confirmation that a worktree, a branch and a window are about to
-exist. That window is the only open that takes the staged brief and tasks
-without asking; it carries the seed's token in `CS_SPAWN_TOKEN`.
-
-Each worktree is a full cs session (own conversation, color, crash
-recovery, task list) that shares the base session's secrets.
-
-Retirement never commits your work for you: it refuses dirty checkouts and
-untracked files and tells you what to commit. Git-ignored files do not block it. Those
-under a directory a build or install recreates (node_modules, target, .venv
-and the like) go with the worktree. Retirement moves every other ignored file,
-a `.env` or a local database, to the system trash first and lists each file
-it moved, and each directory it moved whole with its file count
-(`trash` on macOS, `gio trash` on Linux; with neither it refuses and removes
-nothing). Creating a feature from a base with uncommitted changes asks
-before branching from the last commit (interactive sessions) or refuses
-(scripts). Abandon a feature with `cs -rm myproj@fix-auth`. Repos that
-gitignore `.cs/` get a per-worktree `.cs/` whose records are fused into the
-base at retirement; a README or summary the feature changed lands in
-`.cs/features/<task>/`, beside the base's own. Requires git >= 2.22.
-
-### Task queue
-
-Queue up prompts and step away — cs drains them on its own at turn
-boundaries, once you've confirmed:
-
-```bash
-cs -queue add "refactor the parser"   # add a task (or: cs <session> -queue add "..." from a terminal outside any session; from another session it arrives as task mail)
-cs -queue accept <id>                 # queue a task another session mailed (cs -msg shows the id)
-cs -queue                             # or `cs -queue list` — show pending + completed tasks
-cs -queue rm 2                        # remove pending task 2
-cs -queue clear                       # empty the queue and stop draining
-cs -queue log                         # Walk-away run journal (tasks done, breaker trips)
-```
-
-When tasks are queued and nothing is running them, the `cs` mod's band
-above the prompt shows a `▤ queue N · start` key. Press it and cs asks whether
-to work through them (Start, Not yet, or Compact, which compacts the
-conversation and then starts) and how: in this conversation, each task in a
-subagent, or each task as a workflow (choosing workflows is your go-ahead
-for Claude Code's Workflow tool). A turn that ends with tasks waiting is not
-stopped to ask. Start
-drains every task in order (FIFO, top to bottom) at each stop boundary with
-no further prompts until the queue is empty. Not yet runs nothing and the
-key stays. There's no
-mid-drain pause — once started it runs to the end, trusting Claude Code's
-own auto-compact. As it drains, cs instructs Claude to mirror the queue
-into the native task list so progress stays visible, and hands each task
-over with its scope: do what the task asks, leave a pre-existing bug or
-unmentioned behavior as a follow-up in the narrative, and state the reading
-taken of an ambiguous task. In subagent or workflow mode each handed task
-also says to run it that way and to check the result before marking it
-done. (The key runs `cs -queue start` (with `subagents` or `workflow`) on
-your behalf. With `CS_NO_FUNCTION_HOOKS=1` there is no band, so run it
-yourself.)
-
-Inside a cs session, `/queue <task>` does the same as `cs -queue add` without
-leaving Claude Code, and runs at once even while Claude is mid-turn. A toast
-under the prompt confirms each add (`cs: queued: <task>`, cut at 60
-characters). `/queue`
-alone prints `cs -queue list` and, when tasks are pending and the queue is not
-already running, asks whether to start them. Start arms the queue (and starts
-a turn if Claude is idle, so the first task arrives); Not yet runs
-nothing; Compact compacts the conversation first, then
-starts the queue as Start does. It comes from the `cs` mod, so
-`CS_NO_FUNCTION_HOOKS=1` withholds it.
-
-In the session picker (`cs` with no argument), the right pane shows a
-**To-Do** panel for the highlighted session: press `Tab` to focus its
-input, type a task and press `Enter` to queue it; `Down` moves into the
-list where `d` deletes and `e` edits a task in place, and `Esc` returns
-to the session list. Sessions with queued tasks get a sortable **Queue**
-column (`▰▱` meter and count) in the table, and the status line shows `▤ N`
-after the session name.
-
-### Conversation rotation
-
-A long-running conversation eventually gets too heavy to keep working in —
-context fills up, or a work phase just wraps. Rotation hands off to a fresh
-conversation without losing the thread:
-
-```bash
-cs -conversations                     # show this session's conversation chain
-```
-
-Invoke the `rotate` skill yourself, or accept it when the narrative-reminder
-nudges you (see below). It distills the live conversation into a
-lineage-stamped handoff — parent UUID, purpose, and a continuation plan —
-writes it to `.cs/handoffs/YYYY-MM-DD-<slug>.md` (cs never commits it), and arms it by naming it in
-`.cs/local/pending-handoff`. Any earlier handoff of its own that is still
-pending is flipped to `superseded`, and the skill also prunes spent ones as it
-goes: it deletes a `consumed`, `discarded` or `superseded` handoff older than 30
-days by its `created:` date, unless it is among the 10 newest in the store. That
-pass is part of the skill's instructions rather than something cs runs — no cs
-command deletes a handoff — so the directory only shrinks when you rotate. Git
-history keeps every file the pass removes. The conversation keeps running;
-nothing has ended yet. An [encrypted session](docs/session-layout.md#encrypted-sessions)
-keeps the handoff and the marker in `.cs/private/` and commits neither.
-
-Because you may commit the handoff and it becomes the next conversation's opening
-prompt, the skill redacts credentials, identifying data and sensitive
-personal detail such as health notes out of it (name the secret's purpose
-and its `cs -secrets get` key instead, and point at where the detail lives),
-leads Next Step with anything that is waiting on you, references
-committed work by path rather than re-summarising it, and keeps what you
-said close to your own words while condensing its own reasoning.
-
-Then rotate with **`/clear`**. The fresh conversation reads the handoff,
-reconciles the native task list it inherited with it (cs keys that list to
-the session, not the conversation, and opts every model into the Task tools;
-`CS_NO_TASK_TOOLS=1` leaves that to Claude Code), and continues from its next-step
-section — the old transcript is not loaded. It starts on its own: a moment
-after the `/clear`, the session wakes itself into the handoff's next step with
-nothing typed. The wake writes a kick file every `CS_ROTATION_KICK_DELAY`
-seconds (2 by default), up to 30 times, until one lands. `CS_NO_ROTATION_WAKE=1`
-makes the fresh conversation wait for your next message instead.
-
-If you would rather stop for the day, the handoff stays armed and the next
-`cs <name>` launch lists the handoff answers under the launch card, one per row:
-
-```
-Rotation handoff pending: 2026-07-16-continue-f5-plan.md
-
-    y  resume          continue the previous conversation · default
-    r  from handoff    fresh conversation that picks up the handoff
-    n  fresh           fresh conversation; the handoff waits for later
-    d  discard         retire the handoff, then resume
-
-    ›
-```
-
-The launch card's context row says how full the last conversation in this session got, so
-the choice between `y` and `r` is not made blind. It reads the figure
-cs-statusline stamps on every render (`.cs/local/context-pct`), so it appears
-only where the status line is installed, and it is shown on the plain `[Y/n]`
-prompt too. The stamp is keyed by session, not by conversation — with a second
-conversation open here (a teammate, or one started outside cs) the figure is
-whichever rendered most recently, which is why the line says "here" rather than
-naming the conversation you are resuming.
-
-`r` rotates the same way and hands the fresh conversation a first prompt, so it
-starts on the handoff without you typing anything, as a `/clear` rotation does
-through its wake. `Y` (or Enter) resumes as usual and
-`n` starts fresh — both disarm the marker and say so, leaving the handoff
-itself pending so a later rotate can re-arm it. `d` discards the handoff
-outright. A handoff this checkout never wrote is labelled `(from another
-checkout)` at the prompt — it is still offered, because continuing your own
-rotation from a second machine is a working flow, but `r` on a colleague's live
-handoff consumes their artifact under your UUID, so the offer says whose it is.
-cs offers only a handoff whose file name is plain (letters, digits and `._@-`,
-at most 160 characters); it passes over any other and says so in one line.
-An armed marker names the handoff to offer; without one, or when it names a
-spent, missing or not plain file, the lexicographically last unconsumed basename wins — the `YYYY-MM-DD-` prefix makes that the newest. The marker takes
-precedence because `.cs/handoffs/` is shared and nothing deletes a handoff: a
-co-worker's file stays unconsumed indefinitely, and sorting last it would
-otherwise shadow the rotation this checkout armed.
-
-A compaction or a context-limit fork between arming and rotating leaves the
-marker alone, so a pending rotation survives either.
-
-At 40% context, the narrative-reminder Stop hook surfaces a
-once-per-conversation heads-up so you can steer toward a natural stopping
-point (`CS_CTX_WARN_CTX` overrides it; the warning stays silent at or above
-the nudge threshold, where rotation takes over). At 65% context, the same
-hook nudges once per conversation to invoke the rotate skill
-(`CS_ROTATE_NUDGE_CTX` overrides the threshold; a non-numeric value falls
-back to 65). Both tiers yield to an armed or draining task queue, which
-owns the turn loop while it runs. At 80% the `cs` mod rotates the
-conversation itself: it runs `/rotate`, then counts down 20 seconds to the
-`/clear` (`1` goes now, any prompt stops it). `CS_ROTATE_FORCE_CTX=off`
-turns that off and a percentage moves it; the first launch on a machine
-prints one notice saying so.
-
-Every rotation, deliberate or not, appends a `rotated` event to
-`.cs/timeline.jsonl` with the old and new conversation UUIDs and a reason:
-`handoff` (a `/clear` or `r` rotation, naming the handoff), `declined-resume`
-(`n` at the resume prompt),
-`resume-failed` (`--resume` errored and cs fell back to fresh),
-or `rebind` (SessionStart found a UUID mismatch — Claude Code forked a new
-conversation, e.g. past its own context limit). `cs -conversations` reads
-this log and renders each conversation's `started` events (folded into a
-single line with a resume count) and each `rotated` event as a `from > to`
-arrow, marking the live conversation `[current]`.
-
-### Live sessions & status
-
-See which cs sessions are running right now on this machine — PID-locked or
-breathing via the statusline heartbeat, so conversations opened outside cs
-appear too — and let each one say what it's working on:
-
-```bash
-cs -live                       # list live sessions: name, actor, uptime, agent state, status
-cs -status "refactoring auth"  # set this session's status
-cs -status                     # show this session's status (falls back to the README objective)
-cs -status --clear             # clear it (revert to the objective)
-```
-
-Liveness is a local fact — a session is "live" when its `.cs/session.lock`
-names a running process on this machine, or when its statusline heartbeat is
-fresh (`.cs/local/context-pct` written within the last 900 seconds), the same
-two signals the TUI uses. There is no
-network or cross-machine presence. A session that never sets a status shows its
-README objective instead.
-
-## Slash Commands
-
-- `/wrap` — The end-of-session command: distills the session into durable auto-memory entries (strict bar) and sweeps findings into the narrative, checking its `MEMORY.md` rewrites for removed and dangling links and the byte and line budgets, moving pointers for finished subjects or rules a check now enforces into `.cs/memory/reference_memory_archive.md` before it rewords any, and, when a check could enforce a rule an entry states, adding a task to build that check and keeping the entry; writes the narrative summary to `.cs/summary.md`; runs `cs -narrative rotate`; archives completed task rows. It commits nothing
-- `/checkpoint <label>` — Save a labelled state snapshot (narrative, changes, git HEAD)
-- `/queue <task>` — Add a task to this session's walk-away queue through `cs -queue add`, even mid-turn; `/queue` alone lists the queue and offers to start pending tasks (from the `cs` mod)
-- `/cs-update` — Open the release notes for a pending cs update, with `1` to install it (from the `cs-update` mod)
-
-## Shell Completion
-
-Tab completion for session names and commands is installed automatically. To enable it:
-
-**Bash** - Add to `~/.bashrc`:
 ```bash
 [[ -f ~/.bash_completion.d/cs.bash ]] && source ~/.bash_completion.d/cs.bash
 ```
 
-**Zsh** - Add to `~/.zshrc` (before `compinit`):
+For Zsh, add this to `~/.zshrc` before `compinit`:
+
 ```bash
 fpath=(~/.zsh/completions $fpath)
 autoload -Uz compinit && compinit
 ```
 
-Then restart your shell or run `source ~/.bashrc` / `source ~/.zshrc`.
+Restart the shell or source its configuration. `cs <TAB>` offers sessions and flags; `cs home<TAB>` completes a matching session; `cs -<TAB>` offers global flags; `cs session -secrets <TAB>` offers secrets actions. Names come from cs and include adopted symlink sessions, matching `cs -list`.
 
-Completions support:
-- Everything at once: `cs <TAB>` → every session name plus the global flags
-- Session names: `cs home<TAB>` → `cs homeassistant`, including sessions adopted by symlink from elsewhere on disk
-- Global flags: `cs -<TAB>` → `-list`, `-secrets`, etc.
-- Secrets commands: `cs session -secrets <TAB>` → `set`, `get`, `list`, etc.
+### Installation, updates, and settings
 
-Session names come from `cs` itself, so tab completion always matches what `cs -list` shows.
+The binaries are `cs`, `cs-secrets`, `cs-statusline`, `cs-subagent-statusline`, and `cs-tui`. Hooks live in `~/.claude/hooks/cs/`; `/checkpoint`, `/wrap`, their memory and summary passes, the six skills, and the three mods install under `~/.claude/`.
+The skills are `store-secret`, `prose-hygiene`, `rotate`, `finish`, `feature`, and `write-as-me`. The mods are `cs`, `cs-update`, and `cs-mermaid`. See [hook and mod behavior](docs/hooks.md) and [rotate and wrap keys](docs/configuration.md#rotate-and-wrap-keys).
+Settings changes create mode-preserving sibling backups named `settings.json.cs-bak.<UTC stamp>`, with numbered collision suffixes. Unchanged writes create none, and cs retains the five newest backups.
+The `.installed` record under the hook directory stores SHA-256 checksums. Install, update, and uninstall replace or remove only cs-written content, including content shipped by a past release without a record, and list preserved user files with `Kept <path>` warnings.
+Retired user files warn once per content, except paths containing newlines cannot enter the record and warn each time. FIFOs, devices, and links to them stay unread. Symlinked skill directories stay untouched. Retired commands disappear only when cs wrote them. Content checking and replacement are separate operations; a concurrent rewrite can occur between them.
+`.tui-origin`, beside `.version` and outside `.installed`, records `checkout <path>` or `release` for doctor's picker check. Installing no picker or preserving your own picker link leaves it unchanged; uninstall removes it.
+Updates come from GitHub Releases with SHA-256 verification and [minisign](https://jedisct1.github.io/minisign/) verification when available. `cs -update --check` prints the full pending notes. A launch uses a compact update card when you disable function-hook mods; otherwise the [update mod](docs/hooks.md#cs-update-not-a-hook-script--a-claude-code-mod) shows them.
+For defaults and overrides, see [configuration](docs/configuration.md). `CS_SESSIONS_ROOT` defaults to `~/.claude-sessions`; cs and cs-secrets resolve a relative value from their startup directory.
 
-## Configuration
+### Writing, terminal integration, and Markdown notes
 
-cs runs with sensible defaults and needs no configuration. The one you're most likely to set is the sessions directory:
+[`prose-hygiene`](skills/prose-hygiene/SKILL.md) judges a draft against phrase, structure, and voice rules with a scoring rubric.
+[`/write-as-me`](skills/write-as-me/SKILL.md) drafts messages, replies, pull requests, and docs in your voice. First use builds an editable profile from typed transcript messages at `~/.claude-sessions/.voice/profile.md`. Supplementary writing in `.voice/sources/*.md` joins the corpus on each build.
+With [claude-council](https://github.com/hex/claude-council) or the codex plugin installed, the Stop hook offers decision-point advice and review. See [advisor behavior](docs/hooks.md#narrative-remindersh-stop-filechanged-cwdchanged) for consent and reminder limits.
+cs redirects [Claude Code auto memory](https://code.claude.com/docs/en/memory) into `.cs/memory/`; the harness owns memory-file format and cs owns the storage path. See [memory records](docs/session-layout.md).
+In iTerm2, cs tints the tab with the session color and resets it on exit. Shell integration enables a finished-turn dock bounce until the next prompt; tmux adds progress and a Claude title icon. [Configuration](docs/configuration.md) covers the opt-out, and doctor reports the integration state.
+The sessions root contains Markdown notes and an `index.md` regenerated on session end. Session README frontmatter has `status`, `created`, `tags`, and `aliases`; conversation identifiers and activity state stay machine-local. See [session layout](docs/session-layout.md) before opening this directory in [Obsidian](https://obsidian.md).
+For git sharing, see [merge policy](docs/session-layout.md#merge-policy) and [signed, per-machine secrets sync](docs/secrets.md), including [age](https://github.com/FiloSottile/age) exports. Launch installs the per-clone memory merge driver; pulling before the first launch uses ordinary text merging, and doctor warns when the driver is missing.
+For secrets commands, examples such as `cs my-project -secrets list`, storage backends, and live-session write restrictions, see the [secrets guide](docs/secrets.md). Named narrative rotation refuses another live session except a base's own features. `--force` bypasses neither guard.
 
-```bash
-export CS_SESSIONS_ROOT="/path/to/sessions"   # default: ~/.claude-sessions
-```
+</details>
 
-cs and cs-secrets take a relative path from the directory they start in.
-
-For the full list — secrets backend, theme detection, status-line segments, Nerd Font icons, and the variables cs sets for you at launch — see [docs/configuration.md](docs/configuration.md).
-
-## Documentation
-
-- **[Configuration](docs/configuration.md)** - Every environment variable cs reads and the ones it sets for you
-- **[Session layout](docs/session-layout.md)** - The `.cs/` directory schema: shared vs machine-local files and merge policy
-- **[Hooks](docs/hooks.md)** - How the Claude Code hooks work
-- **[Secrets](docs/secrets.md)** - Secure secrets handling and storage backends
-- **[Statusline](docs/statusline.md)** - The cs status line: segments, colors, configuration
-
-## Obsidian Integration
-
-Open `~/.claude-sessions/` (or your `CS_SESSIONS_ROOT`) as an [Obsidian](https://obsidian.md) vault for a visual dashboard over all sessions.
-
-**What works out of the box:**
-- Full-text search across all sessions
-- Graph view showing session connections via standard markdown links
-- `index.md` at the vault root listing all sessions (auto-generated on session end)
-- YAML frontmatter in each session's `.cs/README.md` with `status`, `created`, `tags`, and `aliases` (machine-local values like the Claude session UUID live in gitignored `.cs/local/state`, so shared sessions never merge-conflict on automated writes)
-
-**Recommended plugins:**
-- **[Dataview](https://github.com/blacksmithgu/obsidian-dataview)** - Query sessions by frontmatter (status, tags, dates)
-- **[Projects](https://github.com/marcusolsson/obsidian-projects)** - Kanban/calendar views over session frontmatter
-- **[Juggl](https://github.com/HEmile/juggl)** - Graph views from YAML relationships (no wikilinks needed)
-
-**Example Dataview queries** (paste into any note):
-
-Active sessions sorted by last activity (file mtime — activity dates are no
-longer stored in frontmatter, they are machine-local):
-````markdown
-```dataview
-TABLE status, tags, file.mtime AS "last activity"
-FROM "."
-WHERE file.name = "README" AND status = "active"
-SORT file.mtime DESC
-```
-````
-
-Stale sessions (not touched in 7+ days):
-````markdown
-```dataview
-LIST
-FROM "."
-WHERE file.name = "README" AND status = "active"
-  AND file.mtime <= date(today) - dur(7 days)
-```
-````
-
-**Graph view tip:** In Obsidian's graph settings, add `.cs/local` to the folder exclusion filter to reduce clutter.
-
-## Uninstalling
+## Uninstall
 
 ```bash
 cs -uninstall
 ```
 
-## See also
+## Documentation
 
-- [iTerm2-dimmer](https://github.com/hex/iTerm2-dimmer) -- dims noisy hook output (TASKMASTER) in iTerm2 so it doesn't clutter the screen
+| Guide | Contents |
+|---|---|
+| [Configuration](docs/configuration.md) | Every environment variable cs reads and the values it exports. |
+| [Session layout](docs/session-layout.md) | Shared and local records, encryption, and merge policy. |
+| [Hooks](docs/hooks.md) | Hook behavior, prompt rewriting, and Claude Code mods. |
+| [Secrets](docs/secrets.md) | Storage backends, backups, and signed sync files. |
+| [Statusline](docs/statusline.md) | Segments, colors, thresholds, and agent rows. |
 
 ## License
 
-MIT
-
-## Contributing
-
-Contributions welcome! Please open an issue or PR.
+[MIT](LICENSE). Contributions can start with an issue or pull request.
