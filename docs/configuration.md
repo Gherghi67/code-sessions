@@ -9,6 +9,59 @@ and helper binaries. It deliberately excludes test seams and internal state —
 values cs computes and passes to itself, which change without notice and are
 documented in the code that reads them.
 
+## Installation, updates, and settings
+
+### Installed components
+
+The installer deploys these components:
+
+| Component | Names and location |
+|---|---|
+| Binaries | `cs`, `cs-secrets`, `cs-statusline`, `cs-subagent-statusline`, and `cs-tui` in `~/.local/bin/`. |
+| Hooks and wrap passes | `~/.claude/hooks/cs/`, including the memory and summary passes that `/wrap` reads. |
+| Commands | `/checkpoint` and `/wrap` in `~/.claude/commands/`. |
+| Skills | `store-secret`, `prose-hygiene`, `rotate`, `finish`, `feature`, and `write-as-me` in `~/.claude/skills/`. |
+| Mods | `cs`, `cs-update`, and `cs-mermaid` in `~/.claude/skills/`. |
+
+See [hook and mod behavior](hooks.md) and [rotate and wrap keys](#rotate-and-wrap-keys).
+
+### Settings backups
+
+- Settings changes create sibling backups named `settings.json.cs-bak.<UTC stamp>` and preserve the original file mode.
+- Backups with the same timestamp get numbered suffixes.
+- Unchanged writes create no backup.
+- cs retains the five newest backups.
+
+### Installed content and user files
+
+- The `.installed` record in `~/.claude/hooks/cs/` stores SHA-256 checksums.
+- Install, update, and uninstall replace or remove only content cs wrote, including content shipped by a past release without a record.
+- User files stay in place and appear in `Kept <path>` warnings.
+
+Preserved files have these rules:
+
+- Retired user files warn once per content. Paths with newlines cannot enter the record and warn each time.
+- FIFOs, devices, and links to them stay unread.
+- Symlinked skill directories stay untouched.
+- Retired commands disappear only when cs wrote them.
+- Content checking and replacement are separate operations. A concurrent rewrite can occur between them.
+
+### Picker origin
+
+| Record | Behavior |
+|---|---|
+| `.tui-origin` | Sits beside `.version`, outside `.installed`, and records `checkout <path>` or `release` for doctor's picker check. |
+| No picker installed | The origin stays unchanged. |
+| User's picker link preserved | The origin stays unchanged. |
+| Uninstall | Removes `.tui-origin`. |
+
+### Release verification and notes
+
+- Updates come from GitHub Releases with SHA-256 verification.
+- [minisign](https://jedisct1.github.io/minisign/) verification runs when both minisign and a release signature are available.
+- `cs -update --check` prints the full pending release notes.
+- The [in-session switches](#in-session-switches) describe the compact launch card and the [update mod](hooks.md#cs-update-not-a-hook-script--a-claude-code-mod).
+
 ## Environment variables you set
 
 ```bash
@@ -218,12 +271,14 @@ export CS_NO_MAIL_WAKE="1"
 export CS_ROTATION_KICK_DELAY="2"   # this is the default
 export CS_NO_ROTATION_WAKE="1"
 
-# Disable the iTerm2 attention bounce (the dock bounce a finished turn starts,
-# and the attention marker the status line reads). The tab tint is NOT gated by
-# this: set_tab_title emits the iTerm2 escapes unconditionally at launch, and
-# the colour resets when the session exits. Under tmux it also starts claude
-# as found on PATH and with tmux's TERM_PROGRAM, so the tab gets no progress
-# line and no Claude icon.
+# Disable the iTerm2 attention bounce (the dock bounce a finished turn starts
+# with shell integration, until the next prompt, and the attention marker
+# the status line reads). The tab tint uses the session color and is NOT gated
+# by this: set_tab_title emits the iTerm2 escapes unconditionally at launch,
+# and the colour resets when the session exits. Under tmux it also starts
+# claude as found on PATH and with tmux's TERM_PROGRAM, so the tab gets no
+# progress line and no Claude icon. Unset, cs enables both under tmux.
+# cs -doctor reports the integration state.
 export CS_NO_ITERM2="1"
 
 # Leave the Task tools to Claude Code's model default. A cs launch exports
@@ -356,7 +411,7 @@ process and its hooks can find the session:
 - `CLAUDE_SESSION_DIR` - Full path to the session directory (workspace root)
 - `CLAUDE_SESSION_META_DIR` - Path to the `.cs/` metadata directory
 - `CLAUDE_CODE_TASK_LIST_ID` - Set to the session name for task list persistence; a feature worktree gets its own list under its `base@task` name, not the base's
-- `CLAUDE_CODE_AUTO_MEMORY_PATH` / `CLAUDE_COWORK_MEMORY_PATH_OVERRIDE` - Redirect Claude Code's auto-memory writer into `<session>/.cs/memory/`
+- `CLAUDE_CODE_AUTO_MEMORY_PATH` / `CLAUDE_COWORK_MEMORY_PATH_OVERRIDE` - Redirect [Claude Code auto memory](https://code.claude.com/docs/en/memory) into `<session>/.cs/memory/`. Claude Code owns the memory-file format and cs owns the storage path. See [memory records](session-layout.md#shared-files).
 - `CS_BIN` - Exported by every cs launch, never set by hand: the absolute path of the running cs, replacing any value inherited from a parent launch. The mods run cs through it (`cs -update`, `/queue`), since the claude process's `PATH` is not the launching shell's
 - `CS_UPDATE_AVAILABLE` - Exported by a cs launch, never set by hand: the version a newer cs was found at. The cs-update mod reads it to draw the release-notes pane. Absent when nothing is pending
 - `CS_LIVE_LOCK_PID` - Set only for `.cs/local/pre-open`, never by hand: the pid in `.cs/session.lock` when that pid is a running process, empty otherwise. A pre-open reads it to tell whether the session is running instead of reading the lock (see [session-layout.md](session-layout.md))
