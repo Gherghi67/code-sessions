@@ -436,6 +436,31 @@ test_open_names_the_files_it_changed_under_one_header() {
         || { echo "  FAIL: an open that changed nothing printed the header"; cat "$TEST_TMPDIR/notice-block.out"; return 1; }
 }
 
+# A line that is not a row, here the warning about a colour the README names,
+# ends the block: the next row starts a new one under its own header.
+test_open_heads_the_rows_after_a_warning_again() {
+    local dir out
+    dir=$(_fresh_session "notice-split")
+    grep -vxF '.cs/session.mutex.lock' "$dir/.gitignore" > "$dir/.gitignore.new" && mv "$dir/.gitignore.new" "$dir/.gitignore"
+    git -C "$dir" commit -qm "drop a lock rule" -- .gitignore || { echo "  FAIL: fixture commit"; return 1; }
+    awk 'NR == 1 { print; print "claude_session_color: chartreuse"; next } { print }' "$dir/.cs/README.md" > "$dir/.cs/README.new" \
+        && mv "$dir/.cs/README.new" "$dir/.cs/README.md"
+    awk 'index($0, "claude_session_color:") != 1' "$dir/.cs/local/state" > "$dir/.cs/local/state.new" \
+        && mv "$dir/.cs/local/state.new" "$dir/.cs/local/state"
+    _reopen_with_migration "notice-split"
+    out=$(grep -vE '^(Unarchived|$)' "$TEST_TMPDIR/notice-split.out" \
+        | awk -v h="$NOTICE_HEADER" '$0 == h || /^  / || /^ignoring / { print }' \
+        | sed -E 's/^(  \.cs\/local\/state  backfilled claude_session_color) \([a-z]+\)$/\1 (COLOUR)/')
+    assert_eq "$(printf '%s\n' "$NOTICE_HEADER" \
+            '  .gitignore       ignores .cs/session.mutex.lock' \
+            '                   → tracked file: commit it with your next change' \
+            "ignoring claude_session_color in .cs/README.md: not one of claude's colours" \
+            "$NOTICE_HEADER" \
+            '  .cs/README.md    machine-local fields moved to .cs/local/state or dropped' \
+            '  .cs/local/state  backfilled claude_session_color (COLOUR)')" \
+        "$out" "the warning ends one block and the next row heads another" || return 1
+}
+
 # The line cs wrote pointing at /summary, either wording, becomes the /wrap
 # sentence; a second open changes nothing.
 test_open_rewrites_each_summary_line_cs_wrote() {
@@ -743,6 +768,7 @@ run_test test_appended_cue_block_matches_the_template
 run_test test_open_rewrites_each_four_option_cue_cs_wrote
 run_test test_open_drops_the_sweep_and_summary_sentence_from_each_wrap_line_cs_wrote
 run_test test_open_names_the_files_it_changed_under_one_header
+run_test test_open_heads_the_rows_after_a_warning_again
 run_test test_open_leaves_an_edited_cue_and_wrap_line_alone
 run_test test_open_rewrites_each_summary_line_cs_wrote
 run_test test_open_leaves_an_edited_summary_line_alone
