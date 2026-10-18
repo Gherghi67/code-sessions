@@ -337,6 +337,11 @@ The launch banner's compact notes card draws only when `CS_NO_FUNCTION_HOOKS=1`
 or `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=0` withholds the mod, since otherwise
 the mod shows the full notes in the session.
 
+Mermaid drawing is a Claude Code `/config` row, `cs-mermaid.drawDiagrams` (on by
+default). Off, ` ```mermaid ` fences in replies show as source and the system
+prompt no longer says they draw. `.cs/local/disabled` turns off only the prompt
+section, as it does every other cs injection into the model's context.
+
 ## Environment variables cs sets for you
 
 These are exported automatically when you start a session, so the Claude Code

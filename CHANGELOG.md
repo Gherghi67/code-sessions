@@ -6,6 +6,9 @@ All notable changes to cs are documented here. Release notes are also available 
 
 ## Unreleased
 
+### Added
+- The `cs-mermaid` mod draws mermaid flowcharts in replies inline in the transcript: nodes as coloured blocks, edges as lines with arrowheads and labels, in the light or dark palette of your `theme`. A chart it cannot draw (a subgraph, another diagram type, or one too wide for the terminal) stays a code block with the reason under it. The mod also tells the model, in a short system prompt section, that flowcharts draw here and to add one only for a flow that branches, loops or has four or more stages. `/config` → `cs-mermaid.drawDiagrams` turns both off; `cs -doctor` lists the section among its authority rows.
+
 ### Changed
 - `tests/run_all.sh` hands suites to its lanes from one queue, longest file first, so a lane that finishes takes the next suite. `CS_TEST_SHARD=N/M` balances its shards by line count, and CI runs the bash suites as two shards per OS. A suite that runs long for its length carries `# run_all-weight: N` and counts as N times its lines; `test_install.sh` does, with 2, so it no longer shares a macOS shard with `test_worktrees.sh`. A suite file the gate cannot read stops it with `cannot read <path>`.
 - `tests/lint_shell.sh` runs one shellcheck pass, one file per run across every processor, instead of two passes over every file in one process: about 3 minutes to under 20 seconds on a 14-core Mac. A file shellcheck cannot run on stops it with exit 2 and the file's name, where it used to read as `found errors`.
