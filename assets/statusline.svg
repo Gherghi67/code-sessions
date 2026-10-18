@@ -1,0 +1,404 @@
+<?xml version='1.0' encoding='utf-8'?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1056 132" width="1056" height="132" role="img" aria-labelledby="title desc">
+  <title id="title">cs status line in five states</title>
+  <desc id="desc">Quiet session at 20% context and 10% quota; amber context at 45%; red context capsule at 70%; three queued tasks and two unread messages; quota at 75% with reset countdown. Each state lasts 2.5 seconds.</desc>
+  <metadata>{"capture": {"renderer": "bin/cs-statusline", "clock": 1000, "states": [{"label": "Quiet session", "input": {"session_name": "demo", "workspace": {"current_dir": "."}, "model": {"id": "claude-opus-4-8", "display_name": "Opus"}, "effort": {"level": "high"}, "context_window": {"used_percentage": 20}, "rate_limits": {"five_hour": {"used_percentage": 10, "resets_at": 9060}, "seven_day": {"used_percentage": 30, "resets_at": 490600}}}, "queue_files": 0, "mail_json_files": 0, "ansi": {"light": "\u001b[0m\u001b[49;38;2;225;221;209m\u001b[48;2;225;221;209;38;2;217;119;87;1m✳\u001b[48;2;225;221;209m \u001b[48;2;225;221;209;38;2;78;77;73;1mdemo\u001b[48;2;225;221;209;38;2;123;121;114;22m  ·  \u001b[48;2;225;221;209;38;2;78;77;73;1m⎇ main\u001b[48;2;225;221;209;38;2;123;121;114;22m  ·  \u001b[48;2;225;221;209;38;2;78;77;73;1m✦ Opus\u001b[48;2;225;221;209m \u001b[48;2;225;221;209;38;2;87;105;247;22mhigh\u001b[49;38;2;225;221;209m\u001b[0m \u001b[49;38;2;225;221;209m\u001b[48;2;225;221;209;38;2;123;121;114;22m◔ ctx\u001b[48;2;225;221;209m \u001b[48;2;225;221;209;38;2;123;121;114;22m20%\u001b[49;38;2;225;221;209m\u001b[0m \u001b[49;38;2;225;221;209m\u001b[48;2;225;221;209;38;2;123;121;114;22m◷ 5h\u001b[48;2;225;221;209m \u001b[48;2;225;221;209;38;2;123;121;114;22m10%\u001b[49;38;2;225;221;209m\u001b[0m", "dark": "\u001b[0m\u001b[49;38;2;48;48;48m\u001b[48;2;48;48;48;38;2;217;119;87;1m✳\u001b[48;2;48;48;48m \u001b[48;2;48;48;48;38;2;230;230;230;1mdemo\u001b[48;2;48;48;48;38;2;161;161;161;22m  ·  \u001b[48;2;48;48;48;38;2;230;230;230;1m⎇ main\u001b[48;2;48;48;48;38;2;161;161;161;22m  ·  \u001b[48;2;48;48;48;38;2;230;230;230;1m✦ Opus\u001b[48;2;48;48;48m \u001b[48;2;48;48;48;38;2;146;158;250;22mhigh\u001b[49;38;2;48;48;48m\u001b[0m \u001b[49;38;2;48;48;48m\u001b[48;2;48;48;48;38;2;161;161;161;22m◔ ctx\u001b[48;2;48;48;48m \u001b[48;2;48;48;48;38;2;161;161;161;22m20%\u001b[49;38;2;48;48;48m\u001b[0m \u001b[49;38;2;48;48;48m\u001b[48;2;48;48;48;38;2;161;161;161;22m◷ 5h\u001b[48;2;48;48;48m \u001b[48;2;48;48;48;38;2;161;161;161;22m10%\u001b[49;38;2;48;48;48m\u001b[0m"}}, {"label": "Context warning", "input": {"session_name": "demo", "workspace": {"current_dir": "."}, "model": {"id": "claude-opus-4-8", "display_name": "Opus"}, "effort": {"level": "high"}, "context_window": {"used_percentage": 45}, "rate_limits": {"five_hour": {"used_percentage": 10, "resets_at": 9060}, "seven_day": {"used_percentage": 30, "resets_at": 490600}}}, "queue_files": 0, "mail_json_files": 0, "ansi": {"light": "\u001b[0m\u001b[49;38;2;225;221;209m\u001b[48;2;225;221;209;38;2;217;119;87;1m✳\u001b[48;2;225;221;209m \u001b[48;2;225;221;209;38;2;78;77;73;1mdemo\u001b[48;2;225;221;209;38;2;123;121;114;22m  ·  \u001b[48;2;225;221;209;38;2;78;77;73;1m⎇ main\u001b[48;2;225;221;209;38;2;123;121;114;22m  ·  \u001b[48;2;225;221;209;38;2;78;77;73;1m✦ Opus\u001b[48;2;225;221;209m \u001b[48;2;225;221;209;38;2;87;105;247;22mhigh\u001b[49;38;2;225;221;209m\u001b[0m \u001b[49;38;2;225;221;209m\u001b[48;2;225;221;209;38;2;123;121;114;22m◑ ctx\u001b[48;2;225;221;209m \u001b[48;2;225;221;209;38;2;180;83;9;1m45%\u001b[49;38;2;225;221;209m\u001b[0m \u001b[49;38;2;225;221;209m\u001b[48;2;225;221;209;38;2;123;121;114;22m◷ 5h\u001b[48;2;225;221;209m \u001b[48;2;225;221;209;38;2;123;121;114;22m10%\u001b[49;38;2;225;221;209m\u001b[0m", "dark": "\u001b[0m\u001b[49;38;2;48;48;48m\u001b[48;2;48;48;48;38;2;217;119;87;1m✳\u001b[48;2;48;48;48m \u001b[48;2;48;48;48;38;2;230;230;230;1mdemo\u001b[48;2;48;48;48;38;2;161;161;161;22m  ·  \u001b[48;2;48;48;48;38;2;230;230;230;1m⎇ main\u001b[48;2;48;48;48;38;2;161;161;161;22m  ·  \u001b[48;2;48;48;48;38;2;230;230;230;1m✦ Opus\u001b[48;2;48;48;48m \u001b[48;2;48;48;48;38;2;146;158;250;22mhigh\u001b[49;38;2;48;48;48m\u001b[0m \u001b[49;38;2;48;48;48m\u001b[48;2;48;48;48;38;2;161;161;161;22m◑ ctx\u001b[48;2;48;48;48m \u001b[48;2;48;48;48;38;2;253;230;138;1m45%\u001b[49;38;2;48;48;48m\u001b[0m \u001b[49;38;2;48;48;48m\u001b[48;2;48;48;48;38;2;161;161;161;22m◷ 5h\u001b[48;2;48;48;48m \u001b[48;2;48;48;48;38;2;161;161;161;22m10%\u001b[49;38;2;48;48;48m\u001b[0m"}}, {"label": "Context critical", "input": {"session_name": "demo", "workspace": {"current_dir": "."}, "model": {"id": "claude-opus-4-8", "display_name": "Opus"}, "effort": {"level": "high"}, "context_window": {"used_percentage": 70}, "rate_limits": {"five_hour": {"used_percentage": 10, "resets_at": 9060}, "seven_day": {"used_percentage": 30, "resets_at": 490600}}}, "queue_files": 0, "mail_json_files": 0, "ansi": {"light": "\u001b[0m\u001b[49;38;2;225;221;209m\u001b[48;2;225;221;209;38;2;217;119;87;1m✳\u001b[48;2;225;221;209m \u001b[48;2;225;221;209;38;2;78;77;73;1mdemo\u001b[48;2;225;221;209;38;2;123;121;114;22m  ·  \u001b[48;2;225;221;209;38;2;78;77;73;1m⎇ main\u001b[48;2;225;221;209;38;2;123;121;114;22m  ·  \u001b[48;2;225;221;209;38;2;78;77;73;1m✦ Opus\u001b[48;2;225;221;209m \u001b[48;2;225;221;209;38;2;87;105;247;22mhigh\u001b[49;38;2;225;221;209m\u001b[0m \u001b[49;38;2;215;0;21m\u001b[48;2;215;0;21;38;2;255;255;255;1m◕ ctx\u001b[48;2;215;0;21m \u001b[48;2;215;0;21;38;2;255;255;255;1m70%\u001b[49;38;2;215;0;21m\u001b[0m \u001b[49;38;2;225;221;209m\u001b[48;2;225;221;209;38;2;123;121;114;22m◷ 5h\u001b[48;2;225;221;209m \u001b[48;2;225;221;209;38;2;123;121;114;22m10%\u001b[49;38;2;225;221;209m\u001b[0m", "dark": "\u001b[0m\u001b[49;38;2;48;48;48m\u001b[48;2;48;48;48;38;2;217;119;87;1m✳\u001b[48;2;48;48;48m \u001b[48;2;48;48;48;38;2;230;230;230;1mdemo\u001b[48;2;48;48;48;38;2;161;161;161;22m  ·  \u001b[48;2;48;48;48;38;2;230;230;230;1m⎇ main\u001b[48;2;48;48;48;38;2;161;161;161;22m  ·  \u001b[48;2;48;48;48;38;2;230;230;230;1m✦ Opus\u001b[48;2;48;48;48m \u001b[48;2;48;48;48;38;2;146;158;250;22mhigh\u001b[49;38;2;48;48;48m\u001b[0m \u001b[49;38;2;255;69;58m\u001b[48;2;255;69;58;38;2;255;255;255;1m◕ ctx\u001b[48;2;255;69;58m \u001b[48;2;255;69;58;38;2;255;255;255;1m70%\u001b[49;38;2;255;69;58m\u001b[0m \u001b[49;38;2;48;48;48m\u001b[48;2;48;48;48;38;2;161;161;161;22m◷ 5h\u001b[48;2;48;48;48m \u001b[48;2;48;48;48;38;2;161;161;161;22m10%\u001b[49;38;2;48;48;48m\u001b[0m"}}, {"label": "Queued tasks and unread mail", "input": {"session_name": "demo", "workspace": {"current_dir": "."}, "model": {"id": "claude-opus-4-8", "display_name": "Opus"}, "effort": {"level": "high"}, "context_window": {"used_percentage": 20}, "rate_limits": {"five_hour": {"used_percentage": 10, "resets_at": 9060}, "seven_day": {"used_percentage": 30, "resets_at": 490600}}}, "queue_files": 3, "mail_json_files": 2, "ansi": {"light": "\u001b[0m\u001b[49;38;2;225;221;209m\u001b[48;2;225;221;209;38;2;217;119;87;1m✳\u001b[48;2;225;221;209m \u001b[48;2;225;221;209;38;2;78;77;73;1mdemo\u001b[48;2;225;221;209m  \u001b[48;2;225;221;209;38;2;180;83;9;22m▤ 3\u001b[48;2;225;221;209m  \u001b[48;2;225;221;209;38;2;180;83;9;22m✉ 2\u001b[48;2;225;221;209;38;2;123;121;114;22m  ·  \u001b[48;2;225;221;209;38;2;78;77;73;1m⎇ main\u001b[48;2;225;221;209;38;2;123;121;114;22m  ·  \u001b[48;2;225;221;209;38;2;78;77;73;1m✦ Opus\u001b[48;2;225;221;209m \u001b[48;2;225;221;209;38;2;87;105;247;22mhigh\u001b[49;38;2;225;221;209m\u001b[0m \u001b[49;38;2;225;221;209m\u001b[48;2;225;221;209;38;2;123;121;114;22m◔ ctx\u001b[48;2;225;221;209m \u001b[48;2;225;221;209;38;2;123;121;114;22m20%\u001b[49;38;2;225;221;209m\u001b[0m \u001b[49;38;2;225;221;209m\u001b[48;2;225;221;209;38;2;123;121;114;22m◷ 5h\u001b[48;2;225;221;209m \u001b[48;2;225;221;209;38;2;123;121;114;22m10%\u001b[49;38;2;225;221;209m\u001b[0m", "dark": "\u001b[0m\u001b[49;38;2;48;48;48m\u001b[48;2;48;48;48;38;2;217;119;87;1m✳\u001b[48;2;48;48;48m \u001b[48;2;48;48;48;38;2;230;230;230;1mdemo\u001b[48;2;48;48;48m  \u001b[48;2;48;48;48;38;2;253;230;138;22m▤ 3\u001b[48;2;48;48;48m  \u001b[48;2;48;48;48;38;2;253;230;138;22m✉ 2\u001b[48;2;48;48;48;38;2;161;161;161;22m  ·  \u001b[48;2;48;48;48;38;2;230;230;230;1m⎇ main\u001b[48;2;48;48;48;38;2;161;161;161;22m  ·  \u001b[48;2;48;48;48;38;2;230;230;230;1m✦ Opus\u001b[48;2;48;48;48m \u001b[48;2;48;48;48;38;2;146;158;250;22mhigh\u001b[49;38;2;48;48;48m\u001b[0m \u001b[49;38;2;48;48;48m\u001b[48;2;48;48;48;38;2;161;161;161;22m◔ ctx\u001b[48;2;48;48;48m \u001b[48;2;48;48;48;38;2;161;161;161;22m20%\u001b[49;38;2;48;48;48m\u001b[0m \u001b[49;38;2;48;48;48m\u001b[48;2;48;48;48;38;2;161;161;161;22m◷ 5h\u001b[48;2;48;48;48m \u001b[48;2;48;48;48;38;2;161;161;161;22m10%\u001b[49;38;2;48;48;48m\u001b[0m"}}, {"label": "Quota warning and reset countdown", "input": {"session_name": "demo", "workspace": {"current_dir": "."}, "model": {"id": "claude-opus-4-8", "display_name": "Opus"}, "effort": {"level": "high"}, "context_window": {"used_percentage": 20}, "rate_limits": {"five_hour": {"used_percentage": 75, "resets_at": 9060}, "seven_day": {"used_percentage": 84, "resets_at": 490600}}}, "queue_files": 0, "mail_json_files": 0, "ansi": {"light": "\u001b[0m\u001b[49;38;2;225;221;209m\u001b[48;2;225;221;209;38;2;217;119;87;1m✳\u001b[48;2;225;221;209m \u001b[48;2;225;221;209;38;2;78;77;73;1mdemo\u001b[48;2;225;221;209;38;2;123;121;114;22m  ·  \u001b[48;2;225;221;209;38;2;78;77;73;1m⎇ main\u001b[48;2;225;221;209;38;2;123;121;114;22m  ·  \u001b[48;2;225;221;209;38;2;78;77;73;1m✦ Opus\u001b[48;2;225;221;209m \u001b[48;2;225;221;209;38;2;87;105;247;22mhigh\u001b[49;38;2;225;221;209m\u001b[0m \u001b[49;38;2;225;221;209m\u001b[48;2;225;221;209;38;2;123;121;114;22m◔ ctx\u001b[48;2;225;221;209m \u001b[48;2;225;221;209;38;2;123;121;114;22m20%\u001b[49;38;2;225;221;209m\u001b[0m \u001b[49;38;2;225;221;209m\u001b[48;2;225;221;209;38;2;123;121;114;22m◷ 5h\u001b[48;2;225;221;209m \u001b[48;2;225;221;209;38;2;180;83;9;1m75% · 2h14m\u001b[48;2;225;221;209;38;2;123;121;114;22m ⋮ \u001b[48;2;225;221;209;38;2;123;121;114;22m◶ wk\u001b[48;2;225;221;209m \u001b[48;2;225;221;209;38;2;180;83;9;1m84% · 5d16h\u001b[49;38;2;225;221;209m\u001b[0m", "dark": "\u001b[0m\u001b[49;38;2;48;48;48m\u001b[48;2;48;48;48;38;2;217;119;87;1m✳\u001b[48;2;48;48;48m \u001b[48;2;48;48;48;38;2;230;230;230;1mdemo\u001b[48;2;48;48;48;38;2;161;161;161;22m  ·  \u001b[48;2;48;48;48;38;2;230;230;230;1m⎇ main\u001b[48;2;48;48;48;38;2;161;161;161;22m  ·  \u001b[48;2;48;48;48;38;2;230;230;230;1m✦ Opus\u001b[48;2;48;48;48m \u001b[48;2;48;48;48;38;2;146;158;250;22mhigh\u001b[49;38;2;48;48;48m\u001b[0m \u001b[49;38;2;48;48;48m\u001b[48;2;48;48;48;38;2;161;161;161;22m◔ ctx\u001b[48;2;48;48;48m \u001b[48;2;48;48;48;38;2;161;161;161;22m20%\u001b[49;38;2;48;48;48m\u001b[0m \u001b[49;38;2;48;48;48m\u001b[48;2;48;48;48;38;2;161;161;161;22m◷ 5h\u001b[48;2;48;48;48m \u001b[48;2;48;48;48;38;2;253;230;138;1m75% · 2h14m\u001b[48;2;48;48;48;38;2;161;161;161;22m ⋮ \u001b[48;2;48;48;48;38;2;161;161;161;22m◶ wk\u001b[48;2;48;48;48m \u001b[48;2;48;48;48;38;2;253;230;138;1m84% · 5d16h\u001b[49;38;2;48;48;48m\u001b[0m"}}]}, "environment": {"CS_STATUSLINE_NOW": "1000", "CS_STATUSLINE_CAPS": "1", "COLORTERM": "truecolor", "CS_TERM_THEME": "light or dark", "CS_TERM_BG_RGB": "251;246;233 or 25;25;25", "CLAUDE_SESSION_NAME": "demo"}, "fixture": "Empty main-branch git repository; isolated session with the recorded queue and unread-mail file counts. Captured from bin/cs-statusline. Capsule-end glyphs U+E0B6/U+E0B4 are drawn as paths."}</metadata>
+  <style>
+text{font-family:Menlo,Consolas,"DejaVu Sans Mono",monospace;font-variant-numeric:tabular-nums;font-variant-ligatures:none}
+.canvas{fill:#FBF6E9}.caption{fill:#625A4C}.dark{display:none}
+@media(prefers-color-scheme:dark){.canvas{fill:#191919}.caption{fill:#B9B3A8}.light{display:none}.dark{display:inline}}
+@media(prefers-reduced-motion:reduce){.frame{display:none}.frame.quiet{display:inline;opacity:1!important}}
+</style>
+  <rect class="canvas" width="1056" height="132" rx="12" />
+  <g class="frame quiet" opacity="1">
+    <animate attributeName="opacity" values="1;0;0;0;0;1" keyTimes="0;0.2;0.4;0.6;0.8;1" calcMode="discrete" dur="12.5s" repeatCount="indefinite" />
+    <text x="24" y="31" class="caption" font-size="12">Quiet session</text>
+    <text x="1032" y="31" class="caption" font-size="12" text-anchor="end">1 / 5</text>
+    <g class="light" aria-hidden="true">
+      <path d="M 33.3,57 A 9.3,14 0 0 0 33.3,85 Z" fill="#E1DDD1" data-glyph="" />
+      <rect x="33.3" y="57" width="9.5" height="28" fill="#E1DDD1" />
+      <text x="33.3" y="76" font-size="15.5" font-weight="700" fill="#D97757" textLength="9.3" lengthAdjust="spacingAndGlyphs" xml:space="preserve">✳</text>
+      <rect x="42.6" y="57" width="9.5" height="28" fill="#E1DDD1" />
+      <rect x="51.9" y="57" width="37.4" height="28" fill="#E1DDD1" />
+      <text x="51.9" y="76" font-size="15.5" font-weight="700" fill="#4E4D49" textLength="37.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">demo</text>
+      <rect x="89.1" y="57" width="46.7" height="28" fill="#E1DDD1" />
+      <text x="89.1" y="76" font-size="15.5" font-weight="400" fill="#7B7972" textLength="46.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  ·  </text>
+      <rect x="135.6" y="57" width="56.0" height="28" fill="#E1DDD1" />
+      <text x="135.6" y="76" font-size="15.5" font-weight="700" fill="#4E4D49" textLength="55.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">⎇ main</text>
+      <rect x="191.4" y="57" width="46.7" height="28" fill="#E1DDD1" />
+      <text x="191.4" y="76" font-size="15.5" font-weight="400" fill="#7B7972" textLength="46.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  ·  </text>
+      <rect x="237.9" y="57" width="56.0" height="28" fill="#E1DDD1" />
+      <text x="237.9" y="76" font-size="15.5" font-weight="700" fill="#4E4D49" textLength="55.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">✦ Opus</text>
+      <rect x="293.7" y="57" width="9.5" height="28" fill="#E1DDD1" />
+      <rect x="303.0" y="57" width="37.4" height="28" fill="#E1DDD1" />
+      <text x="303.0" y="76" font-size="15.5" font-weight="400" fill="#5769F7" textLength="37.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">high</text>
+      <path d="M 340.2,57 A 9.3,14 0 0 1 340.2,85 Z" fill="#E1DDD1" data-glyph="" />
+      <path d="M 368.1,57 A 9.3,14 0 0 0 368.1,85 Z" fill="#E1DDD1" data-glyph="" />
+      <rect x="368.1" y="57" width="46.7" height="28" fill="#E1DDD1" />
+      <text x="368.1" y="76" font-size="15.5" font-weight="400" fill="#7B7972" textLength="46.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">◔ ctx</text>
+      <rect x="414.6" y="57" width="9.5" height="28" fill="#E1DDD1" />
+      <rect x="423.9" y="57" width="28.1" height="28" fill="#E1DDD1" />
+      <text x="423.9" y="76" font-size="15.5" font-weight="400" fill="#7B7972" textLength="27.9" lengthAdjust="spacingAndGlyphs" xml:space="preserve">20%</text>
+      <path d="M 451.8,57 A 9.3,14 0 0 1 451.8,85 Z" fill="#E1DDD1" data-glyph="" />
+      <path d="M 479.7,57 A 9.3,14 0 0 0 479.7,85 Z" fill="#E1DDD1" data-glyph="" />
+      <rect x="479.7" y="57" width="37.4" height="28" fill="#E1DDD1" />
+      <text x="479.7" y="76" font-size="15.5" font-weight="400" fill="#7B7972" textLength="37.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">◷ 5h</text>
+      <rect x="516.9" y="57" width="9.5" height="28" fill="#E1DDD1" />
+      <rect x="526.2" y="57" width="28.1" height="28" fill="#E1DDD1" />
+      <text x="526.2" y="76" font-size="15.5" font-weight="400" fill="#7B7972" textLength="27.9" lengthAdjust="spacingAndGlyphs" xml:space="preserve">10%</text>
+      <path d="M 554.1,57 A 9.3,14 0 0 1 554.1,85 Z" fill="#E1DDD1" data-glyph="" />
+    </g>
+    <g class="dark" aria-hidden="true">
+      <path d="M 33.3,57 A 9.3,14 0 0 0 33.3,85 Z" fill="#303030" data-glyph="" />
+      <rect x="33.3" y="57" width="9.5" height="28" fill="#303030" />
+      <text x="33.3" y="76" font-size="15.5" font-weight="700" fill="#D97757" textLength="9.3" lengthAdjust="spacingAndGlyphs" xml:space="preserve">✳</text>
+      <rect x="42.6" y="57" width="9.5" height="28" fill="#303030" />
+      <rect x="51.9" y="57" width="37.4" height="28" fill="#303030" />
+      <text x="51.9" y="76" font-size="15.5" font-weight="700" fill="#E6E6E6" textLength="37.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">demo</text>
+      <rect x="89.1" y="57" width="46.7" height="28" fill="#303030" />
+      <text x="89.1" y="76" font-size="15.5" font-weight="400" fill="#A1A1A1" textLength="46.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  ·  </text>
+      <rect x="135.6" y="57" width="56.0" height="28" fill="#303030" />
+      <text x="135.6" y="76" font-size="15.5" font-weight="700" fill="#E6E6E6" textLength="55.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">⎇ main</text>
+      <rect x="191.4" y="57" width="46.7" height="28" fill="#303030" />
+      <text x="191.4" y="76" font-size="15.5" font-weight="400" fill="#A1A1A1" textLength="46.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  ·  </text>
+      <rect x="237.9" y="57" width="56.0" height="28" fill="#303030" />
+      <text x="237.9" y="76" font-size="15.5" font-weight="700" fill="#E6E6E6" textLength="55.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">✦ Opus</text>
+      <rect x="293.7" y="57" width="9.5" height="28" fill="#303030" />
+      <rect x="303.0" y="57" width="37.4" height="28" fill="#303030" />
+      <text x="303.0" y="76" font-size="15.5" font-weight="400" fill="#929EFA" textLength="37.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">high</text>
+      <path d="M 340.2,57 A 9.3,14 0 0 1 340.2,85 Z" fill="#303030" data-glyph="" />
+      <path d="M 368.1,57 A 9.3,14 0 0 0 368.1,85 Z" fill="#303030" data-glyph="" />
+      <rect x="368.1" y="57" width="46.7" height="28" fill="#303030" />
+      <text x="368.1" y="76" font-size="15.5" font-weight="400" fill="#A1A1A1" textLength="46.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">◔ ctx</text>
+      <rect x="414.6" y="57" width="9.5" height="28" fill="#303030" />
+      <rect x="423.9" y="57" width="28.1" height="28" fill="#303030" />
+      <text x="423.9" y="76" font-size="15.5" font-weight="400" fill="#A1A1A1" textLength="27.9" lengthAdjust="spacingAndGlyphs" xml:space="preserve">20%</text>
+      <path d="M 451.8,57 A 9.3,14 0 0 1 451.8,85 Z" fill="#303030" data-glyph="" />
+      <path d="M 479.7,57 A 9.3,14 0 0 0 479.7,85 Z" fill="#303030" data-glyph="" />
+      <rect x="479.7" y="57" width="37.4" height="28" fill="#303030" />
+      <text x="479.7" y="76" font-size="15.5" font-weight="400" fill="#A1A1A1" textLength="37.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">◷ 5h</text>
+      <rect x="516.9" y="57" width="9.5" height="28" fill="#303030" />
+      <rect x="526.2" y="57" width="28.1" height="28" fill="#303030" />
+      <text x="526.2" y="76" font-size="15.5" font-weight="400" fill="#A1A1A1" textLength="27.9" lengthAdjust="spacingAndGlyphs" xml:space="preserve">10%</text>
+      <path d="M 554.1,57 A 9.3,14 0 0 1 554.1,85 Z" fill="#303030" data-glyph="" />
+    </g>
+  </g>
+  <g class="frame" opacity="0">
+    <animate attributeName="opacity" values="0;1;0;0;0;0" keyTimes="0;0.2;0.4;0.6;0.8;1" calcMode="discrete" dur="12.5s" repeatCount="indefinite" />
+    <text x="24" y="31" class="caption" font-size="12">Context warning</text>
+    <text x="1032" y="31" class="caption" font-size="12" text-anchor="end">2 / 5</text>
+    <g class="light" aria-hidden="true">
+      <path d="M 33.3,57 A 9.3,14 0 0 0 33.3,85 Z" fill="#E1DDD1" data-glyph="" />
+      <rect x="33.3" y="57" width="9.5" height="28" fill="#E1DDD1" />
+      <text x="33.3" y="76" font-size="15.5" font-weight="700" fill="#D97757" textLength="9.3" lengthAdjust="spacingAndGlyphs" xml:space="preserve">✳</text>
+      <rect x="42.6" y="57" width="9.5" height="28" fill="#E1DDD1" />
+      <rect x="51.9" y="57" width="37.4" height="28" fill="#E1DDD1" />
+      <text x="51.9" y="76" font-size="15.5" font-weight="700" fill="#4E4D49" textLength="37.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">demo</text>
+      <rect x="89.1" y="57" width="46.7" height="28" fill="#E1DDD1" />
+      <text x="89.1" y="76" font-size="15.5" font-weight="400" fill="#7B7972" textLength="46.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  ·  </text>
+      <rect x="135.6" y="57" width="56.0" height="28" fill="#E1DDD1" />
+      <text x="135.6" y="76" font-size="15.5" font-weight="700" fill="#4E4D49" textLength="55.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">⎇ main</text>
+      <rect x="191.4" y="57" width="46.7" height="28" fill="#E1DDD1" />
+      <text x="191.4" y="76" font-size="15.5" font-weight="400" fill="#7B7972" textLength="46.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  ·  </text>
+      <rect x="237.9" y="57" width="56.0" height="28" fill="#E1DDD1" />
+      <text x="237.9" y="76" font-size="15.5" font-weight="700" fill="#4E4D49" textLength="55.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">✦ Opus</text>
+      <rect x="293.7" y="57" width="9.5" height="28" fill="#E1DDD1" />
+      <rect x="303.0" y="57" width="37.4" height="28" fill="#E1DDD1" />
+      <text x="303.0" y="76" font-size="15.5" font-weight="400" fill="#5769F7" textLength="37.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">high</text>
+      <path d="M 340.2,57 A 9.3,14 0 0 1 340.2,85 Z" fill="#E1DDD1" data-glyph="" />
+      <path d="M 368.1,57 A 9.3,14 0 0 0 368.1,85 Z" fill="#E1DDD1" data-glyph="" />
+      <rect x="368.1" y="57" width="46.7" height="28" fill="#E1DDD1" />
+      <text x="368.1" y="76" font-size="15.5" font-weight="400" fill="#7B7972" textLength="46.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">◑ ctx</text>
+      <rect x="414.6" y="57" width="9.5" height="28" fill="#E1DDD1" />
+      <rect x="423.9" y="57" width="28.1" height="28" fill="#E1DDD1" />
+      <text x="423.9" y="76" font-size="15.5" font-weight="700" fill="#B45309" textLength="27.9" lengthAdjust="spacingAndGlyphs" xml:space="preserve">45%</text>
+      <path d="M 451.8,57 A 9.3,14 0 0 1 451.8,85 Z" fill="#E1DDD1" data-glyph="" />
+      <path d="M 479.7,57 A 9.3,14 0 0 0 479.7,85 Z" fill="#E1DDD1" data-glyph="" />
+      <rect x="479.7" y="57" width="37.4" height="28" fill="#E1DDD1" />
+      <text x="479.7" y="76" font-size="15.5" font-weight="400" fill="#7B7972" textLength="37.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">◷ 5h</text>
+      <rect x="516.9" y="57" width="9.5" height="28" fill="#E1DDD1" />
+      <rect x="526.2" y="57" width="28.1" height="28" fill="#E1DDD1" />
+      <text x="526.2" y="76" font-size="15.5" font-weight="400" fill="#7B7972" textLength="27.9" lengthAdjust="spacingAndGlyphs" xml:space="preserve">10%</text>
+      <path d="M 554.1,57 A 9.3,14 0 0 1 554.1,85 Z" fill="#E1DDD1" data-glyph="" />
+    </g>
+    <g class="dark" aria-hidden="true">
+      <path d="M 33.3,57 A 9.3,14 0 0 0 33.3,85 Z" fill="#303030" data-glyph="" />
+      <rect x="33.3" y="57" width="9.5" height="28" fill="#303030" />
+      <text x="33.3" y="76" font-size="15.5" font-weight="700" fill="#D97757" textLength="9.3" lengthAdjust="spacingAndGlyphs" xml:space="preserve">✳</text>
+      <rect x="42.6" y="57" width="9.5" height="28" fill="#303030" />
+      <rect x="51.9" y="57" width="37.4" height="28" fill="#303030" />
+      <text x="51.9" y="76" font-size="15.5" font-weight="700" fill="#E6E6E6" textLength="37.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">demo</text>
+      <rect x="89.1" y="57" width="46.7" height="28" fill="#303030" />
+      <text x="89.1" y="76" font-size="15.5" font-weight="400" fill="#A1A1A1" textLength="46.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  ·  </text>
+      <rect x="135.6" y="57" width="56.0" height="28" fill="#303030" />
+      <text x="135.6" y="76" font-size="15.5" font-weight="700" fill="#E6E6E6" textLength="55.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">⎇ main</text>
+      <rect x="191.4" y="57" width="46.7" height="28" fill="#303030" />
+      <text x="191.4" y="76" font-size="15.5" font-weight="400" fill="#A1A1A1" textLength="46.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  ·  </text>
+      <rect x="237.9" y="57" width="56.0" height="28" fill="#303030" />
+      <text x="237.9" y="76" font-size="15.5" font-weight="700" fill="#E6E6E6" textLength="55.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">✦ Opus</text>
+      <rect x="293.7" y="57" width="9.5" height="28" fill="#303030" />
+      <rect x="303.0" y="57" width="37.4" height="28" fill="#303030" />
+      <text x="303.0" y="76" font-size="15.5" font-weight="400" fill="#929EFA" textLength="37.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">high</text>
+      <path d="M 340.2,57 A 9.3,14 0 0 1 340.2,85 Z" fill="#303030" data-glyph="" />
+      <path d="M 368.1,57 A 9.3,14 0 0 0 368.1,85 Z" fill="#303030" data-glyph="" />
+      <rect x="368.1" y="57" width="46.7" height="28" fill="#303030" />
+      <text x="368.1" y="76" font-size="15.5" font-weight="400" fill="#A1A1A1" textLength="46.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">◑ ctx</text>
+      <rect x="414.6" y="57" width="9.5" height="28" fill="#303030" />
+      <rect x="423.9" y="57" width="28.1" height="28" fill="#303030" />
+      <text x="423.9" y="76" font-size="15.5" font-weight="700" fill="#FDE68A" textLength="27.9" lengthAdjust="spacingAndGlyphs" xml:space="preserve">45%</text>
+      <path d="M 451.8,57 A 9.3,14 0 0 1 451.8,85 Z" fill="#303030" data-glyph="" />
+      <path d="M 479.7,57 A 9.3,14 0 0 0 479.7,85 Z" fill="#303030" data-glyph="" />
+      <rect x="479.7" y="57" width="37.4" height="28" fill="#303030" />
+      <text x="479.7" y="76" font-size="15.5" font-weight="400" fill="#A1A1A1" textLength="37.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">◷ 5h</text>
+      <rect x="516.9" y="57" width="9.5" height="28" fill="#303030" />
+      <rect x="526.2" y="57" width="28.1" height="28" fill="#303030" />
+      <text x="526.2" y="76" font-size="15.5" font-weight="400" fill="#A1A1A1" textLength="27.9" lengthAdjust="spacingAndGlyphs" xml:space="preserve">10%</text>
+      <path d="M 554.1,57 A 9.3,14 0 0 1 554.1,85 Z" fill="#303030" data-glyph="" />
+    </g>
+  </g>
+  <g class="frame" opacity="0">
+    <animate attributeName="opacity" values="0;0;1;0;0;0" keyTimes="0;0.2;0.4;0.6;0.8;1" calcMode="discrete" dur="12.5s" repeatCount="indefinite" />
+    <text x="24" y="31" class="caption" font-size="12">Context critical</text>
+    <text x="1032" y="31" class="caption" font-size="12" text-anchor="end">3 / 5</text>
+    <g class="light" aria-hidden="true">
+      <path d="M 33.3,57 A 9.3,14 0 0 0 33.3,85 Z" fill="#E1DDD1" data-glyph="" />
+      <rect x="33.3" y="57" width="9.5" height="28" fill="#E1DDD1" />
+      <text x="33.3" y="76" font-size="15.5" font-weight="700" fill="#D97757" textLength="9.3" lengthAdjust="spacingAndGlyphs" xml:space="preserve">✳</text>
+      <rect x="42.6" y="57" width="9.5" height="28" fill="#E1DDD1" />
+      <rect x="51.9" y="57" width="37.4" height="28" fill="#E1DDD1" />
+      <text x="51.9" y="76" font-size="15.5" font-weight="700" fill="#4E4D49" textLength="37.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">demo</text>
+      <rect x="89.1" y="57" width="46.7" height="28" fill="#E1DDD1" />
+      <text x="89.1" y="76" font-size="15.5" font-weight="400" fill="#7B7972" textLength="46.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  ·  </text>
+      <rect x="135.6" y="57" width="56.0" height="28" fill="#E1DDD1" />
+      <text x="135.6" y="76" font-size="15.5" font-weight="700" fill="#4E4D49" textLength="55.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">⎇ main</text>
+      <rect x="191.4" y="57" width="46.7" height="28" fill="#E1DDD1" />
+      <text x="191.4" y="76" font-size="15.5" font-weight="400" fill="#7B7972" textLength="46.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  ·  </text>
+      <rect x="237.9" y="57" width="56.0" height="28" fill="#E1DDD1" />
+      <text x="237.9" y="76" font-size="15.5" font-weight="700" fill="#4E4D49" textLength="55.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">✦ Opus</text>
+      <rect x="293.7" y="57" width="9.5" height="28" fill="#E1DDD1" />
+      <rect x="303.0" y="57" width="37.4" height="28" fill="#E1DDD1" />
+      <text x="303.0" y="76" font-size="15.5" font-weight="400" fill="#5769F7" textLength="37.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">high</text>
+      <path d="M 340.2,57 A 9.3,14 0 0 1 340.2,85 Z" fill="#E1DDD1" data-glyph="" />
+      <path d="M 368.1,57 A 9.3,14 0 0 0 368.1,85 Z" fill="#D70015" data-glyph="" />
+      <rect x="368.1" y="57" width="46.7" height="28" fill="#D70015" />
+      <text x="368.1" y="76" font-size="15.5" font-weight="700" fill="#FFFFFF" textLength="46.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">◕ ctx</text>
+      <rect x="414.6" y="57" width="9.5" height="28" fill="#D70015" />
+      <rect x="423.9" y="57" width="28.1" height="28" fill="#D70015" />
+      <text x="423.9" y="76" font-size="15.5" font-weight="700" fill="#FFFFFF" textLength="27.9" lengthAdjust="spacingAndGlyphs" xml:space="preserve">70%</text>
+      <path d="M 451.8,57 A 9.3,14 0 0 1 451.8,85 Z" fill="#D70015" data-glyph="" />
+      <path d="M 479.7,57 A 9.3,14 0 0 0 479.7,85 Z" fill="#E1DDD1" data-glyph="" />
+      <rect x="479.7" y="57" width="37.4" height="28" fill="#E1DDD1" />
+      <text x="479.7" y="76" font-size="15.5" font-weight="400" fill="#7B7972" textLength="37.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">◷ 5h</text>
+      <rect x="516.9" y="57" width="9.5" height="28" fill="#E1DDD1" />
+      <rect x="526.2" y="57" width="28.1" height="28" fill="#E1DDD1" />
+      <text x="526.2" y="76" font-size="15.5" font-weight="400" fill="#7B7972" textLength="27.9" lengthAdjust="spacingAndGlyphs" xml:space="preserve">10%</text>
+      <path d="M 554.1,57 A 9.3,14 0 0 1 554.1,85 Z" fill="#E1DDD1" data-glyph="" />
+    </g>
+    <g class="dark" aria-hidden="true">
+      <path d="M 33.3,57 A 9.3,14 0 0 0 33.3,85 Z" fill="#303030" data-glyph="" />
+      <rect x="33.3" y="57" width="9.5" height="28" fill="#303030" />
+      <text x="33.3" y="76" font-size="15.5" font-weight="700" fill="#D97757" textLength="9.3" lengthAdjust="spacingAndGlyphs" xml:space="preserve">✳</text>
+      <rect x="42.6" y="57" width="9.5" height="28" fill="#303030" />
+      <rect x="51.9" y="57" width="37.4" height="28" fill="#303030" />
+      <text x="51.9" y="76" font-size="15.5" font-weight="700" fill="#E6E6E6" textLength="37.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">demo</text>
+      <rect x="89.1" y="57" width="46.7" height="28" fill="#303030" />
+      <text x="89.1" y="76" font-size="15.5" font-weight="400" fill="#A1A1A1" textLength="46.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  ·  </text>
+      <rect x="135.6" y="57" width="56.0" height="28" fill="#303030" />
+      <text x="135.6" y="76" font-size="15.5" font-weight="700" fill="#E6E6E6" textLength="55.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">⎇ main</text>
+      <rect x="191.4" y="57" width="46.7" height="28" fill="#303030" />
+      <text x="191.4" y="76" font-size="15.5" font-weight="400" fill="#A1A1A1" textLength="46.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  ·  </text>
+      <rect x="237.9" y="57" width="56.0" height="28" fill="#303030" />
+      <text x="237.9" y="76" font-size="15.5" font-weight="700" fill="#E6E6E6" textLength="55.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">✦ Opus</text>
+      <rect x="293.7" y="57" width="9.5" height="28" fill="#303030" />
+      <rect x="303.0" y="57" width="37.4" height="28" fill="#303030" />
+      <text x="303.0" y="76" font-size="15.5" font-weight="400" fill="#929EFA" textLength="37.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">high</text>
+      <path d="M 340.2,57 A 9.3,14 0 0 1 340.2,85 Z" fill="#303030" data-glyph="" />
+      <path d="M 368.1,57 A 9.3,14 0 0 0 368.1,85 Z" fill="#FF453A" data-glyph="" />
+      <rect x="368.1" y="57" width="46.7" height="28" fill="#FF453A" />
+      <text x="368.1" y="76" font-size="15.5" font-weight="700" fill="#FFFFFF" textLength="46.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">◕ ctx</text>
+      <rect x="414.6" y="57" width="9.5" height="28" fill="#FF453A" />
+      <rect x="423.9" y="57" width="28.1" height="28" fill="#FF453A" />
+      <text x="423.9" y="76" font-size="15.5" font-weight="700" fill="#FFFFFF" textLength="27.9" lengthAdjust="spacingAndGlyphs" xml:space="preserve">70%</text>
+      <path d="M 451.8,57 A 9.3,14 0 0 1 451.8,85 Z" fill="#FF453A" data-glyph="" />
+      <path d="M 479.7,57 A 9.3,14 0 0 0 479.7,85 Z" fill="#303030" data-glyph="" />
+      <rect x="479.7" y="57" width="37.4" height="28" fill="#303030" />
+      <text x="479.7" y="76" font-size="15.5" font-weight="400" fill="#A1A1A1" textLength="37.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">◷ 5h</text>
+      <rect x="516.9" y="57" width="9.5" height="28" fill="#303030" />
+      <rect x="526.2" y="57" width="28.1" height="28" fill="#303030" />
+      <text x="526.2" y="76" font-size="15.5" font-weight="400" fill="#A1A1A1" textLength="27.9" lengthAdjust="spacingAndGlyphs" xml:space="preserve">10%</text>
+      <path d="M 554.1,57 A 9.3,14 0 0 1 554.1,85 Z" fill="#303030" data-glyph="" />
+    </g>
+  </g>
+  <g class="frame" opacity="0">
+    <animate attributeName="opacity" values="0;0;0;1;0;0" keyTimes="0;0.2;0.4;0.6;0.8;1" calcMode="discrete" dur="12.5s" repeatCount="indefinite" />
+    <text x="24" y="31" class="caption" font-size="12">Queued tasks and unread mail</text>
+    <text x="1032" y="31" class="caption" font-size="12" text-anchor="end">4 / 5</text>
+    <g class="light" aria-hidden="true">
+      <path d="M 33.3,57 A 9.3,14 0 0 0 33.3,85 Z" fill="#E1DDD1" data-glyph="" />
+      <rect x="33.3" y="57" width="9.5" height="28" fill="#E1DDD1" />
+      <text x="33.3" y="76" font-size="15.5" font-weight="700" fill="#D97757" textLength="9.3" lengthAdjust="spacingAndGlyphs" xml:space="preserve">✳</text>
+      <rect x="42.6" y="57" width="9.5" height="28" fill="#E1DDD1" />
+      <rect x="51.9" y="57" width="37.4" height="28" fill="#E1DDD1" />
+      <text x="51.9" y="76" font-size="15.5" font-weight="700" fill="#4E4D49" textLength="37.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">demo</text>
+      <rect x="89.1" y="57" width="18.8" height="28" fill="#E1DDD1" />
+      <rect x="107.7" y="57" width="28.1" height="28" fill="#E1DDD1" />
+      <text x="107.7" y="76" font-size="15.5" font-weight="400" fill="#B45309" textLength="27.9" lengthAdjust="spacingAndGlyphs" xml:space="preserve">▤ 3</text>
+      <rect x="135.6" y="57" width="18.8" height="28" fill="#E1DDD1" />
+      <rect x="154.2" y="57" width="28.1" height="28" fill="#E1DDD1" />
+      <text x="154.2" y="76" font-size="15.5" font-weight="400" fill="#B45309" textLength="27.9" lengthAdjust="spacingAndGlyphs" xml:space="preserve">✉ 2</text>
+      <rect x="182.1" y="57" width="46.7" height="28" fill="#E1DDD1" />
+      <text x="182.1" y="76" font-size="15.5" font-weight="400" fill="#7B7972" textLength="46.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  ·  </text>
+      <rect x="228.6" y="57" width="56.0" height="28" fill="#E1DDD1" />
+      <text x="228.6" y="76" font-size="15.5" font-weight="700" fill="#4E4D49" textLength="55.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">⎇ main</text>
+      <rect x="284.4" y="57" width="46.7" height="28" fill="#E1DDD1" />
+      <text x="284.4" y="76" font-size="15.5" font-weight="400" fill="#7B7972" textLength="46.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  ·  </text>
+      <rect x="330.9" y="57" width="56.0" height="28" fill="#E1DDD1" />
+      <text x="330.9" y="76" font-size="15.5" font-weight="700" fill="#4E4D49" textLength="55.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">✦ Opus</text>
+      <rect x="386.7" y="57" width="9.5" height="28" fill="#E1DDD1" />
+      <rect x="396.0" y="57" width="37.4" height="28" fill="#E1DDD1" />
+      <text x="396.0" y="76" font-size="15.5" font-weight="400" fill="#5769F7" textLength="37.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">high</text>
+      <path d="M 433.2,57 A 9.3,14 0 0 1 433.2,85 Z" fill="#E1DDD1" data-glyph="" />
+      <path d="M 461.1,57 A 9.3,14 0 0 0 461.1,85 Z" fill="#E1DDD1" data-glyph="" />
+      <rect x="461.1" y="57" width="46.7" height="28" fill="#E1DDD1" />
+      <text x="461.1" y="76" font-size="15.5" font-weight="400" fill="#7B7972" textLength="46.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">◔ ctx</text>
+      <rect x="507.6" y="57" width="9.5" height="28" fill="#E1DDD1" />
+      <rect x="516.9" y="57" width="28.1" height="28" fill="#E1DDD1" />
+      <text x="516.9" y="76" font-size="15.5" font-weight="400" fill="#7B7972" textLength="27.9" lengthAdjust="spacingAndGlyphs" xml:space="preserve">20%</text>
+      <path d="M 544.8,57 A 9.3,14 0 0 1 544.8,85 Z" fill="#E1DDD1" data-glyph="" />
+      <path d="M 572.7,57 A 9.3,14 0 0 0 572.7,85 Z" fill="#E1DDD1" data-glyph="" />
+      <rect x="572.7" y="57" width="37.4" height="28" fill="#E1DDD1" />
+      <text x="572.7" y="76" font-size="15.5" font-weight="400" fill="#7B7972" textLength="37.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">◷ 5h</text>
+      <rect x="609.9" y="57" width="9.5" height="28" fill="#E1DDD1" />
+      <rect x="619.2" y="57" width="28.1" height="28" fill="#E1DDD1" />
+      <text x="619.2" y="76" font-size="15.5" font-weight="400" fill="#7B7972" textLength="27.9" lengthAdjust="spacingAndGlyphs" xml:space="preserve">10%</text>
+      <path d="M 647.1,57 A 9.3,14 0 0 1 647.1,85 Z" fill="#E1DDD1" data-glyph="" />
+    </g>
+    <g class="dark" aria-hidden="true">
+      <path d="M 33.3,57 A 9.3,14 0 0 0 33.3,85 Z" fill="#303030" data-glyph="" />
+      <rect x="33.3" y="57" width="9.5" height="28" fill="#303030" />
+      <text x="33.3" y="76" font-size="15.5" font-weight="700" fill="#D97757" textLength="9.3" lengthAdjust="spacingAndGlyphs" xml:space="preserve">✳</text>
+      <rect x="42.6" y="57" width="9.5" height="28" fill="#303030" />
+      <rect x="51.9" y="57" width="37.4" height="28" fill="#303030" />
+      <text x="51.9" y="76" font-size="15.5" font-weight="700" fill="#E6E6E6" textLength="37.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">demo</text>
+      <rect x="89.1" y="57" width="18.8" height="28" fill="#303030" />
+      <rect x="107.7" y="57" width="28.1" height="28" fill="#303030" />
+      <text x="107.7" y="76" font-size="15.5" font-weight="400" fill="#FDE68A" textLength="27.9" lengthAdjust="spacingAndGlyphs" xml:space="preserve">▤ 3</text>
+      <rect x="135.6" y="57" width="18.8" height="28" fill="#303030" />
+      <rect x="154.2" y="57" width="28.1" height="28" fill="#303030" />
+      <text x="154.2" y="76" font-size="15.5" font-weight="400" fill="#FDE68A" textLength="27.9" lengthAdjust="spacingAndGlyphs" xml:space="preserve">✉ 2</text>
+      <rect x="182.1" y="57" width="46.7" height="28" fill="#303030" />
+      <text x="182.1" y="76" font-size="15.5" font-weight="400" fill="#A1A1A1" textLength="46.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  ·  </text>
+      <rect x="228.6" y="57" width="56.0" height="28" fill="#303030" />
+      <text x="228.6" y="76" font-size="15.5" font-weight="700" fill="#E6E6E6" textLength="55.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">⎇ main</text>
+      <rect x="284.4" y="57" width="46.7" height="28" fill="#303030" />
+      <text x="284.4" y="76" font-size="15.5" font-weight="400" fill="#A1A1A1" textLength="46.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  ·  </text>
+      <rect x="330.9" y="57" width="56.0" height="28" fill="#303030" />
+      <text x="330.9" y="76" font-size="15.5" font-weight="700" fill="#E6E6E6" textLength="55.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">✦ Opus</text>
+      <rect x="386.7" y="57" width="9.5" height="28" fill="#303030" />
+      <rect x="396.0" y="57" width="37.4" height="28" fill="#303030" />
+      <text x="396.0" y="76" font-size="15.5" font-weight="400" fill="#929EFA" textLength="37.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">high</text>
+      <path d="M 433.2,57 A 9.3,14 0 0 1 433.2,85 Z" fill="#303030" data-glyph="" />
+      <path d="M 461.1,57 A 9.3,14 0 0 0 461.1,85 Z" fill="#303030" data-glyph="" />
+      <rect x="461.1" y="57" width="46.7" height="28" fill="#303030" />
+      <text x="461.1" y="76" font-size="15.5" font-weight="400" fill="#A1A1A1" textLength="46.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">◔ ctx</text>
+      <rect x="507.6" y="57" width="9.5" height="28" fill="#303030" />
+      <rect x="516.9" y="57" width="28.1" height="28" fill="#303030" />
+      <text x="516.9" y="76" font-size="15.5" font-weight="400" fill="#A1A1A1" textLength="27.9" lengthAdjust="spacingAndGlyphs" xml:space="preserve">20%</text>
+      <path d="M 544.8,57 A 9.3,14 0 0 1 544.8,85 Z" fill="#303030" data-glyph="" />
+      <path d="M 572.7,57 A 9.3,14 0 0 0 572.7,85 Z" fill="#303030" data-glyph="" />
+      <rect x="572.7" y="57" width="37.4" height="28" fill="#303030" />
+      <text x="572.7" y="76" font-size="15.5" font-weight="400" fill="#A1A1A1" textLength="37.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">◷ 5h</text>
+      <rect x="609.9" y="57" width="9.5" height="28" fill="#303030" />
+      <rect x="619.2" y="57" width="28.1" height="28" fill="#303030" />
+      <text x="619.2" y="76" font-size="15.5" font-weight="400" fill="#A1A1A1" textLength="27.9" lengthAdjust="spacingAndGlyphs" xml:space="preserve">10%</text>
+      <path d="M 647.1,57 A 9.3,14 0 0 1 647.1,85 Z" fill="#303030" data-glyph="" />
+    </g>
+  </g>
+  <g class="frame" opacity="0">
+    <animate attributeName="opacity" values="0;0;0;0;1;0" keyTimes="0;0.2;0.4;0.6;0.8;1" calcMode="discrete" dur="12.5s" repeatCount="indefinite" />
+    <text x="24" y="31" class="caption" font-size="12">Quota warning and reset countdown</text>
+    <text x="1032" y="31" class="caption" font-size="12" text-anchor="end">5 / 5</text>
+    <g class="light" aria-hidden="true">
+      <path d="M 33.3,57 A 9.3,14 0 0 0 33.3,85 Z" fill="#E1DDD1" data-glyph="" />
+      <rect x="33.3" y="57" width="9.5" height="28" fill="#E1DDD1" />
+      <text x="33.3" y="76" font-size="15.5" font-weight="700" fill="#D97757" textLength="9.3" lengthAdjust="spacingAndGlyphs" xml:space="preserve">✳</text>
+      <rect x="42.6" y="57" width="9.5" height="28" fill="#E1DDD1" />
+      <rect x="51.9" y="57" width="37.4" height="28" fill="#E1DDD1" />
+      <text x="51.9" y="76" font-size="15.5" font-weight="700" fill="#4E4D49" textLength="37.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">demo</text>
+      <rect x="89.1" y="57" width="46.7" height="28" fill="#E1DDD1" />
+      <text x="89.1" y="76" font-size="15.5" font-weight="400" fill="#7B7972" textLength="46.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  ·  </text>
+      <rect x="135.6" y="57" width="56.0" height="28" fill="#E1DDD1" />
+      <text x="135.6" y="76" font-size="15.5" font-weight="700" fill="#4E4D49" textLength="55.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">⎇ main</text>
+      <rect x="191.4" y="57" width="46.7" height="28" fill="#E1DDD1" />
+      <text x="191.4" y="76" font-size="15.5" font-weight="400" fill="#7B7972" textLength="46.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  ·  </text>
+      <rect x="237.9" y="57" width="56.0" height="28" fill="#E1DDD1" />
+      <text x="237.9" y="76" font-size="15.5" font-weight="700" fill="#4E4D49" textLength="55.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">✦ Opus</text>
+      <rect x="293.7" y="57" width="9.5" height="28" fill="#E1DDD1" />
+      <rect x="303.0" y="57" width="37.4" height="28" fill="#E1DDD1" />
+      <text x="303.0" y="76" font-size="15.5" font-weight="400" fill="#5769F7" textLength="37.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">high</text>
+      <path d="M 340.2,57 A 9.3,14 0 0 1 340.2,85 Z" fill="#E1DDD1" data-glyph="" />
+      <path d="M 368.1,57 A 9.3,14 0 0 0 368.1,85 Z" fill="#E1DDD1" data-glyph="" />
+      <rect x="368.1" y="57" width="46.7" height="28" fill="#E1DDD1" />
+      <text x="368.1" y="76" font-size="15.5" font-weight="400" fill="#7B7972" textLength="46.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">◔ ctx</text>
+      <rect x="414.6" y="57" width="9.5" height="28" fill="#E1DDD1" />
+      <rect x="423.9" y="57" width="28.1" height="28" fill="#E1DDD1" />
+      <text x="423.9" y="76" font-size="15.5" font-weight="400" fill="#7B7972" textLength="27.9" lengthAdjust="spacingAndGlyphs" xml:space="preserve">20%</text>
+      <path d="M 451.8,57 A 9.3,14 0 0 1 451.8,85 Z" fill="#E1DDD1" data-glyph="" />
+      <path d="M 479.7,57 A 9.3,14 0 0 0 479.7,85 Z" fill="#E1DDD1" data-glyph="" />
+      <rect x="479.7" y="57" width="37.4" height="28" fill="#E1DDD1" />
+      <text x="479.7" y="76" font-size="15.5" font-weight="400" fill="#7B7972" textLength="37.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">◷ 5h</text>
+      <rect x="516.9" y="57" width="9.5" height="28" fill="#E1DDD1" />
+      <rect x="526.2" y="57" width="102.5" height="28" fill="#E1DDD1" />
+      <text x="526.2" y="76" font-size="15.5" font-weight="700" fill="#B45309" textLength="102.3" lengthAdjust="spacingAndGlyphs" xml:space="preserve">75% · 2h14m</text>
+      <rect x="628.5" y="57" width="28.1" height="28" fill="#E1DDD1" />
+      <text x="628.5" y="76" font-size="15.5" font-weight="400" fill="#7B7972" textLength="27.9" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> ⋮ </text>
+      <rect x="656.4" y="57" width="37.4" height="28" fill="#E1DDD1" />
+      <text x="656.4" y="76" font-size="15.5" font-weight="400" fill="#7B7972" textLength="37.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">◶ wk</text>
+      <rect x="693.6" y="57" width="9.5" height="28" fill="#E1DDD1" />
+      <rect x="702.9" y="57" width="102.5" height="28" fill="#E1DDD1" />
+      <text x="702.9" y="76" font-size="15.5" font-weight="700" fill="#B45309" textLength="102.3" lengthAdjust="spacingAndGlyphs" xml:space="preserve">84% · 5d16h</text>
+      <path d="M 805.2,57 A 9.3,14 0 0 1 805.2,85 Z" fill="#E1DDD1" data-glyph="" />
+    </g>
+    <g class="dark" aria-hidden="true">
+      <path d="M 33.3,57 A 9.3,14 0 0 0 33.3,85 Z" fill="#303030" data-glyph="" />
+      <rect x="33.3" y="57" width="9.5" height="28" fill="#303030" />
+      <text x="33.3" y="76" font-size="15.5" font-weight="700" fill="#D97757" textLength="9.3" lengthAdjust="spacingAndGlyphs" xml:space="preserve">✳</text>
+      <rect x="42.6" y="57" width="9.5" height="28" fill="#303030" />
+      <rect x="51.9" y="57" width="37.4" height="28" fill="#303030" />
+      <text x="51.9" y="76" font-size="15.5" font-weight="700" fill="#E6E6E6" textLength="37.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">demo</text>
+      <rect x="89.1" y="57" width="46.7" height="28" fill="#303030" />
+      <text x="89.1" y="76" font-size="15.5" font-weight="400" fill="#A1A1A1" textLength="46.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  ·  </text>
+      <rect x="135.6" y="57" width="56.0" height="28" fill="#303030" />
+      <text x="135.6" y="76" font-size="15.5" font-weight="700" fill="#E6E6E6" textLength="55.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">⎇ main</text>
+      <rect x="191.4" y="57" width="46.7" height="28" fill="#303030" />
+      <text x="191.4" y="76" font-size="15.5" font-weight="400" fill="#A1A1A1" textLength="46.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">  ·  </text>
+      <rect x="237.9" y="57" width="56.0" height="28" fill="#303030" />
+      <text x="237.9" y="76" font-size="15.5" font-weight="700" fill="#E6E6E6" textLength="55.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">✦ Opus</text>
+      <rect x="293.7" y="57" width="9.5" height="28" fill="#303030" />
+      <rect x="303.0" y="57" width="37.4" height="28" fill="#303030" />
+      <text x="303.0" y="76" font-size="15.5" font-weight="400" fill="#929EFA" textLength="37.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">high</text>
+      <path d="M 340.2,57 A 9.3,14 0 0 1 340.2,85 Z" fill="#303030" data-glyph="" />
+      <path d="M 368.1,57 A 9.3,14 0 0 0 368.1,85 Z" fill="#303030" data-glyph="" />
+      <rect x="368.1" y="57" width="46.7" height="28" fill="#303030" />
+      <text x="368.1" y="76" font-size="15.5" font-weight="400" fill="#A1A1A1" textLength="46.5" lengthAdjust="spacingAndGlyphs" xml:space="preserve">◔ ctx</text>
+      <rect x="414.6" y="57" width="9.5" height="28" fill="#303030" />
+      <rect x="423.9" y="57" width="28.1" height="28" fill="#303030" />
+      <text x="423.9" y="76" font-size="15.5" font-weight="400" fill="#A1A1A1" textLength="27.9" lengthAdjust="spacingAndGlyphs" xml:space="preserve">20%</text>
+      <path d="M 451.8,57 A 9.3,14 0 0 1 451.8,85 Z" fill="#303030" data-glyph="" />
+      <path d="M 479.7,57 A 9.3,14 0 0 0 479.7,85 Z" fill="#303030" data-glyph="" />
+      <rect x="479.7" y="57" width="37.4" height="28" fill="#303030" />
+      <text x="479.7" y="76" font-size="15.5" font-weight="400" fill="#A1A1A1" textLength="37.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">◷ 5h</text>
+      <rect x="516.9" y="57" width="9.5" height="28" fill="#303030" />
+      <rect x="526.2" y="57" width="102.5" height="28" fill="#303030" />
+      <text x="526.2" y="76" font-size="15.5" font-weight="700" fill="#FDE68A" textLength="102.3" lengthAdjust="spacingAndGlyphs" xml:space="preserve">75% · 2h14m</text>
+      <rect x="628.5" y="57" width="28.1" height="28" fill="#303030" />
+      <text x="628.5" y="76" font-size="15.5" font-weight="400" fill="#A1A1A1" textLength="27.9" lengthAdjust="spacingAndGlyphs" xml:space="preserve"> ⋮ </text>
+      <rect x="656.4" y="57" width="37.4" height="28" fill="#303030" />
+      <text x="656.4" y="76" font-size="15.5" font-weight="400" fill="#A1A1A1" textLength="37.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">◶ wk</text>
+      <rect x="693.6" y="57" width="9.5" height="28" fill="#303030" />
+      <rect x="702.9" y="57" width="102.5" height="28" fill="#303030" />
+      <text x="702.9" y="76" font-size="15.5" font-weight="700" fill="#FDE68A" textLength="102.3" lengthAdjust="spacingAndGlyphs" xml:space="preserve">84% · 5d16h</text>
+      <path d="M 805.2,57 A 9.3,14 0 0 1 805.2,85 Z" fill="#303030" data-glyph="" />
+    </g>
+  </g>
+</svg>

@@ -2,6 +2,13 @@
 
 The installer configures Claude Code hooks that enable session management features.
 
+## Skills
+
+| Skill | Behavior |
+|-------|----------|
+| [`prose-hygiene`](../skills/prose-hygiene/SKILL.md) | Judges a draft with a scoring rubric and reports its score. The caller controls revision and repeated scoring. |
+| [`/write-as-me`](../skills/write-as-me/SKILL.md) | Drafts in your voice using a writing profile. Its corpus contains typed transcript messages and supplementary writing from `.voice/sources/*.md`, included on each build. |
+
 ## How a hook finds its session (`cs-resolve.sh`)
 
 Every hook opens by sourcing `cs-resolve.sh`, a library shipped alongside them and
@@ -281,6 +288,8 @@ Runs when Claude Code starts a session:
 
 ## autosave-commits.sh (PostToolUse on Write/Edit)
 
+New sessions begin with one commit of their initial files.
+
 Runs after any file modification (Write or Edit), providing crash recovery for all session files:
 - Autosaves the entire working tree to the conversation's own shadow ref `refs/worktree/cs/session/<conversation-uuid>` (keyed on the hook input's `session_id`) using git plumbing commands. Each conversation writes, recovers, and deletes only its own ref, so concurrent sessions on one checkout — and parallel worktree sessions — never share or clobber each other's snapshot chain
 - Does not create commits on `main` or touch the working tree index
@@ -322,7 +331,7 @@ On `Stop`, also:
 - Reminds Claude to review and append to its per-actor narrative (`.cs/memory/narrative.<actor>.md`, the session lab notebook), keyed on the most recently modified `narrative.*.md`, when it has not been touched recently. The contract is append-only: a disproven entry gets a dated correction that names it; earlier sections are never rewritten or deleted (that is what keeps `cs -narrative rotate`'s head-truncation safe under `merge=union`)
 - Carries the commit rule: the model never commits narrative appends or anything else under `.cs/` on its own, not even beside a project change, since cs commits files under `.cs/` only in the commit that creates a session and the merge `/finish` makes, and the model commits them only when the user asks; a commit holding narrative appends is pushed only when the user asks; and uncommitted appends are safe because `autosave-commits.sh` already snapshots every edit to the shadow ref. The generated session protocol states the same rule in its `cs:session-commits` section, and it rides this reminder as well because the protocol is read once at startup and is stale by the time a commit happens, while this fires at the append itself — and because the reason string is rebuilt every run, so every existing session picks it up on upgrade with no migration phase. Unconditional rather than gated on whether `.cs/` is tracked: the check is cheap, but the advice is inert rather than wrong where `.cs/` is gitignored, and a condition the model has to evaluate is one it will not
 - Cooldown-gated via `.cs/.narrative-reminder-cooldown` (at most once per 5 minutes). The same stat pass measures every narrative against `CS_NARRATIVE_MAX_BYTES` (default 131072) and appends one line per file over budget naming it and pointing at `cs -narrative rotate`; nothing is rotated from the hook
-- Appends a second-opinion note to that same reminder when `claude-council` or the codex plugin is present, naming what each offers: `/claude-council:advise` to put the conversation to external models, and `/codex:review` before Claude calls built work done, with `/codex:rescue` when a run stalls. It rides the narrative reminder rather than taking a second `Stop` entry, because the event has one emit slot and a second registration would compete instead of compose. For the same reason there is one note and one cooldown stamp whatever the plugin count: two independent notes would double the appended text and race the same stamp. Detection reads `installPath` from `~/.claude/plugins/installed_plugins.json` and then requires the plugin's own command file on disk (`commands/advise.md`, `commands/review.md`), because the install record outlives an uninstall, so the file decides. The council half suggests and never sends, and asks Claude to check with the user first, because a digest of the conversation goes to third-party providers and nothing a hook can read says whose words it holds (inside a subagent the ambient session id names the parent). The codex half offers `/codex:review` rather than promising to run it: that command carries `disable-model-invocation`, so only the user can type it, while `/codex:rescue` does not and Claude may invoke it. Cooldown-gated via `.cs/local/.advisor-nudge-cooldown` (per-machine state, never git-synced) at most once per 30 minutes, and silent when no plugin is present. Only the launched conversation nudges: a tmux teammate shares the directory and the single cooldown stamp, so an ungated note would let a teammate consume the lead's slot
+- Appends a second-opinion note to that same reminder when [claude-council](https://github.com/hex/claude-council) or the codex plugin is present, naming what each offers: `/claude-council:advise` to put the conversation to external models, and `/codex:review` before Claude calls built work done, with `/codex:rescue` when a run stalls. It rides the narrative reminder rather than taking a second `Stop` entry, because the event has one emit slot and a second registration would compete instead of compose. For the same reason there is one note and one cooldown stamp whatever the plugin count: two independent notes would double the appended text and race the same stamp. Detection reads `installPath` from `~/.claude/plugins/installed_plugins.json` and then requires the plugin's own command file on disk (`commands/advise.md`, `commands/review.md`), because the install record outlives an uninstall, so the file decides. The council half suggests and never sends, and asks Claude to check with the user first, because a digest of the conversation goes to third-party providers and nothing a hook can read says whose words it holds (inside a subagent the ambient session id names the parent). The codex half offers `/codex:review` rather than promising to run it: that command carries `disable-model-invocation`, so only the user can type it, while `/codex:rescue` does not and Claude may invoke it. Cooldown-gated via `.cs/local/.advisor-nudge-cooldown` (per-machine state, never git-synced) at most once per 30 minutes, and silent when no plugin is present. Only the launched conversation nudges: a tmux teammate shares the directory and the single cooldown stamp, so an ungated note would let a teammate consume the lead's slot
 - Approves silently inside subagents and outside cs sessions, and when the narrative was modified within the cooldown window
 
 ## session-end.sh (SessionEnd)
@@ -700,6 +709,8 @@ The child inherits the claude process's environment, so the
 refused task (empty, or more than one line) prints cs's exit code and the end
 of its stderr as cs wrote them.
 
+![Statusline without queued tasks, two pending tasks, then statusline with two queued tasks](https://raw.githubusercontent.com/hex/claude-sessions/main/assets/queue.svg)
+
 `/finish` gets a toast at each end. While `cs <base> -integrate-feature` and
 `-retire-feature` run, cs replaces a progress record at each step
 (`finish-progress.json`, see [session layout](session-layout.md#machine-local-files-cslocal-gitignored)).
@@ -828,6 +839,8 @@ cs session: with function hooks on it draws, and adds its prompt section, in any
 directory and for every prompt the engine composes, a subagent's included. It
 needs Claude Code 2.1.300 or later: an older build does not know `prompt.compose`
 and refuses the whole module, so nothing draws there.
+
+![Reply prose, then the same prose with a drawn Mermaid chart](https://raw.githubusercontent.com/hex/claude-sessions/main/assets/mermaid.svg)
 
 It hooks two events:
 
