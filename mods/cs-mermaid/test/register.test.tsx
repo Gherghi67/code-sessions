@@ -11,6 +11,8 @@ const TEXT = ['Flow:', '', '```mermaid', 'graph TD', '  A[prompt] --> B{cached?}
 test('fencesOf finds mermaid fences and ignores other fences', () => {
   expect(fencesOf(TEXT)).toEqual(['graph TD\n  A[prompt] --> B{cached?}\n  B -->|no| C[render]'])
   expect(fencesOf('```ts\nconst a = 1\n```')).toEqual([])
+  // A four-backtick block quoting mermaid source is not a fence of its own.
+  expect(fencesOf('x\n````mermaid\ngraph TD\nA-->B\n````\n')).toEqual([])
 })
 
 test('a reply without mermaid is left to the engine', async ($, on) => {
@@ -23,20 +25,37 @@ test('a reply without mermaid is left to the engine', async ($, on) => {
   await mounted.unmount()
 })
 
-test('a reply with a fence draws prose as Markdown and the chart as blocks, with no fence left', async ($, on) => {
-  on('config.list', () => ({ value: [] }))
+// The engine stand-in draws each block it is handed and records what it was handed.
+function engine(on: On, seen: { text: string; isFirstOfReply: boolean }[]) {
   on('ui.render', { component: 'AssistantMessage' }, ($, e) => {
     const { Text } = $.ui.resolve(e)
-    return <Text>engine drew it</Text>
+    seen.push({ text: e.props.text, isFirstOfReply: e.props.isFirstOfReply })
+    return <Text>engine: {e.props.text}</Text>
   })
+}
+
+test('a reply with a fence hands its prose to the engine and draws the chart as blocks, with no fence left', async ($, on) => {
+  on('config.list', () => ({ value: [] }))
+  const seen: { text: string; isFirstOfReply: boolean }[] = []
+  engine(on, seen)
   const reply = await $.ui.mount({ plugin: 'cs-mermaid', surface: 'terminal', component: 'AssistantMessage', props: { text: TEXT, isFirstOfReply: true } })
-  expect(await reply.find({ type: 'Markdown', text: 'Flow:' })).toBeDefined()
+  expect(seen).toEqual([{ text: 'Flow:\n', isFirstOfReply: true }])
+  expect(await reply.find({ type: 'Text', text: 'engine: Flow:' })).toBeDefined()
   expect(await reply.find({ type: 'Text', text: 'prompt' })).toBeDefined()
   expect(await reply.find({ type: 'Text', text: 'cached?' })).toBeDefined()
   expect(await reply.find({ type: 'Text', text: 'render' })).toBeDefined()
   expect(await reply.find({ type: 'Text', text: 'no' })).toBeDefined()
   expect(await reply.findAll({ type: 'Code' })).toEqual([])
-  expect(await reply.find({ type: 'Text', text: 'engine drew it' })).toBeUndefined()
+  await reply.unmount()
+})
+
+test('a reply that opens with a fence gives the bullet to no prose part', async ($, on) => {
+  on('config.list', () => ({ value: [] }))
+  const seen: { text: string; isFirstOfReply: boolean }[] = []
+  engine(on, seen)
+  const text = '```mermaid\ngraph TD\n  A --> B\n```\nafter'
+  const reply = await $.ui.mount({ plugin: 'cs-mermaid', surface: 'terminal', component: 'AssistantMessage', props: { text, isFirstOfReply: true } })
+  expect(seen).toEqual([{ text: '\nafter', isFirstOfReply: false }])
   await reply.unmount()
 })
 
@@ -132,13 +151,13 @@ test('blockRows pads full-width rows with the label centred, measured in cells',
 
 test('splitReply keeps prose and fences in order', () => {
   expect(splitReply(TEXT)).toEqual([
-    { kind: 'text', body: 'Flow:\n\n' },
+    { kind: 'text', body: 'Flow:\n' },
     { kind: 'mermaid', body: 'graph TD\n  A[prompt] --> B{cached?}\n  B -->|no| C[render]' },
   ])
   expect(splitReply('a\n```mermaid\ngraph TD\nA --> B\n```\nb\n```mermaid\ngraph LR\nC --> D\n```')).toEqual([
-    { kind: 'text', body: 'a\n' },
+    { kind: 'text', body: 'a' },
     { kind: 'mermaid', body: 'graph TD\nA --> B' },
-    { kind: 'text', body: '\nb\n' },
+    { kind: 'text', body: '\nb' },
     { kind: 'mermaid', body: 'graph LR\nC --> D' },
   ])
 })
