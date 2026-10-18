@@ -846,7 +846,9 @@ It hooks two events:
   reading of the chart, and `style`, `classDef`, `class` and `:::` fills win
   over them, as does a shape over the edge count. Edges are box-drawing glyphs
   with `▼▲►◄` heads, a shared cell is always a crossing (`┼`), and each label
-  sits in a gap in its own line. The mod turns a left-to-right chart wider
+  sits beside its edge's first vertical run, so the corner and the head stay; a
+  label that answers a decision (`yes`, `pass`, `healthy`; `no`, `fail`,
+  `degraded`) is drawn in green or red, any other in the line colour. The mod turns a left-to-right chart wider
   than the terminal top-down. It measures the terminal: beside a docked pane
   the transcript is narrower, and a chart sized to the terminal can wrap
   there. A fence the parser refuses (any statement outside the supported
