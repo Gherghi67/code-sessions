@@ -264,7 +264,7 @@ launch_claude_code() {
         _found=$(_discover_session_uuid_in "$(_claude_project_dir "$session_dir")")
         if _is_uuid "$_found"; then
             _set_local_state "$session_dir/.cs/local/state" claude_session_id "$_found"
-            warn "Bound claude_session_id in .cs/local/state to $_found"
+            notice .cs/local/state "bound claude_session_id to $_found"
             claude_session_id="$_found"
         fi
     fi

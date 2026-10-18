@@ -130,14 +130,14 @@ ENTRIES
     done <<< "$entries"
 }
 
-# One line naming the rules ensure_cs_gitignore_entries just appended, when
-# git tracks <dir>/.gitignore: in an adopted project that is the team's file,
-# and the rules would otherwise show up as an uncommitted change nobody
-# explained. A .gitignore git does not track, or a fresh one, gets no line.
+# One notice row naming the rules ensure_cs_gitignore_entries just appended,
+# when git tracks <dir>/.gitignore: in an adopted project that is the team's
+# file, and the rules would otherwise show up as an uncommitted change nobody
+# explained. A .gitignore git does not track, or a fresh one, gets no row.
 _explain_gitignore_additions() {  # dir
     [ -n "${_CS_GITIGNORE_ADDED:-}" ] || return 0
     _cs_git_at "$1" ls-files --error-unmatch -- .gitignore >/dev/null 2>&1 || return 0
-    info "cs added $_CS_GITIGNORE_ADDED to the tracked .gitignore so cs's machine-local files are never staged; commit it with your next change"
+    notice .gitignore "ignores $_CS_GITIGNORE_ADDED" "tracked file: commit it with your next change"
 }
 
 # One line saying cs committed nothing, naming each of <path>... that git
