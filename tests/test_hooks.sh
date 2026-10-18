@@ -1802,7 +1802,10 @@ _tt_tab_hook() {  # hook, pane, session name, LC_TERMINAL, CS_NO_ITERM2; prints 
           TMUX="$TT_SOCK,1,0" TMUX_PANE="$2" CLAUDE_SESSION_NAME="$3" LC_TERMINAL="$4" \
           bash "$HOOKS_DIR/$1" 2>&1
 }
-_wait_for_file() { local i=0; while [ ! -s "$1" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done; }
+# Waits until <file> holds the stand-in's record. The helper starts in the
+# background, and a loaded machine can start it seconds after the hook returns,
+# so the wait is on the record; the 120 s guard only stops a hang.
+_wait_for_file() { local deadline=$((SECONDS + 120)); while [ ! -s "$1" ] && [ "$SECONDS" -lt "$deadline" ]; do sleep 0.1; done; }
 
 test_a_claim_in_iterm_hands_the_window_to_the_tab_helper() {
     session_start_setup
