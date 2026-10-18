@@ -224,7 +224,7 @@ hooks read no queue, mail or rotation marker from that directory and write nothi
 the Stop hook hands out no task, the prompt hook shows no mail, stamps no date and leaves
 the attention flag, a `/clear` loads no handoff, SessionStart records no conversation id,
 SessionEnd's vault waiter records no pid (it still detaches the vault), and the session log
-(`session.log`) stops. The status line, both mods (`cs` and `cs-update`), the `rotate` skill's
+(`session.log`) stops. The status line, the `cs` and `cs-update` mods, the `rotate` skill's
 arming of its marker and `/wrap`'s last pass stand down too. The status line
 cannot ask git on every render, so each hook run leaves its answer in
 `~/.cache/cs/tracked/<session name>`, and a pull goes unseen there until the next hook
@@ -817,6 +817,68 @@ Tests: `tests/test_mod_update.sh` runs the bun unit tests under
 lead gate) and `claude plugin validate` when each binary is on PATH, and always
 checks the manifest and its `/config` field, the cache-name pin against
 `lib/20-update.sh`, and that the installer and doctor name the mod.
+
+## cs-mermaid (not a hook script — a Claude Code mod)
+
+`mods/cs-mermaid/` is a Claude Code function-hooks plugin, deployed and gated
+the same way as the `cs` mod: `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`, which every
+`cs <name>` launch exports and `CS_NO_FUNCTION_HOOKS=1` withholds. It reads no
+environment, writes no file and runs no process. Unlike the `cs` mod it needs no
+cs session: with function hooks on it draws, and adds its prompt section, in any
+directory and for every prompt the engine composes, a subagent's included. It
+needs Claude Code 2.1.300 or later: an older build does not know `prompt.compose`
+and refuses the whole module, so nothing draws there.
+
+It hooks two events:
+
+- `ui.render` on `AssistantMessage` (terminal surface only). A reply with no
+  ` ```mermaid ` fence goes to the engine untouched. A reply with one is split
+  into prose, which goes back to the engine (so the reply keeps its opening
+  bullet, on its first part only), and fences, each parsed (`hooks/parse.ts`) and
+  laid out (`hooks/layout.ts`) in character cells; the last 32 layouts are
+  kept, since a streaming reply re-renders on every flush. Nodes are solid
+  blocks, three rows tall, taller or wider where more than one edge meets them:
+  lavender, amber for `{}` and `{{}}`, mauve for `(( ))`, in a light or dark
+  palette from the `theme` row of `/config`. `style`, `classDef`, `class`
+  and `:::` set a node's fill and text colour. Edges are box-drawing glyphs
+  with `▼▲►◄` heads, a shared cell is always a crossing (`┼`), and each label
+  sits in a gap in its own line. The mod turns a left-to-right chart wider
+  than the terminal top-down. It measures the terminal: beside a docked pane
+  the transcript is narrower, and a chart sized to the terminal can wrap
+  there. A fence the parser refuses (any statement outside the supported
+  subset refuses the whole chart: subgraphs, self-loops, non-flowchart
+  diagram types, more than 200 nodes, 400 edges or 60-cell
+  labels) or one still too wide stays a code block with `mermaid: <reason>`
+  under it.
+- `prompt.compose`. When the prompt is for a session that draws in a terminal
+  (`terminal` among `e.surfaces`), not `--bare`, and the session directory has
+  no `.cs/local/disabled`, the mod appends one `session`-scope section,
+  `cs-mermaid:diagrams` (about 80 tokens): flowchart fences draw here; add one
+  only for a flow that branches, loops or has four or more stages, never for a
+  task list or numbered steps; one fence, short labels, no subgraphs. It is
+  part of every request's system prompt, on the session side of the prompt
+  cache's boundary. Claude Code runs `prompt.compose` hooks only from plugins an
+  organization lists in managed settings when it manages Claude Code; there
+  the drawing still works and the section is not sent. `cs -doctor` lists the
+  section among the authority rows, `off` when `CS_NO_FUNCTION_HOOKS` withholds
+  the mod (it cannot read the `/config` row).
+
+The `/config` row `cs-mermaid.drawDiagrams` (on by default) turns off both:
+fences show as source and the model is not told they draw.
+
+`install.sh` deploys the mod's six files (`.claude-plugin/plugin.json`,
+`hooks/hooks.json`, `hooks/register.tsx`, `hooks/parse.ts`, `hooks/layout.ts`,
+`hooks/text.ts`) under `~/.claude/skills/cs-mermaid/`, and `cs -uninstall`
+removes the directory. The mod writes no heartbeat, so `cs -doctor` has no
+"last ran" row for it.
+
+Tests: `tests/test_mod_mermaid.sh` runs the tests under `mods/cs-mermaid/test/`
+with `claude plugin test` (they use the engine's own `claude-code/testing` kit:
+the parser, exact picture fixtures for the layout, the inline drawing, the
+fallback to source, the option and each prompt-section gate) and
+`claude plugin validate` when `claude` is on PATH and knows `prompt.compose`
+(both skip on an older build), and always checks the manifest, its `/config`
+field and that the installer names the mod.
 
 ## Hook Configuration
 
