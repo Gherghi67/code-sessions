@@ -752,7 +752,7 @@ _migrate_session_documents() {  # session_dir, tracked_tree_is_ours
             fm && line ~ re          { next }
             { print }
         ' "$readme"; then
-            notice .cs/README.md "moved its machine-local fields to .cs/local/state"
+            notice .cs/README.md "machine-local fields moved to .cs/local/state or dropped"
         else
             warn "could not rewrite $readme; its machine-local fields stay in it"
             _CS_MIGRATE_CLEAN=0

@@ -15,7 +15,7 @@ All notable changes to cs are documented here. Release notes are also available 
 
 ### Fixes
 - cs reads the terminal's theme before it migrates a session, so what the migration prints uses the light palette on a light terminal. It read the theme only at launch, after the migration had printed in the dark palette.
-- The `.gitignore` cs writes for a new session names `.cs/session.lock` and `.cs/session.mutex.lock`. The next full migration of every session cs had created appended both lines and asked you to commit `.gitignore`.
+- The `.gitignore` cs writes for a new session names `.cs/session.lock` and `.cs/session.mutex.lock`, so a session created from this version gets no `.gitignore` row on a later migration. A session created before still gets the two lines, and the row asking you to commit them, once.
 - The status line's background tmux walker kills a `ps` that has not answered after five seconds of wall time. It counted fifty short sleeps before, each of which ran long by its fork on a loaded machine, so the wait could outlast the ten-second walk mark and the next render started a second walker beside the first.
 
 ## 2026.10.8
