@@ -386,6 +386,8 @@ command-tracker files are pruned, and machine-local fields are moved out of
 shared files into `.cs/local/`. Migration is idempotent — a modern session is
 left untouched.
 
+![Migration notice header, gitignore lock rules and commit instruction, then README frontmatter added](https://raw.githubusercontent.com/hex/claude-sessions/main/assets/notice.svg)
+
 A migration whose writes all succeed writes `.cs/local/migrated`, and
 the next open skips the one-time phases while that stamp still holds: same cs
 version, same actor, same encrypted state, every file it listed still there,
