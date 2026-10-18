@@ -256,11 +256,13 @@ _with_wrap_text() {  # file
     _replace_line "$1" "$SUMMARY_BULLET" "$WRAP_BULLET"
 }
 
-# What the open prints when it rewrites the cue block, and when it rewrites a
-# line of the protocol, in each file.
-DROPPED_OFFERS='Dropped the /sweep and /summary offers cs wrote into CLAUDE.local.md; it offers /wrap alone'
-POINTED_LOCAL='Pointed the session protocol cs wrote into CLAUDE.local.md at /wrap'
-POINTED_ROOT='Pointed the session protocol cs wrote into CLAUDE.md at /wrap'
+# The header over the rows an open prints for the files it changed, and the
+# rows it prints when it rewrites the cue block, and when it rewrites a line
+# of the protocol, in each file.
+NOTICE_HEADER='✳ cs updated these files'
+DROPPED_OFFERS='  CLAUDE.local.md  offers /wrap alone, without /sweep or /summary'
+POINTED_LOCAL='  CLAUDE.local.md  session protocol points at /wrap'
+POINTED_ROOT='  CLAUDE.md        session protocol points at /wrap'
 
 # What the open prints when it cannot read or rewrite CLAUDE.md.
 UNREWRITTEN_ROOT='could not rewrite CLAUDE.md; any /summary line cs wrote there still points at a command that is gone'
@@ -416,6 +418,22 @@ test_open_drops_the_sweep_and_summary_sentence_from_each_wrap_line_cs_wrote() {
         ! _open_printed "wrap-line-$v" "$DROPPED_OFFERS" \
             || { echo "  FAIL: the open names offers it did not drop"; return 1; }
     done
+}
+
+# An open that changes files names them under one header, a row per change in
+# the order made; an open that changes nothing prints no header.
+test_open_names_the_files_it_changed_under_one_header() {
+    local dir
+    dir=$(_fresh_session "notice-block")
+    _cue_block_with_triggers | _splice_cue_block "$dir/CLAUDE.local.md"
+    _splice_wrap_line "$dir/CLAUDE.local.md" "$WRAP_LINE_WITH_CHECKPOINT"
+    _reopen_with_migration "notice-block"
+    assert_eq "$(printf '%s\n' "$NOTICE_HEADER" "$DROPPED_OFFERS" "$POINTED_LOCAL")" \
+        "$(awk -v h="$NOTICE_HEADER" '$0 == h { on = 1; print; next } on && /^  / { print; next } { on = 0 }' "$TEST_TMPDIR/notice-block.out")" \
+        "one header, then a row per change" || return 1
+    _reopen_with_migration "notice-block"
+    ! grep -Fq -- "$NOTICE_HEADER" "$TEST_TMPDIR/notice-block.out" \
+        || { echo "  FAIL: an open that changed nothing printed the header"; cat "$TEST_TMPDIR/notice-block.out"; return 1; }
 }
 
 # The line cs wrote pointing at /summary, either wording, becomes the /wrap
@@ -724,6 +742,7 @@ run_test test_new_session_cue_offers_wrap_or_nothing
 run_test test_appended_cue_block_matches_the_template
 run_test test_open_rewrites_each_four_option_cue_cs_wrote
 run_test test_open_drops_the_sweep_and_summary_sentence_from_each_wrap_line_cs_wrote
+run_test test_open_names_the_files_it_changed_under_one_header
 run_test test_open_leaves_an_edited_cue_and_wrap_line_alone
 run_test test_open_rewrites_each_summary_line_cs_wrote
 run_test test_open_leaves_an_edited_summary_line_alone

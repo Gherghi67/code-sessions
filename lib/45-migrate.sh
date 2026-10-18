@@ -916,10 +916,10 @@ _wrap_only_migrate() {  # file
     [ -n "$changes" ] || return 0
     cs_write_atomic "$f" _wrap_only_rewrite print "$f" || return 1
     case "$changes" in
-        *cue*) warn "Dropped the /sweep and /summary offers cs wrote into ${f##*/}; it offers /wrap alone" ;;
+        *cue*) notice "${f##*/}" "offers /wrap alone, without /sweep or /summary" ;;
     esac
     case "$changes" in
-        *line*) warn "Pointed the session protocol cs wrote into ${f##*/} at /wrap" ;;
+        *line*) notice "${f##*/}" "session protocol points at /wrap" ;;
     esac
 }
 

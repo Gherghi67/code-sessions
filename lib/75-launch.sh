@@ -207,15 +207,6 @@ launch_claude_code() {
     # the sessions it starts. Empty for every other open.
     local remote_mode="${6:-}"
 
-    # Terminal theme (and its real background RGB when known) for the statusline
-    # and hooks, detected while cs still owns the tty and reused by the session
-    # launched next.
-    _export_term_theme
-    # Refresh the palette now that the theme is known so everything below —
-    # the collision menu and the launch banner — reads on a light canvas
-    # (colors were first set at startup, defaulting to dark).
-    setup_palette
-
     # The spawn token (see the seed consumer below) proves THIS window to
     # THIS session only. Taken into a plain variable and dropped from the
     # environment here, before the lock: its collision menu re-execs cs for

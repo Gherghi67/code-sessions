@@ -2559,6 +2559,22 @@ info() {
     printf "${GREEN}%s${NC}\n" "$1"
 }
 
+# A row naming a file cs changed for the user: the file in a column, then the
+# change, and under it, when given, what the user must do about it. The first
+# row of a run prints the header the rows sit under. Each row prints as it is
+# made, so an exit part way keeps every row for a write that happened. Whether
+# the header is out lives in this shell, and a row from a subshell would print
+# it again, so a subshell call is refused.
+notice() {  # file, change, [action]
+    [ "$BASH_SUBSHELL" -eq 0 ] || error "notice for $1 called in a subshell, which would repeat the header"
+    if [ -z "${_CS_NOTICE_HEADED:-}" ]; then
+        printf "${RUST}%s${NC} ${BOLD}%s${NC}\n" "$ICON_LOGO" "cs updated these files"
+        _CS_NOTICE_HEADED=1
+    fi
+    printf "  ${DIM}%-15s${NC}  %s\n" "$1" "$2"
+    [ -z "${3:-}" ] || printf "  %-15s  ${ORANGE}→ %s${NC}\n" "" "$3"
+}
+
 # Strip leading and trailing whitespace from a string; prints the result.
 _trim() {  # text
     local s="$1"
@@ -8117,10 +8133,10 @@ _wrap_only_migrate() {  # file
     [ -n "$changes" ] || return 0
     cs_write_atomic "$f" _wrap_only_rewrite print "$f" || return 1
     case "$changes" in
-        *cue*) warn "Dropped the /sweep and /summary offers cs wrote into ${f##*/}; it offers /wrap alone" ;;
+        *cue*) notice "${f##*/}" "offers /wrap alone, without /sweep or /summary" ;;
     esac
     case "$changes" in
-        *line*) warn "Pointed the session protocol cs wrote into ${f##*/} at /wrap" ;;
+        *line*) notice "${f##*/}" "session protocol points at /wrap" ;;
     esac
 }
 
@@ -14036,15 +14052,6 @@ launch_claude_code() {
     # the sessions it starts. Empty for every other open.
     local remote_mode="${6:-}"
 
-    # Terminal theme (and its real background RGB when known) for the statusline
-    # and hooks, detected while cs still owns the tty and reused by the session
-    # launched next.
-    _export_term_theme
-    # Refresh the palette now that the theme is known so everything below —
-    # the collision menu and the launch banner — reads on a light canvas
-    # (colors were first set at startup, defaulting to dark).
-    setup_palette
-
     # The spawn token (see the seed consumer below) proves THIS window to
     # THIS session only. Taken into a plain variable and dropped from the
     # environment here, before the lock: its collision menu re-execs cs for
@@ -16849,6 +16856,15 @@ main() {
             return 0
         fi
     fi
+
+    # Terminal theme (and its real background RGB when known) for the statusline
+    # and hooks, detected while cs still owns the tty and reused by the session
+    # launched next.
+    _export_term_theme
+    # Refresh the palette now that the theme is known so everything below —
+    # migration's notices, the collision menu and the launch banner — reads on
+    # a light canvas (colors were first set at startup, defaulting to dark).
+    setup_palette
 
     # Define paths (resolve symlinks for adopted sessions so Claude Code
     # sees the original project path, preserving conversation continuity)
