@@ -184,6 +184,12 @@ CS_MOD_FILES=(
     cs-update/.claude-plugin/plugin.json
     cs-update/hooks/hooks.json
     cs-update/hooks/register.tsx
+    cs-mermaid/.claude-plugin/plugin.json
+    cs-mermaid/hooks/hooks.json
+    cs-mermaid/hooks/layout.ts
+    cs-mermaid/hooks/parse.ts
+    cs-mermaid/hooks/register.tsx
+    cs-mermaid/hooks/text.ts
 )
 
 # Every file install.sh deploys from the repo, one repo path per line: the

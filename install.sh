@@ -237,6 +237,12 @@ CS_MOD_FILES=(
     cs-update/.claude-plugin/plugin.json
     cs-update/hooks/hooks.json
     cs-update/hooks/register.tsx
+    cs-mermaid/.claude-plugin/plugin.json
+    cs-mermaid/hooks/hooks.json
+    cs-mermaid/hooks/layout.ts
+    cs-mermaid/hooks/parse.ts
+    cs-mermaid/hooks/register.tsx
+    cs-mermaid/hooks/text.ts
 )
 
 # Every file install.sh deploys from the repo, one repo path per line: the
@@ -1317,7 +1323,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "a64f7537dbd4dcbbe5e42991ae017d408e526a8ad9eda9b6cb2c043db6dc8892  bin/cs"
+    "6f276d85a3799c53415c7b080949e71ac29962dd4fb13809727da6cebc719055  bin/cs"
     "98e006132ae799f88400cd94ddb2e09aa7605a159f95665b35ed22025eb53b04  bin/cs-secrets"
     "201b1615c286fa60cc004d1d7799211f4f1b545843573b4f36c7b707829710de  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -1354,6 +1360,12 @@ CS_PAYLOAD_SHA256=(
     "7a97c18b6ae755d8ec7862532eb15bbf627170a1fab8cc90dd2f8f77a57164be  mods/cs-update/.claude-plugin/plugin.json"
     "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-update/hooks/hooks.json"
     "85eed2ed78ad31901e690f600aa10b13b5e600cd181c67cf30224c271ca06eb2  mods/cs-update/hooks/register.tsx"
+    "83a89eb2a476d67c4282c867f740ff62d04aa81f0045fb39ba970ed76d85a085  mods/cs-mermaid/.claude-plugin/plugin.json"
+    "529fd7aa9b22d012870c0a106899b65f6a37eac022c7ffb77898042038e03167  mods/cs-mermaid/hooks/hooks.json"
+    "411bec6d4486ef24faca8b6c921d73ebacfd1f579d341118836015eec0252d74  mods/cs-mermaid/hooks/layout.ts"
+    "1ba32856e0e26079a5ff978954d3aef840da2e78fc622b7b95ae1f02cceed223  mods/cs-mermaid/hooks/parse.ts"
+    "8660f8a753d7025cf6380957cf845123afd7b0102cfb1d28991ce546c9e278a8  mods/cs-mermaid/hooks/register.tsx"
+    "c9c48de571777b2e2e948770b4e43fce1f4f84f86547496772a5021fc3380757  mods/cs-mermaid/hooks/text.ts"
     "d9adfb82412597f096190d1dfcd36d9ae67adbc5a230c9baa5d8485b010f8e78  completions/cs.bash"
     "fa1619b5039452a62dafd4e373546dd2606db4e61a76f6c13af8272ec5be7d5e  completions/_cs"
 )
