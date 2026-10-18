@@ -70,25 +70,30 @@ EOF
     echo "$session_dir"
 }
 
-# Removes legacy data files
+# Removes legacy data files, and says so
 test_prune_removes_data_files() {
-    local session_dir
+    local session_dir out
     session_dir=$(populate_legacy_session "legacy")
 
-    "$CS_BIN" legacy <<< "" >/dev/null 2>&1 || true
+    out=$("$CS_BIN" legacy <<< "" 2>&1 || true)
 
     assert_file_not_exists "$session_dir/.cs/commands.md"          "commands.md should be removed" || return 1
     assert_file_not_exists "$session_dir/.cs/commands.md.tmp"      "commands.md.tmp should be removed" || return 1
     assert_file_not_exists "$session_dir/.cs/command-dates.txt"    "command-dates.txt should be removed" || return 1
     assert_file_not_exists "$session_dir/.cs/promoted-commands.txt" "promoted-commands.txt should be removed" || return 1
+    grep -Fxq -- "  .cs/             dropped the retired command tracker's files" <<< "$out" \
+        || { echo "  FAIL: the open says it dropped the tracker's files"; return 1; }
 }
 
-# Strips the @-include and the surrounding "Discovered Commands" section
+# Strips the @-include and the surrounding "Discovered Commands" section, and says so
 test_prune_strips_claude_md_include() {
-    local session_dir
+    local session_dir out
     session_dir=$(populate_legacy_session "legacy")
 
-    "$CS_BIN" legacy <<< "" >/dev/null 2>&1 || true
+    out=$("$CS_BIN" legacy <<< "" 2>&1 || true)
+
+    grep -Fxq -- "  CLAUDE.md        dropped the retired command tracker's section" <<< "$out" \
+        || { echo "  FAIL: the open says it dropped the tracker's section from CLAUDE.md"; return 1; }
 
     local claude_md="$session_dir/CLAUDE.md"
     assert_file_not_contains "$claude_md" "@.cs/commands.md"            "CLAUDE.md should not retain @-include" || return 1

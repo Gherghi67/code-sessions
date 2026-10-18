@@ -385,10 +385,13 @@ test_migration_adds_frontmatter_to_old_readme() {
     assert_eq "# Session: test-old" "$first_line" "Old README should not have frontmatter" || return 1
 
     # Open session to trigger migration
-    "$CS_BIN" test-old <<< "" 2>&1 || true
+    local out
+    out=$("$CS_BIN" test-old <<< "" 2>&1 || true)
 
     first_line=$(head -1 "$CS_SESSIONS_ROOT/test-old/.cs/README.md")
     assert_eq "---" "$first_line" "Migrated README should have frontmatter" || return 1
+    grep -Fxq -- '  .cs/README.md    added frontmatter' <<< "$out" \
+        || { echo "  FAIL: the open says it added frontmatter to the README"; return 1; }
 }
 
 test_migration_preserves_existing_content() {

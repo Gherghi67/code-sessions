@@ -31,7 +31,7 @@ test_new_session_carries_the_session_commit_rule() {
 # managed sections and not this one. The migration runs its one-time phases
 # only without a fresh stamp, as after an upgrade.
 test_existing_session_gains_the_rule_once() {
-    local dir="$CS_SESSIONS_ROOT/older" file before size
+    local dir="$CS_SESSIONS_ROOT/older" file before size out
     file="$dir/CLAUDE.local.md"
     _open older > /dev/null || { echo "  FAIL: creating the session failed"; return 1; }
     printf '%s\n' '<!-- cs:session-protocol -->' '# Session Documentation Protocol' '' 'protocol body' \
@@ -39,9 +39,11 @@ test_existing_session_gains_the_rule_once() {
         '' '<!-- cs:wrap-cues -->' '## Session wrap-up cues' '' 'cues body' > "$file"
     before=$(cat "$file")
     rm -f "$dir/.cs/local/migrated"
-    _open older > /dev/null || { echo "  FAIL: the reopen failed"; return 1; }
+    out=$(_open older) || { echo "  FAIL: the reopen failed"; return 1; }
     assert_eq "1" "$(_count_lines "$file" "$SENTINEL")" "the migration adds the sentinel" || return 1
     assert_eq "1" "$(_count_lines "$file" "$RULE")" "and the rule" || return 1
+    grep -Fxq -- '  CLAUDE.local.md  added the session-commits rule' <<< "$out" \
+        || { echo "  FAIL: the reopen says it added the rule"; return 1; }
     assert_eq "$before" "$(head -n 14 "$file")" "the existing protocol stays as it was, above the rule" || return 1
     size=$(wc -c < "$file" | tr -d ' ')
     rm -f "$dir/.cs/local/migrated"

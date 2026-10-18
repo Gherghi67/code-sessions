@@ -973,10 +973,13 @@ EOF
         > "$session_dir/.gitattributes"
     (cd "$session_dir" && git init -q && git add -A && git commit -q -m "init")
 
-    "$CS_BIN" legacy-log <<< "" >/dev/null 2>&1 || true
+    local out
+    out=$("$CS_BIN" legacy-log <<< "" 2>&1 || true)
 
     assert_file_exists "$session_dir/.cs/local/session.log" \
         "migration should create the log at .cs/local/session.log" || return 1
+    grep -Fxq -- '  session.log      moved from .cs/logs/ to .cs/local/' <<< "$out" \
+        || { echo "  FAIL: the open says where the session log moved"; return 1; }
     assert_file_contains "$session_dir/.cs/local/session.log" "BASH: echo hello" \
         "relocated log should carry the old content" || return 1
     assert_eq "Claude Code Session Log" \

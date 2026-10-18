@@ -87,10 +87,10 @@ test_adopt_appends_protocol_to_an_existing_claude_local_md() {
     local project_dir="$TEST_TMPDIR/my-project"
     mkdir -p "$project_dir"
     printf '# My local notes\n\nUSER-LOCAL-KEEP\n' > "$project_dir/CLAUDE.local.md"
-    local before
+    local before out
     before=$(cat "$project_dir/CLAUDE.local.md")
 
-    (cd "$project_dir" && "$CS_BIN" -adopt my-session >/dev/null 2>&1)
+    out=$(cd "$project_dir" && "$CS_BIN" -adopt my-session 2>&1)
 
     local after
     after=$(cat "$project_dir/CLAUDE.local.md")
@@ -104,6 +104,8 @@ test_adopt_appends_protocol_to_an_existing_claude_local_md() {
     esac
     assert_file_contains "$project_dir/CLAUDE.local.md" "<!-- cs:session-protocol -->" \
         "the protocol is appended to the user's CLAUDE.local.md" || return 1
+    grep -Fxq -- '  CLAUDE.local.md  added the cs session protocol below your own lines' <<< "$out" \
+        || { echo "  FAIL: adopt says it added the protocol below the user's lines"; return 1; }
 }
 
 # A CLAUDE.local.md that already carries a cs sentinel is left exactly as it is.

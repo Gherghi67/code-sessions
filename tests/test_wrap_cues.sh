@@ -73,13 +73,16 @@ EOF
 # ============================================================================
 
 test_lazy_migration_appends_wrap_cues() {
-    local session_dir
+    local session_dir out
     session_dir=$(_seed_legacy_session_wrap "legacy-wrap")
 
     assert_file_not_contains "$session_dir/CLAUDE.md" "cs:wrap-cues" \
         "precondition: legacy CLAUDE.md should lack cs:wrap-cues sentinel" || return 1
 
-    "$CS_BIN" legacy-wrap <<< "" >/dev/null 2>&1 || true
+    out=$("$CS_BIN" legacy-wrap <<< "" 2>&1 || true)
+
+    grep -Fxq -- '  CLAUDE.local.md  added the session wrap-up cues' <<< "$out" \
+        || { echo "  FAIL: the open says it added the wrap-up cues"; return 1; }
 
     assert_file_contains "$session_dir/CLAUDE.md" "Session Documentation Protocol" \
         "the head above the sentinel stays in CLAUDE.md" || return 1

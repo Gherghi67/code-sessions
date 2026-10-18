@@ -229,12 +229,15 @@ test_lazy_migration_self_heals_orphan_uuid() {
     local real_uuid="abcd1234-5678-4abc-9def-fedcba987654"
     _seed_claude_transcript "$session_dir" "$real_uuid"
 
-    "$CS_BIN" legacy-session <<< "" >/dev/null 2>&1 || true
+    local out
+    out=$("$CS_BIN" legacy-session <<< "" 2>&1 || true)
 
     local recorded
     recorded=$(_extract_session_uuid "$session_dir/.cs/local/state")
     assert_eq "$real_uuid" "$recorded" \
         "self-heal should rewrite orphan claude_session_id to the existing transcript UUID" || return 1
+    grep -Fxq -- "  .cs/local/state  repaired orphan claude_session_id (was $orphan_uuid)" <<< "$out" \
+        || { echo "  FAIL: the open names the orphan it repaired"; return 1; }
 
     # Idempotent: a second resume must not flip the value back.
     "$CS_BIN" legacy-session <<< "" >/dev/null 2>&1 || true

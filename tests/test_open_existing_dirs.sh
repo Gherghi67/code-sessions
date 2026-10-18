@@ -49,6 +49,8 @@ test_flat_layout_migration_commits_nothing() {
     assert_file_not_exists "$dir/README.md" "and left the root" || return 1
     assert_eq "README.md" "$(git -C "$dir" ls-files README.md)" "git still tracks the README at the root" || return 1
     assert_eq "" "$(git -C "$dir" ls-files .cs)" "and nothing under .cs/" || return 1
+    grep -Fxq -- '  .cs/             holds the session metadata, moved out of the workspace root' <<< "$out" \
+        || { echo "  FAIL: one row says the metadata moved into .cs/"; return 1; }
     assert_eq "$(printf '%s\n' '  working tree     cs committed nothing' \
             '                   → commit .cs/, logs/, README.md, .gitignore and .gitattributes with your next change')" \
         "$(row_and_action "$out" '  working tree     cs committed nothing')" \
