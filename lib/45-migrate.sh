@@ -391,11 +391,11 @@ prune_commands_artifacts() {
             /^[0-9]+\. \*\*\.cs\/commands\.md\*\*/ { next }
             { print }
         ' "$claude_md" || error "could not rewrite $claude_md"
-        removed=1
+        notice CLAUDE.md "dropped the retired command tracker's section"
     fi
 
     if [ "$removed" -eq 1 ]; then
-        warn "Pruned retired command-tracker artifacts"
+        notice .cs/ "dropped the retired command tracker's files"
     fi
 }
 
@@ -689,7 +689,7 @@ _migrate_session_documents() {  # session_dir, tracked_tree_is_ours
         # write that does not complete leaves nothing behind.
         if cs_write_atomic "$readme" printf -- '---\nstatus: active\ncreated: %s\ntags: []\naliases: ["%s"]\n---\n%s\n' \
             "$created_date" "$session_name" "$existing_content" 2>/dev/null; then
-            warn "Added frontmatter to .cs/README.md"
+            notice .cs/README.md "added frontmatter"
         else
             _CS_MIGRATE_CLEAN=0
         fi
@@ -752,7 +752,7 @@ _migrate_session_documents() {  # session_dir, tracked_tree_is_ours
             fm && line ~ re          { next }
             { print }
         ' "$readme"; then
-            warn "Moved machine-local fields from .cs/README.md to .cs/local/state"
+            notice .cs/README.md "machine-local fields moved to .cs/local/state or dropped"
         else
             warn "could not rewrite $readme; its machine-local fields stay in it"
             _CS_MIGRATE_CLEAN=0
@@ -916,10 +916,10 @@ _wrap_only_migrate() {  # file
     [ -n "$changes" ] || return 0
     cs_write_atomic "$f" _wrap_only_rewrite print "$f" || return 1
     case "$changes" in
-        *cue*) warn "Dropped the /sweep and /summary offers cs wrote into ${f##*/}; it offers /wrap alone" ;;
+        *cue*) notice "${f##*/}" "offers /wrap alone, without /sweep or /summary" ;;
     esac
     case "$changes" in
-        *line*) warn "Pointed the session protocol cs wrote into ${f##*/} at /wrap" ;;
+        *line*) notice "${f##*/}" "session protocol points at /wrap" ;;
     esac
 }
 
@@ -972,7 +972,7 @@ _ensure_claude_local_sections() {  # session_dir
                     stripping && /^<!-- / { stripping = 0 }
                     !stripping { print }
                 ' "$claude_md_p9" || error "could not rewrite $claude_md_p9"
-                warn "Retired auto-memory bucket guidance; replaced with cs:memory-note"
+                notice CLAUDE.local.md "cs:memory-note replaces the auto-memory bucket guidance"
             # State 3: tombstone (sentinel without header) — preserve opt-out
             fi
         else
@@ -981,7 +981,7 @@ _ensure_claude_local_sections() {  # session_dir
                 echo ""
                 _emit_memory_note_block
             } >> "$claude_md_p9"
-            warn "Added cs:memory-note to CLAUDE.local.md"
+            notice CLAUDE.local.md "added cs:memory-note"
         fi
     fi
 
@@ -991,7 +991,7 @@ _ensure_claude_local_sections() {  # session_dir
     # keep the HTML comment).
     if [ -f "$claude_md_p9" ] && ! grep -q 'cs:wrap-cues' "$claude_md_p9"; then
         { echo; _emit_wrap_cues_block; } >> "$claude_md_p9"
-        warn "Appended session wrap-up cues to CLAUDE.local.md"
+        notice CLAUDE.local.md "added the session wrap-up cues"
     fi
 
     # Phase 16: /wrap is the one command that runs the memory and summary
@@ -1008,7 +1008,7 @@ _ensure_claude_local_sections() {  # session_dir
     if [ -f "$claude_md_p9" ] && [ -d "$session_dir/.cs/private" ] \
         && ! grep -q 'cs:encrypted-protocol' "$claude_md_p9"; then
         { echo; _emit_encrypted_protocol_block; } >> "$claude_md_p9"
-        warn "Added the encrypted-session protocol to CLAUDE.local.md"
+        notice CLAUDE.local.md "added the encrypted-session protocol"
     fi
 
     # Phase 15: the rule for committing session files, which sessions created
@@ -1016,7 +1016,7 @@ _ensure_claude_local_sections() {  # session_dir
     # means managed, never re-added.
     if [ -f "$claude_md_p9" ] && ! grep -q 'cs:session-commits' "$claude_md_p9"; then
         { echo; _emit_session_commits_block; } >> "$claude_md_p9"
-        warn "Added the session-commits rule to CLAUDE.local.md"
+        notice CLAUDE.local.md "added the session-commits rule"
     fi
 }
 
@@ -1173,7 +1173,7 @@ migrate_session() {
         setup_merge_attributes "$session_dir"
         ensure_cs_gitignore_entries "$session_dir"
         # Names the rules just appended to a tracked .gitignore. Adopt merges
-        # the same rules and names .gitignore in its own line of what it left
+        # the same rules and names .gitignore in its own row of what it left
         # (_explain_nothing_committed) instead.
         _explain_gitignore_additions "$session_dir"
     fi
@@ -1198,10 +1198,7 @@ migrate_session() {
         # files from the user's next `git add`.
         ensure_cs_gitignore_entries "$session_dir"
 
-        echo ""
-        echo -e "${ORANGE}Migrated session to .cs/ directory structure${NC}"
-        echo -e "${DIM}Session metadata moved to .cs/ - your workspace root is now clean for project files.${NC}"
-        echo ""
+        notice .cs/ "holds the session metadata, moved out of the workspace root"
 
         # The moves stay in the working tree for the user to commit, and the
         # session records the mode its features take, as adopt does.
@@ -1249,7 +1246,7 @@ migrate_session() {
         if [ "$tracked_tree_is_ours" = 1 ] && [ -f "$ga" ] && grep -q 'logs/session\.log merge=union' "$ga"; then
             cs_write_atomic "$ga" awk '!/logs\/session\.log merge=union/' "$ga" 2>/dev/null || true
         fi
-        warn "Moved .cs/logs/session.log to ${log_dir#"$session_dir"/}/session.log"
+        notice session.log "moved from .cs/logs/ to ${log_dir#"$session_dir"/}/"
     fi
 
     # Remove inert sync/remote metadata left by older versions (the sync
@@ -1324,9 +1321,9 @@ migrate_session() {
         if [ -n "$_bind_uuid" ]; then
             _set_local_state "$_state" claude_session_id "$_bind_uuid"
             if [ -z "$_existing" ]; then
-                warn "Bound claude_session_id in .cs/local/state to $_bind_uuid"
+                notice .cs/local/state "bound claude_session_id to $_bind_uuid"
             else
-                warn "Repaired orphan claude_session_id (was $_existing)"
+                notice .cs/local/state "repaired orphan claude_session_id (was $_existing)"
             fi
         fi
     }
@@ -1343,7 +1340,7 @@ migrate_session() {
         local _new_color
         _new_color=$(_alloc_random_color)
         _set_local_state "$_state" claude_session_color "$_new_color"
-        warn "Backfilled claude_session_color in .cs/local/state ($_new_color)"
+        notice .cs/local/state "backfilled claude_session_color ($_new_color)"
     fi
 
     # A stamp that cannot be written costs only speed: without it the next

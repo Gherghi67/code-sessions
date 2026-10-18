@@ -2556,7 +2556,25 @@ error() {
 }
 
 info() {
+    _CS_NOTICE_HEADED=""
     printf "${GREEN}%s${NC}\n" "$1"
+}
+
+# A row naming a file cs changed for the user: the file in a column, then the
+# change, and under it, when given, what the user must do about it. The first
+# row of a run prints the header the rows sit under; an info or warn line
+# between rows ends the block, so the next row prints the header again. Each
+# row prints as it is made, so an exit part way keeps every row for a write
+# that happened. Whether the header is out lives in this shell, and a row from
+# a subshell would print it again, so a subshell call is refused.
+notice() {  # file, change, [action]
+    [ "$BASH_SUBSHELL" -eq 0 ] || error "notice for $1 called in a subshell, which would repeat the header"
+    if [ -z "${_CS_NOTICE_HEADED:-}" ]; then
+        printf "${RUST}%s${NC} ${BOLD}%s${NC}\n" "$ICON_LOGO" "cs updated these files"
+        _CS_NOTICE_HEADED=1
+    fi
+    printf "  ${DIM}%-15s${NC}  %s\n" "$1" "$2"
+    [ -z "${3:-}" ] || printf "  %-15s  ${ORANGE}→ %s${NC}\n" "" "$3"
 }
 
 # Strip leading and trailing whitespace from a string; prints the result.
@@ -2901,6 +2919,7 @@ _is_help_flag() {  # arg
 }
 
 warn() {
+    _CS_NOTICE_HEADED=""
     printf "${YELLOW}%s${NC}\n" "$1"
 }
 
@@ -6630,7 +6649,7 @@ ensure_session_claude_md() {
     elif ! grep -q '<!-- cs:' "$claude_local"; then
         printf '\n' >> "$claude_local"
         _emit_session_claude_md >> "$claude_local"
-        warn "Appended the cs session protocol to your existing CLAUDE.local.md"
+        notice CLAUDE.local.md "added the cs session protocol below your own lines"
     fi
 }
 
@@ -6703,7 +6722,7 @@ migrate_claude_md_to_local() {
         else
             mv "$claude_md" "$local_md"
         fi
-        warn "Moved the cs session protocol from CLAUDE.md to CLAUDE.local.md"
+        notice CLAUDE.local.md "holds the cs session protocol, moved from CLAUDE.md"
     else
         if [ -f "$local_md" ]; then
             printf '\n' >> "$local_md"
@@ -6712,7 +6731,7 @@ migrate_claude_md_to_local() {
             sed -n "${split_line},\$p" "$claude_md" > "$local_md"
         fi
         cs_write_atomic "$claude_md" printf '%s\n' "$head_text" || error "could not rewrite $claude_md"
-        warn "Moved cs-managed sections from CLAUDE.md to CLAUDE.local.md; your own content stays in CLAUDE.md"
+        notice CLAUDE.local.md "holds cs's sections, moved from CLAUDE.md, where your own lines stay"
     fi
     return 0
 }
@@ -7592,11 +7611,11 @@ prune_commands_artifacts() {
             /^[0-9]+\. \*\*\.cs\/commands\.md\*\*/ { next }
             { print }
         ' "$claude_md" || error "could not rewrite $claude_md"
-        removed=1
+        notice CLAUDE.md "dropped the retired command tracker's section"
     fi
 
     if [ "$removed" -eq 1 ]; then
-        warn "Pruned retired command-tracker artifacts"
+        notice .cs/ "dropped the retired command tracker's files"
     fi
 }
 
@@ -7890,7 +7909,7 @@ _migrate_session_documents() {  # session_dir, tracked_tree_is_ours
         # write that does not complete leaves nothing behind.
         if cs_write_atomic "$readme" printf -- '---\nstatus: active\ncreated: %s\ntags: []\naliases: ["%s"]\n---\n%s\n' \
             "$created_date" "$session_name" "$existing_content" 2>/dev/null; then
-            warn "Added frontmatter to .cs/README.md"
+            notice .cs/README.md "added frontmatter"
         else
             _CS_MIGRATE_CLEAN=0
         fi
@@ -7953,7 +7972,7 @@ _migrate_session_documents() {  # session_dir, tracked_tree_is_ours
             fm && line ~ re          { next }
             { print }
         ' "$readme"; then
-            warn "Moved machine-local fields from .cs/README.md to .cs/local/state"
+            notice .cs/README.md "machine-local fields moved to .cs/local/state or dropped"
         else
             warn "could not rewrite $readme; its machine-local fields stay in it"
             _CS_MIGRATE_CLEAN=0
@@ -8117,10 +8136,10 @@ _wrap_only_migrate() {  # file
     [ -n "$changes" ] || return 0
     cs_write_atomic "$f" _wrap_only_rewrite print "$f" || return 1
     case "$changes" in
-        *cue*) warn "Dropped the /sweep and /summary offers cs wrote into ${f##*/}; it offers /wrap alone" ;;
+        *cue*) notice "${f##*/}" "offers /wrap alone, without /sweep or /summary" ;;
     esac
     case "$changes" in
-        *line*) warn "Pointed the session protocol cs wrote into ${f##*/} at /wrap" ;;
+        *line*) notice "${f##*/}" "session protocol points at /wrap" ;;
     esac
 }
 
@@ -8173,7 +8192,7 @@ _ensure_claude_local_sections() {  # session_dir
                     stripping && /^<!-- / { stripping = 0 }
                     !stripping { print }
                 ' "$claude_md_p9" || error "could not rewrite $claude_md_p9"
-                warn "Retired auto-memory bucket guidance; replaced with cs:memory-note"
+                notice CLAUDE.local.md "cs:memory-note replaces the auto-memory bucket guidance"
             # State 3: tombstone (sentinel without header) — preserve opt-out
             fi
         else
@@ -8182,7 +8201,7 @@ _ensure_claude_local_sections() {  # session_dir
                 echo ""
                 _emit_memory_note_block
             } >> "$claude_md_p9"
-            warn "Added cs:memory-note to CLAUDE.local.md"
+            notice CLAUDE.local.md "added cs:memory-note"
         fi
     fi
 
@@ -8192,7 +8211,7 @@ _ensure_claude_local_sections() {  # session_dir
     # keep the HTML comment).
     if [ -f "$claude_md_p9" ] && ! grep -q 'cs:wrap-cues' "$claude_md_p9"; then
         { echo; _emit_wrap_cues_block; } >> "$claude_md_p9"
-        warn "Appended session wrap-up cues to CLAUDE.local.md"
+        notice CLAUDE.local.md "added the session wrap-up cues"
     fi
 
     # Phase 16: /wrap is the one command that runs the memory and summary
@@ -8209,7 +8228,7 @@ _ensure_claude_local_sections() {  # session_dir
     if [ -f "$claude_md_p9" ] && [ -d "$session_dir/.cs/private" ] \
         && ! grep -q 'cs:encrypted-protocol' "$claude_md_p9"; then
         { echo; _emit_encrypted_protocol_block; } >> "$claude_md_p9"
-        warn "Added the encrypted-session protocol to CLAUDE.local.md"
+        notice CLAUDE.local.md "added the encrypted-session protocol"
     fi
 
     # Phase 15: the rule for committing session files, which sessions created
@@ -8217,7 +8236,7 @@ _ensure_claude_local_sections() {  # session_dir
     # means managed, never re-added.
     if [ -f "$claude_md_p9" ] && ! grep -q 'cs:session-commits' "$claude_md_p9"; then
         { echo; _emit_session_commits_block; } >> "$claude_md_p9"
-        warn "Added the session-commits rule to CLAUDE.local.md"
+        notice CLAUDE.local.md "added the session-commits rule"
     fi
 }
 
@@ -8374,7 +8393,7 @@ migrate_session() {
         setup_merge_attributes "$session_dir"
         ensure_cs_gitignore_entries "$session_dir"
         # Names the rules just appended to a tracked .gitignore. Adopt merges
-        # the same rules and names .gitignore in its own line of what it left
+        # the same rules and names .gitignore in its own row of what it left
         # (_explain_nothing_committed) instead.
         _explain_gitignore_additions "$session_dir"
     fi
@@ -8399,10 +8418,7 @@ migrate_session() {
         # files from the user's next `git add`.
         ensure_cs_gitignore_entries "$session_dir"
 
-        echo ""
-        echo -e "${ORANGE}Migrated session to .cs/ directory structure${NC}"
-        echo -e "${DIM}Session metadata moved to .cs/ - your workspace root is now clean for project files.${NC}"
-        echo ""
+        notice .cs/ "holds the session metadata, moved out of the workspace root"
 
         # The moves stay in the working tree for the user to commit, and the
         # session records the mode its features take, as adopt does.
@@ -8450,7 +8466,7 @@ migrate_session() {
         if [ "$tracked_tree_is_ours" = 1 ] && [ -f "$ga" ] && grep -q 'logs/session\.log merge=union' "$ga"; then
             cs_write_atomic "$ga" awk '!/logs\/session\.log merge=union/' "$ga" 2>/dev/null || true
         fi
-        warn "Moved .cs/logs/session.log to ${log_dir#"$session_dir"/}/session.log"
+        notice session.log "moved from .cs/logs/ to ${log_dir#"$session_dir"/}/"
     fi
 
     # Remove inert sync/remote metadata left by older versions (the sync
@@ -8525,9 +8541,9 @@ migrate_session() {
         if [ -n "$_bind_uuid" ]; then
             _set_local_state "$_state" claude_session_id "$_bind_uuid"
             if [ -z "$_existing" ]; then
-                warn "Bound claude_session_id in .cs/local/state to $_bind_uuid"
+                notice .cs/local/state "bound claude_session_id to $_bind_uuid"
             else
-                warn "Repaired orphan claude_session_id (was $_existing)"
+                notice .cs/local/state "repaired orphan claude_session_id (was $_existing)"
             fi
         fi
     }
@@ -8544,7 +8560,7 @@ migrate_session() {
         local _new_color
         _new_color=$(_alloc_random_color)
         _set_local_state "$_state" claude_session_color "$_new_color"
-        warn "Backfilled claude_session_color in .cs/local/state ($_new_color)"
+        notice .cs/local/state "backfilled claude_session_color ($_new_color)"
     fi
 
     # A stamp that cannot be written costs only speed: without it the next
@@ -14036,15 +14052,6 @@ launch_claude_code() {
     # the sessions it starts. Empty for every other open.
     local remote_mode="${6:-}"
 
-    # Terminal theme (and its real background RGB when known) for the statusline
-    # and hooks, detected while cs still owns the tty and reused by the session
-    # launched next.
-    _export_term_theme
-    # Refresh the palette now that the theme is known so everything below —
-    # the collision menu and the launch banner — reads on a light canvas
-    # (colors were first set at startup, defaulting to dark).
-    setup_palette
-
     # The spawn token (see the seed consumer below) proves THIS window to
     # THIS session only. Taken into a plain variable and dropped from the
     # environment here, before the lock: its collision menu re-execs cs for
@@ -14074,7 +14081,7 @@ launch_claude_code() {
     # left uncommitted, like every cs edit to session content.
     if [ -f "$session_dir/.cs/archived" ]; then
         rm -f "$session_dir/.cs/archived"
-        info "Unarchived: $session_name"
+        notice .cs/archived "removed, so the session is active again"
     fi
 
     # Read the session's recorded UUID (allocated by create_session_structure
@@ -14102,7 +14109,7 @@ launch_claude_code() {
         _found=$(_discover_session_uuid_in "$(_claude_project_dir "$session_dir")")
         if _is_uuid "$_found"; then
             _set_local_state "$session_dir/.cs/local/state" claude_session_id "$_found"
-            warn "Bound claude_session_id in .cs/local/state to $_found"
+            notice .cs/local/state "bound claude_session_id to $_found"
             claude_session_id="$_found"
         fi
     fi
@@ -15331,6 +15338,11 @@ create_session_gitignore() {
 # Per-actor local state (never shared)
 .cs/local/
 
+# The session's locks, by name as well as by *.lock: the rules
+# ensure_cs_gitignore_entries looks for
+.cs/session.lock
+.cs/session.mutex.lock
+
 # A session's cs files when a .cs/private directory holds them (the link an
 # encrypted session keeps there is committed; a directory is not)
 .cs/private/
@@ -15448,20 +15460,21 @@ ENTRIES
     done <<< "$entries"
 }
 
-# One line naming the rules ensure_cs_gitignore_entries just appended, when
-# git tracks <dir>/.gitignore: in an adopted project that is the team's file,
-# and the rules would otherwise show up as an uncommitted change nobody
-# explained. A .gitignore git does not track, or a fresh one, gets no line.
+# One notice row naming the rules ensure_cs_gitignore_entries just appended,
+# when git tracks <dir>/.gitignore: in an adopted project that is the team's
+# file, and the rules would otherwise show up as an uncommitted change nobody
+# explained. A .gitignore git does not track, or a fresh one, gets no row.
 _explain_gitignore_additions() {  # dir
     [ -n "${_CS_GITIGNORE_ADDED:-}" ] || return 0
     _cs_git_at "$1" ls-files --error-unmatch -- .gitignore >/dev/null 2>&1 || return 0
-    info "cs added $_CS_GITIGNORE_ADDED to the tracked .gitignore so cs's machine-local files are never staged; commit it with your next change"
+    notice .gitignore "ignores $_CS_GITIGNORE_ADDED" "tracked file: commit it with your next change"
 }
 
-# One line saying cs committed nothing, naming each of <path>... that git
-# shows as changed or untracked in <dir>, in the order given, a directory with
-# a trailing slash: what adopt and the flat-layout migration leave for the user
-# to commit. No line when git shows none of them or cannot say.
+# A notice row saying cs committed nothing, its action line naming each of
+# <path>... that git shows as changed or untracked in <dir>, in the order
+# given, a directory with a trailing slash: what adopt and the flat-layout
+# migration leave for the user to commit. No row when git shows none of them
+# or cannot say.
 _explain_nothing_committed() {  # dir, path...
     local dir="$1" entry path shown=$'\n' p left="" count=0
     shift
@@ -15496,7 +15509,7 @@ _explain_nothing_committed() {  # dir, path...
             joined="$joined, $p"
         fi
     done <<< "$left"
-    info "cs committed nothing; it left $joined for you to commit"
+    notice "working tree" "cs committed nothing" "commit $joined with your next change"
 }
 
 # Record in <dir>/.cs/local/state the mode the session's features take, for
@@ -16443,6 +16456,10 @@ main() {
             return 0
             ;;
         -adopt)
+            # Adopt writes the session's files and names them in notice rows,
+            # so the palette follows the terminal as an open's does.
+            _export_term_theme
+            setup_palette
             if [ "${2:-}" = "--worktrees" ]; then
                 shift 2
                 adopt_worktrees "$@"
@@ -16849,6 +16866,15 @@ main() {
             return 0
         fi
     fi
+
+    # Terminal theme (and its real background RGB when known) for the statusline
+    # and hooks, detected while cs still owns the tty and reused by the session
+    # launched next.
+    _export_term_theme
+    # Refresh the palette now that the theme is known so everything below —
+    # migration's notices, the collision menu and the launch banner — reads on
+    # a light canvas (colors were first set at startup, defaulting to dark).
+    setup_palette
 
     # Define paths (resolve symlinks for adopted sessions so Claude Code
     # sees the original project path, preserving conversation continuity)

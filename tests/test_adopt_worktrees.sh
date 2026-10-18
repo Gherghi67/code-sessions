@@ -350,7 +350,7 @@ _assert_open_keeps_the_relocated_conversation() {  # first prompt of the bound c
     output=$(unset CLAUDE_CONFIG_DIR; "$CS_BIN" repo.moved-wt <<< "y" 2>&1) || true
     assert_eq "$UUID_A" "$(awk '/^claude_session_id:/ { print $2; exit }' "$wt/.cs/local/state")" \
         "the state still binds the relocated conversation" || return 1
-    assert_output_not_contains "$output" "Repaired orphan claude_session_id" \
+    assert_output_not_contains "$output" "repaired orphan claude_session_id" \
         "a bound conversation whose transcript was relocated is no orphan" || return 1
     assert_output_contains "$(sed -n 's/^args=//p' "$TEST_TMPDIR/claude-launch")" "--resume $UUID_A" \
         "the open resumes the bound, relocated conversation" || return 1

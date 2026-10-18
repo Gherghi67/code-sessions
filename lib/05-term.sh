@@ -82,7 +82,25 @@ error() {
 }
 
 info() {
+    _CS_NOTICE_HEADED=""
     printf "${GREEN}%s${NC}\n" "$1"
+}
+
+# A row naming a file cs changed for the user: the file in a column, then the
+# change, and under it, when given, what the user must do about it. The first
+# row of a run prints the header the rows sit under; an info or warn line
+# between rows ends the block, so the next row prints the header again. Each
+# row prints as it is made, so an exit part way keeps every row for a write
+# that happened. Whether the header is out lives in this shell, and a row from
+# a subshell would print it again, so a subshell call is refused.
+notice() {  # file, change, [action]
+    [ "$BASH_SUBSHELL" -eq 0 ] || error "notice for $1 called in a subshell, which would repeat the header"
+    if [ -z "${_CS_NOTICE_HEADED:-}" ]; then
+        printf "${RUST}%s${NC} ${BOLD}%s${NC}\n" "$ICON_LOGO" "cs updated these files"
+        _CS_NOTICE_HEADED=1
+    fi
+    printf "  ${DIM}%-15s${NC}  %s\n" "$1" "$2"
+    [ -z "${3:-}" ] || printf "  %-15s  ${ORANGE}→ %s${NC}\n" "" "$3"
 }
 
 # Strip leading and trailing whitespace from a string; prints the result.

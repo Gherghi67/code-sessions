@@ -207,15 +207,6 @@ launch_claude_code() {
     # the sessions it starts. Empty for every other open.
     local remote_mode="${6:-}"
 
-    # Terminal theme (and its real background RGB when known) for the statusline
-    # and hooks, detected while cs still owns the tty and reused by the session
-    # launched next.
-    _export_term_theme
-    # Refresh the palette now that the theme is known so everything below —
-    # the collision menu and the launch banner — reads on a light canvas
-    # (colors were first set at startup, defaulting to dark).
-    setup_palette
-
     # The spawn token (see the seed consumer below) proves THIS window to
     # THIS session only. Taken into a plain variable and dropped from the
     # environment here, before the lock: its collision menu re-execs cs for
@@ -245,7 +236,7 @@ launch_claude_code() {
     # left uncommitted, like every cs edit to session content.
     if [ -f "$session_dir/.cs/archived" ]; then
         rm -f "$session_dir/.cs/archived"
-        info "Unarchived: $session_name"
+        notice .cs/archived "removed, so the session is active again"
     fi
 
     # Read the session's recorded UUID (allocated by create_session_structure
@@ -273,7 +264,7 @@ launch_claude_code() {
         _found=$(_discover_session_uuid_in "$(_claude_project_dir "$session_dir")")
         if _is_uuid "$_found"; then
             _set_local_state "$session_dir/.cs/local/state" claude_session_id "$_found"
-            warn "Bound claude_session_id in .cs/local/state to $_found"
+            notice .cs/local/state "bound claude_session_id to $_found"
             claude_session_id="$_found"
         fi
     fi

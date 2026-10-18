@@ -87,10 +87,10 @@ test_adopt_appends_protocol_to_an_existing_claude_local_md() {
     local project_dir="$TEST_TMPDIR/my-project"
     mkdir -p "$project_dir"
     printf '# My local notes\n\nUSER-LOCAL-KEEP\n' > "$project_dir/CLAUDE.local.md"
-    local before
+    local before out
     before=$(cat "$project_dir/CLAUDE.local.md")
 
-    (cd "$project_dir" && "$CS_BIN" -adopt my-session >/dev/null 2>&1)
+    out=$(cd "$project_dir" && "$CS_BIN" -adopt my-session 2>&1)
 
     local after
     after=$(cat "$project_dir/CLAUDE.local.md")
@@ -104,6 +104,8 @@ test_adopt_appends_protocol_to_an_existing_claude_local_md() {
     esac
     assert_file_contains "$project_dir/CLAUDE.local.md" "<!-- cs:session-protocol -->" \
         "the protocol is appended to the user's CLAUDE.local.md" || return 1
+    grep -Fxq -- '  CLAUDE.local.md  added the cs session protocol below your own lines' <<< "$out" \
+        || { echo "  FAIL: adopt says it added the protocol below the user's lines"; return 1; }
 }
 
 # A CLAUDE.local.md that already carries a cs sentinel is left exactly as it is.
@@ -641,8 +643,10 @@ test_adopt_inits_git_when_none_exists() {
     assert_file_contains "$project_dir/.gitattributes" '^\.cs/memory/narrative\.\*\.md merge=union$' || return 1
     assert_file_contains "$project_dir/.gitattributes" '^\.cs/memory/reference_memory_archive\.md merge=union$' || return 1
     assert_file_contains "$project_dir/.gitignore" '^\.cs/local/$' "cs's rules are in the .gitignore" || return 1
-    assert_output_contains "$out" "cs committed nothing; it left .cs/, .gitignore and .gitattributes for you to commit" \
-        "one line names what adopt left" || return 1
+    assert_eq "$(printf '%s\n' '  working tree     cs committed nothing' \
+            '                   → commit .cs/, .gitignore and .gitattributes with your next change')" \
+        "$(row_and_action "$out" '  working tree     cs committed nothing')" \
+        "one row names what adopt left" || return 1
     assert_eq "tracked" "$(awk -F': ' '/^cs_mode:/{print $2}' "$project_dir/.cs/local/state")" \
         "the session records that git is to carry .cs" || return 1
 }
@@ -663,8 +667,10 @@ test_adopt_into_git_repo_leaves_its_files_untracked() {
     assert_eq "?? .cs/
 ?? .gitattributes
 ?? .gitignore" "$(git -C "$project_dir" status --porcelain)" "cs's files are untracked" || return 1
-    assert_output_contains "$out" "cs committed nothing; it left .cs/, .gitignore and .gitattributes for you to commit" \
-        "one line names what adopt left" || return 1
+    assert_eq "$(printf '%s\n' '  working tree     cs committed nothing' \
+            '                   → commit .cs/, .gitignore and .gitattributes with your next change')" \
+        "$(row_and_action "$out" '  working tree     cs committed nothing')" \
+        "one row names what adopt left" || return 1
     assert_eq "tracked" "$(awk -F': ' '/^cs_mode:/{print $2}' "$project_dir/.cs/local/state")" \
         "the session records that git is to carry .cs" || return 1
 }
@@ -729,7 +735,7 @@ test_readopt_with_everything_committed_names_nothing_left() {
 
     assert_dir "$CS_SESSIONS_ROOT/my-session" "the records are re-adopted" || return 1
     assert_eq "" "$(git -C "$project_dir" status --porcelain)" "git shows nothing left to commit" || return 1
-    assert_output_not_contains "$out" "cs committed nothing" "no line names what adopt left" || return 1
+    assert_output_not_contains "$out" "cs committed nothing" "no row names what adopt left" || return 1
 }
 
 # Work the user had staged before adopting stays staged, alone, and is not
@@ -1081,18 +1087,22 @@ _team_gitignore_project() {  # dir, session name
 }
 
 # On open, rules cs appends to a .gitignore git tracks show up as the team's
-# file changing for no stated reason, so cs says once what it added and why.
+# file changing for no stated reason, so cs says once what it added and that
+# the file is left to commit.
+GITIGNORE_ROW='  .gitignore       ignores '
 test_open_explains_the_rules_it_adds_to_a_tracked_gitignore() {
     local dir="$TEST_TMPDIR/team-project" out
     _team_gitignore_project "$dir" team-session || { echo "  FAIL: fixture"; return 1; }
     out=$("$CS_BIN" team-session <<< "" 2>&1) || { echo "  FAIL: the open failed: $out"; return 1; }
-    assert_output_contains "$out" "cs added .cs/vault-mnt/, .cs-tmp.\* to the tracked .gitignore so cs's machine-local files are never staged; commit it with your next change" \
-        "the open names both rules and why" || return 1
-    assert_eq "1" "$(printf '%s\n' "$out" | grep -c 'cs added')" "in one line" || return 1
+    assert_eq "$(printf '%s\n' "  .gitignore       ignores .cs/vault-mnt/, .cs-tmp.*" \
+            "                   → tracked file: commit it with your next change")" \
+        "$(printf '%s\n' "$out" | grep -F -A1 -- "$GITIGNORE_ROW")" \
+        "the open names both rules and what to do about them" || return 1
+    assert_eq "1" "$(printf '%s\n' "$out" | grep -cF -- "$GITIGNORE_ROW")" "in one row" || return 1
     assert_eq " M .gitignore" "$(git -C "$dir" status --porcelain -- .gitignore)" "the rules are left for the user to commit" || return 1
     rm -f "$dir/.cs/local/migrated"
     out=$("$CS_BIN" team-session <<< "" 2>&1) || { echo "  FAIL: the reopen failed: $out"; return 1; }
-    assert_output_not_contains "$out" "cs added" "an open that adds nothing says nothing" || return 1
+    assert_output_not_contains "$out" "$GITIGNORE_ROW" "an open that adds nothing says nothing" || return 1
 }
 
 # A .gitignore git does not track is no one else's file: cs appends its rules
@@ -1103,8 +1113,10 @@ test_open_adds_rules_to_an_untracked_gitignore_quietly() {
     (cd "$dir" && git init -q && printf 'node_modules/\n' > .gitignore && git add .gitignore && git commit -q -m team) \
         || { echo "  FAIL: fixture"; return 1; }
     out=$(cd "$dir" && "$CS_BIN" -adopt own-session 2>&1) || { echo "  FAIL: adopt failed: $out"; return 1; }
-    assert_output_not_contains "$out" "cs added" "adopt prints no open's line about the rules" || return 1
-    assert_output_contains "$out" "cs committed nothing; it left .cs/, .gitignore and .gitattributes for you to commit" \
+    assert_output_not_contains "$out" "$GITIGNORE_ROW" "adopt prints no open's line about the rules" || return 1
+    assert_eq "$(printf '%s\n' '  working tree     cs committed nothing' \
+            '                   → commit .cs/, .gitignore and .gitattributes with your next change')" \
+        "$(row_and_action "$out" '  working tree     cs committed nothing')" \
         "but names .gitignore in its own" || return 1
     assert_eq " M .gitignore" "$(git -C "$dir" status --porcelain -- .gitignore)" "and leaves the rules uncommitted" || return 1
     git -C "$dir" rm -q --cached .gitignore && git -C "$dir" commit -q -m untrack || { echo "  FAIL: untrack"; return 1; }
@@ -1112,7 +1124,21 @@ test_open_adds_rules_to_an_untracked_gitignore_quietly() {
     rm -f "$dir/.cs/local/migrated"
     out=$("$CS_BIN" own-session <<< "" 2>&1) || { echo "  FAIL: the open failed: $out"; return 1; }
     assert_eq ".cs/vault-mnt/" "$(grep -xF '.cs/vault-mnt/' "$dir/.gitignore")" "the rule is appended" || return 1
-    assert_output_not_contains "$out" "cs added" "with no line about it" || return 1
+    assert_output_not_contains "$out" "$GITIGNORE_ROW" "with no line about it" || return 1
+}
+
+# The .gitignore cs writes for a new session already holds every rule an open
+# merges, so the open's migration appends nothing to it and asks nothing of
+# the user.
+test_open_adds_nothing_to_the_gitignore_cs_wrote() {
+    local dir="$CS_SESSIONS_ROOT/own-rules" out
+    "$CS_BIN" own-rules <<< "" >/dev/null 2>&1 || { echo "  FAIL: the first open failed"; return 1; }
+    cp "$dir/.gitignore" "$TEST_TMPDIR/own-rules.gitignore"
+    rm -f "$dir/.cs/local/migrated"
+    out=$("$CS_BIN" own-rules <<< "" 2>&1) || { echo "  FAIL: the reopen failed: $out"; return 1; }
+    cmp -s "$TEST_TMPDIR/own-rules.gitignore" "$dir/.gitignore" \
+        || { echo "  FAIL: the open appended to the .gitignore cs wrote"; diff "$TEST_TMPDIR/own-rules.gitignore" "$dir/.gitignore"; return 1; }
+    assert_output_not_contains "$out" "$GITIGNORE_ROW" "and names no rule it added" || return 1
 }
 
 # ============================================================================
@@ -1446,6 +1472,7 @@ run_test test_gitignore_without_an_answer_from_git_appends_nothing
 run_test test_gitignore_asks_about_its_own_checkout_whatever_the_environment
 run_test test_open_explains_the_rules_it_adds_to_a_tracked_gitignore
 run_test test_open_adds_rules_to_an_untracked_gitignore_quietly
+run_test test_open_adds_nothing_to_the_gitignore_cs_wrote
 run_test test_adopt_sets_memory_merge_driver
 
 run_test test_adopt_creates_cs_structure

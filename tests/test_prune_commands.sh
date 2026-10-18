@@ -70,25 +70,30 @@ EOF
     echo "$session_dir"
 }
 
-# Removes legacy data files
+# Removes legacy data files, and says so
 test_prune_removes_data_files() {
-    local session_dir
+    local session_dir out
     session_dir=$(populate_legacy_session "legacy")
 
-    "$CS_BIN" legacy <<< "" >/dev/null 2>&1 || true
+    out=$("$CS_BIN" legacy <<< "" 2>&1 || true)
 
     assert_file_not_exists "$session_dir/.cs/commands.md"          "commands.md should be removed" || return 1
     assert_file_not_exists "$session_dir/.cs/commands.md.tmp"      "commands.md.tmp should be removed" || return 1
     assert_file_not_exists "$session_dir/.cs/command-dates.txt"    "command-dates.txt should be removed" || return 1
     assert_file_not_exists "$session_dir/.cs/promoted-commands.txt" "promoted-commands.txt should be removed" || return 1
+    grep -Fxq -- "  .cs/             dropped the retired command tracker's files" <<< "$out" \
+        || { echo "  FAIL: the open says it dropped the tracker's files"; return 1; }
 }
 
-# Strips the @-include and the surrounding "Discovered Commands" section
+# Strips the @-include and the surrounding "Discovered Commands" section, and says so
 test_prune_strips_claude_md_include() {
-    local session_dir
+    local session_dir out
     session_dir=$(populate_legacy_session "legacy")
 
-    "$CS_BIN" legacy <<< "" >/dev/null 2>&1 || true
+    out=$("$CS_BIN" legacy <<< "" 2>&1 || true)
+
+    grep -Fxq -- "  CLAUDE.md        dropped the retired command tracker's section" <<< "$out" \
+        || { echo "  FAIL: the open says it dropped the tracker's section from CLAUDE.md"; return 1; }
 
     local claude_md="$session_dir/CLAUDE.md"
     assert_file_not_contains "$claude_md" "@.cs/commands.md"            "CLAUDE.md should not retain @-include" || return 1
@@ -120,11 +125,13 @@ test_prune_is_idempotent() {
     session_dir=$(populate_legacy_session "legacy")
 
     "$CS_BIN" legacy <<< "" >/dev/null 2>&1 || true
+    # Without the stamp the second open runs every phase again, the prune too.
+    rm -f "$session_dir/.cs/local/migrated"
     local second_run
     second_run=$("$CS_BIN" legacy <<< "" 2>&1 || true)
 
-    # No removal message on the second open — nothing to remove.
-    assert_output_not_contains "$second_run" "commands.md"  "second open should not mention commands.md" || return 1
+    # No removal row on the second open — nothing to remove.
+    assert_output_not_contains "$second_run" "retired command tracker"  "second open should name no tracker removal" || return 1
     # And the data files still don't exist.
     assert_file_not_exists "$session_dir/.cs/commands.md" "commands.md should still be absent on rerun" || return 1
 }
@@ -147,8 +154,8 @@ EOF
     assert_file_not_exists "$session_dir/.cs/commands.md"           "no commands.md should be created" || return 1
     assert_file_not_exists "$session_dir/.cs/command-dates.txt"     "no command-dates.txt should be created" || return 1
     assert_file_not_exists "$session_dir/.cs/promoted-commands.txt" "no promoted-commands.txt should be created" || return 1
-    # And no removal message
-    assert_output_not_contains "$output" "commands.md" "clean session should not mention commands.md" || return 1
+    # And no removal row
+    assert_output_not_contains "$output" "retired command tracker" "clean session should name no tracker removal" || return 1
 }
 
 echo "cs prune-commands migration tests"
