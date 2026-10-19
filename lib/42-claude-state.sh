@@ -223,6 +223,9 @@ _exec_fresh_rebind() {
     export CS_CLAUDE_SESSION_ID="$new_uuid"
     [ -z "$old_uuid" ] || export CS_FRESH_REBIND=1
     # shellcheck disable=SC2086
-    cs_run_child $CLAUDE_CODE_BIN --name "$session_name" --session-id "$new_uuid" ${launch_prompt:+"$launch_prompt"}
+    local -a CS_NATIVE_LAUNCH_ARGS
+    _cs_native_launch_options claude || return 1
+    # shellcheck disable=SC2086
+    cs_run_child $CLAUDE_CODE_BIN ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} --name "$session_name" --session-id "$new_uuid" ${launch_prompt:+"$launch_prompt"}
 }
 

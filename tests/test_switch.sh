@@ -229,7 +229,10 @@ test_verb_defaults_to_the_other_engine_and_writes_the_file() {
     assert_eq "engine=codex
 mode=fresh
 handoff=$HANDOFF
-run=$CS_RUN_ID" "$(cat "$file")" "pending-switch is four key=value lines in order" || return 1
+run=$CS_RUN_ID
+model=
+effort=
+approval=" "$(cat "$file")" "pending-switch includes launch options in order" || return 1
     assert_output_contains "$out" '/exit' "Claude is left with /exit" || return 1
     assert_output_contains "$out" "under\|in a fresh codex conversation" "names the target" || return 1
     assert_output_contains "$out" "$HANDOFF" "names the handoff" || return 1
@@ -1076,6 +1079,30 @@ test_verb_refuses_an_encrypted_session_that_would_not_reopen() {
     out=$("$CS_BIN" -switch --check claude 2>&1) || { echo "  FAIL: moved into the vault, --check must pass: $out"; return 1; }
 }
 
+test_switch_keeps_selected_launch_options() {
+    local out status=0
+    _new_claude_session selected-options
+    cat > "$CS_STUB_DIR/claude.plan" <<PLAN
+PLAN_HANDOFF=$HANDOFF
+PLAN_SWITCH='codex --model=provider/model --effort=xhigh --native-approval'
+PLAN
+    out=$("$CS_BIN" selected-options --resume </dev/null 2>&1) || status=$?
+    assert_eq 0 "$status" "switch options failed: $out" || return 1
+    _has "$CS_STUB_DIR/codex.args.1" '--model' || return 1
+    _has "$CS_STUB_DIR/codex.args.1" 'provider/model' || return 1
+    _has "$CS_STUB_DIR/codex.args.1" 'model_reasoning_effort="xhigh"' || return 1
+    assert_file_not_contains "$CS_STUB_DIR/codex.args.1" '^--approve-for-me$' || return 1
+}
+
+test_switch_marker_keeps_spaces_in_selected_model() {
+    _fake_run options-marker claude
+    _arm
+    "$CS_BIN" -switch codex --model 'model with spaces $(literal)' --effort high --approve-for-me >/dev/null 2>&1 || return 1
+    _has "$CS_SESSION_DIR/.cs/local/pending-switch" 'model=model with spaces $(literal)' || return 1
+    _has "$CS_SESSION_DIR/.cs/local/pending-switch" 'approval=auto' || return 1
+}
+
+
 run_test test_verb_defaults_to_the_other_engine_and_writes_the_file
 run_test test_verb_from_codex_targets_claude_and_says_quit
 run_test test_verb_refuses_the_same_engine
@@ -1117,4 +1144,6 @@ run_test test_settle_keeps_the_handoff_when_the_target_cli_went_missing
 run_test test_settle_refuses_a_switch_that_names_no_other_engine
 run_test test_verb_refuses_an_encrypted_session_that_would_not_reopen
 
+run_test test_switch_keeps_selected_launch_options
+run_test test_switch_marker_keeps_spaces_in_selected_model
 report_results

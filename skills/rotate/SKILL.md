@@ -292,6 +292,16 @@ vault is locked: tell the user to mount it and stop.
    SessionStart hook runs on that first message: it points the session at the
    new conversation and hands it this handoff, and the reply begins the next
    step. A message with its own content takes precedence over the handoff.
+   They need not type either: twenty seconds after this turn ends, cs types
+   `/clear` and then `go` into the Codex terminal itself, and Codex shows a
+   line saying so when the turn ends. A message they send first stops the
+   count and keeps this conversation; it starts again when that turn ends.
+   Text left unsent in the composer when the count ends is sent, with
+   `/clear` appended, so they should send or clear a draft first.
+   Launched with `CS_ROTATE_FORCE_CTX=off` (or `0`), or where cs cannot
+   type into the terminal (none attached, or one that refuses simulated
+   input, which the launch names as Codex starts), there is no count and no
+   line promising one.
 
    If they would rather stop for the day, exiting and answering `r` at the
    next `cs <session-name>` launch does the same thing. Answering `Y` or `n`
@@ -317,5 +327,7 @@ vault is locked: tell the user to mount it and stop.
    `CS_ROTATE_FORCE_CTX=off` (or `0`) at launch leaves the keystroke to them.
    A `/clear` they type after the countdown already ran opens a conversation
    with nothing armed, which is why the line must not end up buried under a
-   summary of what you just wrote. Codex has no capsule and no countdown: the
-   `/clear` and the first message are both theirs.
+   summary of what you just wrote. Codex has no capsule; its count is cs
+   typing `/clear` and `go` into the terminal twenty seconds after the turn
+   ends, so the line is for anyone who wants it sooner or runs with the count
+   off.

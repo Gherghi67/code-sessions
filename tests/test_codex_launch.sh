@@ -39,6 +39,7 @@ setup() {
     export CS_THREAD_ID=12345678-1234-1234-1234-123456789abc
     export CS_HELPER_EXIT=0 CS_CODEX_EXIT=0
     export CS_CODEX_HELP='--approve-for-me' CS_CODEX_HELP_EXIT=0
+    unset CS_LAUNCH_APPROVAL CS_LAUNCH_MODEL CS_LAUNCH_EFFORT
     export CS_CODEX_START=0 CS_CODEX_NEW_HANDOFF=""
     export CS_CODEX_TURN=0 CS_CODEX_TURNS="$TEST_TMPDIR/codex-turns"
     export CS_HELPER_TURN_CALLS="$TEST_TMPDIR/helper-turn-calls" CS_HELPER_TURN_FAIL_FROM=0
@@ -52,7 +53,7 @@ if [ "${1:-}" = --help ]; then
     exit "$CS_CODEX_HELP_EXIT"
 fi
 printf '%s\n' "$@" > "$CS_CODEX_LOG"
-env | grep -E '^(CS_SESSION_|CS_ACTOR=|CLAUDE_SESSION_|CLAUDE_CODE_SESSION_ID=|CS_CLAUDE_SESSION_ID=|CS_LEAD_PID=|CLAUDE_PID=)' > "$CS_CODEX_ENV" || true
+env | grep -E '^(CS_SESSION_|CS_RUN_APPROVAL=|CS_ACTOR=|CLAUDE_SESSION_|CLAUDE_CODE_SESSION_ID=|CS_CLAUDE_SESSION_ID=|CS_LEAD_PID=|CLAUDE_PID=)' > "$CS_CODEX_ENV" || true
 if [ "$CS_CODEX_START" = 1 ]; then
     printf '{"session_id":"%s","source":"resume"}' "$CS_THREAD_ID" | "$CS_BIN" -codex-hook session-start
 fi
@@ -99,8 +100,10 @@ teardown() {
     unset CODEX_BIN CS_CODEX_THREAD_BIN CS_TEST_SESSION_DIR CS_CODEX_LOG
     unset CS_CODEX_ENV CS_HELPER_ARGS CS_HELPER_COUNT CS_THREAD_ID
     unset CS_HELPER_EXIT CS_CODEX_EXIT CS_CODEX_HELP CS_CODEX_HELP_EXIT
+    unset CS_LAUNCH_APPROVAL CS_LAUNCH_MODEL CS_LAUNCH_EFFORT
     unset CS_CODEX_START CS_CODEX_NEW_HANDOFF
     unset CS_CODEX_TURN CS_CODEX_TURNS CS_HELPER_TURN_CALLS CS_HELPER_TURN_FAIL_FROM CODEX_HOME
+    unset CS_TEST_PROBE
 }
 
 # Unsupported builds must be rejected before native preparation changes the
@@ -164,6 +167,27 @@ test_codex_help_prose_is_not_an_approval_option() {
     assert_not_exists "$CS_CODEX_LOG" "no interactive launch" || return 1
 }
 
+test_native_approval_launches_without_automatic_approval_support() {
+    export CS_CODEX_HELP='--sandbox' CS_LAUNCH_APPROVAL=native
+    export CS_LAUNCH_MODEL='native-model' CS_LAUNCH_EFFORT='high'
+    local output status=0 binding="$CS_TEST_SESSION_DIR/.cs/local/codex-thread-id"
+    output=$(launch_codex demo "$CS_TEST_SESSION_DIR" true false 2>&1) || status=$?
+    assert_eq 0 "$status" "native approval launch failed: $output" || return 1
+    assert_eq "$CS_THREAD_ID" "$(cat "$binding")" "native approval creates its thread" || return 1
+    assert_exists "$CS_HELPER_COUNT" "native approval prepares the thread" || return 1
+    assert_eq '--model' "$(sed -n '6p' "$CS_CODEX_LOG")" "model option retained" || return 1
+    assert_eq 'native-model' "$(sed -n '7p' "$CS_CODEX_LOG")" "model value retained" || return 1
+    assert_eq '-c' "$(sed -n '8p' "$CS_CODEX_LOG")" "effort config option retained" || return 1
+    assert_eq 'model_reasoning_effort="high"' "$(sed -n '9p' "$CS_CODEX_LOG")" "effort value retained" || return 1
+    if grep -Fx -- '--approve-for-me' "$CS_CODEX_LOG" >/dev/null; then
+        echo '  FAIL: native approval passed the automatic approval option'
+        return 1
+    fi
+    grep -Fqx CS_RUN_APPROVAL=native "$CS_CODEX_ENV" \
+        || { echo "  FAIL: the run's hooks are not told its approval is native"; return 1; }
+    assert_not_exists "$CS_TEST_SESSION_DIR/.cs/session.lock" "native launch releases its lock" || return 1
+}
+
 test_new_thread_binding_and_context() {
     local output status=0 binding="$CS_TEST_SESSION_DIR/.cs/local/codex-thread-id"
     output=$(launch_codex demo "$CS_TEST_SESSION_DIR" true false 2>&1) || status=$?
@@ -175,11 +199,13 @@ test_new_thread_binding_and_context() {
     assert_eq "-C" "$(sed -n '4p' "$CS_CODEX_LOG")" "CLI cwd switch" || return 1
     assert_eq "$CS_TEST_SESSION_DIR" "$(sed -n '5p' "$CS_CODEX_LOG")" "CLI cwd with spaces" || return 1
     assert_eq "--approve-for-me" "$(sed -n '6p' "$CS_CODEX_LOG")" "new thread uses automatic approval review" || return 1
+    grep -Fqx CS_RUN_APPROVAL=auto "$CS_CODEX_ENV" \
+        || { echo "  FAIL: the run's hooks are not told its approval is automatic"; return 1; }
     assert_eq 6 "$(wc -l < "$CS_HELPER_ARGS" | tr -d ' ')" "helper takes three named arguments" || return 1
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/local/codex-instructions.md" 'This context does not request work' || return 1
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/local/codex-instructions.md" 'narrative.test-actor.md' || return 1
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/local/codex-instructions.md" 'Agent-sessions executable:' || return 1
-    assert_output_contains "$output" 'autosave, and task queue integration are unavailable' "feature scope notice" || return 1
+    assert_output_contains "$output" 'automatic recovery is enabled' "feature scope notice" || return 1
     assert_file_contains "$CS_TEST_SESSION_DIR/.cs/local/state" 'engine: codex' || return 1
     assert_not_exists "$CS_TEST_SESSION_DIR/.cs/session.lock" "lock released after CLI exit" || return 1
     assert_output_contains "$(cat "$CS_CODEX_ENV")" 'CS_SESSION_NAME=demo' "neutral identity exported" || return 1
@@ -365,7 +391,10 @@ source "$CS_TEST_LIB_DIR/../lib/24-engine-adapters.sh"
 source "$CS_TEST_LIB_DIR/../lib/36-context.sh"
 source "$CS_TEST_LIB_DIR/../lib/40-state.sh"
 source "$CS_TEST_LIB_DIR/../lib/41-bindings.sh"
+source "$CS_TEST_LIB_DIR/../lib/75-launch.sh"
 source "$CS_TEST_LIB_DIR/../lib/76-codex.sh"
+source "$CS_TEST_LIB_DIR/../lib/77-codex-hooks.sh"
+source "$CS_TEST_LIB_DIR/../lib/78-switch.sh"
 _set_local_state() { printf '%s: %s\n' "$2" "$3" >> "$1"; }
 cs_actor_slug() { printf 'test-actor\n'; }
 cs_interactive() { return 1; }
@@ -398,6 +427,153 @@ LAUNCHER
         echo '  FAIL: Codex child survived launcher termination'
         return 1
     fi
+}
+
+# A launch whose automatic /clear watcher is a stand-in. The stand-in records
+# its pid and run directory and, when stopped, whether the run had already
+# settled (the first thing the run does after the engine call). The fake Codex
+# records whether a deadline an earlier build left in the session was still
+# there, writes this run's own deadline into the run directory, copies the CLI
+# pid the launch wrote there beside its own, and exits a second later.
+# Everything lands in $CS_TEST_PROBE; the launcher is $TEST_TMPDIR/launch.sh.
+_autoclear_launch_fixture() {
+    local launcher_script="$TEST_TMPDIR/launch.sh"
+    export CS_TEST_LIB_DIR="$SCRIPT_DIR" CS_TEST_PROBE="$TEST_TMPDIR/probe"
+    mkdir -p "$CS_TEST_PROBE"
+    printf 'deadline=1\nrun=earlier\n' > "$CS_TEST_SESSION_DIR/.cs/local/codex-autoclear"
+    cat > "$CODEX_BIN" <<'FAKE_CODEX'
+#!/usr/bin/env bash
+if [ "${1:-}" = --help ]; then
+    printf '      --approve-for-me\n'
+    exit 0
+fi
+source "$CS_TEST_LIB_DIR/../lib/02-shared.sh"
+source "$CS_TEST_LIB_DIR/../lib/40-state.sh"
+source "$CS_TEST_LIB_DIR/../lib/77-codex-hooks.sh"
+touch "$CS_TEST_PROBE/codex-ran"
+[ ! -e "$CS_TEST_SESSION_DIR/.cs/local/codex-autoclear" ] || touch "$CS_TEST_PROBE/saw-legacy-deadline"
+run_dir=$(_codex_run_dir) || exit 0
+printf '%s\n' "$run_dir" > "$CS_TEST_PROBE/run-dir"
+if [ -d "$run_dir" ]; then
+    printf 'deadline=1\nrun=%s\n' "$CS_RUN_ID" > "$(_codex_autoclear_file "$run_dir")"
+    touch "$CS_TEST_PROBE/wrote-deadline"
+    cp "$run_dir/native.pid" "$CS_TEST_PROBE/native-pid" 2>/dev/null
+    echo $$ > "$CS_TEST_PROBE/codex-pid"
+fi
+sleep 1
+FAKE_CODEX
+    chmod +x "$CODEX_BIN"
+    cat > "$launcher_script" <<'LAUNCHER'
+#!/usr/bin/env bash
+set -euo pipefail
+for lib in 02-shared 15-lock 16-lifecycle 24-engine-adapters 36-context 40-state 41-bindings 75-launch 76-codex 77-codex-hooks 78-switch; do
+    source "$CS_TEST_LIB_DIR/../lib/$lib.sh"
+done
+_set_local_state() { printf '%s: %s\n' "$2" "$3" >> "$1"; }
+cs_actor_slug() { printf 'test-actor\n'; }
+cs_interactive() { return 1; }
+warn() { printf 'Warning: %s\n' "$1" >&2; }
+# The fixture's cache lies under TMPDIR, which the real check rightly refuses.
+export CS_CACHE_DIR="$CS_TEST_PROBE/cache"
+_codex_run_dir_in_sandbox_root() { return 1; }
+_codex_flush_input() { touch "$CS_TEST_PROBE/flushed"; }
+# The terminal the pty gives the launch takes simulated input unless a test
+# says it refuses.
+_codex_autoclear_probe() {
+    [ -n "${CS_TEST_PROBE_REFUSES:-}" ] || return 0
+    printf '%s\n' "$CS_TEST_PROBE_REFUSES"
+    return 1
+}
+eval "_real_switch_settle() $(declare -f _switch_settle | tail -n +2)"
+_switch_settle() { touch "$CS_TEST_PROBE/settled"; _real_switch_settle "$@"; }
+_codex_autoclear_watch() {  # session_dir, run_dir
+    trap 'if [ -e "$CS_TEST_PROBE/settled" ]; then echo after; else echo before; fi > "$CS_TEST_PROBE/stopped"; exit 0' TERM
+    printf '%s\n' "$2" > "$CS_TEST_PROBE/watch-dir"
+    [ -z "${CS_TEST_KEYS_SENT:-}" ] || : > "$2/keys-sent"
+    # bash 3.2 has no BASHPID: a child's parent is this subshell.
+    sh -c 'echo $PPID' > "$CS_TEST_PROBE/watch-pid"
+    while :; do sleep 0.1; done
+}
+launch_codex demo "$CS_TEST_SESSION_DIR" true false
+if [ -s "$CS_TEST_PROBE/watch-pid" ] && kill -0 "$(cat "$CS_TEST_PROBE/watch-pid")" 2>/dev/null; then
+    touch "$CS_TEST_PROBE/watcher-outlived-launch"
+fi
+LAUNCHER
+}
+
+# Under a terminal the watcher runs for exactly as long as Codex: started
+# before it, stopped as soon as it exits and before anything else the run does
+# (a switch's relaunch would otherwise get its keys), and the run directory
+# with this run's deadline goes with it.
+test_autoclear_watcher_lives_exactly_as_long_as_codex() {
+    local launcher_script="$TEST_TMPDIR/launch.sh" watcher run_dir
+    _autoclear_launch_fixture
+    _pty_run /bin/bash "$launcher_script" > "$TEST_TMPDIR/launcher-output" 2>&1
+    assert_file_exists "$CS_TEST_PROBE/codex-ran" "Codex ran: $(cat "$TEST_TMPDIR/launcher-output")" || return 1
+    [ -s "$CS_TEST_PROBE/watch-pid" ] || { echo "  FAIL: no watcher under a terminal: $(cat "$TEST_TMPDIR/launcher-output")"; return 1; }
+    watcher=$(cat "$CS_TEST_PROBE/watch-pid")
+    if kill -0 "$watcher" 2>/dev/null; then
+        kill "$watcher" 2>/dev/null; echo "  FAIL: the watcher outlived Codex"; return 1
+    fi
+    assert_not_exists "$CS_TEST_PROBE/watcher-outlived-launch" "the watcher is stopped before launch_codex returns" || return 1
+    assert_eq before "$(cat "$CS_TEST_PROBE/stopped" 2>/dev/null)" \
+        "the watcher is stopped as soon as Codex exits, before the run settles" || return 1
+    assert_not_exists "$CS_TEST_PROBE/saw-legacy-deadline" \
+        "a deadline an earlier build left in the session is gone before Codex starts" || return 1
+    assert_file_exists "$CS_TEST_PROBE/wrote-deadline" "Codex found this run's directory to write its deadline in" || return 1
+    run_dir=$(cat "$CS_TEST_PROBE/run-dir")
+    assert_eq "$run_dir" "$(cat "$CS_TEST_PROBE/watch-dir")" "the watcher reads this run's directory" || return 1
+    assert_eq "$(cat "$CS_TEST_PROBE/codex-pid")" "$(cat "$CS_TEST_PROBE/native-pid" 2>/dev/null)" \
+        "the run directory names the CLI the typist must check" || return 1
+    assert_not_exists "$run_dir" "this run's directory and deadline are gone once launch_codex returns" || return 1
+}
+
+# Keys the watcher typed can still be queued when Codex exits, and would run in
+# the shell: the launch flushes the terminal's input then, and only then, so
+# ordinary type-ahead survives every other exit.
+test_the_launch_flushes_input_only_after_typing() {
+    local launcher_script="$TEST_TMPDIR/launch.sh"
+    _autoclear_launch_fixture
+    _pty_run /bin/bash "$launcher_script" > "$TEST_TMPDIR/launcher-output" 2>&1
+    assert_file_exists "$CS_TEST_PROBE/codex-ran" "Codex ran: $(cat "$TEST_TMPDIR/launcher-output")" || return 1
+    assert_not_exists "$CS_TEST_PROBE/flushed" "input flushed with no keys of cs's sent" || return 1
+    rm -rf "$CS_TEST_PROBE"
+    _autoclear_launch_fixture
+    CS_TEST_KEYS_SENT=1 _pty_run /bin/bash "$launcher_script" > "$TEST_TMPDIR/launcher-output" 2>&1
+    assert_file_exists "$CS_TEST_PROBE/codex-ran" "Codex ran: $(cat "$TEST_TMPDIR/launcher-output")" || return 1
+    assert_file_exists "$CS_TEST_PROBE/flushed" "keys cs sent were left in the terminal's input" || return 1
+}
+
+# A terminal that will not take simulated input gets no watcher, and the
+# launch says why before Codex starts, rather than the turn promising a count.
+test_a_refused_probe_starts_no_watcher_and_says_why() {
+    local launcher_script="$TEST_TMPDIR/launch.sh"
+    _autoclear_launch_fixture
+    CS_TEST_PROBE_REFUSES="legacy_tiocsti is 0" _pty_run /bin/bash "$launcher_script" > "$TEST_TMPDIR/launcher-output" 2>&1
+    assert_file_exists "$CS_TEST_PROBE/codex-ran" "Codex ran: $(cat "$TEST_TMPDIR/launcher-output")" || return 1
+    assert_not_exists "$CS_TEST_PROBE/watch-pid" "a watcher started where it cannot type" || return 1
+    assert_output_contains "$(cat "$TEST_TMPDIR/launcher-output")" \
+        "cs: no automatic /clear after a rotation: legacy_tiocsti is 0" || return 1
+}
+
+# The refusal is kept in session.log too, where the rest of the automatic
+# /clear's story is.
+test_a_failed_probe_is_logged() {
+    local launcher_script="$TEST_TMPDIR/launch.sh"
+    _autoclear_launch_fixture
+    CS_TEST_PROBE_REFUSES="legacy_tiocsti is 0" _pty_run /bin/bash "$launcher_script" > "$TEST_TMPDIR/launcher-output" 2>&1
+    assert_file_exists "$CS_TEST_PROBE/codex-ran" "Codex ran: $(cat "$TEST_TMPDIR/launcher-output")" || return 1
+    assert_file_contains "$CS_TEST_SESSION_DIR/.cs/local/session.log" \
+        "Automatic /clear is off for this run: legacy_tiocsti is 0" || return 1
+}
+
+# Without a terminal there is nothing to type into, so no watcher starts.
+test_no_autoclear_watcher_without_a_terminal() {
+    local launcher_script="$TEST_TMPDIR/launch.sh"
+    _autoclear_launch_fixture
+    /bin/bash "$launcher_script" > "$TEST_TMPDIR/launcher-output" 2>&1 < /dev/null
+    assert_file_exists "$CS_TEST_PROBE/codex-ran" "Codex ran: $(cat "$TEST_TMPDIR/launcher-output")" || return 1
+    assert_not_exists "$CS_TEST_PROBE/watch-pid" "no terminal, no watcher" || return 1
 }
 
 test_explicit_fresh_replaces_only_codex_binding() {
@@ -635,6 +811,7 @@ run_test test_unsupported_codex_first_open_does_not_prepare_a_thread
 run_test test_unsupported_codex_preserves_bound_launches_and_handoffs
 run_test test_failed_codex_help_cannot_advertise_compatibility
 run_test test_codex_help_prose_is_not_an_approval_option
+run_test test_native_approval_launches_without_automatic_approval_support
 run_test test_explicit_fresh_replaces_only_codex_binding
 run_test test_failed_fresh_preserves_codex_binding
 run_test test_resume_without_binding_does_not_create
@@ -663,4 +840,9 @@ run_test test_live_lock_blocks_launch
 run_test test_helper_resolved_beside_cs
 run_test test_unarchive_and_actor_override
 run_test test_termination_releases_lock_and_stops_codex
+run_test test_autoclear_watcher_lives_exactly_as_long_as_codex
+run_test test_no_autoclear_watcher_without_a_terminal
+run_test test_the_launch_flushes_input_only_after_typing
+run_test test_a_refused_probe_starts_no_watcher_and_says_why
+run_test test_a_failed_probe_is_logged
 report_results

@@ -578,6 +578,53 @@ test_claude_config_link_keeps_the_shell_profile_login() {
         "$(cat "$TEST_TMPDIR/launched")" "the keychain entry follows the shell's profile" || return 1
 }
 
+# code-sessions is the exception: its sessions share the default login the
+# Agents sidebar switches, also when a launch arrives without its launcher's
+# empty value, so the vault does not fall back to the profile's own entry.
+test_code_sessions_claude_config_link_shares_the_default_login() {
+    _make_vaulted_session vt
+    _make_vaulted_config vt
+    _make_config_sentinel
+    mkdir -p "$TEST_TMPDIR/profile/.claude"
+
+    env -u CLAUDE_SECURESTORAGE_CONFIG_DIR CODE_SESSIONS_HOME="$TEST_TMPDIR/profile" \
+        CLAUDE_CONFIG_DIR="$TEST_TMPDIR/profile/.claude" "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+
+    assert_eq "config=$CS_SESSIONS_ROOT/vt/.cs/claude-config secure=" \
+        "$(cat "$TEST_TMPDIR/launched")" "the vault session keeps the shared login" || return 1
+}
+
+# Under code-sessions the shell's config is the profile's. A cs launched from
+# inside an encrypted session (typed there, or a spawn on a tmux server that
+# session started) drops the parent's vault for the profile, not for ~/.claude,
+# and stays on the shared login: also when the parent's value is the profile
+# dir an older launch recorded, which names the profile's own keychain entry.
+test_code_sessions_launch_from_a_vault_opens_on_the_profile() {
+    local profile="$TEST_TMPDIR/profile" other="$TEST_TMPDIR/other/.cs/claude-config"
+    mkdir -p "$profile/.claude" "$other" "$HOME/.claude"
+    printf '{"model":"home"}\n' > "$HOME/.claude/settings.json"
+    printf '{"model":"profile"}\n' > "$profile/.claude/settings.json"
+    "$CS_BIN" plain <<< "" >/dev/null 2>&1 || true
+    _make_vaulted_session vt
+    _make_vaulted_config vt
+    _make_config_sentinel
+
+    CODE_SESSIONS_HOME="$profile" CLAUDE_CONFIG_DIR="$other" CLAUDE_SECURESTORAGE_CONFIG_DIR="" \
+        "$CS_BIN" plain <<< "" >/dev/null 2>&1 || true
+    CODE_SESSIONS_HOME="$profile" CLAUDE_CONFIG_DIR="$other" CLAUDE_SECURESTORAGE_CONFIG_DIR="$profile/.claude" \
+        "$CS_BIN" plain <<< "" >/dev/null 2>&1 || true
+    CODE_SESSIONS_HOME="$profile" CLAUDE_CONFIG_DIR="$other" CLAUDE_SECURESTORAGE_CONFIG_DIR="" \
+        "$CS_BIN" vt <<< "" >/dev/null 2>&1 || true
+
+    local config="$CS_SESSIONS_ROOT/vt/.cs/claude-config"
+    assert_eq "config=$profile/.claude secure=
+config=$profile/.claude secure=
+config=$config secure=" "$(cat "$TEST_TMPDIR/launched")" \
+        "each launch opens on the profile, or this vault, and the shared login" || return 1
+    assert_eq "$profile/.claude/settings.json" "$(readlink "$config/settings.json")" \
+        "settings.json should link to the profile's config, not ~/.claude" || return 1
+}
+
 test_unmounted_claude_config_refuses_open() {
     _make_vaulted_session vt
     _make_vaulted_config vt
@@ -915,7 +962,8 @@ test_claude_config_refuses_an_unreadable_claude_json() {
     _make_vaulted_session vt
     _make_vaulted_config vt
     _make_launch_sentinel
-    local content out rc
+    local content out rc config_file
+    config_file="$(cd "$CS_SESSIONS_ROOT/vt/.cs/claude-config" && pwd -P)/.claude.json"
     for content in '{"projects": {,}' ''; do
         printf '%s' "$content" > "$HOME/.claude.json"
 
@@ -925,7 +973,7 @@ test_claude_config_refuses_an_unreadable_claude_json() {
         assert_eq "1" "$rc" "cs should exit 1 for '$content'" || return 1
         # The line before it is the stale-lock notice the fixture's own
         # creating launch leaves behind.
-        assert_eq "Error: $HOME/.claude.json is not a JSON object cs can copy into $CS_SESSIONS_ROOT/vt/.cs/claude-config; fix it, then reopen." \
+        assert_eq "Error: could not refresh $config_file from $HOME/.claude.json; fix its JSON, then reopen." \
             "$(tail -n 1 <<< "$out")" "cs should name the source it cannot copy" || return 1
         assert_file_not_exists "$TEST_TMPDIR/launched" "claude must not launch" || return 1
         assert_eq "" "$(ls -A "$CS_SESSIONS_ROOT/vt/.cs/claude-config")" \
@@ -997,6 +1045,8 @@ run_test test_claude_config_link_moves_claude_code_into_the_vault
 run_test test_unmounted_claude_config_refuses_open
 run_test test_session_without_claude_config_drops_an_inherited_vault_config
 run_test test_claude_config_link_keeps_the_shell_profile_login
+run_test test_code_sessions_claude_config_link_shares_the_default_login
+run_test test_code_sessions_launch_from_a_vault_opens_on_the_profile
 run_test test_claude_config_links_the_shared_config
 run_test test_claude_config_links_the_shell_profile_config
 run_test test_claude_config_skips_what_the_shell_config_lacks

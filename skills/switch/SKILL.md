@@ -26,6 +26,12 @@ step 1 reads the `conversation:` line of the same output.
 
 Take the target and the option from the user's message, the one that invoked
 this skill: an engine name, `claude` or `codex`, and optionally `--resume`.
+Also carry any requested `--model MODEL`, `--effort LEVEL`,
+`--approve-for-me` or `--native-approval` options through both the check and
+the final `cs -switch` call, quoting each value as a separate argument.
+Codex defaults to automatic approval review in a workspace-write sandbox;
+`--native-approval` uses its configured policy. Explicit `--approve-for-me`
+selects Claude's `auto` permission mode when Claude is the target.
 Codex hands a skill no arguments (it never substitutes the arguments
 placeholder), so under both engines read them from the user's message; do
 not wait for them to arrive any other way. No engine named means the other
@@ -68,10 +74,8 @@ non-zero, print the line it printed (it names the fix) and stop: no handoff,
 no commit, no marker. A handoff written for a switch that cannot happen is
 armed for a `/clear` the user never asked for.
 
-Under Codex the launch's sandbox is read-only, so Codex may ask the user to
-approve the `cs -switch` calls (the one in step 3 writes into `.cs/`), as it
-does the handoff's own writes. Say so before the first one, so the approval
-is expected.
+Use the current run's approval policy for the `cs -switch` calls and the
+handoff writes. A default Codex launch reviews escalations automatically.
 
 **Encrypted session.** Rotate's own section applies: the handoffs, the
 marker and the session log live under `.cs/private/`, and nothing from the
@@ -144,8 +148,19 @@ vault is committed. `cs -switch` keeps its record there too,
      `CS_ROTATE_FORCE_CTX=off` (or `0`), there is no countdown: the key or a
      typed `/exit` is theirs. With function hooks withheld
      (`CS_NO_FUNCTION_HOOKS=1`) there is no mod at all, so they type `/exit`.
-   - Under Codex (`engine: codex`) there is no countdown: they quit Codex
-     themselves with `/quit`. A `/clear` cannot change engines.
+   - Under Codex (`engine: codex`), cs types `/quit` into the Codex terminal
+     itself twenty seconds after this turn ends, and Codex shows a line saying
+     so and naming the target's engine, model and approval; they can quit
+     sooner with `/quit`. A prompt they send first stops the count (it starts
+     again when that turn ends) and keeps this conversation. Text left unsent
+     in the composer when the count ends is sent, with `/quit` appended, so
+     they should send or clear a draft first. Launched with
+     `CS_ROTATE_FORCE_CTX=off` (or `0`), or where cs cannot type into the
+     terminal (the launch says so as Codex starts), there is no count. A run
+     launched with `--native-approval` gets no count toward a switch either,
+     whatever approval the switch names: cs never carries out a switch
+     unattended there, so the line says the exit is theirs. A `/clear` cannot
+     change engines.
    - The old conversation stays on disk, untouched:
      `cs <session-name> --engine <current engine>` opens it again later.
    - To call the switch off before exiting: `cs -switch cancel`. The
@@ -170,5 +185,6 @@ vault is committed. `cs -switch` keeps its record there too,
    after the CLI it waits on has exited. A hook cannot exit for them; the
    `cs` mod's key and countdown can under Claude, and they run `/exit`
    rather than `/clear` because the pending switch is recorded. Codex has no
-   key and no countdown: the quit is theirs. The line must not end up buried
-   under a summary of what you just wrote.
+   key; cs types its `/quit` after twenty seconds unless the count is off or
+   the run was launched with `--native-approval`.
+   The line must not end up buried under a summary of what you just wrote.

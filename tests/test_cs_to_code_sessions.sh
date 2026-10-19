@@ -1973,6 +1973,9 @@ make_codex_session() {  # name id
 test_a_session_cs_named_codex_for_opens_claude_in_code_sessions() {
     make_fixture
     make_codex_session x "$MINE_ID"
+    # Longer ago than the margin, or the rerun below would take the files the
+    # launch writes in the copy for changes on both sides.
+    wait_past_the_margin
     local cs_before copy
     cs_before=$(cs_side_fingerprint)
     run_move --session x || { echo "$OUT"; return 1; }

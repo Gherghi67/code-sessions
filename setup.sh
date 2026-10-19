@@ -548,7 +548,7 @@ printf '\nInstalled. Open a new terminal, then run:\n'
 printf '  ccs my-project --engine codex\n  ccs my-project --engine claude\n'
 printf 'ccs is short for code-sessions. Inside a session cs is code-sessions; in a terminal cs stays the original.\n'
 printf 'Profile: %s\n' "$profile_home"
-printf 'Claude and Codex keep their own login and configuration files in this profile.\n'
+printf 'Claude shares your usual subscription login; Codex keeps its own profile login.\n'
 printf 'Your original cs commands, Claude settings, and sessions are unchanged by setup.\n'
 for runtime in claude codex; do
     case ",$CS_INSTALL_ENGINES," in

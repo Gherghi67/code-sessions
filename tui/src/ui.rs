@@ -267,6 +267,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     // Overlay dialogs on top
     match &app.mode {
         Mode::SessionMenu => render_session_menu(app, frame),
+        Mode::LaunchOptions => render_launch_options(app, frame),
         Mode::ConfirmDelete => render_confirm_delete(app, frame),
         Mode::ConfirmBatchDelete => render_confirm_batch_delete(app, frame),
         Mode::ConfirmForceOpen => render_confirm_force_open(app, frame),
@@ -956,6 +957,7 @@ fn render_footer(app: &App, frame: &mut Frame, area: Rect) {
                 "q:quit  Enter:open  n:new  d:delete  r:rename  a:archive  A:archived  Tab:to-do  Space:mark  /:search  1-6:sort  ?:legend"
             }
             Mode::SessionMenu => "j/k:navigate  Enter:select  key:run directly  q/Esc:close",
+            Mode::LaunchOptions => "Tab:next  left/right:change  Enter:save  Esc:cancel",
             Mode::ConfirmDelete | Mode::ConfirmBatchDelete => "y:confirm  n:cancel",
             Mode::ConfirmForceOpen => "y:force open  n:cancel",
             Mode::ConfirmRotate => "y:rotate  n/Esc:cancel",
@@ -1109,6 +1111,59 @@ fn render_session_menu(app: &App, frame: &mut Frame) {
         .title(format!(" {} ", title))
         .title_style(Style::default().fg(p.ink).add_modifier(Modifier::BOLD));
     frame.render_widget(Paragraph::new(lines).block(block), popup_area);
+}
+
+fn render_launch_options(app: &App, frame: &mut Frame) {
+    let p = app.theme;
+    let model = if app.launch_model.text().is_empty() {
+        "native default"
+    } else {
+        app.launch_model.text()
+    };
+    let effort = if app.launch_effort.text().is_empty() {
+        "native default"
+    } else {
+        app.launch_effort.text()
+    };
+    let values = [
+        format!("Engine:    {}", app.launch_engine),
+        format!("Model:     {model}"),
+        format!("Effort:    {effort}"),
+        format!(
+            "Approvals: {}",
+            if app.launch_automatic {
+                "automatic review"
+            } else {
+                "native default"
+            }
+        ),
+    ];
+    let mut lines: Vec<Line> = values
+        .into_iter()
+        .enumerate()
+        .map(|(row, text)| {
+            Line::from(Span::styled(
+                format!("{} {text}", if row == app.launch_row { ">" } else { " " }),
+                Style::default().fg(if row == app.launch_row { p.gold } else { p.fg }),
+            ))
+        })
+        .collect();
+    lines.push(Line::from(""));
+    lines.push(Line::from(
+        "Type a model or effort; clear to use native defaults.",
+    ));
+    lines.push(Line::from("Changing engine clears model and effort."));
+    let area = centered_cols(62, 10, frame.area());
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Engine / model / effort ")
+                .border_style(Style::default().fg(p.strong)),
+        ),
+        area,
+    );
 }
 
 fn render_confirm_delete(app: &App, frame: &mut Frame) {
@@ -2103,9 +2158,15 @@ fn render_merge(app: &mut App, frame: &mut Frame, area: Rect) {
         lines.push(Line::from(Span::styled(step2, Style::default().fg(p.ink))));
         // Two lines: Paragraph truncates rather than wraps, and a real base
         // and task name would push the verb off the tail of one line.
-        lines.push(Line::from(Span::styled("    3  retire: fuse records, remove worktree + branch", Style::default().fg(p.ink))));
         lines.push(Line::from(Span::styled(
-            format!("       needs the {}@{} conversation closed first", app.merge_base, f.task),
+            "    3  retire: fuse records, remove worktree + branch",
+            Style::default().fg(p.ink),
+        )));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "       needs the {}@{} conversation closed first",
+                app.merge_base, f.task
+            ),
             Style::default().fg(p.mut_),
         )));
         let body = Rect::new(
@@ -2170,9 +2231,9 @@ mod tests {
 
     use crate::app::App;
     use crate::app::FeatureRow;
+    use crate::app::Focus;
     use crate::session::{Liveness, Session};
     use crate::theme::Palette;
-    use crate::app::Focus;
     use crossterm::event::{KeyCode, KeyEvent};
     use ratatui::backend::TestBackend;
     use ratatui::style::Color;

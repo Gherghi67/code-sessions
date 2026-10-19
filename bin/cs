@@ -77,6 +77,7 @@ CS_HOOKS=(
 CS_HOOK_LIBS=(
     cs-resolve.sh
     cs-shared.sh
+    cs-engine-events.sh
     cs-iterm-tab.py
     prompt-rewriter.sh
     prompt-rewriter-model.sh
@@ -176,11 +177,11 @@ _strip_hook_registration() {
 
 # The SessionStart hook cs registers for Codex: Codex runs the command through
 # a shell, so a path outside the plain-word alphabet is single-quoted.
-_codex_hook_command() {  # cs_path
+_codex_hook_command() {  # cs_path, [verb]
     case "$1" in
         *[!A-Za-z0-9_./+-]*)
-            printf "'%s' -codex-hook session-start" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")" ;;
-        *) printf '%s -codex-hook session-start' "$1" ;;
+            printf "'%s' -codex-hook %s" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")" "${2:-session-start}" ;;
+        *) printf '%s -codex-hook %s' "$1" "${2:-session-start}" ;;
     esac
 }
 
@@ -189,10 +190,10 @@ _codex_hook_command() {  # cs_path
 # sha256 of the handler group's definition, as compact sorted-key JSON with
 # Codex's defaults filled in. cs writes that hash in the same step that
 # registers its hook, so the hook runs without a review prompt.
-_codex_hook_trust_hash() {  # command, [matcher as JSON]
+_codex_hook_trust_hash() {  # command, [matcher as JSON], [event key]
     local json
-    json=$(jq -ncS --arg c "$1" --argjson matcher "${2:-null}" \
-        '{event_name: "session_start", hooks: [{async: false, command: $c, timeout: 600, type: "command"}]}
+    json=$(jq -ncS --arg c "$1" --argjson matcher "${2:-null}" --arg event "${3:-session_start}" \
+        '{event_name: $event, hooks: [{async: false, command: $c, timeout: 600, type: "command"}]}
          + (if $matcher == null then {} else {matcher: $matcher} end)' \
         | tr -d '\n') || return 1
     if command -v sha256sum >/dev/null 2>&1; then
@@ -205,12 +206,12 @@ _codex_hook_trust_hash() {  # command, [matcher as JSON]
 # A config.toml rewrite: drop the trust table for each listed key, then rename
 # trust tables past a removed group or handler down by one index. shift_from
 # is a group index, group:handler for a handler removal, or empty for none.
-_codex_trust_tables_edit() {  # config, hooks_file, shift_from, keys...
-    local config="$1" file="$2" shift_from="$3" tmp
-    shift 3
+_codex_trust_tables_edit() {  # config, hooks_file, shift_from, event key, keys...
+    local config="$1" file="$2" shift_from="$3" event_key="$4" tmp
+    shift 4
     [ -f "$config" ] || return 0
     tmp=$(mktemp "$config.cs.XXXXXX") || return 1
-    awk -v prefix="[hooks.state.\"$file:session_start:" -v shift_from="$shift_from" -v drops="$(printf '%s\n' "$@")" '
+    awk -v prefix="[hooks.state.\"$file:$event_key:" -v shift_from="$shift_from" -v drops="$(printf '%s\n' "$@")" '
         BEGIN {
             shift_parts = split(shift_from, removed, ":")
             n = split(drops, list, "\n")
@@ -242,19 +243,19 @@ _codex_trust_tables_edit() {  # config, hooks_file, shift_from, keys...
 }
 
 # Index of cs's own SessionStart group in a hooks.json document, or nothing.
-_codex_hook_group_index() {  # hooks.json content
-    printf '%s' "$1" | jq -r '
-        [(.hooks.SessionStart // [])
+_codex_hook_group_index() {  # hooks.json content, [event], [verb]
+    printf '%s' "$1" | jq -r --arg event "${2:-SessionStart}" --arg verb "${3:-session-start}" '
+        [(.hooks[$event] // [])
          | to_entries[]
-         | select(any(.value.hooks[]?; (.command // "") | endswith(" -codex-hook session-start")))
+         | select(any(.value.hooks[]?; (.command // "") | endswith(" -codex-hook " + $verb)))
          | .key] | first // empty'
 }
 
 # Index of cs's handler inside its SessionStart group.
 _codex_hook_handler_index() {  # hooks.json content, group index
-    printf '%s' "$1" | jq -r --argjson i "$2" '
-        [.hooks.SessionStart[$i].hooks | to_entries[]
-         | select((.value.command // "") | endswith(" -codex-hook session-start"))
+    printf '%s' "$1" | jq -r --argjson i "$2" --arg event "${3:-SessionStart}" --arg verb "${4:-session-start}" '
+        [.hooks[$event][$i].hooks | to_entries[]
+         | select((.value.command // "") | endswith(" -codex-hook " + $verb))
          | .key] | first // empty'
 }
 
@@ -264,7 +265,7 @@ _codex_hook_handler_index() {  # hooks.json content, group index
 # positions and trust. A hooks.json that is not valid JSON is left alone.
 _codex_hooks_register() {  # codex_dir, command
     local dir="$1" cmd="$2" file="$1/hooks.json" config="$1/config.toml"
-    local doc index handler=0 matcher tmp hash key
+    local doc index handler=0 matcher tmp hash key event="${3:-SessionStart}" event_key="${4:-session_start}" verb="${5:-session-start}"
     case "$file" in *'"'*|*\\*) return 1 ;; esac
     if [ -f "$file" ]; then
         doc=$(cat "$file") || return 1
@@ -272,24 +273,24 @@ _codex_hooks_register() {  # codex_dir, command
     else
         doc='{}'
     fi
-    index=$(_codex_hook_group_index "$doc")
+    index=$(_codex_hook_group_index "$doc" "$event" "$verb")
     if [ -n "$index" ]; then
-        handler=$(_codex_hook_handler_index "$doc" "$index") || return 1
+        handler=$(_codex_hook_handler_index "$doc" "$index" "$event" "$verb") || return 1
     fi
-    doc=$(printf '%s' "$doc" | jq --arg c "$cmd" --arg i "$index" --argjson h "$handler" '
+    doc=$(printf '%s' "$doc" | jq --arg c "$cmd" --arg i "$index" --argjson h "$handler" --arg event "$event" '
         {type: "command", command: $c} as $ours
         | .hooks = (.hooks // {})
-        | .hooks.SessionStart = (.hooks.SessionStart // [])
-        | if $i == "" then .hooks.SessionStart += [{hooks: [$ours]}]
-          else .hooks.SessionStart[($i | tonumber)].hooks[$h] = $ours end') || return 1
-    [ -n "$index" ] || index=$(printf '%s' "$doc" | jq '.hooks.SessionStart | length - 1')
-    matcher=$(printf '%s' "$doc" | jq -c --argjson i "$index" '.hooks.SessionStart[$i].matcher // null') || return 1
+        | .hooks[$event] = (.hooks[$event] // [])
+        | if $i == "" then .hooks[$event] += [{hooks: [$ours]}]
+          else .hooks[$event][($i | tonumber)].hooks[$h] = $ours end') || return 1
+    [ -n "$index" ] || index=$(printf '%s' "$doc" | jq --arg event "$event" '.hooks[$event] | length - 1')
+    matcher=$(printf '%s' "$doc" | jq -c --argjson i "$index" --arg event "$event" '.hooks[$event][$i].matcher // null') || return 1
     mkdir -p "$dir" || return 1
     tmp=$(mktemp "$file.cs.XXXXXX") || return 1
     printf '%s\n' "$doc" > "$tmp" && chmod 600 "$tmp" && mv "$tmp" "$file" || { rm -f "$tmp"; return 1; }
-    hash=$(_codex_hook_trust_hash "$cmd" "$matcher") || return 1
-    key="$file:session_start:$index:$handler"
-    _codex_trust_tables_edit "$config" "$file" "" "$key" || return 1
+    hash=$(_codex_hook_trust_hash "$cmd" "$matcher" "$event_key") || return 1
+    key="$file:$event_key:$index:$handler"
+    _codex_trust_tables_edit "$config" "$file" "" "$event_key" "$key" || return 1
     [ -f "$config" ] || { : > "$config" && chmod 600 "$config"; } || return 1
     if [ -s "$config" ]; then printf '\n' >> "$config" || return 1; fi
     printf '[hooks.state."%s"]\ntrusted_hash = "sha256:%s"\n' "$key" "$hash" >> "$config"
@@ -299,18 +300,19 @@ _codex_hooks_register() {  # codex_dir, command
 # handlers or groups as their indices move. Remove an empty hooks.json.
 _codex_hooks_unregister() {  # codex_dir
     local dir="$1" file="$1/hooks.json" config="$1/config.toml" doc index handler shift_from count tmp
+    local event="${2:-SessionStart}" event_key="${3:-session_start}" verb="${4:-session-start}"
     [ -f "$file" ] || return 0
     doc=$(cat "$file") || return 1
-    index=$(_codex_hook_group_index "$doc" 2>/dev/null) || return 1
+    index=$(_codex_hook_group_index "$doc" "$event" "$verb" 2>/dev/null) || return 1
     [ -n "$index" ] || return 0
-    handler=$(_codex_hook_handler_index "$doc" "$index") || return 1
-    count=$(printf '%s' "$doc" | jq --argjson i "$index" '.hooks.SessionStart[$i].hooks | length') || return 1
+    handler=$(_codex_hook_handler_index "$doc" "$index" "$event" "$verb") || return 1
+    count=$(printf '%s' "$doc" | jq --argjson i "$index" --arg event "$event" '.hooks[$event][$i].hooks | length') || return 1
     shift_from="$index:$handler"
     [ "$count" != 1 ] || shift_from="$index"
-    doc=$(printf '%s' "$doc" | jq --argjson i "$index" --argjson h "$handler" '
-        del(.hooks.SessionStart[$i].hooks[$h])
-        | if .hooks.SessionStart[$i].hooks == [] then del(.hooks.SessionStart[$i]) else . end
-        | if .hooks.SessionStart == [] then del(.hooks.SessionStart) else . end
+    doc=$(printf '%s' "$doc" | jq --argjson i "$index" --argjson h "$handler" --arg event "$event" '
+        del(.hooks[$event][$i].hooks[$h])
+        | if .hooks[$event][$i].hooks == [] then del(.hooks[$event][$i]) else . end
+        | if .hooks[$event] == [] then del(.hooks[$event]) else . end
         | if .hooks == {} then del(.hooks) else . end') || return 1
     if [ "$doc" = '{}' ]; then
         rm -f "$file" || return 1
@@ -318,7 +320,7 @@ _codex_hooks_unregister() {  # codex_dir
         tmp=$(mktemp "$file.cs.XXXXXX") || return 1
         printf '%s\n' "$doc" > "$tmp" && chmod 600 "$tmp" && mv "$tmp" "$file" || { rm -f "$tmp"; return 1; }
     fi
-    _codex_trust_tables_edit "$config" "$file" "$shift_from" "$file:session_start:$index:$handler"
+    _codex_trust_tables_edit "$config" "$file" "$shift_from" "$event_key" "$file:$event_key:$index:$handler"
 }
 
 # Codex draws the bar under its prompt from [tui] status_line in config.toml,
@@ -538,11 +540,18 @@ _CS_KEYBINDING_DEFS='
 # session that dir is the session's .cs/claude-config, which no other session
 # reads; it links the shell's keybindings.json instead, so cs's keys belong in
 # the shell's config dir, which launch records in
-# CLAUDE_SECURESTORAGE_CONFIG_DIR (empty for ~/.claude).
+# CLAUDE_SECURESTORAGE_CONFIG_DIR (empty for ~/.claude). code-sessions keeps
+# that variable empty for its shared login; its shell config is the profile's.
 _cs_keybindings_file() {
     local dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
     case "$dir" in
-        */.cs/claude-config) dir="${CLAUDE_SECURESTORAGE_CONFIG_DIR:-$HOME/.claude}" ;;
+        */.cs/claude-config)
+            if [ -n "${CODE_SESSIONS_HOME:-}" ]; then
+                dir="$CODE_SESSIONS_HOME/.claude"
+            else
+                dir="${CLAUDE_SECURESTORAGE_CONFIG_DIR:-$HOME/.claude}"
+            fi
+            ;;
     esac
     printf '%s\n' "$dir/keybindings.json"
 }
@@ -1356,6 +1365,9 @@ Commands:
   <name> --from-handoff  Start a fresh conversation from the pending rotation handoff without prompting
   <name> --force      Override active session lock
   <name> --engine <claude|codex>  Select and remember this session's runtime
+  <name> --model MODEL --effort LEVEL  Choose native model and reasoning effort
+  <name> --approve-for-me  Use the engine's automatic approval review
+  <name> --native-approval  Use native approval defaults (Codex otherwise reviews automatically)
   <base>@<feature>    Open a parallel feature worktree of session <base>
   <base> -features          List a base's feature worktrees and their merge readiness
   <base> -finish <feature>  Open <base> and run /finish for <feature> (integrate, then retire the worktree)
@@ -1771,8 +1783,45 @@ session_uptime_secs() {  # meta_dir, now_epoch
     [ "$started" -gt 0 ] || { echo 0; return 0; }
     echo $(( now - started ))
 }
+# Whether a process is running: a zombie, which kill -0 still finds until its
+# parent reaps it, is not. Without ps it counts as gone.
+_cs_run_pid_running() {  # pid
+    local state
+    state=$(ps -o stat= -p "$1" 2>/dev/null | tr -d ' ') || return 1
+    case "$state" in '' | Z*) return 1 ;; esac
+}
+
+# End a helper an adapter runs beside the native CLI (Codex's automatic /clear
+# watcher), and leave its private directory for the adapter to read. The
+# helper ends its own children on TERM: keys a child types after the CLI is
+# gone would land in the shell. A helper waits for the launcher to end, so the
+# launcher must end it before any wait of its own can block on it, and a
+# helper that cannot take TERM (cs started with TERM ignored, which no trap
+# can undo) gets KILL after 2 s, as the child reap below does.
+_cs_run_end_helper() {
+    [ -n "${_cs_run_helper_pid:-}" ] || return 0
+    kill -TERM "$_cs_run_helper_pid" 2>/dev/null || true
+    local deadline=$((SECONDS + 2))
+    while _cs_run_pid_running "$_cs_run_helper_pid" && [ "$SECONDS" -lt "$deadline" ]; do
+        sleep 0.1
+    done
+    kill -KILL "$_cs_run_helper_pid" 2>/dev/null || true
+    wait "$_cs_run_helper_pid" 2>/dev/null || true
+    _cs_run_helper_pid=""
+}
+
+# Stop the helper, then remove the private directory it worked from.
+_cs_run_stop_helper() {
+    _cs_run_end_helper
+    if [ -n "${_cs_run_helper_dir:-}" ]; then
+        rm -rf "$_cs_run_helper_dir" 2>/dev/null || true
+        _cs_run_helper_dir=""
+    fi
+}
+
 _cs_run_cleanup() {
     [ "${_cs_run_active:-0}" = 1 ] || return 0
+    _cs_run_stop_helper
     # A signal can arrive while a child runs. Reap it before releasing the lease.
     if [ -n "${_cs_run_child_pid:-}" ]; then
         kill -TERM "$_cs_run_child_pid" 2>/dev/null || true
@@ -1815,6 +1864,15 @@ _cs_run_record_child() {  # meta_dir, pid
     mv "$tmp" "$meta/local/run-lease.json" || { rm -f "$tmp"; return 1; }
 }
 
+_cs_run_publish_child() {  # helper_dir, pid
+    local tmp
+    tmp=$(mktemp "$1/.native.XXXXXX" 2>/dev/null) || return 1
+    if ! { printf '%s\n' "$2" > "$tmp" && mv "$tmp" "$1/native.pid"; } 2>/dev/null; then
+        rm -f "$tmp" 2>/dev/null
+        return 1
+    fi
+}
+
 cs_run_child() {  # executable, arguments...
     local status=0
     _cs_run_gate=$(mktemp "$_cs_run_meta/local/.run-start.XXXXXX") || return 1
@@ -1842,6 +1900,12 @@ cs_run_child() {  # executable, arguments...
         _cs_run_gate=""
         return 1
     fi
+    # The helper's directory, when an adapter runs one, learns the CLI's pid
+    # here: the helper must stop once the CLI is gone, and run-lease.json,
+    # which records it too, lies in the session, where the agent can write.
+    if [ -n "${_cs_run_helper_dir:-}" ]; then
+        _cs_run_publish_child "$_cs_run_helper_dir" "$_cs_run_child_pid" || true
+    fi
     printf 'run\n' > "$_cs_run_gate"
     wait "$_cs_run_child_pid" || status=$?
     _cs_run_child_pid=""
@@ -1863,7 +1927,8 @@ cs_run_native() { cs_run_child "$@"; }
 cs_launch_session() {  # engine, name, directory, is_new, force, merge, intent
     local engine="$1" name="$2" directory="$3" is_new="$4" force="${5:-}"
     local merge="${6:-}" intent="${7:-auto}" status=0
-    local _cs_run_meta="$directory/.cs" _cs_run_active=0 _cs_run_child_pid="" _cs_run_gate=""
+    local _cs_run_meta="$directory/.cs" _cs_run_active=0 _cs_run_child_pid="" _cs_run_gate="" _cs_run_helper_pid=""
+    local _cs_run_helper_dir=""
     local saved_exit saved_int saved_term
     local CS_RUN_ID CS_RUN_ENGINE="$engine" CS_RUN_OWNER_PID="$$" CS_LEAD_PID="$$"
     CS_RUN_ID=$(_alloc_uuid) || return 1
@@ -2372,7 +2437,7 @@ cs_engine_call() {  # engine operation [arguments...]
         return 2
     fi
     case "$operation" in
-        dependencies|capabilities|prepare_workspace|launch) ;;
+        dependencies|capabilities|prepare_workspace|launch|files_changed) ;;
         *) printf 'Error: Unknown adapter operation: %s\n' "$operation" >&2; return 2 ;;
     esac
     handler="_cs_${engine}_adapter_${operation}"
@@ -2517,6 +2582,49 @@ validate_session_ref() {  # name
 # Returns 1 for plain names (no @). Errors out when either half is invalid.
 # @ is safe as a separator: validate_session_name has never admitted it, so
 # no existing session name can contain one.
+# Each adapter reads native PostToolUse JSON on stdin. No applicable successful
+# edit emits nothing and returns success; malformed input also fails open. Paths
+# remain native paths, resolved against cwd by the shared recovery consumer.
+_cs_claude_adapter_files_changed() {
+    jq -c '
+        select(type == "object")
+        | select((.hook_event_name // "PostToolUse") == "PostToolUse")
+        | select(.tool_name == "Write" or .tool_name == "Edit")
+        | select(.error == null and .is_error != true)
+        | select((.tool_response | type) != "object" or
+            (.tool_response.is_error != true and .tool_response.success != false))
+        | select(.tool_input.file_path | type == "string" and length > 0)
+        | {type: "files_changed", engine: "claude", session_id: .session_id,
+           cwd: (.cwd // ""), files: [.tool_input.file_path]}
+    ' 2>/dev/null || true
+}
+
+_cs_codex_adapter_files_changed() {
+    # Codex uses a command-shaped raw patch and a successful string response.
+    # PostToolUse is only emitted after completion. Verify its success response
+    # too: input alone also appears in pre-tool/permission hooks and failed calls.
+    jq -c '
+        def trim_edges: gsub("^\\s+|\\s+$"; "");
+        select(type == "object")
+        | select(.hook_event_name == "PostToolUse" and .tool_name == "apply_patch")
+        | select(.error == null and .is_error != true)
+        | select(.tool_response | type == "string" and startswith("Success. Updated the following files:\n"))
+        | select(.tool_input.command | type == "string")
+        | . as $input
+        | (.tool_input.command | gsub("\r\n"; "\n") | trim_edges | split("\n")
+            | if length >= 4 and
+                (.[0] == "<<EOF" or .[0] == "<<\u0027EOF\u0027" or .[0] == "<<\"EOF\"") and
+                (.[-1] | endswith("EOF")) then .[1:-1] else . end) as $lines
+        | select(($lines[0] | trim_edges) == "*** Begin Patch" and
+            ($lines[-1] | trim_edges) == "*** End Patch")
+        | [$lines[] | select(test("^\\*\\*\\* (Add File|Delete File|Update File|Move to): .+"))
+            | sub("^\\*\\*\\* (Add File|Delete File|Update File|Move to): "; "")]
+          | unique as $files
+        | select($files | length > 0)
+        | {type: "files_changed", engine: "codex", session_id: $input.session_id,
+           cwd: ($input.cwd // ""), files: $files}
+    ' 2>/dev/null || true
+}
 cs_split_worktree_name() {
     local name="$1"
     case "$name" in
@@ -4569,7 +4677,10 @@ _exec_fresh_rebind() {
     export CS_CLAUDE_SESSION_ID="$new_uuid"
     [ -z "$old_uuid" ] || export CS_FRESH_REBIND=1
     # shellcheck disable=SC2086
-    cs_run_child $CLAUDE_CODE_BIN --name "$session_name" --session-id "$new_uuid" ${launch_prompt:+"$launch_prompt"}
+    local -a CS_NATIVE_LAUNCH_ARGS
+    _cs_native_launch_options claude || return 1
+    # shellcheck disable=SC2086
+    cs_run_child $CLAUDE_CODE_BIN ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} --name "$session_name" --session-id "$new_uuid" ${launch_prompt:+"$launch_prompt"}
 }
 
 setup_merge_attributes() {
@@ -8742,7 +8853,7 @@ run_doctor() {
         fi
         capabilities=$(cs_engine_call "$engine" capabilities) || return $?
         _doctor_ok "Codex integration capabilities: ${capabilities//$'\n'/, }"
-        echo "  Codex hooks, automatic queue delivery, and usage observations are unavailable."
+        echo "  Claude hooks, automatic queue delivery, and usage observations are unavailable."
         if [ -d "$session_dir/.cs" ]; then
             if binding=$(cs_binding_read "$session_dir" codex); then
                 if [ -z "$binding" ]; then
@@ -9200,8 +9311,12 @@ run_tui() {
     if [ -n "$tui_output" ]; then
         local selected="${tui_output%%$'\n'*}"
         if [ "$tui_output" != "$selected" ]; then
-            local tui_flags="${tui_output#*$'\n'}"
-            exec "$0" "$selected" $tui_flags
+            local tui_flags="${tui_output#*$'\n'}" word
+            local -a tui_args=()
+            while IFS= read -r word; do
+                tui_args+=("$word")
+            done < <(printf '%s\n' "$tui_flags")
+            exec "$0" "$selected" "${tui_args[@]}"
         else
             exec "$0" "$selected"
         fi
@@ -10235,19 +10350,23 @@ _disarm_rotation_marker() {  # session_dir [surviving_handoff]
 # keychain entry independently of the config dir, and empty selects the
 # default entry. A value inherited from a parent launch into such a session is
 # recognisable by its path and dropped, so a session without the link opens
-# on the shell's own config.
+# on the shell's own config. Under code-sessions that is the profile's, on the
+# shared login: ~/.claude belongs to the original cs.
 _export_session_claude_config() {  # session_dir
     local config="$1/.cs/claude-config"
     case "${CLAUDE_CONFIG_DIR:-}" in
         */.cs/claude-config)
             unset CLAUDE_CONFIG_DIR CLAUDE_SECURESTORAGE_CONFIG_DIR
+            if [ -n "${CODE_SESSIONS_HOME:-}" ]; then
+                export CLAUDE_CONFIG_DIR="$CODE_SESSIONS_HOME/.claude" CLAUDE_SECURESTORAGE_CONFIG_DIR=''
+            fi
             ;;
     esac
     [ -e "$config" ] || return 0
     _link_shared_claude_config "$config" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
     # Claude Code keeps .claude.json beside the config dir by default, inside it
     # when CLAUDE_CONFIG_DIR is set.
-    _seed_session_claude_json "$config" "${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json"
+    _seed_session_claude_json "$config" "$(_cs_claude_json_path "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" "${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json")" || return $?
     export CLAUDE_SECURESTORAGE_CONFIG_DIR="${CLAUDE_SECURESTORAGE_CONFIG_DIR-${CLAUDE_CONFIG_DIR-}}"
     export CLAUDE_CONFIG_DIR="$config"
 }
@@ -10268,21 +10387,161 @@ _link_shared_claude_config() {  # session_config_dir, shell_config_dir
     done
 }
 
-# The session's .claude.json starts once as a copy of the shell's, so the
-# login's onboarding and preferences carry over, with every project's record
-# dropped: each keeps that project's last prompt in plaintext. From then on it
-# is the session's own. jq exits 0 on an empty file and prints nothing, so -e
-# is what turns an empty or unreadable source into a refusal.
-_seed_session_claude_json() {  # session_config_dir, shell_claude_json
-    local dest="$1/.claude.json" tmp
-    [ -e "$dest" ] || [ -L "$dest" ] && return 0
-    [ -e "$2" ] || return 0
-    tmp=$(mktemp "$1/.claude.json.XXXXXX") || error "could not create a temporary file in $1."
-    if ! jq -e '.projects = {}' "$2" > "$tmp" 2>/dev/null; then
-        rm -f "$tmp"
-        error "$2 is not a JSON object cs can copy into $1; fix it, then reopen."
+# Claude selects a regular, nonempty legacy config first. An empty one wins
+# only with native write permission bits and no modern config alongside it.
+_cs_claude_json_path() {  # config_dir, fallback_json
+    local legacy="$1/.config.json" mode
+    if [ -f "$legacy" ] && {
+        [ -s "$legacy" ] || {
+            [ ! -e "$2" ] && mode=$(_cs_file_mode "$legacy") &&
+                [ $((0$mode & 0222)) -ne 0 ]
+        }
+    }; then
+        printf '%s\n' "$legacy"
+    else
+        printf '%s\n' "$2"
     fi
-    mv "$tmp" "$dest" || { rm -f "$tmp"; error "could not write $dest."; }
+}
+
+# Native locks must stay empty. Keep their inode identity outside the directory
+# so a stale-lock takeover cannot turn our cleanup into the successor's unlock.
+_cs_claude_lock_identity() {  # lock directory
+    if stat --version >/dev/null 2>&1; then
+        stat -L -c '%d:%i' "$1"
+    else
+        stat -L -f '%d:%i' "$1"
+    fi
+}
+
+_cs_claude_lock_heartbeat() {  # lock directory, identity, readiness file
+    local started ready="$3"
+    # Only the parent retains the FIFO's writer. EOF stops us even if SIGKILL
+    # prevents its EXIT trap from running. Bash 3.2 returns 1 for both EOF and
+    # a timed read, so distinguish them by the time spent waiting.
+    exec 8>&-
+    while [ ! -L "$1" ] && [ "$(_cs_claude_lock_identity "$1" 2>/dev/null)" = "$2" ]; do
+        # Descriptor 9 retains the acquired inode across a stale-lock takeover.
+        touch /dev/fd/9 || return 1
+        if [ -n "$ready" ]; then : > "$ready"; ready=""; fi
+        started=$SECONDS
+        IFS= read -r -t 2 <&7 || true
+        [ $((SECONDS - started)) -ge 1 ] || return 0
+    done
+    return 1
+}
+
+# Carry shell preferences on first creation, then refresh only the selected
+# login. Claude and the sidebar use proper-lockfile directories without pid
+# files: never reclaim their lock with cs's pid-based lock helper.
+_seed_session_claude_json() (  # session_config_dir, shell_claude_json
+    local dest tmp="" lock="" rc=0 link hops=0 parent
+    [ -e "$2" ] || return 0
+    dest=$(_cs_claude_json_path "$1" "$1/.claude.json")
+    # proper-lockfile locks the canonical config target. A symlink alias must
+    # therefore share its target's lock, as well as its atomic write.
+    while [ -L "$dest" ]; do
+        [ "$hops" -lt 16 ] || error "too many config symlinks: $dest"
+        link=$(readlink "$dest") || return 1
+        case "$link" in
+            /*) dest="$link" ;;
+            *) dest="$(dirname "$dest")/$link" ;;
+        esac
+        hops=$((hops + 1))
+    done
+    parent=$(cd "$(dirname "$dest")" && pwd -P) || return 1
+    dest="$parent/$(basename "$dest")"
+    lock="$dest.lock"
+    # Bash 3.2 unwinds function locals before an EXIT trap after error().
+    # These cleanup names live only in this subshell and survive that unwind.
+    _cs_seed_temp_file="" _cs_seed_ready_file="" _cs_seed_watch_fifo="" _cs_seed_heartbeat=""
+    _cs_seed_lock="$lock" _cs_seed_lock_identity=""
+    trap '
+        [ -z "$_cs_seed_temp_file" ] || rm -f "$_cs_seed_temp_file"
+        [ -z "$_cs_seed_ready_file" ] || rm -f "$_cs_seed_ready_file"
+        [ -z "$_cs_seed_watch_fifo" ] || rm -f "$_cs_seed_watch_fifo"
+        if [ -n "$_cs_seed_lock_identity" ] &&
+            [ ! -L "$_cs_seed_lock" ] &&
+            [ "$(_cs_claude_lock_identity "$_cs_seed_lock")" = "$_cs_seed_lock_identity" ]; then
+            rmdir "$_cs_seed_lock" 2>/dev/null || true
+        fi
+        if [ -n "$_cs_seed_heartbeat" ]; then
+            kill "$_cs_seed_heartbeat" 2>/dev/null || true
+            wait "$_cs_seed_heartbeat" 2>/dev/null || true
+        fi
+    ' EXIT
+    trap 'exit 143' TERM
+    trap 'exit 130' INT
+    if ! mkdir "$lock" 2>/dev/null; then
+        # Native locks heartbeat and become stale after ten seconds. Wait a
+        # conservative minute before reclaiming an empty abandoned directory,
+        # including one a SIGKILL left. Never use cs's two-second pid protocol.
+        if [ -d "$lock" ] && [ ! -L "$lock" ] && [ -n "$(find "$lock" -prune -mmin +1 2>/dev/null)" ]; then
+            rmdir "$lock" 2>/dev/null && mkdir "$lock" 2>/dev/null \
+                || error "Claude config is busy: $dest; retry after its writer finishes."
+        else
+            error "Claude config is busy: $dest; retry after its writer finishes."
+        fi
+    fi
+    _cs_seed_lock_identity=$(_cs_claude_lock_identity "$lock") || error "could not identify Claude config lock: $lock"
+    exec 9<"$lock" || error "could not open Claude config lock: $lock"
+    [ ! -L "$lock" ] && [ "$(_cs_claude_lock_identity "$lock")" = "$_cs_seed_lock_identity" ] \
+        || error "lost Claude config lock: $lock"
+    tmp=$(mktemp "$parent/.claude.json.XXXXXX") || error "could not create a temporary file in $parent."
+    _cs_seed_temp_file="$tmp"
+    _cs_seed_ready_file="$tmp.ready"
+    _cs_seed_watch_fifo="$tmp.watch"
+    mkfifo "$_cs_seed_watch_fifo" || error "could not create Claude config lock heartbeat pipe."
+    exec 8<>"$_cs_seed_watch_fifo" 7<"$_cs_seed_watch_fifo"
+    _cs_claude_lock_heartbeat "$lock" "$_cs_seed_lock_identity" "$_cs_seed_ready_file" &
+    _cs_seed_heartbeat=$!
+    exec 7<&-
+    while [ ! -f "$_cs_seed_ready_file" ]; do
+        kill -0 "$_cs_seed_heartbeat" 2>/dev/null || error "could not heartbeat Claude config lock: $lock"
+        sleep 0.05
+    done
+    if [ -e "$dest" ]; then
+        jq -es 'if length != 2 or any(.[]; type != "object") then error("expected objects")
+            else .[0] as $shell | .[1] |
+                if ($shell | has("oauthAccount")) then .oauthAccount = $shell.oauthAccount
+                else del(.oauthAccount) end end' "$2" "$dest" > "$tmp" 2>/dev/null 8>&- || rc=1
+    else
+        jq -e 'if type == "object" then .projects = {} else error("expected object") end' \
+            "$2" > "$tmp" 2>/dev/null 8>&- || rc=1
+    fi
+    if [ "$rc" = 0 ]; then
+        kill -0 "$_cs_seed_heartbeat" 2>/dev/null &&
+            [ ! -L "$lock" ] &&
+            [ "$(_cs_claude_lock_identity "$lock")" = "$_cs_seed_lock_identity" ] \
+            || error "lost Claude config lock: $lock; retry after its writer finishes."
+        cs_write_atomic "$dest" cat "$tmp" 8>&- && chmod 600 "$dest" || rc=1
+    fi
+    [ "$rc" = 0 ] || error "could not refresh $dest from $2; fix its JSON, then reopen."
+)
+
+# Values travel through argv and the switch marker, never shell evaluation.
+_cs_launch_option_value() {  # option, value
+    case "${2:-}" in
+        ''|*$'\n'*|*$'\r'*) error "$1 needs a nonempty single-line value" ;;
+    esac
+}
+
+_cs_native_launch_options() {  # engine; sets CS_NATIVE_LAUNCH_ARGS
+    CS_NATIVE_LAUNCH_ARGS=()
+    [ -z "${CS_LAUNCH_MODEL:-}" ] || CS_NATIVE_LAUNCH_ARGS+=(--model "$CS_LAUNCH_MODEL")
+    case "$1" in
+        claude)
+            [ -z "${CS_LAUNCH_EFFORT:-}" ] || CS_NATIVE_LAUNCH_ARGS+=(--effort "$CS_LAUNCH_EFFORT")
+            [ "${CS_LAUNCH_APPROVAL:-}" != auto ] || CS_NATIVE_LAUNCH_ARGS+=(--permission-mode auto)
+            ;;
+        codex)
+            if [ -n "${CS_LAUNCH_EFFORT:-}" ]; then
+                local quoted_effort
+                quoted_effort=$(printf '%s' "$CS_LAUNCH_EFFORT" | jq -Rs .) || return 1
+                CS_NATIVE_LAUNCH_ARGS+=(-c "model_reasoning_effort=$quoted_effort")
+            fi
+            [ "${CS_LAUNCH_APPROVAL:-auto}" = native ] || CS_NATIVE_LAUNCH_ARGS+=(--approve-for-me)
+            ;;
+    esac
 }
 
 # One row of the pending-handoff answers: the key, a padded label, and a dim
@@ -10310,7 +10569,7 @@ _cs_claude_adapter_capabilities() {
     # memory_index: .cs/memory/MEMORY.md loads at every session start.
     # mail_delivery: hooks surface `cs -msg` mail inside the conversation.
     printf '%s\n' launch exact_resume startup_context feature_finish \
-        rotation spawn_brief memory_index mail_delivery
+        rotation spawn_brief memory_index mail_delivery recovery_autosave
 }
 
 _claude_native_id_valid() {  # native conversation ID
@@ -10326,6 +10585,8 @@ launch_claude_code() {
 }
 
 _launch_claude_bound() {
+    local -a CS_NATIVE_LAUNCH_ARGS
+    _cs_native_launch_options claude || return 1
     # Claude Code downgrades its branding (logo, "thinking" animation) and statusline
     # truecolor to a muted palette when it detects tmux, regardless of actual color
     # support (anthropics/claude-code#35148). cs owns the environment before it execs
@@ -10521,7 +10782,19 @@ _launch_claude_bound() {
     local memory_path="$session_dir/.cs/memory"
     export CLAUDE_CODE_AUTO_MEMORY_PATH="$memory_path"
     export CLAUDE_COWORK_MEMORY_PATH_OVERRIDE="$memory_path"
-    _export_session_claude_config "$session_dir"
+    # code-sessions shares the default Claude login, the one the Agents sidebar
+    # switches, and its launcher says so with an empty value. A launch that
+    # skipped that launcher, such as a feature or tmux window opened from a
+    # session an older launcher started, would otherwise file its login under
+    # the profile's own keychain entry, which no switch reaches. A value
+    # chosen on purpose stays.
+    if [ -n "${CODE_SESSIONS_HOME:-}" ] && [ -z "${CLAUDE_SECURESTORAGE_CONFIG_DIR+set}" ]; then
+        export CLAUDE_SECURESTORAGE_CONFIG_DIR=''
+    fi
+    if [ -n "${CODE_SESSIONS_HOME:-}" ] && [ -z "$CLAUDE_SECURESTORAGE_CONFIG_DIR" ]; then
+        _seed_session_claude_json "$CODE_SESSIONS_HOME/.claude" "$(_cs_claude_json_path "$HOME/.claude" "$HOME/.claude.json")" || return $?
+    fi
+    _export_session_claude_config "$session_dir" || return $?
     # Expose the recorded session UUID to hooks. Hooks can use this to
     # reverse-look-up which cs session they're firing inside without having
     # to depend on $CLAUDE_CODE_SESSION_ID (set by Claude Code itself, but
@@ -10944,7 +11217,7 @@ EOF
         # an explicit --fresh choice, independent of how quickly native exit occurs.
         local rc=0
         # shellcheck disable=SC2086
-        cs_run_child $CLAUDE_CODE_BIN --name "$session_name" --resume "$resume_id" ${launch_prompt:+"$launch_prompt"} || rc=$?
+        cs_run_child $CLAUDE_CODE_BIN ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} --name "$session_name" --resume "$resume_id" ${launch_prompt:+"$launch_prompt"} || rc=$?
         if [ "$rc" -ne 0 ]; then
             printf 'Could not resume the recorded Claude conversation; binding preserved. Retry or run: cs %s --engine claude --fresh\n' "$session_name" >&2
         fi
@@ -10960,7 +11233,7 @@ EOF
         #     always writes one; handled defensively): naked exec.
         if [ "$is_new" = "true" ] && [ -n "$claude_session_id" ]; then
             # shellcheck disable=SC2086
-            cs_run_child $CLAUDE_CODE_BIN --name "$session_name" --session-id "$claude_session_id" ${launch_prompt:+"$launch_prompt"}
+            cs_run_child $CLAUDE_CODE_BIN ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} --name "$session_name" --session-id "$claude_session_id" ${launch_prompt:+"$launch_prompt"}
         elif [ "$is_new" = "false" ]; then
             _disarm_rotation_marker "$session_dir"
             # An explicit --fresh never asked anything, so it is not a decline.
@@ -10970,7 +11243,7 @@ EOF
             _exec_fresh_rebind "$session_dir" "$_rebind_reason" "" "$spawn_kick" "$merge_kick"
         else
             # shellcheck disable=SC2086
-            cs_run_child $CLAUDE_CODE_BIN --name "$session_name" ${launch_prompt:+"$launch_prompt"}
+            cs_run_child $CLAUDE_CODE_BIN ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} --name "$session_name" ${launch_prompt:+"$launch_prompt"}
         fi
     fi
 }
@@ -11109,7 +11382,7 @@ _cs_codex_adapter_capabilities() {
     # the armed handoff; the launch prompt's r starts a thread from it.
     # feature_finish: -finish starts the thread on `$finish <task>`, as
     # Claude's starts on /finish <task>.
-    printf '%s\n' launch exact_resume startup_context feature_finish rotation
+    printf '%s\n' launch exact_resume startup_context feature_finish rotation recovery_autosave
 }
 
 _cs_codex_adapter_prepare_workspace() {  # session_dir, mode
@@ -11310,12 +11583,15 @@ _launch_codex_bound() {
         /*) ;;
         *) codex_bin="$(cd "$(dirname "$codex_bin")" && pwd -P)/$(basename "$codex_bin")" || return 1 ;;
     esac
-    # Refuse before native preparation can bind a thread or spend its handoff.
-    local codex_help
-    if ! codex_help=$(cs_run_child "$codex_bin" --help 2>/dev/null) \
-        || ! printf '%s\n' "$codex_help" | grep -E '^[[:space:]]*--approve-for-me([[:space:]]|$)' >/dev/null; then
-        _codex_launch_error "Codex at $codex_bin must support --approve-for-me. Upgrade Codex or set CODEX_BIN to a build whose --help lists --approve-for-me."
-        return 1
+    # Automatic approval must refuse before preparation binds or spends context.
+    # Native approval leaves policy to Codex and needs no automatic-review flag.
+    if [ "${CS_LAUNCH_APPROVAL:-auto}" != native ]; then
+        local codex_help
+        if ! codex_help=$(cs_run_child "$codex_bin" --help 2>/dev/null) \
+            || ! printf '%s\n' "$codex_help" | grep -E '^[[:space:]]*--approve-for-me([[:space:]]|$)' >/dev/null; then
+            _codex_launch_error "Codex at $codex_bin must support --approve-for-me for automatic approval. Upgrade Codex, set CODEX_BIN to a supporting build, or use --native-approval to keep Codex's configured policy."
+            return 1
+        fi
     fi
     helper=$(_codex_thread_helper) || {
         _codex_launch_error "Cannot locate cs-codex-thread beside the cs executable."
@@ -11530,12 +11806,50 @@ _launch_codex_bound() {
         turn_before=$(_codex_turn_mark "$helper" "$codex_bin" "$session_dir" "$thread_id") || turn_before=""
     fi
 
-    printf '%s\n' 'Codex via cs: session context, exact resume and rotation are enabled; Claude hooks, autosave, and task queue integration are unavailable.'
+    printf '%s\n' 'Codex via cs: session context, exact resume and rotation are enabled; automatic recovery is enabled; Claude task queue integration is unavailable.'
     # A dedicated native writer lives for this supervised CLI lifetime.
     # Signals and lock cleanup belong to the shared controller.
     local status=0
-    cs_run_child "$codex_bin" --no-daemon resume "$thread_id" -C "$session_dir" \
-        --approve-for-me ${kick:+"$kick"} || status=$?
+    local -a CS_NATIVE_LAUNCH_ARGS
+    _cs_native_launch_options codex || return 1
+    # The run's approval, for its hooks and the automatic /clear's watcher: a
+    # run with native approval never quits for a switch unattended.
+    local CS_RUN_APPROVAL=auto
+    [ "${CS_LAUNCH_APPROVAL:-auto}" != native ] || CS_RUN_APPROVAL=native
+    export CS_RUN_APPROVAL
+    # The automatic /clear after a rotation (lib/77-codex-hooks.sh) types into
+    # this terminal, so its watcher runs only where one is attached and will
+    # take simulated input, which is asked once here, and only with a private
+    # directory for its deadline, made before Codex starts. Where it cannot
+    # type, the launch says why, and no turn promises a count. The
+    # run's cleanup stops the watcher and removes the directory, after the CLI
+    # or when a signal ends the launch (lib/16-lifecycle.sh). Earlier builds
+    # kept the deadline in the session, where the agent could forge it; one
+    # left there is removed and never read.
+    local autoclear_dir refusal
+    rm -f "$session_dir/.cs/local/codex-autoclear" 2>/dev/null || true
+    if [ -t 0 ] && [ -t 1 ] && _codex_autoclear_grace >/dev/null; then
+        if ! refusal=$(_codex_autoclear_probe); then
+            printf "${DIM:-}cs: no automatic /clear after a rotation: %s${NC:-}\n" "$refusal"
+            _codex_autoclear_log "$session_dir" "Automatic /clear is off for this run: $refusal"
+        elif autoclear_dir=$(_codex_run_dir_prepare "$session_dir"); then
+            _cs_run_helper_dir=$autoclear_dir
+            _codex_autoclear_watch "$session_dir" "$autoclear_dir" </dev/null >/dev/null 2>&1 &
+            _cs_run_helper_pid=$!
+        else
+            printf "${DIM}The automatic /clear after a rotation is off for this run: cs could not make a private directory under %s.${NC}\n" \
+                "${CS_CACHE_DIR:-$HOME/.cache/cs}/codex-runs"
+        fi
+    fi
+    cs_run_child "$codex_bin" --no-daemon resume "$thread_id" -C "$session_dir" ${CS_NATIVE_LAUNCH_ARGS[@]+"${CS_NATIVE_LAUNCH_ARGS[@]}"} ${kick:+"$kick"} || status=$?
+    # Keys the watcher typed just before Codex exited can wait unread in the
+    # terminal and would run in the shell, so its input is flushed, but only
+    # when the watcher was typing: the flush would eat ordinary type-ahead.
+    _cs_run_end_helper
+    if [ -n "$_cs_run_helper_dir" ] && [ -e "$(_codex_keys_sent_file "$_cs_run_helper_dir")" ]; then
+        _codex_flush_input
+    fi
+    _cs_run_stop_helper
     if [ "$status" -ne 0 ] && [ -n "$spent" ]; then
         # A switch relaunch's settle reads it too (lib/78-switch.sh).
         _cs_switch_ran=""
@@ -11586,11 +11900,35 @@ _fresh_notice_codex() {  # actor_slug
 cmd_codex_hook() {  # event
     case "${1:-}" in
         session-start) _codex_hook_session_start ;;
+        files-changed) _codex_hook_files_changed ;;
+        stop) _codex_hook_stop ;;
+        user-prompt-submit) _codex_hook_user_prompt_submit ;;
+        permission-request) _codex_hook_permission_request ;;
+        # A verb this cs does not know, from a hooks.json an older or newer
+        # cs registered. Codex reads exit 2 with text on stderr as a denial
+        # from a PermissionRequest hook and as a block from others, so a hook
+        # call (stdin not a terminal) answers `{}`, which decides nothing,
+        # and exits 0. Only a person typing it gets the usage line.
         *)
-            printf 'Usage: cs -codex-hook session-start\n' >&2
-            return 2
+            if [ -t 0 ]; then
+                printf 'Usage: cs -codex-hook session-start|files-changed|stop|user-prompt-submit|permission-request\n' >&2
+                return 2
+            fi
+            cat >/dev/null 2>&1 || true
+            [ -t 1 ] || printf '{}\n'
+            return 0
             ;;
     esac
+}
+
+_codex_hook_files_changed() {
+    local event hook
+    [ "${CS_RUN_ENGINE:-}" = codex ] && [ -n "${CS_SESSION_DIR:-}" ] || return 0
+    event=$(cs_engine_call codex files_changed) || return 0
+    [ -n "$event" ] || return 0
+    hook="${CODEX_HOME:-$HOME/.codex}/hooks/cs/autosave-commits.sh"
+    [ -r "$hook" ] || return 0
+    printf '%s' "$event" | bash "$hook" --event || true
 }
 
 # Codex fires SessionStart on the first turn of a thread, before the model
@@ -11656,6 +11994,587 @@ _codex_hook_rebind() {  # session_dir, thread_id, handoff
     fi
     _timeline_started "$session_dir" codex "$thread_id" clear || true
 }
+
+# The automatic /clear after a rotation: Codex's counterpart of the cs mod's
+# countdown under Claude. No Codex plugin can run a command, so three pieces
+# share the job. The Stop hook, at the end of a turn that leaves a handoff
+# armed, writes a deadline into this run's private directory. The
+# UserPromptSubmit hook drops it, so a message sent first keeps the
+# conversation; the count starts again when that turn ends. The
+# PermissionRequest hook drops it too, so an approval prompt never takes the
+# keys. A watcher the Codex
+# launch runs beside the CLI (lib/76-codex.sh) types /clear, then go, into the
+# terminal once the deadline has passed and the same handoff is still armed;
+# with a switch pending at the deadline it types /quit, and cs reopens the
+# session under the other engine. CS_ROTATE_FORCE_CTX set to off (or 0) leaves
+# the keys to the user, as it does under Claude, and so does
+# CS_CODEX_CLEAR_GRACE=0.
+#
+# The deadline is the watcher's licence to type, so it lives where the agent
+# cannot write: Codex's workspace sandbox writes anywhere in the session, /tmp
+# and $TMPDIR, and a deadline forged there would have the watcher type /clear
+# and Enter into whatever the terminal shows, an approval prompt included. The
+# hooks and the watcher each find the directory from their own environment:
+# cs's cache, then codex-runs/<run id>, made 0700 by the launch before Codex
+# starts and removed when the run ends.
+_codex_run_dir() {
+    _is_uuid "${CS_RUN_ID:-}" || return 1
+    printf '%s/codex-runs/%s\n' "${CS_CACHE_DIR:-$HOME/.cache/cs}" "$CS_RUN_ID"
+}
+
+# Whether a directory lies, once symlinks are resolved, under any of the
+# roots: it or one of its parents is that root. They are compared by device
+# and inode (test -ef), not by spelling: macOS's file system ignores case, so
+# a directory spelled .../SESS lies in the session .../Sess, and a root given
+# through a symlink (macOS's /tmp is /private/tmp) is the directory it names.
+# A directory it cannot resolve counts as inside.
+_codex_dir_under() {  # dir, root...
+    local dir root
+    dir=$(cd "$1" 2>/dev/null && pwd -P) || return 0
+    shift
+    while :; do
+        for root in "$@"; do
+            [ -n "$root" ] || continue
+            [ ! "$dir" -ef "$root" ] || return 0
+        done
+        [ -n "$dir" ] && [ "$dir" != / ] || return 1
+        dir=${dir%/*}
+        [ -n "$dir" ] || dir=/
+    done
+}
+
+# Whether a directory lies under a root the workspace sandbox may always
+# write: the session, $TMPDIR or /tmp.
+_codex_run_dir_in_sandbox_root() {  # dir, session_dir
+    _codex_dir_under "$1" "$2" "${TMPDIR:-}" /tmp
+}
+
+# The further roots Codex's own config lets the workspace sandbox write
+# (sandbox_workspace_write.writable_roots), one a line, from every layer cs
+# can read: the system's, $CODEX_HOME's, and a .codex/config.toml in the
+# session or any directory above it. Any table counts, a profile's included,
+# whichever the launch ends up using: a root named anywhere is a root. ~ is
+# the home directory, and a relative root is read against both the session
+# and the file's own directory. Roots a managed device profile adds are not in
+# any file cs can read. Fails when a config there cannot be read.
+_codex_config_writable_roots() {  # session_dir
+    local dir
+    local -a files
+    files=(/etc/codex/config.toml /etc/codex/managed_config.toml "${CODEX_HOME:-$HOME/.codex}/config.toml")
+    dir=$(cd "$1" 2>/dev/null && pwd -P) || return 1
+    while :; do
+        files+=("$dir/.codex/config.toml")
+        [ -n "$dir" ] && [ "$dir" != / ] || break
+        dir=${dir%/*}
+    done
+    python3 -I -c '
+import os, re, sys
+session = sys.argv[1]
+array = re.compile(r"writable_roots\s*=\s*\[(.*?)\]", re.S)
+item = re.compile(r"\"((?:[^\"\\]|\\.)*)\"|\x27([^\x27]*)\x27")
+for name in sys.argv[2:]:
+    try:
+        with open(name, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except (FileNotFoundError, NotADirectoryError):
+        continue
+    except OSError:
+        sys.exit(1)
+    for found in array.finditer(text):
+        for basic, literal in item.findall(found.group(1)):
+            root = re.sub(r"\\(.)", r"\1", basic) if basic else literal
+            root = os.path.expanduser(root)
+            if os.path.isabs(root):
+                print(root)
+            elif root:
+                print(os.path.join(session, root))
+                print(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(name))), root))
+' "$1" "${files[@]}"
+}
+
+# Whether a directory lies under a writable root Codex's config adds.
+_codex_run_dir_in_config_root() {  # dir, session_dir
+    local roots root
+    roots=$(_codex_config_writable_roots "$2") || return 0
+    [ -n "$roots" ] || return 1
+    printf '%s\n' "$roots" | {
+        while IFS= read -r root; do
+            [ -z "$root" ] || ! _codex_dir_under "$1" "$root" || exit 0
+        done
+        exit 1
+    }
+}
+
+# The run directory as the launch made it: a real directory, the user's, mode
+# 700, and outside every root the sandbox may write.
+_codex_run_dir_ok() {  # run_dir, session_dir
+    [ -d "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] || return 1
+    [ "$(_cs_file_mode "$1" 2>/dev/null)" = 700 ] || return 1
+    ! _codex_run_dir_in_sandbox_root "$1" "$2"
+}
+
+# The deadline as the Stop hook writes it: a regular file, the user's, mode 600.
+_codex_stamp_ok() {  # file
+    [ -f "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] || return 1
+    [ "$(_cs_file_mode "$1" 2>/dev/null)" = 600 ]
+}
+
+# Makes this run's directory, before Codex starts, and prints it. A directory
+# already there is not this run's, and one the checks refuse is taken back.
+# Codex reads its config as it starts, so the roots that config adds are
+# asked about here, once, and stay as they are for the run.
+_codex_run_dir_prepare() {  # session_dir
+    local dir
+    dir=$(_codex_run_dir) || return 1
+    ( umask 077 && mkdir -p "${dir%/*}" && mkdir -m 700 "$dir" ) 2>/dev/null || return 1
+    if ! _codex_run_dir_ok "$dir" "$1" || _codex_run_dir_in_config_root "$dir" "$1"; then
+        rmdir "$dir" 2>/dev/null || true
+        return 1
+    fi
+    printf '%s\n' "$dir"
+}
+
+_codex_autoclear_file() {  # run_dir
+    printf '%s/autoclear\n' "$1"
+}
+
+# Stands while the watcher types, from before its first key until it is done.
+# The UserPromptSubmit hook takes it away, so a prompt the user sends while cs
+# types stops whatever cs has left to type: a key, the Enter, or the go after
+# /clear.
+_codex_typing_file() {  # run_dir
+    printf '%s/typing\n' "$1"
+}
+
+# What the count does at its end: `clear`, or `quit <target>` when a switch
+# this run recorded is pending, since /clear cannot change engines and would
+# spend the handoff the switch carries; <target> is the relaunch in words. The
+# watcher asks at the deadline, as the cs mod reads the switch at zero, so a
+# switch armed or cancelled during the count is the one that counts; the Stop
+# hook asks only for its wording.
+#
+# Nobody is at the keys when the count ends, so a run with native approval
+# never quits on its own: that is `hold <target>`, and the exit stays the
+# user's. The agent can arm a switch itself, one that loosens approval
+# (`cs -switch --approve-for-me`) among them; it can rewrite pending-switch
+# after the watcher read it, since cs settles the switch from that file once
+# Codex exits; and it can write the target's settings into the session (a
+# .claude/settings.local.json the relaunch would load). Only /clear, which
+# keeps this Codex and its sandbox, is typed unattended there. A run that does
+# not say which approval it has counts as native, the stricter reading.
+_codex_autoclear_action() {  # session_dir
+    local switch_file target summary
+    if switch_file=$(_switch_file "$1") && [ -f "$switch_file" ] \
+        && [ "$(_switch_field "$switch_file" run)" = "${CS_RUN_ID:-}" ]; then
+        target=$(_switch_field "$switch_file" engine)
+        if [ -n "$target" ]; then
+            summary=$(_switch_target_summary "$switch_file")
+            if [ "${CS_RUN_APPROVAL:-native}" != auto ]; then
+                printf 'hold %s\n' "$summary"
+            else
+                printf 'quit %s\n' "$summary"
+            fi
+            return 0
+        fi
+    fi
+    printf 'clear\n'
+}
+
+# Stands while the watcher runs, as "<pid> <run id>": the Stop hook promises a
+# count only while it names this run and a live process, since nothing else
+# would type the keys.
+_codex_watcher_pid_file() {  # run_dir
+    printf '%s/watcher.pid\n' "$1"
+}
+
+_codex_watcher_alive() {  # run_dir
+    local pid="" run=""
+    { read -r pid run < "$(_codex_watcher_pid_file "$1")"; } 2>/dev/null || return 1
+    [[ "$pid" =~ ^[0-9]+$ ]] && [ "$run" = "${CS_RUN_ID:-}" ] || return 1
+    kill -0 "$pid" 2>/dev/null
+}
+
+# Whether this terminal will take the keys the watcher types, asked once as
+# Codex launches, so a turn never promises a count nothing can carry out.
+# Prints the cause and fails when it will not: the terminal does not open,
+# python3 or its TIOCSTI is missing, or Linux refuses simulated input to
+# anyone but root (dev.tty.legacy_tiocsti=0, the default from 6.2 on some
+# distributions). CS_CODEX_TTY, CS_CODEX_PROBE_OS and CS_TIOCSTI_SYSCTL stand
+# in for the terminal, the system and the sysctl in tests.
+_codex_autoclear_probe() {
+    local tty="${CS_CODEX_TTY:-/dev/tty}" err os legacy=""
+    if ! err=$( { : < "$tty"; } 2>&1 ); then
+        err=${err##*: }
+        printf 'cs cannot open %s (%s)\n' "$tty" "${err:-it would not open}"
+        return 1
+    fi
+    if ! command -v python3 >/dev/null 2>&1; then
+        printf 'python3, which types the keys, is not on PATH\n'
+        return 1
+    fi
+    if ! python3 -I -c 'import termios; termios.TIOCSTI' >/dev/null 2>&1; then
+        printf "python3's termios has no TIOCSTI, the call that types into a terminal\n"
+        return 1
+    fi
+    os=${CS_CODEX_PROBE_OS:-$(uname -s 2>/dev/null)}
+    if [ "$os" = Linux ] && [ "$(id -u 2>/dev/null)" != 0 ]; then
+        { read -r legacy < "${CS_TIOCSTI_SYSCTL:-/proc/sys/dev/tty/legacy_tiocsti}"; } 2>/dev/null || legacy=""
+        if [ "$legacy" = 0 ]; then
+            printf 'this kernel refuses simulated terminal input (dev.tty.legacy_tiocsti is 0)\n'
+            return 1
+        fi
+    fi
+}
+
+# The seconds the count runs (CS_CODEX_CLEAR_GRACE, default 20, the mod's
+# grace), or failure when the automatic /clear is off. A CS_ROTATE_FORCE_CTX
+# nobody can read is not off, as in the mod. The grace is read as decimal, so
+# 08 is eight seconds rather than an octal error that would fail the turn. A
+# grace of 0 turns the count off, as CS_ROTATE_FORCE_CTX=0 does, rather than
+# typing at the next poll, while the turn that armed it may still be closing.
+_codex_autoclear_grace() {
+    local force grace="${CS_CODEX_CLEAR_GRACE:-20}"
+    force=$(printf '%s' "${CS_ROTATE_FORCE_CTX:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+    [ "$force" != off ] || return 1
+    ! [[ "$force" =~ ^0+$ ]] || return 1
+    if [[ "$grace" =~ ^[0-9]+$ ]]; then grace=$((10#$grace)); else grace=20; fi
+    [ "$grace" -ne 0 ] || return 1
+    printf '%s\n' "$grace"
+}
+
+# Only the conversation this run launched and the session is bound to counts
+# down; a turn in any other thread, or a teammate's, never clears it. The hook
+# must never fail a turn, so every path returns 0.
+_codex_hook_stop() {
+    local input session_id session_dir meta run_dir stamp grace bound handoff tmp deadline action sysmsg
+    input=$(cat) || input=""
+    [ "${CS_RUN_ENGINE:-}" = codex ] && [ -n "${CS_SESSION_DIR:-}" ] || return 0
+    session_dir="$CS_SESSION_DIR"
+    meta="$session_dir/.cs"
+    [ -d "$meta/local" ] || return 0
+    session_id=$(printf '%s' "$input" | jq -r '.session_id // ""' 2>/dev/null) || session_id=""
+    _codex_thread_id_valid "$session_id" || return 0
+    # No private directory, no watcher: nothing would type the keys, so the
+    # turn ends without a count or a line promising one.
+    run_dir=$(_codex_run_dir) && _codex_run_dir_ok "$run_dir" "$session_dir" || return 0
+    stamp=$(_codex_autoclear_file "$run_dir")
+    grace=$(_codex_autoclear_grace) || { rm -f "$stamp" 2>/dev/null; return 0; }
+    cs_run_lease_owned "$meta" || return 0
+    bound=$(cs_binding_read "$session_dir" codex 2>/dev/null) || return 0
+    [ "$bound" = "$session_id" ] || return 0
+    handoff=$(_rotation_armed_handoff "$session_dir")
+    [ -n "$handoff" ] || { rm -f "$stamp" 2>/dev/null; return 0; }
+    # No live watcher of this run's, nothing to type the keys: a terminal that
+    # refuses simulated input gets none, and the launch said why.
+    _codex_watcher_alive "$run_dir" || { rm -f "$stamp" 2>/dev/null; return 0; }
+    # Only the wording: the watcher decides again at the deadline.
+    action=$(_codex_autoclear_action "$session_dir")
+    if [ "${action%% *}" = hold ]; then
+        rm -f "$stamp" 2>/dev/null
+        sysmsg="cs: a switch to ${action#hold } is pending. This run has native approval, so cs does not quit for you: /quit to take it, or cs -switch cancel to stay."
+        jq -n --arg m "$sysmsg" '{systemMessage: $m}' 2>/dev/null || true
+        return 0
+    fi
+    # The deadline is worked out before the temp file exists, so nothing that
+    # fails here can leave one behind.
+    deadline=$(( $(date +%s) + grace ))
+    # mktemp makes the file 0600, the mode the watcher requires.
+    tmp=$(mktemp "$stamp.XXXXXX" 2>/dev/null) || return 0
+    if ! { printf 'deadline=%s\nhandoff=%s\nrun=%s\n' \
+        "$deadline" "$handoff" "${CS_RUN_ID:-}" > "$tmp" \
+        && mv "$tmp" "$stamp"; } 2>/dev/null; then
+        rm -f "$tmp" 2>/dev/null
+        return 0
+    fi
+    if [ "${action%% *}" = quit ]; then
+        sysmsg="cs: /quit in $grace s, and cs reopens this session under ${action#quit } from $handoff. Send a message first to stay; unsent text in the composer would be sent."
+    else
+        sysmsg="cs: /clear and go in $grace s, to continue from $handoff. Send a message first to keep this conversation; unsent text in the composer would be sent."
+    fi
+    jq -n --arg m "$sysmsg" '{systemMessage: $m}' 2>/dev/null || true
+    return 0
+}
+
+# A message sent while the count runs stops it, and one sent while cs types
+# stops the rest of the keys. Any message does: the hook only removes, so a
+# prompt in another thread costs at most one count.
+_codex_hook_user_prompt_submit() {
+    local run_dir
+    cat >/dev/null 2>&1 || true
+    [ "${CS_RUN_ENGINE:-}" = codex ] && [ -n "${CS_SESSION_DIR:-}" ] || return 0
+    [ -d "$CS_SESSION_DIR/.cs/local" ] || return 0
+    run_dir=$(_codex_run_dir) && _codex_run_dir_ok "$run_dir" "$CS_SESSION_DIR" || return 0
+    rm -f "$(_codex_autoclear_file "$run_dir")" "$(_codex_typing_file "$run_dir")" 2>/dev/null || true
+    return 0
+}
+
+# An approval Codex asks for stops the count and cs's typing, as a prompt
+# does: the turn is not over while the approval waits, and /clear, go or the
+# Enter after them would land in the approval prompt. The turn can go on after
+# its Stop hook, when another tool's Stop hook asks Codex to continue, so a
+# count can be running when the prompt comes up. The hook rules on nothing: it
+# prints `{}`, which Codex 0.162 reads as no decision (its PermissionRequest
+# output carries a decision only under hookSpecificOutput), on every path, and
+# exits 0, never 2, which Codex reads as a denial.
+_codex_hook_permission_request() {
+    _codex_hook_user_prompt_submit
+    printf '{}\n'
+    return 0
+}
+
+# Types text and Enter into the controlling terminal as if typed (TIOCSTI):
+# a character every 100 ms and a pause before Enter, because Codex reads a
+# burst as a paste and its Enter as a newline. Measured on 0.162: "/clear" sent
+# at once stayed in the composer unsent, and a 19-character line at 50 ms a key
+# got a newline where 8 characters at that pace submitted. Fails where the
+# terminal refuses simulated input, as Linux does with dev.tty.legacy_tiocsti=0.
+# Before each key and before Enter it looks for the typing marker; once a
+# prompt the user sent has taken it away, it stops with status 4 and sends no
+# Enter, so nothing more of cs's goes in after that prompt. It also checks
+# that Codex, by the pid the launch wrote into the run directory, still runs,
+# and that the watcher that started it is still its parent: with either gone
+# the keys would land in the shell, so it stops with status 3.
+# Any other failure ends it with status 1 and, on the last line of stderr,
+# the errno's name and text, which the watcher logs as the cause.
+# It replaces the shell it runs in with python, so the watcher, which starts
+# it in the background, holds python's own pid and can end it at once.
+# CS_CODEX_TYPE_SINK names a file the keys are appended to instead, for tests.
+_codex_type_keys() {  # text, typing_marker, native_pid_file
+    exec python3 -I -c '
+import errno, fcntl, os, sys, termios, time
+marker = sys.argv[2]
+if not os.path.exists(marker):
+    sys.exit(4)
+parent = os.getppid()
+try:
+    with open(sys.argv[3]) as f:
+        native = int(f.read().split()[0])
+except (IndexError, OSError, ValueError):
+    sys.exit(3)
+def check():
+    if not os.path.exists(marker):
+        sys.exit(4)
+    if os.getppid() != parent:
+        sys.exit(3)
+    try:
+        os.kill(native, 0)
+    except OSError:
+        sys.exit(3)
+def type_keys():
+    sink = os.environ.get("CS_CODEX_TYPE_SINK", "")
+    if sink:
+        fd = os.open(sink, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        put = lambda key: os.write(fd, key)
+    else:
+        fd = os.open("/dev/tty", os.O_RDWR)
+        put = lambda key: fcntl.ioctl(fd, termios.TIOCSTI, key)
+    try:
+        for ch in sys.argv[1].encode():
+            check()
+            put(bytes([ch]))
+            time.sleep(0.1)
+        time.sleep(0.5)
+        check()
+        put(b"\r")
+    finally:
+        os.close(fd)
+try:
+    type_keys()
+except OSError as e:
+    sys.stderr.write("%s: %s\n" % (errno.errorcode.get(e.errno, "OSError"), e.strerror or e))
+    sys.exit(1)
+' "$1" "$2" "${3:-}"
+}
+
+# The CLI's pid, as the launch wrote it (lib/16-lifecycle.sh).
+_codex_native_pid_file() {  # run_dir
+    printf '%s/native.pid\n' "$1"
+}
+
+# Stands from before cs's first key until half a second after its last Enter,
+# while keys of cs's can still wait unread in the terminal. The launch flushes
+# the terminal's input after Codex exits only when it is there (lib/76-codex.sh).
+# It is not the typing marker: a prompt the user sends takes that one away,
+# and the keys typed before it can still be queued.
+_codex_keys_sent_file() {  # run_dir
+    printf '%s/keys-sent\n' "$1"
+}
+
+# Drops what waits unread in this terminal's input, where keys cs typed for a
+# Codex that has since exited would otherwise run in the shell.
+_codex_flush_input() {
+    [ -t 0 ] || return 0
+    python3 -I -c 'import termios; termios.tcflush(0, termios.TCIFLUSH)' 2>/dev/null || true
+}
+
+# Whether the terminal the keys would go to is still there. A closed tab hangs
+# it up; the watcher then has nothing to type into and ends.
+_codex_autoclear_terminal() {
+    { : </dev/tty; } 2>/dev/null
+}
+
+# Runs beside the Codex CLI for its lifetime (lib/76-codex.sh) and ends with
+# the run's owner or its terminal; the launcher also stops it once the CLI
+# exits (_cs_run_stop_helper). Once a second it reads the deadline the Stop
+# hook wrote into the run's directory, and only from there: a directory that
+# stops being private ends the watch, and a deadline file that is not what the
+# hook writes is dropped unread. Past the deadline, while this run still holds
+# the session's lease and the same handoff is still armed, it consumes the
+# deadline and types the keys: /quit when a switch this run recorded is
+# pending then (nothing, in a run with native approval), /clear otherwise. The armed handoff is a liveness check, not the licence: the agent
+# may arm one itself.
+# /clear and go are two prompts: Codex starts no turn after /clear, and cs's
+# SessionStart hook hands the new thread the handoff with its first message.
+# The watcher cannot see the screen. Text left unsent in the composer is sent
+# with the keys added to it, which the Stop hook's line warns of; a prompt the
+# user sends while cs types takes the typing marker away, and cs stops there.
+#
+# Everything it waits on, a sleep or the typist, runs as its child and is
+# waited for, so a TERM, from the launcher's stop or anyone's, ends that child
+# first and the watcher straight after: keys typed after the CLI is gone would
+# land in the shell, and nothing outside the watcher has to find its children.
+_codex_autoclear_watch() {  # session_dir, run_dir
+    local session_dir="$1" run_dir="$2" stamp typing keys_sent native deadline handoff action run status child=""
+    local pid_file errors cause keys
+    trap '[ -z "$child" ] || kill -TERM "$child" 2>/dev/null; exit 0' TERM
+    # The watcher says it is there, for the Stop hook, and takes that back as
+    # it ends, a TERM included.
+    pid_file=$(_codex_watcher_pid_file "$run_dir")
+    # shellcheck disable=SC2064 # the path is fixed now; the locals are gone by EXIT
+    trap "rm -f $(printf '%q' "$pid_file") 2>/dev/null" EXIT
+    _codex_watcher_publish "$pid_file" || true
+    stamp=$(_codex_autoclear_file "$run_dir")
+    typing=$(_codex_typing_file "$run_dir")
+    keys_sent=$(_codex_keys_sent_file "$run_dir")
+    native=$(_codex_native_pid_file "$run_dir")
+    errors="$run_dir/keys.err"
+    while kill -0 "${CS_RUN_OWNER_PID:-$$}" 2>/dev/null && _codex_autoclear_terminal; do
+        _codex_autoclear_child sleep 1
+        if ! _codex_run_dir_ok "$run_dir" "$session_dir"; then
+            _codex_autoclear_log "$session_dir" "Automatic /clear: this run's directory is gone or no longer private; the /clear is yours"
+            return 0
+        fi
+        [ -e "$stamp" ] || [ -L "$stamp" ] || continue
+        if ! _codex_stamp_ok "$stamp"; then
+            rm -f "$stamp" 2>/dev/null || true
+            continue
+        fi
+        run=$(_switch_field "$stamp" run)
+        deadline=$(_switch_field "$stamp" deadline)
+        if [ "$run" != "${CS_RUN_ID:-}" ] || ! [[ "$deadline" =~ ^[0-9]+$ ]]; then
+            rm -f "$stamp" 2>/dev/null || true
+            continue
+        fi
+        [ "$(date +%s)" -ge "$deadline" ] || continue
+        handoff=$(_switch_field "$stamp" handoff)
+        # The marker goes down before the deadline is spent, and the typist
+        # checks it before every key and Enter; go waits on it too, since the
+        # prompt that removed it may have landed during the pause after /clear.
+        # A prompt removes both, so one that lands before the marker leaves no
+        # deadline, and one after it leaves no marker: either way no key follows.
+        if ! { ( umask 077 && : > "$typing" ); } 2>/dev/null; then
+            rm -f "$stamp" 2>/dev/null || true
+            _codex_autoclear_log "$session_dir" "Automatic /clear: cs could not mark its typing in this run's directory; run /clear and send go"
+            continue
+        fi
+        if [ ! -e "$stamp" ]; then
+            rm -f "$typing" 2>/dev/null || true
+            continue
+        fi
+        rm -f "$stamp" 2>/dev/null || true
+        # A forced launch can take the session over while this CLI stays
+        # open: its deadline, set before the takeover, is no longer this
+        # run's to act on, as the cs mod checks it still owns the rotation.
+        if ! cs_run_lease_owned "$session_dir/.cs"; then
+            rm -f "$typing" 2>/dev/null || true
+            _codex_autoclear_log "$session_dir" "Automatic /clear: another cs run owns this session now; nothing typed"
+            continue
+        fi
+        if ! { [ -n "$handoff" ] && [ "$(_rotation_armed_handoff "$session_dir")" = "$handoff" ]; }; then
+            rm -f "$typing" 2>/dev/null || true
+            continue
+        fi
+        action=$(_codex_autoclear_action "$session_dir")
+        if [ "${action%% *}" = hold ]; then
+            rm -f "$typing" 2>/dev/null || true
+            _codex_autoclear_log "$session_dir" "Automatic /quit: this run has native approval, so the exit to ${action#hold } is yours"
+            continue
+        fi
+        # A prompt that went in during these checks took the marker: its turn
+        # keeps the conversation, as one sent before the deadline does.
+        [ -e "$typing" ] || continue
+        { ( umask 077 && : > "$keys_sent" && : > "$errors" ); } 2>/dev/null || true
+        # The typist's stderr is kept for the cause of a failure.
+        if [ "${action%% *}" = quit ]; then
+            _codex_autoclear_child _codex_type_keys /quit "$typing" "$native" 2>>"$errors"; status=$?
+        else
+            _codex_autoclear_child _codex_type_keys /clear "$typing" "$native" 2>>"$errors"; status=$?
+            if [ "$status" = 0 ]; then
+                _codex_autoclear_child sleep 2
+                if [ -e "$typing" ]; then
+                    _codex_autoclear_child _codex_type_keys go "$typing" "$native" 2>>"$errors"; status=$?
+                else
+                    status=4
+                fi
+            fi
+        fi
+        rm -f "$typing" 2>/dev/null || true
+        _codex_autoclear_child sleep 0.5
+        rm -f "$keys_sent" 2>/dev/null || true
+        keys=/clear
+        [ "${action%% *}" != quit ] || keys=/quit
+        case "$status" in
+            0) ;;
+            4)
+                if [ "$keys" = /quit ]; then
+                    _codex_autoclear_log "$session_dir" "Automatic /quit: a prompt went in while cs was typing; Enter not sent"
+                else
+                    _codex_autoclear_log "$session_dir" "Automatic /clear: a prompt went in while cs was typing; go not sent"
+                fi
+                ;;
+            # Codex was gone, or the watcher was: nothing refused the keys,
+            # and there is nothing left to type them into.
+            3) _codex_autoclear_log "$session_dir" "Automatic $keys: Codex had already exited; nothing more typed" ;;
+            # The keys did not land: the person still has them, as before.
+            *)
+                cause=$(tail -n 1 "$errors" 2>/dev/null) || cause=""
+                if [ "$keys" = /quit ]; then
+                    _codex_autoclear_log "$session_dir" "Automatic /quit did not run: ${cause:-the typist failed with status $status}; run /quit"
+                else
+                    _codex_autoclear_log "$session_dir" "Automatic /clear did not run: ${cause:-the typist failed with status $status}; run /clear and send go"
+                fi
+                ;;
+        esac
+    done
+}
+
+# Writes "<pid> <run id>" for the watcher. bash 3.2 has no BASHPID, so the pid
+# is the parent of a child it starts, which is this shell.
+_codex_watcher_publish() {  # pid_file
+    local tmp
+    tmp=$(mktemp "$1.XXXXXX" 2>/dev/null) || return 1
+    if ! { sh -c 'printf "%s %s\n" "$PPID" "$1"' sh "${CS_RUN_ID:-}" > "$tmp" && mv "$tmp" "$1"; } 2>/dev/null; then
+        rm -f "$tmp" 2>/dev/null
+        return 1
+    fi
+}
+
+# Runs a command as the watcher's child and waits for it, with its status. The
+# watcher's TERM trap reads `child`, which is the watcher's own local.
+_codex_autoclear_child() {  # command, arguments...
+    local status=0
+    "$@" & child=$!
+    wait "$child" || status=$?
+    child=""
+    return "$status"
+}
+
+_codex_autoclear_log() {  # session_dir, line
+    local log_dir
+    if log_dir=$(cs_private_dir "$1/.cs"); then
+        { printf '%s - %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$2" >> "$log_dir/session.log"; } 2>/dev/null || true
+    fi
+}
 # The flow. The switch skill runs rotate's steps (a handoff written and armed
 # in pending-handoff), then `cs -switch [engine] [--resume]` checks the target
 # and writes <private dir>/pending-switch naming this run. The user exits the
@@ -11707,6 +12626,33 @@ _switch_quit_command() {  # engine
     esac
 }
 
+# The approval a switch's relaunch starts with: the one it recorded, or the
+# target's own default when it recorded none, as _cs_native_launch_options
+# applies them: Codex reviews automatically, Claude keeps its own settings.
+_switch_target_approval() {  # target, recorded
+    case "$2" in
+        auto|native) printf '%s\n' "$2" ;;
+        *) if [ "$1" = codex ]; then printf 'auto\n'; else printf 'native\n'; fi ;;
+    esac
+}
+
+# The relaunch a switch would start, in words: engine, model, effort when one
+# was asked for, and approval. Codex's count names it before it acts.
+_switch_target_summary() {  # file
+    local target model effort words
+    target=$(_switch_field "$1" engine)
+    model=$(_switch_field "$1" model)
+    effort=$(_switch_field "$1" effort)
+    if [ -n "$model" ]; then words="model $model"; else words="its default model"; fi
+    [ -z "$effort" ] || words="$words, effort $effort"
+    if [ "$(_switch_target_approval "$target" "$(_switch_field "$1" approval)")" = auto ]; then
+        words="$words, automatic approval"
+    else
+        words="$words, native approval"
+    fi
+    printf '%s (%s)\n' "$target" "$words"
+}
+
 # The installer records which engines it set up (skills, hooks). No record is
 # an install from before the choice existed, which set up both.
 _switch_engine_installed() {  # engine
@@ -11737,7 +12683,7 @@ _switch_engine_reads_vault() {  # engine
 }
 
 _switch_usage() {
-    error "Usage: cs -switch [--check] [claude|codex] [--resume], or cs -switch cancel"
+    error "Usage: cs -switch [--check] [claude|codex] [--resume] [--model MODEL] [--effort LEVEL] [--approve-for-me|--native-approval], or cs -switch cancel"
 }
 
 # cs -switch [--check] [claude|codex] [--resume] | cancel
@@ -11745,22 +12691,36 @@ _switch_usage() {
 # Every refusal is one line naming the fix. --check runs all of them except the
 # armed-handoff one and writes nothing: the skill asks before writing a handoff.
 cmd_switch() {
-    local target="" mode=fresh check="" arg
+    local target="" mode=fresh check="" arg model="" effort="" approval=""
     if [ "${1:-}" = cancel ]; then
         [ $# -eq 1 ] || _switch_usage
         _switch_cancel
         return $?
     fi
-    for arg in "$@"; do
+    while [ $# -gt 0 ]; do
+        arg="$1"
         case "$arg" in
             --check) check=1 ;;
             --resume) mode=resume ;;
+            --model|--effort)
+                [ $# -ge 2 ] || _switch_usage
+                _cs_launch_option_value "$arg" "$2"
+                if [ "$arg" = --model ]; then model="$2"; else effort="$2"; fi
+                shift
+                ;;
+            --model=*|--effort=*)
+                _cs_launch_option_value "${arg%%=*}" "${arg#*=}"
+                if [ "${arg%%=*}" = --model ]; then model="${arg#*=}"; else effort="${arg#*=}"; fi
+                ;;
+            --approve-for-me) approval=auto ;;
+            --native-approval) approval=native ;;
             -*) _switch_usage ;;
             *)
                 [ -z "$target" ] || _switch_usage
                 target="$arg"
                 ;;
         esac
+        shift
     done
 
     local session_dir="${CS_SESSION_DIR:-}" name="${CS_SESSION_NAME:-}"
@@ -11819,8 +12779,8 @@ cmd_switch() {
     handoff=$(_rotation_armed_handoff "$session_dir")
     [ -n "$handoff" ] \
         || error "No rotation handoff is armed; write and arm one first (rotate's steps 1-9), then run cs -switch again"
-    cs_write_atomic "$file" printf 'engine=%s\nmode=%s\nhandoff=%s\nrun=%s\n' \
-        "$target" "$mode" "$handoff" "$CS_RUN_ID" \
+    cs_write_atomic "$file" printf 'engine=%s\nmode=%s\nhandoff=%s\nrun=%s\nmodel=%s\neffort=%s\napproval=%s\n' \
+        "$target" "$mode" "$handoff" "$CS_RUN_ID" "$model" "$effort" "$approval" \
         || error "Could not write $file"
     local how="a fresh $target conversation"
     [ "$mode" = fresh ] || how="$target's last conversation"
@@ -11867,7 +12827,7 @@ _switch_run_start() {  # session_dir
 # main, which execs it once cs_launch_session has returned.
 _switch_settle() {  # session_name, session_dir, engine, run_status
     local name="$1" dir="$2" engine="$3" status="$4"
-    local file target mode handoff run handoffs missing binding refusal
+    local file target mode handoff run handoffs missing binding refusal model effort approval
 
     # A switch relaunch whose CLI failed: its handoff goes back to armed unless
     # the conversation evidently ran. Either way this run has spoken for the
@@ -11885,6 +12845,9 @@ _switch_settle() {  # session_name, session_dir, engine, run_status
     target=$(_switch_field "$file" engine)
     mode=$(_switch_field "$file" mode)
     handoff=$(_switch_field "$file" handoff)
+    model=$(_switch_field "$file" model)
+    effort=$(_switch_field "$file" effort)
+    approval=$(_switch_field "$file" approval)
     # Consumed once, whatever happens next.
     rm -f "$file" 2>/dev/null || true
 
@@ -11931,6 +12894,9 @@ _switch_settle() {  # session_name, session_dir, engine, run_status
     else
         mode=fresh
     fi
+    _cs_switch_next_model="$model"
+    _cs_switch_next_effort="$effort"
+    _cs_switch_next_approval="$approval"
     _cs_switch_next="$target"
     _cs_switch_next_mode="$mode"
     _cs_switch_prev="$engine"
@@ -11987,6 +12953,12 @@ _switch_relaunch() {  # session_name
             _cs_sw_argv+=(--from-handoff --switched-from "$_cs_sw_from")
             printf "${DIM:-}Switching %s to %s: a fresh conversation from %s.${NC:-}\n" "$_cs_sw_name" "$_cs_sw_target" "${_cs_switch_handoff:-the handoff}"
         fi
+        [ -z "${_cs_switch_next_model:-}" ] || _cs_sw_argv+=(--model "$_cs_switch_next_model")
+        [ -z "${_cs_switch_next_effort:-}" ] || _cs_sw_argv+=(--effort "$_cs_switch_next_effort")
+        case "${_cs_switch_next_approval:-}" in
+            auto) _cs_sw_argv+=(--approve-for-me) ;;
+            native) _cs_sw_argv+=(--native-approval) ;;
+        esac
         for _cs_sw_var in $(compgen -e); do
             case "${_cs_switch_env_names:-}" in
                 *$'\n'"$_cs_sw_var"$'\n'*) ;;
@@ -11999,7 +12971,8 @@ _switch_relaunch() {  # session_name
         done
         # Even when the shell that started this launch carried them (cs run
         # from inside another session), they name a run that is not this one.
-        unset CS_RUN_ID CS_RUN_ENGINE CS_RUN_OWNER_PID CS_LEAD_PID CS_FRESH_REBIND CS_CLAUDE_SESSION_ID 2>/dev/null || true
+        unset CS_RUN_ID CS_RUN_ENGINE CS_RUN_APPROVAL CS_RUN_OWNER_PID CS_LEAD_PID CS_FRESH_REBIND \
+            CS_CLAUDE_SESSION_ID 2>/dev/null || true
         umask "$_cs_sw_umask" 2>/dev/null || true
         cd "$_cs_sw_pwd" 2>/dev/null || cd / 2>/dev/null || true
         shopt -s execfail
@@ -12827,13 +13800,30 @@ run_uninstall() {
         fi
     done
     if command -v jq >/dev/null 2>&1 \
-        && grep -q -- '-codex-hook session-start' "${codex_skills_dir%/skills}/hooks.json" 2>/dev/null; then
-        if _codex_hooks_unregister "${codex_skills_dir%/skills}"; then
-            info "Removed the cs hook from ${codex_skills_dir%/skills}/hooks.json"
+        && grep -q -- '-codex-hook ' "${codex_skills_dir%/skills}/hooks.json" 2>/dev/null; then
+        # Each hook goes on its own, so one cs cannot remove leaves the others
+        # removed, and the warning names every event that stayed.
+        local codex_hook codex_hook_rest codex_hooks_failed=""
+        for codex_hook in SessionStart:session_start:session-start \
+            PostToolUse:post_tool_use:files-changed Stop:stop:stop \
+            UserPromptSubmit:user_prompt_submit:user-prompt-submit \
+            PermissionRequest:permission_request:permission-request; do
+            codex_hook_rest=${codex_hook#*:}
+            _codex_hooks_unregister "${codex_skills_dir%/skills}" "${codex_hook%%:*}" \
+                "${codex_hook_rest%%:*}" "${codex_hook_rest#*:}" \
+                || codex_hooks_failed="$codex_hooks_failed${codex_hooks_failed:+, }${codex_hook%%:*}"
+        done
+        if [ -z "$codex_hooks_failed" ]; then
+            info "Removed the cs hooks from ${codex_skills_dir%/skills}/hooks.json"
         else
-            warn "Could not remove the cs hook from ${codex_skills_dir%/skills}/hooks.json; remove its SessionStart entry by hand"
+            warn "Could not remove the cs hooks for $codex_hooks_failed from ${codex_skills_dir%/skills}/hooks.json; remove them by hand"
         fi
     fi
+    local recovery_file
+    for recovery_file in autosave-commits.sh cs-resolve.sh cs-shared.sh cs-engine-events.sh; do
+        rm -f "${codex_skills_dir%/skills}/hooks/cs/$recovery_file"
+    done
+    rmdir "${codex_skills_dir%/skills}/hooks/cs" 2>/dev/null || true
     local codex_sl_rc=0
     _codex_status_line_remove "${codex_skills_dir%/skills}" > /dev/null || codex_sl_rc=$?
     case $codex_sl_rc in
@@ -13210,6 +14200,8 @@ main() {
     local force_flag=""
     local merge_feature=""
     local explicit_engine=""
+    local CS_LAUNCH_MODEL="" CS_LAUNCH_EFFORT="" CS_LAUNCH_APPROVAL=""
+    local _cs_switch_next_model="" _cs_switch_next_effort="" _cs_switch_next_approval=""
     local launch_intent=auto
     # cs -switch (lib/78-switch.sh): set by its relaunch's hidden flag, and by
     # _switch_settle when the run that ends here armed a switch.
@@ -13241,6 +14233,26 @@ main() {
     esac
     while [ $# -gt 0 ]; do
         case "$1" in
+            --model|--effort)
+                [ $# -ge 2 ] || error "$1 needs a value"
+                _cs_launch_option_value "$1" "$2"
+                if [ "$1" = --model ]; then CS_LAUNCH_MODEL="$2"; else CS_LAUNCH_EFFORT="$2"; fi
+                shift 2
+                ;;
+            --model=*|--effort=*)
+                _cs_launch_option_value "${1%%=*}" "${1#*=}"
+                # Adapter launch helpers read these dynamically scoped values.
+                # shellcheck disable=SC2034
+                if [ "${1%%=*}" = --model ]; then CS_LAUNCH_MODEL="${1#*=}"; else CS_LAUNCH_EFFORT="${1#*=}"; fi
+                shift
+                ;;
+            --approve-for-me) CS_LAUNCH_APPROVAL=auto; shift ;;
+            --native-approval)
+                # Read by the selected adapter's launch helper.
+                # shellcheck disable=SC2034
+                CS_LAUNCH_APPROVAL=native
+                shift
+                ;;
             --engine)
                 [ $# -ge 2 ] && [ -n "$2" ] || error "--engine needs claude or codex"
                 cs_engine_known "$2" || error "Unknown engine: $2. Choose claude or codex."
@@ -13401,7 +14413,7 @@ main() {
                 shift
                 ;;
             *)
-                error "Unknown session command: $1. Use -secrets, -queue, -msg, -narrative, -conversations, -usage, -tag, -features, -finish, --engine, --fresh, --resume, --from-handoff, or --force."
+                error "Unknown session command: $1. Use -secrets, -queue, -msg, -narrative, -conversations, -usage, -tag, -features, -finish, --engine, --model, --effort, --approve-for-me, --native-approval, --fresh, --resume, --from-handoff, or --force."
                 ;;
         esac
     done

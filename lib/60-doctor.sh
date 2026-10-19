@@ -910,7 +910,7 @@ run_doctor() {
         fi
         capabilities=$(cs_engine_call "$engine" capabilities) || return $?
         _doctor_ok "Codex integration capabilities: ${capabilities//$'\n'/, }"
-        echo "  Codex hooks, automatic queue delivery, and usage observations are unavailable."
+        echo "  Claude hooks, automatic queue delivery, and usage observations are unavailable."
         if [ -d "$session_dir/.cs" ]; then
             if binding=$(cs_binding_read "$session_dir" codex); then
                 if [ -z "$binding" ]; then

@@ -446,6 +446,33 @@ pub fn agent_statuses_in(dir: &Path) -> HashMap<String, String> {
     out
 }
 
+/// The launcher's saved preference wins, then its environment default and
+/// sole installed engine. Reading this never changes a session's preference.
+pub fn launch_engine(name: &str) -> String {
+    let state =
+        fs::read_to_string(sessions_root().join(name).join(".cs/local/state")).unwrap_or_default();
+    let saved = state.lines().find_map(|line| line.strip_prefix("engine: "));
+    let configured = std::env::var("CS_DEFAULT_ENGINE")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let install = std::env::var("CS_INSTALL_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(home_dir().unwrap_or_default()).join(".local/bin"));
+    let installed = fs::read_to_string(install.join(".cs-install-engines")).unwrap_or_default();
+    saved
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .or(configured)
+        .unwrap_or_else(|| {
+            if installed.trim() == "codex" {
+                "codex"
+            } else {
+                "claude"
+            }
+            .into()
+        })
+}
+
 pub fn sessions_root() -> PathBuf {
     #[cfg(test)]
     if let Some(root) = test_root::current() {
