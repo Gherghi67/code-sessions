@@ -5505,7 +5505,7 @@ test_worktree_without_its_recorded_id_binds_the_folders_conversation() {
     printf '{"type":"user","sessionId":"%s"}\n' "$uuid" > "$proj/$uuid.jsonl"
     local output
     output=$(CS_ASSUME_TTY=1 "$CS_BIN" "myproj@fix-auth" <<< "" 2>&1 || true)
-    assert_output_contains "$output" "Bound claude_session_id in .cs/local/state to $uuid" "the open binds the transcript it found" || return 1
+    assert_output_contains "$output" "  .cs/local/state  bound claude_session_id to $uuid" "the open binds the transcript it found" || return 1
     assert_output_contains "$output" "Continue previous conversation?" "a real conversation is offered" || return 1
     assert_output_contains "$output" "--resume $uuid" "the default answer resumes it" || return 1
     assert_eq "$uuid" "$(awk '/^claude_session_id:/ { print $2; exit }' "$state")" "the binding is recorded" || return 1

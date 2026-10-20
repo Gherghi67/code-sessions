@@ -617,12 +617,12 @@ test_queue_accept_refuses_a_second_accept() {
 test_queue_accept_refuses_while_another_holds_its_lock() {
     "$CS_BIN" -msg receiver -k task "review the tui diff" >/dev/null 2>&1 || return 1
     local id; id=$(jq -r .id "$(FIRST_MSG)")
-    local lock fifo="$TEST_TMPDIR/accept.fifo" ready="$TEST_TMPDIR/accept.ready" holder out rc=0 i=0
+    local lock fifo="$TEST_TMPDIR/accept.fifo" ready="$TEST_TMPDIR/accept.ready" holder out rc=0
     lock="$(RCV_META)/local/queue.accept.mutex.lock"
     mkfifo "$fifo"
     bash -c 'source "$1"; _cs_lock "$2" || exit 1; : > "$3"; read -r _ <> "$4"' _ "$SCRIPT_DIR/../hooks/cs-shared.sh" "$lock" "$ready" "$fifo" &
     holder=$!
-    until [ -e "$ready" ] || [ "$i" -ge 100 ]; do sleep 0.05; i=$((i + 1)); done
+    wait_until test -e "$ready" || { kill "$holder"; echo "  FAIL: fixture: the holder never took $lock"; return 1; }
     out=$(rcv -queue accept "$id" 2>&1) || rc=$?
     kill "$holder"
     assert_eq "1" "$rc" "accept exits 1" || return 1
@@ -691,30 +691,74 @@ test_queue_accept_writes_the_receipt_before_the_queued_copy() {
 }
 
 # Racing accepts of one id take turns between the receipt check and the receipt
-# write. The check is held open for a second (a grep stand-in that waits when
-# asked about the receipt file, then runs the real grep by its full path), so
-# every racer is inside it before any of them writes: without the lock each
-# would find no receipt, record one, and report the task queued. A receipt for
-# another id is there beforehand because the check reads an existing file only.
-# The queued file is no witness on its own: racers in one second write the
-# same name, and the rename hides the duplicates.
+# write. Every racer waits at a barrier until each of the three is waiting
+# for the lock or has made the check: a perl stand-in marks a racer at the
+# lock and waits before it runs the real perl, and a grep stand-in runs the
+# real grep on the receipt file, marks the racer checked and waits before it
+# returns grep's answer. Without the lock all three therefore check before any
+# of them writes: each finds no receipt, records one, and reports the task
+# queued. With it, all three contend for the lock at once, so the last one
+# waits out two turns, not three racers' startup, inside the lock's
+# five-second wait, and the holder's check finds the other two at the lock and
+# does not wait. A turn holds as little of the
+# test's own time as it can: the stand-ins are bash, which starts several
+# times faster than a macOS /bin/sh, source the barrier rather than start
+# another shell, and run once before the race, since macOS takes up to a
+# second and a half over a new script's first run. Each loser prints one of
+# two honest refusals, as its whole output: the receipt refusal when it got
+# the lock after the winner, or the lock refusal when the turns ahead of it
+# outlasted the lock's wait, which lib/02-shared.sh documents as five seconds
+# at most (under load two turns can). Either way it queued nothing, which the
+# receipt and queue counts below hold exact. A receipt for another id is
+# there beforehand because the check reads an existing file only. The queued
+# file is no witness on its own: racers in one second write the same name,
+# and the rename hides the duplicates.
 test_queue_accept_serialises_concurrent_accepts() {
     "$CS_BIN" -msg receiver -k task "review the tui diff" >/dev/null 2>&1 || return 1
     local id; id=$(jq -r .id "$(FIRST_MSG)")
     local receipts; receipts="$(RCV_META)/local/queue.accepted"
     printf 'some-earlier-id\n' > "$receipts"
     local real_grep; real_grep=$(command -v grep) || return 1
-    mkdir -p "$TEST_TMPDIR/bin"
-    printf '#!/bin/sh\ncase "$*" in *queue.accepted*) sleep 1 ;; esac\nexec "%s" "$@"\n' "$real_grep" > "$TEST_TMPDIR/bin/grep"
-    chmod +x "$TEST_TMPDIR/bin/grep"
+    local real_perl; real_perl=$(command -v perl) || return 1
+    local b="$TEST_TMPDIR/barrier"
+    mkdir -p "$TEST_TMPDIR/bin" "$b"
+    cat > "$b/arrive" <<'EOF'
+: > "$B/$1.$ACCEPT_RACER"
+deadline=$((SECONDS + 120))
+for r in 1 2 3; do
+    while [ ! -e "$B/lock.$r" ] && [ ! -e "$B/check.$r" ]; do
+        [ "$SECONDS" -lt "$deadline" ] || { : > "$B/timed-out"; break 2; }
+        sleep 0.05
+    done
+done
+EOF
+    printf '#!/bin/bash\ncase "$*" in *queue.accepted*) "%s" "$@"; rc=$?; B="%s"; . "$B/arrive" check; exit $rc ;; esac\nexec "%s" "$@"\n' "$real_grep" "$b" "$real_grep" > "$TEST_TMPDIR/bin/grep"
+    printf '#!/bin/bash\ncase "$*" in *queue.accept.mutex.lock*) B="%s"; . "$B/arrive" lock ;; esac\nexec "%s" "$@"\n' "$b" "$real_perl" > "$TEST_TMPDIR/bin/perl"
+    chmod +x "$TEST_TMPDIR/bin/grep" "$TEST_TMPDIR/bin/perl"
+    printf 'x\n' | "$TEST_TMPDIR/bin/grep" -q x || return 1
+    "$TEST_TMPDIR/bin/perl" -e 1 || return 1
     local i
     for i in 1 2 3; do
-        ( PATH="$TEST_TMPDIR/bin:$PATH" rcv -queue accept "$id" > "$TEST_TMPDIR/accept.$i" 2>&1 ) &
+        ( export ACCEPT_RACER=$i; PATH="$TEST_TMPDIR/bin:$PATH" rcv -queue accept "$id" > "$TEST_TMPDIR/accept.$i" 2>&1 ) &
     done
     wait
+    assert_not_exists "$b/timed-out" "all three racers reach the barrier" || return 1
     local refusal="Error: message $id was already accepted into the queue (if no copy is queued or done, an earlier accept was interrupted: cs -queue add it by hand)"
-    assert_eq "$(printf '%s\n%s\n%s' "$refusal" "$refusal" "queued: review the tui diff")" \
-        "$(cat "$TEST_TMPDIR"/accept.[123] | sort)" "one racer queues the task and the other two are refused" || return 1
+    local busy; busy="Error: another cs -queue accept holds $(RCV_META)/local/queue.accept.mutex.lock; retry in a moment"
+    local out queued=0 refused=0
+    for i in 1 2 3; do
+        out=$(cat "$TEST_TMPDIR/accept.$i")
+        if [ "$out" = "queued: review the tui diff" ]; then
+            queued=$((queued + 1))
+        elif [ "$out" = "$refusal" ] || [ "$out" = "$busy" ]; then
+            refused=$((refused + 1))
+        else
+            echo "  racer $i printed neither the task nor one honest refusal: $out"
+            return 1
+        fi
+    done
+    assert_eq "1" "$queued" "one racer queues the task" || return 1
+    assert_eq "2" "$refused" "the other two are refused" || return 1
     assert_eq "1" "$("$real_grep" -cxF -- "$id" "$receipts")" "the receipt is recorded once" || return 1
     assert_eq "1" "$(RQUEUE_LEN)" "the task is queued once" || return 1
 }

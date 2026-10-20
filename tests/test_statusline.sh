@@ -1441,12 +1441,9 @@ _make_ps_table() {
 # verdict for parent $1 and the TMUX claim $2, so the next render reads a
 # settled answer rather than racing one. Non-zero if it never arrives.
 settle_tmux_verdict() {
-    local key="$1,$2" n=0
+    local key="$1,$2"
     key=${key//\//-}; key=${key//[^A-Za-z0-9._,-]/_}   # as _cache_key sanitises
-    while [ ! -s "$HOME/.cache/cs/tmux-real/$key" ] && [ "$n" -lt 200 ]; do
-        n=$((n + 1)); sleep 0.05
-    done
-    [ -s "$HOME/.cache/cs/tmux-real/$key" ]
+    wait_until test -s "$HOME/.cache/cs/tmux-real/$key"
 }
 
 # The pane id is a claim about where this conversation lives, and TMUX_PANE is
@@ -2852,6 +2849,11 @@ test_fable_segment_costs_nothing_off_fable() {
     assert_not_exists "$CS_USAGE_DIR" "a non-fable model must not create the usage cache dir" || return 1
 }
 
+# Exits 0 when the cached fable reading for org-abc is <pct>.
+_usage_pct_is() {  # pct
+    [ "$(jq -r '.pct' "$CS_USAGE_DIR/fable.org-abc.json" 2>/dev/null)" = "$1" ]
+}
+
 # The refresh must actually fire when the cache is due — a render that never
 # kicks one would leave the chip frozen at its first reading forever.
 test_fable_segment_kicks_a_refresh_when_due() {
@@ -2860,11 +2862,9 @@ test_fable_segment_kicks_a_refresh_when_due() {
     seed_usage_cache org-abc 42 "2026-08-29T03:59:59Z" 1787816000 1787816300
     local json='{"session_name":"s","model":{"id":"claude-fable-5","display_name":"Fable"},"workspace":{"current_dir":"/none"}}'
     PATH="$USAGE_BINDIR:$PATH" CS_STATUSLINE_NOW=1787816400 run_sl "$json" >/dev/null
-    # The refresher is detached, so wait for the write rather than racing it.
-    local i=0
-    while [ "$i" -lt 50 ] && [ "$(jq -r '.pct' "$CS_USAGE_DIR/fable.org-abc.json")" = "42" ]; do
-        i=$(( i + 1 )); command sleep 0.1
-    done
+    # The refresher is detached and starts later on a loaded machine, so wait
+    # for its write rather than racing it.
+    wait_until _usage_pct_is 86
     assert_eq "86" "$(jq -r '.pct' "$CS_USAGE_DIR/fable.org-abc.json")" \
         "a due cache must trigger a detached refresh that rewrites the reading" || return 1
 }
@@ -3005,15 +3005,11 @@ test_fable_segment_does_spawn_when_curl_is_present() {
     # ms after the spawn, so a loop waiting for it to vanish can fall through
     # before it ever exists and leave teardown racing a live refresher. The
     # seeded pct differs from the shim body's 86 so the write is observable.
-    local i=0
-    while [ "$i" -lt 50 ] && [ "$(jq -r '.pct' "$CS_USAGE_DIR/fable.org-abc.json" 2>/dev/null)" != "86" ]; do
-        i=$(( i + 1 )); command sleep 0.1
-    done
+    wait_until _usage_pct_is 86
     assert_eq "86" "$(jq -r '.pct' "$CS_USAGE_DIR/fable.org-abc.json")" "the kicked refresher must complete its write" || return 1
-    i=0
-    while [ "$i" -lt 50 ] && [ -d "$CS_USAGE_DIR/.lock" ]; do
-        i=$(( i + 1 )); command sleep 0.1
-    done
+    # The refresher drops its lock after the write; teardown waits for that.
+    wait_until test ! -d "$CS_USAGE_DIR/.lock" \
+        || { echo "  FAIL: the kicked refresher never dropped its lock"; return 1; }
 }
 
 run_test test_fable_segment_does_not_spawn_a_refresher_without_curl
@@ -4162,6 +4158,11 @@ test_the_deferred_walk_starts_from_the_parent_and_caches_real() {
 
 run_test test_the_deferred_walk_starts_from_the_parent_and_caches_real
 
+# Exits 0 once the stalled ps stand-in has logged at least <count> calls.
+_stalled_walkers_reach() {  # count
+    [ "$(wc -l < "$STALLLOG" | tr -d ' ')" -ge "$1" ]
+}
+
 # A `ps` that never answers must not mint a walker every render. The render that
 # spawns one marks the walk in flight, and every render inside
 # TMUX_WALK_MARK_TTL renders without spawning another; past the TTL one render
@@ -4170,36 +4171,62 @@ test_a_stalled_walk_is_not_respawned_every_render() {
     export CS_TERM_THEME=light FORCE_COLOR=0
     export CS_STATUSLINE_SEGMENTS=pane
     export TMUX="/tmp/fake,2216,0" TMUX_PANE="%7"
-    export CS_STATUSLINE_PARENT=4242
+    # The longest deadline the render accepts, so the first walker still holds
+    # its mark while the four renders run.
+    export CS_STATUSLINE_PARENT=4242 CS_STATUSLINE_WALK_DEADLINE=9
     # A ps that never returns within the run: each invocation records itself,
     # so the count of records is the count of walkers spawned.
     mkdir -p "$TEST_TMPDIR/fakebin"
     export STALLLOG="$TEST_TMPDIR/stalled"
     : > "$STALLLOG"
-    printf '#!/bin/sh\necho x >> "$STALLLOG"\nsleep 30\n' > "$TEST_TMPDIR/fakebin/ps"
+    printf '#!/bin/sh\necho x >> "$STALLLOG"\nexec sleep 300\n' > "$TEST_TMPDIR/fakebin/ps"
     chmod +x "$TEST_TMPDIR/fakebin/ps"
     export PATH="$TEST_TMPDIR/fakebin:$PATH"
-    local json='{"session_id":"sid-1"}' i=0 spawned
+    local json='{"session_id":"sid-1"}' i=0 spawned stamp
+    local mark="$HOME/.cache/cs/tmux-walking/4242,-tmp-fake,2216,0"
     while [ "$i" -lt 4 ]; do
         i=$((i + 1))
         CS_STATUSLINE_NOW=$((1000 + i)) run_sl "$json" >/dev/null
     done
-    # Give the children time to reach their ps before counting.
-    local n=0
-    while [ ! -s "$STALLLOG" ] && [ "$n" -lt 100 ]; do n=$((n + 1)); sleep 0.05; done
-    sleep 0.3
+    # A render that spawns a walker stamps the mark with its own clock first,
+    # in the render itself, so the stamp names the last render that spawned
+    # one however late that walker's ps would start.
+    stamp=""
+    [ -f "$mark" ] && IFS=$'\t' read -r stamp _ < "$mark"
+    assert_eq "1001" "$stamp" "only the first of four renders inside the TTL spawns a walker" || return 1
+    # The walker is detached and its ps starts later on a loaded machine.
+    wait_until test -s "$STALLLOG"
     spawned=$(wc -l < "$STALLLOG" | tr -d ' ')
     assert_eq "1" "$spawned" "four renders inside the TTL must spawn one walker" || return 1
     # Past the mark's TTL a render tries again, so a dead child cannot wedge
     # the verdict for the rest of the conversation.
     CS_STATUSLINE_NOW=1012 run_sl "$json" >/dev/null   # past TMUX_WALK_MARK_TTL (10)
-    n=0
-    while [ "$(wc -l < "$STALLLOG" | tr -d ' ')" -lt 2 ] && [ "$n" -lt 100 ]; do n=$((n + 1)); sleep 0.05; done
+    wait_until _stalled_walkers_reach 2
     spawned=$(wc -l < "$STALLLOG" | tr -d ' ')
     assert_eq "2" "$spawned" "past the TTL one render walks again" || return 1
 }
 
 run_test test_a_stalled_walk_is_not_respawned_every_render
+
+# A `sleep` for the render's PATH that logs each call to $DEADLOG as
+# "<parent pid> <own pid> <seconds asked>", then sleeps what it was asked plus
+# $2 seconds, if any. With no extra it execs the real sleep, so the own pid is
+# the sleep's. A walker kills ps only once its deadline sleep ends, so a logged
+# line comes before the kill and before the mark is cleared: the distinct
+# parents count walkers without racing them, as a stalled ps logging itself
+# would, whatever number of sleeps a walker's deadline takes. The deadline
+# being a single sleep is pinned by the wall-time test alone.
+_make_deadline_sleep() {  # dir extra-seconds
+    local real
+    real=$(command -v sleep)
+    mkdir -p "$1"
+    if [ "$2" = 0 ]; then
+        printf '#!/bin/sh\necho "$PPID $$ $1" >> "$DEADLOG"\nexec %s "$@"\n' "$real" > "$1/sleep"
+    else
+        printf '#!/bin/sh\necho "$PPID $$ $1" >> "$DEADLOG"\n%s "$@"\nexec %s %s\n' "$real" "$real" "$2" > "$1/sleep"
+    fi
+    chmod +x "$1/sleep"
+}
 
 # The mark only spaces walkers out; what keeps them from piling up is that a
 # walker gives its ps a deadline shorter than the mark and kills it by the pid
@@ -4209,33 +4236,37 @@ test_a_stalled_walker_is_killed_before_its_mark_expires() {
     export CS_STATUSLINE_SEGMENTS=pane
     export TMUX="/tmp/fake,2216,0" TMUX_PANE="%7"
     export CS_STATUSLINE_PARENT=4242 CS_STATUSLINE_WALK_DEADLINE=1
+    local real_sleep deadbin="$TEST_TMPDIR/deadbin"
+    real_sleep=$(command -v sleep)
     mkdir -p "$TEST_TMPDIR/fakebin"
-    export STALLLOG="$TEST_TMPDIR/stalled"
-    : > "$STALLLOG"
-    printf '#!/bin/sh\necho "$$" >> "$STALLLOG"\nexec sleep 30\n' > "$TEST_TMPDIR/fakebin/ps"
+    export STALLLOG="$TEST_TMPDIR/stalled" DEADLOG="$TEST_TMPDIR/deadlines"
+    : > "$STALLLOG"; : > "$DEADLOG"
+    # The ps logs its pid for the alive check below; it may be killed before
+    # it gets that far, so walkers are counted by their deadlines instead. It
+    # stalls far longer than the poll below can stretch under load, so only
+    # the walker's kill can end it while the test watches.
+    printf '#!/bin/sh\necho "$$" >> "$STALLLOG"\nexec %s 300\n' "$real_sleep" > "$TEST_TMPDIR/fakebin/ps"
     chmod +x "$TEST_TMPDIR/fakebin/ps"
+    _make_deadline_sleep "$deadbin" 0
     export PATH="$TEST_TMPDIR/fakebin:$PATH"
-    local json='{"session_id":"sid-1"}' now p alive n
+    local json='{"session_id":"sid-1"}' now p alive
+    local mark="$HOME/.cache/cs/tmux-walking/4242,-tmp-fake,2216,0"
     for now in 1001 1012 1023; do
-        CS_STATUSLINE_NOW=$now run_sl "$json" >/dev/null
-        n=0
-        while [ "$(wc -l < "$STALLLOG" | tr -d ' ')" -lt $(( (now - 990) / 11 )) ] && [ "$n" -lt 100 ]; do
-            n=$((n + 1)); sleep 0.05
-        done
-        sleep 1.6   # past the one-second deadline
+        PATH="$deadbin:$PATH" CS_STATUSLINE_NOW=$now run_sl "$json" >/dev/null
+        # The walker clears the mark as its last act, after it has killed and
+        # reaped its ps, so a cleared mark means this window's walker is done.
+        # The next window starts only then. The wait outlasts the walker's 1 s
+        # deadline however loaded the machine, and a walker that never kills
+        # leaves its ps, and so its mark, up for 300 s, past the wait.
+        wait_until test ! -e "$mark"
+        [ ! -e "$mark" ] \
+            || { echo "  FAIL: the walker spawned at $now never killed its stalled ps"; return 1; }
     done
-    assert_eq "3" "$(wc -l < "$STALLLOG" | tr -d ' ')" "each mark window spawns one walker" || return 1
-    # The walker polls its ps with a sleep and a fork per tick, so on a slow
-    # runner the one-second deadline lands well after one second. The claim
-    # is that the kill comes before the mark expires (TMUX_WALK_MARK_TTL, 10 s),
-    # so wait for it up to eight seconds rather than a fixed pause.
-    n=0
-    while [ "$n" -lt 80 ]; do
-        alive=0
-        while read -r p; do kill -0 "$p" 2>/dev/null && alive=$((alive + 1)); done < "$STALLLOG"
-        [ "$alive" -eq 0 ] && break
-        n=$((n + 1)); sleep 0.1
-    done
+    assert_eq "3" "$(cut -d' ' -f1 "$DEADLOG" | sort -u | wc -l | tr -d ' ')" "each mark window spawns one walker" || return 1
+    # Every walker has cleared its mark, which it does only after killing and
+    # reaping its ps, so no recorded ps may still be alive.
+    alive=0
+    while read -r p; do kill -0 "$p" 2>/dev/null && alive=$((alive + 1)); done < "$STALLLOG"
     assert_eq "0" "$alive" "no stalled ps outlives its deadline" || return 1
     # The killed walk is a ps that could not answer: no verdict, and the pane
     # still draws as real.
@@ -4244,6 +4275,96 @@ test_a_stalled_walker_is_killed_before_its_mark_expires() {
 }
 
 run_test test_a_stalled_walker_is_killed_before_its_mark_expires
+
+# The deadline is wall time. On a loaded machine every `sleep` costs its fork
+# on top of what it was asked for, so a deadline counted in sleeps runs long
+# by that cost once per sleep and can outlast the mark, letting the next render
+# start a second walker beside the first. Here each sleep the walker runs takes
+# 1 s longer than asked: a deadline of 1 s counted as 10 sleeps of 0.1 s
+# would take 11 s, past TMUX_WALK_MARK_TTL (10 s); one sleep takes 2 s.
+test_the_walk_deadline_holds_in_wall_time_when_sleeps_run_long() {
+    export CS_TERM_THEME=light FORCE_COLOR=0
+    export CS_STATUSLINE_SEGMENTS=pane
+    export TMUX="/tmp/fake,2216,0" TMUX_PANE="%7"
+    export CS_STATUSLINE_PARENT=4242 CS_STATUSLINE_WALK_DEADLINE=1
+    local real_sleep slowbin="$TEST_TMPDIR/slowbin"
+    real_sleep=$(command -v sleep)
+    mkdir -p "$TEST_TMPDIR/fakebin"
+    export STALLLOG="$TEST_TMPDIR/stalled" DEADLOG="$TEST_TMPDIR/deadlines"
+    : > "$STALLLOG"; : > "$DEADLOG"
+    printf '#!/bin/sh\necho "$$" >> "$STALLLOG"\nexec %s 300\n' "$real_sleep" > "$TEST_TMPDIR/fakebin/ps"
+    chmod +x "$TEST_TMPDIR/fakebin/ps"
+    _make_deadline_sleep "$slowbin" 1
+    export PATH="$TEST_TMPDIR/fakebin:$PATH"
+    local json='{"session_id":"sid-1"}' alive=0 p start
+    local mark="$HOME/.cache/cs/tmux-walking/4242,-tmp-fake,2216,0"
+    start=$SECONDS
+    # Only the render, and the walker it leaves behind, see the slow sleep.
+    PATH="$slowbin:$PATH" CS_STATUSLINE_NOW=1001 run_sl "$json" >/dev/null
+    # Wall time, because that is how the mark ages. SECONDS counts whole
+    # seconds, so this gives up between 9 and 10 s after the render started.
+    while [ -e "$mark" ] && [ $((SECONDS - start)) -lt 10 ]; do sleep 0.1; done
+    [ ! -e "$mark" ] \
+        || { echo "  FAIL: the walker still held its stalled ps when its mark expired"; return 1; }
+    assert_eq "1" "$(cut -d' ' -f3 "$DEADLOG")" "the walker sleeps once, for its 1 s deadline" || return 1
+    while read -r p; do kill -0 "$p" 2>/dev/null && alive=$((alive + 1)); done < "$STALLLOG"
+    assert_eq "0" "$alive" "the walker's ps is dead once its mark is cleared" || return 1
+}
+
+run_test test_the_walk_deadline_holds_in_wall_time_when_sleeps_run_long
+
+# A ps that answers ends the walk at once: the walker stops its watchdog and
+# the watchdog's sleep instead of waiting out the deadline, and leaves neither
+# behind. With a 9 s deadline, a walker that waited on its watchdog would land
+# its verdict and clear its mark 9 s late, and a sleep left running would
+# still be alive after the mark is gone.
+test_a_walk_whose_ps_answers_stops_its_deadline() {
+    export CS_TERM_THEME=light FORCE_COLOR=0
+    export CS_STATUSLINE_SEGMENTS=pane
+    export TMUX="/tmp/fake,2216,0" TMUX_PANE="%7"
+    export CS_STATUSLINE_PARENT=4242 CS_STATUSLINE_WALK_DEADLINE=9
+    local deadbin="$TEST_TMPDIR/deadbin" real_sleep
+    real_sleep=$(command -v sleep)
+    export DEADLOG="$TEST_TMPDIR/deadlines"
+    : > "$DEADLOG"
+    _make_deadline_sleep "$deadbin" 0
+    # The ps answers (the parent under the server) as soon as the watchdog's
+    # sleep has started, so there is a sleep to stop; a ps that won outright
+    # would leave nothing to check. Its own pauses use the real sleep.
+    mkdir -p "$TEST_TMPDIR/fakebin"
+    printf '#!/bin/sh\ni=0\nwhile [ ! -s "$DEADLOG" ] && [ "$i" -lt 100 ]; do i=$((i + 1)); %s 0.05; done\necho "4242 2216"\necho "2216 1"\n' \
+        "$real_sleep" > "$TEST_TMPDIR/fakebin/ps"
+    chmod +x "$TEST_TMPDIR/fakebin/ps"
+    export PATH="$TEST_TMPDIR/fakebin:$PATH"
+    local json='{"session_id":"sid-1"}' start elapsed p alive
+    local key="4242,-tmp-fake,2216,0"
+    local mark="$HOME/.cache/cs/tmux-walking/$key"
+    start=$SECONDS
+    PATH="$deadbin:$PATH" CS_STATUSLINE_NOW=1001 run_sl "$json" >/dev/null
+    # Bounded past the deadline, so a walker that waits it out is measured,
+    # not cut off.
+    while [ -e "$mark" ] && [ $((SECONDS - start)) -lt 15 ]; do sleep 0.1; done
+    elapsed=$((SECONDS - start))
+    [ ! -e "$mark" ] || { echo "  FAIL: the walker never cleared its mark"; return 1; }
+    assert_eq "real" "$(tail -1 "$HOME/.cache/cs/tmux-real/$key" 2>/dev/null)" \
+        "the walk caches the answered verdict" || return 1
+    # SECONDS counts whole seconds, so 5 is under 6 s of wall time: far past a
+    # walk on a loaded machine, far short of the 9 s deadline.
+    [ "$elapsed" -le 5 ] \
+        || { echo "  FAIL: the verdict took ${elapsed}s, waiting on the 9 s deadline"; return 1; }
+    assert_eq "1" "$(wc -l < "$DEADLOG" | tr -d ' ')" "the walker arms one deadline" || return 1
+    # The watchdog signals its sleep on its way out; give the signal a moment.
+    start=$SECONDS
+    while :; do
+        alive=0
+        while read -r _ p _; do kill -0 "$p" 2>/dev/null && alive=$((alive + 1)); done < "$DEADLOG"
+        [ "$alive" -eq 0 ] || [ $((SECONDS - start)) -ge 2 ] && break
+        sleep 0.1
+    done
+    assert_eq "0" "$alive" "no deadline sleep outlives an answered walk" || return 1
+}
+
+run_test test_a_walk_whose_ps_answers_stops_its_deadline
 
 # The usage refresher paints no bar, so it has no use for the terminal's theme
 # or the ancestry verdict behind it. It must not run the walk at all: a ps that

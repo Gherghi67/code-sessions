@@ -474,8 +474,10 @@ STUB
     printf '{"prompt": "fix the login bug"}' \
         | STUB_MARKER="$marker" PATH="$stub:$PATH" bash "$HOOKS_DIR/scope-prompt.sh" \
         >/dev/null 2>&1 &
-    local pid=$! i=0
-    while [ ! -f "$marker" ] && [ "$i" -lt 100 ]; do i=$((i + 1)); sleep 0.05; done
+    local pid=$!
+    # The hook reaches the stub later on a loaded machine; wait for the stub's
+    # marker, then kill the hook while the stub holds it there.
+    wait_until test -f "$marker"
     kill -9 "$pid" 2>/dev/null
     wait "$pid" 2>/dev/null
     pkill -f "$stub/git" 2>/dev/null

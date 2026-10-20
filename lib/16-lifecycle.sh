@@ -136,7 +136,7 @@ cs_run_child() {  # executable, arguments...
 _cs_run_unarchive() {  # meta_dir, name
     if [ -f "$1/archived" ]; then
         rm -f "$1/archived" || return 1
-        printf 'Unarchived: %s\n' "$2"
+        printf '%s\n' removed
     fi
 }
 
@@ -168,7 +168,15 @@ cs_launch_session() {  # engine, name, directory, is_new, force, merge, intent
     cs_export_session_context "$name" "$directory" || status=$?
     unset CS_FRESH_REBIND CS_CLAUDE_SESSION_ID
     if [ "$status" -eq 0 ]; then
-        cs_run_with_lease "$_cs_run_meta" _cs_run_unarchive "$_cs_run_meta" "$name" || status=$?
+        local unarchived=""
+        unarchived=$(cs_run_with_lease "$_cs_run_meta" _cs_run_unarchive "$_cs_run_meta" "$name") || status=$?
+        if [ "$status" -eq 0 ] && [ "$unarchived" = removed ]; then
+            if declare -F notice >/dev/null; then
+                notice .cs/archived "removed, so the session is active again"
+            else
+                printf 'Unarchived: %s\n' "$name"
+            fi
+        fi
     fi
     # cs -switch (lib/78-switch.sh): a pending switch found as a run starts is
     # an earlier run's leftover; the one this run arms is settled at its end,

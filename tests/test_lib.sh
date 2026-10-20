@@ -699,6 +699,51 @@ _run_bounded() {  # seconds, command...
     ' "$@"
 }
 
+# Runs <command> until it succeeds, so a test waits on the event it means and
+# not on a count of polls: a loaded machine starts a detached writer seconds
+# late, and the count runs out first. The 120 s guard only stops a hang.
+# Returns 0 once the command succeeds, else 1 at the guard. Prints nothing; the
+# test's own assertion after the wait says what was missing. A condition that
+# needs more than one command goes in a small function passed by name.
+wait_until() {  # command...
+    local deadline=$((SECONDS + 120))
+    until "$@"; do
+        [ "$SECONDS" -lt "$deadline" ] || return 1
+        sleep 0.05
+    done
+}
+
+# Exits 0 when ps shows <pattern> in the command line of <pid>, printing
+# nothing. A script started in the background shows the shell that forked it
+# until it has exec'd, so a test that hands its pid on for its argv to be read
+# waits on this first: wait_until pid_args_match "$pid" fake-claude.
+pid_args_match() {  # pid, pattern
+    ps -o args= -p "$1" 2>/dev/null | grep -q -- "$2"
+}
+
+# Waits until <file> exists or <pid>, a child of this shell, has exited, so a
+# test waits on the step it means and not on a count of polls that load
+# stretches or shrinks. The 300 s guard only stops a hang. Returns 0, printing
+# nothing, once the file is there. Otherwise prints "  FAIL: <what>: " and why,
+# and returns 1: the exit status when the pid exited first (it is reaped here),
+# or "not there after 300 s", the pid then killed. The file's existence is the
+# event, so its writer makes it whole in one step (a touch, or a write and a mv).
+wait_for_file_or_exit() {  # file, pid, what
+    local deadline=$((SECONDS + 300)) rc=0
+    while [ ! -e "$1" ] && kill -0 "$2" 2>/dev/null && [ "$SECONDS" -lt "$deadline" ]; do
+        sleep 0.05
+    done
+    [ -e "$1" ] && return 0
+    if kill -0 "$2" 2>/dev/null; then
+        kill -KILL "$2" 2>/dev/null
+        echo "  FAIL: $3: not there after 300 s"
+    else
+        wait "$2" || rc=$?
+        echo "  FAIL: $3: it exited first, status $rc"
+    fi
+    return 1
+}
+
 # --- Launch Helpers ---
 
 # Create an executable stub that prints its environment, so a test can assert
@@ -799,6 +844,12 @@ Thumbs.db
 GITIGNORE
     (cd "$session_dir" && git init -q && git add -A && git commit -q -m "init")
     echo "$session_dir"
+}
+
+# The line of <output> that is exactly <row>, then the line under it: a
+# notice row and the action line cs prints beneath it.
+row_and_action() {  # output, row
+    printf '%s\n' "$1" | grep -F -x -A1 -- "$2"
 }
 
 # Parse a JSONL file the way cs reads it — one record per line, malformed lines

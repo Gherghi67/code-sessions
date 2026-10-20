@@ -2,6 +2,13 @@
 
 The installer configures Claude Code hooks that enable session management features.
 
+## Skills
+
+| Skill | Behavior |
+|-------|----------|
+| [`prose-hygiene`](../skills/prose-hygiene/SKILL.md) | Judges a draft with a scoring rubric and reports its score. The caller controls revision and repeated scoring. |
+| [`/write-as-me`](../skills/write-as-me/SKILL.md) | Drafts in your voice using a writing profile. Its corpus contains typed transcript messages and supplementary writing from `.voice/sources/*.md`, included on each build. |
+
 ## How a hook finds its session (`cs-resolve.sh`)
 
 Every hook opens by sourcing `cs-resolve.sh`, a library shipped alongside them and
@@ -224,7 +231,7 @@ hooks read no queue, mail or rotation marker from that directory and write nothi
 the Stop hook hands out no task, the prompt hook shows no mail, stamps no date and leaves
 the attention flag, a `/clear` loads no handoff, SessionStart records no conversation id,
 SessionEnd's vault waiter records no pid (it still detaches the vault), and the session log
-(`session.log`) stops. The status line, both mods (`cs` and `cs-update`), the `rotate` skill's
+(`session.log`) stops. The status line, the `cs` and `cs-update` mods, the `rotate` skill's
 arming of its marker and `/wrap`'s last pass stand down too. The status line
 cannot ask git on every render, so each hook run leaves its answer in
 `~/.cache/cs/tracked/<session name>`, and a pull goes unseen there until the next hook
@@ -281,6 +288,8 @@ Runs when Claude Code starts a session:
 
 ## autosave-commits.sh (completed file changes)
 
+New sessions begin with one commit of their initial files.
+
 Runs after successful Claude Write/Edit reports or completed Codex patches,
 through the adapters' common `files_changed` event. Codex reports a whole
 patch's file list at once; both engines use this same consumer. Failed and
@@ -326,7 +335,7 @@ On `Stop`, also:
 - Reminds Claude to review and append to its per-actor narrative (`.cs/memory/narrative.<actor>.md`, the session lab notebook), keyed on the most recently modified `narrative.*.md`, when it has not been touched recently. The contract is append-only: a disproven entry gets a dated correction that names it; earlier sections are never rewritten or deleted (that is what keeps `cs -narrative rotate`'s head-truncation safe under `merge=union`)
 - Carries the commit rule: the model never commits narrative appends or anything else under `.cs/` on its own, not even beside a project change, since cs commits files under `.cs/` only in the commit that creates a session and the merge `/finish` makes, and the model commits them only when the user asks; a commit holding narrative appends is pushed only when the user asks; and uncommitted appends are safe because `autosave-commits.sh` already snapshots every edit to the shadow ref. The generated session protocol states the same rule in its `cs:session-commits` section, and it rides this reminder as well because the protocol is read once at startup and is stale by the time a commit happens, while this fires at the append itself — and because the reason string is rebuilt every run, so every existing session picks it up on upgrade with no migration phase. Unconditional rather than gated on whether `.cs/` is tracked: the check is cheap, but the advice is inert rather than wrong where `.cs/` is gitignored, and a condition the model has to evaluate is one it will not
 - Cooldown-gated via `.cs/.narrative-reminder-cooldown` (at most once per 5 minutes). The same stat pass measures every narrative against `CS_NARRATIVE_MAX_BYTES` (default 131072) and appends one line per file over budget naming it and pointing at `cs -narrative rotate`; nothing is rotated from the hook
-- Appends a second-opinion note to that same reminder when `claude-council` or the codex plugin is present, naming what each offers: `/claude-council:advise` to put the conversation to external models, and `/codex:review` before Claude calls built work done, with `/codex:rescue` when a run stalls. It rides the narrative reminder rather than taking a second `Stop` entry, because the event has one emit slot and a second registration would compete instead of compose. For the same reason there is one note and one cooldown stamp whatever the plugin count: two independent notes would double the appended text and race the same stamp. Detection reads `installPath` from `~/.claude/plugins/installed_plugins.json` and then requires the plugin's own command file on disk (`commands/advise.md`, `commands/review.md`), because the install record outlives an uninstall, so the file decides. The council half suggests and never sends, and asks Claude to check with the user first, because a digest of the conversation goes to third-party providers and nothing a hook can read says whose words it holds (inside a subagent the ambient session id names the parent). The codex half offers `/codex:review` rather than promising to run it: that command carries `disable-model-invocation`, so only the user can type it, while `/codex:rescue` does not and Claude may invoke it. Cooldown-gated via `.cs/local/.advisor-nudge-cooldown` (per-machine state, never git-synced) at most once per 30 minutes, and silent when no plugin is present. Only the launched conversation nudges: a tmux teammate shares the directory and the single cooldown stamp, so an ungated note would let a teammate consume the lead's slot
+- Appends a second-opinion note to that same reminder when [claude-council](https://github.com/hex/claude-council) or the codex plugin is present, naming what each offers: `/claude-council:advise` to put the conversation to external models, and `/codex:review` before Claude calls built work done, with `/codex:rescue` when a run stalls. It rides the narrative reminder rather than taking a second `Stop` entry, because the event has one emit slot and a second registration would compete instead of compose. For the same reason there is one note and one cooldown stamp whatever the plugin count: two independent notes would double the appended text and race the same stamp. Detection reads `installPath` from `~/.claude/plugins/installed_plugins.json` and then requires the plugin's own command file on disk (`commands/advise.md`, `commands/review.md`), because the install record outlives an uninstall, so the file decides. The council half suggests and never sends, and asks Claude to check with the user first, because a digest of the conversation goes to third-party providers and nothing a hook can read says whose words it holds (inside a subagent the ambient session id names the parent). The codex half offers `/codex:review` rather than promising to run it: that command carries `disable-model-invocation`, so only the user can type it, while `/codex:rescue` does not and Claude may invoke it. Cooldown-gated via `.cs/local/.advisor-nudge-cooldown` (per-machine state, never git-synced) at most once per 30 minutes, and silent when no plugin is present. Only the launched conversation nudges: a tmux teammate shares the directory and the single cooldown stamp, so an ungated note would let a teammate consume the lead's slot
 - Approves silently inside subagents and outside cs sessions, and when the narrative was modified within the cooldown window
 
 ## session-end.sh (SessionEnd)
@@ -712,6 +721,8 @@ The child inherits the claude process's environment, so the
 refused task (empty, or more than one line) prints cs's exit code and the end
 of its stderr as cs wrote them.
 
+![Statusline without queued tasks, two pending tasks, then statusline with two queued tasks](https://raw.githubusercontent.com/hex/claude-sessions/main/assets/queue.svg)
+
 `/finish` gets a toast at each end. While `cs <base> -integrate-feature` and
 `-retire-feature` run, cs replaces a progress record at each step
 (`finish-progress.json`, see [session layout](session-layout.md#machine-local-files-cslocal-gitignored)).
@@ -829,6 +840,77 @@ Tests: `tests/test_mod_update.sh` runs the bun unit tests under
 lead gate) and `claude plugin validate` when each binary is on PATH, and always
 checks the manifest and its `/config` field, the cache-name pin against
 `lib/20-update.sh`, and that the installer and doctor name the mod.
+
+## cs-mermaid (not a hook script — a Claude Code mod)
+
+`mods/cs-mermaid/` is a Claude Code function-hooks plugin, deployed and gated
+the same way as the `cs` mod: `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`, which every
+`cs <name>` launch exports and `CS_NO_FUNCTION_HOOKS=1` withholds. It reads no
+environment, writes no file and runs no process. Unlike the `cs` mod it needs no
+cs session: with function hooks on it draws, and adds its prompt section, in any
+directory and for every prompt the engine composes, a subagent's included. It
+needs Claude Code 2.1.300 or later: an older build does not know `prompt.compose`
+and refuses the whole module, so nothing draws there.
+
+![Reply prose, then the same prose with a drawn Mermaid chart](https://raw.githubusercontent.com/hex/claude-sessions/main/assets/mermaid.svg)
+
+It hooks two events:
+
+- `ui.render` on `AssistantMessage` (terminal surface only). A reply with no
+  ` ```mermaid ` fence goes to the engine untouched. A reply with one is split
+  into prose, which goes back to the engine (so the reply keeps its opening
+  bullet, on its first part only), and fences, each parsed (`hooks/parse.ts`) and
+  laid out (`hooks/layout.ts`) in character cells; the last 32 layouts are
+  kept, since a streaming reply re-renders on every flush. Nodes are solid
+  blocks, three rows tall, taller or wider where more than one edge meets them,
+  coloured by their role in the flow, in a light or dark palette from the
+  `theme` row of `/config`: a decision (`{ }`, `{{ }}`, or any node with two
+  or more outgoing edges) amber, a start (`(( ))`, or a node nothing leads to)
+  green, an end (a node that leads nowhere) grey, every other step lavender.
+  Mermaid itself fills every node the same; the roles are the terminal's
+  reading of the chart, and `style`, `classDef`, `class` and `:::` fills win
+  over them, as does a shape over the edge count. Edges are box-drawing glyphs
+  with `▼▲►◄` heads, a shared cell is always a crossing (`┼`), and each label
+  sits beside its edge's first vertical run, so the corner and the head stay; a
+  label that answers a decision (`yes`, `pass`, `healthy`; `no`, `fail`,
+  `degraded`) is drawn in green or red, any other in the line colour. The mod turns a left-to-right chart wider
+  than the terminal top-down. It measures the terminal: beside a docked pane
+  the transcript is narrower, and a chart sized to the terminal can wrap
+  there. A fence the parser refuses (any statement outside the supported
+  subset refuses the whole chart: subgraphs, self-loops, non-flowchart
+  diagram types, more than 200 nodes, 400 edges or 60-cell
+  labels) or one still too wide stays a code block with `mermaid: <reason>`
+  under it.
+- `prompt.compose`. When the prompt is for a session that draws in a terminal
+  (`terminal` among `e.surfaces`), not `--bare`, and the session directory has
+  no `.cs/local/disabled`, the mod appends one `session`-scope section,
+  `cs-mermaid:diagrams` (about 80 tokens): flowchart fences draw here; add one
+  only for a flow that branches, loops or has four or more stages, never for a
+  task list or numbered steps; one fence, short labels, no subgraphs, `{ }`
+  for a decision, `(( ))` for a start or end, `[ ]` for a step. It is
+  part of every request's system prompt, on the session side of the prompt
+  cache's boundary. Claude Code runs `prompt.compose` hooks only from plugins an
+  organization lists in managed settings when it manages Claude Code; there
+  the drawing still works and the section is not sent. `cs -doctor` lists the
+  section among the authority rows, `off` when `CS_NO_FUNCTION_HOOKS` withholds
+  the mod (it cannot read the `/config` row).
+
+The `/config` row `cs-mermaid.drawDiagrams` (on by default) turns off both:
+fences show as source and the model is not told they draw.
+
+`install.sh` deploys the mod's six files (`.claude-plugin/plugin.json`,
+`hooks/hooks.json`, `hooks/register.tsx`, `hooks/parse.ts`, `hooks/layout.ts`,
+`hooks/text.ts`) under `~/.claude/skills/cs-mermaid/`, and `cs -uninstall`
+removes the directory. The mod writes no heartbeat, so `cs -doctor` has no
+"last ran" row for it.
+
+Tests: `tests/test_mod_mermaid.sh` runs the tests under `mods/cs-mermaid/test/`
+with `claude plugin test` (they use the engine's own `claude-code/testing` kit:
+the parser, exact picture fixtures for the layout, the inline drawing, the
+fallback to source, the option and each prompt-section gate) and
+`claude plugin validate` when `claude` is on PATH and knows `prompt.compose`
+(both skip on an older build), and always checks the manifest, its `/config`
+field and that the installer names the mod.
 
 ## Hook Configuration
 

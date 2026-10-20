@@ -937,14 +937,15 @@ _race_lock_once() {  # meta_dir, round -> prints the number of openers that took
             until [ -e "$LOCK_GATE" ]; do :; done
             # The refusal exits, so the acquire runs in a subshell; its $$ is
             # still this opener. A real winner goes on to run claude; this one
-            # stays alive until every opener has settled (or 20 s), else a
-            # late loser would rightly reclaim the lock of a dead holder and
-            # win in turn. Openers take turns, so twenty take about a second.
+            # stays alive until every opener has settled (or 120 s of wall
+            # time), else a late loser would rightly reclaim the lock of a dead
+            # holder and win in turn. Openers take turns, so twenty take about
+            # a second, longer on a loaded machine.
             if ( acquire_session_lock "$LOCK_META" "" lockrace >/dev/null 2>&1 ); then
                 echo "$$" >> "$LOCK_WINNERS"
                 echo "$$" >> "$LOCK_SETTLED"
-                n=0
-                while [ "$(wc -l < "$LOCK_SETTLED")" -lt 20 ] && [ "$n" -lt 400 ]; do sleep 0.05; n=$((n + 1)); done
+                deadline=$((SECONDS + 120))
+                while [ "$(wc -l < "$LOCK_SETTLED")" -lt 20 ] && [ "$SECONDS" -lt "$deadline" ]; do sleep 0.05; done
             else
                 echo "$$" >> "$LOCK_SETTLED"
             fi
@@ -1009,10 +1010,9 @@ SHIM
         ' &
     }
     _reclaim_opener "$shim:$PATH"; pid_b=$!
-    until [ -e "$paused" ] || [ "$i" -ge 100 ]; do sleep 0.05; i=$((i + 1)); done
+    wait_until test -e "$paused"
     assert_file_exists "$paused" "the second opener reached its replacement of the stale lock" || { touch "$gate"; wait; return 1; }
     _reclaim_opener "$PATH"; pid_a=$!
-    i=0
     while kill -0 "$pid_a" 2>/dev/null && [ ! -s "$winners" ] && [ "$i" -lt 30 ]; do sleep 0.05; i=$((i + 1)); done
     touch "$gate"
     wait "$pid_a" "$pid_b" 2>/dev/null || true
@@ -1046,7 +1046,7 @@ SHIM
         CLAUDE_SESSION_DIR="$CS_SESSIONS_ROOT/lockhook" CLAUDE_SESSION_META_DIR="$meta_dir" \
         CS_RESOLVED_FROM=walk "$SCRIPT_DIR/../hooks/session-end.sh" >/dev/null 2>&1 &
     pid_hook=$!
-    until [ -e "$paused" ] || [ "$i" -ge 200 ]; do sleep 0.05; i=$((i + 1)); done
+    wait_until test -e "$paused"
     assert_file_exists "$paused" "the hook reached its remove of the stale lock" || { touch "$gate"; wait; return 1; }
     LOCK_LIB="$SCRIPT_DIR/../lib" LOCK_META="$meta_dir" LOCK_WINNERS="$winners" bash -c '
         . "$LOCK_LIB/05-term.sh"
@@ -1057,12 +1057,12 @@ SHIM
         acquire_session_lock "$LOCK_META" "" lockhook >/dev/null 2>&1 && { echo "$$" >> "$LOCK_WINNERS"; sleep 4; }
     ' &
     pid_open=$!
-    i=0
     while kill -0 "$pid_open" 2>/dev/null && [ ! -s "$winners" ] && [ "$i" -lt 30 ]; do sleep 0.05; i=$((i + 1)); done
     touch "$gate"
     wait "$pid_hook" 2>/dev/null || true
-    i=0
-    until [ -s "$winners" ] || [ "$i" -ge 140 ]; do sleep 0.05; i=$((i + 1)); done
+    # Once the hook is let go the opener takes the mutex and the lock, later on
+    # a loaded machine; wait for its win before reading the lock.
+    wait_until test -s "$winners"
     assert_eq "$(cat "$winners")" "$(cat "$meta_dir/session.lock" 2>/dev/null)" \
         "the opener that took the lock still holds it after the hook's stale clear" || { wait; return 1; }
     wait "$pid_open" 2>/dev/null || true
@@ -1080,7 +1080,7 @@ test_forced_open_lock_survives_the_lead_ending_meanwhile() {
     local meta_dir="$CS_SESSIONS_ROOT/lockforce/.cs" shim="$TEST_TMPDIR/rmshim-force"
     local hook_paused="$TEST_TMPDIR/force-hookrm.paused" hook_gate="$TEST_TMPDIR/force-hookrm.gate"
     local open_paused="$TEST_TMPDIR/force-open.paused" open_gate="$TEST_TMPDIR/force-open.gate"
-    local opener_pid="$TEST_TMPDIR/force-open.pid" lead pid_hook pid_open i=0
+    local opener_pid="$TEST_TMPDIR/force-open.pid" lead pid_hook pid_open
     sleep 300 &
     lead=$!
     echo "$lead" > "$meta_dir/session.lock"
@@ -1104,7 +1104,7 @@ SHIM
         acquire_session_lock "$LOCK_META" true lockforce >/dev/null 2>&1
     ' &
     pid_open=$!
-    until [ -e "$open_paused" ] || [ "$i" -ge 200 ]; do sleep 0.05; i=$((i + 1)); done
+    wait_until test -e "$open_paused"
     assert_file_exists "$open_paused" "the forced open reached its override" \
         || { touch "$open_gate" "$hook_gate"; kill "$lead"; wait; return 1; }
     echo '{"session_id": "lead-a", "reason": "other"}' | PATH="$shim:$PATH" CLAUDE_SESSION_NAME=lockforce \
@@ -1112,8 +1112,7 @@ SHIM
         CS_RESOLVED_FROM=env CS_LEAD_CLAIM=1 CS_LEAD_PID="$lead" CLAUDE_PID="$lead" \
         "$SCRIPT_DIR/../hooks/session-end.sh" >/dev/null 2>&1 &
     pid_hook=$!
-    i=0
-    until [ -e "$hook_paused" ] || [ "$i" -ge 200 ]; do sleep 0.05; i=$((i + 1)); done
+    wait_until test -e "$hook_paused"
     assert_file_exists "$hook_paused" "the lead's SessionEnd reached its remove of its own lock" \
         || { touch "$open_gate" "$hook_gate"; kill "$lead"; wait; return 1; }
     # The forced open goes on while the hook holds the mutex. Without the mutex
@@ -1148,7 +1147,7 @@ test_cancelled_open_cleanup_leaves_the_lock_a_forced_open_took_meanwhile() {
     create_lock_test_session "lockcancel"
     local meta_dir="$CS_SESSIONS_ROOT/lockcancel/.cs" shim="$TEST_TMPDIR/rmshim-cancel"
     local rm_paused="$TEST_TMPDIR/cancel-rm.paused" rm_gate="$TEST_TMPDIR/cancel-rm.gate"
-    local opener_pid="$TEST_TMPDIR/cancel-open.pid" pid_cancel pid_open i=0
+    local opener_pid="$TEST_TMPDIR/cancel-open.pid" pid_cancel pid_open
     mkdir -p "$shim"
     cat > "$shim/rm" <<SHIM
 #!/bin/bash
@@ -1167,7 +1166,7 @@ SHIM
         exit 0
     ' >/dev/null 2>&1 &
     pid_cancel=$!
-    until [ -e "$rm_paused" ] || [ "$i" -ge 200 ]; do sleep 0.05; i=$((i + 1)); done
+    wait_until test -e "$rm_paused"
     assert_file_exists "$rm_paused" "the cancelled open's cleanup reached its remove of its own lock" \
         || { touch "$rm_gate"; wait; return 1; }
     LOCK_LIB="$SCRIPT_DIR/../lib" LOCK_META="$meta_dir" OPENER_PID="$opener_pid" bash -c '
@@ -1202,12 +1201,12 @@ SHIM
 # Start a process that holds <lock file> through _cs_lock until killed, with
 # no child: it blocks in bash's own read on a fifo. Its pid is MUTEX_HOLDER.
 _hold_session_mutex() {  # lock file
-    local ready="$TEST_TMPDIR/mutex.ready" i=0
+    local ready="$TEST_TMPDIR/mutex.ready"
     mkfifo "$TEST_TMPDIR/mutex.fifo"
     bash -c 'source "$1"; _cs_lock "$2" || exit 1; : > "$3"; read -r _ <> "$4"' _ \
         "$SCRIPT_DIR/../hooks/cs-shared.sh" "$1" "$ready" "$TEST_TMPDIR/mutex.fifo" &
     MUTEX_HOLDER=$!
-    until [ -e "$ready" ] || [ "$i" -ge 100 ]; do sleep 0.05; i=$((i + 1)); done
+    wait_until test -e "$ready"
     [ -e "$ready" ] || { echo "  FAIL: the holder never took $1"; return 1; }
 }
 

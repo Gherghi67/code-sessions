@@ -16,6 +16,14 @@ _stage_install() {  # home
     done
 }
 
+# Wait for cs to print a line to its output file. cs prints the line just
+# before it waits on its next answer, so what the test changes next lands
+# while cs waits, however loaded the machine. A line that never comes falls
+# through at wait_until's guard, and the assertion on it fails.
+_wait_for_output() {  # file, line
+    wait_until grep -qsF -- "$2" "$1"
+}
+
 # Refused before the first removal: every binary is still installed, the
 # refusal says nothing was uninstalled and to run cs -uninstall again once
 # the sessions are closed, and the exit is non-zero.
@@ -52,17 +60,21 @@ test_uninstall_with_a_live_session_removes_nothing() {
 # The confirmation waits on a person, so a session can open after the first
 # check. The check runs again once the answer is in, before the first
 # removal: a session that went live during the prompt still refuses the
-# whole uninstall with every binary in place.
+# whole uninstall with every binary in place. The session opens once the
+# confirmation is printed, after the first check, so only the second check
+# can refuse it.
 test_uninstall_rechecks_live_sessions_after_the_confirmation() {
     local home="$TEST_TMPDIR/late-home" root="$TEST_TMPDIR/late-sessions" stub="$TEST_TMPDIR/mount-stub-late"
     _stage_install "$home"
     mkdir -p "$root/late-open/.cs"
     _stub_mount_table "$stub" "/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled)" || return 1
     local rc=0 out f
-    { sleep 1; echo "$$" > "$root/late-open/.cs/session.lock"; printf 'yny'; } \
+    { _wait_for_output "$TEST_TMPDIR/late.out" "This will uninstall cs and all its components:"
+      echo "$$" > "$root/late-open/.cs/session.lock"; printf 'yny'; } \
         | HOME="$home" CS_SESSIONS_ROOT="$root" PATH="$stub:$PATH" "$CS_BIN" -uninstall \
         > "$TEST_TMPDIR/late.out" 2>&1 || rc=$?
     out=$(cat "$TEST_TMPDIR/late.out")
+    assert_output_contains "$out" "This will uninstall cs and all its components:" "the confirmation was reached before the session opened" || return 1
     assert_eq 1 "$rc" "uninstall exits 1 when a session opened during the prompt" || return 1
     assert_output_contains "$out" "Error: Nothing was uninstalled: these sessions are live: late-open. Close them and run cs -uninstall again." \
         "the refusal names the session that opened" || return 1
@@ -74,7 +86,9 @@ test_uninstall_rechecks_live_sessions_after_the_confirmation() {
 # The data question waits on a person too. A session that opens while
 # "Delete session data?" is pending is found once the answer is in, before
 # rm -rf, and the data stays. The answers are: go ahead, keep the keychain
-# secrets, then (once the session is open) delete the data.
+# secrets, then (once the session is open) delete the data. The session opens
+# once "Session data exists" is printed, after the first check of the data
+# step, so only the check after the answer can find it.
 test_uninstall_rechecks_live_sessions_after_the_data_question() {
     local home="$TEST_TMPDIR/data-home" root="$TEST_TMPDIR/data-sessions" stub="$TEST_TMPDIR/mount-stub-data"
     _stage_install "$home"
@@ -82,7 +96,9 @@ test_uninstall_rechecks_live_sessions_after_the_data_question() {
     echo "notes" > "$root/late-data/.cs/notes.md"
     _stub_mount_table "$stub" "/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled)" || return 1
     local rc=0 out
-    { printf 'yn'; sleep 2; echo "$$" > "$root/late-data/.cs/session.lock"; printf 'y'; } \
+    { printf 'yn'
+      _wait_for_output "$TEST_TMPDIR/data.out" "Session data exists at $root"
+      echo "$$" > "$root/late-data/.cs/session.lock"; printf 'y'; } \
         | HOME="$home" CS_SESSIONS_ROOT="$root" PATH="$stub:$PATH" "$CS_BIN" -uninstall \
         > "$TEST_TMPDIR/data.out" 2>&1 || rc=$?
     out=$(cat "$TEST_TMPDIR/data.out")
@@ -97,6 +113,8 @@ test_uninstall_rechecks_live_sessions_after_the_data_question() {
 # data?" is pending, as an encrypted session opening attaches its vault.
 # The mount table is read again once the answer is in, before rm -rf, which
 # would recurse into the volume: the data stays and the refusal names it.
+# The volume mounts once "Session data exists" is printed, after the first
+# mount check, so only the second can find it.
 test_uninstall_rechecks_mounts_after_the_data_question() {
     local home="$TEST_TMPDIR/mnt-home" root="$TEST_TMPDIR/mnt-sessions" stub="$TEST_TMPDIR/mount-stub-mnt"
     _stage_install "$home"
@@ -104,7 +122,8 @@ test_uninstall_rechecks_mounts_after_the_data_question() {
     echo "notes" > "$root/vaulted/.cs/vault-mnt/notes.md"
     _stub_mount_table "$stub" "/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled)" || return 1
     local rc=0 out
-    { printf 'yn'; sleep 2
+    { printf 'yn'
+      _wait_for_output "$TEST_TMPDIR/mnt.out" "Session data exists at $root"
       printf '%s\n' "/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled)" \
           "/dev/disk9s1 on $root/vaulted/.cs/vault-mnt (apfs, local, nodev, nosuid, journaled, noowners, mounted by tester)" > "$stub/table"
       printf 'y'; } \
@@ -149,6 +168,8 @@ test_uninstall_keeping_secrets_keeps_age_state_and_removes_the_settings_lock() {
 # kept and why, and purges the rest, a feature's (<base>@<task>) included:
 # a store under a feature's own name is purged like any other. The answers
 # are: go ahead, (the session opens) delete the secrets, then keep the data.
+# The session opens once the secrets question is printed, after the recheck
+# that follows the confirmation, so it is live for the purge alone.
 test_uninstall_names_each_session_whose_secrets_it_kept() {
     local home="$TEST_TMPDIR/sk-home" root="$TEST_TMPDIR/sk-sessions" stub="$TEST_TMPDIR/mount-stub-sk"
     _stage_install "$home"
@@ -169,7 +190,9 @@ test_uninstall_names_each_session_whose_secrets_it_kept() {
         "$home/.local/bin/cs-secrets" --session closed@task get OLD_KEY 2>&1)" "fixture: a store is kept under the feature's name" || return 1
     sleep 300 &
     local pid=$! rc=0 out kept left
-    { printf 'y'; sleep 2; echo "$pid" > "$root/opens-late/.cs/session.lock"; printf 'yn'; } \
+    { printf 'y'
+      _wait_for_output "$TEST_TMPDIR/sk.out" "Secrets may exist in OS keychain for these sessions:"
+      echo "$pid" > "$root/opens-late/.cs/session.lock"; printf 'yn'; } \
         | HOME="$home" CS_SESSIONS_ROOT="$root" PATH="$stub:$PATH" CS_SECRETS_BACKEND=encrypted \
             CS_SECRETS_PASSWORD=test-password-for-ci CLAUDE_SESSION_NAME=sender "$CS_BIN" -uninstall \
         > "$TEST_TMPDIR/sk.out" 2>&1 || rc=$?

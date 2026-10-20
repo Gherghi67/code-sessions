@@ -164,11 +164,18 @@ out=$(_attempt 1) || _rc=$?
 _took=$(( SECONDS - _began ))
 
 # A user whose only credential is a Console API key has no login to fall back
-# on, so the scrubbed attempt fails in about a second. Give the key one go
-# rather than leaving the feature dead for them. Only after a FAST failure: an
-# attempt that already spent the timeout has nothing left to spend, and a second
-# would double the freeze this timeout exists to bound.
-if _failed "$_rc" "$out" && [ -n "${ANTHROPIC_API_KEY:-}" ] && [ "$_took" -lt 5 ]; then
+# on, so the scrubbed attempt answers "Not logged in". Give the key one go
+# rather than leaving the feature dead for them. That answer never spent the
+# timeout, so it is retried however long a loaded machine took to give it. Any
+# other failure is retried only when it was FAST: an attempt that already spent
+# the timeout has nothing left to spend, and a second would double the freeze
+# this timeout exists to bound.
+_not_logged_in() {  # output
+    case "$1" in 'Not logged in'*) return 0 ;; esac
+    return 1
+}
+if _failed "$_rc" "$out" && [ -n "${ANTHROPIC_API_KEY:-}" ] \
+    && { _not_logged_in "$out" || [ "$_took" -lt 5 ]; }; then
     _rc=0
     out=$(_attempt 0) || _rc=$?
 fi

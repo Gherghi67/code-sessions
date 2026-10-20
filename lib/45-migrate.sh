@@ -556,7 +556,7 @@ _migrate_session_documents() {  # session_dir, actor_slug
         # write that does not complete leaves nothing behind.
         if cs_write_atomic "$readme" printf -- '---\nstatus: active\ncreated: %s\ntags: []\naliases: ["%s"]\n---\n%s\n' \
             "$created_date" "$session_name" "$existing_content" 2>/dev/null; then
-            warn "Added frontmatter to .cs/README.md"
+            notice .cs/README.md "added frontmatter"
         else
             _CS_MIGRATE_CLEAN=0
         fi
@@ -619,7 +619,7 @@ _migrate_session_documents() {  # session_dir, actor_slug
             fm && line ~ re          { next }
             { print }
         ' "$readme"; then
-            warn "Moved machine-local fields from .cs/README.md to .cs/local/state"
+            notice .cs/README.md "machine-local fields moved to .cs/local/state or dropped"
         else
             warn "could not rewrite $readme; its machine-local fields stay in it"
             _CS_MIGRATE_CLEAN=0
@@ -805,7 +805,7 @@ migrate_session() {
         setup_merge_attributes "$session_dir"
         ensure_cs_gitignore_entries "$session_dir"
         # Names the rules just appended to a tracked .gitignore. Adopt merges
-        # the same rules and names .gitignore in its own line of what it left
+        # the same rules and names .gitignore in its own row of what it left
         # (_explain_nothing_committed) instead.
         _explain_gitignore_additions "$session_dir"
     fi
@@ -830,10 +830,7 @@ migrate_session() {
         # files from the user's next `git add`.
         ensure_cs_gitignore_entries "$session_dir"
 
-        echo ""
-        echo -e "${ORANGE}Migrated session to .cs/ directory structure${NC}"
-        echo -e "${DIM}Session metadata moved to .cs/ - your workspace root is now clean for project files.${NC}"
-        echo ""
+        notice .cs/ "holds the session metadata, moved out of the workspace root"
 
         # The moves stay in the working tree for the user to commit, and the
         # session records the mode its features take, as adopt does.
@@ -881,7 +878,7 @@ migrate_session() {
         if [ "$tracked_tree_is_ours" = 1 ] && [ -f "$ga" ] && grep -q 'logs/session\.log merge=union' "$ga"; then
             cs_write_atomic "$ga" awk '!/logs\/session\.log merge=union/' "$ga" 2>/dev/null || true
         fi
-        warn "Moved .cs/logs/session.log to ${log_dir#"$session_dir"/}/session.log"
+        notice session.log "moved from .cs/logs/ to ${log_dir#"$session_dir"/}/"
     fi
 
     # Remove inert sync/remote metadata left by older versions (the sync

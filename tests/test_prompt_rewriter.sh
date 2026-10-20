@@ -224,11 +224,19 @@ test_line_and_static_modes_do_not_echo_the_prompt() {
 # The native mode follows that. Under five seconds it must show the label with
 # no clock at all — a counter ticking 1s, 2s on a rewrite that always takes
 # about ten is noise Claude Code deliberately leaves out.
+#
+# Only readings under five are forbidden, not every clock. The shim's own clock
+# decides, and on a loaded machine the 1s stub can outlive five of its seconds,
+# when `(5s)` is exactly what the contract asks for (see the test below). A
+# clock painted too early still shows: native repaints on every change, so it
+# would leave a `(0s)` or `(1s)` behind.
 test_animated_modes_withhold_the_elapsed_under_five_seconds() {
     local mode out
     for mode in native screen; do
         out=$(render_in_mode "$mode" '' 1)
-        assert_file_not_contains "$out" '([0-9]*s)' \
+        # Guard the guard: if nothing painted, absence of a clock proves nothing.
+        assert_file_contains "$out" 'ewriting' "mode '$mode' painted" || return 1
+        assert_file_not_contains "$out" '([0-4]s)' \
             "mode '$mode' shows no elapsed before five seconds" || return 1
     done
 }
@@ -312,12 +320,8 @@ test_cancel_keeps_the_original_and_exits_clean() {
     CLAUDE_SESSION_META_DIR="$trace_dir" CS_REWRITE_CMD="$slow" "$SHIM" "$f" >/dev/null 2>&1 &
     local shim=$!
     local trace="$trace_dir/local/rewrite.trace"
-    local waited=0
-    while [ "$waited" -lt 100 ] && ! grep -q 'rewriter-forked' "$trace" 2>/dev/null; do
-        sleep 0.1
-        waited=$((waited + 1))
-    done
-    [ "$waited" -lt 100 ] || { echo "shim never signalled rewriter-forked"; kill "$shim" 2>/dev/null; return 1; }
+    wait_until grep -qs 'rewriter-forked' "$trace" \
+        || { echo "shim never signalled rewriter-forked"; kill "$shim" 2>/dev/null; return 1; }
     kill -TERM "$shim" 2>/dev/null
     local st=0; wait "$shim" || st=$?
     assert_eq "0" "$st" "exits 0, so Claude Code reports no editor error" || return 1
@@ -357,11 +361,7 @@ SLOWEOF
     local f; f=$(composer_file "make the login thing better")
     CS_REWRITE_CMD="$slow" "$SHIM" "$f" >/dev/null 2>&1 &
     local shim=$!
-    local waited=0
-    while [ "$waited" -lt 50 ] && [ ! -s "$pidfile" ]; do
-        sleep 0.1
-        waited=$((waited + 1))
-    done
+    wait_until test -s "$pidfile"
     [ -s "$pidfile" ] || { echo "rewriter never recorded its child"; kill "$shim" 2>/dev/null; return 1; }
     local grandchild; grandchild=$(cat "$pidfile")
     kill -TERM "$shim" 2>/dev/null

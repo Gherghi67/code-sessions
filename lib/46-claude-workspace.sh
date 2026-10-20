@@ -119,11 +119,11 @@ prune_commands_artifacts() {
             /^[0-9]+\. \*\*\.cs\/commands\.md\*\*/ { next }
             { print }
         ' "$claude_md" || error "could not rewrite $claude_md"
-        removed=1
+        notice CLAUDE.md "dropped the retired command tracker's section"
     fi
 
     if [ "$removed" -eq 1 ]; then
-        warn "Pruned retired command-tracker artifacts"
+        notice .cs/ "dropped the retired command tracker's files"
     fi
 }
 
@@ -158,7 +158,7 @@ _claude_migrate_workspace() {
             _bind_uuid=$(_discover_session_uuid_in "$_proj")
             if [ -n "$_bind_uuid" ]; then
                 _set_local_state_if_absent "$_state" claude_session_id "$_bind_uuid"
-                warn "Bound claude_session_id in .cs/local/state to $_bind_uuid"
+                notice .cs/local/state "bound claude_session_id to $_bind_uuid"
             fi
         fi
     }
@@ -175,7 +175,7 @@ _claude_migrate_workspace() {
         local _new_color
         _new_color=$(_alloc_random_color)
         _set_local_state_if_absent "$_state" claude_session_color "$_new_color"
-        warn "Backfilled claude_session_color in .cs/local/state ($_new_color)"
+        notice .cs/local/state "backfilled claude_session_color ($_new_color)"
     fi
 }
 
@@ -263,7 +263,7 @@ _claude_ensure_local_sections() {  # session_dir
                     stripping && /^<!-- / { stripping = 0 }
                     !stripping { print }
                 ' "$claude_md_p9" || error "could not rewrite $claude_md_p9"
-                warn "Retired auto-memory bucket guidance; replaced with cs:memory-note"
+                notice CLAUDE.local.md "cs:memory-note replaces the auto-memory bucket guidance"
             # State 3: tombstone (sentinel without header) — preserve opt-out
             fi
         else
@@ -272,7 +272,7 @@ _claude_ensure_local_sections() {  # session_dir
                 echo ""
                 _emit_memory_note_block
             } >> "$claude_md_p9"
-            warn "Added cs:memory-note to CLAUDE.local.md"
+            notice CLAUDE.local.md "added cs:memory-note"
         fi
     fi
 
@@ -282,7 +282,7 @@ _claude_ensure_local_sections() {  # session_dir
     # keep the HTML comment).
     if [ -f "$claude_md_p9" ] && ! grep -q 'cs:wrap-cues' "$claude_md_p9"; then
         { echo; _emit_wrap_cues_block; } >> "$claude_md_p9"
-        warn "Appended session wrap-up cues to CLAUDE.local.md"
+        notice CLAUDE.local.md "added the session wrap-up cues"
     fi
 
     # Phase 16: /wrap is the one command that runs the memory and summary
@@ -299,7 +299,7 @@ _claude_ensure_local_sections() {  # session_dir
     if [ -f "$claude_md_p9" ] && [ -d "$session_dir/.cs/private" ] \
         && ! grep -q 'cs:encrypted-protocol' "$claude_md_p9"; then
         { echo; _emit_encrypted_protocol_block; } >> "$claude_md_p9"
-        warn "Added the encrypted-session protocol to CLAUDE.local.md"
+        notice CLAUDE.local.md "added the encrypted-session protocol"
     fi
 
     # Phase 15: the rule for committing session files, which sessions created
@@ -307,7 +307,7 @@ _claude_ensure_local_sections() {  # session_dir
     # means managed, never re-added.
     if [ -f "$claude_md_p9" ] && ! grep -q 'cs:session-commits' "$claude_md_p9"; then
         { echo; _emit_session_commits_block; } >> "$claude_md_p9"
-        warn "Added the session-commits rule to CLAUDE.local.md"
+        notice CLAUDE.local.md "added the session-commits rule"
     fi
 }
 
@@ -342,7 +342,7 @@ _claude_ensure_workspace_protocol() {
         if [ -f "$claude_local" ]; then
             printf '\n' >> "$claude_local"
             _emit_session_claude_md >> "$claude_local"
-            warn "Appended the cs session protocol to your existing CLAUDE.local.md"
+            notice CLAUDE.local.md "added the cs session protocol below your own lines"
         else
             write_session_claude_md "$session_dir"
         fi
@@ -506,9 +506,9 @@ _wrap_only_migrate() {  # file
     [ -n "$changes" ] || return 0
     cs_write_atomic "$f" _wrap_only_rewrite print "$f" || return 1
     case "$changes" in
-        *cue*) warn "Dropped the /sweep and /summary offers cs wrote into ${f##*/}; it offers /wrap alone" ;;
+        *cue*) notice "${f##*/}" "offers /wrap alone, without /sweep or /summary" ;;
     esac
     case "$changes" in
-        *line*) warn "Pointed the session protocol cs wrote into ${f##*/} at /wrap" ;;
+        *line*) notice "${f##*/}" "session protocol points at /wrap" ;;
     esac
 }

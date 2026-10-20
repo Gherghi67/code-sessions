@@ -5,7 +5,7 @@
 set -euo pipefail
 
 # Configuration
-VERSION="2026.10.8"
+VERSION="2026.10.9"
 # This build is code-sessions, a fork of cs. It runs as cs inside its own
 # profile; outside, the code-sessions (ccs) launcher starts it and cs is the
 # original. install.sh greps this line to tell its own build from the original.

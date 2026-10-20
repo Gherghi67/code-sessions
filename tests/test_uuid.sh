@@ -242,8 +242,8 @@ test_lazy_migration_binds_to_existing_transcript() {
 }
 
 # ============================================================================
-# Cycle 3c: lazy migration self-heals a recorded UUID with no matching
-# transcript by rewriting it to the most-recent real transcript.
+# Cycle 3c: a missing transcript leaves the recorded native identity intact;
+# discovering another transcript cannot silently switch the conversation.
 # ============================================================================
 
 test_lazy_migration_preserves_missing_transcript_binding() {
@@ -254,12 +254,14 @@ test_lazy_migration_preserves_missing_transcript_binding() {
     local real_uuid="abcd1234-5678-4abc-9def-fedcba987654"
     _seed_claude_transcript "$session_dir" "$real_uuid"
 
-    "$CS_BIN" legacy-session <<< "" >/dev/null 2>&1 || true
+    local out
+    out=$("$CS_BIN" legacy-session <<< "" 2>&1 || true)
 
     local recorded
     recorded=$(_extract_session_uuid "$session_dir/.cs/local/state")
     assert_eq "$orphan_uuid" "$recorded" \
         "missing transcript must preserve the recorded native identity" || return 1
+    assert_output_not_contains "$out" "repaired orphan claude_session_id" "the open preserves the recorded native identity" || return 1
 
     # Idempotent: a second resume must not flip the value back.
     "$CS_BIN" legacy-session <<< "" >/dev/null 2>&1 || true

@@ -1802,7 +1802,9 @@ _tt_tab_hook() {  # hook, pane, session name, LC_TERMINAL, CS_NO_ITERM2; prints 
           TMUX="$TT_SOCK,1,0" TMUX_PANE="$2" CLAUDE_SESSION_NAME="$3" LC_TERMINAL="$4" \
           bash "$HOOKS_DIR/$1" 2>&1
 }
-_wait_for_file() { local i=0; while [ ! -s "$1" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done; }
+# The tab helper starts in the background, and a loaded machine can start it
+# seconds after the hook returns, so each test waits on its record through
+# wait_until (test_lib), whose 120 s guard only stops a hang.
 
 test_a_claim_in_iterm_hands_the_window_to_the_tab_helper() {
     session_start_setup
@@ -1814,7 +1816,7 @@ test_a_claim_in_iterm_hands_the_window_to_the_tab_helper() {
     assert_eq "0" "$rc" "the hook succeeds while the helper fails" || { _tt kill-server; return 1; }
     assert_eq "still running" "$([ -e "$FAKE_PY_DONE" ] && echo finished || echo "still running")" \
         "the hook returns while the helper it started still runs" || { _tt kill-server; return 1; }
-    _wait_for_file "$FAKE_PY_CALLS"
+    wait_until test -s "$FAKE_PY_CALLS"
     : > "$FAKE_PY_RELEASE"
     assert_eq "[$HOOKS_DIR/cs-iterm-tab.py][$window][$TT_SOCK,1,0]" "$(cat "$FAKE_PY_CALLS" 2>/dev/null)" \
         "a claim runs the tab helper once on its window, on the same tmux server" || { _tt kill-server; return 1; }
@@ -1822,7 +1824,7 @@ test_a_claim_in_iterm_hands_the_window_to_the_tab_helper() {
         "the helper's output never reaches the hook's" || { _tt kill-server; return 1; }
     : > "$FAKE_PY_CALLS"
     _tt_tab_hook session-end.sh "$TT_PANE_A" current-session iTerm2 "" >/dev/null
-    _wait_for_file "$FAKE_PY_CALLS"
+    wait_until test -s "$FAKE_PY_CALLS"
     assert_eq "[$HOOKS_DIR/cs-iterm-tab.py][$window][$TT_SOCK,1,0]" "$(cat "$FAKE_PY_CALLS" 2>/dev/null)" \
         "a release runs it too, so the tab drops the session that left" || { _tt kill-server; return 1; }
     _tt kill-server
@@ -1987,7 +1989,7 @@ test_a_claim_outside_iterm_runs_no_tab_helper() {
     _tt_tab_hook session-start.sh "$TT_PANE_B" fignity iTerm2 1 >/dev/null
     # Positive control on the same server: an iTerm2 claim does run it.
     _tt_tab_hook session-start.sh "$TT_PANE_A" current-session iTerm2 "" >/dev/null
-    _wait_for_file "$FAKE_PY_CALLS"
+    wait_until test -s "$FAKE_PY_CALLS"
     assert_eq "1" "$(cat "$FAKE_PY_CALLS" 2>/dev/null | wc -l | tr -d ' ')" \
         "neither a terminal other than iTerm2 nor CS_NO_ITERM2 runs the helper; the control does" || { _tt kill-server; return 1; }
     _tt kill-server
@@ -2076,8 +2078,8 @@ test_a_launch_cleanup_releases_its_pane_and_keeps_the_others_title() {
     local lib="$SCRIPT_DIR/../lib"
     _tt respawn-pane -k -t "$TT_PANE_B" "bash -c '. \"$lib/02-shared.sh\"; . \"$lib/05-term.sh\"; set_tab_title \"cs: fignity\" \"\" fignity; reset_tab_title; touch \"$TEST_TMPDIR/cleaned\"; sleep 600'" \
         || { _tt kill-server; return 1; }
-    local i=0
-    while [ ! -e "$TEST_TMPDIR/cleaned" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+    # The pane's shell starts later on a loaded machine; wait for its mark.
+    wait_until test -e "$TEST_TMPDIR/cleaned"
     assert_eq "cs: current-session" "$(_tt_window_name)" \
         "the cleaned-up launch leaves the window to the session still running" || { _tt kill-server; return 1; }
     assert_eq "" "$(_tt show-options -p -v -t "$TT_PANE_B" @cs_session 2>/dev/null)" \
@@ -2135,8 +2137,8 @@ test_a_launch_in_a_second_pane_joins_the_window_name() {
     local lib="$SCRIPT_DIR/../lib"
     _tt respawn-pane -k -t "$TT_PANE_B" "bash -c '. \"$lib/02-shared.sh\"; . \"$lib/05-term.sh\"; set_tab_title \"cs: fignity\" \"\" fignity; touch \"$TEST_TMPDIR/launched\"; sleep 600'" \
         || { _tt kill-server; return 1; }
-    local i=0
-    while [ ! -e "$TEST_TMPDIR/launched" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+    # The pane's shell starts later on a loaded machine; wait for its mark.
+    wait_until test -e "$TEST_TMPDIR/launched"
     assert_eq "cs: current-session | fignity" "$(_tt_window_name)" \
         "a cs launched in the other pane joins the window name" || { _tt kill-server; return 1; }
     assert_eq "cs: fignity" "$(_tt display-message -p -t "$TT_PANE_B" '#{pane_title}')" \
@@ -4917,11 +4919,9 @@ test_session_start_publishes_the_contract_to_a_teammate() {
     : > "$envfile"
     printf '#!/usr/bin/env bash\nsleep 30\n' > "$script"; chmod +x "$script"
     "$script" --agent-id a1 --agent-name mate --team-name t >/dev/null 2>&1 &
-    local pid=$! i=0
-    while [ "$i" -lt 50 ]; do
-        ps -o args= -p "$pid" 2>/dev/null | grep -q fake-claude && break
-        i=$((i + 1)); sleep 0.1
-    done
+    local pid=$!
+    wait_until pid_args_match "$pid" fake-claude \
+        || { kill "$pid" 2>/dev/null; echo "  FAIL: fixture: ps never showed the stand-in teammate"; session_start_teardown; return 1; }
 
     env -u CLAUDE_SESSION_NAME -u CLAUDE_SESSION_DIR -u CLAUDE_SESSION_META_DIR \
         CLAUDE_CODE_ENTRYPOINT="cli" CLAUDE_PID="$pid" CLAUDE_PROJECT_DIR="$dir" \

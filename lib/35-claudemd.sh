@@ -300,7 +300,7 @@ ensure_session_claude_md() {
     elif ! grep -q '<!-- cs:' "$claude_local"; then
         printf '\n' >> "$claude_local"
         _emit_session_claude_md >> "$claude_local"
-        warn "Appended the cs session protocol to your existing CLAUDE.local.md"
+        notice CLAUDE.local.md "added the cs session protocol below your own lines"
     fi
 }
 
@@ -373,7 +373,7 @@ migrate_claude_md_to_local() {
         else
             mv "$claude_md" "$local_md"
         fi
-        warn "Moved the cs session protocol from CLAUDE.md to CLAUDE.local.md"
+        notice CLAUDE.local.md "holds the cs session protocol, moved from CLAUDE.md"
     else
         if [ -f "$local_md" ]; then
             printf '\n' >> "$local_md"
@@ -382,7 +382,7 @@ migrate_claude_md_to_local() {
             sed -n "${split_line},\$p" "$claude_md" > "$local_md"
         fi
         cs_write_atomic "$claude_md" printf '%s\n' "$head_text" || error "could not rewrite $claude_md"
-        warn "Moved cs-managed sections from CLAUDE.md to CLAUDE.local.md; your own content stays in CLAUDE.md"
+        notice CLAUDE.local.md "holds cs's sections, moved from CLAUDE.md, where your own lines stay"
     fi
     return 0
 }

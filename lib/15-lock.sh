@@ -137,7 +137,7 @@ _require_session_lock_perl() {  # meta_dir
 # Take a lock without an interactive collision menu, for encryption. Use the
 # same mutex and lease guard as an open so a concurrent launcher cannot be
 # replaced between the liveness check and publication. Returns 1 for a live
-# holder and 2 for a held mutex; other failures keep their own status.
+# holder, 2 for a held mutex, and 3 for another acquisition failure.
 _take_session_lock() {  # meta_dir
     local meta="$1" status=0 remote="" session_name=""
     _CS_LOCK_LIVE_PID=""

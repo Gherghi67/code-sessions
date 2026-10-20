@@ -258,7 +258,7 @@ SCRIPT
     unset CLAUDE_CODE_BIN
     [ "$rc" -eq 0 ] || { echo "  FAIL: open exited non-zero: $output"; return 1; }
     [ ! -f "$dir/.cs/archived" ] || { echo "  FAIL: marker should be removed at launch"; return 1; }
-    assert_output_contains "$output" "Unarchived: reopen" "launch prints the notice" || return 1
+    assert_output_contains "$output" "^  \.cs/archived     removed, so the session is active again$" "launch names the marker it removed" || return 1
 }
 
 test_unarchive_rejects_flags() {

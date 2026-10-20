@@ -358,7 +358,7 @@ test_encrypt_refuses_an_open_that_took_the_lock_after_its_check() {
     local meta="$CS_SESSIONS_ROOT/enc/.cs" shim="$TEST_TMPDIR/awkshim" real_awk
     local paused="$TEST_TMPDIR/awk.paused" gate="$TEST_TMPDIR/awk.gate"
     local opened="$TEST_TMPDIR/open.ready" fifo="$TEST_TMPDIR/open.fifo"
-    local pid_encrypt pid_open rc=0 i=0 out="$TEST_TMPDIR/encrypt.out"
+    local pid_encrypt pid_open rc=0 out="$TEST_TMPDIR/encrypt.out"
     real_awk=$(command -v awk)
     mkdir -p "$shim"
     cat > "$shim/awk" <<SHIM
@@ -374,7 +374,7 @@ SHIM
     chmod +x "$shim/awk"
     PATH="$shim:$PATH" _encrypt enc >"$out" 2>&1 &
     pid_encrypt=$!
-    until [ -e "$paused" ] || [ "$i" -ge 200 ]; do sleep 0.05; i=$((i + 1)); done
+    wait_until test -e "$paused"
     assert_file_exists "$paused" "cs -encrypt reached its README read after the live check" \
         || { touch "$gate"; wait "$pid_encrypt"; return 1; }
     mkfifo "$fifo"
@@ -388,8 +388,7 @@ SHIM
         read -r _ <> "$FIFO"
     ' &
     pid_open=$!
-    i=0
-    until [ -e "$opened" ] || [ "$i" -ge 100 ]; do sleep 0.05; i=$((i + 1)); done
+    wait_until test -e "$opened"
     assert_file_exists "$opened" "the open took the session lock" \
         || { touch "$gate"; wait "$pid_encrypt"; kill "$pid_open" 2>/dev/null; wait "$pid_open"; return 1; }
     touch "$gate"
@@ -407,12 +406,12 @@ SHIM
 # Start a process that holds <lock file> through _cs_lock until killed, with
 # no child: it blocks in bash's own read on a fifo. Its pid is MUTEX_HOLDER.
 _hold_session_mutex() {  # lock file
-    local ready="$TEST_TMPDIR/mutex.ready" i=0
+    local ready="$TEST_TMPDIR/mutex.ready"
     mkfifo "$TEST_TMPDIR/mutex.fifo"
     bash -c 'source "$1"; _cs_lock "$2" || exit 1; : > "$3"; read -r _ <> "$4"' _ \
         "$SCRIPT_DIR/../hooks/cs-shared.sh" "$1" "$ready" "$TEST_TMPDIR/mutex.fifo" &
     MUTEX_HOLDER=$!
-    until [ -e "$ready" ] || [ "$i" -ge 100 ]; do sleep 0.05; i=$((i + 1)); done
+    wait_until test -e "$ready"
     [ -e "$ready" ] || { echo "  FAIL: the holder never took $1"; return 1; }
 }
 
@@ -569,8 +568,9 @@ test_pre_open_stops_a_waiter_detach_in_flight() {
     local claude=$!
     wait "$claude" 2>/dev/null
     FAKE_HDIUTIL_HOLD=detach _end_conversation enc prompt_input_exit "$claude" "$claude"
-    local f="$CS_SESSIONS_ROOT/enc/.cs/local/vault-detach.pid" i=0
-    while [ ! -s "$f" ] && [ $i -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
+    local f="$CS_SESSIONS_ROOT/enc/.cs/local/vault-detach.pid"
+    # The detached waiter records its detach child later on a loaded machine.
+    wait_until test -s "$f"
     [ -s "$f" ] || { echo "  FAIL: the waiter recorded no detach child"; return 1; }
     local detach rc=0
     detach=$(cat "$f")
@@ -822,22 +822,18 @@ _end_conversation() {  # name reason claude_pid lead_pid
         bash "$HOOK_SESSION_END" >/dev/null 2>&1
 }
 
-_wait_for_log() {  # expected -> polls the hdiutil log up to 10 s
-    local i=0
-    while [ $i -lt 50 ]; do
-        [ "$(cat "$FAKE_HDIUTIL_LOG")" = "$1" ] && return 0
-        sleep 0.2; i=$((i + 1))
-    done
-    return 1
+# The waiter is detached and acts once the lead has exited, later on a loaded
+# machine, so these wait on what it leaves behind; non-zero only at the guard.
+_log_is() {  # expected
+    [ "$(cat "$FAKE_HDIUTIL_LOG")" = "$1" ]
 }
 
-_waiter_gone() {  # name -> waits up to 10 s for the waiter to finish
-    local f="$CS_SESSIONS_ROOT/$1/.cs/local/vault-waiter.pid" i=0
-    while [ $i -lt 50 ]; do
-        [ -e "$f" ] || return 0
-        sleep 0.2; i=$((i + 1))
-    done
-    return 1
+_wait_for_log() {  # expected -> waits until the hdiutil log reads exactly that
+    wait_until _log_is "$1"
+}
+
+_waiter_gone() {  # name -> waits until the waiter has removed its pid file
+    wait_until test ! -e "$CS_SESSIONS_ROOT/$1/.cs/local/vault-waiter.pid"
 }
 
 test_session_end_detaches_after_the_lead_exits() {

@@ -148,6 +148,7 @@ _is_help_flag() {  # arg
 }
 
 warn() {
+    _CS_NOTICE_HEADED=""
     printf "${YELLOW}%s${NC}\n" "$1"
 }
 

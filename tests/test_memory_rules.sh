@@ -247,7 +247,7 @@ EOF
 }
 
 test_phase9_retires_v1_block_to_note() {
-    local session_dir
+    local session_dir out
     session_dir=$(_seed_session_with_legacy_rules_block "v1-session" "v1")
 
     assert_file_contains "$session_dir/CLAUDE.md" '<!-- cs:memory-rules -->' \
@@ -255,7 +255,10 @@ test_phase9_retires_v1_block_to_note() {
     assert_file_contains "$session_dir/CLAUDE.md" '^## Auto-memory bucket guidance$' \
         "precondition: v1 header (no suffix) present" || return 1
 
-    "$CS_BIN" v1-session <<< "" >/dev/null 2>&1 || true
+    out=$("$CS_BIN" v1-session <<< "" 2>&1 || true)
+
+    grep -Fxq -- '  CLAUDE.local.md  cs:memory-note replaces the auto-memory bucket guidance' <<< "$out" \
+        || { echo "  FAIL: the open names the note that replaced the bucket guidance"; return 1; }
 
     assert_file_contains "$session_dir/CLAUDE.md" "Session Documentation Protocol" \
         "the head above the sentinel stays in CLAUDE.md" || return 1

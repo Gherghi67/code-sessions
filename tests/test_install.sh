@@ -2,6 +2,11 @@
 # ABOUTME: Tests for install.sh end-to-end behavior
 # ABOUTME: Isolates HOME to a tmpdir so install side-effects don't leak
 
+# Each test runs a whole install, so this suite takes about twice the time its
+# length suggests (562 s for 3,824 lines on the macOS runner); run_all.sh
+# weighs it accordingly when it splits shards and orders its queue.
+# run_all-weight: 2
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=tests/test_lib.sh
 source "$SCRIPT_DIR/test_lib.sh"
@@ -435,7 +440,7 @@ settings.json.cs-bak.notes" "$backups" \
 # taken under that lock, both changes survive; read early and written late,
 # the writer's key is lost.
 test_install_keeps_a_concurrent_settings_change() {
-    local fake_home="$TEST_TMPDIR/home-race" f real stub="$TEST_TMPDIR/race-bin" i=0
+    local fake_home="$TEST_TMPDIR/home-race" f real stub="$TEST_TMPDIR/race-bin"
     f="$fake_home/.claude/settings.json"
     real=$(command -v jq)
     mkdir -p "$fake_home/.claude" "$stub"
@@ -464,9 +469,8 @@ EOF
     chmod +x "$stub/jq"
     HOME="$fake_home" PATH="$stub:$PATH" bash "$INSTALL_SH" > /dev/null 2>&1 < /dev/null \
         || { echo "  FAIL: install.sh exited non-zero"; return 1; }
-    while [ ! -e "$TEST_TMPDIR/race-writer.done" ] && [ "$i" -lt 60 ]; do
-        sleep 0.1; i=$((i + 1))
-    done
+    # The writer runs detached and may still be at work when install.sh exits.
+    wait_until test -e "$TEST_TMPDIR/race-writer.done"
     assert_exists "$TEST_TMPDIR/race-fired" "the slow merge ran" || return 1
     assert_file_exists "$TEST_TMPDIR/race-writer.done" "the concurrent writer finished" || return 1
     jq -e '.env.BOB == "1"' "$f" >/dev/null 2>&1 \

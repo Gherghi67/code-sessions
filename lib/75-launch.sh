@@ -471,15 +471,6 @@ _launch_claude_bound() {
     local intent="${6:-auto}"
     local remote_mode="${7:-}"
 
-    # Terminal theme (and its real background RGB when known) for the statusline
-    # and hooks, detected while cs still owns the tty and reused by the session
-    # launched next.
-    _export_term_theme
-    # Refresh the palette now that the theme is known so everything below —
-    # the collision menu and the launch banner — reads on a light canvas
-    # (colors were first set at startup, defaulting to dark).
-    setup_palette
-
     # The core acquired the lease and exported this run's session context.
     # A force selected in its collision menu also bypasses native duplicates.
     [ "${CS_COLLISION_FORCE:-}" = "1" ] && force="true"
@@ -518,7 +509,7 @@ _launch_claude_bound() {
         _found=$(_discover_session_uuid_in "$(_claude_project_dir "$session_dir")")
         if _is_uuid "$_found"; then
             _set_local_state "$session_dir/.cs/local/state" claude_session_id "$_found"
-            warn "Bound claude_session_id in .cs/local/state to $_found"
+            notice .cs/local/state "bound claude_session_id to $_found"
             claude_session_id="$_found"
         fi
     fi
@@ -681,8 +672,8 @@ _launch_claude_bound() {
     if [ -n "$claude_session_id" ]; then
         export CS_CLAUDE_SESSION_ID="$claude_session_id"
     fi
-    # Hooks identify the lead by the supervised native process's direct
-    # parent and this run's lease; descendants cannot inherit ownership.
+    # Hooks identify the native lead through its SessionStart claim and this
+    # run's lease; descendants cannot inherit ownership merely from the environment.
     export CS_LEAD_PID=$$
     # The other test is the lead's claim on this launch, which its SessionStart
     # writes to .cs/local/lead-pid (cs_lead_claim): the resume arm runs claude

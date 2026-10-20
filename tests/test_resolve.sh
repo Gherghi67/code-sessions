@@ -500,18 +500,16 @@ run_test test_a_front_end_resolves_an_adopted_session_through_its_link
 # Start a process whose argv carries the flags under test, and print its pid
 # once ps can see it. A script file, not `bash -c`: bash exec's the last command
 # of a -c string over itself, so the process ps reports would be `sleep`, with
-# the arguments under test gone from its argv.
+# the arguments under test gone from its argv. Its caller reads the pid from
+# this function's output, so a ps that never shows it prints nothing more, and
+# the caller's assertions fail.
 _fake_claude() {  # [extra_args...]
-    local script="$TEST_TMPDIR/fake-claude.sh" pid i=0
+    local script="$TEST_TMPDIR/fake-claude.sh" pid
     printf '#!/usr/bin/env bash\nsleep 30\n' > "$script"
     chmod +x "$script"
     "$script" "$@" >/dev/null 2>&1 &
     pid=$!
-    while [ "$i" -lt 50 ]; do
-        ps -o args= -p "$pid" 2>/dev/null | grep -q fake-claude && break
-        i=$((i + 1))
-        sleep 0.1
-    done
+    wait_until pid_args_match "$pid" fake-claude
     printf '%s\n' "$pid"
 }
 

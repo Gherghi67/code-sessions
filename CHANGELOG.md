@@ -4,6 +4,29 @@ All notable changes to cs are documented here. Release notes are also available 
 
 <!-- New entries group changes under Keep-a-Changelog headings (Added / Changed / Removed / Fixes / Docs), or Features / Performance where those fit the release. -->
 
+## 2026.10.9
+
+### Added
+- The `cs-mermaid` mod draws mermaid flowcharts in replies inline in the transcript: nodes as blocks coloured by their role in the flow (a decision amber, a start green, an end grey, a step lavender; a `style` fill wins), edges as lines with arrowheads and labels beside them (a `yes`/`pass` label green, a `no`/`fail` one red), in the light or dark palette of your `theme`. A chart it cannot draw (a subgraph, another diagram type, or one too wide for the terminal) stays a code block with the reason under it. The mod also tells the model, in a short system prompt section, that flowcharts draw here and to add one only for a flow that branches, loops or has four or more stages. `/config` → `cs-mermaid.drawDiagrams` turns both off; `cs -doctor` lists the section among its authority rows. Needs Claude Code 2.1.300 or later.
+
+### Changed
+- `tests/run_all.sh` hands suites to its lanes from one queue, longest file first, so a lane that finishes takes the next suite. `CS_TEST_SHARD=N/M` balances its shards by line count, and CI runs the bash suites as two shards per OS. A suite that runs long for its length carries `# run_all-weight: N` and counts as N times its lines; `test_install.sh` does, with 2, so it no longer shares a macOS shard with `test_worktrees.sh`. A suite file the gate cannot read stops it with `cannot read <path>`.
+- `tests/lint_shell.sh` runs one shellcheck pass, one file per run across every processor, instead of two passes over every file in one process: about 3 minutes to under 20 seconds on a 14-core Mac. A file shellcheck cannot run on stops it with exit 2 and the file's name, where it used to read as `found errors`.
+- CI cancels a pull request's older test run when a newer push lands (never on `main`), and skips the tests for a push that touches only `docs/superpowers/` or `docs/upstream/`, which no suite reads.
+- When an open or `cs -adopt` changes a file for you, cs lists it under one `✳ cs updated these files` header, a row per change with the file in a column and the change beside it, and under the `.gitignore` row the one thing to do: commit it with your next change. These were separate sentences in green or amber, and amber also meant cs could not do something; that is all amber means now.
+- Tests that wait on a background writer or a released stand-in wait on the event itself, through `wait_until` in `tests/test_lib.sh` (a command retried under a 120 s hang guard), not on a count of polls a loaded machine outran. That covers 17 suites, among them the iTerm tab-helper tests that went red in the full bash 3.2 run on `main`.
+- Five tests that went red under load wait on the event they check: the status line's walker tests, uninstall's mount and live-session rechecks, the concurrent `cs -queue accept` race (a loser may print either honest refusal), the nested-child lead claim, and the rewriter's withheld elapsed time. `tests/test_lib.sh` gains `wait_for_file_or_exit`.
+
+### Fixes
+- The prompt rewriter retries with your Console API key whenever the first attempt answers "Not logged in", however long that took. It retried only a failure that took under five seconds, so on a loaded machine a key-only user's rewrite failed outright. Any other failure is still retried only when it was that fast.
+- cs reads the terminal's theme before it migrates a session, so what the migration prints uses the light palette on a light terminal. It read the theme only at launch, after the migration had printed in the dark palette.
+- The `.gitignore` cs writes for a new session names `.cs/session.lock` and `.cs/session.mutex.lock`, so a session created from this version gets no `.gitignore` row on a later migration. A session created before still gets the two lines, and the row asking you to commit them, once.
+- The status line's background tmux walker kills a `ps` that has not answered after five seconds of wall time. It counted fifty short sleeps before, each of which ran long by its fork on a loaded machine, so the wait could outlast the ten-second walk mark and the next render started a second walker beside the first.
+
+### Docs
+- The README reads in one screen: install first, a 60-second first run, the status line, a feature table that links each feature to the guide with its detail, uninstall, and the documentation index. The command reference and the operational detail (sessions and locks, adoption, worktrees, the queue and mail, rotation, remote control, completion) moved to `docs/commands.md`; installer and settings detail to `docs/configuration.md`. Every claim was checked against `cs -h`, the source, the guides or a test; thirteen that nothing confirmed were dropped, and the Windows section with them (native Windows left in 2026.8.10).
+- Six animated SVGs, each traced from a capture of the real program: the status line in five states, a first run (the launch and the picker), a reply gaining an inline Mermaid chart, the `cs updated these files` rows, and the queue count reaching the status line. They replace the status line screenshot.
+
 ## 2026.10.8
 
 ### Added

@@ -3,17 +3,37 @@
 
 name: Test
 
+# Plans, specs and upstream notes under docs/ are the only files no suite reads
+# (README, CHANGELOG and the other docs are checked by test_docs and friends),
+# so a push that touches nothing else runs no tests.
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'docs/superpowers/**'
+      - 'docs/upstream/**'
   pull_request:
+    paths-ignore:
+      - 'docs/superpowers/**'
+      - 'docs/upstream/**'
+
+# A newer push to a pull request's branch cancels its older run. Runs on main
+# are never cancelled: a release is tagged only on a commit whose own run is
+# green.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  # Two jobs per OS, each running half the suites (run_all.sh balances the
+  # halves by line count). One macOS job ran all of them for 25 minutes.
   bash:
+    name: bash (${{ matrix.os }}, ${{ matrix.shard }}/2)
     strategy:
       fail-fast: false
       matrix:
         os: [macos-latest, ubuntu-latest]
+        shard: [1, 2]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -35,6 +55,8 @@ jobs:
         run: brew install age
 
       - name: Run bash test suites
+        env:
+          CS_TEST_SHARD: ${{ matrix.shard }}/2
         run: bash tests/run_all.sh
 
   build-sync:
