@@ -252,6 +252,7 @@ _append_record() {  # file, jq args...
 # Report append failure so acknowledged transitions keep their recovery record.
 _timeline_rotated() {  # session_dir, from, to, reason, [handoff]
     local session_dir="$1" from="$2" to="$3" reason="$4" handoff="${5:-}" engine="${6:-claude}"
+    _terminate_jsonl "$session_dir/.cs/timeline.jsonl"
     cs_append_inside "$session_dir/.cs/timeline.jsonl" jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
            --arg from "$from" \
            --arg to "$to" \
@@ -265,6 +266,7 @@ _timeline_rotated() {  # session_dir, from, to, reason, [handoff]
 # A native adapter calls this only after its conversation readiness acknowledgement.
 _timeline_started() {  # session_dir, engine, native_id, source
     local session_dir="$1" engine="$2" native_id="$3" source="$4"
+    _terminate_jsonl "$session_dir/.cs/timeline.jsonl"
     cs_append_inside "$session_dir/.cs/timeline.jsonl" jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         --arg engine "$engine" --arg session_id "$native_id" --arg source "$source" \
         --arg run_id "${CS_RUN_ID:-}" \
