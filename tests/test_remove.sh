@@ -796,6 +796,53 @@ test_remove_base_session_drops_its_age_state() {
         "cs -rm names the age state it removed" || return 1
 }
 
+test_remove_base_session_drops_only_profile_age_state() {
+    create_test_session ageprofile >/dev/null
+    local default_dir="$HOME/.cs-secrets/sessions/ageprofile"
+    local profile="$TEST_TMPDIR/profile-secrets"
+    local age_dir="$profile/sessions/ageprofile"
+    mkdir -p "$default_dir" "$age_dir"
+    printf 'original-pin\n' > "$default_dir/age-trusted"
+    printf 'profile-pin\n' > "$age_dir/age-trusted"
+    local out
+    out=$(CS_SECRETS_DIR="$profile" "$CS_BIN" -rm ageprofile --force </dev/null 2>&1) || { echo "  cs -rm failed: $out"; return 1; }
+    assert_not_exists "$age_dir" "the profile's age state goes with its session" || return 1
+    assert_eq "original-pin" "$(cat "$default_dir/age-trusted")" "the original store survives" || return 1
+    assert_eq "Removed age state: $age_dir" "$(printf '%s\n' "$out" | grep '^Removed age state: ')" \
+        "cs -rm names the profile's state" || return 1
+}
+
+test_remove_profile_age_state_refuses_a_linked_root_with_trailing_slashes() {
+    local actual="$TEST_TMPDIR/actual-secrets"
+    local profile="$TEST_TMPDIR/profile-secrets"
+    local age_dir="$actual/sessions/ageprofilelink"
+    local default_dir="$HOME/.cs-secrets/sessions/ageprofilelink"
+    mkdir -p "$age_dir" "$default_dir"
+    printf 'profile-pin\n' > "$age_dir/age-trusted"
+    printf 'original-pin\n' > "$default_dir/age-trusted"
+    ln -s "$actual" "$profile"
+    local suffix out rc
+    for suffix in "" "/" "///"; do
+        create_test_session ageprofilelink >/dev/null
+        rc=0
+        out=$(CS_SECRETS_DIR="$profile$suffix" "$CS_BIN" -rm ageprofilelink --force </dev/null 2>&1) || rc=$?
+        assert_eq "1" "$rc" "a linked profile root is refused even with '$suffix': $out" || return 1
+        assert_not_exists "$CS_SESSIONS_ROOT/ageprofilelink" "the session is removed" || return 1
+        assert_eq "profile-pin" "$(cat "$age_dir/age-trusted")" "state behind the profile link survives" || return 1
+        assert_eq "original-pin" "$(cat "$default_dir/age-trusted")" "the original store survives" || return 1
+    done
+}
+
+test_remove_base_session_with_empty_secrets_dir_uses_default() {
+    create_test_session ageempty >/dev/null
+    local age_dir="$HOME/.cs-secrets/sessions/ageempty"
+    mkdir -p "$age_dir"
+    printf 'age1pin\n' > "$age_dir/age-trusted"
+    local out
+    out=$(CS_SECRETS_DIR= "$CS_BIN" -rm ageempty --force </dev/null 2>&1) || { echo "  cs -rm failed: $out"; return 1; }
+    assert_not_exists "$age_dir" "an empty override falls back to the default store" || return 1
+}
+
 test_remove_base_session_without_age_state_prints_no_age_line() {
     create_test_session agenone >/dev/null
     local out
@@ -1247,6 +1294,9 @@ test_remove_from_inside_a_session_checks_every_name_first() {
     assert_dir "$CS_SESSIONS_ROOT/receiver" "the live session survives" || return 1
 }
 
+run_test test_remove_base_session_drops_only_profile_age_state
+run_test test_remove_base_session_with_empty_secrets_dir_uses_default
+run_test test_remove_profile_age_state_refuses_a_linked_root_with_trailing_slashes
 run_test test_remove_live_other_session_refused_even_with_force
 run_test test_remove_refuses_a_served_session_with_and_without_force
 run_test test_remove_idle_other_session_from_inside_a_session

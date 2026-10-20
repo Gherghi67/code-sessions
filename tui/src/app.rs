@@ -2811,8 +2811,23 @@ fn secrets_home() -> Option<PathBuf> {
     session::home_dir().map(PathBuf::from)
 }
 
+/// The configured cs-secrets store, falling back to `~/.cs-secrets` for an
+/// unset or empty override. Tests scope both selectors to this thread so
+/// they cannot reach a real profile or race on process-global environment.
+fn secrets_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    let configured = {
+        test_home::current()?;
+        test_home::secrets_dir()
+    };
+    #[cfg(not(test))]
+    let configured = std::env::var_os("CS_SECRETS_DIR");
+    configured.filter(|dir| !dir.is_empty()).map(PathBuf::from)
+        .or_else(|| secrets_home().map(|home| home.join(".cs-secrets")))
+}
+
 /// Where cs-secrets keeps a base session's age state (recipient pins and
-/// digests): `~/.cs-secrets/sessions/<name>/`. Twin of `age_state_dir` in
+/// digests): `<secrets-dir>/sessions/<name>/`. Twin of `age_state_dir` in
 /// bin/cs-secrets and `_drop_session_age_state` in lib/65-sessions.sh; the
 /// three change together. None for a feature (`base@task`) name, whose
 /// secrets are its base's, and for any name that is not one plain path
@@ -2824,11 +2839,11 @@ fn age_state_dir(name: &str) -> Option<PathBuf> {
     if !one_plain_component || name.starts_with('.') || name.contains('/') || name.contains('@') {
         return None;
     }
-    Some(secrets_home()?.join(".cs-secrets/sessions").join(name))
+    Some(secrets_dir()?.join("sessions").join(name))
 }
 
 /// True when cs-secrets began moving session `old`'s secrets to `new` and
-/// did not finish: its marker `~/.cs-secrets/.rename.<old>` holds the line
+/// did not finish: its marker `<secrets-dir>/.rename.<old>` holds the line
 /// `<new>`. It writes the marker before its first change and removes it
 /// last, or once it has put a failed move back, so a refusal or a failure
 /// leaves none, or one naming another unfinished move; a move it could not
@@ -2836,10 +2851,10 @@ fn age_state_dir(name: &str) -> Option<PathBuf> {
 /// Twin of `marker` in rename_session_secrets in bin/cs-secrets; the two
 /// change together.
 fn secrets_move_unfinished(old: &str, new: &str) -> bool {
-    let Some(home) = secrets_home() else {
+    let Some(dir) = secrets_dir() else {
         return false;
     };
-    match std::fs::read(home.join(".cs-secrets").join(format!(".rename.{old}"))) {
+    match std::fs::read(dir.join(format!(".rename.{old}"))) {
         Ok(bytes) => bytes == format!("{new}\n").as_bytes(),
         Err(_) => false,
     }
@@ -2851,7 +2866,7 @@ fn drop_age_state(name: &str) -> Result<Option<PathBuf>, String> {
     let Some(dir) = age_state_dir(name) else {
         return Ok(None);
     };
-    // `~/.cs-secrets/sessions` and `~/.cs-secrets` must be real directories:
+    // The secrets directory and its `sessions` child must be real directories:
     // through a link the removal would land on a same-name directory
     // elsewhere. Reading through the link is harmless, so only a state that is
     // there is named as left behind. An unsearchable parent fails the read
@@ -2917,15 +2932,17 @@ fn is_symlink(path: &Path) -> bool {
     path.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false)
 }
 
-/// Test-only override for [`claude_home`]. Same rationale as
+/// Test-only overrides for [`claude_home`] and the cs-secrets store. Same rationale as
 /// `session::test_root`: scope the value to the current test thread instead of
 /// mutating process-global `HOME`. The returned guard clears it on drop.
 #[cfg(test)]
 pub mod test_home {
     use std::cell::RefCell;
+    use std::ffi::OsString;
     use std::path::PathBuf;
 
     thread_local! {
+        static SECRETS_DIR: RefCell<Option<OsString>> = const { RefCell::new(None) };
         static HOME: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
     }
 
@@ -2939,9 +2956,20 @@ pub mod test_home {
         Guard
     }
 
+    pub(super) fn secrets_dir() -> Option<OsString> {
+        SECRETS_DIR.with(|c| c.borrow().clone())
+    }
+
+    #[must_use]
+    pub fn scoped_with_secrets_dir(home: PathBuf, dir: OsString) -> Guard {
+        SECRETS_DIR.with(|c| *c.borrow_mut() = Some(dir));
+        scoped(home)
+    }
+
     pub struct Guard;
     impl Drop for Guard {
         fn drop(&mut self) {
+            SECRETS_DIR.with(|c| *c.borrow_mut() = None);
             HOME.with(|c| *c.borrow_mut() = None);
         }
     }
@@ -4293,11 +4321,17 @@ mod tests {
     /// With `fail` set the stand-in prints a refusal and exits 1 instead.
     #[cfg(unix)]
     fn rename_fixture(tag: &str, fail: bool) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+        rename_fixture_in_profile(tag, fail, false)
+    }
+
+    #[cfg(unix)]
+    fn rename_fixture_in_profile(tag: &str, fail: bool, profile: bool) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
         use std::os::unix::fs::PermissionsExt;
         let tmp = std::env::temp_dir().join(format!("cs-test-rename-{}-{}", tag, std::process::id()));
         std::fs::remove_dir_all(&tmp).ok();
         let root = tmp.join("root");
         let home = tmp.join("home");
+        let secrets_dir = if profile { tmp.join("profile-secrets") } else { home.join(".cs-secrets") };
         std::fs::create_dir_all(root.join("proj/.cs/local")).unwrap();
         std::fs::create_dir_all(&home).unwrap();
         std::fs::create_dir_all(tmp.join("shim")).unwrap();
@@ -4309,8 +4343,9 @@ mod tests {
         } else {
             format!(
                 "[ \"$1\" = -secrets ] || exit 9\nshift\n\
-                 HOME='{home}' CS_SECRETS_DIR='{home}/.cs-secrets' CS_SECRETS_CALLER= CS_SESSION_NAME= CLAUDE_SESSION_NAME= CS_SECRETS_SESSION= CS_SESSIONS_ROOT='{root}' CS_SECRETS_BACKEND=encrypted PATH='{shim}':\"$PATH\" exec '{secrets}' \"$@\"\n",
+                 HOME='{home}' CS_SECRETS_DIR='{secrets_dir}' CS_SECRETS_CALLER= CS_SESSION_NAME= CLAUDE_SESSION_NAME= CS_SECRETS_SESSION= CS_SESSIONS_ROOT='{root}' CS_SECRETS_BACKEND=encrypted PATH='{shim}':\"$PATH\" exec '{secrets}' \"$@\"\n",
                 home = home.display(),
+                secrets_dir = secrets_dir.display(),
                 root = root.display(),
                 shim = tmp.join("shim").display(),
                 secrets = secrets.display()
@@ -4840,6 +4875,52 @@ mod tests {
         );
         assert!(!home.join(".cs-secrets/.rename.proj").exists(), "the finished move removes its marker");
         assert!(!pins.exists(), "nothing is left under proj");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_profile_rename_with_unfinished_secrets_keeps_the_new_name() {
+        use crate::session::test_root;
+        let _env = CS_BIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (tmp, root, home) = rename_fixture_in_profile("profile-unrestorable", false, true);
+        let profile = tmp.join("profile-secrets");
+        let pins = profile.join("sessions/proj");
+        std::fs::create_dir_all(&pins).unwrap();
+        std::fs::write(pins.join("age-trusted"), "0000000000000000000000000000000000000000000000000000000000000000\n").unwrap();
+        let original = home.join(".cs-secrets/sessions/proj");
+        std::fs::create_dir_all(&original).unwrap();
+        std::fs::write(original.join("age-trusted"), "original-pin\n").unwrap();
+        std::fs::write(home.join(".cs-secrets/.rename.proj"), "elsewhere\n").unwrap();
+        fixture_secret_set(&tmp, "proj", "E1", "value-enc");
+        fixture_failing_ln(&tmp, "*/sessions/proj-old/*|*/proj.enc");
+        let _root = test_root::scoped(root.clone());
+        let _home = test_home::scoped_with_secrets_dir(home.clone(), profile.clone().into_os_string());
+        std::env::set_var("CS_BIN", tmp.join("cs-stub"));
+        let mut app = app_on(&root, "proj");
+        app.mode = Mode::Rename;
+        app.rename_input.set("proj-old");
+
+        app.execute_rename();
+        std::env::remove_var("CS_BIN");
+
+        assert_eq!(
+            app.status_message.as_ref().map(|m| (m.text.as_str(), m.level)),
+            Some(("Rename incomplete: run `cs -secrets --session proj rename proj-old`", StatusLevel::Error))
+        );
+        assert!(root.join("proj-old/.cs").is_dir(), "the session keeps its new name for recovery");
+        assert!(!root.join("proj").exists());
+        assert_eq!(std::fs::read_to_string(profile.join(".rename.proj")).unwrap(), "proj-old\n");
+        std::fs::remove_file(tmp.join("shim/ln")).unwrap();
+        let out = std::process::Command::new(tmp.join("cs-stub"))
+            .args(["-secrets", "--session", "proj", "rename", "proj-old"])
+            .output().unwrap();
+        assert!(out.status.success(), "rerun: {}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(fixture_secret_get(&tmp, "proj-old", "E1"), Ok("value-enc".to_string()));
+        assert!(profile.join("sessions/proj-old/age-trusted").is_file());
+        assert!(!profile.join(".rename.proj").exists());
+        assert_eq!(std::fs::read_to_string(original.join("age-trusted")).unwrap(), "original-pin\n");
+        assert_eq!(std::fs::read_to_string(home.join(".cs-secrets/.rename.proj")).unwrap(), "elsewhere\n");
         std::fs::remove_dir_all(&tmp).ok();
     }
 
@@ -5982,6 +6063,41 @@ mod tests {
         let status = app.status_message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
         assert!(!age_dir.exists(), "age state survived; status: {status}");
         assert_eq!(status, format!("Deleted: agebase · removed age state {}", age_dir.display()));
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn delete_of_a_base_session_drops_only_profile_age_state() {
+        use crate::session::test_root;
+        let (root, home) = age_fixture("profile", &["agebase"], &["agebase"]);
+        let profile = root.parent().unwrap().join("profile-secrets");
+        let age_dir = profile.join("sessions/agebase");
+        std::fs::create_dir_all(&age_dir).unwrap();
+        std::fs::write(age_dir.join("age-trusted"), "profile-pin\n").unwrap();
+        let _root = test_root::scoped(root.clone());
+        let _home = test_home::scoped_with_secrets_dir(home.clone(), profile.into_os_string());
+        let mut app = app_on(&root, "agebase");
+
+        app.execute_delete();
+
+        let status = app.status_message.as_ref().map(|m| m.text.as_str()).unwrap_or_default();
+        assert!(!age_dir.exists(), "profile age state survived; status: {status}");
+        assert_eq!(status, format!("Deleted: agebase · removed age state {}", age_dir.display()));
+        assert_eq!(std::fs::read_to_string(home.join(".cs-secrets/sessions/agebase/age-trusted")).unwrap(), "age1pin\n");
+        std::fs::remove_dir_all(root.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn delete_with_an_empty_secrets_dir_drops_default_age_state() {
+        use crate::session::test_root;
+        let (root, home) = age_fixture("empty-profile", &["agebase"], &["agebase"]);
+        let _root = test_root::scoped(root.clone());
+        let _home = test_home::scoped_with_secrets_dir(home.clone(), "".into());
+        let mut app = app_on(&root, "agebase");
+
+        app.execute_delete();
+
+        assert!(!home.join(".cs-secrets/sessions/agebase").exists());
         std::fs::remove_dir_all(root.parent().unwrap()).ok();
     }
 

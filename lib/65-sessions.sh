@@ -677,9 +677,9 @@ Add --delete-files to remove $them with --force"
 }
 
 # Remove the age state cs-secrets keeps for a base session outside the
-# session directory: ~/.cs-secrets/sessions/<name>/ (recipient pins and
-# digests). Twin of age_state_dir in bin/cs-secrets and age_state_dir in
-# tui/src/app.rs; the three change together. Prints one line naming the path
+# session directory: $CS_SECRETS_DIR/sessions/<name>/, falling back to
+# ~/.cs-secrets (recipient pins and digests). Twin of age_state_dir in
+# bin/cs-secrets and age_state_dir in tui/src/app.rs; the three change together. Prints one line naming the path
 # when there was something to remove, nothing otherwise. A name that is not a
 # single plain path component is refused before it becomes a path, so "" can
 # never resolve to the sessions directory itself. Keychain and encrypted
@@ -690,18 +690,23 @@ Add --delete-files to remove $them with --force"
 # 2026-10-11); a lock shared with the removal was weighed and declined, do not
 # add one.
 _drop_session_age_state() {  # name
-    local name="$1" dir
+    local name="$1" dir secrets_dir="${CS_SECRETS_DIR:-$HOME/.cs-secrets}"
     case "$name" in
         ''|.*|*/*|*@*)
             warn "Refusing to remove age state for an invalid base session name: '$name'"
             return 1 ;;
     esac
-    dir="$HOME/.cs-secrets/sessions/$name"
+    # A trailing slash hides a directory symlink from -L; normalize it before
+    # checking the selected store, keeping / itself intact.
+    while [ "${secrets_dir%/}" != "$secrets_dir" ] && [ "$secrets_dir" != / ]; do
+        secrets_dir="${secrets_dir%/}"
+    done
+    dir="$secrets_dir/sessions/$name"
     # Each parent must be a real directory cs can search: through a link the
     # rm -rf would land on a same-name directory elsewhere, and an unsearchable
     # parent makes a present state read as absent.
     local parent linked=false
-    for parent in "$HOME/.cs-secrets" "$HOME/.cs-secrets/sessions"; do
+    for parent in "$secrets_dir" "$secrets_dir/sessions"; do
         [ -L "$parent" ] && linked=true
         [ -e "$parent" ] || return 0
         if [ ! -d "$parent" ] || [ ! -x "$parent" ]; then
