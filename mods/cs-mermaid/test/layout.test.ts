@@ -187,6 +187,28 @@ test('a 200-node chain lays out in bounded time', () => {
   expect(drawn.boxes.length).toBe(200)
 })
 
+test('long parallel edges are refused before excessive dummy expansion', () => {
+  const chain = Array.from({ length: 199 }, (_, i) => `N${i} --> N${i + 1}`)
+  const source = 'graph TD\n' + chain.concat(Array(201).fill('N0 --> N199')).join('\n')
+  const graph = parse(source)
+  if ('error' in graph) throw new Error(graph.error)
+  expect([graph.nodes.length, graph.edges.length]).toEqual([200, 400])
+  const started = Date.now()
+  const drawn = layout(graph)
+  expect(Date.now() - started).toBeLessThan(2000)
+  expect('error' in drawn ? drawn.error : 'drawn').toMatch(/too many edge segments/)
+})
+
+test('long edges below the expansion budget reach the cell-budget fallback promptly', () => {
+  const chain = Array.from({ length: 199 }, (_, i) => `N${i} --> N${i + 1}`)
+  const graph = parse('graph TD\n' + chain.concat(Array(59).fill('N0 --> N199')).join('\n'))
+  if ('error' in graph) throw new Error(graph.error)
+  const started = Date.now()
+  const drawn = layout(graph)
+  expect(Date.now() - started).toBeLessThan(2000)
+  expect('error' in drawn ? drawn.error : 'drawn').toMatch(/^diagram would be \d+x\d+ cells$/)
+})
+
 test('a chart within the parser limits but past the cell budget is refused with its size', () => {
   const label = 'x'.repeat(60)
   const side = (prefix: string) => Array.from({ length: 20 }, (_, i) => `${prefix}${i}[${label}]`).join(' & ')

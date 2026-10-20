@@ -11,6 +11,7 @@ export type LayoutError = { error: string }
 
 const MARGIN = 1
 const MAX_CELLS = 200_000
+const MAX_SEGMENTS = 12_000
 
 // Items are real nodes or the dummy vertices a long edge is split into, one per layer it crosses.
 type Item = {
@@ -87,6 +88,10 @@ export function layout(graph: Graph): Layout | LayoutError {
     }
   }
 
+  // Count the expanded work before allocating any dummy vertices.
+  const segmentCount = forward.reduce((sum, edge) => sum + items.get(headOf(edge))!.layer - items.get(tailOf(edge))!.layer, 0)
+  if (segmentCount > MAX_SEGMENTS) return { error: `diagram has too many edge segments (${segmentCount}, limit ${MAX_SEGMENTS})` }
+
   // Dummy vertices: a long edge becomes a chain of segments between adjacent layers.
   const segments: Segment[] = []
   const chains = new Map<number, Segment[]>()
@@ -108,10 +113,22 @@ export function layout(graph: Graph): Layout | LayoutError {
     segments.push(...chain)
   }
 
+  const outgoingSegments = new Map<Item, Segment[]>()
+  const incomingSegments = new Map<Item, Segment[]>()
+  const segmentsByGap = new Map<number, Segment[]>()
+  const degree = new Map<Item, number>()
+  for (const segment of segments) {
+    ;(outgoingSegments.get(segment.from) ?? outgoingSegments.set(segment.from, []).get(segment.from)!).push(segment)
+    ;(incomingSegments.get(segment.to) ?? incomingSegments.set(segment.to, []).get(segment.to)!).push(segment)
+    ;(segmentsByGap.get(segment.to.layer) ?? segmentsByGap.set(segment.to.layer, []).get(segment.to.layer)!).push(segment)
+    degree.set(segment.from, (degree.get(segment.from) ?? 0) + 1)
+    degree.set(segment.to, (degree.get(segment.to) ?? 0) + 1)
+  }
+
   const layers: Item[][] = []
   for (const item of items.values()) (layers[item.layer] ??= []).push(item)
   for (let i = 0; i < layers.length; i++) layers[i] ??= []
-  orderLayers(layers, segments)
+  orderLayers(layers, segments, segmentsByGap, degree)
 
   // Cross positions: real nodes widen for their ports, and in TD for the label that sits
   // beside a straight exit; layers are centred on the widest.
@@ -121,8 +138,8 @@ export function layout(graph: Graph): Layout | LayoutError {
   const exitSpan = (s: Segment) => (!flip && labelOf(s) > 0 ? labelOf(s) + 4 : 2)
   for (const item of items.values()) {
     if (!item.node) continue
-    const exits = segments.filter(s => s.from === item)
-    const entries = segments.filter(s => s.to === item).length
+    const exits = (outgoingSegments.get(item) ?? []).slice()
+    const entries = (incomingSegments.get(item) ?? []).slice().length
     // n ports two cells apart need 2n+1 cells; a labelled exit needs its label's room after it.
     const exitRoom = exits.reduce((sum, s) => sum + exitSpan(s), 0) + 1
     item.cross = Math.max(item.cross, entries * 2 + 1, exitRoom)
@@ -141,8 +158,8 @@ export function layout(graph: Graph): Layout | LayoutError {
   // ordered by the far end so segments do not cross on the way out.
   for (const item of items.values()) {
     const centre = (other: Item) => other.c0 + Math.floor(other.cross / 2)
-    const exits = segments.filter(s => s.from === item).sort((p, q) => centre(p.to) - centre(q.to))
-    const entries = segments.filter(s => s.to === item).sort((p, q) => centre(p.from) - centre(q.from))
+    const exits = (outgoingSegments.get(item) ?? []).slice().sort((p, q) => centre(p.to) - centre(q.to))
+    const entries = (incomingSegments.get(item) ?? []).slice().sort((p, q) => centre(p.from) - centre(q.from))
     entries.forEach((s, i) => (s.entry = portAt(item, i, entries.length)))
     if (!item.node || exits.every(s => exitSpan(s) === 2)) {
       exits.forEach((s, i) => (s.exit = portAt(item, i, exits.length)))
@@ -159,7 +176,7 @@ export function layout(graph: Graph): Layout | LayoutError {
   // Ends one cell apart run straight: rounding, not meaning, put them apart.
   for (const s of segments) {
     if (Math.abs(s.exit - s.entry) !== 1) continue
-    const siblings = segments.filter(o => o !== s && o.to.layer === s.to.layer)
+    const siblings = (segmentsByGap.get(s.to.layer) ?? []).filter(o => o !== s)
     // Never snap onto, or right beside, another line in the same gap.
     const clear = (c: number) => !siblings.some(o => Math.abs(o.exit - c) <= 1 || Math.abs(o.entry - c) <= 1)
     if (clear(s.entry) && s.entry > s.from.c0 && s.entry < s.from.c0 + s.from.cross - 1) s.exit = s.entry
@@ -167,7 +184,7 @@ export function layout(graph: Graph): Layout | LayoutError {
   }
   // Two different segments sharing a column in one gap would overlap: nudge the entry.
   for (let gap = 1; gap < layers.length; gap++) {
-    const inGap = segments.filter(s => s.to.layer === gap)
+    const inGap = segmentsByGap.get(gap) ?? []
     const used = new Set<number>()
     for (const s of inGap) used.add(s.exit)
     for (const s of inGap) {
@@ -191,7 +208,7 @@ export function layout(graph: Graph): Layout | LayoutError {
   const busOf = new Map<Segment, number>()
   const busCount: number[] = []
   for (let gap = 1; gap < layers.length; gap++) {
-    const movers = segments.filter(s => s.to.layer === gap && s.exit !== s.entry).sort((p, q) => Math.min(p.exit, p.entry) - Math.min(q.exit, q.entry))
+    const movers = (segmentsByGap.get(gap) ?? []).filter(s => s.exit !== s.entry).sort((p, q) => Math.min(p.exit, p.entry) - Math.min(q.exit, q.entry))
     const rowEnds: number[] = []
     for (const s of movers) {
       const lo = Math.min(s.exit, s.entry)
@@ -212,7 +229,7 @@ export function layout(graph: Graph): Layout | LayoutError {
   layers.forEach((layer, i) => {
     gapStart[i] = a
     if (i > 0) {
-      const labelRoom = flip ? Math.max(0, ...segments.filter(s => s.to.layer === i && labelOf(s) > 0).map(s => labelOf(s) + 2)) : 0
+      const labelRoom = flip ? Math.max(0, ...(segmentsByGap.get(i) ?? []).filter(s => labelOf(s) > 0).map(s => labelOf(s) + 2)) : 0
       gapSize[i] = Math.max(2, 2 + (busCount[i] ?? 0), labelRoom + (busCount[i] ?? 0) + 1)
       a += gapSize[i]!
     }
@@ -224,6 +241,15 @@ export function layout(graph: Graph): Layout | LayoutError {
     a += along
   })
   const busRow = (s: Segment, bus: number) => (gapStart[s.to.layer] ?? 0) + (gapSize[s.to.layer] ?? 2) - 2 - bus
+
+  // Nodes alone already provide a lower bound on the final drawing size.
+  // Refuse an oversized drawing before allocating its line grid.
+  const nodes = [...items.values()].filter(item => item.node)
+  const alongSize = Math.max(0, ...nodes.map(item => item.a0 + item.along)) + MARGIN
+  const crossSize = Math.max(0, ...nodes.map(item => item.c0 + item.cross)) + MARGIN
+  if (alongSize * crossSize > MAX_CELLS) {
+    return { error: `diagram would be ${flip ? alongSize : crossSize}x${flip ? crossSize : alongSize} cells` }
+  }
 
   const grid = new Grid()
   // A dummy vertex is the edge passing through its layer: draw it as a straight piece.
@@ -316,17 +342,17 @@ function portAt(item: Item, i: number, n: number): number {
 }
 
 // Several starting orders, each refined by barycenter sweeps and transposes; fewest crossings wins.
-function orderLayers(layers: Item[][], segments: Segment[]): void {
+function orderLayers(layers: Item[][], segments: Segment[], byGap: Map<number, Segment[]>, degree: Map<Item, number>): void {
   const starts: Item[][][] = [
     layers.map(layer => [...layer]),
     layers.map(layer => [...layer].reverse()),
-    layers.map(layer => [...layer].sort((p, q) => segments.filter(s => s.from === q || s.to === q).length - segments.filter(s => s.from === p || s.to === p).length)),
+    layers.map(layer => [...layer].sort((p, q) => (degree.get(q) ?? 0) - (degree.get(p) ?? 0))),
   ]
   let best = Infinity
   let bestOrder = starts[0]!
   for (const start of starts) {
     start.forEach((layer, i) => (layers[i] = layer))
-    const count = refineOrder(layers, segments)
+    const count = refineOrder(layers, segments, byGap)
     if (count < best) {
       best = count
       bestOrder = layers.map(layer => [...layer])
@@ -345,7 +371,7 @@ function orderLayers(layers: Item[][], segments: Segment[]): void {
 // instead of holding the render hook for tens of seconds; a small chart never reaches it.
 const ORDERING_BUDGET = 4_000_000
 
-function refineOrder(layers: Item[][], segments: Segment[]): number {
+function refineOrder(layers: Item[][], segments: Segment[], byGap: Map<number, Segment[]>): number {
   layers.forEach(layer => layer.forEach((item, i) => (item.order = i)))
   let work = 0
   const exhausted = () => work > ORDERING_BUDGET
@@ -367,7 +393,7 @@ function refineOrder(layers: Item[][], segments: Segment[]): number {
   const crossings = () => {
     let count = 0
     for (let i = 1; i < layers.length; i++) {
-      const between = segments.filter(s => s.to.layer === i)
+      const between = byGap.get(i) ?? []
       work += (between.length * (between.length - 1)) / 2
       for (let p = 0; p < between.length; p++) for (let q = p + 1; q < between.length; q++) {
         const a = between[p]!, b = between[q]!
@@ -418,6 +444,7 @@ function refineOrder(layers: Item[][], segments: Segment[]): number {
   const combinations = layers.reduce((product, layer) => product * factorial(layer.length), 1)
   if (best > 0 && combinations <= 5000 && !exhausted()) {
     const search = (index: number) => {
+      if (exhausted()) return
       if (index === layers.length) {
         const now = crossings()
         if (now < best) {
@@ -431,7 +458,7 @@ function refineOrder(layers: Item[][], segments: Segment[]): number {
         layer.splice(0, layer.length, ...perm)
         layer.forEach((item, i) => (item.order = i))
         search(index + 1)
-        if (best === 0) return
+        if (best === 0 || exhausted()) return
       }
     }
     bestOrder = layers.map(layer => [...layer])
