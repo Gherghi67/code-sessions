@@ -2153,10 +2153,12 @@ _fuse_plan() {  # feature_meta base_meta out task
         done
     fi
     list=$(mktemp "${TMPDIR:-/tmp}/cs-fuse-list.XXXXXX") || return 1
-    # local/ is machine-local (_fuse_walk_skips) and never walked.
+    # local/ is machine-local (_fuse_walk_skips) and never walked. The walk
+    # is sorted so the first record it refuses, named in the error, is the
+    # same on every filesystem (pipefail keeps a failed find failing).
     if ! (cd -- "$1" && find . -mindepth 1 \( -path ./local -prune \) \
             -o \( -type d -exec test -e '{}/.git' \; -prune -print0 \) \
-            -o \( ! -type d -print0 \)) > "$list"; then
+            -o \( ! -type d -print0 \) | LC_ALL=C sort -z) > "$list"; then
         rm -f "$list"
         return 1
     fi
