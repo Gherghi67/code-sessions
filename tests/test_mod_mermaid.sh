@@ -23,6 +23,19 @@ test_mod_manifest_names_the_plugin_its_module_and_the_config_field() {
 
 test_mod_is_deployed_by_the_installer() {
     assert_file_contains "$SCRIPT_DIR/../install.sh" "cs-mermaid/hooks/register.tsx" "install.sh lists the module" || return 1
+    assert_file_contains "$SCRIPT_DIR/../install.sh" "cs-mermaid/skills/show-me/SKILL.md" "install.sh lists the show-me skill" || return 1
+}
+
+# The skill deploys inside the mod, so the engine lists it as cs-mermaid:show-me
+# (measured on 2.1.304); its description is what makes the model pick it unasked.
+test_show_me_skill_names_itself_and_its_triggers() {
+    local skill="$MOD/skills/show-me/SKILL.md"
+    assert_eq "name: show-me" "$(sed -n '2p' "$skill")" "frontmatter name" || return 1
+    assert_file_contains "$skill" '^description: This skill should be used when the user asks to "show me"' "third-person description with the trigger phrase" || return 1
+    assert_file_contains "$skill" '^graph TD$' "the flowchart example uses the dialect the mod draws" || return 1
+    if grep -q 'sequenceDiagram' "$skill"; then
+        echo "  FAIL: the skill shows a diagram type the mod cannot draw"; return 1
+    fi
 }
 
 # The mod hooks prompt.compose, which a Claude Code before 2.1.300 does not
@@ -85,6 +98,7 @@ test_mod_validate_inventories_the_hooks_and_calls() {
 
 run_test test_mod_manifest_names_the_plugin_its_module_and_the_config_field
 run_test test_mod_is_deployed_by_the_installer
+run_test test_show_me_skill_names_itself_and_its_triggers
 run_test test_mod_unit_tests_pass_under_the_engine_test_kit
 run_test test_mod_validate_inventories_the_hooks_and_calls
 

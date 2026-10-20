@@ -25,12 +25,21 @@ cd claude-sessions
 Review [install.sh](install.sh) before running it. The piped command always installs the release, even inside a checkout.
 The installer puts the commands in `~/.local/bin/`, registers hooks, and installs skills, mods, and Bash and Zsh completions.
 
+## Usage
+
+```bash
+cs debug-api
+```
+
+One command, from any terminal: `cs <name>` creates the session the first time and resumes it every time after. It needs no project or git repository first.
+
 ## First run in 60 seconds
 
-1. Run `cs debug-api`. cs creates a workspace and opens Claude Code without needing an existing project or git repository.
+1. Run `cs debug-api`. cs creates a workspace and opens Claude Code.
 2. Describe your task. cs records the first substantive prompt in the session's `Objective` section and keeps notes under `.cs/`.
 3. Exit Claude Code. Run `cs debug-api` again and accept the prompt to resume the recorded conversation.
-4. Run `cs` to open the session picker. Choose a session to reopen it, or use `cs .` from a known session root.
+
+When you forget a name, a bare `cs` opens a picker of your sessions, and `cs .` reopens the one whose root you are in.
 
 ![Session creation banner, picker with demo focused, and picker with demo marked](https://raw.githubusercontent.com/hex/claude-sessions/main/assets/first-run.svg)
 
@@ -57,7 +66,7 @@ The [statusline guide](docs/statusline.md) covers the capsules, colors, threshol
 | Prompt rewriting | Ctrl+G rewrites a draft in the composer for you to review before sending. | [Prompt rewriter](docs/hooks.md#prompt-rewritersh-not-a-hook--an-editor-shim) |
 | Writing skills | Judges prose or drafts from a writing profile. | [Skills](docs/hooks.md#skills) |
 | Session wrap | `/wrap` saves memory, summarizes the narrative, and archives completed tasks without committing. | [Memory checks](docs/hooks.md#memory-index-guardsh-not-a-hook--run-by-wraps-memory-pass) |
-| Inline Mermaid | Draws supported flowcharts in replies. Requires Claude Code 2.1.300+. | [Mermaid mod](docs/hooks.md#cs-mermaid-not-a-hook-script--a-claude-code-mod)<br><img src="https://raw.githubusercontent.com/hex/claude-sessions/main/assets/mermaid.svg" width="260" alt="Reply prose, then the same prose with a drawn Mermaid chart"> |
+| Inline Mermaid | Draws supported flowcharts in replies, and a `show-me` skill answers "show me" with one. Requires Claude Code 2.1.300+. | [Mermaid mod](docs/hooks.md#cs-mermaid-not-a-hook-script--a-claude-code-mod)<br><img src="https://raw.githubusercontent.com/hex/claude-sessions/main/assets/mermaid.svg" width="260" alt="Reply prose, then the same prose with a drawn Mermaid chart"> |
 | Release notes | Shows pending release notes in-session through `/cs-update`. | [Update mod](docs/hooks.md#cs-update-not-a-hook-script--a-claude-code-mod) |
 | Other front ends | Session hooks also work in desktop and IDE conversations opened in a `.cs/` workspace. | [Session resolution](docs/hooks.md#how-a-hook-finds-its-session-cs-resolvesh) |
 
