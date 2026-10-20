@@ -415,6 +415,18 @@ check_update_notify() {
         fi
     fi
 
+    # The fork checks upstream for both adapters, but never offers the original
+    # cs installer's replacement of the running binary. Keep this notice brief;
+    # release summaries can be whole pages and the fork merges them by hand.
+    if [ -n "${CODE_SESSIONS_HOME:-}" ]; then
+        if [ -n "$UPDATE_AVAILABLE" ]; then
+            printf '\n%bUpstream cs %s available%b (fork includes cs %s)\n' "$GREEN" "$UPDATE_AVAILABLE" "$NC" "$VERSION"
+            printf '  Release notes: %s/tag/v%s\n' "$RELEASES_BASE" "$UPDATE_AVAILABLE"
+            printf '  In the code-sessions checkout: scripts/sync-upstream.py catch-up, then sh setup.sh\n'
+        fi
+        return 0
+    fi
+
     # Build the launch card's notes cache once per pending remote version,
     # and beside it the full changelog span the cs-update mod draws; an
     # empty file records a failed fetch so launches don't retry the network
@@ -443,6 +455,7 @@ check_update_notify() {
             done
         fi
     fi
+
 }
 
 # Check dependencies

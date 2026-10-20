@@ -66,7 +66,9 @@ export CS_TMUX_SOCKET=code-sessions CS_TMUX_SESSION=code-sessions
 # opened before the profile used the keychain exports the encrypted one, and a
 # session started from it would look for its secrets where they no longer are.
 unset CS_SECRETS_BACKEND
-export CS_SECRETS_KEYCHAIN_PREFIX=code-sessions CS_SECRETS_DIR="$profile_home/.cs-secrets" CS_NO_UPDATE_CHECK=1
+export CS_SECRETS_KEYCHAIN_PREFIX=code-sessions CS_SECRETS_DIR="$profile_home/.cs-secrets"
+# Session launches check Hex's cs releases hourly, using this profile's cache.
+# Honour an explicit CS_NO_UPDATE_CHECK opt-out from the caller.
 unset CS_SESSION_NAME CS_SESSION_DIR CS_SESSION_META_DIR CS_ACTOR
 unset CLAUDE_SESSION_NAME CLAUDE_SESSION_DIR CLAUDE_SESSION_META_DIR
 # Inside the profile `cs` is code-sessions: its bin comes first on PATH, and
