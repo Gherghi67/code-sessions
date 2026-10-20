@@ -243,6 +243,7 @@ CS_MOD_FILES=(
     cs-mermaid/hooks/parse.ts
     cs-mermaid/hooks/register.tsx
     cs-mermaid/hooks/text.ts
+    cs-mermaid/skills/show-me/SKILL.md
 )
 
 # Every file install.sh deploys from the repo, one repo path per line: the
@@ -1329,7 +1330,7 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "8ca3255c068b352be927e51cfc629f070c89ddbae77198c94c71c36a85e341d4  bin/cs"
+    "240d1c8fef3eb214de12ef74415695802a3ff1bc4a43c69365cd8f31b9f843b9  bin/cs"
     "98e006132ae799f88400cd94ddb2e09aa7605a159f95665b35ed22025eb53b04  bin/cs-secrets"
     "b4e9bae3e09b55cbd68703b894898794d2352902f1a1e8aec04d93cf1e2077eb  bin/cs-statusline"
     "aa370b9561539ddacd7dc6cf3dbd45f1bbdc9f7f21f0e97d211807fcbe17c4ab  bin/cs-subagent-statusline"
@@ -1372,6 +1373,7 @@ CS_PAYLOAD_SHA256=(
     "4258a64c8eb8a2a172fb0680c578204f90ad97f344e82b25b4ff1ff9be701633  mods/cs-mermaid/hooks/parse.ts"
     "5a61c589f8e2a1e7c38aba026244c2ab1864f36035648872595de40fe6fe4cbc  mods/cs-mermaid/hooks/register.tsx"
     "c9c48de571777b2e2e948770b4e43fce1f4f84f86547496772a5021fc3380757  mods/cs-mermaid/hooks/text.ts"
+    "c591644117d9a870c4631ecb40c7fc47f7cbab7b74849feb07b318784ba85367  mods/cs-mermaid/skills/show-me/SKILL.md"
     "d9adfb82412597f096190d1dfcd36d9ae67adbc5a230c9baa5d8485b010f8e78  completions/cs.bash"
     "fa1619b5039452a62dafd4e373546dd2606db4e61a76f6c13af8272ec5be7d5e  completions/_cs"
 )

@@ -151,6 +151,7 @@ CS_MOD_FILES=(
     cs-mermaid/hooks/parse.ts
     cs-mermaid/hooks/register.tsx
     cs-mermaid/hooks/text.ts
+    cs-mermaid/skills/show-me/SKILL.md
 )
 
 # Every file install.sh deploys from the repo, one repo path per line: the

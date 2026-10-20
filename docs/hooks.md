@@ -886,10 +886,19 @@ It hooks two events:
 The `/config` row `cs-mermaid.drawDiagrams` (on by default) turns off both:
 fences show as source and the model is not told they draw.
 
-`install.sh` deploys the mod's six files (`.claude-plugin/plugin.json`,
+The mod also ships a skill, `skills/show-me/SKILL.md`, which the engine lists
+as `/cs-mermaid:show-me`. Its description names the asks that call for a
+picture ("show me", "draw it", "diagram this", "how does X work" about a flow
+or a layout), so the model picks it unasked when one fits; the body puts a
+`graph TD` flowchart first, in the subset the mod draws, then text sketches
+(pseudocode, a call tree, a component tree, a file tree, a diff) for
+structure without a flow. The `/config` row leaves the skill in place: with
+drawing off, its flowchart shows as source.
+
+`install.sh` deploys the mod's seven files (`.claude-plugin/plugin.json`,
 `hooks/hooks.json`, `hooks/register.tsx`, `hooks/parse.ts`, `hooks/layout.ts`,
-`hooks/text.ts`) under `~/.claude/skills/cs-mermaid/`, and `cs -uninstall`
-removes the directory. The mod writes no heartbeat, so `cs -doctor` has no
+`hooks/text.ts`, `skills/show-me/SKILL.md`) under `~/.claude/skills/cs-mermaid/`,
+and `cs -uninstall` removes the directory. The mod writes no heartbeat, so `cs -doctor` has no
 "last ran" row for it.
 
 Tests: `tests/test_mod_mermaid.sh` runs the tests under `mods/cs-mermaid/test/`
