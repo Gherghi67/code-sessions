@@ -719,6 +719,34 @@ test_code_sessions_launcher_opens_when_upstream_is_unreachable() {
     assert_eq attempt "$(cat "$TEST_TMPDIR/upstream-curl.log")" "the failed request was attempted"
 }
 
+test_code_sessions_launcher_opens_with_a_read_only_stale_update_cache() {
+    _stage_upstream_check
+    local cache="$HOME/.local/share/code-sessions/home/.cache/cs/update-check" out status=0
+    mkdir -p "$(dirname "$cache")"
+    _deny_file_write "$cache" || return 77
+    chmod 600 "$cache"
+    printf '1000 2026.99.3\n' > "$cache"
+    chmod 400 "$cache"
+    out=$(_launch_upstream_check upstream-read-only-cache) || status=$?
+    chmod 600 "$cache"
+    assert_eq 0 "$status" "a cache refresh failure must not stop launch" || { echo "$out"; return 1; }
+    assert_output_contains "$out" "MOD_UPDATE=unset" "the native session still runs" || return 1
+    assert_output_contains "$out" "Upstream cs 2026.99.3 available" "the successful probe still supplies the notice" || return 1
+    assert_output_not_contains "$out" "Permission denied" "optional cache failures stay quiet"
+}
+
+test_code_sessions_launcher_opens_when_update_cache_directory_cannot_be_created() {
+    _stage_upstream_check
+    local parent="$HOME/.local/share/code-sessions/home/.cache" out status=0
+    mkdir -p "$parent"
+    _deny_writes "$parent" || return 77
+    out=$(_launch_upstream_check upstream-no-cache-directory) || status=$?
+    _allow_writes "$parent"
+    assert_eq 0 "$status" "a cache directory failure must not stop launch" || { echo "$out"; return 1; }
+    assert_output_contains "$out" "MOD_UPDATE=unset" "the native session still runs" || return 1
+    assert_output_not_contains "$out" "Permission denied" "optional cache failures stay quiet"
+}
+
 run_test test_help_shows_update_command
 run_test test_help_shows_check_and_force
 run_test test_help_does_not_show_auto_update
@@ -750,6 +778,8 @@ run_test test_code_sessions_launcher_checks_upstream_and_caches_the_result
 run_test test_code_sessions_launcher_honours_update_check_opt_out
 run_test test_code_sessions_codex_launch_shows_the_upstream_notice
 run_test test_code_sessions_launcher_opens_when_upstream_is_unreachable
+run_test test_code_sessions_launcher_opens_with_a_read_only_stale_update_cache
+run_test test_code_sessions_launcher_opens_when_update_cache_directory_cannot_be_created
 run_test test_notify_writes_notes_cache
 run_test test_notify_writes_notes_cache_past_stale_tmp_files
 run_test test_notify_writes_empty_full_cache_when_fetch_fails
