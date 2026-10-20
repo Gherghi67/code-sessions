@@ -1728,7 +1728,7 @@ CS_KNOWN_SHA256=(
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
     "7f3e925725d66b3f0a5b2ec2beb253dd50621f4156166edbd91ce0eb8d7fadd4  bin/cs"
-    "5042a197231df26f302a95a4a464dc8c379f6934186f4f3db4b3f2d3eebf297b  bin/cs-secrets"
+    "47ade9518130b8288b5cc7aaec98cb0a5418fd553e96e8d4b988a3985903d89a  bin/cs-secrets"
     "be8c092f779ff31c8543733efeed651fd2703269814b1625682dadad5d054056  bin/cs-codex-thread"
     "bc152de974021d7745798bfb84641f6039214c7426bb9cd4d6ec5d750f058a1f  bin/cs-statusline"
     "92a52124fee1ac25e0f15c9fd4fe70a21876ea8ea47ec1f6b8226334c38e53e3  bin/cs-subagent-statusline"

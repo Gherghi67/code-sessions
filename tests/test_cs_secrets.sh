@@ -43,6 +43,49 @@ teardown() {
 # Save real HOME before tests override it
 ORIGINAL_HOME="$HOME"
 
+# Exercise the installed binary outside the checkout, with only Codex hooks.
+# A recipient forces age list to load the real shared library.
+_codex_only_secrets_fixture() {  # codex home
+    local codex_home="$1" installed="$TEST_TMPDIR/installed"
+    mkdir -p "$installed/bin" "$codex_home/hooks/cs" "$CS_SESSIONS_ROOT/test-session/.cs/age-recipients"
+    cp "$CS_SECRETS_BIN" "$installed/bin/cs-secrets"
+    cp "$SCRIPT_DIR/../hooks/cs-shared.sh" "$codex_home/hooks/cs/cs-shared.sh"
+    printf 'age1dummy\n' > "$CS_SESSIONS_ROOT/test-session/.cs/age-recipients/peer.pub"
+}
+
+test_installed_secrets_loads_shared_library_from_configured_codex_home() (
+    export CODEX_HOME="$TEST_TMPDIR/codex profile"
+    unset CS_HOOKS_DIR
+    _codex_only_secrets_fixture "$CODEX_HOME"
+    local out rc=0
+    out=$("$TEST_TMPDIR/installed/bin/cs-secrets" age list 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the Codex-only installed binary lists recipients: $out" || exit 1
+    assert_eq "Recipients for session: test-session
+  - peer: age1dummy..." "$out" "age list uses the Codex hook library" || exit 1
+)
+
+test_installed_secrets_loads_shared_library_from_default_codex_home() (
+    unset CODEX_HOME CS_HOOKS_DIR
+    _codex_only_secrets_fixture "$HOME/.codex"
+    local out rc=0
+    out=$("$TEST_TMPDIR/installed/bin/cs-secrets" age list 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the default Codex-only install lists recipients: $out" || exit 1
+    assert_eq "Recipients for session: test-session
+  - peer: age1dummy..." "$out" "age list uses the default Codex hook library" || exit 1
+)
+
+test_installed_secrets_names_all_library_locations_when_missing() (
+    export CODEX_HOME="$TEST_TMPDIR/codex profile"
+    export CS_HOOKS_DIR="$TEST_TMPDIR/claude-hooks"
+    _codex_only_secrets_fixture "$CODEX_HOME"
+    rm "$CODEX_HOME/hooks/cs/cs-shared.sh"
+    local out rc=0
+    out=$("$TEST_TMPDIR/installed/bin/cs-secrets" age list 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a missing shared library fails" || exit 1
+    assert_eq "Error: Could not load cs-shared.sh (looked in $TEST_TMPDIR/installed/bin/../hooks/cs-shared.sh, $CS_HOOKS_DIR/cs-shared.sh and $CODEX_HOME/hooks/cs/cs-shared.sh); reinstall cs" \
+        "$out" "the failure names every attempted library path" || exit 1
+)
+
 # --- Sync-file test helpers ---
 
 # Reproduce the machine identifier cs-secrets uses to name per-machine sync
@@ -5162,6 +5205,9 @@ test_neutral_session_name_takes_precedence_with_legacy_fallback() (
     assert_eq legacy-value "$("$CS_SECRETS_BIN" get legacy_key)"
 )
 
+run_test test_installed_secrets_loads_shared_library_from_configured_codex_home
+run_test test_installed_secrets_loads_shared_library_from_default_codex_home
+run_test test_installed_secrets_names_all_library_locations_when_missing
 run_test test_backend_shows_encrypted
 run_test test_backend_override_via_env
 run_test test_backend_wsl_defaults_encrypted_not_keychain
