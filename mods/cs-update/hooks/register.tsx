@@ -157,6 +157,9 @@ export function register(on: On, options: PluginOptions) {
   on('command.run', { command: 'cs-update' }, async ($, e) => {
     const cwd = await $.session.cwd()
     if (!(await isLead($, cwd))) return { text: 'The release-notes pane belongs to the conversation cs launched.' }
+    if (await $.env.get('CODE_SESSIONS_HOME')) {
+      return { text: 'To update the code-sessions fork, run `scripts/sync-upstream.py catch-up` in its checkout, then `sh setup.sh`. Upstream release notes: https://github.com/hex/claude-sessions/releases' }
+    }
     const pending = await $.env.get('CS_UPDATE_AVAILABLE')
     if (!pending) return { text: 'This launch found no newer cs; the check runs again at the next launch.' }
     // After a reload (which drops the module state, and fires no
