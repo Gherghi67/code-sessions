@@ -81,9 +81,11 @@ fi
 # How long one suite may run before the gate stops it. Nothing else bounds a
 # hung suite: `wait` has no timeout and macOS ships no `timeout`, so a suite
 # stuck on a child that never returns holds the whole gate until someone
-# notices. The slowest suite takes about 200 s on a loaded box; the default
-# leaves three times that. CS_TEST_SUITE_TIMEOUT overrides, in seconds.
-suite_timeout="${CS_TEST_SUITE_TIMEOUT:-600}"
+# notices. The slowest suite, test_install, took 558 to 601 s under a full
+# local gate in October 2026 and test_worktrees 476 s, so the default leaves
+# test_install about twice its loaded time. CS_TEST_SUITE_TIMEOUT overrides,
+# in seconds.
+suite_timeout="${CS_TEST_SUITE_TIMEOUT:-1200}"
 case "$suite_timeout" in ''|*[!0-9]*) echo "invalid CS_TEST_SUITE_TIMEOUT='$suite_timeout' (want a positive number of seconds)" >&2; exit 2 ;; esac
 [ "$suite_timeout" -ge 1 ] || { echo "invalid CS_TEST_SUITE_TIMEOUT='$suite_timeout' (want a positive number of seconds)" >&2; exit 2; }
 

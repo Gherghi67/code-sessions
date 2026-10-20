@@ -197,12 +197,36 @@ test_fresh_launch_is_labelled_and_recorded_as_fresh() {
     assert_output_contains "$ev" '"reason":"fresh"' "an explicit --fresh is recorded as fresh" || return 1
 }
 
+# cs stays as claude's parent on a resume it cannot be sure of, and a claude
+# that fails within three seconds is read as a conversation that would not
+# resume, so cs starts a fresh one. When that claude ended because its session
+# was removed (`cs -rm <name> --force` while it was exiting), the fresh start
+# would build the session's .cs/local/state again from its path and launch a
+# claude in a directory that is gone. cs exits with claude's status instead,
+# writing nothing and starting nothing.
+test_resume_failure_leaves_a_removed_session_removed() {
+    _rot_session "rot-gone"
+    local dir="$CS_SESSIONS_ROOT/rot-gone" out rc=0
+    cat > "$TEST_TMPDIR/claude-stub" << 'SCRIPT'
+#!/bin/bash
+case "$*" in *--resume*) rm -rf "$CS_TEST_REMOVE_DIR"; exit 1;; esac
+echo "STUB_ARGS: $*"
+exit 0
+SCRIPT
+    out=$(CS_TEST_REMOVE_DIR="$dir" "$CS_BIN" rot-gone <<< "" 2>&1) || rc=$?
+    assert_not_exists "$dir" "the removed session stays removed" || return 1
+    assert_output_not_contains "$out" "STUB_ARGS:" "no fresh claude starts for a removed session" || return 1
+    assert_output_not_contains "$out" "Starting fresh" "no fresh start is announced for a removed session" || return 1
+    assert_eq "1" "$rc" "cs exits with the status of the claude that ended" || return 1
+}
+
 run_test test_hook_mismatch_emits_rebind_event
 run_test test_hook_matching_uuid_emits_nothing
 run_test test_decline_resume_emits_declined_event
 run_test test_adopted_project_first_launch_starts_fresh_without_asking
 run_test test_fresh_launch_is_labelled_and_recorded_as_fresh
 run_test test_unattended_resume_failure_preserves_binding_without_lineage
+run_test test_resume_failure_leaves_a_removed_session_removed
 
 # ============================================================================
 # Cycle 2: the rotate skill ships and is registered
@@ -216,6 +240,14 @@ test_rotate_skill_exists_with_frontmatter() {
     assert_file_contains "$skill" "description:" "frontmatter has a description" || return 1
     assert_file_contains "$skill" "status: unconsumed" "skill teaches the frontmatter contract" || return 1
     assert_file_contains "$skill" ".cs/handoffs/" "skill targets the tracked handoff store" || return 1
+}
+
+# cs offers and loads only a handoff whose file name is plain, so the skill
+# that names the file keeps the slug inside that rule by construction.
+test_rotate_skill_slug_is_a_plain_name() {
+    local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md"
+    assert_file_contains "$skill" "slug is ASCII: lowercase letters, digits and hyphens only, at most 60" \
+        "the skill limits the slug to characters cs offers" || return 1
 }
 
 # Nothing else in cs deletes a handoff, so without a prune rule .cs/handoffs/
@@ -262,29 +294,28 @@ test_rotate_skill_has_a_home_for_rejected_alternatives() {
 # them no container and step 4 said "pass two is where exact readings live".
 # In 4 sampled handoffs, 3 writers invented their own section for these facts;
 # the one that did not carried both of the wrong claims found. A named section
-# in pass one, checked item by item before the first commit, closes both.
+# in pass one, checked item by item as pass one is written, closes both.
 test_rotate_skill_has_a_home_for_conversation_only_facts() {
     local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md"
     assert_file_contains "$skill" "3\. Conversation-only facts" \
         "the body needs a pass-one section for facts that exist nowhere else" || return 1
     assert_file_contains "$skill" "check each one off" \
-        "and a checklist before the first commit" || return 1
+        "and a checklist as pass one is written" || return 1
     if grep -q 'pass two is where exact readings live' "$skill"; then
         echo "  FAIL: exact readings belong to pass one, not pass two"; return 1
     fi
 }
 
 # A successor appends its report to the handoff it consumed, and nothing
-# committed it: step 7's prune deletes spent handoffs on the premise that git
+# commits it: step 7's prune deletes spent handoffs on the premise that git
 # history keeps them, which is false for an uncommitted report (Codex and
-# Fable, 2026-09-24). The prune must skip a handoff with uncommitted changes,
-# and step 8 must stage the report.
+# Fable, 2026-09-24). The prune must skip a handoff with uncommitted changes.
 test_rotate_skill_keeps_successor_reports() {
     local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md"
     assert_file_contains "$skill" "it has no uncommitted changes" \
         "the prune must not delete an uncommitted successor report" || return 1
     assert_file_contains "$skill" "Successor report" \
-        "step 8 must stage consumed handoffs carrying a report" || return 1
+        "the prune names the successor report it keeps" || return 1
 }
 
 # .cs/ is gitignored in some checkouts, and `git status --porcelain` prints
@@ -296,6 +327,35 @@ test_rotate_skill_prunes_only_tracked_handoffs() {
     local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md"
     assert_file_contains "$skill" "git ls-files --error-unmatch" \
         "the prune must skip a handoff git does not track" || return 1
+}
+
+# Completed native task rows pile up in the live list every conversation
+# re-reads (443 of 454 rows in one session). The rotation moves them out
+# through cs -archive-tasks: plan first (the standing answer and the rows),
+# one question while the answer is unasked, recorded with answer yes|no, then
+# run. A rotation the cs mod forced, or ran from its one-key rotate button,
+# drives itself and must not stop to ask: the skill reads that from plan's
+# forced: line (cs compares .cs/local/cs.forced and .cs/local/cs.pressed with
+# the conversation's id; test_task_archive.sh pins that), never from
+# CS_ROTATE_FORCE_CTX, a threshold that is unset by default while forcing is on
+# and that a person who rotates by hand may have set. All of it happens before
+# step 9 arms the handoff, which stays the last step.
+test_rotate_skill_archives_completed_task_rows_before_arming() {
+    local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md" step8
+    step8=$(awk '/^8\. /{p=1} /^9\. /{p=0} p' "$skill")
+    [ -n "$step8" ] || { echo "  FAIL: the skill has no step 8"; return 1; }
+    assert_output_contains "$step8" 'cs -archive-tasks plan' "step 8 reads the plan first" || return 1
+    assert_output_contains "$step8" 'answer: unasked' "it asks only while the session has not answered" || return 1
+    assert_output_contains "$step8" 'cs -archive-tasks answer yes' "a yes is recorded" || return 1
+    assert_output_contains "$step8" 'cs -archive-tasks answer' "the answer is recorded through cs" || return 1
+    assert_output_contains "$step8" 'cs -archive-tasks run' "and the run moves the rows" || return 1
+    assert_output_contains "$step8" '`forced: yes`' "a forced rotation is read from plan's forced: line" || return 1
+    assert_output_contains "$step8" 'on its own or from its one-key rotate button' \
+        "and so is a press of the button" || return 1
+    assert_output_contains "$step8" 'With `forced: yes`, do not ask: skip the archive this time.' \
+        "and does not stop to ask" || return 1
+    assert_output_contains "$step8" 'With `forced: no`, ask' "any other /rotate asks" || return 1
+    assert_output_not_contains "$step8" 'CS_ROTATE_FORCE_CTX' "the threshold setting decides nothing here" || return 1
 }
 
 test_rotate_skill_requires_provenance_on_claims() {
@@ -318,9 +378,9 @@ test_rotate_skill_requires_provenance_on_claims() {
 # The successor is told to execute the next-step section, and in-document
 # retrieval degrades with length — so the thing it needs first must not be the
 # thing it finds last. "Write it first" only means anything as tool-call order:
-# a Write lands whole or not at all, so the first pass is committed before the
-# second pass appends to it, or a compaction mid-rotation loses exactly what
-# was meant to survive it.
+# a Write lands whole or not at all, so the first pass is a Write of its own,
+# on disk before the second pass appends to it, or a compaction mid-rotation
+# loses exactly what was meant to survive it.
 test_rotate_skill_puts_the_next_step_first() {
     local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md"
     assert_file_contains "$skill" "1\. Next Step" \
@@ -340,31 +400,63 @@ test_rotate_skill_puts_the_next_step_first() {
         "a Next Step that needs a clean worktree must name the consumed flip" || return 1
     assert_file_contains "$skill" "append" \
         "the second pass must append, since a Write replaces the whole file" || return 1
-    assert_file_contains "$skill" "second commit" \
-        "and land as its own commit, never an amend of the durable one" || return 1
+    # Pass one is durable once the Write returns: it is on disk, and the
+    # autosave hook snapshots every Write into the conversation's shadow ref
+    # wherever git does not ignore .cs/. Nothing in the rotation commits
+    # (Alex, 2026-10-14: "No commits at all").
+    assert_file_contains "$skill" "Pass one is durable once the Write returns" \
+        "the skill says why the first pass is safe uncommitted" || return 1
+    assert_file_contains "$skill" "autosave-commits\.sh" \
+        "naming the hook that keeps it" || return 1
+    assert_file_not_contains "$skill" "second commit" \
+        "there is no second commit" || return 1
+    assert_file_not_contains "$skill" "Commit the first pass" \
+        "and no commit of the first pass" || return 1
     if grep -q -- '--amend\|amend the' "$skill"; then
         echo "  FAIL: amending replaces the only faithful copy of pass one"; return 1
     fi
 }
 
 # Arming is the last step. An armed marker is disarmed by the launch prompt on
-# Y, n or Enter and nothing re-arms it, while an unarmed committed handoff is
+# Y, n or Enter and nothing re-arms it, while an unarmed handoff on disk is
 # still offered by that prompt's scan — so arming before the ritual can finish
 # turns an interruption into a bare /clear. Pinned by ORDER in the file: the arm
-# step must come after both commits and after the retire step.
+# step must come after the retire step and the task archive, and no numbered
+# step commits.
 test_rotate_skill_arms_last() {
     local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md"
-    local arm commit2 retire tell
+    local arm archive retire tell steps
     arm=$(grep -n '^[0-9]*\. Arm it' "$skill" | head -1 | cut -d: -f1)
-    commit2=$(grep -n '^[0-9]*\. Second commit' "$skill" | head -1 | cut -d: -f1)
+    archive=$(grep -n '^[0-9]*\. Archive completed task rows' "$skill" | head -1 | cut -d: -f1)
     retire=$(grep -n '^[0-9]*\. Retire this machine' "$skill" | head -1 | cut -d: -f1)
     tell=$(grep -n '^[0-9]*\. Tell the user' "$skill" | head -1 | cut -d: -f1)
-    [ -n "$arm" ] && [ -n "$commit2" ] && [ -n "$retire" ] && [ -n "$tell" ] \
-        || { echo "  FAIL: could not locate the arm, second-commit, retire and tell steps"; return 1; }
-    [ "$arm" -gt "$commit2" ] && [ "$arm" -gt "$retire" ] \
-        || { echo "  FAIL: arming must follow the second commit and the retire step (arm at $arm)"; return 1; }
+    [ -n "$arm" ] && [ -n "$archive" ] && [ -n "$retire" ] && [ -n "$tell" ] \
+        || { echo "  FAIL: could not locate the arm, archive, retire and tell steps"; return 1; }
+    [ "$archive" -gt "$retire" ] \
+        || { echo "  FAIL: the archive must follow the retire step (archive at $archive, retire at $retire)"; return 1; }
+    [ "$arm" -gt "$archive" ] && [ "$arm" -gt "$retire" ] \
+        || { echo "  FAIL: arming must follow the archive and the retire step (arm at $arm)"; return 1; }
     [ "$arm" -lt "$tell" ] \
         || { echo "  FAIL: arming must precede telling the user to /clear"; return 1; }
+    steps=$(grep -E '^[0-9]+\. ' "$skill" | grep -ci 'commit')
+    assert_eq "0" "$steps" "no numbered step commits" || return 1
+}
+
+# A rotation makes no commit (Alex, 2026-10-14: "No commits at all"): the
+# handoff, the supersedings, the prunes and the task archive stay on disk, and
+# files under .cs/ are committed only when the user asks. The skill says so in
+# step 8 and gives no git add or git commit to run, so a model has no commit
+# to make and no subject to invent.
+test_rotate_skill_makes_no_commit() {
+    local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md" step8
+    step8=$(awk '/^8\. /{p=1} /^9\. /{p=0} p' "$skill")
+    assert_output_contains "$step8" "The rotation makes no commit." "step 8 says no commit is made" || return 1
+    assert_output_contains "$step8" "stay on disk, uncommitted" "and that the files stay on disk" || return 1
+    assert_output_contains "$step8" "commit them only when the user asks." \
+        "and that only the user's ask commits them" || return 1
+    assert_file_not_contains "$skill" "git commit" "the skill runs no git commit" || return 1
+    assert_file_not_contains "$skill" "git add" "and stages nothing" || return 1
+    assert_file_not_contains "$skill" "session: handoff" "and names no commit subject" || return 1
 }
 
 test_rotate_skill_pins_a_model_that_cannot_refuse() {
@@ -485,7 +577,7 @@ test_rotate_skill_documents_the_clear_route() {
 
 test_rotate_skill_governs_what_goes_into_the_handoff() {
     # The handoff is written by a model summarising a conversation, committed
-    # by step 4 into a store the session .gitignore does not cover, and read
+    # by step 8 into a store the session .gitignore does not cover, and read
     # back as the next conversation's prompt. Published and re-read: both
     # halves are why the body needs rules.
     local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md"
@@ -531,16 +623,6 @@ test_rotate_skill_governs_what_goes_into_the_handoff() {
         "a blocker must lead Next Step, ahead of the steps it gates" || return 1
 }
 
-test_rotate_skill_never_force_adds_an_ignored_handoff() {
-    local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md"
-    # A plain `git add` of a handoff under an ignored .cs/ exits 1, and
-    # rotations answered that with `git add -f`, publishing every handoff in
-    # a public repo that meant to keep .cs/ private.
-    assert_file_contains "$skill" "check-ignore -q --no-index" \
-        "the skill must test whether a path is ignored before staging it" || return 1
-    assert_file_contains "$skill" "Never \`git add -f\`" \
-        "the skill must forbid force-adding an ignored path" || return 1
-}
 
 test_rotate_skill_reads_parent_from_state_not_the_launch_env() {
     # CS_CLAUDE_SESSION_ID is the LAUNCH uuid: exported once per cs process
@@ -566,14 +648,16 @@ test_rotate_skill_reads_parent_from_state_not_the_launch_env() {
 }
 
 run_test test_rotate_skill_exists_with_frontmatter
-run_test test_rotate_skill_never_force_adds_an_ignored_handoff
+run_test test_rotate_skill_slug_is_a_plain_name
 run_test test_rotate_skill_has_a_home_for_rejected_alternatives
 run_test test_rotate_skill_has_a_home_for_conversation_only_facts
 run_test test_rotate_skill_keeps_successor_reports
 run_test test_rotate_skill_prunes_only_tracked_handoffs
 run_test test_rotate_skill_requires_provenance_on_claims
+run_test test_rotate_skill_archives_completed_task_rows_before_arming
 run_test test_rotate_skill_puts_the_next_step_first
 run_test test_rotate_skill_arms_last
+run_test test_rotate_skill_makes_no_commit
 run_test test_rotate_skill_pins_a_model_that_cannot_refuse
 run_test test_rotate_skill_keeps_the_users_words_close
 run_test test_rotate_skill_spends_length_asymmetrically
@@ -810,6 +894,42 @@ test_handoff_prompt_lists_one_answer_per_row() {
     fi
 }
 
+# .cs/handoffs/ is tracked, so a clone chooses a handoff's file name, and the
+# name can carry a terminal escape: a raw ESC or BEL byte, or backslash text
+# echo -e would turn into one. cs offers only a handoff whose name is plain
+# (_cs_plain_name leaves it as it is), so the name it prints, and the one r
+# hands Claude, is the file itself. The scan passes over the others, an armed
+# marker naming one is dropped, and one line says a handoff was skipped
+# without naming it: it says where, and that a clone may have written it. A
+# plain handoff beside them is still offered.
+test_handoff_whose_name_is_not_plain_is_not_offered() {
+    _rot_session "rot-plain-name"
+    local dir="$CS_SESSIONS_ROOT/rot-plain-name" output named
+    local bad=$'2026-07-16-e\033[1mb\007\\e[0m.md' armed=$'2026-07-17-e\033[1mb\007x.md'
+    _seed_handoff "$dir" "2026-07-15-plain.md" "unconsumed"
+    _seed_handoff "$dir" "$bad" "unconsumed"
+    _seed_handoff "$dir" "$armed" "unconsumed"
+    printf '%s\n' "$armed" > "$dir/.cs/local/pending-handoff"
+    output=$("$CS_BIN" rot-plain-name <<< "d" 2>&1) || true
+    assert_eq "Skipped a rotation handoff in .cs/handoffs/ whose file name is not plain (only letters, digits and ._@-, at most 160 characters); check who wrote it before renaming it." \
+        "$(grep '^Skipped a rotation handoff' <<< "$output")" \
+        "one line says a handoff was skipped" || return 1
+    assert_eq "Rotation handoff pending: 2026-07-15-plain.md (from another checkout)" \
+        "$(grep '^Rotation handoff pending:' <<< "$output")" \
+        "the plain handoff is offered, not the armed one" || return 1
+    assert_eq "Handoff discarded: 2026-07-15-plain.md" \
+        "$(grep '^Handoff discarded:' <<< "$output")" \
+        "d discards the plain handoff it offered" || return 1
+    assert_not_exists "$dir/.cs/local/pending-handoff" "the marker naming the skipped handoff is dropped" || return 1
+    assert_file_contains "$dir/.cs/handoffs/$bad" "^status: unconsumed$" "the skipped handoff is left as it was" || return 1
+    assert_file_contains "$dir/.cs/handoffs/$armed" "^status: unconsumed$" "the armed handoff is left as it was" || return 1
+    named=$(grep -a '2026-07-1[67]' <<< "$output" || true)
+    assert_eq "" "$named" "no line names a skipped handoff" || return 1
+    # The banner carries cs's own colours; the lines about handoffs carry none.
+    named=$(grep -ai 'handoff' <<< "$output")
+    assert_no_escape_bytes "$named" "no escape byte reaches the terminal" || return 1
+}
+
 # The r launch auto-starts the handoff: its positional prompt is the handoff
 # continuation (displacing the /color re-apply for this one launch), so the fresh
 # conversation reads the handoff and continues without the user typing first.
@@ -967,8 +1087,8 @@ test_offer_labels_a_handoff_from_another_checkout() {
         "a handoff whose parent this checkout never ran is labelled" || return 1
 }
 
-# hooks/bash-logger.sh appends every Bash command to the same session.log, so a
-# bare substring match reads a logged `claude --resume <uuid>` as proof this
+# A session.log can hold `BASH:` command lines (the retired bash-logger hook
+# appended every Bash command to it), so a bare substring match reads a logged `claude --resume <uuid>` as proof this
 # checkout ran that conversation — silently dropping the one warning shown
 # before r mutates a colleague's handoff.
 test_a_logged_command_naming_a_uuid_is_not_provenance() {
@@ -1025,6 +1145,7 @@ test_offer_reads_provenance_from_the_private_log() {
     # An encrypted session keeps its handoffs in the vault too.
     mv "$dir/.cs/handoffs" "$TEST_TMPDIR/vault/private/handoffs"
     ln -s "$TEST_TMPDIR/vault/private" "$dir/.cs/private"
+    _mark_hand_made_vault "$dir"
     printf '%s - Session started (source: startup, ID: %s)\n' \
         "2026-07-16 10:00:00" "$UUID_A" >> "$TEST_TMPDIR/vault/private/session.log"
     local output
@@ -1033,6 +1154,23 @@ test_offer_reads_provenance_from_the_private_log() {
         "the offer is still made for a local handoff" || return 1
     assert_output_not_contains "$output" "another checkout" \
         "a handoff this checkout wrote carries no foreign label" || return 1
+}
+
+# An encrypted session keeps its handoffs in the vault, so the line about a
+# skipped handoff names that directory.
+test_skipped_handoff_line_names_the_vaults_handoff_store() {
+    _rot_session "rot-private-skip"
+    local dir="$CS_SESSIONS_ROOT/rot-private-skip" output
+    _seed_handoff "$dir" $'2026-07-16-e\033[1mb.md' "unconsumed"
+    mkdir -p "$TEST_TMPDIR/vault/private"
+    mv "$dir/.cs/local/session.log" "$TEST_TMPDIR/vault/private/session.log"
+    mv "$dir/.cs/handoffs" "$TEST_TMPDIR/vault/private/handoffs"
+    ln -s "$TEST_TMPDIR/vault/private" "$dir/.cs/private"
+    _mark_hand_made_vault "$dir"
+    output=$("$CS_BIN" rot-private-skip <<< "n" 2>&1) || true
+    assert_eq "Skipped a rotation handoff in .cs/private/handoffs/ whose file name is not plain (only letters, digits and ._@-, at most 160 characters); check who wrote it before renaming it." \
+        "$(grep '^Skipped a rotation handoff' <<< "$output")" \
+        "the line names the vault's handoff directory" || return 1
 }
 
 # A session with no recorded conversation (the first open after cs -adopt, a
@@ -1105,10 +1243,13 @@ test_unbound_spawned_launch_starts_fresh_and_keeps_the_handoff() {
     _rot_unbound_session "rot-unbound-spawn"
     local dir="$CS_SESSIONS_ROOT/rot-unbound-spawn"
     _seed_handoff "$dir" "2026-07-16-test.md" "unconsumed"
+    # The seed as cs -spawn writes it (line 1 the token, line 2 the spawner),
+    # opened as the spawn's own window: the token in CS_SPAWN_TOKEN is what
+    # makes this open unattended rather than a consent ask.
     mkdir -p "$CS_SESSIONS_ROOT/.spawn"
-    printf 'spawner\ndo the thing\n' > "$CS_SESSIONS_ROOT/.spawn/rot-unbound-spawn.seed"
+    printf 'feedfacefeedfacefeedfacefeedface\nspawner\ndo the thing\n' > "$CS_SESSIONS_ROOT/.spawn/rot-unbound-spawn.seed"
     local output
-    output=$("$CS_BIN" rot-unbound-spawn </dev/null 2>&1) || true
+    output=$(CS_SPAWN_TOKEN=feedfacefeedfacefeedfacefeedface "$CS_BIN" rot-unbound-spawn </dev/null 2>&1) || true
     assert_output_not_contains "$output" "Rotation handoff pending" "an unattended launch asks nothing" || return 1
     assert_output_contains "$output" "\-\-session-id " "a new conversation starts" || return 1
     assert_file_contains "$dir/.cs/handoffs/2026-07-16-test.md" "status: unconsumed" "the handoff waits for an attended open" || return 1
@@ -1262,6 +1403,7 @@ test_orphaned_marker_disarm_does_not_offer_a_spent_handoff() {
 run_test test_orphaned_marker_disarm_does_not_offer_a_spent_handoff
 run_test test_rotate_answer_consumes_pending_handoff
 run_test test_handoff_prompt_lists_one_answer_per_row
+run_test test_handoff_whose_name_is_not_plain_is_not_offered
 run_test test_rotate_answer_auto_starts_handoff
 run_test test_continue_and_no_leave_handoff_unconsumed
 run_test test_consumed_handoffs_do_not_trigger_prompt
@@ -1269,6 +1411,7 @@ run_test test_newest_of_multiple_handoffs_wins
 run_test test_offer_labels_a_handoff_from_another_checkout
 run_test test_offer_leaves_a_local_handoff_unlabelled
 run_test test_offer_reads_provenance_from_the_private_log
+run_test test_skipped_handoff_line_names_the_vaults_handoff_store
 run_test test_a_logged_command_naming_a_uuid_is_not_provenance
 run_test test_a_trailing_carriage_return_still_reads_as_local
 run_test test_armed_marker_outranks_a_later_sorting_orphan
@@ -1425,6 +1568,32 @@ test_rotation_tells_the_user_one_message_starts_it() {
         *2026-07-16-test.md*) ;;
         *) echo "  FAIL: the notice must name the handoff: $msg"; return 1 ;;
     esac
+}
+
+# A clone chooses a handoff's file name. The hook loads only a handoff whose
+# name is plain (_cs_plain_name leaves it as it is), so the file the preamble
+# tells Claude to read is the file itself. A marker naming any other is
+# dropped: no rotation, nothing said, the handoff left unconsumed. The name
+# carries ESC and BEL but no backslash, so the marker's separator check does
+# not refuse it first.
+test_rotation_does_not_load_a_handoff_whose_name_is_not_plain() {
+    _rot_hook_session "rot-plain-hook"
+    local bad=$'2026-07-16-e\033[1mb\007x.md'
+    _seed_handoff "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" "$bad" "unconsumed"
+    printf '%s\n' "$bad" > "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/pending-handoff"
+    printf 'claude_session_id: %s\n' "$UUID_A" > "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/state"
+    local out context msg
+    out=$(_start_hook "$UUID_B" clear) || return 1
+    context=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext')
+    msg=$(printf '%s' "$out" | jq -r '.systemMessage // ""')
+    assert_output_contains "$context" "managed Claude Code session" "the hook ran and produced its context" || return 1
+    assert_output_not_contains "$context" "Conversation Rotation" "no rotation is loaded" || return 1
+    assert_output_not_contains "$context" "2026-07-16" "Claude is told no handoff name" || return 1
+    assert_eq "" "$msg" "the user is told nothing loaded" || return 1
+    assert_no_escape_bytes "$context$msg" "no escape byte reaches Claude or the user" || return 1
+    assert_file_contains "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/handoffs/$bad" "^status: unconsumed$" \
+        "the handoff is left unconsumed" || return 1
+    assert_not_exists "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/pending-handoff" "the marker is dropped" || return 1
 }
 
 # Scoped to a rotation: a plain /clear is a blank slate and has nothing to say.
@@ -1761,6 +1930,24 @@ _arm_kick() {  # returns the kick file path on stdout
     printf '%s\n' "$d/rotation.kick"
 }
 
+# While git tracks a file in the session's control directory the hooks act on
+# nothing there, the rotation kick included: a watched file that changes
+# wakes nobody and spends no kick.
+test_rotation_kick_wakes_nobody_while_git_tracks_a_control_file() {
+    _rot_hook_session "rot-tracked"
+    local kick; kick=$(_arm_kick)
+    git -C "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" rev-parse --git-dir >/dev/null 2>&1 || git -C "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" init -q
+    git -C "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" add -f .cs/local/rotation-kick/rotation.kick
+    git -C "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" -c user.email=jane.roe@example.com -c user.name="Jane Roe" \
+        commit -q -m "ship a kick"
+    local out rc=0
+    out=$(_rot_filechanged "$kick" add 2>&1) || rc=$?
+    assert_eq "0" "$rc" "no wake is delivered" || return 1
+    assert_eq "" "$out" "and nothing is printed" || return 1
+    assert_file_not_exists "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/rotation-kick/delivered" \
+        "the kick is not marked delivered" || return 1
+}
+
 test_rotation_kick_wakes_the_model() {
     _rot_hook_session "rot-wake"
     local kick; kick=$(_arm_kick)
@@ -1935,6 +2122,7 @@ test_fork_with_armed_marker_records_rebind() {
 
 run_test test_clear_source_consumes_pending_handoff
 run_test test_rotation_tells_the_user_one_message_starts_it
+run_test test_rotation_does_not_load_a_handoff_whose_name_is_not_plain
 run_test test_plain_clear_says_nothing_to_the_user
 run_test test_startup_rotation_does_not_tell_the_user_to_send_a_message
 run_test test_rotation_preamble_makes_the_first_message_mean_begin
@@ -1948,6 +2136,7 @@ run_test test_a_teammate_clear_leaves_the_leads_kick_alone
 run_test test_the_detached_child_actually_writes_the_kick
 run_test test_the_kick_is_rewritten_until_delivered
 run_test test_rotation_kick_wakes_the_model
+run_test test_rotation_kick_wakes_nobody_while_git_tracks_a_control_file
 run_test test_rotation_kick_wakes_exactly_once
 run_test test_rotation_kick_does_not_yield_to_a_stale_queue_state
 run_test test_rotation_kick_ignores_unlink
@@ -2203,10 +2392,86 @@ test_conversations_session_scoped_form() {
     assert_output_contains "$out" "11111111  started (startup)" "scoped form renders" || return 1
 }
 
+# A wrong-typed record (here a numeric session_id) is skipped with a warning
+# naming its line, and the records after it still render. It sits mid-file on
+# purpose: jq's error on any record but the last only reaches stderr, so a bad
+# LAST record would not show whether the listing survives it.
+test_conversations_skips_a_malformed_record_and_keeps_listing() {
+    _rot_hook_session "rot-view-bad"
+    : > "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/state"
+    cat > "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/timeline.jsonl" << EOF
+{"ts":"2026-07-14T09:00:00Z","event":"started","source":"startup","session_id":"$UUID_A","branch":"main"}
+{"ts":"2026-07-14T10:00:00Z","event":"started","source":"startup","session_id":12345,"branch":"main"}
+{"ts":"2026-07-16T10:00:05Z","event":"started","source":"startup","session_id":"$UUID_B","branch":"main"}
+EOF
+    local out rc=0
+    out=$("$CS_BIN" -conversations 2>"$TEST_TMPDIR/conv-err") || rc=$?
+    [ "$rc" -eq 0 ] || { echo "  FAIL: one bad record must not fail the listing (rc=$rc)"; return 1; }
+    assert_output_contains "$out" "11111111  started (startup)" "the record before the bad one renders" || return 1
+    assert_output_contains "$out" "22222222  started (startup)" "the record after the bad one renders" || return 1
+    assert_file_contains "$TEST_TMPDIR/conv-err" "line 2:" "the warning names the bad line" || return 1
+}
+
+# A recorded field is data: control characters are stripped before it reaches
+# the terminal, so an OSC 52 sequence in a handoff name cannot write the
+# clipboard. The C1 controls (U+0080-U+009F) go too: U+009B is CSI and U+009D
+# OSC on a terminal that reads 8-bit controls. A tab stays. The printable rest
+# of each field survives.
+test_conversations_strips_control_characters() {
+    _rot_hook_session "rot-view-esc"
+    : > "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/state"
+    cat > "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/timeline.jsonl" << EOF
+{"ts":"2026-07-16T09:00:00Z","event":"started","source":"x\\u001b[31mred\\u0085y\\tz\\u009dw","session_id":"$UUID_A","branch":"main"}
+{"ts":"2026-07-16T10:00:00Z","event":"rotated","from":"$UUID_A","to":"$UUID_B","reason":"r\\u009bq\\u0080","handoff":"a\\u001b]52;c;Zm9v\\u0007b\\u009f"}
+EOF
+    local out
+    out=$(TZ=UTC "$CS_BIN" -conversations 2>&1) || return 1
+    if printf '%s' "$out" | LC_ALL=C grep -q "$(printf '[\001-\010\033\177]')"; then
+        echo "  FAIL: a control character reached the terminal"
+        return 1
+    fi
+    if printf '%s' "$out" | LC_ALL=C grep -q "$(printf '\302[\200-\237]')"; then
+        echo "  FAIL: a C1 control character reached the terminal"
+        return 1
+    fi
+    assert_eq "2026-07-16 09:00  claude:11111111  started (x[31mredy	zw)
+2026-07-16 10:00  claude:11111111 > 22222222  rotated (rq: a]52;c;Zm9vb)" "$out" "the printable rest of each field survives, the tab with it" || return 1
+}
+
+# A timestamp that is a string but not a date, or missing altogether, is
+# accepted by the type check and must render as data: the record keeps its
+# line and the listing goes on. Inside jq's catch the input is the error
+# text, so a fallback that re-reads .ts there aborts the whole listing with
+# exit 5 and every later record vanishes.
+test_conversations_keeps_listing_past_a_bad_or_missing_timestamp() {
+    _rot_hook_session "rot-view-ts"
+    : > "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/state"
+    cat > "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/timeline.jsonl" << EOF
+{"ts":"not-a-date","event":"started","source":"startup","session_id":"33333333-3333-4333-8333-333333333333","branch":"main"}
+{"ts":"2026-07-14T09:00:00Z","event":"started","source":"startup","session_id":"$UUID_A","branch":"main"}
+{"ts":"2026-07-16T10:00:05Z","event":"started","source":"startup","session_id":"$UUID_B","branch":"main"}
+{"event":"started","source":"startup","session_id":"44444444-4444-4444-8444-444444444444","branch":"main"}
+EOF
+    local out rc=0
+    out=$("$CS_BIN" -conversations 2>"$TEST_TMPDIR/conv-ts-err") || rc=$?
+    [ "$rc" -eq 0 ] || { echo "  FAIL: a bad timestamp must not fail the listing (rc=$rc): $(cat "$TEST_TMPDIR/conv-ts-err")"; return 1; }
+    assert_output_contains "$out" "not-a-date  claude:33333333  started (startup)" "the unparsable timestamp renders verbatim" || return 1
+    assert_output_contains "$out" "11111111  started (startup)" "the record after the bad timestamp renders" || return 1
+    assert_output_contains "$out" "22222222  started (startup)" "every well-formed record renders" || return 1
+    assert_output_contains "$out" "?  claude:44444444  started (startup)" "a missing timestamp renders as ? and the record stays" || return 1
+    if [ -s "$TEST_TMPDIR/conv-ts-err" ]; then
+        echo "  FAIL: a timestamp that renders as data must not warn: $(cat "$TEST_TMPDIR/conv-ts-err")"
+        return 1
+    fi
+}
+
 run_test test_conversations_renders_chain
 run_test test_conversations_empty_timeline
 run_test test_conversations_requires_session_context
 run_test test_conversations_session_scoped_form
+run_test test_conversations_skips_a_malformed_record_and_keeps_listing
+run_test test_conversations_strips_control_characters
+run_test test_conversations_keeps_listing_past_a_bad_or_missing_timestamp
 
 # ============================================================================
 # Cycle 7: final-review fixes — rebind ordering (I1), frontmatter scoping (M-new)
@@ -2542,6 +2807,16 @@ test_force_threshold_trims_only_the_ends_like_the_mod() {
     assert_eq "" "$got" "off survives outer whitespace" || return 1
 }
 
+# Like the mod, a whole number past 100 is the default, not a threshold no
+# turn can reach; 100 itself is the top of the range.
+test_force_threshold_past_100_is_the_default_like_the_mod() {
+    local got
+    got=$(CS_ROTATE_FORCE_CTX="150" bash -c '. "'"$SCRIPT_DIR"'/../lib/75-launch.sh"; _rotate_force_threshold')
+    assert_eq "80" "$got" "150 reads as the default" || return 1
+    got=$(CS_ROTATE_FORCE_CTX="100" bash -c '. "'"$SCRIPT_DIR"'/../lib/75-launch.sh"; _rotate_force_threshold')
+    assert_eq "100" "$got" "100 is kept" || return 1
+}
+
 # The notice is only worth anything if a launch prints it: the unit tests above
 # call the function, this one goes through cs.
 test_launch_prints_the_force_notice_once_and_only_with_hooks_on() {
@@ -2569,6 +2844,7 @@ run_test test_force_notice_is_silent_when_the_forcing_is_off
 run_test test_force_notice_names_an_overridden_threshold
 run_test test_force_notice_is_silent_when_function_hooks_are_off
 run_test test_force_threshold_trims_only_the_ends_like_the_mod
+run_test test_force_threshold_past_100_is_the_default_like_the_mod
 run_test test_launch_prints_the_force_notice_once_and_only_with_hooks_on
 run_test test_ctx_warning_fires_once_in_band
 run_test test_ctx_tiers_are_silent_for_a_teammate
@@ -2593,6 +2869,7 @@ _encrypt_session() {  # session_dir -> prints the vault's private dir
     mkdir -p "$vault/handoffs"
     [ -f "$1/.cs/local/session.log" ] && mv "$1/.cs/local/session.log" "$vault/session.log"
     ln -s "$vault" "$1/.cs/private"
+    _mark_hand_made_vault "$1"
     echo "$vault"
 }
 
@@ -2656,6 +2933,7 @@ test_encrypted_pending_handoff_is_consumed_in_the_vault() {
     local vault="$TEST_TMPDIR/vault-consume/private"
     mkdir -p "$vault"
     ln -s "$vault" "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/private"
+    _mark_hand_made_vault "$(dirname "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}")"
     _seed_handoff "$TEST_TMPDIR/vault-consume/stage" "2026-07-16-test.md" "unconsumed"
     mkdir -p "$vault/handoffs"
     mv "$TEST_TMPDIR/vault-consume/stage/.cs/handoffs/2026-07-16-test.md" "$vault/handoffs/"
@@ -2676,6 +2954,7 @@ test_encrypted_clear_rotation_keeps_the_handoff_name_out_of_the_timeline() {
     local vault="$TEST_TMPDIR/vault-label/private"
     mkdir -p "$vault"
     ln -s "$vault" "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/private"
+    _mark_hand_made_vault "$(dirname "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}")"
     _seed_handoff "$TEST_TMPDIR/vault-label/stage" "2026-07-16-secret-topic.md" "unconsumed"
     mkdir -p "$vault/handoffs"
     mv "$TEST_TMPDIR/vault-label/stage/.cs/handoffs/2026-07-16-secret-topic.md" "$vault/handoffs/"
@@ -2711,6 +2990,47 @@ test_rotate_skill_routes_an_encrypted_session_into_the_vault() {
         "the skill arms an encrypted session's marker in the vault" || return 1
 }
 
+# Step 9's command arms the marker only once cs says it trusts the session's
+# control files: a marker git tracks is one a pull can rewrite, and the
+# SessionStart hook refuses the rotation it names. Run as written, it arms
+# .cs/local (.cs/private in an encrypted session), and while git tracks a
+# control file it fails, writing nothing, so the skill can say why.
+test_rotate_skill_arms_the_marker_only_when_cs_vets_the_session() {
+    local skill="$SCRIPT_DIR/../skills/rotate/SKILL.md" block dir rc
+    block=$(awk '/^9\. Arm it/{p=1; next} /^10\. /{p=0} p && /^ *```/{f=!f; next} p && f' "$skill" | sed 's/^   //')
+    [ -n "$block" ] || { echo "  FAIL: step 9 has no command block"; return 1; }
+    dir=$(mktemp -d "${TMPDIR:-/tmp}/rotate-arm.XXXXXX")
+    mkdir -p "$dir/s/.cs/local" "$dir/e/.cs/local" "$dir/e/.cs/private" "$dir/bin"
+    ln -s "$SCRIPT_DIR/../bin/cs" "$dir/bin/cs"
+    (cd "$dir/s" && PATH="$dir/bin:$PATH" HANDOFF=2026-01-01-next.md bash -c "$block") \
+        || { echo "  FAIL: step 9 failed in a plain session"; rm -rf "$dir"; return 1; }
+    assert_eq "2026-01-01-next.md" "$(cat "$dir/s/.cs/local/pending-handoff" 2>/dev/null)" \
+        "a plain session arms .cs/local" || { rm -rf "$dir"; return 1; }
+    (cd "$dir/e" && PATH="$dir/bin:$PATH" HANDOFF=2026-01-01-next.md bash -c "$block") \
+        || { echo "  FAIL: step 9 failed in an encrypted session"; rm -rf "$dir"; return 1; }
+    assert_eq "2026-01-01-next.md" "$(cat "$dir/e/.cs/private/pending-handoff" 2>/dev/null)" \
+        "an encrypted session arms .cs/private" || { rm -rf "$dir"; return 1; }
+    assert_not_exists "$dir/e/.cs/local/pending-handoff" "and not .cs/local" || { rm -rf "$dir"; return 1; }
+    # A locked vault leaves .cs/private a link to nowhere: the session is still
+    # encrypted, and nothing reads a marker from .cs/local there.
+    mkdir -p "$dir/l/.cs/local"
+    ln -s "$dir/nowhere" "$dir/l/.cs/private"
+    rc=0
+    (cd "$dir/l" && PATH="$dir/bin:$PATH" HANDOFF=2026-01-01-next.md bash -c "$block" 2>/dev/null) || rc=$?
+    assert_eq "1" "$rc" "step 9 fails in a locked encrypted session" || { rm -rf "$dir"; return 1; }
+    assert_not_exists "$dir/l/.cs/local/pending-handoff" "and arms no .cs/local marker" || { rm -rf "$dir"; return 1; }
+    rm -f "$dir/s/.cs/local/pending-handoff"
+    printf 'claude_session_id: x\n' > "$dir/s/.cs/local/state"
+    git -C "$dir/s" init -q
+    git -C "$dir/s" add -f .cs/local/state
+    git -C "$dir/s" -c user.name=t -c user.email=t@example.com commit -qm tracked
+    rc=0
+    (cd "$dir/s" && PATH="$dir/bin:$PATH" HANDOFF=2026-01-01-next.md bash -c "$block" 2>/dev/null) || rc=$?
+    assert_eq "1" "$rc" "step 9 fails while git tracks a control file" || { rm -rf "$dir"; return 1; }
+    assert_not_exists "$dir/s/.cs/local/pending-handoff" "and arms nothing" || { rm -rf "$dir"; return 1; }
+    rm -rf "$dir"
+}
+
 run_test test_encrypted_rotate_answer_arms_the_private_marker
 run_test test_encrypted_discard_retires_the_vault_handoff
 run_test test_encrypted_session_with_plaintext_handoffs_refuses_to_open
@@ -2718,5 +3038,6 @@ run_test test_encrypted_pending_handoff_is_consumed_in_the_vault
 run_test test_encrypted_clear_rotation_keeps_the_handoff_name_out_of_the_timeline
 run_test test_locked_encrypted_session_consumes_no_handoff
 run_test test_rotate_skill_routes_an_encrypted_session_into_the_vault
+run_test test_rotate_skill_arms_the_marker_only_when_cs_vets_the_session
 
 report_results

@@ -3,6 +3,7 @@
 # ABOUTME: Exercises failed/stale acknowledgements without invoking native engines.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/test_lib.sh"
+source "$SCRIPT_DIR/../lib/05-term.sh"
 source "$SCRIPT_DIR/../lib/02-shared.sh"
 source "$SCRIPT_DIR/../lib/40-state.sh"
 source "$SCRIPT_DIR/../lib/41-bindings.sh"

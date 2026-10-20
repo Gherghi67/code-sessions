@@ -26,6 +26,10 @@ let runs: { argv: string[]; init: any }[]
 let runResult: { exitCode: number; stdout: string; stderr: string } | Error
 let commands: any[]
 let sessionId: string
+// Directories that exist with no file of their own, and where each path lands
+// once its links are followed (as `$.fs.stat(path, { resolve: true })` answers).
+let existing: Set<string>
+let realPaths: Record<string, string>
 
 // The default runner: records the call and answers with `runResult`. A test
 // that swaps it in (for a run held in flight) gets it back in beforeEach.
@@ -44,8 +48,12 @@ const $ = {
   session: { id: async () => sessionId, cwd: async () => '/work' },
   fs: {
     read: async (path: string) => { if (path in files) return files[path]; throw new Error(`ENOENT ${path}`) },
-    exists: async (path: string) => path in files || path === '/work/.cs/local',
+    exists: async (path: string) => path in files || existing.has(path),
     write: (path: string, text: string) => defaultWrite(path, text),
+    stat: async (path: string, options?: { resolve?: boolean }) => {
+      if (!(path in realPaths)) throw new Error(`ENOENT ${path}`)
+      return { kind: 'directory', size: 0, mtimeMs: 0, isLink: false, ...(options?.resolve ? { realPath: realPaths[path] } : {}) }
+    },
   },
   ui: {
     resolve: async () => ({ Box: 'Box', Text: 'Text', Button: 'Button' }),
@@ -112,8 +120,12 @@ beforeEach(() => {
     '/home/u/.cache/cs/update-notes-full-2026.99.3': SPAN,
   }
   written = {}; panes = []; toasts = []; invalidated = []; runs = []; commands = []
+  // /work sits under the default sessions root by its own name.
+  existing = new Set(['/work/.cs/local'])
+  realPaths = { '/work': '/work', '/home/u/.claude-sessions/work': '/work' }
   runResult = { exitCode: 0, stdout: 'ok', stderr: '' }
   ;($ as any).process.run = defaultRun
+  ;($ as any).env.get = async (name: string) => envVars[name]
   defaultWrite = async (path: string, text: string) => { written[path] = text }
   sessionId = 'uuid-lead'
   load()
@@ -153,6 +165,96 @@ test('session.start opens the pane once per load and writes the heartbeat', asyn
   expect(written['/work/' + HEARTBEAT]).toMatch(/^\d{4}-/)
   await start()
   expect(opens()).toHaveLength(1)
+})
+
+// While git tracks the session's control files, cs -vet-session refuses and
+// the mod writes nothing into .cs/local: no heartbeat, no DONE marker, and a
+// stale marker is left as git has it.
+// The installer runs alone, apart from the -vet-session asks around it.
+const updateRuns = () => runs.filter(r => r.argv[1] === '-update')
+
+const vetRefusing = () => {
+  ;($ as any).process.run = async (argv: string[], init: any) => {
+    runs.push({ argv, init })
+    if (argv[1] === '-vet-session') return { exitCode: 1, stdout: '', stderr: 'Error: .cs/local/state is tracked in git\n' }
+    return runResult
+  }
+}
+
+test('a session whose control files git tracks gets no heartbeat', async () => {
+  vetRefusing()
+  await start()
+  expect(written['/work/' + HEARTBEAT]).toBeUndefined()
+  expect(runs.map(r => r.argv)).toContainEqual(['/opt/cs/bin/cs', '-vet-session', '/work'])
+})
+
+test('while git tracks the control files, a stale DONE marker is left as git has it', async () => {
+  vetRefusing()
+  files['/work/' + DONE] = '2026.99.1\nUpdate finished. Takes effect on your next launch.\n'
+  await start()
+  expect(written['/work/' + DONE]).toBeUndefined()
+})
+
+test('while git tracks the control files, a finished update writes no DONE marker', async () => {
+  vetRefusing()
+  await start()
+  await buttons(await draw())[0].props.onPress()
+  expect(texts(await draw()).join('\n')).toContain('Update finished. Takes effect on your next launch.')
+  expect(written['/work/' + DONE]).toBeUndefined()
+})
+
+// The sessions root names a session; nothing inside a directory can, since a
+// cloned repository may carry any file under .cs/, .cs/local included, and
+// still pass cs -vet-session. A directory the root does not name gets no
+// write from this mod: no heartbeat, no DONE marker, no tombstone.
+test('a directory with .cs/local that the sessions root does not name gets no heartbeat', async () => {
+  existing = new Set(['/clone/.cs/local'])
+  realPaths = { '/clone': '/clone' }
+  await hooks['session.start']($, { cwd: '/clone' }, async () => 'started')
+  expect(written).toEqual({})
+})
+
+test('a root entry of the same name that is another directory does not make the cwd a session', async () => {
+  realPaths = { '/work': '/work', '/home/u/.claude-sessions/work': '/elsewhere' }
+  await start()
+  expect(written['/work/' + HEARTBEAT]).toBeUndefined()
+})
+
+test('CS_SESSIONS_ROOT names the sessions root', async () => {
+  envVars.CS_SESSIONS_ROOT = '/roots'
+  realPaths = { '/work': '/work', '/roots/work': '/work' }
+  await start()
+  expect(written['/work/' + HEARTBEAT]).toMatch(/^\d{4}-/)
+  realPaths = { '/work': '/work', '/home/u/.claude-sessions/work': '/work' }
+  written = {}
+  await start()
+  expect(written['/work/' + HEARTBEAT]).toBeUndefined()
+})
+
+test('an adopted session is named by the session_name its state records', async () => {
+  files['/work/.cs/local/state'] = 'session_name: alias\nclaude_session_id: uuid-lead\n'
+  realPaths = { '/work': '/work', '/home/u/.claude-sessions/alias': '/work' }
+  await start()
+  expect(written['/work/' + HEARTBEAT]).toMatch(/^\d{4}-/)
+})
+
+test('in a directory the sessions root does not name, a stale DONE marker is left as it is', async () => {
+  realPaths = { '/work': '/work' }
+  files['/work/' + DONE] = '2026.99.1\nUpdate finished. Takes effect on your next launch.\n'
+  await start()
+  await draw()
+  expect(written).toEqual({})
+})
+
+// The gate is asked again at the write, so a root entry gone while the pane
+// is open (the session removed or its link moved) takes no DONE marker.
+test('in a directory the sessions root no longer names, a finished update writes no DONE marker', async () => {
+  await start()
+  realPaths = { '/work': '/work' }
+  written = {}
+  await buttons(await draw())[0].props.onPress()
+  expect(texts(await draw()).join('\n')).toContain('Update finished. Takes effect on your next launch.')
+  expect(written).toEqual({})
 })
 
 test('no pending version, no pane, no toast', async () => {
@@ -255,16 +357,19 @@ test('1 runs cs -update once, by the exported path, with a ten-minute timeout, a
   // and pressed twice; the run is held in flight so the second press lands
   // while the first is running.
   let release!: (v: any) => void
-  ;($ as any).process.run = async (argv: string[], init: any) => { runs.push({ argv, init }); return new Promise(r => { release = r }) }
+  ;($ as any).process.run = async (argv: string[], init: any) => {
+    if (argv[1] === '-vet-session') return { exitCode: 0, stdout: '', stderr: '' }
+    runs.push({ argv, init }); return new Promise(r => { release = r })
+  }
   const press = buttons(await draw())[0].props.onPress
   const first = press()
   const second = press()
   await Promise.resolve()
   release({ exitCode: 0, stdout: '', stderr: '' })
   await first; await second
-  expect(runs).toHaveLength(1)
-  expect(runs[0].argv).toEqual(['/opt/cs/bin/cs', '-update'])
-  expect(runs[0].init).toMatchObject({ timeoutMs: 600000 })
+  expect(updateRuns()).toHaveLength(1)
+  expect(updateRuns()[0].argv).toEqual(['/opt/cs/bin/cs', '-update'])
+  expect(updateRuns()[0].init).toMatchObject({ timeoutMs: 600000 })
   const words = texts(await draw()).join('\n')
   // Version-neutral: cs -update installs whatever is latest when pressed,
   // which may be newer than the launch saw.
@@ -276,20 +381,28 @@ test('1 runs cs -update once, by the exported path, with a ten-minute timeout, a
 test('a second press returns at the running guard before any lookup', async () => {
   await start()
   let giveBin!: (v: any) => void
-  ;($ as any).env.get = async (name: string) => name === 'CS_BIN' ? new Promise(r => { giveBin = r }) : envVars[name]
+  // Only the press's own lookup is held; the -vet-session ask after the run answers at once.
+  let held = false
+  ;($ as any).env.get = async (name: string) => {
+    if (name !== 'CS_BIN' || held) return envVars[name]
+    held = true
+    return new Promise(r => { giveBin = r })
+  }
   const press = buttons(await draw())[0].props.onPress
   const a = press(); const b = press()
   await Promise.resolve()
   giveBin('/opt/cs/bin/cs')
   await a; await b
-  ;($ as any).env.get = async (name: string) => envVars[name]
-  expect(runs).toHaveLength(1)
+  expect(updateRuns()).toHaveLength(1)
 })
 
 test('while the update runs the pane says so and hides the key', async () => {
   await start()
   let release!: (v: any) => void
-  ;($ as any).process.run = async (argv: string[], init: any) => { runs.push({ argv, init }); return new Promise(r => { release = r }) }
+  ;($ as any).process.run = async (argv: string[], init: any) => {
+    if (argv[1] === '-vet-session') return { exitCode: 0, stdout: '', stderr: '' }
+    runs.push({ argv, init }); return new Promise(r => { release = r })
+  }
   const pressed = buttons(await draw())[0].props.onPress()
   await Promise.resolve()
   const words = texts(await draw()).join('\n')
@@ -378,6 +491,15 @@ test('/cs-update in a teammate opens nothing', async () => {
   expect(opens()).toHaveLength(0)
 })
 
+test('a directory with .cs/local that the sessions root does not name shows no pane and /cs-update does nothing there', async () => {
+  realPaths = { '/work': '/work' }
+  await start()
+  expect(opens()).toHaveLength(0)
+  expect(await runCommand()).toEqual({ text: 'The release-notes pane belongs to the conversation cs launched.' })
+  expect(opens()).toHaveLength(0)
+  expect(written).toEqual({})
+})
+
 test('/cs-update after a reload, with no session.start or render between, restores the finished pane instead of offering the update again', async () => {
   files['/work/' + DONE] = '2026.99.3\nUpdate finished. Takes effect on your next launch.\n'
   expect(await runCommand()).toEqual({ text: 'Release notes are in the side pane.' })
@@ -455,4 +577,21 @@ test('a failed write to the DONE marker toasts and the pane still shows done', a
   expect(toasts).toEqual(['cs-update: could not record the finished update: disk full'])
   const words = texts(await draw()).join('\n')
   expect(words).toContain('Update finished. Takes effect on your next launch.')
+})
+
+// A pane redrawn after a reload asks the lead gate before it restores the
+// marker, so a directory the sessions root does not name gets no pane back.
+test('in a directory the sessions root does not name, a pane redrawn after a reload is not restored from a fresh DONE marker', async () => {
+  realPaths = { '/work': '/work' }
+  files['/work/' + DONE] = '2026.99.3\nUpdate finished. Takes effect on your next launch.\n'
+  await draw()
+  expect(opens()).toHaveLength(0)
+  expect(written).toEqual({})
+})
+
+test('in a directory the sessions root does not name, session start never spawns cs -vet-session', async () => {
+  existing = new Set(['/clone/.cs/local'])
+  realPaths = { '/clone': '/clone' }
+  await hooks['session.start']($, { cwd: '/clone' }, async () => 'started')
+  expect(runs).toHaveLength(0)
 })

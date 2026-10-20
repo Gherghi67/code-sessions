@@ -40,6 +40,13 @@ setup_palette() {
 setup_palette
 
 # Icons - Nerd Font with Unicode fallback
+# cs needs a UTF-8 locale. Under an EUC one (ja_JP.eucJP, ko_KR.eucKR,
+# zh_CN.eucCN) bash reads the last byte of a glyph that sits directly before a
+# quote as the lead byte of a two-byte character and takes the quote with it,
+# so these lines, and a few like them elsewhere in cs and its hooks, stop the
+# parse with a syntax error. Left as is (Alex 2026-10-11): the output is UTF-8
+# in any case, and the README names the requirement. Do not escape the glyphs
+# or add a locale check for this.
 if [[ "${CS_NERD_FONTS:-}" == "1" ]]; then
     ICON_LOCK='󰌾'      # mdi-lock
     ICON_HOST='󰟀'      # mdi-monitor
@@ -78,16 +85,6 @@ _trim() {  # text
     s="${s#"${s%%[![:space:]]*}"}"
     s="${s%"${s##*[![:space:]]}"}"
     printf '%s' "$s"
-}
-
-# Strip C0 control characters (keeping tab and newline) and DEL from stdin, so
-# text another session wrote cannot smuggle an escape sequence into this
-# session's terminal. cs is multi-session by design — presence, queued tasks and
-# mail all cross a session boundary — and the reader does not trust the writer.
-# C0 and DEL only: 8-bit C1 (0x80-0x9F, where 0x9B is CSI) is deliberately out
-# of scope, because a UTF-8 terminal does not decode raw C1 bytes as controls.
-_scrub_controls() {
-    LC_ALL=C tr -d '\000-\010\013-\037\177'
 }
 
 # Detect the outer terminal, even when running inside tmux.

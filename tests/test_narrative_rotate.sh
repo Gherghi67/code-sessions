@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ABOUTME: Tests for cs -narrative rotate: byte-budgeted archival of a narrative's oldest sections
-# ABOUTME: Pins the cut rule, content addressing, concurrency guards, git commit and union-merge safety
+# ABOUTME: Pins the cut rule, content addressing, concurrency guards, that it makes no commit, and union-merge safety
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/test_lib.sh"
@@ -120,6 +120,25 @@ test_rotate_archives_oldest_sections_and_keeps_tail() {
 
 # The live narrative is rewritten through a temp file; it keeps the mode it
 # had. 750 carries an execute bit, which no umask gives a newly written file.
+# Claude runs cs -narrative rotate from whatever directory its shell is in. A
+# clone can commit a directory laid out like a git repository anywhere in the
+# session, with a config naming a clean filter for every file; git, run from
+# inside it, would take it for the repository and run that filter on the
+# archived text. The rotation runs no command the clone's config names.
+test_rotate_runs_no_filter_from_a_repository_layout_it_is_run_in() {
+    local g="$SESSION_DIR/vendor/pkg" rc=0
+    mkdir -p "$g/objects" "$g/refs" "$g/info"
+    printf 'ref: refs/heads/main\n' > "$g/HEAD"
+    printf '[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tworktree = .\n[filter "x"]\n\tclean = touch %s; cat\n' \
+        "$TEST_TMPDIR/filter-ran" > "$g/config"
+    printf '* filter=x\n' > "$g/info/attributes"
+    _make_narrative "$LIVE" 10 500
+    (cd "$g" && "$CS_BIN" -narrative rotate > /dev/null 2>&1) || rc=$?
+    assert_file_not_exists "$TEST_TMPDIR/filter-ran" "git must not run the layout's clean filter" || return 1
+    assert_eq "0" "$rc" "the rotation succeeds" || return 1
+    assert_file_not_contains "$LIVE" "section 1$" "the rotation happened" || return 1
+}
+
 test_rotate_keeps_the_live_files_mode() {
     _make_narrative "$LIVE" 10 500
     chmod 750 "$LIVE"
@@ -128,17 +147,48 @@ test_rotate_keeps_the_live_files_mode() {
     assert_eq "750" "$(_file_mode "$LIVE")" "the live narrative keeps its mode" || return 1
 }
 
-# A live narrative that is a symlink is rewritten through the link: the target
-# holds the kept tail and the link stays a link.
+# A live narrative linked to a file inside the session is rewritten through
+# the link: the target holds the kept tail and the link stays a link. One
+# linked outside the session is refused before anything is archived, since a
+# clone can commit `narrative.x.md -> ~/.zshrc` (audit M8).
 test_rotate_writes_through_a_symlinked_narrative() {
-    local real="$TEST_TMPDIR/elsewhere/narrative.md"
-    mkdir -p "$TEST_TMPDIR/elsewhere"
+    local real="$SESSION_DIR/notes/narrative.md"
+    mkdir -p "$SESSION_DIR/notes"
     _make_narrative "$real" 10 500
-    ln -s "$real" "$LIVE"
+    ln -s ../../notes/narrative.md "$LIVE"
     "$CS_BIN" -narrative rotate > /dev/null 2>&1 || return 1
     [ -L "$LIVE" ] || { echo "  FAIL: the symlink was replaced by a regular file"; return 1; }
     assert_file_not_contains "$real" "section 1$" "the target was rotated" || return 1
     assert_file_contains "$real" "section 10$" "the target keeps the newest section" || return 1
+}
+
+test_rotate_refuses_a_narrative_linked_out_of_the_session() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local real="$t/elsewhere/narrative.md" out rc=0 before
+    mkdir -p "$t/elsewhere"
+    _make_narrative "$real" 10 500
+    before=$(cat "$real")
+    ln -s "$real" "$LIVE"
+    out=$("$CS_BIN" -narrative rotate 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the rotation must fail" || return 1
+    assert_eq "Error: .cs/memory/narrative.alice.md leads to $real, outside the session; cs will not rotate through it." \
+        "$out" "the refusal names the link" || return 1
+    assert_eq "$before" "$(cat "$real")" "the target is untouched" || return 1
+    assert_not_exists "$SESSION_DIR/.cs/narrative-archive/alice" "nothing was archived" || return 1
+}
+
+test_rotate_names_a_narrative_linked_out_by_a_plain_path() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m
+    local out rc=0
+    mkdir -p "$t/elsewhere$bad"
+    _make_narrative "$t/elsewhere$bad/narrative.md" 10 500
+    ln -s "$t/elsewhere$bad/narrative.md" "$LIVE"
+    out=$("$CS_BIN" -narrative rotate 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the rotation must fail" || return 1
+    assert_eq "Error: .cs/memory/narrative.alice.md leads to $t/elsewhere$shown/narrative.md, outside the session; cs will not rotate through it." \
+        "$out" "the refusal names where the link leads as a plain path" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal" || return 1
 }
 
 test_rotate_keeps_the_header_block() {
@@ -360,7 +410,9 @@ test_rotate_refuses_a_differing_chunk_with_the_same_name() {
 
 test_rotate_keeps_an_append_that_lands_mid_rotation() {
     _make_narrative "$LIVE" 10 500
-    export CS_NARRATIVE_ROTATE_MIDPOINT="printf '\n## 2026-09-01 — late note\nlanded during rotation\n' >> '$LIVE'"
+    cp "$LIVE" "$TEST_TMPDIR/midpoint.md"
+    printf '\n## 2026-09-01 — late note\nlanded during rotation\n' >> "$TEST_TMPDIR/midpoint.md"
+    export CS_NARRATIVE_ROTATE_MIDPOINT="$TEST_TMPDIR/midpoint.md"
     "$CS_BIN" -narrative rotate > /dev/null 2>&1 || return 1
     assert_file_contains "$LIVE" "^## 2026-09-01 — late note$" "the late section is in the live file" || return 1
     assert_file_contains "$LIVE" "landed during rotation" "with its body" || return 1
@@ -371,7 +423,8 @@ test_rotate_keeps_an_append_that_lands_mid_rotation() {
 test_rotate_aborts_when_the_archived_run_changed_underneath() {
     _make_narrative "$LIVE" 10 500
     cp "$LIVE" "$TEST_TMPDIR/original.md"
-    export CS_NARRATIVE_ROTATE_MIDPOINT="sed 's/^## 2026-08-03 — section 2$/## 2026-08-03 — section 2 (edited)/' '$LIVE' > '$LIVE.x' && mv '$LIVE.x' '$LIVE'"
+    sed 's/^## 2026-08-03 — section 2$/## 2026-08-03 — section 2 (edited)/' "$LIVE" > "$TEST_TMPDIR/midpoint.md"
+    export CS_NARRATIVE_ROTATE_MIDPOINT="$TEST_TMPDIR/midpoint.md"
     local output
     if output=$("$CS_BIN" -narrative rotate 2>&1); then
         echo "  FAIL: must abort when the prefix changed"
@@ -388,9 +441,25 @@ test_rotate_abort_leaves_a_preexisting_identical_chunk_alone() {
     cp "$LIVE" "$TEST_TMPDIR/original.md"
     "$CS_BIN" -narrative rotate > /dev/null 2>&1 || return 1
     cp "$TEST_TMPDIR/original.md" "$LIVE"
-    export CS_NARRATIVE_ROTATE_MIDPOINT="sed 's/^## 2026-08-03 — section 2$/## 2026-08-03 — section 2 (edited)/' '$LIVE' > '$LIVE.x' && mv '$LIVE.x' '$LIVE'"
+    sed 's/^## 2026-08-03 — section 2$/## 2026-08-03 — section 2 (edited)/' "$LIVE" > "$TEST_TMPDIR/midpoint.md"
+    export CS_NARRATIVE_ROTATE_MIDPOINT="$TEST_TMPDIR/midpoint.md"
     "$CS_BIN" -narrative rotate > /dev/null 2>&1 && { echo "  FAIL: must abort"; return 1; }
     assert_eq "1" "$(find "$ARCHIVE_DIR" -name '*.md' | wc -l | tr -d ' ')" "a chunk that predates this run survives the abort" || return 1
+}
+
+# The midpoint seam is a fixture the live file is replaced with, never code:
+# a value that is a command must not run, and is refused as naming no file.
+test_rotate_midpoint_seam_never_executes_its_value() {
+    _make_narrative "$LIVE" 10 500
+    export CS_NARRATIVE_ROTATE_MIDPOINT="touch '$TEST_TMPDIR/executed'"
+    local output
+    if output=$("$CS_BIN" -narrative rotate 2>&1); then
+        assert_not_exists "$TEST_TMPDIR/executed" "the seam's value is not run as a command" || return 1
+        echo "  FAIL: a seam value that names no file must be refused"
+        return 1
+    fi
+    assert_not_exists "$TEST_TMPDIR/executed" "the seam's value is not run as a command" || return 1
+    assert_output_contains "$output" "CS_NARRATIVE_ROTATE_MIDPOINT names no file" "says why it refused" || return 1
 }
 
 test_rotate_leaves_no_temp_files_behind() {
@@ -437,47 +506,37 @@ _init_tracked_repo() {
         && git add -A && git commit -q -m init)
 }
 
-test_rotate_commits_live_and_chunk_when_tracked() {
-    _make_narrative "$LIVE" 10 500
-    _init_tracked_repo
-    "$CS_BIN" -narrative rotate > /dev/null 2>&1 || return 1
-    local subject dirty
-    subject=$(git -C "$SESSION_DIR" log -1 --format=%s)
-    assert_eq "cs: rotate narrative.alice (7 sections -> narrative-archive)" "$subject" "one commit with the rotation subject" || return 1
-    dirty=$(git -C "$SESSION_DIR" status --porcelain -- .cs/memory .cs/narrative-archive)
-    assert_eq "" "$dirty" "live file and chunk are both committed" || return 1
-}
-
-# Rotation commits inside the user's own checkout — and an adopted session IS
-# their project repo. A pathspec-less commit would sweep whatever they had
-# staged into a commit titled "cs: rotate narrative", which is now reachable
-# for any session from the picker rather than only the one you are sitting in.
-test_rotate_commits_only_its_own_two_files() {
+# cs -narrative rotate makes no commit (Alex, 2026-10-14: "No commits at
+# all"): the trimmed live file and the new archive chunk stay on disk,
+# uncommitted, and nothing is staged, so work the user had staged stays
+# staged and alone. The output is the one line the wrap reports.
+test_rotate_makes_no_commit_and_leaves_the_cut_on_disk() {
     _make_narrative "$LIVE" 10 500
     _init_tracked_repo
     printf 'work in progress\n' > "$SESSION_DIR/user-file.txt"
     git -C "$SESSION_DIR" add -- user-file.txt
-    "$CS_BIN" -narrative rotate > /dev/null 2>&1 || return 1
-    local subject files staged
-    # HEAD must BE the rotation commit first: the fixture commits before the
-    # user's file exists, so "HEAD does not contain user-file.txt" is also true
-    # when the rotation commit never happened.
-    subject=$(git -C "$SESSION_DIR" log -1 --format=%s)
-    case "$subject" in "cs: rotate narrative"*) ;; *) echo "  FAIL: HEAD is not the rotation commit: $subject"; return 1 ;; esac
-    files=$(git -C "$SESSION_DIR" show --name-only --format= HEAD | grep -c 'user-file.txt' || true)
-    assert_eq "0" "$files" "the user's staged file must not ride along in the rotation commit" || return 1
-    staged=$(git -C "$SESSION_DIR" diff --cached --name-only -- user-file.txt)
-    assert_eq "user-file.txt" "$staged" "and it must still be staged afterwards" || return 1
+    local head output status staged chunk
+    head=$(git -C "$SESSION_DIR" rev-parse HEAD)
+    output=$("$CS_BIN" -narrative rotate 2>&1) || { echo "  FAIL: rotate failed: $output"; return 1; }
+    assert_eq "$head" "$(git -C "$SESSION_DIR" rev-parse HEAD)" "no commit is made" || return 1
+    chunk=$(find "$ARCHIVE_DIR" -name '*.md' | head -1)
+    case "$output" in
+        "rotated 7 sections ("*") -> .cs/narrative-archive/alice/$(basename "$chunk"); live file now "*" KB") ;;
+        *) echo "  FAIL: the output is not the one rotation line: $output"; return 1 ;;
+    esac
+    status=$(git -C "$SESSION_DIR" status --porcelain -- .cs/memory .cs/narrative-archive)
+    assert_eq " M .cs/memory/narrative.alice.md
+?? .cs/narrative-archive/" "$status" "the cut is on disk, uncommitted and unstaged" || return 1
+    staged=$(git -C "$SESSION_DIR" diff --cached --name-only)
+    assert_eq "user-file.txt" "$staged" "only the user's own staged file is staged" || return 1
+    assert_file_not_contains "$LIVE" "section 1$" "the rotation happened" || return 1
 }
 
-# Naming a pathspec makes the commit a PARTIAL commit, which git refuses inside
-# a repo mid-merge — a state the old pathspec-less commit committed straight
-# through. The refusal is the safer half of that trade, but the reason must
-# survive: the bare message sends the reader looking for a broken rotation.
-test_rotate_names_the_merge_state_when_the_commit_is_refused() {
+# Mid-merge, the rotation still cuts and stages nothing, so nothing of it
+# rides into the user's merge commit.
+test_rotate_mid_merge_stages_nothing() {
     _make_narrative "$LIVE" 10 500
     _init_tracked_repo
-    # Manufacture a merge in progress: two divergent branches, conflicting file.
     git -C "$SESSION_DIR" checkout -q -b other
     printf 'theirs\n' > "$SESSION_DIR/conflict.txt"
     git -C "$SESSION_DIR" add -- conflict.txt
@@ -490,65 +549,44 @@ test_rotate_names_the_merge_state_when_the_commit_is_refused() {
     printf 'resolved\n' > "$SESSION_DIR/conflict.txt"
     git -C "$SESSION_DIR" add -- conflict.txt
     [ -f "$SESSION_DIR/.git/MERGE_HEAD" ] || { echo "  FAIL: fixture did not reach a mid-merge state"; return 1; }
-
     local output
-    output=$("$CS_BIN" -narrative rotate 2>&1) || true
-    assert_output_contains "$output" "mid-merge" "the warning must name the real reason" || return 1
+    output=$("$CS_BIN" -narrative rotate 2>&1) || { echo "  FAIL: rotate failed: $output"; return 1; }
+    assert_eq "conflict.txt" "$(git -C "$SESSION_DIR" diff --cached --name-only)" "only the user's resolution is staged" || return 1
     assert_file_not_contains "$LIVE" "section 1$" "the rotation itself still happened" || return 1
+    [ -f "$SESSION_DIR/.git/MERGE_HEAD" ] || { echo "  FAIL: the merge is no longer in progress"; return 1; }
 }
 
-test_rotate_skips_the_commit_when_cs_is_ignored() {
-    _make_narrative "$LIVE" 10 500
-    printf '.cs/\n' > "$SESSION_DIR/.gitignore"
-    (cd "$SESSION_DIR" && git init -q -b main && git config user.email alice@example.com && git config user.name alice \
-        && git add -A && git commit -q -m init)
-    local before output after
-    before=$(git -C "$SESSION_DIR" rev-list --count HEAD)
-    output=$("$CS_BIN" -narrative rotate 2>&1) || return 1
-    after=$(git -C "$SESSION_DIR" rev-list --count HEAD)
-    assert_eq "$before" "$after" "no commit when the narrative is not tracked" || return 1
-    assert_output_contains "$output" "not tracked" "says the archive was left uncommitted" || return 1
-    assert_file_contains "$LIVE" "section 8$" "the rotation itself still ran" || return 1
-}
-
-# A repo can ignore .cs/ wholesale and still track the narrative, because
-# something once ran `git add -f` on it. cs never force-adds into an ignored
-# tree: committing there is how session notes leak into a public repo. The
-# rotation still runs, nothing is committed, and the warning names the way out.
-test_rotate_never_force_adds_into_an_ignored_cs() {
-    _make_narrative "$LIVE" 10 500
-    printf '.cs/\n' > "$SESSION_DIR/.gitignore"
-    (cd "$SESSION_DIR" && git init -q -b main && git config user.email alice@example.com && git config user.name alice \
-        && git add -- .gitignore && git add -f -- .cs/memory/narrative.alice.md && git commit -q -m init)
-    local before output after tracked staged
-    before=$(git -C "$SESSION_DIR" rev-list --count HEAD)
-    output=$("$CS_BIN" -narrative rotate 2>&1) || return 1
-    after=$(git -C "$SESSION_DIR" rev-list --count HEAD)
-    assert_eq "$before" "$after" "no commit into an ignored .cs/" || return 1
-    tracked=$(git -C "$SESSION_DIR" ls-files -- .cs/narrative-archive | wc -l | tr -d ' ')
-    assert_eq "0" "$tracked" "the archive chunk is not added to the index" || return 1
-    staged=$(git -C "$SESSION_DIR" diff --cached --name-only | wc -l | tr -d ' ')
-    assert_eq "0" "$staged" "nothing is left staged" || return 1
-    assert_output_contains "$output" "git rm -r --cached .cs" "the warning names how to untrack it" || return 1
-    assert_file_contains "$LIVE" "section 8$" "the rotation itself still ran" || return 1
-}
-
-# Ignoring only the archive directory is the other way into an ignored path.
-# Committing the trimmed live file without its chunk would drop the archived
-# sections from git, so nothing is committed, and the warning names the path
-# that is actually ignored rather than advising to untrack all of .cs/.
-test_rotate_names_an_ignored_archive_directory() {
-    _make_narrative "$LIVE" 10 500
-    printf '.cs/narrative-archive/\n' > "$SESSION_DIR/.gitignore"
-    (cd "$SESSION_DIR" && git init -q -b main && git config user.email alice@example.com && git config user.name alice \
-        && git add -- .gitignore .cs/memory/narrative.alice.md && git commit -q -m init)
-    local before output after
-    before=$(git -C "$SESSION_DIR" rev-list --count HEAD)
-    output=$("$CS_BIN" -narrative rotate 2>&1) || return 1
-    after=$(git -C "$SESSION_DIR" rev-list --count HEAD)
-    assert_eq "$before" "$after" "no commit when the archive chunk is ignored" || return 1
-    assert_output_contains "$output" "is gitignored here" "the warning says which path is ignored" || return 1
-    assert_output_not_contains "$output" "git rm -r --cached .cs" "untracking .cs/ is not the fix here" || return 1
+# However the repo ignores the session's files (all of .cs/, all of it with
+# the narrative force-added once, or only the archive), the rotation runs,
+# makes no commit, stages nothing and prints only its rotation line.
+test_rotate_in_an_ignored_tree_commits_and_stages_nothing() {
+    local shape before output after
+    for shape in cs-ignored force-added archive-ignored; do
+        rm -rf "$SESSION_DIR/.git" "$SESSION_DIR/.gitignore" "$SESSION_DIR/.cs/narrative-archive"
+        _make_narrative "$LIVE" 10 500
+        case "$shape" in
+            cs-ignored)
+                printf '.cs/\n' > "$SESSION_DIR/.gitignore"
+                (cd "$SESSION_DIR" && git init -q -b main && git config user.email alice@example.com && git config user.name alice \
+                    && git add -A && git commit -q -m init) ;;
+            force-added)
+                printf '.cs/\n' > "$SESSION_DIR/.gitignore"
+                (cd "$SESSION_DIR" && git init -q -b main && git config user.email alice@example.com && git config user.name alice \
+                    && git add -- .gitignore && git add -f -- .cs/memory/narrative.alice.md && git commit -q -m init) ;;
+            archive-ignored)
+                printf '.cs/narrative-archive/\n' > "$SESSION_DIR/.gitignore"
+                (cd "$SESSION_DIR" && git init -q -b main && git config user.email alice@example.com && git config user.name alice \
+                    && git add -- .gitignore .cs/memory/narrative.alice.md && git commit -q -m init) ;;
+        esac
+        before=$(git -C "$SESSION_DIR" rev-list --count HEAD)
+        output=$("$CS_BIN" -narrative rotate 2>&1) || { echo "  FAIL: rotate failed ($shape): $output"; return 1; }
+        after=$(git -C "$SESSION_DIR" rev-list --count HEAD)
+        assert_eq "$before" "$after" "no commit ($shape)" || return 1
+        assert_eq "" "$(git -C "$SESSION_DIR" diff --cached --name-only)" "nothing is staged ($shape)" || return 1
+        assert_eq "1" "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" "one output line ($shape): $output" || return 1
+        case "$output" in rotated\ 7\ sections*) ;; *) echo "  FAIL: not the rotation line ($shape): $output"; return 1 ;; esac
+        assert_file_contains "$LIVE" "section 8$" "the rotation itself still ran ($shape)" || return 1
+    done
 }
 
 test_rotate_outside_git_still_rotates() {
@@ -586,6 +624,7 @@ test_rotate_archives_an_encrypted_narrative_behind_private() {
     _vault_memory
     mkdir -p "$VAULT/private"
     ln -s "$VAULT/private" "$SESSION_DIR/.cs/private"
+    _mark_hand_made_vault "$SESSION_DIR"
     _make_narrative "$LIVE" 10 500
     local output archive
     output=$("$CS_BIN" -narrative rotate 2>&1) || { echo "$output"; return 1; }
@@ -602,6 +641,7 @@ test_rotate_uses_a_narrative_archive_linked_into_the_vault() {
     _vault_memory
     mkdir -p "$VAULT/narrative-archive"
     ln -s "$VAULT/narrative-archive" "$SESSION_DIR/.cs/narrative-archive"
+    _mark_hand_made_vault "$SESSION_DIR"
     _make_narrative "$LIVE" 10 500
     "$CS_BIN" -narrative rotate > /dev/null 2>&1 || return 1
     assert_eq "1" "$(find "$VAULT/narrative-archive/alice" -name '2026-08-08-*.md' | wc -l | tr -d ' ')" \
@@ -652,9 +692,12 @@ _make_clones() {
     git clone -q "$SESSION_DIR" "$CLONE_B" && git -C "$CLONE_B" config user.email alice@example.com && git -C "$CLONE_B" config user.name alice
 }
 
+# Rotates in a clone, then commits the cut the way its user would: cs makes no
+# commit of its own, so what reaches the other clone is the user's commit.
 _rotate_in() {  # clone dir, [keep bytes]
     CLAUDE_SESSION_DIR="$1" CLAUDE_SESSION_META_DIR="$1/.cs" CS_NARRATIVE_KEEP_BYTES="${2:-$CS_NARRATIVE_KEEP_BYTES}" \
-        "$CS_BIN" -narrative rotate > /dev/null 2>&1
+        "$CS_BIN" -narrative rotate > /dev/null 2>&1 || return 1
+    git -C "$1" add -- .cs/memory .cs/narrative-archive .cs/timeline.jsonl && git -C "$1" commit -q -m "user commits the rotation"
 }
 
 test_rotate_then_peer_append_merges_without_resurrection() {
@@ -765,11 +808,88 @@ test_named_rotate_under_budget_is_a_noop() {
     assert_output_contains "$output" "nothing to rotate:.*(budget" "must name the budget it is under" || return 1
 }
 
+# Rotating cuts the narrative a running conversation appends to: from inside
+# another session that waits for the target to close. A plain terminal and a
+# base rotating its own feature are the user, as before.
+test_named_rotate_from_another_session_refuses_a_live_target() {
+    _make_narrative "$LIVE" 10 500
+    local before; before=$(_bytes "$LIVE")
+    sleep 300 &
+    local live_pid=$!
+    echo "$live_pid" > "$SESSION_DIR/.cs/session.lock"
+    local output rc=0
+    output=$(CLAUDE_SESSION_NAME=other "$CS_BIN" test-session -narrative rotate 2>&1) || rc=$?
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    assert_eq "1" "$rc" "the rotate exits 1" || return 1
+    assert_eq "Error: session other cannot rotate the narrative of session test-session while it is live (pid $live_pid); --force does not override that from another session. Close test-session first." \
+        "$output" "the refusal names both sessions" || return 1
+    assert_eq "$before" "$(_bytes "$LIVE")" "the narrative is untouched" || return 1
+    assert_not_exists "$ARCHIVE_DIR" "nothing is archived" || return 1
+}
+
+test_named_rotate_from_a_plain_shell_rotates_a_live_session() {
+    _make_narrative "$LIVE" 10 500
+    sleep 300 &
+    local live_pid=$!
+    echo "$live_pid" > "$SESSION_DIR/.cs/session.lock"
+    _leave_session
+    local output rc=0
+    output=$("$CS_BIN" test-session -narrative rotate 2>&1) || rc=$?
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    assert_eq "0" "$rc" "a plain terminal rotates it (output: $output)" || return 1
+    assert_file_not_contains "$LIVE" "section 1$" "the oldest section is archived" || return 1
+}
+
+test_named_rotate_from_a_base_rotates_its_live_feature() {
+    local wt="$CS_SESSIONS_ROOT/test-session@feat"
+    mkdir -p "$wt/.cs/local" "$wt/.cs/memory"
+    _make_narrative "$wt/.cs/memory/narrative.alice.md" 10 500
+    sleep 300 &
+    local live_pid=$!
+    echo "$live_pid" > "$wt/.cs/session.lock"
+    local output rc=0
+    output=$(CLAUDE_SESSION_NAME=test-session "$CS_BIN" test-session@feat -narrative rotate 2>&1) || rc=$?
+    kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    assert_eq "0" "$rc" "the base rotates its own feature (output: $output)" || return 1
+    assert_file_not_contains "$wt/.cs/memory/narrative.alice.md" "section 1$" "the feature's oldest section is archived" || return 1
+}
+
 test_named_rotate_refuses_an_unknown_session() {
     _leave_session
     local output
     output=$("$CS_BIN" no-such-session -narrative rotate 2>&1) && { echo "  FAIL: must refuse an absent session"; return 1; }
     assert_output_contains "$output" "No such session" "the error must name the real problem" || return 1
+}
+
+# The named form writes into a session without opening it, so the open's scan
+# never runs on that path. A committed .cs/timeline.jsonl leading out of the
+# session must stop the rotation before the event line is appended to it.
+test_named_rotate_refuses_a_timeline_linked_out_of_the_session() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local victim="$t/victim" out rc=0
+    printf 'USER-OWNED\n' > "$victim"
+    _make_narrative "$LIVE" 10 500
+    ln -s "$victim" "$SESSION_DIR/.cs/timeline.jsonl"
+    _leave_session
+    out=$("$CS_BIN" test-session -narrative rotate 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the rotation must fail" || return 1
+    assert_eq "Error: .cs/timeline.jsonl is a symlink to $victim, outside the session, and cs writes through it. Replace it with a real file or directory, or cs -rm the session." \
+        "$out" "the refusal names the link" || return 1
+    assert_eq "USER-OWNED" "$(cat "$victim")" "the file outside the session is untouched" || return 1
+    assert_not_exists "$ARCHIVE_DIR" "nothing was archived" || return 1
+}
+
+# The snapshot rotation copies the narrative into must not have a name a clone
+# can guess: with its pid known (exec keeps it), a planted link at that name
+# would have cp truncate a file outside the session.
+test_rotate_snapshot_name_is_not_predictable() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local victim="$t/victim"
+    printf 'USER-OWNED\n' > "$victim"
+    _make_narrative "$LIVE" 10 500
+    bash -c 'ln -s "$1" "$2/.cs/memory/.narrative.alice.rotate.$$" && exec "$3" -narrative rotate' \
+        _ "$victim" "$SESSION_DIR" "$CS_BIN" >/dev/null 2>&1 || true
+    assert_eq "USER-OWNED" "$(cat "$victim")" "the file outside the session is untouched" || return 1
 }
 
 test_named_rotate_usage_names_the_form_the_user_typed() {
@@ -806,12 +926,12 @@ test_narrative_budget_is_one_value_in_both_copies() {
     [ -n "$lib_max" ] && [ -n "$bin_max" ] || { echo "  FAIL: budget constant missing from lib or bin"; return 1; }
     assert_eq "$lib_max" "$bin_max" "the max budget must match between lib and bin" || return 1
     assert_eq "$lib_keep" "$bin_keep" "the keep budget must match between lib and bin" || return 1
-    # The resume reads the live file in one Read call, and that tool refuses a
-    # file over 256 KiB. The budget sits well under the ceiling so a file that
-    # has passed it is still readable while the warning is on screen, and the
-    # kept tail leaves a working day of headroom before the next rotation.
-    assert_eq "229376" "$lib_max" "the budget stays under the Read tool's 256 KiB ceiling" || return 1
-    assert_eq "114688" "$lib_keep" "and the kept tail is half of it" || return 1
+    # Every resume reads the whole live file, which runs between the tail and
+    # the budget, so the pair sets the recurring cost: 128 KiB and 64 KiB put
+    # an average resume near 96 KiB. Both sit far under the Read tool's 256 KiB
+    # ceiling, and the tail is half the budget so rotation stays infrequent.
+    assert_eq "131072" "$lib_max" "the budget is 128 KiB" || return 1
+    assert_eq "65536" "$lib_keep" "and the kept tail is half of it" || return 1
     # The hooks carry no copy of their own: both take the budget from
     # cs-shared.sh, build.sh's copy of the lib fragment (test_install pins that
     # file to the build). A numeric default left behind in a hook would keep
@@ -844,6 +964,26 @@ test_narrative_budget_reads_any_spelling_of_zero_as_the_default() {
     assert_eq "5" "$(_narrative_budget 99999999999999999999 5)" "a value past 64 bits falls back, not wraps" || return 1
     assert_eq "5" "$(_narrative_budget 9999999999999999 5)" "16 digits falls back" || return 1
     assert_eq "999999999999999" "$(_narrative_budget 999999999999999 5)" "15 digits is kept" || return 1
+}
+
+# The heading scan runs inside rotate_narrative's command substitution, a
+# forked copy of the shell, and a bash linked against libintl can die when it
+# changes its own locale there. The trace shows every assignment the shell
+# itself made while the scan ran; awk gets its C locale as an argument of env.
+# Offsets are C-locale byte counts: the em dash (\342\200\224) is 3 bytes.
+test_narrative_headings_counts_bytes_and_leaves_the_shells_own_locale_alone() {
+    local b utf8 out own expected
+    utf8="$(utf8_locale)"
+    printf '# T\n\n## a \342\200\224 b\nxx\n## c \342\200\224 d\n' > "$TEST_TMPDIR/headings.md"
+    expected="$(printf '5 ## a \342\200\224 b\n19 ## c \342\200\224 d')"
+    for b in $(every_bash); do
+        out="$(env -i PATH="$PATH" HOME="$HOME" ${utf8:+"LC_ALL=$utf8"} "$b" -c '
+            source "$1"; set -x; _narrative_headings "$2"' x "$SCRIPT_DIR/../lib/51-narrative.sh" \
+            "$TEST_TMPDIR/headings.md" 2>"$TEST_TMPDIR/trace")"
+        assert_eq "$expected" "$out" "$b: each heading at its byte offset" || return 1
+        own="$(shell_locale_assignments "$TEST_TMPDIR/trace")"
+        assert_eq "" "$own" "$b must not assign its own locale inside _narrative_headings" || return 1
+    done
 }
 
 test_named_rotate_refuses_a_dangling_adopted_link() {
@@ -888,14 +1028,203 @@ echo "cs narrative rotation tests"
 echo "==========================="
 echo ""
 
+# Without a pre-open nothing marks the vault as the user's own, so an archive
+# link out of the session is refused before any chunk is written through it.
+test_rotate_refuses_an_archive_linked_out_without_a_pre_open() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local out rc=0
+    mkdir -p "$t/away"
+    ln -s "$t/away" "$SESSION_DIR/.cs/narrative-archive"
+    _make_narrative "$LIVE" 10 500
+    out=$("$CS_BIN" -narrative rotate 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the rotation must fail" || return 1
+    assert_eq "Error: .cs/narrative-archive/alice leads to $t/away/alice, outside the session; cs will not rotate through it." \
+        "$out" "the refusal names the link" || return 1
+    assert_eq "" "$(ls -A "$t/away")" "nothing was archived outside" || return 1
+    assert_file_contains "$LIVE" "section 1$" "the live narrative is whole" || return 1
+}
+
+test_rotate_names_an_archive_linked_out_by_a_plain_path() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m
+    local out rc=0
+    mkdir -p "$t/away$bad"
+    ln -s "$t/away$bad" "$SESSION_DIR/.cs/narrative-archive"
+    _make_narrative "$LIVE" 10 500
+    out=$("$CS_BIN" -narrative rotate 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the rotation must fail" || return 1
+    assert_eq "Error: .cs/narrative-archive/alice leads to $t/away$shown/alice, outside the session; cs will not rotate through it." \
+        "$out" "the refusal names where the link leads as a plain path" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal" || return 1
+    assert_eq "" "$(ls -A "$t/away$bad")" "nothing was archived outside" || return 1
+}
+
+# Codex r1 #4: the archive chunk's temp name was predictable (it carries the
+# chunk's own hash), so a clone could plant it as a link out of the session.
+# The name is learned the way an attacker would: by rotating a copy.
+test_rotate_does_not_write_through_a_planted_temp_link() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    _make_narrative "$LIVE" 10 500
+    cp -R "$SESSION_DIR" "$TEST_TMPDIR/probe"
+    CLAUDE_SESSION_DIR="$TEST_TMPDIR/probe" CLAUDE_SESSION_META_DIR="$TEST_TMPDIR/probe/.cs" \
+        "$CS_BIN" -narrative rotate >/dev/null 2>&1 || return 1
+    local name; name=$(basename "$(ls "$TEST_TMPDIR/probe/.cs/narrative-archive/alice/"*.md)")
+    printf 'USER-OWNED\n' > "$t/victim"
+    mkdir -p "$ARCHIVE_DIR"
+    ln -s "$t/victim" "$ARCHIVE_DIR/.$name.tmp"
+    "$CS_BIN" -narrative rotate >/dev/null 2>&1 || true
+    assert_eq "USER-OWNED" "$(cat "$t/victim")" "the file behind the planted temp link is untouched" || return 1
+}
+
+# The chunk's final name can be planted the same way, as a link to a
+# directory outside, where mv would drop the chunk.
+test_rotate_does_not_move_the_chunk_through_a_planted_link() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    _make_narrative "$LIVE" 10 500
+    cp -R "$SESSION_DIR" "$TEST_TMPDIR/probe"
+    CLAUDE_SESSION_DIR="$TEST_TMPDIR/probe" CLAUDE_SESSION_META_DIR="$TEST_TMPDIR/probe/.cs" \
+        "$CS_BIN" -narrative rotate >/dev/null 2>&1 || return 1
+    local name; name=$(basename "$(ls "$TEST_TMPDIR/probe/.cs/narrative-archive/alice/"*.md)")
+    mkdir -p "$t/away" "$ARCHIVE_DIR"
+    ln -s "$t/away" "$ARCHIVE_DIR/$name"
+    "$CS_BIN" -narrative rotate >/dev/null 2>&1 || true
+    assert_eq "" "$(ls -A "$t/away")" "nothing lands in the directory outside" || return 1
+}
+
+# The checks read a path as in the session by its spelling under
+# CLAUDE_SESSION_DIR, so a CLAUDE_SESSION_META_DIR naming the same .cs another
+# way (relative, through a linked parent, with a ./ in it) is checked as the
+# session's own .cs.
+test_rotate_checks_a_metadata_dir_spelled_another_way() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local meta out rc
+    mkdir -p "$t/away"
+    ln -s "$t/away" "$SESSION_DIR/.cs/narrative-archive"
+    ln -s "$CS_SESSIONS_ROOT" "$TEST_TMPDIR/sessions-link"
+    _make_narrative "$LIVE" 10 500
+    for meta in test-session/.cs "$TEST_TMPDIR/sessions-link/test-session/.cs" "$SESSION_DIR/./.cs"; do
+        rc=0
+        out=$(cd "$CS_SESSIONS_ROOT" && CLAUDE_SESSION_META_DIR="$meta" "$CS_BIN" -narrative rotate 2>&1) || rc=$?
+        assert_eq "1" "$rc" "the rotation must fail with the metadata dir spelled $meta" || return 1
+        assert_eq "Error: .cs/narrative-archive/alice leads to $t/away/alice, outside the session; cs will not rotate through it." \
+            "$out" "the refusal names the link (metadata dir $meta)" || return 1
+        assert_eq "" "$(ls -A "$t/away")" "nothing was archived outside (metadata dir $meta)" || return 1
+    done
+    assert_file_contains "$LIVE" "section 1$" "the live narrative is whole" || return 1
+}
+
+# The same for a .cs/memory link out: the refusal comes before the snapshot,
+# so no copy of the narrative is left beside it outside the session.
+test_rotate_leaves_nothing_beside_a_memory_link_out_with_a_relative_metadata_dir() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local out rc=0 before
+    mkdir -p "$t/away" "$SESSION_DIR/.cs/private"
+    rmdir "$SESSION_DIR/.cs/memory"
+    ln -s "$t/away" "$SESSION_DIR/.cs/memory"
+    _make_narrative "$t/away/narrative.alice.md" 10 500
+    before=$(cat "$t/away/narrative.alice.md")
+    out=$(cd "$CS_SESSIONS_ROOT" && CLAUDE_SESSION_META_DIR=test-session/.cs "$CS_BIN" -narrative rotate 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the rotation must fail" || return 1
+    assert_eq "Error: .cs/memory/narrative.alice.md leads to $t/away/narrative.alice.md, outside the session; cs will not rotate through it." \
+        "$out" "the refusal names the link" || return 1
+    assert_eq "narrative.alice.md" "$(ls -A "$t/away")" "no snapshot is left outside" || return 1
+    assert_eq "$before" "$(cat "$t/away/narrative.alice.md")" "the narrative is untouched" || return 1
+    assert_not_exists "$SESSION_DIR/.cs/private/narrative-archive" "nothing was archived" || return 1
+}
+
+# A metadata dir that is not the session's own .cs names a different session
+# from the one the checks are made against; cs refuses rather than pick one.
+test_rotate_refuses_a_metadata_dir_of_another_session() {
+    local other="$CS_SESSIONS_ROOT/other" out rc=0
+    mkdir -p "$other/.cs/memory"
+    _make_narrative "$other/.cs/memory/narrative.alice.md" 10 500
+    _make_narrative "$LIVE" 10 500
+    out=$(CLAUDE_SESSION_META_DIR="$other/.cs" "$CS_BIN" -narrative rotate 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the rotation must fail" || return 1
+    assert_eq "Error: CLAUDE_SESSION_META_DIR is $other/.cs, not $SESSION_DIR/.cs; cs -narrative rotate needs both to name one session." \
+        "$out" "the refusal names both directories" || return 1
+    assert_file_contains "$other/.cs/memory/narrative.alice.md" "section 1$" "the other narrative is whole" || return 1
+    assert_file_contains "$LIVE" "section 1$" "this narrative is whole" || return 1
+    assert_not_exists "$other/.cs/narrative-archive" "nothing was archived in the other session" || return 1
+}
+
+# mkdir -p makes every level the archive needs, so a link above the levels
+# that do not exist yet decides where they land: .cs/private leading out
+# would put the archive outside the session. The leave check on the archive
+# dir alone cannot see that, because its parent does not exist yet.
+test_rotate_refuses_an_archive_dir_mkdir_would_make_outside_the_session() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local out rc=0
+    mkdir -p "$t/away" "$SESSION_DIR/mem"
+    rmdir "$SESSION_DIR/.cs/memory"
+    ln -s ../mem "$SESSION_DIR/.cs/memory"
+    ln -s "$t/away" "$SESSION_DIR/.cs/private"
+    _make_narrative "$LIVE" 10 500
+    out=$("$CS_BIN" -narrative rotate 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the rotation must fail" || return 1
+    assert_eq "cs_mkdir_inside: $SESSION_DIR/.cs/private/narrative-archive/alice leads to $t/away/narrative-archive/alice, outside the session $SESSION_DIR
+Error: Cannot write to $SESSION_DIR/.cs/private/narrative-archive/alice" "$out" "the refusal names where mkdir would land" || return 1
+    assert_eq "" "$(ls -A "$t/away")" "nothing was made outside" || return 1
+    assert_eq "narrative.alice.md" "$(ls -A "$SESSION_DIR/mem")" "no snapshot is left behind" || return 1
+    assert_file_contains "$LIVE" "section 1$" "the live narrative is whole" || return 1
+}
+
+# The snapshot is made in the directory the live file's name sits in, so a
+# .cs/memory link out is refused even when the narrative there links back in.
+test_rotate_refuses_a_memory_dir_linked_out_for_its_snapshot() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local out rc=0
+    mkdir -p "$t/away" "$SESSION_DIR/notes" "$SESSION_DIR/.cs/private"
+    _make_narrative "$SESSION_DIR/notes/narrative.md" 10 500
+    rmdir "$SESSION_DIR/.cs/memory"
+    ln -s "$t/away" "$SESSION_DIR/.cs/memory"
+    ln -s "$SESSION_DIR/notes/narrative.md" "$t/away/narrative.alice.md"
+    out=$("$CS_BIN" -narrative rotate 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the rotation must fail" || return 1
+    assert_eq "rotate_narrative: $SESSION_DIR/.cs/memory leads to $t/away, outside the session $SESSION_DIR
+Error: Cannot write to $SESSION_DIR/.cs/memory" "$out" "the refusal names the link" || return 1
+    assert_eq "narrative.alice.md" "$(ls -A "$t/away")" "no snapshot is made outside" || return 1
+    assert_file_contains "$SESSION_DIR/notes/narrative.md" "section 1$" "the narrative is whole" || return 1
+}
+
+# A rewrite that fails takes back what the rotation wrote: the snapshot and
+# the chunk it made, so the archive never holds sections the live file kept.
+test_rotate_takes_back_its_snapshot_and_chunk_when_the_rewrite_fails() {
+    local out rc=0
+    mkdir -p "$SESSION_DIR/notes"
+    _make_narrative "$SESSION_DIR/notes/narrative.md" 10 500
+    ln -s ../../notes/narrative.md "$LIVE"
+    chmod 555 "$SESSION_DIR/notes"
+    out=$("$CS_BIN" -narrative rotate 2>&1) || rc=$?
+    chmod 755 "$SESSION_DIR/notes"
+    assert_eq "1" "$rc" "the rotation must fail" || return 1
+    assert_eq "Error: could not rewrite narrative.alice.md" "$(printf '%s\n' "$out" | tail -1)" "names the failed rewrite" || return 1
+    assert_eq "" "$(find "$SESSION_DIR/.cs/memory" -name '.narrative.*.rotate.*')" "the snapshot is not left behind" || return 1
+    assert_eq "" "$(ls -A "$ARCHIVE_DIR")" "the chunk is taken back" || return 1
+    assert_file_contains "$SESSION_DIR/notes/narrative.md" "section 1$" "the narrative is whole" || return 1
+}
+
 run_test test_rotate_is_a_recognised_subcommand
 run_test test_rotate_under_budget_is_a_noop
 run_test test_rotate_requires_a_session
 run_test test_rotate_rejects_unknown_subcommand
 run_test test_help_shows_narrative
 run_test test_rotate_archives_oldest_sections_and_keeps_tail
+run_test test_rotate_runs_no_filter_from_a_repository_layout_it_is_run_in
 run_test test_rotate_keeps_the_live_files_mode
 run_test test_rotate_writes_through_a_symlinked_narrative
+run_test test_rotate_refuses_a_narrative_linked_out_of_the_session
+run_test test_rotate_names_a_narrative_linked_out_by_a_plain_path
+run_test test_rotate_refuses_an_archive_linked_out_without_a_pre_open
+run_test test_rotate_names_an_archive_linked_out_by_a_plain_path
+run_test test_rotate_does_not_write_through_a_planted_temp_link
+run_test test_rotate_does_not_move_the_chunk_through_a_planted_link
+run_test test_rotate_checks_a_metadata_dir_spelled_another_way
+run_test test_rotate_leaves_nothing_beside_a_memory_link_out_with_a_relative_metadata_dir
+run_test test_rotate_refuses_a_metadata_dir_of_another_session
+run_test test_rotate_refuses_an_archive_dir_mkdir_would_make_outside_the_session
+run_test test_rotate_refuses_a_memory_dir_linked_out_for_its_snapshot
+run_test test_rotate_takes_back_its_snapshot_and_chunk_when_the_rewrite_fails
 run_test test_rotate_keeps_the_header_block
 run_test test_rotate_cuts_on_a_heading_boundary
 run_test test_rotate_writes_one_chunk_whose_body_is_verbatim
@@ -914,15 +1243,13 @@ run_test test_rotate_refuses_a_differing_chunk_with_the_same_name
 run_test test_rotate_keeps_an_append_that_lands_mid_rotation
 run_test test_rotate_aborts_when_the_archived_run_changed_underneath
 run_test test_rotate_abort_leaves_a_preexisting_identical_chunk_alone
+run_test test_rotate_midpoint_seam_never_executes_its_value
 run_test test_rotate_leaves_no_temp_files_behind
 run_test test_rotate_refuses_an_unreadable_narrative
 run_test test_rotate_refuses_an_unwritable_archive_dir
-run_test test_rotate_commits_live_and_chunk_when_tracked
-run_test test_rotate_commits_only_its_own_two_files
-run_test test_rotate_names_the_merge_state_when_the_commit_is_refused
-run_test test_rotate_skips_the_commit_when_cs_is_ignored
-run_test test_rotate_never_force_adds_into_an_ignored_cs
-run_test test_rotate_names_an_ignored_archive_directory
+run_test test_rotate_makes_no_commit_and_leaves_the_cut_on_disk
+run_test test_rotate_mid_merge_stages_nothing
+run_test test_rotate_in_an_ignored_tree_commits_and_stages_nothing
 run_test test_rotate_outside_git_still_rotates
 run_test test_rotate_appends_a_timeline_event
 run_test test_rotate_archives_an_encrypted_narrative_behind_private
@@ -936,11 +1263,17 @@ run_test test_named_rotate_targets_the_named_session_not_the_ambient_one
 run_test test_named_rotate_on_a_worktree_uses_its_own_narrative
 run_test test_named_rotate_honours_the_caller_actor_over_the_session_identity
 run_test test_named_rotate_under_budget_is_a_noop
+run_test test_named_rotate_from_another_session_refuses_a_live_target
+run_test test_named_rotate_from_a_plain_shell_rotates_a_live_session
+run_test test_named_rotate_from_a_base_rotates_its_live_feature
 run_test test_named_rotate_refuses_an_unknown_session
+run_test test_named_rotate_refuses_a_timeline_linked_out_of_the_session
+run_test test_rotate_snapshot_name_is_not_predictable
 run_test test_named_rotate_usage_names_the_form_the_user_typed
 run_test test_named_rotate_refuses_a_directory_that_is_not_a_session
 run_test test_narrative_budget_is_one_value_in_both_copies
 run_test test_narrative_budget_reads_any_spelling_of_zero_as_the_default
+run_test test_narrative_headings_counts_bytes_and_leaves_the_shells_own_locale_alone
 run_test test_named_rotate_refuses_a_dangling_adopted_link
 run_test test_named_rotate_rejects_an_unknown_subcommand
 run_test test_unknown_session_command_error_lists_narrative

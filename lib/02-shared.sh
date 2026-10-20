@@ -1,5 +1,5 @@
-# ABOUTME: Actor identity, narrative budget, private-dir, tmux window-title, atomic file rewrite and state-file
-# ABOUTME: lock code that cs AND its hooks run. build.sh folds this into bin/cs and copies it to hooks/cs-shared.sh.
+# ABOUTME: Actor identity, narrative budget, private-dir, tmux window-title, atomic file rewrite, state-file
+# ABOUTME: lock, session-lock reading, remote-control server check and settings.json rewrite code that cs AND its hooks run. build.sh folds this into bin/cs and copies it to hooks/cs-shared.sh.
 
 # The core session identity is independent of the selected runtime. Keep the
 # aliases while shipped hooks and shared commands still read the older names.
@@ -60,16 +60,17 @@ cs_actor_slug() {
     _slugify "$(cs_actor_raw "$sdir" "$meta")"
 }
 
-# 224 KiB budget, 112 KiB tail. The ceiling is the Read tool's: it refuses a
-# file over 256 KiB, and the resume reads the live narrative in one call, so a
-# file past that size cannot be read in full at all. The budget sits under the
-# ceiling with room for the appends made while the over-budget warning is on
-# screen and before anyone rotates. The tail is what a resume actually costs;
-# sections run about 2 KB and an active day produces 60-odd of them, so 112 KiB
-# is most of a day. The 2:1 ratio keeps rotation infrequent: a full tail's
-# worth must accumulate again before the next one.
-CS_NARRATIVE_MAX_DEFAULT=229376
-CS_NARRATIVE_KEEP_DEFAULT=114688
+# 128 KiB budget, 64 KiB tail. Every resume reads the whole live narrative,
+# and the live file runs from the tail up to the budget between rotations, so
+# the pair sets what each resume costs: about 96 KiB on average, near 42k
+# tokens (a 171 KB narrative measured about 75k). The busiest session writes
+# about 39 KB a day, so the tail holds a day and a half of it and a week or
+# more of a quieter session. The Read tool refuses a file over 256 KiB and the
+# resume reads the narrative in one call; the budget leaves that much room for
+# appends made while the over-budget warning is on screen. The 2:1 ratio keeps rotation infrequent: a
+# full tail's worth must accumulate again before the next one.
+CS_NARRATIVE_MAX_DEFAULT=131072
+CS_NARRATIVE_KEEP_DEFAULT=65536
 
 # A positive integer override, else the default. Empty, non-numeric and zero
 # in any spelling (0, 00) all fall back: a zero budget would rotate on every
@@ -93,8 +94,15 @@ CS_VAULT_LINKS="memory plans claude-config private"
 # traces). An encrypted session links .cs/private into its vault; any other
 # keeps them in .cs/local. Fails, printing nothing, when .cs/private is a link
 # whose vault is locked: a writer drops its line rather than write it anywhere
-# else in plaintext.
+# else in plaintext. Fails the same way for a hook whose session resolved with
+# files git tracks in that directory (CS_TRACKED_FILES_META, set by
+# cs_resolve_session): nothing git delivered there is read as a queue, mail or
+# a rotation, and nothing is added beside it. That answer is one hook run's:
+# a value of either name that came in with the environment is dropped here,
+# where cs and every hook that reads these files load this file.
+unset CS_TRACKED_FILES_META CS_TRACKED_FILES_NOTICE
 cs_private_dir() {  # meta_dir
+    [ "${CS_TRACKED_FILES_META:-}" != "$1" ] || return 1
     if [ -L "$1/private" ] || [ -e "$1/private" ]; then
         [ -d "$1/private" ] || return 1
         printf '%s\n' "$1/private"
@@ -103,11 +111,318 @@ cs_private_dir() {  # meta_dir
     fi
 }
 
+# The machine-local directory a hook writes in, .cs/local (an encrypted session
+# keeps it beside the vault, not in it). Fails, as cs_private_dir does, for the
+# session whose control files git tracks (CS_TRACKED_FILES_META): a hook adds,
+# changes and removes nothing a pull delivered or a commit would carry. That
+# holds while only vault content is tracked too: the rule is the session's,
+# not one directory's.
+cs_local_dir() {  # meta_dir
+    [ "${CS_TRACKED_FILES_META:-}" != "$1" ] || return 1
+    printf '%s\n' "$1/local"
+}
+
+# git, asked about <dir> and the repository that directory sits in, whatever
+# the environment says. GIT_DIR and GIT_WORK_TREE name another repository,
+# GIT_INDEX_FILE another index (git hands one to every commit hook),
+# GIT_COMMON_DIR and GIT_OBJECT_DIRECTORY another store, and
+# GIT_CEILING_DIRECTORIES can keep git from finding the repository at all, and
+# the four *_PATHSPECS settings change how a pathspec matches (a literal one
+# reads ":(icase,literal)..." as a file name). A refusal that asked git under
+# any of them would find nothing tracked and let the open, or a hook, go on.
+# GIT_CONFIG_COUNT (with its KEY_n/VALUE_n pairs) and GIT_CONFIG_PARAMETERS
+# hand git configuration, and a bad value makes every call fail. git speaks
+# in the C locale here so a caller can tell "not a repository" from a failure.
+# The repository's core.fsmonitor names a command git runs on every ls-files;
+# an empty value turns it off, on every git version, so no question asked
+# here runs a program the repository's config names.
+# Every check that decides whether cs trusts a session's files asks through
+# here.
+_cs_git_at() {  # dir, git arguments...
+    local dir="$1"
+    shift
+    env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR -u GIT_OBJECT_DIRECTORY \
+        -u GIT_CEILING_DIRECTORIES -u GIT_LITERAL_PATHSPECS -u GIT_GLOB_PATHSPECS \
+        -u GIT_NOGLOB_PATHSPECS -u GIT_ICASE_PATHSPECS -u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS \
+        -u LANGUAGE LC_ALL=C git -c core.fsmonitor= -C "$dir" "$@"
+}
+
+# The directory git's own search would take for the repository by its HEAD,
+# looking up from <dir>; fails when the search ends without one. git, asked
+# about a directory, takes the nearest directory at or above it that holds a
+# .git, or one that itself holds HEAD (beside objects/ and refs/, or a
+# commondir naming them), and runs the commands its config names. A clone can
+# commit that layout anywhere, with git add -f where its .gitignore hides the
+# path, and a committed link can lead into one outside the session (another
+# directory a clone made), so it is looked for before git is asked anything.
+# The walk is git's: each directory from <dir> up to / is asked, by the
+# filesystem and never by how its path is spelled, whether it holds .git (the
+# search ends there, finding nothing) or HEAD (found). Any HEAD counts, a dangling
+# link too: git accepts a link into refs/ whether or not it leads anywhere. A
+# session root without .git is asked like any other directory. Such a root
+# is outside the threat a clone or pull brings, so the hooks and verbs that
+# ask git at a session root do not walk from it first. A link out of
+# the session, a vault mounted elsewhere among them, is walked from where it
+# leads up to its first .git or / like any other directory.
+# The directory found is printed relative to <session_dir> when it lies below
+# it, the session matched by identity (-ef), so a link that spells the
+# session's name in another case (pwd -P keeps the case a link spells) still
+# names it inside; otherwise its whole path is printed.
+_cs_head_on_git_walk() {  # physical dir, session_dir
+    local d="$1" up
+    while :; do
+        [ ! -e "$d/.git" ] || return 1
+        if [ -e "$d/HEAD" ] || [ -L "$d/HEAD" ]; then
+            break
+        fi
+        [ -n "$d" ] || return 1
+        d=${d%/*}
+    done
+    if up=$(_cs_spelling_of_ancestor "${d%/*}" "$2"); then
+        printf '%s\n' "${d#"$up"/}"
+    else
+        printf '%s\n' "${d:-/}"
+    fi
+}
+
+# The leading part of the absolute path <dir> that is the directory
+# <ancestor>, compared by identity (-ef) and printed as <dir> spells it: <dir>
+# itself or one of the directories above it. Fails when none is.
+_cs_spelling_of_ancestor() {  # dir, ancestor
+    local d="$1"
+    while [ -n "$d" ]; do
+        if [ "$d" -ef "$2" ]; then
+            printf '%s\n' "$d"
+            return 0
+        fi
+        d=${d%/*}
+    done
+    return 1
+}
+
+# What git said on stderr when the same call through _cs_git_at failed, its
+# answer discarded. A git that could not be run at all is named in place of
+# env's wording: missing (exit 127), or found but not runnable (exit 126).
+_cs_git_error_at() {  # dir, git arguments...
+    local why rc=0
+    why=$(_cs_git_at "$@" 2>&1 >/dev/null) || rc=$?
+    case "$rc" in
+        127) printf 'git is not installed or not on PATH\n' ;;
+        126) printf 'git was found on PATH but could not be run\n' ;;
+        *) printf '%s\n' "$why" ;;
+    esac
+}
+
+# True when git's error output says it found no repository at all, the one
+# failure that answers "nothing tracked". The line is looked for anywhere in
+# the output: GIT_TRACE and trace2 settings, from the environment or from
+# configuration, print their own lines first.
+_cs_git_not_a_repo() {  # git's error output
+    local line
+    while IFS= read -r line; do
+        case "$line" in "fatal: not a git repository"*) return 0 ;; esac
+    done <<<"$1"
+    return 1
+}
+
+# git's own complaint, cut to printable characters: its first "fatal:" or
+# "error:" line, so trace lines printed before it are passed over, else its
+# first line.
+_cs_git_complaint() {  # git's error output
+    local line why=${1%%$'\n'*}
+    while IFS= read -r line; do
+        case "$line" in "fatal: "* | "error: "*) why=$line; break ;; esac
+    done <<<"$1"
+    why=$(printf '%s' "$why" | env LC_ALL=C tr -c '[:print:]' '?' | cut -c1-200) || why=""
+    printf '%s\n' "${why:-git failed}"
+}
+
+# Says that git could not answer whether it tracks a file in <dir>, in git's
+# own words.
+_cs_git_cannot_answer() {  # dir, git's error output
+    printf 'cs could not ask git whether it tracks a file in .cs/%s: %s\n' "${1##*/}" "$(_cs_git_complaint "$2")"
+}
+
+# <name> with every byte but A-Z, a-z, 0-9, ".", "_", "/", "@" and "-"
+# replaced by "_", cut to its first <longest> characters when that is given.
+# A name a repository chose (a file it tracks, a directory it commits) is
+# printed through here, so it never reaches the terminal, or Claude, raw: no
+# escape, control byte or newline survives. tr works on bytes in the C locale,
+# so each byte of a multibyte character is replaced on its own.
+_cs_plain_name() {  # name, [longest]
+    if [ -n "${2:-}" ]; then
+        printf '%s' "$1" | env LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_' | cut -c1-"$2"
+    else
+        printf '%s' "$1" | env LC_ALL=C tr -c 'A-Za-z0-9._/@-' '_'
+    fi
+}
+
+# True when <name> is not empty, holds no "/", and _cs_plain_name, cut at
+# 160, leaves it as it is. A name cs offers the user to act on, or hands
+# Claude to read, must be one, so the name printed is the file itself, and it
+# is one file name: it cannot reach outside the directory it is looked up in.
+_cs_is_plain_name() {  # name
+    case "$1" in ''|*/*) return 1 ;; esac
+    [ "$(_cs_plain_name "$1" 160)" = "$1" ]
+}
+
+# Prints the line that says git tracks <tracked> and how to stop: untrack
+# <sub>, a path relative to <top>, and commit, both in <top>. The repository
+# chose both names and the user is asked to paste the command, so each path is
+# quoted for the shell and taken literally by git (a directory named "*" would
+# otherwise untrack every file), a path starting with "~" or "=" is spelled
+# from the current directory (bash 3.2 leaves the tilde bare, and zsh reads
+# =git as git's own path), and so is a repository starting with "-", which
+# git -C takes as a path but a reader takes for an option, the commit runs in the
+# same repository wherever the command is pasted, and the file name and the
+# commit message keep only characters a plain path has. The name also shows in
+# the Stop hook's message, a systemMessage, which Claude Code shows the user and
+# leaves out of what it sends the model.
+cs_untrack_notice() {  # tracked, top, sub
+    local shown said top="$2" sub="$3"
+    shown=$(_cs_plain_name "$1" 160) || return 1
+    said=$(_cs_plain_name "$sub") || return 1
+    case "$top" in '~'* | '='* | '-'*) top="./$top" ;; esac
+    case "$sub" in '~'* | '='*) sub="./$sub" ;; esac
+    printf "%s is tracked in git (per-actor state must stay local). Fix with: git -C %q --literal-pathspecs rm -r --cached -- %q && git -C %q commit -m 'stop tracking %s'\n" \
+        "$shown" "$top" "$sub" "$top" "$said"
+}
+
+# Says which file git tracks in <dir> and how to stop tracking it; fails,
+# printing nothing, when git tracks none there. A git that fails for any
+# reason but "not a git repository" has not said that: the function then
+# prints why and succeeds, so every caller refuses. Asked of the directory itself,
+# in whichever repository lists it, so a link to a tracked directory is seen
+# through; asked from the repository's top with a case-insensitive pattern, so
+# a case variant of the name (.cs/LOCAL, which a case-insensitive volume puts
+# in .cs/local) is seen too. A directory in no repository, a vault mounted from
+# elsewhere, has nothing tracked. A directory that is gone can still hold files
+# the index lists (the next checkout brings them back), so it is asked of the
+# nearest directory that exists, with the missing part added to the pattern; a
+# link that leads nowhere (a locked vault) holds nothing git lists.
+# <session_dir> is the session as its caller names it, printed in place of the
+# repository's own path when the two are one directory. A directory that holds
+# the session's own files is named, with no command: untracking it would
+# untrack the project, whatever case the link spells the session's name in. A
+# directory laid out like a repository where git's own search from the one
+# asked about would find it, inside the session or out of it, is named before
+# git is asked anything. One inside the session is named relative to it, with
+# the HEAD to delete; one outside it is named by its whole path with no delete
+# advice, since it can be the user's own repository (a session inside a bare
+# repository or a checkout's .git, or a bare repository that is the session
+# directory itself, which counts as outside).
+cs_tracked_files_notice() {  # dir, session_dir
+    local real top prefix tracked status why failed meta sub rest n layout here="$1" missing=""
+    while [ ! -e "$here" ] && [ ! -L "$here" ]; do
+        case "$here" in */?*) ;; *) return 1 ;; esac
+        missing="/${here##*/}$missing"
+        here=${here%/*}
+    done
+    # The x keeps a trailing newline in a name that $( ) drops; -- keeps a
+    # name starting with "-" from reading as cd's option, a cd that fails
+    # into "nothing tracked".
+    real=$(cd -P -- "$here" 2>/dev/null && pwd -P && printf x) || return 1
+    real=${real%$'\n'x}
+    if layout=$(_cs_head_on_git_walk "$real" "$2"); then
+        # A whole path is printed uncut, so it still names the directory.
+        case "$layout" in
+            /*)
+                layout=$(_cs_plain_name "$layout") || return 1
+                printf '%s holds HEAD, so git takes it for a repository and would run commands its config names. Run cs -rm to remove the session.\n' \
+                    "$layout"
+                ;;
+            *)
+                layout=$(_cs_plain_name "$layout" 160) || return 1
+                printf '%s holds HEAD, so git takes it for a repository and would run commands its config names (cs state must be a plain directory inside the session). Delete %s/HEAD, or cs -rm the session.\n' \
+                    "$layout" "$layout"
+                ;;
+        esac
+        return 0
+    fi
+    # The repository's top and the directory's place in it, one line each from
+    # one git: two newlines in all, unless a name holds one, and then each is
+    # asked on its own.
+    if ! top=$(_cs_git_at "$real" rev-parse --show-toplevel --show-prefix 2>/dev/null && printf x); then
+        why=$(_cs_git_error_at "$real" rev-parse --show-toplevel --show-prefix)
+        ! _cs_git_not_a_repo "$why" || return 1
+        _cs_git_cannot_answer "$1" "$why"
+        return 0
+    fi
+    case "$top" in
+        *$'\n'*$'\n'*$'\n'*)
+            failed=""
+            top=$(_cs_git_at "$real" rev-parse --show-toplevel 2>/dev/null && printf x) || failed=--show-toplevel
+            [ -n "$failed" ] || prefix=$(_cs_git_at "$real" rev-parse --show-prefix 2>/dev/null && printf x) \
+                || failed=--show-prefix
+            if [ -n "$failed" ]; then
+                why=$(_cs_git_error_at "$real" rev-parse "$failed")
+                _cs_git_cannot_answer "$1" "$why"
+                return 0
+            fi
+            top=${top%$'\n'x}
+            prefix=${prefix%$'\n'x}
+            ;;
+        *)
+            prefix=${top#*$'\n'}
+            prefix=${prefix%$'\n'x}
+            top=${top%%$'\n'*}
+            ;;
+    esac
+    [ -z "$missing" ] || prefix="$prefix${missing#/}/"
+    real="$real$missing"
+    # :(icase): a case-insensitive checkout (macOS by default) puts a
+    # committed .cs/LOCAL/pre-open at .cs/local/pre-open on disk, where a
+    # case-sensitive pathspec would never see it.
+    # The reader stops at the first entry, so git may die of SIGPIPE behind a
+    # found one; its status counts only when nothing was found.
+    tracked=$(_cs_git_at "$top" ls-files -z -- ":(icase,literal)${prefix:-.}" 2>/dev/null \
+        | { IFS= read -r -d '' first || exit 0; printf '%sx' "$first"; }
+        printf '/%s' "${PIPESTATUS[0]}") || return 1
+    status=${tracked##*/}
+    tracked=${tracked%/*}
+    tracked=${tracked%x}
+    if [ -z "$tracked" ]; then
+        [ "$status" != 0 ] || return 1
+        why=$(_cs_git_error_at "$top" ls-files -z -- ":(icase,literal)${prefix:-.}")
+        _cs_git_cannot_answer "$1" "$why"
+        return 0
+    fi
+    meta=$(cd -P -- "$2/.cs" 2>/dev/null && pwd -P && printf x) && meta=${meta%$'\n'x}
+    if _cs_spelling_of_ancestor "$meta" "$real" >/dev/null; then
+        printf "%s leads to a directory that holds this session's own files, where git tracks %s (per-actor state must stay local). Make %s a directory of its own.\n" \
+            ".cs/${1##*/}" "$(_cs_plain_name "$tracked" 160)" ".cs/${1##*/}"
+        return 0
+    fi
+    # The path to untrack, spelled as the index has it: a case variant is
+    # removed under its own name.
+    n=0 rest=$prefix
+    while [ -n "$rest" ]; do n=$((n + 1)); rest=${rest#*/}; done
+    sub="" rest=$tracked
+    while [ "$n" -gt 0 ]; do
+        sub="$sub${sub:+/}${rest%%/*}"
+        rest=${rest#*/}
+        n=$((n - 1))
+    done
+    [ ! "$top" -ef "$2" ] || top="$2"
+    cs_untrack_notice "$tracked" "$top" "${sub:-.}"
+}
+
+# The same, for the directories that hold a session's cs content files:
+# .cs/private once that name exists, and .cs/local always (the hooks read the
+# rotation kick and the session's ids there either way).
+cs_files_tracked_notice() {  # meta_dir, session_dir
+    if [ -L "$1/private" ] || [ -e "$1/private" ]; then
+        cs_tracked_files_notice "$1/private" "$2" && return 0
+    fi
+    cs_tracked_files_notice "$1/local" "$2"
+}
+
 # Says what an unusable .cs/private is, for an error message: the vault it
-# points at, or that it is not a directory at all.
+# points at, as a plain name (a clone can commit the link), or that it is not
+# a directory at all.
 cs_private_state() {  # meta_dir
     if [ -L "$1/private" ]; then
-        printf 'points at %s\n' "$(readlink "$1/private")"
+        printf 'points at %s\n' "$(_cs_plain_name "$(readlink "$1/private")" 160)"
     else
         printf 'is not a directory\n'
     fi
@@ -140,7 +455,8 @@ cs_handoff_dir() {  # meta_dir
 cs_tmux_title_window() {  # pane, session name ("" releases the pane)
     local pane="$1" name="$2" names lock
     [ -n "$pane" ] || return 0
-    lock=$(_cs_tmux_title_lock "$pane")
+    lock=$(_cs_tmux_title_lock_path "$pane")
+    [ -z "$lock" ] || _cs_lock "$lock" || lock=""
     if [ -n "$name" ]; then
         tmux set-option -p -t "$pane" @cs_session "$name" 2>/dev/null || true
     else
@@ -157,7 +473,7 @@ cs_tmux_title_window() {  # pane, session name ("" releases the pane)
         tmux set-window-option -t "$pane" allow-rename on 2>/dev/null || true
         tmux set-window-option -t "$pane" allow-set-title on 2>/dev/null || true
     fi
-    _cs_mkdir_unlock "$lock"
+    _cs_unlock "$lock"
     _cs_iterm_tab_title "$pane"
 }
 
@@ -177,96 +493,200 @@ _cs_iterm_tab_title() {  # pane
     ( python3 "$helper" "$window" </dev/null >/dev/null 2>&1 & )
 }
 
-# Takes the lock on a pane's window and prints its directory: a directory per
-# tmux server and window under $TMPDIR, through _cs_mkdir_lock. A call is a few
-# tmux round trips (385 ms measured on a loaded machine, so six panes queue for
-# two seconds), and past the wait the title is written without the lock, as a
-# title must never stall a hook. Prints nothing when it holds nothing.
-_cs_tmux_title_lock() {  # pane
-    local key lock
+# Prints the lock file of a pane's window, one per tmux server and window
+# under $TMPDIR, which cs_tmux_title_window takes through _cs_lock in its own
+# process. A call is a few tmux round trips (385 ms measured on a loaded
+# machine, so six panes queue for two seconds), and past the wait the title
+# is written without the lock, as a title must never stall a hook. Prints
+# nothing when tmux cannot name the window.
+_cs_tmux_title_lock_path() {  # pane
+    local key
     key=$(tmux display-message -p -t "$1" '#{socket_path}#{window_id}' 2>/dev/null) || key=""
     [ -n "$key" ] || return 0
-    lock="${TMPDIR:-/tmp}/cs-title-$(printf '%s' "$key" | tr -c 'A-Za-z0-9@_.-' '_').lock"
-    _cs_mkdir_lock "$lock" || return 0
-    printf '%s\n' "$lock"
+    printf '%s\n' "${TMPDIR:-/tmp}/cs-title-$(printf '%s' "$key" | tr -c 'A-Za-z0-9@_.-' '_').mutex.lock"
 }
 
-# The one mkdir lock cs and its hooks take wherever two processes may write
-# the same thing at once (a window title, the state file): a directory holding
-# the holder's pid, since mkdir is atomic and bash 3.2 has no flock. A holder
-# whose pid is gone died holding it and is taken over at once; an empty pid
-# file older than two seconds is a holder that died between the mkdir and the
-# write, taken over too. A takeover renames the dead lock to a name of its own
-# before removing it, and rename is atomic, so of two waiters that saw the
-# same dead pid only one reclaims; the other's rename fails and it goes back
-# to waiting on whichever lock the winner then makes. Two windows are left
-# alone: a holder that pauses over two seconds between its mkdir and its pid
-# write is taken for dead, and a holder running as another user answers
-# kill -0 with EPERM, which reads as dead too; cs sessions run as one user,
-# and a line lost to either costs one resume prompt or one title, not data.
-# A live holder is waited for, but for no more than five seconds: past that
-# the caller goes ahead without the lock, since a launch or a hook must never
-# stall on a lock a stray process holds, and a lock older than a minute is
-# removed on the way out so the next caller is not taxed again (a real hold
-# lasts milliseconds). A lock that vanishes between the failed mkdir and the
-# look at it was just released, and the next mkdir is tried at once. Returns
-# 0 holding the lock with its pid written, 1 holding nothing; a directory
-# that cannot hold a lock at all (missing, read-only) is not waited on.
-_cs_mkdir_lock() {  # lock dir
-    local lock="$1" dir holder deadline=$((SECONDS + 5)) empty_since=""
-    dir=$(dirname "$lock")
-    until mkdir "$lock" 2>/dev/null; do
-        [ -d "$dir" ] && [ -w "$dir" ] || return 1
-        if [ "$SECONDS" -ge "$deadline" ]; then
-            [ -z "$(find "$lock" -prune -mmin +1 2>/dev/null)" ] || _cs_mkdir_reclaim "$lock" ""
+# The one lock cs and its hooks take wherever two processes may write the
+# same thing at once (a window title, the state file, settings.json): flock(2)
+# on a lock file. The kernel ties the lock to the open file and drops it when
+# the last descriptor on that file closes, so a holder that dies, however it
+# dies, has released it, and no process ever judges another one dead. Bash
+# 3.2 has no flock, so bash opens the file on fd 9 and a short perl process
+# locks the descriptor it inherits; the lock stays with bash's descriptor
+# once perl exits. That shape sets the contract:
+# - fd 9 is the lock's, so a process holds one lock at a time. A second take
+#   while one is held is refused: opening fd 9 again would drop the first.
+# - A lock taken inside $(...) or ( ) belongs to that subshell and is gone
+#   when it exits, so the process that does the work takes the lock.
+# - A child started while holding inherits fd 9. Release unlocks the open
+#   file itself before closing fd 9, so a child still running cannot keep the
+#   lock past the release; a holder killed outright keeps it until every
+#   child that inherited fd 9 has exited.
+# - The path must be a regular file, or absent, when it is created. A
+#   directory, symlink, fifo or anything else is refused at once with a line
+#   on stderr, and a link is never followed: bash opens the file itself (a
+#   descriptor perl opened would close when perl exits), so a link is refused
+#   before the open, and perl then checks that the path names the very
+#   regular file fd 9 has open. Only a link swapped in between those two
+#   steps, by a live process of the same user, is followed, and the lock is
+#   then refused.
+# - The file is never removed, but by cs -uninstall, which removes
+#   ~/.claude/settings.json.mutex.lock while it holds it: a removed lock file
+#   lets the next taker lock a fresh file while a waiter locks the removed one.
+#   A taker that finds the path gone after it opened the file, or naming
+#   another file once it holds the lock, lets it go and takes the lock on the
+#   file the path names, trying three times in all.
+# - A directory that is missing, or cannot take a new file, refuses at once.
+# - A live holder is waited for, but for no more than five seconds: past that
+#   the caller goes ahead without the lock or gives up, as it chooses, since a
+#   launch or a hook must never stall on a lock a stray process holds.
+# - Without perl nothing is locked, and a line on stderr says so.
+# Returns 0 holding the lock, 1 holding nothing.
+_cs_lock() {  # lock file
+    local lock="$1" rc
+    if [ -n "${_CS_LOCK_HELD:-}" ]; then
+        echo "cs: cannot lock $lock: this process already holds $_CS_LOCK_HELD" >&2
+        return 1
+    fi
+    if ! command -v perl >/dev/null 2>&1; then
+        echo "cs: cannot lock $lock: perl not found" >&2
+        return 1
+    fi
+    for _ in 1 2 3; do
+        if [ -L "$lock" ] || { [ -e "$lock" ] && [ ! -f "$lock" ]; }; then
+            echo "cs: cannot lock $lock: not a regular file" >&2
             return 1
         fi
-        if [ ! -d "$lock" ]; then
-            empty_since=""
-            continue
-        fi
-        holder=""
-        { read -r holder < "$lock/pid"; } 2>/dev/null || true
-        if [ -n "$holder" ]; then
-            empty_since=""
-            kill -0 "$holder" 2>/dev/null || _cs_mkdir_reclaim "$lock" "$holder"
-        else
-            : "${empty_since:=$SECONDS}"
-            if [ $((SECONDS - empty_since)) -ge 2 ]; then
-                _cs_mkdir_reclaim "$lock" ""
-                empty_since=""
-            fi
-        fi
-        sleep 0.05
+        { exec 9<>"$lock"; } 2>/dev/null || return 1
+        rc=0
+        perl -e "$_CS_LOCK_PERL" "$lock" || rc=$?
+        case "$rc" in
+            0)
+                _CS_LOCK_HELD="$lock"
+                _CS_LOCK_SUBSHELL=$BASH_SUBSHELL
+                return 0
+                ;;
+            2)
+                exec 9<&-
+                echo "cs: cannot lock $lock: not a regular file" >&2
+                return 1
+                ;;
+            3) exec 9<&- ;;
+            *)
+                exec 9<&-
+                return 1
+                ;;
+        esac
     done
-    echo "$$" > "$lock/pid" 2>/dev/null || true
+    return 1
 }
 
-# Remove a dead holder's lock through a rename only this process can win. The
-# pid the caller judged dead is checked again after the rename: a lock with a
-# different pid is a NEW holder's, made between the judgement and the rename,
-# and goes back where it was.
-_cs_mkdir_reclaim() {  # lock dir, judged pid ("" accepts any)
-    local moved="$1.dead.$$" now=""
-    mv "$1" "$moved" 2>/dev/null || return 0
-    if [ -n "$2" ]; then
-        { read -r now < "$moved/pid"; } 2>/dev/null || true
-        if [ -n "$now" ] && [ "$now" != "$2" ]; then
-            mv "$moved" "$1" 2>/dev/null || true
-            return 0
-        fi
-    fi
-    rm -f "$moved/pid"; rmdir "$moved" 2>/dev/null || true
+# _cs_lock's perl, run on the lock file with bash's fd 9 open on it. Exits 0
+# holding the lock; 1 after five seconds of a live holder; 2 when the path is
+# not the regular file fd 9 has open (a link, or another type); 3 when the
+# path names another regular file than fd 9 has, or nothing at all, so the
+# caller opens the path again. The five seconds are read from the clock, not
+# counted in polls: a starved CPU wakes each 50 ms poll late, and a hundred
+# late polls would wait twice as long as promised. The clock is the
+# monotonic one, so a wall-clock step during the wait (NTP, a manual date
+# change) neither ends it early nor stretches it.
+_CS_LOCK_PERL='
+use Fcntl qw(:flock);
+use Time::HiRes qw(clock_gettime CLOCK_MONOTONIC);
+sub now { return clock_gettime(CLOCK_MONOTONIC); }
+open(my $fd, "+<&=", 9) or exit 1;
+my @held = stat($fd);
+exit 2 unless @held && -f _;
+sub path_names_held {
+    my @path = lstat($ARGV[0]);
+    return @path && -f _ && $path[0] == $held[0] && $path[1] == $held[1];
+}
+my @path = lstat($ARGV[0]);
+exit 3 if !@path && $!{ENOENT};
+exit 2 unless @path && -f _;
+exit 3 unless path_names_held();
+my $deadline = now() + 5;
+while (1) {
+    if (flock($fd, LOCK_EX | LOCK_NB)) {
+        exit 0 if path_names_held();
+        flock($fd, LOCK_UN);
+        exit 3;
+    }
+    my $left = $deadline - now();
+    exit 1 if $left <= 0;
+    select(undef, undef, undef, $left < 0.05 ? $left : 0.05);
+}
+'
+
+# Release the lock this process holds on <lock file>. Any other path, an
+# empty one, or a lock the parent took, seen from a subshell, is left alone.
+_cs_unlock() {  # lock file ("" when none was held)
+    [ -n "$1" ] && [ "$1" = "${_CS_LOCK_HELD:-}" ] && [ "${_CS_LOCK_SUBSHELL:-}" = "$BASH_SUBSHELL" ] || return 0
+    perl -e 'use Fcntl qw(:flock); open(my $fd, "+<&=", 9) or exit 1; flock($fd, LOCK_UN) or exit 1' \
+        || echo "cs: could not unlock $1; closing it instead" >&2
+    exec 9<&-
+    _CS_LOCK_HELD=""
 }
 
-# Release the lock, but only one this process still holds: a lock taken over
-# from us in the meantime belongs to someone else.
-_cs_mkdir_unlock() {  # lock dir ("" when none was held)
-    [ -n "$1" ] || return 0
-    local holder=""
-    { read -r holder < "$1/pid"; } 2>/dev/null || true
-    [ "$holder" = "$$" ] || return 0
-    rm -f "$1/pid"; rmdir "$1" 2>/dev/null || true
+# Whether $1, a string of decimal digits with no leading zero, is a pid this
+# machine can have: 1 to 2147483647, a pid_t. A larger number is not one kill
+# can ask about: bash's builtin and macOS's /bin/kill refuse it, and procps
+# kill on Linux truncates it to a pid_t and answers for whatever process that
+# is. live_lock_pid and doctor's integrate-lock check decide the range here;
+# live_lock_pid in bin/cs-secrets, which cannot source this file, keeps the
+# same two clauses.
+_cs_pid_in_range() {  # digits
+    [ -n "$1" ] && [ "${#1}" -le 10 ] && [ "$1" -le 2147483647 ]
+}
+
+# Print the pid a session's lock names when that process is running on this
+# machine; print nothing otherwise. The rule: the lock's text, surrounding
+# whitespace removed, is a decimal number from 1 to 2147483647 (a pid_t;
+# leading zeros allowed) and kill -0 reaches it. "0" and "-1" name process
+# groups, not a process, and a larger number wraps on Linux. Every reader of
+# a session lock in cs and in its hooks decides "running" here. Twin of
+# live_lock_pid in bin/cs-secrets, which cannot source this file; the two
+# keep this rule together. Arg: meta_dir.
+read_lock_pid() {  # meta_dir
+    local f="$1/session.lock"
+    [ -f "$f" ] || return 0
+    cat "$f" 2>/dev/null || true
+}
+
+live_lock_pid() {  # meta_dir
+    local text pid
+    text="$(read_lock_pid "$1")"
+    text="${text#"${text%%[![:space:]]*}"}"
+    text="${text%"${text##*[![:space:]]}"}"
+    case "$text" in
+        ''|*[!0-9]*) return 0 ;;
+    esac
+    pid="${text#"${text%%[!0]*}"}"
+    _cs_pid_in_range "$pid" || return 0
+    kill -0 "$pid" 2>/dev/null || return 0
+    echo "$pid"
+}
+
+# The pid of the remote-control server serving session <name>, from its
+# .cs/local/remote.pid, when that pid runs `remote-control --name <name>`.
+# Fails otherwise. A server whose release never ran (its process group
+# killed with SIGKILL, a crash, a restart) leaves the file behind, and its pid
+# can later belong to any program, so a running pid alone proves nothing; the
+# argv is matched as the live-duplicate guard in launch_claude_code matches
+# --name, padded so demo does not match demo-2. ps is called directly, not
+# through CS_PS_BIN: that seam blanks the machine-wide scan in tests, and this
+# asks about one pid. cs's opens, cs -rm, cs -live, cs -doctor and the
+# SessionEnd hook all decide "served" here.
+_remote_server_pid() {  # meta_dir, session_name
+    local f="$1/local/remote.pid" pid="" args
+    [ -f "$f" ] || return 1
+    IFS= read -r pid < "$f" 2>/dev/null || true
+    case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+    args=$(ps -ww -o args= -p "$pid" 2>/dev/null) || return 1
+    case " $args " in
+        *" remote-control --name $2 "*) printf '%s' "$pid" ;;
+        *) return 1 ;;
+    esac
 }
 
 # Octal permission bits of a file, as chmod takes them (644), read through a
@@ -284,19 +704,295 @@ _cs_file_mode() {  # path
 # with .cs-tmp., the prefix a session's .gitignore names, so one left by a
 # killed writer never reaches an autosave snapshot. A symlinked destination is
 # followed to its target, so a shared or linked file is rewritten in place and
-# the link survives. The destination keeps the
+# the link survives; inside a session (CLAUDE_SESSION_DIR) a destination under
+# it whose links lead out of it is refused instead (_cs_write_leaves_session),
+# since a clone can commit `.cs/README.md -> ~/.zshrc`. The destination keeps the
 # permission bits it had, and a new file gets the umask's; the temp file takes
 # them BEFORE the rename, so a shared directory never sees a 0600 window. A
 # failed command, chmod or rename leaves the destination as it was, the temp
 # file removed, and returns the failing status. Callers that want a message
 # add it: hooks source this file, and `error` is cs's alone.
 # Usage: cs_write_atomic <dest> <command> [args...]
+# Where a write to a path lands: its symlinks followed, 16 hops as
+# cs_write_atomic follows them, and its directory resolved physically, so a
+# linked parent counts too. Fails when that directory does not exist, and
+# with status 2 when the path is still a link after 16 hops: the kernel
+# follows more, so where such a write lands is unknown here. Fails with
+# status 3 when a name in the path, in a link's target or in the directory it
+# resolves to ends in a newline: $(...) strips a trailing one, here and in the
+# caller, so the path read would not be the one the kernel follows, and a
+# decoy beside it would pass. Each command takes the path after --, so a
+# relative name starting with a dash is a name, not an option.
+_cs_write_target() {  # path
+    local dest="$1" link dir hops=0 nl=$'\n'
+    case "$dest" in *"$nl"/*|*"$nl") return 3 ;; esac
+    while [ -L "$dest" ] && [ "$hops" -lt 16 ]; do
+        # -n and the x keep a trailing newline that $(...) would strip
+        # (macOS readlink adds none of its own to a target ending in one).
+        link=$(readlink -n -- "$dest" && printf x) || return 1
+        link=${link%x}
+        case "$link" in
+            /*) dest="$link" ;;
+            *) dest="$(dirname -- "$dest")/$link" ;;
+        esac
+        case "$dest" in *"$nl"/*|*"$nl") return 3 ;; esac
+        hops=$((hops + 1))
+    done
+    [ ! -L "$dest" ] || return 2
+    # A directory that exists resolves whole, its last component included:
+    # appending a final ".." to its resolved parent would read as inside.
+    if [ -d "$dest" ]; then
+        dir=$(cd -P -- "$dest" 2>/dev/null && pwd -P && printf x) || return 1
+        dir=${dir%"$nl"x}
+        case "$dir" in *"$nl") return 3 ;; esac
+        printf '%s\n' "$dir"
+        return
+    fi
+    # cd -P walks each component as the filesystem does: a logical cd would
+    # collapse `link/..` to the link's own parent, not the target's. The x
+    # keeps a directory's trailing newline; the name after it keeps it from
+    # the caller's $(...).
+    dir=$(cd -P -- "$(dirname -- "$dest")" 2>/dev/null && pwd -P && printf x) || return 1
+    dir=${dir%"$nl"x}
+    printf '%s/%s\n' "${dir%/}" "$(basename -- "$dest")"
+}
+
+# True when .cs at <root> is a submodule or nested repository, whose files
+# the session's index never lists (Codex r2 #4). The gitlink outlives a
+# removed .cs/.git, so the index is checked as well; the pathspec also lists
+# entries below .cs, so only a gitlink whose whole path is .cs counts. A git
+# that fails here, outside a repository among other reasons, lists nothing and
+# reads as "not nested"; both callers go on to ask cs_tracked_files_notice,
+# which refuses on any failure but that one.
+_cs_nested_cs() {  # root
+    [ -e "$1/.cs/.git" ] && return 0
+    _cs_git_at "$1" ls-files -s -- ':(icase).cs' 2>/dev/null \
+        | awk -F'\t' '{ split($1, m, " "); if (m[1] == "160000" && tolower($2) == ".cs") hit = 1 } END { exit !hit }' 2>/dev/null
+}
+
+# True when the session at <root> has a vault the user set up by hand: a
+# .cs/local/pre-open the open would run. A clone can commit one or link one
+# in, so it counts only as a real file under a real .cs/local, untracked (the
+# same rules cs_assert_local_untracked enforces at open; a standalone command
+# like cs <name> -queue never ran that check). Fails with status 2, printing
+# git's error ("cs could not ask git ..."), when git cannot answer whether it
+# tracks the pre-open: that is no vault either, so no link out of the session
+# is let through, and a caller can say why.
+_cs_hand_made_vault() {  # root
+    local pre="$1/.cs/local/pre-open" notice
+    [ -f "$pre" ] && [ ! -L "$pre" ] && [ ! -L "$1/.cs" ] && [ ! -L "$1/.cs/local" ] || return 1
+    ! _cs_nested_cs "$1" || return 1
+    notice=$(cs_tracked_files_notice "$1/.cs/local" "$1") || return 0
+    case "$notice" in
+        "cs could not ask git"*) printf '%s\n' "$notice"; return 2 ;;
+    esac
+    return 1
+}
+
+# True when a path lies in the session at <root> by its spelling (as typed,
+# or under the root's physical path, the spelling an adopted session is
+# written by) but a write to it lands outside the root; prints where it lands,
+# as a plain name cut at 160 characters, or one of two phrases when that
+# cannot be named.
+# A vault set up by hand mounts anywhere, from .cs/local/pre-open, so while
+# one exists the four vault links, and a .cs/narrative-archive link (which
+# cs -narrative rotate uses as it is), may lead out. That covers an encrypted
+# session, whose .cs/claude-config links settings, skills and the rest to the
+# shell's own config: cs -encrypt writes the pre-open. A clone cannot ship a
+# pre-open (cs_assert_local_untracked refuses one tracked or linked in), but
+# it can commit the vault's layout, so the layout alone earns nothing. When
+# git cannot answer whether the vault is hand made, a write through one of
+# those links that lands outside prints git's error ("cs could not ask git
+# ...") in place of where it lands: still a write that leaves the session.
+_cs_write_leaves_session() {  # root, path
+    local root="$1" root_p real sub vault=0 why="" via=""
+    # A root spelled exactly - is OLDPWD to cd even after --; cs never exports
+    # a session dir spelled so, so that spelling is accepted, not re-fixed.
+    root_p=$(cd -- "$root" 2>/dev/null && pwd -P) || return 1
+    case "$2" in
+        "$root"/*|"$root_p"/*) ;;
+        *) return 1 ;;
+    esac
+    why=$(_cs_hand_made_vault "$root") || vault=$?
+    if [ "$vault" != 1 ]; then
+        for sub in $CS_VAULT_LINKS narrative-archive; do
+            [ -L "$root/.cs/$sub" ] || continue
+            case "$2" in
+                "$root/.cs/$sub"|"$root/.cs/$sub"/*|"$root_p/.cs/$sub"|"$root_p/.cs/$sub"/*)
+                    [ "$vault" != 0 ] || return 1
+                    via=1 ;;
+            esac
+        done
+    fi
+    # An unresolvable directory fails the write at mktemp, writing nothing.
+    real=$(_cs_write_target "$2") || {
+        case $? in
+            2) real="a chain of more than 16 links" ;;
+            3) real="a name ending in a newline" ;;
+            *) return 1 ;;
+        esac
+    }
+    case "$real/" in
+        "$root_p"/*) return 1 ;;
+    esac
+    if [ -n "$via" ]; then
+        printf '%s\n' "$why"
+        return 0
+    fi
+    # A clone chooses where a committed link leads, so a resolved path, which
+    # always starts with "/", is printed as a plain name; the two phrases
+    # above are cs's own and are printed as written.
+    case "$real" in /*) real=$(_cs_plain_name "$real" 160) ;; esac
+    printf '%s\n' "$real"
+}
+
+# The session a path lies in, by its spelling: the nearest directory above it
+# that holds a .cs, never climbing to the sessions root or past it. A
+# directory inside a .cs is never the session. Nor is one reached through a
+# link inside a session further up (an adopted session's entry in the
+# sessions root aside): a link a clone commits (.cs/private -> ../../other,
+# backup -> elsewhere) would make a .cs it reaches the session the write is
+# checked against, so the session the link sits in is the one checked. Found from
+# the path rather than from CLAUDE_SESSION_DIR, so a write into another session
+# (cs-secrets --session) or one made with the variable unset is checked against
+# the session it lands in. Fails for a path in no session.
+_cs_session_root_of() {  # path
+    local d stop="${CS_SESSIONS_ROOT:-${HOME:-/nonexistent}/.claude-sessions}" root="" linked=""
+    case "$1" in
+        /*) d="${1%/*}" ;;
+        *) d="$PWD/$1"; d="${d%/*}" ;;
+    esac
+    while [ -n "$d" ] && [ "$d" != "$stop" ]; do
+        case "$d/" in
+            */.cs/*) ;;
+            *) if [ -d "$d/.cs" ] && { [ -z "$root" ] || [ -n "$linked" ]; }; then
+                   root="$d" linked=""
+               fi ;;
+        esac
+        if [ -L "$d" ] && [ "${d%/*}" != "$stop" ]; then
+            linked=1
+        fi
+        d="${d%/*}"
+    done
+    [ -n "$root" ] || return 1
+    printf '%s\n' "$root"
+}
+
+# The three writers below name a link out of the session on stderr whatever
+# the caller wants. A hook sets CS_WRITE_QUIET=1 so that a write failing for any
+# other reason (a read-only directory, a full disk) shows only in the status:
+# hooks fail quietly, and their stderr reaches the user's terminal.
+
+# The check the writers share: true, with the refusal on stderr, when a write
+# to <path> would leave the session it lies in. A relative path is taken from
+# the current directory, its links kept, so its spelling still says which
+# session it is in. <probe> is the part of the path that exists, when that is
+# less than all of it. Every write is checked afresh: a file that passed once
+# can be swapped for a link before the next write.
+_cs_refuses_write() {  # writer, path, [probe]
+    local p="$2" e="${3:-$2}" root out
+    case "$p" in /*) ;; *) p="$PWD/$p" ;; esac
+    case "$e" in /*) ;; *) e="$PWD/$e" ;; esac
+    root=$(_cs_session_root_of "$p") || return 1
+    out=$(_cs_write_leaves_session "$root" "$e") || return 1
+    # Below the session, the path can hold names a clone chose, so that part,
+    # and the part of it that does not exist yet, print as plain names; the
+    # session's own path prints as it is spelled.
+    case "$out" in
+        "cs could not ask git"*) echo "$1: $root/$(_cs_plain_name "${p#"$root"/}" 160) not written: $out" >&2 ;;
+        *) echo "$1: $root/$(_cs_plain_name "${p#"$root"/}" 160) leads to $out$(_cs_plain_name "${p#"$e"}" 160), outside the session $root" >&2 ;;
+    esac
+}
+
+# Append a command's output to a file, unless a link takes the file out of the
+# session it lies in; then name the link on stderr and append nothing.
+cs_append_inside() {  # file, command [args...]
+    local file="$1"; shift
+    ! _cs_refuses_write cs_append_inside "$file" || return 1
+    if [ -n "${CS_WRITE_QUIET:-}" ]; then
+        { "$@" >> "$file"; } 2>/dev/null
+    else
+        "$@" >> "$file"
+    fi
+}
+
+# Whether cs_mkdir_inside refuses to make <dir> from <nearest>, the nearest
+# level of it that exists, by spelling alone: <nearest> must be a .cs or lie
+# inside one, and the levels to make must not hold a .cs. A writer that plans
+# its directories before it makes them (the retire's record fuse) asks the
+# same question.
+_cs_mkdir_spelling_refused() {  # dir, nearest existing level
+    case "$2/" in
+        */.cs/*) ;;
+        *) return 0 ;;
+    esac
+    case "${1#"$2"}/" in
+        */.cs/*) return 0 ;;
+    esac
+    return 1
+}
+
+# Make a directory and its missing levels inside a .cs that exists, unless a
+# link takes it out of the session it lies in. cs makes a session's .cs when it
+# creates, adopts or migrates the session; a writer that finds it gone is
+# running for a session removed under it, so the levels to make must lie below
+# an existing .cs and must not themselves hold a .cs, judged by spelling as the
+# session is; a directory that already exists makes nothing and gets only the
+# link check. The levels to make do not exist yet, so the nearest one that does
+# is what gets resolved: a link there carries every level made below it. Each
+# level is then made on its own, never with mkdir -p: a session removed after
+# the checks leaves the next level without its parent, so the mkdir fails and
+# nothing is built again from the path. A level another writer made first
+# counts as made.
+cs_mkdir_inside() {  # dir
+    local dir="$1" e rest part err
+    case "$dir" in /*) ;; *) dir="$PWD/$dir" ;; esac
+    e="$dir"
+    while [ -n "$e" ] && [ ! -e "$e" ] && [ ! -L "$e" ]; do
+        e="${e%/*}"
+    done
+    if [ "$e" != "$dir" ] && _cs_mkdir_spelling_refused "$dir" "$e"; then
+        e=""
+    fi
+    if [ -z "$e" ]; then
+        [ -n "${CS_WRITE_QUIET:-}" ] || echo "cs_mkdir_inside: $dir is not inside an existing .cs" >&2
+        return 1
+    fi
+    if _cs_refuses_write cs_mkdir_inside "$dir" "$e"; then
+        return 1
+    fi
+    if [ "$e" = "$dir" ]; then
+        [ ! -d "$dir" ] || return 0
+        [ -n "${CS_WRITE_QUIET:-}" ] || echo "cs_mkdir_inside: $dir is not a directory" >&2
+        return 1
+    fi
+    rest="${dir#"$e"}"
+    while [ -n "$rest" ]; do
+        rest="${rest#/}"
+        part="${rest%%/*}"
+        rest="${rest#"$part"}"
+        [ -n "$part" ] || continue
+        e="$e/$part"
+        if [ -n "${CS_WRITE_QUIET:-}" ]; then
+            mkdir "$e" 2>/dev/null || [ -d "$e" ] || return 1
+        else
+            err=$(mkdir "$e" 2>&1) || [ -d "$e" ] || { printf '%s\n' "$err" >&2; return 1; }
+        fi
+    done
+}
+
 cs_write_atomic() {  # dest, command [args...]
     local dest="$1"; shift
     (
         local dir tmp mode link hops=0
+        ! _cs_refuses_write cs_write_atomic "$dest" || exit 1
+        [ -z "${CS_WRITE_QUIET:-}" ] || exec 2>/dev/null
+        # readlink, dirname and basename below take dest without --: a
+        # relative dest starting with a dash fails at them or at mktemp and
+        # writes nothing, so that spelling is accepted, not re-fixed.
         while [ -L "$dest" ] && [ "$hops" -lt 16 ]; do
-            link=$(readlink "$dest") || exit 1
+            link=$(readlink -n "$dest" && printf x) || exit 1
+            link=${link%x}
             case "$link" in
                 /*) dest="$link" ;;
                 *) dest="$(dirname "$dest")/$link" ;;
@@ -322,12 +1018,19 @@ cs_write_atomic() {  # dest, command [args...]
 
 # The machine-local state file (.cs/local/state) is rewritten whole from its
 # old contents, by cs and by the SessionStart hook, so two writers can lose an
-# update unless they take turns: the lock is _cs_mkdir_lock on a directory
-# beside the file. The vault holder list takes turns through it too. Prints the lock directory when it holds it, nothing when it
-# does not.
-_cs_local_state_lock() {  # state
-    _cs_mkdir_lock "$1.lock" || return 0
-    printf '%s\n' "$1.lock"
+# update unless they take turns: they run their change under _cs_lock on
+# <file>.mutex.lock beside the file. The vault holder list takes turns
+# through it too. Once the lock's wait runs out the change runs without it,
+# as a launch or a hook must not stall on it. The lock is taken and let go in
+# this function's own process, never in a $(...), which would let go of it
+# as the $(...) exits. Returns the command's status.
+_cs_with_state_lock() {  # file, command [args...]
+    local lock="$1.mutex.lock" rc=0
+    shift
+    _cs_lock "$lock" || lock=""
+    "$@" || rc=$?
+    _cs_unlock "$lock"
+    return "$rc"
 }
 
 # The state file's new contents: every line but the key's, then the key's new
@@ -347,22 +1050,14 @@ _cs_local_state_render() {  # state, key [, value]
 # line for that key, under the state lock. Returns non-zero when the write
 # failed; the file is then as it was.
 cs_local_state_set() {  # state, key, value
-    local lock rc=0
-    lock=$(_cs_local_state_lock "$1")
-    cs_write_atomic "$1" _cs_local_state_render "$1" "$2" "$3" || rc=$?
-    _cs_mkdir_unlock "$lock"
-    return "$rc"
+    _cs_with_state_lock "$1" cs_write_atomic "$1" _cs_local_state_render "$1" "$2" "$3"
 }
 
 # Remove a key's line from a machine-local state file, under the state lock.
 # A missing file is a no-op.
 cs_local_state_unset() {  # state, key
     [ -f "$1" ] || return 0
-    local lock rc=0
-    lock=$(_cs_local_state_lock "$1")
-    cs_write_atomic "$1" _cs_local_state_render "$1" "$2" || rc=$?
-    _cs_mkdir_unlock "$lock"
-    return "$rc"
+    _cs_with_state_lock "$1" cs_write_atomic "$1" _cs_local_state_render "$1" "$2"
 }
 
 # Serialize ownership changes on a persistent inode. The descriptor belongs to
@@ -374,7 +1069,8 @@ cs_local_state_unset() {  # state, key
 cs_run_guarded() (  # meta_dir, callback, arguments...
     local meta="$1" mask
     shift
-    mkdir -p "$meta/local" || return 1
+    [ -d "$meta" ] || { printf 'Error: could not create %s/local\n' "$meta" >&2; return 1; }
+    cs_mkdir_inside "$meta/local" || return 1
     # The guard is private; what the callback writes takes the caller's umask.
     mask=$(umask)
     umask 077
@@ -424,19 +1120,175 @@ cs_run_with_lease() {  # meta_dir, callback, arguments...
 # list without one pid. Both take the lock beside the file, so a drop never
 # renames its copy over a line another opener added meanwhile.
 cs_vault_holder_add() {  # holders, pid
-    local lock rc=0
-    lock=$(_cs_local_state_lock "$1")
-    { printf '%s\n' "$2" >> "$1"; } 2>/dev/null || rc=$?
-    _cs_mkdir_unlock "$lock"
-    return "$rc"
+    _cs_with_state_lock "$1" _cs_append_line "$1" "$2"
+}
+
+# Append one line to a file. Its error message is dropped, its status kept.
+_cs_append_line() {  # file, line
+    { printf '%s\n' "$2" >> "$1"; } 2>/dev/null
 }
 
 # A missing list is a no-op. Other lines stay as they are.
 cs_vault_holder_drop() {  # holders, pid
     [ -f "$1" ] || return 0
-    local lock rc=0
-    lock=$(_cs_local_state_lock "$1")
-    cs_write_atomic "$1" awk -v pid="$2" '$0 != pid' "$1" || rc=$?
-    _cs_mkdir_unlock "$lock"
+    _cs_with_state_lock "$1" cs_write_atomic "$1" awk -v pid="$2" '$0 != pid' "$1"
+}
+
+# Claude Code's settings.json holds the user's permissions, env, MCP servers
+# and other tools' hooks. Whether cs can read it: a missing or zero-byte file
+# can (cs creates it), anything else jq cannot parse cannot, and is never
+# replaced. Returns 1 with "<file> is not valid JSON; left it unchanged and
+# wrote no <file>.cs-bak.<stamp> backup: <jq's reason>" in CS_SETTINGS_ERROR
+# when it cannot. Something there that is not a regular file (a FIFO, a
+# device, a directory, or a link to one) is never opened, since reading a
+# FIFO waits for a writer and a device may never end, and returns 1 with
+# "<file> is not a regular file, so cs did not read it; left it unchanged".
+# That test comes first: -s is false for a FIFO or a device, as for a
+# missing file, so the size alone would pass one as a file cs creates.
+# shellcheck disable=SC2034  # CS_SETTINGS_ERROR is read by the callers in cs and install.sh
+cs_settings_check() {  # file
+    local reason
+    CS_SETTINGS_ERROR=""
+    if [ -e "$1" ] && [ ! -f "$1" ]; then
+        CS_SETTINGS_ERROR="$1 is not a regular file, so cs did not read it; left it unchanged"
+        return 1
+    fi
+    [ -s "$1" ] || return 0
+    reason=$(jq -e . 2>&1 >/dev/null < "$1") && return 0
+    reason="${reason%%$'\n'*}"
+    reason="${reason#jq: }"
+    [ -n "$reason" ] || reason="jq found no JSON value in it, or only null or false"
+    CS_SETTINGS_ERROR="$1 is not valid JSON; left it unchanged and wrote no $1.cs-bak.<stamp> backup: $reason"
+    return 1
+}
+
+# Rewrite a Claude Code settings file through a command that reads its JSON on
+# stdin and prints the new JSON, usually jq and a filter. Claude Code, a second
+# install and cs's own verbs all rewrite the file whole, so the read, the
+# command and the write happen under one _cs_lock on <file>.mutex.lock beside it, and
+# a cs writer waiting on it never loses its change or another's; nothing that
+# waits on a person may run inside it. Claude Code takes no such lock: against
+# it the guard is that the read and the write are only the command's run time
+# apart. A missing or zero-byte file reads as {}; a file cs_settings_check
+# refuses, or a command whose output is not JSON, leaves the file as it was.
+# When the content changes, the file as it was is first copied beside it as
+# <file>.cs-bak.<UTC stamp> (.1, .2 ... numbered past the highest taken for
+# that stamp, so a name pruning freed is never reused), mode
+# kept, then replaced through cs_write_atomic; unchanged content writes
+# nothing, so no backup either. Every changing write keeps one, and then the
+# five newest backups are kept and older ones removed. Returns 0 written or
+# unchanged, 1 refused with the reason in CS_SETTINGS_ERROR and the file
+# untouched.
+cs_settings_update() {  # file, command [args...]
+    local file="$1" lock="$1.mutex.lock" rc=0
+    shift
+    CS_SETTINGS_ERROR=""
+    if ! _cs_lock "$lock"; then
+        CS_SETTINGS_ERROR="could not take the lock $lock; $file left unchanged"
+        return 1
+    fi
+    _cs_settings_rewrite "$file" "$@" || rc=$?
+    _cs_unlock "$lock"
     return "$rc"
+}
+
+# cs_settings_update's work, run while it holds the lock.
+# shellcheck disable=SC2034  # CS_SETTINGS_ERROR is read by the callers in cs and install.sh
+_cs_settings_rewrite() {  # file, command [args...]
+    local file="$1" current="{}" updated stamp backup="" n=0 taken="" f k
+    shift
+    cs_settings_check "$file" || return 1
+    if [ -s "$file" ]; then
+        current=$(cat "$file") || {
+            CS_SETTINGS_ERROR="could not read $file; left it unchanged"
+            return 1
+        }
+    fi
+    if ! updated=$(printf '%s\n' "$current" | "$@") \
+        || ! printf '%s\n' "$updated" | jq -e . >/dev/null 2>&1; then
+        CS_SETTINGS_ERROR="could not update $file: the change did not produce JSON; left it unchanged"
+        return 1
+    fi
+    [ "$updated" != "$current" ] || return 0
+    if [ -e "$file" ]; then
+        stamp=$(date -u +%Y%m%dT%H%M%SZ)
+        backup="$file.cs-bak.$stamp"
+        # The next number is one past the highest this stamp has: pruning
+        # removes the lowest, so filling a freed name would make the newest
+        # backup sort oldest and be pruned at once.
+        for f in "$backup" "$backup".*; do
+            [ -e "$f" ] || [ -L "$f" ] || continue
+            taken=yes
+            k="${f#"$backup"}"
+            k="${k#.}"
+            case "$k" in
+                ''|*[!0-9]*) ;;
+                *) [ $((10#$k)) -gt "$n" ] && n=$((10#$k)) ;;
+            esac
+        done
+        if [ -n "$taken" ]; then
+            n=$((n + 1))
+            backup="$file.cs-bak.$stamp.$n"
+            while [ -e "$backup" ] || [ -L "$backup" ]; do
+                n=$((n + 1))
+                backup="$file.cs-bak.$stamp.$n"
+            done
+        fi
+        cp -p "$file" "$backup" 2>/dev/null || {
+            CS_SETTINGS_ERROR="could not back up $file to $backup; left it unchanged"
+            return 1
+        }
+    fi
+    cs_write_atomic "$file" printf '%s\n' "$updated" || {
+        CS_SETTINGS_ERROR="could not write $file; left it unchanged"
+        return 1
+    }
+    _cs_prune_settings_backups "$file" "$backup"
+}
+
+# Keeps five of file $1's backups, <file>.cs-bak.<UTC stamp> with an
+# optional .<n>, and removes the rest: backup $2, the one this write just
+# took, when given, and the newest of the others by stamp and then by n.
+# $2 is kept by name, not by order, as a clock set back stamps it older than
+# backups already there. A file beside it under any other name, or a link,
+# is not a backup cs wrote and is left alone. A backup rm cannot remove
+# stays, with rm's own message.
+_cs_prune_settings_backups() {  # file, [backup just written]
+    local f suffix n keep=5
+    [ -z "${2:-}" ] || keep=4
+    for f in "$1".cs-bak.*; do
+        [ -f "$f" ] && [ ! -L "$f" ] || continue
+        [ "$f" != "${2:-}" ] || continue
+        suffix="${f#"$1".cs-bak.}"
+        case "$suffix" in
+            [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z)
+                printf '%s 0 %s\n' "$suffix" "$suffix" ;;
+            [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z.*)
+                n="${suffix#*Z.}"
+                case "$n" in
+                    ''|*[!0-9]*) ;;
+                    *) printf '%s %s %s\n' "${suffix%%Z.*}Z" "$n" "$suffix" ;;
+                esac
+                ;;
+        esac
+    done | sort -k1,1 -k2,2n | awk -v keep="$keep" '{ name[NR] = $3 } END { for (i = 1; i <= NR - keep; i++) print name[i] }' \
+        | while IFS= read -r suffix; do
+            rm -f -- "$1.cs-bak.$suffix" || true
+        done
+}
+
+# Strip C0 control characters (keeping tab and newline) and DEL from stdin, so
+# text another session wrote cannot smuggle an escape sequence into this
+# session's terminal. cs is multi-session by design — presence, queued tasks and
+# mail all cross a session boundary — and the reader does not trust the writer.
+# Text a cloned session's repo carries (a file cs -search matches, a recipient
+# file age list previews) is cleaned the same way.
+# C0 and DEL only: 8-bit C1 (0x80-0x9F, where 0x9B is CSI) is deliberately out
+# of scope, because a UTF-8 terminal does not decode raw C1 bytes as controls.
+# The C locale reaches tr as an argument of env, never as an assignment the
+# shell makes for itself: every caller pipes into this function, so it runs in
+# a forked copy of the shell, and a bash linked against libintl (Homebrew's)
+# can crash when it changes its own locale there.
+_scrub_controls() {
+    env LC_ALL=C tr -d '\000-\010\013-\037\177'
 }

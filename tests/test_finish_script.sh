@@ -323,18 +323,443 @@ test_report_is_ready_to_retire_over_uncommitted_bookkeeping() {
     assert_eq "ready" "$(key "$out" retire)" "ready despite the uncommitted bookkeeping" || return 1
 }
 
-test_report_after_a_squash_landing_gives_the_squash_notice() {
+# Squash-shaped landing: the branch's content arrives on the base as one
+# unrelated commit, so the captured commit is never an ancestor.
+squash_land() {  # base task
+    (cd "$CS_SESSIONS_ROOT/$1" && git merge -q --squash "cs/$2" >/dev/null && git commit -q -m "$2 (#7)")
+}
+
+report_for() {  # base task sha
+    CLAUDE_SESSION_DIR="$CS_SESSIONS_ROOT/$1" CLAUDE_SESSION_NAME="$1" bash "$FINISH" report "$1" "$2" "$3" 2>&1
+}
+
+# A MERGED PR for cs/fix-auth whose head is <head-oid>, with no checks.
+stub_merged_pr() {  # head-oid
+    stub_gh_routes '[{"number":7,"state":"MERGED","url":"https://github.com/example-org/example-repo/pull/7","mergeCommit":{"oid":"abc123"},"mergedAt":"2026-09-12T09:00:00Z","baseRefName":"main","headRefOid":"'"$1"'","headRepositoryOwner":{"login":"example-org"},"isCrossRepository":false}]' \
+        '{"check_runs":[]}' '{"statuses":[]}'
+}
+
+# The tree is the evidence: a branch whose every changed path is byte for
+# byte on the base loses nothing but history when it goes, so no PR at all
+# (a local squash, a cherry-pick) is no reason to keep it. The retire entry
+# then takes it under --force.
+test_report_after_a_squash_landing_with_no_pr_is_content_landed() {
     local sha out
     sha=$(finish_fixture myproj fix-auth)
     stub_gh '[]'
-    # Squash-shaped landing: the content arrives as an unrelated commit, F is not an ancestor.
-    (cd "$CS_SESSIONS_ROOT/myproj" && git merge -q --squash cs/fix-auth >/dev/null && git commit -q -m "feature (#7)")
-    out=$(CLAUDE_SESSION_DIR="$CS_SESSIONS_ROOT/myproj" CLAUDE_SESSION_NAME="myproj" \
-        bash "$FINISH" report myproj fix-auth "$sha" 2>&1)
+    squash_land myproj fix-auth
+    out=$(report_for myproj fix-auth "$sha")
     assert_eq "no" "$(key "$out" landed)" "F is not an ancestor after a squash" || return 1
-    assert_eq "not-landed" "$(key "$out" retire)" "a squash landing is not retirable on ancestry" || return 1
+    assert_eq "none" "$(key "$out" pr_state)" "there is no PR" || return 1
+    assert_eq "content-landed" "$(key "$out" retire)" "every changed path is on the base" || return 1
+    assert_eq "1" "$(key "$out" retire_paths_checked)" "the one path the branch changed was checked" || return 1
+    assert_output_contains "$out" "retire_note: cs/fix-auth is not an ancestor of base, but every path it changed is identical on base HEAD; retire with --force" \
+        "the note says why force is safe" || return 1
+    out=$("$CS_BIN" myproj -retire-feature fix-auth "$sha" --force 2>&1) || { echo "  FAIL: retire refused: $out"; return 1; }
+    assert_eq "retired fix-auth $sha" "$out" "the entry retires it under --force" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/myproj@fix-auth" "the worktree is gone" || return 1
+}
+
+# Today's PR evidence (MERGED, head == captured sha) and the content check
+# agree on a clean squash landing.
+test_report_content_landed_with_a_pr_head_equal_to_the_capture() {
+    local sha out
+    sha=$(finish_fixture myproj fix-auth)
+    stub_merged_pr "$sha"
+    squash_land myproj fix-auth
+    out=$(report_for myproj fix-auth "$sha")
+    assert_eq "MERGED" "$(key "$out" pr_state)" "the PR merged" || return 1
+    assert_eq "$sha" "$(key "$out" pr_head_oid)" "its head is the capture" || return 1
+    assert_eq "content-landed" "$(key "$out" retire)" "and the content is on the base" || return 1
+}
+
+# The PR's head is not the capture (the PR landed through other commits), but
+# every path the branch changed is on the base: the PR head says nothing the
+# tree does not settle.
+test_report_content_landed_whatever_the_pr_head_says() {
+    local sha out
+    sha=$(finish_fixture myproj fix-auth)
+    stub_merged_pr a1a1
+    squash_land myproj fix-auth
+    out=$(report_for myproj fix-auth "$sha")
+    assert_eq "a1a1" "$(key "$out" pr_head_oid)" "the PR head differs from the capture" || return 1
+    assert_eq "content-landed" "$(key "$out" retire)" "the content check decides" || return 1
+    assert_eq "1" "$(key "$out" retire_paths_checked)" "one path checked" || return 1
+}
+
+# One path the base holds differently keeps the refusal, and the refusal
+# names it. The base carries the other path exactly as the branch has it.
+test_report_refuses_a_branch_with_one_path_not_on_the_base() {
+    local sha out wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    finish_fixture myproj fix-auth > /dev/null
+    echo "second" > "$wt/second.txt"
+    (cd "$wt" && git add second.txt && git commit -q -m "second")
+    sha=$(git -C "$wt" rev-parse HEAD)
+    stub_gh '[]'
+    (cd "$CS_SESSIONS_ROOT/myproj" && echo "feature work" > feature.txt && echo "not the branch's" > second.txt \
+        && git add feature.txt second.txt && git commit -q -m "partial landing")
+    out=$(report_for myproj fix-auth "$sha")
+    assert_eq "not-landed" "$(key "$out" retire)" "a path that differs is not landed" || return 1
     assert_output_contains "$out" "retire_note: cs/fix-auth is not an ancestor of base (a squash or rebase landing); retire with --force only on a MERGED pr_state" \
         "the note says when force is legitimate" || return 1
+    assert_eq "1 of 2" "$(key "$out" retire_paths_differing)" "one of the two changed paths differs" || return 1
+    assert_eq "second.txt" "$(printf '%s\n' "$out" | sed -n 's/^retire_differs: //p')" "and only it is named" || return 1
+}
+
+# The base edited the landed path again after the squash: the branch's
+# version is no longer what the base holds, so the check refuses. The PR
+# evidence (MERGED, head == capture) stays for the skill's own --force arm.
+test_report_refuses_a_path_the_base_edited_after_the_landing() {
+    local sha out
+    sha=$(finish_fixture myproj fix-auth)
+    stub_merged_pr "$sha"
+    squash_land myproj fix-auth
+    (cd "$CS_SESSIONS_ROOT/myproj" && echo "edited on the base" >> feature.txt && git commit -q -am "edit")
+    out=$(report_for myproj fix-auth "$sha")
+    assert_eq "not-landed" "$(key "$out" retire)" "the base's later edit means the content differs" || return 1
+    assert_eq "1 of 1" "$(key "$out" retire_paths_differing)" "the one path differs" || return 1
+    assert_eq "feature.txt" "$(key "$out" retire_differs)" "and is named" || return 1
+    assert_eq "MERGED" "$(key "$out" pr_state)" "the PR state still reports" || return 1
+    assert_eq "$sha" "$(key "$out" pr_head_oid)" "with the head the skill compares" || return 1
+}
+
+# A deletion lands when the path is absent on the base too; a rename is a
+# deletion and an addition, both checked.
+test_report_content_landed_counts_a_deleted_and_a_renamed_path() {
+    local sha out base="$CS_SESSIONS_ROOT/myproj" wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    create_test_session_with_git myproj > /dev/null
+    git -C "$base" remote add origin "git@github.com:example-org/example-repo.git"
+    (cd "$base" && echo gone > gone.txt && echo moved > old-name.txt && git add gone.txt old-name.txt && git commit -q -m "base files")
+    cs_launch "myproj@fix-auth"
+    (cd "$wt" && git rm -q gone.txt && git mv old-name.txt new-name.txt && git commit -q -m "delete and rename")
+    sha=$(git -C "$wt" rev-parse HEAD)
+    stub_gh '[]'
+    squash_land myproj fix-auth
+    out=$(report_for myproj fix-auth "$sha")
+    assert_eq "content-landed" "$(key "$out" retire)" "the deletion and the rename landed" || return 1
+    assert_eq "3" "$(key "$out" retire_paths_checked)" "gone.txt, old-name.txt and new-name.txt" || return 1
+    # The same branch against a base that kept the deleted file.
+    (cd "$base" && echo gone > gone.txt && git add gone.txt && git commit -q -m "restore")
+    out=$(report_for myproj fix-auth "$sha")
+    assert_eq "not-landed" "$(key "$out" retire)" "a deleted path the base still holds differs" || return 1
+    assert_eq "gone.txt" "$(key "$out" retire_differs)" "and is named" || return 1
+}
+
+# The same bytes with another mode are not the branch's content.
+test_report_refuses_a_mode_change_the_base_lacks() {
+    local sha out base="$CS_SESSIONS_ROOT/myproj" wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    create_test_session_with_git myproj > /dev/null
+    git -C "$base" remote add origin "git@github.com:example-org/example-repo.git"
+    (cd "$base" && printf '#!/bin/sh\n' > run.sh && git add run.sh && git commit -q -m "script")
+    cs_launch "myproj@fix-auth"
+    (cd "$wt" && chmod +x run.sh && git commit -q -am "make it executable")
+    sha=$(git -C "$wt" rev-parse HEAD)
+    stub_gh '[]'
+    (cd "$base" && git commit -q --allow-empty -m "unrelated")
+    out=$(report_for myproj fix-auth "$sha")
+    assert_eq "not-landed" "$(key "$out" retire)" "the mode change is not on the base" || return 1
+    assert_eq "run.sh" "$(key "$out" retire_differs)" "and is named" || return 1
+}
+
+# The refusal names ten paths at most and counts the rest.
+test_report_names_at_most_ten_differing_paths() {
+    local sha out i wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    finish_fixture myproj fix-auth > /dev/null
+    for i in 01 02 03 04 05 06 07 08 09 10 11 12; do echo "$i" > "$wt/p$i.txt"; done
+    (cd "$wt" && git add p*.txt && git commit -q -m "twelve")
+    sha=$(git -C "$wt" rev-parse HEAD)
+    stub_gh '[]'
+    (cd "$CS_SESSIONS_ROOT/myproj" && git commit -q --allow-empty -m "unrelated")
+    out=$(report_for myproj fix-auth "$sha")
+    assert_eq "13 of 13" "$(key "$out" retire_paths_differing)" "every changed path differs" || return 1
+    assert_eq "feature.txt p01.txt p02.txt p03.txt p04.txt p05.txt p06.txt p07.txt p08.txt p09.txt" \
+        "$(printf '%s\n' "$out" | sed -n 's/^retire_differs: //p' | tr '\n' ' ' | sed 's/ $//')" "the first ten are named" || return 1
+    assert_eq "3" "$(key "$out" retire_differs_more)" "the rest are counted" || return 1
+}
+
+# A tip past the captured commit holds work no landing carried; the entry
+# refuses it under --force, so the report says what to do instead.
+test_report_content_landed_waits_for_commits_after_the_capture() {
+    local sha out wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    sha=$(finish_fixture myproj fix-auth)
+    stub_gh '[]'
+    squash_land myproj fix-auth
+    (cd "$wt" && git commit -q --allow-empty -m "after capture")
+    out=$(report_for myproj fix-auth "$sha")
+    assert_output_contains "$out" "retire: 1 commit(s) on cs/fix-auth after the captured commit are not integrated; run /finish fix-auth again before retiring" \
+        "the later commit is named before any retire" || return 1
+    assert_output_not_contains "$out" "content-landed" "content-landed is not claimed" || return 1
+}
+
+# The base records submodule `mod` at one commit, with .gitmodules giving it
+# <ignore> (none when empty). The branch bumps the pointer and adds feat.txt;
+# only feat.txt lands on the base, so the branch is the one ref holding the
+# bump. No cs launch: the report reads only the two git trees. Prints the
+# captured sha.
+gitlink_bump_fixture() {  # ignore
+    local base="$CS_SESSIONS_ROOT/myproj" wt="$CS_SESSIONS_ROOT/myproj@fix-auth" sub="$TEST_TMPDIR/sub" c1 c2
+    create_test_session_with_git myproj > /dev/null
+    git init -q "$sub"
+    (cd "$sub" && echo 1 > f && git add f && git commit -q -m one)
+    c1=$(git -C "$sub" rev-parse HEAD)
+    (cd "$sub" && echo 2 > f && git commit -q -am two)
+    c2=$(git -C "$sub" rev-parse HEAD)
+    printf '[submodule "mod"]\n\tpath = mod\n\turl = %s\n' "$sub" > "$base/.gitmodules"
+    [ -z "$1" ] || printf '\tignore = %s\n' "$1" >> "$base/.gitmodules"
+    (cd "$base" && git add .gitmodules && git update-index --add --cacheinfo "160000,$c1,mod" && git commit -q -m "submodule")
+    git -C "$base" worktree add -q -b cs/fix-auth "$wt"
+    (cd "$wt" && git update-index --cacheinfo "160000,$c2,mod" && echo feat > feat.txt && git add feat.txt \
+        && git commit -q -m "bump mod")
+    (cd "$base" && echo feat > feat.txt && git add feat.txt && git commit -q -m "feat only")
+    git -C "$wt" rev-parse HEAD
+}
+
+# A submodule the project tells diff to ignore still has a pointer: a bump
+# the base never got is content the retire would lose.
+test_report_refuses_a_submodule_bump_gitmodules_ignores() {
+    local sha out
+    sha=$(gitlink_bump_fixture all)
+    out=$(report_for myproj fix-auth "$sha")
+    assert_eq "not-landed" "$(key "$out" retire)" "the bump is not on the base" || return 1
+    assert_eq "1 of 2" "$(key "$out" retire_paths_differing)" "feat.txt landed, mod did not" || return 1
+    assert_eq "mod" "$(key "$out" retire_differs)" "and the submodule is named" || return 1
+}
+
+# The same through the user's git config instead of .gitmodules.
+test_report_refuses_a_submodule_bump_diff_config_ignores() {
+    local sha out
+    sha=$(gitlink_bump_fixture "")
+    git -C "$CS_SESSIONS_ROOT/myproj" config diff.ignoreSubmodules all
+    out=$(report_for myproj fix-auth "$sha")
+    assert_eq "not-landed" "$(key "$out" retire)" "the bump is not on the base" || return 1
+    assert_eq "1 of 2" "$(key "$out" retire_paths_differing)" "feat.txt landed, mod did not" || return 1
+    assert_eq "mod" "$(key "$out" retire_differs)" "and the submodule is named" || return 1
+}
+
+# A base session and its worktree on cs/fix-auth, both plain git: the report
+# reads only their trees, so no cs launch.
+plain_fixture() {
+    create_test_session_with_git myproj > /dev/null
+    git -C "$CS_SESSIONS_ROOT/myproj" worktree add -q -b cs/fix-auth "$CS_SESSIONS_ROOT/myproj@fix-auth"
+}
+
+# The branch adds one file named <name>; the base adds the same name with
+# other content. Prints the captured sha.
+one_name_differs_fixture() {  # name
+    local base="$CS_SESSIONS_ROOT/myproj" wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    plain_fixture
+    (cd "$wt" && printf 'branch\n' > "$1" && git add -A && git commit -q -m "branch")
+    (cd "$base" && printf 'base\n' > "$1" && git add -A && git commit -q -m "base")
+    git -C "$wt" rev-parse HEAD
+}
+
+# A path name is a name, never a pathspec: `:(glob)zz` names a file, and the
+# base holding that file differently is a refusal.
+test_report_refuses_a_pathspec_magic_name_the_base_holds_differently() {
+    local sha out
+    sha=$(one_name_differs_fixture ':(glob)zz')
+    out=$(report_for myproj fix-auth "$sha")
+    assert_eq "not-landed" "$(key "$out" retire)" "the file differs on the base" || return 1
+    assert_eq "1 of 1" "$(key "$out" retire_paths_differing)" "the one path differs" || return 1
+    assert_eq ":(glob)zz" "$(key "$out" retire_differs)" "and is named as it is" || return 1
+}
+
+# A newline inside a name is one path, never two: the refusal names it once,
+# in git's quoted form.
+test_report_refuses_a_newline_name_the_base_holds_differently() {
+    local sha out
+    sha=$(one_name_differs_fixture $'nl\nname')
+    out=$(report_for myproj fix-auth "$sha")
+    assert_eq "not-landed" "$(key "$out" retire)" "the file differs on the base" || return 1
+    assert_eq "1 of 1" "$(key "$out" retire_paths_differing)" "the one path differs" || return 1
+    assert_eq '"nl\nname"' "$(printf '%s\n' "$out" | sed -n 's/^retire_differs: //p')" "and is named once, quoted" || return 1
+}
+
+# A capture that shares no history with the base has no "what the branch
+# changed" to compare, so nothing vouches for it.
+test_report_refuses_a_capture_with_no_merge_base() {
+    local sha tree out wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    plain_fixture
+    (cd "$wt" && echo orphan > orphan.txt && git add orphan.txt)
+    tree=$(git -C "$wt" write-tree)
+    sha=$(git -C "$wt" commit-tree -m orphan "$tree")
+    git -C "$wt" reset -q --hard "$sha"
+    out=$(report_for myproj fix-auth "$sha")
+    assert_eq "no" "$(key "$out" landed)" "the capture is not an ancestor" || return 1
+    assert_eq "not-landed" "$(key "$out" retire)" "no merge base is not landed" || return 1
+    assert_output_not_contains "$out" "retire_paths" "no path counts" || return 1
+    assert_output_not_contains "$out" "retire_differs" "and no path names" || return 1
+}
+
+# The branch renames a to b and edits a line of it, and renames x to y as it
+# is; the base renames a to c and x to z, both as they were. The branch's edit
+# is in b and nowhere on the base, however alike b and c are, and y is a path
+# the base does not have, even with z's bytes.
+test_report_refuses_paths_the_branch_renamed_and_the_base_renamed_elsewhere() {
+    local sha out base="$CS_SESSIONS_ROOT/myproj" wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    plain_fixture
+    (cd "$wt" && printf 'line1\nline2\nline3\nline4\nline5\n' > a && echo "content of x" > x && git add a x \
+        && git commit -q -m "a and x")
+    git -C "$base" merge -q --ff-only cs/fix-auth
+    (cd "$wt" && git mv a b && printf 'line1\nline2\nbranch edit\nline4\nline5\n' > b && git mv x y \
+        && git commit -q -am "a to b, edited; x to y")
+    sha=$(git -C "$wt" rev-parse HEAD)
+    (cd "$base" && git mv a c && git mv x z && git commit -q -m "a to c; x to z")
+    out=$(report_for myproj fix-auth "$sha")
+    assert_eq "not-landed" "$(key "$out" retire)" "the edit in b is not on the base" || return 1
+    assert_eq "2 of 4" "$(key "$out" retire_paths_differing)" "a and x are gone on both sides, b and y are not on the base" || return 1
+    assert_eq "b y" "$(printf '%s\n' "$out" | sed -n 's/^retire_differs: //p' | tr '\n' ' ' | sed 's/ $//')" \
+        "and only b and y are named" || return 1
+}
+
+# A worktree path that holds a plain directory has no HEAD to read: the
+# report says so on an error line and stops. The ceiling keeps git from
+# finding a repository above the sessions root.
+test_report_says_error_when_the_worktree_is_not_a_git_checkout() {
+    local sha out status=0 wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    create_test_session_with_git myproj > /dev/null
+    sha=$(git -C "$CS_SESSIONS_ROOT/myproj" rev-parse HEAD)
+    mkdir -p "$wt"
+    out=$(GIT_CEILING_DIRECTORIES="$CS_SESSIONS_ROOT" report_for myproj fix-auth "$sha") || status=$?
+    assert_eq "1" "$status" "the report fails" || return 1
+    assert_eq "error: git rev-parse HEAD failed in the worktree $wt" "$(printf '%s\n' "$out" | tail -1)" \
+        "and says so last" || return 1
+    assert_output_not_contains "$out" "retire:" "with no retire line" || return 1
+}
+
+# A branch whose changed path names add up to more bytes than one command
+# line holds (ARG_MAX, measured here) is checked like any other. The paths
+# are about 490 bytes each and live only in the index and the commits, never
+# on disk; both sides get the same ones, so the content landed.
+test_report_checks_more_path_bytes_than_a_command_line_holds() {
+    local sha out n blob dir base="$CS_SESSIONS_ROOT/myproj" wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    plain_fixture
+    n=$(( $(getconf ARG_MAX) / 400 ))
+    blob=$(printf 'same\n' | git -C "$wt" hash-object -w --stdin)
+    dir="$(printf '%0240d' 0 | tr 0 d)/$(printf '%0240d' 0 | tr 0 e)"
+    awk -v n="$n" -v b="$blob" -v d="$dir" \
+        'BEGIN { for (i = 1; i <= n; i++) printf "100644 %s\t%s/f%06d\n", b, d, i }' > "$TEST_TMPDIR/index-info"
+    git -C "$wt" update-index --index-info < "$TEST_TMPDIR/index-info"
+    git -C "$wt" commit -q -m "many paths"
+    sha=$(git -C "$wt" rev-parse HEAD)
+    git -C "$base" update-index --index-info < "$TEST_TMPDIR/index-info"
+    git -C "$base" commit -q -m "the same paths"
+    out=$(report_for myproj fix-auth "$sha")
+    assert_eq "content-landed" "$(key "$out" retire)" "every path is on the base" || return 1
+    assert_eq "$n" "$(key "$out" retire_paths_checked)" "and every one was checked" || return 1
+}
+
+# A name that is not UTF-8, printed raw (core.quotePath false) under a UTF-8
+# locale, is reported like any other name. It has no ASCII byte at all, which
+# is what a UTF-8 grep or sed trips on. It goes in through the index, as some
+# filesystems refuse it on disk, so the worktree shows it deleted. The output
+# holds those bytes, so it is read in the C locale here too.
+test_report_names_a_non_utf8_path_under_a_utf8_locale() {
+    local sha out blob name=$'\xff\xfe' base="$CS_SESSIONS_ROOT/myproj" wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    plain_fixture
+    git -C "$base" config core.quotePath false
+    (cd "$wt" && echo ok > good.txt && git add good.txt)
+    blob=$(printf 'branch\n' | git -C "$wt" hash-object -w --stdin)
+    git -C "$wt" update-index --add --cacheinfo "100644,$blob,$name"
+    git -C "$wt" commit -q -m "two files"
+    sha=$(git -C "$wt" rev-parse HEAD)
+    (cd "$base" && echo ok > good.txt && git add good.txt)
+    blob=$(printf 'base\n' | git -C "$base" hash-object -w --stdin)
+    git -C "$base" update-index --add --cacheinfo "100644,$blob,$name"
+    git -C "$base" commit -q -m "the same name, other content"
+    out=$(LC_ALL=C.UTF-8 CLAUDE_SESSION_DIR="$base" CLAUDE_SESSION_NAME=myproj \
+        bash "$FINISH" report myproj fix-auth "$sha" 2>&1)
+    assert_eq "dirt:  D $name" "$(printf '%s\n' "$out" | LC_ALL=C sed -n '/^dirt: /p')" "the worktree's missing file is named" || return 1
+    assert_eq "not-landed" "$(printf '%s\n' "$out" | LC_ALL=C sed -n 's/^retire: //p')" "the name differs on the base" || return 1
+    assert_eq "1 of 2" "$(printf '%s\n' "$out" | LC_ALL=C sed -n 's/^retire_paths_differing: //p')" "good.txt landed" || return 1
+    assert_eq "$name" "$(printf '%s\n' "$out" | LC_ALL=C sed -n 's/^retire_differs: //p')" "and the name is printed as git has it" || return 1
+}
+
+# Whatever stops the content check, the report ends on an error line, never
+# in silence: here perl, which matches the paths, fails without a word.
+test_report_says_error_when_the_content_check_stops_without_one() {
+    local sha out status=0 wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    plain_fixture
+    (cd "$wt" && echo work > work.txt && git add work.txt && git commit -q -m "work")
+    sha=$(git -C "$wt" rev-parse HEAD)
+    mkdir -p "$TEST_TMPDIR/bin"
+    printf '#!/bin/sh\nexit 3\n' > "$TEST_TMPDIR/bin/perl"
+    chmod +x "$TEST_TMPDIR/bin/perl"
+    out=$(PATH="$TEST_TMPDIR/bin:$PATH" CLAUDE_SESSION_DIR="$CS_SESSIONS_ROOT/myproj" CLAUDE_SESSION_NAME=myproj \
+        bash "$FINISH" report myproj fix-auth "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the report fails" || return 1
+    assert_eq "error: comparing the paths cs/fix-auth changed with base HEAD failed (exit 3)" \
+        "$(printf '%s\n' "$out" | tail -1)" "and says so last" || return 1
+    assert_output_not_contains "$out" "retire:" "with no retire line" || return 1
+}
+
+# The content check compares the capture with the base_head the report
+# prints, whatever the base commits while it runs. The branch has a=1 b=1,
+# the base a=1 b=2, so b differs. A git stand-in commits a=9 b=1 on the base
+# just before git lists the differing names as it quotes them; that later
+# commit must not make the report name a.
+test_report_checks_the_base_head_it_prints_while_the_base_moves() {
+    local sha head out realgit base="$CS_SESSIONS_ROOT/myproj" wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    plain_fixture
+    (cd "$wt" && echo 1 > a && echo 1 > b && git add a b && git commit -q -m "a and b")
+    sha=$(git -C "$wt" rev-parse HEAD)
+    (cd "$base" && echo 1 > a && echo 2 > b && git add a b && git commit -q -m "a, and b otherwise")
+    head=$(git -C "$base" rev-parse HEAD)
+    realgit=$(command -v git)
+    mkdir -p "$TEST_TMPDIR/racebin"
+    cat > "$TEST_TMPDIR/racebin/git" << SHIM
+#!/bin/sh
+case " \$* " in
+    *" -z "*) ;;
+    *" diff "*" --name-only $sha "*)
+        if [ ! -e "$TEST_TMPDIR/raced" ]; then
+            : > "$TEST_TMPDIR/raced"
+            (cd "$base" && echo 9 > a && echo 1 > b && "$realgit" commit -q -am "race") || exit 99
+        fi ;;
+esac
+exec "$realgit" "\$@"
+SHIM
+    chmod +x "$TEST_TMPDIR/racebin/git"
+    out=$(PATH="$TEST_TMPDIR/racebin:$PATH" report_for myproj fix-auth "$sha")
+    assert_eq "9" "$(git -C "$base" show HEAD:a)" "the base committed during the check" || return 1
+    assert_eq "$head" "$(key "$out" base_head)" "the report prints the base_head from before it" || return 1
+    assert_eq "not-landed" "$(key "$out" retire)" "b differs on that base_head" || return 1
+    assert_eq "1 of 2" "$(key "$out" retire_paths_differing)" "one of a and b differs" || return 1
+    assert_eq "b" "$(printf '%s\n' "$out" | sed -n 's/^retire_differs: //p')" "and it is b, not a" || return 1
+}
+
+# A base whose HEAD git cannot read has no base_head to check against: the
+# report says so on an error line and stops. The ceiling keeps git from
+# finding a repository above the sessions root.
+test_report_says_error_when_the_base_is_not_a_git_checkout() {
+    local sha out status=0 base="$CS_SESSIONS_ROOT/myproj" wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    mkdir -p "$base"
+    git init -q "$wt"
+    (cd "$wt" && echo work > work.txt && git add work.txt && git commit -q -m "work")
+    sha=$(git -C "$wt" rev-parse HEAD)
+    out=$(GIT_CEILING_DIRECTORIES="$CS_SESSIONS_ROOT" report_for myproj fix-auth "$sha") || status=$?
+    assert_eq "1" "$status" "the report fails" || return 1
+    assert_eq "error: git rev-parse HEAD failed in the base $base" "$(printf '%s\n' "$out" | tail -1)" \
+        "and says so last" || return 1
+    assert_output_not_contains "$out" "retire:" "with no retire line" || return 1
+}
+
+# A content check that succeeds without counting the paths it checked has
+# vouched for nothing: here perl exits 0 and prints nothing.
+test_report_says_error_when_the_content_check_counts_no_paths() {
+    local sha out status=0 wt="$CS_SESSIONS_ROOT/myproj@fix-auth"
+    plain_fixture
+    (cd "$wt" && echo work > work.txt && git add work.txt && git commit -q -m "work")
+    sha=$(git -C "$wt" rev-parse HEAD)
+    mkdir -p "$TEST_TMPDIR/bin"
+    printf '#!/bin/sh\nexit 0\n' > "$TEST_TMPDIR/bin/perl"
+    chmod +x "$TEST_TMPDIR/bin/perl"
+    out=$(PATH="$TEST_TMPDIR/bin:$PATH" CLAUDE_SESSION_DIR="$CS_SESSIONS_ROOT/myproj" CLAUDE_SESSION_NAME=myproj \
+        bash "$FINISH" report myproj fix-auth "$sha" 2>&1) || status=$?
+    assert_eq "1" "$status" "the report fails" || return 1
+    assert_eq "error: comparing the paths cs/fix-auth changed with base HEAD gave '' as the path count, not none or a number" \
+        "$(printf '%s\n' "$out" | tail -1)" "and says so last" || return 1
+    assert_output_not_contains "$out" "retire:" "with no retire line" || return 1
 }
 
 run_test test_prepare_in_feature_session_hands_off
@@ -441,6 +866,27 @@ run_test test_prepare_skips_the_lookup_for_a_non_github_origin
 run_test test_report_after_a_local_integrate_gives_the_retire_line
 run_test test_report_with_an_integrated_tip_gives_the_plain_retire_line
 run_test test_report_is_ready_to_retire_over_uncommitted_bookkeeping
-run_test test_report_after_a_squash_landing_gives_the_squash_notice
+run_test test_report_after_a_squash_landing_with_no_pr_is_content_landed
+run_test test_report_content_landed_with_a_pr_head_equal_to_the_capture
+run_test test_report_content_landed_whatever_the_pr_head_says
+run_test test_report_refuses_a_branch_with_one_path_not_on_the_base
+run_test test_report_refuses_a_path_the_base_edited_after_the_landing
+run_test test_report_content_landed_counts_a_deleted_and_a_renamed_path
+run_test test_report_refuses_a_mode_change_the_base_lacks
+run_test test_report_names_at_most_ten_differing_paths
+run_test test_report_content_landed_waits_for_commits_after_the_capture
+run_test test_report_refuses_a_submodule_bump_gitmodules_ignores
+run_test test_report_refuses_a_submodule_bump_diff_config_ignores
+run_test test_report_refuses_a_pathspec_magic_name_the_base_holds_differently
+run_test test_report_refuses_a_newline_name_the_base_holds_differently
+run_test test_report_refuses_a_capture_with_no_merge_base
+run_test test_report_refuses_paths_the_branch_renamed_and_the_base_renamed_elsewhere
+run_test test_report_says_error_when_the_worktree_is_not_a_git_checkout
+run_test test_report_checks_more_path_bytes_than_a_command_line_holds
+run_test test_report_names_a_non_utf8_path_under_a_utf8_locale
+run_test test_report_says_error_when_the_content_check_stops_without_one
+run_test test_report_checks_the_base_head_it_prints_while_the_base_moves
+run_test test_report_says_error_when_the_base_is_not_a_git_checkout
+run_test test_report_says_error_when_the_content_check_counts_no_paths
 
 report_results

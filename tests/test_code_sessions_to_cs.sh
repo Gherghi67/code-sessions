@@ -80,7 +80,7 @@ make_fixture() {
     printf 'before the edit\n' > "$PROFILE/.claude/file-history/$ALPHA_ID/snap@v1"
 
     printf 's3cret-value' > "$TEST_TMPDIR/value"
-    CS_SECRETS_KEYCHAIN_PREFIX=code-sessions CS_SECRETS_DIR="$PROFILE/.cs-secrets" \
+    CS_SESSIONS_ROOT="$PROFILE/sessions" CS_SECRETS_KEYCHAIN_PREFIX=code-sessions CS_SECRETS_DIR="$PROFILE/.cs-secrets" \
         "$PROFILE/.local/bin/cs-secrets" --session beta set TOKEN < "$TEST_TMPDIR/value" >/dev/null
 
     STUB="$HOME/.local/bin/cs-secrets"
@@ -510,7 +510,7 @@ test_a_code_sessions_environment_does_not_redirect_the_copy() {
     make_fixture
     env CODE_SESSIONS_HOME="$PROFILE" CS_SESSIONS_ROOT="$PROFILE/sessions" CS_TRANSCRIPTS_DIR="$PROFILE/.claude/projects" \
         CLAUDE_CONFIG_DIR="$PROFILE/.claude" CS_SECRETS_BACKEND=encrypted \
-        CS_SECRETS_KEYCHAIN_PREFIX=code-sessions CS_SECRETS_DIR="$PROFILE/.cs-secrets" CS_SESSION_NAME=alpha \
+        CS_SESSIONS_ROOT="$PROFILE/sessions" CS_SECRETS_KEYCHAIN_PREFIX=code-sessions CS_SECRETS_DIR="$PROFILE/.cs-secrets" CS_SESSION_NAME=alpha \
         python3 "$COPY" --apply > "$TEST_TMPDIR/out.log" 2>&1 || { cat "$TEST_TMPDIR/out.log"; return 1; }
     assert_dir "$CSROOT/beta" || return 1
     assert_file_exists "$CLAUDE/projects/$BETA_CS_KEY/$BETA_ID.jsonl" || return 1

@@ -20,8 +20,22 @@ _doctor_settings_parse_ok() {  # settings
     jq -e . "$1" >/dev/null 2>&1
 }
 
+# A jq definition of every hook in settings.json: .hooks is event -> [{matcher,
+# hooks: [{type, command, ...}]}]. Install and uninstall keep whatever else the
+# user wrote there (an event that is not a list, an entry or a hook that is
+# not an object), and Claude Code runs none of it as a hook, so only the
+# objects in the lists are walked; anything else would stop jq mid-stream.
+_DOCTOR_JQ_HOOKS='def cs_hooks: objects | .hooks | objects | .[] | arrays | .[] | objects | .hooks | arrays | .[] | objects;'
+
 _doctor_check_settings_valid() {
     local settings="${CS_CLAUDE_DIR:-$HOME/.claude}/settings.json"
+    # Something there that is not a regular file (a FIFO, a device, a
+    # directory) is never opened: reading a FIFO waits for a writer. Every
+    # settings check below tests -f before it reads.
+    if [ -e "$settings" ] && [ ! -f "$settings" ]; then
+        _doctor_fail "Settings: $settings is not a regular file, so cs did not read it"
+        return 0
+    fi
     # A missing file is the hooks check's story to tell, with its own advice.
     [ -f "$settings" ] || return 0
     if ! command -v jq >/dev/null 2>&1; then
@@ -62,7 +76,7 @@ _doctor_check_hooks_registered() {
         return
     fi
     local names registered missing=()
-    names=$(cd "$hooks_dir" && ls *.sh 2>/dev/null || true)
+    names=$(cd -- "$hooks_dir" && ls *.sh 2>/dev/null || true)
     [ -z "$names" ] && { _doctor_warn "Hooks: no .sh files in $hooks_dir"; return; }
     if ! command -v jq >/dev/null 2>&1; then
         _doctor_warn "Hooks: jq not installed; registration in $settings could not be checked"
@@ -76,7 +90,10 @@ _doctor_check_hooks_registered() {
     # file as text passed a broken install whenever a hook path lingered in an
     # unrelated permission rule or env value: the hook never fires, and doctor
     # called the install healthy.
-    registered=$(jq -r '.hooks // {} | to_entries[].value[].hooks[]?.command // empty' "$settings" 2>/dev/null || true)
+    if ! registered=$(jq -r "$_DOCTOR_JQ_HOOKS"' cs_hooks | .command | strings' "$settings" 2>/dev/null); then
+        _doctor_fail "Hooks: cannot read the hook events in $settings; registration unknown"
+        return
+    fi
     local name lib is_lib
     while IFS= read -r name; do
         [ -z "$name" ] && continue
@@ -122,15 +139,12 @@ _doctor_check_hook_files_executable() {
     fi
 }
 
-# Compares deployable artifacts in the current directory's cs source checkout
-# (hooks/*.sh, skills/*/SKILL.md and their support files, mods) against their
-# deployed copies, Codex's copies of the skills included. A source edit only takes effect once install.sh deploys it, so
-# silent drift between the two means the running install doesn't match what
-# the source says it does. Silent outside a checkout.
-_doctor_check_hook_drift() {
+# True when the current directory is the cs source checkout that produced the
+# install: it holds hooks/, install.sh and bin/cs, and its bin/cs carries the
+# version install.sh stamped into the deploy directory.
+_doctor_in_installed_checkout() {
     local hooks_dir="$HOOKS_DEPLOY_DIR"
-    local skills_dir="${CS_SKILLS_DIR:-$HOME/.claude/skills}"
-    [ -d "hooks" ] && [ -f "install.sh" ] && [ -f "bin/cs" ] || return 0
+    [ -d "hooks" ] && [ -f "install.sh" ] && [ -f "bin/cs" ] || return 1
 
     # Those three names are not proof this checkout produced the install. Any
     # directory holding them passes, and a scratch copy of the repo is an
@@ -149,17 +163,32 @@ _doctor_check_hook_drift() {
         src_version=$(sed -n 's/^VERSION="\([^"]*\)".*/\1/p' bin/cs 2>/dev/null | head -1)
     [ -f "$hooks_dir/.version" ] &&
         deployed_version=$(tr -d '[:space:]' < "$hooks_dir/.version" 2>/dev/null)
-    [ -n "$src_version" ] && [ "$src_version" = "$deployed_version" ] || return 0
+    [ -n "$src_version" ] && [ "$src_version" = "$deployed_version" ]
+}
+
+# Compares deployable artifacts in the current directory's cs source checkout
+# (hooks/*.sh, hooks/*.md, commands/*.md, skills/*/SKILL.md) against their deployed
+# copies. A source edit only takes effect once install.sh deploys it, so
+# silent drift between the two means the running install doesn't match what
+# the source says it does. Silent outside the checkout that produced the
+# install.
+_doctor_check_hook_drift() {
+    local hooks_dir="$HOOKS_DEPLOY_DIR"
+    local skills_dir="${CS_SKILLS_DIR:-$HOME/.claude/skills}"
+    _doctor_in_installed_checkout || return 0
 
     local clean=1
 
     # area label, deploy root, source paths — reported per artifact kind.
     # Skills deploy as <name>/SKILL.md; everything else deploys flat, keyed
-    # on the source path shape so the label stays purely cosmetic.
+    # on the source path shape so the label stays purely cosmetic. A deployed
+    # copy cs did not write (_cs_owns_file, as install.sh decides) is one
+    # ./install.sh keeps as the user's, so it is named apart, with advice
+    # that can clear it.
     _drift_scan() {
         local label="$1" deploy_root="$2"
         shift 2
-        local drifted=() missing=() src name deployed
+        local drifted=() users_copies=() missing=() src name deployed
         for src in "$@"; do
             [ -e "$src" ] || continue
             if [[ "$src" == */SKILL.md ]]; then
@@ -178,11 +207,19 @@ _doctor_check_hook_drift() {
             if [ ! -f "$deployed" ]; then
                 missing+=("$name")
             elif ! cmp -s "$src" "$deployed"; then
-                drifted+=("$name")
+                if _cs_owns_file "$deployed"; then
+                    drifted+=("$name")
+                else
+                    users_copies+=("$name")
+                fi
             fi
         done
         if [ ${#drifted[@]} -gt 0 ]; then
             _doctor_warn "$label drift: deployed copy differs from source: ${drifted[*]} (run ./install.sh)"
+            clean=0
+        fi
+        if [ ${#users_copies[@]} -gt 0 ]; then
+            _doctor_warn "$label drift: deployed copy differs from source: ${users_copies[*]} (kept as yours, so ./install.sh does not replace it; move it aside, then run ./install.sh to get cs's copy)"
             clean=0
         fi
         if [ ${#missing[@]} -gt 0 ]; then
@@ -191,7 +228,7 @@ _doctor_check_hook_drift() {
         fi
     }
 
-    _drift_scan "Hook" "$hooks_dir" hooks/*.sh hooks/*.png
+    _drift_scan "Hook" "$hooks_dir" hooks/*.sh hooks/*.png hooks/*.md
     local skill_sources=(skills/*/SKILL.md skills/*/scripts/*.sh skills/*/agents/*.yaml)
     _drift_scan "Skill" "$skills_dir" "${skill_sources[@]}"
     _drift_scan "Mod" "$skills_dir" mods/*/.claude-plugin/plugin.json mods/*/hooks/*
@@ -209,6 +246,82 @@ _doctor_check_hook_drift() {
     fi
 }
 
+# Holds the installed picker to the checkout install.sh copied it from, which
+# install.sh records in the deploy directory's .tui-origin ("checkout <path>"
+# or "release"), so doctor checks it from any folder. install.sh copies a
+# cs-tui it never builds, so a merge that rewrites tui/src leaves both the
+# cargo build and the installed copy where they were, and the picker runs
+# stale with nothing to say so. Two facts are read: the build is older than a
+# file cargo would rebuild it from (cargo's own test is an mtime test too),
+# and the installed bytes are not the build's. Silent with no installed
+# picker, a release picker, a picker that is a symlink (install.sh keeps a
+# link to content it did not write, so the picker is the user's own), and a
+# recorded checkout with no build. With no usable record, or a recorded
+# checkout that no longer holds the TUI, one untagged line says the picker was
+# not checked and what fixes that.
+_doctor_check_tui_build() {
+    local installed="$HOME/.local/bin/cs-tui" origin_file="$HOOKS_DEPLOY_DIR/.tui-origin"
+    [ -f "$installed" ] || return 0
+    [ ! -L "$installed" ] || return 0
+
+    local origin="" checkout shown
+    [ -f "$origin_file" ] && { origin=$(cat "$origin_file" 2>/dev/null) || origin=""; }
+    # install.sh writes one line; a record of more is not one it wrote, so no
+    # line of it is taken for the checkout.
+    case "$origin" in
+        release) return 0 ;;
+        *$'\n'*) checkout="" ;;
+        "checkout /"*) checkout="${origin#checkout }" ;;
+        *) checkout="" ;;
+    esac
+    if [ -z "$checkout" ]; then
+        printf '  %s\n' "cs-tui: not checked: nothing in $origin_file says where $installed came from; the next ./install.sh from your checkout records it, and cs -update records it where a release picker exists for this platform (and replaces a checkout-built picker with the release one)"
+        return 0
+    fi
+    # One trailing slash is dropped, so the rows join the path to tui/ with one.
+    [ "$checkout" = / ] || checkout="${checkout%/}"
+    # The checkout path as cs prints any name (_printable_name), so a control
+    # character in it cannot drive the terminal; the advice commands quote it
+    # with %q instead, so they paste back as the same path.
+    shown=$(_printable_name "$checkout")
+    if [ ! -f "$checkout/tui/Cargo.toml" ]; then
+        printf '  %s\n' "cs-tui: not checked: $installed came from $shown, which holds no tui/Cargo.toml now; run ./install.sh from your checkout, or cs -update"
+        return 0
+    fi
+
+    # The build install.sh ships: tui/target/release/cs-tui, unless bin/cs-tui
+    # is newer. install.sh, the advice below, must be able to clear the row.
+    local build="bin/cs-tui"
+    if [ -f "$checkout/tui/target/release/cs-tui" ] && { [ ! -f "$checkout/$build" ] || [ "$checkout/tui/target/release/cs-tui" -nt "$checkout/$build" ]; }; then
+        build="tui/target/release/cs-tui"
+    fi
+    [ -f "$checkout/$build" ] || return 0
+
+    # Cargo rebuilds only from the files rustc reads, so under tui/src only
+    # *.rs counts: a .DS_Store or a merge's .orig newer than the build is no
+    # reason to rebuild, and a rebuild would not clear a row that counted it.
+    # Paths are relative to the checkout, so its name never reaches -path.
+    local inputs=() input newer quoted
+    printf -v quoted '%q' "$checkout"
+    if ! newer=$(
+        cd -- "$checkout" || exit 1
+        for input in tui/src tui/Cargo.toml tui/Cargo.lock tui/build.rs tui/.cargo/config.toml; do
+            [ -e "$input" ] && inputs+=("$input")
+        done
+        find "${inputs[@]}" -type f \( ! -path 'tui/src/*' -o -name '*.rs' \) -newer "$build" 2>/dev/null
+    ); then
+        _doctor_warn "cs-tui: could not read the TUI source under $shown/tui to compare it with the build $shown/$build"
+        return 0
+    fi
+    if [ -n "$newer" ]; then
+        _doctor_warn "cs-tui: the TUI source under $shown/tui changed after the build $shown/$build, so the installed picker may be stale (run cargo build --release --manifest-path $quoted/tui/Cargo.toml, then $quoted/install.sh)"
+    elif ! cmp -s "$checkout/$build" "$installed"; then
+        _doctor_warn "cs-tui: the installed $installed differs from the build $shown/$build (run $quoted/install.sh)"
+    else
+        _doctor_ok "cs-tui: the installed picker matches the build $shown/$build"
+    fi
+}
+
 # iTerm2 awareness, reported only when running inside iTerm2: tab color and
 # title ship via native escapes regardless; the attention dock bounce needs
 # the it2 utilities from iTerm2 shell integration (~/.iterm2, not on PATH).
@@ -223,9 +336,38 @@ _doctor_check_iterm2() {
     fi
 }
 
+# One row per session `cs <name> --remote` serves or served: cs records the
+# server's pid in .cs/local/remote.pid, and a process it starts beside the
+# server removes the file once the server exits. A file whose pid no longer
+# runs that server (_remote_server_pid) means that process never got to (it
+# was killed, or the machine restarted), and the pid is gone or belongs to
+# another program by now. The doctor removes such a file and says so.
+_doctor_check_remote() {
+    local f meta name pid
+    for f in "$SESSIONS_ROOT"/*/.cs/local/remote.pid; do
+        [ -e "$f" ] || continue
+        meta="${f%/local/remote.pid}"
+        name="$(basename "$(dirname "$meta")")"
+        if pid=$(_remote_server_pid "$meta" "$name"); then
+            _doctor_ok "Remote: $name is served by claude remote-control (PID $pid)"
+            continue
+        fi
+        pid=$(head -n 1 "$f" 2>/dev/null | tr -d '[:space:]') || pid=""
+        if rm -f "$f" 2>/dev/null && [ ! -e "$f" ]; then
+            _doctor_warn "Remote: $name's .cs/local/remote.pid named PID ${pid:-(none)}, which is no longer $name's claude remote-control server, and nothing removed it when that server ended; removed it now."
+        else
+            _doctor_warn "Remote: $name's .cs/local/remote.pid named PID ${pid:-(none)}, which is no longer $name's claude remote-control server, and could not be removed: $f"
+        fi
+    done
+}
+
 # Spawn hygiene, all best-effort warnings:
 #   - .seed.stale and .brief.md.stale files accumulate in .spawn/ (the launch
-#     path sets aged-out seeds and their briefs aside but never deletes them),
+#     path sets aged-out seeds aside but never deletes them),
+#   - a cs -spawn killed before it published leaves its .<name>.seed.XXXXXX
+#     staging file, which no launch reads and nothing else removes,
+#   - an open killed outright leaves the seed it claimed under
+#     .<name>.seed.claim.<pid>, which no later open reads,
 #   - a pending .seed for a session that does not exist blocks re-spawning
 #     that name until it is removed,
 #   - a spawned-by pointer at a deleted session sends the drain notify nowhere,
@@ -233,19 +375,42 @@ _doctor_check_iterm2() {
 #     stamp is one cs -spawn will refuse to reuse.
 _doctor_check_spawn() {
     local spawn_dir="$SESSIONS_ROOT/.spawn"
-    local stale=() orphan=() dangling=() clean=1
-    local f name
+    local stale=() orphan=() dangling=() abandoned=() clean=1
+    local f name suffix now
 
     if [ -d "$spawn_dir" ]; then
-        for f in "$spawn_dir"/*.seed.stale "$spawn_dir"/*.brief.md.stale; do
-            [ -e "$f" ] || continue
-            stale+=("$(basename "$f")")
+        # The aged-out suffixes are the .stale ones in cs -spawn's own list.
+        for suffix in $(_spawn_staging_suffixes); do
+            case "$suffix" in *.stale) ;; *) continue ;; esac
+            for f in "$spawn_dir"/*"$suffix"; do
+                [ -e "$f" ] || continue
+                stale+=("$(basename "$f")")
+            done
         done
         for f in "$spawn_dir"/*.seed; do
             [ -e "$f" ] || continue
             name=$(basename "$f" .seed)
             is_session_dir "$SESSIONS_ROOT/$name" || orphan+=("$name")
         done
+        # A spawn runs for well under a minute; an older staging file is one
+        # whose spawn was killed before it published.
+        now=$(date +%s)
+        for f in "$spawn_dir"/.*.seed.??????; do
+            [ -e "$f" ] || continue
+            [ $(( now - $(_epoch_mtime "$f") )) -gt 60 ] || continue
+            abandoned+=("$(basename "$f")")
+        done
+        # A claim is held by an open still at the consent ask while its pid
+        # runs; once the pid is gone, nothing puts the seed back.
+        for f in "$spawn_dir"/.*.seed.claim.[0-9]*; do
+            [ -e "$f" ] || continue
+            kill -0 "${f##*.}" 2>/dev/null && continue
+            abandoned+=("$(basename "$f")")
+        done
+    fi
+    if [ ${#abandoned[@]} -gt 0 ]; then
+        _doctor_warn "Spawn staging: ${#abandoned[@]} file(s) left in .spawn/ by an interrupted cs -spawn or open (never read; safe to delete): ${abandoned[*]}"
+        clean=0
     fi
     if [ ${#stale[@]} -gt 0 ]; then
         _doctor_warn "Spawn seeds: ${#stale[@]} aged-out .stale file(s) in .spawn/ (nothing prunes them; safe to delete): ${stale[*]}"
@@ -323,7 +488,10 @@ _doctor_check_settings_hooks_resolve() {
         return
     fi
     local commands
-    commands=$(jq -r '.hooks // {} | to_entries[].value[].hooks[]?.command // empty' "$settings" 2>/dev/null)
+    if ! commands=$(jq -r "$_DOCTOR_JQ_HOOKS"' cs_hooks | .command | strings' "$settings" 2>/dev/null); then
+        _doctor_fail "Hook paths: cannot read the hook events in $settings"
+        return
+    fi
     if [ -z "$commands" ]; then
         _doctor_ok "Hook paths: no hooks registered in settings.json"
         return
@@ -368,7 +536,7 @@ _doctor_check_worktrees() {
         # same binary; a shell's own spelling of the directory need not match
         # git's.
         d_real=$(git -C "$d" rev-parse --show-toplevel 2>/dev/null) \
-            || d_real=$(cd "$d" 2>/dev/null && pwd -P || echo "$d")
+            || d_real=$(cd -- "$d" 2>/dev/null && pwd -P || echo "$d")
         if ! git -C "$base_dir" worktree list --porcelain 2>/dev/null \
             | grep -qx "worktree $d_real"; then
             _doctor_warn "Worktrees: $name is not a registered worktree of $base_name (pruned or created by hand?)"
@@ -437,15 +605,19 @@ _doctor_check_shadow_ref() {
             # way. The matcher is a regex, as Claude Code reads it; an empty or
             # "*" matcher covers every tool. An invalid regex counts as no
             # match for its own entry only, since a registration under it
-            # cannot fire; the entries after it are still read.
-            commands=$(jq -r '
-                .hooks.PostToolUse // [] | .[]
+            # cannot fire; the entries after it are still read. As for every
+            # hook doctor reads, only the objects in the lists are walked.
+            if ! commands=$(jq -r '
+                objects | .hooks | objects | .PostToolUse | arrays | .[] | objects
                 | select((.matcher // "") as $m
                     | $m == "" or $m == "*"
                       or (try (("Write" | test("^(" + $m + ")$")) and ("Edit" | test("^(" + $m + ")$"))) catch false))
-                | .hooks[]?.command // empty
+                | .hooks | arrays | .[] | objects | .command | strings
                 | select(test("(^|[ /])autosave-commits\\.sh$"))
-            ' "$settings" 2>/dev/null || true)
+            ' "$settings" 2>/dev/null); then
+                _doctor_warn "Shadow ref: cannot read the PostToolUse hooks in $settings; autosave's registration unknown"
+                return
+            fi
             if [ -z "$commands" ]; then
                 _doctor_warn "Shadow ref: autosave-commits.sh is not registered for PostToolUse on Write and Edit in $settings; edits are not snapshotted"
                 return
@@ -470,14 +642,17 @@ _doctor_check_claude_audit() {
         _doctor_fail "Audit: cannot read $settings (invalid JSON)"
         return
     fi
-    # .hooks is event -> [{matcher, hooks: [{type, command, ...}]}]; flatten 3 levels for command count.
+    # Hooks are counted as cs_hooks walks them, one per hook object.
     local counts hooks_count mcps_count perms_count env_count
-    counts=$(jq -r '
-        "\([.hooks // {} | to_entries[].value[].hooks[]?] | length) " +
+    if ! counts=$(jq -r "$_DOCTOR_JQ_HOOKS"'
+        "\([cs_hooks] | length) " +
         "\(.mcpServers // {} | length) " +
         "\(((.permissions.allow // []) + (.permissions.deny // [])) | length) " +
         "\(.env // {} | length)"
-    ' "$settings" 2>/dev/null || echo "0 0 0 0")
+    ' "$settings" 2>/dev/null); then
+        _doctor_warn "Audit: cannot count the hooks, MCPs, permission rules and env vars in $settings"
+        return
+    fi
     read -r hooks_count mcps_count perms_count env_count <<< "$counts"
     _doctor_ok "Audit: ${hooks_count} hooks, ${mcps_count} MCPs, ${perms_count} perm rules, ${env_count} env vars in settings.json"
 }
@@ -520,7 +695,21 @@ _doctor_check_statusline() {
             esac
             ;;
         *)
-            _doctor_warn "Statusline: using a foreign status line ($cmd) — $gating"
+            # A foreign command can chain to cs-statusline (a bridge that runs
+            # the original), so inside a session the file itself decides: a
+            # context-pct inside the heartbeat window means the gates are fed.
+            # An empty or non-numeric file feeds no gate, however fresh.
+            local meta="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}" now age reading=""
+            now=$(date +%s)
+            [ -z "$meta" ] || reading=$(tr -d '[:space:]' < "$meta/local/context-pct" 2>/dev/null) || reading=""
+            case "$reading" in ''|*[!0-9]*) reading="" ;; esac
+            if [ -n "$reading" ] && session_heartbeat_alive "$meta" "$now"; then
+                age=$(( (now - $(_epoch_mtime "$meta/local/context-pct")) / 60 ))
+                [ "$age" -ge 0 ] || age=0
+                _doctor_ok "Statusline: context-pct written $age min ago through $cmd"
+            else
+                _doctor_warn "Statusline: using a non-cs status line ($cmd) — $gating, unless it chains to cs-statusline"
+            fi
             ;;
     esac
 }
@@ -663,7 +852,8 @@ _doctor_check_narrative_size() {
         [ -f "$f" ] || continue
         sz=$(wc -c < "$f" 2>/dev/null | tr -d ' ' || echo 0)
         if [ "$sz" -gt "$max" ]; then
-            _doctor_warn "Narrative: $(basename "$f") is $((sz / 1024)) KB (budget $((max / 1024)) KB) — run cs -narrative rotate"
+            # .cs/memory is tracked, so a clone chooses the file name.
+            _doctor_warn "Narrative: $(_cs_plain_name "$(basename "$f")" 160) is $((sz / 1024)) KB (budget $((max / 1024)) KB) — run cs -narrative rotate"
             over=$((over + 1))
         fi
     done
@@ -734,7 +924,10 @@ _doctor_check_merge_driver() {
 _doctor_check_migration_stamp() {
     local dir="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" state
     [ -n "$dir" ] || return 0
-    if [ -n "$(_read_local_state "$dir/.cs/local/state" cs_base)" ]; then
+    # A worktree open never migrates, so never stamps. cs_base or task_branch
+    # marks one; task_branch is the key the worktree open itself reads.
+    if [ -n "$(_read_local_state "$dir/.cs/local/state" cs_base)" ] \
+        || [ -n "$(_read_local_state "$dir/.cs/local/state" task_branch)" ]; then
         return 0
     fi
     state=$(_migration_stamp_state "$dir" "$(cs_actor_raw "$dir" "$dir/.cs")")
@@ -777,33 +970,42 @@ _doctor_check_integrate_lock() {
     local pid
     pid=$(cat "$lock/pid" 2>/dev/null || true)
     case "$pid" in
-        0|*[!0-9]*|"") pid="" ;;
+        *[!0-9]*) pid="" ;;
     esac
-    # kill -0 through the shell builtin, not ps: kill(2) sees a process that a
-    # restricted /proc hides from ps, and its errno tells a holder owned by
-    # another user (EPERM) from a pid that is gone (ESRCH). Only ESRCH is
-    # evidence of absence; anything else the check cannot read is unknown,
-    # and an unknown must not come with removal advice. LC_ALL=C pins the
-    # message the builtin prints, which is the only channel for the errno;
-    # it is assigned inside the subshell rather than as a command prefix
-    # because bash 3.2 does not apply a prefix assignment to a builtin's
-    # locale (probed: `$(LC_ALL=C printf "%.1f" 1)` prints 1,0 under fr_FR).
-    local verdict="unrecorded" err=""
+    pid="${pid#"${pid%%[!0]*}"}"
+    # kill -0, not ps: kill(2) sees a process that a restricted /proc hides
+    # from ps, and its errno tells a holder owned by another user (EPERM) from
+    # a pid that is gone (ESRCH). Only ESRCH is evidence of absence; anything
+    # else the check cannot read is unknown, and an unknown must not come with
+    # removal advice. LC_ALL=C pins the message kill prints, which is the only
+    # channel for the errno. env runs the kill on PATH (/bin/kill on macOS)
+    # with that locale in its own environment, so the shell never changes its
+    # own locale in this forked copy, which can crash a bash linked against
+    # libintl. That kill prints "kill: <pid>: No such process" or "kill:
+    # <pid>: Operation not permitted" and exits 1, and refuses a pid it cannot
+    # parse with "kill: illegal process id: <pid>", which is unknown. A number
+    # past the pid range never reaches kill: procps kill on Linux would
+    # truncate it to a pid_t and answer for another process (ESRCH for most
+    # values, and 4294967297 is pid 1, which is held), so the range is
+    # screened by cs's own rule first and the number is unknown.
+    local verdict="unrecorded" why=""
     if [ -n "$pid" ]; then
-        if err=$( LC_ALL=C; kill -0 "$pid" 2>&1 ); then
+        if ! _cs_pid_in_range "$pid"; then
+            verdict="unknown" why="no process can have that pid"
+        elif why=$(env LC_ALL=C kill -0 "$pid" 2>&1); then
             verdict="held"
         else
-            case "$err" in
+            case "$why" in
                 *"No such process"*)        verdict="stale" ;;
                 *"Operation not permitted"*) verdict="eperm" ;;
-                *)                           verdict="unknown" ;;
+                *)                           verdict="unknown" why="${why#kill: }" ;;
             esac
         fi
     fi
     case "$verdict" in
         held)    _doctor_ok "Integrate lock: $lock held by a running integrate (pid $pid)" ;;
         eperm)   _doctor_ok "Integrate lock: $lock held by a running integrate (pid $pid; signalling it is not permitted here, which is a process that exists)" ;;
-        unknown) _doctor_warn "Integrate lock: $lock records pid $pid and cs cannot tell whether it is running (${err##*: })" ;;
+        unknown) _doctor_warn "Integrate lock: $lock records pid $pid and cs cannot tell whether it is running ($why)" ;;
         # ESRCH is absence only in this process's pid namespace, and pids are
         # recycled, so the removal stays conditional on what the person can see.
         stale)   _doctor_warn "Integrate lock: $lock records pid $pid, which this process cannot see; the lock is probably stale. Autosave skips while it exists. Once nothing is using this checkout, clear it with: rm -r \"$lock\"" ;;
@@ -870,6 +1072,7 @@ run_doctor() {
     _doctor_check_hooks_registered
     _doctor_check_hook_files_executable
     _doctor_check_hook_drift
+    _doctor_check_tui_build
     _doctor_check_deployed_version
     _doctor_check_settings_hooks_resolve
     _doctor_check_claude_audit
@@ -878,6 +1081,7 @@ run_doctor() {
     _doctor_check_rotate_wrap_keys
     _doctor_check_iterm2
     _doctor_check_spawn
+    _doctor_check_remote
     _doctor_check_hook_authority
 
     if [ -n "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}" ] && [ -d "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}" ]; then

@@ -110,6 +110,26 @@ test_status_get_filters_readme_placeholder() {
     assert_output_contains "$out" "(none)" "unfilled placeholder objective yields (none)" || return 1
 }
 
+# A pull can bring a committed presence into an open session, and every cs
+# writer leaves the files git tracks there as git has them: setting or
+# clearing the status refuses, naming the file, and the file stays.
+test_status_set_and_clear_refuse_while_git_tracks_the_presence() {
+    git -C "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" init -q
+    printf 'from the repository\n' > "$(PFILE)"
+    git -C "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" add -f .cs/local/presence
+    git -C "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" -c user.name=t -c user.email=t@example.com commit -qm seed
+    local verdict="Error: .cs/local/presence is tracked in git (per-actor state must stay local). Fix with: git -C ${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}} --literal-pathspecs rm -r --cached -- .cs/local && git -C ${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}} commit -m 'stop tracking .cs/local'"
+    local out rc=0
+    out=$("$CS_BIN" -status "a new status" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "setting the status refuses" || return 1
+    assert_eq "$verdict" "$out" "and names the tracked file" || return 1
+    rc=0
+    out=$("$CS_BIN" -status --clear 2>&1) || rc=$?
+    assert_eq "1" "$rc" "clearing the status refuses" || return 1
+    assert_eq "$verdict" "$out" "and names the tracked file" || return 1
+    assert_eq "from the repository" "$(cat "$(PFILE)")" "the presence stays as git has it" || return 1
+}
+
 run_test test_status_set_writes_presence_file
 run_test test_status_set_ignores_a_stale_presence_tmp
 run_test test_status_preserves_quotes_and_equals
@@ -154,5 +174,36 @@ run_test test_status_clear_reverts_to_objective
 run_test test_status_get_filters_readme_placeholder
 run_test test_status_render_strips_control_bytes_from_the_presence_file
 run_test test_status_render_strips_control_bytes_from_the_objective_fallback
+run_test test_status_set_and_clear_refuse_while_git_tracks_the_presence
+
+# A claude still running after `cs -rm <name> --force` keeps its session's
+# environment. Setting its status then refuses the way cs refuses a session
+# that does not exist, and builds nothing where the session was.
+test_status_refuses_a_removed_session() {
+    local out rc=0
+    rm -rf "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}"
+    out=$("$CS_BIN" -status "still working" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the status refuses" || return 1
+    assert_eq "Error: No such session: test-session" "$out" "the refusal names the session" || return 1
+    assert_not_exists "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" "the removed session is not built again" || return 1
+}
+
+run_test test_status_refuses_a_removed_session
+
+# A removal landing after that check, while the status is being set, meets
+# the writer instead: it makes nothing outside a .cs that is there, so the
+# status fails and the session is not built again.
+test_status_refuses_a_session_removed_after_its_check() {
+    local out rc=0 seam
+    seam=$(_seam_remove_after_the_meta_check "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}")
+    out=$(BASH_ENV="$seam" "$CS_BIN" -status "still working" 2>&1) || rc=$?
+    assert_exists "$seam.removed" "the session was removed after the check: $out" || return 1
+    assert_eq "1" "$rc" "the status fails: $out" || return 1
+    assert_eq "cs_mkdir_inside: ${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local is not inside an existing .cs" "$out" \
+        "the writer names the directory it would not make" || return 1
+    assert_not_exists "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" "the removed session is not built again" || return 1
+}
+
+run_test test_status_refuses_a_session_removed_after_its_check
 
 report_results

@@ -31,9 +31,8 @@ one-key rotation it exists for.
 **Encrypted session.** When `.cs/private` exists, the session keeps its
 handoffs in its vault: every `.cs/handoffs/` below means
 `.cs/private/handoffs/`, step 9 arms `.cs/private/pending-handoff`, and the
-session log is `.cs/private/session.log`. Commit nothing from the vault:
-skip steps 4, 6 and 8 for handoffs (the prune's "git tracks it" rule then
-keeps every one). If `.cs/private` is a link to a missing directory, the
+session log is `.cs/private/session.log`. Git never tracks the vault, so
+the prune's "git tracks it" rule keeps every handoff there. If `.cs/private` is a link to a missing directory, the
 vault is locked: tell the user to mount it and stop.
 
 ## Process
@@ -51,6 +50,9 @@ vault is locked: tell the user to mount it and stop.
    that is writing this handoff — step 7 supersedes by matching it against
    the session log.
 2. Pick a short kebab-case slug from the purpose (e.g. `continue-f5-plan`).
+   The slug is ASCII: lowercase letters, digits and hyphens only, at most 60
+   characters. cs offers and loads only a handoff whose file name is plain and
+   passes over any other.
 3. Write `.cs/handoffs/YYYY-MM-DD-<slug>.md` (today's date; create the
    directory if missing) with EXACTLY this frontmatter, then the body:
 
@@ -128,9 +130,10 @@ vault is locked: tell the user to mount it and stop.
    starts work (a test run, a build, a merge, a deploy) first says how to
    tell whether it is already done or still running, and what to do in each
    case. An action that needs a clean worktree (a branch switch, a merge, a
-   rebase) says the successor starts with this handoff uncommitted, because
-   session start flips its `status:` to `consumed`, and says to commit that
-   change first.
+   rebase) says the successor starts with this handoff uncommitted, like
+   the other session files: nothing commits them, and session start
+   flips its `status:` to `consumed`. It says to ask the user before
+   committing or setting them aside.
 
    **2. Settled and rejected** is the DECISIONS ledger, one line each:
    `<decision or rejected alternative> | <who decided, with the user's words
@@ -158,8 +161,9 @@ vault is locked: tell the user to mount it and stop.
    `assumed`. When you cannot recall which label fits, `assumed` is the
    honest answer and costs nothing. Write `none` for an empty category.
 
-   Four rules govern the body, all following from where it goes: step 4
-   commits it, and the next conversation reads it as its opening prompt.
+   Four rules govern the body, all following from where it goes: it stays
+   in `.cs/handoffs/`, which the user may commit, and the next conversation
+   reads it as its opening prompt.
 
    - **Redact.** API keys, tokens, passwords, personally identifying
      information, anything the session deliberately left untracked for
@@ -172,10 +176,10 @@ vault is locked: tell the user to mount it and stop.
      first action that needs the redacted detail says to read it from that
      path first, and if the file is absent on this machine, to ask the user
      before proceeding as if there were no constraint.
-     `.cs/handoffs/` is tracked, so writing one here publishes it;
-     credentials live in `cs -secrets`. Name the secret's purpose instead:
+     `.cs/handoffs/` is often tracked, so the user's next commit of it
+     publishes what you write here; credentials live in `cs -secrets`. Name the secret's purpose instead:
      "the deploy token, in `cs -secrets get DEPLOY_TOKEN`".
-     Re-read the finished body before step 4 commits it, for secrets and
+     Re-read the finished body before step 9 arms it, for secrets and
      for the detail this rule names: an exact reading is where a secret
      hides, and a verbatim quote is where personal detail does.
    - **Reference committed work; restate what a successor cannot recover.**
@@ -195,30 +199,22 @@ vault is locked: tell the user to mount it and stop.
    runs when context is already hot, and a compaction can land before you
    finish. The first Write carries the frontmatter, Next Step, Settled and
    rejected, and Conversation-only facts: the ledger, which dies with the
-   conversation. Commit that (step 4) before continuing. The second pass
-   then APPENDS sections 4-9 (step 5), recoverable from the repo if this
-   rotation never finishes, and lands as a second commit. Append, never a
-   second Write: a Write replaces the whole file and re-emits pass one from
-   whatever context you have by then. Never rewrite the first commit
-   either; it is the only faithful copy of pass one.
-4. Commit the first pass. Stage the handoff by name. Re-read the body for
-   secrets first (the Redact rule above) — the same re-read runs again before
-   step 6, because pass two quotes files and code, and a secret can sit in
-   either.
+   conversation. The second pass then APPENDS sections 4-9 (step 5),
+   recoverable from the repo if this rotation never finishes. Append, never
+   a second Write: a Write replaces the whole file and re-emits pass one
+   from whatever context you have by then, and the file pass one wrote is
+   the only faithful copy of it.
 
-   Before staging any path in steps 4, 6 or 8, run
-   `git check-ignore -q --no-index -- <path>`, one path per call (`-q` takes
-   only one). Exit 0 means the repo ignores it; a repo that ignores `.cs/`
-   does so to keep session notes out of a public repo. Never `git add -f`
-   an ignored path, even when a plain `git add` fails on it: skip that commit,
-   leave the file on disk, and say so in your reply. The handoff still works
-   uncommitted; step 9 arms it by basename.
+   Pass one is durable once the Write returns: it is on disk, and the
+   autosave hook (`autosave-commits.sh`, which snapshots the working tree
+   into this conversation's shadow ref on every Write and Edit) keeps a copy
+   wherever git does not ignore `.cs/`. No step of the rotation commits it.
+4. Re-read pass one for secrets (the Redact rule above). The same re-read
+   runs again in step 6, because pass two quotes files and code, and a
+   secret can sit in either.
 5. Append the second pass with Edit or `cat >>`, never Write.
-6. Second commit for the appended body, unless step 4 found the handoff
-   ignored. Re-read it for secrets and the detail the Redact rule names first.
-
-   Once both commits land, the handoff's CONTENT is safe: nothing left to
-   lose. It is not yet armed — that is deliberate, see step 9.
+6. Re-read the appended body for secrets and the detail the Redact rule
+   names.
 7. Retire this machine's leftovers: for every OTHER file in `.cs/handoffs/`
    whose frontmatter still says `status: unconsumed`, flip that one
    frontmatter line to `status: superseded` — but only when its `parent:`
@@ -262,18 +258,62 @@ vault is locked: tell the user to mount it and stop.
    Take the age from `created:` in the frontmatter, never the file's mtime.
    `.cs/handoffs/` is shared, and a clone stamps every file with its checkout
    time: mtime would read as "all new" on a fresh machine and prune nothing,
-   while saying nothing about when the handoff was written. Stage the
-   deletions with step 8's commit.
-8. Commit the supersedings, every consumed handoff whose uncommitted change
-   is a `## Successor report` appended by the conversation that took it
-   over, and any tracked session state, like narratives. Stage those paths
-   by name, skipping every ignored one (the step 4 check).
+   while saying nothing about when the handoff was written. The deletions
+   stay uncommitted, like everything else the rotation writes.
+8. Archive completed task rows. Run
+   `cs -archive-tasks plan` once; its `answer:` line is the session's
+   standing answer, given once and kept in `.cs/local/task-archive`, and
+   its `forced:` line says whether the `cs` mod ran this `/rotate` for the
+   user, on its own or from its one-key rotate button (cs reads
+   `.cs/local/cs.forced` and `.cs/local/cs.pressed`, which the mod writes
+   with this conversation's id before it runs either):
+
+   - `answer: unasked`, with an `archive:` line naming rows:
+     With `forced: yes`, do not ask: skip the archive this time.
+     With `forced: no`, ask once with AskUserQuestion whether this session
+     moves completed task rows out of the live list at each `/rotate` and
+     `/wrap` (they land in `.cs/task-archive/<date>/<actor>/<list>/` with
+     a readable `tasks.md`), record the reply with
+     `cs -archive-tasks answer yes` or `cs -archive-tasks answer no`, and on
+     yes run as below.
+   - `answer: yes`, with rows to archive: run `cs -archive-tasks run` and
+     keep its one line for your reply.
+   - `answer: no`, or `archive: nothing`: skip it.
+
+   An `Error:` from either command moved nothing (cs refuses a task store
+   it does not recognise); put its line in your reply and go on with the
+   rotation. The highest-numbered row always stays in the live list, so
+   Claude Code never hands an archived number to a new task.
+
+   The rotation makes no commit. The handoff, the supersedings, step 7's
+   prune deletions and the task archive stay on disk, uncommitted: cs
+   commits files under `.cs/` only in the commit that creates a session
+   and the merge `/finish` makes, and you
+   commit them only when the user asks.
+
+   With pass two appended and re-read, the handoff's CONTENT is complete:
+   nothing left to lose. It is not yet armed — that is deliberate, see
+   step 9.
 9. Arm it, LAST: write its basename (no path) to `.cs/local/pending-handoff`
    (`.cs/private/pending-handoff` in an encrypted session).
-   Machine-local state — never commit it.
+   Machine-local state — never commit it. Run this once from the session
+   root, with `HANDOFF` set to the basename:
 
-   Arming is the final step because an armed marker is fragile in a way a
-   committed file is not. If the CLI exits before the ritual finishes and
+   ```sh
+   marker=.cs/local/pending-handoff
+   if [ -L .cs/private ] || [ -e .cs/private ]; then marker=.cs/private/pending-handoff; fi
+   cs -vet-session . && printf '%s\n' "$HANDOFF" > "$marker"
+   ```
+
+   The command asks cs first: while git tracks a file in `.cs/local` or
+   `.cs/private`, a pull can rewrite the marker, and the SessionStart hook
+   refuses the rotation it names. Then the command prints why and arms
+   nothing. Tell the user that line and that the handoff stays in the store:
+   once they untrack the files as it says, `cs <session-name>`'s launch
+   prompt offers the handoff with `r`. Skip steps 10 and 11.
+
+   Arming is the final step because an armed marker is fragile in a way the
+   handoff file on disk is not. If Claude Code exits before the ritual finishes and
    the user relaunches, `cs <name>`'s prompt disarms the marker on `Y`, `n`
    or Enter (lib/75-launch.sh), and nothing re-arms it; a later `/clear`
    then opens a bare conversation with this handoff left `unconsumed`. The

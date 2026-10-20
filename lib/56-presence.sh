@@ -11,7 +11,7 @@ _presence_file() {  # meta_dir
 _write_presence() {  # meta_dir, text
     local meta_dir="$1" text="$2" file
     file="$(_presence_file "$meta_dir")"
-    mkdir -p "$(dirname "$file")"
+    cs_mkdir_inside "$(dirname "$file")"
     text="$(printf '%s' "$text" | tr '\n\r' '  ')"
     cs_write_atomic "$file" printf '%s\n' "$text"
 }
@@ -163,6 +163,9 @@ run_status() {
     if [ -z "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}" ]; then
         error "cs -status must be run inside a cs session"
     fi
+    # A claude still running after its session was removed keeps the
+    # session's environment; its status is gone with it.
+    [ -d "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}" ] || error "No such session: ${CLAUDE_SESSION_NAME:-${CLAUDE_SESSION_META_DIR%/.cs}}"
     local meta_dir="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}"
     if [ $# -eq 0 ]; then
         local session_dir status
@@ -171,14 +174,18 @@ run_status() {
         if [ -n "$status" ]; then printf '%s\n' "$status"; else echo "(none)"; fi
         return 0
     fi
+    # Setting and clearing write into .cs/local, which cs leaves as git has
+    # it while git tracks a file there; reading writes nothing.
     case "$1" in
         --clear|-c)
+            _vet_current_session
             rm -f "$(_presence_file "$meta_dir")"
             ;;
         "")
             error "cs -status: empty status; use 'cs -status --clear' to clear"
             ;;
         *)
+            _vet_current_session
             _write_presence "$meta_dir" "$*"
             ;;
     esac

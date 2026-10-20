@@ -49,6 +49,20 @@ if [ "$_cs_had_e" = 1 ]; then set -e; fi
 if ! command -v cs_private_dir >/dev/null 2>&1; then
     cs_private_dir() { return 1; }
 fi
+# Nor whether git tracks the session's control files, so nothing is written
+# into .cs/local either.
+if ! command -v cs_local_dir >/dev/null 2>&1; then
+    cs_local_dir() { return 1; }
+    _cs_local_dir_unknown=1
+fi
+# A write this hook cannot make is skipped without a word, and the link check
+# on appends and new directories lives in cs-shared.sh; without the library
+# they are made unchecked, as they were before the check existed.
+CS_WRITE_QUIET=1
+if ! command -v cs_append_inside >/dev/null 2>&1; then
+    cs_append_inside() { local f="$1"; shift; { "$@" >> "$f"; } 2>/dev/null; }
+    cs_mkdir_inside() { mkdir -p "$1" 2>/dev/null; }
+fi
 # Nor whether its handoffs sit in a vault, so no rotation is offered or consumed.
 if ! command -v cs_handoff_dir >/dev/null 2>&1; then
     cs_handoff_dir() { return 1; }
@@ -77,8 +91,18 @@ if ! command -v _cs_terminate_jsonl >/dev/null 2>&1; then
     _cs_terminate_jsonl() {
         [ -s "$1" ] || return 0
         [ -n "$(tail -c 1 "$1" 2>/dev/null)" ] || return 0
-        { printf '\n' >> "$1"; } 2>/dev/null || true
+        cs_append_inside "$1" printf '\n' || true
     }
+fi
+# A name a clone chose is printed through the library's _cs_plain_name;
+# without it the hook prints no such name, only "?".
+if ! command -v _cs_plain_name >/dev/null 2>&1; then
+    _cs_plain_name() { printf '?'; }
+fi
+# A rotation loads only a handoff whose name is plain; without the library's
+# _cs_is_plain_name no name is, so no handoff loads.
+if ! command -v _cs_is_plain_name >/dev/null 2>&1; then
+    _cs_is_plain_name() { return 1; }
 fi
 # Not in a cs session, do nothing. Resolves from the env under the CLI and
 # from the opened directory under front ends that cannot export one.
@@ -109,8 +133,11 @@ _build_digest() {  # meta_local_dir
     seen=$(cat "$qdir/notifications.seen" 2>/dev/null | tr -d '[:space:]') || true
     case "$seen" in ''|*[!0-9]*) seen=0;; esac
     [ "$total" -gt "$seen" ] || return 0
+    # A line that does not parse, or parses to something other than an object,
+    # is skipped: reading .event from one would fail the whole jq program, and
+    # the cursor would then be spent on notifications nobody was shown.
     DIGEST=$(awk -v a=$((seen + 1)) -v b="$total" 'NR>=a && NR<=b' "$inbox" 2>/dev/null | jq -rRs '
-        [split("\n")[] | select(length > 0) | (fromjson? // empty)] as $e |
+        [split("\n")[] | select(length > 0) | (fromjson? // empty) | select(type == "object")] as $e |
         ($e | map(select(.event == "task_done")) | length) as $done |
         ($e | map(select(.event == "breaker_tripped")) | .[-1]) as $trip |
         ($e | map(select(.event == "drain_finished")) | length) as $fin |
@@ -161,11 +188,20 @@ fi
 # append into a missing dir would abort this hook under set -e.
 # An encrypted session logs into its vault; while the vault is locked the log
 # goes nowhere, never into .cs/local.
-mkdir -p "$META_DIR/local" 2>/dev/null || true
+# Every write into .cs/local goes through LOCAL_DIR, which is empty while git
+# tracks a file in the session's control directories (cs_local_dir).
+LOCAL_DIR=$(cs_local_dir "$META_DIR") || LOCAL_DIR=""
+[ -z "$LOCAL_DIR" ] || cs_mkdir_inside "$LOCAL_DIR" || true
 if _log_dir=$(cs_private_dir "$META_DIR"); then SESSION_LOG="$_log_dir/session.log"; else SESSION_LOG=/dev/null; fi
-echo "$(date '+%Y-%m-%d %H:%M:%S') - Session started (source: $SOURCE, ID: $SESSION_ID)" >> "$SESSION_LOG"
-echo "  Working directory: $CWD" >> "$SESSION_LOG"
-echo "" >> "$SESSION_LOG"
+cs_append_inside "$SESSION_LOG" printf '%s\n' "$(date '+%Y-%m-%d %H:%M:%S') - Session started (source: $SOURCE, ID: $SESSION_ID)" \
+    "  Working directory: $CWD" "" || true
+
+# The lead claims its launch before anything below asks which claude is the
+# lead (cs_lead_claim, cs-resolve.sh). On every source: a /clear or a
+# compaction renews the claim under the conversation now running.
+if [ -n "$LOCAL_DIR" ] && command -v cs_lead_claim >/dev/null 2>&1; then
+    cs_lead_claim "$LOCAL_DIR" "$SESSION_ID" || true
+fi
 
 
 # Auto-pull and crash recovery only on fresh start or resume
@@ -287,8 +323,8 @@ if git -C "$SESSION_DIR" rev-parse --git-dir >/dev/null 2>&1; then
                 fi
                 CRASH_CONTEXT="${CRASH_HEAD} WARNING: ${CRASH_WHY} A blanket restore would overwrite committed work with a divergent snapshot, so it is NOT offered. Inspect and restore per file, e.g.: git -C \"$SESSION_DIR\" diff HEAD $SHADOW_REF -- <file> then git -C \"$SESSION_DIR\" checkout $SHADOW_REF -- <file>\nTo discard the snapshot once reviewed, run: git -C \"$SESSION_DIR\" update-ref -d $SHADOW_REF"
             fi
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Crash recovery: found ${CRASH_FILE_COUNT} unsaved file(s), awaiting user decision" \
-                >> "$SESSION_LOG"
+            cs_append_inside "$SESSION_LOG" \
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] Crash recovery: found ${CRASH_FILE_COUNT} unsaved file(s), awaiting user decision" || true
         else
             # No actual changes — just clean up the orphaned ref
             git -C "$SESSION_DIR" update-ref -d "$SHADOW_REF" 2>/dev/null || true
@@ -313,15 +349,23 @@ if [ "${CS_RESOLVED_FROM:-env}" = "env" ]; then
 elif command -v _cs_is_teammate >/dev/null 2>&1 && _cs_is_teammate; then
     _cs_publish_to="teammate"
 fi
+# Claude Code sources the file as shell, so each value goes in single quotes
+# with every ' written as '\'' : a path holding " or $( stays data. The quote
+# and its escape sit in variables because bash 3.2 mangles them as literals
+# inside a double-quoted ${v//pattern/replacement}.
+_cs_env_export() {  # name value
+    local v="$2" sq="'" esc="'\\''"
+    printf "export %s='%s'\n" "$1" "${v//$sq/$esc}"
+}
 if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -n "$_cs_publish_to" ]; then
-    cat >> "$CLAUDE_ENV_FILE" << EOF
-export CLAUDE_SESSION_NAME="$CLAUDE_SESSION_NAME"
-export CLAUDE_SESSION_DIR="$SESSION_DIR"
-export CLAUDE_SESSION_META_DIR="$META_DIR"
-EOF
-    if [ "$_cs_publish_to" = "teammate" ]; then
-        printf 'export CS_RESOLVED_FROM="%s"\n' "${CS_RESOLVED_FROM:-walk}" >> "$CLAUDE_ENV_FILE"
-    fi
+    {
+        _cs_env_export CLAUDE_SESSION_NAME "$CLAUDE_SESSION_NAME"
+        _cs_env_export CLAUDE_SESSION_DIR "$SESSION_DIR"
+        _cs_env_export CLAUDE_SESSION_META_DIR "$META_DIR"
+        if [ "$_cs_publish_to" = "teammate" ]; then
+            _cs_env_export CS_RESOLVED_FROM "${CS_RESOLVED_FROM:-walk}"
+        fi
+    } >> "$CLAUDE_ENV_FILE"
 fi
 
 # Resolve who is driving this session, for the identity anchor below, with the
@@ -373,7 +417,14 @@ EOF
 # Atomic and serialised against cs's own writer through cs_local_state_set.
 STATE_FILE="$META_DIR/local/state"
 _cs_hook_local_state_set() {
-    mkdir -p "$META_DIR/local" || return 1
+    if [ -z "$LOCAL_DIR" ]; then
+        # A tracked control directory is reported by the Stop hook; a missing
+        # library is said here, because nothing else names what it cost.
+        [ -z "${_cs_local_dir_unknown:-}" ] \
+            || echo "session-start: cs-shared.sh is missing or outdated, so $1 was not recorded in $STATE_FILE" >&2
+        return 1
+    fi
+    cs_mkdir_inside "$LOCAL_DIR" || return 1
     cs_local_state_set "$STATE_FILE" "$1" "$2"
 }
 
@@ -403,15 +454,32 @@ local_state_set() {
 # An encrypted session keeps both the marker and its handoffs in the vault; a
 # locked one has neither to offer.
 ROTATION_HANDOFF=""
+ROTATION_HANDOFF_SHOWN=""
 PENDING_MARKER=""
 HANDOFF_DIR=""
 if _marker_dir=$(cs_private_dir "$META_DIR") && HANDOFF_DIR=$(cs_handoff_dir "$META_DIR"); then
     PENDING_MARKER="$_marker_dir/pending-handoff"
 fi
 HANDOFF_REL=".cs/${HANDOFF_DIR#"$META_DIR"/}"
+# A claude started from inside the session (a `claude -p` the lead's Bash tool
+# ran) fires this hook with the lead's contract in its environment, and a tmux
+# teammate fires it as a full claude of its own. The armed rotation and the
+# queue's once-only digest belong to the lead: such a guest is neither handed
+# them nor clears them. A front end that walked in is no guest: it is the
+# conversation the user is in, and its /clear loads the rotation. A claude
+# shown to be the lead is asked nothing further: the teammate check reads the
+# command line, and a launch prompt can hold the flags it looks for.
+IS_GUEST=0
+if command -v cs_is_lead >/dev/null 2>&1 && cs_is_lead; then
+    :
+elif command -v cs_is_shown_nested_child >/dev/null 2>&1 && cs_is_shown_nested_child; then
+    IS_GUEST=1
+elif command -v _cs_is_teammate >/dev/null 2>&1 && _cs_is_teammate; then
+    IS_GUEST=1
+fi
 case "$SOURCE" in
     startup|clear)
-        if [ -n "$PENDING_MARKER" ] && [ -f "$PENDING_MARKER" ]; then
+        if [ "$IS_GUEST" != 1 ] && [ -n "$PENDING_MARKER" ] && [ -f "$PENDING_MARKER" ]; then
             HANDOFF_BASENAME=$(cat "$PENDING_MARKER" 2>/dev/null | tr -d '[:space:]' || true)
             # The marker names a basename. Anything with a separator would
             # resolve outside the handoff store, and the file it landed on
@@ -421,10 +489,16 @@ case "$SOURCE" in
             case "$HANDOFF_BASENAME" in
                 */*|*\\*) HANDOFF_BASENAME="" ;;
             esac
+            # .cs/handoffs/ is tracked, so a clone chooses the file name. Only
+            # a plain one loads, so the name Claude is told is the file itself.
+            _cs_is_plain_name "$HANDOFF_BASENAME" || HANDOFF_BASENAME=""
             HANDOFF_FILE="$HANDOFF_DIR/$HANDOFF_BASENAME"
             if [ -n "$HANDOFF_BASENAME" ] && [ -f "$HANDOFF_FILE" ] \
                 && _handoff_is_unconsumed "$HANDOFF_FILE"; then
                 ROTATION_HANDOFF="$HANDOFF_BASENAME"
+                # .cs/handoffs/ is tracked, so a clone chooses the file name:
+                # it is printed as a plain name.
+                ROTATION_HANDOFF_SHOWN=$(_cs_plain_name "$ROTATION_HANDOFF" 160)
             else
                 rm -f "$PENDING_MARKER" 2>/dev/null || true
             fi
@@ -469,7 +543,7 @@ _cs_acknowledge_claude_binding() {
     fi
     if [ "$RECORDED_UUID" != "$SESSION_ID" ] || [ "$pending_match" = 1 ]; then
         _cs_hook_local_state_set claude_session_id "$SESSION_ID" || return 2
-        echo "$(date '+%Y-%m-%d %H:%M:%S') - Rebound claude_session_id: ${RECORDED_UUID:-none} -> $SESSION_ID" >> "$SESSION_LOG"
+        cs_append_inside "$SESSION_LOG" echo "$(date '+%Y-%m-%d %H:%M:%S') - Rebound claude_session_id: ${RECORDED_UUID:-none} -> $SESSION_ID" || true
         # Named literally: TIMELINE_FILE is not assigned until further down.
         _cs_terminate_jsonl "$META_DIR/timeline.jsonl" 2>/dev/null || true
         # Durable lineage: a UUID change the launch path did not pre-record.
@@ -493,15 +567,14 @@ _cs_acknowledge_claude_binding() {
         # workspace) rotates from nothing, so it records no rotation.
         if [ "$pending_match" = 1 ] && [ -z "$transition_from" ]; then lineage_recorded=1; fi
         if [ "$lineage_recorded" = 0 ]; then
-        { jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        cs_append_inside "$META_DIR/timeline.jsonl" jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
                --arg from "$transition_from" \
                --arg to "$SESSION_ID" \
                --arg handoff "$transition_handoff" --arg reason "$transition_reason" \
                --arg run_id "${CS_RUN_ID:-}" \
                '{ts: $ts, event: "rotated", engine: "claude", run_id: $run_id, from: $from, to: $to,
                  reason: $reason}
-                + (if $handoff == "" then {} else {handoff: $handoff} end)' \
-            >> "$META_DIR/timeline.jsonl"; } 2>/dev/null || {
+                + (if $handoff == "" then {} else {handoff: $handoff} end)' || {
                 # Keep an acknowledged pending transition until its lineage
                 # is durable; the next acknowledgement can finish it.
                 [ "$pending_match" = 0 ] || return 1
@@ -558,14 +631,13 @@ fi
 TIMELINE_FILE="$META_DIR/timeline.jsonl"
 TIMELINE_BRANCH=$(git -C "$SESSION_DIR" branch --show-current 2>/dev/null || echo "")
 _cs_terminate_jsonl "$TIMELINE_FILE" 2>/dev/null || true
-{ jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+cs_append_inside "$TIMELINE_FILE" jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
        --arg event "started" \
        --arg source "$SOURCE" \
        --arg session_id "$SESSION_ID" \
        --arg branch "$TIMELINE_BRANCH" \
        --arg run_id "${CS_RUN_ID:-}" --arg role "$(if [ "$IS_LEAD" = 1 ]; then echo lead; else echo external; fi)" \
-       '{ts: $ts, event: $event, engine: "claude", run_id: $run_id, role: $role, source: $source, session_id: $session_id, branch: $branch}' \
-    >> "$TIMELINE_FILE"; } 2>/dev/null || true
+       '{ts: $ts, event: $event, engine: "claude", run_id: $run_id, role: $role, source: $source, session_id: $session_id, branch: $branch}' || true
 
 # Update last_resumed in local state on resume
 if [ "$SOURCE" = "resume" ]; then
@@ -574,7 +646,7 @@ fi
 
 # A fresh session is attended by definition: drop any stale attention
 # marker left by the previous conversation's final Stop.
-rm -f "$META_DIR/local/attention" 2>/dev/null || true
+[ -z "$LOCAL_DIR" ] || rm -f "$LOCAL_DIR/attention" 2>/dev/null || true
 
 # iTerm2: also cancel any dock bounce the previous conversation left running.
 # Mirrors the guard in narrative-reminder.sh (hooks are standalone).
@@ -593,9 +665,17 @@ fi
 # written to the terminal device; a front end without one (the desktop app)
 # skips it. Same value the launch set, so no new consent is asked. Lead only:
 # Claude Code titles a teammate's pane with the agent's name, and the tab this
-# repairs is the launched conversation's.
+# repairs is the launched conversation's. Under `cs <name> --remote` the lead
+# is a conversation the server started from the phone, and the window and tab
+# are the server's, named remote:<name> (tmux) or `cs: <name> (remote)` by its
+# launch: while .cs/local/remote.pid names a server running remote-control for
+# this session (_remote_server_pid, cs-shared.sh) no title is set, inside tmux
+# or out, so that name stays.
 _title="cs: $CLAUDE_SESSION_NAME"
 if [ "$IS_LEAD" != 1 ]; then
+    :
+elif command -v _remote_server_pid >/dev/null 2>&1 \
+    && _remote_server_pid "$META_DIR" "${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}}" >/dev/null; then
     :
 elif [ -n "${TMUX:-}" ]; then
     # An empty array is unbound under bash 3.2's set -u, hence the expansion.
@@ -640,7 +720,7 @@ for _nf in "$META_DIR"/memory/narrative.*.md; do
     else
         _whose="not yours: read it only from the line the digest names, never whole"
     fi
-    NARRATIVE_OVER="${NARRATIVE_OVER}- $_nb is $((_sz / 1024)) KB, over the $((NARRATIVE_MAX / 1024)) KB budget; $_whose
+    NARRATIVE_OVER="${NARRATIVE_OVER}- $(_cs_plain_name "$_nb" 160) is $((_sz / 1024)) KB, over the $((NARRATIVE_MAX / 1024)) KB budget; $_whose
 "
 done
 if [ -n "$NARRATIVE_OVER" ]; then
@@ -671,7 +751,14 @@ if [ "$SOURCE" = "resume" ] && git -C "$SESSION_DIR" rev-parse --git-dir >/dev/n
     # Recent commits since last session
     COMMIT_COUNT=$(git -C "$SESSION_DIR" rev-list --count --since="7 days ago" HEAD 2>/dev/null || echo "0")
     if [ "$COMMIT_COUNT" -gt 0 ]; then
-        RECENT_FILES=$(git -C "$SESSION_DIR" diff --name-only "HEAD~${COMMIT_COUNT}" HEAD 2>/dev/null | head -5 | xargs -n1 basename 2>/dev/null | paste -sd', ' - 2>/dev/null || true)
+        # The session's repo chooses the file names, and git quotes a control
+        # byte in one but not a shell metacharacter, so only a plain name is
+        # listed. Each check forks, so only the first five files are checked,
+        # however many the commits touched.
+        RECENT_FILES=$(git -C "$SESSION_DIR" diff --name-only "HEAD~${COMMIT_COUNT}" HEAD 2>/dev/null \
+            | head -5 | while IFS= read -r _recent; do
+                _cs_is_plain_name "${_recent##*/}" && printf '%s\n' "${_recent##*/}"
+            done | paste -sd', ' - 2>/dev/null || true)
         DYNAMIC="${DYNAMIC}Recent commits: ${COMMIT_COUNT} in last 7 days"
         if [ -n "$RECENT_FILES" ]; then
             DYNAMIC="${DYNAMIC} (${RECENT_FILES})"
@@ -680,16 +767,20 @@ if [ "$SOURCE" = "resume" ] && git -C "$SESSION_DIR" rev-parse --git-dir >/dev/n
     fi
 
     # Per-actor digest: shared memory/narrative activity since this actor last looked.
-    mkdir -p "$META_DIR/local" 2>/dev/null || true
+    [ -z "$LOCAL_DIR" ] || cs_mkdir_inside "$LOCAL_DIR" || true
     WATERMARK_FILE="$META_DIR/local/watermark"
     LAST_SEEN=""
     [ -f "$WATERMARK_FILE" ] && LAST_SEEN=$(cat "$WATERMARK_FILE" 2>/dev/null || true)
     HEAD_SHA=$(git -C "$SESSION_DIR" rev-parse -q --verify HEAD 2>/dev/null || true)
     if [ -n "$LAST_SEEN" ] && [ -n "$HEAD_SHA" ] \
         && git -C "$SESSION_DIR" rev-parse -q --verify "$LAST_SEEN" >/dev/null 2>&1; then
+        # The clone's history chooses its author names, and git keeps a control
+        # byte in one: each is printed as a plain name.
         DIGEST=$(git -C "$SESSION_DIR" log --no-merges --format='%an' "$LAST_SEEN..HEAD" -- .cs/memory 2>/dev/null \
             | sort | uniq -c | sort -rn \
-            | sed 's/^[[:space:]]*\([0-9][0-9]*\)[[:space:]]*\(.*\)$/\2 (\1)/' \
+            | while read -r _count _author; do
+                printf '%s (%s)\n' "$(_cs_plain_name "$_author" 160)" "$_count"
+            done \
             | paste -sd', ' - 2>/dev/null || true)
         # Reading a whole teammate narrative is not an option (one dormant
         # file measured 801 KB); the digest names where each one grew
@@ -706,16 +797,24 @@ if [ "$SOURCE" = "resume" ] && git -C "$SESSION_DIR" rev-parse --git-dir >/dev/n
         # has nothing to measure against, so it goes unmentioned rather than
         # named whole on every resume.
         NARRATIVE_DELTA=""
-        # One renderer for both paths: the tracked loop and the untracked one
-        # below describe the same thing to the model, and two copies of the
-        # sentence drift apart while both their tests stay green.
+        # Append one teammate narrative's growth to NARRATIVE_DELTA as the
+        # sentence the model reads; the actor's own narrative is skipped.
         _add_delta() {  # path sections start
             [ "$1" = ".cs/memory/narrative.$ACTOR_SLUG.md" ] && return 0
             NARRATIVE_DELTA="${NARRATIVE_DELTA}${NARRATIVE_DELTA:+; }$1: $2 new section(s) from line $3"
         }
         while IFS=$'\t' read -r _added _deleted _path; do
             case "$_path" in .cs/memory/narrative.*.md) ;; *) continue ;; esac
-            [ -f "$SESSION_DIR/$_path" ] || continue
+            # A clone chooses the file name and Claude is told the path to
+            # read. git quotes a control byte in it but not a shell
+            # metacharacter, so only a plain name is named, as only a plain
+            # rotation handoff loads. The case pattern's * matches "/", so the
+            # whole path below .cs/memory is checked: a narrative is one file
+            # there, never one in a subdirectory.
+            _cs_is_plain_name "${_path#.cs/memory/}" || continue
+            # A link named like a narrative leads where the clone chose, so
+            # only a regular file is named for Claude to read.
+            [ -f "$SESSION_DIR/$_path" ] && [ ! -L "$SESSION_DIR/$_path" ] || continue
             case "$_added" in ''|-|0) continue ;; esac
             # One pass for both numbers: the diff of a rotated narrative is
             # the size of the file, and piping it twice costs two copies of it.
@@ -745,7 +844,7 @@ NUMSTAT
         [ -n "$DELTA_LINE" ] && DYNAMIC="${DYNAMIC}${DELTA_LINE}${_NL}"
     fi
     # Advance the watermark to current HEAD (also seeds it on first resume).
-    [ -n "$HEAD_SHA" ] && echo "$HEAD_SHA" > "$WATERMARK_FILE"
+    [ -z "$HEAD_SHA" ] || [ -z "$LOCAL_DIR" ] || cs_write_atomic "$WATERMARK_FILE" echo "$HEAD_SHA" || true
 
     # Objective from README.md
     OBJECTIVE=$(sed -n '/^## Objective/,/^## /{/^## Objective/d;/^## /d;/^$/d;p;}' "$META_DIR/README.md" 2>/dev/null | head -1 | sed 's/^\[.*\]$//' || true)
@@ -786,7 +885,7 @@ NUMSTAT
             # supplying it, which costs a help call every time it is used. This
             # block is already conditional on siblings existing, so it appears
             # exactly when there is somewhere to send to.
-            DYNAMIC="${DYNAMIC}Other Sessions — when a request substantially matches one of these objectives, not merely its vocabulary, ask via AskUserQuestion whether to hand it over before starting the work here. Offer both: do it here, or send it there. Be picky, the way the wrap-up cue is: a request that only brushes a sibling's subject belongs here, and a prompt that fires on every overlap becomes the block nobody reads.${_NL}${SIBLINGS}To hand one a task or note: cs -msg <session> \"<body>\"${_NL}Add --kind notify|task|text|result (default text; a task kind lands in that session's walk-away queue).${_NL}"
+            DYNAMIC="${DYNAMIC}Other Sessions — when a request substantially matches one of these objectives, not merely its vocabulary, ask via AskUserQuestion whether to hand it over before starting the work here. Offer both: do it here, or send it there. Be picky, the way the wrap-up cue is: a request that only brushes a sibling's subject belongs here, and a prompt that fires on every overlap becomes the block nobody reads.${_NL}${SIBLINGS}To hand one a task or note: cs -msg <session> \"<body>\"${_NL}Add --kind notify|task|text|result (default text; a task waits in that session's mailbox until its user accepts it with cs -queue accept <id>).${_NL}"
         fi
     fi
 
@@ -798,7 +897,7 @@ NUMSTAT
         CONTEXT="${CONTEXT}
 
 --- Session State ---
-$(printf '%s' "$DYNAMIC" | LC_ALL=C tr -d '\000-\010\013-\037\177')"
+$(printf '%s' "$DYNAMIC" | env LC_ALL=C tr -d '\000-\010\013-\037\177')"
     fi
 fi
 
@@ -889,10 +988,10 @@ esac
 ROTATION_KICK=""
 if [ -n "$ROTATION_HANDOFF" ] && [ "$SOURCE" = "clear" ] && [ "$IS_LEAD" = 1 ] \
     && [ -z "${CS_NO_ROTATION_WAKE:-}" ]; then
-    _kick_dir="$META_DIR/local/rotation-kick"
+    _kick_dir="$LOCAL_DIR/rotation-kick"
     # The watcher is handed the path with no existence check, and a watch armed
     # on a missing directory never fires again for the process's lifetime.
-    if mkdir -p "$_kick_dir" 2>/dev/null; then
+    if [ -n "$LOCAL_DIR" ] && cs_mkdir_inside "$_kick_dir"; then
         ROTATION_KICK="$_kick_dir"
         # A stale marker from a previous rotation would make the FileChanged
         # hook treat this kick as already delivered and exit silently.
@@ -911,8 +1010,7 @@ if [ -n "$ROTATION_HANDOFF" ] && [ "$SOURCE" = "clear" ] && [ "$IS_LEAD" = 1 ] \
             # deliberately does not end in .kick, so it does not match the
             # hook's triage.
             _write_kick() {
-                { date +%s > "$_kick_dir/rotation.tmp.$$"; } 2>/dev/null \
-                    && mv "$_kick_dir/rotation.tmp.$$" "$_kick_dir/rotation.kick" 2>/dev/null
+                cs_write_atomic "$_kick_dir/rotation.kick" date +%s
             }
             # Every write lost before the arm leaves the session idle under a
             # notice promising it would continue on its own, so keep writing: a
@@ -949,9 +1047,9 @@ elif [ "$SOURCE" = "clear" ] && [ "$IS_LEAD" = 1 ]; then
     #
     # Lead-only: a teammate's /clear would otherwise stop the lead's retries
     # and make the lead's own wake decline.
-    _stale_kick="$META_DIR/local/rotation-kick"
-    if [ -d "$_stale_kick" ]; then
-        { : > "$_stale_kick/delivered"; } 2>/dev/null || true
+    _stale_kick="$LOCAL_DIR/rotation-kick"
+    if [ -n "$LOCAL_DIR" ] && [ -d "$_stale_kick" ]; then
+        cs_write_atomic "$_stale_kick/delivered" : || true
     fi
 fi
 
@@ -976,11 +1074,11 @@ if [ -n "$ROTATION_HANDOFF" ]; then
     CONTEXT="${CONTEXT}
 
 --- Conversation Rotation ---
-This fresh conversation continues rotated work. Read $HANDOFF_REL/$ROTATION_HANDOFF FIRST — it is the previous conversation's handoff; the prior transcript is not loaded, and the handoff plus your own .cs/memory/narrative.$ACTOR_SLUG.md carry the context.
+This fresh conversation continues rotated work. Read $HANDOFF_REL/$ROTATION_HANDOFF_SHOWN FIRST — it is the previous conversation's handoff; the prior transcript is not loaded, and the handoff plus your own .cs/memory/narrative.$ACTOR_SLUG.md carry the context.
 
 Nothing has run yet. $ROTATION_START A BARE NUDGE — \"go\", \"continue\", \"ok\" — means begin: reconcile your native task list, which carried over from the previous conversation, with the handoff (mark what it says is done, add any next-step step that is missing, one task per step), then execute the next step and report what you did, without re-summarising it or asking which part to start with. A first message carrying its own content takes precedence over the handoff; answer that instead. Ask first only where you normally would: the handoff is missing, unreadable, or genuinely ambiguous, or its next step is destructive or irreversible.
 
-Once that next step is done, append a \`## Successor report\` section to the end of $HANDOFF_REL/$ROTATION_HANDOFF: each thing you had to look up again, re-derive, or found wrong in the handoff, with how you found out, or \`none\`. Append only; never rewrite what the previous conversation wrote."
+Once that next step is done, append a \`## Successor report\` section to the end of $HANDOFF_REL/$ROTATION_HANDOFF_SHOWN: each thing you had to look up again, re-derive, or found wrong in the handoff, with how you found out, or \`none\`. Append only; never rewrite what the previous conversation wrote."
 elif [ -n "$FRESH_NOTICE" ]; then
     CONTEXT="${CONTEXT}
 
@@ -1014,7 +1112,7 @@ DIGEST_PENDING=""
 # The inbox sits behind .cs/private in an encrypted session; a locked vault has
 # nothing readable, and DIGEST_DIR stays empty so no cursor is written.
 DIGEST_DIR=""
-if DIGEST_DIR=$(cs_private_dir "$META_DIR"); then _build_digest "$DIGEST_DIR"; else DIGEST_DIR=""; fi
+if [ "$IS_GUEST" != 1 ] && DIGEST_DIR=$(cs_private_dir "$META_DIR"); then _build_digest "$DIGEST_DIR"; else DIGEST_DIR=""; fi
 if [ -n "$DIGEST" ]; then
     CONTEXT="${CONTEXT}
 
@@ -1045,8 +1143,8 @@ fi
 # encrypted session); a locked vault arms no watch rather than a plaintext one.
 MAIL_WATCH=""
 if [ "$IS_LEAD" = 1 ] && _mail_base=$(cs_private_dir "$META_DIR") \
-    && mkdir -p "$_mail_base/mail/tmp" "$_mail_base/mail/new" \
-                "$_mail_base/mail/cur" 2>/dev/null; then
+    && cs_mkdir_inside "$_mail_base/mail/tmp" && cs_mkdir_inside "$_mail_base/mail/new" \
+    && cs_mkdir_inside "$_mail_base/mail/cur"; then
     MAIL_WATCH="$_mail_base/mail/new"
 fi
 
@@ -1082,9 +1180,9 @@ fi
 SYSTEM_MESSAGE=""
 if [ -n "$ROTATION_HANDOFF" ] && [ "$SOURCE" = "clear" ]; then
     if [ -n "$ROTATION_KICK" ]; then
-        SYSTEM_MESSAGE="Rotation loaded from $ROTATION_HANDOFF — continuing automatically in a moment. Type to take over instead, or if nothing happens in a few seconds, send any message to start it."
+        SYSTEM_MESSAGE="Rotation loaded from $ROTATION_HANDOFF_SHOWN — continuing automatically in a moment. Type to take over instead, or if nothing happens in a few seconds, send any message to start it."
     else
-        SYSTEM_MESSAGE="Rotation loaded from $ROTATION_HANDOFF — send any message (\"go\") to continue where the previous conversation left off."
+        SYSTEM_MESSAGE="Rotation loaded from $ROTATION_HANDOFF_SHOWN — send any message (\"go\") to continue where the previous conversation left off."
     fi
 fi
 
@@ -1114,9 +1212,8 @@ _commit_digest "$DIGEST_DIR"
 case "$SESSION_ID" in
     ''|.*|*[!A-Za-z0-9._-]*) ;;
     *)
-        mkdir -p "$META_DIR/local/context-date" 2>/dev/null \
-            && { printf '%s\n' "$CONTEXT_DAY" > "$META_DIR/local/context-date/.$SESSION_ID.$$.tmp"; } 2>/dev/null \
-            && mv "$META_DIR/local/context-date/.$SESSION_ID.$$.tmp" "$META_DIR/local/context-date/$SESSION_ID" 2>/dev/null || true
+        [ -z "$LOCAL_DIR" ] || { cs_mkdir_inside "$LOCAL_DIR/context-date" \
+            && cs_write_atomic "$LOCAL_DIR/context-date/$SESSION_ID" printf '%s\n' "$CONTEXT_DAY"; } || true
         ;;
 esac
 

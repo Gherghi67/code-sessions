@@ -25,9 +25,14 @@ jobs:
           git config --global user.email "ci@claude-sessions.test"
           git config --global user.name "cs CI"
 
-      - name: Install jq (Linux)
+      # age backs cs-secrets sync; without it the age tests skip and judge nothing.
+      - name: Install jq and age (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y jq
+        run: sudo apt-get update && sudo apt-get install -y jq age
+
+      - name: Install age (macOS)
+        if: runner.os == 'macOS'
+        run: brew install age
 
       - name: Run bash test suites
         run: bash tests/run_all.sh

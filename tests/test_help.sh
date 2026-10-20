@@ -35,6 +35,18 @@ test_version_prints_clean() {
     assert_output_contains "$out" "(code-sessions, a fork of cs)" "the version line names the fork" || return 1
 }
 
+# The cs mod, the rotate skill and /wrap ask cs -vet-session before they write
+# into a session; a user reading why a rotation did not arm finds it in the
+# help.
+test_vet_session_answers_help() {
+    local out rc=0
+    out=$("$CS_BIN" -vet-session --help 2>&1) || rc=$?
+    assert_eq "0" "$rc" "cs -vet-session --help exits 0" || return 1
+    assert_eq "Usage:
+  -vet-session <dir>  Exit 0 when git tracks no file in <dir>'s .cs/local or .cs/private, else name the file and how to untrack it (the cs mod, /rotate and /wrap ask before they write there)" \
+        "$out" "and prints its usage line" || return 1
+}
+
 echo ""
 echo "cs help/version tests"
 echo "====================="
@@ -43,5 +55,6 @@ echo ""
 run_test test_help_no_command_substitution
 run_test test_help_names_the_fork_and_its_launcher
 run_test test_version_prints_clean
+run_test test_vet_session_answers_help
 
 report_results

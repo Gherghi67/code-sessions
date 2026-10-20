@@ -439,6 +439,53 @@ test_launch_stops_loudly_when_state_cannot_be_written() {
     [ ! -f "$TEST_TMPDIR/claude-args" ] || { echo "  FAIL: claude must not launch unrecorded"; return 1; }
 }
 
+# cs writes state for a session whose .cs it has made: it makes the missing
+# .cs/local there, and leaves one that exists as it is. A session removed
+# under a running cs has no .cs, and the write then fails naming the directory
+# instead of building the session again from its path.
+test_state_write_makes_local_only_inside_an_existing_cs() {
+    local root="$TEST_TMPDIR/root" out rc=0
+    mkdir -p "$root/live/.cs"
+    _state_write() {  # state, key, value
+        "$BASH" -c '. "$1/02-shared.sh"; . "$1/05-term.sh"; . "$1/40-state.sh"; _set_local_state "$2" "$3" "$4"' _ \
+            "$SCRIPT_DIR/../lib" "$@" 2>&1
+    }
+    out=$(_state_write "$root/live/.cs/local/state" cs_mode tracked) || rc=$?
+    assert_eq "0" "$rc" "the first write makes .cs/local" || return 1
+    rc=0
+    out=$(_state_write "$root/live/.cs/local/state" cs_base live) || rc=$?
+    assert_eq "0" "$rc" "a write into an existing .cs/local succeeds" || return 1
+    assert_eq "cs_mode: tracked"$'\n'"cs_base: live" "$(cat "$root/live/.cs/local/state")" "both keys are recorded" || return 1
+    rc=0
+    out=$(_state_write "$root/gone/.cs/local/state" cs_mode tracked) || rc=$?
+    assert_eq "1" "$rc" "a write for a removed session fails" || return 1
+    assert_eq "Error: could not create $root/gone/.cs/local" "$out" "the failure names the directory" || return 1
+    assert_not_exists "$root/gone" "the removed session is not made again" || return 1
+}
+
+# A status line render, a hook or a second cs can make .cs/local between the
+# state write's look for it and its mkdir. A DEBUG trap stands in for that
+# writer: it makes the directory just before the state write's mkdir runs. The
+# directory is there, which is all the write needs: it records the key.
+test_state_write_counts_a_local_dir_another_writer_made_first() {
+    local root="$TEST_TMPDIR/root" out rc=0
+    mkdir -p "$root/live/.cs"
+    out=$(CS_TEST_PEER_RAN="$TEST_TMPDIR/peer-ran" CS_TEST_PEER_DIR="$root/live/.cs/local" "$BASH" -c '
+        . "$1/02-shared.sh"; . "$1/05-term.sh"; . "$1/40-state.sh"
+        set -o functrace
+        _peer() {
+            case "$BASH_COMMAND" in mkdir\ *) ;; *) return 0 ;; esac
+            [ ! -e "$CS_TEST_PEER_RAN" ] || return 0
+            : > "$CS_TEST_PEER_RAN"
+            command mkdir "$CS_TEST_PEER_DIR"
+        }
+        trap _peer DEBUG
+        _set_local_state "$2" cs_mode tracked' _ "$SCRIPT_DIR/../lib" "$root/live/.cs/local/state" 2>&1) || rc=$?
+    assert_exists "$TEST_TMPDIR/peer-ran" "the second writer ran before the state write's mkdir" || return 1
+    assert_eq "0" "$rc" "the state write succeeds: $out" || return 1
+    assert_eq "cs_mode: tracked" "$(cat "$root/live/.cs/local/state" 2>/dev/null)" "the key is recorded" || return 1
+}
+
 # ============================================================================
 # Cycle 2b: state and .gitattributes rewrites use a unique temp name, keep the
 # destination's mode, and serialise on a lock
@@ -479,21 +526,323 @@ test_state_and_gitattributes_rewrites_leave_tmp_siblings_alone_and_keep_modes() 
     assert_eq "750" "$(_file_mode "$state")" "state keeps its mode" || return 1
 }
 
+# ============================================================================
+# The lock cs and its hooks share (_cs_lock / _cs_unlock in lib/02-shared.sh)
+# ============================================================================
+
+LOCK_LIB="$SCRIPT_DIR/../hooks/cs-shared.sh"
+
+# Exit 0 when the lock file is free right now, 1 when a process holds it: a
+# non-blocking flock of the probe's own, gone when the probe exits.
+_lock_is_free() {  # lock file
+    perl -e 'use Fcntl qw(:flock); open(my $f, "<", $ARGV[0]) or exit 2; exit(flock($f, LOCK_EX | LOCK_NB) ? 0 : 1)' "$1"
+}
+
+# Start a holder with no child process: it takes the lock, creates <ready>,
+# and blocks in bash's own read on a fifo, so the process holding the lock is
+# the one LOCK_HOLDER names and nothing else shares its descriptor.
+_start_lock_holder() {  # lock file, ready file
+    local i=0
+    mkfifo "$2.fifo"
+    bash -c 'source "$1"; _cs_lock "$2" || exit 1; : > "$3"; read -r _ <> "$4"' _ "$LOCK_LIB" "$1" "$2" "$2.fifo" &
+    LOCK_HOLDER=$!
+    until [ -e "$2" ] || [ "$i" -ge 100 ]; do sleep 0.05; i=$((i + 1)); done
+    [ -e "$2" ] || { echo "  FAIL: the holder never took $1"; return 1; }
+}
+
+# A lock path holding anything but a regular file is refused at once, with a
+# line saying so, and never followed: a committed symlink is how a clone could
+# aim the lock file's create at a file outside the session.
+test_lock_refuses_a_path_that_is_not_a_regular_file() {
+    local d="$TEST_TMPDIR/locks" kind rc start err
+    mkdir -p "$d/dir.lock"
+    mkfifo "$d/fifo.lock"
+    printf 'keep\n' > "$d/target"
+    ln -s "$d/target" "$d/link.lock"
+    ln -s "$d/absent" "$d/dangling.lock"
+    for kind in dir fifo link dangling; do
+        rc=0; start=$SECONDS
+        err=$(bash -c 'source "$1"; _cs_lock "$2"' _ "$LOCK_LIB" "$d/$kind.lock" 2>&1) || rc=$?
+        assert_eq "1" "$rc" "a $kind at the lock path is refused" || return 1
+        assert_eq "cs: cannot lock $d/$kind.lock: not a regular file" "$err" "the refusal says why" || return 1
+        [ $((SECONDS - start)) -le 1 ] || { echo "  FAIL: the $kind refusal took $((SECONDS - start))s"; return 1; }
+    done
+    assert_not_exists "$d/absent" "the dangling link's target was not created" || return 1
+    assert_eq "keep" "$(cat "$d/target")" "the link's target is untouched" || return 1
+    rc=0
+    err=$(bash -c 'source "$1"; _cs_lock "$2"' _ "$LOCK_LIB" "$d/plain.lock" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "a regular lock file is taken" || return 1
+    assert_eq "" "$err" "and taking it prints nothing" || return 1
+}
+
+# Write a stand-in perl into <bin dir> that, on its first call only, changes
+# <lock file> and then runs the real perl, by absolute path: called by
+# _cs_lock, that lands after bash has opened fd 9 on the file and before the
+# lock helper looks at the path. <change> is remove (cs -uninstall removing the
+# settings lock), link (a symlink to <dir>/target) or dir (a directory).
+_perl_changing_the_lock_path() {  # bin dir, lock file, change
+    local real
+    real=$(command -v perl)
+    mkdir -p "$1"
+    {
+        printf '#!/bin/bash\n'
+        printf 'if [ ! -e %q ]; then\n    : > %q\n    rm -f %q\n' "$1/changed" "$1/changed" "$2"
+        case "$3" in
+            link) printf '    ln -s %q %q\n' "$(dirname "$2")/target" "$2" ;;
+            dir) printf '    mkdir %q\n' "$2" ;;
+        esac
+        printf 'fi\nexec %q "$@"\n' "$real"
+    } > "$1/perl"
+    chmod +x "$1/perl"
+}
+
+# cs -uninstall removes the settings lock while it holds it. A taker that has
+# already opened the file then finds the path gone; it opens the path again
+# and holds the lock on the file the path names, so its settings write goes
+# through.
+test_lock_retakes_a_path_removed_while_it_was_being_taken() {
+    local f="$TEST_TMPDIR/settings.json" bin="$TEST_TMPDIR/removing-perl" rc=0 out
+    printf '{"a": 1}\n' > "$f"
+    : > "$f.mutex.lock"
+    _perl_changing_the_lock_path "$bin" "$f.mutex.lock" remove
+    out=$(PROBE='use Fcntl qw(:flock); open(my $f, "<", $ARGV[0]) or exit 2; exit(flock($f, LOCK_EX | LOCK_NB) ? 0 : 1)' \
+        bash -c 'source "$1"; PATH="$3:$PATH"
+        _cs_lock "$2" || exit 1
+        if perl -e "$PROBE" "$2"; then echo "path: free"; else echo "path: held"; fi' _ "$LOCK_LIB" "$f.mutex.lock" "$bin" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the lock is taken" || return 1
+    assert_eq "path: held" "$out" "on the file the path names, and nothing is printed" || return 1
+    assert_exists "$bin/changed" "the stand-in removed the path while the lock was being taken" || return 1
+    [ -f "$f.mutex.lock" ] && [ ! -L "$f.mutex.lock" ] || { echo "  FAIL: the lock path is not a regular file afterwards"; return 1; }
+
+    rm "$bin/changed"
+    rc=0
+    out=$(bash -c 'source "$1"; PATH="$3:$PATH"; cs_settings_update "$2" jq -c ".b = 2" || { echo "$CS_SETTINGS_ERROR"; exit 1; }' \
+        _ "$LOCK_LIB" "$f" "$bin" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the settings write goes through" || return 1
+    assert_eq "" "$out" "and prints nothing" || return 1
+    assert_eq '{"a":1,"b":2}' "$(cat "$f")" "the file holds the change" || return 1
+    assert_exists "$bin/changed" "the stand-in removed the path during the write's lock" || return 1
+}
+
+# Only a path that is gone is opened again. A symlink or a directory swapped in
+# after bash opened fd 9 is refused, as one there before the open is.
+test_lock_refuses_a_link_or_directory_swapped_in_while_it_was_being_taken() {
+    local d="$TEST_TMPDIR/swapped" change rc err
+    for change in link dir; do
+        mkdir -p "$d/$change"
+        printf 'keep\n' > "$d/$change/target"
+        : > "$d/$change/x.lock"
+        _perl_changing_the_lock_path "$d/$change/bin" "$d/$change/x.lock" "$change"
+        rc=0
+        err=$(bash -c 'source "$1"; PATH="$3:$PATH"; _cs_lock "$2"' _ "$LOCK_LIB" "$d/$change/x.lock" "$d/$change/bin" 2>&1) || rc=$?
+        assert_exists "$d/$change/bin/changed" "the stand-in swapped in a $change" || return 1
+        assert_eq "1" "$rc" "a $change swapped in is refused" || return 1
+        assert_eq "cs: cannot lock $d/$change/x.lock: not a regular file" "$err" "the refusal says why" || return 1
+        assert_eq "keep" "$(cat "$d/$change/target")" "the $change's neighbour is untouched" || return 1
+    done
+}
+
+# Takers never hold the lock at once: four of them each add one to a counter
+# 25 times, reading it, pausing, then writing it back, under the lock. Any
+# two inside together lose an increment, so the count falls short of 100.
+test_lock_takers_never_hold_it_at_once() {
+    local lock="$TEST_TMPDIR/count.lock" count="$TEST_TMPDIR/count" pids="" p failed=0
+    echo 0 > "$count"
+    for p in 1 2 3 4; do
+        bash -c 'source "$1"; i=0
+            while [ "$i" -lt 25 ]; do
+                _cs_lock "$2" || exit 1
+                read -r n < "$3"; sleep 0.01; echo $((n + 1)) > "$3"
+                _cs_unlock "$2"
+                i=$((i + 1))
+            done' _ "$LOCK_LIB" "$lock" "$count" &
+        pids="$pids $!"
+    done
+    for p in $pids; do wait "$p" || failed=$((failed + 1)); done
+    assert_eq "0" "$failed" "every taker got the lock each time it asked" || return 1
+    assert_eq "100" "$(cat "$count")" "no increment was lost to a second holder" || return 1
+    _lock_is_free "$lock" || { echo "  FAIL: the lock is still held after every taker released it"; return 1; }
+}
+
+# A holder killed outright has released the lock: the kernel drops it with
+# the process, so the next taker gets it at once, and nothing judges the
+# holder dead or waits to.
+test_lock_of_a_killed_holder_is_free_at_once() {
+    local lock="$TEST_TMPDIR/killed.lock" rc=0 start
+    _start_lock_holder "$lock" "$TEST_TMPDIR/killed.ready" || return 1
+    if _lock_is_free "$lock"; then
+        kill "$LOCK_HOLDER"
+        echo "  FAIL: the live holder does not hold the lock"
+        return 1
+    fi
+    kill -9 "$LOCK_HOLDER"
+    wait "$LOCK_HOLDER" 2>/dev/null || true
+    start=$SECONDS
+    bash -c 'source "$1"; _cs_lock "$2"' _ "$LOCK_LIB" "$lock" || rc=$?
+    assert_eq "0" "$rc" "the next taker gets the killed holder's lock" || return 1
+    [ $((SECONDS - start)) -le 1 ] || { echo "  FAIL: the take waited $((SECONDS - start))s"; return 1; }
+}
+
+# A lock taken inside $(...) or ( ) is that subshell's and is gone when it
+# exits, so its caller holds nothing. A lock the caller holds stays held
+# across its subshells, a subshell's release leaves it held, a release of a
+# path not held is a no-op, and a second take while holding is refused.
+test_lock_belongs_to_the_shell_that_took_it() {
+    local lock="$TEST_TMPDIR/sub.lock" other="$TEST_TMPDIR/other.lock" out
+    out=$(LOCK="$lock" OTHER="$other" PROBE='use Fcntl qw(:flock); open(my $f, "<", $ARGV[0]) or exit 2; exit(flock($f, LOCK_EX | LOCK_NB) ? 0 : 1)' \
+        bash -c 'source "$1"
+        state() { if perl -e "$PROBE" "$LOCK"; then echo "$1: free"; else echo "$1: held"; fi; }
+        taken=$(_cs_lock "$LOCK" && echo yes); echo "taken in \$(...): $taken"
+        state "after \$(...)"
+        ( _cs_lock "$LOCK" ) && echo "taken in ( ): yes"
+        state "after ( )"
+        _cs_lock "$LOCK" && echo "taken by the shell: yes"
+        ( _cs_unlock "$LOCK" ); released=$(_cs_unlock "$LOCK")
+        state "after a release in ( ) and in \$(...)"
+        _cs_unlock "$OTHER"
+        state "after a release of a path not held"
+        _cs_lock "$OTHER" 2>&1 || echo "second take: refused"
+        state "after the second take"
+        _cs_unlock "$LOCK"
+        state "after the release"' _ "$LOCK_LIB")
+    assert_eq "taken in \$(...): yes
+after \$(...): free
+taken in ( ): yes
+after ( ): free
+taken by the shell: yes
+after a release in ( ) and in \$(...): held
+after a release of a path not held: held
+cs: cannot lock $other: this process already holds $lock
+second take: refused
+after the second take: held
+after the release: free" "$out" "each shell holds only the lock it took" || return 1
+}
+
+# A child started while the lock is held inherits the descriptor the lock
+# lives on. Once the holder releases, that child, still running, does not
+# keep the lock.
+test_lock_release_frees_it_from_a_child_still_running() {
+    local lock="$TEST_TMPDIR/child.lock" pidfile="$TEST_TMPDIR/child.pid" out child
+    out=$(LOCK="$lock" PIDFILE="$pidfile" PROBE='use Fcntl qw(:flock); open(my $f, "<", $ARGV[0]) or exit 2; exit(flock($f, LOCK_EX | LOCK_NB) ? 0 : 1)' \
+        bash -c 'source "$1"
+        _cs_lock "$LOCK" || exit 1
+        sleep 30 >/dev/null 2>&1 &
+        echo "$!" > "$PIDFILE"
+        _cs_unlock "$LOCK"
+        if perl -e "$PROBE" "$LOCK"; then echo free; else echo held; fi' _ "$LOCK_LIB")
+    child=$(cat "$pidfile")
+    if ! kill -0 "$child" 2>/dev/null; then
+        echo "  FAIL: the child was not running when the lock was probed"
+        return 1
+    fi
+    kill "$child"
+    assert_eq "free" "$out" "the released lock is free while the child runs" || return 1
+}
+
+# A live holder is waited for five seconds; then the taker gives up holding
+# nothing, quietly (its caller says what that means), and the holder keeps
+# its lock. The wait is timed around the _cs_lock call alone, by the shell
+# that makes it and with no process of its own: starting that shell and
+# sourcing the library take as long as the machine's load makes them, and
+# that is not the wait.
+test_lock_waits_five_seconds_for_a_live_holder() {
+    local lock="$TEST_TMPDIR/busy.lock" rc=0 err took held=yes
+    _start_lock_holder "$lock" "$TEST_TMPDIR/busy.ready" || return 1
+    err=$(bash -c 'source "$1"
+        s=$SECONDS
+        _cs_lock "$2"; rc=$?
+        echo $((SECONDS - s)) > "$3"
+        exit $rc' _ "$LOCK_LIB" "$lock" "$TEST_TMPDIR/busy.took" 2>&1) || rc=$?
+    took=$(cat "$TEST_TMPDIR/busy.took")
+    _lock_is_free "$lock" && held=no
+    kill "$LOCK_HOLDER"
+    assert_eq "1" "$rc" "the taker gives up" || return 1
+    assert_eq "" "$err" "and prints nothing" || return 1
+    assert_eq "yes" "$held" "the holder still holds the lock" || return 1
+    [ "$took" -ge 4 ] && [ "$took" -le 6 ] || { echo "  FAIL: the taker gave up after ${took}s, not about 5s"; return 1; }
+}
+
+# Settings writers take turns on <file>.mutex.lock. While another writer
+# still holds it after five seconds, the rewrite refuses, says which lock,
+# and leaves the file as it was.
+test_settings_update_refuses_while_its_lock_stays_held() {
+    local f="$TEST_TMPDIR/settings.json" rc=0 out
+    printf '{"a": 1}\n' > "$f"
+    _start_lock_holder "$f.mutex.lock" "$TEST_TMPDIR/settings.ready" || return 1
+    out=$(bash -c 'source "$1"; cs_settings_update "$2" jq ".b = 2" || { echo "$CS_SETTINGS_ERROR"; exit 1; }' _ "$LOCK_LIB" "$f" 2>&1) || rc=$?
+    kill "$LOCK_HOLDER"
+    assert_eq "1" "$rc" "the rewrite refuses" || return 1
+    assert_eq "could not take the lock $f.mutex.lock; $f left unchanged" "$out" "and names the lock" || return 1
+    assert_eq '{"a": 1}' "$(cat "$f")" "the file is as it was" || return 1
+}
+
+# Seven changing writes inside one UTC second keep the backups of the last
+# five: each backup holds the file as it was before its own write, and
+# pruning never removes the one just taken, even after it freed the
+# unsuffixed name. The clock is pinned so the seven share one stamp.
+test_settings_backups_in_one_second_keep_the_newest_five() {
+    local f="$TEST_TMPDIR/settings.json" bin="$TEST_TMPDIR/pinned-date" k kept
+    mkdir -p "$bin"
+    printf '#!/bin/bash\nif [ "$1" = -u ]; then echo 20300101T000000Z; else exec /bin/date "$@"; fi\n' > "$bin/date"
+    chmod +x "$bin/date"
+    printf '{"n": 0}\n' > "$f"
+    for k in 1 2 3 4 5 6 7; do
+        bash -c 'source "$1"; PATH="$4:$PATH"; cs_settings_update "$2" jq ".n = $3" || { echo "$CS_SETTINGS_ERROR"; exit 1; }' \
+            _ "$LOCK_LIB" "$f" "$k" "$bin" || { echo "  FAIL: write $k refused"; return 1; }
+    done
+    kept=$(for b in "$f".cs-bak.*; do jq -c .n "$b"; done | sort -n | tr '\n' ' ')
+    assert_eq "2 3 4 5 6 " "$kept" "the backups taken before writes 3 to 7 remain" || return 1
+}
+
+# After the clock moves back, five older backups carry later stamps than
+# the one just written. Pruning keeps the new one anyway, plus the four
+# newest of the others, so the rollback snapshot of the last write survives.
+test_settings_backup_survives_a_clock_set_back() {
+    local f="$TEST_TMPDIR/settings.json" bin="$TEST_TMPDIR/early-date" i kept
+    mkdir -p "$bin"
+    printf '#!/bin/bash\nif [ "$1" = -u ]; then echo 20291231T235959Z; else exec /bin/date "$@"; fi\n' > "$bin/date"
+    chmod +x "$bin/date"
+    printf '{"n": 0}\n' > "$f"
+    for i in 0 1 2 3 4; do
+        printf '{"n": "later%s"}\n' "$i" > "$f.cs-bak.20300101T00000${i}Z"
+    done
+    bash -c 'source "$1"; PATH="$3:$PATH"; cs_settings_update "$2" jq ".n = 1" || { echo "$CS_SETTINGS_ERROR"; exit 1; }' \
+        _ "$LOCK_LIB" "$f" "$bin" || { echo "  FAIL: the write refused"; return 1; }
+    kept=$(for b in "$f".cs-bak.*; do jq -c .n "$b"; done | tr '\n' ' ')
+    assert_eq '0 "later1" "later2" "later3" "later4" ' "$kept" \
+        "the new backup and the four latest-stamped others remain" || return 1
+}
+
+# A lock whose directory is missing is refused at once and quietly, as one
+# whose directory cannot take a new file is; without perl nothing is locked,
+# and a line on stderr says so.
+test_lock_refuses_at_once_without_its_directory_or_perl() {
+    local lock="$TEST_TMPDIR/missing/x.lock" rc=0 err start
+    start=$SECONDS
+    err=$(bash -c 'source "$1"; _cs_lock "$2"' _ "$LOCK_LIB" "$lock" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a lock in a missing directory is refused" || return 1
+    assert_eq "" "$err" "quietly" || return 1
+    [ $((SECONDS - start)) -le 1 ] || { echo "  FAIL: the refusal took $((SECONDS - start))s"; return 1; }
+    lock="$TEST_TMPDIR/x.lock"; rc=0
+    err=$(bash -c 'source "$1"; PATH="$3"; _cs_lock "$2"' _ "$LOCK_LIB" "$lock" "$TEST_TMPDIR/no-such-bin" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "without perl the lock is refused" || return 1
+    assert_eq "cs: cannot lock $lock: perl not found" "$err" "with a line saying why" || return 1
+}
+
 # A state rewrite is a read-modify-write, so two writers (cs at launch and the
-# SessionStart hook) can lose an update unless they take turns. The lock is a
-# directory beside the file, .cs/local/state.lock, holding the holder's pid; a
-# live holder is waited for, up to five seconds, then the write goes ahead.
+# SessionStart hook) can lose an update unless they take turns. The lock is
+# .cs/local/state.mutex.lock beside the file; a live holder is waited for, up
+# to five seconds, then the write goes ahead.
 test_state_write_waits_for_a_live_lock_holder() {
     local state="$TEST_TMPDIR/state" lib="$SCRIPT_DIR/../hooks/cs-shared.sh" start took
     printf 'session_name: locked-state\n' > "$state"
-    mkdir "$state.lock"
-    echo "$$" > "$state.lock/pid"
+    _start_lock_holder "$state.mutex.lock" "$TEST_TMPDIR/state.ready" || return 1
 
     start=$SECONDS
     bash -c 'source "$1"; cs_local_state_set "$2" claude_session_id abc' _ "$lib" "$state" \
-        || { echo "  FAIL: the write failed"; return 1; }
+        || { kill "$LOCK_HOLDER"; echo "  FAIL: the write failed"; return 1; }
     took=$((SECONDS - start))
-    rm -f "$state.lock/pid"; rmdir "$state.lock" 2>/dev/null
+    kill "$LOCK_HOLDER"
 
     assert_file_contains "$state" "^claude_session_id: abc$" "the write went ahead once the wait ran out" || return 1
     assert_file_contains "$state" "^session_name: locked-state$" "and kept the other keys" || return 1
@@ -536,7 +885,7 @@ test_two_state_writers_lose_no_update() {
     wait "$p1" || { echo "  FAIL: writer a failed"; return 1; }
     wait "$p2" || { echo "  FAIL: writer b failed"; return 1; }
     assert_eq "80" "$(wc -l < "$state" | tr -d ' ')" "every key written by either writer is in the file" || return 1
-    assert_not_exists "$state.lock" "no lock left behind" || return 1
+    _lock_is_free "$state.mutex.lock" || { echo "  FAIL: the state lock is still held after both writers finished"; return 1; }
 }
 
 # Dropping a vault holder rewrites the list while an opener may be adding to
@@ -561,7 +910,7 @@ EOF
     [ -e "$added" ] || { echo "  FAIL: the opener's add never finished"; return 1; }
     assert_eq "222
 333" "$(cat "$holders")" "the drop removed 111 and the opener's 333 survived" || return 1
-    assert_not_exists "$holders.lock" "no lock left behind" || return 1
+    _lock_is_free "$holders.mutex.lock" || { echo "  FAIL: the holders lock is still held after the drop and the add"; return 1; }
 }
 
 # Homebrew's gnubin puts GNU stat first on a Mac's PATH; the mode read must
@@ -588,23 +937,30 @@ test_atomic_write_refuses_a_directory_destination() {
     assert_eq "" "$(ls -A "$d")" "nothing is left inside the directory" || return 1
 }
 
-test_state_write_takes_over_a_dead_holders_lock() {
+# Earlier cs versions locked the state with a directory, .cs/local/state.lock,
+# holding a pid. One left on disk, even naming a live process, is not the
+# lock: the write takes .cs/local/state.mutex.lock without waiting on it, and
+# leaves the directory as it found it.
+test_state_write_ignores_a_lock_directory_left_on_disk() {
     local session_dir
-    session_dir=$(create_test_session_with_git stale-lock)
-    local state="$session_dir/.cs/local/state"
-    local dead
-    dead=$(sh -c 'echo $$')
+    session_dir=$(create_test_session_with_git dir-lock)
+    local state="$session_dir/.cs/local/state" start took
     mkdir -p "$state.lock"
-    echo "$dead" > "$state.lock/pid"
+    echo "$$" > "$state.lock/pid"
     _argv_claude_stub
 
-    "$CS_BIN" stale-lock <<< "" >/dev/null 2>&1 || true
+    CS_ASSUME_TTY=1 "$CS_BIN" dir-lock <<< "" >/dev/null 2>&1 || true
+    assert_file_contains "$state" "^engine: claude$" "the launch's write went through" || return 1
 
-    assert_file_contains "$state" "^engine: claude" "the write went through" || return 1
-    # A waited-out deadline leaves the dead lock in place; a takeover removes it
-    # and the writer then releases its own, so the directory's absence is the
-    # takeover, with no clock involved.
-    assert_not_exists "$state.lock" "the dead lock was taken over and released" || return 1
+    # One write, timed alone: a launch's own run time under load would hide
+    # a five-second wait on the directory.
+    start=$SECONDS
+    bash -c 'source "$1"; cs_local_state_set "$2" probe yes' _ "$LOCK_LIB" "$state" \
+        || { echo "  FAIL: the write failed"; return 1; }
+    took=$((SECONDS - start))
+    [ "$took" -le 2 ] || { echo "  FAIL: the write waited on the directory (took ${took}s)"; return 1; }
+    assert_file_contains "$state" "^probe: yes$" "the write went through" || return 1
+    assert_eq "$$" "$(cat "$state.lock/pid")" "the directory is left as it was" || return 1
 }
 
 # ============================================================================
@@ -654,6 +1010,7 @@ test_migration_moves_session_log_into_private() {
     printf '[2026-01-01 10:01:00] BASH: echo sealed\n' > "$session_dir/.cs/logs/session.log"
     (cd "$session_dir" && git init -q && git add -A && git commit -q -m "init")
     ln -s "$vault/private" "$session_dir/.cs/private"
+    _mark_hand_made_vault "$session_dir"
 
     "$CS_BIN" legacy-private-log <<< "" >/dev/null 2>&1 || true
 
@@ -773,6 +1130,92 @@ test_union_merge_attributes_written() {
         "timeline.jsonl should merge with the union driver" || return 1
     assert_file_contains "$ga" 'narrative\.\*\.md merge=union' \
         "per-actor narratives should merge with the union driver" || return 1
+    assert_file_contains "$ga" '^\.cs/memory/reference_memory_archive\.md merge=union$' \
+        "the memory archive should merge with the union driver" || return 1
+}
+
+# A .gitattributes whose last line has no newline (an editor that writes none)
+# gets each merge line cs appends on a line of its own, so git reads it.
+test_merge_attributes_start_a_line_after_a_file_with_no_final_newline() {
+    local sdir="$CS_SESSIONS_ROOT/attrs-nl"
+    "$CS_BIN" attrs-nl < /dev/null > /dev/null 2>&1 || true
+    printf '%s\n%s\n%s' '.cs/memory/MEMORY.md merge=ours' '.cs/timeline.jsonl merge=union' \
+        '.cs/memory/narrative.*.md merge=union' > "$sdir/.gitattributes"
+    rm -f "$sdir/.cs/local/migrated"
+    "$CS_BIN" attrs-nl < /dev/null > /dev/null 2>&1 || true
+    assert_eq ".cs/memory/MEMORY.md merge=ours
+.cs/timeline.jsonl merge=union
+.cs/memory/narrative.*.md merge=union
+.cs/memory/reference_memory_archive.md merge=union" "$(cat "$sdir/.gitattributes")" \
+        "the archive line is appended on a line of its own" || return 1
+    assert_eq ".cs/memory/reference_memory_archive.md: merge: union" \
+        "$(git -C "$sdir" check-attr merge -- .cs/memory/reference_memory_archive.md)" \
+        "git reads the archive's union attribute" || return 1
+}
+
+# A .gitattributes where an earlier append glued the archive line onto the
+# narrative line holds neither as a whole line; the next open appends each on
+# a line of its own.
+test_merge_attributes_add_the_archive_line_beside_a_glued_one() {
+    local sdir="$CS_SESSIONS_ROOT/attrs-glued" glued
+    glued='.cs/memory/narrative.*.md merge=union.cs/memory/reference_memory_archive.md merge=union'
+    "$CS_BIN" attrs-glued < /dev/null > /dev/null 2>&1 || true
+    printf '%s\n' '.cs/memory/MEMORY.md merge=ours' '.cs/timeline.jsonl merge=union' "$glued" \
+        > "$sdir/.gitattributes"
+    rm -f "$sdir/.cs/local/migrated"
+    "$CS_BIN" attrs-glued < /dev/null > /dev/null 2>&1 || true
+    assert_eq ".cs/memory/MEMORY.md merge=ours
+.cs/timeline.jsonl merge=union
+$glued
+.cs/memory/narrative.*.md merge=union
+.cs/memory/reference_memory_archive.md merge=union" "$(cat "$sdir/.gitattributes")" \
+        "the narrative and archive lines are appended on lines of their own" || return 1
+    assert_eq ".cs/memory/reference_memory_archive.md: merge: union" \
+        "$(git -C "$sdir" check-attr merge -- .cs/memory/reference_memory_archive.md)" \
+        "git reads the archive's union attribute" || return 1
+}
+
+# A .gitattributes where earlier appends glued every merge line onto one line
+# (a hand-written line with no final newline before them) gives git no merge
+# attribute for any of them; the next open appends each on a line of its own.
+test_merge_attributes_add_each_line_beside_a_glued_one() {
+    local sdir="$CS_SESSIONS_ROOT/attrs-all-glued" glued
+    glued='*.png binary.cs/memory/MEMORY.md merge=ours.cs/timeline.jsonl merge=union'
+    glued="$glued.cs/memory/narrative.*.md merge=union.cs/memory/reference_memory_archive.md merge=union"
+    "$CS_BIN" attrs-all-glued < /dev/null > /dev/null 2>&1 || true
+    printf '%s\n' "$glued" > "$sdir/.gitattributes"
+    rm -f "$sdir/.cs/local/migrated"
+    "$CS_BIN" attrs-all-glued < /dev/null > /dev/null 2>&1 || true
+    assert_eq "$glued
+.cs/memory/MEMORY.md merge=ours
+.cs/timeline.jsonl merge=union
+.cs/memory/narrative.*.md merge=union
+.cs/memory/reference_memory_archive.md merge=union" "$(cat "$sdir/.gitattributes")" \
+        "each merge line is appended on a line of its own" || return 1
+    assert_eq ".cs/memory/MEMORY.md: merge: ours
+.cs/timeline.jsonl: merge: union
+.cs/memory/narrative.alice.md: merge: union
+.cs/memory/reference_memory_archive.md: merge: union" \
+        "$(git -C "$sdir" check-attr merge -- .cs/memory/MEMORY.md .cs/timeline.jsonl \
+            .cs/memory/narrative.alice.md .cs/memory/reference_memory_archive.md 2>/dev/null)" \
+        "git reads each merge attribute" || return 1
+}
+
+# A .gitattributes holding bytes that are not UTF-8 and every merge line, read
+# in a UTF-8 locale, already has each line: an open appends nothing.
+test_merge_attributes_read_a_file_that_is_not_utf8() {
+    local sdir="$CS_SESSIONS_ROOT/attrs-bytes" lines
+    lines='.cs/memory/MEMORY.md merge=ours
+.cs/timeline.jsonl merge=union
+.cs/memory/narrative.*.md merge=union
+.cs/memory/reference_memory_archive.md merge=union'
+    "$CS_BIN" attrs-bytes < /dev/null > /dev/null 2>&1 || true
+    printf '*.dat binary # \377\376\n%s\n' "$lines" > "$sdir/.gitattributes"
+    cp "$sdir/.gitattributes" "$TEST_TMPDIR/attrs-bytes.before"
+    rm -f "$sdir/.cs/local/migrated"
+    LC_ALL=en_US.UTF-8 "$CS_BIN" attrs-bytes < /dev/null > /dev/null 2>&1 || true
+    cmp -s "$TEST_TMPDIR/attrs-bytes.before" "$sdir/.gitattributes" \
+        || { echo "  FAIL: an open appends nothing to a file that holds every line: $(tail -n +2 "$sdir/.gitattributes")"; return 1; }
 }
 
 test_frontmatter_backfill_created_uses_git_date() {
@@ -828,6 +1271,582 @@ test_divergent_appends_merge_clean() {
 
 # ============================================================================
 
+# Inside a session (CLAUDE_SESSION_DIR set) a destination under the session
+# must stay in it once its links are followed: a committed link would make a
+# write to .cs/README.md land on a file the session does not own.
+_atomic_write_in() {  # session dir, dest, text
+    CLAUDE_SESSION_DIR="$1" bash -c 'source "$1"; cs_write_atomic "$2" printf "%s\n" "$3"' _ \
+        "$SCRIPT_DIR/../hooks/cs-shared.sh" "$2" "$3"
+}
+
+test_atomic_write_refuses_a_link_out_of_the_session() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/sess" o="$t/outside" out rc=0
+    mkdir -p "$s/.cs"
+    printf 'USER-OWNED\n' > "$o"
+    ln -s "$o" "$s/.cs/README.md"
+    out=$(_atomic_write_in "$s" "$s/.cs/README.md" new 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the write must fail" || return 1
+    assert_eq "cs_write_atomic: $s/.cs/README.md leads to $o, outside the session $s" "$out" "the refusal names the path" || return 1
+    assert_eq "USER-OWNED" "$(cat "$o")" "the target outside is untouched" || return 1
+}
+
+# A clone chooses where a committed link leads, and the name there can carry
+# a terminal escape: a raw ESC or BEL byte, or backslash text echo -e would
+# turn into one. The refusal names where the write lands as a plain path,
+# each character a plain path lacks replaced by _.
+test_atomic_write_names_where_a_link_leads_as_a_plain_path() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m
+    local s="$t/sess" o="$t/out" out rc=0
+    mkdir -p "$s/.cs" "$o$bad"
+    ln -s "$o$bad" "$s/.cs/memory"
+    out=$(_atomic_write_in "$s" "$s/.cs/memory/MEMORY.md" new 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the write must fail" || return 1
+    assert_eq "cs_write_atomic: $s/.cs/memory/MEMORY.md leads to $o$shown/MEMORY.md, outside the session $s" "$out" "the refusal names where it lands as a plain path" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal" || return 1
+    assert_eq "" "$(ls -A "$o$bad")" "nothing is written into the directory outside" || return 1
+}
+
+# The path a write was asked for can hold a name a clone chose too: a file it
+# committed under a directory that links out. The refusal names the part of
+# that path below the session as a plain path, and so does the part of a new
+# directory's path that does not exist yet; the session's own path prints as
+# it is spelled.
+_mkdir_inside_in() {  # session dir, dir
+    CLAUDE_SESSION_DIR="$1" bash -c 'source "$1"; cs_mkdir_inside "$2"' _ \
+        "$SCRIPT_DIR/../hooks/cs-shared.sh" "$2"
+}
+
+test_write_refusal_names_the_path_asked_for_as_a_plain_path() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m
+    local s="$t/sess" o="$t/out" out rc=0
+    mkdir -p "$s/.cs" "$o"
+    ln -s "$o" "$s/.cs/memory"
+    out=$(_atomic_write_in "$s" "$s/.cs/memory/n$bad.md" new 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the write must fail" || return 1
+    assert_eq "cs_write_atomic: $s/.cs/memory/n$shown.md leads to $o/n$shown.md, outside the session $s" "$out" \
+        "the refusal names the file asked for as a plain path" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal from the write" || return 1
+    rc=0
+    out=$(_mkdir_inside_in "$s" "$s/.cs/memory/d$bad/x" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the mkdir must fail" || return 1
+    assert_eq "cs_mkdir_inside: $s/.cs/memory/d$shown/x leads to $o/d$shown/x, outside the session $s" "$out" \
+        "the refusal names the directories it would make as a plain path" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal from the mkdir" || return 1
+    assert_eq "" "$(ls -A "$o")" "nothing is made in the directory outside" || return 1
+}
+
+# A plain name is a file name cs can print, arm and hand Claude as it is:
+# not empty, only letters, digits and ._@-, at most 160 characters, and never
+# holding a separator, so it cannot name a file outside the directory it is
+# looked up in.
+test_plain_name_is_one_file_name_of_plain_characters() {
+    local name verdict long
+    long=$(printf 'a%.0s' $(seq 1 160))
+    for name in "x.md" "2026-07-16-next.md" "a@b_c-d.e" "$long"; do
+        verdict=$(bash -c 'source "$1"; _cs_is_plain_name "$2" && echo plain || echo not' _ \
+            "$SCRIPT_DIR/../hooks/cs-shared.sh" "$name")
+        assert_eq "plain" "$verdict" "'${name:0:20}' is a plain name" || return 1
+    done
+    for name in "" "a/b" "../x" "/x" "x/" "a b" $'e\033[1mb' "${long}a"; do
+        verdict=$(bash -c 'source "$1"; _cs_is_plain_name "$2" && echo plain || echo not' _ \
+            "$SCRIPT_DIR/../hooks/cs-shared.sh" "$name")
+        assert_eq "not" "$verdict" "'${name:0:20}' is not a plain name" || return 1
+    done
+}
+
+test_atomic_write_refuses_a_directory_link_out_of_the_session() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/sess" o="$t/outside-dir" out rc=0
+    mkdir -p "$s/.cs" "$o"
+    ln -s "$o" "$s/.cs/memory"
+    out=$(_atomic_write_in "$s" "$s/.cs/memory/MEMORY.md" new 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the write must fail" || return 1
+    assert_eq "cs_write_atomic: $s/.cs/memory/MEMORY.md leads to $o/MEMORY.md, outside the session $s" "$out" "the refusal names the path" || return 1
+    assert_eq "" "$(ls -A "$o")" "nothing is written into the directory outside" || return 1
+}
+
+# The session is found from the destination, not from CLAUDE_SESSION_DIR: a
+# write made with it unset, or into another session, is checked the same way.
+test_atomic_write_checks_the_session_the_destination_is_in() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/sess" o="$t/outside" out rc=0
+    mkdir -p "$s/.cs"
+    printf 'USER-OWNED\n' > "$o"
+    ln -s "$o" "$s/.cs/README.md"
+    out=$(env -u CLAUDE_SESSION_DIR bash -c 'source "$1"; cs_write_atomic "$2" printf "%s\n" new' _ \
+        "$SCRIPT_DIR/../hooks/cs-shared.sh" "$s/.cs/README.md" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the write must fail" || return 1
+    assert_eq "cs_write_atomic: $s/.cs/README.md leads to $o, outside the session $s" "$out" "the refusal names the path" || return 1
+    assert_eq "USER-OWNED" "$(cat "$o")" "the target outside is untouched" || return 1
+}
+
+# mkdir -p makes every missing level: a link out above the first missing one
+# must be caught even though the levels below it do not exist yet.
+test_mkdir_inside_refuses_new_levels_under_a_link_out() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/sess" o="$t/outside-dir" out rc=0
+    mkdir -p "$s/.cs" "$o"
+    ln -s "$o" "$s/.cs/local"
+    out=$(bash -c 'source "$1"; cs_mkdir_inside "$2"' _ "$SCRIPT_DIR/../hooks/cs-shared.sh" "$s/.cs/local/a/b" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the mkdir must fail" || return 1
+    assert_eq "cs_mkdir_inside: $s/.cs/local/a/b leads to $o/a/b, outside the session $s" "$out" "the refusal names the path" || return 1
+    assert_eq "" "$(ls -A "$o")" "nothing is made outside the session" || return 1
+}
+
+# A session's .cs is made by cs when it creates, adopts or migrates the
+# session, never by a writer: a writer finding the .cs gone is running for a
+# session that was removed under it, and making the path would bring the
+# session back. So cs_mkdir_inside makes levels only inside a .cs that exists,
+# as many as the path needs, and refuses one that would make the .cs or
+# anything above it, quietly when the caller asks.
+test_mkdir_inside_makes_levels_only_inside_an_existing_cs() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local root="$t/root" out rc=0
+    local lib="$SCRIPT_DIR/../hooks/cs-shared.sh"
+    mkdir -p "$root/live/.cs" "$root/bare"
+    out=$(CS_SESSIONS_ROOT="$root" "$BASH" -c 'source "$1"; cs_mkdir_inside "$2"' _ "$lib" "$root/live/.cs/local/context-date" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "levels inside an existing .cs are made" || return 1
+    assert_eq "" "$out" "making them says nothing" || return 1
+    [ -d "$root/live/.cs/local/context-date" ] || { echo "  FAIL: both missing levels are made"; return 1; }
+    rc=0
+    out=$(CS_SESSIONS_ROOT="$root" "$BASH" -c 'source "$1"; cs_mkdir_inside "$2"' _ "$lib" "$root/live/.cs" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "an existing .cs is left as it is" || return 1
+    mkdir "$root/live/notes-kept"
+    out=$(CS_SESSIONS_ROOT="$root" "$BASH" -c 'source "$1"; cs_mkdir_inside "$2"' _ "$lib" "$root/live/notes-kept" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "an existing directory beside the .cs is left as it is: nothing is made" || return 1
+    assert_eq "" "$out" "leaving it says nothing" || return 1
+    rc=0
+    out=$(CS_SESSIONS_ROOT="$root" "$BASH" -c 'source "$1"; cs_mkdir_inside "$2"' _ "$lib" "$root/gone/.cs/local" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a removed session's .cs/local is refused" || return 1
+    assert_eq "cs_mkdir_inside: $root/gone/.cs/local is not inside an existing .cs" "$out" "the refusal names the path" || return 1
+    assert_not_exists "$root/gone" "the removed session is not made again" || return 1
+    rc=0
+    out=$(CS_SESSIONS_ROOT="$root" CS_WRITE_QUIET=1 "$BASH" -c 'source "$1"; cs_mkdir_inside "$2"' _ "$lib" "$root/gone/.cs/local" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the quiet refusal fails too" || return 1
+    assert_eq "" "$out" "a quiet caller hears nothing" || return 1
+    assert_not_exists "$root/gone" "nor does a quiet caller make it" || return 1
+    rc=0
+    out=$(CS_SESSIONS_ROOT="$root" "$BASH" -c 'source "$1"; cs_mkdir_inside "$2"' _ "$lib" "$root/bare/.cs/local" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a session directory without its .cs gets none" || return 1
+    assert_not_exists "$root/bare/.cs" "the .cs is not made" || return 1
+    rc=0
+    out=$(CS_SESSIONS_ROOT="$root" "$BASH" -c 'source "$1"; cs_mkdir_inside "$2"' _ "$lib" "$root/live/notes" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a directory beside the .cs is refused" || return 1
+    assert_not_exists "$root/live/notes" "nothing is made beside the .cs" || return 1
+    rc=0
+    out=$(CS_SESSIONS_ROOT="$root" "$BASH" -c 'source "$1"; cs_mkdir_inside "$2"' _ "$lib" "$root/live/.cs/sub/.cs/local" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a .cs among the levels to make is refused" || return 1
+    assert_not_exists "$root/live/.cs/sub" "no level of it is made" || return 1
+}
+
+# The session can be removed after cs_mkdir_inside has checked the path and
+# before it makes anything. A DEBUG trap stands in for that `cs -rm`: it
+# removes the session just before the writer's first mkdir runs. The writer
+# then fails and nothing is made: no level that vanished is built again. The
+# same trap making the directory instead stands in for a second writer that
+# got there first, which is success.
+test_mkdir_inside_never_rebuilds_a_session_removed_under_it() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local root="$t/root" out rc=0
+    local lib="$SCRIPT_DIR/../hooks/cs-shared.sh"
+    _mkdir_inside_with_a_peer() {  # what the peer does before the first mkdir, dir, [quiet]
+        rm -f "$t/peer-ran"
+        CS_SESSIONS_ROOT="$root" CS_WRITE_QUIET="${3:-}" \
+            CS_TEST_PEER_RAN="$t/peer-ran" CS_TEST_PEER_DOES="$1" CS_TEST_DIR="$2" "$BASH" -c '
+            source "$1"
+            set -o functrace
+            _peer() {
+                case "$BASH_COMMAND" in mkdir\ *) ;; *) return 0 ;; esac
+                [ ! -e "$CS_TEST_PEER_RAN" ] || return 0
+                : > "$CS_TEST_PEER_RAN"
+                eval "$CS_TEST_PEER_DOES"
+            }
+            trap _peer DEBUG
+            cs_mkdir_inside "$CS_TEST_DIR"' _ "$lib" 2>&1
+    }
+    mkdir -p "$root/ending/.cs"
+    out=$(_mkdir_inside_with_a_peer 'rm -rf "${CS_TEST_DIR%/.cs/*}"' "$root/ending/.cs/local/mail/new") || rc=$?
+    assert_exists "$t/peer-ran" "the stand-in removal ran before the writer's mkdir" || return 1
+    assert_eq "1" "$rc" "the writer fails when the session goes before its mkdir" || return 1
+    assert_not_exists "$root/ending" "the removed session is not built again" || return 1
+    rc=0
+    mkdir -p "$root/ending/.cs"
+    out=$(_mkdir_inside_with_a_peer 'rm -rf "${CS_TEST_DIR%/.cs/*}"' "$root/ending/.cs/local/mail/new" 1) || rc=$?
+    assert_exists "$t/peer-ran" "the stand-in removal ran before the quiet writer's mkdir" || return 1
+    assert_eq "1" "$rc" "the quiet writer fails too" || return 1
+    assert_eq "" "$out" "and says nothing" || return 1
+    assert_not_exists "$root/ending" "nor does the quiet writer build it again" || return 1
+    rc=0
+    mkdir -p "$root/live/.cs"
+    out=$(_mkdir_inside_with_a_peer 'command mkdir "${CS_TEST_DIR%/*}"' "$root/live/.cs/local/x") || rc=$?
+    assert_exists "$t/peer-ran" "the second writer ran before the first one's mkdir" || return 1
+    assert_eq "0" "$rc" "a level another writer made first counts as made" || return 1
+    assert_eq "" "$out" "and the writer says nothing about it" || return 1
+    [ -d "$root/live/.cs/local/x" ] || { echo "  FAIL: the levels below it are made"; return 1; }
+    rc=0
+    rm -rf "$root/live/.cs/local"
+    out=$(_mkdir_inside_with_a_peer 'command mkdir "${CS_TEST_DIR%/*}"' "$root/live/.cs/local/x" 1) || rc=$?
+    assert_exists "$t/peer-ran" "the second writer ran before the quiet writer's mkdir" || return 1
+    assert_eq "0" "$rc" "a quiet writer counts a level another writer made first as made" || return 1
+    [ -d "$root/live/.cs/local/x" ] || { echo "  FAIL: the quiet writer makes the levels below it"; return 1; }
+    rc=0
+    : > "$root/live/.cs/taken"
+    out=$(CS_SESSIONS_ROOT="$root" "$BASH" -c 'source "$1"; cs_mkdir_inside "$2"' _ "$lib" "$root/live/.cs/taken" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a file where the directory goes is refused" || return 1
+    assert_eq "cs_mkdir_inside: $root/live/.cs/taken is not a directory" "$out" "the refusal names the file" || return 1
+}
+
+# The writers take a relative destination from the caller's directory, and
+# check it as that absolute path.
+test_atomic_write_checks_a_relative_destination() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/sess" o="$t/outside" out rc=0
+    mkdir -p "$s/.cs/local"
+    printf 'USER-OWNED\n' > "$o"
+    ln -s "$o" "$s/.cs/local/snap"
+    out=$(cd "$s" && bash -c 'source "$1"; cs_write_atomic .cs/local/snap printf "%s\n" new' _ \
+        "$SCRIPT_DIR/../hooks/cs-shared.sh" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the write must fail" || return 1
+    assert_eq "cs_write_atomic: $s/.cs/local/snap leads to $o, outside the session $s" "$out" "the refusal names the path" || return 1
+    assert_eq "USER-OWNED" "$(cat "$o")" "the target outside is untouched" || return 1
+}
+
+test_append_inside_checks_a_relative_destination() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/sess" o="$t/outside" out rc=0
+    mkdir -p "$s/.cs/local"
+    printf 'USER-OWNED\n' > "$o"
+    ln -s "$o" "$s/.cs/local/trace"
+    out=$(cd "$s" && bash -c 'source "$1"; cs_append_inside .cs/local/trace echo new' _ \
+        "$SCRIPT_DIR/../hooks/cs-shared.sh" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the append must fail" || return 1
+    assert_eq "cs_append_inside: $s/.cs/local/trace leads to $o, outside the session $s" "$out" "the refusal names the path" || return 1
+    assert_eq "USER-OWNED" "$(cat "$o")" "the target outside is untouched" || return 1
+}
+
+# Run a cs-shared.sh function from <dir>, stderr folded into its output.
+_shared_in() {  # dir, function, [args...]
+    local dir="$1"; shift
+    (cd "$dir" && bash -c 'source "$1"; shift; "$@"' _ "$SCRIPT_DIR/../hooks/cs-shared.sh" "$@" 2>&1)
+}
+
+# A relative path whose first name starts with a dash is a name, never an
+# option: a directory named -P must resolve to itself, not to cd -P's
+# $HOME, and dirname, basename and readlink must take such a name as a path.
+# A session given as -s is checked like any other, so a link out of it is
+# named.
+test_write_target_resolves_a_relative_name_starting_with_a_dash() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local w="$t/w" o="$t/outside-dir" out rc
+    mkdir -p "$w/-P" "$w/-s/.cs" "$o"
+    ln -s -- -P "$w/-L"
+    ln -s "$o" "$w/-s/.cs/memory"
+    rc=0; out=$(_shared_in "$w" _cs_write_target -P) || rc=$?
+    assert_eq "0 $w/-P" "$rc $out" "a directory named -P resolves to itself" || return 1
+    rc=0; out=$(_shared_in "$w" _cs_write_target -P/f) || rc=$?
+    assert_eq "0 $w/-P/f" "$rc $out" "a file in -P resolves under it" || return 1
+    rc=0; out=$(_shared_in "$w" _cs_write_target -L) || rc=$?
+    assert_eq "0 $w/-P" "$rc $out" "a link named -L is followed to -P" || return 1
+    rc=0; out=$(_shared_in "$w" _cs_write_leaves_session -s -s/.cs/memory/n.md) || rc=$?
+    assert_eq "0 $o/n.md" "$rc $out" "a write through -s/.cs/memory leaves the session -s" || return 1
+}
+
+# The kernel follows up to 32 links (macOS) and the check follows 16: a
+# longer chain is refused rather than written where the check stopped looking.
+test_append_inside_refuses_a_chain_longer_than_it_follows() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/sess" o="$t/outside" out rc=0 i=15
+    mkdir -p "$s/.cs"
+    printf 'USER-OWNED\n' > "$o"
+    ln -s "$o" "$s/.cs/x16"
+    while [ "$i" -ge 1 ]; do ln -s "x$((i + 1))" "$s/.cs/x$i"; i=$((i - 1)); done
+    ln -s x1 "$s/.cs/timeline.jsonl"
+    out=$(bash -c 'source "$1"; cs_append_inside "$2" echo new' _ \
+        "$SCRIPT_DIR/../hooks/cs-shared.sh" "$s/.cs/timeline.jsonl" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the append must fail" || return 1
+    assert_eq "cs_append_inside: $s/.cs/timeline.jsonl leads to a chain of more than 16 links, outside the session $s" "$out" "the refusal names the path" || return 1
+    assert_eq "USER-OWNED" "$(cat "$o")" "the target outside is untouched" || return 1
+}
+
+# A link inside .cs to another session puts a .cs above the destination
+# that is not this session's: the session is never one found inside a .cs,
+# nor one reached through a link below the sessions root.
+test_append_inside_is_not_rerooted_by_a_link_to_another_session() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local root="$t/root" out rc=0
+    mkdir -p "$root/sess/.cs" "$root/other/.cs"
+    ln -s ../../other "$root/sess/.cs/private"
+    out=$(CS_SESSIONS_ROOT="$root" bash -c 'source "$1"; cs_append_inside "$2" echo new' _ \
+        "$SCRIPT_DIR/../hooks/cs-shared.sh" "$root/sess/.cs/private/session.log" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the append must fail" || return 1
+    assert_eq "cs_append_inside: $root/sess/.cs/private/session.log leads to $root/other/session.log, outside the session $root/sess" "$out" "the refusal names the path" || return 1
+    assert_not_exists "$root/other/session.log" "nothing is written in the other session" || return 1
+    rc=0
+    ln -s ../other "$root/sess/sub"
+    out=$(CS_SESSIONS_ROOT="$root" bash -c 'source "$1"; cs_mkdir_inside "$2"' _ \
+        "$SCRIPT_DIR/../hooks/cs-shared.sh" "$root/sess/sub/.cs/local" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a session dir reached through a link is not a session" || return 1
+    assert_not_exists "$root/other/.cs/local" "nothing is made in the other session" || return 1
+    rc=0
+    mkdir -p "$root/other/sub/.cs"
+    out=$(CS_SESSIONS_ROOT="$root" bash -c 'source "$1"; cs_append_inside "$2" echo new' _ \
+        "$SCRIPT_DIR/../hooks/cs-shared.sh" "$root/sess/.cs/private/sub/x.log" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a .cs below the link is not the session either" || return 1
+    assert_not_exists "$root/other/sub/x.log" "nothing is written below the link" || return 1
+}
+
+# Every append is checked: a file that passed once and was then replaced by
+# a link out is refused on the next append.
+test_append_inside_checks_every_append() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/sess" o="$t/outside" out rc=0
+    mkdir -p "$s/.cs/local"
+    printf 'USER-OWNED\n' > "$o"
+    out=$(bash -c 'source "$1"; cs_append_inside "$2" echo first; rm "$2"; ln -s "$3" "$2"; cs_append_inside "$2" echo second' _ \
+        "$SCRIPT_DIR/../hooks/cs-shared.sh" "$s/.cs/local/trace" "$o" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the second append must fail" || return 1
+    assert_eq "cs_append_inside: $s/.cs/local/trace leads to $o, outside the session $s" "$out" "the refusal names the path" || return 1
+    assert_eq "USER-OWNED" "$(cat "$o")" "the target outside is untouched" || return 1
+}
+
+# A link anywhere between the destination and the session, not only one
+# that is itself the candidate, must not make a .cs below it the session.
+test_append_inside_is_not_rerooted_through_a_linked_ancestor() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local root="$t/root" out rc=0
+    mkdir -p "$root/sess/.cs" "$t/other/sub/.cs"
+    ln -s "$t/other" "$root/sess/backup"
+    out=$(CS_SESSIONS_ROOT="$root" bash -c 'source "$1"; cs_append_inside "$2" echo new' _ \
+        "$SCRIPT_DIR/../hooks/cs-shared.sh" "$root/sess/backup/sub/x.log" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the append must fail" || return 1
+    assert_eq "cs_append_inside: $root/sess/backup/sub/x.log leads to $t/other/sub/x.log, outside the session $root/sess" "$out" "the refusal names the path" || return 1
+    assert_not_exists "$t/other/sub/x.log" "nothing is written below the link" || return 1
+}
+
+# A directory that exists is resolved whole: a link to ../.. is the
+# session's parent even though its last component spells "..".
+test_mkdir_inside_resolves_a_link_to_a_parent_directory() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/a/sess" out rc=0
+    mkdir -p "$s/.cs"
+    ln -s ../.. "$s/.cs/private"
+    out=$(bash -c 'source "$1"; cs_mkdir_inside "$2"' _ \
+        "$SCRIPT_DIR/../hooks/cs-shared.sh" "$s/.cs/private/mail/tmp" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the mkdir must fail" || return 1
+    assert_eq "cs_mkdir_inside: $s/.cs/private/mail/tmp leads to $t/a/mail/tmp, outside the session $s" "$out" "the refusal names the path" || return 1
+    assert_not_exists "$t/a/mail" "nothing is made above the session" || return 1
+}
+
+# A dangling link would create its target: refused the same way.
+test_atomic_write_refuses_a_dangling_link_out_of_the_session() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/sess" o="$t/not-there" out rc=0
+    mkdir -p "$s/.cs"
+    ln -s "$o" "$s/.cs/README.md"
+    out=$(_atomic_write_in "$s" "$s/.cs/README.md" new 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the write must fail" || return 1
+    assert_eq "cs_write_atomic: $s/.cs/README.md leads to $o, outside the session $s" "$out" "the refusal names the path" || return 1
+    assert_not_exists "$o" "the link's target is not created" || return 1
+}
+
+# An adopted session is reached through a link from the sessions root, and
+# cs writes to it by its resolved path: the check holds for that spelling too.
+test_atomic_write_refuses_a_link_out_of_an_adopted_session() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/project" link="$t/root/adopted" o="$t/outside" out rc=0
+    mkdir -p "$s/.cs" "$t/root"
+    ln -s "$s" "$link"
+    printf 'USER-OWNED\n' > "$o"
+    ln -s "$o" "$s/.cs/README.md"
+    out=$(_atomic_write_in "$link" "$s/.cs/README.md" new 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the write must fail" || return 1
+    assert_eq "USER-OWNED" "$(cat "$o")" "the target outside is untouched" || return 1
+}
+
+# Links that stay inside the session, and destinations outside every session
+# (a dotfiles manager's settings.json), are still written through.
+test_atomic_write_follows_links_inside_the_session_and_outside_it() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/sess" dot="$t/dotfiles/settings.json" home="$t/home"
+    mkdir -p "$s/.cs" "$(dirname "$dot")" "$home"
+    printf 'old\n' > "$s/real.md"
+    ln -s ../real.md "$s/.cs/README.md"
+    printf 'old\n' > "$dot"
+    ln -s "$dot" "$home/settings.json"
+    _atomic_write_in "$s" "$s/.cs/README.md" new || { echo "  FAIL: an in-session link was refused"; return 1; }
+    _atomic_write_in "$s" "$home/settings.json" new || { echo "  FAIL: a destination outside the session was refused"; return 1; }
+    assert_eq "new" "$(cat "$s/real.md")" "the in-session target took the write" || return 1
+    [ -L "$s/.cs/README.md" ] || { echo "  FAIL: the in-session link was replaced"; return 1; }
+    assert_eq "new" "$(cat "$dot")" "the dotfiles target took the write" || return 1
+}
+
+# Command substitution strips trailing newlines, so a link whose target ends
+# in one, or names a directory that does, would be read as a different path
+# than the kernel follows: a committed decoy beside it passes as inside.
+test_atomic_write_refuses_a_link_with_a_newline_in_its_target() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/sess" o="$t/outside" nl=$'\n' out rc=0
+    mkdir -p "$s/.cs/d" "$o"
+    printf 'USER-OWNED\n' > "$o/rc"
+    printf 'decoy\n' > "$s/.cs/t"
+    ln -s "$o/rc" "$s/.cs/t$nl"
+    ln -s "t$nl" "$s/.cs/README.md"
+    out=$(_atomic_write_in "$s" "$s/.cs/README.md" new 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a trailing newline: the write must fail" || return 1
+    assert_eq "cs_write_atomic: $s/.cs/README.md leads to a name ending in a newline, outside the session $s" "$out" "the refusal names the link" || return 1
+    ln -s "$o" "$s/.cs/d$nl"
+    ln -s "d$nl/rc" "$s/.cs/timeline.jsonl"
+    rc=0
+    CLAUDE_SESSION_DIR="$s" bash -c 'source "$1"; cs_append_inside "$2" echo new' _ \
+        "$SCRIPT_DIR/../hooks/cs-shared.sh" "$s/.cs/timeline.jsonl" 2>/dev/null || rc=$?
+    assert_eq "1" "$rc" "a newline-ended directory: the append must fail" || return 1
+    rc=0
+    _atomic_write_in "$s" "$s/.cs/d$nl/rc" new 2>/dev/null || rc=$?
+    assert_eq "1" "$rc" "a destination spelled with a newline: the write must fail" || return 1
+    mkdir -p "$t/sess$nl"
+    ln -s "../../sess$nl" "$s/.cs/up"
+    rc=0
+    _atomic_write_in "$s" "$s/.cs/up/rc" new 2>/dev/null || rc=$?
+    assert_eq "1" "$rc" "a directory resolving to a newline-ended name: the write must fail" || return 1
+    rc=0
+    CLAUDE_SESSION_DIR="$s" bash -c 'source "$1"; cs_mkdir_inside "$2"' _ \
+        "$SCRIPT_DIR/../hooks/cs-shared.sh" "$s/.cs/up/" 2>/dev/null || rc=$?
+    assert_eq "1" "$rc" "a newline-ended directory itself: the mkdir must fail" || return 1
+    assert_eq "" "$(ls -A "$t/sess$nl")" "nothing lands beside the session" || return 1
+    assert_eq "USER-OWNED" "$(cat "$o/rc")" "the target outside is untouched" || return 1
+    assert_eq "decoy" "$(cat "$s/.cs/t")" "the decoy is untouched" || return 1
+    mkdir -p "$s/.cs/mid${nl}dir"
+    ln -s "mid${nl}dir/notes${nl}x.md" "$s/.cs/mid.md"
+    _atomic_write_in "$s" "$s/.cs/mid.md" kept \
+        || { echo "  FAIL: a newline inside a name, not at its end, was refused"; return 1; }
+    assert_eq "kept" "$(cat "$s/.cs/mid${nl}dir/notes${nl}x.md")" "the in-session target took the write" || return 1
+    _atomic_write_in "$s" "$s/.cs/mid${nl}dir/direct.md" kept \
+        || { echo "  FAIL: a destination with a newline inside a name was refused"; return 1; }
+}
+
+# A .cs/claude-config leads out only as cs's own link into the vault; a real
+# directory a clone commits, holding a link out, is checked like any other.
+test_atomic_write_refuses_a_link_out_of_a_committed_claude_config() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/sess" o="$t/outside" out rc=0
+    mkdir -p "$s/.cs/claude-config"
+    printf 'USER-OWNED\n' > "$o"
+    ln -s "$o" "$s/.cs/claude-config/settings.json"
+    out=$(_atomic_write_in "$s" "$s/.cs/claude-config/settings.json" new 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the write must fail" || return 1
+    assert_eq "cs_write_atomic: $s/.cs/claude-config/settings.json leads to $o, outside the session $s" "$out" "the refusal names the path" || return 1
+    assert_eq "USER-OWNED" "$(cat "$o")" "the target outside is untouched" || return 1
+}
+
+# An encrypted session's .cs/claude-config links the shell's settings,
+# keybindings and the rest out to its config dir by design; a write there
+# (statusline enable, the rotate keys) goes through to the shell's file.
+# cs -encrypt writes the session's .cs/local/pre-open, so it is a vault set
+# up by hand.
+test_atomic_write_follows_an_encrypted_sessions_shared_config_link() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/sess" shell="$t/shell-config"
+    mkdir -p "$s/.cs/vault-mnt/claude-config" "$shell"
+    _mark_hand_made_vault "$s"
+    ln -s vault-mnt/claude-config "$s/.cs/claude-config"
+    printf 'old\n' > "$shell/settings.json"
+    ln -s "$shell/settings.json" "$s/.cs/vault-mnt/claude-config/settings.json"
+    _atomic_write_in "$s" "$s/.cs/claude-config/settings.json" new \
+        || { echo "  FAIL: the shared settings link was refused"; return 1; }
+    assert_eq "new" "$(cat "$shell/settings.json")" "the shell's settings took the write" || return 1
+}
+
+# A clone can commit the same layout: .cs/claude-config linked to a real
+# .cs/vault-mnt/claude-config holding links out. Without a pre-open the
+# session has no vault, so those links are checked like any other.
+test_atomic_write_refuses_a_committed_vault_config_lookalike() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/sess" o="$t/outside" out rc=0
+    mkdir -p "$s/.cs/vault-mnt/claude-config"
+    ln -s vault-mnt/claude-config "$s/.cs/claude-config"
+    printf 'USER-OWNED\n' > "$o"
+    ln -s "$o" "$s/.cs/vault-mnt/claude-config/settings.json"
+    out=$(_atomic_write_in "$s" "$s/.cs/claude-config/settings.json" new 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the write must fail" || return 1
+    assert_eq "cs_write_atomic: $s/.cs/claude-config/settings.json leads to $o, outside the session $s" "$out" "the refusal names the path" || return 1
+    assert_eq "USER-OWNED" "$(cat "$o")" "the target outside is untouched" || return 1
+}
+
+# A vault set up by hand mounts anywhere, from .cs/local/pre-open, which a
+# clone cannot ship; with one there, the vault links lead outside by design.
+test_atomic_write_follows_a_hand_made_vault_link() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/sess" vault="$t/vault"
+    mkdir -p "$s/.cs" "$vault/private"
+    ln -s "$vault/private" "$s/.cs/private"
+    _mark_hand_made_vault "$s"
+    _atomic_write_in "$s" "$s/.cs/private/queue.state" new \
+        || { echo "  FAIL: the hand-made vault link was refused"; return 1; }
+    assert_eq "new" "$(cat "$vault/private/queue.state")" "the vault took the write" || return 1
+}
+
+# Codex r1 #1: a link whose target walks through another link and then ..
+# lands where the logical spelling does not; the check must resolve the
+# directories physically, as the write does.
+test_atomic_write_resolves_dotdot_after_a_link_physically() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/sess" out rc=0
+    mkdir -p "$s/.cs" "$t/out/sub"
+    printf 'USER-OWNED\n' > "$t/out/victim"
+    ln -s "$t/out/sub" "$s/bridge"
+    ln -s ../bridge/../victim "$s/.cs/README.md"
+    out=$(_atomic_write_in "$s" "$s/.cs/README.md" new 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the write must fail" || return 1
+    assert_eq "cs_write_atomic: $s/.cs/README.md leads to $t/out/victim, outside the session $s" "$out" "the refusal names where it lands" || return 1
+    assert_eq "USER-OWNED" "$(cat "$t/out/victim")" "the file outside is untouched" || return 1
+}
+
+# Codex r1 #3: a pre-open earns the vault exemption only when the open would
+# accept it. A clone that commits one (or links one in) gets no exemption.
+test_atomic_write_ignores_a_tracked_or_linked_pre_open() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/sess" vault="$t/vault" rc=0
+    mkdir -p "$s/.cs" "$vault/private"
+    ln -s "$vault/private" "$s/.cs/private"
+    _mark_hand_made_vault "$s"
+    git -C "$s" init -q
+    git -C "$s" add -f .cs/local/pre-open
+    _atomic_write_in "$s" "$s/.cs/private/queue.state" new >/dev/null 2>&1 || rc=$?
+    assert_eq "1" "$rc" "a tracked pre-open earns no exemption" || return 1
+    assert_file_not_exists "$vault/private/queue.state" "nothing was written through the link" || return 1
+
+    rm -rf "$s/.git" "$s/.cs/local"
+    mkdir -p "$t/elsewhere/local"
+    printf '#!/bin/sh\nexit 0\n' > "$t/elsewhere/local/pre-open"
+    ln -s "$t/elsewhere/local" "$s/.cs/local"
+    rc=0
+    _atomic_write_in "$s" "$s/.cs/private/queue.state" new >/dev/null 2>&1 || rc=$?
+    assert_eq "1" "$rc" "a pre-open behind a linked .cs/local earns no exemption" || return 1
+    assert_file_not_exists "$vault/private/queue.state" "nothing was written through the link" || return 1
+}
+
+# Codex r2 #4: with .cs a submodule, the superproject's index holds only the
+# .cs gitlink, so asking it about .cs/local finds nothing even when the
+# submodule commits a pre-open. Such a pre-open earns no exemption.
+test_atomic_write_ignores_a_pre_open_committed_in_a_cs_submodule() {
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    local s="$t/sess" vault="$t/vault" rc=0
+    mkdir -p "$s/.cs" "$vault/private"
+    _mark_hand_made_vault "$s"
+    git -C "$s/.cs" init -q
+    git -C "$s/.cs" add -f local/pre-open
+    git -C "$s/.cs" -c user.name=t -c user.email=t@example.com commit -q -m pre-open
+    git -C "$s" init -q
+    git -C "$s" add .cs 2>/dev/null
+    ln -s "$vault/private" "$s/.cs/private"
+    _atomic_write_in "$s" "$s/.cs/private/queue.state" new >/dev/null 2>&1 || rc=$?
+    assert_eq "1" "$rc" "a pre-open committed in a .cs submodule earns no exemption" || return 1
+    assert_file_not_exists "$vault/private/queue.state" "nothing was written through the link" || return 1
+}
+
 run_test test_new_session_records_state_in_local_not_readme
 run_test test_resume_leaves_readme_untouched
 run_test test_migration_leaves_a_body_line_that_looks_like_a_field
@@ -843,18 +1862,64 @@ run_test test_session_start_stamps_the_context_date_for_this_conversation
 run_test test_session_start_writes_last_resumed_to_local_state
 run_test test_session_end_leaves_readme_untouched
 run_test test_union_merge_attributes_written
+run_test test_merge_attributes_start_a_line_after_a_file_with_no_final_newline
+run_test test_merge_attributes_add_the_archive_line_beside_a_glued_one
+run_test test_merge_attributes_add_each_line_beside_a_glued_one
+run_test test_merge_attributes_read_a_file_that_is_not_utf8
 run_test test_divergent_appends_merge_clean
 run_test test_frontmatter_backfill_created_uses_git_date
 run_test test_migration_moves_session_log_into_private
 run_test test_clone_with_a_readme_color_that_is_not_a_color_gets_a_fresh_one
 run_test test_launch_ignores_a_recorded_color_that_is_not_a_color
 run_test test_launch_stops_loudly_when_state_cannot_be_written
+run_test test_state_write_makes_local_only_inside_an_existing_cs
+run_test test_state_write_counts_a_local_dir_another_writer_made_first
 run_test test_state_and_gitattributes_rewrites_leave_tmp_siblings_alone_and_keep_modes
+run_test test_lock_refuses_a_path_that_is_not_a_regular_file
+run_test test_lock_retakes_a_path_removed_while_it_was_being_taken
+run_test test_lock_refuses_a_link_or_directory_swapped_in_while_it_was_being_taken
+run_test test_lock_takers_never_hold_it_at_once
+run_test test_lock_of_a_killed_holder_is_free_at_once
+run_test test_lock_belongs_to_the_shell_that_took_it
+run_test test_lock_release_frees_it_from_a_child_still_running
+run_test test_lock_waits_five_seconds_for_a_live_holder
+run_test test_settings_update_refuses_while_its_lock_stays_held
+run_test test_settings_backups_in_one_second_keep_the_newest_five
+run_test test_settings_backup_survives_a_clock_set_back
+run_test test_lock_refuses_at_once_without_its_directory_or_perl
 run_test test_state_write_waits_for_a_live_lock_holder
-run_test test_state_write_takes_over_a_dead_holders_lock
+run_test test_state_write_ignores_a_lock_directory_left_on_disk
 run_test test_state_write_fails_loudly_when_the_old_state_cannot_be_read
 run_test test_two_state_writers_lose_no_update
 run_test test_vault_holder_drop_keeps_a_concurrent_add
 run_test test_atomic_write_keeps_the_mode_with_gnu_stat_on_a_mac
 run_test test_atomic_write_refuses_a_directory_destination
+run_test test_atomic_write_refuses_a_link_out_of_the_session
+run_test test_atomic_write_names_where_a_link_leads_as_a_plain_path
+run_test test_write_refusal_names_the_path_asked_for_as_a_plain_path
+run_test test_plain_name_is_one_file_name_of_plain_characters
+run_test test_atomic_write_refuses_a_directory_link_out_of_the_session
+run_test test_atomic_write_refuses_a_dangling_link_out_of_the_session
+run_test test_atomic_write_checks_the_session_the_destination_is_in
+run_test test_mkdir_inside_refuses_new_levels_under_a_link_out
+run_test test_mkdir_inside_makes_levels_only_inside_an_existing_cs
+run_test test_mkdir_inside_never_rebuilds_a_session_removed_under_it
+run_test test_atomic_write_checks_a_relative_destination
+run_test test_append_inside_checks_a_relative_destination
+run_test test_write_target_resolves_a_relative_name_starting_with_a_dash
+run_test test_append_inside_refuses_a_chain_longer_than_it_follows
+run_test test_append_inside_is_not_rerooted_by_a_link_to_another_session
+run_test test_append_inside_checks_every_append
+run_test test_append_inside_is_not_rerooted_through_a_linked_ancestor
+run_test test_mkdir_inside_resolves_a_link_to_a_parent_directory
+run_test test_atomic_write_refuses_a_link_out_of_an_adopted_session
+run_test test_atomic_write_follows_links_inside_the_session_and_outside_it
+run_test test_atomic_write_refuses_a_link_with_a_newline_in_its_target
+run_test test_atomic_write_refuses_a_link_out_of_a_committed_claude_config
+run_test test_atomic_write_follows_an_encrypted_sessions_shared_config_link
+run_test test_atomic_write_refuses_a_committed_vault_config_lookalike
+run_test test_atomic_write_follows_a_hand_made_vault_link
+run_test test_atomic_write_resolves_dotdot_after_a_link_physically
+run_test test_atomic_write_ignores_a_tracked_or_linked_pre_open
+run_test test_atomic_write_ignores_a_pre_open_committed_in_a_cs_submodule
 report_results

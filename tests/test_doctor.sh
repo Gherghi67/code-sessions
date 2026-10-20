@@ -62,6 +62,23 @@ test_doctor_reports_pass_for_healthy_session() {
     assert_output_contains "$output" "OK" "healthy session should show OK status" || return 1
 }
 
+# .cs/memory is tracked, so a clone chooses a narrative's file name, and the
+# name can carry a terminal escape: a raw ESC or BEL byte, or backslash text
+# echo -e would turn into one. The warning names it as a plain name, each
+# character a plain name lacks replaced by _.
+test_doctor_names_a_narrative_over_budget_as_a_plain_name() {
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m output msg
+    { echo "# Session narrative"; head -c 3000 /dev/zero | tr '\0' 'x'; echo; } \
+        > "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/memory/narrative.a$bad.md"
+    output=$(CS_NARRATIVE_MAX_BYTES=2048 "$CS_BIN" -doctor 2>&1) || true
+    # The [WARN] tag before the message carries cs's own colours.
+    msg=$(grep 'Narrative: narrative\.a' <<< "$output")
+    msg="Narrative: ${msg#*Narrative: }"
+    assert_eq "Narrative: narrative.a$shown.md is 2 KB (budget 2 KB) — run cs -narrative rotate" "$msg" \
+        "the warning names the narrative as a plain name" || return 1
+    assert_no_escape_bytes "$msg" "no escape byte reaches the terminal" || return 1
+}
+
 test_doctor_warns_on_a_narrative_over_budget() {
     local nf="$CLAUDE_SESSION_META_DIR/memory/narrative.alice.md"
     { echo "# Session narrative (alice)"; head -c 3000 /dev/zero | tr '\0' 'x'; echo; } > "$nf"
@@ -211,6 +228,46 @@ test_doctor_warns_on_hook_drift() {
         "doctor should warn when a deployed hook differs from checkout source" || return 1
 }
 
+# The passes /wrap reads deploy beside the hooks, so an edited pass the
+# installer has not copied is hook drift too.
+test_doctor_warns_on_wrap_pass_drift() {
+    local checkout="$TEST_TMPDIR/checkout" deployed="$TEST_TMPDIR/deployed"
+    make_fake_checkout "$checkout" "$deployed"
+    echo 'source pass' > "$checkout/hooks/wrap-sweep.md"
+    echo 'deployed pass' > "$deployed/wrap-sweep.md"
+
+    local output
+    output=$(cd "$checkout" && CS_HOOKS_DIR="$deployed" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" "Hook drift: deployed copy differs from source: wrap-sweep.md" \
+        "doctor should warn when a deployed wrap pass differs from checkout source" || return 1
+}
+
+# ./install.sh replaces a deployed copy cs wrote and keeps one it did not (the
+# user's edit), so the drift row's advice follows what the install will do:
+# run it for cs's own copy; for a copy kept as the user's, move it aside first.
+# The record names session-start.sh as cs's; narrative-reminder.sh is not in
+# it and is no content cs ever shipped.
+test_doctor_drift_advice_follows_whose_the_deployed_copy_is() {
+    local home="$TEST_TMPDIR/drift-home" checkout="$TEST_TMPDIR/keptco" deployed digest output
+    deployed="$home/.claude/hooks/cs"
+    make_fake_checkout "$checkout" "$deployed"
+    echo 'echo source' > "$checkout/hooks/session-start.sh"
+    echo 'echo source' > "$checkout/hooks/narrative-reminder.sh"
+    echo 'echo an-older-cs-build' > "$deployed/session-start.sh"
+    echo 'echo the-users-edit' > "$deployed/narrative-reminder.sh"
+    chmod +x "$deployed/session-start.sh" "$deployed/narrative-reminder.sh"
+    digest=$(shasum -a 256 "$deployed/session-start.sh" | cut -d' ' -f1)
+    printf '%s  .claude/hooks/cs/session-start.sh\n' "$digest" > "$deployed/.installed"
+
+    output=$(cd "$checkout" && HOME="$home" CS_HOOKS_DIR="$deployed" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" "Hook drift: deployed copy differs from source: session-start.sh (run ./install.sh)$" \
+        "cs's own copy: run the installer" || { echo "$output"; return 1; }
+    assert_output_contains "$output" "Hook drift: deployed copy differs from source: narrative-reminder.sh (kept as yours, so ./install.sh does not replace it; move it aside, then run ./install.sh to get cs's copy)$" \
+        "the user's copy: move it aside first" || { echo "$output"; return 1; }
+    assert_output_not_contains "$output" "narrative-reminder.sh.*(run ./install.sh)$" \
+        "the user's copy is not offered the plain advice" || { echo "$output"; return 1; }
+}
+
 test_doctor_warns_on_undeployed_hook() {
     local checkout="$TEST_TMPDIR/checkout" deployed="$TEST_TMPDIR/deployed"
     make_fake_checkout "$checkout" "$deployed"
@@ -337,6 +394,360 @@ test_doctor_warns_on_codex_skill_drift() {
     output=$(cd "$checkout" && CS_HOOKS_DIR="$TEST_TMPDIR/deployed-hooks" CS_SKILLS_DIR="$claude_skills" \
         CODEX_HOME="$codex_home" CS_INSTALL_DIR="$TEST_TMPDIR/bin" "$CS_BIN" -doctor 2>&1) || true
     assert_output_not_contains "$output" "Codex skill drift" "Codex is not installed here" || return 1
+}
+
+# Helper: a cs checkout with a TUI source tree whose files carry mtime $2
+# (touch -t form), and an empty install dir under a HOME of the test's own.
+# install.sh copies a picker it never builds, so the freshness of cs-tui is
+# read from these mtimes and bytes.
+make_tui_checkout() {  # dir, source_stamp
+    local dir="$1"
+    make_fake_checkout "$dir" "$TEST_TMPDIR/tui-deployed"
+    mkdir -p "$dir/tui/src" "$dir/tui/target/release" "$TEST_TMPDIR/home/.local/bin"
+    echo '[package]' > "$dir/tui/Cargo.toml"
+    echo '# lock' > "$dir/tui/Cargo.lock"
+    echo 'fn main() {}' > "$dir/tui/src/main.rs"
+    touch -t "$2" "$dir/tui/Cargo.toml" "$dir/tui/Cargo.lock" "$dir/tui/src/main.rs"
+}
+
+# Helper: the line install.sh writes to say where the installed picker came
+# from ("checkout <path>" or "release").
+record_tui_origin() {  # line
+    mkdir -p "$TEST_TMPDIR/tui-deployed"
+    printf '%s\n' "$1" > "$TEST_TMPDIR/tui-deployed/.tui-origin"
+}
+
+# Doctor run from directory $1 under the test's HOME; prints its output.
+doctor_from() {  # dir
+    mkdir -p "$1"
+    (cd "$1" && HOME="$TEST_TMPDIR/home" CS_HOOKS_DIR="$TEST_TMPDIR/tui-deployed" "$CS_BIN" -doctor 2>&1) || true
+}
+
+# The cs-tui row of doctor output $1 with its colour tag stripped, and the
+# tag's name in front: "WARN cs-tui: ...", "OK cs-tui: ...", or "NOTE
+# cs-tui: ..." for the untagged line doctor prints when it cannot judge.
+tui_row() {  # output
+    local line
+    line=$(grep 'cs-tui: ' <<< "$1") || return 0
+    case "$line" in
+        "  cs-tui: "*) printf 'NOTE cs-tui: %s\n' "${line#*cs-tui: }" ;;
+        *"[WARN]"*) printf 'WARN cs-tui: %s\n' "${line#*cs-tui: }" ;;
+        *"[ OK ]"*) printf 'OK cs-tui: %s\n' "${line#*cs-tui: }" ;;
+        *) printf 'UNTAGGED %s\n' "$line" ;;
+    esac
+}
+
+# A merge rewrites tui/src while the build under tui/target stays where cargo
+# left it, and install.sh ships that build as it is: the picker goes stale
+# with nothing to say so. Doctor reads the checkout from the install's record,
+# so it says so from any folder.
+test_doctor_tui_warns_when_a_rust_source_changed_after_the_build() {
+    local checkout="$TEST_TMPDIR/tuico" output
+    make_tui_checkout "$checkout" 202601010000
+    echo 'old build' > "$checkout/tui/target/release/cs-tui"
+    touch -t 202601020000 "$checkout/tui/target/release/cs-tui"
+    touch -t 202601030000 "$checkout/tui/src/main.rs"
+    cp "$checkout/tui/target/release/cs-tui" "$TEST_TMPDIR/home/.local/bin/cs-tui"
+    record_tui_origin "checkout $checkout"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "WARN cs-tui: the TUI source under $checkout/tui changed after the build $checkout/tui/target/release/cs-tui, so the installed picker may be stale (run cargo build --release --manifest-path $checkout/tui/Cargo.toml, then $checkout/install.sh)" \
+        "$(tui_row "$output")" "a .rs file newer than the build is named with the rebuild" || return 1
+}
+
+test_doctor_tui_warns_when_cargo_toml_changed_after_the_build() {
+    local checkout="$TEST_TMPDIR/tuico" output
+    make_tui_checkout "$checkout" 202601010000
+    echo 'old build' > "$checkout/tui/target/release/cs-tui"
+    touch -t 202601020000 "$checkout/tui/target/release/cs-tui"
+    touch -t 202601030000 "$checkout/tui/Cargo.toml"
+    cp "$checkout/tui/target/release/cs-tui" "$TEST_TMPDIR/home/.local/bin/cs-tui"
+    record_tui_origin "checkout $checkout"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "WARN cs-tui: the TUI source under $checkout/tui changed after the build $checkout/tui/target/release/cs-tui, so the installed picker may be stale (run cargo build --release --manifest-path $checkout/tui/Cargo.toml, then $checkout/install.sh)" \
+        "$(tui_row "$output")" "a Cargo.toml newer than the build is named with the rebuild" || return 1
+}
+
+test_doctor_tui_warns_when_cargo_lock_changed_after_the_build() {
+    local checkout="$TEST_TMPDIR/tuico" output
+    make_tui_checkout "$checkout" 202601010000
+    echo 'old build' > "$checkout/tui/target/release/cs-tui"
+    touch -t 202601020000 "$checkout/tui/target/release/cs-tui"
+    touch -t 202601030000 "$checkout/tui/Cargo.lock"
+    cp "$checkout/tui/target/release/cs-tui" "$TEST_TMPDIR/home/.local/bin/cs-tui"
+    record_tui_origin "checkout $checkout"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "WARN cs-tui: the TUI source under $checkout/tui changed after the build $checkout/tui/target/release/cs-tui, so the installed picker may be stale (run cargo build --release --manifest-path $checkout/tui/Cargo.toml, then $checkout/install.sh)" \
+        "$(tui_row "$output")" "a Cargo.lock newer than the build is named with the rebuild" || return 1
+}
+
+# Cargo rebuilds only from the files rustc reads, so a Finder .DS_Store or a
+# merge's .orig under tui/src newer than the build is no reason to rebuild,
+# and a rebuild would not clear a row that counted it.
+test_doctor_tui_ok_with_a_stray_file_under_src_newer_than_the_build() {
+    local checkout="$TEST_TMPDIR/tuico" output
+    make_tui_checkout "$checkout" 202601010000
+    echo 'build' > "$checkout/tui/target/release/cs-tui"
+    touch -t 202601020000 "$checkout/tui/target/release/cs-tui"
+    echo 'finder' > "$checkout/tui/src/.DS_Store"
+    echo 'merge leftover' > "$checkout/tui/src/main.rs.orig"
+    touch -t 202601030000 "$checkout/tui/src/.DS_Store" "$checkout/tui/src/main.rs.orig"
+    cp "$checkout/tui/target/release/cs-tui" "$TEST_TMPDIR/home/.local/bin/cs-tui"
+    record_tui_origin "checkout $checkout"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "OK cs-tui: the installed picker matches the build $checkout/tui/target/release/cs-tui" \
+        "$(tui_row "$output")" "files cargo does not read leave the picker OK" || return 1
+}
+
+# A rebuild that never reached install.sh leaves the old picker in place.
+test_doctor_warns_when_the_installed_tui_differs_from_the_build() {
+    local checkout="$TEST_TMPDIR/tuico" output
+    make_tui_checkout "$checkout" 202601020000
+    echo 'new build' > "$checkout/tui/target/release/cs-tui"
+    touch -t 202601030000 "$checkout/tui/target/release/cs-tui"
+    echo 'old build' > "$TEST_TMPDIR/home/.local/bin/cs-tui"
+    record_tui_origin "checkout $checkout"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "WARN cs-tui: the installed $TEST_TMPDIR/home/.local/bin/cs-tui differs from the build $checkout/tui/target/release/cs-tui (run $checkout/install.sh)" \
+        "$(tui_row "$output")" "an uninstalled rebuild is named with the install" || return 1
+}
+
+test_doctor_tui_ok_when_the_installed_picker_is_the_fresh_build() {
+    local checkout="$TEST_TMPDIR/tuico" output
+    make_tui_checkout "$checkout" 202601020000
+    echo 'new build' > "$checkout/tui/target/release/cs-tui"
+    touch -t 202601030000 "$checkout/tui/target/release/cs-tui"
+    cp "$checkout/tui/target/release/cs-tui" "$TEST_TMPDIR/home/.local/bin/cs-tui"
+    record_tui_origin "checkout $checkout"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "OK cs-tui: the installed picker matches the build $checkout/tui/target/release/cs-tui" \
+        "$(tui_row "$output")" "a fresh build, installed, is OK" || return 1
+}
+
+# install.sh ships bin/cs-tui when it is newer than the cargo build, so that
+# is the build the installed picker is held to: install.sh, the advice the
+# warning gives, must be able to clear it.
+test_doctor_tui_holds_the_picker_to_the_build_install_sh_ships() {
+    local checkout="$TEST_TMPDIR/tuico" output
+    make_tui_checkout "$checkout" 202601020000
+    echo 'cargo build' > "$checkout/tui/target/release/cs-tui"
+    touch -t 202601030000 "$checkout/tui/target/release/cs-tui"
+    echo 'copied build' > "$checkout/bin/cs-tui"
+    touch -t 202601040000 "$checkout/bin/cs-tui"
+    cp "$checkout/bin/cs-tui" "$TEST_TMPDIR/home/.local/bin/cs-tui"
+    record_tui_origin "checkout $checkout"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "OK cs-tui: the installed picker matches the build $checkout/bin/cs-tui" \
+        "$(tui_row "$output")" "the newer bin/cs-tui is the build install.sh ships" || return 1
+}
+
+# A source directory doctor cannot read is said so, and the run goes on to
+# its summary.
+test_doctor_tui_names_a_source_tree_it_cannot_read() {
+    local checkout="$TEST_TMPDIR/tuico" output
+    make_tui_checkout "$checkout" 202601020000
+    mkdir -p "$checkout/tui/src/locked"
+    echo 'build' > "$checkout/tui/target/release/cs-tui"
+    touch -t 202601030000 "$checkout/tui/target/release/cs-tui"
+    cp "$checkout/tui/target/release/cs-tui" "$TEST_TMPDIR/home/.local/bin/cs-tui"
+    record_tui_origin "checkout $checkout"
+    chmod 000 "$checkout/tui/src/locked"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    chmod 755 "$checkout/tui/src/locked"
+    assert_eq "WARN cs-tui: could not read the TUI source under $checkout/tui to compare it with the build $checkout/tui/target/release/cs-tui" \
+        "$(tui_row "$output")" "an unreadable source tree is named, not passed" || return 1
+    assert_output_contains "$output" "Complete with [1-9][0-9]* warning(s)\." "doctor ran to its summary" || return 1
+}
+
+# The record holds the checkout path whole, spaces and all, and the commands
+# the row gives are quoted so they paste.
+test_doctor_tui_reads_a_recorded_checkout_whose_path_holds_spaces() {
+    local checkout="$TEST_TMPDIR/tui co" output
+    make_tui_checkout "$checkout" 202601010000
+    echo 'old build' > "$checkout/tui/target/release/cs-tui"
+    touch -t 202601020000 "$checkout/tui/target/release/cs-tui"
+    touch -t 202601030000 "$checkout/tui/src/main.rs"
+    cp "$checkout/tui/target/release/cs-tui" "$TEST_TMPDIR/home/.local/bin/cs-tui"
+    record_tui_origin "checkout $checkout"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "WARN cs-tui: the TUI source under $checkout/tui changed after the build $checkout/tui/target/release/cs-tui, so the installed picker may be stale (run cargo build --release --manifest-path $TEST_TMPDIR/tui\\ co/tui/Cargo.toml, then $TEST_TMPDIR/tui\\ co/install.sh)" \
+        "$(tui_row "$output")" "a recorded path with a space is read whole and quoted in the advice" || return 1
+}
+
+# A checkout path with a control character in it (here an escape, which a
+# terminal obeys) prints in every row as cs prints any name (_printable_name):
+# the character as one "?". The advice commands keep the %q form, which
+# pastes back as the same path.
+test_doctor_tui_prints_a_control_character_in_the_recorded_path_as_a_question_mark() {
+    local checkout="$TEST_TMPDIR/co"$'\e'"[31mRED" output
+    local shown="$TEST_TMPDIR/co?[31mRED" quoted="\$'$TEST_TMPDIR/co\\E[31mRED'"
+    local installed="$TEST_TMPDIR/home/.local/bin/cs-tui"
+    make_tui_checkout "$checkout" 202601010000
+    echo 'old build' > "$checkout/tui/target/release/cs-tui"
+    touch -t 202601020000 "$checkout/tui/target/release/cs-tui"
+    touch -t 202601030000 "$checkout/tui/src/main.rs"
+    cp "$checkout/tui/target/release/cs-tui" "$installed"
+    record_tui_origin "checkout $checkout"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "WARN cs-tui: the TUI source under $shown/tui changed after the build $shown/tui/target/release/cs-tui, so the installed picker may be stale (run cargo build --release --manifest-path $quoted/tui/Cargo.toml, then $quoted/install.sh)" \
+        "$(tui_row "$output")" "a source change: the path's escape prints as ?" || return 1
+    touch -t 202601040000 "$checkout/tui/target/release/cs-tui"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "OK cs-tui: the installed picker matches the build $shown/tui/target/release/cs-tui" \
+        "$(tui_row "$output")" "a fresh build: the path's escape prints as ?" || return 1
+    echo 'other build' > "$installed"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "WARN cs-tui: the installed $installed differs from the build $shown/tui/target/release/cs-tui (run $quoted/install.sh)" \
+        "$(tui_row "$output")" "a differing picker: the path's escape prints as ?" || return 1
+    mkdir -p "$checkout/tui/src/locked"
+    chmod 000 "$checkout/tui/src/locked"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    chmod 755 "$checkout/tui/src/locked"
+    assert_eq "WARN cs-tui: could not read the TUI source under $shown/tui to compare it with the build $shown/tui/target/release/cs-tui" \
+        "$(tui_row "$output")" "an unreadable source: the path's escape prints as ?" || return 1
+    rm "$checkout/tui/Cargo.toml"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "NOTE cs-tui: not checked: $installed came from $shown, which holds no tui/Cargo.toml now; run ./install.sh from your checkout, or cs -update" \
+        "$(tui_row "$output")" "a checkout without its TUI: the path's escape prints as ?" || return 1
+}
+
+# install.sh writes the record as one line. A record of more lines is not
+# one install.sh wrote, so doctor takes no line of it for the checkout, even
+# a first line that names a checkout whose build is installed.
+test_doctor_tui_names_an_origin_record_of_more_than_one_line() {
+    local checkout="$TEST_TMPDIR/tuico" output
+    make_tui_checkout "$checkout" 202601020000
+    echo 'build' > "$checkout/tui/target/release/cs-tui"
+    touch -t 202601030000 "$checkout/tui/target/release/cs-tui"
+    cp "$checkout/tui/target/release/cs-tui" "$TEST_TMPDIR/home/.local/bin/cs-tui"
+    record_tui_origin "checkout $checkout"$'\n'"release"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "NOTE cs-tui: not checked: nothing in $TEST_TMPDIR/tui-deployed/.tui-origin says where $TEST_TMPDIR/home/.local/bin/cs-tui came from; the next ./install.sh from your checkout records it, and cs -update records it where a release picker exists for this platform (and replaces a checkout-built picker with the release one)" \
+        "$(tui_row "$output")" "a record of two lines: the not-understood line" || return 1
+    assert_eq "1" "$(grep -c 'cs-tui' <<< "$output")" "the line is one line" || return 1
+}
+
+# A recorded path that ends in a slash names the same checkout, and its rows
+# join the path to tui/ with one slash.
+test_doctor_tui_reads_a_recorded_checkout_path_that_ends_in_a_slash() {
+    local checkout="$TEST_TMPDIR/tuico" output
+    make_tui_checkout "$checkout" 202601020000
+    echo 'build' > "$checkout/tui/target/release/cs-tui"
+    touch -t 202601030000 "$checkout/tui/target/release/cs-tui"
+    cp "$checkout/tui/target/release/cs-tui" "$TEST_TMPDIR/home/.local/bin/cs-tui"
+    record_tui_origin "checkout $checkout/"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "OK cs-tui: the installed picker matches the build $checkout/tui/target/release/cs-tui" \
+        "$(tui_row "$output")" "a trailing slash in the record: one slash in the row" || return 1
+}
+
+# A worktree or another clone at the same version has its own build. Doctor
+# run from there holds the picker to the checkout the install recorded, not
+# to the tree it stands in.
+test_doctor_tui_judges_the_recorded_checkout_not_the_one_it_runs_in() {
+    local checkout="$TEST_TMPDIR/tuico" other="$TEST_TMPDIR/worktree" output
+    make_tui_checkout "$checkout" 202601020000
+    echo 'installed build' > "$checkout/tui/target/release/cs-tui"
+    touch -t 202601030000 "$checkout/tui/target/release/cs-tui"
+    cp "$checkout/tui/target/release/cs-tui" "$TEST_TMPDIR/home/.local/bin/cs-tui"
+    make_tui_checkout "$other" 202601020000
+    echo 'feature build' > "$other/tui/target/release/cs-tui"
+    touch -t 202601030000 "$other/tui/target/release/cs-tui"
+    record_tui_origin "checkout $checkout"
+    output=$(doctor_from "$other")
+    assert_eq "OK cs-tui: the installed picker matches the build $checkout/tui/target/release/cs-tui" \
+        "$(tui_row "$output")" "a same-version tree's own build is not the installed picker's" || return 1
+}
+
+# A release-asset install has no checkout to hold the picker to, even when
+# doctor runs in a same-version clone with a build of its own.
+test_doctor_tui_silent_for_a_release_picker() {
+    local checkout="$TEST_TMPDIR/tuico" output
+    make_tui_checkout "$checkout" 202601020000
+    echo 'local build' > "$checkout/tui/target/release/cs-tui"
+    touch -t 202601010000 "$checkout/tui/target/release/cs-tui"
+    echo 'release asset' > "$TEST_TMPDIR/home/.local/bin/cs-tui"
+    record_tui_origin "release"
+    output=$(doctor_from "$checkout")
+    assert_eq "" "$(tui_row "$output")" "a release picker: no cs-tui row" || return 1
+    assert_output_contains "$output" "Deploy drift" "doctor ran in the same-version clone" || return 1
+}
+
+# An install that predates the record, or one that placed no picker over an
+# earlier one, leaves nothing saying where the picker came from: one line
+# says it was not checked and which install writes the record: ./install.sh
+# from a checkout, or cs -update where a release picker exists.
+test_doctor_tui_names_a_missing_origin_record() {
+    local output
+    mkdir -p "$TEST_TMPDIR/home/.local/bin" "$TEST_TMPDIR/tui-deployed"
+    echo 'picker' > "$TEST_TMPDIR/home/.local/bin/cs-tui"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "NOTE cs-tui: not checked: nothing in $TEST_TMPDIR/tui-deployed/.tui-origin says where $TEST_TMPDIR/home/.local/bin/cs-tui came from; the next ./install.sh from your checkout records it, and cs -update records it where a release picker exists for this platform (and replaces a checkout-built picker with the release one)" \
+        "$(tui_row "$output")" "no record: one neutral line naming the fix" || return 1
+}
+
+test_doctor_tui_names_an_origin_record_it_does_not_understand() {
+    local output
+    mkdir -p "$TEST_TMPDIR/home/.local/bin"
+    echo 'picker' > "$TEST_TMPDIR/home/.local/bin/cs-tui"
+    record_tui_origin "checkout relative/path"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "NOTE cs-tui: not checked: nothing in $TEST_TMPDIR/tui-deployed/.tui-origin says where $TEST_TMPDIR/home/.local/bin/cs-tui came from; the next ./install.sh from your checkout records it, and cs -update records it where a release picker exists for this platform (and replaces a checkout-built picker with the release one)" \
+        "$(tui_row "$output")" "a record that names no absolute checkout or release: the same line" || return 1
+}
+
+# The checkout the picker came from was deleted, or no longer holds the TUI:
+# there is no build to hold the picker to, and the fix is an install from the
+# checkout in use now, or cs -update.
+test_doctor_tui_names_a_recorded_checkout_without_its_tui() {
+    local checkout="$TEST_TMPDIR/tuico" output
+    make_tui_checkout "$checkout" 202601020000
+    echo 'build' > "$checkout/tui/target/release/cs-tui"
+    touch -t 202601030000 "$checkout/tui/target/release/cs-tui"
+    cp "$checkout/tui/target/release/cs-tui" "$TEST_TMPDIR/home/.local/bin/cs-tui"
+    record_tui_origin "checkout $checkout"
+    rm "$checkout/tui/Cargo.toml"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "NOTE cs-tui: not checked: $TEST_TMPDIR/home/.local/bin/cs-tui came from $checkout, which holds no tui/Cargo.toml now; run ./install.sh from your checkout, or cs -update" \
+        "$(tui_row "$output")" "a recorded checkout without its TUI: one neutral line" || return 1
+    rm -rf "$checkout"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "NOTE cs-tui: not checked: $TEST_TMPDIR/home/.local/bin/cs-tui came from $checkout, which holds no tui/Cargo.toml now; run ./install.sh from your checkout, or cs -update" \
+        "$(tui_row "$output")" "a recorded checkout that is gone: the same line" || return 1
+}
+
+# install.sh keeps a symlink at ~/.local/bin/cs-tui that points at content it
+# did not write, so whatever the record says, the picker is the user's own.
+test_doctor_tui_silent_for_a_picker_that_is_a_symlink() {
+    local checkout="$TEST_TMPDIR/tuico" output
+    make_tui_checkout "$checkout" 202601020000
+    echo 'build' > "$checkout/tui/target/release/cs-tui"
+    touch -t 202601030000 "$checkout/tui/target/release/cs-tui"
+    echo 'own picker' > "$TEST_TMPDIR/own-picker"
+    ln -s "$TEST_TMPDIR/own-picker" "$TEST_TMPDIR/home/.local/bin/cs-tui"
+    record_tui_origin "checkout $checkout"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "" "$(tui_row "$output")" "the user's own linked picker: no cs-tui row" || return 1
+}
+
+# A recorded checkout with no build (cargo clean, or bin/cs-tui deleted) has
+# nothing to hold the picker to: doctor cannot tell, so it says nothing.
+test_doctor_tui_silent_without_a_build_in_the_checkout() {
+    local checkout="$TEST_TMPDIR/tuico" output
+    make_tui_checkout "$checkout" 202601020000
+    echo 'some picker' > "$TEST_TMPDIR/home/.local/bin/cs-tui"
+    touch -t 202601010000 "$TEST_TMPDIR/home/.local/bin/cs-tui"
+    record_tui_origin "checkout $checkout"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "" "$(tui_row "$output")" "no build: no cs-tui row" || return 1
+}
+
+test_doctor_tui_silent_when_no_picker_is_installed() {
+    local checkout="$TEST_TMPDIR/tuico" output
+    make_tui_checkout "$checkout" 202601020000
+    echo 'old build' > "$checkout/tui/target/release/cs-tui"
+    touch -t 202601010000 "$checkout/tui/target/release/cs-tui"
+    output=$(doctor_from "$TEST_TMPDIR/elsewhere")
+    assert_eq "" "$(tui_row "$output")" "nothing installed and no record: no cs-tui row" || return 1
 }
 
 test_doctor_warns_on_version_mismatch() {
@@ -629,6 +1040,80 @@ test_doctor_skips_inline_shell_hook_commands() {
         "inline shell-snippet hook commands must not be flagged as missing files" || return 1
 }
 
+# Install and uninstall keep a hook event whose value is not a list, and an
+# entry or a hook in an event's list that is not an object: they are the
+# user's. Every row that reads the hook events reads past them to cs's own
+# registrations, wherever they sit, and the run reaches its summary. Cases:
+# a string event before cs's events, the same after them, and cs's events
+# holding entries and hooks that are not objects.
+test_doctor_reads_past_hook_events_and_entries_that_are_not_objects() {
+    local fake_claude="$TEST_TMPDIR/claude-nonlist" fake_hooks="$TEST_TMPDIR/hooks-nonlist"
+    local id="11111111-2222-3333-4444-555555555555" case_name output rc
+    mkdir -p "$fake_claude" "$fake_hooks"
+    : > "$fake_hooks/session-start.sh"
+    : > "$fake_hooks/autosave-commits.sh"
+    chmod +x "$fake_hooks/session-start.sh" "$fake_hooks/autosave-commits.sh"
+    for case_name in string-event-first string-event-last entries-not-objects; do
+        jq -n --arg case "$case_name" --arg start "$fake_hooks/session-start.sh" \
+            --arg autosave "$fake_hooks/autosave-commits.sh" '
+            {SessionStart: [{hooks: [{type: "command", command: $start}]}],
+             PostToolUse: [{matcher: "Write|Edit", hooks: [{type: "command", command: $autosave}]}]} as $cs
+            | {hooks: (
+                if $case == "string-event-first" then {Notification: "not-a-list"} + $cs
+                elif $case == "string-event-last" then $cs + {Notification: "not-a-list"}
+                else {SessionStart: [{hooks: ["bare", {type: "command", command: $start}]}],
+                      PostToolUse: ["user-entry", {matcher: "Write|Edit", hooks: [{type: "command", command: $autosave}]}]}
+                end)}' > "$fake_claude/settings.json"
+        rc=0
+        output=$(CLAUDE_CODE_SESSION_ID="$id" CS_CLAUDE_DIR="$fake_claude" CS_HOOKS_DIR="$fake_hooks" \
+            "$CS_BIN" -doctor 2>&1) || rc=$?
+        assert_output_contains "$output" "Hooks: all registered in settings.json" \
+            "$case_name: cs's hooks are found registered" || { echo "$output"; return 1; }
+        assert_output_contains "$output" "Hook paths: all registered hooks resolve to existing files" \
+            "$case_name: the hook paths row reads every registration" || { echo "$output"; return 1; }
+        assert_output_contains "$output" "Audit: 2 hooks, 0 MCPs, 0 perm rules, 0 env vars in settings.json" \
+            "$case_name: the audit counts the two hooks" || { echo "$output"; return 1; }
+        assert_output_contains "$output" "Shadow ref: no snapshot for this conversation yet (autosave runs on Edit/Write)" \
+            "$case_name: autosave's registration is found" || { echo "$output"; return 1; }
+        # No statusLine in the fixture is always a WARN, so the summary is
+        # the warnings line.
+        assert_eq "0" "$rc" "$case_name: doctor's exit status" || { echo "$output"; return 1; }
+        assert_output_contains "$(tail -n 1 <<< "$output")" "^Complete with [0-9]* warning(s)\.$" \
+            "$case_name: doctor runs to its summary" || { echo "$output"; return 1; }
+    done
+}
+
+# A jq run that fails on a settings file that parses is reported on the row
+# that ran it, and doctor goes on to its summary. The fake jq fails every
+# filter that reads the hook events and runs the real jq for the rest.
+test_doctor_reports_a_failed_read_of_the_hook_events() {
+    local fake_claude="$TEST_TMPDIR/claude-jqfail" fake_hooks="$TEST_TMPDIR/hooks-jqfail"
+    local fake_bin="$TEST_TMPDIR/jqfail-bin" real_jq id="11111111-2222-3333-4444-555555555555" output
+    real_jq=$(command -v jq)
+    mkdir -p "$fake_claude" "$fake_hooks" "$fake_bin"
+    : > "$fake_hooks/session-start.sh"
+    chmod +x "$fake_hooks/session-start.sh"
+    jq -n --arg start "$fake_hooks/session-start.sh" \
+        '{hooks: {SessionStart: [{hooks: [{type: "command", command: $start}]}]}}' > "$fake_claude/settings.json"
+    printf '#!/bin/sh\ncase "$*" in *.hooks*) echo "jq: error: injected" >&2; exit 5 ;; esac\nexec "%s" "$@"\n' \
+        "$real_jq" > "$fake_bin/jq"
+    chmod +x "$fake_bin/jq"
+    output=$(PATH="$fake_bin:$PATH" CLAUDE_CODE_SESSION_ID="$id" CS_CLAUDE_DIR="$fake_claude" \
+        CS_HOOKS_DIR="$fake_hooks" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" "Settings: $fake_claude/settings.json is valid JSON" \
+        "positive control: the parse check runs the real jq" || { echo "$output"; return 1; }
+    assert_output_contains "$output" "Hooks: cannot read the hook events in $fake_claude/settings.json; registration unknown" \
+        "the registration row names the failed read" || { echo "$output"; return 1; }
+    assert_output_contains "$output" "Hook paths: cannot read the hook events in $fake_claude/settings.json" \
+        "the hook paths row names the failed read" || { echo "$output"; return 1; }
+    assert_output_contains "$output" "Audit: cannot count the hooks, MCPs, permission rules and env vars in $fake_claude/settings.json" \
+        "the audit row names the failed read" || { echo "$output"; return 1; }
+    assert_output_contains "$output" "Shadow ref: cannot read the PostToolUse hooks in $fake_claude/settings.json; autosave's registration unknown" \
+        "the shadow ref row names the failed read" || { echo "$output"; return 1; }
+    assert_output_contains "$(tail -n 1 <<< "$output")" "^Failed: [0-9]*  Warnings: [0-9]*$" \
+        "doctor runs to its summary" || { echo "$output"; return 1; }
+}
+
 test_doctor_statusline_ok_when_registered_and_executable() {
     local fake_claude="$TEST_TMPDIR/sl-claude"
     local fake_bin="$TEST_TMPDIR/sl-bin"
@@ -813,6 +1298,37 @@ test_doctor_statusline_names_context_gating_for_foreign_statusline() {
         || { echo "  FAIL: a non-cs statusline leaves gating inert — WARN, not OK"; return 1; }
 }
 
+# A foreign status line can chain to cs-statusline (a bridge that runs the
+# original), so inside a session the evidence decides: a context-pct written
+# within the heartbeat window means the gates are fed, whatever the command.
+test_doctor_statusline_judges_a_foreign_command_by_a_fresh_context_pct() {
+    local fake_claude="$TEST_TMPDIR/sl-claude-bridge"
+    local cmd="$TEST_TMPDIR/bridge/statusline-bridge.sh"
+    local pct="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/context-pct"
+    mkdir -p "$fake_claude" "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local"
+    printf '{"statusLine":{"command":"%s"}}\n' "$cmd" > "$fake_claude/settings.json"
+    printf '61\n' > "$pct"
+    perl -e '$t = time - 60; utime $t, $t, $ARGV[0] or die' "$pct"
+    local output line
+    output=$(CS_CLAUDE_DIR="$fake_claude" "$CS_BIN" -doctor 2>&1) || true
+    line=$(printf '%s\n' "$output" | grep 'Statusline:' | sed "s/$(printf '\033')\\[[0-9;]*m//g")
+    assert_eq "  [ OK ] Statusline: context-pct written 1 min ago through $cmd" "$line" \
+        "a fresh context-pct under a foreign command is an OK naming its age" || return 1
+    # Past the heartbeat window the evidence is gone: back to the hedged WARN.
+    perl -e '$t = time - 1200; utime $t, $t, $ARGV[0] or die' "$pct"
+    output=$(CS_CLAUDE_DIR="$fake_claude" "$CS_BIN" -doctor 2>&1) || true
+    line=$(printf '%s\n' "$output" | grep 'Statusline:' | sed "s/$(printf '\033')\\[[0-9;]*m//g")
+    assert_eq "  [WARN] Statusline: using a non-cs status line ($cmd) — context-pct is never written, so the rotation nudge and the queue context breaker stay inert, unless it chains to cs-statusline" "$line" \
+        "a stale context-pct leaves the hedged WARN" || return 1
+    # A fresh but empty file (a teammate's statusline touches it without a
+    # reading) feeds no gate: the hedged WARN again.
+    : > "$pct"
+    output=$(CS_CLAUDE_DIR="$fake_claude" "$CS_BIN" -doctor 2>&1) || true
+    line=$(printf '%s\n' "$output" | grep 'Statusline:' | sed "s/$(printf '\033')\\[[0-9;]*m//g")
+    assert_eq "  [WARN] Statusline: using a non-cs status line ($cmd) — context-pct is never written, so the rotation nudge and the queue context breaker stay inert, unless it chains to cs-statusline" "$line" \
+        "a fresh context-pct holding no reading leaves the hedged WARN" || return 1
+}
+
 test_doctor_subagent_statusline_ok_when_registered_and_executable() {
     local fake_claude="$TEST_TMPDIR/ssl-claude"
     local fake_bin="$TEST_TMPDIR/ssl-bin"
@@ -900,6 +1416,36 @@ test_doctor_warns_on_stale_spawn_brief() {
     output=$(CS_TMUX_BIN="$(_doctor_tmux_fake '' '')" "$CS_BIN" -doctor 2>&1) || true
     assert_output_contains "$output" "gone.brief.md.stale" \
         "doctor should name the aged-out brief beside its seed" || return 1
+}
+
+# A cs -spawn killed before it published leaves its dot-named staging file.
+# No launch reads it and nothing else removes it, so the doctor names it.
+test_doctor_warns_on_abandoned_spawn_staging() {
+    mkdir -p "$CS_SESSIONS_ROOT/.spawn"
+    printf 'killed\n' > "$CS_SESSIONS_ROOT/.spawn/.gone.seed.Ab12Cd"
+    touch -t 202401010000 "$CS_SESSIONS_ROOT/.spawn/.gone.seed.Ab12Cd"
+    local output
+    output=$(CS_TMUX_BIN="$(_doctor_tmux_fake '' '')" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" ".gone.seed.Ab12Cd" \
+        "doctor should name the staging file an interrupted spawn left" || return 1
+}
+
+# An open killed outright (no trap runs) leaves the seed it claimed under
+# .<name>.seed.claim.<pid>. The doctor names it once that pid is gone, and
+# never a claim an open still waiting at the ask holds.
+test_doctor_warns_on_a_claimed_seed_whose_open_is_gone() {
+    mkdir -p "$CS_SESSIONS_ROOT/.spawn"
+    local dead
+    sh -c 'exit 0' & dead=$!
+    wait "$dead"
+    printf 'claimed\n' > "$CS_SESSIONS_ROOT/.spawn/.gone.seed.claim.$dead"
+    printf 'asking\n' > "$CS_SESSIONS_ROOT/.spawn/.live.seed.claim.$$"
+    local output
+    output=$(CS_TMUX_BIN="$(_doctor_tmux_fake '' '')" "$CS_BIN" -doctor 2>&1) || true
+    assert_output_contains "$output" ".gone.seed.claim.$dead" \
+        "doctor should name the seed a killed open claimed" || return 1
+    assert_output_not_contains "$output" ".live.seed.claim.$$" \
+        "doctor should leave a live open's claim alone" || return 1
 }
 
 test_doctor_warns_on_orphaned_spawn_seed() {
@@ -1015,6 +1561,7 @@ run_test test_doctor_subcommand_exists
 run_test test_doctor_runs_default_checks_from_session
 run_test test_doctor_reports_pass_for_healthy_session
 run_test test_doctor_warns_on_a_narrative_over_budget
+run_test test_doctor_names_a_narrative_over_budget_as_a_plain_name
 run_test test_doctor_reads_a_leading_zero_budget_as_decimal
 run_test test_doctor_reports_ok_when_narratives_fit
 run_test test_doctor_survives_an_unreadable_narrative
@@ -1023,6 +1570,8 @@ run_test test_doctor_exits_nonzero_on_failure
 run_test test_doctor_completes_when_the_deploy_stamp_is_absent
 run_test test_doctor_drift_ignores_a_checkout_that_did_not_produce_the_install
 run_test test_doctor_warns_on_hook_drift
+run_test test_doctor_warns_on_wrap_pass_drift
+run_test test_doctor_drift_advice_follows_whose_the_deployed_copy_is
 run_test test_doctor_warns_on_undeployed_hook
 run_test test_doctor_drift_silent_when_in_sync
 run_test test_doctor_warns_on_mod_drift
@@ -1030,6 +1579,26 @@ run_test test_doctor_drift_skipped_outside_checkout
 run_test test_doctor_warns_on_skill_script_drift
 run_test test_doctor_warns_on_skill_drift
 run_test test_doctor_warns_on_codex_skill_drift
+run_test test_doctor_tui_warns_when_a_rust_source_changed_after_the_build
+run_test test_doctor_tui_warns_when_cargo_toml_changed_after_the_build
+run_test test_doctor_tui_warns_when_cargo_lock_changed_after_the_build
+run_test test_doctor_tui_ok_with_a_stray_file_under_src_newer_than_the_build
+run_test test_doctor_warns_when_the_installed_tui_differs_from_the_build
+run_test test_doctor_tui_ok_when_the_installed_picker_is_the_fresh_build
+run_test test_doctor_tui_holds_the_picker_to_the_build_install_sh_ships
+run_test test_doctor_tui_names_a_source_tree_it_cannot_read
+run_test test_doctor_tui_reads_a_recorded_checkout_whose_path_holds_spaces
+run_test test_doctor_tui_prints_a_control_character_in_the_recorded_path_as_a_question_mark
+run_test test_doctor_tui_names_an_origin_record_of_more_than_one_line
+run_test test_doctor_tui_reads_a_recorded_checkout_path_that_ends_in_a_slash
+run_test test_doctor_tui_judges_the_recorded_checkout_not_the_one_it_runs_in
+run_test test_doctor_tui_silent_for_a_release_picker
+run_test test_doctor_tui_names_a_missing_origin_record
+run_test test_doctor_tui_names_an_origin_record_it_does_not_understand
+run_test test_doctor_tui_names_a_recorded_checkout_without_its_tui
+run_test test_doctor_tui_silent_for_a_picker_that_is_a_symlink
+run_test test_doctor_tui_silent_without_a_build_in_the_checkout
+run_test test_doctor_tui_silent_when_no_picker_is_installed
 run_test test_doctor_warns_on_version_mismatch
 run_test test_doctor_version_silent_without_stamp
 run_test test_doctor_runs_without_session
@@ -1044,6 +1613,8 @@ run_test test_doctor_passes_when_all_settings_hooks_resolve
 run_test test_doctor_settings_hooks_resolve_handles_no_hooks_section
 run_test test_doctor_settings_hooks_resolve_expands_tilde
 run_test test_doctor_skips_inline_shell_hook_commands
+run_test test_doctor_reads_past_hook_events_and_entries_that_are_not_objects
+run_test test_doctor_reports_a_failed_read_of_the_hook_events
 run_test test_doctor_statusline_ok_when_registered_and_executable
 run_test test_doctor_statusline_fails_when_binary_missing
 run_test test_doctor_statusline_caps_row_names_the_answer_or_the_ask
@@ -1052,6 +1623,7 @@ run_test test_doctor_rotate_mod_row_observes_execution_not_presence
 run_test test_doctor_statusline_no_fail_when_not_registered
 run_test test_doctor_statusline_names_context_gating_when_absent
 run_test test_doctor_statusline_names_context_gating_for_foreign_statusline
+run_test test_doctor_statusline_judges_a_foreign_command_by_a_fresh_context_pct
 run_test test_doctor_subagent_statusline_ok_when_registered_and_executable
 run_test test_doctor_subagent_statusline_fails_when_binary_missing
 run_test test_doctor_subagent_statusline_no_fail_when_not_registered
@@ -1061,6 +1633,8 @@ run_test test_doctor_token_cost_handles_no_transcripts
 run_test test_doctor_warns_on_stale_spawn_seeds
 run_test test_doctor_warns_on_stale_spawn_brief
 run_test test_doctor_completes_after_spawn_warning
+run_test test_doctor_warns_on_abandoned_spawn_staging
+run_test test_doctor_warns_on_a_claimed_seed_whose_open_is_gone
 run_test test_doctor_warns_on_orphaned_spawn_seed
 run_test test_doctor_spawn_ok_when_seeds_clean
 run_test test_doctor_warns_on_dangling_spawned_by
@@ -1097,6 +1671,25 @@ test_doctor_fails_on_unparseable_settings() {
         "an unreadable settings file is a failure, not a warning" || return 1
     assert_output_not_contains "$output" "0 hooks, 0 MCPs" \
         "counts from a failed parse must not be reported as an audit result" || return 1
+}
+
+# Doctor reads neither settings.json nor keybindings.json when it is not a
+# regular file (here a FIFO each): reading one waits for a writer that never
+# comes. Each gets a row, as a file it cannot parse does, and doctor finishes.
+test_doctor_names_settings_and_keybindings_that_are_not_regular_files() {
+    local cfg="$TEST_TMPDIR/claude-fifo" xdg="$TEST_TMPDIR/xdg-fifo" output rc=0
+    mkdir -p "$cfg" "$xdg"
+    mkfifo "$cfg/settings.json" "$cfg/keybindings.json"
+    _run_bounded 60 env CS_CLAUDE_DIR="$cfg" CLAUDE_CONFIG_DIR="$cfg" XDG_CONFIG_HOME="$xdg" "$CS_BIN" -doctor \
+        > "$TEST_TMPDIR/doctor-fifo.out" 2>&1 || rc=$?
+    output=$(cat "$TEST_TMPDIR/doctor-fifo.out")
+    assert_eq "1" "$rc" "doctor exit status (142: still running after 60 s)" || { echo "$output"; return 1; }
+    assert_output_contains "$output" "FAIL.*Settings: $cfg/settings\.json is not a regular file, so cs did not read it$" \
+        "the settings.json fifo gets a row" || { echo "$output"; return 1; }
+    assert_output_contains "$output" "WARN.*Rotate/wrap keys: $cfg/keybindings\.json is unparseable (not JSON with a \"bindings\" array)$" \
+        "the keybindings.json fifo gets a row" || { echo "$output"; return 1; }
+    [ -p "$cfg/settings.json" ] && [ -p "$cfg/keybindings.json" ] \
+        || { echo "  FAIL: the fifos are not left as they were"; return 1; }
 }
 
 test_doctor_does_not_accept_a_hook_named_only_in_a_permission_rule() {
@@ -1259,6 +1852,7 @@ EOF
         "a registration after an invalid matcher must still be read" || return 1
 }
 run_test test_doctor_fails_on_unparseable_settings
+run_test test_doctor_names_settings_and_keybindings_that_are_not_regular_files
 run_test test_doctor_does_not_accept_a_hook_named_only_in_a_permission_rule
 run_test test_doctor_checks_the_callers_shadow_ref_not_the_recorded_lead
 run_test test_doctor_falls_back_to_the_recorded_id_not_the_launch_id
@@ -1428,8 +2022,20 @@ test_doctor_reports_a_stale_migration_stamp() {
         "a stale stamp names what changed and the reset" || return 1
 }
 
+# A worktree open never migrates, so it never stamps: its row would say
+# "stale (no stamp)" forever. The worktree open knows itself by task_branch,
+# which a worktree whose state lost cs_base still carries.
+test_doctor_skips_the_migration_stamp_in_a_worktree_known_by_its_task_branch() {
+    local output
+    printf 'task_branch: feature/fix-auth\n' >> "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}/.cs/local/state"
+    output=$(CS_ACTOR=alice "$CS_BIN" -doctor 2>&1) || true
+    assert_output_not_contains "$output" "Migration stamp:" \
+        "a worktree has no migration stamp row" || return 1
+}
+
 run_test test_doctor_reports_a_current_migration_stamp
 run_test test_doctor_reports_a_stale_migration_stamp
+run_test test_doctor_skips_the_migration_stamp_in_a_worktree_known_by_its_task_branch
 
 
 # `cs <base> -integrate-feature` takes <git-dir>/cs/integrate.lock and the
@@ -1481,7 +2087,7 @@ test_doctor_reports_a_lock_held_by_another_users_process_as_held() {
     # the EPERM branch this test exists for. So the fixture is checked first,
     # and a run that cannot produce EPERM skips loudly instead of passing.
     local err
-    if err=$( LC_ALL=C; kill -0 1 2>&1 ); then
+    if err=$(env LC_ALL=C kill -0 1 2>&1); then
         echo "    SKIP: pid 1 is signalable here, so EPERM cannot be exercised"
         return 77
     fi
@@ -1506,22 +2112,27 @@ test_doctor_reports_a_lock_held_by_another_users_process_as_held() {
     assert_output_not_contains "$output" "rm -r" "no removal advice for a held lock" || return 1
 }
 
-# A pid the kernel refuses to answer about at all (here: one past the pid
-# range, which bash's kill rejects before the syscall) is neither held nor
-# gone; doctor must say so and must not tell the user to remove the lock.
+# A pid past the pid range is one the kernel can never answer about, so the
+# lock is neither held nor gone; doctor must say so and must not tell the
+# user to remove the lock. macOS's /bin/kill rejects such a number before the
+# syscall; procps kill on Linux truncates it to a pid_t and asks the kernel
+# about another process: 999999999999 answers for a pid that is gone, and
+# 4294967297 for pid 1, which is held.
 test_doctor_does_not_call_a_lock_stale_when_the_pid_cannot_be_checked() {
-    local sess="$TEST_TMPDIR/sess-nocheck"
-    mkdir -p "$sess/.cs/memory"
-    git -C "$sess" init -q
-    mkdir -p "$sess/.git/cs/integrate.lock"
-    echo 999999999999 > "$sess/.git/cs/integrate.lock/pid"
-    local output
-    output=$(CLAUDE_SESSION_DIR="$sess" CLAUDE_SESSION_META_DIR="$sess/.cs" \
-        CS_CLAUDE_DIR="$TEST_TMPDIR/claude-nc" "$CS_BIN" -doctor 2>&1) || true
-    assert_output_contains "$output" "cannot tell whether it is running" \
-        "a check with no answer is reported as unknown" || return 1
-    assert_output_not_contains "$output" "rm -r" "no removal advice on an unknown" || return 1
-    assert_output_not_contains "$output" "held by a running integrate" "and not held either" || return 1
+    local pid sess output
+    for pid in 999999999999 4294967297; do
+        sess="$TEST_TMPDIR/sess-nocheck-$pid"
+        mkdir -p "$sess/.cs/memory"
+        git -C "$sess" init -q
+        mkdir -p "$sess/.git/cs/integrate.lock"
+        echo "$pid" > "$sess/.git/cs/integrate.lock/pid"
+        output=$(CLAUDE_SESSION_DIR="$sess" CLAUDE_SESSION_META_DIR="$sess/.cs" \
+            CS_CLAUDE_DIR="$TEST_TMPDIR/claude-nc" "$CS_BIN" -doctor 2>&1) || true
+        assert_output_contains "$output" "cannot tell whether it is running" \
+            "a check with no answer is reported as unknown (pid $pid)" || return 1
+        assert_output_not_contains "$output" "rm -r" "no removal advice on an unknown (pid $pid)" || return 1
+        assert_output_not_contains "$output" "held by a running integrate" "and not held either (pid $pid)" || return 1
+    done
 }
 
 test_doctor_names_a_lock_whose_pid_is_dead_as_stale() {
@@ -1559,6 +2170,38 @@ test_doctor_does_not_treat_pid_zero_as_a_holder() {
     assert_output_contains "$output" "integrate.lock" "the lock is still reported" || return 1
 }
 
+# The liveness check runs kill -0 in a command substitution, a forked copy of
+# the shell, and a bash linked against libintl can die when it changes its own
+# locale there. The trace shows every locale assignment the shell made during
+# the whole doctor run; the C locale reaches kill as an argument of env. Each
+# verdict stays exact under every bash: a live holder is held, a reaped pid is
+# stale, and pid 1, which another user owns, is held through EPERM.
+test_doctor_checks_the_lock_holder_without_the_shell_assigning_its_own_locale() {
+    local sess="$TEST_TMPDIR/sess-tracelock" b pid want output own eperm=1 err
+    mkdir -p "$sess/.cs/memory"
+    git -C "$sess" init -q
+    mkdir -p "$sess/.git/cs/integrate.lock"
+    sh -c 'exit 0' & local dead=$!; wait "$dead"
+    if err=$(env LC_ALL=C kill -0 1 2>&1); then eperm=""; fi
+    case "$err" in *"Operation not permitted"*) ;; *) eperm="" ;; esac
+    for b in $(every_bash); do
+        for pid in "$$" "$dead" ${eperm:+1}; do
+            case "$pid" in
+                "$$")    want="integrate.lock held by a running integrate (pid $$)" ;;
+                "$dead") want="integrate.lock records pid $dead, which this process cannot see" ;;
+                *)       want="integrate.lock held by a running integrate (pid 1; signalling it is not permitted here" ;;
+            esac
+            echo "$pid" > "$sess/.git/cs/integrate.lock/pid"
+            output=$(CLAUDE_SESSION_DIR="$sess" CLAUDE_SESSION_META_DIR="$sess/.cs" \
+                CS_CLAUDE_DIR="$TEST_TMPDIR/claude-tl" "$b" -x "$CS_BIN" -doctor 2>"$TEST_TMPDIR/trace") || true
+            assert_output_contains "$output" "$want" "$b, pid $pid: the verdict" || return 1
+            own="$(shell_locale_assignments "$TEST_TMPDIR/trace")"
+            assert_eq "" "$own" "$b, pid $pid: doctor must not assign its own locale" || return 1
+        done
+    done
+    [ -n "$eperm" ] || { echo "    SKIP (EPERM cell): pid 1 is signalable here"; return 77; }
+}
+
 test_doctor_is_silent_with_no_integrate_lock() {
     local sess="$TEST_TMPDIR/sess-nolock"
     mkdir -p "$sess/.cs/memory"
@@ -1577,5 +2220,6 @@ run_test test_doctor_reports_a_lock_held_by_another_users_process_as_held
 run_test test_doctor_does_not_call_a_lock_stale_when_the_pid_cannot_be_checked
 run_test test_doctor_names_a_lock_whose_pid_is_dead_as_stale
 run_test test_doctor_is_silent_with_no_integrate_lock
+run_test test_doctor_checks_the_lock_holder_without_the_shell_assigning_its_own_locale
 
 report_results

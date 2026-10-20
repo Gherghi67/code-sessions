@@ -307,29 +307,33 @@ do_update() {
     echo ""
 
     local releases_url="${RELEASES_BASE}/download/v${remote_version}"
-    local tmpdir
-    tmpdir=$(mktemp -d)
+    # A global, not a local: the EXIT trap runs after do_update's frame may be
+    # gone, and it removes the dir however the update ends (an error() below,
+    # a failing installer under errexit, or the final exit).
+    _CS_UPDATE_TMPDIR=$(mktemp -d "${TMPDIR:-/tmp}/cs-update.XXXXXX") \
+        || error "Failed to create a temp dir for the update."
+    trap 'rm -rf "$_CS_UPDATE_TMPDIR"' EXIT
+    local tmpdir="$_CS_UPDATE_TMPDIR"
 
     # Download install.sh + checksum + signature from release assets
     curl -fsSL "$releases_url/install.sh" -o "$tmpdir/install.sh" || {
-        rm -rf "$tmpdir"; error "Failed to download installer."
+        error "Failed to download installer."
     }
     curl -fsSL "$releases_url/install.sh.sha256" -o "$tmpdir/install.sh.sha256" || {
-        rm -rf "$tmpdir"; error "Failed to download checksum."
+        error "Failed to download checksum."
     }
-    # Signature file is optional (best-effort)
-    curl -fsSL "$releases_url/install.sh.minisig" -o "$tmpdir/install.sh.minisig" 2>/dev/null
+    # Signature file is optional (best-effort): a release without one is
+    # checked by its checksum alone, so a failed fetch must not end the update.
+    curl -fsSL "$releases_url/install.sh.minisig" -o "$tmpdir/install.sh.minisig" 2>/dev/null || true
 
     # Verify checksum (hard gate)
     if ! verify_checksum "$tmpdir/install.sh" "$tmpdir/install.sh.sha256"; then
-        rm -rf "$tmpdir"
         error "Checksum verification failed. Update aborted."
     fi
 
     # Verify signature if minisign available (soft enhancement)
     if [ -f "$tmpdir/install.sh.minisig" ]; then
         if ! verify_signature "$tmpdir/install.sh" "$tmpdir/install.sh.minisig"; then
-            rm -rf "$tmpdir"
             error "Signature verification failed. Update aborted."
         fi
     fi
@@ -391,12 +395,17 @@ check_update_notify() {
     if [ -f "$UPDATE_CACHE" ]; then
         local cache_time cached_version
         read -r cache_time cached_version < "$UPDATE_CACHE" 2>/dev/null || true
+        # Digits only before the arithmetic below, which would evaluate any
+        # other token as an expression; anything else is no cache.
+        case "$cache_time" in *[!0-9]*) cache_time="" ;; esac
 
-        # If cache is fresh, use it
-        if [ -n "$cache_time" ] && [ $((now - cache_time)) -lt $UPDATE_CHECK_INTERVAL ]; then
+        # A fresh cache needs both fields: a line torn after the time names
+        # no version and answers nothing, so it reads as no cache.
+        if [ -n "$cache_time" ] && [ -n "$cached_version" ] \
+            && [ $((now - cache_time)) -lt $UPDATE_CHECK_INTERVAL ]; then
             cache_fresh=1
             # Set update available if cached version is newer
-            if [ -n "$cached_version" ] && version_greater "$cached_version" "$VERSION"; then
+            if version_greater "$cached_version" "$VERSION"; then
                 UPDATE_AVAILABLE="$cached_version"
             fi
         fi
@@ -408,8 +417,7 @@ check_update_notify() {
         remote_version=$(get_remote_version 2>/dev/null) || remote_version=""
 
         if [ -n "$remote_version" ]; then
-            # A release notice is optional; a cache failure must not block launch.
-            { echo "$now $remote_version" > "$UPDATE_CACHE"; } 2>/dev/null || true
+            cs_write_atomic "$UPDATE_CACHE" printf '%s %s\n' "$now" "$remote_version" || true
             if version_greater "$remote_version" "$VERSION"; then
                 UPDATE_AVAILABLE="$remote_version"
             fi

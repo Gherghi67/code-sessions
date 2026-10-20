@@ -9,6 +9,25 @@ source "$SCRIPT_DIR/test_lib.sh"
 # Tests
 # ============================================================================
 
+# .cs/memory is tracked, so a clone chooses a memory file's name and what it
+# says. The name can carry a terminal escape: a raw ESC or BEL byte, or
+# backslash text echo -e would turn into one. A result names the file as a
+# plain name, each character a plain name lacks replaced by _, and prints the
+# matched line with its control bytes deleted and its other text as written.
+# The clone chooses what .cs/README.md says too, so a line matched there is
+# printed the same way.
+test_search_names_a_memory_file_as_a_plain_name() {
+    create_test_session "plain-names"
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m output
+    printf 'needle \033]0;T\007 \\e[0m tail\n' > "$CS_SESSIONS_ROOT/plain-names/.cs/memory/n$bad.md"
+    printf 'readme needle \033[2J\007 \\e[0m end\n' >> "$CS_SESSIONS_ROOT/plain-names/.cs/README.md"
+    output=$("$CS_BIN" -search "needle" 2>&1)
+    assert_eq 'plain-names: .cs/README.md: 2:readme needle [2J \e[0m end
+plain-names: .cs/memory/n'"$shown"'.md: 1:needle ]0;T \e[0m tail' "$output" \
+        "the result names the file as a plain name and prints each line without control bytes" || return 1
+    assert_no_escape_bytes "$output" "no escape byte reaches the terminal" || return 1
+}
+
 test_search_finds_in_narrative() {
     create_test_session "project-alpha"
     echo "## PostgreSQL migration failed on staging server" > "$CS_SESSIONS_ROOT/project-alpha/.cs/memory/narrative.md"
@@ -116,6 +135,7 @@ echo ""
 
 run_test test_search_finds_in_narrative
 run_test test_search_finds_in_memory
+run_test test_search_names_a_memory_file_as_a_plain_name
 # A dash-prefixed query must be treated as a search term, not a grep option.
 test_search_dash_prefixed_query() {
     create_test_session "flags"

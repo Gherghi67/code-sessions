@@ -1179,6 +1179,29 @@ test_display_width_counts_codepoints_not_bytes() {
       assert_eq "4" "$_WIDTH" "a multibyte session name should count codepoints, not bytes" )
 }
 
+# The width is counted the same way under every bash and locale, and the
+# shell never changes its own locale for it: a bash linked against libintl
+# that sets a locale of its own inside a command substitution, with no locale
+# variable set, dies of SIGSEGV. Each cell is one fresh bash with one locale
+# setting, counting "café ✳" (six codepoints) inside $( ).
+test_display_width_leaves_the_shells_own_locale_alone() {
+    local b utf8 loc out own
+    utf8="$(utf8_locale)"
+    for b in $(every_bash); do
+        for loc in ${utf8:+"LC_ALL=$utf8"} LC_ALL=C none; do
+            [ "$loc" = none ] && loc=""
+            out=$(env -i PATH="$PATH" HOME="$TEST_TMPDIR" $loc "$b" -c '
+                CS_STATUSLINE_LIB=1 . "$1" 2>/dev/null
+                set -x
+                w=$(_display_width "$2"; printf "%s" "$_WIDTH")
+                printf "%s" "$w"' x "$SL" "$(printf 'caf\303\251 \342\234\263')" 2>"$TEST_TMPDIR/trace")
+            assert_eq "6" "$out" "$b ${loc:-with no locale}: the width of the name" || return 1
+            own="$(shell_locale_assignments "$TEST_TMPDIR/trace")"
+            assert_eq "" "$own" "$b ${loc:-with no locale} must not assign its own locale in _display_width" || return 1
+        done
+    done
+}
+
 test_parse_rgb_triplet_accepts_valid_and_rejects_malformed() {
     ( _load_sl_functions
       _parse_rgb_triplet "250;248;242"
@@ -1698,6 +1721,7 @@ run_test test_ctx_zero_vs_absent
 run_test test_unknown_segment_ignored
 run_test test_session_color_never_reaches_the_bar
 run_test test_display_width_counts_codepoints_not_bytes
+run_test test_display_width_leaves_the_shells_own_locale_alone
 run_test test_parse_rgb_triplet_accepts_valid_and_rejects_malformed
 
 # ============================================================================
@@ -2049,6 +2073,56 @@ test_shared_clock_normalizes_leading_zero_pin() {
     assert_file_contains "$lim" "stamped_at: 8$" "leading-zero pin normalized to base-10" || return 1
 }
 
+# The bar repaints on every Claude Code event and once a minute when idle, so
+# a claude still running after `cs -rm <name> --force` renders for a session
+# that is gone. The render stamps context-pct and limits only in a .cs that
+# is there, making the missing .cs/local in it; a removed session stays
+# removed. Rendered under the bash running this suite.
+test_render_never_recreates_a_removed_session() {
+    local fixture='{"session_name":"s","workspace":{"current_dir":"/tmp"},"context_window":{"used_percentage":42},"rate_limits":{"five_hour":{"used_percentage":10},"seven_day":{"used_percentage":20}}}'
+    mkdir -p "$CS_SESSIONS_ROOT/live/.cs"
+    printf '%s' "$fixture" | CLAUDE_SESSION_NAME=live "$BASH" "$SL" > /dev/null \
+        || { echo "  FAIL: the render for a live session failed"; return 1; }
+    assert_eq "42" "$(cat "$CS_SESSIONS_ROOT/live/.cs/local/context-pct" 2>/dev/null)" "a live session gets its context-pct" || return 1
+    assert_file_contains "$CS_SESSIONS_ROOT/live/.cs/local/limits" "^five_hour_used_pct: 10$" "a live session gets its limits" || return 1
+    printf '%s' "$fixture" | CLAUDE_SESSION_NAME=gone "$BASH" "$SL" > /dev/null \
+        || { echo "  FAIL: the render for a removed session failed"; return 1; }
+    assert_not_exists "$CS_SESSIONS_ROOT/gone" "the render does not make a removed session again" || return 1
+}
+
+# A hook or a second render can make .cs/local between a render's look for it
+# and its mkdir. A DEBUG trap loaded through BASH_ENV stands in for that
+# writer: before each mkdir of the render it makes the directory. The
+# directory is there, which is all the stamp needs: the render still writes
+# its reading, the context one and, in a render that carries only limits, the
+# limits one.
+test_render_counts_a_local_dir_another_writer_made_first() {
+    local seam="$TEST_TMPDIR/peer-seam.sh"
+    cat > "$seam" << 'SEAM'
+set -o functrace
+_cs_test_peer() {
+    case "$BASH_COMMAND" in mkdir\ *) ;; *) return 0 ;; esac
+    command mkdir "$CS_TEST_PEER_DIR" 2>/dev/null
+    : > "$CS_TEST_PEER_RAN"
+    return 0
+}
+trap _cs_test_peer DEBUG
+SEAM
+    mkdir -p "$CS_SESSIONS_ROOT/ctx/.cs" "$CS_SESSIONS_ROOT/lim/.cs"
+    printf '%s' '{"session_name":"s","workspace":{"current_dir":"/tmp"},"context_window":{"used_percentage":42}}' \
+        | CLAUDE_SESSION_NAME=ctx BASH_ENV="$seam" CS_TEST_PEER_RAN="$TEST_TMPDIR/peer-ran-ctx" \
+            CS_TEST_PEER_DIR="$CS_SESSIONS_ROOT/ctx/.cs/local" "$BASH" "$SL" > /dev/null \
+        || { echo "  FAIL: the context render failed"; return 1; }
+    assert_exists "$TEST_TMPDIR/peer-ran-ctx" "the second writer ran before the context render's mkdir" || return 1
+    assert_eq "42" "$(cat "$CS_SESSIONS_ROOT/ctx/.cs/local/context-pct" 2>/dev/null)" "the context reading is stamped" || return 1
+    printf '%s' '{"session_name":"s","workspace":{"current_dir":"/tmp"},"rate_limits":{"five_hour":{"used_percentage":10}}}' \
+        | CLAUDE_SESSION_NAME=lim BASH_ENV="$seam" CS_TEST_PEER_RAN="$TEST_TMPDIR/peer-ran-lim" \
+            CS_TEST_PEER_DIR="$CS_SESSIONS_ROOT/lim/.cs/local" "$BASH" "$SL" > /dev/null \
+        || { echo "  FAIL: the limits render failed"; return 1; }
+    assert_exists "$TEST_TMPDIR/peer-ran-lim" "the second writer ran before the limits render's mkdir" || return 1
+    assert_file_contains "$CS_SESSIONS_ROOT/lim/.cs/local/limits" "^five_hour_used_pct: 10$" "the limits reading is stamped" || return 1
+}
+
 # ============================================================================
 # Theme resolution: CS_TERM_THEME pin wins; else follow the terminal live
 # (macOS OS appearance, tty-safe) so a mid-session dark-mode switch is tracked;
@@ -2233,6 +2307,8 @@ run_test test_shared_clock_ignores_inherited_now
 run_test test_shared_clock_replaces_inherited_garbage
 run_test test_shared_clock_ignores_inherited_ready_flag
 run_test test_shared_clock_normalizes_leading_zero_pin
+run_test test_render_never_recreates_a_removed_session
+run_test test_render_counts_a_local_dir_another_writer_made_first
 run_test test_sl_theme_user_pin_overrides
 run_test test_sl_theme_non_macos_uses_frozen_launch_value
 run_test test_sl_theme_non_macos_defaults_dark
@@ -3938,13 +4014,17 @@ make_full_render_fixture() {
 # forks a dozen runs past Claude Code's limit and the tick is killed.
 test_warm_render_forks_only_the_interpreter_and_jq() {
     make_full_render_fixture
+    # Every cache ages against the render's own clock, so the renders share one
+    # pinned second: "warm" is a fact about that clock, not about how quickly
+    # this machine gets from one render to the next.
+    local now; now=$(date +%s)
     # What the bar shows without the shims, rendered from this same shell (a
     # pipeline would give it another parent and so another ancestry verdict).
     printf '%s' "$FULL_JSON" > "$TEST_TMPDIR/stdin.json"
-    bash "$SL" < "$TEST_TMPDIR/stdin.json" > "$TEST_TMPDIR/plain.txt" 2>/dev/null
+    CS_STATUSLINE_NOW="$now" bash "$SL" < "$TEST_TMPDIR/stdin.json" > "$TEST_TMPDIR/plain.txt" 2>/dev/null
     local plain; plain=$(cat "$TEST_TMPDIR/plain.txt")
-    count_render_forks "$FULL_JSON"   # the cold render fills the caches
-    count_render_forks "$FULL_JSON"
+    CS_STATUSLINE_NOW="$now" count_render_forks "$FULL_JSON"   # the cold render fills the caches
+    CS_STATUSLINE_NOW="$now" count_render_forks "$FULL_JSON"
     assert_eq "0" "$FORKS_RC" "the counted render exits cleanly" || return 1
     assert_eq "$plain" "$FORKS_OUT" "the counted render draws the same line" || return 1
     assert_output_contains_f "$FORKS_OUT" "main +1!1" "and the line carries the git segment" || return 1
@@ -3953,11 +4033,14 @@ test_warm_render_forks_only_the_interpreter_and_jq() {
     # been seen, or the shims were never installed and the count means nothing.
     grep -qx bash "$TEST_TMPDIR/forks" || { echo "  FAIL: the interpreter was not counted; shims missing"; return 1; }
     grep -qx jq "$TEST_TMPDIR/forks" || { echo "  FAIL: jq was not counted; shims missing"; return 1; }
-    # A bash without a builtin clock (3.2, macOS stock) forks date once for the
-    # render's shared clock; nothing else is allowed through.
-    local limit=2
-    bash -c 'printf "%(%s)T" -1' >/dev/null 2>&1 || limit=3
-    [ "$FORKS" -le "$limit" ] || { echo "  FAIL: warm render forked $FORKS external commands (limit $limit):"; sed 's/^/    /' "$TEST_TMPDIR/forks"; return 1; }
+    [ "$FORKS" -le 2 ] || { echo "  FAIL: warm render forked $FORKS external commands (limit 2):"; sed 's/^/    /' "$TEST_TMPDIR/forks"; return 1; }
+    # The clock itself, read for real: a bash without a builtin clock (3.2,
+    # macOS stock) forks date once for the render's shared clock, never once
+    # per reader. Only date is counted here, since this render's caches may
+    # have aged.
+    count_render_forks "$FULL_JSON"
+    local dates; dates=$(grep -cx date "$TEST_TMPDIR/forks" || true)
+    [ "$dates" -le 1 ] || { echo "  FAIL: a render on the real clock forked date $dates times (limit 1)"; return 1; }
 }
 
 run_test test_warm_render_forks_only_the_interpreter_and_jq
@@ -4189,6 +4272,57 @@ test_usage_refresher_never_walks_the_process_tree() {
 
 run_test test_usage_refresher_never_walks_the_process_tree
 
+# The walker's deadline reaches shell arithmetic, which runs a command
+# substitution held in an array subscript. PATH[...] is the payload because
+# set -u aborts on an unset array base before the subscript is expanded.
+_walk_deadline_payload() {  # marker
+    printf 'PATH[$(touch %s)]' "$1"
+}
+
+# The subagent bar sources this script in library mode, which walks in-process
+# at load, so a _SL_WALK_DEADLINE in its environment would reach the walk.
+test_an_inherited_walk_deadline_is_never_read() {
+    local marker="$TEST_TMPDIR/ran"
+    _make_ps_chain "2216:1"
+    export TMUX="/tmp/fake,2216,0" PATH="$TEST_TMPDIR/fakebin:$PATH"
+    printf '%s' '{"columns":80,"tasks":[]}' \
+        | _SL_WALK_DEADLINE="$(_walk_deadline_payload "$marker")" \
+            bash "$SCRIPT_DIR/../bin/cs-subagent-statusline" >/dev/null 2>&1
+    assert_not_exists "$marker" "an inherited _SL_WALK_DEADLINE must not run as code" || return 1
+}
+
+# A well-formed number inherited from the environment is ignored too: the
+# in-process walk reads ps directly, over a pipe, and only the detached walker
+# takes the deadline path, which writes ps's answer to a file.
+test_an_inherited_numeric_walk_deadline_is_ignored() {
+    local log="$TEST_TMPDIR/ps-stdout"
+    mkdir -p "$TEST_TMPDIR/fakebin"
+    printf '#!/bin/sh\nk=other; [ -p /dev/stdout ] && k=pipe\necho "$k" >> "%s"\necho "2216 1"\n' \
+        "$log" > "$TEST_TMPDIR/fakebin/ps"
+    chmod +x "$TEST_TMPDIR/fakebin/ps"
+    export TMUX="/tmp/fake,2216,0" PATH="$TEST_TMPDIR/fakebin:$PATH"
+    printf '%s' '{"columns":80,"tasks":[]}' \
+        | _SL_WALK_DEADLINE=5 bash "$SCRIPT_DIR/../bin/cs-subagent-statusline" >/dev/null 2>&1
+    assert_eq "pipe" "$(cat "$log" 2>/dev/null)" \
+        "the walk must read ps directly, not by an inherited deadline" || return 1
+}
+
+test_the_walk_reads_its_deadline_only_as_digits() {
+    local marker="$TEST_TMPDIR/ran"
+    ( _load_sl_functions
+      _make_ps_chain "500:2216 2216:1"
+      export PATH="$TEST_TMPDIR/fakebin:$PATH"
+      mkdir -p "$HOME/.cache/cs/tmux-walking"
+      _SL_WALK_DEADLINE="$(_walk_deadline_payload "$marker")"
+      _sl_tmux_walk 500 2216 2>/dev/null
+      assert_eq "0" "$?" "a walk with an unusable deadline still answers from ps" || return 1 )
+    assert_not_exists "$marker" "a non-numeric deadline must not run as code" || return 1
+}
+
+run_test test_an_inherited_walk_deadline_is_never_read
+run_test test_an_inherited_numeric_walk_deadline_is_ignored
+run_test test_the_walk_reads_its_deadline_only_as_digits
+
 # The org id is kept for ORG_CACHE_TTL under the config path, so an account
 # swap shows within five minutes and a render never walks the config twice in
 # that time.
@@ -4379,6 +4513,54 @@ test_teammate_heartbeat_does_not_reset_the_lead_cadence() {
 }
 
 run_test test_teammate_heartbeat_does_not_reset_the_lead_cadence
+
+# While git tracks the session's control files the hooks mark the session under
+# ~/.cache/cs/tracked (hooks/cs-resolve.sh), and the render adds, changes and
+# removes nothing in .cs/local: neither the context stamp nor the limits stamp.
+# The control render, unmarked, writes both, so the check is sensitive.
+test_render_writes_nothing_into_a_tracked_control_directory() {
+    export CLAUDE_SESSION_NAME=trackedsess
+    local sess="$CS_SESSIONS_ROOT/trackedsess" porcelain
+    local input='{"session_id":"lead","context_window":{"used_percentage":30},"rate_limits":{"five_hour":{"used_percentage":12,"resets_at":2000}},"workspace":{"current_dir":"/none"}}'
+    mkdir -p "$sess/.cs/local"
+    printf 'claude_session_id: lead\n' > "$sess/.cs/local/state"
+    git -C "$sess" init -q
+    git -C "$sess" add .cs/local/state
+    git -C "$sess" -c user.name=t -c user.email=t@example.com commit -q -m tracked
+    mkdir -p "$HOME/.cache/cs/tracked"
+    : > "$HOME/.cache/cs/tracked/trackedsess"
+    CS_STATUSLINE_NOW=1000 run_sl "$input" >/dev/null
+    porcelain=$(git -C "$sess" status --porcelain --ignored -- .cs/local)
+    assert_eq "" "$porcelain" "a marked session's control directory is left as git has it" || return 1
+    rm "$HOME/.cache/cs/tracked/trackedsess"
+    CS_STATUSLINE_NOW=1000 run_sl "$input" >/dev/null
+    assert_eq "30" "$(cat "$sess/.cs/local/context-pct" 2>/dev/null)" "unmarked, the render stamps the context" || return 1
+    assert_file_exists "$sess/.cs/local/limits" "and the limits" || return 1
+}
+
+run_test test_render_writes_nothing_into_a_tracked_control_directory
+
+# The mark is read under the rule hooks/cs-resolve.sh writes it by: a session
+# name that is empty or holds "/" is never marked, so it never reads as
+# tracked, whatever a path built from it happens to reach under
+# ~/.cache/cs/tracked. A plain name with its mark present is the control.
+test_tracked_mark_is_read_only_for_a_name_the_hooks_mark() {
+    ( _load_sl_functions
+      mkdir -p "$HOME/.cache/cs/tracked/grp"
+      : > "$HOME/.cache/cs/tracked/sess"
+      : > "$HOME/.cache/cs/tracked/grp/sess"
+      local rc
+      rc=0; CLAUDE_SESSION_NAME=sess _session_files_tracked || rc=$?
+      assert_eq "0" "$rc" "a plain name with its mark reads as tracked" || return 1
+      rc=0; CLAUDE_SESSION_NAME=grp/sess _session_files_tracked || rc=$?
+      assert_eq "1" "$rc" "a name holding / reads as not tracked" || return 1
+      rc=0; CLAUDE_SESSION_NAME=../tracked/sess _session_files_tracked || rc=$?
+      assert_eq "1" "$rc" "a name climbing out of the mark directory reads as not tracked" || return 1
+      rc=0; CLAUDE_SESSION_NAME='' _session_files_tracked || rc=$?
+      assert_eq "1" "$rc" "an empty name reads as not tracked" || return 1 )
+}
+
+run_test test_tracked_mark_is_read_only_for_a_name_the_hooks_mark
 
 
 # A config that yields no account (caught mid-rewrite, or malformed) leaves no

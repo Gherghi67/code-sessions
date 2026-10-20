@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# ABOUTME: Tests for skills/sweep/scripts/memory-index-guard.sh, the /sweep MEMORY.md rewrite guard
-# ABOUTME: Covers removed links, the byte budget, a missing snapshot, and restore
+# ABOUTME: Tests for skills/sweep/scripts/memory-index-guard.sh, the guard on /wrap's memory-pass MEMORY.md rewrites
+# ABOUTME: Covers removed and dangling pointers, the memory archive, the byte and line budgets, a missing snapshot, and restore
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=tests/test_lib.sh
@@ -8,7 +8,8 @@ source "$SCRIPT_DIR/test_lib.sh"
 
 GUARD="$SCRIPT_DIR/../skills/sweep/scripts/memory-index-guard.sh"
 
-# A session root holding a MEMORY.md with two pointers; the guard runs from it.
+# A session root holding a MEMORY.md with two pointers and the two entries
+# they name; the guard runs from it.
 _guard_session() {
     SESSION="$TEST_TMPDIR/session"
     mkdir -p "$SESSION/.cs/memory" "$SESSION/.cs/local"
@@ -17,6 +18,8 @@ _guard_session() {
 - [Alpha rule](feedback_alpha.md): never do alpha twice
 - [Beta fact](project_beta.md): beta only runs on Tuesdays
 EOF
+    : > "$SESSION/.cs/memory/feedback_alpha.md"
+    : > "$SESSION/.cs/memory/project_beta.md"
 }
 
 _guard() {  # subcommand...
@@ -34,9 +37,11 @@ test_check_fails_when_a_link_is_removed() {
         "check must name the link that was removed" || return 1
 }
 
-# Appends one pointer line padded so MEMORY.md ends at exactly $1 bytes.
+# Appends one pointer line padded so MEMORY.md ends at exactly $1 bytes, and
+# the entry it names.
 _pad_index_to() {  # bytes
     local head='- [Pad](project_pad.md): ' size fill
+    : > "$SESSION/.cs/memory/project_pad.md"
     size=$(wc -c < "$INDEX")
     fill=$(( $1 - size - ${#head} - 1 ))
     { printf '%s' "$head"; head -c "$fill" /dev/zero | tr '\0' x; printf '\n'; } >> "$INDEX"
@@ -52,6 +57,49 @@ test_check_fails_over_the_byte_budget() {
     assert_eq 1 "$rc" "check must fail one byte past the budget" || return 1
     assert_output_contains "$out" "over budget: 24401 bytes > 24400" \
         "check must print the size against the budget" || return 1
+}
+
+# Claude Code also stops loading MEMORY.md at a line limit, and every line
+# counts toward it: blank lines, headings, and a last line with no newline,
+# which wc -l would not count.
+test_check_fails_over_the_line_budget() {
+    _guard_session
+    _guard snapshot > /dev/null || return 1
+    local i out rc=0
+    for i in $(seq 1 97); do printf '\n## Heading %s\n' "$i"; done >> "$INDEX"
+    assert_eq 196 "$(wc -l < "$INDEX" | tr -d ' ')" "fixture must be 196 lines" || return 1
+    out=$(_guard check 2>&1) || rc=$?
+    assert_eq 0 "$rc" "check must pass at the line budget: $out" || return 1
+    assert_output_contains "$out" "MEMORY.md: 196/196 lines" \
+        "a pass must print the line count against the budget" || return 1
+    printf '%s' '## Tail with no newline' >> "$INDEX"
+    rc=0
+    out=$(_guard check 2>&1) || rc=$?
+    assert_eq 1 "$rc" "check must fail one line past the budget" || return 1
+    assert_output_contains "$out" "over budget: 197 lines > 196" \
+        "check must count the last line with no newline" || return 1
+}
+
+# Claude Code counts lines after turning a CRLF, a lone CR, U+2028 and U+2029
+# each into one line break, so check counts each of them as one too.
+test_check_counts_the_line_breaks_claude_code_counts() {
+    _guard_session
+    _guard snapshot > /dev/null || return 1
+    local i seps="" out rc=0
+    for i in $(seq 3 190); do printf '## Heading %s\n' "$i"; done >> "$INDEX"
+    for i in $(seq 1 12); do seps="${seps}x"$'\342\200\250'"y"$'\r'; done
+    printf '%s\n' "$seps" >> "$INDEX"
+    assert_eq 191 "$(wc -l < "$INDEX" | tr -d ' ')" "fixture must be 191 newline-ended lines" || return 1
+    out=$(_guard check 2>&1) || rc=$?
+    assert_eq 1 "$rc" "check must fail past the budget Claude Code counts" || return 1
+    assert_eq "over budget: 214 lines > 196" "$(grep '^over budget' <<< "$out")" \
+        "a lone CR and U+2028 each count as a line break, a CRLF as one" || return 1
+    printf '%s\n' "a"$'\342\200\251'"b" >> "$INDEX"
+    rc=0
+    out=$(_guard check 2>&1) || rc=$?
+    assert_eq 1 "$rc" "check still fails" || return 1
+    assert_eq "MEMORY.md: 216/196 lines" "$(grep '^MEMORY.md: .* lines$' <<< "$out")" \
+        "U+2029 counts as a line break" || return 1
 }
 
 # step 5 runs check once per sweep even when nothing was written; with no
@@ -85,6 +133,7 @@ test_check_passes_a_rewrite_that_keeps_every_link_at_the_budget() {
 - [Beta fact](project_beta.md): beta only on Tuesdays
 - [Gamma](reference_gamma.md): the gamma board
 EOF
+    : > "$SESSION/.cs/memory/reference_gamma.md"
     _pad_index_to 24400 || return 1
     local out rc=0
     out=$(_guard check 2>&1) || rc=$?
@@ -99,6 +148,7 @@ test_check_counts_bytes_not_characters() {
     _guard_session
     _guard snapshot > /dev/null || return 1
     printf '%s\n' '- [Delta](project_delta.md): delta — then epsilon' >> "$INDEX"
+    : > "$SESSION/.cs/memory/project_delta.md"
     _pad_index_to 24401 || return 1
     local chars
     chars=$(LC_ALL=en_US.UTF-8 wc -m < "$INDEX" | tr -d ' ')
@@ -145,6 +195,7 @@ test_unknown_subcommand_prints_usage() {
 test_check_passes_when_a_supporting_link_is_dropped() {
     _guard_session
     printf '%s\n' '- [Gamma](project_gamma.md): see [vendor docs](https://example.com/docs)' >> "$INDEX"
+    : > "$SESSION/.cs/memory/project_gamma.md"
     _guard snapshot > /dev/null || return 1
     sed -i.bak 's|: see \[vendor docs\](https://example.com/docs)|: vendor configuration|' "$INDEX"
     grep -q 'vendor configuration' "$INDEX" || { echo "  FAIL: fixture edit did not land"; return 1; }
@@ -182,11 +233,193 @@ test_check_fails_on_an_unindexed_bucket_entry() {
         "a file outside the four buckets is not an entry" || return 1
 }
 
+# A pointer whose entry file is not in .cs/memory leads nowhere: Claude Code
+# loads the pointer, and the file it names cannot be read.
+test_check_fails_on_a_pointer_to_a_missing_entry() {
+    _guard_session
+    _guard snapshot > /dev/null || return 1
+    printf '%s\n' '- [Gone](project_gone.md): an entry that is not there' >> "$INDEX"
+    local out rc=0
+    out=$(_guard check 2>&1) || rc=$?
+    assert_eq 1 "$rc" "a pointer to a missing entry must fail" || return 1
+    assert_eq "dangling: project_gone.md" "$(grep -v '^MEMORY.md: ' <<< "$out")" \
+        "check must name the pointer with no entry, and nothing else" || return 1
+}
+
+# A pointer names an entry file only when its target is a bare file name
+# ending in .md, with no / and no :. A URL names none, whatever it ends in,
+# and neither does a link to a section of a file; in MEMORY.md or in the
+# archive, check passes them.
+test_check_passes_a_pointer_that_names_no_entry_file() {
+    _guard_session
+    _guard_archive
+    printf '%s\n' '- [Docs](https://example.com/docs): vendor docs' \
+        '- [Usage](project_tool.md#usage): the usage section' >> "$INDEX"
+    printf '%s\n' '- [Board](https://example.com/board.md): the old board' >> "$ARCHIVE"
+    _guard snapshot > /dev/null || return 1
+    local out rc=0
+    out=$(_guard check 2>&1) || rc=$?
+    assert_eq 0 "$rc" "a pointer that names no entry file must pass: $out" || return 1
+    assert_eq "" "$(grep -v '^MEMORY.md: ' <<< "$out")" "check names nothing" || return 1
+}
+
+# The archive index: an ordinary reference entry whose body lists pointers in
+# MEMORY.md's own shape, one of them to an entry archived by an earlier sweep,
+# with a pointer to it in MEMORY.md.
+_guard_archive() {
+    ARCHIVE="$SESSION/.cs/memory/reference_memory_archive.md"
+    cat > "$ARCHIVE" << 'EOF'
+---
+name: memory-archive
+description: "Pointers moved out of MEMORY.md; each entry still applies when its subject comes up"
+metadata:
+  type: reference
+---
+
+- [Old study](project_old.md): a study that closed
+EOF
+    : > "$SESSION/.cs/memory/project_old.md"
+    printf '%s\n' '- [Memory archive](reference_memory_archive.md): pointers moved out of this index' >> "$INDEX"
+}
+
+# The /wrap pass may move a pointer line verbatim from MEMORY.md into the
+# archive: a move, not a loss. check names it and passes, and an entry whose
+# only pointer is in the archive is indexed.
+test_check_passes_a_pointer_moved_to_the_archive() {
+    _guard_session
+    _guard_archive
+    _guard snapshot > /dev/null || return 1
+    printf '%s\n' '- [Beta fact](project_beta.md): beta only runs on Tuesdays' >> "$ARCHIVE"
+    printf '%s\n' '- [Alpha rule](feedback_alpha.md): never do alpha twice' \
+        '- [Memory archive](reference_memory_archive.md): pointers moved out of this index' > "$INDEX"
+    local out rc=0
+    out=$(_guard check 2>&1) || rc=$?
+    assert_eq 0 "$rc" "a pointer moved to the archive must pass: $out" || return 1
+    assert_eq "demoted: project_beta.md" "$(grep -v '^MEMORY.md: ' <<< "$out")" \
+        "check names the moved pointer, and nothing else" || return 1
+}
+
+# A pointer in both files is a move left half done.
+test_check_fails_on_a_pointer_in_the_index_and_the_archive() {
+    _guard_session
+    _guard_archive
+    _guard snapshot > /dev/null || return 1
+    printf '%s\n' '- [Beta fact](project_beta.md): beta only runs on Tuesdays' >> "$ARCHIVE"
+    local out rc=0
+    out=$(_guard check 2>&1) || rc=$?
+    assert_eq 1 "$rc" "a pointer in both files must fail" || return 1
+    assert_eq "duplicate: project_beta.md" "$(grep -v '^MEMORY.md: ' <<< "$out")" \
+        "check names the pointer in both files, and nothing else" || return 1
+}
+
+# The archive is read only through its pointer in MEMORY.md; one inside the
+# archive itself does not count.
+test_check_fails_when_the_index_has_no_pointer_to_the_archive() {
+    _guard_session
+    _guard_archive
+    _guard snapshot > /dev/null || return 1
+    printf '%s\n' '- [Alpha rule](feedback_alpha.md): never do alpha twice' \
+        '- [Beta fact](project_beta.md): beta only runs on Tuesdays' > "$INDEX"
+    printf '%s\n' '- [Memory archive](reference_memory_archive.md): pointers moved out of this index' >> "$ARCHIVE"
+    local out rc=0
+    out=$(_guard check 2>&1) || rc=$?
+    assert_eq 1 "$rc" "an archive with no pointer in MEMORY.md must fail" || return 1
+    assert_eq "removed: reference_memory_archive.md
+unindexed: reference_memory_archive.md" "$(grep -v '^MEMORY.md: ' <<< "$out")" \
+        "check names the archive as removed and unindexed, and nothing else" || return 1
+}
+
+test_check_fails_on_an_archive_pointer_to_a_missing_entry() {
+    _guard_session
+    _guard_archive
+    _guard snapshot > /dev/null || return 1
+    printf '%s\n' '- [Lost](project_lost.md): not there' >> "$ARCHIVE"
+    local out rc=0
+    out=$(_guard check 2>&1) || rc=$?
+    assert_eq 1 "$rc" "an archive pointer to a missing entry must fail" || return 1
+    assert_eq "dangling: project_lost.md" "$(grep -v '^MEMORY.md: ' <<< "$out")" \
+        "check names the archive pointer with no entry, and nothing else" || return 1
+}
+
+# snapshot keeps the archive too: a pointer that was in the archive and is now
+# in neither file is lost, as one lost from MEMORY.md is, whether or not its
+# entry is a bucket file and whether or not the file is still there.
+test_check_fails_on_a_pointer_dropped_from_the_archive() {
+    _guard_session
+    _guard_archive
+    printf '%s\n' "- [Narrative; bob](narrative.bob.md): bob's notebook" >> "$ARCHIVE"
+    : > "$SESSION/.cs/memory/narrative.bob.md"
+    _guard snapshot > /dev/null || return 1
+    grep -v 'narrative\.bob\.md' "$ARCHIVE" > "$TEST_TMPDIR/archive" && cp "$TEST_TMPDIR/archive" "$ARCHIVE"
+    local out rc=0
+    out=$(_guard check 2>&1) || rc=$?
+    assert_eq 1 "$rc" "a pointer dropped from the archive must fail" || return 1
+    assert_eq "removed: narrative.bob.md" "$(grep -v '^MEMORY.md: ' <<< "$out")" \
+        "check names the pointer dropped from the archive, and nothing else" || return 1
+}
+
+test_check_fails_on_an_archived_pointer_dropped_with_its_entry() {
+    _guard_session
+    _guard_archive
+    _guard snapshot > /dev/null || return 1
+    grep -v 'project_old\.md' "$ARCHIVE" > "$TEST_TMPDIR/archive" && cp "$TEST_TMPDIR/archive" "$ARCHIVE"
+    rm "$SESSION/.cs/memory/project_old.md"
+    local out rc=0
+    out=$(_guard check 2>&1) || rc=$?
+    assert_eq 1 "$rc" "an archived pointer dropped with its entry must fail" || return 1
+    assert_eq "removed: project_old.md" "$(grep -v '^MEMORY.md: ' <<< "$out")" \
+        "check names the pointer dropped from the archive, and nothing else" || return 1
+}
+
+# restore puts back MEMORY.md alone; a pointer this sweep moved to the archive
+# is then in both files, and check says so.
+test_restore_after_a_move_leaves_the_pointer_in_both_files() {
+    _guard_session
+    _guard_archive
+    _guard snapshot > /dev/null || return 1
+    printf '%s\n' '- [Beta fact](project_beta.md): beta only runs on Tuesdays' >> "$ARCHIVE"
+    printf '%s\n' '- [Alpha rule](feedback_alpha.md): never do alpha twice' \
+        '- [Memory archive](reference_memory_archive.md): pointers moved out of this index' > "$INDEX"
+    cp "$ARCHIVE" "$TEST_TMPDIR/archive"
+    _guard restore > /dev/null || return 1
+    cmp -s "$TEST_TMPDIR/archive" "$ARCHIVE" || { echo "  FAIL: restore must leave the archive as it was"; return 1; }
+    local out rc=0
+    out=$(_guard check 2>&1) || rc=$?
+    assert_eq 1 "$rc" "the pointer is in both files after restore" || return 1
+    assert_eq "duplicate: project_beta.md" "$(grep -v '^MEMORY.md: ' <<< "$out")" \
+        "check names the pointer the restore put back" || return 1
+}
+
+# .cs/memory is tracked, so a clone chooses the entry file names and the
+# pointers MEMORY.md holds, and a name can carry a terminal escape: a raw ESC
+# or BEL byte, or backslash text echo -e would turn into one. check names a
+# removed pointer, a pointer with no entry and an unindexed entry as plain
+# names, each character a plain name lacks replaced by _.
+test_check_names_a_pointer_and_an_entry_as_plain_names() {
+    _guard_session
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m out rc=0
+    printf '%s\n' "- [Odd](feedback_o$bad.md): odd" >> "$INDEX"
+    _guard snapshot > /dev/null || return 1
+    printf '%s\n' '- [Alpha rule](feedback_alpha.md): never do alpha twice' \
+        '- [Beta fact](project_beta.md): beta only runs on Tuesdays' > "$INDEX"
+    : > "$SESSION/.cs/memory/project_p$bad.md"
+    printf '%s\n' "- [Dangling](project_d$bad.md): no entry" >> "$INDEX"
+    out=$(_guard check 2>&1) || rc=$?
+    assert_eq 1 "$rc" "check fails" || return 1
+    assert_eq "dangling: project_d$shown.md" "$(grep '^dangling:' <<< "$out")" \
+        "check names the pointer with no entry as a plain name" || return 1
+    assert_eq "removed: feedback_o$shown.md" "$(grep '^removed:' <<< "$out")" \
+        "check names the removed pointer as a plain name" || return 1
+    assert_eq "unindexed: project_p$shown.md" "$(grep '^unindexed:' <<< "$out")" \
+        "check names the unindexed entry as a plain name" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches Claude" || return 1
+}
+
 # A fresh session has no MEMORY.md until Claude Code writes the first entry,
 # so the first sweep snapshots nothing and must still reach a passing check.
 test_first_sweep_snapshots_an_absent_index_as_empty() {
     _guard_session
-    rm "$INDEX"
+    rm "$INDEX" "$SESSION/.cs/memory/feedback_alpha.md" "$SESSION/.cs/memory/project_beta.md"
     local out rc=0
     out=$(_guard snapshot 2>&1) || rc=$?
     assert_eq 0 "$rc" "snapshot with no MEMORY.md yet must succeed: $out" || return 1
@@ -237,6 +470,7 @@ test_snapshot_goes_into_the_private_dir() {
     _guard_session
     mkdir -p "$TEST_TMPDIR/vault/private"
     ln -s "$TEST_TMPDIR/vault/private" "$SESSION/.cs/private"
+    _mark_hand_made_vault "$SESSION"
     local out
     out=$(_guard snapshot 2>&1) || { echo "  FAIL: snapshot exited non-zero: $out"; return 1; }
     assert_eq "$(cat "$INDEX")" "$(cat "$TEST_TMPDIR/vault/private/memory-index.snapshot")" \
@@ -258,12 +492,69 @@ test_snapshot_refuses_a_locked_private_dir() {
         "nothing may be copied into .cs/local" || return 1
 }
 
+# The snapshot lives in .cs/local, and while git tracks a file there a
+# repository wrote it: a snapshot taken there would sit beside it, and a
+# committed one restored would put the repository's index over the session's.
+# Every subcommand refuses, naming the file, and touches nothing.
+test_every_subcommand_refuses_while_git_tracks_a_control_file() {
+    _guard_session
+    local before snap="$SESSION/.cs/local/memory-index.snapshot" sub out rc
+    printf -- '- [Planted](project_planted.md): from the repository\n' > "$snap"
+    git -C "$SESSION" init -q
+    git -C "$SESSION" add .cs/local/memory-index.snapshot
+    before=$(cat "$INDEX")
+    for sub in snapshot check restore; do
+        rc=0
+        out=$(_guard "$sub" 2>&1) || rc=$?
+        assert_eq 2 "$rc" "$sub refuses" || return 1
+        assert_eq "memory-index-guard: .cs/local/memory-index.snapshot is tracked in git (per-actor state must stay local). Fix with: git -C $SESSION --literal-pathspecs rm -r --cached -- .cs/local && git -C $SESSION commit -m 'stop tracking .cs/local'" \
+            "$out" "$sub names the tracked file" || return 1
+        assert_eq "$before" "$(cat "$INDEX")" "$sub leaves MEMORY.md as it was" || return 1
+        assert_eq "- [Planted](project_planted.md): from the repository" "$(cat "$snap")" \
+            "$sub leaves the snapshot as it was" || return 1
+    done
+}
+
+# The pointers and the entries are compared with comm, which needs them sorted
+# the way it reads them: both sorts and comm get the C locale through env, so
+# the lists come out in byte order (uppercase, then "_", then lowercase) in any
+# caller's locale, and the shell never changes its own locale for them, which
+# can crash a bash linked against libintl in the forked copies they run in.
+test_check_lists_in_byte_order_without_the_shell_assigning_its_own_locale() {
+    local b utf8 out rc own
+    utf8="$(utf8_locale)"
+    _guard_session
+    rm "$SESSION/.cs/memory/feedback_alpha.md" "$SESSION/.cs/memory/project_beta.md"
+    printf '%s\n' '- [A](project_a.md): a' '- [B](project_B.md): b' '- [C](project__c.md): c' \
+        '- [Keep](feedback_keep.md): kept' > "$INDEX"
+    _guard snapshot > /dev/null || return 1
+    printf '%s\n' '- [Keep](feedback_keep.md): kept' > "$INDEX"
+    : > "$SESSION/.cs/memory/feedback_keep.md"
+    : > "$SESSION/.cs/memory/project_yak.md"
+    : > "$SESSION/.cs/memory/project_Zed.md"
+    for b in $(every_bash); do
+        rc=0
+        out=$(cd "$SESSION" && env ${utf8:+"LC_ALL=$utf8"} "$b" -x "$GUARD" check 2>"$TEST_TMPDIR/trace") || rc=$?
+        assert_eq 1 "$rc" "$b: check fails on the removed and unindexed entries" || return 1
+        assert_eq "removed: project_B.md
+removed: project__c.md
+removed: project_a.md
+unindexed: project_Zed.md
+unindexed: project_yak.md
+MEMORY.md: 33/24400 bytes
+MEMORY.md: 1/196 lines" "$out" "$b: the report, in byte order" || return 1
+        own="$(shell_locale_assignments "$TEST_TMPDIR/trace")"
+        assert_eq "" "$own" "$b must not assign its own locale during check" || return 1
+    done
+}
+
 run_test test_check_fails_when_a_link_is_removed
 run_test test_check_passes_a_rewrite_that_keeps_every_link_at_the_budget
 run_test test_check_counts_bytes_not_characters
 run_test test_check_without_a_snapshot_is_an_error
 run_test test_check_without_the_index_is_an_error
 run_test test_check_fails_over_the_byte_budget
+run_test test_check_fails_over_the_line_budget
 run_test test_restore_puts_back_the_snapshot_byte_for_byte
 run_test test_restore_without_a_snapshot_leaves_the_index_alone
 run_test test_unknown_subcommand_prints_usage
@@ -271,10 +562,23 @@ run_test test_unknown_subcommand_prints_usage
 run_test test_check_passes_when_a_supporting_link_is_dropped
 run_test test_check_fails_when_two_pointers_are_merged
 run_test test_check_fails_on_an_unindexed_bucket_entry
+run_test test_check_fails_on_a_pointer_to_a_missing_entry
+run_test test_check_passes_a_pointer_moved_to_the_archive
+run_test test_check_fails_on_a_pointer_in_the_index_and_the_archive
+run_test test_check_fails_when_the_index_has_no_pointer_to_the_archive
+run_test test_check_fails_on_an_archive_pointer_to_a_missing_entry
+run_test test_restore_after_a_move_leaves_the_pointer_in_both_files
+run_test test_check_fails_on_a_pointer_dropped_from_the_archive
+run_test test_check_fails_on_an_archived_pointer_dropped_with_its_entry
+run_test test_check_passes_a_pointer_that_names_no_entry_file
+run_test test_check_counts_the_line_breaks_claude_code_counts
+run_test test_check_names_a_pointer_and_an_entry_as_plain_names
 run_test test_first_sweep_snapshots_an_absent_index_as_empty
 run_test test_snapshot_outside_a_session_root_is_an_error
 run_test test_check_with_an_unreadable_snapshot_is_an_error
 run_test test_snapshot_goes_into_the_private_dir
 run_test test_snapshot_refuses_a_locked_private_dir
+run_test test_every_subcommand_refuses_while_git_tracks_a_control_file
+run_test test_check_lists_in_byte_order_without_the_shell_assigning_its_own_locale
 
 report_results

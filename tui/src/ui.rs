@@ -16,7 +16,9 @@ use ratatui::layout::Alignment;
 use crate::app::{
     App, FlashKind, Focus, Mode, NotesFocus, SortColumn, SortDirection, StatusLevel,
 };
+use crate::session::DeleteWarning;
 use crate::theme::{self, Palette};
+use crate::untracked;
 
 const PREVIEW_MIN_WIDTH: u16 = 120;
 
@@ -1175,13 +1177,10 @@ fn render_confirm_delete(app: &App, frame: &mut Frame) {
 
     let remaining = app.delete_countdown_remaining();
 
-    let action_msg = if session.is_adopted {
-        format!(
-            "Remove adopted session '{}'?\n(removes symlink only, project preserved)",
-            session.name
-        )
+    let (question, note) = if session.is_adopted {
+        (format!("Remove adopted session '{}'?", session.name), "(removes symlink only, project preserved)")
     } else {
-        format!("Delete session '{}'?\nThis cannot be undone.", session.name)
+        (format!("Delete session '{}'?", session.name), "This cannot be undone.")
     };
 
     let hint = if remaining > 0 {
@@ -1191,7 +1190,13 @@ fn render_confirm_delete(app: &App, frame: &mut Frame) {
     };
     let hint_color = if remaining > 0 { p.comment } else { p.fg };
 
-    let popup_area = centered_rect(50, 7 + warning_rows(&app.delete_warnings), frame.area());
+    // Borders, question, note, the blank above the hint and the hint.
+    let fixed_rows = 6;
+    let columns = popup_columns(50, frame.area());
+    let separator = grant_separator(app, frame.area().height, fixed_rows);
+    let grants = grant_rows(app, separator);
+    let warnings = warning_lines(&app.delete_warnings, frame.area().height, fixed_rows + grants, columns, p.red);
+    let popup_area = centered_rect(50, fixed_rows + warnings.len() as u16 + grants, frame.area());
     frame.render_widget(Clear, popup_area);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -1199,13 +1204,14 @@ fn render_confirm_delete(app: &App, frame: &mut Frame) {
         .title(" Confirm Delete ")
         .title_style(Style::default().fg(p.red).add_modifier(Modifier::BOLD));
 
-    let mut lines = vec![Line::from(Span::styled(action_msg, Style::default().fg(p.fg)))];
-    push_warning_lines(&mut lines, &app.delete_warnings, p.red);
+    let mut lines = vec![one_row(&question, columns, p.fg), one_row(note, columns, p.fg)];
+    lines.extend(warnings);
+    push_grant_lines(&mut lines, app, columns, separator);
     lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(hint, Style::default().fg(hint_color))));
+    lines.push(one_row(&hint, columns, hint_color));
     let text = Paragraph::new(lines)
         .block(block)
-        .wrap(Wrap { trim: true });
+        .wrap(Wrap { trim: false });
     frame.render_widget(text, popup_area);
 }
 
@@ -1230,7 +1236,13 @@ fn render_confirm_batch_delete(app: &App, frame: &mut Frame) {
     };
     let hint_color = if remaining > 0 { p.comment } else { p.fg };
 
-    let popup_area = centered_rect(55, 7 + warning_rows(&app.delete_warnings), frame.area());
+    // Borders, question, names, the blank above the note, the note and the hint.
+    let fixed_rows = 7;
+    let columns = popup_columns(55, frame.area());
+    let separator = grant_separator(app, frame.area().height, fixed_rows);
+    let grants = grant_rows(app, separator);
+    let warnings = warning_lines(&app.delete_warnings, frame.area().height, fixed_rows + grants, columns, p.red);
+    let popup_area = centered_rect(55, fixed_rows + warnings.len() as u16 + grants, frame.area());
     frame.render_widget(Clear, popup_area);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -1238,41 +1250,112 @@ fn render_confirm_batch_delete(app: &App, frame: &mut Frame) {
         .title(format!(" Delete {} sessions ", count))
         .title_style(Style::default().fg(p.red).add_modifier(Modifier::BOLD));
 
-    let mut lines = vec![
-        Line::from(Span::styled(
-            format!("Delete {} sessions?", count),
-            Style::default().fg(p.fg),
-        )),
-        Line::from(Span::styled(list, Style::default().fg(p.comment))),
-    ];
-    push_warning_lines(&mut lines, &app.delete_warnings, p.red);
+    let mut lines = vec![one_row(&format!("Delete {} sessions?", count), columns, p.fg), one_row(&list, columns, p.comment)];
+    lines.extend(warnings);
+    push_grant_lines(&mut lines, app, columns, separator);
     lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled("This cannot be undone.", Style::default().fg(p.red))));
-    lines.push(Line::from(Span::styled(hint, Style::default().fg(hint_color))));
+    lines.push(one_row("This cannot be undone.", columns, p.red));
+    lines.push(one_row(&hint, columns, hint_color));
     let text = Paragraph::new(lines)
         .block(block)
-        .wrap(Wrap { trim: true });
+        .wrap(Wrap { trim: false });
     frame.render_widget(text, popup_area);
 }
 
-/// Rows the delete warnings take in a confirm popup: a blank separator,
-/// then two rows per warning, since a file list usually wraps once.
-fn warning_rows(warnings: &[String]) -> u16 {
-    if warnings.is_empty() {
-        0
-    } else {
-        1 + 2 * warnings.len() as u16
+/// The escalations a delete confirm offers, each with its key and whether
+/// it is granted: the confirm refuses what is not granted, as `cs -rm` does
+/// without --delete-files or --force.
+fn grant_lines(app: &App) -> Vec<String> {
+    let state = |on: bool| if on { "yes" } else { "no" };
+    let mut lines = Vec::new();
+    if app.delete_offers.unowned_files {
+        lines.push(format!("[D] Delete those files too: {}", state(app.delete_grants.unowned_files)));
+    }
+    if app.delete_offers.past_live_lock {
+        lines.push(format!("[F] Remove although live: {}", state(app.delete_grants.past_live_lock)));
+    }
+    lines
+}
+
+/// Whether the grant lines get a blank separator above them: they do,
+/// unless warnings exist and the `height`-row screen would leave them no row
+/// with it but one without it. That row then holds the warning or their
+/// count, directly over the grant it explains. `fixed_rows` are the popup's
+/// rows besides its warnings and grants.
+fn grant_separator(app: &App, height: u16, fixed_rows: u16) -> bool {
+    app.delete_warnings.is_empty() || height != fixed_rows + grant_rows(app, true)
+}
+
+/// Rows the grant lines take: the blank separator when `separator`, then
+/// one row each.
+fn grant_rows(app: &App, separator: bool) -> u16 {
+    let n = grant_lines(app).len() as u16;
+    if n == 0 { 0 } else { separator as u16 + n }
+}
+
+fn push_grant_lines(lines: &mut Vec<Line<'static>>, app: &App, columns: u16, separator: bool) {
+    let grants = grant_lines(app);
+    if grants.is_empty() {
+        return;
+    }
+    if separator {
+        lines.push(Line::from(""));
+    }
+    for text in grants {
+        lines.push(one_row(&text, columns, app.theme.fg));
     }
 }
 
-fn push_warning_lines(lines: &mut Vec<Line<'static>>, warnings: &[String], color: Color) {
-    if warnings.is_empty() {
-        return;
+/// A delete popup line that takes one row of the popup's `columns`: text
+/// wider than that is shortened in the middle, as listing entries are, so
+/// the rows the popup counts are the rows it draws.
+fn one_row(text: &str, columns: u16, color: Color) -> Line<'static> {
+    Line::from(Span::styled(untracked::shortened(text, columns as usize), Style::default().fg(color)))
+}
+
+/// The delete warnings as confirm popup lines: a blank separator, then each
+/// warning, a listing of files git does not track one entry per row (as
+/// `cs -rm` prints it) under its own. The lines take at most the rows a
+/// `height`-row screen leaves a popup whose other lines take `other`, so its
+/// grant and key hint stay on screen: each warning gets its row first, and
+/// the entries share what is left, the first warnings' first, fewer than the
+/// usual twenty when they would not fit and none once the rows run out. When
+/// even one row per warning does not fit, the last row counts the warnings
+/// left out. When the screen leaves a single row, it holds that warning or
+/// the count, with no blank separator above it. A warning and an entry are
+/// each one row of the popup's `columns`: one too wide for it is shortened
+/// in the middle.
+fn warning_lines(warnings: &[DeleteWarning], height: u16, other: u16, columns: u16, color: Color) -> Vec<Line<'static>> {
+    let room = (height as usize).saturating_sub(other as usize);
+    if warnings.is_empty() || room == 0 {
+        return Vec::new();
     }
-    lines.push(Line::from(""));
+    let style = Style::default().fg(color);
+    let (mut lines, rows) = if room == 1 { (Vec::new(), 1) } else { (vec![Line::from("")], room - 1) };
+    if warnings.len() > rows {
+        let shown = rows - 1;
+        lines.extend(warnings[..shown].iter().map(|w| one_row(&w.text, columns, color)));
+        lines.push(one_row(&format!("... and {} more warnings", warnings.len() - shown), columns, color));
+        return lines;
+    }
+    let mut rows_left = rows - warnings.len();
     for warning in warnings {
-        lines.push(Line::from(Span::styled(warning.clone(), Style::default().fg(color))));
+        lines.push(one_row(&warning.text, columns, color));
+        let entries = &warning.entries;
+        if rows_left == 0 {
+            continue;
+        }
+        let shown = if entries.len() <= rows_left.min(untracked::SHOWN_ENTRIES) {
+            entries.len()
+        } else {
+            rows_left.min(untracked::SHOWN_ENTRIES + 1) - 1
+        };
+        for text in untracked::entry_lines_within(entries, shown, columns as usize) {
+            rows_left -= 1;
+            lines.push(Line::from(Span::styled(text, style)));
+        }
     }
+    lines
 }
 
 fn render_confirm_force_open(app: &App, frame: &mut Frame) {
@@ -1649,7 +1732,14 @@ fn render_preview_pane(app: &App, frame: &mut Frame, area: Rect) {
         .as_deref()
         .map(|s| format!(" \u{b7} {s}"))
         .unwrap_or_default();
-    let (state_value, state_color, state_dot) = if let Some(pid) = session.liveness.lock_pid() {
+    let (state_value, state_color, state_dot) = if let crate::session::Liveness::Served { server, .. } = session.liveness {
+        // Served by `cs <name> --remote`: the pid worth showing is the server's.
+        (
+            format!("\u{25a0} live \u{b7} remote {}{}", server, agent),
+            p.teal,
+            None,
+        )
+    } else if let Some(pid) = session.liveness.lock_pid() {
         (
             format!("\u{25a0} live \u{b7} locked {}{}", pid, agent),
             p.teal,
@@ -2032,6 +2122,7 @@ fn render_merge(app: &mut App, frame: &mut Frame, area: Rect) {
                 "locked" => (format!("{} session is open", f.lock), p.amber),
                 "dirty" => ("uncommitted changes".to_string(), p.amber),
                 "base-dirty" => ("base has uncommitted changes".to_string(), p.amber),
+                "vault-locked" => ("base vault is locked".to_string(), p.amber),
                 other => (other.to_string(), p.amber),
             };
             Row::new(vec![
@@ -2116,6 +2207,8 @@ fn render_merge(app: &mut App, frame: &mut Frame, area: Rect) {
         // and worktree locks want different remedies, so name the side.
         let (base_label, base_color) = if f.lock == "base" {
             ("base session open".to_string(), p.amber)
+        } else if f.state == "vault-locked" {
+            ("vault locked".to_string(), p.amber)
         } else if f.base_dirty {
             ("uncommitted changes".to_string(), p.amber)
         } else {
@@ -2193,6 +2286,12 @@ fn centered_cols(width: u16, height: u16, area: Rect) -> Rect {
         width,
         height,
     }
+}
+
+/// Columns of text a popup `percent_x` of `area` wide holds between its
+/// side borders.
+fn popup_columns(percent_x: u16, area: Rect) -> u16 {
+    centered_rect(percent_x, 0, area).width.saturating_sub(2)
 }
 
 fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
@@ -4259,6 +4358,15 @@ mod tests {
     }
 
     #[test]
+    fn preview_state_row_shows_a_served_session_as_remote_with_the_server_pid() {
+        let mut app = preview_test_app();
+        app.sessions[0].liveness = Liveness::Served { lock: 4242, server: 777 };
+        let text = render_wide(&mut app);
+        assert!(text.contains("live \u{b7} remote 777"), "state row must name the server:\n{text}");
+        assert!(!text.contains("locked"), "a served session is not shown as a plain lock:\n{text}");
+    }
+
+    #[test]
     fn preview_state_row_omits_agent_status_when_none_is_advertised() {
         let mut app = preview_test_app();
         app.sessions[0].liveness = Liveness::Locked(4242);
@@ -4734,6 +4842,20 @@ mod tests {
     }
 
     #[test]
+    fn merge_screen_names_a_locked_base_vault() {
+        // The retire refuses a locked base vault before anything else in the
+        // base, and mounting it is the remedy, so the row and the base line
+        // both say so rather than the raw state or "clean".
+        let mut app = merge_app();
+        app.merge_features[0].state = "vault-locked".into();
+        app.merge_selected = 0;
+        let text = render_wide(&mut app);
+        assert!(text.contains("base vault is locked"), "the row must name the vault:\n{text}");
+        assert!(text.contains("base      vault locked"), "the base line must name the vault:\n{text}");
+        assert!(!text.contains("base      clean"), "a locked vault must not read clean:\n{text}");
+    }
+
+    #[test]
     fn merge_screen_hairline_stays_inside_the_list_card() {
         // The rule is drawn at inner.y + 1. On a short terminal the list shrinks
         // until that row falls past the card and the rule paints across the
@@ -5002,5 +5124,494 @@ mod tests {
             text.contains("Features failed: boom"),
             "a probe failure must surface on the merge screen's status line:\n{text}"
         );
+    }
+
+    fn git_in(dir: &std::path::Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.email=t@example.com", "-c", "user.name=t"])
+            .args(args)
+            .output()
+            .expect("git runs");
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    /// A worktree session `proj@task` under `root`, beside its base, whose
+    /// repo tracks `src/app.ts` and ignores `node_modules/`.
+    fn worktree_session(root: &std::path::Path) -> std::path::PathBuf {
+        let base = root.join("proj");
+        std::fs::create_dir_all(base.join("src")).unwrap();
+        std::fs::write(base.join("src/app.ts"), "export {}").unwrap();
+        std::fs::write(base.join(".gitignore"), "node_modules/\n.cs/local/\n").unwrap();
+        git_in(&base, &["init", "-q"]);
+        git_in(&base, &["add", "src", ".gitignore"]);
+        git_in(&base, &["commit", "-qm", "seed"]);
+        feature_worktree(root, "task")
+    }
+
+    /// Another worktree session `proj@<task>` of the base `worktree_session`
+    /// made under `root`.
+    fn feature_worktree(root: &std::path::Path, task: &str) -> std::path::PathBuf {
+        let wt = root.join(format!("proj@{task}"));
+        git_in(&root.join("proj"), &["worktree", "add", "-q", wt.to_str().unwrap(), "-b", &format!("cs/{task}")]);
+        std::fs::create_dir_all(wt.join(".cs/local")).unwrap();
+        wt
+    }
+
+    /// The delete confirm for `proj@task`, rendered: the text of each popup
+    /// row from the row holding `first` on, without the popup's borders.
+    fn delete_confirm_rows(root: &std::path::Path, width: u16, height: u16, first: &str) -> Vec<String> {
+        delete_confirm_rows_of(root, &["proj@task"], width, height, first)
+    }
+
+    /// The delete confirm for the sessions `names` (one: `d` on it; more:
+    /// each marked, then `D`), rendered: the text of each popup row from the
+    /// row holding `first` on, without the popup's borders.
+    fn delete_confirm_rows_of(root: &std::path::Path, names: &[&str], width: u16, height: u16, first: &str) -> Vec<String> {
+        let _guard = crate::session::test_root::scoped(root.to_path_buf());
+        let mut app = App::new(crate::session::scan_sessions());
+        if let [name] = names {
+            let pos = app.filtered.iter().position(|&i| app.sessions[i].name == *name).unwrap();
+            app.table_state.select(Some(pos));
+            app.mode = Mode::SessionMenu;
+            app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+        } else {
+            app.marked_sessions.extend(names.iter().map(|n| n.to_string()));
+            app.handle_key(KeyEvent::from(KeyCode::Char('D')));
+        }
+        let rows = rows_at(&mut app, width, height);
+        let top = rows.iter().position(|r| r.contains(first)).unwrap_or_else(|| panic!("no row holds {first:?}:\n{}", rows.join("\n")));
+        let left = rows[top][..rows[top].find(first).unwrap()].chars().count();
+        rows[top..]
+            .iter()
+            .map(|r| r.chars().skip(left).take_while(|&c| c != '\u{2502}').collect::<String>().trim_end().to_string())
+            .collect()
+    }
+
+    // The delete confirm lists what git does not track the way `cs -rm` does:
+    // the total, then one entry per row, a whole untracked tree as one row
+    // with its file count.
+    #[test]
+    fn delete_confirm_lists_untracked_trees_one_per_row() {
+        let root = std::env::temp_dir().join(format!("cs-ui-del-trees-{}", std::process::id()));
+        let wt = worktree_session(&root);
+        std::fs::create_dir_all(wt.join("node_modules/pkg")).unwrap();
+        for i in 0..1200 {
+            std::fs::write(wt.join(format!("node_modules/pkg/f{i}")), "").unwrap();
+        }
+        std::fs::create_dir_all(wt.join("src/__screenshots__")).unwrap();
+        std::fs::write(wt.join("src/__screenshots__/a.png"), "").unwrap();
+        std::fs::write(wt.join("src/__screenshots__/b.png"), "").unwrap();
+        std::fs::write(wt.join("notes.txt"), "draft").unwrap();
+
+        let rows = delete_confirm_rows(&root, 120, 40, "Also deletes");
+
+        assert_eq!(
+            rows[..4],
+            [
+                "Also deletes 1,203 files git does not track:",
+                "    node_modules/         (1,200 files)",
+                "    src/__screenshots__/  (2 files)",
+                "    notes.txt",
+            ]
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    // A session root's files cs did not create are listed one name per row,
+    // as a worktree's untracked files are, and capped the same way, so [D]
+    // says which files it deletes. The popup takes the rows its lines use:
+    // at 80x24 the rows left hold thirteen names and the count of the rest,
+    // and the popup's border follows the key hint.
+    #[test]
+    fn delete_confirm_lists_files_cs_did_not_create_one_per_row() {
+        let root = std::env::temp_dir().join(format!("cs-ui-del-root-files-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("rel/.cs/local")).unwrap();
+        for i in 0..15 {
+            std::fs::write(root.join(format!("rel/quarterly-report-draft-{i:02}.md")), "x").unwrap();
+        }
+
+        let rows = delete_confirm_rows_of(&root, &["rel"], 80, 24, "Also deletes");
+
+        let mut expected = vec!["Also deletes files cs did not create:".to_string()];
+        expected.extend((0..13).map(|i| format!("    quarterly-report-draft-{i:02}.md")));
+        expected.extend(["    ... and 2 more", "", "[D] Delete those files too: no", ""].map(String::from));
+        assert_eq!(rows.iter().take(expected.len()).collect::<Vec<_>>(), expected.iter().collect::<Vec<_>>());
+        assert!(rows[expected.len()].starts_with("[y] Confirm"), "the key hint stays on screen: {rows:?}");
+        assert!(rows[expected.len() + 1].starts_with('\u{2500}'), "the popup's border follows the key hint: {rows:?}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    // On a terminal too short for twenty entries the confirm lists fewer, so
+    // the grant and the key hint under the list stay on screen.
+    #[test]
+    fn delete_confirm_lists_fewer_entries_on_a_short_terminal() {
+        let root = std::env::temp_dir().join(format!("cs-ui-del-short-{}", std::process::id()));
+        let wt = worktree_session(&root);
+        for i in 1..=25 {
+            std::fs::write(wt.join(format!("n{i:02}.txt")), "").unwrap();
+        }
+
+        let rows = delete_confirm_rows(&root, 120, 20, "Also deletes");
+
+        assert_eq!(
+            rows[..11],
+            [
+                "Also deletes 25 files git does not track:",
+                "    n01.txt",
+                "    n02.txt",
+                "    n03.txt",
+                "    n04.txt",
+                "    n05.txt",
+                "    n06.txt",
+                "    n07.txt",
+                "    n08.txt",
+                "    n09.txt",
+                "    ... and 16 more",
+            ]
+        );
+        assert!(rows.iter().any(|r| r == "[D] Delete those files too: no"), "the grant stays on screen: {rows:?}");
+        assert!(rows.iter().any(|r| r.starts_with("[y] Confirm")), "the key hint stays on screen: {rows:?}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    // An entry takes one row whatever its length: a path wider than the
+    // popup is shortened in the middle, so the grant and the key hint under
+    // the list stay on screen. At 120 columns the popup holds 58, which
+    // leaves a directory 43 beside "(3 files)".
+    #[test]
+    fn delete_confirm_shortens_a_long_path_to_one_row() {
+        let root = std::env::temp_dir().join(format!("cs-ui-del-long-{}", std::process::id()));
+        let wt = worktree_session(&root);
+        let components =
+            ["accordion", "breadcrumb", "date-picker", "dropdown-menu", "navigation-menu", "pagination", "tooltip"];
+        for name in components {
+            let dir = wt.join("src/lib/components").join(name);
+            std::fs::create_dir_all(dir.join("__screenshots__")).unwrap();
+            std::fs::write(dir.join("index.ts"), "export {}").unwrap();
+        }
+        git_in(&wt, &["add", "src/lib"]);
+        git_in(&wt, &["commit", "-qm", "components"]);
+        for name in components {
+            for shot in ["a.png", "b.png", "c.png"] {
+                std::fs::write(wt.join("src/lib/components").join(name).join("__screenshots__").join(shot), "").unwrap();
+            }
+        }
+
+        let rows = delete_confirm_rows(&root, 120, 40, "Also deletes");
+
+        assert_eq!(
+            rows[..10],
+            [
+                "Also deletes 21 files git does not track:",
+                "    src/lib/components/ac…dion/__screenshots__/  (3 files)",
+                "    src/lib/components/br…rumb/__screenshots__/  (3 files)",
+                "    src/lib/components/da…cker/__screenshots__/  (3 files)",
+                "    src/lib/components/dr…menu/__screenshots__/  (3 files)",
+                "    src/lib/components/na…menu/__screenshots__/  (3 files)",
+                "    src/lib/components/pa…tion/__screenshots__/  (3 files)",
+                "    src/lib/components/tooltip/__screenshots__/  (3 files)",
+                "",
+                "[D] Delete those files too: no",
+            ]
+        );
+        assert!(rows[11].starts_with("[y] Confirm"), "the key hint stays on screen: {rows:?}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    // A path is measured in the columns it takes on screen, where a wide
+    // character takes two: a file gets the popup's 58 columns less the
+    // indent, a directory what "(1 file)" leaves of them.
+    #[test]
+    fn delete_confirm_shortens_by_the_columns_a_path_takes() {
+        use unicode_width::UnicodeWidthChar;
+        let root = std::env::temp_dir().join(format!("cs-ui-del-wide-{}", std::process::id()));
+        let wt = worktree_session(&root);
+        let wide = "一二三四五六七八九十一二三四五六七八九十";
+        std::fs::create_dir_all(wt.join("src").join(wide)).unwrap();
+        std::fs::write(wt.join("src").join(wide).join("a.png"), "").unwrap();
+        std::fs::write(
+            wt.join("src/a-component-with-a-very-long-descriptive-name-that-keeps-going.stories.ts"),
+            "",
+        )
+        .unwrap();
+        // The screen holds a wide character in one cell and a blank in the next.
+        let on_screen = |text: &str| -> String {
+            text.chars().flat_map(|c| if c.width() == Some(2) { vec![c, ' '] } else { vec![c] }).collect()
+        };
+
+        let rows = delete_confirm_rows(&root, 120, 40, "Also deletes");
+
+        assert_eq!(
+            rows[..5],
+            [
+                "Also deletes 2 files git does not track:".to_string(),
+                "    src/a-component-with-a-very…hat-keeps-going.stories.ts".to_string(),
+                on_screen("    src/一二三四五六七八九…一二三四五六七八九十/  (1 file)"),
+                String::new(),
+                "[D] Delete those files too: no".to_string(),
+            ]
+        );
+        assert!(rows[6].starts_with("[y] Confirm"), "the key hint stays on screen: {rows:?}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A 40-character worktree session name under the `worktree_session` base.
+    const LONG_TASK: &str = "abcdefghijklmnopqrstuvwxyz012345678";
+
+    // Every line of the delete confirm takes one row, the question naming
+    // the session and the listing's header included: one wider than the
+    // popup is shortened in the middle, so the grant and the key hint stay
+    // on screen for a long session name. At 80 columns the popup holds 38,
+    // at 120 it holds 58.
+    #[test]
+    fn delete_confirm_gives_each_line_one_row_for_a_long_session_name() {
+        let root = std::env::temp_dir().join(format!("cs-ui-del-name-{}", std::process::id()));
+        worktree_session(&root);
+        let wt = feature_worktree(&root, LONG_TASK);
+        let name = format!("proj@{LONG_TASK}");
+        assert_eq!(name.chars().count(), 40, "fixture: a 40-character session name");
+        for file in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(wt.join(file), "").unwrap();
+        }
+
+        let rows = delete_confirm_rows_of(&root, &[&name], 80, 24, "Delete session");
+        assert_eq!(
+            rows[..10],
+            [
+                "Delete session 'pro…tuvwxyz012345678'?",
+                "This cannot be undone.",
+                "",
+                "Also deletes 3 file…it does not track:",
+                "    a.txt",
+                "    b.txt",
+                "    c.txt",
+                "",
+                "[D] Delete those files too: no",
+                "",
+            ]
+        );
+        assert!(rows[10].starts_with("[y] Confirm"), "the key hint stays on screen at 80x24: {rows:?}");
+        assert!(rows[11].starts_with('\u{2500}'), "the popup's border follows the key hint: {rows:?}");
+
+        let rows = delete_confirm_rows_of(&root, &[&name], 120, 40, "Delete session");
+        assert_eq!(
+            rows[..10],
+            [
+                "Delete session 'proj@abcdefghijklmnopqrstuvwxyz012345678'?",
+                "This cannot be undone.",
+                "",
+                "Also deletes 3 files git does not track:",
+                "    a.txt",
+                "    b.txt",
+                "    c.txt",
+                "",
+                "[D] Delete those files too: no",
+                "",
+            ]
+        );
+        assert!(rows[10].starts_with("[y] Confirm"), "the key hint stays on screen at 120x40: {rows:?}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    // The batch delete confirm gives each line one row too: the list of
+    // names and a warning naming its session are shortened in the middle.
+    // At 80 columns the popup holds 42, at 120 it holds 64.
+    #[test]
+    fn batch_delete_confirm_gives_each_line_one_row_for_long_session_names() {
+        let root = std::env::temp_dir().join(format!("cs-ui-batch-name-{}", std::process::id()));
+        worktree_session(&root);
+        let wt = feature_worktree(&root, LONG_TASK);
+        feature_worktree(&root, "bbcdefghijklmnopqrstuvwxyz012345678");
+        for file in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(wt.join(file), "").unwrap();
+        }
+        let names = [format!("proj@{LONG_TASK}"), "proj@bbcdefghijklmnopqrstuvwxyz012345678".to_string()];
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+
+        let rows = delete_confirm_rows_of(&root, &names, 80, 24, "Delete 2 sessions?");
+        assert_eq!(
+            rows[..11],
+            [
+                "Delete 2 sessions?",
+                "proj@abcdefghijklmnop…pqrstuvwxyz012345678",
+                "",
+                "proj@abcdefghijklmnop… git does not track:",
+                "    a.txt",
+                "    b.txt",
+                "    c.txt",
+                "",
+                "[D] Delete those files too: no",
+                "",
+                "This cannot be undone.",
+            ]
+        );
+        assert!(rows[11].starts_with("[y] Confirm"), "the key hint stays on screen at 80x24: {rows:?}");
+
+        let rows = delete_confirm_rows_of(&root, &names, 120, 40, "Delete 2 sessions?");
+        assert_eq!(
+            rows[..11],
+            [
+                "Delete 2 sessions?",
+                "proj@abcdefghijklmnopqrstuvwxyz0…efghijklmnopqrstuvwxyz012345678",
+                "",
+                "proj@abcdefghijklmnopqrstuvwxyz0…tes 3 files git does not track:",
+                "    a.txt",
+                "    b.txt",
+                "    c.txt",
+                "",
+                "[D] Delete those files too: no",
+                "",
+                "This cannot be undone.",
+            ]
+        );
+        assert!(rows[11].starts_with("[y] Confirm"), "the key hint stays on screen at 120x40: {rows:?}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Worktree sessions `proj@t01`..`proj@t<count>` of the `worktree_session`
+    /// base under `root`, each holding one file git does not track, `a.txt`.
+    fn warned_worktrees(root: &std::path::Path, count: usize) -> Vec<String> {
+        worktree_session(root);
+        (1..=count)
+            .map(|i| {
+                let task = format!("t{i:02}");
+                std::fs::write(feature_worktree(root, &task).join("a.txt"), "").unwrap();
+                format!("proj@{task}")
+            })
+            .collect()
+    }
+
+    // However many marked sessions carry a warning, the batch confirm keeps
+    // its grant and its key hint on screen: the warnings share the rows the
+    // screen has left, and those past them are counted on one row.
+    #[test]
+    fn batch_delete_confirm_keeps_its_keys_on_screen_for_any_number_of_warned_sessions() {
+        let root = std::env::temp_dir().join(format!("cs-ui-batch-many-{}", std::process::id()));
+        let names = warned_worktrees(&root, 18);
+        // At 80x24, 8 warned sessions overrun the rows left and 16 overrun
+        // them with headers alone; at 120x40, 17 overrun them.
+        for (width, height, n) in [(80, 24, 7), (80, 24, 8), (80, 24, 10), (80, 24, 16), (120, 40, 17), (120, 40, 18)] {
+            let marked: Vec<&str> = names[..n].iter().map(String::as_str).collect();
+            let rows = delete_confirm_rows_of(&root, &marked, width, height, &format!("Delete {n} sessions?"));
+            let hint = rows
+                .iter()
+                .position(|r| r.starts_with("[y] Confirm"))
+                .unwrap_or_else(|| panic!("{n} warned at {width}x{height}: no key hint on screen:\n{}", rows.join("\n")));
+            assert_eq!(
+                rows[hint - 4..hint],
+                ["", "[D] Delete those files too: no", "", "This cannot be undone."],
+                "{n} warned at {width}x{height}: the grant stays on screen above the hint:\n{}",
+                rows.join("\n")
+            );
+        }
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    // The warnings fill the rows the screen has left in order: each gets its
+    // header row, the first ones their entries until the rows run out, and
+    // when even the headers do not fit, the last row counts the rest. At
+    // 120x40 the batch confirm with the [D] grant leaves 30 rows for them.
+    #[test]
+    fn batch_delete_confirm_fills_the_rows_left_with_warnings_in_order() {
+        let root = std::env::temp_dir().join(format!("cs-ui-batch-fill-{}", std::process::id()));
+        let names = warned_worktrees(&root, 32);
+        let header = |name: &str| format!("{name}: Also deletes 1 file git does not track:");
+
+        let marked: Vec<&str> = names[..17].iter().map(String::as_str).collect();
+        let rows = delete_confirm_rows_of(&root, &marked, 120, 40, "Delete 17 sessions?");
+        let mut expected = vec![String::new()];
+        for (i, name) in marked.iter().enumerate() {
+            expected.push(header(name));
+            if i < 13 {
+                expected.push("    a.txt".to_string());
+            }
+        }
+        expected.extend(["", "[D] Delete those files too: no", "", "This cannot be undone."].map(String::from));
+        assert_eq!(rows[2..2 + expected.len()], expected[..], "17 warned:\n{}", rows.join("\n"));
+        assert!(rows[2 + expected.len()].starts_with("[y] Confirm"), "17 warned: {rows:?}");
+
+        let marked: Vec<&str> = names.iter().map(String::as_str).collect();
+        let rows = delete_confirm_rows_of(&root, &marked, 120, 40, "Delete 32 sessions?");
+        let mut expected = vec![String::new()];
+        expected.extend(marked[..29].iter().map(|name| header(name)));
+        expected.extend(["... and 3 more warnings", "", "[D] Delete those files too: no", "", "This cannot be undone."].map(String::from));
+        assert_eq!(rows[2..2 + expected.len()], expected[..], "32 warned:\n{}", rows.join("\n"));
+        assert!(rows[2 + expected.len()].starts_with("[y] Confirm"), "32 warned: {rows:?}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    // When the screen leaves the warnings one row, the confirm spends it on
+    // the count rather than on the blank row above it, so warnings that exist
+    // are never hidden while [D] and [y] show. At 80x10 the batch confirm with
+    // the [D] grant leaves exactly one.
+    #[test]
+    fn batch_delete_confirm_counts_its_warnings_in_the_one_row_left() {
+        let root = std::env::temp_dir().join(format!("cs-ui-batch-one-row-{}", std::process::id()));
+        let names = warned_worktrees(&root, 2);
+        let marked: Vec<&str> = names.iter().map(String::as_str).collect();
+
+        let rows = delete_confirm_rows_of(&root, &marked, 80, 10, "Delete 2 sessions?");
+
+        assert_eq!(
+            rows[..7],
+            [
+                "Delete 2 sessions?",
+                "proj@t01, proj@t02",
+                "... and 2 more warnings",
+                "",
+                "[D] Delete those files too: no",
+                "",
+                "This cannot be undone.",
+            ],
+            "{}",
+            rows.join("\n")
+        );
+        assert!(rows[7].starts_with("[y] Confirm"), "the key hint stays on screen: {rows:?}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    // When the screen leaves the warnings no row at all, the confirm gives
+    // them the blank row above its grant, so the count sits directly over
+    // [D] Delete those files too. At 80x9 the batch confirm's other lines
+    // fill the screen, as the single confirm's do at 80x8.
+    #[test]
+    fn delete_confirms_count_their_warnings_over_the_grant_when_no_row_is_left() {
+        let root = std::env::temp_dir().join(format!("cs-ui-batch-no-row-{}", std::process::id()));
+        let names = warned_worktrees(&root, 2);
+        let marked: Vec<&str> = names.iter().map(String::as_str).collect();
+
+        let rows = delete_confirm_rows_of(&root, &marked, 80, 9, "Delete 2 sessions?");
+        assert_eq!(
+            rows[..6],
+            [
+                "Delete 2 sessions?",
+                "proj@t01, proj@t02",
+                "... and 2 more warnings",
+                "[D] Delete those files too: no",
+                "",
+                "This cannot be undone.",
+            ],
+            "batch at 80x9:\n{}",
+            rows.join("\n")
+        );
+        assert!(rows[6].starts_with("[y] Confirm"), "the key hint stays on screen at 80x9: {rows:?}");
+
+        let rows = delete_confirm_rows_of(&root, &["proj@t01"], 80, 8, "Delete session");
+        assert_eq!(
+            rows[..5],
+            [
+                "Delete session 'proj@t01'?",
+                "This cannot be undone.",
+                "Also deletes 1 file…it does not track:",
+                "[D] Delete those files too: no",
+                "",
+            ],
+            "single at 80x8:\n{}",
+            rows.join("\n")
+        );
+        assert!(rows[5].starts_with("[y] Confirm"), "the key hint stays on screen at 80x8: {rows:?}");
+        std::fs::remove_dir_all(&root).ok();
     }
 }

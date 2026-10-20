@@ -24,11 +24,10 @@ enumerations keep their true count (the three-item rule targets rhetorical triad
 a real list of three files); conditional openers are fine in procedural text (the
 starter ban targets rhetorical questions, not "When X, do Y").
 
-**Scope:** cs applies this to `/summary` output (`.cs/summary.md` and the memory
-entries; the narrative notebooks are exempt). Every rule below needs a model judging
-meaning, so the `/summary` critic subagent is the only thing that enforces them.
-`/wrap` skips that critic for speed, which makes these rules something to follow
-while drafting rather than a pass to run afterward.
+**Scope:** in a cs session this covers what `/wrap` writes (`.cs/summary.md` and the
+memory entries; the narrative notebooks are exempt). Every rule below needs a model
+judging meaning, and `/wrap` runs no critic, which makes these rules something to
+follow while drafting rather than a pass to run afterward.
 
 ## Core principles
 
@@ -111,8 +110,8 @@ Lazy extremes (every, always, never, everyone, everybody, nobody) assert false a
 Rate 1-10 on each dimension using the anchors below. Total below 35/50 means the
 prose needs revision. This skill only judges: report the per-dimension scores, the
 total, and the violation list (quoted text + rule + rewrite) whether or not it
-passes, then stop. Revising and any re-score loop belong to the caller (the
-`/summary` pass caps the re-runs) — do not edit the file here.
+passes, then stop. Revising and any re-score loop belong to the caller — do not
+edit the file here.
 
 | Dimension | Low end (score 1-3) | High end (score 8-10) |
 |-----------|---------------------|------------------------|

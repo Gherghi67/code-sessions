@@ -58,7 +58,7 @@ setup() {
     # and a loaded runner must not turn a scan test into a skip. The deadline
     # tests set their own budget.
     export CS_SCOPE_BUDGET_MS="600000"
-    mkdir -p "$CLAUDE_SESSION_DIR"
+    mkdir -p "$CLAUDE_SESSION_META_DIR"
     git -C "$CLAUDE_SESSION_DIR" init -q
     git -C "$CLAUDE_SESSION_DIR" config user.email "test@cs.local"
     git -C "$CLAUDE_SESSION_DIR" config user.name "cs test"
@@ -542,12 +542,24 @@ test_stage_trace_goes_into_the_private_dir() {
     seed_repo "src/api.ts"
     mkdir -p "$TEST_TMPDIR/vault/private" "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local"
     ln -s "$TEST_TMPDIR/vault/private" "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/private"
+    _mark_hand_made_vault "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}"
     run_hook "implement a retry wrapper around the fetch call in src/api.ts" >/dev/null 2>&1
     local stages
     stages=$(awk '{print $3}' "$TEST_TMPDIR/vault/private/scope-prompt.trace" 2>/dev/null)
     assert_output_contains "$stages" "launch" "the launch mark lands in the private dir" || return 1
     assert_output_contains "$stages" "emit" "the stage trace lands in the private dir" || return 1
     assert_file_not_exists "$(_trace_file)" "nothing may be traced in plaintext" || return 1
+}
+
+# Without a vault set up by hand, a .cs/private link out of the session is
+# no place for the trace: not even the launch mark, written before the
+# library and its link check load.
+test_launch_mark_skips_a_private_link_without_a_hand_made_vault() {
+    seed_repo "src/api.ts"
+    mkdir -p "$TEST_TMPDIR/elsewhere" "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local"
+    ln -s "$TEST_TMPDIR/elsewhere" "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/private"
+    run_hook "implement a retry wrapper around the fetch call in src/api.ts" >/dev/null 2>&1
+    assert_file_not_exists "$TEST_TMPDIR/elsewhere/scope-prompt.trace" "nothing is traced through the link" || return 1
 }
 
 # A locked vault leaves the link dangling: the prompt still goes through, and
@@ -568,19 +580,26 @@ test_stage_trace_stops_where_a_killed_run_stopped() {
     # A git that blocks parks the hook in the grounded scan, exactly where the
     # UserPromptSubmit cap parks it in production. The trail it leaves is the
     # only evidence such a run ever produces, so it has to name the last stage
-    # reached and must not claim the run finished.
-    local stub="$TEST_TMPDIR/stub" marker="$TEST_TMPDIR/stub-reached"
+    # reached and must not claim the run finished. Only the scan's bare
+    # `git -C <session> ls-files` blocks: the .cs/local tracked-file check asks
+    # git before the trace opens, and those calls go to the real git.
+    local stub="$TEST_TMPDIR/stub" marker="$TEST_TMPDIR/stub-reached" real_git
+    real_git=$(command -v git)
     mkdir -p "$stub"
     cat > "$stub/git" <<'STUB'
 #!/bin/sh
-printf 'reached\n' > "$STUB_MARKER"
-sleep 5
+if [ "$#" -eq 3 ] && [ "$3" = ls-files ]; then
+    printf 'reached %s\n' "$*" > "$STUB_MARKER"
+    sleep 5
+    exit 1
+fi
+exec "$STUB_REAL_GIT" "$@"
 STUB
     chmod +x "$stub/git"
     rm -f "$marker"
 
     printf '{"prompt": "implement a retry wrapper in src/api.ts"}' \
-        | STUB_MARKER="$marker" PATH="$stub:$PATH" bash "$HOOK" >/dev/null 2>&1 &
+        | STUB_MARKER="$marker" STUB_REAL_GIT="$real_git" PATH="$stub:$PATH" bash "$HOOK" >/dev/null 2>&1 &
     local pid=$! i=0
     while [ ! -f "$marker" ] && [ "$i" -lt 100 ]; do i=$((i + 1)); sleep 0.05; done
     kill -9 "$pid" 2>/dev/null
@@ -779,6 +798,28 @@ test_grep_fallback_still_classifies_chitchat_negative() {
 # nothing timed. The digests, the date and the clarify guideline still arrive;
 # the scope block is replaced by one line that says why; the trace names the
 # stage and never reaches the scan.
+# A mail body is text another session wrote: the digest drops its C0 control
+# bytes but tab and newline, and DEL, and keeps a multibyte character whole.
+# tr gets the C locale through env; the shell never changes its own locale for
+# it, which can crash a bash linked against libintl in the forked copy the
+# scrub runs in.
+test_mail_digest_scrubs_controls_without_the_shell_assigning_its_own_locale() {
+    local b utf8 _in out body own
+    utf8="$(utf8_locale)"
+    mkdir -p "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/mail/new"
+    printf '%s\n' '{"id":"m1","ts":1,"from":"peer","actor":"","kind":"text","ref":null,"body":"hi \u0007there \u2014 peer\u007f"}' \
+        > "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/mail/new/0000000001-m1.json"
+    _in=$(printf '%s' "fix the retry" | jq -Rs '{prompt: ., hook_event_name: "UserPromptSubmit", session_id: "sid-test"}')
+    for b in $(every_bash); do
+        out=$(env ${utf8:+"LC_ALL=$utf8"} "$b" -x "$HOOK" <<< "$_in" 2>"$TEST_TMPDIR/trace") \
+            || { echo "  FAIL: $b: hook must exit 0"; return 1; }
+        body=$(additional_context "$out" | grep -A1 '^<cs_mail id=' | sed -n 2p)
+        assert_eq "$(printf 'hi there \342\200\224 peer')" "$body" "$b: the body, scrubbed byte for byte" || return 1
+        own="$(shell_locale_assignments "$TEST_TMPDIR/trace")"
+        assert_eq "" "$own" "$b must not assign its own locale in the prompt hook" || return 1
+    done
+}
+
 test_budget_exhausted_skips_the_scan_and_keeps_the_rest() {
     seed_repo "src/api.ts"
     # Everything the front half builds is live at once: a pending queue
@@ -896,6 +937,49 @@ test_sub_second_budget_is_the_default_on_a_second_resolution_clock() {
     fi
 }
 
+# Bash 3.2 has no $EPOCHREALTIME of its own and takes whatever the environment
+# holds, and the clock's parts reach shell arithmetic, which runs a command
+# substitution held in an operand. A value that is not seconds and a fraction,
+# both digits, is no clock: the run counts as on a shell without one, so the
+# launch mark comes from `date`, the stage marks from $SECONDS, and a
+# sub-second budget takes the default. The file named by PWNED_FILE is what a
+# substitution in the value would create; the payload names it through the
+# environment because the clock is split at the first dot. Needs a bash that
+# takes the variable from the environment (macOS's /bin/bash 3.2); bash 5
+# keeps its own clock whatever the environment says.
+test_a_clock_from_the_environment_is_read_as_data() {
+    local inherits="" b
+    for b in /bin/bash bash; do
+        if [ "$(env EPOCHREALTIME=probe "$b" -c 'printf %s "${EPOCHREALTIME:-}"' 2>/dev/null)" = probe ]; then
+            inherits="$b"
+            break
+        fi
+    done
+    if [ -z "$inherits" ]; then
+        echo "    SKIP: no bash here takes \$EPOCHREALTIME from the environment"
+        return 77
+    fi
+    seed_repo "src/api.ts"
+    # A cs launch has made .cs/local/ by the first prompt, and the launch mark
+    # is written only into one that exists.
+    mkdir -p "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local"
+    local in pwned="$TEST_TMPDIR/pwned" value rc
+    in=$(printf '%s' "fix the handler in src/api.ts" | jq -Rs '{prompt: ., hook_event_name: "UserPromptSubmit", session_id: "sid-test"}')
+    for value in '0+HOME[$(:>"$PWNED_FILE")].5' 'soon.later'; do
+        rm -f "$(_trace_file)" "$pwned"
+        env EPOCHREALTIME="$value" PWNED_FILE="$pwned" CS_SCOPE_BUDGET_MS=500 \
+            "$inherits" "$HOOK" <<< "$in" >/dev/null 2>&1 && rc=0 || rc=$?
+        assert_eq "0" "$rc" "the hook exits 0 ($value)" || return 1
+        assert_file_not_exists "$pwned" "the clock's content never runs ($value)" || return 1
+        awk '$3 == "launch" && $2 ~ /^[0-9]{10}000$/ { ok = 1 } END { exit !ok }' "$(_trace_file)" \
+            || { echo "  FAIL: the launch mark is whole seconds from date ($value): $(cat "$(_trace_file)" 2>/dev/null)"; return 1; }
+        awk '$3 != "launch" && $2 !~ /^[0-9]*000$/ && $2 != "0" { bad = 1 } END { exit bad }' "$(_trace_file)" \
+            || { echo "  FAIL: the stage marks count whole seconds ($value): $(cat "$(_trace_file)")"; return 1; }
+        assert_output_contains "$(_trace_stages)" "budget=1500" \
+            "a sub-second budget takes the default on the whole-second clock ($value)" || return 1
+    done
+}
+
 # The digest's surface-once budget is spent only by a delivered emission: an
 # emission the hook could not write leaves the cursor where it was, on the
 # deadline exit as on the others. Stdout is CLOSED here (`>&-`), which jq
@@ -948,6 +1032,7 @@ run_test test_injection_prompt_is_data_not_code
 run_test test_firing_prompt_exits_zero
 run_test test_stage_trace_records_the_run_in_order
 run_test test_stage_trace_goes_into_the_private_dir
+run_test test_launch_mark_skips_a_private_link_without_a_hand_made_vault
 run_test test_stage_trace_is_skipped_while_the_private_dir_is_locked
 run_test test_stage_trace_stops_where_a_killed_run_stopped
 run_test test_stage_trace_marks_a_run_killed_before_the_trace_opens
@@ -995,6 +1080,24 @@ test_date_note_silent_without_a_stamp_and_writes_one() {
     ac=$(additional_context "$out")
     assert_output_not_contains "$ac" "## Date" "a missing baseline is not a change" || return 1
     assert_file_contains "$(_stamp_file)" "^$(_today)\$" "first sight writes the baseline" || return 1
+}
+
+# While git tracks a file in .cs/local, the hooks write nothing there: the
+# date baseline is not stamped, as SessionStart stamps none.
+test_prompt_hook_changes_nothing_in_a_control_directory_git_tracks() {
+    local changed
+    mkdir -p "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local"
+    rm -f "$(_stamp_file)"
+    printf 'tracked\n' > "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/session.log"
+    printf 'attended\n' > "${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-}}/local/attention"
+    git -C "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" add -f .cs/local
+    git -C "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" commit -q -m "ship the control directory"
+    # The launch mark, written before the library loads, is the one write
+    # docs/hooks.md keeps; everything after it stands down.
+    CS_SCOPE_TRACE_DISABLE=1 run_hook "hello" >/dev/null
+    assert_file_not_exists "$(_stamp_file)" "no date stamp lands in the tracked directory" || return 1
+    changed=$(git -C "${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}" status --porcelain --ignored -- .cs/local)
+    assert_eq "" "$changed" "nothing under the tracked .cs/local is added, changed or removed" || return 1
 }
 
 test_date_note_stamps_are_per_conversation() {
@@ -1129,6 +1232,7 @@ test_date_note_stamp_advances_on_a_code_work_prompt_too() {
 run_test test_date_note_fires_when_the_day_changed
 run_test test_date_note_silent_when_the_day_is_unchanged
 run_test test_date_note_silent_without_a_stamp_and_writes_one
+run_test test_prompt_hook_changes_nothing_in_a_control_directory_git_tracks
 run_test test_date_note_stamps_are_per_conversation
 run_test test_date_note_silent_on_the_prompt_after_it_fired
 run_test test_date_note_treats_a_malformed_stamp_as_missing
@@ -1142,10 +1246,12 @@ run_test test_date_note_stamp_advances_on_a_code_work_prompt_too
 
 # The deadline tests use the date-stamp helpers defined above, so they run after them.
 run_test test_budget_exhausted_skips_the_scan_and_keeps_the_rest
+run_test test_mail_digest_scrubs_controls_without_the_shell_assigning_its_own_locale
 run_test test_budget_within_runs_the_scan
 run_test test_budget_garbage_is_the_default
 run_test test_budget_of_one_millisecond_expires
 run_test test_sub_second_budget_is_the_default_on_a_second_resolution_clock
+run_test test_a_clock_from_the_environment_is_read_as_data
 run_test test_failed_emission_leaves_the_digest_cursor_unspent
 
 report_results

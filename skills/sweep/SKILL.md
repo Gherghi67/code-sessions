@@ -12,16 +12,15 @@ You are working in a cs session. Your task is to review the conversation in your
 
 Two write surfaces, deliberately DIFFERENT bars:
 
-- **The strict buckets (`.cs/memory/{user,feedback,project,reference}_*.md`) are forever** — they are the session's persistent memory and inform every future session, whichever engine runs it. **Bar: very strict. Default: write nothing.**
+- **The strict buckets (`.cs/memory/{user,feedback,project,reference}_*.md`) are forever** — they sit in Claude's persistent memory and inform every future session. **Bar: very strict. Default: write nothing.**
 - **`.cs/memory/narrative.<actor>.md` is your session-local lab notebook** (per-actor — run `cs -whoami` for your actor) — a native memory topic file, looser bar. Substantive observations welcome. Default: write if the session surfaced a non-obvious finding worth keeping.
 
 Both are written in parallel from the conversation — narrative is not the upstream of the strict buckets.
 
 ## Steps
 
-Before anything else, from the session root, snapshot the index so step 5 can check this sweep's
-rewrites against it. The guard ships with this skill: `<skill-dir>` below is this skill's directory,
-the folder this SKILL.md was loaded from.
+Before anything else, from the session root, snapshot the index and the archive (step 5) so step 5
+can check this sweep's rewrites against them:
 
 ```sh
 bash <skill-dir>/scripts/memory-index-guard.sh snapshot
@@ -50,7 +49,7 @@ bash <skill-dir>/scripts/memory-index-guard.sh snapshot
    | "Linear project X / Grafana board at Y / the #channel for Z / docs at URL" | `reference_*.md` |
 
 3. **Writing memory entries — INTERPRET, don't transcribe.**
-   - Read the matching `.cs/memory/<bucket>_*.md` file first to check for duplicates in any form — paraphrase, near-duplicate, superset. If something similar exists, skip; do not append. But if the new fact contradicts or materially extends an existing entry, update that entry in place (and its `MEMORY.md` pointer) rather than skipping or writing a duplicate.
+   - Read the matching `.cs/memory/<bucket>_*.md` file first to check for duplicates in any form — paraphrase, near-duplicate, superset. If something similar exists, skip; do not append. But if the new fact contradicts or materially extends an existing entry, update that entry in place (and its pointer, in `MEMORY.md` or in step 5's archive) rather than skipping or writing a duplicate.
    - For new entries, name the file `<bucket>_<short_slug>.md` and match the frontmatter shape of the existing entries in that bucket (the dedup read above shows you the current format); if the bucket has no existing entries, copy the frontmatter shape from any other bucket's entries. Then write a concise paraphrase capturing the essence in your own words.
    - One entry per durable fact. If a fact plausibly fits two buckets, pick the more specific one — do not cross-post.
    - After writing an entry, add a one-line pointer for it to `.cs/memory/MEMORY.md`, matching the existing `- [title](file.md): one-line summary` lines and appending to the list. The index is what future sessions load; an unindexed entry is never read again.
@@ -59,27 +58,72 @@ bash <skill-dir>/scripts/memory-index-guard.sh snapshot
 
 4. **Narrative sweep — looser bar.** Resolve `<actor>` with `cs -whoami` first, then append only to your own narrative file. If a substantive finding from this session is not yet in your narrative (`.cs/memory/narrative.<actor>.md`), append it as a dated section. Substantive = something a future session resuming this work would want to know.
 
-5. **Keep the index under budget.** An engine that loads `MEMORY.md` at every session start does so
-   against a hard size limit (`cs -engine supports memory_index` says whether yours does; Claude Code does);
-   past it only part of the file loads and the entries beyond the cut are never read again. Keep the
-   budget either way: the index is shared by every engine and actor on this session. After writing any pointer — and once per sweep even if you wrote none, since another
-   actor may have pushed it over — check:
+5. **Keep the index under budget.** `cs -engine supports memory_index` says whether this engine loads the index at startup; keep the shared budget either way. `MEMORY.md` loads in full at every session start against two hard
+   limits, bytes and lines; past either, Claude Code loads only part of the file and the entries beyond
+   the cut are never read again. After writing any pointer — and once per sweep even if you wrote none,
+   since another actor may have pushed it over — check:
 
    ```sh
-   bash <skill-dir>/scripts/memory-index-guard.sh check            # size against the byte budget
+   bash <skill-dir>/scripts/memory-index-guard.sh check             # size against the byte and line budgets
    awk '/^- \[/{print length($0)"\t"$0}' .cs/memory/MEMORY.md \
      | sort -rn | awk -F'\t' '$1>200' | cut -c1-120                # every over-long pointer, with its text
    ```
 
-   `check` exits 1 when the file is over the budget, when a pointer that was in the snapshot is gone,
-   or when a bucket entry has no pointer, and names each one. The budget is bytes and lives in the script.
+   `check` exits 1 when the file is over either budget, when a pointer that was in `MEMORY.md` or
+   the archive at the snapshot is in neither now, when a pointer names an entry file that is not in
+   `.cs/memory/`, when a pointer is in both `MEMORY.md` and the archive, or when a bucket entry has
+   no pointer in either file, and names each one. A pointer names an entry file when its target is
+   a bare file name ending in `.md`, with no `/` and no `:`; a URL or a `file.md#section` link names
+   none and is not checked, in `MEMORY.md` and the archive alike. Both budgets live in the script,
+   and every line counts toward the line budget, blank and heading lines too.
 
-   The FILE size is the hard constraint — that is what truncates. The 200 figure is only a heuristic
-   for finding candidates: a longer pointer is fine if it carries a rule that would be unsafe to drop,
-   and the file still fits. Note `awk length` counts characters while the budget is bytes, so a
-   200-character line with em dashes or backticks exceeds 200 bytes.
+   The FILE size and line count are the hard constraints — they are what truncates. The 200 figure
+   above is only a heuristic for finding long pointers: a longer pointer is fine if it carries a rule
+   that would be unsafe to drop, and the file still fits. Note `awk length` counts characters while
+   the budget is bytes, so a 200-character line with em dashes or backticks exceeds 200 bytes.
 
-   If over budget, **rewrite** the longest pointers shorter. A pointer is a recall HOOK, not a summary:
+   **The archive.** `.cs/memory/reference_memory_archive.md` is an ordinary `reference_` entry, with
+   frontmatter like its siblings, whose body lists pointer lines in `MEMORY.md`'s own shape,
+   `- [title](file.md): hook`. `MEMORY.md` holds one pointer to it. Entry files never move out of
+   `.cs/memory/` and are never deleted; only pointer lines move.
+
+   **Demote.** You may move a pointer line from `MEMORY.md` to the end of the archive when its entry
+   is either of these, and if over budget, **demote first**, before rewording anything:
+   - about a subject that no longer exists: a finished project, a closed study; or
+   - a rule a test, hook or CI lane now enforces. Find the check in the tree before you move the
+     pointer; a rule you only believe a check enforces stays.
+
+   A rule that has to fire before a proposal stays in `MEMORY.md`, whatever else is true of its entry:
+   "never re-add X", "declined, never re-propose", "rejected". A future session needs it before it
+   suggests the thing, and it has no reason to open the archive first.
+   A `narrative.*.md` pointer is never demoted either: cs adds the opening actor's narrative pointer
+   back to `MEMORY.md` whenever `MEMORY.md` lacks it, and the pointer would then be in both files.
+
+   Move the line byte for byte: delete it from `MEMORY.md` and append the identical line to the
+   archive. Never reword a pointer on its way into the archive. The first demotion creates the
+   archive with exactly these lines, byte for byte, followed by one blank line, so that two clones
+   that each make a first demotion write the same header and their merge keeps one copy of it:
+
+   ```markdown
+   ---
+   name: memory-archive
+   description: "Pointers moved out of MEMORY.md; each entry still applies when its subject comes up"
+   metadata:
+     type: reference
+   ---
+   ```
+
+   It also appends the archive's own pointer to `MEMORY.md`, for example
+   `- [Memory archive](reference_memory_archive.md): pointers moved out of this index; open it when a subject is not listed here`.
+   Never edit the archive's frontmatter after that: a pass changes the archive only by appending
+   a pointer line, updating one in step 3, or deleting one on `duplicate:`. `check` names each pointer this sweep moved as
+   `demoted:` and passes it.
+
+   Rewording shortens a line's bytes, never the number of lines: over the line budget, demotion is the
+   only remedy, and when no pointer meets either criterion, say so and ask. Over the byte budget alone,
+   go on to rewrite.
+
+   If still over the byte budget, **rewrite** the longest pointers shorter. A pointer is a recall HOOK, not a summary:
    it needs the distinctive noun that makes a future session open the file, plus any negation that
    makes the entry safe to act on. Detail belongs in the topic file, which loads lazily.
 
@@ -91,12 +135,21 @@ bash <skill-dir>/scripts/memory-index-guard.sh snapshot
    its "never"/"only"/"must".
 
    **Compress; never delete** an entry or its pointer to save space, and never merge two pointers into
-   one — an unindexed entry is never read again. If compression alone cannot fit the budget, say so and
+   one — an unindexed entry is never read again. A pointer moved into the archive is not deleted; one
+   dropped from both files is. If demotion and compression together cannot fit the budget, say so and
    ask; do not resolve it by dropping entries.
 
-   Put a removed pointer back by rewriting it. If the index is past repair, run
+   Put a removed pointer back by rewriting it. `duplicate:` is a move stopped half done, by `restore`
+   or by a merge that brought another actor's demotion in beside your index; keep one copy. When
+   the entry is a rule that has to fire before a proposal, its demotion broke the rule
+   above: delete the archive's copy. Otherwise delete the `MEMORY.md` copy. Delete that one line and
+   keep the other copy as it stands, even when the two differ: an entry whose meaning changed gets its
+   pointer updated in step 3, never here. On `dangling:`, stop and ask: entries are
+   never deleted, so a pointer whose file is gone means a rename or a lost file only the user can
+   account for. If the index is past repair, run
    `bash <skill-dir>/scripts/memory-index-guard.sh restore` to return it to the snapshot, then redo this
-   sweep's pointer edits. Never finish a sweep with `check` failing.
+   sweep's pointer edits. `restore` puts back `MEMORY.md` alone, so redo a demotion by deleting the
+   `MEMORY.md` line `check` then names `duplicate:`. Never finish a sweep with `check` failing.
 
    **After rewriting, verify twice.** Re-run `check` to confirm the file still fits and every link survived, and re-read each
    rewritten pointer against its topic file. Syntactic health is not semantic health: a shortened line
@@ -114,6 +167,8 @@ bash <skill-dir>/scripts/memory-index-guard.sh snapshot
 
 - Routine debugging that produced a fix — the fix is in the code; the commit message has the context.
 - Boilerplate code or simple CRUD work.
-- Restatements of existing memory entries.
+- Restatements of existing memory entries, including one whose pointer is in the archive
+  (`.cs/memory/reference_memory_archive.md`): its entry file is still in `.cs/memory/`, and the
+  dedup read in step 3 finds it.
 - A play-by-play of what you did ("we refactored X", "fixed the bug in Y") — the code and the commit already carry that. A constraint you *discovered* while doing it still qualifies; route it to `project_*.md`.
 - Anything inferring beyond what was literally said or clearly implied.

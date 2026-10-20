@@ -13,6 +13,7 @@ mod app;
 mod session;
 mod theme;
 mod ui;
+mod untracked;
 
 type Tui = Terminal<CrosstermBackend<BufWriter<io::Stderr>>>;
 

@@ -49,6 +49,19 @@ if [ "$_cs_had_e" = 1 ]; then set -e; fi
 if ! command -v cs_private_dir >/dev/null 2>&1; then
     cs_private_dir() { return 1; }
 fi
+if ! command -v cs_local_dir >/dev/null 2>&1; then
+    cs_local_dir() { return 1; }
+fi
+# A write this hook cannot make is skipped without a word, and the link check
+# on appends and new directories lives in cs-shared.sh; without the library
+# they are made unchecked, as they were before the check existed.
+CS_WRITE_QUIET=1
+if ! command -v cs_append_inside >/dev/null 2>&1; then
+    cs_append_inside() { local f="$1"; shift; { "$@" >> "$f"; } 2>/dev/null; }
+fi
+if ! command -v cs_write_atomic >/dev/null 2>&1; then
+    cs_write_atomic() { return 1; }
+fi
 if ! command -v cs_resolve_session >/dev/null 2>&1; then
     cs_resolve_session() {
         [ -n "${CLAUDE_SESSION_NAME:-}" ] && [ -n "${CLAUDE_SESSION_DIR:-}" ]
@@ -58,26 +71,32 @@ if ! command -v _cs_terminate_jsonl >/dev/null 2>&1; then
     _cs_terminate_jsonl() {
         [ -s "$1" ] || return 0
         [ -n "$(tail -c 1 "$1" 2>/dev/null)" ] || return 0
-        { printf '\n' >> "$1"; } 2>/dev/null || true
+        cs_append_inside "$1" printf '\n' || true
     }
 fi
 # Not in a cs session, do nothing. Resolves from the env under the CLI and
 # from the opened directory under front ends that cannot export one.
 cs_resolve_session "$INPUT" || exit 0
 
+SESSION_DIR="${CS_SESSION_DIR:-${CLAUDE_SESSION_DIR:-}}"
+META_DIR="${CS_SESSION_META_DIR:-${CLAUDE_SESSION_META_DIR:-$SESSION_DIR/.cs}}"
+
 # This pane no longer runs the session: the tmux window, which is the tab, is
 # named after the cs sessions still running in its other panes, or names
 # itself again when none is left. A /clear ends here too, and its SessionStart
 # claims the pane back straight after. Only the launched conversation
 # releases it: a `claude -p` run from inside the session inherits its
-# TMUX_PANE, and its end must not take the lead's claim with it.
+# TMUX_PANE, and its end must not take the lead's claim with it. Under
+# `cs <name> --remote` the window is the server's, named remote:<name> by its
+# launch, and the phone lead never claimed it (session-start.sh): while
+# .cs/local/remote.pid names a server running remote-control for this session
+# (_remote_server_pid) the window is left as it is.
 if [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ] && command -v cs_tmux_title_window >/dev/null 2>&1 \
-    && command -v cs_is_lead >/dev/null 2>&1 && cs_is_lead; then
+    && command -v cs_is_lead >/dev/null 2>&1 && cs_is_lead \
+    && ! { command -v _remote_server_pid >/dev/null 2>&1 \
+        && _remote_server_pid "$META_DIR" "${CLAUDE_SESSION_NAME:-}" >/dev/null; }; then
     cs_tmux_title_window "$TMUX_PANE" ""
 fi
-
-SESSION_DIR="${CLAUDE_SESSION_DIR:-}"
-META_DIR="${CLAUDE_SESSION_META_DIR:-$SESSION_DIR/.cs}"
 
 # Verify session directory exists
 if [ ! -d "$SESSION_DIR" ]; then
@@ -88,24 +107,36 @@ fi
 # append into a missing dir cannot abort this hook (and its cleanup) under set -e.
 # An encrypted session logs into its vault; while the vault is locked the log
 # goes nowhere, never into .cs/local.
-mkdir -p "$META_DIR/local" 2>/dev/null || true
+# A .cs/local git tracks is left as git has it (cs_local_dir).
+# The directory is made as the last level of a .cs that is there, never with
+# -p: `cs -rm <name> --force` can remove the session while its claude is still
+# ending, after the check above, and mkdir -p would build the removed session
+# again from its path. Every other write below is a file in a directory that
+# already exists, so with the session gone each one fails and writes nothing.
+_cs_end_make_local_dir() {
+    [ -n "$LOCAL_DIR" ] && [ ! -d "$LOCAL_DIR" ] || return 0
+    if command -v _cs_refuses_write >/dev/null 2>&1; then
+        ! _cs_refuses_write cs_mkdir_inside "$LOCAL_DIR" "$META_DIR" || return 1
+    fi
+    mkdir "$LOCAL_DIR" 2>/dev/null || [ -d "$LOCAL_DIR" ]
+}
+LOCAL_DIR=$(cs_local_dir "$META_DIR") || LOCAL_DIR=""
+_cs_end_make_local_dir || true
 if _log_dir=$(cs_private_dir "$META_DIR"); then SESSION_LOG="$_log_dir/session.log"; else SESSION_LOG=/dev/null; fi
-echo "" >> "$SESSION_LOG"
-echo "$(date '+%Y-%m-%d %H:%M:%S') - Session ended (source: $END_REASON, ID: $SESSION_ID)" >> "$SESSION_LOG"
+cs_append_inside "$SESSION_LOG" printf '%s\n' "" "$(date '+%Y-%m-%d %H:%M:%S') - Session ended (source: $END_REASON, ID: $SESSION_ID)" || true
 
 # Append structured event to timeline.jsonl
 TIMELINE_FILE="$META_DIR/timeline.jsonl"
 TIMELINE_BRANCH=$(git -C "$SESSION_DIR" branch --show-current 2>/dev/null || echo "")
 _cs_terminate_jsonl "$TIMELINE_FILE" 2>/dev/null || true
-{ jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+cs_append_inside "$TIMELINE_FILE" jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
        --arg event "ended" \
        --arg source "$END_REASON" \
        --arg session_id "$SESSION_ID" \
        --arg run_id "${CS_RUN_ID:-}" \
        --arg branch "$TIMELINE_BRANCH" \
        '{ts: $ts, event: $event, source: $source, session_id: $session_id,
-         engine: "claude", run_id: $run_id, branch: $branch}' \
-    >> "$TIMELINE_FILE"; } 2>/dev/null || true
+         engine: "claude", run_id: $run_id, branch: $branch}' || true
 
 # Delete only the ending conversation's own autosave ref (no longer needed
 # after a clean end). A sibling conversation's ref is left untouched, so a
@@ -121,16 +152,24 @@ fi
 # successor. It must never release a token-qualified lease. Preserve legacy
 # stale-PID cleanup only under the same guard used by modern acquisition.
 _cs_end_legacy_lock_cleanup() {
+    command -v live_lock_pid >/dev/null 2>&1 || return 0
     [ ! -f "$META_DIR/local/run-lease.json" ] && [ -z "${CS_RUN_ID:-}" ] || return 0
+    [ ! -L "$META_DIR/session.lock" ] && [ -f "$META_DIR/session.lock" ] || return 0
     local lock_pid=""
-    { IFS= read -r lock_pid < "$META_DIR/session.lock"; } 2>/dev/null || return 0
-    case "$lock_pid" in
-        ''|*[!0-9]*) rm -f "$META_DIR/session.lock" 2>/dev/null || true ;;
-        *) kill -0 "$lock_pid" 2>/dev/null || rm -f "$META_DIR/session.lock" 2>/dev/null || true ;;
-    esac
+    lock_pid=$(live_lock_pid "$META_DIR")
+    if [ -z "$lock_pid" ]; then
+        rm -f "$META_DIR/session.lock" 2>/dev/null || true
+    elif [ "${CS_LEAD_CLAIM:-}" = 1 ] && [ "$END_REASON" != clear ] && [ "$END_REASON" != resume ] \
+        && [ "$lock_pid" = "${CS_LEAD_PID:-}" ] && cs_is_lead; then
+        _remote_server_pid "$META_DIR" "${CS_SESSION_NAME:-${CLAUDE_SESSION_NAME:-}}" >/dev/null \
+            || rm -f "$META_DIR/session.lock" 2>/dev/null || true
+    fi
 }
 if command -v cs_run_guarded >/dev/null 2>&1; then
-    cs_run_guarded "$META_DIR" _cs_end_legacy_lock_cleanup || true
+    if _cs_lock "$META_DIR/session.mutex.lock"; then
+        cs_run_guarded "$META_DIR" _cs_end_legacy_lock_cleanup || true
+        _cs_unlock "$META_DIR/session.mutex.lock"
+    fi
 fi
 
 # A session cs -encrypt built detaches its vault when the lead conversation
@@ -148,37 +187,54 @@ if [ -f "$META_DIR/local/vault" ] && [ "${CS_RESOLVED_FROM:-env}" = "env" ] \
         clear|resume) ;;
         *)
             nohup /bin/bash -c '
-                dir=$1 pid=$2
+                dir=$1 pid=$2 ldir=$3 shared=$4
                 while kill -0 "$pid" 2>/dev/null; do sleep 1; done
                 alive() { case "$1" in ""|*[!0-9]*) return 1 ;; esac; kill -0 "$1" 2>/dev/null; }
                 held=""
-                alive "$(tr -d "[:space:]" < "$dir/.cs/session.lock" 2>/dev/null)" && held=1
+                # The lock is read by live_lock_pid from cs-shared.sh, the
+                # one lock rule. A waiter that cannot load it keeps the vault
+                # mounted, and the next open handles the leftover.
+                if . "$shared" 2>/dev/null && command -v live_lock_pid >/dev/null 2>&1; then
+                    [ -z "$(live_lock_pid "$dir/.cs")" ] || held=1
+                else
+                    held=1
+                fi
                 if [ -z "$held" ] && [ -f "$dir/.cs/local/vault-holders" ]; then
                     while read -r h; do alive "$h" && held=1; done < "$dir/.cs/local/vault-holders"
                 fi
-                if [ -z "$held" ] && mnt=$(cd "$dir/.cs/vault-mnt" 2>/dev/null && pwd -P) \
+                if [ -z "$held" ] && mnt=$(cd -- "$dir/.cs/vault-mnt" 2>/dev/null && pwd -P) \
                     && mount | grep -F " on $mnt (" >/dev/null; then
                     # A child with a recorded pid, so a reopen can stop it.
+                    # Long after the open checked the session: the builtin
+                    # test refuses a link planted here since.
                     hdiutil detach "$mnt" >/dev/null 2>&1 &
-                    echo "$!" > "$dir/.cs/local/vault-detach.pid"
+                    # Recorded only where cs keeps its own files: a .cs/local
+                    # git tracks gets no pid ($ldir is empty then).
+                    if [ -n "$ldir" ]; then
+                        [ -L "$ldir/vault-detach.pid" ] || echo "$!" > "$ldir/vault-detach.pid"
+                    fi
                     wait "$!" || true
-                    rm -f "$dir/.cs/local/vault-detach.pid"
+                    [ -z "$ldir" ] || rm -f "$ldir/vault-detach.pid"
                 fi
-                rm -f "$dir/.cs/local/vault-waiter.pid"
-            ' cs-vault-waiter "$SESSION_DIR" "$CLAUDE_PID" </dev/null >/dev/null 2>&1 &
-            echo "$!" > "$META_DIR/local/vault-waiter.pid"
+                [ -z "$ldir" ] || rm -f "$ldir/vault-waiter.pid"
+            ' cs-vault-waiter "$SESSION_DIR" "$CLAUDE_PID" "$LOCAL_DIR" "$_cs_shared" </dev/null >/dev/null 2>&1 &
+            # Written at once, not through cs_write_atomic: the waiter deletes
+            # this file as it ends, and a slower write could land after that.
+            # The builtin test refuses a planted link in its place.
+            [ -z "$LOCAL_DIR" ] || [ -L "$LOCAL_DIR/vault-waiter.pid" ] || echo "$!" > "$LOCAL_DIR/vault-waiter.pid"
             disown 2>/dev/null || true
             ;;
     esac
 fi
 
 # Regenerate sessions index.md at the sessions root
-# CS_SESSIONS_ROOT is not exported into a session, so this used to fall back to
-# the session's parent directory unconditionally. That is right for a session
-# living under the sessions root and wrong for an adopted one, whose directory
-# is an unrelated project path — the index landed in that project's parent.
-# Default to the sessions root itself, and only write an index where sessions
-# actually live.
+# cs exports CS_SESSIONS_ROOT into a session only when the user set it, made
+# absolute when it was relative; unset, the root is the default below. The
+# session's parent directory is no stand-in: right for a session living under
+# the sessions root, wrong for an adopted one, whose directory is an unrelated
+# project path, so the index would land in that project's parent. Default to
+# the sessions root itself, and only write an index where sessions actually
+# live.
 # Compare physical against physical, on BOTH sides. The resolver reports a
 # physical SESSION_DIR (cd + pwd -P) while the CLI exports a logical one built
 # from $HOME, so normalizing only the root stops the index being written for any
@@ -188,9 +244,9 @@ fi
 _cs_root_default="${HOME:-/nonexistent}/.claude-sessions"
 SESSIONS_ROOT="${CS_SESSIONS_ROOT:-$_cs_root_default}"
 if [ -d "$SESSIONS_ROOT" ]; then
-    SESSIONS_ROOT=$(cd "$SESSIONS_ROOT" 2>/dev/null && pwd -P) || SESSIONS_ROOT="${CS_SESSIONS_ROOT:-$_cs_root_default}"
+    SESSIONS_ROOT=$(cd -- "$SESSIONS_ROOT" 2>/dev/null && pwd -P) || SESSIONS_ROOT="${CS_SESSIONS_ROOT:-$_cs_root_default}"
 fi
-SESSION_DIR_PHYS=$(cd "$SESSION_DIR" 2>/dev/null && pwd -P) || SESSION_DIR_PHYS="$SESSION_DIR"
+SESSION_DIR_PHYS=$(cd -- "$SESSION_DIR" 2>/dev/null && pwd -P) || SESSION_DIR_PHYS="$SESSION_DIR"
 case "$SESSION_DIR_PHYS" in
     "$SESSIONS_ROOT"/*) : ;;
     *) [ -n "${CS_SESSIONS_ROOT:-}" ] || SESSIONS_ROOT="" ;;
@@ -261,7 +317,11 @@ if [ -n "$SESSIONS_ROOT" ] && [ -d "$SESSIONS_ROOT" ]; then
     } > "$INDEX_FILE"; } 2>/dev/null || true
 fi
 
-echo "Session management cleanup complete" >> "$SESSION_LOG"
-echo "================================================================================" >> "$SESSION_LOG"
+cs_append_inside "$SESSION_LOG" printf '%s\n' "Session management cleanup complete" \
+    "================================================================================" || true
+
+if [ "$END_REASON" != clear ] && [ "$END_REASON" != resume ] && [ -n "$LOCAL_DIR" ] && cs_is_lead; then
+    cs_lead_claim_end "$LOCAL_DIR" || true
+fi
 
 exit 0

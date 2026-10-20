@@ -26,6 +26,9 @@ setup() {
     # exist, which the CS_AGE_BIN seam reads as "no age on this machine".
     export CS_AGE_BIN="$TEST_TMPDIR/no-such-age"
     mkdir -p "$CS_SESSIONS_ROOT" "$HOME"
+    # The session CLAUDE_SESSION_NAME names: export-file and the age commands
+    # refuse a name the sessions root does not have.
+    mkdir -p "$CS_SESSIONS_ROOT/test-session/.cs"
 }
 
 teardown() {
@@ -111,13 +114,40 @@ set -u
 sub="${1:-}"
 sess="${FAKE_SECURITY_SESSION:-test-session}"
 
-# Argument shape used by cs-secrets: -a <account> -s <service> [-w [value]] [-U]
-acct=""; service=""; value=""; have_value=0
+# FAKE_SECURITY_ARGVLOG records the argv this process was started with, which
+# is exactly what `ps` would show, so a test can prove a value never reached it.
+[ -n "${FAKE_SECURITY_ARGVLOG:-}" ] && printf '%s\n' "$*" >> "$FAKE_SECURITY_ARGVLOG"
+
+# `security -i` reads its command line from stdin. Parse that line the way the
+# real tokenizer does for what cs-secrets sends (double-quoted words with \\
+# and \" escapes) and carry on as if it had been argv.
+if [ "$sub" = "-i" ]; then
+    IFS= read -r line || true
+    # The real tool takes at most 4095 bytes of a line as one command and
+    # reads what is left, the newline included, as the next one; an empty
+    # command returns 0 and the exit status is the last command's. So a line
+    # of exactly 4095 bytes runs whole and exits 0 whatever its command did,
+    # and a longer line is cut. FAKE_SECURITY_LINELOG records each line's
+    # length in bytes.
+    line_bytes=$(printf '%s' "$line" | wc -c | tr -d ' ')
+    [ -n "${FAKE_SECURITY_LINELOG:-}" ] && printf '%s\n' "$line_bytes" >> "$FAKE_SECURITY_LINELOG"
+    if [ "$line_bytes" -gt 4095 ]; then
+        echo "security: a command line over 4095 bytes is cut" >&2
+        exit 1
+    fi
+    [ "$line_bytes" -eq 4095 ] && trap 'exit 0' EXIT
+    eval "set -- $line"
+    sub="${1:-}"
+fi
+
+# Argument shape used by cs-secrets: -a <account> -s <service> [-w [value] | -X <hex>] [-U]
+acct=""; service=""; value=""; have_value=0; hex=""; have_hex=0
 while [ $# -gt 0 ]; do
     case "$1" in
         -a) acct="${2:-}"; shift 2 ;;
         -s) service="${2:-}"; shift 2 ;;
         -w) if [ $# -ge 2 ] && [ "${2#-}" = "$2" ]; then value="$2"; have_value=1; shift 2; else shift; fi ;;
+        -X) hex="${2:-}"; have_hex=1; shift 2 ;;
         *)  shift ;;
     esac
 done
@@ -181,7 +211,11 @@ case "$sub" in
         esac
         if [ -n "$store" ]; then
             mkdir -p "$store"
-            { printf '%s\n' "$service"; [ "$have_value" -eq 1 ] && printf '%s' "$value"; } > "$(slot)"
+            {
+                printf '%s\n' "$service"
+                [ "$have_value" -eq 1 ] && printf '%s' "$value"
+                [ "$have_hex" -eq 1 ] && printf '%s' "$hex" | perl -ne 'print pack("H*", $_)'
+            } > "$(slot)"
         fi
         exit 0
         ;;
@@ -236,6 +270,17 @@ test_store_and_get() {
     assert_eq "sk_test_123" "$value" "Should retrieve stored value" || return 1
 }
 
+# A value on argv is still stored, with a warning that names the one place it
+# shows (ps) and the stdin form that avoids it.
+test_set_warns_about_a_value_on_argv() {
+    local err
+    err=$("$CS_SECRETS_BIN" set api_key "sk_test_123" 2>&1 >/dev/null)
+    assert_eq "$(printf '%s\n%s' \
+        "Warning: passing the value on the command line exposes it via ps." \
+        "         Prefer stdin: cs -secrets set api_key < valuefile")" "$err" \
+        "the argv warning names ps and the stdin form" || return 1
+}
+
 test_store_with_spaces_in_value() {
     "$CS_SECRETS_BIN" set db_url "postgres://user:pass@localhost/my db" 2>&1
     local value
@@ -243,8 +288,7 @@ test_store_with_spaces_in_value() {
     assert_eq "postgres://user:pass@localhost/my db" "$value" "Should handle spaces" || return 1
 }
 
-# The value can be supplied on stdin (never argv) so it stays out of ps and the
-# bash-logger session.log capture.
+# The value can be supplied on stdin (never argv) so it stays out of ps.
 test_set_reads_value_from_stdin() {
     printf 'sk_from_stdin' | "$CS_SECRETS_BIN" set api_key >/dev/null 2>&1
     local value
@@ -422,6 +466,357 @@ test_purge_removes_all() {
     assert_output_contains "$list_output" "No secrets" "All secrets should be gone" || return 1
 }
 
+# The pin list and digest record live under ~/.cs-secrets, so they outlive the
+# session directory. `purge` deletes ALL of a session's secrets, and the trust
+# that went with them goes too: a later session under the same name must not
+# inherit recipients nobody pinned for it.
+test_purge_drops_the_sessions_age_state() {
+    _use_real_age || return $?
+    local state="$HOME/.cs-secrets/sessions/test-session"
+    printf 'age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqs3290gq\n' > "$TEST_TMPDIR/peer.pub"
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/peer.pub" >/dev/null 2>&1 || { echo "  FAIL: age add failed"; return 1; }
+    assert_file_exists "$state/age-trusted" "fixture: age add wrote the pin list" || return 1
+    "$CS_SECRETS_BIN" purge >/dev/null 2>&1 || { echo "  FAIL: purge failed"; return 1; }
+    if [ -e "$state" ]; then
+        echo "  FAIL: purge left the session's age state behind: $(ls -A "$state" | tr '\n' ' ')"
+        return 1
+    fi
+}
+
+# The age recipients and the sync file live in a session's .cs, and the pin
+# list under ~/.cs-secrets is keyed by the session's name. A name the sessions
+# root does not have (a removed session, a mistyped --session) must be refused
+# before anything is written: creating it would bring a removed session back
+# as a directory holding nothing but recipients, with a pin list a later
+# session of that name would inherit.
+_assert_no_trace_of_session() {  # name
+    assert_not_exists "$CS_SESSIONS_ROOT/$1" "no directory is created for the session" || return 1
+    assert_not_exists "$HOME/.cs-secrets/sessions/$1" "no age state is created for the session" || return 1
+}
+
+test_age_add_refuses_a_session_the_root_does_not_have() {
+    local out rc=0
+    out=$("$CS_SECRETS_BIN" --session ghost age add age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq0000000 2>&1) || rc=$?
+    assert_eq "1" "$rc" "age add exits 1" || return 1
+    assert_eq "Error: No session named 'ghost' in $CS_SESSIONS_ROOT" "$out" "the refusal names the session and the root" || return 1
+    _assert_no_trace_of_session ghost || return 1
+}
+
+# A directory in the sessions root that holds no .cs is not a session, and an
+# age add must not make it look like one.
+test_age_add_refuses_a_directory_that_is_not_a_session() {
+    local out rc=0
+    mkdir -p "$CS_SESSIONS_ROOT/plain"
+    out=$("$CS_SECRETS_BIN" --session plain age add age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq0000000 2>&1) || rc=$?
+    assert_eq "1" "$rc" "age add exits 1" || return 1
+    assert_eq "Error: No session named 'plain' in $CS_SESSIONS_ROOT" "$out" "the refusal names the session and the root" || return 1
+    assert_eq "" "$(ls -A "$CS_SESSIONS_ROOT/plain")" "the directory stays empty" || return 1
+    assert_not_exists "$HOME/.cs-secrets/sessions/plain" "no age state is created for it" || return 1
+}
+
+# A session is one entry of the sessions root, so a name that is a path is
+# refused even where the path leads to a directory holding .cs: ".." would put
+# the recipients in the root's parent and the pin list in ~/.cs-secrets itself,
+# where no session removal looks.
+test_age_add_refuses_a_name_that_is_a_path() {
+    local name out rc
+    mkdir -p "$TEST_TMPDIR/.cs" "$CS_SESSIONS_ROOT/test-session/nested/.cs"
+    for name in .. . test-session/nested test-session/; do
+        rc=0
+        out=$("$CS_SECRETS_BIN" --session "$name" age add age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq0000000 2>&1) || rc=$?
+        assert_eq "1" "$rc" "age add exits 1 for '$name'" || return 1
+        assert_eq "Error: No session named '$name' in $CS_SESSIONS_ROOT" "$out" "the refusal names '$name' and the root" || return 1
+    done
+    assert_not_exists "$TEST_TMPDIR/.cs/age-recipients" "nothing is written beside the sessions root" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/.cs" "nothing is written into the sessions root" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/test-session/nested/.cs/age-recipients" "nothing is written into the nested directory" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/test-session/.cs/age-recipients" "nothing is written into the session through a trailing slash" || return 1
+    assert_not_exists "$HOME/.cs-secrets/age-trusted" "no pin list lands in ~/.cs-secrets itself" || return 1
+    assert_not_exists "$HOME/.cs-secrets/sessions" "no age state is created" || return 1
+}
+
+# Purge ends in an rm -rf of the session's age state under ~/.cs-secrets, so a
+# name that is a path would delete whatever it leads to: the machine key one
+# level up, a directory beside ~/.cs-secrets two levels up. Every verb that
+# takes a session refuses such a name before touching any store.
+test_session_verbs_refuse_a_name_that_is_a_path() {
+    local bindir; bindir=$(_make_fake_security)
+    mkdir -p "$HOME/.cs-secrets/sessions/test-session" "$HOME/victim"
+    printf 'keep\n' > "$HOME/victim/file.txt"
+    printf 'PRIVATE\n' > "$HOME/.cs-secrets/id_ed25519"
+    local backend name verb out rc
+    for backend in keychain encrypted; do
+        for name in ../../victim ../id_ed25519 .. test-session/x; do
+            for verb in purge list; do
+                rc=0
+                out=$(PATH="$bindir:$PATH" CS_SECRETS_BACKEND=$backend FAKE_SECURITY_MODE=empty \
+                    "$CS_SECRETS_BIN" --session "$name" "$verb" 2>&1) || rc=$?
+                assert_eq "1" "$rc" "$backend $verb exits 1 for '$name'" || return 1
+                assert_eq "Error: No session named '$name' in $CS_SESSIONS_ROOT" "$out" \
+                    "$backend $verb names '$name' and the root" || return 1
+            done
+        done
+    done
+    assert_file_exists "$HOME/victim/file.txt" "the directory beside ~/.cs-secrets survives" || return 1
+    assert_file_exists "$HOME/.cs-secrets/id_ed25519" "the machine key survives" || return 1
+}
+
+test_age_remove_refuses_a_session_the_root_does_not_have() {
+    local out rc=0
+    out=$("$CS_SECRETS_BIN" --session ghost age remove peer 2>&1) || rc=$?
+    assert_eq "1" "$rc" "age remove exits 1" || return 1
+    assert_eq "Error: No session named 'ghost' in $CS_SESSIONS_ROOT" "$out" "the refusal names the session and the root" || return 1
+    _assert_no_trace_of_session ghost || return 1
+}
+
+# age remove reads a recipient file, drops its key's pin and deletes it. A
+# clone can commit a link on the way there, the session's .cs, its
+# age-recipients directory or the file itself, leading anywhere, so a link
+# at any of the three is refused, named, before anything is read or removed.
+test_age_remove_refuses_a_link_on_the_way_to_the_recipient() {
+    local key=age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq0000000
+    local outside="$TEST_TMPDIR/outside" fp pins session link out rc
+    mkdir -p "$outside/.cs/age-recipients"
+    printf '%s\n' "$key" > "$outside/peer.pub"
+    printf '%s\n' "$key" > "$outside/.cs/age-recipients/peer.pub"
+    printf 'keep\n' > "$outside/other.txt"
+    fp=$(printf '%s' "$key" | shasum -a 256 | cut -d' ' -f1)
+    pins="$fp
+another-pin"
+    mkdir -p "$CS_SESSIONS_ROOT/dir-link/.cs" "$CS_SESSIONS_ROOT/file-link/.cs/age-recipients" "$CS_SESSIONS_ROOT/cs-link"
+    ln -s "$outside" "$CS_SESSIONS_ROOT/dir-link/.cs/age-recipients"
+    ln -s "$outside/peer.pub" "$CS_SESSIONS_ROOT/file-link/.cs/age-recipients/peer.pub"
+    ln -s "$outside/.cs" "$CS_SESSIONS_ROOT/cs-link/.cs"
+    for session in dir-link file-link cs-link; do
+        mkdir -p "$HOME/.cs-secrets/sessions/$session"
+        printf '%s\n' "$pins" > "$HOME/.cs-secrets/sessions/$session/age-trusted"
+        case "$session" in
+            dir-link) link="$CS_SESSIONS_ROOT/$session/.cs/age-recipients" ;;
+            file-link) link="$CS_SESSIONS_ROOT/$session/.cs/age-recipients/peer.pub" ;;
+            cs-link) link="$CS_SESSIONS_ROOT/$session/.cs" ;;
+        esac
+        rc=0
+        out=$("$CS_SECRETS_BIN" --session "$session" age remove peer 2>&1) || rc=$?
+        assert_eq "1" "$rc" "age remove exits 1 through the $session link: $out" || return 1
+        assert_eq "Error: refusing to remove recipient peer: $link is a link; cs removes a recipient file only from the session's own .cs/age-recipients directory, never through a link. Nothing was removed." \
+            "$out" "the refusal names the $session link" || return 1
+        assert_eq "$pins" "$(cat "$HOME/.cs-secrets/sessions/$session/age-trusted")" "the $session pin list is as it was" || return 1
+        [ -L "$link" ] || { echo "  FAIL: the $session link is gone: $link"; return 1; }
+    done
+    assert_eq "$key" "$(cat "$outside/peer.pub")" "the file outside the session is kept" || return 1
+    assert_eq "$key" "$(cat "$outside/.cs/age-recipients/peer.pub")" "the recipient file under the linked .cs is kept" || return 1
+    assert_eq "keep" "$(cat "$outside/other.txt")" "the file beside it is kept" || return 1
+}
+
+# A recipient is named by its file in .cs/age-recipients, so its name is one
+# file name. A name that could lead elsewhere (a "/", a leading "." as in
+# "..") or carries a control byte is refused before anything is looked up:
+# a path as the name reached another session's recipient file.
+test_age_remove_refuses_a_name_that_is_not_a_recipient_name() {
+    local key=age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq0000000
+    local other="$CS_SESSIONS_ROOT/other/.cs/age-recipients" name shown out rc
+    mkdir -p "$other" "$CS_SESSIONS_ROOT/test-session/.cs/age-recipients"
+    printf '%s\n' "$key" > "$other/peer.pub"
+    printf '%s\n' "$key" > "$CS_SESSIONS_ROOT/test-session/.cs/age-recipients/.hidden.pub"
+    for name in ../../../other/.cs/age-recipients/peer sub/peer .. . .hidden $'peer\nx' $'peer\e[31m' $'peer\x7f'; do
+        case "$name" in
+            $'peer\nx') shown=peer_x ;;
+            $'peer\e[31m') shown=peer__31m ;;
+            $'peer\x7f') shown=peer_ ;;
+            *) shown=$name ;;
+        esac
+        rc=0
+        out=$("$CS_SECRETS_BIN" age remove "$name" 2>&1) || rc=$?
+        assert_eq "1" "$rc" "age remove exits 1 for '$shown': $out" || return 1
+        assert_eq "Error: not a recipient name: $shown. A recipient's name is its file's name in .cs/age-recipients without .pub, with no '/', no control character and no leading '.'." \
+            "$out" "the refusal names '$shown' plainly" || return 1
+    done
+    assert_eq "$key" "$(cat "$other/peer.pub")" "the other session's recipient file is kept" || return 1
+    assert_eq "$key" "$(cat "$CS_SESSIONS_ROOT/test-session/.cs/age-recipients/.hidden.pub")" "the hidden file is kept" || return 1
+    assert_not_exists "$HOME/.cs-secrets/sessions/test-session" "no age state is made" || return 1
+}
+
+# age add names a recipient after its key file, without .pub. A key file
+# whose name starts with a '.' would make a recipient that no listing, export
+# or age remove sees (their *.pub globs skip it), its key pinned until a
+# purge, so it is refused, named plainly, before anything is made or pinned.
+# Any other name is taken, a control byte included: the export refusal tells
+# the user to pin such a file with age add.
+test_age_add_refuses_a_key_file_whose_name_is_not_a_recipient_name() {
+    local key=age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq0000000
+    local keys="$TEST_TMPDIR/keys" file shown out rc before
+    mkdir -p "$keys/sub"
+    for file in "$keys/.hidden.pub" "$keys/sub/..pub"; do
+        printf '%s\n' "$key" > "$file"
+        case "$file" in
+            */.hidden.pub) shown=.hidden ;;
+            */..pub) shown=. ;;
+        esac
+        before=$(_tree_state)
+        rc=0
+        out=$("$CS_SECRETS_BIN" age add "$file" 2>&1) || rc=$?
+        assert_eq "1" "$rc" "age add exits 1 for '$shown': $out" || return 1
+        assert_eq "Error: not a recipient name: $shown. A key file's name without .pub must not start with '.': age list, every export and age remove skip such a recipient." \
+            "$out" "the refusal names '$shown' plainly" || return 1
+        assert_eq "$before" "$(_tree_state)" "age add of '$shown' makes and pins nothing" || return 1
+    done
+    assert_not_exists "$CS_SESSIONS_ROOT/test-session/.cs/age-recipients" "no recipients folder is made" || return 1
+}
+
+# Every path and every file's checksum under HOME and the sessions root.
+_tree_state() {
+    find "$HOME" "$CS_SESSIONS_ROOT" -print | LC_ALL=C sort
+    find "$HOME" "$CS_SESSIONS_ROOT" -type f -exec cksum {} + | LC_ALL=C sort
+}
+
+# A feature (<base>@<task>) uses its base's secrets, age recipients and pins:
+# its launch exports the base as CS_SECRETS_SESSION, and cs <base>@<task>
+# -secrets names the base. A store, a lock, a sync file or age state made
+# under the feature's own name is read and removed by nothing, so every write
+# addressed to a feature but purge is refused, naming the base, before
+# anything is written, locked or created, under either backend.
+test_every_write_but_purge_refuses_a_feature_session() {
+    local key=age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq0000000
+    local meta="$CS_SESSIONS_ROOT/test-session@task/.cs" bindir backend cmd out rc before path
+    bindir=$(_make_fake_security)
+    printf 'v1' | "$CS_SECRETS_BIN" set API_KEY >/dev/null 2>&1 || { echo "  FAIL: fixture: could not seed the base's secret"; return 1; }
+    mkdir -p "$meta/age-recipients" "$meta/artifacts"
+    printf '%s\n' "$key" > "$meta/age-recipients/peer.pub"
+    printf 'api_key=sk_live_feature1\n' > "$meta/artifacts/notes.txt"
+    local cmds=("set NEW_KEY" "store NEW_KEY" "delete API_KEY" "rm API_KEY" "rename moved" \
+        "import-file" "import-file --replace" "migrate" "migrate --redact" \
+        "migrate-backend keychain" "migrate-backend encrypted --delete-source" "export-file" \
+        "age add $key" "age remove peer" "age rm peer")
+    for backend in encrypted keychain; do
+        for cmd in "${cmds[@]}"; do
+            before=$(_tree_state)
+            rm -f "$TEST_TMPDIR/security.argv"
+            rc=0
+            # shellcheck disable=SC2086 # each entry carries its own arguments
+            out=$(printf 'v2' | PATH="$bindir:$PATH" CS_SECRETS_BACKEND=$backend FAKE_SECURITY_ARGVLOG="$TEST_TMPDIR/security.argv" \
+                "$CS_SECRETS_BIN" --session test-session@task $cmd 2>&1) || rc=$?
+            assert_eq "1" "$rc" "$backend $cmd exits 1: $out" || return 1
+            assert_eq "Error: test-session@task is a feature of session test-session, and a feature uses its base's secrets and age recipients. Run it with --session test-session." \
+                "$out" "$backend $cmd names the base" || return 1
+            assert_eq "$before" "$(_tree_state)" "$backend $cmd leaves every file as it was" || return 1
+            assert_not_exists "$TEST_TMPDIR/security.argv" "$backend $cmd calls no security command" || return 1
+        done
+    done
+    for path in "$HOME/.cs-secrets/test-session@task.enc" "$HOME/.cs-secrets/.lock.test-session@task" \
+        "$HOME/.cs-secrets/sessions/test-session@task" "$CS_SESSIONS_ROOT/.secrets-lock.test-session@task" \
+        "$meta/secrets.$(_machine_id).age" "$meta/secrets.$(_machine_id).enc"; do
+        assert_not_exists "$path" "nothing is made at $path" || return 1
+    done
+    assert_eq "v1" "$("$CS_SECRETS_BIN" get API_KEY 2>&1)" "the base's secret is kept" || return 1
+    # cs <base>@<task> -secrets names the base, and its write lands there.
+    rc=0
+    out=$(printf 'v3' | "$CS_BIN" test-session@task -secrets set ROUTED_KEY 2>&1) || rc=$?
+    assert_eq "0" "$rc" "cs test-session@task -secrets set exits 0: $out" || return 1
+    assert_eq "v3" "$("$CS_SECRETS_BIN" get ROUTED_KEY 2>&1)" "the routed write lands in the base's store" || return 1
+    assert_not_exists "$HOME/.cs-secrets/test-session@task.enc" "the routed write makes no store for the feature" || return 1
+}
+
+# purge only removes, so it is the one write a feature session takes: it
+# clears what an earlier cs stored under the feature's own name (a store, a
+# Keychain entry, a pin list) and makes nothing named for the feature. The
+# base's secrets and pin list are kept.
+test_purge_of_a_feature_session_removes_what_its_name_holds() {
+    local bindir kcstore="$TEST_TMPDIR/kc-store" backend before kc_before out rc
+    local fstate="$HOME/.cs-secrets/sessions/test-session@task"
+    bindir=$(_make_fake_security)
+    mkdir -p "$CS_SESSIONS_ROOT/test-session@task/.cs"
+    printf 'v1' | "$CS_SECRETS_BIN" set API_KEY >/dev/null 2>&1 || { echo "  FAIL: fixture: could not seed the base's encrypted secret"; return 1; }
+    printf 'kv1' | PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        "$CS_SECRETS_BIN" set API_KEY >/dev/null 2>&1 || { echo "  FAIL: fixture: could not seed the base's Keychain secret"; return 1; }
+    mkdir -p "$HOME/.cs-secrets/sessions/test-session"
+    printf 'base-pin\n' > "$HOME/.cs-secrets/sessions/test-session/age-trusted"
+    for backend in encrypted keychain; do
+        before=$(_tree_state)
+        kc_before=$(find "$kcstore" -type f -exec cksum {} + | LC_ALL=C sort)
+        case "$backend" in
+            encrypted) _seed_enc_sync_file "$HOME/.cs-secrets/test-session@task.enc" '{"OLD_KEY":"old"}' || return 1 ;;
+            keychain) FAKE_SECURITY_STORE="$kcstore" \
+                "$bindir/security" add-generic-password -a "${USER:-unknown}" -s "cs:test-session@task:OLD_KEY" -w old ;;
+        esac
+        mkdir -p "$fstate"
+        printf 'pin\n' > "$fstate/age-trusted"
+        assert_eq "old" "$(PATH="$bindir:$PATH" CS_SECRETS_BACKEND=$backend FAKE_SECURITY_STORE="$kcstore" \
+            "$CS_SECRETS_BIN" --session test-session@task get OLD_KEY 2>&1)" "fixture: $backend holds a secret under the feature's name" || return 1
+        rc=0
+        out=$(PATH="$bindir:$PATH" CS_SECRETS_BACKEND=$backend FAKE_SECURITY_STORE="$kcstore" \
+            "$CS_SECRETS_BIN" --session test-session@task purge 2>&1) || rc=$?
+        assert_eq "0" "$rc" "$backend purge exits 0: $out" || return 1
+        assert_eq "Purged 1 secret(s) for session: test-session@task" "$out" "$backend purge counts the feature's secret" || return 1
+        assert_eq "$before" "$(_tree_state)" "$backend purge removes the feature's leftovers and makes nothing" || return 1
+        assert_eq "$kc_before" "$(find "$kcstore" -type f -exec cksum {} + | LC_ALL=C sort)" "$backend purge leaves only the base's Keychain entry" || return 1
+    done
+    assert_eq "v1" "$("$CS_SECRETS_BIN" get API_KEY 2>&1)" "the base's encrypted secret is kept" || return 1
+    assert_eq "kv1" "$(PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        "$CS_SECRETS_BIN" get API_KEY 2>&1)" "the base's Keychain secret is kept" || return 1
+}
+
+# An option cs-secrets does not take (--session=other: the session goes after
+# --session with a space) is refused, named, before any command runs. Read
+# as a word, it left the session cs-secrets runs in to be acted on: purge
+# purged it. Every command, with the option before it or after it.
+test_an_unknown_option_is_refused_before_any_command_runs() {
+    local key=age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq0000000
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs" bindir backend cmd out rc before
+    bindir=$(_make_fake_security)
+    mkdir -p "$CS_SESSIONS_ROOT/other/.cs" "$meta/age-recipients" "$meta/artifacts"
+    printf 'v1' | "$CS_SECRETS_BIN" set API_KEY >/dev/null 2>&1 || { echo "  FAIL: fixture: could not seed the session's secret"; return 1; }
+    printf 'o1' | "$CS_SECRETS_BIN" --session other set OTHER_KEY >/dev/null 2>&1 || { echo "  FAIL: fixture: could not seed other's secret"; return 1; }
+    printf '%s\n' "$key" > "$meta/age-recipients/peer.pub"
+    printf 'api_key=sk_live_ambient1\n' > "$meta/artifacts/notes.txt"
+    local cmds=("--session=other set NEW_KEY" "--session=other store NEW_KEY" "--session=other get API_KEY" \
+        "--session=other list" "--session=other ls" "--session=other delete API_KEY" "--session=other rm API_KEY" \
+        "--session=other purge" "--session=other rename moved" "--session=other export" "--session=other export-file" \
+        "--session=other import-file" "--session=other migrate" "--session=other migrate --redact" \
+        "--session=other migrate-backend keychain" "--session=other backend" "--session=other age init" \
+        "--session=other age pubkey" "--session=other age add $key" "--session=other age list" "--session=other age ls" \
+        "--session=other age remove peer" "--session=other age rm peer" \
+        "purge --session=other" "age list --session=other")
+    for backend in encrypted keychain; do
+        for cmd in "${cmds[@]}"; do
+            before=$(_tree_state)
+            rm -f "$TEST_TMPDIR/security.argv"
+            rc=0
+            # shellcheck disable=SC2086 # each entry carries its own arguments
+            out=$(printf 'v2' | PATH="$bindir:$PATH" CS_SECRETS_BACKEND=$backend FAKE_SECURITY_ARGVLOG="$TEST_TMPDIR/security.argv" \
+                "$CS_SECRETS_BIN" $cmd 2>&1) || rc=$?
+            assert_eq "1" "$rc" "$backend $cmd exits 1: $out" || return 1
+            assert_eq "Error: unknown option: --session_other. Usage: cs-secrets <command> [options]; run cs-secrets --help for the commands and options." \
+                "$out" "$backend $cmd names the option" || return 1
+            assert_eq "$before" "$(_tree_state)" "$backend $cmd leaves every file as it was" || return 1
+            assert_not_exists "$TEST_TMPDIR/security.argv" "$backend $cmd calls no security command" || return 1
+        done
+    done
+    assert_eq "v1" "$("$CS_SECRETS_BIN" get API_KEY 2>&1)" "the session's secret is kept" || return 1
+    assert_eq "o1" "$("$CS_SECRETS_BIN" --session other get OTHER_KEY 2>&1)" "other's secret is kept" || return 1
+}
+
+# Stored secrets outlive `cs -rm`, so an export under a removed session's name
+# has something to write.
+test_export_file_refuses_a_session_the_root_does_not_have() {
+    local out rc=0
+    mkdir -p "$CS_SESSIONS_ROOT/ghost/.cs"
+    "$CS_SECRETS_BIN" --session ghost set api_key "sk_123" >/dev/null 2>&1 || { echo "  FAIL: fixture: set failed"; return 1; }
+    rm -rf "$CS_SESSIONS_ROOT/ghost"
+    out=$("$CS_SECRETS_BIN" --session ghost export-file 2>&1) || rc=$?
+    assert_eq "1" "$rc" "export-file exits 1" || return 1
+    assert_eq "Error: No session named 'ghost' in $CS_SESSIONS_ROOT" "$out" "the refusal names the session and the root" || return 1
+    _assert_no_trace_of_session ghost || return 1
+}
+
+test_import_file_refuses_a_session_the_root_does_not_have() {
+    local out rc=0
+    out=$("$CS_SECRETS_BIN" --session ghost import-file 2>&1) || rc=$?
+    assert_eq "1" "$rc" "import-file exits 1" || return 1
+    assert_eq "Error: No session named 'ghost' in $CS_SESSIONS_ROOT" "$out" "the refusal names the session and the root" || return 1
+    _assert_no_trace_of_session ghost || return 1
+}
+
 test_purge_empty_session() {
     local output
     output=$("$CS_SECRETS_BIN" purge 2>&1)
@@ -592,6 +987,8 @@ test_encrypted_write_success_updates_and_leaves_no_temp() {
 # ============================================================================
 
 test_sessions_are_isolated() {
+    create_test_session session-a >/dev/null
+    create_test_session session-b >/dev/null
     export CLAUDE_SESSION_NAME="session-a"
     "$CS_SECRETS_BIN" set shared_key "value_a" 2>&1
 
@@ -637,6 +1034,7 @@ test_rm_alias_works() {
 }
 
 test_session_flag_overrides_env() {
+    create_test_session other-session >/dev/null
     export CLAUDE_SESSION_NAME="default-session"
     "$CS_SECRETS_BIN" --session other-session set api_key "abc" 2>&1
     local value
@@ -766,6 +1164,8 @@ test_picker_rejects_invalid_choice() {
 
 test_picker_empty_root_errors() {
     unset CLAUDE_SESSION_NAME CS_SECRETS_SESSION
+    # setup stages test-session; this test is about a root with no session.
+    rm -rf "$CS_SESSIONS_ROOT/test-session"
     local out
     if out=$(printf '1\n' | CS_ASSUME_TTY=1 "$CS_SECRETS_BIN" list 2>&1); then
         echo "  FAIL: empty sessions root should error"
@@ -813,6 +1213,53 @@ test_export_file_writes_per_machine_enc() {
              echo "  store: $(ls -a "$HOME/.cs-secrets" 2>&1 | tr '\n' ' ')"
              return 1; }
     assert_file_not_exists "$meta/secrets.enc" "export-file must NOT write the shared/unsuffixed name" || return 1
+}
+
+# A session named with --session gets the same link check as the current one:
+# its .cs linked out of the session must not receive the sync file.
+test_export_file_refuses_a_session_whose_cs_links_out() {
+    local t o s="$CS_SESSIONS_ROOT/other" out rc=0
+    t=$(cd "$TEST_TMPDIR" && pwd -P); o="$t/outside"
+    mkdir -p "$o" "$s"
+    ln -s "$o" "$s/.cs"
+    "$CS_SECRETS_BIN" --session other set api_key "sk_123" >/dev/null 2>&1
+    out=$(PATH="$(_ageless_path)" "$CS_SECRETS_BIN" --session other export-file 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the export must fail" || return 1
+    assert_eq "cs_mkdir_inside: $s/.cs leads to $o, outside the session $s" "$out" "the refusal names the link" || return 1
+    assert_eq "" "$(ls -A "$o")" "nothing is written outside the session" || return 1
+}
+
+# A path named inside a session is checked like the default one: a committed
+# link above it (.cs/backup -> elsewhere) must not carry the sync file out.
+test_export_file_refuses_a_named_path_a_link_carries_out() {
+    local t o s="$CS_SESSIONS_ROOT/other" out rc=0
+    t=$(cd "$TEST_TMPDIR" && pwd -P); o="$t/outside"
+    mkdir -p "$o" "$s/.cs"
+    printf 'USER-OWNED\n' > "$o/result.enc"
+    ln -s "$o" "$s/.cs/backup"
+    "$CS_SECRETS_BIN" --session other set api_key "sk_123" >/dev/null 2>&1
+    out=$(PATH="$(_ageless_path)" "$CS_SECRETS_BIN" --session other export-file "$s/.cs/backup/result.enc" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the export must fail" || return 1
+    assert_eq "cs-secrets export-file: $s/.cs/backup/result.enc leads to $o/result.enc, outside the session $s" "$out" "the refusal names the link" || return 1
+    assert_eq "USER-OWNED" "$(cat "$o/result.enc")" "the file outside is untouched" || return 1
+}
+
+# The default sync file is checked too: one committed as a link to a
+# directory outside the session would take the ciphertext into it.
+test_export_file_refuses_a_default_file_linked_to_a_directory_outside() {
+    local t o s="$CS_SESSIONS_ROOT/other" out rc=0 f
+    t=$(cd "$TEST_TMPDIR" && pwd -P); o="$t/outside"
+    mkdir -p "$o" "$s/.cs"
+    "$CS_SECRETS_BIN" --session other set api_key "sk_123" >/dev/null 2>&1
+    PATH="$(_ageless_path)" "$CS_SECRETS_BIN" --session other export-file >/dev/null 2>&1
+    f=$(ls "$s/.cs"/secrets.*.enc 2>/dev/null)
+    [ -f "$f" ] || { echo "  FAIL: no default sync file to replace"; return 1; }
+    rm "$f"; ln -s "$o" "$f"
+    "$CS_SECRETS_BIN" --session other set api_key "sk_456" >/dev/null 2>&1
+    out=$(PATH="$(_ageless_path)" "$CS_SECRETS_BIN" --session other export-file 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the export must fail" || return 1
+    assert_eq "cs-secrets export-file: $f leads to $o, outside the session $s" "$out" "the refusal names the link" || return 1
+    assert_eq "" "$(ls -A "$o")" "nothing is written outside the session" || return 1
 }
 
 # A context that leaves USER unset (cron, a systemd unit) must still derive a
@@ -866,6 +1313,1827 @@ test_export_file_rewrites_when_changed() {
     local dec
     dec=$(openssl enc -aes-256-cbc -d -pbkdf2 -iter 100000 -in "$f" -pass "pass:$CS_SECRETS_PASSWORD" 2>/dev/null)
     assert_output_contains "$dec" "sk_changed" "re-export should contain the updated value" || return 1
+}
+
+# --- age recipient tests (real age; skipped where age is not installed) ---
+
+# Point cs-secrets at the real age binary, overriding the "no age" seam setup
+# exports. Returns 77 (skipped) where age or age-keygen is not installed.
+_use_real_age() {
+    local age_bin keygen_bin
+    age_bin=$(command -v age 2>/dev/null) || age_bin=""
+    keygen_bin=$(command -v age-keygen 2>/dev/null) || keygen_bin=""
+    if [ -z "$age_bin" ] || [ -z "$keygen_bin" ]; then
+        echo "    SKIP (age and age-keygen are not installed)"
+        return 77
+    fi
+    export CS_AGE_BIN="$age_bin"
+}
+
+# Generate a throwaway age identity in the test dir: <name>.key and <name>.pub.
+_make_age_identity() {
+    local name="$1"
+    age-keygen -o "$TEST_TMPDIR/$name.key" 2>/dev/null || return 1
+    age-keygen -y "$TEST_TMPDIR/$name.key" > "$TEST_TMPDIR/$name.pub" || return 1
+}
+
+# True when the identity file decrypts the sync file to a payload holding the
+# expected value. The plaintext never reaches the test output.
+_age_decrypts_to() {
+    local key="$1" file="$2" expected="$3" plain
+    plain=$(age -d -i "$key" < "$file" 2>/dev/null) || return 1
+    grep -qF -- "$expected" <<< "$plain"
+}
+
+# Codex (batch 1, round 2): the pin list lived at .cs/local/age-trusted, inside
+# the checkout. .cs/local is gitignored, but `git add -f` is not, so a push
+# carrying attacker.pub plus a pin list naming its fingerprint made a fresh
+# clone trust the pusher with no local age add. The machine-local age state
+# lives outside the checkout, under ~/.cs-secrets, where nothing git can
+# carry reaches it: a planted pin list in the session is never read.
+test_export_ignores_a_pin_list_planted_in_the_checkout() {
+    _use_real_age || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f out rc=0 attacker_fp
+    f="$meta/secrets.$(_machine_id).age"
+    _make_age_identity attacker || { echo "  FAIL: could not create a test identity"; return 1; }
+    "$CS_SECRETS_BIN" age init >/dev/null 2>&1 || { echo "  FAIL: age init failed"; return 1; }
+    mkdir -p "$meta/age-recipients" "$meta/local"
+    cp "$TEST_TMPDIR/attacker.pub" "$meta/age-recipients/attacker.pub"
+    attacker_fp=$(printf '%s' "$(head -1 "$TEST_TMPDIR/attacker.pub")" | shasum -a 256 | cut -d' ' -f1)
+    printf '%s\n' "$attacker_fp" > "$meta/local/age-trusted"
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "  FAIL: a pin list planted in the checkout was trusted: $out"
+        return 1
+    fi
+    assert_output_contains "$out" "age add .*age-recipients/attacker\\.pub" "the refusal names attacker.pub with its pin command" || return 1
+    if [ -s "$f" ]; then
+        echo "  FAIL: the refused export wrote the sync file"
+        return 1
+    fi
+}
+
+# code-sessions, a fork of cs installed beside it, files its keychain items as
+# code-sessions:<session>:<name>. One keychain then holds two installs' secrets
+# for a session both have, and neither reads, lists or purges the other's.
+# A subshell body: this suite's teardown does not restore the fake's PATH.
+test_keychain_prefix_keeps_two_installs_apart() (
+    use_fake_keychain
+    export CS_SECRETS_BACKEND=keychain
+    printf 'original' | "$CS_SECRETS_BIN" set API_KEY >/dev/null || exit 1
+    printf 'fork' | CS_SECRETS_KEYCHAIN_PREFIX=code-sessions "$CS_SECRETS_BIN" set API_KEY >/dev/null || exit 1
+    printf 'fork-only' | CS_SECRETS_KEYCHAIN_PREFIX=code-sessions "$CS_SECRETS_BIN" set TOKEN >/dev/null || exit 1
+    assert_eq "code-sessions:test-session:API_KEY"$'\n'"code-sessions:test-session:TOKEN"$'\n'"cs:test-session:API_KEY" \
+        "$(fake_keychain_items)" || exit 1
+    assert_eq original "$("$CS_SECRETS_BIN" get API_KEY)" || exit 1
+    assert_eq fork "$(CS_SECRETS_KEYCHAIN_PREFIX=code-sessions "$CS_SECRETS_BIN" get API_KEY)" || exit 1
+    local listed
+    listed=$("$CS_SECRETS_BIN" list)
+    assert_output_contains "$listed" "API_KEY" || exit 1
+    assert_output_not_contains "$listed" "TOKEN" "the original listed the fork's secret" || exit 1
+    CS_SECRETS_KEYCHAIN_PREFIX=code-sessions "$CS_SECRETS_BIN" purge >/dev/null || exit 1
+    assert_eq "cs:test-session:API_KEY" "$(fake_keychain_items)" "a purge reached the other install's items" || exit 1
+)
+
+# The prefix goes into grep patterns; a '.' there would match other prefixes.
+test_keychain_prefix_refuses_pattern_characters() (
+    use_fake_keychain
+    local out rc=0
+    out=$(CS_SECRETS_BACKEND=keychain CS_SECRETS_KEYCHAIN_PREFIX='c.s' "$CS_SECRETS_BIN" list 2>&1) || rc=$?
+    [ "$rc" -ne 0 ] || { echo "  FAIL: a prefix with '.' was accepted"; exit 1; }
+    assert_output_contains "$out" "Invalid CS_SECRETS_KEYCHAIN_PREFIX" || exit 1
+    assert_eq "" "$(fake_keychain_items)" || exit 1
+)
+
+test_backend_names_the_keychain_prefix() (
+    use_fake_keychain
+    local out
+    out=$(CS_SECRETS_BACKEND=keychain CS_SECRETS_KEYCHAIN_PREFIX=code-sessions "$CS_SECRETS_BIN" backend 2>&1)
+    assert_output_contains "$out" "code-sessions:<session>:<name>" || exit 1
+    out=$(CS_SECRETS_BACKEND=keychain "$CS_SECRETS_BIN" backend 2>&1)
+    assert_output_contains "$out" "cs:<session>:<name>" || exit 1
+)
+
+# migrate writes to a backend without passing through the entry validation that
+# guards set and import-file, so it must validate too.
+test_migrate_refuses_an_invalid_name() {
+    local bindir; bindir=$(_make_fake_security)
+    local rc=0 out
+    out=$(PATH="$bindir:$PATH" FAKE_SECURITY_STORE="$TEST_TMPDIR/kc-store" \
+          "$CS_SECRETS_BIN" migrate-backend "not a backend" --from encrypted 2>&1) || rc=$?
+    [ "$rc" -ne 0 ] || { echo "  FAIL: an invalid target backend must exit nonzero"; return 1; }
+    assert_output_contains "$out" "Invalid target backend" "must name the invalid backend" || return 1
+}
+
+# Codex (batch 1, round 2): the recipients lock lived in the session's .cs/local
+# too, so a password export of a nonempty store to an external path needed a
+# writable checkout even though it writes nothing into the session. The lock
+# lives beside the other machine-local age state, under ~/.cs-secrets.
+test_password_export_to_an_external_path_needs_no_writable_checkout() {
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local out rc=0
+    mkdir -p "$meta"
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    chmod 500 "$meta"
+    out=$(PATH="$(_ageless_path)" "$CS_SECRETS_BIN" export-file "$TEST_TMPDIR/external.enc" 2>&1) || rc=$?
+    chmod 700 "$meta"
+    [ "$rc" -eq 0 ] || { echo "  FAIL: a password export to an external path failed on a read-only checkout (rc=$rc): $out"; return 1; }
+    assert_file_exists "$TEST_TMPDIR/external.enc" "the external sync file is written" || return 1
+    local restored
+    restored=$(openssl enc -aes-256-cbc -d -pbkdf2 -iter 100000 \
+        -in "$TEST_TMPDIR/external.enc" -pass "pass:$CS_SECRETS_PASSWORD" 2>/dev/null)
+    assert_output_contains "$restored" "sk_123" "the external file holds the store" || return 1
+}
+
+test_age_export_skips_rewrite_when_nothing_changed() {
+    _use_real_age || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f
+    f="$meta/secrets.$(_machine_id).age"
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
+    cp "$f" "$TEST_TMPDIR/before.age"
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: second export failed"; return 1; }
+    if ! cmp -s "$f" "$TEST_TMPDIR/before.age"; then
+        echo "  FAIL: an export with the same secrets and recipients rewrote the age sync file"
+        return 1
+    fi
+}
+
+# The recipient set's digest sorts the keys with the C locale handed to sort
+# through env, so the digest is the same under every bash and locale and the
+# shell never changes its own locale for it, which can crash a bash linked
+# against libintl in the forked copy the sort runs in.
+test_age_recipient_digest_leaves_the_shells_own_locale_alone() {
+    _use_real_age || return $?
+    local b utf8 out own
+    utf8="$(utf8_locale)"
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
+    for b in $(every_bash); do
+        out=$(env ${utf8:+"LC_ALL=$utf8"} "$b" -x "$CS_SECRETS_BIN" export-file 2>"$TEST_TMPDIR/trace") \
+            || { echo "  FAIL: $b: export failed"; return 1; }
+        assert_eq "No secret changes to export for session: test-session (secrets.$(_machine_id).age is up to date)" \
+            "$out" "$b: the recipient set reads as unchanged" || return 1
+        own="$(shell_locale_assignments "$TEST_TMPDIR/trace")"
+        assert_eq "" "$own" "$b must not assign its own locale during export-file" || return 1
+    done
+}
+
+test_age_add_reencrypts_an_unchanged_store() {
+    _use_real_age || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f
+    f="$meta/secrets.$(_machine_id).age"
+    _make_age_identity colleague || { echo "  FAIL: could not create a test identity"; return 1; }
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
+    assert_file_exists "$f" "first export should write the age sync file" || return 1
+    if _age_decrypts_to "$TEST_TMPDIR/colleague.key" "$f" "sk_123"; then
+        echo "  FAIL: the colleague decrypted the file before being added (fixture is wrong)"
+        return 1
+    fi
+    "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/colleague.pub" >/dev/null 2>&1 || { echo "  FAIL: age add failed"; return 1; }
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: export after age add failed"; return 1; }
+    if ! _age_decrypts_to "$TEST_TMPDIR/colleague.key" "$f" "sk_123"; then
+        echo "  FAIL: after age add, the unchanged store was not re-encrypted to the new recipient"
+        return 1
+    fi
+}
+
+test_age_remove_reencrypts_an_unchanged_store() {
+    _use_real_age || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f
+    f="$meta/secrets.$(_machine_id).age"
+    _make_age_identity colleague || { echo "  FAIL: could not create a test identity"; return 1; }
+    "$CS_SECRETS_BIN" age init >/dev/null 2>&1 || { echo "  FAIL: age init failed"; return 1; }
+    "$CS_SECRETS_BIN" age add "$HOME/.cs-secrets/id_ed25519.pub" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/colleague.pub" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
+    # Positive control: the colleague can read the file before the revocation.
+    if ! _age_decrypts_to "$TEST_TMPDIR/colleague.key" "$f" "sk_123"; then
+        echo "  FAIL: the colleague could not decrypt before removal (fixture is wrong)"
+        return 1
+    fi
+    cp "$f" "$TEST_TMPDIR/before.age"
+    "$CS_SECRETS_BIN" age remove colleague >/dev/null 2>&1 || { echo "  FAIL: age remove failed"; return 1; }
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: export after age remove failed"; return 1; }
+    if cmp -s "$f" "$TEST_TMPDIR/before.age"; then
+        echo "  FAIL: after age remove, the unchanged store was not re-encrypted"
+        return 1
+    fi
+    if _age_decrypts_to "$TEST_TMPDIR/colleague.key" "$f" "sk_123"; then
+        echo "  FAIL: the removed recipient still decrypts the re-exported file"
+        return 1
+    fi
+    if ! _age_decrypts_to "$HOME/.cs-secrets/id_ed25519" "$f" "sk_123"; then
+        echo "  FAIL: this machine's own key no longer decrypts the re-exported file"
+        return 1
+    fi
+}
+
+# A .pub that lands in .cs/age-recipients/ without a local `age add` (a git
+# pull of someone else's push) must not receive the secrets.
+test_export_refuses_an_unpinned_pushed_recipient() {
+    _use_real_age || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f out rc=0
+    f="$meta/secrets.$(_machine_id).age"
+    _make_age_identity intruder || { echo "  FAIL: could not create a test identity"; return 1; }
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
+    cp "$f" "$TEST_TMPDIR/before.age"
+    cp "$TEST_TMPDIR/intruder.pub" "$meta/age-recipients/intruder.pub"
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "  FAIL: export succeeded with an unpinned recipient present: $out"
+        return 1
+    fi
+    assert_output_contains "$out" "intruder\.pub" "the refusal names the unpinned file" || return 1
+    assert_output_contains "$out" "age add .*age-recipients/intruder\.pub" "the refusal prints the command that pins it" || return 1
+    if ! cmp -s "$f" "$TEST_TMPDIR/before.age"; then
+        echo "  FAIL: the refused export rewrote the age sync file"
+        return 1
+    fi
+    if _age_decrypts_to "$TEST_TMPDIR/intruder.key" "$f" "sk_123"; then
+        echo "  FAIL: the unpinned recipient decrypts the sync file"
+        return 1
+    fi
+    assert_file_not_exists "$meta/secrets.$(_machine_id).enc" "the refusal must not fall back to a password export" || return 1
+}
+
+# A clone chooses the name of a recipient file it pushes. The export's refusal
+# lists it, age list names it and age add, given the pin command's path,
+# reports it, each as a plain name: each character a plain name lacks becomes _.
+test_recipient_names_a_clone_chose_print_as_plain_names() {
+    _use_real_age || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m
+    local out rc=0 key
+    _make_age_identity intruder || { echo "  FAIL: could not create a test identity"; return 1; }
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
+    cp "$TEST_TMPDIR/intruder.pub" "$meta/age-recipients/i$bad.pub"
+    key=$(cat "$TEST_TMPDIR/intruder.pub")
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the export is refused" || return 1
+    assert_eq "  i$shown.pub" "$(grep '^  i' <<< "$out")" \
+        "the refusal lists the recipient file as a plain name" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal from the refusal" || return 1
+    out=$("$CS_SECRETS_BIN" age list 2>&1) || return 1
+    assert_eq "  - i$shown: ${key:0:20}..." "$(grep '^  - i' <<< "$out")" \
+        "age list names the recipient as a plain name" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal from age list" || return 1
+    out=$("$CS_SECRETS_BIN" age add "$meta/age-recipients/i$bad.pub" 2>&1) || return 1
+    assert_eq "Added recipient: i$shown
+Public key: $key" "$out" "age add names the recipient as a plain name" || return 1
+    out=$("$CS_SECRETS_BIN" age add "$key" 2>&1) || return 1
+    assert_eq "Added recipient: i$shown
+Public key: $key" "$out" "age add of the raw key names the file that holds it as a plain name" || return 1
+}
+
+# A clone chooses what a recipient file holds. age list shows the first 20
+# characters of it with its control bytes deleted, as cs -search shows a
+# matched line, so an escape in the file never reaches the terminal.
+test_age_list_preview_drops_control_bytes() {
+    local dir="$CS_SESSIONS_ROOT/test-session/.cs/age-recipients" out
+    mkdir -p "$dir"
+    printf '\033[31mage1\007abcdefghijklmnopqrstuvwxyz\n' > "$dir/peer.pub"
+    out=$("$CS_SECRETS_BIN" age list 2>&1) || return 1
+    assert_eq "Recipients for session: test-session
+  - peer: [31mage1abcdefghij..." "$out" "age list shows the preview without its control bytes" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal" || return 1
+}
+
+# A recipient file holds one key, on its first line. age list previews that
+# line only, so a newline in a file a clone chose cannot lay out a second row
+# naming a recipient that does not exist.
+test_age_list_previews_only_a_recipient_files_first_line() {
+    local dir="$CS_SESSIONS_ROOT/test-session/.cs/age-recipients" out
+    mkdir -p "$dir"
+    printf 'x\n  - bob: age1qqqqq\n' > "$dir/zz.pub"
+    out=$("$CS_SECRETS_BIN" age list 2>&1) || return 1
+    assert_eq "Recipients for session: test-session
+  - zz: x..." "$out" "age list shows one row, previewing the first line" || return 1
+}
+
+test_export_encrypts_to_a_recipient_pinned_by_age_add() {
+    _use_real_age || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f
+    f="$meta/secrets.$(_machine_id).age"
+    _make_age_identity colleague || { echo "  FAIL: could not create a test identity"; return 1; }
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
+    cp "$TEST_TMPDIR/colleague.pub" "$meta/age-recipients/colleague.pub"
+    "$CS_SECRETS_BIN" age add "$meta/age-recipients/colleague.pub" >/dev/null 2>&1 \
+        || { echo "  FAIL: age add on the pulled file failed"; return 1; }
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: export after pinning failed"; return 1; }
+    if ! _age_decrypts_to "$TEST_TMPDIR/colleague.key" "$f" "sk_123"; then
+        echo "  FAIL: the pinned recipient cannot decrypt the export"
+        return 1
+    fi
+}
+
+# A machine that exported before pinning existed (its own sync file is there,
+# no pin list): the first export pins the recipients present, says so once,
+# and pins nothing that arrives afterwards.
+# Codex (batch 1, round 1): the one-time migration keyed trust on the
+# existence of this machine's own sync file, a TRACKED file with a predictable
+# name. A push adding attacker.pub beside an empty secrets.<user>@<host>.age
+# made a fresh clone's first export pin everyone. No automatic pin from
+# anything git can carry: only this machine's own public key is pinned by
+# content (encrypting to a key whose private half is here trusts nobody new);
+# every other recipient needs an `age add` on this machine.
+test_export_never_pins_from_a_forged_sync_file() {
+    _use_real_age || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f out rc=0
+    f="$meta/secrets.$(_machine_id).age"
+    _make_age_identity attacker || { echo "  FAIL: could not create a test identity"; return 1; }
+    "$CS_SECRETS_BIN" age init >/dev/null 2>&1 || { echo "  FAIL: age init failed"; return 1; }
+    mkdir -p "$meta/age-recipients"
+    cp "$HOME/.cs-secrets/id_ed25519.pub" "$meta/age-recipients/self.pub"
+    cp "$TEST_TMPDIR/attacker.pub" "$meta/age-recipients/attacker.pub"
+    # The forged sync file a push can plant: tracked, predictable name, empty.
+    : > "$f"
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "  FAIL: a forged sync file made the first export pin a pushed key: $out"
+        return 1
+    fi
+    assert_output_contains "$out" "age add .*age-recipients/attacker\.pub" "the refusal names attacker.pub with its pin command" || return 1
+    assert_output_not_contains "$out" "self\.pub" "this machine's own key is pinned by content, not listed" || return 1
+    assert_output_not_contains "$out" "Pinned" "nothing is pinned automatically" || return 1
+    if [ -s "$f" ]; then
+        echo "  FAIL: the refused export wrote the sync file"
+        return 1
+    fi
+    local attacker_fp
+    attacker_fp=$(printf '%s' "$(head -1 "$TEST_TMPDIR/attacker.pub")" | shasum -a 256 | cut -d' ' -f1)
+    if [ -f "$HOME/.cs-secrets/sessions/test-session/age-trusted" ] && grep -qxF "$attacker_fp" "$HOME/.cs-secrets/sessions/test-session/age-trusted"; then
+        echo "  FAIL: attacker.pub is in the pin list"
+        return 1
+    fi
+    # Only an explicit age add on this machine admits the key.
+    "$CS_SECRETS_BIN" age add "$meta/age-recipients/attacker.pub" >/dev/null 2>&1 || { echo "  FAIL: age add failed"; return 1; }
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || { echo "  FAIL: export after the explicit pin failed: $out"; return 1; }
+    if ! _age_decrypts_to "$TEST_TMPDIR/attacker.key" "$f" "sk_123"; then
+        echo "  FAIL: an explicitly pinned recipient cannot decrypt the export"
+        return 1
+    fi
+}
+
+# A fresh clone (or a wiped .cs/local) has recipients but no sync file of this
+# machine's own: nothing is pinned for it, the export lists every unpinned file,
+# and an `age add` pins only the file it names.
+test_export_on_a_fresh_clone_pins_nothing() {
+    _use_real_age || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f out rc=0
+    f="$meta/secrets.$(_machine_id).age"
+    _make_age_identity alice || { echo "  FAIL: could not create a test identity"; return 1; }
+    _make_age_identity bob || { echo "  FAIL: could not create a test identity"; return 1; }
+    mkdir -p "$meta/age-recipients"
+    cp "$TEST_TMPDIR/alice.pub" "$meta/age-recipients/alice.pub"
+    cp "$TEST_TMPDIR/bob.pub" "$meta/age-recipients/bob.pub"
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "  FAIL: a fresh clone exported to recipients it never pinned: $out"
+        return 1
+    fi
+    assert_output_contains "$out" "age add .*age-recipients/alice\.pub" "the refusal names alice.pub with its pin command" || return 1
+    assert_output_contains "$out" "age add .*age-recipients/bob\.pub" "the refusal names bob.pub with its pin command" || return 1
+    assert_output_not_contains "$out" "Pinned" "a fresh clone pins nothing by itself" || return 1
+    assert_file_not_exists "$f" "the refused export writes no age sync file" || return 1
+    assert_file_not_exists "$meta/secrets.$(_machine_id).enc" "the refusal must not fall back to a password export" || return 1
+    "$CS_SECRETS_BIN" age add "$meta/age-recipients/alice.pub" >/dev/null 2>&1 || { echo "  FAIL: age add failed"; return 1; }
+    rc=0
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "  FAIL: age add on one file pinned the other as well: $out"
+        return 1
+    fi
+    assert_output_contains "$out" "bob\.pub" "the refusal still names bob.pub" || return 1
+    assert_output_not_contains "$out" "alice\.pub" "alice.pub is pinned now" || return 1
+}
+
+# Removing a recipient also drops its pin, so a copy of the same key pushed back
+# into the directory is refused rather than silently trusted again.
+test_age_remove_drops_the_pin() {
+    _use_real_age || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local out rc=0
+    _make_age_identity colleague || { echo "  FAIL: could not create a test identity"; return 1; }
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
+    "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/colleague.pub" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" age remove colleague >/dev/null 2>&1 || return 1
+    cp "$TEST_TMPDIR/colleague.pub" "$meta/age-recipients/colleague.pub"
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "  FAIL: a removed recipient's key pushed back was trusted again: $out"
+        return 1
+    fi
+    assert_output_contains "$out" "colleague\.pub" "the refusal names the re-pushed file" || return 1
+}
+
+_use_real_ssh_keygen() {
+    if ! command -v ssh-keygen >/dev/null 2>&1; then
+        echo "    SKIP (ssh-keygen is not installed)"
+        return 77
+    fi
+}
+_make_ssh_identity() {  # name -> $TEST_TMPDIR/<name>.ssh (+ .pub)
+    ssh-keygen -q -t ed25519 -N '' -C "$1@example.com" -f "$TEST_TMPDIR/$1.ssh" </dev/null || return 1
+}
+
+# A recipient may be an ssh-ed25519 key: age encrypts to it, and it is the key
+# a peer signs its sync file with.
+test_age_add_takes_an_ssh_ed25519_key_file() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f; f="$meta/secrets.$(_machine_id).age"
+    local out rc=0 key_type key_body key_comment
+    _make_ssh_identity colleague || { echo "  FAIL: could not create a test ssh identity"; return 1; }
+    read -r key_type key_body key_comment < "$TEST_TMPDIR/colleague.ssh.pub"
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
+
+    out=$("$CS_SECRETS_BIN" age add "$TEST_TMPDIR/colleague.ssh.pub" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "age add accepts the key file: $out" || return 1
+    assert_eq "$key_type $key_body" "$(cat "$meta/age-recipients/colleague.ssh.pub")" \
+        "the recipient file holds the key without its comment" || return 1
+    rc=0
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the export encrypts to it: $out" || return 1
+    _age_decrypts_to "$TEST_TMPDIR/colleague.ssh" "$f" "sk_123" \
+        || { echo "  FAIL: the ssh identity cannot decrypt the sync file"; return 1; }
+}
+
+test_age_add_takes_a_raw_ssh_ed25519_key() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f; f="$meta/secrets.$(_machine_id).age"
+    local out rc=0 key_type key_body key_comment added
+    _make_ssh_identity colleague || { echo "  FAIL: could not create a test ssh identity"; return 1; }
+    read -r key_type key_body key_comment < "$TEST_TMPDIR/colleague.ssh.pub"
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+
+    out=$("$CS_SECRETS_BIN" age add "$key_type $key_body $key_comment" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "age add accepts the quoted key: $out" || return 1
+    added=$(cat "$meta"/age-recipients/recipient-*.pub)
+    assert_eq "$key_type $key_body" "$added" "the recipient file holds the key without its comment" || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: export failed"; return 1; }
+    _age_decrypts_to "$TEST_TMPDIR/colleague.ssh" "$f" "sk_123" \
+        || { echo "  FAIL: the ssh identity cannot decrypt the sync file"; return 1; }
+}
+
+# Only the two key forms are recipients. Anything else is refused before a
+# file or a pin is written.
+test_age_add_refuses_what_is_not_a_key() {
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local refusal="Error: Invalid public key. Must be a file, an age1... key or a quoted \"ssh-ed25519 <key>\""
+    local candidate out rc
+    printf 'not a key\n' > "$TEST_TMPDIR/junk.pub"
+    for candidate in "hello" "ssh-ed25519" "ssh-ed25519 " "ssh-ed25519 not*base64" "ssh-rsa AAAAB3NzaC1yc2E" "$TEST_TMPDIR/junk.pub"; do
+        rc=0
+        out=$("$CS_SECRETS_BIN" age add "$candidate" 2>&1) || rc=$?
+        assert_eq "1" "$rc" "age add exits 1 for '$candidate'" || return 1
+        assert_eq "$refusal" "$out" "the refusal names the accepted forms for '$candidate'" || return 1
+        assert_eq "" "$(ls "$meta/age-recipients" 2>/dev/null)" "no recipient file is written for '$candidate'" || return 1
+        assert_not_exists "$HOME/.cs-secrets/sessions/test-session/age-trusted" "nothing is pinned for '$candidate'" || return 1
+    done
+}
+
+# A recipient is named after its key file, so two collaborators' keys can both
+# arrive as laptop.pub. The second `age add` refuses to replace the first
+# recipient, naming the file and both keys: replacing it would leave the first
+# collaborator unable to decrypt. Adding the same key again changes nothing.
+test_age_add_refuses_a_different_key_under_a_recipient_name_in_use() {
+    _use_real_age || return $?
+    local dir="$CS_SESSIONS_ROOT/test-session/.cs/age-recipients" out rc=0 k1 k2 fp2
+    mkdir -p "$TEST_TMPDIR/first" "$TEST_TMPDIR/second"
+    age-keygen 2>/dev/null | age-keygen -y > "$TEST_TMPDIR/first/laptop.pub" || { echo "  FAIL: fixture: age-keygen"; return 1; }
+    age-keygen 2>/dev/null | age-keygen -y > "$TEST_TMPDIR/second/laptop.pub" || { echo "  FAIL: fixture: age-keygen"; return 1; }
+    k1=$(cat "$TEST_TMPDIR/first/laptop.pub"); k2=$(cat "$TEST_TMPDIR/second/laptop.pub")
+    fp2=$(printf '%s' "$k2" | shasum -a 256 | cut -d' ' -f1)
+    "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/first/laptop.pub" >/dev/null 2>&1 || { echo "  FAIL: fixture: the first age add failed"; return 1; }
+
+    out=$("$CS_SECRETS_BIN" age add "$TEST_TMPDIR/second/laptop.pub" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a second key under the name laptop is refused" || return 1
+    assert_eq "Error: refusing to replace recipient laptop: $dir/laptop.pub holds $k1, not the key given, $k2. Give the key file another name, or run 'cs -secrets age remove laptop' first." \
+        "$out" "the refusal names the file and both keys" || return 1
+    assert_eq "$k1" "$(cat "$dir/laptop.pub")" "laptop.pub still holds the first key" || return 1
+    if grep -qxF "$fp2" "$HOME/.cs-secrets/sessions/test-session/age-trusted"; then
+        echo "  FAIL: the refused key was pinned"
+        return 1
+    fi
+
+    rc=0
+    out=$("$CS_SECRETS_BIN" age add "$TEST_TMPDIR/first/laptop.pub" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "adding the same key again succeeds" || return 1
+    assert_eq "Added recipient: laptop
+Public key: $k1" "$out" "adding the same key again says what it holds" || return 1
+    assert_eq "laptop.pub" "$(ls "$dir")" "no second recipient file is written" || return 1
+}
+
+# A clone chooses a recipient file's name. When the name in use is not plain
+# (_cs_plain_name changes it), the refusal names it as a plain name but
+# suggests no `age remove`: the command would name a recipient that does not
+# exist.
+test_age_add_refusal_suggests_age_remove_only_for_a_plain_name() {
+    _use_real_age || return $?
+    local dir="$CS_SESSIONS_ROOT/test-session/.cs/age-recipients" out rc=0 k1 k2
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m
+    mkdir -p "$dir" "$TEST_TMPDIR/second"
+    age-keygen 2>/dev/null | age-keygen -y > "$dir/i$bad.pub" || { echo "  FAIL: fixture: age-keygen"; return 1; }
+    age-keygen 2>/dev/null | age-keygen -y > "$TEST_TMPDIR/second/i$bad.pub" || { echo "  FAIL: fixture: age-keygen"; return 1; }
+    k1=$(cat "$dir/i$bad.pub"); k2=$(cat "$TEST_TMPDIR/second/i$bad.pub")
+    out=$("$CS_SECRETS_BIN" age add "$TEST_TMPDIR/second/i$bad.pub" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a second key under the name in use is refused" || return 1
+    assert_eq "Error: refusing to replace recipient i$shown: $dir/i$shown.pub holds $k1, not the key given, $k2. Give the key file another name." \
+        "$out" "the refusal suggests no age remove for a name that is not plain" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal" || return 1
+    assert_eq "$k1" "$(cat "$dir/i$bad.pub")" "the recipient file still holds the first key" || return 1
+    # The clone chooses what the file holds too: the refusal shows it without
+    # its control bytes.
+    printf 'age1\033]0;T\007\033[2J\\e[0m\n' > "$dir/i$bad.pub"
+    rc=0
+    out=$("$CS_SECRETS_BIN" age add "$TEST_TMPDIR/second/i$bad.pub" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a key under a name whose file holds escape text is refused" || return 1
+    assert_eq "Error: refusing to replace recipient i$shown: $dir/i$shown.pub holds age1]0;T[2J\\e[0m, not the key given, $k2. Give the key file another name." \
+        "$out" "the refusal shows what the file holds without its control bytes" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal from what the file holds" || return 1
+}
+
+# An age1... key age cannot encrypt to is refused at `age add`, before it is
+# written or pinned: pinned, it made every later export of the session fail.
+# One key is not bech32 at all; the other has the right shape and characters
+# and fails only its checksum.
+test_age_add_refuses_an_age_key_age_does_not_accept() {
+    _use_real_age || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs" candidate out rc
+    for candidate in age1notakey age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq0000000; do
+        rc=0
+        out=$("$CS_SECRETS_BIN" age add "$candidate" 2>&1) || rc=$?
+        assert_eq "1" "$rc" "age add exits 1 for '$candidate'" || return 1
+        assert_eq "Error: Invalid public key: age does not accept $candidate as a recipient" "$out" "the refusal names the key ('$candidate')" || return 1
+        assert_eq "" "$(ls "$meta/age-recipients" 2>/dev/null)" "no recipient file is written for '$candidate'" || return 1
+        assert_not_exists "$HOME/.cs-secrets/sessions/test-session/age-trusted" "nothing is pinned for '$candidate'" || return 1
+    done
+}
+
+# The same holds for an ssh-ed25519 key: its body can be all base64
+# characters and still be no key. One is given raw, with a body too short to
+# hold a key type; the other arrives in a key file, with a well-formed header
+# and twenty key bytes where thirty-two belong.
+test_age_add_refuses_an_ssh_key_age_does_not_accept() {
+    _use_real_age || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs" short="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG9ubHkgdHdlbnR5IGJ5dGVz" out rc=0
+    out=$("$CS_SECRETS_BIN" age add "ssh-ed25519 AAAA" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "age add exits 1 for a raw malformed ssh key" || return 1
+    assert_eq "Error: Invalid public key: age does not accept ssh-ed25519 AAAA as a recipient" "$out" "the refusal names the raw key" || return 1
+    assert_eq "" "$(ls "$meta/age-recipients" 2>/dev/null)" "no recipient file is written for the raw key" || return 1
+    assert_not_exists "$HOME/.cs-secrets/sessions/test-session/age-trusted" "nothing is pinned for the raw key" || return 1
+
+    printf '%s peer@example.com\n' "$short" > "$TEST_TMPDIR/peer.pub"
+    rc=0
+    out=$("$CS_SECRETS_BIN" age add "$TEST_TMPDIR/peer.pub" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "age add exits 1 for a key file holding a malformed ssh key" || return 1
+    assert_eq "Error: Invalid public key: age does not accept $short as a recipient" "$out" "the refusal names the key the file holds" || return 1
+    assert_eq "" "$(ls "$meta/age-recipients" 2>/dev/null)" "no recipient file is written for the key file" || return 1
+    assert_not_exists "$HOME/.cs-secrets/sessions/test-session/age-trusted" "nothing is pinned for the key file" || return 1
+}
+
+# When age cannot encrypt the export, the export fails and says what age said.
+# It writes no password-encrypted file in its place: a later import would read
+# the stale .age beside it and restore an old value. The bad key is pinned the
+# way a pin list holds one that was added before `age add` checked keys.
+test_export_fails_when_age_cannot_encrypt() {
+    _use_real_age || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs" f bad err rc=0 fp age_said
+    f="$meta/secrets.$(_machine_id).age"
+    bad="age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq0000000"
+    "$CS_SECRETS_BIN" set api_key "v1" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: fixture: the first export failed"; return 1; }
+    cp "$f" "$TEST_TMPDIR/before.age"
+    printf '%s\n' "$bad" > "$meta/age-recipients/bad.pub"
+    fp=$(printf '%s' "$bad" | shasum -a 256 | cut -d' ' -f1)
+    printf '%s\n' "$fp" >> "$HOME/.cs-secrets/sessions/test-session/age-trusted"
+    age_said=$(age -r "$bad" -o /dev/null < /dev/null 2>&1) && { echo "  FAIL: fixture: age accepted the bad key"; return 1; }
+    "$CS_SECRETS_BIN" set api_key "v2" >/dev/null 2>&1 || return 1
+
+    err=$("$CS_SECRETS_BIN" export-file 2>&1 >/dev/null) || rc=$?
+    assert_eq "1" "$rc" "the export fails when age cannot encrypt" || return 1
+    assert_eq "Error: age could not encrypt the export for session 'test-session' (existing sync file left intact):
+$age_said" "$err" "the failure names age's error" || return 1
+    assert_file_not_exists "$meta/secrets.$(_machine_id).enc" "no password-encrypted file is written instead" || return 1
+    cmp -s "$f" "$TEST_TMPDIR/before.age" || { echo "  FAIL: the failed export changed the age sync file"; return 1; }
+}
+
+# A key given raw has no file to be named after: it gets recipient-<seconds>,
+# and a number after that while the name is taken, so keys added within one
+# second each get a recipient of their own. A raw key some recipient file
+# already holds is that recipient: adding it again, whenever, writes no
+# second file. The date on PATH answers `+%s` from a file, so the test says
+# what second it is.
+test_age_add_gives_each_raw_key_a_free_recipient_name() {
+    _use_real_age || return $?
+    local dir="$CS_SESSIONS_ROOT/test-session/.cs/age-recipients" shim="$TEST_TMPDIR/date-shim" real_date n out rc
+    local k1 k2 k3
+    real_date=$(command -v date)
+    mkdir -p "$shim"
+    cat > "$shim/date" <<SHIM
+#!/usr/bin/env bash
+if [ "\${1:-}" = "+%s" ]; then cat "$TEST_TMPDIR/now"; exit 0; fi
+exec "$real_date" "\$@"
+SHIM
+    chmod +x "$shim/date"
+    for n in 1 2 3; do
+        age-keygen 2>/dev/null | age-keygen -y > "$TEST_TMPDIR/k$n" || { echo "  FAIL: fixture: age-keygen"; return 1; }
+    done
+    k1=$(cat "$TEST_TMPDIR/k1"); k2=$(cat "$TEST_TMPDIR/k2"); k3=$(cat "$TEST_TMPDIR/k3")
+    printf '1700000000\n' > "$TEST_TMPDIR/now"
+
+    rc=0; out=$(PATH="$shim:$PATH" "$CS_SECRETS_BIN" age add "$k1" 2>&1) || rc=$?
+    assert_eq "0 Added recipient: recipient-1700000000
+Public key: $k1" "$rc $out" "the first raw key takes the second's name" || return 1
+    rc=0; out=$(PATH="$shim:$PATH" "$CS_SECRETS_BIN" age add "$k2" 2>&1) || rc=$?
+    assert_eq "0 Added recipient: recipient-1700000000-2
+Public key: $k2" "$rc $out" "a second raw key in the same second gets a name of its own" || return 1
+    rc=0; out=$(PATH="$shim:$PATH" "$CS_SECRETS_BIN" age add "$k3" 2>&1) || rc=$?
+    assert_eq "0 Added recipient: recipient-1700000000-3
+Public key: $k3" "$rc $out" "and so does a third" || return 1
+
+    rc=0; out=$(PATH="$shim:$PATH" "$CS_SECRETS_BIN" age add "$k1" 2>&1) || rc=$?
+    assert_eq "0 Added recipient: recipient-1700000000
+Public key: $k1" "$rc $out" "the first key again, in the same second, is the recipient it already is" || return 1
+    printf '1700000005\n' > "$TEST_TMPDIR/now"
+    rc=0; out=$(PATH="$shim:$PATH" "$CS_SECRETS_BIN" age add "$k2" 2>&1) || rc=$?
+    assert_eq "0 Added recipient: recipient-1700000000-2
+Public key: $k2" "$rc $out" "the second key again, seconds later, is the recipient it already is" || return 1
+
+    assert_eq "recipient-1700000000-2.pub
+recipient-1700000000-3.pub
+recipient-1700000000.pub" "$(ls "$dir" | env LC_ALL=C sort)" "three keys, three recipient files" || return 1
+    assert_eq "$k1 $k2 $k3" \
+        "$(cat "$dir/recipient-1700000000.pub") $(cat "$dir/recipient-1700000000-2.pub") $(cat "$dir/recipient-1700000000-3.pub")" \
+        "each file holds its own key" || return 1
+    for n in 1 2 3; do
+        grep -qxF "$(printf '%s' "$(cat "$TEST_TMPDIR/k$n")" | shasum -a 256 | cut -d' ' -f1)" \
+            "$HOME/.cs-secrets/sessions/test-session/age-trusted" || { echo "  FAIL: key $n is not pinned"; return 1; }
+    done
+}
+
+# `age add` never offers to download age: with no age binary it fails at once,
+# pointing at `age init`, which is where the download is offered. It prompts
+# for nothing, reaches for no network, and writes no recipient, no pin and no
+# machine key. The curl on PATH logs a call and fails.
+test_age_add_without_age_points_at_age_init() {
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs" netbin="$TEST_TMPDIR/net-bin" out rc=0
+    mkdir -p "$netbin"
+    printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nexit 1\n' "$TEST_TMPDIR/curl-argv" > "$netbin/curl"
+    chmod +x "$netbin/curl"
+    out=$(PATH="$netbin:$PATH" "$CS_SECRETS_BIN" age add age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqs3290gq 2>&1) || rc=$?
+    assert_eq "1" "$rc" "age add exits 1 with no age binary" || return 1
+    assert_eq "Error: age binary not found. Run: cs -secrets age init" "$out" "the refusal points at age init and offers no download" || return 1
+    assert_not_exists "$TEST_TMPDIR/curl-argv" "age add reaches for no network" || return 1
+    assert_eq "" "$(ls "$meta/age-recipients" 2>/dev/null)" "no recipient file is written" || return 1
+    assert_not_exists "$HOME/.cs-secrets/sessions/test-session/age-trusted" "nothing is pinned" || return 1
+    assert_not_exists "$HOME/.cs-secrets/id_ed25519" "no machine key is made" || return 1
+}
+
+_stage_machine_ssh_key() {  # this machine's ssh key under the test HOME
+    mkdir -p "$HOME/.cs-secrets" && chmod 700 "$HOME/.cs-secrets" || return 1
+    ssh-keygen -q -t ed25519 -N '' -C "test@example.com" -f "$HOME/.cs-secrets/id_ed25519" </dev/null || return 1
+}
+
+# A peer encrypts to whichever of this machine's keys it has pinned: the ssh
+# key, or the age key from before the ssh key existed. Both stay readable.
+test_import_file_reads_a_file_encrypted_to_this_machines_ssh_key() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    _stage_machine_ssh_key || { echo "  FAIL: could not stage the machine ssh key"; return 1; }
+    printf '%s\n' '{"from_peer":"vp"}' \
+        | age -r "$(cat "$HOME/.cs-secrets/id_ed25519.pub")" -o "$meta/secrets.peer@example.age" \
+        || { echo "  FAIL: fixture: age could not encrypt to the ssh key"; return 1; }
+
+    # Made by hand, so unsigned: this test is about which key decrypts.
+    local out rc=0
+    out=$("$CS_SECRETS_BIN" import-file --allow-unsigned 2>&1) || rc=$?
+    assert_eq "vp" "$("$CS_SECRETS_BIN" get from_peer 2>&1)" "the secret is imported (import said: $rc $out)" || return 1
+}
+
+test_import_file_still_reads_a_file_encrypted_to_the_earlier_age_key() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    _stage_machine_ssh_key || { echo "  FAIL: could not stage the machine ssh key"; return 1; }
+    age-keygen -o "$HOME/.cs-secrets/age.key" 2>/dev/null || { echo "  FAIL: fixture: age-keygen failed"; return 1; }
+    printf '%s\n' '{"from_before":"vb"}' \
+        | age -r "$(age-keygen -y "$HOME/.cs-secrets/age.key")" -o "$meta/secrets.peer@example.age" \
+        || { echo "  FAIL: fixture: age could not encrypt to the age key"; return 1; }
+
+    local out rc=0
+    out=$("$CS_SECRETS_BIN" import-file --allow-unsigned 2>&1) || rc=$?
+    assert_eq "vb" "$("$CS_SECRETS_BIN" get from_before 2>&1)" "the secret is imported (import said: $rc $out)" || return 1
+}
+
+# This machine has one key, an ssh-ed25519 pair cs keeps under ~/.cs-secrets:
+# never the user's own ~/.ssh keys, and no passphrase, since exports run
+# unattended.
+test_age_init_creates_this_machines_ssh_key() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local out rc=0 key_type key_body key_comment
+    out=$("$CS_SECRETS_BIN" age init 2>&1) || rc=$?
+    assert_eq "0" "$rc" "age init exits 0: $out" || return 1
+    assert_file_exists "$HOME/.cs-secrets/id_ed25519" "the private key exists" || return 1
+    assert_eq "600" "$(_file_mode "$HOME/.cs-secrets/id_ed25519")" "the private key is owner-only" || return 1
+    assert_not_exists "$HOME/.cs-secrets/age.key" "no age key is created" || return 1
+    assert_not_exists "$HOME/.ssh" "the user's own ssh directory is untouched" || return 1
+    assert_file_exists "$HOME/.cs-secrets/id_ed25519.pub" "the public key exists" || return 1
+    read -r key_type key_body key_comment < "$HOME/.cs-secrets/id_ed25519.pub"
+    assert_eq "ssh-ed25519" "$key_type" "the key is an ed25519 key" || return 1
+    assert_eq "$key_type $key_body" "$("$CS_SECRETS_BIN" age pubkey 2>&1)" "age pubkey prints the key without its comment" || return 1
+    printf 'x' > "$TEST_TMPDIR/payload"
+    ssh-keygen -q -Y sign -f "$HOME/.cs-secrets/id_ed25519" -n probe "$TEST_TMPDIR/payload" </dev/null 2>/dev/null \
+        || { echo "  FAIL: the key signs without asking for a passphrase"; return 1; }
+}
+
+test_age_init_names_a_missing_ssh_keygen() {
+    _use_real_age || return $?
+    local bindir="$TEST_TMPDIR/no-ssh-keygen" out rc=0
+    link_path_without "$bindir" 'ssh-keygen'
+    out=$(PATH="$bindir" "$CS_SECRETS_BIN" age init 2>&1) || rc=$?
+    assert_eq "1" "$rc" "age init exits 1" || return 1
+    assert_eq "Error: ssh-keygen not found. cs keeps this machine's key as an ssh-ed25519 pair and needs OpenSSH 8.0 or later to create it and to sign with it." \
+        "$out" "the refusal names ssh-keygen" || return 1
+    assert_not_exists "$HOME/.cs-secrets/id_ed25519" "no key is created" || return 1
+    assert_not_exists "$HOME/.cs-secrets/age.key" "no age key is created instead" || return 1
+}
+
+test_first_export_makes_this_machines_ssh_key_the_recipient() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f; f="$meta/secrets.$(_machine_id).age"
+    local out rc=0 key_type key_body key_comment
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the first export exits 0: $out" || return 1
+    assert_file_exists "$HOME/.cs-secrets/id_ed25519.pub" "this machine's public key exists" || return 1
+    read -r key_type key_body key_comment < "$HOME/.cs-secrets/id_ed25519.pub"
+    assert_eq "$key_type $key_body" "$(cat "$meta/age-recipients/$(_machine_id).pub")" \
+        "this machine's recipient file holds its ssh key" || return 1
+    _age_decrypts_to "$HOME/.cs-secrets/id_ed25519" "$f" "sk_123" \
+        || { echo "  FAIL: this machine's ssh key cannot decrypt its own sync file"; return 1; }
+    assert_not_exists "$HOME/.cs-secrets/age.key" "no age key is created" || return 1
+}
+
+# Machines upgrade one at a time, so one sync file is encrypted to age keys
+# and ssh keys together.
+test_export_encrypts_to_age_and_ssh_recipients_together() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f; f="$meta/secrets.$(_machine_id).age"
+    _make_age_identity older || { echo "  FAIL: could not create a test age identity"; return 1; }
+    _make_ssh_identity newer || { echo "  FAIL: could not create a test ssh identity"; return 1; }
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
+    "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/older.pub" >/dev/null 2>&1 || { echo "  FAIL: age add of the age key failed"; return 1; }
+    "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/newer.ssh.pub" >/dev/null 2>&1 || { echo "  FAIL: age add of the ssh key failed"; return 1; }
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: export to both failed"; return 1; }
+    _age_decrypts_to "$TEST_TMPDIR/older.key" "$f" "sk_123" || { echo "  FAIL: the age recipient cannot decrypt"; return 1; }
+    _age_decrypts_to "$TEST_TMPDIR/newer.ssh" "$f" "sk_123" || { echo "  FAIL: the ssh recipient cannot decrypt"; return 1; }
+    _age_decrypts_to "$HOME/.cs-secrets/id_ed25519" "$f" "sk_123" || { echo "  FAIL: this machine cannot decrypt its own file"; return 1; }
+}
+
+# A session the way a cs from before the ssh key left it on this machine: an
+# age key pair, this machine's recipient file holding the age key, that key
+# pinned, a secret in the store.
+_stage_session_from_before_the_ssh_key() {
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs" age_pub
+    mkdir -p "$HOME/.cs-secrets/sessions/test-session" "$meta/age-recipients" || return 1
+    chmod 700 "$HOME/.cs-secrets"
+    age-keygen -o "$HOME/.cs-secrets/age.key" 2>/dev/null || return 1
+    age_pub=$(age-keygen -y "$HOME/.cs-secrets/age.key") || return 1
+    printf '%s\n' "$age_pub" > "$HOME/.cs-secrets/age.pub"
+    printf '%s\n' "$age_pub" > "$meta/age-recipients/$(_machine_id).pub"
+    printf '%s' "$age_pub" | shasum -a 256 | cut -d' ' -f1 > "$HOME/.cs-secrets/sessions/test-session/age-trusted"
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+}
+
+# The first export after the upgrade moves this machine to its ssh key: its
+# recipient file changes, the sync file is encrypted to the new key, and a
+# peer that pinned the old key is told to pin the new one before it exports
+# again.
+test_export_switches_this_machine_to_its_ssh_key() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local mid; mid=$(_machine_id)
+    local f="$meta/secrets.$mid.age" peer_home="$TEST_TMPDIR/peer-home"
+    local out rc=0 key_type key_body key_comment
+    _stage_session_from_before_the_ssh_key || { echo "  FAIL: could not stage the earlier session"; return 1; }
+    # The peer is another machine (its own user name, so its own recipient
+    # file). It pinned this machine's age key while that was the recipient,
+    # and this machine pinned the peer's key in turn.
+    mkdir -p "$peer_home"
+    USER=peer HOME="$peer_home" "$CS_SECRETS_BIN" age add "$meta/age-recipients/$mid.pub" >/dev/null 2>&1 \
+        || { echo "  FAIL: fixture: the peer could not pin the age key"; return 1; }
+    USER=peer HOME="$peer_home" "$CS_SECRETS_BIN" set peer_key "pv" >/dev/null 2>&1 || return 1
+    USER=peer HOME="$peer_home" "$CS_SECRETS_BIN" export-file "$TEST_TMPDIR/peer-before.age" >/dev/null 2>&1 \
+        || { echo "  FAIL: fixture: the peer cannot export before the switch"; return 1; }
+    printf '%s' "$(cat "$meta"/age-recipients/peer@*.pub)" | shasum -a 256 | cut -d' ' -f1 \
+        >> "$HOME/.cs-secrets/sessions/test-session/age-trusted"
+
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the export exits 0: $out" || return 1
+    assert_file_exists "$HOME/.cs-secrets/id_ed25519.pub" "this machine has an ssh key" || return 1
+    read -r key_type key_body key_comment < "$HOME/.cs-secrets/id_ed25519.pub"
+    assert_eq "$key_type $key_body" "$(cat "$meta/age-recipients/$mid.pub")" \
+        "this machine's recipient file holds its ssh key" || return 1
+    _age_decrypts_to "$HOME/.cs-secrets/id_ed25519" "$f" "sk_123" \
+        || { echo "  FAIL: the ssh key cannot decrypt the sync file"; return 1; }
+    if _age_decrypts_to "$HOME/.cs-secrets/age.key" "$f" "sk_123"; then
+        echo "  FAIL: the sync file is still encrypted to the earlier age key"
+        return 1
+    fi
+    assert_file_exists "$HOME/.cs-secrets/age.key" "the earlier age key is kept" || return 1
+
+    rc=0
+    out=$(USER=peer HOME="$peer_home" "$CS_SECRETS_BIN" export-file "$TEST_TMPDIR/peer-after.age" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the peer's next export is refused" || return 1
+    assert_output_contains "$out" "age add .*age-recipients/$mid\.pub" "the refusal gives the peer the pin command" || return 1
+    assert_file_not_exists "$TEST_TMPDIR/peer-after.age" "the refused export writes nothing" || return 1
+}
+
+# A clone can commit a recipient file under any name holding this machine's
+# earlier age key, which is public. The switch to the ssh key rewrites it and
+# names it as a plain name.
+test_export_switch_names_a_recipient_file_as_a_plain_name() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local mid; mid=$(_machine_id)
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m
+    local out rc=0
+    _stage_session_from_before_the_ssh_key || { echo "  FAIL: could not stage the earlier session"; return 1; }
+    cp "$meta/age-recipients/$mid.pub" "$meta/age-recipients/c$bad.pub" || return 1
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the export exits 0: $out" || return 1
+    assert_eq "Switched c$shown.pub from this machine's age key to its ssh key." \
+        "$(grep '^Switched c' <<< "$out")" "the switch names the recipient file as a plain name" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal" || return 1
+}
+
+# With age on the machine an export encrypts to keys, and it needs ssh-keygen
+# for this machine's key. Without it the export stops and says so; it does not
+# fall back to a password file.
+test_first_export_without_ssh_keygen_refuses() {
+    _use_real_age || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local bindir="$TEST_TMPDIR/no-ssh-keygen" out rc=0
+    link_path_without "$bindir" 'ssh-keygen'
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    out=$(PATH="$bindir" "$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the export exits 1" || return 1
+    assert_eq "Error: ssh-keygen not found. cs keeps this machine's key as an ssh-ed25519 pair and needs OpenSSH 8.0 or later to create it and to sign with it." \
+        "$out" "the refusal names ssh-keygen" || return 1
+    assert_eq "" "$(find "$meta" -name 'secrets.*')" "no sync file of either kind is written" || return 1
+    assert_eq "" "$(find "$meta" -name '*.pub')" "no recipient file is written" || return 1
+}
+
+# True when <file>.sig is this key's signature over the file in the session's
+# namespace. Checked with ssh-keygen directly, not through cs.
+_sync_file_is_signed_by() {  # public key file, sync file, session
+    local allowed="$TEST_TMPDIR/allowed.$$" key_type key_body key_comment
+    read -r key_type key_body key_comment < "$1"
+    printf 'cs %s %s\n' "$key_type" "$key_body" > "$allowed"
+    ssh-keygen -Y verify -f "$allowed" -I cs -n "cs-secrets@$3" -s "$2.sig" < "$2" >/dev/null 2>&1
+}
+
+# age says who may read a sync file, not who wrote it: anyone who can push can
+# encrypt to a tracked public key. The export signs the ciphertext with this
+# machine's key, in a namespace that names the session.
+test_export_signs_the_sync_file() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f; f="$meta/secrets.$(_machine_id).age"
+    local out rc=0
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the export exits 0: $out" || return 1
+    assert_file_exists "$f.sig" "the signature sits beside the sync file" || return 1
+    _sync_file_is_signed_by "$HOME/.cs-secrets/id_ed25519.pub" "$f" test-session \
+        || { echo "  FAIL: the signature does not verify with this machine's key"; return 1; }
+    if _sync_file_is_signed_by "$HOME/.cs-secrets/id_ed25519.pub" "$f" other-session; then
+        echo "  FAIL: the signature verifies for another session"
+        return 1
+    fi
+}
+
+# A stop between the two renames leaves a new sync file beside an old
+# signature, or none. The next export puts a current signature back although
+# no secret changed.
+test_export_replaces_a_signature_that_does_not_verify() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f; f="$meta/secrets.$(_machine_id).age"
+    local out rc
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
+
+    rm "$f.sig"
+    rc=0
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the export after a lost signature exits 0: $out" || return 1
+    _sync_file_is_signed_by "$HOME/.cs-secrets/id_ed25519.pub" "$f" test-session \
+        || { echo "  FAIL: a lost signature was not written again: $out"; return 1; }
+
+    printf 'an earlier ciphertext' \
+        | ssh-keygen -Y sign -f "$HOME/.cs-secrets/id_ed25519" -n "cs-secrets@test-session" > "$f.sig" 2>/dev/null \
+        || { echo "  FAIL: fixture: could not make a stale signature"; return 1; }
+    rc=0
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the export after a stale signature exits 0: $out" || return 1
+    _sync_file_is_signed_by "$HOME/.cs-secrets/id_ed25519.pub" "$f" test-session \
+        || { echo "  FAIL: a stale signature was not replaced: $out"; return 1; }
+    assert_eq "sk_123" "$(age -d -i "$HOME/.cs-secrets/id_ed25519" < "$f" | jq -r .api_key)" "the secret is still the same" || return 1
+}
+
+# A peer checks a sync file's signature against the public keys in
+# .cs/age-recipients, so the machine that signs has to be in there. Joining a
+# session that already has recipients adds this machine's key on its first
+# export.
+test_export_adds_this_machine_to_a_session_that_has_recipients() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local mid; mid=$(_machine_id)
+    local f="$meta/secrets.$mid.age" out rc=0 key_type key_body key_comment
+    _make_age_identity colleague || { echo "  FAIL: could not create a test identity"; return 1; }
+    "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/colleague.pub" >/dev/null 2>&1 || { echo "  FAIL: fixture: age add failed"; return 1; }
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the export exits 0: $out" || return 1
+    assert_file_exists "$HOME/.cs-secrets/id_ed25519.pub" "this machine has a key" || return 1
+    read -r key_type key_body key_comment < "$HOME/.cs-secrets/id_ed25519.pub"
+    assert_file_exists "$meta/age-recipients/$mid.pub" "this machine has a recipient file" || return 1
+    assert_eq "$key_type $key_body" "$(cat "$meta/age-recipients/$mid.pub")" "it holds this machine's key" || return 1
+    _age_decrypts_to "$HOME/.cs-secrets/id_ed25519" "$f" "sk_123" || { echo "  FAIL: this machine cannot decrypt its own file"; return 1; }
+    _age_decrypts_to "$TEST_TMPDIR/colleague.key" "$f" "sk_123" || { echo "  FAIL: the colleague cannot decrypt"; return 1; }
+    _sync_file_is_signed_by "$meta/age-recipients/$mid.pub" "$f" test-session \
+        || { echo "  FAIL: the signature does not verify with the published key"; return 1; }
+}
+
+# The file name this machine would publish under can already hold someone
+# else's key: two machines with one user and host name, or a key pair made
+# anew. cs does not replace a key it cannot account for.
+test_export_refuses_when_this_machines_recipient_file_holds_another_key() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local mid; mid=$(_machine_id)
+    local out rc=0 before
+    _make_ssh_identity other || { echo "  FAIL: could not create a test ssh identity"; return 1; }
+    cp "$TEST_TMPDIR/other.ssh.pub" "$TEST_TMPDIR/$mid.pub"
+    "$CS_SECRETS_BIN" age add "$TEST_TMPDIR/$mid.pub" >/dev/null 2>&1 || { echo "  FAIL: fixture: age add failed"; return 1; }
+    before=$(cat "$meta/age-recipients/$mid.pub")
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the export exits 1" || return 1
+    assert_eq "Error: $meta/age-recipients/$mid.pub holds a key that is not this machine's. Remove it with 'cs -secrets age remove $mid', or publish this machine's key under another name with 'cs -secrets age add <a copy of $HOME/.cs-secrets/id_ed25519.pub>'." \
+        "$out" "the refusal names the file and both ways out" || return 1
+    assert_eq "$before" "$(cat "$meta/age-recipients/$mid.pub")" "the file is left as it was" || return 1
+    assert_eq "" "$(find "$meta" -name 'secrets.*')" "no sync file is written" || return 1
+}
+
+# An export that has nothing new to say leaves the file and its signature
+# byte for byte as they were.
+test_export_leaves_a_current_signed_file_alone() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f; f="$meta/secrets.$(_machine_id).age"
+    local out rc=0
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
+    cp "$f" "$TEST_TMPDIR/before.age"
+    cp "$f.sig" "$TEST_TMPDIR/before.sig"
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the second export exits 0" || return 1
+    assert_eq "No secret changes to export for session: test-session (secrets.$(_machine_id).age is up to date)" "$out" \
+        "it reports nothing to export" || return 1
+    cmp -s "$f" "$TEST_TMPDIR/before.age" || { echo "  FAIL: the sync file was rewritten"; return 1; }
+    cmp -s "$f.sig" "$TEST_TMPDIR/before.sig" || { echo "  FAIL: the signature was rewritten"; return 1; }
+}
+
+# Signing needs ssh-keygen on every export, not only the first.
+test_later_export_without_ssh_keygen_refuses_and_keeps_the_signed_file() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f; f="$meta/secrets.$(_machine_id).age"
+    local bindir="$TEST_TMPDIR/no-ssh-keygen" out rc=0
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
+    cp "$f" "$TEST_TMPDIR/before.age"
+    cp "$f.sig" "$TEST_TMPDIR/before.sig"
+    "$CS_SECRETS_BIN" set api_key "sk_456" >/dev/null 2>&1 || return 1
+    link_path_without "$bindir" 'ssh-keygen'
+    out=$(PATH="$bindir" "$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the export exits 1" || return 1
+    assert_eq "Error: ssh-keygen not found. cs keeps this machine's key as an ssh-ed25519 pair and needs OpenSSH 8.0 or later to create it and to sign with it." \
+        "$out" "the refusal names ssh-keygen" || return 1
+    cmp -s "$f" "$TEST_TMPDIR/before.age" || { echo "  FAIL: the sync file was changed"; return 1; }
+    cmp -s "$f.sig" "$TEST_TMPDIR/before.sig" || { echo "  FAIL: the signature was changed"; return 1; }
+    assert_eq "" "$(find "$meta" -name '.secrets.*')" "no temp file is left" || return 1
+    assert_eq "" "$(find "$meta" -name '*.enc')" "no password file is written instead" || return 1
+}
+
+test_export_to_a_named_file_signs_beside_it() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local named="$TEST_TMPDIR/out/named.age"
+    mkdir -p "$TEST_TMPDIR/out"
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file "$named" >/dev/null 2>&1 || { echo "  FAIL: export to a named file failed"; return 1; }
+    _sync_file_is_signed_by "$HOME/.cs-secrets/id_ed25519.pub" "$named" test-session \
+        || { echo "  FAIL: the named file has no verifying signature beside it"; return 1; }
+    assert_eq "" "$(find "$meta" -name 'secrets.*')" "nothing is written at the default place" || return 1
+}
+
+# A password file's trust is the password: whoever holds it can write one. It
+# carries no signature.
+test_password_export_writes_no_signature() {
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: password export failed"; return 1; }
+    assert_file_exists "$meta/secrets.$(_machine_id).enc" "the password file is written" || return 1
+    assert_eq "" "$(find "$meta" -name '*.sig')" "no signature is written" || return 1
+    assert_not_exists "$HOME/.cs-secrets/id_ed25519" "no machine key is made for a password export" || return 1
+}
+
+# A directory where the signature goes would take the new signature inside it
+# and leave the sync file with none: the export stops before it writes.
+test_export_refuses_a_directory_where_the_signature_goes() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f; f="$meta/secrets.$(_machine_id).age"
+    local out rc=0
+    "$CS_SECRETS_BIN" set api_key "sk_123" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: first export failed"; return 1; }
+    cp "$f" "$TEST_TMPDIR/before.age"
+    rm "$f.sig"
+    mkdir "$f.sig"
+    "$CS_SECRETS_BIN" set api_key "sk_456" >/dev/null 2>&1 || return 1
+    out=$("$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the export exits 1" || return 1
+    assert_eq "Error: Aborting export for session 'test-session': $f.sig is a directory" "$out" "the refusal names the path" || return 1
+    cmp -s "$f" "$TEST_TMPDIR/before.age" || { echo "  FAIL: the sync file was changed"; return 1; }
+    assert_eq "" "$(find "$meta" -name '.secrets.*')" "no temp file is left" || return 1
+    assert_eq "" "$(find "$f.sig" -mindepth 1)" "nothing is written into the directory" || return 1
+}
+
+# ---------------------------------------------------------------------------
+# Signed sync files on import. age only says who may read a file: anyone who
+# can push to the session's repository can encrypt one to a tracked public
+# key. An import takes an age file only when its signature was made by a key
+# a recipient file holds and this machine has pinned.
+# ---------------------------------------------------------------------------
+
+# Another machine in the session, with its own HOME and user name. It pins
+# this machine's key, stores one secret and exports: the session then holds
+# secrets.peer@<host>.age, its signature and the peer's recipient file.
+_peer_exports() {  # secret name, value
+    local peer_home="$TEST_TMPDIR/peer-home" own_pubkey="$HOME/.cs-secrets/id_ed25519.pub"
+    mkdir -p "$peer_home"
+    "$CS_SECRETS_BIN" age init >/dev/null 2>&1 || return 1
+    USER=peer HOME="$peer_home" "$CS_SECRETS_BIN" age add "$own_pubkey" >/dev/null 2>&1 || return 1
+    USER=peer HOME="$peer_home" "$CS_SECRETS_BIN" set "$1" "$2" >/dev/null 2>&1 || return 1
+    USER=peer HOME="$peer_home" "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || return 1
+}
+_peer_sync_file() {
+    printf '%s' "$CS_SESSIONS_ROOT"/test-session/.cs/secrets.peer@*.age
+}
+_peer_recipient_file() {
+    printf '%s' "$CS_SESSIONS_ROOT"/test-session/.cs/age-recipients/peer@*.pub
+}
+# A sync file someone who can push made by hand: encrypted to this machine's
+# key under the given file name, with no signature.
+_plant_unsigned_sync_file() {  # file name, json
+    "$CS_SECRETS_BIN" age init >/dev/null 2>&1 || return 1
+    printf '%s\n' "$2" | age -r "$(cat "$HOME/.cs-secrets/id_ed25519.pub")" \
+        -o "$CS_SESSIONS_ROOT/test-session/.cs/$1" || return 1
+}
+
+test_import_file_takes_a_file_signed_by_a_pinned_peer() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local out rc=0
+    _peer_exports from_peer "vp" || { echo "  FAIL: fixture: the peer could not export"; return 1; }
+    "$CS_SECRETS_BIN" age add "$(_peer_recipient_file)" >/dev/null 2>&1 || { echo "  FAIL: fixture: could not pin the peer"; return 1; }
+    out=$("$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the import exits 0: $out" || return 1
+    assert_eq "Imported 1 secret(s) from 1 sync file(s)." "$out" "it reports the one file" || return 1
+    assert_eq "vp" "$("$CS_SECRETS_BIN" get from_peer 2>&1)" "the peer's secret is imported" || return 1
+}
+
+test_import_file_skips_an_unsigned_age_file() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local mode out rc
+    _plant_unsigned_sync_file "secrets.aaa@example.age" '{"planted":"vx"}' || { echo "  FAIL: fixture: could not plant the file"; return 1; }
+    for mode in "" --replace; do
+        rc=0
+        # shellcheck disable=SC2086  # an empty mode is no argument
+        out=$("$CS_SECRETS_BIN" import-file $mode 2>&1) || rc=$?
+        assert_eq "0" "$rc" "the import exits 0 (mode '$mode')" || return 1
+        assert_output_contains "$out" "^Skipped secrets\.aaa@example\.age: it has no signature\. Sync files written before cs signed them have none; import one you trust with --allow-unsigned\.$" \
+            "the skip names the file and the flag (mode '$mode')" || return 1
+        _assert_secret_absent planted "nothing from the file is stored (mode '$mode')" || return 1
+    done
+}
+
+# A file under this machine's own name is no more trusted than any other: the
+# name is a string anyone can write.
+test_import_file_skips_an_unsigned_file_under_this_machines_name() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local out rc=0
+    "$CS_SECRETS_BIN" set api_key "vlocal" >/dev/null 2>&1 || return 1
+    _plant_unsigned_sync_file "secrets.$(_machine_id).age" '{"api_key":"vswapped"}' || { echo "  FAIL: fixture: could not plant the file"; return 1; }
+    out=$("$CS_SECRETS_BIN" import-file --replace 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the import exits 0" || return 1
+    assert_output_contains "$out" "^Skipped secrets\.$(_machine_id)\.age: it has no signature" "the skip names the file" || return 1
+    assert_eq "vlocal" "$("$CS_SECRETS_BIN" get api_key 2>&1)" "the stored secret is not replaced" || return 1
+}
+
+test_import_file_skips_a_file_signed_by_an_unpinned_key() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local out rc=0 peer_pub peer_file
+    _peer_exports from_peer "vp" || { echo "  FAIL: fixture: the peer could not export"; return 1; }
+    peer_pub=$(_peer_recipient_file)
+    peer_file=$(_peer_sync_file)
+    out=$("$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the import exits 0" || return 1
+    assert_output_contains "$out" "^Skipped $(basename "$peer_file"): it is signed by $(basename "$peer_pub"), a key this machine has not pinned\. If you trust it: cs -secrets --session test-session age add " \
+        "the skip names the signer's file and the pin command" || return 1
+    _assert_secret_absent from_peer "nothing from the file is stored" || return 1
+}
+
+# A clone chooses the names of the sync files and recipient files it commits,
+# and a name can carry a terminal escape: a raw ESC or BEL byte, or backslash
+# text echo -e would turn into one. The skip names the sync file and its
+# signer's file as plain names, each character a plain name lacks replaced by _.
+test_import_file_names_a_sync_file_and_its_signer_as_plain_names() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m
+    local out rc=0 line
+    _peer_exports from_peer "vp" || { echo "  FAIL: fixture: the peer could not export"; return 1; }
+    mv "$(_peer_sync_file)" "$meta/secrets.p$bad.age" || return 1
+    mv "$(_peer_sync_file).sig" "$meta/secrets.p$bad.age.sig" 2>/dev/null \
+        || mv "$meta"/secrets.peer@*.age.sig "$meta/secrets.p$bad.age.sig" || return 1
+    mv "$(_peer_recipient_file)" "$meta/age-recipients/p$bad.pub" || return 1
+    out=$("$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the import exits 0" || return 1
+    line=$(grep '^Skipped' <<< "$out")
+    assert_eq "Skipped secrets.p$shown.age: it is signed by p$shown.pub, a key this machine has not pinned. If you trust it: cs -secrets --session test-session age add " \
+        "${line%%age add *}age add " "the skip names the file and its signer as plain names" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal" || return 1
+}
+
+# A signature by a key no recipient file holds says nothing about who wrote
+# the file, however valid it is.
+test_import_file_skips_a_file_signed_by_a_key_outside_the_session() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f="$meta/secrets.aaa@example.age" out rc=0
+    _make_ssh_identity stranger || return 1
+    # This machine has exported, so the session holds a pinned key to check
+    # signatures against: the stranger's must fail that check, not find it empty.
+    "$CS_SECRETS_BIN" set local_key "vlocal" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 || { echo "  FAIL: fixture: export failed"; return 1; }
+    _plant_unsigned_sync_file "secrets.aaa@example.age" '{"planted":"vx"}' || return 1
+    ssh-keygen -Y sign -f "$TEST_TMPDIR/stranger.ssh" -n "cs-secrets@test-session" < "$f" > "$f.sig" 2>/dev/null \
+        || { echo "  FAIL: fixture: could not sign"; return 1; }
+    out=$("$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the import exits 0" || return 1
+    assert_output_contains "$out" "^Skipped secrets\.aaa@example\.age: its signature does not match\." "the skip names the file" || return 1
+    _assert_secret_absent planted "nothing from the file is stored" || return 1
+}
+
+test_import_file_skips_a_signed_file_changed_after_signing() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local out rc=0 peer_file
+    _peer_exports from_peer "vp" || { echo "  FAIL: fixture: the peer could not export"; return 1; }
+    "$CS_SECRETS_BIN" age add "$(_peer_recipient_file)" >/dev/null 2>&1 || return 1
+    peer_file=$(_peer_sync_file)
+    # One byte added to the ciphertext. (Overwriting a byte with a fixed value
+    # leaves the file as it was once in 256 runs.)
+    printf 'X' >> "$peer_file"
+    out=$("$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the import exits 0" || return 1
+    assert_output_contains "$out" "^Skipped $(basename "$peer_file"): its signature does not match\." "the skip names the file" || return 1
+    _assert_secret_absent from_peer "nothing from the file is stored" || return 1
+}
+
+# The bytes that are decrypted are the bytes whose signature was checked. A
+# checkout can replace a sync file while an import runs; here ssh-keygen
+# itself replaces the session's file, just before or just after it verifies.
+_ssh_keygen_that_swaps() {  # bin dir, before|after, replacement, sync file
+    local real_keygen
+    real_keygen=$(command -v ssh-keygen)
+    mkdir -p "$1"
+    cat > "$1/ssh-keygen" <<SHIM
+#!/bin/bash
+case " \$* " in
+    *" -Y verify "*)
+        if [ "$2" = before ]; then
+            cp "$3" "$4"
+            : > "$TEST_TMPDIR/swapped"
+            exec "$real_keygen" "\$@"
+        fi
+        "$real_keygen" "\$@" || exit \$?
+        cp "$3" "$4"
+        : > "$TEST_TMPDIR/swapped"
+        exit 0
+        ;;
+esac
+exec "$real_keygen" "\$@"
+SHIM
+    chmod +x "$1/ssh-keygen"
+}
+_plant_unsigned_replacement() {  # output file, json
+    printf '%s\n' "$2" | age -r "$(cat "$HOME/.cs-secrets/id_ed25519.pub")" -o "$1"
+}
+
+test_import_file_decrypts_the_bytes_it_verified() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local bindir="$TEST_TMPDIR/swapping-ssh-keygen" unsigned="$TEST_TMPDIR/unsigned.age"
+    local peer_file out rc=0
+    _peer_exports from_peer "vp" || { echo "  FAIL: fixture: the peer could not export"; return 1; }
+    "$CS_SECRETS_BIN" age add "$(_peer_recipient_file)" >/dev/null 2>&1 || { echo "  FAIL: fixture: could not pin the peer"; return 1; }
+    peer_file=$(_peer_sync_file)
+    _plant_unsigned_replacement "$unsigned" '{"from_peer":"vswapped"}' || { echo "  FAIL: fixture: could not encrypt the replacement"; return 1; }
+    _ssh_keygen_that_swaps "$bindir" after "$unsigned" "$peer_file"
+    out=$(PATH="$bindir:$PATH" "$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_file_exists "$TEST_TMPDIR/swapped" "fixture: the file was replaced after a passing check" || return 1
+    cmp -s "$peer_file" "$unsigned" || { echo "  FAIL: fixture: the session does not hold the replacement"; return 1; }
+    assert_eq "0" "$rc" "the import exits 0: $out" || return 1
+    assert_eq "vp" "$("$CS_SECRETS_BIN" get from_peer 2>&1)" "the signed value is imported, not the replacement" || return 1
+}
+
+# The other order: the session holds an unsigned file when the import reads
+# it, and the signed one is back in place by the time the signature is checked.
+test_import_file_verifies_the_bytes_it_will_decrypt() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local bindir="$TEST_TMPDIR/swapping-ssh-keygen" signed="$TEST_TMPDIR/signed.age"
+    local peer_file out rc=0
+    _peer_exports from_peer "vp" || { echo "  FAIL: fixture: the peer could not export"; return 1; }
+    "$CS_SECRETS_BIN" age add "$(_peer_recipient_file)" >/dev/null 2>&1 || { echo "  FAIL: fixture: could not pin the peer"; return 1; }
+    peer_file=$(_peer_sync_file)
+    cp "$peer_file" "$signed"
+    _plant_unsigned_replacement "$peer_file" '{"from_peer":"vswapped"}' || { echo "  FAIL: fixture: could not encrypt the replacement"; return 1; }
+    _ssh_keygen_that_swaps "$bindir" before "$signed" "$peer_file"
+    out=$(PATH="$bindir:$PATH" "$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_file_exists "$TEST_TMPDIR/swapped" "fixture: the signed file was put back before the check" || return 1
+    cmp -s "$peer_file" "$signed" || { echo "  FAIL: fixture: the session does not hold the signed file"; return 1; }
+    assert_eq "0" "$rc" "the import exits 0: $out" || return 1
+    assert_output_contains "$out" "^Skipped $(basename "$peer_file"): its signature does not match\." "the skip names the file" || return 1
+    _assert_secret_absent from_peer "nothing from the unsigned file is stored" || return 1
+}
+
+# A symbolic link is the one thing a push can put at either path that names
+# something outside the repository: a device, a pipe, a file of any size. An
+# import copies the link, never what it names, and takes neither.
+test_import_file_skips_a_signature_that_is_a_symbolic_link() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local peer_file mode out rc
+    _peer_exports from_peer "vp" || { echo "  FAIL: fixture: the peer could not export"; return 1; }
+    "$CS_SECRETS_BIN" age add "$(_peer_recipient_file)" >/dev/null 2>&1 || { echo "  FAIL: fixture: could not pin the peer"; return 1; }
+    peer_file=$(_peer_sync_file)
+    mv "$peer_file.sig" "$TEST_TMPDIR/elsewhere.sig"
+    ln -s "$TEST_TMPDIR/elsewhere.sig" "$peer_file.sig"
+    for mode in "" --allow-unsigned; do
+        rc=0
+        # shellcheck disable=SC2086  # an empty mode is no argument
+        out=$("$CS_SECRETS_BIN" import-file $mode 2>&1) || rc=$?
+        assert_eq "0" "$rc" "the import exits 0 (mode '$mode')" || return 1
+        assert_output_contains "$out" "^Skipped $(basename "$peer_file"): its signature is a symbolic link\.$" "the skip says why (mode '$mode')" || return 1
+        _assert_secret_absent from_peer "nothing from the file is stored (mode '$mode')" || return 1
+    done
+}
+
+test_import_file_skips_a_sync_file_that_is_a_symbolic_link() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local peer_file out rc=0
+    _peer_exports from_peer "vp" || { echo "  FAIL: fixture: the peer could not export"; return 1; }
+    "$CS_SECRETS_BIN" age add "$(_peer_recipient_file)" >/dev/null 2>&1 || { echo "  FAIL: fixture: could not pin the peer"; return 1; }
+    peer_file=$(_peer_sync_file)
+    mv "$peer_file" "$TEST_TMPDIR/elsewhere.age"
+    ln -s "$TEST_TMPDIR/elsewhere.age" "$peer_file"
+    out=$("$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the import exits 0" || return 1
+    assert_output_contains "$out" "^Skipped $(basename "$peer_file"): it is a symbolic link\.$" "the skip says why" || return 1
+    _assert_secret_absent from_peer "nothing from the file is stored" || return 1
+}
+
+# A password file carries no signature, so the link is the whole attack: a
+# pushed .enc link to another session's local store, which the shared password
+# opens, would import that session's secrets and the next export would publish
+# them in this session's tracked sync file.
+test_import_file_skips_a_password_sync_file_that_is_a_symbolic_link() {
+    local out rc=0 link="$CS_SESSIONS_ROOT/test-session/.cs/secrets.zz.enc"
+    create_test_session other-session >/dev/null
+    printf 'value-of-other\n' | "$CS_SECRETS_BIN" --session other-session set other_token >/dev/null 2>&1 \
+        || { echo "  FAIL: fixture: set in the other session failed"; return 1; }
+    assert_file_exists "$HOME/.cs-secrets/other-session.enc" "fixture: the other session's local store" || return 1
+    ln -s "$HOME/.cs-secrets/other-session.enc" "$link"
+    out=$("$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the import exits 0" || return 1
+    assert_output_contains "$out" "^Skipped secrets\.zz\.enc: it is a symbolic link\.$" "the skip says why" || return 1
+    _assert_secret_absent other_token "nothing from the linked store is imported" || return 1
+    rc=0
+    out=$("$CS_SECRETS_BIN" import-file "$link" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a named link is refused" || return 1
+    assert_eq "Error: Refusing to import $link: it is a symbolic link." "$out" "the refusal names the file and why" || return 1
+    _assert_secret_absent other_token "nothing is imported through the named link" || return 1
+}
+
+# One value larger than the kernel lets a process carry in its environment
+# (1 MiB on macOS, 128 KiB per string on Linux) used to make the store's jq
+# fail to start; the empty result was written over the store, every secret
+# was lost, and the import still reported success.
+test_import_file_keeps_the_store_when_a_value_exceeds_the_exec_limit() {
+    local out rc=0 len
+    printf 'kept\n' | "$CS_SECRETS_BIN" set keep_one >/dev/null 2>&1 \
+        || { echo "  FAIL: fixture: set failed"; return 1; }
+    {
+        printf '{"big_blob":"'
+        head -c 1200000 /dev/zero | tr '\0' 'A'
+        printf '","zzz_small":"s2"}\n'
+    } > "$TEST_TMPDIR/payload.json"
+    openssl enc -aes-256-cbc -e -pbkdf2 -iter 100000 -in "$TEST_TMPDIR/payload.json" \
+        -out "$CS_SESSIONS_ROOT/test-session/.cs/secrets.peer@example.enc" -pass env:CS_SECRETS_PASSWORD \
+        || { echo "  FAIL: fixture: could not encrypt the sync file"; return 1; }
+    out=$("$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_eq "0 Imported 2 secret(s) from 1 sync file(s)." "$rc $out" "the import stores both values" || return 1
+    assert_eq "kept" "$("$CS_SECRETS_BIN" get keep_one 2>&1)" "the stored secret survives" || return 1
+    assert_eq "s2" "$("$CS_SECRETS_BIN" get zzz_small 2>&1)" "the small value is stored" || return 1
+    len=$("$CS_SECRETS_BIN" get big_blob 2>/dev/null | tr -d '\n' | wc -c | tr -d ' ')
+    assert_eq "1200000" "$len" "the large value is stored whole" || return 1
+}
+
+# A .cs pushed as a link to ~/.cs-secrets holds no link a file check sees, yet
+# the legacy secrets.enc it finds there is the local store of a session named
+# secrets, which the shared password opens.
+test_import_file_refuses_a_session_whose_cs_is_a_link() {
+    local out rc=0 session_dir="$CS_SESSIONS_ROOT/linked-session" real
+    create_test_session secrets >/dev/null
+    printf 'value-of-victim\n' | "$CS_SECRETS_BIN" --session secrets set victim_token >/dev/null 2>&1 \
+        || { echo "  FAIL: fixture: set in the session named secrets failed"; return 1; }
+    assert_file_exists "$HOME/.cs-secrets/secrets.enc" "fixture: the victim's local store" || return 1
+    mkdir -p "$session_dir"
+    ln -s "$HOME/.cs-secrets" "$session_dir/.cs"
+    real=$(cd "$HOME/.cs-secrets" && pwd -P)
+    out=$("$CS_SECRETS_BIN" --session linked-session import-file 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the import is refused" || return 1
+    assert_eq "Error: Refusing to import for session 'linked-session': $session_dir/.cs leads to $real, outside the session" \
+        "$out" "the refusal names the link and where it leads" || return 1
+    rc=0
+    out=$("$CS_SECRETS_BIN" --session linked-session import-file "$session_dir/.cs/secrets.enc" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a file named through the link is refused" || return 1
+    rc=0
+    out=$("$CS_SECRETS_BIN" --session linked-session get victim_token 2>&1) || rc=$?
+    assert_eq "3 Error: secret not found: victim_token" "$rc $out" "nothing from the victim's store is imported" || return 1
+}
+
+# A clone chooses where a committed link leads, and the name there can carry
+# a terminal escape: a raw ESC or BEL byte, or backslash text echo -e would
+# turn into one. Each import refusal names where the link leads as a plain
+# path, each character a plain path lacks replaced by _.
+test_import_file_names_where_a_linked_cs_leads_as_a_plain_path() {
+    local out rc=0 session_dir="$CS_SESSIONS_ROOT/linked-session" t
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m
+    t=$(cd "$TEST_TMPDIR" && /bin/pwd -P)
+    mkdir -p "$session_dir" "$t/cs$bad"
+    ln -s "$t/cs$bad" "$session_dir/.cs"
+    out=$("$CS_SECRETS_BIN" --session linked-session import-file 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the import is refused" || return 1
+    assert_eq "Error: Refusing to import for session 'linked-session': $session_dir/.cs leads to $t/cs$shown, outside the session" \
+        "$out" "the refusal names where the link leads as a plain path" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal" || return 1
+}
+
+test_import_file_names_where_a_linked_directory_leads_as_a_plain_path() {
+    local out rc=0 inbox="$CS_SESSIONS_ROOT/test-session/.cs/inbox" t
+    local bad=$'e\033[1mb\007\\e[0m' shown=e__1mb__e_0m
+    t=$(cd "$TEST_TMPDIR" && /bin/pwd -P)
+    mkdir -p "$t/in$bad"
+    printf 'not a sync file\n' > "$t/in$bad/other-session.enc"
+    ln -s "$t/in$bad" "$inbox"
+    out=$("$CS_SECRETS_BIN" import-file "$inbox/other-session.enc" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the import is refused" || return 1
+    assert_eq "Error: Refusing to import $inbox/other-session.enc: its directory leads to $t/in$shown, outside the session" \
+        "$out" "the refusal names where the directory leads as a plain path" || return 1
+    assert_no_escape_bytes "$out" "no escape byte reaches the terminal" || return 1
+}
+
+# A file named outright is read from where its path leads, so a directory link
+# pushed inside the session (.cs/inbox -> ~/.cs-secrets) would hand over
+# another session's local store under a name that is itself no link.
+test_import_file_refuses_a_named_file_behind_a_linked_directory() {
+    local out rc=0 inbox="$CS_SESSIONS_ROOT/test-session/.cs/inbox" real
+    create_test_session other-session >/dev/null
+    printf 'value-of-other\n' | "$CS_SECRETS_BIN" --session other-session set other_token >/dev/null 2>&1 \
+        || { echo "  FAIL: fixture: set in the other session failed"; return 1; }
+    ln -s "$HOME/.cs-secrets" "$inbox"
+    real=$(cd "$HOME/.cs-secrets" && /bin/pwd -P)
+    out=$("$CS_SECRETS_BIN" import-file "$inbox/other-session.enc" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the import is refused" || return 1
+    assert_eq "Error: Refusing to import $inbox/other-session.enc: its directory leads to $real, outside the session" \
+        "$out" "the refusal names the file and where its directory leads" || return 1
+    _assert_secret_absent other_token "nothing from the other session's store is imported" || return 1
+}
+
+# Writes a stand-in for <tool> at the front of PATH that, on the first call
+# whose arguments mention <word>, swaps the session's .cs for a link to
+# ~/.cs-secrets (keeping the real one as .cs.saved), then runs the real tool.
+_make_cs_swapper() {  # tool, word
+    local bindir="$TEST_TMPDIR/swap-bin" real
+    real=$(command -v "$1") || return 1
+    mkdir -p "$bindir"
+    cat > "$bindir/$1" <<EOF
+#!/bin/bash
+case "\$*" in *"$2"*)
+    if [ ! -e "$TEST_TMPDIR/swapped" ]; then
+        : > "$TEST_TMPDIR/swapped"
+        mv "$CS_SESSIONS_ROOT/test-session/.cs" "$CS_SESSIONS_ROOT/test-session/.cs.saved"
+        ln -s "$HOME/.cs-secrets" "$CS_SESSIONS_ROOT/test-session/.cs"
+    fi ;;
+esac
+exec "$real" "\$@"
+EOF
+    chmod +x "$bindir/$1"
+    printf '%s\n' "$bindir"
+}
+
+# The session's own legacy secrets.enc, and a session named secrets whose
+# local store ~/.cs-secrets/secrets.enc a swapped-in .cs link would expose.
+_seed_swap_fixture() {
+    create_test_session secrets >/dev/null
+    printf 'value-of-victim\n' | "$CS_SECRETS_BIN" --session secrets set victim_token >/dev/null 2>&1 \
+        || { echo "  FAIL: fixture: set in the session named secrets failed"; return 1; }
+    printf '{"own_token":"mine"}\n' | openssl enc -aes-256-cbc -e -pbkdf2 -iter 100000 \
+        -out "$CS_SESSIONS_ROOT/test-session/.cs/secrets.enc" -pass env:CS_SECRETS_PASSWORD \
+        || { echo "  FAIL: fixture: could not encrypt the sync file"; return 1; }
+}
+
+# The .cs is checked once, then each file is copied: a checkout that swaps .cs
+# for a link before a copy starts must not lead that copy out of the session.
+test_import_file_refuses_a_cs_swapped_for_a_link_before_the_copy() {
+    local out rc=0 bindir
+    _seed_swap_fixture || return 1
+    bindir=$(_make_cs_swapper mktemp cs-import) || { echo "  FAIL: fixture: no mktemp"; return 1; }
+    out=$(PATH="$bindir:$PATH" "$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_file_exists "$TEST_TMPDIR/swapped" "positive control: the swap happened during the import" || return 1
+    assert_output_contains "$out" "^Skipped secrets\.enc: its directory changed while it was read\.$" \
+        "the skip says why" || return 1
+    _assert_secret_absent victim_token "nothing from the victim's store is imported" || return 1
+}
+
+# A swap that lands while the copy itself runs must not lead it out either.
+test_import_file_reads_the_cs_it_checked_when_swapped_during_the_copy() {
+    local out rc=0 bindir
+    _seed_swap_fixture || return 1
+    bindir=$(_make_cs_swapper cp secrets.enc) || { echo "  FAIL: fixture: no cp"; return 1; }
+    out=$(PATH="$bindir:$PATH" "$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_file_exists "$TEST_TMPDIR/swapped" "positive control: the swap happened during the import" || return 1
+    assert_eq "0 Imported 1 secret(s) from 1 sync file(s)." "$rc $out" "the session's own file is imported" || return 1
+    assert_eq "mine" "$("$CS_SECRETS_BIN" get own_token 2>&1)" "the value is the session's own" || return 1
+    _assert_secret_absent victim_token "nothing from the victim's store is imported" || return 1
+}
+
+# A directory outside the session and outside the local store, holding a sync
+# file the shared password opens; the session's .cs/inbox is linked to it.
+_link_inbox_outside_the_session() {
+    mkdir -p "$TEST_TMPDIR/outside"
+    printf '{"other_token":"value-of-other"}\n' | openssl enc -aes-256-cbc -e -pbkdf2 -iter 100000 \
+        -out "$TEST_TMPDIR/outside/other-session.enc" -pass env:CS_SECRETS_PASSWORD \
+        || { echo "  FAIL: fixture: could not encrypt the sync file"; return 1; }
+    ln -s "$TEST_TMPDIR/outside" "$CS_SESSIONS_ROOT/test-session/.cs/inbox"
+}
+
+# The session can be spelled many ways: a doubled slash, a dot segment, a link
+# to the sessions root, or a relative name from a directory reached through
+# one. Each is the same session, so each must meet the same refusal.
+test_import_file_refuses_a_named_file_behind_a_linked_directory_however_spelled() {
+    local out rc spelling alias="$TEST_TMPDIR/root-alias"
+    _link_inbox_outside_the_session || return 1
+    ln -s "$CS_SESSIONS_ROOT" "$alias"
+    for spelling in \
+        "$CS_SESSIONS_ROOT//test-session/.cs/inbox/other-session.enc" \
+        "$CS_SESSIONS_ROOT/./test-session/.cs/inbox/other-session.enc" \
+        "$alias/test-session/.cs/inbox/other-session.enc"; do
+        rc=0
+        out=$("$CS_SECRETS_BIN" import-file "$spelling" 2>&1) || rc=$?
+        assert_eq "1" "$rc" "the import of $spelling is refused: $out" || return 1
+    done
+    rc=0
+    out=$(cd "$alias/test-session" && "$CS_SECRETS_BIN" import-file .cs/inbox/other-session.enc 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a relative name from the session reached through a link is refused: $out" || return 1
+    _assert_secret_absent other_token "nothing from the other session's store is imported" || return 1
+}
+
+# On a filesystem that ignores case, a session spelled in another case is the
+# same session.
+test_import_file_refuses_a_named_file_behind_a_linked_directory_in_another_case() {
+    local out rc=0 upper
+    mkdir "$TEST_TMPDIR/case-probe"
+    if [[ ! -d "$TEST_TMPDIR/CASE-PROBE" ]]; then
+        echo "    SKIP (this filesystem tells case apart)"
+        return 77
+    fi
+    upper=$(printf '%s' "$CS_SESSIONS_ROOT/test-session" | tr '[:lower:]' '[:upper:]')
+    _link_inbox_outside_the_session || return 1
+    out=$("$CS_SECRETS_BIN" import-file "$upper/.cs/inbox/other-session.enc" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the import is refused: $out" || return 1
+    _assert_secret_absent other_token "nothing from the other session's store is imported" || return 1
+}
+
+# Whatever path names it, a file in the local secrets store is another
+# session's store, never a sync file: a link outside every session reaches it
+# just as well.
+test_import_file_refuses_a_named_file_in_the_local_secrets_store() {
+    local out rc=0 link="$TEST_TMPDIR/elsewhere" real
+    create_test_session other-session >/dev/null
+    printf 'value-of-other\n' | "$CS_SECRETS_BIN" --session other-session set other_token >/dev/null 2>&1 \
+        || { echo "  FAIL: fixture: set in the other session failed"; return 1; }
+    ln -s "$HOME/.cs-secrets" "$link"
+    real=$(cd "$HOME/.cs-secrets" && /bin/pwd -P)
+    out=$("$CS_SECRETS_BIN" import-file "$link/other-session.enc" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the import is refused" || return 1
+    assert_eq "Error: Refusing to import $link/other-session.enc: its directory leads to $real, the local secrets store" \
+        "$out" "the refusal names the file and the store" || return 1
+    _assert_secret_absent other_token "nothing from the other session's store is imported" || return 1
+}
+
+# Another session's checkout is no more trusted than this one's: a file named
+# through its .cs/inbox, a link pushed to a directory outside it, must not be
+# read. A file that really is in the other session still imports.
+test_import_file_refuses_a_named_file_behind_another_sessions_linked_directory() {
+    local out rc=0 other="$CS_SESSIONS_ROOT/b-session"
+    mkdir -p "$TEST_TMPDIR/outside" "$other/.cs"
+    printf '{"other_token":"value-of-other"}\n' | openssl enc -aes-256-cbc -e -pbkdf2 -iter 100000 \
+        -out "$TEST_TMPDIR/outside/other-session.enc" -pass env:CS_SECRETS_PASSWORD \
+        || { echo "  FAIL: fixture: could not encrypt the outside file"; return 1; }
+    ln -s "$TEST_TMPDIR/outside" "$other/.cs/inbox"
+    out=$("$CS_SECRETS_BIN" import-file "$other/.cs/inbox/other-session.enc" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the import is refused: $out" || return 1
+    _assert_secret_absent other_token "nothing behind the other session's link is imported" || return 1
+    printf '{"b_token":"from-b"}\n' | openssl enc -aes-256-cbc -e -pbkdf2 -iter 100000 \
+        -out "$other/.cs/secrets.b.enc" -pass env:CS_SECRETS_PASSWORD \
+        || { echo "  FAIL: fixture: could not encrypt the other session's file"; return 1; }
+    # A link in this session into the other one leaves this session too.
+    ln -s "$other/.cs" "$CS_SESSIONS_ROOT/test-session/.cs/inbox"
+    rc=0
+    out=$("$CS_SECRETS_BIN" import-file "$CS_SESSIONS_ROOT/test-session/.cs/inbox/secrets.b.enc" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a file reached through a link into the other session is refused: $out" || return 1
+    _assert_secret_absent b_token "nothing from the other session is imported through the link" || return 1
+    rc=0
+    out=$("$CS_SECRETS_BIN" import-file "$other/.cs/secrets.b.enc" 2>&1) || rc=$?
+    assert_eq "0 Imported 1 secret(s) from 1 sync file(s)." "$rc $out" "a file inside the other session imports" || return 1
+}
+
+# A named file cs cannot read is not a file it could not decrypt.
+test_import_file_names_a_file_it_cannot_read() {
+    local out rc=0 work="$TEST_TMPDIR/work"
+    mkdir -p "$work"
+    printf '{"own_token":"mine"}\n' | openssl enc -aes-256-cbc -e -pbkdf2 -iter 100000 \
+        -out "$work/backup.enc" -pass env:CS_SECRETS_PASSWORD \
+        || { echo "  FAIL: fixture: could not encrypt the sync file"; return 1; }
+    chmod 000 "$work/backup.enc"
+    out=$("$CS_SECRETS_BIN" import-file "$work/backup.enc" 2>&1) || rc=$?
+    chmod 600 "$work/backup.enc"
+    assert_eq "1 Error: Could not read $work/backup.enc" "$rc $out" "the refusal says the file could not be read" || return 1
+}
+
+# An exported CDPATH must not change where a relative name leads, nor what the
+# directory check reads back.
+test_import_file_reads_a_relative_name_under_an_exported_cdpath() {
+    local out rc=0 work="$TEST_TMPDIR/work"
+    mkdir -p "$work/sub"
+    printf '{"cdpath_token":"v"}\n' | openssl enc -aes-256-cbc -e -pbkdf2 -iter 100000 \
+        -out "$work/sub/backup.enc" -pass env:CS_SECRETS_PASSWORD \
+        || { echo "  FAIL: fixture: could not encrypt the sync file"; return 1; }
+    out=$(cd "$work" && CDPATH=".:$TEST_TMPDIR" "$CS_SECRETS_BIN" import-file sub/backup.enc 2>&1) || rc=$?
+    assert_eq "0 Imported 1 secret(s) from 1 sync file(s)." "$rc $out" "the file is imported" || return 1
+    assert_eq "v" "$("$CS_SECRETS_BIN" get cdpath_token 2>&1)" "the value is stored" || return 1
+}
+
+# A relative TMPDIR names a directory from where cs-secrets started, not from
+# the directory a copy runs in.
+test_import_file_reads_the_session_under_a_relative_tmpdir() {
+    local out rc=0
+    printf '{"own_token":"mine"}\n' | openssl enc -aes-256-cbc -e -pbkdf2 -iter 100000 \
+        -out "$CS_SESSIONS_ROOT/test-session/.cs/secrets.enc" -pass env:CS_SECRETS_PASSWORD \
+        || { echo "  FAIL: fixture: could not encrypt the sync file"; return 1; }
+    mkdir "$TEST_TMPDIR/rt"
+    out=$(cd "$TEST_TMPDIR" && TMPDIR=rt "$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_eq "0 Imported 1 secret(s) from 1 sync file(s)." "$rc $out" "the session's file is imported" || return 1
+    assert_eq "mine" "$("$CS_SECRETS_BIN" get own_token 2>&1)" "the value is stored" || return 1
+}
+
+# A .cs that cannot be entered by the time its file is copied has not changed:
+# the file is unreadable, and the import says so.
+test_import_file_counts_a_cs_it_cannot_enter_as_unreadable() {
+    local out rc=0 bindir="$TEST_TMPDIR/lock-bin" real meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    printf '{"own_token":"mine"}\n' | openssl enc -aes-256-cbc -e -pbkdf2 -iter 100000 \
+        -out "$meta/secrets.enc" -pass env:CS_SECRETS_PASSWORD \
+        || { echo "  FAIL: fixture: could not encrypt the sync file"; return 1; }
+    real=$(command -v mktemp) || { echo "  FAIL: fixture: no mktemp"; return 1; }
+    mkdir -p "$bindir"
+    cat > "$bindir/mktemp" <<EOF
+#!/bin/bash
+case "\$*" in *cs-import*) chmod 000 "$meta" ;; esac
+exec "$real" "\$@"
+EOF
+    chmod +x "$bindir/mktemp"
+    out=$(PATH="$bindir:$PATH" "$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    chmod 755 "$meta"
+    assert_eq "0" "$rc" "the import finishes: $out" || return 1
+    assert_output_contains "$out" "^Skipped 1 sync file(s) that could not be read\.$" "the file is counted as unreadable" || return 1
+    if [[ "$out" == *"changed while it was read"* ]]; then
+        echo "  FAIL: an unenterable .cs is reported as changed: $out"
+        return 1
+    fi
+}
+
+# A Keychain value larger than the kernel lets a process carry in its
+# environment (1 MiB on macOS) must still reach the backup: export-file builds
+# the backup through jq, which never starts if the value rides in env.
+test_keychain_export_file_carries_a_value_past_the_exec_limit() {
+    local bindir; bindir=$(_make_fake_security)
+    local kcstore="$TEST_TMPDIR/kc-store" mid; mid=$(_machine_id)
+    local f="$CS_SESSIONS_ROOT/test-session/.cs/secrets.${mid}.enc" len rc=0 out
+    mkdir -p "$kcstore"
+    {
+        printf 'cs:test-session:big_blob\n'
+        head -c 1200000 /dev/zero | tr '\0' 'A'
+        printf '\n'
+    } > "$kcstore/cs_test-session_big_blob"
+    out=$(PATH="$bindir:$(_ageless_path)" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        "$CS_SECRETS_BIN" export-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "export-file succeeds: $out" || return 1
+    openssl enc -aes-256-cbc -d -pbkdf2 -iter 100000 -in "$f" -pass env:CS_SECRETS_PASSWORD \
+        > "$TEST_TMPDIR/backup.json" 2>/dev/null \
+        || { echo "  FAIL: the sync file does not decrypt with the test password"; return 1; }
+    len=$(jq -r '.big_blob | length' "$TEST_TMPDIR/backup.json")
+    assert_eq "1200000" "$len" "the backup carries the whole value" || return 1
+}
+
+# A store that already holds two JSON documents (a corrupt or hand-edited
+# file) comes back from jq as two documents; writing them would keep a store
+# that every reader takes as missing secrets.
+test_set_refuses_to_write_a_store_of_more_than_one_document() {
+    local out rc=0 store="$HOME/.cs-secrets/test-session.enc"
+    mkdir -p "$HOME/.cs-secrets"
+    printf '{"a":"1"}\n{"b":"2"}\n' | openssl enc -aes-256-cbc -e -pbkdf2 -iter 100000 \
+        -out "$store" -pass env:CS_SECRETS_PASSWORD \
+        || { echo "  FAIL: fixture: could not encrypt the store"; return 1; }
+    cp "$store" "$TEST_TMPDIR/store.before"
+    out=$(printf 'v\n' | "$CS_SECRETS_BIN" set c 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the write is refused" || return 1
+    assert_output_contains "$out" "^Error: refusing to write a secrets store for session 'test-session' that is not one JSON object$" \
+        "the refusal says why" || return 1
+    cmp -s "$store" "$TEST_TMPDIR/store.before" || { echo "  FAIL: the store on disk changed"; return 1; }
+}
+
+# A directory at the signature path is not a missing signature.
+test_import_file_skips_a_file_whose_signature_cannot_be_read() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local out rc=0
+    _plant_unsigned_sync_file "secrets.aaa@example.age" '{"planted":"vx"}' || { echo "  FAIL: fixture: could not plant the file"; return 1; }
+    mkdir "$CS_SESSIONS_ROOT/test-session/.cs/secrets.aaa@example.age.sig"
+    out=$("$CS_SECRETS_BIN" import-file --allow-unsigned 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the import exits 0" || return 1
+    assert_output_contains "$out" "^Skipped secrets\.aaa@example\.age: its signature could not be read\.$" "the skip says why" || return 1
+    _assert_secret_absent planted "nothing from the file is stored" || return 1
+}
+
+# The same peer, pinned in two sessions: a file it signed for one is not
+# accepted in the other.
+test_import_file_skips_a_file_signed_for_another_session() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs" other="$CS_SESSIONS_ROOT/other-session/.cs"
+    local out rc=0 peer_file peer_pub
+    _peer_exports from_peer "vp" || { echo "  FAIL: fixture: the peer could not export"; return 1; }
+    peer_file=$(_peer_sync_file)
+    peer_pub=$(_peer_recipient_file)
+    mkdir -p "$other/age-recipients"
+    cp "$peer_pub" "$other/age-recipients/"
+    cp "$peer_file" "$peer_file.sig" "$other/"
+    "$CS_SECRETS_BIN" --session other-session age add "$other/age-recipients/$(basename "$peer_pub")" >/dev/null 2>&1 \
+        || { echo "  FAIL: fixture: could not pin the peer in the other session"; return 1; }
+    out=$("$CS_SECRETS_BIN" --session other-session import-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the import exits 0" || return 1
+    assert_output_contains "$out" "^Skipped $(basename "$peer_file"): its signature does not match\." "the skip names the file" || return 1
+    out=$("$CS_SECRETS_BIN" --session other-session get from_peer 2>&1) || true
+    assert_eq "Error: secret not found: from_peer" "$out" "nothing is stored in the other session" || return 1
+}
+
+test_import_file_allow_unsigned_takes_a_file_with_no_signature() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local out rc=0
+    _plant_unsigned_sync_file "secrets.older@example.age" '{"from_before":"vb"}' || return 1
+    out=$("$CS_SECRETS_BIN" import-file --allow-unsigned 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the import exits 0: $out" || return 1
+    assert_eq "vb" "$("$CS_SECRETS_BIN" get from_before 2>&1)" "the unsigned file is imported" || return 1
+}
+
+# The flag is for files that predate signatures, not for files whose
+# signature is wrong.
+test_import_file_allow_unsigned_still_skips_a_bad_signature() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local out rc=0 peer_file
+    _peer_exports from_peer "vp" || { echo "  FAIL: fixture: the peer could not export"; return 1; }
+    "$CS_SECRETS_BIN" age add "$(_peer_recipient_file)" >/dev/null 2>&1 || return 1
+    peer_file=$(_peer_sync_file)
+    printf 'X' >> "$peer_file"
+    out=$("$CS_SECRETS_BIN" import-file --allow-unsigned 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the import exits 0" || return 1
+    assert_output_contains "$out" "^Skipped $(basename "$peer_file"): its signature does not match\." "the skip names the file" || return 1
+    _assert_secret_absent from_peer "nothing from the file is stored" || return 1
+}
+
+test_import_file_refuses_a_named_file_that_is_not_trusted() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local f="$meta/secrets.aaa@example.age" out rc=0
+    _plant_unsigned_sync_file "secrets.aaa@example.age" '{"planted":"vx"}' || return 1
+    out=$("$CS_SECRETS_BIN" import-file "$f" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the import of the named file exits 1" || return 1
+    assert_eq "Error: Refusing to import $f: it has no signature. Sync files written before cs signed them have none; import one you trust with --allow-unsigned." \
+        "$out" "the refusal names the file and the flag" || return 1
+    _assert_secret_absent planted "nothing from the file is stored" || return 1
+    rc=0
+    out=$("$CS_SECRETS_BIN" import-file "$f" --allow-unsigned 2>&1) || rc=$?
+    assert_eq "0" "$rc" "with the flag the named file is imported: $out" || return 1
+    assert_eq "vx" "$("$CS_SECRETS_BIN" get planted 2>&1)" "its secret is stored" || return 1
+}
+
+# Checking a signature needs ssh-keygen. Without it an age file is skipped by
+# name, and a password file beside it is still imported.
+test_import_file_without_ssh_keygen_skips_signed_files_by_name() {
+    _use_real_age || return $?
+    _use_real_ssh_keygen || return $?
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local bindir="$TEST_TMPDIR/no-ssh-keygen" out rc=0 peer_file
+    _peer_exports from_peer "vp" || { echo "  FAIL: fixture: the peer could not export"; return 1; }
+    "$CS_SECRETS_BIN" age add "$(_peer_recipient_file)" >/dev/null 2>&1 || return 1
+    peer_file=$(_peer_sync_file)
+    _seed_enc_sync_file "$meta/secrets.machine-b.enc" '{"from_password_file":"ve"}' || return 1
+    link_path_without "$bindir" 'ssh-keygen'
+    out=$(PATH="$bindir" "$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the import exits 0: $out" || return 1
+    assert_output_contains "$out" "^Skipped $(basename "$peer_file"): ssh-keygen not found, so its signature cannot be checked\.$" "the skip names the file and the tool" || return 1
+    _assert_secret_absent from_peer "the age file is not imported" || return 1
+    assert_eq "ve" "$("$CS_SECRETS_BIN" get from_password_file 2>&1)" "the password file is imported" || return 1
 }
 
 test_import_file_merges_all_machines_and_legacy() {
@@ -924,10 +3192,9 @@ test_set_rejects_a_name_that_breaks_out_of_export() {
 # both become CS_SECRET_API_KEY. Eval takes the last, so a sync file can shadow
 # a real secret with an attacker's value. Refuse rather than emit both.
 test_export_refuses_colliding_exported_names() {
-    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
-    _seed_enc_sync_file "$meta/secrets.machine-c.enc" \
-        '{"api_key":"REAL","api-key":"SHADOW"}' || return 1
-    PATH="$(_ageless_path)" "$CS_SECRETS_BIN" import-file >/dev/null 2>&1
+    # Staged with two `set` calls: an import refuses the pair.
+    "$CS_SECRETS_BIN" set api_key "REAL" >/dev/null 2>&1 || { echo "  FAIL: fixture: set api_key failed"; return 1; }
+    "$CS_SECRETS_BIN" set api-key "SHADOW" >/dev/null 2>&1 || { echo "  FAIL: fixture: set api-key failed"; return 1; }
 
     local out rc=0
     out=$("$CS_SECRETS_BIN" export 2>&1) || rc=$?
@@ -945,47 +3212,6 @@ test_export_refuses_colliding_exported_names() {
     emitted=$("$CS_SECRETS_BIN" export 2>/dev/null)
     assert_eq "" "$emitted" "a refused export must emit no assignments at all" || return 1
 }
-
-# code-sessions, a fork of cs installed beside it, files its keychain items as
-# code-sessions:<session>:<name>. One keychain then holds two installs' secrets
-# for a session both have, and neither reads, lists or purges the other's.
-# A subshell body: this suite's teardown does not restore the fake's PATH.
-test_keychain_prefix_keeps_two_installs_apart() (
-    use_fake_keychain
-    export CS_SECRETS_BACKEND=keychain
-    printf 'original' | "$CS_SECRETS_BIN" set API_KEY >/dev/null || exit 1
-    printf 'fork' | CS_SECRETS_KEYCHAIN_PREFIX=code-sessions "$CS_SECRETS_BIN" set API_KEY >/dev/null || exit 1
-    printf 'fork-only' | CS_SECRETS_KEYCHAIN_PREFIX=code-sessions "$CS_SECRETS_BIN" set TOKEN >/dev/null || exit 1
-    assert_eq "code-sessions:test-session:API_KEY"$'\n'"code-sessions:test-session:TOKEN"$'\n'"cs:test-session:API_KEY" \
-        "$(fake_keychain_items)" || exit 1
-    assert_eq original "$("$CS_SECRETS_BIN" get API_KEY)" || exit 1
-    assert_eq fork "$(CS_SECRETS_KEYCHAIN_PREFIX=code-sessions "$CS_SECRETS_BIN" get API_KEY)" || exit 1
-    local listed
-    listed=$("$CS_SECRETS_BIN" list)
-    assert_output_contains "$listed" "API_KEY" || exit 1
-    assert_output_not_contains "$listed" "TOKEN" "the original listed the fork's secret" || exit 1
-    CS_SECRETS_KEYCHAIN_PREFIX=code-sessions "$CS_SECRETS_BIN" purge >/dev/null || exit 1
-    assert_eq "cs:test-session:API_KEY" "$(fake_keychain_items)" "a purge reached the other install's items" || exit 1
-)
-
-# The prefix goes into grep patterns; a '.' there would match other prefixes.
-test_keychain_prefix_refuses_pattern_characters() (
-    use_fake_keychain
-    local out rc=0
-    out=$(CS_SECRETS_BACKEND=keychain CS_SECRETS_KEYCHAIN_PREFIX='c.s' "$CS_SECRETS_BIN" list 2>&1) || rc=$?
-    [ "$rc" -ne 0 ] || { echo "  FAIL: a prefix with '.' was accepted"; exit 1; }
-    assert_output_contains "$out" "Invalid CS_SECRETS_KEYCHAIN_PREFIX" || exit 1
-    assert_eq "" "$(fake_keychain_items)" || exit 1
-)
-
-test_backend_names_the_keychain_prefix() (
-    use_fake_keychain
-    local out
-    out=$(CS_SECRETS_BACKEND=keychain CS_SECRETS_KEYCHAIN_PREFIX=code-sessions "$CS_SECRETS_BIN" backend 2>&1)
-    assert_output_contains "$out" "code-sessions:<session>:<name>" || exit 1
-    out=$(CS_SECRETS_BACKEND=keychain "$CS_SECRETS_BIN" backend 2>&1)
-    assert_output_contains "$out" "cs:<session>:<name>" || exit 1
-)
 
 # migrate writes to a backend without passing through the entry validation that
 # guards set and import-file, so it must validate too.
@@ -1037,6 +3263,80 @@ test_import_file_refuses_a_hostile_key_name() {
         return 1
     fi
     assert_output_contains "$out" "name" "the refusal must name the problem" || return 1
+}
+
+_assert_secret_absent() {  # name, message
+    local out rc=0
+    out=$("$CS_SECRETS_BIN" get "$1" 2>&1) || rc=$?
+    assert_eq "3 Error: secret not found: $1" "$rc $out" "$2" || return 1
+}
+
+# Two names that differ only in hyphen against underscore become one variable
+# in `cs -secrets export`, which then refuses the whole store. An import that
+# would create such a pair stores nothing and names both.
+test_import_file_refuses_two_names_that_export_as_one_variable() {
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    _seed_enc_sync_file "$meta/secrets.machine-a.enc" '{"api-key":"va","other":"vo"}' || return 1
+    _seed_enc_sync_file "$meta/secrets.machine-b.enc" '{"api_key":"vb"}' || return 1
+
+    local out rc=0
+    out=$(PATH="$(_ageless_path)" "$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the import exits 1" || return 1
+    assert_eq "Error: Aborting import for session 'test-session': secrets 'api-key' and 'api_key' both export as CS_SECRET_API_KEY. Nothing was imported. Remove one of them where it is stored, then export and import again." \
+        "$out" "the refusal names both secrets and the variable" || return 1
+    _assert_secret_absent api-key "the hyphenated name is not stored" || return 1
+    _assert_secret_absent api_key "the underscored name is not stored" || return 1
+    _assert_secret_absent other "a name beside the pair is not stored either" || return 1
+}
+
+# The same pair with one half already stored: the local secret stays, the
+# incoming one is refused, and export keeps working.
+test_import_file_refuses_a_name_that_shares_a_variable_with_a_stored_secret() {
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    "$CS_SECRETS_BIN" set api_key "vlocal" >/dev/null 2>&1 || { echo "  FAIL: fixture: set failed"; return 1; }
+    _seed_enc_sync_file "$meta/secrets.machine-a.enc" '{"api-key":"va","other":"vo"}' || return 1
+
+    local mode out rc
+    for mode in "" --replace; do
+        rc=0
+        # shellcheck disable=SC2086  # an empty mode is no argument
+        out=$(PATH="$(_ageless_path)" "$CS_SECRETS_BIN" import-file $mode 2>&1) || rc=$?
+        assert_eq "1" "$rc" "the import exits 1 (mode '$mode')" || return 1
+        assert_eq "Error: Aborting import for session 'test-session': secrets 'api-key' and 'api_key' both export as CS_SECRET_API_KEY. Nothing was imported. Remove one of them where it is stored, then export and import again." \
+            "$out" "the refusal names the incoming and the stored secret (mode '$mode')" || return 1
+        _assert_secret_absent api-key "the incoming name is not stored (mode '$mode')" || return 1
+        _assert_secret_absent other "a name beside it is not stored either (mode '$mode')" || return 1
+        assert_eq "vlocal" "$("$CS_SECRETS_BIN" get api_key 2>&1)" "the stored secret is untouched (mode '$mode')" || return 1
+    done
+    assert_eq "export CS_SECRET_API_KEY=vlocal" "$("$CS_SECRETS_BIN" export 2>&1)" "export still works" || return 1
+}
+
+# An invalid name stops the import before any name is stored, however the
+# names sort.
+test_import_file_stores_nothing_when_one_name_is_invalid() {
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    _seed_enc_sync_file "$meta/secrets.machine-a.enc" '{"aaa_new":"v1","zz;rm":"v2"}' || return 1
+
+    local out rc=0
+    out=$(PATH="$(_ageless_path)" "$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the import exits 1" || return 1
+    assert_output_contains "$out" "invalid secret name 'zz;rm'" "the refusal names the invalid name" || return 1
+    _assert_secret_absent aaa_new "a valid name sorted before the invalid one is not stored" || return 1
+    assert_file_not_exists "$HOME/.cs-secrets/test-session.enc" "no store is created" || return 1
+}
+
+# A name carrying a carriage return is not the name without it. The import
+# refuses it instead of storing an empty value under the shorter name.
+test_import_file_refuses_a_name_ending_in_a_carriage_return() {
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    _seed_enc_sync_file "$meta/secrets.machine-a.enc" '{"cr_key\r":"crval"}' || return 1
+
+    local out rc=0
+    out=$(PATH="$(_ageless_path)" "$CS_SECRETS_BIN" import-file 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the import exits 1" || return 1
+    assert_output_contains "$out" "invalid secret name 'cr_key\\\\r'" "the refusal shows the carriage return" || return 1
+    assert_output_not_contains "$out" "Imported" "nothing is reported as imported" || return 1
+    assert_file_not_exists "$HOME/.cs-secrets/test-session.enc" "no store is created" || return 1
 }
 
 # Defense in depth: a store written before the check existed must still not be
@@ -1167,7 +3467,7 @@ test_keychain_export_file_aborts_on_jq_failure() {
     cat > "$bindir/jq" <<JQFAKE
 #!/usr/bin/env bash
 for a in "\$@"; do
-    case "\$a" in *'= \$value'*) echo "jq: simulated failure" >&2; exit 5 ;; esac
+    case "\$a" in *'.[\$name] = \$value'*) echo "jq: simulated failure" >&2; exit 5 ;; esac
 done
 exec "$real_jq" "\$@"
 JQFAKE
@@ -1190,33 +3490,34 @@ JQFAKE
     assert_file_not_exists "$meta/secrets.${mid}.age" "no age sync file on jq construction failure" || return 1
 }
 
-# A grep/sed execution failure in keychain enumeration must fail loud, not read
-# as an empty store. A fake sed fails only on the extraction script (svce).
+# An awk execution failure in keychain enumeration must fail loud, not read
+# as an empty store. A fake awk fails only on the extraction script, which
+# reads the session's prefix from CS_KEYCHAIN_PREFIX.
 test_keychain_list_loud_on_extraction_failure() {
     local bindir; bindir=$(_make_fake_security)
-    local real_sed; real_sed=$(command -v sed)
-    # A fake sed in the sandbox dir shadows the real one, which it delegates to
+    local real_awk; real_awk=$(command -v awk)
+    # A fake awk in the sandbox dir shadows the real one, which it delegates to
     # for every call except the one it simulates failing.
-    cat > "$bindir/sed" <<SEDFAKE
+    cat > "$bindir/awk" <<AWKFAKE
 #!/usr/bin/env bash
 for a in "\$@"; do
-    case "\$a" in *svce*) echo "sed: simulated failure" >&2; exit 2 ;; esac
+    case "\$a" in *CS_KEYCHAIN_PREFIX*) echo "awk: simulated failure" >&2; exit 2 ;; esac
 done
-exec "$real_sed" "\$@"
-SEDFAKE
-    chmod +x "$bindir/sed"
+exec "$real_awk" "\$@"
+AWKFAKE
+    chmod +x "$bindir/awk"
 
     local out rc=0
     out=$(PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_MODE=readfail \
         "$CS_SECRETS_BIN" list 2>&1) || rc=$?
 
     if [[ $rc -eq 0 ]]; then
-        echo "  FAIL: list must be nonzero when enumeration extraction (sed) fails"
+        echo "  FAIL: list must be nonzero when enumeration extraction (awk) fails"
         echo "    output: $out"
         return 1
     fi
-    assert_output_contains "$out" "sed: simulated failure" \
-        "the abort must show sed actually ran and failed, not that cs-secrets never started" || return 1
+    assert_output_contains "$out" "awk: simulated failure" \
+        "the abort must show awk actually ran and failed, not that cs-secrets never started" || return 1
     assert_output_not_contains "$out" "No secrets stored" "an extraction failure must not read as an empty store" || return 1
 }
 
@@ -1407,6 +3708,284 @@ test_migrate_partial_write_fails_loud() {
     assert_output_contains "$out" "incomplete" "must report the migration as incomplete" || return 1
 }
 
+# --- migrate --redact: each value is replaced as text, never through argv ---
+
+# A value holds whatever bytes the file gave it. Regex characters in it, an
+# unbalanced "(" or a balanced "(a)", are text to find, and every other byte
+# of the file, its other lines included, stays as it was.
+test_migrate_redact_replaces_each_value_as_text() {
+    local art="$CS_SESSIONS_ROOT/test-session/.cs/artifacts" out rc=0 want
+    mkdir -p "$art"
+    printf '%s\n' '# service credentials' 'api_key=sk(live*[1]^$.?+{2}|\1&/x' \
+        'endpoint=https://api.example.com/v1' 'db_password: p(a)ss w0rd' '' 'note=plain text after' > "$art/config.env"
+    out=$("$CS_SECRETS_BIN" migrate --redact 2>&1) || rc=$?
+    assert_eq "0" "$rc" "migrate --redact exits 0: $out" || return 1
+    assert_eq "Scanning artifacts for plaintext secrets...
+
+  Migrated: api_key (from config.env)
+  Migrated: db_password (from config.env)
+
+Migrated 2 secret(s) to secure storage.
+Updated 1 file(s) with redacted values." "$out" "migrate reports both secrets and the one file" || return 1
+    want=$(printf '%s\n' '# service credentials' 'api_key=[REDACTED: stored in keychain as api_key]' \
+        'endpoint=https://api.example.com/v1' 'db_password: [REDACTED: stored in keychain as db_password]' '' 'note=plain text after'; printf x)
+    assert_eq "$want" "$(cat "$art/config.env"; printf x)" "each value, and nothing else, is replaced" || return 1
+    assert_eq 'sk(live*[1]^$.?+{2}|\1&/x' "$("$CS_SECRETS_BIN" get api_key 2>&1)" "api_key is stored as it was" || return 1
+    assert_eq 'p(a)ss w0rd' "$("$CS_SECRETS_BIN" get db_password 2>&1)" "db_password is stored as it was" || return 1
+}
+
+# `ps` shows every process's arguments to every local user, so a migrated
+# value must never be one. Each tool cs-secrets could run from PATH goes
+# through a recorder that logs the arguments it was started with.
+test_migrate_redact_keeps_each_value_off_argv() {
+    local art="$CS_SESSIONS_ROOT/test-session/.cs/artifacts" rec="$TEST_TMPDIR/argv-rec" log="$TEST_TMPDIR/argv.log" tool real
+    mkdir -p "$art" "$rec"
+    for tool in sed awk grep tr cat od jq openssl find basename dirname mktemp mv chmod rm cut head tail wc perl shasum; do
+        real=$(command -v "$tool") || continue
+        cat > "$rec/$tool" <<EOF
+#!/bin/sh
+printf '%s\n' "$tool \$*" >> '$log'
+exec '$real' "\$@"
+EOF
+        chmod +x "$rec/$tool"
+    done
+    printf '%s\n' 'api_key=sk_live_4f9c2e7a1b' > "$art/config.env"
+    PATH="$rec:$PATH" "$CS_SECRETS_BIN" migrate --redact >/dev/null 2>&1 \
+        || { echo "  FAIL: migrate --redact failed"; return 1; }
+    assert_eq "api_key=[REDACTED: stored in keychain as api_key]" "$(cat "$art/config.env")" "the value is redacted" || return 1
+    assert_file_contains "$log" "^find .*/artifacts -type f -print0$" "the recorder saw the tools cs-secrets ran" || return 1
+    if grep -F 'sk_live_4f9c2e7a1b' "$log"; then
+        echo "  FAIL: the value reached a process's argv (lines above)"
+        return 1
+    fi
+}
+
+# One value can hold another (hunter2 inside hunter22). The longer one is
+# replaced first, so no tail of it is left and each marker names its own key.
+# A value is still replaced wherever the file holds it, a line that is no
+# secret included.
+test_migrate_redact_replaces_the_longest_value_first() {
+    local art="$CS_SESSIONS_ROOT/test-session/.cs/artifacts" out rc=0 want
+    mkdir -p "$art"
+    printf '%s\n' '# database' 'password=hunter2' 'db_password=hunter22' \
+        'url=postgres://app:hunter2@db.example.com/main' > "$art/db.env"
+    out=$("$CS_SECRETS_BIN" migrate --redact 2>&1) || rc=$?
+    assert_eq "0" "$rc" "migrate --redact exits 0: $out" || return 1
+    assert_eq "Scanning artifacts for plaintext secrets...
+
+  Migrated: password (from db.env)
+  Migrated: db_password (from db.env)
+
+Migrated 2 secret(s) to secure storage.
+Updated 1 file(s) with redacted values." "$out" "migrate reports both secrets and the one file" || return 1
+    want=$(printf '%s\n' '# database' 'password=[REDACTED: stored in keychain as password]' \
+        'db_password=[REDACTED: stored in keychain as db_password]' \
+        'url=postgres://app:[REDACTED: stored in keychain as password]@db.example.com/main'; printf x)
+    assert_eq "$want" "$(cat "$art/db.env"; printf x)" "no tail of a longer value is left, and each marker names its key" || return 1
+    assert_eq "hunter2" "$("$CS_SECRETS_BIN" get password 2>&1)" "password is stored as it was" || return 1
+    assert_eq "hunter22" "$("$CS_SECRETS_BIN" get db_password 2>&1)" "db_password is stored as it was" || return 1
+}
+
+# A value can be text the marker itself holds ("as"). Every value is replaced
+# before any marker is put in, so no marker is rewritten by a later value.
+test_migrate_redact_keeps_every_marker_whole() {
+    local art="$CS_SESSIONS_ROOT/test-session/.cs/artifacts" out rc=0 want
+    mkdir -p "$art"
+    printf '%s\n' 'api_key=realvalue1' 'secret_key=as' 'note=as agreed' > "$art/keys.env"
+    out=$("$CS_SECRETS_BIN" migrate --redact 2>&1) || rc=$?
+    assert_eq "0" "$rc" "migrate --redact exits 0: $out" || return 1
+    assert_eq "Scanning artifacts for plaintext secrets...
+
+  Migrated: api_key (from keys.env)
+  Migrated: secret_key (from keys.env)
+
+Migrated 2 secret(s) to secure storage.
+Updated 1 file(s) with redacted values." "$out" "migrate reports both secrets and the one file" || return 1
+    want=$(printf '%s\n' 'api_key=[REDACTED: stored in keychain as api_key]' \
+        'secret_key=[REDACTED: stored in keychain as secret_key]' \
+        'note=[REDACTED: stored in keychain as secret_key] agreed'; printf x)
+    assert_eq "$want" "$(cat "$art/keys.env"; printf x)" "every marker is whole, and the short value is replaced where it occurs" || return 1
+    assert_eq "realvalue1" "$("$CS_SECRETS_BIN" get api_key 2>&1)" "api_key is stored as it was" || return 1
+    assert_eq "as" "$("$CS_SECRETS_BIN" get secret_key 2>&1)" "secret_key is stored as it was" || return 1
+}
+
+# A key names a secret when one of its name segments (split on _, at each
+# lower-to-upper case change, before the last capital of an upper-case run
+# that a lower-case letter follows, and where a letter and a digit meet in
+# either direction) is a secret word or ends in one (PGPASSWORD,
+# NGROK_AUTHTOKEN, S3SECRET), is pat, cred or creds whole, when its last
+# segment is auth, pass or pwd, when api, access or private comes right
+# before key, or when its last segment is key or ends in key (APP_KEY,
+# TS_AUTHKEY). Trailing all-digit and v<digits> segments do not count when
+# finding the last segment (APP_KEY2, MASTER_KEY_V2, BASIC_AUTH_2). Each key
+# here is migrated and its value, and nothing else, is replaced.
+test_migrate_redact_stores_each_key_a_segment_names_a_secret() {
+    local art="$CS_SESSIONS_ROOT/test-session/.cs/artifacts" out rc=0 want name n=0 value
+    local names="api_key API_KEY apiKey APIKEY OPENAI_ADMIN_API_KEY DB_PASSWORD dbPassword passwd password2
+        ACCESS_TOKEN GITHUB_TOKEN githubToken FIRST_TOKEN CS_SECRETS_PASSWORD AWS_SECRET_ACCESS_KEY
+        AWS_ACCESS_KEY_ID PRIVATE_KEY API_KEY2 client_credential DB_CREDENTIALS BASIC_AUTH key KEY key_ token password
+        AWSSecretKey HTTPToken DBPassword myAPIKey OAuth
+        PGPASSWORD ACCESSTOKEN APISECRET NGROK_AUTHTOKEN DBPASSWORD S3SECRET OAUTH2TOKEN DB2PASS V2AUTH
+        APP_KEY RAILS_MASTER_KEY SSH_KEY SIGNING_KEY authKey encryptionKey SECRETKEY ACCESSKEY TS_AUTHKEY
+        PRIVATE_KEY_PEM PASSPHRASE GPG_PASSPHRASE Authorization Proxy_Authorization
+        DB_PASS MYSQL_PWD GITHUB_PAT AWS_CREDS DB_CRED pixelsThisPass SMTP_PASS FIRST_PASS DB_PASS_2
+        APP_KEY2 APP_KEY_2 SSH_KEY_1 KEY2 MASTER_KEY_V2 JWT_KEY_V2 BASIC_AUTH_2 TS_AUTHKEY_2 APIkey"
+    local lines=() want_lines=() want_out="Scanning artifacts for plaintext secrets...
+"
+    mkdir -p "$art"
+    for name in $names; do
+        n=$((n + 1))
+        value="example-value-$(printf '%02d' "$n")"
+        lines+=("$name=$value")
+        want_lines+=("$name=[REDACTED: stored in keychain as $name]")
+        want_out+="
+  Migrated: $name (from app.env)"
+    done
+    printf '%s\n' "${lines[@]}" > "$art/app.env"
+    out=$("$CS_SECRETS_BIN" migrate --redact 2>&1) || rc=$?
+    assert_eq "0" "$rc" "migrate --redact exits 0: $out" || return 1
+    assert_eq "$want_out
+
+Migrated $n secret(s) to secure storage.
+Updated 1 file(s) with redacted values." "$out" "migrate names every key a segment marks as a secret" || return 1
+    want=$(printf '%s\n' "${want_lines[@]}"; printf x)
+    assert_eq "$want" "$(cat "$art/app.env"; printf x)" "each value, and nothing else, is replaced" || return 1
+    n=0
+    for name in $names; do
+        n=$((n + 1))
+        assert_eq "example-value-$(printf '%02d' "$n")" "$("$CS_SECRETS_BIN" get "$name" 2>&1)" "$name is stored as it was" || return 1
+    done
+}
+
+# A secret word at the start or inside of a longer segment (author,
+# passwordless, tokenizers, KEYTIMEOUT, bypass, pattern), a plural (keys,
+# DEFAULT_MAX_TOKENS, CS_SECRETS_BACKEND), key or auth before another segment
+# (KEY_NUM, key_index, auth_dependency, SSH_AUTH_SOCK), auth glued at a
+# segment's end (OAUTH, NOAUTH), a qualifier and key apart (API_FILE_KEY_ID),
+# pass or pwd before another segment (PASS_RATE, passThrough, PASS_COUNT),
+# the whole name PWD, key or auth before a segment that is not a trailing
+# number (KEY_FILE, SSH_KEY_PATH, AUTH_HEADER, KEY_V), a trailing number
+# alone (V2),
+# and session, cookie or private alone mark no secret. Nothing is stored,
+# and the file, a value that recurs in its prose included, stays byte for
+# byte as it was.
+test_migrate_redact_leaves_each_key_no_segment_names_a_secret() {
+    local art="$CS_SESSIONS_ROOT/test-session/.cs/artifacts" out rc=0 want name
+    local names="Author tokenizers KEYTIMEOUT keys EDGE_KEYS other_keys DEFAULT_MAX_TOKENS MAX_THINKING_TOKENS
+        CS_SECRETS_BACKEND OWNED_KEY_BIT KEY_NUM key_index API_FILE_KEY_ID AWSACCESSKEYID
+        auth_dependency SSH_AUTH_SOCK OAUTH NOAUTH CLAUDE_SESSION_ID cookie EXTRACT_PRIVATE legacy_api
+        bypass compass pattern passwordless secretsManager monkeyPatch
+        PASS_RATE passThrough PASS_COUNT PWD OLDPWD KEY_FILE SSH_KEY_PATH AUTH_HEADER V2 KEY_2_FILE KEY_V"
+    local lines=('author: alice')
+    mkdir -p "$art"
+    for name in $names; do
+        lines+=("$name=example-$name")
+    done
+    lines+=('note: alice reviewed this file')
+    printf '%s\n' "${lines[@]}" > "$art/app.env"
+    want=$(cat "$art/app.env"; printf x)
+    out=$("$CS_SECRETS_BIN" migrate --redact 2>&1) || rc=$?
+    assert_eq "0" "$rc" "migrate --redact exits 0: $out" || return 1
+    assert_eq "Scanning artifacts for plaintext secrets...
+
+
+No plaintext secrets found to migrate." "$out" "migrate finds no secret" || return 1
+    assert_eq "$want" "$(cat "$art/app.env"; printf x)" "the file stays byte for byte as it was" || return 1
+    assert_eq "No secrets stored for session: test-session" "$("$CS_SECRETS_BIN" list 2>&1)" "nothing is stored" || return 1
+}
+
+# A key that names a secret only through plain key (isKey, FILE_KEY, API_KEY,
+# KEY, hotkey, APP_KEY2) holds a lookup key, not a credential, when its
+# value, after surrounding whitespace, a trailing CR and one pair of
+# matching quotes (not a mismatched pair) are stripped, is true, false,
+# null or digits alone:
+# nothing is stored and the line stays. A key that names a secret by any
+# other word, or whose last segment ends in secretkey, accesskey,
+# privatekey or authkey, a trailing number segment aside (SECRETKEY_2,
+# TS_AUTHKEY_2), keeps such a value (PASSWORD=123456, SECRETKEY=123456),
+# stored as written. No stored value here occurs
+# elsewhere in the file except inside a longer stored value, so each
+# replacement touches one line.
+test_migrate_redact_skips_a_flag_or_number_only_under_a_key_name() {
+    local art="$CS_SESSIONS_ROOT/test-session/.cs/artifacts" out rc=0 want
+    mkdir -p "$art"
+    printf '%s\n' 'PASSWORD=123456' 'PIN_TOKEN=4821' 'secret: 0042' '_fileKey=example-file-key-value' \
+        'SECRETKEY=234567' 'ACCESSKEY=7391' 'AWSSECRETKEY=7' 'PRIVATEKEY=NULL' 'TS_AUTHKEY=false' 'token: "8"' 'SECRETKEY_2=53' 'TS_AUTHKEY_2=False' \
+        'isKey=true' 'enabledKey=FALSE' 'FILE_KEY=9001' 'API_KEY=null' 'KEY=0' 'hotkey=1' 'APP_KEY2=42' \
+        'rowKey=true ' "sortKey: '1'" 'cacheKey: "TRUE"' "mixedKey: \"1'" > "$art/app.env"
+    printf 'partitionKey=9001\r\n' >> "$art/app.env"
+    out=$("$CS_SECRETS_BIN" migrate --redact 2>&1) || rc=$?
+    assert_eq "0" "$rc" "migrate --redact exits 0: $out" || return 1
+    assert_eq "Scanning artifacts for plaintext secrets...
+
+  Migrated: PASSWORD (from app.env)
+  Migrated: PIN_TOKEN (from app.env)
+  Migrated: secret (from app.env)
+  Migrated: _fileKey (from app.env)
+  Migrated: SECRETKEY (from app.env)
+  Migrated: ACCESSKEY (from app.env)
+  Migrated: AWSSECRETKEY (from app.env)
+  Migrated: PRIVATEKEY (from app.env)
+  Migrated: TS_AUTHKEY (from app.env)
+  Migrated: token (from app.env)
+  Migrated: SECRETKEY_2 (from app.env)
+  Migrated: TS_AUTHKEY_2 (from app.env)
+  Migrated: mixedKey (from app.env)
+
+Migrated 13 secret(s) to secure storage.
+Updated 1 file(s) with redacted values." "$out" "a number under a password or token name is migrated, a flag or number under a key name is not" || return 1
+    want=$(printf '%s\n' 'PASSWORD=[REDACTED: stored in keychain as PASSWORD]' \
+        'PIN_TOKEN=[REDACTED: stored in keychain as PIN_TOKEN]' 'secret: [REDACTED: stored in keychain as secret]' \
+        '_fileKey=[REDACTED: stored in keychain as _fileKey]' 'SECRETKEY=[REDACTED: stored in keychain as SECRETKEY]' \
+        'ACCESSKEY=[REDACTED: stored in keychain as ACCESSKEY]' 'AWSSECRETKEY=[REDACTED: stored in keychain as AWSSECRETKEY]' \
+        'PRIVATEKEY=[REDACTED: stored in keychain as PRIVATEKEY]' 'TS_AUTHKEY=[REDACTED: stored in keychain as TS_AUTHKEY]' \
+        'token: [REDACTED: stored in keychain as token]' 'SECRETKEY_2=[REDACTED: stored in keychain as SECRETKEY_2]' \
+        'TS_AUTHKEY_2=[REDACTED: stored in keychain as TS_AUTHKEY_2]' \
+        'isKey=true' 'enabledKey=FALSE' 'FILE_KEY=9001' 'API_KEY=null' 'KEY=0' 'hotkey=1' 'APP_KEY2=42' \
+        'rowKey=true ' "sortKey: '1'" 'cacheKey: "TRUE"' 'mixedKey: [REDACTED: stored in keychain as mixedKey]' \
+        $'partitionKey=9001\r'; printf x)
+    assert_eq "$want" "$(cat "$art/app.env"; printf x)" "only the migrated values are replaced" || return 1
+    assert_eq "123456" "$("$CS_SECRETS_BIN" get PASSWORD 2>&1)" "PASSWORD is stored as it was" || return 1
+    assert_eq "0042" "$("$CS_SECRETS_BIN" get secret 2>&1)" "secret keeps its leading zeros" || return 1
+    assert_eq "\"8\"" "$("$CS_SECRETS_BIN" get token 2>&1)" "a quoted colon-form value is stored with its quotes" || return 1
+    assert_eq "Secrets for session: test-session
+  - ACCESSKEY
+  - AWSSECRETKEY
+  - PASSWORD
+  - PIN_TOKEN
+  - PRIVATEKEY
+  - SECRETKEY
+  - SECRETKEY_2
+  - TS_AUTHKEY
+  - TS_AUTHKEY_2
+  - _fileKey
+  - mixedKey
+  - secret
+  - token" "$("$CS_SECRETS_BIN" list 2>&1)" "no plain-key name with a flag or number value is stored" || return 1
+}
+
+# A value that is only whitespace, or only whitespace inside one pair of
+# matching quotes, is never stored or redacted, whatever the name: the line
+# stays and nothing else in the file is touched (a stored space or " "
+# would be replaced wherever the file holds one). An empty pair is blank
+# once unquoted and is skipped too.
+test_migrate_redact_leaves_a_blank_value_under_any_name() {
+    local art="$CS_SESSIONS_ROOT/test-session/.cs/artifacts" out rc=0 want
+    mkdir -p "$art"
+    printf '%s\n' 'S_KEY=   ' 'PASSWORD= ' "DB_PASS=\"$(printf '\t')\"" 'KEY: " "' "PASSWORD: ' '" \
+        "S_KEY: \"$(printf '\t')\"" "API_KEY: '  '" 'SECRETKEY: ""' "token: ''" \
+        'note: a space seen here, a " " pair, and an empty "" pair' > "$art/app.env"
+    want=$(cat "$art/app.env"; printf x)
+    out=$("$CS_SECRETS_BIN" migrate --redact 2>&1) || rc=$?
+    assert_eq "0" "$rc" "migrate --redact exits 0: $out" || return 1
+    assert_eq "Scanning artifacts for plaintext secrets...
+
+
+No plaintext secrets found to migrate." "$out" "migrate finds no secret" || return 1
+    assert_eq "$want" "$(cat "$art/app.env"; printf x)" "the file stays byte for byte as it was" || return 1
+    assert_eq "No secrets stored for session: test-session" "$("$CS_SECRETS_BIN" list 2>&1)" "nothing is stored" || return 1
+}
+
 # ============================================================================
 # Concurrency & durability (encrypted backend)
 # ============================================================================
@@ -1418,6 +3997,7 @@ test_migrate_partial_write_fails_loud() {
 # silently vanish. Every key must survive.
 test_encrypted_concurrent_stores_no_lost_update() {
     local sess="d1-concurrent"
+    create_test_session "$sess" >/dev/null
     local n=15 i
     for i in $(seq 1 "$n"); do
         CLAUDE_SESSION_NAME="$sess" "$CS_SECRETS_BIN" set "key$i" "val$i" >/dev/null 2>&1 &
@@ -1442,6 +4022,7 @@ test_encrypted_concurrent_stores_no_lost_update() {
 # so a failed export leaves the existing sync file untouched.
 test_export_file_atomic_preserves_prior_on_encrypt_failure() {
     local sess="d2-atomic"
+    create_test_session "$sess" >/dev/null
     CLAUDE_SESSION_NAME="$sess" "$CS_SECRETS_BIN" set k1 v1 >/dev/null 2>&1
 
     # Seed an existing, valid per-machine sync file (a prior successful export).
@@ -1500,6 +4081,7 @@ SHIM
 # lock to remove. Deterministic: seed the lock with a definitely-dead PID.
 test_encrypted_stale_lock_fails_loud_not_reaped() {
     local sess="stale-lock"
+    create_test_session "$sess" >/dev/null
     mkdir -p "$HOME/.cs-secrets"
     chmod 700 "$HOME/.cs-secrets"
     # A definitely-dead PID: spawn a child, reap it, reuse its now-free PID.
@@ -1522,10 +4104,12 @@ test_encrypted_stale_lock_fails_loud_not_reaped() {
 
 # codex F1 review: the export mutex must not couple non-encrypted backends to the
 # encrypted backend's ~/.cs-secrets. A keychain store is atomic per credential
-# and never needed the lock; requiring a writable ~/.cs-secrets to export from
-# those backends is a regression. Block the path with a plain file where the dir
-# would go and confirm a keychain export still works (only the encrypted backend
-# takes the lock).
+# and never needed the store lock. Narrowed by batch 1 (Codex round 2): the age
+# recipients lock and pin list live under ~/.cs-secrets on every backend, taken
+# once there is something to export, so the guarantee that remains is that an
+# export with nothing to export touches nothing. Block the path with a plain
+# file where the dir would go and confirm an empty-store keychain export still
+# works.
 test_keychain_export_does_not_require_cs_secrets_dir() {
     local bindir; bindir=$(_make_fake_security)
     rm -rf "$HOME/.cs-secrets"
@@ -1543,6 +4127,1018 @@ test_keychain_export_does_not_require_cs_secrets_dir() {
 
 
 
+# ----------------------------------------------------------------------------
+# No secret on a child's argv (audit H3). Every local user can read any
+# process's argv through `ps`, and EDR tools log it, so a value taken on stdin
+# must not be handed on to security, openssl or jq as an argument. Each fake
+# below records the argv it was started with (what `ps` shows) and then runs the
+# real tool, so the operation still has to work end to end.
+# ----------------------------------------------------------------------------
+
+# A random fixture value held in a file; tests feed it on stdin and grep for it
+# with -f, so the value itself never reaches an argv in the test either. Echoes
+# the file path.
+_argv_canary() {
+    local f="$TEST_TMPDIR/canary"
+    printf 'canary-%s-%s-%s' "$RANDOM" "$RANDOM" "$$" > "$f"
+    printf '%s' "$f"
+}
+
+# The canary's hex form, which is just as secret: a `-X <hex>` on argv would
+# leak the value as surely as `-w <value>`. Echoes the file path.
+_argv_canary_hex() {
+    local f="$TEST_TMPDIR/canary.hex"
+    od -An -v -tx1 < "$1" | tr -d ' \n' > "$f"
+    printf '%s' "$f"
+}
+
+# The fixture password, held in a file for the same reason.
+_argv_password_file() {
+    local f="$TEST_TMPDIR/password"
+    printf '%s' "$CS_SECRETS_PASSWORD" > "$f"
+    printf '%s' "$f"
+}
+
+# Put an argv-recording wrapper for tool $1 into bin dir $2, appending one line
+# per call to log $3, then exec the real tool found on the current PATH.
+_make_argv_logger() {
+    local tool="$1" bindir="$2" log="$3" real
+    real=$(command -v "$tool") || { echo "  FAIL: no real $tool on PATH"; return 1; }
+    mkdir -p "$bindir"
+    cat > "$bindir/$tool" <<LOGGER
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$log"
+exec "$real" "\$@"
+LOGGER
+    chmod +x "$bindir/$tool"
+}
+
+# Fail when argv log $1 holds the text in file $2. The message names the tool
+# and what leaked but never prints the value.
+_refute_argv_holds() {
+    local log="$1" needle="$2" what="$3"
+    if grep -qF -f "$needle" "$log" 2>/dev/null; then
+        echo "  FAIL: $what reached a child's argv (visible to ps): $(basename "$log")"
+        return 1
+    fi
+}
+
+# True when file $1 holds exactly the bytes of file $2 plus the one trailing
+# newline `get` prints. Compares without putting either value on output.
+_get_matches() {
+    [ "$(cat "$1")" = "$(cat "$2")" ]
+}
+
+test_keychain_set_keeps_the_value_off_argv() {
+    local bindir; bindir=$(_make_fake_security)
+    local canary; canary=$(_argv_canary)
+    local hex; hex=$(_argv_canary_hex "$canary")
+    local argvlog="$TEST_TMPDIR/security-argv" kcstore="$TEST_TMPDIR/kc-store"
+
+    PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        FAKE_SECURITY_ARGVLOG="$argvlog" "$CS_SECRETS_BIN" set K1 < "$canary" >/dev/null 2>&1 \
+        || { echo "  FAIL: keychain set exited nonzero"; return 1; }
+
+    # Positive control: the fake ran, and what it stored reads back byte-exact.
+    [ -s "$argvlog" ] || { echo "  FAIL: the fake security was never called"; return 1; }
+    PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        "$CS_SECRETS_BIN" get K1 > "$TEST_TMPDIR/got" 2>/dev/null \
+        || { echo "  FAIL: keychain get exited nonzero"; return 1; }
+    _get_matches "$TEST_TMPDIR/got" "$canary" \
+        || { echo "  FAIL: the stored value did not read back byte-exact"; return 1; }
+
+    _refute_argv_holds "$argvlog" "$canary" "the secret value" || return 1
+    _refute_argv_holds "$argvlog" "$hex" "the secret value (hex-encoded)" || return 1
+}
+
+# A value the user typed or piped in must reach security byte-exact, interior
+# newline and quotes included, now that it travels as a command line on stdin.
+test_keychain_set_round_trips_a_multiline_quoted_value() {
+    local bindir; bindir=$(_make_fake_security)
+    local kcstore="$TEST_TMPDIR/kc-store"
+    printf 'line one "q" \\ end\nline two' > "$TEST_TMPDIR/value"
+
+    PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        "$CS_SECRETS_BIN" set K1 < "$TEST_TMPDIR/value" >/dev/null 2>&1 \
+        || { echo "  FAIL: keychain set exited nonzero"; return 1; }
+    PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        "$CS_SECRETS_BIN" get K1 > "$TEST_TMPDIR/got" 2>/dev/null \
+        || { echo "  FAIL: keychain get exited nonzero"; return 1; }
+    _get_matches "$TEST_TMPDIR/got" "$TEST_TMPDIR/value" \
+        || { echo "  FAIL: a multi-line value with quotes and a backslash did not read back byte-exact"; return 1; }
+}
+
+# `security -i` reads one command per line into a 4096-byte buffer: the rest
+# of a line over 4095 bytes is read as the next command, and cs sends none
+# over 4094. The store line for account "tester" and secret BIG of
+# test-session is 37 fixed bytes, the quoted account (8) and service
+# "cs:test-session:BIG" (21), and two hex digits per value byte:
+# 66 + 2 * 2014 = 4094 fits, 66 + 2 * 2015 = 4096 does not. A value over the
+# limit is refused before `security` runs at all; one at the limit is stored.
+test_keychain_set_refuses_a_value_too_long_for_one_security_line() {
+    local bindir; bindir=$(_make_fake_security)
+    local argvlog="$TEST_TMPDIR/security-argv" kcstore="$TEST_TMPDIR/kc-store" out rc=0
+    head -c 2015 /dev/zero | tr '\0' 'v' > "$TEST_TMPDIR/over"
+    head -c 2014 /dev/zero | tr '\0' 'v' > "$TEST_TMPDIR/at"
+
+    out=$(PATH="$bindir:$PATH" USER=tester CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        FAKE_SECURITY_ARGVLOG="$argvlog" "$CS_SECRETS_BIN" set BIG < "$TEST_TMPDIR/over" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a value one byte over the limit is refused" || return 1
+    assert_eq "Error: refusing to store BIG in the Keychain: its value is 2015 bytes, over the 2014 bytes a Keychain value can hold under this session and name. Store larger values with the encrypted backend (CS_SECRETS_BACKEND=encrypted)." \
+        "$out" "the refusal names the limit and the encrypted backend" || return 1
+    assert_not_exists "$argvlog" "security is never called for a value over the limit" || return 1
+
+    rc=0
+    out=$(PATH="$bindir:$PATH" USER=tester CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        FAKE_SECURITY_ARGVLOG="$argvlog" "$CS_SECRETS_BIN" set BIG < "$TEST_TMPDIR/at" 2>&1) || rc=$?
+    assert_eq "0" "$rc" "a value at the limit is stored: $out" || return 1
+    PATH="$bindir:$PATH" USER=tester CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        "$CS_SECRETS_BIN" get BIG > "$TEST_TMPDIR/got" 2>/dev/null \
+        || { echo "  FAIL: keychain get exited nonzero"; return 1; }
+    _get_matches "$TEST_TMPDIR/got" "$TEST_TMPDIR/at" \
+        || { echo "  FAIL: the value at the limit did not read back byte-exact"; return 1; }
+}
+
+# A line of exactly 4095 bytes runs whole, but `security -i` then reads its
+# newline as an empty command and exits 0: an add that failed is reported as
+# stored. So the longest line cs sends is 4094 bytes, and the boundary sits
+# on both kinds of name. Account "tester" and session test-session give a
+# fixed part of 67 bytes for BIGH and 66 for BIG:
+#   BIGH: 67 + 2 * 2013 = 4093 is sent, 67 + 2 * 2014 = 4095 is refused
+#   BIG:  66 + 2 * 2014 = 4094 is sent, 66 + 2 * 2015 = 4096 is refused
+# Every add fails here, so a line sent at 4095 bytes shows as a false
+# "Stored secret".
+test_keychain_set_never_sends_a_line_whose_failure_security_would_hide() {
+    local bindir; bindir=$(_make_fake_security)
+    local name at over fixed out rc
+    for name in BIGH BIG; do
+        case "$name" in
+            BIGH) at=2013; fixed=67 ;;
+            BIG)  at=2014; fixed=66 ;;
+        esac
+        over=$((at + 1))
+        head -c "$over" /dev/zero | tr '\0' 'v' > "$TEST_TMPDIR/over"
+        head -c "$at" /dev/zero | tr '\0' 'v' > "$TEST_TMPDIR/at"
+        rm -f "$TEST_TMPDIR/argv" "$TEST_TMPDIR/lines"
+
+        rc=0
+        out=$(PATH="$bindir:$PATH" USER=tester CS_SECRETS_BACKEND=keychain FAKE_SECURITY_MODE=storefail \
+            FAKE_SECURITY_ARGVLOG="$TEST_TMPDIR/argv" FAKE_SECURITY_LINELOG="$TEST_TMPDIR/lines" \
+            "$CS_SECRETS_BIN" set "$name" < "$TEST_TMPDIR/over" 2>&1) || rc=$?
+        assert_eq "1" "$rc" "$name: a value of $over bytes is refused: $out" || return 1
+        assert_eq "Error: refusing to store $name in the Keychain: its value is $over bytes, over the $at bytes a Keychain value can hold under this session and name. Store larger values with the encrypted backend (CS_SECRETS_BACKEND=encrypted)." \
+            "$out" "$name: the refusal names the limit" || return 1
+        assert_not_exists "$TEST_TMPDIR/argv" "$name: security is never called for a value over the limit" || return 1
+
+        rc=0
+        out=$(PATH="$bindir:$PATH" USER=tester CS_SECRETS_BACKEND=keychain FAKE_SECURITY_MODE=storefail \
+            FAKE_SECURITY_ARGVLOG="$TEST_TMPDIR/argv" FAKE_SECURITY_LINELOG="$TEST_TMPDIR/lines" \
+            "$CS_SECRETS_BIN" set "$name" < "$TEST_TMPDIR/at" 2>&1) || rc=$?
+        assert_eq "$((fixed + 2 * at))" "$(cat "$TEST_TMPDIR/lines" 2>/dev/null)" "$name: a value of $at bytes is sent as one line of that length" || return 1
+        assert_eq "1" "$rc" "$name: the failed add of a value at the limit is reported as failed: $out" || return 1
+        assert_eq "Error: failed to store secret in Keychain: $name" "$out" "$name: the failure names the secret" || return 1
+    done
+}
+
+# The limit counts the bytes of the line, not its characters. The account
+# here is six characters and eight bytes (two two-byte letters), so the fixed
+# part for secret X is 37 + 10 + 19 = 66 bytes and the limit 2014; counted in
+# characters it would be 64 and 2015, and a 2015-byte value would go out on a
+# 4096-byte line. cs runs under a UTF-8 locale, where a shell counts
+# characters; the test is skipped where the machine has none.
+test_keychain_limit_counts_bytes_for_a_non_ascii_account() {
+    local bindir; bindir=$(_make_fake_security)
+    local account=$'t\xc3\xabst\xc3\xa9r' utf8 kcstore="$TEST_TMPDIR/kc-store" out rc=0
+    utf8=$(locale -a 2>/dev/null | grep -i -E '^(en_US|C)\.utf-?8$' | head -1)
+    [ -n "$utf8" ] || { echo "    SKIP (no UTF-8 locale on this machine)"; return 77; }
+    head -c 2015 /dev/zero | tr '\0' 'v' > "$TEST_TMPDIR/over"
+    head -c 2014 /dev/zero | tr '\0' 'v' > "$TEST_TMPDIR/at"
+
+    out=$(PATH="$bindir:$PATH" LC_ALL="$utf8" USER="$account" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        FAKE_SECURITY_ARGVLOG="$TEST_TMPDIR/argv" "$CS_SECRETS_BIN" set X < "$TEST_TMPDIR/over" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a value one byte over the byte limit is refused: $out" || return 1
+    assert_eq "Error: refusing to store X in the Keychain: its value is 2015 bytes, over the 2014 bytes a Keychain value can hold under this session and name. Store larger values with the encrypted backend (CS_SECRETS_BACKEND=encrypted)." \
+        "$out" "the limit is the one the line's bytes give" || return 1
+    assert_not_exists "$TEST_TMPDIR/argv" "security is never called for a value over the limit" || return 1
+
+    rc=0
+    out=$(PATH="$bindir:$PATH" LC_ALL="$utf8" USER="$account" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        FAKE_SECURITY_LINELOG="$TEST_TMPDIR/lines" "$CS_SECRETS_BIN" set X < "$TEST_TMPDIR/at" 2>&1) || rc=$?
+    assert_eq "0 Stored secret: X" "$rc $out" "a value at the limit is stored" || return 1
+    assert_eq "4094" "$(cat "$TEST_TMPDIR/lines")" "its line is 4094 bytes" || return 1
+    PATH="$bindir:$PATH" LC_ALL="$utf8" USER="$account" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        "$CS_SECRETS_BIN" get X > "$TEST_TMPDIR/got" 2>/dev/null \
+        || { echo "  FAIL: keychain get exited nonzero"; return 1; }
+    _get_matches "$TEST_TMPDIR/got" "$TEST_TMPDIR/at" \
+        || { echo "  FAIL: the value at the limit did not read back byte-exact"; return 1; }
+}
+
+# migrate-backend names each secret that did not reach the target, and shows
+# what the store said about it: for a value too long for the Keychain, the
+# limit and the backend that holds larger values.
+test_migrate_backend_shows_why_the_keychain_refused_a_value() {
+    _RN_BIN=$(_make_fake_security)
+    local out rc=0
+    head -c 2015 /dev/zero | tr '\0' 'v' > "$TEST_TMPDIR/over"
+    printf 'small' > "$TEST_TMPDIR/small"
+    _backend_secrets encrypted set BIG < "$TEST_TMPDIR/over" >/dev/null 2>&1 || { echo "  FAIL: fixture: set BIG"; return 1; }
+    _backend_secrets encrypted set SMALL < "$TEST_TMPDIR/small" >/dev/null 2>&1 || { echo "  FAIL: fixture: set SMALL"; return 1; }
+
+    out=$(USER=tester _backend_secrets keychain migrate-backend keychain --from encrypted 2>&1) || rc=$?
+    assert_eq "1" "$rc" "a migration that left a secret behind exits 1" || return 1
+    assert_eq "Migrating secrets from 'encrypted' to 'keychain'...
+
+Found 2 secret(s) to migrate
+Error: refusing to store BIG in the Keychain: its value is 2015 bytes, over the 2014 bytes a Keychain value can hold under this session and name. Store larger values with the encrypted backend (CS_SECRETS_BACKEND=encrypted).
+  Failed: BIG
+  Migrated: SMALL
+
+Migrated 1 of 2 secret(s) to keychain
+Error: Migration incomplete: only 1 of 2 secret(s) reached keychain" "$out" "the migration shows the store's refusal beside the secret it names" || return 1
+    assert_eq "small" "$(USER=tester _backend_secrets keychain get SMALL 2>&1)" "the secret that fits is in the Keychain" || return 1
+    _backend_secrets encrypted get BIG > "$TEST_TMPDIR/got" 2>/dev/null \
+        || { echo "  FAIL: BIG no longer reads from the encrypted store"; return 1; }
+    _get_matches "$TEST_TMPDIR/got" "$TEST_TMPDIR/over" || { echo "  FAIL: BIG changed in the encrypted store"; return 1; }
+}
+
+# A rename that fails after it has emptied the old name puts each Keychain
+# value back under it. When the Keychain refuses one, the undo shows the
+# store's own refusal before it names the secret and the rerun. K1 is stored
+# the way a cs that passed values on argv stored it: 2015 bytes, over the
+# 2007 the old name's `security -i` line holds, within the 2020 of the new
+# one. The ln on PATH fails, so the move of the pin list, which follows the
+# Keychain entries, is what fails.
+test_a_rename_undo_shows_why_the_keychain_refused_a_value() {
+    _RN_BIN=$(_make_fake_security)
+    local old="a-much-longer-session-name" new="b" shim="$TEST_TMPDIR/ln-shim" out rc=0
+    local old_age="$HOME/.cs-secrets/sessions/a-much-longer-session-name" new_age="$HOME/.cs-secrets/sessions/b"
+    mkdir -p "$CS_SESSIONS_ROOT/$new/.cs" "$old_age" "$shim"
+    head -c 2015 /dev/zero | tr '\0' 'v' > "$TEST_TMPDIR/v"
+    PATH="$_RN_BIN:$PATH" FAKE_SECURITY_STORE="$TEST_TMPDIR/kc-store" \
+        security add-generic-password -a tester -s "cs:$old:K1" -w "$(cat "$TEST_TMPDIR/v")" -U \
+        || { echo "  FAIL: fixture: could not seed K1"; return 1; }
+    printf 'pin-fingerprint\n' > "$old_age/age-trusted"
+    printf '#!/bin/sh\necho "ln: refused" >&2\nexit 1\n' > "$shim/ln"
+    chmod +x "$shim/ln"
+
+    out=$(PATH="$shim:$PATH" USER=tester _kc_secrets --session "$old" rename "$new" 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the rename fails: $out" || return 1
+    assert_eq "ln: refused
+Error: Refusing to move the secrets of session '$old' to '$new': could not move $old_age/age-trusted to $new_age/age-trusted
+Error: refusing to store K1 in the Keychain: its value is 2015 bytes, over the 2007 bytes a Keychain value can hold under this session and name. Store larger values with the encrypted backend (CS_SECRETS_BACKEND=encrypted).
+Error: could not move the secrets of session '$old' back from '$new': could not store Keychain secret K1 under '$old' again; rerun: cs -secrets --session $old rename $new" \
+        "$out" "the undo shows the store's refusal for the secret it names" || return 1
+    assert_eq "cs:$new:K1" "$(_kc_services)" "K1 stays under the new name, where it still reads" || return 1
+    mkdir -p "$CS_SESSIONS_ROOT/$new/.cs"
+    USER=tester _kc_secrets --session "$new" get K1 > "$TEST_TMPDIR/got" 2>/dev/null \
+        || { echo "  FAIL: K1 does not read under the new name"; return 1; }
+    _get_matches "$TEST_TMPDIR/got" "$TEST_TMPDIR/v" || { echo "  FAIL: K1 changed"; return 1; }
+}
+
+test_encrypted_set_keeps_value_and_password_off_argv() {
+    local bindir="$TEST_TMPDIR/argv-bin"
+    local olog="$TEST_TMPDIR/openssl-argv" jlog="$TEST_TMPDIR/jq-argv"
+    _make_argv_logger openssl "$bindir" "$olog" || return 1
+    _make_argv_logger jq "$bindir" "$jlog" || return 1
+    local canary; canary=$(_argv_canary)
+    local pw; pw=$(_argv_password_file)
+
+    PATH="$bindir:$PATH" "$CS_SECRETS_BIN" set K1 < "$canary" >/dev/null 2>&1 \
+        || { echo "  FAIL: encrypted set exited nonzero"; return 1; }
+    PATH="$bindir:$PATH" "$CS_SECRETS_BIN" get K1 > "$TEST_TMPDIR/got" 2>/dev/null \
+        || { echo "  FAIL: encrypted get exited nonzero"; return 1; }
+
+    # Positive control: both wrappers ran, and the round trip held.
+    assert_file_contains "$olog" "aes-256-cbc" "the openssl wrapper must have seen the encrypt/decrypt" || return 1
+    [ -s "$jlog" ] || { echo "  FAIL: the jq wrapper was never called"; return 1; }
+    _get_matches "$TEST_TMPDIR/got" "$canary" \
+        || { echo "  FAIL: the stored value did not read back byte-exact"; return 1; }
+
+    _refute_argv_holds "$olog" "$canary" "the secret value" || return 1
+    _refute_argv_holds "$jlog" "$canary" "the secret value" || return 1
+    _refute_argv_holds "$olog" "$pw" "CS_SECRETS_PASSWORD" || return 1
+    _refute_argv_holds "$jlog" "$pw" "CS_SECRETS_PASSWORD" || return 1
+}
+
+# Without CS_SECRETS_PASSWORD the store key is derived: a SHA-256 printed as 64
+# hex characters. That key must not reach openssl's argv either.
+test_encrypted_derived_key_stays_off_argv() {
+    local bindir="$TEST_TMPDIR/argv-bin" olog="$TEST_TMPDIR/openssl-argv"
+    _make_argv_logger openssl "$bindir" "$olog" || return 1
+    local canary; canary=$(_argv_canary)
+
+    ( unset CS_SECRETS_PASSWORD
+      PATH="$bindir:$PATH" "$CS_SECRETS_BIN" set K1 < "$canary" >/dev/null 2>&1 \
+          || { echo "  FAIL: encrypted set with a derived key exited nonzero"; exit 1; }
+      PATH="$bindir:$PATH" "$CS_SECRETS_BIN" get K1 > "$TEST_TMPDIR/got" 2>/dev/null \
+          || { echo "  FAIL: encrypted get with a derived key exited nonzero"; exit 1; }
+    ) || return 1
+
+    assert_file_contains "$olog" "aes-256-cbc" "the openssl wrapper must have seen the encrypt/decrypt" || return 1
+    _get_matches "$TEST_TMPDIR/got" "$canary" \
+        || { echo "  FAIL: the stored value did not read back byte-exact"; return 1; }
+    if grep -qE '[0-9a-f]{64}' "$olog"; then
+        echo "  FAIL: a derived 256-bit key (64 hex characters) reached openssl's argv"
+        return 1
+    fi
+}
+
+# export-file encrypts the whole store, import-file decrypts and merges every
+# sync file; neither may put a value or the sync password on argv.
+test_sync_export_import_keep_values_off_argv() {
+    local bindir="$TEST_TMPDIR/argv-bin"
+    local olog="$TEST_TMPDIR/openssl-argv" jlog="$TEST_TMPDIR/jq-argv"
+    _make_argv_logger openssl "$bindir" "$olog" || return 1
+    _make_argv_logger jq "$bindir" "$jlog" || return 1
+    local canary; canary=$(_argv_canary)
+    local pw; pw=$(_argv_password_file)
+
+    "$CS_SECRETS_BIN" set K1 < "$canary" >/dev/null 2>&1 \
+        || { echo "  FAIL: seeding set exited nonzero"; return 1; }
+    PATH="$bindir:$(_ageless_path)" "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 \
+        || { echo "  FAIL: export-file exited nonzero"; return 1; }
+    "$CS_SECRETS_BIN" delete K1 >/dev/null 2>&1 \
+        || { echo "  FAIL: delete exited nonzero"; return 1; }
+    PATH="$bindir:$(_ageless_path)" "$CS_SECRETS_BIN" import-file >/dev/null 2>&1 \
+        || { echo "  FAIL: import-file exited nonzero"; return 1; }
+
+    # Positive control: the import really restored the value from the sync file.
+    "$CS_SECRETS_BIN" get K1 > "$TEST_TMPDIR/got" 2>/dev/null \
+        || { echo "  FAIL: get after import exited nonzero"; return 1; }
+    _get_matches "$TEST_TMPDIR/got" "$canary" \
+        || { echo "  FAIL: import-file did not restore the exported value byte-exact"; return 1; }
+    assert_file_contains "$olog" "aes-256-cbc" "the openssl wrapper must have seen the sync encrypt/decrypt" || return 1
+    [ -s "$jlog" ] || { echo "  FAIL: the jq wrapper was never called"; return 1; }
+
+    _refute_argv_holds "$olog" "$canary" "the secret value" || return 1
+    _refute_argv_holds "$jlog" "$canary" "the secret value" || return 1
+    _refute_argv_holds "$olog" "$pw" "CS_SECRETS_PASSWORD" || return 1
+    _refute_argv_holds "$jlog" "$pw" "CS_SECRETS_PASSWORD" || return 1
+}
+
+# Collecting a keychain store into a backup builds its JSON one value at a time;
+# that construction must not put a value on jq's argv.
+test_keychain_export_file_keeps_values_off_argv() {
+    local bindir; bindir=$(_make_fake_security)
+    local jlog="$TEST_TMPDIR/jq-argv" olog="$TEST_TMPDIR/openssl-argv"
+    _make_argv_logger jq "$bindir" "$jlog" || return 1
+    _make_argv_logger openssl "$bindir" "$olog" || return 1
+    local canary; canary=$(_argv_canary)
+    local pw; pw=$(_argv_password_file)
+    local kcstore="$TEST_TMPDIR/kc-store"
+    local meta="$CS_SESSIONS_ROOT/test-session/.cs"
+    local mid; mid=$(_machine_id)
+
+    PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        "$CS_SECRETS_BIN" set K1 < "$canary" >/dev/null 2>&1 \
+        || { echo "  FAIL: keychain set exited nonzero"; return 1; }
+    : > "$jlog"; : > "$olog"
+    PATH="$bindir:$(_ageless_path)" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$kcstore" \
+        "$CS_SECRETS_BIN" export-file >/dev/null 2>&1 \
+        || { echo "  FAIL: keychain export-file exited nonzero"; return 1; }
+
+    # Positive control: the backup really carries the value.
+    local f="$meta/secrets.${mid}.enc"
+    assert_file_exists "$f" "export-file must write the per-machine sync file" || return 1
+    openssl enc -aes-256-cbc -d -pbkdf2 -iter 100000 -in "$f" -pass env:CS_SECRETS_PASSWORD \
+        > "$TEST_TMPDIR/backup.json" 2>/dev/null \
+        || { echo "  FAIL: the sync file does not decrypt with the test password"; return 1; }
+    grep -qF -f "$canary" "$TEST_TMPDIR/backup.json" \
+        || { echo "  FAIL: the sync file does not carry the stored value"; return 1; }
+    [ -s "$jlog" ] || { echo "  FAIL: the jq wrapper was never called"; return 1; }
+
+    _refute_argv_holds "$jlog" "$canary" "the secret value" || return 1
+    _refute_argv_holds "$olog" "$canary" "the secret value" || return 1
+    _refute_argv_holds "$olog" "$pw" "CS_SECRETS_PASSWORD" || return 1
+}
+
+# ----------------------------------------------------------------------------
+# rename: a session's secrets follow it to a new name. The picker renames the
+# session directory, then runs `rename`; every store keyed by the name moves:
+# the Keychain entries cs:<old>:*, ~/.cs-secrets/<old>.enc and the age state
+# ~/.cs-secrets/sessions/<old>/.
+# ----------------------------------------------------------------------------
+
+# Run cs-secrets on the Keychain backend against the fake security's store.
+_kc_secrets() {
+    PATH="$_RN_BIN:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$TEST_TMPDIR/kc-store" \
+        "$CS_SECRETS_BIN" "$@"
+}
+
+# Session alpha with a value in all three stores, Keychain K1 (the argv
+# canary) and K2, encrypted-store E1, and a pin list, and its directory then
+# renamed to bravo as the picker does before it runs `rename`. Leaves the
+# fake security's bin dir in _RN_BIN.
+_seed_renamed_session() {
+    _RN_BIN=$(_make_fake_security)
+    mkdir -p "$CS_SESSIONS_ROOT/alpha/.cs"
+    _RN_CANARY=$(_argv_canary)
+    printf 'value-two' > "$TEST_TMPDIR/v2"
+    printf 'value-enc' > "$TEST_TMPDIR/ve"
+    _kc_secrets --session alpha set K1 < "$_RN_CANARY" >/dev/null 2>&1 || return 1
+    _kc_secrets --session alpha set K2 < "$TEST_TMPDIR/v2" >/dev/null 2>&1 || return 1
+    "$CS_SECRETS_BIN" --session alpha set E1 < "$TEST_TMPDIR/ve" >/dev/null 2>&1 || return 1
+    mkdir -p "$HOME/.cs-secrets/sessions/alpha"
+    printf 'pin-fingerprint\n' > "$HOME/.cs-secrets/sessions/alpha/age-trusted"
+    mv "$CS_SESSIONS_ROOT/alpha" "$CS_SESSIONS_ROOT/bravo"
+}
+
+# The names a fake Keychain holds, one service per line, sorted.
+_kc_services() {
+    local f
+    for f in "$TEST_TMPDIR/kc-store"/*; do
+        [ -f "$f" ] && head -1 "$f"
+    done | sort
+}
+
+test_rename_moves_every_store_to_the_new_name() {
+    _seed_renamed_session || { echo "  FAIL: fixture: could not seed alpha's stores"; return 1; }
+    local out rc=0 argvlog="$TEST_TMPDIR/security-argv"
+    out=$(FAKE_SECURITY_ARGVLOG="$argvlog" _kc_secrets --session alpha rename bravo 2>&1) || rc=$?
+    assert_eq "0" "$rc" "rename exits 0: $out" || return 1
+    assert_output_contains "$out" "^Moved the secrets of session 'alpha' to 'bravo'$" "rename says what it did" || return 1
+
+    assert_eq "cs:bravo:K1
+cs:bravo:K2" "$(_kc_services)" "the Keychain holds bravo's entries and none of alpha's" || return 1
+    _kc_secrets --session bravo get K1 > "$TEST_TMPDIR/got" 2>/dev/null \
+        || { echo "  FAIL: bravo's K1 does not read"; return 1; }
+    _get_matches "$TEST_TMPDIR/got" "$_RN_CANARY" || { echo "  FAIL: K1 did not move byte-exact"; return 1; }
+    assert_eq "value-two" "$(_kc_secrets --session bravo get K2 2>&1)" "K2 moved" || return 1
+    _refute_argv_holds "$argvlog" "$_RN_CANARY" "the moved Keychain value" || return 1
+
+    assert_eq "value-enc" "$("$CS_SECRETS_BIN" --session bravo get E1 2>&1)" "the encrypted store moved" || return 1
+    [ ! -e "$HOME/.cs-secrets/alpha.enc" ] || { echo "  FAIL: alpha.enc is still there"; return 1; }
+
+    assert_eq "pin-fingerprint" "$(cat "$HOME/.cs-secrets/sessions/bravo/age-trusted" 2>&1)" "the pin list moved" || return 1
+    [ ! -e "$HOME/.cs-secrets/sessions/alpha" ] || { echo "  FAIL: alpha's age state is still there"; return 1; }
+    local entry left=""
+    for entry in "$HOME/.cs-secrets"/* "$HOME/.cs-secrets"/.[!.]*; do
+        [ -e "$entry" ] || continue
+        case "$(basename "$entry")" in bravo.enc|sessions|.salt) ;; *) left="$left $(basename "$entry")" ;; esac
+    done
+    assert_eq "" "$left" "nothing but bravo's store is left in ~/.cs-secrets (no lock, no marker)" || return 1
+    assert_eq "age-trusted" "$(ls -A "$HOME/.cs-secrets/sessions/bravo")" "bravo's age state holds the pin list only" || return 1
+}
+
+test_rename_refuses_a_new_name_that_has_secrets_or_age_state() {
+    _seed_renamed_session || { echo "  FAIL: fixture: could not seed alpha's stores"; return 1; }
+    local out rc kind
+    for kind in keychain enc age; do
+        rm -rf "$TEST_TMPDIR/kc-store/cs_bravo_"* "$HOME/.cs-secrets/bravo.enc" "$HOME/.cs-secrets/sessions/bravo"
+        case "$kind" in
+            keychain) _kc_secrets --session bravo set B1 < "$TEST_TMPDIR/v2" >/dev/null 2>&1 || return 1 ;;
+            enc) "$CS_SECRETS_BIN" --session bravo set B1 < "$TEST_TMPDIR/v2" >/dev/null 2>&1 || return 1 ;;
+            age) mkdir -p "$HOME/.cs-secrets/sessions/bravo" && printf 'other\n' > "$HOME/.cs-secrets/sessions/bravo/age-trusted" ;;
+        esac
+        rc=0
+        out=$(_kc_secrets --session alpha rename bravo 2>&1) || rc=$?
+        assert_eq "1" "$rc" "rename refuses when bravo has $kind state: $out" || return 1
+        case "$kind" in
+            keychain) assert_eq "Error: Refusing to move the secrets of session 'alpha' to 'bravo': 'bravo' already has Keychain secrets" "$out" "the refusal names the Keychain" || return 1 ;;
+            enc) assert_eq "Error: Refusing to move the secrets of session 'alpha' to 'bravo': $HOME/.cs-secrets/bravo.enc already exists" "$out" "the refusal names the store" || return 1 ;;
+            age) assert_eq "Error: Refusing to move the secrets of session 'alpha' to 'bravo': $HOME/.cs-secrets/sessions/bravo already exists" "$out" "the refusal names the age state" || return 1 ;;
+        esac
+        assert_eq "value-two" "$(_kc_secrets --session alpha get K2 2>&1)" "alpha's Keychain entry stays ($kind)" || return 1
+        assert_eq "value-enc" "$("$CS_SECRETS_BIN" --session alpha get E1 2>&1)" "alpha's encrypted store stays ($kind)" || return 1
+        assert_eq "pin-fingerprint" "$(cat "$HOME/.cs-secrets/sessions/alpha/age-trusted" 2>&1)" "alpha's pins stay ($kind)" || return 1
+        [ ! -e "$HOME/.cs-secrets/.rename.alpha" ] || { echo "  FAIL: a refused rename left a marker ($kind)"; return 1; }
+    done
+    assert_eq "other" "$(cat "$HOME/.cs-secrets/sessions/bravo/age-trusted")" "bravo's own pins are untouched" || return 1
+}
+
+# A session with no secrets of its own takes none from the new name either:
+# what an earlier session left under bravo would become the renamed session's
+# secrets and trust.
+test_rename_of_a_session_without_secrets_refuses_a_new_name_that_has_any() {
+    _RN_BIN=$(_make_fake_security)
+    mkdir -p "$CS_SESSIONS_ROOT/bravo/.cs"
+    printf 'value-two' > "$TEST_TMPDIR/v2"
+    local out rc kind
+    for kind in keychain enc age; do
+        rm -rf "$TEST_TMPDIR/kc-store/cs_bravo_"* "$HOME/.cs-secrets/bravo.enc" "$HOME/.cs-secrets/sessions/bravo"
+        case "$kind" in
+            keychain) _kc_secrets --session bravo set B1 < "$TEST_TMPDIR/v2" >/dev/null 2>&1 || return 1 ;;
+            enc) "$CS_SECRETS_BIN" --session bravo set B1 < "$TEST_TMPDIR/v2" >/dev/null 2>&1 || return 1 ;;
+            age) mkdir -p "$HOME/.cs-secrets/sessions/bravo" && printf 'other\n' > "$HOME/.cs-secrets/sessions/bravo/age-trusted" ;;
+        esac
+        rc=0
+        out=$(_kc_secrets --session alpha rename bravo 2>&1) || rc=$?
+        assert_eq "1" "$rc" "rename refuses when bravo has $kind state: $out" || return 1
+        case "$kind" in
+            keychain) assert_eq "Error: Refusing to move the secrets of session 'alpha' to 'bravo': 'bravo' already has Keychain secrets" "$out" "the refusal names the Keychain" || return 1
+                      assert_eq "value-two" "$(_kc_secrets --session bravo get B1 2>&1)" "bravo's Keychain entry stays" || return 1 ;;
+            enc) assert_eq "Error: Refusing to move the secrets of session 'alpha' to 'bravo': $HOME/.cs-secrets/bravo.enc already exists" "$out" "the refusal names the store" || return 1
+                 assert_eq "value-two" "$("$CS_SECRETS_BIN" --session bravo get B1 2>&1)" "bravo's encrypted store stays" || return 1 ;;
+            age) assert_eq "Error: Refusing to move the secrets of session 'alpha' to 'bravo': $HOME/.cs-secrets/sessions/bravo already exists" "$out" "the refusal names the age state" || return 1
+                 assert_eq "other" "$(cat "$HOME/.cs-secrets/sessions/bravo/age-trusted")" "bravo's pins stay" || return 1 ;;
+        esac
+        [ ! -e "$HOME/.cs-secrets/.rename.alpha" ] || { echo "  FAIL: a refused rename left a marker ($kind)"; return 1; }
+    done
+}
+
+# An empty age-state directory under the new name holds no pins and no
+# digest; a refused move leaves one behind when its lock was the only entry.
+# It is not state the new name has, so it does not block the move.
+test_rename_moves_into_an_empty_age_state_directory() {
+    _seed_renamed_session || { echo "  FAIL: fixture: could not seed alpha's stores"; return 1; }
+    local out rc=0
+    mkdir -p "$HOME/.cs-secrets/sessions/bravo"
+    out=$(_kc_secrets --session alpha rename bravo 2>&1) || rc=$?
+    assert_eq "0" "$rc" "rename exits 0: $out" || return 1
+    assert_eq "Moved the secrets of session 'alpha' to 'bravo'" "$out" "rename moves the secrets" || return 1
+    assert_eq "pin-fingerprint" "$(cat "$HOME/.cs-secrets/sessions/bravo/age-trusted" 2>&1)" "the pin list is bravo's" || return 1
+}
+
+# The new name is a session name, never a command or an option: a session
+# may be called purge, and renaming to it moves the secrets there.
+test_rename_takes_the_new_name_literally() {
+    _seed_renamed_session || { echo "  FAIL: fixture: could not seed alpha's stores"; return 1; }
+    local out rc=0
+    mv "$CS_SESSIONS_ROOT/bravo" "$CS_SESSIONS_ROOT/purge"
+    out=$(_kc_secrets --session alpha rename purge 2>&1) || rc=$?
+    assert_eq "0" "$rc" "rename to purge exits 0: $out" || return 1
+    assert_eq "Moved the secrets of session 'alpha' to 'purge'" "$out" "rename moves the secrets to purge" || return 1
+    assert_eq "cs:purge:K1
+cs:purge:K2" "$(_kc_services)" "the Keychain entries are purge's" || return 1
+    assert_eq "value-enc" "$("$CS_SECRETS_BIN" --session purge get E1 2>&1)" "the encrypted store is purge's" || return 1
+    assert_eq "pin-fingerprint" "$(cat "$HOME/.cs-secrets/sessions/purge/age-trusted" 2>&1)" "the pin list is purge's" || return 1
+}
+
+# A word after the new name is refused, not read as a command: every store
+# stays alpha's.
+test_rename_refuses_a_second_name() {
+    _seed_renamed_session || { echo "  FAIL: fixture: could not seed alpha's stores"; return 1; }
+    local out rc=0
+    out=$(_kc_secrets --session alpha rename bravo purge 2>&1) || rc=$?
+    assert_eq "1" "$rc" "rename with a second word exits 1: $out" || return 1
+    assert_eq "Error: rename takes one session name; unexpected: purge" "$out" "the refusal names the extra word" || return 1
+    assert_eq "cs:alpha:K1
+cs:alpha:K2" "$(_kc_services)" "alpha's Keychain entries stay" || return 1
+    assert_eq "value-enc" "$("$CS_SECRETS_BIN" --session alpha get E1 2>&1)" "alpha's encrypted store stays" || return 1
+    assert_eq "pin-fingerprint" "$(cat "$HOME/.cs-secrets/sessions/alpha/age-trusted" 2>&1)" "alpha's pins stay" || return 1
+}
+
+# The secrets follow the session directory, never lead it: while the sessions
+# root still has alpha, its secrets stay alpha's. bravo must be a session too,
+# so nothing is created under a name the root lacks.
+test_rename_refuses_while_the_old_session_directory_exists() {
+    _seed_renamed_session || { echo "  FAIL: fixture: could not seed alpha's stores"; return 1; }
+    local out rc=0
+    mkdir -p "$CS_SESSIONS_ROOT/alpha/.cs"
+    out=$(_kc_secrets --session alpha rename bravo 2>&1) || rc=$?
+    assert_eq "1" "$rc" "rename refuses while alpha is a session: $out" || return 1
+    assert_eq "Error: Refusing to move the secrets of session 'alpha' to 'bravo': $CS_SESSIONS_ROOT/alpha still exists; rename the session directory first" "$out" \
+        "the refusal says the directory moves first" || return 1
+    rm -rf "$CS_SESSIONS_ROOT/alpha" "$CS_SESSIONS_ROOT/bravo"
+    rc=0
+    out=$(_kc_secrets --session alpha rename bravo 2>&1) || rc=$?
+    assert_eq "1" "$rc" "rename refuses a target the sessions root lacks: $out" || return 1
+    assert_eq "Error: No session named 'bravo' in $CS_SESSIONS_ROOT" "$out" "the refusal names the missing session" || return 1
+    assert_eq "cs:alpha:K1
+cs:alpha:K2" "$(_kc_services)" "alpha's Keychain entries stay" || return 1
+    [ -e "$HOME/.cs-secrets/alpha.enc" ] || { echo "  FAIL: alpha.enc moved"; return 1; }
+    [ -e "$HOME/.cs-secrets/sessions/alpha/age-trusted" ] || { echo "  FAIL: alpha's pins moved"; return 1; }
+    [ ! -e "$HOME/.cs-secrets/sessions/bravo" ] || { echo "  FAIL: a refused rename created bravo's age state"; return 1; }
+}
+
+# A move interrupted after its marker: K1 copied but alpha's copy not yet
+# deleted, K2 not copied, the encrypted store moved, one age file moved and
+# one not. The rerun finishes it and leaves nothing under alpha.
+test_rename_rerun_finishes_an_interrupted_move() {
+    _seed_renamed_session || { echo "  FAIL: fixture: could not seed alpha's stores"; return 1; }
+    local out rc=0 sec="$HOME/.cs-secrets"
+    _kc_secrets --session bravo set K1 < "$_RN_CANARY" >/dev/null 2>&1 || return 1
+    mv "$sec/alpha.enc" "$sec/bravo.enc"
+    mkdir -p "$sec/sessions/bravo"
+    mv "$sec/sessions/alpha/age-trusted" "$sec/sessions/bravo/age-trusted"
+    printf 'digest\n' > "$sec/sessions/alpha/age-exported-to"
+    printf 'bravo\n' > "$sec/.rename.alpha"
+    out=$(_kc_secrets --session alpha rename bravo 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the rerun exits 0: $out" || return 1
+    assert_output_contains "$out" "^Moved the secrets of session 'alpha' to 'bravo'$" "the rerun finishes" || return 1
+    assert_eq "cs:bravo:K1
+cs:bravo:K2" "$(_kc_services)" "every Keychain entry is bravo's" || return 1
+    assert_eq "value-two" "$(_kc_secrets --session bravo get K2 2>&1)" "K2 moved" || return 1
+    assert_eq "value-enc" "$("$CS_SECRETS_BIN" --session bravo get E1 2>&1)" "the encrypted store is bravo's" || return 1
+    assert_eq "age-exported-to
+age-trusted" "$(ls -A "$sec/sessions/bravo")" "both age files are bravo's" || return 1
+    [ ! -e "$sec/sessions/alpha" ] || { echo "  FAIL: alpha's age state is still there"; return 1; }
+    [ ! -e "$sec/.rename.alpha" ] || { echo "  FAIL: the marker outlived the finished move"; return 1; }
+}
+
+# On a rerun a value present under both names counts as moved only when it is
+# the same value; a different one is never overwritten.
+test_rename_rerun_refuses_a_value_that_differs_under_both_names() {
+    _seed_renamed_session || { echo "  FAIL: fixture: could not seed alpha's stores"; return 1; }
+    local out rc=0
+    printf 'not-the-same' > "$TEST_TMPDIR/vx"
+    _kc_secrets --session bravo set K2 < "$TEST_TMPDIR/vx" >/dev/null 2>&1 || return 1
+    printf 'bravo\n' > "$HOME/.cs-secrets/.rename.alpha"
+    out=$(_kc_secrets --session alpha rename bravo 2>&1) || rc=$?
+    assert_eq "1" "$rc" "the rerun refuses: $out" || return 1
+    assert_eq "Error: Refusing to move the secrets of session 'alpha' to 'bravo': Keychain secret K2 differs under the two names; nothing was overwritten" "$out" \
+        "the refusal names the secret" || return 1
+    assert_eq "value-two" "$(_kc_secrets --session alpha get K2 2>&1)" "alpha's K2 stays" || return 1
+    assert_eq "not-the-same" "$(_kc_secrets --session bravo get K2 2>&1)" "bravo's K2 stays" || return 1
+    _kc_secrets --session alpha get K1 > "$TEST_TMPDIR/got" 2>/dev/null \
+        || { echo "  FAIL: alpha's K1 was deleted by a refused move"; return 1; }
+}
+
+# An ln stand-in that refuses every link whose target matches the pattern in
+# its first line and hands the rest to the real ln. Echoes its bin dir.
+_make_failing_ln() {  # target pattern (a case pattern)
+    local bindir="$TEST_TMPDIR/ln-bin" real_ln
+    real_ln=$(command -v ln)
+    mkdir -p "$bindir"
+    cat > "$bindir/ln" <<SHIM
+#!/usr/bin/env bash
+case "\$2" in
+    $1) exit 1 ;;
+esac
+exec "$real_ln" "\$@"
+SHIM
+    chmod +x "$bindir/ln"
+    echo "$bindir"
+}
+
+# A move that fails partway puts back what it moved before it exits: the
+# Keychain entries were moved and the encrypted store too when linking the
+# pin list fails, and every value is alpha's again, with no marker, so the
+# picker can move the session directory back.
+test_rename_that_fails_partway_puts_every_value_back_under_the_old_name() {
+    _seed_renamed_session || { echo "  FAIL: fixture: could not seed alpha's stores"; return 1; }
+    local lnbin out rc=0 sec="$HOME/.cs-secrets"
+    lnbin=$(_make_failing_ln "*/sessions/bravo/*")
+    out=$(PATH="$lnbin:$PATH" _kc_secrets --session alpha rename bravo 2>&1) || rc=$?
+    assert_eq "1" "$rc" "rename exits 1: $out" || return 1
+    assert_eq "Error: Refusing to move the secrets of session 'alpha' to 'bravo': could not move $sec/sessions/alpha/age-trusted to $sec/sessions/bravo/age-trusted" "$out" \
+        "rename names the step that failed" || return 1
+    assert_eq "cs:alpha:K1
+cs:alpha:K2" "$(_kc_services)" "the Keychain holds alpha's entries and none of bravo's" || return 1
+    _kc_secrets --session alpha get K1 > "$TEST_TMPDIR/got" 2>/dev/null \
+        || { echo "  FAIL: alpha's K1 does not read"; return 1; }
+    _get_matches "$TEST_TMPDIR/got" "$_RN_CANARY" || { echo "  FAIL: K1 did not come back byte-exact"; return 1; }
+    assert_eq "value-two" "$(_kc_secrets --session alpha get K2 2>&1)" "K2 is alpha's" || return 1
+    assert_eq "value-enc" "$("$CS_SECRETS_BIN" --session alpha get E1 2>&1)" "the encrypted store is alpha's" || return 1
+    assert_not_exists "$sec/bravo.enc" "no encrypted store under bravo" || return 1
+    assert_eq "pin-fingerprint" "$(cat "$sec/sessions/alpha/age-trusted" 2>&1)" "the pin list is alpha's" || return 1
+    assert_not_exists "$sec/sessions/bravo" "no age state under bravo" || return 1
+    assert_not_exists "$sec/.rename.alpha" "no marker is left" || return 1
+    assert_eq "bravo
+test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
+}
+
+# A move that cannot put back what it moved keeps its marker and says so: the
+# values are split across the names, and the rerun it names finishes the move.
+test_rename_that_cannot_put_a_failed_move_back_keeps_the_marker() {
+    _seed_renamed_session || { echo "  FAIL: fixture: could not seed alpha's stores"; return 1; }
+    local lnbin out rc=0 sec="$HOME/.cs-secrets"
+    lnbin=$(_make_failing_ln "*/sessions/bravo/*|*/alpha.enc")
+    out=$(PATH="$lnbin:$PATH" _kc_secrets --session alpha rename bravo 2>&1) || rc=$?
+    assert_eq "1" "$rc" "rename exits 1: $out" || return 1
+    assert_eq "Error: Refusing to move the secrets of session 'alpha' to 'bravo': could not move $sec/sessions/alpha/age-trusted to $sec/sessions/bravo/age-trusted
+Error: could not move the secrets of session 'alpha' back from 'bravo': could not move $sec/bravo.enc back to $sec/alpha.enc; rerun: cs -secrets --session alpha rename bravo" "$out" \
+        "rename names the step that failed and the one it could not put back" || return 1
+    assert_eq "bravo" "$(cat "$sec/.rename.alpha" 2>&1)" "the marker names the move to finish" || return 1
+    out=$(_kc_secrets --session alpha rename bravo 2>&1) || { echo "  FAIL: the rerun failed: $out"; return 1; }
+    assert_eq "Moved the secrets of session 'alpha' to 'bravo'" "$out" "the rerun finishes the move" || return 1
+    assert_eq "cs:bravo:K1
+cs:bravo:K2" "$(_kc_services)" "every Keychain entry is bravo's" || return 1
+    assert_eq "value-enc" "$("$CS_SECRETS_BIN" --session bravo get E1 2>&1)" "the encrypted store is bravo's" || return 1
+    assert_eq "pin-fingerprint" "$(cat "$sec/sessions/bravo/age-trusted" 2>&1)" "the pin list is bravo's" || return 1
+}
+
+# A signal that lands the moment rename has written its marker, before it
+# moves anything, puts back nothing and removes the marker: a marker is left
+# only by a move it could not put back. BASH_ENV hands cs-secrets a DEBUG
+# trap that sends it one TERM before its first command after the marker
+# exists.
+test_a_signal_right_after_the_marker_is_written_leaves_no_marker() {
+    _seed_renamed_session || { echo "  FAIL: fixture: could not seed alpha's stores"; return 1; }
+    local env="$TEST_TMPDIR/term-after-marker.sh" out rc=0 sec="$HOME/.cs-secrets"
+    cat > "$env" <<HOOK
+set -T
+trap '[ -e "$sec/.rename.alpha" ] && [ ! -e "$TEST_TMPDIR/term.sent" ] && : > "$TEST_TMPDIR/term.sent" && kill -TERM \$\$' DEBUG
+HOOK
+    out=$(BASH_ENV="$env" _kc_secrets --session alpha rename bravo 2>&1) || rc=$?
+    [ -e "$TEST_TMPDIR/term.sent" ] || { echo "  FAIL: fixture: the hook never saw the marker"; return 1; }
+    assert_eq "143" "$rc" "rename exits 143: $out" || return 1
+    assert_eq "" "$out" "rename prints nothing" || return 1
+    assert_not_exists "$sec/.rename.alpha" "no marker is left" || return 1
+    assert_eq "cs:alpha:K1
+cs:alpha:K2" "$(_kc_services)" "the Keychain holds alpha's entries and none of bravo's" || return 1
+    assert_eq "value-enc" "$("$CS_SECRETS_BIN" --session alpha get E1 2>&1)" "the encrypted store is alpha's" || return 1
+    assert_eq "pin-fingerprint" "$(cat "$sec/sessions/alpha/age-trusted" 2>&1)" "the pin list is alpha's" || return 1
+}
+
+# A session name is matched literally in the Keychain: a dot in a.b matches
+# a dot, never the dash of a-b, so list, export, purge and rename of a.b see
+# none of a-b's entries.
+test_keychain_commands_match_the_session_name_literally() {
+    _RN_BIN=$(_make_fake_security)
+    mkdir -p "$CS_SESSIONS_ROOT/a-b/.cs" "$CS_SESSIONS_ROOT/a.b/.cs"
+    printf 'value-ab' > "$TEST_TMPDIR/vab"
+    _kc_secrets --session a-b set K1 < "$TEST_TMPDIR/vab" >/dev/null 2>&1 || { echo "  FAIL: fixture: set a-b K1 failed"; return 1; }
+    local out rc=0
+    out=$(_kc_secrets --session a.b list 2>&1) || rc=$?
+    assert_eq "0 No secrets stored for session: a.b" "$rc $out" "list a.b shows none of a-b's names" || return 1
+    rc=0
+    out=$(_kc_secrets --session a.b export 2>&1) || rc=$?
+    assert_eq "0 " "$rc $out" "export a.b exports nothing" || return 1
+    rc=0
+    out=$(_kc_secrets --session a.b purge 2>&1) || rc=$?
+    assert_eq "0 No secrets to purge for session: a.b" "$rc $out" "purge a.b finds nothing to purge" || return 1
+    rm -rf "$CS_SESSIONS_ROOT/a.b"
+    rc=0
+    out=$(_kc_secrets --session a.b rename x 2>&1) || rc=$?
+    assert_eq "1 Error: No session named 'x' in $CS_SESSIONS_ROOT" "$rc $out" "rename a.b refuses only for the missing target" || return 1
+    mkdir -p "$CS_SESSIONS_ROOT/a.b/.cs"
+    rc=0
+    out=$(_kc_secrets --session x rename a.b 2>&1) || rc=$?
+    assert_eq "0 No secrets to move for session: x" "$rc $out" "rename to a.b finds no secrets under a.b" || return 1
+    assert_eq "cs:a-b:K1" "$(_kc_services)" "a-b's entry is untouched" || return 1
+    assert_eq "value-ab" "$(_kc_secrets --session a-b get K1 2>&1)" "a-b's K1 keeps its value" || return 1
+}
+
+# A rename refused before it made the new name's age directory leaves that
+# directory alone: an export or age add for the new name may have just made it.
+test_a_refused_rename_leaves_the_new_names_age_directory() {
+    _seed_renamed_session || { echo "  FAIL: fixture: could not seed alpha's stores"; return 1; }
+    local out rc=0
+    mkdir -p "$CS_SESSIONS_ROOT/alpha/.cs" "$HOME/.cs-secrets/sessions/bravo"
+    out=$(_kc_secrets --session alpha rename bravo 2>&1) || rc=$?
+    assert_eq "1" "$rc" "rename refuses while alpha is a session: $out" || return 1
+    [ -d "$HOME/.cs-secrets/sessions/bravo" ] || { echo "  FAIL: the refused rename removed bravo's age directory"; return 1; }
+}
+
+# A rename that has moved every value exits 0 even when it cannot release a
+# lock it took: the picker reads a nonzero exit as "still under the old name"
+# and moves the session directory back away from its secrets. The lock it
+# could not remove is named on stderr and left for the user to remove. A
+# stand-in rm fails on alpha's write lock.
+test_a_rename_that_cannot_release_a_lock_after_the_move_exits_0() {
+    _seed_renamed_session || { echo "  FAIL: fixture: could not seed alpha's stores"; return 1; }
+    local rmbin="$TEST_TMPDIR/rm-bin" real_rm out rc=0 sec="$HOME/.cs-secrets" lock="$CS_SESSIONS_ROOT/.secrets-lock.alpha"
+    real_rm=$(command -v rm)
+    mkdir -p "$rmbin"
+    cat > "$rmbin/rm" <<SHIM
+#!/usr/bin/env bash
+case "\$*" in
+    "-f $lock") echo "rm: simulated failure on \$2" >&2; exit 1 ;;
+esac
+exec "$real_rm" "\$@"
+SHIM
+    chmod +x "$rmbin/rm"
+    out=$(PATH="$rmbin:$PATH" _kc_secrets --session alpha rename bravo 2>"$TEST_TMPDIR/err") || rc=$?
+    assert_eq "0" "$rc" "rename exits 0: $out $(cat "$TEST_TMPDIR/err")" || return 1
+    assert_eq "Moved the secrets of session 'alpha' to 'bravo'" "$out" "rename says what it did" || return 1
+    assert_eq "rm: simulated failure on $lock
+Warning: could not remove the lock $lock; remove it by hand" "$(cat "$TEST_TMPDIR/err")" \
+        "rename names the lock it could not release" || return 1
+    assert_eq "cs:bravo:K1
+cs:bravo:K2" "$(_kc_services)" "the Keychain holds bravo's entries and none of alpha's" || return 1
+    assert_eq "value-enc" "$("$CS_SECRETS_BIN" --session bravo get E1 2>&1)" "the encrypted store is bravo's" || return 1
+    assert_eq "pin-fingerprint" "$(cat "$sec/sessions/bravo/age-trusted" 2>&1)" "the pin list is bravo's" || return 1
+    assert_not_exists "$sec/sessions/alpha" "no age state is left under alpha" || return 1
+    assert_not_exists "$sec/.rename.alpha" "no marker is left" || return 1
+    assert_eq ".secrets-lock.alpha
+bravo
+test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "only the lock rm could not remove is left in the sessions root" || return 1
+}
+
+# On a Mac the Keychain holds what a session stored there whatever backend a
+# later run uses, so rename on the encrypted backend reads it too. Run against
+# the fake security's store, as macOS.
+_mac_encrypted_secrets() {
+    PATH="$_RN_BIN:$PATH" CS_PLATFORM_OVERRIDE=macos CS_SECRETS_BACKEND=encrypted FAKE_SECURITY_STORE="$TEST_TMPDIR/kc-store" \
+        "$CS_SECRETS_BIN" "$@"
+}
+
+test_rename_on_the_encrypted_backend_moves_the_keychain_entries() {
+    _seed_renamed_session || { echo "  FAIL: fixture: could not seed alpha's stores"; return 1; }
+    local out rc=0
+    out=$(_mac_encrypted_secrets --session alpha rename bravo 2>&1) || rc=$?
+    assert_eq "0" "$rc" "rename exits 0: $out" || return 1
+    assert_eq "Moved the secrets of session 'alpha' to 'bravo'" "$out" "rename says what it did" || return 1
+    assert_eq "cs:bravo:K1
+cs:bravo:K2" "$(_kc_services)" "the Keychain holds bravo's entries and none of alpha's" || return 1
+    assert_eq "value-two" "$(_kc_secrets --session bravo get K2 2>&1)" "K2 moved" || return 1
+    assert_eq "value-enc" "$("$CS_SECRETS_BIN" --session bravo get E1 2>&1)" "the encrypted store moved" || return 1
+}
+
+# What a removed session left in the Keychain under the new name would become
+# the renamed session's, and a Keychain that cannot be read may hold such a
+# value: either is refused before anything changes.
+test_rename_on_the_encrypted_backend_refuses_what_the_keychain_holds_or_hides() {
+    _RN_BIN=$(_make_fake_security)
+    mkdir -p "$CS_SESSIONS_ROOT/bravo/.cs"
+    printf 'stale' > "$TEST_TMPDIR/stale"
+    _kc_secrets --session bravo set K1 < "$TEST_TMPDIR/stale" >/dev/null 2>&1 || return 1
+    local out rc=0
+    out=$(_mac_encrypted_secrets --session alpha rename bravo 2>&1) || rc=$?
+    assert_eq "1" "$rc" "rename refuses: $out" || return 1
+    assert_eq "Error: Refusing to move the secrets of session 'alpha' to 'bravo': 'bravo' already has Keychain secrets" "$out" \
+        "the refusal names the Keychain" || return 1
+    assert_eq "stale" "$(_kc_secrets --session bravo get K1 2>&1)" "bravo's Keychain entry stays" || return 1
+
+    rm -rf "$TEST_TMPDIR/kc-store"
+    rc=0
+    out=$(FAKE_SECURITY_MODE=fail _mac_encrypted_secrets --session alpha rename bravo 2>&1) || rc=$?
+    assert_eq "1" "$rc" "rename refuses an unreadable Keychain: $out" || return 1
+    assert_eq "Error: Refusing to move the secrets of session 'alpha' to 'bravo': failed to enumerate the Keychain" "$out" \
+        "the refusal says the Keychain could not be read" || return 1
+    [ ! -e "$HOME/.cs-secrets/.rename.alpha" ] || { echo "  FAIL: a refused rename left a marker"; return 1; }
+}
+
+# The picker runs rename on every rename, mostly for sessions with no secrets:
+# those must not gain a ~/.cs-secrets.
+test_rename_with_nothing_to_move_creates_no_cs_secrets() {
+    local bindir; bindir=$(_make_fake_security)
+    local out rc=0
+    mkdir -p "$CS_SESSIONS_ROOT/bravo/.cs"
+    out=$(PATH="$bindir:$PATH" CS_SECRETS_BACKEND=keychain FAKE_SECURITY_STORE="$TEST_TMPDIR/kc-store" \
+        "$CS_SECRETS_BIN" --session alpha rename bravo 2>&1) || rc=$?
+    assert_eq "0" "$rc" "rename exits 0: $out" || return 1
+    assert_eq "No secrets to move for session: alpha" "$out" "rename says there was nothing" || return 1
+    [ ! -e "$HOME/.cs-secrets" ] || { echo "  FAIL: rename created ~/.cs-secrets"; return 1; }
+    assert_eq "bravo
+test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
+}
+
+# ----------------------------------------------------------------------------
+# The session write lock: set, delete, purge and rename serialise on one lock
+# per session name, <sessions root>/.secrets-lock.<name>, and set and delete
+# refuse a name the sessions root does not have. Without both, a write that
+# lands while rename moves the session is deleted or left under the old name
+# after it said it was stored.
+# ----------------------------------------------------------------------------
+
+# Run cs-secrets on the named backend; the Keychain is the fake security's
+# store. Needs _RN_BIN.
+_backend_secrets() {  # backend, args...
+    PATH="$_RN_BIN:$PATH" CS_SECRETS_BACKEND="$1" FAKE_SECURITY_STORE="$TEST_TMPDIR/kc-store" \
+        "$CS_SECRETS_BIN" "${@:2}"
+}
+
+# A relative sessions root names a directory under the one cs-secrets runs in,
+# and every path built from it is absolute: the refusal names the root that
+# way, and a root starting with a dash reaches rm and cat as a path, so each
+# write releases the lock and the next one takes it. x/y is the positive
+# control for the lock: it has no dash.
+test_a_relative_sessions_root_is_made_absolute() {
+    local w="$TEST_TMPDIR/w" root key out rc
+    mkdir -p "$w"
+    printf 'v1' > "$TEST_TMPDIR/v1"
+    for root in -r x/y; do
+        mkdir -p "$w/$root/demo-x/.cs"
+        for key in K1 K2; do
+            rc=0
+            out=$(cd "$w" && CS_SESSIONS_ROOT="$root" CS_SECRETS_LOCK_TIMEOUT=1 \
+                "$CS_SECRETS_BIN" --session demo-x set "$key" < "$TEST_TMPDIR/v1" 2>&1) || rc=$?
+            assert_eq 0 "$rc" "set $key under the root $root exits 0" || return 1
+            assert_eq "Stored secret: $key" "$out" "set $key under the root $root stores it" || return 1
+        done
+        assert_eq "demo-x" "$(ls -A "$w/$root")" "no write lock is left in $root" || return 1
+        rc=0
+        out=$(cd "$w" && CS_SESSIONS_ROOT="$root" \
+            "$CS_SECRETS_BIN" --session nosuch set K1 < "$TEST_TMPDIR/v1" 2>&1) || rc=$?
+        assert_eq 1 "$rc" "set for a session the root $root does not have exits 1" || return 1
+        assert_eq "Error: No session named 'nosuch' in $w/$root" "$out" \
+            "the refusal names the root $root as an absolute path" || return 1
+    done
+}
+
+# Session ghost with K1 on both backends and a pin list, then removed from
+# the sessions root: what `cs -rm`, or a rename away from the name, leaves.
+_seed_removed_session() {
+    _RN_BIN=$(_make_fake_security)
+    mkdir -p "$CS_SESSIONS_ROOT/ghost/.cs"
+    printf 'kept' > "$TEST_TMPDIR/kept"
+    printf 'late' > "$TEST_TMPDIR/late"
+    local backend
+    for backend in keychain encrypted; do
+        _backend_secrets "$backend" --session ghost set K1 < "$TEST_TMPDIR/kept" >/dev/null 2>&1 || return 1
+    done
+    mkdir -p "$HOME/.cs-secrets/sessions/ghost"
+    printf 'pin-fingerprint\n' > "$HOME/.cs-secrets/sessions/ghost/age-trusted"
+    rm -rf "$CS_SESSIONS_ROOT/ghost"
+}
+
+# A value stored under a name the sessions root does not have is one no
+# session reads, and one the rename that moved the session away never moves.
+test_set_and_delete_refuse_a_session_the_root_does_not_have() {
+    _seed_removed_session || { echo "  FAIL: fixture: could not seed ghost's stores"; return 1; }
+    local backend out rc
+    for backend in keychain encrypted; do
+        rc=0
+        out=$(_backend_secrets "$backend" --session ghost set K2 < "$TEST_TMPDIR/late" 2>&1) || rc=$?
+        assert_eq "1" "$rc" "$backend set exits 1: $out" || return 1
+        assert_eq "Error: No session named 'ghost' in $CS_SESSIONS_ROOT" "$out" "$backend set names the session and the root" || return 1
+        rc=0
+        out=$(_backend_secrets "$backend" --session ghost delete K1 2>&1) || rc=$?
+        assert_eq "1" "$rc" "$backend delete exits 1: $out" || return 1
+        assert_eq "Error: No session named 'ghost' in $CS_SESSIONS_ROOT" "$out" "$backend delete names the session and the root" || return 1
+        assert_eq "Secrets for session: ghost
+  - K1" "$(_backend_secrets "$backend" --session ghost list 2>&1)" "$backend holds K1 and no K2" || return 1
+        assert_eq "kept" "$(_backend_secrets "$backend" --session ghost get K1 2>&1)" "$backend K1 keeps its value" || return 1
+    done
+    assert_not_exists "$CS_SESSIONS_ROOT/ghost" "no directory is created for the session" || return 1
+    assert_eq "test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
+}
+
+# migrate-backend stores every key it moves, so a session the sessions root
+# does not have is refused before it starts, by name, not key by key.
+test_migrate_backend_refuses_a_session_the_root_does_not_have() {
+    _seed_removed_session || { echo "  FAIL: fixture: could not seed ghost's stores"; return 1; }
+    local out rc=0 backend
+    out=$(_backend_secrets keychain --session ghost migrate-backend keychain --from encrypted --delete-source 2>&1) || rc=$?
+    assert_eq "1" "$rc" "migrate-backend exits 1: $out" || return 1
+    assert_eq "Error: No session named 'ghost' in $CS_SESSIONS_ROOT" "$out" "migrate-backend names the session and the root" || return 1
+    for backend in keychain encrypted; do
+        assert_eq "kept" "$(_backend_secrets "$backend" --session ghost get K1 2>&1)" "$backend K1 keeps its value" || return 1
+    done
+}
+
+# Stored secrets outlive `cs -rm`, and purge is how they are removed
+# afterwards, so purge does not need the session directory.
+test_purge_removes_what_a_removed_session_left() {
+    _seed_removed_session || { echo "  FAIL: fixture: could not seed ghost's stores"; return 1; }
+    local backend out rc
+    for backend in keychain encrypted; do
+        rc=0
+        out=$(_backend_secrets "$backend" --session ghost purge 2>&1) || rc=$?
+        assert_eq "0" "$rc" "$backend purge exits 0: $out" || return 1
+        assert_eq "Purged 1 secret(s) for session: ghost" "$out" "$backend purge counts what it removed" || return 1
+        assert_eq "No secrets stored for session: ghost" "$(_backend_secrets "$backend" --session ghost list 2>&1)" \
+            "$backend holds nothing of ghost's" || return 1
+    done
+    assert_not_exists "$HOME/.cs-secrets/sessions/ghost" "the age state went with the secrets" || return 1
+    assert_eq "test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
+}
+
+# The write lock lives in the sessions root, so a Keychain write on a machine
+# with no ~/.cs-secrets does not create one.
+test_keychain_writes_create_no_cs_secrets_dir() {
+    _RN_BIN=$(_make_fake_security)
+    printf 'value-one' > "$TEST_TMPDIR/v1"
+    assert_eq "Stored secret: K1" "$(_backend_secrets keychain set K1 < "$TEST_TMPDIR/v1" 2>&1)" "set stores K1" || return 1
+    assert_eq "Deleted secret: K1" "$(_backend_secrets keychain delete K1 2>&1)" "delete removes K1" || return 1
+    assert_eq "Stored secret: K1" "$(_backend_secrets keychain set K1 < "$TEST_TMPDIR/v1" 2>&1)" "set stores K1 again" || return 1
+    assert_eq "Purged 1 secret(s) for session: test-session" "$(_backend_secrets keychain purge 2>&1)" "purge removes K1" || return 1
+    assert_not_exists "$HOME/.cs-secrets" "no ~/.cs-secrets is created" || return 1
+    assert_eq "test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "no lock is left in the sessions root" || return 1
+}
+
+# A write that cannot take the lock changes nothing and names the lock file.
+# PID 1 stands for another process holding it.
+test_set_delete_and_purge_take_the_session_write_lock() {
+    _RN_BIN=$(_make_fake_security)
+    local lock="$CS_SESSIONS_ROOT/.secrets-lock.test-session" backend verb out rc
+    printf 'value-one' > "$TEST_TMPDIR/v1"
+    for backend in keychain encrypted; do
+        _backend_secrets "$backend" set K1 < "$TEST_TMPDIR/v1" >/dev/null 2>&1 \
+            || { echo "  FAIL: fixture: $backend set failed"; return 1; }
+    done
+    printf '1\n' > "$lock"
+    for backend in keychain encrypted; do
+        for verb in "set K2" "delete K1" "purge"; do
+            rc=0
+            # shellcheck disable=SC2086  # $verb is a verb and its argument
+            out=$(CS_SECRETS_LOCK_TIMEOUT=1 _backend_secrets "$backend" $verb < "$TEST_TMPDIR/v1" 2>&1) || rc=$?
+            assert_eq "1" "$rc" "$backend $verb exits 1: $out" || return 1
+            assert_eq "Error: timed out after 1s acquiring the secrets write lock for session 'test-session' (held by PID 1). If no such process is running, remove: $lock
+Error: Refusing to change the secrets of session 'test-session': could not acquire the secrets write lock" "$out" \
+                "$backend $verb names the lock" || return 1
+        done
+        assert_eq "Secrets for session: test-session
+  - K1" "$(_backend_secrets "$backend" list 2>&1)" "$backend holds K1 and no K2" || return 1
+    done
+    assert_eq "1" "$(cat "$lock")" "the other holder's lock is left alone" || return 1
+}
+
+# rename takes the write lock of both names before it looks at any store,
+# even to say there is nothing to move: a set that passed its session check
+# before the directory moved may still be writing under the old name.
+test_rename_takes_the_write_lock_of_both_names() {
+    _RN_BIN=$(_make_fake_security)
+    mkdir -p "$CS_SESSIONS_ROOT/bravo/.cs"
+    local name lock out rc
+    for name in alpha bravo; do
+        lock="$CS_SESSIONS_ROOT/.secrets-lock.$name"
+        printf '1\n' > "$lock"
+        rc=0
+        out=$(CS_SECRETS_LOCK_TIMEOUT=1 _kc_secrets --session alpha rename bravo 2>&1) || rc=$?
+        assert_eq "1" "$rc" "rename exits 1 while $name's write lock is held: $out" || return 1
+        assert_eq "Error: timed out after 1s acquiring the secrets write lock for session '$name' (held by PID 1). If no such process is running, remove: $lock
+Error: Refusing to move the secrets of session 'alpha' to 'bravo': could not acquire the secrets write locks" "$out" \
+            "rename names $name's lock" || return 1
+        rm -f "$lock"
+        assert_eq "bravo
+test-session" "$(ls -A "$CS_SESSIONS_ROOT")" "rename released the lock it did take" || return 1
+    done
+    assert_not_exists "$HOME/.cs-secrets" "a refused rename creates no ~/.cs-secrets" || return 1
+}
+
 # ============================================================================
 # Runner
 # ============================================================================
@@ -1553,17 +5149,18 @@ echo "================"
 echo ""
 
 # Backend
-test_neutral_session_name_takes_precedence_with_legacy_fallback() {
+test_neutral_session_name_takes_precedence_with_legacy_fallback() (
+    mkdir -p "$CS_SESSIONS_ROOT/neutral-session/.cs"
     export CS_SESSION_NAME=neutral-session
-    "$CS_SECRETS_BIN" set neutral-key neutral-value >/dev/null 2>&1 || return 1
-    assert_eq neutral-value "$("$CS_SECRETS_BIN" get neutral-key)" || return 1
+    "$CS_SECRETS_BIN" set neutral_key neutral-value >/dev/null 2>&1 || return 1
+    assert_eq neutral-value "$("$CS_SECRETS_BIN" get neutral_key)" || return 1
     unset CS_SESSION_NAME
     local output
     output=$("$CS_SECRETS_BIN" list 2>&1) || return 1
-    assert_output_not_contains "$output" neutral-key 'neutral and legacy session stores must stay separate' || return 1
-    "$CS_SECRETS_BIN" set legacy-key legacy-value >/dev/null 2>&1 || return 1
-    assert_eq legacy-value "$("$CS_SECRETS_BIN" get legacy-key)"
-}
+    assert_output_not_contains "$output" neutral_key 'neutral and legacy session stores must stay separate' || return 1
+    "$CS_SECRETS_BIN" set legacy_key legacy-value >/dev/null 2>&1 || return 1
+    assert_eq legacy-value "$("$CS_SECRETS_BIN" get legacy_key)"
+)
 
 run_test test_backend_shows_encrypted
 run_test test_backend_override_via_env
@@ -1571,6 +5168,7 @@ run_test test_backend_wsl_defaults_encrypted_not_keychain
 
 # Store and retrieve
 run_test test_store_and_get
+run_test test_set_warns_about_a_value_on_argv
 run_test test_set_reads_value_from_stdin
 run_test test_set_reads_value_from_file_redirect
 run_test test_set_refuses_placeholder_values
@@ -1592,6 +5190,20 @@ run_test test_delete_preserves_other_secrets
 
 # Purge
 run_test test_purge_removes_all
+run_test test_purge_drops_the_sessions_age_state
+run_test test_age_add_refuses_a_session_the_root_does_not_have
+run_test test_age_add_refuses_a_directory_that_is_not_a_session
+run_test test_age_add_refuses_a_name_that_is_a_path
+run_test test_session_verbs_refuse_a_name_that_is_a_path
+run_test test_age_remove_refuses_a_session_the_root_does_not_have
+run_test test_age_remove_refuses_a_link_on_the_way_to_the_recipient
+run_test test_age_remove_refuses_a_name_that_is_not_a_recipient_name
+run_test test_age_add_refuses_a_key_file_whose_name_is_not_a_recipient_name
+run_test test_every_write_but_purge_refuses_a_feature_session
+run_test test_purge_of_a_feature_session_removes_what_its_name_holds
+run_test test_an_unknown_option_is_refused_before_any_command_runs
+run_test test_export_file_refuses_a_session_the_root_does_not_have
+run_test test_import_file_refuses_a_session_the_root_does_not_have
 run_test test_purge_empty_session
 
 # Export
@@ -1615,6 +5227,9 @@ run_test test_store_alias_works
 run_test test_ls_alias_works
 run_test test_rm_alias_works
 run_test test_session_flag_overrides_env
+run_test test_export_file_refuses_a_session_whose_cs_links_out
+run_test test_export_file_refuses_a_named_path_a_link_carries_out
+run_test test_export_file_refuses_a_default_file_linked_to_a_directory_outside
 run_test test_no_session_errors
 run_test test_picker_selects_numbered_session
 run_test test_picker_prompt_stays_off_stdout
@@ -1640,6 +5255,10 @@ run_test test_migrate_refuses_an_invalid_name
 run_test test_export_namespaces_every_variable
 run_test test_export_namespace_neutralises_dangerous_names
 run_test test_import_file_refuses_a_hostile_key_name
+run_test test_import_file_refuses_two_names_that_export_as_one_variable
+run_test test_import_file_refuses_a_name_that_shares_a_variable_with_a_stored_secret
+run_test test_import_file_stores_nothing_when_one_name_is_invalid
+run_test test_import_file_refuses_a_name_ending_in_a_carriage_return
 run_test test_export_refuses_a_hostile_name_already_in_the_store
 run_test test_import_file_aborts_when_the_store_write_fails
 run_test test_import_file_skips_undecryptable_files
@@ -1674,6 +5293,14 @@ run_test test_keychain_purge_loud_on_enumeration_failure
 run_test test_keychain_export_loud_on_enumeration_failure
 run_test test_keychain_export_loud_on_read_failure
 run_test test_migrate_partial_write_fails_loud
+run_test test_migrate_redact_replaces_each_value_as_text
+run_test test_migrate_redact_keeps_each_value_off_argv
+run_test test_migrate_redact_replaces_the_longest_value_first
+run_test test_migrate_redact_keeps_every_marker_whole
+run_test test_migrate_redact_stores_each_key_a_segment_names_a_secret
+run_test test_migrate_redact_leaves_each_key_no_segment_names_a_secret
+run_test test_migrate_redact_skips_a_flag_or_number_only_under_a_key_name
+run_test test_migrate_redact_leaves_a_blank_value_under_any_name
 
 # Concurrency & durability
 run_test test_encrypted_concurrent_stores_no_lost_update
@@ -1682,4 +5309,434 @@ run_test test_encrypted_stale_lock_fails_loud_not_reaped
 run_test test_keychain_export_does_not_require_cs_secrets_dir
 
 run_test test_neutral_session_name_takes_precedence_with_legacy_fallback
+# No secret on a child's argv (audit H3)
+run_test test_keychain_set_keeps_the_value_off_argv
+run_test test_keychain_set_round_trips_a_multiline_quoted_value
+run_test test_keychain_set_refuses_a_value_too_long_for_one_security_line
+run_test test_keychain_set_never_sends_a_line_whose_failure_security_would_hide
+run_test test_keychain_limit_counts_bytes_for_a_non_ascii_account
+run_test test_migrate_backend_shows_why_the_keychain_refused_a_value
+run_test test_a_rename_undo_shows_why_the_keychain_refused_a_value
+run_test test_encrypted_set_keeps_value_and_password_off_argv
+run_test test_encrypted_derived_key_stays_off_argv
+run_test test_sync_export_import_keep_values_off_argv
+run_test test_keychain_export_file_keeps_values_off_argv
+
+# age recipients
+run_test test_age_export_skips_rewrite_when_nothing_changed
+run_test test_age_recipient_digest_leaves_the_shells_own_locale_alone
+run_test test_age_add_reencrypts_an_unchanged_store
+run_test test_age_remove_reencrypts_an_unchanged_store
+run_test test_export_refuses_an_unpinned_pushed_recipient
+run_test test_recipient_names_a_clone_chose_print_as_plain_names
+run_test test_age_list_preview_drops_control_bytes
+run_test test_age_list_previews_only_a_recipient_files_first_line
+run_test test_export_encrypts_to_a_recipient_pinned_by_age_add
+run_test test_export_never_pins_from_a_forged_sync_file
+run_test test_export_ignores_a_pin_list_planted_in_the_checkout
+run_test test_password_export_to_an_external_path_needs_no_writable_checkout
+run_test test_export_on_a_fresh_clone_pins_nothing
+run_test test_age_remove_drops_the_pin
+run_test test_age_add_takes_an_ssh_ed25519_key_file
+run_test test_age_add_takes_a_raw_ssh_ed25519_key
+run_test test_age_add_refuses_a_different_key_under_a_recipient_name_in_use
+run_test test_age_add_refusal_suggests_age_remove_only_for_a_plain_name
+run_test test_age_add_refuses_an_age_key_age_does_not_accept
+run_test test_age_add_refuses_an_ssh_key_age_does_not_accept
+run_test test_export_fails_when_age_cannot_encrypt
+run_test test_age_add_gives_each_raw_key_a_free_recipient_name
+run_test test_age_add_without_age_points_at_age_init
+run_test test_age_add_refuses_what_is_not_a_key
+run_test test_import_file_reads_a_file_encrypted_to_this_machines_ssh_key
+run_test test_import_file_still_reads_a_file_encrypted_to_the_earlier_age_key
+run_test test_age_init_creates_this_machines_ssh_key
+run_test test_age_init_names_a_missing_ssh_keygen
+run_test test_first_export_makes_this_machines_ssh_key_the_recipient
+run_test test_export_encrypts_to_age_and_ssh_recipients_together
+run_test test_export_switches_this_machine_to_its_ssh_key
+run_test test_export_switch_names_a_recipient_file_as_a_plain_name
+run_test test_first_export_without_ssh_keygen_refuses
+run_test test_export_signs_the_sync_file
+run_test test_export_replaces_a_signature_that_does_not_verify
+run_test test_export_adds_this_machine_to_a_session_that_has_recipients
+run_test test_rename_moves_every_store_to_the_new_name
+run_test test_rename_refuses_a_new_name_that_has_secrets_or_age_state
+run_test test_rename_of_a_session_without_secrets_refuses_a_new_name_that_has_any
+run_test test_rename_moves_into_an_empty_age_state_directory
+run_test test_rename_takes_the_new_name_literally
+run_test test_rename_refuses_a_second_name
+run_test test_rename_refuses_while_the_old_session_directory_exists
+run_test test_rename_on_the_encrypted_backend_moves_the_keychain_entries
+run_test test_rename_on_the_encrypted_backend_refuses_what_the_keychain_holds_or_hides
+run_test test_rename_that_fails_partway_puts_every_value_back_under_the_old_name
+run_test test_rename_that_cannot_put_a_failed_move_back_keeps_the_marker
+run_test test_a_signal_right_after_the_marker_is_written_leaves_no_marker
+run_test test_keychain_commands_match_the_session_name_literally
+run_test test_a_refused_rename_leaves_the_new_names_age_directory
+run_test test_a_rename_that_cannot_release_a_lock_after_the_move_exits_0
+run_test test_rename_rerun_finishes_an_interrupted_move
+run_test test_rename_rerun_refuses_a_value_that_differs_under_both_names
+run_test test_rename_with_nothing_to_move_creates_no_cs_secrets
+run_test test_set_and_delete_refuse_a_session_the_root_does_not_have
+run_test test_a_relative_sessions_root_is_made_absolute
+run_test test_migrate_backend_refuses_a_session_the_root_does_not_have
+run_test test_purge_removes_what_a_removed_session_left
+run_test test_keychain_writes_create_no_cs_secrets_dir
+run_test test_set_delete_and_purge_take_the_session_write_lock
+run_test test_rename_takes_the_write_lock_of_both_names
+run_test test_export_refuses_when_this_machines_recipient_file_holds_another_key
+run_test test_export_leaves_a_current_signed_file_alone
+run_test test_later_export_without_ssh_keygen_refuses_and_keeps_the_signed_file
+run_test test_export_to_a_named_file_signs_beside_it
+run_test test_export_refuses_a_directory_where_the_signature_goes
+run_test test_password_export_writes_no_signature
+run_test test_import_file_takes_a_file_signed_by_a_pinned_peer
+run_test test_import_file_skips_an_unsigned_age_file
+run_test test_import_file_skips_an_unsigned_file_under_this_machines_name
+run_test test_import_file_skips_a_file_signed_by_an_unpinned_key
+run_test test_import_file_names_a_sync_file_and_its_signer_as_plain_names
+run_test test_import_file_skips_a_file_signed_by_a_key_outside_the_session
+run_test test_import_file_skips_a_signed_file_changed_after_signing
+run_test test_import_file_decrypts_the_bytes_it_verified
+run_test test_import_file_verifies_the_bytes_it_will_decrypt
+run_test test_import_file_skips_a_signature_that_is_a_symbolic_link
+run_test test_import_file_skips_a_sync_file_that_is_a_symbolic_link
+run_test test_import_file_skips_a_password_sync_file_that_is_a_symbolic_link
+run_test test_import_file_keeps_the_store_when_a_value_exceeds_the_exec_limit
+run_test test_import_file_refuses_a_session_whose_cs_is_a_link
+run_test test_import_file_refuses_a_named_file_behind_a_linked_directory
+run_test test_import_file_names_where_a_linked_cs_leads_as_a_plain_path
+run_test test_import_file_names_where_a_linked_directory_leads_as_a_plain_path
+run_test test_import_file_refuses_a_cs_swapped_for_a_link_before_the_copy
+run_test test_import_file_reads_the_cs_it_checked_when_swapped_during_the_copy
+run_test test_import_file_refuses_a_named_file_behind_a_linked_directory_however_spelled
+run_test test_import_file_refuses_a_named_file_behind_a_linked_directory_in_another_case
+run_test test_import_file_refuses_a_named_file_in_the_local_secrets_store
+run_test test_import_file_refuses_a_named_file_behind_another_sessions_linked_directory
+run_test test_import_file_names_a_file_it_cannot_read
+run_test test_import_file_reads_a_relative_name_under_an_exported_cdpath
+run_test test_import_file_reads_the_session_under_a_relative_tmpdir
+run_test test_import_file_counts_a_cs_it_cannot_enter_as_unreadable
+run_test test_keychain_export_file_carries_a_value_past_the_exec_limit
+run_test test_set_refuses_to_write_a_store_of_more_than_one_document
+run_test test_import_file_skips_a_file_whose_signature_cannot_be_read
+run_test test_import_file_skips_a_file_signed_for_another_session
+run_test test_import_file_allow_unsigned_takes_a_file_with_no_signature
+run_test test_import_file_allow_unsigned_still_skips_a_bad_signature
+run_test test_import_file_refuses_a_named_file_that_is_not_trusted
+run_test test_import_file_without_ssh_keygen_skips_signed_files_by_name
+
+# --- A session writing another session's secrets while that one is live ---
+#
+# A conversation inside one session changes another session's secrets only
+# while that session's claude is not running. Features share their base's
+# secrets, so a feature writes its base's freely; reads and a plain terminal
+# are never refused.
+
+# receiver, a session holding API_KEY=v1, whose lock a live process holds.
+# Sets RECEIVER_PID; _stop_receiver ends it.
+_live_receiver() {
+    mkdir -p "$CS_SESSIONS_ROOT/receiver/.cs"
+    printf 'v1' | CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" set API_KEY >/dev/null 2>&1 \
+        || { echo "  FAIL: could not seed receiver's secret"; return 1; }
+    sleep 300 &
+    RECEIVER_PID=$!
+    echo "$RECEIVER_PID" > "$CS_SESSIONS_ROOT/receiver/.cs/session.lock"
+}
+_stop_receiver() {
+    kill "$RECEIVER_PID" 2>/dev/null; wait "$RECEIVER_PID" 2>/dev/null
+    return 0
+}
+_receiver_refusal() {  # caller
+    _receiver_refusal_for "$1" "$RECEIVER_PID"
+}
+_receiver_refusal_for() {  # caller pid
+    printf 'Error: session %s cannot change the secrets of session receiver while it is live (pid %s); --force does not override that from another session. Close receiver first.' "$1" "$2"
+}
+
+# The cs arms set the caller themselves, over a CS_SECRETS_CALLER the shell
+# carried in; a target named by its feature is refused against its base.
+test_secrets_delete_of_a_live_other_session_is_refused_on_every_route() {
+    _live_receiver || return 1
+    local route out rc
+    for route in named session-flag direct feature-name; do
+        rc=0
+        case "$route" in
+            named) out=$(CLAUDE_SESSION_NAME=sender CS_SECRETS_CALLER=receiver "$CS_BIN" receiver -secrets delete API_KEY </dev/null 2>&1) || rc=$? ;;
+            session-flag) out=$(CLAUDE_SESSION_NAME=sender CS_SECRETS_CALLER=receiver "$CS_BIN" -secrets --session receiver delete API_KEY </dev/null 2>&1) || rc=$? ;;
+            direct) out=$(CLAUDE_SESSION_NAME=sender "$CS_SECRETS_BIN" -s receiver delete API_KEY </dev/null 2>&1) || rc=$? ;;
+            feature-name) out=$(CLAUDE_SESSION_NAME=sender "$CS_SECRETS_BIN" -s receiver@feat delete API_KEY </dev/null 2>&1) || rc=$? ;;
+        esac
+        assert_eq "1" "$rc" "the $route delete exits 1" || { _stop_receiver; return 1; }
+        assert_eq "$(_receiver_refusal sender)" "$out" "the $route refusal names both sessions" || { _stop_receiver; return 1; }
+    done
+    out=$(CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" get API_KEY 2>&1)
+    _stop_receiver
+    assert_eq "v1" "$out" "receiver's secret survives" || return 1
+}
+
+test_secrets_every_writing_command_is_refused_for_a_live_other_session() {
+    _live_receiver || return 1
+    local cmd out rc
+    local cmds=("set NEW_KEY" "store NEW_KEY" "delete API_KEY" "rm API_KEY" "purge" "rename moved" \
+        "import-file" "import-file --replace" "migrate" "migrate --redact" \
+        "migrate-backend keychain" "migrate-backend keychain --delete-source" "export-file" \
+        "age add age1example" "age remove alice" "age rm alice")
+    for cmd in "${cmds[@]}"; do
+        rc=0
+        # shellcheck disable=SC2086 # each entry carries its own arguments
+        out=$(printf 'v2' | CLAUDE_SESSION_NAME=sender "$CS_SECRETS_BIN" -s receiver $cmd 2>&1) || rc=$?
+        assert_eq "1" "$rc" "$cmd exits 1" || { _stop_receiver; return 1; }
+        assert_eq "$(_receiver_refusal sender)" "$out" "$cmd is refused" || { _stop_receiver; return 1; }
+    done
+    out=$(CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" export 2>&1)
+    _stop_receiver
+    assert_eq "export CS_SECRET_API_KEY=v1" "$out" "receiver's store is as it was" || return 1
+}
+
+test_secrets_reads_of_a_live_other_session_still_work() {
+    _live_receiver || return 1
+    local got listed exported rc=0
+    got=$(CLAUDE_SESSION_NAME=sender "$CS_SECRETS_BIN" -s receiver get API_KEY 2>&1) || rc=$?
+    listed=$(CLAUDE_SESSION_NAME=sender "$CS_BIN" receiver -secrets list 2>&1) || rc=$?
+    exported=$(CLAUDE_SESSION_NAME=sender "$CS_SECRETS_BIN" -s receiver export 2>&1) || rc=$?
+    _stop_receiver
+    assert_eq "0" "$rc" "get, list and export exit 0" || return 1
+    assert_eq "v1" "$got" "get reads the value" || return 1
+    assert_eq "export CS_SECRET_API_KEY=v1" "$exported" "export reads the value" || return 1
+    assert_eq "Secrets for session: receiver
+  - API_KEY" "$listed" "list names the secret" || return 1
+}
+
+test_secrets_delete_of_an_idle_other_session_works() {
+    _live_receiver || return 1
+    _stop_receiver
+    CLAUDE_SESSION_NAME=sender "$CS_BIN" receiver -secrets delete API_KEY </dev/null >/dev/null 2>&1 \
+        || { echo "  FAIL: the idle delete was refused"; return 1; }
+    assert_eq "" "$(CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" export 2>&1)" "the secret is gone" || return 1
+}
+
+# A feature's secrets are its base's (the launch exports CS_SECRETS_SESSION),
+# so a feature writes them while the base is open; the base writes its own.
+test_secrets_a_feature_and_its_base_write_the_live_base_secrets() {
+    _live_receiver || return 1
+    local rc=0
+    printf 'v2' | CLAUDE_SESSION_NAME=receiver@feat CS_SECRETS_SESSION=receiver "$CS_SECRETS_BIN" set API_KEY >/dev/null 2>&1 || rc=$?
+    printf 'v3' | CLAUDE_SESSION_NAME=receiver@feat "$CS_BIN" receiver@feat -secrets set OTHER_KEY >/dev/null 2>&1 || rc=$?
+    printf 'v4' | CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" set THIRD_KEY >/dev/null 2>&1 || rc=$?
+    local got
+    got=$(CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" export 2>&1)
+    _stop_receiver
+    assert_eq "0" "$rc" "every write exits 0" || return 1
+    assert_eq "export CS_SECRET_API_KEY=v2
+export CS_SECRET_OTHER_KEY=v3
+export CS_SECRET_THIRD_KEY=v4" "$got" "every write landed in receiver's store" || return 1
+}
+
+test_secrets_delete_from_a_plain_shell_takes_a_live_session() {
+    _live_receiver || return 1
+    local rc=0
+    ( unset CLAUDE_SESSION_NAME; "$CS_BIN" receiver -secrets delete API_KEY </dev/null >/dev/null 2>&1 ) || rc=$?
+    local listed
+    listed=$(CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" export 2>&1)
+    _stop_receiver
+    assert_eq "0" "$rc" "the plain-shell delete exits 0" || return 1
+    assert_eq "" "$listed" "the secret is gone" || return 1
+}
+
+# `rename` writes two sessions' secrets: the old name's and the new one's. The
+# old name's directory is gone by the time it runs, so the new name is the one
+# that can be live. alpha left secrets when its directory went; bravo is
+# another session, open and holding none.
+test_secrets_rename_into_a_live_other_session_is_refused() {
+    _RN_BIN=$(_make_fake_security)
+    mkdir -p "$CS_SESSIONS_ROOT/alpha/.cs" "$CS_SESSIONS_ROOT/bravo/.cs"
+    printf 'value-one' > "$TEST_TMPDIR/v1"
+    CLAUDE_SESSION_NAME=alpha _kc_secrets set K1 < "$TEST_TMPDIR/v1" >/dev/null 2>&1 \
+        || { echo "  FAIL: fixture: could not seed alpha's secret"; return 1; }
+    rm -rf "$CS_SESSIONS_ROOT/alpha"
+    sleep 300 &
+    local pid=$! out rc=0
+    echo "$pid" > "$CS_SESSIONS_ROOT/bravo/.cs/session.lock"
+    out=$(CLAUDE_SESSION_NAME=sender _kc_secrets -s alpha rename bravo 2>&1) || rc=$?
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    assert_eq "1" "$rc" "the rename exits 1" || return 1
+    assert_eq "Error: session sender cannot change the secrets of session bravo while it is live (pid $pid); --force does not override that from another session. Close bravo first." \
+        "$out" "the refusal names the live new name" || return 1
+    assert_eq "cs:alpha:K1" "$(_kc_services)" "alpha's secret stays under alpha" || return 1
+}
+
+# The picker renames a closed session by moving its directory, then running
+# `cs -secrets --session <old> rename <new>`; from inside another session
+# that move still goes through.
+test_secrets_rename_of_a_closed_session_from_inside_another_session_moves_it() {
+    _seed_renamed_session || { echo "  FAIL: fixture: could not seed alpha's stores"; return 1; }
+    local out rc=0
+    out=$(CLAUDE_SESSION_NAME=sender PATH="$_RN_BIN:$PATH" CS_SECRETS_BACKEND=keychain \
+        FAKE_SECURITY_STORE="$TEST_TMPDIR/kc-store" "$CS_BIN" -secrets --session alpha rename bravo </dev/null 2>&1) || rc=$?
+    assert_eq "0" "$rc" "the rename exits 0: $out" || return 1
+    assert_eq "cs:bravo:K1
+cs:bravo:K2" "$(_kc_services)" "the Keychain entries moved to bravo" || return 1
+    assert_eq "value-enc" "$("$CS_SECRETS_BIN" --session bravo get E1 2>&1)" "the encrypted store moved" || return 1
+}
+
+# A base's secrets are its features' too, so while one of its features is
+# live they are written only by the base itself, by that live feature (its
+# own secrets) and from a plain terminal: another base and a sibling feature
+# are refused. receiver is closed here.
+test_secrets_writes_to_a_base_wait_for_its_live_feature() {
+    _live_receiver || return 1
+    _stop_receiver
+    mkdir -p "$CS_SESSIONS_ROOT/receiver@x/.cs"
+    sleep 300 &
+    local pid=$! out sibling rc=0 sibling_rc=0
+    echo "$pid" > "$CS_SESSIONS_ROOT/receiver@x/.cs/session.lock"
+    out=$(printf 'v2' | CLAUDE_SESSION_NAME=sender "$CS_SECRETS_BIN" -s receiver set API_KEY 2>&1) || rc=$?
+    sibling=$(printf 'v3' | CLAUDE_SESSION_NAME=receiver@y CS_SECRETS_SESSION=receiver "$CS_SECRETS_BIN" set SIBLING_KEY 2>&1) || sibling_rc=$?
+    local base=0 own=0 plain=0
+    printf 'v4' | CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" set BASE_KEY >/dev/null 2>&1 || base=$?
+    printf 'v5' | CLAUDE_SESSION_NAME=receiver@x CS_SECRETS_SESSION=receiver "$CS_SECRETS_BIN" set OWN_KEY >/dev/null 2>&1 || own=$?
+    printf 'v6' | ( unset CLAUDE_SESSION_NAME; "$CS_SECRETS_BIN" -s receiver set PLAIN_KEY ) >/dev/null 2>&1 || plain=$?
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    assert_eq "1" "$rc" "the write from sender exits 1" || return 1
+    assert_eq "Error: session sender cannot change the secrets of session receiver while its feature receiver@x is live (pid $pid); --force does not override that from another session. Close receiver@x first." \
+        "$out" "the refusal names the live feature" || return 1
+    assert_eq "1" "$sibling_rc" "the write from the sibling feature receiver@y exits 1" || return 1
+    assert_eq "Error: session receiver@y cannot change the secrets of session receiver while its feature receiver@x is live (pid $pid); --force does not override that from another session. Close receiver@x first." \
+        "$sibling" "the sibling's refusal names the live feature" || return 1
+    assert_eq "0 0 0" "$base $own $plain" "the base, the live feature itself and a plain terminal write" || return 1
+    assert_eq "export CS_SECRET_API_KEY=v1
+export CS_SECRET_BASE_KEY=v4
+export CS_SECRET_OWN_KEY=v5
+export CS_SECRET_PLAIN_KEY=v6" "$(CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" export 2>&1)" "only the refused writes are missing" || return 1
+}
+
+# A volume that ignores letter case keeps receiver's store under RECEIVER too,
+# so a write to RECEIVER waits for receiver's live feature on every route.
+test_secrets_writes_to_a_base_named_in_another_case_wait_for_its_live_feature() {
+    _live_receiver || return 1
+    _stop_receiver
+    [ -d "$CS_SESSIONS_ROOT/RECEIVER" ] || { echo "    SKIP: the sessions root tells letter case apart"; return 77; }
+    mkdir -p "$CS_SESSIONS_ROOT/receiver@x/.cs"
+    sleep 300 &
+    local pid=$! route out rc outs="" rcs=""
+    echo "$pid" > "$CS_SESSIONS_ROOT/receiver@x/.cs/session.lock"
+    for route in named session-flag direct; do
+        rc=0
+        case "$route" in
+            named) out=$(printf 'v2' | CLAUDE_SESSION_NAME=sender "$CS_BIN" RECEIVER -secrets set NAMED_KEY 2>&1) || rc=$? ;;
+            session-flag) out=$(printf 'v3' | CLAUDE_SESSION_NAME=sender "$CS_BIN" -secrets --session RECEIVER set FLAG_KEY 2>&1) || rc=$? ;;
+            direct) out=$(printf 'v4' | CLAUDE_SESSION_NAME=sender "$CS_SECRETS_BIN" -s RECEIVER set DIRECT_KEY 2>&1) || rc=$? ;;
+        esac
+        rcs="$rcs $route=$rc"
+        outs="$outs$route: $out
+"
+    done
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    local refusal="Error: session sender cannot change the secrets of session RECEIVER while its feature receiver@x is live (pid $pid); --force does not override that from another session. Close receiver@x first."
+    assert_eq " named=1 session-flag=1 direct=1" "$rcs" "every route exits 1" || return 1
+    assert_eq "named: $refusal
+session-flag: $refusal
+direct: $refusal
+" "$outs" "every route's refusal names the live feature" || return 1
+    assert_eq "export CS_SECRET_API_KEY=v1" "$(CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" export 2>&1)" "receiver's store is as it was" || return 1
+}
+
+# Only the base's own features hold its secrets: another base's live feature
+# does not, even when that base's name starts with this one's.
+test_secrets_writes_to_a_base_not_held_by_another_base_live_feature() {
+    _live_receiver || return 1
+    _stop_receiver
+    mkdir -p "$CS_SESSIONS_ROOT/receiver2@x/.cs"
+    sleep 300 &
+    local pid=$! out rc=0
+    echo "$pid" > "$CS_SESSIONS_ROOT/receiver2@x/.cs/session.lock"
+    out=$(printf 'v2' | CLAUDE_SESSION_NAME=sender "$CS_SECRETS_BIN" -s receiver set OTHER_KEY 2>&1) || rc=$?
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    assert_eq "0" "$rc" "the write exits 0: $out" || return 1
+    assert_eq "export CS_SECRET_API_KEY=v1
+export CS_SECRET_OTHER_KEY=v2" "$(CLAUDE_SESSION_NAME=receiver "$CS_SECRETS_BIN" export 2>&1)" "the write landed in receiver's store" || return 1
+}
+
+# The same holds for the new name of a rename: alpha left secrets when its
+# directory went, and bravo, spelled BRAVO, is idle while bravo@x is live.
+test_secrets_rename_into_a_base_named_in_another_case_waits_for_its_live_feature() {
+    _RN_BIN=$(_make_fake_security)
+    mkdir -p "$CS_SESSIONS_ROOT/alpha/.cs" "$CS_SESSIONS_ROOT/bravo/.cs" "$CS_SESSIONS_ROOT/bravo@x/.cs"
+    [ -d "$CS_SESSIONS_ROOT/BRAVO" ] || { echo "    SKIP: the sessions root tells letter case apart"; return 77; }
+    printf 'value-one' > "$TEST_TMPDIR/v1"
+    CLAUDE_SESSION_NAME=alpha _kc_secrets set K1 < "$TEST_TMPDIR/v1" >/dev/null 2>&1 \
+        || { echo "  FAIL: fixture: could not seed alpha's secret"; return 1; }
+    rm -rf "$CS_SESSIONS_ROOT/alpha"
+    sleep 300 &
+    local pid=$! out rc=0
+    echo "$pid" > "$CS_SESSIONS_ROOT/bravo@x/.cs/session.lock"
+    out=$(CLAUDE_SESSION_NAME=sender _kc_secrets -s alpha rename BRAVO 2>&1) || rc=$?
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    assert_eq "1" "$rc" "the rename exits 1" || return 1
+    assert_eq "Error: session sender cannot change the secrets of session BRAVO while its feature bravo@x is live (pid $pid); --force does not override that from another session. Close bravo@x first." \
+        "$out" "the refusal names the live feature" || return 1
+    assert_eq "cs:alpha:K1" "$(_kc_services)" "alpha's secret stays under alpha" || return 1
+}
+
+# cs and cs-secrets read a session lock by one rule: the text, surrounding
+# whitespace removed, is a decimal pid from 1 to 2147483647 that kill -0
+# reaches. Each content below is fed to both, through the refusals of
+# `cs receiver -narrative rotate` and `cs-secrets -s receiver set` from
+# inside sender, and both must call it live (refuse, naming the pid) or idle
+# (rotate finds nothing to rotate; the secret is stored). Any other output
+# fails the test: a refusal that names the pid in another form is neither.
+test_cs_and_cs_secrets_read_a_session_lock_by_one_rule() {
+    mkdir -p "$CS_SESSIONS_ROOT/receiver/.cs/memory"
+    printf '# Narrative\n' > "$CS_SESSIONS_ROOT/receiver/.cs/memory/narrative.tester.md"
+    local rotated="nothing to rotate: narrative.tester.md is 0 KB (budget 64 KB)"
+    sleep 300 &
+    local pid=$! entry content want out got_cs got_secrets
+    local entries=("live|$pid" "live| $pid" "live|$pid " "live|	$pid
+
+" "live|00$pid" "idle|-1" "idle|0" "idle|000" "idle|abc" "idle|" "idle|${pid}x" \
+        "idle|+$pid" "idle|4294967295" "idle|99999999999999999999")
+    for entry in "${entries[@]}"; do
+        want="${entry%%|*}"
+        content="${entry#*|}"
+        printf '%s' "$content" > "$CS_SESSIONS_ROOT/receiver/.cs/session.lock"
+        out=$(CLAUDE_SESSION_NAME=sender CS_ACTOR=tester CS_NARRATIVE_MAX_BYTES=65536 "$CS_BIN" receiver -narrative rotate </dev/null 2>&1)
+        if [ "$out" = "Error: session sender cannot rotate the narrative of session receiver while it is live (pid $pid); --force does not override that from another session. Close receiver first." ]; then
+            got_cs=live
+        elif [ "$out" = "$rotated" ]; then
+            got_cs=idle
+        else
+            echo "  FAIL: cs reads the lock '$content' as neither live nor idle: $out"
+            kill "$pid"; wait "$pid" 2>/dev/null; return 1
+        fi
+        out=$(printf 'v' | CLAUDE_SESSION_NAME=sender "$CS_SECRETS_BIN" -s receiver set K 2>&1)
+        if [ "$out" = "$(_receiver_refusal_for sender "$pid")" ]; then
+            got_secrets=live
+        elif [ "$out" = "Stored secret: K" ]; then
+            got_secrets=idle
+        else
+            echo "  FAIL: cs-secrets reads the lock '$content' as neither live nor idle: $out"
+            kill "$pid"; wait "$pid" 2>/dev/null; return 1
+        fi
+        assert_eq "$want" "$got_cs" "cs reads the lock '$content'" || { kill "$pid"; wait "$pid" 2>/dev/null; return 1; }
+        assert_eq "$want" "$got_secrets" "cs-secrets reads the lock '$content'" || { kill "$pid"; wait "$pid" 2>/dev/null; return 1; }
+    done
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    return 0
+}
+
+run_test test_secrets_delete_of_a_live_other_session_is_refused_on_every_route
+run_test test_secrets_every_writing_command_is_refused_for_a_live_other_session
+run_test test_secrets_rename_into_a_live_other_session_is_refused
+run_test test_secrets_rename_of_a_closed_session_from_inside_another_session_moves_it
+run_test test_secrets_reads_of_a_live_other_session_still_work
+run_test test_secrets_delete_of_an_idle_other_session_works
+run_test test_secrets_a_feature_and_its_base_write_the_live_base_secrets
+run_test test_secrets_delete_from_a_plain_shell_takes_a_live_session
+run_test test_cs_and_cs_secrets_read_a_session_lock_by_one_rule
+run_test test_secrets_writes_to_a_base_wait_for_its_live_feature
+run_test test_secrets_writes_to_a_base_named_in_another_case_wait_for_its_live_feature
+run_test test_secrets_rename_into_a_base_named_in_another_case_waits_for_its_live_feature
+run_test test_secrets_writes_to_a_base_not_held_by_another_base_live_feature
+
 report_results

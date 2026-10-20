@@ -10,7 +10,6 @@ teardown() {
         rm -rf "$TEST_TMPDIR"
     fi
     unset CS_SESSIONS_ROOT CLAUDE_CODE_BIN
-    unset CLAUDE_SESSION_NAME CLAUDE_SESSION_DIR CLAUDE_SESSION_META_DIR 2>/dev/null || true
 }
 
 UUID_A="aaaa1111-2222-4333-8444-555566667777"
@@ -283,6 +282,111 @@ SCRIPT
         "the open's own files (settings.local.json, CLAUDE.local.md) stay out of git status" || return 1
 }
 
+# A claude stub that records its argv and the command line of its parent: cs
+# when the resume runs claude as its child, the caller when cs execs claude.
+_launch_recording_stub() {
+    cat > "$TEST_TMPDIR/claude-stub" << SCRIPT
+#!/bin/bash
+{ printf 'args=%s\n' "\$*"; printf 'parent=%s\n' "\$(ps -o args= -p \$PPID)"; } > "$TEST_TMPDIR/claude-launch"
+exit 0
+SCRIPT
+    chmod +x "$TEST_TMPDIR/claude-stub"
+    export CLAUDE_CODE_BIN="$TEST_TMPDIR/claude-stub"
+}
+
+# A closed `claude --worktree` conversation sits in the parent repo's project
+# dir, and `claude --resume <id>` from inside the worktree still finds it. The
+# resume is sure to land, so claude runs in place of cs, as it does for a
+# transcript in the worktree's own project dir.
+test_resume_of_a_relocated_conversation_runs_claude_in_place_of_cs() {
+    local repo="$TEST_TMPDIR/repo"
+    _make_repo "$repo" moved-wt
+    _seed_relocated_conversation "$repo" "$repo/.claude/worktrees/moved-wt" "$UUID_A" "Port the sync engine to the worktree branch"
+    (cd "$repo" && "$CS_BIN" -adopt --worktrees >/dev/null 2>&1) || { echo "  FAIL: adopt should succeed"; return 1; }
+    _launch_recording_stub
+    (unset CLAUDE_CONFIG_DIR; "$CS_BIN" repo.moved-wt <<< "y" >/dev/null 2>&1) || true
+    assert_output_contains "$(sed -n 's/^args=//p' "$TEST_TMPDIR/claude-launch")" "--resume $UUID_A" \
+        "the open resumes the relocated conversation" || return 1
+    assert_output_contains "$(sed -n 's/^parent=//p' "$TEST_TMPDIR/claude-launch")" "repo.moved-wt" \
+        "cs supervises the resumed Claude process" || return 1
+}
+
+# The parent's project dir also holds the parent's own conversations. One that
+# stepped into the worktree carries the worktree's record but began on the
+# parent, so it is not the worktree's conversation: cs stays claude's parent.
+test_resume_of_a_parent_conversation_under_the_worktree_id_keeps_cs_as_the_parent() {
+    local repo="$TEST_TMPDIR/repo"
+    _make_repo "$repo" moved-wt
+    local wt="$repo/.claude/worktrees/moved-wt"
+    _seed_relocated_conversation "$repo" "$wt" "$UUID_A" "Port the sync engine to the worktree branch"
+    (cd "$repo" && "$CS_BIN" -adopt --worktrees >/dev/null 2>&1) || { echo "  FAIL: adopt should succeed"; return 1; }
+    _seed_entered_conversation "$repo" "$wt" "$UUID_A" "Start on the parent, then enter the worktree"
+    _launch_recording_stub
+    (unset CLAUDE_CONFIG_DIR; "$CS_BIN" repo.moved-wt <<< "y" >/dev/null 2>&1) || true
+    assert_output_contains "$(sed -n 's/^args=//p' "$TEST_TMPDIR/claude-launch")" "--resume $UUID_A" \
+        "the open still resumes the recorded conversation" || return 1
+    assert_output_contains "$(sed -n 's/^parent=//p' "$TEST_TMPDIR/claude-launch")" "repo.moved-wt" \
+        "cs stays claude's parent" || return 1
+}
+
+# The bound conversation's transcript sits in the parent's project dir, and a
+# plain claude run in the worktree outside cs leaves another transcript in the
+# worktree's own project dir. The bound one still exists, so the open keeps it
+# and resumes it; the other conversation is not taken for its replacement.
+# The bound conversation's first prompt is rewritten after the adoption bound
+# it, as the caller says.
+_assert_open_keeps_the_relocated_conversation() {  # first prompt of the bound conversation
+    local repo="$TEST_TMPDIR/repo"
+    _make_repo "$repo" moved-wt
+    local wt="$repo/.claude/worktrees/moved-wt"
+    _seed_relocated_conversation "$repo" "$wt" "$UUID_A" "Port the sync engine to the worktree branch"
+    (cd "$repo" && "$CS_BIN" -adopt --worktrees >/dev/null 2>&1) || { echo "  FAIL: adopt should succeed"; return 1; }
+    assert_eq "$UUID_A" "$(awk '/^claude_session_id:/ { print $2; exit }' "$wt/.cs/local/state")" \
+        "the adoption bound the relocated conversation" || return 1
+    _seed_relocated_conversation "$repo" "$wt" "$UUID_A" "$1"
+    _seed_conversation "$wt" "$UUID_B" "a quick unrelated question asked outside cs"
+    _launch_recording_stub
+    local output
+    output=$(unset CLAUDE_CONFIG_DIR; "$CS_BIN" repo.moved-wt <<< "y" 2>&1) || true
+    assert_eq "$UUID_A" "$(awk '/^claude_session_id:/ { print $2; exit }' "$wt/.cs/local/state")" \
+        "the state still binds the relocated conversation" || return 1
+    assert_output_not_contains "$output" "Repaired orphan claude_session_id" \
+        "a bound conversation whose transcript was relocated is no orphan" || return 1
+    assert_output_contains "$(sed -n 's/^args=//p' "$TEST_TMPDIR/claude-launch")" "--resume $UUID_A" \
+        "the open resumes the bound, relocated conversation" || return 1
+}
+
+test_open_keeps_a_relocated_conversation_beside_a_newer_local_one() {
+    _assert_open_keeps_the_relocated_conversation "Port the sync engine to the worktree branch"
+}
+
+# A bound conversation is kept by what it is, the worktree's record and a first
+# prompt stamped with the worktree as cwd. The teammate test that discovery
+# applies reads the first prompt's whole line, so a prompt that only mentions
+# the teammate frame by name must not unbind a conversation already bound.
+test_open_keeps_a_relocated_conversation_whose_prompt_names_the_teammate_frame() {
+    _assert_open_keeps_the_relocated_conversation "Explain how teammate-message is handled"
+}
+
+# A worktree that held two `claude --worktree` conversations has both in the
+# parent's project dir. Resuming the older one lands as surely as the newer:
+# the bound conversation is checked by its own file, not by being the newest.
+test_resume_of_an_older_relocated_conversation_runs_claude_in_place_of_cs() {
+    local repo="$TEST_TMPDIR/repo"
+    _make_repo "$repo" moved-wt
+    local wt="$repo/.claude/worktrees/moved-wt"
+    _seed_relocated_conversation "$repo" "$wt" "$UUID_A" "Port the sync engine to the worktree branch"
+    (cd "$repo" && "$CS_BIN" -adopt --worktrees >/dev/null 2>&1) || { echo "  FAIL: adopt should succeed"; return 1; }
+    _seed_relocated_conversation "$repo" "$wt" "$UUID_B" "Write the migration notes for the sync engine"
+    touch -t 200001010000 "$(_wt_project_dir "$repo")/$UUID_A.jsonl"
+    _launch_recording_stub
+    (unset CLAUDE_CONFIG_DIR; "$CS_BIN" repo.moved-wt <<< "y" >/dev/null 2>&1) || true
+    assert_output_contains "$(sed -n 's/^args=//p' "$TEST_TMPDIR/claude-launch")" "--resume $UUID_A" \
+        "the open resumes the bound, older conversation" || return 1
+    assert_output_contains "$(sed -n 's/^parent=//p' "$TEST_TMPDIR/claude-launch")" "repo.moved-wt" \
+        "cs supervises the resumed Claude process" || return 1
+}
+
 test_a_symlink_to_another_project_is_not_adopted() {
     local repo="$TEST_TMPDIR/repo" other="$TEST_TMPDIR/other-project"
     _make_repo "$repo"
@@ -294,6 +398,82 @@ test_a_symlink_to_another_project_is_not_adopted() {
     assert_not_exists "$other/.cs" "a directory outside the repo gets no .cs/" || return 1
     assert_not_exists "$CS_SESSIONS_ROOT/repo.sneaky" "no session is registered for it" || return 1
     assert_output_contains "$output" "skip sneaky: not a worktree of" "the skip says why" || return 1
+}
+
+# A clone can commit, with git add -f, a directory laid out like a git
+# repository (HEAD, objects/, refs/, a config naming a worktree and a
+# core.fsmonitor) where Claude Code keeps its worktrees. git asked about that
+# entry takes it for the repository and reads that config, so the entry is
+# skipped by name before git is asked anything, and a real worktree beside it
+# is still adopted.
+_commit_git_dir_layout_in_repo() {  # repo_dir, directory under the repo
+    local g="$1/$2"
+    mkdir -p "$g/objects" "$g/refs"
+    : > "$g/objects/.keep"
+    : > "$g/refs/.keep"
+    printf 'ref: refs/heads/main\n' > "$g/HEAD"
+    printf '[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tworktree = .\n\tfsmonitor = touch %s; false\n' \
+        "$TEST_TMPDIR/fsmonitor-ran" > "$g/config"
+    git -C "$1" add -f "$2"
+    git -C "$1" commit -q -m "ship a repository layout"
+}
+
+test_a_committed_git_repository_layout_is_skipped_by_name() {
+    local repo="$TEST_TMPDIR/repo"
+    _make_repo "$repo" real-wt
+    _commit_git_dir_layout_in_repo "$repo" .claude/worktrees/planted
+    _seed_conversation "$repo/.claude/worktrees/planted" "$UUID_A" "Work in the planted layout"
+    _seed_conversation "$repo/.claude/worktrees/real-wt" "$UUID_B" "Work in the real worktree"
+    local output rc=0
+    output=$(cd "$repo" && "$CS_BIN" -adopt --worktrees 2>&1) || rc=$?
+    assert_file_not_exists "$TEST_TMPDIR/fsmonitor-ran" "git must not run the layout's core.fsmonitor" || return 1
+    assert_eq "0" "$rc" "adopt --worktrees goes on past the layout: $output" || return 1
+    assert_eq "skip planted: .claude/worktrees/planted holds HEAD, so git takes it for a repository and would run commands its config names" \
+        "$(printf '%s\n' "$output" | grep '^skip planted')" "the skip names the layout" || return 1
+    assert_not_exists "$repo/.claude/worktrees/planted/.cs" "the layout gets no .cs/" || return 1
+    assert_not_exists "$CS_SESSIONS_ROOT/repo.planted" "no session is registered for it" || return 1
+    [ -L "$CS_SESSIONS_ROOT/repo.real-wt" ] || { echo "  FAIL: the real worktree beside it is adopted: $output"; return 1; }
+}
+
+# git asked about a plain entry walks up to the nearest directory holding
+# HEAD, so the layout committed at .claude/worktrees itself is named for it.
+test_a_committed_git_repository_layout_above_an_entry_is_skipped_by_name() {
+    local repo="$TEST_TMPDIR/repo"
+    _make_repo "$repo"
+    mkdir -p "$repo/.claude/worktrees/plain"
+    _seed_conversation "$repo/.claude/worktrees/plain" "$UUID_A" "Work in a plain folder"
+    _commit_git_dir_layout_in_repo "$repo" .claude/worktrees
+    local output rc=0
+    output=$(cd "$repo" && "$CS_BIN" -adopt --worktrees 2>&1) || rc=$?
+    assert_file_not_exists "$TEST_TMPDIR/fsmonitor-ran" "git must not run the layout's core.fsmonitor" || return 1
+    assert_eq "0" "$rc" "adopt --worktrees goes on past the layout: $output" || return 1
+    assert_eq "skip plain: .claude/worktrees holds HEAD, so git takes it for a repository and would run commands its config names" \
+        "$(printf '%s\n' "$output" | grep '^skip plain')" "the skip names the layout above the entry" || return 1
+    assert_not_exists "$repo/.claude/worktrees/plain/.cs" "the entry gets no .cs/" || return 1
+}
+
+# A clone chooses the names under .claude/worktrees, and a name can carry a
+# terminal escape: raw (ESC [2J clears the screen) or as backslash text that
+# echo -e would turn into one (\033]0;...\007 retitles the window). Every
+# line that names an entry prints it with each character a plain path does
+# not have replaced by _, so no escape reaches the terminal.
+test_a_worktree_name_is_printed_as_a_plain_path() {
+    local repo="$TEST_TMPDIR/repo" raw text output rc=0 real
+    _make_repo "$repo"
+    text='a\033]0;TITLE\007b'
+    raw=$(printf 'c\033[2Jd')
+    mkdir -p "$repo/.claude/worktrees/$text" "$repo/.claude/worktrees/$raw"
+    : > "$repo/.claude/worktrees/$text/f"
+    : > "$repo/.claude/worktrees/$raw/f"
+    git -C "$repo" add -f .claude/worktrees
+    git -C "$repo" commit -q -m "ship two folders"
+    real=$(cd -P "$repo" && pwd -P)
+    output=$(cd "$repo" && "$CS_BIN" -adopt --worktrees 2>&1) || rc=$?
+    assert_eq "0" "$rc" "adopt --worktrees goes on past both: $output" || return 1
+    assert_eq "0" "$(printf '%s' "$output" | LC_ALL=C tr -dc '\033\007' | wc -c | tr -d ' ')" \
+        "no ESC or BEL byte reaches the terminal" || return 1
+    assert_eq "$(printf 'skip a_033_0_TITLE_007b: not a worktree of %s\nskip c__2Jd: not a worktree of %s\n0 adopted; open one with: cs repo.<worktree>' "$real" "$real")" \
+        "$output" "each name is printed as a plain path" || return 1
 }
 
 test_open_leaves_a_tracked_claude_md_with_cs_markers_alone() {
@@ -543,7 +723,15 @@ run_test test_rerun_adopts_nothing_twice_and_keeps_the_exclude_file
 run_test test_dry_run_writes_nothing
 run_test test_rerun_prunes_a_link_whose_worktree_is_gone
 run_test test_same_worktree_name_under_two_repos_opens_the_right_one
+run_test test_resume_of_a_relocated_conversation_runs_claude_in_place_of_cs
+run_test test_resume_of_a_parent_conversation_under_the_worktree_id_keeps_cs_as_the_parent
+run_test test_resume_of_an_older_relocated_conversation_runs_claude_in_place_of_cs
+run_test test_open_keeps_a_relocated_conversation_beside_a_newer_local_one
+run_test test_open_keeps_a_relocated_conversation_whose_prompt_names_the_teammate_frame
 run_test test_a_symlink_to_another_project_is_not_adopted
+run_test test_a_committed_git_repository_layout_is_skipped_by_name
+run_test test_a_committed_git_repository_layout_above_an_entry_is_skipped_by_name
+run_test test_a_worktree_name_is_printed_as_a_plain_path
 run_test test_open_leaves_a_tracked_claude_md_with_cs_markers_alone
 run_test test_an_exclude_file_without_a_final_newline_keeps_its_last_rule
 run_test test_rerun_finishes_an_adoption_that_lost_its_link

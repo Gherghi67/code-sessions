@@ -345,6 +345,7 @@ class Copier:
         """Names to copy, names cs already has, and any problem reading either."""
         ccs_env = profile_secrets_env(self.ccs_secrets_dir)
         cs_env = scrubbed_env()
+        cs_env["CS_SESSIONS_ROOT"] = self.cs_root
         try:
             if not os.access(self.ccs_secrets, os.X_OK):
                 raise SecretsError("%s is missing; run setup.sh" % tilde(self.ccs_secrets))
@@ -362,6 +363,7 @@ class Copier:
     def copy_secrets(self, plan, names):
         ccs_env = profile_secrets_env(self.ccs_secrets_dir)
         cs_env = scrubbed_env()
+        cs_env["CS_SESSIONS_ROOT"] = self.cs_root
         return [name for name in names
                 if not copy_secret([self.ccs_secrets, "--session", plan.name, "get", name], ccs_env,
                                    [self.cs_secrets, "--session", plan.cs_name, "set", name], cs_env)]

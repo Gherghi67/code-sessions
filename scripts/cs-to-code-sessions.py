@@ -1181,7 +1181,9 @@ class Importer:
         return added
 
     def secret_envs(self):
-        return scrubbed_env(), profile_secrets_env(self.ccs_secrets_dir)
+        cs_env = scrubbed_env()
+        cs_env["CS_SESSIONS_ROOT"] = self.cs_root
+        return cs_env, profile_secrets_env(self.ccs_secrets_dir)
 
     def secrets(self, session):
         """Names to copy, names code-sessions already has, and any problem reading either."""

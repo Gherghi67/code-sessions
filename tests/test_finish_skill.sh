@@ -65,7 +65,9 @@ test_finish_skill_teaches_the_ritual() {
     assert_file_contains "$SKILL" "cs <base> -retire-feature <task> <sha>" "retires only through the hidden entry" || return 1
     assert_file_contains "$SKILL" "retire: ready" "reads the report's retire key" || return 1
     assert_file_contains "$SKILL" "retire: not-landed" "the squash case exists" || return 1
-    assert_file_contains "$SKILL" "[-]-force" "and takes force only on PR evidence" || return 1
+    assert_file_contains "$SKILL" "retire: content-landed" "a branch whose content is on the base retires" || return 1
+    assert_file_contains "$SKILL" "[-]-force" "and takes force on the content or the PR evidence" || return 1
+    assert_file_contains "$SKILL" "no merge base" "a not-landed capture with no shared history has no path lines" || return 1
     assert_file_contains "$SKILL" "equals the captured" "force needs the PR head to be the captured commit" || return 1
     assert_file_contains "$SKILL" "conversation is still open" "the open-conversation refusal is the user's to act on" || return 1
     assert_file_not_contains "$SKILL" "[-]-merge" "the retired verb is never named" || return 1

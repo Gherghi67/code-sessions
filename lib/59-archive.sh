@@ -22,7 +22,7 @@ _session_is_archived() {  # session_dir
 }
 
 run_archive() {
-    local force="" arg name
+    local force="" arg name live_pid
     local names
     names=()
     for arg in "$@"; do
@@ -35,14 +35,24 @@ run_archive() {
         esac
     done
     [ "${#names[@]}" -ge 1 ] || error "Usage: cs -archive <name>... [--force]"
+    # Before any marker is written: a live session of another conversation's
+    # user, or a base with a live feature when the caller is not that base,
+    # stops the whole run.
+    # One already archived is left alone below.
+    for name in "${names[@]}"; do
+        [ -f "$SESSIONS_ROOT/$name/.cs/archived" ] && continue
+        _refuse_live_other_session "$name" "$SESSIONS_ROOT/$name/.cs" archive
+        _refuse_base_with_live_feature "$name" archive
+    done
     for name in "${names[@]}"; do
         _archive_resolve "$name"
         if [ -f "$ARCHIVE_MARKER" ]; then
             info "Already archived: $name"
             continue
         fi
-        if [ -z "$force" ] && session_is_live "$ARCHIVE_DIR/.cs"; then
-            error "Session '$name' is live (pid $(read_lock_pid "$ARCHIVE_DIR/.cs")); use --force to archive anyway"
+        if [ -z "$force" ]; then
+            live_pid=$(live_lock_pid "$ARCHIVE_DIR/.cs")
+            [ -z "$live_pid" ] || error "Session '$name' is live (pid $live_pid); use --force to archive anyway"
         fi
         printf 'archived: %s by %s\n' "$(date +%Y-%m-%d)" "$(cs_actor_slug)" > "$ARCHIVE_MARKER"
         info "Archived: $name (opening it restores it; or run 'cs -unarchive $name')"

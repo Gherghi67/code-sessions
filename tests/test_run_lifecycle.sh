@@ -42,6 +42,9 @@ DRIVER
 source "$CS_TEST_SOURCE_DIR/lib/02-shared.sh"
 source "$CS_TEST_SOURCE_DIR/hooks/cs-resolve.sh"
 CLAUDE_PID=$$
+# SessionStart establishes the native lead claim before other hooks inspect it.
+export CS_LEAD_CLAIM=1
+cs_lead_claim "$CS_SESSION_META_DIR/local" test-session
 if cs_is_lead; then printf 'lead\n' > "$CS_TEST_SESSION_DIR/lead"; fi
 printf '%s\n' "$$" > "$CS_TEST_SESSION_DIR/child-pid"
 printf '%s\n' "$CS_RUN_ID" > "$CS_TEST_SESSION_DIR/child-run-id"

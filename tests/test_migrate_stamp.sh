@@ -171,6 +171,7 @@ test_session_encrypted_after_the_stamp_gains_the_protocol() {
     # otherwise refuses.
     mkdir -p "$TEST_TMPDIR/vault/private"
     ln -s "$TEST_TMPDIR/vault/private" "$dir/.cs/private"
+    _mark_hand_made_vault "$dir"
     if [ -e "$dir/.cs/local/session.log" ]; then
         mv "$dir/.cs/local/session.log" "$TEST_TMPDIR/vault/private/session.log"
     fi
@@ -239,8 +240,8 @@ test_committed_stamp_is_refused() {
         || { echo "  FAIL: could not commit the stamp"; return 1; }
     out=$(_open tracked) || rc=$?
     assert_eq "1" "$rc" "an open with a committed stamp is refused" || return 1
-    assert_output_contains "$out" ".cs/local/ is tracked in git" \
-        "the refusal names the tracked .cs/local" || return 1
+    assert_output_contains "$out" ".cs/local/migrated is tracked in git" \
+        "the refusal names the tracked stamp" || return 1
     assert_output_not_contains "$out" "--resume" "the refused open launches nothing" || return 1
 }
 
@@ -264,6 +265,41 @@ test_memory_index_edit_reruns_only_the_narrative_check() {
         "a newer MEMORY.md gets its narrative pointer back" || return 1
     assert_file_not_contains "$dir/.gitignore" '^\.obsidian/$' \
         "a newer MEMORY.md alone runs no other phase" || return 1
+}
+
+# The narrative is no stamp probe, so old resume wording that comes back into
+# it (a merge, a restore) after the stamp is invisible to the stamp. Its probe
+# reads eight lines, so it runs on every open: the description is rewritten
+# while a backdated .gitignore edit shows the open was a fresh-stamp one.
+test_old_narrative_wording_after_the_stamp_is_rewritten() {
+    local dir="$CS_SESSIONS_ROOT/reworded" f tmp
+    _stamped_session reworded || return 1
+    f="$dir/.cs/memory/narrative.alice.md"
+    tmp=$(mktemp "${TMPDIR:-/tmp}/reword.XXXXXX")
+    awk '/^description: / && !done { print "description: Session lab-notebook and work-in-progress narrative for alice. Looser bar than durable memory. Read the live narrative.*.md on resume; older sections are archived under .cs/narrative-archive/."; done = 1; next } { print }' "$f" > "$tmp"
+    cat "$tmp" > "$f"
+    rm -f "$tmp"
+    _drop_line "$dir/.gitignore" ".obsidian/"
+    _age_session "$dir"
+    _open reworded > /dev/null || { echo "  FAIL: the reopen failed"; return 1; }
+    assert_eq "description: Session lab-notebook and work-in-progress narrative for alice. Looser bar than durable memory. Its owner reads it in full on resume; anyone else reads only the lines the resume digest names. Older sections are archived under .cs/narrative-archive/." \
+        "$(grep '^description: ' "$f")" "the old wording is rewritten on a fresh-stamp open" || return 1
+    assert_file_not_contains "$dir/.gitignore" '^\.obsidian/$' \
+        "the open skipped the one-time phases" || return 1
+}
+
+# The retired command-tracker files are tested by existence alone, so their
+# prune runs on every open: a commands.md restored after the stamp goes.
+test_retired_commands_file_after_the_stamp_is_pruned() {
+    local dir="$CS_SESSIONS_ROOT/pruned"
+    _stamped_session pruned || return 1
+    printf '# Commands\n' > "$dir/.cs/commands.md"
+    _drop_line "$dir/.gitignore" ".obsidian/"
+    _age_session "$dir"
+    _open pruned > /dev/null || { echo "  FAIL: the reopen failed"; return 1; }
+    assert_file_not_exists "$dir/.cs/commands.md" "the retired file is pruned on a fresh-stamp open" || return 1
+    assert_file_not_contains "$dir/.gitignore" '^\.obsidian/$' \
+        "the open skipped the one-time phases" || return 1
 }
 
 # A directory where the stamp goes makes every stamp write fail, the way a
@@ -390,6 +426,8 @@ run_test test_migration_with_a_failed_write_leaves_no_stamp
 run_test test_unusable_stamp_reruns_the_migration_quietly
 run_test test_committed_stamp_is_refused
 run_test test_memory_index_edit_reruns_only_the_narrative_check
+run_test test_old_narrative_wording_after_the_stamp_is_rewritten
+run_test test_retired_commands_file_after_the_stamp_is_pruned
 run_test test_stamp_that_cannot_be_written_does_not_stop_the_open
 run_test test_stamp_from_another_engine_reruns_the_migration
 run_test test_stamp_naming_no_engine_reruns_the_migration

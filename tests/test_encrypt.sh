@@ -19,8 +19,13 @@ EOF
 #!/bin/sh
 echo "$*" >> "$FAKE_HDIUTIL_LOG"
 [ "$1" = "${FAKE_HDIUTIL_FAIL:-}" ] && { echo "hdiutil: $1 failed - stub" >&2; exit 1; }
-# The verb named in $FAKE_HDIUTIL_SLOW takes 3 s and logs "<verb>-done" once it finishes.
-if [ "$1" = "${FAKE_HDIUTIL_SLOW:-}" ]; then sleep 3; echo "$1-done" >> "$FAKE_HDIUTIL_LOG"; fi
+# The verb named in $FAKE_HDIUTIL_HOLD never finishes by itself: it stays in
+# flight until something stops it, or until the log is gone, so a test that
+# fails leaves nothing running.
+if [ "$1" = "${FAKE_HDIUTIL_HOLD:-}" ]; then
+    while [ -e "$FAKE_HDIUTIL_LOG" ]; do sleep 0.1; done
+    exit 0
+fi
 # With $FAKE_LOCK_WATCH set, create records whether that lock names a live pid.
 if [ "$1" = "create" ] && [ -n "${FAKE_LOCK_WATCH:-}" ]; then
     p=$(cat "$FAKE_LOCK_WATCH" 2>/dev/null)
@@ -28,6 +33,8 @@ if [ "$1" = "create" ] && [ -n "${FAKE_LOCK_WATCH:-}" ]; then
 fi
 # create makes the container, the one side effect cs relies on.
 if [ "$1" = "create" ]; then eval "last=\${$#}"; mkdir -p "$last"; fi
+# Make the content move fail only after encryption has acquired its lease.
+if [ "$1" = "create" ] && [ -n "${FAKE_READONLY_LOCAL:-}" ]; then chmod 555 "$FAKE_READONLY_LOCAL"; fi
 # With $FAKE_MOUNT_FLAG set, attach and detach flip the mount stub's answer.
 if [ -n "${FAKE_MOUNT_FLAG:-}" ]; then
     [ "$1" = "attach" ] && : > "$FAKE_MOUNT_FLAG"
@@ -324,6 +331,108 @@ test_encrypt_releases_the_session_lock_when_it_stops() {
     [ ! -e "$lock" ] || { echo "  FAIL: lock left after a failed encrypt: $(cat "$lock")"; return 1; }
 }
 
+# The EXIT trap releases the lock of whatever sessions root cs runs under: a
+# root holding a space, quotes and a $( is a path to release, never code to run.
+test_encrypt_releases_the_lock_under_a_root_with_quotes() {
+    _stubs
+    export CS_SESSIONS_ROOT="$TEST_TMPDIR/odd root/it's \"q\" \$(touch pwned)"
+    mkdir -p "$CS_SESSIONS_ROOT"
+    _populated_session enc
+    local lock="$CS_SESSIONS_ROOT/enc/.cs/session.lock" rc=0
+    (cd "$TEST_TMPDIR" && FAKE_HDIUTIL_FAIL=attach _encrypt enc >/dev/null 2>&1) || rc=$?
+    assert_eq "1" "$rc" "encrypt stops" || return 1
+    [ ! -e "$lock" ] || { echo "  FAIL: lock left after a failed encrypt: $(cat "$lock")"; return 1; }
+    [ ! -e "$TEST_TMPDIR/pwned" ] || { echo "  FAIL: the root's \$( ran as code"; return 1; }
+}
+
+# cs -encrypt checks that the session is not live, then takes its lock. An
+# open in another terminal can take the lock between the two. cs -encrypt must
+# then refuse, with nothing written, and leave the open's lock as it is: two
+# processes each holding the session would run claude while the moves run.
+# cs -encrypt is paused after its check by a stand-in awk that waits on a gate
+# file while it reads the session README, and the open takes the lock
+# meanwhile and stays alive, blocked on a fifo, until the asserts are done.
+test_encrypt_refuses_an_open_that_took_the_lock_after_its_check() {
+    _stubs
+    _populated_session enc
+    local meta="$CS_SESSIONS_ROOT/enc/.cs" shim="$TEST_TMPDIR/awkshim" real_awk
+    local paused="$TEST_TMPDIR/awk.paused" gate="$TEST_TMPDIR/awk.gate"
+    local opened="$TEST_TMPDIR/open.ready" fifo="$TEST_TMPDIR/open.fifo"
+    local pid_encrypt pid_open rc=0 i=0 out="$TEST_TMPDIR/encrypt.out"
+    real_awk=$(command -v awk)
+    mkdir -p "$shim"
+    cat > "$shim/awk" <<SHIM
+#!/bin/bash
+case "\$*" in
+    *"/enc/.cs/README.md")
+        if [ ! -e "$paused" ]; then
+            touch "$paused"; until [ -e "$gate" ]; do sleep 0.05; done
+        fi ;;
+esac
+exec "$real_awk" "\$@"
+SHIM
+    chmod +x "$shim/awk"
+    PATH="$shim:$PATH" _encrypt enc >"$out" 2>&1 &
+    pid_encrypt=$!
+    until [ -e "$paused" ] || [ "$i" -ge 200 ]; do sleep 0.05; i=$((i + 1)); done
+    assert_file_exists "$paused" "cs -encrypt reached its README read after the live check" \
+        || { touch "$gate"; wait "$pid_encrypt"; return 1; }
+    mkfifo "$fifo"
+    LOCK_LIB="$SCRIPT_DIR/../lib" LOCK_META="$meta" READY="$opened" FIFO="$fifo" bash -c '
+        . "$LOCK_LIB/05-term.sh"
+        . "$LOCK_LIB/02-shared.sh"
+        . "$LOCK_LIB/15-lock.sh"
+        cs_interactive() { return 1; }
+        acquire_session_lock "$LOCK_META" "" enc >/dev/null 2>&1 || exit 1
+        : > "$READY"
+        read -r _ <> "$FIFO"
+    ' &
+    pid_open=$!
+    i=0
+    until [ -e "$opened" ] || [ "$i" -ge 100 ]; do sleep 0.05; i=$((i + 1)); done
+    assert_file_exists "$opened" "the open took the session lock" \
+        || { touch "$gate"; wait "$pid_encrypt"; kill "$pid_open" 2>/dev/null; wait "$pid_open"; return 1; }
+    touch "$gate"
+    wait "$pid_encrypt" || rc=$?
+    local lock_now
+    lock_now=$(cat "$meta/session.lock" 2>/dev/null)
+    kill "$pid_open" 2>/dev/null; wait "$pid_open" 2>/dev/null
+    assert_eq "1" "$rc" "cs -encrypt refuses" || return 1
+    assert_eq "Error: enc: the session is running; close it, then encrypt." "$(cat "$out")" \
+        "cs -encrypt names the running session" || return 1
+    assert_eq "" "$(cat "$FAKE_HDIUTIL_LOG")" "hdiutil never called" || return 1
+    assert_eq "$pid_open" "$lock_now" "the open still holds the session lock" || return 1
+}
+
+# Start a process that holds <lock file> through _cs_lock until killed, with
+# no child: it blocks in bash's own read on a fifo. Its pid is MUTEX_HOLDER.
+_hold_session_mutex() {  # lock file
+    local ready="$TEST_TMPDIR/mutex.ready" i=0
+    mkfifo "$TEST_TMPDIR/mutex.fifo"
+    bash -c 'source "$1"; _cs_lock "$2" || exit 1; : > "$3"; read -r _ <> "$4"' _ \
+        "$SCRIPT_DIR/../hooks/cs-shared.sh" "$1" "$ready" "$TEST_TMPDIR/mutex.fifo" &
+    MUTEX_HOLDER=$!
+    until [ -e "$ready" ] || [ "$i" -ge 100 ]; do sleep 0.05; i=$((i + 1)); done
+    [ -e "$ready" ] || { echo "  FAIL: the holder never took $1"; return 1; }
+}
+
+# While another cs holds the openers' mutex past its five-second wait, that
+# holder may be between reading a dead pid and removing the lock, so
+# cs -encrypt refuses rather than going on without it, and writes nothing.
+test_encrypt_refuses_while_the_openers_mutex_stays_held() {
+    _stubs
+    _populated_session enc
+    local meta="$CS_SESSIONS_ROOT/enc/.cs" out rc=0
+    _hold_session_mutex "$meta/session.mutex.lock" || return 1
+    out=$(_encrypt enc 2>&1) || rc=$?
+    kill "$MUTEX_HOLDER" 2>/dev/null; wait "$MUTEX_HOLDER" 2>/dev/null
+    assert_eq "1" "$rc" "cs -encrypt refuses" || return 1
+    assert_eq "Error: enc: another cs is opening this session ($meta/session.mutex.lock is held); try again in a moment." "$out" \
+        "cs -encrypt names the held mutex" || return 1
+    [ ! -e "$meta/session.lock" ] || { echo "  FAIL: session.lock written: $(cat "$meta/session.lock")"; return 1; }
+    _assert_nothing_written enc || return 1
+}
+
 test_encrypt_refuses_a_readme_it_cannot_tag() {
     _stubs
     create_test_session enc >/dev/null
@@ -361,8 +470,7 @@ test_encrypt_stops_on_a_failed_move_and_names_what_moved() {
     _stubs
     _populated_session enc
     local s="$CS_SESSIONS_ROOT/enc/.cs" out rc=0
-    chmod 555 "$s/local"
-    out=$(_encrypt enc 2>&1) || rc=$?
+    out=$(FAKE_READONLY_LOCAL="$s/local" _encrypt enc 2>&1) || rc=$?
     chmod 755 "$s/local"
     assert_eq "1" "$rc" "non-zero exit" || return 1
     assert_output_contains "$out" "enc: could not move .cs/local/session.log into the vault. Already moved: .cs/memory .cs/plans. Not moved:" "names moved and unmoved" || return 1
@@ -390,7 +498,7 @@ EOF
     : > "$FAKE_HDIUTIL_LOG"
 }
 
-_pre_open() {  # name [env...] -> runs the hook the way _run_pre_open does
+_pre_open() {  # name [env...] -> runs the hook from the session directory, as _run_pre_open does; cs's CS_LIVE_LOCK_PID goes in env
     local name="$1"; shift
     (cd "$CS_SESSIONS_ROOT/$name" && env "$@" .cs/local/pre-open </dev/null)
 }
@@ -400,10 +508,45 @@ test_pre_open_joins_a_mount_held_by_a_running_session() {
     sleep 300 &
     local live=$! rc=0
     echo "$live" > "$CS_SESSIONS_ROOT/enc/.cs/session.lock"
-    _pre_open enc FAKE_MOUNTED=1 >/dev/null 2>&1 || rc=$?
+    _pre_open enc FAKE_MOUNTED=1 CS_LIVE_LOCK_PID="$live" >/dev/null 2>&1 || rc=$?
     kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
     assert_eq "0" "$rc" "exit 0" || return 1
     assert_eq "" "$(cat "$FAKE_HDIUTIL_LOG")" "no prompt, no hdiutil call" || return 1
+}
+
+# The pre-open takes cs's reading of the session lock from CS_LIVE_LOCK_PID
+# and never reads the lock itself. Run without it (by hand, or by a cs that
+# does not set it), a mount counts as held by no running session, even
+# under a live lock: it is detached and the password asked for again.
+test_pre_open_without_the_lock_pid_detaches_and_asks_again() {
+    _encrypted_session enc || return 1
+    sleep 300 &
+    local live=$! rc=0
+    echo "$live" > "$CS_SESSIONS_ROOT/enc/.cs/session.lock"
+    _pre_open enc -u CS_LIVE_LOCK_PID FAKE_MOUNTED=1 CS_ASSUME_TTY=1 >/dev/null 2>&1 || rc=$?
+    kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
+    assert_eq "0" "$rc" "exit 0" || return 1
+    assert_eq "detach $FAKE_MNT
+attach -nobrowse -mountpoint $FAKE_MNT $(_vault_path enc)" "$(cat "$FAKE_HDIUTIL_LOG")" "detach, then a prompting attach" || return 1
+}
+
+# A CS_LIVE_LOCK_PID that names no running process (a dead pid, or 0 and 00,
+# which kill -0 takes for the caller's process group) is not a running
+# session either: run by hand with one, the pre-open detaches the mount and
+# asks for the password again.
+test_pre_open_with_a_lock_pid_that_is_not_running_detaches_and_asks_again() {
+    _encrypted_session enc || return 1
+    sleep 300 &
+    local dead=$! value rc
+    kill "$dead" 2>/dev/null; wait "$dead" 2>/dev/null
+    for value in "$dead" 0 00; do
+        : > "$FAKE_HDIUTIL_LOG"
+        rc=0
+        _pre_open enc FAKE_MOUNTED=1 CS_ASSUME_TTY=1 CS_LIVE_LOCK_PID="$value" >/dev/null 2>&1 || rc=$?
+        assert_eq "0" "$rc" "exit 0 with CS_LIVE_LOCK_PID=$value" || return 1
+        assert_eq "detach $FAKE_MNT
+attach -nobrowse -mountpoint $FAKE_MNT $(_vault_path enc)" "$(cat "$FAKE_HDIUTIL_LOG")" "CS_LIVE_LOCK_PID=$value: detach, then a prompting attach" || return 1
+    done
 }
 
 # /clear used to drop the lock while claude ran on; the holder list still names it.
@@ -425,14 +568,18 @@ test_pre_open_stops_a_waiter_detach_in_flight() {
     sleep 0.1 &
     local claude=$!
     wait "$claude" 2>/dev/null
-    FAKE_HDIUTIL_SLOW=detach _end_conversation enc prompt_input_exit "$claude" "$claude"
+    FAKE_HDIUTIL_HOLD=detach _end_conversation enc prompt_input_exit "$claude" "$claude"
     local f="$CS_SESSIONS_ROOT/enc/.cs/local/vault-detach.pid" i=0
-    while [ ! -s "$f" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+    while [ ! -s "$f" ] && [ $i -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
     [ -s "$f" ] || { echo "  FAIL: the waiter recorded no detach child"; return 1; }
-    local rc=0
+    local detach rc=0
+    detach=$(cat "$f")
+    kill -0 "$detach" 2>/dev/null || { echo "  FAIL: the waiter's detach is not in flight before the reopen"; return 1; }
     _pre_open enc FAKE_MOUNTED=1 CS_ASSUME_TTY=1 >/dev/null 2>&1 || rc=$?
-    sleep 3.5
+    local alive=0
+    kill -0 "$detach" 2>/dev/null && alive=1
     assert_eq "0" "$rc" "reopen asks again" || return 1
+    assert_eq "0" "$alive" "the waiter's detach is stopped when the reopen returns" || return 1
     assert_eq "detach $FAKE_MNT
 detach $FAKE_MNT
 attach -nobrowse -mountpoint $FAKE_MNT $(_vault_path enc)" "$(cat "$FAKE_HDIUTIL_LOG")" "the waiter's detach never finished" || return 1
@@ -520,6 +667,47 @@ test_open_that_stops_leaves_a_running_session_vault_mounted() {
     kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
     assert_eq "1" "$rc" "the open stops" || return 1
     assert_eq "" "$(cat "$FAKE_HDIUTIL_LOG")" "joined the mount, never detached it" || return 1
+}
+
+# The open's exit reads the lock by live_lock_pid's rule: "-1" and "0" name
+# process groups and "+<pid>" is not a pid, so no running session holds the
+# vault and the open that mounted it detaches it.
+test_open_that_stops_reads_the_lock_by_the_one_lock_rule() {
+    _encrypted_session enc || return 1
+    echo "plaintext" > "$CS_SESSIONS_ROOT/enc/.cs/local/session.log"
+    local text out rc
+    for text in "-1" "0" "+$$"; do
+        : > "$FAKE_HDIUTIL_LOG"
+        rm -f "$TEST_TMPDIR/mounted"
+        printf '%s\n' "$text" > "$CS_SESSIONS_ROOT/enc/.cs/session.lock"
+        rc=0
+        out=$(_open enc 2>&1) || rc=$?
+        assert_eq "1" "$rc" "the open over a lock of '$text' stops: $out" || return 1
+        assert_output_contains "$out" "still holds session.log in plaintext" "stops at the plaintext refusal" || return 1
+        assert_eq "attach -nobrowse -mountpoint $FAKE_MNT $(_vault_path enc)
+detach $FAKE_MNT" "$(cat "$FAKE_HDIUTIL_LOG")" "a lock of '$text' does not keep the vault mounted" || return 1
+    done
+}
+
+# An open over a mounted vault reads the lock by live_lock_pid's rule before
+# its pre-open runs: "0" and "00" name a process group, not a running
+# session, so the pre-open detaches the mount and asks for the password.
+test_open_over_a_mounted_vault_reads_the_lock_by_the_one_lock_rule() {
+    _encrypted_session enc || return 1
+    echo "plaintext" > "$CS_SESSIONS_ROOT/enc/.cs/local/session.log"
+    local text out rc
+    for text in "0" "00"; do
+        : > "$FAKE_HDIUTIL_LOG"
+        : > "$TEST_TMPDIR/mounted"
+        printf '%s\n' "$text" > "$CS_SESSIONS_ROOT/enc/.cs/session.lock"
+        rc=0
+        out=$(_open enc 2>&1) || rc=$?
+        assert_eq "1" "$rc" "the open over a lock of '$text' stops: $out" || return 1
+        assert_output_contains "$out" "still holds session.log in plaintext" "stops at the plaintext refusal" || return 1
+        assert_eq "detach $FAKE_MNT
+attach -nobrowse -mountpoint $FAKE_MNT $(_vault_path enc)
+detach $FAKE_MNT" "$(cat "$FAKE_HDIUTIL_LOG")" "a lock of '$text' does not join the mount without the password" || return 1
+    done
 }
 
 # The resume prompt belongs to a session with a conversation to resume; one
@@ -666,6 +854,22 @@ test_session_end_detaches_after_the_lead_exits() {
     _waiter_gone enc || { echo "  FAIL: waiter pid file left"; return 1; }
 }
 
+# The detach child's pid file is written by the waiter long after the open
+# checked the session; a link planted there since must not carry the write.
+test_session_end_detach_pid_does_not_follow_a_link() {
+    _encrypted_session enc || return 1
+    local t; t=$(cd "$TEST_TMPDIR" && pwd -P)
+    printf 'USER-OWNED\n' > "$t/victim"
+    ln -s "$t/victim" "$CS_SESSIONS_ROOT/enc/.cs/local/vault-detach.pid"
+    sleep 300 &
+    local claude=$!
+    _end_conversation enc prompt_input_exit "$claude" "$claude"
+    kill "$claude" 2>/dev/null; wait "$claude" 2>/dev/null
+    _wait_for_log "detach $FAKE_MNT" || { echo "  FAIL: no detach after exit: $(cat "$FAKE_HDIUTIL_LOG")"; return 1; }
+    _waiter_gone enc || { echo "  FAIL: waiter pid file left"; return 1; }
+    assert_eq "USER-OWNED" "$(cat "$t/victim")" "the link's target is untouched" || return 1
+}
+
 test_session_end_leaves_the_vault_for_clear_resume_and_non_leads() {
     _encrypted_session enc || return 1
     local case_ reason lead claude
@@ -694,6 +898,28 @@ test_session_end_ignores_a_session_cs_did_not_encrypt() {
     assert_eq "" "$(cat "$FAKE_HDIUTIL_LOG")" "no detach" || return 1
 }
 
+# While git tracks .cs/local the waiter still detaches the vault when claude
+# exits (a mounted vault left behind is the worse outcome), but records no pid
+# there: the tracked directory is left as git has it.
+test_session_end_waiter_records_nothing_while_git_tracks_the_control_files() {
+    _encrypted_session enc || return 1
+    local s="$CS_SESSIONS_ROOT/enc" changed
+    git -C "$s" init -q && git -C "$s" add -f .cs/local \
+        && git -C "$s" -c user.name=test -c user.email=test@example.com commit -q -m "ship the control directory" \
+        || { echo "  FAIL: fixture commit failed"; return 1; }
+    assert_eq "" "$(git -C "$s" status --porcelain --ignored -- .cs/local)" "the fixture starts clean" || return 1
+    sleep 300 &
+    local claude=$!
+    _end_conversation enc prompt_input_exit "$claude" "$claude"
+    changed=$(git -C "$s" status --porcelain --ignored -- .cs/local)
+    kill "$claude" 2>/dev/null; wait "$claude" 2>/dev/null
+    assert_eq "" "$changed" "no waiter pid lands in the tracked .cs/local" || return 1
+    _wait_for_log "detach $FAKE_MNT" || { echo "  FAIL: no detach after exit: $(cat "$FAKE_HDIUTIL_LOG")"; return 1; }
+    sleep 0.5
+    changed=$(git -C "$s" status --porcelain --ignored -- .cs/local)
+    assert_eq "" "$changed" "nor a detach pid once the waiter has run" || return 1
+}
+
 test_session_end_waiter_spares_a_reopened_session() {
     _encrypted_session enc || return 1
     sleep 300 &
@@ -706,6 +932,47 @@ test_session_end_waiter_spares_a_reopened_session() {
     _waiter_gone enc || { kill "$reopened"; echo "  FAIL: waiter still running"; return 1; }
     kill "$reopened" 2>/dev/null; wait "$reopened" 2>/dev/null
     assert_eq "" "$(cat "$FAKE_HDIUTIL_LOG")" "the new conversation keeps its mount" || return 1
+}
+
+# The waiter reads the lock by live_lock_pid's rule: a lock of "-1", "0" or
+# "+<pid>" written after SessionEnd names no reopened conversation, so the
+# waiter detaches the vault once the lead claude exits.
+test_session_end_waiter_reads_the_lock_by_the_one_lock_rule() {
+    _encrypted_session enc || return 1
+    local text claude
+    for text in "-1" "0" "+$$"; do
+        : > "$FAKE_HDIUTIL_LOG"
+        sleep 300 &
+        claude=$!
+        _end_conversation enc prompt_input_exit "$claude" "$claude"
+        printf '%s\n' "$text" > "$CS_SESSIONS_ROOT/enc/.cs/session.lock"
+        kill "$claude" 2>/dev/null; wait "$claude" 2>/dev/null
+        _waiter_gone enc || { echo "  FAIL: waiter still running over a lock of '$text'"; return 1; }
+        assert_eq "detach $FAKE_MNT" "$(cat "$FAKE_HDIUTIL_LOG")" "a lock of '$text' does not keep the vault mounted" || return 1
+    done
+}
+
+# A waiter whose cs-shared.sh lacks live_lock_pid cannot read the lock by the
+# one rule, so it leaves the vault mounted for the next open to handle, even
+# over the lock of the claude that has just exited.
+test_session_end_waiter_without_the_lock_rule_keeps_the_vault() {
+    _encrypted_session enc || return 1
+    local partial="$TEST_TMPDIR/partial-hooks"
+    mkdir -p "$partial"
+    cp "$SCRIPT_DIR/../hooks/"*.sh "$partial/"
+    printf '\nunset -f live_lock_pid\n' >> "$partial/cs-shared.sh"
+    sleep 300 &
+    local claude=$!
+    echo "$claude" > "$CS_SESSIONS_ROOT/enc/.cs/session.lock"
+    printf '{"session_id":"11111111-2222-3333-4444-555555555555","reason":"prompt_input_exit"}' |
+        CLAUDE_SESSION_NAME=enc CLAUDE_SESSION_DIR="$CS_SESSIONS_ROOT/enc" \
+        CLAUDE_SESSION_META_DIR="$CS_SESSIONS_ROOT/enc/.cs" \
+        CLAUDE_PID="$claude" CS_LEAD_PID="$claude" FAKE_MOUNTED=1 \
+        bash "$partial/session-end.sh" >/dev/null 2>&1
+    [ -s "$CS_SESSIONS_ROOT/enc/.cs/local/vault-waiter.pid" ] || { kill "$claude"; echo "  FAIL: no waiter recorded"; return 1; }
+    kill "$claude" 2>/dev/null; wait "$claude" 2>/dev/null
+    _waiter_gone enc || { echo "  FAIL: waiter still running"; return 1; }
+    assert_eq "" "$(cat "$FAKE_HDIUTIL_LOG")" "the vault stays mounted" || return 1
 }
 
 test_session_end_waiter_spares_a_vault_a_holder_keeps() {
@@ -749,11 +1016,16 @@ run_test test_encrypt_builds_a_session_never_opened_on_this_machine
 run_test test_encrypt_builds_the_container_under_cs_data_dir
 run_test test_encrypt_holds_the_session_lock_while_it_works
 run_test test_encrypt_releases_the_session_lock_when_it_stops
+run_test test_encrypt_releases_the_lock_under_a_root_with_quotes
+run_test test_encrypt_refuses_an_open_that_took_the_lock_after_its_check
+run_test test_encrypt_refuses_while_the_openers_mutex_stays_held
 run_test test_encrypt_refuses_a_readme_it_cannot_tag
 run_test test_encrypt_stops_when_create_fails
 run_test test_encrypt_stops_when_attach_fails
 run_test test_encrypt_stops_on_a_failed_move_and_names_what_moved
 run_test test_pre_open_joins_a_mount_held_by_a_running_session
+run_test test_pre_open_without_the_lock_pid_detaches_and_asks_again
+run_test test_pre_open_with_a_lock_pid_that_is_not_running_detaches_and_asks_again
 run_test test_pre_open_joins_a_mount_whose_holder_is_alive_without_a_lock
 run_test test_pre_open_stops_a_waiter_detach_in_flight
 run_test test_pre_open_detaches_a_leftover_mount_and_asks_again
@@ -763,6 +1035,8 @@ run_test test_pre_open_attaches_with_a_prompt
 run_test test_pre_open_attaches_the_recorded_container_whatever_cs_data_dir_says
 run_test test_open_that_stops_detaches_the_vault_it_mounted
 run_test test_open_that_stops_leaves_a_running_session_vault_mounted
+run_test test_open_that_stops_reads_the_lock_by_the_one_lock_rule
+run_test test_open_over_a_mounted_vault_reads_the_lock_by_the_one_lock_rule
 run_test test_open_cancelled_at_a_prompt_detaches_the_vault_it_mounted
 run_test test_open_that_stops_leaves_a_vault_another_holder_keeps
 run_test test_open_handing_off_to_the_session_manager_leaves_the_holders
@@ -770,9 +1044,13 @@ run_test test_open_resuming_keeps_the_vault_while_claude_runs
 run_test test_open_fresh_detaches_after_claude_exits
 run_test test_first_open_detaches_after_claude_exits
 run_test test_session_end_detaches_after_the_lead_exits
+run_test test_session_end_detach_pid_does_not_follow_a_link
 run_test test_session_end_leaves_the_vault_for_clear_resume_and_non_leads
 run_test test_session_end_ignores_a_session_cs_did_not_encrypt
+run_test test_session_end_waiter_records_nothing_while_git_tracks_the_control_files
 run_test test_session_end_waiter_spares_a_reopened_session
+run_test test_session_end_waiter_reads_the_lock_by_the_one_lock_rule
+run_test test_session_end_waiter_without_the_lock_rule_keeps_the_vault
 run_test test_session_end_waiter_spares_a_vault_a_holder_keeps
 run_test test_session_end_waiter_leaves_a_busy_vault_mounted
 report_results

@@ -34,6 +34,7 @@ _cs() {
         'delete:Delete a secret'
         'rm:Delete a secret (alias)'
         'purge:Delete ALL secrets'
+        'rename:Move the secrets to a renamed session'
         'export:Export as environment variables'
         'export-file:Export to encrypted file'
         'import-file:Import from encrypted file'
@@ -58,12 +59,12 @@ _cs() {
     local -a queue_cmds
     queue_cmds=(
         'add:Add a task to the walk-away queue'
+        'accept:Queue a task another session sent by mail, by message id'
         'list:Show pending and completed queued tasks'
         'ls:Show pending and completed queued tasks (alias)'
         'rm:Remove a pending task by index'
         'clear:Empty the queue and stop draining'
         'start:Arm the queue for draining (subagents or workflow runs each task that way)'
-        'defer:Decline draining for now'
         'log:Show the walk-away run journal (drains, breaker trips)'
     )
 
@@ -118,6 +119,7 @@ _cs() {
         '-unarchive:Restore an archived session'
         '-encrypt:Move a closed session into an encrypted vault (macOS)'
         '-status:Set or show this session'\''s advertised status'
+        '-vet-session:Check that git tracks no file in a session'\''s control directories'
         '-search:Search across all sessions'
         '-statusline:Manage the cs status line (enable|disable|caps)'
         '-detect-theme:Detect terminal background theme'
@@ -187,16 +189,19 @@ _cs() {
         return
     fi
 
-    # Context: after -adopt. A new session name completes nothing; the options
-    # choose the engine, or register Claude Code's worktrees instead.
+    # Context: after -adopt. A new session name completes nothing; --yes
+    # answers the re-adopt question, and --worktrees, only as the first word,
+    # registers Claude Code's worktrees instead.
     if $after_adopt; then
         if [[ "$words[CURRENT]" == -* ]]; then
             local -a adopt_opts
+            local yes_opt='--yes:Re-adopt orphaned session records without asking'
             if [[ "$words[CURRENT-1]" == "--worktrees" ]]; then
                 adopt_opts=('--dry-run:Print what would be adopted and write nothing')
+            elif [[ "$words[CURRENT-1]" == "-adopt" ]]; then
+                adopt_opts=('--worktrees:Register .claude/worktrees/* here as <repo>.<worktree> sessions' "$yes_opt")
             else
-                adopt_opts=('--worktrees:Register .claude/worktrees/* here as <repo>.<worktree> sessions'
-                    '--engine:Choose Claude Code or Codex CLI for this session')
+                adopt_opts=("$yes_opt" "--engine:Choose Claude Code or Codex CLI for this session")
             fi
             _describe 'option' adopt_opts
         fi
@@ -233,7 +238,21 @@ _cs() {
 
     # Context: after -secrets
     if $in_secrets; then
-        _describe 'secrets command' secrets_cmds
+        if [[ "$words[CURRENT]" == -* ]]; then
+            local -a secrets_opts
+            secrets_opts=(
+                '--session:Act on the named session'
+                '--replace:import-file: overwrite secrets already stored'
+                '--allow-unsigned:import-file: also take age files that have no signature'
+                '--redact:migrate: replace plaintext values in place'
+                '--from:migrate-backend: the backend to move from'
+                '--delete-source:migrate-backend: delete from the source afterwards'
+                '--help:Show the secrets reference'
+            )
+            _describe 'option' secrets_opts
+        else
+            _describe 'secrets command' secrets_cmds
+        fi
         return
     fi
 
@@ -289,6 +308,8 @@ _cs() {
             '--resume:Resume the exact recorded conversation'
             '--from-handoff:Start a fresh conversation from the pending rotation handoff'
             '--force:Override active session lock'
+            '--remote:Serve the session through claude remote-control'
+            '--permission-mode:With --remote, the permission mode of the sessions it starts'
         )
         _describe 'option' session_opts
         return
