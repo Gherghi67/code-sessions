@@ -331,6 +331,20 @@ cs_is_lead() {
         command -v cs_run_lease_owned >/dev/null 2>&1 || return 1
         [ "${CS_RUN_ENGINE:-}" = claude ] && cs_run_lease_owned "$meta" || return 1
         [ "${CS_LEAD_PID:-}" = "${CS_RUN_OWNER_PID:-}" ] || return 1
+        # Fork launchers from before lead claims still supervise a native
+        # child. Its recorded PID and process start identify that child across
+        # a hook update; another child inheriting the token is never the lead.
+        # Check every call, since a cached answer could survive PID reuse.
+        if [ "${CS_LEAD_CLAIM:-}" != 1 ] && [ "${CLAUDE_PID:-}" != "$CS_LEAD_PID" ]; then
+            local recorded_start current_start
+            recorded_start=$(jq -er --arg pid "${CLAUDE_PID:-}" \
+                'select((.native_pid | type) == "number" and .native_pid > 1 and (.native_pid | tostring) == $pid) |
+                 .native_started | select(type == "string" and length > 0)' \
+                "$meta/local/run-lease.json" 2>/dev/null) || return 1
+            current_start=$(LC_ALL=C "${CS_PS_BIN:-ps}" -o lstart= -p "$CLAUDE_PID" 2>/dev/null | sed 's/^[[:space:]]*//') || return 1
+            [ "$recorded_start" = "$current_start" ]
+            return $?
+        fi
     fi
     if [ -z "$_CS_IS_LEAD" ]; then
         _CS_IS_LEAD=0

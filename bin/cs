@@ -5,7 +5,7 @@
 set -euo pipefail
 
 # Configuration
-VERSION="2026.10.9"
+VERSION="2026.10.10"
 # This build is code-sessions, a fork of cs. It runs as cs inside its own
 # profile; outside, the code-sessions (ccs) launcher starts it and cs is the
 # original. install.sh greps this line to tell its own build from the original.
@@ -204,6 +204,7 @@ CS_MOD_FILES=(
     cs-mermaid/hooks/parse.ts
     cs-mermaid/hooks/register.tsx
     cs-mermaid/hooks/text.ts
+    cs-mermaid/skills/show-me/SKILL.md
 )
 
 # Every file install.sh deploys from the repo, one repo path per line: the
@@ -1462,6 +1463,7 @@ CS_KNOWN_SHA256=(
     c50976e1f3c21dd1f50731287278ec57eedb9a88170b59fa9563702eb333fccf
     c5212fc5822c770b3da9f56ba6712c720bc3d60b841b623fed7d75a145348dc8
     c56a4f57c7236c0a07b34ba11cd9aec81425bc2a6e7c1d681f79a461b3adb483
+    c591644117d9a870c4631ecb40c7fc47f7cbab7b74849feb07b318784ba85367
     c6c2d60670c919ba30bdbc18744f28479fa3d6798286131b885bbef25822442a
     c6c82c458f41ccdf039e8125c068e4eeca2f2006316d7bcbacdf9939f0a44504
     c6dd9d00576254dd6c3cc4ac8d6fe567adc1eb23466d1c2fec9fa11db14d68ff
@@ -6831,10 +6833,12 @@ _fuse_plan() {  # feature_meta base_meta out task
         done
     fi
     list=$(mktemp "${TMPDIR:-/tmp}/cs-fuse-list.XXXXXX") || return 1
-    # local/ is machine-local (_fuse_walk_skips) and never walked.
+    # local/ is machine-local (_fuse_walk_skips) and never walked. The walk
+    # is sorted so the first record it refuses, named in the error, is the
+    # same on every filesystem (pipefail keeps a failed find failing).
     if ! (cd -- "$1" && find . -mindepth 1 \( -path ./local -prune \) \
             -o \( -type d -exec test -e '{}/.git' \; -prune -print0 \) \
-            -o \( ! -type d -print0 \)) > "$list"; then
+            -o \( ! -type d -print0 \) | LC_ALL=C sort -z) > "$list"; then
         rm -f "$list"
         return 1
     fi

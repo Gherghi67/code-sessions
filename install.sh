@@ -272,6 +272,7 @@ CS_MOD_FILES=(
     cs-mermaid/hooks/parse.ts
     cs-mermaid/hooks/register.tsx
     cs-mermaid/hooks/text.ts
+    cs-mermaid/skills/show-me/SKILL.md
 )
 
 # Every file install.sh deploys from the repo, one repo path per line: the
@@ -1530,6 +1531,7 @@ CS_KNOWN_SHA256=(
     c50976e1f3c21dd1f50731287278ec57eedb9a88170b59fa9563702eb333fccf
     c5212fc5822c770b3da9f56ba6712c720bc3d60b841b623fed7d75a145348dc8
     c56a4f57c7236c0a07b34ba11cd9aec81425bc2a6e7c1d681f79a461b3adb483
+    c591644117d9a870c4631ecb40c7fc47f7cbab7b74849feb07b318784ba85367
     c6c2d60670c919ba30bdbc18744f28479fa3d6798286131b885bbef25822442a
     c6c82c458f41ccdf039e8125c068e4eeca2f2006316d7bcbacdf9939f0a44504
     c6dd9d00576254dd6c3cc4ac8d6fe567adc1eb23466d1c2fec9fa11db14d68ff
@@ -1725,12 +1727,12 @@ CS_KNOWN_SHA256=(
 # installed) before `cs -update` runs it, so a payload file that does not
 # match is not the file that was released.
 CS_PAYLOAD_SHA256=(
-    "08dd0cbb04ad83112a54859dbe0bd9f6cd7a7d4fd2f0504cc4d025462a375424  bin/cs"
+    "e00f65ba0f5196e428f45919bc16ee07c639ee0883f46e6e11232c64a90dee13  bin/cs"
     "5042a197231df26f302a95a4a464dc8c379f6934186f4f3db4b3f2d3eebf297b  bin/cs-secrets"
     "be8c092f779ff31c8543733efeed651fd2703269814b1625682dadad5d054056  bin/cs-codex-thread"
     "bc152de974021d7745798bfb84641f6039214c7426bb9cd4d6ec5d750f058a1f  bin/cs-statusline"
     "92a52124fee1ac25e0f15c9fd4fe70a21876ea8ea47ec1f6b8226334c38e53e3  bin/cs-subagent-statusline"
-    "43335c77601a816e211bd43b01a4b22925c04188ec3760be3c12d5722a3a2e39  hooks/cs-resolve.sh"
+    "7957cae275265c068b76ff43f7309ac5a7146ccbc75f84c08a0866ba724f3c0d  hooks/cs-resolve.sh"
     "cba2f7a43f3d8f22c531b768a50786c5d6489af241fd40a6dfefb658b3ce198d  hooks/cs-shared.sh"
     "5c3dac024c052e6c50f2d6398f33b0bd47d958e8e0d2283e5997f62aef349299  hooks/cs-engine-events.sh"
     "50d63ce0995e68fddd8503700c15f9585d11938c9cd3872a883146de7707c765  hooks/cs-iterm-tab.py"
@@ -1776,6 +1778,7 @@ CS_PAYLOAD_SHA256=(
     "4258a64c8eb8a2a172fb0680c578204f90ad97f344e82b25b4ff1ff9be701633  mods/cs-mermaid/hooks/parse.ts"
     "5a61c589f8e2a1e7c38aba026244c2ab1864f36035648872595de40fe6fe4cbc  mods/cs-mermaid/hooks/register.tsx"
     "c9c48de571777b2e2e948770b4e43fce1f4f84f86547496772a5021fc3380757  mods/cs-mermaid/hooks/text.ts"
+    "c591644117d9a870c4631ecb40c7fc47f7cbab7b74849feb07b318784ba85367  mods/cs-mermaid/skills/show-me/SKILL.md"
     "605fa5d43cfe4241a6403cdae4bce6faf0aff2a1e05f12d23aca1bb59c7fcb2a  completions/cs.bash"
     "182b1e2d61caeb5b7569769f6fdcfd3b2209962d042fd779798e02740e20a51b  completions/_cs"
 )

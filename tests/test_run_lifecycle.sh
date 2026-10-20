@@ -43,8 +43,12 @@ source "$CS_TEST_SOURCE_DIR/lib/02-shared.sh"
 source "$CS_TEST_SOURCE_DIR/hooks/cs-resolve.sh"
 CLAUDE_PID=$$
 # SessionStart establishes the native lead claim before other hooks inspect it.
-export CS_LEAD_CLAIM=1
-cs_lead_claim "$CS_SESSION_META_DIR/local" test-session
+if [ "${CS_TEST_LEGACY_LEAD:-0}" = 1 ]; then
+    unset CS_LEAD_CLAIM
+else
+    export CS_LEAD_CLAIM=1
+    cs_lead_claim "$CS_SESSION_META_DIR/local" test-session
+fi
 if cs_is_lead; then printf 'lead\n' > "$CS_TEST_SESSION_DIR/lead"; fi
 printf '%s\n' "$$" > "$CS_TEST_SESSION_DIR/child-pid"
 printf '%s\n' "$CS_RUN_ID" > "$CS_TEST_SESSION_DIR/child-run-id"
@@ -91,6 +95,40 @@ test_shared_exit_status_and_cleanup() {
     assert_eq "$(cat "$CS_TEST_SESSION_DIR/run-id")" "$(cat "$CS_TEST_SESSION_DIR/child-run-id")" || return 1
     assert_not_exists "$CS_TEST_SESSION_DIR/.cs/session.lock" || return 1
     assert_not_exists "$CS_TEST_SESSION_DIR/.cs/local/run-lease.json" || return 1
+}
+
+# An installed hook can change while a launcher from the previous fork is
+# still running. That launcher recorded its native PID and start time, but
+# predates CS_LEAD_CLAIM; the new hooks must still recognize its native lead.
+test_pre_claim_launcher_keeps_its_native_lead_after_upgrade() {
+    CS_TEST_LEGACY_LEAD=1 "$TEST_TMPDIR/driver" || return 1
+    assert_file_contains "$CS_TEST_SESSION_DIR/lead" lead "the old launch retains its native lead"
+}
+
+test_pre_claim_lease_checks_native_identity_on_every_call() {
+    local meta="$CS_TEST_SESSION_DIR/.cs" child other status=0 CS_LEAD_CLAIM=""
+    _test_lease old-launch
+    acquire_session_lock "$meta" false demo || return 1
+    sleep 300 &
+    child=$!
+    _cs_run_record_child "$meta" "$child" || { kill "$child"; return 1; }
+    CLAUDE_PID="$child"
+    _CS_IS_LEAD=""
+    cs_is_lead || status=1
+    # Same PID, another process start: a stale memo must not keep ownership.
+    jq '.native_started = "another process"' "$meta/local/run-lease.json" > "$meta/local/lease-test.tmp"
+    mv "$meta/local/lease-test.tmp" "$meta/local/run-lease.json"
+    if cs_is_lead; then status=1; fi
+    # Another child inherits the token, but the lease does not name its PID.
+    sleep 300 &
+    other=$!
+    CLAUDE_PID="$other"
+    _CS_IS_LEAD=""
+    if cs_is_lead; then status=1; fi
+    kill "$child" "$other" 2>/dev/null; wait "$child" 2>/dev/null || true
+    wait "$other" 2>/dev/null || true
+    release_session_lock "$meta"
+    assert_eq 0 "$status" "only the recorded native process with its original start owns the old launch"
 }
 
 test_terminal_stdin_reaches_child() {
@@ -263,6 +301,8 @@ HOLDER
 }
 
 run_test test_shared_exit_status_and_cleanup
+run_test test_pre_claim_launcher_keeps_its_native_lead_after_upgrade
+run_test test_pre_claim_lease_checks_native_identity_on_every_call
 run_test test_terminal_stdin_reaches_child
 run_test test_competing_launch_cannot_steal_lease
 run_test test_force_successor_rejects_old_cleanup_and_binding_writer
